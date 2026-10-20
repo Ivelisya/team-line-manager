@@ -131,7 +131,7 @@ pub fn restore(ctx: &Ctx, o: RestoreOpts) -> anyhow::Result<u8> {
     let id = st(&m, "/id");
     let mut q: Vec<(&str, String)> = vec![];
     if let Some(t) = o.team {
-        q.push(("team_id", lookup(&ctx.c.get("/teams")?, t, &["name"], "团队")?));
+        q.push(("team_id", lookup(&ctx.teams()?, t, &["name"], "团队")?));
     }
     if let Some(n) = o.number {
         q.push(("number", n.to_string()));
@@ -164,7 +164,7 @@ pub fn restore(ctx: &Ctx, o: RestoreOpts) -> anyhow::Result<u8> {
 
     let mut body = json!({});
     if let Some(t) = o.team {
-        body["team_id"] = json!(lookup(&ctx.c.get("/teams")?, t, &["name"], "团队")?);
+        body["team_id"] = json!(lookup(&ctx.teams()?, t, &["name"], "团队")?);
     }
     if let Some(n) = o.number {
         body["number"] = json!(n);

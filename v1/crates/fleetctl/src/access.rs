@@ -24,7 +24,7 @@ pub fn access(ctx: &Ctx, o: AccessOpts) -> anyhow::Result<u8> {
         q.push(("node", ctx.find_id(n, Want::Any)?.0));
     }
     if let Some(t) = o.team {
-        q.push(("team", crate::ops::lookup(&ctx.c.get("/teams")?, t, &["name"], "团队")?));
+        q.push(("team", crate::ops::lookup(&ctx.teams()?, t, &["name"], "团队")?));
     }
     if let Some(s) = o.search {
         q.push(("search", s.to_string()));
