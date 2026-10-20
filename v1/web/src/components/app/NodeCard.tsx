@@ -6,7 +6,8 @@ import type { MachineView, Plan } from '@/lib/types';
 import * as F from '@/lib/format';
 import { beatCells, entryText, hasHost, isQuiet, monthTraffic, probeSummary, quota, resourceMeters, subLabel } from '@/lib/derive';
 import { useSeries } from '@/lib/queries';
-import { useInView, type DrawerTab } from '@/lib/drawer';
+import { type DrawerTab } from '@/lib/drawer';
+import { useInView } from '@/lib/useInView';
 import { KIND_LABEL } from '@/lib/sort';
 import { cn } from '@/lib/utils';
 import { Beat, Chip, HealthPill, KindIcon, LabelValue, Mark, Meter, Num, Quota } from './primitives';
@@ -159,7 +160,7 @@ function FlowRow({ m }: { m: MachineView }) {
 
 /** 卡片只吃稳定的 props（plans 引用、onOpen 回调不随地址变化），配合 memo，抽屉开关或 tick 时只有变了的那张重渲染 */
 function NodeCardImpl({ m, view, current, plans, onOpen: open }: { m: MachineView; view: CardView; current?: boolean; plans: Plan[]; onOpen: (id: string, tab?: DrawerTab) => void }) {
-  const [ref, seen] = useInView<HTMLElement>();
+  const [ref, visible] = useInView<HTMLElement>(); // 心跳条只在卡片可见时轮询，滚出视口就停
   const onOpen = (tab?: 'overview' | 'manage') => open(m.id, tab);
   const q = quota(m); const host = hasHost(m);
   const t = monthTraffic(m);
@@ -201,7 +202,7 @@ function NodeCardImpl({ m, view, current, plans, onOpen: open }: { m: MachineVie
           </div>
           <Quota pct={q.pct} />
         </section>
-        <section className="slot-seg"><BeatSlot m={m} enabled={seen} /></section>
+        <section className="slot-seg"><BeatSlot m={m} enabled={visible} /></section>
         <section className="slot-seg nc-run">
           <div className="nc-run-item"><span className="nc-run-label"><RefreshCw />已上架</span><span className="nc-run-val"><Num f={F.since(m.activated_at)} /></span></div>
           <div className="nc-run-item"><span className="nc-run-label"><Calendar />到期</span><DueVal m={m} /></div>
@@ -223,14 +224,14 @@ function NodeCardImpl({ m, view, current, plans, onOpen: open }: { m: MachineVie
           </div>
           <Quota pct={q.pct} />
         </section>
-        <section className="slot-seg"><BeatSlot m={m} enabled={seen} /></section>
+        <section className="slot-seg"><BeatSlot m={m} enabled={visible} /></section>
       </>}
 
       {view === 'compact' && <>
         <div className="nc-tags"><TagsList m={m} /></div>
         <section className="slot-seg"><Meters m={m} plans={plans} compact /></section>
         <section className="slot-seg"><FlowRow m={m} /></section>
-        <section className="slot-seg"><BeatSlot m={m} enabled={seen} /></section>
+        <section className="slot-seg"><BeatSlot m={m} enabled={visible} /></section>
       </>}
 
       <Foot m={m} onOpen={onOpen} />
