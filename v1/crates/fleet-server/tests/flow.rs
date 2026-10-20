@@ -151,6 +151,7 @@ async fn relay_round(t: &T, tok: &str, _after: u64, seq: &mut u64) -> DesiredSta
             .collect(),
         access: vec![],
         xray: None,
+        agent_health: None,
     };
     let (s, v) = t.req("POST", "/agent/v1/report", Some(serde_json::to_value(&r).unwrap()), Some(tok)).await;
     assert_eq!(s, StatusCode::OK, "report: {v}");
