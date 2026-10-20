@@ -183,6 +183,7 @@ pub fn policy_tag(id: Uuid, part: &str) -> String {
 /// - allowlist：名单内走原出站，其余 blocked
 /// - denylist：名单内 blocked，其余落到默认规则
 /// - blocked：该入口全部 blocked
+///
 /// observe（没有 policy）不产生规则。
 fn policy_rules(e: &DesiredEntry) -> Vec<Value> {
     let Some(EntryPolicy { mode, domains }) = &e.policy else { return vec![] };
