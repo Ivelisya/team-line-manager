@@ -1,4 +1,4 @@
-// Mock 数据：约 27 台机器（2 线路机、团队1/团队2 的落地机、1 台无主机家宽代理、1 台故障、1 台下线中、2 台已退役、1 台上架中）。
+// Mock 数据：约 27 台机器（2 线路机、团队1/团队2 的落地机、1 台无主机家宽代理、1 台故障、1 台退役中、2 台已退役、1 台上架中）。
 // IP 只用文档保留段 203.0.113.0/24 与 198.51.100.0/24。
 
 import type { ApiKey, Incident, Job, NotifyChannel, NotifyLogEntry, JobLog, MachineView, Plan, Provider, Renewal, Silence, AuditEntry, Team, EntryView, Lifecycle, HealthStatus, Subscription } from '@/lib/types';
@@ -216,15 +216,15 @@ export function buildDb(): Db {
   };
   logT('j-run', [['info', '开始上架 团队1-13 (198.51.100.77)'], ['info', '连接 198.51.100.77:22 ...'], ['info', '系统: Debian 12 x86_64，内存 4096 MB'], ['info', '步骤 1/5 完成'], ['info', '下载 agent 1.0.3 ...'], ['info', '注册 agent，令牌已写入 /etc/fleet/agent.toml'], ['info', '步骤 2/5 完成'], ['info', '写入 /etc/ss/config.json，端口 8388'], ['warn', 'ufw 未启用，跳过防火墙规则'], ['info', '启动 ss-server ...']]);
   logT('j-fail', [['info', '开始上架 团队2-13 (203.0.113.77)'], ['info', '连接 203.0.113.77:22 ...'], ['error', 'SSH 连接被拒绝：Permission denied (password)']]);
-  logT('j-ret', [['info', '开始下线 团队2-07'], ['info', '停用入口 线路机2:20007，已下发'], ['info', '清理节点上的服务 ...']]);
-  logT('j-done1', [['info', '下线完成']]); logT('j-done2', [['info', '上架完成']]); logT('j-done3', [['info', '下线完成']]);
+  logT('j-ret', [['info', '开始退役 团队2-07'], ['info', '停用入口 线路机2:20007，已下发'], ['info', '清理节点上的服务 ...']]);
+  logT('j-done1', [['info', '退役完成']]); logT('j-done2', [['info', '上架完成']]); logT('j-done3', [['info', '退役完成']]);
 
   const incidents: Incident[] = [
-    { id: 'i1', subject: { id: 'm-t1-05', name: '团队1-05' }, subject_id: 'm-t1-05', subject_name: '团队1-05', rule: 'agent_offline', severity: 'critical', state: 'firing', summary: 'agent 已离线 14 分钟', opened_at: iso(now() - 14 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null },
-    { id: 'i2', subject: { id: 'm-t1-05', name: '团队1-05' }, subject_id: 'm-t1-05', subject_name: '团队1-05', rule: 'tcp_fail', severity: 'critical', state: 'firing', summary: '线路机到节点 TCP 探测连续失败 5 次', opened_at: iso(now() - 12 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: iso(now() - 5 * 60_000), ack_by: 'admin' },
-    { id: 'i3', subject: { id: 'm-t1-09', name: '团队1-09' }, subject_id: 'm-t1-09', subject_name: '团队1-09', rule: 'egress_fail', severity: 'warning', state: 'firing', summary: '出口验证连续失败 3 次（经线路机1:20009 访问外网超时）', opened_at: iso(now() - 50 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null },
-    { id: 'i4', subject: { id: 'r2', name: '线路机2' }, subject_id: 'r2', subject_name: '线路机2', rule: 'relay_apply_lag', severity: 'warning', state: 'firing', summary: '配置代数 8 未下发完成（已下发 7）', opened_at: iso(now() - 25 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null },
-    { id: 'i5', subject: { id: 'm-t2-03', name: '团队2-03' }, subject_id: 'm-t2-03', subject_name: '团队2-03', rule: 'renewal_due', severity: 'info', state: 'resolved', summary: '7 天内到期，请安排续费', opened_at: iso(now() - 26 * 3600_000), resolved_at: iso(now() - 25 * 3600_000), last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null },
+    { id: 'i1', subject: { id: 'm-t1-05', name: '团队1-05' }, subject_id: 'm-t1-05', subject_name: '团队1-05', rule: 'agent_offline', severity: 'critical', state: 'firing', summary: 'agent 已离线 14 分钟', opened_at: iso(now() - 14 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 0 },
+    { id: 'i2', subject: { id: 'm-t1-05', name: '团队1-05' }, subject_id: 'm-t1-05', subject_name: '团队1-05', rule: 'tcp_fail', severity: 'critical', state: 'firing', summary: '线路机到节点 TCP 探测连续失败 5 次', opened_at: iso(now() - 12 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: iso(now() - 5 * 60_000), ack_by: 'admin', reopen_count: 0 },
+    { id: 'i3', subject: { id: 'm-t1-09', name: '团队1-09' }, subject_id: 'm-t1-09', subject_name: '团队1-09', rule: 'egress_fail', severity: 'warning', state: 'firing', summary: '出口验证连续失败 3 次（经线路机1:20009 访问外网超时）', opened_at: iso(now() - 50 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 2 },
+    { id: 'i4', subject: { id: 'r2', name: '线路机2' }, subject_id: 'r2', subject_name: '线路机2', rule: 'relay_apply_lag', severity: 'warning', state: 'firing', summary: '配置代数 8 未下发完成（已下发 7）', opened_at: iso(now() - 25 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 0 },
+    { id: 'i5', subject: { id: 'm-t2-03', name: '团队2-03' }, subject_id: 'm-t2-03', subject_name: '团队2-03', rule: 'renewal_due', severity: 'info', state: 'resolved', summary: '7 天内到期，请安排续费', opened_at: iso(now() - 26 * 3600_000), resolved_at: iso(now() - 25 * 3600_000), last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 0 },
   ];
   const silences: Silence[] = [{ id: 's1', subject_id: 'm-t2-04', subject_name: '团队2-04', rule: null, starts_at: iso(now() - 3600_000), ends_at: iso(now() + 3 * 3600_000), is_maintenance: true, comment: '换内核，预计 4 小时' }];
   const audit: AuditEntry[] = [

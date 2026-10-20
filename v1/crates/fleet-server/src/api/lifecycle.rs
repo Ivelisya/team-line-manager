@@ -145,7 +145,7 @@ pub struct EvacuateIn {
     to_relay_id: Uuid,
 }
 
-/// 搬空线路机：为这台线路机上每个在用入口的节点各建一个换线路机作业（线路机下线前用）。
+/// 搬空线路机：为这台线路机上每个在用入口的节点各建一个换线路机作业（线路机退役前用）。
 /// 暂时不能搬的节点（停用、有别的作业、已在目标线路机上有入口…）列在 skipped 里，不影响其它节点。
 pub async fn evacuate(a: Actor, State(st): State<AppState>, Path(relay): Path<Uuid>, ApiJson(b): ApiJson<EvacuateIn>) -> ApiResult<Json<Value>> {
     if relay == b.to_relay_id {

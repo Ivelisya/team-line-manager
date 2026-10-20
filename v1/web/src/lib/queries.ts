@@ -142,7 +142,8 @@ export const usePatchTeam = () => useWrite(({ id, ...b }: { id: string; name?: s
 export const useRenumber = () => useWrite(({ id, token }: { id: string; token: string }) => post(`/teams/${id}/renumber`, { token }), [['teams'], ...M]);
 export const fetchRenumber = (id: string) => get<RenumberPreview>(`/teams/${id}/renumber`);
 export const useAddProvider = () => useWrite((b: Partial<Provider>) => post('/providers', b), [['providers']]);
-export const useAddPlan = () => useWrite((b: Partial<Plan>) => post('/plans', b), [['plans']]);
+export const usePatchProvider = () => useWrite(({ id, ...b }: { id: string } & Partial<Provider>) => patch(`/providers/${id}`, b), [['providers'], ...M]);
+export const useAddPlan = () => useWrite((b: Record<string, unknown>) => post('/plans', b), [['plans']]);
 export const usePatchPlan = () => useWrite(({ id, ...b }: { id: string } & Record<string, unknown>) => patch(`/plans/${id}`, b), [['plans'], ...M]);
 export const fetchShare = (entryId: string) => get<{ url: string }>(`/entries/${entryId}/share`);
 export const fetchLogs = (jobId: string, after: number) => get<JobLog[]>(`/jobs/${jobId}/logs?after=${after}`);

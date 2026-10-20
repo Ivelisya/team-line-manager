@@ -22,7 +22,7 @@ pnpm build         # tsc -b + vite build，输出 dist/
 ```bash
 pnpm shots         # tools/shoot.mjs：各页面 1440 / 390 截图到 shots/ + 卡片分段对齐检查（输出 misaligned=0 才算通过）
 pnpm shots:ui      # tools/shoot-ui.mjs：交互态截图（命令面板、悬浮卡、右键菜单、作业进度、设置页、通知、深色）；BASE=… OUT=<目录> node tools/shoot-ui.mjs [场景名片段]
-pnpm smoke         # tools/smoke.mjs：下线确认流程、批量上架（粘贴 → 检查 → 唯一确认 → 作业）
+pnpm smoke         # tools/smoke.mjs：退役确认流程、批量上架（粘贴 → 检查 → 唯一确认 → 作业）
 ```
 
 `CLIP=x,y,w,h pnpm shots <场景名片段>` 只截局部。需要本机装有 Chrome 或 Edge（`CHROME` 环境变量可指定）。

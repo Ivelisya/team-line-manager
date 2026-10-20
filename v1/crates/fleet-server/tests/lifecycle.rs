@@ -269,6 +269,56 @@ async fn billing_tz_is_validated_on_write() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn provider_create_defaults_and_patch() {
+    let t = setup(false).await;
+    // 时区 null / 空白 = 列默认值 UTC（界面清空时区原先发 null 直接 400）
+    let a = t.post("/api/v1/providers", json!({"name": "甲", "code": "A", "panel_url": null, "timezone": null})).await["id"].as_str().unwrap().to_string();
+    t.post("/api/v1/providers", json!({"name": "乙", "code": "B", "timezone": " "})).await;
+    let ps = t.get("/api/v1/providers").await;
+    assert!(ps.as_array().unwrap().iter().all(|p| p["timezone"] == "UTC" && p["panel_url"].is_null()), "{ps}");
+    let (s, v) = t.req("POST", "/api/v1/providers", Some(json!({"name": "甲", "code": "C"})), None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v.to_string().contains("已有同名供应商"), "{v}");
+
+    let path = format!("/api/v1/providers/{a}");
+    let get = || async { t.get("/api/v1/providers").await.as_array().unwrap().iter().find(|p| p["id"] == a.as_str()).unwrap().clone() };
+    let (s, v) = t.req("PATCH", &path, Some(json!({"name": " 甲改 ", "panel_url": "https://panel.example", "timezone": "Asia/Shanghai"})), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let p = get().await;
+    assert_eq!((p["name"].as_str(), p["code"].as_str(), p["panel_url"].as_str(), p["timezone"].as_str()), (Some("甲改"), Some("A"), Some("https://panel.example"), Some("Asia/Shanghai")));
+    // 校验：坏时区 400、缩写撞了 409、空名 400、不存在 404；失败不改任何字段
+    let (s, v) = t.req("PATCH", &path, Some(json!({"name": "甲二", "timezone": "Mars/Olympus"})), None).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    let (s, v) = t.req("PATCH", &path, Some(json!({"code": "B"})), None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v.to_string().contains("已有同缩写的供应商"), "{v}");
+    assert_eq!(t.req("PATCH", &path, Some(json!({"name": "  "})), None).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(t.req("PATCH", &format!("/api/v1/providers/{}", Uuid::now_v7()), Some(json!({"name": "x"})), None).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(get().await["name"], "甲改");
+    // 清空：panel_url null、时区空串 = 回到 UTC；没传的字段不动
+    let (s, v) = t.req("PATCH", &path, Some(json!({"panel_url": null, "timezone": ""})), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let p = get().await;
+    assert_eq!((p["name"].as_str(), p["panel_url"].is_null(), p["timezone"].as_str()), (Some("甲改"), true, Some("UTC")));
+    let audit = t.get("/api/v1/audit?limit=50").await;
+    assert_eq!(audit.as_array().unwrap().iter().filter(|e| e["action"] == "provider.update" && e["title"] == "修改供应商").count(), 2, "{audit}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn plan_patch_null_clears_field() {
+    let t = setup(false).await;
+    let p = t.post("/api/v1/providers", json!({"name": "甲", "code": "A"})).await["id"].clone();
+    let id = t.post("/api/v1/plans", json!({"provider_id": p, "name": "基础", "price_cents": 500, "traffic_gb": 1000, "cpu_cores": 2})).await["id"].as_str().unwrap().to_string();
+    let (s, v) = t.req("PATCH", &format!("/api/v1/plans/{id}"), Some(json!({"traffic_gb": null})), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let plan = t.get("/api/v1/plans").await[0].clone();
+    assert!(plan["traffic_gb"].is_null() && plan["cpu_cores"] == 2, "null 清空、没传的不动：{plan}");
+    let (s, v) = t.req("POST", "/api/v1/plans", Some(json!({"provider_id": p, "name": "基础", "price_cents": 1})), None).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    assert!(v.to_string().contains("同名套餐"), "{v}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn provider_tz_is_validated_like_billing_tz() {
     let t = setup(false).await;
     let (s, v) = t.req("POST", "/api/v1/providers", Some(json!({"name": "坏时区", "code": "BAD", "timezone": "Mars/Olympus"})), None).await;

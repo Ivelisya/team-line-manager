@@ -121,7 +121,7 @@ pub fn status(ctx: &Ctx) -> anyhow::Result<u8> {
         let mut s = table::kv(&[
             ("节点", bucket("nodes")),
             ("线路机", bucket("relays")),
-            ("上架中/下线中", format!("{} / {}", st(&ov, "/provisioning"), st(&ov, "/retiring"))),
+            ("上架中/退役中", format!("{} / {}", st(&ov, "/provisioning"), st(&ov, "/retiring"))),
             ("7 天内到期", st(&ov, "/due_7d")),
             ("月费", if cost.is_empty() { "-".into() } else { cost }),
             ("本月流量", format!("↑ {}  ↓ {}", bytes(num(&ov, "/traffic_month/up").unwrap_or(0.0)), bytes(num(&ov, "/traffic_month/down").unwrap_or(0.0)))),
@@ -146,7 +146,10 @@ fn incident_table(list: &[Value]) -> String {
                 st(i, "/severity"),
                 st(i, "/rule"),
                 if i.get("subject_name").is_some() { st(i, "/subject_name") } else { st(i, "/subject/name") },
-                st(i, "/summary"),
+                match i["reopen_count"].as_i64() {
+                    Some(n) if n > 0 => format!("{}（反复 {} 次）", st(i, "/summary"), n + 1),
+                    _ => st(i, "/summary"),
+                },
                 table::ts(&st(i, "/opened_at")),
                 if i["ack_at"].is_null() { "".into() } else { format!("已确认 {}", st(i, "/ack_by")) },
                 st(i, "/id"),

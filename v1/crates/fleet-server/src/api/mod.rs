@@ -27,6 +27,12 @@ pub fn paged<T: Serialize>(items: Vec<T>, total: i64, offset: i64) -> axum::Json
     ok(json!({ "items": items, "total": total, "next_offset": (end < total).then_some(end) }))
 }
 
+/// PATCH 的可清空字段：`#[serde(default, deserialize_with = "super::some")]` 让没传 = None、传 null = Some(None)
+/// （不加的话 serde 把 null 也当成没传，清不掉）
+pub fn some<'de, T: serde::Deserialize<'de>, D: serde::Deserializer<'de>>(d: D) -> Result<Option<T>, D::Error> {
+    T::deserialize(d).map(Some)
+}
+
 pub fn router() -> Router<AppState> {
     use crate::auth;
     Router::new()
@@ -38,6 +44,7 @@ pub fn router() -> Router<AppState> {
         .route("/teams/{id}", patch(catalog::patch_team))
         .route("/teams/{id}/renumber", get(machines::renumber_preview).post(machines::renumber_apply))
         .route("/providers", get(catalog::list_providers).post(catalog::create_provider))
+        .route("/providers/{id}", patch(catalog::patch_provider))
         .route("/plans", get(catalog::list_plans).post(catalog::create_plan))
         .route("/plans/{id}", patch(catalog::patch_plan))
         // 机器

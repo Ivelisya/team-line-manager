@@ -1,4 +1,4 @@
-// 确认类对话框：ConfirmDialog（一次确认）与 TypedConfirmDialog（输入指定文字才可确认，用于下线、彻底删除、轮换凭据）。
+// 确认类对话框：ConfirmDialog（一次确认）与 TypedConfirmDialog（输入指定文字才可确认，用于退役、彻底删除、轮换凭据）。
 import * as React from 'react';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogHeader } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';

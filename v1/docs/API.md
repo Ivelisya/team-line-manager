@@ -39,10 +39,11 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
 | POST | `/teams` | `{name,sort_order?}` |
 | PATCH | `/teams/{id}` | `{name?,sort_order?}`（改团队名 = 该团队所有节点显示名一起变） |
 | GET | `/providers` | `[{id,name,code,panel_url,timezone}]` |
-| POST | `/providers` | `{name,code,panel_url?,timezone?}` |
+| POST | `/providers` | `{name,code,panel_url?,timezone?}`；`timezone` 不传 / null / 空串 = 列默认值 UTC，否则须是 `at time zone` 认的时区（400）；名称或缩写重复 409 |
+| PATCH | `/providers/{id}` | `{name?,code?,panel_url?,timezone?}`：没传的不改；`panel_url` null / 空串 = 清空；`timezone` null / 空串 = 回到 UTC。校验同 POST；只影响之后上架的机器（已上架机器的账单时区是当时抄过去的）。写审计 `provider.update` |
 | GET | `/plans` | `[{id,provider_id,name,cpu_cores,mem_mb,disk_gb,bandwidth_mbps,traffic_gb,price_cents,currency,cycle,notes,archived_at,machine_count}]` |
 | POST | `/plans` | 同上字段（不含 id/统计） |
-| PATCH | `/plans/{id}` | 任意字段；`archived:true` 归档 |
+| PATCH | `/plans/{id}` | 任意字段（没传的不改；规格类字段传 null = 清空）；`archived:true` 归档 |
 
 ## 机器
 `MachineView`（列表与详情同形）：
@@ -131,7 +132,7 @@ ProvisionItem = {
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/overview` | `{nodes:{total,ok,degraded,down,unknown,maintenance}, relays:{…}, provisioning, retiring, due_7d, monthly_cost:[{currency,cents}]（按币种分别汇总，不折算）, traffic_month:{up,down}, net_rx_bps, net_tx_bps}`（只统计 active） |
-| GET | `/incidents?state=firing\|resolved\|all&limit=100&offset=0` | 分页：`{items:[{id,rule,subject:{id,name},subject_id,subject_name,severity,state,summary,opened_at,last_seen_at,resolved_at,ack_at,ack_by}], total, next_offset}`；`state` 默认 firing；顺序：进行中在前 → 严重度高在前 → 开始时间新在前（同时刻按 id，翻页不重不漏） |
+| GET | `/incidents?state=firing\|resolved\|all&limit=100&offset=0` | 分页：`{items:[{id,rule,subject:{id,name},subject_id,subject_name,severity,state,summary,opened_at,last_seen_at,resolved_at,ack_at,ack_by,reopen_count}], total, next_offset}`；`state` 默认 firing；`reopen_count`：恢复后 30 分钟内同一（规则, 对象）复发会重开原告警而不是新建，每次 +1；顺序：进行中在前 → 严重度高在前 → 开始时间新在前（同时刻按 id，翻页不重不漏） |
 | POST | `/incidents/{id}/ack` | |
 | GET/POST | `/silences`、DELETE `/silences/{id}` | `{subject_id?,rule?,starts_at,ends_at,is_maintenance,comment}` |
 | GET | `/audit?target_id=&limit=` | |

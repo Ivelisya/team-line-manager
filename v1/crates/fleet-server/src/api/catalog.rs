@@ -107,17 +107,14 @@ pub async fn patch_team(a: Actor, State(st): State<AppState>, Path(id): Path<Uui
 
 // ── 供应商 ────────────────────────────────────────────────────────────────
 
-#[derive(Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Serialize, sqlx::FromRow)]
 pub struct Provider {
-    #[serde(default)]
-    id: Option<Uuid>,
+    id: Uuid,
     name: String,
     code: String,
     panel_url: Option<String>,
-    #[serde(default = "utc")]
     timezone: String,
 }
-fn utc() -> String { "UTC".into() }
 
 pub async fn list_providers(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
     let v: Vec<Provider> = sqlx::query_as("select id, name, code, panel_url, timezone from provider order by name")
@@ -126,23 +123,103 @@ pub async fn list_providers(_a: Actor, State(st): State<AppState>) -> ApiResult<
     Ok(ok(v))
 }
 
-pub async fn create_provider(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Provider>) -> ApiResult<Json<Value>> {
+/// 新建与 PATCH 共用：没传 = 不改；`panel_url` 传 null / 空串 = 清空；`timezone` null / 空串 = 列默认值（UTC）
+#[derive(Deserialize)]
+pub struct ProviderIn {
+    name: Option<String>,
+    code: Option<String>,
+    #[serde(default, deserialize_with = "super::some")]
+    panel_url: Option<Option<String>>,
+    #[serde(default, deserialize_with = "super::some")]
+    timezone: Option<Option<String>>,
+}
+
+/// 空白当没填
+fn blank(v: &Option<String>) -> Option<&str> { v.as_deref().map(str::trim).filter(|s| !s.is_empty()) }
+
+/// 名称 / 缩写撞了唯一约束
+fn provider_conflict(e: sqlx::Error) -> ApiError {
+    let c = e.as_database_error().and_then(|d| d.constraint()).map(String::from);
+    match (ApiError::from(e), c.as_deref()) {
+        (x, Some("provider_name_key")) if x.code == "conflict" => ApiError::conflict("已有同名供应商"),
+        (x, Some("provider_code_key")) if x.code == "conflict" => ApiError::conflict("已有同缩写的供应商"),
+        (x, _) => x,
+    }
+}
+
+pub async fn create_provider(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<ProviderIn>) -> ApiResult<Json<Value>> {
     let id = new_id();
-    let name = clean_name(&b.name, "供应商名")?;
-    let code = clean_name(&b.code, "供应商缩写")?;
+    let name = clean_name(b.name.as_deref().unwrap_or(""), "供应商名")?;
+    let code = clean_name(b.code.as_deref().unwrap_or(""), "供应商缩写")?;
+    let tz = b.timezone.as_ref().and_then(blank);
     let mut tx = st.db.begin().await?;
     // 上架时供应商时区会被抄进账单时区，按同一标准校验
-    super::machines::check_tz(&mut tx, &b.timezone).await?;
-    sqlx::query("insert into provider (id, name, code, panel_url, timezone) values ($1, $2, $3, $4, $5)")
+    if let Some(tz) = tz {
+        super::machines::check_tz(&mut tx, tz).await?;
+    }
+    sqlx::query("insert into provider (id, name, code, panel_url) values ($1, $2, $3, $4)")
         .bind(id)
         .bind(&name)
         .bind(&code)
-        .bind(&b.panel_url)
-        .bind(&b.timezone)
+        .bind(b.panel_url.as_ref().and_then(blank))
         .execute(&mut *tx)
-        .await?;
+        .await
+        .map_err(provider_conflict)?;
+    if let Some(tz) = tz {
+        sqlx::query("update provider set timezone = $2 where id = $1").bind(id).bind(tz).execute(&mut *tx).await?;
+    }
     audit(&mut tx, &a.name, "provider.create", "provider", Some(id), json!({"name": name, "code": code})).await?;
     tx.commit().await?;
+    st.emit(Event::Catalog);
+    Ok(ok(json!({"id": id})))
+}
+
+pub async fn patch_provider(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, ApiJson(b): ApiJson<ProviderIn>) -> ApiResult<Json<Value>> {
+    let mut tx = st.db.begin().await?;
+    let old: Provider = sqlx::query_as("select id, name, code, panel_url, timezone from provider where id = $1 for update")
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| ApiError::not_found("没有这个供应商"))?;
+    let name = match &b.name {
+        Some(n) => clean_name(n, "供应商名")?,
+        None => old.name.clone(),
+    };
+    let code = match &b.code {
+        Some(c) => clean_name(c, "供应商缩写")?,
+        None => old.code.clone(),
+    };
+    let panel_url = match &b.panel_url {
+        Some(u) => blank(u).map(String::from),
+        None => old.panel_url.clone(),
+    };
+    let tz = match &b.timezone {
+        Some(t) => blank(t).map(String::from),
+        None => Some(old.timezone.clone()),
+    };
+    if let Some(tz) = &tz {
+        super::machines::check_tz(&mut tx, tz).await?;
+    }
+    sqlx::query("update provider set name = $2, code = $3, panel_url = $4 where id = $1")
+        .bind(id)
+        .bind(&name)
+        .bind(&code)
+        .bind(&panel_url)
+        .execute(&mut *tx)
+        .await
+        .map_err(provider_conflict)?;
+    // 时区清空 = 回到列默认值；已上架机器的账单时区是当时抄过去的，这里不跟着改
+    let (tz,): (String,) = match &tz {
+        Some(tz) => sqlx::query_as("update provider set timezone = $2 where id = $1 returning timezone").bind(id).bind(tz),
+        None => sqlx::query_as("update provider set timezone = default where id = $1 returning timezone").bind(id),
+    }
+    .fetch_one(&mut *tx)
+    .await?;
+    audit(&mut tx, &a.name, "provider.update", "provider", Some(id),
+        json!({"before": {"name": old.name, "code": old.code, "panel_url": old.panel_url, "timezone": old.timezone},
+               "after": {"name": name, "code": code, "panel_url": panel_url, "timezone": tz}})).await?;
+    tx.commit().await?;
+    // 机器视图里的供应商名 / 缩写：Catalog 事件已让视图缓存和前端机器列表作废
     st.emit(Event::Catalog);
     Ok(ok(json!({"id": id})))
 }
@@ -184,10 +261,15 @@ pub async fn list_plans(_a: Actor, State(st): State<AppState>) -> ApiResult<Json
 pub struct PlanIn {
     provider_id: Option<Uuid>,
     name: Option<String>,
+    #[serde(default, deserialize_with = "super::some")]
     cpu_cores: Option<Option<i32>>,
+    #[serde(default, deserialize_with = "super::some")]
     mem_mb: Option<Option<i32>>,
+    #[serde(default, deserialize_with = "super::some")]
     disk_gb: Option<Option<i32>>,
+    #[serde(default, deserialize_with = "super::some")]
     bandwidth_mbps: Option<Option<i32>>,
+    #[serde(default, deserialize_with = "super::some")]
     traffic_gb: Option<Option<i32>>,
     price_cents: Option<i32>,
     currency: Option<String>,

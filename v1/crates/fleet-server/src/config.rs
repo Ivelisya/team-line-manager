@@ -14,7 +14,7 @@ pub struct Config {
     /// 前端构建产物目录；不存在则只提供 API
     #[serde(default)]
     pub web_dir: Option<PathBuf>,
-    /// 中控登录机器用的私钥（上架、下线）
+    /// 中控登录机器用的私钥（上架、退役）
     pub ssh_key: PathBuf,
     /// 中控自己维护的 known_hosts（上架预检时记录指纹，之后严格校验）
     pub known_hosts: PathBuf,

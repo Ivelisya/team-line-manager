@@ -58,6 +58,7 @@ function ApiKeysSection() {
   const [ask, setAsk] = React.useState<ApiKey | null>(null);
   const copyRef = React.useRef<HTMLButtonElement>(null);
   const list = q.data ?? [];
+  const openNew = () => { setName(''); setScopes(['read']); setExp('90'); setOpen(true); };
   const toggle = (s: string, on: boolean) => setScopes((l) => (on ? [...l, s] : l.filter((x) => x !== s)));
   const valid = name.trim().length > 0 && scopes.length > 0;
   const submit = () => create.mutate({ name: name.trim(), scopes, expires_days: exp === 'never' ? undefined : Number(exp) }, {
@@ -66,10 +67,10 @@ function ApiKeysSection() {
   return (
     <>
       <Panel title="API 密钥" count={list.length} sub="给脚本和运维命令行调用中控用；只有登录会话能管理密钥" flush
-        tools={<Button variant="primary" onClick={() => { setName(''); setScopes(['read']); setExp('90'); setOpen(true); }}><Plus />新建密钥</Button>}>
+        tools={<Button variant="primary" onClick={openNew}><Plus />新建密钥</Button>}>
         {q.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div>}
         {q.isLoading ? <SkeletonRows rows={3} /> : list.length === 0 && !q.isError ? (
-          <Empty icon={<KeyRound size={22} />} text="还没有 API 密钥" hint="新建一个，用 Authorization: Bearer 调用接口"><Button variant="primary" onClick={() => setOpen(true)}><Plus />新建密钥</Button></Empty>
+          <Empty icon={<KeyRound size={22} />} text="还没有 API 密钥" hint="新建一个，用 Authorization: Bearer 调用接口"><Button variant="primary" onClick={openNew}><Plus />新建密钥</Button></Empty>
         ) : (
           <div className="table-wrap">
             <table className="dt" style={{ minWidth: 860 }}>

@@ -92,7 +92,7 @@ export function NodesPage() {
   const pg = usePage({ total: q.data ? rows.length : undefined, sizes: [25, 50, 100], size: 50, reset: [scope, text, team, kind, relay, status, sort] });
   const pageRows = React.useMemo(() => rows.slice(pg.offset, pg.offset + pg.size), [rows, pg.offset, pg.size]);
   const total = columns.reduce((s, c) => s + c.size, 0);
-  const statusOpts = [...Object.entries(HEALTH_LABEL).filter(([k]) => k !== 'inactive').map(([value, label]) => ({ value, label })), { value: 'provisioning', label: '上架中' }, { value: 'retiring', label: '下线中' }];
+  const statusOpts = [...Object.entries(HEALTH_LABEL).filter(([k]) => k !== 'inactive').map(([value, label]) => ({ value, label })), { value: 'provisioning', label: '上架中' }, { value: 'retiring', label: '退役中' }];
 
   return (
     <div className="stack">

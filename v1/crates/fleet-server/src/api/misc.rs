@@ -100,6 +100,8 @@ struct IncidentOut {
     #[serde(with = "time::serde::rfc3339::option")]
     ack_at: Option<OffsetDateTime>,
     ack_by: Option<String>,
+    /// 恢复后又在重开窗口内复发的次数
+    reopen_count: i32,
 }
 
 #[derive(Deserialize)]
@@ -118,7 +120,7 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, Query(q): Query<In
     let sql = format!(
         "select i.id, i.rule, i.subject_id,
             case when m.kind = 'relay' then m.label when t.name is not null then t.name || '-' || lpad(m.number::text, 2, '0') end subject_name,
-            i.severity::text severity, i.state::text state, i.summary, i.opened_at, i.last_seen_at, i.resolved_at, i.ack_at, i.ack_by
+            i.severity::text severity, i.state::text state, i.summary, i.opened_at, i.last_seen_at, i.resolved_at, i.ack_at, i.ack_by, i.reopen_count
          from incident i left join machine m on m.id = i.subject_id left join team t on t.id = m.team_id
          where {f} order by i.state, i.severity desc, i.opened_at desc, i.id desc limit $1 offset $2"
     );
@@ -186,7 +188,7 @@ pub async fn create_silence(a: Actor, State(st): State<AppState>, ApiJson(b): Ap
         return Err(ApiError::bad_request("结束时间要晚于开始时间"));
     }
     if (b.ends_at - b.starts_at).whole_days() > 30 {
-        return Err(ApiError::bad_request("最长 30 天；更久的请直接把机器下线"));
+        return Err(ApiError::bad_request("最长 30 天；更久的请直接把机器退役"));
     }
     let id = new_id();
     let mut tx = st.db.begin().await?;
@@ -278,6 +280,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "team.update" => "修改团队",
         "team.renumber" => "重新编号",
         "provider.create" => "新建供应商",
+        "provider.update" => "修改供应商",
         "plan.create" => "新建套餐",
         "plan.update" => "修改套餐",
         "entry.enable" => "启用入口",
@@ -323,6 +326,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
             None => format!("{} → {}", s("old_name"), s("name")),
         },
         a if a.starts_with("entry.") && d["relay"].is_string() => format!("{}:{}", s("relay"), d["port"]),
+        "provider.update" => d["after"]["name"].as_str().unwrap_or("").to_string(),
         "team.create" | "provider.create" | "plan.create" | "notify.create" | "notify.update" | "notify.delete" => s("name"),
         _ => String::new(),
     };

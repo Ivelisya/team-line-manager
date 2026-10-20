@@ -69,7 +69,7 @@ export function EvacuateDialog({ relay, open, onOpenChange, onDone }: { relay: M
   const movable = list.filter((e) => e.lifecycle === 'active');
   return (
     <ConfirmDialog open={open} onOpenChange={onOpenChange} size="md" title={`搬空 ${relay.name}`} confirmLabel={`搬走 ${movable.length} 个节点`} confirmDisabled={!to || movable.length === 0}
-      description="为这台线路机上每个在用入口的节点各建一个“换线路机”作业，搬完后就可以安全下线这台线路机。"
+      description="为这台线路机上每个在用入口的节点各建一个“换线路机”作业，搬完后就可以安全退役这台线路机。"
       onConfirm={async () => {
         const r = await evac.mutateAsync({ id: relay.id, to_relay_id: to });
         toast.ok(`已为 ${r.jobs.length} 个节点提交换线路机作业${r.skipped.length ? `，${r.skipped.length} 个被跳过` : ''}`);

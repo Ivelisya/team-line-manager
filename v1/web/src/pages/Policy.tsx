@@ -398,7 +398,7 @@ function ChangeList({ changes }: { changes: PolicyChange[] }) {
 
 /* ================================================================ 发布记录 */
 const STATUS: Record<VersionStatus | 'gone', { label: string; tone: Tone; dot?: 'pulse' | 'ring' }> = {
-  applied: { label: '已应用', tone: 'ok' }, applying: { label: '进行中', tone: 'info', dot: 'pulse' }, failed: { label: '失败', tone: 'bad' }, gone: { label: '已下线', tone: 'neutral', dot: 'ring' },
+  applied: { label: '已应用', tone: 'ok' }, applying: { label: '进行中', tone: 'info', dot: 'pulse' }, failed: { label: '失败', tone: 'bad' }, gone: { label: '已退役', tone: 'neutral', dot: 'ring' },
 };
 const StatusPill = ({ s }: { s: VersionStatus | 'gone' }) => <Pill tone={STATUS[s].tone} dot={STATUS[s].dot}>{STATUS[s].label}</Pill>;
 

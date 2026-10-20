@@ -89,6 +89,8 @@ export interface Incident {
   id: string; rule: string; subject: { id: string; name: string } | null; subject_id: string | null; subject_name: string | null;
   severity: 'info' | 'warning' | 'critical' | string; state: 'firing' | 'resolved'; summary: string;
   opened_at: string; last_seen_at: string | null; resolved_at: string | null; ack_at: string | null; ack_by: string | null;
+  /** 恢复后 30 分钟内复发、合并进这条的次数 */
+  reopen_count: number;
 }
 export interface Silence { id: string; subject_id: string | null; subject_name: string | null; rule: string | null; starts_at: string; ends_at: string; is_maintenance: boolean; comment: string }
 export interface Renewal { id: string; old_due: string | null; new_due: string; amount_cents: number | null; note: string | null; actor: string; created_at: string }

@@ -15,7 +15,7 @@ pub enum Status {
     #[default]
     Unknown,
     Maintenance,
-    /// 非 active：上架中、下线中、已退役、失败
+    /// 非 active：上架中、退役中、已退役、失败
     Inactive,
 }
 

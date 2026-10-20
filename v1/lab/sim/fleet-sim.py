@@ -20,7 +20,7 @@
 #   cpu_high 持续高 CPU（降级）  disk_high 磁盘 91%（降级）（这两台按 10 秒节奏上报，原因见 cmd_run）  renew_soon 2 天后到期（降级；线路机 3 天）
 #   flaky 探测约 35% 失败（忽好忽坏，会开关告警）  offline 停止上报（离线，告警）  proxy_dead 上游代理不通（宕）
 # 加密列说明：reality_private_enc / node_outbound.secret_enc 填的是随机字节，不是合法密文——服务端只在
-#   /agent/v1/desired 和上架/下线作业里解密它们，模拟器从不请求 /desired，也不要对模拟机器做上架/SSH 类操作。
+#   /agent/v1/desired 和上架/退役作业里解密它们，模拟器从不请求 /desired，也不要对模拟机器做上架/SSH 类操作。
 #
 # 环境变量：FLEET_DB（默认 postgres://fleet:fleet@127.0.0.1/fleet）、FLEET_URL（默认 http://127.0.0.1:8080）、
 #           SIM_DIR（默认 /root/fleet-sim）、FLEET_API_KEY（status --api 用）。

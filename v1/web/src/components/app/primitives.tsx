@@ -27,7 +27,7 @@ Pill.displayName = 'Pill';
 export function HealthPill({ m }: { m: Pick<MachineView, 'health' | 'lifecycle' | 'maintenance'> }) {
   const lc = m.lifecycle;
   if (lc === 'provisioning') return <Pill tone="info" dot="pulse">上架中</Pill>;
-  if (lc === 'retiring') return <Pill tone="info" dot="pulse">下线中</Pill>;
+  if (lc === 'retiring') return <Pill tone="info" dot="pulse">退役中</Pill>;
   if (lc === 'retired') return <Pill tone="neutral" dot="ring">已退役</Pill>;
   if (lc === 'failed') return <Pill tone="bad">上架失败</Pill>;
   const s = m.health.status;
