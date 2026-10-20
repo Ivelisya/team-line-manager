@@ -94,8 +94,14 @@ impl Queue {
         }
     }
 
+    /// 队列文件路径：调用方拿到路径后在阻塞线程里自己读（不在 async 线程上做磁盘 IO）
+    pub fn file_path(&self, seq: u64) -> PathBuf {
+        path_of(&self.dir, seq)
+    }
+
+    #[cfg(test)]
     pub fn read(&self, seq: u64) -> Result<Vec<u8>> {
-        Ok(std::fs::read(path_of(&self.dir, seq))?)
+        Ok(std::fs::read(self.file_path(seq))?)
     }
 
     /// 服务端已持久化到 seq（含）：删除其之前的全部

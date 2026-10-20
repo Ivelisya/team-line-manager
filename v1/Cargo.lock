@@ -655,6 +655,7 @@ name = "fleet-agent"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "flate2",
  "fleet-proto",
  "libc",
  "rand 0.8.8",
