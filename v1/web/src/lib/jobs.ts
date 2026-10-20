@@ -3,7 +3,7 @@ import type { Job, JobStep } from './types';
 
 export const JOB_KIND: Record<string, string> = {
   provision_vps: '上架节点', provision_proxy: '上架代理节点', provision_relay: '上架线路机',
-  attach_entry: '新增入口', retire: '退役', purge: '彻底删除', upgrade_agent: '升级 agent',
+  attach_entry: '新增入口', move_entry: '换线路机', restore_vps: '恢复节点', restore_proxy: '恢复代理节点', restore_relay: '恢复线路机', retire: '退役', purge: '彻底删除', upgrade_agent: '升级 agent',
 };
 export const jobKindLabel = (k: string) => JOB_KIND[k] ?? k;
 

@@ -1,5 +1,7 @@
 //! 各作业步骤的实现。每步幂等：重跑不会重复产生副作用。
 
+mod lifecycle;
+
 use super::scripts::{self, vars};
 use super::{log, JobRow, Outcome};
 use crate::crypto::{random_token, sha256};
@@ -104,6 +106,14 @@ pub async fn run(c: &Ctx<'_>, key: &str) -> anyhow::Result<Outcome> {
         "activate" => activate(c).await,
         "detach" => detach(c).await,
         "wait_detached" => wait_detached(c).await,
+        // 换线路机：能复用的步骤直接复用（防火墙、等应用、出口验收），其余在 lifecycle 子模块
+        "attach_new" => lifecycle::attach_new(c).await,
+        "firewall_widen" => firewall(c).await,
+        "wait_applied_new" => wait_applied(c).await,
+        "verify_new" => verify(c).await,
+        "detach_old" => lifecycle::detach_old(c).await,
+        "wait_detached_old" => lifecycle::wait_detached_old(c).await,
+        "firewall_narrow" => lifecycle::firewall_narrow(c).await,
         "cleanup" => cleanup(c).await,
         "revoke" => revoke(c).await,
         "finalize" => finalize(c).await,
@@ -470,6 +480,23 @@ async fn verify(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
 
 async fn activate(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let id = c.target_id()?;
+    if c.job.kind.starts_with("restore_") {
+        // 恢复已退役的机器：清掉退役时间，原因记「已恢复：…」，历史、账单、审计都挂在原来的机器 id 上
+        let reason = match c.job.params["reason"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(r) => format!("已恢复：{r}"),
+            None => "已恢复".to_string(),
+        };
+        sqlx::query(
+            "update machine set lifecycle = 'active', activated_at = coalesce(activated_at, now()), retired_at = null, lifecycle_reason = $2,
+                revision = revision + 1, updated_at = now() where id = $1 and lifecycle = 'provisioning'",
+        )
+        .bind(id)
+        .bind(&reason)
+        .execute(&c.st.db)
+        .await?;
+        c.log("机器已恢复上线").await;
+        return Ok(Outcome::Done(json!({"restored": true, "reason": reason})));
+    }
     sqlx::query(
         "update machine set lifecycle = 'active', activated_at = coalesce(activated_at, now()), lifecycle_reason = null,
             revision = revision + 1, updated_at = now() where id = $1 and lifecycle = 'provisioning'",
@@ -638,24 +665,33 @@ async fn note<T, E: std::fmt::Display>(st: &AppState, job: Uuid, what: &str, r: 
     }
 }
 
-/// 上架/加入口被取消：摘掉已建的入口；上架的机器直接退役（释放 IP 与编号）。尽力而为，错误记日志。
-/// 取消后不再需要保存的 root 密码，由调用方在置 cancelled 时一并清掉。
-pub async fn compensate(st: &AppState, job: &JobRow, owner: &str) {
-    let c = Ctx { st, job, owner, started: OffsetDateTime::now_utc(), first: false };
-    if let Ok(eid) = c.param_uuid("entry_id") {
-        if let Some(mut tx) = note(st, job.id, "开启事务", st.db.begin().await).await {
-            match entries::transition(&mut tx, eid, "removing", false).await {
-                Ok((r, _)) => {
-                    if note(st, job.id, "提交摘除入口", tx.commit().await).await.is_some() {
-                        st.relay_bumped(r);
-                        log(st, job.id, "warn", "已摘除本次建的入口").await;
-                    }
+/// 摘掉作业建的入口（补偿用，尽力而为）
+async fn remove_created_entry(st: &AppState, job: Uuid, eid: Uuid) {
+    if let Some(mut tx) = note(st, job, "开启事务", st.db.begin().await).await {
+        match entries::transition(&mut tx, eid, "removing", false).await {
+            Ok((r, _)) => {
+                if note(st, job, "提交摘除入口", tx.commit().await).await.is_some() {
+                    st.relay_bumped(r);
+                    log(st, job, "warn", "已摘除本次建的入口").await;
                 }
-                Err(e) => log(st, job.id, "warn", format!("摘除入口：{}", e.message)).await,
             }
+            Err(e) => log(st, job, "warn", format!("摘除入口：{}", e.message)).await,
         }
     }
-    if !job.kind.starts_with("provision_") {
+}
+
+/// 上架/恢复/加入口/换线路机被取消：摘掉已建的入口；上架的机器直接退役，恢复的机器回到已退役（都释放 IP 与编号）。
+/// 尽力而为，错误记日志。取消后不再需要保存的 root 密码，由调用方在置 cancelled 时一并清掉。
+pub async fn compensate(st: &AppState, job: &JobRow, owner: &str) {
+    let c = Ctx { st, job, owner, started: OffsetDateTime::now_utc(), first: false };
+    if job.kind == "move_entry" {
+        return lifecycle::compensate_move(&c).await;
+    }
+    if let Ok(eid) = c.param_uuid("entry_id") {
+        remove_created_entry(st, job.id, eid).await;
+    }
+    let restoring = job.kind.starts_with("restore_");
+    if !job.kind.starts_with("provision_") && !restoring {
         return;
     }
     let Some(id) = job.target_id else { return };
@@ -674,30 +710,55 @@ pub async fn compensate(st: &AppState, job: &JobRow, owner: &str) {
         sqlx::query("update agent_token set revoked_at = now() where machine_id = $1 and revoked_at is null").bind(id).execute(&st.db).await,
     )
     .await;
-    note(
+    // 压缩编号要用「取消前」这台机器占着编号的团队（恢复取消会把团队改回去，所以先读）
+    let team = note(
         st,
         job.id,
-        "机器标记已退役",
-        sqlx::query("update machine set lifecycle = 'retired', retired_at = now(), lifecycle_reason = '上架取消', revision = revision + 1 where id = $1")
+        "读取团队",
+        sqlx::query_as::<_, (Option<Uuid>,)>("select team_id from machine where id = $1").bind(id).fetch_optional(&st.db).await,
+    )
+    .await
+    .flatten();
+    if restoring {
+        // 回到恢复之前的样子：原团队、原编号、原名、原退役原因（退役时间恢复期间一直没动过）
+        let prev = &job.params["prev"];
+        let prev_team = prev["team_id"].as_str().and_then(|s| Uuid::try_parse(s).ok());
+        let prev_number = prev["number"].as_i64().map(|n| n as i32);
+        note(
+            st,
+            job.id,
+            "机器回到已退役",
+            sqlx::query(
+                "update machine set lifecycle = 'retired', lifecycle_reason = $2, team_id = coalesce($3, team_id), number = coalesce($4, number),
+                    label = coalesce($5, label), revision = revision + 1, updated_at = now() where id = $1",
+            )
             .bind(id)
+            .bind(prev["reason"].as_str())
+            .bind(prev_team)
+            .bind(prev_number)
+            .bind(prev["label"].as_str())
             .execute(&st.db)
             .await,
-    )
-    .await;
+        )
+        .await;
+    } else {
+        note(
+            st,
+            job.id,
+            "机器标记已退役",
+            sqlx::query("update machine set lifecycle = 'retired', retired_at = now(), lifecycle_reason = '上架取消', revision = revision + 1 where id = $1")
+                .bind(id)
+                .execute(&st.db)
+                .await,
+        )
+        .await;
+    }
     note(st, job.id, "删除出站秘密", sqlx::query("delete from node_outbound where machine_id = $1").bind(id).execute(&st.db).await).await;
     note(st, job.id, "忘记主机公钥", ssh::forget_host(&st.cfg.known_hosts, &m.ip, m.ssh_port as u16).await).await;
     if st.cfg.numbering.auto_compact {
-        let team = note(
-            st,
-            job.id,
-            "读取团队",
-            sqlx::query_as::<_, (Option<Uuid>,)>("select team_id from machine where id = $1").bind(id).fetch_optional(&st.db).await,
-        )
-        .await
-        .flatten();
         if let Some((Some(t),)) = team {
             if let Some(mut tx) = note(st, job.id, "开启事务", st.db.begin().await).await {
-                if let Some((_, relays)) = note(st, job.id, "压缩编号", crate::db::compact_team(&mut tx, t, &job.created_by, "上架取消后自动压缩").await).await {
+                if let Some((_, relays)) = note(st, job.id, "压缩编号", crate::db::compact_team(&mut tx, t, &job.created_by, if restoring { "恢复取消后自动压缩" } else { "上架取消后自动压缩" }).await).await {
                     if note(st, job.id, "提交编号压缩", tx.commit().await).await.is_some() {
                         for r in relays {
                             st.relay_bumped(r);
@@ -707,7 +768,8 @@ pub async fn compensate(st: &AppState, job: &JobRow, owner: &str) {
             }
         }
     }
-    log(st, job.id, "warn", "上架已取消：机器标记为已退役，IP 与编号已释放").await;
+    let msg = if restoring { "恢复已取消：机器回到已退役，IP 与编号已释放" } else { "上架已取消：机器标记为已退役，IP 与编号已释放" };
+    log(st, job.id, "warn", msg).await;
 }
 
 #[cfg(test)]

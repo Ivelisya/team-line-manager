@@ -1,0 +1,570 @@
+//! 换线路机（move_entry）、搬空线路机（evacuate）、恢复已退役的机器（restore_*）。
+//! 需要 PostgreSQL：环境变量 FLEET_TEST_DB。会清空该库的 public schema，用 `--test-threads=1` 串行跑。
+//!
+//! 线路机用 `Sim` 模拟：拉期望状态、回报全部应用成功、给每个入口报一个成功的出口探测（和 tests/flow.rs 一样）。
+//! 节点用上游代理（没有 SSH，整条流程可以在测试里走通）；VPS 恢复只测到预检和作业创建，不真的 ssh。
+
+mod common;
+
+use axum::http::StatusCode;
+use common::{seed_node, seed_relay, seed_team, setup, T};
+use fleet_proto::{ApplyReport, DesiredState, EntryApply, ProbeKind, ProbeSample, Report};
+use serde_json::{json, Value};
+use std::time::Duration;
+use uuid::Uuid;
+
+fn now_ms() -> i64 { (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64 }
+
+struct Sim {
+    tok: String,
+    seq: u64,
+}
+
+impl Sim {
+    fn new(tok: String) -> Self { Sim { tok, seq: 0 } }
+
+    /// 一轮：拉期望状态 → 回报已应用 → 上报出口探测
+    async fn round(&mut self, t: &T) -> DesiredState {
+        let (s, v) = t.req("GET", "/agent/v1/desired?after=0", None, Some(&self.tok)).await;
+        assert_eq!(s, StatusCode::OK, "desired: {v}");
+        let ds: DesiredState = serde_json::from_value(v).unwrap();
+        let rep = ApplyReport {
+            generation: ds.generation,
+            ok: true,
+            error: None,
+            entries: ds.entries.iter().map(|e| EntryApply { id: e.id, ok: true, error: None }).collect(),
+        };
+        let (s, _) = t.req("POST", "/agent/v1/applied", Some(serde_json::to_value(&rep).unwrap()), Some(&self.tok)).await;
+        assert_eq!(s, StatusCode::NO_CONTENT);
+        self.seq += 1;
+        let r = Report {
+            seq: self.seq,
+            boot_id: "b1".into(),
+            agent_version: "test".into(),
+            sent_at_ms: now_ms(),
+            info: None,
+            host: vec![],
+            entries: vec![],
+            probes: ds
+                .entries
+                .iter()
+                .map(|e| ProbeSample { entry_id: e.id, ts_ms: now_ms(), kind: ProbeKind::Egress, ok: true, latency_ms: Some(12.0), detail: Some(e.expect_egress_ip.to_string()) })
+                .collect(),
+            access: vec![],
+            xray: None,
+            agent_health: None,
+        };
+        let (s, v) = t.req("POST", "/agent/v1/report", Some(serde_json::to_value(&r).unwrap()), Some(&self.tok)).await;
+        assert_eq!(s, StatusCode::OK, "report: {v}");
+        ds
+    }
+}
+
+/// 第二台线路机「线路机3」（198.51.100.3）
+async fn seed_relay_b(t: &T) -> (Uuid, String) {
+    let id = Uuid::now_v7();
+    let (sk, pk) = fleet_server::crypto::reality_keypair();
+    sqlx::query("insert into machine (id, kind, label, primary_ip, lifecycle, activated_at) values ($1, 'relay', '线路机3', '198.51.100.3', 'active', now())")
+        .bind(id)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    sqlx::query("insert into relay (machine_id, public_host, reality_private_enc, reality_public_key, min_client_ver, generation, applied_generation) values ($1, 'relay3.test', $2, $3, '1.8.2', 1, 1)")
+        .bind(id)
+        .bind(t.st.secrets.seal_str(&sk))
+        .bind(pk)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let tok = "fa1_test_relay_token_b";
+    sqlx::query("insert into agent_token (id, machine_id, token_hash) values ($1, $2, $3)")
+        .bind(Uuid::now_v7())
+        .bind(id)
+        .bind(fleet_server::crypto::sha256(tok.as_bytes()))
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    (id, tok.to_string())
+}
+
+fn upstream(host: &str) -> Value { json!({"protocol": "socks5", "host": host, "port": 1080, "username": "u", "password": "p"}) }
+
+/// 上架一台上游代理节点，返回 (machine_id, job_id)
+async fn provision_proxy(t: &T, team: Uuid, relay: Uuid, ip: &str) -> (Uuid, String) {
+    let created = t
+        .post("/api/v1/provision", json!({"items": [{"kind": "proxy", "ip": ip, "team_id": team, "relay_id": relay, "upstream": upstream("p.example")}]}))
+        .await;
+    let j = &created["jobs"][0];
+    (j["machine_id"].as_str().unwrap().parse().unwrap(), j["job_id"].as_str().unwrap().to_string())
+}
+
+/// 一边模拟线路机一边等作业到某个状态
+async fn drive(t: &T, sims: &mut [&mut Sim], job: &str, want: &str) -> Value {
+    for _ in 0..300 {
+        for s in sims.iter_mut() {
+            s.round(t).await;
+        }
+        let j = t.job(job).await;
+        if j["state"] == want {
+            return j;
+        }
+        if matches!(j["state"].as_str(), Some("failed" | "cancelled" | "succeeded")) {
+            let logs = t.get(&format!("/api/v1/jobs/{job}/logs")).await;
+            panic!("作业 {job} 想要 {want}，实际 {}：{} / {logs}", j["state"], j["error"]);
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    panic!("作业 {job} 没到 {want}：{}", t.job(job).await);
+}
+
+/// 节点的入口（relay_id, lifecycle, id），按创建时间
+async fn entries_of(t: &T, node: Uuid) -> Vec<(Uuid, String, Uuid)> {
+    sqlx::query_as("select relay_id, lifecycle::text, id from entry where node_id = $1 order by created_at, id").bind(node).fetch_all(&t.st.db).await.unwrap()
+}
+
+async fn wait_until<F, Fut>(what: &str, f: F)
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    for _ in 0..150 {
+        if f().await {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("等不到：{what}");
+}
+
+async fn log_msgs(t: &T, job: &str) -> Vec<String> {
+    t.get(&format!("/api/v1/jobs/{job}/logs")).await.as_array().unwrap().iter().map(|l| l["msg"].as_str().unwrap().to_string()).collect()
+}
+
+async fn lifecycle_of(t: &T, id: Uuid) -> String { t.machine_lifecycle(id).await }
+
+async fn name_of(t: &T, id: Uuid) -> String { t.get(&format!("/api/v1/machines/{id}")).await["name"].as_str().unwrap().to_string() }
+
+async fn mv_req(t: &T, node: Uuid, to: Uuid) -> (StatusCode, Value) {
+    t.req("POST", &format!("/api/v1/machines/{node}/move"), Some(json!({"to_relay_id": to})), None).await
+}
+
+// ── 换线路机 ──────────────────────────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn move_proxy_node_never_loses_its_entry() {
+    let t = setup(true).await;
+    let (ra, ta) = seed_relay(&t).await;
+    let (rb, tb) = seed_relay_b(&t).await;
+    let (mut a, mut b) = (Sim::new(ta), Sim::new(tb));
+    let team = seed_team(&t, "团队1").await;
+    let (node, pj) = provision_proxy(&t, team, ra, "203.0.113.10").await;
+    drive(&t, &mut [&mut a], &pj, "succeeded").await;
+    let es = entries_of(&t, node).await;
+    assert_eq!(es.len(), 1);
+    assert_eq!((es[0].0, es[0].1.as_str()), (ra, "active"));
+    let old_entry = es[0].2;
+
+    let r = t.post(&format!("/api/v1/machines/{node}/move"), json!({"to_relay_id": rb})).await;
+    assert_eq!(r["share_changed"], true);
+    assert!(r["note"].as_str().unwrap().contains("分享链接"), "{r}");
+    assert_eq!(r["from"], "线路机2");
+    assert_eq!(r["to"], "线路机3");
+    let job = r["job_id"].as_str().unwrap().to_string();
+
+    // 节点已有进行中的作业：不能再发起第二个
+    let (s, _) = t.req("POST", &format!("/api/v1/machines/{node}/move"), Some(json!({"to_relay_id": rb})), None).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+
+    // 新入口建在目标线路机上（pending），旧入口原封不动
+    wait_until("新入口建好", || async { entries_of(&t, node).await.len() == 2 }).await;
+    let es = entries_of(&t, node).await;
+    assert_eq!((es[0].0, es[0].1.as_str()), (ra, "active"));
+    assert_eq!((es[1].0, es[1].1.as_str()), (rb, "pending"));
+    let new_entry = es[1].2;
+    assert_ne!(new_entry, old_entry);
+
+    // 只模拟目标线路机：新入口 applied + 出口探测通过 → 作业摘旧入口（旧线路机还没回报，所以停在 removing）
+    let mut stage = None;
+    for _ in 0..300 {
+        b.round(&t).await;
+        let es = entries_of(&t, node).await;
+        assert!(es.iter().any(|e| e.1 == "active"), "换线期间节点至少有一个 active 入口：{es:?}");
+        if es.iter().any(|e| e.2 == old_entry && e.1 == "removing") {
+            stage = Some(es);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let es = stage.expect("旧入口应当进入 removing");
+    assert_eq!(es.iter().find(|e| e.2 == new_entry).unwrap().1, "active", "新入口已经生效");
+    // 摘了旧入口之后不能再取消（取消会让节点没有入口）
+    let (s, v) = t.req("POST", &format!("/api/v1/jobs/{job}/cancel"), None, None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(t.job(&job).await["cancellable"], false);
+
+    // 旧线路机回报 → 旧入口 removed → 作业完成
+    let j = drive(&t, &mut [&mut a, &mut b], &job, "succeeded").await;
+    let es = entries_of(&t, node).await;
+    assert_eq!(es.iter().find(|e| e.2 == old_entry).unwrap().1, "removed");
+    assert_eq!((es.iter().find(|e| e.2 == new_entry).unwrap().0, es.iter().find(|e| e.2 == new_entry).unwrap().1.as_str()), (rb, "active"));
+    // 作业里记着新入口 id，并提示分享链接变了
+    assert_eq!(j["result"]["new_entry_id"], new_entry.to_string());
+    assert_eq!(j["result"]["share_changed"], true);
+    let keys: Vec<&str> = j["steps"].as_array().unwrap().iter().map(|s| s["key"].as_str().unwrap()).collect();
+    assert_eq!(keys, ["attach_new", "firewall_widen", "wait_applied_new", "verify_new", "detach_old", "wait_detached_old", "firewall_narrow"]);
+    assert_eq!(j["steps"][1]["state"], "skipped", "上游代理没有防火墙");
+    assert!(log_msgs(&t, &job).await.iter().any(|m| m.contains("新的分享链接")));
+    // 新入口的分享链接指向新线路机
+    let share = t.get(&format!("/api/v1/entries/{new_entry}/share")).await;
+    assert!(share["url"].as_str().unwrap().contains("@relay3.test:"), "{share}");
+    assert_eq!(lifecycle_of(&t, node).await, "active");
+    // 审计
+    let audit = t.get("/api/v1/audit?limit=100").await;
+    assert!(audit.as_array().unwrap().iter().any(|x| x["action"] == "entry.move"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancel_move_removes_new_entry_and_keeps_old() {
+    let t = setup(true).await;
+    let (ra, ta) = seed_relay(&t).await;
+    let (rb, tb) = seed_relay_b(&t).await;
+    let (mut a, mut b) = (Sim::new(ta), Sim::new(tb));
+    let team = seed_team(&t, "团队1").await;
+    let (node, pj) = provision_proxy(&t, team, ra, "203.0.113.10").await;
+    drive(&t, &mut [&mut a], &pj, "succeeded").await;
+    let old_entry = entries_of(&t, node).await[0].2;
+
+    let job = t.post(&format!("/api/v1/machines/{node}/move"), json!({"to_relay_id": rb})).await["job_id"].as_str().unwrap().to_string();
+    wait_until("新入口建好", || async { entries_of(&t, node).await.len() == 2 }).await;
+    // 目标线路机一直没生效：中途取消
+    t.post(&format!("/api/v1/jobs/{job}/cancel"), json!({})).await;
+    let j = t.wait_job(&job, "cancelled").await;
+    assert_eq!(j["steps"][0]["state"], "compensated");
+
+    let es = entries_of(&t, node).await;
+    assert_eq!(es.iter().find(|e| e.2 == old_entry).unwrap().1, "active", "旧入口保持不动");
+    let new = es.iter().find(|e| e.2 != old_entry).unwrap();
+    assert_eq!(new.1, "removing", "新入口被摘除");
+    assert!(log_msgs(&t, &job).await.iter().any(|m| m.contains("旧入口保持不动")));
+    // 目标线路机回报之后新入口 removed，节点还是只有旧入口在用
+    for _ in 0..40 {
+        b.round(&t).await;
+        if entries_of(&t, node).await.iter().any(|e| e.2 == new.2 && e.1 == "removed") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let es = entries_of(&t, node).await;
+    assert_eq!(es.iter().filter(|e| e.1 == "active").count(), 1);
+    assert_eq!(es.iter().find(|e| e.2 == new.2).unwrap().1, "removed");
+    assert_eq!(lifecycle_of(&t, node).await, "active");
+    // 取消之后可以重新发起
+    t.post(&format!("/api/v1/machines/{node}/move"), json!({"to_relay_id": rb})).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn move_is_validated() {
+    let t = setup(false).await;
+    let (ra, _) = seed_relay(&t).await;
+    let (rb, _) = seed_relay_b(&t).await;
+    let team = seed_team(&t, "团队1").await;
+    let node = seed_node(&t, team, 1, "203.0.113.10", "active").await;
+    let mv = |to: Uuid| mv_req(&t, node, to);
+
+    // 没有在用入口
+    let (s, v) = mv(rb).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    let mut tx = t.st.db.begin().await.unwrap();
+    let (e, _, _) = fleet_server::entries::create(&mut tx, ra, node).await.unwrap();
+    tx.commit().await.unwrap();
+    // 入口还没生效（pending）
+    let (s, _) = mv(rb).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    sqlx::query("update entry set lifecycle = 'active' where id = $1").bind(e).execute(&t.st.db).await.unwrap();
+    // 目标就是当前线路机
+    let (s, v) = mv(ra).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    // 目标线路机不在用
+    sqlx::query("update machine set lifecycle = 'retired', retired_at = now() where id = $1").bind(rb).execute(&t.st.db).await.unwrap();
+    let (s, _) = mv(rb).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    sqlx::query("update machine set lifecycle = 'active', retired_at = null where id = $1").bind(rb).execute(&t.st.db).await.unwrap();
+    // 目标线路机上已有这个节点的入口
+    let mut tx = t.st.db.begin().await.unwrap();
+    fleet_server::entries::create(&mut tx, rb, node).await.unwrap();
+    tx.commit().await.unwrap();
+    let (s, v) = mv(rb).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    // 节点不是在用状态
+    let other = seed_node(&t, team, 2, "203.0.113.11", "retired").await;
+    let (s, _) = t.req("POST", &format!("/api/v1/machines/{other}/move"), Some(json!({"to_relay_id": rb})), None).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    // 线路机本身不能换
+    let (s, _) = t.req("POST", &format!("/api/v1/machines/{ra}/move"), Some(json!({"to_relay_id": rb})), None).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn evacuate_creates_one_job_per_node_and_guard_mentions_it() {
+    let t = setup(false).await;
+    let (ra, _) = seed_relay(&t).await;
+    let (rb, _) = seed_relay_b(&t).await;
+    let team = seed_team(&t, "团队1").await;
+    let mut nodes = vec![];
+    for i in 0..3 {
+        let n = seed_node(&t, team, i + 1, &format!("203.0.113.{}", 10 + i), "active").await;
+        let mut tx = t.st.db.begin().await.unwrap();
+        let (e, _, _) = fleet_server::entries::create(&mut tx, ra, n).await.unwrap();
+        tx.commit().await.unwrap();
+        // 第三个节点的入口是停用的：搬空时跳过并说明原因
+        sqlx::query("update entry set lifecycle = $2::entry_lifecycle where id = $1").bind(e).bind(if i == 2 { "disabled" } else { "active" }).execute(&t.st.db).await.unwrap();
+        nodes.push(n);
+    }
+
+    // 线路机上还有入口：不能退役，提示里指向「搬空线路机」
+    let (s, v) = t.req("POST", &format!("/api/v1/machines/{ra}/retire"), Some(json!({"confirm": "线路机2"})), None).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    assert!(v["error"]["message"].as_str().unwrap().contains("搬空线路机"), "{v}");
+
+    let (s, _) = t.req("POST", &format!("/api/v1/relays/{ra}/evacuate"), Some(json!({"to_relay_id": ra})), None).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "搬到自己身上没有意义");
+    let r = t.post(&format!("/api/v1/relays/{ra}/evacuate"), json!({"to_relay_id": rb})).await;
+    let jobs = r["jobs"].as_array().unwrap();
+    assert_eq!(jobs.len(), 2, "{r}");
+    assert_eq!(r["skipped"].as_array().unwrap().len(), 1, "{r}");
+    assert_eq!(r["skipped"][0]["machine_id"], nodes[2].to_string());
+    assert!(r["skipped"][0]["reason"].as_str().unwrap().contains("已停用"), "{r}");
+    for j in jobs {
+        let jj = t.job(j["job_id"].as_str().unwrap()).await;
+        assert_eq!(jj["kind"], "move_entry");
+        assert_eq!(jj["state"], "queued");
+    }
+    // 再搬一次：两个节点都已有进行中的作业，全部跳过
+    let r2 = t.post(&format!("/api/v1/relays/{ra}/evacuate"), json!({"to_relay_id": rb})).await;
+    assert_eq!(r2["jobs"].as_array().unwrap().len(), 0);
+    assert_eq!(r2["skipped"].as_array().unwrap().len(), 3);
+    let audit = t.get("/api/v1/audit?limit=100").await;
+    assert!(audit.as_array().unwrap().iter().any(|x| x["action"] == "relay.evacuate"));
+    assert_eq!(audit.as_array().unwrap().iter().filter(|x| x["action"] == "entry.move").count(), 2);
+}
+
+// ── 恢复已退役的机器 ──────────────────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn restore_retired_proxy_node_appends_number_and_gets_new_entry() {
+    let t = setup(true).await;
+    let (ra, ta) = seed_relay(&t).await;
+    let mut a = Sim::new(ta);
+    let team = seed_team(&t, "团队1").await;
+    let (n1, j1) = provision_proxy(&t, team, ra, "203.0.113.10").await;
+    drive(&t, &mut [&mut a], &j1, "succeeded").await;
+    let (n2, j2) = provision_proxy(&t, team, ra, "203.0.113.11").await;
+    drive(&t, &mut [&mut a], &j2, "succeeded").await;
+    assert_eq!((name_of(&t, n1).await, name_of(&t, n2).await), ("团队1-01".to_string(), "团队1-02".to_string()));
+    // 给 n1 挂一份账单，恢复后要还在
+    t.req("PUT", &format!("/api/v1/machines/{n1}/subscription"), Some(json!({"price_cents": 500, "due_date": "2027-01-01"})), None).await;
+
+    // 退役 n1：n2 压缩成 01
+    let rj = t.post(&format!("/api/v1/machines/{n1}/retire"), json!({"confirm": "团队1-01", "reason": "测试退役"})).await["job_id"].as_str().unwrap().to_string();
+    drive(&t, &mut [&mut a], &rj, "succeeded").await;
+    assert_eq!(lifecycle_of(&t, n1).await, "retired");
+    assert_eq!(name_of(&t, n2).await, "团队1-01");
+    let old_entry = entries_of(&t, n1).await[0].2;
+
+    // 只有已退役的机器能恢复
+    let (s, _) = t.req("POST", &format!("/api/v1/machines/{n2}/restore"), Some(json!({"relay_id": ra})), None).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+
+    // 预检：接在团队末尾（团队1-02），上游代理要重新填出站参数，不需要密码
+    let pv = t.get(&format!("/api/v1/machines/{n1}/restore")).await;
+    assert_eq!(pv["restorable"], true, "{pv}");
+    assert_eq!(pv["name"], "团队1-02");
+    assert_eq!(pv["number"], 2);
+    assert_eq!(pv["old_name"], "团队1-01");
+    assert_eq!(pv["needs"]["upstream"], true);
+    assert_eq!(pv["needs"]["relay"], true);
+    assert_eq!(pv["needs"]["password"], "no");
+    assert!(pv["ip_conflict"].is_null());
+    assert_eq!(pv["last_relay"]["id"], ra.to_string());
+    // 缺中转线路机 / 缺上游参数 → 400
+    let (s, _) = t.req("POST", &format!("/api/v1/machines/{n1}/restore"), Some(json!({"upstream": upstream("p.example")})), None).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, _) = t.req("POST", &format!("/api/v1/machines/{n1}/restore"), Some(json!({"relay_id": ra})), None).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+
+    let r = t.post(&format!("/api/v1/machines/{n1}/restore"), json!({"relay_id": ra, "upstream": upstream("p2.example"), "reason": "客户续约"})).await;
+    assert_eq!(r["name"], "团队1-02");
+    assert_eq!(r["machine_id"], n1.to_string());
+    let job = r["job_id"].as_str().unwrap().to_string();
+    assert_eq!(t.job(&job).await["kind"], "restore_proxy");
+    assert_eq!(lifecycle_of(&t, n1).await, "provisioning");
+    // 恢复期间不能再被恢复第二次，也不能被改名
+    let (s, _) = t.req("POST", &format!("/api/v1/machines/{n1}/restore"), Some(json!({"relay_id": ra, "upstream": upstream("x")})), None).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+
+    let j = drive(&t, &mut [&mut a], &job, "succeeded").await;
+    let keys: Vec<&str> = j["steps"].as_array().unwrap().iter().map(|s| s["key"].as_str().unwrap()).collect();
+    assert_eq!(keys, ["attach", "wait_applied", "verify", "activate"]);
+    assert_eq!(lifecycle_of(&t, n1).await, "active");
+    let m = t.get(&format!("/api/v1/machines/{n1}")).await;
+    assert_eq!(m["name"], "团队1-02");
+    assert!(m["retired_at"].is_null(), "{m}");
+    assert_eq!(m["lifecycle_reason"], "已恢复：客户续约");
+    // 同一个机器 id：账单还在；旧入口仍是 removed，新入口是另一条 active
+    let sub: i64 = sqlx::query_scalar("select count(*) from subscription where machine_id = $1").bind(n1).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(sub, 1);
+    let es = entries_of(&t, n1).await;
+    assert_eq!(es.len(), 2);
+    assert_eq!(es.iter().find(|e| e.2 == old_entry).unwrap().1, "removed", "旧入口不复活");
+    assert_eq!(es.iter().filter(|e| e.1 == "active").count(), 1);
+    let audit = t.get("/api/v1/audit?limit=100").await;
+    assert!(audit.as_array().unwrap().iter().any(|x| x["action"] == "machine.restore"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn restore_is_blocked_when_ip_is_taken() {
+    let t = setup(false).await;
+    let (ra, _) = seed_relay(&t).await;
+    let team = seed_team(&t, "团队1").await;
+    let old = seed_node(&t, team, 1, "203.0.113.10", "retired").await;
+    // 退役后 IP 释放，被别的机器上架占用了
+    let squatter = seed_node(&t, team, 1, "203.0.113.10", "active").await;
+    let pv = t.get(&format!("/api/v1/machines/{old}/restore?probe=false")).await;
+    assert_eq!(pv["restorable"], false);
+    assert_eq!(pv["ip_conflict"]["machine_id"], squatter.to_string());
+    assert!(pv["blockers"][0].as_str().unwrap().contains("203.0.113.10"));
+    let (s, v) = t.req("POST", &format!("/api/v1/machines/{old}/restore"), Some(json!({"relay_id": ra, "upstream": upstream("p")})), None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(lifecycle_of(&t, old).await, "retired", "被拒绝后机器不变");
+    // 手动指定的编号被占用也是 409
+    let free = seed_node(&t, team, 2, "203.0.113.12", "retired").await;
+    let (s, _) = t.req("POST", &format!("/api/v1/machines/{free}/restore"), Some(json!({"relay_id": ra, "upstream": upstream("p"), "number": 1})), None).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancel_restore_returns_machine_to_retired_and_compacts_numbers() {
+    let t = setup(true).await;
+    let (ra, _) = seed_relay(&t).await;
+    let team = seed_team(&t, "团队1").await;
+    seed_node(&t, team, 1, "203.0.113.1", "active").await;
+    seed_node(&t, team, 2, "203.0.113.2", "active").await;
+    let gap = seed_node(&t, team, 4, "203.0.113.4", "active").await; // 编号有空档：取消后要压缩成 3
+    let old = seed_node(&t, team, 7, "203.0.113.7", "retired").await;
+    assert_eq!(name_of(&t, old).await, "团队1-07");
+
+    let pv = t.get(&format!("/api/v1/machines/{old}/restore?probe=false")).await;
+    assert_eq!(pv["number"], 3, "默认取最小的空号");
+    let r = t.post(&format!("/api/v1/machines/{old}/restore"), json!({"relay_id": ra, "upstream": upstream("p"), "reason": "试试"})).await;
+    let job = r["job_id"].as_str().unwrap().to_string();
+    assert_eq!(name_of(&t, old).await, "团队1-03");
+    // 作业已经建了入口（等线路机生效，线路机不回报）→ 取消
+    wait_until("入口建好", || async { !entries_of(&t, old).await.is_empty() }).await;
+    t.post(&format!("/api/v1/jobs/{job}/cancel"), json!({})).await;
+    t.wait_job(&job, "cancelled").await;
+
+    assert_eq!(lifecycle_of(&t, old).await, "retired", "不能留在 provisioning 占着 IP 和编号");
+    let m = t.get(&format!("/api/v1/machines/{old}")).await;
+    assert_eq!(m["name"], "团队1-07", "团队、编号回到恢复之前");
+    assert!(!m["retired_at"].is_null());
+    assert_eq!(entries_of(&t, old).await[0].1, "removing", "摘掉了作业建的入口");
+    let outbound: i64 = sqlx::query_scalar("select count(*) from node_outbound where machine_id = $1").bind(old).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(outbound, 0, "出站秘密清掉");
+    // 编号压缩：空档消失
+    assert_eq!(name_of(&t, gap).await, "团队1-03");
+    let audit = t.get("/api/v1/audit?limit=100").await;
+    assert!(audit.as_array().unwrap().iter().any(|x| x["action"] == "team.renumber"));
+    let msgs = log_msgs(&t, &job).await;
+    assert!(msgs.iter().any(|m| m.contains("恢复已取消")), "{msgs:?}");
+    // IP 和编号都释放了：同一个 IP 又可以上架
+    let chk = t.post("/api/v1/provision/check", json!({"items": [{"kind": "proxy", "ip": "203.0.113.7", "team_id": team, "relay_id": ra, "upstream": upstream("x")}]})).await;
+    assert_eq!(chk["items"][0]["ok"], true, "{chk}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn restore_vps_precheck_and_job_creation() {
+    let t = setup(true).await;
+    let (ra, _) = seed_relay(&t).await;
+    let team = seed_team(&t, "团队1").await;
+    // 一台退役的 VPS，指向 127.0.0.1:1（必定连接被拒）
+    let vps = Uuid::now_v7();
+    sqlx::query(
+        "insert into machine (id, kind, team_id, number, primary_ip, ssh_port, lifecycle, activated_at, retired_at, lifecycle_reason)
+         values ($1, 'vps', $2, 1, '127.0.0.1', 1, 'retired', now(), now(), '到期不续')",
+    )
+    .bind(vps)
+    .bind(team)
+    .execute(&t.st.db)
+    .await
+    .unwrap();
+
+    let pv = t.get(&format!("/api/v1/machines/{vps}/restore")).await;
+    assert_eq!(pv["kind"], "vps");
+    assert_eq!(pv["restorable"], true, "{pv}");
+    assert_eq!(pv["name"], "团队1-01");
+    assert_eq!(pv["needs"]["upstream"], false);
+    assert_eq!(pv["needs"]["relay"], true);
+    assert_eq!(pv["needs"]["password"], "optional", "连不上的机器没法判断中控密钥能不能登录：密码可选");
+    assert_eq!(pv["ssh"]["key_login"], "unreachable");
+    assert!(!pv["warnings"].as_array().unwrap().is_empty());
+    assert_eq!(pv["retired_reason"], "到期不续");
+
+    // 缺线路机 → 400
+    let (s, _) = t.req("POST", &format!("/api/v1/machines/{vps}/restore"), Some(json!({"login": {"password": "x"}})), None).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+
+    let r = t.post(&format!("/api/v1/machines/{vps}/restore"), json!({"relay_id": ra, "login": {"password": "root-pw"}, "reason": "回炉"})).await;
+    let job = r["job_id"].as_str().unwrap().to_string();
+    let j0 = t.job(&job).await;
+    assert_eq!(j0["kind"], "restore_vps");
+    assert_eq!(j0["steps"][0]["key"], "preflight");
+    assert_eq!(j0["steps"].as_array().unwrap().len(), 9, "和上架同样的 9 步");
+    assert_eq!(lifecycle_of(&t, vps).await, "provisioning");
+    let outbound: i64 = sqlx::query_scalar("select count(*) from node_outbound where machine_id = $1 and protocol = 'shadowsocks'").bind(vps).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(outbound, 1, "恢复时重新生成 SS 出站参数");
+    let enc: bool = sqlx::query_scalar("select (params->'login'->>'password_enc') is not null from job where id = $1::uuid").bind(&job).fetch_one(&t.st.db).await.unwrap();
+    assert!(enc, "root 密码加密存在作业参数里");
+
+    // SSH 连不上 → 预检失败（网络类）；取消后机器回到 retired，密码清掉
+    let failed = t.wait_job(&job, "failed").await;
+    assert_eq!(failed["steps"][0]["error_kind"], "network");
+    t.post(&format!("/api/v1/jobs/{job}/cancel"), json!({})).await;
+    t.wait_job(&job, "cancelled").await;
+    assert_eq!(lifecycle_of(&t, vps).await, "retired");
+    let reason: Option<String> = sqlx::query_scalar("select lifecycle_reason from machine where id = $1").bind(vps).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(reason.as_deref(), Some("到期不续"), "退役原因回到恢复之前");
+    let gone: bool = sqlx::query_scalar("select (params->'login') is null from job where id = $1::uuid").bind(&job).fetch_one(&t.st.db).await.unwrap();
+    assert!(gone, "取消后加密的 root 密码要清掉");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn restore_relay_label_conflict() {
+    let t = setup(false).await;
+    let (_live, _) = seed_relay(&t).await; // 线路机2 在用
+    let old = Uuid::now_v7();
+    let (sk, pk) = fleet_server::crypto::reality_keypair();
+    sqlx::query("insert into machine (id, kind, label, primary_ip, lifecycle, retired_at) values ($1, 'relay', '线路机2', '198.51.100.9', 'retired', now())")
+        .bind(old)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    sqlx::query("insert into relay (machine_id, public_host, reality_private_enc, reality_public_key, generation, applied_generation) values ($1, 'old.test', $2, $3, 5, 5)")
+        .bind(old)
+        .bind(t.st.secrets.seal_str(&sk))
+        .bind(pk)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let pv = t.get(&format!("/api/v1/machines/{old}/restore?probe=false")).await;
+    assert_eq!(pv["restorable"], false);
+    assert!(pv["blockers"][0].as_str().unwrap().contains("同名线路机"), "{pv}");
+    assert_eq!(pv["needs"]["relay"], false);
+    let (s, _) = t.req("POST", &format!("/api/v1/machines/{old}/restore"), Some(json!({})), None).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    // 换个名字就可以：作业类型 restore_relay，期望状态代数 +1（agent 装好后必须真的应用一次）
+    let r = t.post(&format!("/api/v1/machines/{old}/restore"), json!({"label": "线路机9", "login": {"password": "pw"}})).await;
+    assert_eq!(r["name"], "线路机9");
+    assert_eq!(t.job(r["job_id"].as_str().unwrap()).await["kind"], "restore_relay");
+    let (g, a): (i64, i64) = sqlx::query_as("select generation, applied_generation from relay where machine_id = $1").bind(old).fetch_one(&t.st.db).await.unwrap();
+    assert!(g > a, "代数 {g} 必须大于已应用代数 {a}");
+}

@@ -17,6 +17,7 @@ import { Hotkeys, PaletteTrigger } from '@/features/Hotkeys';
 import { JobsIndicator } from '@/features/JobsIndicator';
 import { ErrorBoundary } from '@/components/app/ErrorBoundary';
 import { RetireDialog } from '@/components/app/RetireDialog';
+import { LifecycleDialogsHost } from '@/components/app/LifecycleDialogs';
 import { Note, Pill } from '@/components/app/primitives';
 
 const NAV = [
@@ -138,6 +139,7 @@ export function Shell() {
       </main>
       <NodeDrawer />
       <NodeActionsHost />
+      <LifecycleDialogsHost />
       <Hotkeys theme={theme} />
       <Toaster />
     </div>

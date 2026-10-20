@@ -5,7 +5,7 @@ import { del, get, patch, post, put } from './api';
 import { makeDefaultCompare } from './sort';
 import { jobLive } from './jobs';
 import { usePoll } from './streamState';
-import type { ApiKey, Incident, Job, JobLog, MachineView, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, SeriesResp, Silence, Team, AuditEntry, NotifyChannel, NotifyLogEntry } from './types';
+import type { ApiKey, Incident, Job, JobLog, MachineView, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RestoreBody, RestorePreview, MoveResult, EvacuateResult, SeriesResp, Silence, Team, AuditEntry, NotifyChannel, NotifyLogEntry } from './types';
 
 export const useMe = () => useQuery({ queryKey: ['me'], queryFn: () => get<{ username: string }>('/auth/me'), retry: false, staleTime: 5 * 60_000 });
 export const useTeams = () => useQuery({ queryKey: ['teams'], queryFn: () => get<Team[]>('/teams'), staleTime: 60_000 });
@@ -96,6 +96,22 @@ export const useSaveSubscription = () => useWrite(({ id, ...b }: { id: string } 
 export const useRenew = () => useWrite(({ id, ...b }: { id: string; new_due: string; amount_cents?: number; note?: string }) => post(`/machines/${id}/renewals`, b), [...M, ['renewals']]);
 export const useEntryAction = () => useWrite(({ id, ...b }: { id: string; action: 'enable' | 'disable' | 'rotate'; confirm?: string }) => post(`/entries/${id}/actions`, b), M);
 export const useAddEntry = () => useWrite(({ id, relay_id }: { id: string; relay_id: string }) => post<{ job_id: string }>(`/machines/${id}/entries`, { relay_id }), [...M, ['jobs']]);
+export const useMoveEntry = () => useWrite(({ id, ...b }: { id: string; to_relay_id: string; from_relay_id?: string }) => post<MoveResult>(`/machines/${id}/move`, b), [...M, ['jobs']]);
+export const useEvacuate = () => useWrite(({ id, to_relay_id }: { id: string; to_relay_id: string }) => post<EvacuateResult>(`/relays/${id}/evacuate`, { to_relay_id }), [...M, ['jobs']]);
+export const useRestore = () => useWrite(({ id, ...b }: { id: string } & RestoreBody) => post<{ job_id: string; machine_id: string; name: string; old_name: string; number: number | null }>(`/machines/${id}/restore`, b), [...M, ['jobs'], ['teams']]);
+/** 恢复预检；probe=false 不试 SSH（改团队/编号时只想看新名字，不必每次重新探测） */
+export const useRestorePreview = (id: string | null, enabled: boolean, o: { team_id?: string; number?: number; label?: string; probe?: boolean } = {}) =>
+  useQuery({
+    queryKey: ['restore-preview', id, o.team_id ?? '', o.number ?? '', o.label ?? '', o.probe !== false], enabled: !!id && enabled, staleTime: 0, gcTime: 0, placeholderData: (p) => p,
+    queryFn: () => {
+      const q = new URLSearchParams();
+      if (o.team_id) q.set('team_id', o.team_id);
+      if (o.number != null) q.set('number', String(o.number));
+      if (o.label) q.set('label', o.label);
+      if (o.probe === false) q.set('probe', 'false');
+      return get<RestorePreview>(`/machines/${id}/restore${q.size ? `?${q}` : ''}`);
+    },
+  });
 export const useProvisionCheck = () => useMutation({ mutationFn: (items: ProvisionItem[]) => post<{ items: ProvisionCheckItem[] }>('/provision/check', { items }) });
 export const useProvision = () => useWrite((items: ProvisionItem[]) => post<{ jobs: { machine_id: string; job_id: string; name: string }[] }>('/provision', { items }), [...M, ['jobs'], ['teams']]);
 export const useUpgradeAgent = () => useWrite((id: string) => post<{ machine_id: string; job_id: string }>(`/machines/${id}/upgrade-agent`), [...M, ['jobs']]);

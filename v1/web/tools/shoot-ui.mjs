@@ -166,6 +166,43 @@ const scenes = {
     await d.page.close();
     return { page, errors: errors.concat(d.errors) };
   },
+  // 生命周期：换线路机、搬空线路机、恢复已退役的机器
+  async 'move-dialog'() {
+    const { page, errors } = await open('/?m=m-t1-02&tab=manage', { h: 1000 });
+    await clickText(page, 'button', '换线路机'); await sleep(700);
+    await page.click('.dialog .select-trigger'); await sleep(300);
+    await clickText(page, '[role="option"]', '线路机2'); await sleep(400);
+    await shot(page, 'ui-move-dialog');
+    return { page, errors };
+  },
+  async 'evacuate-dialog'() {
+    const { page, errors } = await open('/relays', { h: 1000 });
+    await clickText(page, 'button', '搬空到'); await sleep(700);
+    await page.click('.dialog .select-trigger'); await sleep(300);
+    await clickText(page, '[role="option"]', '线路机2'); await sleep(400);
+    await shot(page, 'ui-evacuate-dialog');
+    return { page, errors };
+  },
+  async 'restore-dialog'() {
+    const { page, errors } = await open('/?m=m-t2-5r&tab=manage', { h: 1100 });
+    await shot(page, 'ui-restore-drawer');
+    await clickText(page, 'button', '恢复…'); await sleep(1500);
+    await shot(page, 'ui-restore-dialog');
+    return { page, errors };
+  },
+  async 'restore-dialog-password'() {
+    const { page, errors } = await open('/?m=m-t1-3r&tab=manage', { h: 1100 });
+    await clickText(page, 'button', '恢复…'); await sleep(1500);
+    await page.type('.dialog input[type="password"]', 'secret'); await sleep(300);
+    await shot(page, 'ui-restore-dialog-password');
+    return { page, errors };
+  },
+  async 'move-menu'() {
+    const { page, errors } = await open('/', { h: 1000 });
+    await page.click('.ncard:nth-child(3) .nc-actions button[aria-label="更多操作"]'); await sleep(500);
+    await shot(page, 'ui-move-menu');
+    return { page, errors };
+  },
   async 'mobile'() {
     const { page, errors } = await open('/', { w: 390, h: 800 });
     await page.keyboard.down('Control'); await page.keyboard.press('k'); await page.keyboard.up('Control'); await sleep(500);

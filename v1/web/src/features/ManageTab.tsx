@@ -1,7 +1,7 @@
 // 抽屉“管理”页：改名/改编号（带实时预览）、入口操作、下线（退役）、彻底删除（仅已退役）。
 import * as React from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, Plus, Trash2 } from 'lucide-react';
+import { ArrowRight, PackageOpen, Plus, Repeat2, Trash2, Undo2 } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
 import { useAddEntry, usePatchMachine, usePurge, useRelays, useTeams, useUpgradeAgent } from '@/lib/queries';
 import * as F from '@/lib/format';
@@ -13,6 +13,7 @@ import { entryState, Note, Section, SectionHeader } from '@/components/app/primi
 import { TypedConfirmDialog } from '@/components/app/dialogs';
 import { RetireDialog } from '@/components/app/RetireDialog';
 import { EntryActions, entryLabel } from '@/components/app/EntryActions';
+import { EvacuateDialog, MoveDialog, RestoreDialog, movableEntries } from '@/components/app/LifecycleDialogs';
 
 export function ManageTab({ m, onClosed }: { m: MachineView; onClosed: () => void }) {
   const retired = m.lifecycle === 'retired';
@@ -79,6 +80,7 @@ function EntrySection({ m }: { m: MachineView }) {
   const relays = useRelays().data ?? [];
   const add = useAddEntry();
   const [relay, setRelay] = React.useState('');
+  const [dlg, setDlg] = React.useState<null | 'move' | 'evacuate'>(null);
   const used = new Set(m.entries.map((e) => e.relay.id));
   const opts = relays.filter((r) => !used.has(r.id)).map((r) => ({ value: r.id, label: r.name }));
   return (
@@ -92,6 +94,18 @@ function EntrySection({ m }: { m: MachineView }) {
             <span className="row" style={{ gap: 8 }}>{entryState(e)}<EntryActions entry={e} /></span>
           </div>
         ))}
+        {m.kind !== 'relay' && m.lifecycle === 'active' && movableEntries(m).length > 0 && (
+          <div className="manage-row">
+            <div><div className="t">换线路机</div><div className="hint">把入口换到另一台线路机：新入口验收通过后才摘旧入口，不断网；完成后分享链接会变。</div></div>
+            <Button variant="secondary" disabled={!!m.active_job} onClick={() => setDlg('move')}><Repeat2 />换线路机…</Button>
+          </div>
+        )}
+        {m.kind === 'relay' && m.lifecycle === 'active' && movableEntries(m).length > 0 && (
+          <div className="manage-row">
+            <div><div className="t">搬空线路机</div><div className="hint">把上面所有节点换到另一台线路机，之后就能安全下线这台。节点的分享链接会变。</div></div>
+            <Button variant="secondary" onClick={() => setDlg('evacuate')}><PackageOpen />搬空到…</Button>
+          </div>
+        )}
         {m.kind !== 'relay' && opts.length > 0 && (
           <div className="row">
             <div style={{ width: 200 }}><Select value={relay} onChange={setRelay} options={opts} placeholder="再挂到另一台线路机" /></div>
@@ -99,6 +113,8 @@ function EntrySection({ m }: { m: MachineView }) {
           </div>
         )}
       </div>
+      <MoveDialog m={m} open={dlg === 'move'} onOpenChange={(o) => !o && setDlg(null)} onDone={() => setDlg(null)} />
+      <EvacuateDialog relay={m} open={dlg === 'evacuate'} onOpenChange={(o) => !o && setDlg(null)} onDone={() => setDlg(null)} />
     </Section>
   );
 }
@@ -123,7 +139,7 @@ function AgentSection({ m }: { m: MachineView }) {
 }
 
 function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }) {
-  const [dlg, setDlg] = React.useState<null | 'retire' | 'purge'>(null);
+  const [dlg, setDlg] = React.useState<null | 'retire' | 'purge' | 'restore'>(null);
   const purge = usePurge();
   const busyJob = m.lifecycle === 'provisioning' || m.lifecycle === 'retiring';
   const retired = m.lifecycle === 'retired';
@@ -133,13 +149,22 @@ function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }
       <SectionHeader title={retired ? '已退役' : '下线'} />
       <div className="danger-zone">
         {retired ? (
-          <div className="manage-row">
-            <div>
-              <div className="t">彻底删除</div>
-              <div className="hint">已于 {F.dtFull(m.retired_at)} 退役。退役不支持恢复；彻底删除会清掉这台机器的记录与遥测，审计记录保留。</div>
+          <>
+            <div className="manage-row">
+              <div>
+                <div className="t">恢复</div>
+                <div className="hint">已于 {F.dtFull(m.retired_at)} 退役。恢复会保持原来的机器 ID（历史、账单、审计接上），重新走一遍上架，编号接在团队末尾。</div>
+              </div>
+              <Button variant="primary" onClick={() => setDlg('restore')}><Undo2 />恢复…</Button>
             </div>
-            <Button variant="outline-danger" onClick={() => setDlg('purge')}><Trash2 />彻底删除…</Button>
-          </div>
+            <div className="manage-row">
+              <div>
+                <div className="t">彻底删除</div>
+                <div className="hint">会清掉这台机器的记录与遥测，无法找回；审计记录保留。</div>
+              </div>
+              <Button variant="outline-danger" onClick={() => setDlg('purge')}><Trash2 />彻底删除…</Button>
+            </div>
+          </>
         ) : (
           <div className="manage-row">
             <div>
@@ -152,6 +177,7 @@ function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }
         {busyJob && m.active_job && <Note tone="info">作业进行中，暂不能操作。<Link to={`/jobs/${m.active_job.id}`} style={{ color: 'var(--accent)' }}>查看作业</Link></Note>}
       </div>
 
+      <RestoreDialog m={m} open={dlg === 'restore'} onOpenChange={(o) => !o && setDlg(null)} onDone={onClosed} />
       <RetireDialog m={m} open={dlg === 'retire'} onOpenChange={(o) => !o && setDlg(null)} onDone={onClosed} />
 
       <TypedConfirmDialog open={dlg === 'purge'} onOpenChange={(o) => !o && setDlg(null)} title={`彻底删除 ${m.name}？`} expected={m.name} prompt="请输入显示名" confirmLabel="彻底删除" danger

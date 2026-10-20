@@ -1,5 +1,5 @@
 // 线路：每台线路机一张卡——下发状态（配置代数 vs 已下发）+ 入口表（端口、节点、状态、是否已下发、TCP/出口探测、流量）。
-import { CheckCircle2, CircleAlert, Loader2, PanelRightOpen } from 'lucide-react';
+import { CheckCircle2, CircleAlert, Loader2, PackageOpen, PanelRightOpen } from 'lucide-react';
 import { useRelays } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
@@ -11,6 +11,7 @@ import { Waypoints } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { EntryActions } from '@/components/app/EntryActions';
 import { entryState } from '@/components/app/primitives';
+import { openEvacuate } from '@/lib/nodeActions';
 
 const probe = (p: EntryView['tcp']) => (p == null ? <span className="t-muted">—</span> : p.ok ? <Num f={F.ms(p.latency_ms)} /> : <span style={{ color: 'var(--bad-text)' }} title={p.detail ?? undefined}>失败</span>);
 
@@ -43,7 +44,9 @@ function RelayCard({ m }: { m: MachineView }) {
         <HealthPill m={m} />
         <span className="t-sub">{r?.public_host ?? m.ip} · {m.ip}</span>
         {m.subscription && <Chip variant={due.tone === 'warn' || due.tone === 'bad' ? 'warn' : undefined}>到期 <Num f={due.text} /></Chip>}
-        <span style={{ marginLeft: 'auto' }} className="row"><Button size="sm" onClick={() => open(m.id)}><PanelRightOpen size={14} />详情</Button></span>
+        <span style={{ marginLeft: 'auto' }} className="row">
+          {m.lifecycle === 'active' && m.entries.some((e) => e.lifecycle === 'active') && <Button size="sm" onClick={() => openEvacuate(m.id)}><PackageOpen size={14} />搬空到…</Button>}
+          <Button size="sm" onClick={() => open(m.id)}><PanelRightOpen size={14} />详情</Button></span>
       </header>
       <ApplyStatus m={m} />
       <div className="table-wrap">

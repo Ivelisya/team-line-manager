@@ -6,6 +6,7 @@ mod client;
 mod cmds;
 mod config;
 mod ipintel;
+mod lifecycle;
 mod ops;
 mod resolve;
 mod table;
@@ -355,6 +356,68 @@ enum Cmd {
         #[arg(long)]
         ticks: bool,
     },
+    /// 换线路机：把节点的入口换到另一台线路机（新入口验收后才摘旧入口，不断网；分享链接会变）
+    Move {
+        /// 节点（id / 显示名 / IP）
+        node: String,
+        /// 目标线路机
+        #[arg(long)]
+        to: String,
+        /// 节点有多个入口时，指定换掉哪台线路机上的
+        #[arg(long)]
+        from: Option<String>,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        follow: bool,
+    },
+    /// 搬空线路机：为它上面每个在用入口的节点各建一个换线路机作业（线路机下线前用）
+    Evacuate {
+        /// 要搬空的线路机
+        relay: String,
+        /// 搬到哪台线路机
+        #[arg(long)]
+        to: String,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        follow: bool,
+    },
+    /// 恢复已退役的机器（保持原 id；先预检再提交，重新走上架收敛）
+    Restore {
+        /// 已退役的机器（id / 显示名 / IP）
+        machine: String,
+        /// 改到别的团队（默认原团队）
+        #[arg(long)]
+        team: Option<String>,
+        /// 指定团队内编号（默认接在末尾）
+        #[arg(long)]
+        number: Option<i32>,
+        /// 节点要接入的线路机
+        #[arg(long)]
+        relay: Option<String>,
+        /// 线路机恢复时改名（原名被占用时）
+        #[arg(long)]
+        label: Option<String>,
+        /// 上游代理节点：socks5://用户:密码@主机:端口（退役时出站参数已清掉）
+        #[arg(long)]
+        upstream: Option<String>,
+        /// vps 的 SS 端口
+        #[arg(long)]
+        ss_port: Option<u16>,
+        /// root 密码放在哪个环境变量里（预检说中控密钥登录不了时必填）
+        #[arg(long)]
+        password_env: Option<String>,
+        #[arg(long)]
+        reason: Option<String>,
+        /// 机器重装过、主机指纹变了：允许覆盖已记录的指纹
+        #[arg(long)]
+        reset_host_key: bool,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        follow: bool,
+    },
 }
 
 /// `session_login`：命令自己会用用户名密码登录（keys --user），没有 API 密钥也放行，只要有中控地址
@@ -456,6 +519,25 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Sources { machine, window, limit } => ipintel::sources(x, &machine, &window, limit),
         Cmd::IpintelStatus => ipintel::status(x),
         Cmd::Watch { count, ticks } => cmds::watch(x, count, ticks),
+        Cmd::Move { node, to, from, yes, follow } => lifecycle::mv(x, &node, &to, from.as_deref(), yes, follow),
+        Cmd::Evacuate { relay, to, yes, follow } => lifecycle::evacuate(x, &relay, &to, yes, follow),
+        Cmd::Restore { machine, team, number, relay, label, upstream, ss_port, password_env, reason, reset_host_key, yes, follow } => lifecycle::restore(
+            x,
+            lifecycle::RestoreOpts {
+                machine: &machine,
+                team: team.as_deref(),
+                number,
+                relay: relay.as_deref(),
+                label: label.as_deref(),
+                upstream: upstream.as_deref(),
+                ss_port,
+                password_env: password_env.as_deref(),
+                reason: reason.as_deref(),
+                reset_host_key,
+                yes,
+                follow,
+            },
+        ),
     }
 }
 

@@ -279,6 +279,9 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "entry.rotate" => "轮换凭据",
         "entry.share" => "查看分享链接",
         "entry.add" => "新增入口",
+        "entry.move" => "换线路机",
+        "relay.evacuate" => "搬空线路机",
+        "machine.restore" => "恢复机器",
         "job.retry" => "重试作业",
         "job.cancel" => "取消作业",
         "silence.create" => "新建静默",
@@ -307,6 +310,12 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
             let why = d["why"].as_str().map(|w| format!("{w}：")).unwrap_or_default();
             format!("{why}{}", parts.join("，"))
         }
+        "entry.move" => format!("{} · {} → {}", s("name"), s("from"), s("to")),
+        "relay.evacuate" => format!("{} → {}（{} 个作业）", s("from"), s("to"), d["jobs"].as_array().map_or(0, |a| a.len())),
+        "machine.restore" => match d["reason"].as_str().filter(|r| !r.is_empty()) {
+            Some(r) => format!("{} → {}（{r}）", s("old_name"), s("name")),
+            None => format!("{} → {}", s("old_name"), s("name")),
+        },
         a if a.starts_with("entry.") && d["relay"].is_string() => format!("{}:{}", s("relay"), d["port"]),
         "team.create" | "provider.create" | "plan.create" | "notify.create" | "notify.update" | "notify.delete" => s("name"),
         _ => String::new(),

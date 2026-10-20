@@ -4,6 +4,7 @@ pub mod exec;
 pub mod ipintel;
 pub mod jobs;
 pub mod keys;
+pub mod lifecycle;
 pub mod machines;
 pub mod misc;
 pub mod notify;
@@ -43,6 +44,10 @@ pub fn router() -> Router<AppState> {
         .route("/machines/{id}/subscription", axum::routing::put(machines::put_subscription))
         .route("/machines/{id}/renewals", get(machines::list_renewals).post(machines::add_renewal))
         .route("/machines/{id}/entries", post(relays::add_entry))
+        // 换线路机、搬空线路机、恢复已退役的机器
+        .route("/machines/{id}/move", post(lifecycle::move_node))
+        .route("/relays/{id}/evacuate", post(lifecycle::evacuate))
+        .route("/machines/{id}/restore", get(lifecycle::restore_preview).post(lifecycle::restore))
         // 上架
         .route("/provision/check", post(provision::check))
         .route("/provision", post(provision::create))

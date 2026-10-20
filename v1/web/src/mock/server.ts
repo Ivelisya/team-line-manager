@@ -457,6 +457,137 @@ R('POST', '/agents/upgrade', () => {
   emit({ type: 'machines' }); return { jobs };
 });
 
+// ---------- 换线路机 / 搬空线路机 / 恢复已退役的机器 ----------
+const MOVE_STEPS: [string, string][] = [['attach_new', '在新线路机建入口'], ['firewall_widen', '放行新线路机（节点防火墙）'], ['wait_applied_new', '等待新线路机生效'], ['verify_new', '经新入口出口验收'], ['detach_old', '摘除旧入口'], ['wait_detached_old', '等待旧线路机摘除'], ['firewall_narrow', '收紧节点防火墙']];
+const RESTORE_STEPS: [string, string][] = [['preflight', '预检与身份'], ['bootstrap', '引导密钥'], ['converge', '节点收敛（SSH 加固、SS、防火墙）'], ['agent', '安装 agent'], ['wait_report', '等待首次上报'], ['attach', '接入线路机'], ['wait_applied', '等待线路机生效'], ['verify', '出口验收'], ['activate', '上线']];
+const SHARE_NOTE = '换线路机后分享链接会变：客户端需要换成新的分享链接（作业完成后到节点的入口里复制）';
+const blankTraffic = () => ({ today_up: 0, today_down: 0, month_up: 0, month_down: 0 });
+
+/** 校验一次换线路机；返回计划，或不能换的原因 */
+function planMove(m: MachineView, toId: string, fromId?: string): { old: EntryView; to: MachineView } | string {
+  if (m.kind === 'relay') return `「${m.name}」是线路机，只有节点能换线路机`;
+  if (m.lifecycle !== 'active') return `「${m.name}」现在不是在用状态，不能换线路机`;
+  if (m.active_job) return `「${m.name}」还有进行中的作业，等它结束再换线路机`;
+  const to = db.machines.find((x) => x.id === toId && x.kind === 'relay');
+  if (!to) return '目标线路机不存在';
+  if (to.lifecycle !== 'active') return `目标线路机「${to.name}」不在用`;
+  const live = m.entries.filter((e) => !fromId || e.relay.id === fromId);
+  if (live.length === 0) return `「${m.name}」没有在用的入口`;
+  if (live.length > 1) return `「${m.name}」有 ${live.length} 个入口：请指定要换掉哪条线路机上的入口`;
+  const old = live[0];
+  if (old.lifecycle !== 'active') return `「${m.name}」在 ${old.relay.name} 上的入口还没生效或已停用`;
+  if (old.relay.id === to.id) return `目标线路机「${to.name}」就是节点当前所在的线路机`;
+  if (m.entries.some((e) => e.relay.id === to.id)) return `「${m.name}」在「${to.name}」上已经有入口`;
+  return { old, to };
+}
+function startMove(m: MachineView, plan: { old: EntryView; to: MachineView }) {
+  const { old, to } = plan;
+  const ne: EntryView = { id: `e${db.seq++}`, relay: { id: to.id, name: to.name }, node: { id: m.id, name: m.name }, port: Math.max(20000, ...to.entries.map((x) => x.port)) + 1, lifecycle: 'provisioning', applied: false, apply_error: null, tcp: null, egress: null, traffic: blankTraffic() };
+  m.entries.push(ne); to.entries.push(ne);
+  const job = newJob('move_entry', { id: m.id, name: m.name }, MOVE_STEPS);
+  job.result = { new_entry_id: ne.id, old_entry_id: old.id, from_relay_id: old.relay.id, to_relay_id: to.id, share_changed: true, note: '客户端需要换成新的分享链接' };
+  m.active_job = { id: job.id, kind: 'move_entry', state: 'running' };
+  drive(job, 2200, () => {
+    ne.lifecycle = 'active'; ne.applied = true; ne.tcp = { ok: true, latency_ms: 48, detail: null, ts: iso() }; ne.egress = { ok: true, latency_ms: 176, detail: null, ts: iso() };
+    m.entries = m.entries.filter((e) => e.id !== old.id); const from = machine(old.relay.id); from.entries = from.entries.filter((e) => e.id !== old.id);
+    m.active_job = null; emit({ type: 'relay', id: from.id }); emit({ type: 'relay', id: to.id });
+  }, [{ entry_id: ne.id, relay: to.name, port: ne.port }]);
+  return job;
+}
+R('POST', '/machines/([^/]+)/move', ({ params, body }) => {
+  const m = machine(params[0]);
+  const plan = planMove(m, body.to_relay_id, body.from_relay_id);
+  if (typeof plan === 'string') throw bad(plan, 409, 'conflict');
+  const from = plan.old.relay.name;
+  const job = startMove(m, plan);
+  db.audit.unshift({ id: `a${db.seq++}`, ts: iso(), actor: db.user, action: 'entry.move', title: '换线路机', summary: `${m.name} · ${from} → ${plan.to.name}`, target_kind: 'machine', target_id: m.id, detail: {} });
+  emit({ type: 'machines' }); emit({ type: 'job', id: job.id });
+  return { job_id: job.id, name: m.name, from, to: plan.to.name, share_changed: true, note: SHARE_NOTE };
+});
+R('POST', '/relays/([^/]+)/evacuate', ({ params, body }) => {
+  const src = machine(params[0]);
+  if (src.kind !== 'relay') throw bad('只有线路机能搬空', 409, 'conflict');
+  if (body.to_relay_id === src.id) throw bad('目标线路机不能和要搬空的是同一台');
+  const dst = machine(body.to_relay_id);
+  if (dst.kind !== 'relay' || dst.lifecycle !== 'active') throw bad('目标线路机不在用', 409, 'conflict');
+  const jobs: { machine_id: string; name: string; job_id: string }[] = []; const skipped: { machine_id: string; name: string | null; reason: string }[] = [];
+  for (const e of [...src.entries]) {
+    if (e.lifecycle === 'removing' || e.lifecycle === 'removed') continue;
+    const node = machine(e.node.id);
+    const plan = planMove(node, dst.id, src.id);
+    if (typeof plan === 'string') { skipped.push({ machine_id: node.id, name: node.name, reason: plan }); continue; }
+    jobs.push({ machine_id: node.id, name: node.name, job_id: startMove(node, plan).id });
+  }
+  db.audit.unshift({ id: `a${db.seq++}`, ts: iso(), actor: db.user, action: 'relay.evacuate', title: '搬空线路机', summary: `${src.name} → ${dst.name}（${jobs.length} 个作业）`, target_kind: 'machine', target_id: src.id, detail: {} });
+  emit({ type: 'machines' });
+  return { from: src.name, to: dst.name, jobs, skipped, share_changed: jobs.length > 0, note: SHARE_NOTE };
+});
+
+function restorePlan(m: MachineView, teamId: string | null, number: string | null, label: string | null) {
+  const blockers: string[] = [];
+  if (m.lifecycle !== 'retired') blockers.push('这台机器现在不是已退役状态，不能恢复');
+  const other = db.machines.find((x) => x.id !== m.id && x.ip === m.ip && x.lifecycle !== 'retired');
+  const ip_conflict = other ? { machine_id: other.id, name: other.name, lifecycle: other.lifecycle } : null;
+  if (other) blockers.push(`IP ${m.ip} 已被未退役的机器「${other.name}」占用：先把它退役，或确认这台机器的 IP 没有变`);
+  let name = m.name; let num: number | null = null; let team = m.team;
+  if (m.kind === 'relay') {
+    name = (label?.trim() || m.label || m.name);
+    if (db.machines.some((x) => x.kind === 'relay' && x.lifecycle !== 'retired' && x.label === name && x.id !== m.id)) blockers.push(`已经有同名线路机「${name}」：恢复时换一个名字`);
+  } else {
+    const t = teamId ? db.teams.find((x) => x.id === teamId) : db.teams.find((x) => x.id === m.team?.id);
+    if (!t) blockers.push('团队不存在'); else {
+      team = { id: t.id, name: t.name };
+      const taken = new Set(db.machines.filter((x) => x.team?.id === t.id && x.id !== m.id && x.lifecycle !== 'retired' && x.number != null).map((x) => x.number!));
+      if (number) { const n = +number; if (taken.has(n)) blockers.push(`编号 ${n} 已被占用`); else num = n; } else { let n = 1; while (taken.has(n)) n++; num = n; }
+      if (num != null) name = displayName(t.name, num);
+    }
+  }
+  return { blockers, ip_conflict, name, num, team, label: m.kind === 'relay' ? name : null };
+}
+R('GET', '/machines/([^/]+)/restore', ({ params, query }) => {
+  const m = machine(params[0]);
+  const p = restorePlan(m, query.get('team_id'), query.get('number'), query.get('label'));
+  const probe = query.get('probe') !== 'false' && m.kind !== 'proxy';
+  const keyLogin = m.id === 'm-t1-3r' ? 'denied' : 'ok';
+  const last = db.machines.find((x) => x.kind === 'relay' && x.lifecycle === 'active' && x.id === (m.team?.id === 't2' ? 'r2' : 'r1'));
+  return {
+    id: m.id, kind: m.kind, lifecycle: m.lifecycle, ip: m.ip, old_name: m.name, name: p.name, team: p.team, number: p.num, label: p.label,
+    restorable: p.blockers.length === 0, blockers: p.blockers, warnings: [], ip_conflict: p.ip_conflict, retired_reason: m.lifecycle_reason,
+    last_relay: last ? { id: last.id, name: last.name } : null,
+    ssh: probe ? { reachable: true, key_login: keyLogin, host_key: 'SHA256:q3Zp1vJm0cJ2oWfX8sB9tqk1eYb7rUo5nHj2LdPaVx4' } : null,
+    needs: { relay: m.kind !== 'relay', upstream: m.kind === 'proxy', password: m.kind === 'proxy' ? 'no' : keyLogin === 'denied' ? 'required' : 'no' },
+  };
+});
+R('POST', '/machines/([^/]+)/restore', ({ params, body }) => {
+  const m = machine(params[0]);
+  const p = restorePlan(m, body.team_id ?? null, body.number != null ? String(body.number) : null, body.label ?? null);
+  if (p.blockers.length) throw bad(p.blockers.join('；'), 409, 'conflict');
+  const relay = m.kind === 'relay' ? null : db.machines.find((x) => x.id === body.relay_id && x.kind === 'relay' && x.lifecycle === 'active');
+  if (m.kind !== 'relay' && !relay) throw bad('要选一台在用的线路机');
+  if (m.kind === 'proxy' && !body.upstream?.host) throw bad('上游代理要重新填协议、地址和端口');
+  const old = m.name;
+  m.lifecycle = 'provisioning'; m.lifecycle_reason = '恢复中'; if (p.team) m.team = p.team; m.number = p.num; if (m.kind === 'relay') m.label = p.label; m.name = p.name; m.revision++;
+  m.health = { status: 'unknown', reasons: [{ key: 'provisioning', severity: 'info', text: '恢复作业进行中' }] };
+  let e: EntryView | null = null;
+  if (relay) {
+    e = { id: `e${db.seq++}`, relay: { id: relay.id, name: relay.name }, node: { id: m.id, name: m.name }, port: Math.max(20000, ...relay.entries.map((x) => x.port)) + 1, lifecycle: 'provisioning', applied: false, apply_error: null, tcp: null, egress: null, traffic: blankTraffic() };
+    m.entries = [e]; relay.entries.push(e);
+  }
+  const relaySteps: [string, string][] = [['preflight', '预检与身份'], ['bootstrap', '引导密钥'], ['converge_relay', '线路机收敛（SSH 加固、Xray）'], ['agent', '安装 agent'], ['wait_report', '等待首次上报'], ['wait_applied', '等待 Xray 配置生效'], ['activate', '上线']];
+  const steps = m.kind === 'proxy' ? RESTORE_STEPS.filter(([k]) => ['attach', 'wait_applied', 'verify', 'activate'].includes(k)) : m.kind === 'relay' ? relaySteps : RESTORE_STEPS;
+  const job = newJob(`restore_${m.kind}`, { id: m.id, name: m.name }, steps);
+  m.active_job = { id: job.id, kind: job.kind, state: 'running' };
+  drive(job, 2000, () => {
+    m.lifecycle = 'active'; m.retired_at = null; m.lifecycle_reason = `已恢复${body.reason ? `：${body.reason}` : ''}`; m.active_job = null; m.health = { status: 'ok', reasons: [] };
+    if (m.kind !== 'proxy') { m.agent = { version: '1.0.3', last_report_at: iso(), online: true }; m.host = { ts: iso(), cpu_pct: 5, load1: 0.1, mem_used: 380 * 1024 ** 2, mem_total: 4 * GiB, disk_used: 4 * GiB, disk_total: 60 * GiB, net_rx_bps: 2e5, net_tx_bps: 1e5, tcp_conns: 10 }; }
+    if (e) { e.lifecycle = 'active'; e.applied = true; e.tcp = { ok: true, latency_ms: 50, detail: null, ts: iso() }; e.egress = { ok: true, latency_ms: 180, detail: null, ts: iso() }; }
+    refreshCounts();
+  });
+  db.audit.unshift({ id: `a${db.seq++}`, ts: iso(), actor: db.user, action: 'machine.restore', title: '恢复机器', summary: `${old} → ${m.name}`, target_kind: 'machine', target_id: m.id, detail: {} });
+  refreshCounts(); emit({ type: 'machines' }); emit({ type: 'catalog' });
+  return { job_id: job.id, machine_id: m.id, name: m.name, old_name: old, number: m.number };
+});
+
 // ---------- 设置：API 密钥 / 通知渠道 ----------
 const rand = (n: number) => Array.from({ length: n }, () => 'abcdefghijklmnopqrstuvwxyz0123456789'[Math.floor(Math.random() * 36)]).join('');
 R('GET', '/api-keys', () => clone(db.apiKeys));
