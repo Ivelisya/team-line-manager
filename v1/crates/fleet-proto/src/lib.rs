@@ -93,7 +93,9 @@ pub struct SystemInfo {
 pub struct HostSample {
     pub ts_ms: i64,
     pub cpu_pct: f32,
-    pub load1: f32,
+    /// 1 分钟负载；容器里拿不到本机负载（/proc/loadavg 是宿主机的）时为 None
+    #[serde(default)]
+    pub load1: Option<f32>,
     pub mem_used: u64,
     pub mem_total: u64,
     pub disk_used: u64,

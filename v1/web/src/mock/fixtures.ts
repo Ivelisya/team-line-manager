@@ -2,7 +2,7 @@
 // IP 只用文档保留段 203.0.113.0/24 与 198.51.100.0/24。
 
 import type { ApiKey, Incident, Job, NotifyChannel, NotifyLogEntry, JobLog, MachineView, Plan, Provider, Renewal, Silence, AuditEntry, Team, EntryView, Lifecycle, HealthStatus, Subscription } from '@/lib/types';
-import { displayName } from '@/lib/format';
+import { addMonths, displayName } from '@/lib/format';
 
 export function rng(seed: number) {
   let a = seed >>> 0;
@@ -137,6 +137,7 @@ export function buildDb(): Db {
       note: d.n === 1 ? '主力线路，勿动' : '',
     });
     if (down && m.host) { m.host.ts = iso(now() - 14 * 60_000); }
+    if (id === 'm-t2-06' && m.host) m.host.load1 = null; // LXC 容器：agent 拿不到本机负载
     machines.push(m);
   }
 
@@ -247,5 +248,7 @@ export function buildDb(): Db {
     { id: 'n3', channel_id: 'c1', channel_name: '运维群', incident_id: 'i3-0000-bbbb', ts: iso(now() - 50 * 60_000), ok: false, error: 'Telegram 返回 429：请求过于频繁，请 17 秒后重试' },
     { id: 'n4', channel_id: 'c3', channel_name: '自建告警网关', incident_id: null, ts: iso(now() - 3 * DAY), ok: true, error: null },
   ];
-  return { user: 'admin', teams, providers, plans, machines, jobs, logs, incidents, silences, audit, renewals: {}, apiKeys, channels, notifyLog, seq: 100 };
+  const s3 = machines.find((m) => m.id === 'm-t1-03')!.subscription!;
+  const renewals: Record<string, Renewal[]> = { 'm-t1-03': [{ id: 'rn1', old_due: addMonths(s3.due_date, -3), new_due: s3.due_date, amount_cents: s3.price_cents, note: '账单 #2041', actor: 'admin', created_at: iso(now() - 84 * DAY) }] };
+  return { user: 'admin', teams, providers, plans, machines, jobs, logs, incidents, silences, audit, renewals, apiKeys, channels, notifyLog, seq: 100 };
 }

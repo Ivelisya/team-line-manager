@@ -5,7 +5,7 @@ import { ArrowDownUp, ChevronDown, ChevronUp } from 'lucide-react';
 import type { MachineView, Plan } from '@/lib/types';
 import type { DrawerTab } from '@/lib/drawer';
 import * as F from '@/lib/format';
-import { isQuiet, monthTraffic, quota, remainingValue, resourceMeters } from '@/lib/derive';
+import { isQuiet, liveRate, monthTraffic, quota, remainingValue, resourceMeters } from '@/lib/derive';
 import { KIND_LABEL } from '@/lib/sort';
 import { cn } from '@/lib/utils';
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from '@/components/ui/context-menu';
@@ -25,8 +25,8 @@ export const TABLE_SORTS: Record<string, (a: MachineView, b: MachineView) => num
   cpu: (a, b) => (a.host?.cpu_pct ?? -1) - (b.host?.cpu_pct ?? -1),
   mem: (a, b) => memPct(a) - memPct(b),
   disk: (a, b) => diskPct(a) - diskPct(b),
-  up: (a, b) => (a.host?.net_tx_bps ?? -1) - (b.host?.net_tx_bps ?? -1),
-  down: (a, b) => (a.host?.net_rx_bps ?? -1) - (b.host?.net_rx_bps ?? -1),
+  up: (a, b) => (liveRate(a)?.tx ?? -1) - (liveRate(b)?.tx ?? -1),
+  down: (a, b) => (liveRate(a)?.rx ?? -1) - (liveRate(b)?.rx ?? -1),
   traffic: (a, b) => { const x = monthTraffic(a); const y = monthTraffic(b); return x.up + x.down - (y.up + y.down); },
   quota: (a, b) => (quota(a).rem ?? Infinity) - (quota(b).rem ?? Infinity),
   due: (a, b) => (a.subscription?.due_days ?? 1e9) - (b.subscription?.due_days ?? 1e9),
@@ -55,10 +55,10 @@ function columns(plans: Plan[]): Col[] {
     ...(['cpu', 'mem', 'disk'] as const).map((k): Col => ({ id: k, header: k === 'cpu' ? 'CPU' : k === 'mem' ? '内存' : '磁盘', size: 84, sort: true,
       cell: (m) => { const r = resourceMeters(m, plans); return r ? pctCell(r[k].pct, k, isQuiet(m)) : <span className="t-muted">—</span>; } })),
     ...(['up', 'down'] as const).map((k): Col => ({ id: k, header: k === 'up' ? '上行' : '下行', size: 92, r: true, sort: true,
-      cell: (m) => { const v = k === 'up' ? m.host?.net_tx_bps : m.host?.net_rx_bps; return <span className="trate" data-speed={m.host && !isQuiet(m) ? F.speedOf(v) : undefined}><Num f={F.rate(v)} /></span>; } })),
+      cell: (m) => { const r = liveRate(m); const v = r && (k === 'up' ? r.tx : r.rx); return <span className="trate" data-speed={r ? F.speedOf(v) : undefined}><Num f={F.rate(v)} /></span>; } })),
     { id: 'traffic', header: '本月流量', size: 80, r: true, sort: true, cell: (m) => { const t = monthTraffic(m); return <Num f={F.bytes(t.up + t.down)} />; } },
     { id: 'quota', header: '剩余流量', size: 106, sort: true,
-      cell: (m) => { const q = quota(m); return <span className="tquota"><Cells pct={q.pct} n={8} colors={Q8} />{q.rem == null ? <span className="t-sub">不限</span> : q.rem > 0 ? <Num f={F.bytes(q.rem)} /> : <span className="tdue is-bad">已超限</span>}</span>; } },
+      cell: (m) => { const q = quota(m); return <span className="tquota">{q.rem != null && <Cells pct={q.pct} n={8} colors={Q8} />}{q.rem == null ? <span className="t-sub">不限</span> : q.rem > 0 ? <Num f={F.bytes(q.rem)} /> : <span className="tdue is-bad">已超限</span>}</span>; } },
     { id: 'due', header: '距到期', size: 72, r: true, sort: true,
       cell: (m) => { const d = F.dueFmt(m.subscription?.due_days); return <span className={cn('tdue', d.tone && `is-${d.tone}`)}><Num f={d.text} /></span>; } },
     { id: 'value', header: '剩余价值', size: 76, r: true, sort: true, cell: (m) => { const v = remainingValue(m); return v ? <span className="num">{F.money(v.cents, v.currency)}</span> : <span className="t-muted">—</span>; } },

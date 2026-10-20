@@ -7,6 +7,10 @@ const GiB = 1024 ** 3;
 export const hasHost = (m: MachineView) => m.kind !== 'proxy' && m.host != null;
 /** 数据过期：agent 离线，或健康为故障 */
 export const isQuiet = (m: MachineView) => m.health.status === 'down' || (m.agent != null && !m.agent.online) || m.lifecycle === 'retired';
+/** 当前网卡速率：无主机或数据过期（isQuiet）时为 null——各处显示 “—”，也不进迹线 */
+export const liveRate = (m: MachineView) => (hasHost(m) && !isQuiet(m) ? { rx: m.host!.net_rx_bps, tx: m.host!.net_tx_bps } : null);
+/** 容器（LXC 等）里 /proc/loadavg 是宿主机的，agent 不报负载（null） */
+export const LOAD_NA = '容器内无法获取本机负载';
 
 export function entryText(m: MachineView): string {
   if (m.kind === 'relay') return `${m.entries.length} 条入口`;
@@ -39,7 +43,7 @@ export function resourceMeters(m: MachineView, plans: Plan[]) {
     mem: { value: F.pct(memPct), pct: memPct, sub: usedTotal(h.mem_used, h.mem_total) },
     disk: { value: F.pct(diskPct), pct: diskPct, sub: usedTotal(h.disk_used, h.disk_total) },
     // 负载按核数折成百分比（1 分钟平均负载 / 核数）：比裸的 “0.50” 好懂；超过 100% 表示排队，数字照实显示，格条封顶
-    load: { value: F.pct(loadPct), pct: loadPct, sub: h.load1 == null ? `${cores} 核` : `1 分钟 ${h.load1.toFixed(2)} · ${cores} 核` },
+    load: { value: F.pct(loadPct), pct: loadPct, sub: h.load1 == null ? LOAD_NA : `1 分钟 ${h.load1.toFixed(2)} · ${cores} 核`, hint: h.load1 == null ? LOAD_NA : undefined },
   };
 }
 /**

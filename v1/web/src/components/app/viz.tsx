@@ -4,8 +4,7 @@
 import * as React from 'react';
 import type { Fmt } from '@/lib/format';
 import * as F from '@/lib/format';
-import type { TracePoint } from '@/lib/traces';
-import { TRACE_N } from '@/lib/traces';
+import { SERIES_N, type LivePoint } from '@/lib/live';
 import type { TagColor } from '@/lib/derive';
 import { cn } from '@/lib/utils';
 import { Num } from './primitives';
@@ -38,10 +37,10 @@ export const quotaColors = (n: number) => Array.from({ length: n }, (_, i) => {
 export const QUOTA_COLORS = quotaColors(CELL_N);
 
 /** 资源读数：图标 + 名称 + 数值，副行，格条。metric 决定颜色（--m-cpu / --m-mem / --m-disk / --m-load） */
-export function CellMeter({ icon, label, value, pct, sub, metric, empty }: { icon: React.ReactNode; label: string; value: Fmt; pct: number | null; sub?: React.ReactNode; metric: 'cpu' | 'mem' | 'disk' | 'load'; empty?: boolean }) {
+export function CellMeter({ icon, label, value, pct, sub, metric, empty, title }: { icon: React.ReactNode; label: string; value: Fmt; pct: number | null; sub?: React.ReactNode; metric: 'cpu' | 'mem' | 'disk' | 'load'; empty?: boolean; title?: string }) {
   const p = pct == null ? 0 : pct;
   return (
-    <div className={cn('cmeter', empty && 'is-empty')} data-metric={metric} data-tone={empty ? undefined : p >= 90 ? 'bad' : p >= 75 ? 'warn' : undefined}>
+    <div className={cn('cmeter', empty && 'is-empty')} title={title} data-metric={metric} data-tone={empty ? undefined : p >= 90 ? 'bad' : p >= 75 ? 'warn' : undefined}>
       <div className="cmeter-head"><span className="cmeter-label">{icon}{label}</span><span className="cmeter-value"><Num f={value} /></span></div>
       {sub !== undefined && <div className="cmeter-sub">{sub}</div>}
       <Cells pct={empty ? null : pct} color={`var(--m-${metric})`} />
@@ -67,13 +66,13 @@ export function Ring({ pct, metric, size = 64, stroke = 6, children }: { pct: nu
   );
 }
 
-/** 点阵迹线：最近 TRACE_N 个点，最新在右；点的大小与浓淡随速率（相对本条最大值），没数据的槽是浅灰小点 */
+/** 点阵迹线：最近 SERIES_N 个点，最新在右；点的大小与浓淡随速率（相对本条最大值），没数据的槽是浅灰小点 */
 export function DotTrace({ values }: { values: number[] }) {
   const max = Math.max(1, ...values);
-  const pad = TRACE_N - values.length;
+  const pad = SERIES_N - values.length;
   return (
     <span className="dots" aria-hidden>
-      {Array.from({ length: TRACE_N }, (_, i) => {
+      {Array.from({ length: SERIES_N }, (_, i) => {
         const v = i < pad ? null : values[i - pad];
         return <i key={i} data-on={v != null && v > 0 ? '' : undefined} style={v != null && v > 0 ? ({ '--l': clamp01(v / max) } as Vars) : undefined} />;
       })}
@@ -89,12 +88,12 @@ function niceMax(v: number) {
   return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * e;
 }
 
-/** 面积折线（集群状态里的上行 / 下行）：最近 TRACE_N 个点、最新在右；左轴三档刻度，两端标时间 */
-export function AreaSpark({ points, pick, tone }: { points: TracePoint[]; pick: (p: TracePoint) => number; tone: 'up' | 'down' }) {
+/** 面积折线（集群状态里的上行 / 下行）：最近 SERIES_N 个点、最新在右；左轴三档刻度，两端标时间 */
+export function AreaSpark({ points, pick, tone }: { points: readonly LivePoint[]; pick: (p: LivePoint) => number; tone: 'up' | 'down' }) {
   const W = 300; const H = 100;
   const vals = points.map(pick);
   const max = niceMax(Math.max(0, ...vals) * 1.1);
-  // 点不满 TRACE_N 时铺满整宽（两端的时间标签照实写），不让一小段线挤在最右边
+  // 点不满 SERIES_N 时铺满整宽（两端的时间标签照实写），不让一小段线挤在最右边
   const step = W / Math.max(1, vals.length - 1);
   const x0 = vals.length > 1 ? 0 : W;
   const xy = vals.map((v, i) => [x0 + i * step, H - (v / max) * H] as const);

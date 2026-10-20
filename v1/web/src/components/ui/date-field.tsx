@@ -1,6 +1,7 @@
 // 日期选择（全站唯一实现，替代原生 <input type="date">）：触发器长得像输入框，值与显示一律 YYYY-MM-DD；
 // 弹层是 Radix Popover + 月历网格。键盘：方向键逐日/逐周，PageUp/PageDown 换月（加 Shift 换年），Home/End 到周首/周尾，
 // Enter/空格选中，Esc 关闭（焦点回到触发器）。日期按本地日历计算，不经过 Date 的时区换算。
+// iconOnly：触发器只是一个日历图标按钮（批量网格里配合文本格用，文本格负责键入与整块粘贴）。
 import * as React from 'react';
 import * as PopoverPrimitive from '@radix-ui/react-popover';
 import { Calendar, ChevronLeft, ChevronRight } from 'lucide-react';
@@ -22,8 +23,8 @@ function monthGrid(month: string) {
   return Array.from({ length: 42 }, (_, i) => addDays(start, i));
 }
 
-export function DateField({ value, onChange, min, id, placeholder = '选择日期', className, 'aria-label': aria }: {
-  value: string; onChange: (v: string) => void; min?: string; id?: string; placeholder?: string; className?: string; 'aria-label'?: string;
+export function DateField({ value, onChange, min, id, placeholder = '选择日期', className, iconOnly, disabled, 'aria-label': aria }: {
+  value: string; onChange: (v: string) => void; min?: string; id?: string; placeholder?: string; className?: string; iconOnly?: boolean; disabled?: boolean; 'aria-label'?: string;
 }) {
   const [open, setOpen] = React.useState(false);
   const [focus, setFocus] = React.useState(() => (ISO.test(value) ? value : today()));
@@ -51,8 +52,8 @@ export function DateField({ value, onChange, min, id, placeholder = '选择日�
 
   return (
     <PopoverPrimitive.Root open={open} onOpenChange={(o) => { if (o) setFocus(start); setOpen(o); }}>
-      <PopoverPrimitive.Trigger id={id} aria-label={aria} className={cn('select-trigger datefield', !value && 'is-empty', className)}>
-        <span className="num">{value || placeholder}</span><Calendar />
+      <PopoverPrimitive.Trigger id={id} aria-label={aria} disabled={disabled} className={cn(iconOnly ? 'icon-btn icon-btn-sm' : 'select-trigger datefield', !iconOnly && !value && 'is-empty', className)}>
+        {iconOnly ? <Calendar size={14} /> : <><span className="num">{value || placeholder}</span><Calendar /></>}
       </PopoverPrimitive.Trigger>
       <PopoverPrimitive.Portal>
         <PopoverPrimitive.Content className="popover cal" align="start" sideOffset={6} collisionPadding={8} onOpenAutoFocus={(e) => { e.preventDefault(); focusDay(start); }}>

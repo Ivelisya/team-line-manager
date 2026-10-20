@@ -189,7 +189,7 @@ pub async fn seed_node(t: &T, relay: Uuid, team: Uuid, number: i32, ip: &str, po
 pub fn now_ms() -> i64 { (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64 }
 
 pub fn host(ts_ms: i64, cpu: f32, rx: u64, tx: u64) -> HostSample {
-    HostSample { ts_ms, cpu_pct: cpu, load1: 0.5, mem_used: 400, mem_total: 1000, disk_used: 300, disk_total: 1000, net_rx_bytes: rx, net_tx_bytes: tx, tcp_conns: 3 }
+    HostSample { ts_ms, cpu_pct: cpu, load1: Some(0.5), mem_used: 400, mem_total: 1000, disk_used: 300, disk_total: 1000, net_rx_bytes: rx, net_tx_bytes: tx, tcp_conns: 3 }
 }
 
 pub fn entry_sample(entry_id: Uuid, ts_ms: i64, up: u64, down: u64) -> EntrySample {

@@ -35,8 +35,23 @@ pub fn cpu_pct(prev: CpuTimes, cur: CpuTimes) -> f32 {
     (100.0 * (dt - di) as f64 / dt as f64) as f32
 }
 
-pub fn parse_load1(s: &str) -> f32 {
-    s.split_whitespace().next().and_then(|x| x.parse().ok()).unwrap_or(0.0)
+/// /proc/loadavg（"0.52 0.58 0.59 2/1323 12345"）的 1 分钟负载。
+/// 第 4 列的 total 是全系统的调度实体（线程）数：容器（LXC 等，没有 lxcfs 虚拟化 loadavg）里读到的是宿主机的 loadavg，
+/// total 远大于本命名空间里能看到的线程数，这个负载不代表本机，返回 None。
+pub fn parse_load1(loadavg: &str, visible_threads: usize) -> Option<f32> {
+    let mut f = loadavg.split_whitespace();
+    let load1 = f.next()?.parse().ok()?;
+    let total: usize = f.nth(2)?.split_once('/')?.1.parse().ok()?;
+    (total <= 2 * visible_threads + 10).then_some(load1)
+}
+
+/// 本命名空间里能看到的线程数：<proc>/<pid>/task 的条目合计（loadavg 的 total 数的是线程，不是进程）
+pub fn visible_threads(proc: &std::path::Path) -> usize {
+    let Ok(rd) = std::fs::read_dir(proc) else { return 0 };
+    rd.flatten()
+        .filter(|e| e.file_name().to_str().is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit())))
+        .map(|e| std::fs::read_dir(e.path().join("task")).map_or(0, |t| t.count()))
+        .sum()
 }
 
 /// 返回 (total, available) 字节
@@ -129,7 +144,8 @@ pub fn collect_info() -> SystemInfo {
         .and_then(|l| l.split_once(':'))
         .map(|(_, v)| v.trim().to_string())
         .unwrap_or_default();
-    let cores = read("/proc/stat").lines().filter(|l| l.starts_with("cpu") && l.as_bytes().get(3).is_some_and(|c| c.is_ascii_digit())).count() as u32;
+    // 可用核数（认 cgroup 配额与 CPU 亲和性）：容器里 /proc/stat 列的是宿主机全部 CPU
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get() as u32);
     let (ipv4, ipv6) = local_ips();
     SystemInfo {
         hostname: read("/proc/sys/kernel/hostname").trim().to_string(),
@@ -243,7 +259,7 @@ impl HostCollector {
         HostSample {
             ts_ms: now_ms(),
             cpu_pct: pct,
-            load1: parse_load1(&read("/proc/loadavg")),
+            load1: parse_load1(&read("/proc/loadavg"), visible_threads(std::path::Path::new("/proc"))),
             mem_used: mem_total.saturating_sub(avail),
             mem_total,
             disk_used,
@@ -258,6 +274,33 @@ impl HostCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn load1_host_vs_container() {
+        // 宿主机：total 与可见线程数相当
+        assert_eq!(parse_load1("0.52 0.58 0.59 3/1323 4242
+", 1310), Some(0.52));
+        // LXC 容器：loadavg 是宿主机的（1323 个线程），容器里只看得到 40 个
+        assert_eq!(parse_load1("0.52 0.58 0.59 3/1323 4242
+", 40), None);
+        // 很小的系统：+10 的余量
+        assert_eq!(parse_load1("0.01 0.02 0.00 1/30 99", 12), Some(0.01));
+        assert_eq!(parse_load1("", 40), None);
+        assert_eq!(parse_load1("0.5 0.5 0.5", 40), None);
+    }
+
+    #[test]
+    fn count_visible_threads() {
+        // 假 /proc：两个进程（1 个、3 个线程），非数字目录与没有 task 的条目不算
+        let root = std::env::temp_dir().join(format!("fleet-proc-{}", std::process::id()));
+        for d in ["1/task/1", "77/task/77", "77/task/78", "77/task/79", "self/task/1", "sys/kernel", "123"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        let n = visible_threads(&root);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(n, 4);
+        assert_eq!(parse_load1("0.1 0.1 0.1 1/4 77", n), Some(0.1));
+    }
 
     #[test]
     fn cpu_delta() {

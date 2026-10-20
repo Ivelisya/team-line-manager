@@ -33,7 +33,7 @@ pnpm smoke         # tools/smoke.mjs：退役确认流程、批量上架（粘�
 src/
   main.tsx, App.tsx          入口、路由（/ /nodes /relays /provision /jobs[/:id] /catalog /incidents /login）
   styles/                    tokens.css（原版 token）、theme.css（shadcn 主题变量 → token）、base（外壳）、components、cards（subgrid 卡片）、table、pages
-  lib/                       api.ts（fetch 封装）、queries.ts（查询与写操作 hook）、stream.ts（实时流 WebSocket）、live.ts（metrics 写缓存 + useLiveSeries）、
+  lib/                       api.ts（fetch 封装）、queries.ts（查询与写操作 hook）、stream.ts（实时流 WebSocket）、live.ts（metrics 写缓存 + 实时迹线 useLiveSeries）、
                              derive.ts（卡片/表格数据推导）、format.ts、sort.ts（默认排序）、drawer.ts（?m= 抽屉）、theme.ts
   components/ui/             shadcn 风格基础组件：button form select dialog(+Sheet) overlays(tabs/menu/tooltip/popover/Segmented) chart toast
   components/app/            唯一实现的业务组件：primitives（Pill/Chip/KpiTile/LabelValue/SectionHeader/Panel/Meter/Beat…）、

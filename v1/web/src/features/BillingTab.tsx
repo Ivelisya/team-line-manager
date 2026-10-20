@@ -48,8 +48,8 @@ export function BillingTab({ m }: { m: MachineView }) {
           <SectionHeader title="续费记录" />
           {renewals.data?.length ? (
             <div className="table-wrap" style={{ border: '1px solid var(--line)', borderRadius: 'var(--r-float)' }}>
-              <table className="dt is-one" style={{ minWidth: 420 }}>
-                <colgroup><col style={{ width: 120 }} /><col style={{ width: 120 }} /><col style={{ width: 90 }} /><col /></colgroup>
+              <table className="dt is-one" style={{ minWidth: 520 }}>
+                <colgroup><col style={{ width: 136 }} /><col style={{ width: 200 }} /><col style={{ width: 90 }} /><col /></colgroup>
                 <thead><tr><th>登记时间</th><th>到期日</th><th className="r">金额</th><th>备注</th></tr></thead>
                 <tbody>{renewals.data.map((r) => (
                   <tr key={r.id}><td>{F.dt(r.created_at)}</td><td>{r.old_due ?? '—'} → {r.new_due}</td><td className="r">{F.money(r.amount_cents, s.currency)}</td><td>{r.note ?? ''}</td></tr>

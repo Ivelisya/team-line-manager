@@ -3,6 +3,7 @@
 
 import type { EntryView, Job, JobLog, MachineView, ProvisionCheckItem, ProvisionItem, SeriesPoint } from '@/lib/types';
 import { displayName } from '@/lib/format';
+import { liveRate } from '@/lib/derive';
 import { buildDb, hashStr, rng, type Db } from './fixtures';
 import { installAccessMock } from './access';
 import { installPolicyMock } from './policy';
@@ -85,7 +86,8 @@ function overview() {
     due_7d: live.filter((m) => m.subscription && m.subscription.due_days <= 7).length,
     monthly_cost: Object.entries(live.reduce<Record<string, number>>((acc, m) => { if (m.subscription) acc[m.subscription.currency] = (acc[m.subscription.currency] ?? 0) + Math.round(monthly(m.subscription.price_cents, m.subscription.cycle)); return acc; }, {})).map(([currency, cents]) => ({ currency, cents })),
     traffic_month: { up, down },
-    net_rx_bps: live.reduce((s, m) => s + (m.host?.net_rx_bps ?? 0), 0), net_tx_bps: live.reduce((s, m) => s + (m.host?.net_tx_bps ?? 0), 0),
+    // 实时速率只算数据没过期的（同 liveRate）
+    net_rx_bps: live.reduce((s, m) => s + (liveRate(m)?.rx ?? 0), 0), net_tx_bps: live.reduce((s, m) => s + (liveRate(m)?.tx ?? 0), 0),
   };
 }
 
@@ -660,11 +662,11 @@ function jitter() {
   for (const m of db.machines) if (m.host && m.lifecycle === 'active' && m.health.status !== 'down') {
     const h = m.host; const f = () => 0.85 + Math.random() * 0.3;
     h.cpu_pct = Math.max(1, Math.min(99, (h.cpu_pct ?? 10) * f())); h.net_rx_bps = Math.round((h.net_rx_bps ?? 1e6) * f()); h.net_tx_bps = Math.round((h.net_tx_bps ?? 1e6) * f()); h.ts = iso(now * 1000);
-    h.load1 = +((h.cpu_pct ?? 0) / 40).toFixed(2);
+    if (h.load1 != null) h.load1 = +((h.cpu_pct ?? 0) / 40).toFixed(2);
     if (m.agent) m.agent.last_report_at = h.ts;
     machines[m.id] = { host: [now, h.cpu_pct, h.load1, h.mem_used, h.mem_total, h.disk_used, h.disk_total, h.net_rx_bps, h.net_tx_bps, h.tcp_conns], seen: now };
   }
-  emit({ type: 'metrics', machines, entries: {} });
+  emit({ type: 'metrics', machines, entries: {}, overview: overview() });
 }
 
 export function installMock() {

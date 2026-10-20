@@ -1,6 +1,6 @@
 // 节点卡片：一套外壳、三种密度（大 / 小 / 紧凑）。每种密度的“槽位”固定（大 10 / 小 7 / 紧凑 6），
 // 无论机器是主机、家宽代理还是线路机，同一个槽位都渲染同样高度的内容或占位——配合 cards.css 的 subgrid，同一行的卡片分段永远对齐。
-// 视觉语言：资源用分段格条（每个指标一个颜色），实时速率是大号读数 + 点阵迹线（客户端环形缓冲，见 lib/traces），
+// 视觉语言：资源用分段格条（每个指标一个颜色），实时速率是大号读数 + 点阵迹线（实时流喂的环形缓冲，见 lib/live），
 // 剩余流量也是格条（绿→黄→红），心跳条同属“格子”语言。迹线与流量可点，直接打开抽屉的“主机 / 流量”页签看历史曲线。
 import { memo } from 'react';
 import { m as mo } from 'motion/react'; // 别名：组件里的 props 叫 m（机器）
@@ -8,9 +8,9 @@ import { SPRING } from '@/lib/motion';
 import { ArrowDown, ArrowUp, Calendar, CircleDollarSign, Cpu, Database, Gauge, Globe, HardDrive, MemoryStick, MoreHorizontal, Radar, RefreshCw, Settings2, PanelRightOpen, ServerOff, Wallet } from 'lucide-react';
 import type { MachineView, Plan } from '@/lib/types';
 import * as F from '@/lib/format';
-import { beatCells, entryText, hasHost, isQuiet, monthTraffic, probeSummary, quota, remainingValue, resourceMeters, subLabel, tagColor } from '@/lib/derive';
+import { beatCells, entryText, hasHost, isQuiet, liveRate, monthTraffic, probeSummary, quota, remainingValue, resourceMeters, subLabel, tagColor } from '@/lib/derive';
 import { useSeries } from '@/lib/queries';
-import { useTrace } from '@/lib/traces';
+import { useLiveSeries } from '@/lib/live';
 import { type DrawerTab } from '@/lib/drawer';
 import { useInView } from '@/lib/useInView';
 import { KIND_LABEL } from '@/lib/sort';
@@ -60,7 +60,7 @@ function Meters({ m, plans, compact }: { m: MachineView; plans: Plan[]; compact?
       <CellMeter metric="cpu" icon={<Cpu />} label="CPU" value={r.cpu.value} pct={r.cpu.pct} sub={compact ? undefined : r.cpu.sub} empty={quiet} />
       <CellMeter metric="mem" icon={<MemoryStick />} label="内存" value={r.mem.value} pct={r.mem.pct} sub={compact ? undefined : r.mem.sub} empty={quiet} />
       <CellMeter metric="disk" icon={<HardDrive />} label="磁盘" value={r.disk.value} pct={r.disk.pct} sub={compact ? undefined : r.disk.sub} empty={quiet} />
-      <CellMeter metric="load" icon={<Gauge />} label="负载" value={r.load.value} pct={r.load.pct} sub={compact ? undefined : r.load.sub} empty={quiet} />
+      <CellMeter metric="load" icon={<Gauge />} label="负载" value={r.load.value} pct={r.load.pct} sub={compact ? undefined : r.load.sub} empty={quiet} title={r.load.hint} />
     </div>
   );
 }
@@ -88,12 +88,12 @@ function FlowCol({ dir, rate, values, total, live, onOpen }: { dir: 'up' | 'down
 }
 
 function Flow({ m, onOpen, totals }: { m: MachineView; onOpen: Open; totals?: boolean }) {
-  const tr = useTrace(m.id);
-  const h = m.host!; const t = monthTraffic(m); const live = !isQuiet(m);
+  const tr = useLiveSeries(m.id);
+  const r = liveRate(m); const t = monthTraffic(m);
   return (
     <div className="flow">
-      <FlowCol dir="up" rate={h.net_tx_bps} values={tr.map((p) => p.tx)} total={totals ? t.up : undefined} live={live} onOpen={onOpen} />
-      <FlowCol dir="down" rate={h.net_rx_bps} values={tr.map((p) => p.rx)} total={totals ? t.down : undefined} live={live} onOpen={onOpen} />
+      <FlowCol dir="up" rate={r?.tx ?? null} values={tr.map((p) => p.tx)} total={totals ? t.up : undefined} live={r != null} onOpen={onOpen} />
+      <FlowCol dir="down" rate={r?.rx ?? null} values={tr.map((p) => p.rx)} total={totals ? t.down : undefined} live={r != null} onOpen={onOpen} />
     </div>
   );
 }
@@ -123,7 +123,7 @@ function FlowRow({ m }: { m: MachineView }) {
   );
 }
 
-/** 剩余流量：标题 + 剩余量，右侧已用 / 上限，下面绿→黄→红的格条；点击打开流量页签 */
+/** 剩余流量：标题 + 剩余量，右侧已用 / 上限，下面绿→黄→红的格条（不限额度不画）；点击打开流量页签 */
 function QuotaSlot({ m, onOpen }: { m: MachineView; onOpen: Open }) {
   const q = quota(m); const used = F.bytes(q.used);
   return (
@@ -134,7 +134,7 @@ function QuotaSlot({ m, onOpen }: { m: MachineView; onOpen: Open }) {
         </span>
         <span className="nc-quse">已用 <span className="num">{used.v} {used.u}</span>{q.limit > 0 && <> / <Num f={F.gb(q.limit)} /></>}</span>
       </span>
-      <Cells pct={q.pct} colors={QUOTA_COLORS} />
+      {q.rem != null && <Cells pct={q.pct} colors={QUOTA_COLORS} />}
     </button>
   );
 }

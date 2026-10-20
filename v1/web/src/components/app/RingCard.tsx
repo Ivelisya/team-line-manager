@@ -5,7 +5,7 @@ import { ArrowDown, ArrowUp } from 'lucide-react';
 import type { MachineView, Plan } from '@/lib/types';
 import type { DrawerTab } from '@/lib/drawer';
 import * as F from '@/lib/format';
-import { isQuiet, resourceMeters } from '@/lib/derive';
+import { isQuiet, liveRate, resourceMeters } from '@/lib/derive';
 import { cn } from '@/lib/utils';
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from '@/components/ui/context-menu';
 import { HealthPill, KindIcon, Num } from './primitives';
@@ -16,7 +16,7 @@ import { Ring } from './viz';
 function RingCardImpl({ m, plans, current, onOpen }: { m: MachineView; plans: Plan[]; current?: boolean; onOpen: (id: string, tab?: DrawerTab) => void }) {
   const r = resourceMeters(m, plans);
   const quiet = isQuiet(m);
-  const h = m.host;
+  const h = m.host; const lr = liveRate(m);
   const ring = (metric: 'cpu' | 'mem' | 'disk', label: string, v: { value: F.Fmt; pct: number | null } | undefined) => (
     <div className="rc-gauge">
       <Ring metric={metric} pct={quiet ? null : v?.pct ?? null}><b className="num">{v && !quiet ? v.value.v : '—'}</b>{v && !quiet && v.value.u && <small>{v.value.u}</small>}</Ring>
@@ -24,7 +24,7 @@ function RingCardImpl({ m, plans, current, onOpen }: { m: MachineView; plans: Pl
     </div>
   );
   const rate = (dir: 'up' | 'down', bps: number | null | undefined) => (
-    <span className="rc-rate" data-speed={quiet ? undefined : F.speedOf(bps)}>{dir === 'up' ? <><ArrowUp /><small>上行</small></> : <><ArrowDown /><small>下行</small></>}<Num f={F.rate(bps)} /></span>
+    <span className="rc-rate" data-speed={lr ? F.speedOf(bps) : undefined}>{dir === 'up' ? <><ArrowUp /><small>上行</small></> : <><ArrowDown /><small>下行</small></>}<Num f={F.rate(bps)} /></span>
   );
   return (
     <ContextMenu>
@@ -39,7 +39,7 @@ function RingCardImpl({ m, plans, current, onOpen }: { m: MachineView; plans: Pl
             {ring('cpu', 'CPU', r?.cpu)}{ring('mem', '内存', r?.mem)}{ring('disk', '磁盘', r?.disk)}
           </button>
           <footer className="rc-foot">
-            {h ? <>{rate('up', h.net_tx_bps)}{rate('down', h.net_rx_bps)}</> : <span className="t-muted">{m.kind === 'proxy' ? '家宽代理没有主机指标' : '暂无主机指标'}</span>}
+            {h ? <>{rate('up', lr?.tx)}{rate('down', lr?.rx)}</> : <span className="t-muted">{m.kind === 'proxy' ? '家宽代理没有主机指标' : '暂无主机指标'}</span>}
           </footer>
         </article>
       </ContextMenuTrigger>

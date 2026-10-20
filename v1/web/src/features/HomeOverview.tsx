@@ -1,12 +1,12 @@
 // 首页上半部分：大圆角浅灰分区（HomeSection）+「监控总览」——问候与一句话状态、8 张 KPI 卡、集群状态面板。
-// 集群状态：在线率大读数 + 格条、在线/离线/总计、状态胶囊；实时总带宽 + 上行 / 下行两张小折线（全站速率的客户端环形缓冲，见 lib/traces）。
+// 集群状态：在线率大读数 + 格条、在线/离线/总计、状态胶囊；实时总带宽 + 上行 / 下行两张小折线（实时流喂的全站速率环形缓冲，见 lib/live）。
 import * as React from 'react';
 import { Link } from 'react-router-dom';
 import { Activity, AlertTriangle, ArrowDown, ArrowUp, CalendarClock, CircleDollarSign, CloudUpload, Gauge, LayoutDashboard, Server, TrendingUp, Waypoints } from 'lucide-react';
 import type { Overview } from '@/lib/types';
 import * as F from '@/lib/format';
 import { useMe } from '@/lib/queries';
-import { FLEET, useTrace } from '@/lib/traces';
+import { FLEET, useLiveSeries } from '@/lib/live';
 import { cn } from '@/lib/utils';
 import { CountUp, DotCount, Num } from '@/components/app/primitives';
 import { AreaSpark, Cells } from '@/components/app/viz';
@@ -81,7 +81,7 @@ export function OverviewSection({ o, loading }: { o: Overview | undefined; loadi
 
 const ONLINE_N = 24;
 function ClusterPanel({ o }: { o: Overview | undefined }) {
-  const trace = useTrace(FLEET);
+  const trace = useLiveSeries(FLEET);
   const sum = (k: keyof Overview['nodes']) => (o ? o.nodes[k] + o.relays[k] : 0);
   const total = sum('total'); const down = sum('down'); const unknown = sum('unknown'); const degraded = sum('degraded');
   const offline = down + unknown; const online = total - offline;

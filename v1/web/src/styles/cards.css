@@ -204,7 +204,7 @@
 .tmeter, .tquota { display: flex; align-items: center; gap: var(--sp-8); min-width: 0; }
 .tmeter .cells, .tquota .cells { flex: 1 1 auto; height: 6px; gap: 2px; }
 .tmeter > .num { flex: none; width: 34px; text-align: right; font-size: var(--fs-label); }
-.tquota > .num, .tquota > .t-sub { flex: none; min-width: 52px; text-align: right; font-size: var(--fs-label); }
+.tquota > .num, .tquota > .t-sub { flex: none; min-width: 52px; margin-left: auto; text-align: right; font-size: var(--fs-label); }
 .trate { font-weight: var(--fw-semibold); color: var(--spd, var(--fg-3)); }
 .tdue { font-weight: var(--fw-semibold); }
 .tdue.is-warn { color: var(--warn-text); }
@@ -212,3 +212,10 @@
 .dt tr.is-quiet td { color: var(--fg-2); }
 .dt tr.is-quiet .cells { opacity: 0.45; }
 .rc-rate small { margin-right: 2px; font: var(--fw-semibold) 11px / 1 var(--font-sans); letter-spacing: 0; color: var(--fg-2); }
+/* 窄环形卡（一行 5 张左右）：方向标签放到读数上面，读数单独一行，单位不再顶到卡片边 */
+.rc-foot { container-type: inline-size; }
+@container (max-width: 228px) {
+  .rc-rate { display: grid; grid-template-columns: auto 1fr; row-gap: 2px; }
+  .rc-rate > .num { grid-column: 1 / -1; }
+  .rc-rate + .rc-rate { grid-template-columns: 1fr auto; justify-items: end; }
+}

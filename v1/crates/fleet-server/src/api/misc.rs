@@ -71,7 +71,9 @@ pub fn overview_of(ms: &[views::MachineView]) -> Value {
             up += m.removed_traffic.month_up;
             down += m.removed_traffic.month_down;
         }
-        if let Some(h) = &m.host {
+        // 实时速率只算数据没过期的：故障或 agent 离线的机器，最后一份上报的速率不算（同前端 liveRate）
+        let stale = m.health.status == Status::Down || m.agent.as_ref().is_some_and(|a| !a.online);
+        if let Some(h) = m.host.as_ref().filter(|_| !stale) {
             rx += h.net_rx_bps.unwrap_or(0.0);
             tx += h.net_tx_bps.unwrap_or(0.0);
         }

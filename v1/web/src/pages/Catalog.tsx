@@ -150,7 +150,7 @@ function ProvidersTab() {
       <Panel title="供应商" count={list.length} tools={<Button variant="primary" onClick={() => setEdit('new')}><Plus />新增供应商</Button>} flush>
         <div className="table-wrap">
           <table className="dt is-one" style={{ minWidth: 640 }}>
-            <colgroup><col style={{ width: 180 }} /><col style={{ width: 90 }} /><col style={{ width: 180 }} /><col /><col style={{ width: 90 }} /></colgroup>
+            <colgroup><col style={{ width: 180 }} /><col style={{ width: 90 }} /><col style={{ width: 180 }} /><col /><col style={{ width: 112 }} /></colgroup>
             <thead><tr><th>名称</th><th>代码</th><th>时区</th><th>面板</th><th /></tr></thead>
             <tbody>{list.map((p) => (
               <tr key={p.id}><td className="strong">{p.name}</td><td><Chip>{p.code}</Chip></td><td>{p.timezone ?? '—'}</td>

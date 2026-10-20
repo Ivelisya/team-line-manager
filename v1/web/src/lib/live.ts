@@ -1,9 +1,10 @@
 // 实时指标：实时流的 metrics 消息（服务端最多每 3 s 一条，只带变了的字段）直接写进机器类查询缓存，不重取；
-// 同时给每台机器攒最近 60 个网卡读数（≈10 分钟，agent 每 10 s 一报），卡片迷你曲线用 useLiveSeries。
+// 同时攒实时迹线（每台机器、全站各最近 30 个速率点），卡片点阵与集群状态折线用 useLiveSeries。
 // 消息形状见 docs/API.md「实时流」：host、tcp/egress 是定长数组（时间为 Unix 秒），其余字段与 REST 同形。
 import { useSyncExternalStore } from 'react';
 import type { QueryClient } from '@tanstack/react-query';
 import type { EntryView, HostMetrics, MachineView, Overview, ProbeResult } from './types';
+import { isQuiet } from './derive';
 
 type N = number | null;
 /** [ts, cpu_pct, load1, mem_used, mem_total, disk_used, disk_total, net_rx_bps, net_tx_bps, tcp_conns] */
@@ -46,6 +47,8 @@ function patchMachine(m: MachineView, msg: MetricsMsg): MachineView {
   if (d.maintenance !== undefined) n.maintenance = d.maintenance;
   if (d.due_days != null && m.subscription) n.subscription = { ...m.subscription, due_days: d.due_days };
   if (d.removed_traffic) n.removed_traffic = d.removed_traffic;
+  const h = d.host;
+  if (h && h[7] != null && h[8] != null && !isQuiet(n)) record(m.id, { t: h[0] * 1000, rx: h[7], tx: h[8] });
   return n;
 }
 
@@ -61,32 +64,34 @@ export function applyMetrics(qc: QueryClient, msg: MetricsMsg) {
   qc.setQueriesData<MachineView[]>({ queryKey: ['machines'] }, list);
   qc.setQueriesData<MachineView[]>({ queryKey: ['relays'] }, list);
   qc.setQueriesData<MachineView>({ queryKey: ['machine'] }, (m) => m && patchMachine(m, msg));
-  if (msg.overview) qc.setQueryData(['overview'], msg.overview);
-  pushSeries(msg);
+  if (msg.overview) {
+    qc.setQueryData(['overview'], msg.overview);
+    record(FLEET, { t: Date.now(), rx: msg.overview.net_rx_bps, tx: msg.overview.net_tx_bps });
+  }
+  if (dirty) { dirty = false; subs.forEach((f) => f()); }
 }
 
-// ---- 每台机器最近的网卡读数 ----
-export interface LivePoint { t: number; rx: N; tx: N }
-const SERIES_N = 60;
+// ---- 实时迹线：每台机器的网卡速率、全站总速率（FLEET），各留最近 SERIES_N 个点 ----
+// 只由 metrics 消息喂：机器按上报时间（同一份上报在几份缓存里各 patch 一次，只记一次），总览按收到的时刻。
+// 数据过期（isQuiet）的机器不记；页面在后台时不写缓存也就不记，所以可能有断档。
+export interface LivePoint { t: number; rx: number; tx: number }
+export const SERIES_N = 30;
+/** 全站总速率在迹线里的键 */
+export const FLEET = '*';
 const EMPTY: readonly LivePoint[] = [];
 const series = new Map<string, readonly LivePoint[]>();
 const subs = new Set<() => void>();
 const subscribe = (f: () => void) => { subs.add(f); return () => { subs.delete(f); }; };
+let dirty = false;
 
-function pushSeries(msg: MetricsMsg) {
-  let changed = false;
-  for (const [id, d] of Object.entries(msg.machines)) {
-    if (!d.host) continue;
-    const t = d.host[0] * 1000;
-    const buf = series.get(id) ?? EMPTY;
-    if (buf.length && buf[buf.length - 1].t >= t) continue;
-    series.set(id, [...buf.slice(-(SERIES_N - 1)), { t, rx: d.host[7], tx: d.host[8] }]);
-    changed = true;
-  }
-  if (changed) subs.forEach((f) => f());
+function record(key: string, p: LivePoint) {
+  const buf = series.get(key) ?? EMPTY;
+  if (buf.length && buf[buf.length - 1].t >= p.t) return;
+  series.set(key, [...buf.slice(-(SERIES_N - 1)), p]); // 新数组：订阅者按引用判断变化
+  dirty = true;
 }
 
-/** 这台机器连上实时流以来最近 60 个网卡读数（时间升序，t 为毫秒）；页面在后台时不攒，所以可能有断档 */
-export function useLiveSeries(id: string | null): readonly LivePoint[] {
-  return useSyncExternalStore(subscribe, () => (id && series.get(id)) || EMPTY, () => EMPTY);
+/** 某台机器（或 FLEET）最近的速率点（时间升序，t 为毫秒） */
+export function useLiveSeries(key: string): readonly LivePoint[] {
+  return useSyncExternalStore(subscribe, () => series.get(key) ?? EMPTY, () => EMPTY);
 }
