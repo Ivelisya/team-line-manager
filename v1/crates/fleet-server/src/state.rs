@@ -1,12 +1,14 @@
 use crate::config::Config;
 use crate::crypto::SecretBox;
+use axum::extract::ws::Utf8Bytes;
 use serde::Serialize;
 use sqlx::PgPool;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-/// 推给浏览器（SSE）的资源变更通知。前端收到后让对应查询失效重取。
+/// 推给浏览器（WebSocket）的消息。除 `Metrics` 外都是资源变更通知，前端收到后让对应查询失效重取。
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
@@ -26,6 +28,18 @@ pub enum Event {
     ApiKeys,
     /// 访问策略的草稿/版本变化
     Policies,
+    /// 实时指标（`live.rs` 拼好的整条 JSON，前端直接写进缓存；各连接共用同一份字节）；只经 `events.send` 发，不走 `emit`
+    #[serde(skip)]
+    Metrics(Utf8Bytes),
+}
+
+impl Event {
+    pub fn to_text(&self) -> Utf8Bytes {
+        match self {
+            Event::Metrics(s) => s.clone(),
+            e => serde_json::to_string(e).unwrap_or_default().into(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -43,8 +57,10 @@ pub struct Inner {
     pub ipintel: crate::ipintel::Service,
     /// 访问监控聚合结果的短 TTL 缓存
     pub access_cache: crate::access::QueryCache,
-    /// 在用机器视图的短缓存（列表、线路机、总览共用）
+    /// 在用机器视图的短缓存（列表、线路机、总览、实时指标共用）
     pub live: crate::views::LiveCache,
+    /// 有新上报、实时指标该重新比对了（`live::run_forever` 消费）
+    pub metrics_dirty: AtomicBool,
 }
 
 impl std::ops::Deref for AppState {
@@ -59,7 +75,7 @@ impl AppState {
         let ipintel = crate::ipintel::Service::new(&cfg.ipintel);
         let access_cache = crate::access::QueryCache::new(std::time::Duration::from_secs(cfg.access_cache_secs));
         let live = crate::views::LiveCache::default();
-        Self(Arc::new(Inner { cfg, db, secrets, events, relay_changed, ipintel, access_cache, live }))
+        Self(Arc::new(Inner { cfg, db, secrets, events, relay_changed, ipintel, access_cache, live, metrics_dirty: AtomicBool::new(false) }))
     }
 
     pub fn emit(&self, e: Event) {

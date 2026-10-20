@@ -1,2 +1,5 @@
 allowBuilds:
   esbuild: true
+# recharts 2 自带 react-is 18，与 React 19 不配套（shadcn 图表文档的做法：钉到同版本）
+overrides:
+  recharts>react-is: 19.3.0

@@ -402,9 +402,9 @@ enum Cmd {
         /// 收到 N 条后退出
         #[arg(long)]
         count: Option<usize>,
-        /// 也显示 30 秒一次的 tick
+        /// 也显示实时指标（metrics，最多每 3 秒一条）
         #[arg(long)]
-        ticks: bool,
+        metrics: bool,
     },
     /// 换线路机：把节点的入口换到另一台线路机（新入口验收后才摘旧入口，不断网；分享链接会变）
     Move {
@@ -421,7 +421,7 @@ enum Cmd {
         #[arg(long)]
         follow: bool,
     },
-    /// 搬空线路机：为它上面每个在用入口的节点各建一个换线路机作业（线路机下线前用）
+    /// 搬空线路机：为它上面每个在用入口的节点各建一个换线路机作业（线路机退役前用）
     Evacuate {
         /// 要搬空的线路机
         relay: String,
@@ -578,7 +578,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             PolicyCmd::Versions => policy::versions(x),
             PolicyCmd::Rollback { version, yes } => policy::rollback(x, &version, yes),
         },
-        Cmd::Watch { count, ticks } => cmds::watch(x, count, ticks),
+        Cmd::Watch { count, metrics } => cmds::watch(x, count, metrics),
         Cmd::Move { node, to, from, yes, follow } => lifecycle::mv(x, &node, &to, from.as_deref(), yes, follow),
         Cmd::Evacuate { relay, to, yes, follow } => lifecycle::evacuate(x, &relay, &to, yes, follow),
         Cmd::Restore { machine, team, number, relay, label, upstream, ss_port, password_env, reason, reset_host_key, yes, follow } => lifecycle::restore(

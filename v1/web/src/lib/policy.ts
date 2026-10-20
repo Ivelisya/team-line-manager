@@ -2,7 +2,6 @@
 // 编辑只改草稿（乐观锁 revision）；预览返回 draft_hash，发布 / 丢弃必须带上且一致。
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { get, post, put } from './api';
-import { usePoll } from './streamState';
 
 export type PolicyMode = 'observe' | 'allowlist' | 'denylist' | 'blocked' | 'inherit';
 export type EffectiveMode = Exclude<PolicyMode, 'inherit'>;
@@ -54,19 +53,13 @@ export interface PolicyVersion {
   is_latest: boolean; is_current: boolean; rollbackable: boolean;
 }
 
-export const usePolicies = () => {
-  const poll = usePoll(30_000);
-  return useQuery({ queryKey: ['policies', 'list'], queryFn: () => get<PolicyList>('/policies'), refetchInterval: poll });
-};
+export const usePolicies = () => useQuery({ queryKey: ['policies', 'list'], queryFn: () => get<PolicyList>('/policies') });
 
 /** 发布记录：有进行中的版本时 3 秒轮询一次（线路机回报应用结果不会触发实时事件） */
-export const usePolicyVersions = () => {
-  const poll = usePoll(30_000);
-  return useQuery({
-    queryKey: ['policies', 'versions'], queryFn: () => get<PolicyVersion[]>('/policies/versions'),
-    refetchInterval: (q) => (q.state.data?.some((v) => v.status === 'applying') ? 3000 : poll),
-  });
-};
+export const usePolicyVersions = () => useQuery({
+  queryKey: ['policies', 'versions'], queryFn: () => get<PolicyVersion[]>('/policies/versions'),
+  refetchInterval: (q) => (q.state.data?.some((v) => v.status === 'applying') ? 3000 : false),
+});
 
 /** 预览是 POST 但没有副作用：对话框打开时取一次，每次打开都重新算 */
 export const usePolicyPreview = (open: boolean) =>

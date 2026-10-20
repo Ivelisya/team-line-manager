@@ -5,9 +5,17 @@ use reqwest::blocking::{Client as Http, RequestBuilder, Response};
 use reqwest::Method;
 use serde_json::{json, Value};
 use std::fmt;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
+use tungstenite::client::IntoClientRequest;
+use tungstenite::http::HeaderValue;
+use tungstenite::handshake::HandshakeError;
+use tungstenite::stream::MaybeTlsStream;
+use tungstenite::WebSocket;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+/// 实时流建连 + 握手的超时（各自计）
+const WS_CONNECT: Duration = Duration::from_secs(10);
 
 #[derive(Debug)]
 pub struct ApiError {
@@ -98,15 +106,45 @@ impl Client {
             .ok_or_else(|| anyhow!("登录成功但没有拿到会话 Cookie"))
     }
 
-    /// 长连接（SSE）：不设整体超时
-    pub fn stream(&self, path: &str) -> anyhow::Result<Response> {
-        let res = self
-            .builder(Method::GET, path)
-            .header("accept", "text/event-stream")
-            .timeout(Duration::from_secs(60 * 60 * 24))
-            .send()
-            .map_err(|e| anyhow!("连不上中控 {}：{e}", self.base))?;
-        Self::check(res)
+    /// 实时流 WebSocket。建连、握手各 10 s 超时；服务端每 15 s 发 ping（读的时候自动回 pong），读超时 45 s 当连接已死。
+    /// 不走 HTTPS_PROXY（REST 请求走）
+    pub fn ws(&self, path: &str) -> anyhow::Result<WebSocket<MaybeTlsStream<TcpStream>>> {
+        let url = format!("{}/api/v1{path}", self.base.replacen("http", "ws", 1));
+        let mut req = url.as_str().into_client_request()?;
+        let h = req.headers_mut();
+        h.insert("user-agent", HeaderValue::from_static(concat!("fleetctl/", env!("CARGO_PKG_VERSION"))));
+        match &self.cred {
+            Cred::Bearer(t) => {
+                h.insert("authorization", HeaderValue::from_str(&format!("Bearer {t}"))?);
+            }
+            Cred::Cookie(c) => {
+                h.insert("cookie", HeaderValue::from_str(c)?);
+            }
+            Cred::None => {}
+        }
+        let fail = |e: &dyn fmt::Display| anyhow!("连不上中控 {}：{e}", self.base);
+        let uri = req.uri();
+        let host = uri.host().ok_or_else(|| anyhow!("中控地址缺主机名：{url}"))?.trim_matches(['[', ']']).to_string();
+        let port = uri.port_u16().unwrap_or(if uri.scheme_str() == Some("wss") { 443 } else { 80 });
+        let mut err = std::io::Error::other("域名没有解析出地址");
+        let tcp = (host.as_str(), port)
+            .to_socket_addrs()
+            .map_err(|e| fail(&e))?
+            .find_map(|a| TcpStream::connect_timeout(&a, WS_CONNECT).map_err(|e| err = e).ok())
+            .ok_or_else(|| fail(&err))?;
+        tcp.set_read_timeout(Some(WS_CONNECT))?;
+        tcp.set_write_timeout(Some(WS_CONNECT))?;
+        let (ws, _) = tungstenite::client_tls(req, tcp).map_err(|e| match e {
+            HandshakeError::Failure(tungstenite::Error::Http(r)) => anyhow::Error::from(api_error(r.status().as_u16(), &String::from_utf8_lossy(r.body().as_deref().unwrap_or_default()))),
+            e => fail(&e),
+        })?;
+        let tcp = match ws.get_ref() {
+            MaybeTlsStream::Plain(s) => s,
+            MaybeTlsStream::Rustls(s) => s.get_ref(),
+            _ => unreachable!("只启用了 rustls"),
+        };
+        tcp.set_read_timeout(Some(Duration::from_secs(45)))?;
+        Ok(ws)
     }
 }
 

@@ -3,14 +3,17 @@ import * as React from 'react';
 import { ServerOff } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
 import type { UseQueryResult } from '@tanstack/react-query';
-import { useSeries } from '@/lib/queries';
+import { usePlans, useSeries } from '@/lib/queries';
 import * as F from '@/lib/format';
-import { hasHost, monthTraffic } from '@/lib/derive';
+import { hasHost, monthTraffic, resourceMeters } from '@/lib/derive';
 import { Segmented } from '@/components/ui/overlays';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Empty, ErrorNote, LabelValue, LabelValueGrid, Num, Section, SectionHeader } from '@/components/app/primitives';
 import { RANGES, TimeChart } from '@/components/app/TimeChart';
 import { EntriesTable } from './EntriesTable';
+
+/** 抽屉开着时曲线每 30 秒重取（实时流只推当前读数，不推曲线） */
+const POLL = 30_000;
 
 function RangeBar({ range, setRange }: { range: string; setRange: (r: string) => void }) {
   return <Segmented sm label="时间范围" value={range} onChange={setRange} items={RANGES.map((r) => ({ value: r.value, label: r.label }))} />;
@@ -25,7 +28,7 @@ function ChartFrame({ q, height = 180, children }: { q: UseQueryResult<unknown>;
 
 export function QualityTab({ m }: { m: MachineView }) {
   const [range, setRange] = React.useState('6h');
-  const s = useSeries(m.id, 'probe', range);
+  const s = useSeries(m.id, 'probe', range, true, POLL);
   return (
     <>
       <Section>
@@ -47,7 +50,7 @@ export function QualityTab({ m }: { m: MachineView }) {
 
 export function TrafficTab({ m }: { m: MachineView }) {
   const [range, setRange] = React.useState('24h');
-  const s = useSeries(m.id, 'traffic', range);
+  const s = useSeries(m.id, 'traffic', range, true, POLL);
   const t = monthTraffic(m);
   return (
     <>
@@ -79,9 +82,11 @@ export function TrafficTab({ m }: { m: MachineView }) {
 export function HostTab({ m }: { m: MachineView }) {
   const [range, setRange] = React.useState('6h');
   const host = hasHost(m);
-  const s = useSeries(m.id, 'host', range, host);
+  const s = useSeries(m.id, 'host', range, host, POLL);
+  const plans = usePlans().data ?? [];
   if (!host) return <Empty icon={<ServerOff size={22} />} text={m.kind === 'proxy' ? '家宽代理没有主机，不采集 CPU / 内存 / 磁盘 / 网卡指标。' : '暂时没有主机指标'} />;
   const h = m.host!;
+  const load = resourceMeters(m, plans)!.load;
   const pct = (v: number) => `${Math.round(v)}%`;
   return (
     <>
@@ -91,7 +96,7 @@ export function HostTab({ m }: { m: MachineView }) {
           <LabelValue label="CPU"><Num f={F.pct(h.cpu_pct, 1)} /></LabelValue>
           <LabelValue label="内存"><Num f={F.bytes(h.mem_used)} /> <span className="t-sub">/ <Num f={F.bytes(h.mem_total)} /></span></LabelValue>
           <LabelValue label="磁盘"><Num f={F.bytes(h.disk_used)} /> <span className="t-sub">/ <Num f={F.bytes(h.disk_total)} /></span></LabelValue>
-          <LabelValue label="负载 1 分钟"><span className="num">{h.load1 == null ? '—' : h.load1.toFixed(2)}</span></LabelValue>
+          <LabelValue label="负载"><Num f={load.value} /> <span className="t-sub">{load.sub}</span></LabelValue>
           <LabelValue label="TCP 连接数"><span className="num">{h.tcp_conns ?? '—'}</span></LabelValue>
           <LabelValue label="网卡 ↓ / ↑"><Num f={F.rate(h.net_rx_bps)} /> <span className="t-sub">/</span> <Num f={F.rate(h.net_tx_bps)} /></LabelValue>
         </LabelValueGrid>

@@ -56,8 +56,11 @@ pub struct PatchIn {
     number: Option<i32>,
     label: Option<String>,
     note: Option<String>,
+    #[serde(default, deserialize_with = "super::some")]
     provider_id: Option<Option<Uuid>>,
+    #[serde(default, deserialize_with = "super::some")]
     plan_id: Option<Option<Uuid>>,
+    #[serde(default, deserialize_with = "super::some")]
     service_ref: Option<Option<String>>,
 }
 
@@ -243,7 +246,7 @@ pub async fn retire(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, 
         .fetch_one(&mut *tx)
         .await?;
         if n > 0 {
-            return Err(ApiError::conflict(format!("这台线路机上还有 {n} 个节点入口：先把节点迁走或下线。可先用「搬空线路机」把节点换到其他线路机")));
+            return Err(ApiError::conflict(format!("这台线路机上还有 {n} 个节点入口：先把节点迁走或退役。可先用「搬空线路机」把节点换到其他线路机")));
         }
     }
     let n = sqlx::query(

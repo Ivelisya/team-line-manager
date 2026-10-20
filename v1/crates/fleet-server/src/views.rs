@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
-    /// 未退役（含上架中、下线中）
+    /// 未退役（含上架中、退役中）
     Live,
     Retired,
     All,
@@ -52,6 +52,8 @@ pub struct Agent {
     pub online: bool,
     /// agent 最近一次报告的 Xray 是否在运行（仅线路机；没报过为 None）
     pub xray_running: Option<bool>,
+    /// agent 报的可用核数（容器里是限额）；没报过为 None
+    pub cores: Option<i32>,
 }
 
 /// 最近 5 分钟主机负载的「最低值」：最低值都超阈值才算持续高负载（健康判定用，不对外输出）
@@ -219,6 +221,7 @@ struct MRow {
     a_version: Option<String>,
     a_last: Option<OffsetDateTime>,
     a_xray: Option<bool>,
+    a_cores: Option<i32>,
     r_host: Option<String>,
     r_gen: Option<i64>,
     r_applied: Option<i64>,
@@ -284,7 +287,7 @@ pub async fn load_with(db: &PgPool, scope: Scope, only: Option<Uuid>, with_traff
                 m.lifecycle_reason, m.note, m.revision, m.created_at, m.activated_at, m.retired_at,
                 s.price_cents s_price, s.currency s_currency, s.cycle::text s_cycle, s.due_date s_due, s.billing_tz s_tz,
                 local_date(s.billing_tz) s_today, s.auto_renew s_auto, s.remind_days s_remind, s.traffic_gb s_traffic, s.traffic_reset_day s_reset,
-                a.agent_version a_version, a.last_report_at a_last, (a.info->'xray'->>'running')::bool a_xray,
+                a.agent_version a_version, a.last_report_at a_last, (a.info->'xray'->>'running')::bool a_xray, (a.info->>'cpu_cores')::int a_cores,
                 r.public_host r_host, r.generation r_gen, r.applied_generation r_applied, r.applied_at r_applied_at, r.generation_at r_gen_at,
                 r.apply_error r_err, r.port_min r_pmin, r.port_max r_pmax
          from machine m
@@ -539,6 +542,7 @@ pub async fn load_with(db: &PgPool, scope: Scope, only: Option<Uuid>, with_traff
                 last_report_at: r.a_last,
                 online: r.a_last.is_some_and(|t| (now - t).whole_seconds() < AGENT_OFFLINE_S),
                 xray_running: r.a_xray,
+                cores: r.a_cores,
             });
             let subscription = r.s_price.map(|price| Subscription {
                 price_cents: price,

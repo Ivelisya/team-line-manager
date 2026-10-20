@@ -39,6 +39,9 @@
 .dt-grid .gcell { width: 100%; height: 100%; box-sizing: border-box; padding: 0 var(--sp-8); border: 0; border-radius: 0; background: transparent; color: var(--fg); font: inherit; text-overflow: ellipsis; }
 .dt-grid .gcell:focus { outline: 2px solid var(--accent); outline-offset: -2px; background: var(--surface); }
 .dt-grid .gcell:disabled { background: var(--sunken); color: var(--fg-3); }
+.dt-grid .gcell-date { display: flex; align-items: center; height: 100%; }
+.dt-grid .gcell-date > .gcell { flex: 1 1 auto; min-width: 0; }
+.dt-grid .gcell-date > .icon-btn { flex: none; margin-right: var(--sp-4); }
 .dt-grid td.is-bad { box-shadow: inset 0 0 0 1px var(--bad); background: var(--bad-bg); }
 .dt-grid td.is-na { background: var(--sunken); }
 .dt-grid tr.is-row-bad td.idx { color: var(--bad-text); }

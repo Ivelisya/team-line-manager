@@ -30,7 +30,8 @@ export interface MachineView {
   lifecycle: Lifecycle; lifecycle_reason: string | null; note: string; revision: number;
   created_at: string; activated_at: string | null; retired_at: string | null;
   subscription: Subscription | null;
-  agent: { version: string | null; last_report_at: string | null; online: boolean } | null;
+  /** cores：agent 报的可用核数（容器里是限额），没报过为 null */
+  agent: { version: string | null; last_report_at: string | null; online: boolean; xray_running: boolean | null; cores: number | null } | null;
   host: HostMetrics | null;
   entries: EntryView[];
   removed_traffic: EntryTraffic; // 已移除入口（如换线路机后的旧入口）今天/本月的流量，不在 entries 里
@@ -89,6 +90,8 @@ export interface Incident {
   id: string; rule: string; subject: { id: string; name: string } | null; subject_id: string | null; subject_name: string | null;
   severity: 'info' | 'warning' | 'critical' | string; state: 'firing' | 'resolved'; summary: string;
   opened_at: string; last_seen_at: string | null; resolved_at: string | null; ack_at: string | null; ack_by: string | null;
+  /** 恢复后 30 分钟内复发、合并进这条的次数 */
+  reopen_count: number;
 }
 export interface Silence { id: string; subject_id: string | null; subject_name: string | null; rule: string | null; starts_at: string; ends_at: string; is_maintenance: boolean; comment: string }
 export interface Renewal { id: string; old_due: string | null; new_due: string; amount_cents: number | null; note: string | null; actor: string; created_at: string }

@@ -29,6 +29,22 @@ const PAGES = [
 ];
 const LIMIT = 8; // 不输入时只列前几台，输入后在全部机器里搜
 
+/** 编号去掉前导零：团队1-04 → 团队1-4，让「1-4」也能按名称命中它 */
+const unpad = (s: string) => s.replace(/\d+/g, (d) => d.replace(/^0+(?=\d)/, ''));
+const subseq = (s: string, q: string) => { const t = [...q]; let i = 0; for (const c of s) if (c === t[i]) i++; return i >= t.length; };
+/** 匹配档位（大的在前）：名称相同 > 名称前缀 > 名称包含 > 去前导零后名称包含 > IP 等其它字段包含 > 名称模糊。
+ *  模糊（子序列）只对名称：IP、UUID 里数字多，短数字串对它们做子序列几乎条条命中。
+ *  条目 value 写成「名称\t其它字段」；没有 \t 的（页面、动作）整串当名称 */
+export function matchTier(value: string, q: string): number {
+  const [name, rest = ''] = value.toLowerCase().split('\t');
+  if (name === q) return 7;
+  if (name.startsWith(q)) return 6;
+  if (name.includes(q)) return 5;
+  if (unpad(name).includes(unpad(q))) return 4;
+  if (rest.includes(q)) return 3;
+  return subseq(name, q) ? 2 : 0;
+}
+
 export default function CommandPalette({ theme }: { theme: { pref: ThemePref; setPref: (p: ThemePref) => void } }) {
   const open = useOverlay() === 'palette';
   const nav = useNavigate();
@@ -46,8 +62,16 @@ export default function CommandPalette({ theme }: { theme: { pref: ThemePref; se
 
   const pool = mode === 'evacuate' ? machines.filter((m) => m.kind === 'relay') : machines;
   const list = search.trim() || mode === 'evacuate' ? pool : pool.slice(0, LIMIT);
+  const value = (m: (typeof list)[number]) => `${m.name}\t${m.ip} ${m.team?.name ?? ''} ${KIND_LABEL[m.kind]}`;
+  // cmdk 按分数排序、同分保留上一次排完的 DOM 顺序：加一个小于档差的位次分，同档始终按默认机器顺序
+  const order = new Map(list.map((m, i) => [value(m), i]));
+  const filter = (v: string, s: string, kw?: string[]) => {
+    const t = matchTier(kw?.length ? `${v} ${kw.join(' ')}` : v, s.trim().toLowerCase());
+    const i = order.get(v);
+    return t === 0 ? 0 : t + (i === undefined ? 0 : 0.5 * (1 - i / list.length));
+  };
   const machineItems = list.map((m) => (
-    <CommandItem key={m.id} value={`${m.name} ${m.ip} ${m.team?.name ?? ''} ${KIND_LABEL[m.kind]}`} keywords={[m.id]}
+    <CommandItem key={m.id} value={value(m)} keywords={[m.id]}
       onSelect={() => { close(); if (mode === 'copy-ip') void copyText(m.ip, ' IP'); else if (mode === 'evacuate') openEvacuate(m.id); else openDrawer(m.id); }}>
       <KindIcon kind={m.kind} />
       <span className="cmd-main"><b className="ellipsis">{m.name}</b><HealthPill m={m} /></span>
@@ -58,7 +82,7 @@ export default function CommandPalette({ theme }: { theme: { pref: ThemePref; se
   return (
     <>
       <CommandDialog open={open} onOpenChange={(o) => setOverlay(o ? 'palette' : null)} title="命令面板">
-        <Command label="命令面板" loop
+        <Command label="命令面板" loop filter={filter}
           onKeyDown={(e) => { if (e.key === 'Backspace' && !search && mode !== 'root') { e.preventDefault(); setMode('root'); } }}>
           <CommandInput autoFocus value={search} onValueChange={setSearch} placeholder={mode === 'copy-ip' ? '选择要复制 IP 的机器…' : mode === 'evacuate' ? '选择要搬空的线路机…' : '搜索机器、页面或动作…'} />
           <CommandList>
@@ -67,14 +91,14 @@ export default function CommandPalette({ theme }: { theme: { pref: ThemePref; se
               <>
                 <CommandGroup heading="跳转页面">
                   {PAGES.map((p) => (
-                    <CommandItem key={p.to} value={`${p.label} ${p.kw}`} onSelect={() => go(p.to)}><p.icon /><span className="cmd-main">{p.label}</span></CommandItem>
+                    <CommandItem key={p.to} value={`${p.label}\t${p.kw}`} onSelect={() => go(p.to)}><p.icon /><span className="cmd-main">{p.label}</span></CommandItem>
                   ))}
                 </CommandGroup>
                 <CommandGroup heading="动作">
                   <CommandItem value="上架节点 provision 添加机器" onSelect={() => go('/provision')}><CloudUpload /><span className="cmd-main">上架节点</span></CommandItem>
                   <CommandItem value="新建静默 silence 维护窗口" onSelect={() => go('/incidents?silence=new')}><BellOff /><span className="cmd-main">新建静默</span></CommandItem>
                   <CommandItem value="复制某机器 IP copy ip" onSelect={() => { setSearch(''); setMode('copy-ip'); }}><Clipboard /><span className="cmd-main">复制某台机器的 IP…</span></CommandItem>
-                  <CommandItem value="搬空线路机 evacuate 换线路机 下线" onSelect={() => { setSearch(''); setMode('evacuate'); }}><PackageOpen /><span className="cmd-main">搬空线路机…</span></CommandItem>
+                  <CommandItem value="搬空线路机 evacuate 换线路机 退役 下线" onSelect={() => { setSearch(''); setMode('evacuate'); }}><PackageOpen /><span className="cmd-main">搬空线路机…</span></CommandItem>
                   <CommandItem value="升级全部 agent upgrade" onSelect={() => { close(); setAskUpgrade(true); }}><ArrowUpCircle /><span className="cmd-main">升级全部 agent</span></CommandItem>
                   <CommandItem value="切换主题 深色 浅色 theme dark light" onSelect={() => { close(); theme.setPref(dark ? 'light' : 'dark'); }}>
                     {dark ? <Sun /> : <Moon />}<span className="cmd-main">切换到{dark ? '浅色' : '深色'}主题</span>

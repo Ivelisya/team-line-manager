@@ -63,7 +63,7 @@ export function JobsPage() {
               <span className="l2"><span>{F.dt(j.created_at)}</span><span>{j.created_by}</span>{j.error && <span className="ellipsis" style={{ color: 'var(--bad-text)' }} title={j.error}>{j.error}</span>}</span>
             </div>
           ))}
-          {jobs.data && list.length === 0 && <Empty icon={<ListChecks size={22} />} text="没有作业" hint="上架、下线、升级 agent 都会在这里留下一条" />}
+          {jobs.data && list.length === 0 && <Empty icon={<ListChecks size={22} />} text="没有作业" hint="上架、退役、升级 agent 都会在这里留下一条" />}
           <Pagination pg={pg} unit="个" compact />
         </Panel>
         <div className="jobs-detail">

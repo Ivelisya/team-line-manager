@@ -3,37 +3,28 @@ import { useCallback } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { del, get, patch, post, put } from './api';
 import { makeDefaultCompare } from './sort';
-import { jobLive } from './jobs';
-import { usePoll } from './streamState';
 import type { ApiKey, Incident, Job, Paged, JobLog, MachineView, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RestoreBody, RestorePreview, MoveResult, EvacuateResult, SeriesResp, Silence, Team, AuditEntry, NotifyChannel, NotifyLogEntry } from './types';
 
 export const useMe = () => useQuery({ queryKey: ['me'], queryFn: () => get<{ username: string }>('/auth/me'), retry: false, staleTime: 5 * 60_000 });
 export const useTeams = () => useQuery({ queryKey: ['teams'], queryFn: () => get<Team[]>('/teams'), staleTime: 60_000 });
 export const useProviders = () => useQuery({ queryKey: ['providers'], queryFn: () => get<Provider[]>('/providers'), staleTime: 60_000 });
 export const usePlans = () => useQuery({ queryKey: ['plans'], queryFn: () => get<Plan[]>('/plans'), staleTime: 60_000 });
-export function useOverview() {
-  const poll = usePoll(30_000);
-  return useQuery({ queryKey: ['overview'], queryFn: ({ signal }) => get<Overview>('/overview', signal), refetchInterval: poll });
-}
+export const useOverview = () => useQuery({ queryKey: ['overview'], queryFn: ({ signal }) => get<Overview>('/overview', signal) });
 
 /** 机器列表，已按默认顺序排好：线路机 → 团队 → 编号（故障/离线不下沉） */
 export function useMachines(scope: 'live' | 'retired' | 'all' = 'live', enabled = true) {
-  const poll = usePoll(30_000);
   const teams = useTeams().data;
   // select 排序：只在列表或团队变化时重算；返回的是查询结果本身，调用方按属性追踪
   const select = useCallback((d: MachineView[]) => [...d].sort(makeDefaultCompare(teams ?? [])), [teams]);
-  return useQuery({ queryKey: ['machines', scope], queryFn: ({ signal }) => get<MachineView[]>(`/machines?scope=${scope}`, signal), refetchInterval: poll, select, enabled });
+  return useQuery({ queryKey: ['machines', scope], queryFn: ({ signal }) => get<MachineView[]>(`/machines?scope=${scope}`, signal), select, enabled });
 }
 /** 按键等“用时才读”的场景：直接读缓存里的机器列表（同样的默认顺序），不订阅、不触发请求 */
 export function readMachines(qc: QueryClient, scope: 'live' | 'retired' | 'all' = 'live'): MachineView[] | undefined {
   const raw = qc.getQueryData<MachineView[]>(['machines', scope]);
   return raw ? [...raw].sort(makeDefaultCompare(qc.getQueryData<Team[]>(['teams']) ?? [])) : undefined;
 }
-export function useMachine(id: string | null) {
-  const poll = usePoll(30_000);
-  return useQuery({ queryKey: ['machine', id], queryFn: ({ signal }) => get<MachineView>(`/machines/${id}`, signal), enabled: !!id, refetchInterval: poll });
-}
-/** 悬浮卡用：先用机器列表缓存里的那份（立即有内容），再按需取单台；不轮询 */
+export const useMachine = (id: string | null) => useQuery({ queryKey: ['machine', id], queryFn: ({ signal }) => get<MachineView>(`/machines/${id}`, signal), enabled: !!id });
+/** 悬浮卡用：先用机器列表缓存里的那份（立即有内容），再按需取单台 */
 export function useMachinePreview(id: string | null) {
   const qc = useQueryClient();
   return useQuery({
@@ -45,34 +36,24 @@ export function useMachinePreview(id: string | null) {
 const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name, 'zh-Hans-CN', { numeric: true });
 const sortRelays = (d: MachineView[]) => [...d].sort(byName);
 const relayChoices = (d: MachineView[]) => d.filter((m) => m.lifecycle === 'active').map((m) => ({ id: m.id, name: m.name })).sort(byName);
-const relaysQuery = (poll: number | false) => ({ queryKey: ['relays'], queryFn: ({ signal }: { signal: AbortSignal }) => get<MachineView[]>('/relays', signal), refetchInterval: poll });
-export function useRelays() {
-  return useQuery({ ...relaysQuery(usePoll(30_000)), select: sortRelays });
-}
-/** 只要“已上线线路机的 id 和名称”（上架页的下拉和名称匹配用）。select 的结果会做结构共享：机器的探测、流量等字段每次轮询都在变，但 id/名称不变时引用不变，批量网格的 memo 才不会被击穿 */
-export function useRelayChoices() {
-  return useQuery({ ...relaysQuery(usePoll(30_000)), select: relayChoices });
-}
-/** poll：卡片上的心跳条没有抽屉那样的 tick 失效，自己按这个间隔刷新；此时 staleTime 同间隔、切回窗口不重取（否则每张卡同时发一次） */
+const relaysQuery = { queryKey: ['relays'], queryFn: ({ signal }: { signal: AbortSignal }) => get<MachineView[]>('/relays', signal) };
+export const useRelays = () => useQuery({ ...relaysQuery, select: sortRelays });
+/** 只要“已上线线路机的 id 和名称”（上架页的下拉和名称匹配用）。select 的结果会做结构共享：机器的探测、流量等字段每次推送都在变，但 id/名称不变时引用不变，批量网格的 memo 才不会被击穿 */
+export const useRelayChoices = () => useQuery({ ...relaysQuery, select: relayChoices });
+/** poll：实时流只推当前读数不推曲线，卡片心跳条、抽屉曲线各按这个间隔刷新；此时 staleTime 同间隔、切回窗口不重取（否则每张卡同时发一次） */
 export const useSeries = (id: string | null, metric: 'host' | 'traffic' | 'probe', range: string, enabled = true, poll?: number) =>
   useQuery({ queryKey: ['series', id, metric, range], queryFn: ({ signal }) => get<SeriesResp>(`/machines/${id}/series?metric=${metric}&range=${range}`, signal), enabled: !!id && enabled, staleTime: poll ?? 30_000, refetchInterval: poll, refetchOnWindowFocus: poll ? false : undefined });
 export const useRenewals = (id: string | null) => useQuery({ queryKey: ['renewals', id], queryFn: ({ signal }) => get<Renewal[]>(`/machines/${id}/renewals`, signal), enabled: !!id });
 export const useAudit = (id: string | null) => useQuery({ queryKey: ['audit', id], queryFn: ({ signal }) => get<AuditEntry[]>(`/audit?target_id=${id}&limit=10`, signal), enabled: !!id });
 /** 作业列表一页（按创建先后倒序）；换页时先留着上一页，不闪骨架 */
-export function useJobs(state: 'active' | 'done' | 'all' = 'all', offset = 0, limit = 100) {
-  const poll = usePoll(10_000);
-  return useQuery({ queryKey: ['jobs', state, offset, limit], queryFn: ({ signal }) => get<Paged<Job>>(`/jobs?state=${state}&limit=${limit}&offset=${offset}`, signal), refetchInterval: poll, placeholderData: keepPreviousData });
-}
-export function useJob(id: string | null) {
-  const poll = usePoll(2500); // 流正常时靠 job 事件失效；流断开才轮询兜底
-  return useQuery({ queryKey: ['job', id], queryFn: ({ signal }) => get<Job>(`/jobs/${id}`, signal), enabled: !!id, refetchInterval: (q) => (poll && q.state.data && jobLive(q.state.data.state) ? poll : false) });
-}
+export const useJobs = (state: 'active' | 'done' | 'all' = 'all', offset = 0, limit = 100) =>
+  useQuery({ queryKey: ['jobs', state, offset, limit], queryFn: ({ signal }) => get<Paged<Job>>(`/jobs?state=${state}&limit=${limit}&offset=${offset}`, signal), placeholderData: keepPreviousData });
+/** 作业详情：靠实时流的 job 事件失效重取 */
+export const useJob = (id: string | null) => useQuery({ queryKey: ['job', id], queryFn: ({ signal }) => get<Job>(`/jobs/${id}`, signal), enabled: !!id });
 /** 告警列表一页（严重度优先）。默认参数与告警页第一页相同：顶栏徽标取 total，和告警页共用同一份缓存 */
 export const INCIDENT_PAGE = 50;
-export function useIncidents(state: 'firing' | 'resolved' | 'all' = 'all', offset = 0, limit = INCIDENT_PAGE) {
-  const poll = usePoll(30_000);
-  return useQuery({ queryKey: ['incidents', state, offset, limit], queryFn: ({ signal }) => get<Paged<Incident>>(`/incidents?state=${state}&limit=${limit}&offset=${offset}`, signal), refetchInterval: poll, placeholderData: keepPreviousData });
-}
+export const useIncidents = (state: 'firing' | 'resolved' | 'all' = 'all', offset = 0, limit = INCIDENT_PAGE) =>
+  useQuery({ queryKey: ['incidents', state, offset, limit], queryFn: ({ signal }) => get<Paged<Incident>>(`/incidents?state=${state}&limit=${limit}&offset=${offset}`, signal), placeholderData: keepPreviousData });
 export const useSilences = () => useQuery({ queryKey: ['silences'], queryFn: () => get<Silence[]>('/silences') });
 
 export interface StreamEvent { type: string; id?: string }
@@ -87,11 +68,6 @@ export function eventKeys(ev: StreamEvent): unknown[][] {
     case 'catalog': return [['teams'], ['providers'], ['plans'], ['machines'], ['machine'], ['notify-channels']];
     case 'api_keys': return [['api-keys']];
     case 'policies': return [['policies'], ['machines'], ['relays']];
-    case 'tick': {
-      // 曲线只刷新当前打开的抽屉，其余视图的曲线不在每个 tick 重取
-      const open = new URLSearchParams(window.location.search).get('m');
-      return [['machines'], ['machine'], ['relays'], ['overview'], ...(open ? [['series', open]] : [])];
-    }
     default: return [];
   }
 }
@@ -142,7 +118,8 @@ export const usePatchTeam = () => useWrite(({ id, ...b }: { id: string; name?: s
 export const useRenumber = () => useWrite(({ id, token }: { id: string; token: string }) => post(`/teams/${id}/renumber`, { token }), [['teams'], ...M]);
 export const fetchRenumber = (id: string) => get<RenumberPreview>(`/teams/${id}/renumber`);
 export const useAddProvider = () => useWrite((b: Partial<Provider>) => post('/providers', b), [['providers']]);
-export const useAddPlan = () => useWrite((b: Partial<Plan>) => post('/plans', b), [['plans']]);
+export const usePatchProvider = () => useWrite(({ id, ...b }: { id: string } & Partial<Provider>) => patch(`/providers/${id}`, b), [['providers'], ...M]);
+export const useAddPlan = () => useWrite((b: Record<string, unknown>) => post('/plans', b), [['plans']]);
 export const usePatchPlan = () => useWrite(({ id, ...b }: { id: string } & Record<string, unknown>) => patch(`/plans/${id}`, b), [['plans'], ...M]);
 export const fetchShare = (entryId: string) => get<{ url: string }>(`/entries/${entryId}/share`);
 export const fetchLogs = (jobId: string, after: number) => get<JobLog[]>(`/jobs/${jobId}/logs?after=${after}`);

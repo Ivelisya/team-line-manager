@@ -1,4 +1,4 @@
-// 交互冒烟：下线确认流程（预览改名 + 输入显示名）与批量上架（粘贴 → 检查 → 唯一确认 → 作业）。需先 VITE_MOCK=1 pnpm dev
+// 交互冒烟：退役确认流程（预览改名 + 输入显示名）与批量上架（粘贴 → 检查 → 唯一确认 → 作业）。需先 VITE_MOCK=1 pnpm dev
 import puppeteer from 'puppeteer-core';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -18,14 +18,14 @@ await page.setViewport({ width: 1440, height: 1000 });
 const clickText = (sel, text) => page.evaluate((s, t) => { const el = [...document.querySelectorAll(s)].find((e) => e.textContent?.trim().includes(t)); if (!el) throw new Error('找不到 ' + t); el.click(); }, sel, text);
 const step = (m) => console.log('·', m);
 
-// 1. 下线
+// 1. 退役
 await page.goto(`${BASE}/nodes?m=m-t1-03&tab=manage`, { waitUntil: 'networkidle0' });
-await clickText('button', '下线…'); await sleep(500);
+await clickText('button', '退役…'); await sleep(500);
 await page.screenshot({ path: path.join(out, 'smoke-retire-dialog.png') });
 const preview = await page.evaluate(() => document.querySelector('.dialog')?.innerText ?? '');
-step('下线预览含改名：' + (preview.includes('团队1-04') && preview.includes('团队1-03')));
+step('退役预览含改名：' + (preview.includes('团队1-04') && preview.includes('团队1-03')));
 await page.type('#typed-confirm', '团队1-03');
-await clickText('.dialog button', '下线'); await sleep(900);
+await clickText('.dialog button', '退役'); await sleep(900);
 // 注意：mock 数据在内存里，整页跳转会重置，所以不在这里跨页验证作业列表
 
 // 2. 批量上架

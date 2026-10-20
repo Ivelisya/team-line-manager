@@ -302,6 +302,8 @@ async fn report(State(st): State<AppState>, h: HeaderMap, ApiJson(r): ApiJson<Re
     if last.is_none() {
         st.emit(Event::Machine { id: a.machine_id });
     }
+    // 新读数由 live.rs 合并推送（最多每 3 s 一次），不发失效事件
+    st.metrics_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
     Ok(Json(ReportAck { accepted_seq: r.seq, interval_s: 10 }))
 }
 

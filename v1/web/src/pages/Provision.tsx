@@ -8,6 +8,7 @@ import { KIND_LABEL } from '@/lib/sort';
 import { Button, IconButton } from '@/components/ui/button';
 import { Field, Input } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
+import { DateField } from '@/components/ui/date-field';
 import { Segmented } from '@/components/ui/overlays';
 import { ConfirmDialog } from '@/components/app/dialogs';
 import { toast } from '@/components/ui/toast';
@@ -148,9 +149,9 @@ function useOpts(ctx: Ctx) {
 function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; onChange: (p: Partial<Row>) => void; ctx: Ctx; result?: ProvisionCheckItem; errors?: string[]; stale: boolean }) {
   const o = useOpts(ctx);
   const k = row.kind;
-  const T = (key: keyof Row, label: string, p?: { hint?: string; ph?: string; type?: string; num?: boolean }) => (
+  const T = (key: keyof Row, label: string, p?: { hint?: string; ph?: string; num?: boolean }) => (
     <Field label={label} hint={p?.hint}>
-      <Input type={p?.type} inputMode={p?.num ? 'numeric' : undefined} placeholder={p?.ph} value={row[key] as string} onChange={(e) => onChange({ [key]: p?.num ? e.target.value.replace(/\D/g, '') : e.target.value })} />
+      <Input inputMode={p?.num ? 'numeric' : undefined} placeholder={p?.ph} value={row[key] as string} onChange={(e) => onChange({ [key]: p?.num ? e.target.value.replace(/\D/g, '') : e.target.value })} />
     </Field>
   );
   return (
@@ -197,7 +198,7 @@ function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; o
           <Field label="供应商"><Select value={row.provider_id} onChange={(v) => onChange({ provider_id: v, plan_id: '' })} options={o.provider} allowEmpty="不设置" /></Field>
           <Field label="套餐"><Select value={row.plan_id} onChange={(v) => onChange({ plan_id: v })} options={o.planFor(row.provider_id)} allowEmpty="不设置" /></Field>
           {T('service_ref', '服务编号', { ph: 'SVC-1042' })}
-          {T('due_date', '到期日', { type: 'date' })}
+          <Field label="到期日"><DateField value={row.due_date} onChange={(v) => onChange({ due_date: v })} /></Field>
           {T('price', '费用', { ph: '默认取套餐价格' })}
           <div className="span-2"><Field label="备注"><Input value={row.note} onChange={(e) => onChange({ note: e.target.value })} /></Field></div>
         </div>
@@ -227,7 +228,7 @@ function CheckOutput({ results, rows, errors, stale }: { results: ProvisionCheck
 /* ------------------------------------------------------------------ 批量网格 */
 function BatchGrid({ rows, setRows, ctx, results, errors, stale }: { rows: Row[]; setRows: React.Dispatch<React.SetStateAction<Row[]>>; ctx: Ctx; results: ProvisionCheckItem[] | null; errors: string[][] | null; stale: boolean }) {
   const addRows = (n: number) => setRows((rs) => { const last = rs[rs.length - 1]; const base = last ? { kind: last.kind, team_id: last.team_id, relay_id: last.relay_id, provider_id: last.provider_id, plan_id: last.plan_id, login_user: last.login_user } : {}; return [...rs, ...Array.from({ length: n }, () => newRow(base))]; });
-  const total = COLS.reduce((s, c) => s + c.w, 0) + 40 + 40 + 220;
+  const total = COLS.reduce((s, c) => s + c.w, 0) + 40 + 56 + 220;
 
   // 单元格拿到的回调必须稳定（GridCell 是 memo），所以按行 id 工作，不捕获行下标
   const opts = useOpts(ctx);
@@ -263,7 +264,7 @@ function BatchGrid({ rows, setRows, ctx, results, errors, stale }: { rows: Row[]
         tools={<><Button size="sm" onClick={copyHeader}><ClipboardPaste />复制表头</Button><Button size="sm" onClick={() => addRows(1)}><Plus />加一行</Button><Button size="sm" onClick={() => addRows(5)}>加 5 行</Button><Button size="sm" variant="quiet" onClick={() => setRows([newRow()])}>清空</Button></>}>
         <div className="table-wrap">
           <table className="dt dt-grid" style={{ minWidth: total }}>
-            <colgroup><col style={{ width: 40 }} />{COLS.map((c) => <col key={c.key} style={{ width: c.w }} />)}<col style={{ width: 220 }} /><col style={{ width: 40 }} /></colgroup>
+            <colgroup><col style={{ width: 40 }} />{COLS.map((c) => <col key={c.key} style={{ width: c.w }} />)}<col style={{ width: 220 }} /><col style={{ width: 56 }} /></colgroup>
             <thead><tr><th className="c">#</th>{COLS.map((c) => <th key={c.key} style={{ paddingLeft: 8 }}>{c.label}</th>)}<th style={{ paddingLeft: 8 }}>检查结果</th><th /></tr></thead>
             <tbody>
               {rows.map((r, ri) => {
@@ -316,8 +317,12 @@ const GridCell = React.memo(function GridCell({ col, ci, row, opts, onChange, on
     case 'proto': return <select className="gcell" value={row.up_protocol} disabled={na} aria-label={col.label} onChange={(e) => onChange(row.id, { up_protocol: e.target.value })} onPaste={paste}><option value="socks5">SOCKS5</option><option value="http">HTTP</option></select>;
     default: {
       const v = row[col.key as keyof Row] as string;
-      return <input className="gcell" type={col.type === 'secret' ? 'password' : 'text'} inputMode={col.type === 'num' ? 'numeric' : undefined} autoComplete={col.type === 'secret' ? 'new-password' : 'off'} spellCheck={false}
+      const input = <input className="gcell" type={col.type === 'secret' ? 'password' : 'text'} inputMode={col.type === 'num' ? 'numeric' : undefined} autoComplete={col.type === 'secret' ? 'new-password' : 'off'} spellCheck={false}
         value={v} disabled={na} placeholder={na ? '' : col.ph} aria-label={col.label} onPaste={paste} onChange={(e) => onChange(row.id, { [col.key]: col.type === 'num' ? e.target.value.replace(/\D/g, '') : e.target.value } as Partial<Row>)} />;
+      // 到期日：文本格照常键入 / 整块粘贴 YYYY-MM-DD，右侧日历按钮弹出选择
+      return col.type === 'date' && !na
+        ? <div className="gcell-date">{input}<DateField iconOnly value={v} onChange={(d) => onChange(row.id, { due_date: d })} aria-label={`选择${col.label}`} /></div>
+        : input;
     }
   }
 });

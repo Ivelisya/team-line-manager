@@ -1,8 +1,9 @@
-// 浏览器内 mock：拦截 /api/v1/* 的 fetch，并替换 EventSource。VITE_MOCK=1 时由 main.tsx 安装。
-// 有状态：改名、退役、上架、续费等操作都会改内存里的数据，并通过 mock SSE 通知前端刷新。
+// 浏览器内 mock：拦截 /api/v1/* 的 fetch 和实时流 WebSocket。VITE_MOCK=1 时由 main.tsx 安装。
+// 有状态：改名、退役、上架、续费等操作都会改内存里的数据，并通过 mock 实时流通知前端刷新。
 
 import type { EntryView, Job, JobLog, MachineView, ProvisionCheckItem, ProvisionItem, SeriesPoint } from '@/lib/types';
 import { displayName } from '@/lib/format';
+import { liveRate } from '@/lib/derive';
 import { buildDb, hashStr, rng, type Db } from './fixtures';
 import { installAccessMock } from './access';
 import { installPolicyMock } from './policy';
@@ -15,23 +16,21 @@ const GiB = 1024 ** 3;
 class HttpErr extends Error { constructor(public status: number, public code: string, msg: string) { super(msg); } }
 const bad = (msg: string, status = 400, code = 'bad_request') => new HttpErr(status, code, msg);
 
-// ---------- SSE ----------
-type Ev = { type: string; id?: string };
+// ---------- 实时流 ----------
+type Ev = { type: string; id?: string; [k: string]: unknown };
 const listeners = new Set<(e: Ev) => void>();
 const emit = (e: Ev) => listeners.forEach((l) => l(e));
 
-class MockEventSource {
-  readyState = 1; url: string; onmessage: ((e: MessageEvent) => void) | null = null; onerror: (() => void) | null = null; onopen: (() => void) | null = null;
-  private subs: ((e: MessageEvent) => void)[] = []; private fn: (e: Ev) => void;
-  constructor(url: string) {
-    this.url = url;
-    this.fn = (e) => { const m = new MessageEvent('message', { data: JSON.stringify(e) }); this.onmessage?.(m); this.subs.forEach((s) => s(m)); };
+/** 只顶替 /api/v1/stream 的 WebSocket（Vite 热更新自己的 WebSocket 照常） */
+class MockStream {
+  readyState = 0; onmessage: ((e: MessageEvent) => void) | null = null; onopen: (() => void) | null = null; onclose: (() => void) | null = null; onerror: (() => void) | null = null;
+  private fn = (e: Ev) => this.onmessage?.(new MessageEvent('message', { data: JSON.stringify(e) }));
+  constructor() {
     listeners.add(this.fn);
-    setTimeout(() => this.onopen?.(), 50);
+    setTimeout(() => { if (this.readyState === 0) { this.readyState = 1; this.onopen?.(); } }, 50);
   }
-  addEventListener(t: string, cb: (e: MessageEvent) => void) { if (t === 'message') this.subs.push(cb); }
-  removeEventListener(t: string, cb: (e: MessageEvent) => void) { if (t === 'message') this.subs = this.subs.filter((s) => s !== cb); }
-  close() { this.readyState = 2; listeners.delete(this.fn); }
+  send() {}
+  close() { this.readyState = 3; listeners.delete(this.fn); }
 }
 
 // ---------- 工具 ----------
@@ -87,7 +86,8 @@ function overview() {
     due_7d: live.filter((m) => m.subscription && m.subscription.due_days <= 7).length,
     monthly_cost: Object.entries(live.reduce<Record<string, number>>((acc, m) => { if (m.subscription) acc[m.subscription.currency] = (acc[m.subscription.currency] ?? 0) + Math.round(monthly(m.subscription.price_cents, m.subscription.cycle)); return acc; }, {})).map(([currency, cents]) => ({ currency, cents })),
     traffic_month: { up, down },
-    net_rx_bps: live.reduce((s, m) => s + (m.host?.net_rx_bps ?? 0), 0), net_tx_bps: live.reduce((s, m) => s + (m.host?.net_tx_bps ?? 0), 0),
+    // 实时速率只算数据没过期的（同 liveRate）
+    net_rx_bps: live.reduce((s, m) => s + (liveRate(m)?.rx ?? 0), 0), net_tx_bps: live.reduce((s, m) => s + (liveRate(m)?.tx ?? 0), 0),
   };
 }
 
@@ -150,7 +150,7 @@ function startProvisionJob(m: MachineView) {
   m.active_job = { id: job.id, kind: job.kind, state: 'running' };
   drive(job, 2800, () => {
     m.lifecycle = 'active'; m.activated_at = iso(); m.active_job = null; m.health = { status: 'ok', reasons: [] };
-    if (m.kind !== 'proxy') { m.agent = { version: '1.0.3', last_report_at: iso(), online: true }; m.host = { ts: iso(), cpu_pct: 6, load1: 0.1, mem_used: 400 * 1024 ** 2, mem_total: 4 * GiB, disk_used: 4 * GiB, disk_total: 60 * GiB, net_rx_bps: 2e5, net_tx_bps: 1e5, tcp_conns: 12 }; }
+    if (m.kind !== 'proxy') { m.agent = { version: '1.0.3', last_report_at: iso(), online: true, xray_running: null, cores: 2 }; m.host = { ts: iso(), cpu_pct: 6, load1: 0.1, mem_used: 400 * 1024 ** 2, mem_total: 4 * GiB, disk_used: 4 * GiB, disk_total: 60 * GiB, net_rx_bps: 2e5, net_tx_bps: 1e5, tcp_conns: 12 }; }
     for (const e of m.entries) { e.lifecycle = 'active'; e.applied = true; e.tcp = { ok: true, latency_ms: 52, detail: null, ts: iso() }; e.egress = { ok: true, latency_ms: 190, detail: null, ts: iso() }; }
     refreshCounts();
   });
@@ -300,8 +300,17 @@ R('POST', '/teams/([^/]+)/renumber', ({ params, body }) => {
 R('GET', '/providers', () => clone(db.providers));
 R('POST', '/providers', ({ body }) => {
   if (!body.name || !body.code) throw bad('名称与代码必填');
-  const p = { id: `p${db.seq++}`, name: body.name, code: String(body.code).toUpperCase(), panel_url: body.panel_url ?? null, timezone: body.timezone ?? null };
+  const p = { id: `p${db.seq++}`, name: body.name, code: String(body.code).toUpperCase(), panel_url: body.panel_url || null, timezone: body.timezone || 'UTC' };
   db.providers.push(p); emit({ type: 'catalog' }); return p;
+});
+R('PATCH', '/providers/([^/]+)', ({ params, body }) => {
+  const p = db.providers.find((x) => x.id === params[0]);
+  if (!p) throw bad('没有这个供应商', 404, 'not_found');
+  if (body.name !== undefined) p.name = body.name;
+  if (body.code !== undefined) p.code = body.code;
+  if (body.panel_url !== undefined) p.panel_url = body.panel_url || null;
+  if (body.timezone !== undefined) p.timezone = body.timezone || 'UTC';
+  emit({ type: 'catalog' }); return { id: p.id };
 });
 R('GET', '/plans', () => clone(db.plans));
 R('POST', '/plans', ({ body }) => {
@@ -587,7 +596,7 @@ R('POST', '/machines/([^/]+)/restore', ({ params, body }) => {
   m.active_job = { id: job.id, kind: job.kind, state: 'running' };
   drive(job, 2000, () => {
     m.lifecycle = 'active'; m.retired_at = null; m.lifecycle_reason = `已恢复${body.reason ? `：${body.reason}` : ''}`; m.active_job = null; m.health = { status: 'ok', reasons: [] };
-    if (m.kind !== 'proxy') { m.agent = { version: '1.0.3', last_report_at: iso(), online: true }; m.host = { ts: iso(), cpu_pct: 5, load1: 0.1, mem_used: 380 * 1024 ** 2, mem_total: 4 * GiB, disk_used: 4 * GiB, disk_total: 60 * GiB, net_rx_bps: 2e5, net_tx_bps: 1e5, tcp_conns: 10 }; }
+    if (m.kind !== 'proxy') { m.agent = { version: '1.0.3', last_report_at: iso(), online: true, xray_running: null, cores: 2 }; m.host = { ts: iso(), cpu_pct: 5, load1: 0.1, mem_used: 380 * 1024 ** 2, mem_total: 4 * GiB, disk_used: 4 * GiB, disk_total: 60 * GiB, net_rx_bps: 2e5, net_tx_bps: 1e5, tcp_conns: 10 }; }
     if (e) { e.lifecycle = 'active'; e.applied = true; e.tcp = { ok: true, latency_ms: 50, detail: null, ts: iso() }; e.egress = { ok: true, latency_ms: 180, detail: null, ts: iso() }; }
     refreshCounts();
   });
@@ -646,14 +655,18 @@ R('POST', '/notify-channels/([^/]+)/test', ({ params }) => {
 R('GET', '/notify-log', ({ query }) => clone(db.notifyLog.slice(0, +(query.get('limit') ?? 100))));
 
 // ---------- 安装 ----------
+/** 模拟上报：改读数，按服务端 metrics 消息的形状推增量（见 lib/live.ts） */
 function jitter() {
+  const machines: Record<string, unknown> = {};
+  const now = Math.floor(Date.now() / 1000);
   for (const m of db.machines) if (m.host && m.lifecycle === 'active' && m.health.status !== 'down') {
     const h = m.host; const f = () => 0.85 + Math.random() * 0.3;
-    h.cpu_pct = Math.max(1, Math.min(99, (h.cpu_pct ?? 10) * f())); h.net_rx_bps = (h.net_rx_bps ?? 1e6) * f(); h.net_tx_bps = (h.net_tx_bps ?? 1e6) * f(); h.ts = iso();
-    h.load1 = +((h.cpu_pct ?? 0) / 40).toFixed(2);
-    if (m.agent) m.agent.last_report_at = iso();
+    h.cpu_pct = Math.max(1, Math.min(99, (h.cpu_pct ?? 10) * f())); h.net_rx_bps = Math.round((h.net_rx_bps ?? 1e6) * f()); h.net_tx_bps = Math.round((h.net_tx_bps ?? 1e6) * f()); h.ts = iso(now * 1000);
+    if (h.load1 != null) h.load1 = +((h.cpu_pct ?? 0) / 40).toFixed(2);
+    if (m.agent) m.agent.last_report_at = h.ts;
+    machines[m.id] = { host: [now, h.cpu_pct, h.load1, h.mem_used, h.mem_total, h.disk_used, h.disk_total, h.net_rx_bps, h.net_tx_bps, h.tcp_conns], seen: now };
   }
-  emit({ type: 'tick' });
+  emit({ type: 'metrics', machines, entries: {}, overview: overview() });
 }
 
 export function installMock() {
@@ -683,8 +696,10 @@ export function installMock() {
     }
     return json(404, { error: { code: 'not_found', message: `mock 未实现：${method} ${path}` } });
   };
-  (window as unknown as { EventSource: unknown }).EventSource = MockEventSource;
-  setInterval(jitter, 15_000);
+  window.WebSocket = new Proxy(window.WebSocket, {
+    construct: (Real, args: ConstructorParameters<typeof WebSocket>) => (String(args[0]).includes('/api/v1/stream') ? new MockStream() : new Real(...args)),
+  });
+  setInterval(jitter, 10_000);
   // 演示入口：?logout=1 可模拟未登录
   if (new URLSearchParams(location.search).get('logout') === '1') sessionStorage.setItem('mock:auth', '0');
   else if (sessionStorage.getItem('mock:auth') === null) sessionStorage.setItem('mock:auth', '1');

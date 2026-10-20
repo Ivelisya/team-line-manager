@@ -1,7 +1,8 @@
 // 告警：事件列表（确认 / 查看机器，服务端分页）+ 静默与维护窗口。列表保持服务端顺序（严重度优先），前端不重排。
 import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { BellOff, Check, CheckCircle2, Plus, Trash2, Wrench } from 'lucide-react';
+import { BellOff, CalendarPlus, Check, CheckCircle2, Plus, Trash2, Wrench } from 'lucide-react';
+import { RenewDialog } from '@/features/BillingTab';
 import { INCIDENT_PAGE, useAck, useAddSilence, useDelSilence, useIncidents, useMachines, useSilences } from '@/lib/queries';
 import { usePage } from '@/lib/usePage';
 import { Pagination } from '@/components/app/Pagination';
@@ -19,10 +20,10 @@ import { ConfirmDialog } from '@/components/app/dialogs';
 import { NodeHover } from '@/components/app/NodeHover';
 import { Empty, ErrorNote, Note, PageHead, Panel, Pill } from '@/components/app/primitives';
 
-/** 规则 key（health.rs、ipintel.rs 产出，开告警的全部收录）→ 中文名；未收录的原样显示 key */
+/** 规则 key（health.rs、ipintel.rs 产出，开告警的全部收录）→ 中文名，与通知里的 notify.rs rule_name 一致；未收录的原样显示 key */
 export const RULES: Record<string, string> = {
-  agent_offline: 'agent 离线', no_entry: '节点没有入口', egress_fail: '出口验证失败', tcp_fail: 'TCP 探测失败',
-  renewal_due: '即将到期', renewal_overdue: '已过期未续费', relay_apply_lag: '线路机下发滞后', relay_apply_error: '线路机下发失败', relay_xray_down: '线路机 xray 未运行',
+  agent_offline: 'agent 离线', no_entry: '没有在用入口', egress_fail: '出口不通', tcp_fail: '线路到节点不通',
+  renewal_due: '即将到期', renewal_overdue: '已过期', relay_apply_lag: '配置未应用', relay_apply_error: '配置应用失败', relay_xray_down: 'Xray 未运行',
   host_cpu_high: 'CPU 持续偏高', host_mem_high: '内存持续偏高', host_disk_high: '磁盘空间不足',
   ipintel_new_isp: '来源出现新运营商', ipintel_new_city: '来源出现新城市', ipintel_datacenter_source: '机房 / VPN 来源',
 };
@@ -38,6 +39,10 @@ export function IncidentsPage() {
   const ack = useAck();
   const { open } = useDrawer();
   const list = q.data?.items ?? [];
+  // 续费类告警的「登记续费」要用机器的订阅信息；续费后下一轮评估（≤30 秒）自动恢复
+  const machines = useMachines('live').data;
+  const [renewId, setRenewId] = React.useState<string | null>(null);
+  const renewM = machines?.find((m) => m.id === renewId);
   return (
     <div className="stack" ref={pg.anchor}>
       <PageHead title="告警" note={q.data ? `${q.data.total} 条` : undefined}
@@ -51,14 +56,15 @@ export function IncidentsPage() {
             <tbody>
               {list.map((i) => {
                 const sid = i.subject?.id ?? i.subject_id;
+                const canRenew = i.state === 'firing' && i.rule.startsWith('renewal_') && !!machines?.find((m) => m.id === sid)?.subscription;
                 return (
                   <tr key={i.id}>
                     <td>{SEV(i)}</td>
                     <td>{sid ? <NodeHover id={sid}><button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => open(sid)}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button></NodeHover> : '—'}</td>
-                    <td>{RULES[i.rule] ?? i.rule}</td>
+                    <td>{RULES[i.rule] ?? i.rule}{i.reopen_count > 0 && <span className="sub" title={`恢复后 30 分钟内又复发 ${i.reopen_count} 次，合并为这一条`}>反复 {i.reopen_count + 1} 次</span>}</td>
                     <td><Trunc className="cell-main">{i.summary}</Trunc><span className="sub">{i.resolved_at ? `恢复于 ${F.dt(i.resolved_at)}` : i.ack_at ? `${i.ack_by ?? ''} 已确认 · ${F.ago(i.ack_at)}` : '未确认'}</span></td>
                     <td>{F.dt(i.opened_at)}<span className="sub">{F.ago(i.opened_at)}</span></td>
-                    <td className="r">{i.state === 'firing' && !i.ack_at && <Button size="sm" loading={ack.isPending && ack.variables === i.id} disabled={ack.isPending} onClick={() => ack.mutate(i.id, { onSuccess: () => toast.ok('已确认'), onError: toast.err })}><Check size={13} />确认</Button>}</td>
+                    <td className="r">{canRenew && <Button size="sm" onClick={() => setRenewId(sid)}><CalendarPlus size={13} />登记续费</Button>}{!canRenew && i.state === 'firing' && !i.ack_at && <Button size="sm" loading={ack.isPending && ack.variables === i.id} disabled={ack.isPending} onClick={() => ack.mutate(i.id, { onSuccess: () => toast.ok('已确认'), onError: toast.err })}><Check size={13} />确认</Button>}</td>
                   </tr>
                 );
               })}
@@ -69,6 +75,7 @@ export function IncidentsPage() {
         </div>
         <Pagination pg={pg} unit="条" />
       </Panel>
+      {renewM?.subscription && <RenewDialog m={renewM} s={renewM.subscription} open onOpenChange={(o) => !o && setRenewId(null)} />}
       <Silences />
     </div>
   );

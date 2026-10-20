@@ -1,4 +1,4 @@
-// 抽屉“管理”页：改名/改编号（带实时预览）、入口操作、下线（退役）、彻底删除（仅已退役）。
+// 抽屉“管理”页：改名/改编号（带实时预览）、入口操作、退役、彻底删除（仅已退役）。
 import * as React from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowRight, PackageOpen, Plus, Repeat2, Trash2, Undo2 } from 'lucide-react';
@@ -102,7 +102,7 @@ function EntrySection({ m }: { m: MachineView }) {
         )}
         {m.kind === 'relay' && m.lifecycle === 'active' && movableEntries(m).length > 0 && (
           <div className="manage-row">
-            <div><div className="t">搬空线路机</div><div className="hint">把上面所有节点换到另一台线路机，之后就能安全下线这台。节点的分享链接会变。</div></div>
+            <div><div className="t">搬空线路机</div><div className="hint">把上面所有节点换到另一台线路机，之后就能安全退役这台。节点的分享链接会变。</div></div>
             <Button variant="secondary" onClick={() => setDlg('evacuate')}><PackageOpen />搬空到…</Button>
           </div>
         )}
@@ -146,7 +146,7 @@ function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }
 
   return (
     <Section>
-      <SectionHeader title={retired ? '已退役' : '下线'} />
+      <SectionHeader title={retired ? '已退役' : '退役'} />
       <div className="danger-zone">
         {retired ? (
           <>
@@ -168,10 +168,10 @@ function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }
         ) : (
           <div className="manage-row">
             <div>
-              <div className="t">下线（退役）</div>
+              <div className="t">退役</div>
               <div className="hint">停用入口、吊销凭据，机器进入“已退役”，不再出现在首页和统计里。{m.kind !== 'relay' && '同团队后面的节点会自动前移补号。'}</div>
             </div>
-            <Button variant="outline-danger" disabled={busyJob} onClick={() => setDlg('retire')}>下线…</Button>
+            <Button variant="outline-danger" disabled={busyJob} onClick={() => setDlg('retire')}>退役…</Button>
           </div>
         )}
         {busyJob && m.active_job && <Note tone="info">作业进行中，暂不能操作。<Link to={`/jobs/${m.active_job.id}`} style={{ color: 'var(--accent)' }}>查看作业</Link></Note>}

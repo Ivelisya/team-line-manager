@@ -1,12 +1,13 @@
-// 实时流：EventSource /api/v1/stream，按事件类型让对应查询失效。
-// - 事件 300ms 合并后一次性失效（同一类型/同一 id 只算一次）。
-// - 浏览器自动重连只覆盖“连接断开”；服务端回非 200 时 EventSource 直接进入 CLOSED，所以这里自己指数退避重开（1s → 30s 封顶）。
-// - 每次“出错之后重新 open”都全量失效一次，补上断线期间错过的事件。
-// - 服务端滞后广播 {type:"resync"} 时同样全量失效。
-// - 流正常时不再 30 秒轮询；只有流不是 open 才由各查询自己轮询兜底（见 usePoll）。
+// 实时流：WebSocket /api/v1/stream（JSON 文本帧）。
+// - metrics：实时指标增量，直接写进查询缓存（live.ts），不重取。
+// - 其余是资源变更通知：300ms 合并后按事件类型让对应查询失效（同一类型/同一 id 只算一次）；resync（服务端广播滞后）则全部失效。
+// - 断开后指数退避重连（1s → 30s 封顶），期间不轮询（顶栏显示已断开）。首次连上让机器类查询失效一次（首屏请求可能早于订阅）；
+//   断线重连后让全部查询失效：没连着时错过的事件和增量靠这次重取补上。
+// - 页面在后台：失效只标记过期、不重取，metrics 也不写缓存只标记过期（回到前台由 refetchOnWindowFocus 补上）。
 import { useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { eventKeys, type StreamEvent } from './queries';
+import { applyMetrics, LIVE_KEYS, type MetricsMsg } from './live';
 import { setStreamState as setStatus, useStreamState } from './streamState';
 
 const MERGE_MS = 300;
@@ -17,22 +18,21 @@ export function useStream(enabled: boolean) {
   const state = useStreamState();
   useEffect(() => {
     if (!enabled) return;
-    let es: EventSource | null = null;
+    let ws: WebSocket | null = null;
     let stopped = false;
     let retry = 0;
-    let dirty = false; // 出过错：下次 open 要补数据
+    let connected = false;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let mergeTimer: ReturnType<typeof setTimeout> | undefined;
     const pending = new Map<string, StreamEvent>();
     let all = false;
 
-    // 页面在后台时只标记过期、不立刻重取（回到前台由 refetchOnWindowFocus 补上）
-    const inv = (queryKey?: unknown[]) => qc.invalidateQueries({ queryKey, refetchType: document.hidden ? 'none' : 'active' });
+    const inv = (queryKey?: unknown[], cancelRefetch = true) => qc.invalidateQueries({ queryKey, refetchType: document.hidden ? 'none' : 'active' }, { cancelRefetch });
     const flush = () => {
       mergeTimer = undefined;
       if (all) inv();
       else {
-        // 一批事件里各键只失效一次（重复失效会取消在途请求再发一遍）；['machine'] 已覆盖 ['machine', id]
+        // 一批事件里各键只失效一次；['machine'] 已覆盖 ['machine', id]
         const keys = new Map<string, unknown[]>();
         pending.forEach((ev) => eventKeys(ev).forEach((k) => keys.set(JSON.stringify(k), k)));
         keys.forEach((k) => { if (k.length === 1 || !keys.has(JSON.stringify([k[0]]))) inv(k); });
@@ -44,32 +44,38 @@ export function useStream(enabled: boolean) {
       else pending.set(`${ev.type}:${ev.id ?? ''}`, ev);
       mergeTimer ??= setTimeout(flush, MERGE_MS);
     };
+    const onMetrics = (msg: MetricsMsg) => {
+      if (document.hidden) LIVE_KEYS.forEach((k) => qc.invalidateQueries({ queryKey: k, refetchType: 'none' }));
+      else applyMetrics(qc, msg);
+    };
 
     const open = () => {
       if (stopped) return;
-      const s = new EventSource('/api/v1/stream');
-      es = s;
+      const s = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/v1/stream`);
+      ws = s;
+      // 正在取的不打断重发（首次连上时首屏请求多半还在路上）
       s.onopen = () => {
         retry = 0; setStatus('open');
-        if (dirty) { dirty = false; inv(); }
-      };
-      s.onerror = () => {
-        setStatus('error'); dirty = true;
-        // CLOSED(2)：浏览器放弃了（非 200 / 非 event-stream），要自己重开；CONNECTING 则是浏览器在自动重连
-        if (s.readyState === 2) {
-          s.close();
-          retryTimer = setTimeout(open, Math.min(BACKOFF_MAX, 1000 * 2 ** retry++));
-        }
+        if (connected) inv(undefined, false); else LIVE_KEYS.forEach((k) => inv(k, false));
+        connected = true;
       };
       s.onmessage = (m) => {
-        setStatus('open');
-        try { queue(JSON.parse(m.data) as StreamEvent); } catch { /* 忽略非 JSON 心跳 */ }
+        const ev = JSON.parse(m.data as string) as StreamEvent | MetricsMsg;
+        if (ev.type === 'metrics') onMetrics(ev as MetricsMsg);
+        else queue(ev as StreamEvent);
+      };
+      // 出错之后一定会 close；会话失效（4401）也照常重连，握手会 401，登录态由各查询处理
+      s.onclose = () => {
+        if (stopped) return;
+        setStatus('error');
+        retryTimer = setTimeout(open, Math.min(BACKOFF_MAX, 1000 * 2 ** retry++));
       };
     };
     setStatus('connecting');
-    open();
+    // 推迟到下一轮再连：StrictMode 开发时挂载→卸载→再挂载，避免先建一个马上关掉的连接
+    retryTimer = setTimeout(open, 0);
     return () => {
-      stopped = true; es?.close(); clearTimeout(retryTimer); clearTimeout(mergeTimer);
+      stopped = true; ws?.close(); clearTimeout(retryTimer); clearTimeout(mergeTimer);
       setStatus('connecting');
     };
   }, [enabled, qc]);

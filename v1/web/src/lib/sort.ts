@@ -1,3 +1,4 @@
+import { useMemo, useRef } from 'react';
 import type { MachineView, Team } from './types';
 
 /**
@@ -21,6 +22,26 @@ export function makeDefaultCompare(teams: Team[]) {
   };
 }
 
+/**
+ * 显示顺序保持稳定：实时推送每 3 秒改一次速率、流量、健康，按这些排的列表会跟着乱跳。
+ * key（排序 / 筛选 / 分组 / 页码）不变时沿用上次的顺序，新出现的排到最后、消失的去掉；key 一变才按 list 重排。
+ * key 为 null（按静态字段排序，如默认顺序、名称）时直接用 list。
+ */
+export function useStableOrder<T extends { id: string }>(list: T[], key: string | null): T[] {
+  const prev = useRef<{ key: string | null; ids: string[] } | null>(null);
+  return useMemo(() => {
+    const p = prev.current;
+    let out = list;
+    if (key != null && p?.key === key) {
+      const byId = new Map(list.map((m) => [m.id, m]));
+      const old = new Set(p.ids);
+      out = p.ids.flatMap((id) => byId.get(id) ?? []).concat(list.filter((m) => !old.has(m.id)));
+    }
+    prev.current = { key, ids: out.map((m) => m.id) };
+    return out;
+  }, [list, key]);
+}
+
 export const HEALTH_LABEL: Record<string, string> = {
   ok: '正常', degraded: '降级', down: '故障', unknown: '未知', maintenance: '维护中', inactive: '未启用',
 };
@@ -28,6 +49,6 @@ export const HEALTH_TONE: Record<string, 'ok' | 'warn' | 'bad' | 'info' | 'neutr
   ok: 'ok', degraded: 'warn', down: 'bad', unknown: 'neutral', maintenance: 'info', inactive: 'neutral',
 };
 export const LIFECYCLE_LABEL: Record<string, string> = {
-  draft: '草稿', provisioning: '上架中', active: '运行中', retiring: '下线中', retired: '已退役', failed: '上架失败',
+  draft: '草稿', provisioning: '上架中', active: '运行中', retiring: '退役中', retired: '已退役', failed: '上架失败',
 };
 export const KIND_LABEL: Record<string, string> = { relay: '线路机', vps: '落地机', proxy: '家宽代理' };

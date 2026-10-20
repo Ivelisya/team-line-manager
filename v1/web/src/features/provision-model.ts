@@ -43,7 +43,7 @@ export const COLS: Col[] = [
   { key: 'up_port', label: '上游端口', w: 84, type: 'num', kinds: ['proxy'] },
   { key: 'up_user', label: '上游用户', w: 96, type: 'text', kinds: ['proxy'] },
   { key: 'up_pw', label: '上游密码', w: 104, type: 'secret', kinds: ['proxy'] },
-  { key: 'due_date', label: '到期日', w: 128, type: 'date', kinds: ALL, ph: '2026-12-01' },
+  { key: 'due_date', label: '到期日', w: 148, type: 'date', kinds: ALL, ph: '2026-12-01' },
   { key: 'price', label: '周期费用', w: 96, type: 'text', kinds: ALL },
   { key: 'note', label: '备注', w: 140, type: 'text', kinds: ALL },
 ];

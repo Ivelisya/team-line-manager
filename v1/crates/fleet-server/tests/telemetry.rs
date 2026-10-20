@@ -1,21 +1,18 @@
-//! 遥测入库 / 小时汇总 / 健康判定 / 告警 / 通知 / SSE / 保留期。
+//! 遥测入库 / 小时汇总 / 健康判定 / 告警 / 通知 / 实时流 / 保留期。
 //! 需要 PostgreSQL：环境变量 FLEET_TEST_DB（默认 postgres://fleet:fleet@127.0.0.1/fleet_test）。会清空该库的 public schema。
-//! 不起后台循环：告警评估、小时汇总都由测试手动驱动（告警评估的「当前时间」可以快进，不用真等去抖）。
+//! 不起后台循环：告警评估、小时汇总、实时指标比对都由测试手动驱动（告警评估的「当前时间」可以快进，不用真等去抖）。
 
 mod common_tele;
 
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::StatusCode;
 use common_tele::*;
 use fleet_proto::ProbeKind;
 use fleet_server::alerts::{self, AlertState};
 use fleet_server::state::Event;
-use fleet_server::db;
-use futures::StreamExt;
+use fleet_server::{db, live};
 use serde_json::{json, Value};
 use std::time::Duration;
 use time::OffsetDateTime;
-use tower::ServiceExt;
 use uuid::Uuid;
 
 const H: i64 = 3_600_000;
@@ -243,14 +240,15 @@ async fn relay_xray_down_alert_lifecycle() {
     assert!(ev.try_recv().is_err(), "没有变化就不该有事件");
     assert_eq!(incidents(&t, "firing").await.len(), 1, "同一条告警不重复开");
 
-    // 恢复：Xray 起来后要连续两个干净周期才算恢复
+    // 恢复：Xray 起来后原因要连续消失满 60 秒才算恢复（和开告警的去抖对称）
     let mut r = blank_report(3);
     r.xray = Some(xray(true));
     r.probes = vec![probe(entry, now_ms(), ProbeKind::Egress, true), probe(entry, now_ms(), ProbeKind::Tcp, true)];
     assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
     pass(&t, &mut state, base, 181).await;
-    assert_eq!(incidents(&t, "firing").await.len(), 1, "第一个干净周期还不恢复");
     pass(&t, &mut state, base, 211).await;
+    assert_eq!(incidents(&t, "firing").await.len(), 1, "消失不满 60 秒还不恢复");
+    pass(&t, &mut state, base, 241).await;
     assert!(incidents(&t, "firing").await.is_empty());
     assert!(has_rule(&incidents(&t, "resolved").await, "relay_xray_down"));
     assert!(matches!(ev.try_recv(), Ok(Event::Incidents)));
@@ -269,6 +267,12 @@ async fn relay_renewal_and_global_maintenance() {
     let mut state = AlertState::default();
     alerts::evaluate_once(&t.st, &mut state, OffsetDateTime::now_utc()).await.unwrap();
     assert!(has_rule(&incidents(&t, "firing").await, "renewal_due"), "续费类告警不去抖，立即开");
+    // 登记续费后下一轮评估立即恢复（续费类关也不去抖）
+    let new_due = OffsetDateTime::now_utc().date() + time::Duration::days(60);
+    t.post(&format!("/api/v1/machines/{relay}/renewals"), json!({"new_due": new_due.to_string(), "amount_cents": 500})).await;
+    alerts::evaluate_once(&t.st, &mut state, OffsetDateTime::now_utc()).await.unwrap();
+    assert!(!has_rule(&incidents(&t, "firing").await, "renewal_due"));
+    assert!(has_rule(&incidents(&t, "resolved").await, "renewal_due"));
 
     // 全局维护（不指定机器）：所有机器都显示维护中
     let f = time::format_description::well_known::Rfc3339;
@@ -494,47 +498,173 @@ async fn alert_notifications_firing_repeat_silence_and_resolved() {
     let (s, _) = t.req("DELETE", &format!("/api/v1/silences/{sil}"), None, None).await;
     assert_eq!(s, StatusCode::OK);
 
-    // 恢复：Xray 起来、配置也应用了；连续两个干净周期后各发一条「恢复」（只发给收到过触发的渠道）
+    // 恢复：Xray 起来、配置也应用了；原因消失满 60 秒后各发一条「恢复」（只发给收到过触发的渠道）
     let mut r = blank_report(2);
     r.xray = Some(xray(true));
     assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
     sqlx::query("update relay set applied_generation = 3, applied_at = now() where machine_id = $1").bind(relay).execute(&t.st.db).await.unwrap();
     pass(&t, &mut state, base, 181).await;
     assert_eq!(incidents(&t, "firing").await.len(), 2);
-    pass(&t, &mut state, base, 211).await;
+    pass(&t, &mut state, base, 241).await;
     assert!(incidents(&t, "firing").await.is_empty());
     mock.wait("/wecom/send", 3).await;
     mock.wait("/bot123:ABC", 5).await;
+    mock.wait("/hook/a", 5).await;
     let last_wc = mock.bodies("/wecom/send").pop().unwrap();
     assert!(last_wc["markdown"]["content"].as_str().unwrap().contains("告警已恢复"), "{last_wc}");
     assert!(mock.bodies("/hook/a").iter().any(|b| b["event"] == "resolved" && b["rule"] == "relay_xray_down"));
 }
 
-// ── T7 / T8：SSE 与错误 ─────────────────────────────────────────────────────
+async fn xray_report(t: &T, seq: u64, up: bool) {
+    let mut r = blank_report(seq);
+    r.xray = Some(xray(up));
+    assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
+}
+
+/// 等通知记录写到 n 条（发送是后台的），再多等一会确认没有多发
+async fn log_settles(t: &T, n: i64) {
+    for _ in 0..100 {
+        if t.count("select count(*) from notify_log").await >= n {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(t.count("select count(*) from notify_log").await, n);
+}
+
+/// 把最新一条通知记录的时间改成「告警评估时钟」上的某一刻（评估的 now 是快进的，通知按真实时间记）
+async fn stamp_last_notice(t: &T, at: OffsetDateTime) {
+    sqlx::query("update notify_log set ts = $1 where id = (select max(id) from notify_log)").bind(at).execute(&t.st.db).await.unwrap();
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn sse_sends_resync_when_subscriber_lags() {
+async fn flapping_alert_reopens_same_incident_without_spam() {
     let t = setup().await;
-    let res = t.app.clone().oneshot(Request::get("/api/v1/stream").header("cookie", &t.cookie).body(Body::empty()).unwrap()).await.unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    // 订阅者还没读，广播就发了远超缓冲（256）的事件 → 它会落后
-    for _ in 0..600 {
+    let mock = Mock::start().await;
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "webhook", "config": {"url": mock.url("/hook/a")}, "min_severity": "info", "enabled": true})).await;
+    seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let events = || mock.bodies("/hook/a").iter().map(|b| b["event"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    let mut state = AlertState::default();
+    let base = OffsetDateTime::now_utc();
+    let at = |s: i64| base + time::Duration::seconds(s);
+
+    // 触发 → 确认 → 恢复：各通知一次
+    xray_report(&t, 1, false).await;
+    pass(&t, &mut state, base, 0).await;
+    pass(&t, &mut state, base, 61).await;
+    let first = incidents(&t, "firing").await[0]["id"].clone();
+    log_settles(&t, 1).await;
+    stamp_last_notice(&t, at(61)).await;
+    t.post(&format!("/api/v1/incidents/{}/ack", first.as_str().unwrap()), json!({})).await;
+    xray_report(&t, 2, true).await;
+    pass(&t, &mut state, base, 91).await;
+    pass(&t, &mut state, base, 151).await;
+    assert!(incidents(&t, "firing").await.is_empty());
+    log_settles(&t, 2).await;
+    stamp_last_notice(&t, at(151)).await;
+
+    // 恢复通知后 5 分钟内复发：重开同一条（复发计数 +1、确认清掉），先不通知；满 5 分钟仍在触发再发「触发」
+    xray_report(&t, 3, false).await;
+    pass(&t, &mut state, base, 181).await;
+    pass(&t, &mut state, base, 241).await;
+    let inc = incidents(&t, "firing").await;
+    assert_eq!((inc.len(), &inc[0]["id"], inc[0]["reopen_count"].as_i64()), (1, &first, Some(1)), "{inc:?}");
+    assert!(inc[0]["ack_at"].is_null() && inc[0]["ack_by"].is_null(), "{inc:?}");
+    assert_eq!(t.count("select count(*) from incident").await, 1);
+    pass(&t, &mut state, base, 421).await;
+    log_settles(&t, 2).await;
+    pass(&t, &mut state, base, 451).await;
+    log_settles(&t, 3).await;
+    stamp_last_notice(&t, at(451)).await;
+    xray_report(&t, 4, true).await;
+    pass(&t, &mut state, base, 481).await;
+    pass(&t, &mut state, base, 541).await;
+    log_settles(&t, 4).await;
+    stamp_last_notice(&t, at(541)).await;
+    assert_eq!(events(), ["firing", "resolved", "firing", "resolved"]);
+
+    // 又在 5 分钟内抖一下就恢复：不通知，也不重复报恢复
+    xray_report(&t, 5, false).await;
+    pass(&t, &mut state, base, 571).await;
+    pass(&t, &mut state, base, 631).await;
+    assert_eq!(incidents(&t, "firing").await[0]["reopen_count"], 2);
+    xray_report(&t, 6, true).await;
+    pass(&t, &mut state, base, 661).await;
+    pass(&t, &mut state, base, 721).await;
+    assert!(incidents(&t, "firing").await.is_empty());
+    log_settles(&t, 4).await;
+
+    // 距恢复通知已满 5 分钟才复发：重开时立即发「触发」（真故障不被压住），恢复照常配对
+    xray_report(&t, 7, false).await;
+    pass(&t, &mut state, base, 901).await;
+    pass(&t, &mut state, base, 961).await;
+    assert_eq!(incidents(&t, "firing").await[0]["reopen_count"], 3);
+    log_settles(&t, 5).await;
+    stamp_last_notice(&t, at(961)).await;
+    xray_report(&t, 8, true).await;
+    pass(&t, &mut state, base, 991).await;
+    pass(&t, &mut state, base, 1051).await;
+    log_settles(&t, 6).await;
+    assert_eq!(events(), ["firing", "resolved", "firing", "resolved", "firing", "resolved"]);
+
+    // 超过重开窗口再出现：新开一条
+    sqlx::query("update incident set resolved_at = now() - interval '1 hour'").execute(&t.st.db).await.unwrap();
+    xray_report(&t, 9, false).await;
+    pass(&t, &mut state, base, 1081).await;
+    pass(&t, &mut state, base, 1141).await;
+    let inc = incidents(&t, "firing").await;
+    assert!(inc[0]["id"] != first && inc[0]["reopen_count"] == 0, "{inc:?}");
+    log_settles(&t, 7).await;
+}
+
+// ── T7 / T8：实时流（WebSocket）与错误 ──────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ws_requires_auth_and_resyncs_when_subscriber_lags() {
+    let t = setup().await;
+    match t.ws(false).await {
+        Err(tokio_tungstenite::tungstenite::Error::Http(r)) => assert_eq!(r.status(), StatusCode::UNAUTHORIZED),
+        other => panic!("未登录应 401：{:?}", other.map(|_| ())),
+    }
+    let mut ws = t.ws(true).await.unwrap();
+    // 一口气广播远超缓冲（256）的事件，服务端逐帧往外写跟不上 → 落后
+    for _ in 0..5000 {
         t.st.emit(Event::Machines);
     }
-    let mut body = res.into_body().into_data_stream();
-    let seen = tokio::time::timeout(Duration::from_secs(5), async {
-        let mut buf = String::new();
-        while let Some(Ok(b)) = body.next().await {
-            buf.push_str(&String::from_utf8_lossy(&b));
-            if buf.contains(r#"{"type":"resync"}"#) {
-                return true;
-            }
-        }
-        false
-    })
-    .await
-    .expect("5 秒内应读到 resync");
-    assert!(seen);
+    ws_next(&mut ws, "resync").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn report_is_pushed_as_metrics() {
+    let t = setup().await;
+    let relay = seed_relay(&t, "线路机1", "203.0.113.10", "tok1").await;
+    let mut ws = t.ws(true).await.unwrap();
+    let mut p = live::Published::default();
+    let now = now_ms();
+    let mut r = blank_report(1);
+    r.host = vec![host(now - 10_000, 10.0, 1_000, 2_000), host(now, 42.5, 11_000, 22_000)];
+    assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
+    assert!(live::publish(&t.st, &mut p).await.unwrap());
+    let m = ws_next(&mut ws, "metrics").await;
+    let me = &m["machines"][relay.to_string()];
+    // host = [ts, cpu, load1, mem_used, mem_total, disk_used, disk_total, rx_bps, tx_bps, tcp]
+    assert_eq!((me["host"][1].as_f64(), me["host"][7].as_i64(), me["host"][8].as_i64()), (Some(42.5), Some(8_000), Some(16_000)), "{me}");
+    assert_eq!(me["host"][0].as_i64(), Some(now / 1000));
+    assert!(me["seen"].is_i64() && me["agent"]["online"] == true && me["health"]["status"].is_string(), "{me}");
+    assert!(m["overview"]["relays"]["total"] == 1, "{m}");
+
+    // 没有变化：不发
+    assert!(!live::publish(&t.st, &mut p).await.unwrap());
+    // 下一份上报：只带变了的字段
+    let mut r = blank_report(2);
+    r.host = vec![host(now + 10_000, 50.0, 21_000, 42_000)];
+    assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
+    assert!(live::publish(&t.st, &mut p).await.unwrap());
+    let m = ws_next(&mut ws, "metrics").await;
+    let me = m["machines"][relay.to_string()].as_object().unwrap();
+    assert_eq!(me["host"][1].as_f64(), Some(50.0));
+    assert!(!me.contains_key("health") && !me.contains_key("agent"), "{me:?}");
 }
 
 // ── T9 / T10：分区与保留期 ──────────────────────────────────────────────────

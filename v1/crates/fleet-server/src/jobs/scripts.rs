@@ -184,7 +184,7 @@ echo "agent=$(systemctl is-active fleet-agent)"
 echo "boot_id=$(cat /proc/sys/kernel/random/boot_id)"
 "#;
 
-/// 下线清理（节点）：先停 agent 与 ssserver，删防火墙表和文件。中控随后撤销令牌。
+/// 退役清理（节点）：先停 agent 与 ssserver，删防火墙表和文件。中控随后撤销令牌。
 pub const NODE_CLEANUP: &str = r##"
 set -u
 systemctl disable --now fleet-agent 2>/dev/null; systemctl disable --now fleet-ssserver 2>/dev/null
@@ -198,7 +198,7 @@ ss -Hltn 'sport = :8388' | grep -q . && echo ss=still_listening || echo ss=gone
 echo cleanup=done
 "##;
 
-/// 下线清理（线路机）：停 agent 与 xray，删配置
+/// 退役清理（线路机）：停 agent 与 xray，删配置
 pub const RELAY_CLEANUP: &str = r#"
 set -u
 systemctl disable --now fleet-agent 2>/dev/null; systemctl disable --now fleet-xray 2>/dev/null

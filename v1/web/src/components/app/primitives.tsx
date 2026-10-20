@@ -27,7 +27,7 @@ Pill.displayName = 'Pill';
 export function HealthPill({ m }: { m: Pick<MachineView, 'health' | 'lifecycle' | 'maintenance'> }) {
   const lc = m.lifecycle;
   if (lc === 'provisioning') return <Pill tone="info" dot="pulse">上架中</Pill>;
-  if (lc === 'retiring') return <Pill tone="info" dot="pulse">下线中</Pill>;
+  if (lc === 'retiring') return <Pill tone="info" dot="pulse">退役中</Pill>;
   if (lc === 'retired') return <Pill tone="neutral" dot="ring">已退役</Pill>;
   if (lc === 'failed') return <Pill tone="bad">上架失败</Pill>;
   const s = m.health.status;
@@ -167,23 +167,6 @@ export function CopyButton({ text, label = '内容', className, size = 14 }: { t
     </Tip>
   );
 }
-
-/** 进度线（唯一实现）：0–100，tone 随阈值变 */
-export function Meter({ icon, label, value, pct, sub, empty }: { icon?: React.ReactNode; label: string; value: Fmt; pct: number | null; sub?: React.ReactNode; empty?: boolean }) {
-  const p = pct == null ? 0 : Math.max(0, Math.min(100, pct));
-  const tone = p >= 90 ? 'bad' : p >= 75 ? 'warn' : undefined;
-  return (
-    <div className={cn('meter', empty && 'is-empty')} data-tone={tone}>
-      <div className="meter-head"><span className="meter-label">{icon}{label}</span><span className="meter-value"><Num f={value} /></span></div>
-      <div className="meter-track"><div className="meter-fill" style={{ width: `${p}%` }} /></div>
-      {sub !== undefined && <div className="meter-sub">{sub}</div>}
-    </div>
-  );
-}
-export const Quota = ({ pct }: { pct: number | null }) => {
-  const p = pct == null ? 0 : Math.max(0, Math.min(100, pct));
-  return <div className="quota" data-tone={p >= 95 ? 'bad' : p >= 80 ? 'warn' : undefined}><div className="quota-fill" style={{ width: `${p}%` }} /></div>;
-};
 
 /** 心跳条：n 格，ok/warn/bad/空 */
 export function Beat({ cells, caption, win, stale, n = 20 }: { cells: ('ok' | 'warn' | 'bad' | null)[]; caption: React.ReactNode; win?: string; stale?: boolean; n?: number }) {
