@@ -15,6 +15,7 @@ import { Chip, Empty, entryState, HealthPill, KindIcon, LabelValue, LabelValueGr
 import { RANGES, TimeChart } from '@/components/app/TimeChart';
 import { ManageTab } from './ManageTab';
 import { BillingTab } from './BillingTab';
+import { AccessTab } from './AccessTab';
 
 export function NodeDrawer() {
   const { id, tab, setTab, close } = useDrawer();
@@ -54,6 +55,7 @@ export function NodeDrawer() {
               {tab === 'traffic' && <TrafficTab m={m} />}
               {tab === 'host' && <HostTab m={m} />}
               {tab === 'billing' && <BillingTab m={m} />}
+              {tab === 'access' && <AccessTab m={m} />}
               {tab === 'manage' && <ManageTab m={m} onClosed={close} />}
             </div>
           </>

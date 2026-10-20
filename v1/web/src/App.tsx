@@ -8,6 +8,7 @@ import { JobsPage } from './pages/Jobs';
 import { CatalogPage } from './pages/Catalog';
 import { IncidentsPage } from './pages/Incidents';
 import { LoginPage } from './pages/Login';
+import { AccessPage } from './pages/Access';
 
 export function App() {
   return (
@@ -20,6 +21,7 @@ export function App() {
         <Route path="provision" element={<ProvisionPage />} />
         <Route path="jobs" element={<JobsPage />} />
         <Route path="jobs/:id" element={<JobsPage />} />
+        <Route path="access" element={<AccessPage />} />
         <Route path="catalog" element={<CatalogPage />} />
         <Route path="incidents" element={<IncidentsPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />

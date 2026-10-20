@@ -2,10 +2,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
-export type DrawerTab = 'overview' | 'quality' | 'traffic' | 'host' | 'billing' | 'manage';
+export type DrawerTab = 'overview' | 'quality' | 'traffic' | 'host' | 'billing' | 'access' | 'manage';
 export const DRAWER_TABS: { value: DrawerTab; label: string }[] = [
   { value: 'overview', label: '概览' }, { value: 'quality', label: '连接质量' }, { value: 'traffic', label: '流量' },
-  { value: 'host', label: '主机' }, { value: 'billing', label: '费用' }, { value: 'manage', label: '管理' },
+  { value: 'host', label: '主机' }, { value: 'billing', label: '费用' }, { value: 'access', label: '访问记录' }, { value: 'manage', label: '管理' },
 ];
 
 export function useDrawer() {

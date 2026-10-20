@@ -1,3 +1,4 @@
+pub mod access;
 pub mod catalog;
 pub mod exec;
 pub mod jobs;
@@ -61,6 +62,13 @@ pub fn router() -> Router<AppState> {
         .route("/machines/{id}/logs", get(exec::machine_logs))
         .route("/server/logs", get(exec::server_logs))
         // 总览、告警、审计、实时
+        // 访问监控
+        .route("/access/summary", get(access::summary))
+        .route("/access/targets", get(access::targets))
+        .route("/access/sources", get(access::sources))
+        .route("/access/events", get(access::events))
+        .route("/access/new-targets", get(access::new_targets))
+        .route("/machines/{id}/access", get(access::machine))
         .route("/overview", get(misc::overview))
         .route("/incidents", get(misc::incidents))
         .route("/incidents/{id}/ack", post(misc::ack_incident))

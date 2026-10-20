@@ -2,7 +2,7 @@
 import * as React from 'react';
 import { NavLink, Navigate, Outlet, useLocation } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { BellRing, Boxes, Briefcase, CloudUpload, LayoutGrid, ListChecks, LogOut, Menu, Monitor, Moon, Palette, Server, Sun, Waypoints } from 'lucide-react';
+import { BellRing, Boxes, Briefcase, CloudUpload, LayoutGrid, ListChecks, LogOut, Menu, Monitor, Moon, Palette, Radar, Server, Sun, Waypoints } from 'lucide-react';
 import { AUTH_EVENT, post } from '@/lib/api';
 import { useIncidents, useMe } from '@/lib/queries';
 import { useStream } from '@/lib/stream';
@@ -18,6 +18,7 @@ const NAV = [
   { to: '/relays', label: '线路', icon: Waypoints },
   { to: '/provision', label: '上架', icon: CloudUpload },
   { to: '/jobs', label: '作业', icon: ListChecks },
+  { to: '/access', label: '访问监控', icon: Radar },
   { to: '/catalog', label: '团队与套餐', icon: Briefcase },
   { to: '/incidents', label: '告警', icon: BellRing, badge: true },
 ] as const;
