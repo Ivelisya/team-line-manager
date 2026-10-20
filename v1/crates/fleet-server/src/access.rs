@@ -129,7 +129,7 @@ pub async fn run_forever(st: AppState) {
         if let Err(e) = rollup_recent(&st.db).await {
             tracing::error!("访问汇总失败：{e:#}");
         }
-        if n % 12 == 0 {
+        if n.is_multiple_of(12) {
             if let Err(e) = prune(&st.db).await {
                 tracing::error!("访问汇总清理失败：{e:#}");
             }
