@@ -1,6 +1,7 @@
 // 访问监控：类型（对应 docs/API.md「访问监控」）+ 查询 hook。数据 30 秒轮询，页面不在前台时 TanStack Query 自动暂停。
 import { keepPreviousData, useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { get } from './api';
+import type { IpIntel } from './ipintel';
 
 export type AccessWindow = '1h' | '24h' | '7d' | '30d';
 export const ACCESS_WINDOWS: { value: AccessWindow; label: string; long: string }[] = [
@@ -23,7 +24,8 @@ export interface AccessTarget {
   first_seen: string | null; last_seen: string | null;
 }
 export interface AccessTargets { items: AccessTarget[]; next_offset: number | null; window_start: string }
-export interface AccessSource { node_id: string; name: string; src_ip: string; conns: number; last_ts: string | null }
+/** intel：来源画像（运营商 / 城市 / 接入方式…），IP 库没装或查不到时为 null */
+export interface AccessSource { node_id: string; name: string; src_ip: string; conns: number; last_ts: string | null; intel?: IpIntel | null }
 export interface AccessEvent { ts: string; node_id: string; name: string; src_ip: string | null; dest_host: string; dest_port: number | null; network: string | null; blocked: boolean }
 export interface AccessEvents { items: AccessEvent[]; next_before: string | null }
 export interface NewTarget { node_id: string; name: string; dest_host: string; kind: 'domain' | 'ip'; first_seen: string; last_seen: string; total: number }

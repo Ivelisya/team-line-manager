@@ -37,6 +37,15 @@ struct Raw {
     cn_mixed_remove: Vec<u32>,
 }
 
+/// `Lists::load` 的结果
+pub struct Loaded {
+    pub lists: Lists,
+    /// 覆盖文件存在且已生效
+    pub used: bool,
+    /// 覆盖文件存在但无效（已退回内置默认）
+    pub error: Option<String>,
+}
+
 /// 合并后的清单，查询是 O(1)
 #[derive(Debug, Clone, Default)]
 pub struct Lists {
@@ -91,17 +100,18 @@ impl Lists {
         Ok(l)
     }
 
-    /// 内置默认 + 覆盖文件。文件不存在不算错（`Ok((默认, false))`）；存在但坏了返回 Err 说明原因。
-    pub fn load(overrides: Option<&Path>) -> Result<(Lists, bool), (Lists, String)> {
-        let Some(p) = overrides else { return Ok((Lists::builtin(), false)) };
+    /// 内置默认 + 覆盖文件。文件不存在不算错（`used = false`）；存在但读不了或解析失败时退回内置默认，`error` 说明原因。
+    pub fn load(overrides: Option<&Path>) -> Loaded {
+        let default = |error: Option<String>| Loaded { lists: Lists::builtin(), used: false, error };
+        let Some(p) = overrides else { return default(None) };
         let text = match std::fs::read_to_string(p) {
             Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((Lists::builtin(), false)),
-            Err(e) => return Err((Lists::builtin(), format!("{}: {e}", p.display()))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return default(None),
+            Err(e) => return default(Some(format!("{}: {e}", p.display()))),
         };
         match Lists::with_overrides_str(&text) {
-            Ok(l) => Ok((l, true)),
-            Err(e) => Err((Lists::builtin(), format!("{}: {e}", p.display()))),
+            Ok(lists) => Loaded { lists, used: true, error: None },
+            Err(e) => default(Some(format!("{}: {e}", p.display()))),
         }
     }
 
@@ -185,13 +195,14 @@ mod tests {
     #[test]
     fn load_missing_and_broken_file() {
         let d = tempfile::tempdir().unwrap();
-        let (l, used) = Lists::load(Some(&d.path().join("nope.toml"))).unwrap();
-        assert!(!used);
-        assert!(l.cloud_asn(16509).is_some());
+        let r = Lists::load(Some(&d.path().join("nope.toml")));
+        assert!(!r.used && r.error.is_none());
+        assert!(r.lists.cloud_asn(16509).is_some());
         let bad = d.path().join("bad.toml");
         std::fs::write(&bad, "[[vpn]]\nasn = \"x\"").unwrap();
-        let (fallback, msg) = Lists::load(Some(&bad)).unwrap_err();
+        let r = Lists::load(Some(&bad));
+        let msg = r.error.unwrap();
         assert!(msg.contains("bad.toml"), "{msg}");
-        assert!(fallback.vpn_asn(9009).is_some(), "坏文件退回默认");
+        assert!(!r.used && r.lists.vpn_asn(9009).is_some(), "坏文件退回默认");
     }
 }

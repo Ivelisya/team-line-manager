@@ -61,14 +61,12 @@ impl IpIntel {
 
     fn build(dir: &Path, overrides: Option<&Path>) -> (Dbs, OverrideState, String) {
         let sig = signature(dir, overrides);
-        let (lists, ov) = match Lists::load(overrides) {
-            Ok((l, used)) => (l, OverrideState { used, error: None }),
-            Err((l, e)) => {
-                tracing::warn!("ipintel 覆盖清单无效，退回内置默认：{e}");
-                (l, OverrideState { used: false, error: Some(e) })
-            }
-        };
-        let dbs = Dbs::open(dir, lists);
+        let loaded = Lists::load(overrides);
+        if let Some(e) = &loaded.error {
+            tracing::warn!("ipintel 覆盖清单无效，退回内置默认：{e}");
+        }
+        let ov = OverrideState { used: loaded.used, error: loaded.error };
+        let dbs = Dbs::open(dir, loaded.lists);
         (dbs, ov, sig)
     }
 

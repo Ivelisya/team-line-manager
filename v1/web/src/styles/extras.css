@@ -198,3 +198,12 @@
 @media (prefers-reduced-motion: reduce) {
   .progress[data-live="1"] .progress-fill, .stepbar-item[data-kind="running"] .stepbar-node, .top-btn.jobs-ind > .lucide, .toast-timer { animation: none; }
 }
+
+/* ========== 来源画像：分布横条（抽屉「访问记录」页签） ========== */
+.dist-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: var(--sp-16); }
+.dist { display: flex; flex-direction: column; gap: var(--sp-6); }
+.dist-row { display: grid; grid-template-columns: minmax(64px, 40%) minmax(0, 1fr) 34px; align-items: center; gap: var(--sp-8); font: var(--fw-regular) var(--fs-label) / var(--lh-label) var(--font-sans); }
+.dist-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+.dist-track { height: 8px; border-radius: var(--r-pill); background: var(--track); overflow: hidden; }
+.dist-fill { display: block; height: 100%; border-radius: var(--r-pill); background: var(--chart-1); }
+.dist-pct { text-align: right; color: var(--fg-2); font-variant-numeric: tabular-nums; }
