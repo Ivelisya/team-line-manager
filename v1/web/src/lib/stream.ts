@@ -6,7 +6,7 @@
 // - 流正常时不再 30 秒轮询；只有流不是 open 才由各查询自己轮询兜底（见 usePoll）。
 import { useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { invalidateFor, type StreamEvent } from './queries';
+import { eventKeys, type StreamEvent } from './queries';
 import { setStreamState as setStatus, useStreamState } from './streamState';
 
 const MERGE_MS = 300;
@@ -26,10 +26,17 @@ export function useStream(enabled: boolean) {
     const pending = new Map<string, StreamEvent>();
     let all = false;
 
+    // 页面在后台时只标记过期、不立刻重取（回到前台由 refetchOnWindowFocus 补上）
+    const inv = (queryKey?: unknown[]) => qc.invalidateQueries({ queryKey, refetchType: document.hidden ? 'none' : 'active' });
     const flush = () => {
       mergeTimer = undefined;
-      if (all) qc.invalidateQueries();
-      else pending.forEach((ev) => invalidateFor(qc, ev));
+      if (all) inv();
+      else {
+        // 一批事件里各键只失效一次（重复失效会取消在途请求再发一遍）；['machine'] 已覆盖 ['machine', id]
+        const keys = new Map<string, unknown[]>();
+        pending.forEach((ev) => eventKeys(ev).forEach((k) => keys.set(JSON.stringify(k), k)));
+        keys.forEach((k) => { if (k.length === 1 || !keys.has(JSON.stringify([k[0]]))) inv(k); });
+      }
       pending.clear(); all = false;
     };
     const queue = (ev: StreamEvent) => {
@@ -44,7 +51,7 @@ export function useStream(enabled: boolean) {
       es = s;
       s.onopen = () => {
         retry = 0; setStatus('open');
-        if (dirty) { dirty = false; qc.invalidateQueries(); }
+        if (dirty) { dirty = false; inv(); }
       };
       s.onerror = () => {
         setStatus('error'); dirty = true;

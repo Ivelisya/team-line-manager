@@ -1,8 +1,10 @@
-// 告警：事件列表（确认 / 查看机器）+ 静默与维护窗口。列表保持服务端顺序（严重度优先），前端不重排。
+// 告警：事件列表（确认 / 查看机器，服务端分页）+ 静默与维护窗口。列表保持服务端顺序（严重度优先），前端不重排。
 import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { BellOff, Check, CheckCircle2, Plus, Trash2, Wrench } from 'lucide-react';
-import { useAck, useAddSilence, useDelSilence, useIncidents, useMachines, useSilences } from '@/lib/queries';
+import { INCIDENT_PAGE, useAck, useAddSilence, useDelSilence, useIncidents, useMachines, useSilences } from '@/lib/queries';
+import { usePage } from '@/lib/usePage';
+import { Pagination } from '@/components/app/Pagination';
 import { useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
 import type { Incident } from '@/lib/types';
@@ -17,23 +19,28 @@ import { ConfirmDialog } from '@/components/app/dialogs';
 import { NodeHover } from '@/components/app/NodeHover';
 import { Empty, ErrorNote, Note, PageHead, Panel, Pill } from '@/components/app/primitives';
 
-/** 规则 key（health.rs 产出）→ 中文名；未收录的原样显示 key */
+/** 规则 key（health.rs、ipintel.rs 产出，开告警的全部收录）→ 中文名；未收录的原样显示 key */
 export const RULES: Record<string, string> = {
   agent_offline: 'agent 离线', no_entry: '节点没有入口', egress_fail: '出口验证失败', tcp_fail: 'TCP 探测失败',
   renewal_due: '即将到期', renewal_overdue: '已过期未续费', relay_apply_lag: '线路机下发滞后', relay_apply_error: '线路机下发失败', relay_xray_down: '线路机 xray 未运行',
+  host_cpu_high: 'CPU 持续偏高', host_mem_high: '内存持续偏高', host_disk_high: '磁盘空间不足',
   ipintel_new_isp: '来源出现新运营商', ipintel_new_city: '来源出现新城市', ipintel_datacenter_source: '机房 / VPN 来源',
 };
 const SEV = (i: Incident) => (i.state === 'resolved' ? <Pill tone="ok" dot="ring">已恢复</Pill> : i.severity === 'critical' ? <Pill tone="bad">严重</Pill> : i.severity === 'info' ? <Pill tone="info">提示</Pill> : <Pill tone="warn">警告</Pill>);
 
 export function IncidentsPage() {
   const [state, setState] = React.useState<'firing' | 'resolved' | 'all'>('firing');
-  const q = useIncidents(state);
+  // 页码先于查询算出（偏移量进查询）；总数取上一次的结果
+  const [total, setTotal] = React.useState<number>();
+  const pg = usePage({ total, sizes: [20, INCIDENT_PAGE, 100], size: INCIDENT_PAGE, reset: [state] });
+  const q = useIncidents(state, pg.offset, pg.size);
+  React.useEffect(() => { if (q.data) setTotal(q.data.total); }, [q.data]);
   const ack = useAck();
   const { open } = useDrawer();
-  const list = q.data ?? [];
+  const list = q.data?.items ?? [];
   return (
-    <div className="stack">
-      <PageHead title="告警" note={q.data ? `${list.length} 条` : undefined}
+    <div className="stack" ref={pg.anchor}>
+      <PageHead title="告警" note={q.data ? `${q.data.total} 条` : undefined}
         tools={<Segmented label="状态" value={state} onChange={setState} items={[{ value: 'firing', label: '进行中' }, { value: 'resolved', label: '已恢复' }, { value: 'all', label: '全部' }]} />} />
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       <Panel flush>
@@ -60,6 +67,7 @@ export function IncidentsPage() {
           {q.isLoading && <SkeletonRows rows={4} />}
           {q.data && list.length === 0 && <Empty icon={state === 'firing' ? <CheckCircle2 size={22} /> : undefined} text={state === 'firing' ? '没有进行中的告警' : '没有记录'} hint={state === 'firing' ? '所有机器都在正常范围内' : undefined} />}
         </div>
+        <Pagination pg={pg} unit="条" />
       </Panel>
       <Silences />
     </div>

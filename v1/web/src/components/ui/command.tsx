@@ -53,4 +53,3 @@ export const CommandItem = React.forwardRef<React.ElementRef<typeof Cmdk.Item>, 
 ));
 CommandItem.displayName = 'CommandItem';
 
-export const CommandSeparator = () => <Cmdk.Separator className="cmd-sep" />;

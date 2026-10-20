@@ -1,11 +1,11 @@
 // 访问监控：哪个节点访问了哪些域名 / IP。筛选条（团队 / 节点 / 时间范围 / 搜索 / 目标类型 / 处理结果）即时生效，状态进 URL。
 // 页签：域名与 IP / 新出现的目标 / 来源地址 / 节点概览 / 原始记录。数据 30 秒轮询（切走页面暂停）。
+// 分页：目标与新目标按 offset 翻页（服务端），来源与节点概览是已取回的列表（前端切页），原始记录按时间游标「较新 / 较早」。
 import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { useQueryClient } from '@tanstack/react-query';
 import { Radar } from 'lucide-react';
 import {
-  ACCESS_WINDOWS, isAccessWindow, pagesLoaded, refreshFirstPage, useAccessEvents, useAccessSources, useAccessSummary, useAccessTargets, useNewTargets,
+  ACCESS_WINDOWS, EVENTS_PAGE, isAccessWindow, useAccessEvents, useAccessSources, useAccessSummary, useAccessTargets, useNewTargets,
   type AccessFilter, type AccessWindow, type TargetSort,
 } from '@/lib/access';
 import { useMachines, useTeams } from '@/lib/queries';
@@ -18,6 +18,8 @@ import { Segmented, Tabs, TabsList, TabsTrigger } from '@/components/ui/overlays
 import { Empty, KpiTile, Note, PageHead, Panel, Pill } from '@/components/app/primitives';
 import { AccessViewSwitch } from '@/components/app/AccessViewSwitch';
 import { HostCell, ResultPill, fmtN } from '@/features/AccessBits';
+import { CursorPager, Pagination } from '@/components/app/Pagination';
+import { scrollBackTo, usePage } from '@/lib/usePage';
 import { CONN_FILTER_OPTIONS, ConnCell, IpIntelHint, IpIntelStatusChip, IspPlace, connMatches } from '@/features/IpIntelBits';
 
 type View = 'targets' | 'new' | 'sources' | 'nodes' | 'events';
@@ -45,6 +47,7 @@ export function AccessPage() {
     kind: kind === 'domain' || kind === 'ip' ? kind : '', action: act === 'routed' || act === 'blocked' ? act : '',
   }), [w, sp, kind, act]);
   const tab: View = isView(view) ? view : 'targets';
+  const { open } = useDrawer(); // 一次：各视图的行里不再各自订阅 URL
   const [sort, setSort] = React.useState<TargetSort>('conns');
 
   // 搜索框：输入即生效，停手 250ms 后写进 URL
@@ -85,15 +88,15 @@ export function AccessPage() {
         </div>
       </div>
 
-      <Tabs value={tab} onValueChange={(v) => upd({ view: v === 'targets' ? '' : v })}>
+      <Tabs value={tab} onValueChange={(v) => upd({ view: v === 'targets' ? '' : v, p: '' })}>
         <TabsList>{VIEWS.map((x) => <TabsTrigger key={x.value} value={x.value} noPanel>{x.label}</TabsTrigger>)}</TabsList>
       </Tabs>
 
-      {tab === 'targets' && <TargetsView f={f} sort={sort} setSort={setSort} filtered={filtered} />}
-      {tab === 'new' && <NewView f={f} filtered={filtered} />}
-      {tab === 'sources' && <SourcesView f={f} filtered={filtered} />}
-      {tab === 'nodes' && <NodesView f={f} filtered={filtered} />}
-      {tab === 'events' && <EventsView f={f} filtered={filtered} />}
+      {tab === 'targets' && <TargetsView open={open} f={f} sort={sort} setSort={setSort} filtered={filtered} total={summary.data?.kpi.targets} />}
+      {tab === 'new' && <NewView open={open} f={f} filtered={filtered} />}
+      {tab === 'sources' && <SourcesView open={open} f={f} filtered={filtered} />}
+      {tab === 'nodes' && <NodesView open={open} f={f} filtered={filtered} />}
+      {tab === 'events' && <EventsView open={open} f={f} filtered={filtered} />}
     </div>
   );
 }
@@ -105,39 +108,20 @@ const Loading = () => <div style={{ padding: 16 }}><span className="skel" style=
 const ErrNote = ({ e }: { e: unknown }) => <Note tone="bad">{(e as Error).message}</Note>;
 
 /** 节点名：点开抽屉的「访问记录」页签 */
-function NodeLink({ id, name }: { id: string; name: string }) {
-  const { open } = useDrawer();
+type Open = ReturnType<typeof useDrawer>['open'];
+function NodeLink({ id, name, open }: { id: string; name: string; open: Open }) {
   return <button type="button" className="btn btn-link" style={{ maxWidth: '100%' }} onClick={(e) => { e.stopPropagation(); open(id, 'access'); }}><span className="ellipsis">{name}</span></button>;
 }
 
-/** 加载了多页后自动刷新会暂停（轮询会重拉所有已加载的页，翻页位置也会错位）；这里给出提示和手动刷新 */
-function PausedNote({ pages, queryKey }: { pages: number; queryKey: readonly unknown[] }) {
-  const qc = useQueryClient();
-  if (pages <= 1) return null;
+/** total：同一筛选下 summary 的「访问目标」数，正是这张表的总行数 */
+function TargetsView({ open, f, sort, setSort, filtered, total }: { f: AccessFilter; sort: TargetSort; setSort: (s: TargetSort) => void; filtered: boolean; open: Open; total: number | undefined }) {
+  const pg = usePage({ total, sizes: [50, 100, 200], size: 100, reset: [f, sort] });
+  const q = useAccessTargets(f, sort, pg.offset, pg.size);
+  const rows = q.data?.items ?? [];
   return (
-    <div style={{ padding: '8px 12px' }}>
-      <Note tone="info">已加载 {pages} 页，已暂停自动刷新。<Button variant="link" size="sm" onClick={() => refreshFirstPage(qc, queryKey)}>回到第一页并刷新</Button></Note>
-    </div>
-  );
-}
-
-function LoadMore({ has, busy, onClick }: { has: boolean; busy: boolean; onClick: () => void }) {
-  if (!has) return null;
-  return <div className="dt-foot" style={{ justifyContent: 'center' }}><Button size="sm" loading={busy} onClick={onClick}>加载更多</Button></div>;
-}
-
-function TargetsView({ f, sort, setSort, filtered }: { f: AccessFilter; sort: TargetSort; setSort: (s: TargetSort) => void; filtered: boolean }) {
-  const q = useAccessTargets(f, sort);
-  // offset 分页在排序键变化时同一行可能出现在两页：按 节点|目标 去重，保证 key 唯一
-  const rows = React.useMemo(() => {
-    const seen = new Set<string>();
-    return (q.data?.pages.flatMap((p) => p.items) ?? []).filter((t) => { const k = `${t.node_id}|${t.dest_host}`; if (seen.has(k)) return false; seen.add(k); return true; });
-  }, [q.data]);
-  return (
-    <Panel title="域名与 IP" count={q.data ? `${rows.length}${q.hasNextPage ? '+' : ''} 个` : undefined} sub="同一节点的随机子域名已合并为 *.域名"
+    <Panel ref={pg.anchor} title="域名与 IP" count={total != null ? `${fmtN(total)} 个` : undefined} sub="同一节点的随机子域名已合并为 *.域名"
       tools={<Segmented sm label="排序" value={sort} onChange={setSort} items={[{ value: 'conns', label: '连接数' }, { value: 'last', label: '最近' }, { value: 'first', label: '首次' }]} />} flush>
       {q.isError && <div style={{ padding: 12 }}><ErrNote e={q.error} /></div>}
-      <PausedNote pages={pagesLoaded(q.data)} queryKey={['access', 'targets', f, sort]} />
       <div className="table-wrap">
         <table className="dt" style={{ minWidth: 900 }}>
           <colgroup><col /><col style={{ width: 130 }} /><col style={{ width: 80 }} /><col style={{ width: 96 }} /><col style={{ width: 210 }} /><col style={{ width: 104 }} /><col style={{ width: 104 }} /></colgroup>
@@ -146,7 +130,7 @@ function TargetsView({ f, sort, setSort, filtered }: { f: AccessFilter; sort: Ta
             {rows.map((t) => (
               <tr key={`${t.node_id}|${t.dest_host}`}>
                 <td><HostCell host={t.dest_host} kind={t.kind} /></td>
-                <td><NodeLink id={t.node_id} name={t.name} /></td>
+                <td><NodeLink id={t.node_id} name={t.name} open={open} /></td>
                 <td className="r">{fmtN(t.sources)}</td>
                 <td className="r strong">{fmtN(t.conns)}</td>
                 <td><ResultPill conns={t.conns} blocked={t.blocked} /></td>
@@ -159,16 +143,20 @@ function TargetsView({ f, sort, setSort, filtered }: { f: AccessFilter; sort: Ta
       </div>
       {q.isLoading && <Loading />}
       {q.data && rows.length === 0 && <None f={f} filtered={filtered} />}
-      <LoadMore has={!!q.hasNextPage} busy={q.isFetchingNextPage} onClick={() => void q.fetchNextPage()} />
+      <Pagination pg={pg} unit="个" />
     </Panel>
   );
 }
 
-function NewView({ f, filtered }: { f: AccessFilter; filtered: boolean }) {
-  const q = useNewTargets(f);
+function NewView({ f, filtered, open }: { f: AccessFilter; filtered: boolean; open: Open }) {
+  // 页码先于查询算出（偏移量进查询）；总数取上一次的结果
+  const [total, setTotal] = React.useState<number>();
+  const pg = usePage({ total, sizes: [50, 100, 200], size: 100, reset: [f] });
+  const q = useNewTargets(f, pg.offset, pg.size);
+  React.useEffect(() => { if (q.data) setTotal(q.data.total); }, [q.data]);
   const rows = q.data?.items ?? [];
   return (
-    <Panel title="新出现的目标" count={q.data ? `${rows.length}${q.data.next_offset != null ? '+' : ''} 个` : undefined}
+    <Panel ref={pg.anchor} title="新出现的目标" count={q.data ? `${fmtN(q.data.total)} 个` : undefined}
       sub="该节点第一次访问到的域名 / IP；新目标不等于异常，只作参考" flush>
       {q.isError && <div style={{ padding: 12 }}><ErrNote e={q.error} /></div>}
       <div className="table-wrap">
@@ -179,7 +167,7 @@ function NewView({ f, filtered }: { f: AccessFilter; filtered: boolean }) {
             {rows.map((t) => (
               <tr key={`${t.node_id}|${t.dest_host}`}>
                 <td><HostCell host={t.dest_host} kind={t.kind} /></td>
-                <td><NodeLink id={t.node_id} name={t.name} /></td>
+                <td><NodeLink id={t.node_id} name={t.name} open={open} /></td>
                 <td>{F.dtFull(t.first_seen)}<span className="sub">{F.ago(t.first_seen)}</span></td>
                 <td>{F.ago(t.last_seen)}</td>
                 <td className="r">{fmtN(t.total)}</td>
@@ -190,19 +178,21 @@ function NewView({ f, filtered }: { f: AccessFilter; filtered: boolean }) {
       </div>
       {q.isLoading && <Loading />}
       {q.data && rows.length === 0 && <None f={f} filtered={filtered} what="新出现的目标" />}
+      <Pagination pg={pg} unit="个" />
     </Panel>
   );
 }
 
-function SourcesView({ f, filtered }: { f: AccessFilter; filtered: boolean }) {
+function SourcesView({ f, filtered, open }: { f: AccessFilter; filtered: boolean; open: Open }) {
   const q = useAccessSources(f);
   const [ct, setCt] = React.useState('');
   const all = q.data?.items ?? [];
   const rows = all.filter((s) => connMatches(s.intel, ct));
+  const pg = usePage({ total: q.data ? rows.length : undefined, sizes: [50, 100], size: 50, reset: [f, ct] });
   return (
     <>
       <IpIntelHint />
-      <Panel title="来源地址" count={q.data ? `${rows.length}${ct ? ` / ${all.length}` : ''} 个` : undefined}
+      <Panel ref={pg.anchor} title="来源地址" count={q.data ? `${rows.length}${ct ? ` / ${all.length}` : ''} 个` : undefined}
         sub="连接到入口的客户端地址，按连接数排序，附运营商 · 城市 · 接入方式（离线库，不外发 IP）；搜索框在这里匹配来源 IP" flush>
         {q.isError && <div style={{ padding: 12 }}><ErrNote e={q.error} /></div>}
         <div className="table-wrap">
@@ -216,12 +206,12 @@ function SourcesView({ f, filtered }: { f: AccessFilter; filtered: boolean }) {
               </tr>
             </thead>
             <tbody>
-              {rows.map((s) => (
+              {rows.slice(pg.offset, pg.offset + pg.size).map((s) => (
                 <tr key={`${s.node_id}|${s.src_ip}`}>
                   <td><span className="mono strong">{s.src_ip}</span></td>
                   <td><IspPlace intel={s.intel} /></td>
                   <td><ConnCell intel={s.intel} /></td>
-                  <td><NodeLink id={s.node_id} name={s.name} /></td>
+                  <td><NodeLink id={s.node_id} name={s.name} open={open} /></td>
                   <td className="r">{fmtN(s.conns)}</td>
                   <td title={F.dtFull(s.last_ts)}>{F.ago(s.last_ts)}</td>
                 </tr>
@@ -233,24 +223,25 @@ function SourcesView({ f, filtered }: { f: AccessFilter; filtered: boolean }) {
         {q.data && rows.length === 0 && (ct && all.length > 0
           ? <Empty icon={<Radar size={28} />} text="没有符合该接入方式的来源地址" hint={<Button size="sm" variant="quiet" onClick={() => setCt('')}>清除接入方式筛选</Button>} />
           : <None f={f} filtered={filtered} what="来源地址" />)}
+        <Pagination pg={pg} unit="个" />
       </Panel>
     </>
   );
 }
 
-function NodesView({ f, filtered }: { f: AccessFilter; filtered: boolean }) {
+function NodesView({ f, filtered, open }: { f: AccessFilter; filtered: boolean; open: Open }) {
   const q = useAccessSummary(f);
-  const { open } = useDrawer();
   const rows = q.data?.nodes ?? [];
+  const pg = usePage({ total: q.data ? rows.length : undefined, sizes: [50, 100], size: 50, reset: [f] });
   return (
-    <Panel title="节点概览" count={q.data ? `${rows.length} 个节点` : undefined} sub="点一行打开该节点的访问记录" flush>
+    <Panel ref={pg.anchor} title="节点概览" count={q.data ? `${rows.length} 个节点` : undefined} sub="点一行打开该节点的访问记录" flush>
       {q.isError && <div style={{ padding: 12 }}><ErrNote e={q.error} /></div>}
       <div className="table-wrap">
         <table className="dt" style={{ minWidth: 760 }}>
           <colgroup><col style={{ width: 170 }} /><col style={{ width: 100 }} /><col style={{ width: 100 }} /><col style={{ width: 90 }} /><col style={{ width: 100 }} /><col style={{ width: 110 }} /><col /></colgroup>
           <thead><tr><th>节点</th><th className="r">连接数</th><th className="r">访问目标</th><th className="r">域名</th><th className="r">来源数</th><th className="r">已阻止</th><th>最近活动</th></tr></thead>
           <tbody>
-            {rows.map((n) => (
+            {rows.slice(pg.offset, pg.offset + pg.size).map((n) => (
               <tr key={n.node_id} className="is-link" tabIndex={0} onClick={() => open(n.node_id, 'access')} onKeyDown={(e) => { if (e.key === 'Enter') open(n.node_id, 'access'); }}>
                 <td><span className="cell-main strong">{n.name}</span><span className="sub">{n.team ?? '—'}</span></td>
                 <td className="r strong">{fmtN(n.conns)}</td>
@@ -266,17 +257,25 @@ function NodesView({ f, filtered }: { f: AccessFilter; filtered: boolean }) {
       </div>
       {q.isLoading && <Loading />}
       {q.data && rows.length === 0 && <None f={f} filtered={filtered} />}
+      <Pagination pg={pg} unit="个" />
     </Panel>
   );
 }
 
-function EventsView({ f, filtered }: { f: AccessFilter; filtered: boolean }) {
-  const q = useAccessEvents(f);
-  const rows = q.data?.pages.flatMap((p) => p.items) ?? [];
+function EventsView({ f, filtered, open }: { f: AccessFilter; filtered: boolean; open: Open }) {
+  // 游标栈：cur[i] 是第 i+1 页的 before（'' = 最新一页）。筛选一变回到最新一页
+  const fk = JSON.stringify(f);
+  const [st, setSt] = React.useState({ fk, cur: [''] });
+  if (st.fk !== fk) setSt({ fk, cur: [''] });
+  const cur = st.fk === fk ? st.cur : [''];
+  const q = useAccessEvents(f, cur[cur.length - 1]);
+  const rows = q.data?.items ?? [];
+  const older = q.data?.next_before;
+  const top = React.useRef<HTMLElement>(null);
+  const go = (next: string[]) => { setSt({ fk, cur: next }); scrollBackTo(top.current); };
   return (
-    <Panel title="原始记录" count={q.data ? `${rows.length}${q.hasNextPage ? '+' : ''} 条` : undefined} sub="最新在前；原始记录只保留 7 天，目标不做合并" flush>
+    <Panel ref={top} title="原始记录" sub="最新在前；原始记录只保留 7 天，目标不做合并" flush>
       {q.isError && <div style={{ padding: 12 }}><ErrNote e={q.error} /></div>}
-      <PausedNote pages={pagesLoaded(q.data)} queryKey={['access', 'events', f]} />
       <div className="table-wrap">
         <table className="dt is-one" style={{ minWidth: 820 }}>
           <colgroup><col style={{ width: 150 }} /><col style={{ width: 130 }} /><col style={{ width: 140 }} /><col /><col style={{ width: 70 }} /><col style={{ width: 96 }} /></colgroup>
@@ -285,7 +284,7 @@ function EventsView({ f, filtered }: { f: AccessFilter; filtered: boolean }) {
             {rows.map((e, i) => (
               <tr key={`${e.ts}|${e.node_id}|${i}`}>
                 <td className="num">{F.dtFull(e.ts)}:{F.pad2(new Date(e.ts).getSeconds())}</td>
-                <td><NodeLink id={e.node_id} name={e.name} /></td>
+                <td><NodeLink id={e.node_id} name={e.name} open={open} /></td>
                 <td><span className="mono">{e.src_ip ?? '—'}</span></td>
                 <td title={e.dest_host}><span className="strong">{e.dest_host}</span>{e.dest_port != null && <span className="t-sub">:{e.dest_port}</span>}</td>
                 <td>{e.network?.toUpperCase() ?? '—'}</td>
@@ -297,7 +296,9 @@ function EventsView({ f, filtered }: { f: AccessFilter; filtered: boolean }) {
       </div>
       {q.isLoading && <Loading />}
       {q.data && rows.length === 0 && <None f={f} filtered={filtered} />}
-      <LoadMore has={!!q.hasNextPage} busy={q.isFetchingNextPage} onClick={() => void q.fetchNextPage()} />
+      {/* 新的一页还没到（仍显示着上一页）时不能再往前翻：那时的 next_before 还是上一页的 */}
+      <CursorPager page={cur.length} size={EVENTS_PAGE} onNewer={cur.length > 1 ? () => go(cur.slice(0, -1)) : undefined}
+        onOlder={older && !q.isPlaceholderData ? () => go([...cur, older]) : undefined} />
     </Panel>
   );
 }

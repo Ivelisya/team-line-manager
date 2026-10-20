@@ -128,9 +128,12 @@ impl FromRequestParts<AppState> for Actor {
         // API 密钥
         if let Some(h) = parts.headers.get("authorization").and_then(|v| v.to_str().ok()) {
             if let Some(k) = h.strip_prefix("Bearer ") {
+                // 最近使用时间一分钟内不重复写
                 let row: Option<(String, Vec<String>)> = sqlx::query_as(
-                    "update api_key set last_used_at = now() where key_hash = $1 and revoked_at is null
-                     and (expires_at is null or expires_at > now()) returning name, scopes",
+                    "with k as (select name, scopes from api_key where key_hash = $1 and revoked_at is null and (expires_at is null or expires_at > now())),
+                          _u as (update api_key set last_used_at = now() where key_hash = $1 and revoked_at is null and (expires_at is null or expires_at > now())
+                                 and (last_used_at is null or last_used_at < now() - interval '1 minute'))
+                     select name, scopes from k",
                 )
                 .bind(sha256(k.as_bytes()))
                 .fetch_optional(&st.db)
@@ -153,9 +156,11 @@ impl FromRequestParts<AppState> for Actor {
         let jar = CookieJar::from_headers(&parts.headers);
         let c = jar.get(COOKIE).ok_or_else(ApiError::unauthorized)?;
         let row: Option<(Uuid, String)> = sqlx::query_as(
-            "update session s set last_seen_at = now() from app_user u
-             where s.id_hash = $1 and s.expires_at > now() and u.id = s.user_id and u.disabled_at is null
-             returning u.id, u.username",
+            "with u as (select u.id, u.username from session s join app_user u on u.id = s.user_id
+                        where s.id_hash = $1 and s.expires_at > now() and u.disabled_at is null),
+                  _s as (update session set last_seen_at = now() where id_hash = $1 and expires_at > now() and last_seen_at < now() - interval '1 minute'
+                         and exists (select 1 from u))
+             select id, username from u",
         )
         .bind(sha256(c.value().as_bytes()))
         .fetch_optional(&st.db)

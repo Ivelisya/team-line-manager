@@ -1,4 +1,6 @@
 // 线路：每台线路机一张卡——下发状态（配置代数 vs 已下发）+ 入口表（端口、节点、状态、是否已下发、TCP/出口探测、流量）。
+// 入口多的线路机（几十条）只先露前 ENTRY_CAP 条，表尾「显示全部 N 条」展开：线路机只有几台，一页里放几个分页器反而难用。
+import * as React from 'react';
 import { CheckCircle2, CircleAlert, Loader2, PackageOpen, PanelRightOpen } from 'lucide-react';
 import { useRelays } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
@@ -12,6 +14,8 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { EntryActions } from '@/components/app/EntryActions';
 import { entryState } from '@/components/app/primitives';
 import { openEvacuate } from '@/lib/nodeActions';
+import { ShowAll } from '@/components/app/Pagination';
+import { ENTRY_CAP } from '@/features/EntriesTable';
 
 const probe = (p: EntryView['tcp']) => (p == null ? <span className="t-muted">—</span> : p.ok ? <Num f={F.ms(p.latency_ms)} /> : <span style={{ color: 'var(--bad-text)' }} title={p.detail ?? undefined}>失败</span>);
 
@@ -32,10 +36,11 @@ function ApplyStatus({ m }: { m: MachineView }) {
   );
 }
 
-function RelayCard({ m }: { m: MachineView }) {
-  const { open } = useDrawer();
+function RelayCard({ m, open }: { m: MachineView; open: ReturnType<typeof useDrawer>['open'] }) {
   const r = m.relay;
   const due = F.dueFmt(m.subscription?.due_days);
+  const [all, setAll] = React.useState(false);
+  const entries = all ? m.entries : m.entries.slice(0, ENTRY_CAP);
   return (
     <section className="panel relay-card">
       <header className="relay-head">
@@ -54,7 +59,7 @@ function RelayCard({ m }: { m: MachineView }) {
           <colgroup><col style={{ width: 84 }} /><col style={{ width: 150 }} /><col style={{ width: 104 }} /><col style={{ width: 84 }} /><col style={{ width: 80 }} /><col style={{ width: 80 }} /><col style={{ width: 120 }} /><col style={{ width: 52 }} /></colgroup>
           <thead><tr><th>端口</th><th>节点</th><th>状态</th><th>已下发</th><th className="r">TCP</th><th className="r">出口</th><th className="r">本月流量</th><th /></tr></thead>
           <tbody>
-            {m.entries.map((e) => (
+            {entries.map((e) => (
               <tr key={e.id}>
                 <td className="strong num">{e.port}</td>
                 <td><NodeHover id={e.node.id}><button className="btn-link btn" style={{ height: 'auto', padding: 0, border: 0, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis' }} onClick={() => open(e.node.id)}>{e.node.name}</button></NodeHover></td>
@@ -69,19 +74,21 @@ function RelayCard({ m }: { m: MachineView }) {
         </table>
         {m.entries.length === 0 && <Empty text="这台线路机还没有挂载入口" />}
       </div>
+      <ShowAll total={m.entries.length} cap={ENTRY_CAP} open={all} onToggle={() => setAll((v) => !v)} />
     </section>
   );
 }
 
 export function RelaysPage() {
   const q = useRelays();
+  const { open } = useDrawer();
   const list = q.data ?? [];
   return (
     <div className="stack">
       <PageHead title="线路" note={q.data ? `${list.length} 台线路机 · ${list.reduce((s, m) => s + m.entries.length, 0)} 条入口` : undefined} />
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       {q.isLoading && <Skeleton h={220} />}
-      {list.map((m) => <RelayCard key={m.id} m={m} />)}
+      {list.map((m) => <RelayCard key={m.id} m={m} open={open} />)}
       {q.data && list.length === 0 && <Empty icon={<Waypoints size={22} />} text="还没有线路机" hint="去“上架”添加第一台线路机" />}
     </div>
   );

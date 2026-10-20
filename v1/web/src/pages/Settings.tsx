@@ -18,11 +18,11 @@ import { copyText } from '@/lib/clipboard';
 
 export function SettingsPage() {
   const [sp, setSp] = useSearchParams();
-  const tab = sp.get('tab') === 'notify' ? 'notify' : 'keys';
+  const tab = sp.get('section') === 'notify' ? 'notify' : 'keys';
   return (
     <div className="stack">
       <PageHead title="设置" note="API 密钥与告警通知" />
-      <Tabs value={tab} onValueChange={(v) => setSp((p) => { const n = new URLSearchParams(p); n.set('tab', v); return n; }, { replace: true })}>
+      <Tabs value={tab} onValueChange={(v) => setSp((p) => { const n = new URLSearchParams(p); n.set('section', v); return n; }, { replace: true })}>
         <TabsList className="set-tabs">
           <TabsTrigger value="keys" noPanel><KeyRound size={14} />API 密钥</TabsTrigger>
           <TabsTrigger value="notify" noPanel><Bell size={14} />告警通知</TabsTrigger>

@@ -109,7 +109,7 @@ function series(m: MachineView, metric: string, range: string): { metric: string
       pts.push({ ts, up: Math.round(r() * 8e6 * k * (1 + Math.sin(i / 7))), down: Math.round(r() * 3e7 * k * (1 + Math.cos(i / 8))), conns: Math.round(20 + r() * 80) });
     } else {
       const tcpFail = tail || r() < 0.015; const egFail = tail || r() < 0.02;
-      pts.push({ ts, tcp_ok: !tcpFail, tcp_ms: tcpFail ? null : Math.round(40 + r() * 70 + (i % 23 === 0 ? 120 : 0)), egress_ok: !egFail, egress_ms: egFail ? null : Math.round(160 + r() * 90) });
+      pts.push({ ts, tcp_ok: !tcpFail, tcp_ms: tcpFail ? null : Math.round(40 + r() * 70 + (i % 23 === 0 ? 120 : 0)), egress_ok: !egFail, egress_ms: egFail ? null : Math.round(160 + r() * 90), tcp_n: 2, tcp_ok_n: tcpFail ? 0 : 2 });
     }
   }
   return { metric, range, resolution: range === '7d' || range === '30d' ? '1h' : '1m', points: pts };
@@ -243,7 +243,7 @@ function createMachine(it: ProvisionItem, c: ProvisionCheckItem): MachineView {
     plan: plan ? { id: plan.id, name: plan.name, bandwidth_mbps: plan.bandwidth_mbps, traffic_gb: plan.traffic_gb } : null, service_ref: it.service_ref ?? null,
     lifecycle: 'provisioning', lifecycle_reason: null, note: it.note ?? '', revision: 1, created_at: iso(), activated_at: null, retired_at: null,
     subscription: it.subscription?.due_date ? { price_cents: it.subscription.price_cents ?? plan?.price_cents ?? 0, currency: plan?.currency ?? 'CNY', cycle: it.subscription.cycle ?? plan?.cycle ?? 'monthly', due_date: it.subscription.due_date, due_days: 0, billing_tz: it.subscription.billing_tz ?? 'Asia/Shanghai', auto_renew: false, remind_days: 7, traffic_gb: plan?.traffic_gb || null, traffic_reset_day: 1 } : null,
-    agent: null, host: null, entries: [], health: { status: 'unknown', reasons: [{ key: 'provisioning', severity: 'info', text: '上架作业进行中' }] }, active_job: null, open_incidents: 0, maintenance: false,
+    agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, health: { status: 'unknown', reasons: [{ key: 'provisioning', severity: 'info', text: '上架作业进行中' }] }, active_job: null, open_incidents: 0, maintenance: false,
     relay: it.kind === 'relay' ? { public_host: it.ip, generation: 1, applied_generation: 0, applied_at: null, apply_error: null, port_min: 20001, port_max: 20999 } : null,
   };
   if (m.kind !== 'relay') {
@@ -412,9 +412,15 @@ R('POST', '/machines/([^/]+)/entries', ({ params, body }) => {
   emit({ type: 'machines' }); return { job_id: job.id };
 });
 
+/** 分页接口的形状（同服务端 api::paged） */
+const paged = <T,>(all: T[], query: URLSearchParams) => {
+  const limit = +(query.get('limit') ?? 100); const offset = +(query.get('offset') ?? 0);
+  const items = clone(all.slice(offset, offset + limit));
+  return { items, total: all.length, next_offset: offset + items.length < all.length ? offset + items.length : null };
+};
 R('GET', '/jobs', ({ query }) => {
-  const s = query.get('state') ?? 'all'; const limit = +(query.get('limit') ?? 100);
-  return clone(db.jobs.filter((j) => s === 'all' || (s === 'active' ? j.state === 'running' || j.state === 'queued' : j.state !== 'running' && j.state !== 'queued')).slice(0, limit));
+  const s = query.get('state') ?? 'all';
+  return paged(db.jobs.filter((j) => s === 'all' || (s === 'active' ? j.state === 'running' || j.state === 'queued' : j.state !== 'running' && j.state !== 'queued')), query);
 });
 const jobOf = (id: string) => { const j = db.jobs.find((x) => x.id === id); if (!j) throw bad('作业不存在', 404, 'not_found'); return j; };
 R('GET', '/jobs/([^/]+)', ({ params }) => clone(jobOf(params[0])));
@@ -430,7 +436,7 @@ R('POST', '/jobs/([^/]+)/cancel', ({ params }) => {
 });
 
 R('GET', '/overview', () => overview());
-R('GET', '/incidents', ({ query }) => { const s = query.get('state') ?? 'all'; return clone(db.incidents.filter((i) => s === 'all' || i.state === s)); });
+R('GET', '/incidents', ({ query }) => { const s = query.get('state') ?? 'firing'; return paged(db.incidents.filter((i) => s === 'all' || i.state === s), query); });
 R('POST', '/incidents/([^/]+)/ack', ({ params }) => { const i = db.incidents.find((x) => x.id === params[0]); if (!i) throw bad('告警不存在', 404, 'not_found'); i.ack_at = iso(); i.ack_by = db.user; emit({ type: 'incidents' }); return {}; });
 R('GET', '/silences', () => clone(db.silences));
 R('POST', '/silences', ({ body }) => { const m = body.subject_id ? machine(body.subject_id) : null; const s = { id: `s${db.seq++}`, subject_name: m?.name ?? null, rule: null, subject_id: null, ...body }; db.silences.push(s); emit({ type: 'incidents' }); return s; });

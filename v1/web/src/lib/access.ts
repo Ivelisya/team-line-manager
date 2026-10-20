@@ -1,5 +1,5 @@
 // 访问监控：类型（对应 docs/API.md「访问监控」）+ 查询 hook。数据 30 秒轮询，页面不在前台时 TanStack Query 自动暂停。
-import { keepPreviousData, useInfiniteQuery, useQuery, type QueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { get } from './api';
 import type { IpIntel } from './ipintel';
 
@@ -28,6 +28,7 @@ export interface AccessTargets { items: AccessTarget[]; next_offset: number | nu
 export interface AccessSource { node_id: string; name: string; src_ip: string; conns: number; last_ts: string | null; intel?: IpIntel | null }
 export interface AccessEvent { ts: string; node_id: string; name: string; src_ip: string | null; dest_host: string; dest_port: number | null; network: string | null; blocked: boolean }
 export interface AccessEvents { items: AccessEvent[]; next_before: string | null }
+export interface NewTargets { items: NewTarget[]; total: number; next_offset: number | null; window_start: string }
 export interface NewTarget { node_id: string; name: string; dest_host: string; kind: 'domain' | 'ip'; first_seen: string; last_seen: string; total: number }
 export interface MachineAccess {
   window_start: string;
@@ -36,16 +37,6 @@ export interface MachineAccess {
 }
 
 const POLL = 30_000;
-
-/** 无限查询加载超过 1 页后停止自动轮询：轮询会按顺序重拉所有已加载的页，且 offset 分页在排序键变化时会重复/漏行。
- *  这时由页面提示“已暂停自动刷新”，用 refreshFirstPage 手动回到第一页。 */
-const pollFirstPageOnly = (q: { state: { data?: { pages: unknown[] } } }) => ((q.state.data?.pages.length ?? 0) > 1 ? false : POLL);
-export const pagesLoaded = (d: { pages: unknown[] } | undefined) => d?.pages.length ?? 0;
-/** 只保留第一页并重新拉取（手动刷新） */
-export function refreshFirstPage(qc: QueryClient, queryKey: readonly unknown[]) {
-  qc.setQueryData(queryKey, (d: { pages: unknown[]; pageParams: unknown[] } | undefined) => (d ? { pages: d.pages.slice(0, 1), pageParams: d.pageParams.slice(0, 1) } : d));
-  void qc.invalidateQueries({ queryKey });
-}
 
 /** 筛选条件 → 查询串；空值不带 */
 export function accessQS(f: AccessFilter, extra: Record<string, string | number | undefined> = {}): string {
@@ -62,17 +53,17 @@ export function accessQS(f: AccessFilter, extra: Record<string, string | number 
 export const useAccessSummary = (f: AccessFilter) =>
   useQuery({ queryKey: ['access', 'summary', f], queryFn: ({ signal }) => get<AccessSummary>(`/access/summary?${accessQS(f)}`, signal), refetchInterval: POLL, placeholderData: keepPreviousData });
 
-export const useAccessTargets = (f: AccessFilter, sort: TargetSort, enabled = true) =>
-  useInfiniteQuery({
-    queryKey: ['access', 'targets', f, sort], enabled, initialPageParam: 0, refetchInterval: pollFirstPageOnly, placeholderData: keepPreviousData,
-    queryFn: ({ pageParam, signal }) => get<AccessTargets>(`/access/targets?${accessQS(f, { sort, limit: 100, offset: pageParam })}`, signal),
-    getNextPageParam: (last) => last.next_offset ?? undefined,
+/** 一页目标（offset 分页）。接口不回总数：总数就是同一筛选下 /access/summary 的 kpi.targets（同一个聚合，各节点去重后相加） */
+export const useAccessTargets = (f: AccessFilter, sort: TargetSort, offset: number, limit: number, enabled = true) =>
+  useQuery({
+    queryKey: ['access', 'targets', f, sort, offset, limit], enabled, refetchInterval: POLL, placeholderData: keepPreviousData,
+    queryFn: ({ signal }) => get<AccessTargets>(`/access/targets?${accessQS(f, { sort, limit, offset })}`, signal),
   });
 
-export const useNewTargets = (f: AccessFilter, enabled = true) =>
+export const useNewTargets = (f: AccessFilter, offset: number, limit: number, enabled = true) =>
   useQuery({
-    queryKey: ['access', 'new', f], enabled, refetchInterval: POLL, placeholderData: keepPreviousData,
-    queryFn: ({ signal }) => get<{ items: NewTarget[]; next_offset: number | null }>(`/access/new-targets?${accessQS(f, { limit: 200 })}`, signal),
+    queryKey: ['access', 'new', f, offset, limit], enabled, refetchInterval: POLL, placeholderData: keepPreviousData,
+    queryFn: ({ signal }) => get<NewTargets>(`/access/new-targets?${accessQS(f, { limit, offset })}`, signal),
   });
 
 export const useAccessSources = (f: AccessFilter, enabled = true) =>
@@ -81,11 +72,12 @@ export const useAccessSources = (f: AccessFilter, enabled = true) =>
     queryFn: ({ signal }) => get<{ items: AccessSource[] }>(`/access/sources?${accessQS(f, { limit: 200 })}`, signal),
   });
 
-export const useAccessEvents = (f: AccessFilter, enabled = true) =>
-  useInfiniteQuery({
-    queryKey: ['access', 'events', f], enabled, initialPageParam: '', refetchInterval: pollFirstPageOnly, placeholderData: keepPreviousData,
-    queryFn: ({ pageParam, signal }) => get<AccessEvents>(`/access/events?${accessQS(f, { limit: 100, before: pageParam })}`, signal),
-    getNextPageParam: (last) => last.next_before ?? undefined,
+/** 原始记录的一页：before 是上一页最后一条的时间（'' = 最新一页）。只有最新一页轮询，往前翻的页是固定的历史 */
+export const EVENTS_PAGE = 100;
+export const useAccessEvents = (f: AccessFilter, before: string, enabled = true) =>
+  useQuery({
+    queryKey: ['access', 'events', f, before], enabled, refetchInterval: before ? false : POLL, placeholderData: keepPreviousData,
+    queryFn: ({ signal }) => get<AccessEvents>(`/access/events?${accessQS(f, { limit: EVENTS_PAGE, before })}`, signal),
   });
 
 export const useMachineAccess = (id: string | null, window: AccessWindow) =>

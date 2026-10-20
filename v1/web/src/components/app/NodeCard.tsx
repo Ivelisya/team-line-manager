@@ -1,6 +1,8 @@
 // 节点卡片：一套外壳、三种视图。每个视图的“槽位”固定（大 10 / 小 7 / 紧凑 6），
 // 无论机器是主机、家宽代理还是线路机，同一个槽位都渲染同样高度的内容或占位——配合 cards.css 的 subgrid，同一行的卡片分段永远对齐。
 import { memo } from 'react';
+import { m as mo } from 'motion/react'; // 别名：组件里的 props 叫 m（机器）
+import { SPRING } from '@/lib/motion';
 import { Activity, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpFromLine, Calendar, CircleDollarSign, Cpu, Database, Globe, HardDrive, MemoryStick, MoreHorizontal, Radar, RefreshCw, Settings2, PanelRightOpen, ServerOff } from 'lucide-react';
 import type { MachineView, Plan } from '@/lib/types';
 import * as F from '@/lib/format';
@@ -73,7 +75,7 @@ function BeatSlot({ m, enabled }: { m: MachineView; enabled: boolean }) {
   const s = useSeries(m.id, 'probe', '1h', enabled && live, 120_000);
   const ps = probeSummary(m);
   const cap = !live ? <span className="t-muted">{m.lifecycle === 'retired' ? '已退役' : '尚未开始探测'}</span>
-    : m.kind === 'relay' ? <>入口连通 <b className="num">{ps.tcpOk}/{ps.total}</b></>
+    : m.kind === 'relay' ? <>入口连通 <b className="num" style={ps.tcpOk < ps.total ? { color: 'var(--warn-text)' } : undefined}>{ps.tcpOk}/{ps.total}</b></>
     : <>TCP <b className="num">{ps.tcp != null ? `${ps.tcp} ms` : '—'}</b> · 出口 <b className="num">{ps.egress != null ? `${ps.egress} ms` : '—'}</b></>;
   return <Beat cells={live ? beatCells(s.data?.points) : []} caption={cap} win="近 1 小时" stale={isQuiet(m)} />;
 }
@@ -158,8 +160,9 @@ function FlowRow({ m }: { m: MachineView }) {
   );
 }
 
-/** 卡片只吃稳定的 props（plans 引用、onOpen 回调不随地址变化），配合 memo，抽屉开关或 tick 时只有变了的那张重渲染 */
-function NodeCardImpl({ m, view, current, plans, onOpen: open }: { m: MachineView; view: CardView; current?: boolean; plans: Plan[]; onOpen: (id: string, tab?: DrawerTab) => void }) {
+/** 卡片只吃稳定的 props（plans 引用、onOpen 回调不随地址变化），配合 memo，抽屉开关或 tick 时只有变了的那张重渲染。
+ *  layoutKey：筛选/排序/视图的签名，变了才量位置做布局动画（layoutDependency），平时重渲染不量 */
+function NodeCardImpl({ m, view, current, plans, onOpen: open, layoutKey }: { m: MachineView; view: CardView; current?: boolean; plans: Plan[]; onOpen: (id: string, tab?: DrawerTab) => void; layoutKey: string }) {
   const [ref, visible] = useInView<HTMLElement>(); // 心跳条只在卡片可见时轮询，滚出视口就停
   const onOpen = (tab?: 'overview' | 'manage') => open(m.id, tab);
   const q = quota(m); const host = hasHost(m);
@@ -169,7 +172,7 @@ function NodeCardImpl({ m, view, current, plans, onOpen: open }: { m: MachineVie
   return (
     <ContextMenu>
     <ContextMenuTrigger asChild>
-    <article ref={ref} className={cn('ncard', current && 'is-current', quiet && 'is-quiet')} data-view={VIEW_ATTR[view]} data-id={m.id} data-kind={m.kind} data-health={m.health.status} data-offline={quiet ? '1' : undefined}>
+    <mo.article ref={ref} layout="position" layoutDependency={layoutKey} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ layout: SPRING, opacity: { duration: 0.18 } }} className={cn('ncard', current && 'is-current', quiet && 'is-quiet')} data-view={VIEW_ATTR[view]} data-id={m.id} data-kind={m.kind} data-health={m.health.status} data-offline={quiet ? '1' : undefined}>
       <Head m={m} view={view} onOpen={onOpen} />
 
       {view === 'large' && <>
@@ -235,7 +238,7 @@ function NodeCardImpl({ m, view, current, plans, onOpen: open }: { m: MachineVie
       </>}
 
       <Foot m={m} onOpen={onOpen} />
-    </article>
+    </mo.article>
     </ContextMenuTrigger>
     <ContextMenuContent><NodeContextItems m={m} /></ContextMenuContent>
     </ContextMenu>

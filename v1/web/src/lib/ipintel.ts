@@ -3,9 +3,6 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { get } from './api';
 
 export type ConnType = 'residential' | 'mobile' | 'datacenter' | 'vpn' | 'unknown';
-export const CONN_TYPES: { value: ConnType; label: string }[] = [
-  { value: 'residential', label: '住宅' }, { value: 'mobile', label: '移动' }, { value: 'datacenter', label: '机房' }, { value: 'vpn', label: 'VPN' }, { value: 'unknown', label: '未知' },
-];
 
 /** 一个来源 IP 的画像摘要；查不到（库未装 / 库里没有）时整个对象为 null */
 export interface IpIntel {

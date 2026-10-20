@@ -265,7 +265,11 @@ async fn new_targets_machine_and_idempotent_rollup() {
     let d = t.get("/api/v1/access/new-targets?window=24h&search=solo").await;
     assert_eq!(hosts(&d), vec!["solo.example.net".to_string()]);
     let d = t.get(&format!("/api/v1/access/new-targets?window=7d&node={n1}&limit=3")).await;
-    assert_eq!((d["items"].as_array().unwrap().len(), d["next_offset"].as_i64()), (3, Some(3)));
+    assert_eq!((d["items"].as_array().unwrap().len(), d["next_offset"].as_i64(), d["total"].as_i64()), (3, Some(3), Some(8)));
+    let d = t.get(&format!("/api/v1/access/new-targets?window=7d&node={n1}&limit=3&offset=6")).await;
+    assert_eq!((d["items"].as_array().unwrap().len(), d["next_offset"].is_null(), d["total"].as_i64()), (2, true, Some(8)), "最后一页不满，不给 next_offset");
+    let d = t.get(&format!("/api/v1/access/new-targets?window=7d&node={n1}&kind=ip")).await;
+    assert_eq!(d["total"].as_i64(), Some(1), "总数跟着筛选走");
 
     // 重复汇总不改变结果（含 target_seen.total）
     let before = t.get("/api/v1/access/summary?window=7d").await;

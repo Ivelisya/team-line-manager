@@ -17,6 +17,9 @@ export const toast = {
   show: (t: ToastInput) => push?.(t),
 };
 
+/** 离场过渡时长：读 .toast 的 transition 所用的 --dur-base 令牌（减弱动效时是 0ms） */
+const leaveMs = () => parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--dur-base'));
+
 const ICON = { ok: CheckCircle2, bad: XCircle, info: Info } as const;
 const LIFE = { ok: 3600, info: 5000, bad: 7000 } as const;
 
@@ -55,7 +58,7 @@ export function Toaster() {
   const seq = React.useRef(0);
   const close = React.useCallback((id: number) => {
     setList((l) => l.map((x) => (x.id === id ? { ...x, leaving: true } : x)));
-    setTimeout(() => setList((l) => l.filter((x) => x.id !== id)), 160);
+    setTimeout(() => setList((l) => l.filter((x) => x.id !== id)), leaveMs());
   }, []);
   React.useEffect(() => {
     push = (t) => setList((l) => {

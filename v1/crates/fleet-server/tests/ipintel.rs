@@ -69,6 +69,9 @@ async fn degrades_without_dbs_never_500() {
     assert_eq!(p["top_sources"][0]["src_ip"], "202.102.224.68");
     assert!(p["top_sources"][0]["intel"].is_null());
     assert_eq!(p["learning"]["done"], false);
+    // 同参数再取一次走短 TTL 缓存，结果一致；limit 不同是另一份缓存
+    assert_eq!(t.get(&format!("/api/v1/machines/{}/sources?window=7d", fx.n[0])).await, p);
+    assert_eq!(t.get(&format!("/api/v1/machines/{}/sources?window=7d&limit=1", fx.n[0])).await["top_sources"].as_array().unwrap().len(), 1);
     assert_eq!(t.get(&format!("/api/v1/machines/{}/sources", fx.n[1])).await["empty"], true);
     assert_eq!(t.raw(&format!("/api/v1/machines/{}/sources?window=1h", fx.n[0])).await.0, StatusCode::BAD_REQUEST);
     assert_eq!(t.raw(&format!("/api/v1/machines/{}/sources?limit=abc", fx.n[0])).await.0, StatusCode::BAD_REQUEST);

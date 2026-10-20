@@ -165,11 +165,14 @@ async fn create_partition(db: &PgPool, table: &str, d: Date) -> anyhow::Result<(
     Ok(())
 }
 
+/// 一轮最多补算的脏小时数（长时间断网后的积压分几轮消化）
+const DIRTY_BATCH: i64 = 96;
+
 /// 小时汇总：补算「脏小时」（有新原始数据落进来的整点，含中控停机后 agent 补传的旧数据）加上
 /// 上一小时和当前小时。同一小时从原始数据重算并覆盖，幂等。处理完的脏标记删除。
 pub async fn rollup_hours(db: &PgPool) -> anyhow::Result<()> {
     let (t0, cur): (OffsetDateTime, OffsetDateTime) = sqlx::query_as("select clock_timestamp(), date_trunc('hour', clock_timestamp())").fetch_one(db).await?;
-    let dirty: Vec<(OffsetDateTime,)> = sqlx::query_as("select hour from rollup_dirty where hour <= $1 order by hour").bind(cur).fetch_all(db).await?;
+    let dirty: Vec<(OffsetDateTime,)> = sqlx::query_as("select hour from rollup_dirty where hour <= $1 order by hour limit $2").bind(cur).bind(DIRTY_BATCH).fetch_all(db).await?;
     let mut hours: BTreeSet<OffsetDateTime> = dirty.iter().map(|(h,)| *h).collect();
     hours.insert(cur);
     hours.insert(cur - Duration::hours(1));
@@ -218,13 +221,14 @@ async fn rollup_hour(db: &PgPool, hour: OffsetDateTime) -> anyhow::Result<()> {
 }
 
 /// 保留期清理（每小时一次）：已恢复超 180 天的告警、过期会话、超 1 天的登录失败记录、
-/// 超 90 天的通知记录、超 365 天的审计。
+/// 超 90 天的通知记录、结束超 90 天的静默、超 365 天的审计。
 pub async fn cleanup_retention(db: &PgPool) -> anyhow::Result<()> {
     let q = [
         ("告警", "delete from incident where state = 'resolved' and resolved_at < now() - interval '180 days'"),
         ("会话", "delete from session where expires_at < now()"),
         ("登录失败", "delete from login_failure where ts < now() - interval '1 day'"),
         ("通知记录", "delete from notify_log where ts < now() - interval '90 days'"),
+        ("静默", "delete from silence where ends_at < now() - interval '90 days'"),
         ("审计", "delete from audit_log where ts < now() - interval '365 days'"),
     ];
     for (what, sql) in q {

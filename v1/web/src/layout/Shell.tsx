@@ -13,12 +13,13 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Toaster } from '@/components/ui/toast';
 import { useDrawer } from '@/lib/drawer';
+import { useHeld } from '@/lib/useHeld';
 import { Hotkeys, PaletteTrigger } from '@/features/Hotkeys';
 import { JobsIndicator } from '@/features/JobsIndicator';
 import { ErrorBoundary } from '@/components/app/ErrorBoundary';
 import { Note, Pill } from '@/components/app/primitives';
 
-// 抽屉（含各页签、react-table、对话框）和生命周期对话框只在第一次用到时才下载，登录页和首屏不背这份体积。
+// 抽屉（含各页签、图表、对话框）和生命周期对话框只在第一次用到时才下载，登录页和首屏不背这份体积。
 // 加载失败（发版后旧块 404）由外面的 silent ErrorBoundary 接住并提示刷新。
 const NodeDrawer = React.lazy(() => import('@/features/NodeDrawer').then((m) => ({ default: m.NodeDrawer })));
 const RetireDialog = React.lazy(() => import('@/components/app/RetireDialog').then((m) => ({ default: m.RetireDialog })));
@@ -54,8 +55,10 @@ const closeLifecycle = () => { closeMove(); closeEvacuate(); closeRestore(); };
 function NodeActionsHost() {
   const id = useRetireTarget();
   const q = useMachinePreview(id);
-  if (!id || !q.data) return null;
-  return <React.Suspense fallback={null}><RetireDialog m={q.data} open onOpenChange={(o) => { if (!o) closeRetire(); }} onDone={closeRetire} /></React.Suspense>;
+  // id 清空后继续用最近的机器渲染 open=false 的对话框，让 Radix 播完关闭动画再卸载
+  const m = useHeld(id, q.data);
+  if (!m) return null;
+  return <React.Suspense fallback={null}><RetireDialog key={m.id} m={m} open={!!id} onOpenChange={(o) => { if (!o) closeRetire(); }} onDone={closeRetire} /></React.Suspense>;
 }
 
 function DrawerHost() {
@@ -76,7 +79,7 @@ export function Shell() {
   const [navOpen, setNavOpen] = React.useState(false);
   const theme = useTheme();
   const stream = useStream(!!me.data);
-  const firing = useIncidents('firing').data?.length ?? 0;
+  const firing = useIncidents('firing').data?.total ?? 0;
 
   React.useEffect(() => { setNavOpen(false); }, [loc.pathname]);
   // 登录后首屏稳定下来再悄悄预取抽屉的代码：不占首屏带宽，第一次点开时也不用等
@@ -166,7 +169,7 @@ export function Shell() {
       <div className="nav-scrim" onClick={() => setNavOpen(false)} />
 
       <main className="main" id="main" tabIndex={-1}>
-        <div className="content"><ErrorBoundary resetKey={loc.pathname}><React.Suspense fallback={<PageFallback />}><Outlet /></React.Suspense></ErrorBoundary></div>
+        <div className="content"><ErrorBoundary resetKey={loc.pathname}><React.Suspense fallback={<PageFallback />}><div key={loc.pathname.split('/')[1] ?? ''} className="page-in"><Outlet /></div></React.Suspense></ErrorBoundary></div>
       </main>
       {/* 浮层宿主各包一层边界：它们出错（图表、懒加载块失败等）只收起自己，不拖垮整页 */}
       <ErrorBoundary silent resetKey={loc.search}><DrawerHost /></ErrorBoundary>

@@ -186,7 +186,7 @@ fn fp_matches(path: &Path, fp: Fp) -> bool {
 pub struct Cursor {
     pub inode: u64,
     pub offset: u64,
-    /// 游标所指文件的开头指纹；旧版游标没有（反序列化为 None，按 inode/偏移兜底）
+    /// 游标所指文件的开头指纹；None = 还没取到（文件刚出现 / 刚切到新文件），读过一次后补上
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fp: Option<Fp>,
 }
@@ -195,7 +195,6 @@ pub struct Cursor {
 pub struct Counters {
     pub lines: u64,
     pub events: u64,
-    pub other: u64,
     pub unparsed: u64,
     pub dropped_lines: u64,
     pub rotation_gaps: u64,
@@ -249,24 +248,15 @@ impl Tailer {
             // 首次：从当前末尾开始，不重放历史；但文件是在我们启动后才出现的则从头读
             None => Cursor { inode, offset: if self.seen_missing { 0 } else { size }, fp: None },
         };
-        // 当前路径上的文件还是游标指向的那个吗？有指纹以指纹为准（能识别 copytruncate：inode 不变、
-        // 新文件长过旧偏移时偏移判断会漏）；旧版游标没有指纹，退回 inode + 偏移。
-        let rotated = match cur.fp {
-            Some(fp) => cur.offset > size || !fp_matches(&self.path, fp),
-            None => cur.inode != inode || cur.offset > size,
-        };
+        // 当前路径上的文件还是游标指向的那个吗？以指纹为准（能识别 copytruncate：inode 不变、
+        // 新文件长过旧偏移时偏移判断会漏）；还没有指纹时只看偏移是否超出文件大小。
+        let rotated = cur.offset > size || cur.fp.is_some_and(|fp| !fp_matches(&self.path, fp));
         let (read_path, mut cur) = if !rotated {
             (self.path.clone(), cur)
         } else {
             // 找轮转出去的旧内容 access.log.1（rename 轮转是同一个文件；copytruncate 是拷贝，开头相同）
             let old = self.old_path();
-            let old_ok = std::fs::metadata(&old).is_ok_and(|m| {
-                m.len() >= cur.offset
-                    && match cur.fp {
-                        Some(fp) => fp_matches(&old, fp),
-                        None => m.ino() == cur.inode,
-                    }
-            });
+            let old_ok = cur.fp.is_some_and(|fp| std::fs::metadata(&old).is_ok_and(|m| m.len() >= cur.offset && fp_matches(&old, fp)));
             if old_ok {
                 tracing::info!("访问日志已轮转，先读完 {} 里剩余部分，再从新文件开头读", old.display());
                 (old, cur)
@@ -320,7 +310,7 @@ impl Tailer {
                     self.counters.events += 1;
                     events.push(e);
                 }
-                Parsed::Other => self.counters.other += 1,
+                Parsed::Other => {}
                 Parsed::Bad => self.counters.unparsed += 1,
             }
         }
@@ -583,19 +573,18 @@ mod tests {
     }
 
     #[test]
-    fn cursor_serde_is_backward_compatible() {
-        // 旧版落盘的游标没有 fp 字段
+    fn cursor_serde_without_fp() {
+        // 没有 fp 字段的游标文件照常读入（fp = None），序列化时也不带 fp
         let c: Cursor = serde_json::from_str(r#"{"inode":5,"offset":10}"#).unwrap();
         assert_eq!(c, Cursor { inode: 5, offset: 10, fp: None });
-        // 无指纹的游标序列化后不带 fp，旧版 Agent 回滚也读得懂
         assert_eq!(serde_json::to_string(&c).unwrap(), r#"{"inode":5,"offset":10}"#);
         let c2 = Cursor { inode: 1, offset: 2, fp: Some(Fp { len: 3, hash: 4 }) };
         assert_eq!(serde_json::from_str::<Cursor>(&serde_json::to_string(&c2).unwrap()).unwrap(), c2);
     }
 
     #[test]
-    fn legacy_cursor_without_fp_reads_and_gets_fp() {
-        let d = tmp("legacy");
+    fn cursor_without_fp_reads_and_gets_fp() {
+        let d = tmp("nofp");
         let p = d.join("access.log");
         std::fs::write(&p, line(&h('0'))).unwrap();
         let ino = std::fs::metadata(&p).unwrap().ino();

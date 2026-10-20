@@ -133,9 +133,9 @@ pub async fn new_targets(_a: Actor, State(st): State<AppState>, Query(q): Query<
     // 首次出现时间是精确时间，窗口起点不对齐整点
     f.from = OffsetDateTime::now_utc() - window_of(&q, Window::H24)?.duration();
     let (limit, offset) = page_of(&q, 200)?;
-    let items = access::new_targets(&st.db, &f, limit, offset).await?;
-    let next = (items.len() as i64 == limit).then_some(offset + limit);
-    Ok(ok(json!({"items": items, "next_offset": next, "window_start": access::fmt_ts(f.from)})))
+    let (items, total) = access::new_targets(&st.db, &f, limit, offset).await?;
+    let next = (offset + (items.len() as i64) < total).then_some(offset + items.len() as i64);
+    Ok(ok(json!({"items": items, "total": total, "next_offset": next, "window_start": access::fmt_ts(f.from)})))
 }
 
 pub async fn machine(_a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, Query(q): Query<Q>) -> ApiResult<Json<Value>> {

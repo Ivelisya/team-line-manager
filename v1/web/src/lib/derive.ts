@@ -15,7 +15,8 @@ export function entryText(m: MachineView): string {
   return `${e.relay.name}:${e.port}${m.entries.length > 1 ? ` +${m.entries.length - 1}` : ''}`;
 }
 export function monthTraffic(m: MachineView) {
-  let up = 0; let down = 0; let tu = 0; let td = 0;
+  const r = m.removed_traffic; // 换线后旧入口的流量仍算在本月里
+  let up = r.month_up; let down = r.month_down; let tu = r.today_up; let td = r.today_down;
   for (const e of m.entries) { up += e.traffic.month_up; down += e.traffic.month_down; tu += e.traffic.today_up; td += e.traffic.today_down; }
   return { up, down, today_up: tu, today_down: td };
 }
@@ -39,9 +40,9 @@ export function resourceMeters(m: MachineView, plans: Plan[]) {
     load: { value: (h.load1 == null ? F.NA : { v: h.load1.toFixed(2), u: '' }) as F.Fmt, pct: h.load1 == null ? null : (h.load1 / cores) * 100, sub: `1 分钟 · ${h.tcp_conns ?? '—'} 连接` },
   };
 }
-const RANK = { ok: 0, warn: 1, bad: 2 } as const;
 /**
- * 探测延迟 → 心跳格。取最近 60 个 1 分钟点，每 3 点聚成一格（取最差），共 20 格——对应“近 1 小时”。
+ * 探测 → 心跳格。取最近 60 个 1 分钟点，每 3 点聚成一格，共 20 格——对应“近 1 小时”。
+ * 按格内 TCP 探测成功比例定色（线路机是它所有入口的合计，个别节点抖动只会变黄）：≥95% 且不慢为绿，≥50% 为黄，否则红。
  * 点数不足 60 时从最新一端对齐，早的一端留空。
  */
 export function beatCells(points: SeriesPoint[] | undefined, n = 20, minutes = 60): ('ok' | 'warn' | 'bad' | null)[] {
@@ -50,13 +51,13 @@ export function beatCells(points: SeriesPoint[] | undefined, n = 20, minutes = 6
   const pts = points.slice(-n * size);
   const cells: ('ok' | 'warn' | 'bad')[] = [];
   for (let end = pts.length; end > 0; end -= size) {
-    let worst: 'ok' | 'warn' | 'bad' = 'ok';
+    let ok = 0; let total = 0; let slow = false;
     for (const p of pts.slice(Math.max(0, end - size), end)) {
-      const v = p.tcp_ms as number | null;
-      const t = p.tcp_ok === false || v == null ? 'bad' : v >= 150 ? 'warn' : 'ok';
-      if (RANK[t] > RANK[worst]) worst = t;
+      ok += Number(p.tcp_ok_n ?? 0); total += Number(p.tcp_n ?? 0);
+      if (Number(p.tcp_ms ?? 0) >= 150) slow = true;
     }
-    cells.unshift(worst);
+    const r = total ? ok / total : 0;
+    cells.unshift(r < 0.5 ? 'bad' : r < 0.95 || slow ? 'warn' : 'ok');
   }
   return cells;
 }

@@ -105,7 +105,9 @@ export function installAccessMock(R: Reg, machines: () => MachineView[]) {
     const from = Date.now() - (SECONDS[query.get('window') ?? '24h'] ?? 86400) * 1000;
     const items: NewTarget[] = stats(machines(), query).flatMap((x) => x.targets).filter((t) => new Date(t.first_seen!).getTime() >= from)
       .sort((a, b) => b.first_seen!.localeCompare(a.first_seen!)).map((t) => ({ node_id: t.node_id, name: t.name, dest_host: t.dest_host, kind: t.kind, first_seen: t.first_seen!, last_seen: t.last_seen!, total: t.conns }));
-    return { items: items.slice(0, +(query.get('limit') ?? 200)), next_offset: null };
+    const limit = +(query.get('limit') ?? 200); const offset = +(query.get('offset') ?? 0);
+    const end = Math.min(items.length, offset + limit);
+    return { items: items.slice(offset, end), total: items.length, next_offset: end < items.length ? end : null };
   });
 
   R('GET', '/access/sources', ({ query }) => {

@@ -13,7 +13,12 @@ pub enum Event {
     Machine { id: Uuid },
     Machines,
     Relay { id: Uuid },
-    Job { id: Uuid },
+    /// 作业变化。`target` 不发给前端：emit 时顺带发目标机器的 Machine 事件（机器视图里显示进行中的作业）
+    Job {
+        id: Uuid,
+        #[serde(skip)]
+        target: Option<Uuid>,
+    },
     Incidents,
     Catalog,
     /// 广播滞后、丢了事件：前端收到后让全部查询失效
@@ -38,6 +43,8 @@ pub struct Inner {
     pub ipintel: crate::ipintel::Service,
     /// 访问监控聚合结果的短 TTL 缓存
     pub access_cache: crate::access::QueryCache,
+    /// 在用机器视图的短缓存（列表、线路机、总览共用）
+    pub live: crate::views::LiveCache,
 }
 
 impl std::ops::Deref for AppState {
@@ -51,10 +58,20 @@ impl AppState {
         let (relay_changed, _) = broadcast::channel(64);
         let ipintel = crate::ipintel::Service::new(&cfg.ipintel);
         let access_cache = crate::access::QueryCache::new(std::time::Duration::from_secs(cfg.access_cache_secs));
-        Self(Arc::new(Inner { cfg, db, secrets, events, relay_changed, ipintel, access_cache }))
+        let live = crate::views::LiveCache::default();
+        Self(Arc::new(Inner { cfg, db, secrets, events, relay_changed, ipintel, access_cache, live }))
     }
 
-    pub fn emit(&self, e: Event) { let _ = self.events.send(e); }
+    pub fn emit(&self, e: Event) {
+        // 除密钥外的资源变更都可能改变机器视图
+        if !matches!(e, Event::ApiKeys) {
+            self.live.invalidate();
+        }
+        if let Event::Job { target: Some(t), .. } = e {
+            let _ = self.events.send(Event::Machine { id: t });
+        }
+        let _ = self.events.send(e);
+    }
 
     pub fn relay_bumped(&self, relay_id: Uuid) {
         let _ = self.relay_changed.send(relay_id);

@@ -68,7 +68,7 @@ export function buildDb(): Db {
   const base = (o: Partial<MachineView> & Pick<MachineView, 'id' | 'kind' | 'name' | 'ip'>): MachineView => ({
     team: null, number: null, label: null, ssh_port: 22, provider: null, provider_code: null, plan: null, service_ref: null,
     lifecycle: 'active', lifecycle_reason: null, note: '', revision: 1, created_at: iso(now() - 120 * DAY), activated_at: iso(now() - 100 * DAY), retired_at: null,
-    subscription: null, agent: null, host: null, entries: [], health: { status: 'ok', reasons: [] },
+    subscription: null, agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, health: { status: 'ok', reasons: [] },
     active_job: null, open_incidents: 0, maintenance: false, relay: null, ...o,
   });
 

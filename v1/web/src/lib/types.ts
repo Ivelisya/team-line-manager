@@ -33,6 +33,7 @@ export interface MachineView {
   agent: { version: string | null; last_report_at: string | null; online: boolean } | null;
   host: HostMetrics | null;
   entries: EntryView[];
+  removed_traffic: EntryTraffic; // 已移除入口（如换线路机后的旧入口）今天/本月的流量，不在 entries 里
   health: { status: HealthStatus; reasons: HealthReason[] };
   active_job: { id: string; kind: string; state: string } | null;
   open_incidents: number; maintenance: boolean;
@@ -119,3 +120,6 @@ export type NotifyKind = 'telegram' | 'wecom' | 'webhook';
 export type NotifySeverity = 'info' | 'warning' | 'critical';
 export interface NotifyChannel { id: string; name: string; kind: NotifyKind | string; min_severity: NotifySeverity | string; enabled: boolean; created_at: string; config_hint: string }
 export interface NotifyLogEntry { id: string; channel_id: string; channel_name: string; incident_id: string | null; ts: string; ok: boolean; error: string | null }
+
+/** 服务端分页列表（/jobs、/incidents）：next_offset 只在后面还有数据时给出 */
+export interface Paged<T> { items: T[]; total: number; next_offset: number | null }

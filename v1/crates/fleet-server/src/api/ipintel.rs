@@ -101,5 +101,12 @@ pub async fn machine_sources(_a: Actor, State(st): State<AppState>, Path(id): Pa
         None => 50,
         Some(s) => s.parse::<i64>().map_err(|_| ApiError::bad_request("limit 不是整数"))?.clamp(1, 500),
     };
-    Ok(ok(crate::ipintel::sources_profile(&st, id, w, limit, OffsetDateTime::now_utc()).await?))
+    // 抽屉每 30 秒轮询一次，读的是小时汇总：和访问概况共用短 TTL 缓存
+    let key = format!("sources|{id}|{w:?}|{limit}");
+    if let Some(v) = st.access_cache.get(&key) {
+        return Ok(Json(v));
+    }
+    let out = ok(crate::ipintel::sources_profile(&st, id, w, limit, OffsetDateTime::now_utc()).await?);
+    st.access_cache.put(key, out.0.clone());
+    Ok(out)
 }

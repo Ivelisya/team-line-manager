@@ -1,11 +1,11 @@
 use crate::error::ApiJson;
-use super::ok;
+use super::{ok, paged};
 use crate::auth::Actor;
 use crate::db::{audit as audit_log, new_id};
 use crate::error::{ApiError, ApiResult};
 use crate::health::Status;
 use crate::state::{AppState, Event};
-use crate::views::{self, Scope};
+use crate::views;
 use crate::crypto::sha256;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
@@ -25,13 +25,13 @@ use uuid::Uuid;
 
 /// 只统计 active 的机器
 pub async fn overview(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
-    let ms = views::load(&st.db, Scope::Live, None).await?;
+    let ms = views::live(&st).await?;
     let mut nodes = json!({"total": 0, "ok": 0, "degraded": 0, "down": 0, "unknown": 0, "maintenance": 0});
     let mut relays = nodes.clone();
     let (mut provisioning, mut retiring, mut due_7d, mut up, mut down, mut rx, mut tx) = (0, 0, 0, 0i64, 0i64, 0f64, 0f64);
     // 月费按币种分别汇总（不做汇率折算）
     let mut cost: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
-    for m in &ms {
+    for m in ms.iter() {
         match m.lifecycle.as_str() {
             "provisioning" | "draft" => provisioning += 1,
             "retiring" => retiring += 1,
@@ -68,6 +68,8 @@ pub async fn overview(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<V
                 up += e.traffic.month_up;
                 down += e.traffic.month_down;
             }
+            up += m.removed_traffic.month_up;
+            down += m.removed_traffic.month_down;
         }
         if let Some(h) = &m.host {
             rx += h.net_rx_bps.unwrap_or(0.0);
@@ -103,6 +105,8 @@ struct IncidentOut {
 #[derive(Deserialize)]
 pub struct IncQ {
     state: Option<String>,
+    limit: Option<i64>,
+    offset: Option<i64>,
 }
 
 pub async fn incidents(_a: Actor, State(st): State<AppState>, Query(q): Query<IncQ>) -> ApiResult<Json<Value>> {
@@ -116,9 +120,11 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, Query(q): Query<In
             case when m.kind = 'relay' then m.label when t.name is not null then t.name || '-' || lpad(m.number::text, 2, '0') end subject_name,
             i.severity::text severity, i.state::text state, i.summary, i.opened_at, i.last_seen_at, i.resolved_at, i.ack_at, i.ack_by
          from incident i left join machine m on m.id = i.subject_id left join team t on t.id = m.team_id
-         where {f} order by i.state, i.severity desc, i.opened_at desc limit 500"
+         where {f} order by i.state, i.severity desc, i.opened_at desc, i.id desc limit $1 offset $2"
     );
-    let v: Vec<IncidentOut> = sqlx::query_as(&sql).fetch_all(&st.db).await?;
+    let (limit, offset) = (q.limit.unwrap_or(100).clamp(1, 500), q.offset.unwrap_or(0).max(0));
+    let v: Vec<IncidentOut> = sqlx::query_as(&sql).bind(limit).bind(offset).fetch_all(&st.db).await?;
+    let total: i64 = sqlx::query_scalar(&format!("select count(*) from incident i where {f}")).fetch_one(&st.db).await?;
     let out: Vec<Value> = v
         .iter()
         .map(|i| {
@@ -127,7 +133,7 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, Query(q): Query<In
             j
         })
         .collect();
-    Ok(ok(out))
+    Ok(paged(out, total, offset))
 }
 
 pub async fn ack_incident(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>) -> ApiResult<Json<Value>> {

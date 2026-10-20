@@ -225,22 +225,55 @@ async fn prune_clears_old_passwords_and_deletes_old_jobs() {
     let old_ok = mk("succeeded", 100, json!({})).await;
     let old_cancelled = mk("cancelled", 91, json!({})).await;
     let recent_ok = mk("succeeded", 10, json!({})).await;
-    let old_failed = mk("failed", 100, login.clone()).await; // 失败的作业不删，只清密码
+    let old_failed = mk("failed", 100, login.clone()).await; // 失败的作业 180 天内不删，只清密码
+    let ancient_failed = mk("failed", 200, json!({})).await;
     let mid_failed = mk("failed", 4, login.clone()).await;
     let fresh_failed = mk("failed", 0, login.clone()).await;
 
     let r = jobs::prune(&t.st.db).await.unwrap();
-    assert_eq!(r, jobs::Pruned { passwords_cleared: 2, jobs_deleted: 2 });
+    assert_eq!(r, jobs::Pruned { passwords_cleared: 2, jobs_deleted: 3 });
     let exists = |id: Uuid| {
         let db = t.st.db.clone();
         async move { sqlx::query_scalar::<_, bool>("select exists (select 1 from job where id = $1)").bind(id).fetch_one(&db).await.unwrap() }
     };
-    assert!(!exists(old_ok).await && !exists(old_cancelled).await);
+    assert!(!exists(old_ok).await && !exists(old_cancelled).await && !exists(ancient_failed).await);
     assert!(exists(recent_ok).await && exists(old_failed).await);
-    let steps: i64 = sqlx::query_scalar("select count(*) from job_step where job_id = any($1)").bind(vec![old_ok, old_cancelled]).fetch_one(&t.st.db).await.unwrap();
+    let steps: i64 = sqlx::query_scalar("select count(*) from job_step where job_id = any($1)").bind(vec![old_ok, old_cancelled, ancient_failed]).fetch_one(&t.st.db).await.unwrap();
     assert_eq!(steps, 0, "步骤随作业级联删除");
     for (id, cleared) in [(old_failed, true), (mid_failed, true), (fresh_failed, false)] {
         let is_null: bool = sqlx::query_scalar("select (params->'login') is null from job where id = $1").bind(id).fetch_one(&t.st.db).await.unwrap();
         assert_eq!(is_null, cleared, "{id}");
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn job_list_pages_with_total() {
+    let t = setup(false).await;
+    let mut made = vec![];
+    for state in ["succeeded", "failed", "succeeded", "running", "cancelled"] {
+        let id = Uuid::now_v7();
+        sqlx::query("insert into job (id, kind, params, state, created_by) values ($1, 'purge', '{}', $2::job_state, 'test')")
+            .bind(id)
+            .bind(state)
+            .execute(&t.st.db)
+            .await
+            .unwrap();
+        made.push((id.to_string(), state));
+    }
+    made.sort();
+    made.reverse(); // 列表按 id 倒序
+    let done_ids: Vec<String> = made.iter().filter(|m| m.1 != "running").map(|m| m.0.clone()).collect();
+    let made: Vec<String> = made.into_iter().map(|m| m.0).collect();
+    let ids = |v: &Value| v["items"].as_array().unwrap().iter().map(|j| j["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+
+    let p1 = t.get("/api/v1/jobs?state=all&limit=2").await;
+    let p2 = t.get("/api/v1/jobs?state=all&limit=2&offset=2").await;
+    let p3 = t.get("/api/v1/jobs?state=all&limit=2&offset=4").await;
+    assert_eq!((p1["total"].as_i64(), p1["next_offset"].as_i64(), p2["next_offset"].as_i64()), (Some(5), Some(2), Some(4)));
+    assert!(p3["next_offset"].is_null());
+    assert_eq!([ids(&p1), ids(&p2), ids(&p3)].concat(), made);
+    let done = t.get("/api/v1/jobs?state=done&limit=1&offset=1").await;
+    assert_eq!((done["total"].as_i64(), ids(&done)), (Some(4), vec![done_ids[1].clone()]), "筛选后的总数与偏移");
+    let active = t.get("/api/v1/jobs?state=active").await;
+    assert_eq!((active["total"].as_i64(), active["next_offset"].is_null()), (Some(1), true));
 }

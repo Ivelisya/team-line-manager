@@ -5,18 +5,40 @@ import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import * as PopoverPrimitive from '@radix-ui/react-popover';
 import * as ToggleGroup from '@radix-ui/react-toggle-group';
 import { ChevronRight } from 'lucide-react';
+import { m } from 'motion/react';
 import { cn } from '@/lib/utils';
+import { SPRING } from '@/lib/motion';
+import { sharedObserver } from '@/lib/sharedObserver';
 
-/* ---- Tabs（下划线页签） ---- */
-export const Tabs = TabsPrimitive.Root;
+/* ---- Tabs（下划线页签）：当前页签底下的 2px 下划线是一个共享 layoutId 的 motion 元素，切换时在页签之间滑动 ---- */
+const TabsCtx = React.createContext<{ id: string; value: string | undefined } | null>(null);
+export const Tabs = React.forwardRef<React.ElementRef<typeof TabsPrimitive.Root>, React.ComponentPropsWithoutRef<typeof TabsPrimitive.Root>>(({ value, defaultValue, onValueChange, ...p }, ref) => {
+  const id = React.useId();
+  // Radix 不对外暴露当前值：自己跟一份（受控取 value，非受控取内部记录），给触发器判断“我是不是当前页签”
+  const [inner, setInner] = React.useState(defaultValue);
+  const cur = value ?? inner;
+  const ctx = React.useMemo(() => ({ id, value: cur }), [id, cur]);
+  return (
+    <TabsCtx.Provider value={ctx}>
+      <TabsPrimitive.Root ref={ref} value={value} defaultValue={defaultValue} onValueChange={(v) => { setInner(v); onValueChange?.(v); }} {...p} />
+    </TabsCtx.Provider>
+  );
+});
+Tabs.displayName = 'Tabs';
 export const TabsList = React.forwardRef<React.ElementRef<typeof TabsPrimitive.List>, React.ComponentPropsWithoutRef<typeof TabsPrimitive.List>>(({ className, ...p }, ref) => (
   <TabsPrimitive.List ref={ref} className={cn('tabs-list', className)} {...p} />
 ));
 TabsList.displayName = 'TabsList';
 /** noPanel：这组页签没有配对的 TabsContent（内容由页面自己按 value 渲染）时传，去掉 Radix 默认写上的、指向不存在元素的 aria-controls */
-export const TabsTrigger = React.forwardRef<React.ElementRef<typeof TabsPrimitive.Trigger>, React.ComponentPropsWithoutRef<typeof TabsPrimitive.Trigger> & { noPanel?: boolean }>(({ className, noPanel, ...p }, ref) => (
-  <TabsPrimitive.Trigger ref={ref} className={cn('tab', className)} {...(noPanel ? { 'aria-controls': undefined } : null)} {...p} />
-));
+export const TabsTrigger = React.forwardRef<React.ElementRef<typeof TabsPrimitive.Trigger>, React.ComponentPropsWithoutRef<typeof TabsPrimitive.Trigger> & { noPanel?: boolean }>(({ className, noPanel, children, ...p }, ref) => {
+  const ctx = React.useContext(TabsCtx);
+  return (
+    <TabsPrimitive.Trigger ref={ref} className={cn('tab', className)} {...(noPanel ? { 'aria-controls': undefined } : null)} {...p}>
+      {children}
+      {ctx && ctx.value === p.value && <m.span aria-hidden className="tab-ind" layoutId={`tab-ind-${ctx.id}`} transition={SPRING} />}
+    </TabsPrimitive.Trigger>
+  );
+});
 TabsTrigger.displayName = 'TabsTrigger';
 export const TabsContent = TabsPrimitive.Content;
 
@@ -55,6 +77,9 @@ export function Tip({ text, children, side = 'top', align }: { text: React.React
   );
 }
 
+// 全站共享一个 ResizeObserver：表格里每个单元格一个 Trunc，不必各建一个观察器
+const watchSize = sharedObserver<ResizeObserverEntry>((cb) => new ResizeObserver(cb));
+
 /** 单行省略文本：只有真的被截断时悬停才出现完整内容的提示 */
 export function Trunc({ children, text, className, side = 'top' }: { children: React.ReactNode; text?: string; className?: string; side?: Side }) {
   const ref = React.useRef<HTMLSpanElement>(null);
@@ -73,10 +98,7 @@ export function Trunc({ children, text, className, side = 'top' }: { children: R
     const el = ref.current;
     if (!el) return;
     measure();
-    if (typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
+    return watchSize(el, measure);
   }, [measure, full]);
   return (
     <TooltipPrimitive.Root open={open && cut && !!full} onOpenChange={(o) => { if (o) measure(); setOpen(o); }}>
@@ -99,10 +121,13 @@ PopoverContent.displayName = 'PopoverContent';
 /* ---- 分段控件（单选）：大卡片/小卡片/紧凑、团队筛选等 ---- */
 export interface SegItem<T extends string> { value: T; label: React.ReactNode; count?: number; disabled?: boolean }
 export function Segmented<T extends string>({ value, onChange, items, label, sm, className }: { value: T; onChange: (v: T) => void; items: SegItem<T>[]; label: string; sm?: boolean; className?: string }) {
+  const gid = React.useId();
   return (
     <ToggleGroup.Root type="single" value={value} onValueChange={(v) => v && onChange(v as T)} aria-label={label} className={cn('seg', sm && 'seg-sm', className)}>
       {items.map((it) => (
         <ToggleGroup.Item key={it.value} value={it.value} disabled={it.disabled} className="seg-item">
+          {/* 选中胶囊：共享 layoutId，换项时滑过去；圆角写在 style 里，motion 才会在缩放过程中修正它 */}
+          {value === it.value && <m.span aria-hidden className="seg-ind" layoutId={`seg-ind-${gid}`} style={{ borderRadius: 999 }} transition={SPRING} />}
           {it.label}{it.count != null && <span className="seg-count">{it.count}</span>}
         </ToggleGroup.Item>
       ))}

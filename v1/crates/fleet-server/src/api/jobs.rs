@@ -1,4 +1,4 @@
-use super::ok;
+use super::{ok, paged};
 use crate::auth::Actor;
 use crate::db::audit;
 use crate::error::{ApiError, ApiResult};
@@ -42,6 +42,7 @@ const SELECT: &str = "select j.id, j.kind, j.target_id,
 pub struct ListQ {
     state: Option<String>,
     limit: Option<i64>,
+    offset: Option<i64>,
     target_id: Option<Uuid>,
 }
 
@@ -62,9 +63,14 @@ pub async fn list(_a: Actor, State(st): State<AppState>, Query(q): Query<ListQ>)
         Some("failed") => "j.state = 'failed'",
         _ => "true",
     };
-    let sql = format!("{SELECT} where {filter} and ($1::uuid is null or j.target_id = $1) order by j.created_at desc limit $2");
-    let v: Vec<JobOut> = sqlx::query_as(&sql).bind(q.target_id).bind(q.limit.unwrap_or(100).clamp(1, 500)).fetch_all(&st.db).await?;
-    Ok(ok(v.iter().map(job_json).collect::<Vec<_>>()))
+    let (limit, offset) = (q.limit.unwrap_or(100).clamp(1, 500), q.offset.unwrap_or(0).max(0));
+    let sql = format!("{SELECT} where {filter} and ($1::uuid is null or j.target_id = $1) order by j.id desc limit $2 offset $3");
+    let v: Vec<JobOut> = sqlx::query_as(&sql).bind(q.target_id).bind(limit).bind(offset).fetch_all(&st.db).await?;
+    let total: i64 = sqlx::query_scalar(&format!("select count(*) from job j where {filter} and ($1::uuid is null or j.target_id = $1)"))
+        .bind(q.target_id)
+        .fetch_one(&st.db)
+        .await?;
+    Ok(paged(v.iter().map(job_json).collect(), total, offset))
 }
 
 #[derive(Serialize, sqlx::FromRow)]
@@ -174,13 +180,13 @@ pub async fn retry(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, Q
     .await?;
     audit(&mut tx, &a.name, "job.retry", "job", Some(id), json!({"step": step, "reset_host_key": q.reset_host_key == Some(true)})).await?;
     tx.commit().await?;
-    st.emit(Event::Job { id });
+    st.emit(Event::Job { id, target });
     Ok(ok(json!({"ok": true})))
 }
 
 pub async fn cancel(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
-    let (state, kind, step): (String, String, i32) = sqlx::query_as("select state::text, kind, step from job where id = $1 for update")
+    let (state, kind, step, target): (String, String, i32, Option<Uuid>) = sqlx::query_as("select state::text, kind, step, target_id from job where id = $1 for update")
         .bind(id)
         .fetch_optional(&mut *tx)
         .await?
@@ -200,6 +206,6 @@ pub async fn cancel(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>) 
         .await?;
     audit(&mut tx, &a.name, "job.cancel", "job", Some(id), json!({})).await?;
     tx.commit().await?;
-    st.emit(Event::Job { id });
+    st.emit(Event::Job { id, target });
     Ok(ok(json!({"ok": true})))
 }

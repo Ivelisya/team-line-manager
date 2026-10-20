@@ -131,6 +131,8 @@ pub async fn create_provider(a: Actor, State(st): State<AppState>, ApiJson(b): A
     let name = clean_name(&b.name, "供应商名")?;
     let code = clean_name(&b.code, "供应商缩写")?;
     let mut tx = st.db.begin().await?;
+    // 上架时供应商时区会被抄进账单时区，按同一标准校验
+    super::machines::check_tz(&mut tx, &b.timezone).await?;
     sqlx::query("insert into provider (id, name, code, panel_url, timezone) values ($1, $2, $3, $4, $5)")
         .bind(id)
         .bind(&name)

@@ -6,7 +6,7 @@ use crate::entries;
 use crate::error::{ApiError, ApiResult};
 use crate::jobs;
 use crate::state::{AppState, Event};
-use crate::views::{self, Scope};
+use crate::views;
 use axum::extract::{Path, State};
 use axum::Json;
 use serde::Deserialize;
@@ -14,7 +14,8 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 pub async fn list(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
-    let v: Vec<_> = views::load(&st.db, Scope::Live, None).await?.into_iter().filter(|m| m.kind == "relay").collect();
+    let all = views::live(&st).await?;
+    let v: Vec<_> = all.iter().filter(|m| m.kind == "relay").collect();
     Ok(ok(v))
 }
 
@@ -108,6 +109,6 @@ pub async fn add_entry(a: Actor, State(st): State<AppState>, Path(node_id): Path
     let job = jobs::enqueue(&mut tx, "attach_entry", Some(node_id), json!({"relay_id": b.relay_id}), &a.name).await?;
     audit(&mut tx, &a.name, "entry.add", "machine", Some(node_id), json!({"relay_id": b.relay_id, "job_id": job})).await?;
     tx.commit().await?;
-    st.emit(Event::Job { id: job });
+    st.emit(Event::Job { id: job, target: Some(node_id) });
     Ok(ok(json!({"job_id": job})))
 }

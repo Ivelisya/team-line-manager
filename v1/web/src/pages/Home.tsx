@@ -1,4 +1,4 @@
-// 首页：KPI + 团队筛选 + 视图切换（大卡片/小卡片/紧凑）+ 节点卡片网格。
+// 首页：KPI + 团队筛选 + 视图切换（大卡片/小卡片/紧凑）+ 节点卡片网格（分页，每页条数随视图）。
 // 默认排序：线路机 → 团队 → 编号；故障/离线不下沉。其它排序是用户的显式选择。
 import * as React from 'react';
 import { AlertTriangle, Inbox } from 'lucide-react';
@@ -11,6 +11,8 @@ import { CountUp, DotCount, Empty, ErrorNote, FilterChip, KpiTile, Num, PageHead
 import { NodeCard, SkeletonCard, type CardView } from '@/components/app/NodeCard';
 import { Segmented } from '@/components/ui/overlays';
 import { Select } from '@/components/ui/select';
+import { Pagination } from '@/components/app/Pagination';
+import { usePage } from '@/lib/usePage';
 
 type SortKey = 'default' | 'name' | 'due' | 'traffic' | 'issues';
 const SORTS: { value: SortKey; label: string }[] = [
@@ -18,7 +20,10 @@ const SORTS: { value: SortKey; label: string }[] = [
   { value: 'traffic', label: '本月流量最多' }, { value: 'issues', label: '异常优先' },
 ];
 const VIEWS: CardView[] = ['large', 'small', 'compact'];
+/** 每页张数：都是 2、3、4、6 的倍数，常见列数下最后一行是满的；中间那档是默认 */
+const PAGE_SIZES: Record<CardView, number[]> = { large: [12, 24, 48], small: [18, 36, 72], compact: [24, 48, 96] };
 const EMPTY_PLANS: Plan[] = [];
+const EMPTY_MACHINES: MachineView[] = [];
 const store = {
   /** 读本地偏好；值不在 allowed 里（旧版本或手改的脏值）一律回退默认 */
   get: <T extends string>(k: string, d: T, allowed: readonly T[]): T => { try { const v = localStorage.getItem(k) as T | null; return v && allowed.includes(v) ? v : d; } catch { return d; } },
@@ -53,7 +58,7 @@ export function HomePage() {
   const setV = (v: CardView) => { setView(v); store.set('fleet:view', v); };
   const setS = (v: SortKey) => { setSort(v); store.set('fleet:sort', v); };
 
-  const all = React.useMemo(() => (machines.data ?? []).filter((m) => m.lifecycle !== 'retired'), [machines.data]); // 已退役不进首页
+  const all = machines.data ?? EMPTY_MACHINES; // live 范围已不含已退役
   const counts = React.useMemo(() => ({
     all: all.length, relay: all.filter((m) => m.kind === 'relay').length,
     byTeam: new Map((teams.data ?? []).map((t) => [t.id, all.filter((m) => m.team?.id === t.id).length])),
@@ -67,6 +72,10 @@ export function HomePage() {
     if (onlyIssues) l = l.filter(isIssue);
     return sortList(l, sort);
   }, [all, team, onlyIssues, sort]);
+  // 只渲染当前页：KPI 和分组计数仍按全部机器算（上面的 counts）
+  const pg = usePage({ total: machines.data ? shown.length : undefined, sizes: PAGE_SIZES[view], size: PAGE_SIZES[view][1], reset: [team, onlyIssues, sort, view] });
+  const page = React.useMemo(() => shown.slice(pg.offset, pg.offset + pg.size), [shown, pg.offset, pg.size]);
+  const layoutKey = `${team}|${onlyIssues}|${sort}|${view}`;
 
   const o = ov.data;
   const nodes = o?.nodes; const relays = o?.relays;
@@ -102,7 +111,7 @@ export function HomePage() {
         </div>
       </div>
 
-      <div className="fbar" role="group" aria-label="筛选">
+      <div className="fbar" role="group" aria-label="筛选" ref={pg.anchor}>
         <span className="fbar-label">分组</span>
         <FilterChip pressed={team === 'all'} onClick={() => setTeam('all')} count={counts.all}>全部</FilterChip>
         <FilterChip pressed={team === 'relay'} onClick={() => setTeam('relay')} count={counts.relay}>线路机</FilterChip>
@@ -117,9 +126,14 @@ export function HomePage() {
       ) : !machines.data ? null /* 请求失败且没有缓存：上面的错误提示已说明，不要误报“还没有机器” */ : shown.length === 0 ? (
         <Empty icon={<Inbox size={28} />} text={all.length ? '没有符合筛选条件的机器' : '还没有机器，去“上架”添加第一台'} />
       ) : (
-        <div className="cards" data-view={view}>
-          {shown.map((m) => <NodeCard key={m.id} m={m} view={view} current={m.id === openId} plans={plans} onOpen={open} />)}
-        </div>
+        <>
+          {/* 每页一个网格（key=页码）：翻页是整页淡入，不让上一页的卡片和新卡片之间做位置动画。
+              页内：筛选/排序/视图变了（layoutKey 变）才量位置、滑到新位置；tick 重渲染不量 */}
+          <div key={pg.page} className="cards page-in" data-view={view}>
+            {page.map((m) => <NodeCard key={m.id} m={m} view={view} current={m.id === openId} plans={plans} onOpen={open} layoutKey={layoutKey} />)}
+          </div>
+          <Pagination pg={pg} unit="台" />
+        </>
       )}
     </div>
   );

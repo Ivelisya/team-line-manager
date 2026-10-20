@@ -1,0 +1,62 @@
+// 分页器（唯一实现），样式参照 brocade 的目录分页：一条底栏——左边「25–48 / 161 台 · 每页 [24]」，
+// 右边「第 [2] / 7 页」+「上一页 / 下一页」。配 lib/usePage.ts 使用。
+// 放在面板里是表尾（顶线 + 浅底），放在卡片网格下面是一条独立的圆角条（同筛选条）。
+// 另有两个小件：CursorPager（按时间游标的「较新 / 较早」翻页）、ShowAll（短表格只露前几行，「显示全部 N 条」展开）。
+import { ChevronLeft, ChevronRight } from 'lucide-react';
+import type { PageState } from '@/lib/usePage';
+import { Select } from '@/components/ui/select';
+import { Button } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
+
+/** compact：窄栏里用（作业列表），只留范围和上一页 / 下一页 */
+export function Pagination({ pg, unit = '项', compact, className }: { pg: PageState; unit?: string; compact?: boolean; className?: string }) {
+  const { page, pageCount, total, size, sizes, defaultSize, offset } = pg;
+  if (total == null || (total <= size && size <= defaultSize)) return null; // 默认条数一页就放得下：不出分页器（调大过条数的仍显示，好调回来）
+  const pages = Array.from({ length: pageCount }, (_, i) => ({ value: String(i + 1), label: String(i + 1) }));
+  return (
+    <nav className={cn('pager', className)} aria-label="分页">
+      <span className="pager-range" aria-live="polite">
+        <span className="num">{total ? `${offset + 1}–${Math.min(offset + size, total)}` : '0'}</span><span className="pager-of">/</span><span className="num">{total}</span> {unit}
+      </span>
+      {!compact && sizes.length > 1 && (
+        <span className="pager-field">每页
+          <Select sm value={String(size)} onChange={(v) => pg.setSize(Number(v))} options={sizes.map((n) => ({ value: String(n), label: String(n) }))} aria-label="每页条数" className="pager-select" />
+        </span>
+      )}
+      <span className="pager-nav">
+        {!compact && pageCount > 1 && (
+          <span className="pager-field">第
+            <Select sm value={String(page)} onChange={(v) => pg.setPage(Number(v))} options={pages} aria-label="页码" className="pager-select" />
+            / <span className="num">{pageCount}</span> 页
+          </span>
+        )}
+        <Button size="sm" className="pager-btn" disabled={page <= 1} onClick={() => pg.setPage(page - 1)}><ChevronLeft />上一页</Button>
+        <Button size="sm" className="pager-btn" disabled={page >= pageCount} onClick={() => pg.setPage(page + 1)}>下一页<ChevronRight /></Button>
+      </span>
+    </nav>
+  );
+}
+
+/** 时间游标翻页：没有总数，只能往较新 / 较早走 */
+export function CursorPager({ page, size, onNewer, onOlder }: { page: number; size: number; onNewer?: () => void; onOlder?: () => void }) {
+  if (!onNewer && !onOlder) return null;
+  return (
+    <nav className="pager" aria-label="分页">
+      <span className="pager-range">第 <span className="num">{page}</span> 页<small>每页 {size}</small></span>
+      <span className="pager-nav">
+        <Button size="sm" className="pager-btn" disabled={!onNewer} onClick={onNewer}><ChevronLeft />较新</Button>
+        <Button size="sm" className="pager-btn" disabled={!onOlder} onClick={onOlder}>较早<ChevronRight /></Button>
+      </span>
+    </nav>
+  );
+}
+
+/** 表格只先露前几行：超出时在表尾给「显示全部 N 条 / 收起」 */
+export function ShowAll({ total, cap, open, onToggle, unit = '条' }: { total: number; cap: number; open: boolean; onToggle: () => void; unit?: string }) {
+  if (total <= cap) return null;
+  return (
+    <div className="dt-foot is-center">
+      <Button size="sm" variant="quiet" aria-expanded={open} onClick={onToggle}>{open ? '收起' : `显示全部 ${total} ${unit}`}</Button>
+    </div>
+  );
+}

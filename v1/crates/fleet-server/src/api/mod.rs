@@ -21,6 +21,12 @@ use serde_json::{json, Value};
 /// `{"data": …}`
 pub fn ok<T: Serialize>(v: T) -> axum::Json<Value> { axum::Json(json!({ "data": v })) }
 
+/// 分页列表的统一形状 `{items, total, next_offset}`：`next_offset` 只在后面还有数据时给出
+pub fn paged<T: Serialize>(items: Vec<T>, total: i64, offset: i64) -> axum::Json<Value> {
+    let end = offset + items.len() as i64;
+    ok(json!({ "items": items, "total": total, "next_offset": (end < total).then_some(end) }))
+}
+
 pub fn router() -> Router<AppState> {
     use crate::auth;
     Router::new()

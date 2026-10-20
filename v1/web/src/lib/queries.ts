@@ -1,11 +1,11 @@
 // TanStack Query 封装：查询 hook + 写操作 hook。写操作成功后按范围失效（实时流也会再推一次，重复无害）。
 import { useCallback } from 'react';
-import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { del, get, patch, post, put } from './api';
 import { makeDefaultCompare } from './sort';
 import { jobLive } from './jobs';
 import { usePoll } from './streamState';
-import type { ApiKey, Incident, Job, JobLog, MachineView, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RestoreBody, RestorePreview, MoveResult, EvacuateResult, SeriesResp, Silence, Team, AuditEntry, NotifyChannel, NotifyLogEntry } from './types';
+import type { ApiKey, Incident, Job, Paged, JobLog, MachineView, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RestoreBody, RestorePreview, MoveResult, EvacuateResult, SeriesResp, Silence, Team, AuditEntry, NotifyChannel, NotifyLogEntry } from './types';
 
 export const useMe = () => useQuery({ queryKey: ['me'], queryFn: () => get<{ username: string }>('/auth/me'), retry: false, staleTime: 5 * 60_000 });
 export const useTeams = () => useQuery({ queryKey: ['teams'], queryFn: () => get<Team[]>('/teams'), staleTime: 60_000 });
@@ -17,12 +17,12 @@ export function useOverview() {
 }
 
 /** 机器列表，已按默认顺序排好：线路机 → 团队 → 编号（故障/离线不下沉） */
-export function useMachines(scope: 'live' | 'retired' | 'all' = 'live') {
+export function useMachines(scope: 'live' | 'retired' | 'all' = 'live', enabled = true) {
   const poll = usePoll(30_000);
   const teams = useTeams().data;
   // select 排序：只在列表或团队变化时重算；返回的是查询结果本身，调用方按属性追踪
   const select = useCallback((d: MachineView[]) => [...d].sort(makeDefaultCompare(teams ?? [])), [teams]);
-  return useQuery({ queryKey: ['machines', scope], queryFn: ({ signal }) => get<MachineView[]>(`/machines?scope=${scope}`, signal), refetchInterval: poll, select });
+  return useQuery({ queryKey: ['machines', scope], queryFn: ({ signal }) => get<MachineView[]>(`/machines?scope=${scope}`, signal), refetchInterval: poll, select, enabled });
 }
 /** 按键等“用时才读”的场景：直接读缓存里的机器列表（同样的默认顺序），不订阅、不触发请求 */
 export function readMachines(qc: QueryClient, scope: 'live' | 'retired' | 'all' = 'live'): MachineView[] | undefined {
@@ -53,43 +53,46 @@ export function useRelays() {
 export function useRelayChoices() {
   return useQuery({ ...relaysQuery(usePoll(30_000)), select: relayChoices });
 }
-/** poll：卡片上的心跳条没有抽屉那样的 tick 失效，自己按这个间隔刷新 */
+/** poll：卡片上的心跳条没有抽屉那样的 tick 失效，自己按这个间隔刷新；此时 staleTime 同间隔、切回窗口不重取（否则每张卡同时发一次） */
 export const useSeries = (id: string | null, metric: 'host' | 'traffic' | 'probe', range: string, enabled = true, poll?: number) =>
-  useQuery({ queryKey: ['series', id, metric, range], queryFn: ({ signal }) => get<SeriesResp>(`/machines/${id}/series?metric=${metric}&range=${range}`, signal), enabled: !!id && enabled, staleTime: 30_000, refetchInterval: poll });
+  useQuery({ queryKey: ['series', id, metric, range], queryFn: ({ signal }) => get<SeriesResp>(`/machines/${id}/series?metric=${metric}&range=${range}`, signal), enabled: !!id && enabled, staleTime: poll ?? 30_000, refetchInterval: poll, refetchOnWindowFocus: poll ? false : undefined });
 export const useRenewals = (id: string | null) => useQuery({ queryKey: ['renewals', id], queryFn: ({ signal }) => get<Renewal[]>(`/machines/${id}/renewals`, signal), enabled: !!id });
 export const useAudit = (id: string | null) => useQuery({ queryKey: ['audit', id], queryFn: ({ signal }) => get<AuditEntry[]>(`/audit?target_id=${id}&limit=10`, signal), enabled: !!id });
-export function useJobs(state: 'active' | 'done' | 'all' = 'all') {
+/** 作业列表一页（按创建先后倒序）；换页时先留着上一页，不闪骨架 */
+export function useJobs(state: 'active' | 'done' | 'all' = 'all', offset = 0, limit = 100) {
   const poll = usePoll(10_000);
-  return useQuery({ queryKey: ['jobs', state], queryFn: ({ signal }) => get<Job[]>(`/jobs?state=${state}&limit=100`, signal), refetchInterval: poll });
+  return useQuery({ queryKey: ['jobs', state, offset, limit], queryFn: ({ signal }) => get<Paged<Job>>(`/jobs?state=${state}&limit=${limit}&offset=${offset}`, signal), refetchInterval: poll, placeholderData: keepPreviousData });
 }
-export const useJob = (id: string | null) => useQuery({ queryKey: ['job', id], queryFn: () => get<Job>(`/jobs/${id}`), enabled: !!id, refetchInterval: (q) => (q.state.data && jobLive(q.state.data.state) ? 2500 : false) });
-export function useIncidents(state: 'firing' | 'resolved' | 'all' = 'all') {
+export function useJob(id: string | null) {
+  const poll = usePoll(2500); // 流正常时靠 job 事件失效；流断开才轮询兜底
+  return useQuery({ queryKey: ['job', id], queryFn: ({ signal }) => get<Job>(`/jobs/${id}`, signal), enabled: !!id, refetchInterval: (q) => (poll && q.state.data && jobLive(q.state.data.state) ? poll : false) });
+}
+/** 告警列表一页（严重度优先）。默认参数与告警页第一页相同：顶栏徽标取 total，和告警页共用同一份缓存 */
+export const INCIDENT_PAGE = 50;
+export function useIncidents(state: 'firing' | 'resolved' | 'all' = 'all', offset = 0, limit = INCIDENT_PAGE) {
   const poll = usePoll(30_000);
-  return useQuery({ queryKey: ['incidents', state], queryFn: ({ signal }) => get<Incident[]>(`/incidents?state=${state}`, signal), refetchInterval: poll });
+  return useQuery({ queryKey: ['incidents', state, offset, limit], queryFn: ({ signal }) => get<Paged<Incident>>(`/incidents?state=${state}&limit=${limit}&offset=${offset}`, signal), refetchInterval: poll, placeholderData: keepPreviousData });
 }
 export const useSilences = () => useQuery({ queryKey: ['silences'], queryFn: () => get<Silence[]>('/silences') });
 
 export interface StreamEvent { type: string; id?: string }
-/** 按事件类型让查询失效（实时流用）。resync 由 stream.ts 处理成全部失效 */
-export function invalidateFor(qc: QueryClient, ev: StreamEvent) {
-  const inv = (...keys: unknown[][]) => keys.forEach((k) => qc.invalidateQueries({ queryKey: k }));
+/** 事件对应要失效的查询键（实时流用）。resync 由 stream.ts 处理成全部失效；job 的目标机器服务端会另发 machine 事件，这里不重复 */
+export function eventKeys(ev: StreamEvent): unknown[][] {
   switch (ev.type) {
-    case 'resync': qc.invalidateQueries(); break;
-    case 'machine': inv(['machine', ev.id], ['machines'], ['overview']); break;
-    case 'machines': inv(['machine'], ['machines'], ['relays'], ['overview']); break;
-    case 'relay': inv(['relays'], ['machines']); break;
-    case 'job': inv(['jobs'], ['job', ev.id], ['machines'], ['machine']); break;
-    case 'incidents': inv(['incidents'], ['silences'], ['overview'], ['machines']); break;
-    case 'catalog': inv(['teams'], ['providers'], ['plans'], ['machines'], ['machine'], ['notify-channels']); break;
-    case 'api_keys': inv(['api-keys']); break;
-    case 'policies': inv(['policies'], ['machines'], ['relays']); break;
+    case 'machine': return [['machine', ev.id], ['machines'], ['overview']];
+    case 'machines': return [['machine'], ['machines'], ['relays'], ['overview']];
+    case 'relay': return [['relays'], ['machines']];
+    case 'job': return [['jobs'], ['job', ev.id]];
+    case 'incidents': return [['incidents'], ['silences'], ['overview'], ['machines']];
+    case 'catalog': return [['teams'], ['providers'], ['plans'], ['machines'], ['machine'], ['notify-channels']];
+    case 'api_keys': return [['api-keys']];
+    case 'policies': return [['policies'], ['machines'], ['relays']];
     case 'tick': {
-      inv(['machines'], ['machine'], ['relays'], ['overview']);
       // 曲线只刷新当前打开的抽屉，其余视图的曲线不在每个 tick 重取
       const open = new URLSearchParams(window.location.search).get('m');
-      if (open) inv(['series', open]);
-      break;
+      return [['machines'], ['machine'], ['relays'], ['overview'], ...(open ? [['series', open]] : [])];
     }
+    default: return [];
   }
 }
 

@@ -302,6 +302,8 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Ba
                     None => 0,
                 },
             };
+            let tz = s.billing_tz.as_deref().unwrap_or("Asia/Shanghai");
+            super::machines::check_tz(&mut tx, tz).await?;
             sqlx::query(
                 "insert into subscription (machine_id, price_cents, cycle, due_date, billing_tz) values ($1, $2, $3::billing_cycle, $4, $5)",
             )
@@ -309,7 +311,7 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Ba
             .bind(price)
             .bind(s.cycle.as_deref().unwrap_or("monthly"))
             .bind(s.due_date)
-            .bind(s.billing_tz.as_deref().unwrap_or("Asia/Shanghai"))
+            .bind(tz)
             .execute(&mut *tx)
             .await?;
         }

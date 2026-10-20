@@ -18,11 +18,12 @@
   grid-row: span var(--rows); grid-template-rows: subgrid;
   margin-bottom: var(--grid-gap);
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); overflow: hidden;
-  transition: border-color var(--dur-fast), opacity var(--dur-base);
+  box-shadow: var(--shadow-card);
+  transition: border-color var(--dur-fast), box-shadow var(--dur-base) var(--ease-sheet);
 }
 .ncard[data-view="small"] { --rows: 7; }
 .ncard[data-view="compact"] { --rows: 6; }
-.ncard:hover { border-color: var(--line-strong); }
+.ncard:hover { border-color: var(--line-strong); box-shadow: var(--shadow-card-hover); } /* 不加位移：卡片的 transform 归 motion 的布局动画管 */
 .ncard[data-health="down"] { border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); }
 .ncard[data-health="degraded"] { border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
 .ncard.is-current { border-color: var(--accent); }

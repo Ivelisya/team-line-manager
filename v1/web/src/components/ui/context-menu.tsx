@@ -15,7 +15,6 @@ export const ContextMenuItem = React.forwardRef<React.ElementRef<typeof ContextP
 ));
 ContextMenuItem.displayName = 'ContextMenuItem';
 export const ContextMenuSeparator = () => <ContextPrimitive.Separator className="menu-sep" />;
-export const ContextMenuLabel = ({ children }: { children: React.ReactNode }) => <ContextPrimitive.Label className="menu-label">{children}</ContextPrimitive.Label>;
 export const ContextMenuSub = ContextPrimitive.Sub;
 export const ContextMenuSubTrigger = React.forwardRef<React.ElementRef<typeof ContextPrimitive.SubTrigger>, React.ComponentPropsWithoutRef<typeof ContextPrimitive.SubTrigger>>(({ className, children, ...p }, ref) => (
   <ContextPrimitive.SubTrigger ref={ref} className={cn('menu-item', className)} {...p}>{children}<ChevronRight className="menu-chev" /></ContextPrimitive.SubTrigger>

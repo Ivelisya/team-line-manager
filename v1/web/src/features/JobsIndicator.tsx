@@ -37,9 +37,9 @@ function useJobNotifier(jobs: Job[] | undefined) {
 
 export function JobsIndicator() {
   const q = useJobs('all');
-  useJobNotifier(q.data);
+  useJobNotifier(q.data?.items);
   const [open, setOpen] = React.useState(false);
-  const live = (q.data ?? []).filter((j) => jobLive(j.state));
+  const live = (q.data?.items ?? []).filter((j) => jobLive(j.state));
   if (!live.length) return null;
   return (
     <Popover open={open} onOpenChange={setOpen}>
