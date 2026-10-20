@@ -8,7 +8,7 @@ use crate::xray::cli::XrayCli;
 use crate::xray::{conns, ctl, render, stats};
 use fleet_proto::{tags, DesiredEntry, XrayStatus};
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{watch, Semaphore};
@@ -39,7 +39,7 @@ pub async fn host_task(sh: Arc<Shared>, mut sd: watch::Receiver<bool>) {
         let mut b = sh.buf.lock().unwrap();
         b.push_host(s);
         n += 1;
-        if n % 30 == 0 {
+        if n.is_multiple_of(30) {
             let cur = host::collect_info();
             if cur != last_info || info_sent_at.elapsed() > Duration::from_secs(3600) {
                 last_info = cur.clone();
@@ -71,10 +71,7 @@ pub async fn stats_task(sh: Arc<Shared>, cli: XrayCli, mut sd: watch::Receiver<b
         let entries = enabled_entries(&sh);
         let pid = ctl::main_pid(&cfg.xray_service).await;
         let start = pid.and_then(ctl::proc_start);
-        let core_id = match (pid, start) {
-            (Some(p), Some((t, _))) => format!("{boot}:{p}:{t}"),
-            _ => format!("{boot}:nopid"),
-        };
+        let core_id = stats::core_id_of(&boot, pid, start.map(|s| s.0));
         let res = cli.user_stats().await;
         let up = res.is_ok();
         if was_up != Some(up) {
@@ -85,16 +82,20 @@ pub async fn stats_task(sh: Arc<Shared>, cli: XrayCli, mut sd: watch::Receiver<b
             was_up = Some(up);
         }
         let ts = now_ms();
+        // pid/启动时间取不到：本轮不算增量（保留基线和上一轮 core_id），免得被误判成 Xray 重启而重复计数
         if let Ok(list) = res {
             let cur: HashMap<String, u64> = list.into_iter().collect();
-            let deltas = stats::compute(&mut st, &core_id, &cur);
-            let ports: Vec<u16> = entries.iter().map(|e| e.port).collect();
-            let cn = conns::count_now(&ports);
-            let with_conns: Vec<_> = entries.iter().map(|e| (e.id, cn.get(&e.port).copied().unwrap_or(0))).collect();
-            let samples = stats::to_samples(&deltas, &with_conns, ts);
-            let mut b = sh.buf.lock().unwrap();
-            b.push_entries(samples);
-            b.stats_commit = Some(st.clone());
+            if let Some(deltas) = stats::compute_if_known(&mut st, core_id.as_deref(), &cur) {
+                let ports: Vec<u16> = entries.iter().map(|e| e.port).collect();
+                let cn = conns::count_now(&ports);
+                let with_conns: Vec<_> = entries.iter().map(|e| (e.id, cn.get(&e.port).copied().unwrap_or(0))).collect();
+                let samples = stats::to_samples(&deltas, &with_conns, ts);
+                let mut b = sh.buf.lock().unwrap();
+                b.push_entries(samples);
+                b.stats_commit = Some(st.clone());
+            } else {
+                tracing::debug!("取不到 Xray 的 pid/启动时间，本轮不算流量增量");
+            }
         }
         // 版本：进程换代时取一次
         if up {
@@ -120,6 +121,17 @@ struct Sched {
     sig: String,
     next_tcp: Instant,
     next_egress: Instant,
+    /// 该入口的出口探测是否还在途（排队等信号量也算）：同一入口最多一个，免得任务堆积
+    egress_busy: Arc<AtomicBool>,
+}
+
+/// 探测任务结束（含 panic）时清掉在途标记
+struct BusyGuard(Arc<AtomicBool>);
+
+impl Drop for BusyGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 fn stagger(id: uuid::Uuid, period: Duration) -> Duration {
@@ -162,7 +174,7 @@ pub async fn probe_task(sh: Arc<Shared>, mut sd: watch::Receiver<bool>) {
             let s = sched.entry(e.id).or_insert_with(|| {
                 // 启动时错峰；运行中新增/变化的入口尽快探一次，让界面马上有结果
                 let (a, b) = if first_pass { (stagger(e.id, tcp_every), Duration::from_secs(5) + stagger(e.id, egress_every)) } else { (Duration::from_secs(1), Duration::from_secs(4)) };
-                Sched { sig: sig.clone(), next_tcp: now + a, next_egress: now + b }
+                Sched { sig: sig.clone(), next_tcp: now + a, next_egress: now + b, egress_busy: Arc::new(AtomicBool::new(false)) }
             });
             if s.sig != sig {
                 s.sig = sig;
@@ -181,8 +193,17 @@ pub async fn probe_task(sh: Arc<Shared>, mut sd: watch::Receiver<bool>) {
             if now >= s.next_egress {
                 s.next_egress = now + egress_every;
                 if let Some(pp) = probes.get(&e.id).copied() {
+                    if s.egress_busy.swap(true, Ordering::AcqRel) {
+                        let n = sh.health.probes_skipped.fetch_add(1, Ordering::Relaxed) + 1;
+                        if n <= 3 || n.is_multiple_of(100) {
+                            tracing::warn!(entry = %tags::inbound(e.id), skipped_total = n, "上一次出口探测还没结束，跳过本次");
+                        }
+                        continue;
+                    }
+                    let busy = BusyGuard(s.egress_busy.clone());
                     let (sh2, sem2, id, url, ip) = (sh.clone(), sem.clone(), e.id, d.relay.echo_url.clone(), e.expect_egress_ip);
                     tokio::spawn(async move {
+                        let _busy = busy;
                         let Ok(_permit) = sem2.acquire().await else { return };
                         let r = probe::egress_probe(id, pp, &url, ip, Duration::from_secs(12), now_ms()).await;
                         if !r.ok {

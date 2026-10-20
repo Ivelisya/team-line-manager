@@ -29,7 +29,7 @@ cargo build -p fleet-agent --release --target x86_64-unknown-linux-musl   # 约 
 | `/etc/fleet-agent/agent.toml` `token` | 配置、令牌（均 0600） |
 | `/etc/fleet-agent/xray.json` | **由 agent 全权生成**（0600，含 REALITY 私钥与出站密码）；没有其他写者 |
 | `/var/lib/fleet-agent/` (0700) | `state.json`（seq）、`queue/`（离线队列，`queue/dead/` 是被服务端永久拒绝的报告）、`stats.json`（流量基线）、`access.json`（访问日志游标）、`applied.json`（上次成功应用的期望状态）、`pending_ack.json`、`tmp/` |
-| `/var/log/fleet-xray/access.log` | Xray 访问日志（agent 只读）；用 `fleet-xray.logrotate`（copytruncate） |
+| `/var/log/fleet-xray/access.log` | Xray 访问日志（agent 只读）；用 `deploy/logrotate/fleet-xray`（copytruncate；**部署线路机时必须安装**到 `/etc/logrotate.d/fleet-xray`，`lab/agent/fleet-xray.logrotate` 是同一份） |
 
 **运行身份（v1 的取舍）**：agent 以 root 运行，但 `CapabilityBoundingSet=` 为空、`ProtectSystem=strict`（只有 `/var/lib/fleet-agent`、`/etc/fleet-agent` 可写）、`NoNewPrivileges`、`PrivateTmp`、`PrivateDevices`、`RestrictAddressFamilies`。原因：线路机上要 `systemctl restart fleet-xray`（仅 Xray 没在运行/骨架变更时）并读写 0600 的 xray.json；专用用户 + polkit 在 v1 里得不偿失。`/etc/fleet-agent` 必须事先存在（单元的 ReadWritePaths 依赖它）。Xray 单元同样加固，只保留 `CAP_NET_BIND_SERVICE`。
 
@@ -42,6 +42,16 @@ cargo build -p fleet-agent --release --target x86_64-unknown-linux-musl   # 约 
 6. 任一步失败：按相反顺序撤回，回报 `ok=false`（被点名的入口带错误，其余被回滚的入口标 `已回滚`）。
 7. 只有「API 连不上且 systemd 里该服务不是 active」才写配置并 `systemctl restart`；Xray 在运行但 API 查询出错时**绝不重启**（重启会断开所有客户连接）。骨架（log/api/policy/静态出站）变化也只能重启生效。
 8. 每个 DesiredState 重复应用是空操作。失败后按 15 s…5 min 退避重试同一代。
+9. **启动对齐**：启动时若有 `applied.json`，先幂等再应用一遍（磁盘配置缺失/被改、Xray 新起都会被补齐），成功后才对外报告该代数；失败则代数报 0，向中控重新拉取期望状态。此外每 10 分钟做一次轻量对齐检查（磁盘 xray.json 等于期望渲染结果 + 运行态核对，不跑 `xray -test`），不一致就修复并记 warn 日志（计入 `agent_health.realign_fixes`）。
+
+## 上报与健康
+
+- 同一 seq 连续 20 次（或持续 30 分钟）被服务端回 5xx：视为该报告本身有问题，移入 `queue/dead/` 并继续发后面的；网络错误不计入。
+- 服务端确认的 seq 大于本地最新 seq（时钟回拨/状态丢失）：本地序号推进到其后并 warn。
+- Report 里的 `agent_health`（累计值，随带样本的报告发送）：离线队列长度/丢弃数/dead 数、访问日志尾读计数、被跳过的出口探测数、对齐修复次数、最近一次应用错误。
+- 访问日志轮转靠「文件开头指纹」识别（rename 与 copytruncate 都能认）：先读完 `access.log.1` 里没读的，再从新文件开头读。
+- 中控地址是明文 `http://` 且不在回环/内网时启动打醒目警告（不拒绝）；令牌文件权限宽于 0600 也警告。
+- 后台任务（采集/上报/期望状态）任何一个在关停信号之前结束或 panic，进程以非零码退出，由 systemd 重启。关停时给上报器落盘缓冲、进行中的 apply 收尾的时间（最多约 35 s，单元里 `TimeoutStopSec=45`）。
 
 `Outbound::Direct`（线路机自己的出口）**没有**加入 fleet-proto（server 在并发开发，避免破坏其 `match`）。
 

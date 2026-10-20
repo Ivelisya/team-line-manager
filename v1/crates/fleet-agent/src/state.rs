@@ -52,8 +52,17 @@ impl Buffers {
     }
 }
 
+/// Agent 自身健康里不属于队列/尾读器的那部分（各任务写，上报器读）
+#[derive(Default)]
+pub struct Health {
+    pub probes_skipped: AtomicU64,
+    pub realign_fixes: AtomicU64,
+    pub last_apply_error: Mutex<Option<String>>,
+}
+
 pub struct Shared {
     pub cfg: Arc<Config>,
+    pub health: Health,
     pub buf: Mutex<Buffers>,
     /// 线路机：最近一次成功应用的期望状态（探测、流量统计据此知道有哪些入口）
     pub applied: RwLock<Option<DesiredState>>,
@@ -62,7 +71,7 @@ pub struct Shared {
 
 impl Shared {
     pub fn new(cfg: Arc<Config>) -> Arc<Self> {
-        Arc::new(Self { cfg, buf: Mutex::new(Buffers::default()), applied: RwLock::new(None), applied_gen: AtomicU64::new(0) })
+        Arc::new(Self { cfg, health: Health::default(), buf: Mutex::new(Buffers::default()), applied: RwLock::new(None), applied_gen: AtomicU64::new(0) })
     }
 }
 
@@ -100,6 +109,15 @@ impl SeqState {
     pub fn load(path: PathBuf, queue_newest: Option<u64>) -> Self {
         let base = load_json::<SeqFile>(&path).map(|f| f.seq).unwrap_or_else(|| crate::util::now_ms() as u64);
         Self { path, seq: base.max(queue_newest.unwrap_or(0)) }
+    }
+    /// 服务端确认的序号比本地发出过的还大（时钟回拨 / 状态丢失后）：把本地推到它之后，
+    /// 否则后续报告会被服务端当重复丢弃。
+    pub fn advance_to(&mut self, n: u64) -> anyhow::Result<()> {
+        if n > self.seq {
+            save_json(&self.path, &SeqFile { seq: n }, true)?;
+            self.seq = n;
+        }
+        Ok(())
     }
     pub fn next(&mut self) -> anyhow::Result<u64> {
         let n = self.seq + 1;
@@ -145,6 +163,22 @@ mod tests {
         std::fs::remove_file(&p).unwrap();
         let s3 = SeqState::load(p, Some(u64::MAX / 2));
         assert_eq!(s3.seq, u64::MAX / 2);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn advance_to_only_moves_forward() {
+        let d = std::env::temp_dir().join(format!("fa-seq-adv-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("state.json");
+        let mut s = SeqState::load(p.clone(), Some(100));
+        let before = s.seq; // 无状态文件：从当前时间戳起算
+        s.advance_to(50).unwrap();
+        assert_eq!(s.seq, before); // 往回推无效
+        s.advance_to(before + 5000).unwrap(); // 服务端确认的比本地大（时钟回拨后）
+        assert_eq!(s.next().unwrap(), before + 5001);
+        // 落盘了：重新加载后仍在它之后
+        assert_eq!(SeqState::load(p, None).seq, before + 5001);
         let _ = std::fs::remove_dir_all(&d);
     }
 }

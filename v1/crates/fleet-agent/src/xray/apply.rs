@@ -89,6 +89,25 @@ impl Applier {
         }
     }
 
+    /// 轻量对齐检查（只读，不跑 xray -test）：磁盘上的 xray.json 等于期望渲染结果，且运行态核对通过。
+    /// 返回 Err(不一致的原因)。
+    pub async fn check_aligned(&self, d: &DesiredState) -> Result<(), String> {
+        let _g = self.lock.lock().await;
+        let cand = render(d, &self.ctx()).map_err(|e| format!("渲染失败：{e:#}"))?;
+        match self.read_prev() {
+            Some(p) if p.full == cand.full => {}
+            Some(_) => return Err("磁盘上的 xray.json 与期望状态不一致".into()),
+            None => return Err("xray.json 缺失或无法解析".into()),
+        }
+        let rt = self.cli.runtime().await.map_err(|e| format!("无法读取 Xray 运行态：{e:#}"))?;
+        verify(&rt, &cand)
+    }
+
+    /// 等正在进行的应用（持有锁）结束，最多等 `max`。关停时用，免得在 apply 中途 abort 任务。
+    pub async fn wait_idle(&self, max: Duration) -> bool {
+        tokio::time::timeout(max, self.lock.lock()).await.is_ok()
+    }
+
     pub async fn apply(&self, d: &DesiredState) -> ApplyReport {
         let _g = self.lock.lock().await;
         let t0 = Instant::now();

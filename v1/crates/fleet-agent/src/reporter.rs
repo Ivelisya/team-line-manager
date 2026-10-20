@@ -7,7 +7,8 @@ use crate::server::{Outcome, ServerClient};
 use crate::state::{access_cursor_path, stats_path, SeqState, Shared};
 use crate::util::{backoff, load_json, now_ms, save_json};
 use crate::xray::access::{local_utc_offset_s, Cursor, Tailer};
-use fleet_proto::Report;
+use fleet_proto::{AgentHealth, Report};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
@@ -22,6 +23,29 @@ const QUEUE_MAX_AGE_MS: i64 = 6 * 3600 * 1000;
 const REVOKED_SLEEP: Duration = Duration::from_secs(600);
 const FLUSH_MAX_REPORTS: usize = 200;
 const FLUSH_MAX_TIME: Duration = Duration::from_secs(20);
+/// 同一个 seq 连续被服务端回 5xx 达到这个次数（或持续这么久）：当作"毒丸"移入 dead/，不再堵住后面的报告
+const POISON_MAX_HITS: u32 = 20;
+const POISON_MAX_AGE: Duration = Duration::from_secs(30 * 60);
+
+/// 跟踪"最旧的那个 seq 反复 5xx"
+#[derive(Debug)]
+struct Poison {
+    seq: u64,
+    hits: u32,
+    since: Instant,
+}
+
+impl Poison {
+    /// 记一次 5xx。返回 true = 该 seq 该移入 dead/ 了
+    fn hit(slot: &mut Option<Poison>, seq: u64, now: Instant) -> bool {
+        let p = match slot {
+            Some(p) if p.seq == seq => p,
+            _ => slot.insert(Poison { seq, hits: 0, since: now }),
+        };
+        p.hits += 1;
+        p.hits >= POISON_MAX_HITS || now.duration_since(p.since) >= POISON_MAX_AGE
+    }
+}
 
 pub struct Reporter {
     sh: Arc<Shared>,
@@ -33,6 +57,7 @@ pub struct Reporter {
     interval_s: u32,
     fails: u32,
     next_send: Instant,
+    poison: Option<Poison>,
 }
 
 impl Reporter {
@@ -42,7 +67,7 @@ impl Reporter {
         let seq = SeqState::load(crate::state::state_path(&cfg), queue.newest());
         let tailer = (cfg.role == Role::Relay).then(|| Tailer::new(cfg.access_log.clone(), load_json::<Cursor>(&access_cursor_path(&cfg))));
         tracing::info!(pending = queue.len(), seq = seq.seq, "上报器启动");
-        Ok(Self { sh, queue, client, seq, tailer, boot_id: host::boot_id(), interval_s: 10, fails: 0, next_send: Instant::now() })
+        Ok(Self { sh, queue, client, seq, tailer, boot_id: host::boot_id(), interval_s: 10, fails: 0, next_send: Instant::now(), poison: None })
     }
 
     pub async fn run(mut self, mut sd: watch::Receiver<bool>) {
@@ -71,8 +96,32 @@ impl Reporter {
                 }
             }
             if now >= self.next_send && !self.queue.is_empty() {
-                self.flush().await;
+                self.flush(&mut sd).await;
+                // flush 里等 POST 时收到了关停信号：直接落盘缓冲退出，不再等那个请求
+                if *sd.borrow() {
+                    self.build_and_push(true);
+                    return;
+                }
             }
+        }
+    }
+
+    fn health(&self) -> AgentHealth {
+        let c = self.tailer.as_ref().map(|t| t.counters.clone()).unwrap_or_default();
+        let h = &self.sh.health;
+        AgentHealth {
+            queue_len: self.queue.len() as u32,
+            queue_dropped: self.queue.dropped,
+            queue_dead: self.queue.dead,
+            access_lines: c.lines,
+            access_events: c.events,
+            access_unparsed: c.unparsed,
+            access_dropped_lines: c.dropped_lines,
+            access_rotation_gaps: c.rotation_gaps,
+            access_truncations: c.truncations,
+            probes_skipped: h.probes_skipped.load(Ordering::Relaxed),
+            realign_fixes: h.realign_fixes.load(Ordering::Relaxed),
+            last_apply_error: h.last_apply_error.lock().unwrap().clone(),
         }
     }
 
@@ -129,6 +178,7 @@ impl Reporter {
             probes,
             access,
             xray,
+            agent_health: with_samples.then(|| self.health()),
         };
         match self.queue.push(&report) {
             Ok(()) => {
@@ -167,13 +217,13 @@ impl Reporter {
 
     fn note_failure(&mut self, why: &str) {
         self.fails += 1;
-        if self.fails <= 3 || self.fails % 10 == 0 {
+        if self.fails <= 3 || self.fails.is_multiple_of(10) {
             tracing::warn!(fails = self.fails, pending = self.queue.len(), "上报失败：{why}");
         }
     }
 
     /// 严格有序补传：最旧的先发，确认后再发下一个
-    async fn flush(&mut self) {
+    async fn flush(&mut self, sd: &mut watch::Receiver<bool>) {
         let t0 = Instant::now();
         let mut sent = 0;
         while let Some(seq) = self.queue.oldest() {
@@ -189,10 +239,24 @@ impl Reporter {
                     continue;
                 }
             };
-            match self.client.post_report(body).await {
+            let out = tokio::select! {
+                o = self.client.post_report(body) => o,
+                // 关停：放弃这次请求（报告还在磁盘队列里，下次启动继续发），让上层赶紧落盘缓冲
+                _ = sd.changed() => return,
+            };
+            match out {
                 Outcome::Ok(ack) => {
+                    self.poison = None;
                     if ack.interval_s > 0 {
                         self.interval_s = ack.interval_s.clamp(2, 300);
+                    }
+                    if ack.accepted_seq > self.seq.seq {
+                        // 服务端已确认的序号比本地发出过的最大序号还大（时钟回拨 / 本地状态丢失）：
+                        // 把本地推到它之后，否则之后的新报告会被当重复丢弃
+                        tracing::warn!(accepted = ack.accepted_seq, local = self.seq.seq, "服务端确认的 seq 大于本地最新 seq，推进本地序号");
+                        if let Err(e) = self.seq.advance_to(ack.accepted_seq) {
+                            tracing::error!("推进本地 seq 失败：{e:#}");
+                        }
                     }
                     if ack.accepted_seq >= seq {
                         let n = self.queue.ack_through(ack.accepted_seq);
@@ -207,12 +271,23 @@ impl Reporter {
                         return;
                     }
                 }
-                Outcome::Retry { wait, why } => {
+                Outcome::Retry { wait, why, server_err } => {
+                    if server_err && Poison::hit(&mut self.poison, seq, Instant::now()) {
+                        tracing::error!(seq, "同一报告被服务端连续 5xx，疑似该报告本身触发服务端错误，移入 dead/ 继续发后面的：{why}");
+                        self.queue.dead_letter(seq);
+                        self.poison = None;
+                        self.fails = 0;
+                        continue;
+                    }
+                    if !server_err {
+                        self.poison = None;
+                    }
                     self.note_failure(&why);
                     self.next_send = Instant::now() + wait.unwrap_or_else(|| backoff(self.fails, 5, 60));
                     return;
                 }
                 Outcome::Revoked => {
+                    self.poison = None;
                     tracing::error!("服务端回 401：令牌已被撤销或无效。停止上报 {} 秒后重试（数据继续在本地排队）", REVOKED_SLEEP.as_secs());
                     self.next_send = Instant::now() + REVOKED_SLEEP;
                     return;
@@ -224,5 +299,40 @@ impl Reporter {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn poison_after_n_consecutive_5xx() {
+        let mut slot = None;
+        let t0 = Instant::now();
+        for _ in 1..POISON_MAX_HITS {
+            assert!(!Poison::hit(&mut slot, 7, t0));
+        }
+        assert!(Poison::hit(&mut slot, 7, t0));
+    }
+
+    #[test]
+    fn poison_counter_resets_on_other_seq() {
+        let mut slot = None;
+        let t0 = Instant::now();
+        for _ in 1..POISON_MAX_HITS {
+            assert!(!Poison::hit(&mut slot, 7, t0));
+        }
+        // 换了个 seq（7 已确认/移走）：从头计
+        assert!(!Poison::hit(&mut slot, 8, t0));
+        assert_eq!(slot.as_ref().unwrap().hits, 1);
+    }
+
+    #[test]
+    fn poison_after_age_even_with_few_hits() {
+        let mut slot = None;
+        let t0 = Instant::now();
+        assert!(!Poison::hit(&mut slot, 7, t0));
+        assert!(Poison::hit(&mut slot, 7, t0 + POISON_MAX_AGE));
     }
 }

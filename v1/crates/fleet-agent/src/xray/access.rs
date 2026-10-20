@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::io::{Read, Seek, SeekFrom};
 use std::net::IpAddr;
 use std::os::unix::fs::MetadataExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 const MAX_LINE: usize = 32 * 1024;
@@ -135,10 +135,51 @@ pub fn parse_line(line: &str, utc_offset_s: i64) -> Parsed {
 
 // ── 尾读 ────────────────────────────────────────────────────────────────────
 
+/// 指纹最多取文件开头多少字节
+const FP_MAX: usize = 256;
+
+/// 文件开头的指纹：前 `len` 字节的 FNV-1a 哈希。访问日志只追加，开头不会变；
+/// 开头变了 = 轮转（rename 或 copytruncate）或被截断重写，光靠 inode/偏移分不清 copytruncate。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Fp {
+    pub len: u32,
+    pub hash: u64,
+}
+
+fn fnv1a(b: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for x in b {
+        h ^= *x as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+fn read_head(path: &Path, n: usize) -> Option<Vec<u8>> {
+    let f = std::fs::File::open(path).ok()?;
+    let mut v = Vec::with_capacity(n);
+    f.take(n as u64).read_to_end(&mut v).ok()?;
+    Some(v)
+}
+
+/// 取文件开头的指纹；空文件没有
+fn fingerprint(path: &Path) -> Option<Fp> {
+    let h = read_head(path, FP_MAX)?;
+    (!h.is_empty()).then(|| Fp { len: h.len() as u32, hash: fnv1a(&h) })
+}
+
+/// 文件开头是否仍与指纹一致（文件比指纹短也算不一致）
+fn fp_matches(path: &Path, fp: Fp) -> bool {
+    read_head(path, fp.len as usize).is_some_and(|h| h.len() == fp.len as usize && fnv1a(&h) == fp.hash)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Cursor {
     pub inode: u64,
     pub offset: u64,
+    /// 游标所指文件的开头指纹；旧版游标没有（反序列化为 None，按 inode/偏移兜底）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fp: Option<Fp>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -197,25 +238,46 @@ impl Tailer {
         let cur = match self.cursor {
             Some(c) => c,
             // 首次：从当前末尾开始，不重放历史；但文件是在我们启动后才出现的则从头读
-            None => Cursor { inode, offset: if self.seen_missing { 0 } else { size } },
+            None => Cursor { inode, offset: if self.seen_missing { 0 } else { size }, fp: None },
         };
-        let (read_path, mut cur) = if cur.inode == inode {
+        // 当前路径上的文件还是游标指向的那个吗？有指纹以指纹为准（能识别 copytruncate：inode 不变、
+        // 新文件长过旧偏移时偏移判断会漏）；旧版游标没有指纹，退回 inode + 偏移。
+        let rotated = match cur.fp {
+            Some(fp) => cur.offset > size || !fp_matches(&self.path, fp),
+            None => cur.inode != inode || cur.offset > size,
+        };
+        let (read_path, mut cur) = if !rotated {
             (self.path.clone(), cur)
         } else {
+            // 找轮转出去的旧内容 access.log.1（rename 轮转是同一个文件；copytruncate 是拷贝，开头相同）
             let old = self.old_path();
-            match std::fs::metadata(&old) {
-                Ok(m) if m.ino() == cur.inode => (old, cur),
-                _ => {
+            let old_ok = std::fs::metadata(&old).is_ok_and(|m| {
+                m.len() >= cur.offset
+                    && match cur.fp {
+                        Some(fp) => fp_matches(&old, fp),
+                        None => m.ino() == cur.inode,
+                    }
+            });
+            if old_ok {
+                tracing::info!("访问日志已轮转，先读完 {} 里剩余部分，再从新文件开头读", old.display());
+                (old, cur)
+            } else {
+                if cur.inode == inode {
+                    self.counters.truncations += 1;
+                    tracing::warn!("访问日志被截断/重写且找不到匹配的 .1，从新文件开头读，可能漏掉一段");
+                } else {
                     self.counters.rotation_gaps += 1;
                     tracing::warn!("访问日志轮转后找不到旧文件，可能漏掉一段");
-                    (self.path.clone(), Cursor { inode, offset: 0 })
                 }
+                (self.path.clone(), Cursor { inode, offset: 0, fp: None })
             }
         };
         let fsize = std::fs::metadata(&read_path).map(|m| m.len()).unwrap_or(0);
         if cur.offset > fsize {
+            // 两次 stat 之间又被截断了
             self.counters.truncations += 1;
             cur.offset = 0;
+            cur.fp = None;
         }
         let want = (fsize - cur.offset).min(MAX_WINDOW) as usize;
         let mut buf = vec![0u8; want];
@@ -253,13 +315,25 @@ impl Tailer {
                 Parsed::Bad => self.counters.unparsed += 1,
             }
         }
-        let mut next = Cursor { inode: cur.inode, offset: cur.offset + consumed as u64 };
+        let reading_old = read_path != self.path;
+        // 旧文件末尾那截没有换行的残行（拷贝时恰好写到一半）永远不会被补全，不丢掉游标就卡在旧文件上
+        if reading_old && !hit_cap && cur.offset + want as u64 >= fsize && consumed < buf.len() {
+            self.counters.dropped_lines += 1;
+            consumed = buf.len();
+        }
+        let mut next = Cursor { inode: cur.inode, offset: cur.offset + consumed as u64, fp: cur.fp };
+        // 指纹：还没有，或文件原先太短、现在能取更长的（开头不变，所以升级是安全的）
+        if next.fp.is_none_or(|f| (f.len as usize) < FP_MAX) {
+            if let Some(f) = fingerprint(&read_path) {
+                next.fp = Some(f);
+            }
+        }
         let at_eof = next.offset >= fsize;
         // 旧文件读完了 → 切到新文件开头
-        if read_path != self.path && at_eof {
-            next = Cursor { inode, offset: 0 };
+        if reading_old && at_eof {
+            next = Cursor { inode, offset: 0, fp: None };
         }
-        let more = hit_cap || (want as u64 == MAX_WINDOW && !at_eof) || (read_path != self.path && !at_eof);
+        let more = hit_cap || (want as u64 == MAX_WINDOW && !at_eof) || (reading_old && !at_eof);
         Ok(Batch { events, next: Some(next), more })
     }
 }
@@ -358,7 +432,7 @@ mod tests {
         assert_eq!(b.events.len(), 1); // 半行不读
         t.commit(b.next);
         // 补全半行
-        write!(f, "0:56 from 1.2.3.4:5 accepted tcp:d.com:80 [in-{} -> out-x]\n", id().simple()).unwrap();
+        writeln!(f, "0:56 from 1.2.3.4:5 accepted tcp:d.com:80 [in-{} -> out-x]", id().simple()).unwrap();
         let b = t.read_batch(10, 0).unwrap();
         assert_eq!(b.events[0].dest_host, "d.com");
         t.commit(b.next);
@@ -400,12 +474,121 @@ mod tests {
     fn overlong_line_is_dropped_not_stuck() {
         let d = tmp("long");
         let p = d.join("access.log");
-        let mut t = Tailer::new(p.clone(), Some(Cursor { inode: std::fs::metadata(&d).unwrap().ino(), offset: 0 }));
+        let mut t = Tailer::new(p.clone(), Some(Cursor { inode: std::fs::metadata(&d).unwrap().ino(), offset: 0, fp: None }));
         std::fs::write(&p, vec![b'x'; 40 * 1024]).unwrap();
-        t.cursor = Some(Cursor { inode: std::fs::metadata(&p).unwrap().ino(), offset: 0 });
+        t.cursor = Some(Cursor { inode: std::fs::metadata(&p).unwrap().ino(), offset: 0, fp: None });
         let b = t.read_batch(10, 0).unwrap();
         assert_eq!(t.counters.dropped_lines, 1);
         assert_eq!(b.next.unwrap().offset, 40 * 1024);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    fn hosts(b: &Batch) -> Vec<&str> {
+        b.events.iter().map(|e| e.dest_host.as_str()).collect()
+    }
+
+    /// 与 line() 等长的主机名，保证各行字节数相同，便于构造"新文件比旧偏移还长"
+    fn h(c: char) -> String {
+        format!("{c}{c}{c}.com")
+    }
+
+    #[test]
+    fn copytruncate_reads_rest_of_copy_then_new_file() {
+        let d = tmp("ct");
+        let p = d.join("access.log");
+        std::fs::write(&p, line(&h('0'))).unwrap();
+        let mut t = Tailer::new(p.clone(), None);
+        let b = t.read_batch(10, 0).unwrap();
+        t.commit(b.next);
+        let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        write!(f, "{}{}", line(&h('a')), line(&h('b'))).unwrap();
+        let b = t.read_batch(10, 0).unwrap();
+        assert_eq!(hosts(&b), ["aaa.com", "bbb.com"]);
+        t.commit(b.next);
+        // 还有一行没读，logrotate copytruncate：拷贝到 .1，再原地截断；新文件很快长过旧偏移
+        write!(f, "{}", line(&h('c'))).unwrap();
+        drop(f);
+        std::fs::copy(&p, d.join("access.log.1")).unwrap();
+        std::fs::OpenOptions::new().write(true).truncate(true).open(&p).unwrap();
+        std::fs::write(&p, format!("{}{}{}{}", line(&h('d')), line(&h('e')), line(&h('f')), line(&h('g')))).unwrap();
+        assert!(std::fs::metadata(&p).unwrap().len() > t.cursor.unwrap().offset, "新文件要比旧偏移长，旧实现在这里会读错位置");
+        let b = t.read_batch(10, 0).unwrap();
+        assert_eq!(hosts(&b), ["ccc.com"]); // 先读完 .1 里没读的
+        t.commit(b.next);
+        let b = t.read_batch(10, 0).unwrap();
+        assert_eq!(hosts(&b), ["ddd.com", "eee.com", "fff.com", "ggg.com"]); // 再从新文件 0 开始
+        t.commit(b.next);
+        assert_eq!((t.counters.rotation_gaps, t.counters.truncations), (0, 0));
+        // 之后继续正常追加
+        let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        write!(f, "{}", line(&h('h'))).unwrap();
+        assert_eq!(hosts(&t.read_batch(10, 0).unwrap()), ["hhh.com"]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn copytruncate_without_copy_restarts_from_zero_and_counts() {
+        let d = tmp("ct-nocopy");
+        let p = d.join("access.log");
+        std::fs::write(&p, format!("{}{}", line(&h('0')), line(&h('1')))).unwrap();
+        let mut t = Tailer::new(p.clone(), None);
+        let b = t.read_batch(10, 0).unwrap();
+        t.commit(b.next);
+        // 被截断后又长过旧偏移，没有 .1：只能从头读，记一次截断
+        std::fs::write(&p, format!("{}{}{}", line(&h('a')), line(&h('b')), line(&h('c')))).unwrap();
+        let b = t.read_batch(10, 0).unwrap();
+        assert_eq!(hosts(&b), ["aaa.com", "bbb.com", "ccc.com"]);
+        assert_eq!(t.counters.truncations, 1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn rename_rotation_with_partial_tail_in_old_file_does_not_stick() {
+        let d = tmp("rot-partial");
+        let p = d.join("access.log");
+        std::fs::write(&p, line(&h('0'))).unwrap();
+        let mut t = Tailer::new(p.clone(), None);
+        let b = t.read_batch(10, 0).unwrap();
+        t.commit(b.next);
+        let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        write!(f, "{}2026/10/20 13:5", line(&h('a'))).unwrap(); // 末尾是半行
+        drop(f);
+        std::fs::rename(&p, d.join("access.log.1")).unwrap();
+        std::fs::write(&p, line(&h('n'))).unwrap();
+        let b = t.read_batch(10, 0).unwrap();
+        assert_eq!(hosts(&b), ["aaa.com"]);
+        t.commit(b.next);
+        let b = t.read_batch(10, 0).unwrap();
+        assert_eq!(hosts(&b), ["nnn.com"]);
+        assert_eq!(t.counters.dropped_lines, 1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn cursor_serde_is_backward_compatible() {
+        // 旧版落盘的游标没有 fp 字段
+        let c: Cursor = serde_json::from_str(r#"{"inode":5,"offset":10}"#).unwrap();
+        assert_eq!(c, Cursor { inode: 5, offset: 10, fp: None });
+        // 无指纹的游标序列化后不带 fp，旧版 Agent 回滚也读得懂
+        assert_eq!(serde_json::to_string(&c).unwrap(), r#"{"inode":5,"offset":10}"#);
+        let c2 = Cursor { inode: 1, offset: 2, fp: Some(Fp { len: 3, hash: 4 }) };
+        assert_eq!(serde_json::from_str::<Cursor>(&serde_json::to_string(&c2).unwrap()).unwrap(), c2);
+    }
+
+    #[test]
+    fn legacy_cursor_without_fp_reads_and_gets_fp() {
+        let d = tmp("legacy");
+        let p = d.join("access.log");
+        std::fs::write(&p, line(&h('0'))).unwrap();
+        let ino = std::fs::metadata(&p).unwrap().ino();
+        let off = std::fs::metadata(&p).unwrap().len();
+        let mut t = Tailer::new(p.clone(), Some(Cursor { inode: ino, offset: off, fp: None }));
+        let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        write!(f, "{}", line(&h('a'))).unwrap();
+        drop(f);
+        let b = t.read_batch(10, 0).unwrap();
+        assert_eq!(hosts(&b), ["aaa.com"]);
+        assert!(b.next.unwrap().fp.is_some()); // 读过一次就补上了指纹
         let _ = std::fs::remove_dir_all(&d);
     }
 }

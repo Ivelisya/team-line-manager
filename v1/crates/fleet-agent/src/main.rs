@@ -21,8 +21,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
+use tokio::task::JoinSet;
 
 const DEFAULT_CONFIG: &str = "/etc/fleet-agent/agent.toml";
+/// 关停时等后台任务自己收尾的上限 / 其后再等进行中的 apply 释放锁的上限
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(25);
+const APPLY_GRACE: Duration = Duration::from_secs(10);
 
 struct Args {
     config: PathBuf,
@@ -142,6 +146,7 @@ async fn once(cfg: Config) -> Result<()> {
         probes: vec![],
         access: vec![],
         xray: xs,
+        agent_health: None,
     };
     println!("{}", serde_json::to_string_pretty(&r)?);
     let tok = std::fs::read_to_string(&cfg.token_file).map(|t| t.trim().len()).unwrap_or(0);
@@ -158,33 +163,69 @@ async fn run(cfg: Config) -> Result<()> {
         let _ = std::fs::set_permissions(&cfg.data_dir, std::fs::Permissions::from_mode(0o700));
     }
     tracing::info!(role = ?cfg.role, machine_id = %cfg.machine_id, version = env!("CARGO_PKG_VERSION"), "fleet-agent 启动");
+    server::warn_if_plain_http(&cfg.server_url);
     let cfg = Arc::new(cfg);
     let sh = state::Shared::new(cfg.clone());
     let (sd_tx, sd_rx) = watch::channel(false);
-    let mut tasks = vec![tokio::spawn(collect::host_task(sh.clone(), sd_rx.clone()))];
+    // 后台任务全放进 JoinSet：任何一个在收到关停信号之前结束（panic / 意外返回）都当致命错误，退出让 systemd 重启
+    let mut set: JoinSet<&'static str> = JoinSet::new();
+    spawn_named(&mut set, "host_task", collect::host_task(sh.clone(), sd_rx.clone()));
+    let mut applier_handle: Option<Arc<xray::apply::Applier>> = None;
 
     if cfg.role == Role::Relay {
         let applier = Arc::new(xray::apply::Applier::new(cfg.clone()));
         applier.ensure_boot().await;
         desired::restore(&sh);
-        tasks.push(tokio::spawn(collect::stats_task(sh.clone(), applier.cli.clone(), sd_rx.clone())));
-        tasks.push(tokio::spawn(collect::probe_task(sh.clone(), sd_rx.clone())));
+        spawn_named(&mut set, "stats_task", collect::stats_task(sh.clone(), applier.cli.clone(), sd_rx.clone()));
+        spawn_named(&mut set, "probe_task", collect::probe_task(sh.clone(), sd_rx.clone()));
         let client = server::ServerClient::new(&cfg.server_url, cfg.token_file.clone(), cfg.ca_file.as_ref())?;
-        tasks.push(tokio::spawn(desired::desired_task(sh.clone(), applier, client, sd_rx.clone())));
+        spawn_named(&mut set, "desired_task", desired::desired_task(sh.clone(), applier.clone(), client, sd_rx.clone()));
+        applier_handle = Some(applier);
     }
 
     let client = server::ServerClient::new(&cfg.server_url, cfg.token_file.clone(), cfg.ca_file.as_ref())?;
     let reporter = reporter::Reporter::new(sh.clone(), client)?;
-    let rep_task = tokio::spawn(reporter.run(sd_rx.clone()));
+    spawn_named(&mut set, "reporter", reporter.run(sd_rx.clone()));
 
-    wait_for_signal().await;
-    tracing::info!("收到退出信号，落盘缓冲后退出");
-    let _ = sd_tx.send(true);
-    let _ = tokio::time::timeout(Duration::from_secs(10), rep_task).await;
-    for t in tasks {
-        t.abort();
+    let mut fatal: Option<String> = None;
+    tokio::select! {
+        _ = wait_for_signal() => tracing::info!("收到退出信号，落盘缓冲后退出"),
+        r = set.join_next() => {
+            let m = match r {
+                Some(Ok(name)) => format!("后台任务 {name} 意外退出"),
+                Some(Err(e)) => format!("后台任务异常终止（panic？）：{e}"),
+                None => "没有后台任务".to_string(),
+            };
+            tracing::error!("{m}，让进程退出以便 systemd 重启");
+            fatal = Some(m);
+        }
     }
-    Ok(())
+    let _ = sd_tx.send(true);
+    // 让各任务自己收尾（上报器落盘缓冲、desired 任务做完手上的 apply）；超时再 abort
+    let drained = tokio::time::timeout(SHUTDOWN_GRACE, async { while set.join_next().await.is_some() {} }).await.is_ok();
+    if !drained {
+        tracing::warn!("{} 秒内仍有后台任务没结束，准备强制终止", SHUTDOWN_GRACE.as_secs());
+        if let Some(ap) = &applier_handle {
+            if !ap.wait_idle(APPLY_GRACE).await {
+                tracing::warn!("等了 {} 秒 apply 仍未结束，强制终止（运行态可能处于中间状态，下次启动会对齐）", APPLY_GRACE.as_secs());
+            }
+        }
+    }
+    set.abort_all();
+    match fatal {
+        Some(m) => bail!(m),
+        None => Ok(()),
+    }
+}
+
+fn spawn_named<F>(set: &mut JoinSet<&'static str>, name: &'static str, f: F)
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    set.spawn(async move {
+        f.await;
+        name
+    });
 }
 
 async fn wait_for_signal() {
