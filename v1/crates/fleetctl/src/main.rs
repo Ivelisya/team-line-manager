@@ -479,7 +479,7 @@ fn make_ctx(json: bool, session_login: bool) -> anyhow::Result<Ctx> {
             _ => return Err(e),
         },
     };
-    Ok(Ctx { c: Client::new(&url, Cred::Bearer(token))?, base: url.trim_end_matches('/').to_string(), json })
+    Ok(Ctx::new(Client::new(&url, Cred::Bearer(token))?, url.trim_end_matches('/').to_string(), json))
 }
 
 fn login(url: &str, token: &str, json: bool) -> anyhow::Result<u8> {

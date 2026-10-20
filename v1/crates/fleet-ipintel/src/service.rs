@@ -8,6 +8,7 @@ use serde_json::{json, Value};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 /// 完整加载时的库数量：ip2region v4/v6、DB-IP city/asn、iptoasn
 pub const EXPECTED_DBS: usize = 5;
@@ -24,7 +25,14 @@ pub struct IpIntel {
     cur: RwLock<Arc<Dbs>>,
     ov: Mutex<OverrideState>,
     sig: Mutex<String>,
+    /// 新一代可用库比旧一代少而被暂时拒绝时：(当时的签名, 拒绝时刻)
+    pending_downgrade: Mutex<Option<(String, Instant)>>,
+    /// 同一签名稳定多久之后接受"可用库变少"
+    settle: Duration,
 }
+
+/// 库变少时观察多久再接受
+const DOWNGRADE_SETTLE: Duration = Duration::from_secs(60);
 
 fn stat(p: &Path) -> String {
     match std::fs::metadata(p) {
@@ -56,7 +64,7 @@ impl IpIntel {
     pub fn open(dir: impl Into<PathBuf>, overrides: Option<PathBuf>) -> IpIntel {
         let dir = dir.into();
         let (dbs, ov, sig) = Self::build(&dir, overrides.as_deref());
-        IpIntel { dir, overrides, cur: RwLock::new(Arc::new(dbs)), ov: Mutex::new(ov), sig: Mutex::new(sig) }
+        IpIntel { dir, overrides, cur: RwLock::new(Arc::new(dbs)), ov: Mutex::new(ov), sig: Mutex::new(sig), pending_downgrade: Mutex::new(None), settle: DOWNGRADE_SETTLE }
     }
 
     fn build(dir: &Path, overrides: Option<&Path>) -> (Dbs, OverrideState, String) {
@@ -93,7 +101,34 @@ impl IpIntel {
         if *self.sig.lock().unwrap_or_else(|e| e.into_inner()) == now {
             return false;
         }
+        // 可用库变少多半是库文件正在被替换 / 写到一半 / 暂时损坏：同一个签名下先不换代，等它稳定一段时间再试
+        {
+            let p = self.pending_downgrade.lock().unwrap_or_else(|e| e.into_inner());
+            if p.as_ref().is_some_and(|(s, at)| *s == now && at.elapsed() < self.settle) {
+                return false;
+            }
+        }
         let (dbs, ov, sig) = Self::build(&self.dir, self.overrides.as_deref());
+        let old = self.current();
+        {
+            let mut p = self.pending_downgrade.lock().unwrap_or_else(|e| e.into_inner());
+            if dbs.loaded() < old.loaded() {
+                if p.as_ref().is_none_or(|(s, _)| *s != now) {
+                    tracing::warn!(
+                        "ipintel 重载后可用库变少（{} → {}），可能库文件正在被替换或已损坏：先保留旧一代，{} 秒后若文件未再变化再换。错误：{:?}",
+                        old.loaded(),
+                        dbs.loaded(),
+                        self.settle.as_secs(),
+                        dbs.errors
+                    );
+                    *p = Some((now, Instant::now()));
+                    return false;
+                }
+                // 同一签名已稳定过 settle：不是写到一半，库确实少了（被人删了 / 一直是坏的），接受
+                tracing::warn!("ipintel 库文件已稳定，接受可用库减少（{} → {}）", old.loaded(), dbs.loaded());
+            }
+            *p = None;
+        }
         tracing::info!("ipintel 库已重载：加载 {}/{}，版本 {}", dbs.loaded(), EXPECTED_DBS, dbs.version);
         *self.cur.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(dbs);
         *self.ov.lock().unwrap_or_else(|e| e.into_inner()) = ov;
@@ -186,6 +221,33 @@ mod tests {
         assert_eq!(s.loaded(), 2);
         assert_ne!(s.version(), v1);
         assert_eq!(s.lookup("8.8.8.8".parse().unwrap(), None).country.as_deref(), Some("US"));
+    }
+
+    #[test]
+    fn reload_with_fewer_dbs_keeps_old_generation_until_stable() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("ip2asn-combined.tsv"), TSV).unwrap();
+        let xdb = d.path().join("ip2region_v4.xdb");
+        std::fs::write(&xdb, build_xdb(false, &[("8.8.8.0".parse().unwrap(), "8.8.8.255".parse().unwrap(), "美国|0|0|0|US")])).unwrap();
+        let mut s = IpIntel::open(d.path(), None);
+        assert_eq!(s.loaded(), 2);
+        // 库文件消失（模拟被替换到一半 / 暂时损坏）：这一代先保留
+        std::fs::remove_file(&xdb).unwrap();
+        s.settle = Duration::from_secs(3600);
+        assert!(!s.reload_if_changed());
+        assert_eq!(s.loaded(), 2, "可用库变少时保留旧一代");
+        assert_eq!(s.lookup("8.8.8.8".parse().unwrap(), None).country.as_deref(), Some("US"));
+        // 稳定期内不重复建索引
+        assert!(!s.reload_if_changed());
+        assert_eq!(s.loaded(), 2);
+        // 同一签名稳定够久，说明库确实少了：接受
+        s.settle = Duration::ZERO;
+        assert!(s.reload_if_changed());
+        assert_eq!(s.loaded(), 1);
+        // 库又回来：正常换代
+        std::fs::write(&xdb, build_xdb(false, &[("8.8.8.0".parse().unwrap(), "8.8.8.255".parse().unwrap(), "美国|0|0|0|US")])).unwrap();
+        assert!(s.reload_if_changed());
+        assert_eq!(s.loaded(), 2);
     }
 
     #[test]

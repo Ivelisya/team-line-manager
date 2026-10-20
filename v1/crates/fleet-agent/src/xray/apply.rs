@@ -26,6 +26,14 @@ struct Outcome {
     changed: HashSet<Uuid>,
     /// 出错的那一步对应的入口
     culprit: HashSet<Uuid>,
+    /// 走的是"会断开全部客户连接的重启路径"（Xray 在运行、骨架配置变了）
+    disruptive_restart: bool,
+}
+
+/// 一次应用的结果：回报 + 是否走了会断开客户的重启路径
+pub struct ApplyResult {
+    pub report: ApplyReport,
+    pub disruptive_restart: bool,
 }
 
 impl Outcome {
@@ -109,9 +117,14 @@ impl Applier {
     }
 
     pub async fn apply(&self, d: &DesiredState) -> ApplyReport {
+        self.apply_detailed(d).await.report
+    }
+
+    pub async fn apply_detailed(&self, d: &DesiredState) -> ApplyResult {
         let _g = self.lock.lock().await;
         let t0 = Instant::now();
         let out = self.apply_inner(d).await;
+        let disruptive_restart = out.disruptive_restart;
         let ok = out.error.is_none();
         let enabled: Vec<_> = d.entries.iter().filter(|e| e.enabled).collect();
         let entries = d
@@ -130,7 +143,7 @@ impl Applier {
             })
             .collect();
         tracing::info!(generation = d.generation, ok, ms = t0.elapsed().as_millis() as u64, "应用完成");
-        ApplyReport { generation: d.generation, ok, error: out.error, entries }
+        ApplyResult { report: ApplyReport { generation: d.generation, ok, error: out.error, entries }, disruptive_restart }
     }
 
     async fn apply_inner(&self, d: &DesiredState) -> Outcome {
@@ -145,14 +158,16 @@ impl Applier {
         let all_ids: HashSet<Uuid> = d.entries.iter().filter(|e| e.enabled).map(|e| e.id).collect();
 
         if let Err(e) = self.cli.test_config(&cand.full).await {
-            return Outcome { error: Some(format!("xray -test 未通过：{e:#}")), changed: all_ids, culprit: HashSet::new() };
+            return Outcome { error: Some(format!("xray -test 未通过：{e:#}")), changed: all_ids, culprit: HashSet::new(), ..Default::default() };
         }
 
         let rt = match self.cli.runtime().await {
             Ok(rt) if !static_changed => rt,
             Ok(_) => {
                 tracing::warn!("Xray 骨架配置变化，只能重启生效");
-                return self.restart_apply(&cand, prev_loaded.as_ref(), all_ids).await;
+                let mut out = self.restart_apply(&cand, prev_loaded.as_ref(), all_ids).await;
+                out.disruptive_restart = true;
+                return out;
             }
             Err(e) => {
                 // 只有确认 Xray 没在运行才走重启路径；"在运行但查询出错"绝不重启（重启会断开所有客户连接）
@@ -160,7 +175,7 @@ impl Applier {
                     tracing::warn!("Xray 未运行（{e:#}），写配置并启动");
                     return self.restart_apply(&cand, prev_loaded.as_ref(), all_ids).await;
                 }
-                return Outcome { error: Some(format!("Xray 在运行但 API 查询失败，未做任何改动：{e:#}")), changed: all_ids, culprit: HashSet::new() };
+                return Outcome { error: Some(format!("Xray 在运行但 API 查询失败，未做任何改动：{e:#}")), changed: all_ids, culprit: HashSet::new(), ..Default::default() };
             }
         };
 
@@ -172,7 +187,7 @@ impl Applier {
             }
             return match self.write_config(&cand.full) {
                 Ok(()) => Outcome::default(),
-                Err(e) => Outcome { error: Some(format!("写配置失败：{e:#}")), changed, culprit: HashSet::new() },
+                Err(e) => Outcome { error: Some(format!("写配置失败：{e:#}")), changed, culprit: HashSet::new(), ..Default::default() },
             };
         }
         tracing::info!(steps = steps.len(), "经 Xray API 应用变更");
@@ -183,7 +198,7 @@ impl Applier {
             if let Err(e) = self.cli.exec(&s.op).await {
                 let culprit = ids_of_tag(&s.tag).into_iter().collect();
                 let msg = self.rollback(&steps[..=i], &rt, &format!("{}：{e:#}", s.op.describe())).await;
-                return Outcome { error: Some(msg), changed, culprit };
+                return Outcome { error: Some(msg), changed, culprit, ..Default::default() };
             }
         }
         // 核对运行态
@@ -193,14 +208,14 @@ impl Applier {
         };
         if let Err(why) = verdict {
             let msg = self.rollback(&steps, &rt, &format!("运行态核对失败：{why}")).await;
-            return Outcome { error: Some(msg), changed, culprit: HashSet::new() };
+            return Outcome { error: Some(msg), changed, culprit: HashSet::new(), ..Default::default() };
         }
         // 最后写文件
         if let Err(e) = self.write_config(&cand.full) {
             let msg = self.rollback(&steps, &rt, &format!("写配置失败：{e:#}")).await;
-            return Outcome { error: Some(msg), changed, culprit: HashSet::new() };
+            return Outcome { error: Some(msg), changed, culprit: HashSet::new(), ..Default::default() };
         }
-        Outcome { error: None, changed, culprit: HashSet::new() }
+        Outcome { error: None, changed, culprit: HashSet::new(), ..Default::default() }
     }
 
     /// API 连不上，且 systemd 里该服务也不是 active → 才认为 Xray 没在运行
@@ -242,7 +257,7 @@ impl Applier {
     /// Xray 没在运行 / 骨架变化：写配置 → systemctl restart → 等就绪 → 核对
     async fn restart_apply(&self, cand: &Rendered, prev: Option<&Rendered>, ids: HashSet<Uuid>) -> Outcome {
         let old_bytes = std::fs::read(&self.cfg.xray_config).ok();
-        let fail = |m: String| Outcome { error: Some(m), changed: ids.clone(), culprit: HashSet::new() };
+        let fail = |m: String| Outcome { error: Some(m), changed: ids.clone(), culprit: HashSet::new(), ..Default::default() };
         if let Err(e) = self.write_config(&cand.full) {
             return fail(format!("写配置失败：{e:#}"));
         }

@@ -6,12 +6,17 @@ use crate::table::{self, bps, bytes, money};
 use anyhow::{anyhow, bail};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
+use std::sync::Mutex;
 use std::time::Duration;
 
 pub struct Ctx {
     pub c: Client,
     pub base: String,
     pub json: bool,
+    /// 一次命令内只拉一次的列表（`mv` 要解析 3 台机器、`restore` 要解析 2 次团队，不必每次都 GET）。
+    /// 命令是一次性进程，缓存不会跨命令过期；写操作之后需要新数据的地方不要走缓存。
+    machines_cache: Mutex<Option<Vec<Value>>>,
+    teams_cache: Mutex<Option<Value>>,
 }
 
 /// 往 stdout 写一行，管道被关闭（如 `| head`）时不 panic
@@ -54,14 +59,35 @@ impl Ctx {
         }
     }
 
+    pub fn new(c: Client, base: String, json: bool) -> Self {
+        Self { c, base, json, machines_cache: Mutex::new(None), teams_cache: Mutex::new(None) }
+    }
+
+    /// 全部机器（含已退役）。同一命令内只请求一次
     pub fn machines(&self) -> anyhow::Result<Vec<Value>> {
-        Ok(self.c.get_q("/machines", &[("scope", "all".to_string())])?.as_array().cloned().unwrap_or_default())
+        self.with_machines(|all| all.to_vec())
+    }
+
+    fn with_machines<R>(&self, f: impl FnOnce(&[Value]) -> R) -> anyhow::Result<R> {
+        let mut cache = self.machines_cache.lock().unwrap_or_else(|e| e.into_inner());
+        if cache.is_none() {
+            *cache = Some(self.c.get_q("/machines", &[("scope", "all".to_string())])?.as_array().cloned().unwrap_or_default());
+        }
+        Ok(f(cache.as_deref().unwrap_or_default()))
+    }
+
+    /// 团队列表。同一命令内只请求一次
+    pub fn teams(&self) -> anyhow::Result<Value> {
+        let mut cache = self.teams_cache.lock().unwrap_or_else(|e| e.into_inner());
+        if cache.is_none() {
+            *cache = Some(self.c.get("/teams")?);
+        }
+        Ok(cache.clone().unwrap_or(Value::Null))
     }
 
     /// 解析机器引用（id、显示名、线路机名、IP）
     pub fn find(&self, q: &str, want: Want) -> anyhow::Result<Value> {
-        let all = self.machines()?;
-        resolve::machine(&all, q, want).cloned().map_err(|e| anyhow!(e))
+        self.with_machines(|all| resolve::machine(all, q, want).cloned().map_err(|e| anyhow!(e)))?
     }
 
     pub fn find_id(&self, q: &str, want: Want) -> anyhow::Result<(String, String)> {
@@ -421,13 +447,40 @@ pub fn job(ctx: &Ctx, id: &str, follow: bool) -> anyhow::Result<u8> {
     Ok(if j["state"] == "failed" { 1 } else { 0 })
 }
 
+/// follow 时连续这么多次取进度失败才放弃
+const FOLLOW_MAX_ERRORS: u32 = 3;
+
+/// 值得重试的失败：网络错误、5xx、408/429；其余 4xx（令牌无权限、作业不存在…）重试没用，直接报
+fn follow_error_is_transient(e: &anyhow::Error) -> bool {
+    match e.downcast_ref::<crate::client::ApiError>() {
+        Some(a) => a.status >= 500 || matches!(a.status, 408 | 429),
+        None => true,
+    }
+}
+
 /// 轮询作业日志直到结束；成功退出码 0，失败/取消为 1
 pub fn follow_job(ctx: &Ctx, id: &str) -> anyhow::Result<u8> {
     let mut after = 0i64;
     let mut last = String::new();
+    let mut errs = 0u32;
     loop {
-        let j = ctx.c.get(&format!("/jobs/{id}"))?;
-        let logs = ctx.c.get_q(&format!("/jobs/{id}/logs"), &[("after", after.to_string())])?;
+        let polled = ctx.c.get(&format!("/jobs/{id}")).and_then(|j| Ok((j, ctx.c.get_q(&format!("/jobs/{id}/logs"), &[("after", after.to_string())])?)));
+        let (j, logs) = match polled {
+            Ok(x) => {
+                errs = 0;
+                x
+            }
+            Err(e) => {
+                // 作业在服务端照常跑，一次网络抖动不该让命令退出、让用户以为作业没了
+                errs += 1;
+                if !follow_error_is_transient(&e) || errs >= FOLLOW_MAX_ERRORS {
+                    return Err(e.context(format!("取作业进度失败（连续 {errs} 次）；作业在服务端不受影响，可稍后用 fleetctl job {id} --follow 继续看")));
+                }
+                eprintln!("取作业进度失败（第 {errs}/{FOLLOW_MAX_ERRORS} 次），稍后重试：{e:#}");
+                std::thread::sleep(Duration::from_secs(2 * errs as u64));
+                continue;
+            }
+        };
         for l in logs.as_array().cloned().unwrap_or_default() {
             after = after.max(l["id"].as_i64().unwrap_or(0));
             if ctx.json {
@@ -541,5 +594,33 @@ pub fn watch(ctx: &Ctx, count: Option<usize>, ticks: bool) -> anyhow::Result<u8>
             Err(e) => eprintln!("重连失败：{e}"),
         }
         std::thread::sleep(Duration::from_secs(3));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client::ApiError;
+
+    fn api(status: u16) -> anyhow::Error {
+        ApiError { status, code: "x".into(), message: "m".into() }.into()
+    }
+
+    #[test]
+    fn follow_retries_only_transient_failures() {
+        assert!(follow_error_is_transient(&anyhow!("连不上中控 http://x：timeout")));
+        assert!(follow_error_is_transient(&api(502)));
+        assert!(follow_error_is_transient(&api(429)));
+        assert!(!follow_error_is_transient(&api(401)));
+        assert!(!follow_error_is_transient(&api(404)));
+        // 外面包了 context 也认得出底下的 ApiError
+        assert!(!follow_error_is_transient(&api(403).context("读取")));
+        assert!(follow_error_is_transient(&api(503).context("读取")));
+    }
+
+    #[test]
+    fn ctx_caches_are_empty_until_used() {
+        let ctx = Ctx::new(Client::new("http://127.0.0.1:1", crate::client::Cred::None).unwrap(), "http://127.0.0.1:1".into(), false);
+        assert!(ctx.machines_cache.lock().unwrap().is_none() && ctx.teams_cache.lock().unwrap().is_none());
     }
 }

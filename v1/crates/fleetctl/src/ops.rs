@@ -286,7 +286,7 @@ pub fn rename(ctx: &Ctx, machine: &str, team: Option<&str>, number: Option<i32>,
     let cur = ctx.c.get(&format!("/machines/{id}"))?;
     let mut body = json!({"revision": cur["revision"]});
     if let Some(t) = team {
-        body["team_id"] = json!(lookup(&ctx.c.get("/teams")?, t, &["name"], "团队")?);
+        body["team_id"] = json!(lookup(&ctx.teams()?, t, &["name"], "团队")?);
     }
     if let Some(n) = number {
         body["number"] = json!(n);
@@ -304,7 +304,7 @@ pub fn rename(ctx: &Ctx, machine: &str, team: Option<&str>, number: Option<i32>,
 }
 
 pub fn renumber(ctx: &Ctx, team: &str, yes: bool) -> anyhow::Result<u8> {
-    let tid = lookup(&ctx.c.get("/teams")?, team, &["name"], "团队")?;
+    let tid = lookup(&ctx.teams()?, team, &["name"], "团队")?;
     let pre = ctx.c.get(&format!("/teams/{tid}/renumber"))?;
     let changes = pre["changes"].as_array().cloned().unwrap_or_default();
     if changes.is_empty() {

@@ -22,3 +22,4 @@ reqwest = { workspace = true, features = ["socks"] }
 toml.workspace = true
 rand.workspace = true
 libc = "0.2"
+flate2 = "1"

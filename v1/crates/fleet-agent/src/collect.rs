@@ -6,7 +6,7 @@ use crate::state::{stats_path, Shared};
 use crate::util::{load_json, now_ms};
 use crate::xray::cli::XrayCli;
 use crate::xray::{conns, ctl, render, stats};
-use fleet_proto::{tags, DesiredEntry, XrayStatus};
+use fleet_proto::{tags, DesiredEntry, DesiredState, XrayStatus};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -15,6 +15,9 @@ use tokio::sync::{watch, Semaphore};
 use tokio::time::{interval_at, Instant, MissedTickBehavior};
 
 pub const SAMPLE_INTERVAL: Duration = Duration::from_secs(10);
+/// Xray 流量统计（xray api statsquery 子进程）的采样间隔。计数器是累计值，拉长不丢流量，只是样本更粗。
+/// 服务端按分钟汇总（sum/max），不依赖 10 s 粒度。
+pub const STATS_INTERVAL: Duration = Duration::from_secs(30);
 
 fn ticker(period: Duration) -> tokio::time::Interval {
     let mut t = interval_at(Instant::now() + period, period);
@@ -63,38 +66,57 @@ pub async fn stats_task(sh: Arc<Shared>, cli: XrayCli, mut sd: watch::Receiver<b
     let mut tick = ticker(SAMPLE_INTERVAL);
     let mut version: Option<(u32, String)> = None; // (pid, version)
     let mut was_up: Option<bool> = None;
+    // 缓存的 Xray 进程身份：(MainPID, (starttime ticks, 启动时刻 ms))。只在 /proc 里对不上时才重新问 systemctl
+    let mut proc: Option<(u32, (u64, i64))> = None;
+    let mut last_query: Option<Instant> = None;
+    let mut last_core: Option<String> = None; // 上次成功计算增量时的进程纪元
+    let mut up = false;
     loop {
         tokio::select! {
             _ = tick.tick() => {}
             _ = sd.changed() => return,
         }
         let entries = enabled_entries(&sh);
-        let pid = ctl::main_pid(&cfg.xray_service).await;
-        let start = pid.and_then(ctl::proc_start);
-        let core_id = stats::core_id_of(&boot, pid, start.map(|s| s.0));
-        let res = cli.user_stats().await;
-        let up = res.is_ok();
-        if was_up != Some(up) {
-            match &res {
-                Ok(_) => tracing::info!("Xray API 可达"),
-                Err(e) => tracing::warn!("Xray API 不可达：{e:#}"),
-            }
-            was_up = Some(up);
+        // 每个 SAMPLE_INTERVAL 只做一次 /proc 读取确认进程；systemctl / xray api 子进程是重活
+        if !proc.is_some_and(|(p, started)| ctl::proc_start_ticks(p) == Some(started.0)) {
+            proc = match ctl::main_pid(&cfg.xray_service).await {
+                Some(p) => ctl::proc_start(p).map(|s| (p, s)),
+                None => None,
+            };
         }
-        let ts = now_ms();
-        // pid/启动时间取不到：本轮不算增量（保留基线和上一轮 core_id），免得被误判成 Xray 重启而重复计数
-        if let Ok(list) = res {
-            let cur: HashMap<String, u64> = list.into_iter().collect();
-            if let Some(deltas) = stats::compute_if_known(&mut st, core_id.as_deref(), &cur) {
-                let ports: Vec<u16> = entries.iter().map(|e| e.port).collect();
-                let cn = conns::count_now(&ports);
-                let with_conns: Vec<_> = entries.iter().map(|e| (e.id, cn.get(&e.port).copied().unwrap_or(0))).collect();
-                let samples = stats::to_samples(&deltas, &with_conns, ts);
-                let mut b = sh.buf.lock().unwrap();
-                b.push_entries(samples);
-                b.stats_commit = Some(st.clone());
-            } else {
-                tracing::debug!("取不到 Xray 的 pid/启动时间，本轮不算流量增量");
+        let pid = proc.map(|p| p.0);
+        let start = proc.map(|p| p.1);
+        let core_id = stats::core_id_of(&boot, pid, start.map(|s| s.0));
+        // 流量计数器是累计值，降低采样频率不丢流量。以下情况立即查：首次、到点、API 不可达（尽快发现恢复）、
+        // 进程身份未知、进程换代（Xray 重启后尽早记下新基线）
+        let due = last_query.is_none_or(|t| t.elapsed() >= STATS_INTERVAL) || !up || proc.is_none() || (core_id.is_some() && core_id != last_core);
+        if due {
+            last_query = Some(Instant::now());
+            let res = cli.user_stats().await;
+            up = res.is_ok();
+            if was_up != Some(up) {
+                match &res {
+                    Ok(_) => tracing::info!("Xray API 可达"),
+                    Err(e) => tracing::warn!("Xray API 不可达：{e:#}"),
+                }
+                was_up = Some(up);
+            }
+            let ts = now_ms();
+            // pid/启动时间取不到：本轮不算增量（保留基线和上一轮 core_id），免得被误判成 Xray 重启而重复计数
+            if let Ok(list) = res {
+                let cur: HashMap<String, u64> = list.into_iter().collect();
+                if let Some(deltas) = stats::compute_if_known(&mut st, core_id.as_deref(), &cur) {
+                    last_core = core_id.clone();
+                    let ports: Vec<u16> = entries.iter().map(|e| e.port).collect();
+                    let cn = tokio::task::spawn_blocking(move || conns::count_now(&ports)).await.unwrap_or_default();
+                    let with_conns: Vec<_> = entries.iter().map(|e| (e.id, cn.get(&e.port).copied().unwrap_or(0))).collect();
+                    let samples = stats::to_samples(&deltas, &with_conns, ts);
+                    let mut b = sh.buf.lock().unwrap();
+                    b.push_entries(samples);
+                    b.stats_commit = Some(st.clone());
+                } else {
+                    tracing::debug!("取不到 Xray 的 pid/启动时间，本轮不算流量增量");
+                }
             }
         }
         // 版本：进程换代时取一次
@@ -157,15 +179,20 @@ pub async fn probe_task(sh: Arc<Shared>, mut sd: watch::Receiver<bool>) {
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut first_pass = true;
     let api_port = sh.cfg.api_port();
+    let mut probes_cache: Option<(Arc<DesiredState>, HashMap<uuid::Uuid, u16>)> = None;
     loop {
         tokio::select! {
             _ = tick.tick() => {}
             _ = sd.changed() => return,
         }
+        // Arc 克隆很轻；端口表只在期望状态换代（Arc 变了）时重算
         let Some(d) = sh.applied.read().unwrap().clone() else { continue };
         let tcp_every = Duration::from_secs(d.relay.probe_interval_s.clamp(5, 3600) as u64);
         let egress_every = tcp_every * 2;
-        let probes = render::probe_ports(&d.entries, api_port);
+        if probes_cache.as_ref().is_none_or(|(a, _)| !Arc::ptr_eq(a, &d)) {
+            probes_cache = Some((d.clone(), render::probe_ports(&d.entries, api_port)));
+        }
+        let probes = &probes_cache.as_ref().expect("刚填充").1;
         let now = Instant::now();
         let live: HashSet<_> = d.entries.iter().filter(|e| e.enabled).map(|e| e.id).collect();
         sched.retain(|id, _| live.contains(id));

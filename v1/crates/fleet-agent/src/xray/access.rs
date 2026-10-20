@@ -54,7 +54,16 @@ pub fn parse_ts(date: &str, time: &str, utc_offset_s: i64) -> Option<i64> {
     if !(1..=12).contains(&mo) || !(1..=31).contains(&da) || h > 23 || mi > 59 || s > 60 {
         return None;
     }
-    let ms: i64 = if frac.is_empty() { 0 } else { format!("{:0<3}", &frac[..frac.len().min(3)]).parse().ok()? };
+    let ms: i64 = if frac.is_empty() {
+        0
+    } else {
+        // 只认 ASCII 数字：按字节切多字节字符会 panic，游标落盘前崩溃会导致重启后无限崩溃
+        let head = frac.get(..frac.len().min(3))?;
+        if !head.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        format!("{head:0<3}").parse().ok()?
+    };
     let secs = days_from_civil(y, mo, da) * 86400 + h * 3600 + mi * 60 + s - utc_offset_s;
     Some(secs * 1000 + ms)
 }
@@ -351,6 +360,15 @@ mod tests {
         assert_eq!(parse_ts("2026/10/20", "08:00:00.5", 8 * 3600), Some(1_792_454_400_500));
         assert_eq!(parse_ts("1970/01/01", "00:00:01.123456", 0), Some(1123));
         assert_eq!(parse_ts("2026/13/20", "00:00:00", 0), None);
+    }
+
+    #[test]
+    fn timestamp_fraction_non_ascii_does_not_panic() {
+        // 多字节字符落在第 3 个字节上：按字节切会 panic
+        assert_eq!(parse_ts("2026/10/20", "00:00:00.12é", 0), None);
+        assert_eq!(parse_ts("2026/10/20", "00:00:00.é", 0), None);
+        assert_eq!(parse_ts("2026/10/20", "00:00:00.1x3", 0), None);
+        assert!(matches!(parse_line("2026/10/20 00:00:00.12é from 1.2.3.4:5 accepted tcp:a.com:443", 0), Parsed::Bad));
     }
 
     fn id() -> Uuid {
