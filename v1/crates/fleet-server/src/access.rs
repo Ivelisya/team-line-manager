@@ -1,4 +1,4 @@
-//! 访问监控：把 access_event 汇总成小时表（每 5 分钟重算最近两小时，幂等），以及各个查询。
+//! 访问监控：把 access_event 汇总成小时表（每 5 分钟重算当前小时和被标脏的小时，幂等），以及各个查询。
 //!
 //! - 1h 窗口直接查 access_event（原始记录，保留 access_days 天）；24h 及以上查小时汇总表（保留 90 天）。
 //! - 随机子域名合并在库里的 `access_collapse()`（见迁移 0006），汇总和 1h 查询共用同一份规则。
@@ -23,10 +23,12 @@ pub fn floor_hour(t: OffsetDateTime) -> OffsetDateTime {
 
 // ── 汇总 ─────────────────────────────────────────────────────────────────────
 
-/// 重算 [hour, hour+1h) 的汇总。$1 = hour, $2 = hour + 1h。
+/// 重算 [hour, hour+1h) 的汇总。$1 = hour, $2 = hour + 1h, $3 = 「已关闭」的边界（早于它的小时可能已被来源画像累加过）。
+/// 一次扫描原始记录，同时产出 access_hourly、access_source_hourly、access_target_seen 三张表。
 /// 先按 (节点, 目标, 来源) 分组，再只对去重后的目标做合并，避免对每条记录调用 plpgsql。
 /// target_seen.total 按「本次重算值 - 旧值」累加，所以重复执行不会重复计数。
-const ROLLUP_HOURLY: &str = "
+/// 早于 $3 的小时若来源连接数变了，把差值记进 access_source_late，由 ipintel 的来源同步补记（见 ipintel::sync_sources）。
+const ROLLUP: &str = "
 with rawg as (
     select en.node_id, en.relay_id, lower(rtrim(e.dest_host, '.')) h, e.src_ip,
            count(*) c, count(*) filter (where e.blocked) b, min(e.ts) f, max(e.ts) l
@@ -50,6 +52,20 @@ with rawg as (
     returning 1
 ), nw as (
     select node_id, dest_host, sum(conns)::bigint c, min(f) f, max(l) l from agg group by 1, 2
+), src as (
+    select node_id, src_ip, sum(c)::int conns from rawg where src_ip is not null group by 1, 2
+), src_up as (
+    insert into access_source_hourly (node_id, hour, src_ip, conns)
+    select node_id, $1, src_ip, conns from src
+    on conflict (node_id, hour, src_ip) do update set conns = excluded.conns
+    returning 1
+), late as (
+    insert into access_source_late (node_id, hour, src_ip, delta)
+    select s.node_id, $1, s.src_ip, s.conns - coalesce(o.conns, 0)
+    from src s left join access_source_hourly o on o.node_id = s.node_id and o.hour = $1 and o.src_ip = s.src_ip
+    where $1 < $3 and s.conns <> coalesce(o.conns, 0)
+    on conflict (node_id, hour, src_ip) do update set delta = access_source_late.delta + excluded.delta
+    returning 1
 )
 insert into access_target_seen (node_id, dest_host, first_seen, last_seen, total)
 select n.node_id, n.dest_host, n.f, n.l, greatest(n.c - coalesce(o.c, 0), 0)
@@ -59,21 +75,14 @@ on conflict (node_id, dest_host) do update
       last_seen  = greatest(access_target_seen.last_seen, excluded.last_seen),
       total      = greatest(access_target_seen.total + excluded.total, 0)";
 
-const ROLLUP_SOURCES: &str = "
-insert into access_source_hourly (node_id, hour, src_ip, conns)
-select en.node_id, $1, e.src_ip, count(*)::int
-from access_event e join entry en on en.id = e.entry_id
-where e.ts >= $1 and e.ts < $2 and e.src_ip is not null
-group by en.node_id, e.src_ip
-on conflict (node_id, hour, src_ip) do update set conns = excluded.conns";
-
 /// 重算一个整点小时（UTC 对齐）
 pub async fn rollup_hour(db: &PgPool, hour: OffsetDateTime) -> anyhow::Result<()> {
     let mut tx = db.begin().await?;
     sqlx::query("select pg_advisory_xact_lock($1)").bind(LOCK_KEY).execute(&mut *tx).await?;
     let end = hour + Duration::hours(1);
-    sqlx::query(ROLLUP_HOURLY).bind(hour).bind(end).execute(&mut *tx).await?;
-    sqlx::query(ROLLUP_SOURCES).bind(hour).bind(end).execute(&mut *tx).await?;
+    // 往后多算 10 分钟：接近整点时宁可多记一点差值（用不上的会被同步丢弃），也不能漏
+    let closed = floor_hour(OffsetDateTime::now_utc() + Duration::minutes(10)) - Duration::hours(1);
+    sqlx::query(ROLLUP).bind(hour).bind(end).bind(closed).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(())
 }
@@ -83,6 +92,40 @@ pub async fn rollup_recent(db: &PgPool) -> anyhow::Result<()> {
     let now = floor_hour(OffsetDateTime::now_utc());
     rollup_hour(db, now - Duration::hours(1)).await?;
     rollup_hour(db, now).await
+}
+
+/// 一轮最多补算的脏小时数（长时间断网后的积压分几轮消化）
+const DIRTY_BATCH: i64 = 96;
+
+/// 后台循环每轮做的事：当前小时必算；被标脏的小时（agent 补传的迟到数据）补算。
+/// 上一小时关闭后不再无条件重算——每轮算完当前小时会给它留一个脏标记，所以它在下一个小时的第一轮恰好再算一次收尾，
+/// 之后只有迟到数据到来（上报时标脏）才会再算。
+/// 标记按 (小时, touched_at) 精确删除：补算期间又有新数据落进来的小时，标记已被刷新，不会被误删。
+pub async fn rollup_pending(db: &PgPool) -> anyhow::Result<()> {
+    let cur = floor_hour(OffsetDateTime::now_utc());
+    let dirty: Vec<(OffsetDateTime, OffsetDateTime)> =
+        sqlx::query_as("select hour, touched_at from access_dirty where hour <= $1 order by hour limit $2").bind(cur).bind(DIRTY_BATCH).fetch_all(db).await?;
+    let mut hours: std::collections::BTreeSet<OffsetDateTime> = dirty.iter().map(|d| d.0).collect();
+    hours.insert(cur);
+    for h in &hours {
+        rollup_hour(db, *h).await?;
+    }
+    if !dirty.is_empty() {
+        let (hs, ts): (Vec<OffsetDateTime>, Vec<OffsetDateTime>) = dirty.into_iter().unzip();
+        sqlx::query("delete from access_dirty d using unnest($1::timestamptz[], $2::timestamptz[]) u(h, t) where d.hour = u.h and d.touched_at = u.t")
+            .bind(&hs)
+            .bind(&ts)
+            .execute(db)
+            .await?;
+    }
+    sqlx::query(
+        "insert into access_dirty (hour, touched_at) values ($1, clock_timestamp())
+         on conflict (hour) do update set touched_at = excluded.touched_at",
+    )
+    .bind(cur)
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
 /// 补算 [from, 现在] 的所有小时（逐小时，内存有界）。
@@ -111,22 +154,26 @@ pub async fn prune(db: &PgPool) -> anyhow::Result<()> {
         "delete from access_hourly where hour < $1",
         "delete from access_source_hourly where hour < $1",
         "delete from access_target_seen where last_seen < $1",
+        "delete from access_source_late where hour < $1",
+        "delete from access_dirty where hour < $1",
     ] {
         sqlx::query(s).bind(cutoff).execute(db).await?;
     }
     Ok(())
 }
 
-/// 后台循环：启动补算一次，之后每 5 分钟重算最近两小时并清理过期汇总。
+/// 后台循环：启动补算一次，之后每 5 分钟补算当前小时和脏小时并清理过期汇总。
 pub async fn run_forever(st: AppState) {
     if let Err(e) = backfill(&st.db, st.cfg.retention.access_days).await {
         tracing::error!("访问汇总补算失败：{e:#}");
     }
     let mut t = tokio::time::interval(StdDuration::from_secs(300));
+    // 一轮跑得比间隔长时不要连着补跑，顺延到下一个间隔
+    t.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut n = 0u32;
     loop {
         t.tick().await;
-        if let Err(e) = rollup_recent(&st.db).await {
+        if let Err(e) = rollup_pending(&st.db).await {
             tracing::error!("访问汇总失败：{e:#}");
         }
         if n.is_multiple_of(12) {
@@ -139,6 +186,45 @@ pub async fn run_forever(st: AppState) {
 }
 
 // ── 查询 ─────────────────────────────────────────────────────────────────────
+
+/// 24h / 7d / 30d 聚合结果的短 TTL 缓存（键 = 接口 + 全部查询参数）。
+/// 这些窗口读的是小时汇总表，本来就最多每 5 分钟变一次，缓存几十秒不影响结果；
+/// 一个页面同时发的 summary / targets / machine 请求也不会各自全量聚合一遍。1h 窗口读原始记录，不缓存。
+pub struct QueryCache {
+    ttl: StdDuration,
+    map: std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, serde_json::Value)>>,
+}
+
+impl QueryCache {
+    const MAX: usize = 256;
+
+    pub fn new(ttl: StdDuration) -> Self {
+        Self { ttl, map: Default::default() }
+    }
+
+    pub fn get(&self, key: &str) -> Option<serde_json::Value> {
+        if self.ttl.is_zero() {
+            return None;
+        }
+        let m = self.map.lock().unwrap_or_else(|e| e.into_inner());
+        m.get(key).filter(|(at, _)| at.elapsed() < self.ttl).map(|(_, v)| v.clone())
+    }
+
+    pub fn put(&self, key: String, v: serde_json::Value) {
+        if self.ttl.is_zero() {
+            return;
+        }
+        let mut m = self.map.lock().unwrap_or_else(|e| e.into_inner());
+        if m.len() >= Self::MAX {
+            let ttl = self.ttl;
+            m.retain(|_, (at, _)| at.elapsed() < ttl);
+            if m.len() >= Self::MAX {
+                m.clear();
+            }
+        }
+        m.insert(key, (std::time::Instant::now(), v));
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Window {
@@ -242,8 +328,8 @@ const AGG_EVENTS: &str = "rawg as (
     select en.node_id, lower(rtrim(e.dest_host, '.')) h, e.src_ip,
            count(*) c, count(*) filter (where e.blocked) b, min(e.ts) f, max(e.ts) l
     from access_event e join entry en on en.id = e.entry_id
-    where e.ts >= $1 and ($3::uuid[] is null or en.node_id = any($3))
-      and ($2::uuid is null or en.node_id in (select id from machine where team_id = $2))
+    where e.ts >= $1 and ($3::uuid[] is null or e.entry_id = any(array(select id from entry where node_id = any($3))))
+      and ($2::uuid is null or e.entry_id = any(array(select x.id from entry x join machine mx on mx.id = x.node_id where mx.team_id = $2)))
       and ($4::text is null or e.dest_host ilike $4 or host(e.src_ip) ilike $4)
     group by 1, 2, 3
 ), hm as (
@@ -307,8 +393,8 @@ pub async fn summary(db: &PgPool, f: &Filter) -> sqlx::Result<(Kpi, Vec<NodeRow>
 
     let src_sql = if f.events {
         "select en.node_id, count(distinct e.src_ip)::bigint from access_event e join entry en on en.id = e.entry_id
-         where e.ts >= $1 and ($3::uuid[] is null or en.node_id = any($3))
-           and ($2::uuid is null or en.node_id in (select id from machine where team_id = $2))
+         where e.ts >= $1 and ($3::uuid[] is null or e.entry_id = any(array(select id from entry where node_id = any($3))))
+           and ($2::uuid is null or e.entry_id = any(array(select x.id from entry x join machine mx on mx.id = x.node_id where mx.team_id = $2)))
          group by 1"
     } else {
         "select node_id, count(distinct src_ip)::bigint from access_source_hourly
@@ -388,8 +474,8 @@ pub async fn sources(db: &PgPool, f: &Filter, limit: i64) -> sqlx::Result<Vec<So
         format!(
             "select en.node_id, {NAME} name, host(e.src_ip) src_ip, count(*)::bigint conns, max(e.ts) last_ts
              from access_event e join entry en on en.id = e.entry_id join machine m on m.id = en.node_id left join team t on t.id = m.team_id
-             where e.ts >= $1 and e.src_ip is not null and ($3::uuid[] is null or en.node_id = any($3))
-               and ($2::uuid is null or m.team_id = $2) and ($4::text is null or host(e.src_ip) ilike $4)
+             where e.ts >= $1 and e.src_ip is not null and ($3::uuid[] is null or e.entry_id = any(array(select id from entry where node_id = any($3))))
+               and ($2::uuid is null or e.entry_id = any(array(select x.id from entry x join machine mx on mx.id = x.node_id where mx.team_id = $2))) and ($4::text is null or host(e.src_ip) ilike $4)
              group by en.node_id, m.kind, m.label, m.number, m.lifecycle, t.name, e.src_ip
              order by conns desc, src_ip limit $5"
         )
@@ -425,7 +511,8 @@ pub async fn events(db: &PgPool, f: &Filter, before: Option<OffsetDateTime>, lim
         "select e.ts, en.node_id, {NAME} name, host(e.src_ip) src_ip, e.dest_host, e.dest_port, e.network, e.blocked
          from access_event e join entry en on en.id = e.entry_id join machine m on m.id = en.node_id left join team t on t.id = m.team_id
          where e.ts >= $1 and ($7::timestamptz is null or e.ts < $7)
-           and ($3::uuid[] is null or en.node_id = any($3)) and ($2::uuid is null or m.team_id = $2)
+           and ($3::uuid[] is null or e.entry_id = any(array(select id from entry where node_id = any($3))))
+           and ($2::uuid is null or e.entry_id = any(array(select x.id from entry x join machine mx on mx.id = x.node_id where mx.team_id = $2)))
            and ($4::text is null or e.dest_host ilike $4 or host(e.src_ip) ilike $4)
            and ($5::text is null or access_kind(lower(rtrim(e.dest_host, '.'))) = $5)
            and case $6::text when 'blocked' then e.blocked when 'routed' then not e.blocked else true end
@@ -543,6 +630,19 @@ mod tests {
     fn like_escapes() {
         assert_eq!(like_pattern("  "), None);
         assert_eq!(like_pattern("a_b%c").as_deref(), Some("%a\\_b\\%c%"));
+    }
+
+    #[test]
+    fn query_cache_ttl() {
+        let c = QueryCache::new(StdDuration::from_millis(60));
+        assert!(c.get("a").is_none());
+        c.put("a".into(), serde_json::json!(1));
+        assert_eq!(c.get("a"), Some(serde_json::json!(1)));
+        std::thread::sleep(StdDuration::from_millis(80));
+        assert!(c.get("a").is_none(), "过期不再命中");
+        let off = QueryCache::new(StdDuration::ZERO);
+        off.put("a".into(), serde_json::json!(1));
+        assert!(off.get("a").is_none(), "ttl 为 0 等于不缓存");
     }
 
     #[test]

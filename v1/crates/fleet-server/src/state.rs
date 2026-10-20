@@ -36,6 +36,8 @@ pub struct Inner {
     pub relay_changed: broadcast::Sender<Uuid>,
     /// 来源 IP 画像：离线库 + 内部地址表（库缺失时降级）
     pub ipintel: crate::ipintel::Service,
+    /// 访问监控聚合结果的短 TTL 缓存
+    pub access_cache: crate::access::QueryCache,
 }
 
 impl std::ops::Deref for AppState {
@@ -48,7 +50,8 @@ impl AppState {
         let (events, _) = broadcast::channel(256);
         let (relay_changed, _) = broadcast::channel(64);
         let ipintel = crate::ipintel::Service::new(&cfg.ipintel);
-        Self(Arc::new(Inner { cfg, db, secrets, events, relay_changed, ipintel }))
+        let access_cache = crate::access::QueryCache::new(std::time::Duration::from_secs(cfg.access_cache_secs));
+        Self(Arc::new(Inner { cfg, db, secrets, events, relay_changed, ipintel, access_cache }))
     }
 
     pub fn emit(&self, e: Event) { let _ = self.events.send(e); }

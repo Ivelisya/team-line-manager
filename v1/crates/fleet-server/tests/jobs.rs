@@ -103,9 +103,25 @@ async fn purge_runs_twice_without_error() {
     let team = seed_team(&t, "团队1").await;
     let node = seed_node(&t, team, 1, "203.0.113.10", "retired").await;
     let name = t.get(&format!("/api/v1/machines/{node}")).await["name"].as_str().unwrap().to_string();
+    // 该节点的访问汇总和分区表里的主机指标，彻底删除时要一并清掉
+    for sql in [
+        "insert into access_hourly (node_id, relay_id, hour, dest_host, kind, conns) values ($1, gen_random_uuid(), now(), 'a.com', 'domain', 1)",
+        "insert into access_source_hourly (node_id, hour, src_ip, conns) values ($1, now(), '1.1.1.1', 1)",
+        "insert into access_target_seen (node_id, dest_host, first_seen, last_seen, total) values ($1, 'a.com', now(), now(), 1)",
+        "insert into access_source_late (node_id, hour, src_ip, delta) values ($1, now(), '1.1.1.1', 1)",
+        "insert into host_metric (machine_id, ts, cpu_pct, load1, mem_used, mem_total, disk_used, disk_total, net_rx_bytes, net_tx_bytes, tcp_conns) values ($1, now(), 1, 1, 1, 1, 1, 1, 1, 1, 1)",
+    ] {
+        sqlx::query(sql).bind(node).execute(&t.st.db).await.unwrap();
+    }
     let first = t.post(&format!("/api/v1/machines/{node}/purge"), json!({"confirm": name})).await["job_id"].as_str().unwrap().to_string();
     let j = t.wait_job(&first, "succeeded").await;
     assert_eq!(j["steps"][0]["state"], "done");
+    for tbl in ["access_hourly", "access_source_hourly", "access_target_seen", "access_source_late"] {
+        let n: i64 = sqlx::query_scalar(&format!("select count(*) from {tbl} where node_id = $1")).bind(node).fetch_one(&t.st.db).await.unwrap();
+        assert_eq!(n, 0, "{tbl} 没清干净");
+    }
+    let n: i64 = sqlx::query_scalar("select count(*) from host_metric where machine_id = $1").bind(node).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(n, 0);
     let (s, _) = t.req("GET", &format!("/api/v1/machines/{node}"), None, None).await;
     assert_eq!(s, StatusCode::NOT_FOUND);
 

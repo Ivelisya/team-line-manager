@@ -581,3 +581,43 @@ async fn retention_cleanup_removes_only_expired_rows() {
     assert_eq!(t.count("select count(*) from notify_log").await, 1);
     assert_eq!(t.count("select count(*) from audit_log where actor = 'a'").await, 1);
 }
+
+// ── 访问汇总：agent 断网很久后补传的记录也要汇总进去 ──────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn access_rollup_covers_late_records() {
+    let t = setup().await;
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let team = seed_team(&t, "团队1").await;
+    let (node, entry) = seed_node(&t, relay, team, 1, "203.0.113.5", 20000).await;
+    let late = now_ms() - 5 * H; // 5 小时前：早已不在「最近两小时」里
+    let late_hour = hour_floor(late);
+
+    let mut r = blank_report(1);
+    r.access = vec![access(entry, late)];
+    assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
+    assert_eq!(t.count("select count(*) from access_event").await, 1);
+    assert_eq!(t.count(&format!("select count(*) from access_dirty where extract(epoch from hour)::bigint * 1000 = {late_hour}")).await, 1, "迟到的访问记录所在小时被标脏");
+    assert_eq!(t.count("select count(*) from rollup_dirty").await, 0, "访问记录不动遥测的脏标记");
+
+    fleet_server::access::rollup_pending(&t.st.db).await.unwrap();
+    let hourly = format!("select coalesce(sum(conns), 0)::bigint from access_hourly where node_id = '{node}' and extract(epoch from hour)::bigint * 1000 = {late_hour}");
+    assert_eq!(t.count(&hourly).await, 1, "迟到的记录进了 access_hourly");
+    assert_eq!(t.count(&format!("select coalesce(sum(conns), 0)::bigint from access_source_hourly where node_id = '{node}'")).await, 1);
+    assert_eq!(t.count(&format!("select coalesce(sum(total), 0)::bigint from access_target_seen where node_id = '{node}'")).await, 1);
+    assert_eq!(t.count(&format!("select count(*) from access_dirty where extract(epoch from hour)::bigint * 1000 = {late_hour}")).await, 0, "补算完删除脏标记");
+    assert_eq!(t.count("select count(*) from access_dirty").await, 1, "当前小时留一个标记，下个小时第一轮收尾");
+
+    // 同一小时又补传一条：再补算一次，总数 +1 而不是重复累加；来源连接数的差值记给来源画像
+    let mut r2 = blank_report(2);
+    r2.access = vec![access(entry, late + 1000)];
+    assert_eq!(t.report("tok1", &r2).await.0, StatusCode::OK);
+    fleet_server::access::rollup_pending(&t.st.db).await.unwrap();
+    assert_eq!(t.count(&hourly).await, 2);
+    assert_eq!(t.count(&format!("select coalesce(sum(total), 0)::bigint from access_target_seen where node_id = '{node}'")).await, 2);
+    assert_eq!(t.count("select coalesce(sum(delta), 0)::bigint from access_source_late").await, 2);
+    // 没有新数据时再跑一轮：什么都不变
+    fleet_server::access::rollup_pending(&t.st.db).await.unwrap();
+    assert_eq!(t.count(&hourly).await, 2);
+    assert_eq!(t.count("select coalesce(sum(delta), 0)::bigint from access_source_late").await, 2);
+}

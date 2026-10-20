@@ -28,14 +28,28 @@ fn part_name(table: &str, d: Date) -> String {
 pub async fn maintain_partitions(db: &PgPool, raw_days: u32, access_days: u32, ahead: i64) -> anyhow::Result<()> {
     let today = OffsetDateTime::now_utc().date();
     for t in PARTITIONED {
-        for i in -1..=ahead {
-            let d = today + Duration::days(i);
+        // 只补建缺的分区；建分区要父表的重锁，排在长查询后面会堵住所有上报的 insert，
+        // 所以限 2 秒，拿不到就记 warn、下次维护再试（上报时缺分区还会按需补建）
+        let days: BTreeSet<Date> = (-1..=ahead).map(|i| today + Duration::days(i)).collect();
+        let names: Vec<String> = days.iter().map(|d| part_name(t, *d)).collect();
+        let existing: Vec<(String,)> = sqlx::query_as(
+            "select c.relname::text from pg_class c join pg_inherits i on i.inhrelid = c.oid join pg_class p on p.oid = i.inhparent
+             where p.relname = $1 and c.relname = any($2)",
+        )
+        .bind(t)
+        .bind(&names)
+        .fetch_all(db)
+        .await
+        .with_context(|| format!("查 {t} 已有分区"))?;
+        let existing: BTreeSet<String> = existing.into_iter().map(|(n,)| n).collect();
+        for d in days {
             let n = part_name(t, d);
-            let sql = format!(
-                "create table if not exists {n} partition of {t} for values from ('{d}') to ('{e}')",
-                e = d + Duration::days(1)
-            );
-            sqlx::query(&sql).execute(db).await.with_context(|| format!("建分区 {n}"))?;
+            if existing.contains(&n) {
+                continue;
+            }
+            if let Err(e) = create_partition(db, t, d).await {
+                tracing::warn!("建分区 {n} 失败（可能被长查询挡住），下次维护再试：{e:#}");
+            }
         }
         let keep = if *t == "access_event" { access_days } else { raw_days } as i64;
         let cutoff = part_name(t, today - Duration::days(keep));
@@ -142,8 +156,8 @@ pub async fn ensure_partitions(db: &PgPool, table: &str, days: &BTreeSet<Date>) 
 async fn create_partition(db: &PgPool, table: &str, d: Date) -> anyhow::Result<()> {
     let n = part_name(table, d);
     let mut conn = db.acquire().await?;
-    // 建分区要父表的重锁：5 秒拿不到就放弃，不堵住别的写入
-    sqlx::query("set lock_timeout = '5s'").execute(&mut *conn).await?;
+    // 建分区要父表的重锁：2 秒拿不到就放弃，不堵住别的写入
+    sqlx::query("set lock_timeout = '2s'").execute(&mut *conn).await?;
     let sql = format!("create table if not exists {n} partition of {table} for values from ('{d}') to ('{e}')", e = d + Duration::days(1));
     let r = sqlx::query(&sql).execute(&mut *conn).await;
     let _ = sqlx::query("reset lock_timeout").execute(&mut *conn).await;

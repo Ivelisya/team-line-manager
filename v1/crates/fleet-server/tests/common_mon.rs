@@ -56,7 +56,8 @@ pub async fn setup() -> T {
            public_url = "http://fleet.test"
            ssh_key = "/nonexistent"
            known_hosts = "/tmp/fleet-test-known-hosts"
-           dist_dir = "/nonexistent""#
+           dist_dir = "/nonexistent"
+           access_cache_secs = 0"#
     ))
     .unwrap();
     let st = AppState::new(cfg, pool.clone(), SecretBox::from_key(&[9u8; 32]).unwrap());

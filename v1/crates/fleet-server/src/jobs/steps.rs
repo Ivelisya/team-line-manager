@@ -624,24 +624,54 @@ async fn finalize(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     Ok(Outcome::Done(json!({"renumbered": renamed.len()})))
 }
 
+/// 按天分批删分区大表里这台机器（和它名下入口）的原始数据：每天一条语句，走 (entry_id/machine_id, ts) 索引，
+/// 单条语句只碰一个分区，不会一个事务里锁很久。窗口覆盖整个保留期加前后几天；幂等。
+async fn purge_partitioned(c: &Ctx<'_>, machine: Uuid, eids: &[Uuid]) -> anyhow::Result<u64> {
+    let ret = &c.st.cfg.retention;
+    let back = ret.raw_days.max(ret.access_days) as i64 + 2;
+    let today = OffsetDateTime::now_utc().date();
+    let mut n = 0u64;
+    for i in -back..=3 {
+        let d = today + time::Duration::days(i);
+        let (lo, hi) = (d.midnight().assume_utc(), (d + time::Duration::days(1)).midnight().assume_utc());
+        for t in ["entry_traffic", "probe_result", "access_event"] {
+            n += sqlx::query(&format!("delete from {t} where entry_id = any($1) and ts >= $2 and ts < $3")).bind(eids).bind(lo).bind(hi).execute(&c.st.db).await?.rows_affected();
+        }
+        n += sqlx::query("delete from host_metric where machine_id = $1 and ts >= $2 and ts < $3").bind(machine).bind(lo).bind(hi).execute(&c.st.db).await?.rows_affected();
+    }
+    Ok(n)
+}
+
 async fn purge(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let id = c.target_id()?;
-    let mut tx = c.st.db.begin().await?;
+    // 先不加锁地确认状态，再按天分批删大表（每天一条独立语句，不在一个大事务里锁着机器行）；
     // 机器已经不在（上一次跑到一半进程挂了、或重复发起）：目标已达成，直接算完成
+    let Some((lc,)) = sqlx::query_as::<_, (String,)>("select lifecycle::text from machine where id = $1").bind(id).fetch_optional(&c.st.db).await? else {
+        return Ok(Outcome::Done(json!({"already_gone": true})));
+    };
+    if lc != "retired" {
+        bail!("机器不是已退役状态");
+    }
+    let es: Vec<(Uuid,)> = sqlx::query_as("select id from entry where node_id = $1 or relay_id = $1").bind(id).fetch_all(&c.st.db).await?;
+    let eids: Vec<Uuid> = es.into_iter().map(|(e,)| e).collect();
+    let mut n = purge_partitioned(c, id, &eids).await?;
+
+    // 收尾事务：剩下的小表（小时汇总、访问汇总）和机器本身。分区大表在上面已按天清掉。
+    let mut tx = c.st.db.begin().await?;
     let Some((lc,)) = sqlx::query_as::<_, (String,)>("select lifecycle::text from machine where id = $1 for update").bind(id).fetch_optional(&mut *tx).await? else {
         return Ok(Outcome::Done(json!({"already_gone": true})));
     };
     if lc != "retired" {
         bail!("机器不是已退役状态");
     }
-    let es: Vec<(Uuid,)> = sqlx::query_as("select id from entry where node_id = $1 or relay_id = $1").bind(id).fetch_all(&mut *tx).await?;
-    let eids: Vec<Uuid> = es.into_iter().map(|(e,)| e).collect();
-    let mut n = 0u64;
-    for t in ["entry_traffic", "probe_result", "access_event", "entry_traffic_hourly", "probe_hourly"] {
+    for t in ["entry_traffic_hourly", "probe_hourly"] {
         n += sqlx::query(&format!("delete from {t} where entry_id = any($1)")).bind(&eids).execute(&mut *tx).await?.rows_affected();
     }
-    for t in ["host_metric", "host_metric_hourly"] {
-        n += sqlx::query(&format!("delete from {t} where machine_id = $1")).bind(id).execute(&mut *tx).await?.rows_affected();
+    n += sqlx::query("delete from host_metric_hourly where machine_id = $1").bind(id).execute(&mut *tx).await?.rows_affected();
+    // 访问汇总：access_hourly 按节点或线路机，其余三张按节点（线路机自己没有这三张的行）
+    n += sqlx::query("delete from access_hourly where node_id = $1 or relay_id = $1").bind(id).execute(&mut *tx).await?.rows_affected();
+    for t in ["access_source_hourly", "access_target_seen", "access_source_late"] {
+        n += sqlx::query(&format!("delete from {t} where node_id = $1")).bind(id).execute(&mut *tx).await?.rows_affected();
     }
     sqlx::query("delete from incident where subject_id = $1 or subject_id = any($2)").bind(id).bind(&eids).execute(&mut *tx).await?;
     sqlx::query("delete from silence where subject_id = $1").bind(id).execute(&mut *tx).await?;

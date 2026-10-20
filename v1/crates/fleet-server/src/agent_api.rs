@@ -37,15 +37,26 @@ async fn authenticate(st: &AppState, h: &HeaderMap) -> ApiResult<AgentId> {
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .ok_or_else(ApiError::unauthorized)?;
+    let digest = sha256(tok.trim().as_bytes());
     let row: Option<(Uuid, String)> = sqlx::query_as(
-        "update agent_token t set last_used_at = now() from machine m
-         where t.token_hash = $1 and t.revoked_at is null and m.id = t.machine_id and m.lifecycle <> 'retired'
-         returning m.id, m.kind::text",
+        "select m.id, m.kind::text from agent_token t join machine m on m.id = t.machine_id
+         where t.token_hash = $1 and t.revoked_at is null and m.lifecycle <> 'retired'",
     )
-    .bind(sha256(tok.trim().as_bytes()))
+    .bind(&digest)
     .fetch_optional(&st.db)
     .await?;
     let (machine_id, kind) = row.ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "token_revoked", "令牌无效或已撤销"))?;
+    // 最近使用时间一分钟内不重复写（agent 每 10 秒上报一次，没必要每次都改这一行）；失败不影响认证
+    if let Err(e) = sqlx::query(
+        "update agent_token set last_used_at = now()
+         where token_hash = $1 and revoked_at is null and (last_used_at is null or last_used_at < now() - interval '1 minute')",
+    )
+    .bind(&digest)
+    .execute(&st.db)
+    .await
+    {
+        tracing::warn!("更新令牌最近使用时间失败：{e}");
+    }
     Ok(AgentId { machine_id, kind })
 }
 
@@ -148,6 +159,8 @@ async fn report(State(st): State<AppState>, h: HeaderMap, ApiJson(r): ApiJson<Re
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
+    // 访问记录单独标脏（access_dirty，由访问汇总循环消费），和遥测的 rollup_dirty 互不干扰
+    let access_dirty: Vec<OffsetDateTime> = ac.iter().map(|(_, t)| hour_start(*t)).filter(|h| *h < cur_hour).collect::<BTreeSet<_>>().into_iter().collect();
 
     let mut tx = st.db.begin().await?;
     let last: Option<(i64, Option<String>)> =
@@ -270,6 +283,15 @@ async fn report(State(st): State<AppState>, h: HeaderMap, ApiJson(r): ApiJson<Re
              on conflict (hour) do update set touched_at = excluded.touched_at",
         )
         .bind(&dirty)
+        .execute(&mut *tx)
+        .await?;
+    }
+    if !access_dirty.is_empty() {
+        sqlx::query(
+            "insert into access_dirty (hour, touched_at) select t.h, clock_timestamp() from unnest($1::timestamptz[]) as t(h)
+             on conflict (hour) do update set touched_at = excluded.touched_at",
+        )
+        .bind(&access_dirty)
         .execute(&mut *tx)
         .await?;
     }
