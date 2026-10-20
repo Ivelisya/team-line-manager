@@ -1,17 +1,35 @@
 # fleet-server API v1
 
 - 前缀 `/api/v1`。成功 `{"data": …}`；失败 `{"error":{"code","message"}}`（message 是给人看的中文）。
-- 鉴权：会话 Cookie `fleet_session`（`POST /auth/login` 设置）；或 `Authorization: Bearer <api key>`。
-- 写请求（POST/PUT/PATCH/DELETE）必须带头 `X-Fleet-Request: 1`。
+- 鉴权：会话 Cookie `fleet_session`（`POST /auth/login` 设置）；或 `Authorization: Bearer <api key>`（见下「API 密钥与 scope」）。
+- 会话的写请求（POST/PUT/PATCH/DELETE）必须带头 `X-Fleet-Request: 1`（防 CSRF）；API 密钥不是浏览器，不要求这个头。
 - 时间：RFC 3339 字符串；日期 `YYYY-MM-DD`。金额：整数分（`price_cents`）。流量：字节。速率：bit/s。
 - 乐观锁：改机器要带 `revision`，不一致 → 409。
 
 ## 认证
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/auth/login` | `{username,password}` → 设 Cookie，`{data:{username}}` |
+| POST | `/auth/login` | `{username,password}` → 设 Cookie，`{data:{username}}`。限速：同一用户名 15 分钟内失败 5 次、同一来源 IP 失败 20 次 → 429（`error.code="rate_limited"`，`error.detail.retry_after_s`，message 含剩余等待时间）。成功、失败、登出都写审计 |
 | POST | `/auth/logout` | |
-| GET | `/auth/me` | `{data:{username}}`；未登录 401 |
+| GET | `/auth/me` | `{data:{username, kind:"session"\|"api_key", scopes:[...]}}`；未登录 401 |
+
+## API 密钥与 scope
+密钥是 `flk_<8位十六进制前缀>_<随机串>`，库里只存 sha256 与前缀。每个请求按「方法 + 路径」需要一个 scope，密钥没有就 403（会话用户拥有全部）：
+
+| scope | 允许 |
+|---|---|
+| `read` | 所有 GET，**不含**下面三类 |
+| `write` | 所有非 GET 的业务写操作（不含 `/machines/{id}/exec`） |
+| `secrets` | `GET /entries/{id}/share` 这类凭据 |
+| `exec` | `POST /machines/{id}/exec`、`GET /machines/{id}/logs`、`GET /server/logs`（都是通过 SSH 或本机读取） |
+
+scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` 的管理只允许会话用户，用密钥调用一律 403。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api-keys` | `[{id,name,prefix,scopes,created_at,expires_at,last_used_at,revoked_at}]`（永不返回 token） |
+| POST | `/api-keys` | `{name, scopes:["read",…], expires_days?: 1-3650}` → `{data:{id, token}}`，**token 只返回这一次**；写审计，发 SSE `api_keys` |
+| DELETE | `/api-keys/{id}` | 撤销（幂等）；之后用它的请求 401 |
 
 ## 目录
 | 方法 | 路径 | 说明 |
@@ -99,6 +117,14 @@ ProvisionItem = {
 | POST | `/jobs/{id}/retry` | 失败的作业从失败那一步重来 |
 | POST | `/jobs/{id}/cancel` | 进行中的作业：补偿已完成的步骤后停下 |
 
+## 运维：远程执行与日志
+需要 `exec` scope（会话用户直接可用）。中控用自己的 SSH 密钥和 known_hosts 登录；机器必须不是已退役、不是上游代理（proxy 没有 SSH）。命令原样当 bash 脚本执行（stdin 接 /dev/null），超时由远端 `timeout` 杀掉。每次执行写审计（actor、机器、命令全文、退出码、耗时），**不要在命令里写密码**。
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/machines/{id}/exec` | `{command, timeout_s?: 1-600 (默认 60)}` → `{data:{exit_code, stdout, stderr, duration_ms, truncated, timed_out}}`。stdout/stderr 各截断到 256 KiB（`truncated=true`）；超时 `timed_out=true`、`exit_code=124`；SSH 连不上时 `exit_code=255` 且 stderr 有原因。机器不存在 404、已退役或 proxy 409、命令空/超时越界 400、SSH 无法启动 502 |
+| GET | `/machines/{id}/logs?unit=fleet-agent\|fleet-xray\|ssserver&lines=200` | 白名单 unit（`ssserver` 对应 `fleet-ssserver`），lines 1-2000；内部走同一 exec 通道跑 `journalctl`，返回形状同 exec，另有 `unit`、`lines`。审计动作 `machine.logs` |
+| GET | `/server/logs?lines=200` | 中控自己的 `journalctl -u fleet-server`。fleet 用户通常没权限读 journal：失败时 500 并说明如何授权（`usermod -aG systemd-journal fleet`） |
+
 ## 总览与告警
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -124,7 +150,7 @@ ProvisionItem = {
 - 审计：`{id, ts, actor, action, title, summary, target_kind, target_id, detail}`；界面显示 `title` 与 `summary`（中文，服务端生成），`detail` 是原始 JSON。
 
 ## 实时
-`GET /api/v1/stream`（SSE）。事件 `data` 为 JSON：`{type:"machine",id}`、`{type:"machines"}`、`{type:"relay",id}`、`{type:"job",id}`、`{type:"incidents"}`、`{type:"catalog"}`。前端据此让对应查询失效重取；另外每 30 s 一次 `{type:"tick"}` 刷新遥测。
+`GET /api/v1/stream`（SSE）。事件 `data` 为 JSON：`{type:"machine",id}`、`{type:"machines"}`、`{type:"relay",id}`、`{type:"job",id}`、`{type:"incidents"}`、`{type:"catalog"}`、`{type:"api_keys"}`（密钥增删撤销）。前端据此让对应查询失效重取；另外每 30 s 一次 `{type:"tick"}` 刷新遥测。
 
 ## agent（`/agent/v1`，Bearer 令牌）
 见 `crates/fleet-proto/src/lib.rs`。另：`GET /echo` 返回请求方 IP（纯文本），供出口探测用，无需鉴权。
