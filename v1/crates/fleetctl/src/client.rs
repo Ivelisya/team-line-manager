@@ -5,7 +5,12 @@ use reqwest::blocking::{Client as Http, RequestBuilder, Response};
 use reqwest::Method;
 use serde_json::{json, Value};
 use std::fmt;
+use std::net::TcpStream;
 use std::time::Duration;
+use tungstenite::client::IntoClientRequest;
+use tungstenite::http::HeaderValue;
+use tungstenite::stream::MaybeTlsStream;
+use tungstenite::WebSocket;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -98,15 +103,32 @@ impl Client {
             .ok_or_else(|| anyhow!("登录成功但没有拿到会话 Cookie"))
     }
 
-    /// 长连接（SSE）：不设整体超时
-    pub fn stream(&self, path: &str) -> anyhow::Result<Response> {
-        let res = self
-            .builder(Method::GET, path)
-            .header("accept", "text/event-stream")
-            .timeout(Duration::from_secs(60 * 60 * 24))
-            .send()
-            .map_err(|e| anyhow!("连不上中控 {}：{e}", self.base))?;
-        Self::check(res)
+    /// 实时流 WebSocket。服务端每 15 s 发 ping（读的时候自动回 pong），读超时 45 s 当连接已死
+    pub fn ws(&self, path: &str) -> anyhow::Result<WebSocket<MaybeTlsStream<TcpStream>>> {
+        let url = format!("{}/api/v1{path}", self.base.replacen("http", "ws", 1));
+        let mut req = url.as_str().into_client_request()?;
+        let h = req.headers_mut();
+        h.insert("user-agent", HeaderValue::from_static(concat!("fleetctl/", env!("CARGO_PKG_VERSION"))));
+        match &self.cred {
+            Cred::Bearer(t) => {
+                h.insert("authorization", HeaderValue::from_str(&format!("Bearer {t}"))?);
+            }
+            Cred::Cookie(c) => {
+                h.insert("cookie", HeaderValue::from_str(c)?);
+            }
+            Cred::None => {}
+        }
+        let (ws, _) = tungstenite::connect(req).map_err(|e| match e {
+            tungstenite::Error::Http(r) => anyhow::Error::from(api_error(r.status().as_u16(), &String::from_utf8_lossy(r.body().as_deref().unwrap_or_default()))),
+            e => anyhow!("连不上中控 {}：{e}", self.base),
+        })?;
+        let tcp = match ws.get_ref() {
+            MaybeTlsStream::Plain(s) => s,
+            MaybeTlsStream::Rustls(s) => s.get_ref(),
+            _ => unreachable!("只启用了 rustls"),
+        };
+        tcp.set_read_timeout(Some(Duration::from_secs(45)))?;
+        Ok(ws)
     }
 }
 

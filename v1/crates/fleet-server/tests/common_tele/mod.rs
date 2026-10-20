@@ -8,7 +8,10 @@ use axum::http::{Request, StatusCode, Uri};
 use axum::{Json, Router};
 use fleet_proto::{AccessEvent, EntrySample, HostSample, ProbeKind, ProbeSample, Report, XrayStatus};
 use fleet_server::{config::Config, crypto::SecretBox, db, state::AppState};
+use futures::StreamExt;
 use http_body_util::BodyExt;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::Message;
 use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -57,6 +60,36 @@ impl T {
         let rs = m["health"]["reasons"].as_array().unwrap().iter().map(|r| r["key"].as_str().unwrap().to_string()).collect();
         (m["health"]["status"].as_str().unwrap().to_string(), rs)
     }
+    /// 把应用起在本机随机端口上，连实时流 WebSocket（`cookie` 为假则不带会话）
+    pub async fn ws(&self, cookie: bool) -> Result<Ws, tokio_tungstenite::tungstenite::Error> {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        let app = self.app.clone();
+        tokio::spawn(async move { axum::serve(l, app.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap() });
+        let mut req = format!("ws://{addr}/api/v1/stream").into_client_request().unwrap();
+        if cookie {
+            req.headers_mut().insert("cookie", self.cookie.parse().unwrap());
+        }
+        tokio_tungstenite::connect_async(req).await.map(|(s, _)| s)
+    }
+}
+
+pub type Ws = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// 5 秒内读到第一条 `type` 为 `kind` 的消息（其余消息跳过）
+pub async fn ws_next(ws: &mut Ws, kind: &str) -> Value {
+    let read = async {
+        while let Some(m) = ws.next().await {
+            if let Message::Text(s) = m.unwrap() {
+                let v: Value = serde_json::from_str(&s).unwrap();
+                if v["type"] == kind {
+                    return v;
+                }
+            }
+        }
+        panic!("实时流断开，没等到 {kind}");
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), read).await.unwrap_or_else(|_| panic!("5 秒内没等到 {kind}"))
 }
 
 /// 清空测试库并起一个不带后台循环的应用，登录好 admin

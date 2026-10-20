@@ -53,7 +53,7 @@ export function useRelays() {
 export function useRelayChoices() {
   return useQuery({ ...relaysQuery(usePoll(30_000)), select: relayChoices });
 }
-/** poll：卡片上的心跳条没有抽屉那样的 tick 失效，自己按这个间隔刷新；此时 staleTime 同间隔、切回窗口不重取（否则每张卡同时发一次） */
+/** poll：实时流只推当前读数不推曲线，卡片心跳条、抽屉曲线各按这个间隔刷新；此时 staleTime 同间隔、切回窗口不重取（否则每张卡同时发一次） */
 export const useSeries = (id: string | null, metric: 'host' | 'traffic' | 'probe', range: string, enabled = true, poll?: number) =>
   useQuery({ queryKey: ['series', id, metric, range], queryFn: ({ signal }) => get<SeriesResp>(`/machines/${id}/series?metric=${metric}&range=${range}`, signal), enabled: !!id && enabled, staleTime: poll ?? 30_000, refetchInterval: poll, refetchOnWindowFocus: poll ? false : undefined });
 export const useRenewals = (id: string | null) => useQuery({ queryKey: ['renewals', id], queryFn: ({ signal }) => get<Renewal[]>(`/machines/${id}/renewals`, signal), enabled: !!id });
@@ -87,11 +87,6 @@ export function eventKeys(ev: StreamEvent): unknown[][] {
     case 'catalog': return [['teams'], ['providers'], ['plans'], ['machines'], ['machine'], ['notify-channels']];
     case 'api_keys': return [['api-keys']];
     case 'policies': return [['policies'], ['machines'], ['relays']];
-    case 'tick': {
-      // 曲线只刷新当前打开的抽屉，其余视图的曲线不在每个 tick 重取
-      const open = new URLSearchParams(window.location.search).get('m');
-      return [['machines'], ['machine'], ['relays'], ['overview'], ...(open ? [['series', open]] : [])];
-    }
     default: return [];
   }
 }

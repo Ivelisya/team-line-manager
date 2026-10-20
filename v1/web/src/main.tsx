@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BrowserRouter } from 'react-router-dom';
 import './styles/tw-base.css';
 import './styles/tokens.css';
+import './styles/theme.css';
 import './styles/base.css';
 import './styles/components.css';
 import './styles/cards.css';
@@ -38,7 +39,7 @@ async function boot() {
       <QueryClientProvider client={qc}>
         <MotionProvider>
           <TooltipProvider>
-            <BrowserRouter><App /></BrowserRouter>
+            <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><App /></BrowserRouter>
           </TooltipProvider>
         </MotionProvider>
       </QueryClientProvider>
