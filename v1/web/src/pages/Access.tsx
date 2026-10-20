@@ -16,7 +16,7 @@ import { Select } from '@/components/ui/select';
 import { Segmented, Tabs, TabsList, TabsTrigger } from '@/components/ui/overlays';
 import { Empty, KpiTile, Note, PageHead, Panel, Pill } from '@/components/app/primitives';
 import { AccessViewSwitch } from '@/components/app/AccessViewSwitch';
-import { HostCell, ResultPill, fmtN } from '@/features/AccessTab';
+import { HostCell, ResultPill, fmtN } from '@/features/AccessBits';
 import { CONN_FILTER_OPTIONS, ConnCell, IpIntelHint, IpIntelStatusChip, IspPlace, connMatches } from '@/features/IpIntelBits';
 
 type View = 'targets' | 'new' | 'sources' | 'nodes' | 'events';
