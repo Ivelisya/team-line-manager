@@ -93,7 +93,7 @@ pub async fn audit(tx: &mut Tx<'_>, actor: &str, action: &str, target_kind: &str
 
 /// 线路机期望状态 +1，返回新代数。调用方在提交后调用 `AppState::relay_bumped`。
 pub async fn bump_relay(tx: &mut Tx<'_>, relay_id: Uuid) -> sqlx::Result<i64> {
-    let (g,): (i64,) = sqlx::query_as("update relay set generation = generation + 1 where machine_id = $1 returning generation")
+    let (g,): (i64,) = sqlx::query_as("update relay set generation = generation + 1, generation_at = now() where machine_id = $1 returning generation")
         .bind(relay_id)
         .fetch_one(&mut **tx)
         .await?;

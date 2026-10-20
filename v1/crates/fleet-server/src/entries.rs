@@ -13,12 +13,22 @@ use uuid::Uuid;
 pub async fn create(tx: &mut Tx<'_>, relay_id: Uuid, node_id: Uuid) -> ApiResult<(Uuid, i32, i64)> {
     let (pmin, pmax): (i32, i32) = sqlx::query_as(
         "select r.port_min, r.port_max from relay r join machine m on m.id = r.machine_id
-         where r.machine_id = $1 and m.lifecycle = 'active' for update of r",
+         where r.machine_id = $1 and m.lifecycle = 'active' for update of r for share of m",
     )
     .bind(relay_id)
     .fetch_optional(&mut **tx)
     .await?
     .ok_or_else(|| ApiError::conflict("线路机不存在或不在用"))?;
+    // 节点机器行也加共享锁：和退役（对机器行 for update）互斥，退役开始后就不会再有新入口挂上来
+    let node_lc: Option<(String,)> = sqlx::query_as("select lifecycle::text from machine where id = $1 for share")
+        .bind(node_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    match node_lc {
+        None => return Err(ApiError::not_found("没有这台节点")),
+        Some((lc,)) if lc == "retiring" || lc == "retired" => return Err(ApiError::conflict("节点正在退役或已退役，不能再加入口")),
+        Some(_) => {}
+    }
     // 端口永不复用（含已删除的入口）：旧分享链接不会误连到新节点
     let (maxp,): (Option<i32>,) = sqlx::query_as("select max(port) from entry where relay_id = $1")
         .bind(relay_id)
@@ -158,6 +168,14 @@ pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, ech
 pub async fn on_applied(db: &PgPool, relay_id: Uuid, rep: &ApplyReport) -> anyhow::Result<()> {
     let mut tx = db.begin().await?;
     let gen = rep.generation as i64;
+    // 回报的代数比中控记录的还新：数据库回滚过或 agent 带着旧机器的状态，不能信，忽略
+    let cur: Option<(i64,)> = sqlx::query_as("select generation from relay where machine_id = $1 for update").bind(relay_id).fetch_optional(&mut *tx).await?;
+    if let Some((g,)) = cur {
+        if gen > g {
+            tracing::warn!(%relay_id, reported = gen, current = g, "忽略超前的应用回报");
+            return Ok(());
+        }
+    }
     for e in &rep.entries {
         sqlx::query("update entry set apply_error = $3 where id = $1 and relay_id = $2")
             .bind(e.id)

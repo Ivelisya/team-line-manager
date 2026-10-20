@@ -97,23 +97,29 @@ table inet ss_guard {
   }
 }
 NFT
-nft -c -f $N.tmp && mv -f $N.tmp $N && nft -f $N
+# set -e 对 && 链中间的失败不会退出，这里逐条显式判断；任何一步失败都让脚本以非 0 退出
+nft -c -f $N.tmp || { echo nft=error; exit 21; }
+mv -f $N.tmp $N || { echo nft=error; exit 21; }
+nft -f $N || { echo nft=error; exit 21; }
 [ -f /etc/nftables.conf ] || printf '#!/usr/sbin/nft -f\n' > /etc/nftables.conf
 grep -qF 'include "/etc/fleet/nft/ss_guard.nft"' /etc/nftables.conf || echo 'include "/etc/fleet/nft/ss_guard.nft"' >> /etc/nftables.conf
 systemctl enable -q nftables 2>/dev/null || true
 for i in $(seq 1 30); do ss -Hltn "sport = :$SS_PORT" | grep -q . && break; sleep 0.2; done
 ss -Hltn "sport = :$SS_PORT" | grep -q . && echo ss=listening || echo ss=down
-echo "nft_relays=$(nft list set inet ss_guard relays | tr -d '\n' | sed 's/.*elements = { \(.*\) }.*/\1/' | tr -d ' ')"
+echo "nft_relays=$(nft list set inet ss_guard relays | tr -d '\n' | sed 's/.*elements = { \(.*\) }.*/\1/' | tr -d ' \t')"
 "#;
 
 /// 只更新节点防火墙放行名单（换线路机、加入口时）。变量 SS_PORT ALLOW。
 pub const NODE_NFT_ONLY: &str = r#"
 set -eu
 N=/etc/fleet/nft/ss_guard.nft
-[ -f $N ] || { echo nft=missing; exit 0; }
-sed -i "s/elements = { .* }/elements = { $ALLOW }/" $N
-nft -c -f $N && nft -f $N
-echo "nft_relays=$(nft list set inet ss_guard relays | tr -d '\n' | sed 's/.*elements = { \(.*\) }.*/\1/' | tr -d ' ')"
+[ -f $N ] || { echo nft=missing; exit 22; }
+# 先改临时副本并校验，通过后才替换正式文件（避免留下一份开机时加载会失败的坏文件）
+sed "s/elements = { [^}]* }/elements = { $ALLOW }/" $N > $N.tmp || { echo nft=error; exit 21; }
+nft -c -f $N.tmp || { rm -f $N.tmp; echo nft=error; exit 21; }
+mv -f $N.tmp $N || { echo nft=error; exit 21; }
+nft -f $N || { echo nft=error; exit 21; }
+echo "nft_relays=$(nft list set inet ss_guard relays | tr -d '\n' | sed 's/.*elements = { \(.*\) }.*/\1/' | tr -d ' \t')"
 "#;
 
 /// 线路机：fleet-xray 单元（配置由 agent 生成）。xray 二进制与 geo 文件已推到 /usr/local/bin、/usr/local/share/xray。
@@ -207,5 +213,16 @@ mod tests {
     #[test]
     fn vars_escapes_quotes() {
         assert_eq!(super::vars(&[("A", "it's")]), "A='it'\\''s'\n");
+    }
+
+    /// set -e 下 `a && b && c` 中间失败不会退出：防火墙脚本里不许再出现这种写法
+    #[test]
+    fn nft_failures_are_explicit() {
+        for s in [super::NODE_SS, super::NODE_NFT_ONLY] {
+            assert!(!s.contains("&& nft"), "nft 命令不能放在 && 链里");
+            assert!(s.contains("nft -c -f $N.tmp || {"));
+            assert!(s.contains("nft -f $N || {"));
+        }
+        assert!(super::NODE_NFT_ONLY.contains("[^}]*"), "替换放行名单的 sed 不能吃掉集合的右花括号");
     }
 }

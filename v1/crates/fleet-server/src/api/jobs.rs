@@ -2,7 +2,7 @@ use super::ok;
 use crate::auth::Actor;
 use crate::db::audit;
 use crate::error::{ApiError, ApiResult};
-use crate::jobs::{cancellable, title_of};
+use crate::jobs::{self, cancellable, title_of};
 use crate::state::{AppState, Event};
 use axum::extract::{Path, Query, State};
 use axum::Json;
@@ -78,11 +78,13 @@ struct StepOut {
     finished_at: Option<OffsetDateTime>,
     output: Option<Value>,
     error: Option<String>,
+    /// 失败类别：network / auth / host_key / remote / timeout / internal
+    error_kind: Option<String>,
 }
 
 pub async fn get_one(_a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>) -> ApiResult<Json<Value>> {
     let j: JobOut = sqlx::query_as(&format!("{SELECT} where j.id = $1")).bind(id).fetch_optional(&st.db).await?.ok_or_else(|| ApiError::not_found("没有这个作业"))?;
-    let steps: Vec<StepOut> = sqlx::query_as("select idx, key, state, started_at, finished_at, output, error from job_step where job_id = $1 order by idx")
+    let steps: Vec<StepOut> = sqlx::query_as("select idx, key, state, started_at, finished_at, output, error, error_kind from job_step where job_id = $1 order by idx")
         .bind(id)
         .fetch_all(&st.db)
         .await?;
@@ -123,26 +125,44 @@ pub async fn logs(_a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, Q
     Ok(ok(v))
 }
 
-pub async fn retry(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>) -> ApiResult<Json<Value>> {
+#[derive(Deserialize, Default)]
+pub struct RetryQ {
+    /// 预检报「主机指纹变化」后，确认机器重装过，重试时覆盖已记录的指纹
+    reset_host_key: Option<bool>,
+}
+
+pub async fn retry(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, Query(q): Query<RetryQ>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
-    let (state, step): (String, i32) = sqlx::query_as("select state::text, step from job where id = $1 for update")
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(|| ApiError::not_found("没有这个作业"))?;
+    let (state, step, kind, target): (String, i32, String, Option<Uuid>) =
+        sqlx::query_as("select state::text, step, kind, target_id from job where id = $1 for update")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| ApiError::not_found("没有这个作业"))?;
     if state != "failed" {
         return Err(ApiError::conflict("只有失败的作业能重试"));
     }
-    sqlx::query("update job_step set state = 'pending', started_at = null, finished_at = null, error = null where job_id = $1 and idx = $2")
+    // 机器状态已经变了（比如上架一半的机器后来退役了）：旧作业不能复活
+    let lc: Option<String> = match target {
+        Some(t) => sqlx::query_scalar("select lifecycle::text from machine where id = $1").bind(t).fetch_optional(&mut *tx).await?,
+        None => None,
+    };
+    jobs::check_target(&kind, lc.as_deref()).map_err(ApiError::conflict)?;
+    sqlx::query("update job_step set state = 'pending', started_at = null, finished_at = null, error = null, error_kind = null where job_id = $1 and idx = $2")
         .bind(id)
         .bind(step)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("update job set state = 'queued', error = null, finished_at = null, run_after = now(), lease_until = null where id = $1")
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
-    audit(&mut tx, &a.name, "job.retry", "job", Some(id), json!({"step": step})).await?;
+    sqlx::query(
+        "update job set state = 'queued', error = null, finished_at = null, run_after = now(), lease_until = null, lease_owner = null,
+            params = case when $2 then params || '{\"reset_host_key\": true}'::jsonb else params end
+         where id = $1",
+    )
+    .bind(id)
+    .bind(q.reset_host_key == Some(true))
+    .execute(&mut *tx)
+    .await?;
+    audit(&mut tx, &a.name, "job.retry", "job", Some(id), json!({"step": step, "reset_host_key": q.reset_host_key == Some(true)})).await?;
     tx.commit().await?;
     st.emit(Event::Job { id });
     Ok(ok(json!({"ok": true})))

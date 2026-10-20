@@ -1,13 +1,67 @@
 //! 用系统 ssh 登录机器执行脚本（脚本经 stdin 传入，不出现在命令行）。
 //!
 //! 主机公钥：上架预检时 keyscan 一次并写入中控自己的 known_hosts（TOFU），之后一律 StrictHostKeyChecking=yes。
+//! 已有记录的主机指纹变化时预检失败（除非作业明确允许重置）。known_hosts 是共用文件，读写由全局锁串行化。
+//! 连接类的瞬时错误（超时、拒绝、被重置…）在这里自动重试 3 次。
 
 use anyhow::{bail, Context};
+use base64::Engine;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
+use tokio::sync::Mutex;
+
+/// 步骤失败的类别（写进 job_step.error_kind，前端据此提示）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrKind {
+    Network,
+    Auth,
+    HostKey,
+    Remote,
+    Timeout,
+    Internal,
+}
+
+impl ErrKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ErrKind::Network => "network",
+            ErrKind::Auth => "auth",
+            ErrKind::HostKey => "host_key",
+            ErrKind::Remote => "remote",
+            ErrKind::Timeout => "timeout",
+            ErrKind::Internal => "internal",
+        }
+    }
+}
+
+/// 带类别的步骤错误；包进 anyhow 后用 `kind_of` 取回类别
+#[derive(Debug)]
+pub struct StepError {
+    pub kind: ErrKind,
+    pub msg: String,
+}
+
+impl std::fmt::Display for StepError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(&self.msg) }
+}
+
+impl std::error::Error for StepError {}
+
+impl StepError {
+    pub fn err(kind: ErrKind, msg: impl Into<String>) -> anyhow::Error { anyhow::Error::new(StepError { kind, msg: msg.into() }) }
+}
+
+/// 错误的类别；没标过的一律算中控自身（internal）
+pub fn kind_of(e: &anyhow::Error) -> ErrKind { e.downcast_ref::<StepError>().map(|s| s.kind).unwrap_or(ErrKind::Internal) }
+
+/// 瞬时网络错误的重试间隔（共重试 3 次）
+const RETRY_BACKOFF: [Duration; 3] = [Duration::from_secs(2), Duration::from_secs(5), Duration::from_secs(10)];
+
+/// known_hosts 是所有 worker 共用的一个文件：读-改-写必须串行
+static KNOWN_HOSTS_LOCK: Mutex<()> = Mutex::const_new(());
 
 #[derive(Clone)]
 pub struct Target {
@@ -26,11 +80,32 @@ pub struct Output {
     pub stderr: String,
 }
 
+/// 按 ssh 的错误输出判断类别（只对 ssh 自己失败，即退出码 255 的情形调用）
+fn classify_ssh_stderr(stderr: &str) -> ErrKind {
+    let s = stderr.to_lowercase();
+    if s.contains("host key verification failed") || s.contains("remote host identification has changed") || s.contains("no matching host key") {
+        ErrKind::HostKey
+    } else if s.contains("permission denied") || s.contains("authentication failed") || s.contains("too many authentication failures") {
+        ErrKind::Auth
+    } else {
+        // 连接超时 / 拒绝 / 无路由 / kex 被重置 / 解析失败 …
+        ErrKind::Network
+    }
+}
+
 impl Output {
     pub fn ok(&self) -> bool { self.code == 0 }
     /// 解析脚本里 `key=value` 形式的输出行
     pub fn kv(&self, k: &str) -> Option<&str> {
         self.stdout.lines().rev().find_map(|l| l.strip_prefix(k).and_then(|r| r.strip_prefix('=')))
+    }
+    /// ssh 本身失败（连不上、登录被拒、指纹不符）时的类别；脚本自己退出非 0 返回 None
+    pub fn ssh_kind(&self) -> Option<ErrKind> { (self.code == 255).then(|| classify_ssh_stderr(&self.stderr)) }
+    /// 把失败的输出变成带类别的错误：`what：stderr`
+    pub fn fail(&self, what: &str) -> anyhow::Error {
+        let kind = self.ssh_kind().unwrap_or(ErrKind::Remote);
+        let detail = if self.stderr.trim().is_empty() { self.stdout.trim() } else { self.stderr.trim() };
+        StepError::err(kind, format!("{what}：{detail}"))
     }
 }
 
@@ -52,14 +127,33 @@ impl Target {
             c
         };
         c.args(["-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=10", "-o", "LogLevel=ERROR"]);
+        // 只认中控自己的 known_hosts，不读系统级的
+        c.args(["-o", "GlobalKnownHostsFile=/dev/null"]);
         c.arg("-o").arg(format!("UserKnownHostsFile={}", self.known_hosts.display()));
         c.arg("-p").arg(self.port.to_string());
         c.arg(format!("root@{}", self.ip));
         c
     }
 
-    /// 执行 bash 脚本（经 stdin），可选再追加一段二进制 stdin（用于推文件时就别用这个，用 push）
-    pub async fn run(&self, script: &str, timeout: Duration) -> anyhow::Result<Output> {
+    /// sshpass 自己的退出码（5 密码错、6 主机指纹）折算成 ssh 的 255 + 对应错误文字，统一分类
+    fn normalize(&self, mut o: Output) -> Output {
+        if self.password.is_some() {
+            match o.code {
+                5 => {
+                    o.code = 255;
+                    o.stderr.push_str("\nPermission denied (password)");
+                }
+                6 => {
+                    o.code = 255;
+                    o.stderr.push_str("\nHost key verification failed.");
+                }
+                _ => {}
+            }
+        }
+        o
+    }
+
+    async fn run_once(&self, script: &str, timeout: Duration) -> anyhow::Result<Output> {
         let mut c = self.base();
         c.arg("bash -s");
         c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
@@ -70,15 +164,32 @@ impl Target {
             let _ = stdin.write_all(body.as_bytes()).await;
             let _ = stdin.shutdown().await;
         });
-        let out = tokio::time::timeout(timeout, child.wait_with_output()).await.context("ssh 超时")??;
-        Ok(Output {
+        let out = tokio::time::timeout(timeout, child.wait_with_output())
+            .await
+            .map_err(|_| StepError::err(ErrKind::Timeout, format!("ssh 执行超过 {} 秒", timeout.as_secs())))??;
+        Ok(self.normalize(Output {
             code: out.status.code().unwrap_or(-1),
             stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-        })
+        }))
     }
 
-    /// 推文件：sha256 相同则跳过；否则写临时文件再原子替换。
+    /// 执行 bash 脚本（经 stdin）。连接类的瞬时错误自动重试（2s、5s、10s 退避）；脚本自己失败、登录被拒不重试。
+    pub async fn run(&self, script: &str, timeout: Duration) -> anyhow::Result<Output> {
+        let mut attempt = 0;
+        loop {
+            let out = self.run_once(script, timeout).await?;
+            if out.ssh_kind() == Some(ErrKind::Network) && attempt < RETRY_BACKOFF.len() {
+                tracing::warn!(ip = %self.ip, attempt = attempt + 1, "ssh 连接失败，稍后重试：{}", out.stderr.trim());
+                tokio::time::sleep(RETRY_BACKOFF[attempt]).await;
+                attempt += 1;
+                continue;
+            }
+            return Ok(out);
+        }
+    }
+
+    /// 推文件：sha256 相同则跳过；否则写临时文件再原子替换。连接类的瞬时错误同样重试。
     pub async fn push(&self, local: &Path, remote: &str, mode: &str, timeout: Duration) -> anyhow::Result<bool> {
         let data = tokio::fs::read(local).await.with_context(|| format!("读取 {}", local.display()))?;
         let sha = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&data));
@@ -86,29 +197,65 @@ impl Target {
         if chk.stdout.trim() == sha {
             return Ok(false);
         }
-        let mut c = self.base();
-        c.arg(format!(
-            "set -e; d=$(dirname '{remote}'); mkdir -p \"$d\"; t=\"$d/.push.$$\"; cat > \"$t\"; \
-             [ \"$(sha256sum \"$t\" | cut -d' ' -f1)\" = '{sha}' ] || {{ rm -f \"$t\"; echo SHA_MISMATCH >&2; exit 3; }}; \
-             chmod {mode} \"$t\"; mv -f \"$t\" '{remote}'"
-        ));
-        c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
-        let mut child = c.spawn()?;
-        let mut stdin = child.stdin.take().unwrap();
-        tokio::spawn(async move {
-            let _ = stdin.write_all(&data).await;
-            let _ = stdin.shutdown().await;
-        });
-        let out = tokio::time::timeout(timeout, child.wait_with_output()).await.context("推文件超时")??;
-        if !out.status.success() {
-            bail!("推送 {remote} 失败：{}", String::from_utf8_lossy(&out.stderr).trim());
+        let mut attempt = 0;
+        loop {
+            let mut c = self.base();
+            c.arg(format!(
+                "set -e; d=$(dirname '{remote}'); mkdir -p \"$d\"; t=\"$d/.push.$$\"; cat > \"$t\"; \
+                 [ \"$(sha256sum \"$t\" | cut -d' ' -f1)\" = '{sha}' ] || {{ rm -f \"$t\"; echo SHA_MISMATCH >&2; exit 3; }}; \
+                 chmod {mode} \"$t\"; mv -f \"$t\" '{remote}'"
+            ));
+            c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+            let mut child = c.spawn().context("启动 ssh")?;
+            let mut stdin = child.stdin.take().unwrap();
+            let body = data.clone();
+            tokio::spawn(async move {
+                let _ = stdin.write_all(&body).await;
+                let _ = stdin.shutdown().await;
+            });
+            let out = tokio::time::timeout(timeout, child.wait_with_output())
+                .await
+                .map_err(|_| StepError::err(ErrKind::Timeout, format!("推送 {remote} 超过 {} 秒", timeout.as_secs())))??;
+            if out.status.success() {
+                return Ok(true);
+            }
+            let o = self.normalize(Output {
+                code: out.status.code().unwrap_or(-1),
+                stdout: String::new(),
+                stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+            });
+            if o.ssh_kind() == Some(ErrKind::Network) && attempt < RETRY_BACKOFF.len() {
+                tracing::warn!(ip = %self.ip, attempt = attempt + 1, "推送 {remote} 连接失败，稍后重试：{}", o.stderr.trim());
+                tokio::time::sleep(RETRY_BACKOFF[attempt]).await;
+                attempt += 1;
+                continue;
+            }
+            return Err(o.fail(&format!("推送 {remote} 失败")));
         }
-        Ok(true)
     }
 }
 
-/// keyscan 拿 ed25519 公钥（两次，必须一致），写入 known_hosts（先删同主机旧条目）。返回指纹行。
-pub async fn pin_host_key(known_hosts: &Path, ip: &str, port: u16) -> anyhow::Result<String> {
+/// 公钥（`ssh-ed25519 AAAA…`）的 SHA256 指纹，仅用于展示
+pub fn fingerprint(key: &str) -> String {
+    let b64 = key.split_whitespace().nth(1).unwrap_or(key);
+    match base64::engine::general_purpose::STANDARD.decode(b64) {
+        Ok(raw) => format!("SHA256:{}", base64::engine::general_purpose::STANDARD_NO_PAD.encode(<sha2::Sha256 as sha2::Digest>::digest(&raw))),
+        Err(_) => "（无法解析）".into(),
+    }
+}
+
+/// known_hosts 里这台主机已记录的「类型 公钥」
+async fn pinned_key(known_hosts: &Path, spec: &str) -> Option<String> {
+    let text = tokio::fs::read_to_string(known_hosts).await.ok()?;
+    text.lines().filter(|l| !l.trim_start().starts_with('#')).find_map(|l| {
+        let p: Vec<&str> = l.split_whitespace().collect();
+        (p.len() >= 3 && p[0].split(',').any(|h| h == spec)).then(|| format!("{} {}", p[1], p[2]))
+    })
+}
+
+/// keyscan 拿 ed25519 公钥（两次，必须一致）并写入 known_hosts。返回「类型 公钥」。
+/// 该主机已有记录时：一致就什么都不改；指纹变了则报「主机指纹变化」，`allow_reset` 为真才覆盖。
+pub async fn pin_host_key(known_hosts: &Path, ip: &str, port: u16, allow_reset: bool) -> anyhow::Result<String> {
     let mut seen: Vec<String> = vec![];
     for i in 0..2 {
         if i > 0 {
@@ -132,19 +279,36 @@ pub async fn pin_host_key(known_hosts: &Path, ip: &str, port: u16) -> anyhow::Re
         }
     }
     match seen.len() {
-        0 => bail!("拿不到 {ip}:{port} 的主机公钥（SSH 没开或被防火墙挡）"),
+        0 => return Err(StepError::err(ErrKind::Network, format!("拿不到 {ip}:{port} 的主机公钥（SSH 没开或被防火墙挡）"))),
         1 => {}
-        _ => bail!("{ip}:{port} 两次返回了不同的主机公钥：可能 IP 冲突或被冒用，停止"),
+        _ => return Err(StepError::err(ErrKind::HostKey, format!("{ip}:{port} 两次返回了不同的主机公钥：可能 IP 冲突或被冒用，停止"))),
     }
-    forget_host(known_hosts, ip, port).await?;
-    let line = format!("{} {}\n", host_spec(ip, port), seen[0]);
+    let spec = host_spec(ip, port);
+    let _g = KNOWN_HOSTS_LOCK.lock().await;
+    if let Some(old) = pinned_key(known_hosts, &spec).await {
+        if old == seen[0] {
+            return Ok(seen[0].clone());
+        }
+        if !allow_reset {
+            bail!(StepError {
+                kind: ErrKind::HostKey,
+                msg: format!(
+                    "主机指纹变化：{ip}:{port} 原来记录的是 {}，现在是 {}。确认是同一台机器重装后再重试时勾选「重置主机指纹」，否则可能是 IP 被冒用",
+                    fingerprint(&old),
+                    fingerprint(&seen[0])
+                )
+            });
+        }
+        forget_locked(known_hosts, ip, port).await?;
+    }
+    let line = format!("{spec} {}\n", seen[0]);
     let mut f = tokio::fs::OpenOptions::new().create(true).append(true).open(known_hosts).await?;
     f.write_all(line.as_bytes()).await?;
+    f.flush().await?;
     Ok(seen[0].clone())
 }
 
-/// 从 known_hosts 删除这台主机（退役、彻底删除时调用）
-pub async fn forget_host(known_hosts: &Path, ip: &str, port: u16) -> anyhow::Result<()> {
+async fn forget_locked(known_hosts: &Path, ip: &str, port: u16) -> anyhow::Result<()> {
     if !known_hosts.exists() {
         return Ok(());
     }
@@ -152,7 +316,40 @@ pub async fn forget_host(known_hosts: &Path, ip: &str, port: u16) -> anyhow::Res
     Ok(())
 }
 
+/// 从 known_hosts 删除这台主机（退役、彻底删除时调用）
+pub async fn forget_host(known_hosts: &Path, ip: &str, port: u16) -> anyhow::Result<()> {
+    let _g = KNOWN_HOSTS_LOCK.lock().await;
+    forget_locked(known_hosts, ip, port).await
+}
+
 /// TCP 可达性
 pub async fn tcp_ok(ip: &str, port: u16, timeout: Duration) -> bool {
     tokio::time::timeout(timeout, tokio::net::TcpStream::connect((ip, port))).await.map(|r| r.is_ok()).unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify() {
+        assert_eq!(classify_ssh_stderr("root@1.2.3.4: Permission denied (publickey)."), ErrKind::Auth);
+        assert_eq!(classify_ssh_stderr("Host key verification failed."), ErrKind::HostKey);
+        assert_eq!(classify_ssh_stderr("ssh: connect to host 1.2.3.4 port 22: Connection refused"), ErrKind::Network);
+        assert_eq!(classify_ssh_stderr("kex_exchange_identification: read: Connection reset by peer"), ErrKind::Network);
+    }
+
+    #[test]
+    fn kind_survives_context() {
+        let e = StepError::err(ErrKind::Auth, "x").context("外层");
+        assert_eq!(kind_of(&e), ErrKind::Auth);
+        assert_eq!(kind_of(&anyhow::anyhow!("普通错误")), ErrKind::Internal);
+    }
+
+    #[test]
+    fn spec_and_fingerprint() {
+        assert_eq!(host_spec("1.2.3.4", 22), "1.2.3.4");
+        assert_eq!(host_spec("1.2.3.4", 2222), "[1.2.3.4]:2222");
+        assert!(fingerprint("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGWz").starts_with("SHA256:"));
+    }
 }
