@@ -14,6 +14,7 @@ mk() { # id host ip cores mem disk
 }
 mk 160 fleet-dev    60 6 4096 40
 mk 161 lab-relay1   61 1 512  8
+mk 162 lab-relay2   62 1 512  8
 mk 163 lab-node1    63 1 256  4
 mk 164 lab-node2    64 1 256  4
 mk 165 lab-node3    65 1 256  4
