@@ -19,6 +19,8 @@ pub enum Event {
     /// 广播滞后、丢了事件：前端收到后让全部查询失效
     Resync,
     ApiKeys,
+    /// 访问策略的草稿/版本变化
+    Policies,
 }
 
 #[derive(Clone)]

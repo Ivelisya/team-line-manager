@@ -100,6 +100,10 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
     let mut touch: Vec<Uuid> = vec![];
     for m in &ms {
         for r in &m.health.reasons {
+            // info 级只用于界面提示（如访问策略暂停新连接），不开告警
+            if r.severity == "info" {
+                continue;
+            }
             let k = (r.key.to_string(), m.id);
             current.insert(k.clone());
             let since = *state.first_seen.entry(k.clone()).or_insert(now);

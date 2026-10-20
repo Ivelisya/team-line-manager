@@ -12,6 +12,7 @@ pub mod health;
 pub mod jobs;
 pub mod names;
 pub mod notify;
+pub mod policy;
 pub mod ssh;
 pub mod state;
 pub mod views;

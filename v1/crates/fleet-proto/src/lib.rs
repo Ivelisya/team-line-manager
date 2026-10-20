@@ -201,6 +201,31 @@ pub struct DesiredEntry {
     pub outbound: Outbound,
     /// egress 探测期望看到的出口 IP
     pub expect_egress_ip: IpAddr,
+    /// 访问策略（按域名黑白名单/暂停）。`None` = observe，不产生任何路由规则；
+    /// 旧 Agent 忽略这个字段，新 Agent 收不到字段也按 observe 处理。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<EntryPolicy>,
+}
+
+/// 入口的访问策略（中控已按「节点策略 > 团队策略 > observe」算出的有效值）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EntryPolicy {
+    pub mode: PolicyMode,
+    /// Xray 域名匹配串：`domain:example.com`（含子域）或 `full:example.com`（仅精确）。
+    /// allowlist / denylist 必有至少一个；blocked 为空。
+    #[serde(default)]
+    pub domains: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyMode {
+    /// 只放行名单内域名，其余阻止
+    Allowlist,
+    /// 阻止名单内域名，其余放行
+    Denylist,
+    /// 暂停该入口的所有新连接
+    Blocked,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -254,6 +279,25 @@ mod tests {
             assert_eq!(tags::parse_entry_id(&t), Some(id));
         }
         assert_eq!(tags::parse_entry_id("api"), None);
+    }
+
+    #[test]
+    fn entry_policy_is_backward_compatible() {
+        // 旧 JSON（没有 policy 字段）能解析成 None，且 None 不序列化出字段
+        let id = Uuid::nil();
+        let old = serde_json::json!({
+            "id": id, "port": 20001, "enabled": true, "remark": "r", "client_uuid": id, "short_id": "ab",
+            "outbound": {"protocol": "socks5", "host": "h", "port": 1, "username": null, "password": null},
+            "expect_egress_ip": "203.0.113.9"
+        });
+        let e: DesiredEntry = serde_json::from_value(old).unwrap();
+        assert!(e.policy.is_none());
+        assert!(serde_json::to_value(&e).unwrap().get("policy").is_none());
+        let mut e2 = e.clone();
+        e2.policy = Some(EntryPolicy { mode: PolicyMode::Allowlist, domains: vec!["domain:a.com".into(), "full:b.com".into()] });
+        let v = serde_json::to_value(&e2).unwrap();
+        assert_eq!(v["policy"]["mode"], "allowlist");
+        assert_eq!(serde_json::from_value::<DesiredEntry>(v).unwrap(), e2);
     }
 
     #[test]

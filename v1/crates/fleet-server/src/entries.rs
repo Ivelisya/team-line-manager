@@ -99,6 +99,8 @@ pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, ech
     #[derive(sqlx::FromRow)]
     struct Row {
         id: Uuid,
+        node_id: Uuid,
+        team_id: Option<Uuid>,
         port: i32,
         lifecycle: String,
         client_uuid: Uuid,
@@ -116,7 +118,7 @@ pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, ech
         secret_enc: Vec<u8>,
     }
     let rows: Vec<Row> = sqlx::query_as(
-        "select e.id, e.port, e.lifecycle::text lifecycle, e.client_uuid, e.short_id, m.kind::text kind, t.name team, m.number,
+        "select e.id, e.node_id, m.team_id, e.port, e.lifecycle::text lifecycle, e.client_uuid, e.short_id, m.kind::text kind, t.name team, m.number,
                 m.label, host(m.primary_ip) ip, o.protocol, o.host, o.port oport, o.method, o.username, o.secret_enc
          from entry e join machine m on m.id = e.node_id left join team t on t.id = m.team_id
          join node_outbound o on o.machine_id = e.node_id
@@ -126,6 +128,7 @@ pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, ech
     .bind(relay_id)
     .fetch_all(db)
     .await?;
+    let policies = crate::policy::load_current(db).await?;
     let mut entries = Vec::with_capacity(rows.len());
     for r in rows {
         let secret = secrets.open_str(&r.secret_enc)?;
@@ -148,6 +151,7 @@ pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, ech
             short_id: r.short_id,
             outbound,
             expect_egress_ip: r.ip.parse::<IpAddr>()?,
+            policy: crate::policy::compile(&policies.effective(r.node_id, r.team_id).0),
         });
     }
     Ok(DesiredState {

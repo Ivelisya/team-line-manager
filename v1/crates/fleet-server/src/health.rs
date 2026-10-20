@@ -137,6 +137,11 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
         }
     }
 
+    // 访问策略暂停了新连接：提示一下为什么没有流量。info 级别：不算故障，也不产生告警
+    if m.policy_blocked {
+        rs.push(Reason { key: "policy_blocked", severity: "info", text: "访问策略：已暂停新连接".into() });
+    }
+
     // 续费提醒：线路机和节点都有账单
     if let Some(s) = &m.subscription {
         if s.due_days < 0 {
@@ -148,7 +153,7 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
 
     let status = if rs.iter().any(|r| r.severity == "critical") {
         Status::Down
-    } else if !rs.is_empty() {
+    } else if rs.iter().any(|r| r.severity != "info") {
         Status::Degraded
     } else if unknown {
         Status::Unknown
@@ -197,6 +202,7 @@ mod tests {
             maintenance: false,
             relay: None,
             sustained: Sustained::default(),
+            policy_blocked: false,
         }
     }
 
@@ -280,6 +286,21 @@ mod tests {
         // generation_at 为空：退回 applied_at
         r.relay = Some(relay_info(5, 4, None, Some(now - Duration::minutes(3))));
         assert_eq!(keys(&evaluate(&r, now)), ["relay_apply_lag"]);
+    }
+
+    #[test]
+    fn policy_blocked_is_informational_only() {
+        let now = OffsetDateTime::now_utc();
+        let mut n = base("vps");
+        n.entries = vec![entry(false, true)];
+        n.policy_blocked = true;
+        let h = evaluate(&n, now);
+        assert_eq!(keys(&h), ["policy_blocked"]);
+        assert_eq!(h.reasons[0].severity, "info");
+        assert_eq!(h.status, Status::Ok, "info 不降级");
+        // 同时有真故障时照常降级
+        n.entries = vec![entry(false, false)];
+        assert_eq!(evaluate(&n, now).status, Status::Down);
     }
 
     #[test]

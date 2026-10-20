@@ -158,6 +158,9 @@ pub struct MachineView {
     pub relay: Option<RelayInfo>,
     #[serde(skip)]
     pub sustained: Sustained,
+    /// 节点的有效访问策略是「暂停新连接」（健康判定里提示，不算故障）
+    #[serde(skip)]
+    pub policy_blocked: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -463,6 +466,8 @@ pub async fn load_with(db: &PgPool, scope: Scope, only: Option<Uuid>, with_traff
     let sustained: HashMap<Uuid, Sustained> =
         su.into_iter().map(|r| (r.machine_id, Sustained { span_s: r.span_s.unwrap_or(0), cpu_min: r.cpu_min, mem_min: r.mem_min, disk_min: r.disk_min })).collect();
 
+    let policies = crate::policy::load_current(db).await?;
+
     let today = now.to_offset(time::macros::offset!(+8)).date();
     Ok(rows
         .into_iter()
@@ -498,6 +503,7 @@ pub async fn load_with(db: &PgPool, scope: Scope, only: Option<Uuid>, with_traff
             });
             let entries = entries_by.remove(&r.id).unwrap_or_default();
             let maintenance = maint_all || maint.contains(&r.id);
+            let policy_blocked = r.kind != "relay" && policies.effective(r.id, r.team_id).0.mode == crate::policy::Mode::Blocked;
             let mut v = MachineView {
                 id: r.id,
                 kind: r.kind,
@@ -533,6 +539,7 @@ pub async fn load_with(db: &PgPool, scope: Scope, only: Option<Uuid>, with_traff
                 maintenance,
                 relay,
                 sustained: sustained.get(&r.id).copied().unwrap_or_default(),
+                policy_blocked,
             };
             v.health = health::evaluate(&v, now);
             v
