@@ -23,6 +23,9 @@ pub struct Config {
     /// 位于反向代理之后时信任 X-Forwarded-For
     #[serde(default)]
     pub trust_forwarded_for: bool,
+    /// 会话 Cookie 是否带 Secure；不填则按 public_url 是否 https 判断
+    #[serde(default)]
+    pub cookie_secure: Option<bool>,
     #[serde(default)]
     pub retention: Retention,
     #[serde(default)]

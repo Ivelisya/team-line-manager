@@ -1,0 +1,545 @@
+//! 只读与作业类命令：status / ls / show / series / incidents / jobs / entries / audit / logs / watch …
+
+use crate::client::Client;
+use crate::resolve::{self, Want};
+use crate::table::{self, bps, bytes, money};
+use anyhow::{anyhow, bail};
+use serde_json::{json, Value};
+use std::io::{BufRead, BufReader, Write};
+use std::time::Duration;
+
+pub struct Ctx {
+    pub c: Client,
+    pub base: String,
+    pub json: bool,
+}
+
+/// 往 stdout 写一行，管道被关闭（如 `| head`）时不 panic
+pub fn outln(s: impl AsRef<str>) {
+    let mut o = std::io::stdout().lock();
+    let _ = writeln!(o, "{}", s.as_ref());
+}
+
+pub fn out_raw(s: &str) {
+    let mut o = std::io::stdout().lock();
+    let _ = o.write_all(s.as_bytes());
+    let _ = o.flush();
+}
+
+/// 取字符串/数字/布尔字段（JSON Pointer），缺失或 null 给 "-"
+pub fn st(v: &Value, ptr: &str) -> String {
+    match v.pointer(ptr) {
+        Some(Value::String(s)) => s.clone(),
+        None | Some(Value::Null) => "-".into(),
+        Some(x) => x.to_string(),
+    }
+}
+
+pub fn num(v: &Value, ptr: &str) -> Option<f64> { v.pointer(ptr).and_then(|x| x.as_f64()) }
+
+fn pct(a: Option<f64>, b: Option<f64>) -> String {
+    match (a, b) {
+        (Some(a), Some(b)) if b > 0.0 => format!("{:.0}%", a * 100.0 / b),
+        _ => "-".into(),
+    }
+}
+
+impl Ctx {
+    /// 打印：--json 时输出 data 原样，否则输出人类可读文本
+    pub fn emit(&self, data: &Value, human: impl FnOnce() -> String) {
+        if self.json {
+            outln(serde_json::to_string_pretty(data).unwrap_or_default());
+        } else {
+            outln(human());
+        }
+    }
+
+    pub fn machines(&self) -> anyhow::Result<Vec<Value>> {
+        Ok(self.c.get_q("/machines", &[("scope", "all".to_string())])?.as_array().cloned().unwrap_or_default())
+    }
+
+    /// 解析机器引用（id、显示名、线路机名、IP）
+    pub fn find(&self, q: &str, want: Want) -> anyhow::Result<Value> {
+        let all = self.machines()?;
+        resolve::machine(&all, q, want).cloned().map_err(|e| anyhow!(e))
+    }
+
+    pub fn find_id(&self, q: &str, want: Want) -> anyhow::Result<(String, String)> {
+        let m = self.find(q, want)?;
+        Ok((st(&m, "/id"), st(&m, "/name")))
+    }
+}
+
+pub fn whoami(ctx: &Ctx) -> anyhow::Result<u8> {
+    let d = ctx.c.get("/auth/me")?;
+    ctx.emit(&d, || {
+        let scopes = d["scopes"].as_array().map(|a| a.iter().filter_map(|s| s.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+        table::kv(&[("身份", st(&d, "/username")), ("类型", st(&d, "/kind")), ("权限", scopes), ("中控", ctx.base.clone())])
+    });
+    Ok(0)
+}
+
+pub fn status(ctx: &Ctx) -> anyhow::Result<u8> {
+    let ov = ctx.c.get("/overview")?;
+    let inc = ctx.c.get_q("/incidents", &[("state", "firing".to_string())])?;
+    let both = json!({"overview": ov, "incidents": inc});
+    ctx.emit(&both, || {
+        let bucket = |k: &str| {
+            let n = |f: &str| ov.pointer(&format!("/{k}/{f}")).and_then(|x| x.as_i64()).unwrap_or(0);
+            format!("共 {} · 正常 {} · 降级 {} · 故障 {} · 未知 {} · 维护 {}", n("total"), n("ok"), n("degraded"), n("down"), n("unknown"), n("maintenance"))
+        };
+        let cost = ov["monthly_cost"].as_array().map(|a| a.iter().map(|c| money(c["cents"].as_i64().unwrap_or(0), c["currency"].as_str().unwrap_or(""))).collect::<Vec<_>>().join(" + ")).unwrap_or_default();
+        let mut s = table::kv(&[
+            ("节点", bucket("nodes")),
+            ("线路机", bucket("relays")),
+            ("上架中/下线中", format!("{} / {}", st(&ov, "/provisioning"), st(&ov, "/retiring"))),
+            ("7 天内到期", st(&ov, "/due_7d")),
+            ("月费", if cost.is_empty() { "-".into() } else { cost }),
+            ("本月流量", format!("↑ {}  ↓ {}", bytes(num(&ov, "/traffic_month/up").unwrap_or(0.0)), bytes(num(&ov, "/traffic_month/down").unwrap_or(0.0)))),
+            ("实时速率", format!("↓ {}  ↑ {}", bps(num(&ov, "/net_rx_bps").unwrap_or(0.0)), bps(num(&ov, "/net_tx_bps").unwrap_or(0.0)))),
+        ]);
+        let list = inc.as_array().cloned().unwrap_or_default();
+        s.push_str(&format!("\n\n告警（进行中 {}）", list.len()));
+        if !list.is_empty() {
+            s.push('\n');
+            s.push_str(&incident_table(&list));
+        }
+        s
+    });
+    Ok(0)
+}
+
+fn incident_table(list: &[Value]) -> String {
+    let rows: Vec<Vec<String>> = list
+        .iter()
+        .map(|i| {
+            vec![
+                st(i, "/severity"),
+                st(i, "/rule"),
+                if i.get("subject_name").is_some() { st(i, "/subject_name") } else { st(i, "/subject/name") },
+                st(i, "/summary"),
+                table::ts(&st(i, "/opened_at")),
+                if i["ack_at"].is_null() { "".into() } else { format!("已确认 {}", st(i, "/ack_by")) },
+                st(i, "/id"),
+            ]
+        })
+        .collect();
+    table::render(&["级别", "规则", "对象", "摘要", "开始(UTC)", "确认", "id"], &rows)
+}
+
+pub fn ls(ctx: &Ctx, team: Option<&str>, kind: Option<&str>, status: Option<&str>, retired: bool) -> anyhow::Result<u8> {
+    let scope = if retired { "retired" } else { "live" };
+    let all = ctx.c.get_q("/machines", &[("scope", scope.to_string())])?;
+    let list: Vec<Value> = all
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|m| team.map_or(true, |t| st(m, "/team/name") == t))
+        .filter(|m| kind.map_or(true, |k| st(m, "/kind") == k))
+        .filter(|m| status.map_or(true, |s| st(m, "/health/status") == s || st(m, "/lifecycle") == s))
+        .collect();
+    ctx.emit(&Value::Array(list.clone()), || {
+        let rows: Vec<Vec<String>> = list
+            .iter()
+            .map(|m| {
+                let agent = match m.pointer("/agent/online").and_then(|x| x.as_bool()) {
+                    Some(true) => "在线",
+                    Some(false) => "离线",
+                    None => "-",
+                };
+                vec![
+                    st(m, "/name"),
+                    st(m, "/kind"),
+                    st(m, "/lifecycle"),
+                    st(m, "/health/status"),
+                    st(m, "/ip"),
+                    agent.into(),
+                    num(m, "/host/cpu_pct").map(|x| format!("{x:.0}%")).unwrap_or("-".into()),
+                    pct(num(m, "/host/mem_used"), num(m, "/host/mem_total")),
+                    pct(num(m, "/host/disk_used"), num(m, "/host/disk_total")),
+                    m["entries"].as_array().map(|a| a.len().to_string()).unwrap_or("-".into()),
+                    st(m, "/open_incidents"),
+                    match m.pointer("/active_job/state") {
+                        Some(Value::String(s)) => format!("{} {s}", st(m, "/active_job/kind")),
+                        _ => "".into(),
+                    },
+                ]
+            })
+            .collect();
+        format!("{}\n共 {} 台", table::render(&["名称", "种类", "生命周期", "健康", "IP", "agent", "CPU", "内存", "磁盘", "入口", "告警", "作业"], &rows), list.len())
+    });
+    Ok(0)
+}
+
+pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
+    let (id, _) = ctx.find_id(machine, Want::Any)?;
+    let m = ctx.c.get(&format!("/machines/{id}"))?;
+    ctx.emit(&m, || {
+        let mut rows = vec![
+            ("名称", st(&m, "/name")),
+            ("id", st(&m, "/id")),
+            ("种类", st(&m, "/kind")),
+            ("生命周期", format!("{}{}", st(&m, "/lifecycle"), m["lifecycle_reason"].as_str().map(|r| format!("（{r}）")).unwrap_or_default())),
+            ("健康", st(&m, "/health/status")),
+            ("IP", format!("{}:{}", st(&m, "/ip"), st(&m, "/ssh_port"))),
+            ("供应商/套餐", format!("{} / {}", st(&m, "/provider/name"), st(&m, "/plan/name"))),
+            ("备注", st(&m, "/note")),
+            ("创建", table::ts(&st(&m, "/created_at"))),
+            ("revision", st(&m, "/revision")),
+        ];
+        if !m["agent"].is_null() {
+            rows.push(("agent", format!("{}  版本 {}  最近上报 {}", if m["agent"]["online"] == true { "在线" } else { "离线" }, st(&m, "/agent/version"), table::ts(&st(&m, "/agent/last_report_at")))));
+        }
+        if !m["host"].is_null() {
+            rows.push((
+                "主机",
+                format!(
+                    "CPU {}%  内存 {}  磁盘 {}  load {}  连接 {}  ↓{} ↑{}",
+                    num(&m, "/host/cpu_pct").map(|x| format!("{x:.0}")).unwrap_or("-".into()),
+                    pct(num(&m, "/host/mem_used"), num(&m, "/host/mem_total")),
+                    pct(num(&m, "/host/disk_used"), num(&m, "/host/disk_total")),
+                    num(&m, "/host/load1").map(|x| format!("{x:.2}")).unwrap_or("-".into()),
+                    st(&m, "/host/tcp_conns"),
+                    bps(num(&m, "/host/net_rx_bps").unwrap_or(0.0)),
+                    bps(num(&m, "/host/net_tx_bps").unwrap_or(0.0)),
+                ),
+            ));
+        }
+        if !m["subscription"].is_null() {
+            rows.push((
+                "订阅",
+                format!(
+                    "{}（每{}）到期 {}（还剩 {} 天）",
+                    money(m["subscription"]["price_cents"].as_i64().unwrap_or(0), &st(&m, "/subscription/currency")),
+                    st(&m, "/subscription/cycle"),
+                    st(&m, "/subscription/due_date"),
+                    st(&m, "/subscription/due_days")
+                ),
+            ));
+        }
+        if !m["relay"].is_null() {
+            rows.push(("线路机", format!("{}  代数 {}/{}  {}", st(&m, "/relay/public_host"), st(&m, "/relay/applied_generation"), st(&m, "/relay/generation"), m["relay"]["apply_error"].as_str().unwrap_or(""))));
+        }
+        if !m["active_job"].is_null() {
+            rows.push(("进行中作业", format!("{} {}  {}", st(&m, "/active_job/kind"), st(&m, "/active_job/state"), st(&m, "/active_job/id"))));
+        }
+        let mut s = table::kv(&rows);
+        if let Some(rs) = m.pointer("/health/reasons").and_then(|r| r.as_array()).filter(|r| !r.is_empty()) {
+            s.push_str("\n\n健康原因");
+            for r in rs {
+                s.push_str(&format!("\n  [{}] {}  {}", st(r, "/severity"), st(r, "/key"), st(r, "/text")));
+            }
+        }
+        if let Some(es) = m["entries"].as_array().filter(|e| !e.is_empty()) {
+            s.push_str("\n\n入口\n");
+            s.push_str(&entry_table(es));
+        }
+        s
+    });
+    Ok(0)
+}
+
+fn entry_table(es: &[Value]) -> String {
+    let rows: Vec<Vec<String>> = es
+        .iter()
+        .map(|e| {
+            let probe = |k: &str| match e.pointer(&format!("/{k}/ok")).and_then(|x| x.as_bool()) {
+                Some(true) => "通".to_string(),
+                Some(false) => "不通".to_string(),
+                None => "-".to_string(),
+            };
+            vec![
+                st(e, "/id").chars().take(8).collect(),
+                format!("{}:{}", st(e, "/relay/name"), st(e, "/port")),
+                st(e, "/node/name"),
+                st(e, "/lifecycle"),
+                if e["applied"] == true { "已应用".into() } else { "未应用".into() },
+                probe("tcp"),
+                probe("egress"),
+                format!("↑{} ↓{}", bytes(num(e, "/traffic/today_up").unwrap_or(0.0)), bytes(num(e, "/traffic/today_down").unwrap_or(0.0))),
+                e["apply_error"].as_str().unwrap_or("").to_string(),
+            ]
+        })
+        .collect();
+    table::render(&["id", "入口", "节点", "状态", "配置", "TCP", "出口", "今日流量", "错误"], &rows)
+}
+
+/// 全部入口（取线路机上挂的，避免节点和线路机两边重复）
+pub fn all_entries(ctx: &Ctx) -> anyhow::Result<Vec<Value>> {
+    let ms = ctx.c.get_q("/machines", &[("scope", "live".to_string())])?;
+    Ok(ms.as_array().cloned().unwrap_or_default().into_iter().filter(|m| m["kind"] == "relay").flat_map(|m| m["entries"].as_array().cloned().unwrap_or_default()).collect())
+}
+
+pub fn entries(ctx: &Ctx, machine: Option<&str>) -> anyhow::Result<u8> {
+    let mut es = all_entries(ctx)?;
+    if let Some(q) = machine {
+        let m = ctx.find(q, Want::Live)?;
+        let id = st(&m, "/id");
+        es.retain(|e| st(e, "/relay/id") == id || st(e, "/node/id") == id);
+    }
+    ctx.emit(&Value::Array(es.clone()), || format!("{}\n共 {} 个入口", entry_table(&es), es.len()));
+    Ok(0)
+}
+
+pub fn series(ctx: &Ctx, machine: &str, range: &str, metric: &str) -> anyhow::Result<u8> {
+    let (id, name) = ctx.find_id(machine, Want::Live)?;
+    let d = ctx.c.get_q(&format!("/machines/{id}/series"), &[("metric", metric.to_string()), ("range", range.to_string())])?;
+    ctx.emit(&d, || {
+        let pts = d["points"].as_array().cloned().unwrap_or_default();
+        let cols: &[&str] = match metric {
+            "traffic" => &["up", "down", "conns"],
+            "probe" => &["tcp_ok", "tcp_ms", "egress_ok", "egress_ms"],
+            _ => &["cpu_pct", "mem_pct", "disk_pct", "load1", "net_rx_bps", "net_tx_bps"],
+        };
+        let fmt_n = |c: &str, n: f64| -> String {
+            if c.ends_with("_bps") { bps(n) } else if c == "up" || c == "down" { bytes(n) } else if c.ends_with("_pct") { format!("{n:.0}%") } else { format!("{n:.2}") }
+        };
+        let fmt = |c: &str, p: &Value| -> String {
+            match p.get(c) {
+                None | Some(Value::Null) => "-".into(),
+                Some(Value::Bool(b)) => if *b { "通" } else { "不通" }.into(),
+                Some(x) => fmt_n(c, x.as_f64().unwrap_or(0.0)),
+            }
+        };
+        let mut head = format!("{name}  {metric}  {range}  分辨率 {}  共 {} 点", st(&d, "/resolution"), pts.len());
+        if pts.is_empty() {
+            return head + "\n（没有数据）";
+        }
+        // 汇总：数值列的平均与最大
+        let mut sum_rows = vec![];
+        for c in cols {
+            let vals: Vec<f64> = pts.iter().filter_map(|p| p.get(*c).and_then(|x| x.as_f64())).collect();
+            if vals.is_empty() {
+                continue;
+            }
+            let avg = vals.iter().sum::<f64>() / vals.len() as f64;
+            let max = vals.iter().cloned().fold(f64::MIN, f64::max);
+            sum_rows.push(vec![c.to_string(), fmt_n(c, avg), fmt_n(c, max), fmt_n(c, vals[vals.len() - 1])]);
+        }
+        head.push_str("\n\n");
+        head.push_str(&table::render(&["指标", "平均", "最大", "最新"], &sum_rows));
+        // 均匀抽样最多 12 行
+        let step = pts.len().div_ceil(12).max(1);
+        let sampled: Vec<&Value> = pts.iter().step_by(step).collect();
+        let rows: Vec<Vec<String>> = sampled.iter().map(|p| std::iter::once(table::ts(&st(p, "/ts"))).chain(cols.iter().map(|c| fmt(c, p))).collect()).collect();
+        let mut hdr = vec!["时间(UTC)"];
+        hdr.extend(cols.iter());
+        head.push_str("\n\n");
+        head.push_str(&table::render(&hdr, &rows));
+        head
+    });
+    Ok(0)
+}
+
+pub fn incidents(ctx: &Ctx, all: bool) -> anyhow::Result<u8> {
+    let d = ctx.c.get_q("/incidents", &[("state", if all { "all" } else { "firing" }.to_string())])?;
+    ctx.emit(&d, || {
+        let list = d.as_array().cloned().unwrap_or_default();
+        if list.is_empty() { "没有告警".to_string() } else { format!("{}\n共 {} 条", incident_table(&list), list.len()) }
+    });
+    Ok(0)
+}
+
+pub fn ack(ctx: &Ctx, id: &str) -> anyhow::Result<u8> {
+    let d = ctx.c.post(&format!("/incidents/{id}/ack"), &json!({}))?;
+    ctx.emit(&d, || format!("已确认告警 {id}"));
+    Ok(0)
+}
+
+fn job_row(j: &Value) -> Vec<String> {
+    vec![
+        st(j, "/id"),
+        st(j, "/kind"),
+        st(j, "/target/name"),
+        st(j, "/state"),
+        format!("{}/{}", st(j, "/step"), st(j, "/step_count")),
+        st(j, "/created_by"),
+        table::ts(&st(j, "/created_at")),
+        j["error"].as_str().unwrap_or("").to_string(),
+    ]
+}
+
+pub fn jobs(ctx: &Ctx, active: bool, limit: i64) -> anyhow::Result<u8> {
+    let d = ctx.c.get_q("/jobs", &[("state", if active { "active" } else { "all" }.to_string()), ("limit", limit.to_string())])?;
+    ctx.emit(&d, || {
+        let list = d.as_array().cloned().unwrap_or_default();
+        if list.is_empty() {
+            return "没有作业".to_string();
+        }
+        let rows: Vec<Vec<String>> = list.iter().map(job_row).collect();
+        format!("{}\n共 {} 个", table::render(&["id", "种类", "目标", "状态", "步骤", "创建者", "创建(UTC)", "错误"], &rows), rows.len())
+    });
+    Ok(0)
+}
+
+/// 作业 id：完整 UUID 直接用；否则当前缀在最近作业里找
+pub fn job_id(ctx: &Ctx, q: &str) -> anyhow::Result<String> {
+    if q.len() == 36 {
+        return Ok(q.to_string());
+    }
+    let list = ctx.c.get_q("/jobs", &[("state", "all".to_string()), ("limit", "200".to_string())])?;
+    let hits: Vec<String> = list.as_array().cloned().unwrap_or_default().iter().map(|j| st(j, "/id")).filter(|id| id.starts_with(&q.to_lowercase())).collect();
+    match hits.len() {
+        1 => Ok(hits[0].clone()),
+        0 => bail!("最近 200 个作业里没有 id 以「{q}」开头的"),
+        n => bail!("「{q}」匹配到 {n} 个作业，请给更长的 id"),
+    }
+}
+
+fn log_line(l: &Value) -> String { format!("{}  {:<5} {}", table::ts(&st(l, "/ts")), st(l, "/level"), st(l, "/msg")) }
+
+pub fn job(ctx: &Ctx, id: &str, follow: bool) -> anyhow::Result<u8> {
+    let id = job_id(ctx, id)?;
+    if follow {
+        return follow_job(ctx, &id);
+    }
+    let mut j = ctx.c.get(&format!("/jobs/{id}"))?;
+    let logs = ctx.c.get(&format!("/jobs/{id}/logs"))?;
+    j["logs"] = logs.clone();
+    ctx.emit(&j, || {
+        let mut s = table::kv(&[
+            ("作业", st(&j, "/id")),
+            ("种类", st(&j, "/kind")),
+            ("目标", st(&j, "/target/name")),
+            ("状态", format!("{}  步骤 {}/{}", st(&j, "/state"), st(&j, "/step"), st(&j, "/step_count"))),
+            ("创建", format!("{}  {}", table::ts(&st(&j, "/created_at")), st(&j, "/created_by"))),
+            ("错误", st(&j, "/error")),
+        ]);
+        if let Some(steps) = j["steps"].as_array() {
+            let rows: Vec<Vec<String>> = steps.iter().map(|x| vec![st(x, "/idx"), st(x, "/key"), st(x, "/title"), st(x, "/state"), x["error"].as_str().unwrap_or("").to_string()]).collect();
+            s.push_str("\n\n");
+            s.push_str(&table::render(&["#", "步骤", "说明", "状态", "错误"], &rows));
+        }
+        let ls = logs.as_array().cloned().unwrap_or_default();
+        if !ls.is_empty() {
+            s.push_str("\n\n日志\n");
+            s.push_str(&ls.iter().map(log_line).collect::<Vec<_>>().join("\n"));
+        }
+        s
+    });
+    Ok(if j["state"] == "failed" { 1 } else { 0 })
+}
+
+/// 轮询作业日志直到结束；成功退出码 0，失败/取消为 1
+pub fn follow_job(ctx: &Ctx, id: &str) -> anyhow::Result<u8> {
+    let mut after = 0i64;
+    let mut last = String::new();
+    loop {
+        let j = ctx.c.get(&format!("/jobs/{id}"))?;
+        let logs = ctx.c.get_q(&format!("/jobs/{id}/logs"), &[("after", after.to_string())])?;
+        for l in logs.as_array().cloned().unwrap_or_default() {
+            after = after.max(l["id"].as_i64().unwrap_or(0));
+            if ctx.json {
+                outln(json!({"log": l}).to_string());
+            } else {
+                outln(log_line(&l));
+            }
+        }
+        let state = st(&j, "/state");
+        if state != last {
+            if !ctx.json {
+                outln(format!("── 状态 {state}  步骤 {}/{}", st(&j, "/step"), st(&j, "/step_count")));
+            }
+            last = state.clone();
+        }
+        if matches!(state.as_str(), "succeeded" | "failed" | "cancelled") {
+            if ctx.json {
+                outln(json!({"job": j}).to_string());
+            } else if state != "succeeded" {
+                outln(format!("作业{}：{}", if state == "failed" { "失败" } else { "已取消" }, st(&j, "/error")));
+            }
+            return Ok(if state == "succeeded" { 0 } else { 1 });
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+}
+
+pub fn job_action(ctx: &Ctx, id: &str, action: &str) -> anyhow::Result<u8> {
+    let id = job_id(ctx, id)?;
+    let d = ctx.c.post(&format!("/jobs/{id}/{action}"), &json!({}))?;
+    ctx.emit(&d, || format!("已{}作业 {id}", if action == "retry" { "重试" } else { "取消" }));
+    Ok(0)
+}
+
+pub fn audit(ctx: &Ctx, target: Option<&str>, limit: i64) -> anyhow::Result<u8> {
+    let mut q = vec![("limit", limit.to_string())];
+    if let Some(t) = target {
+        let (id, _) = ctx.find_id(t, Want::Any)?;
+        q.push(("target_id", id));
+    }
+    let d = ctx.c.get_q("/audit", &q)?;
+    ctx.emit(&d, || {
+        let rows: Vec<Vec<String>> = d.as_array().cloned().unwrap_or_default().iter().map(|a| vec![table::ts(&st(a, "/ts")), st(a, "/actor"), st(a, "/title"), st(a, "/summary")]).collect();
+        if rows.is_empty() { "没有审计记录".into() } else { table::render(&["时间(UTC)", "操作者", "操作", "摘要"], &rows) }
+    });
+    Ok(0)
+}
+
+/// 日志类接口返回 {exit_code, stdout, stderr}：stdout 原样输出，stderr 走 stderr
+fn print_text_result(ctx: &Ctx, d: &Value) -> u8 {
+    if ctx.json {
+        outln(serde_json::to_string_pretty(d).unwrap_or_default());
+    } else {
+        out_raw(d["stdout"].as_str().unwrap_or(""));
+        let e = d["stderr"].as_str().unwrap_or("");
+        if !e.is_empty() {
+            eprint!("{e}");
+        }
+        if d["truncated"] == true {
+            eprintln!("\n[输出被截断，只显示了前 256 KiB]");
+        }
+    }
+    if d["exit_code"].as_i64().unwrap_or(0) == 0 { 0 } else { 1 }
+}
+
+pub fn logs(ctx: &Ctx, machine: &str, unit: &str, lines: u32) -> anyhow::Result<u8> {
+    let (id, _) = ctx.find_id(machine, Want::Live)?;
+    let d = ctx.c.get_q(&format!("/machines/{id}/logs"), &[("unit", unit.to_string()), ("lines", lines.to_string())])?;
+    Ok(print_text_result(ctx, &d))
+}
+
+pub fn server_logs(ctx: &Ctx, lines: u32) -> anyhow::Result<u8> {
+    let d = ctx.c.get_q("/server/logs", &[("lines", lines.to_string())])?;
+    Ok(print_text_result(ctx, &d))
+}
+
+fn utc_hms() -> String {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    format!("{:02}:{:02}:{:02}", (secs / 3600) % 24, (secs / 60) % 60, secs % 60)
+}
+
+/// 订阅 /stream，逐条打印事件（--json 为每行一个 JSON）。断线自动重连。
+pub fn watch(ctx: &Ctx, count: Option<usize>, ticks: bool) -> anyhow::Result<u8> {
+    let mut seen = 0usize;
+    let mut first = true;
+    loop {
+        match ctx.c.stream("/stream") {
+            Ok(res) => {
+                first = false;
+                for line in BufReader::new(res).lines() {
+                    let Ok(line) = line else { break };
+                    let Some(data) = line.strip_prefix("data:") else { continue };
+                    let Ok(ev) = serde_json::from_str::<Value>(data.trim()) else { continue };
+                    if ev["type"] == "tick" && !ticks {
+                        continue;
+                    }
+                    if ctx.json {
+                        outln(ev.to_string());
+                    } else {
+                        let rest = ev.as_object().map(|o| o.iter().filter(|(k, _)| *k != "type").map(|(k, v)| format!("{k}={}", v.as_str().map(String::from).unwrap_or_else(|| v.to_string()))).collect::<Vec<_>>().join(" ")).unwrap_or_default();
+                        outln(format!("{}  {:<10} {rest}", utc_hms(), st(&ev, "/type")));
+                    }
+                    seen += 1;
+                    if count.map_or(false, |c| seen >= c) {
+                        return Ok(0);
+                    }
+                }
+                eprintln!("事件流断开，3 秒后重连…");
+            }
+            Err(e) if first => return Err(e),
+            Err(e) => eprintln!("重连失败：{e}"),
+        }
+        std::thread::sleep(Duration::from_secs(3));
+    }
+}

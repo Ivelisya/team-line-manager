@@ -18,6 +18,7 @@ pub enum Event {
     Catalog,
     /// 广播滞后、丢了事件：前端收到后让全部查询失效
     Resync,
+    ApiKeys,
 }
 
 #[derive(Clone)]

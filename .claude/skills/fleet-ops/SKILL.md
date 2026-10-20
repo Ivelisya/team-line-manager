@@ -1,0 +1,78 @@
+---
+name: fleet-ops
+description: 团队线路管理（fleet）的运维入口。查节点或线路机状态、排查告警、看服务日志、在节点上执行命令、上架新机器、退役或删除机器、改名与编号、升级 agent、取入口分享链接时使用；一律先用 fleetctl，不要直接 ssh、psql 或手拼 curl。
+---
+
+# fleet-ops
+
+`fleetctl` 通过中控完成运维：中控用自己的 SSH 密钥登录机器，每次执行都写审计。直接 ssh 会绕开审计和 known_hosts 校验。
+
+## 开始
+
+```
+fleetctl whoami            # 确认连得上，并看本密钥的 scopes
+fleetctl --json <命令>      # AI 一律加 --json，拿 API 的 data 原样 JSON
+```
+
+- 配置：环境变量 `FLEET_URL`、`FLEET_TOKEN`，或 `fleetctl login --url <地址> --token <密钥>`。实验室中控是 `http://192.168.31.60:8080`。
+- 成功退出码 0；失败退出码 1，错误 JSON 在 stderr（`{"error":{"code","message","status"}}`）。`exec` 单台时退出码等于远端命令的退出码。
+- `<机器>` 写机器 id、显示名（`团队1-06`）、线路机名（`线路机2`）或 IP。歧义时命令报错并列出候选，照候选里的 id 重试。
+
+## 先看，再动
+
+| 要做什么 | 命令 |
+|---|---|
+| 总览 + 进行中的告警 | `fleetctl --json status` |
+| 机器列表 | `fleetctl --json ls [--team 团队1] [--kind relay\|vps\|proxy] [--status down] [--retired]` |
+| 一台机器的详情与健康原因 | `fleetctl --json show <机器>` |
+| 指标曲线 | `fleetctl --json series <机器> --range 1h\|6h\|24h\|7d [--metric host\|traffic\|probe]` |
+| 告警 / 确认告警 | `fleetctl --json incidents [--all]`、`fleetctl ack <id>` |
+| 入口列表 | `fleetctl --json entries [<机器>]` |
+| 作业 | `fleetctl --json jobs [--active]`、`fleetctl job <id>`、`fleetctl job <id> --follow` |
+| 审计 | `fleetctl --json audit [--target <机器>] [--limit 50]` |
+| 实时事件 | `fleetctl watch --count 20` |
+
+排查顺序：`status` 找到告警 → `show <机器>` 读 `health.reasons` → `logs <机器>` 读服务日志 → 仍不明再 `exec`。
+
+## 日志与执行
+
+```
+fleetctl logs <机器> --unit fleet-agent|fleet-xray|ssserver --lines 200
+fleetctl server-logs --lines 200
+fleetctl exec <机器> -- systemctl is-active fleet-agent
+fleetctl exec <机器> -- 'df -h | tail -5'                   # 单个参数原样当脚本，可含管道
+fleetctl exec --team 团队1 --timeout 30 -- uptime           # 多台并发 4，汇总每台退出码
+```
+
+- 多个参数会逐个加引号；要管道、重定向，把整条命令写成一个带引号的参数。
+- 输出每个流最多 256 KiB（`truncated`）；超时 `timed_out=true`。
+- 执行只读命令（systemctl status、journalctl、df、ss、cat 日志）。会改动机器状态的命令先向用户确认。
+- 命令全文进审计，所以命令里不放密码或令牌。
+
+## 会改变状态的操作：先向用户确认
+
+下面这些先把对象和后果告诉用户，得到明确同意后再执行，并加 `--yes`（非交互环境不加 `--yes` 会被拒绝）。
+
+```
+fleetctl retire <机器> [--reason 原因] --yes [--follow]    # 摘入口、停服务，同团队编号前移
+fleetctl purge <机器> --yes                                # 只对已退役；删除机器与遥测，不可恢复
+fleetctl entry rotate <入口> --yes                         # 旧分享链接立即失效
+fleetctl entry disable <入口> --yes
+fleetctl upgrade-agent <机器> | --all --yes                # 重启 agent
+fleetctl renumber <团队> --yes                             # 不加 --yes 只预览
+fleetctl provision ...                                     # 先 check，再确认，再提交
+```
+
+- 上架：`fleetctl --json provision --file batch.json --dry-run` 只校验；通过后让用户确认名单，再去掉 `--dry-run` 加 `--yes --follow`。单台参数：`--kind vps --ip 1.2.3.4 --team 团队1 --relay 线路机2 --provider ATTVPS --plan 基础版`。root 密码放环境变量，用 `--ssh-password-env VAR` 传名字。
+- 改名：`fleetctl rename <机器> --team 团队2 --number 3`。
+- 分享链接 `fleetctl share <入口>` 需要 `secrets` scope，会记审计；链接是凭据，只给用户本人，不写进文件或日志。
+- 密钥管理（`fleetctl keys ...`）只认登录会话，AI 不做；需要新密钥时请用户在网页「设置 → API 密钥」创建。
+
+## --json 字段速查
+
+- `ls` / `show`（MachineView）：`id name kind(relay|vps|proxy) lifecycle(active|provisioning|retiring|retired|failed) ip ssh_port revision`；`health.status`（ok|degraded|down|unknown|maintenance|inactive）与 `health.reasons[{key,severity,text}]`；`agent.online`；`host.{cpu_pct,mem_used,mem_total,disk_used,disk_total,load1}`；`entries[]`；`active_job`；`open_incidents`。
+- `incidents`：`id rule subject_name severity(warning|critical) summary opened_at ack_by`。规则 key：agent_offline、no_entry、egress_fail、tcp_fail、renewal_due、renewal_overdue、relay_apply_lag、relay_apply_error、relay_xray_down。
+- `job`：`state`（queued|running|waiting|cancelling|succeeded|failed|cancelled）、`error`、`steps[]`、`logs[]`。
+- `exec`：`exit_code stdout stderr duration_ms truncated timed_out`；多台时是这些字段加 `machine` 的数组。
+
+完整接口见仓库 `docs/API.md`，运维流程与何时才需要直接 ssh 见 `docs/OPS.md`。
