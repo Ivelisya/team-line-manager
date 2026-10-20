@@ -55,11 +55,13 @@ function Lookup({ id, m }: { id: string; m?: MachineView }) {
 }
 
 /** 包住任意“节点名”元素：children 必须能接 ref（原生元素即可）。id 为空时不加悬浮卡 */
-export function NodeHover({ id, m, children }: { id: string | null | undefined; m?: MachineView; children: React.ReactElement }) {
+export function NodeHover({ id, m, children }: { id: string | null | undefined; m?: MachineView; children: React.ReactElement<{ tabIndex?: number }> }) {
   if (!id) return children;
+  // 悬浮卡由 Radix 在触发元素获得焦点时打开；触发元素若是普通 span 就聚焦不到，键盘用户永远看不到卡片，所以补 tabIndex
+  const plain = typeof children.type === 'string' && !['a', 'button', 'input', 'select', 'textarea'].includes(children.type) && children.props.tabIndex == null;
   return (
     <HoverCard>
-      <HoverCardTrigger asChild>{children}</HoverCardTrigger>
+      <HoverCardTrigger asChild>{plain ? React.cloneElement(children, { tabIndex: 0 }) : children}</HoverCardTrigger>
       <HoverCardContent><Lookup id={id} m={m} /></HoverCardContent>
     </HoverCard>
   );

@@ -47,7 +47,7 @@ export function NodeDrawer() {
               </div>
             </header>
             <Tabs value={tab} onValueChange={(v) => setTab(v as DrawerTab)} className="drawer-tabs">
-              <TabsList>{DRAWER_TABS.map((t) => <TabsTrigger key={t.value} value={t.value}>{t.label}</TabsTrigger>)}</TabsList>
+              <TabsList>{DRAWER_TABS.map((t) => <TabsTrigger key={t.value} value={t.value} noPanel>{t.label}</TabsTrigger>)}</TabsList>
             </Tabs>
             <div className="drawer-body">
               {m.lifecycle === 'retired' && (

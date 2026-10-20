@@ -86,7 +86,7 @@ export function AccessPage() {
       </div>
 
       <Tabs value={tab} onValueChange={(v) => upd({ view: v === 'targets' ? '' : v })}>
-        <TabsList>{VIEWS.map((x) => <TabsTrigger key={x.value} value={x.value}>{x.label}</TabsTrigger>)}</TabsList>
+        <TabsList>{VIEWS.map((x) => <TabsTrigger key={x.value} value={x.value} noPanel>{x.label}</TabsTrigger>)}</TabsList>
       </Tabs>
 
       {tab === 'targets' && <TargetsView f={f} sort={sort} setSort={setSort} filtered={filtered} />}

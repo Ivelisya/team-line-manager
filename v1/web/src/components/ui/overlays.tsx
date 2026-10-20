@@ -13,8 +13,9 @@ export const TabsList = React.forwardRef<React.ElementRef<typeof TabsPrimitive.L
   <TabsPrimitive.List ref={ref} className={cn('tabs-list', className)} {...p} />
 ));
 TabsList.displayName = 'TabsList';
-export const TabsTrigger = React.forwardRef<React.ElementRef<typeof TabsPrimitive.Trigger>, React.ComponentPropsWithoutRef<typeof TabsPrimitive.Trigger>>(({ className, ...p }, ref) => (
-  <TabsPrimitive.Trigger ref={ref} className={cn('tab', className)} {...p} />
+/** noPanel：这组页签没有配对的 TabsContent（内容由页面自己按 value 渲染）时传，去掉 Radix 默认写上的、指向不存在元素的 aria-controls */
+export const TabsTrigger = React.forwardRef<React.ElementRef<typeof TabsPrimitive.Trigger>, React.ComponentPropsWithoutRef<typeof TabsPrimitive.Trigger> & { noPanel?: boolean }>(({ className, noPanel, ...p }, ref) => (
+  <TabsPrimitive.Trigger ref={ref} className={cn('tab', className)} {...(noPanel ? { 'aria-controls': undefined } : null)} {...p} />
 ));
 TabsTrigger.displayName = 'TabsTrigger';
 export const TabsContent = TabsPrimitive.Content;
@@ -59,11 +60,28 @@ export function Trunc({ children, text, className, side = 'top' }: { children: R
   const ref = React.useRef<HTMLSpanElement>(null);
   const [cut, setCut] = React.useState(false);
   const [open, setOpen] = React.useState(false);
+  const [focusable, setFocusable] = React.useState(false);
   const full = text ?? (typeof children === 'string' ? children : '');
+  const measure = React.useCallback(() => {
+    const el = ref.current;
+    const isCut = !!el && el.scrollWidth > el.clientWidth + 1;
+    setCut(isCut);
+    // 被截断、又不在按钮/链接里时才加入 Tab 顺序；在按钮里的由按钮自己承担焦点
+    setFocusable(isCut && !!el && !el.parentElement?.closest('a, button, [tabindex]'));
+  }, []);
+  React.useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [measure, full]);
   return (
-    <TooltipPrimitive.Root open={open && cut && !!full} onOpenChange={setOpen}>
+    <TooltipPrimitive.Root open={open && cut && !!full} onOpenChange={(o) => { if (o) measure(); setOpen(o); }}>
       <TooltipPrimitive.Trigger asChild>
-        <span ref={ref} className={cn('ellipsis block', className)} onPointerEnter={() => { const el = ref.current; setCut(!!el && el.scrollWidth > el.clientWidth + 1); }}>{children}</span>
+        <span ref={ref} className={cn('ellipsis block', className)} tabIndex={focusable && full ? 0 : undefined} onPointerEnter={measure} onFocus={measure}>{children}</span>
       </TooltipPrimitive.Trigger>
       <TooltipPrimitive.Portal><TooltipPrimitive.Content side={side} sideOffset={6} collisionPadding={8} className="tooltip">{full}</TooltipPrimitive.Content></TooltipPrimitive.Portal>
     </TooltipPrimitive.Root>

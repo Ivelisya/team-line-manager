@@ -24,8 +24,8 @@ export function SettingsPage() {
       <PageHead title="设置" note="API 密钥与告警通知" />
       <Tabs value={tab} onValueChange={(v) => setSp((p) => { const n = new URLSearchParams(p); n.set('tab', v); return n; }, { replace: true })}>
         <TabsList className="set-tabs">
-          <TabsTrigger value="keys"><KeyRound size={14} />API 密钥</TabsTrigger>
-          <TabsTrigger value="notify"><Bell size={14} />告警通知</TabsTrigger>
+          <TabsTrigger value="keys" noPanel><KeyRound size={14} />API 密钥</TabsTrigger>
+          <TabsTrigger value="notify" noPanel><Bell size={14} />告警通知</TabsTrigger>
         </TabsList>
       </Tabs>
       {tab === 'keys' ? <ApiKeysSection /> : <NotifySection />}
@@ -120,7 +120,7 @@ function ApiKeysSection() {
       </Dialog>
 
       <Dialog open={token != null} onOpenChange={(o) => !o && setToken(null)}>
-        <DialogContent size="md" onInteractOutside={(e) => e.preventDefault()} onOpenAutoFocus={(e) => { e.preventDefault(); copyRef.current?.focus(); }}>
+        <DialogContent size="md" onInteractOutside={(e) => e.preventDefault()} onEscapeKeyDown={(e) => e.preventDefault()} onOpenAutoFocus={(e) => { e.preventDefault(); copyRef.current?.focus(); }}>
           <div style={{ display: 'grid', gap: 6 }}><DialogTitle>密钥已创建</DialogTitle><DialogDescription>请现在复制并保存。</DialogDescription></div>
           <Note tone="warn" icon={<ShieldAlert size={14} />}><b>只显示这一次。</b>关闭后无法再次查看完整密钥；丢了只能撤销后重建。</Note>
           <div className="token-box"><code>{token}</code><CopyButton text={token ?? ''} label="密钥" size={15} /></div>
