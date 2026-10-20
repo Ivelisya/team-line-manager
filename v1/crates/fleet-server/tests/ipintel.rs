@@ -240,3 +240,37 @@ async fn profile_anomalies_and_alert_lifecycle() {
     let open: i64 = sqlx::query_scalar("select count(*) from node_source_seen where flag = 'open'").fetch_one(&t.st.db).await.unwrap();
     assert_eq!(open, 0);
 }
+
+/// 首次扫描分页（40 天前的数据要被扫到）；水位之前的小时被补算后，差值只累加一次；水位之后的差值丢弃（扫描本来就会覆盖）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn late_hours_are_added_once_and_scan_is_paged() {
+    let _g = DB_LOCK.lock().await;
+    let t = setup(true).await;
+    let fx = seed(&t).await;
+    let now = OffsetDateTime::now_utc();
+    let n0 = fx.n[0];
+    t.put_cache("202.102.224.68", "中国联通", "CN", Some("河南省"), Some("郑州市"), "residential").await;
+    t.put_hourly(n0, now - Duration::days(40), "202.102.224.68", 20).await;
+    t.put_hourly(n0, now - Duration::days(3), "202.102.224.68", 100).await;
+    let conns = || async { sqlx::query_scalar::<_, i64>("select conns from node_source_seen where node_id = $1 and dim = 'isp' and value = '中国联通'").bind(n0).fetch_one(&t.st.db).await.unwrap() };
+
+    ipintel::maintain_once(&t.st, now).await.unwrap();
+    assert_eq!(conns().await, 120, "40 天前和 3 天前的都累加了");
+
+    // 3 天前那个小时被补算，多了 30 条；当前小时的差值（水位之后）不该再加
+    let late = |hour: OffsetDateTime, delta: i32| {
+        sqlx::query("insert into access_source_late (node_id, hour, src_ip, delta) values ($1, $2, '202.102.224.68'::inet, $3)")
+            .bind(n0)
+            .bind(fleet_server::access::floor_hour(hour))
+            .bind(delta)
+            .execute(&t.st.db)
+    };
+    late(now - Duration::days(3), 30).await.unwrap();
+    late(now, 5).await.unwrap();
+    ipintel::maintain_once(&t.st, now).await.unwrap();
+    assert_eq!(conns().await, 150);
+    let left: i64 = sqlx::query_scalar("select count(*) from access_source_late").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(left, 0, "处理过的差值（含丢弃的）已清掉");
+    ipintel::maintain_once(&t.st, now).await.unwrap();
+    assert_eq!(conns().await, 150, "重复执行不重复累加");
+}

@@ -31,6 +31,8 @@ pub const RULE_DC_SOURCE: &str = "ipintel_datacenter_source";
 
 /// 节点来源汇总的水位 key
 const WM_KEY: &str = "sources_wm";
+/// 一批在阻塞线程里查多少个地址
+const LOOKUP_BATCH: usize = 2000;
 /// 内部地址表多久重读一次 machine 表
 const INTERNAL_TTL: StdDuration = StdDuration::from_secs(60);
 
@@ -245,10 +247,6 @@ impl Service {
         tokio::task::spawn_blocking(move || i.reload_if_changed()).await.unwrap_or(false)
     }
 
-    fn compute(&self, ip: IpAddr) -> CacheRow {
-        CacheRow::from_intel(ip, &self.intel.lookup(ip, None))
-    }
-
     /// 批量取画像：先读缓存（库版本一致才算命中），没命中的现查；`store` 为真时把现查的结果写回缓存。
     /// 一个库都没加载且缓存里也没有的地址不在返回里（查不到）。数据库出错时尽量返回已有的。
     pub async fn enrich(&self, db: &PgPool, ips: &[IpAddr], store: bool) -> HashMap<IpAddr, Brief> {
@@ -278,7 +276,19 @@ impl Service {
         if missing.is_empty() || self.intel.loaded() == 0 {
             return out;
         }
-        let fresh: Vec<(IpAddr, CacheRow)> = missing.into_iter().map(|ip| (ip, self.compute(ip))).collect();
+        // 离线库查询是同步的、纯 CPU：放到阻塞线程里分批做（库换版本后缓存全失效、来源画像一次最多 2 万个地址），
+        // 不占着异步工作线程
+        let mut fresh: Vec<(IpAddr, CacheRow)> = Vec::with_capacity(missing.len());
+        for chunk in missing.chunks(LOOKUP_BATCH) {
+            let (intel, chunk) = (self.intel.clone(), chunk.to_vec());
+            match tokio::task::spawn_blocking(move || chunk.into_iter().map(|ip| (ip, CacheRow::from_intel(ip, &intel.lookup(ip, None)))).collect::<Vec<_>>()).await {
+                Ok(v) => fresh.extend(v),
+                Err(e) => {
+                    tracing::warn!("ipintel 批量查询失败：{e}");
+                    break;
+                }
+            }
+        }
         if store {
             for chunk in fresh.chunks(1000) {
                 if let Err(e) = store_rows(db, chunk.iter().map(|(_, r)| r), &version).await {
@@ -361,10 +371,16 @@ struct Agg {
     conns: i64,
 }
 
+/// 来源同步每页覆盖的天数：首次扫 91 天、或停摆很久之后按页处理，每页一个事务并各自推进水位
+const SYNC_PAGE: Duration = Duration::days(7);
+
 /// 增量维护 node_source_seen。
 /// - 小时汇总表最近两小时会被反复重算，所以连接数只累加已「关闭」的小时（早于 当前整点 - 1h），靠水位保证只加一次；
 ///   首次 / 最近一次出现用 min / max，重复扫描是幂等的。
+/// - 水位之前的小时若被补算而变化（agent 断网后补传的旧记录），访问汇总会把连接数差值记进 `access_source_late`，
+///   这里和扫描在同一个快照里读出、一并累加，处理完从中扣掉（扣到 0 的行删除）。水位之后的小时由扫描直接覆盖，差值丢弃。
 /// - 学习期内出现的值不标记；学习期后第一次出现的 isp / city / 机房·VPN 来源 IP 标 open（最近一次出现已超过 ttl 的历史值直接标 done）。
+/// - 扫描范围超过一页（7 天）时按时间升序分页，结果与一次扫完等价。
 pub async fn sync_sources(st: &AppState, now: OffsetDateTime) -> anyhow::Result<SyncReport> {
     let svc = &st.ipintel;
     let mut rep = SyncReport::default();
@@ -377,20 +393,52 @@ pub async fn sync_sources(st: &AppState, now: OffsetDateTime) -> anyhow::Result<
         return Ok(rep);
     }
     svc.ensure_internal(&st.db).await;
-    let db = &st.db;
     let closed_upto = floor_hour(now) - Duration::hours(1);
-    let wm: Option<OffsetDateTime> = sqlx::query_scalar("select ts from ipintel_state where key = $1").bind(WM_KEY).fetch_optional(db).await?;
-    let scan_from = wm.unwrap_or(now - Duration::days(access::HOURLY_DAYS + 1));
+    let wm: Option<OffsetDateTime> = sqlx::query_scalar("select ts from ipintel_state where key = $1").bind(WM_KEY).fetch_optional(&st.db).await?;
+    let mut from = wm.unwrap_or(now - Duration::days(access::HOURLY_DAYS + 1));
+    loop {
+        let to = (closed_upto - from > SYNC_PAGE).then(|| from + SYNC_PAGE);
+        sync_page(st, now, from, to, closed_upto, &mut rep).await?;
+        match to {
+            Some(t) => from = t,
+            None => break,
+        }
+    }
+    Ok(rep)
+}
 
-    let rows: Vec<(Uuid, String, OffsetDateTime, OffsetDateTime, i64)> = sqlx::query_as(
-        "select node_id, host(src_ip), min(hour), max(hour), coalesce(sum(conns) filter (where hour < $2), 0)::bigint
-         from access_source_hourly where hour >= $1 group by node_id, src_ip",
+/// 处理 [from, to) 的一页（to 为空 = 一直到现在），完成后水位推进到 to（或 closed_upto）。
+async fn sync_page(st: &AppState, now: OffsetDateTime, from: OffsetDateTime, to: Option<OffsetDateTime>, closed_upto: OffsetDateTime, rep: &mut SyncReport) -> anyhow::Result<()> {
+    let svc = &st.ipintel;
+    let db = &st.db;
+    let count_upto = to.unwrap_or(closed_upto);
+
+    // 同一个快照里读：水位、扫描结果、待补记的差值
+    let mut snap = db.begin().await?;
+    sqlx::query("set transaction isolation level repeatable read").execute(&mut *snap).await?;
+    let wm_old: Option<OffsetDateTime> = sqlx::query_scalar("select ts from ipintel_state where key = $1").bind(WM_KEY).fetch_optional(&mut *snap).await?;
+    let mut rows: Vec<(Uuid, String, OffsetDateTime, OffsetDateTime, i64)> = sqlx::query_as(
+        "select node_id, host(src_ip), min(hour), max(hour), coalesce(sum(conns) filter (where hour < $3), 0)::bigint
+         from access_source_hourly where hour >= $1 and ($2::timestamptz is null or hour < $2) group by node_id, src_ip",
     )
-    .bind(scan_from)
-    .bind(closed_upto)
-    .fetch_all(db)
+    .bind(from)
+    .bind(to)
+    .bind(count_upto)
+    .fetch_all(&mut *snap)
     .await?;
-    rep.pairs = rows.len();
+    let late: Vec<(Uuid, String, OffsetDateTime, i32)> =
+        sqlx::query_as("select node_id, host(src_ip), hour, delta from access_source_late where $1::timestamptz is null or hour < $1")
+            .bind(to)
+            .fetch_all(&mut *snap)
+            .await?;
+    snap.commit().await?;
+    rep.pairs += rows.len();
+    // 水位之前的小时已经累加过，差值补记；水位之后的由扫描覆盖（丢弃）
+    for (node, ip, hour, delta) in &late {
+        if *delta != 0 && wm_old.is_some_and(|w| *hour < w) {
+            rows.push((*node, ip.clone(), *hour, *hour, *delta as i64));
+        }
+    }
 
     let ips: Vec<IpAddr> = rows.iter().filter_map(|r| r.1.parse().ok()).collect();
     let briefs = svc.enrich(db, &ips, true).await;
@@ -419,11 +467,13 @@ pub async fn sync_sources(st: &AppState, now: OffsetDateTime) -> anyhow::Result<
         }
     }
 
+    // 写入、扣差值、推进水位放在一个事务里：中途失败不会重复累加
+    let mut tx = db.begin().await?;
     if !agg.is_empty() {
         // 每个节点的学习期起点 = 已记录的最早 first_seen 与本批最早的较小者
         let nodes: Vec<Uuid> = agg.keys().map(|k| k.0).collect::<HashSet<_>>().into_iter().collect();
         let known: Vec<(Uuid, OffsetDateTime)> =
-            sqlx::query_as("select node_id, min(first_seen) from node_source_seen where node_id = any($1) group by node_id").bind(&nodes).fetch_all(db).await?;
+            sqlx::query_as("select node_id, min(first_seen) from node_source_seen where node_id = any($1) group by node_id").bind(&nodes).fetch_all(&mut *tx).await?;
         let mut start: HashMap<Uuid, OffsetDateTime> = known.into_iter().collect();
         for ((node, _, _), a) in &agg {
             let s = start.entry(*node).or_insert(a.first);
@@ -447,13 +497,15 @@ pub async fn sync_sources(st: &AppState, now: OffsetDateTime) -> anyhow::Result<
         }
         for lo in (0..n_node.len()).step_by(2000) {
             let hi = (lo + 2000).min(n_node.len());
+            // 只在值真的变了（更早的首次出现、更晚的最近出现、连接数有增减）时才写，没变化的行不产生死元组
             let r = sqlx::query(
                 "insert into node_source_seen as n (node_id, dim, value, first_seen, last_seen, conns, flag)
                  select * from unnest($1::uuid[], $2::text[], $3::text[], $4::timestamptz[], $5::timestamptz[], $6::bigint[], $7::text[])
                  on conflict (node_id, dim, value) do update set
                     first_seen = least(n.first_seen, excluded.first_seen),
                     last_seen  = greatest(n.last_seen, excluded.last_seen),
-                    conns      = n.conns + excluded.conns",
+                    conns      = greatest(n.conns + excluded.conns, 0)
+                 where excluded.first_seen < n.first_seen or excluded.last_seen > n.last_seen or excluded.conns <> 0",
             )
             .bind(&n_node[lo..hi])
             .bind(&n_dim[lo..hi])
@@ -462,19 +514,35 @@ pub async fn sync_sources(st: &AppState, now: OffsetDateTime) -> anyhow::Result<
             .bind(&n_last[lo..hi])
             .bind(&n_conns[lo..hi])
             .bind(&n_flag[lo..hi])
-            .execute(db)
+            .execute(&mut *tx)
             .await?;
             rep.upserted += r.rows_affected() as usize;
         }
     }
+    if !late.is_empty() {
+        // 扣掉读到的差值（读完之后汇总又追加的部分保留到下一轮）
+        sqlx::query(
+            "update access_source_late l set delta = l.delta - u.d
+             from unnest($1::uuid[], $2::timestamptz[], $3::text[], $4::int[]) u(n, h, i, d)
+             where l.node_id = u.n and l.hour = u.h and l.src_ip = u.i::inet",
+        )
+        .bind(late.iter().map(|r| r.0).collect::<Vec<_>>())
+        .bind(late.iter().map(|r| r.2).collect::<Vec<_>>())
+        .bind(late.iter().map(|r| r.1.clone()).collect::<Vec<_>>())
+        .bind(late.iter().map(|r| r.3).collect::<Vec<_>>())
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("delete from access_source_late where delta = 0").execute(&mut *tx).await?;
+    }
     sqlx::query(
-        "insert into ipintel_state (key, ts) values ($1, $2) on conflict (key) do update set ts = greatest(ipintel_state.ts, excluded.ts)",
+        "insert into ipintel_state (key, ts) values ($1, $2) on conflict (key) do update set ts = excluded.ts where ipintel_state.ts < excluded.ts",
     )
     .bind(WM_KEY)
-    .bind(closed_upto)
-    .execute(db)
+    .bind(count_upto)
+    .execute(&mut *tx)
     .await?;
-    Ok(rep)
+    tx.commit().await?;
+    Ok(())
 }
 
 struct OpenRow {
