@@ -1,7 +1,8 @@
 // 全局快捷键：⌘K / Ctrl+K（或 /）命令面板，[ ] 在抽屉里切上一台/下一台，? 快捷键帮助。输入框里不触发。
 import * as React from 'react';
 import { Search } from 'lucide-react';
-import { useMachines } from '@/lib/queries';
+import { useQueryClient } from '@tanstack/react-query';
+import { readMachines } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import { modKey, setOverlay, useOverlay } from '@/lib/palette';
 import type { ThemePref } from '@/lib/theme';
@@ -28,13 +29,14 @@ export function PaletteTrigger() {
 export function Hotkeys({ theme }: { theme: { pref: ThemePref; setPref: (p: ThemePref) => void } }) {
   const overlay = useOverlay();
   const { id, tab, open } = useDrawer();
-  const machines = useMachines('live').data;
+  // 不订阅机器列表（订阅会让每个页面都跟着取 /machines）：按 [ ] 时才读缓存
+  const qc = useQueryClient();
   const [loaded, setLoaded] = React.useState(false);
   React.useEffect(() => { if (overlay === 'palette') setLoaded(true); }, [overlay]);
 
   // 事件处理里读最新值，避免每次变化都重新绑定监听
-  const ref = React.useRef({ id, tab, open, machines, overlay });
-  ref.current = { id, tab, open, machines, overlay };
+  const ref = React.useRef({ id, tab, open, overlay });
+  ref.current = { id, tab, open, overlay };
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const c = ref.current;
@@ -43,17 +45,18 @@ export function Hotkeys({ theme }: { theme: { pref: ThemePref; setPref: (p: Them
       if (document.querySelector('.dialog, .cmd-dialog')) return; // 有对话框开着时不抢键
       if (e.key === '/' ) { e.preventDefault(); setOverlay('palette'); }
       else if (e.key === '?') { e.preventDefault(); setOverlay('help'); }
-      else if ((e.key === '[' || e.key === ']') && c.id && c.machines) {
-        const i = c.machines.findIndex((m) => m.id === c.id);
-        if (i < 0) return;
-        const next = c.machines[(i + (e.key === ']' ? 1 : -1) + c.machines.length) % c.machines.length];
+      else if ((e.key === '[' || e.key === ']') && c.id) {
+        const machines = readMachines(qc);
+        const i = machines?.findIndex((m) => m.id === c.id) ?? -1;
+        if (!machines || i < 0) return;
+        const next = machines[(i + (e.key === ']' ? 1 : -1) + machines.length) % machines.length];
         e.preventDefault();
         c.open(next.id, c.tab === 'overview' ? undefined : c.tab);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [qc]);
 
   return (
     <>
