@@ -1,0 +1,257 @@
+//! 端到端：上架（上游代理节点）→ 线路机应用 → 出口验收 → 上线 → 改名同步 → 退役（摘入口、压缩编号）→ 彻底删除。
+//! 需要 PostgreSQL：环境变量 FLEET_TEST_DB（默认 postgres://fleet:fleet@127.0.0.1/fleet_test）。会清空该库的 public schema。
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use fleet_proto::{ApplyReport, DesiredState, EntryApply, ProbeKind, ProbeSample, Report};
+use fleet_server::{config::Config, crypto::SecretBox, db, state::AppState};
+use http_body_util::BodyExt;
+use serde_json::{json, Value};
+use std::time::Duration;
+use tower::ServiceExt;
+use uuid::Uuid;
+
+struct T {
+    app: axum::Router,
+    st: AppState,
+    cookie: String,
+}
+
+impl T {
+    async fn req(&self, method: &str, path: &str, body: Option<Value>, auth: Option<&str>) -> (StatusCode, Value) {
+        let mut b = Request::builder().method(method).uri(path).header("content-type", "application/json").header("x-fleet-request", "1");
+        match auth {
+            Some(tok) => b = b.header("authorization", format!("Bearer {tok}")),
+            None => b = b.header("cookie", &self.cookie),
+        }
+        let req = b.body(body.map(|v| Body::from(v.to_string())).unwrap_or_else(Body::empty)).unwrap();
+        let res = self.app.clone().oneshot(req).await.unwrap();
+        let status = res.status();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        let v = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        (status, v)
+    }
+    async fn get(&self, p: &str) -> Value {
+        let (s, v) = self.req("GET", p, None, None).await;
+        assert_eq!(s, StatusCode::OK, "GET {p}: {v}");
+        v["data"].clone()
+    }
+    async fn post(&self, p: &str, b: Value) -> Value {
+        let (s, v) = self.req("POST", p, Some(b), None).await;
+        assert!(s.is_success(), "POST {p}: {s} {v}");
+        v["data"].clone()
+    }
+    async fn wait_job(&self, id: &str, want: &str) -> Value {
+        for _ in 0..200 {
+            let j = self.get(&format!("/api/v1/jobs/{id}")).await;
+            if j["state"] == want {
+                return j;
+            }
+            if j["state"] == "failed" && want != "failed" {
+                let logs = self.get(&format!("/api/v1/jobs/{id}/logs")).await;
+                panic!("作业失败：{} / {logs}", j["error"]);
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        panic!("作业 {id} 没到 {want}");
+    }
+}
+
+async fn setup() -> T {
+    let url = std::env::var("FLEET_TEST_DB").unwrap_or_else(|_| "postgres://fleet:fleet@127.0.0.1/fleet_test".into());
+    let pool = db::connect(&url).await.unwrap();
+    sqlx::query("drop schema public cascade").execute(&pool).await.unwrap();
+    sqlx::query("create schema public").execute(&pool).await.unwrap();
+    db::MIGRATOR.run(&pool).await.unwrap();
+    db::maintain_partitions(&pool, 14, 7, 2).await.unwrap();
+    let cfg: Config = toml::from_str(&format!(
+        r#"database_url = "{url}"
+           secret_key_file = "/dev/null"
+           public_url = "http://fleet.test"
+           ssh_key = "/nonexistent"
+           known_hosts = "/tmp/fleet-test-known-hosts"
+           dist_dir = "/nonexistent"
+           job_workers = 4"#
+    ))
+    .unwrap();
+    let st = AppState::new(cfg, pool.clone(), SecretBox::from_key(&[9u8; 32]).unwrap());
+    fleet_server::spawn_background(&st);
+    fleet_server::auth::upsert_user(&pool, "admin", "correct horse battery").await.unwrap();
+    let app = fleet_server::app(st.clone());
+    let res = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/auth/login")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"username": "admin", "password": "correct horse battery"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let cookie = res.headers().get("set-cookie").unwrap().to_str().unwrap().split(';').next().unwrap().to_string();
+    T { app, st, cookie }
+}
+
+/// 直接在库里放一台在用的线路机，并给它签一个 agent 令牌
+async fn seed_relay(t: &T) -> (Uuid, String) {
+    let id = Uuid::now_v7();
+    let (sk, pk) = fleet_server::crypto::reality_keypair();
+    sqlx::query("insert into machine (id, kind, label, primary_ip, lifecycle, activated_at) values ($1, 'relay', '线路机2', '198.51.100.2', 'active', now())")
+        .bind(id)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    sqlx::query("insert into relay (machine_id, public_host, reality_private_enc, reality_public_key, min_client_ver, generation, applied_generation) values ($1, 'relay.test', $2, $3, '1.8.2', 1, 1)")
+        .bind(id)
+        .bind(t.st.secrets.seal_str(&sk))
+        .bind(pk)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let tok = "fa1_test_relay_token";
+    sqlx::query("insert into agent_token (id, machine_id, token_hash) values ($1, $2, $3)")
+        .bind(Uuid::now_v7())
+        .bind(id)
+        .bind(fleet_server::crypto::sha256(tok.as_bytes()))
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    (id, tok.to_string())
+}
+
+fn now_ms() -> i64 { (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64 }
+
+/// 模拟线路机 agent：拉期望状态、回报全部成功，并给每个入口报一个成功的出口探测
+async fn relay_round(t: &T, tok: &str, _after: u64, seq: &mut u64) -> DesiredState {
+    let (s, v) = t.req("GET", "/agent/v1/desired?after=0", None, Some(tok)).await;
+    assert_eq!(s, StatusCode::OK, "desired: {v}");
+    let ds: DesiredState = serde_json::from_value(v).unwrap();
+    let rep = ApplyReport {
+        generation: ds.generation,
+        ok: true,
+        error: None,
+        entries: ds.entries.iter().map(|e| EntryApply { id: e.id, ok: true, error: None }).collect(),
+    };
+    let (s, _) = t.req("POST", "/agent/v1/applied", Some(serde_json::to_value(&rep).unwrap()), Some(tok)).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    *seq += 1;
+    let r = Report {
+        seq: *seq,
+        boot_id: "b1".into(),
+        agent_version: "test".into(),
+        sent_at_ms: now_ms(),
+        info: None,
+        host: vec![],
+        entries: vec![],
+        probes: ds
+            .entries
+            .iter()
+            .map(|e| ProbeSample { entry_id: e.id, ts_ms: now_ms(), kind: ProbeKind::Egress, ok: true, latency_ms: Some(12.0), detail: Some(e.expect_egress_ip.to_string()) })
+            .collect(),
+        access: vec![],
+        xray: None,
+    };
+    let (s, v) = t.req("POST", "/agent/v1/report", Some(serde_json::to_value(&r).unwrap()), Some(tok)).await;
+    assert_eq!(s, StatusCode::OK, "report: {v}");
+    ds
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn full_lifecycle() {
+    let t = setup().await;
+    let (relay, rtok) = seed_relay(&t).await;
+    let team = t.post("/api/v1/teams", json!({"name": "团队1"})).await["id"].as_str().unwrap().to_string();
+    let mut seq = 0u64;
+
+    // 上架三台上游代理节点（编号自动 01、02、03）
+    let items: Vec<Value> = (0..3)
+        .map(|i| json!({"kind": "proxy", "ip": format!("203.0.113.{}", 10 + i), "team_id": team, "relay_id": relay,
+                        "upstream": {"protocol": "socks5", "host": format!("p{i}.example"), "port": 1080, "username": "u", "password": "p"}}))
+        .collect();
+    let chk = t.post("/api/v1/provision/check", json!({"items": items})).await;
+    let names: Vec<&str> = chk["items"].as_array().unwrap().iter().map(|i| i["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["团队1-01", "团队1-02", "团队1-03"]);
+    // 同一个 IP 重复 → 校验失败
+    let (s, v) = t.req("POST", "/api/v1/provision", Some(json!({"items": [items[0].clone(), items[0].clone()]})), None).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+
+    let created = t.post("/api/v1/provision", json!({"items": items})).await;
+    let jobs: Vec<String> = created["jobs"].as_array().unwrap().iter().map(|j| j["job_id"].as_str().unwrap().to_string()).collect();
+    let ids: Vec<String> = created["jobs"].as_array().unwrap().iter().map(|j| j["machine_id"].as_str().unwrap().to_string()).collect();
+
+    // 作业建好入口后，线路机拉到期望状态并回报；之后出口探测通过 → 上线
+    let mut gen = 1;
+    for _ in 0..40 {
+        let ds = relay_round(&t, &rtok, gen, &mut seq).await;
+        gen = ds.generation;
+        let done = futures::future::join_all(jobs.iter().map(|j| t.get_owned(j))).await;
+        if done.iter().all(|j| j["state"] == "succeeded") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    for j in &jobs {
+        t.wait_job(j, "succeeded").await;
+    }
+    let ms = t.get("/api/v1/machines").await;
+    let nodes: Vec<&Value> = ms.as_array().unwrap().iter().filter(|m| m["kind"] == "proxy").collect();
+    assert_eq!(nodes.len(), 3);
+    assert!(nodes.iter().all(|m| m["lifecycle"] == "active"));
+    assert_eq!(nodes[0]["name"], "团队1-01");
+    let mut ports: Vec<i64> = nodes.iter().map(|m| m["entries"][0]["port"].as_i64().unwrap()).collect();
+    ports.sort();
+    assert_eq!(ports, [20000, 20001, 20002]);
+
+    // 改名：团队1 → 一队；线路机备注随之同步（代数 +1，期望状态里的 remark 变化）
+    t.req("PATCH", &format!("/api/v1/teams/{team}"), Some(json!({"name": "一队"})), None).await;
+    let ds = relay_round(&t, &rtok, gen, &mut seq).await;
+    assert!(ds.generation > gen);
+    gen = ds.generation;
+    let mut rm: Vec<&str> = ds.entries.iter().map(|e| e.remark.as_str()).collect();
+    rm.sort();
+    assert_eq!(rm, ["一队-01", "一队-02", "一队-03"]);
+
+    // 退役 一队-01：预览显示后面两台前移
+    let pv = t.get(&format!("/api/v1/machines/{}/retire", ids[0])).await;
+    assert_eq!(pv["renames"].as_array().unwrap().len(), 2);
+    let (s, _) = t.req("POST", &format!("/api/v1/machines/{}/retire", ids[0]), Some(json!({"confirm": "错的名字"})), None).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let job = t.post(&format!("/api/v1/machines/{}/retire", ids[0]), json!({"confirm": "一队-01"})).await["job_id"].as_str().unwrap().to_string();
+    for _ in 0..40 {
+        let ds = relay_round(&t, &rtok, gen, &mut seq).await;
+        gen = ds.generation;
+        if t.get_owned(&job).await["state"] == "succeeded" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    t.wait_job(&job, "succeeded").await;
+    // 期望状态里不再有它的入口；剩下两台编号压缩成 01、02，备注同步
+    let ds = relay_round(&t, &rtok, 0, &mut seq).await;
+    assert_eq!(ds.entries.len(), 2);
+    let mut rm: Vec<&str> = ds.entries.iter().map(|e| e.remark.as_str()).collect();
+    rm.sort();
+    assert_eq!(rm, ["一队-01", "一队-02"]);
+    let live = t.get("/api/v1/machines").await;
+    assert!(live.as_array().unwrap().iter().all(|m| m["id"] != ids[0].as_str()), "退役的不在默认列表");
+    let retired = t.get("/api/v1/machines?scope=retired").await;
+    assert_eq!(retired[0]["lifecycle"], "retired");
+    // 新上架接在末尾：一队-03
+    let chk = t.post("/api/v1/provision/check", json!({"items": [{"kind": "proxy", "ip": "203.0.113.10", "team_id": team, "relay_id": relay,
+        "upstream": {"protocol": "socks5", "host": "x", "port": 1}}]})).await;
+    assert_eq!(chk["items"][0]["name"], "一队-03", "退役机器的 IP 已释放、编号接在末尾");
+    // 新入口端口不复用已删除的 20000
+    // 彻底删除
+    let pj = t.post(&format!("/api/v1/machines/{}/purge", ids[0]), json!({"confirm": retired[0]["name"]})).await["job_id"].as_str().unwrap().to_string();
+    t.wait_job(&pj, "succeeded").await;
+    let (s, _) = t.req("GET", &format!("/api/v1/machines/{}", ids[0]), None, None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    // 审计里有重编号记录
+    let audit = t.get("/api/v1/audit?limit=200").await;
+    assert!(audit.as_array().unwrap().iter().any(|a| a["action"] == "team.renumber"));
+}
+
+impl T {
+    async fn get_owned(&self, job: &str) -> Value { self.get(&format!("/api/v1/jobs/{job}")).await }
+}

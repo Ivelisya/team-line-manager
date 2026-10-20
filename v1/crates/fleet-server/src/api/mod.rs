@@ -1,0 +1,62 @@
+pub mod catalog;
+pub mod jobs;
+pub mod machines;
+pub mod misc;
+pub mod provision;
+pub mod relays;
+
+use crate::state::AppState;
+use axum::routing::{get, patch, post};
+use axum::Router;
+use serde::Serialize;
+use serde_json::{json, Value};
+
+/// `{"data": …}`
+pub fn ok<T: Serialize>(v: T) -> axum::Json<Value> { axum::Json(json!({ "data": v })) }
+
+pub fn router() -> Router<AppState> {
+    use crate::auth;
+    Router::new()
+        .route("/auth/login", post(auth::login))
+        .route("/auth/logout", post(auth::logout))
+        .route("/auth/me", get(auth::me))
+        // 目录
+        .route("/teams", get(catalog::list_teams).post(catalog::create_team))
+        .route("/teams/{id}", patch(catalog::patch_team))
+        .route("/teams/{id}/renumber", get(machines::renumber_preview).post(machines::renumber_apply))
+        .route("/providers", get(catalog::list_providers).post(catalog::create_provider))
+        .route("/plans", get(catalog::list_plans).post(catalog::create_plan))
+        .route("/plans/{id}", patch(catalog::patch_plan))
+        // 机器
+        .route("/machines", get(machines::list))
+        .route("/machines/{id}", get(machines::get_one).patch(machines::patch))
+        .route("/machines/{id}/series", get(machines::series))
+        .route("/machines/{id}/retire", get(machines::retire_preview).post(machines::retire))
+        .route("/machines/{id}/purge", post(machines::purge))
+        .route("/machines/{id}/upgrade-agent", post(machines::upgrade_agent))
+        .route("/agents/upgrade", post(machines::upgrade_all_agents))
+        .route("/machines/{id}/subscription", axum::routing::put(machines::put_subscription))
+        .route("/machines/{id}/renewals", get(machines::list_renewals).post(machines::add_renewal))
+        .route("/machines/{id}/entries", post(relays::add_entry))
+        // 上架
+        .route("/provision/check", post(provision::check))
+        .route("/provision", post(provision::create))
+        // 线路机与入口
+        .route("/relays", get(relays::list))
+        .route("/entries/{id}/actions", post(relays::entry_action))
+        .route("/entries/{id}/share", get(relays::share))
+        // 作业
+        .route("/jobs", get(jobs::list))
+        .route("/jobs/{id}", get(jobs::get_one))
+        .route("/jobs/{id}/logs", get(jobs::logs))
+        .route("/jobs/{id}/retry", post(jobs::retry))
+        .route("/jobs/{id}/cancel", post(jobs::cancel))
+        // 总览、告警、审计、实时
+        .route("/overview", get(misc::overview))
+        .route("/incidents", get(misc::incidents))
+        .route("/incidents/{id}/ack", post(misc::ack_incident))
+        .route("/silences", get(misc::list_silences).post(misc::create_silence))
+        .route("/silences/{id}", axum::routing::delete(misc::delete_silence))
+        .route("/audit", get(misc::audit))
+        .route("/stream", get(misc::stream))
+}

@@ -1,0 +1,45 @@
+/* DataTable：固定列宽（table-layout: fixed + colgroup），长文字省略，数字 tabular。移植自原版 table.css */
+
+.table-wrap { overflow-x: auto; min-width: 0; }
+.dt { width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 0; font-size: var(--fs-body); line-height: var(--lh-body); color: var(--fg); }
+.dt th, .dt td { padding: var(--cell-py) var(--cell-px); text-align: left; vertical-align: middle; border-bottom: 1px solid var(--line); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dt th:first-child, .dt td:first-child { padding-left: var(--cell-edge); }
+.dt th:last-child, .dt td:last-child { padding-right: var(--cell-edge); }
+.dt thead th {
+  height: var(--thead-h); box-sizing: border-box; padding-top: 0; padding-bottom: 0;
+  background: var(--sunken); font: var(--fw-medium) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2);
+}
+.dt tbody tr:last-child td { border-bottom: 0; }
+.dt td { height: var(--row-2); box-sizing: border-box; }
+.dt.is-one td { height: var(--row-1); }
+.dt td.r, .dt th.r { text-align: right; }
+.dt td.c, .dt th.c { text-align: center; }
+.dt td.r, .dt td .num { font-variant-numeric: var(--num-variant); }
+.dt .strong { font-weight: var(--fw-semibold); }
+.dt .sub { display: block; font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dt .cell-main { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dt tr.is-link { cursor: pointer; transition: background-color var(--dur-fast); }
+.dt tr.is-link:hover { background: var(--hover); }
+.dt tr.is-current { background: var(--selected); }
+.dt tr.is-current td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
+.dt tr.is-retired td { color: var(--fg-2); }
+.dt .chev { width: 36px; padding-left: 0; text-align: right; color: var(--fg-3); }
+.dt tr.is-link:hover .chev { color: var(--fg-2); }
+.th-sort { display: inline-flex; align-items: center; gap: var(--sp-4); padding: 0; border: 0; background: none; cursor: pointer; font: inherit; color: inherit; max-width: 100%; }
+.th-sort:hover { color: var(--fg); }
+.th-sort .lucide { width: 12px; height: 12px; color: var(--fg-3); }
+.th-sort[data-dir] .lucide { color: var(--accent); }
+.dt-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); padding: var(--sp-8) var(--card-pad); border-top: 1px solid var(--line); font-size: var(--fs-label); color: var(--fg-2); }
+
+/* 可编辑网格（上架批量） */
+.dt-grid th, .dt-grid td { padding: 0; height: 36px; }
+.dt-grid thead th { padding: 0 var(--sp-6); height: var(--thead-h); }
+.dt-grid td.idx { text-align: center; color: var(--fg-3); background: var(--sunken); font-variant-numeric: tabular-nums; }
+.dt-grid td { border-right: 1px solid var(--line); }
+.dt-grid .gcell { width: 100%; height: 100%; box-sizing: border-box; padding: 0 var(--sp-8); border: 0; border-radius: 0; background: transparent; color: var(--fg); font: inherit; text-overflow: ellipsis; }
+.dt-grid .gcell:focus { outline: 2px solid var(--accent); outline-offset: -2px; background: var(--surface); }
+.dt-grid .gcell:disabled { background: var(--sunken); color: var(--fg-3); }
+.dt-grid td.is-bad { box-shadow: inset 0 0 0 1px var(--bad); background: var(--bad-bg); }
+.dt-grid td.is-na { background: var(--sunken); }
+.dt-grid tr.is-row-bad td.idx { color: var(--bad-text); }
+.dt-grid tr.row-result td { height: auto; padding: var(--sp-6) var(--sp-12); background: var(--sunken); white-space: normal; border-right: 0; }

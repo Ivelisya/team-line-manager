@@ -1,0 +1,37 @@
+[Unit]
+Description=fleet-agent (团队线路管理 边缘程序)
+Documentation=file:///usr/local/share/doc/fleet-agent/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/fleet-agent --config /etc/fleet-agent/agent.toml run
+Restart=always
+RestartSec=3
+# v1 选择：以 root 运行（线路机上要 systemctl restart fleet-xray、读写 0600 的 xray.json），
+# 但丢掉全部 capability + 只读文件系统，只留下面两个可写目录。落地节点同一份单元也能用。
+User=root
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/fleet-agent /etc/fleet-agent
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+UMask=0077
+LimitNOFILE=4096
+MemoryMax=128M
+TasksMax=128
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

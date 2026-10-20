@@ -1,5 +1,0 @@
-[
- { "name": "fix/smoke-home-large", "url": "#/home", "width": 1440, "height": 900 },
- { "name": "fix/smoke-home-compact", "url": "#/home", "width": 1440, "height": 900, "view": "compact" },
- { "name": "fix/smoke-home-small", "url": "#/home", "width": 1440, "height": 900, "view": "small" }
-]

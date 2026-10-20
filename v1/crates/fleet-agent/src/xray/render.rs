@@ -1,0 +1,435 @@
+//! DesiredState → 完整 xray.json（固定骨架 + 每个入口一组入站/出站/规则）。
+//! 纯函数，无副作用；apply 与 `render` 子命令共用。
+
+use anyhow::{bail, ensure, Result};
+use fleet_proto::{tags, DesiredEntry, DesiredState, Outbound, RelayParams};
+use serde_json::{json, Map, Value};
+use std::collections::{HashMap, HashSet};
+use uuid::Uuid;
+
+pub const API_TAG: &str = "api";
+pub const STATIC_OUTBOUNDS: [&str; 3] = ["deny", "direct", "blocked"];
+/// mihomo 兼容：minClientVer 不得高于此值
+pub const MAX_MIN_CLIENT_VER: &str = "1.8.2";
+
+pub struct RenderCtx {
+    pub access_log: String,
+    /// "127.0.0.1:62789"
+    pub api_addr: String,
+}
+
+impl RenderCtx {
+    pub fn api_port(&self) -> u16 {
+        self.api_addr.rsplit_once(':').and_then(|(_, p)| p.parse().ok()).unwrap_or(62789)
+    }
+    pub fn api_host(&self) -> &str {
+        self.api_addr.rsplit_once(':').map(|x| x.0).unwrap_or("127.0.0.1")
+    }
+}
+
+/// 渲染结果：整份配置 + 按类别切开的对象（用于按 tag 做差异）
+#[derive(Debug, Clone, PartialEq)]
+pub struct Rendered {
+    pub full: Value,
+    pub inbounds: Vec<Value>,
+    pub outbounds: Vec<Value>,
+    pub rules: Vec<Value>,
+    /// 不随入口变化的部分（log/api/stats/policy + 静态入站/出站/规则），变了就必须重启 Xray
+    pub static_part: Value,
+}
+
+pub fn tag_of(v: &Value) -> &str {
+    v.get("tag").and_then(|t| t.as_str()).unwrap_or("")
+}
+pub fn rule_tag_of(v: &Value) -> &str {
+    v.get("ruleTag").and_then(|t| t.as_str()).unwrap_or("")
+}
+pub fn is_static_outbound(tag: &str) -> bool {
+    STATIC_OUTBOUNDS.contains(&tag)
+}
+fn is_entry_rule(v: &Value) -> bool {
+    let t = rule_tag_of(v);
+    t.starts_with("rule-") || t.starts_with("probe-")
+}
+
+impl Rendered {
+    /// 从整份配置切分（render 与读取磁盘上的现有配置共用）
+    pub fn from_full(full: Value) -> Rendered {
+        let arr = |p: &[&str]| -> Vec<Value> {
+            let mut cur = &full;
+            for k in p {
+                match cur.get(*k) {
+                    Some(n) => cur = n,
+                    None => return vec![],
+                }
+            }
+            cur.as_array().cloned().unwrap_or_default()
+        };
+        let inbounds = arr(&["inbounds"]);
+        let outbounds = arr(&["outbounds"]);
+        let rules = arr(&["routing", "rules"]);
+        let mut sp = Map::new();
+        for k in ["log", "api", "stats", "policy"] {
+            if let Some(v) = full.get(k) {
+                sp.insert(k.into(), v.clone());
+            }
+        }
+        sp.insert("inbounds".into(), Value::Array(inbounds.iter().filter(|v| tag_of(v) == API_TAG).cloned().collect()));
+        sp.insert("outbounds".into(), Value::Array(outbounds.iter().filter(|v| is_static_outbound(tag_of(v))).cloned().collect()));
+        sp.insert("rules".into(), Value::Array(rules.iter().filter(|v| !is_entry_rule(v)).cloned().collect()));
+        sp.insert("domainStrategy".into(), full.pointer("/routing/domainStrategy").cloned().unwrap_or(Value::Null));
+        Rendered { full, inbounds, outbounds, rules, static_part: Value::Object(sp) }
+    }
+}
+
+fn parse_ver(s: &str) -> Option<(u32, u32, u32)> {
+    let mut it = s.trim().split('.');
+    let a = it.next()?.parse().ok()?;
+    let b = it.next().map(|x| x.parse().ok()).unwrap_or(Some(0))?;
+    let c = it.next().map(|x| x.parse().ok()).unwrap_or(Some(0))?;
+    if it.next().is_some() {
+        return None;
+    }
+    Some((a, b, c))
+}
+
+/// 每个启用入口的回环探测入站端口 = 入口端口 + 10000。超出 65535 或与其它端口冲突则没有探测入站。
+pub fn probe_ports(entries: &[DesiredEntry], api_port: u16) -> HashMap<Uuid, u16> {
+    let taken: HashSet<u16> = entries.iter().filter(|e| e.enabled).map(|e| e.port).chain([api_port]).collect();
+    entries
+        .iter()
+        .filter(|e| e.enabled)
+        .filter_map(|e| {
+            let p = e.port.checked_add(10000)?;
+            (!taken.contains(&p)).then_some((e.id, p))
+        })
+        .collect()
+}
+
+pub fn probe_tag(id: Uuid) -> String {
+    format!("probe-{}", id.simple())
+}
+
+fn outbound_json(id: Uuid, o: &Outbound) -> Value {
+    let tag = tags::outbound(id);
+    let server = |host: &str, port: u16, user: &Option<String>, pass: &Option<String>| {
+        let mut s = json!({"address": host, "port": port});
+        if let Some(u) = user.as_deref().filter(|u| !u.is_empty()) {
+            s["users"] = json!([{"user": u, "pass": pass.clone().unwrap_or_default()}]);
+        }
+        s
+    };
+    match o {
+        Outbound::Shadowsocks { host, port, method, password } => json!({
+            "tag": tag, "protocol": "shadowsocks",
+            "settings": {"servers": [{"address": host, "port": port, "method": method, "password": password}]}
+        }),
+        Outbound::Socks5 { host, port, username, password } => json!({
+            "tag": tag, "protocol": "socks",
+            "settings": {"servers": [server(host, *port, username, password)]}
+        }),
+        Outbound::Http { host, port, username, password } => json!({
+            "tag": tag, "protocol": "http",
+            "settings": {"servers": [server(host, *port, username, password)]}
+        }),
+    }
+}
+
+/// VLESS REALITY 入站，与 mihomo 兼容的固定形状（见 spec/edge.md §6.2，不要改）
+fn inbound_json(e: &DesiredEntry, rp: &RelayParams, min_ver: &str) -> Value {
+    json!({
+        "listen": "0.0.0.0",
+        "port": e.port,
+        "protocol": "vless",
+        "tag": tags::inbound(e.id),
+        "settings": {
+            "clients": [{"id": e.client_uuid.to_string(), "email": tags::email(e.id), "flow": "xtls-rprx-vision"}],
+            "decryption": "none",
+            "fallbacks": []
+        },
+        "streamSettings": {
+            "network": "tcp",
+            "security": "reality",
+            "tcpSettings": {"acceptProxyProtocol": false, "header": {"type": "none"}},
+            "realitySettings": {
+                "show": false,
+                "xver": 0,
+                "target": dest_with_port(&rp.reality_dest),
+                "serverNames": [rp.reality_sni],
+                "privateKey": rp.reality_private_key,
+                "minClientVer": min_ver,
+                "maxClientVer": "",
+                "maxTimeDiff": 0,
+                "shortIds": [e.short_id]
+            }
+        },
+        "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"], "metadataOnly": false, "routeOnly": false}
+    })
+}
+
+fn dest_with_port(d: &str) -> String {
+    if d.starts_with('[') && d.contains("]:") || (!d.starts_with('[') && d.matches(':').count() == 1) {
+        d.to_string()
+    } else {
+        format!("{d}:443")
+    }
+}
+
+fn probe_inbound_json(id: Uuid, port: u16) -> Value {
+    json!({
+        "listen": "127.0.0.1",
+        "port": port,
+        "protocol": "socks",
+        "tag": probe_tag(id),
+        "settings": {"auth": "noauth", "udp": false}
+    })
+}
+
+fn validate(d: &DesiredState, api_port: u16) -> Result<String> {
+    let rp = &d.relay;
+    ensure!(!rp.reality_private_key.trim().is_empty(), "reality_private_key 为空");
+    ensure!(!rp.reality_sni.trim().is_empty(), "reality_sni 为空");
+    ensure!(!rp.reality_dest.trim().is_empty(), "reality_dest 为空");
+    let min_ver = rp.min_client_ver.clone().unwrap_or_else(|| MAX_MIN_CLIENT_VER.to_string());
+    let (Some(v), Some(max)) = (parse_ver(&min_ver), parse_ver(MAX_MIN_CLIENT_VER)) else {
+        bail!("min_client_ver 格式无效：{min_ver}");
+    };
+    ensure!(v <= max, "min_client_ver {min_ver} 高于 {MAX_MIN_CLIENT_VER}，会让 mihomo 客户端被拒");
+    let mut ids = HashSet::new();
+    let mut ports = HashSet::new();
+    for e in d.entries.iter().filter(|e| e.enabled) {
+        ensure!(ids.insert(e.id), "入口 id 重复：{}", e.id);
+        ensure!(e.port != 0 && e.port != api_port, "入口 {} 端口 {} 不可用", e.id, e.port);
+        ensure!(ports.insert(e.port), "入口端口重复：{}", e.port);
+        let sid = &e.short_id;
+        ensure!(
+            sid.len() <= 16 && sid.len() % 2 == 0 && sid.bytes().all(|b| b.is_ascii_hexdigit()),
+            "入口 {} 的 short_id 必须是不超过 16 位的偶数长度十六进制：{sid:?}", e.id
+        );
+        let (host, port) = match &e.outbound {
+            Outbound::Shadowsocks { host, port, .. } | Outbound::Socks5 { host, port, .. } | Outbound::Http { host, port, .. } => (host, *port),
+        };
+        ensure!(!host.trim().is_empty() && port != 0, "入口 {} 出站地址无效", e.id);
+    }
+    Ok(min_ver)
+}
+
+fn skeleton_parts(ctx: &RenderCtx) -> (Value, Value, Value, Value, Value) {
+    let log = json!({"access": ctx.access_log, "error": "", "loglevel": "warning"});
+    let api = json!({"tag": API_TAG, "services": ["HandlerService", "StatsService", "RoutingService", "LoggerService"]});
+    let policy = json!({
+        "levels": {"0": {"statsUserUplink": true, "statsUserDownlink": true}},
+        "system": {"statsInboundUplink": true, "statsInboundDownlink": true}
+    });
+    let api_in = json!({
+        "tag": API_TAG, "listen": ctx.api_host(), "port": ctx.api_port(),
+        "protocol": "tunnel", "settings": {"address": ctx.api_host()}
+    });
+    (log, api, json!({}), policy, api_in)
+}
+
+pub fn render(d: &DesiredState, ctx: &RenderCtx) -> Result<Rendered> {
+    let min_ver = validate(d, ctx.api_port())?;
+    let (log, api, stats, policy, api_in) = skeleton_parts(ctx);
+    let probes = probe_ports(&d.entries, ctx.api_port());
+    let enabled: Vec<&DesiredEntry> = d.entries.iter().filter(|e| e.enabled).collect();
+
+    let mut inbounds = vec![api_in];
+    let mut outbounds = vec![
+        json!({"tag": "deny", "protocol": "blackhole"}),
+        json!({"tag": "direct", "protocol": "freedom", "settings": {"domainStrategy": "AsIs"}}),
+        json!({"tag": "blocked", "protocol": "blackhole"}),
+    ];
+    // 探测入站（本机回环）的规则排在内网屏蔽之前：回显服务可能在内网（实验室），而客户流量仍然禁止访问内网
+    let mut rules = vec![json!({"type": "field", "ruleTag": "api", "inboundTag": [API_TAG], "outboundTag": API_TAG})];
+    let mut entry_rules = vec![];
+    for e in &enabled {
+        inbounds.push(inbound_json(e, &d.relay, &min_ver));
+        outbounds.push(outbound_json(e.id, &e.outbound));
+        if let Some(p) = probes.get(&e.id) {
+            inbounds.push(probe_inbound_json(e.id, *p));
+            rules.push(json!({"type": "field", "ruleTag": probe_tag(e.id), "inboundTag": [probe_tag(e.id)], "outboundTag": tags::outbound(e.id)}));
+        }
+        entry_rules.push(json!({"type": "field", "ruleTag": tags::rule(e.id), "inboundTag": [tags::inbound(e.id)], "outboundTag": tags::outbound(e.id)}));
+    }
+    rules.push(json!({"type": "field", "ruleTag": "block-private", "ip": ["geoip:private"], "outboundTag": "blocked"}));
+    rules.push(json!({"type": "field", "ruleTag": "block-bittorrent", "protocol": ["bittorrent"], "outboundTag": "blocked"}));
+    rules.extend(entry_rules);
+    let full = json!({
+        "log": log, "api": api, "stats": stats, "policy": policy,
+        "inbounds": inbounds, "outbounds": outbounds,
+        "routing": {"domainStrategy": "AsIs", "rules": rules}
+    });
+    Ok(Rendered::from_full(full))
+}
+
+/// 没有任何入口的骨架（首次启动、Xray 配置文件缺失时用）
+pub fn skeleton(ctx: &RenderCtx) -> Rendered {
+    let d = DesiredState {
+        generation: 0,
+        relay: RelayParams {
+            reality_dest: "x:443".into(),
+            reality_sni: "x".into(),
+            reality_private_key: "x".into(),
+            min_client_ver: None,
+            echo_url: String::new(),
+            probe_interval_s: 30,
+        },
+        entries: vec![],
+    };
+    render(&d, ctx).expect("空骨架必然合法")
+}
+
+#[cfg(test)]
+pub mod tests {
+    use super::*;
+    use std::net::IpAddr;
+
+    pub fn ctx() -> RenderCtx {
+        RenderCtx { access_log: "/var/log/fleet-xray/access.log".into(), api_addr: "127.0.0.1:62789".into() }
+    }
+
+    pub fn entry(n: u128, port: u16, enabled: bool) -> DesiredEntry {
+        DesiredEntry {
+            id: Uuid::from_u128(n),
+            port,
+            enabled,
+            remark: format!("e{n}"),
+            client_uuid: Uuid::from_u128(n + 1000),
+            short_id: "0123abcd".into(),
+            outbound: Outbound::Shadowsocks { host: "10.0.0.9".into(), port: 8388, method: "aes-256-gcm".into(), password: "pw".into() },
+            expect_egress_ip: "203.0.113.9".parse::<IpAddr>().unwrap(),
+        }
+    }
+
+    pub fn desired(entries: Vec<DesiredEntry>) -> DesiredState {
+        DesiredState {
+            generation: 7,
+            relay: RelayParams {
+                reality_dest: "www.cloudflare.com:443".into(),
+                reality_sni: "www.cloudflare.com".into(),
+                reality_private_key: "PRIVKEY".into(),
+                min_client_ver: Some("1.8.2".into()),
+                echo_url: "http://echo.example/ip".into(),
+                probe_interval_s: 30,
+            },
+            entries,
+        }
+    }
+
+    #[test]
+    fn golden_single_entry() {
+        let r = render(&desired(vec![entry(1, 20001, true)]), &ctx()).unwrap();
+        let id = Uuid::from_u128(1).simple().to_string();
+        let expected = json!({
+            "log": {"access": "/var/log/fleet-xray/access.log", "error": "", "loglevel": "warning"},
+            "api": {"tag": "api", "services": ["HandlerService", "StatsService", "RoutingService", "LoggerService"]},
+            "stats": {},
+            "policy": {
+                "levels": {"0": {"statsUserUplink": true, "statsUserDownlink": true}},
+                "system": {"statsInboundUplink": true, "statsInboundDownlink": true}
+            },
+            "inbounds": [
+                {"tag": "api", "listen": "127.0.0.1", "port": 62789, "protocol": "tunnel", "settings": {"address": "127.0.0.1"}},
+                {
+                    "listen": "0.0.0.0", "port": 20001, "protocol": "vless", "tag": format!("in-{id}"),
+                    "settings": {
+                        "clients": [{"id": Uuid::from_u128(1001).to_string(), "email": format!("e-{id}"), "flow": "xtls-rprx-vision"}],
+                        "decryption": "none", "fallbacks": []
+                    },
+                    "streamSettings": {
+                        "network": "tcp", "security": "reality",
+                        "tcpSettings": {"acceptProxyProtocol": false, "header": {"type": "none"}},
+                        "realitySettings": {
+                            "show": false, "xver": 0, "target": "www.cloudflare.com:443",
+                            "serverNames": ["www.cloudflare.com"], "privateKey": "PRIVKEY",
+                            "minClientVer": "1.8.2", "maxClientVer": "", "maxTimeDiff": 0, "shortIds": ["0123abcd"]
+                        }
+                    },
+                    "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"], "metadataOnly": false, "routeOnly": false}
+                },
+                {"listen": "127.0.0.1", "port": 30001, "protocol": "socks", "tag": format!("probe-{id}"), "settings": {"auth": "noauth", "udp": false}}
+            ],
+            "outbounds": [
+                {"tag": "deny", "protocol": "blackhole"},
+                {"tag": "direct", "protocol": "freedom", "settings": {"domainStrategy": "AsIs"}},
+                {"tag": "blocked", "protocol": "blackhole"},
+                {"tag": format!("out-{id}"), "protocol": "shadowsocks",
+                 "settings": {"servers": [{"address": "10.0.0.9", "port": 8388, "method": "aes-256-gcm", "password": "pw"}]}}
+            ],
+            "routing": {"domainStrategy": "AsIs", "rules": [
+                {"type": "field", "ruleTag": "api", "inboundTag": ["api"], "outboundTag": "api"},
+                {"type": "field", "ruleTag": format!("probe-{id}"), "inboundTag": [format!("probe-{id}")], "outboundTag": format!("out-{id}")},
+                {"type": "field", "ruleTag": "block-private", "ip": ["geoip:private"], "outboundTag": "blocked"},
+                {"type": "field", "ruleTag": "block-bittorrent", "protocol": ["bittorrent"], "outboundTag": "blocked"},
+                {"type": "field", "ruleTag": format!("rule-{id}"), "inboundTag": [format!("in-{id}")], "outboundTag": format!("out-{id}")}
+            ]}
+        });
+        assert_eq!(r.full, expected);
+        // 第一个出站必须是默认拒绝
+        assert_eq!(tag_of(&r.outbounds[0]), "deny");
+        assert_eq!(r.rules.len(), 5);
+    }
+
+    #[test]
+    fn disabled_entries_omitted_and_other_outbounds() {
+        let mut e2 = entry(2, 20002, true);
+        e2.outbound = Outbound::Socks5 { host: "h".into(), port: 1080, username: Some("u".into()), password: Some("p".into()) };
+        let mut e3 = entry(3, 20003, true);
+        e3.outbound = Outbound::Http { host: "h".into(), port: 3128, username: None, password: None };
+        let r = render(&desired(vec![entry(1, 20001, false), e2.clone(), e3.clone()]), &ctx()).unwrap();
+        let s = r.full.to_string();
+        assert!(!s.contains(&Uuid::from_u128(1).simple().to_string()));
+        let o2 = r.outbounds.iter().find(|o| tag_of(o) == tags::outbound(e2.id)).unwrap();
+        assert_eq!(o2["protocol"], "socks");
+        assert_eq!(o2["settings"]["servers"][0]["users"][0], json!({"user": "u", "pass": "p"}));
+        let o3 = r.outbounds.iter().find(|o| tag_of(o) == tags::outbound(e3.id)).unwrap();
+        assert_eq!(o3["protocol"], "http");
+        assert!(o3["settings"]["servers"][0].get("users").is_none());
+    }
+
+    #[test]
+    fn validation() {
+        // 端口重复
+        assert!(render(&desired(vec![entry(1, 20001, true), entry(2, 20001, true)]), &ctx()).is_err());
+        // 禁用入口的端口不参与冲突
+        assert!(render(&desired(vec![entry(1, 20001, false), entry(2, 20001, true)]), &ctx()).is_ok());
+        // minClientVer 超过 1.8.2
+        let mut d = desired(vec![]);
+        d.relay.min_client_ver = Some("1.9.0".into());
+        assert!(render(&d, &ctx()).is_err());
+        d.relay.min_client_ver = None;
+        assert!(render(&d, &ctx()).is_ok());
+        // short_id 非法
+        let mut e = entry(1, 20001, true);
+        e.short_id = "xyz".into();
+        assert!(render(&desired(vec![e]), &ctx()).is_err());
+    }
+
+    #[test]
+    fn probe_port_rules() {
+        let es = vec![entry(1, 20001, true), entry(2, 30001, true), entry(3, 60000, true), entry(4, 20004, false)];
+        let p = probe_ports(&es, 62789);
+        // 20001+10000=30001 与入口 2 冲突；60000+10000 溢出
+        assert!(!p.contains_key(&es[0].id));
+        assert_eq!(p[&es[1].id], 40001);
+        assert!(!p.contains_key(&es[2].id));
+        assert!(!p.contains_key(&es[3].id));
+    }
+
+    #[test]
+    fn dest_port_default() {
+        assert_eq!(dest_with_port("a.com"), "a.com:443");
+        assert_eq!(dest_with_port("a.com:8443"), "a.com:8443");
+        assert_eq!(dest_with_port("[::1]:443"), "[::1]:443");
+    }
+
+    #[test]
+    fn from_full_roundtrip_static_part() {
+        let a = render(&desired(vec![entry(1, 20001, true)]), &ctx()).unwrap();
+        let b = render(&desired(vec![entry(2, 20002, true), entry(3, 20003, true)]), &ctx()).unwrap();
+        assert_eq!(a.static_part, b.static_part);
+        assert_eq!(Rendered::from_full(a.full.clone()), a);
+        assert_eq!(skeleton(&ctx()).static_part, a.static_part);
+    }
+}

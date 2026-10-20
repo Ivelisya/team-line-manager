@@ -1,0 +1,15 @@
+# /etc/fleet-agent/agent.toml  （线路机；落地节点只需 server_url / token_file / role / machine_id）
+server_url = "http://192.168.31.60:8080"
+token_file = "/etc/fleet-agent/token"   # 0600，内容为令牌
+role = "relay"                          # node | relay
+machine_id = "lab-relay1"               # 仅用于日志，身份由令牌决定
+data_dir = "/var/lib/fleet-agent"
+
+# ── 仅 relay ──
+xray_bin = "/usr/local/bin/xray"
+xray_config = "/etc/fleet-agent/xray.json"
+xray_api = "127.0.0.1:62789"
+xray_service = "fleet-xray.service"
+access_log = "/var/log/fleet-xray/access.log"
+xray_asset_dir = "/usr/local/share/xray"
+# ca_file = "/etc/fleet-agent/ca.pem"   # 中控用自签证书时

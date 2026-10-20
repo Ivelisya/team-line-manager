@@ -1,7 +1,0 @@
-{
-  "log": {"loglevel": "warning"},
-  "inbounds": [{"tag": "in", "listen": "127.0.0.1", "port": 25931, "protocol": "socks", "settings": {"auth": "noauth", "udp": false}}],
-  "outbounds": [{"tag": "vl", "protocol": "vless",
-    "settings": {"vnext": [{"address": "127.0.0.1", "port": 25921, "users": [{"id": "6f2b3a52-8c1e-4f1a-9d1e-0c5b8a7e2f11", "encryption": "none"}]}]},
-    "streamSettings": {"network": "tcp"}}]
-}

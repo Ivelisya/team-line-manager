@@ -1,9 +1,0 @@
-# a395（Arch，无 musl-gcc）上交叉编译 x86_64-unknown-linux-musl 静态二进制：
-# 用系统 gcc 编 bundled SQLite，并关掉 LFS64 别名（musl 1.2.4+ 没有 fcntl64/pread64 等符号）。
-[env]
-CC_x86_64_unknown_linux_musl = "gcc"
-CFLAGS_x86_64_unknown_linux_musl = "-std=gnu11 -U_FORTIFY_SOURCE"
-LIBSQLITE3_FLAGS = "-DSQLITE_DISABLE_LFS -DSQLITE_DEFAULT_WAL_SYNCHRONOUS=2"
-
-[build]
-target = "x86_64-unknown-linux-musl"

@@ -1,0 +1,237 @@
+//! 入口（线路机上的一条 VLESS REALITY 入站 → 节点）的领域逻辑：端口分配、期望状态、应用回报。
+
+use crate::crypto::{short_id, SecretBox};
+use crate::db::{bump_relay, new_id, Tx};
+use crate::error::{ApiError, ApiResult};
+use crate::names::display_name;
+use fleet_proto::{ApplyReport, DesiredEntry, DesiredState, Outbound, RelayParams};
+use sqlx::PgPool;
+use std::net::IpAddr;
+use uuid::Uuid;
+
+/// 新建入口：锁线路机 → 取最小空闲端口 → 代数 +1。返回 (entry_id, port, generation)。
+pub async fn create(tx: &mut Tx<'_>, relay_id: Uuid, node_id: Uuid) -> ApiResult<(Uuid, i32, i64)> {
+    let (pmin, pmax): (i32, i32) = sqlx::query_as(
+        "select r.port_min, r.port_max from relay r join machine m on m.id = r.machine_id
+         where r.machine_id = $1 and m.lifecycle = 'active' for update of r",
+    )
+    .bind(relay_id)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or_else(|| ApiError::conflict("线路机不存在或不在用"))?;
+    // 端口永不复用（含已删除的入口）：旧分享链接不会误连到新节点
+    let (maxp,): (Option<i32>,) = sqlx::query_as("select max(port) from entry where relay_id = $1")
+        .bind(relay_id)
+        .fetch_one(&mut **tx)
+        .await?;
+    let port = maxp.map_or(pmin, |p| p.max(pmin - 1) + 1);
+    if port > pmax {
+        return Err(ApiError::conflict("线路机端口段已用完：请在线路机参数里扩大端口范围"));
+    }
+    let gen = bump_relay(tx, relay_id).await?;
+    let id = new_id();
+    sqlx::query(
+        "insert into entry (id, relay_id, node_id, port, client_uuid, short_id, lifecycle, changed_gen)
+         values ($1, $2, $3, $4, $5, $6, 'pending', $7)",
+    )
+    .bind(id)
+    .bind(relay_id)
+    .bind(node_id)
+    .bind(port)
+    .bind(Uuid::new_v4())
+    .bind(short_id())
+    .bind(gen)
+    .execute(&mut **tx)
+    .await?;
+    Ok((id, port, gen))
+}
+
+/// 改入口状态（enable/disable/removing/rotate）并 +1 代数。返回 (relay_id, generation)。
+pub async fn transition(tx: &mut Tx<'_>, entry_id: Uuid, to: &str, rotate: bool) -> ApiResult<(Uuid, i64)> {
+    let (relay_id, cur): (Uuid, String) =
+        sqlx::query_as("select relay_id, lifecycle::text from entry where id = $1 for update")
+            .bind(entry_id)
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or_else(|| ApiError::not_found("没有这个入口"))?;
+    let allowed = matches!(
+        (cur.as_str(), to),
+        ("active", "disabled") | ("disabled", "active") | ("pending" | "active" | "disabled", "removing") | ("removing", "removing")
+    ) || (rotate && cur == to);
+    if !allowed {
+        return Err(ApiError::conflict(format!("入口当前是「{cur}」，不能变成「{to}」")));
+    }
+    sqlx::query("select 1 from relay where machine_id = $1 for update").bind(relay_id).execute(&mut **tx).await?;
+    let gen = bump_relay(tx, relay_id).await?;
+    sqlx::query(
+        "update entry set lifecycle = $2::entry_lifecycle, changed_gen = $3, apply_error = null, updated_at = now(),
+            client_uuid = case when $4 then gen_random_uuid() else client_uuid end
+         where id = $1",
+    )
+    .bind(entry_id)
+    .bind(to)
+    .bind(gen)
+    .bind(rotate)
+    .execute(&mut **tx)
+    .await?;
+    Ok((relay_id, gen))
+}
+
+/// 线路机的期望状态
+pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, echo_url: &str) -> anyhow::Result<DesiredState> {
+    let (gen, dest, sni, sk_enc, mcv): (i64, String, String, Vec<u8>, Option<String>) = sqlx::query_as(
+        "select generation, reality_dest, reality_sni, reality_private_enc, min_client_ver from relay where machine_id = $1",
+    )
+    .bind(relay_id)
+    .fetch_one(db)
+    .await?;
+
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        id: Uuid,
+        port: i32,
+        lifecycle: String,
+        client_uuid: Uuid,
+        short_id: String,
+        kind: String,
+        team: Option<String>,
+        number: Option<i32>,
+        label: Option<String>,
+        ip: String,
+        protocol: String,
+        host: String,
+        oport: i32,
+        method: Option<String>,
+        username: Option<String>,
+        secret_enc: Vec<u8>,
+    }
+    let rows: Vec<Row> = sqlx::query_as(
+        "select e.id, e.port, e.lifecycle::text lifecycle, e.client_uuid, e.short_id, m.kind::text kind, t.name team, m.number,
+                m.label, host(m.primary_ip) ip, o.protocol, o.host, o.port oport, o.method, o.username, o.secret_enc
+         from entry e join machine m on m.id = e.node_id left join team t on t.id = m.team_id
+         join node_outbound o on o.machine_id = e.node_id
+         where e.relay_id = $1 and e.lifecycle in ('pending', 'active', 'disabled')
+         order by e.port",
+    )
+    .bind(relay_id)
+    .fetch_all(db)
+    .await?;
+    let mut entries = Vec::with_capacity(rows.len());
+    for r in rows {
+        let secret = secrets.open_str(&r.secret_enc)?;
+        let outbound = match r.protocol.as_str() {
+            "shadowsocks" => Outbound::Shadowsocks {
+                host: r.host,
+                port: r.oport as u16,
+                method: r.method.unwrap_or_else(|| "aes-256-gcm".into()),
+                password: secret,
+            },
+            "socks5" => Outbound::Socks5 { host: r.host, port: r.oport as u16, username: r.username, password: Some(secret).filter(|s| !s.is_empty()) },
+            _ => Outbound::Http { host: r.host, port: r.oport as u16, username: r.username, password: Some(secret).filter(|s| !s.is_empty()) },
+        };
+        entries.push(DesiredEntry {
+            id: r.id,
+            port: r.port as u16,
+            enabled: r.lifecycle != "disabled",
+            remark: display_name(&r.kind, r.label.as_deref(), r.team.as_deref(), r.number),
+            client_uuid: r.client_uuid,
+            short_id: r.short_id,
+            outbound,
+            expect_egress_ip: r.ip.parse::<IpAddr>()?,
+        });
+    }
+    Ok(DesiredState {
+        generation: gen as u64,
+        relay: RelayParams {
+            reality_dest: dest,
+            reality_sni: sni,
+            reality_private_key: secrets.open_str(&sk_enc)?,
+            min_client_ver: mcv,
+            echo_url: echo_url.to_string(),
+            probe_interval_s: 30,
+        },
+        entries,
+    })
+}
+
+/// 线路机回报：记录已应用代数，推进入口状态（pending→active，removing→removed）。
+pub async fn on_applied(db: &PgPool, relay_id: Uuid, rep: &ApplyReport) -> anyhow::Result<()> {
+    let mut tx = db.begin().await?;
+    let gen = rep.generation as i64;
+    for e in &rep.entries {
+        sqlx::query("update entry set apply_error = $3 where id = $1 and relay_id = $2")
+            .bind(e.id)
+            .bind(relay_id)
+            .bind(if e.ok { None } else { e.error.clone().or(Some("失败".into())) })
+            .execute(&mut *tx)
+            .await?;
+    }
+    if rep.ok {
+        sqlx::query(
+            "update relay set applied_generation = greatest(applied_generation, $2), applied_at = now(), apply_error = null
+             where machine_id = $1",
+        )
+        .bind(relay_id)
+        .bind(gen)
+        .execute(&mut *tx)
+        .await?;
+        let failed: Vec<Uuid> = rep.entries.iter().filter(|e| !e.ok).map(|e| e.id).collect();
+        sqlx::query(
+            "update entry set lifecycle = 'active', updated_at = now()
+             where relay_id = $1 and lifecycle = 'pending' and changed_gen <= $2 and not (id = any($3))",
+        )
+        .bind(relay_id)
+        .bind(gen)
+        .bind(&failed)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "update entry set lifecycle = 'removed', removed_at = now(), updated_at = now()
+             where relay_id = $1 and lifecycle = 'removing' and changed_gen <= $2",
+        )
+        .bind(relay_id)
+        .bind(gen)
+        .execute(&mut *tx)
+        .await?;
+    } else {
+        sqlx::query("update relay set apply_error = $2 where machine_id = $1")
+            .bind(relay_id)
+            .bind(rep.error.clone().unwrap_or_else(|| "未知错误".into()))
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+fn pct(s: &str) -> String {
+    let mut o = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => o.push(b as char),
+            _ => o.push_str(&format!("%{b:02X}")),
+        }
+    }
+    o
+}
+
+/// vless:// 分享链接；fragment 只放显示名，不放任何 IP。
+pub fn share_url(uuid: Uuid, host: &str, port: i32, sni: &str, pbk: &str, sid: &str, remark: &str) -> String {
+    format!(
+        "vless://{uuid}@{host}:{port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni={}&fp=chrome&pbk={}&sid={}&type=tcp#{}",
+        pct(sni),
+        pct(pbk),
+        pct(sid),
+        pct(remark)
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn share_url_encodes_remark() {
+        let u = super::share_url(uuid::Uuid::nil(), "relay.example", 20001, "www.cloudflare.com", "pk", "ab", "团队1-06");
+        assert!(u.starts_with("vless://00000000-0000-0000-0000-000000000000@relay.example:20001?"));
+        assert!(u.ends_with("#%E5%9B%A2%E9%98%9F1-06"));
+    }
+}

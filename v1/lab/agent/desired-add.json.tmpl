@@ -1,0 +1,29 @@
+{
+  "generation": 1,
+  "relay": {
+    "reality_dest": "www.cloudflare.com:443",
+    "reality_sni": "www.cloudflare.com",
+    "reality_private_key": "__REALITY_PRIVATE_KEY__",
+    "min_client_ver": "1.8.2",
+    "echo_url": "http://api.ipify.org",
+    "probe_interval_s": 30
+  },
+  "entries": [
+    {
+      "id": "0198e5a0-0000-7000-8000-000000000001",
+      "port": 20001,
+      "enabled": true,
+      "remark": "lab-node1",
+      "client_uuid": "6b0c1c52-1f0e-4c53-9c0b-2d7a4f6f1a01",
+      "short_id": "a1b2c3d4e5f60718",
+      "outbound": {
+        "protocol": "shadowsocks",
+        "host": "192.168.31.63",
+        "port": 8388,
+        "method": "aes-256-gcm",
+        "password": "__SS_PASSWORD__"
+      },
+      "expect_egress_ip": "13.212.203.115"
+    }
+  ]
+}

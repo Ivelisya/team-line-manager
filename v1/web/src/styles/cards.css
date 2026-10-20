@@ -1,0 +1,146 @@
+/* 节点卡片 NodeCard：一套外壳、三种视图（大卡片 / 小卡片 / 紧凑）、三种机器（主机 / 家宽代理 / 线路机）。
+   对齐方案：.cards 是网格容器，每张卡 grid-row: span N + grid-template-rows: subgrid，
+   卡片的每个“槽位”是一行，同一行里的所有卡片共用行高——不论机器种类，槽位永远相同（无主机指标显示占位，不改变布局）。
+   槽位数：大卡片 10、小卡片 7、紧凑 6（--rows 由组件按视图写入）。 */
+
+.cards {
+  --card-min: var(--card-min-large);
+  display: grid; column-gap: var(--grid-gap); row-gap: 0;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--card-min)), 1fr));
+}
+.cards[data-view="small"] { --card-min: var(--card-min-small); }
+.cards[data-view="compact"] { --card-min: var(--card-min-small); }
+
+.ncard {
+  --rows: 10;
+  position: relative; min-width: 0;
+  display: grid; grid-template-columns: minmax(0, 1fr);
+  grid-row: span var(--rows); grid-template-rows: subgrid;
+  margin-bottom: var(--grid-gap);
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); overflow: hidden;
+  transition: border-color var(--dur-fast), opacity var(--dur-base);
+}
+.ncard[data-view="small"] { --rows: 7; }
+.ncard[data-view="compact"] { --rows: 6; }
+.ncard:hover { border-color: var(--line-strong); }
+.ncard[data-health="down"] { border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); }
+.ncard[data-health="degraded"] { border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
+.ncard.is-current { border-color: var(--accent); }
+.ncard.is-quiet .nc-lv, .ncard.is-quiet .meter-value, .ncard.is-quiet .meter-sub { color: var(--fg-3); }
+.ncard.is-quiet .meter-fill, .ncard.is-quiet .quota-fill { opacity: 0.4; }
+.ncard.is-quiet .beat-cells > i { background: transparent; box-shadow: inset 0 0 0 1px var(--line-strong); }
+
+/* 槽位通用：左右留白 = 卡片内边距；分段线在内边距之内 */
+.ncard > * { margin-inline: var(--card-pad); min-width: 0; }
+.slot-seg { border-top: 1px solid var(--line); padding-top: var(--card-seg); margin-top: var(--card-seg); }
+.ncard[data-view="compact"] .slot-seg { padding-top: var(--sp-8); margin-top: var(--sp-8); }
+
+/* 1 标题：圆点 + 类型标 + 名称 + 右侧操作 */
+.nc-head { display: flex; align-items: center; gap: var(--inline-gap); min-height: 32px; min-width: 0; margin-top: var(--card-pad); }
+.nc-kind { display: inline-grid; place-items: center; flex: none; width: var(--flag-w); height: var(--flag-h); border-radius: 3px; background: var(--sunken); color: var(--fg-2); box-shadow: inset 0 0 0 1px var(--line); }
+.nc-kind .lucide { width: 11px; height: 11px; }
+.nc-name {
+  min-width: 0; padding: 0; border: 0; background: none; cursor: pointer; text-align: left;
+  font: var(--fw-semibold) var(--fs-title) / var(--lh-title) var(--font-sans); letter-spacing: var(--tracking-title);
+  color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  text-decoration: underline; text-decoration-color: transparent; text-underline-offset: 3px;
+  transition: text-decoration-color var(--dur-fast);
+}
+.nc-name:hover { text-decoration-color: var(--line-strong); }
+.ncard[data-view="small"] .nc-name, .ncard[data-view="compact"] .nc-name { font-size: var(--fs-emph); line-height: var(--lh-emph); }
+.ncard[data-view="compact"] .nc-name { flex: none; max-width: 60%; }
+.nc-ipsep { flex: none; color: var(--fg-3); }
+.nc-ip { flex: 0 1 auto; min-width: 0; font-size: var(--fs-body); color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nc-sub { flex: none; font-size: var(--fs-label); color: var(--bad-text); white-space: nowrap; }
+.nc-actions { margin-left: auto; margin-right: -8px; display: flex; align-items: center; gap: var(--sp-2); flex: none; }
+.ncard[data-offline="1"] .nc-name { color: var(--fg-2); }
+
+/* 2 地址（小卡片：地址 + 入口/套餐两行） */
+.nc-addr { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); min-height: 20px; margin-top: var(--sp-2); color: var(--fg-2); }
+.nc-marks { display: inline-flex; gap: var(--sp-4); flex: none; }
+.nc-meta2 { display: grid; min-height: 40px; margin-top: var(--sp-2); font-size: var(--fs-label); line-height: 20px; color: var(--fg-2); }
+.nc-meta2 > div { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); min-width: 0; }
+.nc-meta2 span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 3 字段 2×2 */
+.nc-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-8) var(--sp-16); margin-block: var(--card-seg) 0; padding-top: var(--card-seg); border-top: 1px solid var(--line); }
+
+/* 4 资源（主机：4 条进度线；无主机：占位，同高） */
+.nc-res { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-12) var(--sp-16); margin-top: var(--card-seg); min-height: 94px; align-content: start; }
+.ncard[data-view="small"] .nc-res, .ncard[data-view="compact"] .nc-res { margin-top: 0; min-height: 0; gap: var(--sp-10) var(--sp-16); }
+.ncard[data-view="small"] .nc-res { min-height: 78px; }
+.ncard[data-view="compact"] .nc-res { gap: var(--sp-8) var(--sp-12); min-height: 78px; }
+.nc-hold {
+  grid-column: 1 / -1; display: flex; align-items: center; justify-content: center; gap: var(--sp-8);
+  min-height: 78px; border: 1px dashed var(--line-strong); border-radius: var(--r-float);
+  font-size: var(--fs-label); color: var(--fg-3); text-align: center; padding: 0 var(--sp-12);
+}
+.nc-hold .lucide { width: 14px; height: 14px; }
+
+/* 5 网卡（主机）/ 业务流量（无主机） */
+.nc-seg-title { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); margin-bottom: var(--sp-6); font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); white-space: nowrap; }
+.nc-nic { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-4) var(--sp-16); min-height: 46px; }
+.nc-rate { display: flex; align-items: center; gap: var(--sp-6); min-width: 0; font: var(--fw-semibold) var(--fs-body) / var(--lh-body) var(--font-num); font-variant-numeric: var(--num-variant); color: var(--fg); white-space: nowrap; }
+.nc-rate .lucide { color: var(--fg-2); width: 14px; height: 14px; }
+.nc-rate .unit { font-weight: var(--fw-regular); }
+.nc-total { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-8); min-width: 0; font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); white-space: nowrap; }
+.nc-total .num { color: var(--fg-2); }
+
+/* 6 流量上限 */
+.nc-qhead { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-8); margin-bottom: var(--sp-8); font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); white-space: nowrap; min-width: 0; }
+.nc-qlabel { display: inline-flex; align-items: baseline; gap: var(--sp-4); font-weight: var(--fw-medium); min-width: 0; }
+.nc-qlabel .lucide { width: var(--icon-xs); height: var(--icon-xs); align-self: center; }
+.nc-quse b { font-weight: var(--fw-semibold); color: var(--fg); }
+
+/* 8 运行与到期 */
+.nc-run { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-16); }
+.nc-run-item { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); min-width: 0; min-height: 22px; }
+.nc-run-label { display: inline-flex; align-items: center; gap: var(--sp-4); font: var(--fw-medium) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2); white-space: nowrap; }
+.nc-run-label .lucide { width: var(--icon-xs); height: var(--icon-xs); }
+.nc-run-val { display: inline-flex; align-items: baseline; gap: var(--sp-4); font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-num); font-variant-numeric: var(--num-variant); color: var(--fg); white-space: nowrap; min-width: 0; overflow: hidden; }
+.nc-run-val .unit { font-weight: var(--fw-regular); }
+.nc-run-val.is-warn { color: var(--warn-text); }
+.nc-run-val.is-bad { color: var(--bad-text); }
+
+/* 9 标签行 */
+.nc-tags { display: flex; align-items: center; gap: var(--inline-gap); min-height: 24px; margin-top: 10px; margin-bottom: var(--card-pad); min-width: 0; }
+.nc-tags-list { display: flex; align-items: center; gap: var(--inline-gap); min-width: 0; overflow: hidden; flex: 0 1 auto; }
+.ncard[data-view="compact"] .nc-tags { margin-top: var(--sp-6); min-height: 20px; margin-bottom: 0; gap: var(--sp-4); }
+.ncard[data-view="compact"] .nc-tags-list { gap: var(--sp-4); }
+
+/* 小卡片 / 紧凑：三格 */
+.nc-cells3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-8); margin-top: var(--card-seg); }
+.nc-cell { min-width: 0; padding: var(--sp-8) var(--sp-10); border: 1px solid var(--line); border-radius: var(--r-float); }
+.nc-cell-label { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nc-cell-row { display: flex; align-items: center; gap: var(--sp-4); min-width: 0; font: var(--fw-semibold) var(--fs-label) / var(--lh-label) var(--font-num); font-variant-numeric: var(--num-variant); color: var(--fg); white-space: nowrap; overflow: hidden; }
+.nc-cell-row .lucide { width: 12px; height: 12px; color: var(--fg-2); }
+.nc-cell-row .unit { font-weight: var(--fw-regular); font-size: inherit; }
+.nc-flow2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-2) var(--sp-12); min-height: 66px; align-content: start; }
+.nc-flow2-title { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); }
+.nc-flow2-row { display: flex; align-items: center; gap: var(--sp-6); font: var(--fw-semibold) var(--fs-body) / var(--lh-body) var(--font-num); font-variant-numeric: var(--num-variant); color: var(--fg); white-space: nowrap; min-width: 0; }
+.nc-flow2-row .lucide { width: 12px; height: 12px; color: var(--fg-2); }
+.nc-flow2-row .unit { font-weight: var(--fw-regular); }
+
+/* 业务流量小表（无主机 / 线路机） */
+.nc-etable { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: var(--fs-label); line-height: var(--lh-label); }
+.nc-etable th, .nc-etable td { padding: 3px 0; font-weight: var(--fw-regular); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nc-etable th:first-child { text-align: left; width: 44px; color: var(--fg-2); }
+.nc-etable thead th { color: var(--fg-2); font-weight: var(--fw-medium); padding-top: 0; }
+.nc-etable td { font: var(--fw-semibold) var(--fs-body) / var(--lh-body) var(--font-num); font-variant-numeric: var(--num-variant); color: var(--fg); }
+
+/* 10 footer 带：与卡片等宽（抵消槽位通用左右留白） */
+.nc-foot {
+  margin-inline: 0; display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8);
+  min-height: 44px; box-sizing: border-box; padding: var(--sp-8) var(--card-pad); border-top: 1px solid var(--line);
+}
+.nc-foot-right { display: flex; align-items: center; gap: var(--sp-4); min-width: 0; margin-right: -6px; }
+.nc-foot-right .chip { margin-right: var(--sp-4); }
+
+/* 骨架卡：同样的槽位，保证首屏不跳 */
+.ncard.is-skel > .nc-skel { margin-top: var(--card-pad); height: 14px; }
+
+/* 小卡片 / 紧凑：心跳条与 footer 之间留出内边距；无 sub 行的进度线更矮 */
+.ncard[data-view="small"] > .slot-seg:nth-last-child(2),
+.ncard[data-view="compact"] > .slot-seg:nth-last-child(2) { margin-bottom: var(--card-pad); }
+.ncard[data-view="small"] .nc-res, .ncard[data-view="compact"] .nc-res { min-height: 56px; }
+.ncard[data-view="small"] .nc-hold, .ncard[data-view="compact"] .nc-hold { min-height: 56px; }

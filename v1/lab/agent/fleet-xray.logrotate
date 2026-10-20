@@ -1,0 +1,12 @@
+# /etc/logrotate.d/fleet-xray —— Xray 一直持有访问日志的文件句柄，用 copytruncate。
+# Agent 通过「偏移 > 文件大小 → 从头读」识别截断；轮转间隔内未读完的少量行可能丢失，所以别轮得太勤。
+/var/log/fleet-xray/access.log {
+    daily
+    rotate 3
+    maxsize 200M
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+}

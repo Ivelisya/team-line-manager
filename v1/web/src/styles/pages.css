@@ -1,0 +1,82 @@
+/* 页面级排布：stack / row / 两栏 / 抽屉内排布 / 作业时间线 / 日志 */
+
+.stack { display: grid; gap: var(--section-gap); min-width: 0; }
+.stack-sm { display: grid; gap: var(--sp-8); min-width: 0; }
+.row { display: flex; align-items: center; gap: var(--control-gap); flex-wrap: wrap; min-width: 0; }
+.row-between { justify-content: space-between; }
+.grow { flex: 1 1 auto; min-width: 0; }
+.cols-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--grid-gap); }
+.cols-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--grid-gap); }
+@container content (max-width: 860px) { .cols-2, .cols-3 { grid-template-columns: minmax(0, 1fr); } }
+.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-12) var(--sp-16); }
+.form-grid .span-2 { grid-column: 1 / -1; }
+@media (max-width: 560px) { .form-grid { grid-template-columns: minmax(0, 1fr); } }
+.home-bar { display: flex; align-items: center; gap: var(--control-gap); flex-wrap: wrap; justify-content: space-between; }
+.home-bar .teams { display: flex; align-items: center; gap: var(--sp-6); flex-wrap: wrap; min-width: 0; }
+
+/* 抽屉内：机器头部 */
+.m-head { display: grid; gap: var(--sp-4); min-width: 0; }
+.m-head-row { display: flex; align-items: center; gap: var(--sp-8); flex-wrap: wrap; min-width: 0; }
+.reason-list { display: grid; gap: var(--sp-6); margin: 0; padding: 0; list-style: none; }
+.reason-list li { display: flex; align-items: flex-start; gap: var(--sp-8); font-size: var(--fs-body); }
+.reason-list .dot { margin-top: 7px; }
+.chart-box { height: 180px; min-width: 0; }
+.chart-legend { display: flex; gap: var(--sp-12); font-size: var(--fs-label); color: var(--fg-2); align-items: center; }
+.chart-legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: var(--sp-4); }
+.danger-zone { border: 1px solid color-mix(in srgb, var(--bad) 30%, var(--line)); border-radius: var(--r-float); padding: var(--sp-12) var(--sp-16); display: grid; gap: var(--sp-12); }
+.manage-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-12); flex-wrap: wrap; }
+.manage-row > div:first-child { min-width: 0; flex: 1 1 220px; }
+.manage-row .t { font-weight: var(--fw-medium); }
+.preview-name { display: inline-flex; align-items: center; gap: var(--sp-8); padding: var(--sp-6) var(--sp-12); border-radius: var(--r-control); background: var(--sunken); font-weight: var(--fw-semibold); font-size: var(--fs-emph); }
+
+/* 线路机卡 */
+.relay-card { display: grid; gap: 0; }
+.relay-head { display: flex; align-items: center; gap: var(--sp-12); flex-wrap: wrap; padding: var(--sp-12) var(--card-pad); }
+.relay-head .ttl { font: var(--fw-semibold) var(--fs-title) / var(--lh-title) var(--font-sans); letter-spacing: var(--tracking-title); }
+.apply-box { display: flex; align-items: center; gap: var(--sp-8); flex-wrap: wrap; padding: var(--sp-8) var(--card-pad); border-top: 1px solid var(--line); background: var(--sunken); font-size: var(--fs-label); color: var(--fg-2); }
+
+/* 作业：列表 + 详情 */
+.jobs-layout { display: grid; grid-template-columns: minmax(280px, 380px) minmax(0, 1fr); gap: var(--grid-gap); align-items: start; }
+@container content (max-width: 860px) { .jobs-layout { grid-template-columns: minmax(0, 1fr); } .jobs-layout[data-detail="1"] .jobs-list { display: none; } .jobs-layout[data-detail="0"] .jobs-detail { display: none; } }
+.job-item { display: grid; gap: 2px; width: 100%; padding: var(--sp-10) var(--card-pad); border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left; cursor: pointer; color: inherit; min-width: 0; }
+.job-item:last-child { border-bottom: 0; }
+.job-item:hover { background: var(--hover); }
+.job-item[aria-current="true"] { background: var(--selected); box-shadow: inset 2px 0 0 var(--accent); }
+.job-item .l1 { display: flex; align-items: center; gap: var(--sp-8); min-width: 0; }
+.job-item .l2 { font-size: var(--fs-label); color: var(--fg-2); display: flex; gap: var(--sp-8); min-width: 0; }
+.steps { list-style: none; margin: 0; padding: 0; display: grid; }
+.step { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: var(--sp-10); position: relative; padding-bottom: var(--sp-14); }
+.step:last-child { padding-bottom: 0; }
+.step::before { content: ""; position: absolute; left: 9.5px; top: 22px; bottom: 2px; width: 1px; background: var(--line-strong); }
+.step:last-child::before { display: none; }
+.step-ic { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; background: var(--neutral-bg); color: var(--neutral-text); }
+.step-ic .lucide { width: 12px; height: 12px; stroke-width: 2.2; }
+.step[data-state="done"] .step-ic { background: var(--ok-bg); color: var(--ok-text); }
+.step[data-state="running"] .step-ic { background: var(--info-bg); color: var(--info-text); }
+.step[data-state="failed"] .step-ic { background: var(--bad-bg); color: var(--bad-text); }
+.step-title { display: flex; align-items: baseline; gap: var(--sp-8); min-width: 0; }
+.step-title b { font-weight: var(--fw-medium); }
+.step-time { font-size: var(--fs-label); color: var(--fg-2); }
+.step-out { margin: var(--sp-4) 0 0; font: var(--fs-label) / var(--lh-label) var(--font-mono); color: var(--fg-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+.step-err { margin: var(--sp-4) 0 0; font-size: var(--fs-label); color: var(--bad-text); overflow-wrap: anywhere; }
+.logbox { background: var(--sunken); border-radius: var(--r-float); padding: var(--sp-10) var(--sp-12); max-height: 360px; min-height: 120px; overflow: auto; font: var(--fs-label) / 18px var(--font-mono); }
+.logline { display: grid; grid-template-columns: 64px 44px minmax(0, 1fr); gap: var(--sp-8); }
+.logline .ts { color: var(--fg-3); }
+.logline .lv-info { color: var(--info-text); }
+.logline .lv-warn { color: var(--warn-text); }
+.logline .lv-error { color: var(--bad-text); }
+.logline .msg { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg); }
+
+/* 上架 */
+.prov-steps { display: flex; gap: var(--sp-8); align-items: center; flex-wrap: wrap; font-size: var(--fs-label); color: var(--fg-2); }
+.prov-steps .s { display: inline-flex; align-items: center; gap: var(--sp-6); }
+.prov-steps .n { width: 18px; height: 18px; border-radius: 50%; display: inline-grid; place-items: center; background: var(--neutral-bg); color: var(--neutral-text); font-size: var(--fs-micro); }
+.prov-steps .s[data-on="1"] { color: var(--fg); font-weight: var(--fw-medium); }
+.prov-steps .s[data-on="1"] .n { background: var(--accent-solid); color: var(--on-accent); }
+.prov-steps .s[data-done="1"] .n { background: var(--ok-bg); color: var(--ok-text); }
+.sticky-bar { position: sticky; bottom: 0; z-index: var(--z-sticky); }
+.lv.span-2 { grid-column: 1 / -1; }
+.check-row.span-2 { grid-column: 1 / -1; }
+.job-back { display: none; }
+@container content (max-width: 860px) { .job-back { display: inline-grid; } }
+.job-item .l2 > span:first-child { flex: none; white-space: nowrap; }
