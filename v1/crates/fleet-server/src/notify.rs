@@ -242,9 +242,43 @@ fn client() -> &'static reqwest::Client {
 
 fn short(s: &str) -> String { s.chars().take(300).collect() }
 
-/// 发一条通知到一个渠道。错误文本里不带令牌（reqwest 错误会带 URL，这里去掉）。
+/// 发送失败：`retry` 表示值得再试（网络错误 / 5xx / 429）；渠道拒绝、配置有误之类重试也没用
+struct SendErr {
+    msg: String,
+    retry: bool,
+}
+
+impl SendErr {
+    fn fatal(msg: impl Into<String>) -> Self {
+        Self { msg: msg.into(), retry: false }
+    }
+}
+
+/// 发送失败后的重试间隔：最多再试两次（0.5 秒、2 秒），不拖住后面的渠道太久
+const RETRY_BACKOFF: [Duration; 2] = [Duration::from_millis(500), Duration::from_secs(2)];
+
+/// 发一条通知到一个渠道（只发一次，渠道测试用）。错误文本里不带令牌（reqwest 错误会带 URL，这里去掉）。
 pub async fn send(kind: &str, config: &Value, n: &Notice) -> Result<(), String> {
-    let cfg = normalize_config(kind, config)?;
+    send_once(kind, config, n).await.map_err(|e| e.msg)
+}
+
+/// 发送，网络错误 / 5xx / 429 时退避重试
+async fn send_retry(kind: &str, config: &Value, n: &Notice) -> Result<(), String> {
+    let mut res = send_once(kind, config, n).await;
+    for wait in RETRY_BACKOFF {
+        match &res {
+            Err(e) if e.retry => {
+                tokio::time::sleep(wait).await;
+                res = send_once(kind, config, n).await;
+            }
+            _ => break,
+        }
+    }
+    res.map_err(|e| e.msg)
+}
+
+async fn send_once(kind: &str, config: &Value, n: &Notice) -> Result<(), SendErr> {
+    let cfg = normalize_config(kind, config).map_err(SendErr::fatal)?;
     let c = client();
     let (req, expect_json_code) = match kind {
         "telegram" => {
@@ -258,20 +292,22 @@ pub async fn send(kind: &str, config: &Value, n: &Notice) -> Result<(), String> 
         }
         _ => (c.post(cfg["url"].as_str().unwrap_or_default()).json(&webhook_body(n)), "webhook"),
     };
-    let res = req.send().await.map_err(|e| short(&format!("发送失败：{}", e.without_url())))?;
+    let res = req.send().await.map_err(|e| SendErr { msg: short(&format!("发送失败：{}", e.without_url())), retry: true })?;
     let status = res.status();
+    let retry = status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS;
     let body = res.text().await.unwrap_or_default();
     let j: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+    let fail = |msg: String| Err(SendErr { msg: short(&msg), retry });
     match expect_json_code {
         // Telegram：HTTP 非 2xx 或 ok=false，说明在 description
         "telegram" if !status.is_success() || j["ok"] == json!(false) => {
-            Err(short(&format!("Telegram 拒绝（HTTP {}）：{}", status.as_u16(), j["description"].as_str().unwrap_or(&body))))
+            fail(format!("Telegram 拒绝（HTTP {}）：{}", status.as_u16(), j["description"].as_str().unwrap_or(&body)))
         }
         // 企业微信：HTTP 200 但 errcode != 0 也是失败
         "wecom" if !status.is_success() || j["errcode"].as_i64().is_some_and(|c| c != 0) => {
-            Err(short(&format!("企业微信拒绝（HTTP {}）：{}", status.as_u16(), j["errmsg"].as_str().unwrap_or(&body))))
+            fail(format!("企业微信拒绝（HTTP {}）：{}", status.as_u16(), j["errmsg"].as_str().unwrap_or(&body)))
         }
-        "webhook" if !status.is_success() => Err(short(&format!("webhook 返回 HTTP {}", status.as_u16()))),
+        "webhook" if !status.is_success() => fail(format!("webhook 返回 HTTP {}", status.as_u16())),
         _ => Ok(()),
     }
 }
@@ -283,10 +319,11 @@ struct Channel {
     config_enc: Vec<u8>,
 }
 
-/// 发送并记 `notify_log`
+/// 发送并记 `notify_log`（一次投递记一条，重试不重复记）。渠道测试不重试，让用户马上看到结果。
 async fn deliver(st: &AppState, ch: &Channel, n: &Notice) -> Result<(), String> {
     let res = match st.secrets.open_str(&ch.config_enc).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()) {
-        Some(cfg) => send(&ch.kind, &cfg, n).await,
+        Some(cfg) if n.kind == Kind::Test => send(&ch.kind, &cfg, n).await,
+        Some(cfg) => send_retry(&ch.kind, &cfg, n).await,
         None => Err("渠道配置无法解密（密钥变了？）".into()),
     };
     let logged = sqlx::query("insert into notify_log (channel_id, incident_id, ok, error, kind) values ($1, $2, $3, $4, $5)")
