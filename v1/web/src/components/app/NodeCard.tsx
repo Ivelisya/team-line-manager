@@ -75,7 +75,7 @@ function BeatSlot({ m, enabled }: { m: MachineView; enabled: boolean }) {
   const s = useSeries(m.id, 'probe', '1h', enabled && live, 120_000);
   const ps = probeSummary(m);
   const cap = !live ? <span className="t-muted">{m.lifecycle === 'retired' ? '已退役' : '尚未开始探测'}</span>
-    : m.kind === 'relay' ? <>入口连通 <b className="num">{ps.tcpOk}/{ps.total}</b></>
+    : m.kind === 'relay' ? <>入口连通 <b className="num" style={ps.tcpOk < ps.total ? { color: 'var(--warn-text)' } : undefined}>{ps.tcpOk}/{ps.total}</b></>
     : <>TCP <b className="num">{ps.tcp != null ? `${ps.tcp} ms` : '—'}</b> · 出口 <b className="num">{ps.egress != null ? `${ps.egress} ms` : '—'}</b></>;
   return <Beat cells={live ? beatCells(s.data?.points) : []} caption={cap} win="近 1 小时" stale={isQuiet(m)} />;
 }

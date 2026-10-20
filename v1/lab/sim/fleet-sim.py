@@ -444,28 +444,15 @@ def http_post(path, obj, token, gz=True, timeout=15):
     req = urllib.request.Request(BASE + path, data=body, headers=hdr, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status, resp.read().decode("utf-8", "replace"), zipped
+            return resp.status, resp.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
-        return e.code, e.read().decode("utf-8", "replace"), zipped
+        return e.code, e.read().decode("utf-8", "replace")
     except Exception as e:  # 连接失败、超时
-        return 0, str(e), zipped
-
-
-GZ_OFF_UNTIL = [0.0]
+        return 0, str(e)
 
 
 def post_report(rep, token):
-    """和 fleet-agent 一样：先 gzip；旧服务端不认就明文重发，明文成功后 1 小时内不再压缩。"""
-    use_gz = time.time() >= GZ_OFF_UNTIL[0]
-    st, text, zipped = http_post("/agent/v1/report", rep, token, gz=use_gz)
-    if zipped and st in (400, 415, 422):
-        st2, text2, _ = http_post("/agent/v1/report", rep, token, gz=False)
-        if st2 == 200:
-            if time.time() >= GZ_OFF_UNTIL[0]:
-                log("服务端不接受 gzip 请求体（HTTP %d：%s），改发明文，1 小时后再试压缩" % (st, text[:100]))
-            GZ_OFF_UNTIL[0] = time.time() + 3600
-        return st2, text2
-    return st, text
+    return http_post("/agent/v1/report", rep, token)
 
 
 def build_reports(m, now, relay_gen=None):
@@ -799,7 +786,7 @@ def refresh(world, pool, stats):
             m.applied_gen = x["generation"]
 
             def send(m=m, rep=rep):
-                st, text, _ = http_post("/agent/v1/applied", rep, m.token, gz=False)
+                st, text = http_post("/agent/v1/applied", rep, m.token, gz=False)
                 log("%s 回报 applied generation=%d -> HTTP %s %s" % (m.name, rep["generation"], st, "" if st == 204 else text[:120]))
             pool.submit(send)
 

@@ -109,7 +109,7 @@ function series(m: MachineView, metric: string, range: string): { metric: string
       pts.push({ ts, up: Math.round(r() * 8e6 * k * (1 + Math.sin(i / 7))), down: Math.round(r() * 3e7 * k * (1 + Math.cos(i / 8))), conns: Math.round(20 + r() * 80) });
     } else {
       const tcpFail = tail || r() < 0.015; const egFail = tail || r() < 0.02;
-      pts.push({ ts, tcp_ok: !tcpFail, tcp_ms: tcpFail ? null : Math.round(40 + r() * 70 + (i % 23 === 0 ? 120 : 0)), egress_ok: !egFail, egress_ms: egFail ? null : Math.round(160 + r() * 90) });
+      pts.push({ ts, tcp_ok: !tcpFail, tcp_ms: tcpFail ? null : Math.round(40 + r() * 70 + (i % 23 === 0 ? 120 : 0)), egress_ok: !egFail, egress_ms: egFail ? null : Math.round(160 + r() * 90), tcp_n: 2, tcp_ok_n: tcpFail ? 0 : 2 });
     }
   }
   return { metric, range, resolution: range === '7d' || range === '30d' ? '1h' : '1m', points: pts };

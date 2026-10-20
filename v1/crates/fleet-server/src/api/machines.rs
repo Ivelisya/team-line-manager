@@ -188,9 +188,11 @@ const TRAFFIC_HOURLY: &str = "select coalesce(json_agg(json_build_object('ts', t
     select h.hour t, sum(up_bytes) up, sum(down_bytes) down, max(conns_max) conns
     from entry_traffic_hourly h join entry e on e.id = h.entry_id where (e.node_id = $1 or e.relay_id = $1) and h.hour >= $2 group by 1) a";
 
-const PROBE_RAW: &str = "select coalesce(json_agg(json_build_object('ts', t, 'tcp_ok', tcp_ok, 'tcp_ms', tcp_ms, 'egress_ok', eg_ok, 'egress_ms', eg_ms) order by t), '[]') from (
+const PROBE_RAW: &str = "select coalesce(json_agg(json_build_object('ts', t, 'tcp_ok', tcp_ok, 'tcp_ms', tcp_ms, 'egress_ok', eg_ok, 'egress_ms', eg_ms,
+    'tcp_n', tcp_n, 'tcp_ok_n', tcp_ok_n) order by t), '[]') from (
     select date_trunc('minute', p.ts) t,
       bool_and(p.ok) filter (where p.kind = 'tcp') tcp_ok, avg(p.latency_ms) filter (where p.kind = 'tcp' and p.ok) tcp_ms,
+      count(*) filter (where p.kind = 'tcp') tcp_n, count(*) filter (where p.kind = 'tcp' and p.ok) tcp_ok_n,
       bool_and(p.ok) filter (where p.kind = 'egress') eg_ok, avg(p.latency_ms) filter (where p.kind = 'egress' and p.ok) eg_ms
     from probe_result p join entry e on e.id = p.entry_id where (e.node_id = $1 or e.relay_id = $1) and p.kind in ('tcp', 'egress') and p.ts >= $2 group by 1) a";
 

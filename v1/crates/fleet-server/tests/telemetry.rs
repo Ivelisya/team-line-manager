@@ -92,6 +92,7 @@ async fn relay_probe_series_covers_its_entries() {
     for id in [relay, node] {
         let v = t.get(&format!("/api/v1/machines/{id}/series?metric=probe&range=1h")).await;
         assert_eq!(v["points"].as_array().unwrap().len(), 1, "线路机与节点都能看到这条入口的探测：{v}");
+        assert_eq!((v["points"][0]["tcp_n"].as_i64(), v["points"][0]["tcp_ok_n"].as_i64()), (Some(1), Some(1)));
     }
 }
 
