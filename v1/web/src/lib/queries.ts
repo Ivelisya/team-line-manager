@@ -1,11 +1,11 @@
 // TanStack Query 封装：查询 hook + 写操作 hook。写操作成功后按范围失效（实时流也会再推一次，重复无害）。
 import { useCallback } from 'react';
-import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { del, get, patch, post, put } from './api';
 import { makeDefaultCompare } from './sort';
 import { jobLive } from './jobs';
 import { usePoll } from './streamState';
-import type { ApiKey, Incident, Job, JobLog, MachineView, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RestoreBody, RestorePreview, MoveResult, EvacuateResult, SeriesResp, Silence, Team, AuditEntry, NotifyChannel, NotifyLogEntry } from './types';
+import type { ApiKey, Incident, Job, Paged, JobLog, MachineView, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RestoreBody, RestorePreview, MoveResult, EvacuateResult, SeriesResp, Silence, Team, AuditEntry, NotifyChannel, NotifyLogEntry } from './types';
 
 export const useMe = () => useQuery({ queryKey: ['me'], queryFn: () => get<{ username: string }>('/auth/me'), retry: false, staleTime: 5 * 60_000 });
 export const useTeams = () => useQuery({ queryKey: ['teams'], queryFn: () => get<Team[]>('/teams'), staleTime: 60_000 });
@@ -58,17 +58,20 @@ export const useSeries = (id: string | null, metric: 'host' | 'traffic' | 'probe
   useQuery({ queryKey: ['series', id, metric, range], queryFn: ({ signal }) => get<SeriesResp>(`/machines/${id}/series?metric=${metric}&range=${range}`, signal), enabled: !!id && enabled, staleTime: poll ?? 30_000, refetchInterval: poll, refetchOnWindowFocus: poll ? false : undefined });
 export const useRenewals = (id: string | null) => useQuery({ queryKey: ['renewals', id], queryFn: ({ signal }) => get<Renewal[]>(`/machines/${id}/renewals`, signal), enabled: !!id });
 export const useAudit = (id: string | null) => useQuery({ queryKey: ['audit', id], queryFn: ({ signal }) => get<AuditEntry[]>(`/audit?target_id=${id}&limit=10`, signal), enabled: !!id });
-export function useJobs(state: 'active' | 'done' | 'all' = 'all') {
+/** 作业列表一页（按创建先后倒序）；换页时先留着上一页，不闪骨架 */
+export function useJobs(state: 'active' | 'done' | 'all' = 'all', offset = 0, limit = 100) {
   const poll = usePoll(10_000);
-  return useQuery({ queryKey: ['jobs', state], queryFn: ({ signal }) => get<Job[]>(`/jobs?state=${state}&limit=100`, signal), refetchInterval: poll });
+  return useQuery({ queryKey: ['jobs', state, offset, limit], queryFn: ({ signal }) => get<Paged<Job>>(`/jobs?state=${state}&limit=${limit}&offset=${offset}`, signal), refetchInterval: poll, placeholderData: keepPreviousData });
 }
 export function useJob(id: string | null) {
   const poll = usePoll(2500); // 流正常时靠 job 事件失效；流断开才轮询兜底
   return useQuery({ queryKey: ['job', id], queryFn: ({ signal }) => get<Job>(`/jobs/${id}`, signal), enabled: !!id, refetchInterval: (q) => (poll && q.state.data && jobLive(q.state.data.state) ? poll : false) });
 }
-export function useIncidents(state: 'firing' | 'resolved' | 'all' = 'all') {
+/** 告警列表一页（严重度优先）。默认参数与告警页第一页相同：顶栏徽标取 total，和告警页共用同一份缓存 */
+export const INCIDENT_PAGE = 50;
+export function useIncidents(state: 'firing' | 'resolved' | 'all' = 'all', offset = 0, limit = INCIDENT_PAGE) {
   const poll = usePoll(30_000);
-  return useQuery({ queryKey: ['incidents', state], queryFn: ({ signal }) => get<Incident[]>(`/incidents?state=${state}`, signal), refetchInterval: poll });
+  return useQuery({ queryKey: ['incidents', state, offset, limit], queryFn: ({ signal }) => get<Paged<Incident>>(`/incidents?state=${state}&limit=${limit}&offset=${offset}`, signal), refetchInterval: poll, placeholderData: keepPreviousData });
 }
 export const useSilences = () => useQuery({ queryKey: ['silences'], queryFn: () => get<Silence[]>('/silences') });
 

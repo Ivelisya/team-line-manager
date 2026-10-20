@@ -32,7 +32,7 @@ async fn pass(t: &T, s: &mut AlertState, base: OffsetDateTime, secs: i64) {
     alerts::evaluate_once(&t.st, s, base + time::Duration::seconds(secs)).await.unwrap();
 }
 
-async fn incidents(t: &T, state: &str) -> Vec<Value> { t.get(&format!("/api/v1/incidents?state={state}")).await.as_array().unwrap().clone() }
+async fn incidents(t: &T, state: &str) -> Vec<Value> { t.get(&format!("/api/v1/incidents?state={state}")).await["items"].as_array().unwrap().clone() }
 
 fn has_rule(v: &[Value], rule: &str) -> bool { v.iter().any(|i| i["rule"] == rule) }
 
@@ -605,6 +605,43 @@ async fn retention_cleanup_removes_only_expired_rows() {
     assert_eq!(t.count("select count(*) from login_failure").await, 1);
     assert_eq!(t.count("select count(*) from notify_log").await, 1);
     assert_eq!(t.count("select count(*) from audit_log where actor = 'a'").await, 1);
+}
+
+// ── 告警列表分页：limit / offset + total，顺序稳定（同一时刻开始的也不重不漏） ──────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn incidents_list_pages_with_total() {
+    let t = setup().await;
+    let db = &t.st.db;
+    // 7 条进行中（其中 4 条同一时刻开始，靠 id 兜底排序）+ 2 条已恢复
+    for (state, sev, mins) in [("firing", "critical", 5), ("firing", "warning", 1), ("firing", "warning", 3), ("firing", "warning", 3), ("firing", "warning", 3), ("firing", "warning", 3), ("firing", "critical", 9), ("resolved", "critical", 2), ("resolved", "warning", 4)] {
+        sqlx::query(&format!(
+            "insert into incident (id, rule, subject_id, severity, state, summary, opened_at, resolved_at) values ($1, 'agent_offline', $2, '{sev}', '{state}', 's',
+             now() - interval '{mins} minutes', case when '{state}' = 'resolved' then now() end)"
+        ))
+        .bind(Uuid::now_v7())
+        .bind(Uuid::now_v7())
+        .execute(db)
+        .await
+        .unwrap();
+    }
+    let tr = &t;
+    let page = |q: &'static str| async move { tr.get(&format!("/api/v1/incidents?{q}")).await };
+    let ids = |v: &Value| v["items"].as_array().unwrap().iter().map(|i| i["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+
+    let all = page("state=firing&limit=100").await;
+    assert_eq!((all["total"].as_i64(), all["next_offset"].is_null(), ids(&all).len()), (Some(7), true, 7));
+    assert_eq!(all["items"][0]["severity"], "critical", "严重的在前");
+    let p1 = page("state=firing&limit=3").await;
+    let p2 = page("state=firing&limit=3&offset=3").await;
+    let p3 = page("state=firing&limit=3&offset=6").await;
+    assert_eq!((p1["total"].as_i64(), p1["next_offset"].as_i64()), (Some(7), Some(3)));
+    assert_eq!((p2["next_offset"].as_i64(), p3["next_offset"].is_null(), ids(&p3).len()), (Some(6), true, 1));
+    assert_eq!([ids(&p1), ids(&p2), ids(&p3)].concat(), ids(&all), "逐页拼起来等于一次取全");
+    let past = page("state=firing&limit=3&offset=30").await;
+    assert_eq!((ids(&past).len(), past["total"].as_i64(), past["next_offset"].is_null()), (0, Some(7), true), "越过末尾：空页，但总数照给");
+    assert_eq!(page("state=all").await["total"].as_i64(), Some(9));
+    assert_eq!(page("state=resolved").await["total"].as_i64(), Some(2));
 }
 
 // ── 访问汇总：agent 断网很久后补传的记录也要汇总进去 ──────────────────────────

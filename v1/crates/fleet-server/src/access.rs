@@ -534,16 +534,27 @@ pub struct NewTargetRow {
     pub total: i64,
 }
 
-/// 窗口内第一次出现的目标（f.from 取精确的 now - window，不对齐整点）
-pub async fn new_targets(db: &PgPool, f: &Filter, limit: i64, offset: i64) -> sqlx::Result<Vec<NewTargetRow>> {
+const NEW_WHERE: &str = "s.first_seen >= $1 and ($3::uuid[] is null or s.node_id = any($3)) and ($2::uuid is null or m.team_id = $2)
+           and ($4::text is null or s.dest_host ilike $4) and ($5::text is null or access_kind(s.dest_host) = $5)";
+
+/// 窗口内第一次出现的目标（f.from 取精确的 now - window，不对齐整点）；同时返回符合条件的总数
+pub async fn new_targets(db: &PgPool, f: &Filter, limit: i64, offset: i64) -> sqlx::Result<(Vec<NewTargetRow>, i64)> {
     let sql = format!(
         "select s.node_id, {NAME} name, s.dest_host, access_kind(s.dest_host) kind, s.first_seen, s.last_seen, s.total
          from access_target_seen s join machine m on m.id = s.node_id left join team t on t.id = m.team_id
-         where s.first_seen >= $1 and ($3::uuid[] is null or s.node_id = any($3)) and ($2::uuid is null or m.team_id = $2)
-           and ($4::text is null or s.dest_host ilike $4) and ($5::text is null or access_kind(s.dest_host) = $5)
+         where {NEW_WHERE}
          order by s.first_seen desc, s.dest_host, s.node_id limit $6 offset $7"
     );
-    sqlx::query_as(&sql).bind(f.from).bind(f.team).bind(&f.nodes).bind(&f.like).bind(&f.kind).bind(limit).bind(offset).fetch_all(db).await
+    let items = sqlx::query_as(&sql).bind(f.from).bind(f.team).bind(&f.nodes).bind(&f.like).bind(&f.kind).bind(limit).bind(offset).fetch_all(db).await?;
+    let total = sqlx::query_scalar(&format!("select count(*) from access_target_seen s join machine m on m.id = s.node_id where {NEW_WHERE}"))
+        .bind(f.from)
+        .bind(f.team)
+        .bind(&f.nodes)
+        .bind(&f.like)
+        .bind(&f.kind)
+        .fetch_one(db)
+        .await?;
+    Ok((items, total))
 }
 
 #[derive(Debug, Serialize, FromRow)]

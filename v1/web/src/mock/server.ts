@@ -412,9 +412,15 @@ R('POST', '/machines/([^/]+)/entries', ({ params, body }) => {
   emit({ type: 'machines' }); return { job_id: job.id };
 });
 
+/** 分页接口的形状（同服务端 api::paged） */
+const paged = <T,>(all: T[], query: URLSearchParams) => {
+  const limit = +(query.get('limit') ?? 100); const offset = +(query.get('offset') ?? 0);
+  const items = clone(all.slice(offset, offset + limit));
+  return { items, total: all.length, next_offset: offset + items.length < all.length ? offset + items.length : null };
+};
 R('GET', '/jobs', ({ query }) => {
-  const s = query.get('state') ?? 'all'; const limit = +(query.get('limit') ?? 100);
-  return clone(db.jobs.filter((j) => s === 'all' || (s === 'active' ? j.state === 'running' || j.state === 'queued' : j.state !== 'running' && j.state !== 'queued')).slice(0, limit));
+  const s = query.get('state') ?? 'all';
+  return paged(db.jobs.filter((j) => s === 'all' || (s === 'active' ? j.state === 'running' || j.state === 'queued' : j.state !== 'running' && j.state !== 'queued')), query);
 });
 const jobOf = (id: string) => { const j = db.jobs.find((x) => x.id === id); if (!j) throw bad('作业不存在', 404, 'not_found'); return j; };
 R('GET', '/jobs/([^/]+)', ({ params }) => clone(jobOf(params[0])));
@@ -430,7 +436,7 @@ R('POST', '/jobs/([^/]+)/cancel', ({ params }) => {
 });
 
 R('GET', '/overview', () => overview());
-R('GET', '/incidents', ({ query }) => { const s = query.get('state') ?? 'all'; return clone(db.incidents.filter((i) => s === 'all' || i.state === s)); });
+R('GET', '/incidents', ({ query }) => { const s = query.get('state') ?? 'firing'; return paged(db.incidents.filter((i) => s === 'all' || i.state === s), query); });
 R('POST', '/incidents/([^/]+)/ack', ({ params }) => { const i = db.incidents.find((x) => x.id === params[0]); if (!i) throw bad('告警不存在', 404, 'not_found'); i.ack_at = iso(); i.ack_by = db.user; emit({ type: 'incidents' }); return {}; });
 R('GET', '/silences', () => clone(db.silences));
 R('POST', '/silences', ({ body }) => { const m = body.subject_id ? machine(body.subject_id) : null; const s = { id: `s${db.seq++}`, subject_name: m?.name ?? null, rule: null, subject_id: null, ...body }; db.silences.push(s); emit({ type: 'incidents' }); return s; });

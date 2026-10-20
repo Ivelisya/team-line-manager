@@ -40,7 +40,7 @@
 .jobs-empty { min-height: min(360px, 60dvh); display: grid; align-content: center; }
 @container content (max-width: 720px) { .jobs-layout { grid-template-columns: minmax(0, 1fr); } .jobs-layout[data-detail="1"] .jobs-list { display: none; } .jobs-layout[data-detail="0"] .jobs-detail { display: none; } }
 .job-item { display: grid; gap: 2px; width: 100%; padding: var(--sp-10) var(--card-pad); border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left; cursor: pointer; color: inherit; min-width: 0; transition: background-color var(--dur-fast); }
-.job-item:last-child { border-bottom: 0; }
+.job-item:last-child, .job-item:has(+ .pager) { border-bottom: 0; } /* 分页器自带顶线 */
 .job-item:hover { background: var(--hover); }
 .job-item[aria-current="true"] { background: var(--selected); box-shadow: inset 2px 0 0 var(--accent); }
 .job-item .l1 { display: flex; align-items: center; gap: var(--sp-8); min-width: 0; }

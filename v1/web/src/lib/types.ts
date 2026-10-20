@@ -120,3 +120,6 @@ export type NotifyKind = 'telegram' | 'wecom' | 'webhook';
 export type NotifySeverity = 'info' | 'warning' | 'critical';
 export interface NotifyChannel { id: string; name: string; kind: NotifyKind | string; min_severity: NotifySeverity | string; enabled: boolean; created_at: string; config_hint: string }
 export interface NotifyLogEntry { id: string; channel_id: string; channel_name: string; incident_id: string | null; ts: string; ok: boolean; error: string | null }
+
+/** 服务端分页列表（/jobs、/incidents）：next_offset 只在后面还有数据时给出 */
+export interface Paged<T> { items: T[]; total: number; next_offset: number | null }

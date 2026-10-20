@@ -106,9 +106,10 @@ export const SectionHeader = ({ title, meta, children }: { title: React.ReactNod
 );
 export const Section = ({ children, className }: { children: React.ReactNode; className?: string }) => <section className={cn('sec', className)}>{children}</section>;
 
-export function Panel({ title, count, sub, tools, children, flush, className }: { title?: React.ReactNode; count?: React.ReactNode; sub?: React.ReactNode; tools?: React.ReactNode; children?: React.ReactNode; flush?: boolean; className?: string }) {
+/** ref 落在 section 上（分页器换页后滚回面板顶部用） */
+export const Panel = React.forwardRef<HTMLElement, { title?: React.ReactNode; count?: React.ReactNode; sub?: React.ReactNode; tools?: React.ReactNode; children?: React.ReactNode; flush?: boolean; className?: string }>(function Panel({ title, count, sub, tools, children, flush, className }, ref) {
   return (
-    <section className={cn('panel', className)}>
+    <section ref={ref} className={cn('panel', className)}>
       {(title || tools) && (
         <header className="panel-head">
           {title && <h2 className="panel-title">{title}</h2>}
@@ -120,7 +121,7 @@ export function Panel({ title, count, sub, tools, children, flush, className }: 
       {children != null && <div className={cn('panel-body', flush && 'is-flush')}>{children}</div>}
     </section>
   );
-}
+});
 
 /** 页头：全站同一个 */
 export function PageHead({ title, note, tools }: { title: string; note?: React.ReactNode; tools?: React.ReactNode }) {

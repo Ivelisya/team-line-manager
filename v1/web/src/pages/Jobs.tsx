@@ -1,6 +1,6 @@
 // 作业：列表 + 详情（总进度 + 横向步骤条 + 步骤时间线 + 实时日志，进行中每 1.5s 轮询 /jobs/{id}/logs?after=）。
 import * as React from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, ArrowDownToLine, Check, CircleDashed, Copy, ListChecks, Loader2, Minus, Pause, Play, RotateCw, Square, Undo2, X } from 'lucide-react';
 import { fetchAllLogs, useCancelJob, useJob, useJobs, useRetryJob } from '@/lib/queries';
 import type { Job, JobLog } from '@/lib/types';
@@ -17,6 +17,8 @@ import { JobProgressBar, StepBar } from '@/components/app/JobProgress';
 import { NodeHover } from '@/components/app/NodeHover';
 import { toast } from '@/components/ui/toast';
 import { copyNewShareLink } from '@/lib/moveShare';
+import { Pagination } from '@/components/app/Pagination';
+import { usePage } from '@/lib/usePage';
 import { Empty, ErrorNote, LabelValue, LabelValueGrid, Note, PageHead, Panel, Pill, type Tone } from '@/components/app/primitives';
 
 const STATE: Record<string, { label: string; tone: Tone; dot?: 'pulse' | 'ring' }> = {
@@ -24,26 +26,35 @@ const STATE: Record<string, { label: string; tone: Tone; dot?: 'pulse' | 'ring' 
   cancelling: { label: '取消中', tone: 'warn', dot: 'pulse' }, succeeded: { label: '已完成', tone: 'ok' },
   failed: { label: '失败', tone: 'bad' }, cancelled: { label: '已取消', tone: 'neutral', dot: 'ring' },
 };
+/** 作业列表每页条数：列表在窄栏里，固定一档，不给每页条数下拉 */
+const JOB_PAGE = [20];
+
 export const JobPill = ({ state }: { state: string }) => { const s = STATE[state] ?? { label: state, tone: 'neutral' as Tone }; return <Pill tone={s.tone} dot={s.dot}>{s.label}</Pill>; };
 
 export function JobsPage() {
   const { id } = useParams();
   const nav = useNavigate();
+  const { search } = useLocation(); // 列表 ↔ 详情切换时带着 ?p=，回到列表还在原来那页
   const [filter, setFilter] = React.useState<'all' | 'active' | 'done'>('all');
-  const jobs = useJobs(filter);
-  const list = jobs.data ?? [];
+  // 页码要先于查询算出来（偏移量进查询）；总数来自上一次的结果，用来夹页和显示分页器
+  const [total, setTotal] = React.useState<number>();
+  const pg = usePage({ total, sizes: JOB_PAGE, reset: [filter] });
+  const jobs = useJobs(filter, pg.offset, pg.size);
+  React.useEffect(() => { if (jobs.data) setTotal(jobs.data.total); }, [jobs.data]);
+  const list = jobs.data?.items ?? [];
   const selected = id ?? null;
+  const go = (jid: string) => nav({ pathname: `/jobs/${jid}`, search });
   return (
     <div className="stack">
-      <PageHead title="作业" note={jobs.data ? `${list.length} 个` : undefined}
+      <PageHead title="作业" note={jobs.data ? `${jobs.data.total} 个` : undefined}
         tools={<Segmented label="筛选" value={filter} onChange={setFilter} items={[{ value: 'all', label: '全部' }, { value: 'active', label: '进行中' }, { value: 'done', label: '已结束' }]} />} />
       <div className="jobs-layout" data-detail={selected ? '1' : '0'}>
-        <Panel className="jobs-list" flush>
+        <Panel ref={pg.anchor} className="jobs-list" flush>
           {jobs.isLoading && <SkeletonRows rows={5} />}
           {jobs.isError && <div style={{ padding: 'var(--sp-12)' }}><ErrorNote error={jobs.error} onRetry={() => void jobs.refetch()} /></div>}
           {list.map((j) => (
-            <div key={j.id} className="job-item" role="button" tabIndex={0} aria-current={j.id === selected} onClick={() => nav(`/jobs/${j.id}`)}
-              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); nav(`/jobs/${j.id}`); } }}>
+            <div key={j.id} className="job-item" role="button" tabIndex={0} aria-current={j.id === selected} onClick={() => go(j.id)}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(j.id); } }}>
               <span className="l1">
                 <b className="ellipsis" style={{ fontWeight: 600 }}>{jobKindLabel(j.kind)} · {j.target ? <NodeHover id={j.target.id}><span>{j.target.name}</span></NodeHover> : '—'}</b>
                 <span style={{ marginLeft: 'auto' }}><JobPill state={j.state} /></span>
@@ -53,6 +64,7 @@ export function JobsPage() {
             </div>
           ))}
           {jobs.data && list.length === 0 && <Empty icon={<ListChecks size={22} />} text="没有作业" hint="上架、下线、升级 agent 都会在这里留下一条" />}
+          <Pagination pg={pg} unit="个" compact />
         </Panel>
         <div className="jobs-detail">
           {selected ? <JobDetail id={selected} /> : <Panel className="jobs-empty"><Empty icon={<ListChecks size={22} />} text="选择左侧的作业查看步骤与日志" /></Panel>}
@@ -75,6 +87,7 @@ function LiveProgressBar({ job, live }: { job: Job; live: boolean }) {
 }
 
 function JobDetail({ id }: { id: string }) {
+  const { search } = useLocation();
   const q = useJob(id);
   const retry = useRetryJob(); const cancel = useCancelJob();
   const [cancelAsk, setCancelAsk] = React.useState(false);
@@ -84,7 +97,7 @@ function JobDetail({ id }: { id: string }) {
   if (!j) return <Panel><div className="skel" style={{ height: 160, margin: 16 }} /></Panel>;
   return (
     <div className="stack">
-      <Panel title={<span className="row" style={{ gap: 8 }}><Link to="/jobs" className="icon-btn icon-btn-sm job-back" aria-label="返回列表"><ArrowLeft size={16} /></Link><span>{jobKindLabel(j.kind)} · {j.target ? <NodeHover id={j.target.id}><span>{j.target.name}</span></NodeHover> : '—'}</span></span>} tools={<>
+      <Panel title={<span className="row" style={{ gap: 8 }}><Link to={{ pathname: '/jobs', search }} className="icon-btn icon-btn-sm job-back" aria-label="返回列表"><ArrowLeft size={16} /></Link><span>{jobKindLabel(j.kind)} · {j.target ? <NodeHover id={j.target.id}><span>{j.target.name}</span></NodeHover> : '—'}</span></span>} tools={<>
         <JobPill state={j.state} />
         {j.state === 'failed' && <Button size="sm" variant="primary" loading={retry.isPending} onClick={() => retry.mutate(j.id, { onSuccess: () => toast.ok('已从失败的步骤重试'), onError: toast.err })}><RotateCw />重试</Button>}
         {j.cancellable && <Button size="sm" onClick={() => setCancelAsk(true)}><Square />取消</Button>}

@@ -1,4 +1,4 @@
-// 首页：KPI + 团队筛选 + 视图切换（大卡片/小卡片/紧凑）+ 节点卡片网格。
+// 首页：KPI + 团队筛选 + 视图切换（大卡片/小卡片/紧凑）+ 节点卡片网格（分页，每页条数随视图）。
 // 默认排序：线路机 → 团队 → 编号；故障/离线不下沉。其它排序是用户的显式选择。
 import * as React from 'react';
 import { AlertTriangle, Inbox } from 'lucide-react';
@@ -12,6 +12,8 @@ import { CountUp, DotCount, Empty, ErrorNote, FilterChip, KpiTile, Num, PageHead
 import { NodeCard, SkeletonCard, type CardView } from '@/components/app/NodeCard';
 import { Segmented } from '@/components/ui/overlays';
 import { Select } from '@/components/ui/select';
+import { Pagination } from '@/components/app/Pagination';
+import { usePage } from '@/lib/usePage';
 
 type SortKey = 'default' | 'name' | 'due' | 'traffic' | 'issues';
 const SORTS: { value: SortKey; label: string }[] = [
@@ -19,6 +21,8 @@ const SORTS: { value: SortKey; label: string }[] = [
   { value: 'traffic', label: '本月流量最多' }, { value: 'issues', label: '异常优先' },
 ];
 const VIEWS: CardView[] = ['large', 'small', 'compact'];
+/** 每页张数：都是 2、3、4、6 的倍数，常见列数下最后一行是满的；中间那档是默认 */
+const PAGE_SIZES: Record<CardView, number[]> = { large: [12, 24, 48], small: [18, 36, 72], compact: [24, 48, 96] };
 const EMPTY_PLANS: Plan[] = [];
 const EMPTY_MACHINES: MachineView[] = [];
 const store = {
@@ -69,6 +73,9 @@ export function HomePage() {
     if (onlyIssues) l = l.filter(isIssue);
     return sortList(l, sort);
   }, [all, team, onlyIssues, sort]);
+  // 只渲染当前页：KPI 和分组计数仍按全部机器算（上面的 counts）
+  const pg = usePage({ total: machines.data ? shown.length : undefined, sizes: PAGE_SIZES[view], size: PAGE_SIZES[view][1], reset: [team, onlyIssues, sort, view] });
+  const page = React.useMemo(() => shown.slice(pg.offset, pg.offset + pg.size), [shown, pg.offset, pg.size]);
 
   const o = ov.data;
   const nodes = o?.nodes; const relays = o?.relays;
@@ -104,7 +111,7 @@ export function HomePage() {
         </div>
       </div>
 
-      <div className="fbar" role="group" aria-label="筛选">
+      <div className="fbar" role="group" aria-label="筛选" ref={pg.anchor}>
         <span className="fbar-label">分组</span>
         <FilterChip pressed={team === 'all'} onClick={() => setTeam('all')} count={counts.all}>全部</FilterChip>
         <FilterChip pressed={team === 'relay'} onClick={() => setTeam('relay')} count={counts.relay}>线路机</FilterChip>
@@ -119,12 +126,16 @@ export function HomePage() {
       ) : !machines.data ? null /* 请求失败且没有缓存：上面的错误提示已说明，不要误报“还没有机器” */ : shown.length === 0 ? (
         <Empty icon={<Inbox size={28} />} text={all.length ? '没有符合筛选条件的机器' : '还没有机器，去“上架”添加第一台'} />
       ) : (
-        <div className="cards" data-view={view}>
-          {/* initial={false}：页面首次出现的卡片不播入场；之后因筛选/排序/视图切换新出现的卡片淡入，留下的卡片在 NodeCard 里用 layout="position" 滑到新位置 */}
-          <AnimatePresence initial={false}>
-            {shown.map((m) => <NodeCard key={m.id} m={m} view={view} current={m.id === openId} plans={plans} onOpen={open} />)}
-          </AnimatePresence>
-        </div>
+        <>
+          {/* 每页一个网格（key=页码）：翻页是整页淡入，不让上一页的卡片和新卡片之间做位置动画。
+              页内：initial={false} 让网格首次出现的卡片不播入场；之后因筛选/排序/视图切换新出现的卡片淡入，留下的卡片在 NodeCard 里用 layout="position" 滑到新位置 */}
+          <div key={pg.page} className="cards page-in" data-view={view}>
+            <AnimatePresence initial={false}>
+              {page.map((m) => <NodeCard key={m.id} m={m} view={view} current={m.id === openId} plans={plans} onOpen={open} />)}
+            </AnimatePresence>
+          </div>
+          <Pagination pg={pg} unit="台" />
+        </>
       )}
     </div>
   );

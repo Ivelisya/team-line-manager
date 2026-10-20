@@ -1,8 +1,10 @@
-// 告警：事件列表（确认 / 查看机器）+ 静默与维护窗口。列表保持服务端顺序（严重度优先），前端不重排。
+// 告警：事件列表（确认 / 查看机器，服务端分页）+ 静默与维护窗口。列表保持服务端顺序（严重度优先），前端不重排。
 import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { BellOff, Check, CheckCircle2, Plus, Trash2, Wrench } from 'lucide-react';
-import { useAck, useAddSilence, useDelSilence, useIncidents, useMachines, useSilences } from '@/lib/queries';
+import { INCIDENT_PAGE, useAck, useAddSilence, useDelSilence, useIncidents, useMachines, useSilences } from '@/lib/queries';
+import { usePage } from '@/lib/usePage';
+import { Pagination } from '@/components/app/Pagination';
 import { useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
 import type { Incident } from '@/lib/types';
@@ -27,13 +29,17 @@ const SEV = (i: Incident) => (i.state === 'resolved' ? <Pill tone="ok" dot="ring
 
 export function IncidentsPage() {
   const [state, setState] = React.useState<'firing' | 'resolved' | 'all'>('firing');
-  const q = useIncidents(state);
+  // 页码先于查询算出（偏移量进查询）；总数取上一次的结果
+  const [total, setTotal] = React.useState<number>();
+  const pg = usePage({ total, sizes: [20, INCIDENT_PAGE, 100], size: INCIDENT_PAGE, reset: [state] });
+  const q = useIncidents(state, pg.offset, pg.size);
+  React.useEffect(() => { if (q.data) setTotal(q.data.total); }, [q.data]);
   const ack = useAck();
   const { open } = useDrawer();
-  const list = q.data ?? [];
+  const list = q.data?.items ?? [];
   return (
-    <div className="stack">
-      <PageHead title="告警" note={q.data ? `${list.length} 条` : undefined}
+    <div className="stack" ref={pg.anchor}>
+      <PageHead title="告警" note={q.data ? `${q.data.total} 条` : undefined}
         tools={<Segmented label="状态" value={state} onChange={setState} items={[{ value: 'firing', label: '进行中' }, { value: 'resolved', label: '已恢复' }, { value: 'all', label: '全部' }]} />} />
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       <Panel flush>
@@ -60,6 +66,7 @@ export function IncidentsPage() {
           {q.isLoading && <SkeletonRows rows={4} />}
           {q.data && list.length === 0 && <Empty icon={state === 'firing' ? <CheckCircle2 size={22} /> : undefined} text={state === 'firing' ? '没有进行中的告警' : '没有记录'} hint={state === 'firing' ? '所有机器都在正常范围内' : undefined} />}
         </div>
+        <Pagination pg={pg} unit="条" />
       </Panel>
       <Silences />
     </div>

@@ -79,7 +79,7 @@ export function Shell() {
   const [navOpen, setNavOpen] = React.useState(false);
   const theme = useTheme();
   const stream = useStream(!!me.data);
-  const firing = useIncidents('firing').data?.length ?? 0;
+  const firing = useIncidents('firing').data?.total ?? 0;
 
   React.useEffect(() => { setNavOpen(false); }, [loc.pathname]);
   // 登录后首屏稳定下来再悄悄预取抽屉的代码：不占首屏带宽，第一次点开时也不用等

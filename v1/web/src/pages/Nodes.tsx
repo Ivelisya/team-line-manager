@@ -1,5 +1,5 @@
 // 节点：表格视图。固定列宽；筛选（团队 / 类型 / 线路机 / 状态 / 范围）+ 搜索；点行打开右侧抽屉。
-// 默认顺序 = 线路机 → 团队 → 编号（不排序时保持），表头排序是用户的显式选择，可一键恢复。
+// 默认顺序 = 线路机 → 团队 → 编号（不排序时保持），表头排序是用户的显式选择，可一键恢复。分页在筛选、排序之后（每页 50）。
 import * as React from 'react';
 import { ArrowDownUp, ChevronRight, ChevronDown, ChevronUp, RotateCcw, SearchX } from 'lucide-react';
 import { useMachines, useTeams } from '@/lib/queries';
@@ -17,6 +17,8 @@ import { SkeletonRows } from '@/components/ui/skeleton';
 import { Empty, ErrorNote, HealthPill, KindIcon, Num, PageHead, Panel, Pill } from '@/components/app/primitives';
 import { NodeHover } from '@/components/app/NodeHover';
 import { NodeContextItems } from '@/components/app/NodeMenu';
+import { Pagination } from '@/components/app/Pagination';
+import { usePage } from '@/lib/usePage';
 
 type Scope = 'live' | 'retired';
 /** sort：有它才能点表头排序；descFirst：首次点击先降序（数值列），否则先升序；再点反向，第三次点回默认顺序 */
@@ -87,6 +89,8 @@ export function NodesPage() {
     if (s?.id !== c.id) return { id: c.id, desc: first };
     return s.desc === first ? { id: c.id, desc: !first } : null;
   });
+  const pg = usePage({ total: q.data ? rows.length : undefined, sizes: [25, 50, 100], size: 50, reset: [scope, text, team, kind, relay, status, sort] });
+  const pageRows = React.useMemo(() => rows.slice(pg.offset, pg.offset + pg.size), [rows, pg.offset, pg.size]);
   const total = columns.reduce((s, c) => s + c.size, 0);
   const statusOpts = [...Object.entries(HEALTH_LABEL).filter(([k]) => k !== 'inactive').map(([value, label]) => ({ value, label })), { value: 'provisioning', label: '上架中' }, { value: 'retiring', label: '下线中' }];
 
@@ -95,7 +99,7 @@ export function NodesPage() {
       <PageHead title="节点" note={`${data.length}${data.length !== all.length ? ` / ${all.length}` : ''} 台`}
         tools={<Segmented label="范围" value={scope} onChange={(v) => { setScope(v); setStatus(''); }} items={[{ value: 'live', label: '在用' }, { value: 'retired', label: '已退役' }]} />} />
 
-      <div className="row" role="search">
+      <div className="row" role="search" ref={pg.anchor}>
         <SearchInput value={text} onChange={(e) => setText(e.target.value)} placeholder="搜索名称、IP、套餐、服务编号…" aria-label="搜索" className="w-full sm:w-[260px]" />
         <div className="w-[140px]"><Select value={team} onChange={setTeam} allowEmpty="全部团队" placeholder="团队" options={teams.map((t) => ({ value: t.id, label: t.name }))} aria-label="团队" /></div>
         <div className="w-[130px]"><Select value={kind} onChange={setKind} allowEmpty="全部类型" placeholder="类型" options={Object.entries(KIND_LABEL).map(([value, label]) => ({ value, label }))} aria-label="类型" /></div>
@@ -127,7 +131,7 @@ export function NodesPage() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((m) => (
+              {pageRows.map((m) => (
                 <ContextMenu key={m.id}>
                   <ContextMenuTrigger asChild>
                     <tr className={`is-link${m.id === openId ? ' is-current' : ''}${m.lifecycle === 'retired' ? ' is-retired' : ''}`} tabIndex={0}
@@ -143,6 +147,7 @@ export function NodesPage() {
         </div>
         {!q.isLoading && !q.isError && rows.length === 0 && <Empty icon={<SearchX size={22} />} text={scope === 'retired' ? '还没有已退役的机器' : '没有符合条件的机器'} hint={all.length && scope === 'live' ? '换个筛选条件试试' : undefined} />}
         {q.isLoading && <SkeletonRows rows={6} />}
+        <Pagination pg={pg} unit="台" />
       </Panel>
     </div>
   );
