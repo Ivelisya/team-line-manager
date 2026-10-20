@@ -3,7 +3,7 @@ import * as React from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowRight, PackageOpen, Plus, Repeat2, Trash2, Undo2 } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
-import { useAddEntry, usePatchMachine, usePurge, useRelays, useTeams, useUpgradeAgent } from '@/lib/queries';
+import { useAddEntry, usePatchMachine, usePurge, useRelayChoices, useTeams, useUpgradeAgent } from '@/lib/queries';
 import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
 import { Field, Input } from '@/components/ui/form';
@@ -77,7 +77,7 @@ function RenameSection({ m }: { m: MachineView }) {
 }
 
 function EntrySection({ m }: { m: MachineView }) {
-  const relays = useRelays().data ?? [];
+  const relays = useRelayChoices().data ?? [];
   const add = useAddEntry();
   const [relay, setRelay] = React.useState('');
   const [dlg, setDlg] = React.useState<null | 'move' | 'evacuate'>(null);

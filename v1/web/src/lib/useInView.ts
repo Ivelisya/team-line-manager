@@ -12,14 +12,13 @@ function watch(el: Element, cb: (v: boolean) => void) {
   return () => { callbacks.delete(el); shared?.unobserve(el); };
 }
 
-/** 元素当前是否在（或快要进入）视口。进出都会更新——用来在滚出视口后停掉轮询，滚回来再恢复。
- *  不支持 IntersectionObserver 的环境恒为 true。 */
+/** 元素当前是否在（或快要进入）视口。进出都会更新——用来在滚出视口后停掉轮询，滚回来再恢复。 */
 export function useInView<T extends Element>() {
   const ref = useRef<T | null>(null);
-  const [inView, setInView] = useState(typeof IntersectionObserver === 'undefined');
+  const [inView, setInView] = useState(false);
   useEffect(() => {
     const el = ref.current;
-    if (!el || typeof IntersectionObserver === 'undefined') return;
+    if (!el) return;
     return watch(el, setInView);
   }, []);
   return [ref, inView] as const;

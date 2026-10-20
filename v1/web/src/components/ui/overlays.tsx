@@ -55,6 +55,16 @@ export function Tip({ text, children, side = 'top', align }: { text: React.React
   );
 }
 
+// 全站共享一个 ResizeObserver（同 lib/useInView.ts）：表格里每个单元格一个 Trunc，不必各建一个观察器
+let sharedRO: ResizeObserver | null = null;
+const roCallbacks = new WeakMap<Element, () => void>();
+function watchSize(el: Element, cb: () => void) {
+  sharedRO ??= new ResizeObserver((entries) => { for (const e of entries) roCallbacks.get(e.target)?.(); });
+  roCallbacks.set(el, cb);
+  sharedRO.observe(el);
+  return () => { roCallbacks.delete(el); sharedRO?.unobserve(el); };
+}
+
 /** 单行省略文本：只有真的被截断时悬停才出现完整内容的提示 */
 export function Trunc({ children, text, className, side = 'top' }: { children: React.ReactNode; text?: string; className?: string; side?: Side }) {
   const ref = React.useRef<HTMLSpanElement>(null);
@@ -73,10 +83,7 @@ export function Trunc({ children, text, className, side = 'top' }: { children: R
     const el = ref.current;
     if (!el) return;
     measure();
-    if (typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
+    return watchSize(el, measure);
   }, [measure, full]);
   return (
     <TooltipPrimitive.Root open={open && cut && !!full} onOpenChange={(o) => { if (o) measure(); setOpen(o); }}>

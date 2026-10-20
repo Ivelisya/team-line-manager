@@ -32,8 +32,7 @@ function ApplyStatus({ m }: { m: MachineView }) {
   );
 }
 
-function RelayCard({ m }: { m: MachineView }) {
-  const { open } = useDrawer();
+function RelayCard({ m, open }: { m: MachineView; open: ReturnType<typeof useDrawer>['open'] }) {
   const r = m.relay;
   const due = F.dueFmt(m.subscription?.due_days);
   return (
@@ -75,13 +74,14 @@ function RelayCard({ m }: { m: MachineView }) {
 
 export function RelaysPage() {
   const q = useRelays();
+  const { open } = useDrawer();
   const list = q.data ?? [];
   return (
     <div className="stack">
       <PageHead title="线路" note={q.data ? `${list.length} 台线路机 · ${list.reduce((s, m) => s + m.entries.length, 0)} 条入口` : undefined} />
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       {q.isLoading && <Skeleton h={220} />}
-      {list.map((m) => <RelayCard key={m.id} m={m} />)}
+      {list.map((m) => <RelayCard key={m.id} m={m} open={open} />)}
       {q.data && list.length === 0 && <Empty icon={<Waypoints size={22} />} text="还没有线路机" hint="去“上架”添加第一台线路机" />}
     </div>
   );

@@ -18,7 +18,7 @@ import { JobsIndicator } from '@/features/JobsIndicator';
 import { ErrorBoundary } from '@/components/app/ErrorBoundary';
 import { Note, Pill } from '@/components/app/primitives';
 
-// 抽屉（含各页签、react-table、对话框）和生命周期对话框只在第一次用到时才下载，登录页和首屏不背这份体积。
+// 抽屉（含各页签、图表、对话框）和生命周期对话框只在第一次用到时才下载，登录页和首屏不背这份体积。
 // 加载失败（发版后旧块 404）由外面的 silent ErrorBoundary 接住并提示刷新。
 const NodeDrawer = React.lazy(() => import('@/features/NodeDrawer').then((m) => ({ default: m.NodeDrawer })));
 const RetireDialog = React.lazy(() => import('@/components/app/RetireDialog').then((m) => ({ default: m.RetireDialog })));

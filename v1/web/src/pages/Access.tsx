@@ -45,6 +45,7 @@ export function AccessPage() {
     kind: kind === 'domain' || kind === 'ip' ? kind : '', action: act === 'routed' || act === 'blocked' ? act : '',
   }), [w, sp, kind, act]);
   const tab: View = isView(view) ? view : 'targets';
+  const { open } = useDrawer(); // 一次：各视图的行里不再各自订阅 URL
   const [sort, setSort] = React.useState<TargetSort>('conns');
 
   // 搜索框：输入即生效，停手 250ms 后写进 URL
@@ -89,11 +90,11 @@ export function AccessPage() {
         <TabsList>{VIEWS.map((x) => <TabsTrigger key={x.value} value={x.value} noPanel>{x.label}</TabsTrigger>)}</TabsList>
       </Tabs>
 
-      {tab === 'targets' && <TargetsView f={f} sort={sort} setSort={setSort} filtered={filtered} />}
-      {tab === 'new' && <NewView f={f} filtered={filtered} />}
-      {tab === 'sources' && <SourcesView f={f} filtered={filtered} />}
-      {tab === 'nodes' && <NodesView f={f} filtered={filtered} />}
-      {tab === 'events' && <EventsView f={f} filtered={filtered} />}
+      {tab === 'targets' && <TargetsView open={open} f={f} sort={sort} setSort={setSort} filtered={filtered} />}
+      {tab === 'new' && <NewView open={open} f={f} filtered={filtered} />}
+      {tab === 'sources' && <SourcesView open={open} f={f} filtered={filtered} />}
+      {tab === 'nodes' && <NodesView open={open} f={f} filtered={filtered} />}
+      {tab === 'events' && <EventsView open={open} f={f} filtered={filtered} />}
     </div>
   );
 }
@@ -105,8 +106,8 @@ const Loading = () => <div style={{ padding: 16 }}><span className="skel" style=
 const ErrNote = ({ e }: { e: unknown }) => <Note tone="bad">{(e as Error).message}</Note>;
 
 /** 节点名：点开抽屉的「访问记录」页签 */
-function NodeLink({ id, name }: { id: string; name: string }) {
-  const { open } = useDrawer();
+type Open = ReturnType<typeof useDrawer>['open'];
+function NodeLink({ id, name, open }: { id: string; name: string; open: Open }) {
   return <button type="button" className="btn btn-link" style={{ maxWidth: '100%' }} onClick={(e) => { e.stopPropagation(); open(id, 'access'); }}><span className="ellipsis">{name}</span></button>;
 }
 
@@ -126,7 +127,7 @@ function LoadMore({ has, busy, onClick }: { has: boolean; busy: boolean; onClick
   return <div className="dt-foot" style={{ justifyContent: 'center' }}><Button size="sm" loading={busy} onClick={onClick}>加载更多</Button></div>;
 }
 
-function TargetsView({ f, sort, setSort, filtered }: { f: AccessFilter; sort: TargetSort; setSort: (s: TargetSort) => void; filtered: boolean }) {
+function TargetsView({ open, f, sort, setSort, filtered }: { f: AccessFilter; sort: TargetSort; setSort: (s: TargetSort) => void; filtered: boolean; open: Open }) {
   const q = useAccessTargets(f, sort);
   // offset 分页在排序键变化时同一行可能出现在两页：按 节点|目标 去重，保证 key 唯一
   const rows = React.useMemo(() => {
@@ -146,7 +147,7 @@ function TargetsView({ f, sort, setSort, filtered }: { f: AccessFilter; sort: Ta
             {rows.map((t) => (
               <tr key={`${t.node_id}|${t.dest_host}`}>
                 <td><HostCell host={t.dest_host} kind={t.kind} /></td>
-                <td><NodeLink id={t.node_id} name={t.name} /></td>
+                <td><NodeLink id={t.node_id} name={t.name} open={open} /></td>
                 <td className="r">{fmtN(t.sources)}</td>
                 <td className="r strong">{fmtN(t.conns)}</td>
                 <td><ResultPill conns={t.conns} blocked={t.blocked} /></td>
@@ -164,7 +165,7 @@ function TargetsView({ f, sort, setSort, filtered }: { f: AccessFilter; sort: Ta
   );
 }
 
-function NewView({ f, filtered }: { f: AccessFilter; filtered: boolean }) {
+function NewView({ f, filtered, open }: { f: AccessFilter; filtered: boolean; open: Open }) {
   const q = useNewTargets(f);
   const rows = q.data?.items ?? [];
   return (
@@ -179,7 +180,7 @@ function NewView({ f, filtered }: { f: AccessFilter; filtered: boolean }) {
             {rows.map((t) => (
               <tr key={`${t.node_id}|${t.dest_host}`}>
                 <td><HostCell host={t.dest_host} kind={t.kind} /></td>
-                <td><NodeLink id={t.node_id} name={t.name} /></td>
+                <td><NodeLink id={t.node_id} name={t.name} open={open} /></td>
                 <td>{F.dtFull(t.first_seen)}<span className="sub">{F.ago(t.first_seen)}</span></td>
                 <td>{F.ago(t.last_seen)}</td>
                 <td className="r">{fmtN(t.total)}</td>
@@ -194,7 +195,7 @@ function NewView({ f, filtered }: { f: AccessFilter; filtered: boolean }) {
   );
 }
 
-function SourcesView({ f, filtered }: { f: AccessFilter; filtered: boolean }) {
+function SourcesView({ f, filtered, open }: { f: AccessFilter; filtered: boolean; open: Open }) {
   const q = useAccessSources(f);
   const [ct, setCt] = React.useState('');
   const all = q.data?.items ?? [];
@@ -221,7 +222,7 @@ function SourcesView({ f, filtered }: { f: AccessFilter; filtered: boolean }) {
                   <td><span className="mono strong">{s.src_ip}</span></td>
                   <td><IspPlace intel={s.intel} /></td>
                   <td><ConnCell intel={s.intel} /></td>
-                  <td><NodeLink id={s.node_id} name={s.name} /></td>
+                  <td><NodeLink id={s.node_id} name={s.name} open={open} /></td>
                   <td className="r">{fmtN(s.conns)}</td>
                   <td title={F.dtFull(s.last_ts)}>{F.ago(s.last_ts)}</td>
                 </tr>
@@ -238,9 +239,8 @@ function SourcesView({ f, filtered }: { f: AccessFilter; filtered: boolean }) {
   );
 }
 
-function NodesView({ f, filtered }: { f: AccessFilter; filtered: boolean }) {
+function NodesView({ f, filtered, open }: { f: AccessFilter; filtered: boolean; open: Open }) {
   const q = useAccessSummary(f);
-  const { open } = useDrawer();
   const rows = q.data?.nodes ?? [];
   return (
     <Panel title="节点概览" count={q.data ? `${rows.length} 个节点` : undefined} sub="点一行打开该节点的访问记录" flush>
@@ -270,7 +270,7 @@ function NodesView({ f, filtered }: { f: AccessFilter; filtered: boolean }) {
   );
 }
 
-function EventsView({ f, filtered }: { f: AccessFilter; filtered: boolean }) {
+function EventsView({ f, filtered, open }: { f: AccessFilter; filtered: boolean; open: Open }) {
   const q = useAccessEvents(f);
   const rows = q.data?.pages.flatMap((p) => p.items) ?? [];
   return (
@@ -285,7 +285,7 @@ function EventsView({ f, filtered }: { f: AccessFilter; filtered: boolean }) {
             {rows.map((e, i) => (
               <tr key={`${e.ts}|${e.node_id}|${i}`}>
                 <td className="num">{F.dtFull(e.ts)}:{F.pad2(new Date(e.ts).getSeconds())}</td>
-                <td><NodeLink id={e.node_id} name={e.name} /></td>
+                <td><NodeLink id={e.node_id} name={e.name} open={open} /></td>
                 <td><span className="mono">{e.src_ip ?? '—'}</span></td>
                 <td title={e.dest_host}><span className="strong">{e.dest_host}</span>{e.dest_port != null && <span className="t-sub">:{e.dest_port}</span>}</td>
                 <td>{e.network?.toUpperCase() ?? '—'}</td>

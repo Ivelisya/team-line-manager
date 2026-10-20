@@ -118,20 +118,20 @@ const scenes = {
     await shot(page, 'ui-settings-key-token');
     return { page, errors };
   },
-  async 'settings-notify'() { const { page, errors } = await open('/settings?tab=notify', { h: 1000 }); await shot(page, 'ui-settings-notify'); return { page, errors }; },
+  async 'settings-notify'() { const { page, errors } = await open('/settings?section=notify', { h: 1000 }); await shot(page, 'ui-settings-notify'); return { page, errors }; },
   async 'settings-notify-dialog'() {
-    const { page, errors } = await open('/settings?tab=notify', { h: 900 });
+    const { page, errors } = await open('/settings?section=notify', { h: 900 });
     await clickText(page, 'button', '新建渠道'); await sleep(500);
     await shot(page, 'ui-settings-notify-dialog');
     return { page, errors };
   },
   async 'settings-notify-test'() {
-    const { page, errors } = await open('/settings?tab=notify', { h: 1000 });
+    const { page, errors } = await open('/settings?section=notify', { h: 1000 });
     await clickText(page, 'button', '发送测试'); await sleep(1000);
     await shot(page, 'ui-settings-notify-test');
     return { page, errors };
   },
-  async 'settings-dark'() { const { page, errors } = await open('/settings?tab=notify', { h: 1000, theme: 'dark' }); await shot(page, 'ui-settings-notify-dark'); return { page, errors }; },
+  async 'settings-dark'() { const { page, errors } = await open('/settings?section=notify', { h: 1000, theme: 'dark' }); await shot(page, 'ui-settings-notify-dark'); return { page, errors }; },
   async 'toast'() {
     const { page, errors } = await open('/', { h: 900 });
     for (let i = 0; i < 2; i++) {

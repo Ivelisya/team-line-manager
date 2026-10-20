@@ -162,7 +162,8 @@ const LogPanel = React.memo(function LogPanel({ jobId, state }: { jobId: string;
   React.useEffect(() => {
     let stop = false; let timer: ReturnType<typeof setTimeout>;
     const pull = async () => {
-      try {
+      // 进行中且页面在后台：跳过这一轮（下一轮再拉）；已结束的最后一次补拉不跳过
+      if (!live || !document.hidden) try {
         const more = await fetchAllLogs(jobId, last.current);
         if (stop) return;
         setErr(null);

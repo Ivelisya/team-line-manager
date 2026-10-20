@@ -33,7 +33,7 @@ export default function CommandPalette({ theme }: { theme: { pref: ThemePref; se
   const open = useOverlay() === 'palette';
   const nav = useNavigate();
   const { open: openDrawer } = useDrawer();
-  const machines = useMachines('live').data ?? [];
+  const machines = useMachines('live', open).data ?? []; // 面板关着（组件仍挂载）时不轮询、不随失效重取
   const upgradeAll = useUpgradeAllAgents();
   const [search, setSearch] = React.useState('');
   const [mode, setMode] = React.useState<'root' | 'copy-ip' | 'evacuate'>('root');

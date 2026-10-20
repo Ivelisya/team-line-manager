@@ -19,6 +19,7 @@ const SORTS: { value: SortKey; label: string }[] = [
 ];
 const VIEWS: CardView[] = ['large', 'small', 'compact'];
 const EMPTY_PLANS: Plan[] = [];
+const EMPTY_MACHINES: MachineView[] = [];
 const store = {
   /** 读本地偏好；值不在 allowed 里（旧版本或手改的脏值）一律回退默认 */
   get: <T extends string>(k: string, d: T, allowed: readonly T[]): T => { try { const v = localStorage.getItem(k) as T | null; return v && allowed.includes(v) ? v : d; } catch { return d; } },
@@ -53,7 +54,7 @@ export function HomePage() {
   const setV = (v: CardView) => { setView(v); store.set('fleet:view', v); };
   const setS = (v: SortKey) => { setSort(v); store.set('fleet:sort', v); };
 
-  const all = React.useMemo(() => (machines.data ?? []).filter((m) => m.lifecycle !== 'retired'), [machines.data]); // 已退役不进首页
+  const all = machines.data ?? EMPTY_MACHINES; // live 范围已不含已退役
   const counts = React.useMemo(() => ({
     all: all.length, relay: all.filter((m) => m.kind === 'relay').length,
     byTeam: new Map((teams.data ?? []).map((t) => [t.id, all.filter((m) => m.team?.id === t.id).length])),

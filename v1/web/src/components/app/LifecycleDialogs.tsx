@@ -4,7 +4,7 @@ import * as React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowRight } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
-import { useEvacuate, useMachinePreview, useMoveEntry, useRelays, useRestore, useRestorePreview, useTeams } from '@/lib/queries';
+import { useEvacuate, useMachinePreview, useMoveEntry, useRelayChoices, useRestore, useRestorePreview, useTeams } from '@/lib/queries';
 import { closeEvacuate, closeMove, closeRestore, useEvacuateTarget, useMoveTarget, useRestoreTarget } from '@/lib/nodeActions';
 import { CheckRow, Field, Input } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
@@ -22,13 +22,13 @@ export const movableEntries = (m: MachineView) => m.entries.filter((e) => e.life
 export function MoveDialog({ m, open, onOpenChange, onDone }: { m: MachineView; open: boolean; onOpenChange: (o: boolean) => void; onDone?: () => void }) {
   const nav = useNavigate();
   const move = useMoveEntry();
-  const relays = useRelays().data ?? [];
+  const relays = useRelayChoices().data ?? [];
   const cur = movableEntries(m);
   const [to, setTo] = React.useState('');
   const [from, setFrom] = React.useState('');
   React.useEffect(() => { if (open) { setTo(''); setFrom(cur.length === 1 ? cur[0].relay.id : ''); } }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
   const used = new Set(m.entries.map((e) => e.relay.id));
-  const opts = relays.filter((r) => r.lifecycle === 'active' && !used.has(r.id)).map((r) => ({ value: r.id, label: r.name }));
+  const opts = relays.filter((r) => !used.has(r.id)).map((r) => ({ value: r.id, label: r.name }));
   const multi = cur.length > 1;
   const ready = !!to && cur.length > 0 && (!multi || !!from);
   return (
@@ -60,10 +60,10 @@ export function MoveDialog({ m, open, onOpenChange, onDone }: { m: MachineView; 
 export function EvacuateDialog({ relay, open, onOpenChange, onDone }: { relay: MachineView; open: boolean; onOpenChange: (o: boolean) => void; onDone?: () => void }) {
   const nav = useNavigate();
   const evac = useEvacuate();
-  const relays = useRelays().data ?? [];
+  const relays = useRelayChoices().data ?? [];
   const [to, setTo] = React.useState('');
   React.useEffect(() => { if (open) setTo(''); }, [open]);
-  const opts = relays.filter((r) => r.lifecycle === 'active' && r.id !== relay.id).map((r) => ({ value: r.id, label: r.name }));
+  const opts = relays.filter((r) => r.id !== relay.id).map((r) => ({ value: r.id, label: r.name }));
   const list = relay.entries.filter((e) => e.lifecycle !== 'removing' && e.lifecycle !== 'removed');
   const movable = list.filter((e) => e.lifecycle === 'active');
   return (
@@ -103,7 +103,7 @@ export function RestoreDialog({ m, open, onOpenChange, onDone }: { m: MachineVie
   const nav = useNavigate();
   const restore = useRestore();
   const teams = useTeams().data ?? [];
-  const relays = useRelays().data ?? [];
+  const relays = useRelayChoices().data ?? [];
   const isRelay = m.kind === 'relay';
   const isProxy = m.kind === 'proxy';
   const [team, setTeam] = React.useState(m.team?.id ?? '');
@@ -130,7 +130,7 @@ export function RestoreDialog({ m, open, onOpenChange, onDone }: { m: MachineVie
   const needs = base.data?.needs;
   React.useEffect(() => { if (open && base.data && !relay) setRelay(base.data.last_relay?.id ?? ''); }, [base.data, open]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const relayOpts = relays.filter((r) => r.lifecycle === 'active').map((r) => ({ value: r.id, label: r.name }));
+  const relayOpts = relays.map((r) => ({ value: r.id, label: r.name }));
   const upOk = !isProxy || (up.host.trim() !== '' && Number(up.port) > 0);
   const pwOk = needs?.password !== 'required' || pw !== '';
   const ready = !!pv && pv.restorable && !!needs && (!needs.relay || !!relay) && upOk && pwOk && !live.isFetching;
