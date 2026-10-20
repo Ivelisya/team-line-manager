@@ -3,6 +3,7 @@ import * as React from 'react';
 import { Link } from 'react-router-dom';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/dialog';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/overlays';
+import { ErrorBoundary } from '@/components/app/ErrorBoundary';
 import { Skeleton } from '@/components/ui/skeleton';
 import type { MachineView } from '@/lib/types';
 import { useMachine, useAudit } from '@/lib/queries';
@@ -29,6 +30,8 @@ export function NodeDrawer() {
   return (
     <Sheet open={!!id} onOpenChange={(o) => !o && close()}>
       <SheetContent aria-describedby={undefined}>
+        {/* 抽屉里图表/懒加载块出错只让抽屉显示错误，换机器或页签后自动恢复 */}
+        <ErrorBoundary compact resetKey={`${id}:${tab}`}>
         {!m ? (
           <>
             <div className="drawer-head"><SheetTitle className="drawer-title">{q.isError ? '无法加载机器' : '加载中…'}</SheetTitle></div>
@@ -44,7 +47,7 @@ export function NodeDrawer() {
               </div>
             </header>
             <Tabs value={tab} onValueChange={(v) => setTab(v as DrawerTab)} className="drawer-tabs">
-              <TabsList>{DRAWER_TABS.map((t) => <TabsTrigger key={t.value} value={t.value}>{t.label}</TabsTrigger>)}</TabsList>
+              <TabsList>{DRAWER_TABS.map((t) => <TabsTrigger key={t.value} value={t.value} noPanel>{t.label}</TabsTrigger>)}</TabsList>
             </Tabs>
             <div className="drawer-body">
               {m.lifecycle === 'retired' && (
@@ -69,6 +72,7 @@ export function NodeDrawer() {
             </div>
           </>
         )}
+        </ErrorBoundary>
       </SheetContent>
     </Sheet>
   );

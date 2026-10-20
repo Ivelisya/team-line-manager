@@ -1,5 +1,5 @@
 // 访问监控：类型（对应 docs/API.md「访问监控」）+ 查询 hook。数据 30 秒轮询，页面不在前台时 TanStack Query 自动暂停。
-import { keepPreviousData, useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useInfiniteQuery, useQuery, type QueryClient } from '@tanstack/react-query';
 import { get } from './api';
 import type { IpIntel } from './ipintel';
 
@@ -37,6 +37,16 @@ export interface MachineAccess {
 
 const POLL = 30_000;
 
+/** 无限查询加载超过 1 页后停止自动轮询：轮询会按顺序重拉所有已加载的页，且 offset 分页在排序键变化时会重复/漏行。
+ *  这时由页面提示“已暂停自动刷新”，用 refreshFirstPage 手动回到第一页。 */
+const pollFirstPageOnly = (q: { state: { data?: { pages: unknown[] } } }) => ((q.state.data?.pages.length ?? 0) > 1 ? false : POLL);
+export const pagesLoaded = (d: { pages: unknown[] } | undefined) => d?.pages.length ?? 0;
+/** 只保留第一页并重新拉取（手动刷新） */
+export function refreshFirstPage(qc: QueryClient, queryKey: readonly unknown[]) {
+  qc.setQueryData(queryKey, (d: { pages: unknown[]; pageParams: unknown[] } | undefined) => (d ? { pages: d.pages.slice(0, 1), pageParams: d.pageParams.slice(0, 1) } : d));
+  void qc.invalidateQueries({ queryKey });
+}
+
 /** 筛选条件 → 查询串；空值不带 */
 export function accessQS(f: AccessFilter, extra: Record<string, string | number | undefined> = {}): string {
   const p = new URLSearchParams({ window: f.window });
@@ -50,33 +60,33 @@ export function accessQS(f: AccessFilter, extra: Record<string, string | number 
 }
 
 export const useAccessSummary = (f: AccessFilter) =>
-  useQuery({ queryKey: ['access', 'summary', f], queryFn: () => get<AccessSummary>(`/access/summary?${accessQS(f)}`), refetchInterval: POLL, placeholderData: keepPreviousData });
+  useQuery({ queryKey: ['access', 'summary', f], queryFn: ({ signal }) => get<AccessSummary>(`/access/summary?${accessQS(f)}`, signal), refetchInterval: POLL, placeholderData: keepPreviousData });
 
 export const useAccessTargets = (f: AccessFilter, sort: TargetSort, enabled = true) =>
   useInfiniteQuery({
-    queryKey: ['access', 'targets', f, sort], enabled, initialPageParam: 0, refetchInterval: POLL, placeholderData: keepPreviousData,
-    queryFn: ({ pageParam }) => get<AccessTargets>(`/access/targets?${accessQS(f, { sort, limit: 100, offset: pageParam })}`),
+    queryKey: ['access', 'targets', f, sort], enabled, initialPageParam: 0, refetchInterval: pollFirstPageOnly, placeholderData: keepPreviousData,
+    queryFn: ({ pageParam, signal }) => get<AccessTargets>(`/access/targets?${accessQS(f, { sort, limit: 100, offset: pageParam })}`, signal),
     getNextPageParam: (last) => last.next_offset ?? undefined,
   });
 
 export const useNewTargets = (f: AccessFilter, enabled = true) =>
   useQuery({
     queryKey: ['access', 'new', f], enabled, refetchInterval: POLL, placeholderData: keepPreviousData,
-    queryFn: () => get<{ items: NewTarget[]; next_offset: number | null }>(`/access/new-targets?${accessQS(f, { limit: 200 })}`),
+    queryFn: ({ signal }) => get<{ items: NewTarget[]; next_offset: number | null }>(`/access/new-targets?${accessQS(f, { limit: 200 })}`, signal),
   });
 
 export const useAccessSources = (f: AccessFilter, enabled = true) =>
   useQuery({
     queryKey: ['access', 'sources', f], enabled, refetchInterval: POLL, placeholderData: keepPreviousData,
-    queryFn: () => get<{ items: AccessSource[] }>(`/access/sources?${accessQS(f, { limit: 200 })}`),
+    queryFn: ({ signal }) => get<{ items: AccessSource[] }>(`/access/sources?${accessQS(f, { limit: 200 })}`, signal),
   });
 
 export const useAccessEvents = (f: AccessFilter, enabled = true) =>
   useInfiniteQuery({
-    queryKey: ['access', 'events', f], enabled, initialPageParam: '', refetchInterval: POLL, placeholderData: keepPreviousData,
-    queryFn: ({ pageParam }) => get<AccessEvents>(`/access/events?${accessQS(f, { limit: 100, before: pageParam })}`),
+    queryKey: ['access', 'events', f], enabled, initialPageParam: '', refetchInterval: pollFirstPageOnly, placeholderData: keepPreviousData,
+    queryFn: ({ pageParam, signal }) => get<AccessEvents>(`/access/events?${accessQS(f, { limit: 100, before: pageParam })}`, signal),
     getNextPageParam: (last) => last.next_before ?? undefined,
   });
 
 export const useMachineAccess = (id: string | null, window: AccessWindow) =>
-  useQuery({ queryKey: ['access', 'machine', id, window], enabled: !!id, refetchInterval: POLL, placeholderData: keepPreviousData, queryFn: () => get<MachineAccess>(`/machines/${id}/access?window=${window}`) });
+  useQuery({ queryKey: ['access', 'machine', id, window], enabled: !!id, refetchInterval: POLL, placeholderData: keepPreviousData, queryFn: ({ signal }) => get<MachineAccess>(`/machines/${id}/access?window=${window}`, signal) });

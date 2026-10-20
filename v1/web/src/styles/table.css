@@ -42,4 +42,3 @@
 .dt-grid td.is-bad { box-shadow: inset 0 0 0 1px var(--bad); background: var(--bad-bg); }
 .dt-grid td.is-na { background: var(--sunken); }
 .dt-grid tr.is-row-bad td.idx { color: var(--bad-text); }
-.dt-grid tr.row-result td { height: auto; padding: var(--sp-6) var(--sp-12); background: var(--sunken); white-space: normal; border-right: 0; }

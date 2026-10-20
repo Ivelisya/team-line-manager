@@ -12,7 +12,7 @@ import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
 import { Field, Input, Textarea } from '@/components/ui/form';
 import { Segmented, Tip, Trunc } from '@/components/ui/overlays';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogHeader } from '@/components/ui/dialog';
 import { SkeletonRows } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
 import { ConfirmDialog } from '@/components/app/dialogs';
@@ -40,7 +40,15 @@ export function PolicyPage() {
   const teams = q.data?.teams ?? [];
   const draftCount = q.data?.draft_count ?? 0;
   const sel = parseSel(sp.get('s')) ?? (teams[0] ? { scope: 'team' as const, id: teams[0].id } : null);
-  const select = (s: Sel) => setSp((p) => { const n = new URLSearchParams(p); n.set('s', `${s.scope}:${s.id}`); return n; }, { replace: true });
+  const apply = (s: Sel) => setSp((p) => { const n = new URLSearchParams(p); n.set('s', `${s.scope}:${s.id}`); return n; }, { replace: true });
+  // 编辑器有未保存的改动时，切换范围会让它重新挂载并丢掉编辑：先拦下来，用页面内对话框确认
+  const dirtyRef = React.useRef(false);
+  const onDirty = React.useCallback((d: boolean) => { dirtyRef.current = d; }, []);
+  const [pending, setPending] = React.useState<Sel | null>(null);
+  const select = (s: Sel) => {
+    if (sel && sel.scope === s.scope && sel.id === s.id) return;
+    if (dirtyRef.current) setPending(s); else apply(s);
+  };
 
   const [openTeams, setOpenTeams] = React.useState<Set<string>>(new Set());
   const [initOpen, setInitOpen] = React.useState(false);
@@ -93,13 +101,16 @@ export function PolicyPage() {
           </div>
         </Panel>
         {target
-          ? <Editor key={`${sel!.scope}:${sel!.id}`} scope={sel!.scope} name={target.name} sp={target.sp} team={target.team} node={target.node} />
+          ? <Editor key={`${sel!.scope}:${sel!.id}`} scope={sel!.scope} name={target.name} sp={target.sp} team={target.team} node={target.node} onDirty={onDirty} />
           : <Panel title="编辑"><Empty icon={<ShieldCheck size={22} />} text="在左侧选择团队或节点" /></Panel>}
       </div>
 
       <VersionsPanel />
 
       <PreviewDialog open={preview} onOpenChange={setPreview} />
+      <ConfirmDialog open={pending != null} onOpenChange={(o) => { if (!o) setPending(null); }} danger confirmLabel="放弃修改并切换" title="放弃未保存的修改？"
+        description={`「${target?.name ?? '当前范围'}」有还没保存的修改，切换到别的范围后会丢失。`}
+        onConfirm={() => { if (pending) { dirtyRef.current = false; apply(pending); } }} />
       <ConfirmDialog open={askDiscard} onOpenChange={setAskDiscard} danger confirmLabel="丢弃" title={`丢弃全部 ${draftCount} 份草稿？`}
         description="这些还没发布的改动会丢失。已经生效的规则不受影响。"
         onConfirm={async () => {
@@ -149,7 +160,7 @@ const bodyOf = (p: ScopePolicy): PolicyBody => p.draft ?? { mode: p.mode, domain
 const curOf = (p: ScopePolicy): PolicyBody => ({ mode: p.mode, domains: p.domains, note: p.note });
 const sameBody = (a: PolicyBody, b: PolicyBody) => a.mode === b.mode && a.note === b.note && a.domains.length === b.domains.length && a.domains.every((d, i) => d === b.domains[i]);
 
-function Editor({ scope, name, sp, team, node }: { scope: 'team' | 'node'; name: string; sp: ScopePolicy; team: PolicyTeam; node: PolicyNode | null }) {
+function Editor({ scope, name, sp, team, node, onDirty }: { scope: 'team' | 'node'; name: string; sp: ScopePolicy; team: PolicyTeam; node: PolicyNode | null; onDirty: (d: boolean) => void }) {
   const save = useSavePolicy();
   // 表单初值 = 草稿（没有草稿则生效值）；synced 记录它对应的服务端 revision 与内容，用来判断有没有本地改动、服务端有没有被别人改过
   const init = bodyOf(sp);
@@ -162,6 +173,7 @@ function Editor({ scope, name, sp, team, node }: { scope: 'team' | 'node'; name:
   const form: PolicyBody = { mode, domains: parsed.domains, note: note.trim() };
   const dirty = !sameBody(form, synced.body);
   const stale = sp.revision !== synced.revision;
+  React.useEffect(() => { onDirty(dirty); return () => onDirty(false); }, [dirty, onDirty]);
 
   const load = (p: ScopePolicy) => {
     const b = bodyOf(p);
@@ -309,10 +321,10 @@ function PreviewDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent size="lg">
-          <div style={{ display: 'grid', gap: 6 }}>
+          <DialogHeader>
             <DialogTitle>预览：发布后会怎样</DialogTitle>
             <DialogDescription>{d ? `按最近 ${d.window_hours} 小时的访问汇总模拟，实际结果以发布后为准。` : '正在按最近 24 小时的访问汇总模拟…'}</DialogDescription>
-          </div>
+          </DialogHeader>
           {q.isLoading && <SkeletonRows rows={4} />}
           {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
           {empty && <Empty icon={<ShieldCheck size={22} />} text="没有未发布的草稿" />}

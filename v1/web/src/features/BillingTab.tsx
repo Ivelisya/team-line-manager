@@ -7,7 +7,7 @@ import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
 import { Field, Input, Switch } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogHeader } from '@/components/ui/dialog';
 import { toast } from '@/components/ui/toast';
 import { ErrorNote, LabelValue, LabelValueGrid, Note, Num, Section, SectionHeader } from '@/components/app/primitives';
 
@@ -118,7 +118,7 @@ function RenewDialog({ m, s, open, onOpenChange }: { m: MachineView; s: Subscrip
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
-        <div style={{ display: 'grid', gap: 6 }}><DialogTitle>登记续费 · {m.name}</DialogTitle><DialogDescription>只记录“已续费”，到期日顺延；不会向供应商付款。当前到期日 {s.due_date}。</DialogDescription></div>
+        <DialogHeader><DialogTitle>登记续费 · {m.name}</DialogTitle><DialogDescription>只记录“已续费”，到期日顺延；不会向供应商付款。当前到期日 {s.due_date}。</DialogDescription></DialogHeader>
         <div className="form-grid">
           <Field label="新到期日" error={newDue && newDue <= s.due_date ? '应晚于当前到期日' : undefined}><Input type="date" value={newDue} onChange={(e) => setNewDue(e.target.value)} /></Field>
           <Field label={`实付金额（${s.currency}）`}><Input inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} /></Field>

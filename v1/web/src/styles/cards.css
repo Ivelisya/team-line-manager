@@ -51,7 +51,6 @@
 .ncard[data-view="compact"] .nc-name { flex: none; max-width: 60%; }
 .nc-ipsep { flex: none; color: var(--fg-3); }
 .nc-ip { flex: 0 1 auto; min-width: 0; font-size: var(--fs-body); color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.nc-sub { flex: none; font-size: var(--fs-label); color: var(--bad-text); white-space: nowrap; }
 .nc-actions { margin-left: auto; margin-right: -8px; display: flex; align-items: center; gap: var(--sp-2); flex: none; }
 .ncard[data-offline="1"] .nc-name { color: var(--fg-2); }
 
@@ -136,8 +135,6 @@
 .nc-foot-right { display: flex; align-items: center; gap: var(--sp-4); min-width: 0; margin-right: -6px; }
 .nc-foot-right .chip { margin-right: var(--sp-4); }
 
-/* 骨架卡：同样的槽位，保证首屏不跳 */
-.ncard.is-skel > .nc-skel { margin-top: var(--card-pad); height: 14px; }
 
 /* 小卡片 / 紧凑：心跳条与 footer 之间留出内边距；无 sub 行的进度线更矮 */
 .ncard[data-view="small"] > .slot-seg:nth-last-child(2),

@@ -115,6 +115,13 @@ a { color: inherit; }
 @media (max-width: 480px) {
   .top-btn[data-top="palette"] { display: none; }
 }
+/* ≤400px：顶栏放不下品牌文字 + 告警胶囊 + 作业徽标 + 三个按钮，收起品牌文字（图标仍在、仍可点回首页），间距收紧，允许右侧收缩 */
+@media (max-width: 400px) {
+  .topbar { gap: 0; padding: 0 var(--sp-8) 0 var(--sp-4); }
+  .brand { font-size: 0; gap: 0; flex: none; }
+  .cmd-trigger { margin-right: 0; }
+  .topbar-right { gap: var(--sp-2); min-width: 0; flex-shrink: 1; }
+}
 
 /* ---------- 页头（全站同一个） ---------- */
 .page-head {

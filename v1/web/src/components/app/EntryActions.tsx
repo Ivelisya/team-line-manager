@@ -5,9 +5,10 @@ import type { EntryView } from '@/lib/types';
 import { fetchShare, useEntryAction } from '@/lib/queries';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/overlays';
 import { IconButton, Button } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogHeader } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/form';
 import { toast } from '@/components/ui/toast';
+import { copyText } from '@/lib/clipboard';
 import { ConfirmDialog, TypedConfirmDialog } from './dialogs';
 
 export const entryLabel = (e: EntryView) => `${e.relay.name}:${e.port}`;
@@ -47,11 +48,11 @@ export function EntryActions({ entry }: { entry: EntryView }) {
 
       <Dialog open={dlg === 'share'} onOpenChange={(o) => !o && setDlg(null)}>
         <DialogContent size="md">
-          <div style={{ display: 'grid', gap: 6 }}><DialogTitle>分享链接 · {entryLabel(entry)}</DialogTitle><DialogDescription>查看分享链接会记入审计。链接等同于凭据，请只发给需要的人。</DialogDescription></div>
+          <DialogHeader><DialogTitle>分享链接 · {entryLabel(entry)}</DialogTitle><DialogDescription>查看分享链接会记入审计。链接等同于凭据，请只发给需要的人。</DialogDescription></DialogHeader>
           <Textarea readOnly value={url} rows={4} className="mono" onFocus={(e) => e.currentTarget.select()} />
           <DialogFooter>
             <Button onClick={() => setDlg(null)}>关闭</Button>
-            <Button variant="primary" onClick={async () => { try { await navigator.clipboard.writeText(url); toast.ok('已复制链接'); } catch { toast.err('复制失败，请手动选择并复制'); } }}>复制链接</Button>
+            <Button variant="primary" onClick={() => void copyText(url, '链接')}>复制链接</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

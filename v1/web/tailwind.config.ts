@@ -1,5 +1,4 @@
 import type { Config } from 'tailwindcss';
-import animate from 'tailwindcss-animate';
 
 // 颜色、圆角、字号全部指向 tokens.css 里的 CSS 变量（移植自原版）
 const v = (n: string) => `var(--${n})`;
@@ -38,17 +37,7 @@ export default {
       boxShadow: { float: v('shadow-float'), thumb: v('shadow-thumb'), btn: v('shadow-btn') },
       zIndex: { sticky: '10', pagehead: '20', topbar: '30', drawer: '40', popover: '50', dialog: '60', toast: '70', tooltip: '80' },
       transitionDuration: { fast: '120ms', base: '180ms', panel: '220ms' },
-      keyframes: {
-        'fade-in': { from: { opacity: '0' }, to: { opacity: '1' } },
-        'slide-in-right': { from: { transform: 'translateX(24px)', opacity: '0' }, to: { transform: 'none', opacity: '1' } },
-        'pop-in': { from: { opacity: '0', transform: 'translateY(4px) scale(.98)' }, to: { opacity: '1', transform: 'none' } },
-      },
-      animation: {
-        'fade-in': 'fade-in 180ms cubic-bezier(.2,.8,.2,1)',
-        'slide-in-right': 'slide-in-right 220ms cubic-bezier(.2,.8,.2,1)',
-        'pop-in': 'pop-in 180ms cubic-bezier(.2,.8,.2,1)',
-      },
     },
   },
-  plugins: [animate],
+  plugins: [],
 } satisfies Config;

@@ -2,9 +2,10 @@
 // 页签：域名与 IP / 新出现的目标 / 来源地址 / 节点概览 / 原始记录。数据 30 秒轮询（切走页面暂停）。
 import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { Radar } from 'lucide-react';
 import {
-  ACCESS_WINDOWS, isAccessWindow, useAccessEvents, useAccessSources, useAccessSummary, useAccessTargets, useNewTargets,
+  ACCESS_WINDOWS, isAccessWindow, pagesLoaded, refreshFirstPage, useAccessEvents, useAccessSources, useAccessSummary, useAccessTargets, useNewTargets,
   type AccessFilter, type AccessWindow, type TargetSort,
 } from '@/lib/access';
 import { useMachines, useTeams } from '@/lib/queries';
@@ -16,7 +17,7 @@ import { Select } from '@/components/ui/select';
 import { Segmented, Tabs, TabsList, TabsTrigger } from '@/components/ui/overlays';
 import { Empty, KpiTile, Note, PageHead, Panel, Pill } from '@/components/app/primitives';
 import { AccessViewSwitch } from '@/components/app/AccessViewSwitch';
-import { HostCell, ResultPill, fmtN } from '@/features/AccessTab';
+import { HostCell, ResultPill, fmtN } from '@/features/AccessBits';
 import { CONN_FILTER_OPTIONS, ConnCell, IpIntelHint, IpIntelStatusChip, IspPlace, connMatches } from '@/features/IpIntelBits';
 
 type View = 'targets' | 'new' | 'sources' | 'nodes' | 'events';
@@ -48,7 +49,9 @@ export function AccessPage() {
 
   // 搜索框：输入即生效，停手 250ms 后写进 URL
   const [text, setText] = React.useState(f.search);
-  React.useEffect(() => { const t = setTimeout(() => upd({ q: text.trim() }), 250); return () => clearTimeout(t); }, [text, upd]);
+  // upd 的身份随 URL 变化；放进依赖会让别的筛选一动就重跑这个 effect，把旧文本写回 URL。用 ref 取最新的，只依赖 text。
+  const updRef = React.useRef(upd); updRef.current = upd;
+  React.useEffect(() => { const t = setTimeout(() => updRef.current({ q: text.trim() }), 250); return () => clearTimeout(t); }, [text]);
 
   const teams = useTeams().data ?? [];
   const machines = useMachines('live').data ?? [];
@@ -83,7 +86,7 @@ export function AccessPage() {
       </div>
 
       <Tabs value={tab} onValueChange={(v) => upd({ view: v === 'targets' ? '' : v })}>
-        <TabsList>{VIEWS.map((x) => <TabsTrigger key={x.value} value={x.value}>{x.label}</TabsTrigger>)}</TabsList>
+        <TabsList>{VIEWS.map((x) => <TabsTrigger key={x.value} value={x.value} noPanel>{x.label}</TabsTrigger>)}</TabsList>
       </Tabs>
 
       {tab === 'targets' && <TargetsView f={f} sort={sort} setSort={setSort} filtered={filtered} />}
@@ -107,6 +110,17 @@ function NodeLink({ id, name }: { id: string; name: string }) {
   return <button type="button" className="btn btn-link" style={{ maxWidth: '100%' }} onClick={(e) => { e.stopPropagation(); open(id, 'access'); }}><span className="ellipsis">{name}</span></button>;
 }
 
+/** 加载了多页后自动刷新会暂停（轮询会重拉所有已加载的页，翻页位置也会错位）；这里给出提示和手动刷新 */
+function PausedNote({ pages, queryKey }: { pages: number; queryKey: readonly unknown[] }) {
+  const qc = useQueryClient();
+  if (pages <= 1) return null;
+  return (
+    <div style={{ padding: '8px 12px' }}>
+      <Note tone="info">已加载 {pages} 页，已暂停自动刷新。<Button variant="link" size="sm" onClick={() => refreshFirstPage(qc, queryKey)}>回到第一页并刷新</Button></Note>
+    </div>
+  );
+}
+
 function LoadMore({ has, busy, onClick }: { has: boolean; busy: boolean; onClick: () => void }) {
   if (!has) return null;
   return <div className="dt-foot" style={{ justifyContent: 'center' }}><Button size="sm" loading={busy} onClick={onClick}>加载更多</Button></div>;
@@ -114,11 +128,16 @@ function LoadMore({ has, busy, onClick }: { has: boolean; busy: boolean; onClick
 
 function TargetsView({ f, sort, setSort, filtered }: { f: AccessFilter; sort: TargetSort; setSort: (s: TargetSort) => void; filtered: boolean }) {
   const q = useAccessTargets(f, sort);
-  const rows = q.data?.pages.flatMap((p) => p.items) ?? [];
+  // offset 分页在排序键变化时同一行可能出现在两页：按 节点|目标 去重，保证 key 唯一
+  const rows = React.useMemo(() => {
+    const seen = new Set<string>();
+    return (q.data?.pages.flatMap((p) => p.items) ?? []).filter((t) => { const k = `${t.node_id}|${t.dest_host}`; if (seen.has(k)) return false; seen.add(k); return true; });
+  }, [q.data]);
   return (
     <Panel title="域名与 IP" count={q.data ? `${rows.length}${q.hasNextPage ? '+' : ''} 个` : undefined} sub="同一节点的随机子域名已合并为 *.域名"
       tools={<Segmented sm label="排序" value={sort} onChange={setSort} items={[{ value: 'conns', label: '连接数' }, { value: 'last', label: '最近' }, { value: 'first', label: '首次' }]} />} flush>
       {q.isError && <div style={{ padding: 12 }}><ErrNote e={q.error} /></div>}
+      <PausedNote pages={pagesLoaded(q.data)} queryKey={['access', 'targets', f, sort]} />
       <div className="table-wrap">
         <table className="dt" style={{ minWidth: 900 }}>
           <colgroup><col /><col style={{ width: 130 }} /><col style={{ width: 80 }} /><col style={{ width: 96 }} /><col style={{ width: 210 }} /><col style={{ width: 104 }} /><col style={{ width: 104 }} /></colgroup>
@@ -257,6 +276,7 @@ function EventsView({ f, filtered }: { f: AccessFilter; filtered: boolean }) {
   return (
     <Panel title="原始记录" count={q.data ? `${rows.length}${q.hasNextPage ? '+' : ''} 条` : undefined} sub="最新在前；原始记录只保留 7 天，目标不做合并" flush>
       {q.isError && <div style={{ padding: 12 }}><ErrNote e={q.error} /></div>}
+      <PausedNote pages={pagesLoaded(q.data)} queryKey={['access', 'events', f]} />
       <div className="table-wrap">
         <table className="dt is-one" style={{ minWidth: 820 }}>
           <colgroup><col style={{ width: 150 }} /><col style={{ width: 130 }} /><col style={{ width: 140 }} /><col /><col style={{ width: 70 }} /><col style={{ width: 96 }} /></colgroup>

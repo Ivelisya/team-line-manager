@@ -130,10 +130,6 @@
 .job-prog-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-12); min-width: 0; font-size: var(--fs-body); }
 .job-prog-head > .num { flex: none; font-weight: var(--fw-semibold); }
 .job-prog-head > .t-sub { font-size: var(--fs-label); text-align: right; }
-.job-item .l-prog { display: flex; align-items: center; gap: var(--sp-8); margin: var(--sp-4) 0 var(--sp-2); font-size: var(--fs-micro); color: var(--fg-2); }
-.job-item .l-prog .progress { flex: 1; height: 4px; }
-.job-item { cursor: pointer; }
-.job-item:focus-visible { outline-offset: -2px; }
 
 /* ========== 横向步骤条 ========== */
 .stepbar-wrap { overflow-x: auto; padding-bottom: var(--sp-4); scrollbar-width: thin; }
@@ -171,13 +167,7 @@
 .step-err-box .step-err { margin: 0; min-width: 0; }
 .err-kind { flex: none; display: inline-flex; align-items: center; height: 18px; padding: 0 var(--sp-8); border-radius: var(--r-pill); background: var(--bad-bg); color: var(--bad-text); font: var(--fw-medium) var(--fs-micro) / var(--lh-micro) var(--font-sans); white-space: nowrap; }
 
-/* 日志：错误行整行淡红底，暂停时的提示 */
 .logbox:focus-visible { outline-offset: -2px; }
-.logline { padding: 0 var(--sp-4); margin: 0 calc(var(--sp-4) * -1); border-radius: 3px; }
-.logline[data-level="error"] { background: var(--bad-bg); }
-.logline[data-level="warn"] .msg { color: var(--warn-text); }
-.logline .lv-debug { color: var(--fg-3); }
-.logline-note .msg { font-style: italic; }
 
 /* ========== 设置页 ========== */
 .set-tabs { margin-bottom: var(--section-gap); }

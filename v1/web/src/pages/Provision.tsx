@@ -2,7 +2,7 @@
 import * as React from 'react';
 import { Link } from 'react-router-dom';
 import { CheckCircle2, ClipboardPaste, ListChecks, Plus, Trash2, TriangleAlert } from 'lucide-react';
-import { usePlans, useProviders, useProvision, useProvisionCheck, useRelays, useTeams } from '@/lib/queries';
+import { usePlans, useProviders, useProvision, useProvisionCheck, useRelayChoices, useTeams } from '@/lib/queries';
 import type { Kind, ProvisionCheckItem } from '@/lib/types';
 import { KIND_LABEL } from '@/lib/sort';
 import { Button, IconButton } from '@/components/ui/button';
@@ -18,13 +18,14 @@ import { COLS, applies, localErrors, newRow, parseTsv, setCell, toItem, type Col
 const KIND_OPTS = (Object.entries(KIND_LABEL) as [Kind, string][]).map(([value, label]) => ({ value, label }));
 
 const NONE: never[] = [];
+const NONE_RELAYS: { id: string; name: string }[] = [];
 
 export function ProvisionPage() {
   const teams = useTeams().data ?? NONE;
   const providers = useProviders().data ?? NONE;
   const plans = usePlans().data ?? NONE;
-  const relayList = useRelays().data; // /relays：只含线路机
-  const relays = React.useMemo(() => (relayList ?? []).filter((m) => m.lifecycle === 'active'), [relayList]); // 只能挂在已上线的线路机上
+  // 只能挂在已上线的线路机上。只取 id/名称，引用在内容不变时保持稳定，ctx 不随每次轮询变化（GridCell 的 memo 才有效）
+  const relays = useRelayChoices().data ?? NONE_RELAYS;
   const ctx: Ctx = React.useMemo(() => ({ teams, relays, providers, plans }), [teams, relays, providers, plans]);
 
   const [mode, setMode] = React.useState<'single' | 'batch'>('single');

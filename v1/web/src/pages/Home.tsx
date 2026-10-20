@@ -72,7 +72,9 @@ export function HomePage() {
   const nodes = o?.nodes; const relays = o?.relays;
   const issues = (nodes?.down ?? 0) + (nodes?.degraded ?? 0) + (relays?.down ?? 0) + (relays?.degraded ?? 0);
   const tr = o?.traffic_month;
-  const loading = !o;
+  const loading = !o && !ov.isError; // 失败时不要一直停在骨架：显示“—”和重试
+  const trTotal = tr ? tr.up + tr.down : 0; const trScale = F.bytesScale(trTotal);
+  const rateTotal = o ? o.net_rx_bps + o.net_tx_bps : 0; const rateSc = F.rateScale(rateTotal);
 
   return (
     <div className="stack">
@@ -82,20 +84,21 @@ export function HomePage() {
           <Segmented label="卡片视图" value={view} onChange={setV} items={[{ value: 'large', label: '大卡片' }, { value: 'small', label: '小卡片' }, { value: 'compact', label: '紧凑' }]} />
         </>} />
 
+      {ov.isError && !o && <ErrorNote error={ov.error} onRetry={() => void ov.refetch()} />}
       <div className="kpi-grid-wrap">
         <div className="kpi-grid">
-          <KpiTile loading={loading} label="节点正常" value={<CountUp value={nodes?.ok} />} unit={`/ ${nodes?.total}`}
+          <KpiTile loading={loading} label="节点正常" value={<CountUp value={nodes?.ok} />} unit={nodes ? `/ ${nodes.total}` : undefined}
             sub={nodes && <><DotCount tone="warn" n={nodes.degraded} label="降级" /><DotCount tone="bad" n={nodes.down} label="故障" /><DotCount tone="neutral" n={nodes.unknown} label="未知" /></>} />
-          <KpiTile loading={loading} label="线路机正常" value={<CountUp value={relays?.ok} />} unit={`/ ${relays?.total}`}
+          <KpiTile loading={loading} label="线路机正常" value={<CountUp value={relays?.ok} />} unit={relays ? `/ ${relays.total}` : undefined}
             sub={relays && <><DotCount tone="warn" n={relays.degraded} label="降级" /><DotCount tone="bad" n={relays.down} label="故障" /></>} />
-          <KpiTile loading={loading} label="故障与降级" value={<CountUp value={issues} />} to="/incidents" sub={issues ? '点击查看告警' : '一切正常'} />
+          <KpiTile loading={loading} label="故障与降级" value={<CountUp value={o ? issues : undefined} />} to="/incidents" sub={o ? (issues ? '点击查看告警' : '一切正常') : undefined} />
           <KpiTile loading={loading} label="7 天内到期" value={<CountUp value={o?.due_7d} />} to="/nodes" sub="需要续费的机器" />
-          <KpiTile loading={loading} label="每月费用" value={o && (o.monthly_cost.length ? o.monthly_cost.map((c) => F.money(c.cents, c.currency)).join(' + ') : F.money(0, 'USD'))} sub={o && o.monthly_cost.length > 1 ? '多币种分别合计' : '在用机器按月折算'} />
-          <KpiTile loading={loading} label="本月业务流量" value={tr && <CountUp value={tr.up + tr.down} format={(n) => F.bytes(n).v} />} unit={tr && F.bytes(tr.up + tr.down).u}
+          <KpiTile loading={loading} label="每月费用" value={o ? (o.monthly_cost.length ? o.monthly_cost.map((c) => F.money(c.cents, c.currency)).join(' + ') : F.money(0, 'USD')) : '—'} sub={o && o.monthly_cost.length > 1 ? '多币种分别合计' : '在用机器按月折算'} />
+          <KpiTile loading={loading} label="本月业务流量" value={tr ? <CountUp value={trTotal} format={(n) => F.inScale(n, trScale)} /> : '—'} unit={tr ? trScale.u : undefined}
             sub={tr && <><span>↓ <Num f={F.bytes(tr.down)} /></span><span>↑ <Num f={F.bytes(tr.up)} /></span></>} />
-          <KpiTile loading={loading} label="网卡速率" value={o && <CountUp value={o.net_rx_bps + o.net_tx_bps} format={(n) => F.rate(n).v} />} unit={o && F.rate(o.net_rx_bps + o.net_tx_bps).u}
+          <KpiTile loading={loading} label="网卡速率" value={o ? <CountUp value={rateTotal} format={(n) => F.inScale(n, rateSc)} /> : '—'} unit={o ? rateSc.u : undefined}
             sub={o && <><span>↓ <Num f={F.rate(o.net_rx_bps)} /></span><span>↑ <Num f={F.rate(o.net_tx_bps)} /></span></>} />
-          <KpiTile loading={loading} label="上架 · 下线中" value={o && <CountUp value={o.provisioning + o.retiring} />} to="/jobs" sub={o && `上架 ${o.provisioning} · 下线 ${o.retiring}`} />
+          <KpiTile loading={loading} label="上架 · 下线中" value={o ? <CountUp value={o.provisioning + o.retiring} /> : '—'} to="/jobs" sub={o && `上架 ${o.provisioning} · 下线 ${o.retiring}`} />
         </div>
       </div>
 
@@ -111,7 +114,7 @@ export function HomePage() {
       {machines.isError && <ErrorNote error={machines.error} onRetry={() => void machines.refetch()} />}
       {machines.isLoading ? (
         <div className="cards" data-view={view}>{Array.from({ length: 6 }, (_, i) => <SkeletonCard key={i} view={view} />)}</div>
-      ) : shown.length === 0 ? (
+      ) : !machines.data ? null /* 请求失败且没有缓存：上面的错误提示已说明，不要误报“还没有机器” */ : shown.length === 0 ? (
         <Empty icon={<Inbox size={28} />} text={all.length ? '没有符合筛选条件的机器' : '还没有机器，去“上架”添加第一台'} />
       ) : (
         <div className="cards" data-view={view}>

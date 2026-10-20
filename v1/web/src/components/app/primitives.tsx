@@ -86,7 +86,7 @@ export function KpiTile({ label, value, unit, sub, to, onClick, pressed, loading
 }
 /** 数字平滑过渡：值变了从旧值滚到新值。format 决定怎么显示（默认取整） */
 export function CountUp({ value, format }: { value: number | null | undefined; format?: (n: number) => string }) {
-  const v = useCountUp(value ?? 0);
+  const v = useCountUp(value ?? NaN); // 没有值时是 NaN：数据到达的那一刻直接显示目标值，不从 0 滚过去
   if (value == null) return <>—</>;
   return <>{format ? format(v) : Math.round(v)}</>;
 }

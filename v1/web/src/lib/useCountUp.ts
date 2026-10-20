@@ -8,6 +8,8 @@ export function useCountUp(target: number, ms = 450): number {
   useEffect(() => {
     if (!Number.isFinite(target)) { setShown(target); from.current = target; return; }
     if (from.current === target) return;
+    // 之前没有有效值（数据刚到）：直接显示，不从 0 数起
+    if (!Number.isFinite(from.current)) { from.current = target; setShown(target); return; }
     const reduce = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
     if (reduce) { from.current = target; setShown(target); return; }
     const a = from.current; const t0 = performance.now();

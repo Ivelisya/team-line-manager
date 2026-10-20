@@ -1,5 +1,5 @@
 // TanStack Query 封装：查询 hook + 写操作 hook。写操作成功后按范围失效（实时流也会再推一次，重复无害）。
-import { useMemo } from 'react';
+import { useCallback } from 'react';
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { del, get, patch, post, put } from './api';
 import { makeDefaultCompare } from './sort';
@@ -13,49 +13,59 @@ export const useProviders = () => useQuery({ queryKey: ['providers'], queryFn: (
 export const usePlans = () => useQuery({ queryKey: ['plans'], queryFn: () => get<Plan[]>('/plans'), staleTime: 60_000 });
 export function useOverview() {
   const poll = usePoll(30_000);
-  return useQuery({ queryKey: ['overview'], queryFn: () => get<Overview>('/overview'), refetchInterval: poll });
+  return useQuery({ queryKey: ['overview'], queryFn: ({ signal }) => get<Overview>('/overview', signal), refetchInterval: poll });
 }
 
 /** 机器列表，已按默认顺序排好：线路机 → 团队 → 编号（故障/离线不下沉） */
 export function useMachines(scope: 'live' | 'retired' | 'all' = 'live') {
   const poll = usePoll(30_000);
-  const q = useQuery({ queryKey: ['machines', scope], queryFn: () => get<MachineView[]>(`/machines?scope=${scope}`), refetchInterval: poll });
-  const teams = useTeams();
-  const data = useMemo(() => (q.data ? [...q.data].sort(makeDefaultCompare(teams.data ?? [])) : undefined), [q.data, teams.data]);
-  return { ...q, data };
+  const teams = useTeams().data;
+  // select 排序：只在列表或团队变化时重算；返回的是查询结果本身，调用方按属性追踪
+  const select = useCallback((d: MachineView[]) => [...d].sort(makeDefaultCompare(teams ?? [])), [teams]);
+  return useQuery({ queryKey: ['machines', scope], queryFn: ({ signal }) => get<MachineView[]>(`/machines?scope=${scope}`, signal), refetchInterval: poll, select });
+}
+/** 按键等“用时才读”的场景：直接读缓存里的机器列表（同样的默认顺序），不订阅、不触发请求 */
+export function readMachines(qc: QueryClient, scope: 'live' | 'retired' | 'all' = 'live'): MachineView[] | undefined {
+  const raw = qc.getQueryData<MachineView[]>(['machines', scope]);
+  return raw ? [...raw].sort(makeDefaultCompare(qc.getQueryData<Team[]>(['teams']) ?? [])) : undefined;
 }
 export function useMachine(id: string | null) {
   const poll = usePoll(30_000);
-  return useQuery({ queryKey: ['machine', id], queryFn: () => get<MachineView>(`/machines/${id}`), enabled: !!id, refetchInterval: poll });
+  return useQuery({ queryKey: ['machine', id], queryFn: ({ signal }) => get<MachineView>(`/machines/${id}`, signal), enabled: !!id, refetchInterval: poll });
 }
 /** 悬浮卡用：先用机器列表缓存里的那份（立即有内容），再按需取单台；不轮询 */
 export function useMachinePreview(id: string | null) {
   const qc = useQueryClient();
   return useQuery({
-    queryKey: ['machine', id], queryFn: () => get<MachineView>(`/machines/${id}`), enabled: !!id, staleTime: 15_000,
+    queryKey: ['machine', id], queryFn: ({ signal }) => get<MachineView>(`/machines/${id}`, signal), enabled: !!id, staleTime: 15_000,
     initialData: () => qc.getQueryData<MachineView[]>(['machines', 'live'])?.find((m) => m.id === id),
     initialDataUpdatedAt: () => qc.getQueryState(['machines', 'live'])?.dataUpdatedAt,
   });
 }
+const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name, 'zh-Hans-CN', { numeric: true });
+const sortRelays = (d: MachineView[]) => [...d].sort(byName);
+const relayChoices = (d: MachineView[]) => d.filter((m) => m.lifecycle === 'active').map((m) => ({ id: m.id, name: m.name })).sort(byName);
+const relaysQuery = (poll: number | false) => ({ queryKey: ['relays'], queryFn: ({ signal }: { signal: AbortSignal }) => get<MachineView[]>('/relays', signal), refetchInterval: poll });
 export function useRelays() {
-  const poll = usePoll(30_000);
-  const q = useQuery({ queryKey: ['relays'], queryFn: () => get<MachineView[]>('/relays'), refetchInterval: poll });
-  const data = useMemo(() => (q.data ? [...q.data].sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN', { numeric: true })) : undefined), [q.data]);
-  return { ...q, data };
+  return useQuery({ ...relaysQuery(usePoll(30_000)), select: sortRelays });
+}
+/** 只要“已上线线路机的 id 和名称”（上架页的下拉和名称匹配用）。select 的结果会做结构共享：机器的探测、流量等字段每次轮询都在变，但 id/名称不变时引用不变，批量网格的 memo 才不会被击穿 */
+export function useRelayChoices() {
+  return useQuery({ ...relaysQuery(usePoll(30_000)), select: relayChoices });
 }
 /** poll：卡片上的心跳条没有抽屉那样的 tick 失效，自己按这个间隔刷新 */
 export const useSeries = (id: string | null, metric: 'host' | 'traffic' | 'probe', range: string, enabled = true, poll?: number) =>
-  useQuery({ queryKey: ['series', id, metric, range], queryFn: () => get<SeriesResp>(`/machines/${id}/series?metric=${metric}&range=${range}`), enabled: !!id && enabled, staleTime: 30_000, refetchInterval: poll });
-export const useRenewals = (id: string | null) => useQuery({ queryKey: ['renewals', id], queryFn: () => get<Renewal[]>(`/machines/${id}/renewals`), enabled: !!id });
-export const useAudit = (id: string | null) => useQuery({ queryKey: ['audit', id], queryFn: () => get<AuditEntry[]>(`/audit?target_id=${id}&limit=10`), enabled: !!id });
+  useQuery({ queryKey: ['series', id, metric, range], queryFn: ({ signal }) => get<SeriesResp>(`/machines/${id}/series?metric=${metric}&range=${range}`, signal), enabled: !!id && enabled, staleTime: 30_000, refetchInterval: poll });
+export const useRenewals = (id: string | null) => useQuery({ queryKey: ['renewals', id], queryFn: ({ signal }) => get<Renewal[]>(`/machines/${id}/renewals`, signal), enabled: !!id });
+export const useAudit = (id: string | null) => useQuery({ queryKey: ['audit', id], queryFn: ({ signal }) => get<AuditEntry[]>(`/audit?target_id=${id}&limit=10`, signal), enabled: !!id });
 export function useJobs(state: 'active' | 'done' | 'all' = 'all') {
   const poll = usePoll(10_000);
-  return useQuery({ queryKey: ['jobs', state], queryFn: () => get<Job[]>(`/jobs?state=${state}&limit=100`), refetchInterval: poll });
+  return useQuery({ queryKey: ['jobs', state], queryFn: ({ signal }) => get<Job[]>(`/jobs?state=${state}&limit=100`, signal), refetchInterval: poll });
 }
 export const useJob = (id: string | null) => useQuery({ queryKey: ['job', id], queryFn: () => get<Job>(`/jobs/${id}`), enabled: !!id, refetchInterval: (q) => (q.state.data && jobLive(q.state.data.state) ? 2500 : false) });
 export function useIncidents(state: 'firing' | 'resolved' | 'all' = 'all') {
   const poll = usePoll(30_000);
-  return useQuery({ queryKey: ['incidents', state], queryFn: () => get<Incident[]>(`/incidents?state=${state}`), refetchInterval: poll });
+  return useQuery({ queryKey: ['incidents', state], queryFn: ({ signal }) => get<Incident[]>(`/incidents?state=${state}`, signal), refetchInterval: poll });
 }
 export const useSilences = () => useQuery({ queryKey: ['silences'], queryFn: () => get<Silence[]>('/silences') });
 
@@ -102,15 +112,17 @@ export const useEvacuate = () => useWrite(({ id, to_relay_id }: { id: string; to
 export const useRestore = () => useWrite(({ id, ...b }: { id: string } & RestoreBody) => post<{ job_id: string; machine_id: string; name: string; old_name: string; number: number | null }>(`/machines/${id}/restore`, b), [...M, ['jobs'], ['teams']]);
 /** 恢复预检；probe=false 不试 SSH（改团队/编号时只想看新名字，不必每次重新探测） */
 export const useRestorePreview = (id: string | null, enabled: boolean, o: { team_id?: string; number?: number; label?: string; probe?: boolean } = {}) =>
-  useQuery({
+  useQuery<RestorePreview>({
     queryKey: ['restore-preview', id, o.team_id ?? '', o.number ?? '', o.label ?? '', o.probe !== false], enabled: !!id && enabled, staleTime: 0, gcTime: 0, placeholderData: (p) => p,
-    queryFn: () => {
+    // 预检会真的 SSH 探测机器：切回窗口 / 网络恢复时不要自动重跑，改选项（queryKey 变化）才重查
+    refetchOnWindowFocus: false, refetchOnReconnect: false,
+    queryFn: ({ signal }) => {
       const q = new URLSearchParams();
       if (o.team_id) q.set('team_id', o.team_id);
       if (o.number != null) q.set('number', String(o.number));
       if (o.label) q.set('label', o.label);
       if (o.probe === false) q.set('probe', 'false');
-      return get<RestorePreview>(`/machines/${id}/restore${q.size ? `?${q}` : ''}`);
+      return get<RestorePreview>(`/machines/${id}/restore${q.size ? `?${q}` : ''}`, signal);
     },
   });
 export const useProvisionCheck = () => useMutation({ mutationFn: (items: ProvisionItem[]) => post<{ items: ProvisionCheckItem[] }>('/provision/check', { items }) });
@@ -154,4 +166,4 @@ export const usePatchChannel = () => useWrite(({ id, ...b }: { id: string; name?
 export const useDelChannel = () => useWrite((id: string) => del(`/notify-channels/${id}`), [['notify-channels'], ['notify-log']]);
 export const useTestChannel = () => useWrite((id: string) => post<{ ok: boolean; error: string | null }>(`/notify-channels/${id}/test`), [['notify-log']]);
 export const useNotifyLog = () => useQuery({ queryKey: ['notify-log'], queryFn: () => get<NotifyLogEntry[]>('/notify-log?limit=100') });
-export const useRetirePreview = (id: string | null, enabled: boolean) => useQuery({ queryKey: ['retire-preview', id], queryFn: () => get<RetirePreview>(`/machines/${id}/retire`), enabled: !!id && enabled, staleTime: 0, gcTime: 0 });
+export const useRetirePreview = (id: string | null, enabled: boolean) => useQuery({ queryKey: ['retire-preview', id], queryFn: ({ signal }) => get<RetirePreview>(`/machines/${id}/retire`, signal), enabled: !!id && enabled, staleTime: 0, gcTime: 0, refetchOnWindowFocus: false, refetchOnReconnect: false });

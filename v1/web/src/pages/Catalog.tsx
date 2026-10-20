@@ -6,10 +6,10 @@ import { fetchRenumber, useAddPlan, useAddProvider, useAddTeam, usePatchPlan, us
 import type { Plan, Team } from '@/lib/types';
 import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
-import { Field, Input } from '@/components/ui/form';
+import { CheckRow, Field, Input } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/overlays';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogHeader } from '@/components/ui/dialog';
 import { toast } from '@/components/ui/toast';
 import { Chip, Empty, ErrorNote, Note, Num, PageHead, Panel } from '@/components/app/primitives';
 
@@ -20,7 +20,7 @@ function FormDialog({ open, onOpenChange, title, desc, children, onSubmit, submi
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent size={size}>
         <form style={{ display: 'grid', gap: 16 }} onSubmit={(e) => { e.preventDefault(); if (valid && !busy) onSubmit(); }}>
-          <div style={{ display: 'grid', gap: 6 }}><DialogTitle>{title}</DialogTitle>{desc && <DialogDescription>{desc}</DialogDescription>}</div>
+          <DialogHeader><DialogTitle>{title}</DialogTitle>{desc && <DialogDescription>{desc}</DialogDescription>}</DialogHeader>
           {children}
           <DialogFooter><Button type="button" onClick={() => onOpenChange(false)}>取消</Button><Button type="submit" variant="primary" loading={busy} disabled={!valid}>{submitLabel}</Button></DialogFooter>
         </form>
@@ -100,8 +100,8 @@ function RenumberDialog({ team, onClose }: { team: Team; onClose: () => void }) 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent size="md">
-        <div style={{ display: 'grid', gap: 6 }}><DialogTitle>重新编号 · {team.name}</DialogTitle>
-          <DialogDescription>把在用节点压缩成 01..N（按现有编号先后）。退役时已自动压缩；这里用于手工指定过跳号的情况。</DialogDescription></div>
+        <DialogHeader><DialogTitle>重新编号 · {team.name}</DialogTitle>
+          <DialogDescription>把在用节点压缩成 01..N（按现有编号先后）。退役时已自动压缩；这里用于手工指定过跳号的情况。</DialogDescription></DialogHeader>
         {pv.isLoading && <div className="skel" style={{ height: 80 }} />}
         {pv.isError && <Note tone="bad">{(pv.error as Error).message}</Note>}
         {pv.data && (n === 0
@@ -182,7 +182,7 @@ function PlansTab() {
   return (
     <>
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
-      <Panel title="套餐" count={list.length} tools={<><label className="check-row" style={{ fontSize: 12 }}><input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />显示已归档</label><Button variant="primary" onClick={() => setEdit('new')}><Plus />新增套餐</Button></>} flush>
+      <Panel title="套餐" count={list.length} tools={<><CheckRow className="is-label" checked={showArchived} onChange={setShowArchived}>显示已归档</CheckRow><Button variant="primary" onClick={() => setEdit('new')}><Plus />新增套餐</Button></>} flush>
         <div className="table-wrap">
           <table className="dt" style={{ minWidth: 860 }}>
             <colgroup><col style={{ width: 200 }} /><col style={{ width: 120 }} /><col style={{ width: 150 }} /><col style={{ width: 100 }} /><col style={{ width: 100 }} /><col style={{ width: 110 }} /><col style={{ width: 70 }} /><col style={{ width: 120 }} /></colgroup>

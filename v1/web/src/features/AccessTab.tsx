@@ -8,26 +8,12 @@ import type { MachineView } from '@/lib/types';
 import { Segmented } from '@/components/ui/overlays';
 import { Button } from '@/components/ui/button';
 import { ChartContainer, ChartTooltip, Recharts, axisProps, type ChartConfig } from '@/components/ui/chart';
-import { Chip, Empty, Note, Pill, Section, SectionHeader } from '@/components/app/primitives';
+import { Empty, Note, Pill, Section, SectionHeader } from '@/components/app/primitives';
+import { fmtN } from '@/features/AccessBits';
 import { ConnCell, IspPlace, SourceProfile } from '@/features/IpIntelBits';
 import type { ProfileWindow } from '@/lib/ipintel';
 
 const { BarChart, Bar, XAxis, YAxis, CartesianGrid } = Recharts;
-
-export const fmtN = (n: number) => n.toLocaleString('zh-CN');
-
-/** 处理结果：已转发 / 已阻止 */
-export function ResultPill({ conns, blocked }: { conns: number; blocked: number }) {
-  const routed = conns - blocked;
-  if (blocked <= 0) return <Pill tone="ok">已转发 {fmtN(routed)}</Pill>;
-  if (routed <= 0) return <Pill tone="bad">已阻止 {fmtN(blocked)}</Pill>;
-  return <span className="row" style={{ gap: 4, flexWrap: 'nowrap' }}><Pill tone="ok">已转发 {fmtN(routed)}</Pill><Pill tone="bad">已阻止 {fmtN(blocked)}</Pill></span>;
-}
-
-/** 目标名：IP 目标带一个小标 */
-export const HostCell = ({ host, kind }: { host: string; kind: 'domain' | 'ip' }) => (
-  <span className="row" style={{ gap: 6, flexWrap: 'nowrap' }}><span className="ellipsis strong" title={host}>{host}</span>{kind === 'ip' && <Chip variant="neutral">IP</Chip>}</span>
-);
 
 const cut = (s: string, n = 24) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 const BAR_CFG: ChartConfig = { routed: { label: '已转发', color: 'var(--chart-1)' }, blocked: { label: '已阻止', color: 'var(--bad)' } };

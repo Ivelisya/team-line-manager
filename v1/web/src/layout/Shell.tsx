@@ -7,18 +7,29 @@ import { ApiError, AUTH_EVENT, post } from '@/lib/api';
 import { useIncidents, useMachinePreview, useMe } from '@/lib/queries';
 import { useStream } from '@/lib/stream';
 import { useTheme, type ThemePref } from '@/lib/theme';
-import { closeRetire, useRetireTarget } from '@/lib/nodeActions';
+import { closeEvacuate, closeMove, closeRestore, closeRetire, useEvacuateTarget, useMoveTarget, useRestoreTarget, useRetireTarget } from '@/lib/nodeActions';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, Tip } from '@/components/ui/overlays';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Toaster } from '@/components/ui/toast';
-import { NodeDrawer } from '@/features/NodeDrawer';
+import { useDrawer } from '@/lib/drawer';
 import { Hotkeys, PaletteTrigger } from '@/features/Hotkeys';
 import { JobsIndicator } from '@/features/JobsIndicator';
 import { ErrorBoundary } from '@/components/app/ErrorBoundary';
-import { RetireDialog } from '@/components/app/RetireDialog';
-import { LifecycleDialogsHost } from '@/components/app/LifecycleDialogs';
 import { Note, Pill } from '@/components/app/primitives';
+
+// 抽屉（含各页签、react-table、对话框）和生命周期对话框只在第一次用到时才下载，登录页和首屏不背这份体积。
+// 加载失败（发版后旧块 404）由外面的 silent ErrorBoundary 接住并提示刷新。
+const NodeDrawer = React.lazy(() => import('@/features/NodeDrawer').then((m) => ({ default: m.NodeDrawer })));
+const RetireDialog = React.lazy(() => import('@/components/app/RetireDialog').then((m) => ({ default: m.RetireDialog })));
+const LifecycleDialogsHost = React.lazy(() => import('@/components/app/LifecycleDialogs').then((m) => ({ default: m.LifecycleDialogsHost })));
+
+/** 一旦为真就一直为真：懒加载的浮层第一次需要时挂载，之后保持挂载（关闭动画、再次打开都不用重来） */
+function useEver(v: boolean) {
+  const r = React.useRef(false);
+  if (v) r.current = true;
+  return r.current;
+}
 
 const NAV = [
   { to: '/', label: '首页', icon: LayoutGrid, end: true },
@@ -37,12 +48,25 @@ function PageFallback() {
   return <div className="stack" role="status" aria-label="加载中"><Skeleton w={160} h={28} /><Skeleton h={96} /><Skeleton h={220} /></div>;
 }
 
+const closeLifecycle = () => { closeMove(); closeEvacuate(); closeRestore(); };
+
 /** 卡片/表格菜单里“退役…”要弹的确认框：全站只渲染这一份 */
 function NodeActionsHost() {
   const id = useRetireTarget();
   const q = useMachinePreview(id);
   if (!id || !q.data) return null;
-  return <RetireDialog m={q.data} open onOpenChange={(o) => { if (!o) closeRetire(); }} onDone={closeRetire} />;
+  return <React.Suspense fallback={null}><RetireDialog m={q.data} open onOpenChange={(o) => { if (!o) closeRetire(); }} onDone={closeRetire} /></React.Suspense>;
+}
+
+function DrawerHost() {
+  const { id } = useDrawer();
+  const ever = useEver(!!id);
+  return ever ? <React.Suspense fallback={null}><NodeDrawer /></React.Suspense> : null;
+}
+
+function LifecycleHost() {
+  const ever = useEver(!!(useMoveTarget() || useEvacuateTarget() || useRestoreTarget()));
+  return ever ? <React.Suspense fallback={null}><LifecycleDialogsHost /></React.Suspense> : null;
 }
 
 export function Shell() {
@@ -55,6 +79,13 @@ export function Shell() {
   const firing = useIncidents('firing').data?.length ?? 0;
 
   React.useEffect(() => { setNavOpen(false); }, [loc.pathname]);
+  // 登录后首屏稳定下来再悄悄预取抽屉的代码：不占首屏带宽，第一次点开时也不用等
+  const authed = !!me.data;
+  React.useEffect(() => {
+    if (!authed) return;
+    const t = setTimeout(() => { void import('@/features/NodeDrawer').catch(() => { /* 预取失败不要紧，真用到时会再试 */ }); }, 3000);
+    return () => clearTimeout(t);
+  }, [authed]);
   React.useEffect(() => {
     // 会话过期：把 me 缓存清成未登录状态（resetQueries 会丢掉旧数据并重取，拿到 401 后跳登录页）。
     // 只清缓存不重取的话，Login 页会看到旧的 me.data 又跳回来，形成重定向循环。1 秒内的重复通知合并。
@@ -137,9 +168,10 @@ export function Shell() {
       <main className="main" id="main" tabIndex={-1}>
         <div className="content"><ErrorBoundary resetKey={loc.pathname}><React.Suspense fallback={<PageFallback />}><Outlet /></React.Suspense></ErrorBoundary></div>
       </main>
-      <NodeDrawer />
-      <NodeActionsHost />
-      <LifecycleDialogsHost />
+      {/* 浮层宿主各包一层边界：它们出错（图表、懒加载块失败等）只收起自己，不拖垮整页 */}
+      <ErrorBoundary silent resetKey={loc.search}><DrawerHost /></ErrorBoundary>
+      <ErrorBoundary silent resetKey={loc.pathname} onError={closeRetire}><NodeActionsHost /></ErrorBoundary>
+      <ErrorBoundary silent resetKey={loc.pathname} onError={closeLifecycle}><LifecycleHost /></ErrorBoundary>
       <Hotkeys theme={theme} />
       <Toaster />
     </div>

@@ -1,5 +1,5 @@
 // 上架表单的数据模型：行 → ProvisionItem、字段适用性、从表格软件粘贴的 TSV 解析、本地校验。
-import type { Kind, MachineView, Plan, Provider, ProvisionItem, Team } from '@/lib/types';
+import type { Kind, Plan, Provider, ProvisionItem, Team } from '@/lib/types';
 
 export interface Row {
   /** 稳定的行 id（React key、单元格回调用），不进入提交内容 */
@@ -51,7 +51,7 @@ export const applies = (c: Col, kind: Kind) => c.kinds.includes(kind);
 
 const KIND_ALIAS: Record<string, Kind> = { relay: 'relay', 线路机: 'relay', 中转: 'relay', vps: 'vps', 落地机: 'vps', 节点: 'vps', 落地: 'vps', proxy: 'proxy', 家宽: 'proxy', 家宽代理: 'proxy' };
 
-export interface Ctx { teams: Team[]; relays: MachineView[]; providers: Provider[]; plans: Plan[] }
+export interface Ctx { teams: Team[]; relays: { id: string; name: string }[]; providers: Provider[]; plans: Plan[] }
 
 /** 把一个粘贴来的文本单元格写进行：选择型字段按名称匹配 */
 export function setCell(row: Row, col: Col, raw: string, ctx: Ctx): Row {
