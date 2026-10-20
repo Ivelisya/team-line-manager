@@ -63,6 +63,9 @@ fleetctl entry rotate <入口> --yes                         # 旧分享链接�
 fleetctl entry disable <入口> --yes
 fleetctl upgrade-agent <机器> | --all --yes                # 重启 agent
 fleetctl renumber <团队> --yes                             # 不加 --yes 只预览
+fleetctl move <节点> --to <线路机> --yes [--from <线路机>] [--follow]   # 换线路机：新入口验收后才摘旧入口，不断网；分享链接会变，完成后 fleetctl share <节点> 取新链接
+fleetctl evacuate <线路机> --to <线路机> --yes [--follow]          # 搬空线路机（下线前）：每个在用节点一个换线路机作业
+fleetctl restore <已退役机器> --relay <线路机> [--team --number --label --upstream --password-env VAR --reason --reset-host-key] --yes [--follow]   # 恢复：先预检（IP 冲突、新名字、是否要 root 密码）再提交
 fleetctl provision ...                                     # 先 check，再确认，再提交
 ```
 

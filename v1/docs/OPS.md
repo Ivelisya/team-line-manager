@@ -39,6 +39,9 @@
 | 看作业进度、失败原因 | `fleetctl jobs --active`、`fleetctl job <id> --follow`；失败后 `fleetctl retry <id>` |
 | 退役 | `fleetctl retire 团队1-06 --reason 到期不续 --yes --follow` |
 | 彻底删除已退役机器 | `fleetctl purge 团队1-06 --yes` |
+| 把节点换到另一台线路机 | `fleetctl move 团队1-06 --to 线路机3 --yes --follow`（分享链接会变，见 §6） |
+| 线路机下线前搬空 | `fleetctl evacuate 线路机2 --to 线路机3 --yes --follow` |
+| 恢复已退役的机器 | `fleetctl restore 团队1-06 --relay 线路机3 --reason 客户续约 --yes --follow`（先预检再提交，见 §6） |
 | 改名 / 换团队 / 改编号 | `fleetctl rename 团队1-06 --team 团队2 --number 3` |
 | 编号压缩成连续 | `fleetctl renumber 团队1`（预览），`--yes` 执行 |
 | 升级 agent | `fleetctl upgrade-agent 团队1-06`、`fleetctl upgrade-agent --all --yes` |
@@ -90,3 +93,20 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 - exec 的命令全文会写进审计，不要在命令里放密码、令牌。
 - 登录有限速：同一用户名 15 分钟内错 5 次、同一 IP 错 20 次会被 429 拒绝。
 - 危险操作（退役、删除、轮换、批量升级、会改状态的 exec）先向负责人确认，再加 `--yes`。
+
+## 6. 换线路机 / 搬空线路机 / 恢复已退役的机器
+
+### 换线路机（节点换到另一台线路机）
+1. `fleetctl move 团队1-06 --to 线路机3`（交互确认）或加 `--yes --follow`。节点必须在用，且只有一个在用入口（有多个用 `--from 线路机2` 指定换掉哪条）。
+2. 作业先在目标线路机建新入口（新端口、新凭据），节点是 VPS 时同时把新线路机 IP 加进节点防火墙放行名单；新入口生效、出口探测通过之后才摘旧入口，最后把旧线路机 IP 从放行名单拿掉。换线期间节点始终有一个可用入口，不断网。
+3. **分享链接会变**：完成后用 `fleetctl share 团队1-06` 取新链接发给客户端，旧链接失效。网页上作业完成的通知里有「复制新分享链接」。
+4. 想中止：摘旧入口之前 `fleetctl cancel <job>`，新入口被摘除、防火墙恢复，旧入口不动。摘了旧入口之后只能 `fleetctl retry` 到完成。旧线路机不在线时「等待旧线路机摘除」会失败，线路机恢复后重试。
+
+### 搬空线路机（线路机下线前）
+`fleetctl evacuate 线路机2 --to 线路机3 --yes --follow`：为线路机上每个在用入口的节点各建一个换线路机作业。入口停用/未生效、节点有别的作业的会列为「跳过」，处理后再搬一次。全部搬完（旧入口 removed）后才能 `fleetctl retire 线路机2`（有入口时退役会被拒绝，并提示先搬空）。
+
+### 恢复已退役的机器
+1. `fleetctl restore 团队1-06 --relay 线路机3 --reason 客户续约`：先做预检——IP 有没有被别的在用机器占用（占用则不能恢复）、恢复后的名字（旧名 → 新名，编号接在团队末尾，`--number` 可指定空号）、中控密钥还能不能登录机器。
+2. 预检说中控密钥被拒时必须给 root 密码：`ROOT_PW=… fleetctl restore … --password-env ROOT_PW`。机器重装过、指纹变了加 `--reset-host-key`。上游代理节点退役时出站参数已清掉，要重新给 `--upstream socks5://用户:密码@主机:端口`。线路机原名被占用用 `--label` 改名；换团队用 `--team`。
+3. 机器保持原 id，重新走上架的收敛步骤（proxy 只有建入口、等应用、验收、上线）；旧入口不复活，建新入口，**分享链接是新的**。订阅、历史、审计保留。成功后 `retired_at` 清空，原因记「已恢复：…」。
+4. 取消或失败后取消：机器回到已退役，IP 与编号释放，团队编号压缩。
