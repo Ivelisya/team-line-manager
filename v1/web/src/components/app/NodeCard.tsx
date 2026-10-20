@@ -1,16 +1,19 @@
 // 节点卡片：一套外壳、三种视图。每个视图的“槽位”固定（大 10 / 小 7 / 紧凑 6），
 // 无论机器是主机、家宽代理还是线路机，同一个槽位都渲染同样高度的内容或占位——配合 cards.css 的 subgrid，同一行的卡片分段永远对齐。
 import { memo } from 'react';
-import { Activity, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpFromLine, Calendar, CircleDollarSign, Cpu, Database, Globe, HardDrive, MemoryStick, Radar, RefreshCw, Settings2, PanelRightOpen, ServerOff } from 'lucide-react';
+import { Activity, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpFromLine, Calendar, CircleDollarSign, Cpu, Database, Globe, HardDrive, MemoryStick, MoreHorizontal, Radar, RefreshCw, Settings2, PanelRightOpen, ServerOff } from 'lucide-react';
 import type { MachineView, Plan } from '@/lib/types';
 import * as F from '@/lib/format';
 import { beatCells, entryText, hasHost, isQuiet, monthTraffic, probeSummary, quota, resourceMeters, subLabel } from '@/lib/derive';
-import { useSeries, usePlans } from '@/lib/queries';
-import { useDrawer, useInView } from '@/lib/drawer';
+import { useSeries } from '@/lib/queries';
+import { useInView, type DrawerTab } from '@/lib/drawer';
 import { KIND_LABEL } from '@/lib/sort';
 import { cn } from '@/lib/utils';
 import { Beat, Chip, HealthPill, KindIcon, LabelValue, Mark, Meter, Num, Quota } from './primitives';
 import { Button, IconButton } from '@/components/ui/button';
+import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from '@/components/ui/context-menu';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger, Tip } from '@/components/ui/overlays';
+import { NodeContextItems, NodeDropdownItems } from './NodeMenu';
 
 export type CardView = 'large' | 'small' | 'compact';
 const VIEW_ATTR: Record<CardView, string> = { large: 'large', small: 'small', compact: 'compact' };
@@ -25,9 +28,15 @@ function Head({ m, view, onOpen }: { m: MachineView; view: CardView; onOpen: (ta
   return (
     <header className="nc-head">
       <Dot m={m} /><KindIcon kind={m.kind} />
-      <button type="button" className="nc-name" onClick={() => onOpen()} title={`打开 ${m.name} 的详情`}>{m.name}</button>
+      <Tip text={`打开 ${m.name} 的详情`}><button type="button" className="nc-name" onClick={() => onOpen()}>{m.name}</button></Tip>
       {view === 'compact' && <><span className="nc-ipsep">·</span><span className="nc-ip">{m.ip}</span></>}
-      <div className="nc-actions"><IconButton label="打开详情" onClick={() => onOpen()}><PanelRightOpen size={16} /></IconButton></div>
+      <div className="nc-actions">
+        <IconButton label="打开详情" onClick={() => onOpen()}><PanelRightOpen size={16} /></IconButton>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild><IconButton label="更多操作" tip={false}><MoreHorizontal size={16} /></IconButton></DropdownMenuTrigger>
+          <DropdownMenuContent align="end"><NodeDropdownItems m={m} /></DropdownMenuContent>
+        </DropdownMenu>
+      </div>
     </header>
   );
 }
@@ -60,7 +69,7 @@ function EntryTable({ m }: { m: MachineView }) {
 
 function BeatSlot({ m, enabled }: { m: MachineView; enabled: boolean }) {
   const live = m.lifecycle === 'active';
-  const s = useSeries(m.id, 'probe', '1h', enabled && live);
+  const s = useSeries(m.id, 'probe', '1h', enabled && live, 120_000);
   const ps = probeSummary(m);
   const cap = !live ? <span className="t-muted">{m.lifecycle === 'retired' ? '已退役' : '尚未开始探测'}</span>
     : m.kind === 'relay' ? <>入口连通 <b className="num">{ps.tcpOk}/{ps.total}</b></>
@@ -148,9 +157,8 @@ function FlowRow({ m }: { m: MachineView }) {
   );
 }
 
-function NodeCardImpl({ m, view, current }: { m: MachineView; view: CardView; current?: boolean }) {
-  const { open } = useDrawer();
-  const plans = usePlans().data ?? [];
+/** 卡片只吃稳定的 props（plans 引用、onOpen 回调不随地址变化），配合 memo，抽屉开关或 tick 时只有变了的那张重渲染 */
+function NodeCardImpl({ m, view, current, plans, onOpen: open }: { m: MachineView; view: CardView; current?: boolean; plans: Plan[]; onOpen: (id: string, tab?: DrawerTab) => void }) {
   const [ref, seen] = useInView<HTMLElement>();
   const onOpen = (tab?: 'overview' | 'manage') => open(m.id, tab);
   const q = quota(m); const host = hasHost(m);
@@ -158,6 +166,8 @@ function NodeCardImpl({ m, view, current }: { m: MachineView; view: CardView; cu
   const quiet = isQuiet(m);
 
   return (
+    <ContextMenu>
+    <ContextMenuTrigger asChild>
     <article ref={ref} className={cn('ncard', current && 'is-current', quiet && 'is-quiet')} data-view={VIEW_ATTR[view]} data-id={m.id} data-kind={m.kind} data-health={m.health.status} data-offline={quiet ? '1' : undefined}>
       <Head m={m} view={view} onOpen={onOpen} />
 
@@ -225,6 +235,9 @@ function NodeCardImpl({ m, view, current }: { m: MachineView; view: CardView; cu
 
       <Foot m={m} onOpen={onOpen} />
     </article>
+    </ContextMenuTrigger>
+    <ContextMenuContent><NodeContextItems m={m} /></ContextMenuContent>
+    </ContextMenu>
   );
 }
 export const NodeCard = memo(NodeCardImpl);

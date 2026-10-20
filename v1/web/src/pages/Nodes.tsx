@@ -1,7 +1,7 @@
 // 节点：表格视图。固定列宽；筛选（团队 / 类型 / 线路机 / 状态 / 范围）+ 搜索；点行打开右侧抽屉。
 // 默认顺序 = 线路机 → 团队 → 编号（不排序时保持），表头排序是用户的显式选择，可一键恢复。
 import * as React from 'react';
-import { ArrowDownUp, ChevronRight, ChevronDown, ChevronUp, RotateCcw } from 'lucide-react';
+import { ArrowDownUp, ChevronRight, ChevronDown, ChevronUp, RotateCcw, SearchX } from 'lucide-react';
 import { flexRender, getCoreRowModel, getSortedRowModel, useReactTable, type ColumnDef, type SortingState } from '@tanstack/react-table';
 import { useMachines, useTeams } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
@@ -12,8 +12,12 @@ import type { MachineView } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { SearchInput } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
-import { Segmented } from '@/components/ui/overlays';
-import { Empty, HealthPill, KindIcon, Note, Num, PageHead, Panel, Pill } from '@/components/app/primitives';
+import { Segmented, Trunc } from '@/components/ui/overlays';
+import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from '@/components/ui/context-menu';
+import { SkeletonRows } from '@/components/ui/skeleton';
+import { Empty, ErrorNote, HealthPill, KindIcon, Num, PageHead, Panel, Pill } from '@/components/app/primitives';
+import { NodeHover } from '@/components/app/NodeHover';
+import { NodeContextItems } from '@/components/app/NodeMenu';
 
 type Scope = 'live' | 'retired';
 
@@ -47,12 +51,12 @@ export function NodesPage() {
     const retired = scope === 'retired';
     const c: ColumnDef<MachineView>[] = [
       { id: 'name', header: '名称', size: retired ? 250 : 190, accessorFn: (m) => m.name, sortingFn: (a, b) => a.original.name.localeCompare(b.original.name, 'zh-Hans-CN', { numeric: true }),
-        cell: ({ row: { original: m } }) => <div className="row" style={{ flexWrap: 'nowrap', gap: 8 }}><KindIcon kind={m.kind} /><div style={{ minWidth: 0 }}><span className="cell-main strong">{m.name}{m.lifecycle === 'retired' && <> <Pill tone="neutral" dot="ring">已退役</Pill></>}</span><span className="sub">{m.ip}</span></div></div> },
+        cell: ({ row: { original: m } }) => <div className="row" style={{ flexWrap: 'nowrap', gap: 8 }}><KindIcon kind={m.kind} /><div style={{ minWidth: 0 }}><NodeHover id={m.id} m={m}><span className="cell-main strong">{m.name}{m.lifecycle === 'retired' && <> <Pill tone="neutral" dot="ring">已退役</Pill></>}</span></NodeHover><span className="sub">{m.ip}</span></div></div> },
       { id: 'kind', header: '类型', size: 84, accessorFn: (m) => m.kind, cell: ({ row }) => KIND_LABEL[row.original.kind] },
       { id: 'status', header: '状态', size: 96, accessorFn: (m) => m.health.status, enableSorting: false, cell: ({ row }) => <HealthPill m={row.original} /> },
-      { id: 'entry', header: '线路机:端口', size: 150, accessorFn: (m) => entryText(m), enableSorting: false, cell: ({ row }) => <span className="cell-main">{entryText(row.original)}</span> },
+      { id: 'entry', header: '线路机:端口', size: 150, accessorFn: (m) => entryText(m), enableSorting: false, cell: ({ row }) => <Trunc className="cell-main">{entryText(row.original)}</Trunc> },
       { id: 'plan', header: '供应商 · 套餐', size: 190, accessorFn: (m) => m.plan?.name ?? '', enableSorting: false,
-        cell: ({ row: { original: m } }) => <><span className="cell-main">{m.plan?.name ?? <span className="t-muted">未设置</span>}</span><span className="sub">{m.provider?.name ?? '—'}</span></> },
+        cell: ({ row: { original: m } }) => <>{m.plan ? <Trunc className="cell-main">{m.plan.name}</Trunc> : <span className="cell-main t-muted">未设置</span>}<span className="sub">{m.provider?.name ?? '—'}</span></> },
       { id: 'traffic', header: '本月流量', size: 110, meta: { r: true }, accessorFn: (m) => { const t = monthTraffic(m); return t.up + t.down; },
         cell: ({ row: { original: m } }) => { const t = monthTraffic(m); return <><Num f={F.bytes(t.up + t.down)} /><span className="sub">↓ {F.bytes(t.down).v} {F.bytes(t.down).u}</span></>; } },
     ];
@@ -87,7 +91,7 @@ export function NodesPage() {
         {sorting.length > 0 && <Button variant="quiet" size="md" onClick={() => setSorting([])}><RotateCcw />恢复默认顺序</Button>}
       </div>
 
-      {q.isError && <Note tone="bad">{(q.error as Error).message}</Note>}
+      {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       <Panel flush>
         <div className="table-wrap">
           <table className="dt" style={{ minWidth: total }}>
@@ -114,19 +118,24 @@ export function NodesPage() {
             </thead>
             <tbody>
               {rows.map((row) => (
-                <tr key={row.id} className={`is-link${row.original.id === openId ? ' is-current' : ''}${row.original.lifecycle === 'retired' ? ' is-retired' : ''}`} tabIndex={0}
-                  onClick={() => open(row.original.id)} onKeyDown={(e) => { if (e.key === 'Enter') open(row.original.id); }}>
-                  {row.getVisibleCells().map((cell) => {
-                    const r = (cell.column.columnDef.meta as { r?: boolean } | undefined)?.r;
-                    return <td key={cell.id} className={cell.column.id === 'chev' ? 'chev' : r ? 'r' : undefined}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>;
-                  })}
-                </tr>
+                <ContextMenu key={row.id}>
+                  <ContextMenuTrigger asChild>
+                    <tr className={`is-link${row.original.id === openId ? ' is-current' : ''}${row.original.lifecycle === 'retired' ? ' is-retired' : ''}`} tabIndex={0}
+                      onClick={() => open(row.original.id)} onKeyDown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) open(row.original.id); }}>
+                      {row.getVisibleCells().map((cell) => {
+                        const r = (cell.column.columnDef.meta as { r?: boolean } | undefined)?.r;
+                        return <td key={cell.id} className={cell.column.id === 'chev' ? 'chev' : r ? 'r' : undefined}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>;
+                      })}
+                    </tr>
+                  </ContextMenuTrigger>
+                  <ContextMenuContent><NodeContextItems m={row.original} /></ContextMenuContent>
+                </ContextMenu>
               ))}
             </tbody>
           </table>
         </div>
-        {!q.isLoading && rows.length === 0 && <Empty text={scope === 'retired' ? '还没有已退役的机器' : '没有符合条件的机器'} />}
-        {q.isLoading && <div style={{ padding: 16 }}><span className="skel" style={{ width: '60%', height: 14 }} /></div>}
+        {!q.isLoading && !q.isError && rows.length === 0 && <Empty icon={<SearchX size={22} />} text={scope === 'retired' ? '还没有已退役的机器' : '没有符合条件的机器'} hint={all.length && scope === 'live' ? '换个筛选条件试试' : undefined} />}
+        {q.isLoading && <SkeletonRows rows={6} />}
       </Panel>
     </div>
   );
