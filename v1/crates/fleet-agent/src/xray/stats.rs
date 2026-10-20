@@ -21,6 +21,7 @@ pub struct StatsState {
 /// - 同纪元回退：视为被重置，增量 = 当前值
 /// - 同纪元新出现的计数器：增量 = 当前值
 /// - 否则：当前值 − 上次值
+///
 /// 状态里的 prev 是"合并"而不是替换：暂时消失的计数器重新出现时仍按原基线求差。
 pub fn compute(st: &mut StatsState, core_id: &str, cur: &HashMap<String, u64>) -> HashMap<String, u64> {
     let mut out = HashMap::new();
@@ -48,6 +49,17 @@ pub fn compute(st: &mut StatsState, core_id: &str, cur: &HashMap<String, u64>) -
     st.initialized = true;
     st.core_id = core_id.to_string();
     out
+}
+
+/// Xray 进程纪元标识。pid 或启动时间有一个取不到就返回 None：
+/// 调用方必须跳过本轮 `compute`（保留上一轮的 core_id 和基线），否则会被误判成"Xray 重启"而把累计值全量当增量。
+pub fn core_id_of(boot: &str, pid: Option<u32>, start_ticks: Option<u64>) -> Option<String> {
+    Some(format!("{boot}:{}:{}", pid?, start_ticks?))
+}
+
+/// `compute` 的守卫版：纪元标识未知（None）时什么都不动、返回 None，由调用方跳过本轮。
+pub fn compute_if_known(st: &mut StatsState, core_id: Option<&str>, cur: &HashMap<String, u64>) -> Option<HashMap<String, u64>> {
+    Some(compute(st, core_id?, cur))
 }
 
 /// 把增量按入口汇总成 EntrySample（只为已知的启用入口输出，零增量也输出以保持连续性）
@@ -123,6 +135,32 @@ mod tests {
         let mut st2: StatsState = serde_json::from_str(&json).unwrap();
         let d = compute(&mut st2, "c1", &m(&[("a", 160)]));
         assert_eq!(d["a"], 60);
+    }
+
+    #[test]
+    fn unknown_pid_or_start_yields_no_core_id() {
+        assert_eq!(core_id_of("b", Some(7), Some(99)).as_deref(), Some("b:7:99"));
+        assert_eq!(core_id_of("b", None, Some(99)), None);
+        assert_eq!(core_id_of("b", Some(7), None), None);
+    }
+
+    /// 回归：pid 偶尔取不到时，调用方跳过 compute，基线和 core_id 原样保留，
+    /// 下一轮拿到真 pid 后只算真实增量（旧实现会按"重启"把累计值整个再算一遍）。
+    #[test]
+    fn skipped_round_keeps_baseline_no_double_count() {
+        let boot = "b";
+        let mut st = StatsState::default();
+        let id = core_id_of(boot, Some(7), Some(99)).unwrap();
+        compute(&mut st, &id, &m(&[("a", 1000)]));
+        let d = compute(&mut st, &id, &m(&[("a", 1040)]));
+        assert_eq!(d["a"], 40);
+        // 本轮取不到 pid：跳过，状态一个字节都不变
+        let before = st.clone();
+        assert!(compute_if_known(&mut st, core_id_of(boot, None, None).as_deref(), &m(&[("a", 1070)])).is_none());
+        assert_eq!(st, before);
+        // 下一轮拿到同一个 pid：增量 = 1090 − 1040
+        let d = compute_if_known(&mut st, Some(&id), &m(&[("a", 1090)])).unwrap();
+        assert_eq!(d["a"], 50);
     }
 
     #[test]

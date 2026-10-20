@@ -33,6 +33,45 @@ pub struct Report {
     pub access: Vec<AccessEvent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub xray: Option<XrayStatus>,
+    /// Agent 自身健康（累计值，自进程启动起算）；旧 Agent 不带
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_health: Option<AgentHealth>,
+}
+
+/// Agent 自身的健康数据：离线队列、访问日志尾读、探测与对齐。服务端存进 agent_state.info。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct AgentHealth {
+    /// 离线队列里待发送的报告数
+    #[serde(default)]
+    pub queue_len: u32,
+    /// 因超过字节/时间上限被丢弃的报告数
+    #[serde(default)]
+    pub queue_dropped: u64,
+    /// 被移入 dead/ 的报告数（服务端永久拒绝，或同一 seq 反复 5xx）
+    #[serde(default)]
+    pub queue_dead: u64,
+    #[serde(default)]
+    pub access_lines: u64,
+    #[serde(default)]
+    pub access_events: u64,
+    #[serde(default)]
+    pub access_unparsed: u64,
+    #[serde(default)]
+    pub access_dropped_lines: u64,
+    /// 轮转后找不到旧文件、可能漏掉一段
+    #[serde(default)]
+    pub access_rotation_gaps: u64,
+    #[serde(default)]
+    pub access_truncations: u64,
+    /// 因前一个出口探测还在途而跳过的探测次数
+    #[serde(default)]
+    pub probes_skipped: u64,
+    /// 周期对齐检查发现磁盘/运行态与期望不一致并修复的次数
+    #[serde(default)]
+    pub realign_fixes: u64,
+    /// 最近一次应用失败的错误（成功后清空）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_apply_error: Option<String>,
 }
 
 /// 开机后上报一次、变化时再报。

@@ -18,6 +18,8 @@ pub struct Queue {
     max_bytes: u64,
     max_age_ms: i64,
     pub dropped: u64,
+    /// 本进程内移入 dead/ 的报告数
+    pub dead: u64,
 }
 
 fn path_of(dir: &std::path::Path, seq: u64) -> PathBuf {
@@ -27,7 +29,7 @@ fn path_of(dir: &std::path::Path, seq: u64) -> PathBuf {
 impl Queue {
     pub fn open(dir: PathBuf, max_bytes: u64, max_age_ms: i64) -> Result<Self> {
         std::fs::create_dir_all(dir.join("dead"))?;
-        let mut q = Self { dir, items: BTreeMap::new(), bytes: 0, max_bytes, max_age_ms, dropped: 0 };
+        let mut q = Self { dir, items: BTreeMap::new(), bytes: 0, max_bytes, max_age_ms, dropped: 0, dead: 0 };
         for e in std::fs::read_dir(&q.dir)? {
             let e = e?;
             let name = e.file_name().to_string_lossy().to_string();
@@ -79,8 +81,7 @@ impl Queue {
 
     fn evict(&mut self) {
         let now = now_ms();
-        loop {
-            let Some((&seq, &(size, ts))) = self.items.iter().next() else { break };
+        while let Some((&seq, &(size, ts))) = self.items.iter().next() {
             if self.items.len() > 1 && (self.bytes > self.max_bytes || now - ts > self.max_age_ms) {
                 let _ = std::fs::remove_file(path_of(&self.dir, seq));
                 self.items.remove(&seq);
@@ -111,6 +112,7 @@ impl Queue {
 
     /// 被服务端永久拒绝：移入 dead/（保留最近 DEAD_KEEP 份供排查）
     pub fn dead_letter(&mut self, seq: u64) {
+        self.dead += 1;
         let from = path_of(&self.dir, seq);
         let to = self.dir.join("dead").join(format!("{seq:020}.json"));
         if let Err(e) = std::fs::rename(&from, &to) {
@@ -146,6 +148,7 @@ mod tests {
             probes: vec![],
             access: vec![],
             xray: None,
+            agent_health: None,
         }
     }
 
@@ -169,6 +172,7 @@ mod tests {
         assert_eq!(q.oldest(), Some(3));
         assert_eq!(serde_json::from_slice::<Report>(&q.read(3).unwrap()).unwrap().seq, 3);
         q.dead_letter(3);
+        assert_eq!(q.dead, 1);
         assert!(q.is_empty());
         assert_eq!(q.bytes, 0);
         let _ = std::fs::remove_dir_all(&d);

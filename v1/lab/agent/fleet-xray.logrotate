@@ -1,5 +1,9 @@
 # /etc/logrotate.d/fleet-xray —— Xray 一直持有访问日志的文件句柄，用 copytruncate。
-# Agent 通过「偏移 > 文件大小 → 从头读」识别截断；轮转间隔内未读完的少量行可能丢失，所以别轮得太勤。
+# 部署线路机时必须安装：install -m 0644 deploy/logrotate/fleet-xray /etc/logrotate.d/fleet-xray
+# 否则 access.log 会无限增长。
+# Agent 用「文件开头指纹」识别轮转/截断：指纹不再匹配时，先读完 access.log.1（指纹匹配的那份拷贝）里没读的部分，
+# 再从新文件开头读；找不到匹配的 .1 才算漏一段（计入 access_truncations / access_rotation_gaps）。
+# 拷贝与截断之间的极短窗口里写入的行仍可能丢失，所以别轮得太勤。
 /var/log/fleet-xray/access.log {
     daily
     rotate 3

@@ -122,17 +122,19 @@ pub fn parse_http_response(raw: &[u8]) -> Result<(u16, Vec<u8>)> {
         return Ok((status, body.to_vec()));
     }
     let mut out = Vec::new();
-    let mut i = 0;
+    let mut i = 0usize;
     loop {
-        let nl = body[i..].windows(2).position(|w| w == b"\r\n").context("chunk 头不完整")?;
-        let size = usize::from_str_radix(String::from_utf8_lossy(&body[i..i + nl]).split(';').next().unwrap_or("").trim(), 16).context("chunk 长度无效")?;
-        i += nl + 2;
+        // 全程边界检查：恶意/损坏的响应（超大 chunk 长度、缺 CRLF）只能得到错误，不能 panic
+        let rest = body.get(i..).context("chunk 头不完整")?;
+        let nl = rest.windows(2).position(|w| w == b"\r\n").context("chunk 头不完整")?;
+        let size = usize::from_str_radix(String::from_utf8_lossy(&rest[..nl]).split(';').next().unwrap_or("").trim(), 16).context("chunk 长度无效")?;
+        i = i.checked_add(nl + 2).context("chunk 偏移溢出")?;
         if size == 0 {
             break;
         }
-        ensure!(body.len() >= i + size, "chunk 数据不完整");
-        out.extend_from_slice(&body[i..i + size]);
-        i += size + 2;
+        let end = i.checked_add(size).filter(|e| *e <= body.len()).context("chunk 数据不完整")?;
+        out.extend_from_slice(&body[i..end]);
+        i = end.checked_add(2).context("chunk 偏移溢出")?;
     }
     Ok((status, out))
 }
@@ -219,6 +221,16 @@ mod tests {
         let (_, b) = parse_http_response(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\n1.2.\r\n3\r\n3.4\r\n0\r\n\r\n").unwrap();
         assert_eq!(b, b"1.2.3.4");
         assert!(parse_http_response(b"garbage").is_err());
+        // 畸形 chunk：长度超大 / 数据后缺 CRLF / 只有半个头，都必须返回错误而不是 panic
+        for bad in [
+            &b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nffffffffffffffff\r\nx"[..],
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nabcd",
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nabcd\r\n",
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\na",
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",
+        ] {
+            assert!(parse_http_response(bad).is_err(), "{:?}", String::from_utf8_lossy(bad));
+        }
     }
 
     /// 测试用最小 SOCKS5 服务器：接受 CONNECT，记录目标，然后回一个固定 HTTP 响应
