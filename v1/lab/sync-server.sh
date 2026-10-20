@@ -4,7 +4,7 @@
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SSH="ssh -F $HOME/.ssh/fleetlab_config fleet-dev"
-tar -C "$ROOT" -czf - --exclude=target Cargo.toml migrations deploy crates \
+tar -C "$ROOT" -czf - --exclude=target Cargo.toml Cargo.lock migrations deploy crates \
   | $SSH 'mkdir -p /root/src && cd /root/src && rm -rf crates migrations deploy && tar --no-same-owner -xzf -'
 if [ $# -gt 0 ]; then
   $SSH "cd /root/src && export PATH=\$HOME/.cargo/bin:\$PATH && $*"
