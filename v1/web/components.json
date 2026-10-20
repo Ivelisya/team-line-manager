@@ -3,6 +3,6 @@
   "style": "default",
   "rsc": false,
   "tsx": true,
-  "tailwind": { "config": "tailwind.config.ts", "css": "src/styles/tw-base.css", "baseColor": "neutral", "cssVariables": true },
-  "aliases": { "components": "@/components", "utils": "@/lib/utils", "ui": "@/components/ui" }
+  "tailwind": { "config": "tailwind.config.ts", "css": "src/styles/theme.css", "baseColor": "neutral", "cssVariables": true },
+  "aliases": { "components": "@/components", "utils": "@/lib/utils", "ui": "@/components/ui", "lib": "@/lib", "hooks": "@/lib" }
 }

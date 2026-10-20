@@ -1,21 +1,18 @@
-//! 遥测入库 / 小时汇总 / 健康判定 / 告警 / 通知 / SSE / 保留期。
+//! 遥测入库 / 小时汇总 / 健康判定 / 告警 / 通知 / 实时流 / 保留期。
 //! 需要 PostgreSQL：环境变量 FLEET_TEST_DB（默认 postgres://fleet:fleet@127.0.0.1/fleet_test）。会清空该库的 public schema。
-//! 不起后台循环：告警评估、小时汇总都由测试手动驱动（告警评估的「当前时间」可以快进，不用真等去抖）。
+//! 不起后台循环：告警评估、小时汇总、实时指标比对都由测试手动驱动（告警评估的「当前时间」可以快进，不用真等去抖）。
 
 mod common_tele;
 
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::StatusCode;
 use common_tele::*;
 use fleet_proto::ProbeKind;
 use fleet_server::alerts::{self, AlertState};
 use fleet_server::state::Event;
-use fleet_server::db;
-use futures::StreamExt;
+use fleet_server::{db, live};
 use serde_json::{json, Value};
 use std::time::Duration;
 use time::OffsetDateTime;
-use tower::ServiceExt;
 use uuid::Uuid;
 
 const H: i64 = 3_600_000;
@@ -510,31 +507,53 @@ async fn alert_notifications_firing_repeat_silence_and_resolved() {
     assert!(mock.bodies("/hook/a").iter().any(|b| b["event"] == "resolved" && b["rule"] == "relay_xray_down"));
 }
 
-// ── T7 / T8：SSE 与错误 ─────────────────────────────────────────────────────
+// ── T7 / T8：实时流（WebSocket）与错误 ──────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn sse_sends_resync_when_subscriber_lags() {
+async fn ws_requires_auth_and_resyncs_when_subscriber_lags() {
     let t = setup().await;
-    let res = t.app.clone().oneshot(Request::get("/api/v1/stream").header("cookie", &t.cookie).body(Body::empty()).unwrap()).await.unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    // 订阅者还没读，广播就发了远超缓冲（256）的事件 → 它会落后
-    for _ in 0..600 {
+    match t.ws(false).await {
+        Err(tokio_tungstenite::tungstenite::Error::Http(r)) => assert_eq!(r.status(), StatusCode::UNAUTHORIZED),
+        other => panic!("未登录应 401：{:?}", other.map(|_| ())),
+    }
+    let mut ws = t.ws(true).await.unwrap();
+    // 一口气广播远超缓冲（256）的事件，服务端逐帧往外写跟不上 → 落后
+    for _ in 0..5000 {
         t.st.emit(Event::Machines);
     }
-    let mut body = res.into_body().into_data_stream();
-    let seen = tokio::time::timeout(Duration::from_secs(5), async {
-        let mut buf = String::new();
-        while let Some(Ok(b)) = body.next().await {
-            buf.push_str(&String::from_utf8_lossy(&b));
-            if buf.contains(r#"{"type":"resync"}"#) {
-                return true;
-            }
-        }
-        false
-    })
-    .await
-    .expect("5 秒内应读到 resync");
-    assert!(seen);
+    ws_next(&mut ws, "resync").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn report_is_pushed_as_metrics() {
+    let t = setup().await;
+    let relay = seed_relay(&t, "线路机1", "203.0.113.10", "tok1").await;
+    let mut ws = t.ws(true).await.unwrap();
+    let mut p = live::Published::default();
+    let now = now_ms();
+    let mut r = blank_report(1);
+    r.host = vec![host(now - 10_000, 10.0, 1_000, 2_000), host(now, 42.5, 11_000, 22_000)];
+    assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
+    assert!(live::publish(&t.st, &mut p).await.unwrap());
+    let m = ws_next(&mut ws, "metrics").await;
+    let me = &m["machines"][relay.to_string()];
+    // host = [ts, cpu, load1, mem_used, mem_total, disk_used, disk_total, rx_bps, tx_bps, tcp]
+    assert_eq!((me["host"][1].as_f64(), me["host"][7].as_i64(), me["host"][8].as_i64()), (Some(42.5), Some(8_000), Some(16_000)), "{me}");
+    assert_eq!(me["host"][0].as_i64(), Some(now / 1000));
+    assert!(me["seen"].is_i64() && me["agent"]["online"] == true && me["health"]["status"].is_string(), "{me}");
+    assert!(m["overview"]["relays"]["total"] == 1, "{m}");
+
+    // 没有变化：不发
+    assert!(!live::publish(&t.st, &mut p).await.unwrap());
+    // 下一份上报：只带变了的字段
+    let mut r = blank_report(2);
+    r.host = vec![host(now + 10_000, 50.0, 21_000, 42_000)];
+    assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
+    assert!(live::publish(&t.st, &mut p).await.unwrap());
+    let m = ws_next(&mut ws, "metrics").await;
+    let me = m["machines"][relay.to_string()].as_object().unwrap();
+    assert_eq!(me["host"][1].as_f64(), Some(50.0));
+    assert!(!me.contains_key("health") && !me.contains_key("agent"), "{me:?}");
 }
 
 // ── T9 / T10：分区与保留期 ──────────────────────────────────────────────────

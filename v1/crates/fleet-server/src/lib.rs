@@ -11,6 +11,7 @@ pub mod error;
 pub mod health;
 pub mod ipintel;
 pub mod jobs;
+pub mod live;
 pub mod names;
 pub mod notify;
 pub mod policy;
@@ -60,10 +61,11 @@ async fn cache_headers(req: axum::extract::Request, next: axum::middleware::Next
     res
 }
 
-/// 后台任务：作业、告警、分区维护、小时汇总
+/// 后台任务：作业、告警、实时指标、分区维护、小时汇总
 pub fn spawn_background(st: &AppState) {
     tokio::spawn(jobs::run_forever(st.clone()));
     tokio::spawn(alerts::run_forever(st.clone()));
+    tokio::spawn(live::run_forever(st.clone()));
     tokio::spawn(access::run_forever(st.clone()));
     tokio::spawn(ipintel::run_forever(st.clone()));
     let s = st.clone();

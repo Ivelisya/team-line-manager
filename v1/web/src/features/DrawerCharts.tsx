@@ -12,6 +12,9 @@ import { Empty, ErrorNote, LabelValue, LabelValueGrid, Num, Section, SectionHead
 import { RANGES, TimeChart } from '@/components/app/TimeChart';
 import { EntriesTable } from './EntriesTable';
 
+/** 抽屉开着时曲线每 30 秒重取（实时流只推当前读数，不推曲线） */
+const POLL = 30_000;
+
 function RangeBar({ range, setRange }: { range: string; setRange: (r: string) => void }) {
   return <Segmented sm label="时间范围" value={range} onChange={setRange} items={RANGES.map((r) => ({ value: r.value, label: r.label }))} />;
 }
@@ -25,7 +28,7 @@ function ChartFrame({ q, height = 180, children }: { q: UseQueryResult<unknown>;
 
 export function QualityTab({ m }: { m: MachineView }) {
   const [range, setRange] = React.useState('6h');
-  const s = useSeries(m.id, 'probe', range);
+  const s = useSeries(m.id, 'probe', range, true, POLL);
   return (
     <>
       <Section>
@@ -47,7 +50,7 @@ export function QualityTab({ m }: { m: MachineView }) {
 
 export function TrafficTab({ m }: { m: MachineView }) {
   const [range, setRange] = React.useState('24h');
-  const s = useSeries(m.id, 'traffic', range);
+  const s = useSeries(m.id, 'traffic', range, true, POLL);
   const t = monthTraffic(m);
   return (
     <>
@@ -79,7 +82,7 @@ export function TrafficTab({ m }: { m: MachineView }) {
 export function HostTab({ m }: { m: MachineView }) {
   const [range, setRange] = React.useState('6h');
   const host = hasHost(m);
-  const s = useSeries(m.id, 'host', range, host);
+  const s = useSeries(m.id, 'host', range, host, POLL);
   if (!host) return <Empty icon={<ServerOff size={22} />} text={m.kind === 'proxy' ? '家宽代理没有主机，不采集 CPU / 内存 / 磁盘 / 网卡指标。' : '暂时没有主机指标'} />;
   const h = m.host!;
   const pct = (v: number) => `${Math.round(v)}%`;

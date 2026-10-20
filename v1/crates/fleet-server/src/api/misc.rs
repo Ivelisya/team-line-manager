@@ -7,31 +7,31 @@ use crate::health::Status;
 use crate::state::{AppState, Event};
 use crate::views;
 use crate::crypto::sha256;
+use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
-use axum_extra::extract::cookie::CookieJar;
-use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
+use axum::response::Response;
 use axum::Json;
-use futures::stream::Stream;
+use axum_extra::extract::cookie::CookieJar;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::convert::Infallible;
 use std::time::Duration;
 use time::OffsetDateTime;
-use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
-use tokio_stream::wrappers::{BroadcastStream, IntervalStream};
-use tokio_stream::StreamExt;
+use tokio::sync::broadcast::{self, error::RecvError};
 use uuid::Uuid;
 
-/// 只统计 active 的机器
 pub async fn overview(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
-    let ms = views::live(&st).await?;
+    Ok(ok(overview_of(&views::live(&st).await?)))
+}
+
+/// 总览 KPI，只统计 active 的机器（实时指标推送也用它）
+pub fn overview_of(ms: &[views::MachineView]) -> Value {
     let mut nodes = json!({"total": 0, "ok": 0, "degraded": 0, "down": 0, "unknown": 0, "maintenance": 0});
     let mut relays = nodes.clone();
     let (mut provisioning, mut retiring, mut due_7d, mut up, mut down, mut rx, mut tx) = (0, 0, 0, 0i64, 0i64, 0f64, 0f64);
     // 月费按币种分别汇总（不做汇率折算）
     let mut cost: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
-    for m in ms.iter() {
+    for m in ms {
         match m.lifecycle.as_str() {
             "provisioning" | "draft" => provisioning += 1,
             "retiring" => retiring += 1,
@@ -76,10 +76,10 @@ pub async fn overview(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<V
             tx += h.net_tx_bps.unwrap_or(0.0);
         }
     }
-    Ok(ok(json!({
+    json!({
         "nodes": nodes, "relays": relays, "provisioning": provisioning, "retiring": retiring, "due_7d": due_7d,
         "monthly_cost": cost.into_iter().map(|(c, v)| json!({"currency": c, "cents": v})).collect::<Vec<_>>(), "traffic_month": {"up": up, "down": down}, "net_rx_bps": rx, "net_tx_bps": tx,
-    })))
+    })
 }
 
 #[derive(Serialize, sqlx::FromRow)]
@@ -329,8 +329,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
     (title, summary)
 }
 
-/// SSE 连接用的凭据，用来定期复核「会话/密钥还有效吗」
-#[derive(Clone)]
+/// 实时流连接用的凭据，用来定期复核「会话/密钥还有效吗」
 enum Cred {
     Session(Vec<u8>),
     Key(Vec<u8>),
@@ -360,49 +359,69 @@ async fn still_valid(db: &sqlx::PgPool, c: &Cred) -> bool {
     r.unwrap_or(true)
 }
 
-enum Msg {
-    Data(String),
-    Revoked,
-}
+/// 心跳：每隔这么久发一次 ping，到下一次 ping 还没收到 pong 就当连接已死
+const PING_EVERY: Duration = Duration::from_secs(15);
+const RECHECK_EVERY: Duration = Duration::from_secs(60);
+/// 会话/密钥失效时的关闭码（4000–4999 归应用自用）
+pub const CLOSE_REVOKED: u16 = 4401;
 
-/// SSE：资源变更 + 每 30 s 一次 tick（遥测刷新）。
-/// 广播落后丢了事件时发 `resync`（前端让全部查询失效）；每 60 s 复核一次会话/密钥，被撤销就结束流。
-pub async fn stream(_a: Actor, State(st): State<AppState>, jar: CookieJar, headers: HeaderMap) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
+/// 实时流（WebSocket，JSON 文本帧）：资源变更通知 + 实时指标（`live.rs`）。
+/// 广播落后丢了消息时发 `resync`（前端让全部查询失效）；每 60 s 复核一次会话/密钥，被撤销就以 4401 关闭。
+pub async fn stream(_a: Actor, State(st): State<AppState>, jar: CookieJar, headers: HeaderMap, ws: WebSocketUpgrade) -> Response {
     let bearer = headers.get("authorization").and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer "));
     let cred = match (bearer, jar.get(crate::auth::COOKIE)) {
         (Some(k), _) => Some(Cred::Key(sha256(k.as_bytes()))),
         (None, Some(c)) => Some(Cred::Session(sha256(c.value().as_bytes()))),
         _ => None,
     };
-    let to_json = |e: &Event| serde_json::to_string(e).unwrap_or_default();
-    let events = BroadcastStream::new(st.events.subscribe()).map(move |r| match r {
-        Ok(e) => Msg::Data(to_json(&e)),
-        Err(BroadcastStreamRecvError::Lagged(n)) => {
-            tracing::debug!("SSE 订阅者落后 {n} 条事件，通知前端重新同步");
-            Msg::Data(to_json(&Event::Resync))
-        }
-    });
-    let ticks = IntervalStream::new(tokio::time::interval(Duration::from_secs(30))).map(|_| Msg::Data(r#"{"type":"tick"}"#.to_string()));
+    // 握手前就订阅：升级期间的消息也不漏
+    let rx = st.events.subscribe();
     let db = st.db.clone();
-    let start = tokio::time::Instant::now() + Duration::from_secs(60);
-    let checks = IntervalStream::new(tokio::time::interval_at(start, Duration::from_secs(60)))
-        .then(move |_| {
-            let (db, cred) = (db.clone(), cred.clone());
-            async move {
-                match cred {
-                    Some(c) if !still_valid(&db, &c).await => Some(Msg::Revoked),
-                    _ => None,
+    ws.on_upgrade(move |socket| serve_ws(socket, rx, db, cred))
+}
+
+async fn serve_ws(mut ws: WebSocket, mut rx: broadcast::Receiver<Event>, db: sqlx::PgPool, cred: Option<Cred>) {
+    let start = tokio::time::Instant::now();
+    let mut ping = tokio::time::interval_at(start + PING_EVERY, PING_EVERY);
+    let mut check = tokio::time::interval_at(start + RECHECK_EVERY, RECHECK_EVERY);
+    let mut pong_due = false;
+    loop {
+        let text = tokio::select! {
+            r = rx.recv() => match r {
+                Ok(e) => e.to_json(),
+                Err(RecvError::Lagged(n)) => {
+                    tracing::debug!("实时流订阅者落后 {n} 条消息，通知前端重新同步");
+                    Event::Resync.to_json()
                 }
+                Err(RecvError::Closed) => return,
+            },
+            m = ws.recv() => match m {
+                Some(Ok(Message::Pong(_))) => {
+                    pong_due = false;
+                    continue;
+                }
+                Some(Ok(Message::Close(_)) | Err(_)) | None => return,
+                Some(Ok(_)) => continue,
+            },
+            _ = ping.tick() => {
+                if pong_due || ws.send(Message::Ping(Default::default())).await.is_err() {
+                    return;
+                }
+                pong_due = true;
+                continue;
             }
-        })
-        .filter_map(|m| m);
-    let s = events
-        .merge(ticks)
-        .merge(checks)
-        .take_while(|m| !matches!(m, Msg::Revoked))
-        .filter_map(|m| match m {
-            Msg::Data(d) => Some(Ok(SseEvent::default().data(d))),
-            Msg::Revoked => None,
-        });
-    Sse::new(s).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
+            _ = check.tick() => {
+                if let Some(c) = &cred {
+                    if !still_valid(&db, c).await {
+                        let _ = ws.send(Message::Close(Some(CloseFrame { code: CLOSE_REVOKED, reason: "会话或密钥已失效".into() }))).await;
+                        return;
+                    }
+                }
+                continue;
+            }
+        };
+        if ws.send(Message::Text(text.into())).await.is_err() {
+            return;
+        }
+    }
 }

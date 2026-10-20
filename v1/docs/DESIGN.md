@@ -63,14 +63,14 @@ job ─< job_step ─< job_log      audit_log      user / session / api_key
 
 ## 6. 中控：fleet-server（Rust / axum / sqlx）
 
-- REST `/api/v1/*` + SSE `/api/v1/stream`（资源变更推送，前端不轮询）。
+- REST `/api/v1/*` + WebSocket `/api/v1/stream`（资源变更通知 + 实时指标增量，前端不轮询）。
 - 作业执行器、告警引擎、续费提醒都在同一进程内，以 PG 为唯一状态（`SELECT … FOR UPDATE SKIP LOCKED` 领取任务）。
 - 鉴权：账号密码（argon2）+ 可选 TOTP，会话 Cookie；API 密钥带作用域；所有写操作入审计。
 
-## 7. 前端（React + TypeScript + Vite）
+## 7. 前端（React 19 + TypeScript + Vite；shadcn/ui 主题 + 实时 WebSocket）
 
 - 保留原版卡片外观与配色（设计令牌移植），组件统一：一种卡片（固定分段槽位，用 subgrid 对齐同行卡片）、一种表格（固定列宽）、一种段落头、一种状态标。
-- 数据层 TanStack Query + SSE 失效刷新。
+- 数据层 TanStack Query：变更通知让查询失效重取，实时指标直接写缓存。
 
 ## 8. 实验室（PVE）
 

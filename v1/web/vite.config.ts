@@ -2,7 +2,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'node:path';
 
-// 开发代理：/api 与 /echo 转发到中控
+// 开发代理：/api（含实时流 WebSocket）与 /echo 转发到中控
 const target = 'http://192.168.31.60:8080';
 
 export default defineConfig({
@@ -11,7 +11,7 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': { target, changeOrigin: true },
+      '/api': { target, changeOrigin: true, ws: true },
       '/echo': { target, changeOrigin: true },
     },
   },

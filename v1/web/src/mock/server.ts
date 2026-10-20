@@ -1,5 +1,5 @@
-// 浏览器内 mock：拦截 /api/v1/* 的 fetch，并替换 EventSource。VITE_MOCK=1 时由 main.tsx 安装。
-// 有状态：改名、退役、上架、续费等操作都会改内存里的数据，并通过 mock SSE 通知前端刷新。
+// 浏览器内 mock：拦截 /api/v1/* 的 fetch 和实时流 WebSocket。VITE_MOCK=1 时由 main.tsx 安装。
+// 有状态：改名、退役、上架、续费等操作都会改内存里的数据，并通过 mock 实时流通知前端刷新。
 
 import type { EntryView, Job, JobLog, MachineView, ProvisionCheckItem, ProvisionItem, SeriesPoint } from '@/lib/types';
 import { displayName } from '@/lib/format';
@@ -15,23 +15,21 @@ const GiB = 1024 ** 3;
 class HttpErr extends Error { constructor(public status: number, public code: string, msg: string) { super(msg); } }
 const bad = (msg: string, status = 400, code = 'bad_request') => new HttpErr(status, code, msg);
 
-// ---------- SSE ----------
-type Ev = { type: string; id?: string };
+// ---------- 实时流 ----------
+type Ev = { type: string; id?: string; [k: string]: unknown };
 const listeners = new Set<(e: Ev) => void>();
 const emit = (e: Ev) => listeners.forEach((l) => l(e));
 
-class MockEventSource {
-  readyState = 1; url: string; onmessage: ((e: MessageEvent) => void) | null = null; onerror: (() => void) | null = null; onopen: (() => void) | null = null;
-  private subs: ((e: MessageEvent) => void)[] = []; private fn: (e: Ev) => void;
-  constructor(url: string) {
-    this.url = url;
-    this.fn = (e) => { const m = new MessageEvent('message', { data: JSON.stringify(e) }); this.onmessage?.(m); this.subs.forEach((s) => s(m)); };
+/** 只顶替 /api/v1/stream 的 WebSocket（Vite 热更新自己的 WebSocket 照常） */
+class MockStream {
+  readyState = 0; onmessage: ((e: MessageEvent) => void) | null = null; onopen: (() => void) | null = null; onclose: (() => void) | null = null; onerror: (() => void) | null = null;
+  private fn = (e: Ev) => this.onmessage?.(new MessageEvent('message', { data: JSON.stringify(e) }));
+  constructor() {
     listeners.add(this.fn);
-    setTimeout(() => this.onopen?.(), 50);
+    setTimeout(() => { if (this.readyState === 0) { this.readyState = 1; this.onopen?.(); } }, 50);
   }
-  addEventListener(t: string, cb: (e: MessageEvent) => void) { if (t === 'message') this.subs.push(cb); }
-  removeEventListener(t: string, cb: (e: MessageEvent) => void) { if (t === 'message') this.subs = this.subs.filter((s) => s !== cb); }
-  close() { this.readyState = 2; listeners.delete(this.fn); }
+  send() {}
+  close() { this.readyState = 3; listeners.delete(this.fn); }
 }
 
 // ---------- 工具 ----------
@@ -646,14 +644,18 @@ R('POST', '/notify-channels/([^/]+)/test', ({ params }) => {
 R('GET', '/notify-log', ({ query }) => clone(db.notifyLog.slice(0, +(query.get('limit') ?? 100))));
 
 // ---------- 安装 ----------
+/** 模拟上报：改读数，按服务端 metrics 消息的形状推增量（见 lib/live.ts） */
 function jitter() {
+  const machines: Record<string, unknown> = {};
+  const now = Math.floor(Date.now() / 1000);
   for (const m of db.machines) if (m.host && m.lifecycle === 'active' && m.health.status !== 'down') {
     const h = m.host; const f = () => 0.85 + Math.random() * 0.3;
-    h.cpu_pct = Math.max(1, Math.min(99, (h.cpu_pct ?? 10) * f())); h.net_rx_bps = (h.net_rx_bps ?? 1e6) * f(); h.net_tx_bps = (h.net_tx_bps ?? 1e6) * f(); h.ts = iso();
+    h.cpu_pct = Math.max(1, Math.min(99, (h.cpu_pct ?? 10) * f())); h.net_rx_bps = Math.round((h.net_rx_bps ?? 1e6) * f()); h.net_tx_bps = Math.round((h.net_tx_bps ?? 1e6) * f()); h.ts = iso(now * 1000);
     h.load1 = +((h.cpu_pct ?? 0) / 40).toFixed(2);
-    if (m.agent) m.agent.last_report_at = iso();
+    if (m.agent) m.agent.last_report_at = h.ts;
+    machines[m.id] = { host: [now, h.cpu_pct, h.load1, h.mem_used, h.mem_total, h.disk_used, h.disk_total, h.net_rx_bps, h.net_tx_bps, h.tcp_conns], seen: now };
   }
-  emit({ type: 'tick' });
+  emit({ type: 'metrics', machines, entries: {} });
 }
 
 export function installMock() {
@@ -683,8 +685,10 @@ export function installMock() {
     }
     return json(404, { error: { code: 'not_found', message: `mock 未实现：${method} ${path}` } });
   };
-  (window as unknown as { EventSource: unknown }).EventSource = MockEventSource;
-  setInterval(jitter, 15_000);
+  window.WebSocket = new Proxy(window.WebSocket, {
+    construct: (Real, args: ConstructorParameters<typeof WebSocket>) => (String(args[0]).includes('/api/v1/stream') ? new MockStream() : new Real(...args)),
+  });
+  setInterval(jitter, 10_000);
   // 演示入口：?logout=1 可模拟未登录
   if (new URLSearchParams(location.search).get('logout') === '1') sessionStorage.setItem('mock:auth', '0');
   else if (sessionStorage.getItem('mock:auth') === null) sessionStorage.setItem('mock:auth', '1');

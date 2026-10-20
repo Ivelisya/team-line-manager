@@ -5,7 +5,7 @@ use crate::resolve::{self, Want};
 use crate::table::{self, bps, bytes, money};
 use anyhow::{anyhow, bail};
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -565,33 +565,51 @@ fn utc_hms() -> String {
     format!("{:02}:{:02}:{:02}", (secs / 3600) % 24, (secs / 60) % 60, secs % 60)
 }
 
-/// 订阅 /stream，逐条打印事件（--json 为每行一个 JSON）。断线自动重连。
-pub fn watch(ctx: &Ctx, count: Option<usize>, ticks: bool) -> anyhow::Result<u8> {
+/// 文本模式的一行摘要：metrics 只报条数，其余列出字段
+fn event_summary(ev: &Value) -> String {
+    let Some(o) = ev.as_object() else { return String::new() };
+    if ev["type"] == "metrics" {
+        let n = |k: &str| o.get(k).and_then(Value::as_object).map_or(0, |m| m.len());
+        return format!("machines={} entries={}{}", n("machines"), n("entries"), if o.contains_key("overview") { " overview" } else { "" });
+    }
+    o.iter().filter(|(k, _)| *k != "type").map(|(k, v)| format!("{k}={}", v.as_str().map(String::from).unwrap_or_else(|| v.to_string()))).collect::<Vec<_>>().join(" ")
+}
+
+/// 订阅实时流（WebSocket /stream），逐条打印消息（--json 为每行一个 JSON）。断线自动重连。
+pub fn watch(ctx: &Ctx, count: Option<usize>, metrics: bool) -> anyhow::Result<u8> {
     let mut seen = 0usize;
     let mut first = true;
     loop {
-        match ctx.c.stream("/stream") {
-            Ok(res) => {
+        match ctx.c.ws("/stream") {
+            Ok(mut ws) => {
                 first = false;
-                for line in BufReader::new(res).lines() {
-                    let Ok(line) = line else { break };
-                    let Some(data) = line.strip_prefix("data:") else { continue };
-                    let Ok(ev) = serde_json::from_str::<Value>(data.trim()) else { continue };
-                    if ev["type"] == "tick" && !ticks {
+                loop {
+                    let text = match ws.read() {
+                        Ok(tungstenite::Message::Text(t)) => t,
+                        Ok(tungstenite::Message::Close(f)) => {
+                            if let Some(f) = f {
+                                eprintln!("中控关闭了实时流：{}（{}）", f.reason, u16::from(f.code));
+                            }
+                            break;
+                        }
+                        Ok(_) => continue,
+                        Err(_) => break,
+                    };
+                    let Ok(ev) = serde_json::from_str::<Value>(&text) else { continue };
+                    if ev["type"] == "metrics" && !metrics {
                         continue;
                     }
                     if ctx.json {
                         outln(ev.to_string());
                     } else {
-                        let rest = ev.as_object().map(|o| o.iter().filter(|(k, _)| *k != "type").map(|(k, v)| format!("{k}={}", v.as_str().map(String::from).unwrap_or_else(|| v.to_string()))).collect::<Vec<_>>().join(" ")).unwrap_or_default();
-                        outln(format!("{}  {:<10} {rest}", utc_hms(), st(&ev, "/type")));
+                        outln(format!("{}  {:<10} {}", utc_hms(), st(&ev, "/type"), event_summary(&ev)));
                     }
                     seen += 1;
                     if count.is_some_and(|c| seen >= c) {
                         return Ok(0);
                     }
                 }
-                eprintln!("事件流断开，3 秒后重连…");
+                eprintln!("实时流断开，3 秒后重连…");
             }
             Err(e) if first => return Err(e),
             Err(e) => eprintln!("重连失败：{e}"),
