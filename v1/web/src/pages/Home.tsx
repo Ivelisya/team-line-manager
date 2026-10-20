@@ -107,7 +107,7 @@ export function HomePage() {
             sub={tr && <><span>↓ <Num f={F.bytes(tr.down)} /></span><span>↑ <Num f={F.bytes(tr.up)} /></span></>} />
           <KpiTile loading={loading} label="网卡速率" value={o ? <CountUp value={rateTotal} format={(n) => F.inScale(n, rateSc)} /> : '—'} unit={o ? rateSc.u : undefined}
             sub={o && <><span>↓ <Num f={F.rate(o.net_rx_bps)} /></span><span>↑ <Num f={F.rate(o.net_tx_bps)} /></span></>} />
-          <KpiTile loading={loading} label="上架 · 下线中" value={o ? <CountUp value={o.provisioning + o.retiring} /> : '—'} to="/jobs" sub={o && `上架 ${o.provisioning} · 下线 ${o.retiring}`} />
+          <KpiTile loading={loading} label="上架中 · 退役中" value={o ? <CountUp value={o.provisioning + o.retiring} /> : '—'} to="/jobs" sub={o && `上架 ${o.provisioning} · 退役 ${o.retiring}`} />
         </div>
       </div>
 

@@ -243,14 +243,15 @@ async fn relay_xray_down_alert_lifecycle() {
     assert!(ev.try_recv().is_err(), "没有变化就不该有事件");
     assert_eq!(incidents(&t, "firing").await.len(), 1, "同一条告警不重复开");
 
-    // 恢复：Xray 起来后要连续两个干净周期才算恢复
+    // 恢复：Xray 起来后原因要连续消失满 60 秒才算恢复（和开告警的去抖对称）
     let mut r = blank_report(3);
     r.xray = Some(xray(true));
     r.probes = vec![probe(entry, now_ms(), ProbeKind::Egress, true), probe(entry, now_ms(), ProbeKind::Tcp, true)];
     assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
     pass(&t, &mut state, base, 181).await;
-    assert_eq!(incidents(&t, "firing").await.len(), 1, "第一个干净周期还不恢复");
     pass(&t, &mut state, base, 211).await;
+    assert_eq!(incidents(&t, "firing").await.len(), 1, "消失不满 60 秒还不恢复");
+    pass(&t, &mut state, base, 241).await;
     assert!(incidents(&t, "firing").await.is_empty());
     assert!(has_rule(&incidents(&t, "resolved").await, "relay_xray_down"));
     assert!(matches!(ev.try_recv(), Ok(Event::Incidents)));
@@ -269,6 +270,12 @@ async fn relay_renewal_and_global_maintenance() {
     let mut state = AlertState::default();
     alerts::evaluate_once(&t.st, &mut state, OffsetDateTime::now_utc()).await.unwrap();
     assert!(has_rule(&incidents(&t, "firing").await, "renewal_due"), "续费类告警不去抖，立即开");
+    // 登记续费后下一轮评估立即恢复（续费类关也不去抖）
+    let new_due = OffsetDateTime::now_utc().date() + time::Duration::days(60);
+    t.post(&format!("/api/v1/machines/{relay}/renewals"), json!({"new_due": new_due.to_string(), "amount_cents": 500})).await;
+    alerts::evaluate_once(&t.st, &mut state, OffsetDateTime::now_utc()).await.unwrap();
+    assert!(!has_rule(&incidents(&t, "firing").await, "renewal_due"));
+    assert!(has_rule(&incidents(&t, "resolved").await, "renewal_due"));
 
     // 全局维护（不指定机器）：所有机器都显示维护中
     let f = time::format_description::well_known::Rfc3339;
@@ -494,20 +501,100 @@ async fn alert_notifications_firing_repeat_silence_and_resolved() {
     let (s, _) = t.req("DELETE", &format!("/api/v1/silences/{sil}"), None, None).await;
     assert_eq!(s, StatusCode::OK);
 
-    // 恢复：Xray 起来、配置也应用了；连续两个干净周期后各发一条「恢复」（只发给收到过触发的渠道）
+    // 恢复：Xray 起来、配置也应用了；原因消失满 60 秒后各发一条「恢复」（只发给收到过触发的渠道）
     let mut r = blank_report(2);
     r.xray = Some(xray(true));
     assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
     sqlx::query("update relay set applied_generation = 3, applied_at = now() where machine_id = $1").bind(relay).execute(&t.st.db).await.unwrap();
     pass(&t, &mut state, base, 181).await;
     assert_eq!(incidents(&t, "firing").await.len(), 2);
-    pass(&t, &mut state, base, 211).await;
+    pass(&t, &mut state, base, 241).await;
     assert!(incidents(&t, "firing").await.is_empty());
     mock.wait("/wecom/send", 3).await;
     mock.wait("/bot123:ABC", 5).await;
     let last_wc = mock.bodies("/wecom/send").pop().unwrap();
     assert!(last_wc["markdown"]["content"].as_str().unwrap().contains("告警已恢复"), "{last_wc}");
     assert!(mock.bodies("/hook/a").iter().any(|b| b["event"] == "resolved" && b["rule"] == "relay_xray_down"));
+}
+
+async fn xray_report(t: &T, seq: u64, up: bool) {
+    let mut r = blank_report(seq);
+    r.xray = Some(xray(up));
+    assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
+}
+
+/// 等通知记录写到 n 条（发送是后台的），再多等一会确认没有多发
+async fn log_settles(t: &T, n: i64) {
+    for _ in 0..100 {
+        if t.count("select count(*) from notify_log").await >= n {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(t.count("select count(*) from notify_log").await, n);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn flapping_alert_reopens_same_incident_without_spam() {
+    let t = setup().await;
+    let mock = Mock::start().await;
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "webhook", "config": {"url": mock.url("/hook/a")}, "min_severity": "info", "enabled": true})).await;
+    seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let events = || mock.bodies("/hook/a").iter().map(|b| b["event"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    let mut state = AlertState::default();
+    let base = OffsetDateTime::now_utc();
+
+    // 触发 → 恢复：各通知一次
+    xray_report(&t, 1, false).await;
+    pass(&t, &mut state, base, 0).await;
+    pass(&t, &mut state, base, 61).await;
+    let first = incidents(&t, "firing").await[0]["id"].clone();
+    log_settles(&t, 1).await;
+    xray_report(&t, 2, true).await;
+    pass(&t, &mut state, base, 91).await;
+    pass(&t, &mut state, base, 151).await;
+    assert!(incidents(&t, "firing").await.is_empty());
+    log_settles(&t, 2).await;
+
+    // 30 分钟内复发：重开同一条，复发计数 +1，不再通知
+    xray_report(&t, 3, false).await;
+    pass(&t, &mut state, base, 181).await;
+    pass(&t, &mut state, base, 241).await;
+    let inc = incidents(&t, "firing").await;
+    assert_eq!((inc.len(), &inc[0]["id"], inc[0]["reopen_count"].as_i64()), (1, &first, Some(1)), "{inc:?}");
+    assert_eq!(t.count("select count(*) from incident").await, 1);
+    // 再恢复：没通知过的复发不重复报恢复
+    xray_report(&t, 4, true).await;
+    pass(&t, &mut state, base, 271).await;
+    pass(&t, &mut state, base, 331).await;
+    assert!(incidents(&t, "firing").await.is_empty());
+    log_settles(&t, 2).await;
+    assert_eq!(events(), ["firing", "resolved"]);
+
+    // 复发后一直不恢复：距上次触发通知满 30 分钟再发一次「触发」，之后恢复照常配对通知
+    xray_report(&t, 5, false).await;
+    pass(&t, &mut state, base, 361).await;
+    pass(&t, &mut state, base, 421).await;
+    assert_eq!(incidents(&t, "firing").await[0]["reopen_count"], 2);
+    log_settles(&t, 2).await;
+    sqlx::query("update incident set notified_at = now() - interval '31 minutes'").execute(&t.st.db).await.unwrap();
+    pass(&t, &mut state, base, 451).await;
+    log_settles(&t, 3).await;
+    xray_report(&t, 6, true).await;
+    pass(&t, &mut state, base, 481).await;
+    pass(&t, &mut state, base, 541).await;
+    log_settles(&t, 4).await;
+    assert_eq!(events(), ["firing", "resolved", "firing", "resolved"]);
+
+    // 超过重开窗口再出现：新开一条
+    sqlx::query("update incident set resolved_at = now() - interval '31 minutes'").execute(&t.st.db).await.unwrap();
+    xray_report(&t, 7, false).await;
+    pass(&t, &mut state, base, 571).await;
+    pass(&t, &mut state, base, 631).await;
+    let inc = incidents(&t, "firing").await;
+    assert!(inc[0]["id"] != first && inc[0]["reopen_count"] == 0, "{inc:?}");
+    log_settles(&t, 5).await;
 }
 
 // ── T7 / T8：SSE 与错误 ─────────────────────────────────────────────────────

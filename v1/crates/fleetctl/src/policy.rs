@@ -25,7 +25,7 @@ fn status_cn(s: &str) -> &'static str {
         "applied" => "已应用",
         "applying" => "进行中",
         "failed" => "失败",
-        "gone" => "已下线",
+        "gone" => "已退役",
         _ => "?",
     }
 }

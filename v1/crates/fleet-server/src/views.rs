@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
-    /// 未退役（含上架中、下线中）
+    /// 未退役（含上架中、退役中）
     Live,
     Retired,
     All,

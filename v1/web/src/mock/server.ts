@@ -300,8 +300,17 @@ R('POST', '/teams/([^/]+)/renumber', ({ params, body }) => {
 R('GET', '/providers', () => clone(db.providers));
 R('POST', '/providers', ({ body }) => {
   if (!body.name || !body.code) throw bad('名称与代码必填');
-  const p = { id: `p${db.seq++}`, name: body.name, code: String(body.code).toUpperCase(), panel_url: body.panel_url ?? null, timezone: body.timezone ?? null };
+  const p = { id: `p${db.seq++}`, name: body.name, code: String(body.code).toUpperCase(), panel_url: body.panel_url || null, timezone: body.timezone || 'UTC' };
   db.providers.push(p); emit({ type: 'catalog' }); return p;
+});
+R('PATCH', '/providers/([^/]+)', ({ params, body }) => {
+  const p = db.providers.find((x) => x.id === params[0]);
+  if (!p) throw bad('没有这个供应商', 404, 'not_found');
+  if (body.name !== undefined) p.name = body.name;
+  if (body.code !== undefined) p.code = body.code;
+  if (body.panel_url !== undefined) p.panel_url = body.panel_url || null;
+  if (body.timezone !== undefined) p.timezone = body.timezone || 'UTC';
+  emit({ type: 'catalog' }); return { id: p.id };
 });
 R('GET', '/plans', () => clone(db.plans));
 R('POST', '/plans', ({ body }) => {
