@@ -32,7 +32,49 @@ pub struct Config {
     pub numbering: Numbering,
     #[serde(default = "d_workers")]
     pub job_workers: usize,
+    /// 来源 IP 画像（离线库，只查本地）；整段不写也能跑
+    #[serde(default)]
+    pub ipintel: IpintelConfig,
 }
+
+/// `[ipintel]`：全部有默认值，老配置文件不用改
+#[derive(Debug, Clone, Deserialize)]
+pub struct IpintelConfig {
+    #[serde(default = "d_true")]
+    pub enabled: bool,
+    /// 离线库目录（deploy/ipintel/fetch-dbs.sh 的 DEST）；缺失或不全时降级，不影响服务
+    #[serde(default = "d_ipintel_dir")]
+    pub db_dir: PathBuf,
+    /// 可选的 ASN 分类覆盖文件（见 crates/fleet-ipintel/data/asn-lists.toml 的写法）；文件不存在就只用内置默认
+    #[serde(default = "d_ipintel_overrides")]
+    pub overrides: Option<PathBuf>,
+    /// 额外视为内部地址的 IP（运维出口等）。线路机和节点的 IP 自动算内部，不用写
+    #[serde(default)]
+    pub internal_ips: Vec<String>,
+    /// 学习期天数：从节点第一条访问记录算起，期间只学习不告警
+    #[serde(default = "d_learn_days")]
+    pub learn_days: u32,
+    /// 一次性异常（新运营商 / 新城市 / 机房来源）最后一次出现后多少小时自动恢复
+    #[serde(default = "d_alert_ttl_hours")]
+    pub alert_ttl_hours: u32,
+}
+impl Default for IpintelConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            db_dir: d_ipintel_dir(),
+            overrides: d_ipintel_overrides(),
+            internal_ips: vec![],
+            learn_days: d_learn_days(),
+            alert_ttl_hours: d_alert_ttl_hours(),
+        }
+    }
+}
+fn d_true() -> bool { true }
+fn d_ipintel_dir() -> PathBuf { PathBuf::from("/var/lib/fleet/ipintel") }
+fn d_ipintel_overrides() -> Option<PathBuf> { Some(PathBuf::from("/etc/fleet/ipintel-overrides.toml")) }
+fn d_learn_days() -> u32 { 7 }
+fn d_alert_ttl_hours() -> u32 { 24 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Retention {

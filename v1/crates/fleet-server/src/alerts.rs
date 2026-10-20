@@ -86,7 +86,9 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
         silences.iter().any(|(s, r)| s.is_none_or(|s| s == id) && r.as_deref().is_none_or(|r| r == rule))
     };
     let mut open: HashMap<(String, Uuid), Open> = sqlx::query_as::<_, Open>(
-        "select id, rule, subject_id, severity::text severity, summary, opened_at, notified_at from incident where state = 'firing'",
+        // ipintel_ 开头的规则由 ipintel.rs 自己开和关（一次性异常，24 小时后恢复），这里不碰，否则会被当成「原因消失」恢复掉
+        "select id, rule, subject_id, severity::text severity, summary, opened_at, notified_at from incident
+         where state = 'firing' and rule not like 'ipintel!_%' escape '!'",
     )
     .fetch_all(&st.db)
     .await?

@@ -94,7 +94,8 @@ pub async fn targets(_a: Actor, State(st): State<AppState>, Query(q): Query<Q>) 
 pub async fn sources(_a: Actor, State(st): State<AppState>, Query(q): Query<Q>) -> ApiResult<Json<Value>> {
     let f = filter_of(&q, Window::H24)?;
     let (limit, _) = page_of(&q, 100)?;
-    let items = access::sources(&st.db, &f, limit).await?;
+    let mut items = access::sources(&st.db, &f, limit).await?;
+    crate::ipintel::attach(&st, &mut items).await;
     Ok(ok(json!({"items": items, "window_start": access::fmt_ts(f.from)})))
 }
 
@@ -123,5 +124,7 @@ pub async fn new_targets(_a: Actor, State(st): State<AppState>, Query(q): Query<
 
 pub async fn machine(_a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, Query(q): Query<Q>) -> ApiResult<Json<Value>> {
     let w = window_of(&q, Window::H24)?;
-    Ok(ok(access::machine_access(&st.db, id, w).await?))
+    let mut m = access::machine_access(&st.db, id, w).await?;
+    crate::ipintel::attach(&st, &mut m.top_sources).await;
+    Ok(ok(m))
 }

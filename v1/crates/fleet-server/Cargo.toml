@@ -7,6 +7,7 @@ publish.workspace = true
 
 [dependencies]
 fleet-proto.workspace = true
+fleet-ipintel = { path = "../fleet-ipintel" }
 anyhow.workspace = true
 thiserror.workspace = true
 serde.workspace = true
@@ -36,3 +37,4 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+tempfile = "=3.27.0"
