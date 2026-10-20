@@ -1,3 +1,4 @@
+pub mod access;
 pub mod agent_api;
 pub mod alerts;
 pub mod api;
@@ -39,6 +40,7 @@ pub fn app(st: AppState) -> Router {
 pub fn spawn_background(st: &AppState) {
     tokio::spawn(jobs::run_forever(st.clone()));
     tokio::spawn(alerts::run_forever(st.clone()));
+    tokio::spawn(access::run_forever(st.clone()));
     let s = st.clone();
     tokio::spawn(async move {
         let mut t = tokio::time::interval(std::time::Duration::from_secs(3600));
