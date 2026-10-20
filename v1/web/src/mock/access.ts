@@ -32,7 +32,7 @@ function build(machines: MachineView[]): NodeData[] {
     const r = rng(hashStr(`access:${m.id}`));
     const pool = [...DOMAINS].sort(() => r() - 0.5).slice(0, 22 + Math.floor(r() * 18));
     const targets = pool.map((h) => {
-      const base = Math.max(1, Math.round(Math.pow(r(), 2.2) * 90)); // 每小时连接数
+      const base = Math.max(1, Math.round(Math.pow(r(), 3) * 24)); // 每小时连接数
       const age = r() < 0.18 ? r() * 20 * HOUR : (1 + r() * 25) * DAY; // 少数是最近才出现的
       return {
         node_id: m.id, name: m.name, dest_host: h, kind: (isIp(h) ? 'ip' : 'domain') as 'ip' | 'domain', conns: 0, sources: 0, blocked: 0, base,
