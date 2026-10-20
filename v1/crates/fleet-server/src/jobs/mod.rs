@@ -71,6 +71,18 @@ const RETIRE: &[StepDef] = &[
     s("revoke", "撤销令牌", 30),
     s("finalize", "完成退役", 30),
 ];
+// 换线路机：新入口先建好并验收，再摘旧入口，节点全程至少有一个可用入口。detach_old 之后不可回滚（见 cancellable_at）。
+const MOVE_ENTRY: &[StepDef] = &[
+    s("attach_new", "在新线路机建入口", 60),
+    s("firewall_widen", "放行新线路机（节点防火墙）", 300),
+    s("wait_applied_new", "等待新线路机生效", 300),
+    s("verify_new", "经新入口出口验收", 300),
+    s("detach_old", "摘除旧入口", 60),
+    s("wait_detached_old", "等待旧线路机摘除", 600),
+    s("firewall_narrow", "收紧节点防火墙", 300),
+];
+/// MOVE_ENTRY 里 detach_old 的下标：作业走到这一步（含）之后不能再取消
+const MOVE_POINT_OF_NO_RETURN: i32 = 4;
 const PURGE: &[StepDef] = &[s("purge", "删除数据", 600)];
 const UPGRADE_AGENT: &[StepDef] = &[s("agent", "推送并重启 agent", 600), s("wait_report", "等待重新上报", 180)];
 
@@ -80,6 +92,11 @@ pub fn defs(kind: &str) -> &'static [StepDef] {
         "provision_proxy" => PROVISION_PROXY,
         "provision_relay" => PROVISION_RELAY,
         "attach_entry" => ATTACH_ENTRY,
+        "move_entry" => MOVE_ENTRY,
+        // 恢复已退役的机器：和上架走同一套收敛步骤
+        "restore_vps" => PROVISION_VPS,
+        "restore_proxy" => PROVISION_PROXY,
+        "restore_relay" => PROVISION_RELAY,
         "retire" => RETIRE,
         "purge" => PURGE,
         "upgrade_agent" => UPGRADE_AGENT,
@@ -91,12 +108,15 @@ pub fn title_of(kind: &str, key: &str) -> &'static str {
     defs(kind).iter().find(|d| d.key == key).map(|d| d.title).unwrap_or("")
 }
 
-pub fn cancellable(kind: &str) -> bool { kind.starts_with("provision_") || kind == "attach_entry" }
+pub fn cancellable(kind: &str) -> bool { kind.starts_with("provision_") || kind.starts_with("restore_") || kind == "attach_entry" || kind == "move_entry" }
+
+/// 作业走到第 `step` 步时还能不能取消：换线路机一旦开始摘旧入口就只能重试到完成（回滚会让节点没有入口）
+pub fn cancellable_at(kind: &str, step: i32) -> bool { cancellable(kind) && !(kind == "move_entry" && step >= MOVE_POINT_OF_NO_RETURN) }
 
 /// 外层超时：步骤自己的 timeout_s 再加 120 秒余量
 fn outer_timeout(d: &StepDef) -> Duration { Duration::from_secs(d.timeout_s as u64 + 120) }
 
-fn lifecycle_zh(l: &str) -> &str {
+pub fn lifecycle_zh(l: &str) -> &str {
     match l {
         "draft" => "草稿",
         "provisioning" => "上架中",
@@ -111,8 +131,8 @@ fn lifecycle_zh(l: &str) -> &str {
 /// 这类作业要求目标机器处于什么状态。None = 不限。
 fn required_lifecycle(kind: &str) -> Option<&'static str> {
     match kind {
-        k if k.starts_with("provision_") => Some("provisioning"),
-        "attach_entry" | "upgrade_agent" => Some("active"),
+        k if k.starts_with("provision_") || k.starts_with("restore_") => Some("provisioning"),
+        "attach_entry" | "move_entry" | "upgrade_agent" => Some("active"),
         "retire" => Some("retiring"),
         "purge" => Some("retired"),
         _ => None,
@@ -514,6 +534,11 @@ mod tests {
         assert!(check_target("upgrade_agent", Some("active")).is_ok());
         assert!(check_target("retire", Some("retiring")).is_ok());
         assert!(check_target("retire", Some("retired")).is_err());
+        assert!(check_target("move_entry", Some("active")).is_ok());
+        assert!(check_target("move_entry", Some("retiring")).is_err());
+        assert!(check_target("restore_vps", Some("provisioning")).is_ok());
+        assert!(check_target("restore_vps", Some("retired")).is_err(), "恢复作业要求机器处于上架中");
+        assert!(check_target("restore_proxy", Some("active")).is_err());
         assert!(check_target("purge", Some("retired")).is_ok());
         assert!(check_target("purge", None).is_ok(), "机器已删：purge 的目标已达成");
         assert!(check_target("provision_vps", None).is_err());
@@ -521,7 +546,10 @@ mod tests {
 
     #[test]
     fn outer_timeout_covers_step_timeout() {
-        for k in ["provision_vps", "provision_proxy", "provision_relay", "attach_entry", "retire", "purge", "upgrade_agent"] {
+        for k in [
+            "provision_vps", "provision_proxy", "provision_relay", "attach_entry", "retire", "purge", "upgrade_agent", "move_entry", "restore_vps",
+            "restore_proxy", "restore_relay",
+        ] {
             for d in defs(k) {
                 assert!(outer_timeout(d).as_secs() as i64 >= d.timeout_s + 120);
             }
@@ -529,5 +557,14 @@ mod tests {
         // 线路机收敛内层累计约 1620 秒，必须放得下
         let d = defs("provision_relay").iter().find(|d| d.key == "converge_relay").unwrap();
         assert!(outer_timeout(d).as_secs() >= 1620);
+    }
+
+    #[test]
+    fn move_cancel_window() {
+        assert!(cancellable_at("move_entry", 0) && cancellable_at("move_entry", 3));
+        assert!(!cancellable_at("move_entry", 4) && !cancellable_at("move_entry", 6), "摘旧入口之后不能取消");
+        assert_eq!(defs("move_entry")[MOVE_POINT_OF_NO_RETURN as usize].key, "detach_old");
+        assert!(cancellable_at("restore_vps", 8) && cancellable_at("provision_vps", 8));
+        assert!(!cancellable_at("retire", 0));
     }
 }

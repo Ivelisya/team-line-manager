@@ -76,7 +76,7 @@ struct Checked {
 }
 
 /// SS 密码：32 位，去掉易混字符
-fn ss_password() -> String {
+pub(super) fn ss_password() -> String {
     use rand::Rng;
     const A: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
     let mut r = rand::thread_rng();

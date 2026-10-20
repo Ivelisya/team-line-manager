@@ -2,7 +2,7 @@ use super::ok;
 use crate::auth::Actor;
 use crate::db::audit;
 use crate::error::{ApiError, ApiResult};
-use crate::jobs::{self, cancellable, title_of};
+use crate::jobs::{self, cancellable, cancellable_at, title_of};
 use crate::state::{AppState, Event};
 use axum::extract::{Path, Query, State};
 use axum::Json;
@@ -98,7 +98,17 @@ pub async fn get_one(_a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>
         .collect();
     let mut v = job_json(&j);
     v["steps"] = json!(steps);
-    v["cancellable"] = json!(cancellable(&j.kind) && matches!(j.state.as_str(), "queued" | "running" | "waiting" | "failed"));
+    // 换线路机：把新入口 id 摆在明处（前端据此提供「复制新分享链接」），并提示分享链接已变
+    if j.kind == "move_entry" {
+        let p: Option<Value> = sqlx::query_scalar("select params from job where id = $1").bind(id).fetch_optional(&st.db).await?;
+        if let Some(p) = p {
+            v["result"] = json!({
+                "new_entry_id": p["entry_id"], "old_entry_id": p["old_entry_id"], "from_relay_id": p["from_relay_id"], "to_relay_id": p["to_relay_id"],
+                "share_changed": true, "note": "客户端需要换成新的分享链接",
+            });
+        }
+    }
+    v["cancellable"] = json!(cancellable_at(&j.kind, j.step) && matches!(j.state.as_str(), "queued" | "running" | "waiting" | "failed"));
     Ok(ok(v))
 }
 
@@ -170,13 +180,16 @@ pub async fn retry(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, Q
 
 pub async fn cancel(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
-    let (state, kind): (String, String) = sqlx::query_as("select state::text, kind from job where id = $1 for update")
+    let (state, kind, step): (String, String, i32) = sqlx::query_as("select state::text, kind, step from job where id = $1 for update")
         .bind(id)
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| ApiError::not_found("没有这个作业"))?;
     if !cancellable(&kind) {
         return Err(ApiError::conflict("这类作业不能取消（可以重试到完成）"));
+    }
+    if !cancellable_at(&kind, step) {
+        return Err(ApiError::conflict("旧入口已经开始摘除，不能再取消（取消会让节点没有入口）：失败了点重试到完成"));
     }
     if !matches!(state.as_str(), "queued" | "running" | "waiting" | "failed") {
         return Err(ApiError::conflict("作业已结束"));
