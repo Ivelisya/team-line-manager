@@ -172,7 +172,7 @@ impl Service {
         let intel = if cfg.enabled {
             IpIntel::open(cfg.db_dir.clone(), cfg.overrides.clone())
         } else {
-            IpIntel::open(std::path::PathBuf::new(), None)
+            IpIntel::open("/nonexistent/ipintel-disabled", None)
         };
         let extra_internal = cfg
             .internal_ips
