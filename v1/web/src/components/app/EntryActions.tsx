@@ -5,7 +5,7 @@ import type { EntryView } from '@/lib/types';
 import { fetchShare, useEntryAction } from '@/lib/queries';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/overlays';
 import { IconButton, Button } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogHeader } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/form';
 import { toast } from '@/components/ui/toast';
 import { copyText } from '@/lib/clipboard';
@@ -48,7 +48,7 @@ export function EntryActions({ entry }: { entry: EntryView }) {
 
       <Dialog open={dlg === 'share'} onOpenChange={(o) => !o && setDlg(null)}>
         <DialogContent size="md">
-          <div style={{ display: 'grid', gap: 6 }}><DialogTitle>分享链接 · {entryLabel(entry)}</DialogTitle><DialogDescription>查看分享链接会记入审计。链接等同于凭据，请只发给需要的人。</DialogDescription></div>
+          <DialogHeader><DialogTitle>分享链接 · {entryLabel(entry)}</DialogTitle><DialogDescription>查看分享链接会记入审计。链接等同于凭据，请只发给需要的人。</DialogDescription></DialogHeader>
           <Textarea readOnly value={url} rows={4} className="mono" onFocus={(e) => e.currentTarget.select()} />
           <DialogFooter>
             <Button onClick={() => setDlg(null)}>关闭</Button>

@@ -12,7 +12,7 @@ import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
 import { Field, Input, Textarea } from '@/components/ui/form';
 import { Segmented, Tip, Trunc } from '@/components/ui/overlays';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogHeader } from '@/components/ui/dialog';
 import { SkeletonRows } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
 import { ConfirmDialog } from '@/components/app/dialogs';
@@ -321,10 +321,10 @@ function PreviewDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent size="lg">
-          <div style={{ display: 'grid', gap: 6 }}>
+          <DialogHeader>
             <DialogTitle>预览：发布后会怎样</DialogTitle>
             <DialogDescription>{d ? `按最近 ${d.window_hours} 小时的访问汇总模拟，实际结果以发布后为准。` : '正在按最近 24 小时的访问汇总模拟…'}</DialogDescription>
-          </div>
+          </DialogHeader>
           {q.isLoading && <SkeletonRows rows={4} />}
           {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
           {empty && <Empty icon={<ShieldCheck size={22} />} text="没有未发布的草稿" />}

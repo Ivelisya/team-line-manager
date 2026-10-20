@@ -6,13 +6,10 @@
 .row-between { justify-content: space-between; }
 .grow { flex: 1 1 auto; min-width: 0; }
 .cols-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--grid-gap); }
-.cols-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--grid-gap); }
-@container content (max-width: 860px) { .cols-2, .cols-3 { grid-template-columns: minmax(0, 1fr); } }
+@container content (max-width: 860px) { .cols-2 { grid-template-columns: minmax(0, 1fr); } }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-12) var(--sp-16); }
 .form-grid .span-2 { grid-column: 1 / -1; }
 @media (max-width: 560px) { .form-grid { grid-template-columns: minmax(0, 1fr); } }
-.home-bar { display: flex; align-items: center; gap: var(--control-gap); flex-wrap: wrap; justify-content: space-between; }
-.home-bar .teams { display: flex; align-items: center; gap: var(--sp-6); flex-wrap: wrap; min-width: 0; }
 
 /* 抽屉内：机器头部 */
 .m-head { display: grid; gap: var(--sp-4); min-width: 0; }
@@ -44,6 +41,9 @@
 .job-item[aria-current="true"] { background: var(--selected); box-shadow: inset 2px 0 0 var(--accent); }
 .job-item .l1 { display: flex; align-items: center; gap: var(--sp-8); min-width: 0; }
 .job-item .l2 { font-size: var(--fs-label); color: var(--fg-2); display: flex; gap: var(--sp-8); min-width: 0; }
+.job-item .l-prog { display: flex; align-items: center; gap: var(--sp-8); margin: var(--sp-4) 0 var(--sp-2); font-size: var(--fs-micro); color: var(--fg-2); }
+.job-item .l-prog .progress { flex: 1; height: 4px; }
+.job-item:focus-visible { outline-offset: -2px; }
 .steps { list-style: none; margin: 0; padding: 0; display: grid; }
 .step { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: var(--sp-10); position: relative; padding-bottom: var(--sp-14); }
 .step:last-child { padding-bottom: 0; }
@@ -60,7 +60,12 @@
 .step-out { margin: var(--sp-4) 0 0; font: var(--fs-label) / var(--lh-label) var(--font-mono); color: var(--fg-2); white-space: pre-wrap; overflow-wrap: anywhere; }
 .step-err { margin: var(--sp-4) 0 0; font-size: var(--fs-label); color: var(--bad-text); overflow-wrap: anywhere; }
 .logbox { background: var(--sunken); border-radius: var(--r-float); padding: var(--sp-10) var(--sp-12); max-height: 360px; min-height: 120px; overflow: auto; font: var(--fs-label) / 18px var(--font-mono); }
-.logline { display: grid; grid-template-columns: 64px 44px minmax(0, 1fr); gap: var(--sp-8); }
+/* 日志：错误行整行淡红底，暂停/截断时的提示 */
+.logline { display: grid; grid-template-columns: 64px 44px minmax(0, 1fr); gap: var(--sp-8); padding: 0 var(--sp-4); margin: 0 calc(var(--sp-4) * -1); border-radius: 3px; }
+.logline[data-level="error"] { background: var(--bad-bg); }
+.logline[data-level="warn"] .msg { color: var(--warn-text); }
+.logline .lv-debug { color: var(--fg-3); }
+.logline-note .msg { font-style: italic; }
 .logline .ts { color: var(--fg-3); }
 .logline .lv-info { color: var(--info-text); }
 .logline .lv-warn { color: var(--warn-text); }

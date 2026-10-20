@@ -9,7 +9,7 @@ import { Button, IconButton } from '@/components/ui/button';
 import { Checkbox, Field, Input, Switch } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger, Trunc } from '@/components/ui/overlays';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogHeader } from '@/components/ui/dialog';
 import { SkeletonRows } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
 import { ConfirmDialog } from '@/components/app/dialogs';
@@ -96,7 +96,7 @@ function ApiKeysSection() {
       <Dialog open={open} onOpenChange={(o) => !create.isPending && setOpen(o)}>
         <DialogContent size="md">
           <form style={{ display: 'grid', gap: 16 }} onSubmit={(e) => { e.preventDefault(); if (valid && !create.isPending) submit(); }}>
-            <div style={{ display: 'grid', gap: 6 }}><DialogTitle>新建 API 密钥</DialogTitle><DialogDescription>只授予脚本需要的权限。创建后密钥只显示一次。</DialogDescription></div>
+            <DialogHeader><DialogTitle>新建 API 密钥</DialogTitle><DialogDescription>只授予脚本需要的权限。创建后密钥只显示一次。</DialogDescription></DialogHeader>
             <div className="form-grid">
               <Field label="名称" hint="例如：备份脚本、监控 CLI"><Input value={name} onChange={(e) => setName(e.target.value)} autoFocus autoComplete="off" /></Field>
               <Field label="有效期"><Select value={exp} onChange={setExp} options={EXPIRES} /></Field>
@@ -121,7 +121,7 @@ function ApiKeysSection() {
 
       <Dialog open={token != null} onOpenChange={(o) => !o && setToken(null)}>
         <DialogContent size="md" onInteractOutside={(e) => e.preventDefault()} onEscapeKeyDown={(e) => e.preventDefault()} onOpenAutoFocus={(e) => { e.preventDefault(); copyRef.current?.focus(); }}>
-          <div style={{ display: 'grid', gap: 6 }}><DialogTitle>密钥已创建</DialogTitle><DialogDescription>请现在复制并保存。</DialogDescription></div>
+          <DialogHeader><DialogTitle>密钥已创建</DialogTitle><DialogDescription>请现在复制并保存。</DialogDescription></DialogHeader>
           <Note tone="warn" icon={<ShieldAlert size={14} />}><b>只显示这一次。</b>关闭后无法再次查看完整密钥；丢了只能撤销后重建。</Note>
           <div className="token-box"><code>{token}</code><CopyButton text={token ?? ''} label="密钥" size={15} /></div>
           <DialogFooter>
@@ -259,7 +259,7 @@ function ChannelDialog({ target, onClose }: { target: NotifyChannel | 'new' | nu
     <Dialog open={!!target} onOpenChange={(o) => !o && !busy && onClose()}>
       <DialogContent size="md">
         <form style={{ display: 'grid', gap: 16 }} onSubmit={(e) => { e.preventDefault(); if (valid && !busy) submit(); }}>
-          <div style={{ display: 'grid', gap: 6 }}><DialogTitle>{isNew ? '新建通知渠道' : `编辑渠道 · ${ch?.name ?? ''}`}</DialogTitle><DialogDescription>配置加密保存，保存后页面不再显示明文。</DialogDescription></div>
+          <DialogHeader><DialogTitle>{isNew ? '新建通知渠道' : `编辑渠道 · ${ch?.name ?? ''}`}</DialogTitle><DialogDescription>配置加密保存，保存后页面不再显示明文。</DialogDescription></DialogHeader>
           <div className="form-grid">
             <Field label="名称"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：运维群" autoFocus autoComplete="off" /></Field>
             <Field label="类型" hint={isNew ? undefined : '类型创建后不能改'}><Select value={kind} onChange={(v) => { setKind(v); setCfg({}); }} disabled={!isNew} options={Object.entries(KINDS).map(([value, x]) => ({ value, label: x.label }))} /></Field>

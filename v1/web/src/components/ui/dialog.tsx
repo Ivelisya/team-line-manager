@@ -29,6 +29,8 @@ export const DialogDescription = React.forwardRef<React.ElementRef<typeof Dialog
   <DialogPrimitive.Description ref={ref} className={cn('dialog-desc', className)} {...p} />
 ));
 DialogDescription.displayName = 'DialogDescription';
+/** 标题 + 说明的头部块（标题与说明之间固定的小间距） */
+export const DialogHeader = ({ className, ...p }: React.HTMLAttributes<HTMLDivElement>) => <div className={cn('dialog-head', className)} {...p} />;
 export const DialogFooter = ({ className, ...p }: React.HTMLAttributes<HTMLDivElement>) => <div className={cn('dialog-foot', className)} {...p} />;
 
 /** 右侧抽屉（shadcn Sheet 的写法：Dialog + 右侧定位） */

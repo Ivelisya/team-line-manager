@@ -6,7 +6,7 @@ import { readMachines } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import { modKey, setOverlay, useOverlay } from '@/lib/palette';
 import type { ThemePref } from '@/lib/theme';
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogHeader } from '@/components/ui/dialog';
 
 const CommandPalette = React.lazy(() => import('./CommandPalette'));
 
@@ -81,7 +81,7 @@ function ShortcutsHelp({ open, onOpenChange }: { open: boolean; onOpenChange: (o
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
-        <div style={{ display: 'grid', gap: 6 }}><DialogTitle>键盘快捷键</DialogTitle><DialogDescription>在节点卡片或表格行上点右键，可以直接打开菜单：复制 IP、升级 agent、新建静默、退役。</DialogDescription></div>
+        <DialogHeader><DialogTitle>键盘快捷键</DialogTitle><DialogDescription>在节点卡片或表格行上点右键，可以直接打开菜单：复制 IP、升级 agent、新建静默、退役。</DialogDescription></DialogHeader>
         <ul className="hk-list">
           {KEYS.map((k) => (
             <li key={k.text}><span className="hk-keys">{k.keys.map((x, i) => <React.Fragment key={x}>{i > 0 && <span className="t-muted">+</span>}<kbd className="kbd">{x}</kbd></React.Fragment>)}</span><span>{k.text}</span></li>

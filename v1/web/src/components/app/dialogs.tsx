@@ -1,6 +1,6 @@
 // 确认类对话框：ConfirmDialog（一次确认）与 TypedConfirmDialog（输入指定文字才可确认，用于下线、彻底删除、轮换凭据）。
 import * as React from 'react';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogHeader } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/form';
 import { toast } from '@/components/ui/toast';
@@ -19,7 +19,7 @@ export function ConfirmDialog({ open, onOpenChange, title, description, confirmL
   return (
     <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
       <DialogContent size={size}>
-        <div style={{ display: 'grid', gap: 6 }}><DialogTitle>{title}</DialogTitle>{description && <DialogDescription>{description}</DialogDescription>}</div>
+        <DialogHeader><DialogTitle>{title}</DialogTitle>{description && <DialogDescription>{description}</DialogDescription>}</DialogHeader>
         {children}
         <DialogFooter>
           <Button onClick={() => onOpenChange(false)} disabled={busy}>取消</Button>
@@ -43,7 +43,7 @@ export function TypedConfirmDialog({ expected, prompt, ...base }: Base & { expec
   return (
     <Dialog open={base.open} onOpenChange={(o) => !busy && base.onOpenChange(o)}>
       <DialogContent size={base.size}>
-        <div style={{ display: 'grid', gap: 6 }}><DialogTitle>{base.title}</DialogTitle>{base.description && <DialogDescription>{base.description}</DialogDescription>}</div>
+        <DialogHeader><DialogTitle>{base.title}</DialogTitle>{base.description && <DialogDescription>{base.description}</DialogDescription>}</DialogHeader>
         {base.children}
         <div className="field">
           <label className="label" htmlFor="typed-confirm">{prompt ?? '请输入'} <b className="mono" style={{ color: 'var(--fg)' }}>{expected}</b> 以确认</label>

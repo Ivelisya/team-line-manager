@@ -44,10 +44,10 @@ export const Checkbox = React.forwardRef<React.ElementRef<typeof CheckboxPrimiti
 ));
 Checkbox.displayName = 'Checkbox';
 
-export function CheckRow({ checked, onChange, children, disabled }: { checked: boolean; onChange: (v: boolean) => void; children: React.ReactNode; disabled?: boolean }) {
+export function CheckRow({ checked, onChange, children, disabled, className }: { checked: boolean; onChange: (v: boolean) => void; children: React.ReactNode; disabled?: boolean; className?: string }) {
   const id = React.useId();
   return (
-    <label htmlFor={id} className="check-row" style={disabled ? { opacity: 0.5 } : undefined}>
+    <label htmlFor={id} className={cn('check-row', className)} style={disabled ? { opacity: 0.5 } : undefined}>
       <Checkbox id={id} checked={checked} disabled={disabled} onCheckedChange={(v) => onChange(v === true)} />
       <span>{children}</span>
     </label>

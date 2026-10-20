@@ -11,7 +11,7 @@ import { CheckRow, Field, Input } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { Segmented, Trunc } from '@/components/ui/overlays';
 import { SkeletonRows } from '@/components/ui/skeleton';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogHeader } from '@/components/ui/dialog';
 import { toast } from '@/components/ui/toast';
 import { ConfirmDialog } from '@/components/app/dialogs';
 import { NodeHover } from '@/components/app/NodeHover';
@@ -113,7 +113,7 @@ function Silences() {
       </Panel>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
-          <div style={{ display: 'grid', gap: 6 }}><DialogTitle>新建静默</DialogTitle><DialogDescription>从现在开始，指定时长内所选对象不会触发告警。</DialogDescription></div>
+          <DialogHeader><DialogTitle>新建静默</DialogTitle><DialogDescription>从现在开始，指定时长内所选对象不会触发告警。</DialogDescription></DialogHeader>
           <Field label="对象" hint="必须选择：是哪台机器要静默"><Select value={subject} onChange={setSubject} placeholder="选择机器" options={[{ value: ALL, label: '全部机器（影响所有告警）' }, ...machines.map((m) => ({ value: m.id, label: m.name }))]} /></Field>
           {subject === ALL && <Note tone="warn">静默“全部机器”会让所有机器在这段时间内都不发告警。提交时需要再确认一次。</Note>}
           <Field label="时长（小时）" hint={`最长 ${MAX_HOURS} 小时（30 天）`} error={hoursErr}><Input inputMode="numeric" value={hours} onChange={(e) => setHours(e.target.value.replace(/\D/g, ''))} aria-invalid={!!hoursErr} /></Field>

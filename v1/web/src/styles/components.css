@@ -143,7 +143,6 @@
 .fbar::-webkit-scrollbar { display: none; }
 .fbar-label { flex: none; font-size: var(--fs-label); color: var(--fg-2); margin-right: var(--sp-2); }
 .fbar-div { flex: none; width: 1px; height: 20px; margin: 0 var(--sp-6); background: var(--line); }
-.fbar-end { margin-left: auto; flex: none; display: flex; align-items: center; gap: var(--control-gap); padding-left: var(--sp-8); }
 
 /* ========== KPI 卡（唯一实现 KpiTile） ========== */
 .kpi-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--grid-gap); }
@@ -278,6 +277,7 @@ button.kpi:hover, a.kpi:hover { border-color: var(--line-strong); }
 .checkbox { width: 16px; height: 16px; flex: none; border: 1px solid var(--line-strong); border-radius: var(--r-xs); background: var(--surface); display: inline-grid; place-items: center; cursor: pointer; color: var(--on-accent); }
 .checkbox[data-state="checked"] { background: var(--accent-solid); border-color: var(--accent-solid); }
 .checkbox .lucide { width: 12px; height: 12px; stroke-width: 2.5; }
+.check-row.is-label { font-size: var(--fs-label); }
 .check-row { display: flex; align-items: center; gap: var(--sp-8); font-size: var(--fs-body); cursor: pointer; }
 .switch { width: 34px; height: 20px; flex: none; border: 0; border-radius: 999px; background: var(--line-strong); padding: 2px; cursor: pointer; transition: background-color var(--dur-fast); }
 .switch[data-state="checked"] { background: var(--accent-solid); }
@@ -296,6 +296,7 @@ button.kpi:hover, a.kpi:hover { border-color: var(--line-strong); }
 .dialog-lg { width: min(var(--dialog-lg), calc(100vw - 32px)); }
 .dialog-title { margin: 0; font: var(--fw-semibold) var(--fs-title) / var(--lh-title) var(--font-sans); letter-spacing: var(--tracking-title); }
 .dialog-desc { margin: 0; color: var(--fg-2); font-size: var(--fs-body); line-height: var(--lh-body); }
+.dialog-head { display: grid; gap: var(--sp-6); }
 .dialog-foot { display: flex; justify-content: flex-end; gap: var(--control-gap); flex-wrap: wrap; }
 @keyframes pop-in { from { opacity: 0; transform: translate(-50%, calc(-50% + 6px)) scale(.98); } to { opacity: 1; transform: translate(-50%, -50%); } }
 
