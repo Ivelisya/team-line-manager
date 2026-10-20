@@ -1,0 +1,23 @@
+# /etc/systemd/system/fleet-ipintel-fetch.service — 下载 / 更新 IP 情报离线库（由 .timer 每月触发，也可手动 systemctl start）
+# 脚本装在 /opt/fleet/ipintel/fetch-dbs.sh；库落在 /var/lib/fleet/ipintel（fleet-server 的 [ipintel] db_dir 默认值）。
+[Unit]
+Description=fleet-server ipintel: refresh offline IP databases (ip2region, DB-IP lite, iptoasn)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=fleet
+Group=fleet
+ExecStart=/bin/sh /opt/fleet/ipintel/fetch-dbs.sh /var/lib/fleet/ipintel
+Nice=10
+IOSchedulingClass=idle
+CPUQuota=50%
+MemoryMax=192M
+TimeoutStartSec=45min
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/fleet
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX

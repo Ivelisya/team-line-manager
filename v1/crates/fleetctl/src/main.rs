@@ -5,6 +5,7 @@ mod access;
 mod client;
 mod cmds;
 mod config;
+mod ipintel;
 mod ops;
 mod resolve;
 mod table;
@@ -329,6 +330,22 @@ enum Cmd {
         #[arg(long, default_value_t = 50)]
         limit: i64,
     },
+    /// 查 IP 的画像（运营商、地点、接入方式）：一个 IP 给详细判定理由，多个给表格；只查中控本地离线库
+    Ip {
+        #[arg(required = true)]
+        ips: Vec<String>,
+    },
+    /// 节点（或线路机名下全部节点）的来源画像分布：运营商 / 城市 / 接入方式、top 来源、学习期
+    Sources {
+        machine: String,
+        /// 24h | 7d | 30d
+        #[arg(long, default_value = "24h")]
+        window: String,
+        #[arg(long, default_value_t = 20)]
+        limit: i64,
+    },
+    /// IP 情报离线库状态（加载了几个、版本、缺什么）
+    IpintelStatus,
     /// 订阅实时事件流
     Watch {
         /// 收到 N 条后退出
@@ -435,6 +452,9 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             x,
             access::AccessOpts { view: &view, node: node.as_deref(), team: team.as_deref(), window: &window, search: search.as_deref(), blocked, kind: kind.as_deref(), limit },
         ),
+        Cmd::Ip { ips } => ipintel::ip(x, &ips),
+        Cmd::Sources { machine, window, limit } => ipintel::sources(x, &machine, &window, limit),
+        Cmd::IpintelStatus => ipintel::status(x),
         Cmd::Watch { count, ticks } => cmds::watch(x, count, ticks),
     }
 }
