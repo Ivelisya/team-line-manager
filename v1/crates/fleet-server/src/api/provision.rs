@@ -58,6 +58,8 @@ pub struct Item {
     upstream: Option<Upstream>,
     ss_port: Option<u16>,
     subscription: Option<SubIn>,
+    /// 机器重装过、主机指纹变了：允许预检时覆盖已记录的指纹
+    reset_host_key: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -132,6 +134,11 @@ async fn validate(tx: &mut Tx<'_>, items: &[Item]) -> ApiResult<Vec<Checked>> {
         }
         if !batch_ips.insert(ip) {
             errors.push("这一批里 IP 重复".into());
+        }
+        // 节点防火墙的放行集合是 ipv4_addr、ssserver 只监听 0.0.0.0：线路机和 VPS 节点目前只支持 IPv4
+        // （上游代理不受限，它的出站地址另填）
+        if ip.is_ipv6() && matches!(it.kind.as_str(), "vps" | "relay") {
+            errors.push("暂不支持 IPv6 地址：线路机和 VPS 节点的防火墙放行名单、SS 监听都只处理 IPv4，请填 IPv4 地址".into());
         }
         match it.kind.as_str() {
             "vps" | "proxy" => {
@@ -307,6 +314,9 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Ba
             .await?;
         }
         let mut params = json!({"relay_id": it.relay_id});
+        if it.reset_host_key == Some(true) {
+            params["reset_host_key"] = json!(true);
+        }
         if let Some(pw) = it.login.as_ref().and_then(|l| l.password.as_deref()).filter(|p| !p.is_empty()) {
             let enc = base64::engine::general_purpose::STANDARD.encode(st.secrets.seal_str(pw));
             params["login"] = json!({"password_enc": enc});

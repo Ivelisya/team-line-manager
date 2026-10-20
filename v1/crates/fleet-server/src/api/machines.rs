@@ -212,12 +212,22 @@ pub struct RetireIn {
 }
 
 pub async fn retire(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, ApiJson(b): ApiJson<RetireIn>) -> ApiResult<Json<Value>> {
-    let (name, kind, lifecycle) = display_name_of(&st.db, id).await?;
+    let (name, kind, _) = display_name_of(&st.db, id).await?;
     if b.confirm.trim() != name {
         return Err(ApiError::bad_request(format!("确认文字不对：请输入「{name}」")));
     }
+    let mut tx = st.db.begin().await?;
+    // 先锁机器行再判断、再计数：和「给线路机加入口」（对同一行 for share）互斥，守卫不会被并发挤穿
+    let (lifecycle,): (String,) = sqlx::query_as("select lifecycle::text from machine where id = $1 for update")
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| ApiError::not_found("没有这台机器"))?;
     if lifecycle == "retired" {
         return Err(ApiError::conflict("已经退役"));
+    }
+    if lifecycle == "retiring" {
+        return Err(ApiError::conflict("这台机器已经在退役中：到作业页看进度，失败了点重试"));
     }
     if kind == "relay" {
         let (n,): (i64,) = sqlx::query_as(
@@ -225,18 +235,36 @@ pub async fn retire(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, 
              where e.relay_id = $1 and e.lifecycle <> 'removed' and m.id <> $1",
         )
         .bind(id)
-        .fetch_one(&st.db)
+        .fetch_one(&mut *tx)
         .await?;
         if n > 0 {
             return Err(ApiError::conflict(format!("这台线路机上还有 {n} 个节点入口：先把节点迁走或下线")));
         }
     }
-    let mut tx = st.db.begin().await?;
-    sqlx::query("update machine set lifecycle = 'retiring', lifecycle_reason = $2, revision = revision + 1, updated_at = now() where id = $1")
-        .bind(id)
-        .bind(&b.reason)
-        .execute(&mut *tx)
-        .await?;
+    let n = sqlx::query(
+        "update machine set lifecycle = 'retiring', lifecycle_reason = $2, revision = revision + 1, updated_at = now()
+         where id = $1 and lifecycle not in ('retiring', 'retired')",
+    )
+    .bind(id)
+    .bind(&b.reason)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    if n == 0 {
+        return Err(ApiError::conflict("这台机器刚刚被别人退役了"));
+    }
+    // 这台机器上其它没做完或失败的作业（上架做到一半、加入口失败…）全部作废，否则之后重试会把退役的机器又拉回去
+    let dead: Vec<(Uuid,)> = sqlx::query_as(
+        "update job set state = 'cancelled', finished_at = now(), lease_owner = null, lease_until = null,
+            params = params - 'login', error = coalesce(error, '机器进入退役，作业已作废')
+         where target_id = $1 and state in ('queued', 'running', 'waiting', 'cancelling', 'failed') returning id",
+    )
+    .bind(id)
+    .fetch_all(&mut *tx)
+    .await?;
+    for (jid,) in &dead {
+        sqlx::query("insert into job_log (job_id, level, msg) values ($1, 'warn', '机器进入退役，本作业已作废（不会再重试）')").bind(jid).execute(&mut *tx).await?;
+    }
     let job = jobs::enqueue(
         &mut tx,
         "retire",
@@ -245,10 +273,21 @@ pub async fn retire(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, 
         &a.name,
     )
     .await?;
-    audit(&mut tx, &a.name, "machine.retire", "machine", Some(id), json!({"name": name, "reason": b.reason, "job_id": job})).await?;
+    audit(
+        &mut tx,
+        &a.name,
+        "machine.retire",
+        "machine",
+        Some(id),
+        json!({"name": name, "reason": b.reason, "job_id": job, "cancelled_jobs": dead.iter().map(|(j,)| j).collect::<Vec<_>>()}),
+    )
+    .await?;
     tx.commit().await?;
     st.emit(Event::Machine { id });
     st.emit(Event::Job { id: job });
+    for (j,) in dead {
+        st.emit(Event::Job { id: j });
+    }
     Ok(ok(json!({"job_id": job})))
 }
 
