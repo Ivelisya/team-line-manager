@@ -4,6 +4,7 @@
 import type { EntryView, Job, JobLog, MachineView, ProvisionCheckItem, ProvisionItem, SeriesPoint } from '@/lib/types';
 import { displayName } from '@/lib/format';
 import { buildDb, hashStr, rng, type Db } from './fixtures';
+import { installAccessMock } from './access';
 
 const db: Db = buildDb();
 const DAY = 86400_000;
@@ -434,6 +435,8 @@ R('GET', '/silences', () => clone(db.silences));
 R('POST', '/silences', ({ body }) => { const m = body.subject_id ? machine(body.subject_id) : null; const s = { id: `s${db.seq++}`, subject_name: m?.name ?? null, rule: null, subject_id: null, ...body }; db.silences.push(s); emit({ type: 'incidents' }); return s; });
 R('DELETE', '/silences/([^/]+)', ({ params }) => { db.silences = db.silences.filter((s) => s.id !== params[0]); emit({ type: 'incidents' }); return {}; });
 R('GET', '/audit', ({ query }) => clone(db.audit.filter((a) => !query.get('target_id') || a.target_id === query.get('target_id')).slice(0, +(query.get('limit') ?? 50))));
+
+installAccessMock(R, () => db.machines);
 
 // ---------- 安装 ----------
 function jitter() {
