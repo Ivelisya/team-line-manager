@@ -5,7 +5,8 @@ import * as F from '@/lib/format';
 import { entryState, Num } from '@/components/app/primitives';
 import { ShowAll } from '@/components/app/Pagination';
 
-const ENTRY_CAP = 10;
+/** 入口表先露的条数（抽屉入口表、线路机页共用） */
+export const ENTRY_CAP = 10;
 
 const probeCell = (p: EntryView['tcp']) => (p == null ? <span className="t-muted">—</span> : p.ok ? <Num f={F.ms(p.latency_ms)} /> : <span style={{ color: 'var(--bad-text)' }} title={p.detail ?? undefined}>失败</span>);
 

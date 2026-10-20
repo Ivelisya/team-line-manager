@@ -18,8 +18,10 @@ pub const SAMPLE_INTERVAL: Duration = Duration::from_secs(10);
 /// Xray 流量统计（xray api statsquery 子进程）的采样间隔。计数器是累计值，拉长不丢流量，只是样本更粗。
 /// 服务端按分钟汇总（sum/max），不依赖 10 s 粒度。
 pub const STATS_INTERVAL: Duration = Duration::from_secs(30);
-/// Xray 不可达（或取版本失败）后，重新探查的最短间隔
+/// Xray 不可达（或取版本失败）后，重新探查 API 的最短间隔
 const DOWN_RECHECK: Duration = Duration::from_secs(60);
+/// 进程还在时，API 连续失败这么多次才算不可达（单次 statsquery 失败不报 Xray 未运行）
+const DOWN_AFTER_FAILS: u32 = 3;
 
 fn ticker(period: Duration) -> tokio::time::Interval {
     let mut t = interval_at(Instant::now() + period, period);
@@ -74,6 +76,7 @@ pub async fn stats_task(sh: Arc<Shared>, cli: XrayCli, mut sd: watch::Receiver<b
     let mut last_query: Option<Instant> = None;
     let mut last_core: Option<String> = None; // 上次成功计算增量时的进程纪元
     let mut up = false;
+    let mut api_fails = 0u32; // xray api 连续失败次数
     let mut down_check_at: Option<Instant> = None; // Xray 不可达时，下次允许重查的时刻
     let mut version_retry_at = Instant::now();
     loop {
@@ -82,25 +85,32 @@ pub async fn stats_task(sh: Arc<Shared>, cli: XrayCli, mut sd: watch::Receiver<b
             _ = sd.changed() => return,
         }
         let entries = enabled_entries(&sh);
-        // Xray 已确认不可达时，systemctl / xray api 子进程至多每 DOWN_RECHECK 试一次；其余 tick 只更新状态
-        let backoff = !up && down_check_at.is_some_and(|t| Instant::now() < t);
-        // 每个 SAMPLE_INTERVAL 只做一次 /proc 读取确认进程；systemctl / xray api 子进程是重活
-        if !backoff && !proc.is_some_and(|(p, started)| ctl::proc_start_ticks(p) == Some(started.0)) {
+        // 每个 SAMPLE_INTERVAL 确认一次进程：缓存的进程还在只读 /proc，对不上才问 systemctl
+        if !proc.is_some_and(|(p, started)| ctl::proc_start_ticks(p) == Some(started.0)) {
             proc = match ctl::main_pid(&cfg.xray_service).await {
                 Some(p) => ctl::proc_start(p).map(|s| (p, s)),
                 None => None,
             };
+            // 进程（重新）出现：结束退避，本轮就查 API
+            if proc.is_some() {
+                down_check_at = None;
+            }
         }
+        // Xray 已确认不可达时，xray api 子进程至多每 DOWN_RECHECK 试一次；其余 tick 只更新状态
+        let backoff = !up && down_check_at.is_some_and(|t| Instant::now() < t);
         let pid = proc.map(|p| p.0);
         let start = proc.map(|p| p.1);
         let core_id = stats::core_id_of(&boot, pid, start.map(|s| s.0));
-        // 流量计数器是累计值，降低采样频率不丢流量。以下情况立即查：首次、到点、API 不可达（尽快发现恢复）、
+        // 流量计数器是累计值，降低采样频率不丢流量。以下情况立即查：首次、到点、API 不可达或刚失败过（尽快发现恢复）、
         // 进程身份未知、进程换代（Xray 重启后尽早记下新基线）
-        let due = !backoff && (last_query.is_none_or(|t| t.elapsed() >= STATS_INTERVAL) || !up || proc.is_none() || (core_id.is_some() && core_id != last_core));
+        let due = !backoff
+            && (last_query.is_none_or(|t| t.elapsed() >= STATS_INTERVAL) || !up || api_fails > 0 || proc.is_none() || (core_id.is_some() && core_id != last_core));
         if due {
             last_query = Some(Instant::now());
             let res = cli.user_stats().await;
-            up = res.is_ok();
+            api_fails = if res.is_ok() { 0 } else { api_fails + 1 };
+            // 进程不在，或进程在但连续失败 DOWN_AFTER_FAILS 次，才算不可达并开始退避
+            up = api_fails == 0 || (proc.is_some() && api_fails < DOWN_AFTER_FAILS);
             down_check_at = (!up).then(|| Instant::now() + DOWN_RECHECK);
             if was_up != Some(up) {
                 match &res {
@@ -150,6 +160,8 @@ struct Sched {
     sig: String,
     next_tcp: Instant,
     next_egress: Instant,
+    /// 该入口的 TCP 探测是否还在途（排队等信号量也算）：上一次没结束就等它结束再派，免得目标全超时时任务越积越多
+    tcp_busy: Arc<AtomicBool>,
     /// 该入口的出口探测是否还在途（排队等信号量也算）：同一入口最多一个，免得任务堆积
     egress_busy: Arc<AtomicBool>,
     /// 上一次出口探测是否成功：只在成功/失败切换时打日志（初始当作成功）
@@ -211,19 +223,21 @@ pub async fn probe_task(sh: Arc<Shared>, mut sd: watch::Receiver<bool>) {
             let s = sched.entry(e.id).or_insert_with(|| {
                 // 启动时错峰；运行中新增/变化的入口尽快探一次，让界面马上有结果
                 let (a, b) = if first_pass { (stagger(e.id, tcp_every), Duration::from_secs(5) + stagger(e.id, egress_every)) } else { (Duration::from_secs(1), Duration::from_secs(4)) };
-                Sched { sig: sig.clone(), next_tcp: now + a, next_egress: now + b, egress_busy: Arc::new(AtomicBool::new(false)), egress_ok: Arc::new(AtomicBool::new(true)) }
+                Sched { sig: sig.clone(), next_tcp: now + a, next_egress: now + b, tcp_busy: Arc::new(AtomicBool::new(false)), egress_busy: Arc::new(AtomicBool::new(false)), egress_ok: Arc::new(AtomicBool::new(true)) }
             });
             if s.sig != sig {
                 s.sig = sig;
                 s.next_tcp = now + Duration::from_secs(1);
                 s.next_egress = now + Duration::from_secs(4);
             }
-            if now >= s.next_tcp {
+            if now >= s.next_tcp && !s.tcp_busy.swap(true, Ordering::AcqRel) {
                 s.next_tcp = now + tcp_every;
+                let busy = BusyGuard(s.tcp_busy.clone());
                 let (host, port) = outbound_hostport(e);
                 let (sh2, id) = (sh.clone(), e.id);
                 let tcp_sem2 = tcp_sem.clone();
                 tokio::spawn(async move {
+                    let _busy = busy;
                     let Ok(_permit) = tcp_sem2.acquire().await else { return };
                     let r = probe::tcp_probe(id, &host, port, Duration::from_secs(5), now_ms()).await;
                     sh2.buf.lock().unwrap().push_probe(r);

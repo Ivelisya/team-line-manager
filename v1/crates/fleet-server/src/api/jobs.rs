@@ -180,13 +180,13 @@ pub async fn retry(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, Q
     .await?;
     audit(&mut tx, &a.name, "job.retry", "job", Some(id), json!({"step": step, "reset_host_key": q.reset_host_key == Some(true)})).await?;
     tx.commit().await?;
-    st.emit(Event::Job { id });
+    st.emit(Event::Job { id, target });
     Ok(ok(json!({"ok": true})))
 }
 
 pub async fn cancel(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
-    let (state, kind, step): (String, String, i32) = sqlx::query_as("select state::text, kind, step from job where id = $1 for update")
+    let (state, kind, step, target): (String, String, i32, Option<Uuid>) = sqlx::query_as("select state::text, kind, step, target_id from job where id = $1 for update")
         .bind(id)
         .fetch_optional(&mut *tx)
         .await?
@@ -206,6 +206,6 @@ pub async fn cancel(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>) 
         .await?;
     audit(&mut tx, &a.name, "job.cancel", "job", Some(id), json!({})).await?;
     tx.commit().await?;
-    st.emit(Event::Job { id });
+    st.emit(Event::Job { id, target });
     Ok(ok(json!({"ok": true})))
 }

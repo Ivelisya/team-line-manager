@@ -124,7 +124,8 @@ pub fn restore(sh: &Shared) {
     }
 }
 
-/// 回报应用结果；送不到（或重试等待中收到关停信号）就落盘，下个循环重发
+/// 回报应用结果；送不到（或重试等待中收到关停信号）就落盘，下个循环重发。
+/// 关停一律用 `wait_for(|v| *v)` 等：它看当前值；`changed()` 会把共享的接收端标成已读，之后别处的 select 就醒不来
 async fn report_applied(sh: &Shared, client: &ServerClient, rep: &ApplyReport, sd: &mut watch::Receiver<bool>) -> bool {
     for attempt in 0..3u32 {
         match client.post_applied(rep).await {
@@ -142,7 +143,7 @@ async fn report_applied(sh: &Shared, client: &ServerClient, rep: &ApplyReport, s
                 tracing::warn!("应用回报失败（第 {} 次）：{why}", attempt + 1);
                 tokio::select! {
                     _ = tokio::time::sleep(wait.unwrap_or_else(|| backoff(attempt, 2, 20))) => {}
-                    _ = sd.changed() => break,
+                    _ = sd.wait_for(|v| *v) => break,
                 }
             }
         }
@@ -175,7 +176,7 @@ pub async fn desired_task(sh: Arc<Shared>, applier: Arc<Applier>, client: Arc<Se
         let t0 = Instant::now();
         let res = tokio::select! {
             r = client.get_desired(after) => r,
-            _ = sd.changed() => return,
+            _ = sd.wait_for(|v| *v) => return,
         };
         let pause = match res {
             Outcome::Ok(None) => {
@@ -239,7 +240,7 @@ pub async fn desired_task(sh: Arc<Shared>, applier: Arc<Applier>, client: Arc<Se
         if let Some(p) = pause {
             tokio::select! {
                 _ = tokio::time::sleep(p) => {}
-                _ = sd.changed() => return,
+                _ = sd.wait_for(|v| *v) => return,
             }
         }
     }

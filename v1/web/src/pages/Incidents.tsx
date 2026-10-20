@@ -19,10 +19,11 @@ import { ConfirmDialog } from '@/components/app/dialogs';
 import { NodeHover } from '@/components/app/NodeHover';
 import { Empty, ErrorNote, Note, PageHead, Panel, Pill } from '@/components/app/primitives';
 
-/** 规则 key（health.rs 产出）→ 中文名；未收录的原样显示 key */
+/** 规则 key（health.rs、ipintel.rs 产出，开告警的全部收录）→ 中文名；未收录的原样显示 key */
 export const RULES: Record<string, string> = {
   agent_offline: 'agent 离线', no_entry: '节点没有入口', egress_fail: '出口验证失败', tcp_fail: 'TCP 探测失败',
   renewal_due: '即将到期', renewal_overdue: '已过期未续费', relay_apply_lag: '线路机下发滞后', relay_apply_error: '线路机下发失败', relay_xray_down: '线路机 xray 未运行',
+  host_cpu_high: 'CPU 持续偏高', host_mem_high: '内存持续偏高', host_disk_high: '磁盘空间不足',
   ipintel_new_isp: '来源出现新运营商', ipintel_new_city: '来源出现新城市', ipintel_datacenter_source: '机房 / VPN 来源',
 };
 const SEV = (i: Incident) => (i.state === 'resolved' ? <Pill tone="ok" dot="ring">已恢复</Pill> : i.severity === 'critical' ? <Pill tone="bad">严重</Pill> : i.severity === 'info' ? <Pill tone="info">提示</Pill> : <Pill tone="warn">警告</Pill>);

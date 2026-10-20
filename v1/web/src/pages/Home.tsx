@@ -2,7 +2,6 @@
 // 默认排序：线路机 → 团队 → 编号；故障/离线不下沉。其它排序是用户的显式选择。
 import * as React from 'react';
 import { AlertTriangle, Inbox } from 'lucide-react';
-import { AnimatePresence } from 'motion/react';
 import { useMachines, useOverview, usePlans, useTeams } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
@@ -76,6 +75,7 @@ export function HomePage() {
   // 只渲染当前页：KPI 和分组计数仍按全部机器算（上面的 counts）
   const pg = usePage({ total: machines.data ? shown.length : undefined, sizes: PAGE_SIZES[view], size: PAGE_SIZES[view][1], reset: [team, onlyIssues, sort, view] });
   const page = React.useMemo(() => shown.slice(pg.offset, pg.offset + pg.size), [shown, pg.offset, pg.size]);
+  const layoutKey = `${team}|${onlyIssues}|${sort}|${view}`;
 
   const o = ov.data;
   const nodes = o?.nodes; const relays = o?.relays;
@@ -128,11 +128,9 @@ export function HomePage() {
       ) : (
         <>
           {/* 每页一个网格（key=页码）：翻页是整页淡入，不让上一页的卡片和新卡片之间做位置动画。
-              页内：initial={false} 让网格首次出现的卡片不播入场；之后因筛选/排序/视图切换新出现的卡片淡入，留下的卡片在 NodeCard 里用 layout="position" 滑到新位置 */}
+              页内：筛选/排序/视图变了（layoutKey 变）才量位置、滑到新位置；tick 重渲染不量 */}
           <div key={pg.page} className="cards page-in" data-view={view}>
-            <AnimatePresence initial={false}>
-              {page.map((m) => <NodeCard key={m.id} m={m} view={view} current={m.id === openId} plans={plans} onOpen={open} />)}
-            </AnimatePresence>
+            {page.map((m) => <NodeCard key={m.id} m={m} view={view} current={m.id === openId} plans={plans} onOpen={open} layoutKey={layoutKey} />)}
           </div>
           <Pagination pg={pg} unit="台" />
         </>

@@ -133,8 +133,7 @@ pub async fn move_node(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid
     let plan = plan_move(&mut tx, id, b.from_relay_id, b.to_relay_id).await?.map_err(ApiError::conflict)?;
     let job = enqueue_move(&mut tx, &a.name, id, &plan, b.to_relay_id, "move").await?;
     tx.commit().await?;
-    st.emit(Event::Job { id: job });
-    st.emit(Event::Machine { id });
+    st.emit(Event::Job { id: job, target: Some(id) });
     Ok(ok(json!({
         "job_id": job, "name": plan.node_name, "from": plan.from_name, "to": plan.to_name,
         "share_changed": true, "note": SHARE_NOTE,
@@ -210,8 +209,9 @@ pub async fn evacuate(a: Actor, State(st): State<AppState>, Path(relay): Path<Uu
     .await?;
     tx.commit().await?;
     for j in &created {
-        if let Some(id) = j["job_id"].as_str().and_then(|s| Uuid::try_parse(s).ok()) {
-            st.emit(Event::Job { id });
+        let uuid = |k: &str| j[k].as_str().and_then(|s| Uuid::try_parse(s).ok());
+        if let Some(id) = uuid("job_id") {
+            st.emit(Event::Job { id, target: uuid("machine_id") });
         }
     }
     st.emit(Event::Machines);
@@ -565,8 +565,7 @@ pub async fn restore(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>,
     if m.kind == "relay" {
         st.relay_bumped(id);
     }
-    st.emit(Event::Machine { id });
     st.emit(Event::Machines);
-    st.emit(Event::Job { id: job });
+    st.emit(Event::Job { id: job, target: Some(id) });
     Ok(ok(json!({"job_id": job, "machine_id": id, "name": p.new_name, "old_name": p.old_name, "number": p.number})))
 }

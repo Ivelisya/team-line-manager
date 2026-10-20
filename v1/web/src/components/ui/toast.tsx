@@ -17,13 +17,8 @@ export const toast = {
   show: (t: ToastInput) => push?.(t),
 };
 
-/** 离场过渡时长：直接读 .toast 的 transition 所用的 --dur-base 令牌（减弱动效时是 0ms），不再写死一个会和 CSS 漂移的数字 */
-function leaveMs(): number {
-  try {
-    const v = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--dur-base'));
-    return Number.isFinite(v) ? v : 180;
-  } catch { return 180; }
-}
+/** 离场过渡时长：读 .toast 的 transition 所用的 --dur-base 令牌（减弱动效时是 0ms） */
+const leaveMs = () => parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--dur-base'));
 
 const ICON = { ok: CheckCircle2, bad: XCircle, info: Info } as const;
 const LIFE = { ok: 3600, info: 5000, bad: 7000 } as const;

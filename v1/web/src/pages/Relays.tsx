@@ -15,8 +15,7 @@ import { EntryActions } from '@/components/app/EntryActions';
 import { entryState } from '@/components/app/primitives';
 import { openEvacuate } from '@/lib/nodeActions';
 import { ShowAll } from '@/components/app/Pagination';
-
-const ENTRY_CAP = 10;
+import { ENTRY_CAP } from '@/features/EntriesTable';
 
 const probe = (p: EntryView['tcp']) => (p == null ? <span className="t-muted">—</span> : p.ok ? <Num f={F.ms(p.latency_ms)} /> : <span style={{ color: 'var(--bad-text)' }} title={p.detail ?? undefined}>失败</span>);
 

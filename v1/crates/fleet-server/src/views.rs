@@ -239,19 +239,17 @@ pub async fn load(db: &PgPool, scope: Scope, only: Option<Uuid>) -> sqlx::Result
 /// 在用机器全量视图的短缓存：/machines、/relays、/overview 共用，并发请求合并成一次查询（单飞）。
 /// 资源变更事件（`AppState::emit`）让它立刻作废；agent 上报的指标不发事件，靠 TTL 过期。
 type Cached = (std::time::Instant, u64, std::sync::Arc<Vec<MachineView>>);
+/// 指标（心跳、流量）最多旧这么久
+const LIVE_TTL: std::time::Duration = std::time::Duration::from_secs(3);
 
+#[derive(Default)]
 pub struct LiveCache {
-    ttl: std::time::Duration,
     /// 每次作废 +1；加载开始时记下，加载期间发生过变更的结果不当作新鲜的
     gen: std::sync::atomic::AtomicU64,
     slot: tokio::sync::Mutex<Option<Cached>>,
 }
 
 impl LiveCache {
-    pub fn new(ttl: std::time::Duration) -> Self {
-        Self { ttl, gen: Default::default(), slot: Default::default() }
-    }
-
     pub fn invalidate(&self) {
         self.gen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
@@ -263,7 +261,7 @@ pub async fn live(st: &crate::state::AppState) -> sqlx::Result<std::sync::Arc<Ve
     let mut slot = c.slot.lock().await;
     let gen = c.gen.load(std::sync::atomic::Ordering::SeqCst);
     if let Some((at, g, v)) = &*slot {
-        if *g == gen && at.elapsed() < c.ttl {
+        if *g == gen && at.elapsed() < LIVE_TTL {
             return Ok(v.clone());
         }
     }

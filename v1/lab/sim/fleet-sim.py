@@ -843,69 +843,58 @@ def cmd_run(a):
 
 # ── purge ─────────────────────────────────────────────────────────────────────
 
-# (标签, 依赖的表, SQL)。库比代码旧时（例如实验室还没跑到最新迁移）缺的表直接跳过。
+# (标签, SQL)
 PURGE_STEPS = [
-    ("host_metric", ["host_metric"], "delete from host_metric where machine_id = any(array(select id from sim_m))"),
-    ("entry_traffic", ["entry_traffic"], "delete from entry_traffic where entry_id = any(array(select id from sim_e))"),
-    ("probe_result", ["probe_result"], "delete from probe_result where entry_id = any(array(select id from sim_e))"),
-    ("access_event", ["access_event"], "delete from access_event where entry_id = any(array(select id from sim_e))"),
-    ("host_metric_hourly", ["host_metric_hourly"], "delete from host_metric_hourly where machine_id in (select id from sim_m)"),
-    ("entry_traffic_hourly", ["entry_traffic_hourly"], "delete from entry_traffic_hourly where entry_id in (select id from sim_e)"),
-    ("probe_hourly", ["probe_hourly"], "delete from probe_hourly where entry_id in (select id from sim_e)"),
-    ("access_hourly", ["access_hourly"], "delete from access_hourly where node_id in (select id from sim_m) or relay_id in (select id from sim_m)"),
-    ("access_source_hourly", ["access_source_hourly"], "delete from access_source_hourly where node_id in (select id from sim_m)"),
-    ("access_target_seen", ["access_target_seen"], "delete from access_target_seen where node_id in (select id from sim_m)"),
-    ("access_source_late", ["access_source_late"], "delete from access_source_late where node_id in (select id from sim_m)"),
-    ("node_source_seen", ["node_source_seen"], "delete from node_source_seen where node_id in (select id from sim_m)"),
-    ("ip_intel_cache", ["ip_intel_cache", "sim_ip"], "delete from ip_intel_cache where ip in (select ip from sim_ip)"),
-    ("notify_log", ["notify_log"], "delete from notify_log where incident_id in (select id from incident where subject_id in (select id from sim_m union select id from sim_e))"),
-    ("incident", ["incident"], "delete from incident where subject_id in (select id from sim_m union select id from sim_e)"),
-    ("silence", ["silence"], "delete from silence where subject_id in (select id from sim_m union select id from sim_t)"),
-    ("policy", ["policy"], "delete from policy where (scope = 'node' and scope_id in (select id from sim_m)) or (scope = 'team' and scope_id in (select id from sim_t))"),
-    ("job(+steps/logs)", ["job"], "delete from job where target_id in (select id from sim_m)"),
-    ("audit_log", ["audit_log"], "delete from audit_log where target_id in (select id from sim_m union select id from sim_e union select id from sim_t)"),
-    ("real_relays_bumped", ["relay"], "update relay set generation = generation + 1, generation_at = now() "
+    ("host_metric", "delete from host_metric where machine_id = any(array(select id from sim_m))"),
+    ("entry_traffic", "delete from entry_traffic where entry_id = any(array(select id from sim_e))"),
+    ("probe_result", "delete from probe_result where entry_id = any(array(select id from sim_e))"),
+    ("access_event", "delete from access_event where entry_id = any(array(select id from sim_e))"),
+    ("host_metric_hourly", "delete from host_metric_hourly where machine_id in (select id from sim_m)"),
+    ("entry_traffic_hourly", "delete from entry_traffic_hourly where entry_id in (select id from sim_e)"),
+    ("probe_hourly", "delete from probe_hourly where entry_id in (select id from sim_e)"),
+    ("access_hourly", "delete from access_hourly where node_id in (select id from sim_m) or relay_id in (select id from sim_m)"),
+    ("access_source_hourly", "delete from access_source_hourly where node_id in (select id from sim_m)"),
+    ("access_target_seen", "delete from access_target_seen where node_id in (select id from sim_m)"),
+    ("access_source_late", "delete from access_source_late where node_id in (select id from sim_m)"),
+    ("node_source_seen", "delete from node_source_seen where node_id in (select id from sim_m)"),
+    ("ip_intel_cache", "delete from ip_intel_cache where ip in (select ip from sim_ip)"),
+    ("notify_log", "delete from notify_log where incident_id in (select id from incident where subject_id in (select id from sim_m union select id from sim_e))"),
+    ("incident", "delete from incident where subject_id in (select id from sim_m union select id from sim_e)"),
+    ("silence", "delete from silence where subject_id in (select id from sim_m union select id from sim_t)"),
+    ("policy", "delete from policy where (scope = 'node' and scope_id in (select id from sim_m)) or (scope = 'team' and scope_id in (select id from sim_t))"),
+    ("job(+steps/logs)", "delete from job where target_id in (select id from sim_m)"),
+    ("audit_log", "delete from audit_log where target_id in (select id from sim_m union select id from sim_e union select id from sim_t)"),
+    ("real_relays_bumped", "update relay set generation = generation + 1, generation_at = now() "
      "where machine_id in (select relay_id from entry where id in (select id from sim_e)) and machine_id not in (select id from sim_m)"),
-    ("entry", ["entry"], "delete from entry where id in (select id from sim_e)"),
-    ("machine(+outbound/relay/token/state/subscription/renewal)", ["machine"], "delete from machine where id in (select id from sim_m)"),
-    ("team", ["team"], "delete from team where id in (select id from sim_t) and not exists (select 1 from machine m where m.team_id = team.id)"),
+    ("entry", "delete from entry where id in (select id from sim_e)"),
+    ("machine(+outbound/relay/token/state/subscription/renewal)", "delete from machine where id in (select id from sim_m)"),
+    ("team", "delete from team where id in (select id from sim_t) and not exists (select 1 from machine m where m.team_id = team.id)"),
 ]
 
 
 def purge_sql():
-    have = {r["n"] for r in query("select relname::text n from pg_class where relkind in ('r', 'p') and relnamespace = 'public'::regnamespace")}
     s = ["begin;",
          "create temp table sim_m on commit drop as select id from machine where note = 'fleet-sim';",
          "create temp table sim_e on commit drop as select id from entry where node_id in (select id from sim_m) or relay_id in (select id from sim_m);",
          "create temp table sim_t on commit drop as select id from team where name like '%s%%';" % TEAM_PREFIX]
-    if "access_source_hourly" in have:
-        # 只清「仅被模拟节点用过」的来源 IP 画像缓存，要在删 access_source_hourly 之前算好
-        s.append("create temp table sim_ip on commit drop as select distinct src_ip ip from access_source_hourly where node_id in (select id from sim_m) "
-                 "except select distinct src_ip from access_source_hourly where node_id not in (select id from sim_m);")
-        have.add("sim_ip")
+    # 只清「仅被模拟节点用过」的来源 IP 画像缓存，要在删 access_source_hourly 之前算好
+    s.append("create temp table sim_ip on commit drop as select distinct src_ip ip from access_source_hourly where node_id in (select id from sim_m) "
+             "except select distinct src_ip from access_source_hourly where node_id not in (select id from sim_m);")
     s.append(r"\echo ## 清点")
     s.append("select 'machines', count(*) from sim_m union all select 'entries', count(*) from sim_e union all select 'sim_teams', count(*) from sim_t;")
     s.append(r"\echo ## 删除行数")
-    skipped = []
-    for label, need, sql in PURGE_STEPS:
-        if all(t in have for t in need):
-            kw = "update" if sql.startswith("update") else "delete"
-            s.append("with d as (%s returning 1) select '%s', count(*) from d;" % (sql, label))
-        else:
-            skipped.append(label)
+    for label, sql in PURGE_STEPS:
+        s.append("with d as (%s returning 1) select '%s', count(*) from d;" % (sql, label))
     s.append("commit;")
-    return "\n".join(s) + "\n", skipped
+    return "\n".join(s) + "\n"
 
 
 def cmd_purge(a):
     active = subprocess.run(["systemctl", "is-active", "--quiet", "fleet-sim"]).returncode == 0
     if active and not a.force:
         die("fleet-sim 服务还在运行：先 stop（run-sim.sh stop），或加 --force")
-    sql, skipped = purge_sql()
-    out = psql(sql)
+    out = psql(purge_sql())
     print(out.strip())
-    if skipped:
-        log("库里没有这些表，已跳过：" + ", ".join(skipped))
     left = query("select (select count(*) from machine where note = '%s') m, (select count(*) from team where name like '%s%%') t" % (NOTE, TEAM_PREFIX))[0]
     if left["m"] or left["t"]:
         log("注意：仍有残留 机器 %d 团队 %d（模拟团队里若被挪进了真实机器会保留）" % (left["m"], left["t"]))

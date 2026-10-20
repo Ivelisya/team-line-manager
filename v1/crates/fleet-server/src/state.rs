@@ -13,7 +13,12 @@ pub enum Event {
     Machine { id: Uuid },
     Machines,
     Relay { id: Uuid },
-    Job { id: Uuid },
+    /// 作业变化。`target` 不发给前端：emit 时顺带发目标机器的 Machine 事件（机器视图里显示进行中的作业）
+    Job {
+        id: Uuid,
+        #[serde(skip)]
+        target: Option<Uuid>,
+    },
     Incidents,
     Catalog,
     /// 广播滞后、丢了事件：前端收到后让全部查询失效
@@ -53,7 +58,7 @@ impl AppState {
         let (relay_changed, _) = broadcast::channel(64);
         let ipintel = crate::ipintel::Service::new(&cfg.ipintel);
         let access_cache = crate::access::QueryCache::new(std::time::Duration::from_secs(cfg.access_cache_secs));
-        let live = crate::views::LiveCache::new(std::time::Duration::from_secs(cfg.view_cache_secs));
+        let live = crate::views::LiveCache::default();
         Self(Arc::new(Inner { cfg, db, secrets, events, relay_changed, ipintel, access_cache, live }))
     }
 
@@ -61,6 +66,9 @@ impl AppState {
         // 除密钥外的资源变更都可能改变机器视图
         if !matches!(e, Event::ApiKeys) {
             self.live.invalidate();
+        }
+        if let Event::Job { target: Some(t), .. } = e {
+            let _ = self.events.send(Event::Machine { id: t });
         }
         let _ = self.events.send(e);
     }

@@ -106,11 +106,11 @@ pub fn whoami(ctx: &Ctx) -> anyhow::Result<u8> {
 }
 
 /// 分页接口（`/jobs`、`/incidents`）返回 `{items, total, next_offset}`：命令只要条目，`--json` 输出仍是数组
-fn items(mut v: Value) -> Value { v.get_mut("items").map(Value::take).unwrap_or(v) }
+fn items(mut v: Value) -> anyhow::Result<Value> { v.get_mut("items").map(Value::take).ok_or_else(|| anyhow!("分页响应里没有 items")) }
 
 pub fn status(ctx: &Ctx) -> anyhow::Result<u8> {
     let ov = ctx.c.get("/overview")?;
-    let inc = items(ctx.c.get_q("/incidents", &[("state", "firing".to_string()), ("limit", "500".to_string())])?);
+    let inc = items(ctx.c.get_q("/incidents", &[("state", "firing".to_string()), ("limit", "500".to_string())])?)?;
     let both = json!({"overview": ov, "incidents": inc});
     ctx.emit(&both, || {
         let bucket = |k: &str| {
@@ -362,7 +362,7 @@ pub fn series(ctx: &Ctx, machine: &str, range: &str, metric: &str) -> anyhow::Re
 }
 
 pub fn incidents(ctx: &Ctx, all: bool) -> anyhow::Result<u8> {
-    let d = items(ctx.c.get_q("/incidents", &[("state", if all { "all" } else { "firing" }.to_string()), ("limit", "500".to_string())])?);
+    let d = items(ctx.c.get_q("/incidents", &[("state", if all { "all" } else { "firing" }.to_string()), ("limit", "500".to_string())])?)?;
     ctx.emit(&d, || {
         let list = d.as_array().cloned().unwrap_or_default();
         if list.is_empty() { "没有告警".to_string() } else { format!("{}\n共 {} 条", incident_table(&list), list.len()) }
@@ -390,7 +390,7 @@ fn job_row(j: &Value) -> Vec<String> {
 }
 
 pub fn jobs(ctx: &Ctx, active: bool, limit: i64) -> anyhow::Result<u8> {
-    let d = items(ctx.c.get_q("/jobs", &[("state", if active { "active" } else { "all" }.to_string()), ("limit", limit.to_string())])?);
+    let d = items(ctx.c.get_q("/jobs", &[("state", if active { "active" } else { "all" }.to_string()), ("limit", limit.to_string())])?)?;
     ctx.emit(&d, || {
         let list = d.as_array().cloned().unwrap_or_default();
         if list.is_empty() {
@@ -407,7 +407,7 @@ pub fn job_id(ctx: &Ctx, q: &str) -> anyhow::Result<String> {
     if q.len() == 36 {
         return Ok(q.to_string());
     }
-    let list = items(ctx.c.get_q("/jobs", &[("state", "all".to_string()), ("limit", "200".to_string())])?);
+    let list = items(ctx.c.get_q("/jobs", &[("state", "all".to_string()), ("limit", "200".to_string())])?)?;
     let hits: Vec<String> = list.as_array().cloned().unwrap_or_default().iter().map(|j| st(j, "/id")).filter(|id| id.starts_with(&q.to_lowercase())).collect();
     match hits.len() {
         1 => Ok(hits[0].clone()),

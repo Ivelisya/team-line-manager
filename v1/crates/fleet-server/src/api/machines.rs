@@ -288,10 +288,9 @@ pub async fn retire(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, 
     )
     .await?;
     tx.commit().await?;
-    st.emit(Event::Machine { id });
-    st.emit(Event::Job { id: job });
+    st.emit(Event::Job { id: job, target: Some(id) });
     for (j,) in dead {
-        st.emit(Event::Job { id: j });
+        st.emit(Event::Job { id: j, target: Some(id) });
     }
     Ok(ok(json!({"job_id": job})))
 }
@@ -338,7 +337,7 @@ pub async fn purge(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, A
     let job = jobs::enqueue(&mut tx, "purge", Some(id), json!({"name": name}), &a.name).await?;
     audit(&mut tx, &a.name, "machine.purge", "machine", Some(id), json!({"name": name, "job_id": job})).await?;
     tx.commit().await?;
-    st.emit(Event::Job { id: job });
+    st.emit(Event::Job { id: job, target: Some(id) });
     Ok(ok(json!({"job_id": job})))
 }
 
@@ -362,8 +361,9 @@ async fn enqueue_upgrade(st: &AppState, actor: &str, ids: &[Uuid]) -> ApiResult<
     audit(&mut tx, actor, "agent.upgrade", "machine", None, json!({"count": out.len()})).await?;
     tx.commit().await?;
     for j in &out {
-        if let Some(id) = j["job_id"].as_str().and_then(|s| Uuid::try_parse(s).ok()) {
-            st.emit(Event::Job { id });
+        let uuid = |k: &str| j[k].as_str().and_then(|s| Uuid::try_parse(s).ok());
+        if let Some(id) = uuid("job_id") {
+            st.emit(Event::Job { id, target: uuid("machine_id") });
         }
     }
     Ok(out)
@@ -416,13 +416,14 @@ fn monthly() -> String { "monthly".into() }
 fn sh() -> String { "Asia/Shanghai".into() }
 fn seven() -> i32 { 7 }
 
-/// 账单时区必须是数据库认识的时区名（views 里的 local_date 不再兜底）
+/// 时区（账单时区、供应商时区）必须能被 `at time zone` 接受：views 里的 local_date 就这么用，不再兜底。
+/// 不认识的时区 PG 报 22023（invalid_parameter_value）
 pub async fn check_tz(db: &mut sqlx::PgConnection, tz: &str) -> ApiResult<()> {
-    let ok: bool = sqlx::query_scalar("select exists (select 1 from pg_timezone_names where lower(name) = lower($1))").bind(tz).fetch_one(db).await?;
-    if ok {
-        Ok(())
-    } else {
-        Err(ApiError::bad_request(format!("账单时区「{tz}」不存在：请填 IANA 时区名，如 Asia/Shanghai")))
+    match sqlx::query("select now() at time zone $1").bind(tz).execute(db).await {
+        Err(e) if e.as_database_error().and_then(|d| d.code()).as_deref() == Some("22023") => {
+            Err(ApiError::bad_request(format!("账单时区「{tz}」不存在：请填 IANA 时区名，如 Asia/Shanghai")))
+        }
+        r => r.map(drop).map_err(Into::into),
     }
 }
 

@@ -281,10 +281,7 @@ pub async fn renew(st: &AppState, job: Uuid, owner: &str, secs: u64) -> sqlx::Re
 }
 
 fn notify(st: &AppState, job: &JobRow) {
-    st.emit(Event::Job { id: job.id });
-    if let Some(t) = job.target_id {
-        st.emit(Event::Machine { id: t });
-    }
+    st.emit(Event::Job { id: job.id, target: job.target_id });
 }
 
 /// 租约已丢：放弃本次推进，不再写任何状态

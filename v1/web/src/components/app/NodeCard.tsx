@@ -160,8 +160,9 @@ function FlowRow({ m }: { m: MachineView }) {
   );
 }
 
-/** 卡片只吃稳定的 props（plans 引用、onOpen 回调不随地址变化），配合 memo，抽屉开关或 tick 时只有变了的那张重渲染 */
-function NodeCardImpl({ m, view, current, plans, onOpen: open }: { m: MachineView; view: CardView; current?: boolean; plans: Plan[]; onOpen: (id: string, tab?: DrawerTab) => void }) {
+/** 卡片只吃稳定的 props（plans 引用、onOpen 回调不随地址变化），配合 memo，抽屉开关或 tick 时只有变了的那张重渲染。
+ *  layoutKey：筛选/排序/视图的签名，变了才量位置做布局动画（layoutDependency），平时重渲染不量 */
+function NodeCardImpl({ m, view, current, plans, onOpen: open, layoutKey }: { m: MachineView; view: CardView; current?: boolean; plans: Plan[]; onOpen: (id: string, tab?: DrawerTab) => void; layoutKey: string }) {
   const [ref, visible] = useInView<HTMLElement>(); // 心跳条只在卡片可见时轮询，滚出视口就停
   const onOpen = (tab?: 'overview' | 'manage') => open(m.id, tab);
   const q = quota(m); const host = hasHost(m);
@@ -171,7 +172,7 @@ function NodeCardImpl({ m, view, current, plans, onOpen: open }: { m: MachineVie
   return (
     <ContextMenu>
     <ContextMenuTrigger asChild>
-    <mo.article ref={ref} layout="position" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ layout: SPRING, opacity: { duration: 0.18 } }} className={cn('ncard', current && 'is-current', quiet && 'is-quiet')} data-view={VIEW_ATTR[view]} data-id={m.id} data-kind={m.kind} data-health={m.health.status} data-offline={quiet ? '1' : undefined}>
+    <mo.article ref={ref} layout="position" layoutDependency={layoutKey} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ layout: SPRING, opacity: { duration: 0.18 } }} className={cn('ncard', current && 'is-current', quiet && 'is-quiet')} data-view={VIEW_ATTR[view]} data-id={m.id} data-kind={m.kind} data-health={m.health.status} data-offline={quiet ? '1' : undefined}>
       <Head m={m} view={view} onOpen={onOpen} />
 
       {view === 'large' && <>

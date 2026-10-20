@@ -269,6 +269,29 @@ async fn billing_tz_is_validated_on_write() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn provider_tz_is_validated_like_billing_tz() {
+    let t = setup(false).await;
+    let (s, v) = t.req("POST", "/api/v1/providers", Some(json!({"name": "坏时区", "code": "BAD", "timezone": "Mars/Olympus"})), None).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    // 缩写时区 at time zone 认（pg_timezone_names 里不一定有）：供应商和账单两处标准一致，上架时抄过去照样能用
+    t.post("/api/v1/providers", json!({"name": "缩写时区", "code": "CST", "timezone": "CST"})).await;
+    let tz = t.get("/api/v1/providers").await[0]["timezone"].as_str().unwrap().to_string();
+    let (relay, _) = seed_relay(&t).await;
+    let team = seed_team(&t, "团队1").await;
+    let created = t
+        .post(
+            "/api/v1/provision",
+            json!({"items": [{"kind": "proxy", "ip": "203.0.113.10", "team_id": team, "relay_id": relay, "upstream": upstream("p.example"),
+                              "subscription": {"price_cents": 500, "due_date": "2027-01-01", "billing_tz": tz}}]}),
+        )
+        .await;
+    let node = created["jobs"][0]["machine_id"].as_str().unwrap();
+    let m = t.get(&format!("/api/v1/machines/{node}")).await;
+    assert_eq!(m["subscription"]["billing_tz"], "CST");
+    assert!(m["subscription"]["due_days"].is_i64());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancel_move_removes_new_entry_and_keeps_old() {
     let t = setup(true).await;
     let (ra, ta) = seed_relay(&t).await;
