@@ -26,6 +26,9 @@ pub async fn list(_a: Actor, State(st): State<AppState>, Query(q): Query<ListQ>)
         Some("all") => Scope::All,
         _ => Scope::Live,
     };
+    if scope == Scope::Live {
+        return Ok(ok(&*views::live(&st).await?));
+    }
     Ok(ok(views::load(&st.db, scope, None).await?))
 }
 
@@ -189,7 +192,7 @@ const PROBE_RAW: &str = "select coalesce(json_agg(json_build_object('ts', t, 'tc
     select date_trunc('minute', p.ts) t,
       bool_and(p.ok) filter (where p.kind = 'tcp') tcp_ok, avg(p.latency_ms) filter (where p.kind = 'tcp' and p.ok) tcp_ms,
       bool_and(p.ok) filter (where p.kind = 'egress') eg_ok, avg(p.latency_ms) filter (where p.kind = 'egress' and p.ok) eg_ms
-    from probe_result p join entry e on e.id = p.entry_id where e.node_id = $1 and p.ts >= $2 group by 1) a";
+    from probe_result p join entry e on e.id = p.entry_id where (e.node_id = $1 or e.relay_id = $1) and p.kind in ('tcp', 'egress') and p.ts >= $2 group by 1) a";
 
 const PROBE_HOURLY: &str = "select coalesce(json_agg(json_build_object('ts', t, 'tcp_ok', tcp_ok, 'tcp_ms', tcp_ms, 'egress_ok', eg_ok, 'egress_ms', eg_ms,
     'tcp_success_pct', tcp_pct, 'egress_success_pct', eg_pct) order by t), '[]') from (
@@ -200,7 +203,7 @@ const PROBE_HOURLY: &str = "select coalesce(json_agg(json_build_object('ts', t, 
       sum(h.ok) filter (where h.kind = 'egress') = sum(h.total) filter (where h.kind = 'egress') eg_ok,
       avg(h.latency_avg) filter (where h.kind = 'egress') eg_ms,
       100.0 * sum(h.ok) filter (where h.kind = 'egress') / nullif(sum(h.total) filter (where h.kind = 'egress'), 0) eg_pct
-    from probe_hourly h join entry e on e.id = h.entry_id where e.node_id = $1 and h.hour >= $2 group by 1) a";
+    from probe_hourly h join entry e on e.id = h.entry_id where (e.node_id = $1 or e.relay_id = $1) and h.hour >= $2 group by 1) a";
 
 // ── 退役与彻底删除 ────────────────────────────────────────────────────────
 
@@ -411,11 +414,22 @@ fn monthly() -> String { "monthly".into() }
 fn sh() -> String { "Asia/Shanghai".into() }
 fn seven() -> i32 { 7 }
 
+/// 账单时区必须是数据库认识的时区名（views 里的 local_date 不再兜底）
+pub async fn check_tz(db: &mut sqlx::PgConnection, tz: &str) -> ApiResult<()> {
+    let ok: bool = sqlx::query_scalar("select exists (select 1 from pg_timezone_names where lower(name) = lower($1))").bind(tz).fetch_one(db).await?;
+    if ok {
+        Ok(())
+    } else {
+        Err(ApiError::bad_request(format!("账单时区「{tz}」不存在：请填 IANA 时区名，如 Asia/Shanghai")))
+    }
+}
+
 pub async fn put_subscription(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, ApiJson(b): ApiJson<SubIn>) -> ApiResult<Json<Value>> {
     if b.price_cents < 0 || !(0..=60).contains(&b.remind_days) {
         return Err(ApiError::bad_request("金额或提醒天数不合法"));
     }
     let mut tx = st.db.begin().await?;
+    check_tz(&mut tx, &b.billing_tz).await?;
     sqlx::query(
         "insert into subscription (machine_id, price_cents, currency, cycle, due_date, billing_tz, auto_renew, remind_days, traffic_gb, traffic_reset_day)
          values ($1,$2,$3,$4::billing_cycle,$5,$6,$7,$8,$9,$10)

@@ -89,6 +89,8 @@ pub fn spawn_background(st: &AppState) {
     let s = st.clone();
     tokio::spawn(async move {
         let mut t = tokio::time::interval(std::time::Duration::from_secs(300));
+        // 一轮跑得比间隔长时顺延，不连着补跑
+        t.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             t.tick().await;
             if let Err(e) = db::rollup_hours(&s.db).await {

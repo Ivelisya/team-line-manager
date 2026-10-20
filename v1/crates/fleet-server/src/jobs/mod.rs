@@ -500,7 +500,7 @@ pub struct Pruned {
 
 /// 作业清理，由维护循环定期调用：
 /// - 失败、取消、成功的作业超过 3 天，丢掉 params 里还留着的加密 root 密码（失败的作业重试可能还要用，所以不在失败时立刻清）；
-/// - 成功/取消且结束超过 90 天的作业连同步骤、日志一起删除。
+/// - 成功/取消且结束超过 90 天、失败且结束超过 180 天的作业连同步骤、日志一起删除。
 pub async fn prune(db: &PgPool) -> anyhow::Result<Pruned> {
     let passwords_cleared = sqlx::query(
         "update job set params = params - 'login'
@@ -510,7 +510,10 @@ pub async fn prune(db: &PgPool) -> anyhow::Result<Pruned> {
     .execute(db)
     .await?
     .rows_affected();
-    let jobs_deleted = sqlx::query("delete from job where state in ('succeeded', 'cancelled') and finished_at < now() - interval '90 days'")
+    let jobs_deleted = sqlx::query(
+        "delete from job where (state in ('succeeded', 'cancelled') and finished_at < now() - interval '90 days')
+            or (state = 'failed' and finished_at < now() - interval '180 days')",
+    )
         .execute(db)
         .await?
         .rows_affected();

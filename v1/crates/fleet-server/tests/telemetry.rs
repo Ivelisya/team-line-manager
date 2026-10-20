@@ -80,6 +80,22 @@ async fn report_drops_bad_timestamps_and_keeps_the_rest() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn relay_probe_series_covers_its_entries() {
+    let t = setup().await;
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let team = seed_team(&t, "团队1").await;
+    let (node, entry) = seed_node(&t, relay, team, 1, "203.0.113.5", 20000).await;
+    let mut r = blank_report(1);
+    r.probes = vec![probe(entry, now_ms() - 5_000, ProbeKind::Tcp, true)];
+    let (s, v) = t.report("tok1", &r).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    for id in [relay, node] {
+        let v = t.get(&format!("/api/v1/machines/{id}/series?metric=probe&range=1h")).await;
+        assert_eq!(v["points"].as_array().unwrap().len(), 1, "线路机与节点都能看到这条入口的探测：{v}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn rollup_covers_backfilled_hours_and_counter_resets() {
     let t = setup().await;
     let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
@@ -572,8 +588,16 @@ async fn retention_cleanup_removes_only_expired_rows() {
     for days in [400, 1] {
         sqlx::query(&format!("insert into audit_log (actor, action, ts) values ('a', 'x', now() - interval '{days} days')")).execute(db).await.unwrap();
     }
+    for days in [100, 10] {
+        sqlx::query(&format!("insert into silence (id, starts_at, ends_at, comment, created_by) values ($1, now() - interval '{days} days' - interval '1 hour', now() - interval '{days} days', 's', 'a')"))
+            .bind(Uuid::now_v7())
+            .execute(db)
+            .await
+            .unwrap();
+    }
     let sessions_before = t.count("select count(*) from session").await;
     db::cleanup_retention(db).await.unwrap();
+    assert_eq!(t.count("select count(*) from silence").await, 1, "结束超 90 天的静默删掉");
     assert_eq!(t.count("select count(*) from incident").await, 2, "只删已恢复超 180 天的");
     assert_eq!(t.count("select count(*) from incident where state = 'firing'").await, 1);
     assert_eq!(t.count("select count(*) from session").await, sessions_before - 1);

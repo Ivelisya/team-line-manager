@@ -196,6 +196,7 @@ mod tests {
             agent: Some(Agent { version: None, last_report_at: Some(now), online: true, xray_running: Some(true) }),
             host: None,
             entries: vec![],
+            removed_traffic: Default::default(),
             health: Health::default(),
             active_job: None,
             open_incidents: 0,

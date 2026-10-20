@@ -225,19 +225,20 @@ async fn prune_clears_old_passwords_and_deletes_old_jobs() {
     let old_ok = mk("succeeded", 100, json!({})).await;
     let old_cancelled = mk("cancelled", 91, json!({})).await;
     let recent_ok = mk("succeeded", 10, json!({})).await;
-    let old_failed = mk("failed", 100, login.clone()).await; // 失败的作业不删，只清密码
+    let old_failed = mk("failed", 100, login.clone()).await; // 失败的作业 180 天内不删，只清密码
+    let ancient_failed = mk("failed", 200, json!({})).await;
     let mid_failed = mk("failed", 4, login.clone()).await;
     let fresh_failed = mk("failed", 0, login.clone()).await;
 
     let r = jobs::prune(&t.st.db).await.unwrap();
-    assert_eq!(r, jobs::Pruned { passwords_cleared: 2, jobs_deleted: 2 });
+    assert_eq!(r, jobs::Pruned { passwords_cleared: 2, jobs_deleted: 3 });
     let exists = |id: Uuid| {
         let db = t.st.db.clone();
         async move { sqlx::query_scalar::<_, bool>("select exists (select 1 from job where id = $1)").bind(id).fetch_one(&db).await.unwrap() }
     };
-    assert!(!exists(old_ok).await && !exists(old_cancelled).await);
+    assert!(!exists(old_ok).await && !exists(old_cancelled).await && !exists(ancient_failed).await);
     assert!(exists(recent_ok).await && exists(old_failed).await);
-    let steps: i64 = sqlx::query_scalar("select count(*) from job_step where job_id = any($1)").bind(vec![old_ok, old_cancelled]).fetch_one(&t.st.db).await.unwrap();
+    let steps: i64 = sqlx::query_scalar("select count(*) from job_step where job_id = any($1)").bind(vec![old_ok, old_cancelled, ancient_failed]).fetch_one(&t.st.db).await.unwrap();
     assert_eq!(steps, 0, "步骤随作业级联删除");
     for (id, cleared) in [(old_failed, true), (mid_failed, true), (fresh_failed, false)] {
         let is_null: bool = sqlx::query_scalar("select (params->'login') is null from job where id = $1").bind(id).fetch_one(&t.st.db).await.unwrap();

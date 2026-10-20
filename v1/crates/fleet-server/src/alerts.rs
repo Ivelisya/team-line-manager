@@ -37,6 +37,7 @@ pub struct AlertState {
 pub async fn run_forever(st: AppState) {
     let mut state = AlertState::default();
     let mut tick = tokio::time::interval(Duration::from_secs(30));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tick.tick().await;
         if let Err(e) = evaluate_once(&st, &mut state, OffsetDateTime::now_utc()).await {

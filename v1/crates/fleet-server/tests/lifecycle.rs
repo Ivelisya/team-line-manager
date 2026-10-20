@@ -221,6 +221,51 @@ async fn move_proxy_node_never_loses_its_entry() {
     // 审计
     let audit = t.get("/api/v1/audit?limit=100").await;
     assert!(audit.as_array().unwrap().iter().any(|x| x["action"] == "entry.move"));
+
+    // 旧入口 removed 之后，它本月的流量仍算在节点和旧线路机上（不进入口列表），新线路机上不重复计
+    for (e, up) in [(old_entry, 100i64), (new_entry, 7)] {
+        sqlx::query("insert into entry_traffic_hourly (entry_id, hour, up_bytes, down_bytes) values ($1, date_trunc('hour', now()), $2, 0)")
+            .bind(e)
+            .bind(up)
+            .execute(&t.st.db)
+            .await
+            .unwrap();
+    }
+    let m = t.get(&format!("/api/v1/machines/{node}")).await;
+    assert_eq!(m["entries"].as_array().unwrap().len(), 1);
+    assert_eq!((m["entries"][0]["traffic"]["month_up"].as_i64(), m["removed_traffic"]["month_up"].as_i64()), (Some(7), Some(100)));
+    let rs = t.get("/api/v1/relays").await;
+    let removed_of = |id: Uuid| rs.as_array().unwrap().iter().find(|r| r["id"] == id.to_string()).unwrap()["removed_traffic"]["month_up"].as_i64();
+    assert_eq!((removed_of(ra), removed_of(rb)), (Some(100), Some(0)));
+    let o = t.get("/api/v1/overview").await;
+    assert_eq!(o["traffic_month"]["up"], 107, "总览 = 节点现有入口 + 已移除入口");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn billing_tz_is_validated_on_write() {
+    let t = setup(true).await;
+    let (ra, ta) = seed_relay(&t).await;
+    let mut a = Sim::new(ta);
+    let team = seed_team(&t, "团队1").await;
+    let (node, pj) = provision_proxy(&t, team, ra, "203.0.113.10").await;
+    drive(&t, &mut [&mut a], &pj, "succeeded").await;
+    let put = |tz: &'static str| {
+        let path = format!("/api/v1/machines/{node}/subscription");
+        let t = &t;
+        async move { t.req("PUT", &path, Some(json!({"price_cents": 500, "due_date": "2027-01-01", "billing_tz": tz})), None).await }
+    };
+    t.get("/api/v1/machines").await; // 先让在用机器视图进缓存：写入后的事件要让它作废
+    let (s, v) = put("Mars/Olympus").await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    assert!(v.to_string().contains("账单时区"), "{v}");
+    assert_eq!(put("").await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(put("America/Los_Angeles").await.0, StatusCode::OK);
+    let m = t.get(&format!("/api/v1/machines/{node}")).await;
+    assert_eq!(m["subscription"]["billing_tz"], "America/Los_Angeles");
+    assert!(m["subscription"]["due_days"].is_i64());
+    let list = t.get("/api/v1/machines").await;
+    let in_list = list.as_array().unwrap().iter().find(|x| x["id"] == node.to_string()).unwrap();
+    assert_eq!(in_list["subscription"]["billing_tz"], "America/Los_Angeles", "列表缓存已随事件作废");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

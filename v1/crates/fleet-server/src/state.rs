@@ -38,6 +38,8 @@ pub struct Inner {
     pub ipintel: crate::ipintel::Service,
     /// 访问监控聚合结果的短 TTL 缓存
     pub access_cache: crate::access::QueryCache,
+    /// 在用机器视图的短缓存（列表、线路机、总览共用）
+    pub live: crate::views::LiveCache,
 }
 
 impl std::ops::Deref for AppState {
@@ -51,10 +53,17 @@ impl AppState {
         let (relay_changed, _) = broadcast::channel(64);
         let ipintel = crate::ipintel::Service::new(&cfg.ipintel);
         let access_cache = crate::access::QueryCache::new(std::time::Duration::from_secs(cfg.access_cache_secs));
-        Self(Arc::new(Inner { cfg, db, secrets, events, relay_changed, ipintel, access_cache }))
+        let live = crate::views::LiveCache::new(std::time::Duration::from_secs(cfg.view_cache_secs));
+        Self(Arc::new(Inner { cfg, db, secrets, events, relay_changed, ipintel, access_cache, live }))
     }
 
-    pub fn emit(&self, e: Event) { let _ = self.events.send(e); }
+    pub fn emit(&self, e: Event) {
+        // 除密钥外的资源变更都可能改变机器视图
+        if !matches!(e, Event::ApiKeys) {
+            self.live.invalidate();
+        }
+        let _ = self.events.send(e);
+    }
 
     pub fn relay_bumped(&self, relay_id: Uuid) {
         let _ = self.relay_changed.send(relay_id);

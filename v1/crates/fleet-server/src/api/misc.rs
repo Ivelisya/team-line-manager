@@ -5,7 +5,7 @@ use crate::db::{audit as audit_log, new_id};
 use crate::error::{ApiError, ApiResult};
 use crate::health::Status;
 use crate::state::{AppState, Event};
-use crate::views::{self, Scope};
+use crate::views;
 use crate::crypto::sha256;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
@@ -25,13 +25,13 @@ use uuid::Uuid;
 
 /// 只统计 active 的机器
 pub async fn overview(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
-    let ms = views::load(&st.db, Scope::Live, None).await?;
+    let ms = views::live(&st).await?;
     let mut nodes = json!({"total": 0, "ok": 0, "degraded": 0, "down": 0, "unknown": 0, "maintenance": 0});
     let mut relays = nodes.clone();
     let (mut provisioning, mut retiring, mut due_7d, mut up, mut down, mut rx, mut tx) = (0, 0, 0, 0i64, 0i64, 0f64, 0f64);
     // 月费按币种分别汇总（不做汇率折算）
     let mut cost: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
-    for m in &ms {
+    for m in ms.iter() {
         match m.lifecycle.as_str() {
             "provisioning" | "draft" => provisioning += 1,
             "retiring" => retiring += 1,
@@ -68,6 +68,8 @@ pub async fn overview(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<V
                 up += e.traffic.month_up;
                 down += e.traffic.month_down;
             }
+            up += m.removed_traffic.month_up;
+            down += m.removed_traffic.month_down;
         }
         if let Some(h) = &m.host {
             rx += h.net_rx_bps.unwrap_or(0.0);

@@ -381,6 +381,8 @@ const SYNC_PAGE: Duration = Duration::days(7);
 ///   这里和扫描在同一个快照里读出、一并累加，处理完从中扣掉（扣到 0 的行删除）。水位之后的小时由扫描直接覆盖，差值丢弃。
 /// - 学习期内出现的值不标记；学习期后第一次出现的 isp / city / 机房·VPN 来源 IP 标 open（最近一次出现已超过 ttl 的历史值直接标 done）。
 /// - 扫描范围超过一页（7 天）时按时间升序分页，结果与一次扫完等价。
+///
+/// 内部地址表由调用方（maintain_once）先刷新好。
 pub async fn sync_sources(st: &AppState, now: OffsetDateTime) -> anyhow::Result<SyncReport> {
     let svc = &st.ipintel;
     let mut rep = SyncReport::default();
@@ -392,7 +394,6 @@ pub async fn sync_sources(st: &AppState, now: OffsetDateTime) -> anyhow::Result<
         rep.skipped_no_db = true;
         return Ok(rep);
     }
-    svc.ensure_internal(&st.db).await;
     let closed_upto = floor_hour(now) - Duration::hours(1);
     let wm: Option<OffsetDateTime> = sqlx::query_scalar("select ts from ipintel_state where key = $1").bind(WM_KEY).fetch_optional(&st.db).await?;
     let mut from = wm.unwrap_or(now - Duration::days(access::HOURLY_DAYS + 1));

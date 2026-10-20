@@ -54,6 +54,7 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
   agent: {version,last_report_at,online}|null,          // proxy 没有
   host: {ts,cpu_pct,load1,mem_used,mem_total,disk_used,disk_total,net_rx_bps,net_tx_bps,tcp_conns}|null,
   entries: [EntryView],                                // 节点：自己的入口；线路机：挂在上面的入口
+  removed_traffic: {today_up,today_down,month_up,month_down},  // 已移除入口（如换线路机后的旧入口）本月/今天的流量，不在 entries 里
   health: {status: "ok"|"degraded"|"down"|"unknown"|"maintenance"|"inactive", reasons:[{key,severity,text}]},
   active_job: {id,kind,state}|null, open_incidents, maintenance,
   relay: {public_host,generation,applied_generation,applied_at,apply_error,port_min,port_max}|null }

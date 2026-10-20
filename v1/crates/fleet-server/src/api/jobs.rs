@@ -62,7 +62,7 @@ pub async fn list(_a: Actor, State(st): State<AppState>, Query(q): Query<ListQ>)
         Some("failed") => "j.state = 'failed'",
         _ => "true",
     };
-    let sql = format!("{SELECT} where {filter} and ($1::uuid is null or j.target_id = $1) order by j.created_at desc limit $2");
+    let sql = format!("{SELECT} where {filter} and ($1::uuid is null or j.target_id = $1) order by j.id desc limit $2");
     let v: Vec<JobOut> = sqlx::query_as(&sql).bind(q.target_id).bind(q.limit.unwrap_or(100).clamp(1, 500)).fetch_all(&st.db).await?;
     Ok(ok(v.iter().map(job_json).collect::<Vec<_>>()))
 }

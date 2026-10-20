@@ -180,14 +180,12 @@ pub async fn on_applied(db: &PgPool, relay_id: Uuid, rep: &ApplyReport) -> anyho
             return Ok(());
         }
     }
-    for e in &rep.entries {
-        sqlx::query("update entry set apply_error = $3 where id = $1 and relay_id = $2")
-            .bind(e.id)
-            .bind(relay_id)
-            .bind(if e.ok { None } else { e.error.clone().or(Some("失败".into())) })
-            .execute(&mut *tx)
-            .await?;
-    }
+    sqlx::query("update entry set apply_error = u.err from unnest($2::uuid[], $3::text[]) u(id, err) where entry.id = u.id and entry.relay_id = $1")
+        .bind(relay_id)
+        .bind(rep.entries.iter().map(|e| e.id).collect::<Vec<_>>())
+        .bind(rep.entries.iter().map(|e| if e.ok { None } else { e.error.clone().or(Some("失败".into())) }).collect::<Vec<Option<String>>>())
+        .execute(&mut *tx)
+        .await?;
     if rep.ok {
         sqlx::query(
             "update relay set applied_generation = greatest(applied_generation, $2), applied_at = now(), apply_error = null
