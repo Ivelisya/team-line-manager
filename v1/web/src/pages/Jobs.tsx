@@ -1,16 +1,22 @@
-// 作业：列表 + 详情（步骤时间线 + 实时日志，进行中每 1.5s 轮询 /jobs/{id}/logs?after=）。
+// 作业：列表 + 详情（总进度 + 横向步骤条 + 步骤时间线 + 实时日志，进行中每 1.5s 轮询 /jobs/{id}/logs?after=）。
 import * as React from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Check, CircleDashed, Loader2, Minus, RotateCw, Square, X } from 'lucide-react';
-import { fetchLogs, useCancelJob, useJob, useJobs, useRetryJob } from '@/lib/queries';
-import type { Job, JobLog, JobStep } from '@/lib/types';
-import { jobKindLabel, jobLive, outputLines, stepDone, stepFailed, stepRunning, stepSkipped, stepsDone } from '@/lib/jobs';
+import { ArrowLeft, ArrowDownToLine, Check, CircleDashed, Copy, ListChecks, Loader2, Minus, Pause, Play, RotateCw, Square, Undo2, X } from 'lucide-react';
+import { fetchAllLogs, useCancelJob, useJob, useJobs, useRetryJob } from '@/lib/queries';
+import type { Job, JobLog } from '@/lib/types';
+import { errorKindLabel, jobKindLabel, jobLive, jobProgress, outputLines, stepKind, stepsDone, type StepKind } from '@/lib/jobs';
+import { useNow } from '@/lib/useNow';
+import { copyText } from '@/lib/clipboard';
 import * as F from '@/lib/format';
-import { Button } from '@/components/ui/button';
+import { Button, IconButton } from '@/components/ui/button';
 import { Segmented } from '@/components/ui/overlays';
+import { Progress } from '@/components/ui/progress';
+import { SkeletonRows } from '@/components/ui/skeleton';
 import { ConfirmDialog } from '@/components/app/dialogs';
+import { JobProgressBar, StepBar } from '@/components/app/JobProgress';
+import { NodeHover } from '@/components/app/NodeHover';
 import { toast } from '@/components/ui/toast';
-import { Empty, LabelValue, LabelValueGrid, Note, PageHead, Panel, Pill, type Tone } from '@/components/app/primitives';
+import { Empty, ErrorNote, LabelValue, LabelValueGrid, Note, PageHead, Panel, Pill, type Tone } from '@/components/app/primitives';
 
 const STATE: Record<string, { label: string; tone: Tone; dot?: 'pulse' | 'ring' }> = {
   queued: { label: '排队中', tone: 'neutral', dot: 'ring' }, running: { label: '进行中', tone: 'info', dot: 'pulse' }, waiting: { label: '等待中', tone: 'info', dot: 'ring' },
@@ -18,7 +24,6 @@ const STATE: Record<string, { label: string; tone: Tone; dot?: 'pulse' | 'ring' 
   failed: { label: '失败', tone: 'bad' }, cancelled: { label: '已取消', tone: 'neutral', dot: 'ring' },
 };
 export const JobPill = ({ state }: { state: string }) => { const s = STATE[state] ?? { label: state, tone: 'neutral' as Tone }; return <Pill tone={s.tone} dot={s.dot}>{s.label}</Pill>; };
-const running = (j: Job) => jobLive(j.state);
 
 export function JobsPage() {
   const { id } = useParams();
@@ -33,66 +38,80 @@ export function JobsPage() {
         tools={<Segmented label="筛选" value={filter} onChange={setFilter} items={[{ value: 'all', label: '全部' }, { value: 'active', label: '进行中' }, { value: 'done', label: '已结束' }]} />} />
       <div className="jobs-layout" data-detail={selected ? '1' : '0'}>
         <Panel className="jobs-list" flush>
-          {jobs.isLoading && <div style={{ padding: 16 }}><span className="skel" style={{ width: '70%', height: 14 }} /></div>}
+          {jobs.isLoading && <SkeletonRows rows={5} />}
+          {jobs.isError && <div style={{ padding: 'var(--sp-12)' }}><ErrorNote error={jobs.error} onRetry={() => void jobs.refetch()} /></div>}
           {list.map((j) => (
-            <button key={j.id} className="job-item" aria-current={j.id === selected} onClick={() => nav(`/jobs/${j.id}`)}>
-              <span className="l1"><b className="ellipsis" style={{ fontWeight: 600 }}>{jobKindLabel(j.kind)} · {j.target?.name ?? '—'}</b><span style={{ marginLeft: 'auto' }}><JobPill state={j.state} /></span></span>
-              <span className="l2"><span>{F.dt(j.created_at)}</span><span>{j.created_by}</span>{j.error && <span className="ellipsis" style={{ color: 'var(--bad-text)' }}>{j.error}</span>}</span>
-            </button>
+            <div key={j.id} className="job-item" role="button" tabIndex={0} aria-current={j.id === selected} onClick={() => nav(`/jobs/${j.id}`)}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); nav(`/jobs/${j.id}`); } }}>
+              <span className="l1">
+                <b className="ellipsis" style={{ fontWeight: 600 }}>{jobKindLabel(j.kind)} · {j.target ? <NodeHover id={j.target.id}><span>{j.target.name}</span></NodeHover> : '—'}</b>
+                <span style={{ marginLeft: 'auto' }}><JobPill state={j.state} /></span>
+              </span>
+              {jobLive(j.state) && <span className="l-prog"><Progress value={jobProgress(j).pct} live label="总进度" /><span className="num">{jobProgress(j).done}/{jobProgress(j).total}</span></span>}
+              <span className="l2"><span>{F.dt(j.created_at)}</span><span>{j.created_by}</span>{j.error && <span className="ellipsis" style={{ color: 'var(--bad-text)' }} title={j.error}>{j.error}</span>}</span>
+            </div>
           ))}
-          {jobs.data && list.length === 0 && <Empty text="没有作业" />}
+          {jobs.data && list.length === 0 && <Empty icon={<ListChecks size={22} />} text="没有作业" hint="上架、下线、升级 agent 都会在这里留下一条" />}
         </Panel>
         <div className="jobs-detail">
-          {selected ? <JobDetail id={selected} /> : <Panel><Empty text="选择左侧的作业查看步骤与日志" /></Panel>}
+          {selected ? <JobDetail id={selected} /> : <Panel><Empty icon={<ListChecks size={22} />} text="选择左侧的作业查看步骤与日志" /></Panel>}
         </div>
       </div>
     </div>
   );
 }
 
-function StepIcon({ s }: { s: JobStep }) {
-  if (stepDone(s)) return <Check />;
-  if (stepRunning(s)) return <Loader2 className="spin" />;
-  if (stepFailed(s)) return <X />;
-  if (stepSkipped(s)) return <Minus />;
-  return <CircleDashed />;
-}
+const STEP_ICON: Record<StepKind, React.ReactNode> = { done: <Check />, running: <Loader2 className="spin" />, failed: <X />, skipped: <Minus />, compensated: <Undo2 />, pending: <CircleDashed /> };
 
 function JobDetail({ id }: { id: string }) {
   const q = useJob(id);
   const retry = useRetryJob(); const cancel = useCancelJob();
   const [cancelAsk, setCancelAsk] = React.useState(false);
   const j = q.data;
-  if (q.isError) return <Panel><Note tone="bad">{(q.error as Error).message}</Note></Panel>;
+  const live = !!j && jobLive(j.state);
+  const now = useNow(live);
+  if (q.isError && !j) return <Panel><div style={{ padding: 'var(--sp-12)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div></Panel>;
   if (!j) return <Panel><div className="skel" style={{ height: 160, margin: 16 }} /></Panel>;
   return (
     <div className="stack">
-      <Panel title={<span className="row" style={{ gap: 8 }}><Link to="/jobs" className="icon-btn icon-btn-sm job-back" aria-label="返回列表"><ArrowLeft size={16} /></Link>{jobKindLabel(j.kind)} · {j.target?.name ?? '—'}</span>} tools={<>
+      <Panel title={<span className="row" style={{ gap: 8 }}><Link to="/jobs" className="icon-btn icon-btn-sm job-back" aria-label="返回列表"><ArrowLeft size={16} /></Link><span>{jobKindLabel(j.kind)} · {j.target ? <NodeHover id={j.target.id}><span>{j.target.name}</span></NodeHover> : '—'}</span></span>} tools={<>
         <JobPill state={j.state} />
         {j.state === 'failed' && <Button size="sm" variant="primary" loading={retry.isPending} onClick={() => retry.mutate(j.id, { onSuccess: () => toast.ok('已从失败的步骤重试'), onError: toast.err })}><RotateCw />重试</Button>}
         {j.cancellable && <Button size="sm" onClick={() => setCancelAsk(true)}><Square />取消</Button>}
       </>}>
-        <LabelValueGrid>
-          <LabelValue label="创建人">{j.created_by}</LabelValue>
-          <LabelValue label="创建时间">{F.dtFull(j.created_at)}</LabelValue>
-          <LabelValue label="用时">{F.duration(j.started_at, j.finished_at)}</LabelValue>
-          <LabelValue label="作业 ID"><span className="mono">{j.id}</span></LabelValue>
-        </LabelValueGrid>
+        <div className="stack">
+          <JobProgressBar job={j} now={now} />
+          <StepBar job={j} />
+          <LabelValueGrid>
+            <LabelValue label="创建人">{j.created_by}</LabelValue>
+            <LabelValue label="创建时间">{F.dtFull(j.created_at)}</LabelValue>
+            <LabelValue label="用时">{F.duration(j.started_at, j.finished_at, now)}</LabelValue>
+            <LabelValue label="作业 ID"><span className="mono">{j.id}</span></LabelValue>
+          </LabelValueGrid>
+        </div>
         {j.error && <div style={{ marginTop: 12 }}><Note tone="bad">{j.error}</Note></div>}
       </Panel>
 
       <Panel title="步骤" sub={`${stepsDone(j)} / ${j.step_count || j.steps.length}`}>
         <ol className="steps">
-          {j.steps.map((s) => (
-            <li key={s.idx} className="step" data-state={s.state}>
-              <span className="step-ic"><StepIcon s={s} /></span>
-              <div style={{ minWidth: 0 }}>
-                <div className="step-title"><b>{s.title}</b><span className="step-time">{s.started_at ? `${F.clock(s.started_at)} · ${F.duration(s.started_at, s.finished_at)}` : '等待'}</span></div>
-                {outputLines(s.output).length > 0 && <pre className="step-out">{outputLines(s.output).join('\n')}</pre>}
-                {s.error && <p className="step-err">{s.error}</p>}
-              </div>
-            </li>
-          ))}
+          {j.steps.map((s) => {
+            const k = stepKind(s);
+            return (
+              <li key={s.idx} className="step" data-state={s.state} data-kind={k}>
+                <span className="step-ic">{STEP_ICON[k]}</span>
+                <div style={{ minWidth: 0 }}>
+                  <div className="step-title"><b>{s.title}</b><span className="step-time">{s.started_at ? `${F.clock(s.started_at)} · ${F.duration(s.started_at, s.finished_at ?? (k === 'failed' ? j.finished_at : null), now)}` : k === 'skipped' || k === 'compensated' ? '未执行' : '等待'}</span>{k === 'compensated' && <Pill tone="warn" dot="none">已补偿</Pill>}</div>
+                  {outputLines(s.output).length > 0 && <pre className="step-out">{outputLines(s.output).join('\n')}</pre>}
+                  {(s.error || s.error_kind) && (
+                    <div className="step-err-box">
+                      {s.error_kind && <span className="err-kind" title={s.error_kind}>{errorKindLabel(s.error_kind)}</span>}
+                      {s.error && <p className="step-err">{s.error}</p>}
+                    </div>
+                  )}
+                </div>
+              </li>
+            );
+          })}
         </ol>
       </Panel>
 
@@ -103,36 +122,58 @@ function JobDetail({ id }: { id: string }) {
   );
 }
 
-/** 实时日志：进行中每 1.5 秒按 after=<最后一条 id> 增量拉取；结束后再补拉一次 */
+const SHOW_MAX = 2000; // 页面里最多渲染的行数（更早的行仍在服务端）
+const LEVEL: Record<string, string> = { error: '错误', warn: '警告', info: '信息', debug: '调试' };
+
+/** 实时日志：进行中每 1.5 秒按 after=<最后一条 id> 增量拉取（满 1000 条就接着拉）；结束后再补拉一次。可暂停、自动滚到底、按级别着色 */
 function LogPanel({ job }: { job: Job }) {
   const [logs, setLogs] = React.useState<JobLog[]>([]);
+  const [frozen, setFrozen] = React.useState<number | null>(null); // 暂停时冻结显示的行数
+  const [stuck, setStuck] = React.useState(true);
+  const [err, setErr] = React.useState<unknown>(null);
   const last = React.useRef(0);
   const box = React.useRef<HTMLDivElement>(null);
-  const stick = React.useRef(true);
-  const live = running(job);
+  const live = jobLive(job.state);
 
-  React.useEffect(() => { setLogs([]); last.current = 0; stick.current = true; }, [job.id]);
+  React.useEffect(() => { setLogs([]); setFrozen(null); setStuck(true); setErr(null); last.current = 0; }, [job.id]);
   React.useEffect(() => {
     let stop = false; let timer: ReturnType<typeof setTimeout>;
     const pull = async () => {
       try {
-        const more = await fetchLogs(job.id, last.current);
+        const more = await fetchAllLogs(job.id, last.current);
         if (stop) return;
+        setErr(null);
         if (more.length) { last.current = more[more.length - 1].id; setLogs((l) => [...l, ...more]); }
-      } catch { /* 下一轮重试 */ }
+      } catch (e) { if (!stop) setErr(e); /* 下一轮重试 */ }
       if (!stop && live) timer = setTimeout(pull, 1500);
     };
     void pull();
     return () => { stop = true; clearTimeout(timer); };
   }, [job.id, live, job.state]);
 
-  React.useEffect(() => { const el = box.current; if (el && stick.current) el.scrollTop = el.scrollHeight; }, [logs]);
+  const shown = frozen == null ? logs : logs.slice(0, frozen);
+  const view = shown.length > SHOW_MAX ? shown.slice(-SHOW_MAX) : shown;
+  React.useEffect(() => { const el = box.current; if (el && stuck && frozen == null) el.scrollTop = el.scrollHeight; }, [view.length, stuck, frozen]);
+  const jump = () => { const el = box.current; if (el) { el.scrollTop = el.scrollHeight; setStuck(true); } };
+  const copy = () => void copyText(logs.map((l) => `${F.clock(l.ts)} ${LEVEL[l.level] ?? l.level} ${l.msg}`).join('\n'), '日志');
+
   return (
-    <Panel title="日志" sub={live ? '实时' : undefined} tools={live ? <Pill tone="info" dot="pulse">连接中</Pill> : undefined}>
-      <div className="logbox" ref={box} onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24; }} role="log" aria-live="off">
+    <Panel title="日志" sub={frozen != null ? `已暂停 · 另有 ${logs.length - frozen} 行新日志` : live ? '实时' : `${logs.length} 行`}
+      tools={<>
+        {live && frozen == null && <Pill tone="info" dot="pulse">实时</Pill>}
+        {!stuck && frozen == null && <Button size="sm" variant="quiet" onClick={jump}><ArrowDownToLine />跳到最新</Button>}
+        <Button size="sm" variant="secondary" aria-pressed={frozen != null} onClick={() => { if (frozen == null) setFrozen(logs.length); else { setFrozen(null); setStuck(true); } }}>
+          {frozen == null ? <><Pause />暂停滚动</> : <><Play />继续</>}
+        </Button>
+        <IconButton label="复制全部日志" size="sm" onClick={copy} disabled={!logs.length}><Copy size={14} /></IconButton>
+      </>}>
+      {err != null && logs.length === 0 && <div style={{ marginBottom: 8 }}><ErrorNote error={err} /></div>}
+      <div className="logbox" ref={box} role="log" aria-live="off" tabIndex={0} aria-label="作业日志"
+        onScroll={(e) => { const el = e.currentTarget; setStuck(el.scrollHeight - el.scrollTop - el.clientHeight < 24); }}>
         {logs.length === 0 && <span className="t-muted">暂无日志</span>}
-        {logs.map((l) => (
-          <div key={l.id} className="logline"><span className="ts">{F.clock(l.ts)}</span><span className={`lv-${l.level}`}>{l.level === 'error' ? '错误' : l.level === 'warn' ? '警告' : '信息'}</span><span className="msg">{l.msg}</span></div>
+        {shown.length > SHOW_MAX && <div className="logline logline-note"><span /><span /><span className="msg t-muted">仅显示最近 {SHOW_MAX} 行，共 {shown.length} 行</span></div>}
+        {view.map((l) => (
+          <div key={l.id} className="logline" data-level={l.level}><span className="ts">{F.clock(l.ts)}</span><span className={`lv-${l.level}`}>{LEVEL[l.level] ?? l.level}</span><span className="msg">{l.msg}</span></div>
         ))}
       </div>
     </Panel>

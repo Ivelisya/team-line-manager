@@ -5,7 +5,10 @@ import { useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
 import type { EntryView, MachineView } from '@/lib/types';
 import { Button } from '@/components/ui/button';
-import { Chip, Empty, HealthPill, KindIcon, Note, Num, PageHead, Pill } from '@/components/app/primitives';
+import { Chip, Empty, ErrorNote, HealthPill, KindIcon, Num, PageHead, Pill } from '@/components/app/primitives';
+import { NodeHover } from '@/components/app/NodeHover';
+import { Waypoints } from 'lucide-react';
+import { Skeleton } from '@/components/ui/skeleton';
 import { EntryActions } from '@/components/app/EntryActions';
 import { entryState } from '@/components/app/primitives';
 
@@ -51,7 +54,7 @@ function RelayCard({ m }: { m: MachineView }) {
             {m.entries.map((e) => (
               <tr key={e.id}>
                 <td className="strong num">{e.port}</td>
-                <td><button className="btn-link btn" style={{ height: 'auto', padding: 0, border: 0, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis' }} onClick={() => open(e.node.id)}>{e.node.name}</button></td>
+                <td><NodeHover id={e.node.id}><button className="btn-link btn" style={{ height: 'auto', padding: 0, border: 0, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis' }} onClick={() => open(e.node.id)}>{e.node.name}</button></NodeHover></td>
                 <td>{entryState(e)}</td>
                 <td>{e.lifecycle === 'disabled' ? <span className="t-muted">—</span> : e.applied ? <CheckCircle2 size={14} style={{ color: 'var(--ok)' }} aria-label="已下发" /> : <span title={e.apply_error ?? '等待下发'} style={{ color: e.apply_error ? 'var(--bad-text)' : 'var(--fg-2)' }}>{e.apply_error ? '失败' : '待下发'}</span>}</td>
                 <td className="r">{probe(e.tcp)}</td><td className="r">{probe(e.egress)}</td>
@@ -73,10 +76,10 @@ export function RelaysPage() {
   return (
     <div className="stack">
       <PageHead title="线路" note={q.data ? `${list.length} 台线路机 · ${list.reduce((s, m) => s + m.entries.length, 0)} 条入口` : undefined} />
-      {q.isError && <Note tone="bad">{(q.error as Error).message}</Note>}
-      {q.isLoading && <div className="skel" style={{ height: 220 }} />}
+      {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
+      {q.isLoading && <Skeleton h={220} />}
       {list.map((m) => <RelayCard key={m.id} m={m} />)}
-      {q.data && list.length === 0 && <Empty text="还没有线路机，去“上架”添加" />}
+      {q.data && list.length === 0 && <Empty icon={<Waypoints size={22} />} text="还没有线路机" hint="去“上架”添加第一台线路机" />}
     </div>
   );
 }

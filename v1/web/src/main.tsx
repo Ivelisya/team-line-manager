@@ -9,12 +9,21 @@ import './styles/components.css';
 import './styles/cards.css';
 import './styles/table.css';
 import './styles/pages.css';
+import './styles/extras.css';
 import './styles/tw-utilities.css';
 import { App } from './App';
+import { ApiError } from './lib/api';
 import { TooltipProvider } from './components/ui/overlays';
 
 const qc = new QueryClient({
-  defaultOptions: { queries: { staleTime: 10_000, retry: 1, refetchOnWindowFocus: true } },
+  defaultOptions: {
+    queries: {
+      staleTime: 10_000,
+      // 4xx 是确定的结果（未登录、不存在、参数不对），重试没有意义；网络错误和 5xx 重试一次
+      retry: (n, err) => !(err instanceof ApiError && err.status >= 400 && err.status < 500) && n < 1,
+      refetchOnWindowFocus: true,
+    },
+  },
 });
 
 async function boot() {

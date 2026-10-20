@@ -2,7 +2,7 @@
 import * as React from 'react';
 import { Link } from 'react-router-dom';
 import { CheckCircle2, ClipboardPaste, ListChecks, Plus, Trash2, TriangleAlert } from 'lucide-react';
-import { useMachines, usePlans, useProviders, useProvision, useProvisionCheck, useTeams } from '@/lib/queries';
+import { usePlans, useProviders, useProvision, useProvisionCheck, useRelays, useTeams } from '@/lib/queries';
 import type { Kind, ProvisionCheckItem } from '@/lib/types';
 import { KIND_LABEL } from '@/lib/sort';
 import { Button, IconButton } from '@/components/ui/button';
@@ -11,16 +11,20 @@ import { Select } from '@/components/ui/select';
 import { Segmented } from '@/components/ui/overlays';
 import { ConfirmDialog } from '@/components/app/dialogs';
 import { toast } from '@/components/ui/toast';
+import { copyText } from '@/lib/clipboard';
 import { Note, PageHead, Panel, Pill } from '@/components/app/primitives';
 import { COLS, applies, localErrors, newRow, parseTsv, setCell, toItem, type Col, type Ctx, type Row } from '@/features/provision-model';
 
 const KIND_OPTS = (Object.entries(KIND_LABEL) as [Kind, string][]).map(([value, label]) => ({ value, label }));
 
+const NONE: never[] = [];
+
 export function ProvisionPage() {
-  const teams = useTeams().data ?? [];
-  const providers = useProviders().data ?? [];
-  const plans = usePlans().data ?? [];
-  const relays = (useMachines('live').data ?? []).filter((m) => m.kind === 'relay');
+  const teams = useTeams().data ?? NONE;
+  const providers = useProviders().data ?? NONE;
+  const plans = usePlans().data ?? NONE;
+  const relayList = useRelays().data; // /relays：只含线路机
+  const relays = React.useMemo(() => (relayList ?? []).filter((m) => m.lifecycle === 'active'), [relayList]); // 只能挂在已上线的线路机上
   const ctx: Ctx = React.useMemo(() => ({ teams, relays, providers, plans }), [teams, relays, providers, plans]);
 
   const [mode, setMode] = React.useState<'single' | 'batch'>('single');
@@ -32,7 +36,7 @@ export function ProvisionPage() {
   const [created, setCreated] = React.useState<{ machine_id: string; job_id: string; name: string }[] | null>(null);
   const check = useProvisionCheck(); const provision = useProvision();
 
-  const items = React.useMemo(() => rows.map(toItem), [rows]);
+  const items = React.useMemo(() => rows.map((r) => toItem(r, ctx)), [rows, ctx]);
   const curSig = JSON.stringify([items, rows.map((r) => r.unresolved)]);
   const stale = results != null && sig !== curSig;
   const passed = results != null && !stale && results.every((r) => r.ok);
@@ -119,18 +123,29 @@ export function ProvisionPage() {
 }
 
 /* ------------------------------------------------------------------ 公共：下拉选项 */
-function useOpts(ctx: Ctx, row: Row) {
-  return {
+type Opts = { value: string; label: string }[];
+/** 下拉选项按 ctx 缓存：ctx 不变就是同一个数组引用（批量网格里几百个单元格共用，memo 才生效） */
+function useOpts(ctx: Ctx) {
+  const base = React.useMemo(() => ({
     team: ctx.teams.map((t) => ({ value: t.id, label: t.name })),
     relay: ctx.relays.map((r) => ({ value: r.id, label: r.name })),
     provider: ctx.providers.map((p) => ({ value: p.id, label: p.name })),
-    plan: ctx.plans.filter((p) => !p.archived_at && (!row.provider_id || p.provider_id === row.provider_id)).map((p) => ({ value: p.id, label: p.name })),
-  };
+  }), [ctx.teams, ctx.relays, ctx.providers]);
+  // 套餐选项依赖所选供应商：按供应商缓存
+  const planFor = React.useMemo(() => {
+    const cache = new Map<string, Opts>();
+    return (providerId: string): Opts => {
+      let v = cache.get(providerId);
+      if (!v) { v = ctx.plans.filter((p) => !p.archived_at && (!providerId || p.provider_id === providerId)).map((p) => ({ value: p.id, label: p.name })); cache.set(providerId, v); }
+      return v;
+    };
+  }, [ctx.plans]);
+  return { ...base, planFor };
 }
 
 /* ------------------------------------------------------------------ 单台表单 */
 function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; onChange: (p: Partial<Row>) => void; ctx: Ctx; result?: ProvisionCheckItem; errors?: string[]; stale: boolean }) {
-  const o = useOpts(ctx, row);
+  const o = useOpts(ctx);
   const k = row.kind;
   const T = (key: keyof Row, label: string, p?: { hint?: string; ph?: string; type?: string; num?: boolean }) => (
     <Field label={label} hint={p?.hint}>
@@ -179,7 +194,7 @@ function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; o
       <Panel title="来源与订阅（选填）">
         <div className="form-grid">
           <Field label="供应商"><Select value={row.provider_id} onChange={(v) => onChange({ provider_id: v, plan_id: '' })} options={o.provider} allowEmpty="不设置" /></Field>
-          <Field label="套餐"><Select value={row.plan_id} onChange={(v) => onChange({ plan_id: v })} options={o.plan} allowEmpty="不设置" /></Field>
+          <Field label="套餐"><Select value={row.plan_id} onChange={(v) => onChange({ plan_id: v })} options={o.planFor(row.provider_id)} allowEmpty="不设置" /></Field>
           {T('service_ref', '服务编号', { ph: 'SVC-1042' })}
           {T('due_date', '到期日', { type: 'date' })}
           {T('price', '费用', { ph: '默认取套餐价格' })}
@@ -213,11 +228,16 @@ function BatchGrid({ rows, setRows, ctx, results, errors, stale }: { rows: Row[]
   const addRows = (n: number) => setRows((rs) => { const last = rs[rs.length - 1]; const base = last ? { kind: last.kind, team_id: last.team_id, relay_id: last.relay_id, provider_id: last.provider_id, plan_id: last.plan_id, login_user: last.login_user } : {}; return [...rs, ...Array.from({ length: n }, () => newRow(base))]; });
   const total = COLS.reduce((s, c) => s + c.w, 0) + 40 + 40 + 220;
 
-  const onPaste = (e: React.ClipboardEvent, ri: number, ci: number) => {
+  // 单元格拿到的回调必须稳定（GridCell 是 memo），所以按行 id 工作，不捕获行下标
+  const opts = useOpts(ctx);
+  const rowsRef = React.useRef(rows); rowsRef.current = rows;
+  const change = React.useCallback((rowId: string, p: Partial<Row>) => setRows((rs) => rs.map((x) => (x.id === rowId ? { ...x, ...p } : x))), [setRows]);
+  const onPaste = React.useCallback((e: React.ClipboardEvent, rowId: string, ci: number) => {
     const text = e.clipboardData.getData('text');
     if (!/[\t\n]/.test(text.trim())) return; // 单个值走默认粘贴
     e.preventDefault();
     const grid = parseTsv(text);
+    const ri = Math.max(0, rowsRef.current.findIndex((r) => r.id === rowId));
     setRows((rs) => {
       const next = [...rs];
       grid.forEach((line, dy) => {
@@ -233,8 +253,8 @@ function BatchGrid({ rows, setRows, ctx, results, errors, stale }: { rows: Row[]
       });
       return next;
     });
-  };
-  const copyHeader = async () => { try { await navigator.clipboard.writeText(COLS.map((c) => c.label).join('\t')); toast.ok('已复制表头，可粘贴到表格软件当模板'); } catch { toast.err('复制失败'); } };
+  }, [setRows, ctx]);
+  const copyHeader = () => void copyText(COLS.map((c) => c.label).join('\t'), '表头（可粘贴到表格软件当模板）');
 
   return (
     <div className="stack">
@@ -249,11 +269,11 @@ function BatchGrid({ rows, setRows, ctx, results, errors, stale }: { rows: Row[]
                 const le = errors?.[ri] ?? []; const res = results?.[ri];
                 const bad = le.length > 0 || (res && !res.ok);
                 return (
-                  <tr key={ri} className={bad ? 'is-row-bad' : undefined}>
+                  <tr key={r.id} className={bad ? 'is-row-bad' : undefined}>
                     <td className="idx">{ri + 1}</td>
                     {COLS.map((c, ci) => (
                       <td key={c.key} className={c.key !== 'kind' && !applies(c, r.kind) ? 'is-na' : r.unresolved[c.key] ? 'is-bad' : undefined}>
-                        <GridCell col={c} row={r} ctx={ctx} onChange={(p) => setRows((rs) => rs.map((x, j) => (j === ri ? { ...x, ...p } : x)))} onPaste={(e) => onPaste(e, ri, ci)} />
+                        <GridCell col={c} ci={ci} row={r} opts={c.type === 'team' ? opts.team : c.type === 'relay' ? opts.relay : c.type === 'provider' ? opts.provider : c.type === 'plan' ? opts.planFor(r.provider_id) : undefined} onChange={change} onPaste={onPaste} />
                       </td>
                     ))}
                     <td style={{ padding: '0 8px' }} title={le.concat(res?.errors ?? []).join('；')}>
@@ -261,7 +281,7 @@ function BatchGrid({ rows, setRows, ctx, results, errors, stale }: { rows: Row[]
                         : res ? (res.ok ? <span style={{ color: stale ? 'var(--fg-3)' : 'var(--ok-text)' }}>✓ {res.name}{res.relay_port ? ` · :${res.relay_port}` : ''}</span> : <span style={{ color: 'var(--bad-text)' }}>{res.errors.join('；')}</span>)
                         : <span className="t-muted">—</span>}
                     </td>
-                    <td className="c"><IconButton label={`删除第 ${ri + 1} 行`} size="sm" disabled={rows.length === 1} onClick={() => setRows((rs) => rs.filter((_, j) => j !== ri))}><Trash2 size={14} /></IconButton></td>
+                    <td className="c"><IconButton label={`删除第 ${ri + 1} 行`} size="sm" disabled={rows.length === 1} onClick={() => setRows((rs) => rs.filter((x) => x.id !== r.id))}><Trash2 size={14} /></IconButton></td>
                   </tr>
                 );
               })}
@@ -275,25 +295,28 @@ function BatchGrid({ rows, setRows, ctx, results, errors, stale }: { rows: Row[]
   );
 }
 
-function GridCell({ col, row, ctx, onChange, onPaste }: { col: Col; row: Row; ctx: Ctx; onChange: (p: Partial<Row>) => void; onPaste: (e: React.ClipboardEvent) => void }) {
-  const o = useOpts(ctx, row);
+/** 网格单元格：memo。props 里只有 row 会随编辑变化（不可变更新，只有被改的那一行是新对象），其余都是稳定引用，改一格不会重绘整张表 */
+const GridCell = React.memo(function GridCell({ col, ci, row, opts, onChange, onPaste }: {
+  col: Col; ci: number; row: Row; opts?: Opts; onChange: (rowId: string, p: Partial<Row>) => void; onPaste: (e: React.ClipboardEvent, rowId: string, ci: number) => void;
+}) {
   const na = col.key !== 'kind' && !applies(col, row.kind);
-  const sel = (value: string, opts: { value: string; label: string }[], key: keyof Row, empty = '—') => (
-    <select className="gcell" value={value} disabled={na} aria-label={col.label} onChange={(e) => onChange({ [key]: e.target.value, ...(key === 'provider_id' ? { plan_id: '' } : {}), unresolved: { ...row.unresolved, [key]: '' } })} onPaste={onPaste}>
-      <option value="">{empty}</option>{opts.map((x) => <option key={x.value} value={x.value}>{x.label}</option>)}
+  const paste = (e: React.ClipboardEvent) => onPaste(e, row.id, ci);
+  const sel = (value: string, key: keyof Row, empty = '—') => (
+    <select className="gcell" value={value} disabled={na} aria-label={col.label} onChange={(e) => onChange(row.id, { [key]: e.target.value, ...(key === 'provider_id' ? { plan_id: '' } : {}), unresolved: { ...row.unresolved, [key]: '' } })} onPaste={paste}>
+      <option value="">{empty}</option>{(opts ?? []).map((x) => <option key={x.value} value={x.value}>{x.label}</option>)}
     </select>
   );
   switch (col.type) {
-    case 'kind': return <select className="gcell" value={row.kind} aria-label={col.label} onChange={(e) => onChange({ kind: e.target.value as Kind })} onPaste={onPaste}>{KIND_OPTS.map((x) => <option key={x.value} value={x.value}>{x.label}</option>)}</select>;
-    case 'team': return sel(row.team_id, o.team, 'team_id');
-    case 'relay': return sel(row.relay_id, o.relay, 'relay_id');
-    case 'provider': return sel(row.provider_id, o.provider, 'provider_id');
-    case 'plan': return sel(row.plan_id, o.plan, 'plan_id');
-    case 'proto': return <select className="gcell" value={row.up_protocol} disabled={na} aria-label={col.label} onChange={(e) => onChange({ up_protocol: e.target.value })} onPaste={onPaste}><option value="socks5">SOCKS5</option><option value="http">HTTP</option></select>;
+    case 'kind': return <select className="gcell" value={row.kind} aria-label={col.label} onChange={(e) => onChange(row.id, { kind: e.target.value as Kind })} onPaste={paste}>{KIND_OPTS.map((x) => <option key={x.value} value={x.value}>{x.label}</option>)}</select>;
+    case 'team': return sel(row.team_id, 'team_id');
+    case 'relay': return sel(row.relay_id, 'relay_id');
+    case 'provider': return sel(row.provider_id, 'provider_id');
+    case 'plan': return sel(row.plan_id, 'plan_id');
+    case 'proto': return <select className="gcell" value={row.up_protocol} disabled={na} aria-label={col.label} onChange={(e) => onChange(row.id, { up_protocol: e.target.value })} onPaste={paste}><option value="socks5">SOCKS5</option><option value="http">HTTP</option></select>;
     default: {
       const v = row[col.key as keyof Row] as string;
       return <input className="gcell" type={col.type === 'secret' ? 'password' : 'text'} inputMode={col.type === 'num' ? 'numeric' : undefined} autoComplete={col.type === 'secret' ? 'new-password' : 'off'} spellCheck={false}
-        value={v} disabled={na} placeholder={na ? '' : col.ph} aria-label={col.label} onPaste={onPaste} onChange={(e) => onChange({ [col.key]: col.type === 'num' ? e.target.value.replace(/\D/g, '') : e.target.value } as Partial<Row>)} />;
+        value={v} disabled={na} placeholder={na ? '' : col.ph} aria-label={col.label} onPaste={paste} onChange={(e) => onChange(row.id, { [col.key]: col.type === 'num' ? e.target.value.replace(/\D/g, '') : e.target.value } as Partial<Row>)} />;
     }
   }
-}
+});

@@ -1,13 +1,14 @@
 // 通用展示原件：每种只有一份实现（状态 pill、KPI 磚、标签/值、段标题、面板、页头…）。
 import * as React from 'react';
 import { Link } from 'react-router-dom';
-import { Home, Inbox, Server, Waypoints, Check } from 'lucide-react';
+import { Check, CircleAlert, Copy, Home, Inbox, RotateCw, Server, Waypoints } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Fmt } from '@/lib/format';
-import type { EntryView, HealthStatus, Kind, Lifecycle, MachineView } from '@/lib/types';
+import type { EntryView, HealthReason, Kind, Lifecycle, MachineView } from '@/lib/types';
 import { HEALTH_LABEL, HEALTH_TONE, KIND_LABEL, LIFECYCLE_LABEL } from '@/lib/sort';
 import { Tip } from '@/components/ui/overlays';
-import { toast } from '@/components/ui/toast';
+import { useCountUp } from '@/lib/useCountUp';
+import { copyText } from '@/lib/clipboard';
 
 /** 数值 + 灰色小单位 */
 export function Num({ f, className }: { f: Fmt; className?: string }) {
@@ -17,9 +18,12 @@ export function Num({ f, className }: { f: Fmt; className?: string }) {
 export type Tone = 'ok' | 'warn' | 'bad' | 'info' | 'neutral';
 
 /** 状态 pill（唯一实现）：健康、生命周期、作业状态都走它 */
-export function Pill({ tone = 'neutral', dot, children, title, className }: { tone?: Tone; dot?: 'ring' | 'pulse' | 'none'; children: React.ReactNode; title?: string; className?: string }) {
-  return <span className={cn('pill', className)} data-tone={tone} data-dot={dot} title={title}>{children}</span>;
-}
+export const Pill = React.forwardRef<HTMLSpanElement, { tone?: Tone; dot?: 'ring' | 'pulse' | 'none'; children: React.ReactNode; title?: string; className?: string } & React.HTMLAttributes<HTMLSpanElement>>(
+  ({ tone = 'neutral', dot, children, title, className, ...p }, ref) => (
+    <span ref={ref} className={cn('pill', className)} data-tone={tone} data-dot={dot} title={title} {...p}>{children}</span>
+  ),
+);
+Pill.displayName = 'Pill';
 export function HealthPill({ m }: { m: Pick<MachineView, 'health' | 'lifecycle' | 'maintenance'> }) {
   const lc = m.lifecycle;
   if (lc === 'provisioning') return <Pill tone="info" dot="pulse">上架中</Pill>;
@@ -27,10 +31,18 @@ export function HealthPill({ m }: { m: Pick<MachineView, 'health' | 'lifecycle' 
   if (lc === 'retired') return <Pill tone="neutral" dot="ring">已退役</Pill>;
   if (lc === 'failed') return <Pill tone="bad">上架失败</Pill>;
   const s = m.health.status;
-  const reason = m.health.reasons[0]?.text;
-  return <Pill tone={HEALTH_TONE[s]} dot={s === 'unknown' || s === 'inactive' ? 'ring' : undefined} title={reason}>{HEALTH_LABEL[s]}</Pill>;
+  const pill = <Pill tone={HEALTH_TONE[s]} dot={s === 'unknown' || s === 'inactive' ? 'ring' : undefined} tabIndex={m.health.reasons.length ? 0 : undefined}>{HEALTH_LABEL[s]}</Pill>;
+  return <Tip text={reasonsTip(m.health.reasons)}>{pill}</Tip>;
 }
-export const healthTone = (s: HealthStatus) => HEALTH_TONE[s];
+/** 健康 pill 的悬停提示：把每条原因列出来（带严重度圆点） */
+export function reasonsTip(reasons: HealthReason[]): React.ReactNode {
+  if (!reasons.length) return null;
+  return (
+    <ul className="tip-list">
+      {reasons.map((r) => <li key={r.key}><span className="dot" data-tone={r.severity === 'critical' ? 'bad' : r.severity === 'warning' ? 'warn' : 'info'} />{r.text}</li>)}
+    </ul>
+  );
+}
 export const LifecyclePill = ({ lc }: { lc: Lifecycle | string }) => (
   <Pill tone={lc === 'active' ? 'ok' : lc === 'provisioning' || lc === 'retiring' ? 'info' : lc === 'failed' ? 'bad' : 'neutral'} dot={lc === 'retired' ? 'ring' : undefined}>{LIFECYCLE_LABEL[lc] ?? lc}</Pill>
 );
@@ -71,6 +83,12 @@ export function KpiTile({ label, value, unit, sub, to, onClick, pressed, loading
   if (to) return <Link className="kpi" to={to}>{inner}</Link>;
   if (onClick) return <button type="button" className="kpi" onClick={onClick} aria-pressed={pressed}>{inner}</button>;
   return <div className="kpi">{inner}</div>;
+}
+/** 数字平滑过渡：值变了从旧值滚到新值。format 决定怎么显示（默认取整） */
+export function CountUp({ value, format }: { value: number | null | undefined; format?: (n: number) => string }) {
+  const v = useCountUp(value ?? 0);
+  if (value == null) return <>—</>;
+  return <>{format ? format(v) : Math.round(v)}</>;
 }
 export const DotCount = ({ tone, n, label }: { tone: Tone; n: number; label: string }) => (
   <span className="dotline"><span className="dot" data-tone={tone} />{label} <b className="num" style={{ fontWeight: 600, color: 'var(--fg)' }}>{n}</b></span>
@@ -115,21 +133,35 @@ export function PageHead({ title, note, tools }: { title: string; note?: React.R
   );
 }
 
-export function Empty({ icon, text, children }: { icon?: React.ReactNode; text: string; children?: React.ReactNode }) {
-  return <div className="empty">{icon ?? <Inbox size={28} />}<div>{text}</div>{children}</div>;
+/** 空状态：图标放在柔和的圆底里，一句话说明现状；children 放下一步操作 */
+export function Empty({ icon, text, hint, children }: { icon?: React.ReactNode; text: string; hint?: React.ReactNode; children?: React.ReactNode }) {
+  return <div className="empty"><span className="empty-ic">{icon ?? <Inbox size={22} />}</span><div className="empty-text">{text}</div>{hint && <div className="hint">{hint}</div>}{children}</div>;
 }
 export const Note = ({ tone = 'info', icon, children }: { tone?: 'info' | 'ok' | 'warn' | 'bad'; icon?: React.ReactNode; children: React.ReactNode }) => (
   <div className="note" data-tone={tone}>{icon}<div style={{ minWidth: 0 }}>{children}</div></div>
 );
 
-/** 点击复制的文本 */
-export function Copyable({ text, className }: { text: string; className?: string }) {
-  const [done, setDone] = React.useState(false);
+/** 查询出错的提示条：错误信息 + 可选的重试 */
+export function ErrorNote({ error, onRetry, children }: { error: unknown; onRetry?: () => void; children?: React.ReactNode }) {
   return (
-    <Tip text={done ? '已复制' : '点击复制'}>
-      <button type="button" className={cn('ellipsis', className)} style={{ background: 'none', border: 0, padding: 0, cursor: 'copy', color: 'inherit', textAlign: 'left', display: 'inline-flex', alignItems: 'center', gap: 4, font: 'inherit' }}
-        onClick={async () => { try { await navigator.clipboard.writeText(text); setDone(true); setTimeout(() => setDone(false), 1200); } catch { toast.err('复制失败，请手动选择文本'); } }}>
-        <span className="ellipsis">{text}</span>{done && <Check size={12} />}
+    <Note tone="bad" icon={<CircleAlert size={14} />}>
+      <div className="row" style={{ gap: 8, flexWrap: 'nowrap', alignItems: 'baseline' }}>
+        <span style={{ minWidth: 0, overflowWrap: 'anywhere' }}>{children}{error instanceof Error ? error.message : String(error)}</span>
+        {onRetry && <button type="button" className="btn btn-link btn-sm" style={{ flex: 'none', height: 'auto' }} onClick={onRetry}><RotateCw size={12} />重试</button>}
+      </div>
+    </Note>
+  );
+}
+
+/** 复制按钮：点击复制 text，图标短暂变成对勾作为反馈 */
+export function CopyButton({ text, label = '内容', className, size = 14 }: { text: string; label?: string; className?: string; size?: number }) {
+  const [done, setDone] = React.useState(false);
+  React.useEffect(() => { if (!done) return; const h = setTimeout(() => setDone(false), 1400); return () => clearTimeout(h); }, [done]);
+  return (
+    <Tip text={done ? '已复制' : `复制${label}`}>
+      <button type="button" className={cn('copy-btn', done && 'is-done', className)} aria-label={`复制${label}`}
+        onClick={async (e) => { e.stopPropagation(); if (await copyText(text, label)) setDone(true); }}>
+        {done ? <Check size={size} /> : <Copy size={size} />}
       </button>
     </Tip>
   );

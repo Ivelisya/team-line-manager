@@ -3,6 +3,7 @@ import { Slot } from '@radix-ui/react-slot';
 import { cva, type VariantProps } from 'class-variance-authority';
 import { Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { Tip } from './overlays';
 
 // shadcn 写法（cva + Slot），样式类来自原版 components.css 的 .btn 家族
 const buttonVariants = cva('btn', {
@@ -26,9 +27,12 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(({ classN
 });
 Button.displayName = 'Button';
 
-export const IconButton = React.forwardRef<HTMLButtonElement, React.ButtonHTMLAttributes<HTMLButtonElement> & { label: string; size?: 'sm' | 'md' | 'lg' }>(
-  ({ className, label, size = 'md', type, ...p }, ref) => (
-    <button ref={ref} type={type ?? 'button'} aria-label={label} title={label} className={cn('icon-btn', size === 'sm' && 'icon-btn-sm', size === 'lg' && 'icon-btn-lg', className)} {...p} />
+/** 图标按钮：label 同时是无障碍名称和悬停提示（统一的 Tooltip，不用浏览器自带的 title）。tip=false 可关闭提示 */
+export const IconButton = React.forwardRef<HTMLButtonElement, React.ButtonHTMLAttributes<HTMLButtonElement> & { label: string; size?: 'sm' | 'md' | 'lg'; tip?: boolean; side?: 'top' | 'bottom' | 'left' | 'right' }>(
+  ({ className, label, size = 'md', type, tip = true, side, ...p }, ref) => (
+    <Tip text={tip ? label : null} side={side}>
+      <button ref={ref} type={type ?? 'button'} aria-label={label} className={cn('icon-btn', size === 'sm' && 'icon-btn-sm', size === 'lg' && 'icon-btn-lg', className)} {...p} />
+    </Tip>
   ),
 );
 IconButton.displayName = 'IconButton';

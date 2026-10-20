@@ -11,12 +11,15 @@ export const DRAWER_TABS: { value: DrawerTab; label: string }[] = [
 export function useDrawer() {
   const [sp, setSp] = useSearchParams();
   const id = sp.get('m');
-  const tab = ((sp.get('tab') as DrawerTab) || 'overview');
+  const rawTab = sp.get('tab');
+  const tab: DrawerTab = DRAWER_TABS.some((t) => t.value === rawTab) ? (rawTab as DrawerTab) : 'overview';
+  // react-router 的 setSearchParams 每次地址变化都换身份；用 ref 兜住，open/setTab/close 才稳定（卡片 memo 依赖它）
+  const setRef = useRef(setSp); setRef.current = setSp;
   const open = useCallback((mid: string, t?: DrawerTab) => {
-    setSp((p) => { const n = new URLSearchParams(p); n.set('m', mid); if (t) n.set('tab', t); else n.delete('tab'); return n; });
-  }, [setSp]);
-  const setTab = useCallback((t: DrawerTab) => setSp((p) => { const n = new URLSearchParams(p); n.set('tab', t); return n; }, { replace: true }), [setSp]);
-  const close = useCallback(() => setSp((p) => { const n = new URLSearchParams(p); n.delete('m'); n.delete('tab'); return n; }), [setSp]);
+    setRef.current((p) => { const n = new URLSearchParams(p); n.set('m', mid); if (t) n.set('tab', t); else n.delete('tab'); return n; });
+  }, []);
+  const setTab = useCallback((t: DrawerTab) => setRef.current((p) => { const n = new URLSearchParams(p); n.set('tab', t); return n; }, { replace: true }), []);
+  const close = useCallback(() => setRef.current((p) => { const n = new URLSearchParams(p); n.delete('m'); n.delete('tab'); return n; }), []);
   return { id, tab, open, setTab, close };
 }
 

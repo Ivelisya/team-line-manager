@@ -14,7 +14,8 @@ export function LoginPage() {
   const [u, setU] = React.useState('');
   const [p, setP] = React.useState('');
   const from = (loc.state as { from?: string } | null)?.from ?? '/';
-  if (me.data) return <Navigate to={from} replace />;
+  // 只信“当前确实登录着”的 me：会话过期后 me 带着旧数据又报错时，不能跳回去（否则和外壳互相重定向）
+  if (me.data && !me.isError) return <Navigate to={from} replace />;
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     login.mutate({ username: u.trim(), password: p }, { onSuccess: () => nav(from, { replace: true }) });

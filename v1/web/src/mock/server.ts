@@ -101,7 +101,7 @@ function series(m: MachineView, metric: string, range: string): { metric: string
     walk = Math.max(2, Math.min(97, walk + (r() - 0.5) * 9));
     const tail = isDown && i > n - 6;
     if (metric === 'host') {
-      pts.push({ ts, cpu_pct: tail ? null : walk, mem_pct: tail ? null : (h ? (h.mem_used / h.mem_total) * 100 : 40) + Math.sin(i / 9) * 4, disk_pct: h ? (h.disk_used / h.disk_total) * 100 + i * 0.01 : 30, load1: tail ? null : +(walk / 40).toFixed(2), net_rx_bps: tail ? null : (h?.net_rx_bps ?? 1e7) * (0.5 + r()), net_tx_bps: tail ? null : (h?.net_tx_bps ?? 1e7) * (0.4 + r()) });
+      pts.push({ ts, cpu_pct: tail ? null : walk, mem_pct: tail ? null : (h?.mem_used != null && h.mem_total ? (h.mem_used / h.mem_total) * 100 : 40) + Math.sin(i / 9) * 4, disk_pct: h?.disk_used != null && h.disk_total ? (h.disk_used / h.disk_total) * 100 + i * 0.01 : 30, load1: tail ? null : +(walk / 40).toFixed(2), net_rx_bps: tail ? null : (h?.net_rx_bps ?? 1e7) * (0.5 + r()), net_tx_bps: tail ? null : (h?.net_tx_bps ?? 1e7) * (0.4 + r()) });
     } else if (metric === 'traffic') {
       const k = step / 60_000;
       pts.push({ ts, up: Math.round(r() * 8e6 * k * (1 + Math.sin(i / 7))), down: Math.round(r() * 3e7 * k * (1 + Math.cos(i / 8))), conns: Math.round(20 + r() * 80) });
@@ -205,7 +205,7 @@ function checkProvision(items: ProvisionItem[]): ProvisionCheckItem[] {
       if (team) {
         const used = usedNum.get(team.id) ?? new Set<number>();
         if (it.number != null && it.number !== ('' as unknown as number)) {
-          if (!Number.isInteger(it.number) || it.number < 1 || it.number > 99) errors.push('编号应为 1–99 的整数');
+          if (!Number.isInteger(it.number) || it.number < 1 || it.number > 999) errors.push('编号应为 1–999 的整数');
           else if (used.has(it.number)) errors.push(`${displayName(team.name, it.number)} 已被占用`);
           else number = it.number;
         } else { let n = 1; while (used.has(n)) n++; number = n; }
@@ -435,12 +435,81 @@ R('POST', '/silences', ({ body }) => { const m = body.subject_id ? machine(body.
 R('DELETE', '/silences/([^/]+)', ({ params }) => { db.silences = db.silences.filter((s) => s.id !== params[0]); emit({ type: 'incidents' }); return {}; });
 R('GET', '/audit', ({ query }) => clone(db.audit.filter((a) => !query.get('target_id') || a.target_id === query.get('target_id')).slice(0, +(query.get('limit') ?? 50))));
 
+// ---------- 升级 agent ----------
+const UPSTEPS: [string, string][] = [['push', '推送 agent'], ['restart', '重启 agent'], ['verify', '确认上报']];
+function startUpgrade(m: MachineView) {
+  const job = newJob('upgrade_agent', { id: m.id, name: m.name }, UPSTEPS);
+  m.active_job = { id: job.id, kind: 'upgrade_agent', state: 'running' };
+  drive(job, 1800, () => { m.active_job = null; if (m.agent) m.agent.version = '1.0.4'; });
+  return job;
+}
+R('POST', '/machines/([^/]+)/upgrade-agent', ({ params }) => {
+  const m = machine(params[0]);
+  if (!m.agent) throw bad('这台机器没有 agent（家宽代理不装 agent）');
+  if (m.active_job) throw bad('这台机器有进行中的作业，请等它结束', 409, 'conflict');
+  const job = startUpgrade(m); emit({ type: 'machines' });
+  return { machine_id: m.id, job_id: job.id };
+});
+R('POST', '/agents/upgrade', () => {
+  const jobs = db.machines.filter((m) => m.lifecycle === 'active' && m.agent && !m.active_job).map((m) => ({ machine_id: m.id, job_id: startUpgrade(m).id }));
+  emit({ type: 'machines' }); return { jobs };
+});
+
+// ---------- 设置：API 密钥 / 通知渠道 ----------
+const rand = (n: number) => Array.from({ length: n }, () => 'abcdefghijklmnopqrstuvwxyz0123456789'[Math.floor(Math.random() * 36)]).join('');
+R('GET', '/api-keys', () => clone(db.apiKeys));
+R('POST', '/api-keys', ({ body }) => {
+  const scopes: string[] = body.scopes ?? [];
+  if (!String(body.name ?? '').trim()) throw bad('请填写密钥名称');
+  if (!scopes.length || scopes.some((x) => !['read', 'write', 'secrets', 'exec'].includes(x))) throw bad('请至少选择一项有效权限');
+  const prefix = rand(8); const id = `k${db.seq++}`;
+  db.apiKeys.unshift({ id, name: String(body.name).trim(), prefix, scopes, created_at: iso(), expires_at: body.expires_days ? iso(Date.now() + body.expires_days * DAY) : null, last_used_at: null, revoked_at: null });
+  emit({ type: 'api_keys' });
+  return { id, token: `flk_${prefix}_${rand(32)}` };
+});
+R('DELETE', '/api-keys/([^/]+)', ({ params }) => {
+  const k = db.apiKeys.find((x) => x.id === params[0]); if (!k) throw bad('密钥不存在', 404, 'not_found');
+  k.revoked_at = iso(); emit({ type: 'api_keys' }); return {};
+});
+const hintOf = (kind: string, cfg: Record<string, string>) => (kind === 'telegram' ? `chat ${cfg.chat_id ?? ''}` : (() => { try { return new URL(cfg.url).hostname; } catch { return '—'; } })());
+const channel = (id: string) => { const c = db.channels.find((x) => x.id === id); if (!c) throw bad('渠道不存在', 404, 'not_found'); return c; };
+const pub = (c: Db['channels'][number]) => { const { config: _c, ...rest } = c; return rest; };
+const checkCfg = (kind: string, cfg: Record<string, string>) => {
+  const need = kind === 'telegram' ? ['bot_token', 'chat_id'] : ['url'];
+  if (!['telegram', 'wecom', 'webhook'].includes(kind)) throw bad('不支持的渠道类型');
+  if (need.some((k) => !String(cfg?.[k] ?? '').trim())) throw bad('配置不完整');
+};
+R('GET', '/notify-channels', () => db.channels.map(pub));
+R('POST', '/notify-channels', ({ body }) => {
+  if (!String(body.name ?? '').trim()) throw bad('请填写渠道名称');
+  checkCfg(body.kind, body.config);
+  const c = { id: `c${db.seq++}`, name: String(body.name).trim(), kind: body.kind, min_severity: body.min_severity ?? 'warning', enabled: body.enabled !== false, created_at: iso(), config_hint: hintOf(body.kind, body.config), config: body.config };
+  db.channels.push(c); emit({ type: 'catalog' }); return { id: c.id };
+});
+R('PATCH', '/notify-channels/([^/]+)', ({ params, body }) => {
+  const c = channel(params[0]);
+  if (body.name !== undefined) c.name = String(body.name).trim();
+  if (body.config !== undefined) { checkCfg(c.kind, body.config); c.config = body.config; c.config_hint = hintOf(c.kind, body.config); }
+  if (body.min_severity !== undefined) c.min_severity = body.min_severity;
+  if (body.enabled !== undefined) c.enabled = !!body.enabled;
+  emit({ type: 'catalog' }); return pub(c);
+});
+R('DELETE', '/notify-channels/([^/]+)', ({ params }) => { channel(params[0]); db.channels = db.channels.filter((c) => c.id !== params[0]); emit({ type: 'catalog' }); return {}; });
+R('POST', '/notify-channels/([^/]+)/test', ({ params }) => {
+  const c = channel(params[0]);
+  const fail = c.name.includes('失败') || JSON.stringify(c.config).includes('fail');
+  const error = fail ? '对端返回 HTTP 502（Bad Gateway）' : null;
+  db.notifyLog.unshift({ id: `n${db.seq++}`, channel_id: c.id, channel_name: c.name, incident_id: null, ts: iso(), ok: !fail, error });
+  return { ok: !fail, error };
+});
+R('GET', '/notify-log', ({ query }) => clone(db.notifyLog.slice(0, +(query.get('limit') ?? 100))));
+
 // ---------- 安装 ----------
 function jitter() {
   for (const m of db.machines) if (m.host && m.lifecycle === 'active' && m.health.status !== 'down') {
     const h = m.host; const f = () => 0.85 + Math.random() * 0.3;
-    h.cpu_pct = Math.max(1, Math.min(99, h.cpu_pct * f())); h.net_rx_bps *= f(); h.net_tx_bps *= f(); h.ts = iso();
-    h.load1 = +(h.cpu_pct / 40).toFixed(2);
+    h.cpu_pct = Math.max(1, Math.min(99, (h.cpu_pct ?? 10) * f())); h.net_rx_bps = (h.net_rx_bps ?? 1e6) * f(); h.net_tx_bps = (h.net_tx_bps ?? 1e6) * f(); h.ts = iso();
+    h.load1 = +((h.cpu_pct ?? 0) / 40).toFixed(2);
     if (m.agent) m.agent.last_report_at = iso();
   }
   emit({ type: 'tick' });

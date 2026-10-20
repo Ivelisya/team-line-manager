@@ -1,13 +1,19 @@
+import * as React from 'react';
 import { Route, Routes, Navigate } from 'react-router-dom';
 import { Shell } from './layout/Shell';
 import { HomePage } from './pages/Home';
 import { NodesPage } from './pages/Nodes';
-import { RelaysPage } from './pages/Relays';
-import { ProvisionPage } from './pages/Provision';
-import { JobsPage } from './pages/Jobs';
-import { CatalogPage } from './pages/Catalog';
-import { IncidentsPage } from './pages/Incidents';
 import { LoginPage } from './pages/Login';
+
+// 首页 / 节点 / 登录常驻主包；其余页面按需加载（Shell 里有 Suspense）
+const lazyPage = <K extends string>(load: () => Promise<Record<K, React.ComponentType>>, name: K) =>
+  React.lazy(() => load().then((m) => ({ default: m[name] })));
+const RelaysPage = lazyPage(() => import('./pages/Relays'), 'RelaysPage');
+const ProvisionPage = lazyPage(() => import('./pages/Provision'), 'ProvisionPage');
+const JobsPage = lazyPage(() => import('./pages/Jobs'), 'JobsPage');
+const CatalogPage = lazyPage(() => import('./pages/Catalog'), 'CatalogPage');
+const IncidentsPage = lazyPage(() => import('./pages/Incidents'), 'IncidentsPage');
+const SettingsPage = lazyPage(() => import('./pages/Settings'), 'SettingsPage');
 
 export function App() {
   return (
@@ -22,6 +28,7 @@ export function App() {
         <Route path="jobs/:id" element={<JobsPage />} />
         <Route path="catalog" element={<CatalogPage />} />
         <Route path="incidents" element={<IncidentsPage />} />
+        <Route path="settings" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

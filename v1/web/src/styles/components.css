@@ -337,9 +337,30 @@ button.kpi:hover, a.kpi:hover { border-color: var(--line-strong); }
   background: var(--fg); color: var(--canvas); font-size: var(--fs-label); line-height: var(--lh-label); animation: fade-in var(--dur-fast);
 }
 
-.toasts { position: fixed; z-index: var(--z-toast); right: var(--sp-16); bottom: var(--sp-16); display: grid; gap: var(--sp-8); width: min(360px, calc(100vw - 32px)); }
-.toast { display: flex; gap: var(--sp-8); align-items: flex-start; padding: var(--sp-10) var(--sp-12); background: var(--raised); border: 1px solid var(--line); border-radius: var(--r-float); box-shadow: var(--shadow-float); font-size: var(--fs-body); animation: fade-in var(--dur-base); }
-.toast .lucide { margin-top: 2px; }
-.toast[data-tone="ok"] .lucide { color: var(--ok); }
-.toast[data-tone="bad"] .lucide { color: var(--bad); }
-.toast .toast-body { min-width: 0; overflow-wrap: anywhere; }
+/* 堆叠式通知：新的在最下面，旧的往上排；相同消息合并计数；底部细线是剩余时间，鼠标停上去暂停 */
+.toasts { position: fixed; z-index: var(--z-toast); right: var(--sp-16); bottom: var(--sp-16); display: flex; flex-direction: column; gap: var(--sp-8); width: min(380px, calc(100vw - 32px)); pointer-events: none; }
+.toast {
+  position: relative; display: flex; gap: var(--sp-10); align-items: flex-start; padding: var(--sp-10) var(--sp-12); overflow: hidden; pointer-events: auto;
+  background: var(--raised); border: 1px solid var(--line); border-radius: var(--r-float); box-shadow: var(--shadow-float);
+  font-size: var(--fs-body); line-height: var(--lh-body); animation: toast-in var(--dur-panel) var(--ease-out);
+  transition: opacity var(--dur-base), transform var(--dur-base);
+}
+.toast[data-leaving="1"] { opacity: 0; transform: translateX(16px); }
+.toast > .lucide { margin-top: 2px; }
+.toast[data-tone="ok"] > .lucide { color: var(--ok); }
+.toast[data-tone="bad"] > .lucide { color: var(--bad); }
+.toast[data-tone="info"] > .lucide { color: var(--info); }
+.toast .toast-body { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.toast-title { font-weight: var(--fw-semibold); }
+.toast-text { color: var(--fg-2); font-size: var(--fs-label); line-height: var(--lh-label); }
+.toast-action { margin-top: var(--sp-4); padding: 0; border: 0; background: none; cursor: pointer; font: var(--fw-medium) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--accent); }
+.toast-action:hover { text-decoration: underline; text-underline-offset: 3px; }
+.toast-count { flex: none; align-self: center; padding: 0 var(--sp-6); border-radius: var(--r-pill); background: var(--sunken); color: var(--fg-2); font-size: var(--fs-micro); line-height: 18px; }
+.toast-x { flex: none; width: 22px; height: 22px; margin: -2px -4px 0 0; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--fg-3); cursor: pointer; transition: background-color var(--dur-fast), color var(--dur-fast); }
+.toast-x:hover { background: var(--hover); color: var(--fg); }
+.toast-timer { position: absolute; left: 0; bottom: 0; height: 2px; width: 100%; background: var(--fg-3); opacity: 0.45; transform-origin: left; animation: toast-timer linear forwards; }
+.toast[data-tone="ok"] .toast-timer { background: var(--ok); }
+.toast[data-tone="bad"] .toast-timer { background: var(--bad); }
+.toast[data-tone="info"] .toast-timer { background: var(--info); }
+@keyframes toast-in { from { opacity: 0; transform: translateY(8px) scale(.98); } to { opacity: 1; transform: none; } }
+@keyframes toast-timer { from { transform: scaleX(1); } to { transform: scaleX(0); } }

@@ -4,6 +4,7 @@ import * as DropdownPrimitive from '@radix-ui/react-dropdown-menu';
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import * as PopoverPrimitive from '@radix-ui/react-popover';
 import * as ToggleGroup from '@radix-ui/react-toggle-group';
+import { ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 /* ---- Tabs（下划线页签） ---- */
@@ -30,16 +31,41 @@ export const DropdownMenuItem = React.forwardRef<React.ElementRef<typeof Dropdow
 ));
 DropdownMenuItem.displayName = 'DropdownMenuItem';
 export const DropdownMenuSeparator = () => <DropdownPrimitive.Separator className="menu-sep" />;
-export const DropdownMenuLabel = ({ children }: { children: React.ReactNode }) => <DropdownPrimitive.Label className="hint" style={{ padding: '4px 10px' }}>{children}</DropdownPrimitive.Label>;
+export const DropdownMenuSub = DropdownPrimitive.Sub;
+export const DropdownMenuSubTrigger = React.forwardRef<React.ElementRef<typeof DropdownPrimitive.SubTrigger>, React.ComponentPropsWithoutRef<typeof DropdownPrimitive.SubTrigger>>(({ className, children, ...p }, ref) => (
+  <DropdownPrimitive.SubTrigger ref={ref} className={cn('menu-item', className)} {...p}>{children}<ChevronRight className="menu-chev" /></DropdownPrimitive.SubTrigger>
+));
+DropdownMenuSubTrigger.displayName = 'DropdownMenuSubTrigger';
+export const DropdownMenuSubContent = React.forwardRef<React.ElementRef<typeof DropdownPrimitive.SubContent>, React.ComponentPropsWithoutRef<typeof DropdownPrimitive.SubContent>>(({ className, ...p }, ref) => (
+  <DropdownPrimitive.Portal><DropdownPrimitive.SubContent ref={ref} className={cn('menu', className)} {...p} /></DropdownPrimitive.Portal>
+));
+DropdownMenuSubContent.displayName = 'DropdownMenuSubContent';
 
 /* ---- Tooltip ---- */
 export const TooltipProvider = ({ children }: { children: React.ReactNode }) => <TooltipPrimitive.Provider delayDuration={250}>{children}</TooltipPrimitive.Provider>;
-export function Tip({ text, children, side = 'top' }: { text: React.ReactNode; children: React.ReactElement; side?: 'top' | 'bottom' | 'left' | 'right' }) {
+type Side = 'top' | 'bottom' | 'left' | 'right';
+export function Tip({ text, children, side = 'top', align }: { text: React.ReactNode; children: React.ReactElement; side?: Side; align?: 'start' | 'center' | 'end' }) {
   if (!text) return children;
   return (
     <TooltipPrimitive.Root>
       <TooltipPrimitive.Trigger asChild>{children}</TooltipPrimitive.Trigger>
-      <TooltipPrimitive.Portal><TooltipPrimitive.Content side={side} sideOffset={6} className="tooltip">{text}</TooltipPrimitive.Content></TooltipPrimitive.Portal>
+      <TooltipPrimitive.Portal><TooltipPrimitive.Content side={side} align={align} sideOffset={6} collisionPadding={8} className="tooltip">{text}</TooltipPrimitive.Content></TooltipPrimitive.Portal>
+    </TooltipPrimitive.Root>
+  );
+}
+
+/** 单行省略文本：只有真的被截断时悬停才出现完整内容的提示 */
+export function Trunc({ children, text, className, side = 'top' }: { children: React.ReactNode; text?: string; className?: string; side?: Side }) {
+  const ref = React.useRef<HTMLSpanElement>(null);
+  const [cut, setCut] = React.useState(false);
+  const [open, setOpen] = React.useState(false);
+  const full = text ?? (typeof children === 'string' ? children : '');
+  return (
+    <TooltipPrimitive.Root open={open && cut && !!full} onOpenChange={setOpen}>
+      <TooltipPrimitive.Trigger asChild>
+        <span ref={ref} className={cn('ellipsis block', className)} onPointerEnter={() => { const el = ref.current; setCut(!!el && el.scrollWidth > el.clientWidth + 1); }}>{children}</span>
+      </TooltipPrimitive.Trigger>
+      <TooltipPrimitive.Portal><TooltipPrimitive.Content side={side} sideOffset={6} collisionPadding={8} className="tooltip">{full}</TooltipPrimitive.Content></TooltipPrimitive.Portal>
     </TooltipPrimitive.Root>
   );
 }

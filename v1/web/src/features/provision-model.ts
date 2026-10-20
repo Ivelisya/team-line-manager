@@ -2,6 +2,8 @@
 import type { Kind, MachineView, Plan, Provider, ProvisionItem, Team } from '@/lib/types';
 
 export interface Row {
+  /** 稳定的行 id（React key、单元格回调用），不进入提交内容 */
+  id: string;
   kind: Kind; ip: string; ssh_port: string; team_id: string; number: string; label: string; relay_id: string;
   provider_id: string; plan_id: string; service_ref: string; note: string;
   login_user: string; login_pw: string;
@@ -10,10 +12,11 @@ export interface Row {
   /** 粘贴时没匹配上的文本：字段 → 原文，用于本地报错 */
   unresolved: Record<string, string>;
 }
-export type Field = Exclude<keyof Row, 'unresolved' | 'kind'>;
+export type Field = Exclude<keyof Row, 'id' | 'unresolved' | 'kind'>;
 
+let rowSeq = 0;
 export const newRow = (p?: Partial<Row>): Row => ({
-  kind: 'vps', ip: '', ssh_port: '', team_id: '', number: '', label: '', relay_id: '', provider_id: '', plan_id: '', service_ref: '', note: '',
+  id: `r${++rowSeq}`, kind: 'vps', ip: '', ssh_port: '', team_id: '', number: '', label: '', relay_id: '', provider_id: '', plan_id: '', service_ref: '', note: '',
   login_user: '', login_pw: '', up_protocol: 'socks5', up_host: '', up_port: '', up_user: '', up_pw: '', ss_port: '', due_date: '', price: '', unresolved: {}, ...p,
 });
 
@@ -69,7 +72,8 @@ export function setCell(row: Row, col: Col, raw: string, ctx: Ctx): Row {
 }
 
 const num = (s: string) => (s.trim() === '' ? undefined : Number(s));
-export function toItem(r: Row): ProvisionItem {
+/** ctx 用来补订阅的计费信息：周期取套餐的 cycle，账单时区取供应商的 timezone（没有就让服务端按默认） */
+export function toItem(r: Row, ctx: Ctx): ProvisionItem {
   const it: ProvisionItem = { kind: r.kind, ip: r.ip.trim() };
   if (r.kind !== 'proxy' && r.ssh_port) it.ssh_port = num(r.ssh_port);
   if (r.kind === 'relay') it.label = r.label.trim();
@@ -81,7 +85,14 @@ export function toItem(r: Row): ProvisionItem {
   if (r.kind !== 'proxy' && (r.login_user.trim() || r.login_pw)) it.login = { user: r.login_user.trim() || 'root', password: r.login_pw || undefined };
   if (r.kind === 'proxy') it.upstream = { protocol: r.up_protocol === 'http' ? 'http' : 'socks5', host: r.up_host.trim(), port: Number(r.up_port) || 0, username: r.up_user.trim() || undefined, password: r.up_pw || undefined };
   if (r.kind === 'vps' && r.ss_port) it.ss_port = num(r.ss_port);
-  if (r.due_date) it.subscription = { due_date: r.due_date, price_cents: r.price.trim() ? Math.round(Number(r.price) * 100) : undefined };
+  if (r.due_date) {
+    const plan = ctx.plans.find((p) => p.id === r.plan_id);
+    const provider = ctx.providers.find((p) => p.id === (r.provider_id || plan?.provider_id));
+    it.subscription = {
+      due_date: r.due_date, price_cents: r.price.trim() ? Math.round(Number(r.price) * 100) : undefined,
+      cycle: plan?.cycle, billing_tz: provider?.timezone ?? undefined,
+    };
+  }
   return it;
 }
 
@@ -92,11 +103,13 @@ export function localErrors(r: Row): string[] {
   if (!r.ip.trim()) e.push('请填写 IP');
   if (r.kind === 'relay' && !r.label.trim()) e.push('请填写线路机名');
   if (r.kind !== 'relay') { if (!r.team_id && !r.unresolved.team_id) e.push('请选择团队'); if (!r.relay_id && !r.unresolved.relay_id) e.push('请选择挂载的线路机'); }
-  if (r.number.trim() !== '' && !/^\d+$/.test(r.number.trim())) e.push('编号应为整数，或留空自动编号');
+  if (r.number.trim() !== '' && (!/^\d+$/.test(r.number.trim()) || Number(r.number) < 1 || Number(r.number) > 999)) e.push('编号应为 1–999 的整数，或留空自动编号');
   for (const k of ['ssh_port', 'ss_port', 'up_port'] as const) if (r[k].trim() !== '' && !/^\d+$/.test(r[k].trim())) e.push(`${COLS.find((c) => c.key === k)!.label}应为整数`);
   if (r.kind === 'proxy' && (!r.up_host.trim() || !r.up_port.trim())) e.push('家宽代理需要填写上游主机与端口');
   if (r.due_date && !/^\d{4}-\d{2}-\d{2}$/.test(r.due_date)) e.push('到期日格式应为 YYYY-MM-DD');
   if (r.price.trim() && !isFinite(Number(r.price))) e.push('费用应为数字');
+  // 费用只挂在订阅上：没有到期日就没有订阅，填了的费用会被悄悄丢掉——在这里拦下
+  if (r.price.trim() && !r.due_date) e.push('填了费用，也需要填到期日');
   return e;
 }
 

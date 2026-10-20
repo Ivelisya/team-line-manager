@@ -9,9 +9,10 @@ export interface Subscription {
   price_cents: number; currency: string; cycle: Cycle; due_date: string; due_days: number;
   billing_tz: string; auto_renew: boolean; remind_days: number; traffic_gb: number | null; traffic_reset_day: number | null;
 }
+/** 指标缺测（agent 刚装、上报不全）时对应字段为 null，使用处一律按可空处理 */
 export interface HostMetrics {
-  ts: string; cpu_pct: number; load1: number; mem_used: number; mem_total: number;
-  disk_used: number; disk_total: number; net_rx_bps: number; net_tx_bps: number; tcp_conns: number;
+  ts: string; cpu_pct: number | null; load1: number | null; mem_used: number | null; mem_total: number | null;
+  disk_used: number | null; disk_total: number | null; net_rx_bps: number | null; net_tx_bps: number | null; tcp_conns: number | null;
 }
 export interface ProbeResult { ok: boolean; latency_ms: number | null; detail: string | null; ts: string }
 export interface EntryTraffic { today_up: number; today_down: number; month_up: number; month_down: number }
@@ -29,7 +30,7 @@ export interface MachineView {
   lifecycle: Lifecycle; lifecycle_reason: string | null; note: string; revision: number;
   created_at: string; activated_at: string | null; retired_at: string | null;
   subscription: Subscription | null;
-  agent: { version: string; last_report_at: string; online: boolean } | null;
+  agent: { version: string | null; last_report_at: string | null; online: boolean } | null;
   host: HostMetrics | null;
   entries: EntryView[];
   health: { status: HealthStatus; reasons: HealthReason[] };
@@ -54,9 +55,9 @@ export interface Overview {
 }
 
 export type JobState = 'queued' | 'running' | 'waiting' | 'cancelling' | 'succeeded' | 'failed' | 'cancelled';
-export type JobKind = 'provision_vps' | 'provision_proxy' | 'provision_relay' | 'attach_entry' | 'retire' | 'purge';
+export type JobKind = 'provision_vps' | 'provision_proxy' | 'provision_relay' | 'attach_entry' | 'retire' | 'purge' | 'upgrade_agent';
 /** 步骤 state 文档未列全，前端按 pending/running/waiting/succeeded(done)/failed/skipped(cancelled) 宽松处理 */
-export interface JobStep { idx: number; key: string; title: string; state: string; started_at: string | null; finished_at: string | null; output: Record<string, unknown> | null; error: string | null }
+export interface JobStep { idx: number; key: string; title: string; state: string; started_at: string | null; finished_at: string | null; output: Record<string, unknown> | null; error: string | null; error_kind?: string | null }
 export interface Job {
   id: string; kind: JobKind | string; target: { id: string; name: string } | null; state: JobState | string;
   step: number | null; step_count: number; error: string | null; created_by: string; created_at: string; started_at: string | null; finished_at: string | null;
@@ -92,3 +93,11 @@ export interface AuditEntry { id: string; ts: string; actor: string; action: str
 export interface RenumberPreview { changes: { machine_id: string; old_name: string; new_name: string }[]; token: string }
 /** 退役预览：退役后同团队后面的节点会依次前移改名 */
 export interface RetirePreview { name: string; renames: { machine_id: string; old_name: string; new_name: string }[] }
+
+// ---- 设置页：API 密钥、告警通知渠道（契约见 COMMON.md） ----
+export type ApiScope = 'read' | 'write' | 'secrets' | 'exec';
+export interface ApiKey { id: string; name: string; prefix: string; scopes: ApiScope[] | string[]; created_at: string; expires_at: string | null; last_used_at: string | null; revoked_at: string | null }
+export type NotifyKind = 'telegram' | 'wecom' | 'webhook';
+export type NotifySeverity = 'info' | 'warning' | 'critical';
+export interface NotifyChannel { id: string; name: string; kind: NotifyKind | string; min_severity: NotifySeverity | string; enabled: boolean; created_at: string; config_hint: string }
+export interface NotifyLogEntry { id: string; channel_id: string; channel_name: string; incident_id: string | null; ts: string; ok: boolean; error: string | null }

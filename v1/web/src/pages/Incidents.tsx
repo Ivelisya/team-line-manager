@@ -1,6 +1,7 @@
-// 告警：事件列表（确认 / 查看机器）+ 静默与维护窗口。
+// 告警：事件列表（确认 / 查看机器）+ 静默与维护窗口。列表保持服务端顺序（严重度优先），前端不重排。
 import * as React from 'react';
-import { BellOff, Check, Plus, Trash2, Wrench } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
+import { BellOff, Check, CheckCircle2, Plus, Trash2, Wrench } from 'lucide-react';
 import { useAck, useAddSilence, useDelSilence, useIncidents, useMachines, useSilences } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
@@ -8,12 +9,19 @@ import type { Incident } from '@/lib/types';
 import { Button, IconButton } from '@/components/ui/button';
 import { CheckRow, Field, Input } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
-import { Segmented } from '@/components/ui/overlays';
+import { Segmented, Trunc } from '@/components/ui/overlays';
+import { SkeletonRows } from '@/components/ui/skeleton';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle } from '@/components/ui/dialog';
 import { toast } from '@/components/ui/toast';
-import { Empty, Note, PageHead, Panel, Pill } from '@/components/app/primitives';
+import { ConfirmDialog } from '@/components/app/dialogs';
+import { NodeHover } from '@/components/app/NodeHover';
+import { Empty, ErrorNote, Note, PageHead, Panel, Pill } from '@/components/app/primitives';
 
-const RULES: Record<string, string> = { agent_offline: 'agent 离线', tcp_fail: 'TCP 探测失败', cpu_high: 'CPU 过高', apply_pending: '配置未下发', latency_high: '延迟过高', no_data: '无数据' };
+/** 规则 key（health.rs 产出）→ 中文名；未收录的原样显示 key */
+export const RULES: Record<string, string> = {
+  agent_offline: 'agent 离线', no_entry: '节点没有入口', egress_fail: '出口验证失败', tcp_fail: 'TCP 探测失败',
+  renewal_due: '即将到期', renewal_overdue: '已过期未续费', relay_apply_lag: '线路机下发滞后', relay_apply_error: '线路机下发失败', relay_xray_down: '线路机 xray 未运行',
+};
 const SEV = (i: Incident) => (i.state === 'resolved' ? <Pill tone="ok" dot="ring">已恢复</Pill> : i.severity === 'critical' ? <Pill tone="bad">严重</Pill> : i.severity === 'info' ? <Pill tone="info">提示</Pill> : <Pill tone="warn">警告</Pill>);
 
 export function IncidentsPage() {
@@ -21,31 +29,35 @@ export function IncidentsPage() {
   const q = useIncidents(state);
   const ack = useAck();
   const { open } = useDrawer();
-  const list = [...(q.data ?? [])].sort((a, b) => +new Date(b.opened_at) - +new Date(a.opened_at));
+  const list = q.data ?? [];
   return (
     <div className="stack">
       <PageHead title="告警" note={q.data ? `${list.length} 条` : undefined}
         tools={<Segmented label="状态" value={state} onChange={setState} items={[{ value: 'firing', label: '进行中' }, { value: 'resolved', label: '已恢复' }, { value: 'all', label: '全部' }]} />} />
-      {q.isError && <Note tone="bad">{(q.error as Error).message}</Note>}
+      {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       <Panel flush>
         <div className="table-wrap">
           <table className="dt" style={{ minWidth: 820 }}>
-            <colgroup><col style={{ width: 88 }} /><col style={{ width: 150 }} /><col style={{ width: 130 }} /><col /><col style={{ width: 110 }} /><col style={{ width: 130 }} /></colgroup>
+            <colgroup><col style={{ width: 88 }} /><col style={{ width: 150 }} /><col style={{ width: 150 }} /><col /><col style={{ width: 110 }} /><col style={{ width: 110 }} /></colgroup>
             <thead><tr><th>级别</th><th>对象</th><th>规则</th><th>说明</th><th>开始</th><th /></tr></thead>
             <tbody>
-              {list.map((i) => (
-                <tr key={i.id}>
-                  <td>{SEV(i)}</td>
-                  <td>{i.subject?.id ?? i.subject_id ? <button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => open((i.subject?.id ?? i.subject_id)!)}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button> : '—'}</td>
-                  <td>{RULES[i.rule] ?? i.rule}</td>
-                  <td><span className="cell-main">{i.summary}</span><span className="sub">{i.resolved_at ? `恢复于 ${F.dt(i.resolved_at)}` : i.ack_at ? `${i.ack_by ?? ''} 已确认 · ${F.ago(i.ack_at)}` : '未确认'}</span></td>
-                  <td>{F.dt(i.opened_at)}<span className="sub">{F.ago(i.opened_at)}</span></td>
-                  <td className="r">{i.state === 'firing' && !i.ack_at && <Button size="sm" loading={ack.isPending && ack.variables === i.id} onClick={() => ack.mutate(i.id, { onSuccess: () => toast.ok('已确认'), onError: toast.err })}><Check size={13} />确认</Button>}</td>
-                </tr>
-              ))}
+              {list.map((i) => {
+                const sid = i.subject?.id ?? i.subject_id;
+                return (
+                  <tr key={i.id}>
+                    <td>{SEV(i)}</td>
+                    <td>{sid ? <NodeHover id={sid}><button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => open(sid)}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button></NodeHover> : '—'}</td>
+                    <td>{RULES[i.rule] ?? i.rule}</td>
+                    <td><Trunc className="cell-main">{i.summary}</Trunc><span className="sub">{i.resolved_at ? `恢复于 ${F.dt(i.resolved_at)}` : i.ack_at ? `${i.ack_by ?? ''} 已确认 · ${F.ago(i.ack_at)}` : '未确认'}</span></td>
+                    <td>{F.dt(i.opened_at)}<span className="sub">{F.ago(i.opened_at)}</span></td>
+                    <td className="r">{i.state === 'firing' && !i.ack_at && <Button size="sm" loading={ack.isPending && ack.variables === i.id} disabled={ack.isPending} onClick={() => ack.mutate(i.id, { onSuccess: () => toast.ok('已确认'), onError: toast.err })}><Check size={13} />确认</Button>}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
-          {q.data && list.length === 0 && <Empty text={state === 'firing' ? '没有进行中的告警' : '没有记录'} />}
+          {q.isLoading && <SkeletonRows rows={4} />}
+          {q.data && list.length === 0 && <Empty icon={state === 'firing' ? <CheckCircle2 size={22} /> : undefined} text={state === 'firing' ? '没有进行中的告警' : '没有记录'} hint={state === 'firing' ? '所有机器都在正常范围内' : undefined} />}
         </div>
       </Panel>
       <Silences />
@@ -53,32 +65,46 @@ export function IncidentsPage() {
   );
 }
 
+const ALL = '__all__';
+const MAX_HOURS = 720; // 30 天
+
 function Silences() {
   const q = useSilences(); const del = useDelSilence(); const add = useAddSilence();
   const machines = useMachines('live').data ?? [];
+  const [sp, setSp] = useSearchParams();
   const [open, setOpen] = React.useState(false);
+  const [askAll, setAskAll] = React.useState(false);
   const [subject, setSubject] = React.useState(''); const [hours, setHours] = React.useState('4');
   const [maint, setMaint] = React.useState(true); const [comment, setComment] = React.useState('');
-  React.useEffect(() => { if (open) { setSubject(''); setHours('4'); setMaint(true); setComment(''); } }, [open]);
+  // 命令面板 / 右键菜单：/incidents?silence=<机器id> 直接打开“新建静默”并选好对象；silence=new 不预选
+  React.useEffect(() => {
+    const want = sp.get('silence');
+    if (!want) return;
+    setSubject(want === 'new' ? '' : want); setHours('4'); setMaint(true); setComment(''); setOpen(true);
+    setSp((p) => { const n = new URLSearchParams(p); n.delete('silence'); return n; }, { replace: true });
+  }, [sp, setSp]);
   const list = q.data ?? [];
   const h = Number(hours);
+  const hoursErr = hours !== '' && (h < 1 || h > MAX_HOURS) ? `时长应在 1–${MAX_HOURS} 小时之间` : undefined;
+  const valid = !!subject && h >= 1 && h <= MAX_HOURS;
   const submit = () => {
     const now = Date.now();
-    add.mutate({ subject_id: subject || null, starts_at: new Date(now).toISOString(), ends_at: new Date(now + h * 3600_000).toISOString(), is_maintenance: maint, comment: comment.trim() },
-      { onSuccess: () => { toast.ok('已创建静默'); setOpen(false); }, onError: toast.err });
+    add.mutate({ subject_id: subject === ALL ? null : subject, starts_at: new Date(now).toISOString(), ends_at: new Date(now + h * 3600_000).toISOString(), is_maintenance: maint, comment: comment.trim() },
+      { onSuccess: () => { toast.ok('已创建静默'); setOpen(false); setAskAll(false); }, onError: toast.err });
   };
   return (
     <>
-      <Panel title="静默与维护窗口" count={list.length} sub="窗口内不会产生告警" tools={<Button onClick={() => setOpen(true)}><Plus />新建静默</Button>} flush>
-        {list.length === 0 ? <Empty icon={<BellOff size={28} />} text="当前没有生效的静默" /> : (
+      <Panel title="静默与维护窗口" count={list.length} sub="窗口内不会产生告警" tools={<Button onClick={() => { setSubject(''); setHours('4'); setMaint(true); setComment(''); setOpen(true); }}><Plus />新建静默</Button>} flush>
+        {q.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div>}
+        {q.isLoading ? <SkeletonRows rows={2} /> : list.length === 0 && !q.isError ? <Empty icon={<BellOff size={22} />} text="当前没有生效的静默" hint="维护机器前先建一个，期间不会发告警" /> : (
           <div className="table-wrap">
             <table className="dt is-one" style={{ minWidth: 640 }}>
               <colgroup><col style={{ width: 140 }} /><col style={{ width: 110 }} /><col style={{ width: 230 }} /><col /><col style={{ width: 52 }} /></colgroup>
               <thead><tr><th>对象</th><th>类型</th><th>时间</th><th>备注</th><th /></tr></thead>
               <tbody>{list.map((s) => (
-                <tr key={s.id}><td className="strong">{s.subject_name ?? '全部'}</td><td>{s.is_maintenance ? <Pill tone="info"><Wrench size={11} />维护</Pill> : <Pill>静默</Pill>}</td>
-                  <td>{F.dt(s.starts_at)} → {F.dt(s.ends_at)}</td><td><span className="cell-main">{s.comment}</span></td>
-                  <td className="c"><IconButton label="删除静默" size="sm" onClick={() => del.mutate(s.id, { onSuccess: () => toast.ok('已删除静默'), onError: toast.err })}><Trash2 size={14} /></IconButton></td></tr>
+                <tr key={s.id}><td className="strong">{s.subject_name ?? '全部机器'}</td><td>{s.is_maintenance ? <Pill tone="info"><Wrench size={11} />维护</Pill> : <Pill>静默</Pill>}</td>
+                  <td>{F.dt(s.starts_at)} → {F.dt(s.ends_at)}</td><td><Trunc className="cell-main">{s.comment}</Trunc></td>
+                  <td className="c"><IconButton label="删除静默" size="sm" disabled={del.isPending} onClick={() => del.mutate(s.id, { onSuccess: () => toast.ok('已删除静默'), onError: toast.err })}><Trash2 size={14} /></IconButton></td></tr>
               ))}</tbody>
             </table>
           </div>
@@ -86,14 +112,18 @@ function Silences() {
       </Panel>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
-          <div style={{ display: 'grid', gap: 6 }}><DialogTitle>新建静默</DialogTitle><DialogDescription>从现在开始，指定时长内这台机器不会触发告警。</DialogDescription></div>
-          <Field label="对象"><Select value={subject} onChange={setSubject} allowEmpty="全部机器" options={machines.map((m) => ({ value: m.id, label: m.name }))} /></Field>
-          <Field label="时长（小时）"><Input inputMode="numeric" value={hours} onChange={(e) => setHours(e.target.value.replace(/\D/g, ''))} /></Field>
+          <div style={{ display: 'grid', gap: 6 }}><DialogTitle>新建静默</DialogTitle><DialogDescription>从现在开始，指定时长内所选对象不会触发告警。</DialogDescription></div>
+          <Field label="对象" hint="必须选择：是哪台机器要静默"><Select value={subject} onChange={setSubject} placeholder="选择机器" options={[{ value: ALL, label: '全部机器（影响所有告警）' }, ...machines.map((m) => ({ value: m.id, label: m.name }))]} /></Field>
+          {subject === ALL && <Note tone="warn">静默“全部机器”会让所有机器在这段时间内都不发告警。提交时需要再确认一次。</Note>}
+          <Field label="时长（小时）" hint={`最长 ${MAX_HOURS} 小时（30 天）`} error={hoursErr}><Input inputMode="numeric" value={hours} onChange={(e) => setHours(e.target.value.replace(/\D/g, ''))} aria-invalid={!!hoursErr} /></Field>
           <CheckRow checked={maint} onChange={setMaint}>标记为维护（卡片显示“维护中”）</CheckRow>
           <Field label="备注"><Input value={comment} onChange={(e) => setComment(e.target.value)} placeholder="例如：换内核" /></Field>
-          <DialogFooter><Button onClick={() => setOpen(false)}>取消</Button><Button variant="primary" loading={add.isPending} disabled={!h || h < 1} onClick={submit}>创建</Button></DialogFooter>
+          <DialogFooter><Button onClick={() => setOpen(false)}>取消</Button><Button variant="primary" loading={add.isPending} disabled={!valid} onClick={() => (subject === ALL ? setAskAll(true) : submit())}>创建</Button></DialogFooter>
         </DialogContent>
       </Dialog>
+      <ConfirmDialog open={askAll} onOpenChange={setAskAll} title="静默全部机器？" confirmLabel="静默全部机器" danger
+        description={`接下来 ${hours || 0} 小时内，所有机器的告警都不会发出。确认是要这样做吗？`}
+        onConfirm={async () => { await add.mutateAsync({ subject_id: null, starts_at: new Date().toISOString(), ends_at: new Date(Date.now() + h * 3600_000).toISOString(), is_maintenance: maint, comment: comment.trim() }); toast.ok('已创建静默'); setOpen(false); }} />
     </>
   );
 }

@@ -73,9 +73,9 @@ export function ago(iso: string | null | undefined, now = Date.now()): string {
   if (s < 86400) return `${Math.floor(s / 3600)} 小时前`;
   return `${Math.floor(s / 86400)} 天前`;
 }
-export function duration(a: string | null, b: string | null): string {
+export function duration(a: string | null, b: string | null, now = Date.now()): string {
   if (!a) return '—';
-  const s = Math.max(0, ((b ? new Date(b).getTime() : Date.now()) - new Date(a).getTime()) / 1000);
+  const s = Math.max(0, ((b ? new Date(b).getTime() : now) - new Date(a).getTime()) / 1000);
   if (s < 60) return `${s.toFixed(s < 10 ? 1 : 0)} 秒`;
   return `${Math.floor(s / 60)} 分 ${Math.floor(s % 60)} 秒`;
 }

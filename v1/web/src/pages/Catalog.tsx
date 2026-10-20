@@ -11,7 +11,7 @@ import { Select } from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/overlays';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle } from '@/components/ui/dialog';
 import { toast } from '@/components/ui/toast';
-import { Chip, Empty, Note, Num, PageHead, Panel } from '@/components/app/primitives';
+import { Chip, Empty, ErrorNote, Note, Num, PageHead, Panel } from '@/components/app/primitives';
 
 function FormDialog({ open, onOpenChange, title, desc, children, onSubmit, submitLabel, busy, valid = true, size }: {
   open: boolean; onOpenChange: (o: boolean) => void; title: string; desc?: React.ReactNode; children: React.ReactNode; onSubmit: () => void; submitLabel: string; busy?: boolean; valid?: boolean; size?: 'sm' | 'md';
@@ -19,7 +19,7 @@ function FormDialog({ open, onOpenChange, title, desc, children, onSubmit, submi
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent size={size}>
-        <form style={{ display: 'grid', gap: 16 }} onSubmit={(e) => { e.preventDefault(); if (valid) onSubmit(); }}>
+        <form style={{ display: 'grid', gap: 16 }} onSubmit={(e) => { e.preventDefault(); if (valid && !busy) onSubmit(); }}>
           <div style={{ display: 'grid', gap: 6 }}><DialogTitle>{title}</DialogTitle>{desc && <DialogDescription>{desc}</DialogDescription>}</div>
           {children}
           <DialogFooter><Button type="button" onClick={() => onOpenChange(false)}>取消</Button><Button type="submit" variant="primary" loading={busy} disabled={!valid}>{submitLabel}</Button></DialogFooter>
@@ -63,6 +63,7 @@ function TeamsTab() {
   };
   return (
     <>
+      {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       <Panel title="团队" count={list.length} sub="首页与表格按“排序”从小到大排列" tools={<Button variant="primary" size="md" onClick={() => setEdit('new')}><Plus />新建团队</Button>} flush>
         <div className="table-wrap">
           <table className="dt is-one" style={{ minWidth: 520 }}>
@@ -129,6 +130,7 @@ function ProvidersTab() {
   const list = q.data ?? [];
   return (
     <>
+      {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       <Panel title="供应商" count={list.length} tools={<Button variant="primary" onClick={() => setOpen(true)}><Plus />新增供应商</Button>} flush>
         <div className="table-wrap">
           <table className="dt is-one" style={{ minWidth: 560 }}>
@@ -179,6 +181,7 @@ function PlansTab() {
   const num = (k: keyof typeof EMPTY_PLAN, label: string, hint?: string) => <Field label={label} hint={hint}><Input inputMode="decimal" value={f[k]} onChange={(e) => setF({ ...f, [k]: e.target.value.replace(/[^\d.]/g, '') })} /></Field>;
   return (
     <>
+      {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       <Panel title="套餐" count={list.length} tools={<><label className="check-row" style={{ fontSize: 12 }}><input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />显示已归档</label><Button variant="primary" onClick={() => setEdit('new')}><Plus />新增套餐</Button></>} flush>
         <div className="table-wrap">
           <table className="dt" style={{ minWidth: 860 }}>
@@ -195,7 +198,7 @@ function PlansTab() {
                   <td className="r num">{p.machine_count}</td>
                   <td className="r"><span className="row" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
                     <Button size="sm" variant="quiet" onClick={() => setEdit(p)}><Pencil size={13} />编辑</Button>
-                    <Button size="sm" variant="quiet" title={p.archived_at ? '取消归档' : '归档'} onClick={() => patch.mutate({ id: p.id, archived: !p.archived_at }, { onSuccess: () => toast.ok(p.archived_at ? '已取消归档' : '已归档'), onError: toast.err })}>{p.archived_at ? <ArchiveRestore size={13} /> : <Archive size={13} />}</Button></span></td>
+                    <Button size="sm" variant="quiet" aria-label={p.archived_at ? '取消归档' : '归档'} disabled={patch.isPending} onClick={() => patch.mutate({ id: p.id, archived: !p.archived_at }, { onSuccess: () => toast.ok(p.archived_at ? '已取消归档' : '已归档'), onError: toast.err })}>{p.archived_at ? <ArchiveRestore size={13} /> : <Archive size={13} />}</Button></span></td>
                 </tr>
               ))}
             </tbody>

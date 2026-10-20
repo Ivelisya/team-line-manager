@@ -9,7 +9,7 @@ import { Field, Input, Switch } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle } from '@/components/ui/dialog';
 import { toast } from '@/components/ui/toast';
-import { LabelValue, LabelValueGrid, Note, Num, Section, SectionHeader } from '@/components/app/primitives';
+import { ErrorNote, LabelValue, LabelValueGrid, Note, Num, Section, SectionHeader } from '@/components/app/primitives';
 
 const CURRENCIES = ['CNY', 'USD', 'EUR', 'HKD', 'JPY'].map((c) => ({ value: c, label: `${c} ${F.currencySym(c).trim()}` }));
 const CYCLES = Object.entries(F.CYCLE).filter(([k]) => k !== 'once').map(([value, label]) => ({ value, label: `每${label}` }));
@@ -61,7 +61,7 @@ export function BillingTab({ m }: { m: MachineView }) {
                 ))}</tbody>
               </table>
             </div>
-          ) : <div className="hint">暂无续费记录</div>}
+          ) : renewals.isError ? <ErrorNote error={renewals.error} onRetry={() => void renewals.refetch()} /> : <div className="hint">{renewals.isLoading ? '加载中…' : '暂无续费记录'}</div>}
         </Section>
       )}
       {s && <RenewDialog m={m} s={s} open={renew} onOpenChange={setRenew} />}
@@ -101,7 +101,7 @@ function SubForm({ m }: { m: MachineView }) {
       <Field label="流量上限（GiB）" hint="留空 = 不限"><Input inputMode="numeric" value={traffic} onChange={(e) => setTraffic(e.target.value.replace(/\D/g, ''))} /></Field>
       <Field label="流量重置日（每月几号）"><Input inputMode="numeric" value={resetDay} onChange={(e) => setResetDay(e.target.value.replace(/\D/g, ''))} /></Field>
       <label className="check-row span-2" style={{ gap: 10 }}><Switch checked={auto} onCheckedChange={setAuto} /><span>到期自动续费（只用于提醒口径，不会真的扣款）</span></label>
-      <div className="span-2 row" style={{ justifyContent: 'flex-end' }}><Button variant="primary" disabled={!valid} loading={save.isPending} onClick={submit}>保存订阅</Button></div>
+      <div className="span-2 row" style={{ justifyContent: 'flex-end' }}><Button variant="primary" disabled={!valid || save.isPending} loading={save.isPending} onClick={submit}>保存订阅</Button></div>
     </div>
   );
 }
@@ -126,7 +126,7 @@ function RenewDialog({ m, s, open, onOpenChange }: { m: MachineView; s: Subscrip
         </div>
         <DialogFooter>
           <Button onClick={() => onOpenChange(false)}>取消</Button>
-          <Button variant="primary" disabled={!ok} loading={renew.isPending}
+          <Button variant="primary" disabled={!ok || renew.isPending} loading={renew.isPending}
             onClick={() => renew.mutate({ id: m.id, new_due: newDue, amount_cents: Math.round(Number(amount) * 100), note: note.trim() || undefined }, { onSuccess: () => { toast.ok(`已登记续费，到期日 ${newDue}`); onOpenChange(false); }, onError: toast.err })}>登记续费</Button>
         </DialogFooter>
       </DialogContent>

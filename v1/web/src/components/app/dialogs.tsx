@@ -7,10 +7,10 @@ import { toast } from '@/components/ui/toast';
 
 interface Base {
   open: boolean; onOpenChange: (o: boolean) => void; title: string; description?: React.ReactNode;
-  confirmLabel: string; danger?: boolean; onConfirm: () => Promise<unknown> | unknown; children?: React.ReactNode; size?: 'sm' | 'md';
+  confirmLabel: string; danger?: boolean; /** 额外的禁用条件（例如预览还没加载完） */ confirmDisabled?: boolean; onConfirm: () => Promise<unknown> | unknown; children?: React.ReactNode; size?: 'sm' | 'md';
 }
 
-export function ConfirmDialog({ open, onOpenChange, title, description, confirmLabel, danger, onConfirm, children, size }: Base) {
+export function ConfirmDialog({ open, onOpenChange, title, description, confirmLabel, danger, confirmDisabled, onConfirm, children, size }: Base) {
   const [busy, setBusy] = React.useState(false);
   const run = async () => {
     setBusy(true);
@@ -23,7 +23,7 @@ export function ConfirmDialog({ open, onOpenChange, title, description, confirmL
         {children}
         <DialogFooter>
           <Button onClick={() => onOpenChange(false)} disabled={busy}>取消</Button>
-          <Button variant={danger ? 'danger' : 'primary'} loading={busy} onClick={run}>{confirmLabel}</Button>
+          <Button variant={danger ? 'danger' : 'primary'} loading={busy} disabled={confirmDisabled} onClick={run}>{confirmLabel}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -35,7 +35,7 @@ export function TypedConfirmDialog({ expected, prompt, ...base }: Base & { expec
   const [text, setText] = React.useState('');
   const [busy, setBusy] = React.useState(false);
   React.useEffect(() => { if (!base.open) setText(''); }, [base.open]);
-  const ok = text.trim() === expected;
+  const ok = text.trim() === expected && !base.confirmDisabled;
   const run = async () => {
     setBusy(true);
     try { await base.onConfirm(); base.onOpenChange(false); } catch (e) { toast.err(e); } finally { setBusy(false); }
