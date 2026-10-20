@@ -41,8 +41,9 @@ export function CellMeter({ icon, label, value, pct, sub, metric, empty, title }
   const p = pct == null ? 0 : pct;
   return (
     <div className={cn('cmeter', empty && 'is-empty')} title={title} data-metric={metric} data-tone={empty ? undefined : p >= 90 ? 'bad' : p >= 75 ? 'warn' : undefined}>
-      <div className="cmeter-head"><span className="cmeter-label">{icon}{label}</span><span className="cmeter-value"><Num f={value} /></span></div>
-      {sub !== undefined && <div className="cmeter-sub">{sub}</div>}
+      <div className="cmeter-head"><span className="cmeter-label">{icon}{label}</span><span className="cmeter-value"><Num f={empty ? F.NA : value} /></span></div>
+      {/* 数据过期时副标题也是旧读数：留空行占位，卡片不跳高 */}
+      {sub !== undefined && <div className="cmeter-sub">{empty ? ' ' : sub}</div>}
       <Cells pct={empty ? null : pct} color={`var(--m-${metric})`} />
     </div>
   );

@@ -6,7 +6,7 @@ import { useMachines, useTeams } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
 import { entryText, monthTraffic } from '@/lib/derive';
-import { HEALTH_LABEL, KIND_LABEL } from '@/lib/sort';
+import { HEALTH_LABEL, KIND_LABEL, useStableOrder } from '@/lib/sort';
 import type { MachineView } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { SearchInput } from '@/components/ui/form';
@@ -90,7 +90,8 @@ export function NodesPage() {
     return s.desc === first ? { id: c.id, desc: !first } : null;
   });
   const pg = usePage({ total: q.data ? rows.length : undefined, sizes: [25, 50, 100], size: 50, reset: [scope, text, team, kind, relay, status, sort] });
-  const pageRows = React.useMemo(() => rows.slice(pg.offset, pg.offset + pg.size), [rows, pg.offset, pg.size]);
+  const stable = useStableOrder(rows, sort?.id === 'traffic' ? JSON.stringify([scope, text, team, kind, relay, status, sort, pg.page, pg.size]) : null);
+  const pageRows = React.useMemo(() => stable.slice(pg.offset, pg.offset + pg.size), [stable, pg.offset, pg.size]);
   const total = columns.reduce((s, c) => s + c.size, 0);
   const statusOpts = [...Object.entries(HEALTH_LABEL).filter(([k]) => k !== 'inactive').map(([value, label]) => ({ value, label })), { value: 'provisioning', label: '上架中' }, { value: 'retiring', label: '退役中' }];
 

@@ -316,6 +316,11 @@ async fn plan_patch_null_clears_field() {
     let (s, v) = t.req("POST", "/api/v1/plans", Some(json!({"provider_id": p, "name": "基础", "price_cents": 1})), None).await;
     assert_eq!(s, StatusCode::CONFLICT);
     assert!(v.to_string().contains("同名套餐"), "{v}");
+    // 改供应商
+    let p2 = t.post("/api/v1/providers", json!({"name": "乙", "code": "B"})).await["id"].clone();
+    let (s, v) = t.req("PATCH", &format!("/api/v1/plans/{id}"), Some(json!({"provider_id": p2})), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(t.get("/api/v1/plans").await[0]["provider_id"], p2);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

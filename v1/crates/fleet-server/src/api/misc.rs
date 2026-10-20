@@ -394,10 +394,10 @@ async fn serve_ws(mut ws: WebSocket, mut rx: broadcast::Receiver<Event>, db: sql
     loop {
         let text = tokio::select! {
             r = rx.recv() => match r {
-                Ok(e) => e.to_json(),
+                Ok(e) => e.to_text(),
                 Err(RecvError::Lagged(n)) => {
                     tracing::debug!("实时流订阅者落后 {n} 条消息，通知前端重新同步");
-                    Event::Resync.to_json()
+                    Event::Resync.to_text()
                 }
                 Err(RecvError::Closed) => return,
             },
@@ -410,7 +410,7 @@ async fn serve_ws(mut ws: WebSocket, mut rx: broadcast::Receiver<Event>, db: sql
                 Some(Ok(_)) => continue,
             },
             _ = ping.tick() => {
-                if pong_due || ws.send(Message::Ping(Default::default())).await.is_err() {
+                if pong_due || !send(&mut ws, Message::Ping(Default::default())).await {
                     return;
                 }
                 pong_due = true;
@@ -419,15 +419,20 @@ async fn serve_ws(mut ws: WebSocket, mut rx: broadcast::Receiver<Event>, db: sql
             _ = check.tick() => {
                 if let Some(c) = &cred {
                     if !still_valid(&db, c).await {
-                        let _ = ws.send(Message::Close(Some(CloseFrame { code: CLOSE_REVOKED, reason: "会话或密钥已失效".into() }))).await;
+                        send(&mut ws, Message::Close(Some(CloseFrame { code: CLOSE_REVOKED, reason: "会话或密钥已失效".into() }))).await;
                         return;
                     }
                 }
                 continue;
             }
         };
-        if ws.send(Message::Text(text.into())).await.is_err() {
+        if !send(&mut ws, Message::Text(text)).await {
             return;
         }
     }
+}
+
+/// 发一帧；对端卡住（不读、TCP 窗口满）超过一个心跳周期就当连接已死，返回 false 由调用方断开
+async fn send(ws: &mut WebSocket, m: Message) -> bool {
+    matches!(tokio::time::timeout(PING_EVERY, ws.send(m)).await, Ok(Ok(())))
 }

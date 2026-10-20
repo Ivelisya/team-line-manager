@@ -17,12 +17,14 @@ import { Cells, quotaColors } from '@/components/app/viz';
 
 const Q8 = quotaColors(8);
 export interface TableSort { id: string; desc: boolean }
-const memPct = (m: MachineView) => (m.host?.mem_total ? (m.host.mem_used ?? 0) / m.host.mem_total : -1);
-const diskPct = (m: MachineView) => (m.host?.disk_total ? (m.host.disk_used ?? 0) / m.host.disk_total : -1);
+// 数据过期（isQuiet）的机器读数显示 “—”，排序也按 −1（和速率一样排到最后）
+const cpuPct = (m: MachineView) => (!isQuiet(m) && m.host?.cpu_pct != null ? m.host.cpu_pct : -1);
+const memPct = (m: MachineView) => (!isQuiet(m) && m.host?.mem_total ? (m.host.mem_used ?? 0) / m.host.mem_total : -1);
+const diskPct = (m: MachineView) => (!isQuiet(m) && m.host?.disk_total ? (m.host.disk_used ?? 0) / m.host.disk_total : -1);
 /** 可排序列：首次点击降序（名称升序），再点反向，第三次回到上面选的排序 */
 export const TABLE_SORTS: Record<string, (a: MachineView, b: MachineView) => number> = {
   name: (a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN', { numeric: true }),
-  cpu: (a, b) => (a.host?.cpu_pct ?? -1) - (b.host?.cpu_pct ?? -1),
+  cpu: (a, b) => cpuPct(a) - cpuPct(b),
   mem: (a, b) => memPct(a) - memPct(b),
   disk: (a, b) => diskPct(a) - diskPct(b),
   up: (a, b) => (liveRate(a)?.tx ?? -1) - (liveRate(b)?.tx ?? -1),

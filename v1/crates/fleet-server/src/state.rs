@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::crypto::SecretBox;
+use axum::extract::ws::Utf8Bytes;
 use serde::Serialize;
 use sqlx::PgPool;
 use std::sync::atomic::AtomicBool;
@@ -27,16 +28,16 @@ pub enum Event {
     ApiKeys,
     /// 访问策略的草稿/版本变化
     Policies,
-    /// 实时指标（`live.rs` 拼好的整条 JSON，前端直接写进缓存）；只经 `events.send` 发，不走 `emit`
+    /// 实时指标（`live.rs` 拼好的整条 JSON，前端直接写进缓存；各连接共用同一份字节）；只经 `events.send` 发，不走 `emit`
     #[serde(skip)]
-    Metrics(Arc<str>),
+    Metrics(Utf8Bytes),
 }
 
 impl Event {
-    pub fn to_json(&self) -> String {
+    pub fn to_text(&self) -> Utf8Bytes {
         match self {
-            Event::Metrics(s) => s.to_string(),
-            e => serde_json::to_string(e).unwrap_or_default(),
+            Event::Metrics(s) => s.clone(),
+            e => serde_json::to_string(e).unwrap_or_default().into(),
         }
     }
 }

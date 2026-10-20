@@ -12,7 +12,7 @@ type HostTuple = [number, N, N, N, N, N, N, N, N, N];
 /** [ok, latency_ms, ts, detail] */
 type ProbeTuple = [boolean, N, number, string | null];
 interface MachinePatch {
-  host?: HostTuple | null; seen?: N; agent?: { version: string | null; online: boolean; xray_running: boolean | null } | null;
+  host?: HostTuple | null; seen?: N; agent?: { version: string | null; online: boolean; xray_running: boolean | null; cores: number | null } | null;
   health?: MachineView['health']; maintenance?: boolean; due_days?: N; removed_traffic?: MachineView['removed_traffic'];
 }
 interface EntryPatch { tcp?: ProbeTuple | null; egress?: ProbeTuple | null; traffic?: EntryView['traffic'] }
@@ -41,7 +41,8 @@ function patchMachine(m: MachineView, msg: MetricsMsg): MachineView {
   const n = { ...m, entries };
   if (!d) return n;
   if (d.host !== undefined) n.host = d.host && host(d.host);
-  if (d.agent !== undefined) n.agent = d.agent && { last_report_at: m.agent?.last_report_at ?? null, ...d.agent };
+  // 合并进原对象：增量不带 last_report_at（由 seen 给）
+  if (d.agent !== undefined) n.agent = d.agent && { last_report_at: null, ...m.agent, ...d.agent };
   if (d.seen !== undefined && n.agent) n.agent = { ...n.agent, last_report_at: d.seen == null ? null : iso(d.seen) };
   if (d.health) n.health = d.health;
   if (d.maintenance !== undefined) n.maintenance = d.maintenance;
@@ -59,7 +60,17 @@ const patchList = (msg: MetricsMsg) => (old: MachineView[] | undefined) => {
   return hit ? out : old;
 };
 
+/** metrics 写的这几类查询 */
+export const LIVE_KEYS = [['machines'], ['machine'], ['relays'], ['overview']];
+
 export function applyMetrics(qc: QueryClient, msg: MetricsMsg) {
+  // 正在重取的：稍后回来的响应是增量之前的快照，会把这次写进去的盖掉（健康、在线等不常变的字段要等下次变化才纠正）。
+  // 打断重取：服务端广播前已把新视图存进缓存，新请求带上这次变化
+  for (const k of LIVE_KEYS) {
+    for (const q of qc.getQueryCache().findAll({ queryKey: k, fetchStatus: 'fetching' })) {
+      void qc.invalidateQueries({ queryKey: q.queryKey, exact: true, refetchType: 'all' }, { cancelRefetch: true });
+    }
+  }
   const list = patchList(msg);
   qc.setQueriesData<MachineView[]>({ queryKey: ['machines'] }, list);
   qc.setQueriesData<MachineView[]>({ queryKey: ['relays'] }, list);

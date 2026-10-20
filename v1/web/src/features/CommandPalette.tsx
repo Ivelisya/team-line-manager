@@ -32,7 +32,8 @@ const LIMIT = 8; // 不输入时只列前几台，输入后在全部机器里搜
 /** 编号去掉前导零：团队1-04 → 团队1-4，让「1-4」也能按名称命中它 */
 const unpad = (s: string) => s.replace(/\d+/g, (d) => d.replace(/^0+(?=\d)/, ''));
 const subseq = (s: string, q: string) => { const t = [...q]; let i = 0; for (const c of s) if (c === t[i]) i++; return i >= t.length; };
-/** 匹配档位（大的在前）：名称相同 > 名称前缀 > 名称包含 > 去前导零后名称包含 > IP 等其它字段包含 > 名称模糊 > 整体模糊。
+/** 匹配档位（大的在前）：名称相同 > 名称前缀 > 名称包含 > 去前导零后名称包含 > IP 等其它字段包含 > 名称模糊。
+ *  模糊（子序列）只对名称：IP、UUID 里数字多，短数字串对它们做子序列几乎条条命中。
  *  条目 value 写成「名称\t其它字段」；没有 \t 的（页面、动作）整串当名称 */
 export function matchTier(value: string, q: string): number {
   const [name, rest = ''] = value.toLowerCase().split('\t');
@@ -41,8 +42,7 @@ export function matchTier(value: string, q: string): number {
   if (name.includes(q)) return 5;
   if (unpad(name).includes(unpad(q))) return 4;
   if (rest.includes(q)) return 3;
-  if (subseq(name, q)) return 2;
-  return subseq(`${name} ${rest}`, q) ? 1 : 0;
+  return subseq(name, q) ? 2 : 0;
 }
 
 export default function CommandPalette({ theme }: { theme: { pref: ThemePref; setPref: (p: ThemePref) => void } }) {

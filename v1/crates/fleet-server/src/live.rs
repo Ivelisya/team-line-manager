@@ -131,8 +131,9 @@ fn machine_fields(m: &MachineView) -> Fields {
         version: &'a Option<String>,
         online: bool,
         xray_running: Option<bool>,
+        cores: Option<i32>,
     }
-    let agent = m.agent.as_ref().map(|a| AgentState { version: &a.version, online: a.online, xray_running: a.xray_running });
+    let agent = m.agent.as_ref().map(|a| AgentState { version: &a.version, online: a.online, xray_running: a.xray_running, cores: a.cores });
     vec![
         raw(&host),
         raw(&m.agent.as_ref().and_then(|a| a.last_report_at).map(secs)),

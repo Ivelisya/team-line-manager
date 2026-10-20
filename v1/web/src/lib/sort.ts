@@ -1,3 +1,4 @@
+import { useMemo, useRef } from 'react';
 import type { MachineView, Team } from './types';
 
 /**
@@ -19,6 +20,26 @@ export function makeDefaultCompare(teams: Team[]) {
     if (na !== nb) return na - nb;
     return zh.compare(a.name, b.name);
   };
+}
+
+/**
+ * 显示顺序保持稳定：实时推送每 3 秒改一次速率、流量、健康，按这些排的列表会跟着乱跳。
+ * key（排序 / 筛选 / 分组 / 页码）不变时沿用上次的顺序，新出现的排到最后、消失的去掉；key 一变才按 list 重排。
+ * key 为 null（按静态字段排序，如默认顺序、名称）时直接用 list。
+ */
+export function useStableOrder<T extends { id: string }>(list: T[], key: string | null): T[] {
+  const prev = useRef<{ key: string | null; ids: string[] } | null>(null);
+  return useMemo(() => {
+    const p = prev.current;
+    let out = list;
+    if (key != null && p?.key === key) {
+      const byId = new Map(list.map((m) => [m.id, m]));
+      const old = new Set(p.ids);
+      out = p.ids.flatMap((id) => byId.get(id) ?? []).concat(list.filter((m) => !old.has(m.id)));
+    }
+    prev.current = { key, ids: out.map((m) => m.id) };
+    return out;
+  }, [list, key]);
 }
 
 export const HEALTH_LABEL: Record<string, string> = {

@@ -509,6 +509,7 @@ async fn alert_notifications_firing_repeat_silence_and_resolved() {
     assert!(incidents(&t, "firing").await.is_empty());
     mock.wait("/wecom/send", 3).await;
     mock.wait("/bot123:ABC", 5).await;
+    mock.wait("/hook/a", 5).await;
     let last_wc = mock.bodies("/wecom/send").pop().unwrap();
     assert!(last_wc["markdown"]["content"].as_str().unwrap().contains("告警已恢复"), "{last_wc}");
     assert!(mock.bodies("/hook/a").iter().any(|b| b["event"] == "resolved" && b["rule"] == "relay_xray_down"));
@@ -532,6 +533,11 @@ async fn log_settles(t: &T, n: i64) {
     assert_eq!(t.count("select count(*) from notify_log").await, n);
 }
 
+/// 把最新一条通知记录的时间改成「告警评估时钟」上的某一刻（评估的 now 是快进的，通知按真实时间记）
+async fn stamp_last_notice(t: &T, at: OffsetDateTime) {
+    sqlx::query("update notify_log set ts = $1 where id = (select max(id) from notify_log)").bind(at).execute(&t.st.db).await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flapping_alert_reopens_same_incident_without_spam() {
     let t = setup().await;
@@ -541,57 +547,75 @@ async fn flapping_alert_reopens_same_incident_without_spam() {
     let events = || mock.bodies("/hook/a").iter().map(|b| b["event"].as_str().unwrap().to_string()).collect::<Vec<_>>();
     let mut state = AlertState::default();
     let base = OffsetDateTime::now_utc();
+    let at = |s: i64| base + time::Duration::seconds(s);
 
-    // 触发 → 恢复：各通知一次
+    // 触发 → 确认 → 恢复：各通知一次
     xray_report(&t, 1, false).await;
     pass(&t, &mut state, base, 0).await;
     pass(&t, &mut state, base, 61).await;
     let first = incidents(&t, "firing").await[0]["id"].clone();
     log_settles(&t, 1).await;
+    stamp_last_notice(&t, at(61)).await;
+    t.post(&format!("/api/v1/incidents/{}/ack", first.as_str().unwrap()), json!({})).await;
     xray_report(&t, 2, true).await;
     pass(&t, &mut state, base, 91).await;
     pass(&t, &mut state, base, 151).await;
     assert!(incidents(&t, "firing").await.is_empty());
     log_settles(&t, 2).await;
+    stamp_last_notice(&t, at(151)).await;
 
-    // 30 分钟内复发：重开同一条，复发计数 +1，不再通知
+    // 恢复通知后 5 分钟内复发：重开同一条（复发计数 +1、确认清掉），先不通知；满 5 分钟仍在触发再发「触发」
     xray_report(&t, 3, false).await;
     pass(&t, &mut state, base, 181).await;
     pass(&t, &mut state, base, 241).await;
     let inc = incidents(&t, "firing").await;
     assert_eq!((inc.len(), &inc[0]["id"], inc[0]["reopen_count"].as_i64()), (1, &first, Some(1)), "{inc:?}");
+    assert!(inc[0]["ack_at"].is_null() && inc[0]["ack_by"].is_null(), "{inc:?}");
     assert_eq!(t.count("select count(*) from incident").await, 1);
-    // 再恢复：没通知过的复发不重复报恢复
-    xray_report(&t, 4, true).await;
-    pass(&t, &mut state, base, 271).await;
-    pass(&t, &mut state, base, 331).await;
-    assert!(incidents(&t, "firing").await.is_empty());
-    log_settles(&t, 2).await;
-    assert_eq!(events(), ["firing", "resolved"]);
-
-    // 复发后一直不恢复：距上次触发通知满 30 分钟再发一次「触发」，之后恢复照常配对通知
-    xray_report(&t, 5, false).await;
-    pass(&t, &mut state, base, 361).await;
     pass(&t, &mut state, base, 421).await;
-    assert_eq!(incidents(&t, "firing").await[0]["reopen_count"], 2);
     log_settles(&t, 2).await;
-    sqlx::query("update incident set notified_at = now() - interval '31 minutes'").execute(&t.st.db).await.unwrap();
     pass(&t, &mut state, base, 451).await;
     log_settles(&t, 3).await;
-    xray_report(&t, 6, true).await;
+    stamp_last_notice(&t, at(451)).await;
+    xray_report(&t, 4, true).await;
     pass(&t, &mut state, base, 481).await;
     pass(&t, &mut state, base, 541).await;
     log_settles(&t, 4).await;
+    stamp_last_notice(&t, at(541)).await;
     assert_eq!(events(), ["firing", "resolved", "firing", "resolved"]);
 
-    // 超过重开窗口再出现：新开一条
-    sqlx::query("update incident set resolved_at = now() - interval '31 minutes'").execute(&t.st.db).await.unwrap();
-    xray_report(&t, 7, false).await;
+    // 又在 5 分钟内抖一下就恢复：不通知，也不重复报恢复
+    xray_report(&t, 5, false).await;
     pass(&t, &mut state, base, 571).await;
     pass(&t, &mut state, base, 631).await;
+    assert_eq!(incidents(&t, "firing").await[0]["reopen_count"], 2);
+    xray_report(&t, 6, true).await;
+    pass(&t, &mut state, base, 661).await;
+    pass(&t, &mut state, base, 721).await;
+    assert!(incidents(&t, "firing").await.is_empty());
+    log_settles(&t, 4).await;
+
+    // 距恢复通知已满 5 分钟才复发：重开时立即发「触发」（真故障不被压住），恢复照常配对
+    xray_report(&t, 7, false).await;
+    pass(&t, &mut state, base, 901).await;
+    pass(&t, &mut state, base, 961).await;
+    assert_eq!(incidents(&t, "firing").await[0]["reopen_count"], 3);
+    log_settles(&t, 5).await;
+    stamp_last_notice(&t, at(961)).await;
+    xray_report(&t, 8, true).await;
+    pass(&t, &mut state, base, 991).await;
+    pass(&t, &mut state, base, 1051).await;
+    log_settles(&t, 6).await;
+    assert_eq!(events(), ["firing", "resolved", "firing", "resolved", "firing", "resolved"]);
+
+    // 超过重开窗口再出现：新开一条
+    sqlx::query("update incident set resolved_at = now() - interval '1 hour'").execute(&t.st.db).await.unwrap();
+    xray_report(&t, 9, false).await;
+    pass(&t, &mut state, base, 1081).await;
+    pass(&t, &mut state, base, 1141).await;
     let inc = incidents(&t, "firing").await;
     assert!(inc[0]["id"] != first && inc[0]["reopen_count"] == 0, "{inc:?}");
-    log_settles(&t, 5).await;
+    log_settles(&t, 7).await;
 }
 
 // ── T7 / T8：实时流（WebSocket）与错误 ──────────────────────────────────────

@@ -16,6 +16,7 @@ import { Pagination } from '@/components/app/Pagination';
 import { HomeSection, OverviewSection } from '@/features/HomeOverview';
 import { MachineTable, TABLE_SORTS, type TableSort } from '@/features/MachineTable';
 import { usePage } from '@/lib/usePage';
+import { useStableOrder } from '@/lib/sort';
 
 type SortKey = 'default' | 'name' | 'due' | 'traffic' | 'issues';
 const SORTS: { value: SortKey; label: string }[] = [
@@ -86,7 +87,9 @@ export function HomePage() {
   // 只渲染当前页：KPI 和分组计数仍按全部机器算（上面的 counts）
   const sizes = PAGE_SIZES[layout === 'cards' ? view : layout];
   const pg = usePage({ total: machines.data ? shown.length : undefined, sizes, size: sizes[1], reset: [team, onlyIssues, sort, layout, view, ts?.id, ts?.desc] });
-  const page = React.useMemo(() => shown.slice(pg.offset, pg.offset + pg.size), [shown, pg.offset, pg.size]);
+  const liveSort = !!ts || sort === 'traffic' || sort === 'issues'; // 依据随实时推送变的排序
+  const stable = useStableOrder(shown, liveSort ? JSON.stringify([team, onlyIssues, sort, ts, pg.page, pg.size]) : null);
+  const page = React.useMemo(() => stable.slice(pg.offset, pg.offset + pg.size), [stable, pg.offset, pg.size]);
   const layoutKey = `${team}|${onlyIssues}|${sort}|${view}`;
 
   const o = ov.data;

@@ -6,14 +6,12 @@ import * as React from 'react';
 import * as PopoverPrimitive from '@radix-ui/react-popover';
 import { Calendar, ChevronLeft, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { addMonths, pad2 } from '@/lib/format';
+import { addDays, addMonths, pad2 } from '@/lib/format';
 
 const WEEK = ['一', '二', '三', '四', '五', '六', '日'];
 const ISO = /^\d{4}-\d{2}-\d{2}$/;
 const iso = (y: number, m: number, d: number) => `${y}-${pad2(m)}-${pad2(d)}`;
 const today = () => { const t = new Date(); return iso(t.getFullYear(), t.getMonth() + 1, t.getDate()); };
-/** 加减天数（UTC 计算，避免夏令时把一天算成 23 小时） */
-const addDays = (s: string, n: number) => { const [y, m, d] = s.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10); };
 const weekday = (s: string) => { const [y, m, d] = s.split('-').map(Number); return (new Date(Date.UTC(y, m - 1, d)).getUTCDay() + 6) % 7; }; // 周一 = 0
 
 /** 某月的 6×7 网格（周一开头），含前后月补位 */
@@ -33,7 +31,9 @@ export function DateField({ value, onChange, min, id, placeholder = '选择日�
   const days = React.useMemo(() => monthGrid(month), [month]);
   const t = today();
 
-  const start = ISO.test(value) ? value : t;
+  // 键盘、换月、打开时的落点夹到 min：焦点落在禁用的格子上会卡住（禁用按钮拿不到焦点）
+  const clamp = (d: string) => (min && d < min ? min : d);
+  const start = clamp(ISO.test(value) ? value : t);
   const focusDay = (d: string) => grid.current?.querySelector<HTMLButtonElement>(`[data-day="${d}"]`)?.focus();
   // 键盘移动、换月之后焦点跟着 focus 走（刚打开时由 onOpenAutoFocus 聚焦：那时弹层内容才挂进 Portal）
   React.useEffect(() => { if (open) focusDay(focus); }, [open, focus]);
@@ -46,7 +46,7 @@ export function DateField({ value, onChange, min, id, placeholder = '选择日�
       PageUp: () => addMonths(focus, e.shiftKey ? -12 : -1), PageDown: () => addMonths(focus, e.shiftKey ? 12 : 1),
     };
     const f = step[e.key];
-    if (f) { e.preventDefault(); setFocus(f()); }
+    if (f) { e.preventDefault(); setFocus(clamp(f())); }
   };
   const [y, m] = month.split('-').map(Number);
 
@@ -58,7 +58,7 @@ export function DateField({ value, onChange, min, id, placeholder = '选择日�
       <PopoverPrimitive.Portal>
         <PopoverPrimitive.Content className="popover cal" align="start" sideOffset={6} collisionPadding={8} onOpenAutoFocus={(e) => { e.preventDefault(); focusDay(start); }}>
           <div className="cal-head">
-            <button type="button" className="icon-btn icon-btn-sm" aria-label="上个月" onClick={() => setFocus(addMonths(focus, -1))}><ChevronLeft size={16} /></button>
+            <button type="button" className="icon-btn icon-btn-sm" aria-label="上个月" onClick={() => setFocus(clamp(addMonths(focus, -1)))}><ChevronLeft size={16} /></button>
             <span className="cal-title" aria-live="polite">{y} 年 {m} 月</span>
             <button type="button" className="icon-btn icon-btn-sm" aria-label="下个月" onClick={() => setFocus(addMonths(focus, 1))}><ChevronRight size={16} /></button>
           </div>

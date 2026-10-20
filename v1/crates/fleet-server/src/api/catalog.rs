@@ -323,6 +323,7 @@ pub async fn patch_plan(a: Actor, State(st): State<AppState>, Path(id): Path<Uui
         let n = clean_name(n, "套餐名")?;
         set!("name", Some(n));
     }
+    set!("provider_id", b.provider_id);
     set!("cpu_cores", b.cpu_cores);
     set!("mem_mb", b.mem_mb);
     set!("disk_gb", b.disk_gb);

@@ -108,6 +108,9 @@ export function addMonths(date: string, n: number): string {
   return t.toISOString().slice(0, 10);
 }
 
+/** YYYY-MM-DD 加减天数（UTC 计算，避免夏令时把一天算成 23 小时） */
+export const addDays = (s: string, n: number) => { const [y, m, d] = s.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10); };
+
 /** 实时速率的量级：空闲（< 1 Mbps）、常态、繁忙（≥ 200 Mbps）、接近满载（≥ 800 Mbps），卡片读数按它着色 */
 export type Speed = 'idle' | 'low' | 'high' | 'max';
 export const speedOf = (bps: number | null | undefined): Speed => (bps == null || bps < 1e6 ? 'idle' : bps < 2e8 ? 'low' : bps < 8e8 ? 'high' : 'max');

@@ -4,12 +4,12 @@
 //! 去抖（开、关对称）：
 //! - 开：同一 (规则, 机器) 连续出现满 60 s 才开告警；续费类立即开。被静默的不开。
 //! - 关：原因连续消失满 60 s 才恢复；续费类立即恢复（按日期判定，不会抖）。
-//! - 复发：恢复后 30 分钟内同一 (规则, 机器) 又满足开的条件，重开原告警（`reopen_count` +1），不新建。
+//! - 复发：恢复后 30 分钟内同一 (规则, 机器) 又满足开的条件，重开原告警（`reopen_count` +1，清掉确认），不新建。
 //!
 //! 通知（见 notify.rs）：新告警发「触发」；仍在触发的严重告警每 4 小时提醒一次，续费类每天一次；
 //! 原因消失恢复发「恢复」，只在上次恢复通知之后发过触发/提醒时才发（复发后没再通知过的不重复报恢复）。
-//! 复发重开时不立即通知：已报过恢复的，距上次触发/提醒满 30 分钟仍在触发才再发「触发」，
-//! 所以反复抖动的告警每 30 分钟最多一对触发/恢复。被静默（含维护）的不发任何通知。
+//! 复发重开：已报过恢复的，距那条恢复通知满 5 分钟就立即发「触发」，不满则等满 5 分钟仍在触发再发，
+//! 所以反复抖动的告警每 5 分钟最多一对触发/恢复，真故障最多晚 5 分钟报。被静默（含维护）的不发任何通知。
 
 use crate::notify::{self, Kind, Notice};
 use crate::state::{AppState, Event};
@@ -24,6 +24,8 @@ use uuid::Uuid;
 const DEBOUNCE_S: i64 = 60;
 /// 恢复后这么久内复发算同一条告警
 const REOPEN_WINDOW_S: i64 = 30 * 60;
+/// 报过恢复后这么久内复发不再报触发（抖动限流）
+const REOPEN_QUIET_S: i64 = 5 * 60;
 /// 严重告警持续触发的提醒间隔
 const REPEAT_CRITICAL_S: i64 = 4 * 3600;
 /// 续费类提醒间隔（每天最多一次）
@@ -58,8 +60,24 @@ struct Open {
     summary: String,
     opened_at: OffsetDateTime,
     notified_at: Option<OffsetDateTime>,
-    /// 最近一条通知是「恢复」（复发重开后还没再通知过）
-    told_resolved: bool,
+    /// 最近一条通知是「恢复」时它的发送时间（复发重开后还没再通知过）
+    told_resolved_at: Option<OffsetDateTime>,
+}
+
+/// `Open` 的列（查询和重开的 returning 共用）
+const OPEN_COLS: &str = "id, rule, subject_id, severity::text severity, summary, opened_at, notified_at,
+    (select case when l.kind = 'resolved' then l.ts end from notify_log l where l.incident_id = incident.id and l.kind in ('firing', 'repeat', 'resolved')
+     order by l.ts desc, l.id desc limit 1) told_resolved_at";
+
+/// 仍在触发的告警这一轮该发的通知：报过恢复的，距那条恢复通知满 REOPEN_QUIET_S 发「触发」；否则按持续提醒间隔发「提醒」
+fn due(inc: &Open, severity: &str, now: OffsetDateTime) -> Option<Kind> {
+    match inc.told_resolved_at {
+        Some(t) => ((now - t).whole_seconds() >= REOPEN_QUIET_S).then_some(Kind::Firing),
+        None => {
+            let every = repeat_interval_s(&inc.rule, severity)?;
+            ((now - inc.notified_at.unwrap_or(inc.opened_at)).whole_seconds() >= every).then_some(Kind::Repeat)
+        }
+    }
 }
 
 /// 摘要里的数字（分钟数、代数）每次都在变，不算「摘要变了」
@@ -91,13 +109,10 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
     let silenced = |rule: &str, id: Uuid| {
         silences.iter().any(|(s, r)| s.is_none_or(|s| s == id) && r.as_deref().is_none_or(|r| r == rule))
     };
-    let mut open: HashMap<(String, Uuid), Open> = sqlx::query_as::<_, Open>(
-        // ipintel_ 开头的规则由 ipintel.rs 自己开和关（一次性异常，24 小时后恢复），这里不碰，否则会被当成「原因消失」恢复掉
-        "select id, rule, subject_id, severity::text severity, summary, opened_at, notified_at,
-            coalesce((select l.kind = 'resolved' from notify_log l where l.incident_id = incident.id and l.kind in ('firing', 'repeat', 'resolved')
-                      order by l.ts desc, l.id desc limit 1), false) told_resolved
-         from incident where state = 'firing' and rule not like 'ipintel!_%' escape '!'",
-    )
+    // ipintel_ 开头的规则由 ipintel.rs 自己开和关（一次性异常，24 小时后恢复），这里不碰，否则会被当成「原因消失」恢复掉
+    let mut open: HashMap<(String, Uuid), Open> = sqlx::query_as::<_, Open>(&format!(
+        "select {OPEN_COLS} from incident where state = 'firing' and rule not like 'ipintel!_%' escape '!'"
+    ))
     .fetch_all(&st.db)
     .await?
     .into_iter()
@@ -118,6 +133,16 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
             current.insert(k.clone());
             let since = *state.first_seen.entry(k.clone()).or_insert(now);
             let summary = format!("{}：{}", m.name, r.text);
+            let notice = |kind, id, opened_at| Notice {
+                kind,
+                incident_id: Some(id),
+                rule: r.key.to_string(),
+                severity: r.severity.to_string(),
+                machine: m.name.clone(),
+                summary: r.text.clone(),
+                at: now,
+                opened_at: Some(opened_at),
+            };
 
             if let Some(inc) = open.remove(&k) {
                 // 已在告警：同步最新严重度/摘要；只有严重度变了或摘要实质变了才通知前端刷新
@@ -133,25 +158,9 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
                 } else {
                     touch.push(inc.id);
                 }
-                // 持续提醒；复发后已报过恢复的，满重开窗口再发一次「触发」
-                let every = if inc.told_resolved { Some(REOPEN_WINDOW_S) } else { repeat_interval_s(r.key, r.severity) };
-                if let Some(every) = every {
-                    let last = inc.notified_at.unwrap_or(inc.opened_at);
-                    if (now - last).whole_seconds() >= every && !silenced(r.key, m.id) {
-                        notify::spawn_dispatch(
-                            st,
-                            Notice {
-                                kind: if inc.told_resolved { Kind::Firing } else { Kind::Repeat },
-                                incident_id: Some(inc.id),
-                                rule: r.key.to_string(),
-                                severity: r.severity.to_string(),
-                                machine: m.name.clone(),
-                                summary: r.text.clone(),
-                                at: now,
-                                opened_at: Some(inc.opened_at),
-                            },
-                        );
-                    }
+                // 持续提醒；复发后已报过恢复的，满限流时长再发一次「触发」
+                if let Some(kind) = due(&inc, r.severity, now).filter(|_| !silenced(r.key, m.id)) {
+                    notify::spawn_dispatch(st, notice(kind, inc.id, inc.opened_at));
                 }
                 continue;
             }
@@ -160,21 +169,26 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
             if (!immediate && (now - since).whole_seconds() < DEBOUNCE_S) || silenced(r.key, m.id) {
                 continue;
             }
-            // 窗口内刚恢复过：重开原告警，通知交给上面的持续提醒按间隔决定（退役等流程关掉的、带 closed_by 的不重开）
-            let reopened = sqlx::query(
-                "update incident set state = 'firing', resolved_at = null, reopen_count = reopen_count + 1, last_seen_at = now(), severity = $3::severity, summary = $4
+            // 窗口内刚恢复过：重开原告警（清掉确认），按 `due` 决定是否马上通知（退役等流程关掉的、带 closed_by 的不重开）
+            let reopened = sqlx::query_as::<_, Open>(&format!(
+                "update incident set state = 'firing', resolved_at = null, ack_at = null, ack_by = null, reopen_count = reopen_count + 1, last_seen_at = now(),
+                     severity = $3::severity, summary = $4
                  where id = (select id from incident where rule = $1 and subject_id = $2 and state = 'resolved' and resolved_at > $5 and not detail ? 'closed_by'
-                             order by resolved_at desc limit 1)",
-            )
+                             order by resolved_at desc limit 1)
+                 returning {OPEN_COLS}"
+            ))
             .bind(r.key)
             .bind(m.id)
             .bind(r.severity)
             .bind(&summary)
             .bind(now - time::Duration::seconds(REOPEN_WINDOW_S))
-            .execute(&st.db)
+            .fetch_optional(&st.db)
             .await?;
-            if reopened.rows_affected() > 0 {
+            if let Some(inc) = reopened {
                 changed = true;
+                if let Some(kind) = due(&inc, r.severity, now) {
+                    notify::spawn_dispatch(st, notice(kind, inc.id, inc.opened_at));
+                }
                 continue;
             }
             let id = crate::db::new_id();
@@ -193,19 +207,7 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
             .await?;
             if res.rows_affected() > 0 {
                 changed = true;
-                notify::spawn_dispatch(
-                    st,
-                    Notice {
-                        kind: Kind::Firing,
-                        incident_id: Some(id),
-                        rule: r.key.to_string(),
-                        severity: r.severity.to_string(),
-                        machine: m.name.clone(),
-                        summary: r.text.clone(),
-                        at: now,
-                        opened_at: Some(now),
-                    },
-                );
+                notify::spawn_dispatch(st, notice(Kind::Firing, id, now));
             }
         }
     }

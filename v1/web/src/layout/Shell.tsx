@@ -131,9 +131,11 @@ export function Shell() {
         <div className="topbar-right">
           {firing > 0 && <NavLink to="/incidents" style={{ textDecoration: 'none' }} aria-label={`${firing} 条告警`}><Pill tone="bad">{firing}<span className="hide-sm"> 条告警</span></Pill></NavLink>}
           <JobsIndicator />
-          <Tip text={stream === 'open' ? '实时连接正常' : stream === 'error' ? '实时连接中断，正在自动重连，期间每 30 秒轮询一次' : '正在连接…'} side="bottom">
-            <span className="dot" data-tone={stream === 'open' ? undefined : stream === 'error' ? 'bad' : 'neutral'} tabIndex={0} role="img" aria-label={stream === 'open' ? '实时连接正常' : stream === 'error' ? '实时连接中断' : '正在连接'} />
-          </Tip>
+          {stream === 'error'
+            ? <Pill tone="warn" dot="pulse" role="status" title="页面数据暂停更新，连上后自动补齐"><span>实时已断开<span className="hide-sm">，正在重连…</span></span></Pill>
+            : <Tip text={stream === 'open' ? '实时连接正常' : '正在连接…'} side="bottom">
+              <span className="dot" data-tone={stream === 'open' ? undefined : 'neutral'} tabIndex={0} role="img" aria-label={stream === 'open' ? '实时连接正常' : '正在连接'} />
+            </Tip>}
           <Tip text={`配色：${theme.palette === 'plum' ? '粉紫' : '靛蓝'}（点击切换）`} side="bottom">
             <button className="top-btn" data-top="palette" aria-label="切换配色（粉紫 / 靛蓝）" onClick={() => theme.setPalette(theme.palette === 'plum' ? 'indigo' : 'plum')}><Palette size={16} /></button>
           </Tip>

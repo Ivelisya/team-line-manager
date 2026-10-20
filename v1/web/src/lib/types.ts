@@ -30,7 +30,8 @@ export interface MachineView {
   lifecycle: Lifecycle; lifecycle_reason: string | null; note: string; revision: number;
   created_at: string; activated_at: string | null; retired_at: string | null;
   subscription: Subscription | null;
-  agent: { version: string | null; last_report_at: string | null; online: boolean } | null;
+  /** cores：agent 报的可用核数（容器里是限额），没报过为 null */
+  agent: { version: string | null; last_report_at: string | null; online: boolean; xray_running: boolean | null; cores: number | null } | null;
   host: HostMetrics | null;
   entries: EntryView[];
   removed_traffic: EntryTraffic; // 已移除入口（如换线路机后的旧入口）今天/本月的流量，不在 entries 里

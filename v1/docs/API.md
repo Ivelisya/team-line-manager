@@ -53,7 +53,7 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
   lifecycle: "draft"|"provisioning"|"active"|"retiring"|"retired"|"failed", lifecycle_reason|null, note, revision,
   created_at, activated_at|null, retired_at|null,
   subscription: {price_cents,currency,cycle,due_date,due_days,billing_tz,auto_renew,remind_days,traffic_gb,traffic_reset_day}|null,
-  agent: {version,last_report_at,online}|null,          // proxy 没有
+  agent: {version,last_report_at,online,xray_running,cores}|null,  // proxy 没有；cores 为 agent 报的可用核数（容器里是限额），没报过为 null
   host: {ts,cpu_pct,load1,mem_used,mem_total,disk_used,disk_total,net_rx_bps,net_tx_bps,tcp_conns}|null,  // load1 在容器里为 null（/proc/loadavg 是宿主机的）
   entries: [EntryView],                                // 节点：自己的入口；线路机：挂在上面的入口
   removed_traffic: {today_up,today_down,month_up,month_down},  // 已移除入口（如换线路机后的旧入口）本月/今天的流量，不在 entries 里
@@ -164,7 +164,7 @@ ProvisionItem = {
 **实时指标** `{type:"metrics", machines:{<机器id>:{…}}, entries:{<入口id>:{…}}, overview?}`：在用机器视图（`GET /machines` 的 `MachineView`）里随上报与时间变化的字段，和上一条相比**只带变了的字段**（没变的键不出现），客户端把它们写进本地缓存，不必重取。有新上报时最多每 3 s 一条，没有上报也每 30 s 比对一次（离线、到期天数、维护窗口随时间变）；没有变化不发。
 - `machines[id]` 的键：
   - `host`：`[ts, cpu_pct, load1, mem_used, mem_total, disk_used, disk_total, net_rx_bps, net_tx_bps, tcp_conns] | null`（`ts` 为 Unix 秒，速率取整；各项可为 null，与 `MachineView.host` 同义）；
-  - `seen`：`agent.last_report_at` 的 Unix 秒 | null；`agent`：`{version, online, xray_running} | null`（不含 `last_report_at`）；
+  - `seen`：`agent.last_report_at` 的 Unix 秒 | null；`agent`：`{version, online, xray_running, cores} | null`（不含 `last_report_at`，前端合并进原对象）；
   - `health`、`maintenance`、`removed_traffic`：与 `MachineView` 同形；`due_days`：`subscription.due_days`（无订阅为 null）。
 - `entries[id]` 的键：`tcp` / `egress`：`[ok, latency_ms, ts, detail] | null`（`ts` 为 Unix 秒）；`traffic`：与 `EntryView.traffic` 同形。一条入口同时出现在节点和线路机的 `entries` 里，两边都要更新。
 - `overview`：与 `GET /overview` 同形，变了才带。

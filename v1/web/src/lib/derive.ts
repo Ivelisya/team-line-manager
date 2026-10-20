@@ -35,7 +35,8 @@ const usedTotal = (u: number | null, t: number | null) => (u == null || t == nul
 /** 资源读数；指标缺测（null）时对应项显示 “—”，进度为 null（不会出现 NaN） */
 export function resourceMeters(m: MachineView, plans: Plan[]) {
   const h = m.host; if (!h) return null;
-  const cores = plans.find((p) => p.id === m.plan?.id)?.cpu_cores || 2;
+  // 核数优先用 agent 报的（容器里是限额），没报过才看套餐
+  const cores = m.agent?.cores ?? (plans.find((p) => p.id === m.plan?.id)?.cpu_cores || 2);
   const memPct = ratio(h.mem_used, h.mem_total); const diskPct = ratio(h.disk_used, h.disk_total);
   const loadPct = h.load1 == null ? null : (h.load1 / cores) * 100;
   return {
@@ -76,15 +77,15 @@ export function probeSummary(m: MachineView) {
   return { total: es.length, tcpOk, tcp: lat.length ? Math.round(lat.reduce((a, b) => a + b, 0) / lat.length) : null, egress: eg.length ? Math.round(eg.reduce((a, b) => a + b, 0) / eg.length) : null };
 }
 /**
- * 剩余价值：当前已付周期还没用掉的部分，按天折算。本期 = [到期日 − 一个周期, 到期日)，剩余比例 = 距到期天数 / 本期天数。
- * 一次性付费没有周期，不折算（null）；已过期为 0。
+ * 剩余价值：已付还没用掉的部分，按天折算。每期天数 = 到期日往前推一个周期的天数，剩余比例 = 距到期天数 / 每期天数；
+ * 预付了多期时比例大于 1。一次性付费没有周期，不折算（null）；已过期为 0。
  */
 export function remainingValue(m: MachineView) {
   const s = m.subscription;
   const months = s && F.CYCLE_MONTHS[s.cycle];
   if (!s || !months) return null;
   const days = Math.round((Date.parse(s.due_date) - Date.parse(F.addMonths(s.due_date, -months))) / 86_400_000);
-  const frac = Math.max(0, Math.min(1, s.due_days / days));
+  const frac = Math.max(0, s.due_days / days);
   return { cents: Math.round(s.price_cents * frac), currency: s.currency, frac, days };
 }
 

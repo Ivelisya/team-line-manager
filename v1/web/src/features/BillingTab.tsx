@@ -32,7 +32,7 @@ export function BillingTab({ m }: { m: MachineView }) {
             <LabelValue label="费用"><span className="num">{F.money(s.price_cents, s.currency)}</span> <span className="unit">/ {F.cycleLabel(s.cycle)}</span></LabelValue>
             <LabelValue label="到期日">{s.due_date}</LabelValue>
             <LabelValue label="剩余天数"><span style={{ color: due.tone === 'bad' ? 'var(--bad-text)' : due.tone === 'warn' ? 'var(--warn-text)' : undefined }}><Num f={due.text} /></span></LabelValue>
-            <LabelValue label="剩余价值">{rv ? <><span className="num">{F.money(rv.cents, rv.currency)}</span> <span className="unit">本期 {Math.round(rv.frac * 100)}% · 共 {rv.days} 天</span></> : <span className="t-muted">一次性付费，不折算</span>}</LabelValue>
+            <LabelValue label="剩余价值">{rv ? <><span className="num">{F.money(rv.cents, rv.currency)}</span> <span className="unit">{rv.frac > 1 ? `已预付 ${rv.frac.toFixed(1)} 期 · 每期 ${rv.days} 天` : `本期 ${Math.round(rv.frac * 100)}% · 共 ${rv.days} 天`}</span></> : <span className="t-muted">一次性付费，不折算</span>}</LabelValue>
             <LabelValue label="自动续费">{s.auto_renew ? '是' : '否'}</LabelValue>
           </LabelValueGrid>
           <div style={{ marginTop: 12 }}><Button variant="primary" onClick={() => setRenew(true)}><CalendarPlus />登记续费</Button></div>
@@ -116,7 +116,7 @@ export function RenewDialog({ m, s, open, onOpenChange }: { m: MachineView; s: S
       <DialogContent>
         <DialogHeader><DialogTitle>登记续费 · {m.name}</DialogTitle><DialogDescription>只记录“已续费”，到期日顺延；不会向供应商付款。当前到期日 {s.due_date}。</DialogDescription></DialogHeader>
         <div className="form-grid">
-          <Field label="新到期日" error={newDue && newDue <= s.due_date ? '应晚于当前到期日' : undefined}><DateField value={newDue} onChange={setNewDue} min={s.due_date} /></Field>
+          <Field label="新到期日" error={newDue && newDue <= s.due_date ? '应晚于当前到期日' : undefined}><DateField value={newDue} onChange={setNewDue} min={F.addDays(s.due_date, 1)} /></Field>
           <Field label={`实付金额（${s.currency}）`}><Input inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} /></Field>
           <Field label="备注（选填）" className="span-2"><Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="例如：账单 #2041" /></Field>
         </div>

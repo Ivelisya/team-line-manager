@@ -150,7 +150,7 @@ function startProvisionJob(m: MachineView) {
   m.active_job = { id: job.id, kind: job.kind, state: 'running' };
   drive(job, 2800, () => {
     m.lifecycle = 'active'; m.activated_at = iso(); m.active_job = null; m.health = { status: 'ok', reasons: [] };
-    if (m.kind !== 'proxy') { m.agent = { version: '1.0.3', last_report_at: iso(), online: true }; m.host = { ts: iso(), cpu_pct: 6, load1: 0.1, mem_used: 400 * 1024 ** 2, mem_total: 4 * GiB, disk_used: 4 * GiB, disk_total: 60 * GiB, net_rx_bps: 2e5, net_tx_bps: 1e5, tcp_conns: 12 }; }
+    if (m.kind !== 'proxy') { m.agent = { version: '1.0.3', last_report_at: iso(), online: true, xray_running: null, cores: 2 }; m.host = { ts: iso(), cpu_pct: 6, load1: 0.1, mem_used: 400 * 1024 ** 2, mem_total: 4 * GiB, disk_used: 4 * GiB, disk_total: 60 * GiB, net_rx_bps: 2e5, net_tx_bps: 1e5, tcp_conns: 12 }; }
     for (const e of m.entries) { e.lifecycle = 'active'; e.applied = true; e.tcp = { ok: true, latency_ms: 52, detail: null, ts: iso() }; e.egress = { ok: true, latency_ms: 190, detail: null, ts: iso() }; }
     refreshCounts();
   });
@@ -596,7 +596,7 @@ R('POST', '/machines/([^/]+)/restore', ({ params, body }) => {
   m.active_job = { id: job.id, kind: job.kind, state: 'running' };
   drive(job, 2000, () => {
     m.lifecycle = 'active'; m.retired_at = null; m.lifecycle_reason = `已恢复${body.reason ? `：${body.reason}` : ''}`; m.active_job = null; m.health = { status: 'ok', reasons: [] };
-    if (m.kind !== 'proxy') { m.agent = { version: '1.0.3', last_report_at: iso(), online: true }; m.host = { ts: iso(), cpu_pct: 5, load1: 0.1, mem_used: 380 * 1024 ** 2, mem_total: 4 * GiB, disk_used: 4 * GiB, disk_total: 60 * GiB, net_rx_bps: 2e5, net_tx_bps: 1e5, tcp_conns: 10 }; }
+    if (m.kind !== 'proxy') { m.agent = { version: '1.0.3', last_report_at: iso(), online: true, xray_running: null, cores: 2 }; m.host = { ts: iso(), cpu_pct: 5, load1: 0.1, mem_used: 380 * 1024 ** 2, mem_total: 4 * GiB, disk_used: 4 * GiB, disk_total: 60 * GiB, net_rx_bps: 2e5, net_tx_bps: 1e5, tcp_conns: 10 }; }
     if (e) { e.lifecycle = 'active'; e.applied = true; e.tcp = { ok: true, latency_ms: 50, detail: null, ts: iso() }; e.egress = { ok: true, latency_ms: 180, detail: null, ts: iso() }; }
     refreshCounts();
   });

@@ -1,19 +1,17 @@
 // 实时流：WebSocket /api/v1/stream（JSON 文本帧）。
 // - metrics：实时指标增量，直接写进查询缓存（live.ts），不重取。
 // - 其余是资源变更通知：300ms 合并后按事件类型让对应查询失效（同一类型/同一 id 只算一次）；resync（服务端广播滞后）则全部失效。
-// - 断开后指数退避重连（1s → 30s 封顶）。每次连上都让机器类查询失效一次：没连着时错过的增量靠这次重取补上。
+// - 断开后指数退避重连（1s → 30s 封顶），期间不轮询（顶栏显示已断开）。首次连上让机器类查询失效一次（首屏请求可能早于订阅）；
+//   断线重连后让全部查询失效：没连着时错过的事件和增量靠这次重取补上。
 // - 页面在后台：失效只标记过期、不重取，metrics 也不写缓存只标记过期（回到前台由 refetchOnWindowFocus 补上）。
-// - 流正常时不轮询；只有流不是 open 才由各查询自己轮询兜底（见 usePoll）。
 import { useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { eventKeys, type StreamEvent } from './queries';
-import { applyMetrics, type MetricsMsg } from './live';
+import { applyMetrics, LIVE_KEYS, type MetricsMsg } from './live';
 import { setStreamState as setStatus, useStreamState } from './streamState';
 
 const MERGE_MS = 300;
 const BACKOFF_MAX = 30_000;
-/** metrics 写的这几类查询 */
-const LIVE_KEYS = [['machines'], ['machine'], ['relays'], ['overview']];
 
 export function useStream(enabled: boolean) {
   const qc = useQueryClient();
@@ -23,6 +21,7 @@ export function useStream(enabled: boolean) {
     let ws: WebSocket | null = null;
     let stopped = false;
     let retry = 0;
+    let connected = false;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let mergeTimer: ReturnType<typeof setTimeout> | undefined;
     const pending = new Map<string, StreamEvent>();
@@ -55,7 +54,11 @@ export function useStream(enabled: boolean) {
       const s = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/v1/stream`);
       ws = s;
       // 正在取的不打断重发（首次连上时首屏请求多半还在路上）
-      s.onopen = () => { retry = 0; setStatus('open'); LIVE_KEYS.forEach((k) => inv(k, false)); };
+      s.onopen = () => {
+        retry = 0; setStatus('open');
+        if (connected) inv(undefined, false); else LIVE_KEYS.forEach((k) => inv(k, false));
+        connected = true;
+      };
       s.onmessage = (m) => {
         const ev = JSON.parse(m.data as string) as StreamEvent | MetricsMsg;
         if (ev.type === 'metrics') onMetrics(ev as MetricsMsg);

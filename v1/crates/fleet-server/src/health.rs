@@ -193,7 +193,7 @@ mod tests {
             activated_at: Some(now),
             retired_at: None,
             subscription: None,
-            agent: Some(Agent { version: None, last_report_at: Some(now), online: true, xray_running: Some(true) }),
+            agent: Some(Agent { version: None, last_report_at: Some(now), online: true, xray_running: Some(true), cores: None }),
             host: None,
             entries: vec![],
             removed_traffic: Default::default(),
