@@ -15,6 +15,8 @@ body {
 html.is-locked { overflow: hidden; }
 :focus { outline: none; }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+/* 对话框 / 抽屉 / 弹层容器本身拿到焦点（键盘打开时 Radix 先聚焦容器）不画焦点环：环只给里面的控件 */
+[role="dialog"]:focus-visible, [role="alertdialog"]:focus-visible { outline: none; }
 ::selection { background: color-mix(in srgb, var(--accent) 22%, transparent); }
 svg.lucide { stroke-width: var(--icon-stroke); flex: none; }
 button { font: inherit; color: inherit; }

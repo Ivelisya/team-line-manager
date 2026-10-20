@@ -96,3 +96,23 @@ export function duration(a: string | null, b: string | null, now = Date.now()): 
 export const pad2 = p2;
 /** 显示名：团队名 + '-' + 两位编号 */
 export const displayName = (team: string, n: number) => `${team}-${p2(n)}`;
+
+/** 计费周期的月数（一次性没有周期） */
+export const CYCLE_MONTHS: Record<string, number> = { monthly: 1, quarterly: 3, semiannual: 6, yearly: 12 };
+/** YYYY-MM-DD 加 n 个月（n 可为负）；目标月没有那一天时落到月末 */
+export function addMonths(date: string, n: number): string {
+  const [y, m, d] = date.split('-').map(Number);
+  const t = new Date(Date.UTC(y, m - 1 + n, 1));
+  const last = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth() + 1, 0)).getUTCDate();
+  t.setUTCDate(Math.min(d, last));
+  return t.toISOString().slice(0, 10);
+}
+
+/** 实时速率的量级：空闲（< 1 Mbps）、常态、繁忙（≥ 200 Mbps）、接近满载（≥ 800 Mbps），卡片读数按它着色 */
+export type Speed = 'idle' | 'low' | 'high' | 'max';
+export const speedOf = (bps: number | null | undefined): Speed => (bps == null || bps < 1e6 ? 'idle' : bps < 2e8 ? 'low' : bps < 8e8 ? 'high' : 'max');
+
+/** 按本地时间问候 */
+export function greeting(h = new Date().getHours()): string {
+  return h < 5 ? '夜深了' : h < 11 ? '早上好' : h < 13 ? '中午好' : h < 18 ? '下午好' : '晚上好';
+}

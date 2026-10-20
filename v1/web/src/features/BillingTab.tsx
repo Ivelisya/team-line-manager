@@ -6,6 +6,8 @@ import { useRenew, useRenewals, useSaveSubscription } from '@/lib/queries';
 import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
 import { Field, Input, Switch } from '@/components/ui/form';
+import { DateField } from '@/components/ui/date-field';
+import { remainingValue } from '@/lib/derive';
 import { Select } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogHeader } from '@/components/ui/dialog';
 import { toast } from '@/components/ui/toast';
@@ -13,22 +15,14 @@ import { ErrorNote, LabelValue, LabelValueGrid, Note, Num, Section, SectionHeade
 
 const CURRENCIES = ['CNY', 'USD', 'EUR', 'HKD', 'JPY'].map((c) => ({ value: c, label: `${c} ${F.currencySym(c).trim()}` }));
 const CYCLES = Object.entries(F.CYCLE).filter(([k]) => k !== 'once').map(([value, label]) => ({ value, label: `每${label}` }));
-const MONTHS: Record<string, number> = { monthly: 1, quarterly: 3, semiannual: 6, yearly: 12 };
 const TZS = ['Asia/Shanghai', 'America/Los_Angeles', 'America/New_York', 'Europe/London', 'Asia/Tokyo', 'UTC'].map((z) => ({ value: z, label: z }));
-
-export function addMonths(date: string, n: number): string {
-  const [y, m, d] = date.split('-').map(Number);
-  const t = new Date(Date.UTC(y, m - 1 + n, 1));
-  const last = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth() + 1, 0)).getUTCDate();
-  t.setUTCDate(Math.min(d, last));
-  return t.toISOString().slice(0, 10);
-}
 
 export function BillingTab({ m }: { m: MachineView }) {
   const s = m.subscription;
   const renewals = useRenewals(m.id);
   const [renew, setRenew] = React.useState(false);
   const due = F.dueFmt(s?.due_days);
+  const rv = remainingValue(m);
   return (
     <>
       {s && (
@@ -37,7 +31,8 @@ export function BillingTab({ m }: { m: MachineView }) {
           <LabelValueGrid>
             <LabelValue label="费用"><span className="num">{F.money(s.price_cents, s.currency)}</span> <span className="unit">/ {F.cycleLabel(s.cycle)}</span></LabelValue>
             <LabelValue label="到期日">{s.due_date}</LabelValue>
-            <LabelValue label="距到期"><span style={{ color: due.tone === 'bad' ? 'var(--bad-text)' : due.tone === 'warn' ? 'var(--warn-text)' : undefined }}><Num f={due.text} /></span></LabelValue>
+            <LabelValue label="剩余天数"><span style={{ color: due.tone === 'bad' ? 'var(--bad-text)' : due.tone === 'warn' ? 'var(--warn-text)' : undefined }}><Num f={due.text} /></span></LabelValue>
+            <LabelValue label="剩余价值">{rv ? <><span className="num">{F.money(rv.cents, rv.currency)}</span> <span className="unit">本期 {Math.round(rv.frac * 100)}% · 共 {rv.days} 天</span></> : <span className="t-muted">一次性付费，不折算</span>}</LabelValue>
             <LabelValue label="自动续费">{s.auto_renew ? '是' : '否'}</LabelValue>
           </LabelValueGrid>
           <div style={{ marginTop: 12 }}><Button variant="primary" onClick={() => setRenew(true)}><CalendarPlus />登记续费</Button></div>
@@ -95,7 +90,7 @@ function SubForm({ m }: { m: MachineView }) {
       <Field label="费用"><Input inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="68" /></Field>
       <Field label="币种"><Select value={currency} onChange={setCurrency} options={CURRENCIES} /></Field>
       <Field label="计费周期"><Select value={cycle} onChange={setCycle} options={CYCLES} /></Field>
-      <Field label="到期日"><Input type="date" className={dueDate ? undefined : 'is-empty'} value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></Field>
+      <Field label="到期日"><DateField value={dueDate} onChange={setDueDate} /></Field>
       <Field label="账单时区" hint="到期按这个时区的日期算"><Select value={tz} onChange={setTz} options={TZS} /></Field>
       <Field label="提前提醒（天）"><Input inputMode="numeric" value={remind} onChange={(e) => setRemind(e.target.value.replace(/\D/g, ''))} /></Field>
       <Field label="流量上限（GiB）" hint="留空 = 不限"><Input inputMode="numeric" value={traffic} onChange={(e) => setTraffic(e.target.value.replace(/\D/g, ''))} /></Field>
@@ -112,7 +107,7 @@ function RenewDialog({ m, s, open, onOpenChange }: { m: MachineView; s: Subscrip
   const [amount, setAmount] = React.useState('');
   const [note, setNote] = React.useState('');
   React.useEffect(() => {
-    if (open) { setNewDue(addMonths(s.due_date, MONTHS[s.cycle] ?? 1)); setAmount(String(s.price_cents / 100)); setNote(''); }
+    if (open) { setNewDue(F.addMonths(s.due_date, F.CYCLE_MONTHS[s.cycle] ?? 1)); setAmount(String(s.price_cents / 100)); setNote(''); }
   }, [open, s.due_date, s.cycle, s.price_cents]);
   const ok = /^\d{4}-\d{2}-\d{2}$/.test(newDue) && newDue > s.due_date && isFinite(Number(amount)) && amount !== '';
   return (
@@ -120,7 +115,7 @@ function RenewDialog({ m, s, open, onOpenChange }: { m: MachineView; s: Subscrip
       <DialogContent>
         <DialogHeader><DialogTitle>登记续费 · {m.name}</DialogTitle><DialogDescription>只记录“已续费”，到期日顺延；不会向供应商付款。当前到期日 {s.due_date}。</DialogDescription></DialogHeader>
         <div className="form-grid">
-          <Field label="新到期日" error={newDue && newDue <= s.due_date ? '应晚于当前到期日' : undefined}><Input type="date" className={newDue ? undefined : 'is-empty'} value={newDue} onChange={(e) => setNewDue(e.target.value)} /></Field>
+          <Field label="新到期日" error={newDue && newDue <= s.due_date ? '应晚于当前到期日' : undefined}><DateField value={newDue} onChange={setNewDue} min={s.due_date} /></Field>
           <Field label={`实付金额（${s.currency}）`}><Input inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} /></Field>
           <Field label="备注（选填）" className="span-2"><Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="例如：账单 #2041" /></Field>
         </div>

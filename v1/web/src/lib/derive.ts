@@ -33,11 +33,13 @@ export function resourceMeters(m: MachineView, plans: Plan[]) {
   const h = m.host; if (!h) return null;
   const cores = plans.find((p) => p.id === m.plan?.id)?.cpu_cores || 2;
   const memPct = ratio(h.mem_used, h.mem_total); const diskPct = ratio(h.disk_used, h.disk_total);
+  const loadPct = h.load1 == null ? null : (h.load1 / cores) * 100;
   return {
     cpu: { value: F.pct(h.cpu_pct), pct: h.cpu_pct, sub: `${cores} 核` },
     mem: { value: F.pct(memPct), pct: memPct, sub: usedTotal(h.mem_used, h.mem_total) },
     disk: { value: F.pct(diskPct), pct: diskPct, sub: usedTotal(h.disk_used, h.disk_total) },
-    load: { value: (h.load1 == null ? F.NA : { v: h.load1.toFixed(2), u: '' }) as F.Fmt, pct: h.load1 == null ? null : (h.load1 / cores) * 100, sub: `1 分钟 · ${h.tcp_conns ?? '—'} 连接` },
+    // 负载按核数折成百分比（1 分钟平均负载 / 核数）：比裸的 “0.50” 好懂；超过 100% 表示排队，数字照实显示，格条封顶
+    load: { value: F.pct(loadPct), pct: loadPct, sub: h.load1 == null ? `${cores} 核` : `1 分钟 ${h.load1.toFixed(2)} · ${cores} 核` },
   };
 }
 /**
@@ -69,6 +71,29 @@ export function probeSummary(m: MachineView) {
   const eg = es.map((e) => e.egress?.latency_ms).filter((x): x is number => x != null);
   return { total: es.length, tcpOk, tcp: lat.length ? Math.round(lat.reduce((a, b) => a + b, 0) / lat.length) : null, egress: eg.length ? Math.round(eg.reduce((a, b) => a + b, 0) / eg.length) : null };
 }
+/**
+ * 剩余价值：当前已付周期还没用掉的部分，按天折算。本期 = [到期日 − 一个周期, 到期日)，剩余比例 = 距到期天数 / 本期天数。
+ * 一次性付费没有周期，不折算（null）；已过期为 0。
+ */
+export function remainingValue(m: MachineView) {
+  const s = m.subscription;
+  const months = s && F.CYCLE_MONTHS[s.cycle];
+  if (!s || !months) return null;
+  const days = Math.round((Date.parse(s.due_date) - Date.parse(F.addMonths(s.due_date, -months))) / 86_400_000);
+  const frac = Math.max(0, Math.min(1, s.due_days / days));
+  return { cents: Math.round(s.price_cents * frac), currency: s.currency, frac, days };
+}
+
+/** 标签配色：固定语义的用固定色（类型：线路机青、落地机紫、家宽橙；维护中琥珀），
+ *  其余（供应商代号、服务编号）按文字散列到剩下的几种颜色，同一个代号永远同色、也不会和类型标签撞色 */
+export const TAG_COLORS = ['blue', 'pink', 'cyan', 'green'] as const;
+export type TagColor = (typeof TAG_COLORS)[number] | 'gray' | 'teal' | 'violet' | 'orange' | 'amber';
+export function tagColor(text: string): TagColor {
+  let h = 0;
+  for (const ch of text) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return TAG_COLORS[h % TAG_COLORS.length];
+}
+
 export const subLabel = (m: MachineView) => {
   const s = m.subscription; if (!s) return null;
   return `${F.money(s.price_cents, s.currency)}/${F.cycleLabel(s.cycle)}`;
