@@ -34,7 +34,28 @@ pub fn app(st: AppState) -> Router {
         let spa = ServeDir::new(&dir).fallback(ServeFile::new(dir.join("index.html")));
         r = r.fallback_service(spa);
     }
-    r.layer(CompressionLayer::new()).layer(TraceLayer::new_for_http()).with_state(st)
+    r.layer(axum::middleware::from_fn(cache_headers)).layer(CompressionLayer::new()).layer(TraceLayer::new_for_http()).with_state(st)
+}
+
+/// 前端缓存：/assets/ 下的文件名带内容哈希，可以永久缓存；index.html 等其余页面每次都要重新验证，
+/// 否则发布新版后浏览器还拿着旧的入口文件。接口自己管自己的缓存头，这里不碰。
+async fn cache_headers(req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    use axum::http::{header::CACHE_CONTROL, HeaderValue};
+    let path = req.uri().path();
+    let value = if path.starts_with("/assets/") {
+        Some("public, max-age=31536000, immutable")
+    } else if path.starts_with("/api/") || path.starts_with("/agent/") || path == "/echo" {
+        None
+    } else {
+        Some("no-cache")
+    };
+    let mut res = next.run(req).await;
+    if let Some(v) = value {
+        if res.status().is_success() && !res.headers().contains_key(CACHE_CONTROL) {
+            res.headers_mut().insert(CACHE_CONTROL, HeaderValue::from_static(v));
+        }
+    }
+    res
 }
 
 /// 后台任务：作业、告警、分区维护、小时汇总
