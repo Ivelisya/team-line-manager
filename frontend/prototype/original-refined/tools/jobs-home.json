@@ -1,0 +1,331 @@
+[
+ {
+  "name": "home-large-light-1440",
+  "url": "#/home",
+  "width": 1440,
+  "height": 900,
+  "dark": false
+ },
+ {
+  "name": "home-large-light-1440-tall",
+  "url": "#/home",
+  "width": 1440,
+  "height": 1500,
+  "dark": false
+ },
+ {
+  "name": "home-small-light-1440",
+  "url": "#/home",
+  "width": 1440,
+  "height": 900,
+  "dark": false,
+  "view": "small"
+ },
+ {
+  "name": "home-compact-light-1440",
+  "url": "#/home",
+  "width": 1440,
+  "height": 900,
+  "dark": false,
+  "view": "compact"
+ },
+ {
+  "name": "home-large-light-375",
+  "url": "#/home",
+  "width": 375,
+  "height": 812,
+  "dark": false
+ },
+ {
+  "name": "home-states-light-1440",
+  "url": "#/home",
+  "width": 1440,
+  "height": 900,
+  "dark": false,
+  "before": "__app.live.stop(); const s = __app.store; s.applyReplay(4);\nconst n = s.node('t1-02'); n.agent.online = false; n.agent.reported_at = s.now() - 760; n.host.fresh = false;\nconst m = s.node('t1-03'); m.status = { ...m.status, code: 'degraded', word: '降级', reason: 'unstable', since: s.now() - 400 };\nconst f = s.node('t1-04'); f.status = { ...f.status, code: 'fail', word: '故障', reason: 'auth', since: s.now() - 800 };\nconst k = s.node('t1-05'); k.status = { ...k.status, code: 'maintenance', word: '维护中' };\nconst c = s.node('t1-06'); c.host.cpu_pct = 94.2; c.host.mem_pct = 82; c.billing.due_date = '2026-09-20';\nconst d = s.node('t1-01'); d.billing.due_date = '2026-09-26';\ns.emit('change', { nodes: { 't1-01': {}, 't1-02': {}, 't1-03': {}, 't1-04': {}, 't1-05': {}, 't1-06': {} } });; const t=document.querySelector('.ncard').getBoundingClientRect().top + scrollY - 124; window.scrollTo(0, t);",
+  "afterWait": 1200
+ },
+ {
+  "name": "drawer-overview-light-1440",
+  "url": "#/home?node=t1-21",
+  "width": 1440,
+  "height": 900,
+  "dark": false,
+  "wait": 1800
+ },
+ {
+  "name": "drawer-host-light-1440",
+  "url": "#/home?node=t1-01&tab=host",
+  "width": 1440,
+  "height": 900,
+  "dark": false,
+  "wait": 2500
+ },
+ {
+  "name": "home-large-dark-1440",
+  "url": "#/home",
+  "width": 1440,
+  "height": 900,
+  "dark": true
+ },
+ {
+  "name": "home-large-dark-1440-tall",
+  "url": "#/home",
+  "width": 1440,
+  "height": 1500,
+  "dark": true
+ },
+ {
+  "name": "home-small-dark-1440",
+  "url": "#/home",
+  "width": 1440,
+  "height": 900,
+  "dark": true,
+  "view": "small"
+ },
+ {
+  "name": "home-compact-dark-1440",
+  "url": "#/home",
+  "width": 1440,
+  "height": 900,
+  "dark": true,
+  "view": "compact"
+ },
+ {
+  "name": "home-large-dark-375",
+  "url": "#/home",
+  "width": 375,
+  "height": 812,
+  "dark": true
+ },
+ {
+  "name": "home-states-dark-1440",
+  "url": "#/home",
+  "width": 1440,
+  "height": 900,
+  "dark": true,
+  "before": "__app.live.stop(); const s = __app.store; s.applyReplay(4);\nconst n = s.node('t1-02'); n.agent.online = false; n.agent.reported_at = s.now() - 760; n.host.fresh = false;\nconst m = s.node('t1-03'); m.status = { ...m.status, code: 'degraded', word: '降级', reason: 'unstable', since: s.now() - 400 };\nconst f = s.node('t1-04'); f.status = { ...f.status, code: 'fail', word: '故障', reason: 'auth', since: s.now() - 800 };\nconst k = s.node('t1-05'); k.status = { ...k.status, code: 'maintenance', word: '维护中' };\nconst c = s.node('t1-06'); c.host.cpu_pct = 94.2; c.host.mem_pct = 82; c.billing.due_date = '2026-09-20';\nconst d = s.node('t1-01'); d.billing.due_date = '2026-09-26';\ns.emit('change', { nodes: { 't1-01': {}, 't1-02': {}, 't1-03': {}, 't1-04': {}, 't1-05': {}, 't1-06': {} } });; const t=document.querySelector('.ncard').getBoundingClientRect().top + scrollY - 124; window.scrollTo(0, t);",
+  "afterWait": 1200
+ },
+ {
+  "name": "drawer-overview-dark-1440",
+  "url": "#/home?node=t1-21",
+  "width": 1440,
+  "height": 900,
+  "dark": true,
+  "wait": 1800
+ },
+ {
+  "name": "drawer-host-dark-1440",
+  "url": "#/home?node=t1-01&tab=host",
+  "width": 1440,
+  "height": 900,
+  "dark": true,
+  "wait": 2500
+ },
+ {
+  "name": "home-large-light-1440-full",
+  "url": "#/home",
+  "width": 1440,
+  "height": 900,
+  "full": true,
+  "wait": 1500
+ },
+ {
+  "name": "home-large-light-900",
+  "url": "#/home",
+  "width": 900,
+  "height": 900
+ },
+ {
+  "name": "home-small-light-375",
+  "url": "#/home",
+  "width": 375,
+  "height": 812,
+  "view": "small"
+ },
+ {
+  "name": "home-compact-dark-375",
+  "url": "#/home",
+  "width": 375,
+  "height": 812,
+  "view": "compact",
+  "dark": true
+ },
+ {
+  "name": "home-grouped-light-1440",
+  "url": "#/home?group=plan&sort=-netrate",
+  "width": 1440,
+  "height": 900,
+  "view": "compact",
+  "before": "window.scrollTo(0, 250)"
+ },
+ {
+  "name": "home-filtered-light-1440",
+  "url": "#/home?team=团队1&plan=nodemach.proxy.highspeed",
+  "width": 1440,
+  "height": 900,
+  "view": "small"
+ },
+ {
+  "name": "home-loading-light-1440",
+  "url": "#/home",
+  "width": 1440,
+  "height": 900,
+  "delaySnapshot": 3000
+ },
+ {
+  "name": "home-popover-light-1440",
+  "url": "#/home",
+  "width": 1440,
+  "height": 900,
+  "before": "document.querySelector('.ncard [data-act=today]').click()",
+  "afterWait": 1500
+ },
+ {
+  "name": "home-planpop-light-1440",
+  "url": "#/home",
+  "width": 1440,
+  "height": 900,
+  "before": "document.querySelector('.ncard[data-id=\"r1\"]').scrollIntoView({block:'center'}); await new Promise(r=>setTimeout(r,200)); document.querySelector('.ncard[data-id=\"r1\"] [data-act=plan]').click()",
+  "afterWait": 800
+ },
+ {
+  "name": "home-sort-light-1440",
+  "url": "#/home?sort=-netrate",
+  "width": 1440,
+  "height": 900,
+  "before": "document.querySelector('[data-act=sort]').click()"
+ },
+ {
+  "name": "home-palette-light-1440",
+  "url": "#/home",
+  "width": 1440,
+  "height": 900,
+  "before": "document.querySelector('[data-top=search]').click(); const i=document.querySelector('.palette input'); i.value='Pulse'; i.dispatchEvent(new Event('input'))"
+ },
+ {
+  "name": "home-tooltip-light-1440",
+  "url": "#/home",
+  "width": 1440,
+  "height": 900,
+  "before": "window.scrollTo(0,300); await new Promise(r=>setTimeout(r,300)); const c=document.querySelectorAll('.beat-cells')[0].children[18]; c.dispatchEvent(new PointerEvent('pointerover',{bubbles:true,pointerType:'mouse'}));",
+  "afterWait": 800
+ },
+ {
+  "name": "home-theme-menu-light-1440",
+  "url": "#/home",
+  "width": 1440,
+  "height": 900,
+  "before": "document.querySelector('[data-top=theme]').click()"
+ },
+ {
+  "name": "drawer-traffic-light-1440",
+  "url": "#/home?node=t1-01&tab=traffic",
+  "width": 1440,
+  "height": 900,
+  "wait": 2500
+ },
+ {
+  "name": "drawer-quality-light-1440",
+  "url": "#/home?node=t1-01&tab=quality",
+  "width": 1440,
+  "height": 900,
+  "wait": 2500
+ },
+ {
+  "name": "drawer-billing-light-1440",
+  "url": "#/home?node=r1&tab=billing",
+  "width": 1440,
+  "height": 900,
+  "wait": 2000
+ },
+ {
+  "name": "drawer-access-light-1440",
+  "url": "#/home?node=t1-13&tab=access",
+  "width": 1440,
+  "height": 900,
+  "wait": 1500
+ },
+ {
+  "name": "drawer-manage-light-1440",
+  "url": "#/home?node=t1-01&tab=manage",
+  "width": 1440,
+  "height": 900,
+  "wait": 1500
+ },
+ {
+  "name": "drawer-overview-proxy-light-1440",
+  "url": "#/home?node=t1-13",
+  "width": 1440,
+  "height": 900,
+  "wait": 1800
+ },
+ {
+  "name": "drawer-host-relay-dark-1440",
+  "url": "#/home?node=r1&tab=host",
+  "width": 1440,
+  "height": 900,
+  "dark": true,
+  "wait": 2500
+ },
+ {
+  "name": "drawer-host-light-375",
+  "url": "#/home?node=t1-01&tab=host",
+  "width": 375,
+  "height": 812,
+  "wait": 2500
+ },
+ {
+  "name": "drawer-overview-dark-375",
+  "url": "#/home?node=t1-01",
+  "width": 375,
+  "height": 812,
+  "dark": true,
+  "wait": 1800
+ },
+ {
+  "name": "dialog-confirm-l2-light-1440",
+  "url": "#/home?node=t1-01&tab=manage",
+  "width": 1440,
+  "height": 900,
+  "wait": 1500,
+  "before": "document.querySelector('[data-dz=reset]').click()",
+  "afterWait": 600
+ },
+ {
+  "name": "compare-home-large-light",
+  "page": "http://127.0.0.1:5199/original-refined/tools/compare.html?a=../../original/shots/home-large-light.png&b=../shots/home-large-light-1440-tall.png&la=%E5%8E%9F%E7%89%88&lb=%E7%B2%BE%E4%BF%AE&na=live%20%E9%A6%96%E9%A1%B5%20%C2%B7%201440%20%E5%AE%BD%EF%BC%88%E5%A4%96%E5%A3%B3%E4%B8%BA%E7%A4%BA%E6%84%8F%EF%BC%89&nb=%23/home%20%C2%B7%201440%20%E5%AE%BD&w=720",
+  "width": 1488,
+  "height": 900,
+  "full": true
+ },
+ {
+  "name": "compare-home-large-dark",
+  "page": "http://127.0.0.1:5199/original-refined/tools/compare.html?a=../../original/shots/home-large-dark.png&b=../shots/home-large-dark-1440-tall.png&la=%E5%8E%9F%E7%89%88&lb=%E7%B2%BE%E4%BF%AE&na=live%20%E9%A6%96%E9%A1%B5%20%C2%B7%20%E6%B7%B1%E8%89%B2&nb=%23/home%20%C2%B7%20%E6%B7%B1%E8%89%B2&w=720",
+  "width": 1488,
+  "height": 900,
+  "full": true
+ },
+ {
+  "name": "compare-card-large-host",
+  "page": "http://127.0.0.1:5199/original-refined/tools/compare.html?a=../../original/shots/card-large-host-light.png&b=../shots/home-large-light-1440.png&la=%E5%8E%9F%E7%89%88%E5%8D%A1%E7%89%87&lb=%E7%B2%BE%E4%BF%AE%E9%A6%96%E5%B1%8F&na=&nb=&w=720",
+  "width": 1488,
+  "height": 900,
+  "full": true
+ },
+ {
+  "name": "compare-drawer",
+  "page": "http://127.0.0.1:5199/original-refined/tools/compare.html?a=../../original/replica-ops/renders/ops-drawer-overview.png&b=../shots/drawer-overview-light-1440.png&la=%E5%8E%9F%E7%89%88%E8%BF%90%E8%90%A5%E6%8A%BD%E5%B1%89&lb=%E7%B2%BE%E4%BF%AE%E8%8A%82%E7%82%B9%E6%8A%BD%E5%B1%89&na=ops-drawer-overview&nb=%23/home%3Fnode%3Dt1-21&w=720",
+  "width": 1488,
+  "height": 900,
+  "full": true
+ },
+ {
+  "name": "compare-instance-host",
+  "page": "http://127.0.0.1:5199/original-refined/tools/compare.html?a=../../original/shots/instance-host-light.png&b=../shots/drawer-host-light-1440.png&la=%E5%8E%9F%E7%89%88%E8%AF%A6%E6%83%85%E9%A1%B5%20/instance&lb=%E7%B2%BE%E4%BF%AE%EF%BC%9A%E6%8A%BD%E5%B1%89%E2%80%9C%E4%B8%BB%E6%9C%BA%E2%80%9D%E9%A1%B5%E7%AD%BE&na=&nb=&w=720",
+  "width": 1488,
+  "height": 900,
+  "full": true
+ }
+]

@@ -1,0 +1,123 @@
+# /etc/fleetd/fleetd.toml — fleetd 生产配置（中控 38.58.57.22），当前形态：旧系统与 Komari 已下线，fleetd 原生喂数、渲染旧形状接口。
+# 机密一律放单独文件（0640 root:fleetd），这里只写路径。
+# 改完：fleetd check-config --config /etc/fleetd/fleetd.toml（通过后随下一次 upgrade-central.sh 或 systemctl restart fleetd 生效）
+# 改前留备份：cp -p fleetd.toml fleetd.toml.before-<阶段>-<时间戳>（rollback.sh --previous 在旧版本不认新配置时会自动找回最近一份它认的备份）
+
+listen = "127.0.0.1:25900"          # 只能是回环地址；Caddy 把 /v2/api/*、/v2/ingest/* 转发到这里
+data_dir = "/var/lib/fleetd"        # systemd StateDirectory；fleetd.db（告警 / 审计 / 账户）、legacy.db（原生旧库）、ingest.db（边缘上报）、ipintel.db
+catalog = "/opt/fleetd/current/catalog.json"   # 套餐目录，启动时导入（内容不变则跳过）
+ui_base_url = "https://38.58.57.22/#/"         # 通知里的链接前缀（界面在站点根）
+ipintel_backfill_days = 14          # ipintel 首次启动回填每个节点最近 N 天访问（完成后记入库，重启不重复）
+onboard_config = "/etc/fleet/onboard.toml"     # 上架流水线（/v2/api/v1/onboard/*）；不写则关闭
+
+# 旧接口数据来源：native = 原生旧库 legacy.db（fleetd 自己喂数，旧后端 127.0.0.1:25800 已停）；team-ops = 只读适配仍在运行的旧后端（下线前）
+legacy_source = "native"
+
+[legacy]
+# 只在 legacy_source = "team-ops" 时连接旧后端（base_url 缺省 http://127.0.0.1:25800）；native 下不连接
+key_file = "/etc/fleetd/legacy.key"   # X-Ops-Key
+actor = "fleetd"
+concurrency = 2
+timeout_s = 30
+
+[komari]
+enabled = false                 # Komari 已下线：komari/* 由 fleetd 原生提供，不连 Komari（base_url 缺省 http://127.0.0.1:25774，关闭时不用）
+
+[auth]
+mode = "fleetd"                 # 只认 fleetd 自有账户（fleetd user set-password / 界面登录）；komari = 下线前的过渡（另接受 Komari 管理员会话）；dev-allow-local 只给测试服
+
+[poll]
+# 旧形状资源（原生渲染）的共享轮询：有 SSE 客户端时 overview+health 30 s（边缘批次到达时另有推送刷新）、panel 15 s、history 等 60 s、renewals/jobs/audit 300 s；
+# 没有客户端时 overview+health 60 s（够告警用），其余按需
+active_overview_s = 10
+active_panel_s = 15
+active_history_s = 60
+active_slow_s = 300
+idle_overview_s = 60
+ondemand_ttl_s = 15
+
+[alerts]
+group_wait_critical_s = 10
+group_wait_s = 30
+group_interval_s = 300
+repeat_critical_s = 1800     # critical 未确认时每 30 min 重复
+repeat_warning_s = 14400     # warning 4 h
+digest_hour = 9              # info 级进每天 09:00 的摘要
+digest_tz = "Asia/Shanghai"
+degraded_for_s = 300
+host_offline_s = 120
+relay_for_s = 60
+correlate_window_s = 120
+correlate_min_nodes = 3
+renewal_days = [7, 3, 1]
+quota_start_pct = 80
+quota_step_pct = 5
+# 启动宽限：启动后 120 s 内、以及直到数据确实是启动后产生的（最长 600 s），主机离线 / 线路机宕机 / 管理通道中断 /
+# 采集器、健康评估、主机数据同步停滞不新开，已有的也不当作恢复（API.md §4）
+startup_grace_s = 120
+startup_grace_max_s = 600
+
+[notify]
+# 还没配任何渠道 → 影子模式：每条通知只写 notify_log（status = shadow），界面可见。渠道配好、影子期对比完成后改成 false。
+shadow = true
+# healthchecks.io 死人开关（可选）：
+# healthchecks_url = "https://hc-ping.com/<uuid>"
+# healthchecks_interval_s = 60
+
+# [[notify.channels]]
+# name = "tg-ops"
+# type = "telegram"
+# bot_token_file = "/etc/fleetd/secrets/telegram.token"
+# chat_id = "-1001234567890"
+# min_severity = "warning"
+#
+# [[notify.channels]]
+# name = "wecom"
+# type = "wecom"
+# url_file = "/etc/fleetd/secrets/wecom.url"     # 群机器人 webhook 地址（含 key）
+#
+# [[notify.channels]]
+# name = "mail"
+# type = "smtp"
+# host = "smtp.example.com"
+# port = 587
+# security = "starttls"        # starttls | tls | none
+# username = "alerts@example.com"
+# password_file = "/etc/fleetd/secrets/smtp.password"
+# from = "fleetd <alerts@example.com>"
+# to = ["ops@example.com"]
+#
+# [[notify.channels]]
+# name = "hook"
+# type = "webhook"
+# url = "https://example.com/fleetd"
+# secret_file = "/etc/fleetd/secrets/webhook.secret"   # X-Fleet-Signature: sha256=HMAC(secret, "<ts>.<body>")
+
+[ipintel]
+# IP 情报（离线库：ip2region、DB-IP Lite、iptoasn；只查本地，不把 IP 发给任何在线服务）
+enabled = true
+db_dir = "/var/lib/fleetd/ipintel"        # fetch-dbs.sh 下载到这里（fleetd-ipintel-fetch.timer 每月 3 日更新）
+state_db = "/var/lib/fleetd/ipintel.db"
+cache_ttl_days = 30
+learn_s = 604800                          # 节点学习期 7 天（按事件时间）
+alert_ttl_s = 86400
+shared_window_s = 600
+shared_min_km = 150
+shared_ignore_clients = []
+egress_confirm = 2
+retention_days = 35
+# 三台线路机公网 IP 总会自动加入（38.58.57.22、23.148.204.129、38.58.57.69）；运维出口等另加在这里
+internal_ips = []
+
+[ipintel.severity]
+ipintel_new_isp = "warning"
+ipintel_new_city = "warning"
+ipintel_shared_identity = "warning"
+ipintel_datacenter_source = "warning"
+ipintel_egress_ip_changed = "critical"
+
+[edge]
+# 边缘代理（relayd / nodeagent → /v2/ingest/*）。relay_hosts 缺省 {line1 = "线路机1", central = "线路机2", line3 = "线路机3"}
+# 原生旧库的 relays.probe / relays.paths 用 relayd 自己的探测（relayd 不测的节点仍沿用转发的旧文件）
+native_probe = true
+native_paths = true

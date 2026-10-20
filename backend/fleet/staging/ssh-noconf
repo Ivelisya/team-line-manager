@@ -1,0 +1,3 @@
+#!/bin/sh
+# 测试服专用：不读 /etc/ssh/ssh_config（命名空间里属主是 nobody，ssh 会报 Bad owner），其余参数原样
+exec /usr/bin/ssh -F /dev/null "$@"

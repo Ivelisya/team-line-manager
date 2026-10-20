@@ -1,0 +1,38 @@
+[package]
+name = "fleet-onboard"
+version = "0.1.0"
+edition = "2021"
+description = "团队线路管理：批量上架流水线（saga 引擎 + fleetctl onboard + fleetd API 处理函数）"
+publish = false
+
+# 已并入 fleet/Cargo.toml 的 workspace（fleetd 接入）。单独构建：cargo build -p fleet-onboard
+
+[lib]
+name = "onboard"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fleetctl"
+path = "src/bin/fleetctl.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "sync", "io-util", "fs", "net"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+toml = "0.8"
+sha2 = "0.10"
+hex = "0.4"
+base64 = "0.22"
+rand = "0.8"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+
+[dev-dependencies]
+# 只给单元测试用：拿 fleetd-ingest 的真实库结构核对 agent::HostView::query（fleetd 注入的令牌后端就这么查）
+fleetd-ingest = { path = "../../../fleet-edge/fleetd-ingest" }
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 4
+strip = true

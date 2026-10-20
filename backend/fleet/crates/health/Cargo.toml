@@ -1,0 +1,17 @@
+[package]
+name = "fleet-health"
+version = "0.1.0"
+edition = "2021"
+description = "团队线路管理 fleetd 的综合健康判定：逐项检查（旧 monitor.py 逐行移植）+ 探测结果 + 主机遥测 + 线路机状态 → ok/degraded/fail/unknown/maintenance，原因码、since、相关失败、可用率窗口"
+publish = false
+
+[lib]
+name = "fleet_health"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+fleet-probe = { path = "../probe", default-features = false }
+
+# 已收进 fleet/Cargo.toml 的 workspace（fleetd 接入，见 WIRING.md）。单独构建：cargo build -p <本包>

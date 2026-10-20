@@ -1,0 +1,127 @@
+{
+ "log": {
+  "loglevel": "warning"
+ },
+ "api": {
+  "tag": "api",
+  "services": [
+   "StatsService"
+  ]
+ },
+ "stats": {},
+ "policy": {
+  "levels": {
+   "0": {
+    "statsUserUplink": true,
+    "statsUserDownlink": true
+   }
+  },
+  "system": {
+   "statsInboundUplink": true,
+   "statsInboundDownlink": true
+  }
+ },
+ "inbounds": [
+  {
+   "tag": "api",
+   "listen": "127.0.0.1",
+   "port": 25911,
+   "protocol": "tunnel",
+   "settings": {
+    "address": "127.0.0.1"
+   }
+  },
+  {
+   "tag": "inbound-25921",
+   "listen": "127.0.0.1",
+   "port": 25921,
+   "protocol": "vless",
+   "settings": {
+    "clients": [
+     {
+      "id": "6f2b3a52-8c1e-4f1a-9d1e-0c5b8a7e2f11",
+      "email": "client-1",
+      "level": 0
+     }
+    ],
+    "decryption": "none"
+   },
+   "streamSettings": {
+    "network": "tcp"
+   }
+  },
+  {
+   "tag": "inbound-25922",
+   "listen": "127.0.0.1",
+   "port": 25922,
+   "protocol": "socks",
+   "settings": {
+    "auth": "noauth",
+    "udp": false
+   }
+  }
+ ],
+ "outbounds": [
+  {
+   "tag": "direct",
+   "protocol": "freedom"
+  },
+  {
+   "tag": "blocked",
+   "protocol": "blackhole"
+  },
+  {
+   "tag": "lab-aes",
+   "protocol": "shadowsocks",
+   "settings": {
+    "servers": [
+     {
+      "address": "127.0.0.1",
+      "port": 25951,
+      "method": "aes-256-gcm",
+      "password": "fleet-edge-lab-only-1"
+     }
+    ]
+   }
+  },
+  {
+   "tag": "lab-wrongpw",
+   "protocol": "shadowsocks",
+   "settings": {
+    "servers": [
+     {
+      "address": "127.0.0.1",
+      "port": 25951,
+      "method": "aes-256-gcm",
+      "password": "wrong-password"
+     }
+    ]
+   }
+  },
+  {
+   "tag": "lab-closed",
+   "protocol": "shadowsocks",
+   "settings": {
+    "servers": [
+     {
+      "address": "127.0.0.1",
+      "port": 25959,
+      "method": "aes-256-gcm",
+      "password": "x"
+     }
+    ]
+   }
+  }
+ ],
+ "routing": {
+  "rules": [
+   {
+    "type": "field",
+    "inboundTag": [
+     "api"
+    ],
+    "outboundTag": "api"
+   }
+  ]
+ }
+}

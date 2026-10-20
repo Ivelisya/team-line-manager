@@ -1,0 +1,55 @@
+# /etc/systemd/system/fleet-nodeagent.service — 落地节点主机遥测（只读 /proc，只出站 HTTPS 到中控）
+# 不碰数据面：不读写 ssserver / nftables / sshd 的任何东西，不执行命令。
+[Unit]
+Description=fleet-edge nodeagent (host telemetry, observe-only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fleet-edge
+Group=fleet-edge
+ExecStart=/opt/fleet-edge/current/nodeagent --config /etc/fleet-edge/agent.toml
+Restart=always
+RestartSec=10
+TimeoutStopSec=15
+StateDirectory=fleet-nodeagent
+StateDirectoryMode=0700
+UMask=0077
+# 资源上限（§10.4：RSS 3–6 MB、CPU < 0.1%）
+MemoryMax=24M
+MemorySwapMax=0
+CPUQuota=3%
+TasksMax=8
+Nice=10
+IOSchedulingClass=idle
+OOMScoreAdjust=500
+LimitNOFILE=256
+# 加固
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

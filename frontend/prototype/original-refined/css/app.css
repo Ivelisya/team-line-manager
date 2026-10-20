@@ -1,0 +1,9 @@
+/* app.css — 唯一入口。顺序固定（SPEC §8.1）：token → 外壳 → 通用组件 → 节点卡片 → 表格 → 页面。
+   token 只有一份：prototype/original/tokens.css（不复制）。本目录所有 CSS 只引用变量：
+   不写裸 hex、不写 !important、选择器最多两级单类。 */
+@import url("../../original/tokens.css");
+@import url("./shell.css");
+@import url("./components.css");
+@import url("./cards.css");
+@import url("./table.css");
+@import url("./pages.css");

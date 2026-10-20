@@ -1,0 +1,28 @@
+# fleetd 测试服配置（a395，隔离命名空间内）。路径里的 HOME 由 stage.sh 替换。
+listen = "127.0.0.1:18396"
+data_dir = "@HOME@/team-ops-eval/fleet-stage/data"
+catalog = "@HOME@/team-ops-eval/fleet-stage/catalog.json"
+ui_base_url = "http://127.0.0.1:18395/admin/v2/app/#/"
+ipintel_backfill_days = 14
+onboard_config = "@HOME@/team-ops-eval/fleet-stage/onboard.toml"
+
+[legacy]
+# stage 替身直接回答 /api/team-ops/*，不校验 X-Ops-Key
+base_url = "http://127.0.0.1:18397/api/team-ops"
+
+[komari]
+base_url = "http://127.0.0.1:18397"
+# 生产初期没有 Komari 系统 API 密钥：komari/* 按需转发请求者会话。要测后台读 Komari 就打开下一行
+# api_key_file = "@HOME@/team-ops-eval/fleet-stage/komari.apikey"
+
+[auth]
+mode = "komari"
+cookie_secure = false      # 测试服是 http
+
+[notify]
+shadow = true
+
+[ipintel]
+enabled = true
+db_dir = "@HOME@/team-ops-eval/ipintel-db"
+state_db = "@HOME@/team-ops-eval/fleet-stage/data/ipintel.db"

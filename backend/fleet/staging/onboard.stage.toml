@@ -1,0 +1,87 @@
+# 测试服（a395 隔离命名空间）：没有网络，线路机读不到——plan 会给“读不到配置”警告；批次列表、资产等只读接口可用。
+# /etc/fleet/onboard.toml — fleetd 内嵌上架流水线（/v2/api/v1/onboard/*）在中控上的配置。
+# fleetd 以 fleetd 用户运行：本文件与下面的密钥要 root:fleetd 0640；db / work_dir 放在 fleetd 的 StateDirectory 里。
+# 命令行 fleetctl 与 fleetd 共用同一个库时，以 fleetd 用户执行：runuser -u fleetd -- fleetctl onboard …
+db = "@HOME@/team-ops-eval/fleet-stage/data/onboard/onboard.db"
+catalog = "@HOME@/team-ops-eval/fleet-stage/catalog.json"
+work_dir = "@HOME@/team-ops-eval/fleet-stage/data/onboard/work"
+ssh_key = "@HOME@/team-ops-eval/fleet-stage/onboard-keys/id_ed25519"
+ssh_pubkey = "@HOME@/team-ops-eval/fleet-stage/onboard-keys/id_ed25519.pub"
+# 中控上 fleet-cutover 装的那份 Xray（2026-09-24 实查：ls /opt/fleet/xray → 64d46afb80adea1b）
+client_xray = "/bin/false"
+# 隔离命名空间（unshare -Ur）里 /etc/ssh/ssh_config.d 的属主映射成 nobody，系统 ssh 会拒绝读取：用不读系统配置的包装
+ssh_bin = "@HOME@/team-ops-eval/fleet-stage/ssh-noconf"
+concurrency = 5
+canary = true
+canary_gate = "P16"
+relay_window_s = 30
+relay_batch_max = 20
+retry_max = 3
+retry_base_ms = 5000
+keyscan_samples = 5
+keyscan_interval_ms = 3000
+lease_ttl_s = 20
+egress_check_url = "https://www.cloudflare.com/cdn-cgi/trace"
+require_bbr = true
+dd_wait_timeout_s = 1800
+
+[ss]
+tarball = "@HOME@/team-ops-eval/fleet-stage/dist/shadowsocks-v1.25.0.x86_64-unknown-linux-musl.tar.xz"   # 旁边要有 .sha256；0644
+method = "aes-256-gcm"
+port = 8388
+relay_port_lo = 20001
+relay_port_hi = 20999
+
+[[providers]]
+name = "ATTVPS"
+code = "ATT"
+[[providers]]
+name = "OhnoICU"
+code = "MX"
+[[providers]]
+name = "NodeMach"
+code = "NM"
+
+# 三台线路机都已由 fleet-cutover 切到 fleet-xray（/etc/fleet/xray/config.json 为事实源）。
+# 配置写入在线路机上整段持有 flock -w 60 /run/lock/fleet-xray-config.lock（与 fleet-cutover 同一把锁）+ sha256 CAS。
+[[relays]]
+name = "线路机1"
+host = "23.148.204.129"
+ssh_port = 22
+ssh_user = "root"
+ssh_key = "@HOME@/team-ops-eval/fleet-stage/onboard-keys/relay_ed25519"
+known_hosts = "@HOME@/team-ops-eval/fleet-stage/onboard-keys/relays.known_hosts"
+public_host = "23.148.204.129"
+allow_ips = ["23.148.204.129"]
+config = "/etc/fleet/xray/config.json"
+api = "127.0.0.1:62789"
+sni = "www.cloudflare.com"
+max_nodes = 25
+
+[[relays]]
+name = "线路机2"
+host = "127.0.0.1"                    # 中控本机（线路机2 = 中控）
+ssh_port = 22
+ssh_user = "root"
+ssh_key = "@HOME@/team-ops-eval/fleet-stage/onboard-keys/relay_ed25519"
+known_hosts = "@HOME@/team-ops-eval/fleet-stage/onboard-keys/relays.known_hosts"
+public_host = "38.58.57.22"
+allow_ips = ["38.58.57.22"]
+config = "/etc/fleet/xray/config.json"
+api = "127.0.0.1:62789"
+sni = "www.cloudflare.com"
+max_nodes = 25
+
+[[relays]]
+name = "线路机3"
+host = "38.58.57.69"
+ssh_port = 22
+ssh_user = "root"
+ssh_key = "@HOME@/team-ops-eval/fleet-stage/onboard-keys/relay_ed25519"
+known_hosts = "@HOME@/team-ops-eval/fleet-stage/onboard-keys/relays.known_hosts"
+public_host = "38.58.57.69"
+allow_ips = ["38.58.57.69"]
+config = "/etc/fleet/xray/config.json"
+api = "127.0.0.1:62789"
+sni = "www.cloudflare.com"
+max_nodes = 25

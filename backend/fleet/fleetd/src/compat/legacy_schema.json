@@ -1,0 +1,812 @@
+{
+ "auth": {
+  "header": "X-Api-Key",
+  "base_url": "https://38.58.57.22/ops/api",
+  "example": "curl -H \"X-Api-Key: tlm_...\" https://38.58.57.22/ops/api/overview"
+ },
+ "endpoints": [
+  {
+   "method": "GET",
+   "path": "/provision/defaults",
+   "scope": "read",
+   "params": "",
+   "description": "查询接入线路、端口、团队和软件包信息。"
+  },
+  {
+   "method": "GET",
+   "path": "/jobs",
+   "scope": "read",
+   "params": "limit",
+   "description": "查询接入任务列表。"
+  },
+  {
+   "method": "GET",
+   "path": "/jobs/<id>",
+   "scope": "read",
+   "params": "",
+   "description": "查询接入任务步骤和结果。"
+  },
+  {
+   "method": "POST",
+   "path": "/provision/relay",
+   "scope": "write",
+   "params": "name,ip,ssh_port,auth,provider,plan,price,currency,billing_cycle,due_date,traffic_reset_day,timezone,note",
+   "description": "启动一键接入线路机任务。任务 result 含 pending_ui_actions（前端用管理员会话执行的 Komari REST 调用）"
+  },
+  {
+   "method": "POST",
+   "path": "/provision/node",
+   "scope": "write",
+   "params": "relay,team,provider,service_id,name_number,egress_ip,outbound,plan,bandwidth,price,currency,billing_cycle,due_date,supplier_timezone,note",
+   "description": "启动一键接入家宽节点任务。任务 result 含 pending_ui_actions（前端用管理员会话执行的 Komari REST 调用）"
+  },
+  {
+   "method": "GET",
+   "path": "/overview",
+   "scope": "read",
+   "params": "",
+   "description": "查询资产、线路快照、流量汇总和健康摘要（assets[].health 只含 status/reason/since/summary_counts，检查明细见 /node）。"
+  },
+  {
+   "method": "GET",
+   "path": "/activity",
+   "scope": "read",
+   "params": "asset,team,action,source_ip,host,kind,protocol,search,seconds,limit,before,cursor",
+   "description": "筛选并分页查询访问记录及目标和来源统计。"
+  },
+  {
+   "method": "GET",
+   "path": "/history",
+   "scope": "read",
+   "params": "asset,hours",
+   "description": "查询指定资产的历史流量。"
+  },
+  {
+   "method": "GET",
+   "path": "/policies",
+   "scope": "read",
+   "params": "",
+   "description": "查询当前策略、草稿及发布版本。"
+  },
+  {
+   "method": "GET",
+   "path": "/policies/preview",
+   "scope": "read",
+   "params": "",
+   "description": "根据最近访问记录预览策略草稿的影响。"
+  },
+  {
+   "method": "GET",
+   "path": "/audit",
+   "scope": "read",
+   "params": "",
+   "description": "查询最近一百五十条审计记录。"
+  },
+  {
+   "method": "GET",
+   "path": "/renewals",
+   "scope": "read",
+   "params": "",
+   "description": "查询最近两百条续费记录。"
+  },
+  {
+   "method": "GET",
+   "path": "/export",
+   "scope": "read",
+   "params": "",
+   "description": "导出资产清单和团队汇总。"
+  },
+  {
+   "method": "GET",
+   "path": "/health",
+   "scope": "read",
+   "params": "",
+   "description": "查询采集器和监控服务的健康状态；含完整 monitor 汇总（原 /overview.monitor）。"
+  },
+  {
+   "method": "GET",
+   "path": "/fleet",
+   "scope": "read",
+   "params": "",
+   "description": "查询线路机和入口的接入及归属状态。"
+  },
+  {
+   "method": "GET",
+   "path": "/node",
+   "scope": "read",
+   "params": "asset",
+   "description": "查询节点健康（status/reason/since/checks 四态判定）、可用率、流量和审计详情。"
+  },
+  {
+   "method": "GET",
+   "path": "/incidents",
+   "scope": "read",
+   "params": "asset,status",
+   "description": "查询节点故障事件；evidence 含 check、reason 与探针原始证据（rc/phase/ms/measured_at）。"
+  },
+  {
+   "method": "GET",
+   "path": "/behavior",
+   "scope": "read",
+   "params": "asset,team,source_ip,host,action,kind,protocol,search,seconds,limit,offset",
+   "description": "查询访问目标统计和行为异常事件。"
+  },
+  {
+   "method": "GET",
+   "path": "/public-status",
+   "scope": "read",
+   "params": "",
+   "description": "查询主机在线状态和代理链路健康摘要（link_status/reason 为四态口径）。"
+  },
+  {
+   "method": "GET",
+   "path": "/panel/overview",
+   "scope": "read",
+   "params": "relay",
+   "description": "查询面板状态及关联资产的入口流量和出口检查结果；online 表示活跃=最近约 10 秒有流量经过。"
+  },
+  {
+   "method": "GET",
+   "path": "/schema",
+   "scope": "read",
+   "params": "",
+   "description": "查询接口认证方式、参数和权限说明。"
+  },
+  {
+   "method": "GET",
+   "path": "/api-keys",
+   "scope": "full",
+   "params": "",
+   "description": "列出 API key 的元数据和使用计数。"
+  },
+  {
+   "method": "GET",
+   "path": "/api-keys/usage",
+   "scope": "full",
+   "params": "",
+   "description": "查询最近一百条 API key 调用记录。"
+  },
+  {
+   "method": "POST",
+   "path": "/assets/edit",
+   "scope": "write",
+   "params": "uuid,expected_revision,name,note,price,due_date,renewal,renewal_note,capacity_bps",
+   "description": "修改资产资料并按需登记续费；capacity_bps 为可选带宽 bit/s，null 清除显式配置，线路机默认 1 Gbps。"
+  },
+  {
+   "method": "POST",
+   "path": "/policies/draft",
+   "scope": "write",
+   "params": "scope,expected_revision,policy",
+   "description": "保存指定团队或节点的策略草稿。"
+  },
+  {
+   "method": "POST",
+   "path": "/policies/apply",
+   "scope": "write",
+   "params": "draft_hash,routing_hashes",
+   "description": "校验草稿和线路版本后提交策略发布。"
+  },
+  {
+   "method": "POST",
+   "path": "/policies/discard",
+   "scope": "write",
+   "params": "draft_hash",
+   "description": "校验草稿版本后丢弃全部策略草稿。"
+  },
+  {
+   "method": "POST",
+   "path": "/fleet/add",
+   "scope": "write",
+   "params": "kind,name,team,ip,price,due_date,billing_timezone,provider,plan,note,relay,relay_port,host_key,ssh_port,request_id",
+   "description": "登记资产接入资料并准备接入凭据。"
+  },
+  {
+   "method": "POST",
+   "path": "/fleet/activate",
+   "scope": "write",
+   "params": "relay",
+   "description": "验证线路机身份和采集通道后启用线路机。"
+  },
+  {
+   "method": "POST",
+   "path": "/fleet/installer",
+   "scope": "write",
+   "params": "relay",
+   "description": "生成指定线路机的安装脚本。"
+  },
+  {
+   "method": "POST",
+   "path": "/node/profile",
+   "scope": "write",
+   "params": "uuid,expected_revision,profile",
+   "description": "更新节点维护窗口和监控阈值。"
+  },
+  {
+   "method": "POST",
+   "path": "/incidents/ack",
+   "scope": "write",
+   "params": "id,note",
+   "description": "确认故障事件并记录处理备注。"
+  },
+  {
+   "method": "POST",
+   "path": "/behavior/ack",
+   "scope": "write",
+   "params": "id",
+   "description": "确认行为异常事件并记录审计。"
+  },
+  {
+   "method": "POST",
+   "path": "/panel/action",
+   "scope": "write",
+   "params": "relay,action,args；inbound_enable{id,enable,confirm:true},inbound_reset{id,confirm:true},client_reset{id,email,confirm:true},xray_restart{confirm:true},inbound_remark{id,remark},client_rotate{id,confirm:true},xray_logs{count},probe_now{port?}",
+   "description": "入口启停、重置流量、重启 Xray、改备注、更换首个客户端 UUID、查询日志、立即验证链路。probe_now 可指定入口，省略时验证整条线路；已有验证时返回 ok=false，不重复排队。client_rotate 返回 uuid；xray_logs/probe_now 返回 obj。"
+  },
+  {
+   "method": "POST",
+   "path": "/api-keys/create",
+   "scope": "full",
+   "params": "name,scope（read/write/full）,expires_days（0 为永不过期）",
+   "description": "创建 API key 并仅在本次响应返回明文。"
+  },
+  {
+   "method": "POST",
+   "path": "/api-keys/revoke",
+   "scope": "full",
+   "params": "id",
+   "description": "吊销指定 API key。"
+  },
+  {
+   "method": "GET",
+   "path": "/schema.md",
+   "scope": "read",
+   "params": "",
+   "description": "查询 Markdown 格式的完整接口与 UI 动作说明。"
+  },
+  {
+   "method": "GET",
+   "path": "/komari/hosts",
+   "scope": "read",
+   "params": "",
+   "description": "查询每 5 秒同步的 Komari 主机最新状态。"
+  },
+  {
+   "method": "GET",
+   "path": "/komari/hosts/<uuid>/metrics",
+   "scope": "read",
+   "params": "range=1h/4h/1d",
+   "description": "查询全部负载指标；Komari RPC 的 hours 为字符串 1/4/24。"
+  },
+  {
+   "method": "GET",
+   "path": "/komari/pings",
+   "scope": "read",
+   "params": "",
+   "description": "查询全部 Komari Ping 任务。"
+  },
+  {
+   "method": "GET",
+   "path": "/komari/pings/<task_id>/results",
+   "scope": "read",
+   "params": "hours,uuid（可选）",
+   "description": "查询 Ping 历史；task_id 为整数，RPC 按字符串传递，hours 同样为字符串；不传 hours 使用 Komari 的 4 小时范围。"
+  },
+  {
+   "method": "GET",
+   "path": "/komari/clients",
+   "scope": "read",
+   "params": "",
+   "description": "查询 Komari 客户端信息，移除每个元素的 token 字段。"
+  },
+  {
+   "method": "POST",
+   "path": "/fleet/prepare",
+   "scope": "write",
+   "params": "同 /fleet/add",
+   "description": "准备接入票据；通常直接调用 /fleet/add 完成全部编排。"
+  },
+  {
+   "method": "POST",
+   "path": "/fleet/bind",
+   "scope": "write",
+   "params": "uuid,ticket",
+   "description": "绑定 Komari 资产到接入票据。"
+  },
+  {
+   "method": "POST",
+   "path": "/fleet/commit",
+   "scope": "write",
+   "params": "uuid,ticket",
+   "description": "提交已绑定的接入资料。"
+  }
+ ],
+ "scopes": {
+  "read": "所有 GET，/api-keys* 除外。",
+  "write": "包含 read，并允许所有 POST，/api-keys* 除外，包括策略发布、fleet、provision 和面板操作。",
+  "full": "包含 write，并允许 /api-keys* 的列表、使用记录、创建和吊销。"
+ },
+ "ui_actions": [
+  {
+   "action": "drawer-refresh",
+   "method": "GET",
+   "path": "/node",
+   "description": "刷新当前节点详情，保留选中的详情页签。"
+  },
+  {
+   "action": "activity-back",
+   "method": "GET",
+   "path": "/behavior",
+   "description": "查询或导出行为记录；使用筛选与 offset 分页。"
+  },
+  {
+   "action": "activity-clear",
+   "method": "GET",
+   "path": "/activity",
+   "description": "查询访问记录；沿用界面筛选，较早记录使用 cursor。"
+  },
+  {
+   "action": "activity-filter",
+   "method": "GET",
+   "path": "/activity",
+   "description": "查询访问记录；沿用界面筛选，较早记录使用 cursor。"
+  },
+  {
+   "action": "activity-older",
+   "method": "GET",
+   "path": "/activity",
+   "description": "查询访问记录；沿用界面筛选，较早记录使用 cursor。"
+  },
+  {
+   "action": "activity-refresh",
+   "method": "GET",
+   "path": "/activity",
+   "description": "查询访问记录；沿用界面筛选，较早记录使用 cursor。"
+  },
+  {
+   "action": "apikey-create",
+   "method": "POST",
+   "path": "/api-keys/create",
+   "description": "创建密钥，仅本次响应返回明文。"
+  },
+  {
+   "action": "apikey-new",
+   "method": null,
+   "path": null,
+   "description": "仅界面操作，无接口"
+  },
+  {
+   "action": "apikey-refresh",
+   "method": "GET",
+   "path": "/api-keys",
+   "description": "刷新密钥列表，同时查询 /api-keys/usage 和 /schema。"
+  },
+  {
+   "action": "apikey-revoke",
+   "method": null,
+   "path": null,
+   "description": "仅界面操作，无接口"
+  },
+  {
+   "action": "apikey-revoke-confirm",
+   "method": "POST",
+   "path": "/api-keys/revoke",
+   "description": "吊销指定密钥。"
+  },
+  {
+   "action": "asset-activity",
+   "method": "GET",
+   "path": "/activity",
+   "description": "查询访问记录；沿用界面筛选，较早记录使用 cursor。"
+  },
+  {
+   "action": "asset-detail",
+   "method": "GET",
+   "path": "/node",
+   "description": "打开详情，asset 指定节点；同时查询 /panel/overview 和 /renewals。"
+  },
+  {
+   "action": "asset-edit",
+   "method": "POST",
+   "path": "/assets/edit",
+   "description": "打开编辑/续费表单，提交时修改资产；续费设置 renewal。"
+  },
+  {
+   "action": "asset-rules",
+   "method": "GET",
+   "path": "/policies",
+   "description": "查询策略和草稿；表单保存使用 POST /policies/draft。"
+  },
+  {
+   "action": "audit-all",
+   "method": null,
+   "path": null,
+   "description": "仅界面操作，无接口"
+  },
+  {
+   "action": "behavior-ack",
+   "method": "POST",
+   "path": "/behavior/ack",
+   "description": "确认行为异常。"
+  },
+  {
+   "action": "behavior-all",
+   "method": "GET",
+   "path": "/behavior",
+   "description": "查询或导出行为记录；使用筛选与 offset 分页。"
+  },
+  {
+   "action": "behavior-export",
+   "method": "GET",
+   "path": "/behavior",
+   "description": "按当前页签导出行为（/behavior）或规则（/policies）。"
+  },
+  {
+   "action": "behavior-filter",
+   "method": "GET",
+   "path": "/behavior",
+   "description": "查询或导出行为记录；使用筛选与 offset 分页。"
+  },
+  {
+   "action": "behavior-node",
+   "method": "GET",
+   "path": "/behavior",
+   "description": "查询或导出行为记录；使用筛选与 offset 分页。"
+  },
+  {
+   "action": "behavior-page",
+   "method": "GET",
+   "path": "/behavior",
+   "description": "查询或导出行为记录；使用筛选与 offset 分页。"
+  },
+  {
+   "action": "behavior-page-tab",
+   "method": null,
+   "path": null,
+   "description": "仅界面操作，无接口"
+  },
+  {
+   "action": "behavior-refresh",
+   "method": "GET",
+   "path": "/behavior",
+   "description": "查询或导出行为记录；使用筛选与 offset 分页。"
+  },
+  {
+   "action": "behavior-tab",
+   "method": null,
+   "path": null,
+   "description": "仅界面操作，无接口"
+  },
+  {
+   "action": "behavior-timeline",
+   "method": "GET",
+   "path": "/activity",
+   "description": "查询访问记录；沿用界面筛选，较早记录使用 cursor。"
+  },
+  {
+   "action": "close",
+   "method": null,
+   "path": null,
+   "description": "仅界面操作，无接口"
+  },
+  {
+   "action": "copy",
+   "method": null,
+   "path": null,
+   "description": "仅界面操作，无接口"
+  },
+  {
+   "action": "density",
+   "method": null,
+   "path": null,
+   "description": "仅界面操作，无接口"
+  },
+  {
+   "action": "detail",
+   "method": "GET",
+   "path": "/node",
+   "description": "打开详情，asset 指定节点；同时查询 /panel/overview 和 /renewals。"
+  },
+  {
+   "action": "drawer-close",
+   "method": null,
+   "path": null,
+   "description": "仅界面操作，无接口"
+  },
+  {
+   "action": "drawer-tab",
+   "method": null,
+   "path": null,
+   "description": "仅界面操作，无接口"
+  },
+  {
+   "action": "edit-asset",
+   "method": "POST",
+   "path": "/assets/edit",
+   "description": "打开编辑/续费表单，提交时修改资产；续费设置 renewal。"
+  },
+  {
+   "action": "enroll",
+   "method": "GET",
+   "path": "/provision/defaults",
+   "description": "打开接入向导并查询选项；提交使用 /provision/node 或 /provision/relay。"
+  },
+  {
+   "action": "evidence-full",
+   "method": "GET",
+   "path": "/activity",
+   "description": "查询访问记录；沿用界面筛选，较早记录使用 cursor。"
+  },
+  {
+   "action": "evidence-latest",
+   "method": "GET",
+   "path": "/activity",
+   "description": "查询访问记录；沿用界面筛选，较早记录使用 cursor。"
+  },
+  {
+   "action": "evidence-older",
+   "method": "GET",
+   "path": "/activity",
+   "description": "查询访问记录；沿用界面筛选，较早记录使用 cursor。"
+  },
+  {
+   "action": "export",
+   "method": "GET",
+   "path": "/export",
+   "description": "导出资产费用台账。"
+  },
+  {
+   "action": "fleet-activate",
+   "method": "POST",
+   "path": "/fleet/activate",
+   "description": "验证并启用线路机。"
+  },
+  {
+   "action": "fleet-install",
+   "method": "POST",
+   "path": "/fleet/installer",
+   "description": "生成安装脚本。"
+  },
+  {
+   "action": "fleet-status",
+   "method": "GET",
+   "path": "/fleet",
+   "description": "查询线路机接入状态。"
+  },
+  {
+   "action": "inbound-expand",
+   "method": null,
+   "path": null,
+   "description": "仅界面操作，无接口"
+  },
+  {
+   "action": "inbound-page",
+   "method": null,
+   "path": null,
+   "description": "仅界面操作，无接口"
+  },
+  {
+   "action": "inbound-sort",
+   "method": null,
+   "path": null,
+   "description": "仅界面操作，无接口"
+  },
+  {
+   "action": "incident-ack",
+   "method": "POST",
+   "path": "/incidents/ack",
+   "description": "确认故障事件。"
+  },
+  {
+   "action": "job-toggle",
+   "method": "GET",
+   "path": "/jobs/<id>",
+   "description": "展开接入任务步骤和结果。"
+  },
+  {
+   "action": "menu-toggle",
+   "method": null,
+   "path": null,
+   "description": "仅界面操作，无接口"
+  },
+  {
+   "action": "node-settings",
+   "method": "POST",
+   "path": "/node/profile",
+   "description": "打开监控维护表单，提交 profile、uuid 和 expected_revision。"
+  },
+  {
+   "action": "nodes-view",
+   "method": null,
+   "path": null,
+   "description": "仅界面操作，无接口"
+  },
+  {
+   "action": "panel-logs",
+   "method": "POST",
+   "path": "/panel/action",
+   "description": "action=xray_logs，args={count:100}；返回 obj 日志行。"
+  },
+  {
+   "action": "panel-probe",
+   "method": "POST",
+   "path": "/panel/action",
+   "description": "action=probe_now，args={port} 验证选中的入口；args={} 验证整条线路。"
+  },
+  {
+   "action": "panel-remark",
+   "method": null,
+   "path": null,
+   "description": "仅界面操作，无接口"
+  },
+  {
+   "action": "panel-remark-save",
+   "method": "POST",
+   "path": "/panel/action",
+   "description": "action=inbound_remark，args={id,remark}。"
+  },
+  {
+   "action": "panel-reset",
+   "method": "POST",
+   "path": "/panel/action",
+   "description": "有 email 时 client_reset{id,email}，否则 inbound_reset{id}。"
+  },
+  {
+   "action": "panel-restart",
+   "method": "POST",
+   "path": "/panel/action",
+   "description": "打开确认框；panel-submit 执行 xray_restart{confirm:true} 或 client_rotate{id}。"
+  },
+  {
+   "action": "panel-rotate",
+   "method": "POST",
+   "path": "/panel/action",
+   "description": "打开确认框；panel-submit 执行 xray_restart{confirm:true} 或 client_rotate{id}。"
+  },
+  {
+   "action": "panel-submit",
+   "method": "POST",
+   "path": "/panel/action",
+   "description": "执行已选择的 inbound_enable、xray_restart 或 client_rotate。"
+  },
+  {
+   "action": "panel-toggle",
+   "method": "POST",
+   "path": "/panel/action",
+   "description": "action=inbound_enable，args={id,enable,confirm:true}；停用先确认。"
+  },
+  {
+   "action": "policy-apply",
+   "method": "POST",
+   "path": "/policies/apply",
+   "description": "使用预览的 draft_hash、routing_hashes 发布。"
+  },
+  {
+   "action": "policy-discard",
+   "method": null,
+   "path": null,
+   "description": "仅界面操作，无接口"
+  },
+  {
+   "action": "policy-discard-confirm",
+   "method": "POST",
+   "path": "/policies/discard",
+   "description": "使用 draft_hash 丢弃草稿。"
+  },
+  {
+   "action": "policy-preview",
+   "method": "GET",
+   "path": "/policies/preview",
+   "description": "预览草稿影响。"
+  },
+  {
+   "action": "policy-refresh",
+   "method": "GET",
+   "path": "/policies",
+   "description": "查询策略和草稿；表单保存使用 POST /policies/draft。"
+  },
+  {
+   "action": "provision-node",
+   "method": "GET",
+   "path": "/provision/defaults",
+   "description": "打开接入向导并查询选项；提交使用 /provision/node 或 /provision/relay。"
+  },
+  {
+   "action": "provision-relay",
+   "method": "GET",
+   "path": "/provision/defaults",
+   "description": "打开接入向导并查询选项；提交使用 /provision/node 或 /provision/relay。"
+  },
+  {
+   "action": "provision-submit",
+   "method": "POST",
+   "path": "/provision/relay",
+   "description": "线路机向导提交，返回 job_id。"
+  },
+  {
+   "action": "provision-submit",
+   "method": "POST",
+   "path": "/provision/node",
+   "description": "家宽节点向导提交，返回 job_id。"
+  },
+  {
+   "action": "refresh",
+   "method": "GET",
+   "path": "/overview",
+   "description": "刷新总览并重新查询当前页面接口。"
+  },
+  {
+   "action": "renew",
+   "method": "POST",
+   "path": "/assets/edit",
+   "description": "打开编辑/续费表单，提交时修改资产；续费设置 renewal。"
+  },
+  {
+   "action": "renew-asset",
+   "method": "POST",
+   "path": "/assets/edit",
+   "description": "打开编辑/续费表单，提交时修改资产；续费设置 renewal。"
+  },
+  {
+   "action": "schema-export",
+   "method": "GET",
+   "path": "/schema",
+   "description": "导出已查询的接口说明 JSON。"
+  },
+  {
+   "action": "scope",
+   "method": null,
+   "path": null,
+   "description": "仅界面操作，无接口"
+  },
+  {
+   "action": "source-records",
+   "method": "GET",
+   "path": "/activity",
+   "description": "查询访问记录；沿用界面筛选，较早记录使用 cursor。"
+  },
+  {
+   "action": "system-refresh",
+   "method": "GET",
+   "path": "/audit",
+   "description": "刷新操作记录，同时刷新 /overview。"
+  },
+  {
+   "action": "target-records",
+   "method": "GET",
+   "path": "/activity",
+   "description": "查询访问记录；沿用界面筛选，较早记录使用 cursor。"
+  },
+  {
+   "action": "team",
+   "method": null,
+   "path": null,
+   "description": "仅界面操作，无接口"
+  },
+  {
+   "action": "wizard-back",
+   "method": null,
+   "path": null,
+   "description": "仅界面操作，无接口"
+  },
+  {
+   "action": "wizard-confirm",
+   "method": null,
+   "path": null,
+   "description": "仅界面操作，无接口"
+  },
+  {
+   "action": "wizard-enroll",
+   "method": "POST",
+   "path": "/fleet/add",
+   "description": "查询 GET /fleet 后打开已有入口登记表单；提交时 prepare → addClient → bind → editClient → commit。"
+  },
+  {
+   "action": "wizard-next",
+   "method": null,
+   "path": null,
+   "description": "仅界面操作，无接口"
+  }
+ ],
+ "ai_notes": "online = 最近约 10 秒有流量经过，表示活跃，不等同主机在线。fresh = 快照年龄 < max(120, 3×采集间隔) 秒。probe.healthy = 探针最近一次连通性检查成功（结合 tcp_at/egress_at 判断时效；actual_ip 与 expected_ip 判断出口漂移）；path.healthy = 使用实际入口和代理配置的端到端链路验证成功。monthly_cents 单位为美元分，除以 100 为 USD 月费。jobs.status：running 执行中、succeeded 成功、failed 失败、rolled_back 失败后已回滚；steps.status：pending 待执行、running 执行中、ok 成功、failed 失败、skipped 跳过。jobs.result.pending_ui_actions = 任务成功后仍需前端以管理员会话执行的 Komari REST 调用列表 {method,path,body}（目前只有首页 Ping 绑定）。Komari 结果在 data 下原样返回，clients 仅移除 token；Komari 无 incidents 概念，故障查询使用 /incidents。health.status：ok 正常、degraded 降级、fail 故障、unknown 无数据或过期、maintenance 维护；health.reason 枚举 timeout/auth/egress_mismatch/policy_blocked/upstream_down/probe_offline/stale/unstable/retrying/unknown；出口与入口检查按完整探测周期判定：一个周期（首次加两次 30 秒重试）全部失败记 1 次失败，连续 2 个周期失败为 fail，1 次认证成功即恢复 ok；最近 6 个周期中 3 次失败标记 degraded/unstable；重试进行中保持上一判定并给出 retrying（metrics.egress_pending=true）；summary_counts 为各检查状态计数（ok/degraded/fail/unknown/na）。"
+}

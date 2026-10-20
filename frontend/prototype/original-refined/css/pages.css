@@ -1,0 +1,271 @@
+/* pages.css — 页面级排布（只放布局，不放组件外观）。组件外观一律在 components.css / cards.css / table.css。 */
+
+/* 通用排布 */
+.stack { display: grid; gap: var(--section-gap); min-width: 0; }
+.stack-sm { display: grid; gap: var(--grid-gap); min-width: 0; }
+.row { display: flex; align-items: center; gap: var(--control-gap); min-width: 0; }
+.row-end { display: flex; align-items: center; justify-content: flex-end; gap: var(--control-gap); min-width: 0; }
+.row-between { display: flex; align-items: center; justify-content: space-between; gap: var(--control-gap); min-width: 0; }
+.cols-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--grid-gap); min-width: 0; }
+.grow { flex: 1; min-width: 0; }
+@media (max-width: 900px) { .cols-2 { grid-template-columns: minmax(0, 1fr); } }
+
+/* 页面切换：内容区淡入（不做页面转场，只防止首帧闪） */
+.page { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--section-gap); min-width: 0; }
+.page > .page-head { margin-bottom: 0; }
+/* 空的占位槽（线路页的演示条槽）不占一格网格行，否则多出 16 px 间距（consistency #15） */
+.page > [data-demo]:empty { display: none; }
+
+/* ---------- 首页 #/home ---------- */
+/* 控制条：分组分段（左）+ 排序（右），与原版同一行 */
+.home-bar { display: flex; align-items: center; justify-content: space-between; gap: var(--control-gap); min-width: 0; }
+.home-bar .seg { flex: 0 1 auto; min-width: 0; }
+@media (max-width: 600px) {
+  .home-bar .btn-label { display: none; }
+  .home-bar .btn { padding: 0 var(--sp-10); }
+}
+.home-grid-wrap { min-width: 0; }
+.home-empty { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); }
+
+/* ---------- 运营总览 #/dashboard（§6.2） ---------- */
+/* 两栏面板（业务速率排行 │ 需处理）各按内容高度（原版“需要关注”就是按内容高，空状态不悬在一大片白里，fidelity #14） */
+.dash-pair { align-items: start; }
+.dash-attn { display: flex; flex-direction: column; min-width: 0; }
+/* 业务速率排行固定 5 行高（行数随实时数据变化时面板不跳，零布局位移）；空状态也占这个高度 */
+.dash-rank { min-height: calc(5 * var(--row-2)); display: flex; flex-direction: column; }
+.dash-rank > .empty { flex: 1; }
+/* 需处理为空但有“未知”：空状态不撑满，只占一行高度，让出位置给“未知”小节 */
+.dash-attn > .empty.is-short { flex: none; min-height: 0; padding: var(--sp-16); }
+/* 团队表“状态”列：最小宽 260，不随 pill 个数跳动 */
+.dash-status { min-width: 260px; }
+/* 图表容器预留 190 高（含 x 轴带），uPlot 异步加载时不推动下方内容 */
+.dash-chart { min-height: 190px; }
+.dash-chart > .skel { height: 190px; }
+.dash-chart[hidden] { display: none; }
+
+/* 原型未包含的页面 */
+.placeholder { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); }
+
+/* 演示条（?demo=1） */
+.demo-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-8) var(--sp-12); padding: var(--sp-8) var(--sp-12); border: 1px dashed var(--line-strong); border-radius: var(--r-float); font-size: var(--fs-label); color: var(--fg-3); }
+
+/* 抽屉内容排布 */
+.dz { display: grid; gap: var(--grid-gap); min-width: 0; }
+.dz-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); padding: var(--card-pad); min-width: 0; }
+.dz-card-flush { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); overflow: hidden; min-width: 0; }
+.dz-head { display: flex; align-items: center; gap: var(--sp-8); margin-bottom: var(--sp-12); min-height: 22px; }
+.dz-title { margin: 0; font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-sans); color: var(--fg); white-space: nowrap; }
+.dz-tools { margin-left: auto; display: flex; align-items: center; gap: var(--control-gap); font-size: var(--fs-label); color: var(--fg-2); white-space: nowrap; }
+.dz-statusrow { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-8) var(--sp-20); }
+.dz-kv { display: inline-flex; align-items: center; gap: var(--sp-6); font-size: var(--fs-label); color: var(--fg-2); white-space: nowrap; }
+.dz-kv b { font-weight: var(--fw-regular); color: var(--fg); font-size: var(--fs-body); }
+.dz-days { display: flex; align-items: center; gap: var(--sp-16); flex-wrap: wrap; }
+/* 抽屉里的 30 天条铺满整行（每格 7 px 很难对准悬停，craft #36）；首页卡片的心跳条保持原版 20 格定宽 */
+.dz-days > .days { flex: 1 1 240px; width: auto; }
+.dz-days > .days > i { flex: 1 1 0; width: auto; max-width: 16px; }
+.dz-days-val { font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-num); font-variant-numeric: var(--num-variant); }
+.dz-groups { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--grid-gap); }
+.dz-group-title { font: var(--fw-semibold) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg); margin-bottom: var(--sp-4); }
+.dl-rows { margin: 0; display: grid; }
+.dl-rows > div { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-12); padding: var(--sp-6) 0; border-bottom: 1px solid var(--line); min-width: 0; }
+.dl-rows > div:last-child { border-bottom: 0; }
+.dl-rows dt { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); white-space: nowrap; flex: none; }
+.dl-rows dd { margin: 0; font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg); text-align: right; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 长文字值（系统、CPU 型号）最多两行，不再差几个像素就省略（craft #18） */
+.dl-rows dd.is-long { white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere; }
+/* 可复制的值：复制图标浮在值的左边，不占位，右缘与其它值对齐（IPv4 不再内缩 18 px，craft #18） */
+.dl-rows dd .copy { position: relative; overflow: visible; }
+.dl-rows dd .copy > .lucide { position: absolute; right: calc(100% + var(--sp-4)); top: 50%; margin-top: -7px; }
+.dl-rows dd .num { font-weight: var(--fw-semibold); }
+.dl-rows dd .unit { font-size: inherit; }
+.dz-actions { display: grid; }
+.dz-action { display: flex; align-items: center; gap: var(--sp-12); padding: var(--sp-12) 0; border-bottom: 1px solid var(--line); }
+.dz-action:first-child { padding-top: 0; }
+.dz-action:last-child { border-bottom: 0; padding-bottom: 0; }
+.dz-action-name { font: var(--fw-medium) var(--fs-body) / var(--lh-body) var(--font-sans); color: var(--fg); }
+.dz-action-desc { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); }
+.dz-action-body { flex: 1; min-width: 0; }
+@media (max-width: 760px) {
+  .dz-groups { grid-template-columns: minmax(0, 1fr); }
+  .readings, .card-readings { --cols: 1; }
+}
+
+/* ---------- 节点行为 #/behavior（§6.5） ---------- */
+/* 访问规则：两栏 1 : 3（间距 12）；左栏范围列表最高 660 内部滚动；内容区 ≤760 时上下排 */
+.rules-grid { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(0, 3fr); gap: var(--grid-gap); align-items: start; min-width: 0; }
+.rules-list { max-height: 660px; overflow-y: auto; margin: 0 calc(-1 * var(--sp-6)); padding: 0 var(--sp-6); }
+.rules-domains { min-height: 140px; font-variant-numeric: tabular-nums; }
+.rules-editor .panel-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@container content (max-width: 760px) {
+  .rules-grid { grid-template-columns: minmax(0, 1fr); }
+  .rules-list { max-height: 320px; }
+}
+/* 证据对话框里的表：贴着对话框内容区，横向放不下时内部滚动 */
+.evidence-table { min-width: 0; border: 1px solid var(--line); border-radius: var(--r-float); overflow: hidden; }
+.evidence-table > .empty { min-height: 120px; }
+
+/* ---------- 线路 #/lines（SPEC §6.4；原版 renders/ops-lines.png 的排布） ---------- */
+/* 控制条：线路机分段（左）+ 跨线路机搜索（右），与首页“分组分段 + 排序”同一行语言 */
+.lines-bar { display: flex; align-items: center; justify-content: space-between; gap: var(--control-gap); min-width: 0; }
+.lines-bar .seg { flex: 0 1 auto; min-width: 0; }
+.lines-bar .search { flex: 0 1 360px; }
+@container content (max-width: 700px) {
+  .lines-bar { flex-wrap: wrap; }
+  .lines-bar .search { flex: 1 1 100%; }
+}
+
+/* 线路机面板：头（名称行 + 描述行）→ 读数行 → 入口分段 → 更新详情；分段之间是通栏发丝线（原版嵌套的“连接入口”面板去掉一层边框，A-16） */
+.relay-head { display: grid; gap: var(--sp-4); padding: var(--sp-14) var(--card-pad) 0; min-width: 0; }
+.relay-line { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-6) var(--sp-12); min-width: 0; min-height: 28px; }
+.relay-name { margin: 0; font: var(--fw-semibold) var(--fs-title) / var(--lh-title) var(--font-sans); letter-spacing: var(--tracking-title); color: var(--fg); white-space: nowrap; }
+.relay-read { display: inline-flex; align-items: baseline; gap: var(--sp-4) var(--sp-6); font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); white-space: nowrap; }
+.relay-read .num-b { font: var(--fw-semibold) var(--fs-body) / var(--lh-body) var(--font-num); font-variant-numeric: var(--num-variant); color: var(--fg); margin-right: var(--sp-6); }
+/* 利用率百分比定宽右对齐：<1% / 2% / 12% 变化时后面的内容不左右跳（craft #5） */
+.relay-read [data-s^="util-"] .num-b { display: inline-block; min-width: 4ch; text-align: left; } /* 预留宽度放在数字后面：标签与数字之间只有一个正常间距 */
+.relay-read .num-b .unit, .relay-read .num-b .num { font-size: inherit; font-weight: inherit; color: inherit; }
+.relay-read .num-b .unit { font-size: var(--fs-label); font-weight: var(--fw-regular); color: var(--fg-2); }
+.relay-fresh { margin-left: auto; }
+.relay-sub { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-4) var(--sp-16); min-width: 0; font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); }
+.relay-meta, .relay-parts, .entry-counts { display: inline-flex; flex-wrap: wrap; align-items: center; column-gap: var(--sp-6); row-gap: var(--sp-2); min-width: 0; }
+.relay-meta .copy { position: relative; font-variant-numeric: tabular-nums; }
+/* IP 后的复制图标不占位（悬停才出现），否则 IP 与后面的“·”之间平白多出一个图标宽的空隙 */
+.relay-meta .copy > .lucide { position: absolute; left: 100%; margin-left: var(--sp-2); }
+.relay-parts { cursor: default; }
+.relay-sep { color: var(--fg-3); }
+.relay-sep.is-gap { margin: 0 var(--sp-2); color: var(--line-strong); }
+.relay-metrics { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: var(--sp-12) var(--sp-24); padding: var(--sp-16) var(--card-pad) var(--card-pad); min-width: 0; }
+@container content (max-width: 1000px) { .relay-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@container content (max-width: 520px) { .relay-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-12) var(--sp-16); } }
+.relay-sec { border-top: 1px solid var(--line); min-width: 0; }
+.relay.is-nomatch .relay-nomatch { display: flex; align-items: baseline; gap: var(--sp-8); padding: var(--sp-12) var(--card-pad); font-size: var(--fs-body); }
+.relay.is-nomatch .relay-name { font-size: var(--fs-emph); line-height: var(--lh-emph); }
+
+/* 入口分段：标题 + 计数（左）……… 团队 / 活动 / 状态 · 新增家宽节点 · Xray 日志（右，控件一律 32 高） */
+.entry-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-8) var(--sp-12); padding: var(--sp-12) var(--card-pad); min-width: 0; }
+.entry-title { margin: 0; font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-sans); color: var(--fg); white-space: nowrap; }
+.entry-counts { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); }
+.entry-counts .unit { font-size: inherit; }
+.entry-tools { margin-left: auto; display: flex; flex-wrap: wrap; align-items: center; gap: var(--control-gap); }
+.entry-note { padding: 0 var(--card-pad) var(--sp-12); }
+.entry-port { font-weight: var(--fw-semibold); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.entry-ip { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.entry-remark-edit { display: inline-flex; align-items: center; gap: var(--sp-6); }
+.entry-remark-edit .input { width: 220px; }
+
+/* 更新详情：折叠行 + 右侧“重启 Xray”；展开后两列明细 */
+.relay-foot { display: flex; align-items: center; gap: var(--control-gap); padding: var(--sp-4) var(--card-pad); min-width: 0; }
+.relay-foot .disclosure { flex: 1; min-width: 0; }
+.relay-foot .disclosure-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.relay-more { padding: 0 var(--card-pad) var(--card-pad); }
+
+/* 接入任务：每条一行（折叠：标题 · 状态 · 开始 / 耗时 / 步数），展开是结果提示条 + 步骤时间线 */
+.job-list > .job { border-top: 1px solid var(--line); padding: 0 var(--card-pad); }
+.job-row.disclosure { height: auto; min-height: 44px; flex-wrap: wrap; row-gap: var(--sp-2); padding: var(--sp-6) 0; }
+.job-title { font-weight: var(--fw-semibold); white-space: nowrap; }
+.job-meta { font-variant-numeric: tabular-nums; }
+.job-body { display: grid; gap: var(--sp-8); padding: 0 0 var(--sp-12) var(--sp-24); }
+
+/* 管理操作记录：头部工具在右；详情列 = 折叠摘要 + 等宽 JSON */
+.audit-head { flex-wrap: wrap; row-gap: var(--sp-8); }
+.audit-head .panel-tools { flex-wrap: wrap; }
+.audit-detail { width: 40%; }
+.audit-toggle.disclosure { height: var(--h-sm); width: auto; max-width: 100%; }
+.audit-detail .codeblock { margin: var(--sp-4) 0 var(--sp-6); }
+.audit-skel { display: grid; gap: var(--sp-10); padding: var(--sp-14) var(--card-pad) var(--card-pad); }
+
+/* ---------- 上架流水线 #/onboarding（§6.6；只放排布，外观全部来自组件） ---------- */
+/* 批次卡：两行 12 px 元信息 + 一条“已上线”分段进度 */
+.ob-batch { display: grid; gap: var(--sp-2); min-width: 0; }
+.ob-meta { min-width: 0; font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); }
+.ob-meta .num { color: var(--fg); }
+.ob-progress { display: flex; align-items: center; gap: var(--sp-12); margin-top: var(--sp-10); min-width: 0; }
+.ob-progress > .stepbar { flex: 0 1 360px; }
+.ob-progress-note { min-width: 0; font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 矩阵：固定表格布局（计时文字变长不会挤动列宽，§5.3 规则 2）。步骤列 96、状态列 136、操作列 48；
+   首列（节点）吃掉剩余宽度、次行超长省略；内容区不够宽时表格保持最小宽度、在面板里横向滚动（首列固定） */
+.ob-matrix { table-layout: fixed; min-width: 1080px; }
+.ob-matrix.is-steps { min-width: 2000px; }
+.ob-matrix .is-step { width: 96px; }
+.ob-matrix .ob-statecol { width: 136px; }
+.ob-matrix .ob-actcol { width: 48px; padding-left: var(--sp-4); }
+.ob-matrix td:first-child { overflow: hidden; }
+.ob-name { display: inline-flex; align-items: center; gap: var(--sp-6); white-space: nowrap; }
+.ob-clip { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ob-matrix tr.is-muted > td:not(:last-child) { opacity: 0.55; }
+.ob-legend { overflow: hidden; }
+/* 常驻说明行：提示条占满，按钮组靠右，窄了换行到下面 */
+.ob-note { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-8) var(--sp-12); min-width: 0; max-width: calc(100cqw - 2 * var(--cell-edge) - 2px); }
+.ob-note > .note { flex: 1 1 420px; min-width: 0; }
+.ob-note-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--control-gap); }
+.ob-fp { margin-top: var(--sp-2); color: var(--fg-2); overflow-wrap: anywhere; }
+/* 合批窗口倒计时：文字 + 2 px 细线 */
+.ob-window { display: grid; grid-template-columns: auto minmax(60px, 160px); align-items: center; gap: var(--sp-10); }
+@container content (max-width: 1100px) { .ob-legend { display: none; } }
+@container content (max-width: 760px) {
+  .ob-matrix { min-width: 980px; }
+  .ob-progress { flex-wrap: wrap; }
+  .ob-progress > .stepbar { flex: 1 1 100%; }
+  .ob-note > .note { flex-basis: 100%; }
+}
+/* 新建批次对话框 */
+.ob-paste { min-height: 180px; font: var(--fw-regular) var(--fs-label) / var(--lh-body) var(--font-mono); }
+.ob-sum { flex-wrap: wrap; }
+.ob-preview { border: 1px solid var(--line); border-radius: var(--r-float); }
+.ob-edit td { height: auto; padding-top: var(--sp-8); padding-bottom: var(--sp-8); vertical-align: top; }
+.ob-edit th:not(:first-child):not(:last-child), .ob-edit td:not(:first-child):not(:last-child) { padding-left: var(--sp-8); padding-right: var(--sp-8); }
+.ob-edit .sub { margin-top: var(--sp-2); }
+.ob-edit .field-error { display: block; margin-top: var(--sp-2); max-width: 180px; white-space: normal; }
+.ob-in-ip { width: 120px; }
+.ob-svc, .ob-relay, .ob-due { gap: var(--sp-6); flex-wrap: nowrap; }
+.ob-svc, .ob-due { margin-top: var(--sp-4); }
+.ob-in-svc { width: 80px; }
+.ob-in-plan { width: 164px; }
+.ob-in-relay { width: 88px; }
+.ob-in-due { width: 100px; }
+.ob-foot-hint { margin-right: auto; align-self: center; white-space: nowrap; }
+.ob-canary { width: min(100%, 360px); }
+/* 抽屉底栏：“放弃此行”靠最左，其余按钮靠右 */
+.ob-foot-start { margin-right: auto; }
+/* 批次卡标题可换行（手机上不截断）；日志卡头部窄了换行 */
+.ob-head { flex-wrap: wrap; }
+.ob-head > .panel-title { white-space: normal; min-width: 0; }
+.ob-loghead { flex-wrap: wrap; row-gap: var(--sp-8); }
+@media (max-width: 600px) {
+  .ob-density { display: none; }
+  .ob-foot-hint { display: none; }
+  .ob-loghead > .dz-tools { margin-left: 0; width: 100%; }
+  .ob-loghead .search { flex: 1 1 auto; max-width: none; }
+}
+.relay-metrics .meter.is-reading .meter-sub { white-space: normal; }
+.relay-metrics .nowrap { white-space: nowrap; }
+.relay-foot .disclosure > span:not(.disclosure-meta) { white-space: nowrap; }
+@container content (max-width: 600px) { .relay-foot .disclosure-meta { display: none; } }
+/* 审计表：内容区窄时整表横向滚动（列不挤成竖排），首列时间吊在左侧 */
+.audit-dt { min-width: 760px; }
+.audit-dt td { white-space: nowrap; }
+.job-body .timeline { max-width: 640px; }
+.audit-dt tr.is-detail-open td { vertical-align: top; padding-top: var(--sp-12); }
+.audit-dt tr.is-detail-open td.audit-detail { padding-top: var(--sp-8); }
+/* 访问规则：右侧编辑区吊顶，左侧 43 个范围滚动时编辑区留在视口里（craft #33） */
+.rules-editor { position: sticky; top: calc(var(--topbar-h) + var(--pagehead-h, 0px) + var(--sp-16)); }
+@container content (max-width: 760px) { .rules-editor { position: static; } }
+/* 抽屉概览的三张大数字卡（本月 / 近 24 小时 / 业务速率）：外形就是 KPI 卡，三列；手机一列（fidelity #11） */
+.kpi-grid.is-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 600px) { .kpi-grid.is-3 { grid-template-columns: minmax(0, 1fr); } }
+/* 主机页签“负载图表”头下的覆盖说明行 + 去“连接质量”的链接 */
+.host-cover { margin: calc(-1 * var(--sp-6)) 0 var(--sp-10); flex-wrap: wrap; row-gap: var(--sp-4); }
+/* 网卡小图的副行是图例（色块 + 当前值） */
+.mini-sub .chart-legend { gap: var(--sp-8); }
+.mini-sub .chart-legend i { width: 8px; height: 8px; margin-right: var(--sp-4); vertical-align: 0; }
+/* 上架矩阵：手机上首列留够宽，IP 和“线路机 :端口”不被截断（craft #24） */
+@container content (max-width: 760px) { .ob-matrix { min-width: 1060px; } }
+
+/* 套餐与配额：表内额度条（quota 胶囊）限宽，与副行读数左对齐 */
+.quota-cell { max-width: 320px; padding: var(--sp-6) 0 var(--sp-2); }
+.ob-issues { margin: var(--sp-4) 0 0; padding-left: 1.2em; display: grid; gap: var(--sp-2); }
+/* 账户与安全（pages/account.js）：密码表单一列、窄；验证码输入框定宽 */
+.account-form { max-width: 360px; }
+.account-code { width: 140px; }
+.ev-more { display: flex; justify-content: center; padding: var(--sp-8) 0 var(--sp-4); }
+/* 列表正在换新数据：旧行留在原处、变淡，不闪回骨架 */
+.is-refreshing { opacity: 0.55; transition: opacity var(--dur-fast); pointer-events: none; }

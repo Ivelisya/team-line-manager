@@ -1,0 +1,24 @@
+# 运行数据快照（含真实节点 IP），不进仓库；本地保留
+frontend/deploy-v2/live/fixtures/
+frontend/prototype/data/*.json
+!frontend/prototype/data/plan-catalog.json
+
+# 构建产物与缓存
+**/target/
+**/node_modules/
+**/dist/
+*.log
+.DS_Store
+
+# 凭据与密钥（双保险）
+*.pem
+*.key
+id_ed25519*
+id_rsa*
+.env
+.env.*
+*token*.txt
+*.apikey
+
+# 中控线上快照：含明文密钥、二进制和数据库，不进 git
+/production/

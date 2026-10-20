@@ -1,0 +1,208 @@
+/* table.css — DataTable（SPEC §3.10）：保留运营表格的骨架（灰色表头带、行间发丝线、整行可点、行尾 ›），细节照首页。
+   表格放在面板里贴边（.panel-body.is-flush 或 .table-wrap 直接做面板子元素）；横向放不下时容器内滚动。 */
+
+.table-wrap { overflow-x: auto; min-width: 0; }
+/* 横向滚动时右缘一条阴影提示“右边还有”；滚到底被随内容移动的底色盖住（纯 CSS scroll shadow，craft #22） */
+.table-wrap {
+  background:
+    linear-gradient(90deg, transparent, var(--surface) 60%) right / 28px 100% no-repeat local,
+    linear-gradient(270deg, color-mix(in srgb, var(--fg) 10%, transparent), transparent) right / 10px 100% no-repeat scroll;
+}
+/* 表格放得下时（app.js 的 syncWraps 加 .is-clip）：clip 不形成滚动容器，表头贴着吊顶的页头吊住（craft #4） */
+.table-wrap.is-clip { overflow-x: clip; background: none; }
+.table-wrap.is-clip > .dt > thead th { top: calc(var(--topbar-h) + var(--pagehead-h, 0px)); }
+.dt { width: 100%; border-collapse: separate; border-spacing: 0; font-size: var(--fs-body); line-height: var(--lh-body); color: var(--fg); }
+.dt th, .dt td { padding: var(--cell-py) var(--cell-px); text-align: left; vertical-align: middle; border-bottom: 1px solid var(--line); }
+.dt th:first-child, .dt td:first-child { padding-left: var(--cell-edge); }
+.dt th:last-child, .dt td:last-child { padding-right: var(--cell-edge); }
+.dt thead th {
+  position: sticky; top: 0; z-index: var(--z-sticky);
+  height: var(--thead-h); box-sizing: border-box; padding-top: 0; padding-bottom: 0;
+  background: var(--sunken); font: var(--fw-medium) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2-on-sunken); white-space: nowrap;
+}
+.dt tbody tr:last-child td { border-bottom: 0; }
+.dt td { height: var(--row-1); box-sizing: border-box; }
+.dt.is-two td { height: var(--row-2); }
+/* 双行表：单元格一律顶端对齐，同一行里各列的主行在同一条线上（单元素的“启用”不再比旁边的“有活动”低 13 px，craft #14）；
+   行尾 › 仍居中 */
+.dt.is-two td { vertical-align: top; }
+.dt.is-two td.chev { vertical-align: middle; }
+.dt .r { text-align: right; }
+.dt .c { text-align: center; }
+.dt td.r, .dt td .num { font-variant-numeric: var(--num-variant); }
+.dt .strong { font-weight: var(--fw-semibold); }
+.dt .sub { display: block; font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 紧凑：次行 12/16（§3.10），44 = 4 + 20 + 16 + 4 */
+[data-density="compact"] .dt .sub { line-height: var(--lh-micro); }
+.dt .v { font: var(--fw-semibold) var(--fs-body) / var(--lh-body) var(--font-num); font-variant-numeric: var(--num-variant); white-space: nowrap; }
+.dt .v .unit { font-weight: var(--fw-regular); }
+/* 数值用 Inter、正文用 PingFang：行内混排时基线对齐会把 20 的行盒撑高 1–2 px；数值的行内盒收到 16，行高稳定在 --row-2 */
+.dt td .v { line-height: var(--lh-micro); }
+/* 次行同理：苹方行盒里混进 Inter 数值（↓ 11.0 GiB · ↑ 1.79 GiB）或可复制的 IP，行盒会被撑到 19，整行变 57。行内盒收到 16，行高稳定在 --row-2 */
+.dt .sub .val, .dt .sub .num, .dt .sub .copy, .dt .sub .unit { line-height: var(--lh-micro); }
+.dt .nowrap { white-space: nowrap; }
+.dt .clip { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 窄内容区（手机）隐藏次要列：列定义里写 cls: 'hide-narrow'（表头和单元格都会带上）。只给信息在别处已有的列用，例如短名已含团队时的“团队”列 */
+@container content (max-width: 480px) {
+  .dt .hide-narrow { display: none; }
+}
+
+/* 可点行 */
+.dt tr.is-link { cursor: pointer; transition: background-color var(--dur-fast); }
+.dt tr.is-link:hover { background: var(--hover); }
+.dt tr.is-link:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.dt tr.is-current { background: var(--selected); }
+.dt tr.is-current td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
+.dt .chev { width: 36px; padding-left: 0; text-align: right; color: var(--fg-3); }
+.dt tr.is-link:hover .chev { color: var(--fg-2); }
+
+/* 排序表头 */
+.th-sort { display: inline-flex; align-items: center; gap: var(--sp-4); padding: 0; border: 0; background: none; cursor: pointer; font: inherit; color: inherit; }
+.th-sort:hover { color: var(--fg); }
+.th-sort[aria-sort="ascending"], .th-sort[aria-sort="descending"] { color: var(--fg); }
+.th-sort .lucide { width: 12px; height: 12px; color: var(--accent); }
+
+/* 分组行、展开行、空行 */
+.dt tr.group-tr td { height: 36px; background: var(--surface); font-weight: var(--fw-semibold); }
+.dt tr.expand-tr td { background: var(--sunken); padding: var(--sp-16) var(--cell-edge); }
+.dt tr.empty-tr td { height: 120px; }
+/* 小节标题行（运营总览“需处理”下方的“未知”）：12/500 灰字 + 计数，上边发丝线，列宽与上方行对齐 */
+.dt tr.section-tr td { height: 36px; padding-top: var(--sp-10); padding-bottom: 0; vertical-align: top; border-bottom: 0; font: var(--fw-medium) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2); }
+.dt tr.section-tr .num { font-weight: var(--fw-semibold); }
+.dt tbody tr.section-tr:first-child td { border-top: 1px solid var(--line); }
+
+/* 表内进度线（两条上下叠放，默认宽 120）：每条 = 16 行高文字 + 2 px 细线，两条共 36，放进 56 行（宽松）和 44 行（紧凑）都不撑高 */
+.tmeter { display: grid; gap: 0; width: var(--tmeter-w, 120px); }
+/* 细线离上面的文字 1 px：贴着文字下沿看起来像下划线或链接（craft #31） */
+.tmeter .meter-track { margin-top: 1px; }
+.tmeter-row, .tmeter-row b { line-height: 15px; }
+.tmeter-row { display: flex; justify-content: space-between; gap: var(--sp-4); font-size: var(--fs-label); line-height: var(--lh-micro); color: var(--fg-2); white-space: nowrap; }
+.tmeter-row b { font: var(--fw-semibold) var(--fs-label) / var(--lh-micro) var(--font-num); font-variant-numeric: var(--num-variant); color: var(--fg); overflow: hidden; text-overflow: ellipsis; }
+
+/* 一列两个排序键（“月费 / 到期”）；分组行右侧小计 */
+.th-multi { display: inline-flex; align-items: center; gap: var(--sp-4); }
+.th-sep { color: var(--fg-3); }
+.disclosure .group-end { margin-left: auto; padding-left: var(--sp-12); font: var(--fw-regular) var(--fs-label) / var(--lh-label) var(--font-num); font-variant-numeric: var(--num-variant); color: var(--fg-2); white-space: nowrap; }
+.dt tr.group-tr td { padding-top: 0; padding-bottom: 0; }
+
+/* 表内额度线（线路机本月列）：2 px 细线（同进度线）缩成 40 宽，与次行文字同一行 */
+.dt .sub .meter-track { display: inline-block; width: 24px; margin-right: var(--sp-4); vertical-align: middle; }
+
+/* 固定列宽（节点页 11 列）：列宽由表头 width 决定，实时数值变长不会推动别的列；放不下的文字省略号 + tooltip。
+   表格最小宽度写在容器的 --dt-min 上，内容区更窄时容器内横向滚动（首列吊住，见下） */
+.dt.is-fixed { table-layout: fixed; min-width: var(--dt-min, 0px); }
+.dt.is-fixed td { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dt.is-fixed tr.expand-tr td, .dt.is-fixed td.note-td { white-space: normal; overflow: visible; }
+/* 列多的表（节点页 11 列）：单元格左右内边距 12 → 10，首末列仍是 --cell-edge */
+.dt.is-tight { --cell-px: var(--sp-10); }
+.dt.is-tight .chev { width: 32px; }
+/* 状态 pill（22 高）放进 20 的主行，行高保持 --row-2（56 / 44），不被 pill 撑成 59 */
+.dt td > .pill, .dt td > span > .pill:only-child { vertical-align: top; margin: -1px 0; }
+/* 首列 IP 的复制图标不占列宽：悬停时浮在右侧内边距里 */
+.dt td.has-copy .sub { overflow: visible; }
+.dt td.has-copy .copy { position: relative; }
+.dt td.has-copy .copy > .lucide { position: absolute; left: calc(100% + 4px); top: 50%; margin-top: -7px; }
+
+/* 实时筛选：离开当前筛选的行先淡到 0.5 并标“已不符合筛选”，5 秒后收起（§5.3 规则 4）；新进入的行淡入 */
+.dt tr.is-leaving { opacity: 0.5; }
+.dt tr.is-entering { animation: fade-in var(--dur-base) var(--ease-out); }
+
+/* 窄内容区：首列（节点名）吊在左侧，横向滚动时仍看得到是哪一行 */
+@container content (max-width: 760px) {
+  .dt.is-sticky-first td:first-child, .dt.is-sticky-first th:first-child { position: sticky; left: 0; z-index: 1; }
+  .dt.is-sticky-first td:first-child { background: var(--surface); box-shadow: 1px 0 0 var(--line); }
+  .dt.is-sticky-first thead th:first-child { z-index: calc(var(--z-sticky) + 1); box-shadow: 1px 0 0 var(--line); }
+  .dt.is-sticky-first tr.is-link:hover td:first-child { background: linear-gradient(var(--hover), var(--hover)), var(--surface); }
+  .dt.is-sticky-first tr.is-current td:first-child { background: linear-gradient(var(--selected), var(--selected)), var(--surface); box-shadow: inset 2px 0 0 var(--accent), 1px 0 0 var(--line); }
+}
+
+.meter-track[data-tone="warn"] .meter-fill { background: var(--warn); }
+.meter-track[data-tone="bad"] .meter-fill { background: var(--bad); }
+
+/* 步骤单元格 StepCell（上架流水线矩阵，§6.6） */
+.step {
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--sp-6); min-width: 28px;
+  height: var(--h-sm); box-sizing: border-box; padding: 0 var(--sp-8);
+  border: 0; border-radius: var(--r-control); background: transparent; cursor: pointer; white-space: nowrap;
+  font: var(--fw-medium) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2);
+  transition: background-color var(--dur-fast);
+}
+.step .num { font-variant-numeric: var(--num-variant); }
+.step:hover { background: var(--hover); }
+.step[data-step="succeeded"] .lucide { color: var(--ok); }
+.step[data-step="running"] { background: var(--info-bg); color: var(--info-text); }
+.step[data-step="running"] .lucide { color: var(--info); }
+.step[data-step="waiting_input"], .step[data-step="waiting_gate"], .step[data-step="rolled_back"] { background: var(--warn-bg); color: var(--warn-text); }
+.step[data-step="waiting_input"] .lucide, .step[data-step="waiting_gate"] .lucide, .step[data-step="rolled_back"] .lucide { color: var(--warn); }
+.step[data-step="failed"], .step[data-step="blocked"] { background: var(--bad-bg); color: var(--bad-text); }
+.step[data-step="failed"] .lucide, .step[data-step="blocked"] .lucide { color: var(--bad); }
+.step[data-step="queued"] .lucide, .step[data-step="skipped"] .lucide, .step[data-step="cancelled"] .lucide { color: var(--fg-3); }
+
+/* 表尾分页条 */
+.table-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); min-height: 44px; padding: 0 var(--cell-edge); border-top: 1px solid var(--line); font-size: var(--fs-label); color: var(--fg-2); }
+
+/* ---------- 可展开行（§3.10，线路页入口表首用）：dataTable({ expand }) ----------
+   行尾 › 展开时转 90°；展开的行与下面的展开内容之间不画分隔线；展开内容 = 两列明细 + 一排 sm 按钮（右对齐，原版位置） */
+.dt .chev .lucide { transition: transform var(--dur-base) var(--ease-out), color var(--dur-fast); }
+.dt tr[aria-expanded="true"] .chev .lucide { transform: rotate(90deg); color: var(--fg-2); }
+.dt tr.is-open td { border-bottom-color: transparent; }
+.dt tr.is-open td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
+.dt tr.expand-tr td { height: auto; }
+.dl-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 var(--sp-24); min-width: 0; }
+.expand-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--control-gap); margin-top: var(--sp-12); }
+.expand-actions .faint { margin-right: auto; font-size: var(--fs-label); }
+@media (max-width: 760px) { .dl-grid { grid-template-columns: minmax(0, 1fr); } }
+
+/* 表内名称链接（点名称打开节点抽屉，§5.5）与行内图标按钮（平时 --fg-3，行悬停 --fg-2，§3.10） */
+.cell-link { padding: 0; border: 0; background: none; cursor: pointer; text-align: left; font: inherit; font-weight: var(--fw-semibold); color: var(--fg); white-space: nowrap; line-height: inherit; vertical-align: top; }
+.cell-link:hover { text-decoration: underline; text-underline-offset: 3px; }
+.row-actions { display: inline-flex; align-items: center; gap: var(--sp-2); }
+/* 行内图标按钮：--fg-2（--fg-3 只有 2.5:1，低于控件 3:1，craft #15） */
+.row-act { color: var(--fg-2); }
+.dt tr:hover .row-act { color: var(--fg-2); }
+.row-act:hover:not(:disabled) { color: var(--fg); }
+
+/* ---------- 上架流水线矩阵补的表格能力（§6.6；通用：两行表头、窄步骤列、首列常驻、需处理行与常驻说明行） ---------- */
+/* 两行表头（thHead）：名称 12/500 + 汇总（Inter 12 --fg-2），两行都是 16 行高，放进 36 / 32 的表头带 */
+.th-2l { display: grid; line-height: 16px; }
+.th-2l-sub { font: var(--fw-regular) var(--fs-label) / 16px var(--font-sans); font-variant-numeric: var(--num-variant); color: var(--fg-2); }
+/* 步骤列：左右只留 4，StepCell 居中 */
+.dt th.is-step, .dt td.is-step { padding-left: var(--sp-4); padding-right: var(--sp-4); text-align: center; }
+/* 首列始终固定（列多、横向滚动的表：流水线“步骤 16”）；滚动时右侧一条发丝线 */
+.dt.is-pin-first td:first-child, .dt.is-pin-first th:first-child { position: sticky; left: 0; z-index: 1; box-shadow: 1px 0 0 var(--line); }
+.dt.is-pin-first td:first-child { background: var(--surface); }
+.dt.is-pin-first thead th:first-child { z-index: calc(var(--z-sticky) + 1); }
+.dt.is-pin-first tr.is-link:hover td:first-child { background: linear-gradient(var(--hover), var(--hover)), var(--surface); }
+.dt.is-pin-first tr.is-current td:first-child { background: linear-gradient(var(--selected), var(--selected)), var(--surface); }
+/* 需处理的行：首列左侧 2 px 内阴影（失败与风险 --bad，等待输入 --warn），紧跟的说明行同一条色线 */
+.dt tr[data-attn="bad"] > td:first-child, .dt tr[data-attn="bad"] + .note-tr > td { box-shadow: inset 2px 0 0 var(--bad); }
+.dt tr[data-attn="warn"] > td:first-child, .dt tr[data-attn="warn"] + .note-tr > td { box-shadow: inset 2px 0 0 var(--warn); }
+.dt tr.has-note > td { border-bottom-color: transparent; }
+/* 常驻说明行（不是可折叠展开行）：--sunken 底、内边距 10×16、跨全部列 */
+.dt td.note-td { position: static; height: auto; padding: var(--sp-10) var(--cell-edge); background: var(--sunken); }
+/* StepCell 撑满单元格（矩阵里每格等宽，状态底色连成一行）；悬停描边 */
+.step.is-fill { width: 100%; }
+.step.is-fill:hover { box-shadow: inset 0 0 0 1px var(--line-strong); }
+/* 步骤图例（矩阵面板头副行） */
+.step-legend { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--sp-4) var(--sp-12); font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); }
+.step-legend > span { display: inline-flex; align-items: center; gap: var(--sp-4); white-space: nowrap; }
+.step-legend .lucide { color: var(--fg-3); }
+.step-legend > [data-step="succeeded"] > .lucide { color: var(--ok); }
+.step-legend > [data-step="running"] > .lucide { color: var(--info); }
+.step-legend > [data-step="waiting_input"] > .lucide { color: var(--warn); }
+.step-legend > [data-step="failed"] > .lucide, .step-legend > [data-step="blocked"] > .lucide { color: var(--bad); }
+/* 窄内容区：表格横向滚动时，展开内容吊在可见区域里（不用跟着横滑去读明细） */
+@container content (max-width: 760px) {
+  .dt.is-sticky-first tr.expand-tr td { position: static; background: var(--sunken); box-shadow: none; }
+  .dt tr.expand-tr .expand-body { position: sticky; left: var(--cell-edge); width: calc(100cqw - 2 * var(--cell-edge) - 2px); }
+}
+/* 单元格里的 pill / chip（20 高）按行盒顶对齐：基线对齐会把 20 px 的行盒撑到 23，整行多出 3 px */
+.dt td .pill, .dt td .chip { vertical-align: top; }
+/* 首列固定的表里，说明行也吊在左侧（横向滚动时说明与按钮留在视口里），底色保持 --sunken */
+.dt.is-pin-first td.note-td { background: var(--sunken); box-shadow: none; }
+.dt tr.expand-tr td { box-shadow: inset 2px 0 0 var(--accent); }
+
+/* 浮层里的表（对话框、抽屉）：可截断的列吃掉剩余宽度并省略，整表放进容器——不形成横向滚动容器，
+   否则滚轮在表上会被它“接住”，外面的对话框体滚不动（owner：证据对话框在表格上滚不动、结果列被裁掉） */
+.dialog .dt td.clip, .drawer .dt td.clip { max-width: 0; width: 100%; }
+.dialog .table-wrap.is-clip > .dt > thead th, .drawer .table-wrap.is-clip > .dt > thead th { top: 0; }

@@ -1,0 +1,258 @@
+[
+ {
+  "name": "dashboard-light-1440",
+  "url": "#/dashboard",
+  "width": 1440,
+  "height": 900,
+  "wait": 1500
+ },
+ {
+  "name": "dashboard-light-1440-full",
+  "url": "#/dashboard",
+  "width": 1440,
+  "height": 900,
+  "full": true,
+  "wait": 1500
+ },
+ {
+  "name": "dashboard-dark-1440",
+  "url": "#/dashboard",
+  "width": 1440,
+  "height": 900,
+  "dark": true,
+  "wait": 1500
+ },
+ {
+  "name": "dashboard-dark-1440-full",
+  "url": "#/dashboard",
+  "width": 1440,
+  "height": 900,
+  "dark": true,
+  "full": true,
+  "wait": 1500
+ },
+ {
+  "name": "dashboard-light-375",
+  "url": "#/dashboard",
+  "width": 375,
+  "height": 812,
+  "wait": 1500
+ },
+ {
+  "name": "dashboard-light-375-full",
+  "url": "#/dashboard",
+  "width": 375,
+  "height": 812,
+  "full": true,
+  "wait": 1500
+ },
+ {
+  "name": "dashboard-dark-375",
+  "url": "#/dashboard",
+  "width": 375,
+  "height": 812,
+  "dark": true,
+  "wait": 1500
+ },
+ {
+  "name": "dashboard-dark-375-full",
+  "url": "#/dashboard",
+  "width": 375,
+  "height": 812,
+  "dark": true,
+  "full": true,
+  "wait": 1500
+ },
+ {
+  "name": "dashboard-states-light-1440",
+  "url": "#/dashboard",
+  "width": 1440,
+  "height": 900,
+  "wait": 1200,
+  "before": "__app.live.stop(); const s = __app.store; s.applyReplay(0);\nconst m = s.node('t1-21'); m.status = { ...m.status, code: 'degraded', word: '降级', reason: 'unstable', reason_word: null, first_failed_check: 'egress', since: s.now() - 900, attention: true };\nconst u = s.node('t1-05'); u.status = { ...u.status, code: 'unknown', word: '未知', reason: null, reason_word: null, first_failed_check: 'host', since: s.now() - 140, attention: false };\nconst w = s.node('t1-06'); w.status = { ...w.status, code: 'maintenance', word: '维护中', reason: null, since: s.now() - 3000 };\ns.emit('change', { nodes: { 't1-21': {}, 't1-05': {}, 't1-06': {}, 't1-31': {} }, fleet: { kpis: true } });\nwindow.scrollTo(0, document.querySelector('[data-panel=\"teams\"]').getBoundingClientRect().top + scrollY - 120);",
+  "afterWait": 900
+ },
+ {
+  "name": "dashboard-states-dark-1440",
+  "url": "#/dashboard",
+  "width": 1440,
+  "height": 900,
+  "dark": true,
+  "wait": 1200,
+  "before": "__app.live.stop(); const s = __app.store; s.applyReplay(0);\nconst m = s.node('t1-21'); m.status = { ...m.status, code: 'degraded', word: '降级', reason: 'unstable', reason_word: null, first_failed_check: 'egress', since: s.now() - 900, attention: true };\nconst u = s.node('t1-05'); u.status = { ...u.status, code: 'unknown', word: '未知', reason: null, reason_word: null, first_failed_check: 'host', since: s.now() - 140, attention: false };\nconst w = s.node('t1-06'); w.status = { ...w.status, code: 'maintenance', word: '维护中', reason: null, since: s.now() - 3000 };\ns.emit('change', { nodes: { 't1-21': {}, 't1-05': {}, 't1-06': {}, 't1-31': {} }, fleet: { kpis: true } });\nwindow.scrollTo(0, document.querySelector('[data-panel=\"teams\"]').getBoundingClientRect().top + scrollY - 120);",
+  "afterWait": 900
+ },
+ {
+  "name": "dashboard-states-light-375",
+  "url": "#/dashboard",
+  "width": 375,
+  "height": 812,
+  "wait": 1200,
+  "before": "__app.live.stop(); const s = __app.store; s.applyReplay(0);\nconst m = s.node('t1-21'); m.status = { ...m.status, code: 'degraded', word: '降级', reason: 'unstable', reason_word: null, first_failed_check: 'egress', since: s.now() - 900, attention: true };\nconst u = s.node('t1-05'); u.status = { ...u.status, code: 'unknown', word: '未知', reason: null, reason_word: null, first_failed_check: 'host', since: s.now() - 140, attention: false };\nconst w = s.node('t1-06'); w.status = { ...w.status, code: 'maintenance', word: '维护中', reason: null, since: s.now() - 3000 };\ns.emit('change', { nodes: { 't1-21': {}, 't1-05': {}, 't1-06': {}, 't1-31': {} }, fleet: { kpis: true } });\nwindow.scrollTo(0, document.querySelector('[data-panel=\"attn\"]').getBoundingClientRect().top + scrollY - 70);",
+  "afterWait": 900
+ },
+ {
+  "name": "dashboard-compact-light-1440",
+  "url": "#/dashboard",
+  "width": 1440,
+  "height": 900,
+  "wait": 1200,
+  "before": "__app.setDensity('compact');",
+  "afterWait": 600
+ },
+ {
+  "name": "dashboard-compact-dark-1440",
+  "url": "#/dashboard",
+  "width": 1440,
+  "height": 900,
+  "dark": true,
+  "wait": 1200,
+  "before": "__app.setDensity('compact');",
+  "afterWait": 600
+ },
+ {
+  "name": "dashboard-rank-today-range-1h-light-1440",
+  "url": "#/dashboard?rank=today&range=1h",
+  "width": 1440,
+  "height": 900,
+  "wait": 1800,
+  "before": "window.scrollTo(0, 440);",
+  "afterWait": 500
+ },
+ {
+  "name": "dashboard-chart-tooltip-light-1440",
+  "url": "#/dashboard?range=6h",
+  "width": 1440,
+  "height": 900,
+  "wait": 1800,
+  "before": "window.scrollTo(0, 10000); await new Promise((r) => setTimeout(r, 300)); const o = document.querySelector('[data-chart] .u-over'); const r = o.getBoundingClientRect(); for (const t of ['mouseenter', 'mousemove']) o.dispatchEvent(new MouseEvent(t, { bubbles: true, clientX: r.left + r.width * 0.62, clientY: r.top + r.height * 0.5 }));",
+  "afterWait": 400
+ },
+ {
+  "name": "dashboard-chart-tooltip-dark-1440",
+  "url": "#/dashboard?range=6h",
+  "width": 1440,
+  "height": 900,
+  "dark": true,
+  "wait": 1800,
+  "before": "window.scrollTo(0, 10000); await new Promise((r) => setTimeout(r, 300)); const o = document.querySelector('[data-chart] .u-over'); const r = o.getBoundingClientRect(); for (const t of ['mouseenter', 'mousemove']) o.dispatchEvent(new MouseEvent(t, { bubbles: true, clientX: r.left + r.width * 0.62, clientY: r.top + r.height * 0.5 }));",
+  "afterWait": 400
+ },
+ {
+  "name": "dashboard-chart-table-light-1440",
+  "url": "#/dashboard?range=1h",
+  "width": 1440,
+  "height": 900,
+  "wait": 1800,
+  "before": "document.querySelector('[data-act=\"chart-table\"]').click(); window.scrollTo(0, 10000);",
+  "afterWait": 500
+ },
+ {
+  "name": "dashboard-loading-light-1440",
+  "url": "#/dashboard",
+  "width": 1440,
+  "height": 900,
+  "delaySnapshot": 2500
+ },
+ {
+  "name": "dashboard-enroll-light-1440",
+  "url": "#/dashboard",
+  "width": 1440,
+  "height": 900,
+  "wait": 1200,
+  "before": "document.querySelector('[data-act=\"enroll\"]').click();",
+  "afterWait": 500
+ },
+ {
+  "name": "dashboard-enroll-errors-light-1440",
+  "url": "#/dashboard",
+  "width": 1440,
+  "height": 900,
+  "wait": 1200,
+  "before": "document.querySelector('[data-act=\"enroll\"]').click(); await new Promise((r) => setTimeout(r, 300)); document.querySelector('[data-wz=\"next\"]').click();",
+  "afterWait": 500
+ },
+ {
+  "name": "dashboard-enroll-confirm-light-1440",
+  "url": "#/dashboard",
+  "width": 1440,
+  "height": 900,
+  "wait": 1200,
+  "before": "document.querySelector('[data-act=\"enroll\"]').click(); await new Promise((r) => setTimeout(r, 300));\nconst q = (n) => document.querySelector('.dialog').querySelector(`[name=\"${n}\"]`);\nconst set = (n, v, ch) => { const e = q(n); e.value = v; e.dispatchEvent(new Event('input', { bubbles: true })); if (ch) e.dispatchEvent(new Event('change', { bubbles: true })); };\nset('relay', 'r2', true); await new Promise((r) => setTimeout(r, 50));\nset('egress', '198.51.100.88'); set('host', 'hk-res-12.example.net'); set('port', '31485'); set('password', 'x9Kp2mQ7'); set('service', '60412'); set('due', '2026-10-23');\ndocument.querySelector('[data-wz=\"next\"]').click();",
+  "afterWait": 500
+ },
+ {
+  "name": "dashboard-enroll-run-light-1440",
+  "url": "#/dashboard",
+  "width": 1440,
+  "height": 900,
+  "wait": 1200,
+  "before": "document.querySelector('[data-act=\"enroll\"]').click(); await new Promise((r) => setTimeout(r, 300));\nconst q = (n) => document.querySelector('.dialog').querySelector(`[name=\"${n}\"]`);\nconst set = (n, v, ch) => { const e = q(n); e.value = v; e.dispatchEvent(new Event('input', { bubbles: true })); if (ch) e.dispatchEvent(new Event('change', { bubbles: true })); };\nset('relay', 'r2', true); await new Promise((r) => setTimeout(r, 50));\nset('egress', '198.51.100.88'); set('host', 'hk-res-12.example.net'); set('port', '31485'); set('password', 'x9Kp2mQ7'); set('service', '60412'); set('due', '2026-10-23');\ndocument.querySelector('[data-wz=\"next\"]').click(); await new Promise((r) => setTimeout(r, 200)); document.querySelector('[data-wz=\"start\"]').click(); await new Promise((r) => setTimeout(r, 2300));",
+  "afterWait": 100
+ },
+ {
+  "name": "dashboard-enroll-dark-1440",
+  "url": "#/dashboard",
+  "width": 1440,
+  "height": 900,
+  "dark": true,
+  "wait": 1200,
+  "before": "document.querySelector('[data-act=\"enroll\"]').click(); await new Promise((r) => setTimeout(r, 300));\nconst q = (n) => document.querySelector('.dialog').querySelector(`[name=\"${n}\"]`);\nconst set = (n, v, ch) => { const e = q(n); e.value = v; e.dispatchEvent(new Event('input', { bubbles: true })); if (ch) e.dispatchEvent(new Event('change', { bubbles: true })); };\nset('relay', 'r2', true); await new Promise((r) => setTimeout(r, 50));\nset('egress', '198.51.100.88'); set('host', 'hk-res-12.example.net'); set('port', '31485'); set('password', 'x9Kp2mQ7'); set('service', '60412'); set('due', '2026-10-23');",
+  "afterWait": 500
+ },
+ {
+  "name": "dashboard-enroll-light-375",
+  "url": "#/dashboard",
+  "width": 375,
+  "height": 812,
+  "wait": 1200,
+  "before": "document.querySelector('[data-act=\"enroll\"]').click();",
+  "afterWait": 500
+ },
+ {
+  "name": "dashboard-drawer-light-1440",
+  "url": "#/dashboard",
+  "width": 1440,
+  "height": 900,
+  "wait": 1500,
+  "before": "document.querySelector('[data-list=\"rank\"] tr[data-row]').click();",
+  "afterWait": 1200
+ },
+ {
+  "name": "dashboard-replica-light-1440-full",
+  "url": "#/dashboard",
+  "width": 1440,
+  "height": 900,
+  "full": true,
+  "wait": 1200,
+  "before": "__app.live.stop(); const s = __app.store; s.applyReplay(0);\nconst m = s.node('t1-21'); m.status = { ...m.status, code: 'degraded', word: '降级', reason: 'unstable', reason_word: null, first_failed_check: 'egress', since: s.now() - 900, attention: true };\ns.emit('change', { nodes: { 't1-21': {}, 't1-31': {} }, fleet: { kpis: true } });",
+  "afterWait": 900
+ },
+ {
+  "name": "dashboard-replica-dark-1440-full",
+  "url": "#/dashboard",
+  "width": 1440,
+  "height": 900,
+  "full": true,
+  "dark": true,
+  "wait": 1200,
+  "before": "__app.live.stop(); const s = __app.store; s.applyReplay(0);\nconst m = s.node('t1-21'); m.status = { ...m.status, code: 'degraded', word: '降级', reason: 'unstable', reason_word: null, first_failed_check: 'egress', since: s.now() - 900, attention: true };\ns.emit('change', { nodes: { 't1-21': {}, 't1-31': {} }, fleet: { kpis: true } });",
+  "afterWait": 900
+ },
+ {
+  "name": "compare-dashboard-light",
+  "page": "http://127.0.0.1:5199/original-refined/tools/compare.html?a=..%2F..%2Foriginal%2Freplica-ops%2Frenders%2Fops-overview-full.png&b=..%2Fshots%2Fdashboard-replica-light-1440-full.png&la=%E5%8E%9F%E7%89%88&lb=%E7%B2%BE%E4%BF%AE&na=%2Fadmin%2Fdashboard+%C2%B7+%E5%9B%9E%E6%94%BE+%E5%9B%A2%E9%98%9F1-31+%E6%95%85%E9%9A%9C%E3%80%81%E5%9B%A2%E9%98%9F1-21+%E9%99%8D%E7%BA%A7&nb=%23%2Fdashboard+%C2%B7+%E5%90%8C%E4%B8%80%E6%97%B6%E5%88%BB&w=720",
+  "width": 1520,
+  "height": 900,
+  "full": true,
+  "wait": 500
+ },
+ {
+  "name": "compare-dashboard-dark",
+  "page": "http://127.0.0.1:5199/original-refined/tools/compare.html?a=..%2F..%2Foriginal%2Freplica-ops%2Frenders%2Fdark-ops-overview-full.png&b=..%2Fshots%2Fdashboard-replica-dark-1440-full.png&la=%E5%8E%9F%E7%89%88&lb=%E7%B2%BE%E4%BF%AE&na=%2Fadmin%2Fdashboard+%C2%B7+%E6%B7%B1%E8%89%B2&nb=%23%2Fdashboard+%C2%B7+%E6%B7%B1%E8%89%B2&w=720",
+  "width": 1520,
+  "height": 900,
+  "full": true,
+  "wait": 500
+ }
+]

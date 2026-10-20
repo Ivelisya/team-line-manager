@@ -1,0 +1,261 @@
+[
+ {
+  "name": "nodes-light-1440",
+  "url": "#/nodes",
+  "width": 1440,
+  "height": 900
+ },
+ {
+  "name": "nodes-dark-1440",
+  "url": "#/nodes",
+  "width": 1440,
+  "height": 900,
+  "dark": true
+ },
+ {
+  "name": "nodes-light-1440-full",
+  "url": "#/nodes",
+  "width": 1440,
+  "height": 900,
+  "full": true
+ },
+ {
+  "name": "nodes-dark-1440-full",
+  "url": "#/nodes",
+  "width": 1440,
+  "height": 900,
+  "dark": true,
+  "full": true
+ },
+ {
+  "name": "nodes-light-375",
+  "url": "#/nodes",
+  "width": 375,
+  "height": 812
+ },
+ {
+  "name": "nodes-dark-375",
+  "url": "#/nodes",
+  "width": 375,
+  "height": 812,
+  "dark": true
+ },
+ {
+  "name": "nodes-light-375-table",
+  "url": "#/nodes",
+  "width": 375,
+  "height": 812,
+  "before": "const t = document.querySelector('.panel .table-wrap').getBoundingClientRect().top + scrollY - 70; window.scrollTo(0, t);"
+ },
+ {
+  "name": "nodes-dark-375-table",
+  "url": "#/nodes",
+  "width": 375,
+  "height": 812,
+  "dark": true,
+  "before": "const t = document.querySelector('.panel .table-wrap').getBoundingClientRect().top + scrollY - 70; window.scrollTo(0, t); document.querySelector('.panel .table-wrap').scrollLeft = 260;"
+ },
+ {
+  "name": "nodes-loading-light-1440",
+  "url": "#/nodes",
+  "width": 1440,
+  "height": 900,
+  "delaySnapshot": 2500
+ },
+ {
+  "name": "nodes-compact-light-1440",
+  "url": "#/nodes",
+  "width": 1440,
+  "height": 900,
+  "before": "__app.setDensity('compact');",
+  "afterWait": 600
+ },
+ {
+  "name": "nodes-compact-dark-1440",
+  "url": "#/nodes",
+  "width": 1440,
+  "height": 900,
+  "dark": true,
+  "before": "__app.setDensity('compact');",
+  "afterWait": 600
+ },
+ {
+  "name": "nodes-states-light-1440",
+  "url": "#/nodes",
+  "width": 1440,
+  "height": 900,
+  "before": "__app.setDensity('comfortable'); __app.live.stop(); const s = __app.store; s.applyReplay(0);\nconst a = s.node('t1-03'); a.status = { ...a.status, code: 'degraded', word: '降级', reason: 'unstable', reason_word: null, since: s.now() - 900, attention: true, first_failed_check: 'tcp' };\nconst b = s.node('t1-05'); b.status = { ...b.status, code: 'fail', word: '故障', reason: 'egress_mismatch', reason_word: null, since: s.now() - 420, attention: true, first_failed_check: 'egress' };\nconst c = s.node('t1-06'); c.host.cpu_pct = 94.2; c.host.mem_pct = 91; c.billing.due_date = '2026-09-26';\nconst d = s.node('t1-02'); d.agent.online = false; d.agent.reported_at = s.now() - 760; d.host.fresh = false;\nconst e = s.node('t1-07'); e.status = { ...e.status, reason: 'retrying' };\ns.emit('change', { nodes: { 't1-02': {}, 't1-03': {}, 't1-05': {}, 't1-06': {}, 't1-07': {} } });",
+  "afterWait": 900
+ },
+ {
+  "name": "nodes-attention-light-1440",
+  "url": "#/nodes",
+  "width": 1440,
+  "height": 900,
+  "before": "__app.live.stop(); const s = __app.store; s.applyReplay(4); s.emit('change', {}); await new Promise(r => setTimeout(r, 300)); document.querySelector('[data-kpi=\"attention\"]').click();",
+  "afterWait": 900
+ },
+ {
+  "name": "nodes-grouped-plan-light-1440",
+  "url": "#/nodes?group=plan",
+  "width": 1440,
+  "height": 900
+ },
+ {
+  "name": "nodes-grouped-relay-dark-1440",
+  "url": "#/nodes?group=relay&sort=-month",
+  "width": 1440,
+  "height": 900,
+  "dark": true
+ },
+ {
+  "name": "nodes-filtered-light-1440",
+  "url": "#/nodes?team=团队1&plan=attvps.resi-vps.basic&q=relay:线路机2&sort=-rate",
+  "width": 1440,
+  "height": 900
+ },
+ {
+  "name": "nodes-planmenu-light-1440",
+  "url": "#/nodes",
+  "width": 1440,
+  "height": 900,
+  "before": "document.querySelector('[data-act=\"plan-menu\"]').click();",
+  "afterWait": 500
+ },
+ {
+  "name": "nodes-suggest-light-1440",
+  "url": "#/nodes",
+  "width": 1440,
+  "height": 900,
+  "before": "const i = document.querySelector('[data-search=\"q\"] input'); i.focus(); i.value = 'plan:'; i.dispatchEvent(new Event('input', { bubbles: true }));",
+  "afterWait": 500
+ },
+ {
+  "name": "nodes-empty-light-1440",
+  "url": "#/nodes?q=不存在的节点",
+  "width": 1440,
+  "height": 900
+ },
+ {
+  "name": "nodes-drawer-overview-light-1440",
+  "url": "#/nodes?node=t1-21",
+  "width": 1440,
+  "height": 900,
+  "wait": 1800
+ },
+ {
+  "name": "nodes-drawer-quality-egress-light-1440",
+  "url": "#/nodes?node=t1-29&tab=quality",
+  "width": 1440,
+  "height": 900,
+  "wait": 2200,
+  "before": "const b = document.querySelector('.drawer-body'); const c = [...b.querySelectorAll('.dz-title')].find(x => x.textContent === '出口画像'); const sec = c.closest('section'); b.scrollTop = sec.getBoundingClientRect().top - b.getBoundingClientRect().top + b.scrollTop - 16;"
+ },
+ {
+  "name": "nodes-drawer-quality-egress-dark-1440",
+  "url": "#/nodes?node=t1-31&tab=quality",
+  "width": 1440,
+  "height": 900,
+  "dark": true,
+  "wait": 2200,
+  "before": "const b = document.querySelector('.drawer-body'); const c = [...b.querySelectorAll('.dz-title')].find(x => x.textContent === '出口画像'); const sec = c.closest('section'); b.scrollTop = sec.getBoundingClientRect().top - b.getBoundingClientRect().top + b.scrollTop - 16;"
+ },
+ {
+  "name": "nodes-drawer-access-light-1440",
+  "url": "#/nodes?node=t1-13&tab=access",
+  "width": 1440,
+  "height": 900,
+  "wait": 2200,
+  "before": "const b = document.querySelector('.drawer-body'); const c = document.querySelector('[data-src-card]'); b.scrollTop = c.getBoundingClientRect().top - b.getBoundingClientRect().top + b.scrollTop - 16;"
+ },
+ {
+  "name": "nodes-drawer-access-14d-dark-1440",
+  "url": "#/nodes?node=r1&tab=access",
+  "width": 1440,
+  "height": 900,
+  "dark": true,
+  "wait": 2200,
+  "before": "const c = document.querySelector('[data-src-card]'); c.querySelector('.seg-item[data-value=\"d14\"]').click(); await new Promise(r => setTimeout(r, 200)); const b = document.querySelector('.drawer-body'); b.scrollTop = c.getBoundingClientRect().top - b.getBoundingClientRect().top + b.scrollTop - 16;"
+ },
+ {
+  "name": "nodes-drawer-access-light-375",
+  "url": "#/nodes?node=t1-21&tab=access",
+  "width": 375,
+  "height": 812,
+  "wait": 2200,
+  "before": "const b = document.querySelector('.drawer-body'); const c = document.querySelector('[data-src-card]'); b.scrollTop = c.getBoundingClientRect().top - b.getBoundingClientRect().top + b.scrollTop - 16;"
+ },
+ {
+  "name": "nodes-wizard-light-1440",
+  "url": "#/nodes",
+  "width": 1440,
+  "height": 900,
+  "before": "document.querySelector('[data-act=\"add\"]').click();",
+  "afterWait": 700
+ },
+ {
+  "name": "nodes-replica-light-1440",
+  "url": "#/nodes",
+  "width": 1440,
+  "height": 900,
+  "wait": 1200,
+  "before": "__app.live.stop(); const s = __app.store; s.applyReplay(0);\nconst m = s.node('t1-21'); m.status = { ...m.status, code: 'degraded', word: '降级', reason: 'timeout', reason_word: null, first_failed_check: 'egress', since: s.now() - 900, attention: true };\ns.emit('change', { nodes: { 't1-21': {}, 't1-31': {} }, fleet: { kpis: true } });",
+  "afterWait": 900
+ },
+ {
+  "name": "nodes-replica-dark-1440",
+  "url": "#/nodes",
+  "width": 1440,
+  "height": 900,
+  "dark": true,
+  "wait": 1200,
+  "before": "__app.live.stop(); const s = __app.store; s.applyReplay(0);\nconst m = s.node('t1-21'); m.status = { ...m.status, code: 'degraded', word: '降级', reason: 'timeout', reason_word: null, first_failed_check: 'egress', since: s.now() - 900, attention: true };\ns.emit('change', { nodes: { 't1-21': {}, 't1-31': {} }, fleet: { kpis: true } });",
+  "afterWait": 900
+ },
+ {
+  "name": "nodes-replica-light-390",
+  "url": "#/nodes",
+  "width": 390,
+  "height": 844,
+  "wait": 1200,
+  "before": "__app.live.stop(); const s = __app.store; s.applyReplay(0);\nconst m = s.node('t1-21'); m.status = { ...m.status, code: 'degraded', word: '降级', reason: 'timeout', reason_word: null, first_failed_check: 'egress', since: s.now() - 900, attention: true };\ns.emit('change', { nodes: { 't1-21': {}, 't1-31': {} }, fleet: { kpis: true } });",
+  "afterWait": 900
+ },
+ {
+  "name": "nodes-replica-drawer-light-1440",
+  "url": "#/nodes?node=t1-21",
+  "width": 1440,
+  "height": 900,
+  "wait": 1800,
+  "before": "__app.live.stop(); const s = __app.store; s.applyReplay(0);\nconst m = s.node('t1-21'); m.status = { ...m.status, code: 'degraded', word: '降级', reason: 'timeout', reason_word: null, first_failed_check: 'egress', since: s.now() - 900, attention: true };\ns.emit('change', { nodes: { 't1-21': {}, 't1-31': {} }, fleet: { kpis: true } });",
+  "afterWait": 1200
+ },
+ {
+  "name": "nodes-compare-light",
+  "page": "http://127.0.0.1:5199/original-refined/tools/compare.html?a=..%2F..%2Foriginal%2Freplica-ops%2Frenders%2Fops-nodes.png&b=..%2Fshots%2Fnodes-replica-light-1440.png&la=%E5%8E%9F%E7%89%88&lb=%E7%B2%BE%E4%BF%AE&na=%2Fadmin%2Fnodes+%C2%B7+%E5%9B%9E%E6%94%BE+%E5%9B%A2%E9%98%9F1-31+%E6%95%85%E9%9A%9C%E3%80%81%E5%9B%A2%E9%98%9F1-21+%E9%99%8D%E7%BA%A7&nb=%23%2Fnodes+%C2%B7+%E5%90%8C%E4%B8%80%E6%97%B6%E5%88%BB&w=720",
+  "width": 1520,
+  "height": 900,
+  "full": true
+ },
+ {
+  "name": "nodes-compare-dark",
+  "page": "http://127.0.0.1:5199/original-refined/tools/compare.html?a=..%2F..%2Foriginal%2Freplica-ops%2Frenders%2Fdark-ops-nodes.png&b=..%2Fshots%2Fnodes-replica-dark-1440.png&la=%E5%8E%9F%E7%89%88&lb=%E7%B2%BE%E4%BF%AE&na=%2Fadmin%2Fnodes+%C2%B7+%E6%B7%B1%E8%89%B2&nb=%23%2Fnodes+%C2%B7+%E6%B7%B1%E8%89%B2&w=720",
+  "width": 1520,
+  "height": 900,
+  "full": true
+ },
+ {
+  "name": "nodes-compare-drawer",
+  "page": "http://127.0.0.1:5199/original-refined/tools/compare.html?a=..%2F..%2Foriginal%2Freplica-ops%2Frenders%2Fops-drawer-overview.png&b=..%2Fshots%2Fnodes-replica-drawer-light-1440.png&la=%E5%8E%9F%E7%89%88&lb=%E7%B2%BE%E4%BF%AE&na=%E8%8A%82%E7%82%B9%E6%8A%BD%E5%B1%89+%C2%B7+%E6%A6%82%E8%A7%88&nb=%E8%8A%82%E7%82%B9%E6%8A%BD%E5%B1%89+%C2%B7+%E6%A6%82%E8%A7%88&w=720",
+  "width": 1520,
+  "height": 900,
+  "full": true
+ },
+ {
+  "name": "nodes-compare-390",
+  "page": "http://127.0.0.1:5199/original-refined/tools/compare.html?a=..%2F..%2Foriginal%2Freplica-ops%2Frenders%2Fresp-390-nodes.png&b=..%2Fshots%2Fnodes-replica-light-390.png&la=%E5%8E%9F%E7%89%88&lb=%E7%B2%BE%E4%BF%AE&na=%2Fadmin%2Fnodes+%C2%B7+390+%E5%AE%BD&nb=%23%2Fnodes+%C2%B7+390+%E5%AE%BD&w=390",
+  "width": 860,
+  "height": 900,
+  "full": true
+ }
+]

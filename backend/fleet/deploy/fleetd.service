@@ -1,0 +1,61 @@
+# /etc/systemd/system/fleetd.service — 团队线路管理 fleetd（中控）
+# 只监听 127.0.0.1:25900，由 Caddy 的 /v2/api/*、/v2/ingest/* 转发。旧后端与 Komari 已下线：旧形状接口由原生旧库渲染，
+# 主机 / 线路机数据来自边缘上报（relayd、nodeagent）。升级走 upgrade-central.sh（会覆盖本文件）。
+[Unit]
+Description=fleetd: team-ops control plane (native legacy store, edge ingest, SSE, alerts)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fleetd
+Group=fleetd
+Environment=FLEETD_LOG=info
+# mimalloc：释放的页立即还给内核（默认延迟 10 ms 且要等本线程再分配才做；空闲线程上的页会一直算在 RSS 里），
+# 竞技场按需提交。a395 生产数据副本实测匿名内存再降约 15%，CPU 无可见变化
+Environment=MIMALLOC_PURGE_DELAY=0 MIMALLOC_ARENA_EAGER_COMMIT=0
+ExecStartPre=/opt/fleetd/current/fleetd check-config --config /etc/fleetd/fleetd.toml
+ExecStart=/opt/fleetd/current/fleetd serve --config /etc/fleetd/fleetd.toml
+Restart=always
+RestartSec=3
+TimeoutStopSec=10
+StateDirectory=fleetd
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/fleetd
+UMask=0077
+# 加固
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+CapabilityBoundingSet=
+AmbientCapabilities=
+# 内存（2026-09-24 实测，原生模式）：匿名内存（堆）稳定约 110–150 MB——24 h 访问窗口、7/14 天小时汇总、增量快照；
+# 文件页约 300 MB 是 legacy.db / ingest.db 的 SQLite mmap 与 ipintel 离线库（干净页，内存紧张时内核直接回收，但也计入 cgroup 用量）。
+# 中控是 cgroup v1：MemoryHigh 在 v1 上不生效（只在 cgroup v2 上做软限流），真正起作用的只有 MemoryMax（硬限，超了先回收文件页，回收不动就 OOM）。
+# MemoryMax 按「堆 + 文件页」留余量；排查看 /v2/api/v1/system 的 rss_anon_mb 与本机 /v2/api/v1/debug/mem。
+MemoryHigh=384M
+MemoryMax=512M
+# 原生喂数（每 10 s 一拍）、旧形状接口渲染、告警评估、ipintel 都在本进程
+CPUQuota=60%
+TasksMax=64
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

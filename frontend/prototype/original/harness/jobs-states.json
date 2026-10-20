@@ -1,0 +1,258 @@
+[
+ {
+  "url": "http://127.0.0.1:5187/admin/home?theme=light&view=large&bare=1",
+  "width": 1200,
+  "height": 1500,
+  "wait": 10000,
+  "dark": false,
+  "scale": 2,
+  "shots": [
+   {
+    "shot": "../shots/state-card-hover-light.png",
+    "actions": [
+     {
+      "hoverJs": "(()=>{const e=document.getElementById('f').contentDocument.querySelectorAll(\".node-card-grid > div\")[1];if(!e)return null;const r=e.getBoundingClientRect();return {x:r.x+r.width*0.5,y:r.y+r.height*0.35};})()",
+      "wait": 500
+     }
+    ],
+    "clipJs": "(()=>{const e=document.getElementById('f').contentDocument.querySelectorAll(\".node-card-grid > div\")[1];if(!e)return null;const r=e.getBoundingClientRect();return {x:Math.max(0,r.x-10),y:Math.max(0,r.y-10),width:r.width+20,height:r.height+20};})()"
+   },
+   {
+    "shot": "../shots/state-latency-tooltip-light.png",
+    "actions": [
+     {
+      "hoverJs": "(()=>{const e=document.getElementById('f').contentDocument.querySelectorAll(\".latency-strip-cell\")[12];if(!e)return null;const r=e.getBoundingClientRect();return {x:r.x+r.width*0.5,y:r.y+r.height*0.5};})()",
+      "wait": 500
+     }
+    ],
+    "clipJs": "(()=>{const e=document.getElementById('f').contentDocument.querySelectorAll(\".latency-strip\")[0];if(!e)return null;const r=e.getBoundingClientRect();return {x:Math.max(0,r.x-16),y:Math.max(0,r.y-56),width:r.width+32,height:r.height+72};})()"
+   },
+   {
+    "shot": "../shots/state-title-hover-light.png",
+    "actions": [
+     {
+      "hoverJs": "(()=>{const e=document.getElementById('f').contentDocument.querySelectorAll(\".server-card-title-link\")[0];if(!e)return null;const r=e.getBoundingClientRect();return {x:r.x+r.width*0.5,y:r.y+r.height*0.5};})()",
+      "wait": 400
+     }
+    ],
+    "clipJs": "(()=>{const e=document.getElementById('f').contentDocument.querySelectorAll(\".review-card-identity\")[0];if(!e)return null;const r=e.getBoundingClientRect();return {x:Math.max(0,r.x-12),y:Math.max(0,r.y-12),width:r.width+24,height:r.height+24};})()"
+   },
+   {
+    "shot": "../shots/state-tab-hover-light.png",
+    "actions": [
+     {
+      "hoverJs": "(()=>{const e=document.getElementById('f').contentDocument.querySelectorAll(\".home-group-tabs button\")[2];if(!e)return null;const r=e.getBoundingClientRect();return {x:r.x+r.width*0.5,y:r.y+r.height*0.5};})()",
+      "wait": 400
+     }
+    ],
+    "clipJs": "(()=>{const d=document.getElementById('f').contentDocument;const a=d.querySelector(\".home-group-tabs\"),b=d.querySelector(\".home-sort-trigger\");if(!a||!b)return null;const r1=a.getBoundingClientRect(),r2=b.getBoundingClientRect();const x=Math.min(r1.x,r2.x)-12,y=Math.min(r1.y,r2.y)-12;return {x:Math.max(0,x),y:Math.max(0,y),width:Math.max(r1.right,r2.right)-x+12,height:Math.max(r1.bottom,r2.bottom)-y+12};})()"
+   },
+   {
+    "shot": "../shots/state-sort-open-light.png",
+    "actions": [
+     {
+      "clickJs": "(()=>{const e=document.getElementById('f').contentDocument.querySelectorAll(\".home-sort-trigger\")[0];if(!e)return null;const r=e.getBoundingClientRect();return {x:r.x+r.width*0.5,y:r.y+r.height*0.5};})()",
+      "wait": 600
+     }
+    ],
+    "clipJs": "(()=>{const d=document.getElementById('f').contentDocument;const p=d.querySelector('.home-sort-panel');const t=d.querySelector('.home-sort-trigger');if(!p)return null;const a=p.getBoundingClientRect(),b=t.getBoundingClientRect();return {x:Math.min(a.x,b.x)-120,y:b.y-12,width:Math.max(a.right,b.right)-Math.min(a.x,b.x)+132,height:a.bottom-b.y+24};})()"
+   },
+   {
+    "shot": "../shots/state-popover-light.png",
+    "actions": [
+     {
+      "key": "Escape",
+      "keyCode": 27,
+      "wait": 200
+     },
+     {
+      "clickJs": "(()=>{const e=document.getElementById('f').contentDocument.querySelectorAll(\".node-card-grid > div\")[0];if(!e)return null;const r=e.getBoundingClientRect();return {x:r.x+r.width*0.5,y:r.y+r.height*0.9};})()",
+      "wait": 300
+     },
+     {
+      "hoverJs": "(()=>{const e=document.getElementById('f').contentDocument.querySelectorAll(\".node-traffic-trigger\")[0];if(!e)return null;const r=e.getBoundingClientRect();return {x:r.x+r.width*0.5,y:r.y+r.height*0.5};})()",
+      "wait": 2500
+     }
+    ],
+    "clipJs": "(()=>{const d=document.getElementById('f').contentDocument;const p=d.querySelector('.node-traffic-popover');const t=d.querySelector('.node-traffic-trigger');if(!p)return null;const a=p.getBoundingClientRect(),b=t.getBoundingClientRect();const x=Math.min(a.x,b.x)-16,y=Math.min(a.y,b.y)-16;return {x,y,width:Math.max(a.right,b.right)-x+16,height:Math.max(a.bottom,b.bottom)-y+16};})()"
+   },
+   {
+    "shot": "../shots/state-focus-light.png",
+    "actions": [
+     {
+      "hoverJs": "({x:5,y:1400})",
+      "wait": 100
+     },
+     {
+      "key": "Tab",
+      "keyCode": 9,
+      "wait": 100
+     },
+     {
+      "js": "document.getElementById('f').contentDocument.querySelectorAll('.home-group-tabs button')[1].focus()",
+      "wait": 300
+     }
+    ],
+    "clipJs": "(()=>{const d=document.getElementById('f').contentDocument;const a=d.querySelector(\".home-group-tabs\"),b=d.querySelector(\".home-sort-trigger\");if(!a||!b)return null;const r1=a.getBoundingClientRect(),r2=b.getBoundingClientRect();const x=Math.min(r1.x,r2.x)-12,y=Math.min(r1.y,r2.y)-12;return {x:Math.max(0,x),y:Math.max(0,y),width:Math.max(r1.right,r2.right)-x+12,height:Math.max(r1.bottom,r2.bottom)-y+12};})()"
+   },
+   {
+    "shot": "../shots/state-focus-view-light.png",
+    "actions": [
+     {
+      "key": "Tab",
+      "keyCode": 9,
+      "wait": 100
+     },
+     {
+      "js": "document.getElementById('f').contentDocument.querySelectorAll('.admin-home-toolbar button')[1].focus()",
+      "wait": 300
+     }
+    ],
+    "clipJs": "(()=>{const e=document.getElementById('f').contentDocument.querySelectorAll(\".admin-home-toolbar\")[0];if(!e)return null;const r=e.getBoundingClientRect();return {x:Math.max(0,r.x-8),y:Math.max(0,r.y-8),width:r.width+16,height:r.height+16};})()"
+   },
+   {
+    "shot": "../shots/state-focus-card-light.png",
+    "actions": [
+     {
+      "key": "Tab",
+      "keyCode": 9,
+      "wait": 100
+     },
+     {
+      "js": "document.getElementById('f').contentDocument.querySelectorAll('.home-node-actions button')[0].focus()",
+      "wait": 300
+     }
+    ],
+    "clipJs": "(()=>{const e=document.getElementById('f').contentDocument.querySelectorAll(\".managed-node-footer\")[0];if(!e)return null;const r=e.getBoundingClientRect();return {x:Math.max(0,r.x-10),y:Math.max(0,r.y-10),width:r.width+20,height:r.height+20};})()"
+   }
+  ]
+ },
+ {
+  "url": "http://127.0.0.1:5187/admin/home?theme=dark&view=large&bare=1",
+  "width": 1200,
+  "height": 1500,
+  "wait": 10000,
+  "dark": true,
+  "scale": 2,
+  "shots": [
+   {
+    "shot": "../shots/state-card-hover-dark.png",
+    "actions": [
+     {
+      "hoverJs": "(()=>{const e=document.getElementById('f').contentDocument.querySelectorAll(\".node-card-grid > div\")[1];if(!e)return null;const r=e.getBoundingClientRect();return {x:r.x+r.width*0.5,y:r.y+r.height*0.35};})()",
+      "wait": 500
+     }
+    ],
+    "clipJs": "(()=>{const e=document.getElementById('f').contentDocument.querySelectorAll(\".node-card-grid > div\")[1];if(!e)return null;const r=e.getBoundingClientRect();return {x:Math.max(0,r.x-10),y:Math.max(0,r.y-10),width:r.width+20,height:r.height+20};})()"
+   },
+   {
+    "shot": "../shots/state-latency-tooltip-dark.png",
+    "actions": [
+     {
+      "hoverJs": "(()=>{const e=document.getElementById('f').contentDocument.querySelectorAll(\".latency-strip-cell\")[12];if(!e)return null;const r=e.getBoundingClientRect();return {x:r.x+r.width*0.5,y:r.y+r.height*0.5};})()",
+      "wait": 500
+     }
+    ],
+    "clipJs": "(()=>{const e=document.getElementById('f').contentDocument.querySelectorAll(\".latency-strip\")[0];if(!e)return null;const r=e.getBoundingClientRect();return {x:Math.max(0,r.x-16),y:Math.max(0,r.y-56),width:r.width+32,height:r.height+72};})()"
+   },
+   {
+    "shot": "../shots/state-title-hover-dark.png",
+    "actions": [
+     {
+      "hoverJs": "(()=>{const e=document.getElementById('f').contentDocument.querySelectorAll(\".server-card-title-link\")[0];if(!e)return null;const r=e.getBoundingClientRect();return {x:r.x+r.width*0.5,y:r.y+r.height*0.5};})()",
+      "wait": 400
+     }
+    ],
+    "clipJs": "(()=>{const e=document.getElementById('f').contentDocument.querySelectorAll(\".review-card-identity\")[0];if(!e)return null;const r=e.getBoundingClientRect();return {x:Math.max(0,r.x-12),y:Math.max(0,r.y-12),width:r.width+24,height:r.height+24};})()"
+   },
+   {
+    "shot": "../shots/state-tab-hover-dark.png",
+    "actions": [
+     {
+      "hoverJs": "(()=>{const e=document.getElementById('f').contentDocument.querySelectorAll(\".home-group-tabs button\")[2];if(!e)return null;const r=e.getBoundingClientRect();return {x:r.x+r.width*0.5,y:r.y+r.height*0.5};})()",
+      "wait": 400
+     }
+    ],
+    "clipJs": "(()=>{const d=document.getElementById('f').contentDocument;const a=d.querySelector(\".home-group-tabs\"),b=d.querySelector(\".home-sort-trigger\");if(!a||!b)return null;const r1=a.getBoundingClientRect(),r2=b.getBoundingClientRect();const x=Math.min(r1.x,r2.x)-12,y=Math.min(r1.y,r2.y)-12;return {x:Math.max(0,x),y:Math.max(0,y),width:Math.max(r1.right,r2.right)-x+12,height:Math.max(r1.bottom,r2.bottom)-y+12};})()"
+   },
+   {
+    "shot": "../shots/state-sort-open-dark.png",
+    "actions": [
+     {
+      "clickJs": "(()=>{const e=document.getElementById('f').contentDocument.querySelectorAll(\".home-sort-trigger\")[0];if(!e)return null;const r=e.getBoundingClientRect();return {x:r.x+r.width*0.5,y:r.y+r.height*0.5};})()",
+      "wait": 600
+     }
+    ],
+    "clipJs": "(()=>{const d=document.getElementById('f').contentDocument;const p=d.querySelector('.home-sort-panel');const t=d.querySelector('.home-sort-trigger');if(!p)return null;const a=p.getBoundingClientRect(),b=t.getBoundingClientRect();return {x:Math.min(a.x,b.x)-120,y:b.y-12,width:Math.max(a.right,b.right)-Math.min(a.x,b.x)+132,height:a.bottom-b.y+24};})()"
+   },
+   {
+    "shot": "../shots/state-popover-dark.png",
+    "actions": [
+     {
+      "key": "Escape",
+      "keyCode": 27,
+      "wait": 200
+     },
+     {
+      "clickJs": "(()=>{const e=document.getElementById('f').contentDocument.querySelectorAll(\".node-card-grid > div\")[0];if(!e)return null;const r=e.getBoundingClientRect();return {x:r.x+r.width*0.5,y:r.y+r.height*0.9};})()",
+      "wait": 300
+     },
+     {
+      "hoverJs": "(()=>{const e=document.getElementById('f').contentDocument.querySelectorAll(\".node-traffic-trigger\")[0];if(!e)return null;const r=e.getBoundingClientRect();return {x:r.x+r.width*0.5,y:r.y+r.height*0.5};})()",
+      "wait": 2500
+     }
+    ],
+    "clipJs": "(()=>{const d=document.getElementById('f').contentDocument;const p=d.querySelector('.node-traffic-popover');const t=d.querySelector('.node-traffic-trigger');if(!p)return null;const a=p.getBoundingClientRect(),b=t.getBoundingClientRect();const x=Math.min(a.x,b.x)-16,y=Math.min(a.y,b.y)-16;return {x,y,width:Math.max(a.right,b.right)-x+16,height:Math.max(a.bottom,b.bottom)-y+16};})()"
+   },
+   {
+    "shot": "../shots/state-focus-dark.png",
+    "actions": [
+     {
+      "hoverJs": "({x:5,y:1400})",
+      "wait": 100
+     },
+     {
+      "key": "Tab",
+      "keyCode": 9,
+      "wait": 100
+     },
+     {
+      "js": "document.getElementById('f').contentDocument.querySelectorAll('.home-group-tabs button')[1].focus()",
+      "wait": 300
+     }
+    ],
+    "clipJs": "(()=>{const d=document.getElementById('f').contentDocument;const a=d.querySelector(\".home-group-tabs\"),b=d.querySelector(\".home-sort-trigger\");if(!a||!b)return null;const r1=a.getBoundingClientRect(),r2=b.getBoundingClientRect();const x=Math.min(r1.x,r2.x)-12,y=Math.min(r1.y,r2.y)-12;return {x:Math.max(0,x),y:Math.max(0,y),width:Math.max(r1.right,r2.right)-x+12,height:Math.max(r1.bottom,r2.bottom)-y+12};})()"
+   },
+   {
+    "shot": "../shots/state-focus-view-dark.png",
+    "actions": [
+     {
+      "key": "Tab",
+      "keyCode": 9,
+      "wait": 100
+     },
+     {
+      "js": "document.getElementById('f').contentDocument.querySelectorAll('.admin-home-toolbar button')[1].focus()",
+      "wait": 300
+     }
+    ],
+    "clipJs": "(()=>{const e=document.getElementById('f').contentDocument.querySelectorAll(\".admin-home-toolbar\")[0];if(!e)return null;const r=e.getBoundingClientRect();return {x:Math.max(0,r.x-8),y:Math.max(0,r.y-8),width:r.width+16,height:r.height+16};})()"
+   },
+   {
+    "shot": "../shots/state-focus-card-dark.png",
+    "actions": [
+     {
+      "key": "Tab",
+      "keyCode": 9,
+      "wait": 100
+     },
+     {
+      "js": "document.getElementById('f').contentDocument.querySelectorAll('.home-node-actions button')[0].focus()",
+      "wait": 300
+     }
+    ],
+    "clipJs": "(()=>{const e=document.getElementById('f').contentDocument.querySelectorAll(\".managed-node-footer\")[0];if(!e)return null;const r=e.getBoundingClientRect();return {x:Math.max(0,r.x-10),y:Math.max(0,r.y-10),width:r.width+20,height:r.height+20};})()"
+   }
+  ]
+ }
+]

@@ -1,0 +1,219 @@
+[
+ {
+  "name": "onboarding-light-1440",
+  "url": "#/onboarding",
+  "width": 1440,
+  "height": 900
+ },
+ {
+  "name": "onboarding-light-1440-full",
+  "url": "#/onboarding",
+  "width": 1440,
+  "height": 900,
+  "full": true
+ },
+ {
+  "name": "onboarding-dark-1440",
+  "url": "#/onboarding",
+  "width": 1440,
+  "height": 900,
+  "dark": true
+ },
+ {
+  "name": "onboarding-dark-1440-full",
+  "url": "#/onboarding",
+  "width": 1440,
+  "height": 900,
+  "dark": true,
+  "full": true
+ },
+ {
+  "name": "onboarding-matrix-light-1440",
+  "url": "#/onboarding",
+  "width": 1440,
+  "height": 900,
+  "before": "const m = document.querySelector('[data-slot=matrix]'); window.scrollTo(0, m.getBoundingClientRect().top + scrollY - 120); return 1;"
+ },
+ {
+  "name": "onboarding-matrix-dark-1440",
+  "url": "#/onboarding",
+  "width": 1440,
+  "height": 900,
+  "dark": true,
+  "before": "const m = document.querySelector('[data-slot=matrix]'); window.scrollTo(0, m.getBoundingClientRect().top + scrollY - 120); return 1;"
+ },
+ {
+  "name": "onboarding-steps-light-1440",
+  "url": "#/onboarding?cols=steps",
+  "width": 1440,
+  "height": 900,
+  "before": "const m = document.querySelector('[data-slot=matrix]'); window.scrollTo(0, m.getBoundingClientRect().top + scrollY - 120); return 1;"
+ },
+ {
+  "name": "onboarding-attention-light-1440",
+  "url": "#/onboarding?status=attention",
+  "width": 1440,
+  "height": 900,
+  "before": "const m = document.querySelector('[data-slot=matrix]'); window.scrollTo(0, m.getBoundingClientRect().top + scrollY - 120); return 1;"
+ },
+ {
+  "name": "onboarding-compact-light-1440",
+  "url": "#/onboarding",
+  "width": 1440,
+  "height": 900,
+  "density": "compact",
+  "before": "const m = document.querySelector('[data-slot=kpis]'); window.scrollTo(0, m.getBoundingClientRect().top + scrollY - 120); return 1;"
+ },
+ {
+  "name": "onboarding-drawer-failed-light-1440",
+  "url": "#/onboarding?row=团队1-42&step=P6",
+  "width": 1440,
+  "height": 900,
+  "wait": 1500
+ },
+ {
+  "name": "onboarding-drawer-running-dark-1440",
+  "url": "#/onboarding?row=团队1-40&step=P6",
+  "width": 1440,
+  "height": 900,
+  "dark": true,
+  "wait": 1500
+ },
+ {
+  "name": "onboarding-drawer-timeline-light-1440",
+  "url": "#/onboarding?row=团队1-40&step=P6&stab=timeline",
+  "width": 1440,
+  "height": 900,
+  "wait": 1500
+ },
+ {
+  "name": "onboarding-drawer-risk-light-1440",
+  "url": "#/onboarding?row=团队1-43&step=P1",
+  "width": 1440,
+  "height": 900,
+  "wait": 1500
+ },
+ {
+  "name": "onboarding-drawer-input-dark-1440",
+  "url": "#/onboarding?row=团队1-41&step=P2",
+  "width": 1440,
+  "height": 900,
+  "dark": true,
+  "wait": 1500
+ },
+ {
+  "name": "onboarding-drawer-io-light-1440",
+  "url": "#/onboarding?row=团队1-37&step=P13&stab=io",
+  "width": 1440,
+  "height": 900,
+  "wait": 1500
+ },
+ {
+  "name": "onboarding-task-light-1440",
+  "url": "#/onboarding?task=2162d60c",
+  "width": 1440,
+  "height": 900,
+  "wait": 1500
+ },
+ {
+  "name": "onboarding-dialog-1-light-1440",
+  "url": "#/onboarding",
+  "width": 1440,
+  "height": 900,
+  "before": "document.querySelector('[data-act=new]').click(); await new Promise(r => setTimeout(r, 400)); document.querySelector('[data-nb=sample]').click(); return 1;"
+ },
+ {
+  "name": "onboarding-dialog-2-light-1440",
+  "url": "#/onboarding",
+  "width": 1440,
+  "height": 900,
+  "before": "document.querySelector('[data-act=new]').click(); await new Promise(r => setTimeout(r, 400)); document.querySelector('[data-nb=sample]').click(); document.querySelector('[data-nb=next]').click(); return 1;"
+ },
+ {
+  "name": "onboarding-dialog-2-dark-1440",
+  "url": "#/onboarding",
+  "width": 1440,
+  "height": 900,
+  "dark": true,
+  "before": "document.querySelector('[data-act=new]').click(); await new Promise(r => setTimeout(r, 400)); document.querySelector('[data-nb=sample]').click(); document.querySelector('[data-nb=next]').click(); return 1;"
+ },
+ {
+  "name": "onboarding-dialog-csv-light-1440",
+  "url": "#/onboarding",
+  "width": 1440,
+  "height": 900,
+  "before": "document.querySelector('[data-act=new]').click(); await new Promise(r => setTimeout(r, 400)); document.querySelector('[data-seg=\"ob-source\"] [data-value=\"csv\"]').click(); await new Promise(r => setTimeout(r, 200)); document.querySelector('[data-nb=sample]').click(); document.querySelector('[data-nb=next]').click(); return 1;"
+ },
+ {
+  "name": "onboarding-dialog-3-light-1440",
+  "url": "#/onboarding",
+  "width": 1440,
+  "height": 900,
+  "before": "document.querySelector('[data-act=new]').click(); await new Promise(r => setTimeout(r, 400)); document.querySelector('[data-nb=sample]').click(); document.querySelector('[data-nb=next]').click(); const tr = [...document.querySelectorAll('[data-nb-row]')].find(t => t.querySelector('[data-nb-f=ip]').value === '198.51.100.31'); tr.querySelector('[data-nb-del]').click(); document.querySelector('[data-nb=next]').click(); return 1;"
+ },
+ {
+  "name": "onboarding-dialog-4-dark-1440",
+  "url": "#/onboarding",
+  "width": 1440,
+  "height": 900,
+  "dark": true,
+  "before": "document.querySelector('[data-act=new]').click(); await new Promise(r => setTimeout(r, 400)); document.querySelector('[data-nb=sample]').click(); document.querySelector('[data-nb=next]').click(); const tr = [...document.querySelectorAll('[data-nb-row]')].find(t => t.querySelector('[data-nb-f=ip]').value === '198.51.100.31'); tr.querySelector('[data-nb-del]').click(); document.querySelector('[data-nb=next]').click(); document.querySelector('[data-nb=next]').click(); return 1;"
+ },
+ {
+  "name": "onboarding-newbatch-light-1440",
+  "url": "#/onboarding",
+  "width": 1440,
+  "height": 900,
+  "afterWait": 3500,
+  "before": "document.querySelector('[data-act=new]').click(); await new Promise(r => setTimeout(r, 400)); document.querySelector('[data-nb=sample]').click(); document.querySelector('[data-nb=next]').click(); const tr = [...document.querySelectorAll('[data-nb-row]')].find(t => t.querySelector('[data-nb-f=ip]').value === '198.51.100.31'); tr.querySelector('[data-nb-del]').click(); document.querySelector('[data-nb=next]').click(); document.querySelector('[data-nb=next]').click(); document.querySelector('[data-nb=run]').click(); return 1;"
+ },
+ {
+  "name": "onboarding-light-375",
+  "url": "#/onboarding",
+  "width": 375,
+  "height": 812
+ },
+ {
+  "name": "onboarding-light-375-full",
+  "url": "#/onboarding",
+  "width": 375,
+  "height": 812,
+  "full": true
+ },
+ {
+  "name": "onboarding-dark-375",
+  "url": "#/onboarding",
+  "width": 375,
+  "height": 812,
+  "dark": true
+ },
+ {
+  "name": "onboarding-matrix-dark-375",
+  "url": "#/onboarding",
+  "width": 375,
+  "height": 812,
+  "dark": true,
+  "before": "const m = document.querySelector('[data-slot=matrix]'); window.scrollTo(0, m.getBoundingClientRect().top + scrollY - 70); return 1;"
+ },
+ {
+  "name": "onboarding-drawer-light-375",
+  "url": "#/onboarding?row=团队1-41&step=P2",
+  "width": 375,
+  "height": 812,
+  "wait": 1500
+ },
+ {
+  "name": "onboarding-dialog-2-light-375",
+  "url": "#/onboarding",
+  "width": 375,
+  "height": 812,
+  "before": "document.querySelector('[data-act=new]').click(); await new Promise(r => setTimeout(r, 400)); document.querySelector('[data-nb=sample]').click(); document.querySelector('[data-nb=next]').click(); return 1;"
+ },
+ {
+  "name": "onboarding-loading-light-1440",
+  "url": "#/onboarding",
+  "width": 1440,
+  "height": 900,
+  "delaySnapshot": 4000
+ }
+]

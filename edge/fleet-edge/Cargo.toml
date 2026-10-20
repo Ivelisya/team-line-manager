@@ -1,0 +1,48 @@
+[package]
+name = "fleet-edge"
+version = "0.1.0"
+edition = "2021"
+description = "团队线路管理边缘代理：nodeagent（落地节点）与 relayd（线路机，观察模式）"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "nodeagent"
+path = "src/bin/nodeagent.rs"
+
+[[bin]]
+name = "relayd"
+path = "src/bin/relayd.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+toml = { version = "0.8", default-features = false, features = ["parse"] }
+libc = "0.2"
+sha2 = "0.10"
+ureq = { version = "2.12", default-features = false, features = ["tls", "json"] }
+# relayd 的 Xray StatsService 客户端（gRPC over h2c，loopback）
+h2 = "0.4"
+http = "1"
+bytes = "1"
+tokio = { version = "1", default-features = false, features = ["rt", "net", "time", "sync", "macros"] }
+# relayd 内嵌探测（L1/L2），见 ../fleet/crates/probe/WIRING.md
+fleet-probe = { path = "../fleet/crates/probe" }
+rusqlite = { version = "0.40", features = ["bundled"] }
+# 原生全链路检查：由 REALITY 私钥算公钥
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+base64 = "0.22"
+
+[workspace]
+resolver = "2"
+members = [".", "fleetd-ingest"]
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+debug = false

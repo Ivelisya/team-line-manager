@@ -1,0 +1,4 @@
+[{"url":"http://127.0.0.1:5187/admin/home?theme=light&bare=1","width":900,"height":1500,"wait":10000,"scale":1,"shots":[{"shot":"../shots/resp-900-light.png"}]},
+ {"url":"http://127.0.0.1:5187/admin/home?theme=light&bare=1","width":390,"height":2400,"wait":10000,"scale":2,"shots":[{"shot":"../shots/resp-390-light.png"}]},
+ {"url":"http://127.0.0.1:5187/admin/home?theme=dark&bare=1","width":390,"height":2400,"wait":10000,"dark":true,"scale":2,"shots":[{"shot":"../shots/resp-390-dark.png"}]},
+ {"url":"http://127.0.0.1:5187/admin/home?theme=light&bare=1","width":1680,"height":1300,"wait":10000,"scale":1,"shots":[{"shot":"../shots/resp-1680-light.png"}]}]

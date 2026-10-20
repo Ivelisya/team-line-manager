@@ -1,0 +1,168 @@
+/* cards.css — 节点卡片 NodeCard（SPEC §3.12）：一套外壳、三种视图（大卡片 / 小卡片 / 紧凑）、三种节点（主机 / 家宽代理 / 线路机）。
+   原版的行序、读数语法、footer 带全部保留；统一的是内边距、对齐、分段线和 footer。 */
+
+.cards {
+  --card-min: var(--card-min-large);
+  display: grid; gap: var(--grid-gap); align-items: stretch;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--card-min)), 1fr));
+}
+.cards[data-view="small"] { --card-min: var(--card-min-small); }
+/* 紧凑视图与原版一样 3 列（1152 内容宽）：260 的最小宽会排成 4 列，标签被收进 +N、footer 的带宽 chip 和两个文字按钮被挤掉（fidelity #6） */
+.cards[data-view="compact"] { --card-min: var(--card-min-small); }
+
+/* ---------- 外壳 ---------- */
+.ncard {
+  container-type: inline-size;
+  position: relative; display: flex; flex-direction: column; min-width: 0;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); overflow: hidden;
+  transition: border-color var(--dur-fast), opacity var(--dur-base);
+}
+.ncard:hover { border-color: var(--line-strong); }
+.ncard[data-health="fail"] { border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); }
+.ncard.is-current { border-color: var(--accent); }
+.ncard.is-leaving { opacity: 0.5; }
+.ncard-body { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; padding: var(--card-pad); }
+
+/* R1 标题 */
+.ncard-head { display: flex; align-items: center; gap: var(--inline-gap); min-height: 32px; min-width: 0; }
+.ncard-name {
+  min-width: 0; padding: 0; border: 0; background: none; cursor: pointer; text-align: left;
+  font: var(--fw-semibold) var(--fs-title) / var(--lh-title) var(--font-sans); letter-spacing: var(--tracking-title);
+  color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  text-decoration: underline; text-decoration-color: transparent; text-underline-offset: 3px;
+  transition: text-decoration-color var(--dur-fast), color var(--dur-fast);
+}
+.ncard-name:hover { text-decoration-color: var(--line-strong); }
+/* 紧凑视图卡头里的 IP：13/400 --fg-2，放不下时先省略 IP、不省略短名 */
+.ncard[data-view="compact"] .ncard-name { flex: none; }
+.ncard-ipsep { flex: none; color: var(--fg-3); }
+.ncard-ip { flex: 0 1 auto; font-size: var(--fs-body); line-height: var(--lh-body); color: var(--fg-2); font-variant-numeric: tabular-nums; }
+.ncard-offline { flex: none; font-size: var(--fs-label); line-height: var(--lh-label); color: var(--bad-text); white-space: nowrap; }
+.ncard-actions { margin-left: auto; margin-right: -8px; display: flex; align-items: center; gap: var(--sp-2); flex: none; }
+.ncard[data-online="off"] .ncard-name { color: var(--fg-2); }
+
+/* R2 地址：IP 左、IPv4 标记贴右缘，同一基线（修 A-01） */
+.ncard-addr { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); min-height: 20px; margin-top: var(--sp-2); font-size: var(--fs-body); line-height: var(--lh-body); color: var(--fg-2); }
+.ncard-addr .copy { font-variant-numeric: tabular-nums; }
+.ncard-marks { display: inline-flex; gap: var(--sp-4); flex: none; }
+
+/* R3 字段 2×2（分段） */
+.ncard-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-8) var(--sp-16); margin: var(--card-seg) 0 0; padding-top: var(--card-seg); border-top: 1px solid var(--line); }
+.ncard-fields > div { min-width: 0; }
+.ncard-fields dt { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); }
+.ncard-fields dd { margin: 0; font-size: var(--fs-body); line-height: var(--lh-body); color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ncard-fields dd .unit { font-size: inherit; color: inherit; }
+/* 套餐值可点（弹出套餐说明）：平时和原版一样是普通文字，悬停 / 键盘聚焦时才出现虚线下划线（fidelity #12） */
+.plan-btn { max-width: 100%; padding: 0; border: 0; background: none; font: inherit; color: inherit; cursor: pointer; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-decoration: underline dotted transparent; text-underline-offset: 3px; transition: text-decoration-color var(--dur-fast); }
+.plan-btn:hover, .plan-btn:focus-visible { text-decoration-color: var(--fg-2); }
+/* 线路机套餐的规格行（原版在套餐值下面） */
+.ncard-fields dd.ncard-spec { font-size: var(--fs-micro); line-height: var(--lh-micro); color: var(--fg-2); }
+.plan-btn.is-unresolved { color: var(--fg-3); }
+
+/* R4 资源 2×2（紧接字段，无分隔线：原版如此） */
+.ncard-res { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-12) var(--sp-16); margin-top: var(--card-seg); }
+
+/* 卡内分段：顶线 + 12 + 12 */
+.ncard-seg { border-top: 1px solid var(--line); padding-top: var(--card-seg); margin-top: var(--card-seg); min-width: 0; }
+.ncard-seg-title { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); margin-bottom: var(--sp-6); font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); white-space: nowrap; }
+
+/* R5 网卡：接收 / 发送（图标与业务 ↓↑ 区分，§4.3 D-02） */
+.nic { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-4) var(--sp-16); }
+.nic-rate { display: flex; align-items: center; gap: var(--sp-6); min-width: 0; font: var(--fw-semibold) var(--fs-body) / var(--lh-body) var(--font-num); font-variant-numeric: var(--num-variant); color: var(--fg); white-space: nowrap; }
+.nic-rate .lucide { color: var(--fg-2); }
+.nic-rate .unit { font-weight: var(--fw-regular); }
+.nic-total { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-8); min-width: 0; font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); white-space: nowrap; }
+.nic-total .unit { font-size: inherit; }
+
+/* R6 流量上限 */
+.qhead { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-8); margin-bottom: var(--sp-8); font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); white-space: nowrap; min-width: 0; }
+.qlabel { display: inline-flex; align-items: baseline; gap: var(--sp-4); font-weight: var(--fw-medium); min-width: 0; }
+.qlabel .lucide { width: var(--icon-xs); height: var(--icon-xs); align-self: center; }
+/* 小卡片：上限值在标签后、持续运行在右上；已用 / 上限单独一行右对齐（原版小卡片的排法） */
+.qhead.is-tight { margin-bottom: 0; }
+.qup { font-weight: var(--fw-regular); }
+.quse-row { display: flex; justify-content: flex-end; margin-bottom: var(--sp-6); font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); white-space: nowrap; }
+.qrem { font-weight: var(--fw-regular); }
+.quse { font-family: var(--font-num); font-variant-numeric: var(--num-variant); }
+.quse b { font-weight: var(--fw-semibold); color: var(--fg); }
+.quse .unit { font-size: inherit; }
+
+/* R8 运行与到期 */
+.run { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-16); }
+.run-item { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); min-width: 0; min-height: 22px; }
+.run-label { display: inline-flex; align-items: center; gap: var(--sp-4); font: var(--fw-medium) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2); white-space: nowrap; }
+.run-label .lucide { width: var(--icon-xs); height: var(--icon-xs); }
+.run-val { display: inline-flex; align-items: baseline; gap: var(--sp-4); font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-num); font-variant-numeric: var(--num-variant); color: var(--fg); white-space: nowrap; }
+.run-val .unit { font-weight: var(--fw-regular); }
+.run-val .mark { align-self: center; }
+.run-val .txt, .run-val .t-muted { font: var(--fw-regular) var(--fs-label) / var(--lh-label) var(--font-sans); }
+
+/* R9 标签行：放不下时尾部换成 +N，价格 chip 永不被挤掉（C-01） */
+.ncard-tags { display: flex; align-items: center; gap: var(--inline-gap); min-height: 24px; margin-top: 10px; min-width: 0; }
+.tags-list { display: flex; align-items: center; gap: var(--inline-gap); min-width: 0; overflow: hidden; flex: 0 1 auto; }
+.tags-list > [hidden] { display: none; }
+
+/* R10 footer 带（所有卡同一种，内边距 16 与内容左缘对齐，A-03） */
+.ncard-foot {
+  flex: none; display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8);
+  min-height: 44px; box-sizing: border-box; padding: var(--sp-8) var(--card-pad);
+  border-top: 1px solid var(--line);
+}
+.foot-right { display: flex; align-items: center; gap: var(--sp-4); min-width: 0; margin-right: -6px; }
+.foot-right .chip { margin-right: var(--sp-4); }
+.foot-icons { display: none; gap: var(--sp-2); }
+@container (max-width: 300px) {
+  .foot-text { display: none; }
+  .foot-icons { display: flex; }
+  .foot-right .chip-util { display: none; }
+}
+
+/* 离线 / 数据过期：旧值 + --fg-3，进度线 0.4，心跳格空心（§3.12 卡片状态） */
+.ncard.is-stale .lv, .ncard.is-stale .lv .unit, .ncard.is-stale .nic-rate { color: var(--fg-3); }
+.ncard.is-stale .meter-value, .ncard.is-stale .meter-sub { color: var(--fg-3); }
+.ncard.is-stale .meter-fill, .ncard.is-stale .quota-fill { opacity: 0.4; }
+.ncard.is-stale .beat-cells > i { background: transparent; box-shadow: inset 0 0 0 1px var(--line-strong); }
+
+/* ---------- 家宽代理：入口流量小表（R4） ---------- */
+.etable { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: var(--fs-label); line-height: var(--lh-label); }
+.etable th, .etable td { padding: 3px 0; font-weight: var(--fw-regular); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.etable th:first-child { text-align: left; width: 44px; color: var(--fg-2); }
+.etable thead th { color: var(--fg-2); font-weight: var(--fw-medium); padding-top: 0; }
+.etable td { font: var(--fw-semibold) var(--fs-body) / var(--lh-body) var(--font-num); font-variant-numeric: var(--num-variant); color: var(--fg); }
+.etable td .unit { font-weight: var(--fw-regular); }
+.esrc { display: inline-flex; align-items: center; gap: var(--sp-6); font-size: var(--fs-micro); color: var(--fg-2); }
+.esrc.t-warn { color: var(--warn-text); }
+.etitle { display: inline-flex; align-items: center; gap: var(--sp-6); font-weight: var(--fw-medium); color: var(--fg-2); }
+
+/* ---------- 小卡片（compact 原名 小卡片） ---------- */
+.ncard[data-view="small"] .ncard-name, .ncard[data-view="compact"] .ncard-name { font-size: var(--fs-emph); line-height: var(--lh-emph); }
+.meta2 { display: grid; gap: 0; min-height: 40px; margin-top: var(--sp-2); font-size: var(--fs-label); line-height: 20px; color: var(--fg-2); }
+.meta2-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); min-width: 0; }
+.meta2-row > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.res-compact { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-10) var(--sp-16); }
+.res-compact .meter { gap: 4px; }
+.cells3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-8); margin-top: var(--card-seg); }
+.cell { min-width: 0; padding: var(--sp-8) var(--sp-10); border: 1px solid var(--line); border-radius: var(--r-float); }
+.cell-label { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cell-row { display: flex; align-items: center; gap: var(--sp-4); min-width: 0; font: var(--fw-semibold) var(--fs-label) / var(--lh-label) var(--font-num); font-variant-numeric: var(--num-variant); color: var(--fg); white-space: nowrap; overflow: hidden; }
+.cell-row .lucide { width: 12px; height: 12px; color: var(--fg-2); }
+.cell-row .unit { font-weight: var(--fw-regular); font-size: inherit; }
+.cell-row .txt { font-weight: var(--fw-regular); }
+
+/* ---------- 紧凑（mini 原名 紧凑） ---------- */
+.ncard[data-view="compact"] .ncard-seg { padding-top: var(--sp-8); margin-top: var(--sp-8); }
+.ncard[data-view="compact"] .ncard-tags { margin-top: var(--sp-6); min-height: 20px; }
+/* 紧凑卡的标签行：原版的 chip 更紧（价格、IPv4、供应商、家宽、线路机都直接显示，fidelity #6），内边距 8 → 6、间距 6 → 4 */
+.ncard[data-view="compact"] .ncard-tags, .ncard[data-view="compact"] .tags-list { gap: var(--sp-4); }
+.ncard[data-view="compact"] .ncard-tags .chip, .ncard[data-view="compact"] .ncard-tags .mark { padding: 0 var(--sp-6); }
+.ncard[data-view="compact"] .res-compact { gap: var(--sp-8) var(--sp-12); }
+.flow2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-2) var(--sp-12); }
+.flow2-title { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); }
+.flow2-row { display: flex; align-items: center; gap: var(--sp-6); font: var(--fw-semibold) var(--fs-body) / var(--lh-body) var(--font-num); font-variant-numeric: var(--num-variant); color: var(--fg); white-space: nowrap; min-width: 0; }
+.flow2-row .lucide { width: 12px; height: 12px; color: var(--fg-2); }
+.flow2-row .unit { font-weight: var(--fw-regular); }
+.flow2-col { display: grid; gap: 0; min-width: 0; }
+
+/* ---------- 骨架卡（行结构与真实卡相同，高度相同，§3.20） ---------- */
+.ncard.is-skel .skel { height: 12px; }
+.skel-line { display: flex; align-items: center; min-height: 20px; }

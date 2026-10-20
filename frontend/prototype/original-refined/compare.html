@@ -1,0 +1,15 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>原版 vs 精修版</title>
+<style>body{font:14px/1.6 Inter,"PingFang SC",sans-serif;background:#f4f5f7;color:#1c1d21;margin:0;padding:24px 32px}h1{font-size:22px;margin:0 0 4px}h2{font-size:17px;margin:28px 0 8px}.v{background:#fff;border:1px solid #e4e6eb;border-radius:12px;padding:16px 20px;margin:12px 0}.pair{display:grid;grid-template-columns:1fr 1fr;gap:12px}.pair img,.one img{width:100%;border:1px solid #e4e6eb;border-radius:8px;background:#fff}.cap{color:#6b6f76;font-size:12px}ul{margin:6px 0 0 18px;padding:0}</style>
+<h1>团队线路管理 · 原版 vs 精修版</h1><div class="cap">2026-09-24 · 同一时刻数据（09-23 15:22 快照/副本）· 左原版，右精修版</div>
+<div class="v"><b>结论：采用精修版。</b>保留原版画风（浅灰底、白色圆角卡片、靛蓝强调、原侧栏与菜单顺序），统一六个页面的字号、表格、按钮、状态词和单位；字段一个不少，多数页面信息更多。阶段 1 以只读方式上线在 <code>/admin/v2/</code>，写操作深链回原版；原版页面保留。</div>
+<h2>首页（实时数据）</h2><div class="pair"><div><div class="cap">原版 /admin/home</div><img src="final/orig-home-light.png"></div><div><div class="cap">精修版（实时数据，只读预览）</div><img src="final/live-home-light.png"></div></div>
+<ul><li>团队页签带数量；套餐显示规范名；KPI 改为网卡速率（Mbps，接收/发送）并注明口径；地区栏加套餐筛选</li><li>待改进：延迟条打开页面时只有 1–2 格（旧接口只给最新样本）→ 由 fleetd 在服务端保留探测历史解决</li></ul>
+<h2>运营总览</h2><div class="one"><img src="shots/compare-dashboard-light.png"></div>
+<h2>节点</h2><div class="one"><img src="shots/nodes-compare-light.png"></div>
+<h2>节点详情抽屉</h2><div class="one"><img src="shots/compare-drawer.png"></div>
+<h2>线路</h2><div class="one"><img src="shots/compare-lines-light.png"></div>
+<h2>节点行为</h2><div class="one"><img src="shots/behavior-compare-targets-light.png"></div>
+<h2>首页（深色）</h2><div class="one"><img src="shots/compare-home-large-dark.png"></div>
+<h2>节点（手机</h2><div class="one"><img src="shots/nodes-compare-390.png"></div>
+<h2>390px）</h2><div class="one"><img src="shots/390px）.png"></div>
+</html>

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>团队线路管理</title>
+  <meta name="color-scheme" content="light dark">
+  <link rel="icon" href="data:,">
+  <script>
+    // 首屏前设好主题（修 K-11：原版靠 MutationObserver 观察父页，首屏会闪）。localStorage 读失败时跟随系统。
+    (function () {
+      try {
+        var t = JSON.parse(localStorage.getItem('refined:theme') || '"system"');
+        if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+        // 调色板：只用原版靛蓝（owner 2026-09-24：粉紫先不做；tokens.css 里的粉紫 token 块保留但不启用）
+        document.documentElement.setAttribute('data-palette', 'indigo');
+      } catch (e) { /* 隐私模式等：跟随系统、默认粉紫 */ }
+      // 当前页的页面模块提前并行下载（动态 import 否则要等 app.js 跑起来才开始）
+      try {
+        var page = (location.hash.replace(/^#\/?/, '').split(/[?/]/)[0]) || 'home';
+        if (/^[a-z-]+$/.test(page)) {
+          var l = document.createElement('link');
+          l.rel = 'modulepreload';
+          l.href = (document.currentScript && document.currentScript.src ? new URL('pages/' + page + '.js', document.currentScript.src).href : 'js/pages/' + page + '.js');
+          document.head.appendChild(l);
+        }
+      } catch (e) { /* 只是提前下载 */ }
+    })();
+  </script>
+  <link rel="stylesheet" href="css/app.css">
+  <link rel="modulepreload" href="js/app.js">
+  <link rel="preload" href="../data/snapshot.json" as="fetch" crossorigin>
+</head>
+<body>
+  <div class="app" id="app" data-nav="open"></div>
+  <div id="layer"></div>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

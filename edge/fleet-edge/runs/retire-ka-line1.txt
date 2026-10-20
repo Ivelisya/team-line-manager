@@ -1,0 +1,4 @@
+团队2-01 komari-agent 已停用（原 enabled=enabled active=active）
+团队2-02 komari-agent 已停用（原 enabled=enabled active=active）
+团队1-21 komari-agent 已停用（原 enabled=enabled active=active）
+团队1-22 komari-agent 已停用（原 enabled=enabled active=active）

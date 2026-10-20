@@ -1,0 +1,265 @@
+[
+ {
+  "name": "lines-light-1440",
+  "url": "#/lines",
+  "width": 1440,
+  "height": 900
+ },
+ {
+  "name": "lines-dark-1440",
+  "url": "#/lines",
+  "width": 1440,
+  "height": 900,
+  "dark": true
+ },
+ {
+  "name": "lines-light-1440-full",
+  "url": "#/lines",
+  "width": 1440,
+  "height": 900,
+  "full": true
+ },
+ {
+  "name": "lines-dark-1440-full",
+  "url": "#/lines",
+  "width": 1440,
+  "height": 900,
+  "dark": true,
+  "full": true
+ },
+ {
+  "name": "lines-light-375",
+  "url": "#/lines",
+  "width": 375,
+  "height": 812
+ },
+ {
+  "name": "lines-dark-375",
+  "url": "#/lines",
+  "width": 375,
+  "height": 812,
+  "dark": true
+ },
+ {
+  "name": "lines-light-375-table",
+  "url": "#/lines",
+  "width": 375,
+  "height": 812,
+  "before": "document.querySelector('tr[data-row=\"线路机1:20002\"] td').click(); await new Promise(r=>setTimeout(r,900)); const t=document.querySelector('[data-relay=\"r1\"] .entry-head').getBoundingClientRect().top + scrollY - 124; window.scrollTo(0,t);"
+ },
+ {
+  "name": "lines-dark-375-table",
+  "url": "#/lines",
+  "width": 375,
+  "height": 812,
+  "dark": true,
+  "before": "const w=document.querySelector('[data-table=\"r1\"] .table-wrap'); w.scrollLeft = 260; const t=document.querySelector('[data-relay=\"r1\"] .entry-head').getBoundingClientRect().top + scrollY - 124; window.scrollTo(0,t);"
+ },
+ {
+  "name": "lines-light-375-full",
+  "url": "#/lines",
+  "width": 375,
+  "height": 812,
+  "full": true
+ },
+ {
+  "name": "lines-light-900",
+  "url": "#/lines",
+  "width": 900,
+  "height": 900
+ },
+ {
+  "name": "lines-expanded-light-1440",
+  "url": "#/lines",
+  "width": 1440,
+  "height": 900,
+  "before": "document.querySelector('tr[data-row=\"线路机2:20002\"] td').click(); await new Promise(r=>setTimeout(r,900)); document.querySelector('[data-relay=\"r2\"] .relay-foot .disclosure').click(); const t=document.querySelector('[data-relay=\"r2\"]').getBoundingClientRect().top + scrollY - 124; window.scrollTo(0,t);",
+  "afterWait": 900
+ },
+ {
+  "name": "lines-expanded-dark-1440",
+  "url": "#/lines",
+  "width": 1440,
+  "height": 900,
+  "dark": true,
+  "before": "document.querySelector('tr[data-row=\"线路机2:20002\"] td').click(); await new Promise(r=>setTimeout(r,900)); document.querySelector('[data-relay=\"r2\"] .relay-foot .disclosure').click(); const t=document.querySelector('[data-relay=\"r2\"]').getBoundingClientRect().top + scrollY - 124; window.scrollTo(0,t);",
+  "afterWait": 900
+ },
+ {
+  "name": "lines-search-light-1440",
+  "url": "#/lines?q=%E5%9B%A2%E9%98%9F1-24",
+  "width": 1440,
+  "height": 900
+ },
+ {
+  "name": "lines-filter-light-1440",
+  "url": "#/lines?r1.act=idle",
+  "width": 1440,
+  "height": 900,
+  "before": "document.querySelector('[data-relay=\"r1\"] [data-act=\"filter\"][data-k=\"team\"]').click();"
+ },
+ {
+  "name": "lines-sort-rate-light-1440",
+  "url": "#/lines?sort=-rate&relay=r3",
+  "width": 1440,
+  "height": 900
+ },
+ {
+  "name": "lines-compact-light-1440",
+  "url": "#/lines",
+  "width": 1440,
+  "height": 900,
+  "before": "document.querySelector('[data-seg=\"density\"] [data-value=\"compact\"]').click();",
+  "afterWait": 600
+ },
+ {
+  "name": "lines-compact-dark-1440",
+  "url": "#/lines",
+  "width": 1440,
+  "height": 900,
+  "dark": true,
+  "before": "document.querySelector('[data-seg=\"density\"] [data-value=\"compact\"]').click();",
+  "afterWait": 600
+ },
+ {
+  "name": "lines-states-light-1440",
+  "url": "#/lines?demo=1",
+  "width": 1440,
+  "height": 900,
+  "before": "document.querySelector('[data-demo=\"panel\"]').click(); document.querySelector('[data-demo=\"xray\"]').click(); document.querySelector('[data-demo=\"disable\"]').click(); const t=document.querySelector('[data-relay=\"r2\"]').getBoundingClientRect().top + scrollY - 124; window.scrollTo(0,t);"
+ },
+ {
+  "name": "lines-states-dark-1440",
+  "url": "#/lines?demo=1",
+  "width": 1440,
+  "height": 900,
+  "dark": true,
+  "before": "document.querySelector('[data-demo=\"panel\"]').click(); document.querySelector('[data-demo=\"xray\"]').click(); const t=document.querySelector('[data-relay=\"r3\"]').getBoundingClientRect().top + scrollY - 124; window.scrollTo(0,t);"
+ },
+ {
+  "name": "lines-confirm-disable-light-1440",
+  "url": "#/lines",
+  "width": 1440,
+  "height": 900,
+  "before": "document.querySelector('tr[data-row=\"线路机1:20002\"] [data-act=\"disable\"]').click();",
+  "afterWait": 500
+ },
+ {
+  "name": "lines-confirm-reset-dark-1440",
+  "url": "#/lines",
+  "width": 1440,
+  "height": 900,
+  "dark": true,
+  "before": "document.querySelector('tr[data-row=\"线路机1:20002\"] [data-act=\"reset\"]').click();",
+  "afterWait": 500
+ },
+ {
+  "name": "lines-logs-light-1440",
+  "url": "#/lines",
+  "width": 1440,
+  "height": 900,
+  "before": "document.querySelector('[data-relay=\"r2\"] [data-act=\"logs\"]').click();",
+  "afterWait": 600
+ },
+ {
+  "name": "lines-wizard-node-light-1440",
+  "url": "#/lines",
+  "width": 1440,
+  "height": 900,
+  "before": "document.querySelector('[data-relay=\"r2\"] [data-act=\"add-node\"]').click();"
+ },
+ {
+  "name": "lines-wizard-errors-light-1440",
+  "url": "#/lines",
+  "width": 1440,
+  "height": 900,
+  "before": "document.querySelector('[data-relay=\"r2\"] [data-act=\"add-node\"]').click(); await new Promise(r=>setTimeout(r,300)); const set=(n,v)=>{const x=document.querySelector('.dialog [name=\"'+n+'\"]'); x.value=v; x.dispatchEvent(new Event('input',{bubbles:true}));}; set('egress','198.51.100.31'); set('port','70000'); document.querySelector('.dialog [data-wz=\"next\"]').click();"
+ },
+ {
+  "name": "lines-wizard-confirm-light-1440",
+  "url": "#/lines",
+  "width": 1440,
+  "height": 900,
+  "before": "document.querySelector('[data-relay=\"r3\"] [data-act=\"add-node\"]').click(); await new Promise(r=>setTimeout(r,300)); document.querySelector('.dialog [name=\"provider\"][value=\"OhnoICU\"]').click(); await new Promise(r=>setTimeout(r,200)); const set=(n,v)=>{const x=document.querySelector('.dialog [name=\"'+n+'\"]'); x.value=v; x.dispatchEvent(new Event('input',{bubbles:true}));}; set('egress','198.51.100.209'); set('host','198.51.100.209'); set('port','49763'); set('password','x'); set('due','2026-10-22'); document.querySelector('.dialog [data-wz=\"next\"]').click();"
+ },
+ {
+  "name": "lines-wizard-run-dark-1440",
+  "url": "#/lines",
+  "width": 1440,
+  "height": 900,
+  "dark": true,
+  "before": "document.querySelector('[data-relay=\"r1\"] [data-act=\"add-node\"]').click(); await new Promise(r=>setTimeout(r,300)); const set=(n,v)=>{const x=document.querySelector('.dialog [name=\"'+n+'\"]'); x.value=v; x.dispatchEvent(new Event('input',{bubbles:true}));}; set('egress','198.51.100.210'); set('host','198.51.100.210'); set('password','x'); set('due','2026-10-23'); document.querySelector('.dialog [data-wz=\"next\"]').click(); await new Promise(r=>setTimeout(r,200)); document.querySelector('.dialog [data-wz=\"start\"]').click(); await new Promise(r=>setTimeout(r,2600));",
+  "afterWait": 200
+ },
+ {
+  "name": "lines-wizard-relay-light-1440",
+  "url": "#/lines",
+  "width": 1440,
+  "height": 900,
+  "before": "document.querySelector('[data-act=\"add-relay\"]').click(); await new Promise(r=>setTimeout(r,300)); [...document.querySelectorAll('.dialog [name=\"auth\"]')].find(x=>x.value==='key').click();"
+ },
+ {
+  "name": "lines-jobs-audit-light-1440",
+  "url": "#/lines",
+  "width": 1440,
+  "height": 900,
+  "before": "document.querySelector('[data-jobs] .job:nth-child(1) .job-row').click(); await new Promise(r=>setTimeout(r,200)); document.querySelectorAll('[data-audit] [data-act=\"audit-row\"]')[6].click(); const t=document.querySelector('[data-jobs]').getBoundingClientRect().top + scrollY - 124; window.scrollTo(0,t);"
+ },
+ {
+  "name": "lines-jobs-audit-dark-1440",
+  "url": "#/lines",
+  "width": 1440,
+  "height": 900,
+  "dark": true,
+  "before": "document.querySelector('[data-act=\"audit-auto\"]').click(); await new Promise(r=>setTimeout(r,200)); const t=document.querySelector('[data-audit]').getBoundingClientRect().top + scrollY - 124; window.scrollTo(0,t); await new Promise(r=>setTimeout(r,300)); document.querySelector('[data-audit] [data-act=\"audit-menu\"][data-k=\"action\"]').click();"
+ },
+ {
+  "name": "lines-drawer-light-1440",
+  "url": "#/lines?node=t1-24",
+  "width": 1440,
+  "height": 900,
+  "wait": 1800
+ },
+ {
+  "name": "lines-loading-light-1440",
+  "url": "#/lines",
+  "width": 1440,
+  "height": 900,
+  "delaySnapshot": 2500
+ },
+ {
+  "name": "compare-lines-light",
+  "page": "http://127.0.0.1:5199/original-refined/tools/compare.html?a=..%2F..%2Foriginal%2Freplica-ops%2Frenders%2Fops-lines.png&b=..%2Fshots%2Flines-light-1440.png&la=%E5%8E%9F%E7%89%88&lb=%E7%B2%BE%E4%BF%AE&na=replica-ops%2Frenders%2Fops-lines.png+%C2%B7+1440&nb=%23%2Flines+%C2%B7+1440&w=720",
+  "width": 1488,
+  "height": 900,
+  "full": true
+ },
+ {
+  "name": "compare-lines-dark",
+  "page": "http://127.0.0.1:5199/original-refined/tools/compare.html?a=..%2F..%2Foriginal%2Freplica-ops%2Frenders%2Fdark-ops-lines.png&b=..%2Fshots%2Flines-dark-1440.png&la=%E5%8E%9F%E7%89%88&lb=%E7%B2%BE%E4%BF%AE&na=dark-ops-lines.png+%C2%B7+%E6%B7%B1%E8%89%B2&nb=%23%2Flines+%C2%B7+%E6%B7%B1%E8%89%B2&w=720",
+  "width": 1488,
+  "height": 900,
+  "full": true
+ },
+ {
+  "name": "compare-lines-expanded",
+  "page": "http://127.0.0.1:5199/original-refined/tools/compare.html?a=..%2F..%2Foriginal%2Freplica-ops%2Frenders%2Fops-lines-expanded.png&b=..%2Fshots%2Flines-expanded-light-1440.png&la=%E5%8E%9F%E7%89%88%E5%B1%95%E5%BC%80%E8%A1%8C&lb=%E7%B2%BE%E4%BF%AE%E5%B1%95%E5%BC%80%E8%A1%8C&na=ops-lines-expanded.png&nb=%E5%85%A5%E5%8F%A3%E8%A1%8C%E5%B1%95%E5%BC%80+%2B+%E6%9B%B4%E6%96%B0%E8%AF%A6%E6%83%85&w=720",
+  "width": 1488,
+  "height": 900,
+  "full": true
+ },
+ {
+  "name": "compare-lines-wizard",
+  "page": "http://127.0.0.1:5199/original-refined/tools/compare.html?a=..%2F..%2Foriginal%2Freplica-ops%2Frenders%2Fops-dialog-wizard-node.png&b=..%2Fshots%2Flines-wizard-node-light-1440.png&la=%E5%8E%9F%E7%89%88%E5%90%91%E5%AF%BC&lb=%E7%B2%BE%E4%BF%AE%E5%90%91%E5%AF%BC&na=ops-dialog-wizard-node.png&nb=%E6%96%B0%E5%A2%9E%E5%AE%B6%E5%AE%BD%E8%8A%82%E7%82%B9+%C2%B7+%E9%A2%84%E9%80%89%E7%BA%BF%E8%B7%AF%E6%9C%BA2&w=720",
+  "width": 1488,
+  "height": 900,
+  "full": true
+ },
+ {
+  "name": "compare-lines-jobs",
+  "page": "http://127.0.0.1:5199/original-refined/tools/compare.html?a=..%2F..%2Foriginal%2Freplica-ops%2Frenders%2Fops-lines-jobs.png&b=..%2Fshots%2Flines-jobs-audit-light-1440.png&la=%E5%8E%9F%E7%89%88&lb=%E7%B2%BE%E4%BF%AE&na=ops-lines-jobs.png&nb=%E6%8E%A5%E5%85%A5%E4%BB%BB%E5%8A%A1+%2B+%E7%AE%A1%E7%90%86%E6%93%8D%E4%BD%9C%E8%AE%B0%E5%BD%95&w=720",
+  "width": 1488,
+  "height": 900,
+  "full": true
+ }
+]
