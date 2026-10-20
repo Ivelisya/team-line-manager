@@ -221,9 +221,11 @@ macro_rules! full {
     };
 }
 
-/// 机器显示名（与 names::display_name 一致；编号不足两位补零）
+/// 机器显示名（与 names::display_name 一致；编号不足两位补零）。退役机器的编号已被回收给别的机器，
+/// 历史记录里不加标注会和现在同名的机器混在一起，所以带上「（已退役）」。
 const NAME: &str = "coalesce(case when m.kind = 'relay' then m.label
-    else t.name || '-' || case when m.number < 10 then '0' || m.number::text else m.number::text end end, '未命名')";
+    else t.name || '-' || case when m.number < 10 then '0' || m.number::text else m.number::text end end, '未命名')
+    || case when m.lifecycle = 'retired' then '（已退役）' else '' end";
 
 /// 小时表聚合：(节点, 目标) → 连接数、阻止数、来源数
 const AGG_HOURLY: &str = "agg as (
@@ -297,7 +299,7 @@ pub async fn summary(db: &PgPool, f: &Filter) -> sqlx::Result<(Kpi, Vec<NodeRow>
                 max(coalesce(f.last_ts, s.last_seen)) last_ts
          from f join machine m on m.id = f.node_id left join team t on t.id = m.team_id
               left join access_target_seen s on s.node_id = f.node_id and s.dest_host = f.dest_host
-         group by f.node_id, m.kind, m.label, m.number, t.name
+         group by f.node_id, m.kind, m.label, m.number, m.lifecycle, t.name
          order by conns desc, name",
         cte(f)
     );
@@ -385,7 +387,7 @@ pub async fn sources(db: &PgPool, f: &Filter, limit: i64) -> sqlx::Result<Vec<So
              from access_event e join entry en on en.id = e.entry_id join machine m on m.id = en.node_id left join team t on t.id = m.team_id
              where e.ts >= $1 and e.src_ip is not null and ($3::uuid[] is null or en.node_id = any($3))
                and ($2::uuid is null or m.team_id = $2) and ($4::text is null or host(e.src_ip) ilike $4)
-             group by en.node_id, m.kind, m.label, m.number, t.name, e.src_ip
+             group by en.node_id, m.kind, m.label, m.number, m.lifecycle, t.name, e.src_ip
              order by conns desc, src_ip limit $5"
         )
     } else {
@@ -394,7 +396,7 @@ pub async fn sources(db: &PgPool, f: &Filter, limit: i64) -> sqlx::Result<Vec<So
              from access_source_hourly s join machine m on m.id = s.node_id left join team t on t.id = m.team_id
              where s.hour >= $1 and ($3::uuid[] is null or s.node_id = any($3))
                and ($2::uuid is null or m.team_id = $2) and ($4::text is null or host(s.src_ip) ilike $4)
-             group by s.node_id, m.kind, m.label, m.number, t.name, s.src_ip
+             group by s.node_id, m.kind, m.label, m.number, m.lifecycle, t.name, s.src_ip
              order by conns desc, src_ip limit $5"
         )
     };
