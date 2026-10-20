@@ -47,6 +47,13 @@ pub fn spawn_background(st: &AppState) {
             if let Err(e) = db::maintain_partitions(&s.db, s.cfg.retention.raw_days, s.cfg.retention.access_days, 3).await {
                 tracing::error!("分区维护失败：{e:#}");
             }
+            match jobs::prune(&s.db).await {
+                Ok(p) if p.passwords_cleared + p.jobs_deleted > 0 => {
+                    tracing::info!("作业清理：清掉 {} 份引导密码，删除 {} 个旧作业", p.passwords_cleared, p.jobs_deleted)
+                }
+                Ok(_) => {}
+                Err(e) => tracing::error!("作业清理失败：{e:#}"),
+            }
         }
     });
     let s = st.clone();
