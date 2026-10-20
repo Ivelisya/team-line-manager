@@ -10,6 +10,7 @@ pub mod error;
 pub mod health;
 pub mod jobs;
 pub mod names;
+pub mod notify;
 pub mod ssh;
 pub mod state;
 pub mod views;
@@ -46,6 +47,9 @@ pub fn spawn_background(st: &AppState) {
             t.tick().await;
             if let Err(e) = db::maintain_partitions(&s.db, s.cfg.retention.raw_days, s.cfg.retention.access_days, 3).await {
                 tracing::error!("分区维护失败：{e:#}");
+            }
+            if let Err(e) = db::cleanup_retention(&s.db).await {
+                tracing::error!("保留期清理失败：{e:#}");
             }
         }
     });

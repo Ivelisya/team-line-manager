@@ -30,12 +30,20 @@ impl ApiError {
     pub fn internal(m: impl Into<String>) -> Self { Self::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", m) }
 }
 
+/// 8 位十六进制短编号
+fn error_id() -> String { uuid::Uuid::new_v4().simple().to_string()[..8].to_string() }
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        if self.status.is_server_error() {
-            tracing::error!(code = self.code, "{}", self.message);
-        }
-        (self.status, Json(json!({"error": {"code": self.code, "message": self.message, "detail": self.detail}}))).into_response()
+        // 5xx：完整原因只进日志，对客户端只给通用提示和一个短编号（用来对日志）
+        let message = if self.status.is_server_error() {
+            let eid = error_id();
+            tracing::error!(code = self.code, error_id = %eid, "{}", self.message);
+            format!("服务器内部错误（编号 {eid}），请把编号告诉管理员查看日志")
+        } else {
+            self.message
+        };
+        (self.status, Json(json!({"error": {"code": self.code, "message": message, "detail": self.detail}}))).into_response()
     }
 }
 

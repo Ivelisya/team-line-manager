@@ -6,7 +6,10 @@ use crate::error::{ApiError, ApiResult};
 use crate::health::Status;
 use crate::state::{AppState, Event};
 use crate::views::{self, Scope};
+use crate::crypto::sha256;
 use axum::extract::{Path, Query, State};
+use axum::http::HeaderMap;
+use axum_extra::extract::cookie::CookieJar;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::Json;
 use futures::stream::Stream;
@@ -15,6 +18,7 @@ use serde_json::{json, Value};
 use std::convert::Infallible;
 use std::time::Duration;
 use time::OffsetDateTime;
+use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use tokio_stream::wrappers::{BroadcastStream, IntervalStream};
 use tokio_stream::StreamExt;
 use uuid::Uuid;
@@ -280,6 +284,9 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "silence.create" => "新建静默",
         "silence.delete" => "删除静默",
         "agent.upgrade" => "升级 agent",
+        "notify.create" => "新建通知渠道",
+        "notify.update" => "修改通知渠道",
+        "notify.delete" => "删除通知渠道",
         other => other,
     }
     .to_string();
@@ -301,16 +308,86 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
             format!("{why}{}", parts.join("，"))
         }
         a if a.starts_with("entry.") && d["relay"].is_string() => format!("{}:{}", s("relay"), d["port"]),
-        "team.create" | "provider.create" | "plan.create" => s("name"),
+        "team.create" | "provider.create" | "plan.create" | "notify.create" | "notify.update" | "notify.delete" => s("name"),
         _ => String::new(),
     };
     (title, summary)
 }
 
-/// SSE：资源变更 + 每 30 s 一次 tick（遥测刷新）
-pub async fn stream(_a: Actor, State(st): State<AppState>) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
-    let events = BroadcastStream::new(st.events.subscribe()).filter_map(|r| r.ok()).map(|e: Event| serde_json::to_string(&e).unwrap_or_default());
-    let ticks = IntervalStream::new(tokio::time::interval(Duration::from_secs(30))).map(|_| r#"{"type":"tick"}"#.to_string());
-    let s = events.merge(ticks).map(|data| Ok(SseEvent::default().data(data)));
+/// SSE 连接用的凭据，用来定期复核「会话/密钥还有效吗」
+#[derive(Clone)]
+enum Cred {
+    Session(Vec<u8>),
+    Key(Vec<u8>),
+}
+
+/// 查询出错时按「仍有效」处理：数据库一时抖动不该把所有页面的实时流都断掉
+async fn still_valid(db: &sqlx::PgPool, c: &Cred) -> bool {
+    let r = match c {
+        Cred::Session(h) => {
+            sqlx::query_scalar::<_, bool>(
+                "select exists (select 1 from session s join app_user u on u.id = s.user_id
+                 where s.id_hash = $1 and s.expires_at > now() and u.disabled_at is null)",
+            )
+            .bind(h)
+            .fetch_one(db)
+            .await
+        }
+        Cred::Key(h) => {
+            sqlx::query_scalar::<_, bool>(
+                "select exists (select 1 from api_key where key_hash = $1 and revoked_at is null and (expires_at is null or expires_at > now()))",
+            )
+            .bind(h)
+            .fetch_one(db)
+            .await
+        }
+    };
+    r.unwrap_or(true)
+}
+
+enum Msg {
+    Data(String),
+    Revoked,
+}
+
+/// SSE：资源变更 + 每 30 s 一次 tick（遥测刷新）。
+/// 广播落后丢了事件时发 `resync`（前端让全部查询失效）；每 60 s 复核一次会话/密钥，被撤销就结束流。
+pub async fn stream(_a: Actor, State(st): State<AppState>, jar: CookieJar, headers: HeaderMap) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
+    let bearer = headers.get("authorization").and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer "));
+    let cred = match (bearer, jar.get(crate::auth::COOKIE)) {
+        (Some(k), _) => Some(Cred::Key(sha256(k.as_bytes()))),
+        (None, Some(c)) => Some(Cred::Session(sha256(c.value().as_bytes()))),
+        _ => None,
+    };
+    let to_json = |e: &Event| serde_json::to_string(e).unwrap_or_default();
+    let events = BroadcastStream::new(st.events.subscribe()).map(move |r| match r {
+        Ok(e) => Msg::Data(to_json(&e)),
+        Err(BroadcastStreamRecvError::Lagged(n)) => {
+            tracing::debug!("SSE 订阅者落后 {n} 条事件，通知前端重新同步");
+            Msg::Data(to_json(&Event::Resync))
+        }
+    });
+    let ticks = IntervalStream::new(tokio::time::interval(Duration::from_secs(30))).map(|_| Msg::Data(r#"{"type":"tick"}"#.to_string()));
+    let db = st.db.clone();
+    let start = tokio::time::Instant::now() + Duration::from_secs(60);
+    let checks = IntervalStream::new(tokio::time::interval_at(start, Duration::from_secs(60)))
+        .then(move |_| {
+            let (db, cred) = (db.clone(), cred.clone());
+            async move {
+                match cred {
+                    Some(c) if !still_valid(&db, &c).await => Some(Msg::Revoked),
+                    _ => None,
+                }
+            }
+        })
+        .filter_map(|m| m);
+    let s = events
+        .merge(ticks)
+        .merge(checks)
+        .take_while(|m| !matches!(m, Msg::Revoked))
+        .filter_map(|m| match m {
+            Msg::Data(d) => Some(Ok(SseEvent::default().data(d))),
+            Msg::Revoked => None,
+        });
     Sse::new(s).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
 }
