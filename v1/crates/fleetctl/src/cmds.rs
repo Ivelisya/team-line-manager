@@ -135,9 +135,9 @@ pub fn ls(ctx: &Ctx, team: Option<&str>, kind: Option<&str>, status: Option<&str
         .cloned()
         .unwrap_or_default()
         .into_iter()
-        .filter(|m| team.map_or(true, |t| st(m, "/team/name") == t))
-        .filter(|m| kind.map_or(true, |k| st(m, "/kind") == k))
-        .filter(|m| status.map_or(true, |s| st(m, "/health/status") == s || st(m, "/lifecycle") == s))
+        .filter(|m| team.is_none_or(|t| st(m, "/team/name") == t))
+        .filter(|m| kind.is_none_or(|k| st(m, "/kind") == k))
+        .filter(|m| status.is_none_or(|s| st(m, "/health/status") == s || st(m, "/lifecycle") == s))
         .collect();
     ctx.emit(&Value::Array(list.clone()), || {
         let rows: Vec<Vec<String>> = list
@@ -531,7 +531,7 @@ pub fn watch(ctx: &Ctx, count: Option<usize>, ticks: bool) -> anyhow::Result<u8>
                         outln(format!("{}  {:<10} {rest}", utc_hms(), st(&ev, "/type")));
                     }
                     seen += 1;
-                    if count.map_or(false, |c| seen >= c) {
+                    if count.is_some_and(|c| seen >= c) {
                         return Ok(0);
                     }
                 }
