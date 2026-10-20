@@ -67,6 +67,12 @@ enum KeysCmd {
     },
 }
 
+fn keys_user(c: &KeysCmd) -> Option<&str> {
+    match c {
+        KeysCmd::Ls { auth } | KeysCmd::Create { auth, .. } | KeysCmd::Revoke { auth, .. } => auth.user.as_deref(),
+    }
+}
+
 #[derive(Args)]
 struct ProvisionArgs {
     /// 批量文件（JSON 数组或 {"items":[…]}；条目里 team/relay/provider/plan 可直接写名字）
@@ -334,8 +340,15 @@ enum Cmd {
     },
 }
 
-fn make_ctx(json: bool) -> anyhow::Result<Ctx> {
-    let (url, token) = config::load()?;
+/// `session_login`：命令自己会用用户名密码登录（keys --user），没有 API 密钥也放行，只要有中控地址
+fn make_ctx(json: bool, session_login: bool) -> anyhow::Result<Ctx> {
+    let (url, token) = match config::load() {
+        Ok(v) => v,
+        Err(e) => match config::load_url() {
+            Some(url) if session_login => (url, String::new()),
+            _ => return Err(e),
+        },
+    };
     Ok(Ctx { c: Client::new(&url, Cred::Bearer(token))?, base: url.trim_end_matches('/').to_string(), json })
 }
 
@@ -357,7 +370,8 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
     if let Cmd::Login { url, token } = &cli.cmd {
         return login(url, token, json);
     }
-    let ctx = make_ctx(json)?;
+    let session_login = matches!(&cli.cmd, Cmd::Keys { cmd } if keys_user(cmd).is_some());
+    let ctx = make_ctx(json, session_login)?;
     let x = &ctx;
     match cli.cmd {
         Cmd::Login { .. } => unreachable!(),

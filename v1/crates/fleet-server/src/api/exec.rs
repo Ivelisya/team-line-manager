@@ -183,7 +183,8 @@ pub async fn server_logs(a: Actor, State(st): State<AppState>, Query(q): Query<L
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     if !out.status.success() || stdout.trim().is_empty() || stdout.trim_start().starts_with("-- No entries") {
-        return Err(ApiError::internal(format!("读取中控日志失败：{}。{hint}", stderr.trim())));
+        // 4xx 才会把原因带给客户端（5xx 一律隐藏细节），这是可操作的配置问题，要让调用方看到
+        return Err(ApiError::new(axum::http::StatusCode::FAILED_DEPENDENCY, "journal_denied", format!("读取中控日志失败：{}。{hint}", stderr.trim())));
     }
     let (stdout, truncated) = truncate(stdout, MAX_OUT);
     let mut tx = st.db.begin().await?;

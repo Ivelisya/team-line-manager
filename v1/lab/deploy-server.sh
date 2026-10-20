@@ -14,6 +14,7 @@ install -d -m 755 /opt/fleet/dist
 install -m 755 target/x86_64-unknown-linux-musl/release/fleet-agent /opt/fleet/dist/fleet-agent
 echo "fleet-agent $(/opt/fleet/dist/fleet-agent version 2>/dev/null | head -1)"
 id fleet >/dev/null 2>&1 || useradd --system --home-dir /var/lib/fleet --shell /usr/sbin/nologin fleet
+usermod -aG systemd-journal fleet   # fleetctl server-logs 需要读本机 journal
 install -d -m 750 -o fleet -g fleet /etc/fleet /etc/fleet/ssh /var/lib/fleet
 install -d -m 755 /opt/fleet /opt/fleet/dist /opt/fleet/web
 [ -f /etc/fleet/secret.key ] || { /root/src/target/release/fleet-server gen-key /etc/fleet/secret.key; chown fleet:fleet /etc/fleet/secret.key; }

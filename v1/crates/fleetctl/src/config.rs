@@ -42,6 +42,11 @@ pub fn load_file() -> FileCfg {
     config_path().ok().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|s| toml::from_str(&s).ok()).unwrap_or_default()
 }
 
+/// 只取中控地址（环境变量优先）
+pub fn load_url() -> Option<String> {
+    std::env::var("FLEET_URL").ok().filter(|s| !s.trim().is_empty()).or_else(|| load_file().url.filter(|s| !s.trim().is_empty()))
+}
+
 pub fn load() -> anyhow::Result<(String, String)> {
     merge(std::env::var("FLEET_URL").ok(), std::env::var("FLEET_TOKEN").ok(), load_file())
 }
