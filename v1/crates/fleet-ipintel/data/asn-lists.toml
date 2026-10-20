@@ -1,0 +1,262 @@
+# 内置默认的 ASN 分类清单（编译进二进制）。可用 /etc/fleet/ipintel-overrides.toml 覆盖或追加：
+# 同样的 [[分类]] 写法，后出现的条目盖过前面的；name = "" 表示把这些 ASN 从该分类里删掉。
+# cn_mixed 追加用 cn_mixed，删除用 cn_mixed_remove。
+#
+# 判定顺序见 src/classify.rs 顶部：vpn → cloud → hosting → mobile（均 high）→ 名称关键词 → 机房集合 →
+# cn_mixed（residential low，alt=mobile）→ fixed（residential medium）→ unknown。
+
+# ── cn_mixed：中国三大运营商骨干 / 省网，家宽和手机流量共用，离线库分不开 → residential（low，alt=mobile）──
+cn_mixed = [4134, 4812, 4837, 4808, 17621, 17622, 17623, 17816, 9808, 24445, 24400, 24444, 24547, 38019, 56040, 56041, 56042, 56044, 56046, 56047, 56048, 4809, 4847, 10099, 58453]
+
+# ── carrier：ASN → 运营商名（isp 归一）──────────────────────────────────────────────
+[[carrier]]
+asn = [4134, 4809, 4812, 4811, 4847, 23724, 4816, 137266, 131285]
+name = "中国电信"
+[[carrier]]
+asn = [4837, 4808, 9929, 17621, 17622, 17623, 17816, 10099]
+name = "中国联通"
+[[carrier]]
+asn = [9808, 24445, 24400, 24444, 24547, 38019, 56040, 56041, 56042, 56044, 56046, 56047, 56048, 58453]
+name = "中国移动"
+[[carrier]]
+asn = [4538]
+name = "中国教育网"
+[[carrier]]
+asn = [7018]
+name = "AT&T"
+[[carrier]]
+asn = [20057]
+name = "AT&T Mobility"
+[[carrier]]
+asn = [8151]
+name = "Telmex"
+[[carrier]]
+asn = [979]
+name = "NetLab Global"
+[[carrier]]
+asn = [55430]
+name = "StarHub"
+[[carrier]]
+asn = [174]
+name = "Cogent"
+
+# ── cloud：公有云 → datacenter（high）────────────────────────────────────────────────
+[[cloud]]
+asn = [16509, 14618, 8987]
+name = "Amazon AWS"
+[[cloud]]
+asn = [15169, 396982, 19527]
+name = "Google"
+[[cloud]]
+asn = [8075, 8068]
+name = "Microsoft Azure"
+[[cloud]]
+asn = [13335]
+name = "Cloudflare"
+[[cloud]]
+asn = [37963, 45102]
+name = "阿里云"
+[[cloud]]
+asn = [45090, 132203]
+name = "腾讯云"
+[[cloud]]
+asn = [55990, 136907]
+name = "华为云"
+[[cloud]]
+asn = [38365, 55967]
+name = "百度云"
+[[cloud]]
+asn = [31898]
+name = "Oracle Cloud"
+[[cloud]]
+asn = [14061]
+name = "DigitalOcean"
+[[cloud]]
+asn = [20473]
+name = "Vultr (Choopa)"
+[[cloud]]
+asn = [63949]
+name = "Akamai Linode"
+[[cloud]]
+asn = [16276]
+name = "OVH"
+[[cloud]]
+asn = [24940]
+name = "Hetzner"
+[[cloud]]
+asn = [51167]
+name = "Contabo"
+[[cloud]]
+asn = [12876]
+name = "Scaleway"
+[[cloud]]
+asn = [36351]
+name = "IBM Cloud"
+[[cloud]]
+asn = [54113]
+name = "Fastly"
+
+# ── hosting：IDC / 主机托管 → datacenter（high）。我方线路机所在的 AS979 NetLab 也在这里 ──────
+[[hosting]]
+asn = [979]
+name = "NetLab Global"
+[[hosting]]
+asn = [21859]
+name = "Zenlayer"
+[[hosting]]
+asn = [25820]
+name = "IT7 Networks"
+[[hosting]]
+asn = [35916]
+name = "Multacom"
+[[hosting]]
+asn = [906]
+name = "DMIT"
+[[hosting]]
+asn = [36352]
+name = "ColoCrossing"
+[[hosting]]
+asn = [40676]
+name = "Psychz"
+[[hosting]]
+asn = [8100]
+name = "QuadraNet"
+[[hosting]]
+asn = [46844]
+name = "Sharktech"
+[[hosting]]
+asn = [3258]
+name = "xTom"
+[[hosting]]
+asn = [60781, 28753, 16265]
+name = "Leaseweb"
+[[hosting]]
+asn = [23724, 4816]
+name = "中国电信 IDC"
+[[hosting]]
+asn = [53667]
+name = "FranTech (BuyVM)"
+[[hosting]]
+asn = [62904]
+name = "Eonix"
+
+# ── vpn：商业 VPN / 代理出口集中的网络 → vpn（high）──────────────────────────────────
+# 这些 AS 也卖普通主机，但在「客户来源」这个场景里出现几乎都是 VPN / 代理。
+[[vpn]]
+asn = [9009]
+name = "M247（大量商业 VPN 出口）"
+[[vpn]]
+asn = [60068, 212238]
+name = "Datacamp / CDN77（大量商业 VPN 出口）"
+[[vpn]]
+asn = [147049]
+name = "PacketHub（VPN 出口）"
+[[vpn]]
+asn = [62371, 209103]
+name = "Proton AG（ProtonVPN）"
+[[vpn]]
+asn = [39351]
+name = "31173 Services（Mullvad VPN）"
+[[vpn]]
+asn = [136787]
+name = "TEFINCOM（NordVPN）"
+
+# ── mobile：蜂窝专用 ASN → mobile（high）──────────────────────────────────────────────
+[[mobile]]
+asn = [21928]
+name = "T-Mobile US"
+[[mobile]]
+asn = [6167, 22394]
+name = "Verizon Wireless"
+[[mobile]]
+asn = [20057]
+name = "AT&T Mobility"
+[[mobile]]
+asn = [17547]
+name = "M1"
+[[mobile]]
+asn = [4773]
+name = "Singtel Mobile"
+[[mobile]]
+asn = [10091]
+name = "StarHub Mobile"
+[[mobile]]
+asn = [28403]
+name = "Telcel"
+[[mobile]]
+asn = [137266]
+name = "中国电信湖北 5G（武汉）"
+[[mobile]]
+asn = [131285]
+name = "中国电信湖北 5G"
+
+# ── fixed：固网运营商 → residential（medium）──────────────────────────────────────────
+[[fixed]]
+asn = [7018]
+name = "AT&T 固网"
+[[fixed]]
+asn = [7922]
+name = "Comcast"
+[[fixed]]
+asn = [20115, 11427, 20001, 10796, 11351, 12271, 33363]
+name = "Charter"
+[[fixed]]
+asn = [701]
+name = "Verizon 固网"
+[[fixed]]
+asn = [22773]
+name = "Cox"
+[[fixed]]
+asn = [209]
+name = "Lumen"
+[[fixed]]
+asn = [5650]
+name = "Frontier"
+[[fixed]]
+asn = [7029]
+name = "Windstream"
+[[fixed]]
+asn = [6128]
+name = "Optimum"
+[[fixed]]
+asn = [30036]
+name = "Mediacom"
+[[fixed]]
+asn = [11492]
+name = "Cable One"
+[[fixed]]
+asn = [8151]
+name = "Telmex 固网"
+[[fixed]]
+asn = [28548]
+name = "Megacable"
+[[fixed]]
+asn = [17072]
+name = "Totalplay"
+[[fixed]]
+asn = [11888]
+name = "izzi"
+[[fixed]]
+asn = [55430]
+name = "StarHub 固网（NGNBN）"
+[[fixed]]
+asn = [9506, 7473]
+name = "Singtel 固网"
+[[fixed]]
+asn = [4760]
+name = "HKT"
+[[fixed]]
+asn = [9269]
+name = "HKBN"
+[[fixed]]
+asn = [2516]
+name = "KDDI"
+[[fixed]]
+asn = [4713]
+name = "NTT OCN"
+[[fixed]]
+asn = [17676]
+name = "SoftBank BB"
+[[fixed]]
+asn = [3462]
+name = "中华电信 HiNet"

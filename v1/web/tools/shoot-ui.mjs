@@ -156,6 +156,16 @@ const scenes = {
     await shot(page, 'ui-drawer-next');
     return { page, errors };
   },
+  async 'ipintel'() {
+    // 访问监控「来源地址」页签（运营商 · 城市 · 接入方式）与节点抽屉「访问记录」里的来源画像卡
+    const { page, errors } = await open('/access?view=sources', { h: 900 });
+    await shot(page, 'ui-access-sources-intel');
+    const d = await open('/access?m=m-t1-01&tab=access', { h: 1500 });
+    await sleep(600);
+    await shot(d.page, 'ui-drawer-source-profile');
+    await d.page.close();
+    return { page, errors: errors.concat(d.errors) };
+  },
   async 'mobile'() {
     const { page, errors } = await open('/', { w: 390, h: 800 });
     await page.keyboard.down('Control'); await page.keyboard.press('k'); await page.keyboard.up('Control'); await sleep(500);

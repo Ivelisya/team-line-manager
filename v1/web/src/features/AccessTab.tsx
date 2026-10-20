@@ -9,6 +9,8 @@ import { Segmented } from '@/components/ui/overlays';
 import { Button } from '@/components/ui/button';
 import { ChartContainer, ChartTooltip, Recharts, axisProps, type ChartConfig } from '@/components/ui/chart';
 import { Chip, Empty, Note, Pill, Section, SectionHeader } from '@/components/app/primitives';
+import { ConnCell, IspPlace, SourceProfile } from '@/features/IpIntelBits';
+import type { ProfileWindow } from '@/lib/ipintel';
 
 const { BarChart, Bar, XAxis, YAxis, CartesianGrid } = Recharts;
 
@@ -121,6 +123,7 @@ export function AccessTab({ m }: { m: MachineView }) {
       </Section>
       {!none && (
         <>
+          <SourceProfile id={m.id} window={(w === '7d' ? '7d' : '24h') as ProfileWindow} relay={m.kind === 'relay'} />
           <Section>
             <SectionHeader title="每小时连接数" meta={w === '1h' ? '最近 24 小时' : `最近 ${long}`} />
             <HourlyBars points={d.hourly} />
@@ -129,12 +132,16 @@ export function AccessTab({ m }: { m: MachineView }) {
             <SectionHeader title="来源地址" meta="按连接数" />
             {d.top_sources.length ? (
               <div className="table-wrap" style={{ border: '1px solid var(--line)', borderRadius: 'var(--r-float)' }}>
-                <table className="dt is-one" style={{ minWidth: 360 }}>
-                  <colgroup><col /><col style={{ width: 90 }} /><col style={{ width: 120 }} /></colgroup>
-                  <thead><tr><th>来源 IP</th><th className="r">连接数</th><th>最近</th></tr></thead>
+                <table className="dt is-one" style={{ minWidth: 520 }}>
+                  <colgroup><col style={{ width: 150 }} /><col /><col style={{ width: 110 }} /><col style={{ width: 70 }} /><col style={{ width: 110 }} /></colgroup>
+                  <thead><tr><th>来源 IP</th><th>运营商 · 城市</th><th>接入方式</th><th className="r">连接数</th><th>最近</th></tr></thead>
                   <tbody>
                     {d.top_sources.map((s) => (
-                      <tr key={`${s.node_id}-${s.src_ip}`}><td><span className="mono">{s.src_ip}</span>{m.kind === 'relay' && <span className="t-sub"> · {s.name}</span>}</td><td className="r">{fmtN(s.conns)}</td><td>{F.dt(s.last_ts)}</td></tr>
+                      <tr key={`${s.node_id}-${s.src_ip}`}>
+                        <td><span className="mono">{s.src_ip}</span>{m.kind === 'relay' && <span className="t-sub"> · {s.name}</span>}</td>
+                        <td><IspPlace intel={s.intel} /></td><td><ConnCell intel={s.intel} /></td>
+                        <td className="r">{fmtN(s.conns)}</td><td>{F.dt(s.last_ts)}</td>
+                      </tr>
                     ))}
                   </tbody>
                 </table>

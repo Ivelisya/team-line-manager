@@ -21,6 +21,7 @@ import { Empty, ErrorNote, Note, PageHead, Panel, Pill } from '@/components/app/
 export const RULES: Record<string, string> = {
   agent_offline: 'agent 离线', no_entry: '节点没有入口', egress_fail: '出口验证失败', tcp_fail: 'TCP 探测失败',
   renewal_due: '即将到期', renewal_overdue: '已过期未续费', relay_apply_lag: '线路机下发滞后', relay_apply_error: '线路机下发失败', relay_xray_down: '线路机 xray 未运行',
+  ipintel_new_isp: '来源出现新运营商', ipintel_new_city: '来源出现新城市', ipintel_datacenter_source: '机房 / VPN 来源',
 };
 const SEV = (i: Incident) => (i.state === 'resolved' ? <Pill tone="ok" dot="ring">已恢复</Pill> : i.severity === 'critical' ? <Pill tone="bad">严重</Pill> : i.severity === 'info' ? <Pill tone="info">提示</Pill> : <Pill tone="warn">警告</Pill>);
 

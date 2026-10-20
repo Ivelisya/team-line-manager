@@ -32,6 +32,8 @@ pub struct Inner {
     pub events: broadcast::Sender<Event>,
     /// 线路机期望状态变化（relay_id）：唤醒 agent 的长轮询
     pub relay_changed: broadcast::Sender<Uuid>,
+    /// 来源 IP 画像：离线库 + 内部地址表（库缺失时降级）
+    pub ipintel: crate::ipintel::Service,
 }
 
 impl std::ops::Deref for AppState {
@@ -43,7 +45,8 @@ impl AppState {
     pub fn new(cfg: Config, db: PgPool, secrets: SecretBox) -> Self {
         let (events, _) = broadcast::channel(256);
         let (relay_changed, _) = broadcast::channel(64);
-        Self(Arc::new(Inner { cfg, db, secrets, events, relay_changed }))
+        let ipintel = crate::ipintel::Service::new(&cfg.ipintel);
+        Self(Arc::new(Inner { cfg, db, secrets, events, relay_changed, ipintel }))
     }
 
     pub fn emit(&self, e: Event) { let _ = self.events.send(e); }

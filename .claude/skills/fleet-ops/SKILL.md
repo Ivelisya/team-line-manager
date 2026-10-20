@@ -32,6 +32,9 @@ fleetctl --json <命令>      # AI 一律加 --json，拿 API 的 data 原样 JS
 | 审计 | `fleetctl --json audit [--target <机器>] [--limit 50]` |
 | 实时事件 | `fleetctl watch --count 20` |
 | 访问监控：节点访问了哪些域名/IP | `fleetctl --json access [targets\|summary\|new\|sources\|events] [--node <机器>] [--team 团队1] [--window 1h\|24h\|7d\|30d] [--search 域名] [--blocked] [--kind domain\|ip]` |
+| 来源 IP 画像：某 IP 的运营商/城市/接入方式 | `fleetctl --json ip <ip> [<ip>...]`（只查中控本地离线库，不外发） |
+| 节点来源画像分布（运营商/城市/接入方式、top 来源、学习期） | `fleetctl --json sources <机器> [--window 24h\|7d\|30d] [--limit 20]` |
+| IP 库状态（加载了几个、缺什么） | `fleetctl --json ipintel-status`（`loaded` 应为 5；未安装时在中控跑 `lab/install-ipintel.sh`） |
 
 访问监控只有线路机开了访问日志、且有真实客户端流量时才有数据；`new` 是窗口内第一次出现的目标（旧系统的「新域名」），不是告警。
 
@@ -74,7 +77,7 @@ fleetctl provision ...                                     # 先 check，再确�
 ## --json 字段速查
 
 - `ls` / `show`（MachineView）：`id name kind(relay|vps|proxy) lifecycle(active|provisioning|retiring|retired|failed) ip ssh_port revision`；`health.status`（ok|degraded|down|unknown|maintenance|inactive）与 `health.reasons[{key,severity,text}]`；`agent.online`；`host.{cpu_pct,mem_used,mem_total,disk_used,disk_total,load1}`；`entries[]`；`active_job`；`open_incidents`。
-- `incidents`：`id rule subject_name severity(warning|critical) summary opened_at ack_by`。规则 key：agent_offline、no_entry、egress_fail、tcp_fail、renewal_due、renewal_overdue、relay_apply_lag、relay_apply_error、relay_xray_down、host_cpu_high、host_mem_high、host_disk_high。
+- `incidents`：`id rule subject_name severity(warning|critical) summary opened_at ack_by`。规则 key：agent_offline、no_entry、egress_fail、tcp_fail、renewal_due、renewal_overdue、relay_apply_lag、relay_apply_error、relay_xray_down、host_cpu_high、host_mem_high、host_disk_high、ipintel_new_isp（来源出现新运营商）、ipintel_new_city（来源出现新城市）、ipintel_datacenter_source（机房 / VPN 来源 IP），后三个是 warning、学习期 7 天后才有、最后一次出现 24 小时后自动恢复，不用手动处理。
 - `job`：`state`（queued|running|waiting|cancelling|succeeded|failed|cancelled）、`error`、`steps[]`、`logs[]`。
 - `exec`：`exit_code stdout stderr duration_ms truncated timed_out`；多台时是这些字段加 `machine` 的数组。
 

@@ -9,6 +9,7 @@ pub mod db;
 pub mod entries;
 pub mod error;
 pub mod health;
+pub mod ipintel;
 pub mod jobs;
 pub mod names;
 pub mod notify;
@@ -63,6 +64,7 @@ pub fn spawn_background(st: &AppState) {
     tokio::spawn(jobs::run_forever(st.clone()));
     tokio::spawn(alerts::run_forever(st.clone()));
     tokio::spawn(access::run_forever(st.clone()));
+    tokio::spawn(ipintel::run_forever(st.clone()));
     let s = st.clone();
     tokio::spawn(async move {
         let mut t = tokio::time::interval(std::time::Duration::from_secs(3600));

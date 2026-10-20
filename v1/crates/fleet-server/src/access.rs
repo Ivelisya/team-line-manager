@@ -377,6 +377,9 @@ pub struct SourceRow {
     pub conns: i64,
     #[serde(with = "time::serde::rfc3339::option")]
     pub last_ts: Option<OffsetDateTime>,
+    /// 来源画像（运营商、城市、接入方式…），由接口层填；查不到为 null
+    #[sqlx(skip)]
+    pub intel: Option<crate::ipintel::Brief>,
 }
 
 /// 按 (节点, 来源 IP) 的连接数 top。search 在这里匹配来源 IP。

@@ -16,6 +16,7 @@ import { Select } from '@/components/ui/select';
 import { Segmented, Tabs, TabsList, TabsTrigger } from '@/components/ui/overlays';
 import { Empty, KpiTile, Note, PageHead, Panel, Pill } from '@/components/app/primitives';
 import { HostCell, ResultPill, fmtN } from '@/features/AccessTab';
+import { CONN_FILTER_OPTIONS, ConnCell, IpIntelHint, IpIntelStatusChip, IspPlace, connMatches } from '@/features/IpIntelBits';
 
 type View = 'targets' | 'new' | 'sources' | 'nodes' | 'events';
 const VIEWS: { value: View; label: string }[] = [
@@ -59,7 +60,7 @@ export function AccessPage() {
   return (
     <div className="stack">
       <PageHead title="访问监控" note={`每 30 秒刷新${summary.data ? ` · 统计自 ${F.dt(summary.data.window_start)}` : ''}`}
-        tools={<Segmented label="时间范围" value={f.window} onChange={(v) => upd({ w: v === '24h' ? '' : v })} items={ACCESS_WINDOWS.map((x) => ({ value: x.value, label: x.label }))} />} />
+        tools={<><IpIntelStatusChip /><Segmented label="时间范围" value={f.window} onChange={(v) => upd({ w: v === '24h' ? '' : v })} items={ACCESS_WINDOWS.map((x) => ({ value: x.value, label: x.label }))} /></>} />
 
       <div className="row" role="search">
         <SearchInput value={text} onChange={(e) => setText(e.target.value)} placeholder="搜索域名或来源 IP…" aria-label="搜索域名或来源 IP" className="w-full sm:w-[260px]" />
@@ -175,29 +176,45 @@ function NewView({ f, filtered }: { f: AccessFilter; filtered: boolean }) {
 
 function SourcesView({ f, filtered }: { f: AccessFilter; filtered: boolean }) {
   const q = useAccessSources(f);
-  const rows = q.data?.items ?? [];
+  const [ct, setCt] = React.useState('');
+  const all = q.data?.items ?? [];
+  const rows = all.filter((s) => connMatches(s.intel, ct));
   return (
-    <Panel title="来源地址" count={q.data ? `${rows.length} 个` : undefined} sub="连接到入口的客户端地址，按连接数排序；搜索框在这里匹配来源 IP" flush>
-      {q.isError && <div style={{ padding: 12 }}><ErrNote e={q.error} /></div>}
-      <div className="table-wrap">
-        <table className="dt is-one" style={{ minWidth: 560 }}>
-          <colgroup><col /><col style={{ width: 150 }} /><col style={{ width: 110 }} /><col style={{ width: 130 }} /></colgroup>
-          <thead><tr><th>来源 IP</th><th>节点</th><th className="r">连接数</th><th>最近</th></tr></thead>
-          <tbody>
-            {rows.map((s) => (
-              <tr key={`${s.node_id}|${s.src_ip}`}>
-                <td><span className="mono strong">{s.src_ip}</span></td>
-                <td><NodeLink id={s.node_id} name={s.name} /></td>
-                <td className="r">{fmtN(s.conns)}</td>
-                <td title={F.dtFull(s.last_ts)}>{F.ago(s.last_ts)}</td>
+    <>
+      <IpIntelHint />
+      <Panel title="来源地址" count={q.data ? `${rows.length}${ct ? ` / ${all.length}` : ''} 个` : undefined}
+        sub="连接到入口的客户端地址，按连接数排序，附运营商 · 城市 · 接入方式（离线库，不外发 IP）；搜索框在这里匹配来源 IP" flush>
+        {q.isError && <div style={{ padding: 12 }}><ErrNote e={q.error} /></div>}
+        <div className="table-wrap">
+          <table className="dt" style={{ minWidth: 820 }}>
+            <colgroup><col style={{ width: 150 }} /><col /><col style={{ width: 150 }} /><col style={{ width: 130 }} /><col style={{ width: 90 }} /><col style={{ width: 104 }} /></colgroup>
+            <thead>
+              <tr>
+                <th>来源 IP</th><th>运营商 · 城市</th>
+                <th><Select sm value={ct} onChange={setCt} allowEmpty="接入方式" placeholder="接入方式" options={CONN_FILTER_OPTIONS} aria-label="按接入方式筛选" /></th>
+                <th>节点</th><th className="r">连接数</th><th>最近</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      {q.isLoading && <Loading />}
-      {q.data && rows.length === 0 && <None f={f} filtered={filtered} what="来源地址" />}
-    </Panel>
+            </thead>
+            <tbody>
+              {rows.map((s) => (
+                <tr key={`${s.node_id}|${s.src_ip}`}>
+                  <td><span className="mono strong">{s.src_ip}</span></td>
+                  <td><IspPlace intel={s.intel} /></td>
+                  <td><ConnCell intel={s.intel} /></td>
+                  <td><NodeLink id={s.node_id} name={s.name} /></td>
+                  <td className="r">{fmtN(s.conns)}</td>
+                  <td title={F.dtFull(s.last_ts)}>{F.ago(s.last_ts)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {q.isLoading && <Loading />}
+        {q.data && rows.length === 0 && (ct && all.length > 0
+          ? <Empty icon={<Radar size={28} />} text="没有符合该接入方式的来源地址" hint={<Button size="sm" variant="quiet" onClick={() => setCt('')}>清除接入方式筛选</Button>} />
+          : <None f={f} filtered={filtered} what="来源地址" />)}
+      </Panel>
+    </>
   );
 }
 

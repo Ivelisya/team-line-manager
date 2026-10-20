@@ -1,6 +1,7 @@
 pub mod access;
 pub mod catalog;
 pub mod exec;
+pub mod ipintel;
 pub mod jobs;
 pub mod keys;
 pub mod machines;
@@ -69,6 +70,11 @@ pub fn router() -> Router<AppState> {
         .route("/access/events", get(access::events))
         .route("/access/new-targets", get(access::new_targets))
         .route("/machines/{id}/access", get(access::machine))
+        // 来源 IP 画像
+        .route("/ipintel", get(ipintel::batch))
+        .route("/ipintel/status", get(ipintel::status))
+        .route("/ipintel/{ip}", get(ipintel::one))
+        .route("/machines/{id}/sources", get(ipintel::machine_sources))
         .route("/overview", get(misc::overview))
         .route("/incidents", get(misc::incidents))
         .route("/incidents/{id}/ack", post(misc::ack_incident))
