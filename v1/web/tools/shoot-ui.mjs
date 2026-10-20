@@ -63,7 +63,7 @@ const scenes = {
   },
   async 'health-tip'() {
     const { page, errors } = await open('/nodes');
-    const el = await page.$('tbody tr:nth-child(5) .pill');
+    const el = await page.$('tbody tr:nth-child(7) .pill');
     await el.hover(); await sleep(900);
     await shot(page, 'ui-tooltip-health');
     return { page, errors };

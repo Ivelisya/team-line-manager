@@ -37,7 +37,8 @@ export function useNodeMenu(m: MachineView): MenuEntry[] {
   items.push(shareItem, { key: 'sep1', sep: true });
   items.push(
     { key: 'upgrade', label: '升级 agent', icon: <ArrowUpCircle />, disabled: !m.agent || m.lifecycle !== 'active' || !!m.active_job || upgrade.isPending,
-      onSelect: () => upgrade.mutate(m.id, { onSuccess: () => toast.ok('已提交升级作业'), onError: toast.err }) },
+      // 菜单选中后内容会卸载，mutate 的回调届时不再触发；用 Promise 才能保证提示一定出现
+      onSelect: () => { upgrade.mutateAsync(m.id).then(() => toast.ok('已提交升级作业'), (e) => toast.err(e)); } },
     { key: 'rename', label: '改名 / 改编号', icon: <PencilLine />, onSelect: () => open(m.id, 'manage') },
     { key: 'silence', label: '新建静默', icon: <BellOff />, onSelect: () => nav(`/incidents?silence=${m.id}`) },
     { key: 'sep2', sep: true },

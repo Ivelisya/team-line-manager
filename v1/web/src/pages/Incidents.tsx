@@ -99,7 +99,7 @@ function Silences() {
         {q.isLoading ? <SkeletonRows rows={2} /> : list.length === 0 && !q.isError ? <Empty icon={<BellOff size={22} />} text="当前没有生效的静默" hint="维护机器前先建一个，期间不会发告警" /> : (
           <div className="table-wrap">
             <table className="dt is-one" style={{ minWidth: 640 }}>
-              <colgroup><col style={{ width: 140 }} /><col style={{ width: 110 }} /><col style={{ width: 230 }} /><col /><col style={{ width: 52 }} /></colgroup>
+              <colgroup><col style={{ width: 140 }} /><col style={{ width: 110 }} /><col style={{ width: 230 }} /><col /><col style={{ width: 64 }} /></colgroup>
               <thead><tr><th>对象</th><th>类型</th><th>时间</th><th>备注</th><th /></tr></thead>
               <tbody>{list.map((s) => (
                 <tr key={s.id}><td className="strong">{s.subject_name ?? '全部机器'}</td><td>{s.is_maintenance ? <Pill tone="info"><Wrench size={11} />维护</Pill> : <Pill>静默</Pill>}</td>
