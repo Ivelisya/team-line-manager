@@ -16,6 +16,7 @@ pub enum Event {
     Job { id: Uuid },
     Incidents,
     Catalog,
+    ApiKeys,
 }
 
 #[derive(Clone)]

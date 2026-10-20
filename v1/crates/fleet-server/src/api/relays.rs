@@ -57,6 +57,7 @@ pub async fn entry_action(a: Actor, State(st): State<AppState>, Path(id): Path<U
 }
 
 pub async fn share(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>) -> ApiResult<Json<Value>> {
+    a.require_scope("secrets")?;
     #[derive(sqlx::FromRow)]
     struct Row {
         client_uuid: Uuid,

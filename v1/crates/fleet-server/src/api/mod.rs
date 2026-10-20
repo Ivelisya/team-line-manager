@@ -1,5 +1,7 @@
 pub mod catalog;
+pub mod exec;
 pub mod jobs;
+pub mod keys;
 pub mod machines;
 pub mod misc;
 pub mod provision;
@@ -51,6 +53,12 @@ pub fn router() -> Router<AppState> {
         .route("/jobs/{id}/logs", get(jobs::logs))
         .route("/jobs/{id}/retry", post(jobs::retry))
         .route("/jobs/{id}/cancel", post(jobs::cancel))
+        // 运维：API 密钥、远程执行、日志
+        .route("/api-keys", get(keys::list).post(keys::create))
+        .route("/api-keys/{id}", axum::routing::delete(keys::revoke))
+        .route("/machines/{id}/exec", post(exec::exec))
+        .route("/machines/{id}/logs", get(exec::machine_logs))
+        .route("/server/logs", get(exec::server_logs))
         // 总览、告警、审计、实时
         .route("/overview", get(misc::overview))
         .route("/incidents", get(misc::incidents))
