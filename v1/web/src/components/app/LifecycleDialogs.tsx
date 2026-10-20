@@ -9,6 +9,7 @@ import { closeEvacuate, closeMove, closeRestore, useEvacuateTarget, useMoveTarge
 import { CheckRow, Field, Input } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
+import { useHeld } from '@/lib/useHeld';
 import { entryState, Note } from './primitives';
 import { ConfirmDialog } from './dialogs';
 
@@ -216,14 +217,15 @@ export function LifecycleDialogsHost() {
   const moveId = useMoveTarget();
   const evacId = useEvacuateTarget();
   const restoreId = useRestoreTarget();
-  const mv = useMachinePreview(moveId);
-  const ev = useMachinePreview(evacId);
-  const rs = useMachinePreview(restoreId);
+  // id 清空后继续用最近的机器渲染 open=false 的对话框，让 Radix 播完关闭动画再卸载
+  const mv = useHeld(moveId, useMachinePreview(moveId).data);
+  const ev = useHeld(evacId, useMachinePreview(evacId).data);
+  const rs = useHeld(restoreId, useMachinePreview(restoreId).data);
   return (
     <>
-      {moveId && mv.data && <MoveDialog m={mv.data} open onOpenChange={(o) => { if (!o) closeMove(); }} onDone={closeMove} />}
-      {evacId && ev.data && <EvacuateDialog relay={ev.data} open onOpenChange={(o) => { if (!o) closeEvacuate(); }} onDone={closeEvacuate} />}
-      {restoreId && rs.data && <RestoreDialog m={rs.data} open onOpenChange={(o) => { if (!o) closeRestore(); }} onDone={closeRestore} />}
+      {mv && <MoveDialog key={mv.id} m={mv} open={!!moveId} onOpenChange={(o) => { if (!o) closeMove(); }} onDone={closeMove} />}
+      {ev && <EvacuateDialog key={ev.id} relay={ev} open={!!evacId} onOpenChange={(o) => { if (!o) closeEvacuate(); }} onDone={closeEvacuate} />}
+      {rs && <RestoreDialog key={rs.id} m={rs} open={!!restoreId} onOpenChange={(o) => { if (!o) closeRestore(); }} onDone={closeRestore} />}
     </>
   );
 }
