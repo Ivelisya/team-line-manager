@@ -7,7 +7,7 @@ import { ApiError, AUTH_EVENT, post } from '@/lib/api';
 import { useIncidents, useMachinePreview, useMe } from '@/lib/queries';
 import { useStream } from '@/lib/stream';
 import { useTheme, type ThemePref } from '@/lib/theme';
-import { closeRetire, useRetireTarget } from '@/lib/nodeActions';
+import { closeEvacuate, closeMove, closeRestore, closeRetire, useRetireTarget } from '@/lib/nodeActions';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, Tip } from '@/components/ui/overlays';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -36,6 +36,8 @@ const NAV = [
 function PageFallback() {
   return <div className="stack" role="status" aria-label="加载中"><Skeleton w={160} h={28} /><Skeleton h={96} /><Skeleton h={220} /></div>;
 }
+
+const closeLifecycle = () => { closeMove(); closeEvacuate(); closeRestore(); };
 
 /** 卡片/表格菜单里“退役…”要弹的确认框：全站只渲染这一份 */
 function NodeActionsHost() {
@@ -137,9 +139,10 @@ export function Shell() {
       <main className="main" id="main" tabIndex={-1}>
         <div className="content"><ErrorBoundary resetKey={loc.pathname}><React.Suspense fallback={<PageFallback />}><Outlet /></React.Suspense></ErrorBoundary></div>
       </main>
-      <NodeDrawer />
-      <NodeActionsHost />
-      <LifecycleDialogsHost />
+      {/* 浮层宿主各包一层边界：它们出错（图表、懒加载块失败等）只收起自己，不拖垮整页 */}
+      <ErrorBoundary silent resetKey={loc.search}><NodeDrawer /></ErrorBoundary>
+      <ErrorBoundary silent resetKey={loc.pathname} onError={closeRetire}><NodeActionsHost /></ErrorBoundary>
+      <ErrorBoundary silent resetKey={loc.pathname} onError={closeLifecycle}><LifecycleDialogsHost /></ErrorBoundary>
       <Hotkeys theme={theme} />
       <Toaster />
     </div>

@@ -8,6 +8,7 @@ import { IconButton, Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/form';
 import { toast } from '@/components/ui/toast';
+import { copyText } from '@/lib/clipboard';
 import { ConfirmDialog, TypedConfirmDialog } from './dialogs';
 
 export const entryLabel = (e: EntryView) => `${e.relay.name}:${e.port}`;
@@ -51,7 +52,7 @@ export function EntryActions({ entry }: { entry: EntryView }) {
           <Textarea readOnly value={url} rows={4} className="mono" onFocus={(e) => e.currentTarget.select()} />
           <DialogFooter>
             <Button onClick={() => setDlg(null)}>关闭</Button>
-            <Button variant="primary" onClick={async () => { try { await navigator.clipboard.writeText(url); toast.ok('已复制链接'); } catch { toast.err('复制失败，请手动选择并复制'); } }}>复制链接</Button>
+            <Button variant="primary" onClick={() => void copyText(url, '链接')}>复制链接</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
