@@ -171,6 +171,7 @@ async fn run(cfg: Config) -> Result<()> {
     let mut set: JoinSet<&'static str> = JoinSet::new();
     spawn_named(&mut set, "host_task", collect::host_task(sh.clone(), sd_rx.clone()));
     let mut applier_handle: Option<Arc<xray::apply::Applier>> = None;
+    let client = Arc::new(server::ServerClient::new(&cfg.server_url, cfg.token_file.clone(), cfg.ca_file.as_ref())?);
 
     if cfg.role == Role::Relay {
         let applier = Arc::new(xray::apply::Applier::new(cfg.clone()));
@@ -178,12 +179,10 @@ async fn run(cfg: Config) -> Result<()> {
         desired::restore(&sh);
         spawn_named(&mut set, "stats_task", collect::stats_task(sh.clone(), applier.cli.clone(), sd_rx.clone()));
         spawn_named(&mut set, "probe_task", collect::probe_task(sh.clone(), sd_rx.clone()));
-        let client = server::ServerClient::new(&cfg.server_url, cfg.token_file.clone(), cfg.ca_file.as_ref())?;
-        spawn_named(&mut set, "desired_task", desired::desired_task(sh.clone(), applier.clone(), client, sd_rx.clone()));
+        spawn_named(&mut set, "desired_task", desired::desired_task(sh.clone(), applier.clone(), client.clone(), sd_rx.clone()));
         applier_handle = Some(applier);
     }
 
-    let client = server::ServerClient::new(&cfg.server_url, cfg.token_file.clone(), cfg.ca_file.as_ref())?;
     let reporter = reporter::Reporter::new(sh.clone(), client)?;
     spawn_named(&mut set, "reporter", reporter.run(sd_rx.clone()));
 

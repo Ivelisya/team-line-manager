@@ -124,8 +124,8 @@ pub fn restore(sh: &Shared) {
     }
 }
 
-/// 回报应用结果；送不到就落盘，下个循环重发
-async fn report_applied(sh: &Shared, client: &ServerClient, rep: &ApplyReport) -> bool {
+/// 回报应用结果；送不到（或重试等待中收到关停信号）就落盘，下个循环重发
+async fn report_applied(sh: &Shared, client: &ServerClient, rep: &ApplyReport, sd: &mut watch::Receiver<bool>) -> bool {
     for attempt in 0..3u32 {
         match client.post_applied(rep).await {
             Outcome::Ok(()) => {
@@ -140,15 +140,19 @@ async fn report_applied(sh: &Shared, client: &ServerClient, rep: &ApplyReport) -
             Outcome::Revoked => break,
             Outcome::Retry { wait, why, .. } => {
                 tracing::warn!("应用回报失败（第 {} 次）：{why}", attempt + 1);
-                tokio::time::sleep(wait.unwrap_or_else(|| backoff(attempt, 2, 20))).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(wait.unwrap_or_else(|| backoff(attempt, 2, 20))) => {}
+                    _ = sd.changed() => break,
+                }
             }
         }
     }
-    let _ = save_json(&pending_ack_path(&sh.cfg), rep, true);
+    let (path, rep) = (pending_ack_path(&sh.cfg), rep.clone());
+    let _ = tokio::task::spawn_blocking(move || save_json(&path, &rep, true)).await;
     false
 }
 
-pub async fn desired_task(sh: Arc<Shared>, applier: Arc<Applier>, client: ServerClient, mut sd: watch::Receiver<bool>) {
+pub async fn desired_task(sh: Arc<Shared>, applier: Arc<Applier>, client: Arc<ServerClient>, mut sd: watch::Receiver<bool>) {
     let mut fails = 0u32;
     let mut gate = RestartGate::default();
     startup_align(&sh, &applier).await;
@@ -163,7 +167,7 @@ pub async fn desired_task(sh: Arc<Shared>, applier: Arc<Applier>, client: Server
         }
         // 先补发上次没送达的回报
         if let Some(p) = load_json::<ApplyReport>(&pending_ack_path(&sh.cfg)) {
-            report_applied(&sh, &client, &p).await;
+            report_applied(&sh, &client, &p, &mut sd).await;
         }
         // 重启路径的闸门关着时：带着失败的那一代去长轮询，服务端代数一变（有新配置）就返回；
         // 不变就 30 s 一次的 204，不会重复拿到同一代去重试
@@ -191,9 +195,11 @@ pub async fn desired_task(sh: Arc<Shared>, applier: Arc<Applier>, client: Server
                 if rep.ok {
                     note_apply(&sh, &rep, None);
                     gate.clear();
-                    save_applied(&sh.cfg, &d);
                     let generation = d.generation;
-                    *sh.applied.write().unwrap() = Some(Arc::new(d));
+                    let d = Arc::new(d);
+                    let (cfg, d2) = (sh.cfg.clone(), d.clone());
+                    let _ = tokio::task::spawn_blocking(move || save_applied(&cfg, &d2)).await;
+                    *sh.applied.write().unwrap() = Some(d);
                     sh.applied_gen.store(generation, Ordering::Relaxed);
                     fails = 0;
                 } else {
@@ -210,7 +216,7 @@ pub async fn desired_task(sh: Arc<Shared>, applier: Arc<Applier>, client: Server
                         pause = Some(backoff(fails, 15, 300));
                     }
                 }
-                report_applied(&sh, &client, &rep).await;
+                report_applied(&sh, &client, &rep, &mut sd).await;
                 pause
             }
             Outcome::Revoked => {

@@ -6,7 +6,7 @@ use crate::xray::stats::StatsState;
 use fleet_proto::{DesiredState, EntrySample, HostSample, ProbeSample, SystemInfo, XrayStatus};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 const HOST_CAP: usize = 4320; // 12 h @10 s
@@ -25,24 +25,31 @@ pub struct Buffers {
     pub stats_commit: Option<StatsState>,
 }
 
-fn push_capped<T>(v: &mut Vec<T>, items: impl IntoIterator<Item = T>, cap: usize, what: &str) {
+/// 缓冲满时每次推入都会丢弃：日志只在前几次和之后每 100 次打一条（`hits` 为该缓冲的丢弃次数）
+fn push_capped<T>(v: &mut Vec<T>, items: impl IntoIterator<Item = T>, cap: usize, what: &str, hits: &AtomicU64) {
     v.extend(items);
     if v.len() > cap {
         let n = v.len() - cap;
         v.drain(..n);
-        tracing::warn!("缓冲 {what} 超过上限 {cap}，丢弃最旧 {n} 条");
+        let h = hits.fetch_add(1, Ordering::Relaxed) + 1;
+        if h <= 3 || h.is_multiple_of(100) {
+            tracing::warn!(dropped_times = h, "缓冲 {what} 超过上限 {cap}，丢弃最旧 {n} 条");
+        }
     }
 }
 
 impl Buffers {
     pub fn push_host(&mut self, s: HostSample) {
-        push_capped(&mut self.host, [s], HOST_CAP, "host");
+        static HITS: AtomicU64 = AtomicU64::new(0);
+        push_capped(&mut self.host, [s], HOST_CAP, "host", &HITS);
     }
     pub fn push_entries(&mut self, s: Vec<EntrySample>) {
-        push_capped(&mut self.entries, s, ENTRY_CAP, "entries");
+        static HITS: AtomicU64 = AtomicU64::new(0);
+        push_capped(&mut self.entries, s, ENTRY_CAP, "entries", &HITS);
     }
     pub fn push_probe(&mut self, s: ProbeSample) {
-        push_capped(&mut self.probes, [s], PROBE_CAP, "probes");
+        static HITS: AtomicU64 = AtomicU64::new(0);
+        push_capped(&mut self.probes, [s], PROBE_CAP, "probes", &HITS);
     }
     /// 落盘失败时把取走的东西放回去（放在最前面保持时间顺序）
     pub fn restore(&mut self, host: Vec<HostSample>, entries: Vec<EntrySample>, probes: Vec<ProbeSample>) {
@@ -57,6 +64,8 @@ impl Buffers {
 pub struct Health {
     pub probes_skipped: AtomicU64,
     pub realign_fixes: AtomicU64,
+    /// 访问日志连续读取失败次数（成功即清零，仅用于日志限流）
+    pub access_read_errs: AtomicU64,
     pub last_apply_error: Mutex<Option<String>>,
 }
 

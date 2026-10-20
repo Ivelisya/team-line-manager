@@ -67,7 +67,7 @@ fn lock(core: &Mutex<Core>) -> MutexGuard<'_, Core> {
 pub struct Reporter {
     sh: Arc<Shared>,
     core: Arc<Mutex<Core>>,
-    client: ServerClient,
+    client: Arc<ServerClient>,
     boot_id: String,
     interval_s: u32,
     fails: u32,
@@ -86,7 +86,7 @@ fn build_interval(interval_s: u32, fails: u32) -> Duration {
 }
 
 impl Reporter {
-    pub fn new(sh: Arc<Shared>, client: ServerClient) -> anyhow::Result<Self> {
+    pub fn new(sh: Arc<Shared>, client: Arc<ServerClient>) -> anyhow::Result<Self> {
         let cfg = sh.cfg.clone();
         let queue = Queue::open(cfg.data_dir.join("queue"), QUEUE_MAX_BYTES, QUEUE_MAX_AGE_MS)?;
         let seq = SeqState::load(crate::state::state_path(&cfg), queue.newest());
@@ -283,8 +283,14 @@ fn build_and_push_blocking(sh: &Shared, core: &Mutex<Core>, boot_id: &str, with_
                     access = b.events;
                     next_cursor = b.next;
                     more = b.more;
+                    sh.health.access_read_errs.store(0, Ordering::Relaxed);
                 }
-                Err(e) => tracing::warn!("读取访问日志失败：{e:#}"),
+                Err(e) => {
+                    let n = sh.health.access_read_errs.fetch_add(1, Ordering::Relaxed) + 1;
+                    if n <= 3 || n.is_multiple_of(100) {
+                        tracing::warn!(fails = n, "读取访问日志失败：{e:#}");
+                    }
+                }
             }
         }
     }

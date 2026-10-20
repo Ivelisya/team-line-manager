@@ -18,6 +18,8 @@ pub const SAMPLE_INTERVAL: Duration = Duration::from_secs(10);
 /// Xray 流量统计（xray api statsquery 子进程）的采样间隔。计数器是累计值，拉长不丢流量，只是样本更粗。
 /// 服务端按分钟汇总（sum/max），不依赖 10 s 粒度。
 pub const STATS_INTERVAL: Duration = Duration::from_secs(30);
+/// Xray 不可达（或取版本失败）后，重新探查的最短间隔
+const DOWN_RECHECK: Duration = Duration::from_secs(60);
 
 fn ticker(period: Duration) -> tokio::time::Interval {
     let mut t = interval_at(Instant::now() + period, period);
@@ -39,11 +41,12 @@ pub async fn host_task(sh: Arc<Shared>, mut sd: watch::Receiver<bool>) {
             _ = sd.changed() => return,
         }
         let s = hc.sample();
+        n += 1;
+        // 读 /proc 等 IO 在拿锁之前做完，持锁只做内存操作
+        let cur = n.is_multiple_of(30).then(host::collect_info);
         let mut b = sh.buf.lock().unwrap();
         b.push_host(s);
-        n += 1;
-        if n.is_multiple_of(30) {
-            let cur = host::collect_info();
+        if let Some(cur) = cur {
             if cur != last_info || info_sent_at.elapsed() > Duration::from_secs(3600) {
                 last_info = cur.clone();
                 b.info = Some(cur);
@@ -71,14 +74,18 @@ pub async fn stats_task(sh: Arc<Shared>, cli: XrayCli, mut sd: watch::Receiver<b
     let mut last_query: Option<Instant> = None;
     let mut last_core: Option<String> = None; // 上次成功计算增量时的进程纪元
     let mut up = false;
+    let mut down_check_at: Option<Instant> = None; // Xray 不可达时，下次允许重查的时刻
+    let mut version_retry_at = Instant::now();
     loop {
         tokio::select! {
             _ = tick.tick() => {}
             _ = sd.changed() => return,
         }
         let entries = enabled_entries(&sh);
+        // Xray 已确认不可达时，systemctl / xray api 子进程至多每 DOWN_RECHECK 试一次；其余 tick 只更新状态
+        let backoff = !up && down_check_at.is_some_and(|t| Instant::now() < t);
         // 每个 SAMPLE_INTERVAL 只做一次 /proc 读取确认进程；systemctl / xray api 子进程是重活
-        if !proc.is_some_and(|(p, started)| ctl::proc_start_ticks(p) == Some(started.0)) {
+        if !backoff && !proc.is_some_and(|(p, started)| ctl::proc_start_ticks(p) == Some(started.0)) {
             proc = match ctl::main_pid(&cfg.xray_service).await {
                 Some(p) => ctl::proc_start(p).map(|s| (p, s)),
                 None => None,
@@ -89,11 +96,12 @@ pub async fn stats_task(sh: Arc<Shared>, cli: XrayCli, mut sd: watch::Receiver<b
         let core_id = stats::core_id_of(&boot, pid, start.map(|s| s.0));
         // 流量计数器是累计值，降低采样频率不丢流量。以下情况立即查：首次、到点、API 不可达（尽快发现恢复）、
         // 进程身份未知、进程换代（Xray 重启后尽早记下新基线）
-        let due = last_query.is_none_or(|t| t.elapsed() >= STATS_INTERVAL) || !up || proc.is_none() || (core_id.is_some() && core_id != last_core);
+        let due = !backoff && (last_query.is_none_or(|t| t.elapsed() >= STATS_INTERVAL) || !up || proc.is_none() || (core_id.is_some() && core_id != last_core));
         if due {
             last_query = Some(Instant::now());
             let res = cli.user_stats().await;
             up = res.is_ok();
+            down_check_at = (!up).then(|| Instant::now() + DOWN_RECHECK);
             if was_up != Some(up) {
                 match &res {
                     Ok(_) => tracing::info!("Xray API 可达"),
@@ -119,13 +127,12 @@ pub async fn stats_task(sh: Arc<Shared>, cli: XrayCli, mut sd: watch::Receiver<b
                 }
             }
         }
-        // 版本：进程换代时取一次
-        if up {
-            if let Some(p) = pid {
-                if version.as_ref().map(|v| v.0) != Some(p) {
-                    if let Ok(v) = cli.version().await {
-                        version = Some((p, v));
-                    }
+        // 版本：进程换代时取一次；取不到则 DOWN_RECHECK 之后再试
+        if let (true, Some(p)) = (up, pid) {
+            if version.as_ref().map(|v| v.0) != Some(p) && Instant::now() >= version_retry_at {
+                match cli.version().await {
+                    Ok(v) => version = Some((p, v)),
+                    Err(_) => version_retry_at = Instant::now() + DOWN_RECHECK,
                 }
             }
         }
@@ -145,6 +152,8 @@ struct Sched {
     next_egress: Instant,
     /// 该入口的出口探测是否还在途（排队等信号量也算）：同一入口最多一个，免得任务堆积
     egress_busy: Arc<AtomicBool>,
+    /// 上一次出口探测是否成功：只在成功/失败切换时打日志（初始当作成功）
+    egress_ok: Arc<AtomicBool>,
 }
 
 /// 探测任务结束（含 panic）时清掉在途标记
@@ -174,7 +183,8 @@ fn outbound_hostport(e: &DesiredEntry) -> (String, u16) {
 /// 探测调度：TCP 每 probe_interval_s（默认 30 s），出口每 2 倍间隔（默认 60 s）
 pub async fn probe_task(sh: Arc<Shared>, mut sd: watch::Receiver<bool>) {
     let mut sched: HashMap<uuid::Uuid, Sched> = HashMap::new();
-    let sem = Arc::new(Semaphore::new(4));
+    let sem = Arc::new(Semaphore::new(4)); // 出口探测并发上限
+    let tcp_sem = Arc::new(Semaphore::new(8)); // TCP 探测并发上限（单独一个，不排在 12 s 的出口探测后面）
     let mut tick = interval_at(Instant::now() + Duration::from_secs(2), Duration::from_secs(1));
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut first_pass = true;
@@ -201,7 +211,7 @@ pub async fn probe_task(sh: Arc<Shared>, mut sd: watch::Receiver<bool>) {
             let s = sched.entry(e.id).or_insert_with(|| {
                 // 启动时错峰；运行中新增/变化的入口尽快探一次，让界面马上有结果
                 let (a, b) = if first_pass { (stagger(e.id, tcp_every), Duration::from_secs(5) + stagger(e.id, egress_every)) } else { (Duration::from_secs(1), Duration::from_secs(4)) };
-                Sched { sig: sig.clone(), next_tcp: now + a, next_egress: now + b, egress_busy: Arc::new(AtomicBool::new(false)) }
+                Sched { sig: sig.clone(), next_tcp: now + a, next_egress: now + b, egress_busy: Arc::new(AtomicBool::new(false)), egress_ok: Arc::new(AtomicBool::new(true)) }
             });
             if s.sig != sig {
                 s.sig = sig;
@@ -212,7 +222,9 @@ pub async fn probe_task(sh: Arc<Shared>, mut sd: watch::Receiver<bool>) {
                 s.next_tcp = now + tcp_every;
                 let (host, port) = outbound_hostport(e);
                 let (sh2, id) = (sh.clone(), e.id);
+                let tcp_sem2 = tcp_sem.clone();
                 tokio::spawn(async move {
+                    let Ok(_permit) = tcp_sem2.acquire().await else { return };
                     let r = probe::tcp_probe(id, &host, port, Duration::from_secs(5), now_ms()).await;
                     sh2.buf.lock().unwrap().push_probe(r);
                 });
@@ -229,12 +241,21 @@ pub async fn probe_task(sh: Arc<Shared>, mut sd: watch::Receiver<bool>) {
                     }
                     let busy = BusyGuard(s.egress_busy.clone());
                     let (sh2, sem2, id, url, ip) = (sh.clone(), sem.clone(), e.id, d.relay.echo_url.clone(), e.expect_egress_ip);
+                    let last_ok = s.egress_ok.clone();
                     tokio::spawn(async move {
                         let _busy = busy;
                         let Ok(_permit) = sem2.acquire().await else { return };
                         let r = probe::egress_probe(id, pp, &url, ip, Duration::from_secs(12), now_ms()).await;
-                        if !r.ok {
-                            tracing::warn!(entry = %tags::inbound(id), "出口探测失败：{}", r.detail.as_deref().unwrap_or(""));
+                        let detail = r.detail.as_deref().unwrap_or("");
+                        // 只在成功/失败切换时 warn / info，持续失败降为 debug
+                        if last_ok.swap(r.ok, Ordering::Relaxed) == r.ok {
+                            if !r.ok {
+                                tracing::debug!(entry = %tags::inbound(id), "出口探测仍失败：{detail}");
+                            }
+                        } else if r.ok {
+                            tracing::info!(entry = %tags::inbound(id), "出口探测恢复");
+                        } else {
+                            tracing::warn!(entry = %tags::inbound(id), "出口探测失败：{detail}");
                         }
                         sh2.buf.lock().unwrap().push_probe(r);
                     });

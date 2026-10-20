@@ -1,4 +1,4 @@
-//! 声明式应用：渲染 → xray -test → 经 API 热增删（不重启）→ 核对运行态 → 最后原子写配置文件。
+//! 声明式应用：渲染 → 对比运行态算计划 →（确有改动才）xray -test → 经 API 热增删（不重启）→ 核对运行态 → 最后原子写配置文件。
 //! 任一步失败按相反顺序回滚，回报 ok=false。Xray 没运行或骨架变了才走重启路径。
 
 use super::cli::{Runtime, XrayCli};
@@ -73,18 +73,27 @@ impl Applier {
         }
     }
 
-    fn write_config(&self, full: &serde_json::Value) -> Result<()> {
+    /// 写配置（含 fsync）放到阻塞线程，不占异步运行时
+    async fn write_config(&self, full: &serde_json::Value) -> Result<()> {
         let mut data = serde_json::to_vec_pretty(full)?;
         data.push(b'\n');
-        crate::util::write_atomic(&self.cfg.xray_config, &data, true)
+        let path = self.cfg.xray_config.clone();
+        tokio::task::spawn_blocking(move || crate::util::write_atomic(&path, &data, true)).await.context("写配置任务异常终止")?
     }
 
-    /// 启动时：配置缺失则写骨架；Xray 没运行则拉起
+    /// `xray -test` 没过就返回对应的失败结果（只在真要写配置 / 改运行态之前才跑，它是个重子进程）
+    async fn test_failed(&self, cand: &Rendered, ids: &HashSet<Uuid>) -> Option<Outcome> {
+        let e = self.cli.test_config(&cand.full).await.err()?;
+        Some(Outcome { error: Some(format!("xray -test 未通过：{e:#}")), changed: ids.clone(), ..Default::default() })
+    }
+
+    /// 启动时：清掉上次遗留的临时文件（含完整 xray 配置，有 REALITY 私钥）；配置缺失则写骨架；Xray 没运行则拉起
     pub async fn ensure_boot(&self) {
         let _g = self.lock.lock().await;
+        let _ = std::fs::remove_dir_all(&self.cli.tmp_dir);
         if !self.cfg.xray_config.exists() {
             let sk = skeleton(&self.ctx());
-            match self.write_config(&sk.full) {
+            match self.write_config(&sk.full).await {
                 Ok(()) => tracing::info!("已写入空骨架 {}", self.cfg.xray_config.display()),
                 Err(e) => tracing::error!("写骨架失败：{e:#}"),
             }
@@ -157,13 +166,13 @@ impl Applier {
         let prev = prev_loaded.clone().unwrap_or_else(|| skeleton(&ctx));
         let all_ids: HashSet<Uuid> = d.entries.iter().filter(|e| e.enabled).map(|e| e.id).collect();
 
-        if let Err(e) = self.cli.test_config(&cand.full).await {
-            return Outcome { error: Some(format!("xray -test 未通过：{e:#}")), changed: all_ids, culprit: HashSet::new(), ..Default::default() };
-        }
-
+        // 先看运行态、算计划，确有写配置 / 重启 / 改运行态的动作时才跑 xray -test（幂等应用和启动对齐不该白起一个 xray 子进程）
         let rt = match self.cli.runtime().await {
             Ok(rt) if !static_changed => rt,
             Ok(_) => {
+                if let Some(out) = self.test_failed(&cand, &all_ids).await {
+                    return out; // 测试没过不算重启路径失败（没重启过，不走小时级闸门）
+                }
                 tracing::warn!("Xray 骨架配置变化，只能重启生效");
                 let mut out = self.restart_apply(&cand, prev_loaded.as_ref(), all_ids).await;
                 out.disruptive_restart = true;
@@ -172,6 +181,9 @@ impl Applier {
             Err(e) => {
                 // 只有确认 Xray 没在运行才走重启路径；"在运行但查询出错"绝不重启（重启会断开所有客户连接）
                 if self.xray_is_down(&e).await {
+                    if let Some(out) = self.test_failed(&cand, &all_ids).await {
+                        return out;
+                    }
                     tracing::warn!("Xray 未运行（{e:#}），写配置并启动");
                     return self.restart_apply(&cand, prev_loaded.as_ref(), all_ids).await;
                 }
@@ -185,10 +197,16 @@ impl Applier {
             if prev_loaded.as_ref().map(|p| &p.full) == Some(&cand.full) {
                 return Outcome::default(); // 幂等：什么都不用做
             }
-            return match self.write_config(&cand.full) {
+            if let Some(out) = self.test_failed(&cand, &all_ids).await {
+                return out;
+            }
+            return match self.write_config(&cand.full).await {
                 Ok(()) => Outcome::default(),
                 Err(e) => Outcome { error: Some(format!("写配置失败：{e:#}")), changed, culprit: HashSet::new(), ..Default::default() },
             };
+        }
+        if let Some(out) = self.test_failed(&cand, &all_ids).await {
+            return out;
         }
         tracing::info!(steps = steps.len(), "经 Xray API 应用变更");
 
@@ -211,7 +229,7 @@ impl Applier {
             return Outcome { error: Some(msg), changed, culprit: HashSet::new(), ..Default::default() };
         }
         // 最后写文件
-        if let Err(e) = self.write_config(&cand.full) {
+        if let Err(e) = self.write_config(&cand.full).await {
             let msg = self.rollback(&steps, &rt, &format!("写配置失败：{e:#}")).await;
             return Outcome { error: Some(msg), changed, culprit: HashSet::new(), ..Default::default() };
         }
@@ -258,7 +276,7 @@ impl Applier {
     async fn restart_apply(&self, cand: &Rendered, prev: Option<&Rendered>, ids: HashSet<Uuid>) -> Outcome {
         let old_bytes = std::fs::read(&self.cfg.xray_config).ok();
         let fail = |m: String| Outcome { error: Some(m), changed: ids.clone(), culprit: HashSet::new(), ..Default::default() };
-        if let Err(e) = self.write_config(&cand.full) {
+        if let Err(e) = self.write_config(&cand.full).await {
             return fail(format!("写配置失败：{e:#}"));
         }
         let res: Result<()> = async {

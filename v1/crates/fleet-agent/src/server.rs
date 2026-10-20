@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use fleet_proto::{ApplyReport, DesiredState, ReportAck};
 use std::net::IpAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 pub struct ServerClient {
@@ -13,25 +13,16 @@ pub struct ServerClient {
     token_file: PathBuf,
     /// 令牌文件权限过宽的警告只打一次
     perm_warned: AtomicBool,
-    /// 服务端不认 gzip 请求体时，这个时刻（unix ms）之前不再压缩
-    gzip_off_until_ms: AtomicI64,
 }
 
 /// 小于这个字节数的请求体不压缩
 const GZIP_MIN_BYTES: usize = 1024;
-const GZIP_RETRY_AFTER_MS: i64 = 3_600_000;
 
-fn gzip(data: &[u8]) -> std::io::Result<Vec<u8>> {
+fn gzip(data: &[u8]) -> Vec<u8> {
     use flate2::{write::GzEncoder, Compression};
     use std::io::Write;
     let mut e = GzEncoder::new(Vec::with_capacity(data.len() / 4 + 64), Compression::new(3));
-    e.write_all(data)?;
-    e.finish()
-}
-
-/// 服务端不认识 `Content-Encoding: gzip` 时的典型响应
-fn gzip_unsupported_status(status: u16) -> bool {
-    matches!(status, 400 | 415 | 422)
+    e.write_all(data).and_then(|()| e.finish()).expect("写入内存 Vec 不会失败")
 }
 
 /// 回环 / 内网（RFC1918、链路本地、ULA）地址
@@ -44,13 +35,14 @@ fn is_private_ip(ip: IpAddr) -> bool {
 
 /// 中控地址是明文 http:// 且目标不是回环/内网（主机名无法判断内外网，一律算公网）→ 令牌和报告会明文过公网
 pub fn plain_http_over_public(url: &str) -> bool {
-    let Ok(u) = crate::probe::parse_url(url) else { return false };
-    if u.https {
+    let Ok(u) = reqwest::Url::parse(url) else { return false };
+    if u.scheme() != "http" {
         return false;
     }
-    match u.host.parse::<IpAddr>() {
+    let host = u.host_str().unwrap_or("").trim_matches(|c| c == '[' || c == ']');
+    match host.parse::<IpAddr>() {
         Ok(ip) => !is_private_ip(ip),
-        Err(_) => !u.host.eq_ignore_ascii_case("localhost"),
+        Err(_) => !host.eq_ignore_ascii_case("localhost"),
     }
 }
 
@@ -98,7 +90,7 @@ impl ServerClient {
             let pem = std::fs::read(ca).with_context(|| format!("读取 CA {}", ca.display()))?;
             b = b.add_root_certificate(reqwest::Certificate::from_pem(&pem)?);
         }
-        Ok(Self { http: b.build()?, base: base.trim_end_matches('/').to_string(), token_file, perm_warned: AtomicBool::new(false), gzip_off_until_ms: AtomicI64::new(0) })
+        Ok(Self { http: b.build()?, base: base.trim_end_matches('/').to_string(), token_file, perm_warned: AtomicBool::new(false) })
     }
 
     /// 每次请求重读令牌，换令牌无需重启
@@ -125,37 +117,20 @@ impl ServerClient {
     }
 
     /// 上报。请求体较大时 gzip 压缩（`Content-Encoding: gzip`，队列文件仍是明文 JSON，压缩只在发送时做）。
-    /// 兼容旧服务端：旧服务端不认 Content-Encoding，会把压缩体当 JSON 解析失败回 400/415/422。
-    /// 这时同一份报告立刻明文重发，明文成功才断定对端不支持压缩，之后 1 小时内不再压缩（避免把报告当毒丸扔进 dead/）。
+    /// 中控始终带解压层，agent 与中控同一版本发布，不做不支持压缩的回退。
     pub async fn post_report(&self, body: Vec<u8>) -> Outcome<ReportAck> {
         let token = match self.token() {
             Ok(t) => t,
             Err(e) => return Outcome::Retry { wait: Some(Duration::from_secs(30)), why: format!("{e:#}"), server_err: false },
         };
-        if body.len() < GZIP_MIN_BYTES || crate::util::now_ms() < self.gzip_off_until_ms.load(Ordering::Relaxed) {
-            return self.send_report(&token, body, false).await.0;
+        if body.len() < GZIP_MIN_BYTES {
+            return self.send_report(&token, body, false).await;
         }
-        let (body, gz) = tokio::task::spawn_blocking(move || {
-            let gz = gzip(&body);
-            (body, gz)
-        })
-        .await
-        .expect("gzip 压缩任务异常终止");
-        let Ok(gz) = gz else { return self.send_report(&token, body, false).await.0 };
-        let (out, status) = self.send_report(&token, gz, true).await;
-        if !(matches!(out, Outcome::Rejected(_)) && gzip_unsupported_status(status)) {
-            return out;
-        }
-        let (plain, _) = self.send_report(&token, body, false).await;
-        if matches!(plain, Outcome::Ok(_)) {
-            tracing::warn!("服务端不接受 gzip 请求体（HTTP {status}），改发明文，1 小时后再试压缩");
-            self.gzip_off_until_ms.store(crate::util::now_ms() + GZIP_RETRY_AFTER_MS, Ordering::Relaxed);
-        }
-        plain
+        let gz = tokio::task::spawn_blocking(move || gzip(&body)).await.expect("gzip 压缩任务异常终止");
+        self.send_report(&token, gz, true).await
     }
 
-    /// 发一次上报请求，返回分类结果和 HTTP 状态码（网络错误等没有响应时为 0）
-    async fn send_report(&self, token: &str, body: Vec<u8>, gz: bool) -> (Outcome<ReportAck>, u16) {
+    async fn send_report(&self, token: &str, body: Vec<u8>, gz: bool) -> Outcome<ReportAck> {
         let mut req = self.http.post(format!("{}/agent/v1/report", self.base)).bearer_auth(token).header("content-type", "application/json");
         if gz {
             req = req.header("content-encoding", "gzip");
@@ -163,11 +138,11 @@ impl ServerClient {
         let res = req.timeout(Duration::from_secs(15)).body(body).send().await;
         let r = match res {
             Ok(r) => r,
-            Err(e) => return (Outcome::Retry { wait: None, why: format!("网络错误：{e}"), server_err: false }, 0),
+            Err(e) => return Outcome::Retry { wait: None, why: format!("网络错误：{e}"), server_err: false },
         };
         let (status, ra) = (r.status().as_u16(), Self::retry_after(&r));
         let text = r.text().await.unwrap_or_default();
-        let out = match classify(status, ra, &text) {
+        match classify(status, ra, &text) {
             Outcome::Ok(()) => match serde_json::from_str::<ReportAck>(&text) {
                 Ok(a) => Outcome::Ok(a),
                 Err(e) => Outcome::Retry { wait: None, why: format!("ReportAck 解析失败：{e}"), server_err: true },
@@ -175,8 +150,7 @@ impl ServerClient {
             Outcome::Retry { wait, why, server_err } => Outcome::Retry { wait, why, server_err },
             Outcome::Revoked => Outcome::Revoked,
             Outcome::Rejected(s) => Outcome::Rejected(s),
-        };
-        (out, status)
+        }
     }
 
     /// 长轮询；`Ok(None)` = 204（无变化）
@@ -253,8 +227,8 @@ mod tests {
     /// 请求记录：(是否带 content-encoding: gzip, 解压后的正文)
     type Seen = Arc<Mutex<Vec<(bool, Vec<u8>)>>>;
 
-    /// 最小 HTTP 服务端：每个连接一个请求。`understands_gzip=false` 模拟旧服务端（拿压缩体当 JSON 解析失败回 400）。
-    async fn mock_server(understands_gzip: bool) -> (String, Seen) {
+    /// 最小 HTTP 服务端：每个连接一个请求。
+    async fn mock_server() -> (String, Seen) {
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = l.local_addr().unwrap();
         let seen: Seen = Default::default();
@@ -282,20 +256,16 @@ mod tests {
                     let head = String::from_utf8_lossy(&raw[..head_end]).to_ascii_lowercase();
                     let gz = head.contains("content-encoding: gzip");
                     let body = raw[head_end..head_end + cl].to_vec();
-                    let resp = if gz && !understands_gzip {
-                        "HTTP/1.1 400 Bad Request\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".to_string()
+                    let plain = if gz {
+                        let mut out = Vec::new();
+                        flate2::read::GzDecoder::new(&body[..]).read_to_end(&mut out).unwrap();
+                        out
                     } else {
-                        let plain = if gz {
-                            let mut out = Vec::new();
-                            flate2::read::GzDecoder::new(&body[..]).read_to_end(&mut out).unwrap();
-                            out
-                        } else {
-                            body
-                        };
-                        seen.lock().unwrap().push((gz, plain));
-                        let ack = r#"{"accepted_seq":9,"interval_s":10}"#;
-                        format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{ack}", ack.len())
+                        body
                     };
+                    seen.lock().unwrap().push((gz, plain));
+                    let ack = r#"{"accepted_seq":9,"interval_s":10}"#;
+                    let resp = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{ack}", ack.len());
                     let _ = s.write_all(resp.as_bytes()).await;
                 });
             }
@@ -314,7 +284,7 @@ mod tests {
     #[test]
     fn gzip_roundtrip() {
         let data = br#"{"host":[{"cpu_pct":1.5}]}"#.repeat(200);
-        let gz = gzip(&data).unwrap();
+        let gz = gzip(&data);
         assert!(gz.len() < data.len() / 4);
         let mut out = Vec::new();
         flate2::read::GzDecoder::new(&gz[..]).read_to_end(&mut out).unwrap();
@@ -323,7 +293,7 @@ mod tests {
 
     #[tokio::test]
     async fn large_reports_are_gzipped_and_small_ones_are_not() {
-        let (base, seen) = mock_server(true).await;
+        let (base, seen) = mock_server().await;
         let c = client_for(&base, "new");
         let big = br#"{"seq":1,"pad":"xxxxxxxxxxxxxxxx"}"#.repeat(100);
         assert!(matches!(c.post_report(big.clone()).await, Outcome::Ok(a) if a.accepted_seq == 9));
@@ -332,27 +302,6 @@ mod tests {
         assert_eq!(seen.len(), 2);
         assert!(seen[0].0 && seen[0].1 == big, "大报告应以 gzip 发出，服务端解压后与原文一致");
         assert!(!seen[1].0 && seen[1].1 == b"{}", "小报告不压缩");
-    }
-
-    #[tokio::test]
-    async fn old_server_without_gzip_support_falls_back_to_plain() {
-        let (base, seen) = mock_server(false).await;
-        let c = client_for(&base, "old");
-        let big = br#"{"seq":1,"pad":"xxxxxxxxxxxxxxxx"}"#.repeat(100);
-        // 旧服务端对压缩体回 400：同一次调用里明文重发并成功，不能把报告判为永久拒绝
-        assert!(matches!(c.post_report(big.clone()).await, Outcome::Ok(_)));
-        assert!(c.gzip_off_until_ms.load(Ordering::Relaxed) > crate::util::now_ms());
-        // 之后一段时间直接发明文
-        assert!(matches!(c.post_report(big.clone()).await, Outcome::Ok(_)));
-        let seen = seen.lock().unwrap();
-        assert_eq!(seen.len(), 2);
-        assert!(seen.iter().all(|(gz, body)| !gz && *body == big));
-    }
-
-    #[test]
-    fn gzip_unsupported_statuses() {
-        assert!(gzip_unsupported_status(400) && gzip_unsupported_status(415) && gzip_unsupported_status(422));
-        assert!(!gzip_unsupported_status(413) && !gzip_unsupported_status(500));
     }
 
     #[test]
