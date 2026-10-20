@@ -444,16 +444,24 @@ pub async fn load_with(db: &PgPool, scope: Scope, only: Option<Uuid>, with_traff
     let maint: std::collections::HashSet<Uuid> = maint.into_iter().filter_map(|(id,)| id).collect();
 
     // 最近 5 分钟主机负载的最低值（持续高负载判定）
-    let su: Vec<(Uuid, i64, Option<f32>, Option<f32>, Option<f32>)> = sqlx::query_as(
-        "select machine_id, extract(epoch from max(ts) - min(ts))::bigint, min(cpu_pct),
-                (min(mem_used::float8 * 100 / nullif(mem_total, 0)))::real, (min(disk_used::float8 * 100 / nullif(disk_total, 0)))::real
+    #[derive(sqlx::FromRow)]
+    struct S {
+        machine_id: Uuid,
+        span_s: Option<i64>,
+        cpu_min: Option<f32>,
+        mem_min: Option<f32>,
+        disk_min: Option<f32>,
+    }
+    let su: Vec<S> = sqlx::query_as(
+        "select machine_id, extract(epoch from max(ts) - min(ts))::bigint span_s, min(cpu_pct) cpu_min,
+                (min(mem_used::float8 * 100 / nullif(mem_total, 0)))::real mem_min, (min(disk_used::float8 * 100 / nullif(disk_total, 0)))::real disk_min
          from host_metric where machine_id = any($1) and ts > now() - interval '5 minutes' group by machine_id",
     )
     .bind(&ids)
     .fetch_all(db)
     .await?;
     let sustained: HashMap<Uuid, Sustained> =
-        su.into_iter().map(|(id, span_s, cpu_min, mem_min, disk_min)| (id, Sustained { span_s, cpu_min, mem_min, disk_min })).collect();
+        su.into_iter().map(|r| (r.machine_id, Sustained { span_s: r.span_s.unwrap_or(0), cpu_min: r.cpu_min, mem_min: r.mem_min, disk_min: r.disk_min })).collect();
 
     let today = now.to_offset(time::macros::offset!(+8)).date();
     Ok(rows

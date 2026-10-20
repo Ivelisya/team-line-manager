@@ -88,3 +88,36 @@ impl From<axum::extract::rejection::JsonRejection> for ApiError {
 impl From<anyhow::Error> for ApiError {
     fn from(e: anyhow::Error) -> Self { Self::internal(format!("{e:#}")) }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http_body_util::BodyExt;
+
+    async fn body_of(e: ApiError) -> (StatusCode, serde_json::Value) {
+        let res = e.into_response();
+        let status = res.status();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    #[tokio::test]
+    async fn server_errors_hide_internal_details() {
+        for e in [
+            ApiError::from(anyhow::anyhow!("连接 10.0.0.5 失败，password=hunter2")),
+            ApiError::from(sqlx::Error::Protocol("relation \"secret_table\" does not exist".into())),
+        ] {
+            let (s, v) = body_of(e).await;
+            assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR);
+            let m = v["error"]["message"].as_str().unwrap();
+            assert!(m.contains("服务器内部错误") && m.contains("编号"), "{m}");
+            assert!(!m.contains("hunter2") && !m.contains("secret_table") && !m.contains("10.0.0.5"), "{m}");
+        }
+    }
+
+    #[tokio::test]
+    async fn client_errors_keep_their_message() {
+        let (s, v) = body_of(ApiError::bad_request("端口不对")).await;
+        assert_eq!((s, v["error"]["message"].as_str()), (StatusCode::BAD_REQUEST, Some("端口不对")));
+    }
+}
