@@ -208,6 +208,8 @@ struct MRow {
     s_cycle: Option<String>,
     s_due: Option<Date>,
     s_tz: Option<String>,
+    /// 账单时区里的「今天」
+    s_today: Option<Date>,
     s_auto: Option<bool>,
     s_remind: Option<i32>,
     s_traffic: Option<i32>,
@@ -245,7 +247,7 @@ pub async fn load_with(db: &PgPool, scope: Scope, only: Option<Uuid>, with_traff
                 pl.bandwidth_mbps plan_bw, pl.traffic_gb plan_traffic, m.service_ref, m.lifecycle::text lifecycle,
                 m.lifecycle_reason, m.note, m.revision, m.created_at, m.activated_at, m.retired_at,
                 s.price_cents s_price, s.currency s_currency, s.cycle::text s_cycle, s.due_date s_due, s.billing_tz s_tz,
-                s.auto_renew s_auto, s.remind_days s_remind, s.traffic_gb s_traffic, s.traffic_reset_day s_reset,
+                local_date(s.billing_tz) s_today, s.auto_renew s_auto, s.remind_days s_remind, s.traffic_gb s_traffic, s.traffic_reset_day s_reset,
                 a.agent_version a_version, a.last_report_at a_last, (a.info->'xray'->>'running')::bool a_xray,
                 r.public_host r_host, r.generation r_gen, r.applied_generation r_applied, r.applied_at r_applied_at, r.generation_at r_gen_at,
                 r.apply_error r_err, r.port_min r_pmin, r.port_max r_pmax
@@ -484,7 +486,8 @@ pub async fn load_with(db: &PgPool, scope: Scope, only: Option<Uuid>, with_traff
                 currency: r.s_currency.clone().unwrap_or_default(),
                 cycle: r.s_cycle.clone().unwrap_or_default(),
                 due_date: r.s_due.unwrap_or(today),
-                due_days: (r.s_due.unwrap_or(today) - today).whole_days(),
+                // 按订阅自己的账单时区算「今天」（取不到时退回北京时间）
+                due_days: (r.s_due.unwrap_or(today) - r.s_today.unwrap_or(today)).whole_days(),
                 billing_tz: r.s_tz.clone().unwrap_or_default(),
                 auto_renew: r.s_auto.unwrap_or(false),
                 remind_days: r.s_remind.unwrap_or(7),
