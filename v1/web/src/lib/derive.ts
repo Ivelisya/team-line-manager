@@ -15,7 +15,8 @@ export function entryText(m: MachineView): string {
   return `${e.relay.name}:${e.port}${m.entries.length > 1 ? ` +${m.entries.length - 1}` : ''}`;
 }
 export function monthTraffic(m: MachineView) {
-  let up = 0; let down = 0; let tu = 0; let td = 0;
+  const r = m.removed_traffic; // 换线后旧入口的流量仍算在本月里
+  let up = r.month_up; let down = r.month_down; let tu = r.today_up; let td = r.today_down;
   for (const e of m.entries) { up += e.traffic.month_up; down += e.traffic.month_down; tu += e.traffic.today_up; td += e.traffic.today_down; }
   return { up, down, today_up: tu, today_down: td };
 }

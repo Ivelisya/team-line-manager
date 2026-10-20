@@ -33,6 +33,7 @@ export interface MachineView {
   agent: { version: string | null; last_report_at: string | null; online: boolean } | null;
   host: HostMetrics | null;
   entries: EntryView[];
+  removed_traffic: EntryTraffic; // 已移除入口（如换线路机后的旧入口）今天/本月的流量，不在 entries 里
   health: { status: HealthStatus; reasons: HealthReason[] };
   active_job: { id: string; kind: string; state: string } | null;
   open_incidents: number; maintenance: boolean;
