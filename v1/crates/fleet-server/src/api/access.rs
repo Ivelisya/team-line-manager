@@ -73,8 +73,16 @@ fn page_of(q: &Q, default_limit: i64) -> ApiResult<(i64, i64)> {
 
 pub async fn summary(_a: Actor, State(st): State<AppState>, Query(q): Query<Q>) -> ApiResult<Json<Value>> {
     let f = filter_of(&q, Window::H24)?;
+    let key = (!f.events).then(|| format!("summary|{f:?}"));
+    if let Some(v) = key.as_deref().and_then(|k| st.access_cache.get(k)) {
+        return Ok(Json(v));
+    }
     let (kpi, nodes) = access::summary(&st.db, &f).await?;
-    Ok(ok(json!({"kpi": kpi, "nodes": nodes, "window_start": access::fmt_ts(f.from)})))
+    let out = ok(json!({"kpi": kpi, "nodes": nodes, "window_start": access::fmt_ts(f.from)}));
+    if let Some(k) = key {
+        st.access_cache.put(k, out.0.clone());
+    }
+    Ok(out)
 }
 
 pub async fn targets(_a: Actor, State(st): State<AppState>, Query(q): Query<Q>) -> ApiResult<Json<Value>> {
@@ -86,9 +94,17 @@ pub async fn targets(_a: Actor, State(st): State<AppState>, Query(q): Query<Q>) 
         Some("first") => TargetSort::First,
         Some(_) => return Err(ApiError::bad_request("sort 只能是 conns、last、first")),
     };
+    let key = (!f.events).then(|| format!("targets|{f:?}|{sort:?}|{limit}|{offset}"));
+    if let Some(v) = key.as_deref().and_then(|k| st.access_cache.get(k)) {
+        return Ok(Json(v));
+    }
     let items = access::targets(&st.db, &f, sort, limit, offset).await?;
     let next = (items.len() as i64 == limit).then_some(offset + limit);
-    Ok(ok(json!({"items": items, "next_offset": next, "window_start": access::fmt_ts(f.from)})))
+    let out = ok(json!({"items": items, "next_offset": next, "window_start": access::fmt_ts(f.from)}));
+    if let Some(k) = key {
+        st.access_cache.put(k, out.0.clone());
+    }
+    Ok(out)
 }
 
 pub async fn sources(_a: Actor, State(st): State<AppState>, Query(q): Query<Q>) -> ApiResult<Json<Value>> {
@@ -124,7 +140,15 @@ pub async fn new_targets(_a: Actor, State(st): State<AppState>, Query(q): Query<
 
 pub async fn machine(_a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, Query(q): Query<Q>) -> ApiResult<Json<Value>> {
     let w = window_of(&q, Window::H24)?;
+    let key = (w != Window::H1).then(|| format!("machine|{id}|{w:?}"));
+    if let Some(v) = key.as_deref().and_then(|k| st.access_cache.get(k)) {
+        return Ok(Json(v));
+    }
     let mut m = access::machine_access(&st.db, id, w).await?;
     crate::ipintel::attach(&st, &mut m.top_sources).await;
-    Ok(ok(m))
+    let out = ok(m);
+    if let Some(k) = key {
+        st.access_cache.put(k, out.0.clone());
+    }
+    Ok(out)
 }

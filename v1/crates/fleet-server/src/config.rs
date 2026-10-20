@@ -32,6 +32,9 @@ pub struct Config {
     pub numbering: Numbering,
     #[serde(default = "d_workers")]
     pub job_workers: usize,
+    /// 访问监控 24h / 7d / 30d 聚合结果的缓存秒数（这些窗口读的小时汇总表本来就每 5 分钟才更新）；0 = 不缓存
+    #[serde(default = "d_access_cache")]
+    pub access_cache_secs: u64,
     /// 来源 IP 画像（离线库，只查本地）；整段不写也能跑
     #[serde(default)]
     pub ipintel: IpintelConfig,
@@ -98,6 +101,7 @@ impl Default for Numbering {
 
 fn d_listen() -> String { "127.0.0.1:8080".into() }
 fn d_workers() -> usize { 8 }
+fn d_access_cache() -> u64 { 30 }
 
 impl Config {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
