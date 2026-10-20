@@ -1,8 +1,8 @@
 //! `/agent/v1/*`：边缘上报、期望状态长轮询、应用回报；`/echo` 回显来源 IP。
 
-use crate::error::ApiJson;
 use crate::crypto::sha256;
 use crate::entries;
+use crate::error::ApiJson;
 use crate::error::{ApiError, ApiResult};
 use crate::state::{AppState, Event};
 use axum::extract::{ConnectInfo, Query, State};
@@ -12,9 +12,11 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use fleet_proto::{ApplyReport, Report, ReportAck};
 use serde::Deserialize;
+use std::collections::{BTreeSet, HashMap};
 use std::net::SocketAddr;
-use std::time::Duration;
-use time::OffsetDateTime;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
 pub fn router() -> Router<AppState> {
@@ -47,30 +49,131 @@ async fn authenticate(st: &AppState, h: &HeaderMap) -> ApiResult<AgentId> {
     Ok(AgentId { machine_id, kind })
 }
 
-fn ts(ms: i64) -> OffsetDateTime {
-    OffsetDateTime::from_unix_timestamp_nanos(ms as i128 * 1_000_000).unwrap_or_else(|_| OffsetDateTime::now_utc())
+const DAY_MS: i64 = 86_400_000;
+
+/// 时间戳落在 `[lo, hi]`（Unix 毫秒）内才收，否则丢弃。
+/// 分区只覆盖保留期以内到未来几天：窗口外的样本若硬写会让整份上报的事务失败，agent 又会对同一个 seq 无限重试。
+fn ts_in(ms: i64, lo: i64, hi: i64) -> Option<OffsetDateTime> {
+    if ms < lo || ms > hi {
+        return None;
+    }
+    OffsetDateTime::from_unix_timestamp_nanos(ms as i128 * 1_000_000).ok()
+}
+
+/// 过滤出窗口内的样本，窗口外的计入 `dropped`
+fn windowed<'a, T>(items: impl Iterator<Item = &'a T>, ms: impl Fn(&T) -> i64, lo: i64, hi: i64, dropped: &mut usize) -> Vec<(&'a T, OffsetDateTime)> {
+    let mut out = vec![];
+    for it in items {
+        match ts_in(ms(it), lo, hi) {
+            Some(t) => out.push((it, t)),
+            None => *dropped += 1,
+        }
+    }
+    out
+}
+
+/// 样本所在的天没有分区（agent 补传几天前的数据）时按需补建；建不出来的天丢弃其样本。
+async fn with_partitions<T>(st: &AppState, table: &str, mut items: Vec<(T, OffsetDateTime)>, today: Date, dropped: &mut usize) -> Vec<(T, OffsetDateTime)> {
+    // 昨天到明天的分区常规维护一定建好了，只检查窗口里更早/更晚的天
+    let odd: BTreeSet<Date> = items
+        .iter()
+        .map(|(_, t)| t.date())
+        .filter(|d| *d < today - time::Duration::days(1) || *d > today + time::Duration::days(1))
+        .collect();
+    if odd.is_empty() {
+        return items;
+    }
+    let failed = crate::db::ensure_partitions(&st.db, table, &odd).await;
+    if !failed.is_empty() {
+        let before = items.len();
+        items.retain(|(_, t)| !failed.contains(&t.date()));
+        *dropped += before - items.len();
+    }
+    items
+}
+
+/// 丢弃样本的告警日志：每台机器每分钟最多一条
+fn warn_dropped(machine: Uuid, dropped: usize, seq: u64) {
+    if dropped == 0 {
+        return;
+    }
+    static LAST: OnceLock<Mutex<HashMap<Uuid, Instant>>> = OnceLock::new();
+    let mut m = LAST.get_or_init(Default::default).lock().unwrap();
+    if m.get(&machine).is_none_or(|t| t.elapsed() >= Duration::from_secs(60)) {
+        m.insert(machine, Instant::now());
+        tracing::warn!(%machine, seq, dropped, "上报里有时间戳超出可收范围（过期或在未来）的样本，已丢弃");
+    }
+}
+
+fn hour_start(t: OffsetDateTime) -> OffsetDateTime {
+    OffsetDateTime::from_unix_timestamp(t.unix_timestamp().div_euclid(3600) * 3600).unwrap_or(t)
 }
 
 async fn report(State(st): State<AppState>, h: HeaderMap, ApiJson(r): ApiJson<Report>) -> ApiResult<Json<ReportAck>> {
     let a = authenticate(&st, &h).await?;
+    let now = OffsetDateTime::now_utc();
+    let now_ms = (now.unix_timestamp_nanos() / 1_000_000) as i64;
+    let hi = now_ms + DAY_MS;
+    let raw_lo = now_ms - st.cfg.retention.raw_days as i64 * DAY_MS;
+    let acc_lo = now_ms - st.cfg.retention.access_days as i64 * DAY_MS;
+    let today = now.date();
+    let mut dropped = 0usize;
+
+    // ── 入库前整理：时间窗口过滤、补建分区。单条坏样本绝不能让整份上报失败 ──
+    let host = windowed(r.host.iter(), |s| s.ts_ms, raw_lo, hi, &mut dropped);
+    let host = with_partitions(&st, "host_metric", host, today, &mut dropped).await;
+    let (mut es, mut ps, mut ac) = (vec![], vec![], vec![]);
+    // 线路机数据：只收属于这台线路机的入口
+    if a.kind == "relay" && (!r.entries.is_empty() || !r.probes.is_empty() || !r.access.is_empty()) {
+        let mine: Vec<(Uuid,)> = sqlx::query_as("select id from entry where relay_id = $1").bind(a.machine_id).fetch_all(&st.db).await?;
+        let mine: std::collections::HashSet<Uuid> = mine.into_iter().map(|(e,)| e).collect();
+        es = windowed(r.entries.iter().filter(|e| mine.contains(&e.entry_id)), |e| e.ts_ms, raw_lo, hi, &mut dropped);
+        es = with_partitions(&st, "entry_traffic", es, today, &mut dropped).await;
+        ps = windowed(r.probes.iter().filter(|p| mine.contains(&p.entry_id)), |p| p.ts_ms, raw_lo, hi, &mut dropped);
+        ps = with_partitions(&st, "probe_result", ps, today, &mut dropped).await;
+        ac = windowed(r.access.iter().filter(|x| mine.contains(&x.entry_id)).take(5000), |x| x.ts_ms, acc_lo, hi, &mut dropped);
+        ac = with_partitions(&st, "access_event", ac, today, &mut dropped).await;
+    }
+    warn_dropped(a.machine_id, dropped, r.seq);
+
+    // 有新原始数据的整点小时：标脏，小时汇总补算。当前小时的汇总循环每轮都会算，不用标。
+    let cur_hour = hour_start(now);
+    let dirty: Vec<OffsetDateTime> = host
+        .iter()
+        .map(|(_, t)| *t)
+        .chain(es.iter().map(|(_, t)| *t))
+        .chain(ps.iter().map(|(_, t)| *t))
+        .map(hour_start)
+        .filter(|h| *h < cur_hour)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+
     let mut tx = st.db.begin().await?;
     let last: Option<(i64, Option<String>)> =
         sqlx::query_as("select last_seq, boot_id from agent_state where machine_id = $1 for update").bind(a.machine_id).fetch_optional(&mut *tx).await?;
-    // 去重：同一份数据重发（seq 不增）直接确认
+    // 去重：同一份数据重发（seq 不增）直接确认；但这仍说明 agent 活着，要刷新最近上报时间
     if let Some((seq, _)) = &last {
         if r.seq as i64 <= *seq {
-            tx.rollback().await?;
+            sqlx::query("update agent_state set last_report_at = now(), last_seq = greatest(last_seq, $2) where machine_id = $1")
+                .bind(a.machine_id)
+                .bind(r.seq as i64)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
             return Ok(Json(ReportAck { accepted_seq: *seq as u64, interval_s: 10 }));
         }
     }
     let info = r.info.as_ref().map(|i| serde_json::to_value(i).unwrap_or_default());
     let xray = r.xray.as_ref().map(|x| serde_json::to_value(x).unwrap_or_default());
+    let agent_health = r.agent_health.as_ref().map(|h| serde_json::to_value(h).unwrap_or_default());
+    // info 是合并而不是覆盖：只报系统信息时不能把之前记下的 xray / agent 健康状态冲掉
     sqlx::query(
         "insert into agent_state (machine_id, agent_version, boot_id, last_seq, last_report_at, info)
-         values ($1, $2, $3, $4, now(), coalesce($5, '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object('xray', $6::jsonb)))
+         values ($1, $2, $3, $4, now(), coalesce($5, '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object('xray', $6::jsonb, 'agent_health', $7::jsonb)))
          on conflict (machine_id) do update set agent_version = excluded.agent_version, boot_id = excluded.boot_id,
-           last_seq = excluded.last_seq, last_report_at = now(),
-           info = case when $5 is null then agent_state.info else $5 end || jsonb_strip_nulls(jsonb_build_object('xray', $6::jsonb))",
+           last_seq = greatest(agent_state.last_seq, excluded.last_seq), last_report_at = now(),
+           info = agent_state.info || coalesce($5, '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object('xray', $6::jsonb, 'agent_health', $7::jsonb))",
     )
     .bind(a.machine_id)
     .bind(&r.agent_version)
@@ -78,17 +181,18 @@ async fn report(State(st): State<AppState>, h: HeaderMap, ApiJson(r): ApiJson<Re
     .bind(r.seq as i64)
     .bind(info)
     .bind(xray)
+    .bind(agent_health)
     .execute(&mut *tx)
     .await?;
 
-    if !r.host.is_empty() {
-        let n = r.host.len();
+    if !host.is_empty() {
+        let n = host.len();
         let (mut t, mut cpu, mut l1, mut mu, mut mt, mut du, mut dt, mut rx, mut txb, mut tc) = (
             Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n),
             Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n),
         );
-        for s in &r.host {
-            t.push(ts(s.ts_ms));
+        for (s, at) in &host {
+            t.push(*at);
             cpu.push(s.cpu_pct);
             l1.push(s.load1);
             mu.push(s.mem_used as i64);
@@ -118,55 +222,56 @@ async fn report(State(st): State<AppState>, h: HeaderMap, ApiJson(r): ApiJson<Re
         .await?;
     }
 
-    // 线路机数据：只收属于这台线路机的入口
-    if a.kind == "relay" && (!r.entries.is_empty() || !r.probes.is_empty() || !r.access.is_empty()) {
-        let mine: Vec<(Uuid,)> = sqlx::query_as("select id from entry where relay_id = $1").bind(a.machine_id).fetch_all(&mut *tx).await?;
-        let mine: std::collections::HashSet<Uuid> = mine.into_iter().map(|(e,)| e).collect();
-        let es: Vec<_> = r.entries.iter().filter(|e| mine.contains(&e.entry_id)).collect();
-        if !es.is_empty() {
-            sqlx::query(
-                "insert into entry_traffic (entry_id, ts, up_bytes, down_bytes, conns)
-                 select * from unnest($1::uuid[], $2::timestamptz[], $3::bigint[], $4::bigint[], $5::int[])",
-            )
-            .bind(es.iter().map(|e| e.entry_id).collect::<Vec<_>>())
-            .bind(es.iter().map(|e| ts(e.ts_ms)).collect::<Vec<_>>())
-            .bind(es.iter().map(|e| e.up_bytes as i64).collect::<Vec<_>>())
-            .bind(es.iter().map(|e| e.down_bytes as i64).collect::<Vec<_>>())
-            .bind(es.iter().map(|e| e.conns as i32).collect::<Vec<_>>())
-            .execute(&mut *tx)
-            .await?;
-        }
-        let ps: Vec<_> = r.probes.iter().filter(|p| mine.contains(&p.entry_id)).collect();
-        if !ps.is_empty() {
-            sqlx::query(
-                "insert into probe_result (entry_id, ts, kind, ok, latency_ms, detail)
-                 select * from unnest($1::uuid[], $2::timestamptz[], $3::text[], $4::bool[], $5::real[], $6::text[])",
-            )
-            .bind(ps.iter().map(|p| p.entry_id).collect::<Vec<_>>())
-            .bind(ps.iter().map(|p| ts(p.ts_ms)).collect::<Vec<_>>())
-            .bind(ps.iter().map(|p| serde_json::to_value(p.kind).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default()).collect::<Vec<_>>())
-            .bind(ps.iter().map(|p| p.ok).collect::<Vec<_>>())
-            .bind(ps.iter().map(|p| p.latency_ms).collect::<Vec<_>>())
-            .bind(ps.iter().map(|p| p.detail.clone()).collect::<Vec<_>>())
-            .execute(&mut *tx)
-            .await?;
-        }
-        let ac: Vec<_> = r.access.iter().filter(|x| mine.contains(&x.entry_id)).take(5000).collect();
-        if !ac.is_empty() {
-            sqlx::query(
-                "insert into access_event (entry_id, ts, src_ip, dest_host, dest_port, network, blocked)
-                 select * from unnest($1::uuid[], $2::timestamptz[], $3::inet[], $4::text[], $5::int[], $6::text[], $7::bool[])",
-            )
-            .bind(ac.iter().map(|x| x.entry_id).collect::<Vec<_>>())
-            .bind(ac.iter().map(|x| ts(x.ts_ms)).collect::<Vec<_>>())
-            .bind(ac.iter().map(|x| x.src_ip.map(ipnetwork::IpNetwork::from)).collect::<Vec<_>>())
-            .bind(ac.iter().map(|x| x.dest_host.chars().take(253).collect::<String>()).collect::<Vec<_>>())
-            .bind(ac.iter().map(|x| x.dest_port.map(|p| p as i32)).collect::<Vec<_>>())
-            .bind(ac.iter().map(|x| x.network.clone()).collect::<Vec<_>>())
-            .bind(ac.iter().map(|x| x.blocked).collect::<Vec<_>>())
-            .execute(&mut *tx)
-            .await?;
-        }
+    if !es.is_empty() {
+        sqlx::query(
+            "insert into entry_traffic (entry_id, ts, up_bytes, down_bytes, conns)
+             select * from unnest($1::uuid[], $2::timestamptz[], $3::bigint[], $4::bigint[], $5::int[])",
+        )
+        .bind(es.iter().map(|(e, _)| e.entry_id).collect::<Vec<_>>())
+        .bind(es.iter().map(|(_, t)| *t).collect::<Vec<_>>())
+        .bind(es.iter().map(|(e, _)| e.up_bytes as i64).collect::<Vec<_>>())
+        .bind(es.iter().map(|(e, _)| e.down_bytes as i64).collect::<Vec<_>>())
+        .bind(es.iter().map(|(e, _)| e.conns as i32).collect::<Vec<_>>())
+        .execute(&mut *tx)
+        .await?;
+    }
+    if !ps.is_empty() {
+        sqlx::query(
+            "insert into probe_result (entry_id, ts, kind, ok, latency_ms, detail)
+             select * from unnest($1::uuid[], $2::timestamptz[], $3::text[], $4::bool[], $5::real[], $6::text[])",
+        )
+        .bind(ps.iter().map(|(p, _)| p.entry_id).collect::<Vec<_>>())
+        .bind(ps.iter().map(|(_, t)| *t).collect::<Vec<_>>())
+        .bind(ps.iter().map(|(p, _)| serde_json::to_value(p.kind).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default()).collect::<Vec<_>>())
+        .bind(ps.iter().map(|(p, _)| p.ok).collect::<Vec<_>>())
+        .bind(ps.iter().map(|(p, _)| p.latency_ms).collect::<Vec<_>>())
+        .bind(ps.iter().map(|(p, _)| p.detail.clone()).collect::<Vec<_>>())
+        .execute(&mut *tx)
+        .await?;
+    }
+    if !ac.is_empty() {
+        sqlx::query(
+            "insert into access_event (entry_id, ts, src_ip, dest_host, dest_port, network, blocked)
+             select * from unnest($1::uuid[], $2::timestamptz[], $3::inet[], $4::text[], $5::int[], $6::text[], $7::bool[])",
+        )
+        .bind(ac.iter().map(|(x, _)| x.entry_id).collect::<Vec<_>>())
+        .bind(ac.iter().map(|(_, t)| *t).collect::<Vec<_>>())
+        .bind(ac.iter().map(|(x, _)| x.src_ip.map(ipnetwork::IpNetwork::from)).collect::<Vec<_>>())
+        .bind(ac.iter().map(|(x, _)| x.dest_host.chars().take(253).collect::<String>()).collect::<Vec<_>>())
+        .bind(ac.iter().map(|(x, _)| x.dest_port.map(|p| p as i32)).collect::<Vec<_>>())
+        .bind(ac.iter().map(|(x, _)| x.network.clone()).collect::<Vec<_>>())
+        .bind(ac.iter().map(|(x, _)| x.blocked).collect::<Vec<_>>())
+        .execute(&mut *tx)
+        .await?;
+    }
+    if !dirty.is_empty() {
+        sqlx::query(
+            "insert into rollup_dirty (hour, touched_at) select t.h, clock_timestamp() from unnest($1::timestamptz[]) as t(h)
+             on conflict (hour) do update set touched_at = excluded.touched_at",
+        )
+        .bind(&dirty)
+        .execute(&mut *tx)
+        .await?;
     }
     tx.commit().await?;
     if last.is_none() {
@@ -191,7 +296,8 @@ async fn desired(State(st): State<AppState>, h: HeaderMap, Query(q): Query<Desir
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {
         let (g,): (i64,) = sqlx::query_as("select generation from relay where machine_id = $1").bind(a.machine_id).fetch_one(&st.db).await?;
-        if g > after {
+        // 用「不等于」而不是「大于」：数据库回滚/恢复后代数可能变小，agent 手里的代数反而更大
+        if g != after {
             let echo = format!("{}/echo", st.cfg.public_url.trim_end_matches('/'));
             let ds = entries::desired_state(&st.db, &st.secrets, a.machine_id, &echo).await?;
             return Ok(Json(ds).into_response());

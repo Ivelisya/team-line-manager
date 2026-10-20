@@ -16,6 +16,8 @@ pub enum Event {
     Job { id: Uuid },
     Incidents,
     Catalog,
+    /// 广播滞后、丢了事件：前端收到后让全部查询失效
+    Resync,
 }
 
 #[derive(Clone)]

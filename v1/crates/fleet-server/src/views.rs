@@ -50,6 +50,18 @@ pub struct Agent {
     #[serde(with = "time::serde::rfc3339::option")]
     pub last_report_at: Option<OffsetDateTime>,
     pub online: bool,
+    /// agent 最近一次报告的 Xray 是否在运行（仅线路机；没报过为 None）
+    pub xray_running: Option<bool>,
+}
+
+/// 最近 5 分钟主机负载的「最低值」：最低值都超阈值才算持续高负载（健康判定用，不对外输出）
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Sustained {
+    /// 这 5 分钟里样本覆盖了多少秒；不足则不判定
+    pub span_s: i64,
+    pub cpu_min: Option<f32>,
+    pub mem_min: Option<f32>,
+    pub disk_min: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -94,6 +106,9 @@ pub struct EntryView {
     /// 线路机已应用到这条入口的最近一次改动
     pub applied: bool,
     pub apply_error: Option<String>,
+    /// 这条入口所在线路机的 Xray 已确认没在运行（节点侧据此抑制出口/TCP 告警）
+    #[serde(skip)]
+    pub relay_xray_down: bool,
     pub tcp: Option<Probe>,
     pub egress: Option<Probe>,
     pub traffic: Traffic,
@@ -141,6 +156,8 @@ pub struct MachineView {
     pub maintenance: bool,
     /// 仅线路机
     pub relay: Option<RelayInfo>,
+    #[serde(skip)]
+    pub sustained: Sustained,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -150,6 +167,9 @@ pub struct RelayInfo {
     pub applied_generation: i64,
     #[serde(with = "time::serde::rfc3339::option")]
     pub applied_at: Option<OffsetDateTime>,
+    /// 期望代数最近一次变化的时间（配置未应用告警从这里起算）
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub generation_at: Option<OffsetDateTime>,
     pub apply_error: Option<String>,
     pub port_min: i32,
     pub port_max: i32,
@@ -191,10 +211,12 @@ struct MRow {
     s_reset: Option<i32>,
     a_version: Option<String>,
     a_last: Option<OffsetDateTime>,
+    a_xray: Option<bool>,
     r_host: Option<String>,
     r_gen: Option<i64>,
     r_applied: Option<i64>,
     r_applied_at: Option<OffsetDateTime>,
+    r_gen_at: Option<OffsetDateTime>,
     r_err: Option<String>,
     r_pmin: Option<i32>,
     r_pmax: Option<i32>,
@@ -204,6 +226,11 @@ struct MRow {
 pub const AGENT_OFFLINE_S: i64 = 120;
 
 pub async fn load(db: &PgPool, scope: Scope, only: Option<Uuid>) -> sqlx::Result<Vec<MachineView>> {
+    load_with(db, scope, only, true).await
+}
+
+/// `with_traffic = false` 跳过本月流量聚合（告警循环只要健康判定，不需要流量）
+pub async fn load_with(db: &PgPool, scope: Scope, only: Option<Uuid>, with_traffic: bool) -> sqlx::Result<Vec<MachineView>> {
     let lc = match scope {
         Scope::Live => "m.lifecycle <> 'retired'",
         Scope::Retired => "m.lifecycle = 'retired'",
@@ -216,8 +243,8 @@ pub async fn load(db: &PgPool, scope: Scope, only: Option<Uuid>) -> sqlx::Result
                 m.lifecycle_reason, m.note, m.revision, m.created_at, m.activated_at, m.retired_at,
                 s.price_cents s_price, s.currency s_currency, s.cycle::text s_cycle, s.due_date s_due, s.billing_tz s_tz,
                 s.auto_renew s_auto, s.remind_days s_remind, s.traffic_gb s_traffic, s.traffic_reset_day s_reset,
-                a.agent_version a_version, a.last_report_at a_last,
-                r.public_host r_host, r.generation r_gen, r.applied_generation r_applied, r.applied_at r_applied_at,
+                a.agent_version a_version, a.last_report_at a_last, (a.info->'xray'->>'running')::bool a_xray,
+                r.public_host r_host, r.generation r_gen, r.applied_generation r_applied, r.applied_at r_applied_at, r.generation_at r_gen_at,
                 r.apply_error r_err, r.port_min r_pmin, r.port_max r_pmax
          from machine m
          left join team t on t.id = m.team_id
@@ -309,16 +336,20 @@ pub async fn load(db: &PgPool, scope: Scope, only: Option<Uuid>) -> sqlx::Result
         lifecycle: String,
         applied: bool,
         apply_error: Option<String>,
+        relay_xray_down: bool,
     }
     let es: Vec<E> = sqlx::query_as(
         "select e.id, e.relay_id, rm.label relay_label, e.node_id, t.name node_team, nm.number node_number, e.port,
-                e.lifecycle::text lifecycle, r.applied_generation >= e.changed_gen applied, e.apply_error
+                e.lifecycle::text lifecycle, r.applied_generation >= e.changed_gen applied, e.apply_error,
+                coalesce((ra.info->'xray'->>'running')::bool = false and ra.last_report_at > now() - make_interval(secs => $2), false) relay_xray_down
          from entry e join machine rm on rm.id = e.relay_id join relay r on r.machine_id = e.relay_id
+         left join agent_state ra on ra.machine_id = e.relay_id
          join machine nm on nm.id = e.node_id left join team t on t.id = nm.team_id
          where e.lifecycle <> 'removed' and (e.node_id = any($1) or e.relay_id = any($1))
          order by rm.label, e.port",
     )
     .bind(&ids)
+    .bind(AGENT_OFFLINE_S as f64)
     .fetch_all(db)
     .await?;
     let eids: Vec<Uuid> = es.iter().map(|e| e.id).collect();
@@ -345,7 +376,7 @@ pub async fn load(db: &PgPool, scope: Scope, only: Option<Uuid>) -> sqlx::Result
     }
 
     // 流量：小时汇总（今天、本月按北京时间）
-    let tr: Vec<(Uuid, i64, i64, i64, i64)> = sqlx::query_as(
+    let tr: Vec<(Uuid, i64, i64, i64, i64)> = if !with_traffic { vec![] } else { sqlx::query_as(
         "select entry_id,
            coalesce(sum(up_bytes) filter (where hour >= date_trunc('day', now() at time zone 'Asia/Shanghai') at time zone 'Asia/Shanghai'), 0)::bigint,
            coalesce(sum(down_bytes) filter (where hour >= date_trunc('day', now() at time zone 'Asia/Shanghai') at time zone 'Asia/Shanghai'), 0)::bigint,
@@ -356,7 +387,7 @@ pub async fn load(db: &PgPool, scope: Scope, only: Option<Uuid>) -> sqlx::Result
     )
     .bind(&eids)
     .fetch_all(db)
-    .await?;
+    .await? };
     let traffic: HashMap<Uuid, Traffic> = tr
         .into_iter()
         .map(|(id, tu, td, mu, md)| (id, Traffic { today_up: tu, today_down: td, month_up: mu, month_down: md }))
@@ -375,6 +406,7 @@ pub async fn load(db: &PgPool, scope: Scope, only: Option<Uuid>) -> sqlx::Result
             lifecycle: e.lifecycle,
             applied: e.applied,
             apply_error: e.apply_error,
+            relay_xray_down: e.relay_xray_down,
             tcp: probes.get(&(e.id, "tcp".into())).cloned(),
             egress: probes.get(&(e.id, "egress".into())).cloned(),
             traffic: traffic.get(&e.id).cloned().unwrap_or_default(),
@@ -400,14 +432,36 @@ pub async fn load(db: &PgPool, scope: Scope, only: Option<Uuid>) -> sqlx::Result
     .await?;
     let inc: HashMap<Uuid, i64> = inc.into_iter().collect();
 
-    let maint: Vec<(Uuid,)> = sqlx::query_as(
+    // 维护静默：subject_id 为空 = 全局维护，所有机器都算维护中
+    let maint: Vec<(Option<Uuid>,)> = sqlx::query_as(
         "select distinct subject_id from silence where is_maintenance and deleted_at is null
-         and now() between starts_at and ends_at and subject_id = any($1)",
+         and now() between starts_at and ends_at and (subject_id is null or subject_id = any($1))",
     )
     .bind(&ids)
     .fetch_all(db)
     .await?;
-    let maint: std::collections::HashSet<Uuid> = maint.into_iter().map(|(id,)| id).collect();
+    let maint_all = maint.iter().any(|(s,)| s.is_none());
+    let maint: std::collections::HashSet<Uuid> = maint.into_iter().filter_map(|(id,)| id).collect();
+
+    // 最近 5 分钟主机负载的最低值（持续高负载判定）
+    #[derive(sqlx::FromRow)]
+    struct S {
+        machine_id: Uuid,
+        span_s: Option<i64>,
+        cpu_min: Option<f32>,
+        mem_min: Option<f32>,
+        disk_min: Option<f32>,
+    }
+    let su: Vec<S> = sqlx::query_as(
+        "select machine_id, extract(epoch from max(ts) - min(ts))::bigint span_s, min(cpu_pct) cpu_min,
+                (min(mem_used::float8 * 100 / nullif(mem_total, 0)))::real mem_min, (min(disk_used::float8 * 100 / nullif(disk_total, 0)))::real disk_min
+         from host_metric where machine_id = any($1) and ts > now() - interval '5 minutes' group by machine_id",
+    )
+    .bind(&ids)
+    .fetch_all(db)
+    .await?;
+    let sustained: HashMap<Uuid, Sustained> =
+        su.into_iter().map(|r| (r.machine_id, Sustained { span_s: r.span_s.unwrap_or(0), cpu_min: r.cpu_min, mem_min: r.mem_min, disk_min: r.disk_min })).collect();
 
     let today = now.to_offset(time::macros::offset!(+8)).date();
     Ok(rows
@@ -418,6 +472,7 @@ pub async fn load(db: &PgPool, scope: Scope, only: Option<Uuid>) -> sqlx::Result
                 version: r.a_version.clone(),
                 last_report_at: r.a_last,
                 online: r.a_last.is_some_and(|t| (now - t).whole_seconds() < AGENT_OFFLINE_S),
+                xray_running: r.a_xray,
             });
             let subscription = r.s_price.map(|price| Subscription {
                 price_cents: price,
@@ -436,12 +491,13 @@ pub async fn load(db: &PgPool, scope: Scope, only: Option<Uuid>) -> sqlx::Result
                 generation: r.r_gen.unwrap_or(0),
                 applied_generation: r.r_applied.unwrap_or(0),
                 applied_at: r.r_applied_at,
+                generation_at: r.r_gen_at,
                 apply_error: r.r_err.clone(),
                 port_min: r.r_pmin.unwrap_or(0),
                 port_max: r.r_pmax.unwrap_or(0),
             });
             let entries = entries_by.remove(&r.id).unwrap_or_default();
-            let maintenance = maint.contains(&r.id);
+            let maintenance = maint_all || maint.contains(&r.id);
             let mut v = MachineView {
                 id: r.id,
                 kind: r.kind,
@@ -476,6 +532,7 @@ pub async fn load(db: &PgPool, scope: Scope, only: Option<Uuid>) -> sqlx::Result
                 open_incidents: inc.get(&r.id).copied().unwrap_or(0),
                 maintenance,
                 relay,
+                sustained: sustained.get(&r.id).copied().unwrap_or_default(),
             };
             v.health = health::evaluate(&v, now);
             v

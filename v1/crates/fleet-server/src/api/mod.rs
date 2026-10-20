@@ -2,6 +2,7 @@ pub mod catalog;
 pub mod jobs;
 pub mod machines;
 pub mod misc;
+pub mod notify;
 pub mod provision;
 pub mod relays;
 
@@ -59,4 +60,9 @@ pub fn router() -> Router<AppState> {
         .route("/silences/{id}", axum::routing::delete(misc::delete_silence))
         .route("/audit", get(misc::audit))
         .route("/stream", get(misc::stream))
+        // 告警通知渠道
+        .route("/notify-channels", get(notify::list).post(notify::create))
+        .route("/notify-channels/{id}", patch(notify::patch).delete(notify::delete))
+        .route("/notify-channels/{id}/test", post(notify::test))
+        .route("/notify-log", get(notify::log))
 }
