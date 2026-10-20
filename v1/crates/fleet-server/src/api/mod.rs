@@ -8,6 +8,7 @@ pub mod lifecycle;
 pub mod machines;
 pub mod misc;
 pub mod notify;
+pub mod policy;
 pub mod provision;
 pub mod relays;
 
@@ -92,4 +93,12 @@ pub fn router() -> Router<AppState> {
         .route("/notify-channels/{id}", patch(notify::patch).delete(notify::delete))
         .route("/notify-channels/{id}/test", post(notify::test))
         .route("/notify-log", get(notify::log))
+        // 访问策略
+        .route("/policies", get(policy::list))
+        .route("/policies/preview", post(policy::preview))
+        .route("/policies/publish", post(policy::publish))
+        .route("/policies/discard", post(policy::discard))
+        .route("/policies/versions", get(policy::versions))
+        .route("/policies/versions/{id}/rollback", post(policy::rollback))
+        .route("/policies/{scope}/{id}", axum::routing::put(policy::put_one))
 }

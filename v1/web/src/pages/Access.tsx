@@ -15,6 +15,7 @@ import { SearchInput } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { Segmented, Tabs, TabsList, TabsTrigger } from '@/components/ui/overlays';
 import { Empty, KpiTile, Note, PageHead, Panel, Pill } from '@/components/app/primitives';
+import { AccessViewSwitch } from '@/components/app/AccessViewSwitch';
 import { HostCell, ResultPill, fmtN } from '@/features/AccessTab';
 import { CONN_FILTER_OPTIONS, ConnCell, IpIntelHint, IpIntelStatusChip, IspPlace, connMatches } from '@/features/IpIntelBits';
 
@@ -60,7 +61,7 @@ export function AccessPage() {
   return (
     <div className="stack">
       <PageHead title="访问监控" note={`每 30 秒刷新${summary.data ? ` · 统计自 ${F.dt(summary.data.window_start)}` : ''}`}
-        tools={<><IpIntelStatusChip /><Segmented label="时间范围" value={f.window} onChange={(v) => upd({ w: v === '24h' ? '' : v })} items={ACCESS_WINDOWS.map((x) => ({ value: x.value, label: x.label }))} /></>} />
+        tools={<><IpIntelStatusChip /><AccessViewSwitch value="behavior" /><Segmented label="时间范围" value={f.window} onChange={(v) => upd({ w: v === '24h' ? '' : v })} items={ACCESS_WINDOWS.map((x) => ({ value: x.value, label: x.label }))} /></>} />
 
       <div className="row" role="search">
         <SearchInput value={text} onChange={(e) => setText(e.target.value)} placeholder="搜索域名或来源 IP…" aria-label="搜索域名或来源 IP" className="w-full sm:w-[260px]" />

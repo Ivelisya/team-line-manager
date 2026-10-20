@@ -209,3 +209,24 @@ ProvisionItem = {
 预检 `GET /machines/{id}/restore` 返回：`{id, kind, lifecycle, ip, old_name, name（恢复后的名字）, team:{id,name}|null, number, label, restorable, blockers[], warnings[], ip_conflict:{machine_id,name,lifecycle}|null, last_relay:{id,name}|null, retired_reason, ssh:{reachable,key_login:ok|denied|error|unreachable,host_key?}|null, needs:{relay,upstream,password:required|optional|no}}`。编号默认取团队里最小的空号（编号连续时就是 N+1），可用 `number` 指定空号；线路机按 label 唯一约束检查，原名被占用时用 `label` 改名。`ssh` 是服务端用中控密钥试一次登录（临时 known_hosts，不碰正式的）的结果，`probe=false` 跳过；`needs.password=required` 表示中控密钥被拒、必须给 root 密码。
 
 `POST` 请求体：`{team_id?, number?, label?, relay_id?（节点要接入的在用线路机，节点必填）, login?:{password}（只用来推一次中控公钥，用完即丢）, upstream?:{protocol,host,port,username?,password?}（proxy 必填：退役时出站参数已删除）, ss_port?（vps，默认 8388；vps 恢复时重新生成 SS 密码）, reason?, reset_host_key?（机器重装过，允许预检覆盖已记录的主机指纹；退役时已忘记指纹，所以默认是重新记录）}`。
+
+## 访问策略（域名黑白名单）
+按团队或节点设置：有效策略 = 节点策略（`mode≠inherit`）> 团队策略 > 默认 `observe`。模式：`observe`（不产生规则）、`allowlist`（只放行名单内域名，其余阻止）、`denylist`（阻止名单内域名，其余放行）、`blocked`（暂停该节点所有新连接）、`inherit`（仅节点：跟随团队）。`allowlist`/`denylist` 至少一个域名。GET 需 `read`，写操作需 `write` 并写审计；预览是 POST 但无副作用（也需 `write`）。
+
+**域名规范化**：逗号 / 中文逗号 / 顿号 / 分号 / 空白分隔，小写，去尾点；只接受 ASCII（国际化域名填 `xn--`）；每份 ≤300 个；必须含点、每标签 ≤63 且只含字母数字连字符（不以连字符开头结尾）、总长 ≤253；不能是 IP，不能带 URL、端口、通配符 `*`、正则或 `domain:` 之类前缀。`=example.com` 表示精确匹配（Xray `full:`），否则含子域（`domain:`）。保存时排序去重。错误信息中文并点名是哪一个域名（400）。
+
+**草稿与发布**：`PUT` 只改草稿（`policy` 表的 `draft` + `revision` 乐观锁，`expected_revision` 与当前不符 409「草稿已被修改，请重新加载」；还没有记录的范围 revision 为 0）。草稿与生效值相同时草稿自动清除。`draft_hash` = 所有草稿规范化 JSON 的 sha256（十六进制），预览返回，发布 / 丢弃必须带上且一致（否则 409「草稿已变化，请重新预览」）。发布把所有草稿生效成新版本（`policy_version` 存完整快照），对**编译结果有变化**的节点所在的线路机代数 +1（每台只 +1 一次）。回滚 = 把旧版本快照作为新版本发布。版本状态由各线路机的 `applied_generation` 推导：`applying`（有线路机还没应用）→ `applied`；线路机回报应用失败且未应用 → `failed`；已退役的线路机不再等待（`gone`）。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/policies` | `{draft_hash, draft_count, teams:[{id,name,policy,nodes:[{id,name,number,has_entry,policy,effective,draft_effective}]}]}`。`policy`（范围自己的）= `{scope,id,mode,domains,note,draft:{mode,domains,note}\|null,revision,updated_by,updated_at}`；`effective`/`draft_effective`（仅节点）= `{mode,domains,note,source:"node"\|"team"\|"default"}`，分别是生效值与「草稿全部生效后」的值 |
+| PUT | `/policies/{scope}/{id}` | `scope=team\|node`；body `{mode, domains:[…]\|"文本", note, expected_revision}` → `{policy, draft_hash, draft_count}`。团队不能 `inherit`；线路机没有策略 |
+| POST | `/policies/preview` | 按最近 24 小时 `access_hourly` 模拟：`{draft_hash, draft_count, window_hours, affected_relays, changes:[{scope,id,name,from:{mode,domains},to:{…}}], nodes:[{node_id,name,team,mode,source,changed,total_conns,would_block,current_blocked,domains:[{host,conns}]（前 20）}]}`。只列草稿生效后非 observe 或有效策略有变化的节点；随机子域名合并行（`*.x.com`）按「整棵子树落在 domain 规则里」近似匹配 |
+| POST | `/policies/publish` | body `{draft_hash}` → 新版本（同 versions 的一项） |
+| POST | `/policies/discard` | body `{draft_hash}` → `{discarded}` |
+| GET | `/policies/versions` | 最近 30 个：`[{id,seq,kind:"publish"\|"rollback",rollback_of_seq,actor,created_at,status:"applying"\|"applied"\|"failed",changes,relays:[{relay_id,name,generation,applied_generation,status,error}],is_latest,is_current,rollbackable}]`，`seq` 大的在前；`is_current` = 快照与当前生效值一致（不可回滚） |
+| POST | `/policies/versions/{id}/rollback` | 与当前一致时 409；草稿不受影响 → 新版本 |
+
+**下发**：`DesiredEntry.policy`（`fleet-proto`，`#[serde(default, skip_serializing_if = "Option::is_none")]`，旧 agent 忽略、新 agent 收不到 = observe）：`{"mode":"allowlist"|"denylist"|"blocked","domains":["domain:example.com","full:exact.org"]}`；observe 不带该字段。agent 在该入口默认路由规则之前插入 `policy-<入口id>-match`（名单内：allowlist 走原出站、denylist 走 `blocked`）与 `policy-<入口id>-default`（allowlist/blocked：其余走 `blocked`），只匹配该入口自己的 inboundTag——回环探测入站不受影响；规则变化经 `adrules` 整表替换热加载，不重启 Xray。被策略阻止的连接在访问日志里是 `[in-… -> blocked]`，访问监控里计为已阻止。入站 sniffing 保持 `routeOnly=false`（域名匹配靠它改写目标地址；改成 true 会让「客户端给 IP」的连接不再由线路机侧解析域名）。
+**健康**：节点有效策略为 `blocked` 时，健康原因里加一条 `policy_blocked`（severity `info`，「访问策略：已暂停新连接」）；info 级原因不降级、不开告警。
+**实时**：SSE `{type:"policies"}`（草稿 / 发布 / 回滚 / 丢弃）。

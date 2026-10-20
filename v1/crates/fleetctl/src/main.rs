@@ -8,6 +8,7 @@ mod config;
 mod ipintel;
 mod lifecycle;
 mod ops;
+mod policy;
 mod resolve;
 mod table;
 
@@ -66,6 +67,50 @@ enum KeysCmd {
         which: String,
         #[command(flatten)]
         auth: KeyAuthArgs,
+    },
+}
+
+#[derive(Subcommand)]
+enum PolicyCmd {
+    /// 所有团队/节点的访问策略：生效值与草稿
+    Ls,
+    /// 某个团队或节点的策略详情
+    Show {
+        /// 团队名，或节点（显示名 / id / IP）
+        who: String,
+    },
+    /// 设置草稿（不生效，publish 才下发）。不写 --domains / --note 就沿用现有的
+    Set {
+        who: String,
+        /// observe | allowlist | denylist | blocked | inherit（仅节点）
+        #[arg(long)]
+        mode: String,
+        /// 域名，逗号或空白分隔；`=example.com` 为精确匹配，否则含子域
+        #[arg(long)]
+        domains: Option<String>,
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// 模拟：草稿生效后最近 24 小时每个节点会被阻止多少连接
+    Preview,
+    /// 发布全部草稿（先预览，再确认）
+    Publish {
+        #[arg(long)]
+        yes: bool,
+    },
+    /// 丢弃全部草稿
+    Discard {
+        #[arg(long)]
+        yes: bool,
+    },
+    /// 发布记录（最近 30 个）与各线路机的应用状态
+    Versions,
+    /// 把历史版本作为新版本发布
+    Rollback {
+        /// 版本号（3 或 v3）或版本 id
+        version: String,
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -347,6 +392,11 @@ enum Cmd {
     },
     /// IP 情报离线库状态（加载了几个、版本、缺什么）
     IpintelStatus,
+    /// 访问策略：团队/节点的域名黑白名单（草稿 → 预览 → 发布 → 回滚）
+    Policy {
+        #[command(subcommand)]
+        cmd: PolicyCmd,
+    },
     /// 订阅实时事件流
     Watch {
         /// 收到 N 条后退出
@@ -518,6 +568,16 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Ip { ips } => ipintel::ip(x, &ips),
         Cmd::Sources { machine, window, limit } => ipintel::sources(x, &machine, &window, limit),
         Cmd::IpintelStatus => ipintel::status(x),
+        Cmd::Policy { cmd } => match cmd {
+            PolicyCmd::Ls => policy::ls(x),
+            PolicyCmd::Show { who } => policy::show(x, &who),
+            PolicyCmd::Set { who, mode, domains, note } => policy::set(x, policy::SetOpts { who: &who, mode: &mode, domains: domains.as_deref(), note: note.as_deref() }),
+            PolicyCmd::Preview => policy::preview(x),
+            PolicyCmd::Publish { yes } => policy::publish(x, yes),
+            PolicyCmd::Discard { yes } => policy::discard(x, yes),
+            PolicyCmd::Versions => policy::versions(x),
+            PolicyCmd::Rollback { version, yes } => policy::rollback(x, &version, yes),
+        },
         Cmd::Watch { count, ticks } => cmds::watch(x, count, ticks),
         Cmd::Move { node, to, from, yes, follow } => lifecycle::mv(x, &node, &to, from.as_deref(), yes, follow),
         Cmd::Evacuate { relay, to, yes, follow } => lifecycle::evacuate(x, &relay, &to, yes, follow),

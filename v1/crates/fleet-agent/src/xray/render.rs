@@ -2,7 +2,7 @@
 //! 纯函数，无副作用；apply 与 `render` 子命令共用。
 
 use anyhow::{bail, ensure, Result};
-use fleet_proto::{tags, DesiredEntry, DesiredState, Outbound, RelayParams};
+use fleet_proto::{tags, DesiredEntry, DesiredState, EntryPolicy, Outbound, PolicyMode, RelayParams};
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
@@ -49,7 +49,7 @@ pub fn is_static_outbound(tag: &str) -> bool {
 }
 fn is_entry_rule(v: &Value) -> bool {
     let t = rule_tag_of(v);
-    t.starts_with("rule-") || t.starts_with("probe-")
+    t.starts_with("rule-") || t.starts_with("probe-") || t.starts_with("policy-")
 }
 
 impl Rendered {
@@ -175,6 +175,45 @@ fn dest_with_port(d: &str) -> String {
     }
 }
 
+pub fn policy_tag(id: Uuid, part: &str) -> String {
+    format!("policy-{}-{part}", id.simple())
+}
+
+/// 访问策略规则：排在该入口默认路由规则之前，只匹配该入口自己的入站（探测入站有独立规则，不受影响）。
+/// - allowlist：名单内走原出站，其余 blocked
+/// - denylist：名单内 blocked，其余落到默认规则
+/// - blocked：该入口全部 blocked
+///
+/// observe（没有 policy）不产生规则。
+fn policy_rules(e: &DesiredEntry) -> Vec<Value> {
+    let Some(EntryPolicy { mode, domains }) = &e.policy else { return vec![] };
+    let inb = vec![tags::inbound(e.id)];
+    let rule = |part: &str, domains: Option<&Vec<String>>, out: String| {
+        let mut r = json!({"type": "field", "ruleTag": policy_tag(e.id, part), "inboundTag": inb, "outboundTag": out});
+        if let Some(d) = domains {
+            r["domain"] = json!(d);
+        }
+        r
+    };
+    match mode {
+        PolicyMode::Allowlist => vec![
+            rule("match", Some(domains), tags::outbound(e.id)),
+            rule("default", None, "blocked".into()),
+        ],
+        PolicyMode::Denylist => vec![rule("match", Some(domains), "blocked".into())],
+        PolicyMode::Blocked => vec![rule("default", None, "blocked".into())],
+    }
+}
+
+/// 域名匹配串只接受 Xray 的 `domain:` / `full:` 形式 + 保守字符集，避免把中控传来的任意串写进配置
+fn valid_matcher(m: &str) -> bool {
+    let Some(rest) = m.strip_prefix("domain:").or_else(|| m.strip_prefix("full:")) else { return false };
+    !rest.is_empty()
+        && rest.len() <= 253
+        && rest.contains('.')
+        && rest.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'.')
+}
+
 fn probe_inbound_json(id: Uuid, port: u16) -> Value {
     json!({
         "listen": "127.0.0.1",
@@ -210,6 +249,18 @@ fn validate(d: &DesiredState, api_port: u16) -> Result<String> {
             Outbound::Shadowsocks { host, port, .. } | Outbound::Socks5 { host, port, .. } | Outbound::Http { host, port, .. } => (host, *port),
         };
         ensure!(!host.trim().is_empty() && port != 0, "入口 {} 出站地址无效", e.id);
+        if let Some(p) = &e.policy {
+            match p.mode {
+                PolicyMode::Allowlist | PolicyMode::Denylist => {
+                    ensure!(!p.domains.is_empty(), "入口 {} 的访问策略没有域名", e.id);
+                    ensure!(p.domains.len() <= 1000, "入口 {} 的访问策略域名过多（{}）", e.id, p.domains.len());
+                    if let Some(bad) = p.domains.iter().find(|d| !valid_matcher(d)) {
+                        bail!("入口 {} 的访问策略域名无效：{bad:?}", e.id);
+                    }
+                }
+                PolicyMode::Blocked => {}
+            }
+        }
     }
     Ok(min_ver)
 }
@@ -250,6 +301,7 @@ pub fn render(d: &DesiredState, ctx: &RenderCtx) -> Result<Rendered> {
             inbounds.push(probe_inbound_json(e.id, *p));
             rules.push(json!({"type": "field", "ruleTag": probe_tag(e.id), "inboundTag": [probe_tag(e.id)], "outboundTag": tags::outbound(e.id)}));
         }
+        entry_rules.extend(policy_rules(e));
         entry_rules.push(json!({"type": "field", "ruleTag": tags::rule(e.id), "inboundTag": [tags::inbound(e.id)], "outboundTag": tags::outbound(e.id)}));
     }
     rules.push(json!({"type": "field", "ruleTag": "block-private", "ip": ["geoip:private"], "outboundTag": "blocked"}));
@@ -299,6 +351,7 @@ pub mod tests {
             short_id: "0123abcd".into(),
             outbound: Outbound::Shadowsocks { host: "10.0.0.9".into(), port: 8388, method: "aes-256-gcm".into(), password: "pw".into() },
             expect_egress_ip: "203.0.113.9".parse::<IpAddr>().unwrap(),
+            policy: None,
         }
     }
 
@@ -422,6 +475,94 @@ pub mod tests {
         assert_eq!(dest_with_port("a.com"), "a.com:443");
         assert_eq!(dest_with_port("a.com:8443"), "a.com:8443");
         assert_eq!(dest_with_port("[::1]:443"), "[::1]:443");
+    }
+
+    fn with_policy(n: u128, port: u16, mode: PolicyMode, domains: &[&str]) -> DesiredEntry {
+        let mut e = entry(n, port, true);
+        e.policy = Some(EntryPolicy { mode, domains: domains.iter().map(|d| d.to_string()).collect() });
+        e
+    }
+
+    fn rule_tags(r: &Rendered) -> Vec<&str> {
+        r.rules.iter().map(rule_tag_of).collect()
+    }
+
+    #[test]
+    fn policy_rules_four_modes() {
+        let id = Uuid::from_u128(1).simple().to_string();
+        let ib = format!("in-{id}");
+        let ob = format!("out-{id}");
+        let doms = ["domain:a.com", "full:b.com"];
+
+        // observe：没有任何策略规则，和没有 policy 字段完全一致
+        let plain = render(&desired(vec![entry(1, 20001, true)]), &ctx()).unwrap();
+        assert!(!rule_tags(&plain).iter().any(|t| t.starts_with("policy-")));
+
+        // allowlist：名单内走原出站，其余 blocked，都在入口默认规则之前
+        let r = render(&desired(vec![with_policy(1, 20001, PolicyMode::Allowlist, &doms)]), &ctx()).unwrap();
+        assert_eq!(
+            rule_tags(&r),
+            vec!["api".to_string(), format!("probe-{id}"), "block-private".into(), "block-bittorrent".into(),
+                 format!("policy-{id}-match"), format!("policy-{id}-default"), format!("rule-{id}")]
+        );
+        assert_eq!(
+            r.rules[4],
+            json!({"type": "field", "ruleTag": format!("policy-{id}-match"), "inboundTag": [ib.clone()], "domain": doms, "outboundTag": ob.clone()})
+        );
+        assert_eq!(
+            r.rules[5],
+            json!({"type": "field", "ruleTag": format!("policy-{id}-default"), "inboundTag": [ib.clone()], "outboundTag": "blocked"})
+        );
+
+        // denylist：只有一条「名单内 → blocked」
+        let r = render(&desired(vec![with_policy(1, 20001, PolicyMode::Denylist, &doms)]), &ctx()).unwrap();
+        assert_eq!(rule_tags(&r)[4..], [format!("policy-{id}-match"), format!("rule-{id}")]);
+        assert_eq!(r.rules[4]["outboundTag"], "blocked");
+        assert_eq!(r.rules[4]["domain"], json!(doms));
+
+        // blocked：该入口全部 blocked，没有域名字段
+        let r = render(&desired(vec![with_policy(1, 20001, PolicyMode::Blocked, &[])]), &ctx()).unwrap();
+        assert_eq!(rule_tags(&r)[4..], [format!("policy-{id}-default"), format!("rule-{id}")]);
+        assert!(r.rules[4].get("domain").is_none());
+        assert_eq!(r.rules[4]["outboundTag"], "blocked");
+    }
+
+    #[test]
+    fn policy_does_not_touch_probe_or_other_entries_and_keeps_static_part() {
+        let r = render(
+            &desired(vec![with_policy(1, 20001, PolicyMode::Blocked, &[]), entry(2, 20002, true)]),
+            &ctx(),
+        )
+        .unwrap();
+        let p1 = format!("probe-{}", Uuid::from_u128(1).simple());
+        let probe_rule = r.rules.iter().find(|x| rule_tag_of(x) == p1).unwrap();
+        // 探测入站的规则原样：只匹配探测入站、走入口自己的出站，且排在策略规则之前
+        assert_eq!(probe_rule["inboundTag"], json!([p1.clone()]));
+        assert_eq!(probe_rule["outboundTag"], format!("out-{}", Uuid::from_u128(1).simple()));
+        let pos = |t: &str| r.rules.iter().position(|x| rule_tag_of(x) == t).unwrap();
+        assert!(pos(&p1) < pos(&format!("policy-{}-default", Uuid::from_u128(1).simple())));
+        // 其它入口没有策略规则
+        let id2 = Uuid::from_u128(2).simple().to_string();
+        assert!(!rule_tags(&r).iter().any(|t| t.starts_with("policy-") && t.contains(&id2)));
+        // 策略规则属于「入口规则」：不进 static_part，不会因为策略变化而要求重启 Xray
+        let base = render(&desired(vec![entry(1, 20001, true), entry(2, 20002, true)]), &ctx()).unwrap();
+        assert_eq!(base.static_part, r.static_part);
+        assert_eq!(Rendered::from_full(r.full.clone()), r);
+    }
+
+    #[test]
+    fn policy_validation() {
+        let bad = |mode, domains: &[&str]| render(&desired(vec![with_policy(1, 20001, mode, domains)]), &ctx()).is_err();
+        assert!(bad(PolicyMode::Allowlist, &[]));
+        assert!(bad(PolicyMode::Denylist, &[]));
+        assert!(bad(PolicyMode::Allowlist, &["a.com"]));
+        assert!(bad(PolicyMode::Allowlist, &["domain:"]));
+        assert!(bad(PolicyMode::Denylist, &["domain:a.com
+x"]));
+        assert!(bad(PolicyMode::Denylist, &["regexp:.*"]));
+        assert!(bad(PolicyMode::Denylist, &["domain:A.com"]));
+        assert!(!bad(PolicyMode::Blocked, &[]));
+        assert!(!bad(PolicyMode::Denylist, &["domain:a-b.example.com", "full:x.y"]));
     }
 
     #[test]

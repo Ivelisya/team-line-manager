@@ -2,7 +2,7 @@
 // 整个文件按需加载（首次打开时才下载 cmdk）。
 import * as React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowUpCircle, BellOff, BellRing, Briefcase, Clipboard, CloudUpload, Gauge, LayoutGrid, ListChecks, Moon, PackageOpen, Server, Settings, Sun, Waypoints } from 'lucide-react';
+import { ArrowUpCircle, BellOff, BellRing, Briefcase, Clipboard, CloudUpload, Gauge, LayoutGrid, ListChecks, Moon, PackageOpen, Server, Settings, ShieldCheck, Sun, Waypoints } from 'lucide-react';
 import { useMachines, useUpgradeAllAgents } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import { copyText } from '@/lib/clipboard';
@@ -20,6 +20,7 @@ const PAGES = [
   { to: '/nodes', label: '节点', icon: Server, kw: 'nodes 表格 列表' },
   { to: '/relays', label: '线路机', icon: Waypoints, kw: 'relays 线路 入口' },
   { to: '/access', label: '访问监控', icon: Gauge, kw: 'access 访问 监控' },
+  { to: '/access/policy', label: '访问规则', icon: ShieldCheck, kw: 'policy access 访问规则 策略 白名单 黑名单 阻止 域名 allowlist denylist' },
   { to: '/jobs', label: '作业', icon: ListChecks, kw: 'jobs 任务' },
   { to: '/incidents', label: '告警', icon: BellRing, kw: 'incidents alerts 静默' },
   { to: '/catalog', label: '目录（团队与套餐）', icon: Briefcase, kw: 'catalog teams plans providers 团队 套餐 供应商' },

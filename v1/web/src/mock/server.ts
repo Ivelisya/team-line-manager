@@ -5,6 +5,7 @@ import type { EntryView, Job, JobLog, MachineView, ProvisionCheckItem, Provision
 import { displayName } from '@/lib/format';
 import { buildDb, hashStr, rng, type Db } from './fixtures';
 import { installAccessMock } from './access';
+import { installPolicyMock } from './policy';
 
 const db: Db = buildDb();
 const DAY = 86400_000;
@@ -437,6 +438,7 @@ R('DELETE', '/silences/([^/]+)', ({ params }) => { db.silences = db.silences.fil
 R('GET', '/audit', ({ query }) => clone(db.audit.filter((a) => !query.get('target_id') || a.target_id === query.get('target_id')).slice(0, +(query.get('limit') ?? 50))));
 
 installAccessMock(R, () => db.machines);
+installPolicyMock(R, { teams: () => db.teams, machines: () => db.machines, emit, user: () => db.user, bad });
 // ---------- 升级 agent ----------
 const UPSTEPS: [string, string][] = [['push', '推送 agent'], ['restart', '重启 agent'], ['verify', '确认上报']];
 function startUpgrade(m: MachineView) {
