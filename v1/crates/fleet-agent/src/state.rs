@@ -65,7 +65,8 @@ pub struct Shared {
     pub health: Health,
     pub buf: Mutex<Buffers>,
     /// 线路机：最近一次成功应用的期望状态（探测、流量统计据此知道有哪些入口）
-    pub applied: RwLock<Option<DesiredState>>,
+    /// 用 Arc 共享：探测任务每秒读一次，不必每次深拷贝整个期望状态
+    pub applied: RwLock<Option<Arc<DesiredState>>>,
     pub applied_gen: AtomicU64,
 }
 
@@ -98,30 +99,48 @@ struct SeqFile {
     seq: u64,
 }
 
-/// 单调递增的上报序号，每次分配都 fsync。
+/// 号段预留：每预留 SEQ_BLOCK 个序号才 fsync 落盘一次
+const SEQ_BLOCK: u64 = 1000;
+
+/// 单调递增的上报序号。
+/// 落盘的是"已预留的上界"：本进程发出过的任何序号都 ≤ 它。重启时从 max(落盘上界, 队列里最大序号) 之后继续，
+/// 序号会跳过一段（服务端只比较大小去重，空洞无妨）；崩溃只会浪费号段，不会复用序号。
 /// 状态丢失时从当前 unix 毫秒起算（每个报告至少隔 1 s，所以必然大于之前用过的任何序号）。
 pub struct SeqState {
     path: PathBuf,
     pub seq: u64,
+    /// 已落盘的上界
+    reserved: u64,
 }
 
 impl SeqState {
     pub fn load(path: PathBuf, queue_newest: Option<u64>) -> Self {
-        let base = load_json::<SeqFile>(&path).map(|f| f.seq).unwrap_or_else(|| crate::util::now_ms() as u64);
-        Self { path, seq: base.max(queue_newest.unwrap_or(0)) }
+        let saved = load_json::<SeqFile>(&path).map(|f| f.seq);
+        let base = saved.unwrap_or_else(|| crate::util::now_ms() as u64);
+        // 上界取"落盘值"：此后第一次分配就会超过它，立刻预留新号段
+        Self { path, seq: base.max(queue_newest.unwrap_or(0)), reserved: saved.unwrap_or(0) }
+    }
+    fn reserve(&mut self, upto: u64) -> anyhow::Result<()> {
+        save_json(&self.path, &SeqFile { seq: upto }, true)?;
+        self.reserved = upto;
+        Ok(())
     }
     /// 服务端确认的序号比本地发出过的还大（时钟回拨 / 状态丢失后）：把本地推到它之后，
     /// 否则后续报告会被服务端当重复丢弃。
     pub fn advance_to(&mut self, n: u64) -> anyhow::Result<()> {
         if n > self.seq {
-            save_json(&self.path, &SeqFile { seq: n }, true)?;
+            if n > self.reserved {
+                self.reserve(n)?;
+            }
             self.seq = n;
         }
         Ok(())
     }
     pub fn next(&mut self) -> anyhow::Result<u64> {
         let n = self.seq + 1;
-        save_json(&self.path, &SeqFile { seq: n }, true)?;
+        if n > self.reserved {
+            self.reserve(n + SEQ_BLOCK - 1)?;
+        }
         self.seq = n;
         Ok(n)
     }
@@ -157,8 +176,9 @@ mod tests {
         let a = s.next().unwrap();
         let b = s.next().unwrap();
         assert_eq!(b, a + 1);
+        // 号段预留：重启后跳过本段剩余序号，但绝不回退/复用
         let mut s2 = SeqState::load(p.clone(), None);
-        assert_eq!(s2.next().unwrap(), b + 1);
+        assert!(s2.next().unwrap() > b);
         // 状态文件丢了：以队列里最大序号为下限，且起点是时间戳量级
         std::fs::remove_file(&p).unwrap();
         let s3 = SeqState::load(p, Some(u64::MAX / 2));
@@ -178,7 +198,39 @@ mod tests {
         s.advance_to(before + 5000).unwrap(); // 服务端确认的比本地大（时钟回拨后）
         assert_eq!(s.next().unwrap(), before + 5001);
         // 落盘了：重新加载后仍在它之后
-        assert_eq!(SeqState::load(p, None).seq, before + 5001);
+        assert!(SeqState::load(p, None).seq >= before + 5001);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn seq_reserves_in_blocks_and_never_reuses() {
+        let d = std::env::temp_dir().join(format!("fa-seq-blk-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("state.json");
+        let mut s = SeqState::load(p.clone(), None);
+        let first = s.next().unwrap();
+        let on_disk = |p: &PathBuf| load_json::<SeqFile>(p).unwrap().seq;
+        let bound = on_disk(&p);
+        assert_eq!(bound, first + SEQ_BLOCK - 1);
+        // 一个号段内不再写盘
+        for i in 1..SEQ_BLOCK {
+            assert_eq!(s.next().unwrap(), first + i);
+        }
+        assert_eq!(on_disk(&p), bound);
+        // 号段用完：预留下一段
+        let n = s.next().unwrap();
+        assert_eq!(n, bound + 1);
+        assert_eq!(on_disk(&p), n + SEQ_BLOCK - 1);
+        // "崩溃"重启：新序号一定大于崩溃前发出过的任何序号
+        let used = n + 10;
+        for _ in 0..10 {
+            s.next().unwrap();
+        }
+        assert_eq!(s.seq, used);
+        assert!(SeqState::load(p.clone(), None).seq >= used);
+        // 队列里有更大的序号时以队列为准
+        let mut s3 = SeqState::load(p, Some(used + 50_000));
+        assert_eq!(s3.next().unwrap(), used + 50_001);
         let _ = std::fs::remove_dir_all(&d);
     }
 }

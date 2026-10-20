@@ -139,12 +139,32 @@ pub fn parse_http_response(raw: &[u8]) -> Result<(u16, Vec<u8>)> {
     Ok((status, out))
 }
 
+/// 每个 SOCKS 入站端口复用一个 reqwest 客户端：新建客户端要初始化 TLS 配置、加载根证书，在小内存机器上不便宜。
+/// 关掉连接池：出口探测要量的是"新建一条经代理的连接"的完整延迟，复用旧连接会让延迟偏低、也可能掩盖链路故障。
+fn https_client(proxy: SocketAddr) -> Result<reqwest::Client> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    /// 入口被删除后端口会遗留在表里，超过这个数量就整表清掉重建
+    const MAX_CLIENTS: usize = 64;
+    static CLIENTS: OnceLock<Mutex<HashMap<SocketAddr, reqwest::Client>>> = OnceLock::new();
+    let mut m = CLIENTS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(c) = m.get(&proxy) {
+        return Ok(c.clone());
+    }
+    let c = reqwest::Client::builder().proxy(reqwest::Proxy::all(format!("socks5h://{proxy}"))?).pool_max_idle_per_host(0).build()?;
+    if m.len() >= MAX_CLIENTS {
+        m.clear();
+    }
+    m.insert(proxy, c.clone());
+    Ok(c)
+}
+
 /// 经 SOCKS5 代理发 GET，返回正文。http:// 走自带的最小实现；https:// 交给 reqwest（socks5h 代理）。
 pub async fn http_get_via_socks(proxy: SocketAddr, url: &str, timeout: Duration) -> Result<String> {
     let u = parse_url(url)?;
     tokio::time::timeout(timeout, async {
         if u.https {
-            let client = reqwest::Client::builder().proxy(reqwest::Proxy::all(format!("socks5h://{proxy}"))?).build()?;
+            let client = https_client(proxy)?;
             let r = client.get(url).send().await?;
             ensure!(r.status().is_success(), "HTTP {}", r.status());
             return Ok(r.text().await?);
