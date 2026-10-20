@@ -1,4 +1,5 @@
 // 无头浏览器截图 + 卡片分段对齐检查。用法：先 VITE_MOCK=1 pnpm dev，再 node tools/shoot.mjs [场景名过滤]
+// （TRACE_WAIT=35000 让首页大卡片场景多等几轮数据更新，截到有内容的实时迹线；BASE 换端口）
 // 输出到 shots/；对齐检查把每个 .cards 网格里同一行的卡片逐槽位比较“槽位顶边相对卡片顶边的偏移”，必须完全一致。
 import puppeteer from 'puppeteer-core';
 import fs from 'node:fs';
@@ -12,14 +13,24 @@ const BASE = process.env.BASE ?? 'http://127.0.0.1:5173';
 const EXE = process.env.CHROME ?? ['C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'].find((p) => fs.existsSync(p));
 const filter = process.argv[2];
 
+// layout：首页视图（cards / table / ring）；view：卡片密度。wait：多等几轮 mock 的 15 秒抖动，让实时迹线攒出几个点
+const TRACE = Number(process.env.TRACE_WAIT ?? 0);
 const scenes = [
-  { name: 'home-large-1440', url: '/', w: 1440, view: 'large', align: true },
+  { name: 'home-large-1440', url: '/', w: 1440, view: 'large', align: true, wait: TRACE },
   { name: 'home-small-1440', url: '/', w: 1440, view: 'small', align: true },
   { name: 'home-compact-1440', url: '/', w: 1440, view: 'compact', align: true },
-  { name: 'home-large-1440-dark', url: '/', w: 1440, view: 'large', theme: 'dark', align: true },
+  { name: 'home-large-1440-dark', url: '/', w: 1440, view: 'large', theme: 'dark', align: true, wait: TRACE },
+  { name: 'home-table-1440', url: '/', w: 1440, layout: 'table' },
+  { name: 'home-table-1440-dark', url: '/', w: 1440, layout: 'table', theme: 'dark' },
+  { name: 'home-ring-1440', url: '/', w: 1440, layout: 'ring' },
+  { name: 'home-ring-1440-dark', url: '/', w: 1440, layout: 'ring', theme: 'dark' },
   { name: 'home-large-390', url: '/', w: 390, view: 'large', align: true },
+  { name: 'home-large-390-dark', url: '/', w: 390, view: 'large', theme: 'dark' },
   { name: 'home-small-390', url: '/', w: 390, view: 'small' },
   { name: 'home-compact-390', url: '/', w: 390, view: 'compact' },
+  { name: 'home-table-390', url: '/', w: 390, layout: 'table' },
+  { name: 'home-ring-390', url: '/', w: 390, layout: 'ring' },
+  { name: 'home-ring-390-dark', url: '/', w: 390, layout: 'ring', theme: 'dark' },
   { name: 'nodes-1440', url: '/nodes', w: 1440 },
   { name: 'nodes-drawer-1440', url: '/nodes?m=m-t1-05', w: 1440 },
   { name: 'nodes-drawer-manage-1440', url: '/nodes?m=m-t1-03&tab=manage', w: 1440 },
@@ -82,11 +93,12 @@ for (const s0 of run) {
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
   await page.setViewport({ width: s.w, height: 1000, deviceScaleFactor: 1 });
   if (SESSION) await page.setCookie({ name: 'fleet_session', value: SESSION, url: BASE });
-  await page.evaluateOnNewDocument((view, theme) => {
-    try { localStorage.setItem('fleet:view', view ?? 'large'); localStorage.setItem('fleet:theme', theme ?? 'light'); } catch { /* 忽略 */ }
-  }, s.view, s.theme);
+  await page.evaluateOnNewDocument((view, theme, layout) => {
+    try { localStorage.setItem('fleet:view', view ?? 'large'); localStorage.setItem('fleet:theme', theme ?? 'light'); localStorage.setItem('fleet:layout', layout ?? 'cards'); } catch { /* 忽略 */ }
+  }, s.view, s.theme, s.layout);
   await page.goto(BASE + s.url, { waitUntil: SESSION ? 'networkidle2' : 'networkidle0', timeout: 30000 });
   if (SESSION) await new Promise((r) => setTimeout(r, 1500));
+  if (s.wait) await new Promise((r) => setTimeout(r, s.wait));
   await new Promise((r) => setTimeout(r, 700));
   if (s.retired) { await page.evaluate(() => { [...document.querySelectorAll('.seg-item')].find((b) => b.textContent?.includes('已退役'))?.click(); }); await new Promise((r) => setTimeout(r, 500)); }
   if (s.batch) {

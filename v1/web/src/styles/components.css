@@ -178,26 +178,7 @@ button.kpi:active, a.kpi:active { box-shadow: var(--shadow-card); translate: 0 0
   .kpi-value { font-size: var(--fs-page); }
 }
 
-/* ========== 进度线 Meter / 额度条 Quota / 心跳条 Beat ========== */
-.meter { display: grid; gap: var(--sp-4); min-width: 0; }
-.meter-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-8); min-width: 0; }
-.meter-label { display: inline-flex; align-items: baseline; gap: var(--sp-4); min-width: 0; font: var(--fw-medium) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2); white-space: nowrap; }
-.meter-label .lucide { width: var(--icon-xs); height: var(--icon-xs); align-self: center; }
-.meter-value { font: var(--fw-semibold) var(--fs-body) / var(--lh-body) var(--font-num); font-variant-numeric: var(--num-variant); color: var(--fg); white-space: nowrap; }
-.meter-value .unit { font-weight: var(--fw-regular); font-family: var(--font-num); }
-.meter-track { position: relative; height: var(--meter-h); background: var(--line); overflow: hidden; }
-.meter-fill { position: absolute; inset: 0 auto 0 0; width: 0; background: var(--accent); transition: width var(--dur-bar) var(--ease-std), background-color var(--dur-fast); }
-.meter[data-tone="warn"] .meter-fill { background: var(--warn); }
-.meter[data-tone="bad"] .meter-fill { background: var(--bad); }
-.meter-sub { font: var(--fw-regular) var(--fs-micro) / var(--lh-micro) var(--font-sans); font-variant-numeric: var(--num-variant); color: var(--fg-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: var(--lh-micro); }
-.meter.is-empty .meter-value, .meter.is-empty .meter-sub { color: var(--fg-3); }
-.meter.is-empty .meter-fill { width: 0 !important; }
-
-.quota { position: relative; height: var(--quota-h); border-radius: var(--r-pill); background: var(--line); overflow: hidden; }
-.quota-fill { position: absolute; inset: 0 auto 0 0; width: 0; border-radius: var(--r-pill); background: var(--accent); transition: width var(--dur-bar) var(--ease-std); }
-.quota[data-tone="warn"] .quota-fill { background: var(--warn); }
-.quota[data-tone="bad"] .quota-fill { background: var(--bad); }
-
+/* ========== 心跳条 Beat（资源格条、额度格条在 home.css 的 .cells） ========== */
 .beat { display: grid; gap: var(--sp-6); min-width: 0; }
 .beat-cap { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-8); font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); white-space: nowrap; min-width: 0; }
 .beat-cap b { font: var(--fw-semibold) var(--fs-label) / var(--lh-label) var(--font-sans); font-variant-numeric: var(--num-variant); color: var(--fg); }

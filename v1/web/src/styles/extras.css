@@ -210,11 +210,3 @@
    这条放在所有样式表之后的最后一份普通样式里，统一补回。 */
 .btn, .seg-item, .tab, .fchip, .input, .textarea, .select-trigger, .pill, .chip, .mark, .nav-item, .menu-item, .select-item,
 .cmd-item, .cmd-trigger, .cmd-input, .kbd, .toast-action, .label, .sec-head, .brand, .jobs-pop-head { font-variant-numeric: tabular-nums; }
-
-/* ========== 日期输入（原生 type=date，只统一样式，不加依赖） ========== */
-.input[type="date"]::-webkit-calendar-picker-indicator { opacity: 0.5; cursor: pointer; border-radius: var(--r-xs); padding: 2px; transition: opacity var(--dur-fast), background-color var(--dur-fast); }
-.input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; background: var(--hover); }
-.input[type="date"].is-empty { color: var(--fg-3); }
-.input[type="date"]::-webkit-datetime-edit-month-field:focus, .input[type="date"]::-webkit-datetime-edit-day-field:focus, .input[type="date"]::-webkit-datetime-edit-year-field:focus {
-  background: var(--accent-soft); color: var(--accent-soft-fg); border-radius: 3px; outline: none;
-}

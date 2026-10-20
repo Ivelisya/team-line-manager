@@ -1,36 +1,40 @@
-// 节点卡片：一套外壳、三种视图。每个视图的“槽位”固定（大 10 / 小 7 / 紧凑 6），
+// 节点卡片：一套外壳、三种密度（大 / 小 / 紧凑）。每种密度的“槽位”固定（大 10 / 小 7 / 紧凑 6），
 // 无论机器是主机、家宽代理还是线路机，同一个槽位都渲染同样高度的内容或占位——配合 cards.css 的 subgrid，同一行的卡片分段永远对齐。
+// 视觉语言：资源用分段格条（每个指标一个颜色），实时速率是大号读数 + 点阵迹线（客户端环形缓冲，见 lib/traces），
+// 剩余流量也是格条（绿→黄→红），心跳条同属“格子”语言。迹线与流量可点，直接打开抽屉的“主机 / 流量”页签看历史曲线。
 import { memo } from 'react';
 import { m as mo } from 'motion/react'; // 别名：组件里的 props 叫 m（机器）
 import { SPRING } from '@/lib/motion';
-import { Activity, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpFromLine, Calendar, CircleDollarSign, Cpu, Database, Globe, HardDrive, MemoryStick, MoreHorizontal, Radar, RefreshCw, Settings2, PanelRightOpen, ServerOff } from 'lucide-react';
+import { ArrowDown, ArrowUp, Calendar, CircleDollarSign, Cpu, Database, Gauge, Globe, HardDrive, MemoryStick, MoreHorizontal, Radar, RefreshCw, Settings2, PanelRightOpen, ServerOff, Wallet } from 'lucide-react';
 import type { MachineView, Plan } from '@/lib/types';
 import * as F from '@/lib/format';
-import { beatCells, entryText, hasHost, isQuiet, monthTraffic, probeSummary, quota, resourceMeters, subLabel } from '@/lib/derive';
+import { beatCells, entryText, hasHost, isQuiet, monthTraffic, probeSummary, quota, remainingValue, resourceMeters, subLabel, tagColor } from '@/lib/derive';
 import { useSeries } from '@/lib/queries';
+import { useTrace } from '@/lib/traces';
 import { type DrawerTab } from '@/lib/drawer';
 import { useInView } from '@/lib/useInView';
 import { KIND_LABEL } from '@/lib/sort';
 import { cn } from '@/lib/utils';
-import { Beat, Chip, HealthPill, KindIcon, LabelValue, Mark, Meter, Num, Quota } from './primitives';
+import { Beat, HealthPill, KindIcon, LabelValue, Mark, Num } from './primitives';
+import { CellMeter, Cells, DotTrace, QUOTA_COLORS, Tag } from './viz';
 import { Button, IconButton } from '@/components/ui/button';
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from '@/components/ui/context-menu';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger, Tip } from '@/components/ui/overlays';
 import { NodeContextItems, NodeDropdownItems } from './NodeMenu';
 
 export type CardView = 'large' | 'small' | 'compact';
-const VIEW_ATTR: Record<CardView, string> = { large: 'large', small: 'small', compact: 'compact' };
+type Open = (tab?: DrawerTab) => void;
 
-function Dot({ m }: { m: MachineView }) {
+export function StatusDot({ m }: { m: MachineView }) {
   const s = m.health.status;
   const tone = s === 'down' ? 'bad' : s === 'degraded' ? 'warn' : s === 'maintenance' ? 'info' : s === 'ok' ? undefined : 'neutral';
   return <span className="dot" data-tone={tone} />;
 }
 
-function Head({ m, view, onOpen }: { m: MachineView; view: CardView; onOpen: (tab?: 'overview') => void }) {
+function Head({ m, view, onOpen }: { m: MachineView; view: CardView; onOpen: Open }) {
   return (
     <header className="nc-head">
-      <Dot m={m} /><KindIcon kind={m.kind} />
+      <StatusDot m={m} /><KindIcon kind={m.kind} />
       <Tip text={`打开 ${m.name} 的详情`}><button type="button" className="nc-name" onClick={() => onOpen()}>{m.name}</button></Tip>
       {view === 'compact' && <><span className="nc-ipsep">·</span><span className="nc-ip">{m.ip}</span></>}
       <div className="nc-actions">
@@ -43,7 +47,9 @@ function Head({ m, view, onOpen }: { m: MachineView; view: CardView; onOpen: (ta
     </header>
   );
 }
-const ipMarks = (m: MachineView) => <span className="nc-marks"><Mark>{m.ip.includes(':') ? 'IPv6' : 'IPv4'}</Mark>{m.ssh_port !== 22 && <Mark title="SSH 端口">SSH {m.ssh_port}</Mark>}</span>;
+export const IpTags = ({ m }: { m: MachineView }) => (
+  <span className="nc-marks">{m.ip.includes(':') ? <Tag c="blue">V6</Tag> : <Tag c="green">V4</Tag>}{m.ssh_port !== 22 && <Mark title="SSH 端口">SSH {m.ssh_port}</Mark>}</span>
+);
 
 function Meters({ m, plans, compact }: { m: MachineView; plans: Plan[]; compact?: boolean }) {
   const r = resourceMeters(m, plans);
@@ -51,14 +57,48 @@ function Meters({ m, plans, compact }: { m: MachineView; plans: Plan[]; compact?
   const quiet = isQuiet(m);
   return (
     <div className="nc-res">
-      <Meter icon={<Cpu />} label="CPU" value={r.cpu.value} pct={r.cpu.pct} sub={compact ? undefined : r.cpu.sub} empty={quiet} />
-      <Meter icon={<MemoryStick />} label="内存" value={r.mem.value} pct={r.mem.pct} sub={compact ? undefined : r.mem.sub} empty={quiet} />
-      <Meter icon={<HardDrive />} label="磁盘" value={r.disk.value} pct={r.disk.pct} sub={compact ? undefined : r.disk.sub} empty={quiet} />
-      <Meter icon={<Activity />} label="负载" value={r.load.value} pct={r.load.pct} sub={compact ? undefined : r.load.sub} empty={quiet} />
+      <CellMeter metric="cpu" icon={<Cpu />} label="CPU" value={r.cpu.value} pct={r.cpu.pct} sub={compact ? undefined : r.cpu.sub} empty={quiet} />
+      <CellMeter metric="mem" icon={<MemoryStick />} label="内存" value={r.mem.value} pct={r.mem.pct} sub={compact ? undefined : r.mem.sub} empty={quiet} />
+      <CellMeter metric="disk" icon={<HardDrive />} label="磁盘" value={r.disk.value} pct={r.disk.pct} sub={compact ? undefined : r.disk.sub} empty={quiet} />
+      <CellMeter metric="load" icon={<Gauge />} label="负载" value={r.load.value} pct={r.load.pct} sub={compact ? undefined : r.load.sub} empty={quiet} />
     </div>
   );
 }
 
+/** 实时速率一列：方向 + 大号读数（按量级着色）、点阵迹线（点击看主机曲线）、本月累计（点击看流量页签） */
+function FlowCol({ dir, rate, values, total, live, onOpen }: { dir: 'up' | 'down'; rate: number | null; values: number[]; total?: number; live: boolean; onOpen: Open }) {
+  const up = dir === 'up';
+  return (
+    <div className="flow-col" data-dir={dir} data-speed={live ? F.speedOf(rate) : undefined}>
+      <div className="flow-head">
+        <span className="flow-label">{up ? <ArrowUp /> : <ArrowDown />}{up ? '上行' : '下行'}</span>
+        <span className="flow-rate"><Num f={F.rate(rate)} /></span>
+      </div>
+      <Tip text="查看主机曲线"><button type="button" className="flow-trend" onClick={() => onOpen('host')} aria-label={`${up ? '上行' : '下行'}速率：查看主机曲线`}>
+        <DotTrace values={values} />
+        <span className="flow-live" data-live={live ? '' : undefined}><i />{live ? '实时' : '离线'}</span>
+      </button></Tip>
+      {total != null && (
+        <button type="button" className="flow-foot" onClick={() => onOpen('traffic')} aria-label={`本月${up ? '出站' : '入站'}：查看流量页签`}>
+          <span className="flow-foot-label"><Globe />本月{up ? '出站' : '入站'}</span><Num f={F.bytes(total)} />
+        </button>
+      )}
+    </div>
+  );
+}
+
+function Flow({ m, onOpen, totals }: { m: MachineView; onOpen: Open; totals?: boolean }) {
+  const tr = useTrace(m.id);
+  const h = m.host!; const t = monthTraffic(m); const live = !isQuiet(m);
+  return (
+    <div className="flow">
+      <FlowCol dir="up" rate={h.net_tx_bps} values={tr.map((p) => p.tx)} total={totals ? t.up : undefined} live={live} onOpen={onOpen} />
+      <FlowCol dir="down" rate={h.net_rx_bps} values={tr.map((p) => p.rx)} total={totals ? t.down : undefined} live={live} onOpen={onOpen} />
+    </div>
+  );
+}
+
+/** 无主机（家宽代理）：业务流量小表 */
 function EntryTable({ m }: { m: MachineView }) {
   const t = monthTraffic(m);
   const row = (label: string, d: number, u: number) => <tr><th>{label}</th><td><Num f={F.bytes(d)} /></td><td><Num f={F.bytes(u)} /></td></tr>;
@@ -67,6 +107,35 @@ function EntryTable({ m }: { m: MachineView }) {
       <thead><tr><th>周期</th><th>↓ 下行</th><th>↑ 上行</th></tr></thead>
       <tbody>{row('今日', t.today_down, t.today_up)}{row('本月', t.down, t.up)}</tbody>
     </table>
+  );
+}
+/** 无主机（小卡片 / 紧凑）：本月业务 + 探测延迟两列 */
+function FlowRow({ m }: { m: MachineView }) {
+  const t = monthTraffic(m); const ps = probeSummary(m);
+  const col = (title: string, a: React.ReactNode, b: React.ReactNode, ia: React.ReactNode, ib: React.ReactNode) => (
+    <div><div className="nc-flow2-title">{title}</div><div className="nc-flow2-row">{ia}{a}</div><div className="nc-flow2-row">{ib}{b}</div></div>
+  );
+  return (
+    <div className="nc-flow2">
+      {col('本月业务', <Num f={F.bytes(t.down)} />, <Num f={F.bytes(t.up)} />, <ArrowDown />, <ArrowUp />)}
+      {col('TCP · 出口', <Num f={F.ms(ps.tcp)} />, <Num f={F.ms(ps.egress)} />, <Radar />, <Globe />)}
+    </div>
+  );
+}
+
+/** 剩余流量：标题 + 剩余量，右侧已用 / 上限，下面绿→黄→红的格条；点击打开流量页签 */
+function QuotaSlot({ m, onOpen }: { m: MachineView; onOpen: Open }) {
+  const q = quota(m); const used = F.bytes(q.used);
+  return (
+    <button type="button" className="nc-quota" onClick={() => onOpen('traffic')} aria-label="剩余流量：查看流量页签">
+      <span className="nc-qhead">
+        <span className="nc-qlabel"><Database />剩余流量
+          <b className={cn('num', q.rem === 0 && 'is-bad')}>{q.rem == null ? '不限' : q.rem > 0 ? <Num f={F.bytes(q.rem)} /> : '已超限'}</b>
+        </span>
+        <span className="nc-quse">已用 <span className="num">{used.v} {used.u}</span>{q.limit > 0 && <> / <Num f={F.gb(q.limit)} /></>}</span>
+      </span>
+      <Cells pct={q.pct} colors={QUOTA_COLORS} />
+    </button>
   );
 }
 
@@ -80,27 +149,37 @@ function BeatSlot({ m, enabled }: { m: MachineView; enabled: boolean }) {
   return <Beat cells={live ? beatCells(s.data?.points) : []} caption={cap} win="近 1 小时" stale={isQuiet(m)} />;
 }
 
-function DueVal({ m }: { m: MachineView }) {
-  const d = F.dueFmt(m.subscription?.due_days);
-  return <span className={cn('nc-run-val', d.tone && `is-${d.tone}`)}><Num f={d.text} /></span>;
+const dueTone = (m: MachineView) => { const t = F.dueFmt(m.subscription?.due_days).tone; return t || (m.subscription ? 'ok' : ''); };
+
+/** 已上架 · 到期 · 剩余价值：彩色读数 */
+function RunRow({ m }: { m: MachineView }) {
+  const rv = remainingValue(m);
+  return (
+    <section className="slot-seg nc-run">
+      <div className="nc-run-item"><span className="nc-run-label"><RefreshCw />已上架</span><span className="nc-run-val" data-c="up"><Num f={F.since(m.activated_at)} /></span></div>
+      <div className="nc-run-item"><span className="nc-run-label"><Calendar />距到期</span><span className="nc-run-val" data-c={dueTone(m)}><Num f={F.dueFmt(m.subscription?.due_days).text} /></span></div>
+      <div className="nc-run-item"><span className="nc-run-label"><Wallet />剩余价值</span><span className="nc-run-val">{rv ? <span className="num">{F.money(rv.cents, rv.currency)}</span> : <span className="t-muted">—</span>}</span></div>
+    </section>
+  );
 }
 
-function TagsList({ m, price = true }: { m: MachineView; price?: boolean }) {
+const KIND_TAG = { relay: 'teal', proxy: 'orange', vps: 'violet' } as const;
+function Tags({ m, price = true }: { m: MachineView; price?: boolean }) {
   const p = subLabel(m);
   return (
     <>
       <div className="nc-tags-list">
-        {m.provider_code && <Chip title={m.provider?.name}>{m.provider_code}</Chip>}
-        {m.kind !== 'vps' && <Chip variant="neutral">{KIND_LABEL[m.kind]}</Chip>}
-        {m.service_ref && <Chip>{m.service_ref}</Chip>}
-        {m.maintenance && <Chip variant="warn">维护中</Chip>}
+        {m.provider_code && <Tag c={tagColor(m.provider_code)} title={m.provider?.name}>{m.provider_code}</Tag>}
+        <Tag c={KIND_TAG[m.kind]}>{KIND_LABEL[m.kind]}</Tag>
+        {m.service_ref && <Tag c={tagColor(m.service_ref)}>{m.service_ref}</Tag>}
+        {m.maintenance && <Tag c="amber">维护中</Tag>}
       </div>
-      {price && p && <span style={{ marginLeft: 'auto' }}><Chip variant="price"><span className="num">{p}</span></Chip></span>}
+      {price && p && <span className="nc-price"><CircleDollarSign /><span className="num">{p}</span></span>}
     </>
   );
 }
 
-function Foot({ m, onOpen }: { m: MachineView; onOpen: (tab?: 'manage') => void }) {
+function Foot({ m, onOpen }: { m: MachineView; onOpen: Open }) {
   return (
     <footer className="nc-foot">
       <HealthPill m={m} />
@@ -112,128 +191,52 @@ function Foot({ m, onOpen }: { m: MachineView; onOpen: (tab?: 'manage') => void 
   );
 }
 
-function CellsRow({ m }: { m: MachineView }) {
-  const due = F.dueFmt(m.subscription?.due_days);
-  const t = monthTraffic(m); const ps = probeSummary(m);
-  const money = m.subscription ? F.money(m.subscription.price_cents, m.subscription.currency) : '—';
-  const h = m.host;
-  const dueCell = (
-    <div className="nc-cell"><div className="nc-cell-label">到期 · 月费</div>
-      <div className="nc-cell-row"><Calendar /><Num f={due.text} /></div>
-      <div className="nc-cell-row"><CircleDollarSign /><span className="num">{money}</span></div></div>
-  );
-  if (h) return (
-    <div className="nc-cells3">
-      <div className="nc-cell"><div className="nc-cell-label">网卡速率</div>
-        <div className="nc-cell-row"><ArrowDownToLine /><Num f={F.rate(h.net_rx_bps)} /></div>
-        <div className="nc-cell-row"><ArrowUpFromLine /><Num f={F.rate(h.net_tx_bps)} /></div></div>
-      <div className="nc-cell"><div className="nc-cell-label">本月业务</div>
-        <div className="nc-cell-row"><ArrowDown /><Num f={F.bytes(t.down)} /></div>
-        <div className="nc-cell-row"><ArrowUp /><Num f={F.bytes(t.up)} /></div></div>
-      {dueCell}
-    </div>
-  );
-  return (
-    <div className="nc-cells3">
-      <div className="nc-cell"><div className="nc-cell-label">本月业务</div>
-        <div className="nc-cell-row"><ArrowDown /><Num f={F.bytes(t.down)} /></div>
-        <div className="nc-cell-row"><ArrowUp /><Num f={F.bytes(t.up)} /></div></div>
-      <div className="nc-cell"><div className="nc-cell-label">TCP · 出口</div>
-        <div className="nc-cell-row"><Radar /><Num f={F.ms(ps.tcp)} /></div>
-        <div className="nc-cell-row"><Globe /><Num f={F.ms(ps.egress)} /></div></div>
-      {dueCell}
-    </div>
-  );
-}
-
-function FlowRow({ m }: { m: MachineView }) {
-  const h = m.host; const t = monthTraffic(m); const ps = probeSummary(m);
-  const col = (title: string, a: React.ReactNode, b: React.ReactNode, ia: React.ReactNode, ib: React.ReactNode) => (
-    <div><div className="nc-flow2-title">{title}</div><div className="nc-flow2-row">{ia}{a}</div><div className="nc-flow2-row">{ib}{b}</div></div>
-  );
-  return (
-    <div className="nc-flow2">
-      {h ? col('网卡速率', <Num f={F.rate(h.net_rx_bps)} />, <Num f={F.rate(h.net_tx_bps)} />, <ArrowDownToLine />, <ArrowUpFromLine />)
-        : col('TCP · 出口', <Num f={F.ms(ps.tcp)} />, <Num f={F.ms(ps.egress)} />, <Radar />, <Globe />)}
-      {col('本月业务', <Num f={F.bytes(t.down)} />, <Num f={F.bytes(t.up)} />, <ArrowDown />, <ArrowUp />)}
-    </div>
-  );
-}
-
 /** 卡片只吃稳定的 props（plans 引用、onOpen 回调不随地址变化），配合 memo，抽屉开关或 tick 时只有变了的那张重渲染。
  *  layoutKey：筛选/排序/视图的签名，变了才量位置做布局动画（layoutDependency），平时重渲染不量 */
 function NodeCardImpl({ m, view, current, plans, onOpen: open, layoutKey }: { m: MachineView; view: CardView; current?: boolean; plans: Plan[]; onOpen: (id: string, tab?: DrawerTab) => void; layoutKey: string }) {
   const [ref, visible] = useInView<HTMLElement>(); // 心跳条只在卡片可见时轮询，滚出视口就停
-  const onOpen = (tab?: 'overview' | 'manage') => open(m.id, tab);
-  const q = quota(m); const host = hasHost(m);
-  const t = monthTraffic(m);
+  const onOpen: Open = (tab) => open(m.id, tab);
+  const host = hasHost(m);
   const quiet = isQuiet(m);
+  const due = F.dueFmt(m.subscription?.due_days);
 
   return (
     <ContextMenu>
     <ContextMenuTrigger asChild>
-    <mo.article ref={ref} layout="position" layoutDependency={layoutKey} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ layout: SPRING, opacity: { duration: 0.18 } }} className={cn('ncard', current && 'is-current', quiet && 'is-quiet')} data-view={VIEW_ATTR[view]} data-id={m.id} data-kind={m.kind} data-health={m.health.status} data-offline={quiet ? '1' : undefined}>
+    <mo.article ref={ref} layout="position" layoutDependency={layoutKey} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ layout: SPRING, opacity: { duration: 0.18 } }} className={cn('ncard', current && 'is-current', quiet && 'is-quiet')} data-view={view} data-id={m.id} data-kind={m.kind} data-health={m.health.status} data-offline={quiet ? '1' : undefined}>
       <Head m={m} view={view} onOpen={onOpen} />
 
       {view === 'large' && <>
-        <div className="nc-addr"><span className="ellipsis">{m.ip}</span>{ipMarks(m)}</div>
+        <div className="nc-addr"><span className="ellipsis">{m.ip}</span><IpTags m={m} /></div>
         <dl className="nc-fields">
           <LabelValue label="入口">{entryText(m)}</LabelValue>
           <LabelValue label="套餐">{m.plan?.name ?? <span className="t-muted">未设置</span>}</LabelValue>
           <LabelValue label="带宽">{m.plan ? <Num f={F.mbps(m.plan.bandwidth_mbps)} /> : '—'}</LabelValue>
-          <LabelValue label="流量上限">{q.limit > 0 ? <Num f={F.gb(q.limit)} /> : '不限'}</LabelValue>
+          <LabelValue label="流量上限">{quota(m).limit > 0 ? <Num f={F.gb(quota(m).limit)} /> : '不限'}</LabelValue>
         </dl>
         <Meters m={m} plans={plans} />
-        <section className="slot-seg">
-          {host ? <>
-            <div className="nc-seg-title">网卡</div>
-            <div className="nc-nic">
-              <div className="nc-rate" title="网卡接收速率"><ArrowDownToLine /><Num f={F.rate(m.host!.net_rx_bps)} /></div>
-              <div className="nc-rate" title="网卡发送速率"><ArrowUpFromLine /><Num f={F.rate(m.host!.net_tx_bps)} /></div>
-              <div className="nc-total"><span>本月下行</span><Num f={F.bytes(t.down)} /></div>
-              <div className="nc-total"><span>本月上行</span><Num f={F.bytes(t.up)} /></div>
-            </div>
-          </> : <>
-            <div className="nc-seg-title"><span>业务流量</span><Chip variant="neutral">{m.kind === 'proxy' ? '无主机' : '无数据'}</Chip></div>
-            <EntryTable m={m} />
-          </>}
-        </section>
-        <section className="slot-seg">
-          <div className="nc-qhead">
-            <span className="nc-qlabel"><Database />流量上限{q.rem != null && <span style={{ fontWeight: 400 }}> {q.rem > 0 ? <>剩余 <Num f={F.bytes(q.rem)} /></> : <span style={{ color: 'var(--bad-text)' }}>已超限</span>}</span>}</span>
-            <span className="nc-quse"><b className="num">{F.bytes(q.used).v}</b> <span className="unit">{F.bytes(q.used).u}</span> / {q.limit > 0 ? <Num f={F.gb(q.limit)} /> : '不限'}</span>
-          </div>
-          <Quota pct={q.pct} />
-        </section>
+        <section className="slot-seg">{host ? <Flow m={m} onOpen={onOpen} totals /> : <><div className="nc-seg-title"><span>业务流量</span><Tag c="gray">{m.kind === 'proxy' ? '无主机' : '无数据'}</Tag></div><EntryTable m={m} /></>}</section>
+        <section className="slot-seg"><QuotaSlot m={m} onOpen={onOpen} /></section>
         <section className="slot-seg"><BeatSlot m={m} enabled={visible} /></section>
-        <section className="slot-seg nc-run">
-          <div className="nc-run-item"><span className="nc-run-label"><RefreshCw />已上架</span><span className="nc-run-val"><Num f={F.since(m.activated_at)} /></span></div>
-          <div className="nc-run-item"><span className="nc-run-label"><Calendar />到期</span><DueVal m={m} /></div>
-        </section>
-        <div className="nc-tags"><TagsList m={m} /></div>
+        <RunRow m={m} />
+        <div className="nc-tags"><Tags m={m} /></div>
       </>}
 
       {view === 'small' && <>
         <div className="nc-meta2">
-          <div><span>{m.ip}</span>{ipMarks(m)}</div>
-          <div><span>{entryText(m)} · {m.plan?.name ?? '未设置套餐'}</span></div>
+          <div><span>{m.ip}</span><IpTags m={m} /></div>
+          <div><span>{entryText(m)} · {m.plan?.name ?? '未设置套餐'}</span><span className="nc-due" data-c={dueTone(m)}>距到期 <Num f={due.text} /></span></div>
         </div>
         <section className="slot-seg"><Meters m={m} plans={plans} compact /></section>
-        <CellsRow m={m} />
-        <section className="slot-seg">
-          <div className="nc-qhead" style={{ marginBottom: 6 }}>
-            <span className="nc-qlabel"><Database />流量上限 {q.limit > 0 ? <Num f={F.gb(q.limit)} /> : '不限'}</span>
-            <span className="nc-quse"><b className="num">{F.bytes(q.used).v}</b> <span className="unit">{F.bytes(q.used).u}</span></span>
-          </div>
-          <Quota pct={q.pct} />
-        </section>
+        <section className="slot-seg">{host ? <Flow m={m} onOpen={onOpen} /> : <FlowRow m={m} />}</section>
+        <section className="slot-seg"><QuotaSlot m={m} onOpen={onOpen} /></section>
         <section className="slot-seg"><BeatSlot m={m} enabled={visible} /></section>
       </>}
 
       {view === 'compact' && <>
-        <div className="nc-tags"><TagsList m={m} /></div>
+        <div className="nc-tags"><Tags m={m} /></div>
         <section className="slot-seg"><Meters m={m} plans={plans} compact /></section>
-        <section className="slot-seg"><FlowRow m={m} /></section>
+        <section className="slot-seg">{host ? <Flow m={m} onOpen={onOpen} /> : <FlowRow m={m} />}</section>
         <section className="slot-seg"><BeatSlot m={m} enabled={visible} /></section>
       </>}
 

@@ -1,17 +1,20 @@
-// 首页：KPI + 团队筛选 + 视图切换（大卡片/小卡片/紧凑）+ 节点卡片网格（分页，每页条数随视图）。
-// 默认排序：线路机 → 团队 → 编号；故障/离线不下沉。其它排序是用户的显式选择。
+// 首页：两个分区。「监控总览」= 问候 + KPI + 集群状态（features/HomeOverview）；
+// 「服务器集群」= 分组分段控件 + 三种视图：卡片（大 / 小 / 紧凑三种密度）、表格、环形；都在同一份筛选 + 排序之后分页。
+// 默认排序：线路机 → 团队 → 编号；故障/离线不下沉。其它排序是用户的显式选择；表格视图另可点表头排序。
 import * as React from 'react';
-import { AlertTriangle, Inbox } from 'lucide-react';
+import { AlertTriangle, CircleGauge, Inbox, LayoutGrid, Server, Table2 } from 'lucide-react';
 import { useMachines, useOverview, usePlans, useTeams } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
-import * as F from '@/lib/format';
 import { monthTraffic } from '@/lib/derive';
 import type { MachineView, Plan } from '@/lib/types';
-import { CountUp, DotCount, Empty, ErrorNote, FilterChip, KpiTile, Num, PageHead } from '@/components/app/primitives';
+import { Empty, ErrorNote, FilterChip } from '@/components/app/primitives';
 import { NodeCard, SkeletonCard, type CardView } from '@/components/app/NodeCard';
+import { RingCard } from '@/components/app/RingCard';
 import { Segmented } from '@/components/ui/overlays';
 import { Select } from '@/components/ui/select';
 import { Pagination } from '@/components/app/Pagination';
+import { HomeSection, OverviewSection } from '@/features/HomeOverview';
+import { MachineTable, TABLE_SORTS, type TableSort } from '@/features/MachineTable';
 import { usePage } from '@/lib/usePage';
 
 type SortKey = 'default' | 'name' | 'due' | 'traffic' | 'issues';
@@ -19,9 +22,11 @@ const SORTS: { value: SortKey; label: string }[] = [
   { value: 'default', label: '默认排序' }, { value: 'name', label: '名称' }, { value: 'due', label: '到期最近' },
   { value: 'traffic', label: '本月流量最多' }, { value: 'issues', label: '异常优先' },
 ];
-const VIEWS: CardView[] = ['large', 'small', 'compact'];
-/** 每页张数：都是 2、3、4、6 的倍数，常见列数下最后一行是满的；中间那档是默认 */
-const PAGE_SIZES: Record<CardView, number[]> = { large: [12, 24, 48], small: [18, 36, 72], compact: [24, 48, 96] };
+type Layout = 'cards' | 'table' | 'ring';
+const LAYOUTS: Layout[] = ['cards', 'table', 'ring'];
+const DENSITIES: CardView[] = ['large', 'small', 'compact'];
+/** 每页条数：卡片与环形都是 2、3、4、6 的倍数，常见列数下最后一行是满的；中间那档是默认 */
+const PAGE_SIZES: Record<CardView | 'table' | 'ring', number[]> = { large: [12, 24, 48], small: [18, 36, 72], compact: [24, 48, 96], table: [25, 50, 100], ring: [24, 48, 96] };
 const EMPTY_PLANS: Plan[] = [];
 const EMPTY_MACHINES: MachineView[] = [];
 const store = {
@@ -51,12 +56,15 @@ export function HomePage() {
   const ov = useOverview();
   const plans = usePlans().data ?? EMPTY_PLANS;
   const { id: openId, open } = useDrawer();
-  const [view, setView] = React.useState<CardView>(() => store.get('fleet:view', 'large', VIEWS));
+  const [layout, setLayout] = React.useState<Layout>(() => store.get('fleet:layout', 'cards', LAYOUTS));
+  const [view, setView] = React.useState<CardView>(() => store.get('fleet:view', 'large', DENSITIES));
   const [sort, setSort] = React.useState<SortKey>(() => store.get('fleet:sort', 'default', SORTS.map((x) => x.value)));
+  const [tsort, setTsort] = React.useState<TableSort | null>(null); // 表格视图的表头排序（优先于上面的排序）
   const [team, setTeam] = React.useState<string>('all');
   const [onlyIssues, setOnlyIssues] = React.useState(false);
+  const setL = (v: Layout) => { setLayout(v); store.set('fleet:layout', v); };
   const setV = (v: CardView) => { setView(v); store.set('fleet:view', v); };
-  const setS = (v: SortKey) => { setSort(v); store.set('fleet:sort', v); };
+  const setS = (v: SortKey) => { setSort(v); setTsort(null); store.set('fleet:sort', v); };
 
   const all = machines.data ?? EMPTY_MACHINES; // live 范围已不含已退役
   const counts = React.useMemo(() => ({
@@ -65,76 +73,67 @@ export function HomePage() {
     issues: all.filter(isIssue).length,
   }), [all, teams.data]);
 
+  const ts = layout === 'table' ? tsort : null;
   const shown = React.useMemo(() => {
     let l = all;
     if (team === 'relay') l = l.filter((m) => m.kind === 'relay');
     else if (team !== 'all') l = l.filter((m) => m.team?.id === team);
     if (onlyIssues) l = l.filter(isIssue);
-    return sortList(l, sort);
-  }, [all, team, onlyIssues, sort]);
+    l = sortList(l, sort);
+    if (ts) { const sign = ts.desc ? -1 : 1; const cmp = TABLE_SORTS[ts.id]; l = [...l].sort((a, b) => sign * cmp(a, b)); } // 稳定排序：相同值保持原顺序
+    return l;
+  }, [all, team, onlyIssues, sort, ts]);
   // 只渲染当前页：KPI 和分组计数仍按全部机器算（上面的 counts）
-  const pg = usePage({ total: machines.data ? shown.length : undefined, sizes: PAGE_SIZES[view], size: PAGE_SIZES[view][1], reset: [team, onlyIssues, sort, view] });
+  const sizes = PAGE_SIZES[layout === 'cards' ? view : layout];
+  const pg = usePage({ total: machines.data ? shown.length : undefined, sizes, size: sizes[1], reset: [team, onlyIssues, sort, layout, view, ts?.id, ts?.desc] });
   const page = React.useMemo(() => shown.slice(pg.offset, pg.offset + pg.size), [shown, pg.offset, pg.size]);
   const layoutKey = `${team}|${onlyIssues}|${sort}|${view}`;
 
   const o = ov.data;
-  const nodes = o?.nodes; const relays = o?.relays;
-  const issues = (nodes?.down ?? 0) + (nodes?.degraded ?? 0) + (relays?.down ?? 0) + (relays?.degraded ?? 0);
-  const tr = o?.traffic_month;
-  const loading = !o && !ov.isError; // 失败时不要一直停在骨架：显示“—”和重试
-  const trTotal = tr ? tr.up + tr.down : 0; const trScale = F.bytesScale(trTotal);
-  const rateTotal = o ? o.net_rx_bps + o.net_tx_bps : 0; const rateSc = F.rateScale(rateTotal);
+  const groups = [
+    { value: 'all', label: '全部', count: counts.all },
+    { value: 'relay', label: '线路机', count: counts.relay },
+    ...(teams.data ?? []).map((t) => ({ value: t.id, label: t.name, count: counts.byTeam.get(t.id) ?? 0 })),
+  ];
 
   return (
-    <div className="stack">
-      <PageHead title="首页" note={o ? `${nodes!.total} 个节点 · ${relays!.total} 台线路机` : undefined}
-        tools={<>
-          <Select sm value={sort} onChange={(v) => setS(v as SortKey)} options={SORTS} className="w-[168px]" aria-label="排序" />
-          <Segmented label="卡片视图" value={view} onChange={setV} items={[{ value: 'large', label: '大卡片' }, { value: 'small', label: '小卡片' }, { value: 'compact', label: '紧凑' }]} />
-        </>} />
-
+    <div className="stack home">
       {ov.isError && !o && <ErrorNote error={ov.error} onRetry={() => void ov.refetch()} />}
-      <div className="kpi-grid-wrap">
-        <div className="kpi-grid">
-          <KpiTile loading={loading} label="节点正常" value={<CountUp value={nodes?.ok} />} unit={nodes ? `/ ${nodes.total}` : undefined}
-            sub={nodes && <><DotCount tone="warn" n={nodes.degraded} label="降级" /><DotCount tone="bad" n={nodes.down} label="故障" /><DotCount tone="neutral" n={nodes.unknown} label="未知" /></>} />
-          <KpiTile loading={loading} label="线路机正常" value={<CountUp value={relays?.ok} />} unit={relays ? `/ ${relays.total}` : undefined}
-            sub={relays && <><DotCount tone="warn" n={relays.degraded} label="降级" /><DotCount tone="bad" n={relays.down} label="故障" /></>} />
-          <KpiTile loading={loading} label="故障与降级" value={<CountUp value={o ? issues : undefined} />} to="/incidents" sub={o ? (issues ? '点击查看告警' : '一切正常') : undefined} />
-          <KpiTile loading={loading} label="7 天内到期" value={<CountUp value={o?.due_7d} />} to="/nodes" sub="需要续费的机器" />
-          <KpiTile loading={loading} label="每月费用" value={o ? (o.monthly_cost.length ? o.monthly_cost.map((c) => F.money(c.cents, c.currency)).join(' + ') : F.money(0, 'USD')) : '—'} sub={o && o.monthly_cost.length > 1 ? '多币种分别合计' : '在用机器按月折算'} />
-          <KpiTile loading={loading} label="本月业务流量" value={tr ? <CountUp value={trTotal} format={(n) => F.inScale(n, trScale)} /> : '—'} unit={tr ? trScale.u : undefined}
-            sub={tr && <><span>↓ <Num f={F.bytes(tr.down)} /></span><span>↑ <Num f={F.bytes(tr.up)} /></span></>} />
-          <KpiTile loading={loading} label="网卡速率" value={o ? <CountUp value={rateTotal} format={(n) => F.inScale(n, rateSc)} /> : '—'} unit={o ? rateSc.u : undefined}
-            sub={o && <><span>↓ <Num f={F.rate(o.net_rx_bps)} /></span><span>↑ <Num f={F.rate(o.net_tx_bps)} /></span></>} />
-          <KpiTile loading={loading} label="上架 · 下线中" value={o ? <CountUp value={o.provisioning + o.retiring} /> : '—'} to="/jobs" sub={o && `上架 ${o.provisioning} · 下线 ${o.retiring}`} />
+      <OverviewSection o={o} loading={!o && !ov.isError /* 失败时不要一直停在骨架：显示“—”和重试 */} />
+
+      <HomeSection icon={<Server />} label="服务器集群" headRef={pg.anchor}
+        title={<h2 className="hsec-title">节点矩阵与实时监控</h2>} sub="实时监控负载、资源占用、网络吞吐与在线状态；点读数或迹线可直接打开历史曲线。"
+        actions={<>
+          <Select sm value={sort} onChange={(v) => setS(v as SortKey)} options={SORTS} className="w-[132px]" aria-label="排序" />
+          <Segmented sm label="视图" value={layout} onChange={setL} items={[
+            { value: 'cards', label: <><LayoutGrid size={14} />卡片</> }, { value: 'table', label: <><Table2 size={14} />表格</> }, { value: 'ring', label: <><CircleGauge size={14} />环形</> },
+          ]} />
+          {layout === 'cards' && <Segmented sm label="卡片密度" value={view} onChange={setV} items={[{ value: 'large', label: '大' }, { value: 'small', label: '小' }, { value: 'compact', label: '紧凑' }]} />}
+        </>}>
+        <div className="hgroups" role="group" aria-label="筛选">
+          <Segmented label="分组" value={team} onChange={setTeam} items={groups} className="seg-fill" />
+          <FilterChip pressed={onlyIssues} onClick={() => setOnlyIssues((v) => !v)} count={counts.issues}><AlertTriangle size={13} />仅看异常</FilterChip>
         </div>
-      </div>
 
-      <div className="fbar" role="group" aria-label="筛选" ref={pg.anchor}>
-        <span className="fbar-label">分组</span>
-        <FilterChip pressed={team === 'all'} onClick={() => setTeam('all')} count={counts.all}>全部</FilterChip>
-        <FilterChip pressed={team === 'relay'} onClick={() => setTeam('relay')} count={counts.relay}>线路机</FilterChip>
-        {(teams.data ?? []).map((t) => <FilterChip key={t.id} pressed={team === t.id} onClick={() => setTeam(t.id)} count={counts.byTeam.get(t.id) ?? 0}>{t.name}</FilterChip>)}
-        <span className="fbar-div" />
-        <FilterChip pressed={onlyIssues} onClick={() => setOnlyIssues((v) => !v)} count={counts.issues}><AlertTriangle size={13} />仅看异常</FilterChip>
-      </div>
-
-      {machines.isError && <ErrorNote error={machines.error} onRetry={() => void machines.refetch()} />}
-      {machines.isLoading ? (
-        <div className="cards" data-view={view}>{Array.from({ length: 6 }, (_, i) => <SkeletonCard key={i} view={view} />)}</div>
-      ) : !machines.data ? null /* 请求失败且没有缓存：上面的错误提示已说明，不要误报“还没有机器” */ : shown.length === 0 ? (
-        <Empty icon={<Inbox size={28} />} text={all.length ? '没有符合筛选条件的机器' : '还没有机器，去“上架”添加第一台'} />
-      ) : (
-        <>
-          {/* 每页一个网格（key=页码）：翻页是整页淡入，不让上一页的卡片和新卡片之间做位置动画。
-              页内：筛选/排序/视图变了（layoutKey 变）才量位置、滑到新位置；tick 重渲染不量 */}
-          <div key={pg.page} className="cards page-in" data-view={view}>
-            {page.map((m) => <NodeCard key={m.id} m={m} view={view} current={m.id === openId} plans={plans} onOpen={open} layoutKey={layoutKey} />)}
-          </div>
-          <Pagination pg={pg} unit="台" />
-        </>
-      )}
+        {machines.isError && <ErrorNote error={machines.error} onRetry={() => void machines.refetch()} />}
+        {machines.isLoading ? (
+          <div className="cards" data-view={view}>{Array.from({ length: 6 }, (_, i) => <SkeletonCard key={i} view={view} />)}</div>
+        ) : !machines.data ? null /* 请求失败且没有缓存：上面的错误提示已说明，不要误报“还没有机器” */ : shown.length === 0 ? (
+          <Empty icon={<Inbox size={28} />} text={all.length ? '没有符合筛选条件的机器' : '还没有机器，去“上架”添加第一台'} />
+        ) : (
+          <>
+            {/* 每页一个容器（key=页码+视图）：翻页、换视图是整页淡入。卡片页内：筛选/排序/密度变了（layoutKey 变）才量位置、滑到新位置 */}
+            {layout === 'cards' && <div key={`c${pg.page}`} className="cards page-in" data-view={view}>
+              {page.map((m) => <NodeCard key={m.id} m={m} view={view} current={m.id === openId} plans={plans} onOpen={open} layoutKey={layoutKey} />)}
+            </div>}
+            {layout === 'ring' && <div key={`r${pg.page}`} className="rings page-in">
+              {page.map((m) => <RingCard key={m.id} m={m} plans={plans} current={m.id === openId} onOpen={open} />)}
+            </div>}
+            {layout === 'table' && <div key="t" className="hpanel page-in"><MachineTable rows={page} plans={plans} sort={tsort} onSort={setTsort} openId={openId} onOpen={open} /></div>}
+            <Pagination pg={pg} unit="台" />
+          </>
+        )}
+      </HomeSection>
     </div>
   );
 }
