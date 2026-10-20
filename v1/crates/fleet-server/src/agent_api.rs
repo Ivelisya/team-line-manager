@@ -17,11 +17,14 @@ use std::net::SocketAddr;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use time::{Date, OffsetDateTime};
+use tower_http::decompression::RequestDecompressionLayer;
 use uuid::Uuid;
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/report", post(report))
+        // 上报体可以是 gzip（agent 发送时压缩）：解压层在 handler 之前，默认 2 MiB 的请求体上限（DefaultBodyLimit）
+        // 由 Json 提取器施加，量的是解压后的字节，压缩炸弹也被它截住。不带 Content-Encoding 的旧 agent 原样放行。
+        .route("/report", post(report).layer(RequestDecompressionLayer::new()))
         .route("/desired", get(desired))
         .route("/applied", post(applied))
 }
