@@ -104,20 +104,21 @@ impl IpToAsn {
             return None;
         }
         let line = std::str::from_utf8(self.line(idx[pos - 1])).ok()?;
-        let p: Vec<&str> = line.splitn(5, '\t').collect();
-        if p.len() < 3 {
-            return None;
-        }
-        let end: IpAddr = p[1].trim().parse().ok()?;
+        // 迭代器按需取字段，命中后不再为切分结果分配 Vec；少于 3 列的行视为无效
+        let mut f = line.splitn(5, '\t');
+        let (_start, end, asn) = (f.next()?, f.next()?, f.next()?);
+        let end: IpAddr = end.trim().parse().ok()?;
         if k > key(end) {
             return None;
         }
-        let asn: u32 = p[2].trim().parse().ok()?;
+        let asn: u32 = asn.trim().parse().ok()?;
         if asn == 0 {
             return None;
         }
-        let nz = |s: Option<&&str>| s.map(|x| x.trim()).filter(|x| !x.is_empty() && *x != "None" && *x != "Not routed").map(String::from);
-        Some(AsnRow { asn, country: nz(p.get(3)), desc: nz(p.get(4)) })
+        let nz = |s: Option<&str>| s.map(|x| x.trim()).filter(|x| !x.is_empty() && *x != "None" && *x != "Not routed").map(String::from);
+        let country = nz(f.next());
+        let desc = nz(f.next());
+        Some(AsnRow { asn, country, desc })
     }
 
     /// 扫一遍全部行，按 AS 描述里的机房关键词挑出“托管 / 云”ASN 集合（见 classify::HOSTING_KW）。
