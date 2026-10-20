@@ -156,6 +156,48 @@ const scenes = {
     await shot(page, 'ui-drawer-next');
     return { page, errors };
   },
+  async 'policy-light'() { const { page, errors } = await open('/access/policy', { h: 1500 }); await shot(page, 'ui-policy-light'); return { page, errors }; },
+  async 'policy-dark'() { const { page, errors } = await open('/access/policy', { h: 1500, theme: 'dark' }); await shot(page, 'ui-policy-dark'); return { page, errors }; },
+  async 'policy-invalid'() {
+    const { page, errors } = await open('/access/policy', { h: 1300 });
+    await page.click('.pol-ta'); await page.keyboard.down('Control'); await page.keyboard.press('End'); await page.keyboard.up('Control');
+    await page.keyboard.type('\nhttp://bad.example.com/x\n1.2.3.4, ok-one.example.org\nbad_label.com');
+    await sleep(500);
+    await shot(page, 'ui-policy-invalid');
+    return { page, errors };
+  },
+  async 'policy-preview'() {
+    const { page, errors } = await open('/access/policy', { h: 1000 });
+    await clickText(page, 'button', '预览并发布'); await sleep(1200);
+    await shot(page, 'ui-policy-preview');
+    await clickText(page, '.dialog button', '发布…'); await sleep(600);
+    await shot(page, 'ui-policy-publish-confirm');
+    return { page, errors };
+  },
+  async 'policy-flow'() {
+    // 走一遍：改草稿 → 保存 → 预览 → 发布 → 记录里出现「进行中」→ 回滚；断言靠页面文字
+    const { page, errors } = await open('/access/policy', { h: 1300 });
+    const text = () => page.evaluate(() => document.body.innerText);
+    const expect = async (s) => { for (let i = 0; i < 30; i++) { if ((await text()).includes(s)) return; await sleep(200); } throw new Error('页面上没有出现：' + s); };
+    await page.click('.pol-ta'); await page.keyboard.down('Control'); await page.keyboard.press('End'); await page.keyboard.up('Control');
+    await page.keyboard.type('\nnew.example.com');
+    await clickText(page, 'button', '保存草稿'); await expect('草稿已保存');
+    await clickText(page, 'button', '预览并发布'); await expect('预览：发布后会怎样'); await sleep(600);
+    await clickText(page, '.dialog button', '发布…'); await expect('发布 2 份草稿？');
+    await clickText(page, '.dialog button', '确认发布'); await expect('已发布为版本 4');
+    await sleep(500); await shot(page, 'ui-policy-published');
+    await expect('进行中'); await expect('已应用');
+    await clickText(page, 'tbody button', '回滚到此版本'); await expect('回滚到版本');
+    await clickText(page, '.dialog button', '回滚'); await expect('已回滚，新版本 v5');
+    await sleep(500); await shot(page, 'ui-policy-rolledback');
+    return { page, errors };
+  },
+  async 'policy-preview-dark'() {
+    const { page, errors } = await open('/access/policy', { h: 1000, theme: 'dark' });
+    await clickText(page, 'button', '预览并发布'); await sleep(1200);
+    await shot(page, 'ui-policy-preview-dark');
+    return { page, errors };
+  },
   async 'mobile'() {
     const { page, errors } = await open('/', { w: 390, h: 800 });
     await page.keyboard.down('Control'); await page.keyboard.press('k'); await page.keyboard.up('Control'); await sleep(500);

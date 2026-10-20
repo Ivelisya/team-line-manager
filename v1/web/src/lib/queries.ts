@@ -72,6 +72,7 @@ export function invalidateFor(qc: QueryClient, ev: StreamEvent) {
     case 'incidents': inv(['incidents'], ['silences'], ['overview'], ['machines']); break;
     case 'catalog': inv(['teams'], ['providers'], ['plans'], ['machines'], ['machine'], ['notify-channels']); break;
     case 'api_keys': inv(['api-keys']); break;
+    case 'policies': inv(['policies'], ['machines'], ['relays']); break;
     case 'tick': {
       inv(['machines'], ['machine'], ['relays'], ['overview']);
       // 曲线只刷新当前打开的抽屉，其余视图的曲线不在每个 tick 重取

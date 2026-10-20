@@ -15,6 +15,7 @@ const CatalogPage = lazyPage(() => import('./pages/Catalog'), 'CatalogPage');
 const IncidentsPage = lazyPage(() => import('./pages/Incidents'), 'IncidentsPage');
 const SettingsPage = lazyPage(() => import('./pages/Settings'), 'SettingsPage');
 const AccessPage = lazyPage(() => import('./pages/Access'), 'AccessPage');
+const PolicyPage = lazyPage(() => import('./pages/Policy'), 'PolicyPage');
 
 export function App() {
   return (
@@ -28,6 +29,7 @@ export function App() {
         <Route path="jobs" element={<JobsPage />} />
         <Route path="jobs/:id" element={<JobsPage />} />
         <Route path="access" element={<AccessPage />} />
+        <Route path="access/policy" element={<PolicyPage />} />
         <Route path="catalog" element={<CatalogPage />} />
         <Route path="incidents" element={<IncidentsPage />} />
         <Route path="settings" element={<SettingsPage />} />
