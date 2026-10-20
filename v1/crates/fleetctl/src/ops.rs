@@ -83,7 +83,7 @@ pub fn parse_upstream(s: &str) -> anyhow::Result<Value> {
     Ok(Value::Object(o))
 }
 
-fn lookup(list: &Value, q: &str, keys: &[&str], what: &str) -> anyhow::Result<String> {
+pub(crate) fn lookup(list: &Value, q: &str, keys: &[&str], what: &str) -> anyhow::Result<String> {
     let arr = list.as_array().cloned().unwrap_or_default();
     let hits: Vec<&Value> = arr.iter().filter(|x| st(x, "/id") == q || keys.iter().any(|k| st(x, &format!("/{k}")) == q)).collect();
     match hits.len() {

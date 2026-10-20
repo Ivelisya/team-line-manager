@@ -1,6 +1,7 @@
 //! fleetctl：团队线路管理的运维命令行。人看表格，AI 加 `--json` 拿原样 JSON。
 //! 退出码：0 成功；1 失败（错误信息在 stderr）；2 命令行参数不对。exec 单台时沿用远端命令的退出码。
 
+mod access;
 mod client;
 mod cmds;
 mod config;
@@ -297,6 +298,31 @@ enum Cmd {
         #[arg(long, default_value_t = 50)]
         limit: i64,
     },
+    /// 访问监控：哪个节点访问了哪些域名/IP
+    Access {
+        /// summary（按节点汇总）| targets（域名与 IP）| new（新出现的目标）| sources（来源地址）| events（原始记录）
+        #[arg(default_value = "targets")]
+        view: String,
+        /// 只看某台机器（id / 显示名 / IP）
+        #[arg(long)]
+        node: Option<String>,
+        #[arg(long)]
+        team: Option<String>,
+        /// 1h | 24h | 7d | 30d（events 固定取最近记录）
+        #[arg(long, default_value = "24h")]
+        window: String,
+        /// 搜索域名（events / sources 也匹配来源 IP）
+        #[arg(long)]
+        search: Option<String>,
+        /// 只看被阻止的连接
+        #[arg(long)]
+        blocked: bool,
+        /// domain | ip
+        #[arg(long)]
+        kind: Option<String>,
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+    },
     /// 订阅实时事件流
     Watch {
         /// 收到 N 条后退出
@@ -391,6 +417,10 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             }
         }
         Cmd::Audit { target, limit } => cmds::audit(x, target.as_deref(), limit),
+        Cmd::Access { view, node, team, window, search, blocked, kind, limit } => access::access(
+            x,
+            access::AccessOpts { view: &view, node: node.as_deref(), team: team.as_deref(), window: &window, search: search.as_deref(), blocked, kind: kind.as_deref(), limit },
+        ),
         Cmd::Watch { count, ticks } => cmds::watch(x, count, ticks),
     }
 }
