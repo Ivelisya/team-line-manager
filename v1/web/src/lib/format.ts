@@ -8,21 +8,35 @@ const num = (n: number, digits = 1) => {
   return s.includes('.') ? s.replace(/\.?0+$/, '') : s;
 };
 
+/** 量级：除数 + 单位。数字滚动动画要“按目标值的量级”格式化中间值，否则会出现数值是 MiB 级、单位却是 GiB 的错配 */
+export interface Scale { div: number; u: string }
+const BYTE_U = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
+export function bytesScale(n: number): Scale {
+  let i = 0; let x = Math.abs(n);
+  while (x >= 1024 && i < BYTE_U.length - 1) { x /= 1024; i++; }
+  return { div: 1024 ** i, u: BYTE_U[i] };
+}
+export function rateScale(bps: number): Scale {
+  const a = Math.abs(bps);
+  if (a < 1e3) return { div: 1, u: 'bps' };
+  if (a < 1e6) return { div: 1e3, u: 'Kbps' };
+  if (a < 1e9) return { div: 1e6, u: 'Mbps' };
+  return { div: 1e9, u: 'Gbps' };
+}
+/** 用给定量级格式化数值部分（单位由 Scale.u 另行显示） */
+export const inScale = (n: number, s: Scale): string => (s.div === 1 ? String(Math.round(Math.abs(n))) : num(Math.abs(n) / s.div));
+
 /** 字节 → B/KiB/MiB/GiB/TiB */
 export function bytes(n: number | null | undefined): Fmt {
   if (n == null || !isFinite(n)) return NA;
-  const U = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
-  let i = 0; let x = Math.abs(n);
-  while (x >= 1024 && i < U.length - 1) { x /= 1024; i++; }
-  return { v: i === 0 ? String(Math.round(x)) : num(x), u: U[i] };
+  const s = bytesScale(n);
+  return { v: inScale(n, s), u: s.u };
 }
 /** bit/s → Kbps/Mbps/Gbps */
 export function rate(bps: number | null | undefined): Fmt {
   if (bps == null || !isFinite(bps)) return NA;
-  if (bps < 1000) return { v: String(Math.round(bps)), u: 'bps' };
-  if (bps < 1e6) return { v: num(bps / 1e3), u: 'Kbps' };
-  if (bps < 1e9) return { v: num(bps / 1e6), u: 'Mbps' };
-  return { v: num(bps / 1e9), u: 'Gbps' };
+  const s = rateScale(bps);
+  return { v: inScale(bps, s), u: s.u };
 }
 export const pct = (n: number | null | undefined, d = 0): Fmt => (n == null ? NA : { v: n.toFixed(d), u: '%' });
 export const ms = (n: number | null | undefined): Fmt => (n == null ? NA : { v: String(Math.round(n)), u: 'ms' });
