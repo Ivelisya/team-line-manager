@@ -64,13 +64,22 @@ export function JobsPage() {
 
 const STEP_ICON: Record<StepKind, React.ReactNode> = { done: <Check />, running: <Loader2 className="spin" />, failed: <X />, skipped: <Minus />, compensated: <Undo2 />, pending: <CircleDashed /> };
 
+/** 走表的“用时”：useNow 放在这个小组件里，每秒只重渲它自己，不拖着整个详情页（含日志）一起刷 */
+function Dur({ a, b, live }: { a: string | null; b: string | null; live: boolean }) {
+  const now = useNow(live);
+  return <>{F.duration(a, b, now)}</>;
+}
+function LiveProgressBar({ job, live }: { job: Job; live: boolean }) {
+  const now = useNow(live);
+  return <JobProgressBar job={job} now={now} />;
+}
+
 function JobDetail({ id }: { id: string }) {
   const q = useJob(id);
   const retry = useRetryJob(); const cancel = useCancelJob();
   const [cancelAsk, setCancelAsk] = React.useState(false);
   const j = q.data;
   const live = !!j && jobLive(j.state);
-  const now = useNow(live);
   if (q.isError && !j) return <Panel><div style={{ padding: 'var(--sp-12)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div></Panel>;
   if (!j) return <Panel><div className="skel" style={{ height: 160, margin: 16 }} /></Panel>;
   return (
@@ -81,12 +90,12 @@ function JobDetail({ id }: { id: string }) {
         {j.cancellable && <Button size="sm" onClick={() => setCancelAsk(true)}><Square />取消</Button>}
       </>}>
         <div className="stack">
-          <JobProgressBar job={j} now={now} />
+          <LiveProgressBar job={j} live={live} />
           <StepBar job={j} />
           <LabelValueGrid>
             <LabelValue label="创建人">{j.created_by}</LabelValue>
             <LabelValue label="创建时间">{F.dtFull(j.created_at)}</LabelValue>
-            <LabelValue label="用时">{F.duration(j.started_at, j.finished_at, now)}</LabelValue>
+            <LabelValue label="用时"><Dur a={j.started_at} b={j.finished_at} live={live} /></LabelValue>
             <LabelValue label="作业 ID"><span className="mono">{j.id}</span></LabelValue>
           </LabelValueGrid>
         </div>
@@ -111,7 +120,7 @@ function JobDetail({ id }: { id: string }) {
               <li key={s.idx} className="step" data-state={s.state} data-kind={k}>
                 <span className="step-ic">{STEP_ICON[k]}</span>
                 <div style={{ minWidth: 0 }}>
-                  <div className="step-title"><b>{s.title}</b><span className="step-time">{s.started_at ? `${F.clock(s.started_at)} · ${F.duration(s.started_at, s.finished_at ?? (k === 'failed' ? j.finished_at : null), now)}` : k === 'skipped' || k === 'compensated' ? '未执行' : '等待'}</span>{k === 'compensated' && <Pill tone="warn" dot="none">已补偿</Pill>}</div>
+                  <div className="step-title"><b>{s.title}</b><span className="step-time">{s.started_at ? <>{F.clock(s.started_at)} · <Dur a={s.started_at} b={s.finished_at ?? (k === 'failed' ? j.finished_at : null)} live={live && !s.finished_at && k !== 'failed'} /></> : k === 'skipped' || k === 'compensated' ? '未执行' : '等待'}</span>{k === 'compensated' && <Pill tone="warn" dot="none">已补偿</Pill>}</div>
                   {outputLines(s.output).length > 0 && <pre className="step-out">{outputLines(s.output).join('\n')}</pre>}
                   {(s.error || s.error_kind) && (
                     <div className="step-err-box">
@@ -126,7 +135,7 @@ function JobDetail({ id }: { id: string }) {
         </ol>
       </Panel>
 
-      <LogPanel job={j} />
+      <LogPanel jobId={j.id} state={j.state} />
       <ConfirmDialog open={cancelAsk} onOpenChange={setCancelAsk} title="取消这个作业？" confirmLabel="取消作业" danger description="已完成的步骤会被补偿（回滚），然后停下。"
         onConfirm={async () => { await cancel.mutateAsync(j.id); toast.ok('作业已取消'); }} />
     </div>
@@ -134,46 +143,61 @@ function JobDetail({ id }: { id: string }) {
 }
 
 const SHOW_MAX = 2000; // 页面里最多渲染的行数（更早的行仍在服务端）
+const KEEP_MAX = 5000; // 内存里最多保留的行数：超出的从头部丢弃，并在日志顶部提示
 const LEVEL: Record<string, string> = { error: '错误', warn: '警告', info: '信息', debug: '调试' };
 
 /** 实时日志：进行中每 1.5 秒按 after=<最后一条 id> 增量拉取（满 1000 条就接着拉）；结束后再补拉一次。可暂停、自动滚到底、按级别着色 */
-function LogPanel({ job }: { job: Job }) {
+const LogPanel = React.memo(function LogPanel({ jobId, state }: { jobId: string; state: string }) {
   const [logs, setLogs] = React.useState<JobLog[]>([]);
-  const [frozen, setFrozen] = React.useState<number | null>(null); // 暂停时冻结显示的行数
+  const [dropped, setDropped] = React.useState(0); // 因超过 KEEP_MAX 丢掉的行数
+  const [frozen, setFrozen] = React.useState<number | null>(null); // 暂停时冻结到的最后一条日志 id（按 id 而不是行数：头部被丢弃时位置不会错）
   const [stuck, setStuck] = React.useState(true);
   const [err, setErr] = React.useState<unknown>(null);
   const last = React.useRef(0);
+  const all = React.useRef<JobLog[]>([]); // 已保留的日志（真值在这里，state 只用来触发渲染）
   const box = React.useRef<HTMLDivElement>(null);
-  const live = jobLive(job.state);
+  const live = jobLive(state);
 
-  React.useEffect(() => { setLogs([]); setFrozen(null); setStuck(true); setErr(null); last.current = 0; }, [job.id]);
+  React.useEffect(() => { all.current = []; setLogs([]); setDropped(0); setFrozen(null); setStuck(true); setErr(null); last.current = 0; }, [jobId]);
   React.useEffect(() => {
     let stop = false; let timer: ReturnType<typeof setTimeout>;
     const pull = async () => {
       try {
-        const more = await fetchAllLogs(job.id, last.current);
+        const more = await fetchAllLogs(jobId, last.current);
         if (stop) return;
         setErr(null);
-        if (more.length) { last.current = more[more.length - 1].id; setLogs((l) => [...l, ...more]); }
+        if (more.length) {
+          last.current = more[more.length - 1].id;
+          const merged = all.current.concat(more);
+          const over = Math.max(0, merged.length - KEEP_MAX);
+          all.current = over ? merged.slice(over) : merged;
+          if (over) setDropped((d) => d + over);
+          setLogs(all.current);
+        }
       } catch (e) { if (!stop) setErr(e); /* 下一轮重试 */ }
       if (!stop && live) timer = setTimeout(pull, 1500);
     };
     void pull();
     return () => { stop = true; clearTimeout(timer); };
-  }, [job.id, live, job.state]);
+  }, [jobId, live, state]);
 
-  const shown = frozen == null ? logs : logs.slice(0, frozen);
+  const shown = React.useMemo(() => {
+    if (frozen == null) return logs;
+    let n = logs.length;
+    while (n > 0 && logs[n - 1].id > frozen) n--;
+    return logs.slice(0, n);
+  }, [logs, frozen]);
   const view = shown.length > SHOW_MAX ? shown.slice(-SHOW_MAX) : shown;
   React.useEffect(() => { const el = box.current; if (el && stuck && frozen == null) el.scrollTop = el.scrollHeight; }, [view.length, stuck, frozen]);
   const jump = () => { const el = box.current; if (el) { el.scrollTop = el.scrollHeight; setStuck(true); } };
   const copy = () => void copyText(logs.map((l) => `${F.clock(l.ts)} ${LEVEL[l.level] ?? l.level} ${l.msg}`).join('\n'), '日志');
 
   return (
-    <Panel title="日志" sub={frozen != null ? `已暂停 · 另有 ${logs.length - frozen} 行新日志` : live ? '实时' : `${logs.length} 行`}
+    <Panel title="日志" sub={frozen != null ? `已暂停 · 另有 ${logs.length - shown.length} 行新日志` : live ? '实时' : `${logs.length + dropped} 行`}
       tools={<>
         {live && frozen == null && <Pill tone="info" dot="pulse">实时</Pill>}
         {!stuck && frozen == null && <Button size="sm" variant="quiet" onClick={jump}><ArrowDownToLine />跳到最新</Button>}
-        <Button size="sm" variant="secondary" aria-pressed={frozen != null} onClick={() => { if (frozen == null) setFrozen(logs.length); else { setFrozen(null); setStuck(true); } }}>
+        <Button size="sm" variant="secondary" aria-pressed={frozen != null} onClick={() => { if (frozen == null) setFrozen(logs.length ? logs[logs.length - 1].id : 0); else { setFrozen(null); setStuck(true); } }}>
           {frozen == null ? <><Pause />暂停滚动</> : <><Play />继续</>}
         </Button>
         <IconButton label="复制全部日志" size="sm" onClick={copy} disabled={!logs.length}><Copy size={14} /></IconButton>
@@ -182,11 +206,11 @@ function LogPanel({ job }: { job: Job }) {
       <div className="logbox" ref={box} role="log" aria-live="off" tabIndex={0} aria-label="作业日志"
         onScroll={(e) => { const el = e.currentTarget; setStuck(el.scrollHeight - el.scrollTop - el.clientHeight < 24); }}>
         {logs.length === 0 && <span className="t-muted">暂无日志</span>}
-        {shown.length > SHOW_MAX && <div className="logline logline-note"><span /><span /><span className="msg t-muted">仅显示最近 {SHOW_MAX} 行，共 {shown.length} 行</span></div>}
+        {(dropped > 0 || shown.length > SHOW_MAX) && <div className="logline logline-note"><span /><span /><span className="msg t-muted">{dropped > 0 ? `页面只保留最近 ${KEEP_MAX} 行，更早的 ${dropped} 行已省略；` : ''}仅显示最近 {Math.min(SHOW_MAX, shown.length)} 行，共 {shown.length + dropped} 行</span></div>}
         {view.map((l) => (
           <div key={l.id} className="logline" data-level={l.level}><span className="ts">{F.clock(l.ts)}</span><span className={`lv-${l.level}`}>{LEVEL[l.level] ?? l.level}</span><span className="msg">{l.msg}</span></div>
         ))}
       </div>
     </Panel>
   );
-}
+});
