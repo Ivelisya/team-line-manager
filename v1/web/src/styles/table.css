@@ -25,7 +25,7 @@
 .dt tr.is-retired td { color: var(--fg-2); }
 .dt .chev { width: 36px; padding-left: 0; text-align: right; color: var(--fg-3); }
 .dt tr.is-link:hover .chev { color: var(--fg-2); }
-.th-sort { display: inline-flex; align-items: center; gap: var(--sp-4); padding: 0; border: 0; background: none; cursor: pointer; font: inherit; color: inherit; max-width: 100%; }
+.th-sort { display: inline-flex; align-items: center; gap: var(--sp-4); padding: 0; border: 0; background: none; cursor: pointer; font: inherit; color: inherit; max-width: 100%; transition: color var(--dur-fast); }
 .th-sort:hover { color: var(--fg); }
 .th-sort .lucide { width: 12px; height: 12px; color: var(--fg-3); }
 .th-sort[data-dir] .lucide { color: var(--accent); }

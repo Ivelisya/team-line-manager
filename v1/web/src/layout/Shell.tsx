@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Toaster } from '@/components/ui/toast';
 import { useDrawer } from '@/lib/drawer';
+import { useHeld } from '@/lib/useHeld';
 import { Hotkeys, PaletteTrigger } from '@/features/Hotkeys';
 import { JobsIndicator } from '@/features/JobsIndicator';
 import { ErrorBoundary } from '@/components/app/ErrorBoundary';
@@ -54,8 +55,10 @@ const closeLifecycle = () => { closeMove(); closeEvacuate(); closeRestore(); };
 function NodeActionsHost() {
   const id = useRetireTarget();
   const q = useMachinePreview(id);
-  if (!id || !q.data) return null;
-  return <React.Suspense fallback={null}><RetireDialog m={q.data} open onOpenChange={(o) => { if (!o) closeRetire(); }} onDone={closeRetire} /></React.Suspense>;
+  // id 清空后继续用最近的机器渲染 open=false 的对话框，让 Radix 播完关闭动画再卸载
+  const m = useHeld(id, q.data);
+  if (!m) return null;
+  return <React.Suspense fallback={null}><RetireDialog key={m.id} m={m} open={!!id} onOpenChange={(o) => { if (!o) closeRetire(); }} onDone={closeRetire} /></React.Suspense>;
 }
 
 function DrawerHost() {
@@ -166,7 +169,7 @@ export function Shell() {
       <div className="nav-scrim" onClick={() => setNavOpen(false)} />
 
       <main className="main" id="main" tabIndex={-1}>
-        <div className="content"><ErrorBoundary resetKey={loc.pathname}><React.Suspense fallback={<PageFallback />}><Outlet /></React.Suspense></ErrorBoundary></div>
+        <div className="content"><ErrorBoundary resetKey={loc.pathname}><React.Suspense fallback={<PageFallback />}><div key={loc.pathname.split('/')[1] ?? ''} className="page-in"><Outlet /></div></React.Suspense></ErrorBoundary></div>
       </main>
       {/* 浮层宿主各包一层边界：它们出错（图表、懒加载块失败等）只收起自己，不拖垮整页 */}
       <ErrorBoundary silent resetKey={loc.search}><DrawerHost /></ErrorBoundary>

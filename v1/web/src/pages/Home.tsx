@@ -2,6 +2,7 @@
 // 默认排序：线路机 → 团队 → 编号；故障/离线不下沉。其它排序是用户的显式选择。
 import * as React from 'react';
 import { AlertTriangle, Inbox } from 'lucide-react';
+import { AnimatePresence } from 'motion/react';
 import { useMachines, useOverview, usePlans, useTeams } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
@@ -119,7 +120,10 @@ export function HomePage() {
         <Empty icon={<Inbox size={28} />} text={all.length ? '没有符合筛选条件的机器' : '还没有机器，去“上架”添加第一台'} />
       ) : (
         <div className="cards" data-view={view}>
-          {shown.map((m) => <NodeCard key={m.id} m={m} view={view} current={m.id === openId} plans={plans} onOpen={open} />)}
+          {/* initial={false}：页面首次出现的卡片不播入场；之后因筛选/排序/视图切换新出现的卡片淡入，留下的卡片在 NodeCard 里用 layout="position" 滑到新位置 */}
+          <AnimatePresence initial={false}>
+            {shown.map((m) => <NodeCard key={m.id} m={m} view={view} current={m.id === openId} plans={plans} onOpen={open} />)}
+          </AnimatePresence>
         </div>
       )}
     </div>

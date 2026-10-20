@@ -62,7 +62,7 @@
 .popover.jobs-pop { width: 320px; max-width: calc(100vw - 24px); padding: 0; }
 .jobs-pop-head { display: flex; align-items: center; justify-content: space-between; padding: var(--sp-10) var(--sp-12); font: var(--fw-semibold) var(--fs-body) / var(--lh-body) var(--font-sans); border-bottom: 1px solid var(--line); }
 .jobs-pop-list { margin: 0; padding: var(--sp-4); list-style: none; display: grid; max-height: 320px; overflow: auto; }
-.jobs-pop-item { display: grid; gap: var(--sp-4); padding: var(--sp-8) var(--sp-8); border-radius: var(--r-control); color: inherit; text-decoration: none; }
+.jobs-pop-item { display: grid; gap: var(--sp-4); padding: var(--sp-8) var(--sp-8); border-radius: var(--r-control); color: inherit; text-decoration: none; transition: background-color var(--dur-fast); }
 .jobs-pop-item:hover { background: var(--hover); }
 .jobs-pop-t { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-8); min-width: 0; }
 .jobs-pop-all { display: block; padding: var(--sp-8) var(--sp-12); border-top: 1px solid var(--line); font-size: var(--fs-label); color: var(--accent); text-decoration: none; }
@@ -77,6 +77,8 @@
   animation: cmd-in var(--dur-base) var(--ease-out);
 }
 @keyframes cmd-in { from { opacity: 0; transform: translate(-50%, -6px) scale(.985); } to { opacity: 1; transform: translateX(-50%); } }
+.cmd-dialog[data-state="closed"] { animation: cmd-out var(--dur-fast) var(--ease-std) forwards; }
+@keyframes cmd-out { from { opacity: 1; transform: translateX(-50%); } to { opacity: 0; transform: translate(-50%, -4px) scale(.985); } }
 .cmd { display: flex; flex-direction: column; min-height: 0; }
 .cmd-input-wrap { display: flex; align-items: center; gap: var(--sp-10); height: 52px; padding: 0 var(--sp-16); border-bottom: 1px solid var(--line); color: var(--fg-3); }
 .cmd-input { flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; outline: none; background: transparent; color: var(--fg); font: var(--fw-regular) var(--fs-emph) / var(--lh-emph) var(--font-sans); }
@@ -111,7 +113,7 @@
 
 /* ========== 空状态 / 抽屉页签切换 ========== */
 .empty-ic { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; background: var(--sunken); box-shadow: inset 0 0 0 1px var(--line); color: var(--fg-3); }
-.empty-text { font-weight: var(--fw-medium); }
+.empty-text { font-weight: var(--fw-medium); text-wrap: pretty; }
 .tab-pane { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-16); align-content: start; animation: tab-in var(--dur-base) var(--ease-out); }
 @keyframes tab-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 
@@ -187,6 +189,11 @@
 
 @media (prefers-reduced-motion: reduce) {
   .progress[data-live="1"] .progress-fill, .stepbar-item[data-kind="running"] .stepbar-node, .top-btn.jobs-ind > .lucide, .toast-timer { animation: none; }
+  /* 无限循环的呼吸/脉冲也停掉（骨架静止显示） */
+  .pill[data-dot="pulse"]::before, .skel { animation: none; }
+  /* 浮层关闭：不播退出动画，Radix 立即卸载 */
+  .overlay[data-state="closed"], .drawer-overlay[data-state="closed"], .dialog[data-state="closed"], .cmd-dialog[data-state="closed"], .drawer[data-state="closed"],
+  .menu[data-state="closed"], .popover[data-state="closed"], .select-content[data-state="closed"], .page-in { animation: none; }
 }
 
 /* ========== 来源画像：分布横条（抽屉「访问记录」页签） ========== */
@@ -197,3 +204,17 @@
 .dist-track { height: 8px; border-radius: var(--r-pill); background: var(--track); overflow: hidden; }
 .dist-fill { display: block; height: 100%; border-radius: var(--r-pill); background: var(--chart-1); }
 .dist-pct { text-align: right; color: var(--fg-2); font-variant-numeric: tabular-nums; }
+
+/* ========== 数字等宽恢复 ==========
+   `font:` 简写会把 font-variant-numeric 重置成 normal，body 上设的 tabular-nums 在这些控件里就丢了（数字跳动时会左右抖）。
+   这条放在所有样式表之后的最后一份普通样式里，统一补回。 */
+.btn, .seg-item, .tab, .fchip, .input, .textarea, .select-trigger, .pill, .chip, .mark, .nav-item, .menu-item, .select-item,
+.cmd-item, .cmd-trigger, .cmd-input, .kbd, .toast-action, .label, .sec-head, .brand, .jobs-pop-head { font-variant-numeric: tabular-nums; }
+
+/* ========== 日期输入（原生 type=date，只统一样式，不加依赖） ========== */
+.input[type="date"]::-webkit-calendar-picker-indicator { opacity: 0.5; cursor: pointer; border-radius: var(--r-xs); padding: 2px; transition: opacity var(--dur-fast), background-color var(--dur-fast); }
+.input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; background: var(--hover); }
+.input[type="date"].is-empty { color: var(--fg-3); }
+.input[type="date"]::-webkit-datetime-edit-month-field:focus, .input[type="date"]::-webkit-datetime-edit-day-field:focus, .input[type="date"]::-webkit-datetime-edit-year-field:focus {
+  background: var(--accent-soft); color: var(--accent-soft-fg); border-radius: 3px; outline: none;
+}

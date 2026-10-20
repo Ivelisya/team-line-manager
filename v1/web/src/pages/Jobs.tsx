@@ -55,7 +55,7 @@ export function JobsPage() {
           {jobs.data && list.length === 0 && <Empty icon={<ListChecks size={22} />} text="没有作业" hint="上架、下线、升级 agent 都会在这里留下一条" />}
         </Panel>
         <div className="jobs-detail">
-          {selected ? <JobDetail id={selected} /> : <Panel><Empty icon={<ListChecks size={22} />} text="选择左侧的作业查看步骤与日志" /></Panel>}
+          {selected ? <JobDetail id={selected} /> : <Panel className="jobs-empty"><Empty icon={<ListChecks size={22} />} text="选择左侧的作业查看步骤与日志" /></Panel>}
         </div>
       </div>
     </div>

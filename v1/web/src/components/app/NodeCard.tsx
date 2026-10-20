@@ -1,6 +1,8 @@
 // 节点卡片：一套外壳、三种视图。每个视图的“槽位”固定（大 10 / 小 7 / 紧凑 6），
 // 无论机器是主机、家宽代理还是线路机，同一个槽位都渲染同样高度的内容或占位——配合 cards.css 的 subgrid，同一行的卡片分段永远对齐。
 import { memo } from 'react';
+import { m as mo } from 'motion/react'; // 别名：组件里的 props 叫 m（机器）
+import { SPRING } from '@/lib/motion';
 import { Activity, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpFromLine, Calendar, CircleDollarSign, Cpu, Database, Globe, HardDrive, MemoryStick, MoreHorizontal, Radar, RefreshCw, Settings2, PanelRightOpen, ServerOff } from 'lucide-react';
 import type { MachineView, Plan } from '@/lib/types';
 import * as F from '@/lib/format';
@@ -169,7 +171,7 @@ function NodeCardImpl({ m, view, current, plans, onOpen: open }: { m: MachineVie
   return (
     <ContextMenu>
     <ContextMenuTrigger asChild>
-    <article ref={ref} className={cn('ncard', current && 'is-current', quiet && 'is-quiet')} data-view={VIEW_ATTR[view]} data-id={m.id} data-kind={m.kind} data-health={m.health.status} data-offline={quiet ? '1' : undefined}>
+    <mo.article ref={ref} layout="position" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ layout: SPRING, opacity: { duration: 0.18 } }} className={cn('ncard', current && 'is-current', quiet && 'is-quiet')} data-view={VIEW_ATTR[view]} data-id={m.id} data-kind={m.kind} data-health={m.health.status} data-offline={quiet ? '1' : undefined}>
       <Head m={m} view={view} onOpen={onOpen} />
 
       {view === 'large' && <>
@@ -235,7 +237,7 @@ function NodeCardImpl({ m, view, current, plans, onOpen: open }: { m: MachineVie
       </>}
 
       <Foot m={m} onOpen={onOpen} />
-    </article>
+    </mo.article>
     </ContextMenuTrigger>
     <ContextMenuContent><NodeContextItems m={m} /></ContextMenuContent>
     </ContextMenu>

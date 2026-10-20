@@ -34,8 +34,12 @@
 
 /* 作业：列表 + 详情 */
 .jobs-layout { display: grid; grid-template-columns: minmax(280px, 380px) minmax(0, 1fr); gap: var(--grid-gap); align-items: start; }
+.jobs-list { align-self: start; }
+/* 没选作业时的右侧占位：更高、居中，并在长列表滚动时跟着停在视口里（选中后的详情不吸顶，它自己很长） */
+.jobs-detail:has(> .jobs-empty) { position: sticky; top: calc(var(--topbar-h) + var(--sp-16)); align-self: start; }
+.jobs-empty { min-height: min(360px, 60dvh); display: grid; align-content: center; }
 @container content (max-width: 720px) { .jobs-layout { grid-template-columns: minmax(0, 1fr); } .jobs-layout[data-detail="1"] .jobs-list { display: none; } .jobs-layout[data-detail="0"] .jobs-detail { display: none; } }
-.job-item { display: grid; gap: 2px; width: 100%; padding: var(--sp-10) var(--card-pad); border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left; cursor: pointer; color: inherit; min-width: 0; }
+.job-item { display: grid; gap: 2px; width: 100%; padding: var(--sp-10) var(--card-pad); border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left; cursor: pointer; color: inherit; min-width: 0; transition: background-color var(--dur-fast); }
 .job-item:last-child { border-bottom: 0; }
 .job-item:hover { background: var(--hover); }
 .job-item[aria-current="true"] { background: var(--selected); box-shadow: inset 2px 0 0 var(--accent); }

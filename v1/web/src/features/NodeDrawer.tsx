@@ -8,6 +8,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import type { MachineView } from '@/lib/types';
 import { useMachine, useAudit } from '@/lib/queries';
 import { DRAWER_TABS, useDrawer, type DrawerTab } from '@/lib/drawer';
+import { useHeld } from '@/lib/useHeld';
 import * as F from '@/lib/format';
 import { KIND_LABEL } from '@/lib/sort';
 import { jobKindLabel } from '@/lib/jobs';
@@ -24,14 +25,19 @@ const HostTab = React.lazy(() => import('./DrawerCharts').then((m) => ({ default
 const AccessTab = React.lazy(() => import('./AccessTab').then((m) => ({ default: m.AccessTab })));
 
 export function NodeDrawer() {
-  const { id, tab, setTab, close } = useDrawer();
+  const { id, tab: liveTab, setTab, close } = useDrawer();
   const q = useMachine(id);
-  const m = q.data;
+  // 关闭时 id/tab 已从地址里清掉，但抽屉还要播滑出动画：沿用最后一次的机器、页签和 id，别闪成加载骨架或跳回“概览”
+  const m = useHeld(id, q.data);
+  const heldTab = React.useRef(liveTab);
+  const heldId = React.useRef(id);
+  if (id) { heldTab.current = liveTab; heldId.current = id; }
+  const tab = id ? liveTab : heldTab.current;
   return (
     <Sheet open={!!id} onOpenChange={(o) => !o && close()}>
       <SheetContent aria-describedby={undefined}>
         {/* 抽屉里图表/懒加载块出错只让抽屉显示错误，换机器或页签后自动恢复 */}
-        <ErrorBoundary compact resetKey={`${id}:${tab}`}>
+        <ErrorBoundary compact resetKey={`${heldId.current}:${tab}`}>
         {!m ? (
           <>
             <div className="drawer-head"><SheetTitle className="drawer-title">{q.isError ? '无法加载机器' : '加载中…'}</SheetTitle></div>
