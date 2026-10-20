@@ -4,7 +4,7 @@
 
 ## 构建
 
-```
+# 在 fleet-dev:/root/src（lab/sync-server.sh 同步的整个工作区）里
 # fleet-dev:/root/src-agent（只放 fleet-proto + fleet-agent，远端 Cargo.toml 的 members 改成这两个）
 cargo test  -p fleet-agent
 cargo build -p fleet-agent --release --target x86_64-unknown-linux-musl   # 约 5.3 MB
@@ -59,7 +59,7 @@ cargo build -p fleet-agent --release --target x86_64-unknown-linux-musl   # 约 
 
 | 机器 | 装了什么 | 状态 |
 |---|---|---|
-| fleet-dev 192.168.31.60 | Rust 工具链；`/root/src-agent`（agent 的构建副本）；`/root/dl`（下载的 Xray 26.3.27 zip、shadowsocks-rust 1.25.0 tar.xz，已校验 sha256） | 无测试进程 |
+| fleet-dev 192.168.31.60 | Rust 工具链；`/root/src`（工作区构建目录，lab/deploy-server.sh 在这里同时编 server 与 agent）；`/root/dl`（下载的 Xray 26.3.27 zip、shadowsocks-rust 1.25.0 tar.xz，已校验 sha256） | 无测试进程 |
 | lab-relay1 192.168.31.61 | `/usr/local/bin/xray`（Xray 26.3.27，zip 的 SHA2-256 `23cd9af9…c8ae` 与官方 .dgst 一致）、`/usr/local/share/xray/{geoip,geosite}.dat`、`/usr/local/bin/fleet-agent`、`fleet-agent.service`、`fleet-xray.service`、`/etc/fleet-agent/{agent.toml,xray.json(空骨架)}` | 两个服务**已停止、未 enable**；`agent.toml` 指向 `http://192.168.31.60:8080`；没有 token 文件 |
 | lab-node1 192.168.31.63 | `/usr/local/bin/ssserver`（shadowsocks-rust 1.25.0，musl，sha256 已验）、`ssserver.service`（0.0.0.0:8388，aes-256-gcm，tcp_and_udp，密码见 `/etc/ssserver/config.json`）、`/usr/local/bin/fleet-agent`、`fleet-agent.service`、`/etc/fleet-agent/agent.toml`（role=node） | ssserver 运行且 enable；fleet-agent 停止、未 enable；没有 token 文件 |
 | lab-node2/3 | 未动 | |
