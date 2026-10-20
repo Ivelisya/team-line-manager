@@ -55,14 +55,17 @@ export interface Overview {
 }
 
 export type JobState = 'queued' | 'running' | 'waiting' | 'cancelling' | 'succeeded' | 'failed' | 'cancelled';
-export type JobKind = 'provision_vps' | 'provision_proxy' | 'provision_relay' | 'attach_entry' | 'retire' | 'purge' | 'upgrade_agent';
+export type JobKind = 'provision_vps' | 'provision_proxy' | 'provision_relay' | 'attach_entry' | 'move_entry' | 'restore_vps' | 'restore_proxy' | 'restore_relay' | 'retire' | 'purge' | 'upgrade_agent';
 /** 步骤 state 文档未列全，前端按 pending/running/waiting/succeeded(done)/failed/skipped(cancelled) 宽松处理 */
 export interface JobStep { idx: number; key: string; title: string; state: string; started_at: string | null; finished_at: string | null; output: Record<string, unknown> | null; error: string | null; error_kind?: string | null }
 export interface Job {
   id: string; kind: JobKind | string; target: { id: string; name: string } | null; state: JobState | string;
   step: number | null; step_count: number; error: string | null; created_by: string; created_at: string; started_at: string | null; finished_at: string | null;
   steps: JobStep[]; cancellable: boolean;
+  /** 换线路机作业（move_entry）才有：新入口 id 与「分享链接已变」的提示 */
+  result?: JobResult | null;
 }
+export interface JobResult { new_entry_id: string | null; old_entry_id: string | null; from_relay_id: string | null; to_relay_id: string | null; share_changed: boolean; note: string }
 export interface JobLog { id: number; ts: string; level: 'info' | 'warn' | 'error' | string; msg: string }
 
 export interface ProvisionItem {
@@ -91,6 +94,21 @@ export interface Renewal { id: string; old_due: string | null; new_due: string; 
 /** 审计：界面只显示 title 与 summary（服务端生成的中文）；detail 是原始 JSON，不要直接渲染 */
 export interface AuditEntry { id: string; ts: string; actor: string; action: string; title: string; summary: string; target_kind: string | null; target_id: string | null; detail: unknown }
 export interface RenumberPreview { changes: { machine_id: string; old_name: string; new_name: string }[]; token: string }
+/** 换线路机 / 搬空线路机 / 恢复已退役机器（API.md「生命周期操作」） */
+export interface MoveResult { job_id: string; name: string; from: string; to: string; share_changed: boolean; note: string }
+export interface EvacuateResult { from: string; to: string; jobs: { machine_id: string; name: string; job_id: string }[]; skipped: { machine_id: string; name: string | null; reason: string }[]; share_changed: boolean; note: string }
+export interface RestorePreview {
+  id: string; kind: Kind; lifecycle: Lifecycle; ip: string; old_name: string; name: string; team: { id: string; name: string } | null; number: number | null; label: string | null;
+  restorable: boolean; blockers: string[]; warnings: string[]; ip_conflict: { machine_id: string; name: string; lifecycle: string } | null;
+  last_relay: { id: string; name: string } | null; retired_reason: string | null;
+  ssh: { reachable: boolean; key_login: 'ok' | 'denied' | 'error' | 'unreachable' | string; host_key?: string; detail?: string } | null;
+  /** password：required 中控密钥登录被拒、必须给 root 密码；optional 探测不到、可选；no 不需要 */
+  needs: { relay: boolean; upstream: boolean; password: 'required' | 'optional' | 'no' };
+}
+export interface RestoreBody {
+  team_id?: string; number?: number; label?: string; relay_id?: string; reason?: string; reset_host_key?: boolean;
+  login?: { password: string }; upstream?: { protocol: 'socks5' | 'http'; host: string; port: number; username?: string; password?: string };
+}
 /** 退役预览：退役后同团队后面的节点会依次前移改名 */
 export interface RetirePreview { name: string; renames: { machine_id: string; old_name: string; new_name: string }[] }
 

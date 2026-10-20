@@ -2,11 +2,11 @@
 // 菜单内容只在打开时挂载，所以这里的 hook（mutation、路由）不会给每张卡片增加开销。
 import * as React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowUpCircle, BellOff, Copy, Link2, PanelRightOpen, PencilLine, Power } from 'lucide-react';
+import { ArrowUpCircle, BellOff, Copy, Link2, PanelRightOpen, PencilLine, Power, Repeat2, Undo2 } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
 import { fetchShare, useUpgradeAgent } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
-import { openRetire } from '@/lib/nodeActions';
+import { openMove, openRestore, openRetire } from '@/lib/nodeActions';
 import { copyText } from '@/lib/clipboard';
 import { toast } from '@/components/ui/toast';
 import { ContextMenuItem, ContextMenuSeparator, ContextMenuSub, ContextMenuSubContent, ContextMenuSubTrigger } from '@/components/ui/context-menu';
@@ -33,13 +33,18 @@ export function useNodeMenu(m: MachineView): MenuEntry[] {
     { key: 'ip', label: '复制 IP', icon: <Copy />, onSelect: () => void copyText(m.ip, ' IP') },
     { key: 'name', label: '复制名称', icon: <Copy />, onSelect: () => void copyText(m.name, '名称') },
   ];
-  if (retired) return items;
+  if (retired) {
+    items.push({ key: 'sep1', sep: true }, { key: 'restore', label: '恢复…', icon: <Undo2 />, onSelect: () => openRestore(m.id) });
+    return items;
+  }
   items.push(shareItem, { key: 'sep1', sep: true });
   items.push(
     { key: 'upgrade', label: '升级 agent', icon: <ArrowUpCircle />, disabled: !m.agent || m.lifecycle !== 'active' || !!m.active_job || upgrade.isPending,
       // 菜单选中后内容会卸载，mutate 的回调届时不再触发；用 Promise 才能保证提示一定出现
       onSelect: () => { upgrade.mutateAsync(m.id).then(() => toast.ok('已提交升级作业'), (e) => toast.err(e)); } },
     { key: 'rename', label: '改名 / 改编号', icon: <PencilLine />, onSelect: () => open(m.id, 'manage') },
+    ...(m.kind !== 'relay' && m.lifecycle === 'active' && m.entries.some((e) => e.lifecycle === 'active')
+      ? [{ key: 'move', label: '换线路机…', icon: <Repeat2 />, disabled: !!m.active_job, onSelect: () => openMove(m.id) } as MenuEntry] : []),
     { key: 'silence', label: '新建静默', icon: <BellOff />, onSelect: () => nav(`/incidents?silence=${m.id}`) },
     { key: 'sep2', sep: true },
     { key: 'retire', label: '退役…', icon: <Power />, danger: true, disabled: m.lifecycle === 'provisioning' || m.lifecycle === 'retiring', onSelect: () => openRetire(m.id) },

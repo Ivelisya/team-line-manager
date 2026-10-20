@@ -16,6 +16,7 @@ import { ConfirmDialog } from '@/components/app/dialogs';
 import { JobProgressBar, StepBar } from '@/components/app/JobProgress';
 import { NodeHover } from '@/components/app/NodeHover';
 import { toast } from '@/components/ui/toast';
+import { copyNewShareLink } from '@/lib/moveShare';
 import { Empty, ErrorNote, LabelValue, LabelValueGrid, Note, PageHead, Panel, Pill, type Tone } from '@/components/app/primitives';
 
 const STATE: Record<string, { label: string; tone: Tone; dot?: 'pulse' | 'ring' }> = {
@@ -90,6 +91,16 @@ function JobDetail({ id }: { id: string }) {
           </LabelValueGrid>
         </div>
         {j.error && <div style={{ marginTop: 12 }}><Note tone="bad">{j.error}</Note></div>}
+        {j.kind === 'move_entry' && (j.result?.new_entry_id || j.state === 'succeeded') && (
+          <div style={{ marginTop: 12 }}>
+            <Note tone={j.state === 'succeeded' ? 'warn' : 'info'}>
+              <span className="row row-between" style={{ gap: 12 }}>
+                <span>{j.result?.note ?? '客户端需要换成新的分享链接'}：{j.state === 'succeeded' ? '旧链接已失效。' : '新入口验收通过、旧入口摘除后，旧链接会失效。'}</span>
+                {j.result?.new_entry_id && <Button size="sm" onClick={() => void copyNewShareLink(j.id)}><Copy size={14} />复制新分享链接</Button>}
+              </span>
+            </Note>
+          </div>
+        )}
       </Panel>
 
       <Panel title="步骤" sub={`${stepsDone(j)} / ${j.step_count || j.steps.length}`}>

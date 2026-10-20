@@ -2,12 +2,13 @@
 // 整个文件按需加载（首次打开时才下载 cmdk）。
 import * as React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowUpCircle, BellOff, BellRing, Briefcase, Clipboard, CloudUpload, Gauge, LayoutGrid, ListChecks, Moon, Server, Settings, Sun, Waypoints } from 'lucide-react';
+import { ArrowUpCircle, BellOff, BellRing, Briefcase, Clipboard, CloudUpload, Gauge, LayoutGrid, ListChecks, Moon, PackageOpen, Server, Settings, Sun, Waypoints } from 'lucide-react';
 import { useMachines, useUpgradeAllAgents } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import { copyText } from '@/lib/clipboard';
 import { KIND_LABEL } from '@/lib/sort';
 import { setOverlay, useOverlay } from '@/lib/palette';
+import { openEvacuate } from '@/lib/nodeActions';
 import type { ThemePref } from '@/lib/theme';
 import { Command, CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { toast } from '@/components/ui/toast';
@@ -34,7 +35,7 @@ export default function CommandPalette({ theme }: { theme: { pref: ThemePref; se
   const machines = useMachines('live').data ?? [];
   const upgradeAll = useUpgradeAllAgents();
   const [search, setSearch] = React.useState('');
-  const [mode, setMode] = React.useState<'root' | 'copy-ip'>('root');
+  const [mode, setMode] = React.useState<'root' | 'copy-ip' | 'evacuate'>('root');
   const [askUpgrade, setAskUpgrade] = React.useState(false);
 
   React.useEffect(() => { if (!open) { setSearch(''); setMode('root'); } }, [open]);
@@ -42,13 +43,14 @@ export default function CommandPalette({ theme }: { theme: { pref: ThemePref; se
   const go = (to: string) => { close(); nav(to); };
   const dark = document.documentElement.dataset.theme === 'dark';
 
-  const list = search.trim() ? machines : machines.slice(0, LIMIT);
+  const pool = mode === 'evacuate' ? machines.filter((m) => m.kind === 'relay') : machines;
+  const list = search.trim() || mode === 'evacuate' ? pool : pool.slice(0, LIMIT);
   const machineItems = list.map((m) => (
     <CommandItem key={m.id} value={`${m.name} ${m.ip} ${m.team?.name ?? ''} ${KIND_LABEL[m.kind]}`} keywords={[m.id]}
-      onSelect={() => { close(); if (mode === 'copy-ip') void copyText(m.ip, ' IP'); else openDrawer(m.id); }}>
+      onSelect={() => { close(); if (mode === 'copy-ip') void copyText(m.ip, ' IP'); else if (mode === 'evacuate') openEvacuate(m.id); else openDrawer(m.id); }}>
       <KindIcon kind={m.kind} />
       <span className="cmd-main"><b className="ellipsis">{m.name}</b><HealthPill m={m} /></span>
-      <span className="cmd-aside">{mode === 'copy-ip' ? <>复制 <span className="num">{m.ip}</span></> : <span className="num">{m.ip}</span>}</span>
+      <span className="cmd-aside">{mode === 'copy-ip' ? <>复制 <span className="num">{m.ip}</span></> : mode === 'evacuate' ? <span>搬空…</span> : <span className="num">{m.ip}</span>}</span>
     </CommandItem>
   ));
 
@@ -57,7 +59,7 @@ export default function CommandPalette({ theme }: { theme: { pref: ThemePref; se
       <CommandDialog open={open} onOpenChange={(o) => setOverlay(o ? 'palette' : null)} title="命令面板">
         <Command label="命令面板" loop
           onKeyDown={(e) => { if (e.key === 'Backspace' && !search && mode !== 'root') { e.preventDefault(); setMode('root'); } }}>
-          <CommandInput autoFocus value={search} onValueChange={setSearch} placeholder={mode === 'copy-ip' ? '选择要复制 IP 的机器…' : '搜索机器、页面或动作…'} />
+          <CommandInput autoFocus value={search} onValueChange={setSearch} placeholder={mode === 'copy-ip' ? '选择要复制 IP 的机器…' : mode === 'evacuate' ? '选择要搬空的线路机…' : '搜索机器、页面或动作…'} />
           <CommandList>
             <CommandEmpty>没有匹配的结果{search ? `：${search}` : ''}</CommandEmpty>
             {mode === 'root' && (
@@ -71,6 +73,7 @@ export default function CommandPalette({ theme }: { theme: { pref: ThemePref; se
                   <CommandItem value="上架节点 provision 添加机器" onSelect={() => go('/provision')}><CloudUpload /><span className="cmd-main">上架节点</span></CommandItem>
                   <CommandItem value="新建静默 silence 维护窗口" onSelect={() => go('/incidents?silence=new')}><BellOff /><span className="cmd-main">新建静默</span></CommandItem>
                   <CommandItem value="复制某机器 IP copy ip" onSelect={() => { setSearch(''); setMode('copy-ip'); }}><Clipboard /><span className="cmd-main">复制某台机器的 IP…</span></CommandItem>
+                  <CommandItem value="搬空线路机 evacuate 换线路机 下线" onSelect={() => { setSearch(''); setMode('evacuate'); }}><PackageOpen /><span className="cmd-main">搬空线路机…</span></CommandItem>
                   <CommandItem value="升级全部 agent upgrade" onSelect={() => { close(); setAskUpgrade(true); }}><ArrowUpCircle /><span className="cmd-main">升级全部 agent</span></CommandItem>
                   <CommandItem value="切换主题 深色 浅色 theme dark light" onSelect={() => { close(); theme.setPref(dark ? 'light' : 'dark'); }}>
                     {dark ? <Sun /> : <Moon />}<span className="cmd-main">切换到{dark ? '浅色' : '深色'}主题</span>
@@ -79,15 +82,15 @@ export default function CommandPalette({ theme }: { theme: { pref: ThemePref; se
               </>
             )}
             {machineItems.length > 0 && (
-              <CommandGroup heading={mode === 'copy-ip' ? '复制 IP' : '机器'}>
+              <CommandGroup heading={mode === 'copy-ip' ? '复制 IP' : mode === 'evacuate' ? '线路机' : '机器'}>
                 {machineItems}
-                {!search.trim() && machines.length > LIMIT && <div className="cmd-more">还有 {machines.length - LIMIT} 台，输入名称、IP 或团队来搜索</div>}
+                {!search.trim() && mode !== 'evacuate' && machines.length > LIMIT && <div className="cmd-more">还有 {machines.length - LIMIT} 台，输入名称、IP 或团队来搜索</div>}
               </CommandGroup>
             )}
           </CommandList>
           <div className="cmd-foot">
             <span><kbd className="kbd">↑</kbd><kbd className="kbd">↓</kbd>选择</span>
-            <span><kbd className="kbd">↵</kbd>{mode === 'copy-ip' ? '复制' : '打开'}</span>
+            <span><kbd className="kbd">↵</kbd>{mode === 'copy-ip' ? '复制' : mode === 'evacuate' ? '搬空' : '打开'}</span>
             {mode !== 'root' && <span><kbd className="kbd">⌫</kbd>返回</span>}
             <span style={{ marginLeft: 'auto' }}><kbd className="kbd">esc</kbd>关闭</span>
           </div>

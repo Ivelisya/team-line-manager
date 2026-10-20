@@ -8,6 +8,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/overlay
 import { Progress } from '@/components/ui/progress';
 import { toast } from '@/components/ui/toast';
 import { Tip } from '@/components/ui/overlays';
+import { copyNewShareLink } from '@/lib/moveShare';
 import type { Job } from '@/lib/types';
 
 /** 作业从“进行中”变成终态时弹一条通知；首次加载只记基线，不补发历史 */
@@ -23,7 +24,9 @@ function useJobNotifier(jobs: Job[] | undefined) {
         if (!was || !jobLive(was) || jobLive(j.state)) continue;
         const label = `${jobKindLabel(j.kind)} · ${j.target?.name ?? '—'}`;
         const action = { label: '查看', onClick: () => nav(`/jobs/${j.id}`) };
-        if (j.state === 'succeeded') toast.show({ tone: 'ok', title: '作业完成', text: label, action });
+        if (j.state === 'succeeded' && j.kind === 'move_entry') {
+          toast.show({ tone: 'ok', title: '换线路机完成', text: `${label}：分享链接已变化，客户端需要换成新的分享链接`, duration: 15000, action: { label: '复制新分享链接', onClick: () => void copyNewShareLink(j.id) } });
+        } else if (j.state === 'succeeded') toast.show({ tone: 'ok', title: '作业完成', text: label, action });
         else if (j.state === 'failed') toast.show({ tone: 'bad', title: '作业失败', text: j.error ? `${label}：${j.error}` : label, action });
         else toast.show({ tone: 'info', title: '作业已取消', text: label, action });
       }
