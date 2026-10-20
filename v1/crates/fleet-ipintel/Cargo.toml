@@ -1,0 +1,20 @@
+[package]
+name = "fleet-ipintel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "团队线路管理 IP 情报：离线库（ip2region / DB-IP / iptoasn）查询与接入方式判定，只查本地库"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+tracing.workspace = true
+# 以下版本都发布于两周以上，用 = 固定
+maxminddb = { version = "=0.32.0", features = ["mmap"] }
+memmap2 = "=0.9.11"
+regex = "=1.13.1"
+
+[dev-dependencies]
+tempfile = "=3.27.0"
