@@ -122,6 +122,10 @@ export type ProbeBeats = Record<string, ProbeBucket[]>;
 /** 全站网卡速率的历史：每分钟一个点（旧→新），首页集群状态折线开场用 */
 export interface OverviewSeries { points: { ts: string; net_rx_bps: number; net_tx_bps: number }[] }
 export interface SeriesResp { metric: string; range: string; resolution: '1m' | '1h' | string; points: SeriesPoint[] }
+/** 近 N 天可用率（GET /machines/{id}/availability）：每天一项，旧→新共 days 项，最后一项是今天（还没过完）；按这台机器的账单时区分天，
+ *  没有探测的天各项为 0。tcp_pct / egress_pct 是整段的成功率（0–100），没有探测为 null */
+export interface AvailabilityDay { date: string; tcp_total: number; tcp_ok: number; egress_total: number; egress_ok: number }
+export interface Availability { days: number; items: AvailabilityDay[]; tcp_pct: number | null; egress_pct: number | null }
 export interface Incident {
   id: string; rule: string; rule_name: string; subject: { id: string; name: string } | null; subject_id: string | null; subject_name: string | null;
   severity: 'info' | 'warning' | 'critical' | string; state: 'firing' | 'resolved'; summary: string;

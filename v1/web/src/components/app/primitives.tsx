@@ -217,11 +217,10 @@ export function CopyButton({ text, label = '内容', className, size = 14 }: { t
   );
 }
 
-const BEAT_N = 20;
-/** 心跳条：20 格，ok/warn/bad/空；titles 与 cells 一一对应，作每格的悬停说明 */
-export function Beat({ cells, titles, caption, win, stale }: { cells: BeatCell[]; titles?: string[]; caption: React.ReactNode; win?: string; stale?: boolean }) {
-  const pad = Math.max(0, BEAT_N - cells.length);
-  const shown = cells.slice(-BEAT_N); const tips = titles?.slice(-BEAT_N);
+/** 心跳条：n 格（默认 20 格 = 卡片上的近 1 小时），ok/warn/bad/空；titles 与 cells 一一对应，作每格的悬停说明 */
+export function Beat({ cells, titles, caption, win, stale, n = 20 }: { cells: BeatCell[]; titles?: string[]; caption: React.ReactNode; win?: string; stale?: boolean; n?: number }) {
+  const pad = Math.max(0, n - cells.length);
+  const shown = cells.slice(-n); const tips = titles?.slice(-n);
   return (
     <div className={cn('beat', stale && 'is-stale')}>
       <div className="beat-cap"><span className="beat-main ellipsis">{caption}</span>{win && <span className="beat-win">{win}</span>}</div>

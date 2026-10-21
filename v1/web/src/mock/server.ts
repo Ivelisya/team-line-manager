@@ -1,8 +1,8 @@
 // 浏览器内 mock：拦截 /api/v1/* 的 fetch 和实时流 WebSocket。VITE_MOCK=1 时由 main.tsx 安装。
 // 有状态：改名、退役、上架、续费等操作都会改内存里的数据，并通过 mock 实时流通知前端刷新。
 
-import type { EntryView, Incident, Job, JobLog, JobSummary, MachineView, ProbeBucket, ProvisionCheckItem, ProvisionItem, SeriesPoint } from '@/lib/types';
-import { displayName } from '@/lib/format';
+import type { Availability, AvailabilityDay, EntryView, Incident, Job, JobLog, JobSummary, MachineView, ProbeBucket, ProvisionCheckItem, ProvisionItem, SeriesPoint } from '@/lib/types';
+import { addDays, displayName } from '@/lib/format';
 import { isQuiet, liveRate } from '@/lib/derive';
 import { LIFECYCLE_LABEL, makeDefaultCompare } from '@/lib/sort';
 import { buildDb, hashStr, IP_STEPS, quotaOf, rng, type Db } from './fixtures';
@@ -147,6 +147,33 @@ function probeBeats() {
     });
   }
   return out;
+}
+/** 近 N 天可用率（同服务端 /availability）：按账单时区分天，上架之前、退役之后的天没有探测；每条入口每天 TCP 2880 次（30 秒一次）、
+ *  出口 1440 次，今天按已过去的部分算。大多数天全成功，个别天有零星失败，故障机最近两天大面积失败 */
+function availability(m: MachineView, days: number): Availability {
+  if (!Number.isInteger(days) || days < 1 || days > 90) throw bad('days 只能是 1–90');
+  const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: m.subscription?.billing_tz ?? 'Asia/Shanghai' }); // 账单时区里的 YYYY-MM-DD
+  const today = fmt.format(Date.now());
+  const from = m.activated_at && fmt.format(Date.parse(m.activated_at));
+  const to = m.retired_at ? fmt.format(Date.parse(m.retired_at)) : today;
+  // 有探测的入口数：应用中的还没有探测；节点至少算一条（已退役机器的入口已摘掉、fixtures 里是空的，退役前照样有探测）
+  const live = m.entries.filter((e) => e.lifecycle !== 'pending').length;
+  const n = m.kind === 'relay' ? live : Math.max(1, live);
+  const elapsed = (Date.now() - new Date().setHours(0, 0, 0, 0)) / DAY;
+  const items = Array.from({ length: days }, (_, i): AvailabilityDay => {
+    const date = addDays(today, i - days + 1);
+    if (!n || !from || date < from || date > to) return { date, tcp_total: 0, tcp_ok: 0, egress_total: 0, egress_ok: 0 };
+    const r = rng(hashStr(`${m.id}:${date}`));
+    const share = date === today ? elapsed : 1;
+    const tcp = Math.round(2880 * n * share); const egress = Math.round(1440 * n * share);
+    const down = m.health.status === 'down' && date >= addDays(today, -1);
+    const lossy = r() < 0.12;
+    const fail = (total: number) => Math.round(total * (down ? 0.2 + r() * 0.5 : lossy ? r() * 0.03 : 0));
+    return { date, tcp_total: tcp, tcp_ok: tcp - fail(tcp), egress_total: egress, egress_ok: egress - fail(egress) };
+  });
+  const sum = (k: keyof Omit<AvailabilityDay, 'date'>) => items.reduce((s, d) => s + d[k], 0);
+  const pct = (ok: number, total: number) => (total ? (ok / total) * 100 : null);
+  return { days, items, tcp_pct: pct(sum('tcp_ok'), sum('tcp_total')), egress_pct: pct(sum('egress_ok'), sum('egress_total')) };
 }
 /** 全站网卡速率的每分钟历史（旧→新），围着当前总速率随机波动；同服务端只给结束满 20 s 的分钟（end 为其后第一个分钟起点） */
 function overviewSeries(minutes: number) {
@@ -429,6 +456,7 @@ R('GET', '/machines/([^/]+)/series', ({ params, query }) => {
   const m = machine(params[0]); const metric = query.get('metric') ?? 'host';
   return series(metric === 'host' && m.host_machine ? machine(m.host_machine.id) : m, metric, query.get('range') ?? '1h');
 });
+R('GET', '/machines/([^/]+)/availability', ({ params, query }) => availability(machine(params[0]), Number(query.get('days') ?? 30)));
 /** 宿主机上还没开始退役的同机 IP 节点：退役宿主机时一并退役 */
 const ipNodesLeaving = (m: MachineView) => db.machines.filter((x) => x.host_machine?.id === m.id && x.lifecycle !== 'retiring' && x.lifecycle !== 'retired');
 R('GET', '/machines/([^/]+)/retire', ({ params }) => {
