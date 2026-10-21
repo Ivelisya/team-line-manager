@@ -1,10 +1,14 @@
 //! 机器视图：一次把列表页、卡片、抽屉需要的东西组装好（约百台规模，分几条查询再在内存里拼）。
 
-use crate::health::{self, Health};
+use crate::health::{self, Health, Status};
 use crate::names::display_name;
+use crate::state::AppState;
 use serde::Serialize;
-use sqlx::PgPool;
+use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Instant;
 use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
@@ -235,46 +239,87 @@ struct MRow {
 /// agent 多久没上报算离线
 pub const AGENT_OFFLINE_S: i64 = 120;
 
-pub async fn load(db: &PgPool, scope: Scope, only: Option<Uuid>) -> sqlx::Result<Vec<MachineView>> {
-    load_with(db, scope, only, true).await
-}
-
-/// 在用机器全量视图的短缓存：/machines、/relays、/overview 共用，并发请求合并成一次查询（单飞）。
+/// 在用机器全量视图的短缓存：/machines、/relays、/overview、告警评估、实时指标共用，并发请求合并成一次查询（单飞）。
 /// 资源变更事件（`AppState::emit`）让它立刻作废；agent 上报的指标不发事件，靠 TTL 过期。
-type Cached = (std::time::Instant, u64, std::sync::Arc<Vec<MachineView>>);
-/// 指标（心跳、流量）最多旧这么久
+type Cached = (Instant, u64, Arc<Vec<MachineView>>);
+/// 指标（心跳、探测）最多旧这么久
 const LIVE_TTL: std::time::Duration = std::time::Duration::from_secs(3);
+/// 入口 id → 今天 / 本月流量（北京时间，来自小时汇总表，含已移除的入口）
+type TrafficMap = Arc<HashMap<Uuid, Traffic>>;
 
 #[derive(Default)]
 pub struct LiveCache {
     /// 每次作废 +1；加载开始时记下，加载期间发生过变更的结果不当作新鲜的
-    gen: std::sync::atomic::AtomicU64,
+    gen: AtomicU64,
     slot: tokio::sync::Mutex<Option<Cached>>,
+    /// 小时汇总每跑完一轮 +1
+    rolled: AtomicU64,
+    /// 流量只在小时汇总后（或跨天、跨月）才变：按汇总轮次缓存，到库里时钟的下一个北京时间零点过期
+    traffic: tokio::sync::Mutex<Option<((u64, Instant), TrafficMap)>>,
 }
 
 impl LiveCache {
     pub fn invalidate(&self) {
-        self.gen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.gen.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// 小时汇总跑完了：流量缓存作废
+    pub fn rolled_up(&self) {
+        self.rolled.fetch_add(1, Ordering::SeqCst);
     }
 }
 
-/// 在用机器的完整视图（含流量），走 `LiveCache`
-pub async fn live(st: &crate::state::AppState) -> sqlx::Result<std::sync::Arc<Vec<MachineView>>> {
+/// 在用机器的完整视图，走 `LiveCache`
+pub async fn live(st: &AppState) -> sqlx::Result<Arc<Vec<MachineView>>> {
     let c = &st.live;
     let mut slot = c.slot.lock().await;
-    let gen = c.gen.load(std::sync::atomic::Ordering::SeqCst);
+    let gen = c.gen.load(Ordering::SeqCst);
     if let Some((at, g, v)) = &*slot {
         if *g == gen && at.elapsed() < LIVE_TTL {
             return Ok(v.clone());
         }
     }
-    let v = std::sync::Arc::new(load(&st.db, Scope::Live, None).await?);
-    *slot = Some((std::time::Instant::now(), gen, v.clone()));
+    let v = Arc::new(load(st, Scope::Live, None).await?);
+    *slot = Some((Instant::now(), gen, v.clone()));
     Ok(v)
 }
 
-/// `with_traffic = false` 跳过本月流量聚合（告警循环只要健康判定，不需要流量）
-pub async fn load_with(db: &PgPool, scope: Scope, only: Option<Uuid>, with_traffic: bool) -> sqlx::Result<Vec<MachineView>> {
+/// 所有入口今天 / 本月的流量，走 `LiveCache.traffic`
+async fn traffic(st: &AppState) -> sqlx::Result<TrafficMap> {
+    let c = &st.live;
+    let mut slot = c.traffic.lock().await;
+    // 先记下轮次再查：查询期间汇总又跑完一轮的，下次照样重查
+    let rolled = c.rolled.load(Ordering::SeqCst);
+    let t0 = Instant::now();
+    if let Some(((r, exp), v)) = &*slot {
+        if *r == rolled && t0 < *exp {
+            return Ok(v.clone());
+        }
+    }
+    // 跨天看库里的时钟（“今天”也是按库里的 now() 算的）：离下一个北京时间零点还有多少秒
+    let left: f64 = sqlx::query_scalar(
+        "select extract(epoch from date_trunc('day', now() at time zone 'Asia/Shanghai') + interval '1 day' - now() at time zone 'Asia/Shanghai')::float8",
+    )
+    .fetch_one(&st.db)
+    .await?;
+    let rows: Vec<(Uuid, i64, i64, i64, i64)> = sqlx::query_as(
+        "select entry_id,
+           coalesce(sum(up_bytes) filter (where hour >= date_trunc('day', now() at time zone 'Asia/Shanghai') at time zone 'Asia/Shanghai'), 0)::bigint,
+           coalesce(sum(down_bytes) filter (where hour >= date_trunc('day', now() at time zone 'Asia/Shanghai') at time zone 'Asia/Shanghai'), 0)::bigint,
+           coalesce(sum(up_bytes), 0)::bigint, coalesce(sum(down_bytes), 0)::bigint
+         from entry_traffic_hourly where hour >= date_trunc('month', now() at time zone 'Asia/Shanghai') at time zone 'Asia/Shanghai'
+         group by entry_id",
+    )
+    .fetch_all(&st.db)
+    .await?;
+    let v: TrafficMap =
+        Arc::new(rows.into_iter().map(|(id, tu, td, mu, md)| (id, Traffic { today_up: tu, today_down: td, month_up: mu, month_down: md })).collect());
+    *slot = Some(((rolled, t0 + std::time::Duration::from_secs_f64(left)), v.clone()));
+    Ok(v)
+}
+
+pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Result<Vec<MachineView>> {
+    let db = &st.db;
     let lc = match scope {
         Scope::Live => "m.lifecycle <> 'retired'",
         Scope::Retired => "m.lifecycle = 'retired'",
@@ -330,6 +375,7 @@ pub async fn load_with(db: &PgPool, scope: Scope, only: Option<Uuid>, with_traff
         relay_id: Uuid,
         relay_label: String,
         node_id: Uuid,
+        node_label: Option<String>,
         node_team: Option<String>,
         node_number: Option<i32>,
         port: i32,
@@ -356,23 +402,19 @@ pub async fn load_with(db: &PgPool, scope: Scope, only: Option<Uuid>, with_traff
         mem_min: Option<f32>,
         disk_min: Option<f32>,
     }
-    // 流量：小时汇总（今天、本月按北京时间）。(entry_id, 今天上, 今天下, 本月上, 本月下)
-    const TRAFFIC_COLS: &str = "coalesce(sum(up_bytes) filter (where hour >= date_trunc('day', now() at time zone 'Asia/Shanghai') at time zone 'Asia/Shanghai'), 0)::bigint,
-           coalesce(sum(down_bytes) filter (where hour >= date_trunc('day', now() at time zone 'Asia/Shanghai') at time zone 'Asia/Shanghai'), 0)::bigint,
-           coalesce(sum(up_bytes), 0)::bigint, coalesce(sum(down_bytes), 0)::bigint";
-    const MONTH: &str = "hour >= date_trunc('month', now() at time zone 'Asia/Shanghai') at time zone 'Asia/Shanghai'";
-
-    // 下面这些查询互不依赖（探测、流量要等入口列表），并发跑
+    // 下面这些查询互不依赖（探测要等入口列表），并发跑
+    // 每台机器 15 分钟内最近两条样本：逐台走 (machine_id, ts desc) 索引取两条
     let hs_q = sqlx::query_as::<_, H>(
-        "select * from (select machine_id, row_number() over (partition by machine_id order by ts desc) rn, ts, cpu_pct, load1,
-                mem_used, mem_total, disk_used, disk_total, net_rx_bytes, net_tx_bytes, tcp_conns
-         from host_metric where machine_id = any($1) and ts > now() - interval '15 minutes') x where rn <= 2",
+        "select x.* from unnest($1::uuid[]) mid cross join lateral (
+            select machine_id, row_number() over (order by ts desc) rn, ts, cpu_pct, load1,
+                   mem_used, mem_total, disk_used, disk_total, net_rx_bytes, net_tx_bytes, tcp_conns
+            from host_metric where machine_id = mid and ts > now() - interval '15 minutes' order by ts desc limit 2) x",
     )
     .bind(&ids)
     .fetch_all(db);
     let entries_q = async {
         let es: Vec<E> = sqlx::query_as(
-            "select e.id, e.relay_id, rm.label relay_label, e.node_id, t.name node_team, nm.number node_number, e.port,
+            "select e.id, e.relay_id, rm.label relay_label, e.node_id, nm.label node_label, t.name node_team, nm.number node_number, e.port,
                     e.lifecycle::text lifecycle, r.applied_generation >= e.changed_gen applied, e.apply_error,
                     coalesce((ra.info->'xray'->>'running')::bool = false and ra.last_report_at > now() - make_interval(secs => $2), false) relay_xray_down
              from entry e join machine rm on rm.id = e.relay_id join relay r on r.machine_id = e.relay_id
@@ -386,39 +428,28 @@ pub async fn load_with(db: &PgPool, scope: Scope, only: Option<Uuid>, with_traff
         .fetch_all(db)
         .await?;
         let eids: Vec<Uuid> = es.iter().map(|e| e.id).collect();
-        let probes_q = sqlx::query_as::<_, P>(
+        let ps = sqlx::query_as::<_, P>(
             "select distinct on (entry_id, kind) entry_id, kind, ok, latency_ms, detail, ts from probe_result
              where entry_id = any($1) and kind in ('tcp', 'egress') and ts > now() - interval '15 minutes' order by entry_id, kind, ts desc",
         )
         .bind(&eids)
-        .fetch_all(db);
-        let traffic_q = async {
-            if !with_traffic {
-                return Ok(vec![]);
-            }
-            sqlx::query_as::<_, (Uuid, i64, i64, i64, i64)>(&format!(
-                "select entry_id, {TRAFFIC_COLS} from entry_traffic_hourly where entry_id = any($1) and {MONTH} group by entry_id"
-            ))
-            .bind(&eids)
-            .fetch_all(db)
-            .await
-        };
-        let (ps, tr) = tokio::try_join!(probes_q, traffic_q)?;
-        Ok::<_, sqlx::Error>((es, ps, tr))
+        .fetch_all(db)
+        .await?;
+        Ok::<_, sqlx::Error>((es, ps))
     };
-    // 已移除入口本月的流量（换线路机后旧入口 removed，但本月它跑过的流量仍属于这个节点 / 线路机）
-    let removed_q = async {
-        if !with_traffic {
-            return Ok(vec![]);
-        }
-        sqlx::query_as::<_, (Uuid, Uuid, i64, i64, i64, i64)>(&format!(
-            "select e.node_id, e.relay_id, {TRAFFIC_COLS}
-             from entry_traffic_hourly h join entry e on e.id = h.entry_id
-             where e.lifecycle = 'removed' and (e.node_id = any($1) or e.relay_id = any($1)) and h.{MONTH} group by e.node_id, e.relay_id"
-        ))
+    // 已移除入口本月的流量（换线路机后旧入口 removed，但本月它跑过的流量仍属于这个节点 / 线路机）：
+    // 只查本月有流量的那些入口是否已移除、属于谁
+    let traffic_q = async {
+        let tr = traffic(st).await?;
+        let with_traffic: Vec<Uuid> = tr.keys().copied().collect();
+        let removed: Vec<(Uuid, Uuid, Uuid)> = sqlx::query_as(
+            "select id, node_id, relay_id from entry where lifecycle = 'removed' and id = any($1) and (node_id = any($2) or relay_id = any($2))",
+        )
+        .bind(&with_traffic)
         .bind(&ids)
         .fetch_all(db)
-        .await
+        .await?;
+        Ok::<_, sqlx::Error>((tr, removed))
     };
     let jobs_q = sqlx::query_as::<_, (Uuid, Uuid, String, String)>(
         "select target_id, id, kind, state::text from job
@@ -443,8 +474,8 @@ pub async fn load_with(db: &PgPool, scope: Scope, only: Option<Uuid>, with_traff
     )
     .bind(&ids)
     .fetch_all(db);
-    let (hs, (es, ps, tr), removed, jobs, inc, maint, su, policies) =
-        tokio::try_join!(hs_q, entries_q, removed_q, jobs_q, inc_q, maint_q, su_q, crate::policy::load_current(db))?;
+    let (hs, (es, ps), (traffic, removed), jobs, inc, maint, su, policies) =
+        tokio::try_join!(hs_q, entries_q, traffic_q, jobs_q, inc_q, maint_q, su_q, crate::policy::load_current(db))?;
 
     let mut host: HashMap<Uuid, HostNow> = HashMap::new();
     let mut prev: HashMap<Uuid, (OffsetDateTime, Option<i64>, Option<i64>)> = HashMap::new();
@@ -487,19 +518,16 @@ pub async fn load_with(db: &PgPool, scope: Scope, only: Option<Uuid>, with_traff
         probes.insert((p.entry_id, p.kind), Probe { ok: p.ok, latency_ms: p.latency_ms, detail: p.detail, ts: p.ts });
     }
 
-    let traffic: HashMap<Uuid, Traffic> = tr
-        .into_iter()
-        .map(|(id, tu, td, mu, md)| (id, Traffic { today_up: tu, today_down: td, month_up: mu, month_down: md }))
-        .collect();
     // 每条已移除入口的流量同时记到它的节点和线路机上（两端是不同的机器，不会在同一台上重复计）
     let mut removed_by: HashMap<Uuid, Traffic> = HashMap::new();
-    for (node, relay, tu, td, mu, md) in removed {
+    for (id, node, relay) in removed {
+        let x = &traffic[&id];
         for m in [node, relay] {
             let t = removed_by.entry(m).or_default();
-            t.today_up += tu;
-            t.today_down += td;
-            t.month_up += mu;
-            t.month_down += md;
+            t.today_up += x.today_up;
+            t.today_down += x.today_down;
+            t.month_up += x.month_up;
+            t.month_down += x.month_down;
         }
     }
 
@@ -510,7 +538,7 @@ pub async fn load_with(db: &PgPool, scope: Scope, only: Option<Uuid>, with_traff
             relay: Ref { id: e.relay_id, name: e.relay_label.clone() },
             node: Ref {
                 id: e.node_id,
-                name: display_name("vps", None, e.node_team.as_deref(), e.node_number),
+                name: display_name("vps", e.node_label.as_deref(), e.node_team.as_deref(), e.node_number),
             },
             port: e.port,
             lifecycle: e.lifecycle,
@@ -612,4 +640,64 @@ pub async fn load_with(db: &PgPool, scope: Scope, only: Option<Uuid>, with_traff
             v
         })
         .collect())
+}
+
+/// 总览 KPI，只统计 active 的机器（实时指标推送也用它）
+pub fn overview_of(ms: &[MachineView]) -> Value {
+    let mut nodes = json!({"total": 0, "ok": 0, "degraded": 0, "down": 0, "unknown": 0, "maintenance": 0});
+    let mut relays = nodes.clone();
+    let (mut provisioning, mut retiring, mut due_7d, mut up, mut down, mut rx, mut tx) = (0, 0, 0, 0i64, 0i64, 0f64, 0f64);
+    // 月费按币种分别汇总（不做汇率折算）
+    let mut cost: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
+    for m in ms {
+        match m.lifecycle.as_str() {
+            "provisioning" | "draft" => provisioning += 1,
+            "retiring" => retiring += 1,
+            _ => {}
+        }
+        if m.lifecycle != "active" {
+            continue;
+        }
+        let bucket = if m.kind == "relay" { &mut relays } else { &mut nodes };
+        let key = match m.health.status {
+            Status::Ok => "ok",
+            Status::Degraded => "degraded",
+            Status::Down => "down",
+            Status::Maintenance => "maintenance",
+            _ => "unknown",
+        };
+        bucket["total"] = json!(bucket["total"].as_i64().unwrap_or(0) + 1);
+        bucket[key] = json!(bucket[key].as_i64().unwrap_or(0) + 1);
+        if let Some(s) = &m.subscription {
+            if s.due_days <= 7 {
+                due_7d += 1;
+            }
+            // 折成月费
+            let months = match s.cycle.as_str() {
+                "quarterly" => 3,
+                "semiannual" => 6,
+                "yearly" => 12,
+                _ => 1,
+            };
+            *cost.entry(s.currency.clone()).or_default() += s.price_cents as i64 / months;
+        }
+        if m.kind != "relay" {
+            for e in &m.entries {
+                up += e.traffic.month_up;
+                down += e.traffic.month_down;
+            }
+            up += m.removed_traffic.month_up;
+            down += m.removed_traffic.month_down;
+        }
+        // 实时速率只算数据没过期的：故障或 agent 离线的机器，最后一份上报的速率不算（同前端 liveRate）
+        let stale = m.health.status == Status::Down || m.agent.as_ref().is_some_and(|a| !a.online);
+        if let Some(h) = m.host.as_ref().filter(|_| !stale) {
+            rx += h.net_rx_bps.unwrap_or(0.0);
+            tx += h.net_tx_bps.unwrap_or(0.0);
+        }
+    }
+    json!({
+        "nodes": nodes, "relays": relays, "provisioning": provisioning, "retiring": retiring, "due_7d": due_7d,
+        "monthly_cost": cost.into_iter().map(|(c, v)| json!({"currency": c, "cents": v})).collect::<Vec<_>>(), "traffic_month": {"up": up, "down": down}, "net_rx_bps": rx, "net_tx_bps": tx,
+    })
 }

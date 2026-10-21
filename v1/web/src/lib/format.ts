@@ -53,11 +53,14 @@ export function money(cents: number | null | undefined, currency = 'CNY'): strin
 export const CYCLE: Record<string, string> = { monthly: '月', quarterly: '季', semiannual: '半年', yearly: '年', once: '一次性' };
 export const cycleLabel = (c: string) => CYCLE[c] ?? c;
 
-/** 距今天数文字：到期 N 天 / 已过期 N 天 */
-export function dueFmt(days: number | null | undefined): { text: Fmt; tone: '' | 'warn' | 'bad' } {
-  if (days == null) return { text: NA, tone: '' };
-  if (days < 0) return { text: { v: String(-days), u: '天前过期' }, tone: 'bad' };
-  return { text: { v: String(days), u: '天' }, tone: days <= 7 ? 'warn' : '' };
+/** 到期：N 天后 / 今天 / 已过期 N 天（7 天内为 warn，过期为 bad）。数字在 f 里，文字在 pre / post（不按数字排版）；
+ *  past：已过期（后面不再接“到期”二字） */
+export interface Due { pre: string; f: Fmt | null; post: string; past: boolean; tone: '' | 'warn' | 'bad' }
+export function dueFmt(days: number | null | undefined): Due {
+  if (days == null) return { pre: '', f: NA, post: '', past: false, tone: '' };
+  if (days < 0) return { pre: '已过期 ', f: { v: String(-days), u: '天' }, post: '', past: true, tone: 'bad' };
+  if (days === 0) return { pre: '今天', f: null, post: '', past: false, tone: 'warn' };
+  return { pre: '', f: { v: String(days), u: '天' }, post: '后', past: false, tone: days <= 7 ? 'warn' : '' };
 }
 /** 时长：已上架/已运行 */
 export function since(iso: string | null | undefined, now = Date.now()): Fmt {

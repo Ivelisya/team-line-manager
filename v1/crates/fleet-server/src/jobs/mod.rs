@@ -511,12 +511,9 @@ pub async fn prune(db: &PgPool) -> anyhow::Result<Pruned> {
         "delete from job where (state in ('succeeded', 'cancelled') and finished_at < now() - interval '90 days')
             or (state = 'failed' and finished_at < now() - interval '180 days')",
     )
-        .execute(db)
-        .await?
-        .rows_affected();
-    if passwords_cleared + jobs_deleted > 0 {
-        tracing::info!(passwords_cleared, jobs_deleted, "作业清理");
-    }
+    .execute(db)
+    .await?
+    .rows_affected();
     Ok(Pruned { passwords_cleared, jobs_deleted })
 }
 

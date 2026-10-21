@@ -5,8 +5,6 @@ import { cn } from '@/lib/utils';
 import { IconButton } from './button';
 
 export const Dialog = DialogPrimitive.Root;
-export const DialogTrigger = DialogPrimitive.Trigger;
-export const DialogClose = DialogPrimitive.Close;
 
 /** 对话框：size sm 440 / md 660 / lg 760（原版对话框三档） */
 export const DialogContent = React.forwardRef<React.ElementRef<typeof DialogPrimitive.Content>, React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & { size?: 'sm' | 'md' | 'lg' }>(

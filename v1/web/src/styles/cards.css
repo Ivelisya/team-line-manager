@@ -1,6 +1,3 @@
-/* 首页分区、KPI、集群状态、格条 / 圆环 / 迹线、日期选择等新件在 home.css */
-@import './home.css';
-
 /* 节点卡片 NodeCard：一套外壳、三种密度（大 / 小 / 紧凑）、三种机器（主机 / 家宽代理 / 线路机）。
    对齐方案：.cards 是网格容器，每张卡 grid-row: span N + grid-template-rows: subgrid，
    卡片的每个“槽位”是一行，同一行里的所有卡片共用行高——不论机器种类，槽位永远相同（无主机指标显示占位，不改变布局）。
@@ -73,7 +70,6 @@
 .nc-meta2 > div { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); min-width: 0; }
 .nc-meta2 span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nc-due { flex: none; font-weight: var(--fw-medium); }
-.nc-due .num { font-weight: var(--fw-semibold); color: var(--due-c, var(--fg)); }
 
 /* 3 字段 2×2 */
 .nc-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-8) var(--sp-16); margin-block: var(--card-seg) 0; padding-top: var(--card-seg); border-top: 1px solid var(--line); }
@@ -115,6 +111,7 @@
 .flow-foot-label { display: inline-flex; align-items: center; gap: var(--sp-6); }
 .flow-foot-label .lucide { width: 13px; height: 13px; color: var(--dir-c); }
 .flow-foot .num { color: var(--fg); font-weight: var(--fw-medium); }
+.flow-biz { grid-column: 1 / -1; --dir-c: var(--fg-3); } /* 本月业务流量（用户视角的下载 / 上传）：横跨两列，和网卡上行 / 下行分开 */
 .nc-seg-title { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); margin-bottom: var(--sp-6); font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); white-space: nowrap; }
 
 /* 6 剩余流量 */
@@ -134,11 +131,7 @@
 .nc-run-label .lucide { width: 12px; height: 12px; }
 .nc-run-val { display: inline-flex; align-items: baseline; gap: var(--sp-4); font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-num); font-variant-numeric: var(--num-variant); letter-spacing: -0.02em; color: var(--fg); white-space: nowrap; min-width: 0; overflow: hidden; }
 .nc-run-val .unit { font-size: 11px; font-weight: var(--fw-medium); letter-spacing: 0; color: var(--fg-3); }
-[data-c="up"] { --due-c: var(--m-cpu); }
-[data-c="ok"] { --due-c: var(--ok-text); }
-[data-c="warn"] { --due-c: var(--warn-text); }
-[data-c="bad"] { --due-c: var(--bad-text); }
-.nc-run-val[data-c] { color: var(--due-c); }
+.nc-run-val[data-c="up"] { color: var(--m-cpu); }
 
 /* 9 标签行 */
 .nc-tags { display: flex; align-items: center; gap: var(--inline-gap); min-height: 24px; margin-top: var(--card-seg); margin-bottom: var(--card-pad); min-width: 0; }
@@ -204,11 +197,10 @@
 .tmeter, .tquota { display: flex; align-items: center; gap: var(--sp-8); min-width: 0; }
 .tmeter .cells, .tquota .cells { flex: 1 1 auto; height: 6px; gap: 2px; }
 .tmeter > .num { flex: none; width: 34px; text-align: right; font-size: var(--fs-label); }
+.tmeter[data-tone="warn"] > .num { color: var(--warn-text); }
+.tmeter[data-tone="bad"] > .num { color: var(--bad-text); }
 .tquota > .num, .tquota > .t-sub { flex: none; min-width: 52px; margin-left: auto; text-align: right; font-size: var(--fs-label); }
 .trate { font-weight: var(--fw-semibold); color: var(--spd, var(--fg-3)); }
-.tdue { font-weight: var(--fw-semibold); }
-.tdue.is-warn { color: var(--warn-text); }
-.tdue.is-bad { color: var(--bad-text); }
 .dt tr.is-quiet td { color: var(--fg-2); }
 .dt tr.is-quiet .cells { opacity: 0.45; }
 .rc-rate small { margin-right: 2px; font: var(--fw-semibold) 11px / 1 var(--font-sans); letter-spacing: 0; color: var(--fg-2); }

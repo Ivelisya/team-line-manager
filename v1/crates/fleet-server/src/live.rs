@@ -85,7 +85,7 @@ pub async fn publish(st: &AppState, p: &mut Published) -> sqlx::Result<bool> {
     let ids: HashSet<Uuid> = ms.iter().map(|m| m.id).collect();
     p.machines.retain(|id, _| ids.contains(id));
     p.entries.retain(|id, _| seen_e.contains(id));
-    let ov = crate::api::misc::overview_of(&ms);
+    let ov = views::overview_of(&ms);
     let ov_changed = p.overview.as_ref() != Some(&ov);
     p.overview = Some(ov);
     if ov_changed {

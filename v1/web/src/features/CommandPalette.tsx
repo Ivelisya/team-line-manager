@@ -45,18 +45,33 @@ export function matchTier(value: string, q: string): number {
   return subseq(name, q) ? 2 : 0;
 }
 
-export default function CommandPalette({ theme }: { theme: { pref: ThemePref; setPref: (p: ThemePref) => void } }) {
+type Theme = { pref: ThemePref; setPref: (p: ThemePref) => void };
+const close = () => setOverlay(null);
+
+export default function CommandPalette({ theme }: { theme: Theme }) {
   const open = useOverlay() === 'palette';
+  const upgradeAll = useUpgradeAllAgents();
+  const [askUpgrade, setAskUpgrade] = React.useState(false);
+  return (
+    <>
+      {/* 面板内容只在打开时挂载：关着时不订阅机器列表，实时推送不会让它重排 */}
+      <CommandDialog open={open} onOpenChange={(o) => setOverlay(o ? 'palette' : null)} title="命令面板">
+        <PaletteBody theme={theme} askUpgrade={() => setAskUpgrade(true)} />
+      </CommandDialog>
+
+      <ConfirmDialog open={askUpgrade} onOpenChange={setAskUpgrade} title="升级全部 agent？" confirmLabel="全部升级"
+        description="会给所有在用的线路机和 VPS 节点各建一个升级作业（已有进行中作业的会跳过），升级时 agent 会重启，不影响线路上的连接。"
+        onConfirm={async () => { const r = await upgradeAll.mutateAsync(); toast.ok(`已提交 ${r.jobs.length} 个升级作业`); }} />
+    </>
+  );
+}
+
+function PaletteBody({ theme, askUpgrade }: { theme: Theme; askUpgrade: () => void }) {
   const nav = useNavigate();
   const { open: openDrawer } = useDrawer();
-  const machines = useMachines('live', open).data ?? []; // 面板关着（组件仍挂载）时不轮询、不随失效重取
-  const upgradeAll = useUpgradeAllAgents();
+  const machines = useMachines('live').data ?? [];
   const [search, setSearch] = React.useState('');
   const [mode, setMode] = React.useState<'root' | 'copy-ip' | 'evacuate'>('root');
-  const [askUpgrade, setAskUpgrade] = React.useState(false);
-
-  React.useEffect(() => { if (!open) { setSearch(''); setMode('root'); } }, [open]);
-  const close = () => setOverlay(null);
   const go = (to: string) => { close(); nav(to); };
   const dark = document.documentElement.dataset.theme === 'dark';
 
@@ -80,51 +95,43 @@ export default function CommandPalette({ theme }: { theme: { pref: ThemePref; se
   ));
 
   return (
-    <>
-      <CommandDialog open={open} onOpenChange={(o) => setOverlay(o ? 'palette' : null)} title="命令面板">
-        <Command label="命令面板" loop filter={filter}
-          onKeyDown={(e) => { if (e.key === 'Backspace' && !search && mode !== 'root') { e.preventDefault(); setMode('root'); } }}>
-          <CommandInput autoFocus value={search} onValueChange={setSearch} placeholder={mode === 'copy-ip' ? '选择要复制 IP 的机器…' : mode === 'evacuate' ? '选择要搬空的线路机…' : '搜索机器、页面或动作…'} />
-          <CommandList>
-            <CommandEmpty>没有匹配的结果{search ? `：${search}` : ''}</CommandEmpty>
-            {mode === 'root' && (
-              <>
-                <CommandGroup heading="跳转页面">
-                  {PAGES.map((p) => (
-                    <CommandItem key={p.to} value={`${p.label}\t${p.kw}`} onSelect={() => go(p.to)}><p.icon /><span className="cmd-main">{p.label}</span></CommandItem>
-                  ))}
-                </CommandGroup>
-                <CommandGroup heading="动作">
-                  <CommandItem value="上架节点 provision 添加机器" onSelect={() => go('/provision')}><CloudUpload /><span className="cmd-main">上架节点</span></CommandItem>
-                  <CommandItem value="新建静默 silence 维护窗口" onSelect={() => go('/incidents?silence=new')}><BellOff /><span className="cmd-main">新建静默</span></CommandItem>
-                  <CommandItem value="复制某机器 IP copy ip" onSelect={() => { setSearch(''); setMode('copy-ip'); }}><Clipboard /><span className="cmd-main">复制某台机器的 IP…</span></CommandItem>
-                  <CommandItem value="搬空线路机 evacuate 换线路机 退役 下线" onSelect={() => { setSearch(''); setMode('evacuate'); }}><PackageOpen /><span className="cmd-main">搬空线路机…</span></CommandItem>
-                  <CommandItem value="升级全部 agent upgrade" onSelect={() => { close(); setAskUpgrade(true); }}><ArrowUpCircle /><span className="cmd-main">升级全部 agent</span></CommandItem>
-                  <CommandItem value="切换主题 深色 浅色 theme dark light" onSelect={() => { close(); theme.setPref(dark ? 'light' : 'dark'); }}>
-                    {dark ? <Sun /> : <Moon />}<span className="cmd-main">切换到{dark ? '浅色' : '深色'}主题</span>
-                  </CommandItem>
-                </CommandGroup>
-              </>
-            )}
-            {machineItems.length > 0 && (
-              <CommandGroup heading={mode === 'copy-ip' ? '复制 IP' : mode === 'evacuate' ? '线路机' : '机器'}>
-                {machineItems}
-                {!search.trim() && mode !== 'evacuate' && machines.length > LIMIT && <div className="cmd-more">还有 {machines.length - LIMIT} 台，输入名称、IP 或团队来搜索</div>}
-              </CommandGroup>
-            )}
-          </CommandList>
-          <div className="cmd-foot">
-            <span><kbd className="kbd">↑</kbd><kbd className="kbd">↓</kbd>选择</span>
-            <span><kbd className="kbd">↵</kbd>{mode === 'copy-ip' ? '复制' : mode === 'evacuate' ? '搬空' : '打开'}</span>
-            {mode !== 'root' && <span><kbd className="kbd">⌫</kbd>返回</span>}
-            <span style={{ marginLeft: 'auto' }}><kbd className="kbd">esc</kbd>关闭</span>
-          </div>
-        </Command>
-      </CommandDialog>
-
-      <ConfirmDialog open={askUpgrade} onOpenChange={setAskUpgrade} title="升级全部 agent？" confirmLabel="全部升级"
-        description="会给所有在用的线路机和 VPS 节点各建一个升级作业（已有进行中作业的会跳过），升级时 agent 会重启，不影响线路上的连接。"
-        onConfirm={async () => { const r = await upgradeAll.mutateAsync(); toast.ok(`已提交 ${r.jobs.length} 个升级作业`); }} />
-    </>
+    <Command label="命令面板" loop filter={filter}
+      onKeyDown={(e) => { if (e.key === 'Backspace' && !search && mode !== 'root') { e.preventDefault(); setMode('root'); } }}>
+      <CommandInput autoFocus value={search} onValueChange={setSearch} placeholder={mode === 'copy-ip' ? '选择要复制 IP 的机器…' : mode === 'evacuate' ? '选择要搬空的线路机…' : '搜索机器、页面或动作…'} />
+      <CommandList>
+        <CommandEmpty>没有匹配的结果{search ? `：${search}` : ''}</CommandEmpty>
+        {mode === 'root' && (
+          <>
+            <CommandGroup heading="跳转页面">
+              {PAGES.map((p) => (
+                <CommandItem key={p.to} value={`${p.label}\t${p.kw}`} onSelect={() => go(p.to)}><p.icon /><span className="cmd-main">{p.label}</span></CommandItem>
+              ))}
+            </CommandGroup>
+            <CommandGroup heading="动作">
+              <CommandItem value="上架节点 provision 添加机器" onSelect={() => go('/provision')}><CloudUpload /><span className="cmd-main">上架节点</span></CommandItem>
+              <CommandItem value="新建静默 silence 维护窗口" onSelect={() => go('/incidents?silence=new')}><BellOff /><span className="cmd-main">新建静默</span></CommandItem>
+              <CommandItem value="复制某机器 IP copy ip" onSelect={() => { setSearch(''); setMode('copy-ip'); }}><Clipboard /><span className="cmd-main">复制某台机器的 IP…</span></CommandItem>
+              <CommandItem value="搬空线路机 evacuate 换线路机 退役 下线" onSelect={() => { setSearch(''); setMode('evacuate'); }}><PackageOpen /><span className="cmd-main">搬空线路机…</span></CommandItem>
+              <CommandItem value="升级全部 agent upgrade" onSelect={() => { close(); askUpgrade(); }}><ArrowUpCircle /><span className="cmd-main">升级全部 agent</span></CommandItem>
+              <CommandItem value="切换主题 深色 浅色 theme dark light" onSelect={() => { close(); theme.setPref(dark ? 'light' : 'dark'); }}>
+                {dark ? <Sun /> : <Moon />}<span className="cmd-main">切换到{dark ? '浅色' : '深色'}主题</span>
+              </CommandItem>
+            </CommandGroup>
+          </>
+        )}
+        {machineItems.length > 0 && (
+          <CommandGroup heading={mode === 'copy-ip' ? '复制 IP' : mode === 'evacuate' ? '线路机' : '机器'}>
+            {machineItems}
+            {!search.trim() && mode !== 'evacuate' && machines.length > LIMIT && <div className="cmd-more">还有 {machines.length - LIMIT} 台，输入名称、IP 或团队来搜索</div>}
+          </CommandGroup>
+        )}
+      </CommandList>
+      <div className="cmd-foot">
+        <span><kbd className="kbd">↑</kbd><kbd className="kbd">↓</kbd>选择</span>
+        <span><kbd className="kbd">↵</kbd>{mode === 'copy-ip' ? '复制' : mode === 'evacuate' ? '搬空' : '打开'}</span>
+        {mode !== 'root' && <span><kbd className="kbd">⌫</kbd>返回</span>}
+        <span style={{ marginLeft: 'auto' }}><kbd className="kbd">esc</kbd>关闭</span>
+      </div>
+    </Command>
   );
 }

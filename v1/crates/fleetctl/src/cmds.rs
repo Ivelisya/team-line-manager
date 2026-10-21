@@ -578,7 +578,8 @@ fn event_summary(ev: &Value) -> String {
     o.iter().filter(|(k, _)| *k != "type").map(|(k, v)| format!("{k}={}", v.as_str().map(String::from).unwrap_or_else(|| v.to_string()))).collect::<Vec<_>>().join(" ")
 }
 
-/// 订阅实时流（WebSocket /stream），逐条打印消息（--json 为每行一个 JSON）。断线自动重连。
+/// 订阅实时流（WebSocket /stream），逐条打印消息（--json 为每行一个 JSON）。断线自动重连；
+/// 会话/密钥失效（关闭码 4401，或重连时 401/403）直接报错退出，不再重连。
 pub fn watch(ctx: &Ctx, count: Option<usize>, metrics: bool) -> anyhow::Result<u8> {
     let mut seen = 0usize;
     let mut first = true;
@@ -591,6 +592,10 @@ pub fn watch(ctx: &Ctx, count: Option<usize>, metrics: bool) -> anyhow::Result<u
                         Ok(tungstenite::Message::Text(t)) => t,
                         Ok(tungstenite::Message::Close(f)) => {
                             if let Some(f) = f {
+                                // 4401 = 中控复核发现会话/密钥已失效（fleet-server CLOSE_REVOKED）
+                                if u16::from(f.code) == 4401 {
+                                    bail!("中控关闭了实时流：{}（4401），请重新登录或换有效的 API 密钥", f.reason);
+                                }
                                 eprintln!("中控关闭了实时流：{}（{}）", f.reason, u16::from(f.code));
                             }
                             break;
@@ -614,7 +619,7 @@ pub fn watch(ctx: &Ctx, count: Option<usize>, metrics: bool) -> anyhow::Result<u
                 }
                 eprintln!("实时流断开，3 秒后重连…");
             }
-            Err(e) if first => return Err(e),
+            Err(e) if first || e.downcast_ref::<crate::client::ApiError>().is_some_and(|a| matches!(a.status, 401 | 403)) => return Err(e),
             Err(e) => eprintln!("重连失败：{e}"),
         }
         std::thread::sleep(Duration::from_secs(3));

@@ -5,25 +5,14 @@ import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/h
 import type { MachineView } from '@/lib/types';
 import { useMachinePreview } from '@/lib/queries';
 import * as F from '@/lib/format';
-import { entryText } from '@/lib/derive';
+import { entryText, isQuiet, resourceMeters } from '@/lib/derive';
 import { KIND_LABEL } from '@/lib/sort';
-import { CopyButton, HealthPill, KindIcon, Num } from './primitives';
-
-function MiniBar({ label, pct }: { label: string; pct: number | null }) {
-  const p = pct == null ? 0 : Math.max(0, Math.min(100, pct));
-  return (
-    <div className="hc-bar" data-tone={p >= 90 ? 'bad' : p >= 75 ? 'warn' : undefined}>
-      <span className="hc-bar-l">{label}</span>
-      <span className="hc-bar-track"><span style={{ width: `${p}%` }} /></span>
-      <span className="hc-bar-v num">{pct == null ? '—' : `${Math.round(p)}%`}</span>
-    </div>
-  );
-}
+import { CopyButton, Due, HealthPill, KindIcon } from './primitives';
+import { MiniMeter } from './viz';
 
 function MiniCard({ m }: { m: MachineView }) {
-  const h = m.host;
-  const mem = h && h.mem_used != null && h.mem_total ? (h.mem_used / h.mem_total) * 100 : null;
-  const due = F.dueFmt(m.subscription?.due_days);
+  const r = resourceMeters(m, []); // 只用 CPU / 内存，核数用不到
+  const quiet = isQuiet(m);
   const team = m.team ? `${m.team.name}${m.number != null ? ` / ${F.pad2(m.number)}` : ''}` : KIND_LABEL[m.kind];
   return (
     <div className="hc">
@@ -36,10 +25,13 @@ function MiniCard({ m }: { m: MachineView }) {
         <div><dt>IP</dt><dd><span className="hc-ip">{m.ip}</span><CopyButton text={m.ip} label=" IP" size={13} /></dd></div>
         <div><dt>团队 / 编号</dt><dd>{team}</dd></div>
         <div><dt>{m.kind === 'relay' ? '入口' : '线路机:端口'}</dt><dd className="ellipsis">{entryText(m)}</dd></div>
-        <div><dt>到期</dt><dd>{m.subscription ? <span style={{ color: due.tone === 'bad' ? 'var(--bad-text)' : due.tone === 'warn' ? 'var(--warn-text)' : undefined }}><Num f={due.text} /> <span className="t-sub">· {m.subscription.due_date}</span></span> : <span className="t-muted">未设置</span>}</dd></div>
+        <div><dt>到期</dt><dd>{m.subscription ? <><Due days={m.subscription.due_days} /> <span className="t-sub">· {m.subscription.due_date}</span></> : <span className="t-muted">未设置</span>}</dd></div>
       </dl>
-      {h ? (
-        <div className="hc-bars"><MiniBar label="CPU" pct={h.cpu_pct} /><MiniBar label="内存" pct={mem} /></div>
+      {r ? (
+        <div className="hc-bars">
+          <div className="hc-bar"><span className="hc-bar-l">CPU</span><MiniMeter metric="cpu" pct={r.cpu.pct} empty={quiet} /></div>
+          <div className="hc-bar"><span className="hc-bar-l">内存</span><MiniMeter metric="mem" pct={r.mem.pct} empty={quiet} /></div>
+        </div>
       ) : (
         <div className="hint">{m.kind === 'proxy' ? '家宽代理没有主机指标' : '暂无主机指标'}</div>
       )}

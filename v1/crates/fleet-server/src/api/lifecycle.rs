@@ -188,7 +188,7 @@ pub async fn evacuate(a: Actor, State(st): State<AppState>, Path(relay): Path<Uu
             }
             Err(reason) => {
                 let name: Option<(String,)> = sqlx::query_as(
-                    "select case when m.kind = 'relay' then m.label else t.name || '-' || lpad(m.number::text, 2, '0') end
+                    "select display_name(m.kind::text, m.label, t.name, m.number)
                      from machine m left join team t on t.id = m.team_id where m.id = $1",
                 )
                 .bind(node)

@@ -33,7 +33,7 @@ pub struct JobOut {
 }
 
 const SELECT: &str = "select j.id, j.kind, j.target_id,
-    case when m.kind = 'relay' then m.label when t.name is not null then t.name || '-' || lpad(m.number::text, 2, '0') end target_name,
+    display_name(m.kind::text, m.label, t.name, m.number) target_name,
     j.state::text state, j.step, j.error, j.created_by, j.created_at, j.started_at, j.finished_at,
     (select count(*) from job_step s where s.job_id = j.id) step_count
   from job j left join machine m on m.id = j.target_id left join team t on t.id = m.team_id";

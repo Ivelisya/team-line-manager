@@ -1,14 +1,13 @@
 // 首页上半部分：大圆角浅灰分区（HomeSection）+「监控总览」——问候与一句话状态、8 张 KPI 卡、集群状态面板。
-// 集群状态：在线率大读数 + 格条、在线/离线/总计、状态胶囊；实时总带宽 + 上行 / 下行两张小折线（实时流喂的全站速率环形缓冲，见 lib/live）。
+// 集群状态：在线率大读数 + 格条、在线/离线/总计、状态胶囊；网卡速率（实时）+ 上行 / 下行两张小折线（全站速率环形缓冲：开场垫近 30 分钟历史，之后实时流喂，见 lib/live）。
 import * as React from 'react';
-import { Link } from 'react-router-dom';
 import { Activity, AlertTriangle, ArrowDown, ArrowUp, CalendarClock, CircleDollarSign, CloudUpload, Gauge, LayoutDashboard, Server, TrendingUp, Waypoints } from 'lucide-react';
 import type { Overview } from '@/lib/types';
 import * as F from '@/lib/format';
 import { useMe } from '@/lib/queries';
-import { FLEET, useLiveSeries } from '@/lib/live';
+import { useFleetSeries } from '@/lib/live';
 import { cn } from '@/lib/utils';
-import { CountUp, DotCount, Num } from '@/components/app/primitives';
+import { CountUp, DotCount, Num, Stat } from '@/components/app/primitives';
 import { AreaSpark, Cells } from '@/components/app/viz';
 
 /** 分区：浅灰大圆角容器，左上小胶囊标签（图标 + 文字）、标题、一行说明，右上放操作 */
@@ -24,19 +23,6 @@ export function HomeSection({ icon, label, title, sub, actions, children, classN
       {children}
     </section>
   );
-}
-
-type Tone = 'ok' | 'teal' | 'bad' | 'amber' | 'gold' | 'sky' | 'violet' | 'blue';
-/** KPI 卡：彩色图标 + 标签，大号读数 + 小单位，一行灰色说明 */
-function Stat({ icon, tone, label, value, unit, caption, to, loading }: { icon: React.ReactNode; tone: Tone; label: string; value: React.ReactNode; unit?: string; caption?: React.ReactNode; to?: string; loading?: boolean }) {
-  const inner = (
-    <>
-      <span className="stat-label"><span className="stat-ic" data-tone={tone}>{icon}</span>{label}</span>
-      <span className="stat-value">{loading ? <span className="skel" style={{ width: 64, height: 20 }} /> : <>{value}{unit && <small>{unit}</small>}</>}</span>
-      <span className="stat-cap">{loading ? '' : caption ?? ' '}</span>
-    </>
-  );
-  return to ? <Link className="stat" to={to}>{inner}</Link> : <div className="stat">{inner}</div>;
 }
 
 function statusLine(o: Overview | undefined, issues: number): string {
@@ -64,13 +50,13 @@ export function OverviewSection({ o, loading }: { o: Overview | undefined; loadi
           <Stat loading={loading} tone="teal" icon={<Waypoints />} label="线路机正常" value={<CountUp value={relays?.ok} />} unit={relays ? `/ ${relays.total}` : undefined}
             caption={relays && <><DotCount tone="warn" n={relays.degraded} label="降级" /><DotCount tone="bad" n={relays.down} label="故障" /></>} />
           <Stat loading={loading} tone="bad" icon={<AlertTriangle />} label="故障与降级" value={<CountUp value={o ? issues : undefined} />} unit="台" to="/incidents" caption={o ? (issues ? '点击查看告警' : '一切正常') : undefined} />
-          <Stat loading={loading} tone="amber" icon={<CalendarClock />} label="7 天内到期" value={<CountUp value={o?.due_7d} />} unit="台" to="/nodes" caption="需要续费的机器" />
-          <Stat loading={loading} tone="gold" icon={<CircleDollarSign />} label="每月费用" value={o ? F.money(cost0?.cents ?? 0, cost0?.currency ?? 'USD') : '—'}
+          <Stat loading={loading} tone="amber" icon={<CalendarClock />} label="7 天内到期" value={<CountUp value={o?.due_7d} />} unit="台" to="/nodes?sort=due" caption="需要续费的机器" />
+          <Stat loading={loading} tone="gold" icon={<CircleDollarSign />} label="每月费用" value={cost0 ? F.money(cost0.cents, cost0.currency) : '—'}
             caption={costMore.length ? `另有 ${costMore.map((c) => F.money(c.cents, c.currency)).join(' + ')}（不同币种分开计）` : '在用机器按月折算'} />
           <Stat loading={loading} tone="sky" icon={<TrendingUp />} label="本月业务流量" value={tr ? <CountUp value={trTotal} format={(n) => F.inScale(n, trScale)} /> : '—'} unit={tr ? trScale.u : undefined}
-            caption={tr && <><span>↓ <Num f={F.bytes(tr.down)} /></span><span>↑ <Num f={F.bytes(tr.up)} /></span></>} />
+            caption={tr && <><span>下载 <Num f={F.bytes(tr.down)} /></span><span>上传 <Num f={F.bytes(tr.up)} /></span></>} />
           <Stat loading={loading} tone="violet" icon={<Gauge />} label="网卡速率" value={o ? <CountUp value={rateTotal} format={(n) => F.inScale(n, rateSc)} /> : '—'} unit={o ? rateSc.u : undefined}
-            caption={o && <><span>↓ <Num f={F.rate(o.net_rx_bps)} /></span><span>↑ <Num f={F.rate(o.net_tx_bps)} /></span></>} />
+            caption={o && <><span>下行 <Num f={F.rate(o.net_rx_bps)} /></span><span>上行 <Num f={F.rate(o.net_tx_bps)} /></span></>} />
           <Stat loading={loading} tone="blue" icon={<CloudUpload />} label="上架中 · 退役中" value={o ? <CountUp value={o.provisioning + o.retiring} /> : '—'} unit="台" to="/jobs" caption={o && `上架 ${o.provisioning} · 退役 ${o.retiring}`} />
         </div>
         <ClusterPanel o={o} />
@@ -81,7 +67,7 @@ export function OverviewSection({ o, loading }: { o: Overview | undefined; loadi
 
 const ONLINE_N = 24;
 function ClusterPanel({ o }: { o: Overview | undefined }) {
-  const trace = useLiveSeries(FLEET);
+  const trace = useFleetSeries();
   const sum = (k: keyof Overview['nodes']) => (o ? o.nodes[k] + o.relays[k] : 0);
   const total = sum('total'); const down = sum('down'); const unknown = sum('unknown'); const degraded = sum('degraded');
   const offline = down + unknown; const online = total - offline;
@@ -100,28 +86,28 @@ function ClusterPanel({ o }: { o: Overview | undefined }) {
   return (
     <section className="cluster" aria-label="集群状态">
       <header className="cluster-head">
-        <div><h2 className="cluster-title"><Activity />集群状态</h2><p className="cluster-sub">机器在线率与实时网络吞吐</p></div>
+        <div><h2 className="cluster-title"><Activity />集群状态</h2><p className="cluster-sub">机器在线率与网卡速率</p></div>
         {o && <span className="cpill" data-tone={healthy ? 'ok' : down ? 'bad' : 'warn'}><i />{healthy ? '状态健康' : '有异常'}</span>}
       </header>
       <div className="cluster-box">
         <div className="cluster-row">
           <span className="cluster-big"><span className="num">{o ? <><CountUp value={rate} format={(n) => n.toFixed(rate % 1 ? 1 : 0)} />%</> : '—'}</span><small>在线率</small></span>
-          <span className="cluster-kv"><small>离线机器</small><b className="num" data-bad={offline ? '' : undefined}>{o ? offline : '—'} 台</b></span>
+          <span className="cluster-kv"><small>离线机器</small><b className="num" data-bad={offline ? '' : undefined}>{o ? `${offline} 台` : '—'}</b></span>
         </div>
         <Cells pct={o ? 100 : null} n={ONLINE_N} colors={colors} className="cells-lg" />
-        <div className="cluster-foot"><span>在线 <b className="num">{o ? online : '—'}</b> 台{degraded > 0 && <> · 降级 <b className="num">{degraded}</b></>}</span><span>总计 <b className="num">{o ? total : '—'}</b> 台</span></div>
+        <div className="cluster-foot"><span>在线 <b className="num">{o ? online : '—'}</b>{o && ' 台'}{degraded > 0 && <> · 降级 <b className="num">{degraded}</b></>}</span><span>总计 <b className="num">{o ? total : '—'}</b>{o && ' 台'}</span></div>
       </div>
       <div className="cluster-box">
         <div className="cluster-row">
-          <span className="cluster-big"><span className="num">{o ? <CountUp value={now} format={(n) => F.inScale(n, sc)} /> : '—'}</span><small>{o ? sc.u : ''} 实时总带宽</small></span>
+          <span className="cluster-big"><span className="num">{o ? <CountUp value={now} format={(n) => F.inScale(n, sc)} /> : '—'}</span><small>{o ? sc.u : ''} 网卡速率（实时）</small></span>
         </div>
         <div className="cluster-charts">
           <div className="cchart" data-dir="up">
-            <div className="cchart-head"><span><ArrowUp />上行网络</span><b className="num">↑ <Num f={F.rate(o?.net_tx_bps)} /></b></div>
+            <div className="cchart-head"><span><ArrowUp />上行</span><b className="num">↑ <Num f={F.rate(o?.net_tx_bps)} /></b></div>
             <AreaSpark points={trace} pick={(p) => p.tx} tone="up" />
           </div>
           <div className="cchart" data-dir="down">
-            <div className="cchart-head"><span><ArrowDown />下行网络</span><b className="num">↓ <Num f={F.rate(o?.net_rx_bps)} /></b></div>
+            <div className="cchart-head"><span><ArrowDown />下行</span><b className="num">↓ <Num f={F.rate(o?.net_rx_bps)} /></b></div>
             <AreaSpark points={trace} pick={(p) => p.rx} tone="down" />
           </div>
         </div>

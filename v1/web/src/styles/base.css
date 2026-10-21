@@ -12,7 +12,6 @@ body {
   font-synthesis: none;
   text-autospace: no-autospace; /* “团队1-01”不要在中文与数字间自动加空隙 */
 }
-html.is-locked { overflow: hidden; }
 :focus { outline: none; }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 /* 对话框 / 抽屉 / 弹层容器本身拿到焦点（键盘打开时 Radix 先聚焦容器）不画焦点环：环只给里面的控件 */

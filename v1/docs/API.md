@@ -132,6 +132,8 @@ ProvisionItem = {
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/overview` | `{nodes:{total,ok,degraded,down,unknown,maintenance}, relays:{…}, provisioning, retiring, due_7d, monthly_cost:[{currency,cents}]（按币种分别汇总，不折算）, traffic_month:{up,down}, net_rx_bps, net_tx_bps}`（只统计 active；速率不含故障或 agent 离线的机器） |
+| GET | `/overview/series?minutes=30` | 总览网速曲线：`{points:[{ts, net_rx_bps, net_tx_bps}]}`，`minutes` 1–60（默认 30，越界 400）；最近 N 个**结束满 20 s** 的分钟（agent 每 10 s 上报，刚结束的那一分钟还缺最后的上报，不给）每分钟一个点、旧→新，`ts` 为该分钟起点（RFC3339）。每个点 = 该分钟有主机指标的 active 机器速率之和，单台算法同 `/machines/{id}/series?metric=host`（每分钟计数器最大值与上一个有数据的分钟相减 ×8 / 秒数；计数器回绕的那一段不计）；没有数据的分钟为 0 |
+| GET | `/probe-beats` | 探测心跳条：`{<机器id>: [[n, ok, ms], …20 格]}`。每格 3 分钟、按墙钟对齐（`date_bin('3 minutes', ts, 'epoch')`，即每小时的 :00 / :03 / … ），旧→新，最后一格是当前这格（还没走完）；第 i 格 = `[cb-57m+3i 分, cb-57m+3(i+1) 分)`，cb = 当前这格的起点；`n` = TCP 探测次数，`ok` = 成功次数，`ms` = 成功探测的平均延迟（没有成功的为 null）；没有探测的格为 `[0,0,null]`。节点汇总它的入口、线路机汇总挂在它上面的所有入口；只含这 20 格里有探测数据的在用机器 |
 | GET | `/incidents?state=firing\|resolved\|all&limit=100&offset=0` | 分页：`{items:[{id,rule,subject:{id,name},subject_id,subject_name,severity,state,summary,opened_at,last_seen_at,resolved_at,ack_at,ack_by,reopen_count}], total, next_offset}`；`state` 默认 firing；`reopen_count`：恢复后 30 分钟内同一（规则, 对象）复发会重开原告警而不是新建，每次 +1；顺序：进行中在前 → 严重度高在前 → 开始时间新在前（同时刻按 id，翻页不重不漏） |
 | POST | `/incidents/{id}/ack` | |
 | GET/POST | `/silences`、DELETE `/silences/{id}` | `{subject_id?,rule?,starts_at,ends_at,is_maintenance,comment}` |
@@ -147,7 +149,7 @@ ProvisionItem = {
 - 作业 `Job`：`{id, kind, target: {id,name}|null, state, step, step_count, error, created_by, created_at, started_at, finished_at}`；
   `state` ∈ `queued | running | waiting | cancelling | succeeded | failed | cancelled`；详情另有 `steps[]`（`output` 是 JSON 对象或 null）与 `cancellable`。
   作业 `kind` ∈ `provision_vps | provision_proxy | provision_relay | attach_entry | retire | purge | upgrade_agent`。
-- 告警 `Incident`：`{id, rule, subject: {id,name}, subject_id, subject_name, severity, state: "firing"|"resolved", summary, opened_at, last_seen_at, resolved_at, ack_at, ack_by}`。
+- 告警 `Incident`：`{id, rule, subject: {id,name}, subject_id, subject_name, severity, state: "firing"|"resolved", summary, opened_at, last_seen_at, resolved_at, ack_at, ack_by, reopen_count}`（`subject_name` 机器已删除时为 null）。
 - 静默 `Silence`：`{id, subject_id, subject_name, rule, starts_at, ends_at, is_maintenance, comment}`。
 - 续费 `Renewal`：`{id, old_due, new_due, amount_cents, note, actor, created_at}`。
 - 审计：`{id, ts, actor, action, title, summary, target_kind, target_id, detail}`；界面显示 `title` 与 `summary`（中文，服务端生成），`detail` 是原始 JSON。
@@ -155,7 +157,7 @@ ProvisionItem = {
 ## 实时
 `GET /api/v1/stream`：WebSocket（`ws://` / `wss://`），鉴权同其它 GET（会话 Cookie 或 `Authorization: Bearer`，需要 `read`），握手失败返回普通 HTTP 错误（401/403）。服务端只发 JSON 文本帧，不读客户端消息。
 - **保活**：服务端每 15 s 发 ping，到下一次 ping 还没收到 pong 就断开（浏览器自动回 pong）。
-- **会话复核**：每 60 s 查一次会话/密钥是否仍有效，失效则以关闭码 `4401` 关闭；客户端照常退避重连，握手会 401。
+- **会话复核**：每 60 s 查一次会话/密钥是否仍有效，失效则以关闭码 `4401` 关闭（客户端应回登录页，`fleetctl watch` 报错退出）；复核查询本身失败以 `1011` 关闭，客户端照常退避重连、握手时重新鉴权。
 - **滞后**：服务端广播缓冲 256 条，某个连接读得太慢丢了消息时补发 `{type:"resync"}`，客户端应让全部缓存失效重取。
 - **重连**：客户端断线后自己退避重连；连上后应重取一次机器类数据（断开期间错过的 `metrics` 增量不会补发）。
 

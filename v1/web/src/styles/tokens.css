@@ -81,7 +81,6 @@
   --fw-semibold: 600;
 
   --tracking-title: -0.01em;            /* H 页面标题、卡片标题（O −0.6px、N 品牌 +.015em 统一到它） */
-  --tracking-kpi: -0.035em;             /* H KPI 主值（只作用于数字） */
 
   /* ---------- 8. 圆角：4 档 + 1 个限定用途的小圆角（O/N/H 共 11 种以上收拢） ---------- */
   --r-card: 14px;                       /* H/O 卡、面板、KPI、对话框、命令面板（N 12、O 对话框 16、H 详情 20/16 统一到它） */
@@ -204,7 +203,6 @@
   --latency-ok: var(--ok);              /* 心跳格正常 = 绿（H 原样，“绿色心跳条”是辨识度） */
 
   /* ---------- 18. 调色板：点缀渐变（靛蓝预设 = 原版，平涂；粉紫默认见文件末尾“调色板”） ---------- */
-  --grad-hero: var(--surface);          /* KPI 读数卡的底 */
   --grad-soft: var(--accent-soft);      /* 侧栏当前项、已选胶囊的底 */
   --swatch-plum: #8e3bb0;               /* “强调色”菜单里的色块 */
   --swatch-indigo: #5b5bd6;
@@ -292,7 +290,6 @@
   --focus: color-mix(in srgb, var(--accent) 55%, transparent);
   --focus-halo: color-mix(in srgb, var(--accent) 20%, transparent);
   --chart-1: #8e3bb0;
-  --grad-hero: linear-gradient(170deg, #ffffff 0%, #fcf7fc 58%, #fcecf7 100%);
   --grad-soft: linear-gradient(90deg, #f3e6f5 0%, #fbe1f2 100%);
   --shadow-thumb: 0 1px 4px rgba(42, 11, 61, 0.14);
   --shadow-card: 0 1px 2px rgba(42, 11, 61, 0.04), 0 4px 16px rgba(42, 11, 61, 0.05);        /* 粉紫：阴影带一点紫调 */
@@ -311,7 +308,6 @@
   --focus: color-mix(in srgb, var(--accent) 65%, transparent);
   --focus-halo: color-mix(in srgb, var(--accent) 28%, transparent);
   --chart-1: #d9a6ea;
-  --grad-hero: var(--surface);
   --grad-soft: linear-gradient(90deg, #3a2445 0%, #4a2447 100%);
   --shadow-thumb: 0 1px 3px rgba(0, 0, 0, 0.5);
   --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.25);

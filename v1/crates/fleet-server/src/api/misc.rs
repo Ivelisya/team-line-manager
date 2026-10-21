@@ -3,7 +3,6 @@ use super::{ok, paged};
 use crate::auth::Actor;
 use crate::db::{audit as audit_log, new_id};
 use crate::error::{ApiError, ApiResult};
-use crate::health::Status;
 use crate::state::{AppState, Event};
 use crate::views;
 use crate::crypto::sha256;
@@ -21,68 +20,76 @@ use tokio::sync::broadcast::{self, error::RecvError};
 use uuid::Uuid;
 
 pub async fn overview(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
-    Ok(ok(overview_of(&views::live(&st).await?)))
+    Ok(ok(views::overview_of(&views::live(&st).await?)))
 }
 
-/// 总览 KPI，只统计 active 的机器（实时指标推送也用它）
-pub fn overview_of(ms: &[views::MachineView]) -> Value {
-    let mut nodes = json!({"total": 0, "ok": 0, "degraded": 0, "down": 0, "unknown": 0, "maintenance": 0});
-    let mut relays = nodes.clone();
-    let (mut provisioning, mut retiring, mut due_7d, mut up, mut down, mut rx, mut tx) = (0, 0, 0, 0i64, 0i64, 0f64, 0f64);
-    // 月费按币种分别汇总（不做汇率折算）
-    let mut cost: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
-    for m in ms {
-        match m.lifecycle.as_str() {
-            "provisioning" | "draft" => provisioning += 1,
-            "retiring" => retiring += 1,
-            _ => {}
-        }
-        if m.lifecycle != "active" {
-            continue;
-        }
-        let bucket = if m.kind == "relay" { &mut relays } else { &mut nodes };
-        let key = match m.health.status {
-            Status::Ok => "ok",
-            Status::Degraded => "degraded",
-            Status::Down => "down",
-            Status::Maintenance => "maintenance",
-            _ => "unknown",
-        };
-        bucket["total"] = json!(bucket["total"].as_i64().unwrap_or(0) + 1);
-        bucket[key] = json!(bucket[key].as_i64().unwrap_or(0) + 1);
-        if let Some(s) = &m.subscription {
-            if s.due_days <= 7 {
-                due_7d += 1;
-            }
-            // 折成月费
-            let months = match s.cycle.as_str() {
-                "quarterly" => 3,
-                "semiannual" => 6,
-                "yearly" => 12,
-                _ => 1,
-            };
-            *cost.entry(s.currency.clone()).or_default() += s.price_cents as i64 / months;
-        }
-        if m.kind != "relay" {
-            for e in &m.entries {
-                up += e.traffic.month_up;
-                down += e.traffic.month_down;
-            }
-            up += m.removed_traffic.month_up;
-            down += m.removed_traffic.month_down;
-        }
-        // 实时速率只算数据没过期的：故障或 agent 离线的机器，最后一份上报的速率不算（同前端 liveRate）
-        let stale = m.health.status == Status::Down || m.agent.as_ref().is_some_and(|a| !a.online);
-        if let Some(h) = m.host.as_ref().filter(|_| !stale) {
-            rx += h.net_rx_bps.unwrap_or(0.0);
-            tx += h.net_tx_bps.unwrap_or(0.0);
-        }
-    }
-    json!({
-        "nodes": nodes, "relays": relays, "provisioning": provisioning, "retiring": retiring, "due_7d": due_7d,
-        "monthly_cost": cost.into_iter().map(|(c, v)| json!({"currency": c, "cents": v})).collect::<Vec<_>>(), "traffic_month": {"up": up, "down": down}, "net_rx_bps": rx, "net_tx_bps": tx,
-    })
+#[derive(Deserialize)]
+pub struct SeriesQ {
+    minutes: Option<i64>,
 }
+
+#[derive(Serialize, sqlx::FromRow)]
+struct RatePoint {
+    #[serde(with = "time::serde::rfc3339")]
+    ts: OffsetDateTime,
+    net_rx_bps: f64,
+    net_tx_bps: f64,
+}
+
+/// 总览网速曲线：最近 N 个结束满 20 s 的分钟，每分钟一个点，旧→新。agent 每 10 s 上报一次，刚结束的那一分钟还缺最后一两份，算出来偏小，不给。
+/// 每台 active 机器按主机时序同样的算法（每分钟取计数器最大值，与上一个有数据的分钟相减 ×8 / 秒数，计数器回绕的那一段不计）再求和；
+/// 逐台走 (machine_id, ts desc) 索引。
+pub async fn overview_series(_a: Actor, State(st): State<AppState>, Query(q): Query<SeriesQ>) -> ApiResult<Json<Value>> {
+    let n = q.minutes.unwrap_or(30);
+    if !(1..=60).contains(&n) {
+        return Err(ApiError::bad_request("minutes 只能是 1–60"));
+    }
+    let v: Vec<RatePoint> = sqlx::query_as(
+        "with w as (select e - make_interval(mins => $1::int) s, e from (select date_trunc('minute', now() - interval '20 seconds') e) z),
+         b as (
+           select m.id, x.t, x.rx, x.tx from w cross join machine m cross join lateral (
+             select date_trunc('minute', ts) t, max(net_rx_bytes) rx, max(net_tx_bytes) tx from host_metric
+             where machine_id = m.id and ts >= w.s - interval '1 minute' and ts < w.e group by 1) x
+           where m.lifecycle = 'active'),
+         r as (
+           select t, case when rx >= prx then (rx - prx) * 8.0 / nullif(extract(epoch from t - pt), 0) end rx_bps,
+                     case when tx >= ptx then (tx - ptx) * 8.0 / nullif(extract(epoch from t - pt), 0) end tx_bps
+           from (select *, lag(rx) over p prx, lag(tx) over p ptx, lag(t) over p pt from b window p as (partition by id order by t)) y)
+         select g.t ts, coalesce(sum(r.rx_bps), 0)::float8 net_rx_bps, coalesce(sum(r.tx_bps), 0)::float8 net_tx_bps
+         from w cross join generate_series(w.s, w.e - interval '1 minute', interval '1 minute') g(t) left join r on r.t = g.t
+         group by g.t order by g.t",
+    )
+    .bind(n)
+    .fetch_all(&st.db)
+    .await?;
+    Ok(ok(json!({"points": v})))
+}
+
+/// 探测心跳条：每台在用机器的 TCP 探测，按墙钟 3 分钟整格（date_bin 对齐 epoch）共 20 格，旧→新，最后一格是当前这格（还没走完）；
+/// 每格 [次数, 成功次数, 成功的平均延迟 ms 或 null]。线路机汇总它上面所有入口；这 20 格里没有探测的机器不出现。
+pub async fn probe_beats(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
+    const BUCKETS: usize = 20;
+    let rows: Vec<(Uuid, i32, i64, i64, Option<f64>)> = sqlx::query_as(
+        "with w as (select s, s + interval '60 minutes' e from (select date_bin('3 minutes', now(), timestamptz 'epoch') - interval '57 minutes' s) z),
+         p as (
+           select e.node_id, e.relay_id, floor(extract(epoch from x.ts - w.s) / 180)::int i, x.ok, x.latency_ms
+           from w cross join entry e cross join lateral (
+             select ts, ok, latency_ms from probe_result
+             where entry_id = e.id and kind = 'tcp' and ts >= w.s and ts < w.e) x)
+         select v.m, p.i, count(*), count(*) filter (where p.ok), (avg(p.latency_ms) filter (where p.ok))::float8
+         from p cross join lateral (values (p.node_id), (p.relay_id)) v(m)
+         join machine m on m.id = v.m and m.lifecycle <> 'retired'
+         group by v.m, p.i",
+    )
+    .fetch_all(&st.db)
+    .await?;
+    let mut out: std::collections::HashMap<Uuid, Vec<(i64, i64, Option<f64>)>> = std::collections::HashMap::new();
+    for (m, i, n, okn, ms) in rows {
+        out.entry(m).or_insert_with(|| vec![(0, 0, None); BUCKETS])[i as usize] = (n, okn, ms);
+    }
+    Ok(ok(out))
+}
+
 
 #[derive(Serialize, sqlx::FromRow)]
 struct IncidentOut {
@@ -121,7 +128,7 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, Query(q): Query<In
     };
     let sql = format!(
         "select i.id, i.rule, i.subject_id,
-            case when m.kind = 'relay' then m.label when t.name is not null then t.name || '-' || lpad(m.number::text, 2, '0') end subject_name,
+            display_name(m.kind::text, m.label, t.name, m.number) subject_name,
             i.severity::text severity, i.state::text state, i.summary, i.opened_at, i.last_seen_at, i.resolved_at, i.ack_at, i.ack_by, i.reopen_count
          from incident i left join machine m on m.id = i.subject_id left join team t on t.id = m.team_id
          where {f} order by i.state, i.severity desc, i.opened_at desc, i.id desc limit $1 offset $2"
@@ -176,7 +183,7 @@ pub struct Silence {
 pub async fn list_silences(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
     let v: Vec<Silence> = sqlx::query_as(
         "select s.id, s.subject_id, s.rule, s.starts_at, s.ends_at, s.is_maintenance, s.comment,
-                case when m.kind = 'relay' then m.label when t.name is not null then t.name || '-' || lpad(m.number::text, 2, '0') end subject_name
+                display_name(m.kind::text, m.label, t.name, m.number) subject_name
          from silence s left join machine m on m.id = s.subject_id left join team t on t.id = m.team_id
          where s.deleted_at is null and s.ends_at > now() order by s.starts_at",
     )
@@ -341,9 +348,8 @@ enum Cred {
     Key(Vec<u8>),
 }
 
-/// 查询出错时按「仍有效」处理：数据库一时抖动不该把所有页面的实时流都断掉
-async fn still_valid(db: &sqlx::PgPool, c: &Cred) -> bool {
-    let r = match c {
+async fn still_valid(db: &sqlx::PgPool, c: &Cred) -> sqlx::Result<bool> {
+    match c {
         Cred::Session(h) => {
             sqlx::query_scalar::<_, bool>(
                 "select exists (select 1 from session s join app_user u on u.id = s.user_id
@@ -361,8 +367,7 @@ async fn still_valid(db: &sqlx::PgPool, c: &Cred) -> bool {
             .fetch_one(db)
             .await
         }
-    };
-    r.unwrap_or(true)
+    }
 }
 
 /// 心跳：每隔这么久发一次 ping，到下一次 ping 还没收到 pong 就当连接已死
@@ -418,10 +423,17 @@ async fn serve_ws(mut ws: WebSocket, mut rx: broadcast::Receiver<Event>, db: sql
             }
             _ = check.tick() => {
                 if let Some(c) = &cred {
-                    if !still_valid(&db, c).await {
-                        send(&mut ws, Message::Close(Some(CloseFrame { code: CLOSE_REVOKED, reason: "会话或密钥已失效".into() }))).await;
-                        return;
-                    }
+                    // 复核查询失败就断开（1011），由客户端重连时重新鉴权
+                    let close = match still_valid(&db, c).await {
+                        Ok(true) => continue,
+                        Ok(false) => CloseFrame { code: CLOSE_REVOKED, reason: "会话或密钥已失效".into() },
+                        Err(e) => {
+                            tracing::warn!("实时流复核会话失败：{e}");
+                            CloseFrame { code: 1011, reason: "复核会话失败，请重连".into() }
+                        }
+                    };
+                    send(&mut ws, Message::Close(Some(close))).await;
+                    return;
                 }
                 continue;
             }

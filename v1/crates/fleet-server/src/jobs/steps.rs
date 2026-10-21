@@ -592,14 +592,6 @@ async fn finalize(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     .bind(m.id)
     .execute(&mut *tx)
     .await?;
-    // 未结告警直接关闭（不发恢复通知）
-    sqlx::query(
-        "update incident set state = 'resolved', resolved_at = now(), detail = detail || '{\"closed_by\":\"retire\"}'
-         where state = 'firing' and (subject_id = $1 or subject_id in (select id from entry where node_id = $1 or relay_id = $1))",
-    )
-    .bind(m.id)
-    .execute(&mut *tx)
-    .await?;
     // 秘密不再需要
     sqlx::query("delete from node_outbound where machine_id = $1").bind(m.id).execute(&mut *tx).await?;
     // 编号连续：同团队剩下的节点压缩成 01..N

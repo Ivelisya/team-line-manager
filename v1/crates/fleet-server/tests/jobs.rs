@@ -1,4 +1,4 @@
-//! 作业引擎：取消与补偿、退役后旧作业不能复活、purge 幂等、租约持有者校验、线路机退役守卫、作业清理。
+//! 作业引擎：取消与补偿、退役后旧作业不能复活、purge 幂等、租约持有者校验、线路机退役守卫、退役即关告警、作业清理。
 //! 需要 PostgreSQL：环境变量 FLEET_TEST_DB。会清空该库的 public schema，用 `--test-threads=1` 串行跑。
 //!
 //! 「上架」类测试用 VPS 指向 127.0.0.1:1（必定连接被拒）：预检会失败，不需要真的 SSH 到任何机器。
@@ -197,6 +197,29 @@ async fn relay_with_entries_cannot_be_retired() {
     let mut tx = t.st.db.begin().await.unwrap();
     let node2 = seed_node(&t, team, 2, "203.0.113.11", "active").await;
     assert!(fleet_server::entries::create(&mut tx, relay, node2).await.is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retire_closes_open_incidents_up_front() {
+    let t = setup(false).await;
+    let (relay, _) = seed_relay(&t).await;
+    let inc = Uuid::now_v7();
+    sqlx::query("insert into incident (id, rule, subject_id, severity, summary) values ($1, 'relay_xray_down', $2, 'critical', 's')")
+        .bind(inc)
+        .bind(relay)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let r: Value = t.post(&format!("/api/v1/machines/{relay}/retire"), json!({"confirm": "线路机2"})).await;
+    let closed: (String, Value) = sqlx::query_as("select state::text, detail from incident where id = $1").bind(inc).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!((closed.0.as_str(), &closed.1["closed_by"]), ("resolved", &json!("retire")), "发起退役就关掉告警");
+    // 作业失败：机器停在退役中等重试（不回 active），告警评估也不会再开或重开
+    sqlx::query("update job set state = 'failed', finished_at = now() where id = $1::uuid").bind(r["job_id"].as_str().unwrap()).execute(&t.st.db).await.unwrap();
+    t.st.live.invalidate();
+    fleet_server::alerts::evaluate_once(&t.st, &mut Default::default(), time::OffsetDateTime::now_utc()).await.unwrap();
+    assert_eq!(t.machine_lifecycle(relay).await, "retiring");
+    let firing: i64 = sqlx::query_scalar("select count(*) from incident where state = 'firing'").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(firing, 0);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

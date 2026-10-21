@@ -85,6 +85,11 @@ export interface ProvisionCheckItem { ok: boolean; errors: string[]; name: strin
  *  host: cpu_pct mem_pct disk_pct load1 net_rx_bps net_tx_bps（1h 分辨率另有 cpu_max，无 load1）；traffic: up down conns；
  *  probe: tcp_ok tcp_ms egress_ok egress_ms（失败时 *_ms 为 null） */
 export interface SeriesPoint { ts: string; [k: string]: number | boolean | string | null }
+/** 心跳格：每台机器近 60 分钟、20 个 3 分钟桶（旧→新），每桶 [探测次数, 成功次数, 平均 TCP 延迟 ms]；[0,0,null] = 这段没有探测。线路机是它所有入口的合计 */
+export type ProbeBucket = [number, number, number | null];
+export type ProbeBeats = Record<string, ProbeBucket[]>;
+/** 全站网卡速率的历史：每分钟一个点（旧→新），首页集群状态折线开场用 */
+export interface OverviewSeries { points: { ts: string; net_rx_bps: number; net_tx_bps: number }[] }
 export interface SeriesResp { metric: string; range: string; resolution: '1m' | '1h' | string; points: SeriesPoint[] }
 export interface Incident {
   id: string; rule: string; subject: { id: string; name: string } | null; subject_id: string | null; subject_name: string | null;

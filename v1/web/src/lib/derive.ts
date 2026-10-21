@@ -1,5 +1,5 @@
 // 从 MachineView 推导卡片/表格要显示的数据（纯函数，便于复用）
-import type { MachineView, Plan, SeriesPoint } from './types';
+import type { MachineView, Plan, ProbeBucket, Subscription } from './types';
 import * as F from './format';
 
 const GiB = 1024 ** 3;
@@ -30,6 +30,8 @@ export function quota(m: MachineView) {
   const t = monthTraffic(m); const used = t.up + t.down;
   return { limit, used, pct: limit > 0 ? (used / (limit * GiB)) * 100 : null, rem: limit > 0 ? Math.max(0, limit * GiB - used) : null };
 }
+/** 资源占用的告警色（CPU / 内存 / 磁盘 / 负载的格条、圆环、迷你条共用）：≥ 90% 红，≥ 75% 黄 */
+export const usageTone = (pct: number | null | undefined) => (pct == null ? undefined : pct >= 90 ? 'bad' : pct >= 75 ? 'warn' : undefined);
 const ratio = (used: number | null, total: number | null) => (used == null || total == null || !(total > 0) ? null : (used / total) * 100);
 const usedTotal = (u: number | null, t: number | null) => (u == null || t == null ? '—' : `${F.bytes(u).v} ${F.bytes(u).u} / ${F.bytes(t).v} ${F.bytes(t).u}`);
 /** 资源读数；指标缺测（null）时对应项显示 “—”，进度为 null（不会出现 NaN） */
@@ -47,27 +49,13 @@ export function resourceMeters(m: MachineView, plans: Plan[]) {
     load: { value: F.pct(loadPct), pct: loadPct, sub: h.load1 == null ? LOAD_NA : `1 分钟 ${h.load1.toFixed(2)} · ${cores} 核`, hint: h.load1 == null ? LOAD_NA : undefined },
   };
 }
+export type BeatCell = 'ok' | 'warn' | 'bad' | null;
 /**
- * 探测 → 心跳格。取最近 60 个 1 分钟点，每 3 点聚成一格，共 20 格——对应“近 1 小时”。
- * 按格内 TCP 探测成功比例定色（线路机是它所有入口的合计，个别节点抖动只会变黄）：≥95% 且不慢为绿，≥50% 为黄，否则红。
- * 点数不足 60 时从最新一端对齐，早的一端留空。
+ * 探测桶 → 心跳格（20 格 = 近 1 小时，旧→新）。按桶内成功比例定色（线路机是它所有入口的合计，个别节点抖动只会变黄）：
+ * 没有探测为空格（灰）；< 50% 红；< 95% 或平均延迟 ≥ 150 ms 黄；其余绿。
  */
-export function beatCells(points: SeriesPoint[] | undefined, n = 20, minutes = 60): ('ok' | 'warn' | 'bad' | null)[] {
-  if (!points?.length) return [];
-  const size = Math.max(1, Math.ceil(minutes / n));
-  const pts = points.slice(-n * size);
-  const cells: ('ok' | 'warn' | 'bad')[] = [];
-  for (let end = pts.length; end > 0; end -= size) {
-    let ok = 0; let total = 0; let slow = false;
-    for (const p of pts.slice(Math.max(0, end - size), end)) {
-      ok += Number(p.tcp_ok_n ?? 0); total += Number(p.tcp_n ?? 0);
-      if (Number(p.tcp_ms ?? 0) >= 150) slow = true;
-    }
-    const r = total ? ok / total : 0;
-    cells.unshift(r < 0.5 ? 'bad' : r < 0.95 || slow ? 'warn' : 'ok');
-  }
-  return cells;
-}
+export const beatCells = (buckets: ProbeBucket[] | undefined): BeatCell[] =>
+  (buckets ?? []).map(([n, ok, ms]) => { if (!n) return null; const r = ok / n; return r < 0.5 ? 'bad' : r < 0.95 || (ms ?? 0) >= 150 ? 'warn' : 'ok'; });
 /** 入口探测摘要：最差 TCP 延迟与出口延迟 */
 export function probeSummary(m: MachineView) {
   const es = m.entries.filter((e) => e.lifecycle === 'active' || e.lifecycle === 'provisioning');
@@ -80,8 +68,7 @@ export function probeSummary(m: MachineView) {
  * 剩余价值：已付还没用掉的部分，按天折算。每期天数 = 到期日往前推一个周期的天数，剩余比例 = 距到期天数 / 每期天数；
  * 预付了多期时比例大于 1。一次性付费没有周期，不折算（null）；已过期为 0。
  */
-export function remainingValue(m: MachineView) {
-  const s = m.subscription;
+export function remainingValue(s: Subscription | null) {
   const months = s && F.CYCLE_MONTHS[s.cycle];
   if (!s || !months) return null;
   const days = Math.round((Date.parse(s.due_date) - Date.parse(F.addMonths(s.due_date, -months))) / 86_400_000);

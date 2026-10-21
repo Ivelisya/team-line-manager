@@ -80,6 +80,7 @@ fn d_learn_days() -> u32 { 7 }
 fn d_alert_ttl_hours() -> u32 { 24 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct Retention {
     /// 原始时序（主机指标、入口流量、探测）保留天数
     pub raw_days: u32,
@@ -91,6 +92,7 @@ impl Default for Retention {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct Numbering {
     /// 节点退役后自动把该团队编号压缩成 01..N（编号连续，数量一眼可见）
     pub auto_compact: bool,
@@ -108,5 +110,18 @@ impl Config {
         let s = std::fs::read_to_string(path).with_context(|| format!("读取配置 {}", path.display()))?;
         let c: Config = toml::from_str(&s).with_context(|| format!("解析配置 {}", path.display()))?;
         Ok(c)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn partial_tables_keep_defaults() {
+        let r: Retention = toml::from_str("raw_days = 30").unwrap();
+        assert_eq!((r.raw_days, r.access_days), (30, 7));
+        let n: Numbering = toml::from_str("").unwrap();
+        assert!(n.auto_compact);
     }
 }
