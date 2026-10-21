@@ -59,7 +59,7 @@ export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 
     <>
       <CartesianGrid vertical={false} stroke="var(--chart-grid)" />
       <XAxis dataKey="t" type="number" scale="time" domain={['dataMin', 'dataMax']} ticks={xTicks} tickFormatter={xFmt(range)} {...axisProps} minTickGap={32} />
-      <YAxis width={60} tickFormatter={yFmt} {...axisProps} ticks={yTicks} domain={yTicks ? [0, yTicks[yTicks.length - 1]] : domain ?? [0, 'auto']} />
+      <YAxis width={60} tickFormatter={yFmt} {...axisProps} interval={0} ticks={yTicks} domain={yTicks ? [0, yTicks[yTicks.length - 1]] : domain ?? [0, 'auto']} />
       <ChartTooltip config={config} labelFormat={(l) => { const d = new Date(Number(l)); return `${d.getMonth() + 1}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`; }} valueFormat={valueFmt} />
     </>
   );
