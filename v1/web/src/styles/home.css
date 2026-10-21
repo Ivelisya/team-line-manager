@@ -204,7 +204,7 @@
   font: var(--fw-medium) var(--fs-body) / 1 var(--font-num); font-variant-numeric: var(--num-variant); color: var(--fg);
   transition: background-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out);
 }
-.cal-day:hover:not(:disabled) { background: var(--hover); }
+@media (hover: hover) { .cal-day:hover:not(:disabled) { background: var(--hover); } }
 .cal-day.is-off { color: var(--fg-3); }
 .cal-day.is-today { box-shadow: inset 0 0 0 1px var(--line-strong); }
 .cal-day[aria-selected="true"] { background: var(--accent-solid); color: var(--on-accent); }

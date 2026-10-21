@@ -43,7 +43,7 @@
   font: inherit; color: inherit; text-align: left; cursor: pointer; border-radius: var(--r-xs);
   transition: background-color var(--dur-1) var(--ease-std), box-shadow var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out);
 }
-.flow-trend:hover, .flow-foot:hover, .nc-quota:hover { background: var(--hover); box-shadow: 0 0 0 4px var(--hover); }
+@media (hover: hover) { .flow-trend:hover, .flow-foot:hover, .nc-quota:hover { background: var(--hover); box-shadow: 0 0 0 4px var(--hover); } }
 
 /* 1 标题：圆点 + 类型标 + 名称 + 右侧操作 */
 .nc-head { display: flex; align-items: center; gap: var(--inline-gap); min-height: 32px; min-width: 0; margin-top: var(--card-pad); }
@@ -56,7 +56,7 @@
   color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   transform-origin: 0 50%; transition: color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out);
 }
-.nc-name:hover { color: var(--accent); }
+@media (hover: hover) { .nc-name:hover { color: var(--accent); } }
 .ncard[data-view="small"] .nc-name, .ncard[data-view="compact"] .nc-name { font-size: var(--fs-emph); line-height: var(--lh-emph); }
 /* 紧凑：名称下面一行小字 IP（同表格名称列），两行合计 34px，头部只比单行高 2px */
 .nc-title { display: grid; min-width: 0; }
@@ -187,10 +187,10 @@
 .rcard.is-current { border-color: var(--accent); }
 .rc-head { display: flex; align-items: center; gap: var(--inline-gap); min-width: 0; }
 .rc-name { flex: 1 1 auto; min-width: 0; padding: 0; border: 0; border-radius: var(--r-xs); background: none; cursor: pointer; text-align: left; font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-sans); letter-spacing: -0.02em; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transform-origin: 0 50%; transition: color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out); } /* 同 .nc-name */
-.rc-name:hover { color: var(--accent); }
+@media (hover: hover) { .rc-name:hover { color: var(--accent); } }
 .rcard.is-quiet .rc-name { color: var(--fg-2); }
 .rc-rings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-4); margin: 0 calc(-1 * var(--sp-6)); padding: var(--sp-6); border: 0; border-radius: var(--r-float); background: none; font: inherit; color: inherit; cursor: pointer; transition: background-color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out); }
-.rc-rings:hover:not(:disabled) { background: var(--hover); }
+@media (hover: hover) { .rc-rings:hover:not(:disabled) { background: var(--hover); } }
 .rc-rings:disabled { cursor: default; }
 .rc-gauge { display: grid; justify-items: center; gap: var(--sp-4); font: var(--fw-semibold) 11px / 16px var(--font-sans); color: var(--fg-2); }
 .rc-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); min-height: 22px; padding-top: var(--sp-10); border-top: 1px solid var(--line); font-size: var(--fs-label); }

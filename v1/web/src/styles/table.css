@@ -24,12 +24,12 @@
 .dt .sub { display: block; font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dt .cell-main { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dt tr.is-link { cursor: pointer; transition: background-color var(--dur-1) var(--ease-std); }
-.dt tr.is-link:hover { background-color: var(--hover); } /* 只写底色：按下时叠的那层 background-image（components.css「交互状态」）不能被简写清掉，下同 */
+@media (hover: hover) { .dt tr.is-link:hover { background-color: var(--hover); } } /* 只写底色：按下时叠的那层 background-image（components.css「交互状态」）不能被简写清掉，下同 */
 .dt tr.is-current { background: var(--selected); }
 .dt tr.is-current td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
 .dt tr.is-retired td { color: var(--fg-2); }
 .dt .chev { width: 36px; padding-left: 0; text-align: right; color: var(--fg-3); }
-.dt tr.is-link:hover .chev { color: var(--fg-2); }
+@media (hover: hover) { .dt tr.is-link:hover .chev { color: var(--fg-2); } }
 /* 排序按钮撑满整格：高度到底线（减 1px）、宽度盖满内容区并往两侧各伸进单元格内边距 6px（文字位置不变），
    整格都能点；焦点环内收（components.css「交互状态」）画在伸出来的这圈里，不被 th 的 overflow 裁掉 */
 .th-sort {
@@ -39,7 +39,7 @@
   transition: color var(--dur-1) var(--ease-std);
 }
 .dt th.r .th-sort { justify-content: flex-end; }
-.th-sort:hover { color: var(--fg); }
+@media (hover: hover) { .th-sort:hover { color: var(--fg); } }
 .th-sort .lucide { width: 12px; height: 12px; color: var(--fg-3); }
 .th-sort[data-dir] .lucide { color: var(--accent); }
 .dt-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); padding: var(--sp-8) var(--card-pad); border-top: 1px solid var(--line); font-size: var(--fs-label); color: var(--fg-2); }
