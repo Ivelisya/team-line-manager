@@ -137,7 +137,7 @@ export function HomePage() {
         {machines.isLoading ? (
           <div className="cards" data-view={view}>{Array.from({ length: 6 }, (_, i) => <SkeletonCard key={i} view={view} />)}</div>
         ) : !machines.data ? null /* 请求失败且没有缓存：上面的错误提示已说明，不要误报“还没有机器” */ : shown.length === 0 ? (
-          <Empty icon={<Inbox size={28} />} text={all.length ? '没有符合筛选条件的机器' : '还没有机器，去“上架”添加第一台'} />
+          <Empty icon={<Inbox size={28} />} text={all.length ? '没有符合筛选条件的机器' : '还没有机器，去「上架」添加第一台'} />
         ) : (
           <>
             {/* 每页一个容器（key=页码）：翻页、切换卡片 / 环形 / 表格时整块淡入（换卡片密度不重挂、不淡入）。卡片页内：筛选/排序/密度变了（layoutKey 变）才量位置、滑到新位置。
