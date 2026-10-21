@@ -6,6 +6,7 @@ F="-F $HOME/.ssh/fleetlab_config"
 ssh $F fleet-dev 'bash -s' <<'REMOTE'
 set -euo pipefail
 B=http://127.0.0.1:8080/api/v1; J=/tmp/e2e.cookies; P=/root/lab-root-passwords
+trap 'rm -f $J' EXIT   # 登录 cookie 失败也删
 ok() { echo "  ✓ $*"; }
 die() { echo "  ✗ $*"; exit 1; }
 jq -n --rawfile p /root/fleet-admin-password '{username:"admin",password:($p|rtrimstr("\n"))}' | curl -fsS -c $J -H 'content-type: application/json' -d @- $B/auth/login >/dev/null
@@ -89,5 +90,6 @@ api "$B/machines?scope=retired" | jq -r '.data[]|"    已退役："+.name+"  "+.
 TOK=$(runuser -u postgres -- psql -qtA fleet -c "select count(*) from agent_token where machine_id='$N1' and revoked_at is null")
 [ "$TOK" = 0 ] && ok "令牌已撤销" || die "令牌未撤销"
 echo "== 全部通过"
-rm -f $J /tmp/e2e-client-*.json
+# 客户端配置与日志、残留核对结果：失败时留着排查（文件名固定，下次运行覆盖），通过才删
+rm -f /tmp/e2e-*
 REMOTE

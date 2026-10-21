@@ -279,12 +279,13 @@ mod tests {
         (format!("http://{addr}"), seen)
     }
 
-    fn client_for(base: &str, tag: &str) -> ServerClient {
+    /// 令牌文件放在临时目录里；目录一并返回，测试结束时删掉
+    fn client_for(base: &str, tag: &str) -> (ServerClient, PathBuf) {
         let d = std::env::temp_dir().join(format!("fa-srv-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let tok = d.join("token");
         std::fs::write(&tok, "t0k\n").unwrap();
-        ServerClient::new(base, tok).unwrap()
+        (ServerClient::new(base, tok).unwrap(), d)
     }
 
     #[test]
@@ -300,7 +301,7 @@ mod tests {
     #[tokio::test]
     async fn large_reports_are_gzipped_and_small_ones_are_not() {
         let (base, seen) = mock_server().await;
-        let c = client_for(&base, "new");
+        let (c, d) = client_for(&base, "new");
         let big = br#"{"seq":1,"pad":"xxxxxxxxxxxxxxxx"}"#.repeat(100);
         assert!(matches!(c.post_report(big.clone()).await, Outcome::Ok(a) if a.accepted_seq == 9));
         assert!(matches!(c.post_report(b"{}".to_vec()).await, Outcome::Ok(_)));
@@ -308,6 +309,7 @@ mod tests {
         assert_eq!(seen.len(), 2);
         assert!(seen[0].0 && seen[0].1 == big, "大报告应以 gzip 发出，服务端解压后与原文一致");
         assert!(!seen[1].0 && seen[1].1 == b"{}", "小报告不压缩");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

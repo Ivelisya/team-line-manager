@@ -1,0 +1,12 @@
+# /etc/systemd/system/fleet-backup.service — 中控数据库与密钥的每日备份（由 .timer 每天触发，也可手动 systemctl start）
+# 脚本装在 /opt/fleet/backup/fleet-backup.sh；备份落在 /var/backups/fleet，保留 14 份。
+[Unit]
+Description=fleet-server: daily backup (pg_dump + keys) to /var/backups/fleet
+After=postgresql.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/fleet/backup/fleet-backup.sh
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=1h

@@ -143,5 +143,80 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 |---|---|---|
 | `shared_buffers` | 内存的 25% 左右（4 GB 内存给 1GB） | 原始时序表（主机样本每台每 10 秒一行、探测、访问记录）的当天分区和小时汇总表是一直在读写的热数据，放得进缓存时曲线查询、每 3 秒一次的实时视图不用反复读盘 |
 | `work_mem` | 16–32 MB（4 GB 内存取 16MB） | 每 5 分钟的主机小时汇总要把当前小时的全部样本按（机器, 时间）排序算网卡增量：实验室 136 台、约 6 万行，4MB 时排序落盘约 5 MB 临时文件；机器详情的长时段曲线（按分钟 / 小时分组聚合）同理。它按每个排序 / 哈希节点各算一份，连接池上限 20 条，不要给太大 |
+| `wal_compression` | `lz4`（默认 off） | WAL 里近八成是整页镜像：每次 checkpoint 之后某一页第一次被改，整页写进 WAL。中控一直在写的页（当天分区、小时汇总、agent 状态等）每个 checkpoint 周期都要各来一次。lz4 压缩整页镜像，CPU 开销很小；实验室平均每个整页镜像从约 5.8 KB 压到约 2.6 KB |
+| `checkpoint_timeout` | `15min`（默认 5min） | 整页镜像每个 checkpoint 周期重来一遍，周期拉长后热页的整页镜像次数少很多（实验室同样 15 分钟从约 8100 个降到约 3400 个）；代价是崩溃后恢复要多重放一些 WAL（实验室一个周期约 22 MB，秒级） |
+| `max_wal_size` | `2GB`（默认 1GB） | 两次 checkpoint 之间 WAL 攒到这个量就提前做 checkpoint（又带出一轮整页镜像）；留足余量，批量上架、agent 补传积压时也按 15 分钟一个周期走。平时 pg_wal 只占一两个周期的量 |
 
 改法（`psql` 以超级用户执行）：`alter system set work_mem = '16MB'; select pg_reload_conf();` 立即生效；`alter system set shared_buffers = '1GB';` 要重启 PostgreSQL 才生效（fleet-server 的连接池会自动重连，正在进行的请求会失败一次）。改完用 `show work_mem;`、`show shared_buffers;` 确认。
+
+WAL 三项由 `deploy/central/install.sh` 写进 `/etc/postgresql/<版本>/main/conf.d/fleet.conf`，`systemctl reload postgresql` 生效，不用重启；确认：`select name, setting, sourcefile from pg_settings where name in ('wal_compression', 'checkpoint_timeout', 'max_wal_size');`（用 `alter system` 改过同名参数的话 `postgresql.auto.conf` 优先，先 `alter system reset <参数>`）。实验室实测（fleet 库约 1.4 GB，用 pg_waldump 按库统计，排除测试库）：改前每 5 分钟约 20 MB、整页镜像占 78%，合 66 KB/s（约 5.5 GB/天）；改后每 15 分钟约 22 MB、整页镜像占 40%，合 25 KB/s（约 2 GB/天），少了约 63%。
+
+## 9. 生产中控：部署与回滚
+
+部署 / 升级：本机在 `v1/` 下运行 `deploy/central/deploy.sh debian13 fleet.kismet613.com`（幂等，首次安装也用它）。
+
+- `Cargo.toml`、`Cargo.lock`、`crates`、`migrations`、`deploy`、`web` 有未提交的改动时拒绝部署。
+- 版本号 `0.1.0+<哈希>` 里的哈希是最后一次改动 `Cargo.toml`、`Cargo.lock`、`crates`、`migrations`、`deploy` 的提交：只改前端或文档的提交不换哈希，fleet-dev 上不重编 server 和 agent。
+- xray、ssserver、geoip.dat 先和中控 `/opt/fleet/dist` 比 sha256，相同的不上传，中控上的保持原样。
+- 编译失败、或 install.sh 重启后等 60 秒未登录访问 `/api/v1/auth/me` 仍不是 401，部署以非 0 退出，后者会打出 fleet-server 最近 60 行日志。中控上的安装包无论成败都删掉。
+- 换下来的旧 fleet-server 留在中控 `/opt/fleet/fleet-server.prev`（同一个二进制重复部署时不覆盖它）。
+
+回滚（新版起不来，或上线后有严重问题）：
+
+1. 先确认这次部署**没有新迁移**：`git diff --name-only <旧哈希> <新哈希> -- migrations` 为空（新旧哈希见中控 `journalctl -u fleet-server | grep 监听 | tail -2`）。fleet-server 启动时自动跑迁移；新迁移一旦执行过，旧版本发现库里有它不认识的迁移会拒绝启动，这时不能直接换回，只能修好再发新版本（或按 §10 从备份恢复，丢失备份之后的数据）。
+2. 没有新迁移时，在中控上换回旧版（先复制再改名：正在运行的可执行文件不能直接覆盖）：
+   ```
+   cp -p /opt/fleet/fleet-server.prev /opt/fleet/fleet-server.new && mv -f /opt/fleet/fleet-server.new /opt/fleet/fleet-server && systemctl restart fleet-server
+   curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/api/v1/auth/me     # 应为 401
+   ```
+3. 这样只换回了 fleet-server：前端 `/opt/fleet/web` 和 dist 里的 fleet-agent 还是新的，换回后先别上架、别 `upgrade-agent`（新 agent 的上报旧中控可能拒收，见 §7）。要整体回到旧版本：本机 `git checkout <旧提交>` 后再跑一次 deploy.sh（同样要求没有新迁移）。
+
+## 10. 备份与恢复
+
+中控每天北京时间 03:30 做一份备份（`fleet-backup.timer` → `/opt/fleet/backup/fleet-backup.sh`），放在中控 `/var/backups/fleet/fleet-<北京时间>.tar`，留 14 份；第一次装上时 install.sh 立即做一份。手动做一份：`systemctl start fleet-backup`，`journalctl -u fleet-backup -n 5` 看结果。一份 tar 里有：
+
+- `fleet.dump`：`pg_dump -Fc` 整库。`host_metric`、`entry_traffic`、`probe_result`、`access_event` 四张原始时序表（按天分区，只保留几天，量最大）只备结构不备数据，其余表（机器、入口、订阅、作业、审计、告警、小时汇总等）全量。恢复后最近几天的 10 秒粒度曲线和访问明细是空的，小时汇总都在。
+- `etc/fleet/`：`secret.key`（库里 SS 密码、REALITY 私钥、通知渠道配置的加密密钥，丢了这些就解不开）、`fleet.toml`、`ssh/id_ed25519`（中控登录所有机器的密钥）。
+- `var/lib/fleet/known_hosts`：各机器的主机指纹。
+
+整个包都是敏感数据：中控上 0640 root:fleet-backup（只有拉取用户能读），PVE 上 0600 root。
+
+### 家里 PVE 每天取一份
+
+中控上的 `fleet-backup` 用户只能用指定公钥登录，authorized_keys 带 `restrict,command="/opt/fleet/backup/fleet-backup-latest.sh"`：不管请求执行什么都只输出最新一份 tar，不能开 shell、不能转发端口。authorized_keys 由 root 持有，这个用户改不了。第一次配置：
+
+1. PVE 上生成专用密钥：`ssh-keygen -t ed25519 -N '' -C pve-fleet-backup -f /root/.ssh/fleet-backup`
+2. 把 `/root/.ssh/fleet-backup.pub` 的内容放到中控 `/etc/fleet/backup.pub`，再跑一次 deploy.sh：install.sh 看到这个文件才写 authorized_keys，没有就跳过。中控 sshd 配了 `AllowUsers` / `AllowGroups` 的话把 fleet-backup 加进去。
+3. PVE 上安装（文件在仓库 `v1/deploy/backup/`）：
+   ```
+   install -m 755 fleet-backup-pull.sh /usr/local/sbin/
+   install -m 644 fleet-backup-pull.service fleet-backup-pull.timer /etc/systemd/system/
+   ```
+   中控的 SSH 地址不是 `fleet.kismet613.com` 的 22 端口（域名走了 CDN、改过端口）时，改 service 里的 `FLEET_BACKUP_HOST`，或在 PVE 的 `/root/.ssh/config` 里给这个主机配 `HostName`、`Port`。
+4. 手动跑一次（第一次连接会记下中控的主机指纹）：`systemctl daemon-reload && systemctl start fleet-backup-pull`，`journalctl -u fleet-backup-pull -n 5` 与 `ls -l /var/backups/fleet-prod` 确认后 `systemctl enable --now fleet-backup-pull.timer`。
+
+之后每天 04:30 左右取一份，存 `/var/backups/fleet-prod/fleet-prod-<北京时间>.tar`（0600），留 30 份。取到的和上一份完全一样（中控的备份没更新）时不存、服务以失败退出，`systemctl --failed` 里能看到；去中控 `systemctl status fleet-backup` 查原因。撤销 PVE 的拉取权限：删掉中控的 `/etc/fleet/backup.pub` 与 `/var/lib/fleet-backup/.ssh/authorized_keys`。
+
+### 从备份恢复
+
+在新装（或重装）的中控机上按顺序做：
+
+1. 正常部署一次：`deploy/central/deploy.sh <主机> <域名>`。装好 PostgreSQL、Caddy、fleet 用户、服务与定时器；这时库是空的，密钥是新生成的。
+2. 把备份 tar 拷到中控并解开：`mkdir -p /root/restore && tar -xf fleet-<时间>.tar -C /root/restore`
+3. 停服务、换库（`pg_restore` 以 postgres 执行，从标准输入读，对象属主恢复为 fleet）：
+   ```
+   systemctl stop fleet-server
+   runuser -u postgres -- psql -c 'drop database fleet' -c 'create database fleet owner fleet'
+   runuser -u postgres -- pg_restore -d fleet --exit-on-error < /root/restore/fleet.dump
+   ```
+4. 放回密钥与主机指纹。fleet.toml 用新装的那份（里面的库密码是第 1 步新生成的），备份里 fleet.toml 改过的其它设置（retention、numbering 等）对照着抄过来；备份里有 `etc/fleet/ipintel-overrides.toml`、`etc/fleet/backup.pub` 也照样放回：
+   ```
+   install -m 600 -o fleet -g fleet /root/restore/etc/fleet/secret.key /etc/fleet/secret.key
+   install -m 600 -o fleet -g fleet /root/restore/etc/fleet/ssh/id_ed25519 /etc/fleet/ssh/id_ed25519
+   install -m 644 -o fleet -g fleet /root/restore/etc/fleet/ssh/id_ed25519.pub /etc/fleet/ssh/id_ed25519.pub
+   install -m 640 -o fleet -g fleet /root/restore/var/lib/fleet/known_hosts /var/lib/fleet/known_hosts
+   diff /root/restore/etc/fleet/fleet.toml /etc/fleet/fleet.toml
+   ```
+5. 启动并确认：`systemctl start fleet-server`（启动时跑迁移：备份来自旧版本时补上新迁移）；`curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/api/v1/auth/me` 应为 401；`fleetctl status` 看机器。
+6. 中控 IP 变了：把域名解析改到新机器。agent 按域名上报，解析生效后自动恢复；Caddy 自动签证书。
+7. 删掉 `/root/restore`（里面有密钥）。

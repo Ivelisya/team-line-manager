@@ -1,0 +1,11 @@
+# /etc/systemd/system/fleet-backup-pull.timer — 家里 PVE：每天北京时间 04:30 左右取备份（中控 03:30 做好）；错过（关机）则开机后补跑
+[Unit]
+Description=fleet: daily pull of production backup
+
+[Timer]
+OnCalendar=*-*-* 04:30:00 Asia/Shanghai
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
