@@ -202,7 +202,7 @@ ProvisionItem = {
 `POST /agent/v1/report` 入库失败按类回：数据本身入不了库（SQLSTATE 22 类：坏字节、NUL、越界；23 类：违反约束）→ 422（`error.code="bad_report"`），agent 把这份报告移入 `dead/` 不再重发；其它（连接池超时、断连、磁盘满、只读…）→ 503，agent 退避重试（受本地队列的字节与时长上限约束）。agent 只把 4xx（401 撤销、403/404/408/429 除外）当永久拒绝，5xx 和网络错误一律重试。
 
 ## 访问监控
-线路机 agent 解析 Xray 访问日志上报，服务端写入 `access_event`（原始记录保留 `retention.access_days`=7 天），并每 5 分钟把当前小时和被标脏的小时重算进小时汇总（`access_hourly` / `access_source_hourly` / `access_target_seen`，保留 90 天，幂等；agent 断网后补传的旧记录在上报时把所在小时记进 `access_dirty`，下一轮补算；启动时补算缺口）。24h/7d/30d 的结果在进程内缓存：每轮汇总成功后整体作废；`summary` / `targets`（第一页）/ `sources` 最多缓存 `access_cache_secs`（默认 300）秒，单台机器的 `/machines/{id}/access` 与 `/machines/{id}/sources`（带最近原始记录、来源基线与异常）最多 30 秒；设 0 关闭。全部为只读 GET，读权限即可。
+线路机 agent 解析 Xray 访问日志上报，服务端写入 `access_event`（原始记录保留 `retention.access_days`=7 天），并每 5 分钟把当前小时和被标脏的小时重算进小时汇总（`access_hourly` / `access_source_hourly` 保留 31 天，窗口最长 30d；`access_target_seen` 记每个目标的首次 / 最近出现，最近出现超 90 天才删；幂等；agent 断网后补传的旧记录在上报时把所在小时记进 `access_dirty`，下一轮补算；启动时补算缺口）。24h/7d/30d 的结果在进程内缓存：每轮汇总成功后整体作废；`summary` / `targets`（第一页）/ `sources` 最多缓存 `access_cache_secs`（默认 300）秒，单台机器的 `/machines/{id}/access` 与 `/machines/{id}/sources`（带最近原始记录、来源基线与异常）最多 30 秒；设 0 关闭。全部为只读 GET，读权限即可。
 
 公共筛选参数（空串等同没给，非法值返回 400）：`window=1h|24h|7d|30d`（默认 24h，events 默认 7d）、`team=<团队id>`、`node=<节点id>`、`search=`（大小写不敏感的子串，`%` `_` 按字面）、`action=all|blocked|routed`、`kind=all|domain|ip`。
 
