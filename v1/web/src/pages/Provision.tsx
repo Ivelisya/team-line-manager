@@ -29,8 +29,6 @@ export function ProvisionPage() {
   const plans = usePlans().data ?? NONE;
   // 只能挂在已上线的线路机上。只取 id/名称，引用在内容不变时保持稳定，ctx 不随每次轮询变化（GridCell 的 memo 才有效）
   const relays = useRelayChoices().data ?? NONE_RELAYS;
-  const hosts = useHostChoices().data ?? NONE_HOSTS;
-  const ctx: Ctx = React.useMemo(() => ({ teams, relays, hosts, providers, plans }), [teams, relays, hosts, providers, plans]);
 
   const [mode, setMode] = React.useState<'single' | 'batch'>('single');
   const [rows, setRows] = React.useState<Row[]>([newRow()]);
@@ -40,11 +38,15 @@ export function ProvisionPage() {
   const [confirm, setConfirm] = React.useState(false);
   const [created, setCreated] = React.useState<{ machine_id: string; job_id: string; name: string }[] | null>(null);
   const check = useProvisionCheck(); const provision = useProvision();
+  const [sp, setSp] = useSearchParams();
+  const hostParam = sp.get('host');
+  // 宿主机候选取自整份机器列表，订阅着时列表随实时推送最多每 2 秒整表重取（批量上架期间一直在推）：只在用得到时订阅——
+  // 单台开了「在已有机器上添加 IP」、批量（哪一行都能填宿主机）、带着 ?host= 等预填
+  const hosts = useHostChoices(!created && (mode === 'batch' || rows[0].add_ip || hostParam != null)).data ?? NONE_HOSTS;
+  const ctx: Ctx = React.useMemo(() => ({ teams, relays, hosts, providers, plans }), [teams, relays, hosts, providers, plans]);
 
   // ?host=<宿主机 id>：宿主机候选到了之后预填——单台、落地机、打开「在已有机器上添加 IP」，团队与线路机带出宿主机的；预填完把参数从地址里删掉
   // （替换当前历史）。抽屉开在上架页时点「添加 IP 节点」只换地址参数、页面不重挂，跟着参数走，同一台宿主机再点一次也会再预填
-  const [sp, setSp] = useSearchParams();
-  const hostParam = sp.get('host');
   React.useEffect(() => {
     const h = hosts.find((x) => x.id === hostParam);
     if (!h) return;
