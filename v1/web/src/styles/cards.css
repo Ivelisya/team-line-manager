@@ -9,7 +9,7 @@
   grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--card-min)), 1fr));
 }
 .cards[data-view="small"] { --card-min: var(--card-min-small); }
-.cards[data-view="compact"] { --card-min: var(--card-min-small); }
+.cards[data-view="compact"] { --card-min: var(--card-min-compact); } /* 紧凑 260：视口约 ≥1420（侧栏展开）排 4 列，比小卡片多一列（每页 24 / 48 / 96 张是 3、4 的倍数） */
 
 .ncard {
   --rows: 10;
@@ -19,14 +19,12 @@
   margin-bottom: var(--grid-gap);
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); overflow: hidden;
   box-shadow: var(--shadow-card);
-  transition: border-color var(--dur-fast), box-shadow var(--dur-base) var(--ease-sheet), translate var(--dur-base) var(--ease-sheet);
-  animation: fade-in var(--dur-base) var(--ease-out); /* 出现时淡入（筛选后新进来的卡、换页） */
+  transition: border-color var(--dur-1) var(--ease-std), box-shadow var(--dur-2) var(--ease-out), translate var(--dur-2) var(--ease-out);
 }
 .ncard[data-view="small"] { --rows: 7; }
 .ncard[data-view="compact"] { --rows: 6; }
-/* 悬停上浮 2px：卡片的 transform 归 motion 的布局动画管，位移用独立的 translate 属性，互不覆盖（同 KPI 卡）。
-   卡片本身不可点（点里面的读数、按钮），不做按下缩放 */
-.ncard:hover { border-color: var(--line-strong); box-shadow: var(--shadow-card-hover); translate: 0 -2px; }
+/* 悬停上浮 2px 写在 components.css「交互状态」。卡片本身不可点（点里面的读数、按钮），不做按下缩放。
+   出现时不各自淡入：翻页 / 换视图由网格容器整块淡入一次（Home 的 .page-in），一页几十张卡不再各起一条动画 */
 .ncard[data-health="down"] { border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); }
 .ncard[data-health="degraded"] { border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
 .ncard.is-current { border-color: var(--accent); }
@@ -39,11 +37,11 @@
 .slot-seg { border-top: 1px solid var(--line); padding-top: var(--card-seg); margin-top: var(--card-seg); }
 .ncard[data-view="compact"] .slot-seg { padding-top: var(--sp-8); margin-top: var(--sp-8); }
 
-/* 卡内可点的读数（迹线、本月累计、剩余流量）：按钮去掉外观，悬停只给一层浅底 */
+/* 卡内可点的读数（迹线、本月累计、剩余流量）：按钮去掉外观，悬停只给一层浅底，按下整块微缩（块级 --press-lg） */
 .flow-trend, .flow-foot, .nc-quota {
   display: flex; width: 100%; box-sizing: border-box; margin: 0; padding: 0; border: 0; background: none;
   font: inherit; color: inherit; text-align: left; cursor: pointer; border-radius: var(--r-xs);
-  transition: background-color var(--dur-fast), box-shadow var(--dur-fast);
+  transition: background-color var(--dur-1) var(--ease-std), box-shadow var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out);
 }
 .flow-trend:hover, .flow-foot:hover, .nc-quota:hover { background: var(--hover); box-shadow: 0 0 0 4px var(--hover); }
 
@@ -51,11 +49,12 @@
 .nc-head { display: flex; align-items: center; gap: var(--inline-gap); min-height: 32px; min-width: 0; margin-top: var(--card-pad); }
 .nc-kind { display: inline-grid; place-items: center; flex: none; width: var(--flag-w); height: var(--flag-h); border-radius: 3px; background: var(--sunken); color: var(--fg-2); box-shadow: inset 0 0 0 1px var(--line); }
 .nc-kind .lucide { width: 11px; height: 11px; }
+/* 名称是文字按钮：按下从左端缩（文字不往中间跑），焦点环带小圆角 */
 .nc-name {
-  min-width: 0; padding: 0; border: 0; background: none; cursor: pointer; text-align: left;
+  min-width: 0; padding: 0; border: 0; border-radius: var(--r-xs); background: none; cursor: pointer; text-align: left;
   font: var(--fw-semibold) var(--fs-title) / var(--lh-title) var(--font-sans); letter-spacing: -0.02em;
   color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  transition: color var(--dur-fast);
+  transform-origin: 0 50%; transition: color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out);
 }
 .nc-name:hover { color: var(--accent); }
 .ncard[data-view="small"] .nc-name, .ncard[data-view="compact"] .nc-name { font-size: var(--fs-emph); line-height: var(--lh-emph); }
@@ -103,7 +102,9 @@
 [data-speed="low"] { --spd: var(--speed-low); }
 [data-speed="high"] { --spd: var(--speed-high); }
 [data-speed="max"] { --spd: var(--speed-max); }
-.flow-trend { align-items: center; gap: var(--sp-10); min-height: 14px; }
+.flow-trend { align-items: center; gap: var(--sp-10); min-width: 0; min-height: 14px; } /* min-width 0：点阵按列宽收，不把列撑宽、把「实时」挤出卡外 */
+/* 紧凑卡的流量列窄（约 120px）：迹线只画最近 20 个点，30 个 4px 点挤在一起看不清 */
+.ncard[data-view="compact"] .dots > i:nth-child(-n+10) { display: none; }
 /* 窄卡（手机）：方向标签放到读数上面，两列之间不挤。容器设在 .flow 上——卡片本身不能设 container-type（布局包含会让 subgrid 失效） */
 .flow { container-type: inline-size; }
 @container (max-width: 320px) { .flow-head { flex-direction: column; align-items: flex-start; gap: 0; } }
@@ -111,7 +112,7 @@
 .flow-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--fg-3); opacity: 0.6; }
 .flow-live[data-live] .flow-dot { background: var(--spd, var(--ok)); opacity: 1; }
 /* 呼吸只在卡片进入视口时（data-vis 由 NodeCard 的 IntersectionObserver 写；animation-delay 对齐全站同一节拍） */
-.flow-live[data-live][data-vis] .flow-dot { animation: breathe 2s ease-in-out infinite; animation-delay: inherit; }
+.flow-live[data-live][data-vis] .flow-dot { animation: breathe var(--dur-loop) var(--ease-std) infinite; animation-delay: inherit; }
 @media (prefers-reduced-motion: reduce) { .flow-live[data-live][data-vis] .flow-dot { animation: none; } }
 .flow-foot { align-items: center; justify-content: space-between; gap: var(--sp-8); font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); white-space: nowrap; }
 .flow-foot-label { display: inline-flex; align-items: center; gap: var(--sp-6); }
@@ -176,17 +177,16 @@
 .rcard {
   display: grid; gap: var(--sp-10); min-width: 0; padding: var(--sp-14) var(--card-pad) var(--sp-12);
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); box-shadow: var(--shadow-card);
-  transition: border-color var(--dur-fast), box-shadow var(--dur-base) var(--ease-sheet), translate var(--dur-base) var(--ease-sheet);
+  transition: border-color var(--dur-1) var(--ease-std), box-shadow var(--dur-2) var(--ease-out), translate var(--dur-2) var(--ease-out);
 }
-.rcard:hover { border-color: var(--line-strong); box-shadow: var(--shadow-card-hover); translate: 0 -2px; } /* 卡片类上浮 2px（KPI 卡 1px） */
 .rcard[data-health="down"] { border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); }
 .rcard[data-health="degraded"] { border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
 .rcard.is-current { border-color: var(--accent); }
 .rc-head { display: flex; align-items: center; gap: var(--inline-gap); min-width: 0; }
-.rc-name { flex: 1 1 auto; min-width: 0; padding: 0; border: 0; background: none; cursor: pointer; text-align: left; font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-sans); letter-spacing: -0.02em; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: color var(--dur-fast); }
+.rc-name { flex: 1 1 auto; min-width: 0; padding: 0; border: 0; border-radius: var(--r-xs); background: none; cursor: pointer; text-align: left; font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-sans); letter-spacing: -0.02em; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transform-origin: 0 50%; transition: color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out); } /* 同 .nc-name */
 .rc-name:hover { color: var(--accent); }
 .rcard.is-quiet .rc-name { color: var(--fg-2); }
-.rc-rings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-4); margin: 0 calc(-1 * var(--sp-6)); padding: var(--sp-6); border: 0; border-radius: var(--r-float); background: none; font: inherit; color: inherit; cursor: pointer; transition: background-color var(--dur-fast); }
+.rc-rings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-4); margin: 0 calc(-1 * var(--sp-6)); padding: var(--sp-6); border: 0; border-radius: var(--r-float); background: none; font: inherit; color: inherit; cursor: pointer; transition: background-color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out); }
 .rc-rings:hover:not(:disabled) { background: var(--hover); }
 .rc-rings:disabled { cursor: default; }
 .rc-gauge { display: grid; justify-items: center; gap: var(--sp-4); font: var(--fw-semibold) 11px / 16px var(--font-sans); color: var(--fg-2); }

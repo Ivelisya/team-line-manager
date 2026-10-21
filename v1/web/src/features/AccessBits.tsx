@@ -14,5 +14,5 @@ export function ResultPill({ conns, blocked }: { conns: number; blocked: number 
 
 /** 目标名：IP 目标带一个小标 */
 export const HostCell = ({ host, kind }: { host: string; kind: 'domain' | 'ip' }) => (
-  <span className="row" style={{ gap: 6, flexWrap: 'nowrap' }}><span className="ellipsis strong" title={host}>{host}</span>{kind === 'ip' && <Chip variant="neutral">IP</Chip>}</span>
+  <span className="row" style={{ gap: 6, flexWrap: 'nowrap' }}><span className="ellipsis strong" data-tip={host}>{host}</span>{kind === 'ip' && <Chip variant="neutral">IP</Chip>}</span>
 );

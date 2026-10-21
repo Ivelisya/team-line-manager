@@ -15,23 +15,7 @@ import { SkeletonRows } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
 import { resetOnOpen, useHeld } from '@/lib/useHeld';
 import { Chip, Empty, ErrorNote, Note, Num, PageHead, Panel } from '@/components/app/primitives';
-
-/** 提交中不能关；dirty（有未保存的改动）时点遮罩不关，Esc 与取消仍可关 */
-function FormDialog({ open, onOpenChange, title, desc, children, onSubmit, submitLabel, busy, valid = true, size, dirty }: {
-  open: boolean; onOpenChange: (o: boolean) => void; title: string; desc?: React.ReactNode; children: React.ReactNode; onSubmit: () => void; submitLabel: string; busy?: boolean; valid?: boolean; size?: 'sm' | 'md'; dirty?: boolean;
-}) {
-  return (
-    <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
-      <DialogContent size={size} onInteractOutside={(e) => { if (dirty) e.preventDefault(); }}>
-        <form style={{ display: 'grid', gap: 16 }} onSubmit={(e) => { e.preventDefault(); if (valid && !busy) onSubmit(); }}>
-          <DialogHeader><DialogTitle>{title}</DialogTitle>{desc && <DialogDescription>{desc}</DialogDescription>}</DialogHeader>
-          {children}
-          <DialogFooter><Button type="button" onClick={() => onOpenChange(false)} disabled={busy}>取消</Button><Button type="submit" variant="primary" loading={busy} disabled={!valid}>{submitLabel}</Button></DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
-  );
-}
+import { FormDialog } from '@/components/app/dialogs';
 
 const SECTIONS = ['teams', 'providers', 'plans'];
 
@@ -111,35 +95,37 @@ const TeamDialog = resetOnOpen(function TeamDialog({ team, open, onClose }: { te
   );
 });
 
-/** 重新编号：先预览差异，再一次性应用（token 防止预览后数据变了）。常驻挂载，关闭时播完退场动画 */
-function RenumberDialog({ team, open, onClose }: { team: Team; open: boolean; onClose: () => void }) {
+/** 重新编号：先预览差异，再一次性应用（token 防止预览后数据变了）。关闭时播完退场动画。
+ *  每次打开重新挂载（resetOnOpen），只认这次打开后取到的预览：缓存里还留着上一次的（关着时对话框也挂着，观察者没走，gcTime 0 回收不了） */
+const RenumberDialog = resetOnOpen(function RenumberDialog({ team, open, onClose }: { team: Team; open: boolean; onClose: () => void }) {
   const pv = useQuery({ queryKey: ['renumber', team.id], queryFn: () => fetchRenumber(team.id), gcTime: 0, staleTime: 0, enabled: open });
   const apply = useRenumber();
-  const n = pv.data?.changes.length ?? 0;
+  const d = pv.isFetchedAfterMount && pv.isSuccess ? pv.data : undefined;
+  const n = d?.changes.length ?? 0;
   return (
     <Dialog open={open} onOpenChange={(o) => !o && !apply.isPending && onClose()}>
       <DialogContent size="md">
         <DialogHeader><DialogTitle>重新编号 · {team.name}</DialogTitle>
           <DialogDescription>把在用节点压缩成 01..N（按现有编号先后）。退役时已自动压缩；这里用于手工指定过跳号的情况。</DialogDescription></DialogHeader>
-        {pv.isLoading && <div className="skel" style={{ height: 80 }} />}
-        {pv.isError && <Note tone="bad">{(pv.error as Error).message}</Note>}
-        {pv.data && (n === 0
+        {!pv.isFetchedAfterMount && <div className="skel" style={{ height: 80 }} />}
+        {pv.isFetchedAfterMount && pv.isError && <Note tone="bad">{(pv.error as Error).message}</Note>}
+        {d && (n === 0
           ? <Note tone="ok">编号已经连续，不需要调整。</Note>
           : <div className="table-wrap" style={{ maxHeight: 300, overflow: 'auto', border: '1px solid var(--line)', borderRadius: 'var(--r-float)' }}>
             <table className="dt is-one"><colgroup><col /><col style={{ width: 36 }} /><col /></colgroup>
               <thead><tr><th>当前名称</th><th /><th>调整后</th></tr></thead>
-              <tbody>{pv.data.changes.map((c) => <tr key={c.machine_id}><td className="num">{c.old_name}</td><td><ArrowRight size={14} style={{ color: 'var(--fg-3)' }} /></td><td className="strong num">{c.new_name}</td></tr>)}</tbody></table>
+              <tbody>{d.changes.map((c) => <tr key={c.machine_id}><td className="num">{c.old_name}</td><td><ArrowRight size={14} style={{ color: 'var(--fg-3)' }} /></td><td className="strong num">{c.new_name}</td></tr>)}</tbody></table>
           </div>)}
         <DialogFooter>
           <Button onClick={onClose} disabled={apply.isPending}>取消</Button>
-          {/* 重新打开时会先显示上次的预览再刷新：刷新完之前不让应用 */}
-          <Button variant="primary" disabled={!pv.data || n === 0 || pv.isFetching} loading={apply.isPending}
-            onClick={() => apply.mutate({ id: team.id, token: pv.data!.token }, { onSuccess: () => { toast.ok(`已重新编号：${n} 台`); onClose(); }, onError: (e) => { toast.err(e); void pv.refetch(); } })}>应用 {n > 0 ? `${n} 项改名` : ''}</Button>
+          {/* 应用失败后会重取预览（切回窗口也会）：重取完之前不让应用 */}
+          <Button variant="primary" disabled={!d || n === 0 || pv.isFetching} loading={apply.isPending}
+            onClick={() => apply.mutate({ id: team.id, token: d!.token }, { onSuccess: () => { toast.ok(`已重新编号：${n} 台`); onClose(); }, onError: (e) => { toast.err(e); void pv.refetch(); } })}>应用 {n > 0 ? `${n} 项改名` : ''}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
   );
-}
+});
 
 /* ---------------------------------------------------------------- 供应商 */
 const EMPTY_PROVIDER = { name: '', code: '', panel_url: '', timezone: 'Asia/Shanghai' };

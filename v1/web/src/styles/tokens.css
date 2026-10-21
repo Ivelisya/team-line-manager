@@ -4,8 +4,7 @@
 :root {
   color-scheme: light;
 
-  /* ---------- 1. 表面（4 级 + 3 个交互底） ---------- */
-  --fg-2-on-sunken: var(--fg-2);
+  /* ---------- 1. 表面（4 级 + 3 个交互底 + 弹层毛玻璃） ---------- */
   --canvas: #f6f7f9;                    /* H --bg（O #f5f6fa、N #f5f6fa 统一到它） */
   --canvas-glow: radial-gradient(1100px 560px at 50% -8%,
       color-mix(in srgb, var(--accent) 5%, transparent), transparent 60%); /* H --canvas-glow，只在亮色 */
@@ -17,10 +16,15 @@
   --thumb: #ffffff;                     /* H 分段选中项 */
   --selected: color-mix(in srgb, var(--accent) 6%, var(--surface)); /* O 表格选中行 accent 6% */
   --scrim: rgba(0, 0, 0, 0.4);          /* O 遮罩 rgba(0,0,0,.4)；精修后盖住整个视口（修 dna-ops M1） */
+  /* 弹层材质（菜单、右键、下拉、悬浮卡、作业弹层、日历、图表提示、toast）：浮层底 84% + 背后内容模糊提饱和，
+     不支持 backdrop-filter 时回退实底 --raised（components.css）。对话框、抽屉、提示框保持实底 */
+  --glass: color-mix(in srgb, var(--raised) 84%, transparent);
+  --glass-blur: saturate(180%) blur(20px);
 
-  /* ---------- 2. 线（2 级） ---------- */
+  /* ---------- 2. 线（2 级 + 浮层边线） ---------- */
   --line: rgba(17, 24, 39, 0.08);       /* H --line（O #e3e6ef、N rgba(57,65,90,.12) 统一到它） */
-  --line-strong: rgba(17, 24, 39, 0.14);/* H 上游 --border-strong rgba(24,24,27,.13)：输入框、次按钮描边、卡片悬停边、图表 0 线 */
+  --line-strong: rgba(17, 24, 39, 0.14);/* H 上游 --border-strong rgba(24,24,27,.13)：输入框、次按钮描边、卡片悬停边 */
+  --line-float: var(--line);            /* 浮层（弹层、toast、对话框、命令面板、抽屉）的边线：亮色同 --line，暗色提亮一级 */
 
   /* ---------- 3. 文字（2 级 + 1 个只做装饰的第三级） ---------- */
   --fg: #111827;                        /* H --fg（O #202333、N #262936 / 原生表格 #29316b 统一到它） */
@@ -57,8 +61,6 @@
   --chart-3: #0f9f78;                   /* 第三序列（只在 TCP 与出口验证并排的对照图里用）；超过 3 个序列拆小图 */
   --chart-grid: var(--line);            /* 实线发丝线（修 O 虚线网格 3 5） */
   --chart-axis: var(--fg-2);
-  --chart-zero: var(--line-strong);
-  --chart-fill: 8%;                     /* H 详情图“细线 + 淡填充”的填充浓度（只给 ↓ 序列） */
 
   /* ---------- 7. 字体 ---------- */
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Hiragino Sans GB",
@@ -91,10 +93,12 @@
   --r-xs: 4px;                          /* 只给复选框和键帽（H KPI 图标按钮 4 改为 8） */
   /* 心跳格、资源进度线、表格：直角（H 原样） */
 
-  /* ---------- 9. 阴影：卡片、KPI、面板有一层很轻的静止抬升（owner 2026-10-21 放开，原“卡片与面板无阴影”作废）；浮层更深 ---------- */
+  /* ---------- 9. 阴影：卡片、KPI、面板有一层很轻的静止抬升（owner 2026-10-21 放开，原“卡片与面板无阴影”作废）；浮层分两级 ---------- */
   --shadow-card: 0 1px 2px rgba(17, 24, 39, 0.04), 0 4px 16px rgba(17, 24, 39, 0.04);        /* 卡片/KPI/面板静止态 */
   --shadow-card-hover: 0 1px 2px rgba(17, 24, 39, 0.05), 0 10px 24px -6px rgba(17, 24, 39, 0.1); /* 可点击卡片悬停：更深一点，落在下方配合上浮（参照 CFSM-SAO 0 10px 24px -6px） */
-  --shadow-float: 0 8px 30px rgba(0, 0, 0, 0.12);   /* H --floating-shadow：弹层、菜单、toast、对话框、抽屉、命令面板（N 0 20px 70px .2 统一到它） */
+  /* 浮层两级（原来一份 --shadow-float 通用，菜单和对话框一样深，层次分不出来）：近处一层收边 + 远处一层落影 */
+  --shadow-pop: 0 2px 6px rgb(17 24 39 / 0.06), 0 12px 28px -6px rgb(17 24 39 / 0.16);      /* 锚定弹层：菜单、右键、下拉、悬浮卡、日历、作业弹层、toast、图表提示 */
+  --shadow-modal: 0 8px 20px rgb(17 24 39 / 0.08), 0 28px 64px -12px rgb(17 24 39 / 0.28); /* 模态面板：对话框、命令面板、节点抽屉、窄屏侧栏 */
   --shadow-thumb: 0 1px 4px rgba(0, 0, 0, 0.12);    /* H --segment-shadow：分段选中项（O 用线色当阴影，看不见） */
   --shadow-btn: 0 1px 2px rgba(0, 0, 0, 0.08);      /* O 主按钮 */
 
@@ -120,15 +124,14 @@
   --seg-item-sm: 22px;                  /* 小号分段（面板头里的时间范围）：轨道 28 */
   --icon-xs: 13px;                      /* H 卡内标签图标 */
   --icon-sm: 14px;                      /* 按钮、表格内图标 */
-  --icon-md: 16px;                      /* 侧栏、顶栏、卡头图标（H 15 取 16） */
   --icon-stroke: 1.5;                   /* H lucide 1.5（N 默认 2 统一到它） */
   --dot: 6px;                           /* H 状态圆点 */
   --flag-w: 21px; --flag-h: 14px;       /* ≈ H 卡片国旗 23×15、地区 chip 22×14，取 3:2 */
 
   /* ---------- 12. 数据图形 ---------- */
   --quota-h: 6px;                       /* H 流量额度胶囊轨道 */
-  --beat-w-max: 24px; --beat-h: 12px; --beat-gap: 3px; --beat-n: 20; /* H 心跳格 20 格均分整行（单格最宽 24）、高 12、间距 3、2px 圆角 */
-  --day-w: 8px;  --day-h: 16px;         /* 30 天可用性格：同一语言放大一档（O 12×20 收小） */
+  --beat-w-max: 24px; --beat-h: 12px; --beat-gap: 3px; /* H 心跳格 20 格均分整行（单格最宽 24）、高 12、间距 3、2px 圆角 */
+  --latency-ok: var(--ok);              /* 心跳格正常 = 绿（H 原样，“绿色心跳条”是辨识度） */
   /* 首页（参照 CFSM-SAO）：分区底、分段格条、每个资源指标一个颜色、实时速率按量级着色、彩色标签 */
   --section: #eceef1;                   /* 首页大圆角分区底：比画布深一级，白卡浮在上面 */
   --section-line: rgba(17, 24, 39, 0.06);
@@ -146,7 +149,6 @@
   --tag-gold-fg: #ca8a04; --tag-sky-fg: #0284c7;
   --tag-gray-bg: rgba(107, 114, 128, 0.14);  --tag-gray-fg: #4b5563;
   --cell-stagger: 14ms;                 /* 格条首次点亮时逐格的延迟（从左往右扫过去） */
-  --dur-ring: 700ms;                    /* 圆环描边 */
 
   /* ---------- 13. 表格与密度（O 原有 宽松/紧凑 两档，保留；只定义这一次） ---------- */
   --thead-h: 36px;                      /* O 38 */
@@ -169,44 +171,29 @@
   --popover-w: 248px;                   /* H 今日流量弹层 */
   --card-min-large: 360px;              /* H 大卡片 */
   --card-min-small: 340px;              /* H 小卡片 */
-  --card-min-compact: 260px;            /* H 紧凑（组件原意 260；L3 改 280 导致 1152 宽仍 3 列，dna-home L13） */
+  --card-min-compact: 260px;            /* H 紧凑（组件原意 260）：视口约 ≥1420（侧栏展开）排 4 列；再窄卡内放不下，不要再压 */
 
-  /* ---------- 15. 动效（短、轻） ---------- */
-  --dur-press: 80ms;                    /* 按下缩放 */
-  --dur-fast: 120ms;                    /* 悬停、颜色（H .15s） */
-  --dur-base: 180ms;                    /* 分段滑块、下划线、弹层进入、折叠（H .18s/.2s） */
-  --dur-panel: 220ms;                   /* 抽屉、对话框、卡片重排 */
-  --dur-bar: 400ms;                     /* 进度线/额度条宽度 */
-  --dur-flash: 1200ms;                  /* 状态变化时 pill 外圈淡出一次 */
-  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);   /* H 浮层进入曲线 */
-  --ease-std: cubic-bezier(0.4, 0, 0.2, 1);
-  --ease-sheet: cubic-bezier(0.32, 0.72, 0, 1); /* 苹果式面板曲线：抽屉滑入、卡片悬停抬升 */
-  --dur-sheet: 320ms;                   /* 抽屉滑入 */
+  /* ---------- 15. 动效：6 个时长 + 2 条曲线 + 3 档按下缩放。每条过渡都写“时长令牌 + 曲线令牌”，不留默认 ease；
+     系统“减少动态效果”时时长归零（文件末尾）。motion 的弹簧（lib/motion.tsx SPRING）只管滑块与卡片重排，不在这里 ---------- */
+  --dur-press: 80ms;                    /* 按下缩放：快按，松开按元素自己的 --dur-2 慢回 */
+  --dur-1: 140ms;                       /* 悬停与颜色等原地变化；锚定弹层、顶部面板的退场 */
+  --dur-2: 220ms;                       /* 浮层与面板进场、松开回弹、悬停上浮、页签内容；抽屉与 toast 的退场 */
+  --dur-3: 340ms;                       /* 边缘抽屉滑入（节点抽屉、窄屏侧栏） */
+  --dur-data: 450ms;                    /* 读数变化：格条、心跳格、进度线、圆环、曲线展开、KPI 滚数（lib/useCountUp 读它） */
+  --dur-loop: 2s;                       /* 循环的统一节拍：呼吸点、作业徽标、状态胶囊脉冲、骨架、步骤环。改这里要同步 NodeCard.tsx LiveDot 的 2000（按它对齐呼吸相位） */
+  --ease-out: cubic-bezier(0.32, 0.72, 0, 1); /* 苹果式先快后缓：所有进场、移动到位、回弹 */
+  --ease-std: cubic-bezier(0.4, 0, 0.2, 1);   /* 原地状态变化（颜色、透明度）、退场 */
+  --press-sm: 0.94;                     /* 按下缩放（components.css「交互状态」）：小控件——图标按钮、顶栏按钮、复制、关闭、展开箭头、日历格 */
+  --press-md: 0.97;                     /* 文字控件——按钮、筛选 chip、分段、页签、图例、搜索入口、卡片名称、告警胶囊 */
+  --press-lg: 0.98;                     /* 块——KPI 卡、卡内可点的读数 */
+  --state-press: linear-gradient(var(--hover), var(--hover)); /* 行（菜单项、表格行、导航项、作业项…）按下不缩放：悬停底上再叠这一层 */
 
   /* ---------- 16. 层级 ---------- */
-  --z-sticky: 10; --z-pagehead: 20; --z-topbar: 30; --z-drawer: 40;
+  --z-sticky: 10; --z-topbar: 30; --z-drawer: 40;
   --z-dialog: 50; --z-popover: 60; --z-palette: 65; --z-toast: 70; --z-tooltip: 80; /* 弹层（下拉、日期、菜单）在对话框之上，否则对话框里的下拉被盖住 */
 
-  /* ---------- 17. 兼容别名（原版变量名 + shared/charts.js 读取的名字；页面 CSS 不要用） ---------- */
-  --bg: var(--canvas);
-  --card: var(--surface);
-  --card-2: var(--sunken);
-  --text-1: var(--fg);
-  --text-2: var(--fg-2);
-  --text-3: var(--fg-3);
-  --border: var(--line);
-  --border-subtle: var(--line);
-  --border-strong: var(--line-strong);
-  --ok-dot: var(--ok);   --warn-dot: var(--warn);   --bad-dot: var(--bad);   --info-dot: var(--info);
-  --unknown-ring: var(--neutral);
-  --tracker-ok: var(--ok);
-  --tracker-minor: color-mix(in srgb, var(--ok) 50%, var(--surface)); /* ≥99% 但有失败：淡绿，不引入新色相 */
-  --latency-ok: var(--ok);              /* 心跳格正常 = 绿（H 原样，“绿色心跳条”是辨识度） */
-
-  /* ---------- 18. 调色板：点缀渐变（靛蓝预设 = 原版，平涂；粉紫默认见文件末尾“调色板”） ---------- */
+  /* ---------- 17. 调色板：点缀渐变（靛蓝预设 = 原版，平涂；粉紫默认见文件末尾“调色板”） ---------- */
   --grad-soft: var(--accent-soft);      /* 侧栏当前项、已选胶囊的底 */
-  --swatch-plum: #8e3bb0;               /* “强调色”菜单里的色块 */
-  --swatch-indigo: #5b5bd6;
 }
 
 /* 紧凑密度：只在运营页（原版 宽松/紧凑）生效；首页的 大卡片/小卡片/紧凑 是视图，不走这里 */
@@ -270,8 +257,10 @@
   --chart-1: #7c7cf0;
   --chart-2: #d9692f;
   --chart-3: #199e70;
-  --chart-fill: 12%;
-  --shadow-float: 0 8px 30px rgba(0, 0, 0, 0.45);
+  /* 浮层：暗底上投影看不太出来，靠提亮的边线和顶部 1px 内高光把它从下面一层分出来（粉紫暗色不覆盖这几项，沿用这里） */
+  --line-float: rgba(255, 255, 255, 0.1);
+  --shadow-pop: inset 0 1px 0 rgb(255 255 255 / 0.06), 0 12px 28px -6px rgb(0 0 0 / 0.6);
+  --shadow-modal: inset 0 1px 0 rgb(255 255 255 / 0.06), 0 28px 64px -12px rgb(0 0 0 / 0.7);
   --shadow-thumb: 0 1px 3px rgba(0, 0, 0, 0.5);
   --shadow-btn: none;
   --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.25);                 /* 暗色：近乎不可见，靠 1px 边线分层 */
@@ -316,5 +305,6 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  :root { --dur-press: 0ms; --dur-fast: 0ms; --dur-base: 0ms; --dur-panel: 0ms; --dur-sheet: 0ms; --dur-bar: 0ms; --dur-flash: 0ms; --dur-ring: 0ms; --cell-stagger: 0ms; }
+  /* 循环动画（--dur-loop）不靠归零，各处显式 animation: none（extras.css 末尾、cards.css） */
+  :root { --dur-press: 0ms; --dur-1: 0ms; --dur-2: 0ms; --dur-3: 0ms; --dur-data: 0ms; --cell-stagger: 0ms; }
 }

@@ -2,9 +2,10 @@
 import * as React from 'react';
 import { NavLink, Navigate, Outlet, useLocation, useNavigationType } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { BellRing, Boxes, Briefcase, CloudUpload, LayoutGrid, ListChecks, LogOut, Menu, Monitor, Moon, Palette, Radar, RotateCw, Server, Settings, Sun, Waypoints } from 'lucide-react';
+import { Boxes, LogOut, Menu, Monitor, Moon, Palette, RotateCw, Sun } from 'lucide-react';
+import { NAV } from '@/lib/nav';
 import { ApiError, AUTH_EVENT, post } from '@/lib/api';
-import { useIncidents, useMachine, useMe } from '@/lib/queries';
+import { useIncidents, useMe } from '@/lib/queries';
 import { useStream } from '@/lib/stream';
 import { useTheme, type ThemePref } from '@/lib/theme';
 import { closeEvacuate, closeMove, closeRestore, closeRetire, useEvacuateTarget, useMoveTarget, useRestoreTarget, useRetireTarget } from '@/lib/nodeActions';
@@ -13,17 +14,15 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Toaster } from '@/components/ui/toast';
 import { useDrawer } from '@/lib/drawer';
-import { useHeld } from '@/lib/useHeld';
 import { Hotkeys, PaletteTrigger } from '@/features/Hotkeys';
 import { JobsIndicator } from '@/features/JobsIndicator';
 import { ErrorBoundary } from '@/components/app/ErrorBoundary';
 import { Note, Pill } from '@/components/app/primitives';
 import { MotionProvider } from '@/lib/motion';
 
-// 抽屉（含各页签、图表、对话框）和生命周期对话框只在第一次用到时才下载，登录页和首屏不背这份体积。
+// 抽屉（含各页签、图表、对话框）和生命周期对话框（换线路机、搬空、恢复、退役）只在第一次用到时才下载，登录页和首屏不背这份体积。
 // 加载失败（发版后旧块 404）由外面的 silent ErrorBoundary 接住并提示刷新。
 const NodeDrawer = React.lazy(() => import('@/features/NodeDrawer').then((m) => ({ default: m.NodeDrawer })));
-const RetireDialog = React.lazy(() => import('@/components/app/RetireDialog').then((m) => ({ default: m.RetireDialog })));
 const LifecycleDialogsHost = React.lazy(() => import('@/components/app/LifecycleDialogs').then((m) => ({ default: m.LifecycleDialogsHost })));
 
 /** 一旦为真就一直为真：懒加载的浮层第一次需要时挂载，之后保持挂载（关闭动画、再次打开都不用重来） */
@@ -33,34 +32,12 @@ function useEver(v: boolean) {
   return r.current;
 }
 
-const NAV = [
-  { to: '/', label: '首页', icon: LayoutGrid, end: true },
-  { to: '/nodes', label: '机器', icon: Server },
-  { to: '/relays', label: '线路', icon: Waypoints },
-  { to: '/provision', label: '上架', icon: CloudUpload },
-  { to: '/jobs', label: '作业', icon: ListChecks },
-  { to: '/access', label: '访问监控', icon: Radar },
-  { to: '/catalog', label: '团队与套餐', icon: Briefcase },
-  { to: '/incidents', label: '告警', icon: BellRing, badge: true },
-  { to: '/settings', label: '设置', icon: Settings },
-] as const;
-
 /** 懒加载页面下载期间的占位：页头骨架，外壳不闪 */
 function PageFallback() {
   return <div className="stack" role="status" aria-label="加载中"><Skeleton w={160} h={28} /><Skeleton h={96} /><Skeleton h={220} /></div>;
 }
 
-const closeLifecycle = () => { closeMove(); closeEvacuate(); closeRestore(); };
-
-/** 卡片/表格菜单里“退役…”要弹的确认框：全站只渲染这一份 */
-function NodeActionsHost() {
-  const id = useRetireTarget();
-  const q = useMachine(id);
-  // id 清空后继续用最近的机器渲染 open=false 的对话框，让 Radix 播完关闭动画再卸载
-  const m = useHeld(id, q.data);
-  if (!m) return null;
-  return <React.Suspense fallback={null}><RetireDialog key={m.id} m={m} open={!!id} onOpenChange={(o) => { if (!o) closeRetire(); }} onDone={closeRetire} /></React.Suspense>;
-}
+const closeLifecycle = () => { closeMove(); closeEvacuate(); closeRestore(); closeRetire(); };
 
 function DrawerHost() {
   const { id } = useDrawer();
@@ -69,9 +46,9 @@ function DrawerHost() {
 }
 
 function LifecycleHost() {
-  // 三个 hook 都要无条件调用：写成 a() || b() 会短路，hook 数量随渲染变化，React 报错
-  const move = useMoveTarget(), evacuate = useEvacuateTarget(), restore = useRestoreTarget();
-  const ever = useEver(!!(move || evacuate || restore));
+  // 四个 hook 都要无条件调用：写成 a() || b() 会短路，hook 数量随渲染变化，React 报错
+  const move = useMoveTarget(), evacuate = useEvacuateTarget(), restore = useRestoreTarget(), retire = useRetireTarget();
+  const ever = useEver(!!(move || evacuate || restore || retire));
   return ever ? <React.Suspense fallback={null}><LifecycleDialogsHost /></React.Suspense> : null;
 }
 
@@ -139,10 +116,10 @@ export function Shell() {
           <NavLink to="/" className="brand"><span className="brand-mark"><Boxes size={14} /></span>团队线路管理</NavLink>
           <PaletteTrigger />
           <div className="topbar-right">
-            {firing > 0 && <NavLink to="/incidents" style={{ textDecoration: 'none' }} aria-label={`${firing} 条告警`}><Pill tone="bad">{firing}<span className="hide-sm"> 条告警</span></Pill></NavLink>}
+            {firing > 0 && <NavLink to="/incidents" className="top-alert" aria-label={`${firing} 条告警`}><Pill tone="bad">{firing}<span className="hide-sm"> 条告警</span></Pill></NavLink>}
             <JobsIndicator />
             {stream === 'error'
-              ? <Pill tone="warn" dot="pulse" role="status" title="页面数据暂停更新，连上后自动补齐"><span>实时已断开<span className="hide-sm">，正在重连…</span></span></Pill>
+              ? <Pill tone="warn" dot="pulse" role="status" tip="页面数据暂停更新，连上后自动补齐"><span>实时已断开<span className="hide-sm">，正在重连…</span></span></Pill>
               : <Tip text={stream === 'open' ? '实时连接正常' : '正在连接…'} side="bottom">
                 <span className="dot" data-tone={stream === 'open' ? undefined : 'neutral'} tabIndex={0} role="img" aria-label={stream === 'open' ? '实时连接正常' : '正在连接'} />
               </Tip>}
@@ -167,10 +144,10 @@ export function Shell() {
           <nav><ul className="nav-list">
             {NAV.map((n) => (
               <li key={n.to}>
-                <NavLink to={n.to} end={'end' in n ? n.end : false} className="nav-item">
+                <NavLink to={n.to} end={n.end} className="nav-item">
                   {() => <>
                     <n.icon size={16} /><span className="nav-label">{n.label}</span>
-                    {'badge' in n && firing > 0 && <span className="nav-badge">{firing}</span>}
+                    {n.badge && firing > 0 && <span className="nav-badge">{firing}</span>}
                   </>}
                 </NavLink>
               </li>
@@ -185,7 +162,6 @@ export function Shell() {
         </main>
         {/* 浮层宿主各包一层边界：它们出错（图表、懒加载块失败等）只收起自己，不拖垮整页 */}
         <ErrorBoundary silent resetKey={loc.search}><DrawerHost /></ErrorBoundary>
-        <ErrorBoundary silent resetKey={loc.pathname} onError={closeRetire}><NodeActionsHost /></ErrorBoundary>
         <ErrorBoundary silent resetKey={loc.pathname} onError={closeLifecycle}><LifecycleHost /></ErrorBoundary>
         <Hotkeys theme={theme} />
         <TipHost />

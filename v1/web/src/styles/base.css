@@ -37,7 +37,6 @@ a { color: inherit; }
 @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes fade-out { from { opacity: 1; } to { opacity: 0; } }
 @keyframes skel-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-@keyframes pill-flash { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--pill-dot) 45%, transparent); } 100% { box-shadow: 0 0 0 8px transparent; } }
 .spin { animation: spin 1s linear infinite; }
 
 /* ---------- 外壳 ---------- */
@@ -69,10 +68,13 @@ a { color: inherit; }
   width: var(--h-md); height: var(--h-md); padding: 0; border: 0; border-radius: var(--r-control);
   display: inline-grid; place-items: center; cursor: pointer;
   background: var(--accent-soft); color: var(--accent-soft-fg);
-  transition: background-color var(--dur-fast), transform var(--dur-base) var(--ease-sheet);
+  transition: background-color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out);
 }
 .top-btn:hover, .top-btn[aria-expanded="true"] { background: color-mix(in srgb, var(--accent-soft) 82%, var(--accent)); }
-.top-btn:active:not(:disabled) { transform: scale(0.94); transition-duration: var(--dur-press); } /* 快按慢回，同 .btn */
+/* 顶栏告警胶囊（链到告警页）：悬停底色加深一级，按下同文字控件微缩（components.css「交互状态」）；行内的 a 不能缩放，改 inline-flex */
+.top-alert { display: inline-flex; flex: none; border-radius: var(--r-pill); text-decoration: none; transition: scale var(--dur-2) var(--ease-out); }
+.top-alert > .pill { transition: background-color var(--dur-1) var(--ease-std); }
+@media (hover: hover) { .top-alert:hover > .pill { --pill-bg: color-mix(in srgb, var(--bad) calc(var(--tint) + 8%), transparent); } }
 .nav-toggle { display: none; background: transparent; color: var(--fg-2); } /* 汉堡按钮不带软色底，悬停才给浅底 */
 .nav-toggle:hover { background: var(--hover); color: var(--fg); }
 
@@ -81,7 +83,6 @@ a { color: inherit; }
   width: var(--sidebar-w); box-sizing: border-box; padding: var(--sp-8);
   background: var(--surface); border-right: 1px solid var(--line);
   overflow-y: auto; overscroll-behavior: contain; display: flex; flex-direction: column;
-  transition: transform var(--dur-panel) var(--ease-std), visibility var(--dur-panel);
 }
 .nav-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--sp-2); }
 .nav-item {
@@ -90,11 +91,10 @@ a { color: inherit; }
   border: 0; border-radius: var(--r-control); background: transparent;
   color: var(--fg); text-decoration: none; cursor: pointer; text-align: left;
   font: var(--fw-medium) var(--fs-body) / var(--lh-body) var(--font-sans);
-  transition: background-color var(--dur-fast), color var(--dur-fast);
+  transition: background-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std);
 }
-.nav-item .lucide { flex: none; color: var(--fg-2); transition: color var(--dur-fast); }
+.nav-item .lucide { flex: none; color: var(--fg-2); transition: color var(--dur-1) var(--ease-std); }
 .nav-item:hover { background: var(--hover); }
-.nav-item:active:not([aria-current="page"]) { background: linear-gradient(var(--hover), var(--hover)), var(--hover); } /* 按下：悬停底再叠一层 */
 .nav-item[aria-current="page"] { background: var(--grad-soft); color: var(--accent-soft-fg); font-weight: var(--fw-semibold); }
 .nav-item[aria-current="page"] .lucide { color: var(--accent-soft-fg); }
 .nav-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -110,15 +110,18 @@ a { color: inherit; }
 .nav-scrim { display: none; }
 
 @media (max-width: 820px) { :root { --gutter: 16px; } }
+/* ≤760px：侧栏收成左侧抽屉，与节点抽屉同一套——进场 --dur-3 / --ease-out 滑入，退场 --dur-2 / --ease-std 收回，遮罩同步淡入淡出（只压暗不模糊）。
+   过渡写在目标状态上（打开取开态这条，关上取关态那条）；关上时 visibility 等滑出播完再隐藏，遮罩淡出期间已不拦点击 */
 @media (max-width: 760px) {
   .nav-toggle { display: inline-grid; }
-  .sidebar { width: 280px; z-index: var(--z-drawer); box-shadow: var(--shadow-float); }
+  .sidebar { width: 280px; z-index: var(--z-drawer); box-shadow: var(--shadow-modal); transition: transform var(--dur-3) var(--ease-out), visibility 0s; }
   .main { margin-left: 0; }
-  .app:not([data-nav="open"]) .sidebar { transform: translateX(-100%); visibility: hidden; }
-  .app[data-nav="open"] .nav-scrim {
+  .app:not([data-nav="open"]) .sidebar { transform: translateX(-100%); visibility: hidden; transition: transform var(--dur-2) var(--ease-std), visibility 0s var(--dur-2); }
+  .nav-scrim {
     display: block; position: fixed; inset: var(--topbar-h) 0 0 0; z-index: calc(var(--z-drawer) - 1);
-    background: var(--scrim); animation: fade-in var(--dur-base) var(--ease-out);
+    background: var(--scrim); transition: opacity var(--dur-3) var(--ease-out), visibility 0s;
   }
+  .app:not([data-nav="open"]) .nav-scrim { opacity: 0; visibility: hidden; pointer-events: none; transition: opacity var(--dur-2) var(--ease-std), visibility 0s var(--dur-2); }
   .brand { font-size: var(--fs-body); }
 }
 @media (max-width: 480px) {
@@ -145,19 +148,38 @@ a { color: inherit; }
   .page-title { font-size: 20px; line-height: 28px; }
 }
 
-/* 路由切换：页面内容只淡入（不位移，避免和卡片布局动画叠加） */
-.page-in { animation: fade-in var(--dur-base) var(--ease-out); }
+/* 路由切换（Shell，key=路由段）与首页翻页、切换卡片 / 环形 / 表格（Home 的网格容器，key 只含页码，换卡片密度不重挂）：
+   整块只淡入一次（不位移，避免和卡片布局动画叠加）；卡片自己不再各起一条淡入 */
+.page-in { animation: fade-in var(--dur-2) var(--ease-out); }
 
 /* 切换深浅色 / 配色（lib/theme.ts）：切换那一帧关掉全部过渡与动画，整页颜色同时换完，不再按各自的过渡时长一块一块地变；
    支持 View Transitions 时外面再包一层整页交叉淡入 */
 [data-theme-swap] *, [data-theme-swap] *::before, [data-theme-swap] *::after { transition: none !important; animation-duration: 0s !important; }
-::view-transition-old(root), ::view-transition-new(root) { animation-duration: var(--dur-panel); animation-timing-function: var(--ease-std); }
+::view-transition-old(root), ::view-transition-new(root) { animation-duration: var(--dur-2); animation-timing-function: var(--ease-std); }
 
 /* 页面里的滚动区（抽屉正文、对话框里的列表、表格横向滚动…）一律细滚动条、跟随主题线色；页面本身的滚动条保持系统样式 */
 body * { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
 /* 独立滚动的面板：滚到头不把滚动链到页面 */
-.drawer-body, .sidebar, .logbox, .cmd-list, .jobs-pop-list, .pol-tree, .pol-pv-table, .pol-chips, .reason-list, .select-content [data-radix-select-viewport] { overscroll-behavior: contain; }
-.table-wrap { overscroll-behavior-x: contain; }
+.drawer-body, .sidebar, .logbox, .cmd-list, .jobs-pop-list, .menu, .pol-tree, .pol-pv-table, .pol-chips, .reason-list, .select-content [data-radix-select-viewport] { overscroll-behavior: contain; }
+/* 横向滚动区（表格、分段、页签、步骤条、规则编辑器）：触控板横扫到头不触发浏览器的前进 / 后退手势 */
+.table-wrap, .seg, .tabs-list, .stepbar-wrap, .pol-ta { overscroll-behavior-x: contain; }
+
+/* 放不下而在滚动的区域，边缘渐隐提示“那边还有”：还有内容藏着的一侧淡出 20px，滚到头的一侧不淡（首页分组分段控件窄屏时团队藏在右边，过去看不出来）。
+   纯 CSS：滚动驱动动画按滚动位置推 --fs / --fe（开头 / 末尾的渐隐宽度）；不能滚动时滚动时间线不生效，两个值停在初始 0，外观不变；
+   不支持滚动驱动动画的浏览器不加遮罩。菜单不加：遮罩会连它的毛玻璃底、边框一起淡掉，还会裁掉投影 */
+@property --fs { syntax: "<length>"; inherits: false; initial-value: 0px; }
+@property --fe { syntax: "<length>"; inherits: false; initial-value: 0px; }
+@keyframes edge-fade { 0% { --fs: 0px; --fe: 20px; } 6%, 94% { --fs: 20px; --fe: 20px; } 100% { --fs: 20px; --fe: 0px; } }
+@supports (animation-timeline: scroll()) {
+  .seg, .tabs-list {
+    mask-image: linear-gradient(to right, transparent, #000 var(--fs), #000 calc(100% - var(--fe)), transparent);
+    animation: edge-fade linear both; animation-timeline: scroll(self inline);
+  }
+  .reason-list, .cmd-list, .jobs-pop-list, .logbox {
+    mask-image: linear-gradient(to bottom, transparent, #000 var(--fs), #000 calc(100% - var(--fe)), transparent);
+    animation: edge-fade linear both; animation-timeline: scroll(self block);
+  }
+}
 
 /* 登录页 */
 .login-screen { min-height: 100vh; display: grid; place-items: center; padding: var(--sp-16); }

@@ -1,14 +1,14 @@
 /* shadcn/ui 主题契约：标准变量名一律指向 tokens.css 的设计 token，不引入新颜色（外观不变）。
    只写在 :root：var() 在 <html> 上解析，亮/暗 × plum/indigo 四套主题都落在 <html data-theme data-palette> 上，自动跟随，不用逐套重写。
-   例外两处：
-   - --accent 已是 tokens.css 的强调色（品牌色），不能覆盖；shadcn 的 accent 角色（菜单项高亮、ghost 按钮悬停底）
-     在 Tailwind 里取 --ui-accent / --accent-foreground（见 tailwind.config.ts）。
-   - --card、--border 已在 tokens.css「兼容别名」里定义（= --surface / --line），含义与 shadcn 相同，这里不重复。
+   例外一处：--accent 已是 tokens.css 的强调色（品牌色），不能覆盖；shadcn 的 accent 角色（菜单项高亮、ghost 按钮悬停底）
+   在 Tailwind 里取 --ui-accent / --accent-foreground（见 tailwind.config.ts）。
    新加 shadcn 组件直接用 bg-background、text-muted-foreground、bg-primary/90 这类类名即可。 */
 :root {
   --background: var(--canvas);
   --foreground: var(--fg);
+  --card: var(--surface);
   --card-foreground: var(--fg);
+  --border: var(--line);
   --popover: var(--raised);
   --popover-foreground: var(--fg);
   --primary: var(--accent-solid);

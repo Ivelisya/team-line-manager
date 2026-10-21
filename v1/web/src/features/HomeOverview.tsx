@@ -75,8 +75,11 @@ function ClusterPanel({ o }: { o: Overview | undefined }) {
   const online = o?.online ?? 0; const offline = o?.offline ?? 0; const total = online + offline;
   const down = o ? o.nodes.down + o.relays.down : 0; const degraded = o ? o.nodes.degraded + o.relays.degraded : 0;
   const rate = total ? (online / total) * 100 : 0;
-  // 格条按比例分段着色：在线绿、离线红；没有机器全灰
-  const colors = React.useMemo(() => Array.from({ length: ONLINE_N }, (_, i) => (!total ? 'var(--neutral)' : ((i + 0.5) / ONLINE_N) * total < online ? 'var(--ok)' : 'var(--bad)')), [online, total]);
+  // 格条按比例分段着色：在线绿、离线红（末尾几格）；有离线至少 1 格红，不会因为离线占比不到一格就全绿；没有机器全灰
+  const colors = React.useMemo(() => {
+    const bad = offline ? Math.max(1, Math.round((offline / total) * ONLINE_N)) : 0;
+    return Array.from({ length: ONLINE_N }, (_, i) => (!total ? 'var(--neutral)' : i >= ONLINE_N - bad ? 'var(--bad)' : 'var(--ok)'));
+  }, [offline, total]);
   const healthy = o && !down && !degraded;
   const now = o ? o.net_rx_bps + o.net_tx_bps : 0; const sc = F.rateScale(now);
   return (

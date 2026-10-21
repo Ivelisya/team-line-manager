@@ -15,10 +15,12 @@ export function ChartContainer({ config, className, height, children }: { config
 }
 
 interface TipProps { active?: boolean; payload?: { dataKey?: string | number; value?: unknown; color?: string }[]; label?: string | number }
-export function ChartTooltip({ config, labelFormat, valueFormat }: { config: ChartConfig; labelFormat?: (l: string | number) => string; valueFormat?: (k: string, v: number) => string }) {
+/** 悬停提示框 + 十字线（柱状图传 cursor={{ fill: … }}，画成整列底色）。是返回元素的函数而不是组件：recharts 按子元素的类型
+ *  （displayName / name 为 Tooltip）找提示组件，包一层组件就对不上，连鼠标事件都不绑，图上永远没有提示框 */
+export function chartTooltip(config: ChartConfig, labelFormat?: (l: string | number) => string, valueFormat?: (k: string, v: number) => string, cursor: object = { stroke: 'var(--line-strong)' }) {
   return (
     <Recharts.Tooltip
-      cursor={{ stroke: 'var(--line-strong)' }}
+      cursor={cursor}
       isAnimationActive={false} // 提示框紧跟十字线；默认的 400ms 位移动画会让它拖在后面
       content={({ active, payload, label }: TipProps) => {
         if (!active || !payload?.length) return null;
@@ -44,7 +46,7 @@ export function ChartLegend({ config, hidden, onToggle }: { config: ChartConfig;
     <div className="chart-legend">
       {Object.entries(config).map(([k, v]) => (
         <button key={k} type="button" className="chart-legend-item" aria-pressed={!hidden.has(k)} style={{ '--lc': v.color } as React.CSSProperties} onClick={() => onToggle(k)}
-          title={hidden.has(k) ? `显示「${v.label}」` : `隐藏「${v.label}」`}><i />{v.label}</button>
+          data-tip={hidden.has(k) ? `显示「${v.label}」` : `隐藏「${v.label}」`}><i />{v.label}</button>
       ))}
     </div>
   );

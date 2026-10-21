@@ -1,7 +1,7 @@
 // 通用展示原件：每种只有一份实现（状态 pill / 圆点、KPI 卡、到期读数、表头排序、标签/值、段标题、面板、页头…）。
 import * as React from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowDownUp, Check, ChevronDown, ChevronUp, CircleAlert, Copy, Home, Inbox, RotateCw, Server, Waypoints } from 'lucide-react';
+import { ArrowDownUp, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Copy, Home, Inbox, RotateCw, Server, Waypoints } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { dueFmt, type Fmt } from '@/lib/format';
 import type { EntryView, HealthReason, Kind, Lifecycle, MachineView } from '@/lib/types';
@@ -12,16 +12,18 @@ import type { BeatCell } from '@/lib/derive';
 import { copyText } from '@/lib/clipboard';
 
 /** 数值 + 灰色小单位 */
-export function Num({ f, className }: { f: Fmt; className?: string }) {
-  return <span className={cn('num', className)}>{f.v}{f.u && <> <span className="unit">{f.u}</span></>}</span>;
+export function Num({ f }: { f: Fmt }) {
+  return <span className="num">{f.v}{f.u && <> <span className="unit">{f.u}</span></>}</span>;
 }
 
 export type Tone = 'ok' | 'warn' | 'bad' | 'info' | 'neutral';
 
+// 下面几个原件的 tip：悬停 / 键盘聚焦时的说明，写成 data-tip 交给全站一份 TipHost 显示（外观同其它提示框，不用浏览器自带的 title）
+
 /** 状态 pill（唯一实现）：健康、生命周期、作业状态都走它 */
-export const Pill = React.forwardRef<HTMLSpanElement, { tone?: Tone; dot?: 'ring' | 'pulse' | 'none'; children: React.ReactNode; title?: string; className?: string } & React.HTMLAttributes<HTMLSpanElement>>(
-  ({ tone = 'neutral', dot, children, title, className, ...p }, ref) => (
-    <span ref={ref} className={cn('pill', className)} data-tone={tone} data-dot={dot} title={title} {...p}>{children}</span>
+export const Pill = React.forwardRef<HTMLSpanElement, { tone?: Tone; dot?: 'ring' | 'pulse' | 'none'; children: React.ReactNode; tip?: string; className?: string } & React.HTMLAttributes<HTMLSpanElement>>(
+  ({ tone = 'neutral', dot, children, tip, className, ...p }, ref) => (
+    <span ref={ref} className={cn('pill', className)} data-tone={tone} data-dot={dot} data-tip={tip} {...p}>{children}</span>
   ),
 );
 Pill.displayName = 'Pill';
@@ -45,7 +47,7 @@ const reasonsTip = (reasons: HealthReason[]) => (reasons.length ? <ReasonList re
 /** 健康状态圆点：颜色之外给读屏与悬停一份文字。上架中 / 上架失败 / 退役中的健康是 inactive，文字改用生命周期（同 HealthPill），上架失败标红 */
 export const StatusDot = ({ status, lifecycle }: { status: string; lifecycle: Lifecycle }) => {
   const text = lifecycle === 'provisioning' || lifecycle === 'failed' || lifecycle === 'retiring' ? LIFECYCLE_LABEL[lifecycle] : HEALTH_LABEL[status];
-  return <span className="dot" data-tone={lifecycle === 'failed' ? 'bad' : HEALTH_TONE[status]} role="img" aria-label={text} title={text} />;
+  return <span className="dot" data-tone={lifecycle === 'failed' ? 'bad' : HEALTH_TONE[status]} role="img" aria-label={text} data-tip={text} />;
 };
 /** 到期读数：N 天后 / 今天 / 已过期 N 天，7 天内黄、过期红（卡片、表格、悬浮卡共用）。
  *  tail：没有“到期”标签的地方接上“到期”（3 天后到期 / 今天到期 / 已过期 3 天） */
@@ -59,17 +61,17 @@ export const LifecyclePill = ({ lc }: { lc: Lifecycle | string }) => (
 );
 
 // 入口状态：active 按是否已应用细分
-export const entryState = (e: EntryView) => (e.lifecycle === 'disabled' ? <Pill tone="neutral" dot="ring">已停用</Pill> : e.lifecycle === 'active' ? (e.applied ? <Pill tone="ok">运行中</Pill> : e.apply_error ? <span title={e.apply_error}><Pill tone="bad">应用失败</Pill></span> : <Pill tone="info" dot="pulse">应用中</Pill>) : <Pill tone="info" dot="pulse">{ENTRY_LABEL[e.lifecycle]}</Pill>);
+export const entryState = (e: EntryView) => (e.lifecycle === 'disabled' ? <Pill tone="neutral" dot="ring">已停用</Pill> : e.lifecycle === 'active' ? (e.applied ? <Pill tone="ok">运行中</Pill> : e.apply_error ? <Pill tone="bad" tip={e.apply_error}>应用失败</Pill> : <Pill tone="info" dot="pulse">应用中</Pill>) : <Pill tone="info" dot="pulse">{ENTRY_LABEL[e.lifecycle]}</Pill>);
 
-export function Chip({ children, variant, title, className }: { children: React.ReactNode; variant?: 'neutral' | 'warn'; title?: string; className?: string }) {
-  return <span className={cn('chip', variant === 'neutral' && 'chip-neutral', variant === 'warn' && 'chip-warn', className)} title={title}>{children}</span>;
+export function Chip({ children, variant, tip, className }: { children: React.ReactNode; variant?: 'neutral' | 'warn'; tip?: string; className?: string }) {
+  return <span className={cn('chip', variant === 'neutral' && 'chip-neutral', variant === 'warn' && 'chip-warn', className)} data-tip={tip}>{children}</span>;
 }
-export const Mark = ({ children, title }: { children: React.ReactNode; title?: string }) => <span className="mark" title={title}>{children}</span>;
+export const Mark = ({ children, tip }: { children: React.ReactNode; tip?: string }) => <span className="mark" data-tip={tip}>{children}</span>;
 
 /** 类型标（原版国旗位）：线路机 / 落地机 / 家宽代理 */
 export function KindIcon({ kind }: { kind: Kind }) {
   const Ic = kind === 'relay' ? Waypoints : kind === 'proxy' ? Home : Server;
-  return <span className="nc-kind" title={KIND_LABEL[kind]} aria-label={KIND_LABEL[kind]}><Ic /></span>;
+  return <span className="nc-kind" data-tip={KIND_LABEL[kind]} aria-label={KIND_LABEL[kind]}><Ic /></span>;
 }
 
 /** 筛选 chip */
@@ -82,11 +84,11 @@ export function FilterChip({ pressed, onClick, children, count }: { pressed: boo
 }
 
 type StatTone = 'ok' | 'teal' | 'bad' | 'amber' | 'gold' | 'sky' | 'violet' | 'blue';
-/** KPI 卡（唯一实现）：彩色图标 + 标签，大号读数 + 小单位，一行灰色说明；三行固定，同一排等高 */
+/** KPI 卡（唯一实现）：彩色图标 + 标签，大号读数 + 小单位，一行灰色说明；三行固定，同一排等高。可点的（to）标题行最右多一个小箭头 */
 export function Stat({ icon, tone, label, value, unit, caption, to, loading }: { icon: React.ReactNode; tone: StatTone; label: string; value: React.ReactNode; unit?: string; caption?: React.ReactNode; to?: string; loading?: boolean }) {
   const inner = (
     <>
-      <span className="stat-label"><span className="stat-ic" data-tone={tone}>{icon}</span>{label}</span>
+      <span className="stat-label"><span className="stat-ic" data-tone={tone}>{icon}</span>{label}{to && <ChevronRight className="stat-go" aria-hidden />}</span>
       <span className="stat-value">{loading ? <span className="skel" style={{ width: 64, height: 20 }} /> : <>{value}{unit && <small>{unit}</small>}</>}</span>
       <span className="stat-cap">{loading ? '' : caption ?? ' '}</span>
     </>
@@ -166,7 +168,7 @@ export function Empty({ icon, text, hint, children }: { icon?: React.ReactNode; 
   return <div className="empty"><span className="empty-ic">{icon ?? <Inbox size={22} />}</span><div className="empty-text">{text}</div>{hint && <div className="hint">{hint}</div>}{children}</div>;
 }
 export const Note = ({ tone = 'info', icon, children }: { tone?: 'info' | 'ok' | 'warn' | 'bad'; icon?: React.ReactNode; children: React.ReactNode }) => (
-  <div className="note" data-tone={tone}>{icon}<div style={{ minWidth: 0 }}>{children}</div></div>
+  <div className="note" data-tone={tone}>{icon}<div style={{ flex: 1, minWidth: 0 }}>{children}</div></div>
 );
 
 /** 查询出错的提示条：错误信息 + 可选的重试 */
@@ -195,14 +197,15 @@ export function CopyButton({ text, label = '内容', className, size = 14 }: { t
   );
 }
 
-/** 心跳条：n 格，ok/warn/bad/空；titles 与 cells 一一对应，作每格的悬停说明 */
-export function Beat({ cells, titles, caption, win, stale, n = 20 }: { cells: BeatCell[]; titles?: string[]; caption: React.ReactNode; win?: string; stale?: boolean; n?: number }) {
-  const pad = Math.max(0, n - cells.length);
-  const shown = cells.slice(-n); const tips = titles?.slice(-n);
+const BEAT_N = 20;
+/** 心跳条：20 格，ok/warn/bad/空；titles 与 cells 一一对应，作每格的悬停说明 */
+export function Beat({ cells, titles, caption, win, stale }: { cells: BeatCell[]; titles?: string[]; caption: React.ReactNode; win?: string; stale?: boolean }) {
+  const pad = Math.max(0, BEAT_N - cells.length);
+  const shown = cells.slice(-BEAT_N); const tips = titles?.slice(-BEAT_N);
   return (
     <div className={cn('beat', stale && 'is-stale')}>
       <div className="beat-cap"><span className="beat-main ellipsis">{caption}</span>{win && <span className="beat-win">{win}</span>}</div>
-      <div className="beat-cells">{Array.from({ length: pad + shown.length }, (_, i) => i < pad ? <i key={i} /> : <i key={i} data-t={shown[i - pad] ?? undefined} title={tips?.[i - pad]} />)}</div>
+      <div className="beat-cells">{Array.from({ length: pad + shown.length }, (_, i) => i < pad ? <i key={i} /> : <i key={i} data-t={shown[i - pad] ?? undefined} data-tip={tips?.[i - pad]} />)}</div>
     </div>
   );
 }

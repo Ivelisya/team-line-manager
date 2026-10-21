@@ -2,7 +2,6 @@
 // 菜单内容只在打开时挂载，所以这里的 hook（mutation、路由）不会给每张卡片增加开销。
 // 菜单本身由 NodeMenus 按网格 / 表格挂一份，卡片和行里不放 Radix 根。
 import * as React from 'react';
-import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { ArrowUpCircle, BellOff, Copy, Link2, PanelRightOpen, PencilLine, Power, Repeat2, Undo2 } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
@@ -13,7 +12,8 @@ import { copyShareLink, copyText } from '@/lib/clipboard';
 import { useHeld } from '@/lib/useHeld';
 import { toast } from '@/components/ui/toast';
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuSub, ContextMenuSubContent, ContextMenuSubTrigger, ContextMenuTrigger } from '@/components/ui/context-menu';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger } from '@/components/ui/overlays';
+import { DropdownMenuItem, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger } from '@/components/ui/overlays';
+import { useAnchoredDropdown } from './AnchoredDropdown';
 
 export type MenuEntry =
   | { key: string; sep: true }
@@ -94,20 +94,15 @@ function NodeDropdownItems({ m }: { m: MachineView }) {
 /** 网格 / 表格级的节点菜单：整个容器（children，须是 DOM 元素）只挂一个右键菜单和一个“⋯”下拉。
  *  以前每张卡、每行各一对 Radix 菜单根：每个根都给 document 加一个 keydown 捕获监听，卡片随推送重渲染时也跟着重画。
  *  右键：按最近的 [data-id] 找到机器，Radix ContextMenu 照常定位在指针处（触屏长按、Shift+F10 也照常）；
- *  “⋯”：带 data-node-menu 的按钮被点击（键盘回车 / 空格也是 click）时，往这个按钮里插一个盖满它的透明定位框当触发元素
- *  （插在按钮里而不是按坐标放：锁滚动让出滚动条槽位、推送改了卡片高度时，菜单仍跟着按钮走）。
+ *  “⋯”：卡片 / 行里带 data-node-menu 的按钮，锚定共享下拉见 useAnchoredDropdown。
  *  rows：容器里渲染着的机器，菜单内容随推送更新 */
 export function NodeMenus({ rows, children }: { rows: MachineView[]; children: React.ReactElement }) {
   const find = (id: string | null | undefined) => (id ? rows.find((m) => m.id === id) : undefined);
   const picked = React.useRef<HTMLElement | null>(null);
   const [ctxId, setCtxId] = React.useState<string | null>(null);
-  const [dd, setDd] = React.useState<{ id: string; btn: HTMLElement } | null>(null);
-  const [ddOpen, setDdOpen] = React.useState(false);
   // 关闭动画期间继续用最近的那台渲染菜单
   const ctxM = useHeld(ctxId, find(ctxId));
-  const ddM = useHeld(ddOpen ? dd?.id : null, find(dd?.id));
-  // 打开期间那台被筛掉（卡片要卸载了）：菜单跟着收起，不留在一个已经不在页面上的按钮上
-  if (ddOpen && !ddM) setDdOpen(false);
+  const dd = useAnchoredDropdown('[data-node-menu]', (el) => el.closest<HTMLElement>('[data-id]')?.dataset.id, find);
 
   // 右键（触屏是长按，Radix 从 pointerdown 起计时）先于 Radix 记下是哪张卡；落在卡片之间的空隙不弹（preventDefault 让 Radix 跳过）
   const pick = (e: React.SyntheticEvent) => {
@@ -120,29 +115,13 @@ export function NodeMenus({ rows, children }: { rows: MachineView[]; children: R
     el?.toggleAttribute('data-menu', open);
     setCtxId(open && el ? el.dataset.id! : null);
   };
-  const onClick = (e: React.MouseEvent) => {
-    const btn = (e.target as Element).closest<HTMLElement>('[data-node-menu]');
-    const id = btn?.closest<HTMLElement>('[data-id]')?.dataset.id;
-    if (!btn || !find(id)) return;
-    btn.setAttribute('aria-expanded', 'true');
-    setDd({ id: id!, btn }); setDdOpen(true);
-  };
-  const closeDd = () => { dd?.btn.setAttribute('aria-expanded', 'false'); setDdOpen(false); };
-
   return (
     <>
       <ContextMenu onOpenChange={onCtx}>
-        <ContextMenuTrigger asChild onContextMenu={pick} onPointerDown={pick} onClick={onClick}>{children}</ContextMenuTrigger>
+        <ContextMenuTrigger asChild onContextMenu={pick} onPointerDown={pick} onClick={dd.onClick}>{children}</ContextMenuTrigger>
         <ContextMenuContent>{ctxM && <NodeContextItems m={ctxM} />}</ContextMenuContent>
       </ContextMenu>
-      {dd && createPortal(
-        <DropdownMenu open={ddOpen} onOpenChange={(o) => { if (!o) closeDd(); }}>
-          <DropdownMenuTrigger asChild><span className="menu-anchor" aria-label="更多操作" /></DropdownMenuTrigger>
-          {/* 关闭后焦点回到被点的“⋯”（Radix 默认回到触发元素，这里的触发元素是看不见的定位框） */}
-          <DropdownMenuContent align="end" onCloseAutoFocus={(e) => { e.preventDefault(); if (dd.btn.isConnected) dd.btn.focus(); }}>{ddM && <NodeDropdownItems m={ddM} />}</DropdownMenuContent>
-        </DropdownMenu>,
-        dd.btn,
-      )}
+      {dd.menu('更多操作', dd.cur && <NodeDropdownItems m={dd.cur} />)}
     </>
   );
 }

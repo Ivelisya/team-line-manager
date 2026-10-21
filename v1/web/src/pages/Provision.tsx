@@ -283,7 +283,7 @@ function BatchGrid({ rows, setRows, ctx, results, errors, stale }: { rows: Row[]
                         <GridCell col={c} ci={ci} row={r} opts={c.type === 'team' ? opts.team : c.type === 'relay' ? opts.relay : c.type === 'provider' ? opts.provider : c.type === 'plan' ? opts.planFor(r.provider_id) : undefined} onChange={change} onPaste={onPaste} />
                       </td>
                     ))}
-                    <td style={{ padding: '0 8px' }} title={le.concat(res?.errors ?? []).join('；')}>
+                    <td style={{ padding: '0 8px' }} data-tip={le.concat(res?.errors ?? []).join('；')}>
                       {le.length ? <span style={{ color: 'var(--bad-text)' }}>{le.join('；')}</span>
                         : res ? (res.ok ? <span style={{ color: stale ? 'var(--fg-3)' : 'var(--ok-text)' }}>✓ {res.name}{res.relay_port ? ` · :${res.relay_port}` : ''}</span> : <span style={{ color: 'var(--bad-text)' }}>{res.errors.join('；')}</span>)
                         : <span className="t-muted">—</span>}

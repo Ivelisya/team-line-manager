@@ -16,7 +16,7 @@ export function CommandDialog({ open, onOpenChange, title, children }: { open: b
   return (
     <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
       <DialogPrimitive.Portal>
-        <Scrim className="overlay cmd-overlay" kind="dialog" />
+        <Scrim className="overlay cmd-overlay" />
         <DialogPrimitive.Content className="cmd-dialog" aria-describedby={undefined}>
           <DialogPrimitive.Title className="sr-only">{title}</DialogPrimitive.Title>
           {children}

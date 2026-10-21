@@ -16,7 +16,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, Di
 import { SkeletonRows } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
 import { ConfirmDialog } from '@/components/app/dialogs';
-import { useHeld } from '@/lib/useHeld';
+import { resetOnOpen, useHeld } from '@/lib/useHeld';
 import { AccessViewSwitch } from '@/components/app/AccessViewSwitch';
 import { Chip, Empty, ErrorNote, Note, PageHead, Panel, Pill, type Tone } from '@/components/app/primitives';
 import { fmtN } from '@/features/AccessBits';
@@ -153,7 +153,7 @@ function NodeRow({ n, here, pick }: { n: PolicyNode; here: boolean; pick: (s: Se
       <button type="button" className="pol-item" aria-current={here} onClick={() => pick({ scope: 'node', id: n.id })}>
         <span className="pol-name"><Trunc className="strong">{n.name}</Trunc>{!n.has_entry && <span className="pol-sub">还没有入口</span>}</span>
         {n.policy.draft && <Tip text={`草稿：${MODE_LABEL[n.policy.draft.mode]}`}><span><Chip variant="warn">草稿</Chip></span></Tip>}
-        {n.effective.source === 'team' && n.effective.mode !== 'observe' && <span className="pol-inh" title="跟随团队的设置">继承</span>}
+        {n.effective.source === 'team' && n.effective.mode !== 'observe' && <span className="pol-inh" data-tip="跟随团队的设置">继承</span>}
         <ModePill mode={n.effective.mode} />
       </button>
     </div>
@@ -317,11 +317,12 @@ function DomainTag({ d, mark }: { d: string; mark?: 'add' | 'del' }) {
 }
 
 /* ================================================================ 预览与发布 */
-function PreviewDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
+/** 每次打开重新挂载（resetOnOpen），只显示这次打开后算出的预览：缓存里还留着上一次的（关着时对话框也挂着，观察者没走，gcTime 0 回收不了） */
+const PreviewDialog = resetOnOpen(function PreviewDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
   const q = usePolicyPreview(open);
   const publish = usePublishPolicies();
   const [ask, setAsk] = React.useState(false);
-  const d = q.data;
+  const d = q.isFetchedAfterMount && q.isSuccess ? q.data : undefined;
   const totalBlock = d?.nodes.reduce((s, n) => s + n.would_block, 0) ?? 0;
   const total = d?.nodes.reduce((s, n) => s + n.total_conns, 0) ?? 0;
   const empty = !!d && d.draft_count === 0;
@@ -333,8 +334,8 @@ function PreviewDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o
             <DialogTitle>预览：发布后会怎样</DialogTitle>
             <DialogDescription>{d ? `按最近 ${d.window_hours} 小时的访问汇总模拟，实际结果以发布后为准。` : '正在按最近 24 小时的访问汇总模拟…'}</DialogDescription>
           </DialogHeader>
-          {q.isLoading && <SkeletonRows rows={4} list />}
-          {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
+          {!q.isFetchedAfterMount && <SkeletonRows rows={4} list />}
+          {q.isFetchedAfterMount && q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
           {empty && <Empty icon={<ShieldCheck size={22} />} text="没有未发布的草稿" />}
           {d && !empty && (
             <div className="pol-pv">
@@ -392,7 +393,7 @@ function PreviewDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o
         }} />
     </>
   );
-}
+});
 
 function ChangeList({ changes }: { changes: PolicyChange[] }) {
   if (!changes.length) return null;
@@ -430,8 +431,8 @@ function VersionsPanel() {
               <tbody>
                 {list.map((v) => (
                   <tr key={v.id}>
-                    <td><b className="strong">v{v.seq}</b>{v.is_current && <span className="pol-cur" title="当前生效的就是这个版本的内容">当前</span>}<span className="sub">{v.kind === 'rollback' ? `回滚到 v${v.rollback_of_seq ?? '?'}` : '发布'}</span></td>
-                    <td title={F.dtFull(v.created_at)}>{F.dt(v.created_at)}<span className="sub">{v.actor}</span></td>
+                    <td><b className="strong">v{v.seq}</b>{v.is_current && <span className="pol-cur" data-tip="当前生效的就是这个版本的内容">当前</span>}<span className="sub">{v.kind === 'rollback' ? `回滚到 v${v.rollback_of_seq ?? '?'}` : '发布'}</span></td>
+                    <td data-tip={F.dtFull(v.created_at)}>{F.dt(v.created_at)}<span className="sub">{v.actor}</span></td>
                     <td><VersionChanges changes={v.changes} /></td>
                     <td>
                       {v.relays.length === 0 ? <span className="t-sub">无需应用</span> : (
@@ -466,8 +467,9 @@ function VersionChanges({ changes }: { changes: PolicyChange[] }) {
   const full = changes.map(one).join('\n');
   return (
     <Tip text={changes.length > 2 ? <div className="pol-tip">{changes.map((c) => <div key={`${c.scope}:${c.id}`}>{one(c)}</div>)}</div> : null}>
-      <div className="pol-vchg" title={changes.length > 2 ? undefined : full}>
-        {changes.slice(0, 2).map((c) => <Trunc key={`${c.scope}:${c.id}`} className="cell-main">{one(c)}</Trunc>)}
+      {/* 完整内容只给一个提示：两项以内悬停整格看全文（data-tip，换行分项），多于两项用上面的列表；每行自己只省略、不再各挂截断提示 */}
+      <div className="pol-vchg" data-tip={changes.length > 2 ? undefined : full}>
+        {changes.slice(0, 2).map((c) => <span key={`${c.scope}:${c.id}`} className="cell-main">{one(c)}</span>)}
         {changes.length > 2 && <span className="sub">还有 {changes.length - 2} 项</span>}
       </div>
     </Tip>

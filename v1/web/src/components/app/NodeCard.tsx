@@ -44,7 +44,7 @@ const Head = memo(function Head({ name, kind, ip, status, lc, view, onOpen }: { 
 });
 
 const IpTags = ({ ip, sshPort }: { ip: string; sshPort: number }) => (
-  <span className="nc-marks">{ip.includes(':') ? <Tag c="blue">V6</Tag> : <Tag c="green">V4</Tag>}{sshPort !== 22 && <Mark title="SSH 端口">SSH {sshPort}</Mark>}</span>
+  <span className="nc-marks">{ip.includes(':') ? <Tag c="blue">V6</Tag> : <Tag c="green">V4</Tag>}{sshPort !== 22 && <Mark tip="SSH 端口">SSH {sshPort}</Mark>}</span>
 );
 interface Info { ip: string; sshPort: number; entry: string; plan: MachineView['plan'] }
 /** 大卡片：地址行 + 入口 / 套餐 / 套餐带宽 / 流量上限 2×2 */
@@ -78,13 +78,13 @@ function Meters({ m, compact }: { m: MachineView; compact?: boolean }) {
       <CellMeter metric="cpu" icon={<Cpu />} label="CPU" value={r.cpu.value} pct={r.cpu.pct} sub={compact ? undefined : r.cpu.sub} empty={quiet} />
       <CellMeter metric="mem" icon={<MemoryStick />} label="内存" value={r.mem.value} pct={r.mem.pct} sub={compact ? undefined : r.mem.sub} empty={quiet} />
       <CellMeter metric="disk" icon={<HardDrive />} label="磁盘" value={r.disk.value} pct={r.disk.pct} sub={compact ? undefined : r.disk.sub} empty={quiet} />
-      <CellMeter metric="load" icon={<Gauge />} label="负载" value={r.load.value} pct={r.load.pct} sub={compact ? undefined : r.load.sub} empty={quiet} title={r.load.hint} />
+      <CellMeter metric="load" icon={<Gauge />} label="负载" value={r.load.value} pct={r.load.pct} sub={compact ? undefined : r.load.sub} empty={quiet} tip={r.load.hint} />
     </div>
   );
 }
 
 // 实时状态点的呼吸只给视口里的卡片：一页几十张卡各一个无限动画，滚出视口的没必要跟着跑（毛玻璃顶栏下面每帧有变化还得重做模糊）。
-// 直接改 DOM 属性，不触发重渲染；进入视口时按全站同一个 2 秒节拍对齐相位，各卡的点仍是一起呼吸
+// 直接改 DOM 属性，不触发重渲染；进入视口时按全站同一个 2 秒节拍（下面的 2000 = tokens.css 的 --dur-loop，两处要同步）对齐相位，各卡的点仍是一起呼吸
 const watchVis = sharedObserver<IntersectionObserverEntry>((cb) => new IntersectionObserver(cb));
 function LiveDot({ live }: { live: boolean }) {
   const ref = useRef<HTMLSpanElement>(null);
@@ -143,6 +143,9 @@ function EntryTable({ m }: { m: MachineView }) {
     </table>
   );
 }
+/** 探测延迟读数：全部失败显示「失败」（同抽屉入口表），没有探测是「—」 */
+const probeMs = (ms: number | null, fail: boolean) => (fail ? <span style={{ color: 'var(--bad-text)' }}>失败</span> : <Num f={F.ms(ms)} />);
+
 /** 无主机（小卡片 / 紧凑）：本月业务 + 探测延迟两列 */
 function FlowRow({ m }: { m: MachineView }) {
   const t = monthTraffic(m); const ps = probeSummary(m);
@@ -152,7 +155,7 @@ function FlowRow({ m }: { m: MachineView }) {
   return (
     <div className="nc-flow2">
       {col('本月业务', <Num f={F.bytes(t.down)} />, <Num f={F.bytes(t.up)} />, <ArrowDown />, <ArrowUp />)}
-      {col('TCP · 出口', <Num f={F.ms(ps.tcp)} />, <Num f={F.ms(ps.egress)} />, <Radar />, <Globe />)}
+      {col('TCP · 出口', probeMs(ps.tcp, ps.tcpFail), probeMs(ps.egress, ps.egressFail), <Radar />, <Globe />)}
     </div>
   );
 }
@@ -166,7 +169,7 @@ function QuotaSlot({ m, onOpen }: { m: MachineView; onOpen: Open }) {
         <span className="nc-qlabel"><Database />剩余流量
           <b className={cn('num', q.rem === 0 && 'is-bad')}>{q.rem == null ? '不限' : q.rem > 0 ? <Num f={F.bytes(q.rem)} /> : '已超限'}</b>
         </span>
-        <span className="nc-quse" title={`周期 ${q.start.slice(5)} 起`}>本周期已用 <Num f={F.bytes(q.used)} />{q.limit > 0 && <> / <Num f={F.gb(q.limit)} /></>}</span>
+        <span className="nc-quse" data-tip={`周期 ${q.start.slice(5)} 起`}>本周期已用 <Num f={F.bytes(q.used)} />{q.limit > 0 && <> / <Num f={F.gb(q.limit)} /></>}</span>
       </span>
       {q.rem != null && <Cells pct={q.pct} colors={QUOTA_COLORS} />}
       <span className="sr-only">（查看流量页签）</span>
@@ -175,13 +178,13 @@ function QuotaSlot({ m, onOpen }: { m: MachineView; onOpen: Open }) {
 }
 
 /** 心跳条：近 1 小时的探测（全部卡片共用一个 /probe-beats 查询，各取自己的那份） */
-const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, quiet, tcpOk, total, tcp, egress }: { id: string; kind: MachineView['kind']; lifecycle: MachineView['lifecycle']; quiet: boolean; tcpOk: number; total: number; tcp: number | null; egress: number | null }) {
+const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, quiet, tcpOk, total, tcp, egress, tcpFail, egressFail }: { id: string; kind: MachineView['kind']; lifecycle: MachineView['lifecycle']; quiet: boolean } & ReturnType<typeof probeSummary>) {
   const live = lifecycle === 'active';
   const bq = useProbeBeats(useCallback((d: ProbeBeats) => d[id], [id]));
   const beats = bq.data;
   const cap = !live ? <span className="t-muted">{lifecycle === 'retired' ? '已退役' : '尚未开始探测'}</span>
     : kind === 'relay' ? <>入口连通 <b className="num" style={tcpOk < total ? { color: 'var(--warn-text)' } : undefined}>{tcpOk}/{total}</b></>
-    : <>TCP <b><Num f={F.ms(tcp)} /></b> · 出口 <b><Num f={F.ms(egress)} /></b></>;
+    : <>TCP <b>{probeMs(tcp, tcpFail)}</b> · 出口 <b>{probeMs(egress, egressFail)}</b></>;
   // 时段按这份数据取回的时刻对齐（轮询间隔 2 分钟，用当前时刻在跨格时会错一格）
   const titles = useMemo(() => (live ? beatTitles(beats, bq.dataUpdatedAt) : undefined), [live, beats, bq.dataUpdatedAt]);
   return <Beat cells={live ? beatCells(beats) : []} titles={titles} caption={cap} win="近 1 小时" stale={quiet} />;
@@ -205,7 +208,7 @@ const Tags = memo(function Tags({ code, provider, kind, service, maintenance, pr
   return (
     <div className="nc-tags">
       <div className="nc-tags-list">
-        {code && <Tag c={tagColor(code)} title={provider}>{code}</Tag>}
+        {code && <Tag c={tagColor(code)} tip={provider}>{code}</Tag>}
         <Tag c={KIND_TAG[kind]}>{KIND_LABEL[kind]}</Tag>
         {service && <Tag c={tagColor(service)}>{service}</Tag>}
         {maintenance && <Tag c="amber">维护中</Tag>}
@@ -220,8 +223,8 @@ const Foot = memo(function Foot({ health, lifecycle, maintenance, onOpen }: Pick
     <footer className="nc-foot">
       <HealthPill m={{ health, lifecycle, maintenance }} />
       <div className="nc-foot-right">
-        <Button variant="text" size="sm" onClick={() => onOpen()}><Settings2 size={14} /><span>详情</span></Button>
-        <Button variant="text" size="sm" onClick={() => onOpen('manage')}><span>管理</span></Button>
+        <Button variant="text" size="sm" onClick={() => onOpen()}><PanelRightOpen size={14} /><span>详情</span></Button>
+        <Button variant="text" size="sm" onClick={() => onOpen('manage')}><Settings2 size={14} /><span>管理</span></Button>
       </div>
     </footer>
   );

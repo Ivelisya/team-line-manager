@@ -4,7 +4,7 @@
 import { useCallback } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { del, get, patch, post, put } from './api';
-import { collator, defaultOrder } from './sort';
+import { collator, makeDefaultCompare } from './sort';
 import type { ApiKey, Incident, Job, JobSummary, Paged, JobLog, MachineView, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RestoreBody, RestorePreview, MoveResult, EvacuateResult, ProbeBeats, SeriesResp, Silence, Subscription, Team, AuditEntry, NotifyChannel, NotifyLogEntry } from './types';
 
 export const useMe = () => useQuery({ queryKey: ['me'], queryFn: () => get<{ username: string }>('/auth/me'), retry: false, staleTime: 5 * 60_000 });
@@ -16,11 +16,11 @@ export const useOverview = () => useQuery({ queryKey: ['overview'], queryFn: ({ 
 
 const machinesQuery = (scope: 'live' | 'retired' | 'all') => ({ queryKey: ['machines', scope], queryFn: ({ signal }: { signal: AbortSignal }) => get<MachineView[]>(`/machines?scope=${scope}`, signal) });
 /** 机器列表，已按默认顺序排好：线路机 → 团队 → 编号（故障/离线不下沉） */
-export function useMachines(scope: 'live' | 'retired' | 'all' = 'live', enabled = true) {
+export function useMachines(scope: 'live' | 'retired' | 'all' = 'live') {
   const teams = useTeams().data;
-  // select 排序：只在列表或团队变化时重跑；排序依据没变时沿用上次的顺序（defaultOrder）
-  const select = useCallback((d: MachineView[]) => defaultOrder(scope, d, teams ?? []), [scope, teams]);
-  return useQuery({ ...machinesQuery(scope), select, enabled });
+  // select 排序：只在列表或团队变化时重算；返回的是查询结果本身，调用方按属性追踪
+  const select = useCallback((d: MachineView[]) => [...d].sort(makeDefaultCompare(teams ?? [])), [teams]);
+  return useQuery({ ...machinesQuery(scope), select });
 }
 /** 只用名称等少量字段的页面（访问监控的节点下拉、告警页的对象与续费）：读数不进来 */
 export type MachineBrief = Pick<MachineView, 'id' | 'name' | 'kind' | 'team' | 'subscription'>;
@@ -32,15 +32,15 @@ const label = (m: MachineView): MachineLabel => ({ id: m.id, name: m.name, ip: m
  *  select 的结果做结构共享：实时推送只改读数时这些字段不变，引用不变，页面不重渲染 */
 function useMachinesPicked<T>(pick: (m: MachineView) => T) {
   const teams = useTeams().data;
-  const select = useCallback((d: MachineView[]) => defaultOrder('live', d, teams ?? []).map(pick), [teams, pick]);
+  const select = useCallback((d: MachineView[]) => [...d].sort(makeDefaultCompare(teams ?? [])).map(pick), [teams, pick]);
   return useQuery({ ...machinesQuery('live'), select });
 }
 export const useMachineBriefs = () => useMachinesPicked(brief);
 export const useMachineLabels = () => useMachinesPicked(label);
 /** 按键等“用时才读”的场景：直接读缓存里的机器列表（同样的默认顺序），不订阅、不触发请求 */
-export function readMachines(qc: QueryClient, scope: 'live' | 'retired' | 'all' = 'live'): MachineView[] | undefined {
-  const raw = qc.getQueryData<MachineView[]>(['machines', scope]);
-  return raw && defaultOrder(scope, raw, qc.getQueryData<Team[]>(['teams']) ?? []);
+export function readMachines(qc: QueryClient): MachineView[] | undefined {
+  const raw = qc.getQueryData<MachineView[]>(['machines', 'live']);
+  return raw && [...raw].sort(makeDefaultCompare(qc.getQueryData<Team[]>(['teams']) ?? []));
 }
 /** 机器列表缓存（在用 / 已退役 / 全部都找）里的这台，和那份列表取回的时刻 */
 function fromLists(qc: QueryClient, id: string | null) {
@@ -73,10 +73,10 @@ const probeBeatsQuery = { queryKey: ['probe-beats'], queryFn: ({ signal }: { sig
 export const useProbeBeats = <T,>(pick: (d: ProbeBeats) => T) => useQuery({ ...probeBeatsQuery, select: pick });
 const noBeats = () => null; // 轮询观察者不读数据：select 恒为 null，数据变了也不重渲染首页
 export const useProbeBeatsPoll = (enabled: boolean) => { useQuery({ ...probeBeatsQuery, select: noBeats, refetchInterval: 120_000, enabled }); };
-/** poll：实时流只推当前读数不推曲线，抽屉曲线按这个间隔刷新；此时 staleTime 同间隔、切回窗口不重取。
+/** poll：实时流只推当前读数不推曲线，抽屉曲线按这个间隔刷新；staleTime 同间隔、切回窗口不重取。
  *  换时间范围时先留着上一段曲线（调用方按 isPlaceholderData 调淡、横轴按数据自带的 range 格式化），不闪骨架；换了机器不沿用别台的曲线 */
-export const useSeries = (id: string | null, metric: 'host' | 'traffic' | 'probe', range: string, enabled = true, poll?: number) =>
-  useQuery({ queryKey: ['series', id, metric, range], queryFn: ({ signal }) => get<SeriesResp>(`/machines/${id}/series?metric=${metric}&range=${range}`, signal), enabled: !!id && enabled, staleTime: poll ?? 30_000, refetchInterval: poll, refetchOnWindowFocus: poll ? false : undefined,
+export const useSeries = (id: string | null, metric: 'host' | 'traffic' | 'probe', range: string, enabled: boolean, poll: number) =>
+  useQuery({ queryKey: ['series', id, metric, range], queryFn: ({ signal }) => get<SeriesResp>(`/machines/${id}/series?metric=${metric}&range=${range}`, signal), enabled: !!id && enabled, staleTime: poll, refetchInterval: poll, refetchOnWindowFocus: false,
     placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[1] === id ? keepPreviousData(prev) : undefined) });
 export const useRenewals = (id: string | null) => useQuery({ queryKey: ['renewals', id], queryFn: ({ signal }) => get<Renewal[]>(`/machines/${id}/renewals`, signal), enabled: !!id });
 export const useAudit = (id: string | null) => useQuery({ queryKey: ['audit', id], queryFn: ({ signal }) => get<AuditEntry[]>(`/audit?target_id=${id}&limit=10`, signal), enabled: !!id });

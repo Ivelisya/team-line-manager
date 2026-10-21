@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 
-/** 数值变化时平滑过渡（KPI 用）。首次渲染直接显示目标值，不从 0 数起；减少动效偏好下直接跳变。
- *  毛玻璃遮罩开着（<html data-overlay>，见 dialog.tsx）时也直接跳变：KPI 在遮罩下面，逐帧滚动会让 GPU 每帧重做全屏模糊 */
-export function useCountUp(target: number, ms = 450): number {
+/** 数值变化时平滑过渡（KPI 用），时长读动效令牌 --dur-data（与格条、进度线同一节拍）。首次渲染直接显示目标值，不从 0 数起；
+ *  减少动效偏好下令牌为 0，直接跳变。毛玻璃遮罩开着（<html data-overlay>，见 dialog.tsx）时也直接跳变：KPI 在遮罩下面，逐帧滚动会让 GPU 每帧重做全屏模糊 */
+export function useCountUp(target: number): number {
   const [shown, setShown] = useState(target);
   const from = useRef(target);
   const raf = useRef(0);
@@ -11,10 +11,12 @@ export function useCountUp(target: number, ms = 450): number {
     if (from.current === target) return;
     // 之前没有有效值（数据刚到）：直接显示，不从 0 数起
     if (!Number.isFinite(from.current)) { from.current = target; setShown(target); return; }
-    const jump = document.documentElement.hasAttribute('data-overlay') || matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if (jump) { from.current = target; setShown(target); return; }
-    const a = from.current; const t0 = performance.now();
+    const ms = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--dur-data'));
+    if (!(ms > 0) || document.documentElement.hasAttribute('data-overlay')) { from.current = target; setShown(target); return; }
+    // 起点取第一帧的时间戳：rAF 给的是帧开始时刻，可能早于这里的 performance.now()，用它当起点 p 会为负，缓动后反向冲出离谱值
+    const a = from.current; let t0 = -1;
     const step = (t: number) => {
+      if (t0 < 0) t0 = t;
       const p = Math.min(1, (t - t0) / ms);
       const eased = 1 - (1 - p) ** 3;
       const cur = a + (target - a) * eased;
@@ -23,6 +25,6 @@ export function useCountUp(target: number, ms = 450): number {
     };
     raf.current = requestAnimationFrame(step);
     return () => cancelAnimationFrame(raf.current);
-  }, [target, ms]);
+  }, [target]);
   return shown;
 }

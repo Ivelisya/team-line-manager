@@ -80,20 +80,25 @@ export function HomePage() {
   const counts = React.useMemo(() => ({
     all: all.length, relay: all.filter((m) => m.kind === 'relay').length,
     byTeam: new Map((teams.data ?? []).map((t) => [t.id, all.filter((m) => m.team?.id === t.id).length])),
-    issues: all.filter(isIssue).length,
   }), [all, teams.data]);
+  // 当前分组：「仅看异常」的计数与筛选都从它出发
+  const grouped = React.useMemo(() => (team === 'all' ? all : team === 'relay' ? all.filter((m) => m.kind === 'relay') : all.filter((m) => m.team?.id === team)), [all, team]);
+  const issueCount = React.useMemo(() => grouped.filter(isIssue).length, [grouped]);
 
+  // 「仅看异常」开着时成员不随实时推送移出（像邮件的「未读」筛选）：恢复正常的那台留在原位、照常显示正常状态，
+  // 鼠标下的卡不会被换走、页面不跳。命中过的记在这里（筛选时只加不删，重复加无妨）；切换分组、开关筛选的回调里换一个空的
+  const seen = React.useRef(new Set<string>());
+  const pickTeam = React.useCallback((v: string) => { seen.current = new Set(); setTeam(v); }, []);
+  const toggleIssues = () => { seen.current = new Set(); setOnlyIssues((v) => !v); };
   const ts = layout === 'table' ? tsort : null;
   const shown = React.useMemo(() => {
-    let l = all;
-    if (team === 'relay') l = l.filter((m) => m.kind === 'relay');
-    else if (team !== 'all') l = l.filter((m) => m.team?.id === team);
-    if (onlyIssues) l = l.filter(isIssue);
+    let l = grouped;
+    if (onlyIssues) { const ids = seen.current; l = l.filter((m) => (isIssue(m) ? !!ids.add(m.id) : ids.has(m.id))); }
     l = sortList(l, sort);
     if (ts) l = sortTable(l, ts); // 稳定排序：相同值保持原顺序
     return l;
-  }, [all, team, onlyIssues, sort, ts]);
-  // 只渲染当前页：KPI 和分组计数仍按全部机器算（上面的 counts）
+  }, [grouped, onlyIssues, sort, ts]);
+  // 只渲染当前页：KPI 和分组计数按全部机器算（上面的 counts）
   const sizes = PAGE_SIZES[layout === 'cards' ? view : layout];
   const pg = usePage({ total: machines.data ? shown.length : undefined, sizes, size: sizes[1], reset: [team, onlyIssues, sort, layout, view, ts?.id, ts?.desc] });
   const liveSort = !!ts || sort === 'traffic' || sort === 'issues'; // 依据随实时推送变的排序
@@ -124,8 +129,8 @@ export function HomePage() {
           <Segmented sm label="视图" value={layout} onChange={setL} items={LAYOUT_ITEMS} />
         </>}>
         <div className="hgroups" role="group" aria-label="筛选">
-          <Segmented label="分组" value={team} onChange={setTeam} items={groups} className="seg-fill" />
-          <FilterChip pressed={onlyIssues} onClick={() => setOnlyIssues((v) => !v)} count={counts.issues}><AlertTriangle size={13} />仅看异常</FilterChip>
+          <Segmented label="分组" value={team} onChange={pickTeam} items={groups} className="seg-fill" />
+          <FilterChip pressed={onlyIssues} onClick={toggleIssues} count={issueCount}><AlertTriangle size={13} />仅看异常</FilterChip>
         </div>
 
         {machines.isError && <ErrorNote error={machines.error} onRetry={() => void machines.refetch()} />}
@@ -135,7 +140,7 @@ export function HomePage() {
           <Empty icon={<Inbox size={28} />} text={all.length ? '没有符合筛选条件的机器' : '还没有机器，去“上架”添加第一台'} />
         ) : (
           <>
-            {/* 每页一个容器（key=页码+视图）：翻页、换视图是整页淡入。卡片页内：筛选/排序/密度变了（layoutKey 变）才量位置、滑到新位置。
+            {/* 每页一个容器（key=页码）：翻页、切换卡片 / 环形 / 表格时整块淡入（换卡片密度不重挂、不淡入）。卡片页内：筛选/排序/密度变了（layoutKey 变）才量位置、滑到新位置。
                 右键与“⋯”菜单整页共用一份（NodeMenus） */}
             {layout === 'cards' && <NodeMenus rows={page}><div key={`c${pg.page}`} className="cards page-in" data-view={view}>
               {page.map((m) => <NodeCard key={m.id} m={m} view={view} current={m.id === openId} onOpen={open} layoutKey={layoutKey} />)}
