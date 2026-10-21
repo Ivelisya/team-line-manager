@@ -27,6 +27,11 @@
 .audit-what b { font-weight: var(--fw-medium); }
 .audit-meta { flex: none; font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); white-space: nowrap; }
 .audit-detail { line-height: var(--lh-label); color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 抽屉「最近告警」用同一套排版：右边的状态进行中按级别着色、已恢复灰；已恢复的级别点调淡，眼睛先落在还没恢复的那几条上 */
+.audit-meta[data-tone="bad"] { color: var(--bad-text); }
+.audit-meta[data-tone="warn"] { color: var(--warn-text); }
+.audit-meta[data-tone="info"] { color: var(--info-text); }
+.audit-list li[data-resolved] > .dot { opacity: 0.4; }
 .chart-box { height: 180px; min-width: 0; }
 /* 曲线全为 0 时的空状态：占住图的高度（换时间范围时卡片不跳），一句浅色说明居中 */
 .chart-empty { display: grid; place-items: center; min-width: 0; font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); text-align: center; }

@@ -3,7 +3,8 @@
 // IP 只用文档保留段 203.0.113.0/24 与 198.51.100.0/24。
 
 import type { ApiKey, Incident, Job, NotifyChannel, NotifyLogEntry, JobLog, MachineView, Plan, Provider, Renewal, Silence, AuditEntry, Team, EntryView, Lifecycle, HealthStatus, Subscription } from '@/lib/types';
-import { addMonths, displayName } from '@/lib/format';
+import { addMonths, bytes, displayName, str } from '@/lib/format';
+import { quota } from '@/lib/derive';
 
 export function rng(seed: number) {
   let a = seed >>> 0;
@@ -293,7 +294,21 @@ export function buildDb(): Db {
     { id: 'i3', subject: { id: 'm-t1-09', name: '团队1-09' }, subject_id: 'm-t1-09', subject_name: '团队1-09', rule: 'egress_fail', rule_name: '出口不通', severity: 'warning', state: 'firing', summary: '出口验证连续失败 3 次（经线路机1:20009 访问外网超时）', opened_at: iso(now() - 50 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 2 },
     { id: 'i4', subject: { id: 'r2', name: '线路机2' }, subject_id: 'r2', subject_name: '线路机2', rule: 'relay_apply_lag', rule_name: '配置未应用', severity: 'warning', state: 'firing', summary: '线路机2：配置未应用（配置代数 8 · 已应用 7）', opened_at: iso(now() - 25 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 0 },
     { id: 'i5', subject: { id: 'm-t2-03', name: '团队2-03' }, subject_id: 'm-t2-03', subject_name: '团队2-03', rule: 'renewal_due', rule_name: '即将到期', severity: 'info', state: 'resolved', summary: '7 天内到期，请安排续费', opened_at: iso(now() - 26 * 3600_000), resolved_at: iso(now() - 25 * 3600_000), last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 0 },
+    // 已恢复的历史（抽屉「最近告警」）：团队1-05 昨天出口断过半小时、来回反复，三天前 CPU 偏高；团队1-09 六天前 TCP 断过
+    { id: 'i6', subject: { id: 'm-t1-05', name: '团队1-05' }, subject_id: 'm-t1-05', subject_name: '团队1-05', rule: 'egress_fail', rule_name: '出口不通', severity: 'critical', state: 'resolved', summary: '出口验证连续失败 3 次（经线路机1:20005 访问外网超时）', opened_at: iso(now() - 26 * 3600_000), resolved_at: iso(now() - 26 * 3600_000 + 28 * 60_000), last_seen_at: iso(now() - 26 * 3600_000 + 27 * 60_000), ack_at: null, ack_by: null, reopen_count: 2 },
+    { id: 'i7', subject: { id: 'm-t1-05', name: '团队1-05' }, subject_id: 'm-t1-05', subject_name: '团队1-05', rule: 'host_cpu_high', rule_name: 'CPU 持续偏高', severity: 'warning', state: 'resolved', summary: 'CPU 持续 10 分钟高于 90%（最高 97%）', opened_at: iso(now() - 3 * DAY), resolved_at: iso(now() - 3 * DAY + 95 * 60_000), last_seen_at: iso(now() - 3 * DAY + 94 * 60_000), ack_at: iso(now() - 3 * DAY + 20 * 60_000), ack_by: 'admin', reopen_count: 0 },
+    { id: 'i8', subject: { id: 'm-t1-09', name: '团队1-09' }, subject_id: 'm-t1-09', subject_name: '团队1-09', rule: 'tcp_fail', rule_name: '线路到节点不通', severity: 'critical', state: 'resolved', summary: '线路机到节点 TCP 探测连续失败 5 次', opened_at: iso(now() - 6 * DAY), resolved_at: iso(now() - 6 * DAY + 12 * 60_000), last_seen_at: iso(now() - 6 * DAY + 11 * 60_000), ack_at: null, ack_by: null, reopen_count: 0 },
   ];
+  // 流量额度吃紧（traffic_quota_high，同服务端规则）：本周期已用 ≥ 90% 警告、≥ 100% 严重；开始时间错开几小时
+  let tight = 0;
+  for (const m of machines) {
+    const q = quota(m);
+    if (m.lifecycle !== 'active' || q.pct == null || q.pct < 90) continue;
+    const pct = Math.floor(q.pct);
+    incidents.push({ id: `iq-${m.id}`, subject: { id: m.id, name: m.name }, subject_id: m.id, subject_name: m.name, rule: 'traffic_quota_high', rule_name: '流量额度吃紧', severity: pct >= 100 ? 'critical' : 'warning', state: 'firing',
+      summary: `本周期已用 ${pct}%（${str(bytes(q.used))} / ${q.limit} GiB，${q.start.slice(5)} 起）`, opened_at: iso(now() - (2 + 3 * tight++) * 3600_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 0 });
+    m.open_incidents++;
+  }
   const silences: Silence[] = [{ id: 's1', subject_id: 'm-t2-04', subject_name: '团队2-04', rule: null, starts_at: iso(now() - 3600_000), ends_at: iso(now() + 3 * 3600_000), is_maintenance: true, comment: '换内核，预计 4 小时' }];
   const audit: AuditEntry[] = [
     { id: 'a3', ts: iso(now() - 25 * 60_000), actor: '运维 CLI', action: 'exec', title: '执行命令', summary: '团队1-03 · journalctl -u fleet-agent --since "1 hour ago" --no-pager | grep -i -E "err… · 退出码 0', target_kind: 'machine', target_id: 'm-t1-03', detail: { name: '团队1-03', command: 'journalctl -u fleet-agent --since "1 hour ago" --no-pager | grep -i -E "error|warn" | tail -n 200', exit_code: 0 } },

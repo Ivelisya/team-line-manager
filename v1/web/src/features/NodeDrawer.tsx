@@ -8,16 +8,16 @@ import { Tabs, TabsList, TabsTrigger, Tip } from '@/components/ui/overlays';
 import { IconButton } from '@/components/ui/button';
 import { ErrorBoundary } from '@/components/app/ErrorBoundary';
 import { Skeleton } from '@/components/ui/skeleton';
-import type { AuditEntry, MachineView } from '@/lib/types';
-import { useMachine, useAudit } from '@/lib/queries';
+import type { AuditEntry, Incident, MachineView } from '@/lib/types';
+import { useMachine, useAudit, useMachineIncidents } from '@/lib/queries';
 import { DRAWER_TABS, drawerSiblings, useDrawer, type DrawerTab } from '@/lib/drawer';
 import { useHeld } from '@/lib/useHeld';
 import { useTitleName } from '@/lib/title';
 import * as F from '@/lib/format';
 import { KIND_LABEL } from '@/lib/sort';
 import { jobKindLabel } from '@/lib/jobs';
-import { probeSummary } from '@/lib/derive';
-import { Chip, ErrorNote, ReasonList, HealthPill, KindIcon, LabelValue, LabelValueGrid, LifecyclePill, Note, Section, SectionHeader } from '@/components/app/primitives';
+import { probeSummary, severityOf } from '@/lib/derive';
+import { Chip, ErrorNote, ReasonList, HealthPill, KindIcon, LabelValue, LabelValueGrid, LifecyclePill, Note, Section, SectionHeader, SeverityDot } from '@/components/app/primitives';
 import { ManageTab } from './ManageTab';
 import { BillingTab } from './BillingTab';
 import { EntriesTable } from './EntriesTable';
@@ -208,6 +208,7 @@ function OverviewTab({ m }: { m: MachineView }) {
         <SectionHeader title={m.kind === 'relay' ? '挂载的入口' : '入口'} meta={`${m.entries.length} 条`} />
         <EntriesTable m={m} />
       </Section>
+      <RecentIncidents id={m.id} />
       <Section>
         <SectionHeader title="最近操作" />
         {audit.data?.length ? (
@@ -232,6 +233,47 @@ function OverviewTab({ m }: { m: MachineView }) {
       </Section>
     </>
   );
+}
+
+/** 最近告警：级别点 + 规则名，右边进行中 / 已恢复；下一行触发、恢复的时刻与持续多久（进行中算到现在），反复的带次数。
+ *  排版同「最近操作」，悬停规则名看摘要，已恢复的级别点调淡 */
+function RecentIncidents({ id }: { id: string }) {
+  const q = useMachineIncidents(id);
+  return (
+    <Section>
+      <SectionHeader title="最近告警" />
+      {q.data?.length ? (
+        <ul className="audit-list">
+          {q.data.map((i) => {
+            const firing = i.state === 'firing';
+            return (
+              <li key={i.id} data-resolved={firing ? undefined : ''}>
+                <SeverityDot severity={i.severity} />
+                <div className="audit-body">
+                  <div className="audit-head">
+                    <span className="audit-what" data-tip={i.summary}><b>{i.rule_name}</b></span>
+                    <span className="audit-meta" data-tone={firing ? severityOf(i.severity).tone : undefined}>{firing ? '进行中' : '已恢复'}</span>
+                  </div>
+                  <div className="audit-detail hint">
+                    {incidentSpan(i)}
+                    {i.reopen_count > 0 && <> · <span data-tip={`恢复后 30 分钟内又复发 ${i.reopen_count} 次，合并为这一条`}>反复 {i.reopen_count + 1} 次</span></>}
+                  </div>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      ) : q.isError ? <ErrorNote error={q.error} onRetry={() => void q.refetch()} /> : <div className="hint">{q.isLoading ? '加载中…' : '最近没有告警'}</div>}
+    </Section>
+  );
+}
+
+/** 「触发 10-22 05:12 → 恢复 05:40 · 持续 28 分钟」（恢复在同一天只写时刻）；进行中「触发 10-22 05:12 · 已持续 28 分钟」 */
+function incidentSpan(i: Incident): string {
+  const from = F.dt(i.opened_at);
+  if (!i.resolved_at) return `触发 ${from} · 已持续 ${F.str(F.since(i.opened_at))}`;
+  const to = F.dt(i.resolved_at);
+  return `触发 ${from} → 恢复 ${to.slice(0, 5) === from.slice(0, 5) ? to.slice(6) : to} · 持续 ${F.str(F.since(i.opened_at, Date.parse(i.resolved_at)))}`;
 }
 
 /** 一条操作记录拆成对象与详情：摘要以记录里的显示名开头时（上架、执行命令、换线路机…），名字接在动作后面，其余是详情。
