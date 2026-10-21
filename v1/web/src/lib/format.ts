@@ -46,7 +46,7 @@ export const gb = (n: number | null | undefined): Fmt => (n == null || n <= 0 ? 
 export const mbps = (n: number | null | undefined): Fmt => (n == null ? NA : n >= 1000 ? { v: num(n / 1000), u: 'Gbps' } : { v: String(n), u: 'Mbps' });
 
 const SYM: Record<string, string> = { CNY: '¥', USD: '$', EUR: '€', HKD: 'HK$', JPY: 'JP¥', GBP: '£' };
-export const currencySym = (c: string) => SYM[c] ?? `${c} `;
+const currencySym = (c: string) => SYM[c] ?? `${c} `;
 export function money(cents: number | null | undefined, currency = 'CNY'): string {
   if (cents == null) return '—';
   const v = cents / 100;
@@ -56,7 +56,7 @@ export function money(cents: number | null | undefined, currency = 'CNY'): strin
 export const CURRENCY_OPTIONS = ['CNY', 'USD', 'EUR', 'HKD', 'JPY'].map((c) => ({ value: c, label: `${c} ${currencySym(c).trim()}` }));
 /** 当前值不在常用选项里（供应商时区 Asia/Hong_Kong、套餐币种 GBP 等）时补进去，否则下拉显示为空 */
 export const withCurrent = (opts: { value: string; label: string }[], v: string) => (opts.some((o) => o.value === v) ? opts : [{ value: v, label: v }, ...opts]);
-export const CYCLE: Record<string, string> = { monthly: '月', quarterly: '季', semiannual: '半年', yearly: '年' };
+const CYCLE: Record<string, string> = { monthly: '月', quarterly: '季', semiannual: '半年', yearly: '年' };
 /** 计费周期下拉选项：每月 / 每季 / … */
 export const CYCLE_OPTIONS = Object.entries(CYCLE).map(([value, label]) => ({ value, label: `每${label}` }));
 export const cycleLabel = (c: string) => CYCLE[c] ?? c;

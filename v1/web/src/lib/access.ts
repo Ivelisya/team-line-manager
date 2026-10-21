@@ -40,7 +40,7 @@ export interface MachineAccess {
 const POLL = 30_000;
 
 /** 筛选条件 → 查询串；空值不带 */
-export function accessQS(f: AccessFilter, extra: Record<string, string | number | undefined> = {}): string {
+function accessQS(f: AccessFilter, extra: Record<string, string | number | undefined> = {}): string {
   const p = new URLSearchParams({ window: f.window });
   if (f.team) p.set('team', f.team);
   if (f.node) p.set('node', f.node);

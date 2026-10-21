@@ -4,11 +4,11 @@ import { NavLink, Navigate, Outlet, useLocation, useNavigationType } from 'react
 import { useQueryClient } from '@tanstack/react-query';
 import { BellRing, Boxes, Briefcase, CloudUpload, LayoutGrid, ListChecks, LogOut, Menu, Monitor, Moon, Palette, Radar, RotateCw, Server, Settings, Sun, Waypoints } from 'lucide-react';
 import { ApiError, AUTH_EVENT, post } from '@/lib/api';
-import { useIncidents, useMachinePreview, useMe } from '@/lib/queries';
+import { useIncidents, useMachine, useMe } from '@/lib/queries';
 import { useStream } from '@/lib/stream';
 import { useTheme, type ThemePref } from '@/lib/theme';
 import { closeEvacuate, closeMove, closeRestore, closeRetire, useEvacuateTarget, useMoveTarget, useRestoreTarget, useRetireTarget } from '@/lib/nodeActions';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, Tip } from '@/components/ui/overlays';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, Tip, TipHost } from '@/components/ui/overlays';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Toaster } from '@/components/ui/toast';
@@ -55,7 +55,7 @@ const closeLifecycle = () => { closeMove(); closeEvacuate(); closeRestore(); };
 /** 卡片/表格菜单里“退役…”要弹的确认框：全站只渲染这一份 */
 function NodeActionsHost() {
   const id = useRetireTarget();
-  const q = useMachinePreview(id);
+  const q = useMachine(id);
   // id 清空后继续用最近的机器渲染 open=false 的对话框，让 Radix 播完关闭动画再卸载
   const m = useHeld(id, q.data);
   if (!m) return null;
@@ -129,7 +129,7 @@ export function Shell() {
   const ThemeIcon = theme.pref === 'dark' ? Moon : theme.pref === 'light' ? Sun : Monitor;
   const logout = async () => { try { await post('/auth/logout'); } finally { qc.clear(); window.location.assign('/login'); } };
 
-  // 动效提供者只包已登录的外壳：LazyMotion 一挂载就去下载 domMax 特性包，登录页和上面的错误 / 加载态都用不到 m.*
+  // 动效提供者只包已登录的外壳：LazyMotion 挂载后（等浏览器空闲）去下载 domMax 特性包，登录页和上面的错误 / 加载态都用不到 m.*
   return (
     <MotionProvider>
       <div className="app" data-nav={navOpen ? 'open' : 'closed'}>
@@ -188,6 +188,7 @@ export function Shell() {
         <ErrorBoundary silent resetKey={loc.pathname} onError={closeRetire}><NodeActionsHost /></ErrorBoundary>
         <ErrorBoundary silent resetKey={loc.pathname} onError={closeLifecycle}><LifecycleHost /></ErrorBoundary>
         <Hotkeys theme={theme} />
+        <TipHost />
         <Toaster />
       </div>
     </MotionProvider>

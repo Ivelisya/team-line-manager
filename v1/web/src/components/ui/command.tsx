@@ -3,6 +3,7 @@ import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { Command as Cmdk } from 'cmdk';
 import { Search } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { Scrim } from './dialog';
 
 // shadcn 的 Command 写法：cmdk 提供过滤/键盘导航，外观全部走 .cmd-* 类（令牌来自 tokens.css）。
 export const Command = React.forwardRef<React.ElementRef<typeof Cmdk>, React.ComponentPropsWithoutRef<typeof Cmdk>>(({ className, ...p }, ref) => (
@@ -15,7 +16,7 @@ export function CommandDialog({ open, onOpenChange, title, children }: { open: b
   return (
     <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
       <DialogPrimitive.Portal>
-        <DialogPrimitive.Overlay className="overlay cmd-overlay" />
+        <Scrim className="overlay cmd-overlay" kind="dialog" />
         <DialogPrimitive.Content className="cmd-dialog" aria-describedby={undefined}>
           <DialogPrimitive.Title className="sr-only">{title}</DialogPrimitive.Title>
           {children}

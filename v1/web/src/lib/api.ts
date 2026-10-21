@@ -28,7 +28,7 @@ export async function api<T = unknown>(path: string, opts: Opts = {}): Promise<T
     if (res.status === 401 && !path.startsWith('/auth/')) window.dispatchEvent(new Event(AUTH_EVENT));
     throw new ApiError(res.status, json?.error?.code ?? 'http', json?.error?.message ?? `请求失败（${res.status}）`);
   }
-  return (json?.data ?? (undefined as T)) as T;
+  return json?.data as T;
 }
 
 export const get = <T>(p: string, signal?: AbortSignal) => api<T>(p, { signal });

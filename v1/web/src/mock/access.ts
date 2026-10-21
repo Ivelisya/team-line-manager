@@ -84,9 +84,11 @@ export function installAccessMock(R: Reg, machines: () => MachineView[]) {
 
   R('GET', '/access/summary', ({ query }) => {
     const rows = stats(machines(), query).filter((x) => x.targets.length > 0);
+    // 同后端：来源数只在原始记录里算得出；超过 1 小时又带搜索 / 类型 / 结果筛选时给 null
+    const noSources = (query.get('window') ?? '24h') !== '1h' && !!((query.get('search') ?? '').trim() || query.get('kind') || query.get('action'));
     const nodes: AccessNode[] = rows.map(({ n, targets }) => ({
       node_id: n.m.id, name: n.m.name, team: n.m.team?.name ?? null, conns: targets.reduce((s, t) => s + t.conns, 0), targets: targets.length,
-      domains: targets.filter((t) => t.kind === 'domain').length, sources: n.sources.length, blocked: targets.reduce((s, t) => s + t.blocked, 0),
+      domains: targets.filter((t) => t.kind === 'domain').length, sources: noSources ? null : n.sources.length, blocked: targets.reduce((s, t) => s + t.blocked, 0),
       last_ts: targets.map((t) => t.last_seen!).sort().pop() ?? null,
     })).sort((a, b) => b.conns - a.conns);
     return { kpi: { active_nodes: nodes.length, conns: nodes.reduce((s, x) => s + x.conns, 0), targets: nodes.reduce((s, x) => s + x.targets, 0), blocked: nodes.reduce((s, x) => s + x.blocked, 0) }, nodes, window_start: win(query) };

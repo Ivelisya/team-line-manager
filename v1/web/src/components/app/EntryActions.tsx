@@ -12,7 +12,7 @@ import { copyText } from '@/lib/clipboard';
 import { ConfirmDialog, TypedConfirmDialog } from './dialogs';
 
 export const entryLabel = (e: EntryView) => `${e.relay.name}:${e.port}`;
-export const entryDisabled = (e: EntryView) => e.lifecycle === 'disabled';
+const entryDisabled = (e: EntryView) => e.lifecycle === 'disabled';
 
 export function EntryActions({ entry }: { entry: EntryView }) {
   const act = useEntryAction();

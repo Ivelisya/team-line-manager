@@ -10,7 +10,7 @@ interface Props { children: React.ReactNode; resetKey?: string; compact?: boolea
 interface State { error: Error | null }
 
 /** 懒加载的块拉取失败（多半是发版后旧文件已被删除） */
-export function isChunkError(e: unknown): boolean {
+function isChunkError(e: unknown): boolean {
   const s = e instanceof Error ? `${e.name} ${e.message}` : String(e);
   return /Failed to fetch dynamically imported module|error loading dynamically imported module|Importing a module script failed|ChunkLoadError|Loading chunk [\w-]+ failed|Loading CSS chunk/i.test(s);
 }

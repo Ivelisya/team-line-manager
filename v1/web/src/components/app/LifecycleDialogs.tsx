@@ -4,7 +4,7 @@ import * as React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowRight } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
-import { useEvacuate, useMachinePreview, useMoveEntry, useRelayChoices, useRestore, useRestorePreview, useTeams } from '@/lib/queries';
+import { useEvacuate, useMachine, useMoveEntry, useRelayChoices, useRestore, useRestorePreview, useTeams } from '@/lib/queries';
 import { closeEvacuate, closeMove, closeRestore, useEvacuateTarget, useMoveTarget, useRestoreTarget } from '@/lib/nodeActions';
 import { CheckRow, Field, Input } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
@@ -98,6 +98,13 @@ export function EvacuateDialog({ relay, open, onOpenChange, onDone }: { relay: M
 
 // ── 恢复已退役的机器 ────────────────────────────────────────────────────
 
+/** 值停下来 ms 毫秒后才跟上：编号、名字输入框每按一次键不必各发一次预检 */
+function useSettled<T>(v: T, ms: number): T {
+  const [s, setS] = React.useState(v);
+  React.useEffect(() => { const t = setTimeout(() => setS(v), ms); return () => clearTimeout(t); }, [v, ms]);
+  return s;
+}
+
 const KEY_LOGIN: Record<string, string> = { ok: '中控密钥仍可登录，不需要密码', denied: '中控密钥被拒绝，需要 root 密码重新引导', unreachable: 'SSH 现在连不上', error: '探测失败' };
 
 export function RestoreDialog({ m, open, onOpenChange, onDone }: { m: MachineView; open: boolean; onOpenChange: (o: boolean) => void; onDone?: () => void }) {
@@ -121,12 +128,19 @@ export function RestoreDialog({ m, open, onOpenChange, onDone }: { m: MachineVie
     setUp({ protocol: 'socks5', host: '', port: '', username: '', password: '' });
   }, [open, m.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 第一份预检带 SSH 探测（慢一点），决定要不要密码；改团队/编号/名字后只重算名字（probe=false）
-  const n = Number(num);
-  const over = { team_id: team && team !== m.team?.id ? team : undefined, number: num && Number.isInteger(n) && n > 0 ? n : undefined, label: label.trim() || undefined };
+  // 第一份预检带 SSH 探测（慢一点），决定要不要密码；改团队/编号/名字后只重算名字（probe=false）。
+  // 编号、名字停手 300ms 后才进预检（查询键）；提交用的是当下的输入（over），没跟上之前不让提交
+  const toOver = (numText: string, labelText: string) => {
+    const n = Number(numText);
+    return { team_id: team && team !== m.team?.id ? team : undefined, number: numText && Number.isInteger(n) && n > 0 ? n : undefined, label: labelText.trim() || undefined };
+  };
+  const over = toOver(num, label);
+  const settledNum = useSettled(num, 300), settledLabel = useSettled(label, 300);
+  const settled = settledNum === num && settledLabel === label;
+  const asked = toOver(settledNum, settledLabel);
   const edited = !!(over.team_id || over.number != null || over.label);
   const base = useRestorePreview(m.id, open, {});
-  const live = useRestorePreview(m.id, open && edited, { ...over, probe: false });
+  const live = useRestorePreview(m.id, open && !!(asked.team_id || asked.number != null || asked.label), { ...asked, probe: false });
   const pv = edited && live.data ? live.data : base.data;
   const needs = base.data?.needs;
   React.useEffect(() => { if (open && base.data && !relay) setRelay(base.data.last_relay?.id ?? ''); }, [base.data, open]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -134,7 +148,7 @@ export function RestoreDialog({ m, open, onOpenChange, onDone }: { m: MachineVie
   const relayOpts = relays.map((r) => ({ value: r.id, label: r.name }));
   const upOk = !isProxy || (up.host.trim() !== '' && Number(up.port) > 0);
   const pwOk = needs?.password !== 'required' || pw !== '';
-  const ready = !!pv && pv.restorable && !!needs && (!needs.relay || !!relay) && upOk && pwOk && !live.isFetching;
+  const ready = !!pv && pv.restorable && !!needs && (!needs.relay || !!relay) && upOk && pwOk && settled && !live.isFetching;
   // 填过东西就别让误点遮罩关掉（Esc、取消仍可关）
   const dirty = edited || !!pw || !!reason.trim() || reset || relay !== (base.data?.last_relay?.id ?? '') || !!(up.host || up.port || up.username || up.password);
 
@@ -220,9 +234,9 @@ export function LifecycleDialogsHost() {
   const evacId = useEvacuateTarget();
   const restoreId = useRestoreTarget();
   // id 清空后继续用最近的机器渲染 open=false 的对话框，让 Radix 播完关闭动画再卸载
-  const mv = useHeld(moveId, useMachinePreview(moveId).data);
-  const ev = useHeld(evacId, useMachinePreview(evacId).data);
-  const rs = useHeld(restoreId, useMachinePreview(restoreId).data);
+  const mv = useHeld(moveId, useMachine(moveId).data);
+  const ev = useHeld(evacId, useMachine(evacId).data);
+  const rs = useHeld(restoreId, useMachine(restoreId).data);
   return (
     <>
       {mv && <MoveDialog key={mv.id} m={mv} open={!!moveId} onOpenChange={(o) => { if (!o) closeMove(); }} onDone={closeMove} />}

@@ -109,7 +109,7 @@ function AgentHealthNote({ m }: { m: MachineView }) {
   if (!h) return null;
   const items = [
     h.queue_len > 3 && `${h.queue_len} 份报告积压待发`,
-    h.queue_dropped > 0 && `${h.queue_dropped} 份报告因积压太久被丢弃`,
+    h.queue_dropped > 0 && `${h.queue_dropped} 份报告因离线队列超限被丢弃`,
     h.queue_dead > 0 && `${h.queue_dead} 份报告被中控拒收`,
     h.access_rotation_gaps + h.access_truncations > 0 && `访问日志有 ${h.access_rotation_gaps + h.access_truncations} 段漏读`,
   ].filter(Boolean);

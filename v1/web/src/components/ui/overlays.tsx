@@ -78,6 +78,49 @@ export function Tip({ text, children, side = 'top', align }: { text: React.React
   );
 }
 
+/** 共享悬停提示：卡片、表格行里成百上千的只读说明不各挂一个 Radix Tooltip 根（每个根带一套 Popper 上下文，随实时推送跟着重渲染），
+ *  元素上写 data-tip="文字"，外壳里这一份按悬停 / 键盘聚焦到的元素定位显示。外观、延迟同 Tip：停 250ms 出现，刚有提示开着时直接换过去 */
+export function TipHost() {
+  const [tip, setTip] = React.useState<{ id: number; text: string; r: DOMRect } | null>(null);
+  const [open, setOpen] = React.useState(false);
+  const hide = React.useRef(() => {});
+  React.useEffect(() => {
+    let cur: Element | null = null; let timer = 0; let shown = false; let closedAt = 0; let seq = 0;
+    const show = (el: HTMLElement) => { shown = true; setTip({ id: ++seq, text: el.dataset.tip ?? '', r: el.getBoundingClientRect() }); setOpen(true); };
+    const close = () => {
+      clearTimeout(timer); cur = null;
+      if (shown) { shown = false; closedAt = performance.now(); setOpen(false); }
+    };
+    hide.current = close;
+    const over = (e: PointerEvent) => {
+      if (e.pointerType === 'touch') return;
+      const el = (e.target as Element).closest<HTMLElement>('[data-tip]');
+      if (el === cur) return;
+      close();
+      if (!el) return;
+      cur = el;
+      if (performance.now() - closedAt < 300) show(el); else timer = window.setTimeout(() => show(el), 250);
+    };
+    // 键盘聚焦才弹；鼠标按下得到的焦点不算（同 Radix）
+    const focus = (e: FocusEvent) => { const el = (e.target as Element).closest<HTMLElement>('[data-tip]'); if (el?.matches(':focus-visible')) { close(); cur = el; show(el); } };
+    const leave = (e: PointerEvent) => { if (!e.relatedTarget) close(); }; // 指针离开窗口
+    const on: [EventTarget, string, EventListener, boolean][] = [
+      [document, 'pointerover', over as EventListener, false], [document, 'pointerout', leave as EventListener, false], [document, 'pointerdown', close, true],
+      [document, 'focusin', focus as EventListener, false], [document, 'focusout', close, false], [window, 'scroll', close, true],
+    ];
+    on.forEach(([t, n, f, c]) => t.addEventListener(n, f, c));
+    return () => { clearTimeout(timer); on.forEach(([t, n, f, c]) => t.removeEventListener(n, f, c)); };
+  }, []);
+  if (!tip) return null;
+  // key：换到另一个元素时重新挂载（同 Tip 之间切换：旧的收起、新的立即出现），不在原地改字挪位置
+  return (
+    <TooltipPrimitive.Root key={tip.id} open={open} onOpenChange={(o) => { if (!o) hide.current(); }}>
+      <TooltipPrimitive.Trigger asChild><span className="float-anchor" style={{ left: tip.r.left, top: tip.r.top, width: tip.r.width, height: tip.r.height }} /></TooltipPrimitive.Trigger>
+      <TooltipPrimitive.Portal><TooltipPrimitive.Content sideOffset={6} collisionPadding={8} className="tooltip">{tip.text}</TooltipPrimitive.Content></TooltipPrimitive.Portal>
+    </TooltipPrimitive.Root>
+  );
+}
+
 // 全站共享一个 ResizeObserver：表格里每个单元格一个 Trunc，不必各建一个观察器
 const watchSize = sharedObserver<ResizeObserverEntry>((cb) => new ResizeObserver(cb));
 
@@ -121,7 +164,9 @@ PopoverContent.displayName = 'PopoverContent';
 
 /* ---- 分段控件（单选）：大卡片/小卡片/紧凑、团队筛选等 ---- */
 export interface SegItem<T extends string> { value: T; label: React.ReactNode; count?: number; disabled?: boolean }
-export function Segmented<T extends string>({ value, onChange, items, label, sm, className }: { value: T; onChange: (v: T) => void; items: SegItem<T>[]; label: string; sm?: boolean; className?: string }) {
+/** memo：父页面随实时推送重渲染时，items / onChange 稳定（模块常量、useMemo、useCallback）的分段控件不跟着重画 */
+type SegProps<T extends string> = { value: T; onChange: (v: T) => void; items: SegItem<T>[]; label: string; sm?: boolean; className?: string };
+export const Segmented = React.memo(function Segmented<T extends string>({ value, onChange, items, label, sm, className }: SegProps<T>) {
   const gid = React.useId();
   return (
     <ToggleGroup.Root type="single" value={value} onValueChange={(v) => v && onChange(v as T)} aria-label={label} className={cn('seg', sm && 'seg-sm', className)}>
@@ -135,4 +180,4 @@ export function Segmented<T extends string>({ value, onChange, items, label, sm,
       ))}
     </ToggleGroup.Root>
   );
-}
+}) as <T extends string>(p: SegProps<T>) => React.ReactElement;
