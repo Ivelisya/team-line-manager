@@ -313,7 +313,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "machine.logs" => "查看机器日志",
         "server.logs" => "查看中控日志",
         "apikey.create" => "新建 API 密钥",
-        "apikey.revoke" => "吊销 API 密钥",
+        "apikey.revoke" => "撤销 API 密钥",
         "auth.login" => "登录",
         "auth.login_failed" => "登录失败",
         "auth.logout" => "退出登录",

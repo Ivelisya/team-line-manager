@@ -181,6 +181,8 @@ pub struct MachineView {
     pub quota: Quota,
     pub health: Health,
     pub active_job: Option<JobRef>,
+    /// 上架失败（lifecycle = failed）：最近一次失败的上架/恢复作业，网页据此给出「查看作业」
+    pub failed_job: Option<JobRef>,
     pub open_incidents: i64,
     pub maintenance: bool,
     /// 仅线路机
@@ -515,7 +517,9 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     };
     let jobs_q = sqlx::query_as::<_, (Uuid, Uuid, String, String)>(
         "select target_id, id, kind, state::text from job
-         where target_id = any($1) and state in ('queued','running','waiting','cancelling')",
+         where target_id = any($1) and (state in ('queued','running','waiting','cancelling')
+           or (state = 'failed' and kind ~ '^(provision|restore)_'))
+         order by created_at",
     )
     .bind(&ids)
     .fetch_all(db);
@@ -616,7 +620,12 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
         entries_by.entry(e.relay_id).or_default().push(v);
     }
 
-    let jobs: HashMap<Uuid, JobRef> = jobs.into_iter().map(|(t, id, kind, state)| (t, JobRef { id, kind, state })).collect();
+    // 按创建先后：同一台机器后建的覆盖先建的
+    let (mut live_jobs, mut failed_jobs) = (HashMap::new(), HashMap::new());
+    for (t, id, kind, state) in jobs {
+        let m = if state == "failed" { &mut failed_jobs } else { &mut live_jobs };
+        m.insert(t, JobRef { id, kind, state });
+    }
     let inc: HashMap<Uuid, i64> = inc.into_iter().collect();
     let maint_all = maint.iter().any(|(s,)| s.is_none());
     let maint: std::collections::HashSet<Uuid> = maint.into_iter().filter_map(|(id,)| id).collect();
@@ -671,6 +680,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
             };
             let maintenance = maint_all || maint.contains(&r.id);
             let policy_blocked = r.kind != "relay" && policies.effective(r.id, r.team_id).0.mode == crate::policy::Mode::Blocked;
+            let failed_job = if r.lifecycle == "failed" { failed_jobs.get(&r.id).cloned() } else { None };
             let mut v = MachineView {
                 id: r.id,
                 kind: r.kind,
@@ -703,7 +713,8 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 removed_traffic,
                 quota,
                 health: Health::default(),
-                active_job: jobs.get(&r.id).cloned(),
+                active_job: live_jobs.get(&r.id).cloned(),
+                failed_job,
                 open_incidents: inc.get(&r.id).copied().unwrap_or(0),
                 maintenance,
                 relay,

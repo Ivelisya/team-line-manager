@@ -46,9 +46,10 @@ pub struct ListQ {
     target_id: Option<Uuid>,
 }
 
-/// 作业 JSON：目标机器以 `target{id,name}` 给出
+/// 作业 JSON：目标机器以 `target{id,name}` 给出；`step_title` = 当前（或失败的）步骤标题，做完为 null。列表不带 steps
 fn job_json(j: &JobOut) -> Value {
     let mut v = serde_json::to_value(j).unwrap_or_default();
+    v["step_title"] = json!(jobs::defs(&j.kind).get(j.step as usize).map(|d| d.title));
     v["target"] = match j.target_id {
         Some(id) => json!({"id": id, "name": j.target_name.clone().unwrap_or_else(|| "（已删除）".into())}),
         None => Value::Null,
@@ -159,10 +160,22 @@ pub async fn retry(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, Q
         return Err(ApiError::conflict("只有失败的作业能重试"));
     }
     // 机器状态已经变了（比如上架一半的机器后来退役了）：旧作业不能复活
-    let lc: Option<String> = match target {
-        Some(t) => sqlx::query_scalar("select lifecycle::text from machine where id = $1").bind(t).fetch_optional(&mut *tx).await?,
+    let mut lc: Option<String> = match target {
+        Some(t) => sqlx::query_scalar("select lifecycle::text from machine where id = $1 for update").bind(t).fetch_optional(&mut *tx).await?,
         None => None,
     };
+    // 上架失败的机器重试：回到上架中
+    let back = jobs::provisions(&kind) && lc.as_deref() == Some("failed");
+    if back {
+        sqlx::query(
+            "update machine set lifecycle = 'provisioning', lifecycle_reason = case when $2 then '恢复中' end, revision = revision + 1, updated_at = now() where id = $1",
+        )
+        .bind(target)
+        .bind(kind.starts_with("restore_"))
+        .execute(&mut *tx)
+        .await?;
+        lc = Some("provisioning".into());
+    }
     jobs::check_target(&kind, lc.as_deref()).map_err(ApiError::conflict)?;
     sqlx::query("update job_step set state = 'pending', started_at = null, finished_at = null, error = null, error_kind = null where job_id = $1 and idx = $2")
         .bind(id)
@@ -181,6 +194,9 @@ pub async fn retry(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, Q
     audit(&mut tx, &a.name, "job.retry", "job", Some(id), json!({"step": step, "reset_host_key": q.reset_host_key == Some(true)})).await?;
     tx.commit().await?;
     st.emit(Event::Job { id, target });
+    if back {
+        st.emit(Event::Machines);
+    }
     Ok(ok(json!({"ok": true})))
 }
 

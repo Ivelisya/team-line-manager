@@ -59,6 +59,11 @@ export function NodeDrawer() {
               {m.lifecycle === 'retired' && (
                 <Note tone="warn"><b>{m.name}</b> 已于 {F.dtFull(m.retired_at)} 退役（IP {m.ip}）。退役机器保留原编号，可能与在用机器同名，请以 IP 和机器 ID 区分。{m.lifecycle_reason && <> 原因：{m.lifecycle_reason}。</>}</Note>
               )}
+              {m.lifecycle === 'failed' && (
+                <Note tone="bad">
+                  上架失败{m.lifecycle_reason && <>：{m.lifecycle_reason}</>}。{m.failed_job && <><Link to={`/jobs/${m.failed_job.id}`} className="btn-link" onClick={close} style={{ color: 'var(--accent)' }}>查看作业</Link>，可在作业页重试；</>}也可以在「管理」里退役，释放 IP 与编号。
+                </Note>
+              )}
               {m.active_job && (
                 <Note tone="info">
                   {jobKindLabel(m.active_job.kind)}进行中。<Link to={`/jobs/${m.active_job.id}`} className="btn-link" onClick={close} style={{ color: 'var(--accent)' }}>查看作业</Link>

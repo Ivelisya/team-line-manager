@@ -15,7 +15,7 @@
 
 ```
 team ─┐
-      ├─< machine (role=node|relay) ── subscription ── plan ── provider
+      │      │  lifecycle: draft → provisioning → active → retiring → retired；provisioning ⇄ failed（上架作业失败；重试回到上架中）
       │      │  lifecycle: draft → provisioning → active → retiring → retired
       │      ├─< agent_token        （绑定 machine_id，退役时自动撤销）
       │      ├─< metric_* / probe_* （按天分区，过期整区删除）

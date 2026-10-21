@@ -41,6 +41,8 @@ export interface MachineView {
   quota: { used: number; period_start: string };
   health: { status: HealthStatus; reasons: HealthReason[] };
   active_job: { id: string; kind: string; state: string } | null;
+  /** 上架失败（lifecycle = failed）时：失败的上架/恢复作业 */
+  failed_job: { id: string; kind: string; state: string } | null;
   open_incidents: number; maintenance: boolean;
   relay: { public_host: string; generation: number; applied_generation: number; applied_at: string | null; apply_error: string | null; port_min: number; port_max: number } | null;
 }
@@ -66,9 +68,13 @@ export type JobState = 'queued' | 'running' | 'waiting' | 'cancelling' | 'succee
 export type JobKind = 'provision_vps' | 'provision_proxy' | 'provision_relay' | 'attach_entry' | 'move_entry' | 'restore_vps' | 'restore_proxy' | 'restore_relay' | 'retire' | 'purge' | 'upgrade_agent';
 /** 步骤 state 文档未列全，前端按 pending/running/waiting/succeeded(done)/failed/skipped(cancelled) 宽松处理 */
 export interface JobStep { idx: number; key: string; title: string; state: string; started_at: string | null; finished_at: string | null; output: Record<string, unknown> | null; error: string | null; error_kind?: string | null }
-export interface Job {
+/** 作业列表（GET /jobs）的一项：不带 steps。step = 当前（或失败的）步骤下标，step_title 为它的标题，做完为 null */
+export interface JobSummary {
   id: string; kind: JobKind | string; target: { id: string; name: string } | null; state: JobState | string;
-  step: number | null; step_count: number; error: string | null; created_by: string; created_at: string; started_at: string | null; finished_at: string | null;
+  step: number; step_count: number; step_title: string | null; error: string | null; created_by: string; created_at: string; started_at: string | null; finished_at: string | null;
+}
+/** 作业详情（GET /jobs/{id}） */
+export interface Job extends JobSummary {
   steps: JobStep[]; cancellable: boolean;
   /** 换线路机作业（move_entry）才有：新入口 id 与「分享链接已变」的提示 */
   result?: JobResult | null;

@@ -1,7 +1,7 @@
 // 浏览器内 mock：拦截 /api/v1/* 的 fetch 和实时流 WebSocket。VITE_MOCK=1 时由 main.tsx 安装。
 // 有状态：改名、退役、上架、续费等操作都会改内存里的数据，并通过 mock 实时流通知前端刷新。
 
-import type { EntryView, Job, JobLog, MachineView, ProbeBucket, ProvisionCheckItem, ProvisionItem, SeriesPoint } from '@/lib/types';
+import type { EntryView, Job, JobLog, JobSummary, MachineView, ProbeBucket, ProvisionCheckItem, ProvisionItem, SeriesPoint } from '@/lib/types';
 import { displayName } from '@/lib/format';
 import { isQuiet, liveRate } from '@/lib/derive';
 import { buildDb, hashStr, quotaOf, rng, type Db } from './fixtures';
@@ -149,7 +149,7 @@ const PSTEPS: [string, string][] = [['ssh', '连接并检查系统'], ['agent', 
 function newJob(kind: string, target: Job['target'], steps: [string, string][]): Job {
   const id = `j-${db.seq++}`;
   const t = Date.now();
-  const j: Job = { id, kind, target, state: 'running', step: 0, step_count: steps.length, cancellable: true, error: null, created_by: db.user, created_at: iso(t), started_at: iso(t), finished_at: null,
+  const j: Job = { id, kind, target, state: 'running', step: 0, step_count: steps.length, step_title: null, cancellable: true, error: null, created_by: db.user, created_at: iso(t), started_at: iso(t), finished_at: null,
     steps: steps.map(([key, title], idx) => ({ idx, key, title, state: idx === 0 ? 'running' : 'pending', started_at: idx === 0 ? iso(t) : null, finished_at: null, output: null, error: null })) };
   db.jobs.unshift(j); db.logs[id] = [];
   return j;
@@ -272,7 +272,7 @@ function createMachine(it: ProvisionItem, c: ProvisionCheckItem): MachineView {
     plan: plan ? { id: plan.id, name: plan.name, bandwidth_mbps: plan.bandwidth_mbps, traffic_gb: plan.traffic_gb } : null, service_ref: it.service_ref ?? null,
     lifecycle: 'provisioning', lifecycle_reason: null, note: it.note ?? '', revision: 1, created_at: iso(), activated_at: null, retired_at: null,
     subscription: it.subscription?.due_date ? { price_cents: it.subscription.price_cents ?? plan?.price_cents ?? 0, currency: plan?.currency ?? 'USD', cycle: it.subscription.cycle ?? plan?.cycle ?? 'monthly', due_date: it.subscription.due_date, due_days: 0, billing_tz: it.subscription.billing_tz ?? pv?.timezone ?? 'Asia/Shanghai', auto_renew: false, remind_days: 7, traffic_gb: plan?.traffic_gb || null, traffic_reset_day: 1 } : null,
-    agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, quota: { used: 0, period_start: '' }, health: { status: 'unknown', reasons: [{ key: 'provisioning', severity: 'info', text: '上架作业进行中' }] }, active_job: null, open_incidents: 0, maintenance: false,
+    agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, quota: { used: 0, period_start: '' }, health: { status: 'unknown', reasons: [{ key: 'provisioning', severity: 'info', text: '上架作业进行中' }] }, active_job: null, failed_job: null, open_incidents: 0, maintenance: false,
     relay: it.kind === 'relay' ? { public_host: it.ip, generation: 1, applied_generation: 0, applied_at: null, apply_error: null, port_min: 20001, port_max: 20999 } : null,
   };
   if (m.kind !== 'relay') {
@@ -387,7 +387,7 @@ R('POST', '/machines/([^/]+)/retire', ({ params, body }) => {
   const m = machine(params[0]);
   if (m.lifecycle === 'retired') throw bad('这台机器已退役');
   if (body.confirm !== m.name) throw bad('确认名称不匹配', 400, 'confirm_mismatch');
-  const steps: [string, string][] = [['disable', '停用入口'], ...(body.cleanup ? [['cleanup', '清理节点上的服务'] as [string, string]] : []), ['revoke', '吊销凭据'], ['mark', '标记为已退役']];
+  const steps: [string, string][] = [['disable', '停用入口'], ...(body.cleanup ? [['cleanup', '清理节点上的服务'] as [string, string]] : []), ['revoke', '撤销令牌'], ['mark', '标记为已退役']];
   const job = newJob('retire', { id: m.id, name: m.name }, steps);
   m.lifecycle = 'retiring'; m.lifecycle_reason = body.reason ?? null; m.active_job = { id: job.id, kind: 'retire', state: 'running' }; m.entries.forEach((e) => { e.lifecycle = 'disabled'; });
   drive(job, 2200, () => { finishRetire(m); refreshCounts(); });
@@ -456,12 +456,18 @@ const paged = <T,>(all: T[], query: URLSearchParams) => {
   const items = clone(all.slice(offset, offset + limit));
   return { items, total: all.length, next_offset: offset + items.length < all.length ? offset + items.length : null };
 };
+/** 列表项同服务端：不带 steps / cancellable / result，带当前步骤下标与标题 */
+const jobSummary = ({ steps, cancellable: _c, result: _r, ...j }: Job): JobSummary => {
+  const i = steps.findIndex((x) => x.state !== 'done' && x.state !== 'skipped');
+  const step = i < 0 ? steps.length : i;
+  return { ...j, step, step_title: steps[step]?.title ?? null };
+};
 R('GET', '/jobs', ({ query }) => {
   const s = query.get('state') ?? 'all';
-  return paged(db.jobs.filter((j) => s === 'all' || (s === 'active' ? j.state === 'running' || j.state === 'queued' : j.state !== 'running' && j.state !== 'queued')), query);
+  return paged(db.jobs.filter((j) => s === 'all' || (s === 'active' ? j.state === 'running' || j.state === 'queued' : j.state !== 'running' && j.state !== 'queued')).map(jobSummary), query);
 });
 const jobOf = (id: string) => { const j = db.jobs.find((x) => x.id === id); if (!j) throw bad('作业不存在', 404, 'not_found'); return j; };
-R('GET', '/jobs/([^/]+)', ({ params }) => clone(jobOf(params[0])));
+R('GET', '/jobs/([^/]+)', ({ params }) => { const j = clone(jobOf(params[0])); const s = jobSummary(j); return { ...j, step: s.step, step_title: s.step_title }; });
 R('GET', '/jobs/([^/]+)/logs', ({ params, query }) => { const after = +(query.get('after') ?? 0); return clone((db.logs[params[0]] ?? []).filter((l) => l.id > after)); });
 R('POST', '/jobs/([^/]+)/retry', ({ params }) => {
   const j = jobOf(params[0]); if (j.state !== 'failed') throw bad('只有失败的作业才能重试', 409, 'conflict');

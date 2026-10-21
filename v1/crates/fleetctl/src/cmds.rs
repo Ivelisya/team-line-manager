@@ -388,6 +388,9 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
         if !m["active_job"].is_null() {
             rows.push(("进行中作业", format!("{} · {}  {}", job_kind_cn(&st(&m, "/active_job/kind")), job_state_cn(&st(&m, "/active_job/state")), st(&m, "/active_job/id"))));
         }
+        if !m["failed_job"].is_null() {
+            rows.push(("失败作业", format!("{}  {}（fleetctl job 查看，可重试）", job_kind_cn(&st(&m, "/failed_job/kind")), st(&m, "/failed_job/id"))));
+        }
         let mut s = table::kv(&rows);
         if let Some(rs) = m.pointer("/health/reasons").and_then(|r| r.as_array()).filter(|r| !r.is_empty()) {
             s.push_str("\n\n健康原因");
@@ -570,9 +573,9 @@ pub fn job(ctx: &Ctx, id: &str, follow: bool) -> anyhow::Result<u8> {
             ("错误", st(&j, "/error")),
         ]);
         if let Some(steps) = j["steps"].as_array() {
-            let rows: Vec<Vec<String>> = steps.iter().map(|x| vec![st(x, "/idx"), st(x, "/key"), st(x, "/title"), step_state_cn(&st(x, "/state")).to_string(), x["error"].as_str().unwrap_or("").to_string()]).collect();
+            let rows: Vec<Vec<String>> = steps.iter().map(|x| vec![st(x, "/idx"), st(x, "/title"), step_state_cn(&st(x, "/state")).to_string(), x["error"].as_str().unwrap_or("").to_string()]).collect();
             s.push_str("\n\n");
-            s.push_str(&table::render(&["#", "步骤", "说明", "状态", "错误"], &rows));
+            s.push_str(&table::render(&["#", "步骤", "状态", "错误"], &rows));
         }
         let ls = logs.as_array().cloned().unwrap_or_default();
         if !ls.is_empty() {

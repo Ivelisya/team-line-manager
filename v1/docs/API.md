@@ -61,7 +61,9 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
                                 // 订阅有 traffic_reset_day：账单时区里今天或之前最近一次重置日起（月份没有这一天按月末，如 31 号在 9 月是 30 号），
                                 // 从该日账单时区零点累计；否则为北京时间的本月。来自小时汇总表，每次汇总后更新
   health: {status: "ok"|"degraded"|"down"|"unknown"|"maintenance"|"inactive", reasons:[{key,severity,text}]},
-  active_job: {id,kind,state}|null, open_incidents, maintenance,
+  active_job: {id,kind,state}|null,                    // 进行中的作业（queued/running/waiting/cancelling）
+  failed_job: {id,kind,state}|null,                    // lifecycle = failed（上架失败）时：失败的上架/恢复作业；重试回到 provisioning，取消则补偿退役
+  open_incidents, maintenance,
   relay: {public_host,generation,applied_generation,applied_at,apply_error,port_min,port_max}|null }
 EntryView = { id, relay:{id,name}, node:{id,name}, port, lifecycle, applied, apply_error,
   tcp:{ok,latency_ms,detail,ts}|null, egress:{…}|null, traffic:{today_up,today_down,month_up,month_down} }
@@ -118,7 +120,7 @@ ProvisionItem = {
 `Job = {id,kind,target:{id,name}|null,state,step,error,created_by,created_at,started_at,finished_at,steps:[{idx,key,title,state,started_at,finished_at,output,error}]}`
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/jobs?state=active\|done\|all\|failed&target_id=&limit=100&offset=0` | 分页：`{items:[Job（不含 steps）], total, next_offset}`，按创建先后倒序（`id desc`） |
+| GET | `/jobs?state=active\|done\|all\|failed&target_id=&limit=100&offset=0` | 分页：`{items:[Job（不含 steps、cancellable、result，另有 step_title）], total, next_offset}`，按创建先后倒序（`id desc`） |
 | GET | `/jobs/{id}` | 含 steps |
 | GET | `/jobs/{id}/logs?after=<log id>` | `[{id,ts,level,msg}]` |
 | POST | `/jobs/{id}/retry` | 失败的作业从失败那一步重来 |
@@ -151,7 +153,7 @@ ProvisionItem = {
   - host：`{ts, cpu_pct, mem_pct, disk_pct, load1, net_rx_bps, net_tx_bps}`（1h 分辨率另有 `cpu_max`，无 `load1`）
   - traffic：`{ts, up, down, conns}`（字节，该时间桶内的增量）
   - probe：`{ts, tcp_ok, tcp_ms, egress_ok, egress_ms}`（失败时 `*_ms` 为 null；1m 分辨率另有 `tcp_n`、`tcp_ok_n`（该分钟 TCP 探测次数 / 成功次数，线路机为其所有入口合计）；1h 分辨率另有 `tcp_success_pct`、`egress_success_pct`）
-- 作业 `Job`：`{id, kind, target: {id,name}|null, state, step, step_count, error, created_by, created_at, started_at, finished_at}`；
+- 作业 `Job`：`{id, kind, target: {id,name}|null, state, step, step_count, step_title, error, created_by, created_at, started_at, finished_at}`（`step` 当前或失败的步骤下标，`step_title` 它的标题，做完为 null）；
   `state` ∈ `queued | running | waiting | cancelling | succeeded | failed | cancelled`；详情另有 `steps[]`（`output` 是 JSON 对象或 null；各步骤输出的 key 与中文展示见 `web/src/lib/jobs.ts` 的 `OUTPUT`，跳过的步骤为 `{reason}`）与 `cancellable`。
   作业 `kind` ∈ `provision_vps | provision_proxy | provision_relay | attach_entry | retire | purge | upgrade_agent`。
 - 告警 `Incident`：`{id, rule, rule_name（规则中文名，同通知）, subject: {id,name}, subject_id, subject_name, severity, state: "firing"|"resolved", summary, opened_at, last_seen_at, resolved_at, ack_at, ack_by, reopen_count}`（`subject_name` 机器已删除时为 null）。

@@ -1,6 +1,6 @@
 //! 探测：TCP 握手延迟；出口探测 = 经本机回环 SOCKS 入站（路由到该入口的真实出站）访问回显服务，核对出口 IP。
 
-use anyhow::{ensure, Result};
+use anyhow::Result;
 use fleet_proto::{ProbeKind, ProbeSample};
 use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
@@ -11,6 +11,34 @@ fn ms(t: Instant) -> f32 {
     (t.elapsed().as_secs_f64() * 1000.0) as f32
 }
 
+/// 探测失败原因 → 中文（进健康原因、告警、通知）；原始错误只记 agent 日志
+fn reason_cn(raw: &str) -> String {
+    let l = raw.to_ascii_lowercase();
+    if l.contains("socks") {
+        "代理握手失败".into()
+    } else if l.contains("refused") {
+        "连接被拒绝".into()
+    } else if l.contains("lookup") || l.contains("resolve") || l.contains("dns") || l.contains("not known") {
+        "无法解析主机".into()
+    } else if l.contains("timed out") || l.contains("timeout") {
+        "连接超时".into()
+    } else {
+        format!("其他：{}", raw.chars().take(80).collect::<String>())
+    }
+}
+
+/// 错误连同 source 链拼成一行（reqwest 的顶层只有「error sending request」，真正原因在 source 里）
+fn chain(e: &dyn std::error::Error) -> String {
+    let mut s = e.to_string();
+    let mut src = e.source();
+    while let Some(x) = src {
+        s.push_str(": ");
+        s.push_str(&x.to_string());
+        src = x.source();
+    }
+    s
+}
+
 // ── TCP 探测 ────────────────────────────────────────────────────────────────
 
 pub async fn tcp_probe(entry_id: Uuid, host: &str, port: u16, timeout: Duration, ts_ms: i64) -> ProbeSample {
@@ -18,8 +46,11 @@ pub async fn tcp_probe(entry_id: Uuid, host: &str, port: u16, timeout: Duration,
     let r = tokio::time::timeout(timeout, TcpStream::connect((host, port))).await;
     let (ok, detail) = match r {
         Ok(Ok(_)) => (true, None),
-        Ok(Err(e)) => (false, Some(format!("connect: {e}"))),
-        Err(_) => (false, Some(format!("timeout {}s", timeout.as_secs()))),
+        Ok(Err(e)) => {
+            tracing::debug!(host, port, "TCP 探测失败：{e}");
+            (false, Some(reason_cn(&e.to_string())))
+        }
+        Err(_) => (false, Some(format!("连接超时 {} 秒", timeout.as_secs()))),
     };
     // 失败时不给延迟，避免被当成慢而不是挂
     ProbeSample { entry_id, ts_ms, kind: ProbeKind::Tcp, ok, latency_ms: ok.then(|| ms(t)), detail }
@@ -35,15 +66,26 @@ pub fn socks_client(port: u16) -> Result<reqwest::Client> {
     Ok(reqwest::Client::builder().proxy(reqwest::Proxy::all(format!("socks5h://{proxy}"))?).pool_max_idle_per_host(0).build()?)
 }
 
-/// 发 GET，返回正文。http / https 同一条路径。
-async fn http_get(client: &reqwest::Client, url: &str, timeout: Duration) -> Result<String> {
-    tokio::time::timeout(timeout, async {
+/// 发 GET，返回正文；失败返回中文原因。http / https 同一条路径。
+async fn http_get(client: &reqwest::Client, url: &str, timeout: Duration) -> Result<String, String> {
+    let r = tokio::time::timeout(timeout, async {
         let r = client.get(url).send().await?;
-        ensure!(r.status().is_success(), "HTTP {}", r.status());
-        Ok(r.text().await?)
+        if !r.status().is_success() {
+            return Ok(Err(r.status().as_u16()));
+        }
+        Ok::<_, reqwest::Error>(Ok(r.text().await?))
     })
-    .await
-    .map_err(|_| anyhow::anyhow!("超时 {}s", timeout.as_secs()))?
+    .await;
+    match r {
+        Err(_) => Err(format!("超时 {} 秒", timeout.as_secs())),
+        Ok(Ok(Ok(body))) => Ok(body),
+        Ok(Ok(Err(code))) => Err(format!("HTTP 状态码 {code}")),
+        Ok(Err(e)) => {
+            let raw = chain(&e);
+            tracing::debug!(url, "出口探测失败：{raw}");
+            Err(reason_cn(&raw))
+        }
+    }
 }
 
 fn normalize(ip: IpAddr) -> IpAddr {
@@ -64,7 +106,7 @@ pub async fn egress_probe(entry_id: Uuid, client: &reqwest::Client, echo_url: &s
             }
             Err(_) => (false, Some(format!("回显内容不是 IP：{}", body.trim().chars().take(80).collect::<String>()))),
         },
-        Err(e) => (false, Some(format!("{e:#}"))),
+        Err(why) => (false, Some(why)),
     };
     ProbeSample { entry_id, ts_ms, kind: ProbeKind::Egress, ok, latency_ms: ok.then(|| ms(t)), detail }
 }
@@ -139,7 +181,17 @@ mod tests {
         assert!(s.detail.unwrap().contains("198.51.100.1"));
         let (addr, _h) = fake_socks(false, "").await;
         let s = egress_probe(Uuid::nil(), &socks_client(addr.port()).unwrap(), "http://echo.test/ip", "203.0.113.9".parse().unwrap(), Duration::from_secs(3), 1).await;
-        assert!(!s.ok && s.latency_ms.is_none() && s.detail.is_some());
+        assert!(!s.ok && s.latency_ms.is_none());
+        assert_eq!(s.detail.as_deref(), Some("代理握手失败"), "{s:?}");
+    }
+
+    #[test]
+    fn reasons_are_chinese() {
+        assert_eq!(reason_cn("Connection refused (os error 111)"), "连接被拒绝");
+        assert_eq!(reason_cn("failed to lookup address information: Name or service not known"), "无法解析主机");
+        assert_eq!(reason_cn("Connection timed out (os error 110)"), "连接超时");
+        assert_eq!(reason_cn("error sending request: client error (Connect): socks connect error: Connection refused"), "代理握手失败");
+        assert_eq!(reason_cn("Network is unreachable (os error 101)"), "其他：Network is unreachable (os error 101)");
     }
 
     #[tokio::test]
@@ -150,6 +202,7 @@ mod tests {
         assert!(s.ok && s.latency_ms.is_some());
         drop(l);
         let s = tcp_probe(Uuid::nil(), "127.0.0.1", p, Duration::from_secs(2), 1).await;
-        assert!(!s.ok && s.latency_ms.is_none() && s.detail.is_some());
+        assert!(!s.ok && s.latency_ms.is_none());
+        assert_eq!(s.detail.as_deref(), Some("连接被拒绝"));
     }
 }

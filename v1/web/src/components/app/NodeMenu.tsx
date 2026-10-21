@@ -48,7 +48,7 @@ export function useNodeMenu(m: MachineView): MenuEntry[] {
       ? [{ key: 'move', label: '换线路机…', icon: <Repeat2 />, disabled: !!m.active_job, onSelect: () => openMove(m.id) } as MenuEntry] : []),
     { key: 'silence', label: '新建静默', icon: <BellOff />, onSelect: () => nav(`/incidents?silence=${m.id}`) },
     { key: 'sep2', sep: true },
-    { key: 'retire', label: '退役…', icon: <Power />, danger: true, disabled: m.lifecycle === 'provisioning' || m.lifecycle === 'retiring', onSelect: () => openRetire(m.id) },
+    { key: 'retire', label: '退役…', icon: <Power />, danger: true, disabled: m.lifecycle === 'retiring' || (m.lifecycle === 'provisioning' && !!m.active_job), onSelect: () => openRetire(m.id) },
   );
   return items;
 }

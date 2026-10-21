@@ -9,10 +9,10 @@ import { Progress } from '@/components/ui/progress';
 import { toast } from '@/components/ui/toast';
 import { Tip } from '@/components/ui/overlays';
 import { copyNewShareLink } from '@/lib/moveShare';
-import type { Job } from '@/lib/types';
+import type { JobSummary } from '@/lib/types';
 
 /** 作业从“进行中”变成终态时弹一条通知；首次加载只记基线，不补发历史 */
-function useJobNotifier(jobs: Job[] | undefined) {
+function useJobNotifier(jobs: JobSummary[] | undefined) {
   const nav = useNavigate();
   const prev = React.useRef<Map<string, string> | null>(null);
   React.useEffect(() => {
