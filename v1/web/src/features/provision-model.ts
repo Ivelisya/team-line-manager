@@ -25,11 +25,10 @@ export const newRow = (p?: Partial<Row>): Row => ({
 export type ColType = 'text' | 'num' | 'date' | 'kind' | 'host' | 'team' | 'relay' | 'provider' | 'plan' | 'proto' | 'secret';
 export interface Col { key: 'kind' | Field; label: string; w: number; type: ColType; kinds: Kind[]; ph?: string }
 const ALL: Kind[] = ['relay', 'vps', 'proxy'];
-/** 表头顺序即粘贴的列顺序 */
+/** 表头顺序即粘贴的列顺序。「宿主机」是后加的列，排在最后：按没有它的旧表头整理的表格粘进来不会整体错一列 */
 export const COLS: Col[] = [
   { key: 'kind', label: '类型', w: 104, type: 'kind', kinds: ALL },
   { key: 'ip', label: 'IP', w: 132, type: 'text', kinds: ALL, ph: '198.51.100.20' },
-  { key: 'host_id', label: '宿主机', w: 116, type: 'host', kinds: ['vps'] },
   { key: 'ssh_port', label: 'SSH 端口', w: 84, type: 'num', kinds: ['relay', 'vps'], ph: '22' },
   { key: 'team_id', label: '团队', w: 104, type: 'team', kinds: ['vps', 'proxy'] },
   { key: 'number', label: '编号', w: 76, type: 'num', kinds: ['vps', 'proxy'], ph: '自动' },
@@ -49,10 +48,11 @@ export const COLS: Col[] = [
   { key: 'due_date', label: '到期日', w: 148, type: 'date', kinds: ALL, ph: '2026-12-01' },
   { key: 'price', label: '周期费用', w: 96, type: 'text', kinds: ALL },
   { key: 'note', label: '备注', w: 140, type: 'text', kinds: ALL },
+  { key: 'host_id', label: '宿主机', w: 116, type: 'host', kinds: ['vps'] },
 ];
 /** 同机 IP 节点：落地机行打开了「在已有机器上添加 IP」（批量里是填了宿主机） */
 export const isIpNode = (r: Pick<Row, 'kind' | 'add_ip'>) => r.kind === 'vps' && r.add_ip;
-/** 同机 IP 节点不适用的列：SSH 端口、首次登录、SS 端口与供应商都取宿主机的，不带套餐 */
+/** 同机 IP 节点不适用的列：SSH 端口、首次登录与供应商取宿主机的，SS 端口由中控在宿主机上分配，不带套餐 */
 const HOST_NA = new Set<Col['key']>(['ssh_port', 'login_user', 'login_pw', 'ss_port', 'provider_id', 'plan_id']);
 export const applies = (c: Col, r: Pick<Row, 'kind' | 'add_ip'>) => c.kinds.includes(r.kind) && !(isIpNode(r) && HOST_NA.has(c.key));
 
@@ -75,6 +75,18 @@ export function setCell(row: Row, col: Col, raw: string, ctx: Ctx): Row {
     case 'plan': { const t = find(ctx.plans, (x) => [x.name, x.id]); r.plan_id = t?.id ?? ''; if (v && !t) r.unresolved.plan_id = v; break; }
     case 'proto': r.up_protocol = v.toLowerCase() === 'http' ? 'http' : 'socks5'; break;
     default: (r as unknown as Record<string, string>)[col.key] = v;
+  }
+  return r;
+}
+
+/** 把粘贴来的一行从第 ci 列起写进行，对这一行不适用的格子跳过。类型和宿主机决定别的格子适不适用，先写这两列——
+ *  宿主机在最后一列，按列序写会先把同机 IP 节点不适用的格子（SSH 端口、登录、供应商…）写进去 */
+export function pasteLine(row: Row, line: string[], ci: number, ctx: Ctx): Row {
+  const cells = line.flatMap((cell, dx) => (COLS[ci + dx] ? [{ col: COLS[ci + dx], cell }] : []));
+  const lead = ({ col }: { col: Col }) => col.key === 'kind' || col.key === 'host_id';
+  let r = row;
+  for (const { col, cell } of [...cells.filter(lead), ...cells.filter((x) => !lead(x))]) {
+    if (col.key === 'kind' || applies(col, r)) r = setCell(r, col, cell, ctx);
   }
   return r;
 }

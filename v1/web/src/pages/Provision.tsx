@@ -15,7 +15,7 @@ import { ConfirmDialog } from '@/components/app/dialogs';
 import { toast } from '@/components/ui/toast';
 import { copyText } from '@/lib/clipboard';
 import { Note, PageHead, Panel, Pill } from '@/components/app/primitives';
-import { COLS, applies, isIpNode, localErrors, localIssues, newRow, parseTsv, setCell, toItem, type Col, type Ctx, type Row } from '@/features/provision-model';
+import { COLS, applies, isIpNode, localErrors, localIssues, newRow, parseTsv, pasteLine, toItem, type Col, type Ctx, type Row } from '@/features/provision-model';
 
 const KIND_OPTS = (Object.entries(KIND_LABEL) as [Kind, string][]).map(([value, label]) => ({ value, label }));
 
@@ -292,13 +292,7 @@ function BatchGrid({ rows, setRows, ctx, results, errors, stale }: { rows: Row[]
       grid.forEach((line, dy) => {
         const idx = ri + dy;
         while (next.length <= idx) next.push(newRow());
-        let r = next[idx];
-        line.forEach((cell, dx) => {
-          const col = COLS[ci + dx]; if (!col) return;
-          if (col.key !== 'kind' && !applies(col, r)) return;
-          r = setCell(r, col, cell, ctx);
-        });
-        next[idx] = r;
+        next[idx] = pasteLine(next[idx], line, ci, ctx);
       });
       return next;
     });
@@ -338,7 +332,7 @@ function BatchGrid({ rows, setRows, ctx, results, errors, stale }: { rows: Row[]
           </table>
         </div>
       </Panel>
-      <Note icon={<ClipboardPaste size={14} />}>编号留空 = 自动编号（接在末尾）。灰色格子对当前类型不适用，粘贴时会自动跳过。选择列可直接粘贴名称（如「团队1」「线路机1」）。填了「宿主机」的落地机行是同机 IP 节点（宿主机上另配的 IP）：SSH 端口、SS 端口、登录、供应商与套餐沿用宿主机，这几格变灰。</Note>
+      <Note icon={<ClipboardPaste size={14} />}>编号留空 = 自动编号（接在末尾）。灰色格子对当前类型不适用，粘贴时会自动跳过。选择列可直接粘贴名称（如「团队1」「线路机1」）。最后一列填了「宿主机」的落地机行是同机 IP 节点（宿主机上另配的 IP）：SSH 端口、登录与供应商沿用宿主机的，SS 端口由中控在宿主机上分配，不带套餐，这几格变灰。</Note>
       {results && <CheckOutput results={results} rows={rows} errors={errors} stale={stale} />}
       <ConfirmDialog open={askClear} onOpenChange={setAskClear} title="清空批量表格？" confirmLabel="清空" danger
         description="表格里所有行已填写的内容（含登录密码）都会丢失，无法撤销。" onConfirm={() => setRows([newRow()])} />
