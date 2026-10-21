@@ -411,6 +411,7 @@
    禁用的按钮不响应（:not(:disabled)）；禁用的菜单项是 pointer-events: none，不会按下。导航当前项的底是渐变（粉紫），不叠 */
 :is(.icon-btn, .top-btn, .copy-btn, .toast-x, .pol-chev, .cal-day):active:not(:disabled) { scale: var(--press-sm); transition-duration: var(--dur-press); }
 :is(.btn, .fchip, .seg-item, .tab, .chart-legend-item, .cmd-trigger, .top-alert, .nc-name):active:not(:disabled) { scale: var(--press-md); transition-duration: var(--dur-press); }
+button.tag:active { scale: var(--press-md); transition-duration: var(--dur-press); } /* 可点的标签（同机关系标）；只认按钮，纯展示的 span 标签按下不缩 */
 .tab:active:not(:disabled) .tab-ind { scale: calc(1 / var(--press-md)) 1; transition-duration: var(--dur-press); }
 :is(.flow-trend, .flow-foot, .nc-quota, .rc-rings, a.stat):active:not(:disabled) { scale: var(--press-lg); transition-duration: var(--dur-press); }
 :is(.menu-item, .select-item, .cmd-item, .job-item, .jobs-pop-item, .pol-item, .scope-row):active, .nav-item:active:not([aria-current="page"]), .dt tr.is-link:active { background-image: var(--state-press); }
@@ -427,4 +428,5 @@ a.stat:active { translate: none; } /* 按下落回原位并微缩；阴影不去
 
 /* 焦点环：全站 2px 环、2px 间隙（base.css :focus-visible）。会被滚动容器或单元格裁掉的收进元素里面；日历格之间只有 2px 缝，贴边画 */
 :is(.seg-item, .tab, .th-sort, .pol-chev, .pol-item, .job-item, .jobs-pop-item, .logbox):focus-visible, .dt tr.is-link:focus-visible { outline-offset: -2px; }
+button.tag:focus-visible { outline-offset: -2px; } /* 标签行、表格单元格都会裁掉外圈 */
 .cal-day:focus-visible { outline-offset: 0; }

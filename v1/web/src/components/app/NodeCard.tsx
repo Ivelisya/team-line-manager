@@ -8,7 +8,7 @@ import { SPRING } from '@/lib/motion';
 import { ArrowDown, ArrowUp, Calendar, CircleDollarSign, Cpu, Database, Gauge, Globe, HardDrive, MemoryStick, MoreHorizontal, Radar, RefreshCw, Settings2, PanelRightOpen, ServerOff, Wallet } from 'lucide-react';
 import type { MachineView, ProbeBeats, Subscription } from '@/lib/types';
 import * as F from '@/lib/format';
-import { beatCells, beatTitles, entryText, hasHost, isQuiet, liveRate, monthTraffic, probeSummary, quota, remainingValue, resourceMeters, subLabel, tagColor, type TagColor } from '@/lib/derive';
+import { beatCells, beatTitles, entryText, hasHost, hostRel, isQuiet, liveRate, monthTraffic, probeSummary, quota, remainingValue, resourceMeters, subLabel, tagColor, type TagColor } from '@/lib/derive';
 import { useProbeBeats } from '@/lib/queries';
 import { useLiveSeries } from '@/lib/live';
 import { useNow } from '@/lib/useNow';
@@ -16,7 +16,7 @@ import { sharedObserver, watchSize } from '@/lib/sharedObserver';
 import { type DrawerTab } from '@/lib/drawer';
 import { KIND_LABEL } from '@/lib/sort';
 import { cn } from '@/lib/utils';
-import { Beat, Due, HealthPill, KindIcon, LabelValue, Mark, Num, StatusDot } from './primitives';
+import { Beat, Due, HealthPill, HostTag, KindIcon, LabelValue, Mark, Num, StatusDot } from './primitives';
 import { CellMeter, Cells, DotTrace, QUOTA_COLORS, Tag } from './viz';
 import { Button, IconButton } from '@/components/ui/button';
 
@@ -43,28 +43,29 @@ const Head = memo(function Head({ name, kind, ip, status, lc, view, onOpen }: { 
   );
 });
 
-const IpTags = ({ ip, sshPort }: { ip: string; sshPort: number }) => (
-  <span className="nc-marks">{ip.includes(':') ? <Tag c="blue">V6</Tag> : <Tag c="green">V4</Tag>}{sshPort !== 22 && <Mark tip="SSH 端口">SSH {sshPort}</Mark>}</span>
+/** IP 后面的标：IP 版本、非默认的 SSH 端口、同机关系（同机 IP 节点「同机 · 宿主机名」、宿主机「+N IP」，可点） */
+const IpTags = ({ id, ip, sshPort, host, nodes }: Pick<Info, 'id' | 'ip' | 'sshPort' | 'host' | 'nodes'>) => (
+  <span className="nc-marks">{ip.includes(':') ? <Tag c="blue">V6</Tag> : <Tag c="green">V4</Tag>}{sshPort !== 22 && <Mark tip="SSH 端口">SSH {sshPort}</Mark>}<HostTag id={id} host={host} nodes={nodes} /></span>
 );
-interface Info { ip: string; sshPort: number; entry: string; plan: MachineView['plan'] }
-/** 大卡片：地址行 + 入口 / 套餐 / 套餐带宽 / 流量上限 2×2 */
-const LargeInfo = memo(function LargeInfo({ ip, sshPort, entry, plan, limit }: Info & { limit: number }) {
+interface Info { id: string; ip: string; sshPort: number; entry: string; plan: MachineView['plan']; host: MachineView['host_machine']; nodes: MachineView['ip_nodes'] }
+/** 大卡片：地址行 + 入口 / 套餐 / 套餐带宽 / 流量上限 2×2。同机 IP 节点不带套餐，自己没设上限时额度随宿主机 */
+const LargeInfo = memo(function LargeInfo({ entry, plan, limit, ...a }: Info & { limit: number }) {
   return <>
-    <div className="nc-addr"><span className="ellipsis" data-tip={ip}>{ip}</span><IpTags ip={ip} sshPort={sshPort} /></div>
+    <div className="nc-addr"><span className="ellipsis" data-tip={a.ip}>{a.ip}</span><IpTags {...a} /></div>
     <dl className="nc-fields">
       <LabelValue label="入口">{entry}</LabelValue>
-      <LabelValue label="套餐">{plan?.name ?? <span className="t-muted">未设置</span>}</LabelValue>
+      <LabelValue label="套餐">{plan?.name ?? <span className="t-muted">{a.host ? '不带套餐' : '未设置'}</span>}</LabelValue>
       <LabelValue label="套餐带宽">{plan ? <Num f={F.mbps(plan.bandwidth_mbps)} /> : '—'}</LabelValue>
-      <LabelValue label="流量上限"><Num f={F.gb(limit)} /></LabelValue>
+      <LabelValue label="流量上限">{a.host && !(limit > 0) ? '随宿主机' : <Num f={F.gb(limit)} />}</LabelValue>
     </dl>
   </>;
 });
 /** 小卡片：地址 + 入口 · 套餐 · 到期两行（长了省略，悬停看全文） */
-const SmallInfo = memo(function SmallInfo({ ip, sshPort, entry, plan, dueDays }: Info & { dueDays: number | undefined }) {
-  const meta = `${entry} · ${plan?.name ?? '未设置套餐'}`;
+const SmallInfo = memo(function SmallInfo({ entry, plan, dueDays, ...a }: Info & { dueDays: number | undefined }) {
+  const meta = `${entry} · ${plan?.name ?? (a.host ? '不带套餐' : '未设置套餐')}`;
   return (
     <div className="nc-meta2">
-      <div><span data-tip={ip}>{ip}</span><IpTags ip={ip} sshPort={sshPort} /></div>
+      <div><span data-tip={a.ip}>{a.ip}</span><IpTags {...a} /></div>
       <div><span data-tip={meta}>{meta}</span><span className="nc-due"><Due days={dueDays} tail /></span></div>
     </div>
   );
@@ -161,14 +162,15 @@ function FlowRow({ m }: { m: MachineView }) {
   );
 }
 
-/** 剩余流量：标题 + 剩余量，右侧本周期已用 / 上限（周期按流量重置日），下面绿→黄→红的格条（不限额度不画）；点击打开流量页签 */
+/** 剩余流量：标题 + 剩余量，右侧本周期已用 / 上限（周期按流量重置日），下面绿→黄→红的格条（不限额度不画）；点击打开流量页签。
+ *  同机 IP 节点自己没设上限：额度与宿主机共用（算在宿主机的已用里） */
 function QuotaSlot({ m, onOpen }: { m: MachineView; onOpen: Open }) {
   const q = quota(m);
   return (
     <button type="button" className="nc-quota" onClick={() => onOpen('traffic')}>
       <span className="nc-qhead">
         <span className="nc-qlabel"><Database />剩余流量
-          <b className={cn('num', q.rem === 0 && 'is-bad')}>{q.rem == null ? '不限' : q.rem > 0 ? <Num f={F.bytes(q.rem)} /> : '已超限'}</b>
+          <b className={cn('num', q.rem === 0 && 'is-bad')}>{q.rem == null ? (q.shared ? '与宿主机共用' : '不限') : q.rem > 0 ? <Num f={F.bytes(q.rem)} /> : '已超限'}</b>
         </span>
         <span className="nc-quse" data-tip={`周期 ${q.start.slice(5)} 起`}>本周期已用 <Num f={F.bytes(q.used)} />{q.limit > 0 && <> / <Num f={F.gb(q.limit)} /></>}</span>
       </span>
@@ -205,12 +207,19 @@ const RunRow = memo(function RunRow({ activated, sub }: { activated: string | nu
 });
 
 const KIND_TAG = { relay: 'teal', proxy: 'orange', vps: 'violet' } as const;
+const NO_NODES: MachineView['ip_nodes'] = [];
 /** 标签行：标签只排一行，放不下的整枚收起（折到看不见的第二行，cards.css），末尾「+N」，悬停列出收起的那几枚。
- *  收起几枚要排版后才数得出：挂载、标签变了、「+N」出现或变了（列表随之变窄）、卡片变宽变窄时重数；推送不改这几个字段，memo 挡住，不重数 */
-const Tags = memo(function Tags({ code, provider, kind, service, maintenance, price }: { code: string | null; provider?: string; kind: MachineView['kind']; service: string | null; maintenance: boolean; price: string | null }) {
-  const items: { c: TagColor; text: string; tip?: string }[] = [];
+ *  收起几枚要排版后才数得出：挂载、标签变了、「+N」出现或变了（列表随之变窄）、卡片变宽变窄时重数；推送不改这几个字段，memo 挡住，不重数。
+ *  host / nodes：紧凑卡的同机关系标排在类型后面（可点，见 HostTag）；其它密度不传 */
+const Tags = memo(function Tags({ code, provider, kind, service, maintenance, price, id, host, nodes }: {
+  code: string | null; provider?: string; kind: MachineView['kind']; service: string | null; maintenance: boolean; price: string | null;
+  id: string; host: MachineView['host_machine']; nodes: MachineView['ip_nodes'];
+}) {
+  const items: { c: TagColor; text: string; tip?: string; rel?: true }[] = [];
   if (code) items.push({ c: tagColor(code), text: code, tip: provider });
   items.push({ c: KIND_TAG[kind], text: KIND_LABEL[kind] });
+  const rel = hostRel(host, nodes);
+  if (rel) items.push({ c: 'violet', ...rel, rel: true });
   if (service) items.push({ c: tagColor(service), text: service });
   if (maintenance) items.push({ c: 'amber', text: '维护中' });
   const list = useRef<HTMLDivElement>(null);
@@ -221,11 +230,11 @@ const Tags = memo(function Tags({ code, provider, kind, service, maintenance, pr
     for (const t of el.children) if ((t as HTMLElement).offsetTop > top) n++;
     setCut(n);
   }, []);
-  useLayoutEffect(count, [count, code, kind, service, maintenance, price, cut]);
+  useLayoutEffect(count, [count, code, kind, service, maintenance, price, host, nodes, cut]);
   useEffect(() => watchSize(list.current!.parentElement!, count), [count]); // 看整行：行宽只随卡片变，「+N」进出不会让它再触发
   return (
     <div className="nc-tags">
-      <div className="nc-tags-list" ref={list}>{items.map((t, i) => <Tag key={i} c={t.c} tip={t.tip}>{t.text}</Tag>)}</div>
+      <div className="nc-tags-list" ref={list}>{items.map((t, i) => (t.rel ? <HostTag key={i} id={id} host={host} nodes={nodes} /> : <Tag key={i} c={t.c} tip={t.tip}>{t.text}</Tag>))}</div>
       {/* 收起的标签仍在读屏顺序里，「+N」只给眼睛看 */}
       {cut > 0 && <span className="tag" data-c="gray" aria-hidden data-tip={items.slice(-cut).map((t) => (t.tip ? `${t.text}（${t.tip}）` : t.text)).join('、')}>+{cut}</span>}
       {price && <span className="nc-price"><CircleDollarSign /><span className="num">{price}</span></span>}
@@ -252,8 +261,11 @@ function NodeCardImpl({ m, view, current, onOpen: open, layoutKey }: { m: Machin
   const onOpen = useCallback<Open>((tab) => open(m.id, tab), [open, m.id]);
   const host = hasHost(m);
   const quiet = isQuiet(m);
-  const info: Info = { ip: m.ip, sshPort: m.ssh_port, entry: entryText(m), plan: m.plan };
-  const tags = <Tags code={m.provider_code} provider={m.provider?.name} kind={m.kind} service={m.service_ref} maintenance={m.maintenance} price={subLabel(m)} />;
+  const info: Info = { id: m.id, ip: m.ip, sshPort: m.ssh_port, entry: entryText(m), plan: m.plan, host: m.host_machine, nodes: m.ip_nodes };
+  // 同机关系标：大 / 小卡片在 IP 后面（IpTags），紧凑卡没有地址行，放进标签行（放不下整枚收进「+N」）
+  const compact = view === 'compact';
+  const tags = <Tags code={m.provider_code} provider={m.provider?.name} kind={m.kind} service={m.service_ref} maintenance={m.maintenance} price={subLabel(m)}
+    id={m.id} host={compact ? m.host_machine : null} nodes={compact ? m.ip_nodes : NO_NODES} />;
   const beat = <section className="slot-seg"><BeatSlot id={m.id} kind={m.kind} lifecycle={m.lifecycle} quiet={quiet} {...probeSummary(m)} /></section>;
 
   return (

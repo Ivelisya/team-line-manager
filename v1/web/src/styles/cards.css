@@ -67,7 +67,8 @@
 /* 2 地址（小卡片：地址 + 入口/套餐/到期两行） */
 .nc-addr { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); min-height: 22px; margin-top: var(--sp-2); color: var(--fg-2); }
 .nc-marks { display: inline-flex; align-items: center; gap: var(--sp-4); flex: none; }
-.nc-marks .tag { height: 18px; padding: 0 var(--sp-6); font-size: var(--fs-micro); line-height: 18px; border-radius: 6px; }
+.nc-marks .tag, .rc-head .tag, .dt .tag { height: 18px; padding: 0 var(--sp-6); font-size: var(--fs-micro); line-height: 18px; border-radius: 6px; }
+.rc-head .tag, .dt .tag { flex: none; } /* 名称后面的同机关系标：放不下时先省略名称 */
 .nc-meta2 { display: grid; min-height: 44px; margin-top: var(--sp-2); font-size: var(--fs-label); line-height: 22px; color: var(--fg-2); }
 .nc-meta2 > div { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); min-width: 0; }
 .nc-meta2 span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

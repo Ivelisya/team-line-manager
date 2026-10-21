@@ -24,11 +24,19 @@ export function monthTraffic(m: MachineView) {
   for (const e of m.entries) { up += e.traffic.month_up; down += e.traffic.month_down; tu += e.traffic.today_up; td += e.traffic.today_down; }
   return { up, down, today_up: tu, today_down: td };
 }
-/** 流量额度：上限（GiB，订阅没填按套餐，0/null = 不限）与本周期已用（服务端按流量重置日算，见 MachineView.quota） */
+/** 流量额度：上限（GiB，订阅没填按套餐，0/null = 不限）与本周期已用（服务端按流量重置日算，见 MachineView.quota）。
+ *  shared：同机 IP 节点自己没设上限——额度与宿主机共用（宿主机的已用含它的流量），不是「不限」 */
 export function quota(m: MachineView) {
   const limit = m.subscription?.traffic_gb ?? m.plan?.traffic_gb ?? 0;
   const { used, period_start: start } = m.quota;
-  return { limit, used, start, pct: limit > 0 ? (used / (limit * GiB)) * 100 : null, rem: limit > 0 ? Math.max(0, limit * GiB - used) : null };
+  return { limit, used, start, pct: limit > 0 ? (used / (limit * GiB)) * 100 : null, rem: limit > 0 ? Math.max(0, limit * GiB - used) : null, shared: !!m.host_machine && !(limit > 0) };
+}
+/** 同机关系标的文字与悬停说明（卡片、环形卡、机器表）：同机 IP 节点「同机 · 宿主机名」（short：窄处只写「同机」，宿主机名在说明里），
+ *  宿主机「+N IP」；没有同机关系为 null */
+export function hostRel(host: MachineView['host_machine'], nodes: MachineView['ip_nodes'], short?: boolean) {
+  if (host) return { text: short ? '同机' : `同机 · ${host.name}`, tip: `同机 IP 节点：与宿主机「${host.name}」是同一台机器，CPU / 内存 / 磁盘与网卡读数都和宿主机共用` };
+  if (nodes.length) return { text: `+${nodes.length} IP`, tip: `这台机器上还有 ${nodes.length} 个同机 IP 节点：${nodes.map((x) => x.name).join('、')}` };
+  return null;
 }
 /** 流量额度吃紧（首页 KPI）：本周期已用 ≥ 80% 的台数（没设额度的不计），和用得最多的那台（已用百分比向下取整）；没有吃紧的 top 为 null */
 export function quotaTight(list: MachineView[]) {

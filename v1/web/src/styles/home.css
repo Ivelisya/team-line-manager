@@ -190,6 +190,9 @@
 .tag[data-c="cyan"] { --tag-bg: var(--tag-cyan-bg); --tag-fg: var(--tag-cyan-fg); }
 .tag[data-c="amber"] { --tag-bg: var(--tag-amber-bg); --tag-fg: var(--tag-amber-fg); }
 .tag[data-c="green"] { --tag-bg: var(--tag-green-bg); --tag-fg: var(--tag-green-fg); }
+/* 可点的标签（同机关系标，点开对应机器的抽屉）：按钮去掉外观，悬停底色加深；按下与焦点环见 components.css「交互状态」 */
+button.tag { border: 0; cursor: pointer; transition: background-color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out); }
+@media (hover: hover) { button.tag:hover { background: color-mix(in srgb, var(--tag-fg) 22%, transparent); } }
 
 /* ---------- 日期选择（components/ui/date-field） ---------- */
 .datefield { width: 100%; }

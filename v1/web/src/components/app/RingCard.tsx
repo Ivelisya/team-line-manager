@@ -1,5 +1,5 @@
 // 环形视图的卡片：名称 + 状态，CPU / 内存 / 磁盘三个圆环（点击打开抽屉“主机”页签），上行 / 下行实时速率。
-// 高度固定（无主机也画三个空环），整页网格不需要逐槽对齐。
+// 高度固定（无主机也画三个空环），整页网格不需要逐槽对齐。同机关系标在名称后面，卡窄只写「同机」，宿主机名在悬停说明里。
 import { memo } from 'react';
 import { ArrowDown, ArrowUp } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
@@ -7,7 +7,7 @@ import type { DrawerTab } from '@/lib/drawer';
 import * as F from '@/lib/format';
 import { isQuiet, liveRate, resourceMeters } from '@/lib/derive';
 import { cn } from '@/lib/utils';
-import { HealthPill, KindIcon, Num, StatusDot } from './primitives';
+import { HealthPill, HostTag, KindIcon, Num, StatusDot } from './primitives';
 import { Ring } from './viz';
 
 function RingCardImpl({ m, current, onOpen }: { m: MachineView; current?: boolean; onOpen: (id: string, tab?: DrawerTab) => void }) {
@@ -29,6 +29,7 @@ function RingCardImpl({ m, current, onOpen }: { m: MachineView; current?: boolea
       <header className="rc-head">
         <StatusDot status={m.health.status} lifecycle={m.lifecycle} /><KindIcon kind={m.kind} />
         <button type="button" className="nc-name" onClick={() => onOpen(m.id)}>{m.name}</button>
+        <HostTag id={m.id} host={m.host_machine} nodes={m.ip_nodes} short />
         <HealthPill m={m} />
       </header>
       <button type="button" className="rc-rings" onClick={() => onOpen(m.id, 'host')} disabled={!h}>
