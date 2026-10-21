@@ -34,9 +34,10 @@ pub fn app(st: AppState) -> Router {
         .nest("/agent/v1", agent_api::router().fallback(no_api))
         .route("/echo", get(agent_api::echo));
     if let Some(dir) = st.cfg.web_dir.clone().filter(|d| d.join("index.html").exists()) {
-        // 前端是单页应用：未知路径回 index.html
+        // 前端是单页应用：未知路径回 index.html。/assets/ 下的除外，缺的文件回 404：发布新版后旧页面懒加载的旧 chunk
+        // 拿到 index.html 会当脚本解析失败，还会带着下面的一年缓存头留在浏览器里
         let spa = ServeDir::new(&dir).fallback(ServeFile::new(dir.join("index.html")));
-        r = r.fallback_service(spa);
+        r = r.nest_service("/assets", ServeDir::new(dir.join("assets"))).fallback_service(spa);
     }
     r.layer(axum::middleware::from_fn(cache_headers)).layer(CompressionLayer::new()).layer(TraceLayer::new_for_http()).with_state(st)
 }

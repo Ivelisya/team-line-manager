@@ -1,12 +1,15 @@
-//! 运维接口：API 密钥与 scope、登录限速、远程执行的前置校验。
+//! 运维接口：API 密钥与 scope、登录限速、远程执行的前置校验；前端静态文件的 404 与缓存头。
 //! 需要 PostgreSQL（见 common）。
 
 mod common;
 mod common_ops;
 
-use axum::http::StatusCode;
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
 use common_ops::{setup, Auth, ADMIN_PW};
+use http_body_util::BodyExt;
 use serde_json::{json, Value};
+use tower::ServiceExt;
 use uuid::Uuid;
 
 #[tokio::test]
@@ -353,4 +356,28 @@ async fn last_used_updates_are_throttled_to_once_a_minute() {
     assert_eq!(t.call("GET", "/api/v1/machines", None, Auth::Session).await.0, StatusCode::OK);
     let n: i64 = sqlx::query_scalar("select count(*) from session where last_seen_at > now() - interval '5 seconds'").fetch_one(&t.st.db).await.unwrap();
     assert_eq!(n, 1);
+}
+
+/// 前端静态文件：/assets/ 下缺的文件（发布后旧页面懒加载的旧 chunk）回 404、不带一年缓存，不回 index.html；
+/// 其它未知路径照旧回 index.html
+#[tokio::test]
+async fn missing_assets_are_404() {
+    let dir = tempfile::tempdir().unwrap();
+    let web = dir.path().join("web");
+    std::fs::create_dir_all(web.join("assets")).unwrap();
+    std::fs::write(web.join("index.html"), "<!doctype html>").unwrap();
+    std::fs::write(web.join("assets/index-new.js"), "export {}").unwrap();
+    let web = web.display().to_string().replace('\\', "/");
+    let t = common::boot_in(dir, false, &format!("web_dir = \"{web}\"")).await;
+    for (path, status, cache, body) in [
+        ("/assets/index-new.js", StatusCode::OK, Some("public, max-age=31536000, immutable"), "export {}"),
+        ("/assets/index-old.js", StatusCode::NOT_FOUND, None, ""),
+        ("/machines/x", StatusCode::OK, Some("no-cache"), "<!doctype html>"),
+    ] {
+        let res = t.app.clone().oneshot(Request::get(path).body(Body::empty()).unwrap()).await.unwrap();
+        let cc = res.headers().get("cache-control").map(|v| v.to_str().unwrap().to_string());
+        assert_eq!((res.status(), cc.as_deref()), (status, cache), "{path}");
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(String::from_utf8_lossy(&bytes), body, "{path}");
+    }
 }
