@@ -3,9 +3,9 @@
 use super::ok;
 use crate::access::Window;
 use crate::auth::Actor;
-use crate::error::{ApiError, ApiResult};
+use crate::error::{ApiError, ApiPath, ApiQuery, ApiResult};
 use crate::state::AppState;
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 use axum::Json;
 use fleet_ipintel::EXPECTED_DBS;
 use serde::Deserialize;
@@ -41,7 +41,7 @@ pub async fn status(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Val
 }
 
 /// `GET /ipintel/{ip}`：单个地址的完整画像（含各库原始结果）
-pub async fn one(_a: Actor, State(st): State<AppState>, Path(ip): Path<String>) -> ApiResult<Json<Value>> {
+pub async fn one(_a: Actor, State(st): State<AppState>, ApiPath(ip): ApiPath<String>) -> ApiResult<Json<Value>> {
     let ip = parse_ip(&ip)?;
     st.ipintel.ensure_internal(&st.db).await;
     let internal = st.ipintel.internal_name(ip);
@@ -59,7 +59,7 @@ pub struct BatchQ {
 }
 
 /// `GET /ipintel?ips=a,b,c`（≤200）：批量取摘要画像，查不到的 intel 为 null
-pub async fn batch(_a: Actor, State(st): State<AppState>, Query(q): Query<BatchQ>) -> ApiResult<Json<Value>> {
+pub async fn batch(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<BatchQ>) -> ApiResult<Json<Value>> {
     let list: Vec<&str> = q.ips.as_deref().unwrap_or("").split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
     if list.is_empty() {
         return Err(ApiError::bad_request("ips 不能为空，写成 ips=1.2.3.4,5.6.7.8"));
@@ -89,7 +89,7 @@ pub struct SourcesQ {
 }
 
 /// `GET /machines/{id}/sources?window=24h|7d|30d&limit=50`：来源画像分布、top 来源（带画像）、已学基线、学习期
-pub async fn machine_sources(_a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, Query(q): Query<SourcesQ>) -> ApiResult<Json<Value>> {
+pub async fn machine_sources(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<SourcesQ>) -> ApiResult<Json<Value>> {
     let w = match q.window.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         None => Window::H24,
         Some("24h") => Window::H24,

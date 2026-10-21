@@ -3,10 +3,10 @@
 use super::ok;
 use crate::auth::Actor;
 use crate::db::{audit, new_id};
-use crate::error::{ApiError, ApiJson, ApiResult};
+use crate::error::{ApiError, ApiJson, ApiPath, ApiQuery, ApiResult};
 use crate::notify;
 use crate::state::{AppState, Event};
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -113,7 +113,7 @@ pub struct PatchChannel {
     enabled: Option<bool>,
 }
 
-pub async fn patch(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, ApiJson(b): ApiJson<PatchChannel>) -> ApiResult<Json<Value>> {
+pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<PatchChannel>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
     let cur: Row = sqlx::query_as(&format!("select {COLS} from notify_channel where id = $1 for update")).bind(id).fetch_optional(&mut *tx).await?.ok_or_else(|| ApiError::not_found("没有这个通知渠道"))?;
     let name = match &b.name {
@@ -156,7 +156,7 @@ pub async fn patch(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, A
     Ok(ok(json!({"ok": true})))
 }
 
-pub async fn delete(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>) -> ApiResult<Json<Value>> {
+pub async fn delete(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
     let name: Option<(String,)> = sqlx::query_as("delete from notify_channel where id = $1 returning name").bind(id).fetch_optional(&mut *tx).await?;
     let (name,) = name.ok_or_else(|| ApiError::not_found("没有这个通知渠道"))?;
@@ -167,7 +167,7 @@ pub async fn delete(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>) 
 }
 
 /// 发一条测试消息。发送失败不是接口错误：返回 `{ok:false, error}`。
-pub async fn test(_a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>) -> ApiResult<Json<Value>> {
+pub async fn test(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     let exists: Option<(Uuid,)> = sqlx::query_as("select id from notify_channel where id = $1").bind(id).fetch_optional(&st.db).await?;
     if exists.is_none() {
         return Err(ApiError::not_found("没有这个通知渠道"));
@@ -202,7 +202,7 @@ struct LogOut {
     rule_name: Option<String>,
 }
 
-pub async fn log(_a: Actor, State(st): State<AppState>, Query(q): Query<LogQ>) -> ApiResult<Json<Value>> {
+pub async fn log(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<LogQ>) -> ApiResult<Json<Value>> {
     let mut v: Vec<LogOut> = sqlx::query_as(
         "select l.id, l.channel_id, c.name channel_name, l.incident_id, l.ts, l.ok, l.error, l.kind,
                 display_name(m.kind::text, m.label, t.name, m.number) || case when m.lifecycle = 'retired' then '（已退役）' else '' end subject_name, i.rule

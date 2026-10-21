@@ -6,10 +6,10 @@
 use super::ok;
 use crate::auth::Actor;
 use crate::db::{audit, bump_relay, new_id, Tx};
-use crate::error::{ApiError, ApiJson, ApiResult};
+use crate::error::{ApiError, ApiJson, ApiPath, ApiResult};
 use crate::policy::{self, Data, Mode, PolicySet, Row, Scope, Source};
 use crate::state::{AppState, Event};
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -17,8 +17,6 @@ use std::collections::{BTreeMap, HashMap};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-/// 发布 / 回滚 / 丢弃 / 改草稿之间的互斥（事务级咨询锁）
-const LOCK_KEY: i64 = 0x706f_6c69_6379;
 /// 预览看最近多少小时的访问汇总
 const PREVIEW_HOURS: i64 = 24;
 const PREVIEW_DOMAINS: usize = 20;
@@ -104,7 +102,8 @@ pub async fn list(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value
         })
         .collect();
     let draft_count = rows.iter().filter(|r| r.draft.is_some()).count();
-    Ok(ok(json!({"draft_hash": policy::draft_hash(&rows), "draft_count": draft_count, "teams": out})))
+    let ver = policy::current_version(&st.db).await?;
+    Ok(ok(json!({"draft_hash": policy::draft_hash(&rows, ver), "draft_count": draft_count, "teams": out})))
 }
 
 // ── 改草稿 ─────────────────────────────────────────────────────────────────
@@ -131,7 +130,7 @@ pub struct PutIn {
     expected_revision: i32,
 }
 
-pub async fn put_one(a: Actor, State(st): State<AppState>, Path((scope, id)): Path<(String, Uuid)>, ApiJson(b): ApiJson<PutIn>) -> ApiResult<Json<Value>> {
+pub async fn put_one(a: Actor, State(st): State<AppState>, ApiPath((scope, id)): ApiPath<(String, Uuid)>, ApiJson(b): ApiJson<PutIn>) -> ApiResult<Json<Value>> {
     let scope = Scope::parse(&scope).ok_or_else(|| ApiError::bad_request("范围只能是 team 或 node"))?;
     match scope {
         Scope::Team => {
@@ -213,11 +212,12 @@ pub async fn put_one(a: Actor, State(st): State<AppState>, Path((scope, id)): Pa
     st.emit(Event::Policies);
     let rows = policy::load_rows(&st.db, false).await?;
     let one = rows.iter().find(|r| r.scope == scope && r.scope_id == id);
-    Ok(ok(json!({"policy": policy_json(scope, id, one), "draft_hash": policy::draft_hash(&rows), "draft_count": rows.iter().filter(|r| r.draft.is_some()).count()})))
+    let ver = policy::current_version(&st.db).await?;
+    Ok(ok(json!({"policy": policy_json(scope, id, one), "draft_hash": policy::draft_hash(&rows, ver), "draft_count": rows.iter().filter(|r| r.draft.is_some()).count()})))
 }
 
 async fn lock(tx: &mut Tx<'_>) -> ApiResult<()> {
-    sqlx::query("select pg_advisory_xact_lock($1)").bind(LOCK_KEY).execute(&mut **tx).await?;
+    sqlx::query("select pg_advisory_xact_lock($1)").bind(policy::LOCK_KEY).execute(&mut **tx).await?;
     Ok(())
 }
 
@@ -251,7 +251,7 @@ fn map_of(rows: &[Row], drafts: bool) -> BTreeMap<(Scope, Uuid), Data> {
 /// 模拟：把所有草稿生效后，最近 24 小时每个节点会被阻止多少连接、哪些域名
 pub async fn preview(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
     let rows = policy::load_rows(&st.db, false).await?;
-    let hash = policy::draft_hash(&rows);
+    let hash = policy::draft_hash(&rows, policy::current_version(&st.db).await?);
     let cur = policy::set_current(&rows);
     let new = policy::set_with_drafts(&rows);
     let nodes = policy::live_nodes(&st.db).await?;
@@ -322,22 +322,24 @@ pub struct HashIn {
     draft_hash: String,
 }
 
-/// 草稿存在且哈希一致，否则 409
-fn check_hash(rows: &[Row], given: &str) -> ApiResult<()> {
-    let Some(h) = policy::draft_hash(rows) else { return Err(ApiError::conflict("没有未发布的草稿")) };
+/// 草稿存在且哈希一致（草稿与生效版本都没变），否则 409。在锁内调用。
+async fn check_hash(tx: &mut Tx<'_>, rows: &[Row], given: &str) -> ApiResult<()> {
+    let ver = policy::current_version(&mut **tx).await?;
+    let Some(h) = policy::draft_hash(rows, ver) else { return Err(ApiError::conflict("没有未发布的草稿")) };
     if h != given.trim() {
-        return Err(ApiError::conflict("草稿已变化，请重新预览"));
+        return Err(ApiError::conflict("草稿或生效版本已变化，请重新预览"));
     }
     Ok(())
 }
 
 pub async fn publish(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<HashIn>) -> ApiResult<Json<Value>> {
     let names = policy::scope_names(&st.db).await?;
-    let nodes = policy::live_nodes(&st.db).await?;
     let mut tx = st.db.begin().await?;
     lock(&mut tx).await?;
+    // 在锁内读在用节点：新建入口拿同一把锁的共享锁，读到的就是发布时真实挂着的入口
+    let nodes = policy::live_nodes(&mut *tx).await?;
     let rows = policy::load_rows(&mut *tx, true).await?;
-    check_hash(&rows, &b.draft_hash)?;
+    check_hash(&mut tx, &rows, &b.draft_hash).await?;
     let before = policy::set_current(&rows);
     let after = policy::set_with_drafts(&rows);
     for r in rows.iter().filter(|r| r.draft.is_some()) {
@@ -365,7 +367,7 @@ pub async fn discard(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<H
     let mut tx = st.db.begin().await?;
     lock(&mut tx).await?;
     let rows = policy::load_rows(&mut *tx, true).await?;
-    check_hash(&rows, &b.draft_hash)?;
+    check_hash(&mut tx, &rows, &b.draft_hash).await?;
     let n = sqlx::query("update policy set draft = null, revision = revision + 1, updated_by = $1, updated_at = now() where draft is not null")
         .bind(&a.name)
         .execute(&mut *tx)
@@ -524,11 +526,11 @@ async fn version_one(st: &AppState, id: Uuid) -> ApiResult<Value> {
 pub async fn versions(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> { Ok(ok(load_versions(&st, None).await?)) }
 
 /// 把某个历史版本的快照作为新版本发布
-pub async fn rollback(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>) -> ApiResult<Json<Value>> {
+pub async fn rollback(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     let names = policy::scope_names(&st.db).await?;
-    let nodes = policy::live_nodes(&st.db).await?;
     let mut tx = st.db.begin().await?;
     lock(&mut tx).await?;
+    let nodes = policy::live_nodes(&mut *tx).await?;
     let (snap, seq): (Value, i64) = sqlx::query_as("select snapshot, seq from policy_version where id = $1")
         .bind(id)
         .fetch_optional(&mut *tx)

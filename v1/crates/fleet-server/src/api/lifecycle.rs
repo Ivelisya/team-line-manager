@@ -4,12 +4,12 @@
 use super::ok;
 use crate::auth::Actor;
 use crate::db::{audit, bump_relay, Tx};
-use crate::error::{ApiError, ApiJson, ApiResult};
+use crate::error::{ApiError, ApiJson, ApiPath, ApiQuery, ApiResult};
 use crate::jobs;
 use crate::names::{display_name, node_name};
 use crate::ssh;
 use crate::state::{AppState, Event};
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 use axum::Json;
 use base64::Engine;
 use serde::Deserialize;
@@ -123,7 +123,7 @@ pub struct MoveIn {
 }
 
 /// 把节点换到另一台线路机：新入口验收通过后才摘旧入口，期间不断网。
-pub async fn move_node(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, ApiJson(b): ApiJson<MoveIn>) -> ApiResult<Json<Value>> {
+pub async fn move_node(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<MoveIn>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
     let plan = plan_move(&mut tx, id, b.from_relay_id, b.to_relay_id).await?.map_err(ApiError::conflict)?;
     let job = enqueue_move(&mut tx, &a.name, id, &plan, b.to_relay_id, "move").await?;
@@ -142,7 +142,7 @@ pub struct EvacuateIn {
 
 /// 搬空线路机：为这台线路机上每个在用入口的节点各建一个换线路机作业（线路机退役前用）。
 /// 暂时不能搬的节点（停用、有别的作业、已在目标线路机上有入口…）列在 skipped 里，不影响其它节点。
-pub async fn evacuate(a: Actor, State(st): State<AppState>, Path(relay): Path<Uuid>, ApiJson(b): ApiJson<EvacuateIn>) -> ApiResult<Json<Value>> {
+pub async fn evacuate(a: Actor, State(st): State<AppState>, ApiPath(relay): ApiPath<Uuid>, ApiJson(b): ApiJson<EvacuateIn>) -> ApiResult<Json<Value>> {
     if relay == b.to_relay_id {
         return Err(ApiError::bad_request("目标线路机不能和要搬空的是同一台"));
     }
@@ -245,11 +245,13 @@ struct RPlan {
     label: Option<String>,
     new_name: String,
     blockers: Vec<String>,
+    /// blockers 里属于输入错误的（编号超范围、指定的团队不存在）：提交时回 400，其余阻断回 409
+    invalid: Vec<String>,
     ip_conflict: Option<Value>,
 }
 
 async fn restore_plan(conn: &mut PgConnection, id: Uuid, m: &RM, team_ov: Option<Uuid>, num_ov: Option<i32>, label_ov: Option<String>, lock: bool) -> ApiResult<RPlan> {
-    let mut blockers = vec![];
+    let (mut blockers, mut invalid) = (vec![], vec![]);
     let old_team: Option<String> = match m.team_id {
         Some(t) => sqlx::query_scalar("select name from team where id = $1").bind(t).fetch_optional(&mut *conn).await?,
         None => None,
@@ -299,6 +301,9 @@ async fn restore_plan(conn: &mut PgConnection, id: Uuid, m: &RM, team_ov: Option
         match &tn {
             None => {
                 blockers.push("团队不存在".into());
+                if team_ov.is_some() {
+                    invalid.push("团队不存在".into());
+                }
                 new_name = old_name.clone();
             }
             Some(tn) => {
@@ -313,6 +318,7 @@ async fn restore_plan(conn: &mut PgConnection, id: Uuid, m: &RM, team_ov: Option
                 let n = match num_ov {
                     Some(n) if !(1..=999).contains(&n) => {
                         blockers.push("编号范围 1–999".into());
+                        invalid.push("编号范围 1–999".into());
                         None
                     }
                     Some(n) if taken.contains(&n) => {
@@ -333,7 +339,7 @@ async fn restore_plan(conn: &mut PgConnection, id: Uuid, m: &RM, team_ov: Option
         team_id = tid;
         team_name = tn;
     }
-    Ok(RPlan { old_name, team_id, team_name, number, label, new_name, blockers, ip_conflict })
+    Ok(RPlan { old_name, team_id, team_name, number, label, new_name, blockers, invalid, ip_conflict })
 }
 
 /// 用中控密钥试登录这台机器（预检用）：先 keyscan 到临时 known_hosts，不碰正式的。
@@ -370,7 +376,7 @@ pub struct PreviewQ {
 }
 
 /// 恢复预检：IP 冲突、将分配的团队/编号/名字、还需要提供哪些参数
-pub async fn restore_preview(_a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, Query(q): Query<PreviewQ>) -> ApiResult<Json<Value>> {
+pub async fn restore_preview(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<PreviewQ>) -> ApiResult<Json<Value>> {
     let (m, p, last_relay) = {
         let mut conn = st.db.acquire().await?;
         let m = load_rm(&mut conn, id, false).await?;
@@ -385,7 +391,17 @@ pub async fn restore_preview(_a: Actor, State(st): State<AppState>, Path(id): Pa
         (m, p, last)
     };
     let mut warnings: Vec<String> = vec![];
-    let ssh_info = if m.kind != "proxy" && m.lifecycle == "retired" && q.probe != Some(false) { Some(probe_login(&st, &m).await) } else { None };
+    let ssh_info = if m.kind != "proxy" && m.lifecycle == "retired" && q.probe != Some(false) {
+        // 试登录会用中控密钥 SSH 上机器：和 exec 同级权限，并记审计
+        a.require_scope("exec").map_err(|e| ApiError::forbidden(format!("{}：预检要试 SSH 登录，需要 exec 权限；不试登录请加 probe=false", e.message)))?;
+        let info = probe_login(&st, &m).await;
+        let mut tx = st.db.begin().await?;
+        audit(&mut tx, &a.name, "restore.probe", "machine", Some(id), json!({"name": p.old_name, "ip": m.ip, "key_login": info["key_login"]})).await?;
+        tx.commit().await?;
+        Some(info)
+    } else {
+        None
+    };
     // root 密码：中控密钥还能登录就不需要；被拒就必填；探测不到时可选（填了也不亏）
     let password = match (m.kind.as_str(), ssh_info.as_ref().and_then(|i| i["key_login"].as_str())) {
         ("proxy", _) => "no",
@@ -455,10 +471,13 @@ pub struct RestoreIn {
 }
 
 /// 恢复已退役的机器：机器保持原 id，生命周期 retired → provisioning，走和上架相同的收敛步骤
-pub async fn restore(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, ApiJson(b): ApiJson<RestoreIn>) -> ApiResult<Json<Value>> {
+pub async fn restore(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<RestoreIn>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
     let m = load_rm(&mut tx, id, true).await?;
     let p = restore_plan(&mut tx, id, &m, b.team_id, b.number, b.label.clone(), true).await?;
+    if !p.invalid.is_empty() {
+        return Err(ApiError::bad_request(p.invalid.join("；")).with_detail(json!({"blockers": p.blockers, "ip_conflict": p.ip_conflict})));
+    }
     if !p.blockers.is_empty() {
         return Err(ApiError::conflict(p.blockers.join("；")).with_detail(json!({"blockers": p.blockers, "ip_conflict": p.ip_conflict})));
     }

@@ -2,9 +2,9 @@ use crate::error::ApiJson;
 use super::ok;
 use crate::auth::Actor;
 use crate::db::{audit, new_id};
-use crate::error::{ApiError, ApiResult};
+use crate::error::{ApiError, ApiPath, ApiResult};
 use crate::state::{AppState, Event};
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -62,7 +62,7 @@ pub async fn create_team(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJs
     Ok(ok(json!({"id": id})))
 }
 
-pub async fn patch_team(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, ApiJson(b): ApiJson<TeamIn>) -> ApiResult<Json<Value>> {
+pub async fn patch_team(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<TeamIn>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
     let old: (String, i32) = sqlx::query_as("select name, sort_order from team where id = $1 for update")
         .bind(id)
@@ -155,7 +155,7 @@ pub async fn create_provider(a: Actor, State(st): State<AppState>, ApiJson(b): A
     Ok(ok(json!({"id": id})))
 }
 
-pub async fn patch_provider(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, ApiJson(b): ApiJson<ProviderIn>) -> ApiResult<Json<Value>> {
+pub async fn patch_provider(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<ProviderIn>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
     let old: Provider = sqlx::query_as("select id, name, code, panel_url, timezone from provider where id = $1 for update")
         .bind(id)
@@ -288,7 +288,7 @@ pub async fn create_plan(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJs
     Ok(ok(json!({"id": id})))
 }
 
-pub async fn patch_plan(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, ApiJson(b): ApiJson<PlanIn>) -> ApiResult<Json<Value>> {
+pub async fn patch_plan(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<PlanIn>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
     sqlx::query("select 1 from plan where id = $1 for update").bind(id).fetch_one(&mut *tx).await?;
     // 逐字段更新：Option<Option<T>> 区分「没传」与「设为空」

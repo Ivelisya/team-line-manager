@@ -7,10 +7,10 @@ use super::machines::display_name_of;
 use super::ok;
 use crate::auth::Actor;
 use crate::db::audit;
-use crate::error::{ApiError, ApiJson, ApiResult};
+use crate::error::{ApiError, ApiJson, ApiPath, ApiQuery, ApiResult};
 use crate::ssh::Target;
 use crate::state::AppState;
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
 use base64::Engine;
@@ -71,32 +71,34 @@ async fn run_on(st: &AppState, a: &Actor, id: Uuid, command: &str, timeout_s: u6
         .await?;
     let target = Target { ip, port: port as u16, key: st.cfg.ssh_key.clone(), known_hosts: st.cfg.known_hosts.clone(), password: None };
     let _permit = EXEC_SEM.acquire().await.map_err(|_| ApiError::internal("执行通道已关闭"))?;
+    // 先提交一条「已开始」的审计再执行：客户端断开或中控重启时，已执行的命令也有记录；执行完再把结果补进这一条
+    let audit_id: i64 = sqlx::query_scalar(
+        "insert into audit_log (actor, action, target_kind, target_id, detail) values ($1, $2, 'machine', $3, $4) returning id",
+    )
+    .bind(&a.name)
+    .bind(action)
+    .bind(id)
+    .bind(json!({"name": name, "command": command, "started": true}))
+    .fetch_one(&st.db)
+    .await?;
+    let finish = |extra: Value| {
+        sqlx::query("update audit_log set detail = (detail - 'started'::text) || $2 where id = $1").bind(audit_id).bind(extra).execute(&st.db)
+    };
     let t0 = Instant::now();
     // 远端 timeout 负责杀命令；本地多给 15 秒留给建连与收尾
     let res = target.run(&wrap(command, timeout_s), Duration::from_secs(timeout_s + 15)).await;
     let duration_ms = t0.elapsed().as_millis() as u64;
-    let mut tx = st.db.begin().await?;
     match res {
         Ok(o) => {
             let timed_out = o.code == 124;
             let (stdout, t1) = truncate(o.stdout, MAX_OUT);
             let (stderr, t2) = truncate(o.stderr, MAX_OUT);
-            audit(
-                &mut tx,
-                &a.name,
-                action,
-                "machine",
-                Some(id),
-                json!({"name": name, "command": command, "exit_code": o.code, "duration_ms": duration_ms, "timed_out": timed_out}),
-            )
-            .await?;
-            tx.commit().await?;
+            finish(json!({"exit_code": o.code, "duration_ms": duration_ms, "timed_out": timed_out})).await?;
             Ok(Ran { exit_code: o.code, stdout, stderr, duration_ms, truncated: t1 || t2, timed_out })
         }
         Err(e) => {
             let msg = format!("{e:#}");
-            audit(&mut tx, &a.name, action, "machine", Some(id), json!({"name": name, "command": command, "error": msg, "duration_ms": duration_ms})).await?;
-            tx.commit().await?;
+            finish(json!({"error": msg, "duration_ms": duration_ms})).await?;
             if msg.contains("超时") {
                 Ok(Ran { exit_code: 124, stdout: String::new(), stderr: format!("登录或执行超过 {timeout_s} 秒，已终止"), duration_ms, truncated: false, timed_out: true })
             } else {
@@ -120,7 +122,7 @@ pub struct ExecIn {
     timeout_s: Option<u64>,
 }
 
-pub async fn exec(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, ApiJson(b): ApiJson<ExecIn>) -> ApiResult<Json<Value>> {
+pub async fn exec(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<ExecIn>) -> ApiResult<Json<Value>> {
     a.require_scope("exec")?;
     if b.command.trim().is_empty() {
         return Err(ApiError::bad_request("command 不能为空"));
@@ -154,7 +156,7 @@ fn unit_name(u: &str) -> Option<&'static str> {
     }
 }
 
-pub async fn machine_logs(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, Query(q): Query<LogsQ>) -> ApiResult<Json<Value>> {
+pub async fn machine_logs(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<LogsQ>) -> ApiResult<Json<Value>> {
     a.require_scope("exec")?;
     let want = q.unit.as_deref().unwrap_or("fleet-agent");
     let unit = unit_name(want).ok_or_else(|| ApiError::bad_request("unit 只能是 fleet-agent / fleet-xray / ssserver"))?;
@@ -165,7 +167,7 @@ pub async fn machine_logs(a: Actor, State(st): State<AppState>, Path(id): Path<U
 }
 
 /// 中控自己的日志（本机 journalctl）。fleet 用户通常没权限读 journal，失败时给出明确提示。
-pub async fn server_logs(a: Actor, State(st): State<AppState>, Query(q): Query<LogsQ>) -> ApiResult<Json<Value>> {
+pub async fn server_logs(a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<LogsQ>) -> ApiResult<Json<Value>> {
     a.require_scope("exec")?;
     let n = clamp_lines(q.lines);
     let t0 = Instant::now();

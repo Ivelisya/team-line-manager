@@ -1,10 +1,10 @@
 use super::{ok, paged};
 use crate::auth::Actor;
 use crate::db::audit;
-use crate::error::{ApiError, ApiResult};
+use crate::error::{ApiError, ApiPath, ApiQuery, ApiResult};
 use crate::jobs::{self, cancellable, cancellable_at, title_of};
 use crate::state::{AppState, Event};
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 use axum::Json;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -59,7 +59,7 @@ fn job_json(j: &JobOut) -> Value {
     v
 }
 
-pub async fn list(_a: Actor, State(st): State<AppState>, Query(q): Query<ListQ>) -> ApiResult<Json<Value>> {
+pub async fn list(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<ListQ>) -> ApiResult<Json<Value>> {
     let filter = match q.state.as_deref() {
         Some("active") => "j.state in ('queued','running','waiting','cancelling')",
         Some("done") => "j.state in ('succeeded','failed','cancelled')",
@@ -91,7 +91,7 @@ struct StepOut {
     error_kind: Option<String>,
 }
 
-pub async fn get_one(_a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>) -> ApiResult<Json<Value>> {
+pub async fn get_one(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     let j: JobOut = sqlx::query_as(&format!("{SELECT} where j.id = $1")).bind(id).fetch_optional(&st.db).await?.ok_or_else(|| ApiError::not_found("没有这个作业"))?;
     let steps: Vec<StepOut> = sqlx::query_as("select idx, key, state, started_at, finished_at, output, error, error_kind from job_step where job_id = $1 order by idx")
         .bind(id)
@@ -135,7 +135,7 @@ struct LogOut {
     msg: String,
 }
 
-pub async fn logs(_a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, Query(q): Query<LogQ>) -> ApiResult<Json<Value>> {
+pub async fn logs(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<LogQ>) -> ApiResult<Json<Value>> {
     let v: Vec<LogOut> = sqlx::query_as("select id, ts, level, msg from job_log where job_id = $1 and id > $2 order by id limit 1000")
         .bind(id)
         .bind(q.after.unwrap_or(0))
@@ -153,7 +153,7 @@ pub struct RetryIn {
     ssh_password: Option<String>,
 }
 
-pub async fn retry(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, body: axum::body::Bytes) -> ApiResult<Json<Value>> {
+pub async fn retry(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, body: axum::body::Bytes) -> ApiResult<Json<Value>> {
     let b: RetryIn = if body.iter().all(u8::is_ascii_whitespace) {
         RetryIn::default()
     } else {
@@ -229,7 +229,7 @@ pub async fn retry(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, b
     Ok(ok(json!({"ok": true})))
 }
 
-pub async fn cancel(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>) -> ApiResult<Json<Value>> {
+pub async fn cancel(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
     let (state, kind, step, target): (String, String, i32, Option<Uuid>) = sqlx::query_as("select state::text, kind, step, target_id from job where id = $1 for update")
         .bind(id)
