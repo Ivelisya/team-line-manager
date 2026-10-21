@@ -40,6 +40,15 @@ const REPEAT_CRITICAL_S: i64 = 4 * 3600;
 /// 续费类与流量额度的提醒间隔（每天最多一次）
 const REPEAT_SLOW_S: i64 = 24 * 3600;
 
+/// 严重度的高低（同库里 severity 枚举的顺序）
+fn rank(severity: &str) -> u8 {
+    match severity {
+        "critical" => 2,
+        "warning" => 1,
+        _ => 0,
+    }
+}
+
 /// 续费类与流量额度：按日期、小时汇总判定，不会抖——开、关都不去抖，持续提醒每天最多一次
 fn slow(rule: &str) -> bool {
     rule.starts_with("renewal_") || rule == "traffic_quota_high"
@@ -160,24 +169,32 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
             };
 
             if let Some(inc) = open.remove(&k) {
-                // 已在告警：同步最新严重度/摘要；只有严重度变了或摘要实质变了才通知前端刷新
+                // 已在告警：同步摘要；严重度只升不降（流量额度超限后上限被调高、回到吃紧，仍按严重算到恢复：
+                // 收到过「严重」触发的渠道也要收到恢复）。只有严重度变了或摘要实质变了才通知前端刷新
                 state.clean_since.remove(&inc.id);
-                if inc.severity != r.severity || inc.summary != summary {
-                    sqlx::query("update incident set last_seen_at = now(), summary = $2, severity = $3::severity where id = $1")
-                        .bind(inc.id)
-                        .bind(&summary)
-                        .bind(r.severity)
-                        .execute(&st.db)
-                        .await?;
-                    changed |= inc.severity != r.severity || !same_summary(&inc.summary, &summary);
+                let escalated = rank(r.severity) > rank(&inc.severity);
+                let sev = if escalated { r.severity } else { inc.severity.as_str() };
+                if escalated || inc.summary != summary {
+                    // 升级时清掉之前的确认（同复发重开）：确认的是吃紧，超限是新情况
+                    sqlx::query(
+                        "update incident set last_seen_at = now(), summary = $2, severity = $3::severity,
+                             ack_at = case when $4 then null else ack_at end, ack_by = case when $4 then null else ack_by end
+                         where id = $1",
+                    )
+                    .bind(inc.id)
+                    .bind(&summary)
+                    .bind(sev)
+                    .bind(escalated)
+                    .execute(&st.db)
+                    .await?;
+                    changed |= escalated || !same_summary(&inc.summary, &summary);
                 } else {
                     touch.push(inc.id);
                 }
                 // 持续提醒；复发后已报过恢复的，满限流时长再发一次「触发」；升成严重（流量额度从吃紧到超限）不等提醒间隔，马上再发一次「触发」
-                let escalated = r.severity == "critical" && inc.severity != "critical";
-                let kind = if escalated { Some(Kind::Firing) } else { due(&inc, r.severity, now) };
+                let kind = if escalated { Some(Kind::Firing) } else { due(&inc, sev, now) };
                 if let Some(kind) = kind.filter(|_| !silences.matches(r.key, m.id)) {
-                    notify::enqueue(st, notice(kind, inc.id, inc.opened_at)).await;
+                    notify::enqueue(st, Notice { severity: sev.to_string(), ..notice(kind, inc.id, inc.opened_at) }).await;
                 }
                 continue;
             }

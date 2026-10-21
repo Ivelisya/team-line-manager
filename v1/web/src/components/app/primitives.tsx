@@ -41,7 +41,7 @@ export function HealthPill({ m }: { m: Pick<MachineView, 'health' | 'lifecycle' 
 /** 健康原因列表（带严重度圆点）：健康 pill 的悬停提示与抽屉“状态原因”共用 */
 export const ReasonList = ({ reasons, className }: { reasons: HealthReason[]; className: string }) => (
   <ul className={className}>
-    {reasons.map((r, i) => <li key={i}><span className="dot" data-tone={r.severity === 'critical' ? 'bad' : r.severity === 'warning' ? 'warn' : 'info'} />{r.text}</li>)}
+    {reasons.map((r, i) => <li key={i}><span className="dot" data-tone={severityOf(r.severity).tone} />{r.text}</li>)}
   </ul>
 );
 const reasonsTip = (reasons: HealthReason[]) => (reasons.length ? <ReasonList reasons={reasons} className="tip-list" /> : null);

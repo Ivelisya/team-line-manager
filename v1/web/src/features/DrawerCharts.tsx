@@ -133,7 +133,7 @@ export function HostTab({ m }: { m: MachineView }) {
   return (
     <>
       <Section>
-        <SectionHeader title="当前" meta={h ? `更新于 ${F.ago(h.ts)}` : '没有当前读数'}><RangeBar range={range} setRange={setRange} /></SectionHeader>
+        <SectionHeader title="当前" meta={h ? `更新于 ${F.ago(h.ts)}` : m.agent?.last_report_at ? `最后上报于 ${F.ago(m.agent.last_report_at)}` : '还没上报过'}><RangeBar range={range} setRange={setRange} /></SectionHeader>
         {h && r ? (
           <LabelValueGrid>
             <LabelValue label="内存"><Num f={F.bytes(h.mem_used)} /> <span className="t-sub">/ <Num f={F.bytes(h.mem_total)} /></span></LabelValue>

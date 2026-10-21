@@ -568,12 +568,15 @@ R('POST', '/jobs/([^/]+)/cancel', ({ params }) => {
 R('GET', '/overview', () => overview());
 R('GET', '/overview/series', ({ query }) => overviewSeries(Math.min(60, +(query.get('minutes') ?? 30))));
 R('GET', '/probe-beats', () => probeBeats());
-/** 告警的顺序同服务端：进行中在前 → 严重度高在前 → 开始时间新在前。subject_id：只要这台机器的 */
+/** 告警的顺序同服务端：进行中在前 → 严重度高在前 → 开始时间新在前；subject_id（只要这台机器的）时不看严重度，只按时间 */
 const SEV_RANK: Record<string, number> = { critical: 0, warning: 1, info: 2 };
-const incidentOrder = (a: Incident, b: Incident) => (a.state === b.state ? 0 : a.state === 'firing' ? -1 : 1) || (SEV_RANK[a.severity] ?? 1) - (SEV_RANK[b.severity] ?? 1) || b.opened_at.localeCompare(a.opened_at);
+const byState = (a: Incident, b: Incident) => (a.state === b.state ? 0 : a.state === 'firing' ? -1 : 1);
+const bySev = (a: Incident, b: Incident) => (SEV_RANK[a.severity] ?? 1) - (SEV_RANK[b.severity] ?? 1);
+const byOpened = (a: Incident, b: Incident) => b.opened_at.localeCompare(a.opened_at);
 R('GET', '/incidents', ({ query }) => {
   const s = query.get('state') ?? 'firing'; const sid = query.get('subject_id');
-  return paged(db.incidents.filter((i) => (s === 'all' || i.state === s) && (!sid || i.subject_id === sid)).sort(incidentOrder), query);
+  const order = sid ? (a: Incident, b: Incident) => byState(a, b) || byOpened(a, b) : (a: Incident, b: Incident) => byState(a, b) || bySev(a, b) || byOpened(a, b);
+  return paged(db.incidents.filter((i) => (s === 'all' || i.state === s) && (!sid || i.subject_id === sid)).sort(order), query);
 });
 R('POST', '/incidents/([^/]+)/ack', ({ params }) => { const i = db.incidents.find((x) => x.id === params[0]); if (!i) throw bad('告警不存在', 404, 'not_found'); i.ack_at = iso(); i.ack_by = db.user; emit({ type: 'incidents' }); return {}; });
 R('GET', '/silences', () => clone(db.silences));

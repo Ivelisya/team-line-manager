@@ -8,9 +8,11 @@ import { ChartContainer, ChartLegend, chartTooltip, Recharts, axisProps, type Ch
 const { AreaChart, Area, LineChart, Line, XAxis, YAxis, CartesianGrid } = Recharts;
 export const RANGES = [{ value: '1h', label: '1 小时' }, { value: '6h', label: '6 小时' }, { value: '24h', label: '24 小时' }, { value: '7d', label: '7 天' }, { value: '30d', label: '30 天' }] as const;
 
+/** 按天的标日期；按小时的标时刻，落在零点的标日期（一两天的曲线跨日，不会出现两个一样的 06:00 分不清哪天） */
 const xFmt = (range: string) => (t: string | number) => {
   const d = new Date(t);
-  return range === '7d' || range === '30d' ? `${p2(d.getMonth() + 1)}-${p2(d.getDate())}` : `${p2(d.getHours())}:${p2(d.getMinutes())}`;
+  const date = `${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+  return range === '7d' || range === '30d' || (d.getHours() === 0 && d.getMinutes() === 0) ? date : `${p2(d.getHours())}:${p2(d.getMinutes())}`;
 };
 
 const MIN = 60_000; const HOUR = 60 * MIN; const DAY = 24 * HOUR;

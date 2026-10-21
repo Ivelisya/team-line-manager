@@ -667,16 +667,27 @@ async fn traffic_quota_alert_lifecycle() {
     assert_eq!(inc[0]["subject_id"], relay.to_string());
     assert_eq!(inc[0]["summary"], format!("线路机1：本周期流量已用 92%（950 MiB / 1 GiB），{days} 天后重置"));
     log_settles(&t, 1).await;
+    t.post(&format!("/api/v1/incidents/{}/ack", inc[0]["id"].as_str().unwrap()), json!({})).await;
 
-    // 超过 100%：同一条告警升为严重，马上再通知一次（不等每天一次的提醒）；健康状态仍不变
+    // 超过 100%：同一条告警升为严重，马上再通知一次（不等每天一次的提醒），对「吃紧」的确认清掉；健康状态仍不变
     set_traffic(&t, entry, hour, 1100).await;
     pass(&t, &mut state, base, 30).await;
     let inc = incidents(&t, "firing").await;
     assert_eq!((inc.len(), inc[0]["severity"].as_str()), (1, Some("critical")));
+    assert!(inc[0]["ack_at"].is_null(), "{inc:?}");
     assert_eq!(inc[0]["summary"], format!("线路机1：本周期流量已超出额度（已用 107%，1.07 GiB / 1 GiB），{days} 天后重置"));
     assert_eq!(t.health(relay).await.0, "ok");
     log_settles(&t, 2).await;
     pass(&t, &mut state, base, 60).await;
+    log_settles(&t, 2).await;
+
+    // 上限调到 2 GiB、回到吃紧：摘要跟着变，严重度不降（收到过「严重」的渠道恢复时按严重收到），也不再通知
+    sqlx::query("update subscription set traffic_gb = 2 where machine_id = $1").bind(relay).execute(&t.st.db).await.unwrap();
+    set_traffic(&t, entry, hour, 1900).await;
+    pass(&t, &mut state, base, 75).await;
+    let inc = incidents(&t, "firing").await;
+    assert_eq!((inc.len(), inc[0]["severity"].as_str()), (1, Some("critical")));
+    assert_eq!(inc[0]["summary"], format!("线路机1：本周期流量已用 92%（1.86 GiB / 2 GiB），{days} 天后重置"));
     log_settles(&t, 2).await;
 
     // 新周期开始、已用归零：下一轮立即恢复

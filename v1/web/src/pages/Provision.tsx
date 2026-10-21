@@ -41,8 +41,8 @@ export function ProvisionPage() {
   const [sp, setSp] = useSearchParams();
   const hostParam = sp.get('host');
   // 宿主机候选取自整份机器列表，订阅着时列表随实时推送最多每 2 秒整表重取（批量上架期间一直在推）：只在用得到时订阅——
-  // 单台开了「在已有机器上添加 IP」、批量（哪一行都能填宿主机）、带着 ?host= 等预填
-  const hosts = useHostChoices(!created && (mode === 'batch' || rows[0].add_ip || hostParam != null)).data ?? NONE_HOSTS;
+  // 单台开了「在已有机器上添加 IP」、批量（哪一行都能填宿主机）；带着 ?host= 等预填时总要取（停在「已开始上架」面板时从抽屉点「添加 IP 节点…」也要能预填）
+  const hosts = useHostChoices(hostParam != null || (!created && (mode === 'batch' || rows[0].add_ip))).data ?? NONE_HOSTS;
   const ctx: Ctx = React.useMemo(() => ({ teams, relays, hosts, providers, plans }), [teams, relays, hosts, providers, plans]);
 
   // ?host=<宿主机 id>：宿主机候选到了之后预填——单台、落地机、打开「在已有机器上添加 IP」，团队与线路机带出宿主机的；预填完把参数从地址里删掉
