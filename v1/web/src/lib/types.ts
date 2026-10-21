@@ -19,7 +19,10 @@ export interface HostMetrics {
 export interface ProbeResult { ok: boolean; latency_ms: number | null; detail: string | null; ts: string }
 export interface EntryTraffic { today_up: number; today_down: number; month_up: number; month_down: number }
 export interface EntryView {
-  id: string; relay: { id: string; name: string }; node: { id: string; name: string }; port: number;
+  id: string; relay: { id: string; name: string }; node: { id: string; name: string };
+  /** 线路机直出：节点就是线路机自己（node.id = relay.id，node.name =「线路机名-直出」），从线路机自己的 IP 出去；没有 TCP 探测，不能换线路机 / 搬空 */
+  direct: boolean;
+  port: number;
   lifecycle: EntryLifecycle; applied: boolean; apply_error: string | null;
   tcp: ProbeResult | null; egress: ProbeResult | null; traffic: EntryTraffic;
 }
