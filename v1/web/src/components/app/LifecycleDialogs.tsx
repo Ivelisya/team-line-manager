@@ -14,7 +14,7 @@ import { entryState, Note } from './primitives';
 import { ConfirmDialog } from './dialogs';
 import { RetireDialog } from './RetireDialog';
 
-const SHARE_WARN = '换线完成后分享链接会变：需要把新的分享链接发给客户端（作业完成的通知里有“复制新分享链接”）。';
+const SHARE_WARN = '换线完成后分享链接会变：需要把新的分享链接发给客户端（作业完成的通知里有「复制新分享链接」）。';
 
 /** 节点当前在用的入口（可以被换走的）。线路机的直出入口不搬：退役线路机时随之摘除 */
 export const movableEntries = (m: MachineView) => m.entries.filter((e) => e.lifecycle === 'active' && !e.direct);
@@ -70,7 +70,7 @@ export const EvacuateDialog = resetOnOpen(function EvacuateDialog({ relay, open,
   const hasDirect = relay.entries.some((e) => e.direct);
   return (
     <ConfirmDialog open={open} onOpenChange={onOpenChange} size="md" title={`搬空 ${relay.name}`} confirmLabel={`搬走 ${movable.length} 个节点`} confirmDisabled={!to || movable.length === 0}
-      description="为这台线路机上每个在用入口的节点各建一个“换线路机”作业，搬完后就可以安全退役这台线路机。"
+      description="为这台线路机上每个在用入口的节点各建一个「换线路机」作业，搬完后就可以安全退役这台线路机。"
       onConfirm={async () => {
         const r = await evac.mutateAsync({ id: relay.id, to_relay_id: to });
         toast.ok(`已为 ${r.jobs.length} 个节点提交换线路机作业${r.skipped.length ? `，${r.skipped.length} 个被跳过` : ''}`);
@@ -170,7 +170,7 @@ export const RestoreDialog = resetOnOpen(function RestoreDialog({ m, open, onOpe
 
   return (
     <ConfirmDialog asForm dirty={dirty} open={open} onOpenChange={onOpenChange} size="md" title={`恢复 ${m.name}`} confirmLabel="恢复" confirmDisabled={!ready}
-      description="机器保持原来的 ID（历史、账单、审计都接上），重新走一遍上架的收敛步骤；成功后回到“在用”。失败会停在“上架失败”，可在作业页重试；取消会回到已退役。"
+      description="机器保持原来的 ID（历史、账单、审计都接上），重新走一遍上架的收敛步骤；成功后回到「在用」。失败会停在「上架失败」，可在作业页重试；取消会回到已退役。"
       onConfirm={submit}>
       {!base.isFetchedAfterMount && <div className="hint">正在预检（会试一下中控密钥能不能登录这台机器，最多十几秒）…</div>}
       {base.isFetchedAfterMount && base.isError && <Note tone="bad">预检失败：{(base.error as Error).message}</Note>}

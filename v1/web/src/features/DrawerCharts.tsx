@@ -42,7 +42,7 @@ function RangeBar({ range, setRange }: { range: string; setRange: (r: string) =>
 function ChartFrame({ q, height = 180, children }: { q: UseQueryResult<unknown>; height?: number; children: React.ReactNode }) {
   if (q.isError) return <ErrorNote error={q.error} onRetry={() => void q.refetch()}>曲线加载失败：</ErrorNote>;
   if (q.isLoading) return <Skeleton h={height} style={{ borderRadius: 'var(--r-float)' }} />;
-  return <div className="chart-frame" data-stale={q.isPlaceholderData || undefined} aria-busy={q.isPlaceholderData || undefined}>{children}</div>;
+  return <div className="chart-frame" data-stale={q.isPlaceholderData} aria-busy={q.isPlaceholderData || undefined}>{children}</div>;
 }
 
 /** 图表卡：一张曲线一张卡，边框、底色与顶部色条取指标色（--cc）。卡头左边图标 + 标题，右边当前值 + 一行小字；
@@ -99,7 +99,7 @@ export function TrafficTab({ m }: { m: MachineView }) {
       <Section>
         <ChartCard c="var(--chart-1)" icon={<Globe />} title="业务流量" meta={s.data?.resolution === '1h' ? '每小时的流量' : '每分钟的流量'} tools={<RangeBar range={range} setRange={setRange} />}>
           <ChartFrame q={s}>
-            <TimeChart points={s.data?.points} range={s.data?.range ?? range} lines={L_TRAFFIC} yFmt={yBytes} valueFmt={vBytes} yBase={1024} />
+            <TimeChart points={s.data?.points} range={s.data?.range ?? range} lines={L_TRAFFIC} yFmt={yBytes} valueFmt={vBytes} yBase={1024} empty="这段时间没有业务流量" />
           </ChartFrame>
         </ChartCard>
       </Section>

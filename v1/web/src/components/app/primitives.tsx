@@ -6,7 +6,7 @@ import { cn } from '@/lib/utils';
 import { dueFmt, type Fmt } from '@/lib/format';
 import type { EntryView, HealthReason, Kind, Lifecycle, MachineView } from '@/lib/types';
 import { ENTRY_LABEL, HEALTH_LABEL, HEALTH_TONE, KIND_LABEL, LIFECYCLE_LABEL } from '@/lib/sort';
-import { Tip } from '@/components/ui/overlays';
+import { Tip, Trunc } from '@/components/ui/overlays';
 import { useCountUp } from '@/lib/useCountUp';
 import type { BeatCell } from '@/lib/derive';
 import { copyText } from '@/lib/clipboard';
@@ -123,9 +123,10 @@ export function SortHead({ cols, sort, onSort }: { cols: { id: string; header: s
   );
 }
 
-/** 标签/值（唯一实现） */
+/** 标签/值（唯一实现）：值单行显示；字符串值放不下时省略、悬停看全文（IPv6、公网地址），wrap 的折行显示 */
 export function LabelValue({ label, children, wrap, className }: { label: string; children: React.ReactNode; wrap?: boolean; className?: string }) {
-  return <div className={cn('lv', className)}><dt>{label}</dt><dd className={cn(wrap && 'wrap')}>{children ?? '—'}</dd></div>;
+  const v = children ?? '—';
+  return <div className={cn('lv', className)}><dt>{label}</dt><dd className={cn(wrap && 'wrap')}>{typeof v === 'string' && !wrap ? <Trunc>{v}</Trunc> : v}</dd></div>;
 }
 export const LabelValueGrid = ({ children, cols2 }: { children: React.ReactNode; cols2?: boolean }) => <dl className={cn('lv-grid', cols2 && 'cols-2')}>{children}</dl>;
 

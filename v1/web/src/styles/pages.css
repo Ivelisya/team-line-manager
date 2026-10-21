@@ -10,13 +10,26 @@
 .form-grid .span-2 { grid-column: 1 / -1; }
 @media (max-width: 560px) { .form-grid { grid-template-columns: minmax(0, 1fr); } }
 
-/* 抽屉内：机器头部 */
+/* 抽屉内：机器头部。上一台 / 下一台贴顶，与右上角的关闭按钮同一排 */
 .m-head { display: grid; gap: var(--sp-4); min-width: 0; }
 .m-head-row { display: flex; align-items: center; gap: var(--sp-8); flex-wrap: wrap; min-width: 0; }
+.drawer-nav { flex: none; align-self: flex-start; display: flex; gap: var(--sp-2); }
 .reason-list { display: grid; gap: var(--sp-6); margin: 0; padding: 0; list-style: none; }
 .reason-list li { display: flex; align-items: flex-start; gap: var(--sp-8); font-size: var(--fs-body); }
 .reason-list .dot { margin-top: 7px; }
+/* 抽屉「最近操作」：第一行动作 + 对象，右边谁 · 多久前（悬停看具体时间）；第二行命令 / 详情，等宽浅色单行省略（悬停看全文） */
+.audit-list { display: grid; gap: var(--sp-10); margin: 0; padding: 0; list-style: none; }
+.audit-list li { display: flex; align-items: flex-start; gap: var(--sp-8); min-width: 0; }
+.audit-list .dot { margin-top: 7px; }
+.audit-body { flex: 1; min-width: 0; display: grid; gap: var(--sp-2); }
+.audit-head { display: flex; align-items: baseline; gap: var(--sp-12); min-width: 0; }
+.audit-what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.audit-what b { font-weight: var(--fw-medium); }
+.audit-meta { flex: none; font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); white-space: nowrap; }
+.audit-detail { line-height: var(--lh-label); color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chart-box { height: 180px; min-width: 0; }
+/* 曲线全为 0 时的空状态：占住图的高度（换时间范围时卡片不跳），一句浅色说明居中 */
+.chart-empty { display: grid; place-items: center; min-width: 0; font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); text-align: center; }
 .chart-legend { display: flex; flex-wrap: wrap; gap: var(--sp-6); align-items: center; }
 /* 图例胶囊（--lc 是曲线色）：点掉后色块变空心、文字变淡；按下同其它文字控件微缩（components.css「交互状态」） */
 .chart-legend-item {
@@ -61,6 +74,8 @@
 .manage-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-12); flex-wrap: wrap; }
 .manage-row > div:first-child { min-width: 0; flex: 1 1 220px; }
 .manage-row .t { font-weight: var(--fw-medium); }
+/* 管理页「入口」段里列表下面的操作（换线路机 / 搬空 / 直出入口 / 加入口）：与列表隔一道线，间距同段与段之间；组内行距同退役区 */
+.manage-group { display: grid; gap: var(--sp-12); margin-top: var(--card-seg); padding-top: var(--card-seg); border-top: 1px solid var(--line); }
 .preview-name { display: inline-flex; align-items: center; gap: var(--sp-8); padding: var(--sp-6) var(--sp-12); border-radius: var(--r-control); background: var(--sunken); font-weight: var(--fw-semibold); font-size: var(--fs-emph); }
 
 /* 线路机卡 */
@@ -72,10 +87,19 @@
 /* 作业：列表 + 详情 */
 .jobs-layout { display: grid; grid-template-columns: minmax(280px, 380px) minmax(0, 1fr); gap: var(--grid-gap); align-items: start; }
 .jobs-list { align-self: start; }
-/* 没选作业时的右侧占位：更高、居中，并在长列表滚动时跟着停在视口里（选中后的详情不吸顶，它自己很长） */
-.jobs-detail:has(> .jobs-empty) { position: sticky; top: calc(var(--topbar-h) + var(--sp-16)); align-self: start; }
+/* 右侧详情（没选作业时是占位）吸顶：长列表滚到下面再点作业，详情仍停在视口里；比视口高时自己滚动。
+   滚动容器会裁掉面板投影：左右与底部各留一圈内边距（左右用负外边距抵消，面板位置不变） */
+.jobs-detail {
+  position: sticky; top: calc(var(--topbar-h) + var(--sp-16)); align-self: start;
+  max-height: calc(100dvh - var(--topbar-h) - 2 * var(--sp-16)); overflow-y: auto;
+  margin-inline: calc(-1 * var(--sp-8)); padding: 0 var(--sp-8) var(--sp-16);
+}
+/* 没选作业时的占位：更高、居中 */
 .jobs-empty { min-height: min(360px, 60dvh); display: grid; align-content: center; }
-@container content (max-width: 720px) { .jobs-layout { grid-template-columns: minmax(0, 1fr); } .jobs-layout[data-detail="1"] .jobs-list { display: none; } .jobs-layout[data-detail="0"] .jobs-detail { display: none; } }
+@container content (max-width: 720px) {
+  .jobs-layout { grid-template-columns: minmax(0, 1fr); } .jobs-layout[data-detail="1"] .jobs-list { display: none; } .jobs-layout[data-detail="0"] .jobs-detail { display: none; }
+  .jobs-detail { position: static; max-height: none; overflow: visible; margin-inline: 0; padding: 0; } /* 单栏：详情就是整页，跟着页面滚 */
+}
 .job-item { display: grid; gap: 2px; width: 100%; padding: var(--sp-10) var(--card-pad); border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left; cursor: pointer; color: inherit; min-width: 0; transition: background-color var(--dur-1) var(--ease-std); }
 .job-item:last-child, .job-item:has(+ .pager) { border-bottom: 0; } /* 分页器自带顶线 */
 .job-item:hover { background-color: var(--hover); }
@@ -128,4 +152,4 @@
 .lv.span-2 { grid-column: 1 / -1; }
 .check-row.span-2 { grid-column: 1 / -1; }
 .job-back { display: none; }
-@container content (max-width: 860px) { .job-back { display: inline-grid; } }
+@container content (max-width: 720px) { .job-back { display: inline-grid; } } /* 与上面变单栏同一个断点：双栏时列表就在旁边，不需要「返回列表」 */

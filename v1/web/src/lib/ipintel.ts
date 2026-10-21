@@ -36,7 +36,7 @@ export type ProfileWindow = '24h' | '7d' | '30d';
 
 /** 换时间范围时先留着上一份；换了机器不沿用别台的 */
 export const useSourcesProfile = (id: string | null, window: ProfileWindow) =>
-  useQuery({ queryKey: ['ipintel', 'sources', id, window], enabled: !!id, refetchInterval: 30_000, placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[2] === id ? keepPreviousData(prev) : undefined), queryFn: () => get<SourcesProfile>(`/machines/${id}/sources?window=${window}&limit=10`) });
+  useQuery<SourcesProfile>({ queryKey: ['ipintel', 'sources', id, window], enabled: !!id, refetchInterval: 30_000, placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[2] === id ? keepPreviousData(prev) : undefined), queryFn: ({ signal }) => get<SourcesProfile>(`/machines/${id}/sources?window=${window}&limit=10`, signal) });
 
 export const useIpIntelStatus = () =>
-  useQuery({ queryKey: ['ipintel', 'status'], refetchInterval: 60_000, queryFn: () => get<IpIntelStatus>('/ipintel/status') });
+  useQuery({ queryKey: ['ipintel', 'status'], refetchInterval: 60_000, queryFn: ({ signal }) => get<IpIntelStatus>('/ipintel/status', signal) });

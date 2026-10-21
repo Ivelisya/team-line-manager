@@ -86,7 +86,7 @@ export function ProvisionPage() {
     );
   }
 
-  const summary = results == null ? (localErrs?.some((e) => e.length) ? <Pill tone="bad">有行信息不完整</Pill> : <span className="t-sub">填写完成后先点“检查”</span>)
+  const summary = results == null ? (localErrs?.some((e) => e.length) ? <Pill tone="bad">有行信息不完整</Pill> : <span className="t-sub">填写完成后先点「检查」</span>)
     : stale ? <Pill tone="warn">内容已修改，需要重新检查</Pill>
     : passed ? <Pill tone="ok">检查通过，可以开始</Pill> : <Pill tone="bad">{results.filter((r) => !r.ok).length} 行未通过</Pill>;
 
@@ -296,7 +296,7 @@ function BatchGrid({ rows, setRows, ctx, results, errors, stale }: { rows: Row[]
           </table>
         </div>
       </Panel>
-      <Note icon={<ClipboardPaste size={14} />}>编号留空 = 自动编号（接在末尾）。灰色格子对当前类型不适用，粘贴时会自动跳过。选择列可直接粘贴名称（如“团队1”“线路机1”）。</Note>
+      <Note icon={<ClipboardPaste size={14} />}>编号留空 = 自动编号（接在末尾）。灰色格子对当前类型不适用，粘贴时会自动跳过。选择列可直接粘贴名称（如「团队1」「线路机1」）。</Note>
       {results && <CheckOutput results={results} rows={rows} errors={errors} stale={stale} />}
       <ConfirmDialog open={askClear} onOpenChange={setAskClear} title="清空批量表格？" confirmLabel="清空" danger
         description="表格里所有行已填写的内容（含登录密码）都会丢失，无法撤销。" onConfirm={() => setRows([newRow()])} />

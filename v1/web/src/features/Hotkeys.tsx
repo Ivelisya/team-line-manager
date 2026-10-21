@@ -2,8 +2,7 @@
 import * as React from 'react';
 import { Search } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
-import { readMachines } from '@/lib/queries';
-import { useDrawer } from '@/lib/drawer';
+import { drawerSiblings, useDrawer } from '@/lib/drawer';
 import { modKey, setOverlay, useOverlay } from '@/lib/palette';
 import type { ThemePref } from '@/lib/theme';
 import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogHeader } from '@/components/ui/dialog';
@@ -28,15 +27,15 @@ export function PaletteTrigger() {
 
 export function Hotkeys({ theme }: { theme: { pref: ThemePref; setPref: (p: ThemePref) => void } }) {
   const overlay = useOverlay();
-  const { id, tab, open } = useDrawer();
+  const { id, switchTo } = useDrawer();
   // 不订阅机器列表（订阅会让每个页面都跟着取 /machines）：按 [ ] 时才读缓存
   const qc = useQueryClient();
   const [loaded, setLoaded] = React.useState(false);
   React.useEffect(() => { if (overlay === 'palette') setLoaded(true); }, [overlay]);
 
   // 事件处理里读最新值，避免每次变化都重新绑定监听
-  const ref = React.useRef({ id, tab, open, overlay });
-  ref.current = { id, tab, open, overlay };
+  const ref = React.useRef({ id, switchTo, overlay });
+  ref.current = { id, switchTo, overlay };
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const c = ref.current;
@@ -46,12 +45,12 @@ export function Hotkeys({ theme }: { theme: { pref: ThemePref; setPref: (p: Them
       if (e.key === '/' ) { e.preventDefault(); setOverlay('palette'); }
       else if (e.key === '?') { e.preventDefault(); setOverlay('help'); }
       else if ((e.key === '[' || e.key === ']') && c.id) {
-        const machines = readMachines(qc);
-        const i = machines?.findIndex((m) => m.id === c.id) ?? -1;
-        if (!machines || i < 0) return;
-        const next = machines[(i + (e.key === ']' ? 1 : -1) + machines.length) % machines.length];
+        // 到头不绕回：同抽屉头部到头时禁用的上一台 / 下一台
+        const s = drawerSiblings(qc, c.id);
+        const to = s && (e.key === ']' ? s.next : s.prev);
+        if (!to) return;
         e.preventDefault();
-        c.open(next.id, c.tab === 'overview' ? undefined : c.tab, { replace: true });
+        c.switchTo(to);
       }
     };
     window.addEventListener('keydown', onKey);

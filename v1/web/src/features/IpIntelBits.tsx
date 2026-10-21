@@ -97,28 +97,31 @@ export function SourceProfile({ id, window, relay }: { id: string; window: Profi
   return (
     <Section>
       <SectionHeader title="来源画像" meta={`${relay ? '汇总名下所有节点 · ' : ''}最近 ${window === '24h' ? '24 小时' : window === '7d' ? '7 天' : '30 天'} · ${d.total_sources} 个外部来源`} />
-      {d.degraded && <Note tone="warn" icon={<ShieldQuestion size={16} />}>{INSTALL_HINT}</Note>}
-      {d.empty ? <div className="hint">这段时间没有来源记录</div> : d.total_conns === 0 && !d.degraded ? <div className="hint">这段时间只有我方机器或非公网地址的连接，没有外部来源可画像</div> : (
-        <>
-          <div className="dist-grid">
-            <Dist title="运营商" items={d.distribution.isp} empty={d.degraded ? '查不到（IP 库未安装）' : undefined} />
-            <Dist title="城市" items={d.distribution.city} empty={d.degraded ? '查不到（IP 库未安装）' : undefined} />
-            <Dist title="接入方式" items={d.distribution.conn_type} empty={d.degraded ? '查不到（IP 库未安装）' : undefined} />
-          </div>
-          <div className="hint" style={{ marginTop: 8 }}>
-            {learningText(d.learning)}
-            {known > 0 && <> · 已学基线：{d.known.isp.length} 个运营商、{d.known.city.length} 个城市</>}
-            {(d.internal_conns > 0 || d.private_conns > 0) && <> · 另有 {(d.internal_conns + d.private_conns).toLocaleString('zh-CN')} 次连接来自我方机器或非公网地址，未计入分布</>}
-          </div>
-          {d.known.isp.some((k) => k.anomaly) && (
-            <div className="row" style={{ marginTop: 6, gap: 4 }}>
-              <span className="hint">新出现的运营商：</span>
-              {d.known.isp.filter((k) => k.anomaly).map((k) => <Chip key={k.value} variant="warn" tip={`首次出现 ${F.dtFull(k.first_seen)}`}>{k.label}</Chip>)}
+      {/* 换时间范围、新数据未到时沿用的旧画像调淡（extras.css [data-stale]） */}
+      <div data-stale={q.isPlaceholderData}>
+        {d.degraded && <Note tone="warn" icon={<ShieldQuestion size={16} />}>{INSTALL_HINT}</Note>}
+        {d.empty ? <div className="hint">这段时间没有来源记录</div> : d.total_conns === 0 && !d.degraded ? <div className="hint">这段时间只有我方机器或非公网地址的连接，没有外部来源可画像</div> : (
+          <>
+            <div className="dist-grid">
+              <Dist title="运营商" items={d.distribution.isp} empty={d.degraded ? '查不到（IP 库未安装）' : undefined} />
+              <Dist title="城市" items={d.distribution.city} empty={d.degraded ? '查不到（IP 库未安装）' : undefined} />
+              <Dist title="接入方式" items={d.distribution.conn_type} empty={d.degraded ? '查不到（IP 库未安装）' : undefined} />
             </div>
-          )}
-        </>
-      )}
-      {d.anomalies.map((a) => <div key={a.id} style={{ marginTop: 8 }}><Note tone="warn"><strong>{a.rule_name}</strong>：{a.summary.replace(/^[^：]*：/, '')}</Note></div>)}
+            <div className="hint" style={{ marginTop: 8 }}>
+              {learningText(d.learning)}
+              {known > 0 && <> · 已学基线：{d.known.isp.length} 个运营商、{d.known.city.length} 个城市</>}
+              {(d.internal_conns > 0 || d.private_conns > 0) && <> · 另有 {(d.internal_conns + d.private_conns).toLocaleString('zh-CN')} 次连接来自我方机器或非公网地址，未计入分布</>}
+            </div>
+            {d.known.isp.some((k) => k.anomaly) && (
+              <div className="row" style={{ marginTop: 6, gap: 4 }}>
+                <span className="hint">新出现的运营商：</span>
+                {d.known.isp.filter((k) => k.anomaly).map((k) => <Chip key={k.value} variant="warn" tip={`首次出现 ${F.dtFull(k.first_seen)}`}>{k.label}</Chip>)}
+              </div>
+            )}
+          </>
+        )}
+        {d.anomalies.map((a) => <div key={a.id} style={{ marginTop: 8 }}><Note tone="warn"><strong>{a.rule_name}</strong>：{a.summary.replace(/^[^：]*：/, '')}</Note></div>)}
+      </div>
     </Section>
   );
 }

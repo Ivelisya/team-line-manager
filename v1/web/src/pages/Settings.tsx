@@ -130,7 +130,7 @@ function ApiKeysSection() {
         </DialogContent>
       </Dialog>
 
-      <ConfirmDialog open={!!ask} onOpenChange={(o) => !o && setAsk(null)} title={`撤销密钥“${askHeld?.name ?? ''}”？`} confirmLabel="撤销" danger
+      <ConfirmDialog open={!!ask} onOpenChange={(o) => !o && setAsk(null)} title={`撤销密钥「${askHeld?.name ?? ''}」？`} confirmLabel="撤销" danger
         description="撤销后使用这个密钥的脚本会立即收到 401，无法恢复。需要的话只能新建一个。"
         onConfirm={async () => { await revoke.mutateAsync(ask!.id); toast.ok('密钥已撤销'); }} />
     </>
@@ -162,13 +162,13 @@ function NotifySection() {
   const list = q.data ?? [];
   const runTest = (c: NotifyChannel) => {
     test.mutate(c.id, {
-      onSuccess: (r) => { setResults((m) => ({ ...m, [c.id]: r })); if (r.ok) toast.ok(`已向“${c.name}”发送测试消息`); else toast.err(`“${c.name}”发送失败：${r.error ?? '未知错误'}`); },
+      onSuccess: (r) => { setResults((m) => ({ ...m, [c.id]: r })); if (r.ok) toast.ok(`已向「${c.name}」发送测试消息`); else toast.err(`「${c.name}」发送失败：${r.error ?? '未知错误'}`); },
       onError: (e) => { setResults((m) => ({ ...m, [c.id]: { ok: false, error: (e as Error).message } })); toast.err(e); },
     });
   };
   return (
     <>
-      <Panel title="告警通知渠道" count={list.length} sub="告警触发时按“最低级别”推送到这些渠道" flush
+      <Panel title="告警通知渠道" count={list.length} sub="告警触发时按「最低级别」推送到这些渠道" flush
         tools={<Button variant="primary" onClick={() => setEdit('new')}><Plus />新建渠道</Button>}>
         {q.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div>}
         {q.isLoading ? <SkeletonRows rows={3} head /> : list.length === 0 && !q.isError ? (
@@ -185,7 +185,7 @@ function NotifySection() {
                     <tr key={c.id}>
                       <td><div className="row" style={{ flexWrap: 'nowrap', gap: 10 }}><span className="kind-ic" aria-hidden>{k?.icon ?? <Bell />}</span><div style={{ minWidth: 0 }}><Trunc className="cell-main strong">{c.name}</Trunc><span className="sub">{k?.label ?? c.kind} · {c.config_hint}</span></div></div></td>
                       <td>{sevPill(c.min_severity)}</td>
-                      <td><Switch checked={c.enabled} disabled={patch.isPending && patch.variables?.id === c.id} aria-label={`${c.enabled ? '停用' : '启用'}“${c.name}”`}
+                      <td><Switch checked={c.enabled} disabled={patch.isPending && patch.variables?.id === c.id} aria-label={`${c.enabled ? '停用' : '启用'}「${c.name}」`}
                         onCheckedChange={(v) => patch.mutate({ id: c.id, enabled: v }, { onSuccess: () => toast.ok(v ? '渠道已启用' : '渠道已停用'), onError: toast.err })} /></td>
                       <td>
                         <span className="row" style={{ flexWrap: 'nowrap', gap: 8 }}>
@@ -231,7 +231,7 @@ function NotifySection() {
       </Panel>
 
       {editHeld && <ChannelDialog target={editHeld} open={edit != null} onClose={() => setEdit(null)} />}
-      <ConfirmDialog open={!!ask} onOpenChange={(o) => !o && setAsk(null)} title={`删除渠道“${askHeld?.name ?? ''}”？`} confirmLabel="删除" danger
+      <ConfirmDialog open={!!ask} onOpenChange={(o) => !o && setAsk(null)} title={`删除渠道「${askHeld?.name ?? ''}」？`} confirmLabel="删除" danger
         description="删除后告警不会再推送到这个渠道；发送记录保留。"
         onConfirm={async () => { await del.mutateAsync(ask!.id); toast.ok('渠道已删除'); }} />
     </>

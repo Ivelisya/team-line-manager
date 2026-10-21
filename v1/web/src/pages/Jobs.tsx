@@ -45,6 +45,9 @@ export function JobsPage() {
   const list = jobs.data?.items ?? [];
   const selected = id ?? null;
   const go = (jid: string) => nav({ pathname: `/jobs/${jid}`, search });
+  // 宽屏时详情栏吸顶、自己滚动（pages.css .jobs-detail）：换作业回到详情顶部
+  const detail = React.useRef<HTMLDivElement>(null);
+  React.useLayoutEffect(() => { if (detail.current) detail.current.scrollTop = 0; }, [selected]);
   return (
     <div className="stack">
       <PageHead title="作业" note={jobs.data ? `${jobs.data.total} 个` : undefined}
@@ -67,7 +70,7 @@ export function JobsPage() {
           {jobs.data && list.length === 0 && <Empty icon={<ListChecks size={22} />} text="没有作业" hint="上架、退役、升级 agent 都会在这里留下一条" />}
           <Pagination pg={pg} unit="个" compact />
         </Panel>
-        <div className="jobs-detail">
+        <div className="jobs-detail" ref={detail}>
           {selected ? <JobDetail id={selected} /> : <Panel className="jobs-empty"><Empty icon={<ListChecks size={22} />} text="选择左侧的作业查看步骤与日志" /></Panel>}
         </div>
       </div>
