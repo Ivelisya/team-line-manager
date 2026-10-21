@@ -171,7 +171,7 @@ async fn preflight(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         c.warn("8388 端口已经有程序在监听；收敛时会被 fleet-ssserver 接管").await;
     }
     Ok(Outcome::Done(json!({
-        "host_key": fp, "arch": arch, "os": out.kv("os"), "kernel": out.kv("kernel"), "mem_mb": out.kv("mem_mb"),
+        "host_key": ssh::fingerprint(&fp), "arch": arch, "os": out.kv("os"), "kernel": out.kv("kernel"), "mem_mb": out.kv("mem_mb"),
     })))
 }
 
@@ -362,7 +362,7 @@ async fn wait_report(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
                     c.log(format!("新令牌已上报，撤销了 {revoked} 枚旧令牌")).await;
                 }
             }
-            Ok(Outcome::Done(json!({"first_report_at": t.to_string(), "agent_version": v, "old_tokens_revoked": revoked})))
+            Ok(Outcome::Done(json!({"first_report_at": crate::access::fmt_ts(t), "agent_version": v, "old_tokens_revoked": revoked})))
         }
         None => Ok(Outcome::Wait(3)),
     }

@@ -3,7 +3,7 @@ import * as React from 'react';
 import { ServerOff } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
 import type { UseQueryResult } from '@tanstack/react-query';
-import { usePlans, useSeries } from '@/lib/queries';
+import { useSeries } from '@/lib/queries';
 import * as F from '@/lib/format';
 import { hasHost, monthTraffic, resourceMeters } from '@/lib/derive';
 import { Segmented } from '@/components/ui/overlays';
@@ -95,10 +95,9 @@ export function HostTab({ m }: { m: MachineView }) {
   const [range, setRange] = React.useState('6h');
   const host = hasHost(m);
   const s = useSeries(m.id, 'host', range, host, POLL);
-  const plans = usePlans().data ?? [];
   if (!host) return <Empty icon={<ServerOff size={22} />} text={m.kind === 'proxy' ? '家宽代理没有主机，不采集 CPU / 内存 / 磁盘 / 网卡指标。' : '暂时没有主机指标'} />;
   const h = m.host!;
-  const load = resourceMeters(m, plans)!.load;
+  const load = resourceMeters(m)!.load;
   return (
     <>
       <Section>

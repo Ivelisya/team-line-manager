@@ -3,7 +3,7 @@ import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Ban, Bell, FlaskConical, KeyRound, MessagesSquare, Pencil, Plus, Send, ShieldAlert, Trash2, Webhook } from 'lucide-react';
 import { useAddChannel, useApiKeys, useCreateApiKey, useDelChannel, useNotifyChannels, useNotifyLog, usePatchChannel, useRevokeApiKey, useTestChannel } from '@/lib/queries';
-import type { ApiKey, NotifyChannel } from '@/lib/types';
+import type { ApiKey, NotifyChannel, NotifyLogEntry } from '@/lib/types';
 import * as F from '@/lib/format';
 import { Button, IconButton } from '@/components/ui/button';
 import { Checkbox, Field, Input, Switch } from '@/components/ui/form';
@@ -146,6 +146,8 @@ const KINDS: Record<string, { label: string; icon: React.ReactNode; fields: { ke
   webhook: { label: 'Webhook', icon: <Webhook />, fields: [{ key: 'url', label: '接收地址', ph: 'https://hooks.example.com/fleet', secret: true }] },
 };
 const SEVERITIES = [{ value: 'info', label: '提示及以上（全部）' }, { value: 'warning', label: '警告及以上' }, { value: 'critical', label: '只发严重' }];
+/** 发送记录的种类（服务端 notify::Kind） */
+const NOTIFY_KIND: Record<NotifyLogEntry['kind'], string> = { firing: '触发', repeat: '提醒', resolved: '恢复', test: '测试' };
 const sevPill = (s: string) => (s === 'critical' ? <Pill tone="bad" dot="none">严重</Pill> : s === 'warning' ? <Pill tone="warn" dot="none">警告及以上</Pill> : <Pill tone="info" dot="none">全部</Pill>);
 
 interface TestResult { ok: boolean; error: string | null }
@@ -208,14 +210,14 @@ function NotifySection() {
         {log.isLoading ? <SkeletonRows rows={3} /> : !log.data?.length && !log.isError ? <Empty icon={<Send size={22} />} text="还没有发送记录" /> : (
           <div className="table-wrap" style={{ maxHeight: 420, overflowY: 'auto' }}>
             <table className="dt is-one" style={{ minWidth: 640 }}>
-              <colgroup><col style={{ width: 156 }} /><col style={{ width: 170 }} /><col style={{ width: 90 }} /><col style={{ width: 150 }} /><col /></colgroup>
+              <colgroup><col style={{ width: 156 }} /><col style={{ width: 170 }} /><col style={{ width: 90 }} /><col style={{ width: 240 }} /><col /></colgroup>
               <thead><tr><th>时间</th><th>渠道</th><th>结果</th><th>来源</th><th>错误</th></tr></thead>
               <tbody>
                 {(log.data ?? []).map((l) => (
                   <tr key={l.id}>
                     <td>{F.dtFull(l.ts)}</td><td className="strong"><Trunc className="cell-main">{l.channel_name}</Trunc></td>
                     <td>{l.ok ? <Pill tone="ok">成功</Pill> : <Pill tone="bad">失败</Pill>}</td>
-                    <td>{l.incident_id ? <span className="mono">告警 {l.incident_id.slice(0, 8)}</span> : <span className="t-sub">测试消息</span>}</td>
+                    <td>{l.kind === 'test' ? <span className="t-sub">测试消息</span> : <Trunc className="cell-main">{[NOTIFY_KIND[l.kind], l.subject_name ?? '（机器已删除）', l.rule_name].filter(Boolean).join(' · ')}</Trunc>}</td>
                     <td><Trunc className="cell-main" text={l.error ?? ''}>{l.error ? <span style={{ color: 'var(--bad-text)' }}>{l.error}</span> : <span className="t-muted">—</span>}</Trunc></td>
                   </tr>
                 ))}

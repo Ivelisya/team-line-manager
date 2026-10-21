@@ -1,5 +1,7 @@
 // 作业的展示辅助：kind 中文名、state 分类、步骤输出摘要。取值以 API.md「返回形状补充」为准。
-import type { Job, JobStep } from './types';
+import type { EntryLifecycle, Job, JobStep } from './types';
+import { ENTRY_LABEL } from './sort';
+import { dtFull } from './format';
 
 export const JOB_KIND: Record<string, string> = {
   provision_vps: '上架落地机', provision_proxy: '上架家宽代理', provision_relay: '上架线路机',
@@ -41,9 +43,45 @@ export const ERROR_KIND_LABEL: Record<string, string> = {
 };
 export const errorKindLabel = (k: string) => ERROR_KIND_LABEL[k] ?? k;
 
-/** 步骤输出（JSON 对象）→ 每行 “key: value”；嵌套值用单行 JSON */
+// ── 步骤输出 ──
+// 服务端各步骤 Outcome::Done(json!{..}) 的全部 key（crates/fleet-server/src/jobs/steps.rs、steps/lifecycle.rs），
+// 加上跳过时的 {reason}（jobs/mod.rs）。服务端新增输出 key 时同步补这里。
+type OutFmt = (v: unknown) => string;
+const text: OutFmt = (v) => String(v);
+const unit = (u: string): OutFmt => (v) => `${v} ${u}`;
+const yesNo = (y: string, n: string): OutFmt => (v) => (v ? y : n);
+const CLEANUP_SS: Record<string, string> = { gone: '已停止', still_listening: '仍在监听 8388' };
+/** [中文标签, 取值格式]；null = 内部 id，不显示 */
+const OUTPUT: Record<string, [string, OutFmt] | null> = {
+  // preflight
+  host_key: ['主机指纹', text], arch: ['架构', text], os: ['系统', text], kernel: ['内核', text], mem_mb: ['内存', unit('MB')],
+  // bootstrap
+  method: ['登录方式', () => '用 root 密码推送了中控公钥'],
+  // converge / converge_relay
+  bbr: ['BBR', yesNo('已启用', '未启用')], nft_relays: ['防火墙放行', text], ssserver_updated: ['ssserver', yesNo('已更新', '已是最新')], xray: ['Xray 版本', text],
+  // agent / wait_report
+  binary_updated: ['agent 程序', yesNo('已更新', '已是最新')], token_id: null,
+  first_report_at: ['首次上报', (v) => dtFull(String(v))], agent_version: ['agent 版本', text], old_tokens_revoked: ['撤销旧令牌', unit('枚')],
+  // attach / attach_new / detach_old / wait_applied
+  entry_id: null, relay_id: null, old_entry_id: null, relay: ['线路机', text], port: ['入口端口', text], generation: ['配置代数', text],
+  entry: ['入口状态', (v) => ENTRY_LABEL[v as EntryLifecycle]],
+  // verify
+  latency_ms: ['出口延迟', (v) => `${Math.round(Number(v))} ms`], egress_ip: ['出口 IP', text],
+  // activate（恢复）/ 跳过
+  restored: null, reason: ['说明', text],
+  // detach / cleanup / revoke / finalize / purge / wait_detached_old
+  entries: ['入口', unit('个')], ss: ['ssserver', (v) => CLEANUP_SS[String(v)]], revoked: ['撤销令牌', unit('枚')], renumbered: ['重新编号', unit('台')],
+  rows_deleted: ['删除数据', unit('行')], already_gone: ['状态', () => '目标已不存在，无需处理'],
+};
+
+/** 步骤输出（JSON 对象）→ 每行 “标签：值”；空值与内部 id 不显示 */
 export function outputLines(o: JobStep['output']): string[] {
   if (o == null) return [];
-  if (typeof o !== 'object') return [String(o)];
-  return Object.entries(o).map(([k, v]) => `${k}: ${v !== null && typeof v === 'object' ? JSON.stringify(v) : String(v)}`);
+  return Object.entries(o).flatMap(([k, v]) => {
+    const m = OUTPUT[k];
+    if (m === null || v == null || v === '') return [];
+    // 未收录的 key（服务端新加了输出）原样显示，提醒补表
+    if (m === undefined) return [`${k}：${typeof v === 'object' ? JSON.stringify(v) : String(v)}`];
+    return [`${m[0]}：${m[1](v)}`];
+  });
 }

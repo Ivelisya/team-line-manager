@@ -76,7 +76,8 @@ function SubForm({ m }: { m: MachineView }) {
   const [traffic, setTraffic] = React.useState(s?.traffic_gb ? String(s.traffic_gb) : '');
   const [resetDay, setResetDay] = React.useState(s?.traffic_reset_day ? String(s.traffic_reset_day) : '1');
   const priceNum = Number(price);
-  const valid = price !== '' && isFinite(priceNum) && priceNum >= 0 && /^\d{4}-\d{2}-\d{2}$/.test(dueDate);
+  const resetBad = resetDay !== '' && !(Number(resetDay) >= 1 && Number(resetDay) <= 31);
+  const valid = price !== '' && isFinite(priceNum) && priceNum >= 0 && /^\d{4}-\d{2}-\d{2}$/.test(dueDate) && !resetBad;
   const submit = () => {
     const body: Omit<Subscription, 'due_days'> = {
       price_cents: Math.round(priceNum * 100), currency, cycle, due_date: dueDate, billing_tz: tz, auto_renew: auto,
@@ -93,7 +94,7 @@ function SubForm({ m }: { m: MachineView }) {
       <Field label="账单时区" hint="到期按这个时区的日期算"><Select value={tz} onChange={setTz} options={TZS} /></Field>
       <Field label="提前提醒（天）"><Input inputMode="numeric" value={remind} onChange={(e) => setRemind(e.target.value.replace(/\D/g, ''))} /></Field>
       <Field label="流量上限（GiB）" hint="留空 = 按套餐"><Input inputMode="numeric" value={traffic} placeholder={m.plan?.traffic_gb ? `套餐 ${m.plan.traffic_gb}` : '套餐不限'} onChange={(e) => setTraffic(e.target.value.replace(/\D/g, ''))} /></Field>
-      <Field label="流量重置日（每月几号）" hint="按账单时区；月份没有这一天按月末"><Input inputMode="numeric" value={resetDay} onChange={(e) => setResetDay(e.target.value.replace(/\D/g, ''))} /></Field>
+      <Field label="流量重置日（每月几号）" hint="按账单时区；月份没有这一天按月末" error={resetBad ? '填 1–31' : undefined}><Input inputMode="numeric" maxLength={2} value={resetDay} onChange={(e) => setResetDay(e.target.value.replace(/\D/g, ''))} /></Field>
       <label className="check-row span-2" style={{ gap: 10 }}><Switch checked={auto} onCheckedChange={setAuto} /><span>到期自动续费（只用于提醒口径，不会真的扣款）</span></label>
       <div className="span-2 row" style={{ justifyContent: 'flex-end' }}><Button variant="primary" disabled={!valid || save.isPending} loading={save.isPending} onClick={submit}>保存订阅</Button></div>
     </div>

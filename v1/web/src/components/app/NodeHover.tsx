@@ -11,7 +11,7 @@ import { CopyButton, Due, HealthPill, KindIcon } from './primitives';
 import { MiniMeter } from './viz';
 
 function MiniCard({ m }: { m: MachineView }) {
-  const r = resourceMeters(m, []); // 只用 CPU / 内存，核数用不到
+  const r = resourceMeters(m);
   const quiet = isQuiet(m);
   const team = m.team ? `${m.team.name}${m.number != null ? ` / ${F.pad2(m.number)}` : ''}` : KIND_LABEL[m.kind];
   return (

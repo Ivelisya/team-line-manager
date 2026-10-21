@@ -2,7 +2,7 @@
 // 高度固定（无主机也画三个空环），整页网格不需要逐槽对齐。
 import { memo } from 'react';
 import { ArrowDown, ArrowUp } from 'lucide-react';
-import type { MachineView, Plan } from '@/lib/types';
+import type { MachineView } from '@/lib/types';
 import type { DrawerTab } from '@/lib/drawer';
 import * as F from '@/lib/format';
 import { isQuiet, liveRate, resourceMeters } from '@/lib/derive';
@@ -12,8 +12,8 @@ import { HealthPill, KindIcon, Num, StatusDot } from './primitives';
 import { NodeContextItems } from './NodeMenu';
 import { Ring } from './viz';
 
-function RingCardImpl({ m, plans, current, onOpen }: { m: MachineView; plans: Plan[]; current?: boolean; onOpen: (id: string, tab?: DrawerTab) => void }) {
-  const r = resourceMeters(m, plans);
+function RingCardImpl({ m, current, onOpen }: { m: MachineView; current?: boolean; onOpen: (id: string, tab?: DrawerTab) => void }) {
+  const r = resourceMeters(m);
   const quiet = isQuiet(m);
   const h = m.host; const lr = liveRate(m);
   const ring = (metric: 'cpu' | 'mem' | 'disk', label: string, v: { value: F.Fmt; pct: number | null } | undefined) => (

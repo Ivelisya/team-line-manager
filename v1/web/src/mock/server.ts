@@ -680,7 +680,7 @@ R('POST', '/notify-channels/([^/]+)/test', ({ params }) => {
   const c = channel(params[0]);
   const fail = c.name.includes('失败') || JSON.stringify(c.config).includes('fail');
   const error = fail ? '对端返回 HTTP 502（Bad Gateway）' : null;
-  db.notifyLog.unshift({ id: `n${db.seq++}`, channel_id: c.id, channel_name: c.name, incident_id: null, ts: iso(), ok: !fail, error });
+  db.notifyLog.unshift({ id: `n${db.seq++}`, channel_id: c.id, channel_name: c.name, incident_id: null, ts: iso(), ok: !fail, error, kind: 'test', subject_name: null, rule_name: null });
   return { ok: !fail, error };
 });
 R('GET', '/notify-log', ({ query }) => clone(db.notifyLog.slice(0, +(query.get('limit') ?? 100))));

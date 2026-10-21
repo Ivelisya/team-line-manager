@@ -175,6 +175,8 @@ function ProvidersTab() {
 }
 
 /* ---------------------------------------------------------------- 套餐 */
+/** 规格：核数 / 内存，没填的部分显示 “—”；都没填只显示 “—” */
+const planSpec = (p: Plan) => (!p.cpu_cores && !p.mem_mb ? '—' : `${p.cpu_cores || '—'} 核 / ${p.mem_mb ? +(p.mem_mb / 1024).toFixed(1) : '—'} GB`);
 const EMPTY_PLAN = { name: '', provider_id: '', cpu_cores: '', mem_gb: '', disk_gb: '', bandwidth_mbps: '', traffic_gb: '', price: '', currency: 'USD', cycle: 'monthly', notes: '' };
 function PlansTab() {
   const q = usePlans(); const providers = useProviders().data ?? [];
@@ -213,7 +215,7 @@ function PlansTab() {
                 <tr key={p.id} className={p.archived_at ? 'is-retired' : undefined}>
                   <td><span className="cell-main strong">{p.name}</span><span className="sub">{p.archived_at ? '已归档' : p.notes ?? ''}</span></td>
                   <td>{pname(p.provider_id)}</td>
-                  <td>{p.cpu_cores ? `${p.cpu_cores} 核 / ${p.mem_mb / 1024} GB` : '—'}<span className="sub">{p.disk_gb ? `磁盘 ${p.disk_gb} GB` : ''}</span></td>
+                  <td>{planSpec(p)}<span className="sub">{p.disk_gb ? `磁盘 ${p.disk_gb} GB` : ''}</span></td>
                   <td className="r"><Num f={F.mbps(p.bandwidth_mbps)} /></td><td className="r"><Num f={p.traffic_gb ? F.gb(p.traffic_gb) : { v: '不限', u: '' }} /></td>
                   <td className="r"><span className="num">{F.money(p.price_cents, p.currency)}</span><span className="sub">/ {F.cycleLabel(p.cycle)}</span></td>
                   <td className="r num">{p.machine_count}</td>

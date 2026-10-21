@@ -28,7 +28,7 @@ export interface MachineView {
   id: string; kind: Kind; name: string; team: { id: string; name: string } | null; number: number | null; label: string | null;
   ip: string; ssh_port: number;
   provider: { id: string; name: string } | null; provider_code: string | null;
-  plan: { id: string; name: string; bandwidth_mbps: number; traffic_gb: number } | null; service_ref: string | null;
+  plan: { id: string; name: string; bandwidth_mbps: number | null; traffic_gb: number | null } | null; service_ref: string | null;
   lifecycle: Lifecycle; lifecycle_reason: string | null; note: string; revision: number;
   created_at: string; activated_at: string | null; retired_at: string | null;
   subscription: Subscription | null;
@@ -48,8 +48,8 @@ export interface MachineView {
 export interface Team { id: string; name: string; sort_order: number; node_count: number }
 export interface Provider { id: string; name: string; code: string; panel_url: string | null; timezone: string | null }
 export interface Plan {
-  id: string; provider_id: string; name: string; cpu_cores: number; mem_mb: number; disk_gb: number;
-  bandwidth_mbps: number; traffic_gb: number; price_cents: number; currency: string; cycle: Cycle; notes: string | null;
+  id: string; provider_id: string; name: string; cpu_cores: number | null; mem_mb: number | null; disk_gb: number | null;
+  bandwidth_mbps: number | null; traffic_gb: number | null; price_cents: number; currency: string; cycle: Cycle; notes: string | null;
   archived_at: string | null; machine_count: number;
 }
 
@@ -98,7 +98,7 @@ export type ProbeBeats = Record<string, ProbeBucket[]>;
 export interface OverviewSeries { points: { ts: string; net_rx_bps: number; net_tx_bps: number }[] }
 export interface SeriesResp { metric: string; range: string; resolution: '1m' | '1h' | string; points: SeriesPoint[] }
 export interface Incident {
-  id: string; rule: string; subject: { id: string; name: string } | null; subject_id: string | null; subject_name: string | null;
+  id: string; rule: string; rule_name: string; subject: { id: string; name: string } | null; subject_id: string | null; subject_name: string | null;
   severity: 'info' | 'warning' | 'critical' | string; state: 'firing' | 'resolved'; summary: string;
   opened_at: string; last_seen_at: string | null; resolved_at: string | null; ack_at: string | null; ack_by: string | null;
   /** 恢复后 30 分钟内复发、合并进这条的次数 */
@@ -133,7 +133,9 @@ export interface ApiKey { id: string; name: string; prefix: string; scopes: ApiS
 export type NotifyKind = 'telegram' | 'wecom' | 'webhook';
 export type NotifySeverity = 'info' | 'warning' | 'critical';
 export interface NotifyChannel { id: string; name: string; kind: NotifyKind | string; min_severity: NotifySeverity | string; enabled: boolean; created_at: string; config_hint: string }
-export interface NotifyLogEntry { id: string; channel_id: string; channel_name: string; incident_id: string | null; ts: string; ok: boolean; error: string | null }
+export interface NotifyLogEntry { id: string; channel_id: string; channel_name: string; incident_id: string | null; ts: string; ok: boolean; error: string | null;
+  /** firing / repeat / resolved / test */
+  kind: 'firing' | 'repeat' | 'resolved' | 'test'; subject_name: string | null; rule_name: string | null }
 
 /** 服务端分页列表（/jobs、/incidents）：next_offset 只在后面还有数据时给出 */
 export interface Paged<T> { items: T[]; total: number; next_offset: number | null }

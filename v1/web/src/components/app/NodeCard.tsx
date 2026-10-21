@@ -6,7 +6,7 @@ import { memo, useCallback, useEffect, useMemo, useState, useSyncExternalStore }
 import { m as mo } from 'motion/react'; // 别名：组件里的 props 叫 m（机器）
 import { SPRING } from '@/lib/motion';
 import { ArrowDown, ArrowUp, Calendar, CircleDollarSign, Cpu, Database, Gauge, Globe, HardDrive, MemoryStick, MoreHorizontal, Radar, RefreshCw, Settings2, PanelRightOpen, ServerOff, Wallet } from 'lucide-react';
-import type { MachineView, Plan, ProbeBeats, Subscription } from '@/lib/types';
+import type { MachineView, ProbeBeats, Subscription } from '@/lib/types';
 import * as F from '@/lib/format';
 import { beatCells, entryText, hasHost, isQuiet, liveRate, monthTraffic, probeSummary, quota, remainingValue, resourceMeters, subLabel, tagColor } from '@/lib/derive';
 import { useProbeBeats } from '@/lib/queries';
@@ -84,8 +84,8 @@ const SmallInfo = memo(function SmallInfo({ ip, sshPort, entry, plan, dueDays }:
   );
 });
 
-function Meters({ m, plans, compact }: { m: MachineView; plans: Plan[]; compact?: boolean }) {
-  const r = resourceMeters(m, plans);
+function Meters({ m, compact }: { m: MachineView; compact?: boolean }) {
+  const r = resourceMeters(m);
   if (!r) return <div className="nc-res"><div className="nc-hold"><ServerOff />{m.kind === 'proxy' ? '家宽代理没有主机，无 CPU / 内存指标' : m.lifecycle === 'provisioning' ? '上架完成后开始采集' : '暂无主机指标'}</div></div>;
   const quiet = isQuiet(m);
   return (
@@ -226,9 +226,9 @@ const Foot = memo(function Foot({ health, lifecycle, maintenance, onOpen }: Pick
   );
 });
 
-/** 卡片只吃稳定的 props（plans 引用、onOpen 回调不随地址变化），配合 memo，抽屉开关时只有变了的那张重渲染。
+/** 卡片只吃稳定的 props（onOpen 回调不随地址变化），配合 memo，抽屉开关时只有变了的那张重渲染。
  *  layoutKey：筛选/排序/视图的签名，变了才量位置做布局动画（layoutDependency），平时重渲染不量 */
-function NodeCardImpl({ m, view, current, plans, onOpen: open, layoutKey }: { m: MachineView; view: CardView; current?: boolean; plans: Plan[]; onOpen: (id: string, tab?: DrawerTab) => void; layoutKey: string }) {
+function NodeCardImpl({ m, view, current, onOpen: open, layoutKey }: { m: MachineView; view: CardView; current?: boolean; onOpen: (id: string, tab?: DrawerTab) => void; layoutKey: string }) {
   const onOpen = useCallback<Open>((tab) => open(m.id, tab), [open, m.id]);
   const menu = useLatest(m);
   const host = hasHost(m);
@@ -245,7 +245,7 @@ function NodeCardImpl({ m, view, current, plans, onOpen: open, layoutKey }: { m:
 
       {view === 'large' && <>
         <LargeInfo {...info} limit={quota(m).limit} />
-        <Meters m={m} plans={plans} />
+        <Meters m={m} />
         <section className="slot-seg">{host ? <Flow m={m} onOpen={onOpen} totals /> : <><div className="nc-seg-title"><span>业务流量</span><Tag c="gray">{m.kind === 'proxy' ? '无主机' : '无数据'}</Tag></div><EntryTable m={m} /></>}</section>
         <section className="slot-seg"><QuotaSlot m={m} onOpen={onOpen} /></section>
         {beat}
@@ -255,7 +255,7 @@ function NodeCardImpl({ m, view, current, plans, onOpen: open, layoutKey }: { m:
 
       {view === 'small' && <>
         <SmallInfo {...info} dueDays={m.subscription?.due_days} />
-        <section className="slot-seg"><Meters m={m} plans={plans} compact /></section>
+        <section className="slot-seg"><Meters m={m} compact /></section>
         <section className="slot-seg">{host ? <Flow m={m} onOpen={onOpen} /> : <FlowRow m={m} />}</section>
         <section className="slot-seg"><QuotaSlot m={m} onOpen={onOpen} /></section>
         {beat}
@@ -263,7 +263,7 @@ function NodeCardImpl({ m, view, current, plans, onOpen: open, layoutKey }: { m:
 
       {view === 'compact' && <>
         {tags}
-        <section className="slot-seg"><Meters m={m} plans={plans} compact /></section>
+        <section className="slot-seg"><Meters m={m} compact /></section>
         <section className="slot-seg">{host ? <Flow m={m} onOpen={onOpen} /> : <FlowRow m={m} />}</section>
         {beat}
       </>}

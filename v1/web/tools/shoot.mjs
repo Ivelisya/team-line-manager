@@ -59,6 +59,7 @@ const scenes = [
   { name: 'catalog-providers-1440', url: '/catalog?section=providers', w: 1440 },
   { name: 'catalog-plans-1440', url: '/catalog?section=plans', w: 1440 },
   { name: 'incidents-1440', url: '/incidents', w: 1440 },
+  { name: 'settings-notify-1440', url: '/settings?section=notify', w: 1440 },
   { name: 'login-1440', url: '/login?logout=1', w: 1440 },
 ];
 

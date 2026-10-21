@@ -193,15 +193,28 @@ struct LogOut {
     error: Option<String>,
     /// firing / repeat / resolved / test
     kind: String,
+    /// 告警对象的显示名；测试消息、机器已删除时为 null
+    subject_name: Option<String>,
+    #[serde(skip)]
+    rule: Option<String>,
+    /// 告警规则中文名（同通知正文）；测试消息、告警已删除时为 null
+    #[sqlx(skip)]
+    rule_name: Option<String>,
 }
 
 pub async fn log(_a: Actor, State(st): State<AppState>, Query(q): Query<LogQ>) -> ApiResult<Json<Value>> {
-    let v: Vec<LogOut> = sqlx::query_as(
-        "select l.id, l.channel_id, c.name channel_name, l.incident_id, l.ts, l.ok, l.error, l.kind
-         from notify_log l left join notify_channel c on c.id = l.channel_id order by l.id desc limit $1",
+    let mut v: Vec<LogOut> = sqlx::query_as(
+        "select l.id, l.channel_id, c.name channel_name, l.incident_id, l.ts, l.ok, l.error, l.kind,
+                display_name(m.kind::text, m.label, t.name, m.number) subject_name, i.rule
+         from notify_log l left join notify_channel c on c.id = l.channel_id
+         left join incident i on i.id = l.incident_id left join machine m on m.id = i.subject_id left join team t on t.id = m.team_id
+         order by l.id desc limit $1",
     )
     .bind(q.limit.unwrap_or(100).clamp(1, 1000))
     .fetch_all(&st.db)
     .await?;
+    for l in &mut v {
+        l.rule_name = l.rule.as_deref().map(|r| notify::rule_name(r).to_string());
+    }
     Ok(ok(v))
 }

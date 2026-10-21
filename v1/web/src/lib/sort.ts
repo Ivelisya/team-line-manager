@@ -1,5 +1,5 @@
 import { useMemo, useRef } from 'react';
-import type { MachineView, Team } from './types';
+import type { EntryLifecycle, MachineView, Team } from './types';
 
 /** 中文名称比较（编号按数值：团队1-2 排在 团队1-10 前面）；全站共用一个 */
 export const collator = new Intl.Collator('zh-Hans-CN', { numeric: true });
@@ -54,3 +54,5 @@ export const LIFECYCLE_LABEL: Record<string, string> = {
   draft: '草稿', provisioning: '上架中', active: '运行中', retiring: '退役中', retired: '已退役', failed: '上架失败',
 };
 export const KIND_LABEL: Record<string, string> = { relay: '线路机', vps: '落地机', proxy: '家宽代理' };
+// 入口状态：pending / removing 是等线路机应用
+export const ENTRY_LABEL: Record<EntryLifecycle, string> = { pending: '应用中', active: '运行中', disabled: '已停用', removing: '移除中', removed: '已移除' };

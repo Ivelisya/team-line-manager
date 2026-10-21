@@ -3,10 +3,10 @@
 // 默认排序：线路机 → 团队 → 编号；故障/离线不下沉。其它排序是用户的显式选择；表格视图另可点表头排序。
 import * as React from 'react';
 import { AlertTriangle, CircleGauge, Inbox, LayoutGrid, Server, Table2 } from 'lucide-react';
-import { useMachines, useOverview, usePlans, useTeams } from '@/lib/queries';
+import { useMachines, useOverview, useTeams } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import { monthTraffic } from '@/lib/derive';
-import type { MachineView, Plan } from '@/lib/types';
+import type { MachineView } from '@/lib/types';
 import { Empty, ErrorNote, FilterChip, type SortState } from '@/components/app/primitives';
 import { NodeCard, SkeletonCard, type CardView } from '@/components/app/NodeCard';
 import { RingCard } from '@/components/app/RingCard';
@@ -28,7 +28,6 @@ const LAYOUTS: Layout[] = ['cards', 'table', 'ring'];
 const DENSITIES: CardView[] = ['large', 'small', 'compact'];
 /** 每页条数：卡片与环形都是 2、3、4、6 的倍数，常见列数下最后一行是满的；中间那档是默认 */
 const PAGE_SIZES: Record<CardView | 'table' | 'ring', number[]> = { large: [12, 24, 48], small: [18, 36, 72], compact: [24, 48, 96], table: [25, 50, 100], ring: [24, 48, 96] };
-const EMPTY_PLANS: Plan[] = [];
 const EMPTY_MACHINES: MachineView[] = [];
 const store = {
   /** 读本地偏好；值不在 allowed 里（旧版本或手改的脏值）一律回退默认 */
@@ -54,7 +53,6 @@ export function HomePage() {
   const machines = useMachines('live');
   const teams = useTeams();
   const ov = useOverview();
-  const plans = usePlans().data ?? EMPTY_PLANS;
   const { id: openId, open } = useDrawer();
   const [layout, setLayout] = React.useState<Layout>(() => store.get('fleet:layout', 'cards', LAYOUTS));
   const [view, setView] = React.useState<CardView>(() => store.get('fleet:view', 'large', DENSITIES));
@@ -126,12 +124,12 @@ export function HomePage() {
           <>
             {/* 每页一个容器（key=页码+视图）：翻页、换视图是整页淡入。卡片页内：筛选/排序/密度变了（layoutKey 变）才量位置、滑到新位置 */}
             {layout === 'cards' && <div key={`c${pg.page}`} className="cards page-in" data-view={view}>
-              {page.map((m) => <NodeCard key={m.id} m={m} view={view} current={m.id === openId} plans={plans} onOpen={open} layoutKey={layoutKey} />)}
+              {page.map((m) => <NodeCard key={m.id} m={m} view={view} current={m.id === openId} onOpen={open} layoutKey={layoutKey} />)}
             </div>}
             {layout === 'ring' && <div key={`r${pg.page}`} className="rings page-in">
-              {page.map((m) => <RingCard key={m.id} m={m} plans={plans} current={m.id === openId} onOpen={open} />)}
+              {page.map((m) => <RingCard key={m.id} m={m} current={m.id === openId} onOpen={open} />)}
             </div>}
-            {layout === 'table' && <div key="t" className="hpanel page-in"><MachineTable rows={page} plans={plans} sort={tsort} onSort={setTsort} openId={openId} onOpen={open} /></div>}
+            {layout === 'table' && <div key="t" className="hpanel page-in"><MachineTable rows={page} sort={tsort} onSort={setTsort} openId={openId} onOpen={open} /></div>}
             <Pagination pg={pg} unit="台" />
           </>
         )}
