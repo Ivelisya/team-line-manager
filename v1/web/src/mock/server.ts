@@ -105,6 +105,7 @@ function overview() {
 function series(m: MachineView, metric: string, range: string): { metric: string; range: string; resolution: string; points: SeriesPoint[] } {
   const spec: Record<string, [number, number]> = { '1h': [60, 60_000], '6h': [72, 300_000], '24h': [96, 900_000], '7d': [84, 7200_000], '30d': [90, 28800_000] };
   const [n, step] = spec[range] ?? spec['1h'];
+  const hourly = range === '7d' || range === '30d';
   const r = rng(hashStr(m.id + metric));
   const end = Date.now(); const pts: SeriesPoint[] = [];
   const h = m.host; const isDown = m.health.status === 'down';
@@ -117,7 +118,9 @@ function series(m: MachineView, metric: string, range: string): { metric: string
     if (t < from || t > to) continue;
     const tail = isDown && i > n - 6;
     if (metric === 'host') {
-      pts.push({ ts, cpu_pct: tail ? null : walk, mem_pct: tail ? null : (h?.mem_used != null && h.mem_total ? (h.mem_used / h.mem_total) * 100 : 40) + Math.sin(i / 9) * 4, disk_pct: h?.disk_used != null && h.disk_total ? (h.disk_used / h.disk_total) * 100 + i * 0.01 : 30, load1: tail ? null : +(walk / 40).toFixed(2), net_rx_bps: tail ? null : (h?.net_rx_bps ?? 1e7) * (0.5 + r()), net_tx_bps: tail ? null : (h?.net_tx_bps ?? 1e7) * (0.4 + r()) });
+      // 按小时的（同服务端 HOST_HOURLY）另有每小时峰值 cpu_max、没有 load1
+      const cpu: Record<string, number | null> = tail ? { cpu_pct: null } : hourly ? { cpu_pct: walk, cpu_max: Math.min(100, walk + 5 + r() * 25) } : { cpu_pct: walk, load1: +(walk / 40).toFixed(2) };
+      pts.push({ ts, ...cpu, mem_pct: tail ? null : (h?.mem_used != null && h.mem_total ? (h.mem_used / h.mem_total) * 100 : 40) + Math.sin(i / 9) * 4, disk_pct: h?.disk_used != null && h.disk_total ? (h.disk_used / h.disk_total) * 100 + i * 0.01 : 30, net_rx_bps: tail ? null : (h?.net_rx_bps ?? 1e7) * (0.5 + r()), net_tx_bps: tail ? null : (h?.net_tx_bps ?? 1e7) * (0.4 + r()) });
     } else if (metric === 'traffic') {
       const k = step / 60_000;
       pts.push({ ts, up: Math.round(r() * 8e6 * k * (1 + Math.sin(i / 7))), down: Math.round(r() * 3e7 * k * (1 + Math.cos(i / 8))), conns: Math.round(20 + r() * 80) });
@@ -126,7 +129,7 @@ function series(m: MachineView, metric: string, range: string): { metric: string
       pts.push({ ts, tcp_ok: !tcpFail, tcp_ms: tcpFail ? null : Math.round(40 + r() * 70 + (i % 23 === 0 ? 120 : 0)), egress_ok: !egFail, egress_ms: egFail ? null : Math.round(160 + r() * 90), tcp_n: 2, tcp_ok_n: tcpFail ? 0 : 2 });
     }
   }
-  return { metric, range, resolution: range === '7d' || range === '30d' ? '1h' : '1m', points: pts };
+  return { metric, range, resolution: hourly ? '1h' : '1m', points: pts };
 }
 
 /** 心跳格：在用机器 20 个墙钟对齐的 3 分钟桶（旧→新，同服务端 date_bin），最后一桶是当前这格（只走了一部分），

@@ -22,6 +22,8 @@ const poll = (range: string) => POLL[range] ?? 300_000;
 const L_PROBE = [{ key: 'tcp_ms', label: 'TCP 握手', color: 'var(--chart-1)' }, { key: 'egress_ms', label: '出口验证', color: 'var(--chart-2)' }];
 const L_TRAFFIC = [{ key: 'down', label: '↓ 下载', color: 'var(--chart-1)' }, { key: 'up', label: '↑ 上传', color: 'var(--chart-2)' }];
 const L_CPU = [{ key: 'cpu_pct', label: 'CPU', color: 'var(--m-cpu)' }];
+// 按小时的点（7 天 / 30 天）是一小时的平均，短时冲高被摊平：同画每小时的峰值，色取 CPU 蓝的浅色
+const L_CPU_HOURLY = [{ key: 'cpu_pct', label: '平均', color: 'var(--m-cpu)' }, { key: 'cpu_max', label: '峰值', color: 'color-mix(in oklab, var(--m-cpu) 45%, transparent)' }];
 const L_MEM = [{ key: 'mem_pct', label: '内存', color: 'var(--m-mem)' }];
 const L_NET = [{ key: 'net_rx_bps', label: '↓ 下行', color: 'var(--chart-1)' }, { key: 'net_tx_bps', label: '↑ 上行', color: 'var(--chart-2)' }];
 const PCT_DOMAIN: [number, number] = [0, 100];
@@ -130,6 +132,7 @@ export function HostTab({ m }: { m: MachineView }) {
   const h = hasHost(m) ? m.host! : null;
   const r = h ? resourceMeters(m)! : null;
   const few = fewText(m, range);
+  const hourly = s.data?.resolution === '1h';
   return (
     <>
       <Section>
@@ -146,7 +149,7 @@ export function HostTab({ m }: { m: MachineView }) {
       </Section>
       {/* 三张图表卡同属一段，之间不再画分隔线 */}
       <Section className="chart-stack">
-        <ChartCard c="var(--m-cpu)" icon={<Cpu />} title="CPU" value={h ? <Num f={F.pct(h.cpu_pct, 1)} /> : '—'} caption="使用率"><ChartFrame q={s} few={few} height={140}><TimeChart points={s.data?.points} range={s.data?.range ?? range} lines={L_CPU} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></ChartCard>
+        <ChartCard c="var(--m-cpu)" icon={<Cpu />} title="CPU" meta={hourly ? '每小时平均与峰值' : undefined} value={h ? <Num f={F.pct(h.cpu_pct, 1)} /> : '—'} caption="使用率"><ChartFrame q={s} few={few} height={140}><TimeChart points={s.data?.points} range={s.data?.range ?? range} lines={hourly ? L_CPU_HOURLY : L_CPU} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></ChartCard>
         <ChartCard c="var(--m-mem)" icon={<MemoryStick />} title="内存" value={r ? <Num f={F.pct(r.mem.pct, 1)} /> : '—'} caption="使用率"><ChartFrame q={s} few={few} height={140}><TimeChart points={s.data?.points} range={s.data?.range ?? range} lines={L_MEM} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></ChartCard>
         <ChartCard c="var(--chart-1)" icon={<Network />} title="网卡速率" value={h ? <>↓ <Num f={F.rate(h.net_rx_bps)} /> <span className="t-sub">·</span> ↑ <Num f={F.rate(h.net_tx_bps)} /></> : '—'} caption="当前速率"><ChartFrame q={s} few={few} height={160}><TimeChart points={s.data?.points} range={s.data?.range ?? range} lines={L_NET} yFmt={yRate} valueFmt={vRate} yBase={1000} height={160} /></ChartFrame></ChartCard>
       </Section>
