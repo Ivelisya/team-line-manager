@@ -38,6 +38,13 @@ function useMachinesPicked<T>(pick: (m: MachineView) => T) {
 }
 export const useMachineBriefs = () => useMachinesPicked(brief);
 export const useMachineLabels = () => useMachinesPicked(label);
+/** 上架页「在已有机器上添加 IP」的宿主机候选：在用、自身不是同机 IP 节点的落地机，带出它的团队、线路机（第一个入口的）、SSH 端口与供应商。
+ *  同一份机器列表缓存，结果做结构共享：推送只改读数时引用不变（批量网格的 memo 不被击穿） */
+export interface HostChoice { id: string; name: string; team_id: string; relay_id: string; ssh_port: number; provider: string | null }
+const hostChoices = (d: MachineView[]) => d.filter((m) => m.kind === 'vps' && m.lifecycle === 'active' && !m.host_machine)
+  .map((m): HostChoice => ({ id: m.id, name: m.name, team_id: m.team?.id ?? '', relay_id: m.entries[0]?.relay.id ?? '', ssh_port: m.ssh_port, provider: m.provider?.name ?? null }))
+  .sort((a, b) => collator.compare(a.name, b.name));
+export const useHostChoices = () => useQuery({ ...machinesQuery('live'), select: hostChoices });
 /** 首页 KPI「流量额度」：同一份机器列表缓存，只取吃紧的台数与最紧的一台；结果做结构共享，没变时首页总览不跟着推送重渲染 */
 export const useQuotaTight = () => useQuery({ ...machinesQuery('live'), select: quotaTight });
 /** 按键等“用时才读”的场景：直接读缓存里的机器列表（同样的默认顺序），不订阅、不触发请求 */
