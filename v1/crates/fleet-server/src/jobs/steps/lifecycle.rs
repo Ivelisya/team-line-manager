@@ -102,7 +102,7 @@ pub(super) async fn wait_detached_old(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         // 本步第一次运行就带着上次的应用错误（重试）：只重新应用一次
         if c.first {
             rebump(c, relay_id, None).await?;
-            return Ok(Outcome::Wait(2));
+            return Ok(Outcome::Wait(EVENT_POLL_S));
         }
         return Err(remote(format!("旧线路机 {relay} 应用失败：{e}")));
     }
@@ -110,7 +110,7 @@ pub(super) async fn wait_detached_old(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     if seen.is_none_or(|t| (now - t).whole_seconds() > 120) && (now - c.started).whole_seconds() > 60 {
         return Err(StepError::err(ErrKind::Network, format!("旧线路机 {relay} 不在线，入口 {relay}:{port} 摘不掉；线路机恢复后点重试")));
     }
-    Ok(Outcome::Wait(2))
+    Ok(Outcome::Wait(EVENT_POLL_S))
 }
 
 /// 收紧节点防火墙：旧线路机上不再有这个节点的入口时，把旧线路机 IP 从放行名单拿掉（proxy 没有防火墙，直接跳过）。

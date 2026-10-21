@@ -605,9 +605,7 @@ pub async fn reconcile_incidents(st: &AppState, now: OffsetDateTime, rep: &mut S
         .fetch_all(db)
         .await?;
     let mut have: HashMap<(String, Uuid), Firing> = firing.into_iter().map(|f| ((f.rule.clone(), f.subject_id), f)).collect();
-    let silences: Vec<(Option<Uuid>, Option<String>)> =
-        sqlx::query_as("select subject_id, rule from silence where deleted_at is null and now() between starts_at and ends_at").fetch_all(db).await?;
-    let silenced = |rule: &str, id: Uuid| silences.iter().any(|(s, r)| s.is_none_or(|s| s == id) && r.as_deref().is_none_or(|r| r == rule));
+    let silences = crate::silence::Silences::load(db).await?;
 
     let mut changed = false;
     // 摘要没变、只需刷新 last_seen_at 的，循环后一条语句批量改
@@ -644,7 +642,7 @@ pub async fn reconcile_incidents(st: &AppState, now: OffsetDateTime, rep: &mut S
             }
             continue;
         }
-        if silenced(rule, *node) {
+        if silences.matches(rule, *node) {
             continue;
         }
         let id = crate::db::new_id();

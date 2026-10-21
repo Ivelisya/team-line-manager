@@ -39,7 +39,7 @@ pub async fn brief(st: &AppState, scope: Scope) -> sqlx::Result<Value> {
                     'id', m.id, 'kind', m.kind, 'name', display_name(m.kind::text, m.label, t.name, m.number), 'label', m.label,
                     'ip', host(m.primary_ip), 'lifecycle', m.lifecycle,
                     'team', case when t.id is not null then json_build_object('id', t.id, 'name', t.name) end)
-                  order by m.kind = 'relay' desc, t.sort_order nulls first, t.name, m.number, m.label), '[]')
+                  order by m.kind = 'relay' desc, t.sort_order nulls first, t.name, m.number, m.label, m.id), '[]')
          from machine m left join team t on t.id = m.team_id
          where {}",
         scope.cond()
@@ -302,7 +302,6 @@ const LIVE_TTL: std::time::Duration = std::time::Duration::from_secs(3);
 /// 入口 id → 今天 / 本月流量（北京时间，来自小时汇总表，含已移除的入口）
 type TrafficMap = Arc<HashMap<Uuid, Traffic>>;
 
-#[derive(Default)]
 pub struct LiveCache {
     /// 每次作废 +1；加载开始时记下，加载期间发生过变更的结果不当作新鲜的
     gen: AtomicU64,
@@ -313,6 +312,25 @@ pub struct LiveCache {
     traffic: tokio::sync::Mutex<Option<((u64, Instant), TrafficMap)>>,
     /// 有重置日的机器的周期已用：(机器, 周期起点, 账单时区) → 字节，同样只在汇总后作废
     quota: tokio::sync::Mutex<(u64, HashMap<QuotaKey, i64>)>,
+    /// 同时进行的完整视图加载（`load`）的名额
+    loads: tokio::sync::Semaphore,
+}
+
+/// 同时最多这么多次视图加载：一次加载并发 9 条查询，连接池只有 20 条，几次加载一起跑再加上 agent 上报就会把池占满、
+/// 上报等不到连接回 503。多出来的加载排队（在用视图本来就单飞，排队的多是单台详情、已退役列表）
+const MAX_LOADS: usize = 3;
+
+impl Default for LiveCache {
+    fn default() -> Self {
+        Self {
+            gen: AtomicU64::default(),
+            slot: Default::default(),
+            rolled: AtomicU64::default(),
+            traffic: Default::default(),
+            quota: Default::default(),
+            loads: tokio::sync::Semaphore::new(MAX_LOADS),
+        }
+    }
 }
 
 type QuotaKey = (Uuid, Date, String);
@@ -410,6 +428,7 @@ async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<
 }
 
 pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Result<Vec<MachineView>> {
+    let _permit = st.live.loads.acquire().await.expect("名额信号量不会关闭");
     let db = &st.db;
     let lc = scope.cond();
     let sql = format!(
@@ -430,7 +449,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
          left join agent_state a on a.machine_id = m.id
          left join relay r on r.machine_id = m.id
          where {lc} and ($1::uuid is null or m.id = $1)
-         order by m.kind = 'relay' desc, t.sort_order nulls first, t.name, m.number, m.label"
+         order by m.kind = 'relay' desc, t.sort_order nulls first, t.name, m.number, m.label, m.id"
     );
     let rows: Vec<MRow> = sqlx::query_as(&sql).bind(only).fetch_all(db).await?;
     if rows.is_empty() {
@@ -560,13 +579,8 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     let inc_q = sqlx::query_as::<_, (Uuid, i64)>("select subject_id, count(*) from incident where state = 'firing' and subject_id = any($1) group by 1")
         .bind(&ids)
         .fetch_all(db);
-    // 维护静默：subject_id 为空 = 全局维护，所有机器都算维护中
-    let maint_q = sqlx::query_as::<_, (Option<Uuid>,)>(
-        "select distinct subject_id from silence where is_maintenance and deleted_at is null
-         and now() between starts_at and ends_at and (subject_id is null or subject_id = any($1))",
-    )
-    .bind(&ids)
-    .fetch_all(db);
+    // 维护中：同告警的静默共用一份查询与匹配
+    let sil_q = crate::silence::Silences::load(db);
     let su_q = sqlx::query_as::<_, S>(
         "select machine_id, extract(epoch from max(ts) - min(ts))::bigint span_s, min(cpu_pct) cpu_min,
                 (min(mem_used::float8 * 100 / nullif(mem_total, 0)))::real mem_min, (min(disk_used::float8 * 100 / nullif(disk_total, 0)))::real disk_min
@@ -575,8 +589,8 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     .bind(&ids)
     .fetch_all(db);
     let period_of: HashMap<Uuid, Date> = periods.iter().map(|k| (k.0, k.1)).collect();
-    let (hs, (es, ps), (traffic, removed), jobs, inc, maint, su, policies, period_used) =
-        tokio::try_join!(hs_q, entries_q, traffic_q, jobs_q, inc_q, maint_q, su_q, crate::policy::load_modes(db), quota_used(st, periods))?;
+    let (hs, (es, ps), (traffic, removed), jobs, inc, silences, su, policies, period_used) =
+        tokio::try_join!(hs_q, entries_q, traffic_q, jobs_q, inc_q, sil_q, su_q, crate::policy::load_modes(db), quota_used(st, periods))?;
 
     let mut host: HashMap<Uuid, HostNow> = HashMap::new();
     let mut prev: HashMap<Uuid, (OffsetDateTime, Option<i64>, Option<i64>)> = HashMap::new();
@@ -661,8 +675,6 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
         m.insert(t, JobRef { id, kind, state });
     }
     let inc: HashMap<Uuid, i64> = inc.into_iter().collect();
-    let maint_all = maint.iter().any(|(s,)| s.is_none());
-    let maint: std::collections::HashSet<Uuid> = maint.into_iter().filter_map(|(id,)| id).collect();
     let sustained: HashMap<Uuid, Sustained> =
         su.into_iter().map(|r| (r.machine_id, Sustained { span_s: r.span_s.unwrap_or(0), cpu_min: r.cpu_min, mem_min: r.mem_min, disk_min: r.disk_min })).collect();
 
@@ -713,7 +725,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                     period_start: today.replace_day(1).expect("1 号"),
                 },
             };
-            let maintenance = maint_all || maint.contains(&r.id);
+            let maintenance = silences.maintenance(r.id);
             let policy_blocked = r.kind != "relay" && policies.effective(r.id, r.team_id).0.mode == crate::policy::Mode::Blocked;
             // 上架失败：最近失败的上架/恢复作业；退役中：失败的退役作业（等重试）
             let failed_job = failed_jobs

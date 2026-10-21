@@ -37,6 +37,11 @@ struct M {
     lifecycle: String,
 }
 
+/// 等外部事件的步骤（首次上报、线路机回报应用 / 摘除）的兜底重查间隔。事件到了由 `jobs::wake_for` 把作业提前并唤醒引擎，
+/// 重查只补没有唤醒的情形（升级、恢复后的上报不算首次上报，中控重启等）；搬空 N 个节点时 N 个作业不再每 2–3 秒
+/// 各走一遍领取、续租、读写步骤
+const EVENT_POLL_S: u64 = 5;
+
 /// 远端脚本/配置层面的失败
 fn remote(msg: impl Into<String>) -> anyhow::Error { StepError::err(ErrKind::Remote, msg) }
 
@@ -372,7 +377,7 @@ async fn wait_report(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
             }
             Ok(Outcome::Done(json!({"first_report_at": crate::access::fmt_ts(t), "agent_version": v, "old_tokens_revoked": revoked})))
         }
-        None => Ok(Outcome::Wait(3)),
+        None => Ok(Outcome::Wait(EVENT_POLL_S)),
     }
 }
 
@@ -448,11 +453,11 @@ async fn wait_applied(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
             // 本步第一次运行就带着上次的应用错误（重试）：只重新应用一次，不是每轮都 bump
             if c.first {
                 rebump(c, relay_id, Some(eid)).await?;
-                return Ok(Outcome::Wait(2));
+                return Ok(Outcome::Wait(EVENT_POLL_S));
             }
             return Err(remote(format!("线路机应用失败：{e}")));
         }
-        return Ok(if applied && lc == "active" { Outcome::Done(json!({"entry": lc})) } else { Outcome::Wait(2) });
+        return Ok(if applied && lc == "active" { Outcome::Done(json!({"entry": lc})) } else { Outcome::Wait(EVENT_POLL_S) });
     }
     // 新线路机：等第一次应用
     let id = c.target_id()?;
@@ -461,11 +466,11 @@ async fn wait_applied(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     if let Some(e) = err {
         if c.first {
             rebump(c, id, None).await?;
-            return Ok(Outcome::Wait(2));
+            return Ok(Outcome::Wait(EVENT_POLL_S));
         }
         return Err(remote(format!("Xray 配置应用失败：{e}")));
     }
-    Ok(if a >= g { Outcome::Done(json!({"generation": a})) } else { Outcome::Wait(2) })
+    Ok(if a >= g { Outcome::Done(json!({"generation": a})) } else { Outcome::Wait(EVENT_POLL_S) })
 }
 
 async fn verify(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
@@ -561,7 +566,7 @@ async fn wait_detached(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
             return Err(StepError::err(ErrKind::Network, format!("线路机 {relay} 不在线，入口 {relay}:{port} 摘不掉；线路机恢复后点重试")));
         }
     }
-    Ok(Outcome::Wait(2))
+    Ok(Outcome::Wait(EVENT_POLL_S))
 }
 
 async fn cleanup(c: &Ctx<'_>) -> anyhow::Result<Outcome> {

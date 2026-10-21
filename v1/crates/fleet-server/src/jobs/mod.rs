@@ -3,6 +3,9 @@
 //! 步骤返回 Done / Skipped / Wait(秒)：Wait 把作业置为 waiting 并在到点后重新领取（等线路机生效、等首次上报…），
 //! 等待超过该步的 `timeout_s` 即失败。
 //!
+//! 唤醒：建作业、重试、取消后调 `AppState::wake_jobs`；线路机回报应用结果、agent 首次上报时 `wake_for` 把等这些事的作业
+//! 提前到现在再唤醒。引擎空闲时等唤醒，兜底重查（等待中的作业到点、过期租约被接管）从 800 ms 退避到 5 s。
+//!
 //! 租约：领取时给一个短租约，每步开始前按「步骤超时 + 余量」续租；所有对 job / job_step 的状态写入都带
 //! `lease_owner = 自己`，0 行受影响说明租约已被别人接管（或作业被取消、被退役清掉），本执行者立刻放弃推进。
 //! 服务启动时把运行中的租约全部清空（单实例：此前的执行者一定已经不在了），作业随即被重新领取。
@@ -222,6 +225,28 @@ pub async fn log(st: &AppState, job: Uuid, level: &str, msg: impl AsRef<str>) {
     let _ = sqlx::query("insert into job_log (job_id, level, msg) values ($1, $2, $3)").bind(job).bind(level).bind(m).execute(&st.db).await;
 }
 
+/// 引擎空闲时兜底重查的间隔：从 800 ms 起每次翻倍到 5 s，领到作业或被唤醒就回到 800 ms
+const IDLE_MIN: Duration = Duration::from_millis(800);
+const IDLE_MAX: Duration = Duration::from_secs(5);
+
+/// 这台机器（线路机：还有经它的入口所属的节点）上在等待的作业提前到现在，并唤醒引擎。
+/// 线路机回报应用结果、agent 首次上报之后调：等应用 / 等摘除 / 等首次上报的步骤不必等到兜底的重查时间
+pub async fn wake_for(st: &AppState, machine: Uuid) {
+    let r = sqlx::query(
+        "update job set run_after = now() where state = 'waiting' and run_after > now()
+           and (target_id = $1 or target_id in (select node_id from entry where relay_id = $1))",
+    )
+    .bind(machine)
+    .execute(&st.db)
+    .await;
+    match r {
+        Ok(r) if r.rows_affected() > 0 => st.wake_jobs(),
+        Ok(_) => {}
+        // 回报本身已经入库，不因此让 agent 重发；作业照样会在兜底重查时推进
+        Err(e) => tracing::warn!(%machine, "提前等待中的作业失败：{e:#}"),
+    }
+}
+
 /// 后台循环：领取并推进作业
 pub async fn run_forever(st: AppState) {
     let owner = format!("{}-{}", std::process::id(), Uuid::new_v4().simple());
@@ -237,10 +262,12 @@ pub async fn run_forever(st: AppState) {
         Err(e) => tracing::error!("启动时释放旧租约失败：{e:#}"),
     }
     let sem = Arc::new(Semaphore::new(st.cfg.job_workers.max(1)));
+    let mut idle = IDLE_MIN;
     loop {
         let permit = sem.clone().acquire_owned().await.expect("semaphore");
         match claim(&st, &owner).await {
             Ok(Some(job)) => {
+                idle = IDLE_MIN;
                 let st = st.clone();
                 let owner = owner.clone();
                 tokio::spawn(async move {
@@ -260,7 +287,11 @@ pub async fn run_forever(st: AppState) {
             }
             Ok(None) => {
                 drop(permit);
-                tokio::time::sleep(Duration::from_millis(800)).await;
+                // 唤醒在忙的时候到达也不丢（Notify 记一次许可），下一轮立刻再领
+                tokio::select! {
+                    _ = st.jobs_wake.notified() => idle = IDLE_MIN,
+                    _ = tokio::time::sleep(idle) => idle = (idle * 2).min(IDLE_MAX),
+                }
             }
             Err(e) => {
                 drop(permit);

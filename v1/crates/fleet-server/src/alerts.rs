@@ -12,6 +12,7 @@
 //! 所以反复抖动的告警每 5 分钟最多一对触发/恢复，真故障最多晚 5 分钟报。被静默（含维护）的不发任何通知。
 
 use crate::notify::{self, Kind, Notice};
+use crate::silence::Silences;
 use crate::state::{AppState, Event};
 use crate::views;
 use serde_json::json;
@@ -116,14 +117,7 @@ fn repeat_interval_s(rule: &str, severity: &str) -> Option<i64> {
 pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDateTime) -> anyhow::Result<()> {
     // 与列表、实时指标共用在用机器视图（最多旧 3 s）
     let ms = views::live(st).await?;
-    let silences: Vec<(Option<Uuid>, Option<String>)> = sqlx::query_as(
-        "select subject_id, rule from silence where deleted_at is null and now() between starts_at and ends_at",
-    )
-    .fetch_all(&st.db)
-    .await?;
-    let silenced = |rule: &str, id: Uuid| {
-        silences.iter().any(|(s, r)| s.is_none_or(|s| s == id) && r.as_deref().is_none_or(|r| r == rule))
-    };
+    let silences = Silences::load(&st.db).await?;
     // ipintel_ 开头的规则由 ipintel.rs 自己开和关（一次性异常，24 小时后恢复），这里不碰，否则会被当成「原因消失」恢复掉
     let mut open: HashMap<(String, Uuid), Open> = sqlx::query_as::<_, Open>(&format!(
         "select {OPEN_COLS} from incident where state = 'firing' and rule not like 'ipintel!_%' escape '!'"
@@ -174,14 +168,14 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
                     touch.push(inc.id);
                 }
                 // 持续提醒；复发后已报过恢复的，满限流时长再发一次「触发」
-                if let Some(kind) = due(&inc, r.severity, now).filter(|_| !silenced(r.key, m.id)) {
+                if let Some(kind) = due(&inc, r.severity, now).filter(|_| !silences.matches(r.key, m.id)) {
                     notify::enqueue(st, notice(kind, inc.id, inc.opened_at)).await;
                 }
                 continue;
             }
 
             let immediate = r.key.starts_with("renewal_");
-            if (!immediate && (now - since).whole_seconds() < debounce_s(r.key)) || silenced(r.key, m.id) {
+            if (!immediate && (now - since).whole_seconds() < debounce_s(r.key)) || silences.matches(r.key, m.id) {
                 continue;
             }
             // 窗口内刚恢复过：重开原告警（清掉确认），按 `due` 决定是否马上通知（退役等流程关掉的、带 closed_by 的不重开）。
@@ -260,7 +254,7 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
         sqlx::query("update incident set state = 'resolved', resolved_at = now() where id = $1").bind(inc.id).execute(&st.db).await?;
         changed = true;
         // 恢复通知：上次恢复通知之后发过触发/提醒、且当前没被静默时才发
-        if !silenced(&inc.rule, inc.subject_id) && told_firing(&inc) {
+        if !silences.matches(&inc.rule, inc.subject_id) && told_firing(&inc) {
             notify::enqueue(
                 st,
                 Notice {

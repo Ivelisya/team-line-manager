@@ -329,6 +329,7 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Ba
         created.push(json!({"machine_id": id, "job_id": job, "name": c.name}));
     }
     tx.commit().await?;
+    st.wake_jobs();
     st.emit(Event::Machines);
     Ok(ok(json!({"jobs": created})))
 }

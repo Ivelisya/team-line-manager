@@ -307,6 +307,7 @@ pub async fn retire(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<U
     )
     .await?;
     tx.commit().await?;
+    st.wake_jobs();
     // 在用 → 退役中：列表要变
     st.emit(Event::Machines);
     st.emit(Event::Job { id: job, target: Some(id) });
@@ -364,6 +365,7 @@ pub async fn purge(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     let job = jobs::enqueue(&mut tx, "purge", Some(id), json!({"name": name}), &a.name).await?;
     audit(&mut tx, &a.name, "machine.purge", "machine", Some(id), json!({"name": name, "job_id": job})).await?;
     tx.commit().await?;
+    st.wake_jobs();
     st.emit(Event::Job { id: job, target: Some(id) });
     Ok(ok(json!({"job_id": job})))
 }
@@ -391,6 +393,7 @@ async fn enqueue_upgrade(st: &AppState, actor: &str, ids: &[Uuid]) -> ApiResult<
     }
     audit(&mut tx, actor, "agent.upgrade", "machine", None, json!({"count": out.len(), "skipped": skipped.len()})).await?;
     tx.commit().await?;
+    st.wake_jobs();
     for j in &out {
         let uuid = |k: &str| j[k].as_str().and_then(|s| Uuid::try_parse(s).ok());
         if let Some(id) = uuid("job_id") {

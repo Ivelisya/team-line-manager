@@ -323,6 +323,8 @@ async fn ingest(st: &AppState, h: &HeaderMap, r: Report) -> Result<Json<ReportAc
     tx.commit().await?;
     if last.is_none() {
         st.emit(Event::Machine { id: a.machine_id });
+        // 上架中「等待首次上报」的作业
+        crate::jobs::wake_for(st, a.machine_id).await;
     }
     // 新读数由 live.rs 合并推送（最多每 3 s 一次），不发失效事件
     st.metrics_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -372,7 +374,10 @@ async fn applied(State(st): State<AppState>, h: HeaderMap, ApiJson(r): ApiJson<A
     if !r.ok {
         tracing::warn!(relay = %a.machine_id, generation = r.generation, "应用失败：{:?}", r.error);
     }
+    // 等这台线路机应用 / 摘除的作业（成功失败都要看）
+    crate::jobs::wake_for(&st, a.machine_id).await;
     st.emit(Event::Relay { id: a.machine_id });
+    // 入口状态、策略版本的应用进度变了；R 台线路机陆续回报时由 emit 合并成 1 s 一条
     st.emit(Event::Machines);
     Ok(StatusCode::NO_CONTENT)
 }

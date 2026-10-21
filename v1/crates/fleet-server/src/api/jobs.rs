@@ -227,6 +227,7 @@ pub async fn retry(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     .await?;
     audit(&mut tx, &a.name, "job.retry", "job", Some(id), json!({"step": step, "reset_host_key": reset, "password": password.is_some()})).await?;
     tx.commit().await?;
+    st.wake_jobs();
     st.emit(Event::Job { id, target });
     if back {
         st.emit(Event::Machines);
@@ -256,6 +257,7 @@ pub async fn cancel(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<U
         .await?;
     audit(&mut tx, &a.name, "job.cancel", "job", Some(id), json!({})).await?;
     tx.commit().await?;
+    st.wake_jobs();
     st.emit(Event::Job { id, target });
     Ok(ok(json!({"ok": true})))
 }
