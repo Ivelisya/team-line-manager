@@ -2,11 +2,12 @@
 //! 只看 active 的机器（其它生命周期 evaluate 不给原因），所以退役/上架中的机器天然不告警。
 //!
 //! 去抖（开、关对称）：
-//! - 开：同一 (规则, 机器) 连续出现满去抖时长才开告警（出口不通 150 s、TCP 不通 90 s、其余 60 s）；续费类立即开。被静默的不开。
-//! - 关：原因连续消失满同样的时长才恢复；续费类立即恢复（按日期判定，不会抖）。
+//! - 开：同一 (规则, 机器) 连续出现满去抖时长才开告警（出口不通 150 s、TCP 不通 90 s、其余 60 s）；续费类与流量额度立即开。被静默的不开。
+//! - 关：原因连续消失满同样的时长才恢复；续费类与流量额度立即恢复（按日期、小时汇总判定，不会抖）。
 //! - 复发：恢复后 30 分钟内同一 (规则, 机器) 又满足开的条件，重开原告警（`reopen_count` +1，清掉确认），不新建。
 //!
-//! 通知（见 notify.rs）：新告警发「触发」；仍在触发的严重告警每 4 小时提醒一次，续费类每天一次；
+//! 通知（见 notify.rs）：新告警发「触发」；严重度升到严重（流量额度从吃紧到超限）马上再发一次「触发」；
+//! 仍在触发的严重告警每 4 小时提醒一次，续费类与流量额度每天一次；
 //! 原因消失恢复发「恢复」，只在上次恢复通知之后发过触发/提醒时才发（复发后没再通知过的不重复报恢复）。
 //! 复发重开：已报过恢复的，距那条恢复通知满 5 分钟就立即发「触发」，不满则等满 5 分钟仍在触发再发，
 //! 所以反复抖动的告警每 5 分钟最多一对触发/恢复，真故障最多晚 5 分钟报。被静默（含维护）的不发任何通知。
@@ -36,8 +37,13 @@ const REOPEN_WINDOW_S: i64 = 30 * 60;
 const REOPEN_QUIET_S: i64 = 5 * 60;
 /// 严重告警持续触发的提醒间隔
 const REPEAT_CRITICAL_S: i64 = 4 * 3600;
-/// 续费类提醒间隔（每天最多一次）
-const REPEAT_RENEWAL_S: i64 = 24 * 3600;
+/// 续费类与流量额度的提醒间隔（每天最多一次）
+const REPEAT_SLOW_S: i64 = 24 * 3600;
+
+/// 续费类与流量额度：按日期、小时汇总判定，不会抖——开、关都不去抖，持续提醒每天最多一次
+fn slow(rule: &str) -> bool {
+    rule.starts_with("renewal_") || rule == "traffic_quota_high"
+}
 
 /// 评估循环在两次之间要记住的东西
 #[derive(Default)]
@@ -102,10 +108,10 @@ fn same_summary(a: &str, b: &str) -> bool {
     a == b || norm(a) == norm(b)
 }
 
-/// 持续提醒的间隔：续费类每天一次，其它只有严重告警每 4 小时一次
+/// 持续提醒的间隔：续费类与流量额度每天一次，其它只有严重告警每 4 小时一次
 fn repeat_interval_s(rule: &str, severity: &str) -> Option<i64> {
-    if rule.starts_with("renewal_") {
-        Some(REPEAT_RENEWAL_S)
+    if slow(rule) {
+        Some(REPEAT_SLOW_S)
     } else if severity == "critical" {
         Some(REPEAT_CRITICAL_S)
     } else {
@@ -167,14 +173,16 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
                 } else {
                     touch.push(inc.id);
                 }
-                // 持续提醒；复发后已报过恢复的，满限流时长再发一次「触发」
-                if let Some(kind) = due(&inc, r.severity, now).filter(|_| !silences.matches(r.key, m.id)) {
+                // 持续提醒；复发后已报过恢复的，满限流时长再发一次「触发」；升成严重（流量额度从吃紧到超限）不等提醒间隔，马上再发一次「触发」
+                let escalated = r.severity == "critical" && inc.severity != "critical";
+                let kind = if escalated { Some(Kind::Firing) } else { due(&inc, r.severity, now) };
+                if let Some(kind) = kind.filter(|_| !silences.matches(r.key, m.id)) {
                     notify::enqueue(st, notice(kind, inc.id, inc.opened_at)).await;
                 }
                 continue;
             }
 
-            let immediate = r.key.starts_with("renewal_");
+            let immediate = slow(r.key);
             if (!immediate && (now - since).whole_seconds() < debounce_s(r.key)) || silences.matches(r.key, m.id) {
                 continue;
             }
@@ -247,7 +255,7 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
             continue;
         }
         let since = *state.clean_since.entry(inc.id).or_insert(now);
-        if !inc.rule.starts_with("renewal_") && (now - since).whole_seconds() < debounce_s(&inc.rule) {
+        if !slow(&inc.rule) && (now - since).whole_seconds() < debounce_s(&inc.rule) {
             continue;
         }
         state.clean_since.remove(&inc.id);
@@ -348,5 +356,7 @@ mod tests {
         assert_eq!(repeat_interval_s("relay_apply_lag", "warning"), None);
         assert_eq!(repeat_interval_s("renewal_due", "warning"), Some(24 * 3600));
         assert_eq!(repeat_interval_s("renewal_overdue", "critical"), Some(24 * 3600));
+        assert_eq!(repeat_interval_s("traffic_quota_high", "warning"), Some(24 * 3600));
+        assert_eq!(repeat_interval_s("traffic_quota_high", "critical"), Some(24 * 3600));
     }
 }

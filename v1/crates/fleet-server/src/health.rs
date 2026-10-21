@@ -61,6 +61,30 @@ pub const DISK_HIGH_PCT: f32 = 85.0;
 const SUSTAIN_MIN_SPAN_S: i64 = 270;
 /// agent 时钟偏差超过这么久（毫秒）报警告：样本按 agent 的时间入库，当前读数只看最近 15 分钟、持续负载看最近 5 分钟
 const CLOCK_SKEW_MAX_MS: i64 = 60_000;
+/// 流量额度：本周期已用到上限的这么多（%）报警告，到 100%（已超限）报严重
+const QUOTA_WARN_PCT: f64 = 90.0;
+const QUOTA_OVER_PCT: f64 = 100.0;
+const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+
+/// 流量额度（traffic_quota_high）：上限取订阅的 traffic_gb，没填按套餐的；0 / 空 = 不限，不评估（同前端 quota()）。
+/// 同机 IP 节点自己没设上限时额度算在宿主机上（宿主机的已用含它的流量），这里也就不评估
+fn quota_reason(m: &MachineView) -> Option<Reason> {
+    let gb = m.subscription.as_ref().and_then(|s| s.traffic_gb).or(m.plan.as_ref().and_then(|p| p.traffic_gb)).filter(|g| *g > 0)?;
+    let limit = gb as f64 * GIB;
+    let pct = m.quota.used as f64 * 100.0 / limit;
+    if pct < QUOTA_WARN_PCT {
+        return None;
+    }
+    let amount = format!("{} / {}", crate::notify::fmt_bytes(m.quota.used as f64), crate::notify::fmt_bytes(limit));
+    let reset = m.quota.reset_in_days.map(|d| format!("，{d} 天后重置")).unwrap_or_default();
+    // 向下取整：还没超限时不会写成 100%
+    let p = pct.floor();
+    Some(if pct >= QUOTA_OVER_PCT {
+        Reason { key: "traffic_quota_high", severity: "critical", text: format!("本周期流量已超出额度（已用 {p:.0}%，{amount}）{reset}") }
+    } else {
+        Reason { key: "traffic_quota_high", severity: "warning", text: format!("本周期流量已用 {p:.0}%（{amount}）{reset}") }
+    })
+}
 
 /// 在用入口的探测结果 → egress_fail / tcp_fail。
 /// 同一条规则一台机器只开一个告警：几个入口同时失败合成一条原因，文字列出全部入口，
@@ -209,13 +233,15 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
     } else {
         Status::Ok
     };
+    // 流量额度在状态定下之后才加：只开告警，不让机器变「降级」/「故障」（额度快用完不是机器出了问题）
+    rs.extend(quota_reason(m));
     Health { status, reasons: rs, probe_unknown }
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::views::{Agent, EntryView, Probe, Quota, Ref, RelayInfo, Subscription, Sustained, Traffic};
+    use crate::views::{Agent, EntryView, PlanRef, Probe, Quota, Ref, RelayInfo, Subscription, Sustained, Traffic};
     use time::Duration;
     use uuid::Uuid;
 
@@ -248,7 +274,7 @@ pub(crate) mod tests {
             host: None,
             entries: vec![],
             removed_traffic: Default::default(),
-            quota: Quota { used: 0, period_start: now.date() },
+            quota: Quota { used: 0, period_start: now.date(), reset_in_days: None },
             health: Health::default(),
             active_job: None,
             failed_job: None,
@@ -486,6 +512,39 @@ pub(crate) mod tests {
         assert_eq!(keys(&evaluate(&x, now)), ["egress_fail", "tcp_fail", "renewal_due"]);
         x.entries.clear();
         assert_eq!(keys(&evaluate(&x, now))[0], "no_entry");
+    }
+
+    #[test]
+    fn traffic_quota_alerts_without_changing_status() {
+        let now = OffsetDateTime::now_utc();
+        let gib = 1024 * 1024 * 1024;
+        let mut m = base("relay");
+        m.quota.used = 1885 * gib;
+        assert!(evaluate(&m, now).reasons.is_empty(), "没有上限（订阅、套餐都没填）：不评估");
+        // 上限按套餐的 2 TiB：92% 警告，健康状态不变
+        m.plan = Some(PlanRef { id: Uuid::now_v7(), name: "p".into(), bandwidth_mbps: None, traffic_gb: Some(2048) });
+        m.quota.reset_in_days = Some(9);
+        let h = evaluate(&m, now);
+        assert_eq!((keys(&h), h.reasons[0].severity, h.status), (vec!["traffic_quota_high"], "warning", Status::Ok));
+        assert_eq!(h.reasons[0].text, "本周期流量已用 92%（1.84 TiB / 2 TiB），9 天后重置");
+        m.quota.used = 1843 * gib;
+        assert!(evaluate(&m, now).reasons.is_empty(), "89.99% 不报");
+        // 超限：严重，仍不影响健康状态；没有重置日不写几天后重置
+        (m.quota.used, m.quota.reset_in_days) = (2100 * gib, None);
+        let h = evaluate(&m, now);
+        assert_eq!((h.reasons[0].severity, h.status), ("critical", Status::Ok));
+        assert_eq!(h.reasons[0].text, "本周期流量已超出额度（已用 102%，2.05 TiB / 2 TiB）");
+        // 订阅的上限优先于套餐：0 = 不限，更大的上限没到 90%
+        m.subscription = Some(Subscription { traffic_gb: Some(0), ..sub(30) });
+        assert!(evaluate(&m, now).reasons.is_empty());
+        m.subscription = Some(Subscription { traffic_gb: Some(4096), ..sub(30) });
+        assert!(evaluate(&m, now).reasons.is_empty());
+        // 同机 IP 节点自己没设上限（不带套餐）：额度算在宿主机上，不评估
+        let mut x = base("vps");
+        x.host_machine = Some(Ref { id: Uuid::now_v7(), name: "团队1-03".into() });
+        x.entries = vec![entry(false, true)];
+        x.quota.used = 5000 * gib;
+        assert!(keys(&evaluate(&x, now)).is_empty());
     }
 
     #[test]
