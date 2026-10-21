@@ -118,9 +118,10 @@
 .empty-text { font-weight: var(--fw-medium); text-wrap: pretty; }
 .tab-pane { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-16); align-content: start; animation: tab-in var(--dur-2) var(--ease-out); }
 @keyframes tab-in { from { opacity: 0; transform: translateY(4px); } }
-/* 换时间范围时先留着上一段曲线：取新数据期间调淡，到了再柔和地亮回来 */
-.chart-frame { transition: opacity var(--dur-2) var(--ease-std); }
-.chart-frame[data-stale] { opacity: 0.45; }
+/* 换时间范围、筛选或翻页时先留着上一份数据：取新数据期间调淡，到了再柔和地亮回来（抽屉曲线、访问监控的 KPI 与表格、抽屉「访问记录」）。
+   元素上一直写着 data-stale（值是查询的 isPlaceholderData，"true" / "false"）：过渡留在元素上，亮回来才是渐变 */
+[data-stale] { transition: opacity var(--dur-2) var(--ease-std); }
+[data-stale="true"] { opacity: 0.45; }
 /* 曲线第一次有数据时从左往右展开一次：.chart-frame 在数据到了才挂载（之前是骨架），之后的轮询刷新、换时间范围（上面的沿用旧曲线调淡）都不重新挂载，不会再播 */
 .chart-frame .chart-box { animation: chart-reveal var(--dur-data) var(--ease-out); }
 @keyframes chart-reveal { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0); } }

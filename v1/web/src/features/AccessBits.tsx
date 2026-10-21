@@ -4,11 +4,11 @@ import { Chip, Pill } from '@/components/app/primitives';
 
 export const fmtN = (n: number) => n.toLocaleString('zh-CN');
 
-/** 处理结果：已转发 / 已阻止 */
+/** 处理结果：全部转发 / 全部阻止只写结果（次数就是旁边的连接数），有转发也有阻止时才拆开写各多少 */
 export function ResultPill({ conns, blocked }: { conns: number; blocked: number }) {
   const routed = conns - blocked;
-  if (blocked <= 0) return <Pill tone="ok">已转发 {fmtN(routed)}</Pill>;
-  if (routed <= 0) return <Pill tone="bad">已阻止 {fmtN(blocked)}</Pill>;
+  if (blocked <= 0) return <Pill tone="ok">已转发</Pill>;
+  if (routed <= 0) return <Pill tone="bad">已阻止</Pill>;
   return <span className="row" style={{ gap: 4, flexWrap: 'nowrap' }}><Pill tone="ok">已转发 {fmtN(routed)}</Pill><Pill tone="bad">已阻止 {fmtN(blocked)}</Pill></span>;
 }
 
