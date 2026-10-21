@@ -119,8 +119,8 @@ impl Reporter {
 
     /// 取走缓冲 → 分配 seq → 落盘入队。返回访问日志是否还有积压。
     async fn build_and_push(&self, with_samples: bool) -> bool {
-        let (sh, core, boot_id) = (self.sh.clone(), self.core.clone(), self.boot_id.clone());
-        tokio::task::spawn_blocking(move || build_and_push_blocking(&sh, &core, &boot_id, with_samples)).await.expect("上报器的阻塞任务异常终止")
+        let (sh, core, boot_id, online) = (self.sh.clone(), self.core.clone(), self.boot_id.clone(), self.fails == 0);
+        tokio::task::spawn_blocking(move || build_and_push_blocking(&sh, &core, &boot_id, with_samples, online)).await.expect("上报器的阻塞任务异常终止")
     }
 
     fn note_failure(&mut self, why: &str) {
@@ -227,7 +227,8 @@ fn commit(sh: &Shared, tailer: &mut Option<Tailer>, cursor: Option<Cursor>, stat
 }
 
 /// 阻塞线程里的建报：取走缓冲 → 读访问日志 → 分配 seq → 落盘入队。返回访问日志是否还有积压。
-fn build_and_push_blocking(sh: &Shared, core: &Mutex<Core>, boot_id: &str, with_samples: bool) -> bool {
+/// `online`：上报没有连续失败（Reporter::fails == 0）
+fn build_and_push_blocking(sh: &Shared, core: &Mutex<Core>, boot_id: &str, with_samples: bool, online: bool) -> bool {
     let (mut host, mut entries, mut probes, mut info, mut xray, mut stats_commit) = (vec![], vec![], vec![], None, None, None);
     if with_samples {
         let mut b = sh.buf.lock().unwrap();
@@ -243,10 +244,11 @@ fn build_and_push_blocking(sh: &Shared, core: &Mutex<Core>, boot_id: &str, with_
     }
     let mut guard = lock(core);
     let Core { queue, seq, tailer } = &mut *guard;
-    // 访问日志：队列积压过半时暂停读取（日志文件就是缓冲，不丢行）
+    // 访问日志：上报连续失败或队列积压过半时暂停读取（日志文件就是缓冲，不丢行）。
+    // 离线时读进队列的事件会随报告一起被 QUEUE_MAX_AGE_MS 淘汰；留在日志里，恢复后从游标处接着读
     let (mut access, mut next_cursor, mut more) = (vec![], None, false);
     if let Some(t) = tailer.as_mut() {
-        if queue.pressure() < 0.5 {
+        if online && queue.pressure() < 0.5 {
             match t.read_batch(MAX_ACCESS_PER_REPORT, local_utc_offset_s()) {
                 Ok(b) => {
                     access = b.events;
@@ -272,7 +274,7 @@ fn build_and_push_blocking(sh: &Shared, core: &Mutex<Core>, boot_id: &str, with_
         Ok(s) => s,
         Err(e) => {
             tracing::error!("分配 seq 失败（磁盘问题？）：{e:#}，数据留在内存缓冲");
-            sh.buf.lock().unwrap().restore(host, entries, probes);
+            sh.buf.lock().unwrap().restore(host, entries, probes, info, stats_commit);
             return false;
         }
     };
@@ -281,7 +283,7 @@ fn build_and_push_blocking(sh: &Shared, core: &Mutex<Core>, boot_id: &str, with_
         boot_id: boot_id.to_string(),
         agent_version: env!("CARGO_PKG_VERSION").to_string(),
         sent_at_ms: now_ms(),
-        info: info.clone(),
+        info,
         host,
         entries,
         probes,
@@ -296,12 +298,8 @@ fn build_and_push_blocking(sh: &Shared, core: &Mutex<Core>, boot_id: &str, with_
         }
         Err(e) => {
             tracing::error!("报告落盘失败：{e:#}，数据留在内存缓冲");
-            let Report { host, entries, probes, .. } = report;
-            let mut b = sh.buf.lock().unwrap();
-            b.restore(host, entries, probes);
-            if info.is_some() && b.info.is_none() {
-                b.info = info;
-            }
+            let Report { host, entries, probes, info, .. } = report;
+            sh.buf.lock().unwrap().restore(host, entries, probes, info, stats_commit);
             false
         }
     }
@@ -337,5 +335,71 @@ mod tests {
         assert_eq!(build_interval(10, 1), OFFLINE_BUILD_INTERVAL);
         // 服务端要求更长的间隔时尊重它
         assert_eq!(build_interval(120, 3), Duration::from_secs(120));
+    }
+
+    fn tmp(n: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("fa-rep-{n}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn shared(d: &std::path::Path) -> Arc<Shared> {
+        let mut cfg = crate::config::Config::relay_default();
+        cfg.data_dir = d.to_path_buf();
+        cfg.access_log = d.join("access.log");
+        Shared::new(Arc::new(cfg))
+    }
+
+    fn core(d: &std::path::Path, seq_path: std::path::PathBuf, tailer: Option<Tailer>) -> Mutex<Core> {
+        Mutex::new(Core { queue: Queue::open(d.join("queue"), QUEUE_MAX_BYTES, QUEUE_MAX_AGE_MS).unwrap(), seq: SeqState::load(seq_path, None), tailer })
+    }
+
+    #[test]
+    fn access_log_stays_in_file_while_offline() {
+        use std::os::unix::fs::MetadataExt;
+        let d = tmp("offline");
+        let sh = shared(&d);
+        let log = sh.cfg.access_log.clone();
+        let id = uuid::Uuid::from_u128(0xabc).simple();
+        std::fs::write(&log, format!("2026/10/20 13:50:56 from 1.2.3.4:5 accepted tcp:a.com:80 [in-{id} -> out-x] email: e-{id}\n")).unwrap();
+        let cur = Cursor { inode: std::fs::metadata(&log).unwrap().ino(), offset: 0, fp: None };
+        let core = core(&d, d.join("state.json"), Some(Tailer::new(log, Some(cur))));
+        // 上报连续失败：不读日志、游标不动
+        build_and_push_blocking(&sh, &core, "b", true, false);
+        assert_eq!(lock(&core).queue.len(), 0);
+        assert_eq!(lock(&core).tailer.as_ref().unwrap().cursor, Some(cur));
+        // 恢复后从原游标接着读
+        build_and_push_blocking(&sh, &core, "b", true, true);
+        let c = lock(&core);
+        let r: Report = serde_json::from_slice(&std::fs::read(c.queue.file_path(c.queue.oldest().unwrap())).unwrap()).unwrap();
+        assert_eq!(r.access.len(), 1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn failed_build_puts_info_and_stats_back() {
+        let d = tmp("putback");
+        let sh = shared(&d);
+        {
+            let mut b = sh.buf.lock().unwrap();
+            b.info = Some(Default::default());
+            b.stats_commit = Some(Default::default());
+        }
+        // 放回了缓冲，流量基线也没被提前持久化
+        let check = || {
+            let b = sh.buf.lock().unwrap();
+            assert!(b.info.is_some() && b.stats_commit.is_some());
+            assert!(!stats_path(&sh.cfg).exists());
+        };
+        // 分配序号失败：状态文件所在目录不存在
+        build_and_push_blocking(&sh, &core(&d, d.join("missing").join("state.json"), None), "b", true, true);
+        check();
+        // 落盘失败：队列目录没了
+        let c = core(&d, d.join("state.json"), None);
+        std::fs::remove_dir_all(d.join("queue")).unwrap();
+        build_and_push_blocking(&sh, &c, "b", true, true);
+        check();
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

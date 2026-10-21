@@ -83,14 +83,23 @@ pub fn socks_client(port: u16) -> Result<reqwest::Client> {
     Ok(reqwest::Client::builder().proxy(reqwest::Proxy::all(format!("socks5h://{proxy}"))?).pool_max_idle_per_host(0).build()?)
 }
 
-/// 发 GET，返回正文；失败返回中文原因。http / https 同一条路径。
+/// 回显正文最多读这么多字节：正常只有一个 IP，回显服务出错时可能回一整页，不整段读进内存
+const ECHO_BODY_MAX: usize = 1024;
+
+/// 发 GET，返回正文（最多 ECHO_BODY_MAX 字节）；失败返回中文原因。http / https 同一条路径。
 async fn http_get(client: &reqwest::Client, url: &str, timeout: Duration) -> Result<String, String> {
     let r = tokio::time::timeout(timeout, async {
-        let r = client.get(url).send().await?;
+        let mut r = client.get(url).send().await?;
         if !r.status().is_success() {
             return Ok(Err(r.status().as_u16()));
         }
-        Ok::<_, reqwest::Error>(Ok(r.text().await?))
+        let mut body = Vec::new();
+        while body.len() < ECHO_BODY_MAX {
+            let Some(c) = r.chunk().await? else { break };
+            body.extend_from_slice(&c);
+        }
+        body.truncate(ECHO_BODY_MAX);
+        Ok::<_, reqwest::Error>(Ok(String::from_utf8_lossy(&body).into_owned()))
     })
     .await;
     match r {
@@ -121,7 +130,8 @@ pub async fn egress_probe(entry_id: Uuid, client: &reqwest::Client, echo_url: &s
                 let ok = normalize(seen) == normalize(expect);
                 (ok, Some(if ok { seen.to_string() } else { format!("出口 IP {seen}，期望 {expect}") }))
             }
-            Err(_) => (false, Some(format!("回显内容不是 IP：{}", body.trim().chars().take(80).collect::<String>()))),
+            // 去掉控制字符：detail 进中控的 PG text 列，一个 NUL 就让整份报告被拒
+            Err(_) => (false, Some(format!("回显内容不是 IP：{}", body.trim().chars().filter(|c| !c.is_control()).take(80).collect::<String>()))),
         },
         Err(why) => (false, Some(why)),
     };
@@ -200,6 +210,20 @@ mod tests {
         let s = egress_probe(Uuid::nil(), &socks_client(addr.port()).unwrap(), "http://echo.test/ip", "203.0.113.9".parse().unwrap(), Duration::from_secs(3), 1).await;
         assert!(!s.ok && s.latency_ms.is_none());
         assert_eq!(s.detail.as_deref(), Some("代理握手失败"), "{s:?}");
+    }
+
+    #[tokio::test]
+    async fn echo_body_capped_and_control_chars_dropped() {
+        // 回显服务回了一大段带 NUL / 控制字符的正文
+        let body: &'static str = Box::leak(format!("bad\0ip\u{7}\r\n{}", "x".repeat(4000)).into_boxed_str());
+        let (addr, _h) = fake_socks(true, body).await;
+        let got = http_get(&socks_client(addr.port()).unwrap(), "http://echo.test/ip", Duration::from_secs(3)).await.unwrap();
+        assert_eq!(got.len(), ECHO_BODY_MAX);
+        let (addr, _h) = fake_socks(true, body).await;
+        let s = egress_probe(Uuid::nil(), &socks_client(addr.port()).unwrap(), "http://echo.test/ip", "203.0.113.9".parse().unwrap(), Duration::from_secs(3), 1).await;
+        let d = s.detail.unwrap();
+        assert!(!s.ok && !d.chars().any(char::is_control), "{d:?}");
+        assert!(d.starts_with("回显内容不是 IP：badipxxx"), "{d}");
     }
 
     #[test]

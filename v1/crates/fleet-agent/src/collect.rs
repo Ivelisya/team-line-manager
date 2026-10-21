@@ -59,8 +59,8 @@ pub async fn host_task(sh: Arc<Shared>, mut sd: watch::Receiver<bool>) {
 }
 
 /// 当前启用的入口 (id, port)
-fn enabled_entries(sh: &Shared) -> Vec<DesiredEntry> {
-    sh.applied.read().unwrap().as_ref().map(|d| d.entries.iter().filter(|e| e.enabled).cloned().collect()).unwrap_or_default()
+fn enabled_entries(sh: &Shared) -> Vec<(uuid::Uuid, u16)> {
+    sh.applied.read().unwrap().as_ref().map(|d| d.entries.iter().filter(|e| e.enabled).map(|e| (e.id, e.port)).collect()).unwrap_or_default()
 }
 
 /// Xray 流量增量 + 连接数 + 进程状态
@@ -84,7 +84,6 @@ pub async fn stats_task(sh: Arc<Shared>, cli: XrayCli, mut sd: watch::Receiver<b
             _ = tick.tick() => {}
             _ = sd.changed() => return,
         }
-        let entries = enabled_entries(&sh);
         // 每个 SAMPLE_INTERVAL 确认一次进程：缓存的进程还在只读 /proc，对不上才问 systemctl
         if !proc.is_some_and(|(p, started)| ctl::proc_start_ticks(p) == Some(started.0)) {
             proc = match ctl::main_pid(&cfg.xray_service).await {
@@ -125,9 +124,10 @@ pub async fn stats_task(sh: Arc<Shared>, cli: XrayCli, mut sd: watch::Receiver<b
                 let cur: HashMap<String, u64> = list.into_iter().collect();
                 if let Some(deltas) = stats::compute_if_known(&mut st, core_id.as_deref(), &cur) {
                     last_core = core_id.clone();
-                    let ports: Vec<u16> = entries.iter().map(|e| e.port).collect();
+                    let entries = enabled_entries(&sh);
+                    let ports: Vec<u16> = entries.iter().map(|&(_, port)| port).collect();
                     let cn = tokio::task::spawn_blocking(move || conns::count_now(&ports)).await.unwrap_or_default();
-                    let with_conns: Vec<_> = entries.iter().map(|e| (e.id, cn.get(&e.port).copied().unwrap_or(0))).collect();
+                    let with_conns: Vec<_> = entries.iter().map(|&(id, port)| (id, cn.get(&port).copied().unwrap_or(0))).collect();
                     let samples = stats::to_samples(&deltas, &with_conns, ts);
                     let mut b = sh.buf.lock().unwrap();
                     b.push_entries(samples);
@@ -214,6 +214,7 @@ pub async fn probe_task(sh: Arc<Shared>, mut sd: watch::Receiver<bool>) {
         let Some(d) = sh.applied.read().unwrap().clone() else { continue };
         let tcp_every = Duration::from_secs(d.relay.probe_interval_s.clamp(5, 3600) as u64);
         let egress_every = tcp_every * 2;
+        let now = Instant::now();
         if probes_cache.as_ref().is_none_or(|(a, _)| !Arc::ptr_eq(a, &d)) {
             let old: HashMap<u16, reqwest::Client> = probes_cache.take().map(|(_, m)| m.into_values().collect()).unwrap_or_default();
             let mut m = HashMap::new();
@@ -226,23 +227,27 @@ pub async fn probe_task(sh: Arc<Shared>, mut sd: watch::Receiver<bool>) {
                 }
             }
             probes_cache = Some((d.clone(), m));
+            // 端口或出站变了的入口尽快重探一次。入口只随期望状态换代而变，签名（要格式化整个出站）不必每秒逐个比
+            for e in d.entries.iter().filter(|e| e.enabled) {
+                if let Some(s) = sched.get_mut(&e.id) {
+                    let sig = entry_sig(e);
+                    if s.sig != sig {
+                        s.sig = sig;
+                        s.next_tcp = now + Duration::from_secs(1);
+                        s.next_egress = now + Duration::from_secs(4);
+                    }
+                }
+            }
         }
         let probes = &probes_cache.as_ref().expect("刚填充").1;
-        let now = Instant::now();
         let live: HashSet<_> = d.entries.iter().filter(|e| e.enabled).map(|e| e.id).collect();
         sched.retain(|id, _| live.contains(id));
         for e in d.entries.iter().filter(|e| e.enabled) {
-            let sig = entry_sig(e);
             let s = sched.entry(e.id).or_insert_with(|| {
-                // 启动时错峰；运行中新增/变化的入口尽快探一次，让界面马上有结果
+                // 启动时错峰；运行中新增的入口尽快探一次，让界面马上有结果
                 let (a, b) = if first_pass { (stagger(e.id, tcp_every), Duration::from_secs(5) + stagger(e.id, egress_every)) } else { (Duration::from_secs(1), Duration::from_secs(4)) };
-                Sched { sig: sig.clone(), next_tcp: now + a, next_egress: now + b, tcp_busy: Arc::new(AtomicBool::new(false)), egress_busy: Arc::new(AtomicBool::new(false)), egress_ok: Arc::new(AtomicBool::new(true)) }
+                Sched { sig: entry_sig(e), next_tcp: now + a, next_egress: now + b, tcp_busy: Arc::new(AtomicBool::new(false)), egress_busy: Arc::new(AtomicBool::new(false)), egress_ok: Arc::new(AtomicBool::new(true)) }
             });
-            if s.sig != sig {
-                s.sig = sig;
-                s.next_tcp = now + Duration::from_secs(1);
-                s.next_egress = now + Duration::from_secs(4);
-            }
             if now >= s.next_tcp && !s.tcp_busy.swap(true, Ordering::AcqRel) {
                 s.next_tcp = now + tcp_every;
                 let busy = BusyGuard(s.tcp_busy.clone());

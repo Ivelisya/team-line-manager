@@ -98,7 +98,8 @@ pub struct HostSample {
     pub mem_total: u64,
     pub disk_used: u64,
     pub disk_total: u64,
-    /// 开机以来累计（主网卡之和，不含 lo）
+    /// agent 进程内的累计计数器：从 0 起，只累加选中网卡（不含 lo 等虚拟网卡）各自的增量；
+    /// agent 重启归零，服务端按计数器重置处理
     pub net_rx_bytes: u64,
     pub net_tx_bytes: u64,
     pub tcp_conns: u32,
