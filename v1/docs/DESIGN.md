@@ -59,6 +59,8 @@ job ─< job_step ─< job_log      audit_log      user / session / api_key
 
 - 业务表普通建表 + 外键 + 约束（唯一性在库里保证，不靠代码）。
 - 时序表（主机指标、入口流量、探测、访问日志）按天原生分区，保留期到期直接 `DROP` 分区；小时汇总表长期保留。
+  原始时序保留 `retention.raw_days`（默认 3 天：读原始点的曲线最多 24 小时，7d / 30d 走小时汇总，agent 离线队列 6 小时就淘汰），
+  访问日志保留 `retention.access_days`（默认 7 天）；上报接收窗口、分区维护、彻底删除的时间窗都按这两个值推出。
 - 迁移用 sqlx migrations，版本化。
 
 ## 6. 中控：fleet-server（Rust / axum / sqlx）

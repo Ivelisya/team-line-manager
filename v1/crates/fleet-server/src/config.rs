@@ -32,7 +32,8 @@ pub struct Config {
     pub numbering: Numbering,
     #[serde(default = "d_workers")]
     pub job_workers: usize,
-    /// 访问监控 24h / 7d / 30d 聚合结果的缓存秒数（这些窗口读的小时汇总表本来就每 5 分钟才更新）；0 = 不缓存
+    /// 访问监控 24h / 7d / 30d 聚合结果的缓存秒数（这些窗口读小时汇总表，每轮汇总后缓存整体作废，所以可以和汇总间隔一样长；
+    /// 单台机器的结果最多 30 秒）；0 = 不缓存
     #[serde(default = "d_access_cache")]
     pub access_cache_secs: u64,
     /// 来源 IP 画像（离线库，只查本地）；整段不写也能跑
@@ -82,13 +83,14 @@ fn d_alert_ttl_hours() -> u32 { 24 }
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Retention {
-    /// 原始时序（主机指标、入口流量、探测）保留天数
+    /// 原始时序（主机指标、入口流量、探测）保留天数。读原始表的地方最多看 24 小时（7d / 30d 走小时汇总表），
+    /// agent 离线队列 6 小时就淘汰，3 天足够补算迟到的小时汇总。上报接收窗口、分区维护、彻底删除的时间窗都由它推出
     pub raw_days: u32,
     /// 访问记录保留天数
     pub access_days: u32,
 }
 impl Default for Retention {
-    fn default() -> Self { Self { raw_days: 14, access_days: 7 } }
+    fn default() -> Self { Self { raw_days: 3, access_days: 7 } }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -103,7 +105,7 @@ impl Default for Numbering {
 
 fn d_listen() -> String { "127.0.0.1:8080".into() }
 fn d_workers() -> usize { 8 }
-fn d_access_cache() -> u64 { 30 }
+fn d_access_cache() -> u64 { 300 }
 
 impl Config {
     pub fn load(path: &Path) -> anyhow::Result<Self> {

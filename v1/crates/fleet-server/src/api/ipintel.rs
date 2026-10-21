@@ -108,7 +108,7 @@ pub async fn machine_sources(_a: Actor, State(st): State<AppState>, ApiPath(id):
         None => 50,
         Some(s) => s.parse::<i64>().map_err(|_| ApiError::bad_request("limit 不是整数"))?.clamp(1, 500),
     };
-    // 抽屉每 30 秒轮询一次，读的是小时汇总：和访问概况共用短 TTL 缓存
+    // 抽屉每 30 秒轮询一次：和访问监控共用缓存；基线、异常、学习期不随访问汇总变，按单台机器短缓存
     let key = format!("sources|{id}|{w:?}|{limit}");
-    super::access::cached(&st, Some(key), async { Ok(ok(crate::ipintel::sources_profile(&st, id, w, limit, OffsetDateTime::now_utc()).await?).0) }).await
+    super::access::cached(&st, Some(key), true, async { Ok(ok(crate::ipintel::sources_profile(&st, id, w, limit, OffsetDateTime::now_utc()).await?).0) }).await
 }

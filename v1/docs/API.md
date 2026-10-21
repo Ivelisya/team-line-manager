@@ -54,11 +54,13 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
   lifecycle: "draft"|"provisioning"|"active"|"retiring"|"retired"|"failed", lifecycle_reason|null, note, revision,
   created_at, activated_at|null, retired_at|null,
   subscription: {price_cents,currency,cycle,due_date,due_days,billing_tz,auto_renew,remind_days,traffic_gb,traffic_reset_day}|null,
-  agent: {version,last_report_at,online,xray_running,cores,health}|null,  // proxy 没有；cores 为 agent 报的可用核数（容器里是限额），没报过为 null
+  agent: {version,last_report_at,online,xray_running,cores,health,clock_skew_ms}|null,  // proxy 没有；cores 为 agent 报的可用核数（容器里是限额），没报过为 null
+                                // clock_skew_ms：agent 时钟偏差（毫秒）= 中控收到时刻 − 报告的 sent_at_ms，正数 = agent 时钟慢；只按新鲜的报告
+                                // （建报时离线队列为空、上一份 30 秒内收到）更新，误差 < 30 秒，没算过为 null。|偏差| > 60 秒时健康原因有 clock_skew
                                 // health：agent 自报的健康数据（fleet-proto AgentHealth，自 agent 进程启动起累计，重启归零），旧 agent 没报过为 null：
                                 // {queue_len 离线队列待发报告数, queue_dropped 超上限丢弃的报告数, queue_dead 移入 dead/ 的报告数,
-                                //  access_lines, access_events, access_unparsed, access_dropped_lines, access_rotation_gaps 日志轮转可能漏掉一段的次数,
-                                //  access_truncations 日志被截断的次数, probes_skipped, realign_fixes, last_apply_error?（最近一次应用失败，成功后不带）}
+                                //  access_unparsed 解析不了的日志行数, access_dropped_lines 丢弃的日志行数, access_rotation_gaps 日志轮转可能漏掉一段的次数,
+                                //  access_truncations 日志被截断的次数, last_apply_error?（最近一次应用失败，成功后不带）}
   host: {ts,cpu_pct,load1,mem_used,mem_total,disk_used,disk_total,net_rx_bps,net_tx_bps,tcp_conns}|null,  // load1 在容器里为 null（/proc/loadavg 是宿主机的）
   entries: [EntryView],                                // 节点：自己的入口；线路机：挂在上面的入口
   removed_traffic: {today_up,today_down,month_up,month_down},  // 已移除入口（如换线路机后的旧入口）本月/今天的流量，不在 entries 里
@@ -156,6 +158,7 @@ ProvisionItem = {
 ## 返回形状补充（前端以此为准）
 
 - `health.reasons[]`：`{key, rule_name, severity, text}`；`rule_name` 是规则中文名（同通知）；`severity`：`"info"` | `"warning"` | `"critical"`（info 只有 `policy_blocked`，不影响健康）。
+  `clock_skew`（warning，「agent 时钟不准」）：agent 在线且 `|agent.clock_skew_ms|` > 60 秒，文案如「agent 时钟慢 17 分钟：读数可能缺失或冻结，请校时」——样本按 agent 的时间入库，当前读数只看最近 15 分钟、持续负载只看最近 5 分钟。和其它 warning 原因一样满 60 秒去抖后开告警。
 - `GET /machines/{id}/series` → `{metric, range, resolution: "1m"|"1h", points: [...]}`，点里时间字段统一叫 `ts`：
   - host：`{ts, cpu_pct, mem_pct, disk_pct, load1, net_rx_bps, net_tx_bps}`（1h 分辨率另有 `cpu_max`，无 `load1`）
   - traffic：`{ts, up, down, conns}`（字节，该时间桶内的增量）
@@ -180,7 +183,7 @@ ProvisionItem = {
 **实时指标** `{type:"metrics", machines:{<机器id>:{…}}, entries:{<入口id>:{…}}, overview?}`：在用机器视图（`GET /machines` 的 `MachineView`）里随上报与时间变化的字段，和上一条相比**只带变了的字段**（没变的键不出现），客户端把它们写进本地缓存，不必重取。有新上报或作业推进时最多每 3 s 一条，没有也每 30 s 比对一次（离线、到期天数、维护窗口随时间变）；没有变化不发。
 - `machines[id]` 的键：
   - `host`：`[ts, cpu_pct, load1, mem_used, mem_total, disk_used, disk_total, net_rx_bps, net_tx_bps, tcp_conns] | null`（`ts` 为 Unix 秒，速率取整；各项可为 null，与 `MachineView.host` 同义）；
-  - `seen`：`agent.last_report_at` 的 Unix 秒 | null；`agent`：`{version, online, xray_running, cores} | null`（不含 `last_report_at` 和 `health`——agent 自报的累计计数每次上报都变，只随 REST 重取更新；前端合并进原对象）；
+  - `seen`：`agent.last_report_at` 的 Unix 秒 | null；`agent`：`{version, online, xray_running, cores} | null`（不含 `last_report_at`、`health` 和 `clock_skew_ms`——agent 自报的累计计数、时钟偏差每次上报都变，只随 REST 重取更新；前端合并进原对象）；
   - `health`、`maintenance`、`removed_traffic`、`quota`、`active_job`：与 `MachineView` 同形；`due_days`：`subscription.due_days`（无订阅为 null）。
 - `entries[id]` 的键：`tcp` / `egress`：`[ok, latency_ms, ts, detail] | null`（`ts` 为 Unix 秒）；`traffic`：与 `EntryView.traffic` 同形。一条入口同时出现在节点和线路机的 `entries` 里，两边都要更新。
 - `overview`：与 `GET /overview` 同形，变了才带。
@@ -195,7 +198,7 @@ ProvisionItem = {
 `POST /agent/v1/report` 入库失败按类回：数据本身入不了库（SQLSTATE 22 类：坏字节、NUL、越界；23 类：违反约束）→ 422（`error.code="bad_report"`），agent 把这份报告移入 `dead/` 不再重发；其它（连接池超时、断连、磁盘满、只读…）→ 503，agent 退避重试（受本地队列的字节与时长上限约束）。agent 只把 4xx（401 撤销、403/404/408/429 除外）当永久拒绝，5xx 和网络错误一律重试。
 
 ## 访问监控
-线路机 agent 解析 Xray 访问日志上报，服务端写入 `access_event`（原始记录保留 `retention.access_days`=7 天），并每 5 分钟把当前小时和被标脏的小时重算进小时汇总（`access_hourly` / `access_source_hourly` / `access_target_seen`，保留 90 天，幂等；agent 断网后补传的旧记录在上报时把所在小时记进 `access_dirty`，下一轮补算；启动时补算缺口）。24h/7d/30d 的聚合结果在进程内缓存 `access_cache_secs`（默认 30）秒，设 0 关闭。全部为只读 GET，读权限即可。
+线路机 agent 解析 Xray 访问日志上报，服务端写入 `access_event`（原始记录保留 `retention.access_days`=7 天），并每 5 分钟把当前小时和被标脏的小时重算进小时汇总（`access_hourly` / `access_source_hourly` / `access_target_seen`，保留 90 天，幂等；agent 断网后补传的旧记录在上报时把所在小时记进 `access_dirty`，下一轮补算；启动时补算缺口）。24h/7d/30d 的结果在进程内缓存：每轮汇总成功后整体作废；`summary` / `targets`（第一页）/ `sources` 最多缓存 `access_cache_secs`（默认 300）秒，单台机器的 `/machines/{id}/access` 与 `/machines/{id}/sources`（带最近原始记录、来源基线与异常）最多 30 秒；设 0 关闭。全部为只读 GET，读权限即可。
 
 公共筛选参数（空串等同没给，非法值返回 400）：`window=1h|24h|7d|30d`（默认 24h，events 默认 7d）、`team=<团队id>`、`node=<节点id>`、`search=`（大小写不敏感的子串，`%` `_` 按字面）、`action=all|blocked|routed`、`kind=all|domain|ip`。
 
@@ -222,7 +225,7 @@ ProvisionItem = {
 |---|---|---|
 | GET | `/ipintel/{ip}` | 单个地址的完整画像（`isp asn as_org country region city lat lon type type_word type_confidence type_reason type_alt flags sources dbs{四库原始结果}`）加 `degraded`（库没加载全）、`loaded`。非法 IP 400 |
 | GET | `/ipintel?ips=a,b,c` | ≤200 个，`{items:[{ip, intel}|{ip, intel:null, error}], loaded, degraded}`；不写缓存 |
-| GET | `/ipintel/status` | `{enabled, installed, loaded, expected:5, db_dir, version, files:[{id, loaded, bytes, mtime, build, entries}], errors, hosting_asns, lists（各清单条目数）, overrides{path,used,error}, cache_rows, mem, hint}`；未安装时 `hint` 提示运行 `lab/install-ipintel.sh` |
+| GET | `/ipintel/status` | `{enabled, installed, loaded, expected:5, db_dir, version, files:[{id, loaded, bytes, mtime, build, entries}], errors, lists（各清单条目数）, overrides{path,used,error}, cache_rows, hint}`；未安装时 `hint` 提示运行 `lab/install-ipintel.sh` |
 | GET | `/machines/{id}/sources?window=24h\|7d\|30d&limit=50` | 节点的来源画像（线路机：分布与 top 来源只算经它的流量；`known` 基线与 `anomalies` 按节点记，取它名下入口的节点）：`distribution.{isp,city,province,country,conn_type}[{value,label,conns,sources,pct}]`（只统计外部来源；我方机器和非公网地址分别计入 `internal_conns` / `private_conns`）、`top_sources[{src_ip,conns,last_ts,intel}]`、`known.{isp,city,conn_type}[{value,label,first_seen,last_seen,conns,anomaly}]`（已学基线）、`learning{started_at,ends_at,learn_days,done,remaining_hours}`、`anomalies[]`（进行中的 ipintel 告警）、`empty`、`degraded`、`unresolved_sources` |
 
 **异常告警**（warning，进 incident 表并走通知渠道）：节点第一条来源记录起 `learn_days`（默认 7）天内只学习；之后某节点出现新的运营商 → `ipintel_new_isp`，新的城市 → `ipintel_new_city`，某 (节点, 来源 IP) 第一次出现且为机房/VPN → `ipintel_datacenter_source`。跳过非公网地址和我方机器。一次性异常最后一次出现 `alert_ttl_hours`（默认 24）小时后自动恢复，不发恢复通知；同一个值恢复后不会再次告警。后台每 5 分钟从 `access_source_hourly` 增量维护 `node_source_seen`（水位在 `ipintel_state`；水位之前的小时若被补算，连接数差值经 `access_source_late` 补记，首次扫描按 7 天一页）。

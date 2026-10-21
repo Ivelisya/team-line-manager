@@ -59,6 +59,8 @@ pub const MEM_HIGH_PCT: f32 = 90.0;
 pub const DISK_HIGH_PCT: f32 = 85.0;
 /// 样本至少覆盖这么多秒才判定持续高负载（窗口 5 分钟，留出一次上报间隔的余量）
 const SUSTAIN_MIN_SPAN_S: i64 = 270;
+/// agent 时钟偏差超过这么久（毫秒）报警告：样本按 agent 的时间入库，当前读数只看最近 15 分钟、持续负载看最近 5 分钟
+const CLOCK_SKEW_MAX_MS: i64 = 60_000;
 
 pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
     if m.lifecycle != "active" {
@@ -82,6 +84,14 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
                     Some(s) => format!("{}没有上报", crate::notify::fmt_duration(s)),
                     None => "从未上报".into(),
                 },
+            });
+        }
+        // 同持续高负载，只在 agent 在线时判定
+        if let Some(ms) = a.clock_skew_ms.filter(|ms| a.online && ms.abs() > CLOCK_SKEW_MAX_MS) {
+            rs.push(Reason {
+                key: "clock_skew",
+                severity: "warning",
+                text: format!("agent 时钟{} {}：读数可能缺失或冻结，请校时", if ms > 0 { "慢" } else { "快" }, crate::notify::fmt_duration(ms.abs() / 1000)),
             });
         }
     }
@@ -221,7 +231,7 @@ pub(crate) mod tests {
             activated_at: Some(now),
             retired_at: None,
             subscription: None,
-            agent: Some(Agent { version: None, last_report_at: Some(now), online: true, xray_running: Some(true), cores: None, health: None }),
+            agent: Some(Agent { version: None, last_report_at: Some(now), online: true, xray_running: Some(true), cores: None, health: None, clock_skew_ms: None }),
             host: None,
             entries: vec![],
             removed_traffic: Default::default(),
@@ -353,6 +363,24 @@ pub(crate) mod tests {
         let a = m.agent.as_mut().unwrap();
         (a.online, a.last_report_at) = (false, Some(now - Duration::days(3)));
         assert_eq!(evaluate(&m, now).reasons[0].text, "3 天 0 小时没有上报");
+    }
+
+    #[test]
+    fn clock_skew_over_a_minute_warns() {
+        let now = OffsetDateTime::now_utc();
+        let mut m = base("vps");
+        m.entries = vec![entry(false, true)];
+        m.agent.as_mut().unwrap().clock_skew_ms = Some(59_000);
+        assert!(keys(&evaluate(&m, now)).is_empty(), "一分钟以内不报");
+        m.agent.as_mut().unwrap().clock_skew_ms = Some(17 * 60_000 + 500);
+        let h = evaluate(&m, now);
+        assert_eq!((keys(&h), h.status), (vec!["clock_skew"], Status::Degraded));
+        assert_eq!(h.reasons[0].text, "agent 时钟慢 17 分钟：读数可能缺失或冻结，请校时");
+        m.agent.as_mut().unwrap().clock_skew_ms = Some(-2 * 3_600_000);
+        assert_eq!(evaluate(&m, now).reasons[0].text, "agent 时钟快 2 小时 0 分钟：读数可能缺失或冻结，请校时");
+        // 离线时只报离线
+        m.agent.as_mut().unwrap().online = false;
+        assert_eq!(keys(&evaluate(&m, now)), ["agent_offline"]);
     }
 
     #[test]

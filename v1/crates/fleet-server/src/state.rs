@@ -5,12 +5,8 @@ use serde::Serialize;
 use sqlx::PgPool;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, Notify};
 use uuid::Uuid;
-
-/// 两条 `Event::Machines` 之间至少隔这么久
-const MACHINES_GAP: Duration = Duration::from_secs(1);
 
 /// 推给浏览器（WebSocket）的消息。除 `Metrics` 外都是资源变更通知，前端收到后让对应查询失效重取。
 #[derive(Debug, Clone, Serialize)]
@@ -19,7 +15,6 @@ pub enum Event {
     Machine { id: Uuid },
     /// 作业推进带来的机器变化：前端只重取这台机器的详情；列表里的 active_job 由 metrics 推送
     MachineJob { id: Uuid },
-    /// 整表重取。经 `emit` 发时 1 s 内只发一条（见 `AppState::send_machines`）
     Machines,
     Relay { id: Uuid },
     /// 作业变化。`target` 不发给前端：emit 时顺带发目标机器的 MachineJob 事件。
@@ -72,18 +67,8 @@ pub struct Inner {
     /// 告警通知发送队列，每个渠道一个、有容量上限（`notify::enqueue` 第一次给某渠道入队时建好并启动它的发送任务；
     /// 渠道被删除或停用后，发送任务发现时把自己移出这里并退出）
     pub notify_queues: Mutex<std::collections::HashMap<Uuid, crate::notify::Queue>>,
-    /// 唤醒作业引擎去领取（`wake_jobs`）；引擎空闲时等它，兜底按退避间隔重查
+    /// 唤醒作业引擎去领取（`wake_jobs`）；引擎空闲时等它，兜底每 800 ms 重查
     pub jobs_wake: Notify,
-    /// `Event::Machines` 的合并节流（见 `send_machines`）
-    machines_gate: Mutex<MachinesGate>,
-}
-
-#[derive(Default)]
-struct MachinesGate {
-    /// 上一条发出的时间
-    last: Option<Instant>,
-    /// 已经排了一条到点补发
-    pending: bool,
 }
 
 impl std::ops::Deref for AppState {
@@ -110,7 +95,6 @@ impl AppState {
             metrics_dirty: AtomicBool::new(false),
             notify_queues: Default::default(),
             jobs_wake: Notify::new(),
-            machines_gate: Default::default(),
         }))
     }
 
@@ -118,6 +102,10 @@ impl AppState {
         // 除密钥外的资源变更都可能改变机器视图
         if !matches!(e, Event::ApiKeys) {
             self.live.invalidate();
+        }
+        if matches!(e, Event::Machine { .. } | Event::Machines) {
+            // 访问监控的结果里带机器名与团队：改名、重新编号后不等下一轮汇总
+            self.access_cache.invalidate();
         }
         if let Event::Job { target: Some(t), .. } = e {
             let _ = self.events.send(Event::MachineJob { id: t });
@@ -128,36 +116,7 @@ impl AppState {
             // 静默增删、告警开关：卡片上的「维护中」、健康同样走实时指标比对，前端不为它整表重取
             self.metrics_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
         }
-        if matches!(e, Event::Machines) {
-            self.send_machines();
-        } else {
-            let _ = self.events.send(e);
-        }
-    }
-
-    /// `Event::Machines` 让每个浏览器整表重取：线路机逐台回报应用结果（发布策略到 R 台线路机就是 R 条）、
-    /// 批量作业陆续结束时会连着来。距上一条不到 1 s 的不立刻发，合成一条到点补发——补发时这期间的变更都已提交，
-    /// 一次重取全带上；单次操作（距上一条已超过 1 s）照常立刻发。视图缓存的作废在 `emit` 里已经立刻做了
-    fn send_machines(&self) {
-        let mut g = self.machines_gate.lock().unwrap();
-        if g.pending {
-            return;
-        }
-        match g.last.map(|t| t.elapsed()).filter(|d| *d < MACHINES_GAP) {
-            None => {
-                g.last = Some(Instant::now());
-                let _ = self.events.send(Event::Machines);
-            }
-            Some(since) => {
-                g.pending = true;
-                let st = self.clone();
-                tokio::spawn(async move {
-                    tokio::time::sleep(MACHINES_GAP - since).await;
-                    *st.machines_gate.lock().unwrap() = MachinesGate { last: Some(Instant::now()), pending: false };
-                    let _ = st.events.send(Event::Machines);
-                });
-            }
-        }
+        let _ = self.events.send(e);
     }
 
     /// 有作业可领了（建作业、重试、取消，调用方在事务提交之后调）：唤醒空闲的作业引擎，不等它兜底重查

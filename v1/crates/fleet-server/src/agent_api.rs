@@ -188,8 +188,12 @@ async fn ingest(st: &AppState, h: &HeaderMap, r: Report) -> Result<Json<ReportAc
     let access_dirty: Vec<OffsetDateTime> = ac.iter().map(|(_, t)| floor_hour(*t)).filter(|h| *h < cur_hour).collect::<BTreeSet<_>>().into_iter().collect();
 
     let mut tx = st.db.begin().await?;
-    let last: Option<i64> =
-        sqlx::query_scalar("select last_seq from agent_state where machine_id = $1 for update").bind(a.machine_id).fetch_optional(&mut *tx).await?;
+    let prev: Option<(i64, bool)> =
+        sqlx::query_as("select last_seq, coalesce(last_report_at > now() - interval '30 seconds', false) from agent_state where machine_id = $1 for update")
+            .bind(a.machine_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let last = prev.map(|p| p.0);
     // 去重：同一份数据重发（seq 不增）直接确认；但这仍说明 agent 活着，要刷新最近上报时间
     if let Some(seq) = &last {
         if r.seq as i64 <= *seq {
@@ -205,13 +209,17 @@ async fn ingest(st: &AppState, h: &HeaderMap, r: Report) -> Result<Json<ReportAc
     let info = r.info.as_ref().map(|i| serde_json::to_value(i).unwrap_or_default());
     let xray = r.xray.as_ref().map(|x| serde_json::to_value(x).unwrap_or_default());
     let agent_health = r.agent_health.as_ref().map(|h| serde_json::to_value(h).unwrap_or_default());
-    // info 是合并而不是覆盖：只报系统信息时不能把之前记下的 xray / agent 健康状态冲掉
+    // 时钟偏差 = 中控收到时刻 − sent_at_ms（正数 = agent 时钟慢）。sent_at_ms 是建报时刻，积压补发、失败重发的报告会偏大，
+    // 只认新鲜的：建报时离线队列为空（之前的报告都已确认，建报一定晚于中控收到上一份）且上一份是 30 秒内收到的，误差不超过 30 秒
+    let fresh = r.agent_health.as_ref().is_some_and(|h| h.queue_len == 0) && prev.is_some_and(|p| p.1);
+    let skew = fresh.then(|| now_ms - r.sent_at_ms);
+    // info 是合并而不是覆盖：只报系统信息时不能把之前记下的 xray / agent 健康状态 / 时钟偏差冲掉
     sqlx::query(
         "insert into agent_state (machine_id, agent_version, boot_id, last_seq, last_report_at, info)
-         values ($1, $2, $3, $4, now(), coalesce($5, '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object('xray', $6::jsonb, 'agent_health', $7::jsonb)))
+         values ($1, $2, $3, $4, now(), coalesce($5, '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object('xray', $6::jsonb, 'agent_health', $7::jsonb, 'clock_skew_ms', $8::bigint)))
          on conflict (machine_id) do update set agent_version = excluded.agent_version, boot_id = excluded.boot_id,
            last_seq = greatest(agent_state.last_seq, excluded.last_seq), last_report_at = now(),
-           info = agent_state.info || coalesce($5, '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object('xray', $6::jsonb, 'agent_health', $7::jsonb))",
+           info = agent_state.info || coalesce($5, '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object('xray', $6::jsonb, 'agent_health', $7::jsonb, 'clock_skew_ms', $8::bigint))",
     )
     .bind(a.machine_id)
     .bind(&r.agent_version)
@@ -220,6 +228,7 @@ async fn ingest(st: &AppState, h: &HeaderMap, r: Report) -> Result<Json<ReportAc
     .bind(info)
     .bind(xray)
     .bind(agent_health)
+    .bind(skew)
     .execute(&mut *tx)
     .await?;
 
@@ -377,7 +386,6 @@ async fn applied(State(st): State<AppState>, h: HeaderMap, ApiJson(r): ApiJson<A
     // 等这台线路机应用 / 摘除的作业（成功失败都要看）
     crate::jobs::wake_for(&st, a.machine_id).await;
     st.emit(Event::Relay { id: a.machine_id });
-    // 入口状态、策略版本的应用进度变了；R 台线路机陆续回报时由 emit 合并成 1 s 一条
     st.emit(Event::Machines);
     Ok(StatusCode::NO_CONTENT)
 }

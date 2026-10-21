@@ -8,6 +8,7 @@ use crate::db::{floor_hour, Args};
 use crate::state::AppState;
 use serde::Serialize;
 use sqlx::{FromRow, PgPool};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
 use time::{Duration, OffsetDateTime};
@@ -138,8 +139,9 @@ pub async fn run_forever(st: AppState) {
     let mut n = 0u32;
     loop {
         t.tick().await;
-        if let Err(e) = rollup_pending(&st.db).await {
-            tracing::error!("访问汇总失败：{e:#}");
+        match rollup_pending(&st.db).await {
+            Ok(()) => st.access_cache.invalidate(),
+            Err(e) => tracing::error!("访问汇总失败：{e:#}"),
         }
         if n.is_multiple_of(12) {
             if let Err(e) = prune(&st.db).await {
@@ -152,43 +154,59 @@ pub async fn run_forever(st: AppState) {
 
 // ── 查询 ─────────────────────────────────────────────────────────────────────
 
-/// 24h / 7d / 30d 聚合结果的短 TTL 缓存（键 = 接口 + 全部查询参数）。
-/// 这些窗口读的是小时汇总表，本来就最多每 5 分钟变一次，缓存几十秒不影响结果；
-/// 一个页面同时发的 summary / targets / machine 请求也不会各自全量聚合一遍。1h 窗口读原始记录，不缓存。
-/// 存 `Arc`：命中时直接拿去序列化响应，不深拷贝整份结果
+/// 24h / 7d / 30d 查询结果的缓存（键 = 接口 + 全部查询参数，窗口起点已对齐整点）。
+/// 这些窗口读的是小时汇总表，只在每轮汇总后才变：每轮汇总成功后整体作废（代数 +1），聚合结果（summary / targets / sources）
+/// 缓存 `ttl`，选 7d / 30d 时不必每次轮询都重算全量聚合；单台机器的结果（带最近的原始记录、来源画像的基线与异常）
+/// 不全随汇总变，最多缓存 `SHORT_TTL`。1h 窗口读原始记录，不缓存。存 `Arc`：命中时直接拿去序列化响应，不深拷贝整份结果
 pub struct QueryCache {
     ttl: StdDuration,
-    map: std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, Arc<serde_json::Value>)>>,
+    /// 每轮汇总成功后 +1。计算前记下，期间汇总过的结果放进来也不会命中
+    gen: AtomicU64,
+    map: std::sync::Mutex<std::collections::HashMap<String, Cached>>,
 }
+
+/// (放进来的时间, 计算前的代数, 结果)
+type Cached = (std::time::Instant, u64, Arc<serde_json::Value>);
 
 impl QueryCache {
     const MAX: usize = 256;
+    /// 单台机器的结果最多缓存这么久
+    const SHORT_TTL: StdDuration = StdDuration::from_secs(30);
 
     pub fn new(ttl: StdDuration) -> Self {
-        Self { ttl, map: Default::default() }
+        Self { ttl, gen: AtomicU64::new(0), map: Default::default() }
     }
 
-    pub fn get(&self, key: &str) -> Option<Arc<serde_json::Value>> {
+    /// 当前代数：计算前取，`put` 时带上
+    pub fn gen(&self) -> u64 { self.gen.load(Ordering::SeqCst) }
+
+    /// 汇总表变了，之前的结果全部作废
+    pub fn invalidate(&self) { self.gen.fetch_add(1, Ordering::SeqCst); }
+
+    /// `short`：单台机器的结果，按 `SHORT_TTL` 过期
+    pub fn get(&self, key: &str, short: bool) -> Option<Arc<serde_json::Value>> {
         if self.ttl.is_zero() {
             return None;
         }
+        let ttl = if short { self.ttl.min(Self::SHORT_TTL) } else { self.ttl };
+        let g = self.gen();
         let m = self.map.lock().unwrap_or_else(|e| e.into_inner());
-        m.get(key).filter(|(at, _)| at.elapsed() < self.ttl).map(|(_, v)| v.clone())
+        m.get(key).filter(|(at, eg, _)| *eg == g && at.elapsed() < ttl).map(|(_, _, v)| v.clone())
     }
 
-    pub fn put(&self, key: String, v: Arc<serde_json::Value>) {
+    pub fn put(&self, key: String, gen: u64, v: Arc<serde_json::Value>) {
         if self.ttl.is_zero() {
             return;
         }
         let mut m = self.map.lock().unwrap_or_else(|e| e.into_inner());
         if m.len() >= Self::MAX {
-            let ttl = self.ttl;
-            m.retain(|_, (at, _)| at.elapsed() < ttl);
+            let (ttl, g) = (self.ttl, self.gen());
+            m.retain(|_, (at, eg, _)| *eg == g && at.elapsed() < ttl);
             if m.len() >= Self::MAX {
                 m.clear();
             }
         }
-        m.insert(key, (std::time::Instant::now(), v));
+        m.insert(key, (std::time::Instant::now(), gen, v));
     }
 }
 
@@ -739,14 +757,21 @@ mod tests {
     #[test]
     fn query_cache_ttl() {
         let c = QueryCache::new(StdDuration::from_millis(60));
-        assert!(c.get("a").is_none());
-        c.put("a".into(), Arc::new(serde_json::json!(1)));
-        assert_eq!(c.get("a").as_deref(), Some(&serde_json::json!(1)));
+        assert!(c.get("a", false).is_none());
+        c.put("a".into(), c.gen(), Arc::new(serde_json::json!(1)));
+        assert_eq!(c.get("a", false).as_deref(), Some(&serde_json::json!(1)));
         std::thread::sleep(StdDuration::from_millis(80));
-        assert!(c.get("a").is_none(), "过期不再命中");
+        assert!(c.get("a", false).is_none(), "过期不再命中");
+        // 汇总后作废：之前放进来的、以及汇总前开始算的结果都不再命中
+        let g = c.gen();
+        c.put("a".into(), g, Arc::new(serde_json::json!(1)));
+        c.invalidate();
+        assert!(c.get("a", false).is_none());
+        c.put("a".into(), g, Arc::new(serde_json::json!(1)));
+        assert!(c.get("a", false).is_none(), "汇总前开始算的结果");
         let off = QueryCache::new(StdDuration::ZERO);
-        off.put("a".into(), Arc::new(serde_json::json!(1)));
-        assert!(off.get("a").is_none(), "ttl 为 0 等于不缓存");
+        off.put("a".into(), off.gen(), Arc::new(serde_json::json!(1)));
+        assert!(off.get("a", false).is_none(), "ttl 为 0 等于不缓存");
     }
 
     #[test]
