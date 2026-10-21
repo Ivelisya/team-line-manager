@@ -350,7 +350,7 @@ fn load_cn(load1: Option<f64>, cores: Option<i64>) -> String {
 fn agent_health_cn(h: &Value) -> String {
     let n = |k: &str| st(h, &format!("/{k}"));
     let mut s = format!(
-        "离线队列待发 {} 份；自 agent 启动起丢弃 {} 份、移入 dead {} 份，访问日志轮转缺口 {} 次、被截断 {} 次",
+        "离线队列待发 {} 份；自 agent 启动起：因积压太久丢弃 {} 份、被中控拒收 {} 份，访问日志轮转漏读 {} 次、被截断 {} 次",
         n("queue_len"),
         n("queue_dropped"),
         n("queue_dead"),
@@ -358,7 +358,7 @@ fn agent_health_cn(h: &Value) -> String {
         n("access_truncations")
     );
     if let Some(e) = h["last_apply_error"].as_str() {
-        s.push_str(&format!("；最近应用失败：{e}"));
+        s.push_str(&format!("；最近一次应用配置失败：{e}"));
     }
     s
 }
@@ -878,9 +878,9 @@ mod tests {
     #[test]
     fn agent_health_wording() {
         let mut h = json!({"queue_len": 3, "queue_dropped": 0, "queue_dead": 1, "access_lines": 900, "access_rotation_gaps": 2, "access_truncations": 0});
-        assert_eq!(agent_health_cn(&h), "离线队列待发 3 份；自 agent 启动起丢弃 0 份、移入 dead 1 份，访问日志轮转缺口 2 次、被截断 0 次");
+        assert_eq!(agent_health_cn(&h), "离线队列待发 3 份；自 agent 启动起：因积压太久丢弃 0 份、被中控拒收 1 份，访问日志轮转漏读 2 次、被截断 0 次");
         h["last_apply_error"] = json!("xray 配置校验失败");
-        assert!(agent_health_cn(&h).ends_with("被截断 0 次；最近应用失败：xray 配置校验失败"));
+        assert!(agent_health_cn(&h).ends_with("被截断 0 次；最近一次应用配置失败：xray 配置校验失败"));
     }
 
     #[test]
