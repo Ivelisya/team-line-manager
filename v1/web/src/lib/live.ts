@@ -43,8 +43,8 @@ function patchMachine(m: MachineView, msg: MetricsMsg): MachineView {
   const n = { ...m, entries };
   if (!d) return n;
   if (d.host !== undefined) n.host = d.host && host(d.host);
-  // 合并进原对象：增量不带 last_report_at（由 seen 给）
-  if (d.agent !== undefined) n.agent = d.agent && { last_report_at: null, ...m.agent, ...d.agent };
+  // 合并进原对象：增量不带 last_report_at（由 seen 给）和 health（agent 自报，随 REST 重取）
+  if (d.agent !== undefined) n.agent = d.agent && { last_report_at: null, health: null, ...m.agent, ...d.agent };
   if (d.seen !== undefined && n.agent) n.agent = { ...n.agent, last_report_at: d.seen == null ? null : iso(d.seen) };
   if (d.health) n.health = d.health;
   if (d.maintenance !== undefined) n.maintenance = d.maintenance;

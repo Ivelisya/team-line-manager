@@ -17,7 +17,7 @@ export interface AccessFilter {
 export type TargetSort = 'conns' | 'last' | 'first';
 
 export interface AccessKpi { active_nodes: number; conns: number; targets: number; blocked: number }
-export interface AccessNode { node_id: string; name: string; team: string | null; conns: number; targets: number; domains: number; sources: number; blocked: number; last_ts: string | null }
+export interface AccessNode { node_id: string; name: string; team: string | null; conns: number; targets: number; domains: number; sources: number | null; blocked: number; last_ts: string | null }
 export interface AccessSummary { kpi: AccessKpi; nodes: AccessNode[]; window_start: string }
 export interface AccessTarget {
   node_id: string; name: string; dest_host: string; kind: 'domain' | 'ip'; conns: number; sources: number; blocked: number;

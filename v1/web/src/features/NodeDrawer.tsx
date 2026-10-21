@@ -102,6 +102,26 @@ export function NodeDrawer() {
   );
 }
 
+/** agent 自报的异常（自 agent 本次启动起累计）：有丢数据、积压或应用失败才显示。
+ *  线路机的应用失败已在「应用状态」里显示，相同的不重复 */
+function AgentHealthNote({ m }: { m: MachineView }) {
+  const h = m.agent?.health;
+  if (!h) return null;
+  const items = [
+    h.queue_len > 3 && `${h.queue_len} 份报告积压待发`,
+    h.queue_dropped > 0 && `${h.queue_dropped} 份报告因积压太久被丢弃`,
+    h.queue_dead > 0 && `${h.queue_dead} 份报告被中控拒收`,
+    h.access_rotation_gaps + h.access_truncations > 0 && `访问日志有 ${h.access_rotation_gaps + h.access_truncations} 段漏读`,
+  ].filter(Boolean);
+  const applyErr = h.last_apply_error && h.last_apply_error !== m.relay?.apply_error ? h.last_apply_error : null;
+  if (!items.length && !applyErr) return null;
+  return (
+    <div style={{ marginTop: 8 }}>
+      <Note tone="warn">agent 自报（本次启动以来）：{items.join('，')}{items.length > 0 && applyErr && '；'}{applyErr && <>最近一次应用配置失败：{applyErr}</>}</Note>
+    </div>
+  );
+}
+
 function OverviewTab({ m }: { m: MachineView }) {
   const audit = useAudit(m.id);
   const ps = probeSummary(m);
@@ -130,6 +150,7 @@ function OverviewTab({ m }: { m: MachineView }) {
           <LabelValue label="入口探测">{m.entries.length ? `${ps.tcpOk}/${ps.total} 连通` : '—'}</LabelValue>
           {m.note && <LabelValue label="备注" className="span-2" wrap>{m.note}</LabelValue>}
         </LabelValueGrid>
+        <AgentHealthNote m={m} />
       </Section>
       {m.relay && (
         <Section>

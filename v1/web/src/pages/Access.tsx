@@ -255,7 +255,7 @@ const NodesView = React.memo(function NodesView({ f, filtered, open }: { f: Acce
                 <td className="r strong">{fmtN(n.conns)}</td>
                 <td className="r">{fmtN(n.targets)}</td>
                 <td className="r">{fmtN(n.domains)}</td>
-                <td className="r">{fmtN(n.sources)}</td>
+                <td className="r">{n.sources == null ? <span className="t-muted" title="按小时汇总的数据不分目标：加了搜索、类型或结果筛选时算不出来源数，切到「1 小时」可以看">—</span> : fmtN(n.sources)}</td>
                 <td className="r">{n.blocked > 0 ? <Pill tone="bad">{fmtN(n.blocked)}</Pill> : <span className="t-muted">0</span>}</td>
                 <td title={F.dtFull(n.last_ts)}>{F.ago(n.last_ts)}</td>
               </tr>
