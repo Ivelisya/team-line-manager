@@ -12,6 +12,7 @@ import type { AuditEntry, MachineView } from '@/lib/types';
 import { useMachine, useAudit } from '@/lib/queries';
 import { DRAWER_TABS, drawerSiblings, useDrawer, type DrawerTab } from '@/lib/drawer';
 import { useHeld } from '@/lib/useHeld';
+import { useTitleName } from '@/lib/title';
 import * as F from '@/lib/format';
 import { KIND_LABEL } from '@/lib/sort';
 import { jobKindLabel } from '@/lib/jobs';
@@ -45,14 +46,8 @@ export function NodeDrawer() {
     if (bodyRef.current) bodyRef.current.scrollTop = 0;
     tabsRef.current?.querySelector('[data-state="active"]')?.scrollIntoView({ inline: 'nearest', block: 'nearest' });
   }, [shownId, tab]);
-  // 标签页标题换成这台机器的名字，关上抽屉恢复
-  const titleName = id ? m?.name : undefined;
-  React.useEffect(() => {
-    if (!titleName) return;
-    const prev = document.title;
-    document.title = `${titleName} · 团队线路管理`;
-    return () => { document.title = prev; };
-  }, [titleName]);
+  // 标签页标题带上这台机器的名字（关闭动画期间已经去掉），拼接见 lib/title
+  useTitleName(id ? m?.name : undefined);
   // 上一台 / 下一台：同 [ ] 键，用沿用的 id，关闭动画期间按钮不消失
   const sib = drawerSiblings(qc, shownId);
   return (

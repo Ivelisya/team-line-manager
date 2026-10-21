@@ -8,6 +8,7 @@ import { ApiError, AUTH_EVENT, post } from '@/lib/api';
 import { useIncidents, useMe } from '@/lib/queries';
 import { useStream } from '@/lib/stream';
 import { useTheme, type ThemePref } from '@/lib/theme';
+import { useTitleAlerts } from '@/lib/title';
 import { closeEvacuate, closeMove, closeRestore, closeRetire, useEvacuateTarget, useMoveTarget, useRestoreTarget, useRetireTarget } from '@/lib/nodeActions';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, Tip, TipHost } from '@/components/ui/overlays';
 import { Button } from '@/components/ui/button';
@@ -60,6 +61,7 @@ export function Shell() {
   const theme = useTheme();
   const stream = useStream(!!me.data);
   const firing = useIncidents('firing').data?.total ?? 0;
+  useTitleAlerts(firing);
 
   React.useEffect(() => { setNavOpen(false); }, [loc.pathname]);
   // 窄屏侧栏（左侧抽屉）开着时 Esc 收起，焦点回到汉堡按钮；上面叠着对话框、命令面板或节点抽屉时 Esc 归它们
