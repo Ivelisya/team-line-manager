@@ -55,7 +55,7 @@ export const LifecyclePill = ({ lc }: { lc: Lifecycle | string }) => (
   <Pill tone={lc === 'active' ? 'ok' : lc === 'provisioning' || lc === 'retiring' ? 'info' : lc === 'failed' ? 'bad' : 'neutral'} dot={lc === 'retired' ? 'ring' : undefined}>{LIFECYCLE_LABEL[lc] ?? lc}</Pill>
 );
 
-export const entryState = (e: EntryView) => (e.lifecycle === 'disabled' ? <Pill tone="neutral" dot="ring">已停用</Pill> : e.lifecycle === 'active' ? (e.applied ? <Pill tone="ok">运行中</Pill> : <Pill tone="info" dot="pulse">应用中</Pill>) : <Pill tone="info" dot="pulse">{LIFECYCLE_LABEL[e.lifecycle] ?? e.lifecycle}</Pill>);
+export const entryState = (e: EntryView) => (e.lifecycle === 'disabled' ? <Pill tone="neutral" dot="ring">已停用</Pill> : e.lifecycle === 'active' ? (e.applied ? <Pill tone="ok">运行中</Pill> : e.apply_error ? <span title={e.apply_error}><Pill tone="bad">应用失败</Pill></span> : <Pill tone="info" dot="pulse">应用中</Pill>) : <Pill tone="info" dot="pulse">{LIFECYCLE_LABEL[e.lifecycle] ?? e.lifecycle}</Pill>);
 
 export function Chip({ children, variant, title, className }: { children: React.ReactNode; variant?: 'neutral' | 'warn'; title?: string; className?: string }) {
   return <span className={cn('chip', variant === 'neutral' && 'chip-neutral', variant === 'warn' && 'chip-warn', className)} title={title}>{children}</span>;
