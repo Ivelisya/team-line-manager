@@ -1,4 +1,4 @@
-//! fleetctl：团队线路管理的运维命令行。人看表格，AI 加 `--json` 拿原样 JSON。
+//! fleetctl：团队线路管理的运维命令行。人看表格，AI 加 `--json` 拿 JSON。
 //! 退出码：0 成功；1 失败（错误信息在 stderr）；2 命令行参数不对。exec 单台时沿用远端命令的退出码。
 
 mod access;
@@ -23,10 +23,10 @@ use std::process::ExitCode;
     name = "fleetctl",
     version,
     about = "团队线路管理 运维命令行",
-    after_help = "连接配置：环境变量 FLEET_URL、FLEET_TOKEN，或 `fleetctl login` 写入的配置文件。\n<机器> 可以写 机器 id、显示名（团队1-06）、线路机名、IP。\n加 --json 输出 API 返回的 data 原样 JSON；错误一律走 stderr 且退出码非 0。"
+    after_help = "连接配置：环境变量 FLEET_URL、FLEET_TOKEN，或 `fleetctl login` 写入的配置文件。\n<机器> 可以写 机器 id、显示名（团队1-06）、线路机名、IP。\n加 --json 输出一行 JSON：ls / entries 是与表格同列的精简对象（单台完整视图用 show），其余是 API 返回的 data 原样；错误一律走 stderr 且退出码非 0。"
 )]
 struct Cli {
-    /// 输出原样 JSON（给脚本和 AI）
+    /// 输出 JSON（给脚本和 AI）
     #[arg(long, global = true)]
     json: bool,
     #[command(subcommand)]

@@ -8,7 +8,7 @@ export const collator = new Intl.Collator('zh-Hans-CN', { numeric: true });
  * 默认排序：线路机在前 → 团队（sort_order，再名称）→ 编号升序。全站唯一的默认顺序定义（服务端 ORDER BY 与它不完全一致，前端不依赖服务端顺序）。
  * 故障/离线的节点不下沉；其他排序是用户的显式选择。
  */
-function makeDefaultCompare(teams: Team[]) {
+export function makeDefaultCompare(teams: Team[]) {
   const order = new Map(teams.map((t) => [t.id, t.sort_order]));
   return (a: MachineView, b: MachineView): number => {
     const ra = a.kind === 'relay' ? 0 : 1; const rb = b.kind === 'relay' ? 0 : 1;
@@ -22,25 +22,6 @@ function makeDefaultCompare(teams: Team[]) {
     if (na !== nb) return na - nb;
     return collator.compare(a.name, b.name);
   };
-}
-
-/** 默认顺序只看这些：各台的类型、团队、编号、名称，加上团队的 sort_order。实时推送（metrics）只改读数，签名不变 */
-const orderSig = (list: MachineView[], teams: Team[]) =>
-  `${teams.map((t) => `${t.id}:${t.sort_order}`).join()}\n${list.map((m) => `${m.id}\t${m.kind}\t${m.team?.id ?? ''}\t${m.team?.name ?? ''}\t${m.number ?? ''}\t${m.name}`).join('\n')}`;
-/** 每份列表（key：live / retired / all）上次排出的顺序：签名 + 排好后各位置对应的原下标 */
-const orders = new Map<string, { sig: string; idx: number[] }>();
-
-/** 按默认顺序排好的机器列表（查询的 select 与按键时直接读缓存共用这一个）。
- *  推送补丁不改数组顺序，签名没变就按上次的下标取出新对象，不再每 3 秒、每个订阅者对全部机器做一遍中文比较 */
-export function defaultOrder(key: string, list: MachineView[], teams: Team[]): MachineView[] {
-  const sig = orderSig(list, teams);
-  let o = orders.get(key);
-  if (o?.sig !== sig) {
-    const cmp = makeDefaultCompare(teams);
-    o = { sig, idx: list.map((_, i) => i).sort((i, j) => cmp(list[i], list[j])) }; // 稳定排序：同序的保持原顺序，同以前 [...list].sort(cmp)
-    orders.set(key, o);
-  }
-  return o.idx.map((i) => list[i]);
 }
 
 /**

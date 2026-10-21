@@ -170,21 +170,12 @@ install -d -m 755 /etc/fleet-agent
 install -d -m 700 /var/lib/fleet-agent
 RESTART=0
 A=/etc/fleet-agent/agent.toml
+# 只写因机器而异的三项：令牌文件、数据目录、xray 路径等都用 agent 内置的默认值
 {
   echo '# 由 fleet-server 生成'
   echo "server_url = \"$SERVER_URL\""
-  echo 'token_file = "/etc/fleet-agent/token"'
   echo "role = \"$ROLE\""
   echo "machine_id = \"$MACHINE_ID\""
-  echo 'data_dir = "/var/lib/fleet-agent"'
-  if [ "$ROLE" = relay ]; then
-    echo 'xray_bin = "/usr/local/bin/xray"'
-    echo 'xray_config = "/etc/fleet-agent/xray.json"'
-    echo 'xray_api = "127.0.0.1:62789"'
-    echo 'xray_service = "fleet-xray.service"'
-    echo 'access_log = "/var/log/fleet-xray/access.log"'
-    echo 'xray_asset_dir = "/usr/local/share/xray"'
-  fi
 } > $A.tmp
 cmp -s $A.tmp $A && rm -f $A.tmp || { mv $A.tmp $A; RESTART=1; }
 if [ -n "$TOKEN" ]; then

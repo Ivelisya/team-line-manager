@@ -1,4 +1,5 @@
-// 确认类对话框：ConfirmDialog（一次确认）与 TypedConfirmDialog（输入指定文字才可确认，用于退役、彻底删除、轮换凭据）。
+// 通用对话框：ConfirmDialog（一次确认）、TypedConfirmDialog（输入指定文字才可确认，用于退役、彻底删除、轮换凭据）、
+// FormDialog（表单：标题 + 字段 + 取消 / 提交，Enter 提交）。
 // TypedConfirmDialog 的失败原因（如「还不能彻底删除」）留在对话框里显示，不只是一闪而过的通知。
 import * as React from 'react';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogHeader } from '@/components/ui/dialog';
@@ -37,6 +38,23 @@ export function ConfirmDialog({ open, onOpenChange, title, description, confirmL
         {asForm
           ? <form style={{ display: 'grid', gap: 16 }} onSubmit={(e) => { e.preventDefault(); e.stopPropagation(); if (!confirmDisabled && !busy) void run(); }}>{body}</form>
           : body}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** 表单对话框：可提交（valid）时在输入框里按 Enter 即提交。提交中（busy）不能关；dirty（有未保存的改动）时点遮罩不关，Esc 与取消仍可关 */
+export function FormDialog({ open, onOpenChange, title, desc, children, onSubmit, submitLabel, busy, valid = true, size, dirty }: {
+  open: boolean; onOpenChange: (o: boolean) => void; title: string; desc?: React.ReactNode; children: React.ReactNode; onSubmit: () => void; submitLabel: string; busy?: boolean; valid?: boolean; size?: 'sm' | 'md'; dirty?: boolean;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
+      <DialogContent size={size} onInteractOutside={(e) => { if (dirty) e.preventDefault(); }}>
+        <form style={{ display: 'grid', gap: 16 }} onSubmit={(e) => { e.preventDefault(); if (valid && !busy) onSubmit(); }}>
+          <DialogHeader><DialogTitle>{title}</DialogTitle>{desc && <DialogDescription>{desc}</DialogDescription>}</DialogHeader>
+          {children}
+          <DialogFooter><Button type="button" onClick={() => onOpenChange(false)} disabled={busy}>取消</Button><Button type="submit" variant="primary" loading={busy} disabled={!valid}>{submitLabel}</Button></DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
   );

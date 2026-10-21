@@ -177,20 +177,15 @@ impl Reporter {
                             tracing::error!("推进本地 seq 失败：{e:#}");
                         }
                     }
-                    if ack.accepted_seq >= seq {
-                        let through = ack.accepted_seq;
-                        let n = self.blocking(move |c| c.queue.ack_through(through)).await;
-                        if self.fails > 0 {
-                            tracing::info!("上报恢复，已确认 {n} 个报告");
-                        }
-                        self.fails = 0;
-                        self.rejects = 0;
-                        sent += 1;
-                    } else {
-                        self.note_failure(&format!("服务端回 accepted_seq={} < 已发 seq={seq}", ack.accepted_seq));
-                        self.next_send = Instant::now() + backoff(self.fails, 5, 60);
-                        return;
+                    // 成功响应就说明这份已入库：新入库的回本份 seq，重复的回中控已存的 seq（不小于本份）
+                    let through = seq.max(ack.accepted_seq);
+                    let n = self.blocking(move |c| c.queue.ack_through(through)).await;
+                    if self.fails > 0 {
+                        tracing::info!("上报恢复，已确认 {n} 个报告");
                     }
+                    self.fails = 0;
+                    self.rejects = 0;
+                    sent += 1;
                 }
                 Outcome::Retry { wait, why } => {
                     self.note_failure(&why);
@@ -300,7 +295,7 @@ fn build_and_push_blocking(sh: &Shared, core: &Mutex<Core>, boot_id: &str, with_
     let report = Report {
         seq,
         boot_id: boot_id.to_string(),
-        agent_version: env!("CARGO_PKG_VERSION").to_string(),
+        agent_version: fleet_proto::build_version().to_string(),
         sent_at_ms: now_ms(),
         info,
         host,
@@ -331,20 +326,15 @@ fn build_and_push_blocking(sh: &Shared, core: &Mutex<Core>, boot_id: &str, with_
 /// `health` 的拆借用版本：建报时 queue / tailer 已被解构借出，不能再传整个 Core
 fn health_of(sh: &Shared, queue: &Queue, tailer: Option<&Tailer>) -> AgentHealth {
     let cnt = tailer.map(|t| t.counters.clone()).unwrap_or_default();
-    let h = &sh.health;
     AgentHealth {
         queue_len: queue.len() as u32,
         queue_dropped: queue.dropped,
         queue_dead: queue.dead,
-        access_lines: cnt.lines,
-        access_events: cnt.events,
         access_unparsed: cnt.unparsed,
         access_dropped_lines: cnt.dropped_lines,
         access_rotation_gaps: cnt.rotation_gaps,
         access_truncations: cnt.truncations,
-        probes_skipped: h.probes_skipped.load(Ordering::Relaxed),
-        realign_fixes: h.realign_fixes.load(Ordering::Relaxed),
-        last_apply_error: h.last_apply_error.lock().unwrap().clone(),
+        last_apply_error: sh.health.last_apply_error.lock().unwrap().clone(),
     }
 }
 

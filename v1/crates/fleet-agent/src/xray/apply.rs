@@ -60,12 +60,7 @@ fn read_prev(path: &Path) -> Option<Rendered> {
 
 impl Applier {
     pub fn new(cfg: Arc<Config>) -> Self {
-        let cli = XrayCli {
-            bin: cfg.xray_bin.clone(),
-            api: cfg.xray_api.clone(),
-            asset_dir: cfg.xray_asset_dir.clone(),
-            tmp_dir: cfg.data_dir.join("tmp"),
-        };
+        let cli = XrayCli { bin: cfg.xray_bin.clone(), asset_dir: cfg.xray_asset_dir.clone(), tmp_dir: cfg.data_dir.join("tmp") };
         Self { cfg, cli, lock: tokio::sync::Mutex::new(()) }
     }
 

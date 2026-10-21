@@ -1,7 +1,7 @@
 //! 调用 `xray api …` / `xray run -test` / `xray version`。
 //! 子进程带超时、kill_on_drop，输出全部读完，保证回收。
 
-use super::render::tag_of;
+use super::render::{tag_of, API_HOST, API_PORT};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -54,7 +54,6 @@ impl Op {
 #[derive(Clone)]
 pub struct XrayCli {
     pub bin: PathBuf,
-    pub api: String,
     pub asset_dir: PathBuf,
     pub tmp_dir: PathBuf,
 }
@@ -126,19 +125,16 @@ impl XrayCli {
         Ok(String::from_utf8_lossy(&out.stdout).to_string())
     }
 
-    fn server_arg(&self) -> String {
-        format!("--server={}", self.api)
-    }
-
     async fn api(&self, sub: &str, extra: &[&str]) -> Result<String> {
-        let server = self.server_arg();
+        let server = format!("--server={API_HOST}:{API_PORT}");
         let mut args = vec!["api", sub, &server];
         args.extend_from_slice(extra);
         self.run(&args, API_TIMEOUT).await
     }
 
+    /// 只要 tag：完整输出带每个入站的全部设置（含 REALITY 私钥），实验室实测大 25–27 倍，还要经管道搬过来
     pub async fn lsi(&self) -> Result<Vec<String>> {
-        parse_tags(&self.api("lsi", &[]).await?, "inbounds")
+        parse_tags(&self.api("lsi", &["--isOnlyTags=true"]).await?, "inbounds")
     }
     pub async fn lso(&self) -> Result<Vec<String>> {
         parse_tags(&self.api("lso", &[]).await?, "outbounds")
@@ -212,8 +208,9 @@ mod tests {
 
     #[test]
     fn parse_outputs() {
-        let lsi = r#"{"inbounds":[{"proxySettings":{},"tag":"api"},{"tag":"in-1"}]}"#;
-        assert_eq!(parse_tags(lsi, "inbounds").unwrap(), vec!["api", "in-1"]);
+        // `lsi --isOnlyTags=true` 的输出（Xray 26.3.27 实测形状）
+        let lsi = r#"{"inbounds":[{"tag":"in-1"},{"tag":"probe-1"}]}"#;
+        assert_eq!(parse_tags(lsi, "inbounds").unwrap(), vec!["in-1", "probe-1"]);
         assert!(parse_tags("{}", "inbounds").unwrap().is_empty());
         let rules = r#"{"rules":[{"ruleTag":"api","tag":"api"},{"ruleTag":"r","tag":"blocked"}]}"#;
         assert_eq!(parse_rules(rules).unwrap(), vec![("api".into(), "api".into()), ("r".into(), "blocked".into())]);
@@ -227,7 +224,7 @@ mod tests {
 
     #[tokio::test]
     async fn child_gets_capped_gomaxprocs() {
-        let cli = XrayCli { bin: "/bin/sh".into(), api: String::new(), asset_dir: "/nonexistent".into(), tmp_dir: "/nonexistent".into() };
+        let cli = XrayCli { bin: "/bin/sh".into(), asset_dir: "/nonexistent".into(), tmp_dir: "/nonexistent".into() };
         let out = cli.run(&["-c", "printf %s \"$GOMAXPROCS\""], Duration::from_secs(5)).await.unwrap();
         let want = std::thread::available_parallelism().map_or(1, |n| n.get().min(2));
         assert_eq!(out, want.to_string());

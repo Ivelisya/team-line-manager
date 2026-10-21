@@ -11,14 +11,14 @@ const INSTALL_HINT = 'IP 库未安装：在中控运行 lab/install-ipintel.sh';
 
 /** 接入方式徽标：住宅 / 移动 / 机房 / VPN / 未知各一个色调，悬停看判定理由 */
 function ConnPill({ intel }: { intel: Pick<IpIntel, 'conn_type' | 'conn_label' | 'confidence' | 'reason'> }) {
-  return <Pill tone={TONE[intel.conn_type] ?? 'neutral'} title={`${intel.reason}（置信度${CONF[intel.confidence] ?? intel.confidence}）`}>{intel.conn_label}</Pill>;
+  return <Pill tone={TONE[intel.conn_type] ?? 'neutral'} tip={`${intel.reason}（置信度${CONF[intel.confidence] ?? intel.confidence}）`}>{intel.conn_label}</Pill>;
 }
 
 /** 来源行的「运营商 · 城市」；查不到给一个破折号 */
 export function IspPlace({ intel }: { intel: IpIntel | null | undefined }) {
   if (!intel) return <span className="t-muted">—</span>;
   return (
-    <span className="ellipsis" title={[intel.isp, intel.place, intel.asn ? `AS${intel.asn} ${intel.as_org ?? ''}` : ''].filter(Boolean).join(' · ')}>
+    <span className="ellipsis" data-tip={[intel.isp, intel.place, intel.asn ? `AS${intel.asn} ${intel.as_org ?? ''}` : ''].filter(Boolean).join(' · ')}>
       <span className="strong">{intel.isp}</span>{intel.place && <span className="t-sub"> · {intel.place}</span>}
     </span>
   );
@@ -27,7 +27,7 @@ export function IspPlace({ intel }: { intel: IpIntel | null | undefined }) {
 /** 来源行的接入方式：我方机器和非公网地址不判断接入方式 */
 export function ConnCell({ intel }: { intel: IpIntel | null | undefined }) {
   if (!intel) return <span className="t-muted">—</span>;
-  if (intel.internal) return <Chip variant="neutral" title={`我方机器：${intel.internal}`}>我方 · {intel.internal}</Chip>;
+  if (intel.internal) return <Chip variant="neutral" tip={`我方机器：${intel.internal}`}>我方 · {intel.internal}</Chip>;
   if (intel.private) return <Chip variant="neutral">非公网</Chip>;
   return <ConnPill intel={intel} />;
 }
@@ -43,10 +43,10 @@ export function IpIntelStatusChip() {
   const q = useIpIntelStatus();
   const s = q.data;
   if (!s) return null;
-  if (!s.enabled) return <Pill tone="neutral" title="IP 情报已在配置里关闭（[ipintel] enabled = false）">IP 库已关闭</Pill>;
-  if (!s.installed) return <Pill tone="warn" title={s.hint ?? INSTALL_HINT}>IP 库未安装</Pill>;
+  if (!s.enabled) return <Pill tone="neutral" tip="IP 情报已在配置里关闭（[ipintel] enabled = false）">IP 库已关闭</Pill>;
+  if (!s.installed) return <Pill tone="warn" tip={s.hint ?? INSTALL_HINT}>IP 库未安装</Pill>;
   const detail = s.files.map((f) => `${f.id}：${f.loaded ? `已加载${f.build ? `（${f.build}）` : ''}` : '未加载'}`).join('\n');
-  return <Pill tone={s.loaded >= s.expected ? 'ok' : 'warn'} title={detail}>IP 库 {s.loaded}/{s.expected}</Pill>;
+  return <Pill tone={s.loaded >= s.expected ? 'ok' : 'warn'} tip={detail}>IP 库 {s.loaded}/{s.expected}</Pill>;
 }
 
 /** 库没装好时的提示条（来源地址页签用） */
@@ -67,7 +67,7 @@ function Dist({ title, items, empty = '没有数据' }: { title: string; items: 
       {top.length === 0 ? <div className="hint">{empty}</div> : (
         <div className="dist">
           {top.map((x) => (
-            <div key={x.value} className="dist-row" title={`${x.label}：${x.conns.toLocaleString('zh-CN')} 次连接，${x.sources} 个来源`}>
+            <div key={x.value} className="dist-row" data-tip={`${x.label}：${x.conns.toLocaleString('zh-CN')} 次连接，${x.sources} 个来源`}>
               <span className="dist-name">{x.label}</span>
               <span className="dist-track"><span className="dist-fill" style={{ width: `${Math.max(2, Math.min(100, x.pct))}%` }} /></span>
               <span className="dist-pct">{x.pct.toFixed(x.pct < 10 ? 1 : 0)}%</span>
@@ -113,7 +113,7 @@ export function SourceProfile({ id, window, relay }: { id: string; window: Profi
           {d.known.isp.some((k) => k.anomaly) && (
             <div className="row" style={{ marginTop: 6, gap: 4 }}>
               <span className="hint">新出现的运营商：</span>
-              {d.known.isp.filter((k) => k.anomaly).map((k) => <Chip key={k.value} variant="warn" title={`首次出现 ${F.dtFull(k.first_seen)}`}>{k.label}</Chip>)}
+              {d.known.isp.filter((k) => k.anomaly).map((k) => <Chip key={k.value} variant="warn" tip={`首次出现 ${F.dtFull(k.first_seen)}`}>{k.label}</Chip>)}
             </div>
           )}
         </>

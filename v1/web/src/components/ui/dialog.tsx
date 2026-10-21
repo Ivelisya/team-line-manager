@@ -13,35 +13,50 @@ const keepOnToast = (cb: OutsideHandler): OutsideHandler => (e) => {
   cb?.(e);
 };
 
-// 毛玻璃遮罩开着时在 <html> 上挂 data-overlay（有对话框 / 命令面板为 "dialog"，只有抽屉为 "drawer"），
-// extras.css 据此停掉下面一层的循环动画和读数过渡。以前写成 body:has(.overlay[data-state="open"]) …：
-// :has 的参数里有 [data-state]，悬停提示、菜单开合一改 data-state，浏览器就要把整页几千个元素重新匹配一遍。
-// 计数而不是开关：对话框叠在抽屉上、关一个开一个交替时不会被提前清掉。遮罩播退场动画期间仍算开着（模糊还在）
-const shown = { dialog: 0, drawer: 0 };
-const syncFlag = () => {
-  const d = document.documentElement.dataset;
-  if (shown.dialog) d.overlay = 'dialog'; else if (shown.drawer) d.overlay = 'drawer'; else delete d.overlay;
+type InteractHandler = React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>['onInteractOutside'];
+/** 点遮罩想关、却被调用方拦下（有未保存的改动、新密钥还没复制）：面板轻轻回弹一下（1 → 1.02 → 1，--dur-2 + --ease-out），
+ *  告诉用户“点到了，但不会关”，不再毫无反应。只认调用方拦下的主键点击——Radix 自己拦的右键、焦点移出和点通知（keepOnToast）在调用方之前就已拦下。
+ *  减弱动效时 --dur-2 为 0，不弹。缩放用独立的 scale 属性，与居中的 translate、进出场的 transform 互不干扰 */
+const bounceWhenKept = (cb: InteractHandler, panel: React.RefObject<HTMLDivElement | null>): InteractHandler => (e) => {
+  const before = e.defaultPrevented;
+  cb?.(e);
+  if (before || !e.defaultPrevented || e.detail.originalEvent.type !== 'pointerdown') return;
+  const root = getComputedStyle(document.documentElement);
+  const ms = parseFloat(root.getPropertyValue('--dur-2'));
+  if (ms > 0) panel.current?.animate([{ scale: '1' }, { scale: '1.02' }, { scale: '1' }], { duration: ms, easing: root.getPropertyValue('--ease-out').trim() });
 };
-/** 遮罩：Radix 只在打开和退场动画期间挂载它，挂着就登记。ref 要交给 Overlay，Presence 靠它等退场动画播完 */
-export const Scrim = React.forwardRef<HTMLDivElement, { className: string; kind: keyof typeof shown }>(({ className, kind }, ref) => {
+
+// 毛玻璃遮罩（对话框、命令面板）开着时在 <html> 上挂 data-overlay，extras.css 据此停掉下面一层（页面、抽屉）的循环动画和读数过渡，
+// KPI 数字也直接到位（useCountUp）。以前写成 body:has(.overlay[data-state="open"]) …：
+// :has 的参数里有 [data-state]，悬停提示、菜单开合一改 data-state，浏览器就要把整页几千个元素重新匹配一遍。
+// 计数而不是开关：对话框叠对话框、关一个开一个交替时不会被提前清掉。遮罩播退场动画期间仍算开着（模糊还在）。
+// 节点抽屉的遮罩只压暗不模糊，不挂这个开关
+let shown = 0;
+/** 对话框、命令面板的遮罩：Radix 只在打开和退场动画期间挂载它，挂着就登记。ref 要交给 Overlay，Presence 靠它等退场动画播完 */
+export const Scrim = React.forwardRef<HTMLDivElement, { className: string }>(({ className }, ref) => {
   React.useLayoutEffect(() => {
-    shown[kind]++; syncFlag();
-    return () => { shown[kind]--; syncFlag(); };
-  }, [kind]);
+    if (shown++ === 0) document.documentElement.dataset.overlay = '';
+    return () => { if (--shown === 0) delete document.documentElement.dataset.overlay; };
+  }, []);
   return <DialogPrimitive.Overlay ref={ref} className={className} />;
 });
 Scrim.displayName = 'Scrim';
 
 /** 对话框：size sm 440 / md 660 / lg 760（原版对话框三档） */
 export const DialogContent = React.forwardRef<React.ElementRef<typeof DialogPrimitive.Content>, React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & { size?: 'sm' | 'md' | 'lg' }>(
-  ({ className, size = 'sm', children, onPointerDownOutside, ...p }, ref) => (
-    <DialogPrimitive.Portal>
-      <Scrim className="overlay" kind="dialog" />
-      <DialogPrimitive.Content ref={ref} className={cn('dialog', size === 'md' && 'dialog-md', size === 'lg' && 'dialog-lg', className)} onPointerDownOutside={keepOnToast(onPointerDownOutside)} {...p}>
-        {children}
-      </DialogPrimitive.Content>
-    </DialogPrimitive.Portal>
-  ),
+  ({ className, size = 'sm', children, onPointerDownOutside, onInteractOutside, ...p }, ref) => {
+    const panel = React.useRef<HTMLDivElement>(null);
+    React.useImperativeHandle(ref, () => panel.current!, []);
+    return (
+      <DialogPrimitive.Portal>
+        <Scrim className="overlay" />
+        <DialogPrimitive.Content ref={panel} className={cn('dialog', size === 'md' && 'dialog-md', size === 'lg' && 'dialog-lg', className)}
+          onPointerDownOutside={keepOnToast(onPointerDownOutside)} onInteractOutside={bounceWhenKept(onInteractOutside, panel)} {...p}>
+          {children}
+        </DialogPrimitive.Content>
+      </DialogPrimitive.Portal>
+    );
+  },
 );
 DialogContent.displayName = 'DialogContent';
 
@@ -62,7 +77,7 @@ export const Sheet = DialogPrimitive.Root;
 export const SheetContent = React.forwardRef<React.ElementRef<typeof DialogPrimitive.Content>, React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & { hideClose?: boolean }>(
   ({ className, children, hideClose, onPointerDownOutside, ...p }, ref) => (
     <DialogPrimitive.Portal>
-      <Scrim className="drawer-overlay" kind="drawer" />
+      <DialogPrimitive.Overlay className="drawer-overlay" />
       <DialogPrimitive.Content ref={ref} className={cn('drawer', className)} onOpenAutoFocus={(e) => e.preventDefault()} onPointerDownOutside={keepOnToast(onPointerDownOutside)} {...p}>
         {children}
         {!hideClose && (

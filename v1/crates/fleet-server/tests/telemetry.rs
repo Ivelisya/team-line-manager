@@ -40,7 +40,7 @@ async fn report_drops_bad_timestamps_and_keeps_the_rest() {
     let team = seed_team(&t, "团队1").await;
     let (_node, entry) = seed_node(&t, relay, team, 1, "203.0.113.5", 20000).await;
     let now = now_ms();
-    let old = now - 5 * D; // 在保留期内，但常规维护只建了昨天起的分区：要按需补建
+    let old = now - 2 * D; // 在保留期（默认 3 天）内，但常规维护只建了昨天起的分区：要按需补建
 
     let mut r = blank_report(1);
     r.host = vec![
@@ -134,7 +134,7 @@ async fn rollup_covers_backfilled_hours_and_counter_resets() {
     let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
     let team = seed_team(&t, "团队1").await;
     let (_node, entry) = seed_node(&t, relay, team, 1, "203.0.113.5", 20000).await;
-    let h0 = hour_floor(now_ms() - 3 * D); // 3 天前的整点
+    let h0 = hour_floor(now_ms() - 2 * D); // 2 天前的整点（原始数据默认保留 3 天）
 
     // 上一小时最后一个样本 + 本小时四个样本（第三个起计数器清零，模拟重启）；tx 恒为 rx 的 2 倍
     let mut r = blank_report(1);
@@ -1032,9 +1032,9 @@ async fn ws_requires_auth_and_resyncs_when_subscriber_lags() {
         other => panic!("未登录应 401：{:?}", other.map(|_| ())),
     }
     let mut ws = t.ws(true).await.unwrap();
-    // 一口气广播远超缓冲（256）的事件，服务端逐帧往外写跟不上 → 落后（machines 有 1 s 合并节流，用不节流的 catalog）
+    // 一口气广播远超缓冲（256）的事件，服务端逐帧往外写跟不上 → 落后
     for _ in 0..5000 {
-        t.st.emit(Event::Catalog);
+        t.st.emit(Event::Machines);
     }
     ws_next(&mut ws, "resync").await;
 }

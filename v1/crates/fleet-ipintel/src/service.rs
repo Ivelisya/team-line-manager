@@ -166,14 +166,12 @@ impl IpIntel {
             "version": d.version,
             "files": files,
             "errors": d.errors,
-            "hosting_asns": d.hosting_scan.len(),
             "lists": d.lists.counts(),
             "overrides": {
                 "path": self.overrides.as_ref().map(|p| p.display().to_string()),
                 "used": ov.used,
                 "error": ov.error,
             },
-            "mem": crate::mem::rss(),
         })
     }
 }

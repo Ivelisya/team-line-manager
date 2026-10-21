@@ -1,18 +1,11 @@
-// 卡片/表格菜单触发的“要弹对话框”的动作：状态放在这里，由外壳里唯一一份 NodeActionsHost 渲染对话框，
+// 卡片/表格菜单、命令面板触发的“要弹对话框”的动作：状态放在这里，由外壳里唯一一份 LifecycleDialogsHost 渲染对话框，
 // 这样几十张卡片不用各带一份对话框和 mutation。
-import { useSyncExternalStore } from 'react';
+import { createStore } from './store';
 
-/** 一个“目标机器 id”的小仓库：open 设置、close 清空，use 订阅 */
+/** 一个“目标机器 id”：open 设置、close 清空，use 订阅 */
 function target() {
-  let id: string | null = null;
-  const subs = new Set<() => void>();
-  const emit = () => subs.forEach((f) => f());
-  const subscribe = (f: () => void) => { subs.add(f); return () => { subs.delete(f); }; };
-  return {
-    open: (v: string) => { id = v; emit(); },
-    close: () => { id = null; emit(); },
-    use: () => useSyncExternalStore(subscribe, () => id, () => null),
-  };
+  const s = createStore<string | null>(null);
+  return { open: (id: string) => s.set(id), close: () => s.set(null), use: s.use };
 }
 
 const retire = target();

@@ -8,6 +8,9 @@ use crate::table;
 use anyhow::{anyhow, bail};
 use serde_json::{json, Value};
 
+/// 恢复预检会试 SSH 登录（中控那边最多等 30 秒），默认的 30 秒请求超时会撞线
+const RESTORE_PREVIEW_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+
 const SHARE_HINT: &str = "换线路机后分享链接会变：客户端需要换成新的分享链接（作业完成后用 fleetctl share <节点> 取）";
 
 fn find_relay(ctx: &Ctx, q: &str) -> anyhow::Result<Value> {
@@ -143,7 +146,7 @@ pub fn restore(ctx: &Ctx, o: RestoreOpts) -> anyhow::Result<u8> {
     if o.no_probe {
         q.push(("probe", "false".into()));
     }
-    let pv = ctx.c.get_q(&format!("/machines/{id}/restore"), &q)?;
+    let pv = ctx.c.call(reqwest::Method::GET, &format!("/machines/{id}/restore"), &q, None, RESTORE_PREVIEW_TIMEOUT)?;
     if !ctx.json {
         let mut rows = vec![
             ("机器", format!("{}（{}，{}）", st(&pv, "/old_name"), cmds::kind_cn(&st(&pv, "/kind")), st(&pv, "/ip"))),

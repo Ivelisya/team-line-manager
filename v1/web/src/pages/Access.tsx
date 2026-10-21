@@ -151,8 +151,8 @@ const TargetsView = React.memo(function TargetsView({ open, f, sort, setSort, fi
                 <td className="r">{fmtN(t.sources)}</td>
                 <td className="r strong">{fmtN(t.conns)}</td>
                 <td><ResultPill conns={t.conns} blocked={t.blocked} /></td>
-                <td title={F.dtFull(t.first_seen)}>{F.dt(t.first_seen)}</td>
-                <td title={F.dtFull(t.last_seen)}>{F.ago(t.last_seen)}</td>
+                <td data-tip={F.dtFull(t.first_seen)}>{F.dt(t.first_seen)}</td>
+                <td data-tip={F.dtFull(t.last_seen)}>{F.ago(t.last_seen)}</td>
               </tr>
             ))}
           </tbody>
@@ -185,7 +185,7 @@ const NewView = React.memo(function NewView({ f, filtered, open }: { f: AccessFi
               <tr key={`${t.node_id}|${t.dest_host}`}>
                 <td><HostCell host={t.dest_host} kind={t.kind} /></td>
                 <td><NodeLink id={t.node_id} name={t.name} open={open} /></td>
-                <td title={F.dtFull(t.first_seen)}>{F.dt(t.first_seen)}<span className="sub">{F.ago(t.first_seen)}</span></td>
+                <td data-tip={F.dtFull(t.first_seen)}>{F.dt(t.first_seen)}<span className="sub">{F.ago(t.first_seen)}</span></td>
                 <td>{F.ago(t.last_seen)}</td>
                 <td className="r">{fmtN(t.total)}</td>
               </tr>
@@ -237,7 +237,7 @@ const SourcesView = React.memo(function SourcesView({ f, filtered, open }: { f: 
                   <td><ConnCell intel={s.intel} /></td>
                   <td><NodeLink id={s.node_id} name={s.name} open={open} /></td>
                   <td className="r">{fmtN(s.conns)}</td>
-                  <td title={F.dtFull(s.last_ts)}>{F.ago(s.last_ts)}</td>
+                  <td data-tip={F.dtFull(s.last_ts)}>{F.ago(s.last_ts)}</td>
                 </tr>
               ))}
             </tbody>
@@ -271,9 +271,9 @@ const NodesView = React.memo(function NodesView({ f, filtered, open }: { f: Acce
                 <td className="r strong">{fmtN(n.conns)}</td>
                 <td className="r">{fmtN(n.targets)}</td>
                 <td className="r">{fmtN(n.domains)}</td>
-                <td className="r">{n.sources == null ? <span className="t-muted" title="按小时汇总的数据不分目标：加了搜索、类型或结果筛选时算不出来源数，切到「1 小时」可以看">—</span> : fmtN(n.sources)}</td>
+                <td className="r">{n.sources == null ? <span className="t-muted" data-tip="按小时汇总的数据不分目标：加了搜索、类型或结果筛选时算不出来源数，切到「1 小时」可以看">—</span> : fmtN(n.sources)}</td>
                 <td className="r">{n.blocked > 0 ? <Pill tone="bad">{fmtN(n.blocked)}</Pill> : <span className="t-muted">0</span>}</td>
-                <td title={F.dtFull(n.last_ts)}>{F.ago(n.last_ts)}</td>
+                <td data-tip={F.dtFull(n.last_ts)}>{F.ago(n.last_ts)}</td>
               </tr>
             ))}
           </tbody>
@@ -307,10 +307,10 @@ const EventsView = React.memo(function EventsView({ f, filtered, open }: { f: Ac
           <tbody>
             {rows.map((e, i) => (
               <tr key={`${e.ts}|${e.node_id}|${i}`}>
-                <td className="num" title={F.dtFull(e.ts)}>{F.dt(e.ts)}:{F.pad2(new Date(e.ts).getSeconds())}</td>
+                <td className="num" data-tip={F.dtFull(e.ts)}>{F.dt(e.ts)}:{F.pad2(new Date(e.ts).getSeconds())}</td>
                 <td><NodeLink id={e.node_id} name={e.name} open={open} /></td>
                 <td><span className="mono">{e.src_ip ?? '—'}</span></td>
-                <td title={e.dest_host}><span className="strong">{e.dest_host}</span>{e.dest_port != null && <span className="t-sub">:{e.dest_port}</span>}</td>
+                <td data-tip={e.dest_host}><span className="strong">{e.dest_host}</span>{e.dest_port != null && <span className="t-sub">:{e.dest_port}</span>}</td>
                 <td>{e.network?.toUpperCase() ?? '—'}</td>
                 <td>{e.blocked ? <Pill tone="bad">已阻止</Pill> : <Pill tone="ok">已转发</Pill>}</td>
               </tr>

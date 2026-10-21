@@ -6,7 +6,7 @@ import { ACCESS_WINDOWS, useMachineAccess, type AccessEvent, type AccessWindow, 
 import * as F from '@/lib/format';
 import { Segmented } from '@/components/ui/overlays';
 import { Button } from '@/components/ui/button';
-import { ChartContainer, ChartTooltip, Recharts, axisProps, type ChartConfig } from '@/components/ui/chart';
+import { ChartContainer, chartTooltip, Recharts, axisProps, type ChartConfig } from '@/components/ui/chart';
 import { Empty, ErrorNote, Pill, Section, SectionHeader } from '@/components/app/primitives';
 import { fmtN } from '@/features/AccessBits';
 import { ConnCell, IspPlace, SourceProfile } from '@/features/IpIntelBits';
@@ -17,6 +17,10 @@ const { BarChart, Bar, XAxis, YAxis, CartesianGrid } = Recharts;
 const cut = (s: string, n = 24) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 // 与最近记录里「已转发 / 已阻止」标签同色：绿 / 红
 const BAR_CFG: ChartConfig = { routed: { label: '已转发', color: 'var(--ok)' }, blocked: { label: '已阻止', color: 'var(--bad)' } };
+// 柱状图悬停时整列铺一层浅底（recharts 默认是 #ccc 实心块，暗色下刺眼；--hover 在浅色下太淡看不见）
+const BAR_CURSOR = { fill: 'var(--line)' };
+/** 提示框里的连接数带单位 */
+const times = (_: string, v: number) => `${fmtN(v)} 次`;
 
 /** 横向条形图：每行一个目标，已转发 + 已阻止叠在一起。limit：只画前几个（截取放在这里，轮询数据没变时 data 引用不变） */
 function HostBars({ items, limit }: { items: MachineAccess['top_domains']; limit?: number }) {
@@ -26,7 +30,7 @@ function HostBars({ items, limit }: { items: MachineAccess['top_domains']; limit
       <BarChart data={data} layout="vertical" margin={{ top: 0, right: 8, bottom: 0, left: 0 }} barCategoryGap={5}>
         <XAxis type="number" hide />
         <YAxis type="category" dataKey="host" width={176} tickFormatter={(v: string) => cut(v, 26)} interval={0} {...axisProps} />
-        <ChartTooltip config={BAR_CFG} labelFormat={(l) => String(l)} valueFormat={(_, v) => fmtN(v)} />
+        {chartTooltip(BAR_CFG, String, times, BAR_CURSOR)}
         <Bar dataKey="routed" stackId="a" fill="var(--color-routed)" isAnimationActive={false} />
         <Bar dataKey="blocked" stackId="a" fill="var(--color-blocked)" radius={[0, 3, 3, 0]} isAnimationActive={false} />
       </BarChart>
@@ -35,6 +39,8 @@ function HostBars({ items, limit }: { items: MachineAccess['top_domains']; limit
 }
 
 const p2 = F.pad2;
+/** 提示框标题：这一小时的时段，如 10-21 01:00–02:00 */
+const hourSpan = (l: string | number) => { const d = new Date(Number(l)); const e = new Date(Number(l) + 3_600_000); return `${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:00–${p2(e.getHours())}:00`; };
 /** 每小时连接数柱状图 */
 function HourlyBars({ points, height = 160 }: { points: MachineAccess['hourly']; height?: number }) {
   const long = points.length > 30;
@@ -46,7 +52,7 @@ function HourlyBars({ points, height = 160 }: { points: MachineAccess['hourly'];
         <CartesianGrid vertical={false} stroke="var(--chart-grid)" />
         <XAxis dataKey="t" tickFormatter={tick} minTickGap={long ? 40 : 28} {...axisProps} />
         <YAxis width={40} allowDecimals={false} {...axisProps} />
-        <ChartTooltip config={BAR_CFG} labelFormat={(l) => { const d = new Date(Number(l)); return `${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:00`; }} valueFormat={(_, v) => fmtN(v)} />
+        {chartTooltip(BAR_CFG, hourSpan, times, BAR_CURSOR)}
         <Bar dataKey="routed" stackId="a" fill="var(--color-routed)" isAnimationActive={false} />
         <Bar dataKey="blocked" stackId="a" fill="var(--color-blocked)" isAnimationActive={false} />
       </BarChart>
@@ -66,7 +72,7 @@ function RecentTable({ items }: { items: AccessEvent[] }) {
             <tr key={`${e.ts}-${i}`}>
               <td>{F.dt(e.ts)}:{p2(new Date(e.ts).getSeconds())}</td>
               <td><span className="mono">{e.src_ip ?? '—'}</span></td>
-              <td title={e.dest_host}><span className="strong">{e.dest_host}</span>{e.dest_port != null && <span className="t-sub">:{e.dest_port}</span>}</td>
+              <td data-tip={e.dest_host}><span className="strong">{e.dest_host}</span>{e.dest_port != null && <span className="t-sub">:{e.dest_port}</span>}</td>
               <td>{e.blocked ? <Pill tone="bad">已阻止</Pill> : <Pill tone="ok">已转发</Pill>}</td>
             </tr>
           ))}

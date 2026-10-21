@@ -12,8 +12,10 @@ import { Empty, ErrorNote, LabelValue, LabelValueGrid, Num, Section, SectionHead
 import { RANGES, TimeChart } from '@/components/app/TimeChart';
 import { EntriesTable } from './EntriesTable';
 
-/** 抽屉开着时曲线每 30 秒重取（实时流只推当前读数，不推曲线） */
-const POLL = 30_000;
+/** 抽屉开着时曲线的重取间隔（实时流只推当前读数，不推曲线），随范围放大：范围越长点越粗、取一次越贵
+ *  （线路机 24 小时流量曲线一次 130–350 ms 数据库时间，每分钟才多一个点） */
+const POLL: Record<string, number> = { '1h': 30_000, '6h': 60_000, '24h': 120_000 };
+const poll = (range: string) => POLL[range] ?? 300_000;
 
 // 曲线的线条与格式化放模块常量：抽屉随实时推送重渲染时 TimeChart（memo）的 props 不变，不重画。
 // CPU / 内存用首页节点卡的指标色（CPU 蓝、内存紫），上下行与对照序列沿用 --chart-1 / --chart-2
@@ -33,7 +35,7 @@ const vBytes = (_: string, v: number) => { const b = F.bytes(v); return `${b.v} 
 const vRate = (_: string, v: number) => { const r = F.rate(v); return `${r.v} ${r.u}`; };
 
 function RangeBar({ range, setRange }: { range: string; setRange: (r: string) => void }) {
-  return <Segmented sm label="时间范围" value={range} onChange={setRange} items={RANGES.map((r) => ({ value: r.value, label: r.label }))} />;
+  return <Segmented sm label="时间范围" value={range} onChange={setRange} items={RANGES} />;
 }
 
 /** 图表的加载 / 出错状态：出错给重试，不要显示一张空图；换时间范围、新数据未到时沿用的旧曲线调淡 */
@@ -60,7 +62,7 @@ function ChartCard({ c, icon, title, meta, value, caption, tools, children }: { 
 
 export function QualityTab({ m }: { m: MachineView }) {
   const [range, setRange] = React.useState('6h');
-  const s = useSeries(m.id, 'probe', range, true, POLL);
+  const s = useSeries(m.id, 'probe', range, true, poll(range));
   return (
     <>
       <Section>
@@ -81,7 +83,7 @@ export function QualityTab({ m }: { m: MachineView }) {
 
 export function TrafficTab({ m }: { m: MachineView }) {
   const [range, setRange] = React.useState('24h');
-  const s = useSeries(m.id, 'traffic', range, true, POLL);
+  const s = useSeries(m.id, 'traffic', range, true, poll(range));
   const t = monthTraffic(m);
   return (
     <>
@@ -112,7 +114,7 @@ export function TrafficTab({ m }: { m: MachineView }) {
 export function HostTab({ m }: { m: MachineView }) {
   const [range, setRange] = React.useState('6h');
   const host = hasHost(m);
-  const s = useSeries(m.id, 'host', range, host, POLL);
+  const s = useSeries(m.id, 'host', range, host, poll(range));
   if (!host) return <Empty icon={<ServerOff size={22} />} text={m.kind === 'proxy' ? '家宽代理没有主机，不采集 CPU / 内存 / 磁盘 / 网卡指标。' : '暂时没有主机指标'} />;
   const h = m.host!;
   const r = resourceMeters(m)!;

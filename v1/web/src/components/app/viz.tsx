@@ -38,9 +38,9 @@ export const quotaColors = (n: number) => Array.from({ length: n }, (_, i) => {
 export const QUOTA_COLORS = quotaColors(CELL_N);
 
 /** 资源读数：图标 + 名称 + 数值，副行，格条。metric 决定颜色（--m-cpu / --m-mem / --m-disk / --m-load） */
-export function CellMeter({ icon, label, value, pct, sub, metric, empty, title }: { icon: React.ReactNode; label: string; value: Fmt; pct: number | null; sub?: React.ReactNode; metric: 'cpu' | 'mem' | 'disk' | 'load'; empty?: boolean; title?: string }) {
+export function CellMeter({ icon, label, value, pct, sub, metric, empty, tip }: { icon: React.ReactNode; label: string; value: Fmt; pct: number | null; sub?: React.ReactNode; metric: 'cpu' | 'mem' | 'disk' | 'load'; empty?: boolean; tip?: string }) {
   return (
-    <div className={cn('cmeter', empty && 'is-empty')} title={title} data-metric={metric} data-tone={empty ? undefined : usageTone(pct)}>
+    <div className={cn('cmeter', empty && 'is-empty')} data-tip={tip} data-metric={metric} data-tone={empty ? undefined : usageTone(pct)}>
       <div className="cmeter-head"><span className="cmeter-label">{icon}{label}</span><span className="cmeter-value"><Num f={empty ? F.NA : value} /></span></div>
       {/* 数据过期时副标题也是旧读数：留空行占位，卡片不跳高 */}
       {sub !== undefined && <div className="cmeter-sub">{empty ? ' ' : sub}</div>}
@@ -58,17 +58,16 @@ export function MiniMeter({ pct, metric, empty }: { pct: number | null; metric: 
   );
 }
 
-/** 圆环：描边长度随比例变化，首次出现从 0 转到位 */
-export function Ring({ pct, metric, size = 64, stroke = 6, children }: { pct: number | null; metric: 'cpu' | 'mem' | 'disk'; size?: number; stroke?: number; children?: React.ReactNode }) {
-  const r = (size - stroke) / 2;
-  const c = 2 * Math.PI * r;
-  const off = c * (1 - clamp01((pct ?? 0) / 100));
+const RING = 64; const RING_W = 6; const RING_R = (RING - RING_W) / 2; const RING_C = 2 * Math.PI * RING_R;
+/** 圆环（64px，描边 6）：描边长度随比例变化，首次出现从 0 转到位 */
+export function Ring({ pct, metric, children }: { pct: number | null; metric: 'cpu' | 'mem' | 'disk'; children?: React.ReactNode }) {
+  const off = RING_C * (1 - clamp01((pct ?? 0) / 100));
   return (
-    <div className="gauge" data-metric={metric} data-tone={usageTone(pct)} style={{ width: size, height: size }}>
-      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden>
-        <circle className="gauge-track" cx={size / 2} cy={size / 2} r={r} strokeWidth={stroke} />
-        {pct != null && <circle className="gauge-val" cx={size / 2} cy={size / 2} r={r} strokeWidth={stroke} strokeDasharray={c}
-          transform={`rotate(-90 ${size / 2} ${size / 2})`} style={{ '--ring-c': c, '--ring-off': off } as Vars} />}
+    <div className="gauge" data-metric={metric} data-tone={usageTone(pct)} style={{ width: RING, height: RING }}>
+      <svg width={RING} height={RING} viewBox={`0 0 ${RING} ${RING}`} aria-hidden>
+        <circle className="gauge-track" cx={RING / 2} cy={RING / 2} r={RING_R} strokeWidth={RING_W} />
+        {pct != null && <circle className="gauge-val" cx={RING / 2} cy={RING / 2} r={RING_R} strokeWidth={RING_W} strokeDasharray={RING_C}
+          transform={`rotate(-90 ${RING / 2} ${RING / 2})`} style={{ '--ring-c': RING_C, '--ring-off': off } as Vars} />}
       </svg>
       <div className="gauge-center">{children}</div>
     </div>
@@ -124,5 +123,5 @@ export function AreaSpark({ points, pick, tone }: { points: readonly LivePoint[]
   );
 }
 
-/** 彩色标签（供应商代号、类型、服务编号…） */
-export const Tag = ({ c, children, title }: { c: TagColor; children: React.ReactNode; title?: string }) => <span className="tag" data-c={c} title={title}>{children}</span>;
+/** 彩色标签（供应商代号、类型、服务编号…）；tip 是悬停说明（全站 TipHost） */
+export const Tag = ({ c, children, tip }: { c: TagColor; children: React.ReactNode; tip?: string }) => <span className="tag" data-c={c} data-tip={tip}>{children}</span>;

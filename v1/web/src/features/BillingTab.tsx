@@ -9,10 +9,10 @@ import { Field, Input, Switch } from '@/components/ui/form';
 import { DateField } from '@/components/ui/date-field';
 import { quota, remainingValue } from '@/lib/derive';
 import { Select } from '@/components/ui/select';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogHeader } from '@/components/ui/dialog';
 import { toast } from '@/components/ui/toast';
 import { resetOnOpen } from '@/lib/useHeld';
 import { Due, ErrorNote, LabelValue, LabelValueGrid, Note, Section, SectionHeader } from '@/components/app/primitives';
+import { FormDialog } from '@/components/app/dialogs';
 
 const TZS = ['Asia/Shanghai', 'America/Los_Angeles', 'America/New_York', 'Europe/London', 'Asia/Tokyo', 'UTC'].map((z) => ({ value: z, label: z }));
 export function BillingTab({ m }: { m: MachineView }) {
@@ -113,21 +113,13 @@ export const RenewDialog = resetOnOpen(function RenewDialog({ m, s, open, onOpen
   const ok = /^\d{4}-\d{2}-\d{2}$/.test(newDue) && newDue > s.due_date && amount.trim() !== '' && !amountBad;
   const submit = () => renew.mutate({ id: m.id, new_due: newDue, amount_cents: Math.round(Number(amount) * 100), note: note.trim() || undefined }, { onSuccess: () => { toast.ok(`已登记续费，到期日 ${newDue}`); onOpenChange(false); }, onError: toast.err });
   return (
-    <Dialog open={open} onOpenChange={(o) => !renew.isPending && onOpenChange(o)}>
-      <DialogContent>
-        <form style={{ display: 'grid', gap: 16 }} onSubmit={(e) => { e.preventDefault(); if (ok && !renew.isPending) submit(); }}>
-          <DialogHeader><DialogTitle>登记续费 · {m.name}</DialogTitle><DialogDescription>只记录“已续费”，到期日顺延；不会向供应商付款。当前到期日 {s.due_date}。</DialogDescription></DialogHeader>
-          <div className="form-grid">
-            <Field label="新到期日" error={newDue && newDue <= s.due_date ? '应晚于当前到期日' : undefined}><DateField value={newDue} onChange={setNewDue} min={F.addDays(s.due_date, 1)} /></Field>
-            <Field label={`实付金额（${s.currency}）`} error={amountBad ? '应为 0 或正数' : amount.trim() === '' ? '请填写金额，免费填 0' : undefined}><Input inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} aria-invalid={amountBad || undefined} /></Field>
-            <Field label="备注（选填）" className="span-2"><Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="例如：账单 #2041" /></Field>
-          </div>
-          <DialogFooter>
-            <Button onClick={() => onOpenChange(false)} disabled={renew.isPending}>取消</Button>
-            <Button type="submit" variant="primary" disabled={!ok} loading={renew.isPending}>登记续费</Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+    <FormDialog open={open} onOpenChange={onOpenChange} title={`登记续费 · ${m.name}`} desc={`只记录“已续费”，到期日顺延；不会向供应商付款。当前到期日 ${s.due_date}。`}
+      submitLabel="登记续费" busy={renew.isPending} valid={ok} onSubmit={submit}>
+      <div className="form-grid">
+        <Field label="新到期日" error={newDue && newDue <= s.due_date ? '应晚于当前到期日' : undefined}><DateField value={newDue} onChange={setNewDue} min={F.addDays(s.due_date, 1)} /></Field>
+        <Field label={`实付金额（${s.currency}）`} error={amountBad ? '应为 0 或正数' : amount.trim() === '' ? '请填写金额，免费填 0' : undefined}><Input inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} aria-invalid={amountBad || undefined} /></Field>
+        <Field label="备注（选填）" className="span-2"><Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="例如：账单 #2041" /></Field>
+      </div>
+    </FormDialog>
   );
 });

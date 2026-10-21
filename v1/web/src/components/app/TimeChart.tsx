@@ -3,7 +3,7 @@
 import { memo, useCallback, useMemo, useState } from 'react';
 import type { SeriesPoint } from '@/lib/types';
 import { pad2 as p2 } from '@/lib/format';
-import { ChartContainer, ChartLegend, ChartTooltip, Recharts, axisProps, type ChartConfig } from '@/components/ui/chart';
+import { ChartContainer, ChartLegend, chartTooltip, Recharts, axisProps, type ChartConfig } from '@/components/ui/chart';
 
 const { AreaChart, Area, LineChart, Line, XAxis, YAxis, CartesianGrid } = Recharts;
 export const RANGES = [{ value: '1h', label: '1 小时' }, { value: '6h', label: '6 小时' }, { value: '24h', label: '24 小时' }, { value: '7d', label: '7 天' }, { value: '30d', label: '30 天' }] as const;
@@ -40,9 +40,9 @@ function valueTicks(max: number, base: 1000 | 1024): number[] | undefined {
 
 export interface Line { key: string; label: string; color: string }
 /** yBase：数值是速率（1000 进位）或字节（1024 进位）时给出，纵轴按该进位取整档刻度；百分比等固定范围的用 domain */
-export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 'area', yFmt, valueFmt, domain, yBase, height = 180, legend = true, connectNulls = false }: {
+export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 'area', yFmt, valueFmt, domain, yBase, height = 180 }: {
   points: SeriesPoint[] | undefined; lines: Line[]; range: string; kind?: 'area' | 'line'; yFmt: (v: number) => string; valueFmt?: (k: string, v: number) => string;
-  domain?: [number | 'auto', number | 'auto']; yBase?: 1000 | 1024; height?: number; legend?: boolean; connectNulls?: boolean;
+  domain?: [number | 'auto', number | 'auto']; yBase?: 1000 | 1024; height?: number;
 }) {
   const config = useMemo<ChartConfig>(() => Object.fromEntries(lines.map((l) => [l.key, { label: l.label, color: l.color }])), [lines]);
   // 图例点掉的曲线：不画，纵轴刻度也只按还显示的曲线取
@@ -64,24 +64,24 @@ export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 
       <CartesianGrid vertical={false} stroke="var(--chart-grid)" />
       <XAxis dataKey="t" type="number" scale="time" domain={['dataMin', 'dataMax']} ticks={xTicks} tickFormatter={xFmt(range)} {...axisProps} minTickGap={32} />
       <YAxis width={60} tickFormatter={yFmt} {...axisProps} interval={0} ticks={yTicks} domain={yTicks ? [0, yTicks[yTicks.length - 1]] : domain ?? [0, 'auto']} />
-      <ChartTooltip config={config} labelFormat={(l) => { const d = new Date(Number(l)); return `${d.getMonth() + 1}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`; }} valueFormat={valueFmt} />
+      {chartTooltip(config, (l) => { const d = new Date(Number(l)); return `${d.getMonth() + 1}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`; }, valueFmt)}
     </>
   );
   return (
     <div style={{ display: 'grid', gap: 6 }}>
-      {legend && lines.length > 1 && <ChartLegend config={config} hidden={hidden} onToggle={toggle} />}
+      {lines.length > 1 && <ChartLegend config={config} hidden={hidden} onToggle={toggle} />}
       <ChartContainer config={config} height={height}>
         {kind === 'area' ? (
           <AreaChart {...common}>
             {axes}
             {lines.map((l, i) => (
-              <Area key={l.key} dataKey={l.key} type="monotone" stroke={`var(--color-${l.key})`} strokeWidth={1.5} fill={`var(--color-${l.key})`} fillOpacity={i === 0 ? 0.1 : 0.04} hide={hidden.has(l.key)} dot={false} isAnimationActive={false} connectNulls={connectNulls} />
+              <Area key={l.key} dataKey={l.key} type="monotone" stroke={`var(--color-${l.key})`} strokeWidth={1.5} fill={`var(--color-${l.key})`} fillOpacity={i === 0 ? 0.1 : 0.04} hide={hidden.has(l.key)} dot={false} isAnimationActive={false} />
             ))}
           </AreaChart>
         ) : (
           <LineChart {...common}>
             {axes}
-            {lines.map((l) => <Line key={l.key} dataKey={l.key} type="monotone" stroke={`var(--color-${l.key})`} strokeWidth={1.5} hide={hidden.has(l.key)} dot={false} isAnimationActive={false} connectNulls={connectNulls} />)}
+            {lines.map((l) => <Line key={l.key} dataKey={l.key} type="monotone" stroke={`var(--color-${l.key})`} strokeWidth={1.5} hide={hidden.has(l.key)} dot={false} isAnimationActive={false} />)}
           </LineChart>
         )}
       </ChartContainer>

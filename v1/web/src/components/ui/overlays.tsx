@@ -46,8 +46,9 @@ export const TabsContent = TabsPrimitive.Content;
 /* ---- 下拉菜单 ---- */
 export const DropdownMenu = DropdownPrimitive.Root;
 export const DropdownMenuTrigger = DropdownPrimitive.Trigger;
+// 菜单离视口边至少 8px（collisionPadding）：贴边翻转、可用高度（.menu 的 max-height 读它）都按留白后的视口算
 export const DropdownMenuContent = React.forwardRef<React.ElementRef<typeof DropdownPrimitive.Content>, React.ComponentPropsWithoutRef<typeof DropdownPrimitive.Content>>(({ className, sideOffset = 4, ...p }, ref) => (
-  <DropdownPrimitive.Portal><DropdownPrimitive.Content ref={ref} sideOffset={sideOffset} className={cn('menu', className)} {...p} /></DropdownPrimitive.Portal>
+  <DropdownPrimitive.Portal><DropdownPrimitive.Content ref={ref} sideOffset={sideOffset} collisionPadding={8} className={cn('menu', className)} {...p} /></DropdownPrimitive.Portal>
 ));
 DropdownMenuContent.displayName = 'DropdownMenuContent';
 export const DropdownMenuItem = React.forwardRef<React.ElementRef<typeof DropdownPrimitive.Item>, React.ComponentPropsWithoutRef<typeof DropdownPrimitive.Item> & { danger?: boolean }>(({ className, danger, ...p }, ref) => (
@@ -61,25 +62,27 @@ export const DropdownMenuSubTrigger = React.forwardRef<React.ElementRef<typeof D
 ));
 DropdownMenuSubTrigger.displayName = 'DropdownMenuSubTrigger';
 export const DropdownMenuSubContent = React.forwardRef<React.ElementRef<typeof DropdownPrimitive.SubContent>, React.ComponentPropsWithoutRef<typeof DropdownPrimitive.SubContent>>(({ className, ...p }, ref) => (
-  <DropdownPrimitive.Portal><DropdownPrimitive.SubContent ref={ref} className={cn('menu', className)} {...p} /></DropdownPrimitive.Portal>
+  <DropdownPrimitive.Portal><DropdownPrimitive.SubContent ref={ref} collisionPadding={8} className={cn('menu', className)} {...p} /></DropdownPrimitive.Portal>
 ));
 DropdownMenuSubContent.displayName = 'DropdownMenuSubContent';
 
 /* ---- Tooltip ---- */
 export const TooltipProvider = ({ children }: { children: React.ReactNode }) => <TooltipPrimitive.Provider delayDuration={250}>{children}</TooltipPrimitive.Provider>;
 type Side = 'top' | 'bottom' | 'left' | 'right';
-export function Tip({ text, children, side = 'top', align }: { text: React.ReactNode; children: React.ReactElement; side?: Side; align?: 'start' | 'center' | 'end' }) {
+export function Tip({ text, children, side = 'top' }: { text: React.ReactNode; children: React.ReactElement; side?: Side }) {
   if (!text) return children;
   return (
     <TooltipPrimitive.Root>
       <TooltipPrimitive.Trigger asChild>{children}</TooltipPrimitive.Trigger>
-      <TooltipPrimitive.Portal><TooltipPrimitive.Content side={side} align={align} sideOffset={6} collisionPadding={8} className="tooltip">{text}</TooltipPrimitive.Content></TooltipPrimitive.Portal>
+      <TooltipPrimitive.Portal><TooltipPrimitive.Content side={side} sideOffset={6} collisionPadding={8} className="tooltip">{text}</TooltipPrimitive.Content></TooltipPrimitive.Portal>
     </TooltipPrimitive.Root>
   );
 }
 
 /** 共享悬停提示：卡片、表格行里成百上千的只读说明不各挂一个 Radix Tooltip 根（每个根带一套 Popper 上下文，随实时推送跟着重渲染），
- *  元素上写 data-tip="文字"，外壳里这一份按悬停 / 键盘聚焦到的元素定位显示。外观、延迟同 Tip：停 250ms 出现，刚有提示开着时直接换过去 */
+ *  元素上写 data-tip="文字"，外壳里这一份按悬停 / 键盘聚焦到的元素定位显示。外观、延迟同 Tip：停 250ms 出现，刚有提示开着时直接换过去。
+ *  空的 data-tip 当作没有（拼出来的说明可能为空，调用方不用再判） */
+const TIP_SEL = '[data-tip]:not([data-tip=""])';
 export function TipHost() {
   const [tip, setTip] = React.useState<{ id: number; text: string; r: DOMRect } | null>(null);
   const [open, setOpen] = React.useState(false);
@@ -94,7 +97,7 @@ export function TipHost() {
     hide.current = close;
     const over = (e: PointerEvent) => {
       if (e.pointerType === 'touch') return;
-      const el = (e.target as Element).closest<HTMLElement>('[data-tip]');
+      const el = (e.target as Element).closest<HTMLElement>(TIP_SEL);
       if (el === cur) return;
       close();
       if (!el) return;
@@ -102,7 +105,7 @@ export function TipHost() {
       if (performance.now() - closedAt < 300) show(el); else timer = window.setTimeout(() => show(el), 250);
     };
     // 键盘聚焦才弹；鼠标按下得到的焦点不算（同 Radix）
-    const focus = (e: FocusEvent) => { const el = (e.target as Element).closest<HTMLElement>('[data-tip]'); if (el?.matches(':focus-visible')) { close(); cur = el; show(el); } };
+    const focus = (e: FocusEvent) => { const el = (e.target as Element).closest<HTMLElement>(TIP_SEL); if (el?.matches(':focus-visible')) { close(); cur = el; show(el); } };
     const leave = (e: PointerEvent) => { if (!e.relatedTarget) close(); }; // 指针离开窗口
     const on: [EventTarget, string, EventListener, boolean][] = [
       [document, 'pointerover', over as EventListener, false], [document, 'pointerout', leave as EventListener, false], [document, 'pointerdown', close, true],
@@ -125,7 +128,7 @@ export function TipHost() {
 const watchSize = sharedObserver<ResizeObserverEntry>((cb) => new ResizeObserver(cb));
 
 /** 单行省略文本：只有真的被截断时悬停才出现完整内容的提示 */
-export function Trunc({ children, text, className, side = 'top' }: { children: React.ReactNode; text?: string; className?: string; side?: Side }) {
+export function Trunc({ children, text, className }: { children: React.ReactNode; text?: string; className?: string }) {
   const ref = React.useRef<HTMLSpanElement>(null);
   const [cut, setCut] = React.useState(false);
   const [open, setOpen] = React.useState(false);
@@ -149,7 +152,7 @@ export function Trunc({ children, text, className, side = 'top' }: { children: R
       <TooltipPrimitive.Trigger asChild>
         <span ref={ref} className={cn('ellipsis block', className)} tabIndex={focusable && full ? 0 : undefined} onPointerEnter={measure} onFocus={measure}>{children}</span>
       </TooltipPrimitive.Trigger>
-      <TooltipPrimitive.Portal><TooltipPrimitive.Content side={side} sideOffset={6} collisionPadding={8} className="tooltip">{full}</TooltipPrimitive.Content></TooltipPrimitive.Portal>
+      <TooltipPrimitive.Portal><TooltipPrimitive.Content sideOffset={6} collisionPadding={8} className="tooltip">{full}</TooltipPrimitive.Content></TooltipPrimitive.Portal>
     </TooltipPrimitive.Root>
   );
 }
@@ -163,15 +166,15 @@ export const PopoverContent = React.forwardRef<React.ElementRef<typeof PopoverPr
 PopoverContent.displayName = 'PopoverContent';
 
 /* ---- 分段控件（单选）：大卡片/小卡片/紧凑、团队筛选等 ---- */
-export interface SegItem<T extends string> { value: T; label: React.ReactNode; count?: number; disabled?: boolean }
+export interface SegItem<T extends string> { value: T; label: React.ReactNode; count?: number }
 /** memo：父页面随实时推送重渲染时，items / onChange 稳定（模块常量、useMemo、useCallback）的分段控件不跟着重画 */
-type SegProps<T extends string> = { value: T; onChange: (v: T) => void; items: SegItem<T>[]; label: string; sm?: boolean; className?: string };
+type SegProps<T extends string> = { value: T; onChange: (v: T) => void; items: readonly SegItem<T>[]; label: string; sm?: boolean; className?: string };
 export const Segmented = React.memo(function Segmented<T extends string>({ value, onChange, items, label, sm, className }: SegProps<T>) {
   const gid = React.useId();
   return (
     <ToggleGroup.Root type="single" value={value} onValueChange={(v) => v && onChange(v as T)} aria-label={label} className={cn('seg', sm && 'seg-sm', className)}>
       {items.map((it) => (
-        <ToggleGroup.Item key={it.value} value={it.value} disabled={it.disabled} className="seg-item">
+        <ToggleGroup.Item key={it.value} value={it.value} className="seg-item">
           {/* 选中胶囊：共享 layoutId，换项时滑过去；圆角写在 style 里，motion 才会在缩放过程中修正它。
               layoutDependency：选中项不变时父级重渲染（如实时推送）不再量位置 */}
           {value === it.value && <m.span aria-hidden className="seg-ind" layoutId={`seg-ind-${gid}`} layoutDependency={value} style={{ borderRadius: 999 }} transition={SPRING} />}

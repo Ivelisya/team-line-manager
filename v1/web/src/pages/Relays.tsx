@@ -12,7 +12,7 @@ import { Chip, Due, Empty, ErrorNote, HealthPill, KindIcon, Num, PageHead, Pill 
 import { NodeHover } from '@/components/app/NodeHover';
 import { Waypoints } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
-import { EntryActions } from '@/components/app/EntryActions';
+import { EntryMenuButton, EntryMenus } from '@/components/app/EntryActions';
 import { entryState } from '@/components/app/primitives';
 import { openEvacuate } from '@/lib/nodeActions';
 import { ShowAll } from '@/components/app/Pagination';
@@ -27,10 +27,10 @@ const EntryRow = React.memo(function EntryRow({ e, open }: { e: EntryView; open:
       <td className="strong num">{e.port}</td>
       <td><NodeHover id={e.node.id}><button className="btn-link btn" style={{ height: 'auto', padding: 0, border: 0, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis' }} onClick={() => open(e.node.id)}>{e.node.name}</button></NodeHover></td>
       <td>{entryState(e)}</td>
-      <td>{e.lifecycle === 'disabled' ? <span className="t-muted">—</span> : e.applied ? <CheckCircle2 size={14} style={{ color: 'var(--ok)' }} aria-label="已应用" /> : <span title={e.apply_error ?? '应用中'} style={{ color: e.apply_error ? 'var(--bad-text)' : 'var(--fg-2)' }}>{e.apply_error ? '应用失败' : '应用中'}</span>}</td>
+      <td>{e.lifecycle === 'disabled' ? <span className="t-muted">—</span> : e.applied ? <CheckCircle2 size={14} style={{ color: 'var(--ok)' }} aria-label="已应用" /> : <span data-tip={e.apply_error ?? '应用中'} style={{ color: e.apply_error ? 'var(--bad-text)' : 'var(--fg-2)' }}>{e.apply_error ? '应用失败' : '应用中'}</span>}</td>
       <td className="r">{probeCell(e.tcp)}</td><td className="r">{probeCell(e.egress)}</td>
       <td className="r"><Num f={F.bytes(e.traffic.month_up + e.traffic.month_down)} /></td>
-      <td className="c"><EntryActions entry={e} /></td>
+      <td className="c"><EntryMenuButton entry={e} /></td>
     </tr>
   );
 });
@@ -70,7 +70,8 @@ function RelayCard({ m, open }: { m: MachineView; open: Open }) {
           <Button size="sm" onClick={() => open(m.id)}><PanelRightOpen size={14} />详情</Button></span>
       </header>
       <ApplyStatus m={m} />
-      <div className="table-wrap">
+      {/* 入口的“⋯”菜单与对话框整张卡共用一份 */}
+      <EntryMenus entries={m.entries}><div className="table-wrap">
         <table className="dt is-one" style={{ minWidth: 760 }}>
           <colgroup><col style={{ width: 84 }} /><col style={{ width: 150 }} /><col style={{ width: 104 }} /><col style={{ width: 84 }} /><col style={{ width: 80 }} /><col style={{ width: 80 }} /><col style={{ width: 120 }} /><col style={{ width: 52 }} /></colgroup>
           <thead><tr><th>端口</th><th>节点</th><th>状态</th><th>已应用</th><th className="r">TCP</th><th className="r">出口</th><th className="r">本月业务流量</th><th /></tr></thead>
@@ -79,7 +80,7 @@ function RelayCard({ m, open }: { m: MachineView; open: Open }) {
           </tbody>
         </table>
         {m.entries.length === 0 && <Empty text="这台线路机还没有挂载入口" />}
-      </div>
+      </div></EntryMenus>
       <ShowAll total={m.entries.length} cap={ENTRY_CAP} open={all} onToggle={() => setAll((v) => !v)} />
     </section>
   );

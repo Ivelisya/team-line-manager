@@ -97,10 +97,22 @@ export function applyMetrics(qc: QueryClient, msg: MetricsMsg) {
     const r = missed.get(q.queryHash);
     if (r && r.p === q.promise) r.msgs.push(msg); else missed.set(q.queryHash, { p: q.promise, msgs: [msg] });
   }
-  // 一条推送只让 React 提交一次：每个 setQueriesData 自成一批、各派发一次，迹线订阅原先又是同步通知；
+  // 一条推送只让 React 提交一次：每次 setQueryData 自成一批、各派发一次，迹线订阅原先又是同步通知；
   // 包进同一批，迹线通知也排进这批的队列，几类查询与迹线的订阅者在同一轮里一起收到
+  // 不在显示中的查询也照写（回来时读数是新的），但写入会清掉失效标记、把取回时刻记成现在：
+  // 没改动的不写；补丁前已被事件失效的写完补回标记——推送不带的字段（配置版本、名称、生命周期等）还旧，回来时照样重取
   notifyManager.batch(() => {
-    for (const [k] of LIVE_KEYS) { const f = patchOf(k, msg); if (f) qc.setQueriesData({ queryKey: [k] }, f); }
+    for (const [k] of LIVE_KEYS) {
+      const f = patchOf(k, msg);
+      if (!f) continue;
+      for (const q of qc.getQueryCache().findAll({ queryKey: [k] })) {
+        const { data, isInvalidated } = q.state;
+        const n = f(data as never);
+        if (n === data) continue;
+        qc.setQueryData(q.queryKey, n);
+        if (isInvalidated) q.invalidate();
+      }
+    }
     if (msg.overview) recordFleet({ t: Date.now(), rx: msg.overview.net_rx_bps, tx: msg.overview.net_tx_bps });
     if (dirty) { dirty = false; notifyManager.schedule(() => subs.forEach((f) => f())); }
   });

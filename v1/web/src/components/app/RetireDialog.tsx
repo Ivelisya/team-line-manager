@@ -15,14 +15,16 @@ export const RetireDialog = resetOnOpen(function RetireDialog({ m, open, onOpenC
   const [cleanup, setCleanup] = React.useState(true);
   const [reason, setReason] = React.useState('');
   const pv = useRetirePreview(m.id, open);
+  // 重开时缓存里还是上一次的预检（关闭动画期间对话框还挂着、观察者没走，gcTime 0 也回收不了）：只认这次打开后取回的
+  const done = pv.isFetchedAfterMount;
   return (
     <TypedConfirmDialog open={open} onOpenChange={onOpenChange} size="md" title={`退役 ${m.name}？`} expected={m.name} prompt="请输入显示名" confirmLabel="退役" danger
       description="入口会立即停用，已有连接会断开。之后可以在「管理」页恢复，但要重新上架。"
-      confirmDisabled={pv.isLoading}
+      confirmDisabled={!done}
       onConfirm={async () => { await retire.mutateAsync({ id: m.id, confirm: m.name, cleanup, reason: reason.trim() || undefined }); toast.ok('已提交退役作业'); onDone?.(); }}>
-      {pv.isLoading && <div className="hint">正在检查退役后会受影响的节点…</div>}
-      {pv.isError && <Note tone="warn">无法预览改名影响：{(pv.error as Error).message}。仍可继续退役，但无法提前看到后面节点的新名字。</Note>}
-      {pv.data && pv.data.renames.length > 0 && (
+      {!done && <div className="hint">正在检查退役后会受影响的节点…</div>}
+      {done && pv.isError && <Note tone="warn">无法预览改名影响：{(pv.error as Error).message}。仍可继续退役，但无法提前看到后面节点的新名字。</Note>}
+      {done && pv.isSuccess && pv.data.renames.length > 0 && (
         <Note tone="warn">
           <div style={{ fontWeight: 500, marginBottom: 4 }}>退役后以下节点会改名（编号保持连续）：</div>
           <ul className="reason-list" style={{ maxHeight: 200, overflow: 'auto' }}>

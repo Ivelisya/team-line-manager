@@ -19,8 +19,8 @@ export const toast = {
   show: (t: ToastInput) => push?.(t),
 };
 
-/** 离场过渡时长：读 .toast 的 transition 所用的 --dur-base 令牌（减弱动效时是 0ms） */
-const leaveMs = () => parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--dur-base'));
+/** 离场过渡时长：读 .toast 退场过渡所用的 --dur-2 令牌（减弱动效时是 0ms） */
+const leaveMs = () => parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--dur-2'));
 
 const ICON = { ok: CheckCircle2, bad: XCircle, info: Info } as const;
 const LIFE = { ok: 3600, info: 5000, bad: 7000 } as const;
@@ -66,10 +66,15 @@ export function Toaster() {
     push = (t) => setList((l) => {
       const dup = l.find((x) => !x.leaving && x.tone === t.tone && x.text === t.text && x.title === t.title && !x.action && !t.action);
       if (dup) return l.map((x) => (x === dup ? { ...x, count: x.count + 1 } : x));
-      return [...l.slice(-(MAX - 1)), { ...t, id: ++seq.current, count: 1 }];
+      return [...l, { ...t, id: ++seq.current, count: 1 }];
     });
     return () => { push = null; };
   }, []);
+  // 超过上限：最旧的一条走正常的退场（向右滑出再卸载），不再从列表里直接切掉、瞬间消失
+  React.useEffect(() => {
+    const live = list.filter((x) => !x.leaving);
+    if (live.length > MAX) close(live[0].id);
+  }, [list, close]);
   return (
     <div className="toasts" aria-live="polite">
       {/* 每条套一层布局容器：有通知进来或离开时，其余的滑到新位置而不是瞬间跳过去。

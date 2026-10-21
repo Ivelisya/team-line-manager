@@ -286,7 +286,7 @@ pub fn versions(ctx: &Ctx) -> anyhow::Result<u8> {
                 vec![st(v, "/seq"), kind, st(v, "/actor"), table::ts(&st(v, "/created_at")), status, format!("{ok}/{}", rel.len()), changes.join("，")]
             })
             .collect();
-        let mut s = table::render(&["版本", "类型", "操作者", "时间(UTC)", "状态", "线路机", "变更"], &rows);
+        let mut s = table::render(&["版本", "类型", "操作者", "时间", "状态", "线路机", "变更"], &rows);
         let bad: Vec<String> = list
             .iter()
             .flat_map(|v| v["relays"].as_array().cloned().unwrap_or_default().into_iter().map(move |r| (st(v, "/seq"), r)))

@@ -103,14 +103,8 @@ pub fn bps(n: f64) -> String {
 /// 金额（分）
 pub fn money(cents: i64, cur: &str) -> String { format!("{}.{:02} {cur}", cents / 100, (cents % 100).abs()) }
 
-/// RFC 3339 → `2026-10-20 12:34:56`（UTC，截到秒）
+/// RFC 3339 → 北京时间 `2026-10-20 20:34:56`（同网页与通知，截到秒）；缺失（`-`）原样
 pub fn ts(s: &str) -> String {
-    let t = s.replace('T', " ");
-    t.chars().take(19).collect()
-}
-
-/// RFC 3339 → 北京时间 `2026-10-20 20:34:56`（同通知）；缺失（`-`）原样
-pub fn ts_cn(s: &str) -> String {
     let Ok(t) = time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339) else { return s.to_string() };
     let f = time::macros::format_description!("[year]-[month]-[day] [hour]:[minute]:[second]");
     t.to_offset(time::macros::offset!(+8)).format(&f).unwrap_or_default()
@@ -149,8 +143,7 @@ mod tests {
         assert_eq!(bytes(12.0), "12 B");
         assert_eq!(bps(2_500_000.0), "2.5 Mbps");
         assert_eq!(money(1234, "USD"), "12.34 USD");
-        assert_eq!(ts("2026-10-20T12:34:56.789Z"), "2026-10-20 12:34:56");
-        assert_eq!(ts_cn("2026-10-20T18:34:56.789Z"), "2026-10-21 02:34:56");
-        assert_eq!(ts_cn("-"), "-");
+        assert_eq!(ts("2026-10-20T18:34:56.789Z"), "2026-10-21 02:34:56");
+        assert_eq!(ts("-"), "-");
     }
 }

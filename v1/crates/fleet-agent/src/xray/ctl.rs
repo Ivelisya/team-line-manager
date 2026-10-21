@@ -29,17 +29,10 @@ pub fn parse_stat_starttime(stat: &str) -> Option<u64> {
     rest.split_whitespace().nth(19)?.parse().ok()
 }
 
-/// 只读 /proc/<pid>/stat 的 starttime：用来廉价地确认缓存的 MainPID 还是同一个进程（进程没了 / pid 被复用都会对不上）
+/// 只读 /proc/<pid>/stat 的 starttime：和 pid 一起标识 Xray 进程（流量计数纪元），也用来廉价地确认缓存的 MainPID
+/// 还是同一个进程（进程没了 / pid 被复用都会对不上）
 pub fn proc_start_ticks(pid: u32) -> Option<u64> {
     parse_stat_starttime(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
-}
-
-/// (start_ticks, 启动时刻 unix ms)
-pub fn proc_start(pid: u32) -> Option<(u64, i64)> {
-    let ticks = parse_stat_starttime(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)?;
-    let btime: i64 = std::fs::read_to_string("/proc/stat").ok()?.lines().find_map(|l| l.strip_prefix("btime ")?.trim().parse().ok())?;
-    let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) }.max(1) as i64;
-    Some((ticks, btime * 1000 + ticks as i64 * 1000 / hz))
 }
 
 #[cfg(test)]

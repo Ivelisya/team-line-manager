@@ -2,7 +2,8 @@
 // 整个文件按需加载（首次打开时才下载 cmdk）。
 import * as React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowUpCircle, BellOff, BellRing, Briefcase, Clipboard, CloudUpload, Gauge, LayoutGrid, ListChecks, Moon, PackageOpen, Server, Settings, ShieldCheck, Sun, Waypoints } from 'lucide-react';
+import { ArrowUpCircle, BellOff, Clipboard, CloudUpload, Moon, PackageOpen, ShieldCheck, Sun } from 'lucide-react';
+import { NAV, type NavItem } from '@/lib/nav';
 import { useMachineLabels, useUpgradeAllAgents } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import { copyText } from '@/lib/clipboard';
@@ -15,18 +16,9 @@ import { toast } from '@/components/ui/toast';
 import { ConfirmDialog } from '@/components/app/dialogs';
 import { HealthPill, KindIcon } from '@/components/app/primitives';
 
-const PAGES = [
-  { to: '/', label: '首页', icon: LayoutGrid, kw: 'home dashboard 总览' },
-  { to: '/nodes', label: '机器', icon: Server, kw: 'nodes 节点 线路机 表格 列表' },
-  { to: '/relays', label: '线路', icon: Waypoints, kw: 'relays 线路机 入口' },
-  { to: '/access', label: '访问监控', icon: Gauge, kw: 'access 访问 监控' },
-  { to: '/access/policy', label: '访问规则', icon: ShieldCheck, kw: 'policy access 访问规则 策略 白名单 黑名单 阻止 域名 allowlist denylist' },
-  { to: '/jobs', label: '作业', icon: ListChecks, kw: 'jobs 任务' },
-  { to: '/incidents', label: '告警', icon: BellRing, kw: 'incidents alerts 静默' },
-  { to: '/catalog', label: '团队与套餐', icon: Briefcase, kw: 'catalog teams plans providers 目录 团队 套餐 供应商' },
-  { to: '/provision', label: '上架', icon: CloudUpload, kw: 'provision 添加 新增' },
-  { to: '/settings', label: '设置', icon: Settings, kw: 'settings api 密钥 通知 key notify' },
-];
+// 与侧栏同一份导航，在「访问监控」后加上「访问规则」（侧栏里它是访问监控页头的视图切换）
+const POLICY: NavItem = { to: '/access/policy', label: '访问规则', icon: ShieldCheck, kw: 'policy access 访问规则 策略 白名单 黑名单 阻止 域名 allowlist denylist' };
+const PAGES = NAV.flatMap((n) => (n.to === '/access' ? [n, POLICY] : [n]));
 const LIMIT = 8; // 不输入时只列前几台，输入后在全部机器里搜
 
 /** 编号去掉前导零：团队1-04 → 团队1-4，让「1-4」也能按名称命中它 */

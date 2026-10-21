@@ -9,7 +9,18 @@
 
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
+use std::sync::LazyLock;
 use uuid::Uuid;
+
+/// agent 与中控的版本号：编译时带了环境变量 FLEET_GIT_HASH（lab/deploy-server.sh 传本机的 git 短哈希）就是
+/// `0.1.0+<哈希>`，否则只有包版本。包版本一直是 0.1.0，靠哈希才看得出机器上跑的是哪一次提交
+pub fn build_version() -> &'static str {
+    static V: LazyLock<String> = LazyLock::new(|| match option_env!("FLEET_GIT_HASH") {
+        Some(h) => format!("{}+{h}", env!("CARGO_PKG_VERSION")),
+        None => env!("CARGO_PKG_VERSION").into(),
+    });
+    &V
+}
 
 // ── 上报 ────────────────────────────────────────────────────────────────────
 
@@ -36,7 +47,7 @@ pub struct Report {
     pub agent_health: Option<AgentHealth>,
 }
 
-/// Agent 自身的健康数据：离线队列、访问日志尾读、探测与对齐。服务端存进 agent_state.info。
+/// Agent 自身的健康数据：离线队列、访问日志尾读、最近一次应用失败。服务端存进 agent_state.info。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct AgentHealth {
     /// 离线队列里待发送的报告数
@@ -48,12 +59,10 @@ pub struct AgentHealth {
     /// 被移入 dead/ 的报告数：只有服务端永久拒绝（400/413/422 等 4xx）的才进 dead/，5xx 一直重试
     #[serde(default)]
     pub queue_dead: u64,
-    #[serde(default)]
-    pub access_lines: u64,
-    #[serde(default)]
-    pub access_events: u64,
+    /// 访问日志里解析不了的行
     #[serde(default)]
     pub access_unparsed: u64,
+    /// 访问日志里被丢弃的行（超长、主机名含非法字符、轮转后旧文件末尾的残行）
     #[serde(default)]
     pub access_dropped_lines: u64,
     /// 轮转后找不到旧文件、可能漏掉一段
@@ -61,12 +70,6 @@ pub struct AgentHealth {
     pub access_rotation_gaps: u64,
     #[serde(default)]
     pub access_truncations: u64,
-    /// 因前一个出口探测还在途而跳过的探测次数
-    #[serde(default)]
-    pub probes_skipped: u64,
-    /// 周期对齐检查发现磁盘/运行态与期望不一致并修复的次数
-    #[serde(default)]
-    pub realign_fixes: u64,
     /// 最近一次应用失败的错误（成功后清空）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_apply_error: Option<String>,
@@ -78,7 +81,6 @@ pub struct SystemInfo {
     pub hostname: String,
     pub kernel: String,
     pub os: String,
-    pub cpu_model: String,
     pub cpu_cores: u32,
     pub arch: String,
     #[serde(default)]
@@ -156,8 +158,6 @@ pub struct XrayStatus {
     pub running: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub started_at_ms: Option<i64>,
     pub applied_generation: u64,
 }
 

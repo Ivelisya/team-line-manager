@@ -1,5 +1,5 @@
 // 从 MachineView 推导卡片/表格要显示的数据（纯函数，便于复用）
-import type { MachineView, ProbeBucket, Subscription } from './types';
+import type { MachineView, ProbeBucket, ProbeResult, Subscription } from './types';
 import * as F from './format';
 
 const GiB = 1024 ** 3;
@@ -57,8 +57,8 @@ export type BeatCell = 'ok' | 'warn' | 'bad' | null;
 export const beatCells = (buckets: ProbeBucket[] | undefined): BeatCell[] =>
   (buckets ?? []).map(([n, ok, ms]) => { if (!n) return null; const r = ok / n; return r < 0.5 ? 'bad' : r < 0.95 || (ms ?? 0) >= 150 ? 'warn' : 'ok'; });
 const BEAT_MS = 3 * 60_000;
-const BEAT_LEGEND = '绿：全部成功 · 黄：有失败或平均延迟 ≥ 150 ms · 红：一半以上失败 · 灰：没有探测';
-/** 心跳格的悬停说明（与 beatCells 一一对应）：这 3 分钟的时段、探测次数与成功率、平均延迟，第二行是颜色含义。
+const BEAT_LEGEND = '绿：成功 ≥ 95% 且平均 < 150 ms · 黄：成功 50%–95% 或平均 ≥ 150 ms\n红：成功不到一半 · 灰：没有探测';
+/** 心跳格的悬停说明（与 beatCells 一一对应）：这 3 分钟的时段、探测次数与成功率、平均延迟，后两行是颜色含义（阈值同 beatCells）。
  *  桶按墙钟 3 分钟对齐，最后一格是当前这格（见 API.md /probe-beats） */
 export function beatTitles(buckets: ProbeBucket[] | undefined, now = Date.now()): string[] {
   const bs = buckets ?? [];
@@ -70,13 +70,18 @@ export function beatTitles(buckets: ProbeBucket[] | undefined, now = Date.now())
     return `${hm(t0)}–${hm(t0 + BEAT_MS)}${i === bs.length - 1 ? '（进行中）' : ''} · ${what}\n${BEAT_LEGEND}`;
   });
 }
-/** 入口探测摘要：平均 TCP 延迟与出口延迟。只算 active 的入口（同服务端健康规则）：应用中的还没有探测 */
+/** 有探测、却一个都没成功（延迟为 null）：显示「失败」，和「—」（还没有探测）区分开 */
+const allFailed = (ps: (ProbeResult | null)[]) => ps.some((p) => p && !p.ok) && !ps.some((p) => p?.ok);
+/** 入口探测摘要：平均 TCP 延迟与出口延迟，tcpFail / egressFail = 全部失败。只算 active 的入口（同服务端健康规则）：应用中的还没有探测 */
 export function probeSummary(m: MachineView) {
   const es = m.entries.filter((e) => e.lifecycle === 'active');
   const tcpOk = es.filter((e) => e.tcp?.ok).length;
   const lat = es.map((e) => e.tcp?.latency_ms).filter((x): x is number => x != null);
   const eg = es.map((e) => e.egress?.latency_ms).filter((x): x is number => x != null);
-  return { total: es.length, tcpOk, tcp: lat.length ? Math.round(lat.reduce((a, b) => a + b, 0) / lat.length) : null, egress: eg.length ? Math.round(eg.reduce((a, b) => a + b, 0) / eg.length) : null };
+  return {
+    total: es.length, tcpOk, tcp: lat.length ? Math.round(lat.reduce((a, b) => a + b, 0) / lat.length) : null, egress: eg.length ? Math.round(eg.reduce((a, b) => a + b, 0) / eg.length) : null,
+    tcpFail: allFailed(es.map((e) => e.tcp)), egressFail: allFailed(es.map((e) => e.egress)),
+  };
 }
 /**
  * 剩余价值：已付还没用掉的部分，按天折算。每期天数 = 到期日往前推一个周期的天数，剩余比例 = 距到期天数 / 每期天数；

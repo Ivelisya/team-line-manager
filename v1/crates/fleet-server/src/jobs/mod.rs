@@ -4,7 +4,8 @@
 //! 等待超过该步的 `timeout_s` 即失败。
 //!
 //! 唤醒：建作业、重试、取消后调 `AppState::wake_jobs`；线路机回报应用结果、agent 首次上报时 `wake_for` 把等这些事的作业
-//! 提前到现在再唤醒。引擎空闲时等唤醒，兜底重查（等待中的作业到点、过期租约被接管）从 800 ms 退避到 5 s。
+//! 提前到现在再唤醒；推进中发现作业已被取消、放开租约等补偿时也唤醒。引擎空闲时等唤醒，兜底每 800 ms 重查
+//! （等待中的作业到点、过期租约被接管）。
 //!
 //! 租约：领取时给一个短租约，每步开始前按「步骤超时 + 余量」续租；所有对 job / job_step 的状态写入都带
 //! `lease_owner = 自己`，0 行受影响说明租约已被别人接管（或作业被取消、被退役清掉），本执行者立刻放弃推进。
@@ -225,26 +226,22 @@ pub async fn log(st: &AppState, job: Uuid, level: &str, msg: impl AsRef<str>) {
     let _ = sqlx::query("insert into job_log (job_id, level, msg) values ($1, $2, $3)").bind(job).bind(level).bind(m).execute(&st.db).await;
 }
 
-/// 引擎空闲时兜底重查的间隔：从 800 ms 起每次翻倍到 5 s，领到作业或被唤醒就回到 800 ms
-const IDLE_MIN: Duration = Duration::from_millis(800);
-const IDLE_MAX: Duration = Duration::from_secs(5);
-
 /// 这台机器（线路机：还有经它的入口所属的节点）上在等待的作业提前到现在，并唤醒引擎。
-/// 线路机回报应用结果、agent 首次上报之后调：等应用 / 等摘除 / 等首次上报的步骤不必等到兜底的重查时间
+/// 线路机回报应用结果、agent 首次上报之后调：等应用 / 等摘除 / 等首次上报的步骤不必等到兜底的重查时间。
+/// 已经到点的作业（Wait 到期时引擎正好在睡）同样要唤醒，所以不看改了几行
 pub async fn wake_for(st: &AppState, machine: Uuid) {
-    let r = sqlx::query(
-        "update job set run_after = now() where state = 'waiting' and run_after > now()
+    if let Err(e) = sqlx::query(
+        "update job set run_after = least(run_after, now()) where state = 'waiting'
            and (target_id = $1 or target_id in (select node_id from entry where relay_id = $1))",
     )
     .bind(machine)
     .execute(&st.db)
-    .await;
-    match r {
-        Ok(r) if r.rows_affected() > 0 => st.wake_jobs(),
-        Ok(_) => {}
+    .await
+    {
         // 回报本身已经入库，不因此让 agent 重发；作业照样会在兜底重查时推进
-        Err(e) => tracing::warn!(%machine, "提前等待中的作业失败：{e:#}"),
+        tracing::warn!(%machine, "提前等待中的作业失败：{e:#}");
     }
+    st.wake_jobs();
 }
 
 /// 后台循环：领取并推进作业
@@ -262,12 +259,10 @@ pub async fn run_forever(st: AppState) {
         Err(e) => tracing::error!("启动时释放旧租约失败：{e:#}"),
     }
     let sem = Arc::new(Semaphore::new(st.cfg.job_workers.max(1)));
-    let mut idle = IDLE_MIN;
     loop {
         let permit = sem.clone().acquire_owned().await.expect("semaphore");
         match claim(&st, &owner).await {
             Ok(Some(job)) => {
-                idle = IDLE_MIN;
                 let st = st.clone();
                 let owner = owner.clone();
                 tokio::spawn(async move {
@@ -289,8 +284,8 @@ pub async fn run_forever(st: AppState) {
                 drop(permit);
                 // 唤醒在忙的时候到达也不丢（Notify 记一次许可），下一轮立刻再领
                 tokio::select! {
-                    _ = st.jobs_wake.notified() => idle = IDLE_MIN,
-                    _ = tokio::time::sleep(idle) => idle = (idle * 2).min(IDLE_MAX),
+                    _ = st.jobs_wake.notified() => {}
+                    _ = tokio::time::sleep(Duration::from_millis(800)) => {}
                 }
             }
             Err(e) => {
@@ -391,20 +386,21 @@ pub async fn advance(st: &AppState, mut job: JobRow, owner: &str) -> anyhow::Res
                 if (OffsetDateTime::now_utc() - started).whole_seconds() > d.timeout_s {
                     return fail(st, &job, owner, d, ErrKind::Timeout, &format!("等了 {} 秒仍未完成", d.timeout_s)).await;
                 }
-                let n = sqlx::query(
+                let state: Option<String> = sqlx::query_scalar(
                     "update job set state = case when state = 'cancelling' then state else 'waiting' end,
                         run_after = case when state = 'cancelling' then now() else now() + make_interval(secs => $2) end,
                         lease_until = null, lease_owner = null
-                     where id = $1 and lease_owner = $3",
+                     where id = $1 and lease_owner = $3 returning state::text",
                 )
                 .bind(job.id)
                 .bind(secs as f64)
                 .bind(owner)
-                .execute(&st.db)
-                .await?
-                .rows_affected();
-                if n == 0 {
-                    return lost(st, &job).await;
+                .fetch_optional(&st.db)
+                .await?;
+                let Some(state) = state else { return lost(st, &job).await };
+                if state == "cancelling" {
+                    // 等待中被取消：放开租约后立刻去补偿
+                    st.wake_jobs();
                 }
                 return Ok(());
             }
@@ -441,12 +437,13 @@ pub async fn advance(st: &AppState, mut job: JobRow, owner: &str) -> anyhow::Res
                 log(st, job.id, "info", msg).await;
                 notify(st, &job);
                 if state == "cancelling" {
-                    // 运行中被取消：放开租约，下一轮领取时做补偿
+                    // 运行中被取消：放开租约，唤醒引擎重新领取去做补偿
                     sqlx::query("update job set lease_until = null, lease_owner = null, run_after = now() where id = $1 and lease_owner = $2")
                         .bind(job.id)
                         .bind(owner)
                         .execute(&st.db)
                         .await?;
+                    st.wake_jobs();
                     return Ok(());
                 }
             }
@@ -468,7 +465,10 @@ pub async fn advance(st: &AppState, mut job: JobRow, owner: &str) -> anyhow::Res
     .await?;
     match state.as_deref() {
         None => return lost(st, &job).await,
-        Some("cancelling") => log(st, job.id, "warn", "作业刚好做完时收到了取消，将执行补偿").await,
+        Some("cancelling") => {
+            log(st, job.id, "warn", "作业刚好做完时收到了取消，将执行补偿").await;
+            st.wake_jobs();
+        }
         Some(_) => log(st, job.id, "info", "作业完成").await,
     }
     notify(st, &job);
@@ -556,6 +556,7 @@ async fn fail(st: &AppState, job: &JobRow, owner: &str, d: &StepDef, kind: ErrKi
     log(st, job.id, "error", format!("失败：{err}")).await;
     if state == "cancelling" {
         log(st, job.id, "warn", "作业正在取消，将执行补偿").await;
+        st.wake_jobs();
     }
     if marked {
         st.emit(Event::Machines);

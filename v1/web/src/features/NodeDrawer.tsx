@@ -103,6 +103,7 @@ export function NodeDrawer() {
 }
 
 /** agent 自报的异常（自 agent 本次启动起累计）：有丢数据、积压或应用失败才显示。
+ *  访问日志解析不了 / 被丢弃的行也列在这里：Xray 日志格式一变，访问监控会静默归零，这是唯一能看到的地方。
  *  线路机的应用失败已在「应用状态」里显示，相同的不重复 */
 function AgentHealthNote({ m }: { m: MachineView }) {
   const h = m.agent?.health;
@@ -111,6 +112,8 @@ function AgentHealthNote({ m }: { m: MachineView }) {
     h.queue_len > 3 && `${h.queue_len} 份报告积压待发`,
     h.queue_dropped > 0 && `${h.queue_dropped} 份报告因离线队列超限被丢弃`,
     h.queue_dead > 0 && `${h.queue_dead} 份报告被中控拒收`,
+    h.access_unparsed > 0 && `访问日志有 ${h.access_unparsed} 行解析不了`,
+    h.access_dropped_lines > 0 && `${h.access_dropped_lines} 行访问日志被丢弃（超长、含非法字符或不完整）`,
     h.access_rotation_gaps + h.access_truncations > 0 && `访问日志有 ${h.access_rotation_gaps + h.access_truncations} 段漏读`,
   ].filter(Boolean);
   const applyErr = h.last_apply_error && h.last_apply_error !== m.relay?.apply_error ? h.last_apply_error : null;

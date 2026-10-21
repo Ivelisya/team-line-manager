@@ -12,7 +12,7 @@ import { toast } from '@/components/ui/toast';
 import { entryState, Note, Section, SectionHeader } from '@/components/app/primitives';
 import { TypedConfirmDialog } from '@/components/app/dialogs';
 import { RetireDialog } from '@/components/app/RetireDialog';
-import { EntryActions, entryLabel } from '@/components/app/EntryActions';
+import { EntryMenuButton, EntryMenus, entryLabel } from '@/components/app/EntryActions';
 import { EvacuateDialog, MoveDialog, RestoreDialog, movableEntries } from '@/components/app/LifecycleDialogs';
 
 export function ManageTab({ m, onClosed }: { m: MachineView; onClosed: () => void }) {
@@ -30,7 +30,9 @@ export function ManageTab({ m, onClosed }: { m: MachineView; onClosed: () => voi
 
 /** 改名 / 改编号：团队 + 编号（节点）或名称（线路机），实时预览新显示名 */
 function RenameSection({ m }: { m: MachineView }) {
-  const teams = useTeams().data ?? [];
+  const teams = useTeams().data;
+  // 选项只随团队列表变：抽屉随实时推送重渲染时团队下拉（memo）不跟着重画
+  const teamOpts = React.useMemo(() => (teams ?? []).map((t) => ({ value: t.id, label: t.name })), [teams]);
   const patch = usePatchMachine();
   const isRelay = m.kind === 'relay';
   const [team, setTeam] = React.useState(m.team?.id ?? '');
@@ -46,7 +48,7 @@ function RenameSection({ m }: { m: MachineView }) {
     setTeam((v) => keep(v, prev.team, srv.team)); setNum((v) => keep(v, prev.num, srv.num)); setLabel((v) => keep(v, prev.label, srv.label));
   }, [srv.id, srv.team, srv.num, srv.label]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const teamName = teams.find((t) => t.id === team)?.name;
+  const teamName = teams?.find((t) => t.id === team)?.name;
   const n = Number(num);
   const numOk = Number.isInteger(n) && n >= 1 && n <= 999; // 与服务端一致：编号范围 1–999
   const preview = isRelay ? label.trim() : teamName && numOk ? F.displayName(teamName, n) : '';
@@ -65,7 +67,7 @@ function RenameSection({ m }: { m: MachineView }) {
           <Field label="线路机名称" className="span-2"><Input value={label} onChange={(e) => setLabel(e.target.value)} /></Field>
         ) : (
           <>
-            <Field label="团队"><Select value={team} onChange={setTeam} options={teams.map((t) => ({ value: t.id, label: t.name }))} /></Field>
+            <Field label="团队"><Select value={team} onChange={setTeam} options={teamOpts} /></Field>
             <Field label="编号" hint="编号在团队内连续；已被占用时会提示" error={num && !numOk ? '编号应为 1–999 的整数' : undefined}>
               <Input inputMode="numeric" value={num} onChange={(e) => setNum(e.target.value.replace(/\D/g, ''))} aria-invalid={!!num && !numOk} />
             </Field>
@@ -94,12 +96,13 @@ function EntrySection({ m }: { m: MachineView }) {
   return (
     <Section>
       <SectionHeader title="入口" meta="停用 / 启用 / 轮换凭据 / 分享链接" />
-      <div className="stack-sm">
+      {/* 入口的“⋯”菜单与对话框整个入口区共用一份 */}
+      <EntryMenus entries={m.entries}><div className="stack-sm">
         {m.entries.length === 0 && <div className="hint">这台机器还没有入口，选一台线路机把它挂上去。</div>}
         {m.entries.map((e) => (
           <div key={e.id} className="manage-row" style={{ border: '1px solid var(--line)', borderRadius: 'var(--r-float)', padding: '8px 12px' }}>
             <div><div className="t">{m.kind === 'relay' ? `${e.port} · ${e.node.name}` : entryLabel(e)}</div><div className="hint">{e.apply_error ?? (e.applied ? '已应用到线路机' : '应用中')}</div></div>
-            <span className="row" style={{ gap: 8 }}>{entryState(e)}<EntryActions entry={e} /></span>
+            <span className="row" style={{ gap: 8 }}>{entryState(e)}<EntryMenuButton entry={e} /></span>
           </div>
         ))}
         {m.kind !== 'relay' && m.lifecycle === 'active' && movableEntries(m).length > 0 && (
@@ -120,7 +123,7 @@ function EntrySection({ m }: { m: MachineView }) {
             <Button disabled={!relay || add.isPending} loading={add.isPending} onClick={() => add.mutate({ id: m.id, relay_id: relay }, { onSuccess: () => { toast.ok('已提交，新入口正在应用'); setRelay(''); }, onError: toast.err })}><Plus />添加入口</Button>
           </div>
         )}
-      </div>
+      </div></EntryMenus>
       <MoveDialog m={m} open={dlg === 'move'} onOpenChange={(o) => !o && setDlg(null)} onDone={() => setDlg(null)} />
       <EvacuateDialog relay={m} open={dlg === 'evacuate'} onOpenChange={(o) => !o && setDlg(null)} onDone={() => setDlg(null)} />
     </Section>

@@ -77,8 +77,8 @@ pub async fn stats_task(sh: Arc<Shared>, cli: XrayCli, mut sd: watch::Receiver<b
     let mut tick = ticker(SAMPLE_INTERVAL);
     let mut version: Option<(u32, String)> = None; // (pid, version)
     let mut was_up: Option<bool> = None;
-    // 缓存的 Xray 进程身份：(MainPID, (starttime ticks, 启动时刻 ms))。只在 /proc 里对不上时才重新问 systemctl
-    let mut proc: Option<(u32, (u64, i64))> = None;
+    // 缓存的 Xray 进程身份：(MainPID, starttime ticks)。只在 /proc 里对不上时才重新问 systemctl
+    let mut proc: Option<(u32, u64)> = None;
     let mut last_query: Option<Instant> = None;
     let mut last_core: Option<String> = None; // 上次成功计算增量时的进程纪元
     let mut up = false;
@@ -91,9 +91,9 @@ pub async fn stats_task(sh: Arc<Shared>, cli: XrayCli, mut sd: watch::Receiver<b
             _ = sd.changed() => return,
         }
         // 每个 SAMPLE_INTERVAL 确认一次进程：缓存的进程还在只读 /proc，对不上才问 systemctl
-        if !proc.is_some_and(|(p, started)| ctl::proc_start_ticks(p) == Some(started.0)) {
+        if !proc.is_some_and(|(p, ticks)| ctl::proc_start_ticks(p) == Some(ticks)) {
             proc = match ctl::main_pid(&cfg.xray_service).await {
-                Some(p) => ctl::proc_start(p).map(|s| (p, s)),
+                Some(p) => ctl::proc_start_ticks(p).map(|t| (p, t)),
                 None => None,
             };
             // 进程（重新）出现：结束退避，本轮就查 API
@@ -104,8 +104,7 @@ pub async fn stats_task(sh: Arc<Shared>, cli: XrayCli, mut sd: watch::Receiver<b
         // Xray 已确认不可达时，xray api 子进程至多每 DOWN_RECHECK 试一次；其余 tick 只更新状态
         let backoff = !up && down_check_at.is_some_and(|t| Instant::now() < t);
         let pid = proc.map(|p| p.0);
-        let start = proc.map(|p| p.1);
-        let core_id = stats::core_id_of(&boot, pid, start.map(|s| s.0));
+        let core_id = stats::core_id_of(&boot, pid, proc.map(|p| p.1));
         // 流量计数器是累计值，降低采样频率不丢流量。以下情况立即查：首次、到点、API 不可达或刚失败过（尽快发现恢复）、
         // 进程身份未知、进程换代（Xray 重启后尽早记下新基线）
         let due = !backoff
@@ -152,12 +151,7 @@ pub async fn stats_task(sh: Arc<Shared>, cli: XrayCli, mut sd: watch::Receiver<b
                 }
             }
         }
-        let status = XrayStatus {
-            running: up,
-            version: version.as_ref().map(|v| v.1.clone()),
-            started_at_ms: start.map(|s| s.1),
-            applied_generation: sh.applied_gen.load(Ordering::Relaxed),
-        };
+        let status = XrayStatus { running: up, version: version.as_ref().map(|v| v.1.clone()), applied_generation: sh.applied_gen.load(Ordering::Relaxed) };
         sh.buf.lock().unwrap().xray = Some(status);
     }
 }
@@ -202,7 +196,8 @@ pub async fn probe_task(sh: Arc<Shared>, mut sd: watch::Receiver<bool>) {
     let mut tick = interval_at(Instant::now() + Duration::from_secs(2), Duration::from_secs(1));
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut first_pass = true;
-    let api_port = render::RenderCtx::of(&sh.cfg).api_port();
+    // 因上一次出口探测还没结束而跳过的次数（只用于日志限流）
+    let mut skipped = 0u64;
     let mut probes_cache: Option<(Arc<DesiredState>, ProbeClients)> = None;
     loop {
         tokio::select! {
@@ -217,7 +212,7 @@ pub async fn probe_task(sh: Arc<Shared>, mut sd: watch::Receiver<bool>) {
         if probes_cache.as_ref().is_none_or(|(a, _)| !Arc::ptr_eq(a, &d)) {
             let old: HashMap<u16, reqwest::Client> = probes_cache.take().map(|(_, m)| m.into_values().collect()).unwrap_or_default();
             let mut m = HashMap::new();
-            for (id, port) in render::probe_ports(&d.entries, api_port) {
+            for (id, port) in render::probe_ports(&d.entries) {
                 match old.get(&port).cloned().map_or_else(|| probe::socks_client(port), Ok) {
                     Ok(c) => {
                         m.insert(id, (port, c));
@@ -264,9 +259,9 @@ pub async fn probe_task(sh: Arc<Shared>, mut sd: watch::Receiver<bool>) {
                 s.next_egress = now + egress_every;
                 if let Some((_, client)) = probes.get(&e.id) {
                     if s.egress_busy.swap(true, Ordering::AcqRel) {
-                        let n = sh.health.probes_skipped.fetch_add(1, Ordering::Relaxed) + 1;
-                        if n <= 3 || n.is_multiple_of(100) {
-                            tracing::warn!(entry = %tags::inbound(e.id), skipped_total = n, "上一次出口探测还没结束，跳过本次");
+                        skipped += 1;
+                        if skipped <= 3 || skipped.is_multiple_of(100) {
+                            tracing::warn!(entry = %tags::inbound(e.id), skipped_total = skipped, "上一次出口探测还没结束，跳过本次");
                         }
                         continue;
                     }

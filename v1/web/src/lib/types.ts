@@ -27,7 +27,7 @@ export interface HealthReason { key: string; severity: 'info' | 'warning' | 'cri
 /** agent 自报的健康数据（只列界面用到的字段，完整见 docs/API.md） */
 export interface AgentHealth {
   queue_len: number; queue_dropped: number; queue_dead: number;
-  access_rotation_gaps: number; access_truncations: number; last_apply_error?: string | null;
+  access_unparsed: number; access_dropped_lines: number; access_rotation_gaps: number; access_truncations: number; last_apply_error?: string | null;
 }
 export interface MachineView {
   id: string; kind: Kind; name: string; team: { id: string; name: string } | null; number: number | null; label: string | null;

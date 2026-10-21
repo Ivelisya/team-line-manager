@@ -89,6 +89,9 @@ pub struct Agent {
     /// agent 自报的健康数据（离线队列、访问日志尾读、探测与对齐，自 agent 进程启动起累计）；旧 agent 没报过为 None。
     /// 每次上报都变，不进实时指标推送（live.rs 的 agent 字段不含它），随 REST 重取更新
     pub health: Option<fleet_proto::AgentHealth>,
+    /// agent 时钟偏差（毫秒）= 中控收到时刻 − agent 报的发送时刻，正数 = agent 时钟慢；只按积压之外的报告更新，没算过为 None。
+    /// 同 `health` 不进实时指标推送；偏差过大由健康原因 `clock_skew` 体现
+    pub clock_skew_ms: Option<i64>,
 }
 
 /// 最近 5 分钟主机负载的「最低值」：最低值都超阈值才算持续高负载（健康判定用，不对外输出）
@@ -281,6 +284,7 @@ struct MRow {
     a_xray: Option<bool>,
     a_cores: Option<i32>,
     a_health: Option<sqlx::types::Json<fleet_proto::AgentHealth>>,
+    a_skew: Option<i64>,
     r_host: Option<String>,
     r_gen: Option<i64>,
     r_applied: Option<i64>,
@@ -302,6 +306,7 @@ const LIVE_TTL: std::time::Duration = std::time::Duration::from_secs(3);
 /// 入口 id → 今天 / 本月流量（北京时间，来自小时汇总表，含已移除的入口）
 type TrafficMap = Arc<HashMap<Uuid, Traffic>>;
 
+#[derive(Default)]
 pub struct LiveCache {
     /// 每次作废 +1；加载开始时记下，加载期间发生过变更的结果不当作新鲜的
     gen: AtomicU64,
@@ -312,25 +317,6 @@ pub struct LiveCache {
     traffic: tokio::sync::Mutex<Option<((u64, Instant), TrafficMap)>>,
     /// 有重置日的机器的周期已用：(机器, 周期起点, 账单时区) → 字节，同样只在汇总后作废
     quota: tokio::sync::Mutex<(u64, HashMap<QuotaKey, i64>)>,
-    /// 同时进行的完整视图加载（`load`）的名额
-    loads: tokio::sync::Semaphore,
-}
-
-/// 同时最多这么多次视图加载：一次加载并发 9 条查询，连接池只有 20 条，几次加载一起跑再加上 agent 上报就会把池占满、
-/// 上报等不到连接回 503。多出来的加载排队（在用视图本来就单飞，排队的多是单台详情、已退役列表）
-const MAX_LOADS: usize = 3;
-
-impl Default for LiveCache {
-    fn default() -> Self {
-        Self {
-            gen: AtomicU64::default(),
-            slot: Default::default(),
-            rolled: AtomicU64::default(),
-            traffic: Default::default(),
-            quota: Default::default(),
-            loads: tokio::sync::Semaphore::new(MAX_LOADS),
-        }
-    }
 }
 
 type QuotaKey = (Uuid, Date, String);
@@ -428,7 +414,6 @@ async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<
 }
 
 pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Result<Vec<MachineView>> {
-    let _permit = st.live.loads.acquire().await.expect("名额信号量不会关闭");
     let db = &st.db;
     let lc = scope.cond();
     let sql = format!(
@@ -439,7 +424,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 s.price_cents s_price, s.currency s_currency, s.cycle::text s_cycle, s.due_date s_due, s.billing_tz s_tz,
                 local_date(s.billing_tz) s_today, s.auto_renew s_auto, s.remind_days s_remind, s.traffic_gb s_traffic, s.traffic_reset_day s_reset,
                 a.agent_version a_version, a.last_report_at a_last, (a.info->'xray'->>'running')::bool a_xray, (a.info->>'cpu_cores')::int a_cores,
-                a.info->'agent_health' a_health, r.public_host r_host, r.generation r_gen, r.applied_generation r_applied, r.applied_at r_applied_at, r.generation_at r_gen_at,
+                a.info->'agent_health' a_health, (a.info->>'clock_skew_ms')::bigint a_skew, r.public_host r_host, r.generation r_gen, r.applied_generation r_applied, r.applied_at r_applied_at, r.generation_at r_gen_at,
                 r.apply_error r_err, r.port_min r_pmin, r.port_max r_pmax
          from machine m
          left join team t on t.id = m.team_id
@@ -690,6 +675,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 xray_running: r.a_xray,
                 cores: r.a_cores,
                 health: r.a_health.map(|h| h.0),
+                clock_skew_ms: r.a_skew,
             });
             let subscription = r.s_price.map(|price| Subscription {
                 price_cents: price,

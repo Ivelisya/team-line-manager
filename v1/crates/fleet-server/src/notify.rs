@@ -73,6 +73,7 @@ pub struct Notice {
 pub fn rule_name(key: &str) -> &str {
     match key {
         "agent_offline" => "agent 离线",
+        "clock_skew" => "agent 时钟不准",
         "no_entry" => "没有在用入口",
         "egress_fail" => "出口不通",
         "tcp_fail" => "线路到节点不通",

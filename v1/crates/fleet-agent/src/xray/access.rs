@@ -28,7 +28,7 @@ fn window_for(max_events: usize) -> u64 {
 #[derive(Debug)]
 pub enum Parsed {
     Event(AccessEvent),
-    /// 合法但不是入口流量（探测入站等）
+    /// 合法但不是入口流量：探测入站等，以及 Xray 拒绝的连接（扫描器、协议不对的 `rejected` 行，没有目标可记）
     Other,
     Bad,
     /// 目标主机名含非法字符（控制字符、NUL、非 ASCII…）：整行丢弃，计入 dropped_lines，不让坏字节进上报
@@ -101,7 +101,7 @@ pub fn parse_line(line: &str, utc_offset_s: i64) -> Parsed {
     let tok: Vec<&str> = rest.split_whitespace().collect();
     let Some(i) = tok.iter().position(|t| *t == "accepted" || *t == "rejected") else { return Parsed::Bad };
     if tok[i] == "rejected" {
-        return Parsed::Bad;
+        return Parsed::Other;
     }
     // 来源：accepted 之前最后一个 token（跳过 "from"）
     let src = tok[..i].iter().rev().find(|t| **t != "from").copied();
@@ -213,8 +213,6 @@ pub struct Cursor {
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Counters {
-    pub lines: u64,
-    pub events: u64,
     pub unparsed: u64,
     pub dropped_lines: u64,
     pub rotation_gaps: u64,
@@ -321,16 +319,12 @@ impl Tailer {
                 break;
             }
             consumed += raw.len();
-            self.counters.lines += 1;
             if raw.len() > MAX_LINE {
                 self.counters.dropped_lines += 1;
                 continue;
             }
             match parse_line(&String::from_utf8_lossy(raw), utc_offset_s) {
-                Parsed::Event(e) => {
-                    self.counters.events += 1;
-                    events.push(e);
-                }
+                Parsed::Event(e) => events.push(e),
                 Parsed::Other => {}
                 Parsed::Bad => self.counters.unparsed += 1,
                 Parsed::BadHost => self.counters.dropped_lines += 1,
@@ -437,7 +431,8 @@ mod tests {
         let probe = format!("2026/10/20 13:50:56 from 127.0.0.1:5 accepted tcp:a.com:80 [probe-{} -> out-x]", id().simple());
         assert!(matches!(parse_line(&probe, 0), Parsed::Other));
         assert!(matches!(parse_line("garbage", 0), Parsed::Bad));
-        assert!(matches!(parse_line("2026/10/20 13:50:56 from 1.2.3.4:5 rejected proxy/vless/inbound: invalid request", 0), Parsed::Bad));
+        // 扫描器被 Xray 拒绝：不算解析失败，否则 access_unparsed 永远不为 0
+        assert!(matches!(parse_line("2026/10/20 13:50:56 from 1.2.3.4:5 rejected proxy/vless/inbound: invalid request", 0), Parsed::Other));
         assert!(matches!(parse_line("2026/10/20 13:50:56 from 1.2.3.4:5 accepted tcp:a.com:99999 [in-x -> y]", 0), Parsed::Bad));
     }
 

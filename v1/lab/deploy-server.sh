@@ -4,7 +4,9 @@
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 bash "$HERE/sync-server.sh"
-ssh -F "$HOME/.ssh/fleetlab_config" fleet-dev 'bash -s' <<'REMOTE'
+# 远端目录没有 .git：提交哈希在本机取，经环境变量交给远端的 cargo，agent 与中控的版本号成为 0.1.0+<哈希>
+GIT_HASH=$(git -C "$HERE" rev-parse --short HEAD)
+ssh -F "$HOME/.ssh/fleetlab_config" fleet-dev "FLEET_GIT_HASH=$GIT_HASH bash -s" <<'REMOTE'
 set -euo pipefail
 export PATH=$HOME/.cargo/bin:$PATH
 apt-get install -y -qq sshpass openssh-client >/dev/null && apt-get clean   # 不留 .deb 缓存
@@ -32,7 +34,7 @@ dist_dir = "/opt/fleet/dist"
 job_workers = 8
 
 [retention]
-raw_days = 14
+raw_days = 3
 access_days = 7
 
 [numbering]

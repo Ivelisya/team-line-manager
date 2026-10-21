@@ -61,7 +61,7 @@ export function JobsPage() {
                 <span style={{ marginLeft: 'auto' }}><JobPill state={j.state} /></span>
               </span>
               {jobLive(j.state) && <span className="l-prog"><Progress value={jobProgress(j).pct} live label="总进度" /><span className="num">{jobProgress(j).done}/{jobProgress(j).total}</span></span>}
-              <span className="l2"><span>{F.dt(j.created_at)}</span><span>{j.created_by}</span>{j.error && <span className="ellipsis" style={{ color: 'var(--bad-text)' }} title={j.error}>{j.error}</span>}</span>
+              <span className="l2"><span>{F.dt(j.created_at)}</span><span>{j.created_by}</span>{j.error && <span className="ellipsis" style={{ color: 'var(--bad-text)' }} data-tip={j.error}>{j.error}</span>}</span>
             </div>
           ))}
           {jobs.data && list.length === 0 && <Empty icon={<ListChecks size={22} />} text="没有作业" hint="上架、退役、升级 agent 都会在这里留下一条" />}
@@ -131,14 +131,14 @@ function JobDetail({ id }: { id: string }) {
           {j.steps.map((s) => {
             const k = stepKind(s);
             return (
-              <li key={s.idx} className="step" data-state={s.state} data-kind={k}>
+              <li key={s.idx} className="step" data-kind={k}>
                 <span className="step-ic">{STEP_ICON[k]}</span>
                 <div style={{ minWidth: 0 }}>
                   <div className="step-title"><b>{s.title}</b><span className="step-time">{s.started_at ? <>{F.clock(s.started_at)} · <Dur a={s.started_at} b={s.finished_at ?? (k === 'failed' ? j.finished_at : null)} live={live && !s.finished_at && k !== 'failed'} /></> : k === 'skipped' || k === 'compensated' ? '未执行' : '等待'}</span>{k === 'compensated' && <Pill tone="warn" dot="none">已补偿</Pill>}</div>
                   {outputLines(s.output).length > 0 && <pre className="step-out">{outputLines(s.output).join('\n')}</pre>}
                   {(s.error || s.error_kind) && (
                     <div className="step-err-box">
-                      {s.error_kind && <span className="err-kind" title={s.error_kind}>{errorKindLabel(s.error_kind)}</span>}
+                      {s.error_kind && <span className="err-kind" data-tip={s.error_kind}>{errorKindLabel(s.error_kind)}</span>}
                       {s.error && <p className="step-err">{s.error}</p>}
                     </div>
                   )}
@@ -149,7 +149,8 @@ function JobDetail({ id }: { id: string }) {
         </ol>
       </Panel>
 
-      <LogPanel jobId={j.id} state={j.state} />
+      {/* key：换作业时整个日志面板重新挂载，日志、暂停状态从空开始，不先闪一帧上一个作业的日志 */}
+      <LogPanel key={j.id} jobId={j.id} state={j.state} />
       <ConfirmDialog open={cancelAsk} onOpenChange={setCancelAsk} title="取消这个作业？" confirmLabel="取消作业" danger description={cancelDesc(j)}
         onConfirm={async () => { await cancel.mutateAsync(j.id); toast.ok('作业已取消'); }} />
     </div>
@@ -211,8 +212,7 @@ const LogPanel = React.memo(function LogPanel({ jobId, state }: { jobId: string;
   const box = React.useRef<HTMLDivElement>(null);
   const live = jobLive(state);
 
-  React.useEffect(() => { all.current = []; setLogs([]); setDropped(0); setFrozen(null); setStuck(true); setErr(null); last.current = 0; }, [jobId]);
-  // 只随作业和“是否进行中”重启：进行中的状态之间切换（running ↔ waiting）不必重来；离开或换作业时中止在途的请求
+  // 只随“是否进行中”重启（换作业时整个面板重新挂载）：进行中的状态之间切换（running ↔ waiting）不必重来；离开时中止在途的请求
   React.useEffect(() => {
     let stop = false; let timer: ReturnType<typeof setTimeout>;
     const ac = new AbortController();
@@ -253,9 +253,10 @@ const LogPanel = React.memo(function LogPanel({ jobId, state }: { jobId: string;
       tools={<>
         {live && frozen == null && <Pill tone="info" dot="pulse">实时</Pill>}
         {!stuck && frozen == null && <Button size="sm" variant="quiet" onClick={jump}><ArrowDownToLine />跳到最新</Button>}
-        <Button size="sm" variant="secondary" aria-pressed={frozen != null} onClick={() => { if (frozen == null) setFrozen(logs.length ? logs[logs.length - 1].id : 0); else { setFrozen(null); setStuck(true); } }}>
+        {/* 已结束的作业不会再有新日志，不给暂停；结束前暂停着的仍可点“继续”看到最后几行 */}
+        {(live || frozen != null) && <Button size="sm" variant="secondary" aria-pressed={frozen != null} onClick={() => { if (frozen == null) setFrozen(logs.length ? logs[logs.length - 1].id : 0); else { setFrozen(null); setStuck(true); } }}>
           {frozen == null ? <><Pause />暂停滚动</> : <><Play />继续</>}
-        </Button>
+        </Button>}
         <IconButton label="复制全部日志" size="sm" onClick={copy} disabled={!logs.length}><Copy size={14} /></IconButton>
       </>}>
       {err != null && logs.length === 0 && <div style={{ marginBottom: 8 }}><ErrorNote error={err} /></div>}

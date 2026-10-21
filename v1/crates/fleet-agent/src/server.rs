@@ -1,5 +1,6 @@
 //! 与中控的 HTTP 交互：上报 / 长轮询期望状态 / 回报应用结果
 
+use crate::util::error_chain;
 use anyhow::{Context, Result};
 use fleet_proto::{ApplyReport, DesiredState, ReportAck};
 use std::net::IpAddr;
@@ -125,16 +126,13 @@ pub fn warn_if_plain_http(url: &str) {
 }
 
 impl ServerClient {
-    pub fn new(base: &str, token_file: PathBuf, ca_file: Option<&PathBuf>) -> Result<Self> {
-        let mut b = reqwest::Client::builder()
+    pub fn new(base: &str, token_file: PathBuf) -> Result<Self> {
+        let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))
             .redirect(reqwest::redirect::Policy::none())
-            .user_agent(format!("fleet-agent/{}", env!("CARGO_PKG_VERSION")));
-        if let Some(ca) = ca_file {
-            let pem = std::fs::read(ca).with_context(|| format!("读取 CA {}", ca.display()))?;
-            b = b.add_root_certificate(reqwest::Certificate::from_pem(&pem)?);
-        }
-        Ok(Self { http: b.build()?, base: base.trim_end_matches('/').to_string(), token_file, token: Mutex::new(None), perm_warned: AtomicBool::new(false) })
+            .user_agent(format!("fleet-agent/{}", fleet_proto::build_version()))
+            .build()?;
+        Ok(Self { http, base: base.trim_end_matches('/').to_string(), token_file, token: Mutex::new(None), perm_warned: AtomicBool::new(false) })
     }
 
     /// 令牌：缓存里有就直接用，没有才读文件（读失败不缓存，下次再读）
@@ -172,17 +170,18 @@ impl ServerClient {
             Ok(t) => t,
             Err(e) => return Outcome::Retry { wait: Some(Duration::from_secs(30)), why: format!("{e:#}") },
         };
-        // 拿到响应头之前的任何错误（含连接超时、长轮询时服务端挂起到客户端超时）都是失败
+        // 拿到响应头之前的任何错误（含连接超时、长轮询时服务端挂起到客户端超时）都是失败。
+        // reqwest 的顶层只有「error sending request for url (…)」，真正原因（连接被拒、DNS…）在 source 链里，整条拼上
         let r = match req.bearer_auth(token).send().await {
             Ok(r) => r,
-            Err(e) if e.is_timeout() => return Outcome::Retry { wait: None, why: format!("等待响应超时（服务端挂起？）：{e}") },
-            Err(e) => return Outcome::Retry { wait: None, why: format!("网络错误：{e}") },
+            Err(e) if e.is_timeout() => return Outcome::Retry { wait: None, why: format!("等待响应超时（服务端挂起？）：{}", error_chain(&e).0) },
+            Err(e) => return Outcome::Retry { wait: None, why: format!("网络错误：{}", error_chain(&e).0) },
         };
         let (status, ra) = (r.status().as_u16(), Self::retry_after(&r));
         let text = match r.text().await {
             Ok(t) => t,
             // 2xx 之后读正文失败（超时、连接中断）：按失败计数退避。长轮询当成"无变化"的话失败被静默吞掉、立刻重拉
-            Err(e) if (200..300).contains(&status) => return Outcome::Retry { wait: None, why: format!("HTTP {status} 但读取正文失败：{e}") },
+            Err(e) if (200..300).contains(&status) => return Outcome::Retry { wait: None, why: format!("HTTP {status} 但读取正文失败：{}", error_chain(&e).0) },
             Err(_) => String::new(),
         };
         let out = classify(status, ra, &text);
@@ -285,7 +284,7 @@ mod tests {
         std::fs::create_dir_all(&d).unwrap();
         let tok = d.join("token");
         std::fs::write(&tok, "t0k\n").unwrap();
-        ServerClient::new(base, tok, None).unwrap()
+        ServerClient::new(base, tok).unwrap()
     }
 
     #[test]
