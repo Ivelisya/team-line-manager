@@ -1,6 +1,6 @@
 #!/bin/bash
 # 生产中控部署 / 升级。在 fleet-dev 上按当前提交编译 fleet-server 与 fleet-agent（musl），连同 fleet-dev:/opt/fleet/dist 里
-# 实验室验证过的 xray、ssserver、geoip.dat，以及本机构建的前端打成一个包，传到中控机由 install.sh 安装并重启。
+# 实验室验证过的 xray、ssserver、geoip.dat（只带与生产不同的），以及本机构建的前端打成一个包，传到中控机由 install.sh 安装并重启。
 # 幂等，升级同样用它。编译失败或 install.sh 的健康检查不过，整个部署以非 0 退出；回滚见 docs/OPS.md §9。
 # 用法：deploy/central/deploy.sh <中控 ssh 主机> <域名>      例：deploy/central/deploy.sh debian13 fleet.kismet613.com
 # 首次部署后建登录账号（密码从标准输入读一行，至少 10 位）：
@@ -29,10 +29,16 @@ build -p fleet-server --release
 build -p fleet-agent --release --target x86_64-unknown-linux-musl
 REMOTE
 
+# xray、ssserver、geoip.dat 只带生产上没有或与 fleet-dev 不同的（比对 sha256），没变的不重传（共约 22.5 MB）
+want=$($LAB 'cd /opt/fleet/dist && sha256sum xray ssserver geoip.dat')
+have=$(ssh "$HOST" 'cd /opt/fleet/dist 2>/dev/null && sha256sum xray ssserver geoip.dat 2>/dev/null' || true)
+DIST=$(comm -13 <(sort <<<"$have") <(sort <<<"$want") | awk '{print $2}' | xargs)
+echo "== dist 随包：${DIST:-无（xray、ssserver、geoip.dat 与生产相同）}"
+
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE/pkg/bin" "$STAGE/pkg/web"
-$LAB 'tar -czf - -C /root/src/target/release fleet-server -C /root/src/target/x86_64-unknown-linux-musl/release fleet-agent -C /opt/fleet/dist xray ssserver geoip.dat' \
+$LAB "tar -czf - -C /root/src/target/release fleet-server -C /root/src/target/x86_64-unknown-linux-musl/release fleet-agent ${DIST:+-C /opt/fleet/dist $DIST}" \
   | tar --no-same-owner -xzf - -C "$STAGE/pkg/bin"
 
 echo "== 构建前端"

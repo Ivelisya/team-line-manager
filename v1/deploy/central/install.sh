@@ -8,7 +8,7 @@
 set -euo pipefail
 DOMAIN=${1:?用法：install.sh <域名>}
 PKG=$(cd "$(dirname "$0")" && pwd)
-chmod 755 "$PKG/bin/fleet-server" "$PKG/bin/fleet-agent" "$PKG/bin/xray" "$PKG/bin/ssserver"   # 包经 Windows 中转会丢可执行位
+chmod 755 "$PKG/bin/fleet-server"   # 包经 Windows 中转会丢可执行位；首次安装要直接运行它生成密钥
 export DEBIAN_FRONTEND=noninteractive
 
 missing=$(for p in postgresql caddy sshpass openssh-client systemd-timesyncd curl jq; do dpkg -s "$p" >/dev/null 2>&1 || echo "$p"; done)
@@ -67,8 +67,10 @@ fi
 [ -f /etc/fleet/ssh/id_ed25519 ] || { ssh-keygen -q -t ed25519 -N "" -C "fleet-central@$DOMAIN" -f /etc/fleet/ssh/id_ed25519; chown fleet:fleet /etc/fleet/ssh/id_ed25519*; }
 [ -f /var/lib/fleet/known_hosts ] || install -m 640 -o fleet -g fleet /dev/null /var/lib/fleet/known_hosts
 
-install -m 755 "$PKG/bin/fleet-agent" "$PKG/bin/xray" "$PKG/bin/ssserver" /opt/fleet/dist/
-install -m 644 "$PKG/bin/geoip.dat" /opt/fleet/dist/
+# xray、ssserver、geoip.dat 只在与这台中控上的不同时才随包带来（deploy.sh 先比对 sha256），没带的保持原样
+install -m 755 "$PKG/bin/fleet-agent" /opt/fleet/dist/
+for f in xray ssserver; do [ ! -f "$PKG/bin/$f" ] || install -m 755 "$PKG/bin/$f" /opt/fleet/dist/; done
+[ ! -f "$PKG/bin/geoip.dat" ] || install -m 644 "$PKG/bin/geoip.dat" /opt/fleet/dist/
 # 换下来的旧版留作 fleet-server.prev（同一个二进制重复部署时不覆盖它），回滚见 docs/OPS.md §9
 if [ -f /opt/fleet/fleet-server ] && ! cmp -s "$PKG/bin/fleet-server" /opt/fleet/fleet-server; then
   cp -p /opt/fleet/fleet-server /opt/fleet/fleet-server.prev
