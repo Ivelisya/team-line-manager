@@ -1,6 +1,6 @@
 // 时序小图：细线 + 淡填充（原版详情图的语言）。颜色由调用方给：图表 token --chart-1 / --chart-2 / --chart-3，或首页的指标色 --m-cpu / --m-mem。
 // memo：抽屉随实时推送重渲染时，曲线点没变（lines / 格式化函数由调用方放在模块常量里）就不重画
-import { memo, useMemo } from 'react';
+import { memo, useCallback, useMemo, useState } from 'react';
 import type { SeriesPoint } from '@/lib/types';
 import { pad2 as p2 } from '@/lib/format';
 import { ChartContainer, ChartLegend, ChartTooltip, Recharts, axisProps, type ChartConfig } from '@/components/ui/chart';
@@ -45,14 +45,17 @@ export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 
   domain?: [number | 'auto', number | 'auto']; yBase?: 1000 | 1024; height?: number; legend?: boolean; connectNulls?: boolean;
 }) {
   const config = useMemo<ChartConfig>(() => Object.fromEntries(lines.map((l) => [l.key, { label: l.label, color: l.color }])), [lines]);
+  // 图例点掉的曲线：不画，纵轴刻度也只按还显示的曲线取
+  const [hidden, setHidden] = useState<ReadonlySet<string>>(() => new Set());
+  const toggle = useCallback((k: string) => setHidden((h) => { const n = new Set(h); if (!n.delete(k)) n.add(k); return n; }), []);
   const data = useMemo(() => (points ?? []).map((p) => ({ ...p, t: new Date(p.ts).getTime() })), [points]);
   const xTicks = useMemo(() => (data.length > 1 ? timeTicks(data[0].t, data[data.length - 1].t, range) : undefined), [data, range]);
   const yTicks = useMemo(() => {
     if (!yBase) return undefined;
     let max = 0;
-    for (const d of data) for (const l of lines) { const v = (d as Record<string, unknown>)[l.key]; if (typeof v === 'number' && v > max) max = v; }
+    for (const d of data) for (const l of lines) { if (hidden.has(l.key)) continue; const v = (d as Record<string, unknown>)[l.key]; if (typeof v === 'number' && v > max) max = v; }
     return valueTicks(max, yBase);
-  }, [data, lines, yBase]);
+  }, [data, lines, yBase, hidden]);
   const common = {
     data, margin: { top: 6, right: 8, bottom: 0, left: 0 },
   };
@@ -66,19 +69,19 @@ export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 
   );
   return (
     <div style={{ display: 'grid', gap: 6 }}>
-      {legend && lines.length > 1 && <ChartLegend config={config} />}
+      {legend && lines.length > 1 && <ChartLegend config={config} hidden={hidden} onToggle={toggle} />}
       <ChartContainer config={config} height={height}>
         {kind === 'area' ? (
           <AreaChart {...common}>
             {axes}
             {lines.map((l, i) => (
-              <Area key={l.key} dataKey={l.key} type="monotone" stroke={`var(--color-${l.key})`} strokeWidth={1.5} fill={`var(--color-${l.key})`} fillOpacity={i === 0 ? 0.1 : 0.04} dot={false} isAnimationActive={false} connectNulls={connectNulls} />
+              <Area key={l.key} dataKey={l.key} type="monotone" stroke={`var(--color-${l.key})`} strokeWidth={1.5} fill={`var(--color-${l.key})`} fillOpacity={i === 0 ? 0.1 : 0.04} hide={hidden.has(l.key)} dot={false} isAnimationActive={false} connectNulls={connectNulls} />
             ))}
           </AreaChart>
         ) : (
           <LineChart {...common}>
             {axes}
-            {lines.map((l) => <Line key={l.key} dataKey={l.key} type="monotone" stroke={`var(--color-${l.key})`} strokeWidth={1.5} dot={false} isAnimationActive={false} connectNulls={connectNulls} />)}
+            {lines.map((l) => <Line key={l.key} dataKey={l.key} type="monotone" stroke={`var(--color-${l.key})`} strokeWidth={1.5} hide={hidden.has(l.key)} dot={false} isAnimationActive={false} connectNulls={connectNulls} />)}
           </LineChart>
         )}
       </ChartContainer>

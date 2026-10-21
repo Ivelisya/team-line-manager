@@ -17,8 +17,19 @@
 .reason-list li { display: flex; align-items: flex-start; gap: var(--sp-8); font-size: var(--fs-body); }
 .reason-list .dot { margin-top: 7px; }
 .chart-box { height: 180px; min-width: 0; }
-.chart-legend { display: flex; gap: var(--sp-12); font-size: var(--fs-label); color: var(--fg-2); align-items: center; }
-.chart-legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: var(--sp-4); }
+.chart-legend { display: flex; flex-wrap: wrap; gap: var(--sp-6); align-items: center; }
+/* 图例胶囊（--lc 是曲线色）：点掉后色块变空心、文字变淡；按下同其它控件微缩 */
+.chart-legend-item {
+  display: inline-flex; align-items: center; gap: var(--sp-6); height: 24px; padding: 0 var(--sp-8); cursor: pointer;
+  border: 1px solid color-mix(in srgb, var(--lc) 35%, var(--line)); border-radius: var(--r-pill); background: color-mix(in srgb, var(--lc) 8%, var(--surface));
+  font: var(--fw-medium) var(--fs-label) / 1 var(--font-sans); color: var(--fg-2);
+  transition: background-color var(--dur-fast), border-color var(--dur-fast), color var(--dur-fast), opacity var(--dur-fast), transform var(--dur-base) var(--ease-sheet);
+}
+.chart-legend-item:hover { color: var(--fg); border-color: color-mix(in srgb, var(--lc) 60%, var(--line)); }
+.chart-legend-item:active { transform: scale(0.96); transition-duration: var(--dur-press); }
+.chart-legend-item i { width: 8px; height: 8px; border-radius: 2px; background: var(--lc); box-shadow: inset 0 0 0 1.5px var(--lc); transition: background-color var(--dur-fast); }
+.chart-legend-item[aria-pressed="false"] { background: transparent; border-color: var(--line); color: var(--fg-3); }
+.chart-legend-item[aria-pressed="false"] i { background: transparent; }
 /* 图表卡（抽屉曲线，参照 CFSM-SAO 详情图）：--cc 是这张图的指标色，由组件写入。边框取指标色 30%；背景三层，自上而下是
    顶部 2px 指标色→透明的色条（75%）、内侧 1px 顶部高光（浮层底：亮色白、暗色比卡片亮一级，不会发白）、极淡的指标色竖向渐变。
    色条画成背景而不是 ::before：圆角自动裁掉，卡片不用 overflow 裁切，曲线提示框的投影不会被卡边切断 */

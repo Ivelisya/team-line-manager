@@ -38,10 +38,14 @@ export function ChartTooltip({ config, labelFormat, valueFormat }: { config: Cha
   );
 }
 
-export function ChartLegend({ config }: { config: ChartConfig }) {
+/** 图例胶囊：点一下隐藏 / 显示这条曲线（hidden 里是被隐藏的 key） */
+export function ChartLegend({ config, hidden, onToggle }: { config: ChartConfig; hidden: ReadonlySet<string>; onToggle: (key: string) => void }) {
   return (
     <div className="chart-legend">
-      {Object.entries(config).map(([k, v]) => <span key={k}><i style={{ background: v.color }} />{v.label}</span>)}
+      {Object.entries(config).map(([k, v]) => (
+        <button key={k} type="button" className="chart-legend-item" aria-pressed={!hidden.has(k)} style={{ '--lc': v.color } as React.CSSProperties} onClick={() => onToggle(k)}
+          title={hidden.has(k) ? `显示「${v.label}」` : `隐藏「${v.label}」`}><i />{v.label}</button>
+      ))}
     </div>
   );
 }
