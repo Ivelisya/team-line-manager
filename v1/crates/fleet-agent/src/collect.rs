@@ -242,10 +242,10 @@ pub async fn probe_task(sh: Arc<Shared>, mut sd: watch::Receiver<bool>) {
                 let (a, b) = if first_pass { (stagger(e.id, tcp_every), Duration::from_secs(5) + stagger(e.id, egress_every)) } else { (Duration::from_secs(1), Duration::from_secs(4)) };
                 Sched { sig: entry_sig(e), next_tcp: now + a, next_egress: now + b, tcp_busy: Arc::new(AtomicBool::new(false)), egress_busy: Arc::new(AtomicBool::new(false)), egress_ok: Arc::new(AtomicBool::new(true)) }
             });
-            if now >= s.next_tcp && !s.tcp_busy.swap(true, Ordering::AcqRel) {
+            // 直出入口没有节点（addr 为 None）：不做 TCP 探测，只靠出口探测
+            if let Some((host, port)) = e.outbound.addr().filter(|_| now >= s.next_tcp && !s.tcp_busy.swap(true, Ordering::AcqRel)) {
                 s.next_tcp = now + tcp_every;
                 let busy = BusyGuard(s.tcp_busy.clone());
-                let (host, port) = e.outbound.addr();
                 let (sh2, id, host) = (sh.clone(), e.id, host.to_string());
                 let tcp_sem2 = tcp_sem.clone();
                 tokio::spawn(async move {

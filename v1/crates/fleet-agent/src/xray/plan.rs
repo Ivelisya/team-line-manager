@@ -355,6 +355,42 @@ mod tests {
     }
 
     #[test]
+    fn direct_entry_is_hot_added_and_removed() {
+        use super::super::render::tests::direct;
+        let base = render(&desired(vec![entry(1, 20001, true)]), &ctx()).unwrap();
+        let with = render(&desired(vec![entry(1, 20001, true), direct(2, 20002)]), &ctx()).unwrap();
+        let id = Uuid::from_u128(2);
+        // 新增：和节点入口一样热增（不重启），出站是入口自己的 out-<id>
+        let steps = plan(&rt_of(&base), &base, &with);
+        assert_eq!(
+            kinds(&steps),
+            vec![format!("ado {}", tags::outbound(id)), format!("adi {}", tags::inbound(id)), format!("adi probe-{}", id.simple()), "adrules (6 条)".to_string()]
+        );
+        let mut rt = rt_of(&base);
+        simulate(&mut rt, &steps).unwrap();
+        assert!(verify(&rt, &with).is_ok());
+        // 移除：规则先换、出站最后删，共享的 direct 不动
+        let steps = plan(&rt_of(&with), &with, &base);
+        let k = kinds(&steps);
+        assert_eq!(k.last().unwrap(), &format!("rmo {}", tags::outbound(id)));
+        let mut rt = rt_of(&with);
+        simulate(&mut rt, &steps).unwrap();
+        assert!(verify(&rt, &base).is_ok());
+        assert!(rt.outbounds.contains(&"direct".to_string()));
+        // 回滚：撤回全部步骤回到加之前
+        let steps = plan(&rt_of(&base), &base, &with);
+        let undo: Vec<Step> = steps.iter().rev().filter_map(|s| s.undo.clone().map(|u| Step { op: u, undo: None, tag: s.tag.clone() })).collect();
+        let mut rt = rt_of(&with);
+        simulate(&mut rt, &undo).unwrap();
+        assert!(verify(&rt, &base).is_ok());
+        // 停用：入站、出站、规则都摘掉
+        let mut d = direct(2, 20002);
+        d.enabled = false;
+        let off = render(&desired(vec![entry(1, 20001, true), d]), &ctx()).unwrap();
+        assert_eq!(off.full, base.full);
+    }
+
+    #[test]
     fn verify_detects_mismatch() {
         let r = render(&desired(vec![entry(1, 20001, true)]), &ctx()).unwrap();
         let mut rt = rt_of(&r);
