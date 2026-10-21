@@ -176,7 +176,13 @@ pub async fn retry(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     }
     if reset {
         let Some(t) = target else { return Err(ApiError::bad_request("这个作业没有目标机器，没有主机指纹可重置")) };
-        let (ip, port): (String, i32) = sqlx::query_as("select host(primary_ip), ssh_port from machine where id = $1").bind(t).fetch_one(&st.db).await?;
+        // 同机 IP 节点登录的是宿主机：重置的是宿主机的指纹
+        let (ip, port): (String, i32) = sqlx::query_as(
+            "select host(coalesce(h.primary_ip, m.primary_ip)), coalesce(h.ssh_port, m.ssh_port) from machine m left join machine h on h.id = m.host_id where m.id = $1",
+        )
+        .bind(t)
+        .fetch_one(&st.db)
+        .await?;
         // 清掉旧记录并按现在的公钥重新记录（之后的步骤仍严格校验）；锁外做，keyscan 要几秒
         crate::ssh::pin_host_key(&st.cfg.known_hosts, &ip, port as u16, true)
             .await

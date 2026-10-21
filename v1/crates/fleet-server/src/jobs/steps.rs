@@ -2,7 +2,7 @@
 
 mod lifecycle;
 
-use super::scripts::{self, vars};
+use super::scripts::{self, vars, SsInst};
 use super::{log, JobRow, Outcome};
 use crate::crypto::{random_token, sha256};
 use crate::entries;
@@ -32,9 +32,14 @@ pub struct Ctx<'a> {
 struct M {
     id: Uuid,
     kind: String,
+    /// SSH 登录的地址和端口：同机 IP 节点没有自己的 SSH，是宿主机的
     ip: String,
     ssh_port: i32,
     lifecycle: String,
+    /// 同机 IP 节点的宿主机
+    host_id: Option<Uuid>,
+    /// 机器自己的 IP（同机 IP 节点的出口 IP；其它机器同 `ip`）
+    own_ip: String,
 }
 
 /// 等外部事件的步骤（首次上报、线路机回报应用 / 摘除）的兜底重查间隔。事件到了由 `jobs::wake_for` 把作业提前并唤醒引擎，
@@ -48,11 +53,34 @@ fn remote(msg: impl Into<String>) -> anyhow::Error { StepError::err(ErrKind::Rem
 impl Ctx<'_> {
     fn target_id(&self) -> anyhow::Result<Uuid> { self.job.target_id.ok_or_else(|| anyhow!("作业没有目标机器")) }
 
+    /// 目标机器。同机 IP 节点的 ip / ssh_port 取宿主机的：步骤里的 SSH 都自动登录宿主机
     async fn machine(&self) -> anyhow::Result<M> {
-        Ok(sqlx::query_as("select id, kind::text kind, host(primary_ip) ip, ssh_port, lifecycle::text lifecycle from machine where id = $1")
-            .bind(self.target_id()?)
-            .fetch_one(&self.st.db)
-            .await?)
+        Ok(sqlx::query_as(
+            "select m.id, m.kind::text kind, host(coalesce(h.primary_ip, m.primary_ip)) ip, coalesce(h.ssh_port, m.ssh_port) ssh_port,
+                    m.lifecycle::text lifecycle, m.host_id, host(m.primary_ip) own_ip
+             from machine m left join machine h on h.id = m.host_id where m.id = $1",
+        )
+        .bind(self.target_id()?)
+        .fetch_one(&self.st.db)
+        .await?)
+    }
+
+    /// 节点在机器上的 ssserver 实例：普通落地机（宿主机）固定 8388；同机 IP 节点的端口是它出站参数里的 SS 端口
+    async fn ss_inst(&self, m: &M) -> anyhow::Result<SsInst> {
+        if m.host_id.is_none() {
+            return Ok(SsInst::host());
+        }
+        let port: i32 = sqlx::query_scalar("select port from node_outbound where machine_id = $1").bind(m.id).fetch_one(&self.st.db).await?;
+        Ok(SsInst { port: port as u16, ip: Some(m.own_ip.clone()) })
+    }
+
+    /// 退役 / 取消上架时清理机器的脚本。同机 IP 节点只删自己的实例（宿主机的 agent 与 ssserver 不动）
+    async fn cleanup_script(&self, m: &M) -> anyhow::Result<String> {
+        Ok(match m.kind.as_str() {
+            "relay" => scripts::RELAY_CLEANUP.to_string(),
+            _ if m.host_id.is_some() => vars(&[("SS_PORT", &self.ss_inst(m).await?.port.to_string())]) + scripts::NODE_IP_CLEANUP,
+            _ => scripts::NODE_CLEANUP.to_string(),
+        })
     }
 
     fn ssh(&self, m: &M, password: Option<String>) -> Target {
@@ -99,6 +127,7 @@ impl Ctx<'_> {
 pub async fn run(c: &Ctx<'_>, key: &str) -> anyhow::Result<Outcome> {
     match key {
         "preflight" => preflight(c).await,
+        "ip_check" => ip_check(c).await,
         "bootstrap" => bootstrap(c).await,
         "converge" => converge_node(c).await,
         "converge_relay" => converge_relay(c).await,
@@ -183,6 +212,51 @@ async fn preflight(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     })))
 }
 
+/// 同机 IP 节点上架（恢复）的第一步，在宿主机上执行：IP 要直接配在宿主机网卡上，经它访问中控回显的来源要正是它（出站路由对），
+/// 暂定的 SS 端口被别的程序占着时锁住宿主机行，改成最小的空闲端口
+async fn ip_check(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
+    let m = c.machine().await?;
+    let host = m.host_id.ok_or_else(|| anyhow!("这台机器不是同机 IP 节点"))?;
+    let (hname,): (String,) = sqlx::query_as("select display_name(m.kind::text, m.label, t.name, m.number) from machine m left join team t on t.id = m.team_id where m.id = $1")
+        .bind(host)
+        .fetch_one(&c.st.db)
+        .await?;
+    if !ssh::tcp_ok(&m.ip, m.ssh_port as u16, Duration::from_secs(5)).await {
+        return Err(StepError::err(ErrKind::Network, format!("宿主机 {hname}（{}:{}）的 SSH 端口连不上", m.ip, m.ssh_port)));
+    }
+    let ip = m.own_ip.as_str();
+    let echo = format!("{}/echo", c.st.cfg.public_url.trim_end_matches('/'));
+    let out = c.ssh(&m, None).run(&(vars(&[("IP", ip), ("ECHO", &echo)]) + scripts::IP_CHECK), Duration::from_secs(60)).await?;
+    if !out.ok() {
+        return Err(out.fail(&format!("在宿主机 {hname} 上核对 IP 失败")));
+    }
+    let local = out.kv("local_ips").unwrap_or("").replace(',', ", ");
+    if !ip_set(&local).contains(ip) {
+        return Err(remote(format!("IP {ip} 不在宿主机 {hname} 的网卡上（本机：{local}）：只支持直接配在网卡上的公网 IPv4，EIP / NAT 映射的 IP 不行")));
+    }
+    let got = out.kv("echo").unwrap_or("").trim();
+    if got != ip {
+        return Err(remote(match got.parse::<IpAddr>() {
+            Ok(_) => format!("经 {ip} 出站时中控看到的来源是 {got}：宿主机没让这个 IP 的流量从它自己出去（检查策略路由 / NAT）"),
+            Err(_) => format!("经 {ip} 访问中控 {echo} 失败：{got}"),
+        }));
+    }
+    let busy: BTreeSet<u16> = out.kv("busy").unwrap_or("").split(',').filter_map(|p| p.trim().parse().ok()).collect();
+    let mut port = c.ss_inst(&m).await?.port;
+    if busy.contains(&port) {
+        let mut tx = c.st.db.begin().await?;
+        sqlx::query("select 1 from machine where id = $1 for update").bind(host).execute(&mut *tx).await?;
+        let mut taken = crate::db::ip_node_ports(&mut tx, host, Some(m.id)).await?;
+        taken.extend(&busy);
+        let free = crate::db::free_ss_port(&taken).ok_or_else(|| remote(format!("宿主机 {hname} 上没有空闲的 SS 端口")))?;
+        sqlx::query("update node_outbound set port = $2, updated_at = now() where machine_id = $1").bind(m.id).bind(free as i32).execute(&mut *tx).await?;
+        tx.commit().await?;
+        c.warn(format!("SS 端口 {port} 在宿主机上已被占用，改用 {free}")).await;
+        port = free;
+    }
+    Ok(Outcome::Done(json!({"ss_port": port, "local_ips": local, "egress_ip": got})))
+}
+
 async fn bootstrap(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let m = c.machine().await?;
     let key_ok = c.ssh(&m, None).run("true", Duration::from_secs(20)).await.map(|o| o.ok()).unwrap_or(false);
@@ -232,10 +306,10 @@ async fn relay_ips_for(c: &Ctx<'_>, node: Uuid, extra: Option<Uuid>) -> anyhow::
 
 fn ip_set(s: &str) -> BTreeSet<String> { s.split(',').map(str::trim).filter(|x| !x.is_empty()).map(String::from).collect() }
 
-/// 校验节点防火墙脚本的输出：规则加载成功，且放行集合恰好等于期望的线路机 IP
-fn check_nft(out: &Output, allow: &str) -> anyhow::Result<()> {
+/// 校验节点防火墙脚本的输出：规则加载成功，且放行集合恰好等于期望的线路机 IP。`table` 是 nft 表名（`SsInst::table`）
+fn check_nft(out: &Output, allow: &str, table: &str) -> anyhow::Result<()> {
     match out.kv("nft") {
-        Some("missing") => return Err(remote("节点上没有防火墙放行文件（/etc/fleet/nft/ss_guard.nft），这台节点还没收敛过？")),
+        Some("missing") => return Err(remote(format!("节点上没有防火墙放行文件（/etc/fleet/nft/{table}.nft），这台节点还没收敛过？"))),
         Some("error") => return Err(remote(format!("nft 规则校验或加载失败：{}", out.stderr.trim()))),
         _ => {}
     }
@@ -253,15 +327,20 @@ fn check_nft(out: &Output, allow: &str) -> anyhow::Result<()> {
 async fn converge_node(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let m = c.machine().await?;
     let t = c.ssh(&m, None);
-    let base = t.run(scripts::BASELINE, Duration::from_secs(600)).await?;
-    if !base.ok() {
-        return Err(base.fail("系统基线失败"));
-    }
-    if base.kv("sshd_password") != Some("no") {
-        return Err(remote(format!("sshd 仍允许密码登录（{}）", base.kv("sshd_password").unwrap_or("?"))));
-    }
-    if base.kv("cc") != Some("bbr") {
-        c.warn(format!("拥塞控制是 {}，没能切到 BBR（容器里属正常）", base.kv("cc").unwrap_or("?"))).await;
+    // 同机 IP 节点登录的是宿主机：系统基线宿主机上架时已经做过
+    let mut bbr = None;
+    if m.host_id.is_none() {
+        let base = t.run(scripts::BASELINE, Duration::from_secs(600)).await?;
+        if !base.ok() {
+            return Err(base.fail("系统基线失败"));
+        }
+        if base.kv("sshd_password") != Some("no") {
+            return Err(remote(format!("sshd 仍允许密码登录（{}）", base.kv("sshd_password").unwrap_or("?"))));
+        }
+        if base.kv("cc") != Some("bbr") {
+            c.warn(format!("拥塞控制是 {}，没能切到 BBR（容器里属正常）", base.kv("cc").unwrap_or("?"))).await;
+        }
+        bbr = Some(base.kv("cc") == Some("bbr"));
     }
     let pushed = t.push(&c.dist("ssserver"), "/usr/local/bin/ssserver", "0755", Duration::from_secs(180)).await?;
     let (method, secret): (Option<String>, Vec<u8>) = sqlx::query_as("select method, secret_enc from node_outbound where machine_id = $1")
@@ -270,24 +349,26 @@ async fn converge_node(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         .await?;
     let password = c.st.secrets.open_str(&secret)?;
     let allow = relay_ips_for(c, m.id, c.param_uuid("relay_id").ok()).await?;
+    let inst = c.ss_inst(&m).await?;
     let script = vars(&[
-        ("SS_PORT", "8388"),
+        ("SS_PORT", &inst.port.to_string()),
         ("SS_METHOD", method.as_deref().unwrap_or("aes-256-gcm")),
         ("SS_PASSWORD", &password),
         ("ALLOW", &allow),
-    ]) + scripts::NODE_SS;
+    ]) + &scripts::node_ss(&inst);
     let out = t.run(&script, Duration::from_secs(120)).await?;
     if !out.ok() {
         return Err(out.fail("配置 ssserver / 防火墙失败"));
     }
-    check_nft(&out, &allow)?;
+    check_nft(&out, &allow, &inst.table())?;
     if out.kv("ss") != Some("listening") {
         return Err(remote(format!("ssserver 没有起来：{}", out.stdout.trim())));
     }
     if pushed {
-        t.run("systemctl restart fleet-ssserver", Duration::from_secs(30)).await?;
+        // 只重启这台节点自己的实例：同一台机器上别的 ssserver（宿主机的、别的同机 IP 节点的）下次重启时才换上新程序
+        t.run(&format!("systemctl restart {}", inst.svc()), Duration::from_secs(30)).await?;
     }
-    Ok(Outcome::Done(json!({"bbr": base.kv("cc") == Some("bbr"), "nft_relays": out.kv("nft_relays"), "ssserver_updated": pushed})))
+    Ok(Outcome::Done(json!({"bbr": bbr, "nft_relays": out.kv("nft_relays"), "ssserver_updated": pushed})))
 }
 
 async fn converge_relay(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
@@ -414,15 +495,19 @@ async fn firewall(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         _ => return Ok(Outcome::Skipped("家宽代理没有防火墙要改".into())),
     }
     let allow = relay_ips_for(c, m.id, None).await?;
-    let out = c.ssh(&m, None).run(&(vars(&[("SS_PORT", "8388"), ("ALLOW", &allow)]) + scripts::NODE_NFT_ONLY), Duration::from_secs(60)).await?;
+    let table = c.ss_inst(&m).await?.table();
+    let out = c.ssh(&m, None).run(&nft_only(&table, &allow), Duration::from_secs(60)).await?;
     if !out.ok() {
         // 脚本在 nft=missing / nft=error 时以非 0 退出
-        check_nft(&out, &allow)?;
+        check_nft(&out, &allow, &table)?;
         return Err(out.fail("更新防火墙失败"));
     }
-    check_nft(&out, &allow)?;
+    check_nft(&out, &allow, &table)?;
     Ok(Outcome::Done(json!({"nft_relays": out.kv("nft_relays")})))
 }
+
+/// 只改节点防火墙放行名单的脚本
+fn nft_only(table: &str, allow: &str) -> String { vars(&[("NFT_TABLE", table), ("ALLOW", allow)]) + scripts::NODE_NFT_ONLY }
 
 /// 重试时让线路机重新应用一次：代数 +1，清掉上次留下的应用错误（否则一进来又立刻判失败）。
 async fn rebump(c: &Ctx<'_>, relay_id: Uuid, entry: Option<Uuid>) -> anyhow::Result<()> {
@@ -582,8 +667,8 @@ async fn cleanup(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     if !ssh::tcp_ok(&m.ip, m.ssh_port as u16, Duration::from_secs(5)).await {
         return Ok(Outcome::Skipped("机器连不上，跳过清理（令牌照样撤销）".into()));
     }
-    let script = if m.kind == "relay" { scripts::RELAY_CLEANUP } else { scripts::NODE_CLEANUP };
-    match c.ssh(&m, None).run(script, Duration::from_secs(120)).await {
+    let script = c.cleanup_script(&m).await?;
+    match c.ssh(&m, None).run(&script, Duration::from_secs(120)).await {
         Ok(o) if o.stdout.contains("cleanup=done") => Ok(Outcome::Done(json!({"ss": o.kv("ss")}))),
         Ok(o) => Ok(Outcome::Skipped(format!("清理没有完成：{}", o.stderr.trim()))),
         Err(e) => Ok(Outcome::Skipped(format!("登录失败，跳过清理：{e}"))),
@@ -602,6 +687,12 @@ async fn revoke(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
 async fn finalize(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let m = c.machine().await?;
     let mut tx = c.st.db.begin().await?;
+    // 先锁团队行再改机器行：宿主机连同它的同机 IP 节点退役时，同团队的几个退役作业会同时收尾，
+    // 压缩编号要改同团队别的节点，都按「团队 → 机器」的顺序加锁才不会互相等
+    let team: Option<Uuid> = sqlx::query_scalar("select team_id from machine where id = $1").bind(m.id).fetch_one(&mut *tx).await?;
+    if let Some(t) = team {
+        sqlx::query("select 1 from team where id = $1 for update").bind(t).execute(&mut *tx).await?;
+    }
     sqlx::query(
         "update machine set lifecycle = 'retired', retired_at = now(), revision = revision + 1, updated_at = now() where id = $1",
     )
@@ -613,13 +704,10 @@ async fn finalize(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     // 编号连续：同团队剩下的节点压缩成 01..N
     let mut renamed = vec![];
     let mut relays = vec![];
-    if c.st.cfg.numbering.auto_compact {
-        let team: Option<(Option<Uuid>,)> = sqlx::query_as("select team_id from machine where id = $1").bind(m.id).fetch_optional(&mut *tx).await?;
-        if let Some((Some(t),)) = team {
-            let (ch, rs) = crate::db::compact_team(&mut tx, t, &c.job.created_by, "节点退役后自动压缩").await?;
-            renamed = ch;
-            relays = rs;
-        }
+    if let Some(t) = team.filter(|_| c.st.cfg.numbering.auto_compact) {
+        let (ch, rs) = crate::db::compact_team(&mut tx, t, &c.job.created_by, "节点退役后自动压缩").await?;
+        renamed = ch;
+        relays = rs;
     }
     tx.commit().await?;
     for r in relays {
@@ -628,7 +716,10 @@ async fn finalize(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     if !renamed.is_empty() {
         c.log(format!("编号已压缩：{} 台节点改了编号（见审计）", renamed.len())).await;
     }
-    ssh::forget_host(&c.st.cfg.known_hosts, &m.ip, m.ssh_port as u16).await?;
+    // 同机 IP 节点登录的是宿主机：记着的主机公钥是宿主机的，不能忘
+    if m.host_id.is_none() {
+        ssh::forget_host(&c.st.cfg.known_hosts, &m.ip, m.ssh_port as u16).await?;
+    }
     Ok(Outcome::Done(json!({"renumbered": renamed.len()})))
 }
 
@@ -744,8 +835,9 @@ pub async fn compensate(st: &AppState, job: &JobRow, owner: &str) {
         return;
     }
     if m.kind != "proxy" && ssh::tcp_ok(&m.ip, m.ssh_port as u16, Duration::from_secs(5)).await {
-        let script = if m.kind == "relay" { scripts::RELAY_CLEANUP } else { scripts::NODE_CLEANUP };
-        note(st, job.id, "清理机器上的服务", c.ssh(&m, None).run(script, Duration::from_secs(120)).await).await;
+        if let Some(script) = note(st, job.id, "读取清理参数", c.cleanup_script(&m).await).await {
+            note(st, job.id, "清理机器上的服务", c.ssh(&m, None).run(&script, Duration::from_secs(120)).await).await;
+        }
     }
     note(
         st,
@@ -798,7 +890,10 @@ pub async fn compensate(st: &AppState, job: &JobRow, owner: &str) {
         .await;
     }
     note(st, job.id, "删除出站秘密", sqlx::query("delete from node_outbound where machine_id = $1").bind(id).execute(&st.db).await).await;
-    note(st, job.id, "忘记主机公钥", ssh::forget_host(&st.cfg.known_hosts, &m.ip, m.ssh_port as u16).await).await;
+    // 同机 IP 节点记着的主机公钥是宿主机的，不能忘
+    if m.host_id.is_none() {
+        note(st, job.id, "忘记主机公钥", ssh::forget_host(&st.cfg.known_hosts, &m.ip, m.ssh_port as u16).await).await;
+    }
     if st.cfg.numbering.auto_compact {
         if let Some((Some(t),)) = team {
             if let Some(mut tx) = note(st, job.id, "开启事务", st.db.begin().await).await {
@@ -824,16 +919,18 @@ mod tests {
 
     #[test]
     fn nft_check_compares_sets() {
+        let t = "ss_guard";
         // 顺序无关
-        assert!(check_nft(&out("nft_relays=2.2.2.2,1.1.1.1\n"), "1.1.1.1, 2.2.2.2").is_ok());
+        assert!(check_nft(&out("nft_relays=2.2.2.2,1.1.1.1\n"), "1.1.1.1, 2.2.2.2", t).is_ok());
         // 少了一个
-        assert!(check_nft(&out("nft_relays=1.1.1.1\n"), "1.1.1.1, 2.2.2.2").is_err());
+        assert!(check_nft(&out("nft_relays=1.1.1.1\n"), "1.1.1.1, 2.2.2.2", t).is_err());
         // 多了一个
-        assert!(check_nft(&out("nft_relays=1.1.1.1,3.3.3.3\n"), "1.1.1.1").is_err());
+        assert!(check_nft(&out("nft_relays=1.1.1.1,3.3.3.3\n"), "1.1.1.1", t).is_err());
         // 没输出
-        assert!(check_nft(&out(""), "1.1.1.1").is_err());
-        // 脚本自己报的失败
-        assert!(check_nft(&out("nft=missing\n"), "1.1.1.1").is_err());
-        assert!(check_nft(&out("nft=error\nnft_relays=1.1.1.1\n"), "1.1.1.1").is_err());
+        assert!(check_nft(&out(""), "1.1.1.1", t).is_err());
+        // 脚本自己报的失败：缺的是哪张表的文件
+        let e = check_nft(&out("nft=missing\n"), "1.1.1.1", "ss_guard_8389").unwrap_err();
+        assert!(e.to_string().contains("/etc/fleet/nft/ss_guard_8389.nft"), "{e}");
+        assert!(check_nft(&out("nft=error\nnft_relays=1.1.1.1\n"), "1.1.1.1", t).is_err());
     }
 }

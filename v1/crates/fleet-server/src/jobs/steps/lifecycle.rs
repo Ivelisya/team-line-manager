@@ -179,10 +179,12 @@ pub(super) async fn compensate_move(c: &Ctx<'_>) {
     if widened.as_deref().is_some_and(|s| s != "pending") {
         if let Some(m) = note(st, job.id, "读取节点", c.machine().await).await {
             if m.kind == "vps" && ssh::tcp_ok(&m.ip, m.ssh_port as u16, Duration::from_secs(5)).await {
-                if let Some(allow) = note(st, job.id, "计算放行名单", live_relay_ips(c, node).await).await {
-                    let script = vars(&[("SS_PORT", "8388"), ("ALLOW", &allow)]) + scripts::NODE_NFT_ONLY;
-                    match c.ssh(&m, None).run(&script, Duration::from_secs(60)).await {
-                        Ok(out) => match check_nft(&out, &allow) {
+                let allow = note(st, job.id, "计算放行名单", live_relay_ips(c, node).await).await;
+                let inst = note(st, job.id, "读取 SS 端口", c.ss_inst(&m).await).await;
+                if let (Some(allow), Some(inst)) = (allow, inst) {
+                    let table = inst.table();
+                    match c.ssh(&m, None).run(&nft_only(&table, &allow), Duration::from_secs(60)).await {
+                        Ok(out) => match check_nft(&out, &allow, &table) {
                             Ok(()) => log(st, job.id, "info", format!("节点防火墙已恢复为 [{allow}]")).await,
                             Err(e) => log(st, job.id, "warn", format!("补偿「恢复防火墙」失败（已忽略）：{e:#}")).await,
                         },

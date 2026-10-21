@@ -5,7 +5,7 @@ use crate::names::{direct_name, display_name};
 use crate::state::AppState;
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -31,13 +31,13 @@ impl Scope {
     }
 }
 
-/// 精简列表（`GET /machines?view=brief`）：id、类型、显示名、线路机名、IP、生命周期、团队，排序同完整视图。
+/// 精简列表（`GET /machines?view=brief`）：id、类型、显示名、线路机名、IP、生命周期、团队、宿主机 id，排序同完整视图。
 /// fleetctl 按名字 / IP 找机器只要这些：一条查询，不为解析一个名字组装全部机器（含已退役）的完整视图
 pub async fn brief(st: &AppState, scope: Scope) -> sqlx::Result<Value> {
     sqlx::query_scalar(&format!(
         "select coalesce(json_agg(json_build_object(
                     'id', m.id, 'kind', m.kind, 'name', display_name(m.kind::text, m.label, t.name, m.number), 'label', m.label,
-                    'ip', host(m.primary_ip), 'lifecycle', m.lifecycle,
+                    'ip', host(m.primary_ip), 'lifecycle', m.lifecycle, 'host_id', m.host_id,
                     'team', case when t.id is not null then json_build_object('id', t.id, 'name', t.name) end)
                   order by m.kind = 'relay' desc, t.sort_order nulls first, t.name, m.number, m.label, m.id), '[]')
          from machine m left join team t on t.id = m.team_id
@@ -193,6 +193,10 @@ pub struct MachineView {
     pub label: Option<String>,
     pub ip: String,
     pub ssh_port: i32,
+    /// 同机 IP 节点：它所在的宿主机（SSH、agent、主机读数都是宿主机的，`agent` / `host` 就是宿主机的）；其它机器为 null
+    pub host_machine: Option<Ref>,
+    /// 宿主机：它上面未退役的同机 IP 节点
+    pub ip_nodes: Vec<Ref>,
     pub provider: Option<Ref>,
     pub provider_code: Option<String>,
     pub plan: Option<PlanRef>,
@@ -256,6 +260,8 @@ struct MRow {
     label: Option<String>,
     ip: String,
     ssh_port: i32,
+    host_id: Option<Uuid>,
+    host_name: Option<String>,
     provider_id: Option<Uuid>,
     provider_name: Option<String>,
     provider_code: Option<String>,
@@ -395,11 +401,12 @@ async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<
     let miss: Vec<&QuotaKey> = keys.iter().filter(|k| !slot.1.contains_key(*k)).collect();
     if !miss.is_empty() {
         // 小时表按 UTC 整点分桶：周期起点所在的那一桶整桶算进来（半小时时区如 Asia/Kolkata 多算起点前至多 30 分钟，
-        // 不漏算周期开头）；整点时区（北京、洛杉矶）起点正好是桶边界，和今天 / 本月的算法一致
+        // 不漏算周期开头）；整点时区（北京、洛杉矶）起点正好是桶边界，和今天 / 本月的算法一致。
+        // 宿主机的额度和它的同机 IP 节点（含已退役的）共用：它们的入口流量一起算
         let rows: Vec<(Uuid, i64)> = sqlx::query_as(
             "select q.mid, coalesce(sum(h.up_bytes + h.down_bytes), 0)::bigint
              from unnest($1::uuid[], $2::date[], $3::text[]) q(mid, start, tz)
-             join entry e on e.node_id = q.mid or e.relay_id = q.mid
+             join entry e on e.node_id = q.mid or e.relay_id = q.mid or e.node_id in (select x.id from machine x where x.host_id = q.mid)
              join entry_traffic_hourly h on h.entry_id = e.id and h.hour > (q.start::timestamp at time zone q.tz) - interval '1 hour'
              group by q.mid",
         )
@@ -419,8 +426,10 @@ async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<
 pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Result<Vec<MachineView>> {
     let db = &st.db;
     let lc = scope.cond();
+    // 同机 IP 节点没有自己的 agent：agent 状态取宿主机的
     let sql = format!(
         "select m.id, m.kind::text kind, m.team_id, t.name team_name, m.number, m.label, host(m.primary_ip) ip, m.ssh_port,
+                m.host_id, display_name(hm.kind::text, hm.label, ht.name, hm.number) host_name,
                 m.provider_id, p.name provider_name, p.code provider_code, m.plan_id, pl.name plan_name,
                 pl.bandwidth_mbps plan_bw, pl.traffic_gb plan_traffic, m.service_ref, m.lifecycle::text lifecycle,
                 m.lifecycle_reason, m.note, m.revision, m.created_at, m.activated_at, m.retired_at,
@@ -431,10 +440,12 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 r.apply_error r_err, r.port_min r_pmin, r.port_max r_pmax
          from machine m
          left join team t on t.id = m.team_id
+         left join machine hm on hm.id = m.host_id
+         left join team ht on ht.id = hm.team_id
          left join provider p on p.id = m.provider_id
          left join plan pl on pl.id = m.plan_id
          left join subscription s on s.machine_id = m.id
-         left join agent_state a on a.machine_id = m.id
+         left join agent_state a on a.machine_id = coalesce(m.host_id, m.id)
          left join relay r on r.machine_id = m.id
          where {lc} and ($1::uuid is null or m.id = $1)
          order by m.kind = 'relay' desc, t.sort_order nulls first, t.name, m.number, m.label, m.id"
@@ -444,6 +455,8 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
         return Ok(vec![]);
     }
     let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
+    // 主机读数按机器所在的那台算：同机 IP 节点取宿主机的
+    let hids: Vec<Uuid> = rows.iter().map(|r| r.host_id.unwrap_or(r.id)).collect::<HashSet<_>>().into_iter().collect();
     let now = OffsetDateTime::now_utc();
     // 有流量重置日的订阅：账单时区里的今天 → 周期起点
     let periods: Vec<QuotaKey> = rows
@@ -511,7 +524,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
             from host_metric where machine_id = mid and ts > now() - interval '15 minutes' and ts <= now() + interval '1 day'
             order by ts desc limit 2) x",
     )
-    .bind(&ids)
+    .bind(&hids)
     .fetch_all(db);
     let entries_q = async {
         let es: Vec<E> = sqlx::query_as(
@@ -554,7 +567,13 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
         .bind(&ids)
         .fetch_all(db)
         .await?;
-        Ok::<_, sqlx::Error>((tr, removed))
+        // 宿主机上同机 IP 节点（含已退役的）的入口：流量额度和宿主机共用，本月流量也算进宿主机的
+        let ipn: Vec<(Uuid, Uuid)> = sqlx::query_as("select e.id, x.host_id from entry e join machine x on x.id = e.node_id where e.id = any($1) and x.host_id = any($2)")
+            .bind(&with_traffic)
+            .bind(&ids)
+            .fetch_all(db)
+            .await?;
+        Ok::<_, sqlx::Error>((tr, removed, ipn))
     };
     let jobs_q = sqlx::query_as::<_, (Uuid, Uuid, String, String)>(
         "select target_id, id, kind, state::text from job
@@ -574,11 +593,18 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 (min(mem_used::float8 * 100 / nullif(mem_total, 0)))::real mem_min, (min(disk_used::float8 * 100 / nullif(disk_total, 0)))::real disk_min
          from host_metric where machine_id = any($1) and ts > now() - interval '5 minutes' group by machine_id",
     )
+    .bind(&hids)
+    .fetch_all(db);
+    // 宿主机上未退役的同机 IP 节点
+    let ipn_q = sqlx::query_as::<_, (Uuid, Uuid, String)>(
+        "select m.host_id, m.id, display_name(m.kind::text, m.label, t.name, m.number) from machine m left join team t on t.id = m.team_id
+         where m.host_id = any($1) and m.lifecycle <> 'retired' order by t.sort_order nulls first, t.name, m.number, m.id",
+    )
     .bind(&ids)
     .fetch_all(db);
     let period_of: HashMap<Uuid, Date> = periods.iter().map(|k| (k.0, k.1)).collect();
-    let (hs, (es, ps), (traffic, removed), jobs, inc, silences, su, policies, period_used) =
-        tokio::try_join!(hs_q, entries_q, traffic_q, jobs_q, inc_q, sil_q, su_q, crate::policy::load_modes(db), quota_used(st, periods))?;
+    let (hs, (es, ps), (traffic, removed, ipn_entries), jobs, inc, silences, su, policies, period_used, ipn) =
+        tokio::try_join!(hs_q, entries_q, traffic_q, jobs_q, inc_q, sil_q, su_q, crate::policy::load_modes(db), quota_used(st, periods), ipn_q)?;
 
     let mut host: HashMap<Uuid, HostNow> = HashMap::new();
     let mut prev: HashMap<Uuid, (OffsetDateTime, Option<i64>, Option<i64>)> = HashMap::new();
@@ -634,6 +660,16 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
             t.month_down += x.month_down;
         }
     }
+    // 宿主机 → 它的同机 IP 节点本月的业务流量（额度共用）
+    let mut ipn_month: HashMap<Uuid, i64> = HashMap::new();
+    for (e, h) in ipn_entries {
+        let x = &traffic[&e];
+        *ipn_month.entry(h).or_default() += x.month_up + x.month_down;
+    }
+    let mut ip_nodes: HashMap<Uuid, Vec<Ref>> = HashMap::new();
+    for (h, id, name) in ipn {
+        ip_nodes.entry(h).or_default().push(Ref { id, name });
+    }
 
     let mut entries_by: HashMap<Uuid, Vec<EntryView>> = HashMap::new();
     for e in es {
@@ -681,6 +717,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
         .into_iter()
         .map(|r| {
             let name = display_name(&r.kind, r.label.as_deref(), r.team_name.as_deref(), r.number);
+            let hid = r.host_id.unwrap_or(r.id);
             let agent = (r.kind != "proxy").then(|| Agent {
                 version: r.a_version.clone(),
                 last_report_at: r.a_last,
@@ -720,11 +757,13 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 None => Quota {
                     used: entries.iter().map(|e| e.traffic.month_up + e.traffic.month_down).sum::<i64>()
                         + removed_traffic.month_up
-                        + removed_traffic.month_down,
+                        + removed_traffic.month_down
+                        + ipn_month.get(&r.id).copied().unwrap_or(0),
                     period_start: today.replace_day(1).expect("1 号"),
                 },
             };
-            let maintenance = silences.maintenance(r.id);
+            // 宿主机维护时它上面的同机 IP 节点一起维护（是同一台机器）
+            let maintenance = silences.maintenance(r.id) || r.host_id.is_some_and(|h| silences.maintenance(h));
             let policy_blocked = r.kind != "relay" && policies.effective(r.id, r.team_id).0.mode == crate::policy::Mode::Blocked;
             // 上架失败：最近失败的上架/恢复作业；退役中：失败的退役作业（等重试）
             let failed_job = failed_jobs
@@ -744,6 +783,8 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 label: r.label,
                 ip: r.ip,
                 ssh_port: r.ssh_port,
+                host_machine: r.host_id.map(|id| Ref { id, name: r.host_name.clone().unwrap_or_default() }),
+                ip_nodes: ip_nodes.remove(&r.id).unwrap_or_default(),
                 provider: r.provider_id.map(|id| Ref { id, name: r.provider_name.clone().unwrap_or_default() }),
                 provider_code: r.provider_code,
                 plan: r.plan_id.map(|id| PlanRef {
@@ -762,7 +803,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 retired_at: r.retired_at,
                 subscription,
                 agent,
-                host: host.remove(&r.id),
+                host: host.get(&hid).cloned(),
                 entries,
                 removed_traffic,
                 quota,
@@ -772,7 +813,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 open_incidents: inc.get(&r.id).copied().unwrap_or(0),
                 maintenance,
                 relay,
-                sustained: sustained.get(&r.id).copied().unwrap_or_default(),
+                sustained: sustained.get(&hid).copied().unwrap_or_default(),
                 policy_blocked,
             };
             v.health = health::evaluate(&v, now);
@@ -840,14 +881,14 @@ pub fn overview_of(ms: &[MachineView]) -> Value {
             }
         }
         // 实时速率只算数据没过期的：agent 离线的机器，最后一份上报的速率不算（同前端 liveRate）。
-        // 告警（哪怕严重）不影响：机器照常每 10 秒上报
+        // 告警（哪怕严重）不影响：机器照常每 10 秒上报。同机 IP 节点的读数就是宿主机的：在线离线照常按节点计，速率不再算一遍
         let stale = m.agent.as_ref().is_some_and(|a| !a.online);
         if stale {
             offline += 1;
         } else {
             online += 1;
         }
-        if let Some(h) = m.host.as_ref().filter(|_| !stale) {
+        if let Some(h) = m.host.as_ref().filter(|_| !stale && m.host_machine.is_none()) {
             rx += h.net_rx_bps.unwrap_or(0.0);
             tx += h.net_tx_bps.unwrap_or(0.0);
         }
@@ -910,6 +951,15 @@ mod tests {
         assert_eq!(ov["net_rx_bps"], 1000.0);
         assert_eq!(ov["net_tx_bps"], 500.0);
         assert_eq!(ov["nodes"]["down"], 2);
+
+        // 同机 IP 节点的主机读数就是宿主机的：速率只算一次，节点数、在线数照常各算一台
+        let mut h = base("vps");
+        h.host = Some(host(800.0));
+        let mut x = base("vps");
+        x.host = h.host.clone();
+        x.host_machine = Some(Ref { id: h.id, name: "团队1-03".into() });
+        let ov = overview_of(&[h, x]);
+        assert_eq!((ov["net_rx_bps"].as_f64(), ov["nodes"]["total"].as_i64(), ov["online"].as_i64()), (Some(800.0), Some(2), Some(2)));
     }
 
     #[test]

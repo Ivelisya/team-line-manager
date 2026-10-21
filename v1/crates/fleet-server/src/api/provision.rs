@@ -61,6 +61,9 @@ pub struct Item {
     subscription: Option<SubIn>,
     /// 机器重装过、主机指纹变了：允许预检时覆盖已记录的指纹
     reset_host_key: Option<bool>,
+    /// 同机 IP 节点：加在这台落地机（宿主机）上，SSH 与 agent 用宿主机的；`ip` 是它自己的出口 IP，要已配在宿主机网卡上。
+    /// 这时 ssh_port、login、ss_port、provider_id、plan_id、reset_host_key 不适用（忽略）：SSH 端口与供应商取宿主机的、不带套餐，SS 端口由中控分配
+    host_id: Option<Uuid>,
 }
 
 #[derive(Deserialize)]
@@ -68,11 +71,27 @@ pub struct Batch {
     items: Vec<Item>,
 }
 
+/// 宿主机（同机 IP 节点的 host_id 指向的机器）
+#[derive(sqlx::FromRow)]
+struct HostRow {
+    id: Uuid,
+    kind: String,
+    lifecycle: String,
+    host_id: Option<Uuid>,
+    ssh_port: i32,
+    provider_id: Option<Uuid>,
+    name: String,
+}
+
 struct Checked {
     item: Item,
     ip: IpAddr,
     number: Option<i32>,
     name: String,
+    /// 同机 IP 节点：宿主机的 (SSH 端口, 供应商)
+    host: Option<(i32, Option<Uuid>)>,
+    /// 同机 IP 节点暂定的 SS 端口（作业在宿主机上核对时发现被占用会改）
+    ss_port: Option<u16>,
     errors: Vec<String>,
 }
 
@@ -95,6 +114,21 @@ async fn validate(tx: &mut Tx<'_>, items: &[Item]) -> ApiResult<Vec<Checked>> {
         .fetch_all(&mut **tx)
         .await?;
     let team_name: HashMap<Uuid, String> = team_rows.into_iter().collect();
+    // 同机 IP 节点的宿主机：在团队之后锁住（和退役宿主机互斥；同一台宿主机上的 SS 端口一个事务一个事务地分）
+    let host_ids: Vec<Uuid> = items.iter().filter_map(|i| i.host_id).collect::<HashSet<_>>().into_iter().collect();
+    let host_rows: Vec<HostRow> = sqlx::query_as(
+        "select m.id, m.kind::text kind, m.lifecycle::text lifecycle, m.host_id, m.ssh_port, m.provider_id,
+                display_name(m.kind::text, m.label, t.name, m.number) name
+         from machine m left join team t on t.id = m.team_id where m.id = any($1) order by m.id for update of m",
+    )
+    .bind(&host_ids)
+    .fetch_all(&mut **tx)
+    .await?;
+    let mut host_ports: HashMap<Uuid, HashSet<u16>> = HashMap::new();
+    for h in &host_rows {
+        host_ports.insert(h.id, crate::db::ip_node_ports(tx, h.id, None).await?);
+    }
+    let hosts: HashMap<Uuid, HostRow> = host_rows.into_iter().map(|h| (h.id, h)).collect();
     // 每个团队已占用的编号（只算未退役的；退役的号立即回收）
     let taken_rows: Vec<(Uuid, i32)> = sqlx::query_as(
         "select team_id, number from machine where team_id = any($1) and number is not null and lifecycle <> 'retired'",
@@ -187,7 +221,31 @@ async fn validate(tx: &mut Tx<'_>, items: &[Item]) -> ApiResult<Vec<Checked>> {
                 errors.push("供应商不存在".into());
             }
         }
-        out.push(Checked { item: it.clone(), ip, number: it.number, name: String::new(), errors });
+        let (mut host, mut ss_port) = (None, None);
+        if let Some(hid) = it.host_id {
+            match hosts.get(&hid) {
+                None => errors.push("宿主机不存在".into()),
+                Some(_) if it.kind != "vps" => errors.push("只有落地机（vps）能加在宿主机上".into()),
+                Some(h) if h.kind != "vps" || h.host_id.is_some() => {
+                    errors.push(format!("「{}」不能当宿主机：宿主机要是普通落地机（不能是线路机、家宽代理或同机 IP 节点）", h.name))
+                }
+                Some(h) if h.lifecycle != "active" => {
+                    errors.push(format!("宿主机「{}」现在是「{}」，只能加在运行中的落地机上", h.name, jobs::lifecycle_zh(&h.lifecycle)))
+                }
+                Some(h) => {
+                    let taken = host_ports.entry(hid).or_default();
+                    ss_port = crate::db::free_ss_port(taken);
+                    match ss_port {
+                        Some(p) => {
+                            taken.insert(p);
+                        }
+                        None => errors.push(format!("宿主机「{}」上没有空闲的 SS 端口", h.name)),
+                    }
+                    host = Some((h.ssh_port, h.provider_id));
+                }
+            }
+        }
+        out.push(Checked { item: it.clone(), ip, number: it.number, name: String::new(), host, ss_port, errors });
     }
     for c in out.iter_mut() {
         if c.item.kind == "relay" {
@@ -215,7 +273,7 @@ async fn validate(tx: &mut Tx<'_>, items: &[Item]) -> ApiResult<Vec<Checked>> {
 }
 
 fn report(v: &[Checked]) -> Value {
-    json!({"items": v.iter().map(|c| json!({"ok": c.errors.is_empty(), "errors": c.errors, "name": c.name, "number": c.number})).collect::<Vec<_>>()})
+    json!({"items": v.iter().map(|c| json!({"ok": c.errors.is_empty(), "errors": c.errors, "name": c.name, "number": c.number, "ss_port": c.ss_port})).collect::<Vec<_>>()})
 }
 
 pub async fn check(_a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Batch>) -> ApiResult<Json<Value>> {
@@ -236,9 +294,14 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Ba
         let it = &c.item;
         let id = new_id();
         let kind = it.kind.as_str();
+        // 同机 IP 节点：SSH 端口（只展示）和供应商取宿主机的，不带套餐（费用默认不记，要记到它的「费用」里单独填）
+        let (ssh_port, provider, plan) = match c.host {
+            Some((p, pv)) => (p, pv, None),
+            None => (it.ssh_port.unwrap_or(22) as i32, it.provider_id, it.plan_id),
+        };
         sqlx::query(
-            "insert into machine (id, kind, team_id, number, label, primary_ip, ssh_port, provider_id, plan_id, service_ref, note, lifecycle)
-             values ($1, $2::machine_kind, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'provisioning')",
+            "insert into machine (id, kind, team_id, number, label, primary_ip, ssh_port, provider_id, plan_id, service_ref, note, host_id, lifecycle)
+             values ($1, $2::machine_kind, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'provisioning')",
         )
         .bind(id)
         .bind(kind)
@@ -246,11 +309,12 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Ba
         .bind(if kind == "relay" { None } else { c.number })
         .bind(if kind == "relay" { Some(c.name.clone()) } else { None })
         .bind(ipnetwork::IpNetwork::from(c.ip))
-        .bind(it.ssh_port.unwrap_or(22) as i32)
-        .bind(it.provider_id)
-        .bind(it.plan_id)
+        .bind(ssh_port)
+        .bind(provider)
+        .bind(plan)
         .bind(&it.service_ref)
         .bind(it.note.as_deref().unwrap_or(""))
+        .bind(it.host_id)
         .execute(&mut *tx)
         .await?;
         match kind {
@@ -260,7 +324,7 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Ba
                 )
                 .bind(id)
                 .bind(c.ip.to_string())
-                .bind(it.ss_port.unwrap_or(8388) as i32)
+                .bind(c.ss_port.or(it.ss_port).unwrap_or(8388) as i32)
                 .bind(st.secrets.seal_str(&ss_password()))
                 .execute(&mut *tx)
                 .await?;
@@ -311,21 +375,33 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Ba
             .bind(&s.cycle)
             .bind(s.due_date)
             .bind(&s.billing_tz)
-            .bind(it.plan_id)
-            .bind(it.provider_id)
+            .bind(plan)
+            .bind(provider)
             .execute(&mut *tx)
             .await?;
         }
         let mut params = json!({"relay_id": it.relay_id});
-        if it.reset_host_key == Some(true) {
-            params["reset_host_key"] = json!(true);
+        // 同机 IP 节点用中控密钥登录宿主机：不收 root 密码，也不重置宿主机的主机指纹
+        if c.host.is_none() {
+            if it.reset_host_key == Some(true) {
+                params["reset_host_key"] = json!(true);
+            }
+            if let Some(pw) = it.login.as_ref().and_then(|l| l.password.as_deref()).filter(|p| !p.is_empty()) {
+                let enc = base64::engine::general_purpose::STANDARD.encode(st.secrets.seal_str(pw));
+                params["login"] = json!({"password_enc": enc});
+            }
         }
-        if let Some(pw) = it.login.as_ref().and_then(|l| l.password.as_deref()).filter(|p| !p.is_empty()) {
-            let enc = base64::engine::general_purpose::STANDARD.encode(st.secrets.seal_str(pw));
-            params["login"] = json!({"password_enc": enc});
-        }
-        let job = jobs::enqueue(&mut tx, &format!("provision_{kind}"), Some(id), params, &a.name).await?;
-        audit(&mut tx, &a.name, "machine.provision", "machine", Some(id), json!({"name": c.name, "ip": c.ip.to_string(), "kind": kind, "job_id": job})).await?;
+        let job_kind = if c.host.is_some() { "provision_ip".to_string() } else { format!("provision_{kind}") };
+        let job = jobs::enqueue(&mut tx, &job_kind, Some(id), params, &a.name).await?;
+        audit(
+            &mut tx,
+            &a.name,
+            "machine.provision",
+            "machine",
+            Some(id),
+            json!({"name": c.name, "ip": c.ip.to_string(), "kind": kind, "job_id": job, "host_id": it.host_id}),
+        )
+        .await?;
         created.push(json!({"machine_id": id, "job_id": job, "name": c.name}));
     }
     tx.commit().await?;

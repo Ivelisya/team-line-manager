@@ -3,7 +3,7 @@
 use anyhow::Context;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Postgres, Transaction};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use time::{Date, Duration, OffsetDateTime};
 use uuid::Uuid;
 
@@ -299,8 +299,19 @@ pub async fn cleanup_retention(db: &PgPool) -> anyhow::Result<()> {
 
 /// 彻底删除会连带删掉这台机器入口的流量，而入口另一端未退役的机器拿这些流量算今日/本月/周期已用：
 /// 近 35 天里还有这类流量时不能删。另一端已退役（统计不再用、也在等删）的不拦，否则两台互为对端的退役机器谁都删不掉。
+/// 宿主机上还有同机 IP 节点（含已退役的，它们的 host_id 指着它）时也不能删，先删它们。
 /// 返回给用户看的原因；None = 可以删。
-pub async fn purge_blocker(db: impl sqlx::PgExecutor<'_>, machine: Uuid) -> sqlx::Result<Option<String>> {
+pub async fn purge_blocker(db: &PgPool, machine: Uuid) -> sqlx::Result<Option<String>> {
+    let ip_nodes: Option<String> = sqlx::query_scalar(
+        "select string_agg(display_name(m.kind::text, m.label, t.name, m.number), '、' order by m.id)
+         from machine m left join team t on t.id = m.team_id where m.host_id = $1",
+    )
+    .bind(machine)
+    .fetch_one(db)
+    .await?;
+    if let Some(names) = ip_nodes {
+        return Ok(Some(format!("这台机器上还有同机 IP 节点没有彻底删除（含已退役的）：{names}；先删它们")));
+    }
     let until: Option<Date> = sqlx::query_scalar(
         "select ((max(h.hour) + interval '35 days 1 hour') at time zone 'Asia/Shanghai')::date + 1
          from entry e join entry_traffic_hourly h on h.entry_id = e.id
@@ -312,6 +323,25 @@ pub async fn purge_blocker(db: impl sqlx::PgExecutor<'_>, machine: Uuid) -> sqlx
     .await?;
     Ok(until.map(|d| format!("这台机器的入口在 {d} 前仍计入其他机器的流量统计，届时再彻底删除")))
 }
+
+/// 同机 IP 节点的 SS 端口从这里往上分（宿主机自己的 ssserver 固定 8388）
+const IP_NODE_PORT_MIN: u16 = 8389;
+
+/// 宿主机上未退役的同机 IP 节点占着的 SS 端口（`except` 这台不算）。调用方先锁住宿主机行，同一台宿主机上的端口一次只有一个事务在分
+pub async fn ip_node_ports(conn: &mut sqlx::PgConnection, host: Uuid, except: Option<Uuid>) -> sqlx::Result<HashSet<u16>> {
+    let ports: Vec<i32> = sqlx::query_scalar(
+        "select o.port from node_outbound o join machine x on x.id = o.machine_id
+         where x.host_id = $1 and x.lifecycle <> 'retired' and x.id is distinct from $2",
+    )
+    .bind(host)
+    .bind(except)
+    .fetch_all(conn)
+    .await?;
+    Ok(ports.into_iter().map(|p| p as u16).collect())
+}
+
+/// 不在 `taken` 里的最小 SS 端口
+pub fn free_ss_port(taken: &HashSet<u16>) -> Option<u16> { (IP_NODE_PORT_MIN..=u16::MAX).find(|p| !taken.contains(p)) }
 
 pub async fn audit(tx: &mut Tx<'_>, actor: &str, action: &str, target_kind: &str, target_id: Option<Uuid>, detail: serde_json::Value) -> sqlx::Result<()> {
     sqlx::query("insert into audit_log (actor, action, target_kind, target_id, detail) values ($1, $2, $3, $4, $5)")
