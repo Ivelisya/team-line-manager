@@ -210,8 +210,7 @@ impl Service {
     /// 重读 machine 表建内部地址表（线路机和节点的 primary_ip 自动算内部）。
     pub async fn refresh_internal(&self, db: &PgPool) {
         let rows: Result<Vec<(String, String)>, _> = sqlx::query_as(
-            "select host(m.primary_ip), coalesce(case when m.kind = 'relay' then m.label
-                 else t.name || '-' || case when m.number < 10 then '0' || m.number::text else m.number::text end end, '未命名')
+            "select host(m.primary_ip), display_name(m.kind::text, m.label, t.name, m.number)
              from machine m left join team t on t.id = m.team_id where m.lifecycle <> 'retired'",
         )
         .fetch_all(db)
@@ -585,8 +584,7 @@ pub async fn reconcile_incidents(st: &AppState, now: OffsetDateTime, rep: &mut S
 
     let ids: Vec<Uuid> = want.keys().map(|k| k.1).collect();
     let names: HashMap<Uuid, String> = sqlx::query_as::<_, (Uuid, String)>(
-        "select m.id, coalesce(case when m.kind = 'relay' then m.label
-             else t.name || '-' || case when m.number < 10 then '0' || m.number::text else m.number::text end end, '未命名')
+        "select m.id, display_name(m.kind::text, m.label, t.name, m.number)
          from machine m left join team t on t.id = m.team_id where m.id = any($1)",
     )
     .bind(&ids)

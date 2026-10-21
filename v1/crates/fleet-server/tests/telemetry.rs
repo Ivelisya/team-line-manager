@@ -25,7 +25,9 @@ async fn age_dirty(t: &T) {
     sqlx::query("update rollup_dirty set touched_at = now() - interval '1 minute'").execute(&t.st.db).await.unwrap();
 }
 
+/// 评估一轮。告警用的在用机器视图有 3 s 短缓存，测试里上报完马上评估，先作废
 async fn pass(t: &T, s: &mut AlertState, base: OffsetDateTime, secs: i64) {
+    t.st.live.invalidate();
     alerts::evaluate_once(&t.st, s, base + time::Duration::seconds(secs)).await.unwrap();
 }
 
@@ -162,6 +164,78 @@ async fn rollup_covers_backfilled_hours_and_counter_resets() {
     assert_eq!(up, 160);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn overview_series_sums_minute_rates() {
+    let t = setup().await;
+    seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let cur = now_ms().div_euclid(60_000) * 60_000;
+    // 三个分钟各一条：第二分钟计数器回绕（那一段不计），第三分钟 60 s 涨 60 000 字节 = 8 000 bit/s
+    let mut r = blank_report(1);
+    r.host = vec![host(cur - 175_000, 1.0, 50_000, 100_000), host(cur - 115_000, 1.0, 1_000, 2_000), host(cur - 55_000, 1.0, 61_000, 122_000)];
+    assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
+    let v = t.get("/api/v1/overview/series?minutes=5").await;
+    let pts = v["points"].as_array().unwrap();
+    assert_eq!(pts.len(), 5, "{v}");
+    let at = |ms: i64| {
+        let ts = OffsetDateTime::from_unix_timestamp(ms / 1000).unwrap().format(&time::format_description::well_known::Rfc3339).unwrap();
+        pts.iter().find(|p| p["ts"] == ts.as_str()).unwrap_or_else(|| panic!("缺 {ts}：{v}")).clone()
+    };
+    assert_eq!((at(cur - 60_000)["net_rx_bps"].as_f64(), at(cur - 60_000)["net_tx_bps"].as_f64()), (Some(8_000.0), Some(16_000.0)));
+    assert_eq!(at(cur - 120_000)["net_rx_bps"].as_f64(), Some(0.0), "计数器回绕的那一分钟不计");
+    assert!(pts.windows(2).all(|w| w[0]["ts"].as_str() < w[1]["ts"].as_str()), "旧→新");
+    for bad in ["0", "61", "x"] {
+        assert_eq!(t.req("GET", &format!("/api/v1/overview/series?minutes={bad}"), None, None).await.0, StatusCode::BAD_REQUEST);
+    }
+    assert_eq!(t.get("/api/v1/overview/series").await["points"].as_array().unwrap().len(), 30);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn probe_beats_bucket_tcp_probes_per_machine() {
+    let t = setup().await;
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let team = seed_team(&t, "团队1").await;
+    let (node, entry) = seed_node(&t, relay, team, 1, "203.0.113.5", 20000).await;
+    let (_node2, _) = seed_node(&t, relay, team, 2, "203.0.113.6", 20001).await;
+    let now = now_ms();
+    let mut r = blank_report(1);
+    r.probes = vec![
+        probe(entry, now - 5_000, ProbeKind::Tcp, true),
+        probe(entry, now - 10_000, ProbeKind::Tcp, true),
+        probe(entry, now - 4 * 60_000, ProbeKind::Tcp, false),
+        probe(entry, now - 5_000, ProbeKind::Egress, true),
+        probe(entry, now - 61 * 60_000, ProbeKind::Tcp, true),
+    ];
+    assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
+    let v = t.get("/api/v1/probe-beats").await;
+    assert_eq!(v.as_object().unwrap().len(), 2, "只有有探测的机器（线路机汇总它的入口）：{v}");
+    for id in [relay, node] {
+        let b = v[id.to_string()].as_array().unwrap();
+        assert_eq!(b.len(), 20);
+        assert_eq!(b[19], json!([2, 2, 10.0]), "{v}");
+        assert_eq!(b[18], json!([1, 0, null]), "4 分钟前那次落在倒数第二格：{v}");
+        assert!(b[..18].iter().all(|x| *x == json!([0, 0, null])), "{v}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sql_display_name_matches_rust() {
+    let t = setup().await;
+    let cases = [
+        ("relay", Some("线路机2"), None, None),
+        ("vps", None, Some("团队1"), Some(3)),
+        ("vps", None, Some("团队1"), Some(120)),
+        ("proxy", Some("备用"), None, None),
+        ("vps", Some("旧名"), Some("团队1"), Some(4)),
+        ("vps", None, None, None),
+    ];
+    for (k, l, tm, n) in cases {
+        let s: String = sqlx::query_scalar("select display_name($1, $2, $3, $4)").bind(k).bind(l).bind(tm).bind(n).fetch_one(&t.st.db).await.unwrap();
+        assert_eq!(s, fleet_server::names::display_name(k, l, tm, n));
+    }
+    let none: Option<String> = sqlx::query_scalar("select display_name(null, null, null, null)").fetch_one(&t.st.db).await.unwrap();
+    assert!(none.is_none(), "没连上机器（kind 为空）给 null");
+}
+
 // ── T2 / T6 ─────────────────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -255,6 +329,30 @@ async fn relay_xray_down_alert_lifecycle() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retiring_machine_alerts_are_left_to_retire_flow() {
+    let t = setup().await;
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    xray_report(&t, 1, false).await;
+    let mut state = AlertState::default();
+    let base = OffsetDateTime::now_utc();
+    pass(&t, &mut state, base, 0).await;
+    pass(&t, &mut state, base, 61).await;
+    assert_eq!(incidents(&t, "firing").await.len(), 1);
+    // 开始退役：evaluate 不再给原因，但这不是「恢复」，告警留给退役收尾关闭
+    sqlx::query("update machine set lifecycle = 'retiring' where id = $1").bind(relay).execute(&t.st.db).await.unwrap();
+    for secs in [91, 151, 211] {
+        pass(&t, &mut state, base, secs).await;
+    }
+    assert_eq!(incidents(&t, "firing").await.len(), 1, "退役中的机器的告警不自动恢复");
+    // 退役取消回到 active：照常评估，原因消失满 60 秒恢复
+    sqlx::query("update machine set lifecycle = 'active' where id = $1").bind(relay).execute(&t.st.db).await.unwrap();
+    xray_report(&t, 2, true).await;
+    pass(&t, &mut state, base, 241).await;
+    pass(&t, &mut state, base, 301).await;
+    assert!(incidents(&t, "firing").await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn relay_renewal_and_global_maintenance() {
     let t = setup().await;
     let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
@@ -265,6 +363,7 @@ async fn relay_renewal_and_global_maintenance() {
     // 线路机也有续费提醒（原先写在节点分支里，线路机永远不报）
     assert_eq!(t.health(relay).await.1, ["renewal_due"]);
     let mut state = AlertState::default();
+    t.st.live.invalidate();
     alerts::evaluate_once(&t.st, &mut state, OffsetDateTime::now_utc()).await.unwrap();
     assert!(has_rule(&incidents(&t, "firing").await, "renewal_due"), "续费类告警不去抖，立即开");
     // 登记续费后下一轮评估立即恢复（续费类关也不去抖）

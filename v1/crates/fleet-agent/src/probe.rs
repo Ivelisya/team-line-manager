@@ -27,32 +27,18 @@ pub async fn tcp_probe(entry_id: Uuid, host: &str, port: u16, timeout: Duration,
 
 // ── 出口探测 ────────────────────────────────────────────────────────────────
 
-/// 每个 SOCKS 入站端口复用一个 reqwest 客户端：新建客户端要初始化 TLS 配置、加载根证书，在小内存机器上不便宜。
+/// 经本机 SOCKS 入站端口出去的客户端（socks5h，域名由代理解析）。新建客户端要初始化 TLS、加载根证书，
+/// 调用方按端口留一个、随入口集合增删（collect::probe_task）。
 /// 关掉连接池：出口探测要量的是"新建一条经代理的连接"的完整延迟，复用旧连接会让延迟偏低、也可能掩盖链路故障。
-fn client_for(proxy: SocketAddr) -> Result<reqwest::Client> {
-    use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
-    /// 入口被删除后端口会遗留在表里，超过这个数量就挤掉一个（用到时会按需重建）
-    const MAX_CLIENTS: usize = 64;
-    static CLIENTS: OnceLock<Mutex<HashMap<SocketAddr, reqwest::Client>>> = OnceLock::new();
-    let mut m = CLIENTS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(c) = m.get(&proxy) {
-        return Ok(c.clone());
-    }
-    let c = reqwest::Client::builder().proxy(reqwest::Proxy::all(format!("socks5h://{proxy}"))?).pool_max_idle_per_host(0).build()?;
-    if m.len() >= MAX_CLIENTS {
-        if let Some(k) = m.keys().next().copied() {
-            m.remove(&k);
-        }
-    }
-    m.insert(proxy, c.clone());
-    Ok(c)
+pub fn socks_client(port: u16) -> Result<reqwest::Client> {
+    let proxy = SocketAddr::from(([127, 0, 0, 1], port));
+    Ok(reqwest::Client::builder().proxy(reqwest::Proxy::all(format!("socks5h://{proxy}"))?).pool_max_idle_per_host(0).build()?)
 }
 
-/// 经 SOCKS5 代理（socks5h，域名由代理解析）发 GET，返回正文。http / https 同一条路径。
-async fn http_get_via_socks(proxy: SocketAddr, url: &str, timeout: Duration) -> Result<String> {
+/// 发 GET，返回正文。http / https 同一条路径。
+async fn http_get(client: &reqwest::Client, url: &str, timeout: Duration) -> Result<String> {
     tokio::time::timeout(timeout, async {
-        let r = client_for(proxy)?.get(url).send().await?;
+        let r = client.get(url).send().await?;
         ensure!(r.status().is_success(), "HTTP {}", r.status());
         Ok(r.text().await?)
     })
@@ -67,10 +53,10 @@ fn normalize(ip: IpAddr) -> IpAddr {
     }
 }
 
-pub async fn egress_probe(entry_id: Uuid, probe_port: u16, echo_url: &str, expect: IpAddr, timeout: Duration, ts_ms: i64) -> ProbeSample {
+/// `client` 来自 `socks_client`（该入口的探测入站端口）
+pub async fn egress_probe(entry_id: Uuid, client: &reqwest::Client, echo_url: &str, expect: IpAddr, timeout: Duration, ts_ms: i64) -> ProbeSample {
     let t = Instant::now();
-    let proxy = SocketAddr::from(([127, 0, 0, 1], probe_port));
-    let (ok, detail) = match http_get_via_socks(proxy, echo_url, timeout).await {
+    let (ok, detail) = match http_get(client, echo_url, timeout).await {
         Ok(body) => match body.trim().parse::<IpAddr>() {
             Ok(seen) => {
                 let ok = normalize(seen) == normalize(expect);
@@ -138,7 +124,7 @@ mod tests {
     #[tokio::test]
     async fn socks_client_and_egress_ok() {
         let (addr, h) = fake_socks(true, "203.0.113.9\n").await;
-        let s = egress_probe(Uuid::nil(), addr.port(), "http://echo.test:8080/ip", "203.0.113.9".parse().unwrap(), Duration::from_secs(3), 1).await;
+        let s = egress_probe(Uuid::nil(), &socks_client(addr.port()).unwrap(), "http://echo.test:8080/ip", "203.0.113.9".parse().unwrap(), Duration::from_secs(3), 1).await;
         assert!(s.ok, "{s:?}");
         assert!(s.latency_ms.is_some());
         assert_eq!(h.await.unwrap(), ("echo.test".to_string(), 8080));
@@ -147,12 +133,12 @@ mod tests {
     #[tokio::test]
     async fn egress_mismatch_and_refused() {
         let (addr, _h) = fake_socks(true, "198.51.100.1").await;
-        let s = egress_probe(Uuid::nil(), addr.port(), "http://echo.test/ip", "203.0.113.9".parse().unwrap(), Duration::from_secs(3), 1).await;
+        let s = egress_probe(Uuid::nil(), &socks_client(addr.port()).unwrap(), "http://echo.test/ip", "203.0.113.9".parse().unwrap(), Duration::from_secs(3), 1).await;
         assert!(!s.ok);
         assert!(s.latency_ms.is_none());
         assert!(s.detail.unwrap().contains("198.51.100.1"));
         let (addr, _h) = fake_socks(false, "").await;
-        let s = egress_probe(Uuid::nil(), addr.port(), "http://echo.test/ip", "203.0.113.9".parse().unwrap(), Duration::from_secs(3), 1).await;
+        let s = egress_probe(Uuid::nil(), &socks_client(addr.port()).unwrap(), "http://echo.test/ip", "203.0.113.9".parse().unwrap(), Duration::from_secs(3), 1).await;
         assert!(!s.ok && s.latency_ms.is_none() && s.detail.is_some());
     }
 

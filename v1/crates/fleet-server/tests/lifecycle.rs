@@ -231,6 +231,7 @@ async fn move_proxy_node_never_loses_its_entry() {
             .await
             .unwrap();
     }
+    t.st.live.rolled_up(); // 视图里的流量来自小时汇总，汇总跑完才刷新
     let m = t.get(&format!("/api/v1/machines/{node}")).await;
     assert_eq!(m["entries"].as_array().unwrap().len(), 1);
     assert_eq!((m["entries"][0]["traffic"]["month_up"].as_i64(), m["removed_traffic"]["month_up"].as_i64()), (Some(7), Some(100)));

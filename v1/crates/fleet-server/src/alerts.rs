@@ -13,7 +13,7 @@
 
 use crate::notify::{self, Kind, Notice};
 use crate::state::{AppState, Event};
-use crate::views::{self, Scope};
+use crate::views;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -69,9 +69,10 @@ const OPEN_COLS: &str = "id, rule, subject_id, severity::text severity, summary,
     (select case when l.kind = 'resolved' then l.ts end from notify_log l where l.incident_id = incident.id and l.kind in ('firing', 'repeat', 'resolved')
      order by l.ts desc, l.id desc limit 1) told_resolved_at";
 
-/// 仍在触发的告警这一轮该发的通知：报过恢复的，距那条恢复通知满 REOPEN_QUIET_S 发「触发」；否则按持续提醒间隔发「提醒」
+/// 仍在触发的告警这一轮该发的通知：报过恢复的，距那条恢复通知满 REOPEN_QUIET_S 发「触发」；否则按持续提醒间隔发「提醒」。
+/// notify_log 在送达后才写（最长约 30 s），`notified_at` 在开始发送时就更新：比那条恢复通知新，说明「触发」已经在发了，按提醒间隔算
 fn due(inc: &Open, severity: &str, now: OffsetDateTime) -> Option<Kind> {
-    match inc.told_resolved_at {
+    match inc.told_resolved_at.filter(|t| inc.notified_at.is_none_or(|n| n < *t)) {
         Some(t) => ((now - t).whole_seconds() >= REOPEN_QUIET_S).then_some(Kind::Firing),
         None => {
             let every = repeat_interval_s(&inc.rule, severity)?;
@@ -99,8 +100,8 @@ fn repeat_interval_s(rule: &str, severity: &str) -> Option<i64> {
 
 /// 评估一轮。`now` 由调用方给（测试可以快进去抖时间）。
 pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDateTime) -> anyhow::Result<()> {
-    // 告警只看健康判定，不要本月流量聚合
-    let ms = views::load_with(&st.db, Scope::Live, None, false).await?;
+    // 与列表、实时指标共用在用机器视图（最多旧 3 s）
+    let ms = views::live(st).await?;
     let silences: Vec<(Option<Uuid>, Option<String>)> = sqlx::query_as(
         "select subject_id, rule from silence where deleted_at is null and now() between starts_at and ends_at",
     )
@@ -123,7 +124,7 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
     let mut current: HashSet<(String, Uuid)> = HashSet::new();
     let mut changed = false;
     let mut touch: Vec<Uuid> = vec![];
-    for m in &ms {
+    for m in ms.iter() {
         for r in &m.health.reasons {
             // info 级只用于界面提示（如访问策略暂停新连接），不开告警
             if r.severity == "info" {
@@ -216,9 +217,10 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
         sqlx::query("update incident set last_seen_at = now() where id = any($1)").bind(&touch).execute(&st.db).await?;
     }
 
-    // 原因消失的告警恢复（只处理仍在 live 列表里的机器；退役的由退役作业关闭）。
+    // 原因消失的告警恢复：只处理 active 的机器。其它生命周期 evaluate 不给原因，不能当成「恢复」——
+    // 退役中的由退役作业收尾时关闭（closed_by = retire），退役取消回到 active 后照常评估。
     // `open` 里剩下的就是这一轮没有对应原因的告警。
-    let names: HashMap<Uuid, &str> = ms.iter().map(|m| (m.id, m.name.as_str())).collect();
+    let names: HashMap<Uuid, &str> = ms.iter().filter(|m| m.lifecycle == "active").map(|m| (m.id, m.name.as_str())).collect();
     for (_, inc) in open {
         let Some(name) = names.get(&inc.subject_id) else { continue };
         let since = *state.clean_since.entry(inc.id).or_insert(now);
@@ -271,6 +273,26 @@ mod tests {
         assert!(same_summary("团队1-01：5 分钟没有上报", "团队1-01：6 分钟没有上报"));
         assert!(same_summary("线路机2：配置未应用（期望 3，已应用 2）", "线路机2：配置未应用（期望 4，已应用 2）"));
         assert!(!same_summary("团队1-01：5 分钟没有上报", "团队1-01：从未上报"));
+    }
+
+    #[test]
+    fn reopen_firing_not_resent_while_in_flight() {
+        let now = OffsetDateTime::now_utc();
+        let ago = |s: i64| now - time::Duration::seconds(s);
+        let inc = |notified: Option<OffsetDateTime>, resolved: OffsetDateTime| Open {
+            id: Uuid::nil(),
+            rule: "relay_xray_down".into(),
+            subject_id: Uuid::nil(),
+            severity: "critical".into(),
+            summary: String::new(),
+            opened_at: ago(3600),
+            notified_at: notified,
+            told_resolved_at: Some(resolved),
+        };
+        // 恢复通知 10 分钟前，之后没再发过：发「触发」
+        assert!(matches!(due(&inc(Some(ago(900)), ago(600)), "critical", now), Some(Kind::Firing)));
+        // 「触发」30 s 前已开始发送、还没写进 notify_log（最近一条仍是恢复）：不重发
+        assert!(due(&inc(Some(ago(30)), ago(600)), "critical", now).is_none());
     }
 
     #[test]

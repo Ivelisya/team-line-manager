@@ -192,6 +192,9 @@ fn outbound_hostport(e: &DesiredEntry) -> (String, u16) {
     }
 }
 
+/// 入口 → (探测端口, 经该端口出去的客户端)
+type ProbeClients = HashMap<uuid::Uuid, (u16, reqwest::Client)>;
+
 /// 探测调度：TCP 每 probe_interval_s（默认 30 s），出口每 2 倍间隔（默认 60 s）
 pub async fn probe_task(sh: Arc<Shared>, mut sd: watch::Receiver<bool>) {
     let mut sched: HashMap<uuid::Uuid, Sched> = HashMap::new();
@@ -201,18 +204,28 @@ pub async fn probe_task(sh: Arc<Shared>, mut sd: watch::Receiver<bool>) {
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut first_pass = true;
     let api_port = sh.cfg.api_port();
-    let mut probes_cache: Option<(Arc<DesiredState>, HashMap<uuid::Uuid, u16>)> = None;
+    let mut probes_cache: Option<(Arc<DesiredState>, ProbeClients)> = None;
     loop {
         tokio::select! {
             _ = tick.tick() => {}
             _ = sd.changed() => return,
         }
-        // Arc 克隆很轻；端口表只在期望状态换代（Arc 变了）时重算
+        // Arc 克隆很轻；端口表只在期望状态换代（Arc 变了）时重算：仍在的端口沿用客户端，新端口新建，去掉的随旧表丢掉
         let Some(d) = sh.applied.read().unwrap().clone() else { continue };
         let tcp_every = Duration::from_secs(d.relay.probe_interval_s.clamp(5, 3600) as u64);
         let egress_every = tcp_every * 2;
         if probes_cache.as_ref().is_none_or(|(a, _)| !Arc::ptr_eq(a, &d)) {
-            probes_cache = Some((d.clone(), render::probe_ports(&d.entries, api_port)));
+            let old: HashMap<u16, reqwest::Client> = probes_cache.take().map(|(_, m)| m.into_values().collect()).unwrap_or_default();
+            let mut m = HashMap::new();
+            for (id, port) in render::probe_ports(&d.entries, api_port) {
+                match old.get(&port).cloned().map_or_else(|| probe::socks_client(port), Ok) {
+                    Ok(c) => {
+                        m.insert(id, (port, c));
+                    }
+                    Err(e) => tracing::warn!(entry = %tags::inbound(id), "建出口探测客户端失败：{e:#}"),
+                }
+            }
+            probes_cache = Some((d.clone(), m));
         }
         let probes = &probes_cache.as_ref().expect("刚填充").1;
         let now = Instant::now();
@@ -245,7 +258,7 @@ pub async fn probe_task(sh: Arc<Shared>, mut sd: watch::Receiver<bool>) {
             }
             if now >= s.next_egress {
                 s.next_egress = now + egress_every;
-                if let Some(pp) = probes.get(&e.id).copied() {
+                if let Some((_, client)) = probes.get(&e.id) {
                     if s.egress_busy.swap(true, Ordering::AcqRel) {
                         let n = sh.health.probes_skipped.fetch_add(1, Ordering::Relaxed) + 1;
                         if n <= 3 || n.is_multiple_of(100) {
@@ -254,12 +267,12 @@ pub async fn probe_task(sh: Arc<Shared>, mut sd: watch::Receiver<bool>) {
                         continue;
                     }
                     let busy = BusyGuard(s.egress_busy.clone());
-                    let (sh2, sem2, id, url, ip) = (sh.clone(), sem.clone(), e.id, d.relay.echo_url.clone(), e.expect_egress_ip);
+                    let (sh2, sem2, id, url, ip, client) = (sh.clone(), sem.clone(), e.id, d.relay.echo_url.clone(), e.expect_egress_ip, client.clone());
                     let last_ok = s.egress_ok.clone();
                     tokio::spawn(async move {
                         let _busy = busy;
                         let Ok(_permit) = sem2.acquire().await else { return };
-                        let r = probe::egress_probe(id, pp, &url, ip, Duration::from_secs(12), now_ms()).await;
+                        let r = probe::egress_probe(id, &client, &url, ip, Duration::from_secs(12), now_ms()).await;
                         let detail = r.detail.as_deref().unwrap_or("");
                         // 只在成功/失败切换时 warn / info，持续失败降为 debug
                         if last_ok.swap(r.ok, Ordering::Relaxed) == r.ok {

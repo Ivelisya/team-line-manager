@@ -307,11 +307,9 @@ macro_rules! full {
     };
 }
 
-/// 机器显示名（与 names::display_name 一致；编号不足两位补零）。退役机器的编号已被回收给别的机器，
+/// 机器显示名（SQL 函数 display_name，与 names::display_name 一致）。退役机器的编号已被回收给别的机器，
 /// 历史记录里不加标注会和现在同名的机器混在一起，所以带上「（已退役）」。
-const NAME: &str = "coalesce(case when m.kind = 'relay' then m.label
-    else t.name || '-' || case when m.number < 10 then '0' || m.number::text else m.number::text end end, '未命名')
-    || case when m.lifecycle = 'retired' then '（已退役）' else '' end";
+const NAME: &str = "display_name(m.kind::text, m.label, t.name, m.number) || case when m.lifecycle = 'retired' then '（已退役）' else '' end";
 
 /// 小时表聚合：(节点, 目标) → 连接数、阻止数、来源数
 const AGG_HOURLY: &str = "agg as (

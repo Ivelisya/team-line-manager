@@ -65,7 +65,7 @@ job ─< job_step ─< job_log      audit_log      user / session / api_key
 
 - REST `/api/v1/*` + WebSocket `/api/v1/stream`（资源变更通知 + 实时指标增量，前端不轮询）。
 - 作业执行器、告警引擎、续费提醒都在同一进程内，以 PG 为唯一状态（`SELECT … FOR UPDATE SKIP LOCKED` 领取任务）。
-- 鉴权：账号密码（argon2）+ 可选 TOTP，会话 Cookie；API 密钥带作用域；所有写操作入审计。
+- 鉴权：账号密码（argon2），会话 Cookie；API 密钥带作用域；所有写操作入审计。
 
 ## 7. 前端（React 19 + TypeScript + Vite；shadcn/ui 主题 + 实时 WebSocket）
 

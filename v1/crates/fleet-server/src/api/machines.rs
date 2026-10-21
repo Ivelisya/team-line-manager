@@ -29,11 +29,11 @@ pub async fn list(_a: Actor, State(st): State<AppState>, Query(q): Query<ListQ>)
     if scope == Scope::Live {
         return Ok(ok(&*views::live(&st).await?));
     }
-    Ok(ok(views::load(&st.db, scope, None).await?))
+    Ok(ok(views::load(&st, scope, None).await?))
 }
 
 pub async fn get_one(_a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>) -> ApiResult<Json<Value>> {
-    let mut v = views::load(&st.db, Scope::All, Some(id)).await?;
+    let mut v = views::load(&st, Scope::All, Some(id)).await?;
     v.pop().map(ok).ok_or_else(|| ApiError::not_found("没有这台机器"))
 }
 
