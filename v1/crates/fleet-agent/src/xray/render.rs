@@ -48,7 +48,7 @@ pub fn is_static_outbound(tag: &str) -> bool {
 }
 fn is_entry_rule(v: &Value) -> bool {
     let t = rule_tag_of(v);
-    t.starts_with("rule-") || t.starts_with("probe-") || t.starts_with("policy-")
+    t.starts_with("rule-") || t.starts_with("probe-") || t.starts_with("policy-") || t.starts_with("guard-")
 }
 
 impl Rendered {
@@ -130,6 +130,9 @@ fn outbound_json(id: Uuid, o: &Outbound) -> Value {
             "tag": tag, "protocol": "http",
             "settings": {"servers": [server(host, *port, username, password)]}
         }),
+        // 直出也用入口自己的出站 tag（不用共享的 direct）：探测入站、访问策略的放行规则都指向 out-<入口>，
+        // 增删、回滚、核对和节点入口走同一条路
+        Outbound::Direct => json!({"tag": tag, "protocol": "freedom", "settings": {"domainStrategy": "AsIs"}}),
     }
 }
 
@@ -175,6 +178,15 @@ fn dest_with_port(d: &str) -> String {
 
 pub fn policy_tag(id: Uuid, part: &str) -> String {
     format!("policy-{}-{part}", id.simple())
+}
+
+/// 直出入口的守卫规则：目标端口是本机 Xray API 的连接一律 blocked，排在该入口其它规则之前。
+/// 路由是 AsIs，block-private 只拦 IP 目标；客户写一个解析到回环的域名（localhost、127.0.0.1.nip.io），
+/// freedom 会在线路机本机替他解析并连上 API（可增删入站出站）。按端口拦和怎么解析无关。
+/// 不改成 IPIfNonMatch 让域名先解析再过 block-private：解析结果落在 198.18.0.0/15 的 fake-ip DNS 环境（实验室）里，
+/// 所有域名都会被当成内网拦掉
+fn guard_rule(e: &DesiredEntry) -> Value {
+    json!({"type": "field", "ruleTag": format!("guard-{}-api", e.id.simple()), "inboundTag": [tags::inbound(e.id)], "port": API_PORT.to_string(), "outboundTag": "blocked"})
 }
 
 /// 访问策略规则：排在该入口默认路由规则之前，只匹配该入口自己的入站（探测入站有独立规则，不受影响）。
@@ -243,8 +255,9 @@ fn validate(d: &DesiredState) -> Result<String> {
             sid.len() <= 16 && sid.len() % 2 == 0 && sid.bytes().all(|b| b.is_ascii_hexdigit()),
             "入口 {} 的 short_id 必须是不超过 16 位的偶数长度十六进制：{sid:?}", e.id
         );
-        let (host, port) = e.outbound.addr();
-        ensure!(!host.trim().is_empty() && port != 0, "入口 {} 出站地址无效", e.id);
+        if let Some((host, port)) = e.outbound.addr() {
+            ensure!(!host.trim().is_empty() && port != 0, "入口 {} 出站地址无效", e.id);
+        }
         if let Some(p) = &e.policy {
             match p.mode {
                 PolicyMode::Allowlist | PolicyMode::Denylist => {
@@ -296,6 +309,9 @@ pub fn render(d: &DesiredState, ctx: &RenderCtx) -> Result<Rendered> {
         if let Some(p) = probes.get(&e.id) {
             inbounds.push(probe_inbound_json(e.id, *p));
             rules.push(json!({"type": "field", "ruleTag": probe_tag(e.id), "inboundTag": [probe_tag(e.id)], "outboundTag": tags::outbound(e.id)}));
+        }
+        if e.outbound == Outbound::Direct {
+            entry_rules.push(guard_rule(e));
         }
         entry_rules.extend(policy_rules(e));
         entry_rules.push(json!({"type": "field", "ruleTag": tags::rule(e.id), "inboundTag": [tags::inbound(e.id)], "outboundTag": tags::outbound(e.id)}));
@@ -557,6 +573,59 @@ x"]));
         assert!(bad(PolicyMode::Denylist, &["domain:A.com"]));
         assert!(!bad(PolicyMode::Blocked, &[]));
         assert!(!bad(PolicyMode::Denylist, &["domain:a-b.example.com", "full:x.y"]));
+    }
+
+    pub fn direct(n: u128, port: u16) -> DesiredEntry {
+        let mut e = entry(n, port, true);
+        e.outbound = Outbound::Direct;
+        e.expect_egress_ip = "198.51.100.2".parse().unwrap();
+        e
+    }
+
+    #[test]
+    fn direct_entry_renders_own_freedom_outbound() {
+        let r = render(&desired(vec![entry(1, 20001, true), direct(2, 20002)]), &ctx()).unwrap();
+        let (id1, id2) = (Uuid::from_u128(1).simple().to_string(), Uuid::from_u128(2).simple().to_string());
+        // 入口自己的 freedom 出站，不复用共享的 direct
+        let o = r.outbounds.iter().find(|o| tag_of(o) == format!("out-{id2}")).unwrap();
+        assert_eq!(o, &json!({"tag": format!("out-{id2}"), "protocol": "freedom", "settings": {"domainStrategy": "AsIs"}}));
+        assert_eq!(r.outbounds.iter().filter(|o| o["protocol"] == "freedom").count(), 2, "共享 direct + 直出入口自己的");
+        // 入站与探测入站和节点入口同形
+        let inb = r.inbounds.iter().find(|i| tag_of(i) == format!("in-{id2}")).unwrap();
+        assert_eq!(inb["protocol"], "vless");
+        assert_eq!(inb["port"], 20002);
+        assert!(r.inbounds.iter().any(|i| tag_of(i) == format!("probe-{id2}") && i["port"] == 30002));
+        // 规则顺序：探测 → 内网 / BT 屏蔽（同节点入口）→ 各入口；直出入口先过「目标端口是本机 Xray API → blocked」
+        assert_eq!(
+            rule_tags(&r),
+            vec![
+                format!("probe-{id1}"), format!("probe-{id2}"), "block-private".to_string(), "block-bittorrent".into(),
+                format!("rule-{id1}"), format!("guard-{id2}-api"), format!("rule-{id2}")
+            ]
+        );
+        assert_eq!(
+            r.rules[5],
+            json!({"type": "field", "ruleTag": format!("guard-{id2}-api"), "inboundTag": [format!("in-{id2}")], "port": "62789", "outboundTag": "blocked"})
+        );
+        assert_eq!(r.rules[6], json!({"type": "field", "ruleTag": format!("rule-{id2}"), "inboundTag": [format!("in-{id2}")], "outboundTag": format!("out-{id2}")}));
+        assert!(!rule_tags(&r).contains(&format!("guard-{id1}-api").as_str()), "节点入口没有守卫规则（出口在节点上）");
+        assert_eq!(r.full["routing"]["domainStrategy"], "AsIs");
+        // 守卫规则属于入口规则：增删直出入口只走热增删，不重启 Xray
+        assert_eq!(r.static_part, render(&desired(vec![entry(1, 20001, true)]), &ctx()).unwrap().static_part);
+        assert_eq!(Rendered::from_full(r.full.clone()), r);
+    }
+
+    #[test]
+    fn direct_entry_guard_precedes_policy_rules() {
+        // 线路机目前没有访问策略，但万一下发了：守卫在策略规则之前（白名单里的域名也连不到本机 API），策略照常
+        let mut e = direct(1, 20001);
+        e.policy = Some(EntryPolicy { mode: PolicyMode::Allowlist, domains: vec!["domain:a.com".into()] });
+        let r = render(&desired(vec![e]), &ctx()).unwrap();
+        let id = Uuid::from_u128(1).simple().to_string();
+        assert_eq!(rule_tags(&r)[3..], [format!("guard-{id}-api"), format!("policy-{id}-match"), format!("policy-{id}-default"), format!("rule-{id}")]);
+        assert_eq!(r.rules[4]["outboundTag"], format!("out-{id}"));
+        assert_eq!(r.rules[4]["domain"], json!(["domain:a.com"]));
+        assert_eq!(r.rules[5]["outboundTag"], "blocked");
     }
 
     #[test]

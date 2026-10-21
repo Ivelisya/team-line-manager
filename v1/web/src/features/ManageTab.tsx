@@ -20,8 +20,8 @@ export function ManageTab({ m, onClosed }: { m: MachineView; onClosed: () => voi
   return (
     <>
       {!retired && <RenameSection m={m} />}
-      {/* 节点（落地机/家宽代理）没有入口时也要能“添加入口”；线路机的入口来自节点，没有入口就不显示 */}
-      {!retired && (m.kind === 'relay' ? m.entries.length > 0 : m.lifecycle === 'active' || m.entries.length > 0) && <EntrySection m={m} />}
+      {/* 在用的机器没有入口时也要能加：节点「添加入口」，线路机「添加直出入口」 */}
+      {!retired && (m.lifecycle === 'active' || m.entries.length > 0) && <EntrySection m={m} />}
       {m.agent && m.lifecycle === 'active' && <AgentSection m={m} />}
       <DangerSection m={m} onClosed={onClosed} />
     </>
@@ -93,12 +93,14 @@ function EntrySection({ m }: { m: MachineView }) {
   const [dlg, setDlg] = React.useState<null | 'move' | 'evacuate'>(null);
   const used = new Set(m.entries.map((e) => e.relay.id));
   const opts = relays.filter((r) => !used.has(r.id)).map((r) => ({ value: r.id, label: r.name }));
+  // 线路机直出入口：每台至多一条（移除中的也占着，摘完才能再加，同服务端）
+  const canAddDirect = m.kind === 'relay' && m.lifecycle === 'active' && !m.entries.some((e) => e.direct);
   return (
     <Section>
       <SectionHeader title="入口" meta="停用 / 启用 / 轮换凭据 / 分享链接" />
       {/* 入口的“⋯”菜单与对话框整个入口区共用一份 */}
       <EntryMenus entries={m.entries}><div className="stack-sm">
-        {m.entries.length === 0 && <div className="hint">这台机器还没有入口，选一台线路机把它挂上去。</div>}
+        {m.entries.length === 0 && <div className="hint">{m.kind === 'relay' ? '这台线路机上还没有入口：节点的入口在节点上添加；也可以给它加一条直出入口。' : '这台机器还没有入口，选一台线路机把它挂上去。'}</div>}
         {m.entries.map((e) => (
           <div key={e.id} className="manage-row" style={{ border: '1px solid var(--line)', borderRadius: 'var(--r-float)', padding: '8px 12px' }}>
             <div><div className="t">{m.kind === 'relay' ? `${e.port} · ${e.node.name}` : entryLabel(e)}</div><div className="hint">{e.apply_error ?? (e.applied ? '已应用到线路机' : '应用中')}</div></div>
@@ -115,6 +117,13 @@ function EntrySection({ m }: { m: MachineView }) {
           <div className="manage-row">
             <div><div className="t">搬空线路机</div><div className="hint">把上面所有节点换到另一台线路机，之后就能安全退役这台。节点的分享链接会变。</div></div>
             <Button variant="secondary" onClick={() => setDlg('evacuate')}><PackageOpen />搬空到…</Button>
+          </div>
+        )}
+        {canAddDirect && (
+          <div className="manage-row">
+            <div><div className="t">直出入口</div><div className="hint">从这台线路机自己的 IP（{m.ip}）出去，不经落地节点；每台线路机一条，分享链接名「{m.name}-直出」。</div></div>
+            <Button variant="secondary" disabled={add.isPending || !!m.active_job} loading={add.isPending}
+              onClick={() => add.mutate({ id: m.id, relay_id: m.id }, { onSuccess: () => toast.ok('已提交，直出入口正在应用'), onError: toast.err })}><Plus />添加直出入口</Button>
           </div>
         )}
         {m.kind !== 'relay' && opts.length > 0 && (

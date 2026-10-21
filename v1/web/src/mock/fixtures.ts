@@ -126,7 +126,7 @@ export function buildDb(): Db {
     const down = status === 'down'; const offline = down && !d.online; // 故障但 agent 照常上报（如出口不通）
     const lifecycle: Lifecycle = d.lifecycle ?? 'active';
     const entry: EntryView = {
-      id: `e${eSeq++}`, relay: { id: relay.id, name: relay.name }, node: { id, name }, port,
+      id: `e${eSeq++}`, relay: { id: relay.id, name: relay.name }, node: { id, name }, direct: false, port,
       lifecycle: lifecycle === 'retiring' ? 'disabled' : 'active', applied: true, apply_error: null,
       tcp: { ok: !offline, latency_ms: offline ? null : Math.round(18 + r() * 160), detail: offline ? '连接超时' : null, ts: iso(now() - 20_000) },
       egress: { ok: !down, latency_ms: down ? null : Math.round(120 + r() * 220), detail: down ? '出口探测失败' : null, ts: iso(now() - 40_000) },
@@ -158,7 +158,7 @@ export function buildDb(): Db {
   {
     const p = plan('pl1'); const team = teams[0];
     const id = 'm-t1-13p';
-    const e: EntryView = { id: `e${eSeq++}`, relay: { id: 'r1', name: '线路机1' }, node: { id, name: displayName(team.name, 13) }, port: 20000 + entriesByRelay.r1.length + 1, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 } };
+    const e: EntryView = { id: `e${eSeq++}`, relay: { id: 'r1', name: '线路机1' }, node: { id, name: displayName(team.name, 13) }, direct: false, port: 20000 + entriesByRelay.r1.length + 1, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 } };
     entriesByRelay.r1.push(e);
     machines.push(base({
       id, kind: 'vps', name: displayName(team.name, 13), team: { id: team.id, name: team.name }, number: 13, ip: '198.51.100.77', lifecycle: 'provisioning', activated_at: null, created_at: iso(now() - 6 * 60_000),

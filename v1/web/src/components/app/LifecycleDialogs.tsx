@@ -16,8 +16,8 @@ import { RetireDialog } from './RetireDialog';
 
 const SHARE_WARN = '换线完成后分享链接会变：需要把新的分享链接发给客户端（作业完成的通知里有“复制新分享链接”）。';
 
-/** 节点当前在用的入口（可以被换走的） */
-export const movableEntries = (m: MachineView) => m.entries.filter((e) => e.lifecycle === 'active');
+/** 节点当前在用的入口（可以被换走的）。线路机的直出入口不搬：退役线路机时随之摘除 */
+export const movableEntries = (m: MachineView) => m.entries.filter((e) => e.lifecycle === 'active' && !e.direct);
 
 // ── 换线路机 ────────────────────────────────────────────────────────────
 
@@ -65,8 +65,9 @@ export const EvacuateDialog = resetOnOpen(function EvacuateDialog({ relay, open,
   const relays = useRelayChoices().data ?? [];
   const [to, setTo] = React.useState('');
   const opts = relays.filter((r) => r.id !== relay.id).map((r) => ({ value: r.id, label: r.name }));
-  const list = relay.entries.filter((e) => e.lifecycle !== 'removing' && e.lifecycle !== 'removed');
+  const list = relay.entries.filter((e) => e.lifecycle !== 'removing' && e.lifecycle !== 'removed' && !e.direct);
   const movable = list.filter((e) => e.lifecycle === 'active');
+  const hasDirect = relay.entries.some((e) => e.direct);
   return (
     <ConfirmDialog open={open} onOpenChange={onOpenChange} size="md" title={`搬空 ${relay.name}`} confirmLabel={`搬走 ${movable.length} 个节点`} confirmDisabled={!to || movable.length === 0}
       description="为这台线路机上每个在用入口的节点各建一个“换线路机”作业，搬完后就可以安全退役这台线路机。"
@@ -80,7 +81,7 @@ export const EvacuateDialog = resetOnOpen(function EvacuateDialog({ relay, open,
       <Field label="搬到哪台线路机"><Select value={to} onChange={setTo} options={opts} placeholder="选择目标线路机" /></Field>
       <div>
         <div className="label" style={{ marginBottom: 6 }}>将被搬走的节点（{movable.length}）</div>
-        {list.length === 0 ? <div className="hint">这台线路机上没有挂载入口。</div> : (
+        {list.length === 0 ? <div className="hint">这台线路机上没有节点入口。</div> : (
           <ul className="reason-list" style={{ maxHeight: 220, overflow: 'auto' }}>
             {list.map((e) => (
               <li key={e.id}>
@@ -91,6 +92,7 @@ export const EvacuateDialog = resetOnOpen(function EvacuateDialog({ relay, open,
           </ul>
         )}
       </div>
+      {hasDirect && <div className="hint">这台线路机的直出入口不搬，退役时一起摘除；用它的客户需要换成别的线路机的直出链接。</div>}
       <Note tone="warn">{SHARE_WARN}</Note>
     </ConfirmDialog>
   );

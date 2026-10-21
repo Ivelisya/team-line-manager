@@ -72,15 +72,17 @@ export function beatTitles(buckets: ProbeBucket[] | undefined, now = Date.now())
 }
 /** 有探测、却一个都没成功（延迟为 null）：显示「失败」，和「—」（还没有探测）区分开 */
 const allFailed = (ps: (ProbeResult | null)[]) => ps.some((p) => p && !p.ok) && !ps.some((p) => p?.ok);
-/** 入口探测摘要：平均 TCP 延迟与出口延迟，tcpFail / egressFail = 全部失败。只算 active 的入口（同服务端健康规则）：应用中的还没有探测 */
+/** 入口探测摘要：平均 TCP 延迟与出口延迟，tcpFail / egressFail = 全部失败。只算 active 的入口（同服务端健康规则）：应用中的还没有探测。
+ *  直出入口没有节点、不做 TCP 探测：TCP 的连通数（total / tcpOk）与延迟只算经节点的入口，出口照算 */
 export function probeSummary(m: MachineView) {
   const es = m.entries.filter((e) => e.lifecycle === 'active');
-  const tcpOk = es.filter((e) => e.tcp?.ok).length;
-  const lat = es.map((e) => e.tcp?.latency_ms).filter((x): x is number => x != null);
+  const viaNode = es.filter((e) => !e.direct);
+  const tcpOk = viaNode.filter((e) => e.tcp?.ok).length;
+  const lat = viaNode.map((e) => e.tcp?.latency_ms).filter((x): x is number => x != null);
   const eg = es.map((e) => e.egress?.latency_ms).filter((x): x is number => x != null);
   return {
-    total: es.length, tcpOk, tcp: lat.length ? Math.round(lat.reduce((a, b) => a + b, 0) / lat.length) : null, egress: eg.length ? Math.round(eg.reduce((a, b) => a + b, 0) / eg.length) : null,
-    tcpFail: allFailed(es.map((e) => e.tcp)), egressFail: allFailed(es.map((e) => e.egress)),
+    total: viaNode.length, tcpOk, tcp: lat.length ? Math.round(lat.reduce((a, b) => a + b, 0) / lat.length) : null, egress: eg.length ? Math.round(eg.reduce((a, b) => a + b, 0) / eg.length) : null,
+    tcpFail: allFailed(viaNode.map((e) => e.tcp)), egressFail: allFailed(es.map((e) => e.egress)),
   };
 }
 /**

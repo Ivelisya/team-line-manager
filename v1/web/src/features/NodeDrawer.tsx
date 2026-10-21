@@ -150,7 +150,8 @@ function OverviewTab({ m }: { m: MachineView }) {
           <LabelValue label="上架时间">{F.dtFull(m.activated_at)}</LabelValue>
           {m.retired_at && <LabelValue label="退役时间">{F.dtFull(m.retired_at)}</LabelValue>}
           <LabelValue label="agent">{m.agent ? `${m.agent.version ?? '版本未知'} · ${m.agent.last_report_at ? F.ago(m.agent.last_report_at) : '尚未上报'}` : '无（家宽代理不装 agent）'}</LabelValue>
-          <LabelValue label="入口探测">{m.entries.length ? `${ps.tcpOk}/${ps.total} 连通` : '—'}</LabelValue>
+          {/* 只数经节点的入口：直出入口没有 TCP 探测 */}
+          <LabelValue label="入口探测">{ps.total ? `${ps.tcpOk}/${ps.total} 连通` : '—'}</LabelValue>
           {m.note && <LabelValue label="备注" className="span-2" wrap>{m.note}</LabelValue>}
         </LabelValueGrid>
         <AgentHealthNote m={m} />

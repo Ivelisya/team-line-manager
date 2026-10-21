@@ -8,7 +8,7 @@ mod common;
 
 use axum::http::StatusCode;
 use common::{seed_node, seed_relay, seed_team, setup, T};
-use fleet_proto::{ApplyReport, DesiredState, EntryApply, ProbeKind, ProbeSample, Report};
+use fleet_proto::{ApplyReport, DesiredState, EntryApply, Outbound, ProbeKind, ProbeSample, Report};
 use serde_json::{json, Value};
 use std::time::Duration;
 use uuid::Uuid;
@@ -837,4 +837,158 @@ async fn plan_patch_null_clears_field() {
     let (s, v) = t.req("PATCH", &format!("/api/v1/plans/{id}"), Some(json!({"provider_id": p2})), None).await;
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(t.get("/api/v1/plans").await[0]["provider_id"], p2);
+}
+
+// ── 线路机直出入口（节点就是线路机自己）────────────────────────────────────
+
+/// 直接在库里给一台在用的入口（不走作业）：`node` 等于 `relay` 就是直出入口
+async fn seed_entry(t: &T, relay: Uuid, node: Uuid) -> Uuid {
+    let mut tx = t.st.db.begin().await.unwrap();
+    fleet_server::entries::lock_policy_shared(&mut tx).await.unwrap();
+    let (e, _, _) = fleet_server::entries::create(&mut tx, relay, node).await.unwrap();
+    tx.commit().await.unwrap();
+    sqlx::query("update entry set lifecycle = 'active' where id = $1").bind(e).execute(&t.st.db).await.unwrap();
+    e
+}
+
+/// 新增：作业建入口 → 线路机应用 → 出口探测（期望线路机自己的 IP）→ 完成；期望状态、视图、分享链接、启停轮换、改名、一台一条
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn direct_entry_create_desired_view_and_one_per_relay() {
+    let t = setup(true).await;
+    let (ra, tok) = seed_relay(&t).await;
+    let (rb, _) = seed_relay_b(&t).await;
+    let mut sim = Sim::new(tok.clone());
+    let path = format!("/api/v1/machines/{ra}/entries");
+    // 线路机只能给自己加
+    let (s, v) = t.req("POST", &path, Some(json!({"relay_id": rb})), None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    let job = t.post(&path, json!({"relay_id": ra})).await["job_id"].as_str().unwrap().to_string();
+    let j = drive(&t, &mut [&mut sim], &job, "succeeded").await;
+    assert_eq!(j["kind"], "attach_entry");
+    let fw = j["steps"].as_array().unwrap().iter().find(|s| s["key"] == "firewall").unwrap().clone();
+    assert_eq!(fw["state"], "skipped", "{fw}");
+    let audit = t.get("/api/v1/audit?limit=20").await;
+    assert!(audit.as_array().unwrap().iter().any(|x| x["action"] == "entry.add" && x["detail"]["direct"] == true), "{audit}");
+
+    // 库里：节点就是线路机自己
+    let (eid, node, lc, port): (Uuid, Uuid, String, i32) =
+        sqlx::query_as("select id, node_id, lifecycle::text, port from entry where relay_id = $1").bind(ra).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!((node, lc.as_str(), port), (ra, "active", 20000));
+    // 期望状态：直出出站，备注「线路机名-直出」，出口探测期望线路机自己的 IP，没有访问策略
+    let ds = sim.round(&t).await;
+    assert_eq!(ds.entries.len(), 1);
+    let e = &ds.entries[0];
+    assert_eq!(e.outbound, Outbound::Direct);
+    assert_eq!(e.remark, "线路机2-直出");
+    assert_eq!(e.expect_egress_ip.to_string(), "198.51.100.2");
+    assert!(e.enabled && e.policy.is_none());
+    let (_, raw) = t.req("GET", "/agent/v1/desired?after=0", None, Some(&tok)).await;
+    assert_eq!(raw["entries"][0]["outbound"], json!({"protocol": "direct"}), "{raw}");
+
+    // 视图：线路机的入口里只出现一次，标 direct，节点是它自己、名字「线路机2-直出」；没有 TCP 探测，健康正常
+    let m = t.get(&format!("/api/v1/machines/{ra}")).await;
+    let es = m["entries"].as_array().unwrap();
+    assert_eq!(es.len(), 1, "{m}");
+    assert_eq!((es[0]["direct"].clone(), es[0]["node"]["id"].clone(), es[0]["node"]["name"].clone()), (json!(true), json!(ra), json!("线路机2-直出")));
+    assert!(es[0]["tcp"].is_null() && es[0]["egress"]["ok"] == true, "{m}");
+    assert_eq!(m["health"]["status"], "ok", "{m}");
+    assert!(t.get("/api/v1/relays").await.as_array().unwrap().iter().all(|r| r["entries"].as_array().unwrap().len() <= 1));
+
+    // 每台线路机至多一条：接口先拦，库里的唯一索引兜底
+    let (s, v) = t.req("POST", &path, Some(json!({"relay_id": ra})), None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("已经有直出入口"), "{v}");
+    let mut tx = t.st.db.begin().await.unwrap();
+    fleet_server::entries::lock_policy_shared(&mut tx).await.unwrap();
+    assert!(fleet_server::entries::create(&mut tx, ra, ra).await.is_err());
+    drop(tx);
+    // 线路机不能当别的线路机的节点
+    let mut tx = t.st.db.begin().await.unwrap();
+    fleet_server::entries::lock_policy_shared(&mut tx).await.unwrap();
+    assert!(fleet_server::entries::create(&mut tx, rb, ra).await.is_err());
+    drop(tx);
+
+    // 分享链接：线路机地址 + 入口端口，#后是「线路机2-直出」
+    let url = t.get(&format!("/api/v1/entries/{eid}/share")).await["url"].as_str().unwrap().to_string();
+    assert!(url.contains(&format!("@relay.test:{port}?")), "{url}");
+    assert!(url.ends_with("#%E7%BA%BF%E8%B7%AF%E6%9C%BA2-%E7%9B%B4%E5%87%BA"), "{url}");
+
+    // 停用、启用、轮换
+    t.post(&format!("/api/v1/entries/{eid}/actions"), json!({"action": "disable"})).await;
+    assert!(!sim.round(&t).await.entries[0].enabled);
+    t.post(&format!("/api/v1/entries/{eid}/actions"), json!({"action": "enable"})).await;
+    let before = sim.round(&t).await.entries[0].client_uuid;
+    t.post(&format!("/api/v1/entries/{eid}/actions"), json!({"action": "rotate", "confirm": format!("线路机2:{port}")})).await;
+    let after = sim.round(&t).await;
+    assert!(after.entries[0].enabled && after.entries[0].client_uuid != before);
+
+    // 线路机改名：直出入口的备注跟着变（代数 +1，agent 拿到新名字）
+    let gen0: i64 = sqlx::query_scalar("select generation from relay where machine_id = $1").bind(ra).fetch_one(&t.st.db).await.unwrap();
+    let rev = t.get(&format!("/api/v1/machines/{ra}")).await["revision"].clone();
+    let (s, v) = t.req("PATCH", &format!("/api/v1/machines/{ra}"), Some(json!({"revision": rev, "label": "线路机9"})), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let ds = sim.round(&t).await;
+    assert!(ds.generation as i64 > gen0);
+    assert_eq!(ds.entries[0].remark, "线路机9-直出");
+}
+
+/// 搬空：只给节点建换线路机作业，直出入口不搬、也不算「跳过」；线路机本身不能换线路机
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn evacuate_skips_direct_entry() {
+    let t = setup(false).await;
+    let (ra, _) = seed_relay(&t).await;
+    let (rb, _) = seed_relay_b(&t).await;
+    let team = seed_team(&t, "团队1").await;
+    let node = seed_node(&t, team, 1, "203.0.113.10", "active").await;
+    let de = seed_entry(&t, ra, ra).await;
+    seed_entry(&t, ra, node).await;
+    let r = t.post(&format!("/api/v1/relays/{ra}/evacuate"), json!({"to_relay_id": rb})).await;
+    assert_eq!(r["jobs"].as_array().unwrap().len(), 1, "{r}");
+    assert_eq!(r["jobs"][0]["machine_id"], node.to_string());
+    assert!(r["skipped"].as_array().unwrap().is_empty(), "{r}");
+    let (s, _) = t.req("POST", &format!("/api/v1/machines/{ra}/move"), Some(json!({"to_relay_id": rb})), None).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let lc: String = sqlx::query_scalar("select lifecycle::text from entry where id = $1").bind(de).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(lc, "active");
+    assert_eq!(entries_of(&t, ra).await.len(), 1, "目标线路机上没有给它建入口");
+}
+
+/// 退役线路机：守卫只数节点入口（不让先搬空直出入口）；退役作业自动摘掉直出入口
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retire_relay_removes_direct_entry() {
+    let t = setup(true).await;
+    let (ra, tok) = seed_relay(&t).await;
+    let team = seed_team(&t, "团队1").await;
+    let node = seed_node(&t, team, 1, "203.0.113.10", "active").await;
+    let de = seed_entry(&t, ra, ra).await;
+    let ne = seed_entry(&t, ra, node).await;
+    let retire = format!("/api/v1/machines/{ra}/retire");
+    let (s, v) = t.req("POST", &retire, Some(json!({"confirm": "线路机2", "cleanup": false})), None).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    assert!(v["error"]["message"].as_str().unwrap().contains("还有 1 个节点入口"), "{v}");
+    // 节点换走了（这里直接标成已移除）：只剩直出入口，照常退役
+    sqlx::query("update entry set lifecycle = 'removed', removed_at = now() where id = $1").bind(ne).execute(&t.st.db).await.unwrap();
+    let job = t.post(&retire, json!({"confirm": "线路机2", "cleanup": false})).await["job_id"].as_str().unwrap().to_string();
+    // 模拟线路机：拉期望状态、回报已应用，直到直出入口摘除（之后令牌会被撤销）
+    let mut emptied = false;
+    for _ in 0..200 {
+        let lc: String = sqlx::query_scalar("select lifecycle::text from entry where id = $1").bind(de).fetch_one(&t.st.db).await.unwrap();
+        if lc == "removed" {
+            break;
+        }
+        let (s, v) = t.req("GET", "/agent/v1/desired?after=0", None, Some(&tok)).await;
+        if s == StatusCode::OK {
+            let ds: DesiredState = serde_json::from_value(v).unwrap();
+            emptied |= ds.entries.is_empty();
+            let rep = ApplyReport { generation: ds.generation, ok: true, error: None, entries: vec![] };
+            t.req("POST", "/agent/v1/applied", Some(serde_json::to_value(&rep).unwrap()), Some(&tok)).await;
+        }
+        t.nudge_jobs().await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(emptied, "退役中的线路机拿到的期望状态里没有直出入口");
+    t.wait_job(&job, "succeeded").await;
+    assert_eq!(lifecycle_of(&t, ra).await, "retired");
+    let lc: String = sqlx::query_scalar("select lifecycle::text from entry where id = $1").bind(de).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(lc, "removed");
 }

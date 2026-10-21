@@ -66,13 +66,13 @@ pub fn evacuate(ctx: &Ctx, relay: &str, to: &str, yes: bool, follow: bool) -> an
     let src = find_relay(ctx, relay)?;
     let dst = find_relay(ctx, to)?;
     let (sid, sname, dname) = (st(&src, "/id"), st(&src, "/name"), st(&dst, "/name"));
-    // 将被搬走的节点（线路机视图里自带入口列表）
+    // 将被搬走的节点（线路机视图里自带入口列表）。直出入口不搬：退役线路机时随之摘除
     let moving: Vec<Value> = src["entries"]
         .as_array()
         .cloned()
         .unwrap_or_default()
         .into_iter()
-        .filter(|e| matches!(e["lifecycle"].as_str(), Some("active" | "pending" | "disabled")))
+        .filter(|e| matches!(e["lifecycle"].as_str(), Some("active" | "pending" | "disabled")) && e["direct"] != true)
         .collect();
     if !ctx.json {
         if moving.is_empty() {

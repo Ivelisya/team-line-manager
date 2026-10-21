@@ -125,7 +125,8 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     .bind(b.service_ref.clone().flatten())
     .execute(&mut *tx)
     .await?;
-    let relays = if renamed && !is_relay { bump_relays_of_nodes(&mut tx, &[id]).await? } else { vec![] };
+    // 入口备注随节点名变：节点改名刷新它挂的线路机；线路机改名只影响它自己的直出入口（「线路机名-直出」），没有就不动
+    let relays = if renamed { bump_relays_of_nodes(&mut tx, &[id]).await? } else { vec![] };
     audit(
         &mut tx,
         &a.name,

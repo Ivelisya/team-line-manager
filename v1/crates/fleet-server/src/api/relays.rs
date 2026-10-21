@@ -71,10 +71,11 @@ pub async fn share(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
         team: Option<String>,
         number: Option<i32>,
         label: Option<String>,
+        direct: bool,
     }
     let r: Row = sqlx::query_as(
         "select e.client_uuid, e.short_id, e.port, r.public_host, r.reality_sni, r.reality_public_key,
-                n.kind::text kind, t.name team, n.number, n.label
+                n.kind::text kind, t.name team, n.number, n.label, e.node_id = e.relay_id direct
          from entry e join relay r on r.machine_id = e.relay_id join machine n on n.id = e.node_id
          left join team t on t.id = n.team_id where e.id = $1 and e.lifecycle <> 'removed'",
     )
@@ -82,7 +83,7 @@ pub async fn share(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     .fetch_optional(&st.db)
     .await?
     .ok_or_else(|| ApiError::not_found("没有这个入口"))?;
-    let remark = crate::names::display_name(&r.kind, r.label.as_deref(), r.team.as_deref(), r.number);
+    let remark = crate::names::entry_name(r.direct, &r.kind, r.label.as_deref(), r.team.as_deref(), r.number);
     let url = entries::share_url(r.client_uuid, &r.public_host, r.port, &r.reality_sni, &r.reality_public_key, &r.short_id, &remark);
     let mut tx = st.db.begin().await?;
     audit(&mut tx, &a.name, "entry.share", "entry", Some(id), json!({})).await?;
@@ -95,15 +96,20 @@ pub struct AddEntryIn {
     relay_id: Uuid,
 }
 
-/// 给已在用的节点再挂一条入口（作业：建入口 → 等线路机应用 → 等出口探测通过）
+/// 给已在用的节点再挂一条入口（作业：建入口 → 等线路机应用 → 等出口探测通过）。
+/// 线路机给自己加（`relay_id` 就是它自己）= 直出入口：从线路机自己的 IP 出去，每台线路机至多一条
 pub async fn add_entry(a: Actor, State(st): State<AppState>, ApiPath(node_id): ApiPath<Uuid>, ApiJson(b): ApiJson<AddEntryIn>) -> ApiResult<Json<Value>> {
     let (kind, lifecycle): (String, String) = sqlx::query_as("select kind::text, lifecycle::text from machine where id = $1")
         .bind(node_id)
         .fetch_optional(&st.db)
         .await?
         .ok_or_else(|| ApiError::not_found("没有这台机器"))?;
-    if kind == "relay" || lifecycle != "active" {
-        return Err(ApiError::conflict("只能给在用的节点加入口"));
+    let direct = kind == "relay";
+    if direct && b.relay_id != node_id {
+        return Err(ApiError::conflict("线路机上只能加它自己的直出入口（relay_id 填这台线路机自己）"));
+    }
+    if lifecycle != "active" {
+        return Err(ApiError::conflict(if direct { "只能给在用的线路机加直出入口" } else { "只能给在用的节点加入口" }));
     }
     // 入队前先拦下必败的请求，免得留一个失败作业
     let relay: Option<(String, Option<String>)> = sqlx::query_as("select lifecycle::text, label from machine where id = $1 and kind = 'relay'")
@@ -124,11 +130,11 @@ pub async fn add_entry(a: Actor, State(st): State<AppState>, ApiPath(node_id): A
         .fetch_optional(&st.db)
         .await?;
     if dup.is_some() {
-        return Err(ApiError::conflict("这个节点在这台线路机上已经有入口"));
+        return Err(ApiError::conflict(if direct { "这台线路机已经有直出入口" } else { "这个节点在这台线路机上已经有入口" }));
     }
     let mut tx = st.db.begin().await?;
     let job = jobs::enqueue(&mut tx, "attach_entry", Some(node_id), json!({"relay_id": b.relay_id}), &a.name).await?;
-    audit(&mut tx, &a.name, "entry.add", "machine", Some(node_id), json!({"relay_id": b.relay_id, "job_id": job})).await?;
+    audit(&mut tx, &a.name, "entry.add", "machine", Some(node_id), json!({"relay_id": b.relay_id, "job_id": job, "direct": direct})).await?;
     tx.commit().await?;
     st.wake_jobs();
     st.emit(Event::Job { id: job, target: Some(node_id) });

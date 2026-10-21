@@ -236,13 +236,17 @@ pub enum Outbound {
     Shadowsocks { host: String, port: u16, method: String, password: String },
     Socks5 { host: String, port: u16, username: Option<String>, password: Option<String> },
     Http { host: String, port: u16, username: Option<String>, password: Option<String> },
+    /// 线路机直出：从线路机自己的公网 IP 出去（Xray freedom），没有落地节点。
+    /// 旧 agent 不认识这个值，整份期望状态解析失败、回报「agent 版本过旧」：先升级线路机 agent 再建直出入口
+    Direct,
 }
 
 impl Outbound {
-    /// 出站服务器地址 (host, port)
-    pub fn addr(&self) -> (&str, u16) {
+    /// 出站服务器地址 (host, port)；直出没有（不做线路机 → 节点的 TCP 探测）
+    pub fn addr(&self) -> Option<(&str, u16)> {
         match self {
-            Outbound::Shadowsocks { host, port, .. } | Outbound::Socks5 { host, port, .. } | Outbound::Http { host, port, .. } => (host, *port),
+            Outbound::Shadowsocks { host, port, .. } | Outbound::Socks5 { host, port, .. } | Outbound::Http { host, port, .. } => Some((host, *port)),
+            Outbound::Direct => None,
         }
     }
 }
@@ -316,5 +320,32 @@ mod tests {
         let o = Outbound::Socks5 { host: "h".into(), port: 1, username: None, password: None };
         let v = serde_json::to_value(&o).unwrap();
         assert_eq!(v["protocol"], "socks5");
+    }
+
+    #[test]
+    fn direct_outbound_serde() {
+        // 直出只有协议名，没有地址
+        let v = serde_json::to_value(&Outbound::Direct).unwrap();
+        assert_eq!(v, serde_json::json!({"protocol": "direct"}));
+        assert_eq!(serde_json::from_value::<Outbound>(v).unwrap(), Outbound::Direct);
+        assert_eq!(Outbound::Direct.addr(), None);
+        let ss = Outbound::Shadowsocks { host: "10.0.0.9".into(), port: 8388, method: "m".into(), password: "p".into() };
+        assert_eq!(ss.addr(), Some(("10.0.0.9", 8388)));
+        // 整条入口往返
+        let id = Uuid::nil();
+        let e = DesiredEntry {
+            id,
+            port: 20001,
+            enabled: true,
+            remark: "线路机2-直出".into(),
+            client_uuid: id,
+            short_id: "ab".into(),
+            outbound: Outbound::Direct,
+            expect_egress_ip: "198.51.100.2".parse().unwrap(),
+            policy: None,
+        };
+        let v = serde_json::to_value(&e).unwrap();
+        assert_eq!(v["outbound"], serde_json::json!({"protocol": "direct"}));
+        assert_eq!(serde_json::from_value::<DesiredEntry>(v).unwrap(), e);
     }
 }

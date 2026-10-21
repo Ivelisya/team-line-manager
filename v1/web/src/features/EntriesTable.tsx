@@ -10,6 +10,8 @@ export const ENTRY_CAP = 10;
 
 /** TCP / 出口探测单元格（线路机页共用） */
 export const probeCell = (p: EntryView['tcp']) => (p == null ? <span className="t-muted">—</span> : p.ok ? <Num f={F.ms(p.latency_ms)} /> : <span style={{ color: 'var(--bad-text)' }} data-tip={p.detail}>失败</span>);
+/** TCP 单元格：直出入口没有节点，不做 TCP 探测 */
+export const tcpCell = (e: EntryView) => (e.direct ? <span className="t-muted" data-tip="直出入口没有落地节点，不做 TCP 探测">—</span> : probeCell(e.tcp));
 
 export function EntriesTable({ m, traffic }: { m: MachineView; traffic?: boolean }) {
   const [all, setAll] = React.useState(false);
@@ -26,7 +28,7 @@ export function EntriesTable({ m, traffic }: { m: MachineView; traffic?: boolean
           {entries.map((e) => (
             <tr key={e.id}>
               <td className="strong">{m.kind === 'relay' ? `${e.port} · ${e.node.name}` : `${e.relay.name}:${e.port}`}</td>
-              <td>{entryState(e)}</td><td className="r">{probeCell(e.tcp)}</td><td className="r">{probeCell(e.egress)}</td>
+              <td>{entryState(e)}</td><td className="r">{tcpCell(e)}</td><td className="r">{probeCell(e.egress)}</td>
               {traffic && <td className="r"><Num f={F.bytes(e.traffic.month_up + e.traffic.month_down)} /></td>}
             </tr>
           ))}

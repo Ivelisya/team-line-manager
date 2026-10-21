@@ -382,6 +382,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
             None => format!("{} → {}", s("old_name"), s("name")),
         },
         a if a.starts_with("entry.") && d["relay"].is_string() => format!("{}:{}", s("relay"), d["port"]),
+        "entry.add" if d["direct"] == true => "线路机直出入口".into(),
         "provider.update" => d["after"]["name"].as_str().unwrap_or("").to_string(),
         "team.create" | "provider.create" | "plan.create" | "notify.create" | "notify.update" | "notify.delete" => s("name"),
         "exec" => {

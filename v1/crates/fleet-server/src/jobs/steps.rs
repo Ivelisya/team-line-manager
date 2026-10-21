@@ -408,8 +408,10 @@ async fn attach(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
 
 async fn firewall(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let m = c.machine().await?;
-    if m.kind != "vps" {
-        return Ok(Outcome::Skipped("家宽代理没有防火墙要改".into()));
+    match m.kind.as_str() {
+        "vps" => {}
+        "relay" => return Ok(Outcome::Skipped("线路机直出入口没有节点，不用改防火墙".into())),
+        _ => return Ok(Outcome::Skipped("家宽代理没有防火墙要改".into())),
     }
     let allow = relay_ips_for(c, m.id, None).await?;
     let out = c.ssh(&m, None).run(&(vars(&[("SS_PORT", "8388"), ("ALLOW", &allow)]) + scripts::NODE_NFT_ONLY), Duration::from_secs(60)).await?;
