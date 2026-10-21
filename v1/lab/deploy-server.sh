@@ -10,9 +10,12 @@ GIT_HASH=$(git -C "$HERE/.." log -1 --format=%h -- Cargo.toml Cargo.lock crates 
 ssh -F "$HOME/.ssh/fleetlab_config" fleet-dev "FLEET_GIT_HASH=$GIT_HASH bash -s" <<'REMOTE'
 set -euo pipefail
 export PATH=$HOME/.cargo/bin:$PATH
-apt-get install -y -qq sshpass openssh-client >/dev/null && apt-get clean   # 不留 .deb 缓存
-cd /root/src && cargo build -p fleet-server --release 2>&1 | tail -1
-cargo build -p fleet-agent --release --target x86_64-unknown-linux-musl 2>&1 | tail -1
+dpkg -s sshpass openssh-client >/dev/null 2>&1 || { apt-get install -y -qq sshpass openssh-client >/dev/null && apt-get clean; }   # 不留 .deb 缓存
+cd /root/src
+# 成功只打最后一行（用时），失败打全部输出：编译错误在前面
+build() { local out; out=$(cargo build "$@" 2>&1) || { printf '%s\n' "$out"; return 1; }; printf '%s\n' "$out" | tail -1; }
+build -p fleet-server --release
+build -p fleet-agent --release --target x86_64-unknown-linux-musl
 install -d -m 755 /opt/fleet/dist
 install -m 755 target/x86_64-unknown-linux-musl/release/fleet-agent /opt/fleet/dist/fleet-agent
 echo "fleet-agent $(/opt/fleet/dist/fleet-agent version 2>/dev/null | head -1)"
@@ -66,7 +69,8 @@ UNIT
 systemctl daemon-reload
 systemctl enable -q fleet-server
 systemctl restart fleet-server
-sleep 2
+# 启动时先跑迁移再监听（首次建管理员要等迁移跑完）：最多等 15 秒
+for _ in $(seq 15); do curl -s -o /dev/null http://127.0.0.1:8080/api/v1/auth/me && break; sleep 1; done
 if [ ! -f /root/fleet-admin-password ]; then
   (umask 077; head -c 18 /dev/urandom | base64 | tr -d '/+=' > /root/fleet-admin-password)
   /opt/fleet/fleet-server user-set -c /etc/fleet/fleet.toml admin < /root/fleet-admin-password
