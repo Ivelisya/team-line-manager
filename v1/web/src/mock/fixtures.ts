@@ -1,4 +1,5 @@
-// Mock 数据：约 27 台机器（2 线路机、团队1/团队2 的落地机、1 台无主机家宽代理、1 台故障、1 台退役中、2 台已退役、1 台上架中）。
+// Mock 数据：约 28 台机器（2 线路机、团队1/团队2 的落地机、1 台无主机家宽代理、1 台故障、1 台退役中、2 台已退役、1 台上架中、
+// 团队1-03 上的 1 个同机 IP 节点）。
 // IP 只用文档保留段 203.0.113.0/24 与 198.51.100.0/24。
 
 import type { ApiKey, Incident, Job, NotifyChannel, NotifyLogEntry, JobLog, MachineView, Plan, Provider, Renewal, Silence, AuditEntry, Team, EntryView, Lifecycle, HealthStatus, Subscription } from '@/lib/types';
@@ -15,14 +16,18 @@ const now = () => Date.now();
 const iso = (t: number) => new Date(t).toISOString();
 const dateOnly = (t: number) => iso(t).slice(0, 10);
 
-/** 流量额度周期（同服务端 views::period_start）：有重置日取今天或之前最近一次（月份没有这一天按月末），否则本月 1 号；已用按本月业务流量估 */
-export function quotaOf(m: MachineView): MachineView['quota'] {
+/** 流量额度周期（同服务端 views::period_start）：有重置日取今天或之前最近一次（月份没有这一天按月末），否则本月 1 号；已用按本月业务流量估，
+ *  宿主机连同它的同机 IP 节点（含已退役的）一起算（额度共用） */
+export function quotaOf(m: MachineView, all: MachineView[]): MachineView['quota'] {
   const d = new Date(); const day = m.subscription?.traffic_reset_day ?? 1;
   const at = (y: number, mo: number) => new Date(Date.UTC(y, mo, Math.min(day, new Date(Date.UTC(y, mo + 1, 0)).getUTCDate())));
   let s = at(d.getFullYear(), d.getMonth());
   if (s.getUTCDate() > d.getDate()) s = at(d.getFullYear(), d.getMonth() - 1);
-  let used = m.removed_traffic.month_up + m.removed_traffic.month_down;
-  for (const e of m.entries) used += e.traffic.month_up + e.traffic.month_down;
+  let used = 0;
+  for (const x of [m, ...all.filter((x) => x.host_machine?.id === m.id)]) {
+    used += x.removed_traffic.month_up + x.removed_traffic.month_down;
+    for (const e of x.entries) used += e.traffic.month_up + e.traffic.month_down;
+  }
   return { used, period_start: s.toISOString().slice(0, 10) };
 }
 
@@ -33,6 +38,8 @@ export interface Db {
   jobs: Job[]; logs: Record<string, JobLog[]>;
   incidents: Incident[]; silences: Silence[]; audit: AuditEntry[]; renewals: Record<string, Renewal[]>;
   apiKeys: ApiKey[]; channels: (NotifyChannel & { config: Record<string, string> })[]; notifyLog: NotifyLogEntry[];
+  /** 同机 IP 节点在宿主机上的 SS 端口（服务端存在 node_outbound，MachineView 里没有） */
+  ssPorts: Record<string, number>;
   seq: number;
 }
 
@@ -77,7 +84,7 @@ export function buildDb(): Db {
     };
   };
   const base = (o: Partial<MachineView> & Pick<MachineView, 'id' | 'kind' | 'name' | 'ip'>): MachineView => ({
-    team: null, number: null, label: null, ssh_port: 22, provider: null, provider_code: null, plan: null, service_ref: null,
+    team: null, number: null, label: null, ssh_port: 22, host_machine: null, ip_nodes: [], provider: null, provider_code: null, plan: null, service_ref: null,
     lifecycle: 'active', lifecycle_reason: null, note: '', revision: 1, created_at: iso(now() - 120 * DAY), activated_at: iso(now() - 100 * DAY), retired_at: null,
     subscription: null, agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, quota: { used: 0, period_start: '' }, health: { status: 'ok', reasons: [] },
     active_job: null, failed_job: null, open_incidents: 0, maintenance: false, relay: null, ...o,
@@ -185,6 +192,23 @@ export function buildDb(): Db {
       health: { status: 'inactive', reasons: [] },
     }));
   }
+  // 同机 IP 节点：团队1-03 上另配的一个 IP。SSH 端口、供应商、agent 与主机读数是宿主机的（agent、host 与宿主机同一个对象，读数一起变），
+  // 不带套餐、默认不记费用；SS 端口 8389
+  {
+    const h = machines.find((m) => m.id === 'm-t1-03')!; const team = teams[0];
+    const id = 'm-t1-14'; const name = displayName(team.name, 14);
+    const e: EntryView = {
+      id: `e${eSeq++}`, relay: { id: 'r1', name: '线路机1' }, node: { id, name }, direct: false, port: 20000 + entriesByRelay.r1.length + 1, lifecycle: 'active', applied: true, apply_error: null,
+      tcp: { ok: true, latency_ms: 47, detail: null, ts: iso(now() - 20_000) }, egress: { ok: true, latency_ms: 214, detail: null, ts: iso(now() - 40_000) },
+      traffic: { today_up: Math.round(1.1 * GiB), today_down: Math.round(3.6 * GiB), month_up: Math.round(46 * GiB), month_down: Math.round(128 * GiB) },
+    };
+    entriesByRelay.r1.push(e);
+    machines.push(base({
+      id, kind: 'vps', name, team: { id: team.id, name: team.name }, number: 14, ip: '198.51.100.66', ssh_port: h.ssh_port, host_machine: { id: h.id, name: h.name },
+      provider: h.provider, provider_code: h.provider_code, activated_at: iso(now() - 9 * DAY), agent: h.agent, host: h.host, entries: [e],
+    }));
+    h.ip_nodes = [{ id, name }];
+  }
 
   // 把入口挂到线路机上
   for (const rl of ['r1', 'r2'] as const) {
@@ -196,7 +220,7 @@ export function buildDb(): Db {
   machines[1].health = { status: 'degraded', reasons: [{ key: 'relay_apply_lag', severity: 'warning', text: '配置未应用（配置代数 8 · 已应用 7）' }] };
   machines[1].host = hostOf('r2', 58);
 
-  for (const m of machines) m.quota = quotaOf(m);
+  for (const m of machines) m.quota = quotaOf(m, machines);
   // 统计
   for (const t of teams) t.node_count = machines.filter((m) => m.team?.id === t.id && m.lifecycle !== 'retired').length;
   for (const p of plans) p.machine_count = machines.filter((m) => m.plan?.id === p.id && m.lifecycle !== 'retired').length;
@@ -245,6 +269,12 @@ export function buildDb(): Db {
   cj.steps.forEach((x, i) => { x.state = i < 3 ? 'compensated' : 'skipped'; if (i >= 3) { x.started_at = null; x.finished_at = null; } });
   const uj = mk('j-up', 'upgrade_agent', { id: 'r1', name: '线路机1' }, 'succeeded', [['push', '推送 agent'], ['restart', '重启 agent'], ['verify', '确认上报']], 3, 60 * 5);
   jobs.splice(3, 0, cj, uj);
+  // 同机 IP 节点的上架：先在宿主机上核对 IP，收敛不做系统基线（bbr 为 null）
+  const ij = mk('j-ip', 'provision_ip', { id: 'm-t1-14', name: '团队1-14' }, 'succeeded', IP_STEPS, 6, 60 * 24 * 9);
+  ij.steps[0].output = { ss_port: 8389, local_ips: '198.51.100.13, 198.51.100.66', egress_ip: '198.51.100.66' };
+  ij.steps[1].output = { bbr: null, nft_relays: '203.0.113.10', ssserver_updated: false };
+  ij.steps[4].output = { latency_ms: 214.2, egress_ip: '198.51.100.66' };
+  jobs.push(ij);
   const logs: Record<string, JobLog[]> = {};
   const logT = (jobId: string, lines: [string, string][]) => {
     const j = jobs.find((x) => x.id === jobId)!; const c = new Date(j.created_at).getTime();
@@ -255,6 +285,7 @@ export function buildDb(): Db {
   logT('j-retfail', [['info', '开始退役 团队2-10'], ['info', '停用入口 线路机2:20010，已应用'], ['info', '清理节点上的服务 ...'], ['error', 'SSH 连接超时：203.0.113.30:22']]);
   logT('j-ret', [['info', '开始退役 团队2-07'], ['info', '停用入口 线路机2:20007，已应用'], ['info', '清理节点上的服务 ...']]);
   logT('j-done1', [['info', '退役完成']]); logT('j-done2', [['info', '上架完成']]); logT('j-done3', [['info', '退役完成']]);
+  logT('j-ip', [['info', '在宿主机 团队1-03 上核对 IP 198.51.100.66'], ['info', '宿主机本机 IPv4：198.51.100.13, 198.51.100.66'], ['info', '经 198.51.100.66 访问中控，回显来源 198.51.100.66'], ['info', '装好 fleet-ssserver@8389 与防火墙表 ss_guard_8389'], ['info', '上架完成']]);
 
   const incidents: Incident[] = [
     { id: 'i1', subject: { id: 'm-t1-05', name: '团队1-05' }, subject_id: 'm-t1-05', subject_name: '团队1-05', rule: 'agent_offline', rule_name: 'agent 离线', severity: 'critical', state: 'firing', summary: 'agent 已离线 14 分钟', opened_at: iso(now() - 14 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 0 },
@@ -289,5 +320,8 @@ export function buildDb(): Db {
   ];
   const s3 = machines.find((m) => m.id === 'm-t1-03')!.subscription!;
   const renewals: Record<string, Renewal[]> = { 'm-t1-03': [{ id: 'rn1', old_due: addMonths(s3.due_date, -3), new_due: s3.due_date, amount_cents: s3.price_cents, note: '账单 #2041', actor: 'admin', created_at: iso(now() - 84 * DAY) }] };
-  return { user: 'admin', teams, providers, plans, machines, jobs, logs, incidents, silences, audit, renewals, apiKeys, channels, notifyLog, seq: 100 };
+  return { user: 'admin', teams, providers, plans, machines, jobs, logs, incidents, silences, audit, renewals, apiKeys, channels, notifyLog, ssPorts: { 'm-t1-14': 8389 }, seq: 100 };
 }
+
+/** 同机 IP 节点上架 / 恢复的步骤（同服务端 jobs::PROVISION_IP） */
+export const IP_STEPS: [string, string][] = [['ip_check', '在宿主机上核对 IP'], ['converge', '节点收敛（SS 实例、防火墙）'], ['attach', '接入线路机'], ['wait_applied', '等待线路机应用'], ['verify', '出口验收'], ['activate', '上线']];

@@ -4,7 +4,8 @@
 import type { EntryView, Job, JobLog, JobSummary, MachineView, ProbeBucket, ProvisionCheckItem, ProvisionItem, SeriesPoint } from '@/lib/types';
 import { displayName } from '@/lib/format';
 import { isQuiet, liveRate } from '@/lib/derive';
-import { buildDb, hashStr, quotaOf, rng, type Db } from './fixtures';
+import { LIFECYCLE_LABEL, makeDefaultCompare } from '@/lib/sort';
+import { buildDb, hashStr, IP_STEPS, quotaOf, rng, type Db } from './fixtures';
 import { installAccessMock } from './access';
 import { installPolicyMock } from './policy';
 
@@ -38,22 +39,28 @@ const machine = (id: string) => { const m = db.machines.find((x) => x.id === id)
 const teamOf = (id: string) => { const t = db.teams.find((x) => x.id === id); if (!t) throw bad('团队不存在', 404, 'not_found'); return t; };
 const clone = <T,>(x: T): T => JSON.parse(JSON.stringify(x));
 
+/** 由机器算出来的字段：团队 / 套餐的台数，宿主机的同机 IP 节点名单（未退役的，按默认顺序） */
 function refreshCounts() {
   for (const t of db.teams) t.node_count = db.machines.filter((m) => m.team?.id === t.id && m.lifecycle !== 'retired').length;
   for (const p of db.plans) p.machine_count = db.machines.filter((m) => m.plan?.id === p.id && m.lifecycle !== 'retired').length;
+  const order = makeDefaultCompare(db.teams);
+  for (const m of db.machines) m.ip_nodes = db.machines.filter((x) => x.host_machine?.id === m.id && x.lifecycle !== 'retired').sort(order).map((x) => ({ id: x.id, name: x.name }));
 }
 function renameMachine(m: MachineView) {
   if (m.kind === 'relay') m.name = m.label ?? m.name;
   else if (m.team && m.number != null) m.name = displayName(m.team.name, m.number);
-  for (const x of db.machines) for (const e of x.entries) {
-    if (e.node.id === m.id) e.node.name = m.name;
-    if (e.relay.id === m.id) e.relay.name = m.name;
+  for (const x of db.machines) {
+    if (x.host_machine?.id === m.id) x.host_machine.name = m.name;
+    for (const e of x.entries) {
+      if (e.node.id === m.id) e.node.name = m.name;
+      if (e.relay.id === m.id) e.relay.name = m.name;
+    }
   }
 }
-/** 同团队在用节点压缩成 01..N；exclude 为即将退役的机器。返回改名清单 */
-function compactPlan(teamId: string, excludeId?: string) {
+/** 同团队在用节点压缩成 01..N；exclude 为即将退役的机器（退役宿主机时连同它的同机 IP 节点）。返回改名清单 */
+function compactPlan(teamId: string, exclude: string[] = []) {
   const team = teamOf(teamId);
-  const list = db.machines.filter((x) => x.team?.id === teamId && x.id !== excludeId && x.lifecycle !== 'retired' && x.number != null).sort((a, b) => a.number! - b.number!);
+  const list = db.machines.filter((x) => x.team?.id === teamId && !exclude.includes(x.id) && x.lifecycle !== 'retired' && x.number != null).sort((a, b) => a.number! - b.number!);
   return list.map((x, i) => ({ m: x, n: i + 1, old_name: x.name, new_name: displayName(team.name, i + 1) })).filter((c) => c.m.number !== c.n);
 }
 /** 退役完成：释放编号（number=null，名称保留作历史），并压缩同团队编号 */
@@ -90,8 +97,8 @@ function overview() {
     due_7d: live.filter((m) => m.subscription && m.subscription.due_days <= 7 && (m.subscription.due_days < 0 || !m.subscription.auto_renew)).length,
     monthly_cost: Object.entries(live.reduce<Record<string, number>>((acc, m) => { if (m.subscription) acc[m.subscription.currency] = (acc[m.subscription.currency] ?? 0) + Math.round(monthly(m.subscription.price_cents, m.subscription.cycle)); return acc; }, {})).map(([currency, cents]) => ({ currency, cents })),
     traffic_month: { up, down },
-    // 实时速率只算数据没过期的（同 liveRate）
-    net_rx_bps: live.reduce((s, m) => s + (liveRate(m)?.rx ?? 0), 0), net_tx_bps: live.reduce((s, m) => s + (liveRate(m)?.tx ?? 0), 0),
+    // 实时速率只算数据没过期的（同 liveRate）；同机 IP 节点的读数就是宿主机的，不重复算
+    net_rx_bps: live.reduce((s, m) => s + (m.host_machine ? 0 : liveRate(m)?.rx ?? 0), 0), net_tx_bps: live.reduce((s, m) => s + (m.host_machine ? 0 : liveRate(m)?.tx ?? 0), 0),
   };
 }
 
@@ -165,7 +172,7 @@ function drive(job: Job, stepMs: number, onDone: () => void, outputs: Record<str
     if (job.state !== 'running') return;
     const cur = job.steps.find((s) => s.state === 'running');
     if (!cur) return;
-    cur.state = 'succeeded'; cur.finished_at = iso(); cur.output = outputs[cur.idx] ?? null;
+    cur.state = 'done'; cur.finished_at = iso(); cur.output = outputs[cur.idx] ?? null;
     log(job.id, 'info', `步骤 ${cur.idx + 1}/${job.steps.length} 完成：${cur.title}`);
     const next = job.steps[cur.idx + 1];
     if (next) { next.state = 'running'; next.started_at = iso(); job.step = next.idx; log(job.id, 'info', `开始：${next.title}`); emit({ type: 'job', id: job.id }); setTimeout(tick, stepMs); }
@@ -175,15 +182,24 @@ function drive(job: Job, stepMs: number, onDone: () => void, outputs: Record<str
   setTimeout(tick, stepMs);
 }
 
+/** 同机 IP 节点的 agent 与主机读数就是宿主机那一份（同一个对象，读数随宿主机一起变） */
+function borrowHost(m: MachineView, h: MachineView) { m.agent = h.agent; m.host = h.host; }
+/** 同机 IP 节点上架 / 恢复的步骤输出：在宿主机上核对 IP、收敛（不做系统基线，bbr 为 null） */
+const ipOutputs = (m: MachineView, h: MachineView) => [
+  { ss_port: db.ssPorts[m.id], local_ips: `${h.ip}, ${m.ip}`, egress_ip: m.ip },
+  { bbr: null, nft_relays: m.entries.map((e) => machine(e.relay.id).ip).join(', '), ssserver_updated: false },
+];
 function startProvisionJob(m: MachineView) {
-  const job = newJob(m.kind === 'relay' ? 'provision_relay' : m.kind === 'proxy' ? 'provision_proxy' : 'provision_vps', { id: m.id, name: m.name }, PSTEPS);
+  const h = m.host_machine && machine(m.host_machine.id);
+  const job = newJob(h ? 'provision_ip' : m.kind === 'relay' ? 'provision_relay' : m.kind === 'proxy' ? 'provision_proxy' : 'provision_vps', { id: m.id, name: m.name }, h ? IP_STEPS : PSTEPS);
   m.active_job = { id: job.id, kind: job.kind, state: 'running' };
   drive(job, 2800, () => {
     m.lifecycle = 'active'; m.activated_at = iso(); m.active_job = null; m.health = { status: 'ok', reasons: [] };
-    if (m.kind !== 'proxy') { m.agent = { version: '1.0.3', last_report_at: iso(), online: true, xray_running: null, cores: 2, health: null }; m.host = { ts: iso(), cpu_pct: 6, load1: 0.1, mem_used: 400 * 1024 ** 2, mem_total: 4 * GiB, disk_used: 4 * GiB, disk_total: 60 * GiB, net_rx_bps: 2e5, net_tx_bps: 1e5, tcp_conns: 12 }; }
+    if (h) borrowHost(m, h);
+    else if (m.kind !== 'proxy') { m.agent = { version: '1.0.3', last_report_at: iso(), online: true, xray_running: null, cores: 2, health: null }; m.host = { ts: iso(), cpu_pct: 6, load1: 0.1, mem_used: 400 * 1024 ** 2, mem_total: 4 * GiB, disk_used: 4 * GiB, disk_total: 60 * GiB, net_rx_bps: 2e5, net_tx_bps: 1e5, tcp_conns: 12 }; }
     for (const e of m.entries) { e.lifecycle = 'active'; e.applied = true; e.tcp = { ok: true, latency_ms: 52, detail: null, ts: iso() }; e.egress = { ok: true, latency_ms: 190, detail: null, ts: iso() }; }
     refreshCounts();
-  });
+  }, h ? ipOutputs(m, h) : []);
 }
 // 固定作业：运行中的 j-run 慢速推进，便于看时间线
 function bootFixtures() {
@@ -211,11 +227,19 @@ function bootFixtures() {
 
 // ---------- 上架校验 ----------
 const IP_RE = /^(\d{1,3})(\.\d{1,3}){3}$/;
+/** 宿主机上最小的空闲 SS 端口：8389 起，跳过未退役同机节点（except 这台除外）已占的和 extra（同一批里已分出去的） */
+function freeSsPort(hostId: string, extra: number[] = [], except?: string) {
+  const taken = new Set(extra);
+  for (const x of db.machines) if (x.host_machine?.id === hostId && x.lifecycle !== 'retired' && x.id !== except) taken.add(db.ssPorts[x.id]);
+  let p = 8389; while (taken.has(p)) p++;
+  return p;
+}
 function checkProvision(items: ProvisionItem[]): ProvisionCheckItem[] {
   const usedNum = new Map<string, Set<number>>();
   for (const m of db.machines) if (m.team && m.number != null && m.lifecycle !== 'retired') { const s = usedNum.get(m.team.id) ?? new Set(); s.add(m.number); usedNum.set(m.team.id, s); }
   const ips = new Set(db.machines.filter((m) => m.lifecycle !== 'retired').map((m) => m.ip));
   const portUsed = new Map<string, number>();
+  const ssBatch = new Map<string, number[]>(); // 宿主机 → 这一批分到的 SS 端口
   const out: ProvisionCheckItem[] = [];
   const seenIp = new Set<string>();
   for (const it of items) {
@@ -257,19 +281,36 @@ function checkProvision(items: ProvisionItem[]): ProvisionCheckItem[] {
     }
     if (it.kind !== 'proxy' && it.login?.password === '' ) errors.push('登录密码为空：不填请整项留空以使用中控密钥');
     if (it.subscription?.due_date && !/^\d{4}-\d{2}-\d{2}$/.test(it.subscription.due_date)) errors.push('到期日格式应为 YYYY-MM-DD');
-    out.push({ ok: errors.length === 0, errors, name, number, relay_port: relayPort });
+    // 同机 IP 节点：宿主机要是在用的普通落地机；SS 端口在宿主机上暂定（同服务端 provision::validate）
+    let ssPort: number | null = null;
+    if (it.host_id) {
+      const h = db.machines.find((m) => m.id === it.host_id);
+      if (!h) errors.push('宿主机不存在');
+      else if (it.kind !== 'vps') errors.push('只有落地机（vps）能加在宿主机上');
+      else if (h.kind !== 'vps' || h.host_machine) errors.push(`「${h.name}」不能当宿主机：宿主机要是普通落地机（不能是线路机、家宽代理或同机 IP 节点）`);
+      else if (h.lifecycle !== 'active') errors.push(`宿主机「${h.name}」现在是「${LIFECYCLE_LABEL[h.lifecycle]}」，只能加在运行中的落地机上`);
+      else {
+        const batch = ssBatch.get(h.id) ?? [];
+        ssPort = freeSsPort(h.id, batch);
+        ssBatch.set(h.id, [...batch, ssPort]);
+      }
+    }
+    out.push({ ok: errors.length === 0, errors, name, number, relay_port: relayPort, ss_port: ssPort });
   }
   return out;
 }
 
 function createMachine(it: ProvisionItem, c: ProvisionCheckItem): MachineView {
   const id = `m-${db.seq++}`;
-  const plan = db.plans.find((p) => p.id === it.plan_id) ?? null;
-  const pv = db.providers.find((p) => p.id === (it.provider_id ?? plan?.provider_id)) ?? null;
+  // 同机 IP 节点：SSH 端口（只展示）与供应商取宿主机的，不带套餐，SS 端口用检查时暂定的
+  const h = it.host_id ? machine(it.host_id) : null;
+  const plan = h ? null : db.plans.find((p) => p.id === it.plan_id) ?? null;
+  const pv = db.providers.find((p) => p.id === (h ? h.provider?.id : it.provider_id ?? plan?.provider_id)) ?? null;
   const team = it.kind === 'relay' ? null : teamOf(it.team_id!);
+  if (h) db.ssPorts[id] = c.ss_port!;
   const m: MachineView = {
     id, kind: it.kind, name: c.name, team: team ? { id: team.id, name: team.name } : null, number: it.kind === 'relay' ? null : c.number, label: it.kind === 'relay' ? it.label ?? null : null,
-    ip: it.ip, ssh_port: it.ssh_port ?? 22, provider: pv ? { id: pv.id, name: pv.name } : null, provider_code: pv?.code ?? null,
+    ip: it.ip, ssh_port: h?.ssh_port ?? it.ssh_port ?? 22, host_machine: h && { id: h.id, name: h.name }, ip_nodes: [], provider: pv ? { id: pv.id, name: pv.name } : null, provider_code: pv?.code ?? null,
     plan: plan ? { id: plan.id, name: plan.name, bandwidth_mbps: plan.bandwidth_mbps, traffic_gb: plan.traffic_gb } : null, service_ref: it.service_ref ?? null,
     lifecycle: 'provisioning', lifecycle_reason: null, note: it.note ?? '', revision: 1, created_at: iso(), activated_at: null, retired_at: null,
     subscription: it.subscription?.due_date ? { price_cents: it.subscription.price_cents ?? plan?.price_cents ?? 0, currency: plan?.currency ?? 'USD', cycle: it.subscription.cycle ?? plan?.cycle ?? 'monthly', due_date: it.subscription.due_date, due_days: 0, billing_tz: it.subscription.billing_tz ?? pv?.timezone ?? 'Asia/Shanghai', auto_renew: false, remind_days: 7, traffic_gb: plan?.traffic_gb || null, traffic_reset_day: 1 } : null,
@@ -281,7 +322,7 @@ function createMachine(it: ProvisionItem, c: ProvisionCheckItem): MachineView {
     const e: EntryView = { id: `e${db.seq++}`, relay: { id: relay.id, name: relay.name }, node: { id, name: m.name }, direct: false, port: c.relay_port ?? 20999, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 } };
     m.entries = [e]; relay.entries.push(e);
   }
-  recomputeDue(m); m.quota = quotaOf(m);
+  recomputeDue(m); m.quota = quotaOf(m, db.machines);
   db.machines.push(m); refreshCounts();
   return m;
 }
@@ -378,26 +419,48 @@ R('PATCH', '/machines/([^/]+)', ({ params, body }) => {
   db.audit.unshift({ id: `a${db.seq++}`, ts: iso(), actor: db.user, action: 'machine.update', title: '修改机器', summary: `${m.name}：${Object.keys(body).filter((k) => k !== 'revision').join('、')}`, target_kind: 'machine', target_id: m.id, detail: body });
   emit({ type: 'machines' }); emit({ type: 'catalog' }); return clone(m);
 });
-R('GET', '/machines/([^/]+)/series', ({ params, query }) => series(machine(params[0]), query.get('metric') ?? 'host', query.get('range') ?? '1h'));
+// 同机 IP 节点的主机曲线是宿主机的
+R('GET', '/machines/([^/]+)/series', ({ params, query }) => {
+  const m = machine(params[0]); const metric = query.get('metric') ?? 'host';
+  return series(metric === 'host' && m.host_machine ? machine(m.host_machine.id) : m, metric, query.get('range') ?? '1h');
+});
+/** 宿主机上还没开始退役的同机 IP 节点：退役宿主机时一并退役 */
+const ipNodesLeaving = (m: MachineView) => db.machines.filter((x) => x.host_machine?.id === m.id && x.lifecycle !== 'retiring' && x.lifecycle !== 'retired');
 R('GET', '/machines/([^/]+)/retire', ({ params }) => {
   const m = machine(params[0]);
-  const renames = m.team && m.lifecycle !== 'retired' ? compactPlan(m.team.id, m.id).map((c) => ({ machine_id: c.m.id, old_name: c.old_name, new_name: c.new_name })) : [];
-  return { name: m.name, renames };
+  const xs = ipNodesLeaving(m);
+  // 改名按所有受影响的团队算（同服务端）
+  const leaving = m.lifecycle !== 'retired' ? [m, ...xs] : [];
+  const teams = [...new Set(leaving.flatMap((x) => (x.team ? [x.team.id] : [])))];
+  const renames = teams.flatMap((t) => compactPlan(t, leaving.map((x) => x.id))).map((c) => ({ machine_id: c.m.id, old_name: c.old_name, new_name: c.new_name }));
+  return { name: m.name, renames, ip_nodes: xs.map((x) => ({ id: x.id, name: x.name })) };
 });
+function startRetire(m: MachineView, cleanup: boolean, reason: string | null) {
+  const steps: [string, string][] = [['disable', '停用入口'], ...(cleanup ? [['cleanup', '清理节点上的服务'] as [string, string]] : []), ['revoke', '撤销令牌'], ['mark', '标记为已退役']];
+  const job = newJob('retire', { id: m.id, name: m.name }, steps);
+  m.lifecycle = 'retiring'; m.lifecycle_reason = reason; m.active_job = { id: job.id, kind: 'retire', state: 'running' }; m.failed_job = null; m.entries.forEach((e) => { e.lifecycle = 'disabled'; });
+  drive(job, 2200, () => { finishRetire(m); refreshCounts(); });
+  return job;
+}
 R('POST', '/machines/([^/]+)/retire', ({ params, body }) => {
   const m = machine(params[0]);
   if (m.lifecycle === 'retired') throw bad('这台机器已退役');
   if (body.confirm !== m.name) throw bad('确认名称不匹配', 400, 'confirm_mismatch');
-  const steps: [string, string][] = [['disable', '停用入口'], ...(body.cleanup ? [['cleanup', '清理节点上的服务'] as [string, string]] : []), ['revoke', '撤销令牌'], ['mark', '标记为已退役']];
-  const job = newJob('retire', { id: m.id, name: m.name }, steps);
-  m.lifecycle = 'retiring'; m.lifecycle_reason = body.reason ?? null; m.active_job = { id: job.id, kind: 'retire', state: 'running' }; m.entries.forEach((e) => { e.lifecycle = 'disabled'; });
-  drive(job, 2200, () => { finishRetire(m); refreshCounts(); });
-  emit({ type: 'machines' }); return { job_id: job.id };
+  const xs = ipNodesLeaving(m);
+  const job = startRetire(m, !!body.cleanup, body.reason ?? null);
+  // 宿主机：同机 IP 节点一并退役，进行中 / 失败的作业作废，各自一个退役作业（不登录清理：宿主机的清理连同它们的实例一起删）
+  const ip_node_jobs = xs.map((x) => {
+    for (const j of db.jobs) if (j.target?.id === x.id && ['queued', 'running', 'failed'].includes(j.state)) { j.state = 'cancelled'; j.cancellable = false; j.finished_at = iso(); }
+    return { machine_id: x.id, name: x.name, job_id: startRetire(x, false, `随宿主机「${m.name}」退役`).id };
+  });
+  emit({ type: 'machines' }); return { job_id: job.id, ip_node_jobs };
 });
 R('POST', '/machines/([^/]+)/purge', ({ params, body }) => {
   const m = machine(params[0]);
   if (m.lifecycle !== 'retired') throw bad('只有已退役的机器才能彻底删除', 409, 'conflict');
   if (body.confirm !== m.name) throw bad('确认名称不匹配', 400, 'confirm_mismatch');
+  const left = db.machines.filter((x) => x.host_machine?.id === m.id);
+  if (left.length) throw bad(`这台机器上还有同机 IP 节点没有彻底删除（含已退役的）：${left.map((x) => x.name).join('、')}；先删它们`, 409, 'conflict');
   const job = newJob('purge', { id: m.id, name: m.name }, [['telemetry', '删除遥测数据'], ['record', '删除机器记录']]);
   drive(job, 1800, () => { db.machines = db.machines.filter((x) => x.id !== m.id); db.machines.forEach((x) => { x.entries = x.entries.filter((e) => e.node.id !== m.id); }); refreshCounts(); });
   return { job_id: job.id };
@@ -405,7 +468,7 @@ R('POST', '/machines/([^/]+)/purge', ({ params, body }) => {
 R('PUT', '/machines/([^/]+)/subscription', ({ params, body }) => {
   const m = machine(params[0]);
   m.subscription = { traffic_gb: null, traffic_reset_day: null, ...(m.subscription ?? {} as any), ...body, due_days: 0 };
-  recomputeDue(m); m.quota = quotaOf(m); emit({ type: 'machine', id: m.id }); emit({ type: 'machines' }); return clone(m.subscription);
+  recomputeDue(m); m.quota = quotaOf(m, db.machines); emit({ type: 'machine', id: m.id }); emit({ type: 'machines' }); return clone(m.subscription);
 });
 R('GET', '/machines/([^/]+)/renewals', ({ params }) => clone(db.renewals[params[0]] ?? []));
 R('POST', '/machines/([^/]+)/renewals', ({ params, body }) => {
@@ -519,13 +582,14 @@ function startUpgrade(m: MachineView) {
 }
 R('POST', '/machines/([^/]+)/upgrade-agent', ({ params }) => {
   const m = machine(params[0]);
+  if (m.host_machine) throw bad(`同机 IP 节点没有自己的 agent，用的是宿主机「${m.host_machine.name}」的：升级宿主机的 agent`, 409, 'conflict');
   if (!m.agent) throw bad('这台机器没有 agent（家宽代理不装 agent）');
   if (m.active_job) throw bad('这台机器有进行中的作业，请等它结束', 409, 'conflict');
   const job = startUpgrade(m); emit({ type: 'machines' });
   return { machine_id: m.id, job_id: job.id };
 });
 R('POST', '/agents/upgrade', () => {
-  const jobs = db.machines.filter((m) => m.lifecycle === 'active' && m.agent && !m.active_job).map((m) => ({ machine_id: m.id, job_id: startUpgrade(m).id }));
+  const jobs = db.machines.filter((m) => m.lifecycle === 'active' && m.agent && !m.host_machine && !m.active_job).map((m) => ({ machine_id: m.id, job_id: startUpgrade(m).id }));
   emit({ type: 'machines' }); return { jobs };
 });
 
@@ -614,12 +678,16 @@ function restorePlan(m: MachineView, teamId: string | null, number: string | nul
       if (num != null) name = displayName(t.name, num);
     }
   }
+  // 同机 IP 节点：SSH、agent 都是宿主机的，宿主机要在用
+  const h = m.host_machine && machine(m.host_machine.id);
+  if (h && h.lifecycle !== 'active') blockers.push(`宿主机「${h.name}」现在是「${LIFECYCLE_LABEL[h.lifecycle]}」：同机 IP 节点要等宿主机在用才能恢复`);
   return { blockers, ip_conflict, name, num, team, label: m.kind === 'relay' ? name : null };
 }
 R('GET', '/machines/([^/]+)/restore', ({ params, query }) => {
   const m = machine(params[0]);
   const p = restorePlan(m, query.get('team_id'), query.get('number'), query.get('label'));
-  const probe = query.get('probe') !== 'false' && m.kind !== 'proxy';
+  // 同机 IP 节点不试 SSH：它用中控密钥登录宿主机
+  const probe = query.get('probe') !== 'false' && m.kind !== 'proxy' && !m.host_machine;
   const keyLogin = m.id === 'm-t1-3r' ? 'denied' : 'ok';
   const last = db.machines.find((x) => x.kind === 'relay' && x.lifecycle === 'active' && x.id === (m.team?.id === 't2' ? 'r2' : 'r1'));
   return {
@@ -627,7 +695,7 @@ R('GET', '/machines/([^/]+)/restore', ({ params, query }) => {
     restorable: p.blockers.length === 0, blockers: p.blockers, warnings: [], ip_conflict: p.ip_conflict, retired_reason: m.lifecycle_reason,
     last_relay: last ? { id: last.id, name: last.name } : null,
     ssh: probe ? { reachable: true, key_login: keyLogin, host_key: 'SHA256:q3Zp1vJm0cJ2oWfX8sB9tqk1eYb7rUo5nHj2LdPaVx4' } : null,
-    needs: { relay: m.kind !== 'relay', upstream: m.kind === 'proxy', password: m.kind === 'proxy' ? 'no' : keyLogin === 'denied' ? 'required' : 'no' },
+    needs: { relay: m.kind !== 'relay', upstream: m.kind === 'proxy', password: m.kind === 'proxy' || m.host_machine ? 'no' : keyLogin === 'denied' ? 'required' : 'no' },
   };
 });
 R('POST', '/machines/([^/]+)/restore', ({ params, body }) => {
@@ -646,15 +714,19 @@ R('POST', '/machines/([^/]+)/restore', ({ params, body }) => {
     m.entries = [e]; relay.entries.push(e);
   }
   const relaySteps: [string, string][] = [['preflight', '预检与身份'], ['bootstrap', '引导密钥'], ['converge_relay', '线路机收敛（SSH 加固、Xray）'], ['agent', '安装 agent'], ['wait_report', '等待首次上报'], ['wait_applied', '等待 Xray 配置生效'], ['activate', '上线']];
-  const steps = m.kind === 'proxy' ? RESTORE_STEPS.filter(([k]) => ['attach', 'wait_applied', 'verify', 'activate'].includes(k)) : m.kind === 'relay' ? relaySteps : RESTORE_STEPS;
-  const job = newJob(`restore_${m.kind}`, { id: m.id, name: m.name }, steps);
+  // 同机 IP 节点：SS 端口在宿主机上重新分配（原来的可能已给了别的同机节点）
+  const h = m.host_machine && machine(m.host_machine.id);
+  if (h) db.ssPorts[m.id] = freeSsPort(h.id, [], m.id);
+  const steps = h ? IP_STEPS : m.kind === 'proxy' ? RESTORE_STEPS.filter(([k]) => ['attach', 'wait_applied', 'verify', 'activate'].includes(k)) : m.kind === 'relay' ? relaySteps : RESTORE_STEPS;
+  const job = newJob(h ? 'restore_ip' : `restore_${m.kind}`, { id: m.id, name: m.name }, steps);
   m.active_job = { id: job.id, kind: job.kind, state: 'running' };
   drive(job, 2000, () => {
     m.lifecycle = 'active'; m.retired_at = null; m.lifecycle_reason = `已恢复${body.reason ? `：${body.reason}` : ''}`; m.active_job = null; m.health = { status: 'ok', reasons: [] };
-    if (m.kind !== 'proxy') { m.agent = { version: '1.0.3', last_report_at: iso(), online: true, xray_running: null, cores: 2, health: null }; m.host = { ts: iso(), cpu_pct: 5, load1: 0.1, mem_used: 380 * 1024 ** 2, mem_total: 4 * GiB, disk_used: 4 * GiB, disk_total: 60 * GiB, net_rx_bps: 2e5, net_tx_bps: 1e5, tcp_conns: 10 }; }
+    if (h) borrowHost(m, h);
+    else if (m.kind !== 'proxy') { m.agent = { version: '1.0.3', last_report_at: iso(), online: true, xray_running: null, cores: 2, health: null }; m.host = { ts: iso(), cpu_pct: 5, load1: 0.1, mem_used: 380 * 1024 ** 2, mem_total: 4 * GiB, disk_used: 4 * GiB, disk_total: 60 * GiB, net_rx_bps: 2e5, net_tx_bps: 1e5, tcp_conns: 10 }; }
     if (e) { e.lifecycle = 'active'; e.applied = true; e.tcp = { ok: true, latency_ms: 50, detail: null, ts: iso() }; e.egress = { ok: true, latency_ms: 180, detail: null, ts: iso() }; }
     refreshCounts();
-  });
+  }, h ? ipOutputs(m, h) : []);
   db.audit.unshift({ id: `a${db.seq++}`, ts: iso(), actor: db.user, action: 'machine.restore', title: '恢复机器', summary: `${old} → ${m.name}`, target_kind: 'machine', target_id: m.id, detail: {} });
   refreshCounts(); emit({ type: 'machines' }); emit({ type: 'catalog' });
   return { job_id: job.id, machine_id: m.id, name: m.name, old_name: old, number: m.number };
@@ -716,9 +788,12 @@ function jitter() {
   const now = Math.floor(Date.now() / 1000);
   for (const m of db.machines) if (m.host && m.lifecycle === 'active' && m.health.status !== 'down') {
     const h = m.host; const f = () => 0.85 + Math.random() * 0.3;
-    h.cpu_pct = Math.max(1, Math.min(99, (h.cpu_pct ?? 10) * f())); h.net_rx_bps = Math.round((h.net_rx_bps ?? 1e6) * f()); h.net_tx_bps = Math.round((h.net_tx_bps ?? 1e6) * f()); h.ts = iso(now * 1000);
-    if (h.load1 != null) h.load1 = +((h.cpu_pct ?? 0) / 40).toFixed(2);
-    if (m.agent) m.agent.last_report_at = h.ts;
+    // 同机 IP 节点的读数就是宿主机那一份（同一个对象，宿主机排在前面已经改过），只照推
+    if (!m.host_machine) {
+      h.cpu_pct = Math.max(1, Math.min(99, (h.cpu_pct ?? 10) * f())); h.net_rx_bps = Math.round((h.net_rx_bps ?? 1e6) * f()); h.net_tx_bps = Math.round((h.net_tx_bps ?? 1e6) * f()); h.ts = iso(now * 1000);
+      if (h.load1 != null) h.load1 = +((h.cpu_pct ?? 0) / 40).toFixed(2);
+      if (m.agent) m.agent.last_report_at = h.ts;
+    }
     machines[m.id] = { host: [now, h.cpu_pct, h.load1, h.mem_used, h.mem_total, h.disk_used, h.disk_total, h.net_rx_bps, h.net_tx_bps, h.tcp_conns], seen: now };
   }
   emit({ type: 'metrics', machines, entries: {}, overview: overview() });

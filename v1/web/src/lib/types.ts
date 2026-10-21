@@ -35,6 +35,11 @@ export interface AgentHealth {
 export interface MachineView {
   id: string; kind: Kind; name: string; team: { id: string; name: string } | null; number: number | null; label: string | null;
   ip: string; ssh_port: number;
+  /** 同机 IP 节点（kind 仍是 vps）：它所在的宿主机。它没有自己的 agent 和 SSH——agent、host（主机读数）、ssh_port 都是宿主机的，
+   *  plan 为 null，宿主机维护时 maintenance 也为 true；其它机器为 null */
+  host_machine: { id: string; name: string } | null;
+  /** 宿主机：它上面未退役的同机 IP 节点（按团队、编号）；其它机器为 []。宿主机的 quota.used 含它们（含已退役的）的流量 */
+  ip_nodes: { id: string; name: string }[];
   provider: { id: string; name: string } | null; provider_code: string | null;
   plan: { id: string; name: string; bandwidth_mbps: number | null; traffic_gb: number | null } | null; service_ref: string | null;
   lifecycle: Lifecycle; lifecycle_reason: string | null; note: string; revision: number;
@@ -75,7 +80,7 @@ export interface Overview {
 }
 
 export type JobState = 'queued' | 'running' | 'waiting' | 'cancelling' | 'succeeded' | 'failed' | 'cancelled';
-export type JobKind = 'provision_vps' | 'provision_proxy' | 'provision_relay' | 'attach_entry' | 'move_entry' | 'restore_vps' | 'restore_proxy' | 'restore_relay' | 'retire' | 'purge' | 'upgrade_agent';
+export type JobKind = 'provision_vps' | 'provision_proxy' | 'provision_relay' | 'provision_ip' | 'attach_entry' | 'move_entry' | 'restore_vps' | 'restore_proxy' | 'restore_relay' | 'restore_ip' | 'retire' | 'purge' | 'upgrade_agent';
 /** 步骤 state 文档未列全，前端按 pending/running/waiting/succeeded(done)/failed/skipped(cancelled) 宽松处理 */
 export interface JobStep { idx: number; key: string; title: string; state: string; started_at: string | null; finished_at: string | null; output: Record<string, unknown> | null; error: string | null; error_kind?: string | null }
 /** 作业列表（GET /jobs）的一项：不带 steps。step = 当前（或失败的）步骤下标，step_title 为它的标题，做完为 null */
@@ -99,8 +104,12 @@ export interface ProvisionItem {
   upstream?: { protocol: 'socks5' | 'http'; host: string; port: number; username?: string; password?: string };
   ss_port?: number;
   subscription?: { price_cents?: number; currency?: string; due_date: string; cycle?: string; billing_tz?: string };
+  /** 同机 IP 节点：加在这台落地机（宿主机）上。带了它时 ssh_port / login / ss_port / provider_id / plan_id 不适用（服务端忽略）：
+   *  SSH 端口与供应商取宿主机的、不带套餐，SS 端口由中控在宿主机上分配 */
+  host_id?: string;
 }
-export interface ProvisionCheckItem { ok: boolean; errors: string[]; name: string; number: number | null; relay_port?: number }
+/** ss_port：同机 IP 节点暂定的 SS 端口（作业在宿主机上核对时被占用会换），其它为 null */
+export interface ProvisionCheckItem { ok: boolean; errors: string[]; name: string; number: number | null; relay_port?: number; ss_port: number | null }
 
 // ---- 以 API.md「返回形状补充」为准 ----
 /** series：{metric, range, resolution, points}，点里时间字段叫 ts。
@@ -132,6 +141,7 @@ export interface RestorePreview {
   id: string; kind: Kind; lifecycle: Lifecycle; ip: string; old_name: string; name: string; team: { id: string; name: string } | null; number: number | null; label: string | null;
   restorable: boolean; blockers: string[]; warnings: string[]; ip_conflict: { machine_id: string; name: string; lifecycle: string } | null;
   last_relay: { id: string; name: string } | null; retired_reason: string | null;
+  /** 同机 IP 节点不试 SSH（用中控密钥登录宿主机），为 null、needs.password 为 no；宿主机不在用时 blockers 里有原因 */
   ssh: { reachable: boolean; key_login: 'ok' | 'denied' | 'error' | 'unreachable' | string; host_key?: string; detail?: string } | null;
   /** password：required 中控密钥登录被拒、必须给 root 密码；optional 探测不到、可选；no 不需要 */
   needs: { relay: boolean; upstream: boolean; password: 'required' | 'optional' | 'no' };
@@ -140,8 +150,10 @@ export interface RestoreBody {
   team_id?: string; number?: number; label?: string; relay_id?: string; reason?: string; reset_host_key?: boolean;
   login?: { password: string }; upstream?: { protocol: 'socks5' | 'http'; host: string; port: number; username?: string; password?: string };
 }
-/** 退役预览：退役后同团队后面的节点会依次前移改名 */
-export interface RetirePreview { name: string; renames: { machine_id: string; old_name: string; new_name: string }[] }
+/** 退役预览：退役后同团队后面的节点会依次前移改名。ip_nodes：会一并退役的同机 IP 节点（宿主机才有），renames 按所有受影响的团队算 */
+export interface RetirePreview { name: string; renames: { machine_id: string; old_name: string; new_name: string }[]; ip_nodes: { id: string; name: string }[] }
+/** 退役：宿主机的同机 IP 节点各一个退役作业（ip_node_jobs，没有为 []） */
+export interface RetireResult { job_id: string; ip_node_jobs: { machine_id: string; name: string; job_id: string }[] }
 
 // ---- 设置页：API 密钥、告警通知渠道（契约见 COMMON.md） ----
 export type ApiScope = 'read' | 'write' | 'secrets' | 'exec';
