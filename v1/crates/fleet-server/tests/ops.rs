@@ -324,3 +324,33 @@ async fn upgrade_all_skips_conflicting_machine() {
     let n: i64 = sqlx::query_scalar("select count(*) from job where kind = 'upgrade_agent'").fetch_one(&t.st.db).await.unwrap();
     assert_eq!(n, 2);
 }
+
+#[tokio::test]
+async fn last_used_updates_are_throttled_to_once_a_minute() {
+    let t = setup().await;
+    let (kid, tok) = t.make_key("ci-throttle", &["read"]).await;
+    let age = |sql: &'static str, id: String| {
+        let db = t.st.db.clone();
+        async move { sqlx::query_scalar::<_, f64>(sql).bind(id).fetch_one(&db).await.unwrap() }
+    };
+    let key_age = || age("select extract(epoch from now() - last_used_at)::float8 from api_key where id::text = $1", kid.to_string());
+    let (s, _) = t.call("GET", "/api/v1/machines", None, Auth::Key(&tok)).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(key_age().await < 5.0, "第一次使用要记录");
+    // 10 秒前用过：一分钟内不重写；两分钟前用过：重写
+    sqlx::query("update api_key set last_used_at = now() - interval '10 seconds' where id::text = $1").bind(kid.to_string()).execute(&t.st.db).await.unwrap();
+    assert_eq!(t.call("GET", "/api/v1/machines", None, Auth::Key(&tok)).await.0, StatusCode::OK);
+    assert!(key_age().await > 9.0);
+    sqlx::query("update api_key set last_used_at = now() - interval '2 minutes' where id::text = $1").bind(kid.to_string()).execute(&t.st.db).await.unwrap();
+    assert_eq!(t.call("GET", "/api/v1/machines", None, Auth::Key(&tok)).await.0, StatusCode::OK);
+    assert!(key_age().await < 5.0);
+    // 会话同理
+    sqlx::query("update session set last_seen_at = now() - interval '10 seconds'").execute(&t.st.db).await.unwrap();
+    assert_eq!(t.call("GET", "/api/v1/machines", None, Auth::Session).await.0, StatusCode::OK);
+    let n: i64 = sqlx::query_scalar("select count(*) from session where last_seen_at < now() - interval '9 seconds'").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(n, 1);
+    sqlx::query("update session set last_seen_at = now() - interval '2 minutes'").execute(&t.st.db).await.unwrap();
+    assert_eq!(t.call("GET", "/api/v1/machines", None, Auth::Session).await.0, StatusCode::OK);
+    let n: i64 = sqlx::query_scalar("select count(*) from session where last_seen_at > now() - interval '5 seconds'").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(n, 1);
+}

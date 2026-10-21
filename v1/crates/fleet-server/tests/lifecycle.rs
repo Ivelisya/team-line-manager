@@ -819,3 +819,22 @@ async fn add_entry_checks_relay_before_enqueue() {
     let n: i64 = sqlx::query_scalar("select count(*) from job").fetch_one(&t.st.db).await.unwrap();
     assert_eq!(n, 0);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn plan_patch_null_clears_field() {
+    let t = setup(false).await;
+    let p = t.post("/api/v1/providers", json!({"name": "甲", "code": "A"})).await["id"].clone();
+    let id = t.post("/api/v1/plans", json!({"provider_id": p, "name": "基础", "price_cents": 500, "traffic_gb": 1000, "cpu_cores": 2})).await["id"].as_str().unwrap().to_string();
+    let (s, v) = t.req("PATCH", &format!("/api/v1/plans/{id}"), Some(json!({"traffic_gb": null})), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let plan = t.get("/api/v1/plans").await[0].clone();
+    assert!(plan["traffic_gb"].is_null() && plan["cpu_cores"] == 2, "null 清空、没传的不动：{plan}");
+    let (s, v) = t.req("POST", "/api/v1/plans", Some(json!({"provider_id": p, "name": "基础", "price_cents": 1})), None).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    assert!(v.to_string().contains("同名套餐"), "{v}");
+    // 改供应商
+    let p2 = t.post("/api/v1/providers", json!({"name": "乙", "code": "B"})).await["id"].clone();
+    let (s, v) = t.req("PATCH", &format!("/api/v1/plans/{id}"), Some(json!({"provider_id": p2})), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(t.get("/api/v1/plans").await[0]["provider_id"], p2);
+}
