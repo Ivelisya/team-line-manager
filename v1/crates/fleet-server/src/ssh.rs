@@ -2,7 +2,7 @@
 //!
 //! 主机公钥：上架预检时 keyscan 一次并写入中控自己的 known_hosts（TOFU），之后一律 StrictHostKeyChecking=yes。
 //! 已有记录的主机指纹变化时预检失败（除非作业明确允许重置）。known_hosts 是共用文件，读写由全局锁串行化。
-//! 连接类的瞬时错误（超时、拒绝、被重置…）在这里自动重试 3 次。
+//! 连接类的瞬时错误（超时、拒绝、被重置…）在 `run` / `push` 里自动重试 3 次；用户命令走 `run_once`，不重试。
 
 use anyhow::{bail, Context};
 use base64::Engine;
@@ -153,7 +153,9 @@ impl Target {
         o
     }
 
-    async fn run_once(&self, script: &str, timeout: Duration) -> anyhow::Result<Output> {
+    /// 执行 bash 脚本（经 stdin），只跑一次、不重试。用户的命令（远程执行、查日志）走这里：
+    /// 退出码 255 不一定是没连上——命令自己 exit 255、执行中断开连接（reboot）也是 255，重试会把命令再跑一遍
+    pub async fn run_once(&self, script: &str, timeout: Duration) -> anyhow::Result<Output> {
         let mut c = self.base();
         c.arg("bash -s");
         c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
@@ -175,6 +177,7 @@ impl Target {
     }
 
     /// 执行 bash 脚本（经 stdin）。连接类的瞬时错误自动重试（2s、5s、10s 退避）；脚本自己失败、登录被拒不重试。
+    /// 只用于重跑无害的脚本（作业步骤、预检）；用户命令用 `run_once`。
     pub async fn run(&self, script: &str, timeout: Duration) -> anyhow::Result<Output> {
         let mut attempt = 0;
         loop {

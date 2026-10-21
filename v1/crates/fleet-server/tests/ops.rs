@@ -246,6 +246,28 @@ async fn exec_audit_is_written_before_running() {
     assert!(d.get("started").is_none() && (d["error"].is_string() || d["exit_code"].is_number()), "{d}");
 }
 
+/// 远程执行与查日志不重试：ssh 返回 255（这里是连接被拒）原样返回，不会隔 2 秒再跑一遍。
+/// 255 也可能是命令自己 exit 255 或执行中断开（reboot），重试会把用户命令执行多次
+#[tokio::test]
+async fn exec_and_logs_are_not_retried() {
+    let t = setup().await;
+    let id = Uuid::now_v7();
+    sqlx::query("insert into machine (id, kind, label, primary_ip, ssh_port, lifecycle) values ($1, 'relay', '线路机3', '127.0.0.1', 1, 'active')")
+        .bind(id)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let t0 = std::time::Instant::now();
+    let (s, v) = t.call("POST", &format!("/api/v1/machines/{id}/exec"), Some(json!({"command": "echo hi", "timeout_s": 5})), Auth::Session).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["data"]["exit_code"], 255, "{v}");
+    assert!(t0.elapsed() < std::time::Duration::from_secs(2), "连不上时不重试：{:?}", t0.elapsed());
+    let t0 = std::time::Instant::now();
+    let (s, v) = t.call("GET", &format!("/api/v1/machines/{id}/logs?unit=fleet-agent"), None, Auth::Session).await;
+    assert_eq!((s, v["data"]["exit_code"].as_i64()), (StatusCode::OK, Some(255)), "{v}");
+    assert!(t0.elapsed() < std::time::Duration::from_secs(2), "查日志同样不重试：{:?}", t0.elapsed());
+}
+
 #[tokio::test]
 async fn audit_paging_and_command_redaction() {
     let t = setup().await;

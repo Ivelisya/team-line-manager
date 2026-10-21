@@ -8,7 +8,7 @@ use super::ok;
 use crate::auth::Actor;
 use crate::db::audit;
 use crate::error::{ApiError, ApiJson, ApiPath, ApiQuery, ApiResult};
-use crate::ssh::Target;
+use crate::ssh::{kind_of, ErrKind, Target};
 use crate::state::AppState;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -41,11 +41,16 @@ fn truncate(mut s: String, max: usize) -> (String, bool) {
     (s, true)
 }
 
-/// 把用户命令包成远端执行的脚本
+/// 把用户命令包成远端执行的脚本。不用 `exec`：命令不理会 TERM、5 秒后被 KILL 时，timeout 连同自己一起被杀，
+/// 外层 bash 还在才能报 137；`exec` 掉外层的话整个会话被信号杀死，ssh 只会报 255，看上去像没连上
 fn wrap(command: &str, timeout_s: u64) -> String {
     let b64 = base64::engine::general_purpose::STANDARD.encode(command.as_bytes());
-    format!("exec timeout -k 5 {timeout_s} bash -c \"$(printf %s '{b64}' | base64 -d)\" </dev/null\n")
+    format!("timeout -k 5 {timeout_s} bash -c \"$(printf %s '{b64}' | base64 -d)\" </dev/null\n")
 }
+
+/// 远端 timeout 杀掉了命令：到点 TERM 退出 124；不理会 TERM、再过 5 秒被 KILL 是 137。
+/// 137 也可能是命令自己被 KILL（比如内存不足），没到时限的不算超时
+fn remote_timed_out(code: i32, duration_ms: u64, timeout_s: u64) -> bool { code == 124 || (code == 137 && duration_ms >= timeout_s * 1000) }
 
 struct Ran {
     exit_code: i32,
@@ -85,12 +90,12 @@ async fn run_on(st: &AppState, a: &Actor, id: Uuid, command: &str, timeout_s: u6
         sqlx::query("update audit_log set detail = (detail - 'started'::text) || $2 where id = $1").bind(audit_id).bind(extra).execute(&st.db)
     };
     let t0 = Instant::now();
-    // 远端 timeout 负责杀命令；本地多给 15 秒留给建连与收尾
-    let res = target.run(&wrap(command, timeout_s), Duration::from_secs(timeout_s + 15)).await;
+    // 远端 timeout 负责杀命令；本地多给 15 秒留给建连与收尾。只跑一次：255 也可能是命令已经执行过，不能重试
+    let res = target.run_once(&wrap(command, timeout_s), Duration::from_secs(timeout_s + 15)).await;
     let duration_ms = t0.elapsed().as_millis() as u64;
     match res {
         Ok(o) => {
-            let timed_out = o.code == 124;
+            let timed_out = remote_timed_out(o.code, duration_ms, timeout_s);
             let (stdout, t1) = truncate(o.stdout, MAX_OUT);
             let (stderr, t2) = truncate(o.stderr, MAX_OUT);
             finish(json!({"exit_code": o.code, "duration_ms": duration_ms, "timed_out": timed_out})).await?;
@@ -99,7 +104,8 @@ async fn run_on(st: &AppState, a: &Actor, id: Uuid, command: &str, timeout_s: u6
         Err(e) => {
             let msg = format!("{e:#}");
             finish(json!({"error": msg, "duration_ms": duration_ms})).await?;
-            if msg.contains("超时") {
+            // 本地兜底的超时（远端 timeout 没能结束会话）：同样按超时返回
+            if kind_of(&e) == ErrKind::Timeout {
                 Ok(Ran { exit_code: 124, stdout: String::new(), stderr: format!("登录或执行超过 {timeout_s} 秒，已终止"), duration_ms, truncated: false, timed_out: true })
             } else {
                 Err(ApiError::new(StatusCode::BAD_GATEWAY, "ssh_failed", format!("无法通过 SSH 执行：{msg}")))
@@ -212,8 +218,16 @@ mod tests {
     #[test]
     fn wrap_has_no_raw_command() {
         let w = wrap("echo 'hi'; cat </dev/stdin", 30);
-        assert!(w.starts_with("exec timeout -k 5 30 bash -c"));
+        assert!(w.starts_with("timeout -k 5 30 bash -c"));
         assert!(!w.contains("echo 'hi'"));
+    }
+
+    #[test]
+    fn timeout_exit_codes() {
+        assert!(remote_timed_out(124, 1_000, 30));
+        assert!(remote_timed_out(137, 35_000, 30), "不理会 TERM 被强杀");
+        assert!(!remote_timed_out(137, 2_000, 30), "没到时限就被 KILL 的不是超时");
+        assert!(!remote_timed_out(255, 35_000, 30));
     }
 
     #[test]
