@@ -1,7 +1,8 @@
 /* 基础层 + 外壳（顶栏、侧栏、内容区、页头）。移植自原版 tokens.css 基础层与 shell.css */
 
-html { background: var(--canvas); scroll-padding-top: var(--topbar-h); scrollbar-gutter: stable; -webkit-tap-highlight-color: transparent; } /* 锚点/焦点滚动不被固定顶栏遮住；滚动条槽位常驻，长短页面切换时内容与顶栏不横移；触屏点按不闪系统灰块（按下有缩放 / 底色反馈） */
-/* 悬停样式一律包在 @media (hover: hover) 里：触屏没有悬停，点过的卡片、名称、按钮会一直停在悬停态 */
+html { background: var(--canvas); scroll-padding-top: var(--topbar-h); scrollbar-gutter: stable; } /* 锚点/焦点滚动不被固定顶栏遮住；滚动条槽位常驻，长短页面切换时内容与顶栏不横移 */
+/* 触屏：点按的系统灰块已由 Tailwind preflight 在 html 上关掉（-webkit-tap-highlight-color: transparent，按下有缩放 / 底色反馈）；
+   悬停样式一律包在 @media (hover: hover) 里：触屏没有悬停，点过的卡片、名称、按钮会一直停在悬停态 */
 /* Radix 弹层锁滚动时让出槽位：遮罩才盖满全宽（否则右侧留一条不变暗的边）；库会给 body 补同宽的右外边距，内容不动 */
 html:has(> body[data-scroll-locked]) { scrollbar-gutter: auto; }
 /* 背景光晕：固定在视口的一层 body::before（z-index -1：在根背景 --canvas 之上、所有内容之下）。
