@@ -2,8 +2,8 @@
 //! 只看 active 的机器（其它生命周期 evaluate 不给原因），所以退役/上架中的机器天然不告警。
 //!
 //! 去抖（开、关对称）：
-//! - 开：同一 (规则, 机器) 连续出现满 60 s 才开告警；续费类立即开。被静默的不开。
-//! - 关：原因连续消失满 60 s 才恢复；续费类立即恢复（按日期判定，不会抖）。
+//! - 开：同一 (规则, 机器) 连续出现满去抖时长才开告警（出口不通 150 s、TCP 不通 90 s、其余 60 s）；续费类立即开。被静默的不开。
+//! - 关：原因连续消失满同样的时长才恢复；续费类立即恢复（按日期判定，不会抖）。
 //! - 复发：恢复后 30 分钟内同一 (规则, 机器) 又满足开的条件，重开原告警（`reopen_count` +1，清掉确认），不新建。
 //!
 //! 通知（见 notify.rs）：新告警发「触发」；仍在触发的严重告警每 4 小时提醒一次，续费类每天一次；
@@ -20,8 +20,15 @@ use std::time::Duration;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-/// 开、关去抖时长
-const DEBOUNCE_S: i64 = 60;
+/// 开、关去抖时长：探测类结果要等下一轮探测才会变，单次偶发失败也常见，拉长一些
+/// （出口探测周期长，150 s；TCP 探测 90 s）；其余规则 60 s
+fn debounce_s(rule: &str) -> i64 {
+    match rule {
+        "egress_fail" => 150,
+        "tcp_fail" => 90,
+        _ => 60,
+    }
+}
 /// 恢复后这么久内复发算同一条告警
 const REOPEN_WINDOW_S: i64 = 30 * 60;
 /// 报过恢复后这么久内复发不再报触发（抖动限流）
@@ -70,7 +77,7 @@ const OPEN_COLS: &str = "id, rule, subject_id, severity::text severity, summary,
      order by l.ts desc, l.id desc limit 1) told_resolved_at";
 
 /// 仍在触发的告警这一轮该发的通知：报过恢复的，距那条恢复通知满 REOPEN_QUIET_S 发「触发」；否则按持续提醒间隔发「提醒」。
-/// notify_log 在送达后才写（最长约 30 s），`notified_at` 在开始发送时就更新：比那条恢复通知新，说明「触发」已经在发了，按提醒间隔算
+/// notify_log 在送达后才写（发送队列积压时更晚），`notified_at` 在入队时就更新：比那条恢复通知新，说明「触发」已经在发了，按提醒间隔算
 fn due(inc: &Open, severity: &str, now: OffsetDateTime) -> Option<Kind> {
     match inc.told_resolved_at.filter(|t| inc.notified_at.is_none_or(|n| n < *t)) {
         Some(t) => ((now - t).whole_seconds() >= REOPEN_QUIET_S).then_some(Kind::Firing),
@@ -79,6 +86,13 @@ fn due(inc: &Open, severity: &str, now: OffsetDateTime) -> Option<Kind> {
             ((now - inc.notified_at.unwrap_or(inc.opened_at)).whole_seconds() >= every).then_some(Kind::Repeat)
         }
     }
+}
+
+/// 恢复时要不要报「恢复」：上次恢复通知之后发过（入队过）触发/提醒才报。
+/// 看入队时就刷新的 `notified_at`，不看 notify_log（送达后才写，触发还在队列里时查不到，恢复通知就被吞了）；
+/// 同一渠道的队列先进先出，恢复排在触发之后
+fn told_firing(inc: &Open) -> bool {
+    inc.notified_at.is_some_and(|n| inc.told_resolved_at.is_none_or(|t| n > t))
 }
 
 /// 摘要里的数字（分钟数、代数）每次都在变，不算「摘要变了」
@@ -161,13 +175,13 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
                 }
                 // 持续提醒；复发后已报过恢复的，满限流时长再发一次「触发」
                 if let Some(kind) = due(&inc, r.severity, now).filter(|_| !silenced(r.key, m.id)) {
-                    notify::spawn_dispatch(st, notice(kind, inc.id, inc.opened_at));
+                    notify::enqueue(st, notice(kind, inc.id, inc.opened_at)).await;
                 }
                 continue;
             }
 
             let immediate = r.key.starts_with("renewal_");
-            if (!immediate && (now - since).whole_seconds() < DEBOUNCE_S) || silenced(r.key, m.id) {
+            if (!immediate && (now - since).whole_seconds() < debounce_s(r.key)) || silenced(r.key, m.id) {
                 continue;
             }
             // 窗口内刚恢复过：重开原告警（清掉确认），按 `due` 决定是否马上通知（退役等流程关掉的、带 closed_by 的不重开）
@@ -188,7 +202,7 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
             if let Some(inc) = reopened {
                 changed = true;
                 if let Some(kind) = due(&inc, r.severity, now) {
-                    notify::spawn_dispatch(st, notice(kind, inc.id, inc.opened_at));
+                    notify::enqueue(st, notice(kind, inc.id, inc.opened_at)).await;
                 }
                 continue;
             }
@@ -208,7 +222,7 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
             .await?;
             if res.rows_affected() > 0 {
                 changed = true;
-                notify::spawn_dispatch(st, notice(Kind::Firing, id, now));
+                notify::enqueue(st, notice(Kind::Firing, id, now)).await;
             }
         }
     }
@@ -224,36 +238,28 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
     for (_, inc) in open {
         let Some(name) = names.get(&inc.subject_id) else { continue };
         let since = *state.clean_since.entry(inc.id).or_insert(now);
-        if !inc.rule.starts_with("renewal_") && (now - since).whole_seconds() < DEBOUNCE_S {
+        if !inc.rule.starts_with("renewal_") && (now - since).whole_seconds() < debounce_s(&inc.rule) {
             continue;
         }
         state.clean_since.remove(&inc.id);
         sqlx::query("update incident set state = 'resolved', resolved_at = now() where id = $1").bind(inc.id).execute(&st.db).await?;
         changed = true;
         // 恢复通知：上次恢复通知之后发过触发/提醒、且当前没被静默时才发
-        if !silenced(&inc.rule, inc.subject_id) {
-            let sent: bool = sqlx::query_scalar(
-                "select exists (select 1 from notify_log where incident_id = $1 and kind in ('firing', 'repeat')
-                 and ts > coalesce((select max(ts) from notify_log where incident_id = $1 and kind = 'resolved'), '-infinity'))",
+        if !silenced(&inc.rule, inc.subject_id) && told_firing(&inc) {
+            notify::enqueue(
+                st,
+                Notice {
+                    kind: Kind::Resolved,
+                    incident_id: Some(inc.id),
+                    rule: inc.rule.clone(),
+                    severity: inc.severity.clone(),
+                    machine: name.to_string(),
+                    summary: notify::strip_machine(&inc.summary, name).to_string(),
+                    at: now,
+                    opened_at: Some(inc.opened_at),
+                },
             )
-            .bind(inc.id)
-            .fetch_one(&st.db)
-            .await?;
-            if sent {
-                notify::spawn_dispatch(
-                    st,
-                    Notice {
-                        kind: Kind::Resolved,
-                        incident_id: Some(inc.id),
-                        rule: inc.rule.clone(),
-                        severity: inc.severity.clone(),
-                        machine: name.to_string(),
-                        summary: notify::strip_machine(&inc.summary, name).to_string(),
-                        at: now,
-                        opened_at: Some(inc.opened_at),
-                    },
-                );
-            }
+            .await;
         }
     }
     // 已经不在告警的计数清掉
@@ -293,6 +299,38 @@ mod tests {
         assert!(matches!(due(&inc(Some(ago(900)), ago(600)), "critical", now), Some(Kind::Firing)));
         // 「触发」30 s 前已开始发送、还没写进 notify_log（最近一条仍是恢复）：不重发
         assert!(due(&inc(Some(ago(30)), ago(600)), "critical", now).is_none());
+    }
+
+    #[test]
+    fn resolved_notice_follows_queued_firing() {
+        let now = OffsetDateTime::now_utc();
+        let ago = |s: i64| now - time::Duration::seconds(s);
+        let inc = |notified: Option<OffsetDateTime>, resolved: Option<OffsetDateTime>| Open {
+            id: Uuid::nil(),
+            rule: "relay_xray_down".into(),
+            subject_id: Uuid::nil(),
+            severity: "critical".into(),
+            summary: String::new(),
+            opened_at: ago(3600),
+            notified_at: notified,
+            told_resolved_at: resolved,
+        };
+        // 从没通知过（如开告警时被静默）：不报恢复
+        assert!(!told_firing(&inc(None, None)));
+        // 触发已入队（notify_log 里可能还没有）：报恢复
+        assert!(told_firing(&inc(Some(ago(30)), None)));
+        // 报过恢复后复发、又入队了触发：报恢复
+        assert!(told_firing(&inc(Some(ago(30)), Some(ago(600)))));
+        // 最近一条是恢复、之后没再入队触发：不重复报
+        assert!(!told_firing(&inc(Some(ago(900)), Some(ago(600)))));
+    }
+
+    #[test]
+    fn probe_rules_debounce_longer() {
+        assert_eq!(debounce_s("egress_fail"), 150);
+        assert_eq!(debounce_s("tcp_fail"), 90);
+        assert_eq!(debounce_s("relay_xray_down"), 60);
+        assert_eq!(debounce_s("agent_offline"), 60);
     }
 
     #[test]

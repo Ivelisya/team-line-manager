@@ -34,7 +34,7 @@ pub struct Rendered {
     pub inbounds: Vec<Value>,
     pub outbounds: Vec<Value>,
     pub rules: Vec<Value>,
-    /// 不随入口变化的部分（log/api/stats/policy + 静态入站/出站/规则），变了就必须重启 Xray
+    /// 不随入口变化的部分（log/api/stats/policy + 静态出站/规则），变了就必须重启 Xray
     pub static_part: Value,
 }
 
@@ -74,7 +74,6 @@ impl Rendered {
                 sp.insert(k.into(), v.clone());
             }
         }
-        sp.insert("inbounds".into(), Value::Array(inbounds.iter().filter(|v| tag_of(v) == API_TAG).cloned().collect()));
         sp.insert("outbounds".into(), Value::Array(outbounds.iter().filter(|v| is_static_outbound(tag_of(v))).cloned().collect()));
         sp.insert("rules".into(), Value::Array(rules.iter().filter(|v| !is_entry_rule(v)).cloned().collect()));
         sp.insert("domainStrategy".into(), full.pointer("/routing/domainStrategy").cloned().unwrap_or(Value::Null));
@@ -265,34 +264,34 @@ fn validate(d: &DesiredState, api_port: u16) -> Result<String> {
     Ok(min_ver)
 }
 
-fn skeleton_parts(ctx: &RenderCtx) -> (Value, Value, Value, Value, Value) {
+fn skeleton_parts(ctx: &RenderCtx) -> (Value, Value, Value, Value) {
     let log = json!({"access": ctx.access_log, "error": "", "loglevel": "warning"});
-    let api = json!({"tag": API_TAG, "services": ["HandlerService", "StatsService", "RoutingService", "LoggerService"]});
+    // API 用 api.listen 直接监听，不经入站与路由：否则每次调 `xray api` 都在访问日志里记一行 [api -> api]
+    let api = json!({
+        "tag": API_TAG, "listen": format!("{}:{}", ctx.api_host(), ctx.api_port()),
+        "services": ["HandlerService", "StatsService", "RoutingService"]
+    });
     let policy = json!({
         "levels": {"0": {"statsUserUplink": true, "statsUserDownlink": true}},
         "system": {"statsInboundUplink": true, "statsInboundDownlink": true}
     });
-    let api_in = json!({
-        "tag": API_TAG, "listen": ctx.api_host(), "port": ctx.api_port(),
-        "protocol": "tunnel", "settings": {"address": ctx.api_host()}
-    });
-    (log, api, json!({}), policy, api_in)
+    (log, api, json!({}), policy)
 }
 
 pub fn render(d: &DesiredState, ctx: &RenderCtx) -> Result<Rendered> {
     let min_ver = validate(d, ctx.api_port())?;
-    let (log, api, stats, policy, api_in) = skeleton_parts(ctx);
+    let (log, api, stats, policy) = skeleton_parts(ctx);
     let probes = probe_ports(&d.entries, ctx.api_port());
     let enabled: Vec<&DesiredEntry> = d.entries.iter().filter(|e| e.enabled).collect();
 
-    let mut inbounds = vec![api_in];
+    let mut inbounds = vec![];
     let mut outbounds = vec![
         json!({"tag": "deny", "protocol": "blackhole"}),
         json!({"tag": "direct", "protocol": "freedom", "settings": {"domainStrategy": "AsIs"}}),
         json!({"tag": "blocked", "protocol": "blackhole"}),
     ];
     // 探测入站（本机回环）的规则排在内网屏蔽之前：回显服务可能在内网（实验室），而客户流量仍然禁止访问内网
-    let mut rules = vec![json!({"type": "field", "ruleTag": "api", "inboundTag": [API_TAG], "outboundTag": API_TAG})];
+    let mut rules = vec![];
     let mut entry_rules = vec![];
     for e in &enabled {
         inbounds.push(inbound_json(e, &d.relay, &min_ver));
@@ -376,14 +375,13 @@ pub mod tests {
         let id = Uuid::from_u128(1).simple().to_string();
         let expected = json!({
             "log": {"access": "/var/log/fleet-xray/access.log", "error": "", "loglevel": "warning"},
-            "api": {"tag": "api", "services": ["HandlerService", "StatsService", "RoutingService", "LoggerService"]},
+            "api": {"tag": "api", "listen": "127.0.0.1:62789", "services": ["HandlerService", "StatsService", "RoutingService"]},
             "stats": {},
             "policy": {
                 "levels": {"0": {"statsUserUplink": true, "statsUserDownlink": true}},
                 "system": {"statsInboundUplink": true, "statsInboundDownlink": true}
             },
             "inbounds": [
-                {"tag": "api", "listen": "127.0.0.1", "port": 62789, "protocol": "tunnel", "settings": {"address": "127.0.0.1"}},
                 {
                     "listen": "0.0.0.0", "port": 20001, "protocol": "vless", "tag": format!("in-{id}"),
                     "settings": {
@@ -411,7 +409,6 @@ pub mod tests {
                  "settings": {"servers": [{"address": "10.0.0.9", "port": 8388, "method": "aes-256-gcm", "password": "pw"}]}}
             ],
             "routing": {"domainStrategy": "AsIs", "rules": [
-                {"type": "field", "ruleTag": "api", "inboundTag": ["api"], "outboundTag": "api"},
                 {"type": "field", "ruleTag": format!("probe-{id}"), "inboundTag": [format!("probe-{id}")], "outboundTag": format!("out-{id}")},
                 {"type": "field", "ruleTag": "block-private", "ip": ["geoip:private"], "outboundTag": "blocked"},
                 {"type": "field", "ruleTag": "block-bittorrent", "protocol": ["bittorrent"], "outboundTag": "blocked"},
@@ -421,7 +418,7 @@ pub mod tests {
         assert_eq!(r.full, expected);
         // 第一个出站必须是默认拒绝
         assert_eq!(tag_of(&r.outbounds[0]), "deny");
-        assert_eq!(r.rules.len(), 5);
+        assert_eq!(r.rules.len(), 4);
     }
 
     #[test]
@@ -502,29 +499,29 @@ pub mod tests {
         let r = render(&desired(vec![with_policy(1, 20001, PolicyMode::Allowlist, &doms)]), &ctx()).unwrap();
         assert_eq!(
             rule_tags(&r),
-            vec!["api".to_string(), format!("probe-{id}"), "block-private".into(), "block-bittorrent".into(),
+            vec![format!("probe-{id}"), "block-private".to_string(), "block-bittorrent".into(),
                  format!("policy-{id}-match"), format!("policy-{id}-default"), format!("rule-{id}")]
         );
         assert_eq!(
-            r.rules[4],
+            r.rules[3],
             json!({"type": "field", "ruleTag": format!("policy-{id}-match"), "inboundTag": [ib.clone()], "domain": doms, "outboundTag": ob.clone()})
         );
         assert_eq!(
-            r.rules[5],
+            r.rules[4],
             json!({"type": "field", "ruleTag": format!("policy-{id}-default"), "inboundTag": [ib.clone()], "outboundTag": "blocked"})
         );
 
         // denylist：只有一条「名单内 → blocked」
         let r = render(&desired(vec![with_policy(1, 20001, PolicyMode::Denylist, &doms)]), &ctx()).unwrap();
-        assert_eq!(rule_tags(&r)[4..], [format!("policy-{id}-match"), format!("rule-{id}")]);
-        assert_eq!(r.rules[4]["outboundTag"], "blocked");
-        assert_eq!(r.rules[4]["domain"], json!(doms));
+        assert_eq!(rule_tags(&r)[3..], [format!("policy-{id}-match"), format!("rule-{id}")]);
+        assert_eq!(r.rules[3]["outboundTag"], "blocked");
+        assert_eq!(r.rules[3]["domain"], json!(doms));
 
         // blocked：该入口全部 blocked，没有域名字段
         let r = render(&desired(vec![with_policy(1, 20001, PolicyMode::Blocked, &[])]), &ctx()).unwrap();
-        assert_eq!(rule_tags(&r)[4..], [format!("policy-{id}-default"), format!("rule-{id}")]);
-        assert!(r.rules[4].get("domain").is_none());
-        assert_eq!(r.rules[4]["outboundTag"], "blocked");
+        assert_eq!(rule_tags(&r)[3..], [format!("policy-{id}-default"), format!("rule-{id}")]);
+        assert!(r.rules[3].get("domain").is_none());
+        assert_eq!(r.rules[3]["outboundTag"], "blocked");
     }
 
     #[test]

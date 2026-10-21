@@ -296,9 +296,8 @@ async fn converge_relay(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         return Err(remote(format!("sshd 仍允许密码登录（{}）", base.kv("sshd_password").unwrap_or("?"))));
     }
     t.push(&c.dist("xray"), "/usr/local/bin/xray", "0755", Duration::from_secs(300)).await?;
-    for f in ["geoip.dat", "geosite.dat"] {
-        t.push(&c.dist(f), &format!("/usr/local/share/xray/{f}"), "0644", Duration::from_secs(300)).await?;
-    }
+    // 渲染出的配置只用到 geoip:private（策略不允许 geosite: 规则），geosite.dat 不推
+    t.push(&c.dist("geoip.dat"), "/usr/local/share/xray/geoip.dat", "0644", Duration::from_secs(300)).await?;
     let out = t.run(&scripts::relay_xray(), Duration::from_secs(60)).await?;
     if !out.ok() {
         return Err(out.fail("安装 fleet-xray 失败"));
@@ -322,16 +321,22 @@ async fn agent(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         .await?;
     // 记下这枚新令牌，wait_report 用它判断「新 agent 已经在用新令牌上报」
     c.set_params(json!({"agent_token_id": token_id})).await?;
-    let script = vars(&[
+    let mut script = vars(&[
         ("SERVER_URL", &c.st.cfg.public_url),
         ("ROLE", if m.kind == "relay" { "relay" } else { "node" }),
         ("MACHINE_ID", &m.id.to_string()),
         ("TOKEN", &token),
         ("BIN_CHANGED", if pushed { "1" } else { "0" }),
     ]) + &scripts::agent();
+    if m.kind == "relay" {
+        script += &scripts::relay_logrotate();
+    }
     let out = t.run(&script, Duration::from_secs(120)).await?;
     if !out.ok() || out.kv("agent") != Some("active") {
         return Err(remote(format!("agent 没有起来：{} {}", out.stdout.trim(), out.stderr.trim())));
+    }
+    if out.kv("logrotate") == Some("error") {
+        c.warn(format!("访问日志轮转配置没装上：{}", out.stderr.trim())).await;
     }
     Ok(Outcome::Done(json!({"binary_updated": pushed, "token_id": token_id})))
 }
@@ -514,8 +519,9 @@ async fn activate(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
 
 async fn detach(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let id = c.target_id()?;
+    // 按线路机排序处理：一个事务里锁多台线路机时和别的事务同序，不互相死锁
     let es: Vec<(Uuid,)> = sqlx::query_as(
-        "select id from entry where (node_id = $1 or relay_id = $1) and lifecycle not in ('removing', 'removed')",
+        "select id from entry where (node_id = $1 or relay_id = $1) and lifecycle not in ('removing', 'removed') order by relay_id, id",
     )
     .bind(id)
     .fetch_all(&c.st.db)
@@ -527,7 +533,6 @@ async fn detach(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         relays.push(r);
     }
     tx.commit().await?;
-    relays.sort();
     relays.dedup();
     for r in &relays {
         c.st.relay_bumped(*r);

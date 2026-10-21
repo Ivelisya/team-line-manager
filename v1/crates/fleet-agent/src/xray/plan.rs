@@ -40,7 +40,7 @@ pub fn plan(rt: &Runtime, prev: &Rendered, cand: &Rendered) -> Vec<Step> {
     let rt_i: HashSet<&str> = rt.inbounds.iter().map(|s| s.as_str()).collect();
 
     let cand_o: Vec<&Value> = cand.outbounds.iter().filter(|v| !is_static_outbound(tag_of(v))).collect();
-    let cand_i: Vec<&Value> = cand.inbounds.iter().filter(|v| tag_of(v) != API_TAG).collect();
+    let cand_i: Vec<&Value> = cand.inbounds.iter().collect();
     let cand_o_tags: HashSet<&str> = cand_o.iter().map(|v| tag_of(v)).collect();
     let cand_i_tags: HashSet<&str> = cand_i.iter().map(|v| tag_of(v)).collect();
 
@@ -60,7 +60,8 @@ pub fn plan(rt: &Runtime, prev: &Rendered, cand: &Rendered) -> Vec<Step> {
         steps.push(Step { op: Op::AddOutbound((*v).clone()), undo: Some(Op::RemoveOutbound(t.into())), tag: t.into() });
     }
 
-    // 2a. 入站先删：运行态多余的 + 内容变化的
+    // 2a. 入站先删：运行态多余的 + 内容变化的。旧骨架的 api 入站不删：读不到旧配置（prev 按新骨架算）时
+    // 正在运行的 Xray 可能还是旧骨架，经 API 删掉它等于把 API 自己删了
     let mut inbound_adds: Vec<&Value> = Vec::new();
     let mut seen = HashSet::new();
     for t in rt.inbounds.iter().map(|s| s.as_str()).filter(|t| *t != API_TAG && !cand_i_tags.contains(t)) {
@@ -207,12 +208,24 @@ mod tests {
                 format!("ado {}", tags::outbound(id)),
                 format!("adi {}", tags::inbound(id)),
                 format!("adi probe-{}", id.simple()),
-                "adrules (5 条)".to_string()
+                "adrules (4 条)".to_string()
             ]
         );
         let mut rt = rt_of(&prev);
         simulate(&mut rt, &steps).unwrap();
         assert!(verify(&rt, &cand).is_ok());
+    }
+
+    #[test]
+    fn old_skeleton_api_inbound_never_removed() {
+        // 读不到 xray.json（prev 按新骨架算），运行中的 Xray 还是带 api 入站的旧骨架
+        let prev = skeleton(&ctx());
+        let cand = render(&desired(vec![entry(1, 20001, true)]), &ctx()).unwrap();
+        let mut rt = rt_of(&prev);
+        rt.inbounds.push(API_TAG.into());
+        let steps = plan(&rt, &prev, &cand);
+        assert!(steps.iter().all(|s| s.op != Op::RemoveInbound(API_TAG.into())), "{:?}", kinds(&steps));
+        assert!(kinds(&steps).iter().any(|k| k.starts_with("adi ")));
     }
 
     #[test]
@@ -227,7 +240,7 @@ mod tests {
         let mut rt = rt_of(&prev);
         simulate(&mut rt, &steps).unwrap();
         assert!(verify(&rt, &cand).is_ok());
-        assert_eq!(rt.inbounds, vec!["api"]);
+        assert!(rt.inbounds.is_empty());
         assert_eq!(rt.outbounds, vec!["deny", "direct", "blocked"]);
     }
 
@@ -296,19 +309,19 @@ mod tests {
         // observe → allowlist：只换规则表，入站出站一个不动
         let a = render(&desired(vec![with_policy(1, 20001, Allowlist, &["domain:a.com"])]), &ctx()).unwrap();
         let steps = plan(&rt_of(&prev), &prev, &a);
-        assert_eq!(kinds(&steps), vec!["adrules (7 条)".to_string()]);
+        assert_eq!(kinds(&steps), vec!["adrules (6 条)".to_string()]);
         let mut rt = rt_of(&prev);
         simulate(&mut rt, &steps).unwrap();
         assert!(verify(&rt, &a).is_ok());
         // 只改域名列表（规则的 ruleTag/出站对没变）也必须替换
         let b = render(&desired(vec![with_policy(1, 20001, Allowlist, &["domain:a.com", "full:b.com"])]), &ctx()).unwrap();
-        assert_eq!(kinds(&plan(&rt_of(&a), &a, &b)), vec!["adrules (7 条)".to_string()]);
+        assert_eq!(kinds(&plan(&rt_of(&a), &a, &b)), vec!["adrules (6 条)".to_string()]);
         // 模式 allowlist → denylist
         let c = render(&desired(vec![with_policy(1, 20001, Denylist, &["domain:a.com"])]), &ctx()).unwrap();
-        assert_eq!(kinds(&plan(&rt_of(&b), &b, &c)), vec!["adrules (6 条)".to_string()]);
+        assert_eq!(kinds(&plan(&rt_of(&b), &b, &c)), vec!["adrules (5 条)".to_string()]);
         // 恢复 observe：规则表回到原样
         let steps = plan(&rt_of(&c), &c, &prev);
-        assert_eq!(kinds(&steps), vec!["adrules (5 条)".to_string()]);
+        assert_eq!(kinds(&steps), vec!["adrules (4 条)".to_string()]);
         let mut rt = rt_of(&c);
         simulate(&mut rt, &steps).unwrap();
         assert!(verify(&rt, &prev).is_ok());

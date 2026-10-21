@@ -168,26 +168,57 @@ async fn create_partition(db: &PgPool, table: &str, d: Date) -> anyhow::Result<(
 /// 一轮最多补算的脏小时数（长时间断网后的积压分几轮消化）
 const DIRTY_BATCH: i64 = 96;
 
-/// 小时汇总：补算「脏小时」（有新原始数据落进来的整点，含中控停机后 agent 补传的旧数据）加上
-/// 上一小时和当前小时。同一小时从原始数据重算并覆盖，幂等。处理完的脏标记删除。
-pub async fn rollup_hours(db: &PgPool) -> anyhow::Result<()> {
-    let (t0, cur): (OffsetDateTime, OffsetDateTime) = sqlx::query_as("select clock_timestamp(), date_trunc('hour', clock_timestamp())").fetch_one(db).await?;
-    let dirty: Vec<(OffsetDateTime,)> = sqlx::query_as("select hour from rollup_dirty where hour <= $1 order by hour limit $2").bind(cur).bind(DIRTY_BATCH).fetch_all(db).await?;
-    let mut hours: BTreeSet<OffsetDateTime> = dirty.iter().map(|(h,)| *h).collect();
-    hours.insert(cur);
-    hours.insert(cur - Duration::hours(1));
-    for h in &hours {
-        rollup_hour(db, *h).await?;
-    }
-    // 只删「汇总开始 10 秒之前就已标脏」的：汇总期间或刚刚落库的数据，它们的标记留到下一轮
-    let done: Vec<OffsetDateTime> = dirty.into_iter().map(|(h,)| h).collect();
-    sqlx::query("delete from rollup_dirty where hour = any($1) and touched_at < $2 - interval '10 seconds'")
-        .bind(&done)
-        .bind(t0)
-        .execute(db)
+/// 向下取整到 UTC 整点
+pub fn floor_hour(t: OffsetDateTime) -> OffsetDateTime {
+    OffsetDateTime::from_unix_timestamp(t.unix_timestamp().div_euclid(3600) * 3600).unwrap_or(t)
+}
+
+/// 按脏标记补算小时汇总的一轮（遥测 rollup_dirty、访问 access_dirty 共用）：当前小时必算；被标脏的小时
+/// （有新原始数据落进来的整点，含中控停机后 agent 补传的旧数据）补算。
+/// 上一小时关闭后不再无条件重算——每轮算完当前小时会给它留一个脏标记，所以它在下一个小时的第一轮恰好再算一次收尾，
+/// 之后只有迟到数据到来（上报时标脏）才会再算。
+/// 标记按 (小时, touched_at) 精确删除：补算期间又有新数据落进来的小时，标记已被刷新，不会被误删。
+/// 整点后最初 10 分钟内的轮次额外重算上一小时：上报在整点前判定属于当前小时（没标脏）、却在新小时第一轮读完数据后才提交，
+/// 这几毫秒的竞态会漏掉它；升级那一刻上一小时也没有脏标记。多算几次是幂等的。
+pub async fn rollup_dirty<F, Fut>(db: &PgPool, table: &str, roll: F) -> anyhow::Result<()>
+where
+    F: Fn(OffsetDateTime) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<()>>,
+{
+    let now = OffsetDateTime::now_utc();
+    let cur = floor_hour(now);
+    let dirty: Vec<(OffsetDateTime, OffsetDateTime)> = sqlx::query_as(&format!("select hour, touched_at from {table} where hour <= $1 order by hour limit $2"))
+        .bind(cur)
+        .bind(DIRTY_BATCH)
+        .fetch_all(db)
         .await?;
+    let mut hours: BTreeSet<OffsetDateTime> = dirty.iter().map(|d| d.0).collect();
+    hours.insert(cur);
+    if now - cur < Duration::minutes(10) {
+        hours.insert(cur - Duration::hours(1));
+    }
+    for h in &hours {
+        roll(*h).await?;
+    }
+    if !dirty.is_empty() {
+        let (hs, ts): (Vec<OffsetDateTime>, Vec<OffsetDateTime>) = dirty.into_iter().unzip();
+        sqlx::query(&format!("delete from {table} d using unnest($1::timestamptz[], $2::timestamptz[]) u(h, t) where d.hour = u.h and d.touched_at = u.t"))
+            .bind(&hs)
+            .bind(&ts)
+            .execute(db)
+            .await?;
+    }
+    sqlx::query(&format!(
+        "insert into {table} (hour, touched_at) values ($1, clock_timestamp()) on conflict (hour) do update set touched_at = excluded.touched_at"
+    ))
+    .bind(cur)
+    .execute(db)
+    .await?;
     Ok(())
 }
+
+/// 遥测小时汇总的一轮（脏小时语义见 `rollup_dirty`）。同一小时从原始数据重算并覆盖，幂等。
+pub async fn rollup_hours(db: &PgPool) -> anyhow::Result<()> { rollup_dirty(db, "rollup_dirty", |h| rollup_hour(db, h)).await }
 
 /// 重算一个整点小时。主机网络流量取相邻样本的正增量之和（lag），计数器回绕（重启清零）时
 /// 当前读数就是重启后的增量；上一小时最后一个样本参与第一个增量的计算，不丢小时交界处的流量。
@@ -288,15 +319,14 @@ pub async fn compact_team(tx: &mut Tx<'_>, team_id: Uuid, actor: &str, why: &str
     .fetch_all(&mut **tx)
     .await?;
     let changes = crate::names::compact_numbers(nodes);
-    let mut relays = vec![];
     for (id, _old, new) in &changes {
         sqlx::query("update machine set number = $2, revision = revision + 1, updated_at = now() where id = $1")
             .bind(id)
             .bind(new)
             .execute(&mut **tx)
             .await?;
-        relays.extend(bump_relays_of_node(tx, *id).await?);
     }
+    let relays = bump_relays_of_nodes(tx, &changes.iter().map(|c| c.0).collect::<Vec<_>>()).await?;
     if !changes.is_empty() {
         let detail: Vec<serde_json::Value> = changes
             .iter()
@@ -304,21 +334,18 @@ pub async fn compact_team(tx: &mut Tx<'_>, team_id: Uuid, actor: &str, why: &str
             .collect();
         audit(tx, actor, "team.renumber", "team", Some(team_id), serde_json::json!({"why": why, "changes": detail})).await?;
     }
-    relays.sort();
-    relays.dedup();
     Ok((changes, relays))
 }
 
-/// 节点显示名变化后：刷新它所有在用入口所在线路机的代数（备注随之同步）。返回涉及的线路机。
-pub async fn bump_relays_of_node(tx: &mut Tx<'_>, node_id: Uuid) -> sqlx::Result<Vec<Uuid>> {
-    let relays: Vec<(Uuid,)> = sqlx::query_as("select distinct relay_id from entry where node_id = $1 and lifecycle <> 'removed'")
-        .bind(node_id)
+/// 节点显示名变化后：刷新它们所有在用入口所在线路机的代数（备注随之同步）。
+/// 按线路机 id 顺序加锁，和其它同时改多台线路机的事务同序。返回涉及的线路机（已排序去重）。
+pub async fn bump_relays_of_nodes(tx: &mut Tx<'_>, node_ids: &[Uuid]) -> sqlx::Result<Vec<Uuid>> {
+    let relays: Vec<Uuid> = sqlx::query_scalar("select distinct relay_id from entry where node_id = any($1) and lifecycle <> 'removed' order by relay_id")
+        .bind(node_ids)
         .fetch_all(&mut **tx)
         .await?;
-    let mut out = vec![];
-    for (r,) in relays {
-        bump_relay(tx, r).await?;
-        out.push(r);
+    for r in &relays {
+        bump_relay(tx, *r).await?;
     }
-    Ok(out)
+    Ok(relays)
 }

@@ -14,8 +14,8 @@ curl -fsSLO "https://github.com/XTLS/Xray-core/releases/download/$XV/Xray-linux-
 want=$(grep -i 'SHA2-256' Xray-linux-64.zip.dgst | head -1 | awk '{print $NF}')
 got=$(sha256sum Xray-linux-64.zip | cut -d' ' -f1)
 [ "$want" = "$got" ] || { echo "xray sha256 不符"; exit 1; }
-unzip -q -o Xray-linux-64.zip xray geoip.dat geosite.dat
-install -m 755 xray $D/xray; install -m 644 geoip.dat geosite.dat $D/
+unzip -q -o Xray-linux-64.zip xray geoip.dat   # 配置只用 geoip:private，不需要 geosite.dat
+install -m 755 xray $D/xray; install -m 644 geoip.dat $D/; rm -f $D/geosite.dat
 # shadowsocks-rust
 SV=$(gh shadowsocks/shadowsocks-rust | jq -r .tag_name)
 T="shadowsocks-$SV.x86_64-unknown-linux-musl.tar.xz"

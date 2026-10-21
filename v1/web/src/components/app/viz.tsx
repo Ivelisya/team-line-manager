@@ -89,12 +89,12 @@ export const DotTrace = React.memo(function DotTrace({ values }: { values: numbe
   );
 });
 
-/** 坐标上限取 1/2/5×10^k 的整档，刻度读起来干净 */
+/** 坐标上限取整档（×10^k），刻度读起来干净；档位密一些，速率小幅波动时坐标不会在 200 / 500 之间来回跳、曲线忽高忽扁 */
+const NICE = [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10];
 function niceMax(v: number) {
   if (!(v > 0)) return 1e6;
   const e = 10 ** Math.floor(Math.log10(v));
-  const f = v / e;
-  return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * e;
+  return (NICE.find((n) => n * e >= v) ?? 10) * e;
 }
 
 /** 面积折线（集群状态里的网卡上行 / 下行）：全站每分钟一个点（SERIES_N 个 = 近 30 分钟，见 lib/live）、最新在右；左轴三档刻度，两端标首尾两个点的时间 */

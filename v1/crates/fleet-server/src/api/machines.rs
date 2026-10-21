@@ -1,7 +1,7 @@
 use crate::error::ApiJson;
 use super::ok;
 use crate::auth::Actor;
-use crate::db::{audit, bump_relays_of_node, new_id};
+use crate::db::{audit, bump_relays_of_nodes, new_id};
 use crate::error::{ApiError, ApiResult};
 use crate::jobs;
 use crate::names::{compact_numbers, node_name};
@@ -119,7 +119,7 @@ pub async fn patch(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, A
     .bind(b.service_ref.clone().flatten())
     .execute(&mut *tx)
     .await?;
-    let relays = if renamed && !is_relay { bump_relays_of_node(&mut tx, id).await? } else { vec![] };
+    let relays = if renamed && !is_relay { bump_relays_of_nodes(&mut tx, &[id]).await? } else { vec![] };
     audit(
         &mut tx,
         &a.name,

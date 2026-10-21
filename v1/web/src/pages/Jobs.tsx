@@ -261,10 +261,13 @@ const LogPanel = React.memo(function LogPanel({ jobId, state }: { jobId: string;
         onScroll={(e) => { const el = e.currentTarget; setStuck(el.scrollHeight - el.scrollTop - el.clientHeight < 24); }}>
         {logs.length === 0 && <span className="t-muted">暂无日志</span>}
         {(dropped > 0 || shown.length > SHOW_MAX) && <div className="logline logline-note"><span /><span /><span className="msg t-muted">{dropped > 0 ? `页面只保留最近 ${KEEP_MAX} 行，更早的 ${dropped} 行已省略；` : ''}仅显示最近 {Math.min(SHOW_MAX, shown.length)} 行，共 {shown.length + dropped} 行</span></div>}
-        {view.map((l) => (
-          <div key={l.id} className="logline" data-level={l.level}><span className="ts">{F.clock(l.ts)}</span><span className={`lv-${l.level}`}>{LEVEL[l.level] ?? l.level}</span><span className="msg">{l.msg}</span></div>
-        ))}
+        {view.map((l) => <LogLine key={l.id} l={l} />)}
       </div>
     </Panel>
   );
+});
+
+/** 一行日志：已拉到的行对象不变，memo 挡住增量拉取、滚动时的整表重比对 */
+const LogLine = React.memo(function LogLine({ l }: { l: JobLog }) {
+  return <div className="logline" data-level={l.level}><span className="ts">{F.clock(l.ts)}</span><span className={`lv-${l.level}`}>{LEVEL[l.level] ?? l.level}</span><span className="msg">{l.msg}</span></div>;
 });

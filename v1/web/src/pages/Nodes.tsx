@@ -117,17 +117,7 @@ export function NodesPage() {
             <colgroup>{columns.map((c) => <col key={c.id} style={{ width: c.size }} />)}</colgroup>
             <SortHead cols={columns} sort={sort} onSort={setSort} />
             <tbody>
-              {pageRows.map((m) => (
-                <ContextMenu key={m.id}>
-                  <ContextMenuTrigger asChild>
-                    <tr className={`is-link${m.id === openId ? ' is-current' : ''}${m.lifecycle === 'retired' ? ' is-retired' : ''}`} tabIndex={0}
-                      onClick={() => open(m.id)} onKeyDown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) open(m.id); }}>
-                      {columns.map((c) => <td key={c.id} className={c.id === 'chev' ? 'chev' : c.r ? 'r' : undefined}>{c.cell(m)}</td>)}
-                    </tr>
-                  </ContextMenuTrigger>
-                  <ContextMenuContent><NodeContextItems m={m} /></ContextMenuContent>
-                </ContextMenu>
-              ))}
+              {pageRows.map((m) => <Row key={m.id} m={m} current={m.id === openId} onOpen={open} columns={columns} />)}
             </tbody>
           </table>
         </div>
@@ -138,3 +128,18 @@ export function NodesPage() {
     </div>
   );
 }
+
+/** 一行一个 memo：实时推送只换变了的那台机器的引用，其余行不重渲染（onOpen 来自 useDrawer、columns 按范围 memo，都稳定） */
+const Row = React.memo(function Row({ m, current, onOpen, columns }: { m: MachineView; current: boolean; onOpen: (id: string) => void; columns: Col[] }) {
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <tr className={`is-link${current ? ' is-current' : ''}${m.lifecycle === 'retired' ? ' is-retired' : ''}`} tabIndex={0}
+          onClick={() => onOpen(m.id)} onKeyDown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) onOpen(m.id); }}>
+          {columns.map((c) => <td key={c.id} className={c.id === 'chev' ? 'chev' : c.r ? 'r' : undefined}>{c.cell(m)}</td>)}
+        </tr>
+      </ContextMenuTrigger>
+      <ContextMenuContent><NodeContextItems m={m} /></ContextMenuContent>
+    </ContextMenu>
+  );
+});

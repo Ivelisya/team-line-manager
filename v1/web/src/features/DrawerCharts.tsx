@@ -22,10 +22,10 @@ const L_CPU = [{ key: 'cpu_pct', label: 'CPU', color: 'var(--chart-1)' }];
 const L_MEM = [{ key: 'mem_pct', label: '内存', color: 'var(--chart-1)' }];
 const L_NET = [{ key: 'net_rx_bps', label: '↓ 下行', color: 'var(--chart-1)' }, { key: 'net_tx_bps', label: '↑ 上行', color: 'var(--chart-2)' }];
 const PCT_DOMAIN: [number, number] = [0, 100];
-const yPlain = (v: number) => `${v}`;
+const yMs = (v: number) => (v ? `${v} ms` : '0');
 const yPct = (v: number) => `${Math.round(v)}%`;
-const yBytes = (v: number) => { const b = F.bytes(v); return `${b.v}${b.u === 'B' ? '' : b.u[0]}`; };
-const yRate = (v: number) => { const r = F.rate(v); return `${r.v}${r.u[0]}`; };
+const yBytes = (v: number) => (v ? F.str(F.bytes(v)) : '0');
+const yRate = (v: number) => (v ? F.str(F.rate(v)) : '0');
 const vMs = (_: string, v: number) => `${Math.round(v)} ms`;
 const vPct = (_: string, v: number) => `${v.toFixed(1)}%`;
 const vBytes = (_: string, v: number) => { const b = F.bytes(v); return `${b.v} ${b.u}`; };
@@ -50,8 +50,8 @@ export function QualityTab({ m }: { m: MachineView }) {
       <Section>
         <SectionHeader title="延迟" meta="线路机 → 节点 TCP 与出口验证"><RangeBar range={range} setRange={setRange} /></SectionHeader>
         <ChartFrame q={s}>
-          <TimeChart points={s.data?.points} range={range} kind="line" lines={L_PROBE} yFmt={yPlain} valueFmt={vMs} />
-          <div className="hint" style={{ marginTop: 4 }}>缺口表示该时刻探测失败。纵轴单位 ms。</div>
+          <TimeChart points={s.data?.points} range={range} kind="line" lines={L_PROBE} yFmt={yMs} valueFmt={vMs} />
+          <div className="hint" style={{ marginTop: 4 }}>缺口表示该时刻探测失败。</div>
         </ChartFrame>
       </Section>
       <Section>
@@ -78,9 +78,9 @@ export function TrafficTab({ m }: { m: MachineView }) {
         </LabelValueGrid>
       </Section>
       <Section>
-        <SectionHeader title="业务流量" meta="每个时间桶的字节数"><RangeBar range={range} setRange={setRange} /></SectionHeader>
+        <SectionHeader title="业务流量" meta={s.data?.resolution === '1h' ? '每小时的流量' : '每分钟的流量'}><RangeBar range={range} setRange={setRange} /></SectionHeader>
         <ChartFrame q={s}>
-          <TimeChart points={s.data?.points} range={range} lines={L_TRAFFIC} yFmt={yBytes} valueFmt={vBytes} />
+          <TimeChart points={s.data?.points} range={range} lines={L_TRAFFIC} yFmt={yBytes} valueFmt={vBytes} yBase={1024} />
         </ChartFrame>
       </Section>
       <Section>
@@ -113,7 +113,7 @@ export function HostTab({ m }: { m: MachineView }) {
       </Section>
       <Section><SectionHeader title="CPU" /><ChartFrame q={s} height={140}><TimeChart points={s.data?.points} range={range} lines={L_CPU} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></Section>
       <Section><SectionHeader title="内存" /><ChartFrame q={s} height={140}><TimeChart points={s.data?.points} range={range} lines={L_MEM} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></Section>
-      <Section><SectionHeader title="网卡速率" /><ChartFrame q={s} height={160}><TimeChart points={s.data?.points} range={range} lines={L_NET} yFmt={yRate} valueFmt={vRate} height={160} /></ChartFrame></Section>
+      <Section><SectionHeader title="网卡速率" /><ChartFrame q={s} height={160}><TimeChart points={s.data?.points} range={range} lines={L_NET} yFmt={yRate} valueFmt={vRate} yBase={1000} height={160} /></ChartFrame></Section>
     </>
   );
 }

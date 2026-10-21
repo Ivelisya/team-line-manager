@@ -100,7 +100,7 @@ function SubForm({ m }: { m: MachineView }) {
 }
 
 /** 告警页「即将到期 / 已过期」的行操作也用这个 */
-export function RenewDialog({ m, s, open, onOpenChange }: { m: MachineView; s: Subscription; open: boolean; onOpenChange: (o: boolean) => void }) {
+export function RenewDialog({ m, s, open, onOpenChange }: { m: Pick<MachineView, 'id' | 'name'>; s: Subscription; open: boolean; onOpenChange: (o: boolean) => void }) {
   const renew = useRenew();
   const [newDue, setNewDue] = React.useState('');
   const [amount, setAmount] = React.useState('');

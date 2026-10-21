@@ -8,7 +8,7 @@ import {
   ACCESS_WINDOWS, EVENTS_PAGE, isAccessWindow, useAccessEvents, useAccessSources, useAccessSummary, useAccessTargets, useNewTargets,
   type AccessFilter, type AccessWindow, type TargetSort,
 } from '@/lib/access';
-import { useMachines, useTeams } from '@/lib/queries';
+import { useMachineBriefs, useTeams } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
@@ -57,7 +57,7 @@ export function AccessPage() {
   React.useEffect(() => { const t = setTimeout(() => updRef.current({ q: text.trim() }), 250); return () => clearTimeout(t); }, [text]);
 
   const teams = useTeams().data ?? [];
-  const machines = useMachines('live').data ?? [];
+  const machines = useMachineBriefs().data ?? [];
   const nodes = machines.filter((m) => m.kind !== 'relay' && (!f.team || m.team?.id === f.team));
   const summary = useAccessSummary(f);
   const k = summary.data?.kpi;
@@ -83,7 +83,7 @@ export function AccessPage() {
         <Stat tone="blue" icon={<Server />} label="有活动的节点" value={k ? fmtN(k.active_nodes) : '—'} loading={summary.isLoading} caption={`最近 ${winLabel(f.window)}`} />
         <Stat tone="teal" icon={<Activity />} label="连接记录" value={k ? fmtN(k.conns) : '—'} loading={summary.isLoading} caption="含已阻止的连接" />
         <Stat tone="violet" icon={<Target />} label="访问目标" value={k ? fmtN(k.targets) : '—'} loading={summary.isLoading} caption="各节点分别去重后相加" />
-        <Stat tone="bad" icon={<ShieldX />} label="已阻止的连接" value={k ? fmtN(k.blocked) : '—'} loading={summary.isLoading} caption={k && k.conns > 0 ? `占 ${((k.blocked / k.conns) * 100).toFixed(k.blocked / k.conns < 0.1 ? 1 : 0)}%` : undefined} />
+        <Stat tone="bad" icon={<ShieldX />} label="已阻止的连接" value={k ? fmtN(k.blocked) : '—'} loading={summary.isLoading} caption={k && k.conns > 0 ? blockedShare(k.blocked, k.conns) : undefined} />
       </div>
 
       <Tabs value={tab} onValueChange={(v) => upd({ view: v === 'targets' ? '' : v, p: '' })}>
@@ -166,7 +166,7 @@ function NewView({ f, filtered, open }: { f: AccessFilter; filtered: boolean; op
               <tr key={`${t.node_id}|${t.dest_host}`}>
                 <td><HostCell host={t.dest_host} kind={t.kind} /></td>
                 <td><NodeLink id={t.node_id} name={t.name} open={open} /></td>
-                <td>{F.dtFull(t.first_seen)}<span className="sub">{F.ago(t.first_seen)}</span></td>
+                <td title={F.dtFull(t.first_seen)}>{F.dt(t.first_seen)}<span className="sub">{F.ago(t.first_seen)}</span></td>
                 <td>{F.ago(t.last_seen)}</td>
                 <td className="r">{fmtN(t.total)}</td>
               </tr>
@@ -179,6 +179,13 @@ function NewView({ f, filtered, open }: { f: AccessFilter; filtered: boolean; op
       <Pagination pg={pg} unit="个" />
     </Panel>
   );
+}
+
+/** 已阻止占比：有阻止但不到 0.1% 时写“不到 0.1%”，不显示成 0.0% */
+function blockedShare(blocked: number, conns: number) {
+  const p = (blocked / conns) * 100;
+  if (blocked > 0 && p < 0.1) return '占不到 0.1%';
+  return `占 ${p.toFixed(p < 10 && p % 1 ? 1 : 0)}%`;
 }
 
 function SourcesView({ f, filtered, open }: { f: AccessFilter; filtered: boolean; open: Open }) {
@@ -281,7 +288,7 @@ function EventsView({ f, filtered, open }: { f: AccessFilter; filtered: boolean;
           <tbody>
             {rows.map((e, i) => (
               <tr key={`${e.ts}|${e.node_id}|${i}`}>
-                <td className="num">{F.dtFull(e.ts)}:{F.pad2(new Date(e.ts).getSeconds())}</td>
+                <td className="num" title={F.dtFull(e.ts)}>{F.dt(e.ts)}:{F.pad2(new Date(e.ts).getSeconds())}</td>
                 <td><NodeLink id={e.node_id} name={e.name} open={open} /></td>
                 <td><span className="mono">{e.src_ip ?? '—'}</span></td>
                 <td title={e.dest_host}><span className="strong">{e.dest_host}</span>{e.dest_port != null && <span className="t-sub">:{e.dest_port}</span>}</td>

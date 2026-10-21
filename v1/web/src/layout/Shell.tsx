@@ -1,6 +1,6 @@
 // 外壳：56px 顶栏 + 240px 侧栏 + 内容区。选中项是软色胶囊。≤760px 侧栏收成抽屉。
 import * as React from 'react';
-import { NavLink, Navigate, Outlet, useLocation } from 'react-router-dom';
+import { NavLink, Navigate, Outlet, useLocation, useNavigationType } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { BellRing, Boxes, Briefcase, CloudUpload, LayoutGrid, ListChecks, LogOut, Menu, Monitor, Moon, Palette, Radar, RotateCw, Server, Settings, Sun, Waypoints } from 'lucide-react';
 import { ApiError, AUTH_EVENT, post } from '@/lib/api';
@@ -82,11 +82,16 @@ export function Shell() {
   const firing = useIncidents('firing').data?.total ?? 0;
 
   React.useEffect(() => { setNavOpen(false); }, [loc.pathname]);
-  // 登录后首屏稳定下来再悄悄预取抽屉的代码：不占首屏带宽，第一次点开时也不用等
+  // 换页（不是前进/后退）回到顶部：窗口滚动是全站共用的，不重置的话新页面会停在上一页的滚动位置
+  const section = loc.pathname.split('/')[1] ?? '';
+  const navType = useNavigationType();
+  React.useEffect(() => { if (navType !== 'POP') window.scrollTo(0, 0); }, [section]); // eslint-disable-line react-hooks/exhaustive-deps
+  // 登录后首屏稳定下来再悄悄预取抽屉和命令面板的代码：不占首屏带宽，第一次打开时也不用等
+  // （面板没预取的话，按 Ctrl+K 后紧接着打的字会在代码下载期间丢掉）
   const authed = !!me.data;
   React.useEffect(() => {
     if (!authed) return;
-    const t = setTimeout(() => { void import('@/features/NodeDrawer').catch(() => { /* 预取失败不要紧，真用到时会再试 */ }); }, 3000);
+    const t = setTimeout(() => { for (const p of [import('@/features/NodeDrawer'), import('@/features/CommandPalette')]) p.catch(() => { /* 预取失败不要紧，真用到时会再试 */ }); }, 3000);
     return () => clearTimeout(t);
   }, [authed]);
   React.useEffect(() => {
@@ -171,7 +176,7 @@ export function Shell() {
       <div className="nav-scrim" onClick={() => setNavOpen(false)} />
 
       <main className="main" id="main" tabIndex={-1}>
-        <div className="content"><ErrorBoundary resetKey={loc.pathname}><React.Suspense fallback={<PageFallback />}><div key={loc.pathname.split('/')[1] ?? ''} className="page-in"><Outlet /></div></React.Suspense></ErrorBoundary></div>
+        <div className="content"><ErrorBoundary resetKey={loc.pathname}><React.Suspense fallback={<PageFallback />}><div key={section} className="page-in"><Outlet /></div></React.Suspense></ErrorBoundary></div>
       </main>
       {/* 浮层宿主各包一层边界：它们出错（图表、懒加载块失败等）只收起自己，不拖垮整页 */}
       <ErrorBoundary silent resetKey={loc.search}><DrawerHost /></ErrorBoundary>

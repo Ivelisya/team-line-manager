@@ -81,18 +81,14 @@ pub async fn patch_team(a: Actor, State(st): State<AppState>, Path(id): Path<Uui
     // 团队改名 → 该团队所有节点显示名变化 → 线路机备注同步
     let mut relays = vec![];
     if name != old.0 {
-        let nodes: Vec<(Uuid,)> = sqlx::query_as("select id from machine where team_id = $1 and lifecycle <> 'retired'")
+        let nodes: Vec<Uuid> = sqlx::query_scalar("select id from machine where team_id = $1 and lifecycle <> 'retired'")
             .bind(id)
             .fetch_all(&mut *tx)
             .await?;
-        for (n,) in nodes {
-            relays.extend(crate::db::bump_relays_of_node(&mut tx, n).await?);
-        }
+        relays = crate::db::bump_relays_of_nodes(&mut tx, &nodes).await?;
     }
     audit(&mut tx, &a.name, "team.update", "team", Some(id), json!({"before": {"name": old.0, "sort_order": old.1}, "after": {"name": name}})).await?;
     tx.commit().await?;
-    relays.sort();
-    relays.dedup();
     for r in relays {
         st.relay_bumped(r);
     }

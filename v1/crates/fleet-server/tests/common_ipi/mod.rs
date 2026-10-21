@@ -67,7 +67,7 @@ impl T {
              values ($1, coalesce((select relay_id from entry where node_id = $1 limit 1), gen_random_uuid()), $2, $3::inet, $4)",
         )
         .bind(node)
-        .bind(fleet_server::access::floor_hour(hour))
+        .bind(fleet_server::db::floor_hour(hour))
         .bind(ip)
         .bind(conns)
         .execute(&self.st.db)

@@ -7,7 +7,7 @@ bash "$HERE/sync-server.sh"
 ssh -F "$HOME/.ssh/fleetlab_config" fleet-dev 'bash -s' <<'REMOTE'
 set -euo pipefail
 export PATH=$HOME/.cargo/bin:$PATH
-apt-get install -y -qq sshpass openssh-client >/dev/null
+apt-get install -y -qq sshpass openssh-client >/dev/null && apt-get clean   # 不留 .deb 缓存
 cd /root/src && cargo build -p fleet-server --release 2>&1 | tail -1
 cargo build -p fleet-agent --release --target x86_64-unknown-linux-musl 2>&1 | tail -1
 install -d -m 755 /opt/fleet/dist

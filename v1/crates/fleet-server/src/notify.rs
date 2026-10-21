@@ -243,33 +243,43 @@ fn client() -> &'static reqwest::Client {
 
 fn short(s: &str) -> String { s.chars().take(300).collect() }
 
-/// 发送失败：`retry` 表示值得再试（网络错误 / 5xx / 429）；渠道拒绝、配置有误之类重试也没用
+/// 发送失败：`retry` 表示值得再试（网络错误 / 5xx / 429）；渠道拒绝、配置有误之类重试也没用。
+/// `wait`：429 时渠道要求等多久再发
 struct SendErr {
     msg: String,
     retry: bool,
+    wait: Option<Duration>,
 }
 
 impl SendErr {
     fn fatal(msg: impl Into<String>) -> Self {
-        Self { msg: msg.into(), retry: false }
+        Self { msg: msg.into(), retry: false, wait: None }
     }
 }
 
-/// 发送失败后的重试间隔：最多再试两次（0.5 秒、2 秒），不拖住后面的渠道太久
+/// 发送失败后的重试间隔：最多再试两次（0.5 秒、2 秒），不拖住后面的通知太久
 const RETRY_BACKOFF: [Duration; 2] = [Duration::from_millis(500), Duration::from_secs(2)];
+/// 429 要求的等待时长最多等这么久
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
+
+/// 429 的等待时长：Telegram 在 JSON 的 `parameters.retry_after`，其它看 `Retry-After` 头（秒数）
+fn retry_after(header: Option<&str>, body: &Value) -> Option<Duration> {
+    let secs = body["parameters"]["retry_after"].as_u64().or_else(|| header.and_then(|h| h.trim().parse().ok()))?;
+    Some(Duration::from_secs(secs).min(MAX_RETRY_AFTER))
+}
 
 /// 发一条通知到一个渠道（只发一次，渠道测试用）。错误文本里不带令牌（reqwest 错误会带 URL，这里去掉）。
 pub async fn send(kind: &str, config: &Value, n: &Notice) -> Result<(), String> {
     send_once(kind, config, n).await.map_err(|e| e.msg)
 }
 
-/// 发送，网络错误 / 5xx / 429 时退避重试
+/// 发送，网络错误 / 5xx 时退避重试；429 按渠道给的等待时长再试
 async fn send_retry(kind: &str, config: &Value, n: &Notice) -> Result<(), String> {
     let mut res = send_once(kind, config, n).await;
     for wait in RETRY_BACKOFF {
         match &res {
             Err(e) if e.retry => {
-                tokio::time::sleep(wait).await;
+                tokio::time::sleep(e.wait.unwrap_or(wait)).await;
                 res = send_once(kind, config, n).await;
             }
             _ => break,
@@ -293,12 +303,15 @@ async fn send_once(kind: &str, config: &Value, n: &Notice) -> Result<(), SendErr
         }
         _ => (c.post(cfg["url"].as_str().unwrap_or_default()).json(&webhook_body(n)), "webhook"),
     };
-    let res = req.send().await.map_err(|e| SendErr { msg: short(&format!("发送失败：{}", e.without_url())), retry: true })?;
+    let res = req.send().await.map_err(|e| SendErr { msg: short(&format!("发送失败：{}", e.without_url())), retry: true, wait: None })?;
     let status = res.status();
-    let retry = status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS;
+    let limited = status == reqwest::StatusCode::TOO_MANY_REQUESTS;
+    let retry = status.is_server_error() || limited;
+    let header = res.headers().get(reqwest::header::RETRY_AFTER).and_then(|v| v.to_str().ok()).map(String::from);
     let body = res.text().await.unwrap_or_default();
     let j: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
-    let fail = |msg: String| Err(SendErr { msg: short(&msg), retry });
+    let wait = if limited { retry_after(header.as_deref(), &j) } else { None };
+    let fail = |msg: String| Err(SendErr { msg: short(&msg), retry, wait });
     match expect_json_code {
         // Telegram：HTTP 非 2xx 或 ok=false，说明在 description
         "telegram" if !status.is_success() || j["ok"] == json!(false) => {
@@ -344,9 +357,29 @@ async fn deliver(st: &AppState, ch: &Channel, n: &Notice) -> Result<(), String> 
     res
 }
 
-/// 把一条告警通知发给所有已启用、且 `min_severity` 不高于它的渠道。
-/// 触发/持续提醒会刷新 `incident.notified_at`（持续提醒的计时起点）。
-pub async fn dispatch(st: &AppState, n: Notice) {
+/// 一个渠道的发送任务：逐条按顺序发。排队期间渠道可能被删除或停用，发送时以数据库里的当前配置为准，查不到就跳过
+fn channel_worker(st: &AppState, id: Uuid) -> tokio::sync::mpsc::UnboundedSender<Notice> {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Notice>();
+    let st = st.clone();
+    tokio::spawn(async move {
+        while let Some(n) = rx.recv().await {
+            match sqlx::query_as::<_, Channel>("select id, kind, config_enc from notify_channel where id = $1 and enabled").bind(id).fetch_optional(&st.db).await {
+                Ok(Some(ch)) => {
+                    let _ = deliver(&st, &ch, &n).await;
+                }
+                Ok(None) => {}
+                Err(e) => tracing::warn!(channel = %id, "读取通知渠道失败：{e}"),
+            }
+        }
+    });
+    tx
+}
+
+/// 不阻塞告警循环：放进所有已启用、且 `min_severity` 不高于它的渠道各自的发送队列。
+/// 同一渠道内逐条按顺序发（一批告警同时触发时不会并发打到同一个渠道，Telegram 等不容易被限流）；
+/// 渠道之间互不等待，一个渠道一直超时不拖慢别的。
+/// 触发/持续提醒在入队时就刷新 `incident.notified_at`（持续提醒的计时起点）：队列积压时下一轮评估不会重复入队。
+pub async fn enqueue(st: &AppState, n: Notice) {
     if matches!(n.kind, Kind::Firing | Kind::Repeat) {
         if let Some(id) = n.incident_id {
             if let Err(e) = sqlx::query("update incident set notified_at = now() where id = $1").bind(id).execute(&st.db).await {
@@ -354,24 +387,21 @@ pub async fn dispatch(st: &AppState, n: Notice) {
             }
         }
     }
-    let chans: Vec<Channel> = match sqlx::query_as("select id, kind, config_enc from notify_channel where enabled and min_severity <= $1::severity")
+    let ids: Vec<Uuid> = match sqlx::query_scalar("select id from notify_channel where enabled and min_severity <= $1::severity")
         .bind(&n.severity)
         .fetch_all(&st.db)
         .await
     {
-        Ok(c) => c,
+        Ok(ids) => ids,
         Err(e) => {
             tracing::warn!("读取通知渠道失败：{e}");
             return;
         }
     };
-    futures::future::join_all(chans.iter().map(|c| deliver(st, c, &n))).await;
-}
-
-/// 不阻塞告警循环：后台发送
-pub fn spawn_dispatch(st: &AppState, n: Notice) {
-    let st = st.clone();
-    tokio::spawn(async move { dispatch(&st, n).await });
+    let mut qs = st.notify_queues.lock().unwrap_or_else(|e| e.into_inner());
+    for id in ids {
+        let _ = qs.entry(id).or_insert_with(|| channel_worker(st, id)).send(n.clone());
+    }
 }
 
 /// 渠道测试：发一条测试消息，记入 `notify_log`（kind = test），返回发送结果
@@ -452,6 +482,15 @@ mod tests {
         assert_eq!(strip_machine("别的：x", "团队1-02"), "别的：x");
         assert_eq!(rule_name("relay_xray_down"), "Xray 未运行");
         assert_eq!(rule_name("something_new"), "something_new");
+    }
+
+    #[test]
+    fn retry_after_from_telegram_body_or_header() {
+        let tg = json!({"ok": false, "error_code": 429, "parameters": {"retry_after": 7}});
+        assert_eq!(retry_after(None, &tg), Some(Duration::from_secs(7)));
+        assert_eq!(retry_after(Some("3"), &Value::Null), Some(Duration::from_secs(3)));
+        assert_eq!(retry_after(Some("3600"), &Value::Null), Some(MAX_RETRY_AFTER));
+        assert_eq!(retry_after(None, &Value::Null), None);
     }
 
     #[test]

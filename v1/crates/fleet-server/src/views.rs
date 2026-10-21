@@ -467,12 +467,14 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
         disk_min: Option<f32>,
     }
     // 下面这些查询互不依赖（探测要等入口列表），并发跑
-    // 每台机器 15 分钟内最近两条样本：逐台走 (machine_id, ts desc) 索引取两条
+    // 每台机器 15 分钟内最近两条样本：逐台走 (machine_id, ts desc) 索引取两条（带上界，预建的未来空分区被剪掉；
+    // 上界与入库窗口一致放到 1 天，时钟偏快的 agent 的样本不丢）
     let hs_q = sqlx::query_as::<_, H>(
         "select x.* from unnest($1::uuid[]) mid cross join lateral (
             select machine_id, row_number() over (order by ts desc) rn, ts, cpu_pct, load1,
                    mem_used, mem_total, disk_used, disk_total, net_rx_bytes, net_tx_bytes, tcp_conns
-            from host_metric where machine_id = mid and ts > now() - interval '15 minutes' order by ts desc limit 2) x",
+            from host_metric where machine_id = mid and ts > now() - interval '15 minutes' and ts <= now() + interval '1 day'
+            order by ts desc limit 2) x",
     )
     .bind(&ids)
     .fetch_all(db);

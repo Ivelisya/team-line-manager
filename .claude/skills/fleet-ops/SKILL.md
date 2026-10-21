@@ -15,7 +15,7 @@ fleetctl --json <命令>      # AI 一律加 --json，拿 API 的 data 原样 JS
 ```
 
 - 配置：环境变量 `FLEET_URL`、`FLEET_TOKEN`，或 `fleetctl login --url <地址> --token <密钥>`。实验室中控是 `http://192.168.31.60:8080`。
-- 成功退出码 0；失败退出码 1，错误 JSON 在 stderr（`{"error":{"code","message","status"}}`）。`exec` 单台时退出码等于远端命令的退出码。
+- 成功退出码 0；失败退出码 1，错误 JSON 在 stderr（`{"error":{"code","message","status"}}`）。`exec` 单台时退出码等于远端命令的退出码。`job` / `job --follow`（以及各命令的 `--follow`）遇到作业失败或取消也退出 1，stderr 给 `{"error":{"code":"job_failed"|"job_cancelled","message",…}}`。
 - `<机器>` 写机器 id、显示名（`团队1-06`）、线路机名（`线路机2`）或 IP。歧义时命令报错并列出候选，照候选里的 id 重试。
 
 ## 先看，再动
@@ -89,6 +89,6 @@ fleetctl retry <作业> [--reset-host-key] [--password-env VAR]   # 重试失败
 - 不加 `--json` 的 `status` / `show` / `entries` / `incidents` 是给人看的：种类、生命周期、健康、严重度、规则、入口状态、作业种类与状态都显示中文，时间是北京时间；`ls` 的种类 / 生命周期 / 健康列保留原值（就是 `--kind`、`--status` 的取值）。脚本和 AI 只解析 `--json`。
 - `status --json` 的 `overview.online` / `offline`：按 agent 连通计（家宽代理没有 agent 算在线），与健康无关。
 - `job`：`state`（queued|running|waiting|cancelling|succeeded|failed|cancelled）、`error`、`steps[]`、`logs[]`。
-- `exec`：`exit_code stdout stderr duration_ms truncated timed_out`；多台时是这些字段加 `machine` 的数组。
+- `exec`：`exit_code stdout stderr duration_ms truncated timed_out`；多台时是这些字段加 `machine` 的数组，某台没执行成（请求被拒、连不上）时那一项是 `{machine,id,exit_code:null,error:{code,message,status}}`。
 
 完整接口见仓库 `docs/API.md`，运维流程与何时才需要直接 ssh 见 `docs/OPS.md`。
