@@ -5,11 +5,19 @@ use super::render::tag_of;
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::path::PathBuf;
+use std::sync::LazyLock;
 use std::time::Duration;
 use tokio::process::Command;
 
 const API_TIMEOUT: Duration = Duration::from_secs(15);
 const TEST_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// xray 子进程的 GOMAXPROCS：本机可用核数，最多 2。
+/// 子进程跑在 agent 的 cgroup 里（单元 TasksMax=128），Go 默认按核数开 P、线程跟着涨：实验室把 GOMAXPROCS
+/// 设成 64 / 128 时一次 `xray run -test` 占 22 / 38 个任务，再加并发的 `xray api` 和 agent 自己，大核数机器会顶到上限；
+/// 设成 2 只占 4 个。单核机不抬到 2：那样 -test 慢一倍（1000 个入口 4.7 s → 10.8 s）。内存不用限：1000 个入口也只用约 20 MiB
+static CHILD_GOMAXPROCS: LazyLock<String> =
+    LazyLock::new(|| std::thread::available_parallelism().map_or(1, |n| n.get().min(2)).to_string());
 
 /// 对 Xray 运行态的一次一次性快照
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -103,6 +111,7 @@ impl XrayCli {
         let mut cmd = Command::new(&self.bin);
         cmd.args(args)
             .env("XRAY_LOCATION_ASSET", &self.asset_dir)
+            .env("GOMAXPROCS", CHILD_GOMAXPROCS.as_str())
             .stdin(std::process::Stdio::null())
             .kill_on_drop(true);
         let out = tokio::time::timeout(timeout, cmd.output())
@@ -214,5 +223,13 @@ mod tests {
             vec![("user>>>e-1>>>traffic>>>uplink".into(), 12), ("user>>>e-1>>>traffic>>>downlink".into(), 0)]
         );
         assert_eq!(parse_version("Xray 26.3.27 (Xray, Penetrates Everything.) d2758a0\nA unified").as_deref(), Some("26.3.27"));
+    }
+
+    #[tokio::test]
+    async fn child_gets_capped_gomaxprocs() {
+        let cli = XrayCli { bin: "/bin/sh".into(), api: String::new(), asset_dir: "/nonexistent".into(), tmp_dir: "/nonexistent".into() };
+        let out = cli.run(&["-c", "printf %s \"$GOMAXPROCS\""], Duration::from_secs(5)).await.unwrap();
+        let want = std::thread::available_parallelism().map_or(1, |n| n.get().min(2));
+        assert_eq!(out, want.to_string());
     }
 }

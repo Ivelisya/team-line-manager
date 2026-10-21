@@ -77,7 +77,9 @@ fn read_desired(a: &Args) -> Result<DesiredState> {
     serde_json::from_str(&s).with_context(|| format!("解析 {}", p.display()))
 }
 
-#[tokio::main]
+// 工作线程固定 2 个：默认按核数开，大核数机器上 agent 自己就会占掉单元 TasksMax=128 的一大块
+// （阻塞 IO 都在 spawn_blocking 里，实验室单核机一直只有 1 个工作线程）
+#[tokio::main(worker_threads = 2)]
 async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
