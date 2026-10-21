@@ -310,6 +310,7 @@ async fn relay_with_entries_cannot_be_retired() {
     let team = seed_team(&t, "团队1").await;
     let node = seed_node(&t, team, 1, "203.0.113.10", "active").await;
     let mut tx = t.st.db.begin().await.unwrap();
+    fleet_server::entries::lock_policy_shared(&mut tx).await.unwrap();
     let (entry, _, _) = fleet_server::entries::create(&mut tx, relay, node).await.unwrap();
     tx.commit().await.unwrap();
 
@@ -329,6 +330,7 @@ async fn relay_with_entries_cannot_be_retired() {
     // 退役开始后，不能再往这台线路机上加入口
     let mut tx = t.st.db.begin().await.unwrap();
     let node2 = seed_node(&t, team, 2, "203.0.113.11", "active").await;
+    fleet_server::entries::lock_policy_shared(&mut tx).await.unwrap();
     assert!(fleet_server::entries::create(&mut tx, relay, node2).await.is_err());
 }
 

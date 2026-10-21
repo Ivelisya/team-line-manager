@@ -392,8 +392,8 @@ pub async fn restore_preview(a: Actor, State(st): State<AppState>, ApiPath(id): 
     };
     let mut warnings: Vec<String> = vec![];
     let ssh_info = if m.kind != "proxy" && m.lifecycle == "retired" && q.probe != Some(false) {
-        // 试登录会用中控密钥 SSH 上机器：和 exec 同级权限，并记审计
-        a.require_scope("exec").map_err(|e| ApiError::forbidden(format!("{}：预检要试 SSH 登录，需要 exec 权限；不试登录请加 probe=false", e.message)))?;
+        // 试登录会用中控密钥 SSH 上机器：和 POST 恢复一样要 write，并记审计
+        a.require_scope("write")?;
         let info = probe_login(&st, &m).await;
         let mut tx = st.db.begin().await?;
         audit(&mut tx, &a.name, "restore.probe", "machine", Some(id), json!({"name": p.old_name, "ip": m.ip, "key_login": info["key_login"]})).await?;

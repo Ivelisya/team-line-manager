@@ -413,8 +413,8 @@ pub async fn upgrade_agent(a: Actor, State(st): State<AppState>, ApiPath(id): Ap
     if kind == "proxy" || lc != "active" {
         return Err(ApiError::conflict("只有在用的线路机和落地机有 agent"));
     }
-    let (v, _) = enqueue_upgrade(&st, &a.name, &[id]).await?;
-    v.into_iter().next().map(ok).ok_or_else(|| ApiError::conflict("这台机器还有进行中的作业"))
+    let (v, skipped) = enqueue_upgrade(&st, &a.name, &[id]).await?;
+    v.into_iter().next().map(ok).ok_or_else(|| ApiError::conflict(skipped[0]["reason"].as_str().unwrap_or("这台机器还有进行中的作业")))
 }
 
 /// 全部在用的线路机与落地机

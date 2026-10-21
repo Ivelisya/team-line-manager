@@ -716,7 +716,8 @@ pub fn audit(ctx: &Ctx, target: Option<&str>, limit: i64, before: Option<i64>) -
         let last = d.as_array().and_then(|a| a.last()).and_then(|a| a["id"].as_i64());
         match last {
             None => "没有审计记录".into(),
-            Some(id) if rows.len() as i64 >= limit => format!("{}\n更早的记录：--before {id}", table::render(&["时间(UTC)", "操作者", "操作", "摘要"], &rows)),
+            // 服务端把 limit 夹到 1..=1000
+            Some(id) if rows.len() as i64 >= limit.clamp(1, 1000) => format!("{}\n更早的记录：--before {id}", table::render(&["时间(UTC)", "操作者", "操作", "摘要"], &rows)),
             Some(_) => table::render(&["时间(UTC)", "操作者", "操作", "摘要"], &rows),
         }
     });

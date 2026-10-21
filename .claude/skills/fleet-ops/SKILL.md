@@ -71,7 +71,7 @@ fleetctl upgrade-agent <机器> | --all --yes                # 重启 agent
 fleetctl renumber <团队> --yes                             # 不加 --yes 只预览
 fleetctl move <节点> --to <线路机> --yes [--from <线路机>] [--follow]   # 换线路机：新入口验收后才摘旧入口，不断网；分享链接会变，完成后 fleetctl share <节点> 取新链接
 fleetctl evacuate <线路机> --to <线路机> --yes [--follow]          # 搬空线路机（退役前）：每个在用节点一个换线路机作业
-fleetctl restore <已退役机器> --relay <线路机> [--team --number --label --upstream --ss-port --password-env VAR --reason --reset-host-key --no-probe] --yes [--follow]   # 恢复：先预检（IP 冲突、新名字、是否要 root 密码）再提交；预检试 SSH 登录要 exec 权限，没有就加 --no-probe
+fleetctl restore <已退役机器> --relay <线路机> [--team --number --label --upstream --ss-port --password-env VAR --reason --reset-host-key --no-probe] --yes [--follow]   # 恢复：先预检（IP 冲突、新名字、是否要 root 密码）再提交；预检试 SSH 登录和恢复一样要 write 权限，不想试登录就加 --no-probe
 fleetctl provision ...                                     # 先 check，再确认，再提交
 fleetctl retry <作业> [--reset-host-key] [--password-env VAR]   # 重试失败作业；报「主机指纹变化」且确认重装过才加 --reset-host-key；报「没有可用的 root 密码」时用 --password-env 补密码
 ```

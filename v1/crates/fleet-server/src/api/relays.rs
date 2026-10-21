@@ -111,7 +111,8 @@ pub async fn add_entry(a: Actor, State(st): State<AppState>, ApiPath(node_id): A
         .fetch_optional(&st.db)
         .await?;
     match relay {
-        None => return Err(ApiError::not_found("没有这台线路机")),
+        // 请求体里引用的对象不存在是输入错误
+        None => return Err(ApiError::bad_request("relay_id 指向的线路机不存在")),
         Some((lc, label)) if lc != "active" => {
             return Err(ApiError::conflict(format!("线路机 {} 不在用，不能在上面加入口", label.unwrap_or_default())));
         }

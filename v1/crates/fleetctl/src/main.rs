@@ -474,7 +474,7 @@ enum Cmd {
         /// 机器重装过、主机指纹变了：允许覆盖已记录的指纹
         #[arg(long)]
         reset_host_key: bool,
-        /// 预检不试 SSH 登录（试登录要 exec 权限）
+        /// 预检不试 SSH 登录（只做库内检查）
         #[arg(long)]
         no_probe: bool,
         #[arg(long)]

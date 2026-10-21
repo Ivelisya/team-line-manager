@@ -71,9 +71,9 @@ impl From<sqlx::Error> for ApiError {
                     };
                     return Self::conflict(m);
                 }
-                // foreign_key_violation：插入/修改时引用的对象不存在是输入错误（400）；删除仍被引用的对象才是冲突（409）
-                Some("23503") if db.message().starts_with("insert or update") => return Self::bad_request("引用的对象不存在"),
-                Some("23503") => return Self::conflict("被其他数据引用，不能这样改"),
+                // foreign_key_violation：按引用方插入/修改处理（400）。两种违反的错误字段相同、报错文字随 lc_messages 变，分不出来；
+                // 会硬删/改动被引用父对象的接口要自己把 23503 映射成 409（目前没有：父对象都是软删、级联，或走带 purge_blocker 的作业）
+                Some("23503") => return Self::bad_request("引用的对象不存在"),
                 // invalid_text_representation：枚举等类型解析失败（如 cycle="weekly"）
                 Some("22P02") => return Self::bad_request("填写的值格式不对"),
                 // check_violation：约束名只进日志，不给用户（该校验的字段应在接口里先拦下）

@@ -266,16 +266,19 @@ async fn audit_paging_and_command_redaction() {
     let p2 = t.ok("GET", &format!("/api/v1/audit?limit=100&before_id={last}"), None).await;
     let p2 = p2.as_array().unwrap();
     assert!(!p2.is_empty() && p2.iter().all(|a| a["id"].as_i64().unwrap() < last));
-    // 会话看完整命令；没有 exec 的密钥只看到第一行前 80 字
+    // 会话看完整命令；没有 exec 的密钥只看到字数，摘要里也没有命令
     let all = t.ok("GET", "/api/v1/audit?limit=100", None).await;
     let full = all.as_array().unwrap().iter().find(|a| a["action"] == "exec").unwrap();
     assert_eq!(full["detail"]["command"], long.as_str());
+    assert!(full["summary"].as_str().unwrap().contains("hunter2"));
     let (_, tok) = t.make_key("ci-read", &["read"]).await;
     let (s, v) = t.call("GET", "/api/v1/audit?limit=100", None, Auth::Key(&tok)).await;
     assert_eq!(s, StatusCode::OK);
     let e = v["data"].as_array().unwrap().iter().find(|a| a["action"] == "exec").unwrap().clone();
-    let c = e["detail"]["command"].as_str().unwrap();
-    assert!(c.chars().count() == 81 && c.ends_with('…') && !c.contains("second"), "{c}");
+    let hidden = format!("命令已隐藏（{} 字）", long.chars().count());
+    assert_eq!(e["detail"]["command"], hidden.as_str());
+    let sum = e["summary"].as_str().unwrap();
+    assert!(sum.contains(&hidden) && !sum.contains("hunter2"), "{sum}");
 }
 
 #[tokio::test]
