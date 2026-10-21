@@ -7,7 +7,7 @@
 //!   4. 出站删除 rmo（此时规则已不再引用）
 
 use super::cli::{Op, Runtime};
-use super::render::{is_static_outbound, rule_tag_of, tag_of, Rendered};
+use super::render::{is_static_outbound, rule_tag_of, tag_of, Rendered, API_TAG};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
@@ -60,10 +60,11 @@ pub fn plan(rt: &Runtime, prev: &Rendered, cand: &Rendered) -> Vec<Step> {
         steps.push(Step { op: Op::AddOutbound((*v).clone()), undo: Some(Op::RemoveOutbound(t.into())), tag: t.into() });
     }
 
-    // 2a. 入站先删：运行态多余的 + 内容变化的
+    // 2a. 入站先删：运行态多余的 + 内容变化的。旧骨架的 api 入站不删：读不到旧配置（prev 按新骨架算）时
+    // 正在运行的 Xray 可能还是旧骨架，经 API 删掉它等于把 API 自己删了
     let mut inbound_adds: Vec<&Value> = Vec::new();
     let mut seen = HashSet::new();
-    for t in rt.inbounds.iter().map(|s| s.as_str()).filter(|t| !cand_i_tags.contains(t)) {
+    for t in rt.inbounds.iter().map(|s| s.as_str()).filter(|t| *t != API_TAG && !cand_i_tags.contains(t)) {
         if seen.insert(t) {
             steps.push(Step {
                 op: Op::RemoveInbound(t.into()),
@@ -213,6 +214,18 @@ mod tests {
         let mut rt = rt_of(&prev);
         simulate(&mut rt, &steps).unwrap();
         assert!(verify(&rt, &cand).is_ok());
+    }
+
+    #[test]
+    fn old_skeleton_api_inbound_never_removed() {
+        // 读不到 xray.json（prev 按新骨架算），运行中的 Xray 还是带 api 入站的旧骨架
+        let prev = skeleton(&ctx());
+        let cand = render(&desired(vec![entry(1, 20001, true)]), &ctx()).unwrap();
+        let mut rt = rt_of(&prev);
+        rt.inbounds.push(API_TAG.into());
+        let steps = plan(&rt, &prev, &cand);
+        assert!(steps.iter().all(|s| s.op != Op::RemoveInbound(API_TAG.into())), "{:?}", kinds(&steps));
+        assert!(kinds(&steps).iter().any(|k| k.starts_with("adi ")));
     }
 
     #[test]

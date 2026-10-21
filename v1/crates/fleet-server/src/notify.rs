@@ -357,24 +357,27 @@ async fn deliver(st: &AppState, ch: &Channel, n: &Notice) -> Result<(), String> 
     res
 }
 
-/// 把一条告警通知发给所有已启用、且 `min_severity` 不高于它的渠道（各渠道同时发）
-async fn dispatch(st: &AppState, n: Notice) {
-    let chans: Vec<Channel> = match sqlx::query_as("select id, kind, config_enc from notify_channel where enabled and min_severity <= $1::severity")
-        .bind(&n.severity)
-        .fetch_all(&st.db)
-        .await
-    {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!("读取通知渠道失败：{e}");
-            return;
+/// 一个渠道的发送任务：逐条按顺序发。排队期间渠道可能被删除或停用，发送时以数据库里的当前配置为准，查不到就跳过
+fn channel_worker(st: &AppState, id: Uuid) -> tokio::sync::mpsc::UnboundedSender<Notice> {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Notice>();
+    let st = st.clone();
+    tokio::spawn(async move {
+        while let Some(n) = rx.recv().await {
+            match sqlx::query_as::<_, Channel>("select id, kind, config_enc from notify_channel where id = $1 and enabled").bind(id).fetch_optional(&st.db).await {
+                Ok(Some(ch)) => {
+                    let _ = deliver(&st, &ch, &n).await;
+                }
+                Ok(None) => {}
+                Err(e) => tracing::warn!(channel = %id, "读取通知渠道失败：{e}"),
+            }
         }
-    };
-    futures::future::join_all(chans.iter().map(|c| deliver(st, c, &n))).await;
+    });
+    tx
 }
 
-/// 不阻塞告警循环：放进发送队列，由一个后台任务逐条按顺序发（第一次入队时启动）。
-/// 一批告警同时触发时不会并发打到同一个渠道，Telegram 等不容易被限流。
+/// 不阻塞告警循环：放进所有已启用、且 `min_severity` 不高于它的渠道各自的发送队列。
+/// 同一渠道内逐条按顺序发（一批告警同时触发时不会并发打到同一个渠道，Telegram 等不容易被限流）；
+/// 渠道之间互不等待，一个渠道一直超时不拖慢别的。
 /// 触发/持续提醒在入队时就刷新 `incident.notified_at`（持续提醒的计时起点）：队列积压时下一轮评估不会重复入队。
 pub async fn enqueue(st: &AppState, n: Notice) {
     if matches!(n.kind, Kind::Firing | Kind::Repeat) {
@@ -384,17 +387,21 @@ pub async fn enqueue(st: &AppState, n: Notice) {
             }
         }
     }
-    let q = st.notify_queue.get_or_init(|| {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Notice>();
-        let st = st.clone();
-        tokio::spawn(async move {
-            while let Some(n) = rx.recv().await {
-                dispatch(&st, n).await;
-            }
-        });
-        tx
-    });
-    let _ = q.send(n);
+    let ids: Vec<Uuid> = match sqlx::query_scalar("select id from notify_channel where enabled and min_severity <= $1::severity")
+        .bind(&n.severity)
+        .fetch_all(&st.db)
+        .await
+    {
+        Ok(ids) => ids,
+        Err(e) => {
+            tracing::warn!("读取通知渠道失败：{e}");
+            return;
+        }
+    };
+    let mut qs = st.notify_queues.lock().unwrap_or_else(|e| e.into_inner());
+    for id in ids {
+        let _ = qs.entry(id).or_insert_with(|| channel_worker(st, id)).send(n.clone());
+    }
 }
 
 /// 渠道测试：发一条测试消息，记入 `notify_log`（kind = test），返回发送结果
