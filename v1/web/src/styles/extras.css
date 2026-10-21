@@ -110,6 +110,9 @@
 .empty-text { font-weight: var(--fw-medium); text-wrap: pretty; }
 .tab-pane { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-16); align-content: start; animation: tab-in var(--dur-base) var(--ease-out); }
 @keyframes tab-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+/* 换时间范围时先留着上一段曲线：取新数据期间调淡，到了再柔和地亮回来 */
+.chart-frame { transition: opacity var(--dur-base) var(--ease-std); }
+.chart-frame[data-stale] { opacity: 0.45; }
 
 /* ========== 进度条 ========== */
 .progress { position: relative; height: var(--quota-h); border-radius: var(--r-pill); background: var(--line); overflow: hidden; }

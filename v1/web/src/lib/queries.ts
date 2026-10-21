@@ -33,7 +33,14 @@ export function readMachines(qc: QueryClient, scope: 'live' | 'retired' | 'all' 
   const raw = qc.getQueryData<MachineView[]>(['machines', scope]);
   return raw ? [...raw].sort(makeDefaultCompare(qc.getQueryData<Team[]>(['teams']) ?? [])) : undefined;
 }
-export const useMachine = (id: string | null) => useQuery({ queryKey: ['machine', id], queryFn: ({ signal }) => get<MachineView>(`/machines/${id}`, signal), enabled: !!id });
+/** 抽屉用：单台详情取回之前先拿机器列表缓存里的那份占位（在用 / 已退役都找），切换机器时不闪“加载中” */
+export function useMachine(id: string | null) {
+  const qc = useQueryClient();
+  return useQuery<MachineView>({
+    queryKey: ['machine', id], queryFn: ({ signal }) => get<MachineView>(`/machines/${id}`, signal), enabled: !!id,
+    placeholderData: () => { for (const [, d] of qc.getQueriesData<MachineView[]>({ queryKey: ['machines'] })) { const m = d?.find((x) => x.id === id); if (m) return m; } return undefined; },
+  });
+}
 /** 悬浮卡用：先用机器列表缓存里的那份（立即有内容），再按需取单台 */
 export function useMachinePreview(id: string | null) {
   const qc = useQueryClient();
@@ -57,9 +64,11 @@ const probeBeatsQuery = { queryKey: ['probe-beats'], queryFn: ({ signal }: { sig
 export const useProbeBeats = <T,>(pick: (d: ProbeBeats) => T) => useQuery({ ...probeBeatsQuery, select: pick });
 const noBeats = () => null; // 轮询观察者不读数据：select 恒为 null，数据变了也不重渲染首页
 export const useProbeBeatsPoll = (enabled: boolean) => { useQuery({ ...probeBeatsQuery, select: noBeats, refetchInterval: 120_000, enabled }); };
-/** poll：实时流只推当前读数不推曲线，抽屉曲线按这个间隔刷新；此时 staleTime 同间隔、切回窗口不重取 */
+/** poll：实时流只推当前读数不推曲线，抽屉曲线按这个间隔刷新；此时 staleTime 同间隔、切回窗口不重取。
+ *  换时间范围时先留着上一段曲线（调用方按 isPlaceholderData 调淡、横轴按数据自带的 range 格式化），不闪骨架；换了机器不沿用别台的曲线 */
 export const useSeries = (id: string | null, metric: 'host' | 'traffic' | 'probe', range: string, enabled = true, poll?: number) =>
-  useQuery({ queryKey: ['series', id, metric, range], queryFn: ({ signal }) => get<SeriesResp>(`/machines/${id}/series?metric=${metric}&range=${range}`, signal), enabled: !!id && enabled, staleTime: poll ?? 30_000, refetchInterval: poll, refetchOnWindowFocus: poll ? false : undefined });
+  useQuery({ queryKey: ['series', id, metric, range], queryFn: ({ signal }) => get<SeriesResp>(`/machines/${id}/series?metric=${metric}&range=${range}`, signal), enabled: !!id && enabled, staleTime: poll ?? 30_000, refetchInterval: poll, refetchOnWindowFocus: poll ? false : undefined,
+    placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[1] === id ? keepPreviousData(prev) : undefined) });
 export const useRenewals = (id: string | null) => useQuery({ queryKey: ['renewals', id], queryFn: ({ signal }) => get<Renewal[]>(`/machines/${id}/renewals`, signal), enabled: !!id });
 export const useAudit = (id: string | null) => useQuery({ queryKey: ['audit', id], queryFn: ({ signal }) => get<AuditEntry[]>(`/audit?target_id=${id}&limit=10`, signal), enabled: !!id });
 /** 作业列表一页（按创建先后倒序）；换页时先留着上一页，不闪骨架 */

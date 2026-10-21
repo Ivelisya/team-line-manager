@@ -7,7 +7,7 @@ import type { MachineView } from '@/lib/types';
 import { fetchShare, useUpgradeAgent } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import { openMove, openRestore, openRetire } from '@/lib/nodeActions';
-import { copyText } from '@/lib/clipboard';
+import { copyShareLink, copyText } from '@/lib/clipboard';
 import { toast } from '@/components/ui/toast';
 import { ContextMenuItem, ContextMenuSeparator, ContextMenuSub, ContextMenuSubContent, ContextMenuSubTrigger } from '@/components/ui/context-menu';
 import { DropdownMenuItem, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger } from '@/components/ui/overlays';
@@ -22,7 +22,7 @@ export function useNodeMenu(m: MachineView): MenuEntry[] {
   const upgrade = useUpgradeAgent();
   const retired = m.lifecycle === 'retired';
   const share = async (entryId: string) => {
-    try { const r = await fetchShare(entryId); await copyText(r.url, '分享链接'); } catch (e) { toast.err(e); }
+    try { const r = await fetchShare(entryId); await copyShareLink(r.url); } catch (e) { toast.err(e); }
   };
   // 还在应用或正在移除的入口不给分享
   const shareable = m.entries.filter((e) => e.lifecycle !== 'pending' && e.lifecycle !== 'removing');

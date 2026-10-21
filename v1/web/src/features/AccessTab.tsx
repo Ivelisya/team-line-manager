@@ -8,7 +8,7 @@ import type { MachineView } from '@/lib/types';
 import { Segmented } from '@/components/ui/overlays';
 import { Button } from '@/components/ui/button';
 import { ChartContainer, ChartTooltip, Recharts, axisProps, type ChartConfig } from '@/components/ui/chart';
-import { Empty, Note, Pill, Section, SectionHeader } from '@/components/app/primitives';
+import { Empty, ErrorNote, Pill, Section, SectionHeader } from '@/components/app/primitives';
 import { fmtN } from '@/features/AccessBits';
 import { ConnCell, IspPlace, SourceProfile } from '@/features/IpIntelBits';
 import type { ProfileWindow } from '@/lib/ipintel';
@@ -16,7 +16,8 @@ import type { ProfileWindow } from '@/lib/ipintel';
 const { BarChart, Bar, XAxis, YAxis, CartesianGrid } = Recharts;
 
 const cut = (s: string, n = 24) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
-const BAR_CFG: ChartConfig = { routed: { label: '已转发', color: 'var(--chart-1)' }, blocked: { label: '已阻止', color: 'var(--bad)' } };
+// 与最近记录里「已转发 / 已阻止」标签同色：绿 / 红
+const BAR_CFG: ChartConfig = { routed: { label: '已转发', color: 'var(--ok)' }, blocked: { label: '已阻止', color: 'var(--bad)' } };
 
 /** 横向条形图：每行一个目标，已转发 + 已阻止叠在一起 */
 function HostBars({ items }: { items: MachineAccess['top_domains'] }) {
@@ -82,7 +83,13 @@ export function AccessTab({ m }: { m: MachineView }) {
   const q = useMachineAccess(m.id, w);
   const d = q.data;
   const long = ACCESS_WINDOWS.find((x) => x.value === w)!.long;
-  if (q.isError && !d) return <Note tone="bad">{(q.error as Error).message}</Note>;
+  const head = (
+    <SectionHeader title="常访问的目标" meta={m.kind === 'relay' ? `汇总名下所有节点 · 最近 ${long}` : `最近 ${long}`}>
+      <Segmented sm label="时间范围" value={w} onChange={setW} items={ACCESS_WINDOWS.filter((x) => x.value !== '30d').map((x) => ({ value: x.value, label: x.label }))} />
+    </SectionHeader>
+  );
+  // 出错时留着时间范围控件：可以重试，也可以换一段时间
+  if (q.isError && !d) return <Section>{head}<ErrorNote error={q.error} onRetry={() => void q.refetch()} /></Section>;
   if (!d) return <div className="skel" style={{ height: 160 }} />;
   const total = d.top_domains.reduce((s, x) => s + x.conns, 0);
   const none = d.top_domains.length === 0 && d.recent.length === 0;
@@ -90,9 +97,7 @@ export function AccessTab({ m }: { m: MachineView }) {
   return (
     <>
       <Section>
-        <SectionHeader title="常访问的目标" meta={m.kind === 'relay' ? `汇总名下所有节点 · 最近 ${long}` : `最近 ${long}`}>
-          <Segmented sm label="时间范围" value={w} onChange={setW} items={ACCESS_WINDOWS.filter((x) => x.value !== '30d').map((x) => ({ value: x.value, label: x.label }))} />
-        </SectionHeader>
+        {head}
         {none ? (
           <Empty icon={<Radar size={28} />} text={`最近 ${long}没有访问记录（需要线路机开启访问日志、且有真实客户端流量）`} />
         ) : d.top_domains.length === 0 ? (

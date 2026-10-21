@@ -35,11 +35,11 @@ function RangeBar({ range, setRange }: { range: string; setRange: (r: string) =>
   return <Segmented sm label="时间范围" value={range} onChange={setRange} items={RANGES.map((r) => ({ value: r.value, label: r.label }))} />;
 }
 
-/** 图表的加载 / 出错状态：出错给重试，不要显示一张空图 */
+/** 图表的加载 / 出错状态：出错给重试，不要显示一张空图；换时间范围、新数据未到时沿用的旧曲线调淡 */
 function ChartFrame({ q, height = 180, children }: { q: UseQueryResult<unknown>; height?: number; children: React.ReactNode }) {
   if (q.isError) return <ErrorNote error={q.error} onRetry={() => void q.refetch()}>曲线加载失败：</ErrorNote>;
   if (q.isLoading) return <Skeleton h={height} style={{ borderRadius: 'var(--r-float)' }} />;
-  return <>{children}</>;
+  return <div className="chart-frame" data-stale={q.isPlaceholderData || undefined} aria-busy={q.isPlaceholderData || undefined}>{children}</div>;
 }
 
 export function QualityTab({ m }: { m: MachineView }) {
@@ -50,7 +50,7 @@ export function QualityTab({ m }: { m: MachineView }) {
       <Section>
         <SectionHeader title="延迟" meta="线路机 → 节点 TCP 与出口验证"><RangeBar range={range} setRange={setRange} /></SectionHeader>
         <ChartFrame q={s}>
-          <TimeChart points={s.data?.points} range={range} kind="line" lines={L_PROBE} yFmt={yMs} valueFmt={vMs} />
+          <TimeChart points={s.data?.points} range={s.data?.range ?? range} kind="line" lines={L_PROBE} yFmt={yMs} valueFmt={vMs} />
           <div className="hint" style={{ marginTop: 4 }}>缺口表示该时刻探测失败。</div>
         </ChartFrame>
       </Section>
@@ -80,7 +80,7 @@ export function TrafficTab({ m }: { m: MachineView }) {
       <Section>
         <SectionHeader title="业务流量" meta={s.data?.resolution === '1h' ? '每小时的流量' : '每分钟的流量'}><RangeBar range={range} setRange={setRange} /></SectionHeader>
         <ChartFrame q={s}>
-          <TimeChart points={s.data?.points} range={range} lines={L_TRAFFIC} yFmt={yBytes} valueFmt={vBytes} yBase={1024} />
+          <TimeChart points={s.data?.points} range={s.data?.range ?? range} lines={L_TRAFFIC} yFmt={yBytes} valueFmt={vBytes} yBase={1024} />
         </ChartFrame>
       </Section>
       <Section>
@@ -111,9 +111,9 @@ export function HostTab({ m }: { m: MachineView }) {
           <LabelValue label="网卡速率">↓ <Num f={F.rate(h.net_rx_bps)} /> <span className="t-sub">·</span> ↑ <Num f={F.rate(h.net_tx_bps)} /></LabelValue>
         </LabelValueGrid>
       </Section>
-      <Section><SectionHeader title="CPU" /><ChartFrame q={s} height={140}><TimeChart points={s.data?.points} range={range} lines={L_CPU} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></Section>
-      <Section><SectionHeader title="内存" /><ChartFrame q={s} height={140}><TimeChart points={s.data?.points} range={range} lines={L_MEM} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></Section>
-      <Section><SectionHeader title="网卡速率" /><ChartFrame q={s} height={160}><TimeChart points={s.data?.points} range={range} lines={L_NET} yFmt={yRate} valueFmt={vRate} yBase={1000} height={160} /></ChartFrame></Section>
+      <Section><SectionHeader title="CPU" /><ChartFrame q={s} height={140}><TimeChart points={s.data?.points} range={s.data?.range ?? range} lines={L_CPU} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></Section>
+      <Section><SectionHeader title="内存" /><ChartFrame q={s} height={140}><TimeChart points={s.data?.points} range={s.data?.range ?? range} lines={L_MEM} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></Section>
+      <Section><SectionHeader title="网卡速率" /><ChartFrame q={s} height={160}><TimeChart points={s.data?.points} range={s.data?.range ?? range} lines={L_NET} yFmt={yRate} valueFmt={vRate} yBase={1000} height={160} /></ChartFrame></Section>
     </>
   );
 }

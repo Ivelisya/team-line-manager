@@ -51,7 +51,7 @@ export function Hotkeys({ theme }: { theme: { pref: ThemePref; setPref: (p: Them
         if (!machines || i < 0) return;
         const next = machines[(i + (e.key === ']' ? 1 : -1) + machines.length) % machines.length];
         e.preventDefault();
-        c.open(next.id, c.tab === 'overview' ? undefined : c.tab);
+        c.open(next.id, c.tab === 'overview' ? undefined : c.tab, { replace: true });
       }
     };
     window.addEventListener('keydown', onKey);

@@ -33,6 +33,14 @@ export function NodeDrawer() {
   const heldId = React.useRef(id);
   if (id) { heldTab.current = liveTab; heldId.current = id; }
   const tab = id ? liveTab : heldTab.current;
+  // 换机器或页签：正文回到顶部，当前页签滚进可见区（窄屏页签条横向滚动）。用沿用的 id：关闭动画期间不跳
+  const bodyRef = React.useRef<HTMLDivElement>(null);
+  const tabsRef = React.useRef<HTMLDivElement>(null);
+  const shownId = m ? heldId.current : null;
+  React.useLayoutEffect(() => {
+    if (bodyRef.current) bodyRef.current.scrollTop = 0;
+    tabsRef.current?.querySelector('[data-state="active"]')?.scrollIntoView({ inline: 'nearest', block: 'nearest' });
+  }, [shownId, tab]);
   return (
     <Sheet open={!!id} onOpenChange={(o) => !o && close()}>
       <SheetContent aria-describedby={undefined}>
@@ -53,9 +61,9 @@ export function NodeDrawer() {
               </div>
             </header>
             <Tabs value={tab} onValueChange={(v) => setTab(v as DrawerTab)} className="drawer-tabs">
-              <TabsList>{DRAWER_TABS.map((t) => <TabsTrigger key={t.value} value={t.value} noPanel>{t.label}</TabsTrigger>)}</TabsList>
+              <TabsList ref={tabsRef}>{DRAWER_TABS.map((t) => <TabsTrigger key={t.value} value={t.value} noPanel>{t.label}</TabsTrigger>)}</TabsList>
             </Tabs>
-            <div className="drawer-body">
+            <div className="drawer-body" ref={bodyRef}>
               {m.lifecycle === 'retired' && (
                 <Note tone="warn"><b>{m.name}</b> 已于 {F.dtFull(m.retired_at)} 退役（IP {m.ip}）。退役机器保留原编号，可能与在用机器同名，请以 IP 和机器 ID 区分。{m.lifecycle_reason && <> 原因：{m.lifecycle_reason}。</>}</Note>
               )}
