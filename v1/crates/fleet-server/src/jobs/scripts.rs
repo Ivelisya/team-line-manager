@@ -29,11 +29,12 @@ chmod 600 /root/.ssh/authorized_keys
 echo bootstrap=ok
 "#;
 
-/// 系统基线：sshd 只允许密钥、BBR（容器里可能设不了，只报告不失败）
+/// 系统基线：缺的基础包补上（线路机访问日志轮转要 logrotate，精简系统可能没装）、sshd 只允许密钥、BBR（容器里可能设不了，只报告不失败）
 pub const BASELINE: &str = r#"
 set -eu
 export DEBIAN_FRONTEND=noninteractive
 need=""; command -v nft >/dev/null || need="$need nftables"; command -v curl >/dev/null || need="$need curl"
+command -v logrotate >/dev/null || need="$need logrotate"
 if [ -n "$need" ]; then timeout 240 apt-get update -qq >/dev/null 2>&1 || true; timeout 300 apt-get install -y -qq $need >/dev/null; fi
 install -d -m 755 /etc/ssh/sshd_config.d
 grep -qE '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d/\*\.conf' /etc/ssh/sshd_config || sed -i '1i Include /etc/ssh/sshd_config.d/*.conf' /etc/ssh/sshd_config
@@ -123,12 +124,17 @@ echo "nft_relays=$(nft list set inet ss_guard relays | tr -d '\n' | sed 's/.*ele
 "#;
 
 /// 线路机：fleet-xray 单元与访问日志轮转（配置由 agent 生成）。xray 二进制与 geoip.dat 已推到 /usr/local/bin、/usr/local/share/xray。
-pub fn relay_xray() -> String { RELAY_XRAY.replace("__UNIT__", XRAY_UNIT.trim_end()).replace("__LOGROTATE_SH__", relay_logrotate().trim()) }
+pub fn relay_xray() -> String { RELAY_XRAY.replace("__UNIT__", XRAY_UNIT.trim_end()).replace("__LOGROTATE_SH__", logrotate_sh().trim()) }
 
-/// 线路机访问日志轮转：上架时装，升级 agent 时也装一遍（较早上架、还没有这份配置的线路机升级一次就补上）
-pub fn relay_logrotate() -> String { LOGROTATE_SH.replace("__LOGROTATE__", XRAY_LOGROTATE.trim_end()) }
+/// 升级 agent 时也装一遍访问日志轮转（较早上架、还没有这份配置的线路机升级一次就补上）。
+/// 只是补装：包在子 shell 里，失败只输出 `logrotate=error`，不让 agent 步骤失败
+pub fn relay_logrotate() -> String { format!("(\n{}\n) || echo logrotate=error\n", logrotate_sh().trim()) }
 
+fn logrotate_sh() -> String { LOGROTATE_SH.replace("__LOGROTATE__", XRAY_LOGROTATE.trim_end()) }
+
+/// 线路机访问日志轮转配置（上架时随 fleet-xray 一起装，失败则该步骤失败）
 const LOGROTATE_SH: &str = r#"
+install -d -m 755 /etc/logrotate.d
 L=/etc/logrotate.d/fleet-xray
 cat > $L.tmp <<'LOGROTATE'
 __LOGROTATE__
@@ -244,7 +250,17 @@ mod tests {
         let s = super::relay_xray();
         assert!(!s.contains("__"), "占位符都已替换");
         assert!(s.contains("/var/log/fleet-xray/access.log {") && s.contains("copytruncate"));
-        assert!(s.contains("mv $L.tmp $L"));
+        assert!(s.contains("install -d -m 755 /etc/logrotate.d\n") && s.contains("mv $L.tmp $L"));
+        assert!(!s.contains("logrotate=error"), "上架时装不上要让步骤失败");
+        assert!(super::BASELINE.contains(r#"command -v logrotate >/dev/null || need="$need logrotate""#));
         assert!(super::RELAY_CLEANUP.contains("/etc/logrotate.d/fleet-xray"));
+    }
+
+    #[test]
+    fn agent_logrotate_failure_does_not_fail_step() {
+        let s = super::relay_logrotate();
+        assert!(s.starts_with("(\ninstall -d -m 755 /etc/logrotate.d\n"), "{s}");
+        assert!(s.ends_with("\n) || echo logrotate=error\n"), "{s}");
+        assert!(!s.contains("__"));
     }
 }

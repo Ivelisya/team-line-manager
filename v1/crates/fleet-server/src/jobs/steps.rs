@@ -335,6 +335,9 @@ async fn agent(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     if !out.ok() || out.kv("agent") != Some("active") {
         return Err(remote(format!("agent 没有起来：{} {}", out.stdout.trim(), out.stderr.trim())));
     }
+    if out.kv("logrotate") == Some("error") {
+        c.warn(format!("访问日志轮转配置没装上：{}", out.stderr.trim())).await;
+    }
     Ok(Outcome::Done(json!({"binary_updated": pushed, "token_id": token_id})))
 }
 

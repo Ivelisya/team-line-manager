@@ -94,8 +94,9 @@ impl Reporter {
             if now >= next_build {
                 next_build = now + build_interval(self.interval_s, self.fails);
                 let mut more = self.build_and_push(true).await;
-                // 访问日志有积压：在时间预算内追加只含访问事件的报告，尽快追上
-                while more && now.elapsed() < CATCHUP_MAX_TIME {
+                // 访问日志有积压：在时间预算内追加只含访问事件的报告，尽快追上。
+                // 上报连续失败时不追：离线期间日志文件本身就是缓冲，不必把它大量搬进队列
+                while more && self.fails == 0 && now.elapsed() < CATCHUP_MAX_TIME {
                     more = self.build_and_push(false).await;
                 }
             }

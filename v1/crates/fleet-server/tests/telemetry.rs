@@ -706,6 +706,52 @@ async fn notifications_sent_in_order_and_wait_on_429() {
     assert_eq!(t.count("select count(*) from notify_log where ok").await, 2, "限流后重试成功，两条都送达");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn slow_channel_does_not_delay_other_channels() {
+    let t = setup().await;
+    let mock = Mock::start().await;
+    for (name, path) in [("slow", "/slow/a"), ("fast", "/hook/b")] {
+        t.post("/api/v1/notify-channels", json!({"name": name, "kind": "webhook", "config": {"url": mock.url(path)}, "min_severity": "info", "enabled": true})).await;
+    }
+    // 同一轮开两条告警（Xray 未运行 + 配置未应用）
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    xray_report(&t, 1, false).await;
+    sqlx::query("update relay set generation = 3, applied_generation = 1, generation_at = now() - interval '5 minutes' where machine_id = $1").bind(relay).execute(&t.st.db).await.unwrap();
+    let mut state = AlertState::default();
+    let base = OffsetDateTime::now_utc();
+    pass(&t, &mut state, base, 0).await;
+    pass(&t, &mut state, base, 61).await;
+    assert_eq!(incidents(&t, "firing").await.len(), 2);
+    // 慢渠道每条 1.5 秒、还在发第一条；快渠道不等它，两条都已送到
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert_eq!((mock.count("/slow/a"), mock.count("/hook/b")), (1, 2));
+    // 慢渠道自己仍按顺序把两条发完
+    mock.wait("/slow/a", 2).await;
+    log_settles(&t, 4).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn resolved_sent_while_firing_still_queued() {
+    let t = setup().await;
+    let mock = Mock::start().await;
+    t.post("/api/v1/notify-channels", json!({"name": "slow", "kind": "webhook", "config": {"url": mock.url("/slow/a")}, "min_severity": "info", "enabled": true})).await;
+    seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let mut state = AlertState::default();
+    let base = OffsetDateTime::now_utc();
+    xray_report(&t, 1, false).await;
+    pass(&t, &mut state, base, 0).await;
+    pass(&t, &mut state, base, 61).await;
+    // 「触发」还在发（没写进 notify_log）时告警就恢复了：照样报恢复，排在触发之后
+    xray_report(&t, 2, true).await;
+    pass(&t, &mut state, base, 91).await;
+    pass(&t, &mut state, base, 151).await;
+    assert!(incidents(&t, "firing").await.is_empty());
+    assert_eq!(t.count("select count(*) from notify_log").await, 0);
+    log_settles(&t, 2).await;
+    let events: Vec<Value> = mock.bodies("/slow/a").iter().map(|b| b["event"].clone()).collect();
+    assert_eq!(events, [json!("firing"), json!("resolved")]);
+}
+
 async fn xray_report(t: &T, seq: u64, up: bool) {
     let mut r = blank_report(seq);
     r.xray = Some(xray(up));

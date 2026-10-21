@@ -227,6 +227,7 @@ pub fn blank_report(seq: u64) -> Report {
 
 /// 本机 HTTP 假服务：记下每次请求的 (路径, JSON 体)。
 /// 路径含 `fail` 回 500；含 `bad` 回企业微信风格的 errcode 错误；含 `bot` 回 Telegram 风格；其余回 200。
+/// 路径含 `slow` 的每次等 1.5 秒再回（记录在等之前）。
 pub type Hits = Arc<Mutex<Vec<(String, Value)>>>;
 
 pub struct Mock {
@@ -244,6 +245,9 @@ impl Mock {
                 h.push((path.clone(), body.map(|b| b.0).unwrap_or(Value::Null)));
                 h.iter().filter(|(p, _)| p == &path).count()
             };
+            if path.contains("slow") {
+                tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            }
             if path.contains("limited") && n == 1 {
                 // 第一次限流（Telegram 的写法），之后放行
                 (StatusCode::TOO_MANY_REQUESTS, Json(json!({"ok": false, "error_code": 429, "description": "Too Many Requests: retry after 1", "parameters": {"retry_after": 1}})))

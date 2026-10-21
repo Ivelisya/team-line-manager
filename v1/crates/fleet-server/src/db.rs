@@ -178,12 +178,15 @@ pub fn floor_hour(t: OffsetDateTime) -> OffsetDateTime {
 /// 上一小时关闭后不再无条件重算——每轮算完当前小时会给它留一个脏标记，所以它在下一个小时的第一轮恰好再算一次收尾，
 /// 之后只有迟到数据到来（上报时标脏）才会再算。
 /// 标记按 (小时, touched_at) 精确删除：补算期间又有新数据落进来的小时，标记已被刷新，不会被误删。
+/// 整点后最初 10 分钟内的轮次额外重算上一小时：上报在整点前判定属于当前小时（没标脏）、却在新小时第一轮读完数据后才提交，
+/// 这几毫秒的竞态会漏掉它；升级那一刻上一小时也没有脏标记。多算几次是幂等的。
 pub async fn rollup_dirty<F, Fut>(db: &PgPool, table: &str, roll: F) -> anyhow::Result<()>
 where
     F: Fn(OffsetDateTime) -> Fut,
     Fut: std::future::Future<Output = anyhow::Result<()>>,
 {
-    let cur = floor_hour(OffsetDateTime::now_utc());
+    let now = OffsetDateTime::now_utc();
+    let cur = floor_hour(now);
     let dirty: Vec<(OffsetDateTime, OffsetDateTime)> = sqlx::query_as(&format!("select hour, touched_at from {table} where hour <= $1 order by hour limit $2"))
         .bind(cur)
         .bind(DIRTY_BATCH)
@@ -191,6 +194,9 @@ where
         .await?;
     let mut hours: BTreeSet<OffsetDateTime> = dirty.iter().map(|d| d.0).collect();
     hours.insert(cur);
+    if now - cur < Duration::minutes(10) {
+        hours.insert(cur - Duration::hours(1));
+    }
     for h in &hours {
         roll(*h).await?;
     }

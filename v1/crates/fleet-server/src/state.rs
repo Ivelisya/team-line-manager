@@ -64,8 +64,8 @@ pub struct Inner {
     pub live: crate::views::LiveCache,
     /// 有新上报、实时指标该重新比对了（`live::run_forever` 消费）
     pub metrics_dirty: AtomicBool,
-    /// 告警通知发送队列（`notify::enqueue` 第一次入队时建好并启动发送任务）
-    pub notify_queue: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<crate::notify::Notice>>,
+    /// 告警通知发送队列，每个渠道一个（`notify::enqueue` 第一次给某渠道入队时建好并启动它的发送任务）
+    pub notify_queues: std::sync::Mutex<std::collections::HashMap<Uuid, tokio::sync::mpsc::UnboundedSender<crate::notify::Notice>>>,
 }
 
 impl std::ops::Deref for AppState {
@@ -80,7 +80,7 @@ impl AppState {
         let ipintel = crate::ipintel::Service::new(&cfg.ipintel);
         let access_cache = crate::access::QueryCache::new(std::time::Duration::from_secs(cfg.access_cache_secs));
         let live = crate::views::LiveCache::default();
-        Self(Arc::new(Inner { cfg, db, secrets, events, relay_changed, ipintel, access_cache, live, metrics_dirty: AtomicBool::new(false), notify_queue: Default::default() }))
+        Self(Arc::new(Inner { cfg, db, secrets, events, relay_changed, ipintel, access_cache, live, metrics_dirty: AtomicBool::new(false), notify_queues: Default::default() }))
     }
 
     pub fn emit(&self, e: Event) {
