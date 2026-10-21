@@ -11,6 +11,7 @@ tar -C "$ROOT/deploy/ipintel" -czf - fetch-dbs.sh fleet-ipintel-fetch.service fl
   | $SSH 'rm -rf /root/ipintel-install && mkdir -p /root/ipintel-install && tar --no-same-owner -xzf - -C /root/ipintel-install'
 $SSH 'bash -s' <<'REMOTE'
 set -euo pipefail
+trap 'rm -rf /root/ipintel-install' EXIT   # 装完（或失败）就删传上来的文件
 cd /root/ipintel-install
 # fetch-dbs.sh 需要的工具（Debian/Ubuntu 自带，缺了才装）
 for t in curl gzip sha1sum sha256sum od awk; do command -v "$t" >/dev/null || { apt-get install -y -qq curl coreutils gzip gawk >/dev/null; break; }; done
