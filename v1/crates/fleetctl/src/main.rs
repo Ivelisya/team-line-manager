@@ -220,6 +220,13 @@ enum Cmd {
         #[arg(long, default_value = "host")]
         metric: String,
     },
+    /// 近 N 天可用率：每天的 TCP 与出口探测成功率（按机器的账单时区分天，最后一天是今天）
+    Uptime {
+        machine: String,
+        /// 天数（1-90）
+        #[arg(long, default_value_t = 30)]
+        days: i64,
+    },
     /// 告警
     Incidents {
         /// 含已恢复的
@@ -535,6 +542,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Ls { team, kind, status, retired } => cmds::ls(x, team.as_deref(), kind.as_deref(), status.as_deref(), retired),
         Cmd::Show { machine } => cmds::show(x, &machine),
         Cmd::Series { machine, range, metric } => cmds::series(x, &machine, &range, &metric),
+        Cmd::Uptime { machine, days } => cmds::uptime(x, &machine, days),
         Cmd::Incidents { all, machine } => cmds::incidents(x, all, machine.as_deref()),
         Cmd::Ack { id } => cmds::ack(x, &id),
         Cmd::Jobs { active, limit } => cmds::jobs(x, active, limit),
