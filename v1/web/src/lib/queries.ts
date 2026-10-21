@@ -4,7 +4,7 @@
 import { useCallback } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { del, get, patch, post, put } from './api';
-import { collator, makeDefaultCompare } from './sort';
+import { collator, defaultOrder } from './sort';
 import type { ApiKey, Incident, Job, JobSummary, Paged, JobLog, MachineView, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RestoreBody, RestorePreview, MoveResult, EvacuateResult, ProbeBeats, SeriesResp, Silence, Subscription, Team, AuditEntry, NotifyChannel, NotifyLogEntry } from './types';
 
 export const useMe = () => useQuery({ queryKey: ['me'], queryFn: () => get<{ username: string }>('/auth/me'), retry: false, staleTime: 5 * 60_000 });
@@ -18,8 +18,8 @@ const machinesQuery = (scope: 'live' | 'retired' | 'all') => ({ queryKey: ['mach
 /** 机器列表，已按默认顺序排好：线路机 → 团队 → 编号（故障/离线不下沉） */
 export function useMachines(scope: 'live' | 'retired' | 'all' = 'live', enabled = true) {
   const teams = useTeams().data;
-  // select 排序：只在列表或团队变化时重算；返回的是查询结果本身，调用方按属性追踪
-  const select = useCallback((d: MachineView[]) => [...d].sort(makeDefaultCompare(teams ?? [])), [teams]);
+  // select 排序：只在列表或团队变化时重跑；排序依据没变时沿用上次的顺序（defaultOrder）
+  const select = useCallback((d: MachineView[]) => defaultOrder(scope, d, teams ?? []), [scope, teams]);
   return useQuery({ ...machinesQuery(scope), select, enabled });
 }
 /** 只用名称等少量字段的页面（访问监控的节点下拉、告警页的对象与续费）：读数不进来 */
@@ -32,7 +32,7 @@ const label = (m: MachineView): MachineLabel => ({ id: m.id, name: m.name, ip: m
  *  select 的结果做结构共享：实时推送只改读数时这些字段不变，引用不变，页面不重渲染 */
 function useMachinesPicked<T>(pick: (m: MachineView) => T) {
   const teams = useTeams().data;
-  const select = useCallback((d: MachineView[]) => [...d].sort(makeDefaultCompare(teams ?? [])).map(pick), [teams, pick]);
+  const select = useCallback((d: MachineView[]) => defaultOrder('live', d, teams ?? []).map(pick), [teams, pick]);
   return useQuery({ ...machinesQuery('live'), select });
 }
 export const useMachineBriefs = () => useMachinesPicked(brief);
@@ -40,7 +40,7 @@ export const useMachineLabels = () => useMachinesPicked(label);
 /** 按键等“用时才读”的场景：直接读缓存里的机器列表（同样的默认顺序），不订阅、不触发请求 */
 export function readMachines(qc: QueryClient, scope: 'live' | 'retired' | 'all' = 'live'): MachineView[] | undefined {
   const raw = qc.getQueryData<MachineView[]>(['machines', scope]);
-  return raw ? [...raw].sort(makeDefaultCompare(qc.getQueryData<Team[]>(['teams']) ?? [])) : undefined;
+  return raw && defaultOrder(scope, raw, qc.getQueryData<Team[]>(['teams']) ?? []);
 }
 /** 机器列表缓存（在用 / 已退役 / 全部都找）里的这台，和那份列表取回的时刻 */
 function fromLists(qc: QueryClient, id: string | null) {

@@ -15,7 +15,7 @@ import { Segmented } from '@/components/ui/overlays';
 import { Select } from '@/components/ui/select';
 import { Pagination } from '@/components/app/Pagination';
 import { HomeSection, OverviewSection } from '@/features/HomeOverview';
-import { MachineTable, TABLE_SORTS } from '@/features/MachineTable';
+import { MachineTable, sortTable } from '@/features/MachineTable';
 import { usePage } from '@/lib/usePage';
 import { collator, useStableOrder } from '@/lib/sort';
 
@@ -90,7 +90,7 @@ export function HomePage() {
     else if (team !== 'all') l = l.filter((m) => m.team?.id === team);
     if (onlyIssues) l = l.filter(isIssue);
     l = sortList(l, sort);
-    if (ts) { const sign = ts.desc ? -1 : 1; const cmp = TABLE_SORTS[ts.id]; l = [...l].sort((a, b) => sign * cmp(a, b)); } // 稳定排序：相同值保持原顺序
+    if (ts) l = sortTable(l, ts); // 稳定排序：相同值保持原顺序
     return l;
   }, [all, team, onlyIssues, sort, ts]);
   // 只渲染当前页：KPI 和分组计数仍按全部机器算（上面的 counts）
