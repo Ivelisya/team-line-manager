@@ -69,6 +69,94 @@ fn due_cn(days: i64) -> String {
     }
 }
 
+// ── 枚举的中文（同网页；ls 的列保留原值，方便当筛选参数用） ──
+
+fn kind_cn(k: &str) -> &str {
+    match k {
+        "relay" => "线路机",
+        "vps" => "落地机",
+        "proxy" => "家宽代理",
+        k => k,
+    }
+}
+
+fn lifecycle_cn(l: &str) -> &str {
+    match l {
+        "draft" => "草稿",
+        "provisioning" => "上架中",
+        "active" => "运行中",
+        "retiring" => "退役中",
+        "retired" => "已退役",
+        "failed" => "上架失败",
+        l => l,
+    }
+}
+
+fn health_cn(h: &str) -> &str {
+    match h {
+        "ok" => "正常",
+        "degraded" => "降级",
+        "down" => "故障",
+        "unknown" => "未知",
+        "maintenance" => "维护中",
+        "inactive" => "未启用",
+        h => h,
+    }
+}
+
+/// 严重度：同通知里的【严重】【警告】【提示】
+fn severity_cn(s: &str) -> &str {
+    match s {
+        "critical" => "严重",
+        "warning" => "警告",
+        "info" => "提示",
+        s => s,
+    }
+}
+
+fn job_kind_cn(k: &str) -> &str {
+    match k {
+        "provision_vps" => "上架落地机",
+        "provision_proxy" => "上架家宽代理",
+        "provision_relay" => "上架线路机",
+        "attach_entry" => "新增入口",
+        "move_entry" => "换线路机",
+        "restore_vps" => "恢复落地机",
+        "restore_proxy" => "恢复家宽代理",
+        "restore_relay" => "恢复线路机",
+        "retire" => "退役",
+        "purge" => "彻底删除",
+        "upgrade_agent" => "升级 agent",
+        k => k,
+    }
+}
+
+fn job_state_cn(s: &str) -> &str {
+    match s {
+        "queued" => "排队中",
+        "running" => "进行中",
+        "waiting" => "等待中",
+        "cancelling" => "取消中",
+        "succeeded" => "已完成",
+        "failed" => "失败",
+        "cancelled" => "已取消",
+        s => s,
+    }
+}
+
+/// 入口状态：active 按是否已应用细分（同网页）
+fn entry_state_cn(e: &Value) -> &'static str {
+    match e["lifecycle"].as_str().unwrap_or("") {
+        "active" if e["applied"] == true => "运行中",
+        "active" if e["apply_error"].is_string() => "应用失败",
+        "active" | "pending" => "应用中",
+        "disabled" => "已停用",
+        "removing" => "移除中",
+        "removed" => "已移除",
+        _ => "-",
+    }
+}
+
 impl Ctx {
     /// 打印：--json 时输出 data 原样，否则输出人类可读文本
     pub fn emit(&self, data: &Value, human: impl FnOnce() -> String) {
@@ -141,6 +229,7 @@ pub fn status(ctx: &Ctx) -> anyhow::Result<u8> {
         let mut s = table::kv(&[
             ("节点", bucket("nodes")),
             ("线路机", bucket("relays")),
+            ("agent", format!("在线 {} · 离线 {}", st(&ov, "/online"), st(&ov, "/offline"))),
             ("上架中/退役中", format!("{} / {}", st(&ov, "/provisioning"), st(&ov, "/retiring"))),
             ("7 天内到期", st(&ov, "/due_7d")),
             ("每月费用", if cost.is_empty() { "-".into() } else { cost }),
@@ -163,20 +252,20 @@ fn incident_table(list: &[Value]) -> String {
         .iter()
         .map(|i| {
             vec![
-                st(i, "/severity"),
-                st(i, "/rule"),
+                severity_cn(&st(i, "/severity")).to_string(),
+                st(i, "/rule_name"),
                 if i.get("subject_name").is_some() { st(i, "/subject_name") } else { st(i, "/subject/name") },
                 match i["reopen_count"].as_i64() {
                     Some(n) if n > 0 => format!("{}（反复 {} 次）", st(i, "/summary"), n + 1),
                     _ => st(i, "/summary"),
                 },
-                table::ts(&st(i, "/opened_at")),
+                table::ts_cn(&st(i, "/opened_at")),
                 if i["ack_at"].is_null() { "".into() } else { format!("已确认 {}", st(i, "/ack_by")) },
                 st(i, "/id"),
             ]
         })
         .collect();
-    table::render(&["级别", "规则", "对象", "摘要", "开始(UTC)", "确认", "id"], &rows)
+    table::render(&["级别", "规则", "对象", "摘要", "开始", "确认", "id"], &rows)
 }
 
 pub fn ls(ctx: &Ctx, team: Option<&str>, kind: Option<&str>, status: Option<&str>, retired: bool) -> anyhow::Result<u8> {
@@ -240,17 +329,17 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
         let mut rows = vec![
             ("名称", st(&m, "/name")),
             ("id", st(&m, "/id")),
-            ("种类", st(&m, "/kind")),
-            ("生命周期", format!("{}{}", st(&m, "/lifecycle"), m["lifecycle_reason"].as_str().map(|r| format!("（{r}）")).unwrap_or_default())),
-            ("健康", st(&m, "/health/status")),
+            ("种类", kind_cn(&st(&m, "/kind")).to_string()),
+            ("生命周期", format!("{}{}", lifecycle_cn(&st(&m, "/lifecycle")), m["lifecycle_reason"].as_str().map(|r| format!("（{r}）")).unwrap_or_default())),
+            ("健康", health_cn(&st(&m, "/health/status")).to_string()),
             ("IP", format!("{}:{}", st(&m, "/ip"), st(&m, "/ssh_port"))),
             ("供应商/套餐", format!("{} / {}", st(&m, "/provider/name"), st(&m, "/plan/name"))),
             ("备注", st(&m, "/note")),
-            ("创建", table::ts(&st(&m, "/created_at"))),
+            ("创建", table::ts_cn(&st(&m, "/created_at"))),
             ("revision", st(&m, "/revision")),
         ];
         if !m["agent"].is_null() {
-            rows.push(("agent", format!("{}  版本 {}  最近上报 {}", if m["agent"]["online"] == true { "在线" } else { "离线" }, st(&m, "/agent/version"), table::ts(&st(&m, "/agent/last_report_at")))));
+            rows.push(("agent", format!("{}  版本 {}  最近上报 {}", if m["agent"]["online"] == true { "在线" } else { "离线" }, st(&m, "/agent/version"), table::ts_cn(&st(&m, "/agent/last_report_at")))));
         }
         if !m["host"].is_null() {
             rows.push((
@@ -284,13 +373,13 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
             rows.push(("线路机", format!("{}  配置代数 {} · 已应用 {}  {}", st(&m, "/relay/public_host"), st(&m, "/relay/generation"), st(&m, "/relay/applied_generation"), m["relay"]["apply_error"].as_str().unwrap_or(""))));
         }
         if !m["active_job"].is_null() {
-            rows.push(("进行中作业", format!("{} {}  {}", st(&m, "/active_job/kind"), st(&m, "/active_job/state"), st(&m, "/active_job/id"))));
+            rows.push(("进行中作业", format!("{} · {}  {}", job_kind_cn(&st(&m, "/active_job/kind")), job_state_cn(&st(&m, "/active_job/state")), st(&m, "/active_job/id"))));
         }
         let mut s = table::kv(&rows);
         if let Some(rs) = m.pointer("/health/reasons").and_then(|r| r.as_array()).filter(|r| !r.is_empty()) {
             s.push_str("\n\n健康原因");
             for r in rs {
-                s.push_str(&format!("\n  [{}] {}  {}", st(r, "/severity"), st(r, "/key"), st(r, "/text")));
+                s.push_str(&format!("\n  [{}] {}  {}", severity_cn(&st(r, "/severity")), st(r, "/rule_name"), st(r, "/text")));
             }
         }
         if let Some(es) = m["entries"].as_array().filter(|e| !e.is_empty()) {
@@ -315,8 +404,7 @@ fn entry_table(es: &[Value]) -> String {
                 st(e, "/id").chars().take(8).collect(),
                 format!("{}:{}", st(e, "/relay/name"), st(e, "/port")),
                 st(e, "/node/name"),
-                st(e, "/lifecycle"),
-                if e["applied"] == true { "已应用".into() } else if e["apply_error"].is_string() { "应用失败".into() } else { "应用中".into() },
+                entry_state_cn(e).into(),
                 probe("tcp"),
                 probe("egress"),
                 format!("下载 {} / 上传 {}", bytes(num(e, "/traffic/today_down").unwrap_or(0.0)), bytes(num(e, "/traffic/today_up").unwrap_or(0.0))),
@@ -324,7 +412,7 @@ fn entry_table(es: &[Value]) -> String {
             ]
         })
         .collect();
-    table::render(&["id", "入口", "节点", "状态", "配置", "TCP", "出口", "今日业务流量", "错误"], &rows)
+    table::render(&["id", "入口", "节点", "状态", "TCP", "出口", "今日业务流量", "错误"], &rows)
 }
 
 /// 全部入口（取线路机上挂的，避免节点和线路机两边重复）

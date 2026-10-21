@@ -191,7 +191,15 @@ export function buildDb(): Db {
   for (const t of teams) t.node_count = machines.filter((m) => m.team?.id === t.id && m.lifecycle !== 'retired').length;
   for (const p of plans) p.machine_count = machines.filter((m) => m.plan?.id === p.id && m.lifecycle !== 'retired').length;
 
-  // 作业
+  // 作业：步骤输出与服务端同形
+  const STEP_OUT: Record<string, Record<string, unknown>> = {
+    preflight: { host_key: 'SHA256:q3Zp1vJm0cJ2oWfX8sB9tqk1eYb7rUo5nHj2LdPaVx4', arch: 'x86_64', os: 'debian-12', kernel: '6.1.0-26-amd64', mem_mb: '3911' },
+    agent: { binary_updated: true, token_id: '0192a0c4-0000-7000-8000-000000000001' },
+    converge: { bbr: true, nft_relays: '203.0.113.10, 203.0.113.11', ssserver_updated: false },
+    attach: { entry_id: '0192a0c4-0000-7000-8000-000000000002', port: 20014, generation: 9 },
+    verify: { latency_ms: 189.6, egress_ip: '198.51.100.23' },
+    detach: { entries: 2 }, cleanup: { ss: 'gone' }, revoke: { revoked: 1 }, finalize: { renumbered: 3 },
+  };
   const t0 = now();
   const mk = (id: string, kind: string, target: Job['target'], state: Job['state'], stepsDef: [string, string][], doneUntil: number, ageMin: number, err?: string): Job => {
     const created = t0 - ageMin * 60_000;
@@ -201,13 +209,13 @@ export function buildDb(): Db {
         idx: i, key, title,
         state: i < doneUntil ? 'succeeded' : i === doneUntil ? (state === 'running' ? 'running' : state === 'failed' ? 'failed' : 'pending') : 'pending',
         started_at: i <= doneUntil ? iso(created + 2000 + i * 18_000) : null, finished_at: i < doneUntil ? iso(created + 2000 + (i + 1) * 18_000) : null,
-        output: i < doneUntil ? ({ 0: { os: 'Debian 12', kernel: '6.1', mem_mb: 4096 }, 1: { agent: '1.0.3', registered: true }, 2: { ss_port: 8388 }, 3: { entry_port: 20014, applied: true }, 4: { tcp_ms: 52, egress_ms: 190 } } as Record<number, Record<string, unknown>>)[i] ?? null : null,
+        output: i < doneUntil ? STEP_OUT[key] ?? null : null,
         error: i === doneUntil && state === 'failed' ? err ?? '失败' : null,
       })),
     };
   };
-  const PSTEPS: [string, string][] = [['ssh', '连接并检查系统'], ['agent', '安装 agent'], ['ss', '配置 Shadowsocks'], ['entry', '接入线路机'], ['verify', '验证连通性']];
-  const RSTEPS: [string, string][] = [['disable', '停用入口'], ['cleanup', '清理节点上的服务'], ['revoke', '吊销凭据'], ['mark', '标记为已退役']];
+  const PSTEPS: [string, string][] = [['preflight', '连接并检查系统'], ['agent', '安装 agent'], ['converge', '配置 Shadowsocks'], ['attach', '接入线路机'], ['verify', '验证连通性']];
+  const RSTEPS: [string, string][] = [['detach', '停用入口'], ['cleanup', '清理节点上的服务'], ['revoke', '吊销凭据'], ['finalize', '标记为已退役']];
   const jobs: Job[] = [
     mk('j-run', 'provision_vps', { id: 'm-t1-13p', name: '团队1-13' }, 'running', PSTEPS, 2, 6),
     mk('j-fail', 'provision_vps', { id: 'x1', name: '团队2-13' }, 'failed', PSTEPS, 0, 95, 'SSH 连接被拒绝：Permission denied (password)'),
@@ -234,11 +242,11 @@ export function buildDb(): Db {
   logT('j-done1', [['info', '退役完成']]); logT('j-done2', [['info', '上架完成']]); logT('j-done3', [['info', '退役完成']]);
 
   const incidents: Incident[] = [
-    { id: 'i1', subject: { id: 'm-t1-05', name: '团队1-05' }, subject_id: 'm-t1-05', subject_name: '团队1-05', rule: 'agent_offline', severity: 'critical', state: 'firing', summary: 'agent 已离线 14 分钟', opened_at: iso(now() - 14 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 0 },
-    { id: 'i2', subject: { id: 'm-t1-05', name: '团队1-05' }, subject_id: 'm-t1-05', subject_name: '团队1-05', rule: 'tcp_fail', severity: 'critical', state: 'firing', summary: '线路机到节点 TCP 探测连续失败 5 次', opened_at: iso(now() - 12 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: iso(now() - 5 * 60_000), ack_by: 'admin', reopen_count: 0 },
-    { id: 'i3', subject: { id: 'm-t1-09', name: '团队1-09' }, subject_id: 'm-t1-09', subject_name: '团队1-09', rule: 'egress_fail', severity: 'warning', state: 'firing', summary: '出口验证连续失败 3 次（经线路机1:20009 访问外网超时）', opened_at: iso(now() - 50 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 2 },
-    { id: 'i4', subject: { id: 'r2', name: '线路机2' }, subject_id: 'r2', subject_name: '线路机2', rule: 'relay_apply_lag', severity: 'warning', state: 'firing', summary: '线路机2：配置未应用（配置代数 8 · 已应用 7）', opened_at: iso(now() - 25 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 0 },
-    { id: 'i5', subject: { id: 'm-t2-03', name: '团队2-03' }, subject_id: 'm-t2-03', subject_name: '团队2-03', rule: 'renewal_due', severity: 'info', state: 'resolved', summary: '7 天内到期，请安排续费', opened_at: iso(now() - 26 * 3600_000), resolved_at: iso(now() - 25 * 3600_000), last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 0 },
+    { id: 'i1', subject: { id: 'm-t1-05', name: '团队1-05' }, subject_id: 'm-t1-05', subject_name: '团队1-05', rule: 'agent_offline', rule_name: 'agent 离线', severity: 'critical', state: 'firing', summary: 'agent 已离线 14 分钟', opened_at: iso(now() - 14 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 0 },
+    { id: 'i2', subject: { id: 'm-t1-05', name: '团队1-05' }, subject_id: 'm-t1-05', subject_name: '团队1-05', rule: 'tcp_fail', rule_name: '线路到节点不通', severity: 'critical', state: 'firing', summary: '线路机到节点 TCP 探测连续失败 5 次', opened_at: iso(now() - 12 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: iso(now() - 5 * 60_000), ack_by: 'admin', reopen_count: 0 },
+    { id: 'i3', subject: { id: 'm-t1-09', name: '团队1-09' }, subject_id: 'm-t1-09', subject_name: '团队1-09', rule: 'egress_fail', rule_name: '出口不通', severity: 'warning', state: 'firing', summary: '出口验证连续失败 3 次（经线路机1:20009 访问外网超时）', opened_at: iso(now() - 50 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 2 },
+    { id: 'i4', subject: { id: 'r2', name: '线路机2' }, subject_id: 'r2', subject_name: '线路机2', rule: 'relay_apply_lag', rule_name: '配置未应用', severity: 'warning', state: 'firing', summary: '线路机2：配置未应用（配置代数 8 · 已应用 7）', opened_at: iso(now() - 25 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 0 },
+    { id: 'i5', subject: { id: 'm-t2-03', name: '团队2-03' }, subject_id: 'm-t2-03', subject_name: '团队2-03', rule: 'renewal_due', rule_name: '即将到期', severity: 'info', state: 'resolved', summary: '7 天内到期，请安排续费', opened_at: iso(now() - 26 * 3600_000), resolved_at: iso(now() - 25 * 3600_000), last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 0 },
   ];
   const silences: Silence[] = [{ id: 's1', subject_id: 'm-t2-04', subject_name: '团队2-04', rule: null, starts_at: iso(now() - 3600_000), ends_at: iso(now() + 3 * 3600_000), is_maintenance: true, comment: '换内核，预计 4 小时' }];
   const audit: AuditEntry[] = [
@@ -256,10 +264,11 @@ export function buildDb(): Db {
     { id: 'c3', name: '自建告警网关', kind: 'webhook', min_severity: 'info', enabled: false, created_at: iso(now() - 3 * DAY), config_hint: 'hooks.example.com', config: { url: 'https://hooks.example.com/fleet' } },
   ];
   const notifyLog: NotifyLogEntry[] = [
-    { id: 'n1', channel_id: 'c1', channel_name: '运维群', incident_id: 'i1-0000-aaaa', ts: iso(now() - 14 * 60_000), ok: true, error: null },
-    { id: 'n2', channel_id: 'c2', channel_name: '值班企业微信', incident_id: 'i1-0000-aaaa', ts: iso(now() - 14 * 60_000), ok: true, error: null },
-    { id: 'n3', channel_id: 'c1', channel_name: '运维群', incident_id: 'i3-0000-bbbb', ts: iso(now() - 50 * 60_000), ok: false, error: 'Telegram 返回 429：请求过于频繁，请 17 秒后重试' },
-    { id: 'n4', channel_id: 'c3', channel_name: '自建告警网关', incident_id: null, ts: iso(now() - 3 * DAY), ok: true, error: null },
+    { id: 'n1', channel_id: 'c1', channel_name: '运维群', incident_id: 'i1-0000-aaaa', ts: iso(now() - 14 * 60_000), ok: true, error: null, kind: 'firing', subject_name: '团队1-04', rule_name: '出口不通' },
+    { id: 'n2', channel_id: 'c2', channel_name: '值班企业微信', incident_id: 'i1-0000-aaaa', ts: iso(now() - 14 * 60_000), ok: true, error: null, kind: 'firing', subject_name: '团队1-04', rule_name: '出口不通' },
+    { id: 'n3', channel_id: 'c1', channel_name: '运维群', incident_id: 'i3-0000-bbbb', ts: iso(now() - 50 * 60_000), ok: false, error: 'Telegram 返回 429：请求过于频繁，请 17 秒后重试', kind: 'resolved', subject_name: '线路机2', rule_name: '配置未应用' },
+    { id: 'n4', channel_id: 'c3', channel_name: '自建告警网关', incident_id: null, ts: iso(now() - 3 * DAY), ok: true, error: null, kind: 'test', subject_name: null, rule_name: null },
+    { id: 'n5', channel_id: 'c1', channel_name: '运维群', incident_id: 'i9-0000-cccc', ts: iso(now() - 4 * DAY), ok: true, error: null, kind: 'repeat', subject_name: null, rule_name: 'agent 离线' },
   ];
   const s3 = machines.find((m) => m.id === 'm-t1-03')!.subscription!;
   const renewals: Record<string, Renewal[]> = { 'm-t1-03': [{ id: 'rn1', old_due: addMonths(s3.due_date, -3), new_due: s3.due_date, amount_cents: s3.price_cents, note: '账单 #2041', actor: 'admin', created_at: iso(now() - 84 * DAY) }] };

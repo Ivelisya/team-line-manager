@@ -262,6 +262,15 @@ async fn move_proxy_node_never_loses_its_entry() {
     let m = t.get(&format!("/api/v1/machines/{node}")).await;
     assert_eq!(m["quota"]["period_start"], today.to_string());
     assert_eq!(m["quota"]["used"], 107, "周期内：新入口 7 + 已移除入口 100，起点前的 1000 不算：{}", m["quota"]);
+    // 重置日越界：中文 400，不漏约束名
+    for bad in [0, 45] {
+        let (s, v) = t
+            .req("PUT", &format!("/api/v1/machines/{node}/subscription"), Some(json!({"price_cents": 100, "due_date": "2030-01-01", "traffic_reset_day": bad})), None)
+            .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+        let msg = v["error"]["message"].as_str().unwrap();
+        assert!(msg.contains("1–31") && !msg.contains("check"), "{msg}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

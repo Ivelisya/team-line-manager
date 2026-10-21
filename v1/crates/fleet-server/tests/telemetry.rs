@@ -509,7 +509,7 @@ async fn notify_channel_crud_and_test_endpoint() {
     let log = t.get("/api/v1/notify-log?limit=50").await;
     let log = log.as_array().unwrap();
     assert_eq!(log.len(), 4);
-    assert!(log.iter().all(|l| l["kind"] == "test"));
+    assert!(log.iter().all(|l| l["kind"] == "test" && l["subject_name"].is_null() && l["rule_name"].is_null()));
     let dead_row = log.iter().find(|l| l["channel_name"] == "死链接").unwrap();
     assert_eq!(dead_row["ok"], false);
     assert!(dead_row["error"].is_string());
@@ -580,7 +580,9 @@ async fn alert_notifications_firing_repeat_silence_and_resolved() {
     let log = log.as_array().unwrap();
     assert_eq!(log.iter().filter(|l| l["ok"] == false).count(), 2);
     assert!(log.iter().filter(|l| l["ok"] == false).all(|l| l["channel_name"] == "broken" && l["error"].as_str().is_some_and(|e| e.contains("500"))));
-    assert!(log.iter().all(|l| l["incident_id"].is_string() && l["kind"] == "firing"));
+    assert!(log.iter().all(|l| l["incident_id"].is_string() && l["kind"] == "firing" && l["subject_name"] == "线路机1"));
+    assert!(log.iter().any(|l| l["rule_name"] == "Xray 未运行") && log.iter().any(|l| l["rule_name"] == "配置未应用"), "{log:?}");
+    assert!(log.iter().all(|l| l.get("rule").is_none()));
 
     // 持续提醒：严重告警 4 小时后再提醒一次（警告不重复）；之后同一周期内不再发
     sqlx::query("update incident set notified_at = now() - interval '5 hours'").execute(&t.st.db).await.unwrap();

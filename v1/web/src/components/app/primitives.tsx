@@ -4,8 +4,8 @@ import { Link } from 'react-router-dom';
 import { ArrowDownUp, Check, ChevronDown, ChevronUp, CircleAlert, Copy, Home, Inbox, RotateCw, Server, Waypoints } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { dueFmt, type Fmt } from '@/lib/format';
-import type { EntryLifecycle, EntryView, HealthReason, Kind, Lifecycle, MachineView } from '@/lib/types';
-import { HEALTH_LABEL, HEALTH_TONE, KIND_LABEL, LIFECYCLE_LABEL } from '@/lib/sort';
+import type { EntryView, HealthReason, Kind, Lifecycle, MachineView } from '@/lib/types';
+import { ENTRY_LABEL, HEALTH_LABEL, HEALTH_TONE, KIND_LABEL, LIFECYCLE_LABEL } from '@/lib/sort';
 import { Tip } from '@/components/ui/overlays';
 import { useCountUp } from '@/lib/useCountUp';
 import type { BeatCell } from '@/lib/derive';
@@ -38,7 +38,7 @@ export function HealthPill({ m }: { m: Pick<MachineView, 'health' | 'lifecycle' 
 /** 健康原因列表（带严重度圆点）：健康 pill 的悬停提示与抽屉“状态原因”共用 */
 export const ReasonList = ({ reasons, className }: { reasons: HealthReason[]; className: string }) => (
   <ul className={className}>
-    {reasons.map((r) => <li key={r.key}><span className="dot" data-tone={r.severity === 'critical' ? 'bad' : r.severity === 'warning' ? 'warn' : 'info'} />{r.text}</li>)}
+    {reasons.map((r, i) => <li key={i}><span className="dot" data-tone={r.severity === 'critical' ? 'bad' : r.severity === 'warning' ? 'warn' : 'info'} />{r.text}</li>)}
   </ul>
 );
 const reasonsTip = (reasons: HealthReason[]) => (reasons.length ? <ReasonList reasons={reasons} className="tip-list" /> : null);
@@ -55,8 +55,7 @@ export const LifecyclePill = ({ lc }: { lc: Lifecycle | string }) => (
   <Pill tone={lc === 'active' ? 'ok' : lc === 'provisioning' || lc === 'retiring' ? 'info' : lc === 'failed' ? 'bad' : 'neutral'} dot={lc === 'retired' ? 'ring' : undefined}>{LIFECYCLE_LABEL[lc] ?? lc}</Pill>
 );
 
-// 入口状态：active 按是否已应用细分；pending / removing 是等线路机应用
-const ENTRY_LABEL: Record<EntryLifecycle, string> = { pending: '应用中', active: '运行中', disabled: '已停用', removing: '移除中', removed: '已移除' };
+// 入口状态：active 按是否已应用细分
 export const entryState = (e: EntryView) => (e.lifecycle === 'disabled' ? <Pill tone="neutral" dot="ring">已停用</Pill> : e.lifecycle === 'active' ? (e.applied ? <Pill tone="ok">运行中</Pill> : e.apply_error ? <span title={e.apply_error}><Pill tone="bad">应用失败</Pill></span> : <Pill tone="info" dot="pulse">应用中</Pill>) : <Pill tone="info" dot="pulse">{ENTRY_LABEL[e.lifecycle]}</Pill>);
 
 export function Chip({ children, variant, title, className }: { children: React.ReactNode; variant?: 'neutral' | 'warn'; title?: string; className?: string }) {

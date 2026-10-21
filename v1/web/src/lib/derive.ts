@@ -1,5 +1,5 @@
 // 从 MachineView 推导卡片/表格要显示的数据（纯函数，便于复用）
-import type { MachineView, Plan, ProbeBucket, Subscription } from './types';
+import type { MachineView, ProbeBucket, Subscription } from './types';
 import * as F from './format';
 
 const GiB = 1024 ** 3;
@@ -35,18 +35,18 @@ export const usageTone = (pct: number | null | undefined) => (pct == null ? unde
 const ratio = (used: number | null, total: number | null) => (used == null || total == null || !(total > 0) ? null : (used / total) * 100);
 const usedTotal = (u: number | null, t: number | null) => (u == null || t == null ? '—' : `${F.str(F.bytes(u))} / ${F.str(F.bytes(t))}`);
 /** 资源读数；指标缺测（null）时对应项显示 “—”，进度为 null（不会出现 NaN） */
-export function resourceMeters(m: MachineView, plans: Plan[]) {
+export function resourceMeters(m: MachineView) {
   const h = m.host; if (!h) return null;
-  // 核数优先用 agent 报的（容器里是限额），没报过才看套餐
-  const cores = m.agent?.cores ?? (plans.find((p) => p.id === m.plan?.id)?.cpu_cores || 2);
+  // 核数只用 agent 报的（容器里是限额）；没报过时负载折不成百分比，显示 “—”
+  const cores = m.agent?.cores ?? null;
   const memPct = ratio(h.mem_used, h.mem_total); const diskPct = ratio(h.disk_used, h.disk_total);
-  const loadPct = h.load1 == null ? null : (h.load1 / cores) * 100;
+  const loadPct = h.load1 == null || !cores ? null : (h.load1 / cores) * 100;
   return {
-    cpu: { value: F.pct(h.cpu_pct), pct: h.cpu_pct, sub: `${cores} 核` },
+    cpu: { value: F.pct(h.cpu_pct), pct: h.cpu_pct, sub: cores ? `${cores} 核` : undefined },
     mem: { value: F.pct(memPct), pct: memPct, sub: usedTotal(h.mem_used, h.mem_total) },
     disk: { value: F.pct(diskPct), pct: diskPct, sub: usedTotal(h.disk_used, h.disk_total) },
     // 负载按核数折成百分比（1 分钟平均负载 / 核数）：比裸的 “0.50” 好懂；超过 100% 表示排队，数字照实显示，格条封顶
-    load: { value: F.pct(loadPct), pct: loadPct, sub: h.load1 == null ? LOAD_NA : `1 分钟 ${h.load1.toFixed(2)} · ${cores} 核`, hint: h.load1 == null ? LOAD_NA : undefined },
+    load: { value: F.pct(loadPct), pct: loadPct, sub: h.load1 == null ? LOAD_NA : `1 分钟 ${h.load1.toFixed(2)}${cores ? ` · ${cores} 核` : ''}`, hint: h.load1 == null ? LOAD_NA : undefined },
   };
 }
 export type BeatCell = 'ok' | 'warn' | 'bad' | null;

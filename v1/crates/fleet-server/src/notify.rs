@@ -75,6 +75,7 @@ pub fn rule_name(key: &str) -> &str {
         "ipintel_new_isp" => "来源出现新运营商",
         "ipintel_new_city" => "来源出现新城市",
         "ipintel_datacenter_source" => "机房 / VPN 来源",
+        "policy_blocked" => "访问策略暂停",
         other => other,
     }
 }

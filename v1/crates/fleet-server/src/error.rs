@@ -69,7 +69,11 @@ impl From<sqlx::Error> for ApiError {
                     return Self::conflict(m);
                 }
                 Some("23503") => return Self::conflict("被其他数据引用，不能这样改"),
-                Some("23514") => return Self::bad_request(format!("字段不合法（{}）", db.constraint().unwrap_or("check"))),
+                // check_violation：约束名只进日志，不给用户（该校验的字段应在接口里先拦下）
+                Some("23514") => {
+                    tracing::warn!(constraint = db.constraint().unwrap_or("?"), "违反检查约束");
+                    return Self::bad_request("填写的值超出允许范围");
+                }
                 _ => {}
             }
         }

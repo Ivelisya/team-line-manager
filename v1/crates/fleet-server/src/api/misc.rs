@@ -141,6 +141,7 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, Query(q): Query<In
         .map(|i| {
             let mut j = serde_json::to_value(i).unwrap_or_default();
             j["subject"] = json!({"id": i.subject_id, "name": i.subject_name.clone().unwrap_or_else(|| "（已删除）".into())});
+            j["rule_name"] = json!(crate::notify::rule_name(&i.rule));
             j
         })
         .collect();

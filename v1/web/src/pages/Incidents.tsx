@@ -20,13 +20,6 @@ import { ConfirmDialog } from '@/components/app/dialogs';
 import { NodeHover } from '@/components/app/NodeHover';
 import { Empty, ErrorNote, Note, PageHead, Panel, Pill } from '@/components/app/primitives';
 
-/** 规则 key（health.rs、ipintel.rs 产出，开告警的全部收录）→ 中文名，与通知里的 notify.rs rule_name 一致；未收录的原样显示 key */
-export const RULES: Record<string, string> = {
-  agent_offline: 'agent 离线', no_entry: '没有在用入口', egress_fail: '出口不通', tcp_fail: '线路到节点不通',
-  renewal_due: '即将到期', renewal_overdue: '已过期', relay_apply_lag: '配置未应用', relay_apply_error: '配置应用失败', relay_xray_down: 'Xray 未运行',
-  host_cpu_high: 'CPU 持续偏高', host_mem_high: '内存持续偏高', host_disk_high: '磁盘空间不足',
-  ipintel_new_isp: '来源出现新运营商', ipintel_new_city: '来源出现新城市', ipintel_datacenter_source: '机房 / VPN 来源',
-};
 const SEV = (i: Incident) => (i.state === 'resolved' ? <Pill tone="ok" dot="ring">已恢复</Pill> : i.severity === 'critical' ? <Pill tone="bad">严重</Pill> : i.severity === 'info' ? <Pill tone="info">提示</Pill> : <Pill tone="warn">警告</Pill>);
 
 export function IncidentsPage() {
@@ -61,7 +54,7 @@ export function IncidentsPage() {
                   <tr key={i.id}>
                     <td>{SEV(i)}</td>
                     <td>{sid ? <NodeHover id={sid}><button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => open(sid)}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button></NodeHover> : '—'}</td>
-                    <td>{RULES[i.rule] ?? i.rule}{i.reopen_count > 0 && <span className="sub" title={`恢复后 30 分钟内又复发 ${i.reopen_count} 次，合并为这一条`}>反复 {i.reopen_count + 1} 次</span>}</td>
+                    <td>{i.rule_name}{i.reopen_count > 0 && <span className="sub" title={`恢复后 30 分钟内又复发 ${i.reopen_count} 次，合并为这一条`}>反复 {i.reopen_count + 1} 次</span>}</td>
                     <td><Trunc className="cell-main">{i.summary}</Trunc><span className="sub">{i.resolved_at ? `恢复于 ${F.dt(i.resolved_at)}` : i.ack_at ? `${i.ack_by ?? ''} 已确认 · ${F.ago(i.ack_at)}` : '未确认'}</span></td>
                     <td>{F.dt(i.opened_at)}<span className="sub">{F.ago(i.opened_at)}</span></td>
                     <td className="r">{canRenew && <Button size="sm" onClick={() => setRenewId(sid)}><CalendarPlus size={13} />登记续费</Button>}{!canRenew && i.state === 'firing' && !i.ack_at && <Button size="sm" loading={ack.isPending && ack.variables === i.id} disabled={ack.isPending} onClick={() => ack.mutate(i.id, { onSuccess: () => toast.ok('已确认'), onError: toast.err })}><Check size={13} />确认</Button>}</td>

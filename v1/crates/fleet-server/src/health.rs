@@ -26,11 +26,24 @@ pub struct Health {
     pub reasons: Vec<Reason>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct Reason {
     pub key: &'static str,
     pub severity: &'static str,
     pub text: String,
+}
+
+/// 序列化时带上规则中文名 `rule_name`（同通知、告警列表）
+impl Serialize for Reason {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut x = s.serialize_struct("Reason", 4)?;
+        x.serialize_field("key", self.key)?;
+        x.serialize_field("rule_name", crate::notify::rule_name(self.key))?;
+        x.serialize_field("severity", self.severity)?;
+        x.serialize_field("text", &self.text)?;
+        x.end()
+    }
 }
 
 /// 线路机期望状态未应用超过这么久算异常

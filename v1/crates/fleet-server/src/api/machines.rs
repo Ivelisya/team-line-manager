@@ -447,6 +447,9 @@ pub async fn put_subscription(a: Actor, State(st): State<AppState>, Path(id): Pa
     if b.price_cents < 0 || !(0..=60).contains(&b.remind_days) {
         return Err(ApiError::bad_request("金额或提醒天数不合法"));
     }
+    if b.traffic_reset_day.is_some_and(|d| !(1..=31).contains(&d)) {
+        return Err(ApiError::bad_request("流量重置日要在 1–31 之间"));
+    }
     let mut tx = st.db.begin().await?;
     check_tz(&mut tx, &b.billing_tz).await?;
     sqlx::query(
