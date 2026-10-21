@@ -16,6 +16,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Toaster } from '@/components/ui/toast';
 import { useDrawer } from '@/lib/drawer';
 import { Hotkeys, PaletteTrigger } from '@/features/Hotkeys';
+import { AlertsIndicator } from '@/features/AlertsIndicator';
 import { JobsIndicator } from '@/features/JobsIndicator';
 import { ErrorBoundary } from '@/components/app/ErrorBoundary';
 import { Note, Pill } from '@/components/app/primitives';
@@ -129,7 +130,7 @@ export function Shell() {
           <NavLink to="/" className="brand"><span className="brand-mark"><Boxes size={14} /></span>团队线路管理</NavLink>
           <PaletteTrigger />
           <div className="topbar-right">
-            {firing > 0 && <NavLink to="/incidents" className="top-alert" aria-label={`${firing} 条告警`}><Pill tone="bad">{firing}<span className="hide-sm"> 条告警</span></Pill></NavLink>}
+            <AlertsIndicator />
             <JobsIndicator />
             {stream === 'error'
               ? <Pill tone="warn" dot="pulse" role="status" tip="页面数据暂停更新，连上后自动补齐"><span>实时已断开<span className="hide-sm">，正在重连…</span></span></Pill>
