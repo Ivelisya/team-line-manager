@@ -321,13 +321,16 @@ async fn agent(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         .await?;
     // 记下这枚新令牌，wait_report 用它判断「新 agent 已经在用新令牌上报」
     c.set_params(json!({"agent_token_id": token_id})).await?;
-    let script = vars(&[
+    let mut script = vars(&[
         ("SERVER_URL", &c.st.cfg.public_url),
         ("ROLE", if m.kind == "relay" { "relay" } else { "node" }),
         ("MACHINE_ID", &m.id.to_string()),
         ("TOKEN", &token),
         ("BIN_CHANGED", if pushed { "1" } else { "0" }),
     ]) + &scripts::agent();
+    if m.kind == "relay" {
+        script += &scripts::relay_logrotate();
+    }
     let out = t.run(&script, Duration::from_secs(120)).await?;
     if !out.ok() || out.kv("agent") != Some("active") {
         return Err(remote(format!("agent 没有起来：{} {}", out.stdout.trim(), out.stderr.trim())));

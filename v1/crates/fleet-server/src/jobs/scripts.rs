@@ -123,7 +123,18 @@ echo "nft_relays=$(nft list set inet ss_guard relays | tr -d '\n' | sed 's/.*ele
 "#;
 
 /// 线路机：fleet-xray 单元与访问日志轮转（配置由 agent 生成）。xray 二进制与 geoip.dat 已推到 /usr/local/bin、/usr/local/share/xray。
-pub fn relay_xray() -> String { RELAY_XRAY.replace("__UNIT__", XRAY_UNIT.trim_end()).replace("__LOGROTATE__", XRAY_LOGROTATE.trim_end()) }
+pub fn relay_xray() -> String { RELAY_XRAY.replace("__UNIT__", XRAY_UNIT.trim_end()).replace("__LOGROTATE_SH__", relay_logrotate().trim()) }
+
+/// 线路机访问日志轮转：上架时装，升级 agent 时也装一遍（较早上架、还没有这份配置的线路机升级一次就补上）
+pub fn relay_logrotate() -> String { LOGROTATE_SH.replace("__LOGROTATE__", XRAY_LOGROTATE.trim_end()) }
+
+const LOGROTATE_SH: &str = r#"
+L=/etc/logrotate.d/fleet-xray
+cat > $L.tmp <<'LOGROTATE'
+__LOGROTATE__
+LOGROTATE
+cmp -s $L.tmp $L && rm -f $L.tmp || mv $L.tmp $L
+"#;
 
 /// systemd 单元、logrotate 配置：唯一来源在 deploy/
 pub const AGENT_UNIT: &str = include_str!("../../../../deploy/units/fleet-agent.service");
@@ -138,11 +149,7 @@ cat > $U.tmp <<'UNIT'
 __UNIT__
 UNIT
 cmp -s $U.tmp $U && rm -f $U.tmp || { mv $U.tmp $U; systemctl daemon-reload; }
-L=/etc/logrotate.d/fleet-xray
-cat > $L.tmp <<'LOGROTATE'
-__LOGROTATE__
-LOGROTATE
-cmp -s $L.tmp $L && rm -f $L.tmp || mv $L.tmp $L
+__LOGROTATE_SH__
 systemctl enable -q fleet-xray
 echo "xray_version=$(/usr/local/bin/xray version 2>/dev/null | head -1 | awk '{print $2}')"
 "#;
