@@ -130,11 +130,13 @@ fn job_kind_cn(k: &str) -> &str {
         "provision_vps" => "上架落地机",
         "provision_proxy" => "上架家宽代理",
         "provision_relay" => "上架线路机",
+        "provision_ip" => "上架同机 IP 节点",
         "attach_entry" => "新增入口",
         "move_entry" => "换线路机",
         "restore_vps" => "恢复落地机",
         "restore_proxy" => "恢复家宽代理",
         "restore_relay" => "恢复线路机",
+        "restore_ip" => "恢复同机 IP 节点",
         "retire" => "退役",
         "purge" => "彻底删除",
         "upgrade_agent" => "升级 agent",
@@ -404,11 +406,20 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
             ("生命周期", format!("{}{}", lifecycle_cn(&st(&m, "/lifecycle")), m["lifecycle_reason"].as_str().map(|r| format!("（{r}）")).unwrap_or_default())),
             ("健康", health_cn(&st(&m, "/health/status")).to_string()),
             ("IP", format!("{}:{}", st(&m, "/ip"), st(&m, "/ssh_port"))),
+        ];
+        // 同机关系：同机 IP 节点的 SSH、agent、主机读数都是宿主机的；宿主机列出它上面的同机 IP 节点
+        if !m["host_machine"].is_null() {
+            rows.push(("宿主机", format!("{}（SSH、agent、主机读数都用它的）", st(&m, "/host_machine/name"))));
+        }
+        if let Some(xs) = m["ip_nodes"].as_array().filter(|a| !a.is_empty()) {
+            rows.push(("同机 IP 节点", xs.iter().map(|x| st(x, "/name")).collect::<Vec<_>>().join("、")));
+        }
+        rows.extend([
             ("供应商/套餐", format!("{} / {}", st(&m, "/provider/name"), st(&m, "/plan/name"))),
             ("备注", st(&m, "/note")),
             ("创建", table::ts(&st(&m, "/created_at"))),
             ("revision", st(&m, "/revision")),
-        ];
+        ]);
         if !m["agent"].is_null() {
             rows.push(("agent", format!("{}  版本 {}  最近上报 {}", if m["agent"]["online"] == true { "在线" } else { "离线" }, st(&m, "/agent/version"), table::ts(&st(&m, "/agent/last_report_at")))));
         }
