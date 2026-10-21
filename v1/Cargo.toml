@@ -26,6 +26,14 @@ rand = "0.8"
 base64 = "0.22"
 toml = "0.8"
 
+# 调试 / 测试构建只给工作区自己的 crate 留行号表（panic 回溯照样有文件和行号），依赖不带调试信息：
+# 完整调试信息让 fleet-dev 的 target/debug 涨得很快。release 是独立的 profile，不受影响
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 # 调试 / 测试构建里不优化的 argon2 算一次约 0.5 秒（每个集成测试建管理员、登录各一次）：只给它和它用的 blake2 开优化
 [profile.dev.package.argon2]
 opt-level = 3
