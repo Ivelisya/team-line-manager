@@ -184,7 +184,7 @@
 
   /* ---------- 16. 层级 ---------- */
   --z-sticky: 10; --z-pagehead: 20; --z-topbar: 30; --z-drawer: 40;
-  --z-popover: 50; --z-dialog: 60; --z-palette: 65; --z-toast: 70; --z-tooltip: 80;
+  --z-dialog: 50; --z-popover: 60; --z-palette: 65; --z-toast: 70; --z-tooltip: 80; /* 弹层（下拉、日期、菜单）在对话框之上，否则对话框里的下拉被盖住 */
 
   /* ---------- 17. 兼容别名（原版变量名 + shared/charts.js 读取的名字；页面 CSS 不要用） ---------- */
   --bg: var(--canvas);
