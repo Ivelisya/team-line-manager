@@ -1,4 +1,4 @@
-//! 访问策略：团队/节点的域名黑白名单。`set` 只改草稿；`publish` 才会生效并下发到线路机。
+//! 访问策略：团队/节点的域名黑白名单。`set` 只改草稿；`publish` 才会生效并应用到线路机。
 
 use crate::cmds::{st, Ctx};
 use crate::ops::{confirm, lookup};

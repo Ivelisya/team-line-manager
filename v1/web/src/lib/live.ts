@@ -14,7 +14,7 @@ type HostTuple = [number, N, N, N, N, N, N, N, N, N];
 type ProbeTuple = [boolean, N, number, string | null];
 interface MachinePatch {
   host?: HostTuple | null; seen?: N; agent?: { version: string | null; online: boolean; xray_running: boolean | null; cores: number | null } | null;
-  health?: MachineView['health']; maintenance?: boolean; due_days?: N; removed_traffic?: MachineView['removed_traffic'];
+  health?: MachineView['health']; maintenance?: boolean; due_days?: N; removed_traffic?: MachineView['removed_traffic']; quota?: MachineView['quota'];
 }
 interface EntryPatch { tcp?: ProbeTuple | null; egress?: ProbeTuple | null; traffic?: EntryView['traffic'] }
 export interface MetricsMsg { type: 'metrics'; machines: Record<string, MachinePatch>; entries: Record<string, EntryPatch>; overview?: Overview }
@@ -49,6 +49,7 @@ function patchMachine(m: MachineView, msg: MetricsMsg): MachineView {
   if (d.maintenance !== undefined) n.maintenance = d.maintenance;
   if (d.due_days != null && m.subscription) n.subscription = { ...m.subscription, due_days: d.due_days };
   if (d.removed_traffic) n.removed_traffic = d.removed_traffic;
+  if (d.quota) n.quota = d.quota;
   const h = d.host;
   if (h && h[7] != null && h[8] != null && !isQuiet(n)) record(m.id, { t: h[0] * 1000, rx: h[7], tx: h[8] });
   return n;

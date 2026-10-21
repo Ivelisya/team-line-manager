@@ -5,8 +5,8 @@ import * as F from './format';
 const GiB = 1024 ** 3;
 
 export const hasHost = (m: MachineView) => m.kind !== 'proxy' && m.host != null;
-/** 数据过期：agent 离线，或健康为故障 */
-export const isQuiet = (m: MachineView) => m.health.status === 'down' || (m.agent != null && !m.agent.online) || m.lifecycle === 'retired';
+/** 数据过期：agent 离线（没有近期上报）或已退役。和健康无关：有严重告警的机器照常上报，读数照常显示 */
+export const isQuiet = (m: MachineView) => (m.agent != null && !m.agent.online) || m.lifecycle === 'retired';
 /** 当前网卡速率：无主机或数据过期（isQuiet）时为 null——各处显示 “—”，也不进迹线 */
 export const liveRate = (m: MachineView) => (hasHost(m) && !isQuiet(m) ? { rx: m.host!.net_rx_bps, tx: m.host!.net_tx_bps } : null);
 /** 容器（LXC 等）里 /proc/loadavg 是宿主机的，agent 不报负载（null） */
@@ -24,16 +24,16 @@ export function monthTraffic(m: MachineView) {
   for (const e of m.entries) { up += e.traffic.month_up; down += e.traffic.month_down; tu += e.traffic.today_up; td += e.traffic.today_down; }
   return { up, down, today_up: tu, today_down: td };
 }
-/** 流量额度：上限（GiB，0/null = 不限）与已用（入口业务流量合计） */
+/** 流量额度：上限（GiB，订阅没填按套餐，0/null = 不限）与本周期已用（服务端按流量重置日算，见 MachineView.quota） */
 export function quota(m: MachineView) {
   const limit = m.subscription?.traffic_gb ?? m.plan?.traffic_gb ?? 0;
-  const t = monthTraffic(m); const used = t.up + t.down;
-  return { limit, used, pct: limit > 0 ? (used / (limit * GiB)) * 100 : null, rem: limit > 0 ? Math.max(0, limit * GiB - used) : null };
+  const { used, period_start: start } = m.quota;
+  return { limit, used, start, pct: limit > 0 ? (used / (limit * GiB)) * 100 : null, rem: limit > 0 ? Math.max(0, limit * GiB - used) : null };
 }
 /** 资源占用的告警色（CPU / 内存 / 磁盘 / 负载的格条、圆环、迷你条共用）：≥ 90% 红，≥ 75% 黄 */
 export const usageTone = (pct: number | null | undefined) => (pct == null ? undefined : pct >= 90 ? 'bad' : pct >= 75 ? 'warn' : undefined);
 const ratio = (used: number | null, total: number | null) => (used == null || total == null || !(total > 0) ? null : (used / total) * 100);
-const usedTotal = (u: number | null, t: number | null) => (u == null || t == null ? '—' : `${F.bytes(u).v} ${F.bytes(u).u} / ${F.bytes(t).v} ${F.bytes(t).u}`);
+const usedTotal = (u: number | null, t: number | null) => (u == null || t == null ? '—' : `${F.str(F.bytes(u))} / ${F.str(F.bytes(t))}`);
 /** 资源读数；指标缺测（null）时对应项显示 “—”，进度为 null（不会出现 NaN） */
 export function resourceMeters(m: MachineView, plans: Plan[]) {
   const h = m.host; if (!h) return null;
@@ -66,7 +66,7 @@ export function probeSummary(m: MachineView) {
 }
 /**
  * 剩余价值：已付还没用掉的部分，按天折算。每期天数 = 到期日往前推一个周期的天数，剩余比例 = 距到期天数 / 每期天数；
- * 预付了多期时比例大于 1。一次性付费没有周期，不折算（null）；已过期为 0。
+ * 预付了多期时比例大于 1；已过期为 0。
  */
 export function remainingValue(s: Subscription | null) {
   const months = s && F.CYCLE_MONTHS[s.cycle];

@@ -3,7 +3,7 @@
 export type Kind = 'relay' | 'vps' | 'proxy';
 export type Lifecycle = 'draft' | 'provisioning' | 'active' | 'retiring' | 'retired' | 'failed';
 export type HealthStatus = 'ok' | 'degraded' | 'down' | 'unknown' | 'maintenance' | 'inactive';
-export type Cycle = 'monthly' | 'quarterly' | 'semiannual' | 'yearly' | 'once' | string;
+export type Cycle = 'monthly' | 'quarterly' | 'semiannual' | 'yearly' | string;
 
 export interface Subscription {
   price_cents: number; currency: string; cycle: Cycle; due_date: string; due_days: number;
@@ -35,6 +35,8 @@ export interface MachineView {
   host: HostMetrics | null;
   entries: EntryView[];
   removed_traffic: EntryTraffic; // 已移除入口（如换线路机后的旧入口）今天/本月的流量，不在 entries 里
+  /** 流量额度周期：起点（YYYY-MM-DD，有流量重置日按它，否则本月 1 号）与周期内业务流量（字节，含已移除入口） */
+  quota: { used: number; period_start: string };
   health: { status: HealthStatus; reasons: HealthReason[] };
   active_job: { id: string; kind: string; state: string } | null;
   open_incidents: number; maintenance: boolean;

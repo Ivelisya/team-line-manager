@@ -4,7 +4,7 @@
 import type { EntryView, Job, JobLog, MachineView, ProbeBucket, ProvisionCheckItem, ProvisionItem, SeriesPoint } from '@/lib/types';
 import { displayName } from '@/lib/format';
 import { liveRate } from '@/lib/derive';
-import { buildDb, hashStr, rng, type Db } from './fixtures';
+import { buildDb, hashStr, quotaOf, rng, type Db } from './fixtures';
 import { installAccessMock } from './access';
 import { installPolicyMock } from './policy';
 
@@ -70,7 +70,7 @@ function finishRetire(m: MachineView) {
 function recomputeDue(m: MachineView) {
   if (m.subscription) m.subscription.due_days = Math.ceil((new Date(m.subscription.due_date).getTime() - Date.now()) / DAY);
 }
-const monthly = (cents: number, cycle: string) => cents / ({ monthly: 1, quarterly: 3, semiannual: 6, yearly: 12, once: 36 }[cycle] ?? 1);
+const monthly = (cents: number, cycle: string) => cents / ({ monthly: 1, quarterly: 3, semiannual: 6, yearly: 12 }[cycle] ?? 1);
 
 function overview() {
   const live = db.machines.filter((m) => m.lifecycle === 'active');
@@ -83,7 +83,8 @@ function overview() {
   return {
     nodes: cnt(live.filter((m) => m.kind !== 'relay')), relays: cnt(live.filter((m) => m.kind === 'relay')),
     provisioning: db.machines.filter((m) => m.lifecycle === 'provisioning').length, retiring: db.machines.filter((m) => m.lifecycle === 'retiring').length,
-    due_7d: live.filter((m) => m.subscription && m.subscription.due_days <= 7).length,
+    // 需要续费的：自动续费的只在已过期时算（同服务端）
+    due_7d: live.filter((m) => m.subscription && m.subscription.due_days <= 7 && (m.subscription.due_days < 0 || !m.subscription.auto_renew)).length,
     monthly_cost: Object.entries(live.reduce<Record<string, number>>((acc, m) => { if (m.subscription) acc[m.subscription.currency] = (acc[m.subscription.currency] ?? 0) + Math.round(monthly(m.subscription.price_cents, m.subscription.cycle)); return acc; }, {})).map(([currency, cents]) => ({ currency, cents })),
     traffic_month: { up, down },
     // 实时速率只算数据没过期的（同 liveRate）
@@ -142,7 +143,7 @@ function overviewSeries(minutes: number) {
 }
 
 // ---------- 作业模拟 ----------
-const PSTEPS: [string, string][] = [['ssh', '连接并检查系统'], ['agent', '安装 agent'], ['ss', '配置 Shadowsocks'], ['entry', '下发线路机入口'], ['verify', '验证连通性']];
+const PSTEPS: [string, string][] = [['ssh', '连接并检查系统'], ['agent', '安装 agent'], ['ss', '配置 Shadowsocks'], ['entry', '接入线路机'], ['verify', '验证连通性']];
 function newJob(kind: string, target: Job['target'], steps: [string, string][]): Job {
   const id = `j-${db.seq++}`;
   const t = Date.now();
@@ -269,7 +270,7 @@ function createMachine(it: ProvisionItem, c: ProvisionCheckItem): MachineView {
     plan: plan ? { id: plan.id, name: plan.name, bandwidth_mbps: plan.bandwidth_mbps, traffic_gb: plan.traffic_gb } : null, service_ref: it.service_ref ?? null,
     lifecycle: 'provisioning', lifecycle_reason: null, note: it.note ?? '', revision: 1, created_at: iso(), activated_at: null, retired_at: null,
     subscription: it.subscription?.due_date ? { price_cents: it.subscription.price_cents ?? plan?.price_cents ?? 0, currency: plan?.currency ?? 'CNY', cycle: it.subscription.cycle ?? plan?.cycle ?? 'monthly', due_date: it.subscription.due_date, due_days: 0, billing_tz: it.subscription.billing_tz ?? 'Asia/Shanghai', auto_renew: false, remind_days: 7, traffic_gb: plan?.traffic_gb || null, traffic_reset_day: 1 } : null,
-    agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, health: { status: 'unknown', reasons: [{ key: 'provisioning', severity: 'info', text: '上架作业进行中' }] }, active_job: null, open_incidents: 0, maintenance: false,
+    agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, quota: { used: 0, period_start: '' }, health: { status: 'unknown', reasons: [{ key: 'provisioning', severity: 'info', text: '上架作业进行中' }] }, active_job: null, open_incidents: 0, maintenance: false,
     relay: it.kind === 'relay' ? { public_host: it.ip, generation: 1, applied_generation: 0, applied_at: null, apply_error: null, port_min: 20001, port_max: 20999 } : null,
   };
   if (m.kind !== 'relay') {
@@ -277,7 +278,7 @@ function createMachine(it: ProvisionItem, c: ProvisionCheckItem): MachineView {
     const e: EntryView = { id: `e${db.seq++}`, relay: { id: relay.id, name: relay.name }, node: { id, name: m.name }, port: c.relay_port ?? 20999, lifecycle: 'provisioning', applied: false, apply_error: null, tcp: null, egress: null, traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 } };
     m.entries = [e]; relay.entries.push(e);
   }
-  recomputeDue(m);
+  recomputeDue(m); m.quota = quotaOf(m);
   db.machines.push(m); refreshCounts();
   return m;
 }
@@ -401,7 +402,7 @@ R('POST', '/machines/([^/]+)/purge', ({ params, body }) => {
 R('PUT', '/machines/([^/]+)/subscription', ({ params, body }) => {
   const m = machine(params[0]);
   m.subscription = { traffic_gb: null, traffic_reset_day: null, ...(m.subscription ?? {} as any), ...body, due_days: 0 };
-  recomputeDue(m); emit({ type: 'machine', id: m.id }); emit({ type: 'machines' }); return clone(m.subscription);
+  recomputeDue(m); m.quota = quotaOf(m); emit({ type: 'machine', id: m.id }); emit({ type: 'machines' }); return clone(m.subscription);
 });
 R('GET', '/machines/([^/]+)/renewals', ({ params }) => clone(db.renewals[params[0]] ?? []));
 R('POST', '/machines/([^/]+)/renewals', ({ params, body }) => {
@@ -442,7 +443,7 @@ R('POST', '/machines/([^/]+)/entries', ({ params, body }) => {
   const port = Math.max(20000, ...relay.entries.map((x) => x.port)) + 1;
   const e: EntryView = { id: `e${db.seq++}`, relay: { id: relay.id, name: relay.name }, node: { id: m.id, name: m.name }, port, lifecycle: 'provisioning', applied: false, apply_error: null, tcp: null, egress: null, traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 } };
   m.entries.push(e); relay.entries.push(e);
-  const job = newJob('attach_entry', { id: m.id, name: m.name }, [['apply', '下发线路机配置'], ['verify', '验证连通性']]);
+  const job = newJob('attach_entry', { id: m.id, name: m.name }, [['apply', '等待线路机应用'], ['verify', '出口验收']]);
   drive(job, 2000, () => { e.lifecycle = 'active'; e.applied = true; });
   emit({ type: 'machines' }); return { job_id: job.id };
 });

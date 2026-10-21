@@ -212,7 +212,7 @@ async fn move_proxy_node_never_loses_its_entry() {
     assert_eq!(j["result"]["share_changed"], true);
     let keys: Vec<&str> = j["steps"].as_array().unwrap().iter().map(|s| s["key"].as_str().unwrap()).collect();
     assert_eq!(keys, ["attach_new", "firewall_widen", "wait_applied_new", "verify_new", "detach_old", "wait_detached_old", "firewall_narrow"]);
-    assert_eq!(j["steps"][1]["state"], "skipped", "上游代理没有防火墙");
+    assert_eq!(j["steps"][1]["state"], "skipped", "家宽代理没有防火墙");
     assert!(log_msgs(&t, &job).await.iter().any(|m| m.contains("新的分享链接")));
     // 新入口的分享链接指向新线路机
     let share = t.get(&format!("/api/v1/entries/{new_entry}/share")).await;
@@ -240,6 +240,28 @@ async fn move_proxy_node_never_loses_its_entry() {
     assert_eq!((removed_of(ra), removed_of(rb)), (Some(100), Some(0)));
     let o = t.get("/api/v1/overview").await;
     assert_eq!(o["traffic_month"]["up"], 107, "总览 = 节点现有入口 + 已移除入口");
+
+    // 流量重置日：按账单时区里最近一次重置日的零点起算（含已移除入口）。重置日取洛杉矶的今天 → 周期从洛杉矶今天零点开始
+    let (today, day): (time::Date, i32) =
+        sqlx::query_as("select (now() at time zone 'America/Los_Angeles')::date, extract(day from now() at time zone 'America/Los_Angeles')::int")
+            .fetch_one(&t.st.db)
+            .await
+            .unwrap();
+    // 周期起点前一小时的流量不算
+    sqlx::query("insert into entry_traffic_hourly (entry_id, hour, up_bytes, down_bytes) values ($1, ($2::timestamp at time zone 'America/Los_Angeles') - interval '1 hour', 1000, 0)")
+        .bind(old_entry)
+        .bind(today)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let (s, v) = t
+        .req("PUT", &format!("/api/v1/machines/{node}/subscription"), Some(json!({"price_cents": 100, "due_date": "2030-01-01", "billing_tz": "America/Los_Angeles", "traffic_reset_day": day})), None)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    t.st.live.rolled_up();
+    let m = t.get(&format!("/api/v1/machines/{node}")).await;
+    assert_eq!(m["quota"]["period_start"], today.to_string());
+    assert_eq!(m["quota"]["used"], 107, "周期内：新入口 7 + 已移除入口 100，起点前的 1000 不算：{}", m["quota"]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

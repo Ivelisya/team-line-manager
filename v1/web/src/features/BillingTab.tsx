@@ -7,21 +7,20 @@ import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
 import { Field, Input, Switch } from '@/components/ui/form';
 import { DateField } from '@/components/ui/date-field';
-import { remainingValue } from '@/lib/derive';
+import { quota, remainingValue } from '@/lib/derive';
 import { Select } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogHeader } from '@/components/ui/dialog';
 import { toast } from '@/components/ui/toast';
 import { Due, ErrorNote, LabelValue, LabelValueGrid, Note, Section, SectionHeader } from '@/components/app/primitives';
 
 const CURRENCIES = ['CNY', 'USD', 'EUR', 'HKD', 'JPY'].map((c) => ({ value: c, label: `${c} ${F.currencySym(c).trim()}` }));
-const CYCLES = Object.entries(F.CYCLE).filter(([k]) => k !== 'once').map(([value, label]) => ({ value, label: `每${label}` }));
 const TZS = ['Asia/Shanghai', 'America/Los_Angeles', 'America/New_York', 'Europe/London', 'Asia/Tokyo', 'UTC'].map((z) => ({ value: z, label: z }));
 
 export function BillingTab({ m }: { m: MachineView }) {
   const s = m.subscription;
   const renewals = useRenewals(m.id);
   const [renew, setRenew] = React.useState(false);
-  const rv = remainingValue(m.subscription);
+  const rv = remainingValue(m.subscription); const q = quota(m);
   return (
     <>
       {s && (
@@ -30,7 +29,9 @@ export function BillingTab({ m }: { m: MachineView }) {
           <LabelValueGrid>
             <LabelValue label="费用"><span className="num">{F.money(s.price_cents, s.currency)}</span> <span className="unit">/ {F.cycleLabel(s.cycle)}</span></LabelValue>
             <LabelValue label="到期日">{s.due_date}（<Due days={s.due_days} />）</LabelValue>
-            <LabelValue label="剩余价值">{rv ? <><span className="num">{F.money(rv.cents, rv.currency)}</span> <span className="unit">{rv.frac > 1 ? `已预付 ${rv.frac.toFixed(1)} 期 · 每期 ${rv.days} 天` : `本期 ${Math.round(rv.frac * 100)}% · 共 ${rv.days} 天`}</span></> : <span className="t-muted">一次性付费，不折算</span>}</LabelValue>
+            <LabelValue label="剩余价值">{rv ? <><span className="num">{F.money(rv.cents, rv.currency)}</span> <span className="unit">{rv.frac > 1 ? `已预付 ${rv.frac.toFixed(1)} 期 · 每期 ${rv.days} 天` : `本期 ${Math.round(rv.frac * 100)}% · 共 ${rv.days} 天`}</span></> : <span className="t-muted">—</span>}</LabelValue>
+            <LabelValue label="本周期已用"><span className="num">{F.str(F.bytes(q.used))}</span> <span className="unit">/ {q.limit > 0 ? F.str(F.gb(q.limit)) : '不限'}</span></LabelValue>
+            <LabelValue label="流量周期"><span className="num">{q.start.slice(5)}</span> 起</LabelValue>
             <LabelValue label="自动续费">{s.auto_renew ? '是' : '否'}</LabelValue>
           </LabelValueGrid>
           <div style={{ marginTop: 12 }}><Button variant="primary" onClick={() => setRenew(true)}><CalendarPlus />登记续费</Button></div>
@@ -87,12 +88,12 @@ function SubForm({ m }: { m: MachineView }) {
     <div className="form-grid">
       <Field label="费用"><Input inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="68" /></Field>
       <Field label="币种"><Select value={currency} onChange={setCurrency} options={CURRENCIES} /></Field>
-      <Field label="计费周期"><Select value={cycle} onChange={setCycle} options={CYCLES} /></Field>
+      <Field label="计费周期"><Select value={cycle} onChange={setCycle} options={F.CYCLE_OPTIONS} /></Field>
       <Field label="到期日"><DateField value={dueDate} onChange={setDueDate} /></Field>
       <Field label="账单时区" hint="到期按这个时区的日期算"><Select value={tz} onChange={setTz} options={TZS} /></Field>
       <Field label="提前提醒（天）"><Input inputMode="numeric" value={remind} onChange={(e) => setRemind(e.target.value.replace(/\D/g, ''))} /></Field>
-      <Field label="流量上限（GiB）" hint="留空 = 不限"><Input inputMode="numeric" value={traffic} onChange={(e) => setTraffic(e.target.value.replace(/\D/g, ''))} /></Field>
-      <Field label="流量重置日（每月几号）"><Input inputMode="numeric" value={resetDay} onChange={(e) => setResetDay(e.target.value.replace(/\D/g, ''))} /></Field>
+      <Field label="流量上限（GiB）" hint="留空 = 按套餐"><Input inputMode="numeric" value={traffic} placeholder={m.plan?.traffic_gb ? `套餐 ${m.plan.traffic_gb}` : '套餐不限'} onChange={(e) => setTraffic(e.target.value.replace(/\D/g, ''))} /></Field>
+      <Field label="流量重置日（每月几号）" hint="按账单时区；月份没有这一天按月末"><Input inputMode="numeric" value={resetDay} onChange={(e) => setResetDay(e.target.value.replace(/\D/g, ''))} /></Field>
       <label className="check-row span-2" style={{ gap: 10 }}><Switch checked={auto} onCheckedChange={setAuto} /><span>到期自动续费（只用于提醒口径，不会真的扣款）</span></label>
       <div className="span-2 row" style={{ justifyContent: 'flex-end' }}><Button variant="primary" disabled={!valid || save.isPending} loading={save.isPending} onClick={submit}>保存订阅</Button></div>
     </div>

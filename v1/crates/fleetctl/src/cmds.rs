@@ -49,6 +49,26 @@ fn pct(a: Option<f64>, b: Option<f64>) -> String {
     }
 }
 
+/// 计费周期：月 / 季 / 半年 / 年（同网页）
+fn cycle_cn(c: &str) -> &str {
+    match c {
+        "monthly" => "月",
+        "quarterly" => "季",
+        "semiannual" => "半年",
+        "yearly" => "年",
+        c => c,
+    }
+}
+
+/// 到期：N 天后到期 / 今天到期 / 已过期 N 天（同网页与告警）
+fn due_cn(days: i64) -> String {
+    match days {
+        d if d < 0 => format!("已过期 {} 天", -d),
+        0 => "今天到期".into(),
+        d => format!("{d} 天后到期"),
+    }
+}
+
 impl Ctx {
     /// 打印：--json 时输出 data 原样，否则输出人类可读文本
     pub fn emit(&self, data: &Value, human: impl FnOnce() -> String) {
@@ -123,9 +143,9 @@ pub fn status(ctx: &Ctx) -> anyhow::Result<u8> {
             ("线路机", bucket("relays")),
             ("上架中/退役中", format!("{} / {}", st(&ov, "/provisioning"), st(&ov, "/retiring"))),
             ("7 天内到期", st(&ov, "/due_7d")),
-            ("月费", if cost.is_empty() { "-".into() } else { cost }),
-            ("本月流量", format!("↑ {}  ↓ {}", bytes(num(&ov, "/traffic_month/up").unwrap_or(0.0)), bytes(num(&ov, "/traffic_month/down").unwrap_or(0.0)))),
-            ("实时速率", format!("↓ {}  ↑ {}", bps(num(&ov, "/net_rx_bps").unwrap_or(0.0)), bps(num(&ov, "/net_tx_bps").unwrap_or(0.0)))),
+            ("每月费用", if cost.is_empty() { "-".into() } else { cost }),
+            ("本月业务流量", format!("下载 {} / 上传 {}", bytes(num(&ov, "/traffic_month/down").unwrap_or(0.0)), bytes(num(&ov, "/traffic_month/up").unwrap_or(0.0)))),
+            ("网卡速率", format!("下行 {} / 上行 {}", bps(num(&ov, "/net_rx_bps").unwrap_or(0.0)), bps(num(&ov, "/net_tx_bps").unwrap_or(0.0)))),
         ]);
         let list = inc.as_array().cloned().unwrap_or_default();
         s.push_str(&format!("\n\n告警（进行中 {}）", list.len()));
@@ -227,7 +247,7 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
             rows.push((
                 "主机",
                 format!(
-                    "CPU {}%  内存 {}  磁盘 {}  load {}  连接 {}  ↓{} ↑{}",
+                    "CPU {}%  内存 {}  磁盘 {}  负载 {}  连接 {}  网卡 下行 {} / 上行 {}",
                     num(&m, "/host/cpu_pct").map(|x| format!("{x:.0}")).unwrap_or("-".into()),
                     pct(num(&m, "/host/mem_used"), num(&m, "/host/mem_total")),
                     pct(num(&m, "/host/disk_used"), num(&m, "/host/disk_total")),
@@ -242,16 +262,17 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
             rows.push((
                 "订阅",
                 format!(
-                    "{}（每{}）到期 {}（还剩 {} 天）",
+                    "{}（每{}）到期 {}（{}）",
                     money(m["subscription"]["price_cents"].as_i64().unwrap_or(0), &st(&m, "/subscription/currency")),
-                    st(&m, "/subscription/cycle"),
+                    cycle_cn(&st(&m, "/subscription/cycle")),
                     st(&m, "/subscription/due_date"),
-                    st(&m, "/subscription/due_days")
+                    due_cn(m["subscription"]["due_days"].as_i64().unwrap_or(0))
                 ),
             ));
         }
+        rows.push(("流量额度", format!("本周期已用 {}（{} 起）", bytes(num(&m, "/quota/used").unwrap_or(0.0)), st(&m, "/quota/period_start"))));
         if !m["relay"].is_null() {
-            rows.push(("线路机", format!("{}  代数 {}/{}  {}", st(&m, "/relay/public_host"), st(&m, "/relay/applied_generation"), st(&m, "/relay/generation"), m["relay"]["apply_error"].as_str().unwrap_or(""))));
+            rows.push(("线路机", format!("{}  配置代数 {} · 已应用 {}  {}", st(&m, "/relay/public_host"), st(&m, "/relay/generation"), st(&m, "/relay/applied_generation"), m["relay"]["apply_error"].as_str().unwrap_or(""))));
         }
         if !m["active_job"].is_null() {
             rows.push(("进行中作业", format!("{} {}  {}", st(&m, "/active_job/kind"), st(&m, "/active_job/state"), st(&m, "/active_job/id"))));
@@ -286,15 +307,15 @@ fn entry_table(es: &[Value]) -> String {
                 format!("{}:{}", st(e, "/relay/name"), st(e, "/port")),
                 st(e, "/node/name"),
                 st(e, "/lifecycle"),
-                if e["applied"] == true { "已应用".into() } else { "未应用".into() },
+                if e["applied"] == true { "已应用".into() } else if e["apply_error"].is_string() { "应用失败".into() } else { "应用中".into() },
                 probe("tcp"),
                 probe("egress"),
-                format!("↑{} ↓{}", bytes(num(e, "/traffic/today_up").unwrap_or(0.0)), bytes(num(e, "/traffic/today_down").unwrap_or(0.0))),
+                format!("下载 {} / 上传 {}", bytes(num(e, "/traffic/today_down").unwrap_or(0.0)), bytes(num(e, "/traffic/today_up").unwrap_or(0.0))),
                 e["apply_error"].as_str().unwrap_or("").to_string(),
             ]
         })
         .collect();
-    table::render(&["id", "入口", "节点", "状态", "配置", "TCP", "出口", "今日流量", "错误"], &rows)
+    table::render(&["id", "入口", "节点", "状态", "配置", "TCP", "出口", "今日业务流量", "错误"], &rows)
 }
 
 /// 全部入口（取线路机上挂的，避免节点和线路机两边重复）
@@ -645,6 +666,12 @@ mod tests {
         // 外面包了 context 也认得出底下的 ApiError
         assert!(!follow_error_is_transient(&api(403).context("读取")));
         assert!(follow_error_is_transient(&api(503).context("读取")));
+    }
+
+    #[test]
+    fn due_and_cycle_wording() {
+        assert_eq!((due_cn(3), due_cn(0), due_cn(-2)), ("3 天后到期".to_string(), "今天到期".to_string(), "已过期 2 天".to_string()));
+        assert_eq!((cycle_cn("monthly"), cycle_cn("semiannual"), cycle_cn("yearly")), ("月", "半年", "年"));
     }
 
     #[test]

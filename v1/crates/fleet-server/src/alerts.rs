@@ -271,7 +271,7 @@ mod tests {
     #[test]
     fn summary_digits_do_not_count_as_change() {
         assert!(same_summary("团队1-01：5 分钟没有上报", "团队1-01：6 分钟没有上报"));
-        assert!(same_summary("线路机2：配置未应用（期望 3，已应用 2）", "线路机2：配置未应用（期望 4，已应用 2）"));
+        assert!(same_summary("线路机2：配置未应用（配置代数 3 · 已应用 2）", "线路机2：配置未应用（配置代数 4 · 已应用 2）"));
         assert!(!same_summary("团队1-01：5 分钟没有上报", "团队1-01：从未上报"));
     }
 

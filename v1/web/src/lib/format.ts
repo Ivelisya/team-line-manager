@@ -2,6 +2,8 @@
 
 export interface Fmt { v: string; u: string }
 export const NA: Fmt = { v: '—', u: '' };
+/** 纯文本（title、提示里用）：“值 单位” */
+export const str = (f: Fmt) => (f.u ? `${f.v} ${f.u}` : f.v);
 
 const num = (n: number, digits = 1) => {
   const s = n >= 100 ? n.toFixed(0) : n >= 10 ? n.toFixed(1) : n.toFixed(digits === 1 ? 2 : digits);
@@ -50,7 +52,9 @@ export function money(cents: number | null | undefined, currency = 'CNY'): strin
   const v = cents / 100;
   return `${currencySym(currency)}${Number.isInteger(v) ? v : v.toFixed(2)}`;
 }
-export const CYCLE: Record<string, string> = { monthly: '月', quarterly: '季', semiannual: '半年', yearly: '年', once: '一次性' };
+export const CYCLE: Record<string, string> = { monthly: '月', quarterly: '季', semiannual: '半年', yearly: '年' };
+/** 计费周期下拉选项：每月 / 每季 / … */
+export const CYCLE_OPTIONS = Object.entries(CYCLE).map(([value, label]) => ({ value, label: `每${label}` }));
 export const cycleLabel = (c: string) => CYCLE[c] ?? c;
 
 /** 到期：N 天后 / 今天 / 已过期 N 天（7 天内为 warn，过期为 bad）。数字在 f 里，文字在 pre / post（不按数字排版）；

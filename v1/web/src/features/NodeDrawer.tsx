@@ -115,12 +115,12 @@ function OverviewTab({ m }: { m: MachineView }) {
       </Section>
       {m.relay && (
         <Section>
-          <SectionHeader title="下发状态" />
+          <SectionHeader title="应用状态" />
           <LabelValueGrid>
             <LabelValue label="公网地址">{m.relay.public_host}</LabelValue>
             <LabelValue label="端口范围">{m.relay.port_min}–{m.relay.port_max}</LabelValue>
-            <LabelValue label="配置代数 / 已下发">{m.relay.generation} / {m.relay.applied_generation}</LabelValue>
-            <LabelValue label="上次下发">{F.dtFull(m.relay.applied_at)}</LabelValue>
+            <LabelValue label="配置代数">{m.relay.generation} · 已应用 {m.relay.applied_generation}</LabelValue>
+            <LabelValue label="上次应用">{F.dtFull(m.relay.applied_at)}</LabelValue>
           </LabelValueGrid>
           {m.relay.apply_error && <div style={{ marginTop: 8 }}><Note tone="bad">{m.relay.apply_error}</Note></div>}
         </Section>

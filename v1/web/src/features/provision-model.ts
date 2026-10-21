@@ -105,7 +105,7 @@ export function localErrors(r: Row): string[] {
   if (r.kind !== 'relay') { if (!r.team_id && !r.unresolved.team_id) e.push('请选择团队'); if (!r.relay_id && !r.unresolved.relay_id) e.push('请选择挂载的线路机'); }
   if (r.number.trim() !== '' && (!/^\d+$/.test(r.number.trim()) || Number(r.number) < 1 || Number(r.number) > 999)) e.push('编号应为 1–999 的整数，或留空自动编号');
   for (const k of ['ssh_port', 'ss_port', 'up_port'] as const) if (r[k].trim() !== '' && !/^\d+$/.test(r[k].trim())) e.push(`${COLS.find((c) => c.key === k)!.label}应为整数`);
-  if (r.kind === 'proxy' && (!r.up_host.trim() || !r.up_port.trim())) e.push('家宽代理需要填写上游主机与端口');
+  if (r.kind === 'proxy' && (!r.up_host.trim() || !r.up_port.trim())) e.push('家宽代理要填上游协议（socks5/http）、主机和端口');
   if (r.due_date && !/^\d{4}-\d{2}-\d{2}$/.test(r.due_date)) e.push('到期日格式应为 YYYY-MM-DD');
   if (r.price.trim() && !isFinite(Number(r.price))) e.push('费用应为数字');
   // 费用只挂在订阅上：没有到期日就没有订阅，填了的费用会被悄悄丢掉——在这里拦下

@@ -95,11 +95,11 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
                     rs.push(Reason {
                         key: "relay_apply_lag",
                         severity: "warning",
-                        text: format!("配置未应用（期望 {}，已应用 {}）", r.generation, r.applied_generation),
+                        text: format!("配置未应用（配置代数 {} · 已应用 {}）", r.generation, r.applied_generation),
                     });
                 }
                 if let Some(e) = &r.apply_error {
-                    rs.push(Reason { key: "relay_apply_error", severity: "critical", text: format!("应用配置失败：{e}") });
+                    rs.push(Reason { key: "relay_apply_error", severity: "critical", text: format!("应用失败：{e}") });
                 }
             }
         }
@@ -165,13 +165,13 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
-    use crate::views::{Agent, EntryView, Probe, Ref, RelayInfo, Subscription, Sustained, Traffic};
+    use crate::views::{Agent, EntryView, Probe, Quota, Ref, RelayInfo, Subscription, Sustained, Traffic};
     use time::Duration;
     use uuid::Uuid;
 
-    fn base(kind: &str) -> MachineView {
+    pub(crate) fn base(kind: &str) -> MachineView {
         let now = OffsetDateTime::now_utc();
         MachineView {
             id: Uuid::now_v7(),
@@ -198,6 +198,7 @@ mod tests {
             host: None,
             entries: vec![],
             removed_traffic: Default::default(),
+            quota: Quota { used: 0, period_start: now.date() },
             health: Health::default(),
             active_job: None,
             open_incidents: 0,
@@ -210,7 +211,7 @@ mod tests {
 
     fn keys(h: &Health) -> Vec<&'static str> { h.reasons.iter().map(|r| r.key).collect() }
 
-    fn sub(due_days: i64) -> Subscription {
+    pub(crate) fn sub(due_days: i64) -> Subscription {
         Subscription {
             price_cents: 100,
             currency: "USD".into(),

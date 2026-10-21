@@ -159,7 +159,7 @@ function FlowRow({ m }: { m: MachineView }) {
   );
 }
 
-/** 剩余流量：标题 + 剩余量，右侧已用 / 上限，下面绿→黄→红的格条（不限额度不画）；点击打开流量页签 */
+/** 剩余流量：标题 + 剩余量，右侧本周期已用 / 上限（周期按流量重置日），下面绿→黄→红的格条（不限额度不画）；点击打开流量页签 */
 function QuotaSlot({ m, onOpen }: { m: MachineView; onOpen: Open }) {
   const q = quota(m);
   return (
@@ -168,7 +168,7 @@ function QuotaSlot({ m, onOpen }: { m: MachineView; onOpen: Open }) {
         <span className="nc-qlabel"><Database />剩余流量
           <b className={cn('num', q.rem === 0 && 'is-bad')}>{q.rem == null ? '不限' : q.rem > 0 ? <Num f={F.bytes(q.rem)} /> : '已超限'}</b>
         </span>
-        <span className="nc-quse">已用 <Num f={F.bytes(q.used)} />{q.limit > 0 && <> / <Num f={F.gb(q.limit)} /></>}</span>
+        <span className="nc-quse" title={`周期 ${q.start.slice(5)} 起`}>本周期已用 <Num f={F.bytes(q.used)} />{q.limit > 0 && <> / <Num f={F.gb(q.limit)} /></>}</span>
       </span>
       {q.rem != null && <Cells pct={q.pct} colors={QUOTA_COLORS} />}
       <span className="sr-only">（查看流量页签）</span>
