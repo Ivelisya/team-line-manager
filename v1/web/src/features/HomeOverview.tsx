@@ -54,9 +54,9 @@ export function OverviewSection({ o, loading }: { o: Overview | undefined; loadi
           <Stat loading={loading} tone="gold" icon={<CircleDollarSign />} label="每月费用" value={cost0 ? F.money(cost0.cents, cost0.currency) : '—'}
             caption={costMore.length ? `另有 ${costMore.map((c) => F.money(c.cents, c.currency)).join(' + ')}（不同币种分开计）` : '在用机器按月折算'} />
           <Stat loading={loading} tone="sky" icon={<TrendingUp />} label="本月业务流量" value={tr ? <CountUp value={trTotal} format={(n) => F.inScale(n, trScale)} /> : '—'} unit={tr ? trScale.u : undefined}
-            caption={tr && <><span>↓ <Num f={F.bytes(tr.down)} /></span><span>↑ <Num f={F.bytes(tr.up)} /></span></>} />
+            caption={tr && <><span>下载 <Num f={F.bytes(tr.down)} /></span><span>上传 <Num f={F.bytes(tr.up)} /></span></>} />
           <Stat loading={loading} tone="violet" icon={<Gauge />} label="网卡速率" value={o ? <CountUp value={rateTotal} format={(n) => F.inScale(n, rateSc)} /> : '—'} unit={o ? rateSc.u : undefined}
-            caption={o && <><span>↓ <Num f={F.rate(o.net_rx_bps)} /></span><span>↑ <Num f={F.rate(o.net_tx_bps)} /></span></>} />
+            caption={o && <><span>下行 <Num f={F.rate(o.net_rx_bps)} /></span><span>上行 <Num f={F.rate(o.net_tx_bps)} /></span></>} />
           <Stat loading={loading} tone="blue" icon={<CloudUpload />} label="上架中 · 退役中" value={o ? <CountUp value={o.provisioning + o.retiring} /> : '—'} unit="台" to="/jobs" caption={o && `上架 ${o.provisioning} · 退役 ${o.retiring}`} />
         </div>
         <ClusterPanel o={o} />

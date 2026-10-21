@@ -71,36 +71,37 @@ export const LIVE_KEYS = [['machines'], ['machine'], ['relays'], ['overview']];
 const LIVE = new Set(LIVE_KEYS.map((k) => k[0]));
 
 // 在途的重取：回来的响应可能是这几条增量之前的快照，会把写进去的盖掉。不打断它（打断的话慢接口在 3 s 一条的推送下永远取不完），
-// 记下取的期间收到的增量，响应成功后按顺序补到新数据上（增量都是绝对值，响应里已含的再写一遍也不变）；失败则丢弃（缓存里本来就是补过的）
-const missed = new Map<string, MetricsMsg[]>();
-const watched = new WeakSet<QueryClient>();
+// 记下取的期间收到的增量，响应成功后按顺序补到新数据上（增量都是绝对值，响应里已含的再写一遍也不变）；失败则丢弃（缓存里本来就是补过的）。
+// 记录绑定那一次取（p = query.promise）：被失效打断重取（cancelRefetch）时换了新 promise 却不发 fetch 事件，旧记录是更早快照之前的增量，换了就清掉
+const missed = new Map<string, { p: unknown; msgs: MetricsMsg[] }>();
+let watching = false; // 全站只有一个 QueryClient
 function watch(qc: QueryClient) {
-  if (watched.has(qc)) return;
-  watched.add(qc);
+  if (watching) return;
+  watching = true;
   qc.getQueryCache().subscribe((e) => {
     // 还在取（含取的期间写缓存）就等；取完（成功 / 失败 / 被取消）或被移出缓存，这份记录就作废
     if ((e.type !== 'updated' && e.type !== 'removed') || e.query.state.fetchStatus === 'fetching') return;
-    const msgs = missed.get(e.query.queryHash);
-    if (!msgs) return;
+    const r = missed.get(e.query.queryHash);
+    if (!r) return;
     missed.delete(e.query.queryHash);
-    if (e.type === 'updated' && e.action.type === 'success') qc.setQueryData(e.query.queryKey, (d: unknown) => msgs.reduce((x, msg) => patchOf(e.query.queryKey[0], msg)?.(x as never) ?? x, d));
+    if (e.type === 'updated' && e.action.type === 'success' && r.p === e.query.promise) qc.setQueryData(e.query.queryKey, (d: unknown) => r.msgs.reduce((x, msg) => patchOf(e.query.queryKey[0], msg)?.(x as never) ?? x, d));
   });
 }
 
 export function applyMetrics(qc: QueryClient, msg: MetricsMsg) {
   watch(qc);
   for (const q of qc.getQueryCache().findAll({ fetchStatus: 'fetching', predicate: (q) => LIVE.has(q.queryKey[0] as string) })) {
-    const l = missed.get(q.queryHash);
-    if (l) l.push(msg); else missed.set(q.queryHash, [msg]);
+    const r = missed.get(q.queryHash);
+    if (r && r.p === q.promise) r.msgs.push(msg); else missed.set(q.queryHash, { p: q.promise, msgs: [msg] });
   }
   for (const [k] of LIVE_KEYS) { const f = patchOf(k, msg); if (f) qc.setQueriesData({ queryKey: [k] }, f); }
-  if (msg.overview) record(FLEET, { t: Date.now(), rx: msg.overview.net_rx_bps, tx: msg.overview.net_tx_bps });
+  if (msg.overview) recordFleet({ t: Date.now(), rx: msg.overview.net_rx_bps, tx: msg.overview.net_tx_bps });
   if (dirty) { dirty = false; subs.forEach((f) => f()); }
 }
 
 // ---- 实时迹线：每台机器的网卡速率、全站总速率（FLEET），各留最近 SERIES_N 个点 ----
-// 由 metrics 消息喂：机器按上报时间（同一份上报在几份缓存里各 patch 一次，只记一次），总览按收到的时刻；
-// 全站总速率开场先用 /overview/series 的每分钟历史铺满（useFleetSeries）。
+// 由 metrics 消息喂：机器按上报时间（同一份上报在几份缓存里各 patch 一次，只记一次），约 3 s 一个点；
+// 全站总速率每分钟一个点（30 点 = 30 分钟）：开场用 /overview/series 的每分钟历史铺满（useFleetSeries），之后同一分钟内的推送覆盖这一分钟的点。
 // 数据过期（isQuiet）的机器不记；页面在后台时不写缓存也就不记，所以可能有断档。
 export interface LivePoint { t: number; rx: number; tx: number }
 export const SERIES_N = 30;
@@ -119,19 +120,28 @@ function record(key: string, p: LivePoint) {
   dirty = true;
 }
 
+const MIN = 60_000;
+/** 全站：与上一个点同一分钟就覆盖它（t 取这次推送的时刻），否则新起一个点 */
+function recordFleet(p: LivePoint) {
+  const buf = series.get(FLEET) ?? EMPTY;
+  const last = buf[buf.length - 1];
+  series.set(FLEET, last && Math.floor(last.t / MIN) === Math.floor(p.t / MIN) ? [...buf.slice(0, -1), p] : [...buf.slice(-(SERIES_N - 1)), p]);
+  dirty = true;
+}
+
 /** 某台机器（或 FLEET）最近的速率点（时间升序，t 为毫秒） */
 export function useLiveSeries(key: string): readonly LivePoint[] {
   return useSyncExternalStore(subscribe, () => series.get(key) ?? EMPTY, () => EMPTY);
 }
 
-/** 全站总速率：第一次用时取近 30 分钟的每分钟历史垫在实时点前面（只取一次），之后由实时推送接着记 */
+/** 全站总速率：第一次用时取近 30 分钟的每分钟历史（t 为分钟起点）垫在实时点前面（只取一次），之后由实时推送接着记 */
 export function useFleetSeries(): readonly LivePoint[] {
   useQuery({ queryKey: ['overview-series'], queryFn: () => get<OverviewSeries>('/overview/series?minutes=30').then(seedFleet), staleTime: Infinity, gcTime: Infinity });
   return useLiveSeries(FLEET);
 }
 function seedFleet(d: OverviewSeries) {
   const buf = series.get(FLEET) ?? EMPTY;
-  const old = d.points.map((p) => ({ t: Date.parse(p.ts), rx: p.net_rx_bps, tx: p.net_tx_bps })).filter((p) => !buf.length || p.t < buf[0].t);
+  const old = d.points.map((p) => ({ t: Date.parse(p.ts), rx: p.net_rx_bps, tx: p.net_tx_bps })).filter((p) => !buf.length || Math.floor(p.t / MIN) < Math.floor(buf[0].t / MIN));
   series.set(FLEET, [...old, ...buf].slice(-SERIES_N));
   subs.forEach((f) => f());
   return true;

@@ -17,7 +17,7 @@ const POLL = 30_000;
 
 // 曲线的线条与格式化放模块常量：抽屉随实时推送重渲染时 TimeChart（memo）的 props 不变，不重画
 const L_PROBE = [{ key: 'tcp_ms', label: 'TCP 握手', color: 'var(--chart-1)' }, { key: 'egress_ms', label: '出口验证', color: 'var(--chart-2)' }];
-const L_TRAFFIC = [{ key: 'down', label: '↓ 下行', color: 'var(--chart-1)' }, { key: 'up', label: '↑ 上行', color: 'var(--chart-2)' }];
+const L_TRAFFIC = [{ key: 'down', label: '↓ 下载', color: 'var(--chart-1)' }, { key: 'up', label: '↑ 上传', color: 'var(--chart-2)' }];
 const L_CPU = [{ key: 'cpu_pct', label: 'CPU', color: 'var(--chart-1)' }];
 const L_MEM = [{ key: 'mem_pct', label: '内存', color: 'var(--chart-1)' }];
 const L_NET = [{ key: 'net_rx_bps', label: '↓ 下行', color: 'var(--chart-1)' }, { key: 'net_tx_bps', label: '↑ 上行', color: 'var(--chart-2)' }];
@@ -71,10 +71,10 @@ export function TrafficTab({ m }: { m: MachineView }) {
       <Section>
         <SectionHeader title="汇总" />
         <LabelValueGrid cols2>
-          <LabelValue label="今日 ↓ 下行"><Num f={F.bytes(t.today_down)} /></LabelValue>
-          <LabelValue label="今日 ↑ 上行"><Num f={F.bytes(t.today_up)} /></LabelValue>
-          <LabelValue label="本月 ↓ 下行"><Num f={F.bytes(t.down)} /></LabelValue>
-          <LabelValue label="本月 ↑ 上行"><Num f={F.bytes(t.up)} /></LabelValue>
+          <LabelValue label="今日 ↓ 下载"><Num f={F.bytes(t.today_down)} /></LabelValue>
+          <LabelValue label="今日 ↑ 上传"><Num f={F.bytes(t.today_up)} /></LabelValue>
+          <LabelValue label="本月 ↓ 下载"><Num f={F.bytes(t.down)} /></LabelValue>
+          <LabelValue label="本月 ↑ 上传"><Num f={F.bytes(t.up)} /></LabelValue>
         </LabelValueGrid>
       </Section>
       <Section>

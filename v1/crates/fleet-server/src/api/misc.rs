@@ -36,7 +36,7 @@ struct RatePoint {
     net_tx_bps: f64,
 }
 
-/// 总览网速曲线：最近 N 个完整分钟（不含当前未走完的这一分钟），每分钟一个点，旧→新。
+/// 总览网速曲线：最近 N 个结束满 20 s 的分钟，每分钟一个点，旧→新。agent 每 10 s 上报一次，刚结束的那一分钟还缺最后一两份，算出来偏小，不给。
 /// 每台 active 机器按主机时序同样的算法（每分钟取计数器最大值，与上一个有数据的分钟相减 ×8 / 秒数，计数器回绕的那一段不计）再求和；
 /// 逐台走 (machine_id, ts desc) 索引。
 pub async fn overview_series(_a: Actor, State(st): State<AppState>, Query(q): Query<SeriesQ>) -> ApiResult<Json<Value>> {
@@ -45,7 +45,7 @@ pub async fn overview_series(_a: Actor, State(st): State<AppState>, Query(q): Qu
         return Err(ApiError::bad_request("minutes 只能是 1–60"));
     }
     let v: Vec<RatePoint> = sqlx::query_as(
-        "with w as (select date_trunc('minute', now()) - make_interval(mins => $1::int) s, date_trunc('minute', now()) e),
+        "with w as (select e - make_interval(mins => $1::int) s, e from (select date_trunc('minute', now() - interval '20 seconds') e) z),
          b as (
            select m.id, x.t, x.rx, x.tx from w cross join machine m cross join lateral (
              select date_trunc('minute', ts) t, max(net_rx_bytes) rx, max(net_tx_bytes) tx from host_metric
@@ -65,16 +65,17 @@ pub async fn overview_series(_a: Actor, State(st): State<AppState>, Query(q): Qu
     Ok(ok(json!({"points": v})))
 }
 
-/// 探测心跳条：每台在用机器最近 60 分钟的 TCP 探测，按 3 分钟一格共 20 格（旧→新，对齐到当前时刻），
-/// 每格 [次数, 成功次数, 成功的平均延迟 ms 或 null]。线路机汇总它上面所有入口；60 分钟内没有探测的机器不出现。
+/// 探测心跳条：每台在用机器的 TCP 探测，按墙钟 3 分钟整格（date_bin 对齐 epoch）共 20 格，旧→新，最后一格是当前这格（还没走完）；
+/// 每格 [次数, 成功次数, 成功的平均延迟 ms 或 null]。线路机汇总它上面所有入口；这 20 格里没有探测的机器不出现。
 pub async fn probe_beats(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
     const BUCKETS: usize = 20;
     let rows: Vec<(Uuid, i32, i64, i64, Option<f64>)> = sqlx::query_as(
-        "with p as (
-           select e.node_id, e.relay_id, floor(extract(epoch from x.ts - (now() - interval '60 minutes')) / 180)::int i, x.ok, x.latency_ms
-           from entry e cross join lateral (
+        "with w as (select s, s + interval '60 minutes' e from (select date_bin('3 minutes', now(), timestamptz 'epoch') - interval '57 minutes' s) z),
+         p as (
+           select e.node_id, e.relay_id, floor(extract(epoch from x.ts - w.s) / 180)::int i, x.ok, x.latency_ms
+           from w cross join entry e cross join lateral (
              select ts, ok, latency_ms from probe_result
-             where entry_id = e.id and kind = 'tcp' and ts >= now() - interval '60 minutes' and ts < now()) x)
+             where entry_id = e.id and kind = 'tcp' and ts >= w.s and ts < w.e) x)
          select v.m, p.i, count(*), count(*) filter (where p.ok), (avg(p.latency_ms) filter (where p.ok))::float8
          from p cross join lateral (values (p.node_id), (p.relay_id)) v(m)
          join machine m on m.id = v.m and m.lifecycle <> 'retired'

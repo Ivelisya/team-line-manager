@@ -254,8 +254,8 @@ pub struct LiveCache {
     slot: tokio::sync::Mutex<Option<Cached>>,
     /// 小时汇总每跑完一轮 +1
     rolled: AtomicU64,
-    /// 流量只在小时汇总后（或跨天、跨月）才变：按（汇总轮次，北京时间日期）缓存
-    traffic: tokio::sync::Mutex<Option<((u64, Date), TrafficMap)>>,
+    /// 流量只在小时汇总后（或跨天、跨月）才变：按汇总轮次缓存，到库里时钟的下一个北京时间零点过期
+    traffic: tokio::sync::Mutex<Option<((u64, Instant), TrafficMap)>>,
 }
 
 impl LiveCache {
@@ -289,12 +289,19 @@ async fn traffic(st: &AppState) -> sqlx::Result<TrafficMap> {
     let c = &st.live;
     let mut slot = c.traffic.lock().await;
     // 先记下轮次再查：查询期间汇总又跑完一轮的，下次照样重查
-    let key = (c.rolled.load(Ordering::SeqCst), OffsetDateTime::now_utc().to_offset(time::macros::offset!(+8)).date());
-    if let Some((k, v)) = &*slot {
-        if *k == key {
+    let rolled = c.rolled.load(Ordering::SeqCst);
+    let t0 = Instant::now();
+    if let Some(((r, exp), v)) = &*slot {
+        if *r == rolled && t0 < *exp {
             return Ok(v.clone());
         }
     }
+    // 跨天看库里的时钟（“今天”也是按库里的 now() 算的）：离下一个北京时间零点还有多少秒
+    let left: f64 = sqlx::query_scalar(
+        "select extract(epoch from date_trunc('day', now() at time zone 'Asia/Shanghai') + interval '1 day' - now() at time zone 'Asia/Shanghai')::float8",
+    )
+    .fetch_one(&st.db)
+    .await?;
     let rows: Vec<(Uuid, i64, i64, i64, i64)> = sqlx::query_as(
         "select entry_id,
            coalesce(sum(up_bytes) filter (where hour >= date_trunc('day', now() at time zone 'Asia/Shanghai') at time zone 'Asia/Shanghai'), 0)::bigint,
@@ -307,7 +314,7 @@ async fn traffic(st: &AppState) -> sqlx::Result<TrafficMap> {
     .await?;
     let v: TrafficMap =
         Arc::new(rows.into_iter().map(|(id, tu, td, mu, md)| (id, Traffic { today_up: tu, today_down: td, month_up: mu, month_down: md })).collect());
-    *slot = Some((key, v.clone()));
+    *slot = Some(((rolled, t0 + std::time::Duration::from_secs_f64(left)), v.clone()));
     Ok(v)
 }
 

@@ -168,7 +168,8 @@ async fn rollup_covers_backfilled_hours_and_counter_resets() {
 async fn overview_series_sums_minute_rates() {
     let t = setup().await;
     seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
-    let cur = now_ms().div_euclid(60_000) * 60_000;
+    // 只给结束满 20 s 的分钟：cur 是这些分钟之后的第一个分钟起点
+    let cur = (now_ms() - 20_000).div_euclid(60_000) * 60_000;
     // 三个分钟各一条：第二分钟计数器回绕（那一段不计），第三分钟 60 s 涨 60 000 字节 = 8 000 bit/s
     let mut r = blank_report(1);
     r.host = vec![host(cur - 175_000, 1.0, 50_000, 100_000), host(cur - 115_000, 1.0, 1_000, 2_000), host(cur - 55_000, 1.0, 61_000, 122_000)];
@@ -183,6 +184,7 @@ async fn overview_series_sums_minute_rates() {
     assert_eq!((at(cur - 60_000)["net_rx_bps"].as_f64(), at(cur - 60_000)["net_tx_bps"].as_f64()), (Some(8_000.0), Some(16_000.0)));
     assert_eq!(at(cur - 120_000)["net_rx_bps"].as_f64(), Some(0.0), "计数器回绕的那一分钟不计");
     assert!(pts.windows(2).all(|w| w[0]["ts"].as_str() < w[1]["ts"].as_str()), "旧→新");
+    assert_eq!(pts[4]["ts"], at(cur - 60_000)["ts"], "最后一点是结束满 20 s 的最近一分钟：{v}");
     for bad in ["0", "61", "x"] {
         assert_eq!(t.req("GET", &format!("/api/v1/overview/series?minutes={bad}"), None, None).await.0, StatusCode::BAD_REQUEST);
     }
@@ -196,14 +198,17 @@ async fn probe_beats_bucket_tcp_probes_per_machine() {
     let team = seed_team(&t, "团队1").await;
     let (node, entry) = seed_node(&t, relay, team, 1, "203.0.113.5", 20000).await;
     let (_node2, _) = seed_node(&t, relay, team, 2, "203.0.113.6", 20001).await;
-    let now = now_ms();
+    // 格子对齐墙钟 3 分钟：cb 是当前这格的起点，最早一格从 cb - 57 分钟开始
+    let cb = now_ms().div_euclid(180_000) * 180_000;
     let mut r = blank_report(1);
     r.probes = vec![
-        probe(entry, now - 5_000, ProbeKind::Tcp, true),
-        probe(entry, now - 10_000, ProbeKind::Tcp, true),
-        probe(entry, now - 4 * 60_000, ProbeKind::Tcp, false),
-        probe(entry, now - 5_000, ProbeKind::Egress, true),
-        probe(entry, now - 61 * 60_000, ProbeKind::Tcp, true),
+        probe(entry, cb, ProbeKind::Tcp, true),
+        probe(entry, cb - 1_000, ProbeKind::Tcp, true),
+        probe(entry, cb - 2_000, ProbeKind::Tcp, true),
+        probe(entry, cb - 4 * 60_000, ProbeKind::Tcp, false),
+        probe(entry, cb, ProbeKind::Egress, true),
+        probe(entry, cb - 57 * 60_000, ProbeKind::Tcp, true),
+        probe(entry, cb - 57 * 60_000 - 1_000, ProbeKind::Tcp, true),
     ];
     assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
     let v = t.get("/api/v1/probe-beats").await;
@@ -211,9 +216,11 @@ async fn probe_beats_bucket_tcp_probes_per_machine() {
     for id in [relay, node] {
         let b = v[id.to_string()].as_array().unwrap();
         assert_eq!(b.len(), 20);
-        assert_eq!(b[19], json!([2, 2, 10.0]), "{v}");
-        assert_eq!(b[18], json!([1, 0, null]), "4 分钟前那次落在倒数第二格：{v}");
-        assert!(b[..18].iter().all(|x| *x == json!([0, 0, null])), "{v}");
+        assert_eq!(b[19], json!([1, 1, 10.0]), "当前这格（没走完）：{v}");
+        assert_eq!(b[18], json!([2, 2, 10.0]), "上一格：{v}");
+        assert_eq!(b[17], json!([1, 0, null]), "cb 前 4 分钟落在倒数第三格：{v}");
+        assert_eq!(b[0], json!([1, 1, 10.0]), "最早一格从 cb - 57 分钟起，再早的不算：{v}");
+        assert!(b[1..17].iter().all(|x| *x == json!([0, 0, null])), "{v}");
     }
 }
 
@@ -338,13 +345,13 @@ async fn retiring_machine_alerts_are_left_to_retire_flow() {
     pass(&t, &mut state, base, 0).await;
     pass(&t, &mut state, base, 61).await;
     assert_eq!(incidents(&t, "firing").await.len(), 1);
-    // 开始退役：evaluate 不再给原因，但这不是「恢复」，告警留给退役收尾关闭
+    // 直接改库成退役中（不走退役接口，告警没被关）：evaluate 不再给原因，但这不是「恢复」
     sqlx::query("update machine set lifecycle = 'retiring' where id = $1").bind(relay).execute(&t.st.db).await.unwrap();
     for secs in [91, 151, 211] {
         pass(&t, &mut state, base, secs).await;
     }
     assert_eq!(incidents(&t, "firing").await.len(), 1, "退役中的机器的告警不自动恢复");
-    // 退役取消回到 active：照常评估，原因消失满 60 秒恢复
+    // 改回 active：照常评估，原因消失满 60 秒恢复
     sqlx::query("update machine set lifecycle = 'active' where id = $1").bind(relay).execute(&t.st.db).await.unwrap();
     xray_report(&t, 2, true).await;
     pass(&t, &mut state, base, 241).await;

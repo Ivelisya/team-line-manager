@@ -218,7 +218,7 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
     }
 
     // 原因消失的告警恢复：只处理 active 的机器。其它生命周期 evaluate 不给原因，不能当成「恢复」——
-    // 退役中的由退役作业收尾时关闭（closed_by = retire），退役取消回到 active 后照常评估。
+    // 退役中的在发起退役时已经关掉（closed_by = retire，见 api/machines.rs retire）。
     // `open` 里剩下的就是这一轮没有对应原因的告警。
     let names: HashMap<Uuid, &str> = ms.iter().filter(|m| m.lifecycle == "active").map(|m| (m.id, m.name.as_str())).collect();
     for (_, inc) in open {

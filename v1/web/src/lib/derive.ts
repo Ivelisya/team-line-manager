@@ -64,7 +64,6 @@ export function probeSummary(m: MachineView) {
   const eg = es.map((e) => e.egress?.latency_ms).filter((x): x is number => x != null);
   return { total: es.length, tcpOk, tcp: lat.length ? Math.round(lat.reduce((a, b) => a + b, 0) / lat.length) : null, egress: eg.length ? Math.round(eg.reduce((a, b) => a + b, 0) / eg.length) : null };
 }
-export type ProbeSummary = ReturnType<typeof probeSummary>;
 /**
  * 剩余价值：已付还没用掉的部分，按天折算。每期天数 = 到期日往前推一个周期的天数，剩余比例 = 距到期天数 / 每期天数；
  * 预付了多期时比例大于 1。一次性付费没有周期，不折算（null）；已过期为 0。

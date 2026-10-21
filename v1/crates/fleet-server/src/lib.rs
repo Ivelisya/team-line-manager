@@ -95,10 +95,11 @@ pub fn spawn_background(st: &AppState) {
         t.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             t.tick().await;
-            match db::rollup_hours(&s.db).await {
-                Ok(()) => s.live.rolled_up(),
-                Err(e) => tracing::error!("小时汇总失败：{e:#}"),
+            if let Err(e) = db::rollup_hours(&s.db).await {
+                tracing::error!("小时汇总失败：{e:#}");
             }
+            // 失败也可能已写进一部分小时：照样作废流量缓存
+            s.live.rolled_up();
         }
     });
 }

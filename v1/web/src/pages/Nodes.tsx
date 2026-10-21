@@ -69,7 +69,7 @@ export function NodesPage() {
       { id: 'plan', header: '供应商 · 套餐', size: 190,
         cell: (m) => <>{m.plan ? <Trunc className="cell-main">{m.plan.name}</Trunc> : <span className="cell-main t-muted">未设置</span>}<span className="sub">{m.provider?.name ?? '—'}</span></> },
       { id: 'traffic', header: '本月业务流量', size: 120, r: true, ...byNum((m) => { const t = monthTraffic(m); return t.up + t.down; }),
-        cell: (m) => { const t = monthTraffic(m); return <><Num f={F.bytes(t.up + t.down)} /><span className="sub">↓ {F.bytes(t.down).v} {F.bytes(t.down).u}</span></>; } },
+        cell: (m) => { const t = monthTraffic(m); return <><Num f={F.bytes(t.up + t.down)} /><span className="sub">下载 {F.bytes(t.down).v} {F.bytes(t.down).u}</span></>; } },
     ];
     if (retired) {
       c.push({ id: 'retired', header: '退役时间 · 原因', size: 170, ...byStr((m) => m.retired_at ?? ''), cell: (m) => <><span className="cell-main">{F.dtFull(m.retired_at)}</span><span className="sub">{m.lifecycle_reason ?? ''}</span></> });

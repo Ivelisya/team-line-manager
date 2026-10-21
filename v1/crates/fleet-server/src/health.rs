@@ -147,7 +147,8 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
         if s.due_days < 0 {
             rs.push(Reason { key: "renewal_overdue", severity: "critical", text: format!("已过期 {} 天", -s.due_days) });
         } else if s.due_days <= s.remind_days as i64 && !s.auto_renew {
-            rs.push(Reason { key: "renewal_due", severity: "warning", text: format!("{} 天后到期", s.due_days) });
+            let text = if s.due_days == 0 { "今天到期".into() } else { format!("{} 天后到期", s.due_days) };
+            rs.push(Reason { key: "renewal_due", severity: "warning", text });
         }
     }
 
@@ -250,6 +251,9 @@ mod tests {
         let mut m = base("relay");
         m.subscription = Some(sub(3));
         assert_eq!(keys(&evaluate(&m, OffsetDateTime::now_utc())), ["renewal_due"]);
+        assert_eq!(evaluate(&m, OffsetDateTime::now_utc()).reasons[0].text, "3 天后到期");
+        m.subscription = Some(sub(0));
+        assert_eq!(evaluate(&m, OffsetDateTime::now_utc()).reasons[0].text, "今天到期", "和前端的“今天”一致");
         m.subscription = Some(sub(-2));
         let h = evaluate(&m, OffsetDateTime::now_utc());
         assert_eq!(keys(&h), ["renewal_overdue"]);

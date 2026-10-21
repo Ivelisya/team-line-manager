@@ -2,15 +2,16 @@
 // 无论机器是主机、家宽代理还是线路机，同一个槽位都渲染同样高度的内容或占位——配合 cards.css 的 subgrid，同一行的卡片分段永远对齐。
 // 视觉语言：资源用分段格条（每个指标一个颜色），实时速率是大号读数 + 点阵迹线（实时流喂的环形缓冲，见 lib/live），
 // 剩余流量也是格条（绿→黄→红），心跳条同属“格子”语言。迹线与流量可点，直接打开抽屉的“主机 / 流量”页签看历史曲线。
-import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { m as mo } from 'motion/react'; // 别名：组件里的 props 叫 m（机器）
 import { SPRING } from '@/lib/motion';
 import { ArrowDown, ArrowUp, Calendar, CircleDollarSign, Cpu, Database, Gauge, Globe, HardDrive, MemoryStick, MoreHorizontal, Radar, RefreshCw, Settings2, PanelRightOpen, ServerOff, Wallet } from 'lucide-react';
 import type { MachineView, Plan, ProbeBeats, Subscription } from '@/lib/types';
 import * as F from '@/lib/format';
-import { beatCells, entryText, hasHost, isQuiet, liveRate, monthTraffic, probeSummary, quota, remainingValue, resourceMeters, subLabel, tagColor, type ProbeSummary } from '@/lib/derive';
+import { beatCells, entryText, hasHost, isQuiet, liveRate, monthTraffic, probeSummary, quota, remainingValue, resourceMeters, subLabel, tagColor } from '@/lib/derive';
 import { useProbeBeats } from '@/lib/queries';
 import { useLiveSeries } from '@/lib/live';
+import { useNow } from '@/lib/useNow';
 import { type DrawerTab } from '@/lib/drawer';
 import { KIND_LABEL } from '@/lib/sort';
 import { cn } from '@/lib/utils';
@@ -27,8 +28,19 @@ type Open = (tab?: DrawerTab) => void;
 // 卡片随实时推送重渲染（m 换了引用）。静态的几块（标题、地址与字段、标签、运行行、footer、心跳条）各自 memo、只收用到的字段，
 // 推送只重画读数（资源格条、速率、剩余流量）。
 
-/** 标题：圆点 + 类型标 + 名称 + 右侧操作。“⋯”菜单的内容只在打开时挂载，用 menu() 取那一刻最新的机器 */
-const Head = memo(function Head({ name, kind, ip, status, view, onOpen, menu }: { name: string; kind: MachineView['kind']; ip: string; status: string; view: CardView; onOpen: Open; menu: () => MachineView }) {
+/** 卡片最新的机器：Head 是 memo 的，“⋯”菜单打开期间靠订阅它跟上推送 */
+interface Latest { get: () => MachineView; sub: (f: () => void) => () => void }
+function useLatest(m: MachineView): Latest {
+  const [s] = useState(() => {
+    let cur = m; const subs = new Set<() => void>();
+    return { get: () => cur, sub: (f: () => void) => { subs.add(f); return () => { subs.delete(f); }; }, set: (v: MachineView) => { cur = v; subs.forEach((f) => f()); } };
+  });
+  useEffect(() => { s.set(m); }, [s, m]);
+  return s;
+}
+
+/** 标题：圆点 + 类型标 + 名称 + 右侧操作。“⋯”菜单的内容只在打开时挂载 */
+const Head = memo(function Head({ name, kind, ip, status, view, onOpen, menu }: { name: string; kind: MachineView['kind']; ip: string; status: string; view: CardView; onOpen: Open; menu: Latest }) {
   return (
     <header className="nc-head">
       <StatusDot status={status} /><KindIcon kind={kind} />
@@ -44,7 +56,7 @@ const Head = memo(function Head({ name, kind, ip, status, view, onOpen, menu }: 
     </header>
   );
 });
-const MenuItems = ({ menu }: { menu: () => MachineView }) => <NodeDropdownItems m={menu()} />;
+const MenuItems = ({ menu }: { menu: Latest }) => <NodeDropdownItems m={useSyncExternalStore(menu.sub, menu.get)} />;
 
 const IpTags = ({ ip, sshPort }: { ip: string; sshPort: number }) => (
   <span className="nc-marks">{ip.includes(':') ? <Tag c="blue">V6</Tag> : <Tag c="green">V4</Tag>}{sshPort !== 22 && <Mark title="SSH 端口">SSH {sshPort}</Mark>}</span>
@@ -67,7 +79,7 @@ const SmallInfo = memo(function SmallInfo({ ip, sshPort, entry, plan, dueDays }:
   return (
     <div className="nc-meta2">
       <div><span>{ip}</span><IpTags ip={ip} sshPort={sshPort} /></div>
-      <div><span>{entry} · {plan?.name ?? '未设置套餐'}</span><span className="nc-due">到期 <Due days={dueDays} /></span></div>
+      <div><span>{entry} · {plan?.name ?? '未设置套餐'}</span><span className="nc-due"><Due days={dueDays} tail /></span></div>
     </div>
   );
 });
@@ -86,8 +98,8 @@ function Meters({ m, plans, compact }: { m: MachineView; plans: Plan[]; compact?
   );
 }
 
-/** 实时速率一列：方向 + 大号读数（按量级着色）、点阵迹线（点击看主机曲线）、本月累计（点击看流量页签） */
-function FlowCol({ dir, rate, values, total, live, onOpen }: { dir: 'up' | 'down'; rate: number | null; values: number[]; total?: number; live: boolean; onOpen: Open }) {
+/** 网卡速率一列：方向 + 大号读数（按量级着色）、点阵迹线（点击看主机曲线） */
+function FlowCol({ dir, rate, values, live, onOpen }: { dir: 'up' | 'down'; rate: number | null; values: number[]; live: boolean; onOpen: Open }) {
   const up = dir === 'up';
   return (
     <div className="flow-col" data-dir={dir} data-speed={live ? F.speedOf(rate) : undefined}>
@@ -99,11 +111,6 @@ function FlowCol({ dir, rate, values, total, live, onOpen }: { dir: 'up' | 'down
         <DotTrace values={values} />
         <span className="flow-live" data-live={live ? '' : undefined}><i />{live ? '实时' : '离线'}</span>
       </button></Tip>
-      {total != null && (
-        <button type="button" className="flow-foot" onClick={() => onOpen('traffic')}>
-          <span className="flow-foot-label"><Globe />本月{up ? '上行' : '下行'}</span><Num f={F.bytes(total)} /><span className="sr-only">（查看流量页签）</span>
-        </button>
-      )}
     </div>
   );
 }
@@ -114,8 +121,15 @@ function Flow({ m, onOpen, totals }: { m: MachineView; onOpen: Open; totals?: bo
   const r = liveRate(m); const t = monthTraffic(m);
   return (
     <div className="flow">
-      <FlowCol dir="up" rate={r?.tx ?? null} values={tx} total={totals ? t.up : undefined} live={r != null} onOpen={onOpen} />
-      <FlowCol dir="down" rate={r?.rx ?? null} values={rx} total={totals ? t.down : undefined} live={r != null} onOpen={onOpen} />
+      <FlowCol dir="up" rate={r?.tx ?? null} values={tx} live={r != null} onOpen={onOpen} />
+      <FlowCol dir="down" rate={r?.rx ?? null} values={rx} live={r != null} onOpen={onOpen} />
+      {/* 业务流量按用户视角（下载 = downlink、上传 = uplink），和本机网卡的上行 / 下行不是一回事，单独一行 */}
+      {totals && (
+        <button type="button" className="flow-foot flow-biz" onClick={() => onOpen('traffic')}>
+          <span className="flow-foot-label"><Globe />本月业务</span>
+          <span>下载 <Num f={F.bytes(t.down)} /> · 上传 <Num f={F.bytes(t.up)} /></span><span className="sr-only">（查看流量页签）</span>
+        </button>
+      )}
     </div>
   );
 }
@@ -126,7 +140,7 @@ function EntryTable({ m }: { m: MachineView }) {
   const row = (label: string, d: number, u: number) => <tr><th>{label}</th><td><Num f={F.bytes(d)} /></td><td><Num f={F.bytes(u)} /></td></tr>;
   return (
     <table className="nc-etable">
-      <thead><tr><th>周期</th><th>↓ 下行</th><th>↑ 上行</th></tr></thead>
+      <thead><tr><th>周期</th><th>↓ 下载</th><th>↑ 上传</th></tr></thead>
       <tbody>{row('今日', t.today_down, t.today_up)}{row('本月', t.down, t.up)}</tbody>
     </table>
   );
@@ -163,22 +177,22 @@ function QuotaSlot({ m, onOpen }: { m: MachineView; onOpen: Open }) {
 }
 
 /** 心跳条：近 1 小时的探测（全部卡片共用一个 /probe-beats 查询，各取自己的那份） */
-const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, quiet, ps }: { id: string; kind: MachineView['kind']; lifecycle: MachineView['lifecycle']; quiet: boolean; ps: ProbeSummary }) {
+const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, quiet, tcpOk, total, tcp, egress }: { id: string; kind: MachineView['kind']; lifecycle: MachineView['lifecycle']; quiet: boolean; tcpOk: number; total: number; tcp: number | null; egress: number | null }) {
   const live = lifecycle === 'active';
   const beats = useProbeBeats(useCallback((d: ProbeBeats) => d[id], [id])).data;
   const cap = !live ? <span className="t-muted">{lifecycle === 'retired' ? '已退役' : '尚未开始探测'}</span>
-    : kind === 'relay' ? <>入口连通 <b className="num" style={ps.tcpOk < ps.total ? { color: 'var(--warn-text)' } : undefined}>{ps.tcpOk}/{ps.total}</b></>
-    : <>TCP <b><Num f={F.ms(ps.tcp)} /></b> · 出口 <b><Num f={F.ms(ps.egress)} /></b></>;
+    : kind === 'relay' ? <>入口连通 <b className="num" style={tcpOk < total ? { color: 'var(--warn-text)' } : undefined}>{tcpOk}/{total}</b></>
+    : <>TCP <b><Num f={F.ms(tcp)} /></b> · 出口 <b><Num f={F.ms(egress)} /></b></>;
   return <Beat cells={live ? beatCells(beats) : []} caption={cap} win="近 1 小时" stale={quiet} />;
-}, (a, b) => a.id === b.id && a.kind === b.kind && a.lifecycle === b.lifecycle && a.quiet === b.quiet
-  && a.ps.tcpOk === b.ps.tcpOk && a.ps.total === b.ps.total && a.ps.tcp === b.ps.tcp && a.ps.egress === b.ps.egress);
+});
 
-/** 已上架 · 到期 · 剩余价值：彩色读数 */
+/** 已上架 · 到期 · 剩余价值：彩色读数。已上架按分钟走（memo 挡住推送，自己每分钟重画） */
 const RunRow = memo(function RunRow({ activated, sub }: { activated: string | null; sub: Subscription | null }) {
+  const now = useNow(true, 60_000);
   const rv = remainingValue(sub);
   return (
     <section className="slot-seg nc-run">
-      <div className="nc-run-item"><span className="nc-run-label"><RefreshCw />已上架</span><span className="nc-run-val" data-c="up"><Num f={F.since(activated)} /></span></div>
+      <div className="nc-run-item"><span className="nc-run-label"><RefreshCw />已上架</span><span className="nc-run-val" data-c="up"><Num f={F.since(activated, now)} /></span></div>
       <div className="nc-run-item"><span className="nc-run-label"><Calendar />到期</span><span className="nc-run-val"><Due days={sub?.due_days} /></span></div>
       <div className="nc-run-item"><span className="nc-run-label"><Wallet />剩余价值</span><span className="nc-run-val">{rv ? <span className="num">{F.money(rv.cents, rv.currency)}</span> : <span className="t-muted">—</span>}</span></div>
     </section>
@@ -216,14 +230,12 @@ const Foot = memo(function Foot({ health, lifecycle, maintenance, onOpen }: Pick
  *  layoutKey：筛选/排序/视图的签名，变了才量位置做布局动画（layoutDependency），平时重渲染不量 */
 function NodeCardImpl({ m, view, current, plans, onOpen: open, layoutKey }: { m: MachineView; view: CardView; current?: boolean; plans: Plan[]; onOpen: (id: string, tab?: DrawerTab) => void; layoutKey: string }) {
   const onOpen = useCallback<Open>((tab) => open(m.id, tab), [open, m.id]);
-  const latest = useRef(m);
-  useEffect(() => { latest.current = m; });
-  const menu = useCallback(() => latest.current, []);
+  const menu = useLatest(m);
   const host = hasHost(m);
   const quiet = isQuiet(m);
   const info: Info = { ip: m.ip, sshPort: m.ssh_port, entry: entryText(m), plan: m.plan };
   const tags = <Tags code={m.provider_code} provider={m.provider?.name} kind={m.kind} service={m.service_ref} maintenance={m.maintenance} price={subLabel(m)} />;
-  const beat = <section className="slot-seg"><BeatSlot id={m.id} kind={m.kind} lifecycle={m.lifecycle} quiet={quiet} ps={probeSummary(m)} /></section>;
+  const beat = <section className="slot-seg"><BeatSlot id={m.id} kind={m.kind} lifecycle={m.lifecycle} quiet={quiet} {...probeSummary(m)} /></section>;
 
   return (
     <ContextMenu>

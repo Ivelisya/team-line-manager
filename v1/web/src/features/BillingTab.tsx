@@ -29,8 +29,7 @@ export function BillingTab({ m }: { m: MachineView }) {
           <SectionHeader title="当前订阅" />
           <LabelValueGrid>
             <LabelValue label="费用"><span className="num">{F.money(s.price_cents, s.currency)}</span> <span className="unit">/ {F.cycleLabel(s.cycle)}</span></LabelValue>
-            <LabelValue label="到期日">{s.due_date}</LabelValue>
-            <LabelValue label="到期"><Due days={s.due_days} /></LabelValue>
+            <LabelValue label="到期日">{s.due_date}（<Due days={s.due_days} />）</LabelValue>
             <LabelValue label="剩余价值">{rv ? <><span className="num">{F.money(rv.cents, rv.currency)}</span> <span className="unit">{rv.frac > 1 ? `已预付 ${rv.frac.toFixed(1)} 期 · 每期 ${rv.days} 天` : `本期 ${Math.round(rv.frac * 100)}% · 共 ${rv.days} 天`}</span></> : <span className="t-muted">一次性付费，不折算</span>}</LabelValue>
             <LabelValue label="自动续费">{s.auto_renew ? '是' : '否'}</LabelValue>
           </LabelValueGrid>

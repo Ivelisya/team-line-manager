@@ -122,6 +122,7 @@
 .due { font-weight: var(--fw-semibold); }
 .due[data-tone="warn"] { color: var(--warn-text); }
 .due[data-tone="bad"] { color: var(--bad-text); }
+.due-t { font-size: 0.86em; font-weight: var(--fw-medium); } /* 到期里的文字（今天 / 已过期 / 后 / 到期）：不按数字排版 */
 .kbd { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 var(--sp-4); border: 1px solid var(--line); border-radius: var(--r-xs); background: var(--sunken); font: var(--fs-micro) / var(--lh-micro) var(--font-num); color: var(--fg-2); }
 
 /* 筛选 chip */

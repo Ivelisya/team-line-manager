@@ -7,7 +7,7 @@ import { useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
 import type { EntryView, MachineView } from '@/lib/types';
 import { Button } from '@/components/ui/button';
-import { Chip, Empty, ErrorNote, HealthPill, KindIcon, Num, PageHead, Pill } from '@/components/app/primitives';
+import { Chip, Due, Empty, ErrorNote, HealthPill, KindIcon, Num, PageHead, Pill } from '@/components/app/primitives';
 import { NodeHover } from '@/components/app/NodeHover';
 import { Waypoints } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -48,7 +48,7 @@ function RelayCard({ m, open }: { m: MachineView; open: ReturnType<typeof useDra
         <span className="ttl">{m.name}</span>
         <HealthPill m={m} />
         <span className="t-sub">{r?.public_host ?? m.ip} · {m.ip}</span>
-        {m.subscription && <Chip variant={due.tone === 'warn' || due.tone === 'bad' ? 'warn' : undefined}>到期 <Num f={due.text} /></Chip>}
+        {m.subscription && <Chip variant={due.tone === 'warn' || due.tone === 'bad' ? 'warn' : undefined}><Due days={m.subscription.due_days} tail /></Chip>}
         <span style={{ marginLeft: 'auto' }} className="row">
           {m.lifecycle === 'active' && m.entries.some((e) => e.lifecycle === 'active') && <Button size="sm" onClick={() => openEvacuate(m.id)}><PackageOpen size={14} />搬空到…</Button>}
           <Button size="sm" onClick={() => open(m.id)}><PanelRightOpen size={14} />详情</Button></span>

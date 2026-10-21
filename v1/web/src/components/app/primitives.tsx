@@ -44,10 +44,12 @@ export const ReasonList = ({ reasons, className }: { reasons: HealthReason[]; cl
 const reasonsTip = (reasons: HealthReason[]) => (reasons.length ? <ReasonList reasons={reasons} className="tip-list" /> : null);
 /** 健康状态圆点：颜色之外给读屏与悬停一份文字 */
 export const StatusDot = ({ status }: { status: string }) => <span className="dot" data-tone={HEALTH_TONE[status]} role="img" aria-label={HEALTH_LABEL[status]} title={HEALTH_LABEL[status]} />;
-/** 到期读数：N 天后 / 今天 / 已过期 N 天，7 天内黄、过期红（卡片、表格、悬浮卡共用） */
-export function Due({ days }: { days: number | null | undefined }) {
+/** 到期读数：N 天后 / 今天 / 已过期 N 天，7 天内黄、过期红（卡片、表格、悬浮卡共用）。
+ *  tail：没有“到期”标签的地方接上“到期”（3 天后到期 / 今天到期 / 已过期 3 天） */
+export function Due({ days, tail }: { days: number | null | undefined; tail?: boolean }) {
   const d = dueFmt(days);
-  return <span className="due" data-tone={d.tone || undefined}><Num f={d.text} /></span>;
+  const post = d.post + (tail && days != null && !d.past ? '到期' : '');
+  return <span className="due" data-tone={d.tone || undefined}>{d.pre && <span className="due-t">{d.pre}</span>}{d.f && <Num f={d.f} />}{post && <span className="due-t">{post}</span>}</span>;
 }
 export const LifecyclePill = ({ lc }: { lc: Lifecycle | string }) => (
   <Pill tone={lc === 'active' ? 'ok' : lc === 'provisioning' || lc === 'retiring' ? 'info' : lc === 'failed' ? 'bad' : 'neutral'} dot={lc === 'retired' ? 'ring' : undefined}>{LIFECYCLE_LABEL[lc] ?? lc}</Pill>

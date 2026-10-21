@@ -111,6 +111,7 @@
 .flow-foot-label { display: inline-flex; align-items: center; gap: var(--sp-6); }
 .flow-foot-label .lucide { width: 13px; height: 13px; color: var(--dir-c); }
 .flow-foot .num { color: var(--fg); font-weight: var(--fw-medium); }
+.flow-biz { grid-column: 1 / -1; --dir-c: var(--fg-3); } /* 本月业务流量（用户视角的下载 / 上传）：横跨两列，和网卡上行 / 下行分开 */
 .nc-seg-title { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); margin-bottom: var(--sp-6); font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); white-space: nowrap; }
 
 /* 6 剩余流量 */

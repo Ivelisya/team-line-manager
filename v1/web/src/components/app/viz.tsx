@@ -97,7 +97,7 @@ function niceMax(v: number) {
   return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * e;
 }
 
-/** 面积折线（集群状态里的上行 / 下行）：最近 SERIES_N 个点、最新在右；左轴三档刻度，两端标时间 */
+/** 面积折线（集群状态里的网卡上行 / 下行）：全站每分钟一个点（SERIES_N 个 = 近 30 分钟，见 lib/live）、最新在右；左轴三档刻度，两端标首尾两个点的时间 */
 export function AreaSpark({ points, pick, tone }: { points: readonly LivePoint[]; pick: (p: LivePoint) => number; tone: 'up' | 'down' }) {
   const W = 300; const H = 100;
   const vals = points.map(pick);

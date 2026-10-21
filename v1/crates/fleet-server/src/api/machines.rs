@@ -273,6 +273,16 @@ pub async fn retire(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, 
     for (jid,) in &dead {
         sqlx::query("insert into job_log (job_id, level, msg) values ($1, 'warn', '机器进入退役，本作业已作废（不会再重试）')").bind(jid).execute(&mut *tx).await?;
     }
+    // 退役中的机器退出监控（不再评估，也不当成恢复）：未结告警现在就关（不发恢复通知）。
+    // 退役作业失败会停在退役中等重试（步骤不可回滚），告警不能等到收尾才关
+    let closed = sqlx::query(
+        "update incident set state = 'resolved', resolved_at = now(), detail = detail || '{\"closed_by\":\"retire\"}'
+         where state = 'firing' and (subject_id = $1 or subject_id in (select id from entry where node_id = $1 or relay_id = $1))",
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
     let job = jobs::enqueue(
         &mut tx,
         "retire",
@@ -292,6 +302,9 @@ pub async fn retire(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, 
     .await?;
     tx.commit().await?;
     st.emit(Event::Job { id: job, target: Some(id) });
+    if closed > 0 {
+        st.emit(Event::Incidents);
+    }
     for (j,) in dead {
         st.emit(Event::Job { id: j, target: Some(id) });
     }
