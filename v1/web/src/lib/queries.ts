@@ -2,8 +2,8 @@
 import { useCallback } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { del, get, patch, post, put } from './api';
-import { makeDefaultCompare } from './sort';
-import type { ApiKey, Incident, Job, Paged, JobLog, MachineView, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RestoreBody, RestorePreview, MoveResult, EvacuateResult, SeriesResp, Silence, Team, AuditEntry, NotifyChannel, NotifyLogEntry } from './types';
+import { collator, makeDefaultCompare } from './sort';
+import type { ApiKey, Incident, Job, Paged, JobLog, MachineView, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RestoreBody, RestorePreview, MoveResult, EvacuateResult, ProbeBeats, SeriesResp, Silence, Team, AuditEntry, NotifyChannel, NotifyLogEntry } from './types';
 
 export const useMe = () => useQuery({ queryKey: ['me'], queryFn: () => get<{ username: string }>('/auth/me'), retry: false, staleTime: 5 * 60_000 });
 export const useTeams = () => useQuery({ queryKey: ['teams'], queryFn: () => get<Team[]>('/teams'), staleTime: 60_000 });
@@ -33,14 +33,18 @@ export function useMachinePreview(id: string | null) {
     initialDataUpdatedAt: () => qc.getQueryState(['machines', 'live'])?.dataUpdatedAt,
   });
 }
-const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name, 'zh-Hans-CN', { numeric: true });
+const byName = (a: { name: string }, b: { name: string }) => collator.compare(a.name, b.name);
 const sortRelays = (d: MachineView[]) => [...d].sort(byName);
 const relayChoices = (d: MachineView[]) => d.filter((m) => m.lifecycle === 'active').map((m) => ({ id: m.id, name: m.name })).sort(byName);
 const relaysQuery = { queryKey: ['relays'], queryFn: ({ signal }: { signal: AbortSignal }) => get<MachineView[]>('/relays', signal) };
 export const useRelays = () => useQuery({ ...relaysQuery, select: sortRelays });
 /** 只要“已上线线路机的 id 和名称”（上架页的下拉和名称匹配用）。select 的结果会做结构共享：机器的探测、流量等字段每次推送都在变，但 id/名称不变时引用不变，批量网格的 memo 才不会被击穿 */
 export const useRelayChoices = () => useQuery({ ...relaysQuery, select: relayChoices });
-/** poll：实时流只推当前读数不推曲线，卡片心跳条、抽屉曲线各按这个间隔刷新；此时 staleTime 同间隔、切回窗口不重取（否则每张卡同时发一次） */
+/** 卡片心跳条：全部机器近 1 小时的探测，一次取回（每 2 分钟，页面回到前台时若已过期也重取）。
+ *  pick 取一台的那份：结构共享下这台的数据没变时引用不变，心跳条不重渲染 */
+export const useProbeBeats = <T,>(pick: (d: ProbeBeats) => T) =>
+  useQuery({ queryKey: ['probe-beats'], queryFn: ({ signal }) => get<ProbeBeats>('/probe-beats', signal), select: pick, staleTime: 120_000, refetchInterval: 120_000 });
+/** poll：实时流只推当前读数不推曲线，抽屉曲线按这个间隔刷新；此时 staleTime 同间隔、切回窗口不重取 */
 export const useSeries = (id: string | null, metric: 'host' | 'traffic' | 'probe', range: string, enabled = true, poll?: number) =>
   useQuery({ queryKey: ['series', id, metric, range], queryFn: ({ signal }) => get<SeriesResp>(`/machines/${id}/series?metric=${metric}&range=${range}`, signal), enabled: !!id && enabled, staleTime: poll ?? 30_000, refetchInterval: poll, refetchOnWindowFocus: poll ? false : undefined });
 export const useRenewals = (id: string | null) => useQuery({ queryKey: ['renewals', id], queryFn: ({ signal }) => get<Renewal[]>(`/machines/${id}/renewals`, signal), enabled: !!id });

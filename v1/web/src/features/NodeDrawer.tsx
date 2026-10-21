@@ -13,7 +13,7 @@ import * as F from '@/lib/format';
 import { KIND_LABEL } from '@/lib/sort';
 import { jobKindLabel } from '@/lib/jobs';
 import { probeSummary } from '@/lib/derive';
-import { Chip, ErrorNote, HealthPill, KindIcon, LabelValue, LabelValueGrid, LifecyclePill, Note, Section, SectionHeader } from '@/components/app/primitives';
+import { Chip, ErrorNote, ReasonList, HealthPill, KindIcon, LabelValue, LabelValueGrid, LifecyclePill, Note, Section, SectionHeader } from '@/components/app/primitives';
 import { ManageTab } from './ManageTab';
 import { BillingTab } from './BillingTab';
 import { EntriesTable } from './EntriesTable';
@@ -92,7 +92,7 @@ function OverviewTab({ m }: { m: MachineView }) {
       {m.health.reasons.length > 0 && (
         <Section>
           <SectionHeader title="状态原因" />
-          <ul className="reason-list">{m.health.reasons.map((r) => <li key={r.key}><span className="dot" data-tone={r.severity === 'critical' ? 'bad' : r.severity === 'warning' ? 'warn' : 'info'} />{r.text}</li>)}</ul>
+          <ReasonList reasons={m.health.reasons} className="reason-list" />
         </Section>
       )}
       <Section>

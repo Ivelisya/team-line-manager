@@ -1,4 +1,6 @@
 // 时序小图：细线 + 淡填充（原版详情图的语言）。颜色取图表 token：--chart-1 / --chart-2 / --chart-3。
+// memo：抽屉随实时推送重渲染时，曲线点没变（lines / 格式化函数由调用方放在模块常量里）就不重画
+import { memo, useMemo } from 'react';
 import type { SeriesPoint } from '@/lib/types';
 import { ChartContainer, ChartLegend, ChartTooltip, Recharts, axisProps, type ChartConfig } from '@/components/ui/chart';
 
@@ -12,12 +14,12 @@ const xFmt = (range: string) => (t: string | number) => {
 };
 
 export interface Line { key: string; label: string; color: string }
-export function TimeChart({ points, lines, range, kind = 'area', yFmt, valueFmt, domain, height = 180, legend = true, connectNulls = false }: {
+export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 'area', yFmt, valueFmt, domain, height = 180, legend = true, connectNulls = false }: {
   points: SeriesPoint[] | undefined; lines: Line[]; range: string; kind?: 'area' | 'line'; yFmt: (v: number) => string; valueFmt?: (k: string, v: number) => string;
   domain?: [number | 'auto', number | 'auto']; height?: number; legend?: boolean; connectNulls?: boolean;
 }) {
-  const config: ChartConfig = Object.fromEntries(lines.map((l) => [l.key, { label: l.label, color: l.color }]));
-  const data = (points ?? []).map((p) => ({ ...p, t: new Date(p.ts).getTime() }));
+  const config = useMemo<ChartConfig>(() => Object.fromEntries(lines.map((l) => [l.key, { label: l.label, color: l.color }])), [lines]);
+  const data = useMemo(() => (points ?? []).map((p) => ({ ...p, t: new Date(p.ts).getTime() })), [points]);
   const common = {
     data, margin: { top: 6, right: 8, bottom: 0, left: 0 },
   };
@@ -49,4 +51,4 @@ export function TimeChart({ points, lines, range, kind = 'area', yFmt, valueFmt,
       </ChartContainer>
     </div>
   );
-}
+});

@@ -105,7 +105,6 @@
   font: var(--fw-regular) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2); white-space: nowrap;
 }
 .chip .lucide { width: 12px; height: 12px; color: var(--fg-2); }
-.chip-price { color: var(--fg); font-weight: var(--fw-semibold); }
 .chip-neutral { border-color: transparent; background: var(--neutral-bg); color: var(--neutral-text); }
 .chip-warn { border-color: transparent; background: var(--warn-bg); color: var(--warn-text); }
 .mark {
@@ -119,6 +118,10 @@
 .dot[data-tone="bad"] { background: var(--bad); }
 .dot[data-tone="info"] { background: var(--info); }
 .dot[data-tone="neutral"] { background: transparent; box-shadow: inset 0 0 0 1.5px var(--neutral); }
+/* 到期读数（Due）：7 天内黄、过期红 */
+.due { font-weight: var(--fw-semibold); }
+.due[data-tone="warn"] { color: var(--warn-text); }
+.due[data-tone="bad"] { color: var(--bad-text); }
 .kbd { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 var(--sp-4); border: 1px solid var(--line); border-radius: var(--r-xs); background: var(--sunken); font: var(--fs-micro) / var(--lh-micro) var(--font-num); color: var(--fg-2); }
 
 /* 筛选 chip */
@@ -136,47 +139,6 @@
 .fchip-count { font-weight: var(--fw-regular); color: var(--fg-2); }
 .fchip[aria-pressed="true"] .fchip-count { color: var(--accent-soft-fg); }
 .fchip.is-zero, .fchip.is-zero .fchip-count { color: var(--fg-3); }
-
-.fbar {
-  display: flex; align-items: center; gap: var(--sp-6);
-  min-height: 48px; box-sizing: border-box; padding: var(--sp-8) var(--sp-12);
-  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-float);
-  overflow-x: auto; scrollbar-width: none;
-}
-.fbar::-webkit-scrollbar { display: none; }
-.fbar-label { flex: none; font-size: var(--fs-label); color: var(--fg-2); margin-right: var(--sp-2); }
-.fbar-div { flex: none; width: 1px; height: 20px; margin: 0 var(--sp-6); background: var(--line); }
-
-/* ========== KPI 卡（唯一实现 KpiTile） ========== */
-.kpi-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--grid-gap); }
-.kpi {
-  position: relative; display: grid; grid-template-rows: 18px 32px 18px; row-gap: var(--sp-6); align-content: start;
-  min-width: 0; min-height: 106px; box-sizing: border-box; padding: var(--sp-12) var(--sp-16);
-  background: var(--grad-hero); border: 1px solid var(--line); border-radius: var(--r-card);
-  text-align: left; text-decoration: none; color: inherit;
-  box-shadow: var(--shadow-card);
-  transition: border-color var(--dur-fast), background-color var(--dur-fast), box-shadow var(--dur-base) var(--ease-sheet), translate var(--dur-base) var(--ease-sheet);
-}
-button.kpi, a.kpi { cursor: pointer; }
-button.kpi:hover, a.kpi:hover { border-color: var(--line-strong); box-shadow: var(--shadow-card-hover); translate: 0 -1px; } /* 用 translate 属性，不占 transform */
-button.kpi:active, a.kpi:active { box-shadow: var(--shadow-card); translate: 0 0; }
-.kpi[aria-pressed="true"] { border-color: var(--accent); background: var(--selected); }
-.kpi-label { display: flex; align-items: center; gap: var(--sp-4); min-width: 0; font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); white-space: nowrap; }
-.kpi-value {
-  display: flex; align-items: baseline; gap: var(--sp-4); min-width: 0; overflow: hidden; white-space: nowrap;
-  font: var(--fw-semibold) var(--fs-kpi) / var(--lh-kpi) var(--font-num); font-variant-numeric: var(--num-variant);
-  letter-spacing: var(--tracking-kpi); color: var(--fg);
-}
-.kpi-value .unit { font: var(--fw-regular) var(--fs-label) / var(--lh-label) var(--font-num); letter-spacing: 0; color: var(--fg-2); }
-.kpi-sub { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); display: flex; align-items: center; gap: var(--sp-8); }
-.kpi-sub .dotline { display: inline-flex; align-items: center; gap: var(--sp-4); }
-.kpi-grid-wrap { container-type: inline-size; }
-@container (max-width: 760px) { .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 760px) {
-  .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-  .kpi { padding: var(--sp-12); }
-  .kpi-value { font-size: var(--fs-page); }
-}
 
 /* ========== 心跳条 Beat（资源格条、额度格条在 home.css 的 .cells） ========== */
 .beat { display: grid; gap: var(--sp-6); min-width: 0; }
@@ -366,7 +328,7 @@ button.kpi:active, a.kpi:active { box-shadow: var(--shadow-card); translate: 0 0
 
 /* ========== 分页器（Pagination / CursorPager） ========== */
 /* 参照 brocade 目录分页：一条底栏，左侧范围读数（等宽数字），右侧页码下拉 + 上一页 / 下一页。
-   网格下面是独立的圆角条（同 .fbar）；放进面板时是表尾：顶线 + 浅底（同 .apply-box 的 sunken 调） */
+   网格下面是独立的圆角条；放进面板时是表尾：顶线 + 浅底（同 .apply-box 的 sunken 调） */
 .pager {
   display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-8) var(--sp-16);
   min-height: 44px; box-sizing: border-box; padding: var(--sp-6) var(--sp-12);

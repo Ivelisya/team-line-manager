@@ -7,6 +7,7 @@ import './styles/tokens.css';
 import './styles/theme.css';
 import './styles/base.css';
 import './styles/components.css';
+import './styles/home.css';
 import './styles/cards.css';
 import './styles/table.css';
 import './styles/pages.css';

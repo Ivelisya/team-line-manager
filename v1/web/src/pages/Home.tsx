@@ -7,21 +7,21 @@ import { useMachines, useOverview, usePlans, useTeams } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import { monthTraffic } from '@/lib/derive';
 import type { MachineView, Plan } from '@/lib/types';
-import { Empty, ErrorNote, FilterChip } from '@/components/app/primitives';
+import { Empty, ErrorNote, FilterChip, type SortState } from '@/components/app/primitives';
 import { NodeCard, SkeletonCard, type CardView } from '@/components/app/NodeCard';
 import { RingCard } from '@/components/app/RingCard';
 import { Segmented } from '@/components/ui/overlays';
 import { Select } from '@/components/ui/select';
 import { Pagination } from '@/components/app/Pagination';
 import { HomeSection, OverviewSection } from '@/features/HomeOverview';
-import { MachineTable, TABLE_SORTS, type TableSort } from '@/features/MachineTable';
+import { MachineTable, TABLE_SORTS } from '@/features/MachineTable';
 import { usePage } from '@/lib/usePage';
-import { useStableOrder } from '@/lib/sort';
+import { collator, useStableOrder } from '@/lib/sort';
 
 type SortKey = 'default' | 'name' | 'due' | 'traffic' | 'issues';
 const SORTS: { value: SortKey; label: string }[] = [
   { value: 'default', label: '默认排序' }, { value: 'name', label: '名称' }, { value: 'due', label: '到期最近' },
-  { value: 'traffic', label: '本月流量最多' }, { value: 'issues', label: '异常优先' },
+  { value: 'traffic', label: '本月业务流量最多' }, { value: 'issues', label: '异常优先' },
 ];
 type Layout = 'cards' | 'table' | 'ring';
 const LAYOUTS: Layout[] = ['cards', 'table', 'ring'];
@@ -41,9 +41,8 @@ const isIssue = (m: MachineView) => m.health.status === 'down' || m.health.statu
 
 function sortList(list: MachineView[], key: SortKey): MachineView[] {
   if (key === 'default') return list;
-  const zh = new Intl.Collator('zh-Hans-CN', { numeric: true });
   const c: Record<Exclude<SortKey, 'default'>, (a: MachineView, b: MachineView) => number> = {
-    name: (a, b) => zh.compare(a.name, b.name),
+    name: (a, b) => collator.compare(a.name, b.name),
     due: (a, b) => (a.subscription?.due_days ?? 1e9) - (b.subscription?.due_days ?? 1e9),
     traffic: (a, b) => { const x = monthTraffic(a); const y = monthTraffic(b); return y.up + y.down - (x.up + x.down); },
     issues: (a, b) => RANK[a.health.status] - RANK[b.health.status],
@@ -60,7 +59,7 @@ export function HomePage() {
   const [layout, setLayout] = React.useState<Layout>(() => store.get('fleet:layout', 'cards', LAYOUTS));
   const [view, setView] = React.useState<CardView>(() => store.get('fleet:view', 'large', DENSITIES));
   const [sort, setSort] = React.useState<SortKey>(() => store.get('fleet:sort', 'default', SORTS.map((x) => x.value)));
-  const [tsort, setTsort] = React.useState<TableSort | null>(null); // 表格视图的表头排序（优先于上面的排序）
+  const [tsort, setTsort] = React.useState<SortState | null>(null); // 表格视图的表头排序（优先于上面的排序）
   const [team, setTeam] = React.useState<string>('all');
   const [onlyIssues, setOnlyIssues] = React.useState(false);
   const setL = (v: Layout) => { setLayout(v); store.set('fleet:layout', v); };
@@ -107,7 +106,7 @@ export function HomePage() {
       <HomeSection icon={<Server />} label="服务器集群" headRef={pg.anchor}
         title={<h2 className="hsec-title">节点矩阵与实时监控</h2>} sub="实时监控负载、资源占用、网络吞吐与在线状态；点读数或迹线可直接打开历史曲线。"
         actions={<>
-          <Select sm value={sort} onChange={(v) => setS(v as SortKey)} options={SORTS} className="w-[132px]" aria-label="排序" />
+          <Select sm value={sort} onChange={(v) => setS(v as SortKey)} options={SORTS} className="w-[150px]" aria-label="排序" />
           <Segmented sm label="视图" value={layout} onChange={setL} items={[
             { value: 'cards', label: <><LayoutGrid size={14} />卡片</> }, { value: 'table', label: <><Table2 size={14} />表格</> }, { value: 'ring', label: <><CircleGauge size={14} />环形</> },
           ]} />

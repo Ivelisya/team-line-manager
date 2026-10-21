@@ -57,7 +57,7 @@ function RelayCard({ m, open }: { m: MachineView; open: ReturnType<typeof useDra
       <div className="table-wrap">
         <table className="dt is-one" style={{ minWidth: 760 }}>
           <colgroup><col style={{ width: 84 }} /><col style={{ width: 150 }} /><col style={{ width: 104 }} /><col style={{ width: 84 }} /><col style={{ width: 80 }} /><col style={{ width: 80 }} /><col style={{ width: 120 }} /><col style={{ width: 52 }} /></colgroup>
-          <thead><tr><th>端口</th><th>节点</th><th>状态</th><th>已下发</th><th className="r">TCP</th><th className="r">出口</th><th className="r">本月流量</th><th /></tr></thead>
+          <thead><tr><th>端口</th><th>节点</th><th>状态</th><th>已下发</th><th className="r">TCP</th><th className="r">出口</th><th className="r">本月业务流量</th><th /></tr></thead>
           <tbody>
             {entries.map((e) => (
               <tr key={e.id}>
