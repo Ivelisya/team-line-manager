@@ -309,7 +309,13 @@ export function buildDb(): Db {
       summary: `本周期已用 ${pct}%（${str(bytes(q.used))} / ${q.limit} GiB，${q.start.slice(5)} 起）`, opened_at: iso(now() - (2 + 3 * tight++) * 3600_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 0 });
     m.open_incidents++;
   }
-  const silences: Silence[] = [{ id: 's1', subject_id: 'm-t2-04', subject_name: '团队2-04', rule: null, starts_at: iso(now() - 3600_000), ends_at: iso(now() + 3 * 3600_000), is_maintenance: true, comment: '换内核，预计 4 小时' }];
+  // 进行中的维护、只静默一条规则的、明天凌晨 2 点预约的割接（本地时间）
+  const tomorrow2 = new Date(now()); tomorrow2.setDate(tomorrow2.getDate() + 1); tomorrow2.setHours(2, 0, 0, 0);
+  const silences: Silence[] = [
+    { id: 's1', subject_id: 'm-t2-04', subject_name: '团队2-04', rule: null, rule_name: null, starts_at: iso(now() - 3600_000), ends_at: iso(now() + 3 * 3600_000), is_maintenance: true, comment: '换内核，预计 4 小时' },
+    { id: 's2', subject_id: 'm-t1-03', subject_name: '团队1-03', rule: 'clock_skew', rule_name: 'agent 时钟不准', starts_at: iso(now() - 2 * 3600_000), ends_at: iso(now() + 22 * 3600_000), is_maintenance: false, comment: '等供应商校时' },
+    { id: 's3', subject_id: 'r2', subject_name: '线路机2', rule: null, rule_name: null, starts_at: iso(tomorrow2.getTime()), ends_at: iso(tomorrow2.getTime() + 4 * 3600_000), is_maintenance: true, comment: '机房割接（供应商通知）' },
+  ];
   const audit: AuditEntry[] = [
     { id: 'a3', ts: iso(now() - 25 * 60_000), actor: '运维 CLI', action: 'exec', title: '执行命令', summary: '团队1-03 · journalctl -u fleet-agent --since "1 hour ago" --no-pager | grep -i -E "err… · 退出码 0', target_kind: 'machine', target_id: 'm-t1-03', detail: { name: '团队1-03', command: 'journalctl -u fleet-agent --since "1 hour ago" --no-pager | grep -i -E "error|warn" | tail -n 200', exit_code: 0 } },
     { id: 'a1', ts: iso(now() - 40 * 60_000), actor: 'admin', action: 'machine.rename', title: '改名', summary: '团队1-07 → 团队1-03', target_kind: 'machine', target_id: 'm-t1-03', detail: { old: '团队1-07', new: '团队1-03' } },
