@@ -34,7 +34,7 @@ function useEver(v: boolean) {
 
 const NAV = [
   { to: '/', label: '首页', icon: LayoutGrid, end: true },
-  { to: '/nodes', label: '节点', icon: Server },
+  { to: '/nodes', label: '机器', icon: Server },
   { to: '/relays', label: '线路', icon: Waypoints },
   { to: '/provision', label: '上架', icon: CloudUpload },
   { to: '/jobs', label: '作业', icon: ListChecks },

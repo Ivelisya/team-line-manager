@@ -49,7 +49,7 @@ tools/                       shoot.mjs、smoke.mjs（puppeteer-core）
 - **卡片对齐**：`.cards` 网格 + 每张卡 `grid-row: span N; grid-template-rows: subgrid`。槽位固定（大 10 / 小 7 / 紧凑 6），无主机的家宽代理在“资源”槽显示同高占位、“网卡”槽换成业务流量表，同一行分段永远对齐。
 - **默认排序**：线路机 → 团队（sort_order，再名称）→ 编号升序（`lib/sort.ts`）；故障/离线不下沉；其它排序是用户在下拉/表头里的显式选择。
 - 表格 `table-layout: fixed` + `colgroup`；数字 `tabular-nums`；长文字省略。
-- 已退役机器不进首页与 KPI；节点页用“范围”开关查看，退役机器的管理页只有“彻底删除”。
+- 已退役机器不进首页与 KPI；机器页用“范围”开关查看，退役机器的管理页只有“彻底删除”。
 - 写请求自动带 `X-Fleet-Request: 1`；实时流 WebSocket `/api/v1/stream`：资源变更按事件类型失效对应查询，`metrics` 增量直接写进缓存（不再定时整表重取）；流断开时各查询 30s 轮询兜底。
 
 ## 对 API.md 的假定（后端落地后请核对）

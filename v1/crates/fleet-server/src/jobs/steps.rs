@@ -671,6 +671,8 @@ async fn purge(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     // 其余（令牌、agent 状态、账单、续费、出站、线路机参数）随 machine 级联删除
     sqlx::query("delete from machine where id = $1").bind(id).execute(&mut *tx).await?;
     tx.commit().await?;
+    // 小时流量删了：对端机器的流量 / 周期已用缓存跟着作废
+    c.st.live.rolled_up();
     Ok(Outcome::Done(json!({"rows_deleted": n, "entries": eids.len()})))
 }
 

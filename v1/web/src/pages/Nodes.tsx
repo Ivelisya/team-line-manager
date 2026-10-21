@@ -98,7 +98,7 @@ export function NodesPage() {
 
   return (
     <div className="stack">
-      <PageHead title="节点" note={`${data.length}${data.length !== all.length ? ` / ${all.length}` : ''} 台`}
+      <PageHead title="机器" note={`${data.length}${data.length !== all.length ? ` / ${all.length}` : ''} 台`}
         tools={<Segmented label="范围" value={scope} onChange={(v) => { setScope(v); setStatus(''); }} items={[{ value: 'live', label: '在用' }, { value: 'retired', label: '已退役' }]} />} />
 
       <div className="row" role="search" ref={pg.anchor}>

@@ -292,6 +292,46 @@ async fn billing_tz_is_validated_on_write() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn quota_period_in_half_hour_tz_counts_start_bucket() {
+    let t = setup(true).await;
+    let (relay, _) = seed_relay(&t).await;
+    let team = seed_team(&t, "团队1").await;
+    let node = seed_node(&t, team, 1, "203.0.113.10", "active").await;
+    let eid = Uuid::now_v7();
+    sqlx::query("insert into entry (id, relay_id, node_id, port, client_uuid, short_id, lifecycle) values ($1, $2, $3, 20001, $4, 'ab', 'active')")
+        .bind(eid)
+        .bind(relay)
+        .bind(node)
+        .bind(Uuid::now_v7())
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let (today, day): (time::Date, i32) =
+        sqlx::query_as("select (now() at time zone 'Asia/Kolkata')::date, extract(day from now() at time zone 'Asia/Kolkata')::int")
+            .fetch_one(&t.st.db)
+            .await
+            .unwrap();
+    // 加尔各答零点 = UTC xx:30：起点所在的那一桶（起点前 30 分钟开始）算，再前一桶不算
+    for (back, up) in [("30 minutes", 50i64), ("90 minutes", 1000)] {
+        sqlx::query("insert into entry_traffic_hourly (entry_id, hour, up_bytes, down_bytes) values ($1, ($2::timestamp at time zone 'Asia/Kolkata') - $3::interval, $4, 0)")
+            .bind(eid)
+            .bind(today)
+            .bind(back)
+            .bind(up)
+            .execute(&t.st.db)
+            .await
+            .unwrap();
+    }
+    let (s, v) = t
+        .req("PUT", &format!("/api/v1/machines/{node}/subscription"), Some(json!({"price_cents": 100, "due_date": "2030-01-01", "billing_tz": "Asia/Kolkata", "traffic_reset_day": day})), None)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let m = t.get(&format!("/api/v1/machines/{node}")).await;
+    assert_eq!(m["quota"]["period_start"], today.to_string());
+    assert_eq!(m["quota"]["used"], 50, "{}", m["quota"]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn provider_create_defaults_and_patch() {
     let t = setup(false).await;
     // 时区 null / 空白 = 列默认值 UTC（界面清空时区原先发 null 直接 400）

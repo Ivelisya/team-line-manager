@@ -17,7 +17,7 @@ import { HealthPill, KindIcon } from '@/components/app/primitives';
 
 const PAGES = [
   { to: '/', label: '首页', icon: LayoutGrid, kw: 'home dashboard 总览' },
-  { to: '/nodes', label: '节点', icon: Server, kw: 'nodes 表格 列表' },
+  { to: '/nodes', label: '机器', icon: Server, kw: 'nodes 节点 线路机 表格 列表' },
   { to: '/relays', label: '线路机', icon: Waypoints, kw: 'relays 线路 入口' },
   { to: '/access', label: '访问监控', icon: Gauge, kw: 'access 访问 监控' },
   { to: '/access/policy', label: '访问规则', icon: ShieldCheck, kw: 'policy access 访问规则 策略 白名单 黑名单 阻止 域名 allowlist denylist' },
