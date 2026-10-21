@@ -18,6 +18,8 @@ pub(super) async fn attach_new(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let to = c.param_uuid("to_relay_id")?;
     let old = c.param_uuid("old_entry_id")?;
     let mut tx = c.st.db.begin().await?;
+    // 先拿策略共享锁再锁旧入口行（和发布的加锁顺序一致）
+    entries::lock_policy_shared(&mut tx).await.map_err(|e| anyhow!(e.message))?;
     let cur: Option<(String,)> = sqlx::query_as("select lifecycle::text from entry where id = $1 and node_id = $2 for update")
         .bind(old)
         .bind(node)

@@ -504,6 +504,7 @@ async fn move_is_validated() {
     let (s, v) = mv(rb).await;
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
     let mut tx = t.st.db.begin().await.unwrap();
+    fleet_server::entries::lock_policy_shared(&mut tx).await.unwrap();
     let (e, _, _) = fleet_server::entries::create(&mut tx, ra, node).await.unwrap();
     tx.commit().await.unwrap();
     // 入口还没生效（pending）
@@ -520,6 +521,7 @@ async fn move_is_validated() {
     sqlx::query("update machine set lifecycle = 'active', retired_at = null where id = $1").bind(rb).execute(&t.st.db).await.unwrap();
     // 目标线路机上已有这个节点的入口
     let mut tx = t.st.db.begin().await.unwrap();
+    fleet_server::entries::lock_policy_shared(&mut tx).await.unwrap();
     fleet_server::entries::create(&mut tx, rb, node).await.unwrap();
     tx.commit().await.unwrap();
     let (s, v) = mv(rb).await;
@@ -543,6 +545,7 @@ async fn evacuate_creates_one_job_per_node_and_guard_mentions_it() {
     for i in 0..3 {
         let n = seed_node(&t, team, i + 1, &format!("203.0.113.{}", 10 + i), "active").await;
         let mut tx = t.st.db.begin().await.unwrap();
+        fleet_server::entries::lock_policy_shared(&mut tx).await.unwrap();
         let (e, _, _) = fleet_server::entries::create(&mut tx, ra, n).await.unwrap();
         tx.commit().await.unwrap();
         // 第三个节点的入口是停用的：搬空时跳过并说明原因
@@ -743,7 +746,7 @@ async fn restore_vps_precheck_and_job_creation() {
     assert_eq!(pv["ssh"]["key_login"], "unreachable");
     assert!(!pv["warnings"].as_array().unwrap().is_empty());
     assert_eq!(pv["retired_reason"], "到期不续");
-    // 试登录记审计；没有 exec 的密钥不能试登录（probe=false 可以）
+    // 试登录记审计；和 POST 恢复一样要 write（不要 exec），只读密钥只能 probe=false
     let n: i64 = sqlx::query_scalar("select count(*) from audit_log where action = 'restore.probe' and target_id = $1").bind(vps).fetch_one(&t.st.db).await.unwrap();
     assert_eq!(n, 1);
     let key = t.post("/api/v1/api-keys", json!({"name": "ci-read", "scopes": ["read"]})).await;
@@ -752,6 +755,9 @@ async fn restore_vps_precheck_and_job_creation() {
     assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
     let (s, _) = t.req("GET", &format!("/api/v1/machines/{vps}/restore?probe=false"), None, Some(tok)).await;
     assert_eq!(s, StatusCode::OK);
+    let key = t.post("/api/v1/api-keys", json!({"name": "ci-write", "scopes": ["read", "write"]})).await;
+    let (s, v) = t.req("GET", &format!("/api/v1/machines/{vps}/restore"), None, Some(key["token"].as_str().unwrap())).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
 
     // 缺线路机 → 400
     let (s, _) = t.req("POST", &format!("/api/v1/machines/{vps}/restore"), Some(json!({"login": {"password": "x"}})), None).await;
@@ -836,7 +842,7 @@ async fn add_entry_checks_relay_before_enqueue() {
         .unwrap();
     let path = format!("/api/v1/machines/{node}/entries");
     let (s, _) = t.req("POST", &path, Some(json!({"relay_id": Uuid::now_v7()})), None).await;
-    assert_eq!(s, StatusCode::NOT_FOUND);
+    assert_eq!(s, StatusCode::BAD_REQUEST);
     let (s, v) = t.req("POST", &path, Some(json!({"relay_id": gone})), None).await;
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
     let (s, v) = t.req("POST", &path, Some(json!({"relay_id": ra})), None).await;

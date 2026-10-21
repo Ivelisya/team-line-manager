@@ -91,7 +91,7 @@ export function PolicyPage() {
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       <div className="pol-layout">
         <Panel title="范围" count={q.data ? `${teams.length} 个团队` : undefined} className="pol-scope" flush>
-          {q.isLoading && <SkeletonRows rows={6} />}
+          {q.isLoading && <SkeletonRows rows={6} list />}
           {q.data && teams.length === 0 && <Empty text="还没有团队" hint="先在「团队与套餐」里添加团队" />}
           <div className="pol-tree" role="tree" aria-label="团队与节点">
             {teams.map((t) => (
@@ -329,7 +329,7 @@ function PreviewDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o
             <DialogTitle>预览：发布后会怎样</DialogTitle>
             <DialogDescription>{d ? `按最近 ${d.window_hours} 小时的访问汇总模拟，实际结果以发布后为准。` : '正在按最近 24 小时的访问汇总模拟…'}</DialogDescription>
           </DialogHeader>
-          {q.isLoading && <SkeletonRows rows={4} />}
+          {q.isLoading && <SkeletonRows rows={4} list />}
           {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
           {empty && <Empty icon={<ShieldCheck size={22} />} text="没有未发布的草稿" />}
           {d && !empty && (

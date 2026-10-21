@@ -383,6 +383,7 @@ async fn attach(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let node = c.target_id()?;
     let relay = c.param_uuid("relay_id")?;
     let mut tx = c.st.db.begin().await?;
+    entries::lock_policy_shared(&mut tx).await.map_err(|e| anyhow!(e.message))?;
     let (eid, port, gen) = entries::create(&mut tx, relay, node).await.map_err(|e| anyhow!(e.message))?;
     // 记 entry_id 时同时确认租约还在：不在就整个事务回滚，不留下孤儿入口
     let n = sqlx::query("update job set params = params || $2 where id = $1 and lease_owner = $3")

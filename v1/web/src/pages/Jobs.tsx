@@ -51,7 +51,7 @@ export function JobsPage() {
         tools={<Segmented label="筛选" value={filter} onChange={setFilter} items={[{ value: 'all', label: '全部' }, { value: 'active', label: '进行中' }, { value: 'done', label: '已结束' }]} />} />
       <div className="jobs-layout" data-detail={selected ? '1' : '0'}>
         <Panel ref={pg.anchor} className="jobs-list" flush>
-          {jobs.isLoading && <SkeletonRows rows={5} />}
+          {jobs.isLoading && <SkeletonRows rows={5} list />}
           {jobs.isError && <div style={{ padding: 'var(--sp-12)' }}><ErrorNote error={jobs.error} onRetry={() => void jobs.refetch()} /></div>}
           {list.map((j) => (
             <div key={j.id} className="job-item" role="button" tabIndex={0} aria-current={j.id === selected} onClick={() => go(j.id)}

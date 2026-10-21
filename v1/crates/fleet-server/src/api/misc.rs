@@ -281,19 +281,14 @@ pub async fn audit(a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<A
     .bind(q.before_id)
     .fetch_all(&st.db)
     .await?;
-    // 没有 exec 权限的密钥看不到完整命令（命令里可能带口令）：只留第一行的前 80 个字
+    // 没有 exec 权限的密钥看不到命令（第一行也可能带口令）：只给字数，摘要随之隐藏
     let can_exec = a.require_scope("exec").is_ok();
     let out: Vec<Value> = v
         .into_iter()
         .map(|mut a| {
             if !can_exec {
                 if let Some(c) = a.detail.get("command").and_then(Value::as_str) {
-                    let line = c.lines().next().unwrap_or("");
-                    let mut short: String = line.chars().take(80).collect();
-                    if short.len() < c.trim_end().len() {
-                        short.push('…');
-                    }
-                    a.detail["command"] = json!(short);
+                    a.detail["command"] = json!(format!("命令已隐藏（{} 字）", c.chars().count()));
                 }
             }
             let (title, summary) = audit_text(&a.action, &a.detail);
