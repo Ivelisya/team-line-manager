@@ -150,7 +150,7 @@
 .beat-main { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .beat-win { flex: none; font-size: var(--fs-micro); line-height: var(--lh-micro); }
 .beat-cells { display: flex; gap: var(--beat-gap); width: 100%; overflow: hidden; height: var(--beat-h); }
-.beat-cells > i { display: block; flex: 1 1 0; min-width: 2px; max-width: var(--beat-w-max); height: var(--beat-h); background: var(--line); border-radius: 2px; transition: background-color var(--dur-data) var(--ease-std); }
+.beat-cells > i { display: block; flex: 1 1 0; min-width: 2px; max-width: var(--beat-w-max); height: var(--beat-h); background: var(--line); border-radius: 2px; } /* 换色不过渡（同 .cells） */
 .beat-cells > i[data-t="ok"] { background: var(--latency-ok); }
 .beat-cells > i[data-t="warn"] { background: var(--warn); }
 .beat-cells > i[data-t="bad"] { background: var(--bad); }

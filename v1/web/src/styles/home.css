@@ -120,12 +120,12 @@
 
 /* ---------- 分段格条 / 资源读数 ---------- */
 .cells { display: flex; gap: 2px; height: 8px; min-width: 0; }
-/* 从左往右逐格点亮只在格条第一次出现时播（animation 只在元素挂载时跑一次）；之后读数变化直接过渡、不再逐格错开——
-   以前把逐格延迟写在 transition 上，每次推送都要等最右一格的延迟走完，上千个格子的过渡拖得更久。
+/* 从左往右逐格点亮只在格条第一次出现时播（animation 只在元素挂载时跑一次）；之后读数变化像 LED 一样直接切换、不过渡：
+   每条推送上千个格子各起一条底色 / 透明度过渡，主线程逐帧重画整页（实测紧凑 96 张卡每条推送 329ms、大卡 24 张 100ms，去掉过渡降 86–88%）。
+   点亮色放 ::after 只过渡透明度也试过，总量不降。
    没点亮的格子也挂着这段动画：起止都是底色，看不出来，但这样点亮与否变化时不会重新触发 */
 .cells > i {
   flex: 1 1 0; min-width: 0; border-radius: 2px; background: var(--cell-off);
-  transition: background-color var(--dur-data) var(--ease-std), opacity var(--dur-data) var(--ease-std);
   animation: cell-in var(--dur-data) var(--ease-std) calc(var(--i, 0) * var(--cell-stagger)) backwards;
 }
 .cells > i[data-on] { background: var(--c); opacity: calc(0.42 + var(--l, 1) * 0.58); }
@@ -154,8 +154,9 @@
 .gauge[data-metric="mem"] { --mc: var(--m-mem); }
 .gauge[data-metric="disk"] { --mc: var(--m-disk); }
 .gauge-track { fill: none; stroke: var(--cell-off); }
-.gauge-val { fill: none; stroke: var(--mc); stroke-linecap: round; stroke-dashoffset: var(--ring-off); transition: stroke-dashoffset var(--dur-data) var(--ease-out); }
-@starting-style { .gauge-val { stroke-dashoffset: var(--ring-c); } }
+/* 第一次出现从 0 转到位（挂载时的 @keyframes）；之后读数变化直接到位、不过渡（同格条：描边过渡每帧都要主线程重画） */
+.gauge-val { fill: none; stroke: var(--mc); stroke-linecap: round; stroke-dashoffset: var(--ring-off); animation: ring-in var(--dur-data) var(--ease-out); }
+@keyframes ring-in { from { stroke-dashoffset: var(--ring-c); } }
 .gauge-center { position: absolute; inset: 0; display: flex; align-items: baseline; justify-content: center; padding-top: 22px; box-sizing: border-box; }
 .gauge-center b { font: 700 var(--fs-body) / 1 var(--font-num); letter-spacing: -0.02em; color: var(--fg); }
 .gauge-center small { margin-left: 1px; font-size: 9.5px; color: var(--fg-3); }
