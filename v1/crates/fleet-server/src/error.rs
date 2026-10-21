@@ -120,11 +120,19 @@ impl From<axum::extract::rejection::QueryRejection> for ApiError {
 }
 
 impl From<anyhow::Error> for ApiError {
-    /// 包着的是数据库错误（如 agent 接口的 entries::desired_state / on_applied）就按数据库错误映射：连接池超时同样回 503
+    /// 包着的是数据库错误（如 agent 接口的 entries::desired_state / on_applied）就按数据库错误映射：连接池超时同样回 503。
+    /// 映射成 5xx 时（原因只进日志）留整条上下文链，日志里看得出是哪一步出的错
     fn from(e: anyhow::Error) -> Self {
+        let chain = format!("{e:#}");
         match e.downcast::<sqlx::Error>() {
-            Ok(e) => e.into(),
-            Err(e) => Self::internal(format!("{e:#}")),
+            Ok(db) => {
+                let mut a = Self::from(db);
+                if a.status.is_server_error() {
+                    a.message = chain;
+                }
+                a
+            }
+            Err(_) => Self::internal(chain),
         }
     }
 }

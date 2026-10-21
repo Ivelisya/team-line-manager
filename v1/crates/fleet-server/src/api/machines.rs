@@ -327,7 +327,7 @@ pub async fn retire(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<U
     // 同机 IP 节点各自一个退役作业：只摘自己的入口、不登录清理（宿主机的清理连同它们的实例一起删）
     let mut ip_jobs = vec![];
     for (xid, xname, xlc) in &ip_nodes {
-        let j = jobs::enqueue(&mut tx, "retire", Some(*xid), json!({"cleanup": false, "reason": ip_reason, "prev_lifecycle": xlc, "host_id": id}), &a.name).await?;
+        let j = jobs::enqueue(&mut tx, "retire", Some(*xid), json!({"cleanup": false, "reason": ip_reason, "prev_lifecycle": xlc}), &a.name).await?;
         audit(&mut tx, &a.name, "machine.retire", "machine", Some(*xid), json!({"name": xname, "reason": ip_reason, "job_id": j, "host": name})).await?;
         ip_jobs.push(json!({"machine_id": xid, "name": xname, "job_id": j}));
     }

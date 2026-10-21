@@ -241,7 +241,10 @@ async fn ip_check(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
             Err(_) => format!("经 {ip} 访问中控 {echo} 失败：{got}"),
         }));
     }
-    let busy: BTreeSet<u16> = out.kv("busy").unwrap_or("").split(',').filter_map(|p| p.trim().parse().ok()).collect();
+    // 正在监听的端口里去掉配置本来就绑着这个 IP 的（这台节点上次退役没清掉的旧实例）：收敛会用新配置覆盖并重启它，
+    // 算作占用的话会改用别的端口，旧实例就成了没人清理的孤儿
+    let ports = |k: &str| -> BTreeSet<u16> { out.kv(k).unwrap_or("").split(',').filter_map(|p| p.trim().parse().ok()).collect() };
+    let busy: BTreeSet<u16> = ports("busy").difference(&ports("own")).copied().collect();
     let mut port = c.ss_inst(&m).await?.port;
     if busy.contains(&port) {
         let mut tx = c.st.db.begin().await?;

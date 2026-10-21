@@ -123,6 +123,8 @@ PrivateTmp=yes
 WantedBy=multi-user.target
 UNIT
 cmp -s $U.tmp $U && rm -f $U.tmp || { mv $U.tmp $U; systemctl daemon-reload; RESTART=1; }
+# 磁盘上的 ssserver 已换成新版（同机别的实例收敛时推的）、这个实例还在跑旧的：也重启，换上新程序；程序没换过时不重启
+[ /proc/$(systemctl show -p MainPID --value __SVC__)/exe -ef /usr/local/bin/ssserver ] || RESTART=1
 systemctl enable -q __SVC__
 if [ $RESTART = 1 ] || ! systemctl -q is-active __SVC__; then systemctl restart __SVC__; fi
 # 防火墙：SS 端口只放行线路机
@@ -167,13 +169,15 @@ nft -f $N || { echo nft=error; exit 21; }
 echo "nft_relays=$(nft list set inet $NFT_TABLE relays | tr -d '\n' | sed 's/.*elements = { \(.*\) }.*/\1/' | tr -d ' \t')"
 "#;
 
-/// 同机 IP 节点上架前在宿主机上核对：本机的 IPv4、经这个 IP 访问中控 /echo 看到的来源、正在监听的端口（TCP + UDP）。
+/// 同机 IP 节点上架前在宿主机上核对：本机的 IPv4、经这个 IP 访问中控 /echo 看到的来源、正在监听的端口（TCP + UDP），
+/// 以及配置里本来就绑着这个 IP 的实例端口（这台节点上次退役没清理掉的旧实例：恢复时收敛会覆盖它，不算被别人占用）。
 /// 变量 IP（节点自己的 IP）ECHO（中控的 /echo 地址）
 pub const IP_CHECK: &str = r#"
 set -u
 echo "local_ips=$(ip -4 -o addr show | awk '{split($4, a, "/"); if (a[1] !~ /^127\./) print a[1]}' | paste -sd, -)"
 echo "echo=$(curl -4 -sS -m 10 --interface "$IP" "$ECHO" 2>&1 | tr -d '\r\n' | head -c 200)"
 echo "busy=$(ss -Hltun | awk '{n = split($5, a, ":"); print a[n]}' | sort -un | paste -sd, -)"
+echo "own=$(grep -lF "\"server\":\"$IP\"" /etc/shadowsocks-rust/[0-9]*.json 2>/dev/null | sed 's#.*/##; s#\.json$##' | paste -sd, -)"
 "#;
 
 /// 线路机：fleet-xray 单元与访问日志轮转（配置由 agent 生成）。xray 二进制与 geoip.dat 已推到 /usr/local/bin、/usr/local/share/xray。
@@ -362,13 +366,18 @@ echo "nft_relays=$(nft list set inet ss_guard relays | tr -d '\n' | sed 's/.*ele
 "#;
 
     const LOCK: &str = "exec 9>/run/fleet-ss.lock; flock 9\n";
+    /// 进程跑的不是磁盘上当前的 ssserver 才重启（程序没换过时不重启）
+    const STALE: &str = "# 磁盘上的 ssserver 已换成新版（同机别的实例收敛时推的）、这个实例还在跑旧的：也重启，换上新程序；程序没换过时不重启\n\
+                         [ /proc/$(systemctl show -p MainPID --value fleet-ssserver)/exe -ef /usr/local/bin/ssserver ] || RESTART=1\n";
 
-    /// 宿主机（普通落地机）除了多一行锁，和改动前逐字相同：生产节点升级中控后重新收敛，配置、单元、nft、include 行都不变，不重启 ssserver
+    /// 宿主机（普通落地机）除了多一行锁和一行「进程跑的是旧程序才重启」，和改动前逐字相同：生产节点升级中控后重新收敛，配置、单元、nft、include 行都不变，
+    /// 程序没换过也不重启 ssserver
     #[test]
     fn host_render_is_unchanged() {
         let s = node_ss(&SsInst::host());
         assert!(s.starts_with(&format!("\nset -eu\n{LOCK}")), "{s}");
-        assert_eq!(s.replacen(LOCK, "", 1), OLD_NODE_SS);
+        assert!(s.contains(STALE), "{s}");
+        assert_eq!(s.replacen(LOCK, "", 1).replacen(STALE, "", 1), OLD_NODE_SS);
         assert_eq!((SsInst::host().svc(), SsInst::host().table()), ("fleet-ssserver".to_string(), "ss_guard".to_string()));
     }
 

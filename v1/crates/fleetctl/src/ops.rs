@@ -452,13 +452,18 @@ struct ExecResult {
     data: anyhow::Result<Value>,
 }
 
-/// `--team` 的执行目标：团队里在用的线路机与落地机（家宽代理没有 SSH）。同机 IP 节点登录的是宿主机：宿主机也在这个团队里时跳过它，同一台机器只执行一次
+/// `--team` 的执行目标：团队里在用的线路机与落地机（家宽代理没有 SSH）。同机 IP 节点登录的是宿主机：按登录的那台机器（host_id，没有就是自己）
+/// 去重，同一台物理机只执行一次——宿主机也在团队里时留宿主机，否则留第一个同机节点
 fn team_targets(all: &[Value], team: &str) -> Vec<ExecTarget> {
     let members: Vec<&Value> = all.iter().filter(|m| st(m, "/team/name") == team && st(m, "/lifecycle") == "active" && st(m, "/kind") != "proxy").collect();
     let ids: Vec<String> = members.iter().map(|m| st(m, "/id")).collect();
+    let mut seen = std::collections::HashSet::new();
     members
         .into_iter()
-        .filter(|m| !m["host_id"].as_str().is_some_and(|h| ids.iter().any(|i| i == h)))
+        .filter(|m| match m["host_id"].as_str() {
+            Some(h) => !ids.iter().any(|i| i == h) && seen.insert(h.to_string()),
+            None => true,
+        })
         .map(|m| ExecTarget { id: st(m, "/id"), name: st(m, "/name") })
         .collect()
 }
@@ -710,6 +715,7 @@ mod tests {
             m("h", "团队1", "vps", "active", None),
             m("x", "团队1", "vps", "active", Some("h")),      // 宿主机同在团队里：跳过
             m("y", "团队1", "vps", "active", Some("other")),  // 宿主机在别的团队：照常执行（登录的是宿主机）
+            m("y2", "团队1", "vps", "active", Some("other")), // 和 y 同一台宿主机：只执行一次
             m("p", "团队1", "proxy", "active", None),
             m("r", "团队1", "vps", "retired", None),
             m("z", "团队2", "vps", "active", None),
