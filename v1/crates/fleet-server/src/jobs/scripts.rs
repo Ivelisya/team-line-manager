@@ -37,10 +37,13 @@ need=""; command -v nft >/dev/null || need="$need nftables"; command -v curl >/d
 command -v logrotate >/dev/null || need="$need logrotate"
 if [ -n "$need" ]; then timeout 240 apt-get update -qq >/dev/null 2>&1 || true; timeout 300 apt-get install -y -qq $need >/dev/null; fi
 install -d -m 755 /etc/ssh/sshd_config.d
-grep -qE '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d/\*\.conf' /etc/ssh/sshd_config || sed -i '1i Include /etc/ssh/sshd_config.d/*.conf' /etc/ssh/sshd_config
 F=/etc/ssh/sshd_config.d/00-fleet-keyonly.conf
 printf '%s\n' '# fleet：只允许密钥登录' 'PasswordAuthentication no' 'KbdInteractiveAuthentication no' 'PermitRootLogin prohibit-password' 'PubkeyAuthentication yes' > $F.tmp
-if ! cmp -s $F.tmp $F; then mv $F.tmp $F; sshd -t; systemctl restart ssh 2>/dev/null || systemctl restart sshd; else rm -f $F.tmp; fi
+changed=0
+if ! cmp -s $F.tmp $F; then mv $F.tmp $F; changed=1; else rm -f $F.tmp; fi
+# sshd 同一选项只认第一次出现的值：在主配置第一行单独引入这个文件，供应商镜像里排在它前面的 00-xxx.conf、主配置里的设置都盖不过它
+if ! head -n1 /etc/ssh/sshd_config | grep -qxF "Include $F"; then sed -i "1i Include $F" /etc/ssh/sshd_config; changed=1; fi
+if [ $changed = 1 ]; then sshd -t; systemctl restart ssh 2>/dev/null || systemctl restart sshd; fi
 echo "sshd_password=$(sshd -T 2>/dev/null | awk '/^passwordauthentication /{print $2}')"
 printf '%s\n' 'net.core.default_qdisc=fq' 'net.ipv4.tcp_congestion_control=bbr' > /etc/sysctl.d/90-fleet-bbr.conf
 modprobe tcp_bbr 2>/dev/null || true; sysctl -q -p /etc/sysctl.d/90-fleet-bbr.conf 2>/dev/null || true
