@@ -61,7 +61,7 @@ export const OverviewSection = React.memo(function OverviewSection({ o, loading 
             caption={tr && <><span>下载 <Num f={F.bytes(tr.down)} /></span><span>上传 <Num f={F.bytes(tr.up)} /></span></>} />
           <Stat loading={loading} tone="violet" icon={<Database />} label="流量额度" value={<CountUp value={qt?.n} />} unit={qt ? '台' : undefined}
             caption={qt && (qt.top ? <span className="stat-who">最紧<span className="ellipsis">{qt.top.name}</span>已用<b className="num">{qt.top.pct}%</b></span> : '都在 80% 以下')} />
-          <Stat loading={loading} tone="blue" icon={<CloudUpload />} label="上架中 · 退役中" value={o ? <CountUp value={o.provisioning + o.retiring} /> : '—'} unit="台" to="/jobs" caption={o && `上架 ${o.provisioning} · 退役 ${o.retiring}`} />
+          <Stat loading={loading} tone="blue" icon={<CloudUpload />} label="上架中 · 退役中" value={o ? <CountUp value={o.provisioning + o.retiring} /> : '—'} unit="台" to="/jobs" caption={o && <span>上架 <b className="num">{o.provisioning}</b> · 退役 <b className="num">{o.retiring}</b></span>} />
         </div>
         <ClusterPanel o={o} />
       </div>
