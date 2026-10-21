@@ -3,7 +3,7 @@
 
 import type { EntryView, Job, JobLog, MachineView, ProbeBucket, ProvisionCheckItem, ProvisionItem, SeriesPoint } from '@/lib/types';
 import { displayName } from '@/lib/format';
-import { liveRate } from '@/lib/derive';
+import { isQuiet, liveRate } from '@/lib/derive';
 import { buildDb, hashStr, quotaOf, rng, type Db } from './fixtures';
 import { installAccessMock } from './access';
 import { installPolicyMock } from './policy';
@@ -84,6 +84,8 @@ function overview() {
     nodes: cnt(live.filter((m) => m.kind !== 'relay')), relays: cnt(live.filter((m) => m.kind === 'relay')),
     provisioning: db.machines.filter((m) => m.lifecycle === 'provisioning').length, retiring: db.machines.filter((m) => m.lifecycle === 'retiring').length,
     // 需要续费的：自动续费的只在已过期时算（同服务端）
+    // 在线/离线按 agent 连通（同 isQuiet）
+    online: live.filter((m) => !isQuiet(m)).length, offline: live.filter(isQuiet).length,
     due_7d: live.filter((m) => m.subscription && m.subscription.due_days <= 7 && (m.subscription.due_days < 0 || !m.subscription.auto_renew)).length,
     monthly_cost: Object.entries(live.reduce<Record<string, number>>((acc, m) => { if (m.subscription) acc[m.subscription.currency] = (acc[m.subscription.currency] ?? 0) + Math.round(monthly(m.subscription.price_cents, m.subscription.cycle)); return acc; }, {})).map(([currency, cents]) => ({ currency, cents })),
     traffic_month: { up, down },
@@ -275,7 +277,7 @@ function createMachine(it: ProvisionItem, c: ProvisionCheckItem): MachineView {
   };
   if (m.kind !== 'relay') {
     const relay = machine(it.relay_id!);
-    const e: EntryView = { id: `e${db.seq++}`, relay: { id: relay.id, name: relay.name }, node: { id, name: m.name }, port: c.relay_port ?? 20999, lifecycle: 'provisioning', applied: false, apply_error: null, tcp: null, egress: null, traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 } };
+    const e: EntryView = { id: `e${db.seq++}`, relay: { id: relay.id, name: relay.name }, node: { id, name: m.name }, port: c.relay_port ?? 20999, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 } };
     m.entries = [e]; relay.entries.push(e);
   }
   recomputeDue(m); m.quota = quotaOf(m);
@@ -441,7 +443,7 @@ R('GET', '/entries/([^/]+)/share', ({ params }) => {
 R('POST', '/machines/([^/]+)/entries', ({ params, body }) => {
   const m = machine(params[0]); const relay = machine(body.relay_id);
   const port = Math.max(20000, ...relay.entries.map((x) => x.port)) + 1;
-  const e: EntryView = { id: `e${db.seq++}`, relay: { id: relay.id, name: relay.name }, node: { id: m.id, name: m.name }, port, lifecycle: 'provisioning', applied: false, apply_error: null, tcp: null, egress: null, traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 } };
+  const e: EntryView = { id: `e${db.seq++}`, relay: { id: relay.id, name: relay.name }, node: { id: m.id, name: m.name }, port, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 } };
   m.entries.push(e); relay.entries.push(e);
   const job = newJob('attach_entry', { id: m.id, name: m.name }, [['apply', '等待线路机应用'], ['verify', '出口验收']]);
   drive(job, 2000, () => { e.lifecycle = 'active'; e.applied = true; });
@@ -528,7 +530,7 @@ function planMove(m: MachineView, toId: string, fromId?: string): { old: EntryVi
 }
 function startMove(m: MachineView, plan: { old: EntryView; to: MachineView }) {
   const { old, to } = plan;
-  const ne: EntryView = { id: `e${db.seq++}`, relay: { id: to.id, name: to.name }, node: { id: m.id, name: m.name }, port: Math.max(20000, ...to.entries.map((x) => x.port)) + 1, lifecycle: 'provisioning', applied: false, apply_error: null, tcp: null, egress: null, traffic: blankTraffic() };
+  const ne: EntryView = { id: `e${db.seq++}`, relay: { id: to.id, name: to.name }, node: { id: m.id, name: m.name }, port: Math.max(20000, ...to.entries.map((x) => x.port)) + 1, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, traffic: blankTraffic() };
   m.entries.push(ne); to.entries.push(ne);
   const job = newJob('move_entry', { id: m.id, name: m.name }, MOVE_STEPS);
   job.result = { new_entry_id: ne.id, old_entry_id: old.id, from_relay_id: old.relay.id, to_relay_id: to.id, share_changed: true, note: '客户端需要换成新的分享链接' };
@@ -616,7 +618,7 @@ R('POST', '/machines/([^/]+)/restore', ({ params, body }) => {
   m.health = { status: 'unknown', reasons: [{ key: 'provisioning', severity: 'info', text: '恢复作业进行中' }] };
   let e: EntryView | null = null;
   if (relay) {
-    e = { id: `e${db.seq++}`, relay: { id: relay.id, name: relay.name }, node: { id: m.id, name: m.name }, port: Math.max(20000, ...relay.entries.map((x) => x.port)) + 1, lifecycle: 'provisioning', applied: false, apply_error: null, tcp: null, egress: null, traffic: blankTraffic() };
+    e = { id: `e${db.seq++}`, relay: { id: relay.id, name: relay.name }, node: { id: m.id, name: m.name }, port: Math.max(20000, ...relay.entries.map((x) => x.port)) + 1, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, traffic: blankTraffic() };
     m.entries = [e]; relay.entries.push(e);
   }
   const relaySteps: [string, string][] = [['preflight', '预检与身份'], ['bootstrap', '引导密钥'], ['converge_relay', '线路机收敛（SSH 加固、Xray）'], ['agent', '安装 agent'], ['wait_report', '等待首次上报'], ['wait_applied', '等待 Xray 配置生效'], ['activate', '上线']];

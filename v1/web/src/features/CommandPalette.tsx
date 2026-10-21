@@ -60,7 +60,7 @@ export default function CommandPalette({ theme }: { theme: Theme }) {
       </CommandDialog>
 
       <ConfirmDialog open={askUpgrade} onOpenChange={setAskUpgrade} title="升级全部 agent？" confirmLabel="全部升级"
-        description="会给所有在用的线路机和 VPS 节点各建一个升级作业（已有进行中作业的会跳过），升级时 agent 会重启，不影响线路上的连接。"
+        description="会给所有在用的线路机和落地机各建一个升级作业（已有进行中作业的会跳过），升级时 agent 会重启，不影响线路上的连接。"
         onConfirm={async () => { const r = await upgradeAll.mutateAsync(); toast.ok(`已提交 ${r.jobs.length} 个升级作业`); }} />
     </>
   );
@@ -108,7 +108,7 @@ function PaletteBody({ theme, askUpgrade }: { theme: Theme; askUpgrade: () => vo
               ))}
             </CommandGroup>
             <CommandGroup heading="动作">
-              <CommandItem value="上架节点 provision 添加机器" onSelect={() => go('/provision')}><CloudUpload /><span className="cmd-main">上架节点</span></CommandItem>
+              <CommandItem value="上架机器 provision 添加机器 落地机 家宽代理 线路机" onSelect={() => go('/provision')}><CloudUpload /><span className="cmd-main">上架机器</span></CommandItem>
               <CommandItem value="新建静默 silence 维护窗口" onSelect={() => go('/incidents?silence=new')}><BellOff /><span className="cmd-main">新建静默</span></CommandItem>
               <CommandItem value="复制某机器 IP copy ip" onSelect={() => { setSearch(''); setMode('copy-ip'); }}><Clipboard /><span className="cmd-main">复制某台机器的 IP…</span></CommandItem>
               <CommandItem value="搬空线路机 evacuate 换线路机 退役 下线" onSelect={() => { setSearch(''); setMode('evacuate'); }}><PackageOpen /><span className="cmd-main">搬空线路机…</span></CommandItem>

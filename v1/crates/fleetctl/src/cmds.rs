@@ -224,6 +224,15 @@ pub fn ls(ctx: &Ctx, team: Option<&str>, kind: Option<&str>, status: Option<&str
     Ok(0)
 }
 
+/// 负载同网页：1 分钟平均负载 ÷ agent 报的核数，折成百分比；容器里不报负载（null）
+fn load_cn(load1: Option<f64>, cores: Option<i64>) -> String {
+    match (load1, cores) {
+        (None, _) => "-".into(),
+        (Some(l), Some(c)) if c > 0 => format!("{:.0}%（1 分钟 {l:.2} · {c} 核）", l / c as f64 * 100.0),
+        (Some(l), _) => format!("1 分钟 {l:.2}"),
+    }
+}
+
 pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
     let (id, _) = ctx.find_id(machine, Want::Any)?;
     let m = ctx.c.get(&format!("/machines/{id}"))?;
@@ -251,7 +260,7 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
                     num(&m, "/host/cpu_pct").map(|x| format!("{x:.0}")).unwrap_or("-".into()),
                     pct(num(&m, "/host/mem_used"), num(&m, "/host/mem_total")),
                     pct(num(&m, "/host/disk_used"), num(&m, "/host/disk_total")),
-                    num(&m, "/host/load1").map(|x| format!("{x:.2}")).unwrap_or("-".into()),
+                    load_cn(num(&m, "/host/load1"), m.pointer("/agent/cores").and_then(|x| x.as_i64())),
                     st(&m, "/host/tcp_conns"),
                     bps(num(&m, "/host/net_rx_bps").unwrap_or(0.0)),
                     bps(num(&m, "/host/net_tx_bps").unwrap_or(0.0)),
@@ -672,6 +681,13 @@ mod tests {
     fn due_and_cycle_wording() {
         assert_eq!((due_cn(3), due_cn(0), due_cn(-2)), ("3 天后到期".to_string(), "今天到期".to_string(), "已过期 2 天".to_string()));
         assert_eq!((cycle_cn("monthly"), cycle_cn("semiannual"), cycle_cn("yearly")), ("月", "半年", "年"));
+    }
+
+    #[test]
+    fn load_as_percent_of_cores() {
+        assert_eq!(load_cn(Some(0.5), Some(2)), "25%（1 分钟 0.50 · 2 核）");
+        assert_eq!(load_cn(Some(0.5), None), "1 分钟 0.50");
+        assert_eq!(load_cn(None, Some(2)), "-");
     }
 
     #[test]

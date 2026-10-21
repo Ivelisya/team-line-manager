@@ -74,14 +74,14 @@ const KEYS: { keys: string[]; text: string }[] = [
   { keys: [']'], text: '抽屉打开时，切到下一台机器' },
   { keys: ['?'], text: '打开这份快捷键帮助' },
   { keys: ['Esc'], text: '关闭抽屉、对话框和面板' },
-  { keys: ['Enter'], text: '在节点表格里，打开当前行的详情' },
+  { keys: ['Enter'], text: '在机器表格里，打开当前行的详情' },
 ];
 
 function ShortcutsHelp({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
-        <DialogHeader><DialogTitle>键盘快捷键</DialogTitle><DialogDescription>在节点卡片或表格行上点右键，可以直接打开菜单：复制 IP、升级 agent、新建静默、退役。</DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>键盘快捷键</DialogTitle><DialogDescription>在机器卡片或表格行上点右键，可以直接打开菜单：复制 IP、升级 agent、新建静默、退役。</DialogDescription></DialogHeader>
         <ul className="hk-list">
           {KEYS.map((k) => (
             <li key={k.text}><span className="hk-keys">{k.keys.map((x, i) => <React.Fragment key={x}>{i > 0 && <span className="t-muted">+</span>}<kbd className="kbd">{x}</kbd></React.Fragment>)}</span><span>{k.text}</span></li>
