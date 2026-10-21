@@ -364,7 +364,7 @@ mod tests {
         let steps = plan(&rt_of(&base), &base, &with);
         assert_eq!(
             kinds(&steps),
-            vec![format!("ado {}", tags::outbound(id)), format!("adi {}", tags::inbound(id)), format!("adi probe-{}", id.simple()), "adrules (6 条)".to_string()]
+            vec![format!("ado {}", tags::outbound(id)), format!("adi {}", tags::inbound(id)), format!("adi probe-{}", id.simple()), "adrules (7 条)".to_string()]
         );
         let mut rt = rt_of(&base);
         simulate(&mut rt, &steps).unwrap();

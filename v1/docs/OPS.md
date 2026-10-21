@@ -120,7 +120,7 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 
 ## 7. 版本升级顺序
 先升中控（`lab/deploy-server.sh` 就是先装 fleet-server、再把新 agent 放进 dist），再 `fleetctl upgrade-agent --all --yes` 升 agent：新 agent 的上报可能带旧中控不认的字段形状（如容器里 `load1` 为 null），旧中控会拒收整份上报。
-反过来，期望状态里的新东西旧 agent 也不认：直出入口（出站 `direct`）要等那台线路机的 agent 升级后再建，否则线路机报「agent 版本过旧」、整台的配置停在旧代数（这时升级 agent，或取消那个新增入口作业把直出入口摘掉，都能恢复）。新 agent 第一次应用时路由 `domainStrategy` 从 AsIs 变成 IPIfNonMatch，属于骨架变化，Xray 会重启一次（客户连接断开一次）。
+反过来，期望状态里的新东西旧 agent 也不认：直出入口（出站 `direct`）要等那台线路机的 agent 升级后再建，否则线路机报「agent 版本过旧」、整台的配置停在旧代数（这时升级 agent，或取消那个新增入口作业把直出入口摘掉，都能恢复）。
 
 ## 8. PostgreSQL 参数建议
 发行版默认值（`shared_buffers = 128MB`、`work_mem = 4MB`）对中控偏小，建议在中控机上调：

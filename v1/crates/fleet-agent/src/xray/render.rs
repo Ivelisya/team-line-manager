@@ -15,13 +15,6 @@ pub const API_PORT: u16 = 62789;
 pub const STATIC_OUTBOUNDS: [&str; 3] = ["deny", "direct", "blocked"];
 /// mihomo 兼容：minClientVer 不得高于此值
 pub const MAX_MIN_CLIENT_VER: &str = "1.8.2";
-/// 路由的域名策略。IPIfNonMatch：目标是域名且没有任何规则命中时，解析成 IP 再匹配一遍。
-/// 节点入口的规则只按入站匹配（第一遍必然命中，从不解析，和 AsIs 完全一样）；直出入口的规则额外要求目标是 IP（[`ANY_IP`]），
-/// 域名目标第一遍落空、解析后第二遍先过 block-private——否则客户写一个解析到内网 / 回环的域名（localhost、127.0.0.1.nip.io），
-/// freedom 就会替他连上线路机本机的 Xray API（62789，可增删入站出站）和内网
-pub const DOMAIN_STRATEGY: &str = "IPIfNonMatch";
-/// 直出入口路由规则的目标条件：任意 IP（只为让域名目标先解析，见 [`DOMAIN_STRATEGY`]）
-const ANY_IP: [&str; 2] = ["0.0.0.0/0", "::/0"];
 
 pub struct RenderCtx {
     pub access_log: String,
@@ -55,7 +48,7 @@ pub fn is_static_outbound(tag: &str) -> bool {
 }
 fn is_entry_rule(v: &Value) -> bool {
     let t = rule_tag_of(v);
-    t.starts_with("rule-") || t.starts_with("probe-") || t.starts_with("policy-")
+    t.starts_with("rule-") || t.starts_with("probe-") || t.starts_with("policy-") || t.starts_with("guard-")
 }
 
 impl Rendered {
@@ -187,6 +180,15 @@ pub fn policy_tag(id: Uuid, part: &str) -> String {
     format!("policy-{}-{part}", id.simple())
 }
 
+/// 直出入口的守卫规则：目标端口是本机 Xray API 的连接一律 blocked，排在该入口其它规则之前。
+/// 路由是 AsIs，block-private 只拦 IP 目标；客户写一个解析到回环的域名（localhost、127.0.0.1.nip.io），
+/// freedom 会在线路机本机替他解析并连上 API（可增删入站出站）。按端口拦和怎么解析无关。
+/// 不改成 IPIfNonMatch 让域名先解析再过 block-private：解析结果落在 198.18.0.0/15 的 fake-ip DNS 环境（实验室）里，
+/// 所有域名都会被当成内网拦掉
+fn guard_rule(e: &DesiredEntry) -> Value {
+    json!({"type": "field", "ruleTag": format!("guard-{}-api", e.id.simple()), "inboundTag": [tags::inbound(e.id)], "port": API_PORT.to_string(), "outboundTag": "blocked"})
+}
+
 /// 访问策略规则：排在该入口默认路由规则之前，只匹配该入口自己的入站（探测入站有独立规则，不受影响）。
 /// - allowlist：名单内走原出站，其余 blocked
 /// - denylist：名单内 blocked，其余落到默认规则
@@ -308,15 +310,11 @@ pub fn render(d: &DesiredState, ctx: &RenderCtx) -> Result<Rendered> {
             inbounds.push(probe_inbound_json(e.id, *p));
             rules.push(json!({"type": "field", "ruleTag": probe_tag(e.id), "inboundTag": [probe_tag(e.id)], "outboundTag": tags::outbound(e.id)}));
         }
-        let mut own = policy_rules(e);
-        own.push(json!({"type": "field", "ruleTag": tags::rule(e.id), "inboundTag": [tags::inbound(e.id)], "outboundTag": tags::outbound(e.id)}));
         if e.outbound == Outbound::Direct {
-            // 只匹配 IP 目标：域名目标解析后再匹配，先过 block-private（见 DOMAIN_STRATEGY）
-            for r in &mut own {
-                r["ip"] = json!(ANY_IP);
-            }
+            entry_rules.push(guard_rule(e));
         }
-        entry_rules.extend(own);
+        entry_rules.extend(policy_rules(e));
+        entry_rules.push(json!({"type": "field", "ruleTag": tags::rule(e.id), "inboundTag": [tags::inbound(e.id)], "outboundTag": tags::outbound(e.id)}));
     }
     rules.push(json!({"type": "field", "ruleTag": "block-private", "ip": ["geoip:private"], "outboundTag": "blocked"}));
     rules.push(json!({"type": "field", "ruleTag": "block-bittorrent", "protocol": ["bittorrent"], "outboundTag": "blocked"}));
@@ -324,7 +322,7 @@ pub fn render(d: &DesiredState, ctx: &RenderCtx) -> Result<Rendered> {
     let full = json!({
         "log": log, "api": api, "stats": stats, "policy": policy,
         "inbounds": inbounds, "outbounds": outbounds,
-        "routing": {"domainStrategy": DOMAIN_STRATEGY, "rules": rules}
+        "routing": {"domainStrategy": "AsIs", "rules": rules}
     });
     Ok(Rendered::from_full(full))
 }
@@ -423,7 +421,7 @@ pub mod tests {
                 {"tag": format!("out-{id}"), "protocol": "shadowsocks",
                  "settings": {"servers": [{"address": "10.0.0.9", "port": 8388, "method": "aes-256-gcm", "password": "pw"}]}}
             ],
-            "routing": {"domainStrategy": "IPIfNonMatch", "rules": [
+            "routing": {"domainStrategy": "AsIs", "rules": [
                 {"type": "field", "ruleTag": format!("probe-{id}"), "inboundTag": [format!("probe-{id}")], "outboundTag": format!("out-{id}")},
                 {"type": "field", "ruleTag": "block-private", "ip": ["geoip:private"], "outboundTag": "blocked"},
                 {"type": "field", "ruleTag": "block-bittorrent", "protocol": ["bittorrent"], "outboundTag": "blocked"},
@@ -597,37 +595,37 @@ x"]));
         assert_eq!(inb["protocol"], "vless");
         assert_eq!(inb["port"], 20002);
         assert!(r.inbounds.iter().any(|i| tag_of(i) == format!("probe-{id2}") && i["port"] == 30002));
-        // 规则顺序：探测（不限目标，回显服务可能在内网）→ 内网 / BT 屏蔽 → 各入口；直出入口的规则只认 IP 目标
+        // 规则顺序：探测 → 内网 / BT 屏蔽（同节点入口）→ 各入口；直出入口先过「目标端口是本机 Xray API → blocked」
         assert_eq!(
             rule_tags(&r),
-            vec![format!("probe-{id1}"), format!("probe-{id2}"), "block-private".to_string(), "block-bittorrent".into(), format!("rule-{id1}"), format!("rule-{id2}")]
+            vec![
+                format!("probe-{id1}"), format!("probe-{id2}"), "block-private".to_string(), "block-bittorrent".into(),
+                format!("rule-{id1}"), format!("guard-{id2}-api"), format!("rule-{id2}")
+            ]
         );
         assert_eq!(
             r.rules[5],
-            json!({"type": "field", "ruleTag": format!("rule-{id2}"), "inboundTag": [format!("in-{id2}")], "ip": ["0.0.0.0/0", "::/0"], "outboundTag": format!("out-{id2}")})
+            json!({"type": "field", "ruleTag": format!("guard-{id2}-api"), "inboundTag": [format!("in-{id2}")], "port": "62789", "outboundTag": "blocked"})
         );
-        assert!(r.rules[4].get("ip").is_none(), "节点入口的规则不变：只按入站匹配，第一遍必然命中、从不解析域名");
-        assert!(r.rules[1].get("ip").is_none(), "探测规则不限目标");
-        assert_eq!(r.full["routing"]["domainStrategy"], "IPIfNonMatch");
-        // 直出入口不影响骨架：增删它只走热增删，不重启 Xray
+        assert_eq!(r.rules[6], json!({"type": "field", "ruleTag": format!("rule-{id2}"), "inboundTag": [format!("in-{id2}")], "outboundTag": format!("out-{id2}")}));
+        assert!(!rule_tags(&r).contains(&format!("guard-{id1}-api").as_str()), "节点入口没有守卫规则（出口在节点上）");
+        assert_eq!(r.full["routing"]["domainStrategy"], "AsIs");
+        // 守卫规则属于入口规则：增删直出入口只走热增删，不重启 Xray
         assert_eq!(r.static_part, render(&desired(vec![entry(1, 20001, true)]), &ctx()).unwrap().static_part);
         assert_eq!(Rendered::from_full(r.full.clone()), r);
     }
 
     #[test]
-    fn direct_entry_policy_rules_also_wait_for_ip() {
-        // 线路机目前没有访问策略，但万一下发了，直出入口的策略规则同样只认 IP 目标（域名先解析、先过内网屏蔽）
+    fn direct_entry_guard_precedes_policy_rules() {
+        // 线路机目前没有访问策略，但万一下发了：守卫在策略规则之前（白名单里的域名也连不到本机 API），策略照常
         let mut e = direct(1, 20001);
         e.policy = Some(EntryPolicy { mode: PolicyMode::Allowlist, domains: vec!["domain:a.com".into()] });
         let r = render(&desired(vec![e]), &ctx()).unwrap();
         let id = Uuid::from_u128(1).simple().to_string();
-        assert_eq!(rule_tags(&r)[3..], [format!("policy-{id}-match"), format!("policy-{id}-default"), format!("rule-{id}")]);
-        for x in &r.rules[3..] {
-            assert_eq!(x["ip"], json!(["0.0.0.0/0", "::/0"]), "{x}");
-        }
-        assert_eq!(r.rules[3]["outboundTag"], format!("out-{id}"));
-        assert_eq!(r.rules[3]["domain"], json!(["domain:a.com"]));
-        assert_eq!(r.rules[4]["outboundTag"], "blocked");
+        assert_eq!(rule_tags(&r)[3..], [format!("guard-{id}-api"), format!("policy-{id}-match"), format!("policy-{id}-default"), format!("rule-{id}")]);
+        assert_eq!(r.rules[4]["outboundTag"], format!("out-{id}"));
+        assert_eq!(r.rules[4]["domain"], json!(["domain:a.com"]));
+        assert_eq!(r.rules[5]["outboundTag"], "blocked");
     }
 
     #[test]
