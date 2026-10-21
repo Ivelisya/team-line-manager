@@ -6,12 +6,13 @@
 use crate::config::Role;
 use crate::host;
 use crate::queue::Queue;
-use crate::server::{Outcome, ServerClient};
+use crate::server::{Outcome, ServerClient, REVOKED_SLEEP};
 use crate::state::{access_cursor_path, stats_path, SeqState, Shared};
 use crate::util::{backoff, load_json, now_ms, save_json};
 use crate::xray::access::{local_utc_offset_s, Cursor, Tailer};
+use crate::xray::stats::{carry_samples, StatsFile, StatsState};
 use fleet_proto::{AgentHealth, Report};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use tokio::sync::watch;
@@ -23,20 +24,22 @@ const MAX_ENTRIES_PER_REPORT: usize = 3000;
 const MAX_PROBES_PER_REPORT: usize = 1000;
 const QUEUE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const QUEUE_MAX_AGE_MS: i64 = 6 * 3600 * 1000;
-const REVOKED_SLEEP: Duration = Duration::from_secs(600);
+/// 服务端连续拒收（4xx）这么多份报告就按上报失败处理
+const REJECTS_AS_FAILURE: u32 = 3;
 const FLUSH_MAX_REPORTS: usize = 200;
 const FLUSH_MAX_TIME: Duration = Duration::from_secs(20);
 /// 访问日志有积压时，一轮里追加只含访问事件的报告最多花这么久（之后先去发送，下一轮再追）
 const CATCHUP_MAX_TIME: Duration = Duration::from_secs(3);
-/// 上报连续失败（断网 / 服务端不可达）时，建报间隔至少拉长到这么久：
+/// 上报连续失败（断网 / 服务端不可达 / 连续拒收）时，建报间隔至少拉长到这么久：
 /// 合并更多样本进同一份报告，少产生队列文件（每份离线报告恢复后都要一次 RTT 重放）
 const OFFLINE_BUILD_INTERVAL: Duration = Duration::from_secs(60);
 
-/// 磁盘相关状态：队列、序号、访问日志尾读器
+/// 磁盘相关状态：队列、序号、访问日志尾读器、stats.json（最近落盘的流量基线 + 结转表）
 struct Core {
     queue: Queue,
     seq: SeqState,
     tailer: Option<Tailer>,
+    stats: StatsFile,
 }
 
 fn lock(core: &Mutex<Core>) -> MutexGuard<'_, Core> {
@@ -46,12 +49,12 @@ fn lock(core: &Mutex<Core>) -> MutexGuard<'_, Core> {
 pub struct Reporter {
     sh: Arc<Shared>,
     core: Arc<Mutex<Core>>,
-    /// 队列长度（Queue 维护），异步线程上只读它，不拿 core 的锁
-    queue_len: Arc<AtomicUsize>,
     client: Arc<ServerClient>,
     boot_id: String,
     interval_s: u32,
     fails: u32,
+    /// 服务端连续拒收的报告数（被接收一次就清零）
+    rejects: u32,
     next_send: Instant,
 }
 
@@ -71,10 +74,10 @@ impl Reporter {
         let queue = Queue::open(cfg.data_dir.join("queue"), QUEUE_MAX_BYTES, QUEUE_MAX_AGE_MS)?;
         let seq = SeqState::load(crate::state::state_path(&cfg), queue.newest());
         let tailer = (cfg.role == Role::Relay).then(|| Tailer::new(cfg.access_log.clone(), load_json::<Cursor>(&access_cursor_path(&cfg))));
-        tracing::info!(pending = queue.len(), seq = seq.seq, "上报器启动");
-        let queue_len = queue.len_handle();
-        let core = Arc::new(Mutex::new(Core { queue, seq, tailer }));
-        Ok(Self { sh, core, queue_len, client, boot_id: host::boot_id(), interval_s: 10, fails: 0, next_send: Instant::now() })
+        let stats = load_json::<StatsFile>(&stats_path(&cfg)).unwrap_or_default();
+        tracing::info!(pending = queue.len(), seq = seq.seq, carried_entries = stats.carry.len(), "上报器启动");
+        let core = Arc::new(Mutex::new(Core { queue, seq, tailer, stats }));
+        Ok(Self { sh, core, client, boot_id: host::boot_id(), interval_s: 10, fails: 0, rejects: 0, next_send: Instant::now() })
     }
 
     pub async fn run(mut self, mut sd: watch::Receiver<bool>) {
@@ -100,7 +103,7 @@ impl Reporter {
                     more = self.build_and_push(false).await;
                 }
             }
-            if now >= self.next_send && self.queue_len.load(Ordering::Relaxed) > 0 {
+            if now >= self.next_send && !lock(&self.core).queue.is_empty() {
                 self.flush(&mut sd).await;
                 // flush 里等 POST 时收到了关停信号：直接落盘缓冲退出，不再等那个请求
                 if *sd.borrow() {
@@ -126,7 +129,7 @@ impl Reporter {
     fn note_failure(&mut self, why: &str) {
         self.fails += 1;
         if self.fails <= 3 || self.fails.is_multiple_of(10) {
-            tracing::warn!(fails = self.fails, pending = self.queue_len.load(Ordering::Relaxed), "上报失败：{why}");
+            tracing::warn!(fails = self.fails, pending = lock(&self.core).queue.len(), "上报失败：{why}");
         }
     }
 
@@ -181,6 +184,7 @@ impl Reporter {
                             tracing::info!("上报恢复，已确认 {n} 个报告");
                         }
                         self.fails = 0;
+                        self.rejects = 0;
                         sent += 1;
                     } else {
                         self.note_failure(&format!("服务端回 accepted_seq={} < 已发 seq={seq}", ack.accepted_seq));
@@ -204,14 +208,22 @@ impl Reporter {
                     // 永久拒绝：移入 dead/ 留证，继续发后面的，不堵队列
                     tracing::error!(seq, "服务端永久拒绝该报告（已移入 dead/ 目录）：{why}");
                     self.blocking(move |c| c.queue.dead_letter(seq)).await;
+                    self.rejects += 1;
+                    if self.rejects >= REJECTS_AS_FAILURE {
+                        // 连续拒收多半是系统性问题（agent 与中控版本不配套等）：照常建报、读访问日志只会把数据成批送进 dead/。
+                        // 按失败处理，进入离线模式（停读访问日志、停追赶、建报间隔拉长），访问日志留在文件里当缓冲
+                        self.note_failure(&format!("服务端连续 {} 次拒收报告", self.rejects));
+                        self.next_send = Instant::now() + backoff(self.fails, 5, 60);
+                        return;
+                    }
                 }
             }
         }
     }
 }
 
-/// 报告已落盘：这时才前移访问日志游标、持久化流量基线
-fn commit(sh: &Shared, tailer: &mut Option<Tailer>, cursor: Option<Cursor>, stats: Option<crate::xray::stats::StatsState>) {
+/// 报告已落盘：这时才前移访问日志游标、持久化流量基线（`base`：stats_task 交来的新基线）与结转表
+fn commit(sh: &Shared, tailer: &mut Option<Tailer>, cursor: Option<Cursor>, stats: &mut StatsFile, base: Option<StatsState>, carry_changed: bool) {
     if let Some(t) = tailer.as_mut() {
         let changed = cursor.is_some() && cursor != t.cursor;
         t.commit(cursor);
@@ -221,8 +233,12 @@ fn commit(sh: &Shared, tailer: &mut Option<Tailer>, cursor: Option<Cursor>, stat
             }
         }
     }
-    if let Some(s) = stats {
-        let _ = save_json(&stats_path(&sh.cfg), &s, false);
+    let dirty = carry_changed || base.is_some();
+    if let Some(b) = base {
+        stats.base = b;
+    }
+    if dirty {
+        let _ = save_json(&stats_path(&sh.cfg), &*stats, false);
     }
 }
 
@@ -243,7 +259,7 @@ fn build_and_push_blocking(sh: &Shared, core: &Mutex<Core>, boot_id: &str, with_
         stats_commit = b.stats_commit.take();
     }
     let mut guard = lock(core);
-    let Core { queue, seq, tailer } = &mut *guard;
+    let Core { queue, seq, tailer, stats } = &mut *guard;
     // 访问日志：上报连续失败或队列积压过半时暂停读取（日志文件就是缓冲，不丢行）。
     // 离线时读进队列的事件会随报告一起被 QUEUE_MAX_AGE_MS 淘汰；留在日志里，恢复后从游标处接着读
     let (mut access, mut next_cursor, mut more) = (vec![], None, false);
@@ -267,7 +283,7 @@ fn build_and_push_blocking(sh: &Shared, core: &Mutex<Core>, boot_id: &str, with_
     }
     if host.is_empty() && entries.is_empty() && probes.is_empty() && access.is_empty() && info.is_none() && xray.is_none() {
         // 没有内容；但访问日志游标（例如首次定位到文件末尾）仍要提交
-        commit(sh, tailer, next_cursor, stats_commit);
+        commit(sh, tailer, next_cursor, stats, stats_commit, false);
         return more;
     }
     let seq = match seq.next() {
@@ -278,6 +294,9 @@ fn build_and_push_blocking(sh: &Shared, core: &Mutex<Core>, boot_id: &str, with_
             return false;
         }
     };
+    // 之前被淘汰的报告里结转下来的入口流量，接在本轮样本后面随这份报告补报（落盘失败时截掉，结转表不动）
+    let sampled = entries.len();
+    entries.extend(carry_samples(&stats.carry, now_ms()));
     let report = Report {
         seq,
         boot_id: boot_id.to_string(),
@@ -292,13 +311,17 @@ fn build_and_push_blocking(sh: &Shared, core: &Mutex<Core>, boot_id: &str, with_
         agent_health: with_samples.then(|| health_of(sh, queue, tailer.as_ref())),
     };
     match queue.push(&report) {
-        Ok(()) => {
-            commit(sh, tailer, next_cursor, stats_commit);
+        Ok(evicted) => {
+            // 结转表里的流量已经落进这份报告；换成这次入队时被淘汰的报告里的
+            let carry_changed = !(stats.carry.is_empty() && evicted.is_empty());
+            stats.carry = evicted;
+            commit(sh, tailer, next_cursor, stats, stats_commit, carry_changed);
             more
         }
         Err(e) => {
             tracing::error!("报告落盘失败：{e:#}，数据留在内存缓冲");
-            let Report { host, entries, probes, info, .. } = report;
+            let Report { host, mut entries, probes, info, .. } = report;
+            entries.truncate(sampled);
             sh.buf.lock().unwrap().restore(host, entries, probes, info, stats_commit);
             false
         }
@@ -351,8 +374,40 @@ mod tests {
         Shared::new(Arc::new(cfg))
     }
 
+    fn core_with(d: &std::path::Path, seq_path: std::path::PathBuf, tailer: Option<Tailer>, max_bytes: u64) -> Mutex<Core> {
+        let queue = Queue::open(d.join("queue"), max_bytes, QUEUE_MAX_AGE_MS).unwrap();
+        Mutex::new(Core { queue, seq: SeqState::load(seq_path, None), tailer, stats: StatsFile::default() })
+    }
+
     fn core(d: &std::path::Path, seq_path: std::path::PathBuf, tailer: Option<Tailer>) -> Mutex<Core> {
-        Mutex::new(Core { queue: Queue::open(d.join("queue"), QUEUE_MAX_BYTES, QUEUE_MAX_AGE_MS).unwrap(), seq: SeqState::load(seq_path, None), tailer })
+        core_with(d, seq_path, tailer, QUEUE_MAX_BYTES)
+    }
+
+    #[test]
+    fn evicted_traffic_rides_on_a_later_report() {
+        use crate::xray::stats::Carry;
+        let d = tmp("carry");
+        let sh = shared(&d);
+        let id = uuid::Uuid::from_u128(7);
+        // 字节上限 1：每次入队都把最新一份以外的全部淘汰
+        let core = core_with(&d, d.join("state.json"), None, 1);
+        let carried = || load_json::<StatsFile>(&stats_path(&sh.cfg)).map(|f| f.carry);
+        sh.buf.lock().unwrap().push_entries(vec![fleet_proto::EntrySample { entry_id: id, ts_ms: 0, up_bytes: 100, down_bytes: 200, conns: 3 }]);
+        build_and_push_blocking(&sh, &core, "b", true, true);
+        // 第二份入队时第一份被淘汰：它的流量进结转表并随 stats.json 落盘
+        sh.buf.lock().unwrap().info = Some(Default::default());
+        build_and_push_blocking(&sh, &core, "b", true, true);
+        assert_eq!(lock(&core).stats.carry, Carry::from([(id, (100, 200))]));
+        assert_eq!(carried(), Some(Carry::from([(id, (100, 200))])));
+        // 第三份把它带出去；被淘汰的第二份没有流量，结转表清空
+        sh.buf.lock().unwrap().info = Some(Default::default());
+        build_and_push_blocking(&sh, &core, "b", true, true);
+        let c = lock(&core);
+        let r: Report = serde_json::from_slice(&c.queue.read(c.queue.oldest().unwrap()).unwrap()).unwrap();
+        assert_eq!(r.entries.iter().map(|e| (e.entry_id, e.up_bytes, e.down_bytes)).collect::<Vec<_>>(), [(id, 100, 200)]);
+        assert!(c.stats.carry.is_empty());
+        assert_eq!(carried(), Some(Carry::new()));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

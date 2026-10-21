@@ -18,7 +18,7 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
-reqwest = { workspace = true, features = ["socks"] }
+reqwest = { workspace = true, features = ["socks", "gzip"] }
 toml.workspace = true
 rand.workspace = true
 libc = "0.2"

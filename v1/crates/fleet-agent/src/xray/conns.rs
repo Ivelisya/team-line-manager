@@ -18,15 +18,14 @@ fn is_loopback(hex_addr: &str) -> bool {
 pub fn count(proc_net_tcp: &[&str], ports: &[u16]) -> HashMap<u16, u32> {
     let mut m: HashMap<u16, u32> = ports.iter().map(|p| (*p, 0)).collect();
     for content in proc_net_tcp {
+        // 每 30 秒扫一遍全部连接（可能上万行）：跳过 sl 列后逐列迭代取本地/远端/状态，不为每行分配 Vec，非 ESTABLISHED 直接跳过
         for l in content.lines().skip(1) {
-            let f: Vec<&str> = l.split_whitespace().collect();
-            if f.len() < 4 || f[3] != "01" {
-                continue;
-            }
-            let Some((_, lp)) = f[1].rsplit_once(':') else { continue };
+            let mut f = l.split_whitespace().skip(1);
+            let (Some(local), Some(remote), Some("01")) = (f.next(), f.next(), f.next()) else { continue };
+            let Some((_, lp)) = local.rsplit_once(':') else { continue };
             let Ok(port) = u16::from_str_radix(lp, 16) else { continue };
             let Some(c) = m.get_mut(&port) else { continue };
-            let Some((ra, _)) = f[2].rsplit_once(':') else { continue };
+            let Some((ra, _)) = remote.rsplit_once(':') else { continue };
             if !is_loopback(ra) {
                 *c += 1;
             }

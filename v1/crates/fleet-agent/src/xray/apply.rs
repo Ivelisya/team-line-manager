@@ -9,9 +9,13 @@ use crate::config::Config;
 use anyhow::{Context, Result};
 use fleet_proto::{tags, ApplyReport, DesiredState, EntryApply};
 use std::collections::HashSet;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
+
+/// 启动 / 重启 Xray 之后，最多等这么久让它的 API 就绪
+const READY_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct Applier {
     pub cfg: Arc<Config>,
@@ -42,8 +46,16 @@ impl Outcome {
     }
 }
 
-fn ids_of_tag(t: &str) -> Option<Uuid> {
-    tags::parse_entry_id(t)
+/// 磁盘上的现有配置（Agent 是唯一写者）
+fn read_prev(path: &Path) -> Option<Rendered> {
+    let raw = std::fs::read(path).ok()?;
+    match serde_json::from_slice(&raw) {
+        Ok(v) => Some(Rendered::from_full(v)),
+        Err(e) => {
+            tracing::warn!("现有 xray 配置无法解析，按空骨架处理：{e}");
+            None
+        }
+    }
 }
 
 impl Applier {
@@ -57,20 +69,13 @@ impl Applier {
         Self { cfg, cli, lock: tokio::sync::Mutex::new(()) }
     }
 
-    pub fn ctx(&self) -> RenderCtx {
-        RenderCtx { access_log: self.cfg.access_log.to_string_lossy().into(), api_addr: self.cfg.xray_api.clone() }
-    }
-
-    /// 磁盘上的现有配置（Agent 是唯一写者）
-    fn read_prev(&self) -> Option<Rendered> {
-        let raw = std::fs::read(&self.cfg.xray_config).ok()?;
-        match serde_json::from_slice(&raw) {
-            Ok(v) => Some(Rendered::from_full(v)),
-            Err(e) => {
-                tracing::warn!("现有 xray 配置无法解析，按空骨架处理：{e}");
-                None
-            }
-        }
+    /// 渲染候选配置并读出磁盘上的现有配置：构造、解析整份 xray.json 与读文件都放阻塞线程
+    async fn render_with_prev(&self, d: &DesiredState) -> Result<(Rendered, Option<Rendered>), String> {
+        let (d, ctx, path) = (d.clone(), RenderCtx::of(&self.cfg), self.cfg.xray_config.clone());
+        let r = tokio::task::spawn_blocking(move || render(&d, &ctx).map(|c| (c, read_prev(&path))))
+            .await
+            .map_err(|e| format!("渲染任务异常终止：{e}"))?;
+        r.map_err(|e| format!("渲染失败：{e:#}"))
     }
 
     /// 写配置（含 fsync）放到阻塞线程，不占异步运行时
@@ -92,7 +97,7 @@ impl Applier {
         let _g = self.lock.lock().await;
         let _ = std::fs::remove_dir_all(&self.cli.tmp_dir);
         if !self.cfg.xray_config.exists() {
-            let sk = skeleton(&self.ctx());
+            let sk = skeleton(&RenderCtx::of(&self.cfg));
             match self.write_config(&sk.full).await {
                 Ok(()) => tracing::info!("已写入空骨架 {}", self.cfg.xray_config.display()),
                 Err(e) => tracing::error!("写骨架失败：{e:#}"),
@@ -100,9 +105,24 @@ impl Applier {
         }
         if self.cli.lsi().await.is_err() {
             tracing::warn!("Xray API 不可达，尝试 systemctl start {}", self.cfg.xray_service);
-            if let Err(e) = ctl::systemctl(&["start", &self.cfg.xray_service]).await {
-                tracing::error!("启动 Xray 失败：{e:#}");
+            match ctl::systemctl(&["start", &self.cfg.xray_service]).await {
+                // 等 API 就绪再返回：紧接着的启动对齐要经 API 读运行态，Xray 还没起来会被当成"在运行但查询失败"，记一次假的应用失败
+                Ok(_) => {
+                    if let Err(e) = self.wait_ready().await {
+                        tracing::error!("Xray 已启动但 API 仍不可达：{e:#}");
+                    }
+                }
+                Err(e) => tracing::error!("启动 Xray 失败：{e:#}"),
             }
+        }
+    }
+
+    /// Xray 确实没在运行（API 连不上，且 systemd 里该服务不是 active）。
+    /// 重启路径的退避闸门只为不反复断开客户连接；Xray 没在跑就没有客户可断，周期对齐据此照常应用
+    pub async fn is_down(&self) -> bool {
+        match self.cli.lsi().await {
+            Ok(_) => false,
+            Err(e) => self.xray_is_down(&e).await,
         }
     }
 
@@ -110,8 +130,8 @@ impl Applier {
     /// 返回 Err(不一致的原因)。
     pub async fn check_aligned(&self, d: &DesiredState) -> Result<(), String> {
         let _g = self.lock.lock().await;
-        let cand = render(d, &self.ctx()).map_err(|e| format!("渲染失败：{e:#}"))?;
-        match self.read_prev() {
+        let (cand, prev) = self.render_with_prev(d).await?;
+        match prev {
             Some(p) if p.full == cand.full => {}
             Some(_) => return Err("磁盘上的 xray.json 与期望状态不一致".into()),
             None => return Err("xray.json 缺失或无法解析".into()),
@@ -156,14 +176,12 @@ impl Applier {
     }
 
     async fn apply_inner(&self, d: &DesiredState) -> Outcome {
-        let ctx = self.ctx();
-        let cand = match render(d, &ctx) {
-            Ok(c) => c,
-            Err(e) => return Outcome::fail(format!("渲染失败：{e:#}")),
+        let (cand, prev_loaded) = match self.render_with_prev(d).await {
+            Ok(x) => x,
+            Err(e) => return Outcome::fail(e),
         };
-        let prev_loaded = self.read_prev();
         let static_changed = prev_loaded.as_ref().is_some_and(|p| p.static_part != cand.static_part);
-        let prev = prev_loaded.clone().unwrap_or_else(|| skeleton(&ctx));
+        let prev = prev_loaded.clone().unwrap_or_else(|| skeleton(&RenderCtx::of(&self.cfg)));
         let all_ids: HashSet<Uuid> = d.entries.iter().filter(|e| e.enabled).map(|e| e.id).collect();
 
         // 先看运行态、算计划，确有写配置 / 重启 / 改运行态的动作时才跑 xray -test（幂等应用和启动对齐不该白起一个 xray 子进程）
@@ -192,7 +210,7 @@ impl Applier {
         };
 
         let steps = plan(&rt, &prev, &cand);
-        let changed: HashSet<Uuid> = steps.iter().filter_map(|s| ids_of_tag(&s.tag)).collect();
+        let changed: HashSet<Uuid> = steps.iter().filter_map(|s| tags::parse_entry_id(&s.tag)).collect();
         if steps.is_empty() {
             if prev_loaded.as_ref().map(|p| &p.full) == Some(&cand.full) {
                 return Outcome::default(); // 幂等：什么都不用做
@@ -214,7 +232,7 @@ impl Applier {
         for (i, s) in steps.iter().enumerate() {
             tracing::info!("  {}", s.op.describe());
             if let Err(e) = self.cli.exec(&s.op).await {
-                let culprit = ids_of_tag(&s.tag).into_iter().collect();
+                let culprit = tags::parse_entry_id(&s.tag).into_iter().collect();
                 let msg = self.rollback(&steps[..=i], &rt, &format!("{}：{e:#}", s.op.describe())).await;
                 return Outcome { error: Some(msg), changed, culprit, ..Default::default() };
             }
@@ -272,35 +290,48 @@ impl Applier {
         }
     }
 
-    /// Xray 没在运行 / 骨架变化：写配置 → systemctl restart → 等就绪 → 核对
+    /// 轮询到能经 API 读出运行态为止，最多 READY_TIMEOUT
+    async fn wait_ready(&self) -> Result<Runtime> {
+        let t0 = Instant::now();
+        loop {
+            match self.cli.runtime().await {
+                Ok(rt) => return Ok(rt),
+                Err(e) if t0.elapsed() > READY_TIMEOUT => return Err(e).context(format!("{}s 内 Xray API 未就绪", READY_TIMEOUT.as_secs())),
+                Err(_) => tokio::time::sleep(Duration::from_millis(500)).await,
+            }
+        }
+    }
+
+    /// systemctl restart → 等 API 就绪 → 核对运行态与 `want` 一致
+    async fn restart_and_verify(&self, want: &Rendered) -> Result<()> {
+        ctl::systemctl(&["restart", &self.cfg.xray_service]).await?;
+        let rt = self.wait_ready().await?;
+        verify(&rt, want).map_err(anyhow::Error::msg)
+    }
+
+    /// Xray 没在运行 / 骨架变化：写配置 → systemctl restart → 等就绪 → 核对；失败则回滚到旧配置
     async fn restart_apply(&self, cand: &Rendered, prev: Option<&Rendered>, ids: HashSet<Uuid>) -> Outcome {
-        let old_bytes = std::fs::read(&self.cfg.xray_config).ok();
-        let fail = |m: String| Outcome { error: Some(m), changed: ids.clone(), culprit: HashSet::new(), ..Default::default() };
-        if let Err(e) = self.write_config(&cand.full).await {
-            return fail(format!("写配置失败：{e:#}"));
-        }
-        let res: Result<()> = async {
-            ctl::systemctl(&["restart", &self.cfg.xray_service]).await?;
-            let t0 = Instant::now();
-            loop {
-                match self.cli.runtime().await {
-                    Ok(rt) => return verify(&rt, cand).map_err(anyhow::Error::msg),
-                    Err(e) if t0.elapsed() > Duration::from_secs(30) => return Err(e).context("重启后 30s 内 Xray API 未就绪"),
-                    Err(_) => tokio::time::sleep(Duration::from_millis(500)).await,
-                }
-            }
-        }
-        .await;
-        match res {
-            Ok(()) => Outcome { changed: ids, ..Default::default() },
-            Err(e) => {
-                // 恢复旧配置并尽力拉起旧版本
-                if let (Some(b), Some(_)) = (old_bytes, prev) {
-                    let _ = crate::util::write_atomic(&self.cfg.xray_config, &b, true);
-                    let _ = ctl::systemctl(&["restart", &self.cfg.xray_service]).await;
-                }
-                fail(format!("重启应用失败：{e:#}"))
-            }
+        let error = match self.write_config(&cand.full).await {
+            Err(e) => Some(format!("写配置失败：{e:#}")),
+            Ok(()) => match self.restart_and_verify(cand).await {
+                Ok(()) => None,
+                Err(e) => Some(self.restart_rollback(prev, format!("重启应用失败：{e:#}")).await),
+            },
+        };
+        Outcome { error, changed: ids, ..Default::default() }
+    }
+
+    /// 重启路径失败：写回旧配置再重启，和正向一样等 API 就绪并核对运行态，回滚结果写进错误信息。
+    /// 读不到旧配置（缺失 / 无法解析）就没有可回滚的，原样返回错误
+    async fn restart_rollback(&self, prev: Option<&Rendered>, cause: String) -> String {
+        let Some(p) = prev else { return cause };
+        let back = match self.write_config(&p.full).await {
+            Ok(()) => self.restart_and_verify(p).await,
+            Err(e) => Err(e.context("写回旧配置失败")),
+        };
+        match back {
+            Ok(()) => format!("{cause}；已回滚并恢复"),
+            Err(e) => format!("{cause}；回滚后 Xray 仍未就绪：{e:#}"),
         }
     }
 }

@@ -45,7 +45,7 @@ pub struct AgentHealth {
     /// 因超过字节/时间上限被丢弃的报告数
     #[serde(default)]
     pub queue_dropped: u64,
-    /// 被移入 dead/ 的报告数（服务端永久拒绝，或同一 seq 反复 5xx）
+    /// 被移入 dead/ 的报告数：只有服务端永久拒绝（400/413/422 等 4xx）的才进 dead/，5xx 一直重试
     #[serde(default)]
     pub queue_dead: u64,
     #[serde(default)]
@@ -195,7 +195,8 @@ pub struct DesiredEntry {
     pub id: Uuid,
     pub port: u16,
     pub enabled: bool,
-    /// 入站备注（节点显示名），只用于人看
+    /// 入站备注（节点显示名），只用于人看：agent 不读它，也不写进 xray.json。
+    /// 中控改节点名 / 团队名 / 重排编号时代数仍会 +1，agent 收到后渲染结果不变，按幂等应用处理（不跑 xray -test、不动运行态）
     pub remark: String,
     pub client_uuid: Uuid,
     pub short_id: String,
@@ -235,6 +236,15 @@ pub enum Outbound {
     Shadowsocks { host: String, port: u16, method: String, password: String },
     Socks5 { host: String, port: u16, username: Option<String>, password: Option<String> },
     Http { host: String, port: u16, username: Option<String>, password: Option<String> },
+}
+
+impl Outbound {
+    /// 出站服务器地址 (host, port)
+    pub fn addr(&self) -> (&str, u16) {
+        match self {
+            Outbound::Shadowsocks { host, port, .. } | Outbound::Socks5 { host, port, .. } | Outbound::Http { host, port, .. } => (host, *port),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,14 +1,14 @@
 //! 磁盘有界队列：每个待发送的 Report 一个文件 `<seq:020>.json`。
-//! 先落盘再发送；服务端确认后删除；超过字节/时间上限从最旧的开始丢并计数。
+//! 先落盘再发送；服务端确认后删除；超过字节/时间上限从最旧的开始丢并计数（其中的入口流量交还给上报器结转）。
 //! 永久拒绝（4xx）的报告移入 `dead/`，不静默删除。
 
 use crate::util::{now_ms, write_atomic};
+use crate::xray::stats::{add_carry, Carry};
 use anyhow::Result;
-use fleet_proto::Report;
+use fleet_proto::{EntrySample, Report};
+use serde::Deserialize;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
 
 const DEAD_KEEP: usize = 50;
 
@@ -22,18 +22,26 @@ pub struct Queue {
     pub dropped: u64,
     /// 本进程内移入 dead/ 的报告数
     pub dead: u64,
-    /// 队列长度的副本：入队 / 确认 / 移入 dead/ 时更新，供不持锁的读者用
-    len_hint: Arc<AtomicUsize>,
 }
 
-fn path_of(dir: &std::path::Path, seq: u64) -> PathBuf {
+fn path_of(dir: &Path, seq: u64) -> PathBuf {
     dir.join(format!("{seq:020}.json"))
+}
+
+/// 只解析报告里的入口流量样本（访问事件等其余字段跳过）
+fn read_entries(path: &Path) -> Result<Vec<EntrySample>> {
+    #[derive(Deserialize)]
+    struct OnlyEntries {
+        #[serde(default)]
+        entries: Vec<EntrySample>,
+    }
+    Ok(serde_json::from_slice::<OnlyEntries>(&std::fs::read(path)?)?.entries)
 }
 
 impl Queue {
     pub fn open(dir: PathBuf, max_bytes: u64, max_age_ms: i64) -> Result<Self> {
         std::fs::create_dir_all(dir.join("dead"))?;
-        let mut q = Self { dir, items: BTreeMap::new(), bytes: 0, max_bytes, max_age_ms, dropped: 0, dead: 0, len_hint: Arc::default() };
+        let mut q = Self { dir, items: BTreeMap::new(), bytes: 0, max_bytes, max_age_ms, dropped: 0, dead: 0 };
         for e in std::fs::read_dir(&q.dir)? {
             let e = e?;
             let name = e.file_name().to_string_lossy().to_string();
@@ -52,23 +60,12 @@ impl Queue {
             q.bytes += md.len();
             q.items.insert(seq, (md.len(), mt));
         }
-        q.sync_len();
         Ok(q)
-    }
-
-    fn sync_len(&self) {
-        self.len_hint.store(self.items.len(), Ordering::Relaxed);
-    }
-
-    /// 队列长度的原子副本（不用拿外层的锁就能读）
-    pub fn len_handle(&self) -> Arc<AtomicUsize> {
-        self.len_hint.clone()
     }
 
     pub fn len(&self) -> usize {
         self.items.len()
     }
-    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
@@ -83,31 +80,39 @@ impl Queue {
         self.bytes as f32 / self.max_bytes as f32
     }
 
-    pub fn push(&mut self, r: &Report) -> Result<()> {
+    /// 入队；返回因此被淘汰的报告里的入口流量（见 `evict`）
+    pub fn push(&mut self, r: &Report) -> Result<Carry> {
         let body = serde_json::to_vec(r)?;
         write_atomic(&path_of(&self.dir, r.seq), &body, true)?;
         if let Some((old, _)) = self.items.insert(r.seq, (body.len() as u64, now_ms())) {
             self.bytes -= old;
         }
         self.bytes += body.len() as u64;
-        self.evict();
-        self.sync_len();
-        Ok(())
+        Ok(self.evict())
     }
 
-    fn evict(&mut self) {
+    /// 超过字节 / 时长上限就从最旧的开始丢（最新的一份总留着）。入口流量样本是增量，整份丢掉就永久少算：
+    /// 删之前把其中各入口的字节数累加出来交给上报器，结转到下一份报告
+    fn evict(&mut self) -> Carry {
         let now = now_ms();
+        let mut carry = Carry::new();
         while let Some((&seq, &(size, ts))) = self.items.iter().next() {
             if self.items.len() > 1 && (self.bytes > self.max_bytes || now - ts > self.max_age_ms) {
-                let _ = std::fs::remove_file(path_of(&self.dir, seq));
+                let path = path_of(&self.dir, seq);
+                match read_entries(&path) {
+                    Ok(es) => add_carry(&mut carry, &es),
+                    Err(e) => tracing::warn!(seq, "读取要丢弃的报告失败，其中的入口流量无法结转：{e:#}"),
+                }
+                let _ = std::fs::remove_file(path);
                 self.items.remove(&seq);
                 self.bytes -= size;
                 self.dropped += 1;
-                tracing::warn!(seq, dropped_total = self.dropped, "离线队列超限，丢弃最旧的报告");
+                tracing::warn!(seq, dropped_total = self.dropped, "离线队列超限，丢弃最旧的报告（入口流量结转到下一份报告）");
             } else {
                 break;
             }
         }
+        carry
     }
 
     /// 队列文件路径：调用方拿到路径后在阻塞线程里自己读（不在 async 线程上做磁盘 IO）
@@ -129,7 +134,6 @@ impl Queue {
                 self.bytes -= sz;
             }
         }
-        self.sync_len();
         done.len()
     }
 
@@ -145,7 +149,6 @@ impl Queue {
         if let Some((sz, _)) = self.items.remove(&seq) {
             self.bytes -= sz;
         }
-        self.sync_len();
         if let Ok(rd) = std::fs::read_dir(self.dir.join("dead")) {
             let mut names: Vec<_> = rd.filter_map(|e| e.ok()).map(|e| e.path()).collect();
             names.sort();
@@ -186,23 +189,18 @@ mod tests {
     fn push_ack_reopen() {
         let d = tmpdir("a");
         let mut q = Queue::open(d.clone(), 1 << 20, i64::MAX / 2).unwrap();
-        let len = q.len_handle();
         for s in 1..=3 {
             q.push(&rep(s, 10)).unwrap();
         }
-        assert_eq!(len.load(Ordering::Relaxed), 3);
         assert_eq!(q.oldest(), Some(1));
         let q2 = Queue::open(d.clone(), 1 << 20, i64::MAX / 2).unwrap();
         assert_eq!(q2.len(), 3);
-        assert_eq!(q2.len_handle().load(Ordering::Relaxed), 3);
         assert_eq!(q.ack_through(2), 2);
-        assert_eq!(len.load(Ordering::Relaxed), 1);
         assert_eq!(q.oldest(), Some(3));
         assert_eq!(serde_json::from_slice::<Report>(&q.read(3).unwrap()).unwrap().seq, 3);
         q.dead_letter(3);
         assert_eq!(q.dead, 1);
         assert!(q.is_empty());
-        assert_eq!(len.load(Ordering::Relaxed), 0);
         assert_eq!(q.bytes, 0);
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -211,12 +209,22 @@ mod tests {
     fn evicts_oldest_when_full() {
         let d = tmpdir("b");
         let mut q = Queue::open(d.clone(), 2000, i64::MAX / 2).unwrap();
+        // 每份报告给同一个入口带 s 字节上行：被丢掉的那些报告的流量要全部交回来结转
+        let id = uuid::Uuid::from_u128(1);
+        let mut carried = Carry::new();
         for s in 1..=10 {
-            q.push(&rep(s, 300)).unwrap();
+            let mut r = rep(s, 300);
+            r.entries = vec![EntrySample { entry_id: id, ts_ms: 0, up_bytes: s, down_bytes: 1, conns: 2 }];
+            for (k, (up, down)) in q.push(&r).unwrap() {
+                let c = carried.entry(k).or_default();
+                (c.0, c.1) = (c.0 + up, c.1 + down);
+            }
         }
         assert!(q.dropped > 0);
         assert!(q.bytes <= 2000);
         assert_eq!(*q.items.keys().last().unwrap(), 10);
+        let left: u64 = q.items.keys().sum();
+        assert_eq!(carried, Carry::from([(id, ((1..=10).sum::<u64>() - left, q.dropped))]));
         let _ = std::fs::remove_dir_all(&d);
     }
 }

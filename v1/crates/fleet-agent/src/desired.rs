@@ -1,6 +1,6 @@
 //! 线路机：长轮询期望状态 → 应用 → 回报。
 
-use crate::server::{Outcome, ServerClient};
+use crate::server::{Desired, Outcome, ServerClient, REVOKED_SLEEP};
 use crate::state::{load_applied, pending_ack_path, save_applied, Shared};
 use crate::util::{backoff, load_json, save_json};
 use crate::xray::apply::Applier;
@@ -10,7 +10,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
-const REVOKED_SLEEP: Duration = Duration::from_secs(600);
 /// 周期对齐检查间隔：磁盘配置 / Xray 运行态与已应用的期望状态是否一致
 const REALIGN_EVERY: Duration = Duration::from_secs(600);
 /// "重启路径"失败后的退避：首次 15 分钟，翻倍，封顶 6 小时（带抖动）
@@ -93,7 +92,8 @@ async fn startup_align(sh: &Shared, applier: &Applier) {
 async fn periodic_align(sh: &Shared, applier: &Applier, gate: &mut RestartGate) {
     let Some(d) = sh.applied.read().unwrap().clone() else { return };
     let Err(why) = applier.check_aligned(&d).await else { return };
-    if gate.remaining().is_some() {
+    // 闸门只为不反复断开客户连接：Xray 确实没在跑（崩了 / 被停了）就没有客户可断，照常应用把它拉起来
+    if gate.remaining().is_some() && !applier.is_down().await {
         tracing::warn!(generation = d.generation, "对齐检查发现不一致，但重启路径刚失败过，暂不重试：{why}");
         return;
     }
@@ -130,12 +130,12 @@ async fn report_applied(sh: &Shared, client: &ServerClient, rep: &ApplyReport, s
     for attempt in 0..3u32 {
         match client.post_applied(rep).await {
             Outcome::Ok(()) => {
-                let _ = std::fs::remove_file(pending_ack_path(&sh.cfg));
+                let _ = tokio::fs::remove_file(pending_ack_path(&sh.cfg)).await;
                 return true;
             }
             Outcome::Rejected(why) => {
                 tracing::error!(generation = rep.generation, "服务端拒绝应用回报：{why}（丢弃）");
-                let _ = std::fs::remove_file(pending_ack_path(&sh.cfg));
+                let _ = tokio::fs::remove_file(pending_ack_path(&sh.cfg)).await;
                 return true;
             }
             Outcome::Revoked => break,
@@ -156,6 +156,8 @@ async fn report_applied(sh: &Shared, client: &ServerClient, rep: &ApplyReport, s
 pub async fn desired_task(sh: Arc<Shared>, applier: Arc<Applier>, client: Arc<ServerClient>, mut sd: watch::Receiver<bool>) {
     let mut fails = 0u32;
     let mut gate = RestartGate::default();
+    // 本版本解析不了的最新代数：已回报"版本过旧"，之后带着它去长轮询，直到中控出了更新的一代（升级 agent 会重启进程，自然清零）
+    let mut unreadable = 0u64;
     startup_align(&sh, &applier).await;
     let mut last_align = Instant::now();
     loop {
@@ -167,28 +169,39 @@ pub async fn desired_task(sh: Arc<Shared>, applier: Arc<Applier>, client: Arc<Se
             periodic_align(&sh, &applier, &mut gate).await;
         }
         // 先补发上次没送达的回报
-        if let Some(p) = load_json::<ApplyReport>(&pending_ack_path(&sh.cfg)) {
+        let path = pending_ack_path(&sh.cfg);
+        if let Some(p) = tokio::task::spawn_blocking(move || load_json::<ApplyReport>(&path)).await.expect("读回报文件的任务异常终止") {
             report_applied(&sh, &client, &p, &mut sd).await;
         }
         // 重启路径的闸门关着时：带着失败的那一代去长轮询，服务端代数一变（有新配置）就返回；
-        // 不变就 30 s 一次的 204，不会重复拿到同一代去重试
-        let after = if gate.remaining().is_some() { gate.gen } else { sh.applied_gen.load(Ordering::Relaxed) };
+        // 不变就 30 s 一次的 204，不会重复拿到同一代去重试。解析不了的那一代同理
+        let after = (if gate.remaining().is_some() { gate.gen } else { sh.applied_gen.load(Ordering::Relaxed) }).max(unreadable);
         let t0 = Instant::now();
         let res = tokio::select! {
             r = client.get_desired(after) => r,
             _ = sd.wait_for(|v| *v) => return,
         };
         let pause = match res {
-            Outcome::Ok(None) => {
+            Outcome::Ok(Desired::Unchanged) => {
                 fails = 0;
                 // 防止服务端异常地立刻返回 204 导致空转
                 (t0.elapsed() < Duration::from_secs(1)).then_some(Duration::from_secs(2))
             }
-            Outcome::Ok(Some(d)) if gate.blocks(d.generation) => {
+            Outcome::Ok(Desired::Unreadable { generation, error }) => {
+                // 中控的期望状态用了本版本不认识的东西（新枚举值等）：重拉多少次都一样，回报失败让中控看到，等升级
+                tracing::error!(generation, "无法解析期望状态，agent 版本过旧？不再重拉这一代：{error}");
+                let rep = ApplyReport { generation, ok: false, error: Some(format!("agent 版本过旧，无法理解新的期望状态：{error}")), entries: vec![] };
+                note_apply(&sh, &rep, None);
+                report_applied(&sh, &client, &rep, &mut sd).await;
+                unreadable = generation;
+                fails = 0;
+                None
+            }
+            Outcome::Ok(Desired::State(d)) if gate.blocks(d.generation) => {
                 // 正常不会走到（上面已带着这一代去轮询）；防御：别在闸门期内重试
                 Some(Duration::from_secs(30))
             }
-            Outcome::Ok(Some(d)) => {
+            Outcome::Ok(Desired::State(d)) => {
                 tracing::info!(generation = d.generation, entries = d.entries.len(), "收到期望状态");
                 let res = applier.apply_detailed(&d).await;
                 let rep = res.report;

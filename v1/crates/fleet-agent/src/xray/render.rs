@@ -1,6 +1,7 @@
 //! DesiredState → 完整 xray.json（固定骨架 + 每个入口一组入站/出站/规则）。
 //! 纯函数，无副作用；apply 与 `render` 子命令共用。
 
+use crate::config::Config;
 use anyhow::{bail, ensure, Result};
 use fleet_proto::{tags, DesiredEntry, DesiredState, EntryPolicy, Outbound, PolicyMode, RelayParams};
 use serde_json::{json, Map, Value};
@@ -19,6 +20,9 @@ pub struct RenderCtx {
 }
 
 impl RenderCtx {
+    pub fn of(cfg: &Config) -> Self {
+        Self { access_log: cfg.access_log.to_string_lossy().into(), api_addr: cfg.xray_api.clone() }
+    }
     pub fn api_port(&self) -> u16 {
         self.api_addr.rsplit_once(':').and_then(|(_, p)| p.parse().ok()).unwrap_or(62789)
     }
@@ -244,9 +248,7 @@ fn validate(d: &DesiredState, api_port: u16) -> Result<String> {
             sid.len() <= 16 && sid.len() % 2 == 0 && sid.bytes().all(|b| b.is_ascii_hexdigit()),
             "入口 {} 的 short_id 必须是不超过 16 位的偶数长度十六进制：{sid:?}", e.id
         );
-        let (host, port) = match &e.outbound {
-            Outbound::Shadowsocks { host, port, .. } | Outbound::Socks5 { host, port, .. } | Outbound::Http { host, port, .. } => (host, *port),
-        };
+        let (host, port) = e.outbound.addr();
         ensure!(!host.trim().is_empty() && port != 0, "入口 {} 出站地址无效", e.id);
         if let Some(p) = &e.policy {
             match p.mode {

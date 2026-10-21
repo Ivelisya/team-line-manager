@@ -98,7 +98,7 @@ async fn real_main() -> Result<()> {
         "render" => {
             let cfg = load_config(&a, true)?;
             let d = read_desired(&a)?;
-            let ctx = xray::render::RenderCtx { access_log: cfg.access_log.to_string_lossy().into(), api_addr: cfg.xray_api.clone() };
+            let ctx = xray::render::RenderCtx::of(&cfg);
             println!("{}", serde_json::to_string_pretty(&xray::render::render(&d, &ctx)?.full)?);
         }
         "apply" => {

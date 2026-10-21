@@ -5,12 +5,19 @@ use fleet_proto::{ApplyReport, DesiredState, ReportAck};
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
+
+/// 收到 401（令牌无效 / 被撤销）后停发这么久再试
+pub const REVOKED_SLEEP: Duration = Duration::from_secs(600);
 
 pub struct ServerClient {
     http: reqwest::Client,
     base: String,
     token_file: PathBuf,
+    /// 缓存的令牌：第一次请求时读文件；收到 401 就丢掉，下次请求重读（手工换了令牌文件不必重启。
+    /// 中控换令牌走「装 agent」那一步，会重启 agent）
+    token: Mutex<Option<String>>,
     /// 令牌文件权限过宽的警告只打一次
     perm_warned: AtomicBool,
 }
@@ -59,6 +66,43 @@ pub enum Outcome<T> {
     Rejected(String),
 }
 
+impl<T> Outcome<T> {
+    /// Ok 里的值交给 `f` 继续分类（例如 2xx 但正文解析不了 → Retry），其余分类原样带过
+    pub fn and_then<U>(self, f: impl FnOnce(T) -> Outcome<U>) -> Outcome<U> {
+        match self {
+            Outcome::Ok(v) => f(v),
+            Outcome::Retry { wait, why } => Outcome::Retry { wait, why },
+            Outcome::Revoked => Outcome::Revoked,
+            Outcome::Rejected(s) => Outcome::Rejected(s),
+        }
+    }
+}
+
+/// 长轮询的结果
+#[derive(Debug)]
+pub enum Desired {
+    /// 204：没有比 after 新的代数
+    Unchanged,
+    State(DesiredState),
+    /// 有新代数，但本版本 agent 解析不了（中控新增了枚举值等）：只知道代数和解析错误
+    Unreadable { generation: u64, error: String },
+}
+
+/// 先按 JSON 取出代数，再做强类型解析：解析不了也知道是哪一代，能把"版本过旧"回报给中控，
+/// 而不是只记重试日志、永远停在旧代数
+fn parse_desired(text: &str) -> Outcome<Desired> {
+    let retry = |why: String| Outcome::Retry { wait: None, why };
+    let v: serde_json::Value = match serde_json::from_str(text) {
+        Ok(v) => v,
+        Err(e) => return retry(format!("DesiredState 不是合法 JSON：{e}")),
+    };
+    let Some(generation) = v.get("generation").and_then(|g| g.as_u64()) else { return retry("DesiredState 缺少 generation".into()) };
+    match serde_json::from_value(v) {
+        Ok(d) => Outcome::Ok(Desired::State(d)),
+        Err(e) => Outcome::Ok(Desired::Unreadable { generation, error: e.to_string() }),
+    }
+}
+
 /// HTTP 状态码 → 分类。纯函数，便于测试。
 pub fn classify(status: u16, retry_after_s: Option<u64>, body: &str) -> Outcome<()> {
     let short = || format!("HTTP {status}: {}", body.chars().take(200).collect::<String>());
@@ -90,15 +134,20 @@ impl ServerClient {
             let pem = std::fs::read(ca).with_context(|| format!("读取 CA {}", ca.display()))?;
             b = b.add_root_certificate(reqwest::Certificate::from_pem(&pem)?);
         }
-        Ok(Self { http: b.build()?, base: base.trim_end_matches('/').to_string(), token_file, perm_warned: AtomicBool::new(false) })
+        Ok(Self { http: b.build()?, base: base.trim_end_matches('/').to_string(), token_file, token: Mutex::new(None), perm_warned: AtomicBool::new(false) })
     }
 
-    /// 每次请求重读令牌，换令牌无需重启
+    /// 令牌：缓存里有就直接用，没有才读文件（读失败不缓存，下次再读）
     fn token(&self) -> Result<String> {
+        let mut cached = self.token.lock().unwrap();
+        if let Some(t) = cached.as_ref() {
+            return Ok(t.clone());
+        }
         let t = std::fs::read_to_string(&self.token_file).with_context(|| format!("读取令牌 {}", self.token_file.display()))?;
         self.warn_loose_perms();
         let t = t.trim().to_string();
         anyhow::ensure!(!t.is_empty(), "令牌文件为空");
+        *cached = Some(t.clone());
         Ok(t)
     }
 
@@ -116,105 +165,62 @@ impl ServerClient {
         r.headers().get("retry-after")?.to_str().ok()?.trim().parse().ok()
     }
 
+    /// 带上令牌发请求、读完正文，按状态码分类；Ok 里是 (状态码, 正文)。
+    /// 读不到令牌：30 s 后重试；401：丢掉缓存的令牌，下次请求重读文件
+    async fn call(&self, req: reqwest::RequestBuilder) -> Outcome<(u16, String)> {
+        let token = match self.token() {
+            Ok(t) => t,
+            Err(e) => return Outcome::Retry { wait: Some(Duration::from_secs(30)), why: format!("{e:#}") },
+        };
+        // 拿到响应头之前的任何错误（含连接超时、长轮询时服务端挂起到客户端超时）都是失败
+        let r = match req.bearer_auth(token).send().await {
+            Ok(r) => r,
+            Err(e) if e.is_timeout() => return Outcome::Retry { wait: None, why: format!("等待响应超时（服务端挂起？）：{e}") },
+            Err(e) => return Outcome::Retry { wait: None, why: format!("网络错误：{e}") },
+        };
+        let (status, ra) = (r.status().as_u16(), Self::retry_after(&r));
+        let text = match r.text().await {
+            Ok(t) => t,
+            // 2xx 之后读正文失败（超时、连接中断）：按失败计数退避。长轮询当成"无变化"的话失败被静默吞掉、立刻重拉
+            Err(e) if (200..300).contains(&status) => return Outcome::Retry { wait: None, why: format!("HTTP {status} 但读取正文失败：{e}") },
+            Err(_) => String::new(),
+        };
+        let out = classify(status, ra, &text);
+        if out == Outcome::Revoked {
+            *self.token.lock().unwrap() = None;
+        }
+        out.and_then(|()| Outcome::Ok((status, text)))
+    }
+
     /// 上报。请求体较大时 gzip 压缩（`Content-Encoding: gzip`，队列文件仍是明文 JSON，压缩只在发送时做）。
     /// 中控始终带解压层，agent 与中控同一版本发布，不做不支持压缩的回退。
     pub async fn post_report(&self, body: Vec<u8>) -> Outcome<ReportAck> {
-        let token = match self.token() {
-            Ok(t) => t,
-            Err(e) => return Outcome::Retry { wait: Some(Duration::from_secs(30)), why: format!("{e:#}") },
-        };
-        if body.len() < GZIP_MIN_BYTES {
-            return self.send_report(&token, body, false).await;
-        }
-        let gz = tokio::task::spawn_blocking(move || gzip(&body)).await.expect("gzip 压缩任务异常终止");
-        self.send_report(&token, gz, true).await
-    }
-
-    async fn send_report(&self, token: &str, body: Vec<u8>, gz: bool) -> Outcome<ReportAck> {
-        let mut req = self.http.post(format!("{}/agent/v1/report", self.base)).bearer_auth(token).header("content-type", "application/json");
+        let gz = body.len() >= GZIP_MIN_BYTES;
+        let body = if gz { tokio::task::spawn_blocking(move || gzip(&body)).await.expect("gzip 压缩任务异常终止") } else { body };
+        let mut req = self.http.post(format!("{}/agent/v1/report", self.base)).header("content-type", "application/json").timeout(Duration::from_secs(15)).body(body);
         if gz {
             req = req.header("content-encoding", "gzip");
         }
-        let res = req.timeout(Duration::from_secs(15)).body(body).send().await;
-        let r = match res {
-            Ok(r) => r,
-            Err(e) => return Outcome::Retry { wait: None, why: format!("网络错误：{e}") },
-        };
-        let (status, ra) = (r.status().as_u16(), Self::retry_after(&r));
-        let text = r.text().await.unwrap_or_default();
-        match classify(status, ra, &text) {
-            Outcome::Ok(()) => match serde_json::from_str::<ReportAck>(&text) {
-                Ok(a) => Outcome::Ok(a),
-                // 2xx 但正文不对（中间代理的页面等）：照常重试
-                Err(e) => Outcome::Retry { wait: None, why: format!("ReportAck 解析失败：{e}") },
-            },
-            Outcome::Retry { wait, why } => Outcome::Retry { wait, why },
-            Outcome::Revoked => Outcome::Revoked,
-            Outcome::Rejected(s) => Outcome::Rejected(s),
-        }
+        self.call(req).await.and_then(|(_, text)| match serde_json::from_str::<ReportAck>(&text) {
+            Ok(a) => Outcome::Ok(a),
+            // 2xx 但正文不对（中间代理的页面等）：照常重试
+            Err(e) => Outcome::Retry { wait: None, why: format!("ReportAck 解析失败：{e}") },
+        })
     }
 
-    /// 长轮询；`Ok(None)` = 204（无变化）
-    pub async fn get_desired(&self, after: u64) -> Outcome<Option<DesiredState>> {
-        let token = match self.token() {
-            Ok(t) => t,
-            Err(e) => return Outcome::Retry { wait: Some(Duration::from_secs(30)), why: format!("{e:#}") },
-        };
-        let res = self
-            .http
-            .get(format!("{}/agent/v1/desired", self.base))
-            .query(&[("after", after)])
-            .bearer_auth(token)
-            .timeout(Duration::from_secs(50))
-            .send()
-            .await;
-        // 服务端自己会在 hold 到期后回 204；这里在拿到响应头之前的任何错误（含连接超时、服务端挂起到客户端超时）都是失败
-        let r = match res {
-            Ok(r) => r,
-            Err(e) if e.is_timeout() => return Outcome::Retry { wait: None, why: format!("等待响应头超时（服务端挂起？）：{e}") },
-            Err(e) => return Outcome::Retry { wait: None, why: format!("网络错误：{e}") },
-        };
-        let (status, ra) = (r.status().as_u16(), Self::retry_after(&r));
-        if status == 204 {
-            return Outcome::Ok(None);
-        }
-        let text = match r.text().await {
-            Ok(t) => t,
-            // 已收到响应头之后读正文超时：当作无变化（下一轮带同一个 after 重新拉）
-            Err(e) if e.is_timeout() && (200..300).contains(&status) => return Outcome::Ok(None),
-            Err(_) => String::new(),
-        };
-        match classify(status, ra, &text) {
-            Outcome::Ok(()) => match serde_json::from_str::<DesiredState>(&text) {
-                Ok(d) => Outcome::Ok(Some(d)),
-                Err(e) => Outcome::Retry { wait: None, why: format!("DesiredState 解析失败：{e}") },
-            },
-            Outcome::Retry { wait, why } => Outcome::Retry { wait, why },
-            Outcome::Revoked => Outcome::Revoked,
-            Outcome::Rejected(s) => Outcome::Retry { wait: None, why: s },
+    /// 长轮询：服务端 hold 到有比 `after` 新的代数，或到期回 204
+    pub async fn get_desired(&self, after: u64) -> Outcome<Desired> {
+        let req = self.http.get(format!("{}/agent/v1/desired", self.base)).query(&[("after", after)]).timeout(Duration::from_secs(50));
+        match self.call(req).await {
+            // 拉取被拒（4xx）没有可丢弃的数据，照常重试
+            Outcome::Rejected(why) => Outcome::Retry { wait: None, why },
+            o => o.and_then(|(status, text)| if status == 204 { Outcome::Ok(Desired::Unchanged) } else { parse_desired(&text) }),
         }
     }
 
     pub async fn post_applied(&self, rep: &ApplyReport) -> Outcome<()> {
-        let token = match self.token() {
-            Ok(t) => t,
-            Err(e) => return Outcome::Retry { wait: Some(Duration::from_secs(30)), why: format!("{e:#}") },
-        };
-        let res = self
-            .http
-            .post(format!("{}/agent/v1/applied", self.base))
-            .bearer_auth(token)
-            .timeout(Duration::from_secs(15))
-            .json(rep)
-            .send()
-            .await;
-        let r = match res {
-            Ok(r) => r,
-            Err(e) => return Outcome::Retry { wait: None, why: format!("网络错误：{e}") },
-        };
-        let (status, ra) = (r.status().as_u16(), Self::retry_after(&r));
-        let text = r.text().await.unwrap_or_default();
-        classify(status, ra, &text)
+        let req = self.http.post(format!("{}/agent/v1/applied", self.base)).timeout(Duration::from_secs(15)).json(rep);
+        self.call(req).await.and_then(|_| Outcome::Ok(()))
     }
 }
 
@@ -303,6 +309,17 @@ mod tests {
         assert_eq!(seen.len(), 2);
         assert!(seen[0].0 && seen[0].1 == big, "大报告应以 gzip 发出，服务端解压后与原文一致");
         assert!(!seen[1].0 && seen[1].1 == b"{}", "小报告不压缩");
+    }
+
+    #[test]
+    fn unreadable_desired_still_yields_generation() {
+        use crate::xray::render::tests::{desired, entry};
+        let mut v = serde_json::to_value(desired(vec![entry(1, 20001, true)])).unwrap();
+        assert!(matches!(parse_desired(&v.to_string()), Outcome::Ok(Desired::State(d)) if d.generation == 7));
+        // 中控新增了出站协议：强类型解析失败，但代数照样取得到，可以回报"版本过旧"
+        v["entries"][0]["outbound"]["protocol"] = "wireguard".into();
+        assert!(matches!(parse_desired(&v.to_string()), Outcome::Ok(Desired::Unreadable { generation: 7, .. })));
+        assert!(matches!(parse_desired("<html>"), Outcome::Retry { .. }));
     }
 
     #[test]
