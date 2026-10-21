@@ -116,15 +116,34 @@ pub fn cancellable_at(kind: &str, step: i32) -> bool { cancellable(kind) && !(ki
 /// 外层超时：步骤自己的 timeout_s 再加 120 秒余量
 fn outer_timeout(d: &StepDef) -> Duration { Duration::from_secs(d.timeout_s as u64 + 120) }
 
+/// 机器生命周期的中文（同网页 LIFECYCLE_LABEL）
 pub fn lifecycle_zh(l: &str) -> &str {
     match l {
         "draft" => "草稿",
         "provisioning" => "上架中",
-        "active" => "在用",
+        "active" => "运行中",
         "retiring" => "退役中",
         "retired" => "已退役",
-        "failed" => "失败",
+        "failed" => "上架失败",
         o => o,
+    }
+}
+
+/// 作业类型的中文（同网页与 fleetctl）
+pub fn kind_zh(k: &str) -> &str {
+    match k {
+        "provision_vps" => "上架落地机",
+        "provision_proxy" => "上架家宽代理",
+        "provision_relay" => "上架线路机",
+        "attach_entry" => "新增入口",
+        "move_entry" => "换线路机",
+        "restore_vps" => "恢复落地机",
+        "restore_proxy" => "恢复家宽代理",
+        "restore_relay" => "恢复线路机",
+        "retire" => "退役",
+        "purge" => "彻底删除",
+        "upgrade_agent" => "升级 agent",
+        k => k,
     }
 }
 
@@ -446,6 +465,8 @@ async fn finish_cancel(st: &AppState, job: &JobRow, owner: &str) -> anyhow::Resu
     }
     log(st, job.id, "warn", "已取消").await;
     notify(st, job);
+    // 补偿可能把机器退役 / 退回已退役
+    st.emit(Event::Machines);
     Ok(())
 }
 

@@ -181,7 +181,7 @@ function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }
       <RetireDialog m={m} open={dlg === 'retire'} onOpenChange={(o) => !o && setDlg(null)} onDone={onClosed} />
 
       <TypedConfirmDialog open={dlg === 'purge'} onOpenChange={(o) => !o && setDlg(null)} title={`彻底删除 ${m.name}？`} expected={m.name} prompt="请输入显示名" confirmLabel="彻底删除" danger
-        description="会删除机器记录与全部遥测数据，无法找回；审计记录保留。"
+        description="会删除机器记录与全部遥测数据，无法找回；审计记录保留。它的入口近 35 天的流量还计入其他在用机器的统计时，要等到期后才能删。"
         onConfirm={async () => { await purge.mutateAsync({ id: m.id, confirm: m.name }); toast.ok('已提交删除作业'); onClosed(); }} />
     </Section>
   );

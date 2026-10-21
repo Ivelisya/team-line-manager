@@ -74,7 +74,7 @@ EntryView = { id, relay:{id,name}, node:{id,name}, port, lifecycle, applied, app
 | GET | `/machines/{id}/series?metric=host\|traffic\|probe&range=1h\|6h\|24h\|7d\|30d` | 时序。≤24h 用原始点（1 分钟聚合），更长用小时汇总 |
 | GET | `/machines/{id}/retire` | 退役预览：`{data:{name, renames:[{machine_id,old_name,new_name}]}}`——编号保持连续，退役后同团队后面的节点依次前移 |
 | POST | `/machines/{id}/retire` | `{confirm: <显示名>, reason?, cleanup?: true}` → `{data:{job_id}}`。退役完成时同团队编号自动压缩成 01..N（写审计） |
-| POST | `/machines/{id}/purge` | 仅已退役。`{confirm: <显示名>}` → 作业；彻底删除机器与遥测，保留审计 |
+| POST | `/machines/{id}/purge` | 仅已退役。`{confirm: <显示名>}` → 作业；彻底删除机器与遥测，保留审计。它的入口近 35 天有小时流量、且入口另一端的机器未退役时 409：「这台机器的入口在 YYYY-MM-DD 前仍计入其他机器的流量统计，届时再彻底删除」（作业执行时再查一次） |
 | POST | `/machines/{id}/upgrade-agent` | 推送中控当前版本的 agent 并重启（作业 `upgrade_agent`；令牌顺带轮换） |
 | POST | `/agents/upgrade` | 所有在用线路机与落地机各建一个 `upgrade_agent` 作业（有进行中作业的跳过） → `{data:{jobs:[{machine_id,job_id}]}}` |
 | PUT | `/machines/{id}/subscription` | `{price_cents,currency,cycle,due_date,billing_tz,auto_renew,remind_days,traffic_gb?,traffic_reset_day?}` |
@@ -101,7 +101,8 @@ ProvisionItem = {
   upstream?: {protocol:"socks5"|"http", host, port, username?, password?},
   // vps：节点 SS 端口（NAT 机填供应商映射后的公网端口）
   ss_port?: 8388,
-  subscription?: {price_cents?, due_date, cycle?, billing_tz?}
+  // 没给的：price_cents / currency / cycle 取套餐，billing_tz 取供应商时区（机器的供应商，否则套餐的）；都没有时 0 / USD / monthly / Asia/Shanghai
+  subscription?: {price_cents?, currency?, due_date, cycle?, billing_tz?}
 }
 ```
 
@@ -165,16 +166,16 @@ ProvisionItem = {
 - **滞后**：服务端广播缓冲 256 条，某个连接读得太慢丢了消息时补发 `{type:"resync"}`，客户端应让全部缓存失效重取。
 - **重连**：客户端断线后自己退避重连；连上后应重取一次机器类数据（断开期间错过的 `metrics` 增量不会补发）。
 
-**资源变更通知**（收到后让对应查询失效重取）：`{type:"machine",id}`、`{type:"machines"}`、`{type:"relay",id}`、`{type:"job",id}`、`{type:"incidents"}`、`{type:"catalog"}`、`{type:"api_keys"}`（密钥增删撤销）、`{type:"policies"}`、`{type:"resync"}`。
+**资源变更通知**（收到后让对应查询失效重取）：`{type:"machine",id}`、`{type:"machine_job",id}`（作业推进到这台机器：只需重取它的详情；列表里的 `active_job` 走 `metrics`，改生命周期时另发 `machines`）、`{type:"machines"}`、`{type:"relay",id}`、`{type:"job",id}`、`{type:"incidents"}`、`{type:"catalog"}`、`{type:"api_keys"}`（密钥增删撤销）、`{type:"policies"}`、`{type:"resync"}`。
 
-**实时指标** `{type:"metrics", machines:{<机器id>:{…}}, entries:{<入口id>:{…}}, overview?}`：在用机器视图（`GET /machines` 的 `MachineView`）里随上报与时间变化的字段，和上一条相比**只带变了的字段**（没变的键不出现），客户端把它们写进本地缓存，不必重取。有新上报时最多每 3 s 一条，没有上报也每 30 s 比对一次（离线、到期天数、维护窗口随时间变）；没有变化不发。
+**实时指标** `{type:"metrics", machines:{<机器id>:{…}}, entries:{<入口id>:{…}}, overview?}`：在用机器视图（`GET /machines` 的 `MachineView`）里随上报与时间变化的字段，和上一条相比**只带变了的字段**（没变的键不出现），客户端把它们写进本地缓存，不必重取。有新上报或作业推进时最多每 3 s 一条，没有也每 30 s 比对一次（离线、到期天数、维护窗口随时间变）；没有变化不发。
 - `machines[id]` 的键：
   - `host`：`[ts, cpu_pct, load1, mem_used, mem_total, disk_used, disk_total, net_rx_bps, net_tx_bps, tcp_conns] | null`（`ts` 为 Unix 秒，速率取整；各项可为 null，与 `MachineView.host` 同义）；
   - `seen`：`agent.last_report_at` 的 Unix 秒 | null；`agent`：`{version, online, xray_running, cores} | null`（不含 `last_report_at`，前端合并进原对象）；
-  - `health`、`maintenance`、`removed_traffic`、`quota`：与 `MachineView` 同形；`due_days`：`subscription.due_days`（无订阅为 null）。
+  - `health`、`maintenance`、`removed_traffic`、`quota`、`active_job`：与 `MachineView` 同形；`due_days`：`subscription.due_days`（无订阅为 null）。
 - `entries[id]` 的键：`tcp` / `egress`：`[ok, latency_ms, ts, detail] | null`（`ts` 为 Unix 秒）；`traffic`：与 `EntryView.traffic` 同形。一条入口同时出现在节点和线路机的 `entries` 里，两边都要更新。
 - `overview`：与 `GET /overview` 同形，变了才带。
-- 机器的新建、改名、换团队、退役、作业、告警等结构变化不走 `metrics`，仍发上面的失效通知。
+- 机器的新建、改名、换团队、退役、告警等结构变化不走 `metrics`，仍发上面的失效通知。
 
 `fleetctl watch [--count N] [--metrics] [--json]` 订阅这个流（默认不显示 `metrics`）。
 

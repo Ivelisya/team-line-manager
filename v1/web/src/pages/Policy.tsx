@@ -91,7 +91,7 @@ export function PolicyPage() {
       <div className="pol-layout">
         <Panel title="范围" count={q.data ? `${teams.length} 个团队` : undefined} className="pol-scope" flush>
           {q.isLoading && <SkeletonRows rows={6} />}
-          {q.data && teams.length === 0 && <Empty text="还没有团队" hint="先在「目录」里添加团队" />}
+          {q.data && teams.length === 0 && <Empty text="还没有团队" hint="先在「团队与套餐」里添加团队" />}
           <div className="pol-tree" role="tree" aria-label="团队与节点">
             {teams.map((t) => (
               <TeamRows key={t.id} t={t} sel={sel} open={openTeams.has(t.id)}

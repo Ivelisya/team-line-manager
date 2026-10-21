@@ -1,6 +1,7 @@
 // 实时流：WebSocket /api/v1/stream（JSON 文本帧）。
 // - metrics：实时指标增量，直接写进查询缓存（live.ts），不重取。
 // - 其余是资源变更通知：300ms 合并后按事件类型让对应查询失效（同一类型/同一 id 只算一次）；resync（服务端广播滞后）则全部失效。
+//   整表（机器、线路机、总览）的失效再合并成最多每 2 s 一次，且不打断在途的重取：批量上架时不至于每秒整表重取、请求被反复取消。
 // - 断开后指数退避重连（1s → 30s 封顶），期间不轮询（顶栏显示已断开）。首次连上让机器类查询失效一次（首屏请求可能早于订阅）；
 //   断线重连后让全部查询失效：没连着时错过的事件和增量靠这次重取补上。
 // - 页面在后台：失效只标记过期、不重取，metrics 也不写缓存只标记过期（回到前台由 refetchOnWindowFocus 补上）。
@@ -11,6 +12,8 @@ import { applyMetrics, LIVE_KEYS, type MetricsMsg } from './live';
 import { setStreamState as setStatus, useStreamState } from './streamState';
 
 const MERGE_MS = 300;
+const LIST_MS = 2000;
+const LISTS = new Set(['machines', 'relays', 'overview']);
 const BACKOFF_MAX = 30_000;
 
 export function useStream(enabled: boolean) {
@@ -24,7 +27,10 @@ export function useStream(enabled: boolean) {
     let connected = false;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let mergeTimer: ReturnType<typeof setTimeout> | undefined;
+    let listTimer: ReturnType<typeof setTimeout> | undefined;
+    let lastList = 0;
     const pending = new Map<string, StreamEvent>();
+    const listKeys = new Map<string, unknown[]>();
     let all = false;
 
     const inv = (queryKey?: unknown[], cancelRefetch = true) => qc.invalidateQueries({ queryKey, refetchType: document.hidden ? 'none' : 'active' }, { cancelRefetch });
@@ -35,9 +41,19 @@ export function useStream(enabled: boolean) {
         // 一批事件里各键只失效一次；['machine'] 已覆盖 ['machine', id]
         const keys = new Map<string, unknown[]>();
         pending.forEach((ev) => eventKeys(ev).forEach((k) => keys.set(JSON.stringify(k), k)));
-        keys.forEach((k) => { if (k.length === 1 || !keys.has(JSON.stringify([k[0]]))) inv(k); });
+        keys.forEach((k, s) => {
+          if (k.length > 1 && keys.has(JSON.stringify([k[0]]))) return;
+          if (LISTS.has(k[0] as string)) listKeys.set(s, k); else inv(k);
+        });
+        if (listKeys.size) listTimer ??= setTimeout(flushLists, Math.max(0, lastList + LIST_MS - Date.now()));
       }
       pending.clear(); all = false;
+    };
+    // 正在取的整表不打断，也先不失效（取完会清掉失效标记）：留到它回来后的下一轮，它可能是变更之前的快照
+    const flushLists = () => {
+      listTimer = undefined; lastList = Date.now();
+      listKeys.forEach((k, s) => { if (qc.isFetching({ queryKey: k })) return; inv(k, false); listKeys.delete(s); });
+      if (listKeys.size) listTimer = setTimeout(flushLists, LIST_MS);
     };
     const queue = (ev: StreamEvent) => {
       if (ev.type === 'resync') all = true;
@@ -75,7 +91,7 @@ export function useStream(enabled: boolean) {
     // 推迟到下一轮再连：StrictMode 开发时挂载→卸载→再挂载，避免先建一个马上关掉的连接
     retryTimer = setTimeout(open, 0);
     return () => {
-      stopped = true; ws?.close(); clearTimeout(retryTimer); clearTimeout(mergeTimer);
+      stopped = true; ws?.close(); clearTimeout(retryTimer); clearTimeout(mergeTimer); clearTimeout(listTimer);
       setStatus('connecting');
     };
   }, [enabled, qc]);

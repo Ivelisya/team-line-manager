@@ -71,7 +71,7 @@ fn due_cn(days: i64) -> String {
 
 // ── 枚举的中文（同网页；ls 的列保留原值，方便当筛选参数用） ──
 
-fn kind_cn(k: &str) -> &str {
+pub(crate) fn kind_cn(k: &str) -> &str {
     match k {
         "relay" => "线路机",
         "vps" => "落地机",
@@ -144,8 +144,21 @@ fn job_state_cn(s: &str) -> &str {
     }
 }
 
+/// 步骤状态（同网页）
+fn step_state_cn(s: &str) -> &str {
+    match s {
+        "pending" => "等待",
+        "running" => "进行中",
+        "done" => "已完成",
+        "skipped" => "已跳过",
+        "failed" => "失败",
+        "compensated" => "已补偿",
+        s => s,
+    }
+}
+
 /// 入口状态：active 按是否已应用细分（同网页）
-fn entry_state_cn(e: &Value) -> &'static str {
+pub(crate) fn entry_state_cn(e: &Value) -> &'static str {
     match e["lifecycle"].as_str().unwrap_or("") {
         "active" if e["applied"] == true => "运行中",
         "active" if e["apply_error"].is_string() => "应用失败",
@@ -302,7 +315,7 @@ pub fn ls(ctx: &Ctx, team: Option<&str>, kind: Option<&str>, status: Option<&str
                     m["entries"].as_array().map(|a| a.len().to_string()).unwrap_or("-".into()),
                     st(m, "/open_incidents"),
                     match m.pointer("/active_job/state") {
-                        Some(Value::String(s)) => format!("{} {s}", st(m, "/active_job/kind")),
+                        Some(Value::String(s)) => format!("{} {}", job_kind_cn(&st(m, "/active_job/kind")), job_state_cn(s)),
                         _ => "".into(),
                     },
                 ]
@@ -500,9 +513,9 @@ pub fn ack(ctx: &Ctx, id: &str) -> anyhow::Result<u8> {
 fn job_row(j: &Value) -> Vec<String> {
     vec![
         st(j, "/id"),
-        st(j, "/kind"),
+        job_kind_cn(&st(j, "/kind")).to_string(),
         st(j, "/target/name"),
-        st(j, "/state"),
+        job_state_cn(&st(j, "/state")).to_string(),
         format!("{}/{}", st(j, "/step"), st(j, "/step_count")),
         st(j, "/created_by"),
         table::ts(&st(j, "/created_at")),
@@ -550,14 +563,14 @@ pub fn job(ctx: &Ctx, id: &str, follow: bool) -> anyhow::Result<u8> {
     ctx.emit(&j, || {
         let mut s = table::kv(&[
             ("作业", st(&j, "/id")),
-            ("种类", st(&j, "/kind")),
+            ("种类", job_kind_cn(&st(&j, "/kind")).to_string()),
             ("目标", st(&j, "/target/name")),
-            ("状态", format!("{}  步骤 {}/{}", st(&j, "/state"), st(&j, "/step"), st(&j, "/step_count"))),
+            ("状态", format!("{}  步骤 {}/{}", job_state_cn(&st(&j, "/state")), st(&j, "/step"), st(&j, "/step_count"))),
             ("创建", format!("{}  {}", table::ts(&st(&j, "/created_at")), st(&j, "/created_by"))),
             ("错误", st(&j, "/error")),
         ]);
         if let Some(steps) = j["steps"].as_array() {
-            let rows: Vec<Vec<String>> = steps.iter().map(|x| vec![st(x, "/idx"), st(x, "/key"), st(x, "/title"), st(x, "/state"), x["error"].as_str().unwrap_or("").to_string()]).collect();
+            let rows: Vec<Vec<String>> = steps.iter().map(|x| vec![st(x, "/idx"), st(x, "/key"), st(x, "/title"), step_state_cn(&st(x, "/state")).to_string(), x["error"].as_str().unwrap_or("").to_string()]).collect();
             s.push_str("\n\n");
             s.push_str(&table::render(&["#", "步骤", "说明", "状态", "错误"], &rows));
         }
@@ -616,7 +629,7 @@ pub fn follow_job(ctx: &Ctx, id: &str) -> anyhow::Result<u8> {
         let state = st(&j, "/state");
         if state != last {
             if !ctx.json {
-                outln(format!("── 状态 {state}  步骤 {}/{}", st(&j, "/step"), st(&j, "/step_count")));
+                outln(format!("── 状态 {}  步骤 {}/{}", job_state_cn(&state), st(&j, "/step"), st(&j, "/step_count")));
             }
             last = state.clone();
         }

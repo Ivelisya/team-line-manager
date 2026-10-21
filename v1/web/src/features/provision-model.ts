@@ -72,8 +72,8 @@ export function setCell(row: Row, col: Col, raw: string, ctx: Ctx): Row {
 }
 
 const num = (s: string) => (s.trim() === '' ? undefined : Number(s));
-/** ctx 用来补订阅的计费信息：周期取套餐的 cycle，账单时区取供应商的 timezone（没有就让服务端按默认） */
-export function toItem(r: Row, ctx: Ctx): ProvisionItem {
+/** 订阅只带到期日和手填的费用：币种、周期取套餐，账单时区取供应商，都由服务端补 */
+export function toItem(r: Row): ProvisionItem {
   const it: ProvisionItem = { kind: r.kind, ip: r.ip.trim() };
   if (r.kind !== 'proxy' && r.ssh_port) it.ssh_port = num(r.ssh_port);
   if (r.kind === 'relay') it.label = r.label.trim();
@@ -85,14 +85,7 @@ export function toItem(r: Row, ctx: Ctx): ProvisionItem {
   if (r.kind !== 'proxy' && (r.login_user.trim() || r.login_pw)) it.login = { user: r.login_user.trim() || 'root', password: r.login_pw || undefined };
   if (r.kind === 'proxy') it.upstream = { protocol: r.up_protocol === 'http' ? 'http' : 'socks5', host: r.up_host.trim(), port: Number(r.up_port) || 0, username: r.up_user.trim() || undefined, password: r.up_pw || undefined };
   if (r.kind === 'vps' && r.ss_port) it.ss_port = num(r.ss_port);
-  if (r.due_date) {
-    const plan = ctx.plans.find((p) => p.id === r.plan_id);
-    const provider = ctx.providers.find((p) => p.id === (r.provider_id || plan?.provider_id));
-    it.subscription = {
-      due_date: r.due_date, price_cents: r.price.trim() ? Math.round(Number(r.price) * 100) : undefined,
-      cycle: plan?.cycle, billing_tz: provider?.timezone ?? undefined,
-    };
-  }
+  if (r.due_date) it.subscription = { due_date: r.due_date, price_cents: r.price.trim() ? Math.round(Number(r.price) * 100) : undefined };
   return it;
 }
 

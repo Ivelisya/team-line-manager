@@ -36,6 +36,7 @@ pub struct Upstream {
 #[derive(Deserialize, Clone)]
 pub struct SubIn {
     price_cents: Option<i32>,
+    currency: Option<String>,
     due_date: Date,
     cycle: Option<String>,
     billing_tz: Option<String>,
@@ -293,25 +294,25 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Ba
                 .await?;
             }
         }
-        // 账单：显式给了就用；否则有套餐时按套餐价、到期日先空着（不建）
+        // 账单：价格 / 币种 / 周期没给的取套餐，时区没给的取供应商（机器的，否则套餐的）；都没有用列默认
         if let Some(s) = &it.subscription {
-            let price = match s.price_cents {
-                Some(p) => p,
-                None => match it.plan_id {
-                    Some(p) => sqlx::query_scalar("select price_cents from plan where id = $1").bind(p).fetch_one(&mut *tx).await?,
-                    None => 0,
-                },
-            };
-            let tz = s.billing_tz.as_deref().unwrap_or("Asia/Shanghai");
-            super::machines::check_tz(&mut tx, tz).await?;
+            if let Some(tz) = &s.billing_tz {
+                super::machines::check_tz(&mut tx, tz).await?;
+            }
             sqlx::query(
-                "insert into subscription (machine_id, price_cents, cycle, due_date, billing_tz) values ($1, $2, $3::billing_cycle, $4, $5)",
+                "insert into subscription (machine_id, price_cents, currency, cycle, due_date, billing_tz)
+                 select $1, coalesce($2, p.price_cents, 0), coalesce($3, p.currency, 'USD'), coalesce($4::billing_cycle, p.cycle, 'monthly'),
+                        $5, coalesce($6, v.timezone, 'Asia/Shanghai')
+                 from (select 1) one left join plan p on p.id = $7 left join provider v on v.id = coalesce($8, p.provider_id)",
             )
             .bind(id)
-            .bind(price)
-            .bind(s.cycle.as_deref().unwrap_or("monthly"))
+            .bind(s.price_cents)
+            .bind(&s.currency)
+            .bind(&s.cycle)
             .bind(s.due_date)
-            .bind(tz)
+            .bind(&s.billing_tz)
+            .bind(it.plan_id)
+            .bind(it.provider_id)
             .execute(&mut *tx)
             .await?;
         }

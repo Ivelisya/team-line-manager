@@ -11,10 +11,11 @@ export const jobKindLabel = (k: string) => JOB_KIND[k] ?? k;
 
 /** 进行中：还没到终态 */
 export const jobLive = (state: string) => ['queued', 'running', 'waiting', 'cancelling'].includes(state);
-export const stepDone = (s: JobStep) => s.state === 'succeeded' || s.state === 'done';
+// 步骤状态（服务端）：pending / running / done / skipped / failed / compensated
+export const stepDone = (s: JobStep) => s.state === 'done';
 export const stepFailed = (s: JobStep) => s.state === 'failed';
-export const stepSkipped = (s: JobStep) => s.state === 'skipped' || s.state === 'cancelled' || s.state === 'canceled';
-export const stepRunning = (s: JobStep) => s.state === 'running' || s.state === 'waiting' || s.state === 'cancelling';
+export const stepSkipped = (s: JobStep) => s.state === 'skipped';
+export const stepRunning = (s: JobStep) => s.state === 'running';
 /** 已补偿：作业取消或失败后，做过的步骤被逆序撤销 */
 export const stepCompensated = (s: JobStep) => s.state === 'compensated';
 export const stepsDone = (j: Job) => j.steps.filter(stepDone).length;
@@ -36,10 +37,9 @@ export function currentStepTitle(j: Job): string | null {
   return (j.steps.find(stepRunning) ?? j.steps.find(stepFailed))?.title ?? null;
 }
 
-/** error_kind 的中文说明；未收录的原样显示 */
+/** error_kind 的中文说明（服务端 ssh.rs ErrKind）；未收录的原样显示 */
 export const ERROR_KIND_LABEL: Record<string, string> = {
-  ssh_auth: 'SSH 认证失败', ssh_connect: 'SSH 连不上', timeout: '超时', network: '网络错误', permission: '权限不足',
-  not_found: '资源不存在', conflict: '冲突', precondition: '前置条件不满足', agent: 'agent 异常', internal: '内部错误', cancelled: '已取消',
+  network: '网络错误', auth: 'SSH 认证失败', host_key: '主机指纹不符', remote: '远端命令失败', timeout: '超时', internal: '中控内部错误',
 };
 export const errorKindLabel = (k: string) => ERROR_KIND_LABEL[k] ?? k;
 

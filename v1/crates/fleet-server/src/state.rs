@@ -13,9 +13,12 @@ use uuid::Uuid;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
     Machine { id: Uuid },
+    /// 作业推进带来的机器变化：前端只重取这台机器的详情；列表里的 active_job 由 metrics 推送
+    MachineJob { id: Uuid },
     Machines,
     Relay { id: Uuid },
-    /// 作业变化。`target` 不发给前端：emit 时顺带发目标机器的 Machine 事件（机器视图里显示进行中的作业）
+    /// 作业变化。`target` 不发给前端：emit 时顺带发目标机器的 MachineJob 事件。
+    /// 改了机器生命周期的地方（上架、退役、恢复、取消补偿、作业结束）另发 Machines
     Job {
         id: Uuid,
         #[serde(skip)]
@@ -84,7 +87,9 @@ impl AppState {
             self.live.invalidate();
         }
         if let Event::Job { target: Some(t), .. } = e {
-            let _ = self.events.send(Event::Machine { id: t });
+            let _ = self.events.send(Event::MachineJob { id: t });
+            // 列表卡片的 active_job 走实时指标比对（最多 3 s 一次），不让每一步都整表重取
+            self.metrics_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         let _ = self.events.send(e);
     }

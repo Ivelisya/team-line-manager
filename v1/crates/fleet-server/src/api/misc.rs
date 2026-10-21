@@ -309,6 +309,18 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "notify.create" => "新建通知渠道",
         "notify.update" => "修改通知渠道",
         "notify.delete" => "删除通知渠道",
+        "exec" => "执行命令",
+        "machine.logs" => "查看机器日志",
+        "server.logs" => "查看中控日志",
+        "apikey.create" => "新建 API 密钥",
+        "apikey.revoke" => "吊销 API 密钥",
+        "auth.login" => "登录",
+        "auth.login_failed" => "登录失败",
+        "auth.logout" => "退出登录",
+        "policy.draft" => "修改访问规则草稿",
+        "policy.discard" => "丢弃访问规则草稿",
+        "policy.publish" => "发布访问规则",
+        "policy.rollback" => "回滚访问规则",
         other => other,
     }
     .to_string();
@@ -338,6 +350,41 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         a if a.starts_with("entry.") && d["relay"].is_string() => format!("{}:{}", s("relay"), d["port"]),
         "provider.update" => d["after"]["name"].as_str().unwrap_or("").to_string(),
         "team.create" | "provider.create" | "plan.create" | "notify.create" | "notify.update" | "notify.delete" => s("name"),
+        "exec" => {
+            // 命令只取第一行、最多 60 字
+            let cmd = s("command");
+            let line = cmd.lines().next().unwrap_or("");
+            let mut c: String = line.chars().take(60).collect();
+            if c.len() < cmd.trim_end().len() {
+                c.push('…');
+            }
+            let res = match (d["exit_code"].as_i64(), d["timed_out"] == true) {
+                (_, true) => "超时".to_string(),
+                (Some(code), _) => format!("退出码 {code}"),
+                (None, _) => format!("失败：{}", s("error")),
+            };
+            format!("{} · {c} · {res}", s("name"))
+        }
+        "machine.logs" => s("name"),
+        "server.logs" => format!("{} 行", d["lines"]),
+        "apikey.create" | "apikey.revoke" => format!("{}（{}）", s("name"), s("prefix")),
+        "auth.login" | "auth.login_failed" => s("ip"),
+        "policy.draft" if d["cleared"] == true => "撤销草稿".into(),
+        "policy.draft" => {
+            let mode = match d["mode"].as_str().unwrap_or("") {
+                "observe" => "仅观察",
+                "allowlist" => "白名单",
+                "denylist" => "黑名单",
+                "blocked" => "暂停新连接",
+                "inherit" => "跟随团队",
+                m => m,
+            };
+            format!("{mode} · {} 个域名", d["domains"])
+        }
+        "policy.discard" => format!("{} 个草稿", d["drafts"]),
+        "policy.publish" | "policy.rollback" => {
+            format!("第 {} 版 · {} 处改动 · {} 台线路机", d["seq"], d["changes"].as_array().map_or(0, |a| a.len()), d["relays"])
+        }
         _ => String::new(),
     };
     (title, summary)
@@ -448,4 +495,34 @@ async fn serve_ws(mut ws: WebSocket, mut rx: broadcast::Receiver<Event>, db: sql
 /// 发一帧；对端卡住（不读、TCP 窗口满）超过一个心跳周期就当连接已死，返回 false 由调用方断开
 async fn send(ws: &mut WebSocket, m: Message) -> bool {
     matches!(tokio::time::timeout(PING_EVERY, ws.send(m)).await, Ok(Ok(())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_audit_action_has_title() {
+        // 所有写审计的动作（git grep 'audit(' 核对过）；新增动作时补这里和 audit_text
+        for a in [
+            "machine.provision", "machine.retire", "machine.purge", "machine.rename", "machine.update", "machine.restore", "subscription.set", "renewal",
+            "team.create", "team.update", "team.renumber", "provider.create", "provider.update", "plan.create", "plan.update", "entry.enable",
+            "entry.disable", "entry.rotate", "entry.share", "entry.add", "entry.move", "relay.evacuate", "job.retry", "job.cancel", "silence.create",
+            "silence.delete", "agent.upgrade", "notify.create", "notify.update", "notify.delete", "exec", "machine.logs", "server.logs", "apikey.create",
+            "apikey.revoke", "auth.login", "auth.login_failed", "auth.logout", "policy.draft", "policy.discard", "policy.publish", "policy.rollback",
+        ] {
+            assert_ne!(audit_text(a, &json!({})).0, a, "{a} 没有中文标题");
+        }
+    }
+
+    #[test]
+    fn exec_summary_shows_command_and_exit_code() {
+        let long = format!("echo {}\nsecond line", "x".repeat(100));
+        let (_, s) = audit_text("exec", &json!({"name": "团队1-01", "command": long, "exit_code": 3, "timed_out": false}));
+        assert!(s.starts_with("团队1-01 · echo x") && s.contains("…") && s.ends_with("退出码 3") && !s.contains("second"), "{s}");
+        let (_, s) = audit_text("exec", &json!({"name": "n", "command": "uptime", "exit_code": 0, "timed_out": false}));
+        assert_eq!(s, "n · uptime · 退出码 0");
+        let (_, s) = audit_text("exec", &json!({"name": "n", "command": "uptime", "error": "连不上"}));
+        assert_eq!(s, "n · uptime · 失败：连不上");
+    }
 }

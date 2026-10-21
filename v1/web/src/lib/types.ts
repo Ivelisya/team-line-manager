@@ -82,7 +82,7 @@ export interface ProvisionItem {
   login?: { user?: string; password?: string };
   upstream?: { protocol: 'socks5' | 'http'; host: string; port: number; username?: string; password?: string };
   ss_port?: number;
-  subscription?: { price_cents?: number; due_date: string; cycle?: string; billing_tz?: string };
+  subscription?: { price_cents?: number; currency?: string; due_date: string; cycle?: string; billing_tz?: string };
 }
 export interface ProvisionCheckItem { ok: boolean; errors: string[]; name: string; number: number | null; relay_port?: number }
 

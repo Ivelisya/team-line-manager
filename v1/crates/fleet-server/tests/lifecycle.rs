@@ -377,6 +377,19 @@ async fn provider_create_defaults_and_patch() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn team_duplicate_name_says_so() {
+    let t = setup(false).await;
+    seed_team(&t, "团队1").await;
+    let b = seed_team(&t, "团队2").await;
+    let (s, v) = t.req("POST", "/api/v1/teams", Some(json!({"name": "团队1"})), None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(v["error"]["message"], "已有同名团队");
+    let (s, v) = t.req("PATCH", &format!("/api/v1/teams/{b}"), Some(json!({"name": "团队1"})), None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(v["error"]["message"], "已有同名团队", "改名撞名也要说清楚，不是「数据冲突」");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn plan_patch_null_clears_field() {
     let t = setup(false).await;
     let p = t.post("/api/v1/providers", json!({"name": "甲", "code": "A"})).await["id"].clone();
@@ -416,6 +429,27 @@ async fn provider_tz_is_validated_like_billing_tz() {
     let m = t.get(&format!("/api/v1/machines/{node}")).await;
     assert_eq!(m["subscription"]["billing_tz"], "CST");
     assert!(m["subscription"]["due_days"].is_i64());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn provision_subscription_defaults_from_plan_and_provider() {
+    let t = setup(false).await;
+    let pv = t.post("/api/v1/providers", json!({"name": "甲", "code": "A", "timezone": "America/Los_Angeles"})).await["id"].clone();
+    let plan = t.post("/api/v1/plans", json!({"provider_id": pv, "name": "年付", "price_cents": 12000, "currency": "CNY", "cycle": "yearly"})).await["id"].clone();
+    let (relay, _) = seed_relay(&t).await;
+    let team = seed_team(&t, "团队1").await;
+    // 只给到期日：价格 / 币种 / 周期取套餐，时区取套餐的供应商
+    let item = |ip: &str, sub: Value| json!({"kind": "proxy", "ip": ip, "team_id": team, "relay_id": relay, "plan_id": plan, "upstream": upstream("p.example"), "subscription": sub});
+    let created = t.post("/api/v1/provision", json!({"items": [item("203.0.113.10", json!({"due_date": "2027-01-01"}))]})).await;
+    let node = created["jobs"][0]["machine_id"].as_str().unwrap();
+    let s = t.get(&format!("/api/v1/machines/{node}")).await["subscription"].clone();
+    assert_eq!((s["price_cents"].as_i64(), s["currency"].as_str(), s["cycle"].as_str(), s["billing_tz"].as_str()), (Some(12000), Some("CNY"), Some("yearly"), Some("America/Los_Angeles")), "{s}");
+    // 显式给的优先
+    let sub = json!({"due_date": "2027-01-01", "price_cents": 900, "currency": "USD", "cycle": "monthly", "billing_tz": "Asia/Tokyo"});
+    let created = t.post("/api/v1/provision", json!({"items": [item("203.0.113.11", sub)]})).await;
+    let node = created["jobs"][0]["machine_id"].as_str().unwrap();
+    let s = t.get(&format!("/api/v1/machines/{node}")).await["subscription"].clone();
+    assert_eq!((s["price_cents"].as_i64(), s["currency"].as_str(), s["cycle"].as_str(), s["billing_tz"].as_str()), (Some(900), Some("USD"), Some("monthly"), Some("Asia/Tokyo")), "{s}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

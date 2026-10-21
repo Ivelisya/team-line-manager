@@ -240,6 +240,22 @@ pub async fn cleanup_retention(db: &PgPool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// 彻底删除会连带删掉这台机器入口的流量，而入口另一端未退役的机器拿这些流量算今日/本月/周期已用：
+/// 近 35 天里还有这类流量时不能删。另一端已退役（统计不再用、也在等删）的不拦，否则两台互为对端的退役机器谁都删不掉。
+/// 返回给用户看的原因；None = 可以删。
+pub async fn purge_blocker(db: impl sqlx::PgExecutor<'_>, machine: Uuid) -> sqlx::Result<Option<String>> {
+    let until: Option<Date> = sqlx::query_scalar(
+        "select ((max(h.hour) + interval '35 days 1 hour') at time zone 'Asia/Shanghai')::date + 1
+         from entry e join entry_traffic_hourly h on h.entry_id = e.id
+              join machine o on o.id = case when e.node_id = $1 then e.relay_id else e.node_id end
+         where (e.node_id = $1 or e.relay_id = $1) and h.hour >= now() - interval '35 days' and o.lifecycle <> 'retired'",
+    )
+    .bind(machine)
+    .fetch_one(db)
+    .await?;
+    Ok(until.map(|d| format!("这台机器的入口在 {d} 前仍计入其他机器的流量统计，届时再彻底删除")))
+}
+
 pub async fn audit(tx: &mut Tx<'_>, actor: &str, action: &str, target_kind: &str, target_id: Option<Uuid>, detail: serde_json::Value) -> sqlx::Result<()> {
     sqlx::query("insert into audit_log (actor, action, target_kind, target_id, detail) values ($1, $2, $3, $4, $5)")
         .bind(actor)

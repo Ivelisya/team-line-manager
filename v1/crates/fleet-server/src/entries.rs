@@ -56,6 +56,18 @@ pub async fn create(tx: &mut Tx<'_>, relay_id: Uuid, node_id: Uuid) -> ApiResult
     Ok((id, port, gen))
 }
 
+/// 入口状态的中文（同网页 ENTRY_LABEL）
+pub fn state_zh(s: &str) -> &str {
+    match s {
+        "pending" => "应用中",
+        "active" => "运行中",
+        "disabled" => "已停用",
+        "removing" => "移除中",
+        "removed" => "已移除",
+        s => s,
+    }
+}
+
 /// 改入口状态（enable/disable/removing/rotate）并 +1 代数。返回 (relay_id, generation)。
 pub async fn transition(tx: &mut Tx<'_>, entry_id: Uuid, to: &str, rotate: bool) -> ApiResult<(Uuid, i64)> {
     let (relay_id, cur): (Uuid, String) =
@@ -69,7 +81,7 @@ pub async fn transition(tx: &mut Tx<'_>, entry_id: Uuid, to: &str, rotate: bool)
         ("active", "disabled") | ("disabled", "active") | ("pending" | "active" | "disabled", "removing") | ("removing", "removing")
     ) || (rotate && cur == to);
     if !allowed {
-        return Err(ApiError::conflict(format!("入口当前是「{cur}」，不能变成「{to}」")));
+        return Err(ApiError::conflict(format!("入口当前是「{}」，不能变成「{}」", state_zh(&cur), state_zh(to))));
     }
     sqlx::query("select 1 from relay where machine_id = $1 for update").bind(relay_id).execute(&mut **tx).await?;
     let gen = bump_relay(tx, relay_id).await?;

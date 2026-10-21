@@ -207,7 +207,7 @@ export function buildDb(): Db {
       id, kind, target, state, step: Math.min(doneUntil, stepsDef.length - 1), step_count: stepsDef.length, cancellable: state === 'running', error: err ?? null, created_by: 'admin', created_at: iso(created), started_at: iso(created + 2000), finished_at: state === 'running' ? null : iso(created + 120_000),
       steps: stepsDef.map(([key, title], i) => ({
         idx: i, key, title,
-        state: i < doneUntil ? 'succeeded' : i === doneUntil ? (state === 'running' ? 'running' : state === 'failed' ? 'failed' : 'pending') : 'pending',
+        state: i < doneUntil ? 'done' : i === doneUntil ? (state === 'running' ? 'running' : state === 'failed' ? 'failed' : 'pending') : 'pending',
         started_at: i <= doneUntil ? iso(created + 2000 + i * 18_000) : null, finished_at: i < doneUntil ? iso(created + 2000 + (i + 1) * 18_000) : null,
         output: i < doneUntil ? STEP_OUT[key] ?? null : null,
         error: i === doneUntil && state === 'failed' ? err ?? '失败' : null,
@@ -225,7 +225,7 @@ export function buildDb(): Db {
     mk('j-done3', 'retire', { id: 'm-t1-3r', name: '团队1-03' }, 'succeeded', RSTEPS, 4, 60 * 24 * 40),
   ];
   jobs[0].steps[3].state = 'pending';
-  jobs.find((j) => j.id === 'j-fail')!.steps.find((x) => x.state === 'failed')!.error_kind = 'ssh_auth';
+  jobs.find((j) => j.id === 'j-fail')!.steps.find((x) => x.state === 'failed')!.error_kind = 'auth';
   // 已取消并补偿的上架、升级 agent 作业，让步骤条的“已补偿 / 已跳过”和 upgrade_agent 都有样本
   const cj = mk('j-cancel', 'provision_vps', { id: 'x2', name: '团队2-14' }, 'cancelled', PSTEPS, 3, 180);
   cj.steps.forEach((x, i) => { x.state = i < 3 ? 'compensated' : 'skipped'; if (i >= 3) { x.started_at = null; x.finished_at = null; } });
