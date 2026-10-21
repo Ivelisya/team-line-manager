@@ -11,14 +11,24 @@ pub type Tx<'a> = Transaction<'a, Postgres>;
 
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations");
 
+/// 等空闲连接最多 5 秒（sqlx 默认 30 秒，比 agent 上报的 15 秒超时还长）：池子吃紧时尽快回 503
+/// （上报入库按 503 退避重试，见 agent_api::ingest_error），而不是让请求越积越多
 pub async fn connect(url: &str) -> anyhow::Result<PgPool> {
-    PgPoolOptions::new().max_connections(20).connect(url).await.with_context(|| "连接 PostgreSQL")
+    PgPoolOptions::new()
+        .max_connections(20)
+        .acquire_timeout(std::time::Duration::from_secs(5))
+        .connect(url)
+        .await
+        .with_context(|| "连接 PostgreSQL")
 }
 
 pub fn new_id() -> Uuid { Uuid::now_v7() }
 
 /// 按天分区的时序表
 pub const PARTITIONED: &[&str] = &["host_metric", "entry_traffic", "probe_result", "access_event"];
+
+/// 查分区时只看当前 schema（search_path 的第一个）：同一个库里别的 schema 有同名表时（集成测试每个测试一个 schema）不能算数
+const OWN_SCHEMA: &str = "(select oid from pg_namespace where nspname = current_schema())";
 
 fn part_name(table: &str, d: Date) -> String {
     format!("{table}_{:04}{:02}{:02}", d.year(), u8::from(d.month()), d.day())
@@ -32,10 +42,10 @@ pub async fn maintain_partitions(db: &PgPool, raw_days: u32, access_days: u32, a
         // 所以限 2 秒，拿不到就记 warn、下次维护再试（上报时缺分区还会按需补建）
         let days: BTreeSet<Date> = (-1..=ahead).map(|i| today + Duration::days(i)).collect();
         let names: Vec<String> = days.iter().map(|d| part_name(t, *d)).collect();
-        let existing: Vec<(String,)> = sqlx::query_as(
+        let existing: Vec<(String,)> = sqlx::query_as(&format!(
             "select c.relname::text from pg_class c join pg_inherits i on i.inhrelid = c.oid join pg_class p on p.oid = i.inhparent
-             where p.relname = $1 and c.relname = any($2)",
-        )
+             where p.relname = $1 and c.relname = any($2) and p.relnamespace = {OWN_SCHEMA}"
+        ))
         .bind(t)
         .bind(&names)
         .fetch_all(db)
@@ -72,10 +82,10 @@ async fn drop_expired(db: &PgPool, t: &str, cutoff: &str) -> anyhow::Result<()> 
 }
 
 async fn drop_expired_on(conn: &mut sqlx::PgConnection, t: &str, cutoff: &str) -> anyhow::Result<()> {
-    let attached: Vec<(String,)> = sqlx::query_as(
+    let attached: Vec<(String,)> = sqlx::query_as(&format!(
         "select c.relname::text from pg_inherits i join pg_class c on c.oid = i.inhrelid
-         join pg_class p on p.oid = i.inhparent where p.relname = $1 and c.relname < $2 order by 1",
-    )
+         join pg_class p on p.oid = i.inhparent where p.relname = $1 and c.relname < $2 and p.relnamespace = {OWN_SCHEMA} order by 1"
+    ))
     .bind(t)
     .bind(cutoff)
     .fetch_all(&mut *conn)
@@ -96,11 +106,11 @@ async fn drop_expired_on(conn: &mut sqlx::PgConnection, t: &str, cutoff: &str) -
         }
     }
     // 摘下后没来得及删的残留表
-    let orphans: Vec<(String,)> = sqlx::query_as(
+    let orphans: Vec<(String,)> = sqlx::query_as(&format!(
         "select c.relname::text from pg_class c
-         where c.relkind = 'r' and not c.relispartition and c.relnamespace = (select oid from pg_namespace where nspname = current_schema())
-           and c.relname ~ ('^' || $1 || '_[0-9]{8}$') and c.relname < $2",
-    )
+         where c.relkind = 'r' and not c.relispartition and c.relnamespace = {OWN_SCHEMA}
+           and c.relname ~ ('^' || $1 || '_[0-9]{{8}}$') and c.relname < $2"
+    ))
     .bind(t)
     .bind(cutoff)
     .fetch_all(&mut *conn)
@@ -121,9 +131,9 @@ pub async fn ensure_partitions(db: &PgPool, table: &str, days: &BTreeSet<Date>) 
         return vec![];
     }
     let names: Vec<String> = days.iter().map(|d| part_name(table, *d)).collect();
-    let existing: Vec<(String,)> = sqlx::query_as(
-        "select c.relname::text from pg_class c join pg_inherits i on i.inhrelid = c.oid where c.relname = any($1)",
-    )
+    let existing: Vec<(String,)> = sqlx::query_as(&format!(
+        "select c.relname::text from pg_class c join pg_inherits i on i.inhrelid = c.oid where c.relname = any($1) and c.relnamespace = {OWN_SCHEMA}"
+    ))
     .bind(&names)
     .fetch_all(db)
     .await
@@ -137,9 +147,9 @@ pub async fn ensure_partitions(db: &PgPool, table: &str, days: &BTreeSet<Date>) 
         }
         if let Err(e) = create_partition(db, table, *d).await {
             // 并发的另一份上报可能刚建好
-            let again: Option<(String,)> = sqlx::query_as(
-                "select c.relname::text from pg_class c join pg_inherits i on i.inhrelid = c.oid where c.relname = $1",
-            )
+            let again: Option<(String,)> = sqlx::query_as(&format!(
+                "select c.relname::text from pg_class c join pg_inherits i on i.inhrelid = c.oid where c.relname = $1 and c.relnamespace = {OWN_SCHEMA}"
+            ))
             .bind(&n)
             .fetch_optional(db)
             .await
@@ -221,7 +231,9 @@ where
 pub async fn rollup_hours(db: &PgPool) -> anyhow::Result<()> { rollup_dirty(db, "rollup_dirty", |h| rollup_hour(db, h)).await }
 
 /// 重算一个整点小时。主机网络流量取相邻样本的正增量之和（lag），计数器回绕（重启清零）时
-/// 当前读数就是重启后的增量；上一小时最后一个样本参与第一个增量的计算，不丢小时交界处的流量。
+/// 当前读数就是重启后的增量；整点前 15 分钟内的最后一个样本参与第一个增量的计算，不丢小时交界处的流量。
+/// 只回看 15 分钟（回看整小时要多读一倍样本、排序落盘）：整点前 15 分钟内没有样本（agent 离线超过 15 分钟）时，
+/// 本小时第一个样本没有前值、不计增量，缺口那段的流量不记到这一小时（agent 重启本来就按计数器重置处理，同样不计）。
 async fn rollup_hour(db: &PgPool, hour: OffsetDateTime) -> anyhow::Result<()> {
     let q = [
         "insert into host_metric_hourly (machine_id, hour, cpu_avg, cpu_max, mem_used_avg, mem_total_max, disk_used_max, disk_total_max, net_rx, net_tx)
@@ -230,7 +242,7 @@ async fn rollup_hour(db: &PgPool, hour: OffsetDateTime) -> anyhow::Result<()> {
                 coalesce(sum(case when tx is null or prev_tx is null then 0 when tx >= prev_tx then tx - prev_tx else tx end), 0)::bigint
          from (select machine_id, ts, cpu_pct, mem_used, mem_total, disk_used, disk_total,
                       net_rx_bytes rx, lag(net_rx_bytes) over w prev_rx, net_tx_bytes tx, lag(net_tx_bytes) over w prev_tx
-               from host_metric where ts >= $1 - interval '1 hour' and ts < $1 + interval '1 hour'
+               from host_metric where ts >= $1 - interval '15 minutes' and ts < $1 + interval '1 hour'
                window w as (partition by machine_id order by ts)) x
          where ts >= $1 group by machine_id
          on conflict (machine_id, hour) do update set cpu_avg = excluded.cpu_avg, cpu_max = excluded.cpu_max,

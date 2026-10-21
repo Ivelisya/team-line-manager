@@ -1,6 +1,7 @@
 //! 访问监控：构造 access_event → 跑汇总 → 各接口的聚合结果。
-//! 需要 PostgreSQL（见 common_mon.rs）。
+//! 需要 PostgreSQL（见 common）。
 
+mod common;
 mod common_mon;
 
 use axum::http::StatusCode;
@@ -9,9 +10,6 @@ use fleet_server::access;
 use serde_json::Value;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
-
-/// 两个测试共用一个库，串行跑
-static DB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn row<'a>(d: &'a Value, key: &str, field: &str, val: &str) -> &'a Value {
     d[key].as_array().unwrap().iter().find(|n| n[field] == val).unwrap_or_else(|| panic!("{key} 里没有 {field}={val}：{d}"))
@@ -54,7 +52,6 @@ async fn fixture(t: &T) -> common_mon::Fx {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn collapse_and_kind_rules() {
-    let _g = DB_LOCK.lock().await;
     let t = setup().await;
     let cases = [
         ("www.google.com", "www.google.com"),
@@ -86,7 +83,6 @@ async fn collapse_and_kind_rules() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn summary_targets_sources_events() {
-    let _g = DB_LOCK.lock().await;
     let t = setup().await;
     let (st, _) = t.raw("/api/v1/access/summary", false).await;
     assert_eq!(st, StatusCode::UNAUTHORIZED);
@@ -113,6 +109,18 @@ async fn summary_targets_sources_events() {
     let a = row(&d, "nodes", "name", "团队1-01");
     assert_eq!((a["conns"].as_i64(), a["targets"].as_i64(), a["sources"].as_i64()), (Some(15), Some(5), Some(4)));
     assert_eq!(d["kpi"]["conns"], 20);
+
+    // 节点的来源数跟随筛选（和同行的连接数同一批连接）：1h 在原始记录上逐条筛；
+    // 24h 以上来源小时表没有目标维度，带搜索 / 类型 / 处理结果筛选时给 null
+    let src1 = |d: &Value| row(d, "nodes", "name", "团队1-01")["sources"].clone();
+    assert_eq!(src1(&t.get("/api/v1/access/summary?window=1h&action=blocked").await), 1, "被阻止的只来自 1.1.1.1");
+    assert_eq!(src1(&t.get("/api/v1/access/summary?window=1h&action=routed").await), 4);
+    assert_eq!(src1(&t.get("/api/v1/access/summary?window=1h&search=google").await), 2);
+    assert_eq!(src1(&t.get("/api/v1/access/summary?window=1h&kind=ip").await), 1);
+    for q in ["search=google", "kind=ip", "action=blocked"] {
+        assert!(src1(&t.get(&format!("/api/v1/access/summary?window=24h&{q}")).await).is_null(), "{q}");
+    }
+    assert_eq!(src1(&t.get("/api/v1/access/summary?window=24h&kind=all&action=all").await), 5, "all 等于没筛");
 
     // ── 7d / 30d 窗口；30d 里再塞一条 20 天前的小时汇总 ──
     let d = t.get("/api/v1/access/summary?window=7d").await;
@@ -296,7 +304,6 @@ async fn summary_targets_sources_events() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn new_targets_machine_and_idempotent_rollup() {
-    let _g = DB_LOCK.lock().await;
     let t = setup().await;
     let fx = fixture(&t).await;
     let (n1, e1) = (fx.n[0], fx.e[0]);

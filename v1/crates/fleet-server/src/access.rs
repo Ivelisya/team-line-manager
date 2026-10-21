@@ -333,8 +333,9 @@ pub struct NodeRow {
     pub conns: i64,
     pub targets: i64,
     pub domains: i64,
+    /// 去重来源数，跟随全部筛选；小时表算不出带目标筛选的来源数，这时为 None
     #[sqlx(skip)]
-    pub sources: i64,
+    pub sources: Option<i64>,
     pub blocked: i64,
     #[serde(with = "time::serde::rfc3339::option")]
     pub last_ts: Option<OffsetDateTime>,
@@ -362,22 +363,31 @@ pub async fn summary(db: &PgPool, f: &Filter) -> sqlx::Result<(Kpi, Vec<NodeRow>
     );
     let mut nodes: Vec<NodeRow> = full!(sqlx::query_as(&sql), f).fetch_all(db).await?;
 
-    let src_sql = if f.events {
-        "select en.node_id, count(distinct e.src_ip)::bigint from access_event e join entry en on en.id = e.entry_id
+    // 来源数和旁边的连接数同一套筛选：原始记录逐条带上搜索、目标类型、处理结果；
+    // 来源小时表没有目标维度，带这几类筛选时算不出来，给 null（不拿没筛过的数冒充）
+    let srcs: Option<Vec<(Uuid, i64)>> = if f.events {
+        let sql = "select en.node_id, count(distinct e.src_ip)::bigint from access_event e join entry en on en.id = e.entry_id
          where e.ts >= $1 and ($3::uuid[] is null or e.entry_id = any(array(select id from entry where node_id = any($3))))
            and ($2::uuid is null or e.entry_id = any(array(select x.id from entry x join machine mx on mx.id = x.node_id where mx.team_id = $2)))
-           and ($4::uuid is null or e.entry_id = any(array(select id from entry where relay_id = $4)))
-         group by 1"
-    } else {
-        "select node_id, count(distinct src_ip)::bigint from access_source_hourly
+           and ($4::text is null or e.dest_host ilike $4 or host(e.src_ip) ilike $4) and ($5::uuid is null or e.entry_id = any(array(select id from entry where relay_id = $5)))
+           and ($6::text is null or access_kind(lower(rtrim(e.dest_host, '.'))) = $6)
+           and case $7::text when 'blocked' then e.blocked when 'routed' then not e.blocked else true end
+         group by 1";
+        Some(full!(sqlx::query_as(sql), f).fetch_all(db).await?)
+    } else if f.like.is_none() && f.kind.is_none() && f.action == "all" {
+        let sql = "select node_id, count(distinct src_ip)::bigint from access_source_hourly
          where hour >= $1 and ($3::uuid[] is null or node_id = any($3))
            and ($2::uuid is null or node_id in (select id from machine where team_id = $2)) and ($4::uuid is null or relay_id = $4)
-         group by 1"
+         group by 1";
+        Some(sqlx::query_as(sql).bind(f.from).bind(f.team).bind(&f.nodes).bind(f.relay).fetch_all(db).await?)
+    } else {
+        None
     };
-    let srcs: Vec<(Uuid, i64)> = sqlx::query_as(src_sql).bind(f.from).bind(f.team).bind(&f.nodes).bind(f.relay).fetch_all(db).await?;
-    let srcs: std::collections::HashMap<Uuid, i64> = srcs.into_iter().collect();
-    for n in &mut nodes {
-        n.sources = srcs.get(&n.node_id).copied().unwrap_or(0);
+    if let Some(srcs) = srcs {
+        let srcs: std::collections::HashMap<Uuid, i64> = srcs.into_iter().collect();
+        for n in &mut nodes {
+            n.sources = Some(srcs.get(&n.node_id).copied().unwrap_or(0));
+        }
     }
     let kpi = Kpi {
         active_nodes: nodes.len() as i64,

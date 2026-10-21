@@ -26,6 +26,13 @@ rand = "0.8"
 base64 = "0.22"
 toml = "0.8"
 
+# 调试 / 测试构建里不优化的 argon2 算一次约 0.5 秒（每个集成测试建管理员、登录各一次）：只给它和它用的 blake2 开优化
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

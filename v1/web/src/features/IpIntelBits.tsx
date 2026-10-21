@@ -3,7 +3,7 @@
 import { ShieldQuestion } from 'lucide-react';
 import { useIpIntelStatus, useSourcesProfile, type ConnType, type DistItem, type IpIntel, type ProfileWindow, type SourcesProfile } from '@/lib/ipintel';
 import * as F from '@/lib/format';
-import { Chip, Note, Pill, Section, SectionHeader, type Tone } from '@/components/app/primitives';
+import { Chip, ErrorNote, Note, Pill, Section, SectionHeader, type Tone } from '@/components/app/primitives';
 
 const TONE: Record<ConnType, Tone> = { residential: 'ok', mobile: 'info', datacenter: 'warn', vpn: 'bad', unknown: 'neutral' };
 const CONF: Record<string, string> = { high: '高', medium: '中', low: '低' };
@@ -91,7 +91,7 @@ function learningText(l: SourcesProfile['learning']): string {
 export function SourceProfile({ id, window, relay }: { id: string; window: ProfileWindow; relay: boolean }) {
   const q = useSourcesProfile(id, window);
   const d = q.data;
-  if (q.isError && !d) return <Section><SectionHeader title="来源画像" /><Note tone="bad">{(q.error as Error).message}</Note></Section>;
+  if (q.isError && !d) return <Section><SectionHeader title="来源画像" /><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></Section>;
   if (!d) return <Section><SectionHeader title="来源画像" /><div className="skel" style={{ height: 96 }} /></Section>;
   const known = d.known.isp.length + d.known.city.length;
   return (

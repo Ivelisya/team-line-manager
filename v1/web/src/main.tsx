@@ -16,7 +16,6 @@ import './styles/tw-utilities.css';
 import { App } from './App';
 import { ApiError } from './lib/api';
 import { TooltipProvider } from './components/ui/overlays';
-import { MotionProvider } from './lib/motion';
 
 const qc = new QueryClient({
   defaultOptions: {
@@ -38,11 +37,9 @@ async function boot() {
   ReactDOM.createRoot(document.getElementById('root')!).render(
     <React.StrictMode>
       <QueryClientProvider client={qc}>
-        <MotionProvider>
-          <TooltipProvider>
-            <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><App /></BrowserRouter>
-          </TooltipProvider>
-        </MotionProvider>
+        <TooltipProvider>
+          <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><App /></BrowserRouter>
+        </TooltipProvider>
       </QueryClientProvider>
     </React.StrictMode>,
   );

@@ -110,9 +110,17 @@ pub async fn targets(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuer
 pub async fn sources(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Q>) -> ApiResult<Json<Value>> {
     let f = filter_of(&q, Window::H24)?;
     let (limit, _) = page_of(&q, 100)?;
+    let key = (!f.events).then(|| format!("sources|{f:?}|{limit}"));
+    if let Some(v) = key.as_deref().and_then(|k| st.access_cache.get(k)) {
+        return Ok(Json(v));
+    }
     let mut items = access::sources(&st.db, &f, limit).await?;
     crate::ipintel::attach(&st, &mut items).await;
-    Ok(ok(json!({"items": items, "window_start": access::fmt_ts(f.from)})))
+    let out = ok(json!({"items": items, "window_start": access::fmt_ts(f.from)}));
+    if let Some(k) = key {
+        st.access_cache.put(k, out.0.clone());
+    }
+    Ok(out)
 }
 
 /// 原始记录：按时间倒序，`before` 原样传回上一页的 `next_before`（不透明游标），最多回看 7 天

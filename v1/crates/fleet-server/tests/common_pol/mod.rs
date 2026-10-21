@@ -1,50 +1,16 @@
-//! 访问策略集成测试的公共部分：建库、登录、造线路机 / 节点 / 入口、模拟 agent、塞访问汇总。
-//! 需要 PostgreSQL：环境变量 FLEET_TEST_DB（默认 postgres://fleet:fleet@127.0.0.1/fleet_test）。会清空该库的 public schema。
+//! 访问策略集成测试的公共部分：造线路机 / 节点 / 入口、模拟 agent、塞访问汇总（建库与登录见 common）。
 
 #![allow(dead_code)]
 
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::StatusCode;
 use fleet_proto::{ApplyReport, DesiredState, EntryApply};
-use fleet_server::{config::Config, crypto::SecretBox, db, state::AppState};
-use http_body_util::BodyExt;
-use serde_json::{json, Value};
+use serde_json::Value;
 use time::{Duration, OffsetDateTime};
-use tower::ServiceExt;
 use uuid::Uuid;
 
-pub struct T {
-    pub app: axum::Router,
-    pub st: AppState,
-    pub cookie: String,
-}
+pub use crate::common::T;
 
 impl T {
-    pub async fn req(&self, method: &str, path: &str, body: Option<Value>, auth: Option<&str>) -> (StatusCode, Value) {
-        let mut b = Request::builder().method(method).uri(path).header("content-type", "application/json").header("x-fleet-request", "1");
-        match auth {
-            Some(tok) => b = b.header("authorization", format!("Bearer {tok}")),
-            None => b = b.header("cookie", &self.cookie),
-        }
-        let req = b.body(body.map(|v| Body::from(v.to_string())).unwrap_or_else(Body::empty)).unwrap();
-        let res = self.app.clone().oneshot(req).await.unwrap();
-        let status = res.status();
-        let bytes = res.into_body().collect().await.unwrap().to_bytes();
-        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
-    }
-
-    pub async fn get(&self, p: &str) -> Value {
-        let (s, v) = self.req("GET", p, None, None).await;
-        assert_eq!(s, StatusCode::OK, "GET {p}: {v}");
-        v["data"].clone()
-    }
-
-    pub async fn post(&self, p: &str, b: Value) -> Value {
-        let (s, v) = self.req("POST", p, Some(b), None).await;
-        assert!(s.is_success(), "POST {p}: {s} {v}");
-        v["data"].clone()
-    }
-
     /// 期望一个特定状态码，返回错误信息
     pub async fn fail(&self, method: &str, p: &str, b: Option<Value>, want: StatusCode) -> String {
         let (s, v) = self.req(method, p, b, None).await;
@@ -85,39 +51,7 @@ impl T {
 }
 
 /// 不启动后台任务：汇总、告警都由测试自己驱动
-pub async fn setup() -> T {
-    let url = std::env::var("FLEET_TEST_DB").unwrap_or_else(|_| "postgres://fleet:fleet@127.0.0.1/fleet_test".into());
-    let pool = db::connect(&url).await.unwrap();
-    sqlx::query("drop schema public cascade").execute(&pool).await.unwrap();
-    sqlx::query("create schema public").execute(&pool).await.unwrap();
-    db::MIGRATOR.run(&pool).await.unwrap();
-    db::maintain_partitions(&pool, 14, 7, 2).await.unwrap();
-    let cfg: Config = toml::from_str(&format!(
-        r#"database_url = "{url}"
-           secret_key_file = "/dev/null"
-           public_url = "http://fleet.test"
-           ssh_key = "/nonexistent"
-           known_hosts = "/tmp/fleet-test-known-hosts"
-           dist_dir = "/nonexistent""#
-    ))
-    .unwrap();
-    let st = AppState::new(cfg, pool.clone(), SecretBox::from_key(&[9u8; 32]).unwrap());
-    fleet_server::auth::upsert_user(&pool, "admin", "correct horse battery").await.unwrap();
-    let app = fleet_server::app(st.clone());
-    let res = app
-        .clone()
-        .oneshot(
-            Request::post("/api/v1/auth/login")
-                .header("content-type", "application/json")
-                .body(Body::from(json!({"username": "admin", "password": "correct horse battery"}).to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let cookie = res.headers().get("set-cookie").unwrap().to_str().unwrap().split(';').next().unwrap().to_string();
-    T { app, st, cookie }
-}
+pub async fn setup() -> T { crate::common::boot(false, "").await }
 
 pub struct Fx {
     pub relay: Uuid,

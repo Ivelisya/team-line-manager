@@ -1,5 +1,5 @@
 //! 换线路机（move_entry）、搬空线路机（evacuate）、恢复已退役的机器（restore_*）。
-//! 需要 PostgreSQL：环境变量 FLEET_TEST_DB。会清空该库的 public schema，用 `--test-threads=1` 串行跑。
+//! 需要 PostgreSQL（见 common）。
 //!
 //! 线路机用 `Sim` 模拟：拉期望状态、回报全部应用成功、给每个入口报一个成功的出口探测（和 tests/flow.rs 一样）。
 //! 节点用上游代理（没有 SSH，整条流程可以在测试里走通）；VPS 恢复只测到预检和作业创建，不真的 ssh。
@@ -90,12 +90,13 @@ async fn seed_relay_b(t: &T) -> (Uuid, String) {
 fn upstream(host: &str) -> Value { json!({"protocol": "socks5", "host": host, "port": 1080, "username": "u", "password": "p"}) }
 
 /// 上架一台上游代理节点，返回 (machine_id, job_id)
-async fn provision_proxy(t: &T, team: Uuid, relay: Uuid, ip: &str) -> (Uuid, String) {
-    let created = t
-        .post("/api/v1/provision", json!({"items": [{"kind": "proxy", "ip": ip, "team_id": team, "relay_id": relay, "upstream": upstream("p.example")}]}))
-        .await;
-    let j = &created["jobs"][0];
-    (j["machine_id"].as_str().unwrap().parse().unwrap(), j["job_id"].as_str().unwrap().to_string())
+async fn provision_proxy(t: &T, team: Uuid, relay: Uuid, ip: &str) -> (Uuid, String) { provision_proxies(t, team, relay, &[ip]).await.remove(0) }
+
+/// 一次上架几台（编号按顺序），各自的作业并行跑
+async fn provision_proxies(t: &T, team: Uuid, relay: Uuid, ips: &[&str]) -> Vec<(Uuid, String)> {
+    let items: Vec<Value> = ips.iter().map(|ip| json!({"kind": "proxy", "ip": ip, "team_id": team, "relay_id": relay, "upstream": upstream("p.example")})).collect();
+    let created = t.post("/api/v1/provision", json!({"items": items})).await;
+    created["jobs"].as_array().unwrap().iter().map(|j| (j["machine_id"].as_str().unwrap().parse().unwrap(), j["job_id"].as_str().unwrap().to_string())).collect()
 }
 
 /// 一边模拟线路机一边等作业到某个状态
@@ -112,7 +113,8 @@ async fn drive(t: &T, sims: &mut [&mut Sim], job: &str, want: &str) -> Value {
             let logs = t.get(&format!("/api/v1/jobs/{job}/logs")).await;
             panic!("作业 {job} 想要 {want}，实际 {}：{} / {logs}", j["state"], j["error"]);
         }
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        t.nudge_jobs().await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
     panic!("作业 {job} 没到 {want}：{}", t.job(job).await);
 }
@@ -193,7 +195,8 @@ async fn move_proxy_node_never_loses_its_entry() {
             stage = Some(es);
             break;
         }
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        t.nudge_jobs().await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
     let es = stage.expect("旧入口应当进入 removing");
     assert_eq!(es.iter().find(|e| e.2 == new_entry).unwrap().1, "active", "新入口已经生效");
@@ -275,12 +278,9 @@ async fn move_proxy_node_never_loses_its_entry() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn billing_tz_is_validated_on_write() {
-    let t = setup(true).await;
-    let (ra, ta) = seed_relay(&t).await;
-    let mut a = Sim::new(ta);
+    let t = setup(false).await;
     let team = seed_team(&t, "团队1").await;
-    let (node, pj) = provision_proxy(&t, team, ra, "203.0.113.10").await;
-    drive(&t, &mut [&mut a], &pj, "succeeded").await;
+    let node = seed_node(&t, team, 1, "203.0.113.10", "active").await;
     let put = |tz: &'static str| {
         let path = format!("/api/v1/machines/{node}/subscription");
         let t = &t;
@@ -374,38 +374,6 @@ async fn provider_create_defaults_and_patch() {
     assert_eq!((p["name"].as_str(), p["panel_url"].is_null(), p["timezone"].as_str()), (Some("甲改"), true, Some("UTC")));
     let audit = t.get("/api/v1/audit?limit=50").await;
     assert_eq!(audit.as_array().unwrap().iter().filter(|e| e["action"] == "provider.update" && e["title"] == "修改供应商").count(), 2, "{audit}");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn team_duplicate_name_says_so() {
-    let t = setup(false).await;
-    seed_team(&t, "团队1").await;
-    let b = seed_team(&t, "团队2").await;
-    let (s, v) = t.req("POST", "/api/v1/teams", Some(json!({"name": "团队1"})), None).await;
-    assert_eq!(s, StatusCode::CONFLICT, "{v}");
-    assert_eq!(v["error"]["message"], "已有同名团队");
-    let (s, v) = t.req("PATCH", &format!("/api/v1/teams/{b}"), Some(json!({"name": "团队1"})), None).await;
-    assert_eq!(s, StatusCode::CONFLICT, "{v}");
-    assert_eq!(v["error"]["message"], "已有同名团队", "改名撞名也要说清楚，不是「数据冲突」");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn plan_patch_null_clears_field() {
-    let t = setup(false).await;
-    let p = t.post("/api/v1/providers", json!({"name": "甲", "code": "A"})).await["id"].clone();
-    let id = t.post("/api/v1/plans", json!({"provider_id": p, "name": "基础", "price_cents": 500, "traffic_gb": 1000, "cpu_cores": 2})).await["id"].as_str().unwrap().to_string();
-    let (s, v) = t.req("PATCH", &format!("/api/v1/plans/{id}"), Some(json!({"traffic_gb": null})), None).await;
-    assert_eq!(s, StatusCode::OK, "{v}");
-    let plan = t.get("/api/v1/plans").await[0].clone();
-    assert!(plan["traffic_gb"].is_null() && plan["cpu_cores"] == 2, "null 清空、没传的不动：{plan}");
-    let (s, v) = t.req("POST", "/api/v1/plans", Some(json!({"provider_id": p, "name": "基础", "price_cents": 1})), None).await;
-    assert_eq!(s, StatusCode::CONFLICT);
-    assert!(v.to_string().contains("同名套餐"), "{v}");
-    // 改供应商
-    let p2 = t.post("/api/v1/providers", json!({"name": "乙", "code": "B"})).await["id"].clone();
-    let (s, v) = t.req("PATCH", &format!("/api/v1/plans/{id}"), Some(json!({"provider_id": p2})), None).await;
-    assert_eq!(s, StatusCode::OK, "{v}");
-    assert_eq!(t.get("/api/v1/plans").await[0]["provider_id"], p2);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -588,9 +556,9 @@ async fn restore_retired_proxy_node_appends_number_and_gets_new_entry() {
     let (ra, ta) = seed_relay(&t).await;
     let mut a = Sim::new(ta);
     let team = seed_team(&t, "团队1").await;
-    let (n1, j1) = provision_proxy(&t, team, ra, "203.0.113.10").await;
+    let ps = provision_proxies(&t, team, ra, &["203.0.113.10", "203.0.113.11"]).await;
+    let ((n1, j1), (n2, j2)) = (ps[0].clone(), ps[1].clone());
     drive(&t, &mut [&mut a], &j1, "succeeded").await;
-    let (n2, j2) = provision_proxy(&t, team, ra, "203.0.113.11").await;
     drive(&t, &mut [&mut a], &j2, "succeeded").await;
     assert_eq!((name_of(&t, n1).await, name_of(&t, n2).await), ("团队1-01".to_string(), "团队1-02".to_string()));
     // 给 n1 挂一份账单，恢复后要还在
@@ -850,4 +818,23 @@ async fn add_entry_checks_relay_before_enqueue() {
     assert!(v["error"]["message"].as_str().unwrap().contains("已经有入口"), "{v}");
     let n: i64 = sqlx::query_scalar("select count(*) from job").fetch_one(&t.st.db).await.unwrap();
     assert_eq!(n, 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn plan_patch_null_clears_field() {
+    let t = setup(false).await;
+    let p = t.post("/api/v1/providers", json!({"name": "甲", "code": "A"})).await["id"].clone();
+    let id = t.post("/api/v1/plans", json!({"provider_id": p, "name": "基础", "price_cents": 500, "traffic_gb": 1000, "cpu_cores": 2})).await["id"].as_str().unwrap().to_string();
+    let (s, v) = t.req("PATCH", &format!("/api/v1/plans/{id}"), Some(json!({"traffic_gb": null})), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let plan = t.get("/api/v1/plans").await[0].clone();
+    assert!(plan["traffic_gb"].is_null() && plan["cpu_cores"] == 2, "null 清空、没传的不动：{plan}");
+    let (s, v) = t.req("POST", "/api/v1/plans", Some(json!({"provider_id": p, "name": "基础", "price_cents": 1})), None).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    assert!(v.to_string().contains("同名套餐"), "{v}");
+    // 改供应商
+    let p2 = t.post("/api/v1/providers", json!({"name": "乙", "code": "B"})).await["id"].clone();
+    let (s, v) = t.req("PATCH", &format!("/api/v1/plans/{id}"), Some(json!({"provider_id": p2})), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(t.get("/api/v1/plans").await[0]["provider_id"], p2);
 }

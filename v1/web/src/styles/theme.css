@@ -19,7 +19,7 @@
   --muted-foreground: var(--fg-2);
   --ui-accent: var(--hover);            /* = shadcn 的 --accent（见上） */
   --accent-foreground: var(--fg);
-  --destructive: var(--bad);
+  --destructive: var(--bad-solid);
   --destructive-foreground: #ffffff;    /* 同 .btn-danger */
   --input: var(--line-strong);
   --ring: var(--focus);

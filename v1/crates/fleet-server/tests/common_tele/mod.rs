@@ -2,51 +2,21 @@
 //! 放在子目录里，cargo 不会把它当成独立的测试目标。
 #![allow(dead_code)]
 
-use axum::body::Body;
 use axum::extract::State;
-use axum::http::{Request, StatusCode, Uri};
+use axum::http::{StatusCode, Uri};
 use axum::{Json, Router};
 use fleet_proto::{AccessEvent, EntrySample, HostSample, ProbeKind, ProbeSample, Report, XrayStatus};
-use fleet_server::{config::Config, crypto::SecretBox, db, state::AppState};
 use futures::StreamExt;
-use http_body_util::BodyExt;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
-use tower::ServiceExt;
 use uuid::Uuid;
 
-pub struct T {
-    pub app: Router,
-    pub st: AppState,
-    pub cookie: String,
-}
+pub use crate::common::T;
 
 impl T {
-    pub async fn req(&self, method: &str, path: &str, body: Option<Value>, auth: Option<&str>) -> (StatusCode, Value) {
-        let mut b = Request::builder().method(method).uri(path).header("content-type", "application/json").header("x-fleet-request", "1");
-        match auth {
-            Some(tok) => b = b.header("authorization", format!("Bearer {tok}")),
-            None => b = b.header("cookie", &self.cookie),
-        }
-        let req = b.body(body.map(|v| Body::from(v.to_string())).unwrap_or_else(Body::empty)).unwrap();
-        let res = self.app.clone().oneshot(req).await.unwrap();
-        let status = res.status();
-        let bytes = res.into_body().collect().await.unwrap().to_bytes();
-        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
-    }
-    pub async fn get(&self, p: &str) -> Value {
-        let (s, v) = self.req("GET", p, None, None).await;
-        assert_eq!(s, StatusCode::OK, "GET {p}: {v}");
-        v["data"].clone()
-    }
-    pub async fn post(&self, p: &str, b: Value) -> Value {
-        let (s, v) = self.req("POST", p, Some(b), None).await;
-        assert!(s.is_success(), "POST {p}: {s} {v}");
-        v["data"].clone()
-    }
     /// agent 上报，返回 (状态码, 响应体)
     pub async fn report(&self, tok: &str, r: &Report) -> (StatusCode, Value) {
         self.req("POST", "/agent/v1/report", Some(serde_json::to_value(r).unwrap()), Some(tok)).await
@@ -92,41 +62,8 @@ pub async fn ws_next(ws: &mut Ws, kind: &str) -> Value {
     tokio::time::timeout(std::time::Duration::from_secs(5), read).await.unwrap_or_else(|_| panic!("5 秒内没等到 {kind}"))
 }
 
-/// 清空测试库并起一个不带后台循环的应用，登录好 admin
-pub async fn setup() -> T {
-    let url = std::env::var("FLEET_TEST_DB").unwrap_or_else(|_| "postgres://fleet:fleet@127.0.0.1/fleet_test".into());
-    let pool = db::connect(&url).await.unwrap();
-    sqlx::query("drop schema public cascade").execute(&pool).await.unwrap();
-    sqlx::query("create schema public").execute(&pool).await.unwrap();
-    db::MIGRATOR.run(&pool).await.unwrap();
-    db::maintain_partitions(&pool, 14, 7, 2).await.unwrap();
-    let cfg: Config = toml::from_str(&format!(
-        r#"database_url = "{url}"
-           secret_key_file = "/dev/null"
-           public_url = "http://fleet.test"
-           ssh_key = "/nonexistent"
-           known_hosts = "/tmp/fleet-test-known-hosts"
-           dist_dir = "/nonexistent"
-           job_workers = 1"#
-    ))
-    .unwrap();
-    let st = AppState::new(cfg, pool.clone(), SecretBox::from_key(&[9u8; 32]).unwrap());
-    fleet_server::auth::upsert_user(&pool, "admin", "correct horse battery").await.unwrap();
-    let app = fleet_server::app(st.clone());
-    let res = app
-        .clone()
-        .oneshot(
-            Request::post("/api/v1/auth/login")
-                .header("content-type", "application/json")
-                .body(Body::from(json!({"username": "admin", "password": "correct horse battery"}).to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let cookie = res.headers().get("set-cookie").unwrap().to_str().unwrap().split(';').next().unwrap().to_string();
-    T { app, st, cookie }
-}
+/// 新建一个独立的测试环境（见 common），不带后台循环，登录好 admin
+pub async fn setup() -> T { crate::common::boot(false, "").await }
 
 /// 在库里放一台在用的线路机，并签一个 agent 令牌
 pub async fn seed_relay(t: &T, label: &str, ip: &str, tok: &str) -> Uuid {

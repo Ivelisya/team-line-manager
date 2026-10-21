@@ -17,8 +17,52 @@
 .reason-list li { display: flex; align-items: flex-start; gap: var(--sp-8); font-size: var(--fs-body); }
 .reason-list .dot { margin-top: 7px; }
 .chart-box { height: 180px; min-width: 0; }
-.chart-legend { display: flex; gap: var(--sp-12); font-size: var(--fs-label); color: var(--fg-2); align-items: center; }
-.chart-legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: var(--sp-4); }
+.chart-legend { display: flex; flex-wrap: wrap; gap: var(--sp-6); align-items: center; }
+/* 图例胶囊（--lc 是曲线色）：点掉后色块变空心、文字变淡；按下同其它控件微缩 */
+.chart-legend-item {
+  display: inline-flex; align-items: center; gap: var(--sp-6); height: 24px; padding: 0 var(--sp-8); cursor: pointer;
+  border: 1px solid color-mix(in srgb, var(--lc) 35%, var(--line)); border-radius: var(--r-pill); background: color-mix(in srgb, var(--lc) 8%, var(--surface));
+  font: var(--fw-medium) var(--fs-label) / 1 var(--font-sans); color: var(--fg-2);
+  transition: background-color var(--dur-fast), border-color var(--dur-fast), color var(--dur-fast), opacity var(--dur-fast), transform var(--dur-base) var(--ease-sheet);
+}
+.chart-legend-item:hover { color: var(--fg); border-color: color-mix(in srgb, var(--lc) 60%, var(--line)); }
+.chart-legend-item:active { transform: scale(0.96); transition-duration: var(--dur-press); }
+.chart-legend-item i { width: 8px; height: 8px; border-radius: 2px; background: var(--lc); box-shadow: inset 0 0 0 1.5px var(--lc); transition: background-color var(--dur-fast); }
+.chart-legend-item[aria-pressed="false"] { background: transparent; border-color: var(--line); color: var(--fg-3); }
+.chart-legend-item[aria-pressed="false"] i { background: transparent; }
+/* 图表卡（抽屉曲线，参照 CFSM-SAO 详情图）：--cc 是这张图的指标色，由组件写入。边框取指标色 30%；背景三层，自上而下是
+   顶部 2px 指标色→透明的色条（75%）、内侧 1px 顶部高光（浮层底：亮色白、暗色比卡片亮一级，不会发白）、极淡的指标色竖向渐变。
+   色条画成背景而不是 ::before：圆角自动裁掉，卡片不用 overflow 裁切，曲线提示框的投影不会被卡边切断 */
+.chart-card {
+  --cc: var(--chart-1);
+  display: grid; gap: var(--sp-8); min-width: 0; padding: 11px 12px;
+  border: 1px solid color-mix(in srgb, var(--cc) 30%, transparent); border-radius: 16px;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--cc) 75%, transparent), transparent) 0 0 / 100% 2px no-repeat,
+    linear-gradient(var(--raised), var(--raised)) 0 0 / 100% 1px no-repeat,
+    linear-gradient(180deg, color-mix(in srgb, var(--cc) 5%, var(--surface)), var(--surface) 72%);
+  box-shadow: var(--shadow-card);
+}
+/* 卡头按基线对齐：标题、当前值第一行、时间范围的文字落在同一条线上 */
+.chart-card-head { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: var(--sp-4) var(--sp-8); min-width: 0; }
+.chart-card-title { display: flex; align-items: baseline; gap: var(--sp-6); min-width: 0; font: var(--fw-semibold) var(--fs-body) / var(--lh-body) var(--font-sans); color: var(--fg); }
+.chart-card-title .lucide { flex: none; align-self: center; width: 14px; height: 14px; stroke-width: 2; color: var(--cc); } /* svg 被 preflight 设成 block：标题用 flex 让图标与文字同一行 */
+.chart-card-meta { font-size: var(--fs-label); font-weight: var(--fw-regular); color: var(--fg-2); }
+.chart-card-val { display: grid; justify-items: end; text-align: right; }
+.chart-card-val b { font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-num); font-variant-numeric: var(--num-variant); letter-spacing: -0.02em; color: var(--fg); white-space: nowrap; }
+.chart-card-val small { font-size: var(--fs-micro); line-height: var(--lh-micro); color: var(--fg-2); }
+.sec.chart-stack { display: grid; gap: var(--sp-12); }
+/* 图表提示框：毛玻璃（94% 浮层底 + 12px 模糊），第一行时间，下面每行 色块 + 名称 + 加粗数值 */
+.chart-tip {
+  min-width: 140px; padding: var(--sp-8) var(--sp-10); border: 1px solid var(--line); border-radius: var(--r-float);
+  background: color-mix(in srgb, var(--raised) 94%, transparent); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+  box-shadow: var(--shadow-float); font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg);
+  animation: pop-scale-in var(--dur-base) var(--ease-out);
+}
+.chart-tip-t { margin-bottom: var(--sp-4); color: var(--fg-2); }
+.chart-tip-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-12); }
+.chart-tip-row i { display: inline-block; width: 8px; height: 8px; margin-right: var(--sp-6); border-radius: 2px; }
+.chart-tip-row b { font-weight: var(--fw-semibold); }
 .danger-zone { border: 1px solid color-mix(in srgb, var(--bad) 30%, var(--line)); border-radius: var(--r-float); padding: var(--sp-12) var(--sp-16); display: grid; gap: var(--sp-12); }
 .manage-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-12); flex-wrap: wrap; }
 .manage-row > div:first-child { min-width: 0; flex: 1 1 220px; }

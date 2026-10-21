@@ -1,6 +1,7 @@
 //! 访问策略集成测试：草稿 → 预览 → 发布 → 期望状态 → agent 回报 → 版本状态 → 回滚；冲突与校验。
-//! 需要 PostgreSQL（见 common_pol）。串行跑：`cargo test -p fleet-server --test policy -- --test-threads=1`。
+//! 需要 PostgreSQL（见 common）。只跑这一套：`cargo test -p fleet-server --test policy`。
 
+mod common;
 mod common_pol;
 
 use axum::http::StatusCode;

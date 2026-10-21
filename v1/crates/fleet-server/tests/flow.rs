@@ -1,124 +1,13 @@
 //! 端到端：上架（上游代理节点）→ 线路机应用 → 出口验收 → 上线 → 改名同步 → 退役（摘入口、压缩编号）→ 彻底删除。
-//! 需要 PostgreSQL：环境变量 FLEET_TEST_DB（默认 postgres://fleet:fleet@127.0.0.1/fleet_test）。会清空该库的 public schema。
+//! 需要 PostgreSQL（见 common）。
 
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
+mod common;
+
+use axum::http::StatusCode;
+use common::{seed_relay, setup, T};
 use fleet_proto::{ApplyReport, DesiredState, EntryApply, ProbeKind, ProbeSample, Report};
-use fleet_server::{config::Config, crypto::SecretBox, db, state::AppState};
-use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use std::time::Duration;
-use tower::ServiceExt;
-use uuid::Uuid;
-
-struct T {
-    app: axum::Router,
-    st: AppState,
-    cookie: String,
-}
-
-impl T {
-    async fn req(&self, method: &str, path: &str, body: Option<Value>, auth: Option<&str>) -> (StatusCode, Value) {
-        let mut b = Request::builder().method(method).uri(path).header("content-type", "application/json").header("x-fleet-request", "1");
-        match auth {
-            Some(tok) => b = b.header("authorization", format!("Bearer {tok}")),
-            None => b = b.header("cookie", &self.cookie),
-        }
-        let req = b.body(body.map(|v| Body::from(v.to_string())).unwrap_or_else(Body::empty)).unwrap();
-        let res = self.app.clone().oneshot(req).await.unwrap();
-        let status = res.status();
-        let bytes = res.into_body().collect().await.unwrap().to_bytes();
-        let v = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-        (status, v)
-    }
-    async fn get(&self, p: &str) -> Value {
-        let (s, v) = self.req("GET", p, None, None).await;
-        assert_eq!(s, StatusCode::OK, "GET {p}: {v}");
-        v["data"].clone()
-    }
-    async fn post(&self, p: &str, b: Value) -> Value {
-        let (s, v) = self.req("POST", p, Some(b), None).await;
-        assert!(s.is_success(), "POST {p}: {s} {v}");
-        v["data"].clone()
-    }
-    async fn wait_job(&self, id: &str, want: &str) -> Value {
-        for _ in 0..200 {
-            let j = self.get(&format!("/api/v1/jobs/{id}")).await;
-            if j["state"] == want {
-                return j;
-            }
-            if j["state"] == "failed" && want != "failed" {
-                let logs = self.get(&format!("/api/v1/jobs/{id}/logs")).await;
-                panic!("作业失败：{} / {logs}", j["error"]);
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-        panic!("作业 {id} 没到 {want}");
-    }
-}
-
-async fn setup() -> T {
-    let url = std::env::var("FLEET_TEST_DB").unwrap_or_else(|_| "postgres://fleet:fleet@127.0.0.1/fleet_test".into());
-    let pool = db::connect(&url).await.unwrap();
-    sqlx::query("drop schema public cascade").execute(&pool).await.unwrap();
-    sqlx::query("create schema public").execute(&pool).await.unwrap();
-    db::MIGRATOR.run(&pool).await.unwrap();
-    db::maintain_partitions(&pool, 14, 7, 2).await.unwrap();
-    let cfg: Config = toml::from_str(&format!(
-        r#"database_url = "{url}"
-           secret_key_file = "/dev/null"
-           public_url = "http://fleet.test"
-           ssh_key = "/nonexistent"
-           known_hosts = "/tmp/fleet-test-known-hosts"
-           dist_dir = "/nonexistent"
-           job_workers = 4"#
-    ))
-    .unwrap();
-    let st = AppState::new(cfg, pool.clone(), SecretBox::from_key(&[9u8; 32]).unwrap());
-    fleet_server::spawn_background(&st);
-    fleet_server::auth::upsert_user(&pool, "admin", "correct horse battery").await.unwrap();
-    let app = fleet_server::app(st.clone());
-    let res = app
-        .clone()
-        .oneshot(
-            Request::post("/api/v1/auth/login")
-                .header("content-type", "application/json")
-                .body(Body::from(json!({"username": "admin", "password": "correct horse battery"}).to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let cookie = res.headers().get("set-cookie").unwrap().to_str().unwrap().split(';').next().unwrap().to_string();
-    T { app, st, cookie }
-}
-
-/// 直接在库里放一台在用的线路机，并给它签一个 agent 令牌
-async fn seed_relay(t: &T) -> (Uuid, String) {
-    let id = Uuid::now_v7();
-    let (sk, pk) = fleet_server::crypto::reality_keypair();
-    sqlx::query("insert into machine (id, kind, label, primary_ip, lifecycle, activated_at) values ($1, 'relay', '线路机2', '198.51.100.2', 'active', now())")
-        .bind(id)
-        .execute(&t.st.db)
-        .await
-        .unwrap();
-    sqlx::query("insert into relay (machine_id, public_host, reality_private_enc, reality_public_key, min_client_ver, generation, applied_generation) values ($1, 'relay.test', $2, $3, '1.8.2', 1, 1)")
-        .bind(id)
-        .bind(t.st.secrets.seal_str(&sk))
-        .bind(pk)
-        .execute(&t.st.db)
-        .await
-        .unwrap();
-    let tok = "fa1_test_relay_token";
-    sqlx::query("insert into agent_token (id, machine_id, token_hash) values ($1, $2, $3)")
-        .bind(Uuid::now_v7())
-        .bind(id)
-        .bind(fleet_server::crypto::sha256(tok.as_bytes()))
-        .execute(&t.st.db)
-        .await
-        .unwrap();
-    (id, tok.to_string())
-}
 
 fn now_ms() -> i64 { (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64 }
 
@@ -160,7 +49,7 @@ async fn relay_round(t: &T, tok: &str, _after: u64, seq: &mut u64) -> DesiredSta
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn full_lifecycle() {
-    let t = setup().await;
+    let t = setup(true).await;
     let (relay, rtok) = seed_relay(&t).await;
     let team = t.post("/api/v1/teams", json!({"name": "团队1"})).await["id"].as_str().unwrap().to_string();
     let mut seq = 0u64;
@@ -183,14 +72,15 @@ async fn full_lifecycle() {
 
     // 作业建好入口后，线路机拉到期望状态并回报；之后出口探测通过 → 上线
     let mut gen = 1;
-    for _ in 0..40 {
+    for _ in 0..150 {
         let ds = relay_round(&t, &rtok, gen, &mut seq).await;
         gen = ds.generation;
-        let done = futures::future::join_all(jobs.iter().map(|j| t.get_owned(j))).await;
+        let done = futures::future::join_all(jobs.iter().map(|j| t.job(j))).await;
         if done.iter().all(|j| j["state"] == "succeeded") {
             break;
         }
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        t.nudge_jobs().await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
     for j in &jobs {
         t.wait_job(j, "succeeded").await;
@@ -219,13 +109,14 @@ async fn full_lifecycle() {
     let (s, _) = t.req("POST", &format!("/api/v1/machines/{}/retire", ids[0]), Some(json!({"confirm": "错的名字"})), None).await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
     let job = t.post(&format!("/api/v1/machines/{}/retire", ids[0]), json!({"confirm": "一队-01"})).await["job_id"].as_str().unwrap().to_string();
-    for _ in 0..40 {
+    for _ in 0..150 {
         let ds = relay_round(&t, &rtok, gen, &mut seq).await;
         gen = ds.generation;
-        if t.get_owned(&job).await["state"] == "succeeded" {
+        if t.job(&job).await["state"] == "succeeded" {
             break;
         }
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        t.nudge_jobs().await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
     t.wait_job(&job, "succeeded").await;
     // 期望状态里不再有它的入口；剩下两台编号压缩成 01、02，备注同步
@@ -251,8 +142,4 @@ async fn full_lifecycle() {
     // 审计里有重编号记录
     let audit = t.get("/api/v1/audit?limit=200").await;
     assert!(audit.as_array().unwrap().iter().any(|a| a["action"] == "team.renumber"));
-}
-
-impl T {
-    async fn get_owned(&self, job: &str) -> Value { self.get(&format!("/api/v1/jobs/{job}")).await }
 }

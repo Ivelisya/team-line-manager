@@ -93,6 +93,10 @@ impl AppState {
             // 列表卡片的 active_job 走实时指标比对（最多 3 s 一次），不让每一步都整表重取
             self.metrics_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
         }
+        if matches!(e, Event::Incidents) {
+            // 静默增删、告警开关：卡片上的「维护中」、健康同样走实时指标比对，前端不为它整表重取
+            self.metrics_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         let _ = self.events.send(e);
     }
 

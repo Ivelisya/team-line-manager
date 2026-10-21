@@ -54,7 +54,11 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
   lifecycle: "draft"|"provisioning"|"active"|"retiring"|"retired"|"failed", lifecycle_reason|null, note, revision,
   created_at, activated_at|null, retired_at|null,
   subscription: {price_cents,currency,cycle,due_date,due_days,billing_tz,auto_renew,remind_days,traffic_gb,traffic_reset_day}|null,
-  agent: {version,last_report_at,online,xray_running,cores}|null,  // proxy 没有；cores 为 agent 报的可用核数（容器里是限额），没报过为 null
+  agent: {version,last_report_at,online,xray_running,cores,health}|null,  // proxy 没有；cores 为 agent 报的可用核数（容器里是限额），没报过为 null
+                                // health：agent 自报的健康数据（fleet-proto AgentHealth，自 agent 进程启动起累计，重启归零），旧 agent 没报过为 null：
+                                // {queue_len 离线队列待发报告数, queue_dropped 超上限丢弃的报告数, queue_dead 移入 dead/ 的报告数,
+                                //  access_lines, access_events, access_unparsed, access_dropped_lines, access_rotation_gaps 日志轮转可能漏掉一段的次数,
+                                //  access_truncations 日志被截断的次数, probes_skipped, realign_fixes, last_apply_error?（最近一次应用失败，成功后不带）}
   host: {ts,cpu_pct,load1,mem_used,mem_total,disk_used,disk_total,net_rx_bps,net_tx_bps,tcp_conns}|null,  // load1 在容器里为 null（/proc/loadavg 是宿主机的）
   entries: [EntryView],                                // 节点：自己的入口；线路机：挂在上面的入口
   removed_traffic: {today_up,today_down,month_up,month_down},  // 已移除入口（如换线路机后的旧入口）本月/今天的流量，不在 entries 里
@@ -133,7 +137,7 @@ ProvisionItem = {
 需要 `exec` scope（会话用户直接可用）。中控用自己的 SSH 密钥和 known_hosts 登录；机器必须不是已退役、不是家宽代理（proxy 没有 SSH）。命令原样当 bash 脚本执行（stdin 接 /dev/null），超时由远端 `timeout` 杀掉。每次执行写审计（actor、机器、命令全文、退出码、耗时），**不要在命令里写密码**。
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/machines/{id}/exec` | `{command, timeout_s?: 1-600 (默认 60)}` → `{data:{exit_code, stdout, stderr, duration_ms, truncated, timed_out}}`。stdout/stderr 各截断到 256 KiB（`truncated=true`）；超时 `timed_out=true`、`exit_code=124`；SSH 连不上时 `exit_code=255` 且 stderr 有原因。机器不存在 404、已退役或 proxy 409、命令空/超时越界 400、SSH 无法启动 502 |
+| POST | `/machines/{id}/exec` | `{command, timeout_s?: 1-600 (默认 60)}` → `{data:{exit_code, stdout, stderr, duration_ms, truncated, timed_out}}`。stdout/stderr 各截断到 256 KiB（`truncated=true`）；超时 `timed_out=true`：到点远端 `timeout` 发 TERM，`exit_code=124`；命令不理会 TERM 的，再过 5 秒被 KILL（`timeout -k 5`），`exit_code=137`；远端没能按时结束、中控本地等到 `timeout_s+15` 秒仍没返回时也按超时返回 `exit_code=124`。SSH 连不上时 `exit_code=255` 且 stderr 有原因（命令自己退出 255 也是 255）。**只执行一次、不自动重试**（255 时命令可能已经执行过）。机器不存在 404、已退役或 proxy 409、命令空/超时越界 400、SSH 无法启动 502 |
 | GET | `/machines/{id}/logs?unit=fleet-agent\|fleet-xray\|ssserver&lines=200` | 白名单 unit（`ssserver` 对应 `fleet-ssserver`），lines 1-2000；内部走同一 exec 通道跑 `journalctl`，返回形状同 exec，另有 `unit`、`lines`。审计动作 `machine.logs` |
 | GET | `/server/logs?lines=200` | 中控自己的 `journalctl -u fleet-server`。fleet 用户通常没权限读 journal：journalctl 报错时 424（`error.code="journal_denied"`，message 说明如何授权：`usermod -aG systemd-journal fleet`）；journalctl 无法运行或 20 秒没返回时 500 |
 
@@ -176,11 +180,12 @@ ProvisionItem = {
 **实时指标** `{type:"metrics", machines:{<机器id>:{…}}, entries:{<入口id>:{…}}, overview?}`：在用机器视图（`GET /machines` 的 `MachineView`）里随上报与时间变化的字段，和上一条相比**只带变了的字段**（没变的键不出现），客户端把它们写进本地缓存，不必重取。有新上报或作业推进时最多每 3 s 一条，没有也每 30 s 比对一次（离线、到期天数、维护窗口随时间变）；没有变化不发。
 - `machines[id]` 的键：
   - `host`：`[ts, cpu_pct, load1, mem_used, mem_total, disk_used, disk_total, net_rx_bps, net_tx_bps, tcp_conns] | null`（`ts` 为 Unix 秒，速率取整；各项可为 null，与 `MachineView.host` 同义）；
-  - `seen`：`agent.last_report_at` 的 Unix 秒 | null；`agent`：`{version, online, xray_running, cores} | null`（不含 `last_report_at`，前端合并进原对象）；
+  - `seen`：`agent.last_report_at` 的 Unix 秒 | null；`agent`：`{version, online, xray_running, cores} | null`（不含 `last_report_at` 和 `health`——agent 自报的累计计数每次上报都变，只随 REST 重取更新；前端合并进原对象）；
   - `health`、`maintenance`、`removed_traffic`、`quota`、`active_job`：与 `MachineView` 同形；`due_days`：`subscription.due_days`（无订阅为 null）。
 - `entries[id]` 的键：`tcp` / `egress`：`[ok, latency_ms, ts, detail] | null`（`ts` 为 Unix 秒）；`traffic`：与 `EntryView.traffic` 同形。一条入口同时出现在节点和线路机的 `entries` 里，两边都要更新。
 - `overview`：与 `GET /overview` 同形，变了才带。
 - 机器的新建、改名、换团队、退役、告警等结构变化不走 `metrics`，仍发上面的失效通知。
+- 静默的新建 / 删除只发 `incidents`（不发 `machines`）：卡片上的 `maintenance`、`health`、总览的维护中计数随后（最多 3 s）经 `metrics` 送达，不必为它重取机器列表。
 
 `fleetctl watch [--count N] [--metrics] [--json]` 订阅这个流（默认不显示 `metrics`）。
 
@@ -197,11 +202,11 @@ ProvisionItem = {
 - **窗口口径**：`1h` 直接查原始记录；`24h` 及以上查小时汇总，起点对齐到整点（`window_start` 返回实际起点），最新数据最多晚 5 分钟。
 - **随机子域名合并**：注册域名之下的标签含 UUID、或 ≥8 位纯十六进制且 ≥2 位数字、或 ≥20 位字母数字且 ≥4 位数字，则整条合并为 `*.<注册域名>`（注册域名取最后两段，倒数第二段是 com/net/org/gov/edu/co 且最后一段是两字母国家码时取最后三段）。`events` 返回的是未合并的原始目标。
 - **处理结果**：`action=blocked` 时 `conns` 即被阻止数；`action=routed` 时 `conns` 为去掉被阻止后的数，`blocked` 为 0。
-- **来源数**：1h 窗口精确去重；24h 以上是「各小时去重数的最大值」，为偏小的近似（节点级的 `sources` 是精确去重）。
+- **来源数**：1h 窗口精确去重；24h 以上是「各小时去重数的最大值」，为偏小的近似（节点级的 `sources` 是精确去重，24h 以上带 `search` / `kind` / `action` 筛选时为 null，见下）。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/access/summary?…` | `{kpi:{active_nodes,conns,targets,blocked}, nodes:[{node_id,name,team,conns,targets,domains,sources,blocked,last_ts}], window_start}`。`targets` 是各节点分别去重后相加；节点按连接数降序 |
+| GET | `/access/summary?…` | `{kpi:{active_nodes,conns,targets,blocked}, nodes:[{node_id,name,team,conns,targets,domains,sources,blocked,last_ts}], window_start}`。`targets` 是各节点分别去重后相加；节点按连接数降序。节点的 `sources` 是去重来源 IP 数，跟随全部筛选（和同行的 `conns` 同一批连接）：`1h` 在原始记录上逐条带上 `search`（目标或来源 IP）、`kind`、`action`；`24h` 及以上来自来源小时表，没有目标维度，带了 `search`、`kind`、`action`（非 all）任一筛选时为 `null`（界面显示「—」） |
 | GET | `/access/targets?…&sort=conns\|last\|first&limit=100&offset=0` | `{items:[{node_id,name,dest_host,kind,conns,sources,blocked,first_seen,last_seen}], next_offset, window_start}`；`limit` 1–500，`offset` ≤ 100000，满页才给 `next_offset`；`first_seen` 是该节点历史上第一次出现（不限窗口）。不单独回总数：同一筛选下 `/access/summary` 的 `kpi.targets` 就是这张表的总行数（同一个聚合） |
 | GET | `/access/sources?…&limit=100` | `{items:[{node_id,name,src_ip,conns,last_ts}], window_start}`，按 (节点, 来源 IP) 连接数降序；`search` 在这里匹配来源 IP；`limit` ≤ 500 |
 | GET | `/access/events?node=&team=&search=&action=&kind=&window=&limit=100&before=<游标>` | `{items:[{ts,node_id,name,src_ip,dest_host,dest_port,network,blocked}], next_before}`，按 (时间, 记录 id) 倒序；`next_before` 是不透明游标（满页才给），下一页把它原样放进 `before`（要 URL 编码）；同一时刻的多条记录不会被跳过；格式不对 400。`search` 同时匹配目标和来源 IP；只有最近 7 天 |

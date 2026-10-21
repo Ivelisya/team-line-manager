@@ -1,38 +1,17 @@
-//! IP 情报测试的公共部分：建库、登录、造机器和入口、塞来源小时汇总、预置画像缓存。
-//! 需要 PostgreSQL：环境变量 FLEET_TEST_DB（默认 postgres://fleet:fleet@127.0.0.1/fleet_test）。会清空该库的 public schema。
+//! IP 情报测试的公共部分：造机器和入口、塞来源小时汇总、预置画像缓存（建库与登录见 common）。
 //! 不起后台循环：来源汇总 / 异常 / 告警评估都由测试手动驱动，并且可以传入「现在」来快进时间。
 #![allow(dead_code)]
 
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
-use fleet_server::{config::Config, crypto::SecretBox, db, state::AppState};
-use http_body_util::BodyExt;
-use serde_json::{json, Value};
+use axum::http::StatusCode;
+use serde_json::Value;
 use time::OffsetDateTime;
-use tower::ServiceExt;
 use uuid::Uuid;
 
-pub struct T {
-    pub app: axum::Router,
-    pub st: AppState,
-    pub cookie: String,
-    /// 离线库目录（临时目录，随 T 一起删）
-    pub dbdir: tempfile::TempDir,
-}
+pub use crate::common::T;
 
 impl T {
-    pub async fn raw(&self, path: &str) -> (StatusCode, Value) {
-        let req = Request::builder().method("GET").uri(path).header("cookie", &self.cookie).body(Body::empty()).unwrap();
-        let res = self.app.clone().oneshot(req).await.unwrap();
-        let status = res.status();
-        let bytes = res.into_body().collect().await.unwrap().to_bytes();
-        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
-    }
-    pub async fn get(&self, p: &str) -> Value {
-        let (s, v) = self.raw(p).await;
-        assert_eq!(s, StatusCode::OK, "GET {p}: {v}");
-        v["data"].clone()
-    }
+    /// 带会话的 GET，返回 (状态码, 响应体)
+    pub async fn raw(&self, path: &str) -> (StatusCode, Value) { self.req("GET", path, None, None).await }
 
     /// 预置一条画像缓存，库版本取当前这一代（所以命中）
     pub async fn put_cache(&self, ip: &str, isp: &str, country: &str, province: Option<&str>, city: Option<&str>, conn_type: &str) {
@@ -85,49 +64,15 @@ impl T {
     }
 }
 
-/// `with_dbs`：离线库目录里放一个只有一行的 iptoasn TSV，让服务认为「有库」（来源汇总才会推进）；
+/// `with_dbs`：离线库目录（临时目录下的 ipintel/）里放一个只有一行的 iptoasn TSV，让服务认为「有库」（来源汇总才会推进）；
 /// 否则目录是空的，走降级路径。两种都不会读到真实的 /var/lib/fleet/ipintel。
 pub async fn setup(with_dbs: bool) -> T {
-    let url = std::env::var("FLEET_TEST_DB").unwrap_or_else(|_| "postgres://fleet:fleet@127.0.0.1/fleet_test".into());
-    let pool = db::connect(&url).await.unwrap();
-    sqlx::query("drop schema public cascade").execute(&pool).await.unwrap();
-    sqlx::query("create schema public").execute(&pool).await.unwrap();
-    db::MIGRATOR.run(&pool).await.unwrap();
-    db::maintain_partitions(&pool, 14, 7, 2).await.unwrap();
-    let dbdir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("ipintel")).unwrap();
     if with_dbs {
-        std::fs::write(dbdir.path().join("ip2asn-combined.tsv"), "1.0.0.0\t1.0.0.255\t13335\tAU\tCLOUDFLARENET\n").unwrap();
+        std::fs::write(dir.path().join("ipintel/ip2asn-combined.tsv"), "1.0.0.0\t1.0.0.255\t13335\tAU\tCLOUDFLARENET\n").unwrap();
     }
-    let cfg: Config = toml::from_str(&format!(
-        r#"database_url = "{url}"
-           secret_key_file = "/dev/null"
-           public_url = "http://fleet.test"
-           ssh_key = "/nonexistent"
-           known_hosts = "/tmp/fleet-test-known-hosts"
-           dist_dir = "/nonexistent"
-           [ipintel]
-           db_dir = "{dir}"
-           overrides = "/nonexistent/ipintel-overrides.toml"
-           internal_ips = ["192.0.2.77"]"#,
-        dir = dbdir.path().display().to_string().replace('\\', "/")
-    ))
-    .unwrap();
-    let st = AppState::new(cfg, pool.clone(), SecretBox::from_key(&[9u8; 32]).unwrap());
-    fleet_server::auth::upsert_user(&pool, "admin", "correct horse battery").await.unwrap();
-    let app = fleet_server::app(st.clone());
-    let res = app
-        .clone()
-        .oneshot(
-            Request::post("/api/v1/auth/login")
-                .header("content-type", "application/json")
-                .body(Body::from(json!({"username": "admin", "password": "correct horse battery"}).to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let cookie = res.headers().get("set-cookie").unwrap().to_str().unwrap().split(';').next().unwrap().to_string();
-    T { app, st, cookie, dbdir }
+    crate::common::boot_in(dir, false, r#"ipintel.internal_ips = ["192.0.2.77"]"#).await
 }
 
 pub struct Fx {

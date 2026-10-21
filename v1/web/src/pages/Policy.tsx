@@ -19,9 +19,9 @@ import { ConfirmDialog } from '@/components/app/dialogs';
 import { useHeld } from '@/lib/useHeld';
 import { AccessViewSwitch } from '@/components/app/AccessViewSwitch';
 import { Chip, Empty, ErrorNote, Note, PageHead, Panel, Pill, type Tone } from '@/components/app/primitives';
+import { fmtN } from '@/features/AccessBits';
 import '@/styles/policy.css';
 
-const num = (n: number) => n.toLocaleString('zh-CN');
 const MODE_TONE: Record<PolicyMode, Tone> = { observe: 'neutral', allowlist: 'info', denylist: 'warn', blocked: 'bad', inherit: 'neutral' };
 const needsDomains = (m: PolicyMode) => m === 'allowlist' || m === 'denylist';
 
@@ -225,7 +225,7 @@ function Editor({ scope, name, sp, team, node, onDirty }: { scope: 'team' | 'nod
         </div>
 
         <div className="field">
-          <span className="label">域名{uses && <span className="pol-count"> · {num(parsed.domains.length)} 个有效</span>}</span>
+          <span className="label">域名{uses && <span className="pol-count"> · {fmtN(parsed.domains.length)} 个有效</span>}</span>
           <div className="pol-ed" data-bad={uses && (parsed.issues.length > 0 || noDomains) ? '1' : undefined} data-off={uses ? undefined : '1'}>
             <Gutter lines={lines.length} bad={uses ? parsed.badLines : new Set()} />
             <Textarea className="pol-ta" value={text} disabled={!uses} wrap="off" spellCheck={false} autoComplete="off" aria-label="域名列表" aria-invalid={uses && parsed.issues.length > 0 ? true : undefined}
@@ -278,7 +278,7 @@ function Compare({ cur, next, scope, teamCur, teamName }: { cur: PolicyBody; nex
       <div className="pol-side-head">
         <ModePill mode={b.mode} />
         {b.mode === 'inherit' && scope === 'node' && <span className="t-sub">{teamName}：{MODE_LABEL[teamCur.mode]}</span>}
-        {needsDomains(b.mode) && <span className="t-sub">{num(b.domains.length)} 个域名</span>}
+        {needsDomains(b.mode) && <span className="t-sub">{fmtN(b.domains.length)} 个域名</span>}
       </div>
       {needsDomains(b.mode) ? <Chips domains={b.domains} mark={mark} marked={set} /> : b.mode === 'inherit' && needsDomains(teamCur.mode) ? <Chips domains={teamCur.domains} /> : <div className="t-muted pol-none">没有域名规则</div>}
       {b.note && <div className="pol-note t-sub">备注：{b.note}</div>}
@@ -302,7 +302,7 @@ function Chips({ domains, mark, marked }: { domains: string[]; mark?: 'add' | 'd
   return (
     <div className="pol-chips">
       {list.map((d) => <DomainTag key={d} d={d} mark={marked?.has(d) ? mark : undefined} />)}
-      {domains.length > CHIP_LIMIT && <span className="pol-more">还有 {num(domains.length - CHIP_LIMIT)} 个</span>}
+      {domains.length > CHIP_LIMIT && <span className="pol-more">还有 {fmtN(domains.length - CHIP_LIMIT)} 个</span>}
       {domains.length === 0 && <span className="t-muted pol-none">没有域名</span>}
     </div>
   );
@@ -337,7 +337,7 @@ function PreviewDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o
               <div className="pol-sum">
                 <div><span>草稿</span><b>{d.draft_count}</b><small>份</small></div>
                 <div><span>更新线路机</span><b>{d.affected_relays}</b><small>台</small></div>
-                <div><span>会被阻止的连接</span><b>{num(totalBlock)}</b><small>{total > 0 ? `占 ${((totalBlock / total) * 100).toFixed(totalBlock / total < 0.1 ? 1 : 0)}%` : '近 24h 无记录'}</small></div>
+                <div><span>会被阻止的连接</span><b>{fmtN(totalBlock)}</b><small>{total > 0 ? `占 ${((totalBlock / total) * 100).toFixed(totalBlock / total < 0.1 ? 1 : 0)}%` : '近 24h 无记录'}</small></div>
               </div>
               <ChangeList changes={d.changes} />
               {d.nodes.length === 0
@@ -352,13 +352,13 @@ function PreviewDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o
                           <tr key={n.node_id}>
                             <td><Trunc className="cell-main strong">{n.name}</Trunc><span className="sub">{n.source === 'team' ? '跟随团队' : n.source === 'node' ? '节点自己的' : ''}</span></td>
                             <td><ModePill mode={n.mode} /></td>
-                            <td className="r">{num(n.total_conns)}</td>
-                            <td className="r">{n.would_block > 0 ? <><b className="strong">{num(n.would_block)}</b><span className="sub">{n.total_conns > 0 ? `${((n.would_block / n.total_conns) * 100).toFixed(0)}%` : ''}</span></> : <span className="t-muted">0</span>}</td>
+                            <td className="r">{fmtN(n.total_conns)}</td>
+                            <td className="r">{n.would_block > 0 ? <><b className="strong">{fmtN(n.would_block)}</b><span className="sub">{n.total_conns > 0 ? `${((n.would_block / n.total_conns) * 100).toFixed(0)}%` : ''}</span></> : <span className="t-muted">0</span>}</td>
                             <td>
                               {n.domains.length === 0 ? <span className="t-muted">—</span> : (
-                                <Tip text={<div className="pol-tip">{n.domains.map((x) => <div key={x.host}><span className="mono">{x.host}</span> <b>{num(x.conns)}</b></div>)}</div>} side="left">
+                                <Tip text={<div className="pol-tip">{n.domains.map((x) => <div key={x.host}><span className="mono">{x.host}</span> <b>{fmtN(x.conns)}</b></div>)}</div>} side="left">
                                   <span className="pol-hosts" tabIndex={0}>
-                                    {n.domains.slice(0, 1).map((x) => <span key={x.host} className="pol-tag">{x.host}<small>{num(x.conns)}</small></span>)}
+                                    {n.domains.slice(0, 1).map((x) => <span key={x.host} className="pol-tag">{x.host}<small>{fmtN(x.conns)}</small></span>)}
                                     {n.domains.length > 1 && <span className="pol-more">+{n.domains.length - 1}</span>}
                                   </span>
                                 </Tip>

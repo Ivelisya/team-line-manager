@@ -36,8 +36,7 @@
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "react-router-dom": "6.30.6",
-    "recharts": "2.15.4",
-    "tailwind-merge": "2.6.1"
+    "recharts": "2.15.4"
   },
   "devDependencies": {
     "@types/node": "22.20.5",

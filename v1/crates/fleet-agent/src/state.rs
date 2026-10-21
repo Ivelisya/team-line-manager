@@ -51,11 +51,17 @@ impl Buffers {
         static HITS: AtomicU64 = AtomicU64::new(0);
         push_capped(&mut self.probes, [s], PROBE_CAP, "probes", &HITS);
     }
-    /// 落盘失败时把取走的东西放回去（放在最前面保持时间顺序）
-    pub fn restore(&mut self, host: Vec<HostSample>, entries: Vec<EntrySample>, probes: Vec<ProbeSample>) {
+    /// 建报失败时把取走的东西放回去（样本放在最前面保持时间顺序；info / 流量基线只在缓冲里还没有更新的值时放回）
+    pub fn restore(&mut self, host: Vec<HostSample>, entries: Vec<EntrySample>, probes: Vec<ProbeSample>, info: Option<SystemInfo>, stats_commit: Option<StatsState>) {
         self.host.splice(0..0, host);
         self.entries.splice(0..0, entries);
         self.probes.splice(0..0, probes);
+        if self.info.is_none() {
+            self.info = info;
+        }
+        if self.stats_commit.is_none() {
+            self.stats_commit = stats_commit;
+        }
     }
 }
 

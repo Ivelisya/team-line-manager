@@ -24,6 +24,11 @@ export interface EntryView {
   tcp: ProbeResult | null; egress: ProbeResult | null; traffic: EntryTraffic;
 }
 export interface HealthReason { key: string; severity: 'info' | 'warning' | 'critical' | string; text: string }
+/** agent 自报的健康数据（只列界面用到的字段，完整见 docs/API.md） */
+export interface AgentHealth {
+  queue_len: number; queue_dropped: number; queue_dead: number;
+  access_rotation_gaps: number; access_truncations: number; last_apply_error?: string | null;
+}
 export interface MachineView {
   id: string; kind: Kind; name: string; team: { id: string; name: string } | null; number: number | null; label: string | null;
   ip: string; ssh_port: number;
@@ -33,7 +38,8 @@ export interface MachineView {
   created_at: string; activated_at: string | null; retired_at: string | null;
   subscription: Subscription | null;
   /** cores：agent 报的可用核数（容器里是限额），没报过为 null */
-  agent: { version: string | null; last_report_at: string | null; online: boolean; xray_running: boolean | null; cores: number | null } | null;
+  /** health：agent 自报的健康数据（自 agent 进程启动起累计；旧 agent 没报过为 null），不随实时推送更新 */
+  agent: { version: string | null; last_report_at: string | null; online: boolean; xray_running: boolean | null; cores: number | null; health: AgentHealth | null } | null;
   host: HostMetrics | null;
   entries: EntryView[];
   removed_traffic: EntryTraffic; // 已移除入口（如换线路机后的旧入口）今天/本月的流量，不在 entries 里

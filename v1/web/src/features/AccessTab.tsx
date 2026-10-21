@@ -4,11 +4,10 @@ import * as React from 'react';
 import { Radar } from 'lucide-react';
 import { ACCESS_WINDOWS, useMachineAccess, type AccessEvent, type AccessWindow, type MachineAccess } from '@/lib/access';
 import * as F from '@/lib/format';
-import type { MachineView } from '@/lib/types';
 import { Segmented } from '@/components/ui/overlays';
 import { Button } from '@/components/ui/button';
 import { ChartContainer, ChartTooltip, Recharts, axisProps, type ChartConfig } from '@/components/ui/chart';
-import { Empty, Note, Pill, Section, SectionHeader } from '@/components/app/primitives';
+import { Empty, ErrorNote, Pill, Section, SectionHeader } from '@/components/app/primitives';
 import { fmtN } from '@/features/AccessBits';
 import { ConnCell, IspPlace, SourceProfile } from '@/features/IpIntelBits';
 import type { ProfileWindow } from '@/lib/ipintel';
@@ -16,11 +15,12 @@ import type { ProfileWindow } from '@/lib/ipintel';
 const { BarChart, Bar, XAxis, YAxis, CartesianGrid } = Recharts;
 
 const cut = (s: string, n = 24) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
-const BAR_CFG: ChartConfig = { routed: { label: '已转发', color: 'var(--chart-1)' }, blocked: { label: '已阻止', color: 'var(--bad)' } };
+// 与最近记录里「已转发 / 已阻止」标签同色：绿 / 红
+const BAR_CFG: ChartConfig = { routed: { label: '已转发', color: 'var(--ok)' }, blocked: { label: '已阻止', color: 'var(--bad)' } };
 
-/** 横向条形图：每行一个目标，已转发 + 已阻止叠在一起 */
-function HostBars({ items }: { items: MachineAccess['top_domains'] }) {
-  const data = items.map((d) => ({ host: d.dest_host, routed: Math.max(0, d.conns - d.blocked), blocked: d.blocked }));
+/** 横向条形图：每行一个目标，已转发 + 已阻止叠在一起。limit：只画前几个（截取放在这里，轮询数据没变时 data 引用不变） */
+function HostBars({ items, limit }: { items: MachineAccess['top_domains']; limit?: number }) {
+  const data = React.useMemo(() => items.slice(0, limit).map((d) => ({ host: d.dest_host, routed: Math.max(0, d.conns - d.blocked), blocked: d.blocked })), [items, limit]);
   return (
     <ChartContainer config={BAR_CFG} height={Math.max(64, data.length * 26 + 8)}>
       <BarChart data={data} layout="vertical" margin={{ top: 0, right: 8, bottom: 0, left: 0 }} barCategoryGap={5}>
@@ -38,7 +38,7 @@ const p2 = F.pad2;
 /** 每小时连接数柱状图 */
 export function HourlyBars({ points, height = 160 }: { points: MachineAccess['hourly']; height?: number }) {
   const long = points.length > 30;
-  const data = points.map((p) => ({ t: new Date(p.hour).getTime(), routed: Math.max(0, p.conns - p.blocked), blocked: p.blocked }));
+  const data = React.useMemo(() => points.map((p) => ({ t: new Date(p.hour).getTime(), routed: Math.max(0, p.conns - p.blocked), blocked: p.blocked })), [points]);
   const tick = (t: number) => { const d = new Date(t); return long ? `${p2(d.getMonth() + 1)}-${p2(d.getDate())}` : `${p2(d.getHours())}:00`; };
   return (
     <ChartContainer config={BAR_CFG} height={height}>
@@ -76,30 +76,34 @@ function RecentTable({ items }: { items: AccessEvent[] }) {
   );
 }
 
-export function AccessTab({ m }: { m: MachineView }) {
+// 只收 id 和是否线路机：抽屉的机器详情几乎每条实时推送都在变，传整台机器的话这里（连同图表）每 3 秒重画一次
+export const AccessTab = React.memo(function AccessTab({ id, relay }: { id: string; relay: boolean }) {
   const [w, setW] = React.useState<AccessWindow>('24h');
   const [all, setAll] = React.useState(false);
-  const q = useMachineAccess(m.id, w);
+  const q = useMachineAccess(id, w);
   const d = q.data;
   const long = ACCESS_WINDOWS.find((x) => x.value === w)!.long;
-  if (q.isError && !d) return <Note tone="bad">{(q.error as Error).message}</Note>;
+  const head = (
+    <SectionHeader title="常访问的目标" meta={relay ? `汇总名下所有节点 · 最近 ${long}` : `最近 ${long}`}>
+      <Segmented sm label="时间范围" value={w} onChange={setW} items={ACCESS_WINDOWS.filter((x) => x.value !== '30d').map((x) => ({ value: x.value, label: x.label }))} />
+    </SectionHeader>
+  );
+  // 出错时留着时间范围控件：可以重试，也可以换一段时间
+  if (q.isError && !d) return <Section>{head}<ErrorNote error={q.error} onRetry={() => void q.refetch()} /></Section>;
   if (!d) return <div className="skel" style={{ height: 160 }} />;
   const total = d.top_domains.reduce((s, x) => s + x.conns, 0);
   const none = d.top_domains.length === 0 && d.recent.length === 0;
-  const domains = all ? d.top_domains : d.top_domains.slice(0, 10);
   return (
     <>
       <Section>
-        <SectionHeader title="常访问的目标" meta={m.kind === 'relay' ? `汇总名下所有节点 · 最近 ${long}` : `最近 ${long}`}>
-          <Segmented sm label="时间范围" value={w} onChange={setW} items={ACCESS_WINDOWS.filter((x) => x.value !== '30d').map((x) => ({ value: x.value, label: x.label }))} />
-        </SectionHeader>
+        {head}
         {none ? (
           <Empty icon={<Radar size={28} />} text={`最近 ${long}没有访问记录（需要线路机开启访问日志、且有真实客户端流量）`} />
         ) : d.top_domains.length === 0 ? (
           <div className="hint">这段时间没有汇总数据。汇总每 5 分钟更新一次，下方「最近记录」是实时的。</div>
         ) : (
           <>
-            <HostBars items={domains} />
+            <HostBars items={d.top_domains} limit={all ? undefined : 10} />
             <div className="row row-between" style={{ marginTop: 6 }}>
               <span className="hint">共 {fmtN(total)} 次连接（前 {d.top_domains.length} 个目标）。绿色已转发，红色已阻止。</span>
               {d.top_domains.length > 10 && <Button size="sm" variant="quiet" onClick={() => setAll((v) => !v)}>{all ? '收起' : `展开全部 ${d.top_domains.length} 个`}</Button>}
@@ -109,7 +113,7 @@ export function AccessTab({ m }: { m: MachineView }) {
       </Section>
       {!none && (
         <>
-          <SourceProfile id={m.id} window={(w === '7d' ? '7d' : '24h') as ProfileWindow} relay={m.kind === 'relay'} />
+          <SourceProfile id={id} window={(w === '7d' ? '7d' : '24h') as ProfileWindow} relay={relay} />
           <Section>
             <SectionHeader title="每小时连接数" meta={w === '1h' ? '最近 24 小时' : `最近 ${long}`} />
             <HourlyBars points={d.hourly} />
@@ -124,7 +128,7 @@ export function AccessTab({ m }: { m: MachineView }) {
                   <tbody>
                     {d.top_sources.map((s) => (
                       <tr key={`${s.node_id}-${s.src_ip}`}>
-                        <td><span className="mono">{s.src_ip}</span>{m.kind === 'relay' && <span className="t-sub"> · {s.name}</span>}</td>
+                        <td><span className="mono">{s.src_ip}</span>{relay && <span className="t-sub"> · {s.name}</span>}</td>
                         <td><IspPlace intel={s.intel} /></td><td><ConnCell intel={s.intel} /></td>
                         <td className="r">{fmtN(s.conns)}</td><td>{F.dt(s.last_ts)}</td>
                       </tr>
@@ -142,4 +146,4 @@ export function AccessTab({ m }: { m: MachineView }) {
       )}
     </>
   );
-}
+});

@@ -1,5 +1,5 @@
 //! 作业引擎：取消与补偿、退役后旧作业不能复活、purge 幂等、租约持有者校验、线路机退役守卫、退役即关告警、作业清理。
-//! 需要 PostgreSQL：环境变量 FLEET_TEST_DB。会清空该库的 public schema，用 `--test-threads=1` 串行跑。
+//! 需要 PostgreSQL（见 common）。
 //!
 //! 「上架」类测试用 VPS 指向 127.0.0.1:1（必定连接被拒）：预检会失败，不需要真的 SSH 到任何机器。
 
@@ -91,16 +91,12 @@ async fn retired_machine_old_provision_job_cannot_be_retried() {
     assert_eq!(item["step_count"], 9);
     assert_eq!(item["step_title"], "预检与身份");
 
-    // 重试：机器回到上架中；再次失败又回到上架失败
-    t.post(&format!("/api/v1/jobs/{job}/retry"), json!({})).await;
+    // 带 root 密码重试（原密码已被清掉）：机器回到上架中，密码和上架时一样加密存进作业参数供重试的作业使用；再次失败又回到上架失败
+    sqlx::query("update job set params = params - 'login' where id = $1::uuid").bind(&job).execute(&t.st.db).await.unwrap();
+    t.post(&format!("/api/v1/jobs/{job}/retry"), json!({"ssh_password": "new-root-pw"})).await;
     assert_eq!(t.machine_lifecycle(machine).await, "provisioning");
     t.wait_job(&job, "failed").await;
     assert_eq!(t.machine_lifecycle(machine).await, "failed");
-
-    // 带 root 密码重试（原密码已被清掉）：和上架时一样加密存进作业参数，供重试的作业使用
-    sqlx::query("update job set params = params - 'login' where id = $1::uuid").bind(&job).execute(&t.st.db).await.unwrap();
-    t.post(&format!("/api/v1/jobs/{job}/retry"), json!({"ssh_password": "new-root-pw"})).await;
-    t.wait_job(&job, "failed").await;
     let enc: String = sqlx::query_scalar("select params->'login'->>'password_enc' from job where id = $1::uuid").bind(&job).fetch_one(&t.st.db).await.unwrap();
     use base64::Engine as _;
     let raw = base64::engine::general_purpose::STANDARD.decode(enc).unwrap();
@@ -301,6 +297,42 @@ async fn stale_lease_holder_cannot_write() {
     assert_eq!(entries, 1);
     let (state, step): (String, i32) = sqlx::query_as("select state::text, step from job where id = $1").bind(job_id).fetch_one(&t.st.db).await.unwrap();
     assert_eq!((state.as_str(), step), ("waiting", 1));
+}
+
+/// 「全部升级」一个事务建的一批升级作业（created_at 相同）不挡住之后建的其它作业；升级作业之间按建立先后领，线路机在前
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bulk_upgrades_do_not_block_other_jobs() {
+    let t = setup(false).await;
+    let team = seed_team(&t, "团队1").await;
+    // 落地机先插入（id 更小），线路机后插入：领取顺序要看建作业的先后，不是机器 id
+    for i in 1..=3 {
+        sqlx::query("insert into machine (id, kind, team_id, number, primary_ip, lifecycle) values ($1, 'vps', $2, $3, $4::inet, 'active')")
+            .bind(Uuid::now_v7())
+            .bind(team)
+            .bind(i)
+            .bind(format!("203.0.113.{}", 20 + i))
+            .execute(&t.st.db)
+            .await
+            .unwrap();
+    }
+    let (relay, _) = seed_relay(&t).await;
+    let up = t.post("/api/v1/agents/upgrade", json!({})).await;
+    let ups: Vec<Uuid> = up["jobs"].as_array().unwrap().iter().map(|j| j["job_id"].as_str().unwrap().parse().unwrap()).collect();
+    assert_eq!(ups.len(), 4, "{up}");
+
+    let node = seed_node(&t, team, 9, "203.0.113.10", "provisioning").await;
+    let mut tx = t.st.db.begin().await.unwrap();
+    let prov = jobs::enqueue(&mut tx, "provision_proxy", Some(node), json!({"relay_id": relay}), "test").await.unwrap();
+    tx.commit().await.unwrap();
+
+    let mut order = vec![];
+    while let Some(j) = jobs::claim(&t.st, "test").await.unwrap() {
+        order.push((j.id, j.target_id));
+    }
+    assert_eq!(order.len(), 5);
+    assert_eq!(order[0].0, prov, "后建的上架作业先领");
+    assert_eq!(order[1].1, Some(relay), "升级作业里线路机先领");
+    assert_eq!(order[1..].iter().map(|o| o.0).collect::<Vec<_>>(), ups, "升级作业按建立先后");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

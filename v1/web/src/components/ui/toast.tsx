@@ -1,6 +1,8 @@
 import * as React from 'react';
 import { CheckCircle2, Info, X, XCircle } from 'lucide-react';
+import { m } from 'motion/react';
 import { cn } from '@/lib/utils';
+import { SPRING } from '@/lib/motion';
 
 // 堆叠式通知：toast.ok('已保存') / toast.err(error) / toast.show({ tone, title, text, action })。操作名与按钮名一致（“保存” → “已保存”）。
 // 同样的消息在显示期间只叠一次（右上角计数）；鼠标停在上面时暂停计时；错误用 role="alert"。
@@ -70,7 +72,9 @@ export function Toaster() {
   }, []);
   return (
     <div className="toasts" aria-live="polite">
-      {list.map((t) => <ToastItem key={t.id} t={t} onClose={close} />)}
+      {/* 每条套一层布局容器：有通知进来或离开时，其余的滑到新位置而不是瞬间跳过去。
+          layout 不放在 .toast 上：motion 的 transform 会盖掉它离场时的 translateX */}
+      {list.map((t) => <m.div key={t.id} layout="position" transition={SPRING}><ToastItem t={t} onClose={close} /></m.div>)}
     </div>
   );
 }

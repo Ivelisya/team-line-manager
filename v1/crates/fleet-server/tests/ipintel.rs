@@ -1,7 +1,8 @@
 //! IP 情报：库缺失时接口降级不报 500；构造 access_source_hourly + 预置 ip_intel_cache 后，
 //! 节点来源画像分布、学习期后的新运营商 / 新城市 / 机房来源告警、alerts 循环不误恢复、24 小时后自动恢复。
-//! 需要 PostgreSQL（见 common_ipi/mod.rs）。
+//! 需要 PostgreSQL（见 common）。
 
+mod common;
 mod common_ipi;
 
 use axum::http::StatusCode;
@@ -10,9 +11,6 @@ use fleet_server::alerts::{self, AlertState};
 use fleet_server::ipintel;
 use serde_json::Value;
 use time::{Duration, OffsetDateTime};
-
-/// 几个测试共用一个库，串行跑
-static DB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn find<'a>(list: &'a Value, field: &str, val: &str) -> &'a Value {
     list.as_array().unwrap().iter().find(|x| x[field] == val).unwrap_or_else(|| panic!("没有 {field}={val}：{list}"))
@@ -24,7 +22,6 @@ fn rules(inc: &[(String, String, String)], state: &str) -> Vec<String> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn degrades_without_dbs_never_500() {
-    let _g = DB_LOCK.lock().await;
     let t = setup(false).await;
     let fx = seed(&t).await;
     let now = OffsetDateTime::now_utc();
@@ -101,11 +98,15 @@ async fn degrades_without_dbs_never_500() {
     let b = t.get("/api/v1/ipintel?ips=9.9.9.9").await;
     assert_eq!(b["items"][0]["intel"]["isp"], "当前版本");
     assert_eq!(b["items"][0]["intel"]["conn_label"], "机房");
+
+    // 访问监控的来源列表（24h 及以上）同样走短 TTL 缓存：汇总变了，同参数仍是缓存里的；limit 不同是另一份
+    sqlx::query("update access_source_hourly set conns = conns + 100").execute(&t.st.db).await.unwrap();
+    assert_eq!(t.get("/api/v1/access/sources?window=7d").await, a);
+    assert_eq!(t.get("/api/v1/access/sources?window=7d&limit=50").await["items"][0]["conns"], 105);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn profile_anomalies_and_alert_lifecycle() {
-    let _g = DB_LOCK.lock().await;
     let t = setup(true).await;
     assert_eq!(t.st.ipintel.intel.loaded(), 1);
     let fx = seed(&t).await;
@@ -247,7 +248,6 @@ async fn profile_anomalies_and_alert_lifecycle() {
 /// 首次扫描分页（40 天前的数据要被扫到）；水位之前的小时被补算后，差值只累加一次；水位之后的差值丢弃（扫描本来就会覆盖）
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn late_hours_are_added_once_and_scan_is_paged() {
-    let _g = DB_LOCK.lock().await;
     let t = setup(true).await;
     let fx = seed(&t).await;
     let now = OffsetDateTime::now_utc();

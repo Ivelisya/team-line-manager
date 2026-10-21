@@ -2,7 +2,7 @@
 // 同时攒实时迹线（每台机器、全站各最近 30 个速率点），卡片点阵与集群状态折线用 useLiveSeries。
 // 消息形状见 docs/API.md「实时流」：host、tcp/egress 是定长数组（时间为 Unix 秒），其余字段与 REST 同形。
 import { useSyncExternalStore } from 'react';
-import { useQuery, type QueryClient } from '@tanstack/react-query';
+import { notifyManager, useQuery, type QueryClient } from '@tanstack/react-query';
 import { get } from './api';
 import type { EntryView, HostMetrics, MachineView, Overview, OverviewSeries, ProbeResult } from './types';
 import { isQuiet } from './derive';
@@ -43,8 +43,8 @@ function patchMachine(m: MachineView, msg: MetricsMsg): MachineView {
   const n = { ...m, entries };
   if (!d) return n;
   if (d.host !== undefined) n.host = d.host && host(d.host);
-  // 合并进原对象：增量不带 last_report_at（由 seen 给）
-  if (d.agent !== undefined) n.agent = d.agent && { last_report_at: null, ...m.agent, ...d.agent };
+  // 合并进原对象：增量不带 last_report_at（由 seen 给）和 health（agent 自报，随 REST 重取）
+  if (d.agent !== undefined) n.agent = d.agent && { last_report_at: null, health: null, ...m.agent, ...d.agent };
   if (d.seen !== undefined && n.agent) n.agent = { ...n.agent, last_report_at: d.seen == null ? null : iso(d.seen) };
   if (d.health) n.health = d.health;
   if (d.maintenance !== undefined) n.maintenance = d.maintenance;
@@ -97,9 +97,13 @@ export function applyMetrics(qc: QueryClient, msg: MetricsMsg) {
     const r = missed.get(q.queryHash);
     if (r && r.p === q.promise) r.msgs.push(msg); else missed.set(q.queryHash, { p: q.promise, msgs: [msg] });
   }
-  for (const [k] of LIVE_KEYS) { const f = patchOf(k, msg); if (f) qc.setQueriesData({ queryKey: [k] }, f); }
-  if (msg.overview) recordFleet({ t: Date.now(), rx: msg.overview.net_rx_bps, tx: msg.overview.net_tx_bps });
-  if (dirty) { dirty = false; subs.forEach((f) => f()); }
+  // 一条推送只让 React 提交一次：每个 setQueriesData 自成一批、各派发一次，迹线订阅原先又是同步通知；
+  // 包进同一批，迹线通知也排进这批的队列，几类查询与迹线的订阅者在同一轮里一起收到
+  notifyManager.batch(() => {
+    for (const [k] of LIVE_KEYS) { const f = patchOf(k, msg); if (f) qc.setQueriesData({ queryKey: [k] }, f); }
+    if (msg.overview) recordFleet({ t: Date.now(), rx: msg.overview.net_rx_bps, tx: msg.overview.net_tx_bps });
+    if (dirty) { dirty = false; notifyManager.schedule(() => subs.forEach((f) => f())); }
+  });
 }
 
 // ---- 实时迹线：每台机器的网卡速率、全站总速率（FLEET），各留最近 SERIES_N 个点 ----

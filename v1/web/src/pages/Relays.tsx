@@ -16,9 +16,24 @@ import { EntryActions } from '@/components/app/EntryActions';
 import { entryState } from '@/components/app/primitives';
 import { openEvacuate } from '@/lib/nodeActions';
 import { ShowAll } from '@/components/app/Pagination';
-import { ENTRY_CAP } from '@/features/EntriesTable';
+import { ENTRY_CAP, probeCell } from '@/features/EntriesTable';
 
-const probe = (p: EntryView['tcp']) => (p == null ? <span className="t-muted">—</span> : p.ok ? <Num f={F.ms(p.latency_ms)} /> : <span style={{ color: 'var(--bad-text)' }} title={p.detail ?? undefined}>失败</span>);
+type Open = ReturnType<typeof useDrawer>['open'];
+
+/** 入口一行。memo：实时推送对没变的入口原样返回（live.ts 的 patchEntry），open 是稳定引用，只有变了的那几行重渲染 */
+const EntryRow = React.memo(function EntryRow({ e, open }: { e: EntryView; open: Open }) {
+  return (
+    <tr>
+      <td className="strong num">{e.port}</td>
+      <td><NodeHover id={e.node.id}><button className="btn-link btn" style={{ height: 'auto', padding: 0, border: 0, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis' }} onClick={() => open(e.node.id)}>{e.node.name}</button></NodeHover></td>
+      <td>{entryState(e)}</td>
+      <td>{e.lifecycle === 'disabled' ? <span className="t-muted">—</span> : e.applied ? <CheckCircle2 size={14} style={{ color: 'var(--ok)' }} aria-label="已应用" /> : <span title={e.apply_error ?? '应用中'} style={{ color: e.apply_error ? 'var(--bad-text)' : 'var(--fg-2)' }}>{e.apply_error ? '应用失败' : '应用中'}</span>}</td>
+      <td className="r">{probeCell(e.tcp)}</td><td className="r">{probeCell(e.egress)}</td>
+      <td className="r"><Num f={F.bytes(e.traffic.month_up + e.traffic.month_down)} /></td>
+      <td className="c"><EntryActions entry={e} /></td>
+    </tr>
+  );
+});
 
 function ApplyStatus({ m }: { m: MachineView }) {
   const r = m.relay; if (!r) return null;
@@ -37,7 +52,7 @@ function ApplyStatus({ m }: { m: MachineView }) {
   );
 }
 
-function RelayCard({ m, open }: { m: MachineView; open: ReturnType<typeof useDrawer>['open'] }) {
+function RelayCard({ m, open }: { m: MachineView; open: Open }) {
   const r = m.relay;
   const due = F.dueFmt(m.subscription?.due_days);
   const [all, setAll] = React.useState(false);
@@ -60,17 +75,7 @@ function RelayCard({ m, open }: { m: MachineView; open: ReturnType<typeof useDra
           <colgroup><col style={{ width: 84 }} /><col style={{ width: 150 }} /><col style={{ width: 104 }} /><col style={{ width: 84 }} /><col style={{ width: 80 }} /><col style={{ width: 80 }} /><col style={{ width: 120 }} /><col style={{ width: 52 }} /></colgroup>
           <thead><tr><th>端口</th><th>节点</th><th>状态</th><th>已应用</th><th className="r">TCP</th><th className="r">出口</th><th className="r">本月业务流量</th><th /></tr></thead>
           <tbody>
-            {entries.map((e) => (
-              <tr key={e.id}>
-                <td className="strong num">{e.port}</td>
-                <td><NodeHover id={e.node.id}><button className="btn-link btn" style={{ height: 'auto', padding: 0, border: 0, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis' }} onClick={() => open(e.node.id)}>{e.node.name}</button></NodeHover></td>
-                <td>{entryState(e)}</td>
-                <td>{e.lifecycle === 'disabled' ? <span className="t-muted">—</span> : e.applied ? <CheckCircle2 size={14} style={{ color: 'var(--ok)' }} aria-label="已应用" /> : <span title={e.apply_error ?? '应用中'} style={{ color: e.apply_error ? 'var(--bad-text)' : 'var(--fg-2)' }}>{e.apply_error ? '应用失败' : '应用中'}</span>}</td>
-                <td className="r">{probe(e.tcp)}</td><td className="r">{probe(e.egress)}</td>
-                <td className="r"><Num f={F.bytes(e.traffic.month_up + e.traffic.month_down)} /></td>
-                <td className="c"><EntryActions entry={e} /></td>
-              </tr>
-            ))}
+            {entries.map((e) => <EntryRow key={e.id} e={e} open={open} />)}
           </tbody>
         </table>
         {m.entries.length === 0 && <Empty text="这台线路机还没有挂载入口" />}

@@ -15,8 +15,9 @@ export function useDrawer() {
   const tab: DrawerTab = DRAWER_TABS.some((t) => t.value === rawTab) ? (rawTab as DrawerTab) : 'overview';
   // react-router 的 setSearchParams 每次地址变化都换身份；用 ref 兜住，open/setTab/close 才稳定（卡片 memo 依赖它）
   const setRef = useRef(setSp); setRef.current = setSp;
-  const open = useCallback((mid: string, t?: DrawerTab) => {
-    setRef.current((p) => { const n = new URLSearchParams(p); n.set('m', mid); if (t) n.set('tab', t); else n.delete('tab'); return n; });
+  // replace：抽屉已开着、只是换一台（[ ] 键）时替换当前历史，后退键仍是一步关掉抽屉
+  const open = useCallback((mid: string, t?: DrawerTab, o?: { replace?: boolean }) => {
+    setRef.current((p) => { const n = new URLSearchParams(p); n.set('m', mid); if (t) n.set('tab', t); else n.delete('tab'); return n; }, { replace: o?.replace });
   }, []);
   const setTab = useCallback((t: DrawerTab) => setRef.current((p) => { const n = new URLSearchParams(p); n.set('tab', t); return n; }, { replace: true }), []);
   const close = useCallback(() => setRef.current((p) => { const n = new URLSearchParams(p); n.delete('m'); n.delete('tab'); return n; }), []);

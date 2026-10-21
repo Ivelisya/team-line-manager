@@ -19,14 +19,15 @@ export function ChartTooltip({ config, labelFormat, valueFormat }: { config: Cha
   return (
     <Recharts.Tooltip
       cursor={{ stroke: 'var(--line-strong)' }}
+      isAnimationActive={false} // 提示框紧跟十字线；默认的 400ms 位移动画会让它拖在后面
       content={({ active, payload, label }: TipProps) => {
         if (!active || !payload?.length) return null;
         return (
-          <div className="popover" style={{ padding: '8px 10px', minWidth: 140, fontSize: 12 }}>
-            <div style={{ color: 'var(--fg-2)', marginBottom: 4 }}>{labelFormat && label != null ? labelFormat(label) : label}</div>
+          <div className="chart-tip">
+            <div className="chart-tip-t">{labelFormat && label != null ? labelFormat(label) : label}</div>
             {payload.map((p) => (
-              <div key={String(p.dataKey)} style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
-                <span><i style={{ display: 'inline-block', width: 8, height: 8, borderRadius: 2, background: p.color, marginRight: 6 }} />{config[String(p.dataKey)]?.label ?? p.dataKey}</span>
+              <div key={String(p.dataKey)} className="chart-tip-row">
+                <span><i style={{ background: p.color }} />{config[String(p.dataKey)]?.label ?? p.dataKey}</span>
                 <b className="num">{typeof p.value !== 'number' ? '—' : valueFormat ? valueFormat(String(p.dataKey), p.value) : p.value}</b>
               </div>
             ))}
@@ -37,10 +38,14 @@ export function ChartTooltip({ config, labelFormat, valueFormat }: { config: Cha
   );
 }
 
-export function ChartLegend({ config }: { config: ChartConfig }) {
+/** 图例胶囊：点一下隐藏 / 显示这条曲线（hidden 里是被隐藏的 key） */
+export function ChartLegend({ config, hidden, onToggle }: { config: ChartConfig; hidden: ReadonlySet<string>; onToggle: (key: string) => void }) {
   return (
     <div className="chart-legend">
-      {Object.entries(config).map(([k, v]) => <span key={k}><i style={{ background: v.color }} />{v.label}</span>)}
+      {Object.entries(config).map(([k, v]) => (
+        <button key={k} type="button" className="chart-legend-item" aria-pressed={!hidden.has(k)} style={{ '--lc': v.color } as React.CSSProperties} onClick={() => onToggle(k)}
+          title={hidden.has(k) ? `显示「${v.label}」` : `隐藏「${v.label}」`}><i />{v.label}</button>
+      ))}
     </div>
   );
 }

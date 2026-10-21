@@ -16,7 +16,8 @@
 .block { display: block; }
 
 /* ========== 复制按钮 ========== */
-.copy-btn { display: inline-grid; place-items: center; flex: none; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--fg-2); cursor: pointer; transition: background-color var(--dur-fast), color var(--dur-fast); }
+.copy-btn { position: relative; display: inline-grid; place-items: center; flex: none; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--fg-2); cursor: pointer; transition: background-color var(--dur-fast), color var(--dur-fast); }
+.copy-btn::after { content: ""; position: absolute; inset: -5px; } /* 可点范围扩到 32px，外观不变 */
 .copy-btn:hover { background: var(--hover); color: var(--fg); }
 .copy-btn.is-done { color: var(--ok); animation: copy-pop var(--dur-base) var(--ease-out); }
 @keyframes copy-pop { 0% { transform: scale(.8); } 60% { transform: scale(1.15); } 100% { transform: none; } }
@@ -24,6 +25,9 @@
 /* ========== 悬浮卡片 ========== */
 .hover-card { width: 288px; max-width: calc(100vw - 24px); padding: var(--sp-12); animation: pop-fade var(--dur-base) var(--ease-out); }
 @keyframes pop-fade { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+/* 收起与进场对称：往下退 3px 淡出（盖掉 .popover 的缩小退场） */
+.hover-card[data-state="closed"] { animation: pop-fade-out var(--dur-fast) var(--ease-std) forwards; }
+@keyframes pop-fade-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(3px); } }
 .hc { display: grid; gap: var(--sp-10); min-width: 0; }
 .hc-head { display: flex; align-items: center; gap: var(--sp-8); min-width: 0; }
 .hc-name { flex: 1; font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-sans); letter-spacing: var(--tracking-title); }
@@ -77,7 +81,11 @@
 .cmd-input-wrap { display: flex; align-items: center; gap: var(--sp-10); height: 52px; padding: 0 var(--sp-16); border-bottom: 1px solid var(--line); color: var(--fg-3); }
 .cmd-input { flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; outline: none; background: transparent; color: var(--fg); font: var(--fw-regular) var(--fs-emph) / var(--lh-emph) var(--font-sans); }
 .cmd-input::placeholder { color: var(--fg-3); }
-.cmd-list { max-height: min(432px, calc(100dvh - 240px)); overflow-y: auto; overscroll-behavior: contain; padding: var(--sp-6); scroll-padding-block: var(--sp-6); }
+/* 高度跟着结果数平滑伸缩：cmdk 把内容高度写在 --cmdk-list-height 上，加上下内边距（border-box）；超过 max-height 时仍被它截住、内部滚动 */
+.cmd-list {
+  height: calc(var(--cmdk-list-height) + 2 * var(--sp-6)); max-height: min(432px, calc(100dvh - 240px)); overflow-y: auto; overscroll-behavior: contain;
+  padding: var(--sp-6); scroll-padding-block: var(--sp-6); transition: height var(--dur-base) var(--ease-out);
+}
 .cmd-group [cmdk-group-heading] { padding: var(--sp-8) var(--sp-10) var(--sp-4); font: var(--fw-medium) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2); }
 .cmd-group + .cmd-group { margin-top: var(--sp-4); }
 .cmd-item {
@@ -89,6 +97,7 @@
 .cmd-item[data-selected="true"] { background: var(--accent-soft); color: var(--accent-soft-fg); }
 .cmd-item[data-selected="true"] > .lucide { color: var(--accent-soft-fg); }
 .cmd-item[data-selected="true"] .cmd-aside { color: var(--accent-soft-fg); }
+.cmd-item:active { background-image: linear-gradient(var(--hover), var(--hover)); } /* 按下：同菜单项，当前项底上再叠一层悬停色 */
 .cmd-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--sp-8); }
 .cmd-main > b { font-weight: var(--fw-medium); }
 .cmd-aside { flex: none; font-size: var(--fs-label); color: var(--fg-2); }
@@ -110,18 +119,28 @@
 .empty-text { font-weight: var(--fw-medium); text-wrap: pretty; }
 .tab-pane { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-16); align-content: start; animation: tab-in var(--dur-base) var(--ease-out); }
 @keyframes tab-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+/* 换时间范围时先留着上一段曲线：取新数据期间调淡，到了再柔和地亮回来 */
+.chart-frame { transition: opacity var(--dur-base) var(--ease-std); }
+.chart-frame[data-stale] { opacity: 0.45; }
+/* 曲线第一次有数据时从左往右展开一次：.chart-frame 在数据到了才挂载（之前是骨架），之后的轮询刷新、换时间范围（上面的沿用旧曲线调淡）都不重新挂载，不会再播 */
+.chart-frame .chart-box { animation: chart-reveal 600ms var(--ease-out); }
+@keyframes chart-reveal { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0); } }
 
 /* ========== 进度条 ========== */
 .progress { position: relative; height: var(--quota-h); border-radius: var(--r-pill); background: var(--line); overflow: hidden; }
-.progress-fill { position: absolute; inset: 0 auto 0 0; border-radius: var(--r-pill); background: var(--accent); transition: width var(--dur-bar) var(--ease-std), background-color var(--dur-fast); }
+/* 填充条整宽、按进度往左平移（组件里写 translateX），左端被轨道裁掉：只动 transform 不触发布局；
+   不用 scaleX——右端圆角和下面的细纹都会被压扁 */
+.progress-fill { position: absolute; inset: 0; overflow: hidden; border-radius: var(--r-pill); background: var(--accent); transition: transform var(--dur-bar) var(--ease-std), background-color var(--dur-fast); }
 .progress[data-tone="ok"] .progress-fill { background: var(--ok); }
 .progress[data-tone="bad"] .progress-fill { background: var(--bad); }
 .progress[data-tone="warn"] .progress-fill { background: var(--warn); }
-.progress[data-live="1"] .progress-fill {
+/* 细纹层左边多出一个纹样周期，循环右移一个周期首尾无缝；填充条的 overflow 把右边移出去的部分裁掉 */
+.progress[data-live="1"] .progress-fill::after {
+  content: ""; position: absolute; inset: 0 0 0 -14px;
   background-image: linear-gradient(115deg, rgba(255, 255, 255, 0.28) 25%, transparent 25%, transparent 50%, rgba(255, 255, 255, 0.28) 50%, rgba(255, 255, 255, 0.28) 75%, transparent 75%);
   background-size: 14px 14px; animation: progress-flow 1s linear infinite;
 }
-@keyframes progress-flow { to { background-position: 14px 0; } }
+@keyframes progress-flow { to { transform: translateX(14px); } }
 .job-prog { display: grid; gap: var(--sp-6); }
 .job-prog-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-12); min-width: 0; font-size: var(--fs-body); }
 .job-prog-head > .num { flex: none; font-weight: var(--fw-semibold); }
@@ -181,13 +200,22 @@
 .kind-ic .lucide { width: 14px; height: 14px; }
 .test-result { display: inline-flex; align-items: center; gap: var(--sp-4); font-size: var(--fs-label); white-space: nowrap; }
 
+/* 毛玻璃遮罩（对话框、命令面板、抽屉）打开期间暂停下面一层的无限循环动画：backdrop-filter 下面每帧有变化，GPU 就要每帧重做一遍全屏模糊。
+   浮层都 Portal 到 body、不在 .app 里，自己的动画照常；对话框叠在抽屉上时，抽屉也算下面一层。骨架屏不管 */
+:is(body:has(.drawer-overlay[data-state="open"], .overlay[data-state="open"]) .app, body:has(.overlay[data-state="open"]) .drawer)
+  :is(.spin, .flow-live[data-live] i, .top-btn.jobs-ind > .lucide, .stepbar-item[data-kind="running"] .stepbar-node),
+:is(body:has(.drawer-overlay[data-state="open"], .overlay[data-state="open"]) .app, body:has(.overlay[data-state="open"]) .drawer) .pill[data-dot="pulse"]::before,
+:is(body:has(.drawer-overlay[data-state="open"], .overlay[data-state="open"]) .app, body:has(.overlay[data-state="open"]) .drawer) .progress[data-live="1"] .progress-fill::after { animation-play-state: paused; }
+
 @media (prefers-reduced-motion: reduce) {
-  .progress[data-live="1"] .progress-fill, .stepbar-item[data-kind="running"] .stepbar-node, .top-btn.jobs-ind > .lucide, .toast-timer { animation: none; }
+  .progress[data-live="1"] .progress-fill::after, .stepbar-item[data-kind="running"] .stepbar-node, .top-btn.jobs-ind > .lucide, .toast-timer { animation: none; }
   /* 无限循环的呼吸/脉冲也停掉（骨架静止显示） */
   .pill[data-dot="pulse"]::before, .skel { animation: none; }
-  /* 浮层关闭：不播退出动画，Radix 立即卸载 */
-  .overlay[data-state="closed"], .drawer-overlay[data-state="closed"], .dialog[data-state="closed"], .cmd-dialog[data-state="closed"], .drawer[data-state="closed"],
-  .menu[data-state="closed"], .popover[data-state="closed"], .select-content[data-state="closed"], .page-in { animation: none; }
+  /* 浮层关闭：不播退出动画，Radix 立即卸载（抽屉的投影层一起） */
+  .overlay[data-state="closed"], .drawer-overlay[data-state="closed"], .dialog[data-state="closed"], .cmd-dialog[data-state="closed"], .drawer[data-state="closed"], .drawer[data-state="closed"]::before,
+  .menu[data-state="closed"], .popover[data-state="closed"], .select-content[data-state="closed"], .tooltip[data-state="closed"], .hover-card[data-state="closed"], .page-in { animation: none; }
+  /* 曲线展开、悬停提示的缩放位移进场：直接出现 */
+  .chart-frame .chart-box, .tooltip { animation: none; }
 }
 
 /* ========== 来源画像：分布横条（抽屉「访问记录」页签） ========== */
@@ -204,3 +232,5 @@
    这条放在所有样式表之后的最后一份普通样式里，统一补回。 */
 .btn, .seg-item, .tab, .fchip, .input, .textarea, .select-trigger, .pill, .chip, .mark, .nav-item, .menu-item, .select-item,
 .cmd-item, .cmd-trigger, .cmd-input, .kbd, .toast-action, .label, .sec-head, .brand, .jobs-pop-head { font-variant-numeric: tabular-nums; }
+/* 首页读数（集群大数、离线台数、圆环中心、迹线坐标与时间）：同 .num / .stat-value 用 --num-variant（tabular + 斜线零） */
+.cluster-big > .num, .cluster-kv b, .gauge-center b, .spark-axis, .spark-time { font-variant-numeric: var(--num-variant); }

@@ -1,7 +1,8 @@
 //! 遥测入库 / 小时汇总 / 健康判定 / 告警 / 通知 / 实时流 / 保留期。
-//! 需要 PostgreSQL：环境变量 FLEET_TEST_DB（默认 postgres://fleet:fleet@127.0.0.1/fleet_test）。会清空该库的 public schema。
+//! 需要 PostgreSQL（见 common）。
 //! 不起后台循环：告警评估、小时汇总、实时指标比对都由测试手动驱动（告警评估的「当前时间」可以快进，不用真等去抖）。
 
+mod common;
 mod common_tele;
 
 use axum::http::StatusCode;
@@ -93,6 +94,23 @@ async fn report_ingest_errors_are_classified() {
     assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{v}");
 }
 
+/// 连接池用尽：等 5 秒拿不到连接就回 503（agent 退避重试），不按 sqlx 默认的 30 秒干等（测试池的等待时间与 db::connect 相同）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn report_gets_503_when_pool_exhausted() {
+    let t = setup().await;
+    seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let mut held = vec![];
+    while held.len() < t.st.db.options().get_max_connections() as usize {
+        held.push(t.st.db.acquire().await.unwrap());
+    }
+    let t0 = std::time::Instant::now();
+    let (s, v) = t.report("tok1", &blank_report(1)).await;
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{v}");
+    assert!(t0.elapsed() < Duration::from_secs(10), "{:?}", t0.elapsed());
+    drop(held);
+    assert_eq!(t.report("tok1", &blank_report(1)).await.0, StatusCode::OK);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn relay_probe_series_covers_its_entries() {
     let t = setup().await;
@@ -175,6 +193,20 @@ async fn rollup_covers_backfilled_hours_and_counter_resets() {
         .await
         .unwrap();
     assert_eq!(up, 160);
+
+    // 整点前 15 分钟内没有样本（agent 离线跨过整点）：本小时第一个样本没有前值，缺口那段的增量不记进这一小时
+    let hb = h0 - 2 * H;
+    let mut r3 = blank_report(3);
+    r3.host = vec![host(hb - 20 * 60_000, 20.0, 100, 200), host(hb + 10_000, 20.0, 300, 600), host(hb + 20_000, 20.0, 400, 800)];
+    assert_eq!(t.report("tok1", &r3).await.0, StatusCode::OK);
+    db::rollup_hours(&t.st.db).await.unwrap();
+    let rx: i64 = sqlx::query_scalar("select net_rx from host_metric_hourly where machine_id = $1 and extract(epoch from hour)::bigint * 1000 = $2")
+        .bind(relay)
+        .bind(hb)
+        .fetch_one(&t.st.db)
+        .await
+        .unwrap();
+    assert_eq!(rx, 400 - 300, "20 分钟前的样本不参与本小时第一个增量");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -278,6 +310,64 @@ async fn duplicate_report_still_refreshes_last_report_at() {
     assert_eq!(last, 5, "last_seq 不回退");
 }
 
+/// 令牌最近一次使用距今多少秒（没用过为 None）
+async fn token_used_ago(t: &T, machine: Uuid) -> Option<f64> {
+    sqlx::query_scalar("select extract(epoch from now() - last_used_at)::float8 from agent_token where machine_id = $1").bind(machine).fetch_one(&t.st.db).await.unwrap()
+}
+
+/// agent 鉴权同一条语句里记下令牌最近使用时间（一分钟内不重复写）；撤销的令牌 401，也不再刷新
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn agent_auth_records_token_use() {
+    let t = setup().await;
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    assert_eq!(token_used_ago(&t, relay).await, None);
+    assert_eq!(t.report("tok1", &blank_report(1)).await.0, StatusCode::OK);
+    assert!(token_used_ago(&t, relay).await.is_some_and(|s| s < 5.0));
+    let used = |ago: &'static str| {
+        let db = t.st.db.clone();
+        async move {
+            sqlx::query(&format!("update agent_token set last_used_at = now() - interval '{ago}' where machine_id = $1")).bind(relay).execute(&db).await.unwrap();
+        }
+    };
+    used("30 seconds").await;
+    assert_eq!(t.report("tok1", &blank_report(2)).await.0, StatusCode::OK);
+    assert!(token_used_ago(&t, relay).await.is_some_and(|s| s >= 29.0), "一分钟内不重复写");
+    used("2 minutes").await;
+    assert_eq!(t.report("tok1", &blank_report(3)).await.0, StatusCode::OK);
+    assert!(token_used_ago(&t, relay).await.is_some_and(|s| s < 5.0));
+    used("2 minutes").await;
+    sqlx::query("update agent_token set revoked_at = now() where machine_id = $1").bind(relay).execute(&t.st.db).await.unwrap();
+    assert_eq!(t.report("tok1", &blank_report(4)).await.0, StatusCode::UNAUTHORIZED);
+    assert!(token_used_ago(&t, relay).await.is_some_and(|s| s >= 119.0), "撤销的令牌不刷新");
+}
+
+/// agent 自报的健康数据出现在机器视图的 agent.health；之后不带它的上报不把它冲掉
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn agent_health_is_shown_in_machine_view() {
+    let t = setup().await;
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    assert!(t.get(&format!("/api/v1/machines/{relay}")).await["agent"]["health"].is_null(), "没报过为 null");
+    let mut r = blank_report(1);
+    r.agent_health = Some(fleet_proto::AgentHealth {
+        queue_len: 3,
+        queue_dead: 1,
+        access_rotation_gaps: 2,
+        last_apply_error: Some("xray 配置校验失败".into()),
+        ..Default::default()
+    });
+    assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
+    assert_eq!(t.report("tok1", &blank_report(2)).await.0, StatusCode::OK);
+    t.st.live.invalidate();
+    let m = t.get(&format!("/api/v1/machines/{relay}")).await;
+    let h = &m["agent"]["health"];
+    assert_eq!(
+        (h["queue_len"].as_u64(), h["queue_dead"].as_u64(), h["access_rotation_gaps"].as_u64(), h["access_truncations"].as_u64()),
+        (Some(3), Some(1), Some(2), Some(0)),
+        "{m}"
+    );
+    assert_eq!(h["last_apply_error"], "xray 配置校验失败");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desired_long_poll_returns_when_generation_differs_even_if_smaller() {
     let t = setup().await;
@@ -328,6 +418,42 @@ async fn probe_alerts_debounce_longer() {
     pass(&t, &mut state, base, 291).await;
     assert_eq!(rules(incidents(&t, "firing").await), ["egress_fail"]);
     pass(&t, &mut state, base, 351).await;
+    assert!(incidents(&t, "firing").await.is_empty());
+}
+
+/// 探测结果过期（线路机 agent 离线、探测停了）：节点按未知处理、不给出口 / TCP 原因，但这两条告警不当成恢复；
+/// 有了新探测再判，去抖从那时起算
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stale_probes_do_not_resolve_probe_alerts() {
+    let t = setup().await;
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let team = seed_team(&t, "团队1").await;
+    let (node, entry) = seed_node(&t, relay, team, 1, "203.0.113.5", 20000).await;
+    let mut r = blank_report(1);
+    r.xray = Some(xray(true));
+    r.probes = vec![probe(entry, now_ms() - 2_000, ProbeKind::Egress, false), probe(entry, now_ms() - 2_000, ProbeKind::Tcp, false)];
+    assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
+    let mut state = AlertState::default();
+    let base = OffsetDateTime::now_utc();
+    pass(&t, &mut state, base, 0).await;
+    pass(&t, &mut state, base, 151).await;
+    assert_eq!(incidents(&t, "firing").await.len(), 2);
+
+    // 15 分钟内没有探测结果
+    sqlx::query("delete from probe_result where entry_id = $1").bind(entry).execute(&t.st.db).await.unwrap();
+    assert_eq!(t.health(node).await, ("unknown".to_string(), vec![]));
+    for secs in [181, 400, 1200] {
+        pass(&t, &mut state, base, secs).await;
+    }
+    assert_eq!(incidents(&t, "firing").await.len(), 2, "探测过期不是恢复");
+
+    let mut r = blank_report(2);
+    r.xray = Some(xray(true));
+    r.probes = vec![probe(entry, now_ms(), ProbeKind::Egress, true), probe(entry, now_ms(), ProbeKind::Tcp, true)];
+    assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
+    pass(&t, &mut state, base, 1230).await;
+    assert_eq!(incidents(&t, "firing").await.len(), 2, "去抖从有新探测时起算");
+    pass(&t, &mut state, base, 1400).await;
     assert!(incidents(&t, "firing").await.is_empty());
 }
 
@@ -411,6 +537,46 @@ async fn retiring_machine_alerts_are_left_to_retire_flow() {
     pass(&t, &mut state, base, 241).await;
     pass(&t, &mut state, base, 301).await;
     assert!(incidents(&t, "firing").await.is_empty());
+}
+
+/// 退役事务在告警评估取完机器视图之后才提交：评估拿着旧视图（机器还在用、有原因）也不能给退役中的机器新建或重开告警
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn alerts_skip_machine_retired_after_view_loaded() {
+    let t = setup().await;
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    assert_eq!(t.report("tok1", &blank_report(1)).await.0, StatusCode::OK);
+    // 已过期：续费类不去抖，评估一轮就开
+    sqlx::query("insert into subscription (machine_id, price_cents, due_date) values ($1, 500, current_date - 3)").bind(relay).execute(&t.st.db).await.unwrap();
+    let set = |sql: &'static str| {
+        let db = t.st.db.clone();
+        async move {
+            sqlx::query(sql).bind(relay).execute(&db).await.unwrap();
+        }
+    };
+    let retire = "update machine set lifecycle = 'retiring' where id = $1";
+    let mut state = AlertState::default();
+    let base = OffsetDateTime::now_utc();
+
+    // 新建：视图已取（3 s 缓存），随后机器进入退役，评估用的还是那份视图
+    t.st.live.invalidate();
+    fleet_server::views::live(&t.st).await.unwrap();
+    set(retire).await;
+    alerts::evaluate_once(&t.st, &mut state, base).await.unwrap();
+    assert_eq!(t.count("select count(*) from incident").await, 0, "不给退役中的机器开告警");
+
+    // 重开：在用时开过、续费后恢复（30 分钟内复发会重开原告警），同样的时序下不重开
+    set("update machine set lifecycle = 'active' where id = $1").await;
+    pass(&t, &mut state, base, 0).await;
+    assert_eq!(t.count("select count(*) from incident where state = 'firing'").await, 1);
+    set("update subscription set due_date = current_date + 30 where machine_id = $1").await;
+    pass(&t, &mut state, base, 30).await;
+    assert_eq!(t.count("select count(*) from incident where state = 'resolved'").await, 1);
+    set("update subscription set due_date = current_date - 3 where machine_id = $1").await;
+    t.st.live.invalidate();
+    fleet_server::views::live(&t.st).await.unwrap();
+    set(retire).await;
+    alerts::evaluate_once(&t.st, &mut state, base + time::Duration::seconds(60)).await.unwrap();
+    assert_eq!(t.count("select count(*) from incident where state = 'firing' or reopen_count > 0").await, 0, "不重开");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -610,7 +776,8 @@ async fn alert_notifications_firing_repeat_silence_and_resolved() {
     mock.wait("/wecom/send", 1).await;
     mock.wait("/hook/a", 2).await;
     mock.wait("/fail/x", 2).await;
-    for _ in 0..100 {
+    // 坏渠道每条按 0.5 s、2 s 退避重试两次，两条排队发完约 5 秒
+    for _ in 0..200 {
         if t.count("select count(*) from notify_log").await == 7 {
             break;
         }
@@ -902,6 +1069,44 @@ async fn report_is_pushed_as_metrics() {
     let me = m["machines"][relay.to_string()].as_object().unwrap();
     assert_eq!(me["host"][1].as_f64(), Some(50.0));
     assert!(!me.contains_key("health") && !me.contains_key("agent"), "{me:?}");
+}
+
+/// 新建 / 删除维护静默：只发 incidents（不发 machines，前端不整表重取），同时标记实时指标该比对，「维护中」经 metrics 送达
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn maintenance_silence_reaches_cards_via_metrics() {
+    let t = setup().await;
+    let relay = seed_relay(&t, "线路机1", "203.0.113.10", "tok1").await;
+    let mut ws = t.ws(true).await.unwrap();
+    let mut p = live::Published::default();
+    assert!(live::publish(&t.st, &mut p).await.unwrap());
+    ws_next(&mut ws, "metrics").await;
+
+    let f = time::format_description::well_known::Rfc3339;
+    let now = OffsetDateTime::now_utc();
+    let mut ev = t.st.events.subscribe();
+    let dirty = || t.st.metrics_dirty.swap(false, std::sync::atomic::Ordering::Relaxed);
+    dirty();
+    let id = t.post("/api/v1/silences", json!({
+        "subject_id": relay, "is_maintenance": true, "comment": "换机房",
+        "starts_at": (now - time::Duration::minutes(1)).format(&f).unwrap(), "ends_at": (now + time::Duration::hours(1)).format(&f).unwrap(),
+    })).await["id"].as_str().unwrap().to_string();
+    for (what, want) in [("新建", true), ("删除", false)] {
+        if !want {
+            let (s, v) = t.req("DELETE", &format!("/api/v1/silences/{id}"), None, None).await;
+            assert_eq!(s, StatusCode::OK, "{v}");
+        }
+        let mut evs = vec![];
+        while let Ok(e) = ev.try_recv() {
+            evs.push(e);
+        }
+        assert!(evs.iter().any(|e| matches!(e, Event::Incidents)) && !evs.iter().any(|e| matches!(e, Event::Machines)), "{what}：{evs:?}");
+        assert!(dirty(), "{what}后实时指标该比对");
+        assert!(live::publish(&t.st, &mut p).await.unwrap());
+        let m = ws_next(&mut ws, "metrics").await;
+        let me = &m["machines"][relay.to_string()];
+        assert_eq!(me["maintenance"].as_bool(), Some(want), "{what}：{me}");
+        assert_eq!(me["health"]["status"] == "maintenance", want, "{what}：{me}");
+    }
 }
 
 // ── T9 / T10：分区与保留期 ──────────────────────────────────────────────────

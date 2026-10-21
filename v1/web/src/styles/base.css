@@ -1,6 +1,8 @@
 /* 基础层 + 外壳（顶栏、侧栏、内容区、页头）。移植自原版 tokens.css 基础层与 shell.css */
 
-html { background: var(--canvas); scroll-padding-top: var(--topbar-h); } /* 锚点/焦点滚动不被固定顶栏遮住 */
+html { background: var(--canvas); scroll-padding-top: var(--topbar-h); scrollbar-gutter: stable; } /* 锚点/焦点滚动不被固定顶栏遮住；滚动条槽位常驻，长短页面切换时内容与顶栏不横移 */
+/* Radix 弹层锁滚动时让出槽位：遮罩才盖满全宽（否则右侧留一条不变暗的边）；库会给 body 补同宽的右外边距，内容不动 */
+html:has(> body[data-scroll-locked]) { scrollbar-gutter: auto; }
 body {
   margin: 0;
   background: var(--canvas-glow), var(--canvas);
@@ -50,7 +52,7 @@ a { color: inherit; }
   position: fixed; inset: 0 0 auto 0; z-index: var(--z-topbar);
   height: var(--topbar-h); box-sizing: border-box;
   display: flex; align-items: center; gap: var(--sp-4);
-  padding: 0 var(--sp-16) 0 var(--sp-10);
+  padding: 0 calc(var(--sp-16) + var(--removed-body-scroll-bar-size, 0px)) 0 var(--sp-10); /* 锁滚动期间视口变宽，右侧按钮补回让出的槽位，位置不动 */
   background: color-mix(in srgb, var(--surface) 78%, transparent); border-bottom: 1px solid var(--line);
   -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px); /* 毛玻璃：内容从顶栏下滚过时隐约透出 */
 }
@@ -66,11 +68,12 @@ a { color: inherit; }
   width: var(--h-md); height: var(--h-md); padding: 0; border: 0; border-radius: var(--r-control);
   display: inline-grid; place-items: center; cursor: pointer;
   background: var(--accent-soft); color: var(--accent-soft-fg);
-  transition: background-color var(--dur-fast), transform var(--dur-press);
+  transition: background-color var(--dur-fast), transform var(--dur-base) var(--ease-sheet);
 }
 .top-btn:hover, .top-btn[aria-expanded="true"] { background: color-mix(in srgb, var(--accent-soft) 82%, var(--accent)); }
-.top-btn:active { transform: scale(0.94); }
-.nav-toggle { display: none; }
+.top-btn:active:not(:disabled) { transform: scale(0.94); transition-duration: var(--dur-press); } /* 快按慢回，同 .btn */
+.nav-toggle { display: none; background: transparent; color: var(--fg-2); } /* 汉堡按钮不带软色底，悬停才给浅底 */
+.nav-toggle:hover { background: var(--hover); color: var(--fg); }
 
 .sidebar {
   position: fixed; top: var(--topbar-h); bottom: 0; left: 0; z-index: var(--z-topbar);
@@ -90,11 +93,11 @@ a { color: inherit; }
 }
 .nav-item .lucide { flex: none; color: var(--fg-2); transition: color var(--dur-fast); }
 .nav-item:hover { background: var(--hover); }
-.nav-item:active { background: var(--hover); }
+.nav-item:active:not([aria-current="page"]) { background: linear-gradient(var(--hover), var(--hover)), var(--hover); } /* 按下：悬停底再叠一层 */
 .nav-item[aria-current="page"] { background: var(--grad-soft); color: var(--accent-soft-fg); font-weight: var(--fw-semibold); }
 .nav-item[aria-current="page"] .lucide { color: var(--accent-soft-fg); }
 .nav-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.nav-badge { margin-left: auto; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--bad); color: #fff; font-size: var(--fs-micro); line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; }
+.nav-badge { margin-left: auto; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--bad-solid); color: #fff; font-size: var(--fs-micro); line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; }
 .nav-foot { margin-top: auto; padding: var(--sp-8) var(--sp-10); font-size: var(--fs-micro); line-height: var(--lh-micro); color: var(--fg-3); }
 
 .main { margin-left: var(--sidebar-w); padding-top: var(--topbar-h); min-height: 100vh; box-sizing: border-box; }
@@ -144,11 +147,16 @@ a { color: inherit; }
 /* 路由切换：页面内容只淡入（不位移，避免和卡片布局动画叠加） */
 .page-in { animation: fade-in var(--dur-base) var(--ease-out); }
 
-/* 内部滚动区：细滚动条（跟随主题线色）+ 不把滚动链到页面 */
-.drawer-body, .sidebar, .logbox, .cmd-list, .jobs-pop-list, .pol-tree, .pol-pv-table, .pol-chips, .select-content [data-radix-select-viewport] {
-  scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; overscroll-behavior: contain;
-}
-.table-wrap { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; overscroll-behavior-x: contain; }
+/* 切换深浅色 / 配色（lib/theme.ts）：切换那一帧关掉全部过渡与动画，整页颜色同时换完，不再按各自的过渡时长一块一块地变；
+   支持 View Transitions 时外面再包一层整页交叉淡入 */
+[data-theme-swap] *, [data-theme-swap] *::before, [data-theme-swap] *::after { transition: none !important; animation-duration: 0s !important; }
+::view-transition-old(root), ::view-transition-new(root) { animation-duration: var(--dur-panel); animation-timing-function: var(--ease-std); }
+
+/* 页面里的滚动区（抽屉正文、对话框里的列表、表格横向滚动…）一律细滚动条、跟随主题线色；页面本身的滚动条保持系统样式 */
+body * { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+/* 独立滚动的面板：滚到头不把滚动链到页面 */
+.drawer-body, .sidebar, .logbox, .cmd-list, .jobs-pop-list, .pol-tree, .pol-pv-table, .pol-chips, .reason-list, .select-content [data-radix-select-viewport] { overscroll-behavior: contain; }
+.table-wrap { overscroll-behavior-x: contain; }
 
 /* 登录页 */
 .login-screen { min-height: 100vh; display: grid; place-items: center; padding: var(--sp-16); }

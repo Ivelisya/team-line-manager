@@ -18,6 +18,7 @@ import { Hotkeys, PaletteTrigger } from '@/features/Hotkeys';
 import { JobsIndicator } from '@/features/JobsIndicator';
 import { ErrorBoundary } from '@/components/app/ErrorBoundary';
 import { Note, Pill } from '@/components/app/primitives';
+import { MotionProvider } from '@/lib/motion';
 
 // 抽屉（含各页签、图表、对话框）和生命周期对话框只在第一次用到时才下载，登录页和首屏不背这份体积。
 // 加载失败（发版后旧块 404）由外面的 silent ErrorBoundary 接住并提示刷新。
@@ -68,7 +69,9 @@ function DrawerHost() {
 }
 
 function LifecycleHost() {
-  const ever = useEver(!!(useMoveTarget() || useEvacuateTarget() || useRestoreTarget()));
+  // 三个 hook 都要无条件调用：写成 a() || b() 会短路，hook 数量随渲染变化，React 报错
+  const move = useMoveTarget(), evacuate = useEvacuateTarget(), restore = useRestoreTarget();
+  const ever = useEver(!!(move || evacuate || restore));
   return ever ? <React.Suspense fallback={null}><LifecycleDialogsHost /></React.Suspense> : null;
 }
 
@@ -126,64 +129,67 @@ export function Shell() {
   const ThemeIcon = theme.pref === 'dark' ? Moon : theme.pref === 'light' ? Sun : Monitor;
   const logout = async () => { try { await post('/auth/logout'); } finally { qc.clear(); window.location.assign('/login'); } };
 
+  // 动效提供者只包已登录的外壳：LazyMotion 一挂载就去下载 domMax 特性包，登录页和上面的错误 / 加载态都用不到 m.*
   return (
-    <div className="app" data-nav={navOpen ? 'open' : 'closed'}>
-      <button className="skip-link" onClick={() => document.getElementById('main')?.focus()}>跳到内容</button>
-      <header className="topbar">
-        <button className="top-btn nav-toggle is-muted" aria-label="打开导航" onClick={() => setNavOpen((o) => !o)} style={{ background: 'transparent', color: 'var(--fg-2)' }}><Menu size={18} /></button>
-        <NavLink to="/" className="brand"><span className="brand-mark"><Boxes size={14} /></span>团队线路管理</NavLink>
-        <PaletteTrigger />
-        <div className="topbar-right">
-          {firing > 0 && <NavLink to="/incidents" style={{ textDecoration: 'none' }} aria-label={`${firing} 条告警`}><Pill tone="bad">{firing}<span className="hide-sm"> 条告警</span></Pill></NavLink>}
-          <JobsIndicator />
-          {stream === 'error'
-            ? <Pill tone="warn" dot="pulse" role="status" title="页面数据暂停更新，连上后自动补齐"><span>实时已断开<span className="hide-sm">，正在重连…</span></span></Pill>
-            : <Tip text={stream === 'open' ? '实时连接正常' : '正在连接…'} side="bottom">
-              <span className="dot" data-tone={stream === 'open' ? undefined : 'neutral'} tabIndex={0} role="img" aria-label={stream === 'open' ? '实时连接正常' : '正在连接'} />
-            </Tip>}
-          <Tip text={`配色：${theme.palette === 'plum' ? '粉紫' : '靛蓝'}（点击切换）`} side="bottom">
-            <button className="top-btn" data-top="palette" aria-label="切换配色（粉紫 / 靛蓝）" onClick={() => theme.setPalette(theme.palette === 'plum' ? 'indigo' : 'plum')}><Palette size={16} /></button>
-          </Tip>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild><button className="top-btn" aria-label="外观"><ThemeIcon size={16} /></button></DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              {([['light', '浅色', Sun], ['dark', '深色', Moon], ['system', '跟随系统', Monitor]] as [ThemePref, string, typeof Sun][]).map(([v, l, I]) => (
-                <DropdownMenuItem key={v} onSelect={() => theme.setPref(v)}><I />{l}{theme.pref === v && <span style={{ marginLeft: 'auto', color: 'var(--accent)' }}>✓</span>}</DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-          <Tip text={`${me.data.username} · 退出登录`} side="bottom">
-            <button className="top-btn" aria-label={`退出登录（${me.data.username}）`} onClick={logout}><LogOut size={16} /></button>
-          </Tip>
-        </div>
-      </header>
-
-      <aside className="sidebar" aria-label="主导航">
-        <nav><ul className="nav-list">
-          {NAV.map((n) => (
-            <li key={n.to}>
-              <NavLink to={n.to} end={'end' in n ? n.end : false} className="nav-item">
-                {() => <>
-                  <n.icon size={16} /><span className="nav-label">{n.label}</span>
-                  {'badge' in n && firing > 0 && <span className="nav-badge">{firing}</span>}
-                </>}
-              </NavLink>
-            </li>
-          ))}
-        </ul></nav>
-        <div className="nav-foot">已登录：{me.data.username}<br />按 <kbd className="kbd">?</kbd> 查看快捷键</div>
-      </aside>
-      <div className="nav-scrim" onClick={() => setNavOpen(false)} />
-
-      <main className="main" id="main" tabIndex={-1}>
-        <div className="content"><ErrorBoundary resetKey={loc.pathname}><React.Suspense fallback={<PageFallback />}><div key={section} className="page-in"><Outlet /></div></React.Suspense></ErrorBoundary></div>
-      </main>
-      {/* 浮层宿主各包一层边界：它们出错（图表、懒加载块失败等）只收起自己，不拖垮整页 */}
-      <ErrorBoundary silent resetKey={loc.search}><DrawerHost /></ErrorBoundary>
-      <ErrorBoundary silent resetKey={loc.pathname} onError={closeRetire}><NodeActionsHost /></ErrorBoundary>
-      <ErrorBoundary silent resetKey={loc.pathname} onError={closeLifecycle}><LifecycleHost /></ErrorBoundary>
-      <Hotkeys theme={theme} />
-      <Toaster />
-    </div>
+    <MotionProvider>
+      <div className="app" data-nav={navOpen ? 'open' : 'closed'}>
+        <button className="skip-link" onClick={() => document.getElementById('main')?.focus()}>跳到内容</button>
+        <header className="topbar">
+          <button className="top-btn nav-toggle" aria-label="打开导航" onClick={() => setNavOpen((o) => !o)}><Menu size={18} /></button>
+          <NavLink to="/" className="brand"><span className="brand-mark"><Boxes size={14} /></span>团队线路管理</NavLink>
+          <PaletteTrigger />
+          <div className="topbar-right">
+            {firing > 0 && <NavLink to="/incidents" style={{ textDecoration: 'none' }} aria-label={`${firing} 条告警`}><Pill tone="bad">{firing}<span className="hide-sm"> 条告警</span></Pill></NavLink>}
+            <JobsIndicator />
+            {stream === 'error'
+              ? <Pill tone="warn" dot="pulse" role="status" title="页面数据暂停更新，连上后自动补齐"><span>实时已断开<span className="hide-sm">，正在重连…</span></span></Pill>
+              : <Tip text={stream === 'open' ? '实时连接正常' : '正在连接…'} side="bottom">
+                <span className="dot" data-tone={stream === 'open' ? undefined : 'neutral'} tabIndex={0} role="img" aria-label={stream === 'open' ? '实时连接正常' : '正在连接'} />
+              </Tip>}
+            <Tip text={`配色：${theme.palette === 'plum' ? '粉紫' : '靛蓝'}（点击切换）`} side="bottom">
+              <button className="top-btn" data-top="palette" aria-label="切换配色（粉紫 / 靛蓝）" onClick={() => theme.setPalette(theme.palette === 'plum' ? 'indigo' : 'plum')}><Palette size={16} /></button>
+            </Tip>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild><button className="top-btn" aria-label="外观"><ThemeIcon size={16} /></button></DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {([['light', '浅色', Sun], ['dark', '深色', Moon], ['system', '跟随系统', Monitor]] as [ThemePref, string, typeof Sun][]).map(([v, l, I]) => (
+                  <DropdownMenuItem key={v} onSelect={() => theme.setPref(v)}><I />{l}{theme.pref === v && <span style={{ marginLeft: 'auto', color: 'var(--accent)' }}>✓</span>}</DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <Tip text={`${me.data.username} · 退出登录`} side="bottom">
+              <button className="top-btn" aria-label={`退出登录（${me.data.username}）`} onClick={logout}><LogOut size={16} /></button>
+            </Tip>
+          </div>
+        </header>
+  
+        <aside className="sidebar" aria-label="主导航">
+          <nav><ul className="nav-list">
+            {NAV.map((n) => (
+              <li key={n.to}>
+                <NavLink to={n.to} end={'end' in n ? n.end : false} className="nav-item">
+                  {() => <>
+                    <n.icon size={16} /><span className="nav-label">{n.label}</span>
+                    {'badge' in n && firing > 0 && <span className="nav-badge">{firing}</span>}
+                  </>}
+                </NavLink>
+              </li>
+            ))}
+          </ul></nav>
+          <div className="nav-foot">已登录：{me.data.username}<br />按 <kbd className="kbd">?</kbd> 查看快捷键</div>
+        </aside>
+        <div className="nav-scrim" onClick={() => setNavOpen(false)} />
+  
+        <main className="main" id="main" tabIndex={-1}>
+          <div className="content"><ErrorBoundary resetKey={loc.pathname}><React.Suspense fallback={<PageFallback />}><div key={section} className="page-in"><Outlet /></div></React.Suspense></ErrorBoundary></div>
+        </main>
+        {/* 浮层宿主各包一层边界：它们出错（图表、懒加载块失败等）只收起自己，不拖垮整页 */}
+        <ErrorBoundary silent resetKey={loc.search}><DrawerHost /></ErrorBoundary>
+        <ErrorBoundary silent resetKey={loc.pathname} onError={closeRetire}><NodeActionsHost /></ErrorBoundary>
+        <ErrorBoundary silent resetKey={loc.pathname} onError={closeLifecycle}><LifecycleHost /></ErrorBoundary>
+        <Hotkeys theme={theme} />
+        <Toaster />
+      </div>
+    </MotionProvider>
   );
 }

@@ -8,9 +8,11 @@
   border: 1px solid transparent; border-radius: var(--r-control); background: transparent;
   font: var(--fw-medium) var(--fs-body) / var(--lh-body) var(--font-sans); color: var(--fg);
   white-space: nowrap; cursor: pointer; text-decoration: none; user-select: none;
-  transition: background-color var(--dur-fast), color var(--dur-fast), border-color var(--dur-fast), transform var(--dur-press);
+  transition: background-color var(--dur-fast), color var(--dur-fast), border-color var(--dur-fast), transform var(--dur-base) var(--ease-sheet);
 }
-.btn:active:not(:disabled) { transform: scale(0.98); }
+/* 按下反馈「快按慢回」：过渡取变化后那一态的时长，按下时 --dur-press 立刻跟手缩小，松开按默认的 --dur-base 苹果曲线弹回。
+   下面的图标按钮、分段、页签、筛选 chip，顶栏按钮与卡片同此 */
+.btn:active:not(:disabled) { transform: scale(0.98); transition-duration: var(--dur-press); }
 .btn:disabled, .btn[aria-disabled="true"] { opacity: 0.45; cursor: default; }
 /* 加载中不显示成禁用的半透明；转圈替换原图标，按钮宽度不变 */
 .btn[aria-busy="true"]:disabled { opacity: 1; cursor: progress; }
@@ -28,8 +30,8 @@
 .btn-text:hover:not(:disabled) { color: var(--fg); text-decoration: underline; text-underline-offset: 3px; }
 .btn-link { height: auto; padding: 0; border: 0; color: var(--accent); }
 .btn-link:hover { text-decoration: underline; text-underline-offset: 3px; }
-.btn-danger { background: var(--bad); color: #fff; }
-.btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--bad) 86%, black); }
+.btn-danger { background: var(--bad-solid); color: #fff; }
+.btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--bad-solid) 86%, black); }
 .btn-outline-danger { background: var(--surface); color: var(--bad-text); border-color: color-mix(in srgb, var(--bad) 35%, var(--line)); }
 .btn-outline-danger:hover:not(:disabled) { background: var(--bad-bg); border-color: color-mix(in srgb, var(--bad) 50%, var(--line)); }
 .btn-block { width: 100%; }
@@ -38,10 +40,10 @@
   display: inline-grid; place-items: center; flex: none;
   width: var(--h-md); height: var(--h-md); padding: 0; box-sizing: border-box;
   border: 0; border-radius: var(--r-control); background: transparent; color: var(--fg-2); cursor: pointer;
-  transition: background-color var(--dur-fast), color var(--dur-fast), transform var(--dur-press);
+  transition: background-color var(--dur-fast), color var(--dur-fast), transform var(--dur-base) var(--ease-sheet);
 }
 .icon-btn:hover:not(:disabled), .icon-btn[aria-expanded="true"], .icon-btn[aria-pressed="true"] { background: var(--hover); color: var(--fg); }
-.icon-btn:active:not(:disabled) { transform: scale(0.94); }
+.icon-btn:active:not(:disabled) { transform: scale(0.94); transition-duration: var(--dur-press); }
 .icon-btn:disabled { opacity: 0.45; cursor: default; }
 .icon-btn-sm { width: var(--h-sm); height: var(--h-sm); }
 .icon-btn-lg { width: var(--h-lg); height: var(--h-lg); }
@@ -59,9 +61,10 @@
   height: var(--seg-item); padding: 0 var(--sp-14); box-sizing: border-box;
   border: 0; border-radius: var(--r-pill); background: transparent; cursor: pointer; white-space: nowrap; isolation: isolate;
   font: var(--fw-medium) var(--fs-body) / var(--lh-body) var(--font-sans); color: var(--fg-2);
-  transition: color var(--dur-fast), background-color var(--dur-fast);
+  transition: color var(--dur-fast), background-color var(--dur-fast), transform var(--dur-base) var(--ease-sheet);
 }
 .seg-item:hover:not([data-state="on"]):not(:disabled) { color: var(--fg); background: var(--hover); }
+.seg-item:active:not(:disabled) { transform: scale(0.97); transition-duration: var(--dur-press); } /* 选中胶囊在项里面，跟着一起按下去 */
 .seg-item[data-state="on"] { color: var(--fg); }
 /* 选中胶囊：Segmented 在当前项里放一个共享 layoutId 的元素，motion 让它在项之间滑动；z-index:-1 配 isolation 让它垫在文字下面 */
 .seg-ind { position: absolute; inset: 0; z-index: -1; border-radius: var(--r-pill); background: var(--thumb); box-shadow: var(--shadow-thumb); pointer-events: none; }
@@ -78,11 +81,15 @@
   position: relative; flex: none; display: inline-flex; align-items: center; gap: var(--sp-6);
   height: 41px; padding: 0 0 1px; box-sizing: border-box; border: 0; background: transparent; cursor: pointer; white-space: nowrap; /* 41 = 40 + 列表 1px 底线，底部 1px 内边距让文字位置不变，下划线盖在底线上 */
   font: var(--fw-medium) var(--fs-body) / var(--lh-body) var(--font-sans); color: var(--fg-2);
-  transition: color var(--dur-fast);
+  transform-origin: 50% 100%; transition: color var(--dur-fast), transform var(--dur-base) var(--ease-sheet);
 }
 .tab:hover { color: var(--fg); }
 .tab[data-state="active"] { color: var(--fg); } /* 不再随选中加粗：加粗会让页签变宽、把后面的页签顶开 */
-.tab-ind { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; border-radius: 1px 1px 0 0; background: var(--accent); pointer-events: none; }
+.tab:active:not(:disabled) { transform: scale(0.97); transition-duration: var(--dur-press); }
+/* 下划线不跟着缩：页签以底边中点为原点缩放（下划线不上移），下划线横向按 1 / 0.97 放回原宽。
+   用独立的 scale 属性，motion 滑动下划线写的是 transform，互不覆盖 */
+.tab-ind { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; border-radius: 1px 1px 0 0; background: var(--accent); pointer-events: none; transition: scale var(--dur-base) var(--ease-sheet); }
+.tab:active:not(:disabled) .tab-ind { scale: 1.031 1; transition-duration: var(--dur-press); }
 
 /* ========== pill / chip / mark / dot ========== */
 .pill {
@@ -135,10 +142,10 @@
   border: 1px solid var(--line); border-radius: var(--r-pill); background: var(--surface);
   font: var(--fw-medium) var(--fs-body) / var(--lh-body) var(--font-sans); color: var(--fg-2);
   cursor: pointer; white-space: nowrap;
-  transition: background-color var(--dur-fast), color var(--dur-fast), border-color var(--dur-fast), transform var(--dur-press);
+  transition: background-color var(--dur-fast), color var(--dur-fast), border-color var(--dur-fast), transform var(--dur-base) var(--ease-sheet);
 }
 .fchip:hover { border-color: var(--line-strong); color: var(--fg); }
-.fchip:active { transform: scale(0.98); }
+.fchip:active:not(:disabled) { transform: scale(0.98); transition-duration: var(--dur-press); }
 .fchip[aria-pressed="true"] { background: var(--accent-soft); border-color: transparent; color: var(--accent-soft-fg); }
 .fchip-count { font-weight: var(--fw-regular); color: var(--fg-2); }
 .fchip[aria-pressed="true"] .fchip-count { color: var(--accent-soft-fg); }
@@ -199,7 +206,7 @@
 
 .empty { display: grid; justify-items: center; gap: var(--sp-8); padding: var(--sp-24) var(--sp-16); color: var(--fg-2); text-align: center; }
 .empty .lucide { color: var(--fg-3); }
-.skel { display: block; border-radius: var(--r-xs); background: var(--sunken); animation: skel-pulse 1.4s ease-in-out infinite; }
+.skel { display: block; border-radius: var(--r-xs); background: var(--cell-off); animation: skel-pulse 1.4s ease-in-out infinite; } /* 同格条未点亮色：暗色下 --sunken 比卡片还暗，骨架几乎看不见 */
 .skel-row { display: flex; align-items: center; height: var(--row-2); box-sizing: border-box; padding: 0 var(--cell-edge); border-bottom: 1px solid var(--line); }
 .skel-row.is-one { height: var(--row-1); }
 .skel-row:last-child { border-bottom: 0; }
@@ -217,6 +224,7 @@
   transition: border-color var(--dur-fast), box-shadow var(--dur-fast);
 }
 .input::placeholder, .textarea::placeholder { color: var(--fg-3); }
+.select-trigger:hover:not(:disabled, :focus-visible, [data-state="open"]) { border-color: color-mix(in srgb, var(--line-strong), var(--fg) 12%); }
 .input:focus, .textarea:focus, .select-trigger:focus-visible, .select-trigger[data-state="open"] { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-halo); }
 .input:disabled, .textarea:disabled, .select-trigger:disabled { background: var(--sunken); color: var(--fg-3); cursor: default; }
 .input[aria-invalid="true"] { border-color: var(--bad); }
@@ -244,6 +252,9 @@
 .overlay { position: fixed; inset: 0; z-index: var(--z-dialog); background: var(--scrim); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); animation: fade-in var(--dur-base) var(--ease-out); }
 /* 关闭动画：Radix Presence 会等 [data-state=closed] 上的动画播完再卸载；减弱动效时在 extras.css 末尾置 none */
 .overlay[data-state="closed"], .drawer-overlay[data-state="closed"] { animation: fade-out var(--dur-base) var(--ease-std) forwards; }
+/* 退场动画期间不再拦截点击：用户已经可以点下面的东西。Radix 在遮罩（及模态层里的浮层）上内联了 pointer-events: auto，要 !important 才盖得住 */
+.overlay[data-state="closed"], .drawer-overlay[data-state="closed"], .dialog[data-state="closed"], .drawer[data-state="closed"], .cmd-dialog[data-state="closed"],
+.menu[data-state="closed"], .popover[data-state="closed"], .select-content[data-state="closed"] { pointer-events: none !important; }
 /* 顶部锚定（同命令面板）：内容异步变多时只往下长，不上下跳；矮屏时自身滚动 */
 .dialog {
   position: fixed; z-index: var(--z-dialog); left: 50%; top: min(10vh, 96px); transform: translateX(-50%);
@@ -263,14 +274,18 @@
 
 .drawer {
   position: fixed; z-index: var(--z-drawer); top: 0; right: 0; bottom: 0; width: var(--drawer-w);
-  display: flex; flex-direction: column; max-width: 100vw; background: var(--surface); border-left: 1px solid var(--line); box-shadow: var(--shadow-float);
+  display: flex; flex-direction: column; max-width: 100vw; background: var(--surface); border-left: 1px solid var(--line);
   animation: drawer-in var(--dur-sheet) var(--ease-sheet);
 }
 .drawer-overlay { position: fixed; inset: 0; z-index: calc(var(--z-drawer) - 1); background: var(--scrim); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); animation: fade-in var(--dur-panel) var(--ease-out); }
-/* 苹果式面板：整幅从右侧滑入（--ease-sheet 先快后缓），收起走更短的 --dur-panel；阴影随位移淡入，避免屏幕外的投影在右缘露一条暗边 */
-@keyframes drawer-in { from { transform: translateX(100%); box-shadow: 0 8px 30px transparent; } to { transform: none; box-shadow: var(--shadow-float); } }
+/* 苹果式面板：整幅从右侧滑入（--ease-sheet 先快后缓），收起走更短的 --dur-panel；阴影随位移淡入，避免屏幕外的投影在右缘露一条暗边。
+   位移只动 transform、阴影放在 ::before 上只动 opacity：两者都能交给合成器，滑入这段正是抽屉挂载、下载懒块的时候，不能回落主线程逐帧重绘阴影 */
+@keyframes drawer-in { from { transform: translateX(100%); } to { transform: none; } }
 .drawer[data-state="closed"] { animation: drawer-out var(--dur-panel) var(--ease-std) forwards; }
-@keyframes drawer-out { from { transform: none; box-shadow: var(--shadow-float); } to { transform: translateX(100%); box-shadow: 0 8px 30px transparent; } }
+@keyframes drawer-out { from { transform: none; } to { transform: translateX(100%); } }
+/* 左边多出 1px 盖住左边框，投影与原先挂在边框盒上一致；z-index -1 只在抽屉自身的层叠上下文里垫在内容下面 */
+.drawer::before { content: ""; position: absolute; inset: 0 0 0 -1px; z-index: -1; pointer-events: none; box-shadow: var(--shadow-float); animation: fade-in var(--dur-sheet) var(--ease-sheet); }
+.drawer[data-state="closed"]::before { animation: fade-out var(--dur-panel) var(--ease-std) forwards; }
 .drawer-head { flex: none; display: flex; align-items: center; gap: var(--sp-8); padding: var(--sp-12) var(--sp-16); border-bottom: 0; min-width: 0; }
 .drawer-title { margin: 0; min-width: 0; font: var(--fw-semibold) var(--fs-title) / var(--lh-title) var(--font-sans); letter-spacing: var(--tracking-title); }
 .drawer-tabs { flex: none; padding: 0 var(--sp-16); }
@@ -295,6 +310,8 @@
 }
 .menu-item .lucide { color: var(--fg-2); width: 14px; height: 14px; }
 .menu-item[data-highlighted], .select-item[data-highlighted] { background: var(--hover); }
+/* 按下：悬停底上再叠一层悬停色，比悬停再深一点；列表条目不缩放（命令面板条目、表格可点行同此）。禁用项 pointer-events: none，不会按下 */
+.menu-item:active, .select-item:active { background-image: linear-gradient(var(--hover), var(--hover)); }
 .menu-item[data-disabled], .select-item[data-disabled] { color: var(--fg-3); pointer-events: none; }
 .menu-item.is-danger { color: var(--bad-text); }
 .menu-item.is-danger .lucide { color: var(--bad-text); }
@@ -304,11 +321,20 @@
 
 .tooltip {
   z-index: var(--z-tooltip); max-width: 280px; padding: var(--sp-4) var(--sp-8); border-radius: var(--r-control);
-  background: var(--fg); color: var(--canvas); font-size: var(--fs-label); line-height: var(--lh-label); animation: fade-in var(--dur-fast);
+  background: var(--fg); color: var(--canvas); font-size: var(--fs-label); line-height: var(--lh-label);
+  --tip-x: 0px; --tip-y: 0px; transform-origin: var(--radix-tooltip-content-transform-origin); animation: tip-in var(--dur-base) var(--ease-out);
 }
+/* 进场：淡入、从 .96 放大，同时往远离触发元素的方向走 4px（在上方的往上、在下方的往下）；退场原路收回，与进场对称 */
+.tooltip[data-side="top"] { --tip-y: 4px; }
+.tooltip[data-side="bottom"] { --tip-y: -4px; }
+.tooltip[data-side="left"] { --tip-x: 4px; }
+.tooltip[data-side="right"] { --tip-x: -4px; }
+.tooltip[data-state="closed"] { animation: tip-out var(--dur-fast) var(--ease-std) forwards; }
+@keyframes tip-in { from { opacity: 0; transform: translate(var(--tip-x), var(--tip-y)) scale(.96); } to { opacity: 1; transform: none; } }
+@keyframes tip-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: translate(var(--tip-x), var(--tip-y)) scale(.96); } }
 
 /* 堆叠式通知：新的在最下面，旧的往上排；相同消息合并计数；底部细线是剩余时间，鼠标停上去暂停 */
-.toasts { position: fixed; z-index: var(--z-toast); right: var(--sp-16); bottom: var(--sp-16); display: flex; flex-direction: column; gap: var(--sp-8); width: min(380px, calc(100vw - 32px)); pointer-events: none; }
+.toasts { position: fixed; z-index: var(--z-toast); right: calc(var(--sp-16) + var(--removed-body-scroll-bar-size, 0px)); bottom: var(--sp-16); display: flex; flex-direction: column; gap: var(--sp-8); width: min(380px, calc(100vw - 32px)); pointer-events: none; } /* right 同顶栏：锁滚动时补回让出的槽位 */
 .toast {
   position: relative; display: flex; gap: var(--sp-10); align-items: flex-start; padding: var(--sp-10) var(--sp-12); overflow: hidden; pointer-events: auto;
   background: var(--raised); border: 1px solid var(--line); border-radius: var(--r-float); box-shadow: var(--shadow-float);
@@ -326,7 +352,8 @@
 .toast-action { margin-top: var(--sp-4); padding: 0; border: 0; background: none; cursor: pointer; font: var(--fw-medium) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--accent); }
 .toast-action:hover { text-decoration: underline; text-underline-offset: 3px; }
 .toast-count { flex: none; align-self: center; padding: 0 var(--sp-6); border-radius: var(--r-pill); background: var(--sunken); color: var(--fg-2); font-size: var(--fs-micro); line-height: 18px; }
-.toast-x { flex: none; width: 22px; height: 22px; margin: -2px -4px 0 0; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--fg-3); cursor: pointer; transition: background-color var(--dur-fast), color var(--dur-fast); }
+.toast-x { position: relative; flex: none; width: 22px; height: 22px; margin: -2px -4px 0 0; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--fg-3); cursor: pointer; transition: background-color var(--dur-fast), color var(--dur-fast); }
+.toast-x::after { content: ""; position: absolute; inset: -6px; } /* 可点范围扩到 34px，外观不变（仍在通知的内边距里，不被裁） */
 .toast-x:hover { background: var(--hover); color: var(--fg); }
 .toast-timer { position: absolute; left: 0; bottom: 0; height: 2px; width: 100%; background: var(--fg-3); opacity: 0.45; transform-origin: left; animation: toast-timer linear forwards; }
 .toast[data-tone="ok"] .toast-timer { background: var(--ok); }
