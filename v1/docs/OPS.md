@@ -36,8 +36,9 @@
 | 在一台机器上执行命令 | `fleetctl exec 团队1-06 -- systemctl status fleet-agent` |
 | 对一个团队的全部节点执行 | `fleetctl exec --team 团队1 -- uptime`（并发 4，汇总退出码） |
 | 上架 | `fleetctl provision --file batch.json --dry-run`，确认后 `fleetctl provision --file batch.json --yes --follow` |
+| 已有落地机上多了一个 IP，加成一台节点（同机 IP 节点，见 §6） | `fleetctl provision --kind vps --host 团队1-03 --ip 203.0.113.7 --team 团队1 --relay 线路机2 --yes --follow` |
 | 看作业进度、失败原因 | `fleetctl jobs --active`、`fleetctl job <id> --follow`；失败后 `fleetctl retry <id>` |
-| 退役 | `fleetctl retire 团队1-06 --reason 到期不续 --yes --follow` |
+| 退役 | `fleetctl retire 团队1-06 --reason 到期不续 --yes --follow`（宿主机上的同机 IP 节点会一并退役，命令先列出来） |
 | 彻底删除已退役机器 | `fleetctl purge 团队1-06 --yes`（它的入口近 35 天的流量还计入另一端未退役的机器时会被拒，报错里给出可删日期；另一端已退役的不受限） |
 | 把节点换到另一台线路机 | `fleetctl move 团队1-06 --to 线路机3 --yes --follow`（分享链接会变，见 §6） |
 | 线路机退役前搬空 | `fleetctl evacuate 线路机2 --to 线路机3 --yes --follow` |
@@ -60,6 +61,8 @@
 
 `ss_port` 只给 NAT 机填：供应商映射到节点 8388 的公网端口（节点上 ssserver 固定监听 8388），非 NAT 机省略。
 
+同机 IP 节点在条目里写 `"host": "团队1-03"`（宿主机的名字），不写 `ssh_port`、`login`、`ss_port`、`provider`、`plan`。
+
 root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；首次登录必须用密码时，单台上架用 `--ssh-password-env VAR`。
 
 ## 3. 故障排查流程
@@ -79,6 +82,7 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
    - 通知按渠道各一个发送队列，同一渠道内逐条按顺序发（一批告警同时触发时不会并发打到同一渠道），渠道之间互不等待（一个渠道一直超时不拖慢别的）。渠道回 429 时按它给的等待时长再试（Telegram 的 `parameters.retry_after`、通用的 `Retry-After` 头，最多等 60 秒），其它可重试的失败（网络错误、5xx）隔 0.5 秒、2 秒各再试一次；积压时通知会晚到。
 2. **agent 离线**：`fleetctl show <机器>` 看最近上报时间；`fleetctl exec <机器> -- 'systemctl is-active fleet-agent; uptime'`。exec 返回 255 且 stderr 是连接失败 → 机器本身不通（去供应商面板看机器状态/重启）。agent 没运行则 `fleetctl logs <机器> --unit fleet-agent` 找原因，再 `fleetctl exec <机器> -- systemctl restart fleet-agent`（修改状态，先确认）。
 3. **入口不通**：`fleetctl show <节点>` 看入口的 TCP/出口探测；`fleetctl logs <节点> --unit ssserver`；`fleetctl exec <节点> -- 'ss -ltnp | grep -E "8388|ssserver"'`；再看线路机 `fleetctl logs <线路机> --unit fleet-xray`。告警对象是线路机时，是它的直出入口（没有节点、没有 TCP 探测）出口不通：看线路机自己的出网（`fleetctl exec <线路机> -- 'curl -sS -m 10 https://1.1.1.1 -o /dev/null -w %{http_code}'`）和 fleet-xray 日志。
+   同机 IP 节点（`show` 里有「宿主机」）：`logs <节点> --unit ssserver` 看的是宿主机上它自己的实例 `fleet-ssserver@<SS 端口>`，`exec <节点>` 在宿主机上执行；它的 agent 离线、高负载告警都在宿主机名下。出口不对时 `fleetctl exec <节点> -- 'ip -4 addr; curl -4 -sS --interface <它的 IP> <中控地址>/echo'` 看 IP 还在不在网卡上、回显的是不是它自己。
 4. **线路机配置未应用**：`fleetctl show <线路机>`（代数与 apply_error）；`fleetctl logs <线路机> --unit fleet-agent`；`fleetctl logs <线路机> --unit fleet-xray`。xray 配置错误会写在这里。
 5. **作业失败**：`fleetctl job <id>` 看失败步骤和日志；修好原因后 `fleetctl retry <id>`；放弃用 `fleetctl cancel <id>`（已完成的步骤会补偿回退）。报「主机指纹变化」且确认机器重装过：`fleetctl retry <id> --reset-host-key`；报「没有可用的 root 密码」：`ROOT_PW=… fleetctl retry <id> --password-env ROOT_PW`（网页作业的「重试」里同样能勾选 / 填写）。
 6. **中控本身异常**：`fleetctl server-logs`。读不到时按错误提示授权 journal（`usermod -aG systemd-journal fleet` 后重启 fleet-server）。
@@ -101,7 +105,7 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 - 登录有限速：同一用户名 15 分钟内错 5 次、同一 IP 错 20 次会被 429 拒绝。
 - 危险操作（退役、删除、轮换、批量升级、会改状态的 exec）先向负责人确认，再加 `--yes`。
 
-## 6. 换线路机 / 搬空线路机 / 恢复已退役的机器
+## 6. 换线路机 / 搬空线路机 / 恢复已退役的机器 / 同机 IP 节点
 
 ### 换线路机（节点换到另一台线路机）
 1. `fleetctl move 团队1-06 --to 线路机3`（交互确认）或加 `--yes --follow`。节点必须在用，且只有一个在用入口（有多个用 `--from 线路机2` 指定换掉哪条）。
@@ -117,6 +121,16 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 2. 预检说中控密钥被拒时必须给 root 密码：`ROOT_PW=… fleetctl restore … --password-env ROOT_PW`。机器重装过、指纹变了加 `--reset-host-key`。家宽代理退役时出站参数已清掉，要重新给 `--upstream socks5://用户:密码@主机:端口`。线路机原名被占用用 `--label` 改名；换团队用 `--team`。
 3. 机器保持原 id，重新走上架的收敛步骤（proxy 只有建入口、等应用、验收、上线）；旧入口不复活，建新入口，**分享链接是新的**。订阅、历史、审计保留。成功后 `retired_at` 清空，原因记「已恢复：…」。
 4. 取消或失败后取消：机器回到已退役，IP 与编号释放，团队编号压缩。
+5. 同机 IP 节点要等宿主机在用才能恢复（先恢复宿主机）；不试登录、不要密码，SS 端口重新分配。
+
+### 同机 IP 节点（一台落地机上的多个 IP）
+供应商给一台落地机加了 IP 时，每个附加 IP 上架成一台独立的节点（自己的团队编号、入口、出口 IP），按 IP 计节点：
+1. 先在供应商那边把 IP 直接配到这台机器的网卡上（`ip -4 addr` 看得到；EIP / NAT 映射的不支持）；从这个 IP 发出的流量对外显示的要是它自己（作业第一步会用 `curl --interface` 访问中控自动核对）。
+2. `fleetctl provision --kind vps --host <宿主机> --ip <新 IP> --team 团队1 --relay 线路机2 --yes --follow`（批量文件条目写 `"host"`）。不用填 SSH 端口、密码、SS 端口：作业用中控密钥登录宿主机，先核对 IP（不在网卡上、或经它访问中控回显的来源不是它都会失败并说明原因），再在宿主机上装它自己的 ssserver 实例 `fleet-ssserver@<端口>`（端口 8389 起由中控分配，从这个 IP 监听和出站）和防火墙表 `ss_guard_<端口>`，然后建入口、验收。宿主机原来的 ssserver 与防火墙不动、不重启。
+3. `show <宿主机>` 列出「同机 IP 节点」，`show <同机节点>` 显示「宿主机」。它没有自己的 agent：在线状态、主机读数、曲线都是宿主机的，`upgrade-agent` 升级宿主机即可。供应商取宿主机的；费用默认不记（附加 IP 单独收费时在它的「费用」里填），宿主机的流量额度把它的流量算进去。
+4. 单独退役同机节点只删它自己的实例；**退役宿主机时同机节点一并退役**（`retire` 会先列出来）。彻底删除宿主机要先删它的同机节点。
+5. 只想下线宿主机自己的 IP、保留机器：本期不支持；可以停用宿主机的入口（`fleetctl entry disable …`），它的「没有在用的入口」告警可静默。
+6. 回滚到不认识同机节点的旧中控之前，必须先退役全部同机 IP 节点。
 
 ## 7. 版本升级顺序
 先升中控（`lab/deploy-server.sh` 就是先装 fleet-server、再把新 agent 放进 dist），再 `fleetctl upgrade-agent --all --yes` 升 agent：新 agent 的上报可能带旧中控不认的字段形状（如容器里 `load1` 为 null），旧中控会拒收整份上报。

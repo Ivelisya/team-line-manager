@@ -227,11 +227,13 @@ struct RM {
     ssh_port: i32,
     lifecycle: String,
     reason: Option<String>,
+    /// 同机 IP 节点的宿主机
+    host_id: Option<Uuid>,
 }
 
 async fn load_rm(conn: &mut PgConnection, id: Uuid, lock: bool) -> ApiResult<RM> {
     let sql = format!(
-        "select kind::text kind, team_id, number, label, host(primary_ip) ip, ssh_port, lifecycle::text lifecycle, lifecycle_reason reason
+        "select kind::text kind, team_id, number, label, host(primary_ip) ip, ssh_port, lifecycle::text lifecycle, lifecycle_reason reason, host_id
          from machine where id = $1{}",
         if lock { " for update" } else { "" }
     );
@@ -341,6 +343,17 @@ async fn restore_plan(conn: &mut PgConnection, id: Uuid, m: &RM, team_ov: Option
         team_id = tid;
         team_name = tn;
     }
+    // 同机 IP 节点：宿主机要在用（SSH、agent 都是它的）。提交时锁住宿主机行（在团队之后），重新分 SS 端口不和别的上架撞车
+    if let Some(h) = m.host_id {
+        let sql = format!(
+            "select h.lifecycle::text, display_name(h.kind::text, h.label, t.name, h.number) from machine h left join team t on t.id = h.team_id where h.id = $1{}",
+            if lock { " for update of h" } else { "" }
+        );
+        let (hl, hn): (String, String) = sqlx::query_as(&sql).bind(h).fetch_one(&mut *conn).await?;
+        if hl != "active" {
+            blockers.push(format!("宿主机「{hn}」现在是「{}」：同机 IP 节点要等宿主机在用才能恢复", jobs::lifecycle_zh(&hl)));
+        }
+    }
     Ok(RPlan { old_name, team_id, team_name, number, label, new_name, blockers, invalid, ip_conflict })
 }
 
@@ -393,7 +406,8 @@ pub async fn restore_preview(a: Actor, State(st): State<AppState>, ApiPath(id): 
         (m, p, last)
     };
     let mut warnings: Vec<String> = vec![];
-    let ssh_info = if m.kind != "proxy" && m.lifecycle == "retired" && q.probe != Some(false) {
+    // 同机 IP 节点不试登录：它用中控密钥登录宿主机，宿主机在用就能登
+    let ssh_info = if m.kind != "proxy" && m.host_id.is_none() && m.lifecycle == "retired" && q.probe != Some(false) {
         // 试登录会用中控密钥 SSH 上机器：和 POST 恢复一样要 write，并记审计
         a.require_scope("write")?;
         let info = probe_login(&st, &m).await;
@@ -407,6 +421,7 @@ pub async fn restore_preview(a: Actor, State(st): State<AppState>, ApiPath(id): 
     // root 密码：中控密钥还能登录就不需要；被拒就必填；探测不到时可选（填了也不亏）
     let password = match (m.kind.as_str(), ssh_info.as_ref().and_then(|i| i["key_login"].as_str())) {
         ("proxy", _) => "no",
+        _ if m.host_id.is_some() => "no",
         (_, Some("ok")) => "no",
         (_, Some("denied")) => "required",
         _ => "optional",
@@ -517,6 +532,11 @@ pub async fn restore(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<
     }
     match m.kind.as_str() {
         "vps" => {
+            // 同机 IP 节点重新分 SS 端口：退役时出站参数已删，原来的端口可能已经给了宿主机上别的同机节点（宿主机行在 restore_plan 里锁着）
+            let port = match m.host_id {
+                Some(h) => crate::db::free_ss_port(&crate::db::ip_node_ports(&mut tx, h, Some(id)).await?).ok_or_else(|| ApiError::conflict("宿主机上没有空闲的 SS 端口"))?,
+                None => b.ss_port.unwrap_or(8388),
+            };
             sqlx::query(
                 "insert into node_outbound (machine_id, protocol, host, port, method, secret_enc) values ($1, 'shadowsocks', $2, $3, 'aes-256-gcm', $4)
                  on conflict (machine_id) do update set protocol = excluded.protocol, host = excluded.host, port = excluded.port, method = excluded.method,
@@ -524,7 +544,7 @@ pub async fn restore(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<
             )
             .bind(id)
             .bind(&m.ip)
-            .bind(b.ss_port.unwrap_or(8388) as i32)
+            .bind(port as i32)
             .bind(st.secrets.seal_str(&super::provision::ss_password()))
             .execute(&mut *tx)
             .await?;
@@ -558,16 +578,18 @@ pub async fn restore(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<
     if m.kind != "relay" {
         params["relay_id"] = json!(b.relay_id);
     }
-    if b.reset_host_key == Some(true) {
-        params["reset_host_key"] = json!(true);
-    }
-    if m.kind != "proxy" {
+    // 同机 IP 节点登录宿主机用中控密钥：不收 root 密码，也不重置宿主机的指纹
+    if m.kind != "proxy" && m.host_id.is_none() {
+        if b.reset_host_key == Some(true) {
+            params["reset_host_key"] = json!(true);
+        }
         if let Some(pw) = b.login.as_ref().and_then(|l| l.password.as_deref()).filter(|p| !p.is_empty()) {
             let enc = base64::engine::general_purpose::STANDARD.encode(st.secrets.seal_str(pw));
             params["login"] = json!({"password_enc": enc});
         }
     }
-    let job = jobs::enqueue(&mut tx, &format!("restore_{}", m.kind), Some(id), params, &a.name).await?;
+    let kind = if m.host_id.is_some() { "restore_ip".to_string() } else { format!("restore_{}", m.kind) };
+    let job = jobs::enqueue(&mut tx, &kind, Some(id), params, &a.name).await?;
     audit(
         &mut tx,
         &a.name,

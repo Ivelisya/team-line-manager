@@ -26,14 +26,18 @@ relay(machine) ─< entry >─ node(machine)
 job ─< job_step ─< job_log      audit_log      user / session / api_key
 ```
 
-- **machine**：`id, role, team_id, number, label, primary_ip (inet), ssh_port, provider_id, lifecycle, lifecycle_reason, created_at, activated_at, retired_at`。
+- **machine**：`id, role, team_id, number, label, primary_ip (inet), ssh_port, provider_id, host_id, lifecycle, lifecycle_reason, created_at, activated_at, retired_at`。
   - 显示名 = `team.name + "-" + 两位编号`（如 `团队1-06`），**每次读取时计算**，不存储。
   - `(team_id, number)` 在未退役的节点中唯一；`primary_ip` 在未退役的机器中唯一（查重键）。
   - 编号保持连续：节点退役（或上架取消）后，该团队剩下的节点自动压缩成 01..N；新上架接在末尾（N+1），也可手动指定空号。每次重编都写审计（旧名 → 新名）。身份是 machine.id，重编号不换令牌、不断连接，线路机备注自动同步。
+  - **同机 IP 节点**：一台落地机上配了几个公网 IP 时，每个附加的 IP 是一台独立的节点（`kind = vps`，自己的团队、编号、`primary_ip` = 它的出口 IP、`node_outbound`、入口），`host_id` 指向持有 SSH 与 agent 的那台落地机（宿主机，必须是在用、自身 `host_id` 为空的落地机）。
+    它没有自己的 agent 和 SSH：作业、远程执行都登录宿主机，视图里的 agent 状态与主机读数借宿主机的（总览网速不重复算），agent 离线、时钟、持续高负载只由宿主机报，入口探测、无入口、续费照常自己报；宿主机维护时它也维护。
+    `ssh_port` 存宿主机的（只展示），供应商取宿主机的、不带套餐、默认不记费用（可在它的「费用」里单独填）；宿主机的流量额度把同机节点（含已退役的）的入口流量算进去（共用额度）。
+    节点在宿主机上是 ssserver 模板单元的一个实例 `fleet-ssserver@<SS 端口>`（端口从 8389 起由中控分配）：监听并从自己的 IP 出站（`outbound_bind_addr`），nft 表 `ss_guard_<端口>` 只放行它自己的线路机；宿主机原来的 `fleet-ssserver` / `ss_guard`（8388）原样不动。
 - **entry**：线路机上的一个入口（VLESS REALITY 入站 → SS 出站到节点）。`id, relay_id, node_id, port, client_uuid, short_id, lifecycle, applied_generation`。备注由节点显示名生成，改名后随期望状态自动同步。
   直出入口：`node_id = relay_id`（节点就是线路机自己），freedom 出站，从线路机自己的 IP 出去；每台线路机至多一条（同一个 (node_id, relay_id) 唯一索引），备注「线路机名-直出」，随线路机退役摘除。
 - **subscription**：机器的账单。`plan_id, price_cents, currency, cycle, due_date, billing_tz, auto_renew, remind_days`；续费记录单独一张表。
-- **job**：`kind (provision_node | provision_relay | retire | move_entry | rotate_entry | renumber | purge), target, params, state, steps[]`。每一步记录开始、结束、输出、错误类别；失败可从该步重试，取消会执行已完成步骤的补偿。
+- **job**：`kind (provision_vps | provision_proxy | provision_relay | provision_ip | restore_* | attach_entry | move_entry | retire | purge | upgrade_agent), target, params, state, steps[]`。每一步记录开始、结束、输出、错误类别；失败可从该步重试，取消会执行已完成步骤的补偿。
 
 ## 3. 关键流程
 
@@ -41,8 +45,12 @@ job ─< job_step ─< job_log      audit_log      user / session / api_key
 预检（连通、指纹、系统）→ 基线（sshd、nftables、sysctl/BBR）→ 装 ssserver → 装 fleet-agent 并签发令牌 → 等第一批上报 →
 创建入口（写期望状态）→ 等线路机回报已应用 → 端到端验收 → `active`。批量上架就是多行同时提交。
 
+**上架同机 IP 节点**（`provision_ip`，填宿主机 + 新 IP）：在宿主机上核对 IP（要直接配在宿主机网卡上；经它访问中控 `/echo` 回显的必须是它自己，否则是出站路由不对；暂定的 SS 端口被占用就改用最小空闲端口）→
+推 ssserver、装自己的实例和防火墙表（不做系统基线、不装 agent）→ 创建入口 → 等线路机应用 → 出口验收（期望它自己的 IP）→ `active`。恢复（`restore_ip`）同样的步骤，要求宿主机在用，SS 端口重新分配。
+
 **退役**：入口 → `removing`（期望状态去掉）→ 等线路机回报 → 撤销令牌 → （节点可达时）停掉节点上的 agent 和 ssserver → `retired`。
 退役机器从首页、告警、统计、费用里消失，在"已退役"筛选里可查历史；可"恢复"或"彻底删除"（purge 级联删除遥测，保留审计）。
+退役宿主机时它上面的同机 IP 节点**一并退役**（同一事务里置为退役中、作废它们进行中的作业、关告警，各建一个只摘入口不登录清理的退役作业；宿主机的清理连同所有实例一起删）；单独退役同机 IP 节点只删它自己的实例。彻底删除宿主机要等它的同机 IP 节点（含已退役的）先删。
 
 **改名 / 重新编号 / 换团队**：只改 `team_id/number`，同步作业刷新线路机备注；不换令牌、不断连接。"重新编号"先出预览（旧名 → 新名），确认后一次生效。
 

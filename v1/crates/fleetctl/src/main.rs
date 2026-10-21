@@ -122,7 +122,7 @@ fn keys_user(c: &KeysCmd) -> Option<&str> {
 
 #[derive(Args)]
 struct ProvisionArgs {
-    /// 批量文件（JSON 数组或 {"items":[…]}；条目里 team/relay/provider/plan 可直接写名字）
+    /// 批量文件（JSON 数组或 {"items":[…]}；条目里 team/relay/provider/plan/host 可直接写名字）
     #[arg(long)]
     file: Option<PathBuf>,
     /// vps | proxy | relay
@@ -130,6 +130,10 @@ struct ProvisionArgs {
     kind: Option<String>,
     #[arg(long)]
     ip: Option<String>,
+    /// 同机 IP 节点：加在这台已有的落地机（宿主机）上，用它的 SSH 与 agent；--ip 是新的出口 IP（要已配在宿主机网卡上），
+    /// 不用填 --ssh-port / --ssh-password-env / --ss-port（SS 端口由中控分配），供应商取宿主机的
+    #[arg(long)]
+    host: Option<String>,
     #[arg(long)]
     ssh_port: Option<u16>,
     /// 团队名（节点）
@@ -540,6 +544,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
                 file: a.file,
                 kind: a.kind,
                 ip: a.ip,
+                host: a.host,
                 ssh_port: a.ssh_port,
                 team: a.team,
                 number: a.number,

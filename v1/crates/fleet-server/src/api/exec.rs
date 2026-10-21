@@ -70,10 +70,13 @@ async fn run_on(st: &AppState, a: &Actor, id: Uuid, command: &str, timeout_s: u6
     if kind == "proxy" {
         return Err(ApiError::conflict(format!("{name} 是家宽代理，没有 SSH，不能执行命令")));
     }
-    let (ip, port): (String, i32) = sqlx::query_as("select host(primary_ip), ssh_port from machine where id = $1")
-        .bind(id)
-        .fetch_one(&st.db)
-        .await?;
+    // 同机 IP 节点没有自己的 SSH：登录它的宿主机
+    let (ip, port): (String, i32) = sqlx::query_as(
+        "select host(coalesce(h.primary_ip, m.primary_ip)), coalesce(h.ssh_port, m.ssh_port) from machine m left join machine h on h.id = m.host_id where m.id = $1",
+    )
+    .bind(id)
+    .fetch_one(&st.db)
+    .await?;
     let target = Target { ip, port: port as u16, key: st.cfg.ssh_key.clone(), known_hosts: st.cfg.known_hosts.clone(), password: None };
     let _permit = EXEC_SEM.acquire().await.map_err(|_| ApiError::internal("执行通道已关闭"))?;
     // 先提交一条「已开始」的审计再执行：客户端断开或中控重启时，已执行的命令也有记录；执行完再把结果补进这一条
@@ -165,7 +168,16 @@ fn unit_name(u: &str) -> Option<&'static str> {
 pub async fn machine_logs(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<LogsQ>) -> ApiResult<Json<Value>> {
     a.require_scope("exec")?;
     let want = q.unit.as_deref().unwrap_or("fleet-agent");
-    let unit = unit_name(want).ok_or_else(|| ApiError::bad_request("unit 只能是 fleet-agent / fleet-xray / ssserver"))?;
+    let mut unit = unit_name(want).ok_or_else(|| ApiError::bad_request("unit 只能是 fleet-agent / fleet-xray / ssserver"))?.to_string();
+    // 同机 IP 节点的 ssserver 是宿主机上的模板实例 fleet-ssserver@<端口>（fleet-agent 就是宿主机的）
+    let ip_port: Option<i32> =
+        sqlx::query_scalar("select o.port from machine m join node_outbound o on o.machine_id = m.id where m.id = $1 and m.host_id is not null")
+            .bind(id)
+            .fetch_optional(&st.db)
+            .await?;
+    if let (Some(p), "fleet-ssserver") = (ip_port, unit.as_str()) {
+        unit = format!("fleet-ssserver@{p}");
+    }
     let n = clamp_lines(q.lines);
     let cmd = format!("journalctl -u {unit} -n {n} --no-pager -o short-iso");
     let r = run_on(&st, &a, id, &cmd, 30, "machine.logs").await?;

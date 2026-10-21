@@ -47,6 +47,16 @@ const PROVISION_VPS: &[StepDef] = &[
     s("verify", "出口验收", 300),
     s("activate", "上线", 30),
 ];
+// 同机 IP 节点：SSH 与 agent 都是宿主机的，不做预检引导、不装 agent。先在宿主机上核对 IP 与端口，再装它自己的 ssserver 实例；
+// 收敛 ≈ 推 ssserver 200 + 脚本 120 + 重启 30
+const PROVISION_IP: &[StepDef] = &[
+    s("ip_check", "在宿主机上核对 IP", 240),
+    s("converge", "节点收敛（SS 实例、防火墙）", 600),
+    s("attach", "接入线路机", 60),
+    s("wait_applied", "等待线路机应用", 300),
+    s("verify", "出口验收", 300),
+    s("activate", "上线", 30),
+];
 const PROVISION_PROXY: &[StepDef] = &[
     s("attach", "接入线路机", 60),
     s("wait_applied", "等待线路机应用", 300),
@@ -95,12 +105,14 @@ pub fn defs(kind: &str) -> &'static [StepDef] {
         "provision_vps" => PROVISION_VPS,
         "provision_proxy" => PROVISION_PROXY,
         "provision_relay" => PROVISION_RELAY,
+        "provision_ip" => PROVISION_IP,
         "attach_entry" => ATTACH_ENTRY,
         "move_entry" => MOVE_ENTRY,
         // 恢复已退役的机器：和上架走同一套收敛步骤
         "restore_vps" => PROVISION_VPS,
         "restore_proxy" => PROVISION_PROXY,
         "restore_relay" => PROVISION_RELAY,
+        "restore_ip" => PROVISION_IP,
         "retire" => RETIRE,
         "purge" => PURGE,
         "upgrade_agent" => UPGRADE_AGENT,
@@ -142,11 +154,13 @@ pub fn kind_zh(k: &str) -> &str {
         "provision_vps" => "上架落地机",
         "provision_proxy" => "上架家宽代理",
         "provision_relay" => "上架线路机",
+        "provision_ip" => "上架同机 IP 节点",
         "attach_entry" => "新增入口",
         "move_entry" => "换线路机",
         "restore_vps" => "恢复落地机",
         "restore_proxy" => "恢复家宽代理",
         "restore_relay" => "恢复线路机",
+        "restore_ip" => "恢复同机 IP 节点",
         "retire" => "退役",
         "purge" => "彻底删除",
         "upgrade_agent" => "升级 agent",
@@ -618,13 +632,21 @@ mod tests {
         assert!(check_target("purge", Some("retired")).is_ok());
         assert!(check_target("purge", None).is_ok(), "机器已删：purge 的目标已达成");
         assert!(check_target("provision_vps", None).is_err());
+        // 同机 IP 节点的上架 / 恢复：和别的上架类作业一样要求上架中，失败标上架失败、可以取消
+        assert!(check_target("provision_ip", Some("provisioning")).is_ok() && check_target("provision_ip", Some("active")).is_err());
+        assert!(check_target("restore_ip", Some("provisioning")).is_ok() && check_target("restore_ip", Some("retired")).is_err());
+        assert!(provisions("provision_ip") && provisions("restore_ip") && cancellable("provision_ip") && cancellable("restore_ip"));
+        let keys = |k: &str| defs(k).iter().map(|d| d.key).collect::<Vec<_>>();
+        assert_eq!(keys("provision_ip"), ["ip_check", "converge", "attach", "wait_applied", "verify", "activate"]);
+        assert_eq!(keys("restore_ip"), keys("provision_ip"));
+        assert_eq!((kind_zh("provision_ip"), kind_zh("restore_ip")), ("上架同机 IP 节点", "恢复同机 IP 节点"));
     }
 
     #[test]
     fn outer_timeout_covers_step_timeout() {
         for k in [
-            "provision_vps", "provision_proxy", "provision_relay", "attach_entry", "retire", "purge", "upgrade_agent", "move_entry", "restore_vps",
-            "restore_proxy", "restore_relay",
+            "provision_vps", "provision_proxy", "provision_relay", "provision_ip", "attach_entry", "retire", "purge", "upgrade_agent", "move_entry",
+            "restore_vps", "restore_proxy", "restore_relay", "restore_ip",
         ] {
             for d in defs(k) {
                 assert!(outer_timeout(d).as_secs() as i64 >= d.timeout_s + 120);
