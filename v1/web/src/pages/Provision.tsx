@@ -38,7 +38,7 @@ export function ProvisionPage() {
   const [created, setCreated] = React.useState<{ machine_id: string; job_id: string; name: string }[] | null>(null);
   const check = useProvisionCheck(); const provision = useProvision();
 
-  const items = React.useMemo(() => rows.map((r) => toItem(r, ctx)), [rows, ctx]);
+  const items = React.useMemo(() => rows.map((r) => toItem(r)), [rows]);
   const curSig = JSON.stringify([items, rows.map((r) => r.unresolved)]);
   const stale = results != null && sig !== curSig;
   const passed = results != null && !stale && results.every((r) => r.ok);

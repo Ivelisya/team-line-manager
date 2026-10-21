@@ -1,9 +1,11 @@
 // 确认类对话框：ConfirmDialog（一次确认）与 TypedConfirmDialog（输入指定文字才可确认，用于退役、彻底删除、轮换凭据）。
+// TypedConfirmDialog 的失败原因（如「还不能彻底删除」）留在对话框里显示，不只是一闪而过的通知。
 import * as React from 'react';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogHeader } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/form';
 import { toast } from '@/components/ui/toast';
+import { Note } from './primitives';
 
 interface Base {
   open: boolean; onOpenChange: (o: boolean) => void; title: string; description?: React.ReactNode;
@@ -34,11 +36,12 @@ export function ConfirmDialog({ open, onOpenChange, title, description, confirmL
 export function TypedConfirmDialog({ expected, prompt, ...base }: Base & { expected: string; prompt?: string }) {
   const [text, setText] = React.useState('');
   const [busy, setBusy] = React.useState(false);
-  React.useEffect(() => { if (!base.open) setText(''); }, [base.open]);
+  const [err, setErr] = React.useState<string | null>(null);
+  React.useEffect(() => { if (!base.open) { setText(''); setErr(null); } }, [base.open]);
   const ok = text.trim() === expected && !base.confirmDisabled;
   const run = async () => {
-    setBusy(true);
-    try { await base.onConfirm(); base.onOpenChange(false); } catch (e) { toast.err(e); } finally { setBusy(false); }
+    setBusy(true); setErr(null);
+    try { await base.onConfirm(); base.onOpenChange(false); } catch (e) { setErr(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
   };
   return (
     <Dialog open={base.open} onOpenChange={(o) => !busy && base.onOpenChange(o)}>
@@ -50,6 +53,7 @@ export function TypedConfirmDialog({ expected, prompt, ...base }: Base & { expec
           <Input id="typed-confirm" value={text} onChange={(e) => setText(e.target.value)} autoComplete="off" spellCheck={false} placeholder={expected}
             onKeyDown={(e) => { if (e.key === 'Enter' && ok && !busy) void run(); }} />
         </div>
+        {err && <Note tone="bad">{err}</Note>}
         <DialogFooter>
           <Button onClick={() => base.onOpenChange(false)} disabled={busy}>取消</Button>
           <Button variant={base.danger ? 'danger' : 'primary'} disabled={!ok} loading={busy} onClick={run}>{base.confirmLabel}</Button>

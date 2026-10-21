@@ -61,10 +61,12 @@ export const useIncidents = (state: 'firing' | 'resolved' | 'all' = 'all', offse
 export const useSilences = () => useQuery({ queryKey: ['silences'], queryFn: () => get<Silence[]>('/silences') });
 
 export interface StreamEvent { type: string; id?: string }
-/** 事件对应要失效的查询键（实时流用）。resync 由 stream.ts 处理成全部失效；job 的目标机器服务端会另发 machine 事件，这里不重复 */
+/** 事件对应要失效的查询键（实时流用）。resync 由 stream.ts 处理成全部失效。
+ *  machine_job：作业推进时服务端给目标机器发的，只重取详情（列表的 active_job 由 metrics 推送；改生命周期时服务端另发 machines） */
 export function eventKeys(ev: StreamEvent): unknown[][] {
   switch (ev.type) {
     case 'machine': return [['machine', ev.id], ['machines'], ['overview']];
+    case 'machine_job': return [['machine', ev.id]];
     case 'machines': return [['machine'], ['machines'], ['relays'], ['overview']];
     case 'relay': return [['relays'], ['machines']];
     case 'job': return [['jobs'], ['job', ev.id]];

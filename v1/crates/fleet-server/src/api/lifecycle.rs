@@ -66,7 +66,7 @@ async fn plan_move(tx: &mut Tx<'_>, node_id: Uuid, from: Option<Uuid>, to: Uuid)
         .fetch_optional(&mut **tx)
         .await?;
     if let Some((k,)) = busy {
-        return Ok(Err(format!("「{name}」还有进行中的作业（{k}）：等它结束再换线路机")));
+        return Ok(Err(format!("「{name}」还有进行中的作业（{}）：等它结束再换线路机", jobs::kind_zh(&k))));
     }
     let live: Vec<(Uuid, Uuid, String, String)> = sqlx::query_as(
         "select e.id, e.relay_id, e.lifecycle::text, coalesce(rm.label, '') from entry e join machine rm on rm.id = e.relay_id
@@ -85,12 +85,7 @@ async fn plan_move(tx: &mut Tx<'_>, node_id: Uuid, from: Option<Uuid>, to: Uuid)
         }
     };
     if elc != "active" {
-        let zh = match elc.as_str() {
-            "disabled" => "已停用",
-            "pending" => "还在应用中",
-            o => o,
-        };
-        return Ok(Err(format!("「{name}」在 {from_name} 上的入口{zh}：先启用或等它应用完再换线路机")));
+        return Ok(Err(format!("「{name}」在 {from_name} 上的入口现在是「{}」：先启用或等它应用完再换线路机", crate::entries::state_zh(&elc))));
     }
     if from_relay == to {
         return Ok(Err(format!("目标线路机「{to_name}」就是节点当前所在的线路机")));

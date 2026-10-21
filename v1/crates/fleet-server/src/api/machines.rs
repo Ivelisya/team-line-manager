@@ -301,6 +301,8 @@ pub async fn retire(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, 
     )
     .await?;
     tx.commit().await?;
+    // 在用 → 退役中：列表要变
+    st.emit(Event::Machines);
     st.emit(Event::Job { id: job, target: Some(id) });
     if closed > 0 {
         st.emit(Event::Incidents);
@@ -348,6 +350,9 @@ pub async fn purge(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, A
     }
     if b.confirm.trim() != name {
         return Err(ApiError::bad_request(format!("确认文字不对：请输入「{name}」")));
+    }
+    if let Some(why) = crate::db::purge_blocker(&st.db, id).await? {
+        return Err(ApiError::conflict(why));
     }
     let mut tx = st.db.begin().await?;
     let job = jobs::enqueue(&mut tx, "purge", Some(id), json!({"name": name}), &a.name).await?;

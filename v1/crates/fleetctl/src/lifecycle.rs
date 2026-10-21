@@ -75,7 +75,7 @@ pub fn evacuate(ctx: &Ctx, relay: &str, to: &str, yes: bool, follow: bool) -> an
         if moving.is_empty() {
             outln(format!("{sname} 上没有在用的入口，无需搬空。"));
         } else {
-            let rows: Vec<Vec<String>> = moving.iter().map(|e| vec![st(e, "/node/name"), st(e, "/port"), st(e, "/lifecycle")]).collect();
+            let rows: Vec<Vec<String>> = moving.iter().map(|e| vec![st(e, "/node/name"), st(e, "/port"), cmds::entry_state_cn(e).to_string()]).collect();
             outln(format!("将把 {sname} 上的 {} 个节点换到 {dname}：\n{}", moving.len(), table::render(&["节点", "端口", "入口状态"], &rows)));
             outln(SHARE_HINT);
         }
@@ -142,12 +142,18 @@ pub fn restore(ctx: &Ctx, o: RestoreOpts) -> anyhow::Result<u8> {
     let pv = ctx.c.get_q(&format!("/machines/{id}/restore"), &q)?;
     if !ctx.json {
         let mut rows = vec![
-            ("机器", format!("{}（{}，{}）", st(&pv, "/old_name"), st(&pv, "/kind"), st(&pv, "/ip"))),
+            ("机器", format!("{}（{}，{}）", st(&pv, "/old_name"), cmds::kind_cn(&st(&pv, "/kind")), st(&pv, "/ip"))),
             ("恢复后名字", format!("{} → {}", st(&pv, "/old_name"), st(&pv, "/name"))),
             ("退役原因", st(&pv, "/retired_reason")),
         ];
         if pv["ssh"].is_object() {
-            rows.push(("中控密钥登录", st(&pv, "/ssh/key_login")));
+            let login = match pv["ssh"]["key_login"].as_str().unwrap_or("") {
+                "ok" => "能登录".to_string(),
+                "denied" => "被拒绝（需要 root 密码）".to_string(),
+                "unreachable" => "连不上".to_string(),
+                _ => format!("出错：{}", st(&pv, "/ssh/detail")),
+            };
+            rows.push(("中控密钥登录", login));
             if !pv["ssh"]["host_key"].is_null() {
                 rows.push(("主机指纹", st(&pv, "/ssh/host_key")));
             }

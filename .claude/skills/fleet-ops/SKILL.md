@@ -64,7 +64,7 @@ fleetctl exec --team 团队1 --timeout 30 -- uptime           # 多台并发 4�
 
 ```
 fleetctl retire <机器> [--reason 原因] --yes [--follow]    # 摘入口、停服务，同团队编号前移
-fleetctl purge <机器> --yes                                # 只对已退役；删除机器与遥测，不可恢复
+fleetctl purge <机器> --yes                                # 只对已退役；删除机器与遥测，不可恢复。入口近 35 天的流量还计入另一端未退役的机器时被拒（409，报错给出可删日期），到期再删；不要为绕过它去退役对端
 fleetctl entry rotate <入口> --yes                         # 旧分享链接立即失效
 fleetctl entry disable <入口> --yes
 fleetctl upgrade-agent <机器> | --all --yes                # 重启 agent

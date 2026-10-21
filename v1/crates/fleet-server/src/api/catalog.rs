@@ -55,11 +55,7 @@ pub async fn create_team(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJs
         .bind(&name)
         .bind(b.sort_order.unwrap_or(0))
         .execute(&mut *tx)
-        .await
-        .map_err(|e| match ApiError::from(e) {
-            x if x.code == "conflict" => ApiError::conflict("已有同名团队"),
-            x => x,
-        })?;
+        .await?;
     audit(&mut tx, &a.name, "team.create", "team", Some(id), json!({"name": name})).await?;
     tx.commit().await?;
     st.emit(Event::Catalog);
@@ -137,16 +133,6 @@ pub struct ProviderIn {
 /// 空白当没填
 fn blank(v: &Option<String>) -> Option<&str> { v.as_deref().map(str::trim).filter(|s| !s.is_empty()) }
 
-/// 名称 / 缩写撞了唯一约束
-fn provider_conflict(e: sqlx::Error) -> ApiError {
-    let c = e.as_database_error().and_then(|d| d.constraint()).map(String::from);
-    match (ApiError::from(e), c.as_deref()) {
-        (x, Some("provider_name_key")) if x.code == "conflict" => ApiError::conflict("已有同名供应商"),
-        (x, Some("provider_code_key")) if x.code == "conflict" => ApiError::conflict("已有同缩写的供应商"),
-        (x, _) => x,
-    }
-}
-
 pub async fn create_provider(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<ProviderIn>) -> ApiResult<Json<Value>> {
     let id = new_id();
     let name = clean_name(b.name.as_deref().unwrap_or(""), "供应商名")?;
@@ -163,8 +149,7 @@ pub async fn create_provider(a: Actor, State(st): State<AppState>, ApiJson(b): A
         .bind(&code)
         .bind(b.panel_url.as_ref().and_then(blank))
         .execute(&mut *tx)
-        .await
-        .map_err(provider_conflict)?;
+        .await?;
     if let Some(tz) = tz {
         sqlx::query("update provider set timezone = $2 where id = $1").bind(id).bind(tz).execute(&mut *tx).await?;
     }
@@ -206,8 +191,7 @@ pub async fn patch_provider(a: Actor, State(st): State<AppState>, Path(id): Path
         .bind(&code)
         .bind(&panel_url)
         .execute(&mut *tx)
-        .await
-        .map_err(provider_conflict)?;
+        .await?;
     // 时区清空 = 回到列默认值；已上架机器的账单时区是当时抄过去的，这里不跟着改
     let (tz,): (String,) = match &tz {
         Some(tz) => sqlx::query_as("update provider set timezone = $2 where id = $1 returning timezone").bind(id).bind(tz),

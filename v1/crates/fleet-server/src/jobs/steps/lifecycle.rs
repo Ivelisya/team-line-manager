@@ -25,7 +25,7 @@ pub(super) async fn attach_new(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         .await?;
     match cur.as_ref().map(|(l,)| l.as_str()) {
         Some("active") => {}
-        Some(l) => bail!("旧入口现在是「{l}」，不能再换线路机（旧作业不会自动复活，请重新发起）"),
+        Some(l) => bail!("旧入口现在是「{}」，不能再换线路机（旧作业不会自动复活，请重新发起）", entries::state_zh(l)),
         None => bail!("旧入口已经不存在"),
     }
     let dup: Option<(Uuid,)> = sqlx::query_as("select id from entry where node_id = $1 and relay_id = $2 and lifecycle <> 'removed'")
@@ -65,7 +65,7 @@ pub(super) async fn detach_old(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     }
     let nl: Option<String> = sqlx::query_scalar("select lifecycle::text from entry where id = $1").bind(new).fetch_optional(&c.st.db).await?;
     if nl.as_deref() != Some("active") {
-        bail!("新入口现在是「{}」，还不能摘旧入口", nl.as_deref().unwrap_or("不存在"));
+        bail!("新入口现在是「{}」，还不能摘旧入口", nl.as_deref().map_or("不存在", entries::state_zh));
     }
     let cur: Option<String> = sqlx::query_scalar("select lifecycle::text from entry where id = $1").bind(old).fetch_optional(&c.st.db).await?;
     match cur.as_deref() {

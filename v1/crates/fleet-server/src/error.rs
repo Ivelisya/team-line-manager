@@ -64,6 +64,9 @@ impl From<sqlx::Error> for ApiError {
                         Some("entry_node_relay_live") => "这个节点在这台线路机上已经有入口",
                         Some("job_one_active_per_target") => "这台机器还有进行中的作业",
                         Some("plan_provider_id_name_key") => "这个供应商下已有同名套餐",
+                        Some("team_name_key") => "已有同名团队",
+                        Some("provider_name_key") => "已有同名供应商",
+                        Some("provider_code_key") => "已有同缩写的供应商",
                         _ => "数据冲突",
                     };
                     return Self::conflict(m);

@@ -644,6 +644,10 @@ async fn purge(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     if lc != "retired" {
         bail!("机器不是已退役状态");
     }
+    // 排队期间对端可能被恢复了：执行前再查一次
+    if let Some(why) = crate::db::purge_blocker(&c.st.db, id).await? {
+        bail!("{why}");
+    }
     let es: Vec<(Uuid,)> = sqlx::query_as("select id from entry where node_id = $1 or relay_id = $1").bind(id).fetch_all(&c.st.db).await?;
     let eids: Vec<Uuid> = es.into_iter().map(|(e,)| e).collect();
     let mut n = purge_partitioned(c, id, &eids).await?;
@@ -671,7 +675,7 @@ async fn purge(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     // 其余（令牌、agent 状态、账单、续费、出站、线路机参数）随 machine 级联删除
     sqlx::query("delete from machine where id = $1").bind(id).execute(&mut *tx).await?;
     tx.commit().await?;
-    // 小时流量删了：对端机器的流量 / 周期已用缓存跟着作废
+    // 小时流量删了（只剩 35 天前的、或对端已退役）：流量缓存跟着作废
     c.st.live.rolled_up();
     Ok(Outcome::Done(json!({"rows_deleted": n, "entries": eids.len()})))
 }

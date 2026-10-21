@@ -1,7 +1,7 @@
-//! 实时指标推送：在用机器视图里随上报和时间变化的字段（主机读数、最近上报、agent 状态、健康、探测、流量、到期天数、总览），
+//! 实时指标推送：在用机器视图里随上报和时间变化的字段（主机读数、最近上报、agent 状态、健康、探测、流量、到期天数、进行中的作业、总览），
 //! 和上一次推送逐字段比对，只把变了的字段合成一条 `metrics` 消息广播给实时流；前端直接写进查询缓存，不再整表重取。
 //!
-//! 有新上报时最多每 3 s 比对一次；没有上报也每 30 s 比对一次（离线判定、到期天数、维护窗口随时间变）。没有订阅者时不做。
+//! 有新上报或作业推进时最多每 3 s 比对一次；没有上报也每 30 s 比对一次（离线判定、到期天数、维护窗口随时间变）。没有订阅者时不做。
 //! 视图走 `views::live` 的同一份缓存：REST 拿到的快照不会比上一次推送的基线更旧，前端在快照上叠加增量即可。
 
 use crate::state::{AppState, Event};
@@ -19,7 +19,7 @@ const EVERY: Duration = Duration::from_secs(3);
 const SWEEP: Duration = Duration::from_secs(30);
 
 /// 机器级字段（消息里的键名）。host、tcp/egress 用定长数组（每条上报都变，省字节），其余与 REST 同形
-const M_FIELDS: [&str; 8] = ["host", "seen", "agent", "health", "maintenance", "due_days", "removed_traffic", "quota"];
+const M_FIELDS: [&str; 9] = ["host", "seen", "agent", "health", "maintenance", "due_days", "removed_traffic", "quota", "active_job"];
 const E_FIELDS: [&str; 3] = ["tcp", "egress", "traffic"];
 
 type Fields = Vec<Box<RawValue>>;
@@ -143,6 +143,7 @@ fn machine_fields(m: &MachineView) -> Fields {
         raw(&m.subscription.as_ref().map(|s| s.due_days)),
         raw(&m.removed_traffic),
         raw(&m.quota),
+        raw(&m.active_job),
     ]
 }
 
