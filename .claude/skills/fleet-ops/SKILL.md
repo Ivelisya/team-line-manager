@@ -28,7 +28,7 @@ fleetctl --json <命令>      # AI 一律加 --json，输出一行 JSON
 | 机器列表 | `fleetctl --json ls [--team 团队1] [--kind relay\|vps\|proxy] [--status down] [--retired]` |
 | 一台机器的详情与健康原因 | `fleetctl --json show <机器>` |
 | 指标曲线 | `fleetctl --json series <机器> --range 1h\|6h\|24h\|7d [--metric host\|traffic\|probe]` |
-| 告警 / 确认告警 | `fleetctl --json incidents [--all]`、`fleetctl ack <id>` |
+| 告警 / 确认告警 | `fleetctl --json incidents [--all] [--machine <机器>]`、`fleetctl ack <id>` |
 | 入口列表 | `fleetctl --json entries [<机器>]` |
 | 作业 | `fleetctl --json jobs [--active]`、`fleetctl job <id>`、`fleetctl job <id> --follow` |
 | 审计 | `fleetctl --json audit [--target <机器>] [--limit 50] [--before <上一页最后一条的 id>]` |

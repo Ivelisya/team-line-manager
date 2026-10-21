@@ -30,7 +30,7 @@
 | 一台机器详情、为什么不健康 | `fleetctl show 团队1-06`（看「健康原因」） |
 | 最近一天的 CPU/内存/磁盘/网速 | `fleetctl series 团队1-06 --range 24h` |
 | 入口的流量与探测 | `fleetctl series 团队1-06 --metric traffic` / `--metric probe` |
-| 告警列表、确认 | `fleetctl incidents`、`fleetctl ack <id>` |
+| 告警列表、确认 | `fleetctl incidents`、`fleetctl ack <id>`；一台机器的告警历史 `fleetctl incidents --all --machine 团队1-06` |
 | 服务日志 | `fleetctl logs 团队1-06 --unit fleet-agent --lines 300`（unit：fleet-agent / fleet-xray / ssserver） |
 | 中控自己的日志 | `fleetctl server-logs --lines 300` |
 | 在一台机器上执行命令 | `fleetctl exec 团队1-06 -- systemctl status fleet-agent` |

@@ -1293,6 +1293,40 @@ async fn incidents_list_pages_with_total() {
     assert_eq!(page("state=resolved").await["total"].as_i64(), Some(2));
 }
 
+/// 按机器筛选（抽屉的「最近告警」）：subject_id 与 state、limit、offset 组合，total 也只数这台的
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn incidents_filter_by_subject() {
+    let t = setup().await;
+    let (a, b) = (Uuid::now_v7(), Uuid::now_v7());
+    for (subject, state, mins) in [(a, "resolved", 1), (a, "firing", 2), (a, "resolved", 3), (b, "firing", 4)] {
+        sqlx::query(&format!(
+            "insert into incident (id, rule, subject_id, severity, state, summary, opened_at, resolved_at) values ($1, 'agent_offline', $2, 'warning', '{state}', 's',
+             now() - interval '{mins} minutes', case when '{state}' = 'resolved' then now() end)"
+        ))
+        .bind(Uuid::now_v7())
+        .bind(subject)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    }
+    let get = |q: String| {
+        let t = &t;
+        async move { t.get(&format!("/api/v1/incidents?{q}")).await }
+    };
+    let subjects = |v: &Value| v["items"].as_array().unwrap().iter().map(|i| i["subject_id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+
+    let p1 = get(format!("subject_id={a}&state=all&limit=2")).await;
+    assert_eq!((p1["total"].as_i64(), p1["next_offset"].as_i64()), (Some(3), Some(2)));
+    assert_eq!(subjects(&p1), [a.to_string(), a.to_string()]);
+    assert_eq!((p1["items"][0]["state"].as_str(), p1["items"][1]["state"].as_str()), (Some("firing"), Some("resolved")), "进行中在前");
+    let p2 = get(format!("subject_id={a}&state=all&limit=2&offset=2")).await;
+    assert_eq!((p2["total"].as_i64(), p2["next_offset"].is_null(), subjects(&p2)), (Some(3), true, vec![a.to_string()]));
+    assert_eq!(get(format!("subject_id={a}")).await["total"].as_i64(), Some(1), "默认只看进行中");
+    assert_eq!(get(format!("subject_id={b}&state=resolved")).await["total"].as_i64(), Some(0));
+    assert_eq!(get("state=all".into()).await["total"].as_i64(), Some(4), "不带 subject_id 照旧");
+    assert_eq!(t.req("GET", "/api/v1/incidents?subject_id=x", None, None).await.0, StatusCode::BAD_REQUEST);
+}
+
 // ── 访问汇总：agent 断网很久后补传的记录也要汇总进去 ──────────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
