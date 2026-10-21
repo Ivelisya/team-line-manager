@@ -2,6 +2,7 @@ import * as React from 'react';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { X } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { durMs } from '@/lib/motion';
 import { IconButton } from './button';
 
 export const Dialog = DialogPrimitive.Root;
@@ -21,9 +22,8 @@ const bounceWhenKept = (cb: InteractHandler, panel: React.RefObject<HTMLDivEleme
   const before = e.defaultPrevented;
   cb?.(e);
   if (before || !e.defaultPrevented || e.detail.originalEvent.type !== 'pointerdown') return;
-  const root = getComputedStyle(document.documentElement);
-  const ms = parseFloat(root.getPropertyValue('--dur-2'));
-  if (ms > 0) panel.current?.animate([{ scale: '1' }, { scale: '1.02' }, { scale: '1' }], { duration: ms, easing: root.getPropertyValue('--ease-out').trim() });
+  const ms = durMs('--dur-2');
+  if (ms > 0) panel.current?.animate([{ scale: '1' }, { scale: '1.02' }, { scale: '1' }], { duration: ms, easing: getComputedStyle(document.documentElement).getPropertyValue('--ease-out').trim() });
 };
 
 // 毛玻璃遮罩（对话框、命令面板）开着时在 <html> 上挂 data-overlay，extras.css 据此停掉下面一层（页面、抽屉）的循环动画和读数过渡，

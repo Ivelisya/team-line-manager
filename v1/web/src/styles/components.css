@@ -19,19 +19,22 @@
 .btn-md { height: var(--h-md); padding: 0 var(--sp-12); }
 .btn-sm { height: var(--h-sm); padding: 0 var(--sp-10); font-size: var(--fs-label); line-height: var(--lh-label); }
 .btn-primary { background: var(--accent-solid); color: var(--on-accent); box-shadow: var(--shadow-btn); }
-.btn-primary:hover:not(:disabled) { background: var(--accent-strong); }
 .btn-secondary { background: var(--surface); border-color: var(--line-strong); color: var(--fg); }
-.btn-secondary:hover:not(:disabled), .btn-secondary[aria-expanded="true"] { background: linear-gradient(var(--hover), var(--hover)), var(--surface); }
+.btn-secondary[aria-expanded="true"] { background: linear-gradient(var(--hover), var(--hover)), var(--surface); } /* 展开着的下拉触发按钮：同悬停底 */
 .btn-quiet { color: var(--fg-2); }
-.btn-quiet:hover:not(:disabled) { background: var(--hover); color: var(--fg); }
 .btn-text { height: var(--h-sm); padding: 0 var(--sp-6); color: var(--fg-2); font-size: var(--fs-label); line-height: var(--lh-label); }
-.btn-text:hover:not(:disabled) { color: var(--fg); text-decoration: underline; text-underline-offset: 3px; }
 .btn-link { height: auto; padding: 0; border: 0; color: var(--accent); }
-.btn-link:hover { text-decoration: underline; text-underline-offset: 3px; }
 .btn-danger { background: var(--bad-solid); color: #fff; }
-.btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--bad-solid) 86%, black); }
 .btn-outline-danger { background: var(--surface); color: var(--bad-text); border-color: color-mix(in srgb, var(--bad) 35%, var(--line)); }
-.btn-outline-danger:hover:not(:disabled) { background: var(--bad-bg); border-color: color-mix(in srgb, var(--bad) 50%, var(--line)); }
+@media (hover: hover) {
+  .btn-primary:hover:not(:disabled) { background: var(--accent-strong); }
+  .btn-secondary:hover:not(:disabled) { background: linear-gradient(var(--hover), var(--hover)), var(--surface); }
+  .btn-quiet:hover:not(:disabled) { background: var(--hover); color: var(--fg); }
+  .btn-text:hover:not(:disabled) { color: var(--fg); text-decoration: underline; text-underline-offset: 3px; }
+  .btn-link:hover { text-decoration: underline; text-underline-offset: 3px; }
+  .btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--bad-solid) 86%, black); }
+  .btn-outline-danger:hover:not(:disabled) { background: var(--bad-bg); border-color: color-mix(in srgb, var(--bad) 50%, var(--line)); }
+}
 .btn-block { width: 100%; }
 
 .icon-btn {
@@ -40,7 +43,8 @@
   border: 0; border-radius: var(--r-control); background: transparent; color: var(--fg-2); cursor: pointer;
   transition: background-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out);
 }
-.icon-btn:hover:not(:disabled), .icon-btn[aria-expanded="true"], .icon-btn[aria-pressed="true"] { background: var(--hover); color: var(--fg); }
+.icon-btn[aria-expanded="true"], .icon-btn[aria-pressed="true"] { background: var(--hover); color: var(--fg); }
+@media (hover: hover) { .icon-btn:hover:not(:disabled) { background: var(--hover); color: var(--fg); } }
 .icon-btn:disabled { opacity: 0.45; cursor: default; }
 .icon-btn-sm { width: var(--h-sm); height: var(--h-sm); }
 .icon-btn-lg { width: var(--h-lg); height: var(--h-lg); }
@@ -60,7 +64,7 @@
   font: var(--fw-medium) var(--fs-body) / var(--lh-body) var(--font-sans); color: var(--fg-2);
   transition: color var(--dur-1) var(--ease-std), background-color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out);
 }
-.seg-item:hover:not([data-state="on"]) { color: var(--fg); background: var(--hover); }
+@media (hover: hover) { .seg-item:hover:not([data-state="on"]) { color: var(--fg); background: var(--hover); } }
 .seg-item[data-state="on"] { color: var(--fg); }
 /* 选中胶囊：Segmented 在当前项里放一个共享 layoutId 的元素，motion 让它在项之间滑动；z-index:-1 配 isolation 让它垫在文字下面。
    按下时胶囊在项里面，跟着一起缩 */
@@ -78,7 +82,7 @@
   font: var(--fw-medium) var(--fs-body) / var(--lh-body) var(--font-sans); color: var(--fg-2);
   transform-origin: 50% 100%; transition: color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out);
 }
-.tab:hover { color: var(--fg); }
+@media (hover: hover) { .tab:hover { color: var(--fg); } }
 .tab[data-state="active"] { color: var(--fg); } /* 不再随选中加粗：加粗会让页签变宽、把后面的页签顶开 */
 /* 下划线不跟着缩：页签以底边中点为原点缩放（下划线不上移），按下时下划线横向放回原宽（文末「交互状态」）。
    用独立的 scale 属性，motion 滑动下划线写的是 transform，互不覆盖 */
@@ -150,7 +154,7 @@
 .beat-main { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .beat-win { flex: none; font-size: var(--fs-micro); line-height: var(--lh-micro); }
 .beat-cells { display: flex; gap: var(--beat-gap); width: 100%; overflow: hidden; height: var(--beat-h); }
-.beat-cells > i { display: block; flex: 1 1 0; min-width: 2px; max-width: var(--beat-w-max); height: var(--beat-h); background: var(--line); border-radius: 2px; transition: background-color var(--dur-data) var(--ease-std); }
+.beat-cells > i { display: block; flex: 1 1 0; min-width: 2px; max-width: var(--beat-w-max); height: var(--beat-h); background: var(--line); border-radius: 2px; } /* 换色不过渡（同 .cells） */
 .beat-cells > i[data-t="ok"] { background: var(--latency-ok); }
 .beat-cells > i[data-t="warn"] { background: var(--warn); }
 .beat-cells > i[data-t="bad"] { background: var(--bad); }
@@ -216,7 +220,7 @@
   transition: border-color var(--dur-1) var(--ease-std), box-shadow var(--dur-1) var(--ease-std);
 }
 .input::placeholder, .textarea::placeholder { color: var(--fg-3); }
-.select-trigger:hover:not(:disabled, :focus-visible, [data-state="open"]) { border-color: color-mix(in srgb, var(--line-strong), var(--fg) 12%); }
+@media (hover: hover) { .select-trigger:hover:not(:disabled, :focus-visible, [data-state="open"]) { border-color: color-mix(in srgb, var(--line-strong), var(--fg) 12%); } }
 .input:focus, .textarea:focus, .select-trigger:focus-visible, .select-trigger[data-state="open"] { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-halo); }
 .input:disabled, .textarea:disabled, .select-trigger:disabled { background: var(--sunken); color: var(--fg-3); cursor: default; }
 .input[aria-invalid="true"] { border-color: var(--bad); }
@@ -239,6 +243,10 @@
 .switch[data-state="checked"] { background: var(--accent-solid); }
 .switch > span { display: block; width: 16px; height: 16px; border-radius: 999px; background: #fff; box-shadow: var(--shadow-btn); transition: transform var(--dur-2) var(--ease-out), width var(--dur-2) var(--ease-out); } /* 圆钮是移动到位：进场曲线；按住拉长见文末「交互状态」 */
 .switch[data-state="checked"] > span { transform: translateX(14px); }
+/* 禁用（如保存中的开关）：同图标按钮半透明、不再像能点；在 .check-row 里时后面的说明文字一起调淡 */
+.checkbox:disabled, .switch:disabled { opacity: 0.45; cursor: default; }
+.check-row > :disabled ~ span { opacity: 0.45; }
+.check-row:has(> :disabled) { cursor: default; }
 
 /* ========== 浮层：对话框、抽屉、菜单、提示、toast ==========
    进出场三类（关键帧只写起点或终点，另一端取元素自身的样式）：
@@ -362,11 +370,11 @@
 .toast-title { font-weight: var(--fw-semibold); }
 .toast-text { color: var(--fg-2); font-size: var(--fs-label); line-height: var(--lh-label); }
 .toast-action { margin-top: var(--sp-4); padding: 0; border: 0; background: none; cursor: pointer; font: var(--fw-medium) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--accent); }
-.toast-action:hover { text-decoration: underline; text-underline-offset: 3px; }
+@media (hover: hover) { .toast-action:hover { text-decoration: underline; text-underline-offset: 3px; } }
 .toast-count { flex: none; align-self: center; padding: 0 var(--sp-6); border-radius: var(--r-pill); background: var(--sunken); color: var(--fg-2); font-size: var(--fs-micro); line-height: 18px; }
 .toast-x { position: relative; flex: none; width: 22px; height: 22px; margin: -2px -4px 0 0; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--fg-3); cursor: pointer; transition: background-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out); }
 .toast-x::after { content: ""; position: absolute; inset: -6px; } /* 可点范围扩到 34px，外观不变（仍在通知的内边距里，不被裁） */
-.toast-x:hover { background: var(--hover); color: var(--fg); }
+@media (hover: hover) { .toast-x:hover { background: var(--hover); color: var(--fg); } }
 .toast-timer { position: absolute; left: 0; bottom: 0; height: 2px; width: 100%; background: var(--fg-3); opacity: 0.45; transform-origin: left; animation: toast-timer linear forwards; }
 .toast[data-tone="ok"] .toast-timer { background: var(--ok); }
 .toast[data-tone="bad"] .toast-timer { background: var(--bad); }
@@ -384,7 +392,6 @@
   font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2);
 }
 .panel .pager { padding: var(--sp-6) var(--card-pad); border: 0; border-top: 1px solid var(--line); border-radius: 0; background: color-mix(in srgb, var(--sunken) 55%, var(--surface)); }
-.pager .num { font-family: var(--font-num); font-variant-numeric: var(--num-variant); }
 .pager-range { display: inline-flex; align-items: baseline; gap: var(--sp-4); white-space: nowrap; }
 .pager-range > .num { color: var(--fg); font-weight: var(--fw-medium); }
 .pager-of { color: var(--fg-3); }
@@ -403,7 +410,7 @@
    行（菜单项、下拉项、命令项、表格行、导航项、作业项、树节点、权限行）不缩放：悬停底上叠一层 --state-press。
    禁用的按钮不响应（:not(:disabled)）；禁用的菜单项是 pointer-events: none，不会按下。导航当前项的底是渐变（粉紫），不叠 */
 :is(.icon-btn, .top-btn, .copy-btn, .toast-x, .pol-chev, .cal-day):active:not(:disabled) { scale: var(--press-sm); transition-duration: var(--dur-press); }
-:is(.btn, .fchip, .seg-item, .tab, .chart-legend-item, .cmd-trigger, .top-alert, .nc-name, .rc-name):active:not(:disabled) { scale: var(--press-md); transition-duration: var(--dur-press); }
+:is(.btn, .fchip, .seg-item, .tab, .chart-legend-item, .cmd-trigger, .top-alert, .nc-name):active:not(:disabled) { scale: var(--press-md); transition-duration: var(--dur-press); }
 .tab:active:not(:disabled) .tab-ind { scale: calc(1 / var(--press-md)) 1; transition-duration: var(--dur-press); }
 :is(.flow-trend, .flow-foot, .nc-quota, .rc-rings, a.stat):active:not(:disabled) { scale: var(--press-lg); transition-duration: var(--dur-press); }
 :is(.menu-item, .select-item, .cmd-item, .job-item, .jobs-pop-item, .pol-item, .scope-row):active, .nav-item:active:not([aria-current="page"]), .dt tr.is-link:active { background-image: var(--state-press); }

@@ -5,6 +5,7 @@ import { useCallback } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { del, get, patch, post, put } from './api';
 import { collator, makeDefaultCompare } from './sort';
+import { quotaTight } from './derive';
 import type { ApiKey, Incident, Job, JobSummary, Paged, JobLog, MachineView, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RestoreBody, RestorePreview, MoveResult, EvacuateResult, ProbeBeats, SeriesResp, Silence, Subscription, Team, AuditEntry, NotifyChannel, NotifyLogEntry } from './types';
 
 export const useMe = () => useQuery({ queryKey: ['me'], queryFn: () => get<{ username: string }>('/auth/me'), retry: false, staleTime: 5 * 60_000 });
@@ -37,6 +38,8 @@ function useMachinesPicked<T>(pick: (m: MachineView) => T) {
 }
 export const useMachineBriefs = () => useMachinesPicked(brief);
 export const useMachineLabels = () => useMachinesPicked(label);
+/** 首页 KPI「流量额度」：同一份机器列表缓存，只取吃紧的台数与最紧的一台；结果做结构共享，没变时首页总览不跟着推送重渲染 */
+export const useQuotaTight = () => useQuery({ ...machinesQuery('live'), select: quotaTight });
 /** 按键等“用时才读”的场景：直接读缓存里的机器列表（同样的默认顺序），不订阅、不触发请求 */
 export function readMachines(qc: QueryClient): MachineView[] | undefined {
   const raw = qc.getQueryData<MachineView[]>(['machines', 'live']);

@@ -1,10 +1,11 @@
 // 首页上半部分：大圆角浅灰分区（HomeSection）+「监控总览」——问候与一句话状态、8 张 KPI 卡、集群状态面板。
 // 集群状态：在线率大读数 + 格条、在线/离线/总计、状态胶囊；网卡速率（实时）+ 上行 / 下行两张小折线（全站速率环形缓冲：开场垫近 30 分钟历史，之后实时流喂，见 lib/live）。
+// 网卡速率只在集群状态里出现（KPI 原先也有一张，与它重复），KPI 那一格换成流量额度
 import * as React from 'react';
-import { Activity, AlertTriangle, ArrowDown, ArrowUp, CalendarClock, CircleDollarSign, CloudUpload, Gauge, LayoutDashboard, Server, TrendingUp, Waypoints } from 'lucide-react';
+import { Activity, AlertTriangle, ArrowDown, ArrowUp, CalendarClock, CircleDollarSign, CloudUpload, Database, LayoutDashboard, Server, TrendingUp, Waypoints } from 'lucide-react';
 import type { Overview } from '@/lib/types';
 import * as F from '@/lib/format';
-import { useMe } from '@/lib/queries';
+import { useMe, useQuotaTight } from '@/lib/queries';
 import { useFleetSeries } from '@/lib/live';
 import { cn } from '@/lib/utils';
 import { CountUp, DotCount, Num, Stat } from '@/components/app/primitives';
@@ -29,19 +30,19 @@ function statusLine(o: Overview | undefined, issues: number): string {
   if (!o) return '正在汇总机器状态…';
   const due = o.due_7d ? `，${o.due_7d} 台 7 天内到期` : '';
   const fail = o.failed ? `，${o.failed} 台上架失败` : '';
-  if (issues) return `有 ${issues} 台机器故障或降级${fail}${due}，点“故障与降级”查看告警。`;
+  if (issues) return `有 ${issues} 台机器故障或降级${fail}${due}，点「故障与降级」查看告警。`;
   if (o.failed) return `${o.failed} 台机器上架失败${due}，可在作业页重试或在详情里退役。`;
   return `全部 ${o.nodes.total + o.relays.total} 台机器运行良好${due}，监控数据持续采集中。`;
 }
 
-/** memo：首页因机器列表推送、筛选、开关抽屉重渲染时，总览只在 overview 数据变了才重画（它的数据由 metrics 推送单独更新） */
+/** memo：首页因机器列表推送、筛选、开关抽屉重渲染时，总览只在 overview 数据（metrics 推送单独更新）或额度吃紧的结果变了才重画 */
 export const OverviewSection = React.memo(function OverviewSection({ o, loading }: { o: Overview | undefined; loading: boolean }) {
   const me = useMe().data;
+  const qt = useQuotaTight().data;
   const nodes = o?.nodes; const relays = o?.relays;
   const issues = (nodes?.down ?? 0) + (nodes?.degraded ?? 0) + (relays?.down ?? 0) + (relays?.degraded ?? 0);
   const tr = o?.traffic_month;
   const trTotal = tr ? tr.up + tr.down : 0; const trScale = F.bytesScale(trTotal);
-  const rateTotal = o ? o.net_rx_bps + o.net_tx_bps : 0; const rateSc = F.rateScale(rateTotal);
   const [cost0, ...costMore] = o?.monthly_cost ?? [];
   return (
     <HomeSection className="hsec-hero" icon={<LayoutDashboard />} label="监控总览"
@@ -58,9 +59,9 @@ export const OverviewSection = React.memo(function OverviewSection({ o, loading 
             caption={costMore.length ? `另有 ${costMore.map((c) => F.money(c.cents, c.currency)).join(' + ')}（不同币种分开计）` : '在用机器按月折算'} />
           <Stat loading={loading} tone="sky" icon={<TrendingUp />} label="本月业务流量" value={tr ? <CountUp value={trTotal} format={(n) => F.inScale(n, trScale)} /> : '—'} unit={tr ? trScale.u : undefined}
             caption={tr && <><span>下载 <Num f={F.bytes(tr.down)} /></span><span>上传 <Num f={F.bytes(tr.up)} /></span></>} />
-          <Stat loading={loading} tone="violet" icon={<Gauge />} label="网卡速率" value={o ? <CountUp value={rateTotal} format={(n) => F.inScale(n, rateSc)} /> : '—'} unit={o ? rateSc.u : undefined}
-            caption={o && <><span>下行 <Num f={F.rate(o.net_rx_bps)} /></span><span>上行 <Num f={F.rate(o.net_tx_bps)} /></span></>} />
-          <Stat loading={loading} tone="blue" icon={<CloudUpload />} label="上架中 · 退役中" value={o ? <CountUp value={o.provisioning + o.retiring} /> : '—'} unit="台" to="/jobs" caption={o && `上架 ${o.provisioning} · 退役 ${o.retiring}`} />
+          <Stat loading={loading} tone="violet" icon={<Database />} label="流量额度" value={<CountUp value={qt?.n} />} unit={qt ? '台' : undefined}
+            caption={qt && (qt.top ? <span className="stat-who">最紧<span className="ellipsis">{qt.top.name}</span>已用<b className="num">{qt.top.pct}%</b></span> : '都在 80% 以下')} />
+          <Stat loading={loading} tone="blue" icon={<CloudUpload />} label="上架中 · 退役中" value={o ? <CountUp value={o.provisioning + o.retiring} /> : '—'} unit="台" to="/jobs" caption={o && <span>上架 <b className="num">{o.provisioning}</b> · 退役 <b className="num">{o.retiring}</b></span>} />
         </div>
         <ClusterPanel o={o} />
       </div>
@@ -98,7 +99,7 @@ function ClusterPanel({ o }: { o: Overview | undefined }) {
       </div>
       <div className="cluster-box">
         <div className="cluster-row">
-          <span className="cluster-big"><span className="num">{o ? <CountUp value={now} format={(n) => F.inScale(n, sc)} /> : '—'}</span><small>{o ? sc.u : ''} 网卡速率（实时）</small></span>
+          <span className="cluster-big"><span className="num">{o ? F.inScale(now, sc) : '—'}</span><small>{o ? sc.u : ''} 网卡速率（实时）</small></span>
         </div>
         <div className="cluster-charts">
           <div className="cchart" data-dir="up">

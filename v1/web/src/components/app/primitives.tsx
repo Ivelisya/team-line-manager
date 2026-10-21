@@ -101,8 +101,9 @@ export function CountUp({ value, format }: { value: number | null | undefined; f
   if (value == null) return <>—</>;
   return <>{format ? format(v) : Math.round(v)}</>;
 }
+/** KPI 说明行里的「● 降级 3」：数字的字重、颜色同说明行里的其它数字（home.css .stat-cap .num） */
 export const DotCount = ({ tone, n, label }: { tone: Tone; n: number; label: string }) => (
-  <span className="dotline"><span className="dot" data-tone={tone} />{label} <b className="num" style={{ fontWeight: 600, color: 'var(--fg)' }}>{n}</b></span>
+  <span className="dotline"><span className="dot" data-tone={tone} />{label} <b className="num">{n}</b></span>
 );
 
 /** 表头排序：首次点击按 first 的方向（数值列多为先降序，名称、到期先升序），再点反向，第三次回到默认顺序（null） */

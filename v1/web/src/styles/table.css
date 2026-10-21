@@ -1,6 +1,11 @@
 /* DataTable：固定列宽（table-layout: fixed + colgroup），长文字省略，数字 tabular。移植自原版 table.css */
 
 .table-wrap { overflow-x: auto; min-width: 0; }
+/* 机器表（MachineGrid）放得下、不用横滑时组件写上 data-fit：overflow-x: clip 不建滚动容器，表头吸顶在顶栏下方，一百多行往下滚列名一直在。
+   滚动容器里的 sticky 只相对容器本身，容器又不竖向滚动，表头就跟着滚走了。窄屏仍横滑，此时不吸顶 */
+.table-wrap[data-fit] { overflow-x: clip; }
+.table-wrap[data-fit] thead th { position: sticky; top: var(--topbar-h); z-index: var(--z-sticky); }
+.table-wrap[data-fit] tr.is-link { scroll-margin-top: var(--thead-h); } /* 键盘逐行移动焦点时，行不躲在吸顶的表头下面（页面的 scroll-padding 只让出顶栏） */
 .dt { width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 0; font-size: var(--fs-body); line-height: var(--lh-body); color: var(--fg); }
 .dt th, .dt td { padding: var(--cell-py) var(--cell-px); text-align: left; vertical-align: middle; border-bottom: 1px solid var(--line); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dt th:first-child, .dt td:first-child { padding-left: var(--cell-edge); }
@@ -19,12 +24,12 @@
 .dt .sub { display: block; font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dt .cell-main { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dt tr.is-link { cursor: pointer; transition: background-color var(--dur-1) var(--ease-std); }
-.dt tr.is-link:hover { background-color: var(--hover); } /* 只写底色：按下时叠的那层 background-image（components.css「交互状态」）不能被简写清掉，下同 */
+@media (hover: hover) { .dt tr.is-link:hover { background-color: var(--hover); } } /* 只写底色：按下时叠的那层 background-image（components.css「交互状态」）不能被简写清掉，下同 */
 .dt tr.is-current { background: var(--selected); }
 .dt tr.is-current td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
 .dt tr.is-retired td { color: var(--fg-2); }
 .dt .chev { width: 36px; padding-left: 0; text-align: right; color: var(--fg-3); }
-.dt tr.is-link:hover .chev { color: var(--fg-2); }
+@media (hover: hover) { .dt tr.is-link:hover .chev { color: var(--fg-2); } }
 /* 排序按钮撑满整格：高度到底线（减 1px）、宽度盖满内容区并往两侧各伸进单元格内边距 6px（文字位置不变），
    整格都能点；焦点环内收（components.css「交互状态」）画在伸出来的这圈里，不被 th 的 overflow 裁掉 */
 .th-sort {
@@ -34,7 +39,7 @@
   transition: color var(--dur-1) var(--ease-std);
 }
 .dt th.r .th-sort { justify-content: flex-end; }
-.th-sort:hover { color: var(--fg); }
+@media (hover: hover) { .th-sort:hover { color: var(--fg); } }
 .th-sort .lucide { width: 12px; height: 12px; color: var(--fg-3); }
 .th-sort[data-dir] .lucide { color: var(--accent); }
 .dt-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); padding: var(--sp-8) var(--card-pad); border-top: 1px solid var(--line); font-size: var(--fs-label); color: var(--fg-2); }

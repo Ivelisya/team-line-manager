@@ -1,6 +1,8 @@
 /* 基础层 + 外壳（顶栏、侧栏、内容区、页头）。移植自原版 tokens.css 基础层与 shell.css */
 
 html { background: var(--canvas); scroll-padding-top: var(--topbar-h); scrollbar-gutter: stable; } /* 锚点/焦点滚动不被固定顶栏遮住；滚动条槽位常驻，长短页面切换时内容与顶栏不横移 */
+/* 触屏：点按的系统灰块已由 Tailwind preflight 在 html 上关掉（-webkit-tap-highlight-color: transparent，按下有缩放 / 底色反馈）；
+   悬停样式一律包在 @media (hover: hover) 里：触屏没有悬停，点过的卡片、名称、按钮会一直停在悬停态 */
 /* Radix 弹层锁滚动时让出槽位：遮罩才盖满全宽（否则右侧留一条不变暗的边）；库会给 body 补同宽的右外边距，内容不动 */
 html:has(> body[data-scroll-locked]) { scrollbar-gutter: auto; }
 /* 背景光晕：固定在视口的一层 body::before（z-index -1：在根背景 --canvas 之上、所有内容之下）。
@@ -70,13 +72,14 @@ a { color: inherit; }
   background: var(--accent-soft); color: var(--accent-soft-fg);
   transition: background-color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out);
 }
-.top-btn:hover, .top-btn[aria-expanded="true"] { background: color-mix(in srgb, var(--accent-soft) 82%, var(--accent)); }
+.top-btn[aria-expanded="true"] { background: color-mix(in srgb, var(--accent-soft) 82%, var(--accent)); }
+@media (hover: hover) { .top-btn:hover { background: color-mix(in srgb, var(--accent-soft) 82%, var(--accent)); } }
 /* 顶栏告警胶囊（链到告警页）：悬停底色加深一级，按下同文字控件微缩（components.css「交互状态」）；行内的 a 不能缩放，改 inline-flex */
 .top-alert { display: inline-flex; flex: none; border-radius: var(--r-pill); text-decoration: none; transition: scale var(--dur-2) var(--ease-out); }
 .top-alert > .pill { transition: background-color var(--dur-1) var(--ease-std); }
 @media (hover: hover) { .top-alert:hover > .pill { --pill-bg: color-mix(in srgb, var(--bad) calc(var(--tint) + 8%), transparent); } }
 .nav-toggle { display: none; background: transparent; color: var(--fg-2); } /* 汉堡按钮不带软色底，悬停才给浅底 */
-.nav-toggle:hover { background: var(--hover); color: var(--fg); }
+@media (hover: hover) { .nav-toggle:hover { background: var(--hover); color: var(--fg); } }
 
 .sidebar {
   position: fixed; top: var(--topbar-h); bottom: 0; left: 0; z-index: var(--z-topbar);
@@ -94,7 +97,7 @@ a { color: inherit; }
   transition: background-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std);
 }
 .nav-item .lucide { flex: none; color: var(--fg-2); transition: color var(--dur-1) var(--ease-std); }
-.nav-item:hover { background: var(--hover); }
+@media (hover: hover) { .nav-item:hover { background: var(--hover); } }
 .nav-item[aria-current="page"] { background: var(--grad-soft); color: var(--accent-soft-fg); font-weight: var(--fw-semibold); }
 .nav-item[aria-current="page"] .lucide { color: var(--accent-soft-fg); }
 .nav-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -141,7 +144,7 @@ a { color: inherit; }
   min-height: var(--h-bar); margin: 0 0 var(--section-gap); padding: var(--sp-4) 0;
 }
 .page-title { margin: 0; font: var(--fw-semibold) var(--fs-page) / var(--lh-page) var(--font-sans); letter-spacing: var(--tracking-title); color: var(--fg); white-space: nowrap; }
-.page-note { font-size: var(--fs-body); color: var(--fg-2); white-space: nowrap; text-wrap: balance; }
+.page-note { font-size: var(--fs-body); color: var(--fg-2); text-wrap: balance; }
 .page-tools { margin-left: auto; display: flex; align-items: center; gap: var(--control-gap); flex-wrap: wrap; min-width: 0; }
 @media (max-width: 600px) {
   .page-tools { margin-left: 0; width: 100%; }
@@ -166,12 +169,13 @@ body * { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent;
 
 /* 放不下而在滚动的区域，边缘渐隐提示“那边还有”：还有内容藏着的一侧淡出 20px，滚到头的一侧不淡（首页分组分段控件窄屏时团队藏在右边，过去看不出来）。
    纯 CSS：滚动驱动动画按滚动位置推 --fs / --fe（开头 / 末尾的渐隐宽度）；不能滚动时滚动时间线不生效，两个值停在初始 0，外观不变；
-   不支持滚动驱动动画的浏览器不加遮罩。菜单不加：遮罩会连它的毛玻璃底、边框一起淡掉，还会裁掉投影 */
+   不支持滚动驱动动画的浏览器不加遮罩。菜单不加：遮罩会连它的毛玻璃底、边框一起淡掉，还会裁掉投影。
+   放得下的机器表（data-fit，表头吸顶）不加：本来就不滚，免得整张表带着遮罩合成 */
 @property --fs { syntax: "<length>"; inherits: false; initial-value: 0px; }
 @property --fe { syntax: "<length>"; inherits: false; initial-value: 0px; }
 @keyframes edge-fade { 0% { --fs: 0px; --fe: 20px; } 6%, 94% { --fs: 20px; --fe: 20px; } 100% { --fs: 20px; --fe: 0px; } }
 @supports (animation-timeline: scroll()) {
-  .seg, .tabs-list {
+  .seg, .tabs-list, .table-wrap:not([data-fit]) {
     mask-image: linear-gradient(to right, transparent, #000 var(--fs), #000 calc(100% - var(--fe)), transparent);
     animation: edge-fade linear both; animation-timeline: scroll(self inline);
   }
