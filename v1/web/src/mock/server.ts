@@ -109,9 +109,12 @@ function series(m: MachineView, metric: string, range: string): { metric: string
   const end = Date.now(); const pts: SeriesPoint[] = [];
   const h = m.host; const isDown = m.health.status === 'down';
   const cpu0 = h?.cpu_pct ?? 20; let walk = cpu0;
+  // 只有上架之后、退役之前有数据：刚上架的点数不够画线，抽屉写「刚上架，数据积累中」
+  const from = m.activated_at ? Date.parse(m.activated_at) : end; const to = m.retired_at ? Date.parse(m.retired_at) : end;
   for (let i = 0; i < n; i++) {
-    const ts = iso(end - (n - 1 - i) * step);
+    const t = end - (n - 1 - i) * step; const ts = iso(t);
     walk = Math.max(2, Math.min(97, walk + (r() - 0.5) * 9));
+    if (t < from || t > to) continue;
     const tail = isDown && i > n - 6;
     if (metric === 'host') {
       pts.push({ ts, cpu_pct: tail ? null : walk, mem_pct: tail ? null : (h?.mem_used != null && h.mem_total ? (h.mem_used / h.mem_total) * 100 : 40) + Math.sin(i / 9) * 4, disk_pct: h?.disk_used != null && h.disk_total ? (h.disk_used / h.disk_total) * 100 + i * 0.01 : 30, load1: tail ? null : +(walk / 40).toFixed(2), net_rx_bps: tail ? null : (h?.net_rx_bps ?? 1e7) * (0.5 + r()), net_tx_bps: tail ? null : (h?.net_tx_bps ?? 1e7) * (0.4 + r()) });
@@ -221,7 +224,7 @@ function bootFixtures() {
       emit({ type: 'job', id: job.id }); emit({ type: 'machines' });
     }, ms);
   };
-  advance(run, 40_000, () => { m.lifecycle = 'active'; m.active_job = null; m.health = { status: 'ok', reasons: [] }; refreshCounts(); });
+  advance(run, 40_000, () => { m.lifecycle = 'active'; m.activated_at = iso(); m.active_job = null; m.health = { status: 'ok', reasons: [] }; refreshCounts(); });
   advance(retJob, 50_000, () => { finishRetire(rm); refreshCounts(); });
 }
 
@@ -547,7 +550,7 @@ R('POST', '/jobs/([^/]+)/retry', ({ params, body }) => {
   f.state = 'running'; f.error = null; f.error_kind = null; j.state = 'running'; j.cancellable = true; j.error = null; j.finished_at = null; log(j.id, 'info', `从失败的步骤重试${body.reset_host_key ? '（已重置主机指纹）' : ''}`);
   const m = db.machines.find((x) => x.id === j.target?.id);
   if (m) { if (m.lifecycle === 'failed') m.lifecycle = 'provisioning'; m.failed_job = null; m.active_job = { id: j.id, kind: j.kind, state: 'running' }; }
-  drive(j, 2500, () => { if (!m) return; if (j.kind === 'retire') { finishRetire(m); refreshCounts(); return; } m.lifecycle = 'active'; m.active_job = null; m.health = { status: 'ok', reasons: [] }; });
+  drive(j, 2500, () => { if (!m) return; if (j.kind === 'retire') { finishRetire(m); refreshCounts(); return; } m.lifecycle = 'active'; m.activated_at ??= iso(); m.active_job = null; m.health = { status: 'ok', reasons: [] }; });
   emit({ type: 'job', id: j.id }); emit({ type: 'machines' }); return {};
 });
 /** 取消：进行中的作业，或失败的上架 / 恢复作业（上架 → 退役并清理；恢复 → 退回已退役） */
