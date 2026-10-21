@@ -99,7 +99,7 @@ export function TrafficTab({ m }: { m: MachineView }) {
       <Section>
         <ChartCard c="var(--chart-1)" icon={<Globe />} title="业务流量" meta={s.data?.resolution === '1h' ? '每小时的流量' : '每分钟的流量'} tools={<RangeBar range={range} setRange={setRange} />}>
           <ChartFrame q={s}>
-            <TimeChart points={s.data?.points} range={s.data?.range ?? range} lines={L_TRAFFIC} yFmt={yBytes} valueFmt={vBytes} yBase={1024} />
+            <TimeChart points={s.data?.points} range={s.data?.range ?? range} lines={L_TRAFFIC} yFmt={yBytes} valueFmt={vBytes} yBase={1024} empty="这段时间没有业务流量" />
           </ChartFrame>
         </ChartCard>
       </Section>
