@@ -30,6 +30,17 @@ export function quota(m: MachineView) {
   const { used, period_start: start } = m.quota;
   return { limit, used, start, pct: limit > 0 ? (used / (limit * GiB)) * 100 : null, rem: limit > 0 ? Math.max(0, limit * GiB - used) : null };
 }
+/** 流量额度吃紧（首页 KPI）：本周期已用 ≥ 80% 的台数（没设额度的不计），和用得最多的那台（已用百分比向下取整）；没有吃紧的 top 为 null */
+export function quotaTight(list: MachineView[]) {
+  let n = 0; let top: { name: string; pct: number } | null = null;
+  for (const m of list) {
+    const { pct } = quota(m);
+    if (pct == null || pct < 80) continue;
+    n++;
+    if (!top || pct > top.pct) top = { name: m.name, pct };
+  }
+  return { n, top: top && { name: top.name, pct: Math.floor(top.pct) } };
+}
 /** 资源占用的告警色（CPU / 内存 / 磁盘 / 负载的格条、圆环、迷你条共用）：≥ 90% 红，≥ 75% 黄 */
 export const usageTone = (pct: number | null | undefined) => (pct == null ? undefined : pct >= 90 ? 'bad' : pct >= 75 ? 'warn' : undefined);
 const ratio = (used: number | null, total: number | null) => (used == null || total == null || !(total > 0) ? null : (used / total) * 100);
