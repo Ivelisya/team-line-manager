@@ -8,9 +8,8 @@ import * as F from '@/lib/format';
 import { isQuiet, liveRate, resourceMeters } from '@/lib/derive';
 import { cn } from '@/lib/utils';
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from '@/components/ui/context-menu';
-import { HealthPill, KindIcon, Num } from './primitives';
+import { HealthPill, KindIcon, Num, StatusDot } from './primitives';
 import { NodeContextItems } from './NodeMenu';
-import { StatusDot } from './NodeCard';
 import { Ring } from './viz';
 
 function RingCardImpl({ m, plans, current, onOpen }: { m: MachineView; plans: Plan[]; current?: boolean; onOpen: (id: string, tab?: DrawerTab) => void }) {
@@ -31,12 +30,12 @@ function RingCardImpl({ m, plans, current, onOpen }: { m: MachineView; plans: Pl
       <ContextMenuTrigger asChild>
         <article className={cn('rcard', current && 'is-current', quiet && 'is-quiet')} data-health={m.health.status} data-id={m.id}>
           <header className="rc-head">
-            <StatusDot m={m} /><KindIcon kind={m.kind} />
+            <StatusDot status={m.health.status} /><KindIcon kind={m.kind} />
             <button type="button" className="rc-name" onClick={() => onOpen(m.id)}>{m.name}</button>
             <HealthPill m={m} />
           </header>
-          <button type="button" className="rc-rings" onClick={() => onOpen(m.id, 'host')} aria-label={`${m.name}：查看主机曲线`} disabled={!h}>
-            {ring('cpu', 'CPU', r?.cpu)}{ring('mem', '内存', r?.mem)}{ring('disk', '磁盘', r?.disk)}
+          <button type="button" className="rc-rings" onClick={() => onOpen(m.id, 'host')} disabled={!h}>
+            {ring('cpu', 'CPU', r?.cpu)}{ring('mem', '内存', r?.mem)}{ring('disk', '磁盘', r?.disk)}<span className="sr-only">（查看主机曲线）</span>
           </button>
           <footer className="rc-foot">
             {h ? <>{rate('up', lr?.tx)}{rate('down', lr?.rx)}</> : <span className="t-muted">{m.kind === 'proxy' ? '家宽代理没有主机指标' : '暂无主机指标'}</span>}

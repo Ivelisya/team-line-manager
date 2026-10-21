@@ -37,6 +37,8 @@ const scenes = [
   { name: 'nodes-drawer-manage-1440', url: '/nodes?m=m-t1-03&tab=manage', w: 1440 },
   { name: 'nodes-drawer-billing-1440', url: '/nodes?m=m-t1-03&tab=billing', w: 1440 },
   { name: 'nodes-drawer-host-1440', url: '/nodes?m=m-t1-02&tab=host', w: 1440 },
+  { name: 'nodes-drawer-traffic-1440', url: '/nodes?m=m-t1-02&tab=traffic', w: 1440 },
+  { name: 'nodes-due-1440', url: '/nodes?sort=due', w: 1440 },
   { name: 'nodes-drawer-host-lxc-1440', url: '/nodes?m=m-t2-06&tab=host', w: 1440 },
   { name: 'nodes-390', url: '/nodes', w: 390 },
   { name: 'nodes-retired-1440', url: '/nodes?scope=retired', w: 1440, retired: true },

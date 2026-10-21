@@ -1,7 +1,7 @@
 // 浏览器内 mock：拦截 /api/v1/* 的 fetch 和实时流 WebSocket。VITE_MOCK=1 时由 main.tsx 安装。
 // 有状态：改名、退役、上架、续费等操作都会改内存里的数据，并通过 mock 实时流通知前端刷新。
 
-import type { EntryView, Job, JobLog, MachineView, ProvisionCheckItem, ProvisionItem, SeriesPoint } from '@/lib/types';
+import type { EntryView, Job, JobLog, MachineView, ProbeBucket, ProvisionCheckItem, ProvisionItem, SeriesPoint } from '@/lib/types';
 import { displayName } from '@/lib/format';
 import { liveRate } from '@/lib/derive';
 import { buildDb, hashStr, rng, type Db } from './fixtures';
@@ -113,6 +113,30 @@ function series(m: MachineView, metric: string, range: string): { metric: string
     }
   }
   return { metric, range, resolution: range === '7d' || range === '30d' ? '1h' : '1m', points: pts };
+}
+
+/** 心跳格：在用机器近 60 分钟、20 个 3 分钟桶（旧→新），[探测次数, 成功次数, 平均 TCP ms]；线路机合计它的全部入口 */
+function probeBeats() {
+  const out: Record<string, ProbeBucket[]> = {};
+  const slot = Math.floor(Date.now() / 180_000);
+  for (const m of db.machines) {
+    if (m.lifecycle !== 'active' || !m.entries.length) continue;
+    const per = m.entries.length * 3; // 每条入口每分钟探测一次
+    const isDown = m.health.status === 'down';
+    out[m.id] = Array.from({ length: 20 }, (_, i): ProbeBucket => {
+      const r = rng(hashStr(`${m.id}:${slot - 19 + i}`));
+      if (m.id.endsWith('2') && i < 4) return [0, 0, null]; // 演示：刚开始探测的那段没有数据
+      const fail = isDown && i >= 17 ? per : r() < 0.06 ? 1 + Math.floor(r() * per * 0.6) : 0;
+      return [per, per - fail, fail === per ? null : Math.round(40 + r() * 70 + (r() < 0.05 ? 120 : 0))];
+    });
+  }
+  return out;
+}
+/** 全站网卡速率的每分钟历史（旧→新），围着当前总速率随机波动 */
+function overviewSeries(minutes: number) {
+  const o = overview(); const r = rng(hashStr(`ov:${Math.floor(Date.now() / 60_000)}`));
+  const end = Math.floor(Date.now() / 60_000) * 60_000;
+  return { points: Array.from({ length: minutes }, (_, i) => ({ ts: iso(end - (minutes - 1 - i) * 60_000), net_rx_bps: Math.round(o.net_rx_bps * (0.7 + r() * 0.6)), net_tx_bps: Math.round(o.net_tx_bps * (0.7 + r() * 0.6)) })) };
 }
 
 // ---------- 作业模拟 ----------
@@ -445,6 +469,8 @@ R('POST', '/jobs/([^/]+)/cancel', ({ params }) => {
 });
 
 R('GET', '/overview', () => overview());
+R('GET', '/overview/series', ({ query }) => overviewSeries(Math.min(120, +(query.get('minutes') ?? 30))));
+R('GET', '/probe-beats', () => probeBeats());
 R('GET', '/incidents', ({ query }) => { const s = query.get('state') ?? 'firing'; return paged(db.incidents.filter((i) => s === 'all' || i.state === s), query); });
 R('POST', '/incidents/([^/]+)/ack', ({ params }) => { const i = db.incidents.find((x) => x.id === params[0]); if (!i) throw bad('告警不存在', 404, 'not_found'); i.ack_at = iso(); i.ack_by = db.user; emit({ type: 'incidents' }); return {}; });
 R('GET', '/silences', () => clone(db.silences));

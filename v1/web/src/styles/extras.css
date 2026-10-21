@@ -1,10 +1,9 @@
 /* 增强组件：命令面板、悬浮卡片、右键/下拉菜单附加样式、作业进度（步骤条/总进度）、设置页。
    只用 tokens.css 里的令牌（颜色、圆角、阴影、字号），不引入新的视觉语言。 */
 
-/* ========== 菜单附加：子菜单箭头、右键打开时的触发元素高亮、分组标签 ========== */
+/* ========== 菜单附加：子菜单箭头、右键打开时的触发元素高亮 ========== */
 .menu-item[data-state="open"] { background: var(--hover); }
 .menu-chev { margin-left: auto; width: 14px; height: 14px; color: var(--fg-3); }
-.menu-label { padding: var(--sp-4) var(--sp-10); font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); }
 .ncard[data-state="open"] { border-color: var(--accent); }
 .dt tr.is-link[data-state="open"] { background: var(--hover); }
 .dt tr.is-link:focus-visible { outline-offset: -2px; }
@@ -34,13 +33,8 @@
 .hc-rows dd { display: inline-flex; align-items: center; gap: var(--sp-4); min-width: 0; margin: 0; font-size: var(--fs-body); text-align: right; }
 .hc-ip { font-variant-numeric: var(--num-variant); }
 .hc-bars { display: grid; gap: var(--sp-6); padding-top: var(--sp-10); border-top: 1px solid var(--line); }
-.hc-bar { display: grid; grid-template-columns: 34px minmax(0, 1fr) 36px; align-items: center; gap: var(--sp-8); font-size: var(--fs-label); }
+.hc-bar { display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: center; gap: var(--sp-8); font-size: var(--fs-label); }
 .hc-bar-l { color: var(--fg-2); }
-.hc-bar-track { position: relative; height: 4px; background: var(--line); overflow: hidden; }
-.hc-bar-track > span { position: absolute; inset: 0 auto 0 0; background: var(--accent); }
-.hc-bar[data-tone="warn"] .hc-bar-track > span { background: var(--warn); }
-.hc-bar[data-tone="bad"] .hc-bar-track > span { background: var(--bad); }
-.hc-bar-v { text-align: right; color: var(--fg); font-weight: var(--fw-medium); }
 
 /* ========== 顶栏：搜索入口、进行中作业徽标 ========== */
 .cmd-trigger {

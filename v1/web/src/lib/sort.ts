@@ -1,24 +1,26 @@
 import { useMemo, useRef } from 'react';
 import type { MachineView, Team } from './types';
 
+/** 中文名称比较（编号按数值：团队1-2 排在 团队1-10 前面）；全站共用一个 */
+export const collator = new Intl.Collator('zh-Hans-CN', { numeric: true });
+
 /**
  * 默认排序：线路机在前 → 团队（sort_order，再名称）→ 编号升序。
  * 故障/离线的节点不下沉；其他排序是用户的显式选择。
  */
 export function makeDefaultCompare(teams: Team[]) {
   const order = new Map(teams.map((t) => [t.id, t.sort_order]));
-  const zh = new Intl.Collator('zh-Hans-CN', { numeric: true });
   return (a: MachineView, b: MachineView): number => {
     const ra = a.kind === 'relay' ? 0 : 1; const rb = b.kind === 'relay' ? 0 : 1;
     if (ra !== rb) return ra - rb;
     const oa = a.team ? (order.get(a.team.id) ?? 1e9) : 1e9 + 1;
     const ob = b.team ? (order.get(b.team.id) ?? 1e9) : 1e9 + 1;
     if (oa !== ob) return oa - ob;
-    const tn = zh.compare(a.team?.name ?? '', b.team?.name ?? '');
+    const tn = collator.compare(a.team?.name ?? '', b.team?.name ?? '');
     if (tn) return tn;
     const na = a.number ?? 1e9; const nb = b.number ?? 1e9;
     if (na !== nb) return na - nb;
-    return zh.compare(a.name, b.name);
+    return collator.compare(a.name, b.name);
   };
 }
 

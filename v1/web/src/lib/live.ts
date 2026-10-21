@@ -2,8 +2,9 @@
 // 同时攒实时迹线（每台机器、全站各最近 30 个速率点），卡片点阵与集群状态折线用 useLiveSeries。
 // 消息形状见 docs/API.md「实时流」：host、tcp/egress 是定长数组（时间为 Unix 秒），其余字段与 REST 同形。
 import { useSyncExternalStore } from 'react';
-import type { QueryClient } from '@tanstack/react-query';
-import type { EntryView, HostMetrics, MachineView, Overview, ProbeResult } from './types';
+import { useQuery, type QueryClient } from '@tanstack/react-query';
+import { get } from './api';
+import type { EntryView, HostMetrics, MachineView, Overview, OverviewSeries, ProbeResult } from './types';
 import { isQuiet } from './derive';
 
 type N = number | null;
@@ -59,36 +60,52 @@ const patchList = (msg: MetricsMsg) => (old: MachineView[] | undefined) => {
   const out = old.map((m) => { const n = patchMachine(m, msg); hit ||= n !== m; return n; });
   return hit ? out : old;
 };
+/** 一条 metrics 对某类查询数据的改写 */
+const patchOf = (key: unknown, msg: MetricsMsg): ((d: never) => unknown) | null =>
+  key === 'machine' ? (m: MachineView | undefined) => m && patchMachine(m, msg)
+    : key === 'overview' ? (msg.overview ? () => msg.overview : null)
+    : patchList(msg);
 
 /** metrics 写的这几类查询 */
 export const LIVE_KEYS = [['machines'], ['machine'], ['relays'], ['overview']];
+const LIVE = new Set(LIVE_KEYS.map((k) => k[0]));
+
+// 在途的重取：回来的响应可能是这几条增量之前的快照，会把写进去的盖掉。不打断它（打断的话慢接口在 3 s 一条的推送下永远取不完），
+// 记下取的期间收到的增量，响应成功后按顺序补到新数据上（增量都是绝对值，响应里已含的再写一遍也不变）；失败则丢弃（缓存里本来就是补过的）
+const missed = new Map<string, MetricsMsg[]>();
+const watched = new WeakSet<QueryClient>();
+function watch(qc: QueryClient) {
+  if (watched.has(qc)) return;
+  watched.add(qc);
+  qc.getQueryCache().subscribe((e) => {
+    // 还在取（含取的期间写缓存）就等；取完（成功 / 失败 / 被取消）或被移出缓存，这份记录就作废
+    if ((e.type !== 'updated' && e.type !== 'removed') || e.query.state.fetchStatus === 'fetching') return;
+    const msgs = missed.get(e.query.queryHash);
+    if (!msgs) return;
+    missed.delete(e.query.queryHash);
+    if (e.type === 'updated' && e.action.type === 'success') qc.setQueryData(e.query.queryKey, (d: unknown) => msgs.reduce((x, msg) => patchOf(e.query.queryKey[0], msg)?.(x as never) ?? x, d));
+  });
+}
 
 export function applyMetrics(qc: QueryClient, msg: MetricsMsg) {
-  // 正在重取的：稍后回来的响应是增量之前的快照，会把这次写进去的盖掉（健康、在线等不常变的字段要等下次变化才纠正）。
-  // 打断重取：服务端广播前已把新视图存进缓存，新请求带上这次变化
-  for (const k of LIVE_KEYS) {
-    for (const q of qc.getQueryCache().findAll({ queryKey: k, fetchStatus: 'fetching' })) {
-      void qc.invalidateQueries({ queryKey: q.queryKey, exact: true, refetchType: 'all' }, { cancelRefetch: true });
-    }
+  watch(qc);
+  for (const q of qc.getQueryCache().findAll({ fetchStatus: 'fetching', predicate: (q) => LIVE.has(q.queryKey[0] as string) })) {
+    const l = missed.get(q.queryHash);
+    if (l) l.push(msg); else missed.set(q.queryHash, [msg]);
   }
-  const list = patchList(msg);
-  qc.setQueriesData<MachineView[]>({ queryKey: ['machines'] }, list);
-  qc.setQueriesData<MachineView[]>({ queryKey: ['relays'] }, list);
-  qc.setQueriesData<MachineView>({ queryKey: ['machine'] }, (m) => m && patchMachine(m, msg));
-  if (msg.overview) {
-    qc.setQueryData(['overview'], msg.overview);
-    record(FLEET, { t: Date.now(), rx: msg.overview.net_rx_bps, tx: msg.overview.net_tx_bps });
-  }
+  for (const [k] of LIVE_KEYS) { const f = patchOf(k, msg); if (f) qc.setQueriesData({ queryKey: [k] }, f); }
+  if (msg.overview) record(FLEET, { t: Date.now(), rx: msg.overview.net_rx_bps, tx: msg.overview.net_tx_bps });
   if (dirty) { dirty = false; subs.forEach((f) => f()); }
 }
 
 // ---- 实时迹线：每台机器的网卡速率、全站总速率（FLEET），各留最近 SERIES_N 个点 ----
-// 只由 metrics 消息喂：机器按上报时间（同一份上报在几份缓存里各 patch 一次，只记一次），总览按收到的时刻。
+// 由 metrics 消息喂：机器按上报时间（同一份上报在几份缓存里各 patch 一次，只记一次），总览按收到的时刻；
+// 全站总速率开场先用 /overview/series 的每分钟历史铺满（useFleetSeries）。
 // 数据过期（isQuiet）的机器不记；页面在后台时不写缓存也就不记，所以可能有断档。
 export interface LivePoint { t: number; rx: number; tx: number }
 export const SERIES_N = 30;
 /** 全站总速率在迹线里的键 */
-export const FLEET = '*';
+const FLEET = '*';
 const EMPTY: readonly LivePoint[] = [];
 const series = new Map<string, readonly LivePoint[]>();
 const subs = new Set<() => void>();
@@ -105,4 +122,17 @@ function record(key: string, p: LivePoint) {
 /** 某台机器（或 FLEET）最近的速率点（时间升序，t 为毫秒） */
 export function useLiveSeries(key: string): readonly LivePoint[] {
   return useSyncExternalStore(subscribe, () => series.get(key) ?? EMPTY, () => EMPTY);
+}
+
+/** 全站总速率：第一次用时取近 30 分钟的每分钟历史垫在实时点前面（只取一次），之后由实时推送接着记 */
+export function useFleetSeries(): readonly LivePoint[] {
+  useQuery({ queryKey: ['overview-series'], queryFn: () => get<OverviewSeries>('/overview/series?minutes=30').then(seedFleet), staleTime: Infinity, gcTime: Infinity });
+  return useLiveSeries(FLEET);
+}
+function seedFleet(d: OverviewSeries) {
+  const buf = series.get(FLEET) ?? EMPTY;
+  const old = d.points.map((p) => ({ t: Date.parse(p.ts), rx: p.net_rx_bps, tx: p.net_tx_bps })).filter((p) => !buf.length || p.t < buf[0].t);
+  series.set(FLEET, [...old, ...buf].slice(-SERIES_N));
+  subs.forEach((f) => f());
+  return true;
 }

@@ -1,13 +1,14 @@
-// 通用展示原件：每种只有一份实现（状态 pill、KPI 磚、标签/值、段标题、面板、页头…）。
+// 通用展示原件：每种只有一份实现（状态 pill / 圆点、KPI 卡、到期读数、表头排序、标签/值、段标题、面板、页头…）。
 import * as React from 'react';
 import { Link } from 'react-router-dom';
-import { Check, CircleAlert, Copy, Home, Inbox, RotateCw, Server, Waypoints } from 'lucide-react';
+import { ArrowDownUp, Check, ChevronDown, ChevronUp, CircleAlert, Copy, Home, Inbox, RotateCw, Server, Waypoints } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { Fmt } from '@/lib/format';
+import { dueFmt, type Fmt } from '@/lib/format';
 import type { EntryView, HealthReason, Kind, Lifecycle, MachineView } from '@/lib/types';
 import { HEALTH_LABEL, HEALTH_TONE, KIND_LABEL, LIFECYCLE_LABEL } from '@/lib/sort';
 import { Tip } from '@/components/ui/overlays';
 import { useCountUp } from '@/lib/useCountUp';
+import type { BeatCell } from '@/lib/derive';
 import { copyText } from '@/lib/clipboard';
 
 /** 数值 + 灰色小单位 */
@@ -34,14 +35,19 @@ export function HealthPill({ m }: { m: Pick<MachineView, 'health' | 'lifecycle' 
   const pill = <Pill tone={HEALTH_TONE[s]} dot={s === 'unknown' || s === 'inactive' ? 'ring' : undefined} tabIndex={m.health.reasons.length ? 0 : undefined}>{HEALTH_LABEL[s]}</Pill>;
   return <Tip text={reasonsTip(m.health.reasons)}>{pill}</Tip>;
 }
-/** 健康 pill 的悬停提示：把每条原因列出来（带严重度圆点） */
-export function reasonsTip(reasons: HealthReason[]): React.ReactNode {
-  if (!reasons.length) return null;
-  return (
-    <ul className="tip-list">
-      {reasons.map((r) => <li key={r.key}><span className="dot" data-tone={r.severity === 'critical' ? 'bad' : r.severity === 'warning' ? 'warn' : 'info'} />{r.text}</li>)}
-    </ul>
-  );
+/** 健康原因列表（带严重度圆点）：健康 pill 的悬停提示与抽屉“状态原因”共用 */
+export const ReasonList = ({ reasons, className }: { reasons: HealthReason[]; className: string }) => (
+  <ul className={className}>
+    {reasons.map((r) => <li key={r.key}><span className="dot" data-tone={r.severity === 'critical' ? 'bad' : r.severity === 'warning' ? 'warn' : 'info'} />{r.text}</li>)}
+  </ul>
+);
+const reasonsTip = (reasons: HealthReason[]) => (reasons.length ? <ReasonList reasons={reasons} className="tip-list" /> : null);
+/** 健康状态圆点：颜色之外给读屏与悬停一份文字 */
+export const StatusDot = ({ status }: { status: string }) => <span className="dot" data-tone={HEALTH_TONE[status]} role="img" aria-label={HEALTH_LABEL[status]} title={HEALTH_LABEL[status]} />;
+/** 到期读数：N 天后 / 今天 / 已过期 N 天，7 天内黄、过期红（卡片、表格、悬浮卡共用） */
+export function Due({ days }: { days: number | null | undefined }) {
+  const d = dueFmt(days);
+  return <span className="due" data-tone={d.tone || undefined}><Num f={d.text} /></span>;
 }
 export const LifecyclePill = ({ lc }: { lc: Lifecycle | string }) => (
   <Pill tone={lc === 'active' ? 'ok' : lc === 'provisioning' || lc === 'retiring' ? 'info' : lc === 'failed' ? 'bad' : 'neutral'} dot={lc === 'retired' ? 'ring' : undefined}>{LIFECYCLE_LABEL[lc] ?? lc}</Pill>
@@ -49,8 +55,8 @@ export const LifecyclePill = ({ lc }: { lc: Lifecycle | string }) => (
 
 export const entryState = (e: EntryView) => (e.lifecycle === 'disabled' ? <Pill tone="neutral" dot="ring">已停用</Pill> : e.lifecycle === 'active' ? (e.applied ? <Pill tone="ok">运行中</Pill> : <Pill tone="info" dot="pulse">下发中</Pill>) : <Pill tone="info" dot="pulse">{LIFECYCLE_LABEL[e.lifecycle] ?? e.lifecycle}</Pill>);
 
-export function Chip({ children, variant, title, className }: { children: React.ReactNode; variant?: 'price' | 'neutral' | 'warn'; title?: string; className?: string }) {
-  return <span className={cn('chip', variant === 'price' && 'chip-price', variant === 'neutral' && 'chip-neutral', variant === 'warn' && 'chip-warn', className)} title={title}>{children}</span>;
+export function Chip({ children, variant, title, className }: { children: React.ReactNode; variant?: 'neutral' | 'warn'; title?: string; className?: string }) {
+  return <span className={cn('chip', variant === 'neutral' && 'chip-neutral', variant === 'warn' && 'chip-warn', className)} title={title}>{children}</span>;
 }
 export const Mark = ({ children, title }: { children: React.ReactNode; title?: string }) => <span className="mark" title={title}>{children}</span>;
 
@@ -69,20 +75,17 @@ export function FilterChip({ pressed, onClick, children, count }: { pressed: boo
   );
 }
 
-/** KPI 磚：18 标签 / 32 主值 / 18 副行，三行固定，所有磚等高 */
-export function KpiTile({ label, value, unit, sub, to, onClick, pressed, loading }: {
-  label: string; value: React.ReactNode; unit?: string; sub?: React.ReactNode; to?: string; onClick?: () => void; pressed?: boolean; loading?: boolean;
-}) {
+type StatTone = 'ok' | 'teal' | 'bad' | 'amber' | 'gold' | 'sky' | 'violet' | 'blue';
+/** KPI 卡（唯一实现）：彩色图标 + 标签，大号读数 + 小单位，一行灰色说明；三行固定，同一排等高 */
+export function Stat({ icon, tone, label, value, unit, caption, to, loading }: { icon: React.ReactNode; tone: StatTone; label: string; value: React.ReactNode; unit?: string; caption?: React.ReactNode; to?: string; loading?: boolean }) {
   const inner = (
     <>
-      <div className="kpi-label">{label}</div>
-      <div className="kpi-value">{loading ? <span className="skel" style={{ width: 72, height: 24 }} /> : <>{value}{unit && <span className="unit">{unit}</span>}</>}</div>
-      <div className="kpi-sub">{loading ? '' : sub ?? ' '}</div>
+      <span className="stat-label"><span className="stat-ic" data-tone={tone}>{icon}</span>{label}</span>
+      <span className="stat-value">{loading ? <span className="skel" style={{ width: 64, height: 20 }} /> : <>{value}{unit && <small>{unit}</small>}</>}</span>
+      <span className="stat-cap">{loading ? '' : caption ?? ' '}</span>
     </>
   );
-  if (to) return <Link className="kpi" to={to}>{inner}</Link>;
-  if (onClick) return <button type="button" className="kpi" onClick={onClick} aria-pressed={pressed}>{inner}</button>;
-  return <div className="kpi">{inner}</div>;
+  return to ? <Link className="stat" to={to}>{inner}</Link> : <div className="stat">{inner}</div>;
 }
 /** 数字平滑过渡：值变了从旧值滚到新值。format 决定怎么显示（默认取整） */
 export function CountUp({ value, format }: { value: number | null | undefined; format?: (n: number) => string }) {
@@ -93,6 +96,24 @@ export function CountUp({ value, format }: { value: number | null | undefined; f
 export const DotCount = ({ tone, n, label }: { tone: Tone; n: number; label: string }) => (
   <span className="dotline"><span className="dot" data-tone={tone} />{label} <b className="num" style={{ fontWeight: 600, color: 'var(--fg)' }}>{n}</b></span>
 );
+
+/** 表头排序：首次点击按 first 的方向（数值列多为先降序，名称、到期先升序），再点反向，第三次回到默认顺序（null） */
+export interface SortState { id: string; desc: boolean }
+const nextSort = (s: SortState | null, id: string, first: 'asc' | 'desc'): SortState | null =>
+  s?.id !== id ? { id, desc: first === 'desc' } : s.desc === (first === 'desc') ? { id, desc: !s.desc } : null;
+/** 表头一行（唯一实现）：first 为空的列不可排序 */
+export function SortHead({ cols, sort, onSort }: { cols: { id: string; header: string; r?: boolean; first?: 'asc' | 'desc' }[]; sort: SortState | null; onSort: (s: SortState | null) => void }) {
+  return (
+    <thead><tr>{cols.map((c) => {
+      const dir = sort?.id === c.id ? (sort.desc ? 'desc' : 'asc') : undefined;
+      return (
+        <th key={c.id} className={c.r ? 'r' : undefined} aria-sort={dir === 'asc' ? 'ascending' : dir === 'desc' ? 'descending' : undefined}>
+          {c.first ? <button type="button" className="th-sort" data-dir={dir} onClick={() => onSort(nextSort(sort, c.id, c.first!))}>{c.header}{dir === 'asc' ? <ChevronUp /> : dir === 'desc' ? <ChevronDown /> : <ArrowDownUp />}</button> : c.header}
+        </th>
+      );
+    })}</tr></thead>
+  );
+}
 
 /** 标签/值（唯一实现） */
 export function LabelValue({ label, children, wrap, className }: { label: string; children: React.ReactNode; wrap?: boolean; className?: string }) {
@@ -169,7 +190,7 @@ export function CopyButton({ text, label = '内容', className, size = 14 }: { t
 }
 
 /** 心跳条：n 格，ok/warn/bad/空 */
-export function Beat({ cells, caption, win, stale, n = 20 }: { cells: ('ok' | 'warn' | 'bad' | null)[]; caption: React.ReactNode; win?: string; stale?: boolean; n?: number }) {
+export function Beat({ cells, caption, win, stale, n = 20 }: { cells: BeatCell[]; caption: React.ReactNode; win?: string; stale?: boolean; n?: number }) {
   const pad = Array.from({ length: Math.max(0, n - cells.length) }, () => null as null);
   return (
     <div className={cn('beat', stale && 'is-stale')}>

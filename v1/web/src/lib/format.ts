@@ -53,11 +53,12 @@ export function money(cents: number | null | undefined, currency = 'CNY'): strin
 export const CYCLE: Record<string, string> = { monthly: '月', quarterly: '季', semiannual: '半年', yearly: '年', once: '一次性' };
 export const cycleLabel = (c: string) => CYCLE[c] ?? c;
 
-/** 距今天数文字：到期 N 天 / 已过期 N 天 */
+/** 到期：N 天后 / 今天 / 已过期 N 天（7 天内为 warn，过期为 bad） */
 export function dueFmt(days: number | null | undefined): { text: Fmt; tone: '' | 'warn' | 'bad' } {
   if (days == null) return { text: NA, tone: '' };
-  if (days < 0) return { text: { v: String(-days), u: '天前过期' }, tone: 'bad' };
-  return { text: { v: String(days), u: '天' }, tone: days <= 7 ? 'warn' : '' };
+  if (days < 0) return { text: { v: `已过期 ${-days}`, u: '天' }, tone: 'bad' };
+  if (days === 0) return { text: { v: '今天', u: '' }, tone: 'warn' };
+  return { text: { v: String(days), u: '天后' }, tone: days <= 7 ? 'warn' : '' };
 }
 /** 时长：已上架/已运行 */
 export function since(iso: string | null | undefined, now = Date.now()): Fmt {

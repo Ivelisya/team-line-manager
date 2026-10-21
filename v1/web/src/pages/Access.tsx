@@ -3,7 +3,7 @@
 // 分页：目标与新目标按 offset 翻页（服务端），来源与节点概览是已取回的列表（前端切页），原始记录按时间游标「较新 / 较早」。
 import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Radar } from 'lucide-react';
+import { Activity, Radar, Server, ShieldX, Target } from 'lucide-react';
 import {
   ACCESS_WINDOWS, EVENTS_PAGE, isAccessWindow, useAccessEvents, useAccessSources, useAccessSummary, useAccessTargets, useNewTargets,
   type AccessFilter, type AccessWindow, type TargetSort,
@@ -15,7 +15,7 @@ import { Button } from '@/components/ui/button';
 import { SearchInput } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { Segmented, Tabs, TabsList, TabsTrigger } from '@/components/ui/overlays';
-import { Empty, KpiTile, Note, PageHead, Panel, Pill } from '@/components/app/primitives';
+import { Empty, Note, PageHead, Panel, Pill, Stat } from '@/components/app/primitives';
 import { AccessViewSwitch } from '@/components/app/AccessViewSwitch';
 import { HostCell, ResultPill, fmtN } from '@/features/AccessBits';
 import { CursorPager, Pagination } from '@/components/app/Pagination';
@@ -79,13 +79,11 @@ export function AccessPage() {
       </div>
 
       {summary.isError && <Note tone="bad">{(summary.error as Error).message}</Note>}
-      <div className="kpi-grid-wrap">
-        <div className="kpi-grid">
-          <KpiTile label="有活动的节点" value={k ? fmtN(k.active_nodes) : '—'} loading={summary.isLoading} sub={`最近 ${winLabel(f.window)}`} />
-          <KpiTile label="连接记录" value={k ? fmtN(k.conns) : '—'} loading={summary.isLoading} sub="含已阻止的连接" />
-          <KpiTile label="访问目标" value={k ? fmtN(k.targets) : '—'} loading={summary.isLoading} sub="各节点分别去重后相加" />
-          <KpiTile label="已阻止的连接" value={k ? fmtN(k.blocked) : '—'} loading={summary.isLoading} sub={k && k.conns > 0 ? `占 ${((k.blocked / k.conns) * 100).toFixed(k.blocked / k.conns < 0.1 ? 1 : 0)}%` : ' '} />
-        </div>
+      <div className="stat-grid">
+        <Stat tone="blue" icon={<Server />} label="有活动的节点" value={k ? fmtN(k.active_nodes) : '—'} loading={summary.isLoading} caption={`最近 ${winLabel(f.window)}`} />
+        <Stat tone="teal" icon={<Activity />} label="连接记录" value={k ? fmtN(k.conns) : '—'} loading={summary.isLoading} caption="含已阻止的连接" />
+        <Stat tone="violet" icon={<Target />} label="访问目标" value={k ? fmtN(k.targets) : '—'} loading={summary.isLoading} caption="各节点分别去重后相加" />
+        <Stat tone="bad" icon={<ShieldX />} label="已阻止的连接" value={k ? fmtN(k.blocked) : '—'} loading={summary.isLoading} caption={k && k.conns > 0 ? `占 ${((k.blocked / k.conns) * 100).toFixed(k.blocked / k.conns < 0.1 ? 1 : 0)}%` : undefined} />
       </div>
 
       <Tabs value={tab} onValueChange={(v) => upd({ view: v === 'targets' ? '' : v, p: '' })}>
