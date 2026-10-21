@@ -3,11 +3,11 @@ use super::ok;
 use crate::auth::Actor;
 use crate::db::audit;
 use crate::entries;
-use crate::error::{ApiError, ApiResult};
+use crate::error::{ApiError, ApiPath, ApiResult};
 use crate::jobs;
 use crate::state::{AppState, Event};
 use crate::views;
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -25,7 +25,7 @@ pub struct ActionIn {
     confirm: Option<String>,
 }
 
-pub async fn entry_action(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, ApiJson(b): ApiJson<ActionIn>) -> ApiResult<Json<Value>> {
+pub async fn entry_action(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<ActionIn>) -> ApiResult<Json<Value>> {
     let (relay_label, port): (String, i32) =
         sqlx::query_as("select m.label, e.port from entry e join machine m on m.id = e.relay_id where e.id = $1")
             .bind(id)
@@ -57,7 +57,7 @@ pub async fn entry_action(a: Actor, State(st): State<AppState>, Path(id): Path<U
     Ok(ok(json!({"generation": gen})))
 }
 
-pub async fn share(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>) -> ApiResult<Json<Value>> {
+pub async fn share(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     a.require_scope("secrets")?;
     #[derive(sqlx::FromRow)]
     struct Row {
@@ -96,7 +96,7 @@ pub struct AddEntryIn {
 }
 
 /// 给已在用的节点再挂一条入口（作业：建入口 → 等线路机应用 → 等出口探测通过）
-pub async fn add_entry(a: Actor, State(st): State<AppState>, Path(node_id): Path<Uuid>, ApiJson(b): ApiJson<AddEntryIn>) -> ApiResult<Json<Value>> {
+pub async fn add_entry(a: Actor, State(st): State<AppState>, ApiPath(node_id): ApiPath<Uuid>, ApiJson(b): ApiJson<AddEntryIn>) -> ApiResult<Json<Value>> {
     let (kind, lifecycle): (String, String) = sqlx::query_as("select kind::text, lifecycle::text from machine where id = $1")
         .bind(node_id)
         .fetch_optional(&st.db)
@@ -104,6 +104,26 @@ pub async fn add_entry(a: Actor, State(st): State<AppState>, Path(node_id): Path
         .ok_or_else(|| ApiError::not_found("没有这台机器"))?;
     if kind == "relay" || lifecycle != "active" {
         return Err(ApiError::conflict("只能给在用的节点加入口"));
+    }
+    // 入队前先拦下必败的请求，免得留一个失败作业
+    let relay: Option<(String, Option<String>)> = sqlx::query_as("select lifecycle::text, label from machine where id = $1 and kind = 'relay'")
+        .bind(b.relay_id)
+        .fetch_optional(&st.db)
+        .await?;
+    match relay {
+        None => return Err(ApiError::not_found("没有这台线路机")),
+        Some((lc, label)) if lc != "active" => {
+            return Err(ApiError::conflict(format!("线路机 {} 不在用，不能在上面加入口", label.unwrap_or_default())));
+        }
+        Some(_) => {}
+    }
+    let dup: Option<(i32,)> = sqlx::query_as("select 1 from entry where node_id = $1 and relay_id = $2 and lifecycle <> 'removed'")
+        .bind(node_id)
+        .bind(b.relay_id)
+        .fetch_optional(&st.db)
+        .await?;
+    if dup.is_some() {
+        return Err(ApiError::conflict("这个节点在这台线路机上已经有入口"));
     }
     let mut tx = st.db.begin().await?;
     let job = jobs::enqueue(&mut tx, "attach_entry", Some(node_id), json!({"relay_id": b.relay_id}), &a.name).await?;

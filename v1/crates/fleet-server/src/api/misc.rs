@@ -2,12 +2,12 @@ use crate::error::ApiJson;
 use super::{ok, paged};
 use crate::auth::Actor;
 use crate::db::{audit as audit_log, new_id};
-use crate::error::{ApiError, ApiResult};
+use crate::error::{ApiError, ApiPath, ApiQuery, ApiResult};
 use crate::state::{AppState, Event};
 use crate::views;
 use crate::crypto::sha256;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::Response;
 use axum::Json;
@@ -39,7 +39,7 @@ struct RatePoint {
 /// 总览网速曲线：最近 N 个结束满 20 s 的分钟，每分钟一个点，旧→新。agent 每 10 s 上报一次，刚结束的那一分钟还缺最后一两份，算出来偏小，不给。
 /// 每台 active 机器按主机时序同样的算法（每分钟取计数器最大值，与上一个有数据的分钟相减 ×8 / 秒数，计数器回绕的那一段不计）再求和；
 /// 逐台走 (machine_id, ts desc) 索引。
-pub async fn overview_series(_a: Actor, State(st): State<AppState>, Query(q): Query<SeriesQ>) -> ApiResult<Json<Value>> {
+pub async fn overview_series(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<SeriesQ>) -> ApiResult<Json<Value>> {
     let n = q.minutes.unwrap_or(30);
     if !(1..=60).contains(&n) {
         return Err(ApiError::bad_request("minutes 只能是 1–60"));
@@ -120,7 +120,7 @@ pub struct IncQ {
     offset: Option<i64>,
 }
 
-pub async fn incidents(_a: Actor, State(st): State<AppState>, Query(q): Query<IncQ>) -> ApiResult<Json<Value>> {
+pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<IncQ>) -> ApiResult<Json<Value>> {
     let f = match q.state.as_deref() {
         Some("resolved") => "i.state = 'resolved'",
         Some("all") => "true",
@@ -148,16 +148,20 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, Query(q): Query<In
     Ok(paged(out, total, offset))
 }
 
-pub async fn ack_incident(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>) -> ApiResult<Json<Value>> {
-    let n = sqlx::query("update incident set ack_at = now(), ack_by = $2 where id = $1 and ack_at is null")
+pub async fn ack_incident(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
+    let mut tx = st.db.begin().await?;
+    let cur: Option<(String, String, Option<String>)> = sqlx::query_as("select rule, summary, ack_by from incident where id = $1 for update")
         .bind(id)
-        .bind(&a.name)
-        .execute(&st.db)
-        .await?
-        .rows_affected();
-    if n == 0 {
-        return Err(ApiError::conflict("没有这条告警，或已经确认过"));
-    }
+        .fetch_optional(&mut *tx)
+        .await?;
+    let (rule, summary) = match cur {
+        None => return Err(ApiError::not_found("没有这条告警")),
+        Some((_, _, Some(by))) => return Err(ApiError::conflict(format!("这条告警已经由 {by} 确认过"))),
+        Some((rule, summary, None)) => (rule, summary),
+    };
+    sqlx::query("update incident set ack_at = now(), ack_by = $2 where id = $1").bind(id).bind(&a.name).execute(&mut *tx).await?;
+    audit_log(&mut tx, &a.name, "incident.ack", "incident", Some(id), json!({"rule": rule, "summary": summary})).await?;
+    tx.commit().await?;
     st.emit(Event::Incidents);
     Ok(ok(json!({"ok": true})))
 }
@@ -200,6 +204,18 @@ pub async fn create_silence(a: Actor, State(st): State<AppState>, ApiJson(b): Ap
     if (b.ends_at - b.starts_at).whole_days() > 30 {
         return Err(ApiError::bad_request("最长 30 天；更久的请直接把机器退役"));
     }
+    if let Some(r) = b.rule.as_deref() {
+        // rule_name 对不认识的规则原样返回
+        if crate::notify::rule_name(r) == r {
+            return Err(ApiError::bad_request(format!("没有「{r}」这条告警规则")));
+        }
+    }
+    if let Some(sid) = b.subject_id {
+        let n: Option<(i32,)> = sqlx::query_as("select 1 from machine where id = $1").bind(sid).fetch_optional(&st.db).await?;
+        if n.is_none() {
+            return Err(ApiError::bad_request("subject_id 指向的机器不存在"));
+        }
+    }
     let id = new_id();
     let mut tx = st.db.begin().await?;
     sqlx::query(
@@ -222,7 +238,7 @@ pub async fn create_silence(a: Actor, State(st): State<AppState>, ApiJson(b): Ap
     Ok(ok(json!({"id": id})))
 }
 
-pub async fn delete_silence(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>) -> ApiResult<Json<Value>> {
+pub async fn delete_silence(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
     let n = sqlx::query("update silence set deleted_at = now() where id = $1 and deleted_at is null").bind(id).execute(&mut *tx).await?.rows_affected();
     if n == 0 {
@@ -239,6 +255,8 @@ pub async fn delete_silence(a: Actor, State(st): State<AppState>, Path(id): Path
 pub struct AuditQ {
     target_id: Option<Uuid>,
     limit: Option<i64>,
+    /// 翻页：只要 id 小于它的（上一页最后一条的 id）
+    before_id: Option<i64>,
 }
 
 #[derive(Serialize, sqlx::FromRow)]
@@ -253,18 +271,31 @@ struct AuditOut {
     detail: Value,
 }
 
-pub async fn audit(_a: Actor, State(st): State<AppState>, Query(q): Query<AuditQ>) -> ApiResult<Json<Value>> {
+pub async fn audit(a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<AuditQ>) -> ApiResult<Json<Value>> {
     let v: Vec<AuditOut> = sqlx::query_as(
         "select id, ts, actor, action, target_kind, target_id, detail from audit_log
-         where ($1::uuid is null or target_id = $1) order by id desc limit $2",
+         where ($1::uuid is null or target_id = $1) and ($3::bigint is null or id < $3) order by id desc limit $2",
     )
     .bind(q.target_id)
     .bind(q.limit.unwrap_or(100).clamp(1, 1000))
+    .bind(q.before_id)
     .fetch_all(&st.db)
     .await?;
+    // 没有 exec 权限的密钥看不到完整命令（命令里可能带口令）：只留第一行的前 80 个字
+    let can_exec = a.require_scope("exec").is_ok();
     let out: Vec<Value> = v
         .into_iter()
-        .map(|a| {
+        .map(|mut a| {
+            if !can_exec {
+                if let Some(c) = a.detail.get("command").and_then(Value::as_str) {
+                    let line = c.lines().next().unwrap_or("");
+                    let mut short: String = line.chars().take(80).collect();
+                    if short.len() < c.trim_end().len() {
+                        short.push('…');
+                    }
+                    a.detail["command"] = json!(short);
+                }
+            }
             let (title, summary) = audit_text(&a.action, &a.detail);
             let mut j = serde_json::to_value(&a).unwrap_or_default();
             j["title"] = json!(title);
@@ -305,6 +336,8 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "job.cancel" => "取消作业",
         "silence.create" => "新建静默",
         "silence.delete" => "删除静默",
+        "incident.ack" => "确认告警",
+        "restore.probe" => "恢复预检（登录机器）",
         "agent.upgrade" => "升级 agent",
         "notify.create" => "新建通知渠道",
         "notify.update" => "修改通知渠道",
@@ -359,13 +392,15 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
                 c.push('…');
             }
             let res = match (d["exit_code"].as_i64(), d["timed_out"] == true) {
+                _ if d["started"] == true => "执行中或中断（未记录结果）".to_string(),
                 (_, true) => "超时".to_string(),
                 (Some(code), _) => format!("退出码 {code}"),
                 (None, _) => format!("失败：{}", s("error")),
             };
             format!("{} · {c} · {res}", s("name"))
         }
-        "machine.logs" => s("name"),
+        "machine.logs" | "restore.probe" => s("name"),
+        "incident.ack" => format!("{} · {}", crate::notify::rule_name(d["rule"].as_str().unwrap_or("")), s("summary")),
         "server.logs" => format!("{} 行", d["lines"]),
         "apikey.create" | "apikey.revoke" => format!("{}（{}）", s("name"), s("prefix")),
         "auth.login" | "auth.login_failed" => s("ip"),

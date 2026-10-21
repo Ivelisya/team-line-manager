@@ -2,12 +2,13 @@ use crate::error::ApiJson;
 use super::ok;
 use crate::auth::Actor;
 use crate::db::{audit, bump_relays_of_nodes, new_id};
-use crate::error::{ApiError, ApiResult};
+use crate::error::{ApiError, ApiPath, ApiQuery, ApiResult};
 use crate::jobs;
 use crate::names::{compact_numbers, node_name};
 use crate::state::{AppState, Event};
 use crate::views::{self, Scope};
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
+use axum::http::StatusCode;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -20,7 +21,7 @@ pub struct ListQ {
     scope: Option<String>,
 }
 
-pub async fn list(_a: Actor, State(st): State<AppState>, Query(q): Query<ListQ>) -> ApiResult<Json<Value>> {
+pub async fn list(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<ListQ>) -> ApiResult<Json<Value>> {
     let scope = match q.scope.as_deref() {
         Some("retired") => Scope::Retired,
         Some("all") => Scope::All,
@@ -32,7 +33,7 @@ pub async fn list(_a: Actor, State(st): State<AppState>, Query(q): Query<ListQ>)
     Ok(ok(views::load(&st, scope, None).await?))
 }
 
-pub async fn get_one(_a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>) -> ApiResult<Json<Value>> {
+pub async fn get_one(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     let mut v = views::load(&st, Scope::All, Some(id)).await?;
     v.pop().map(ok).ok_or_else(|| ApiError::not_found("没有这台机器"))
 }
@@ -64,7 +65,7 @@ pub struct PatchIn {
     service_ref: Option<Option<String>>,
 }
 
-pub async fn patch(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, ApiJson(b): ApiJson<PatchIn>) -> ApiResult<Json<Value>> {
+pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<PatchIn>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
     let cur: (i32, String, Option<Uuid>, Option<i32>, Option<String>, String) = sqlx::query_as(
         "select revision, kind::text, team_id, number, label, lifecycle::text from machine where id = $1 for update",
@@ -134,7 +135,7 @@ pub async fn patch(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, A
         st.relay_bumped(r);
     }
     st.emit(Event::Machine { id });
-    get_one(a, State(st), Path(id)).await
+    get_one(a, State(st), ApiPath(id)).await
 }
 
 // ── 时序 ──────────────────────────────────────────────────────────────────
@@ -145,7 +146,7 @@ pub struct SeriesQ {
     range: Option<String>,
 }
 
-pub async fn series(_a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, Query(q): Query<SeriesQ>) -> ApiResult<Json<Value>> {
+pub async fn series(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<SeriesQ>) -> ApiResult<Json<Value>> {
     let hours: i64 = match q.range.as_deref().unwrap_or("24h") {
         "1h" => 1,
         "6h" => 6,
@@ -219,7 +220,7 @@ pub struct RetireIn {
     cleanup: Option<bool>,
 }
 
-pub async fn retire(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, ApiJson(b): ApiJson<RetireIn>) -> ApiResult<Json<Value>> {
+pub async fn retire(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<RetireIn>) -> ApiResult<Json<Value>> {
     let (name, kind, _) = display_name_of(&st.db, id).await?;
     if b.confirm.trim() != name {
         return Err(ApiError::bad_request(format!("确认文字不对：请输入「{name}」")));
@@ -314,7 +315,7 @@ pub async fn retire(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, 
 }
 
 /// 退役预览：同团队里会因压缩而改名的节点
-pub async fn retire_preview(_a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>) -> ApiResult<Json<Value>> {
+pub async fn retire_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     let (name, _kind, _lc) = display_name_of(&st.db, id).await?;
     let row: Option<(Option<Uuid>, Option<String>)> =
         sqlx::query_as("select m.team_id, t.name from machine m left join team t on t.id = m.team_id where m.id = $1")
@@ -343,7 +344,7 @@ pub struct PurgeIn {
     confirm: String,
 }
 
-pub async fn purge(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, ApiJson(b): ApiJson<PurgeIn>) -> ApiResult<Json<Value>> {
+pub async fn purge(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<PurgeIn>) -> ApiResult<Json<Value>> {
     let (name, _kind, lifecycle) = display_name_of(&st.db, id).await?;
     if lifecycle != "retired" {
         return Err(ApiError::conflict("只有已退役的机器才能彻底删除"));
@@ -364,9 +365,10 @@ pub async fn purge(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, A
 
 // ── agent 升级 ────────────────────────────────────────────────────────────
 
-async fn enqueue_upgrade(st: &AppState, actor: &str, ids: &[Uuid]) -> ApiResult<Vec<Value>> {
+/// 返回 (建好的作业, 跳过的机器)。每台一个 savepoint：一台冲突（期间别人建了作业）只跳过这台，不整批回滚。
+async fn enqueue_upgrade(st: &AppState, actor: &str, ids: &[Uuid]) -> ApiResult<(Vec<Value>, Vec<Value>)> {
     let mut tx = st.db.begin().await?;
-    let mut out = vec![];
+    let (mut out, mut skipped) = (vec![], vec![]);
     for id in ids {
         // 已有进行中作业的机器跳过（唯一索引也会挡住）
         let busy: Option<(Uuid,)> = sqlx::query_as("select id from job where target_id = $1 and state in ('queued','running','waiting','cancelling')")
@@ -374,12 +376,23 @@ async fn enqueue_upgrade(st: &AppState, actor: &str, ids: &[Uuid]) -> ApiResult<
             .fetch_optional(&mut *tx)
             .await?;
         if busy.is_some() {
+            skipped.push(json!({"machine_id": id, "reason": "还有进行中的作业"}));
             continue;
         }
-        let job = jobs::enqueue(&mut tx, "upgrade_agent", Some(*id), json!({}), actor).await?;
-        out.push(json!({"machine_id": id, "job_id": job}));
+        let mut sp = sqlx::Connection::begin(&mut *tx).await?;
+        match jobs::enqueue(&mut sp, "upgrade_agent", Some(*id), json!({}), actor).await {
+            Ok(job) => {
+                sp.commit().await?;
+                out.push(json!({"machine_id": id, "job_id": job}));
+            }
+            Err(e) if e.status == StatusCode::CONFLICT => {
+                sp.rollback().await?;
+                skipped.push(json!({"machine_id": id, "reason": e.message}));
+            }
+            Err(e) => return Err(e),
+        }
     }
-    audit(&mut tx, actor, "agent.upgrade", "machine", None, json!({"count": out.len()})).await?;
+    audit(&mut tx, actor, "agent.upgrade", "machine", None, json!({"count": out.len(), "skipped": skipped.len()})).await?;
     tx.commit().await?;
     for j in &out {
         let uuid = |k: &str| j[k].as_str().and_then(|s| Uuid::try_parse(s).ok());
@@ -387,11 +400,11 @@ async fn enqueue_upgrade(st: &AppState, actor: &str, ids: &[Uuid]) -> ApiResult<
             st.emit(Event::Job { id, target: uuid("machine_id") });
         }
     }
-    Ok(out)
+    Ok((out, skipped))
 }
 
 /// 单台：推送中控上当前版本的 agent 并重启（令牌顺带轮换）
-pub async fn upgrade_agent(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>) -> ApiResult<Json<Value>> {
+pub async fn upgrade_agent(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     let (kind, lc): (String, String) = sqlx::query_as("select kind::text, lifecycle::text from machine where id = $1")
         .bind(id)
         .fetch_optional(&st.db)
@@ -400,7 +413,7 @@ pub async fn upgrade_agent(a: Actor, State(st): State<AppState>, Path(id): Path<
     if kind == "proxy" || lc != "active" {
         return Err(ApiError::conflict("只有在用的线路机和落地机有 agent"));
     }
-    let v = enqueue_upgrade(&st, &a.name, &[id]).await?;
+    let (v, _) = enqueue_upgrade(&st, &a.name, &[id]).await?;
     v.into_iter().next().map(ok).ok_or_else(|| ApiError::conflict("这台机器还有进行中的作业"))
 }
 
@@ -410,7 +423,8 @@ pub async fn upgrade_all_agents(a: Actor, State(st): State<AppState>) -> ApiResu
         .fetch_all(&st.db)
         .await?;
     let ids: Vec<Uuid> = ids.into_iter().map(|(i,)| i).collect();
-    Ok(ok(json!({"jobs": enqueue_upgrade(&st, &a.name, &ids).await?})))
+    let (jobs, skipped) = enqueue_upgrade(&st, &a.name, &ids).await?;
+    Ok(ok(json!({"jobs": jobs, "skipped": skipped})))
 }
 
 // ── 账单 ──────────────────────────────────────────────────────────────────
@@ -448,7 +462,7 @@ pub async fn check_tz(db: &mut sqlx::PgConnection, tz: &str) -> ApiResult<()> {
     }
 }
 
-pub async fn put_subscription(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, ApiJson(b): ApiJson<SubIn>) -> ApiResult<Json<Value>> {
+pub async fn put_subscription(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<SubIn>) -> ApiResult<Json<Value>> {
     if b.price_cents < 0 || !(0..=60).contains(&b.remind_days) {
         return Err(ApiError::bad_request("金额或提醒天数不合法"));
     }
@@ -494,7 +508,7 @@ pub struct Renewal {
     created_at: OffsetDateTime,
 }
 
-pub async fn list_renewals(_a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>) -> ApiResult<Json<Value>> {
+pub async fn list_renewals(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     let v: Vec<Renewal> = sqlx::query_as(
         "select id, old_due, new_due, amount_cents, note, actor, created_at from renewal where machine_id = $1 order by created_at desc",
     )
@@ -511,7 +525,7 @@ pub struct RenewIn {
     note: Option<String>,
 }
 
-pub async fn add_renewal(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, ApiJson(b): ApiJson<RenewIn>) -> ApiResult<Json<Value>> {
+pub async fn add_renewal(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<RenewIn>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
     let (old,): (Date,) = sqlx::query_as("select due_date from subscription where machine_id = $1 for update")
         .bind(id)
@@ -568,7 +582,7 @@ fn plan_token(changes: &[(Uuid, i32, i32)]) -> String {
     hex::encode(&h.finalize()[..12])
 }
 
-pub async fn renumber_preview(_a: Actor, State(st): State<AppState>, Path(team_id): Path<Uuid>) -> ApiResult<Json<Value>> {
+pub async fn renumber_preview(_a: Actor, State(st): State<AppState>, ApiPath(team_id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     let mut conn = st.db.acquire().await?;
     let (team, changes) = renumber_plan(&mut conn, team_id).await?;
     let list: Vec<Value> = changes
@@ -583,7 +597,7 @@ pub struct RenumberIn {
     token: String,
 }
 
-pub async fn renumber_apply(a: Actor, State(st): State<AppState>, Path(team_id): Path<Uuid>, ApiJson(b): ApiJson<RenumberIn>) -> ApiResult<Json<Value>> {
+pub async fn renumber_apply(a: Actor, State(st): State<AppState>, ApiPath(team_id): ApiPath<Uuid>, ApiJson(b): ApiJson<RenumberIn>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
     // 锁住团队，防止并发上架插号
     sqlx::query("select 1 from team where id = $1 for update").bind(team_id).fetch_one(&mut *tx).await?;

@@ -54,8 +54,10 @@
 批量上架文件 `batch.json` 是条目数组，条目里的 `team`、`relay`、`provider`、`plan` 直接写名字：
 
 ```json
-[{"kind":"vps","ip":"203.0.113.10","team":"团队1","relay":"线路机2","provider":"ATTVPS","plan":"基础版","ss_port":8388}]
+[{"kind":"vps","ip":"203.0.113.10","team":"团队1","relay":"线路机2","provider":"ATTVPS","plan":"基础版"}]
 ```
+
+`ss_port` 只给 NAT 机填：供应商映射到节点 8388 的公网端口（节点上 ssserver 固定监听 8388），非 NAT 机省略。
 
 root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；首次登录必须用密码时，单台上架用 `--ssh-password-env VAR`。
 

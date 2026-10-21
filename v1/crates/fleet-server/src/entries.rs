@@ -11,6 +11,8 @@ use uuid::Uuid;
 
 /// 新建入口：锁线路机 → 取最小空闲端口 → 代数 +1。返回 (entry_id, port, generation)。
 pub async fn create(tx: &mut Tx<'_>, relay_id: Uuid, node_id: Uuid) -> ApiResult<(Uuid, i32, i64)> {
+    // 策略锁的共享锁（先于线路机行锁，和发布的加锁顺序一致）：发布在锁内读在用节点，不会漏掉正在建的入口
+    sqlx::query("select pg_advisory_xact_lock_shared($1)").bind(crate::policy::LOCK_KEY).execute(&mut **tx).await?;
     let (pmin, pmax): (i32, i32) = sqlx::query_as(
         "select r.port_min, r.port_max from relay r join machine m on m.id = r.machine_id
          where r.machine_id = $1 and m.lifecycle = 'active' for update of r for share of m",

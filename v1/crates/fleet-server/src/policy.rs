@@ -16,6 +16,8 @@ use uuid::Uuid;
 /// 每份策略最多多少个域名
 pub const MAX_DOMAINS: usize = 300;
 pub const MAX_NOTE_CHARS: usize = 500;
+/// 发布 / 回滚 / 丢弃 / 改草稿之间的互斥（事务级咨询锁）；新建入口拿共享锁，和发布互斥
+pub const LOCK_KEY: i64 = 0x706f_6c69_6379;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -340,9 +342,14 @@ fn build_set(rows: &[Row], drafts: bool) -> PolicySet {
 
 pub async fn load_current(db: &PgPool) -> sqlx::Result<PolicySet> { Ok(set_current(&load_rows(db, false).await?)) }
 
-/// 所有草稿的规范化 JSON 的 sha256（十六进制）。没有草稿 → None。
-/// 预览返回它，发布/丢弃必须带上且一致：防止预览之后草稿又被改。
-pub fn draft_hash(rows: &[Row]) -> Option<String> {
+/// 当前生效版本号（最新 policy_version.seq；还没有版本为 0）
+pub async fn current_version<'e, E: sqlx::PgExecutor<'e>>(ex: E) -> sqlx::Result<i64> {
+    sqlx::query_scalar("select coalesce(max(seq), 0)::bigint from policy_version").fetch_one(ex).await
+}
+
+/// 所有草稿的规范化 JSON 加当前生效版本号的 sha256（十六进制）。没有草稿 → None。
+/// 预览返回它，发布/丢弃必须带上且一致：防止预览之后草稿又被改，或期间有人发布 / 回滚。
+pub fn draft_hash(rows: &[Row], version: i64) -> Option<String> {
     let mut items: Vec<(&'static str, Uuid, &Data)> = rows.iter().filter_map(|r| r.draft.as_ref().map(|d| (r.scope.as_str(), r.scope_id, d))).collect();
     if items.is_empty() {
         return None;
@@ -352,6 +359,7 @@ pub fn draft_hash(rows: &[Row]) -> Option<String> {
         .into_iter()
         .map(|(s, id, d)| serde_json::json!({"scope": s, "scope_id": id, "mode": d.mode.as_str(), "domains": d.domains, "note": d.note}))
         .collect();
+    let v = serde_json::json!({"version": version, "drafts": v});
     Some(hex::encode(sha256(serde_json::to_string(&v).unwrap_or_default().as_bytes())))
 }
 
@@ -399,7 +407,7 @@ pub struct NodeRef {
     pub relays: Vec<Uuid>,
 }
 
-pub async fn live_nodes(db: &PgPool) -> sqlx::Result<Vec<NodeRef>> {
+pub async fn live_nodes<'e, E: sqlx::PgExecutor<'e>>(ex: E) -> sqlx::Result<Vec<NodeRef>> {
     #[derive(sqlx::FromRow)]
     struct NodeRow {
         id: Uuid,
@@ -417,7 +425,7 @@ pub async fn live_nodes(db: &PgPool) -> sqlx::Result<Vec<NodeRef>> {
          group by m.id, m.kind, m.team_id, t.name, m.number
          order by t.name nulls last, m.number",
     )
-    .fetch_all(db)
+    .fetch_all(ex)
     .await?;
     Ok(rows
         .into_iter()
@@ -595,14 +603,15 @@ mod tests {
     fn draft_hash_is_stable_and_sensitive() {
         let a = row(Scope::Team, 1, Data::default(), Some(d(Mode::Blocked, &[])));
         let b = row(Scope::Node, 2, Scope::Node.default_data(), Some(d(Mode::Denylist, &["x.com"])));
-        assert_eq!(draft_hash(&[]), None);
-        assert_eq!(draft_hash(&[row(Scope::Team, 1, Data::default(), None)]), None);
-        let h1 = draft_hash(&[a.clone(), b.clone()]).unwrap();
+        assert_eq!(draft_hash(&[], 1), None);
+        assert_eq!(draft_hash(&[row(Scope::Team, 1, Data::default(), None)], 1), None);
+        let h1 = draft_hash(&[a.clone(), b.clone()], 1).unwrap();
         assert_eq!(h1.len(), 64);
-        assert_eq!(draft_hash(&[b.clone(), a.clone()]).unwrap(), h1, "与行的顺序无关");
+        assert_eq!(draft_hash(&[b.clone(), a.clone()], 1).unwrap(), h1, "与行的顺序无关");
+        assert_ne!(draft_hash(&[a.clone(), b.clone()], 2).unwrap(), h1, "生效版本变了哈希也变");
         let mut b2 = b.clone();
         b2.draft = Some(d(Mode::Denylist, &["y.com"]));
-        assert_ne!(draft_hash(&[a, b2]).unwrap(), h1);
+        assert_ne!(draft_hash(&[a, b2], 1).unwrap(), h1);
     }
 
     #[test]

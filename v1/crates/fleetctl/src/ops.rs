@@ -335,7 +335,9 @@ pub fn upgrade_agent(ctx: &Ctx, machine: Option<&str>, all: bool, yes: bool, fol
     };
     ctx.emit(&d, || {
         let jobs = d["jobs"].as_array().cloned().unwrap_or_default();
-        format!("已提交 {} 个升级作业（有进行中作业的机器会被跳过）\n{}", jobs.len(), jobs.iter().map(|j| format!("  {}", st(j, "/job_id"))).collect::<Vec<_>>().join("\n"))
+        let skipped = d["skipped"].as_array().map_or(0, |s| s.len());
+        let skip = if skipped > 0 { format!("，跳过 {skipped} 台（有进行中的作业）") } else { "（有进行中作业的机器会被跳过）".into() };
+        format!("已提交 {} 个升级作业{skip}\n{}", jobs.len(), jobs.iter().map(|j| format!("  {}", st(j, "/job_id"))).collect::<Vec<_>>().join("\n"))
     });
     let mut code = 0;
     if follow {

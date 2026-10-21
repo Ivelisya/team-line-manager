@@ -3,9 +3,9 @@
 use super::ok;
 use crate::access::{self, Filter, TargetSort, Window};
 use crate::auth::Actor;
-use crate::error::{ApiError, ApiResult};
+use crate::error::{ApiError, ApiPath, ApiQuery, ApiResult};
 use crate::state::AppState;
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -71,7 +71,7 @@ fn page_of(q: &Q, default_limit: i64) -> ApiResult<(i64, i64)> {
     Ok((limit, offset))
 }
 
-pub async fn summary(_a: Actor, State(st): State<AppState>, Query(q): Query<Q>) -> ApiResult<Json<Value>> {
+pub async fn summary(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Q>) -> ApiResult<Json<Value>> {
     let f = filter_of(&q, Window::H24)?;
     let key = (!f.events).then(|| format!("summary|{f:?}"));
     if let Some(v) = key.as_deref().and_then(|k| st.access_cache.get(k)) {
@@ -85,7 +85,7 @@ pub async fn summary(_a: Actor, State(st): State<AppState>, Query(q): Query<Q>) 
     Ok(out)
 }
 
-pub async fn targets(_a: Actor, State(st): State<AppState>, Query(q): Query<Q>) -> ApiResult<Json<Value>> {
+pub async fn targets(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Q>) -> ApiResult<Json<Value>> {
     let f = filter_of(&q, Window::H24)?;
     let (limit, offset) = page_of(&q, 100)?;
     let sort = match nonempty(&q.sort) {
@@ -107,7 +107,7 @@ pub async fn targets(_a: Actor, State(st): State<AppState>, Query(q): Query<Q>) 
     Ok(out)
 }
 
-pub async fn sources(_a: Actor, State(st): State<AppState>, Query(q): Query<Q>) -> ApiResult<Json<Value>> {
+pub async fn sources(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Q>) -> ApiResult<Json<Value>> {
     let f = filter_of(&q, Window::H24)?;
     let (limit, _) = page_of(&q, 100)?;
     let mut items = access::sources(&st.db, &f, limit).await?;
@@ -116,7 +116,7 @@ pub async fn sources(_a: Actor, State(st): State<AppState>, Query(q): Query<Q>) 
 }
 
 /// 原始记录：按时间倒序，`before` 原样传回上一页的 `next_before`（不透明游标），最多回看 7 天
-pub async fn events(_a: Actor, State(st): State<AppState>, Query(q): Query<Q>) -> ApiResult<Json<Value>> {
+pub async fn events(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Q>) -> ApiResult<Json<Value>> {
     let f = filter_of(&q, Window::D7)?;
     let (limit, _) = page_of(&q, 100)?;
     let before = nonempty(&q.before)
@@ -128,7 +128,7 @@ pub async fn events(_a: Actor, State(st): State<AppState>, Query(q): Query<Q>) -
 }
 
 /// 窗口内第一次出现的目标（旧系统「新域名」的替代，不告警）
-pub async fn new_targets(_a: Actor, State(st): State<AppState>, Query(q): Query<Q>) -> ApiResult<Json<Value>> {
+pub async fn new_targets(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Q>) -> ApiResult<Json<Value>> {
     let mut f = filter_of(&q, Window::H24)?;
     // 首次出现时间是精确时间，窗口起点不对齐整点
     f.from = OffsetDateTime::now_utc() - window_of(&q, Window::H24)?.duration();
@@ -138,7 +138,7 @@ pub async fn new_targets(_a: Actor, State(st): State<AppState>, Query(q): Query<
     Ok(ok(json!({"items": items, "total": total, "next_offset": next, "window_start": access::fmt_ts(f.from)})))
 }
 
-pub async fn machine(_a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, Query(q): Query<Q>) -> ApiResult<Json<Value>> {
+pub async fn machine(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<Q>) -> ApiResult<Json<Value>> {
     let w = window_of(&q, Window::H24)?;
     let key = (w != Window::H1).then(|| format!("machine|{id}|{w:?}"));
     if let Some(v) = key.as_deref().and_then(|k| st.access_cache.get(k)) {

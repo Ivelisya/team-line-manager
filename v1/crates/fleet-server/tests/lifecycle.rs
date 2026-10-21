@@ -669,6 +669,12 @@ async fn restore_is_blocked_when_ip_is_taken() {
     let free = seed_node(&t, team, 2, "203.0.113.12", "retired").await;
     let (s, _) = t.req("POST", &format!("/api/v1/machines/{free}/restore"), Some(json!({"relay_id": ra, "upstream": upstream("p"), "number": 1})), None).await;
     assert_eq!(s, StatusCode::CONFLICT);
+    // 输入错误是 400：编号超范围、指定的团队不存在
+    let (s, v) = t.req("POST", &format!("/api/v1/machines/{free}/restore"), Some(json!({"relay_id": ra, "upstream": upstream("p"), "number": 1000})), None).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    let body = json!({"relay_id": ra, "upstream": upstream("p"), "team_id": uuid::Uuid::now_v7()});
+    let (s, v) = t.req("POST", &format!("/api/v1/machines/{free}/restore"), Some(body), None).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -737,6 +743,15 @@ async fn restore_vps_precheck_and_job_creation() {
     assert_eq!(pv["ssh"]["key_login"], "unreachable");
     assert!(!pv["warnings"].as_array().unwrap().is_empty());
     assert_eq!(pv["retired_reason"], "到期不续");
+    // 试登录记审计；没有 exec 的密钥不能试登录（probe=false 可以）
+    let n: i64 = sqlx::query_scalar("select count(*) from audit_log where action = 'restore.probe' and target_id = $1").bind(vps).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(n, 1);
+    let key = t.post("/api/v1/api-keys", json!({"name": "ci-read", "scopes": ["read"]})).await;
+    let tok = key["token"].as_str().unwrap();
+    let (s, v) = t.req("GET", &format!("/api/v1/machines/{vps}/restore"), None, Some(tok)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    let (s, _) = t.req("GET", &format!("/api/v1/machines/{vps}/restore?probe=false"), None, Some(tok)).await;
+    assert_eq!(s, StatusCode::OK);
 
     // 缺线路机 → 400
     let (s, _) = t.req("POST", &format!("/api/v1/machines/{vps}/restore"), Some(json!({"login": {"password": "x"}})), None).await;
@@ -796,4 +811,37 @@ async fn restore_relay_label_conflict() {
     assert_eq!(t.job(r["job_id"].as_str().unwrap()).await["kind"], "restore_relay");
     let (g, a): (i64, i64) = sqlx::query_as("select generation, applied_generation from relay where machine_id = $1").bind(old).fetch_one(&t.st.db).await.unwrap();
     assert!(g > a, "代数 {g} 必须大于已应用代数 {a}");
+}
+
+/// 加入口：线路机不存在 404；不在用、节点在上面已有入口 409；都不留作业
+#[tokio::test]
+async fn add_entry_checks_relay_before_enqueue() {
+    let t = setup(false).await;
+    let (ra, _) = seed_relay(&t).await;
+    let team = seed_team(&t, "团队1").await;
+    let node = seed_node(&t, team, 1, "203.0.113.20", "active").await;
+    sqlx::query("insert into entry (id, relay_id, node_id, port, client_uuid, short_id, lifecycle, changed_gen) values ($1, $2, $3, 20001, $4, 'ab', 'active', 1)")
+        .bind(Uuid::now_v7())
+        .bind(ra)
+        .bind(node)
+        .bind(Uuid::new_v4())
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let gone = Uuid::now_v7();
+    sqlx::query("insert into machine (id, kind, label, primary_ip, lifecycle, retired_at) values ($1, 'relay', '线路机8', '198.51.100.8', 'retired', now())")
+        .bind(gone)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let path = format!("/api/v1/machines/{node}/entries");
+    let (s, _) = t.req("POST", &path, Some(json!({"relay_id": Uuid::now_v7()})), None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, v) = t.req("POST", &path, Some(json!({"relay_id": gone})), None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    let (s, v) = t.req("POST", &path, Some(json!({"relay_id": ra})), None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("已经有入口"), "{v}");
+    let n: i64 = sqlx::query_scalar("select count(*) from job").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(n, 0);
 }
