@@ -15,6 +15,8 @@ import { Due, ErrorNote, LabelValue, LabelValueGrid, Note, Section, SectionHeade
 
 const CURRENCIES = ['CNY', 'USD', 'EUR', 'HKD', 'JPY'].map((c) => ({ value: c, label: `${c} ${F.currencySym(c).trim()}` }));
 const TZS = ['Asia/Shanghai', 'America/Los_Angeles', 'America/New_York', 'Europe/London', 'Asia/Tokyo', 'UTC'].map((z) => ({ value: z, label: z }));
+/** 当前值不在常用选项里（供应商时区 Asia/Hong_Kong、套餐币种 GBP 等）时补进去，否则下拉显示为空 */
+const withCurrent = (opts: { value: string; label: string }[], v: string) => (opts.some((o) => o.value === v) ? opts : [{ value: v, label: v }, ...opts]);
 
 export function BillingTab({ m }: { m: MachineView }) {
   const s = m.subscription;
@@ -88,10 +90,10 @@ function SubForm({ m }: { m: MachineView }) {
   return (
     <div className="form-grid">
       <Field label="费用"><Input inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="68" /></Field>
-      <Field label="币种"><Select value={currency} onChange={setCurrency} options={CURRENCIES} /></Field>
+      <Field label="币种"><Select value={currency} onChange={setCurrency} options={withCurrent(CURRENCIES, currency)} /></Field>
       <Field label="计费周期"><Select value={cycle} onChange={setCycle} options={F.CYCLE_OPTIONS} /></Field>
       <Field label="到期日"><DateField value={dueDate} onChange={setDueDate} /></Field>
-      <Field label="账单时区" hint="到期按这个时区的日期算"><Select value={tz} onChange={setTz} options={TZS} /></Field>
+      <Field label="账单时区" hint="到期按这个时区的日期算"><Select value={tz} onChange={setTz} options={withCurrent(TZS, tz)} /></Field>
       <Field label="提前提醒（天）"><Input inputMode="numeric" value={remind} onChange={(e) => setRemind(e.target.value.replace(/\D/g, ''))} /></Field>
       <Field label="流量上限（GiB）" hint="留空 = 按套餐"><Input inputMode="numeric" value={traffic} placeholder={m.plan?.traffic_gb ? `套餐 ${m.plan.traffic_gb}` : '套餐不限'} onChange={(e) => setTraffic(e.target.value.replace(/\D/g, ''))} /></Field>
       <Field label="流量重置日（每月几号）" hint="按账单时区；月份没有这一天按月末" error={resetBad ? '填 1–31' : undefined}><Input inputMode="numeric" maxLength={2} value={resetDay} onChange={(e) => setResetDay(e.target.value.replace(/\D/g, ''))} /></Field>

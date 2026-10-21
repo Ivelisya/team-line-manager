@@ -94,7 +94,7 @@ export function NodesPage() {
   const stable = useStableOrder(rows, sort?.id === 'traffic' ? JSON.stringify([scope, text, team, kind, relay, status, sort, pg.page, pg.size]) : null);
   const pageRows = React.useMemo(() => stable.slice(pg.offset, pg.offset + pg.size), [stable, pg.offset, pg.size]);
   const total = columns.reduce((s, c) => s + c.size, 0);
-  const statusOpts = [...Object.entries(HEALTH_LABEL).filter(([k]) => k !== 'inactive').map(([value, label]) => ({ value, label })), { value: 'provisioning', label: '上架中' }, { value: 'retiring', label: '退役中' }];
+  const statusOpts = [...Object.entries(HEALTH_LABEL).filter(([k]) => k !== 'inactive').map(([value, label]) => ({ value, label })), { value: 'provisioning', label: '上架中' }, { value: 'failed', label: '上架失败' }, { value: 'retiring', label: '退役中' }];
 
   return (
     <div className="stack">

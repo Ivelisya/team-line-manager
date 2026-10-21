@@ -19,7 +19,7 @@ use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, Salt
 use argon2::Argon2;
 use axum::extract::{ConnectInfo, FromRequestParts, OriginalUri, State};
 use axum::http::request::Parts;
-use axum::http::{Method, StatusCode};
+use axum::http::{HeaderMap, Method, StatusCode};
 use axum::Json;
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use serde::Deserialize;
@@ -173,27 +173,24 @@ impl FromRequestParts<AppState> for Actor {
     }
 }
 
-/// 请求来源 IP（登录限速用）。位于反向代理之后且配置了 trust_forwarded_for 时取 X-Forwarded-For 的最后一项
-/// （反代追加的那一项；客户端自己塞的在前面，不可信）。
+/// 请求来源 IP：`trust` 时取 X-Forwarded-For 的最后一项（反代追加的那一项；客户端或沿途 HTTP 代理塞的在前面，不可信），
+/// 取不到或不是合法 IP 时用连接对端地址。登录限速与出口回显共用
+pub fn client_ip(h: &HeaderMap, peer: Option<IpAddr>, trust: bool) -> Option<IpAddr> {
+    let fwd = trust
+        .then(|| h.get("x-forwarded-for")?.to_str().ok()?.rsplit(',').next()?.trim().parse::<IpAddr>().ok())
+        .flatten();
+    fwd.or(peer).map(|ip| ip.to_canonical())
+}
+
+/// 请求来源 IP（登录限速用），规则见 [`client_ip`]
 pub struct ClientIp(pub Option<IpAddr>);
 
 impl FromRequestParts<AppState> for ClientIp {
     type Rejection = Infallible;
 
     async fn from_request_parts(parts: &mut Parts, st: &AppState) -> Result<Self, Self::Rejection> {
-        let mut ip = parts.extensions.get::<ConnectInfo<SocketAddr>>().map(|c| c.0.ip());
-        if st.cfg.trust_forwarded_for {
-            let fwd = parts
-                .headers
-                .get("x-forwarded-for")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.rsplit(',').next())
-                .and_then(|v| v.trim().parse::<IpAddr>().ok());
-            if fwd.is_some() {
-                ip = fwd;
-            }
-        }
-        Ok(ClientIp(ip))
+        let peer = parts.extensions.get::<ConnectInfo<SocketAddr>>().map(|c| c.0.ip());
+        Ok(ClientIp(client_ip(&parts.headers, peer, st.cfg.trust_forwarded_for)))
     }
 }
 
@@ -336,6 +333,18 @@ pub async fn upsert_user(db: &sqlx::PgPool, username: &str, password: &str) -> a
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn client_ip_takes_last_forwarded_entry() {
+        let peer: Option<std::net::IpAddr> = Some("10.0.0.1".parse().unwrap());
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-for", "1.2.3.4, 203.0.113.7".parse().unwrap());
+        assert_eq!(client_ip(&h, peer, true), Some("203.0.113.7".parse().unwrap()), "取反代追加的最后一项，前面的可伪造");
+        assert_eq!(client_ip(&h, peer, false), peer, "不信任转发头时用连接对端");
+        h.insert("x-forwarded-for", "1.2.3.4, garbage".parse().unwrap());
+        assert_eq!(client_ip(&h, peer, true), peer, "最后一项不是 IP：用连接对端，不退到前面的");
+        assert_eq!(client_ip(&HeaderMap::new(), Some("::ffff:198.51.100.2".parse().unwrap()), true), Some("198.51.100.2".parse().unwrap()));
+    }
 
     #[test]
     fn password_roundtrip() {

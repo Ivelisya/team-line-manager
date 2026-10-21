@@ -5,7 +5,9 @@ use fleet_proto::{ApplyReport, DesiredState, ReportAck};
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
+use tokio::time::Instant;
 
 pub struct ServerClient {
     http: reqwest::Client,
@@ -13,6 +15,8 @@ pub struct ServerClient {
     token_file: PathBuf,
     /// 令牌文件权限过宽的警告只打一次
     perm_warned: AtomicBool,
+    /// 最近一次任何请求成功（2xx/204）的时间：上报器据此判断「服务端是好的、只是这份报告触发 500」
+    last_ok: Mutex<Option<Instant>>,
 }
 
 /// 小于这个字节数的请求体不压缩
@@ -51,7 +55,8 @@ pub fn plain_http_over_public(url: &str) -> bool {
 pub enum Outcome<T> {
     Ok(T),
     /// 可重试（网络、5xx、429、403…），带建议等待
-    /// `server_err` = 服务端 5xx（区别于网络错误等）：同一 seq 反复 5xx 时上报器据此把它移入 dead/
+    /// `server_err` = 服务端回 500（疑似这份报告触发服务端错误）：同一 seq 反复 500、且期间别的请求成功过时，上报器把它移入 dead/。
+    /// 502/503/504（中控挂了、代理连不上上游）与网络错误一律不算，无限重试（受队列的字节与时长上限约束）
     Retry { wait: Option<Duration>, why: String, server_err: bool },
     /// 令牌无效/被撤销：停止发送，长睡
     Revoked,
@@ -69,7 +74,7 @@ pub fn classify(status: u16, retry_after_s: Option<u64>, body: &str) -> Outcome<
         // 403：令牌与机器不匹配等，不丢数据，响亮地重试
         403 | 404 | 408 => Outcome::Retry { wait: None, why: short(), server_err: false },
         400..=499 => Outcome::Rejected(short()),
-        _ => Outcome::Retry { wait: None, why: short(), server_err: status >= 500 },
+        _ => Outcome::Retry { wait: None, why: short(), server_err: status == 500 },
     }
 }
 
@@ -90,7 +95,7 @@ impl ServerClient {
             let pem = std::fs::read(ca).with_context(|| format!("读取 CA {}", ca.display()))?;
             b = b.add_root_certificate(reqwest::Certificate::from_pem(&pem)?);
         }
-        Ok(Self { http: b.build()?, base: base.trim_end_matches('/').to_string(), token_file, perm_warned: AtomicBool::new(false) })
+        Ok(Self { http: b.build()?, base: base.trim_end_matches('/').to_string(), token_file, perm_warned: AtomicBool::new(false), last_ok: Mutex::new(None) })
     }
 
     /// 每次请求重读令牌，换令牌无需重启
@@ -111,6 +116,10 @@ impl ServerClient {
             tracing::warn!(mode = format!("{mode:o}"), "令牌文件 {} 权限过宽，应为 0600（chmod 600）", self.token_file.display());
         }
     }
+
+    fn mark_ok(&self) { *self.last_ok.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now()); }
+
+    pub fn last_ok(&self) -> Option<Instant> { *self.last_ok.lock().unwrap_or_else(|e| e.into_inner()) }
 
     fn retry_after(r: &reqwest::Response) -> Option<u64> {
         r.headers().get("retry-after")?.to_str().ok()?.trim().parse().ok()
@@ -144,8 +153,12 @@ impl ServerClient {
         let text = r.text().await.unwrap_or_default();
         match classify(status, ra, &text) {
             Outcome::Ok(()) => match serde_json::from_str::<ReportAck>(&text) {
-                Ok(a) => Outcome::Ok(a),
-                Err(e) => Outcome::Retry { wait: None, why: format!("ReportAck 解析失败：{e}"), server_err: true },
+                Ok(a) => {
+                    self.mark_ok();
+                    Outcome::Ok(a)
+                }
+                // 2xx 但正文不对（中间代理的页面等）：不算毒丸，照常重试
+                Err(e) => Outcome::Retry { wait: None, why: format!("ReportAck 解析失败：{e}"), server_err: false },
             },
             Outcome::Retry { wait, why, server_err } => Outcome::Retry { wait, why, server_err },
             Outcome::Revoked => Outcome::Revoked,
@@ -175,6 +188,7 @@ impl ServerClient {
         };
         let (status, ra) = (r.status().as_u16(), Self::retry_after(&r));
         if status == 204 {
+            self.mark_ok();
             return Outcome::Ok(None);
         }
         let text = match r.text().await {
@@ -185,7 +199,10 @@ impl ServerClient {
         };
         match classify(status, ra, &text) {
             Outcome::Ok(()) => match serde_json::from_str::<DesiredState>(&text) {
-                Ok(d) => Outcome::Ok(Some(d)),
+                Ok(d) => {
+                    self.mark_ok();
+                    Outcome::Ok(Some(d))
+                }
                 Err(e) => Outcome::Retry { wait: None, why: format!("DesiredState 解析失败：{e}"), server_err: false },
             },
             Outcome::Retry { wait, why, server_err } => Outcome::Retry { wait, why, server_err },
@@ -213,7 +230,11 @@ impl ServerClient {
         };
         let (status, ra) = (r.status().as_u16(), Self::retry_after(&r));
         let text = r.text().await.unwrap_or_default();
-        classify(status, ra, &text)
+        let o = classify(status, ra, &text);
+        if o == Outcome::Ok(()) {
+            self.mark_ok();
+        }
+        o
     }
 }
 
@@ -311,7 +332,11 @@ mod tests {
         assert!(matches!(classify(429, Some(7), ""), Outcome::Retry { wait: Some(d), .. } if d.as_secs() == 7));
         assert!(matches!(classify(429, Some(9999), ""), Outcome::Retry { wait: Some(d), .. } if d.as_secs() == 600));
         assert!(matches!(classify(403, None, "x"), Outcome::Retry { .. }));
-        assert!(matches!(classify(503, None, "x"), Outcome::Retry { server_err: true, .. }));
+        // 只有 500 可能是报告本身的问题；中控挂了（502/503/504）不算
+        assert!(matches!(classify(500, None, "x"), Outcome::Retry { server_err: true, .. }));
+        for s in [502, 503, 504] {
+            assert!(matches!(classify(s, None, "x"), Outcome::Retry { server_err: false, .. }), "{s}");
+        }
         assert!(matches!(classify(429, None, "x"), Outcome::Retry { server_err: false, .. }));
         assert!(matches!(classify(403, None, "x"), Outcome::Retry { server_err: false, .. }));
         assert!(matches!(classify(400, None, "bad"), Outcome::Rejected(_)));

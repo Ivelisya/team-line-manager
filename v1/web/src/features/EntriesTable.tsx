@@ -12,7 +12,9 @@ const probeCell = (p: EntryView['tcp']) => (p == null ? <span className="t-muted
 
 export function EntriesTable({ m, traffic }: { m: MachineView; traffic?: boolean }) {
   const [all, setAll] = React.useState(false);
-  if (!m.entries.length) return <div className="hint">还没有入口</div>;
+  // 流量页：已移除入口（换线路机后的旧入口）本月的流量也计入汇总，单列一行，各行加起来等于汇总
+  const removed = traffic ? m.removed_traffic.month_up + m.removed_traffic.month_down : 0;
+  if (!m.entries.length && !removed) return <div className="hint">还没有入口</div>;
   const entries = all ? m.entries : m.entries.slice(0, ENTRY_CAP);
   return (
     <div className="table-wrap" style={{ border: '1px solid var(--line)', borderRadius: 'var(--r-float)' }}>
@@ -27,6 +29,9 @@ export function EntriesTable({ m, traffic }: { m: MachineView; traffic?: boolean
               {traffic && <td className="r"><Num f={F.bytes(e.traffic.month_up + e.traffic.month_down)} /></td>}
             </tr>
           ))}
+          {removed > 0 && (
+            <tr><td className="t-sub" colSpan={4}>已移除的入口</td><td className="r"><Num f={F.bytes(removed)} /></td></tr>
+          )}
         </tbody>
       </table>
       <ShowAll total={m.entries.length} cap={ENTRY_CAP} open={all} onToggle={() => setAll((v) => !v)} />

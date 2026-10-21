@@ -80,7 +80,7 @@ export function buildDb(): Db {
     team: null, number: null, label: null, ssh_port: 22, provider: null, provider_code: null, plan: null, service_ref: null,
     lifecycle: 'active', lifecycle_reason: null, note: '', revision: 1, created_at: iso(now() - 120 * DAY), activated_at: iso(now() - 100 * DAY), retired_at: null,
     subscription: null, agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, quota: { used: 0, period_start: '' }, health: { status: 'ok', reasons: [] },
-    active_job: null, open_incidents: 0, maintenance: false, relay: null, ...o,
+    active_job: null, failed_job: null, open_incidents: 0, maintenance: false, relay: null, ...o,
   });
 
   // 线路机
@@ -204,7 +204,7 @@ export function buildDb(): Db {
   const mk = (id: string, kind: string, target: Job['target'], state: Job['state'], stepsDef: [string, string][], doneUntil: number, ageMin: number, err?: string): Job => {
     const created = t0 - ageMin * 60_000;
     return {
-      id, kind, target, state, step: Math.min(doneUntil, stepsDef.length - 1), step_count: stepsDef.length, cancellable: state === 'running', error: err ?? null, created_by: 'admin', created_at: iso(created), started_at: iso(created + 2000), finished_at: state === 'running' ? null : iso(created + 120_000),
+      id, kind, target, state, step: Math.min(doneUntil, stepsDef.length - 1), step_count: stepsDef.length, step_title: null, cancellable: state === 'running', error: err ?? null, created_by: 'admin', created_at: iso(created), started_at: iso(created + 2000), finished_at: state === 'running' ? null : iso(created + 120_000),
       steps: stepsDef.map(([key, title], i) => ({
         idx: i, key, title,
         state: i < doneUntil ? 'done' : i === doneUntil ? (state === 'running' ? 'running' : state === 'failed' ? 'failed' : 'pending') : 'pending',
@@ -215,7 +215,7 @@ export function buildDb(): Db {
     };
   };
   const PSTEPS: [string, string][] = [['preflight', '连接并检查系统'], ['agent', '安装 agent'], ['converge', '配置 Shadowsocks'], ['attach', '接入线路机'], ['verify', '验证连通性']];
-  const RSTEPS: [string, string][] = [['detach', '停用入口'], ['cleanup', '清理节点上的服务'], ['revoke', '吊销凭据'], ['finalize', '标记为已退役']];
+  const RSTEPS: [string, string][] = [['detach', '停用入口'], ['cleanup', '清理节点上的服务'], ['revoke', '撤销令牌'], ['finalize', '标记为已退役']];
   const jobs: Job[] = [
     mk('j-run', 'provision_vps', { id: 'm-t1-13p', name: '团队1-13' }, 'running', PSTEPS, 2, 6),
     mk('j-fail', 'provision_vps', { id: 'x1', name: '团队2-13' }, 'failed', PSTEPS, 0, 95, 'SSH 连接被拒绝：Permission denied (password)'),

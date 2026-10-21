@@ -355,12 +355,7 @@ async fn applied(State(st): State<AppState>, h: HeaderMap, ApiJson(r): ApiJson<A
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// 回显请求方 IP（出口探测用）
+/// 回显请求方 IP（出口探测用）；取法同登录限速（X-Forwarded-For 最后一项）
 pub async fn echo(State(st): State<AppState>, ConnectInfo(addr): ConnectInfo<SocketAddr>, h: HeaderMap) -> String {
-    if st.cfg.trust_forwarded_for {
-        if let Some(ip) = h.get("x-forwarded-for").and_then(|v| v.to_str().ok()).and_then(|v| v.split(',').next()) {
-            return ip.trim().to_string();
-        }
-    }
-    addr.ip().to_canonical().to_string()
+    crate::auth::client_ip(&h, Some(addr.ip()), st.cfg.trust_forwarded_for).map(|ip| ip.to_string()).unwrap_or_default()
 }

@@ -724,7 +724,7 @@ pub async fn compensate(st: &AppState, job: &JobRow, owner: &str) {
     }
     let Some(id) = job.target_id else { return };
     let Some(m) = note(st, job.id, "读取机器", c.machine().await).await else { return };
-    if m.lifecycle != "provisioning" {
+    if !matches!(m.lifecycle.as_str(), "provisioning" | "failed") {
         return;
     }
     if m.kind != "proxy" && ssh::tcp_ok(&m.ip, m.ssh_port as u16, Duration::from_secs(5)).await {

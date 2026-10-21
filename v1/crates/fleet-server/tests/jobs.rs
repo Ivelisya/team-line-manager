@@ -75,7 +75,27 @@ async fn retired_machine_old_provision_job_cannot_be_retried() {
     // 预检失败 → 作业 failed（可以重试的状态）
     let failed = t.wait_job(&job, "failed").await;
     assert_eq!(failed["steps"][0]["error_kind"], "network");
+    // 上架失败：机器不再停在上架中，原因是失败步骤的错误，详情给出失败的作业
+    assert_eq!(t.machine_lifecycle(machine).await, "failed");
+    let m = t.get(&format!("/api/v1/machines/{machine}")).await;
+    assert!(m["lifecycle_reason"].as_str().unwrap().starts_with("预检与身份："), "{m}");
+    assert_eq!(m["failed_job"]["id"], job.as_str(), "{m}");
+    assert!(m["active_job"].is_null());
+
+    // 列表形状：不带 steps，带当前步骤标题（网页进度浮层只靠 step/step_count/step_title）
+    let list = t.get(&format!("/api/v1/jobs?target_id={machine}")).await;
+    let item = &list["items"][0];
+    assert_eq!(item["id"], job.as_str());
+    assert!(item.get("steps").is_none(), "{item}");
+    assert_eq!(item["step"], 0);
+    assert_eq!(item["step_count"], 9);
+    assert_eq!(item["step_title"], "预检与身份");
+
+    // 重试：机器回到上架中；再次失败又回到上架失败
+    t.post(&format!("/api/v1/jobs/{job}/retry"), json!({})).await;
     assert_eq!(t.machine_lifecycle(machine).await, "provisioning");
+    t.wait_job(&job, "failed").await;
+    assert_eq!(t.machine_lifecycle(machine).await, "failed");
 
     // 把这台上架失败的机器退役
     let name = t.get(&format!("/api/v1/machines/{machine}")).await["name"].as_str().unwrap().to_string();

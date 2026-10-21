@@ -214,6 +214,7 @@ pub(crate) mod tests {
             quota: Quota { used: 0, period_start: now.date() },
             health: Health::default(),
             active_job: None,
+            failed_job: None,
             open_incidents: 0,
             maintenance: false,
             relay: None,

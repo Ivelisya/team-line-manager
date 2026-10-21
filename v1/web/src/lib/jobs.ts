@@ -1,5 +1,5 @@
 // 作业的展示辅助：kind 中文名、state 分类、步骤输出摘要。取值以 API.md「返回形状补充」为准。
-import type { EntryLifecycle, Job, JobStep } from './types';
+import type { EntryLifecycle, JobStep, JobSummary } from './types';
 import { ENTRY_LABEL } from './sort';
 import { dtFull } from './format';
 
@@ -18,7 +18,6 @@ export const stepSkipped = (s: JobStep) => s.state === 'skipped';
 export const stepRunning = (s: JobStep) => s.state === 'running';
 /** 已补偿：作业取消或失败后，做过的步骤被逆序撤销 */
 export const stepCompensated = (s: JobStep) => s.state === 'compensated';
-export const stepsDone = (j: Job) => j.steps.filter(stepDone).length;
 
 /** 步骤的展示类别（步骤条、时间线共用） */
 export type StepKind = 'done' | 'running' | 'failed' | 'skipped' | 'compensated' | 'pending';
@@ -26,15 +25,15 @@ export const stepKind = (s: JobStep): StepKind =>
   stepDone(s) ? 'done' : stepFailed(s) ? 'failed' : stepRunning(s) ? 'running' : stepCompensated(s) ? 'compensated' : stepSkipped(s) ? 'skipped' : 'pending';
 export const STEP_KIND_LABEL: Record<StepKind, string> = { done: '已完成', running: '进行中', failed: '失败', skipped: '已跳过', compensated: '已补偿', pending: '等待' };
 
-/** 总进度：已完成步骤 / 总步骤；作业成功时一定是 100 */
-export function jobProgress(j: Job) {
-  const total = j.step_count || j.steps.length || 1;
-  const done = j.state === 'succeeded' ? total : Math.min(total, stepsDone(j));
+/** 总进度：已走过的步骤（step 之前的，完成或跳过）/ 总步骤；作业成功时一定是 100。列表项与详情通用 */
+export function jobProgress(j: JobSummary) {
+  const total = j.step_count || 1;
+  const done = j.state === 'succeeded' ? total : Math.min(total, j.step);
   return { done, total, pct: (done / total) * 100 };
 }
-/** 当前（或失败的）步骤标题，进度浮层里显示 */
-export function currentStepTitle(j: Job): string | null {
-  return (j.steps.find(stepRunning) ?? j.steps.find(stepFailed))?.title ?? null;
+/** 当前（或失败的）步骤标题，进度浮层里显示；排队中为 null */
+export function currentStepTitle(j: JobSummary): string | null {
+  return j.state === 'queued' ? null : j.step_title;
 }
 
 /** error_kind 的中文说明（服务端 ssh.rs ErrKind）；未收录的原样显示 */

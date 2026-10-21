@@ -3,7 +3,7 @@ import { useCallback } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { del, get, patch, post, put } from './api';
 import { collator, makeDefaultCompare } from './sort';
-import type { ApiKey, Incident, Job, Paged, JobLog, MachineView, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RestoreBody, RestorePreview, MoveResult, EvacuateResult, ProbeBeats, SeriesResp, Silence, Team, AuditEntry, NotifyChannel, NotifyLogEntry } from './types';
+import type { ApiKey, Incident, Job, JobSummary, Paged, JobLog, MachineView, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RestoreBody, RestorePreview, MoveResult, EvacuateResult, ProbeBeats, SeriesResp, Silence, Team, AuditEntry, NotifyChannel, NotifyLogEntry } from './types';
 
 export const useMe = () => useQuery({ queryKey: ['me'], queryFn: () => get<{ username: string }>('/auth/me'), retry: false, staleTime: 5 * 60_000 });
 export const useTeams = () => useQuery({ queryKey: ['teams'], queryFn: () => get<Team[]>('/teams'), staleTime: 60_000 });
@@ -51,7 +51,7 @@ export const useRenewals = (id: string | null) => useQuery({ queryKey: ['renewal
 export const useAudit = (id: string | null) => useQuery({ queryKey: ['audit', id], queryFn: ({ signal }) => get<AuditEntry[]>(`/audit?target_id=${id}&limit=10`, signal), enabled: !!id });
 /** 作业列表一页（按创建先后倒序）；换页时先留着上一页，不闪骨架 */
 export const useJobs = (state: 'active' | 'done' | 'all' = 'all', offset = 0, limit = 100) =>
-  useQuery({ queryKey: ['jobs', state, offset, limit], queryFn: ({ signal }) => get<Paged<Job>>(`/jobs?state=${state}&limit=${limit}&offset=${offset}`, signal), placeholderData: keepPreviousData });
+  useQuery({ queryKey: ['jobs', state, offset, limit], queryFn: ({ signal }) => get<Paged<JobSummary>>(`/jobs?state=${state}&limit=${limit}&offset=${offset}`, signal), placeholderData: keepPreviousData });
 /** 作业详情：靠实时流的 job 事件失效重取 */
 export const useJob = (id: string | null) => useQuery({ queryKey: ['job', id], queryFn: ({ signal }) => get<Job>(`/jobs/${id}`, signal), enabled: !!id });
 /** 告警列表一页（严重度优先）。默认参数与告警页第一页相同：顶栏徽标取 total，和告警页共用同一份缓存 */

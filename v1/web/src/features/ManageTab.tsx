@@ -141,7 +141,8 @@ function AgentSection({ m }: { m: MachineView }) {
 function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }) {
   const [dlg, setDlg] = React.useState<null | 'retire' | 'purge' | 'restore'>(null);
   const purge = usePurge();
-  const busyJob = m.lifecycle === 'provisioning' || m.lifecycle === 'retiring';
+  // 上架中有作业在跑、退役中：不能退役；上架失败（或上架中但作业已不在跑）可以退役，释放 IP 与编号
+  const busyJob = (m.lifecycle === 'provisioning' || m.lifecycle === 'retiring') && !!m.active_job;
   const retired = m.lifecycle === 'retired';
 
   return (
@@ -169,9 +170,9 @@ function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }
           <div className="manage-row">
             <div>
               <div className="t">退役</div>
-              <div className="hint">停用入口、吊销凭据，机器进入“已退役”，不再出现在首页和统计里。{m.kind !== 'relay' && '同团队后面的节点会自动前移补号。'}</div>
+              <div className="hint">停用入口、撤销令牌，机器进入“已退役”，不再出现在首页和统计里。{m.kind !== 'relay' && '同团队后面的节点会自动前移补号。'}</div>
             </div>
-            <Button variant="outline-danger" disabled={busyJob} onClick={() => setDlg('retire')}>退役…</Button>
+            <Button variant="outline-danger" disabled={busyJob || m.lifecycle === 'retiring'} onClick={() => setDlg('retire')}>退役…</Button>
           </div>
         )}
         {busyJob && m.active_job && <Note tone="info">作业进行中，暂不能操作。<Link to={`/jobs/${m.active_job.id}`} style={{ color: 'var(--accent)' }}>查看作业</Link></Note>}

@@ -4,7 +4,7 @@ import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, ArrowDownToLine, Check, CircleDashed, Copy, ListChecks, Loader2, Minus, Pause, Play, RotateCw, Square, Undo2, X } from 'lucide-react';
 import { fetchAllLogs, useCancelJob, useJob, useJobs, useRetryJob } from '@/lib/queries';
 import type { Job, JobLog } from '@/lib/types';
-import { errorKindLabel, jobKindLabel, jobLive, jobProgress, outputLines, stepKind, stepsDone, type StepKind } from '@/lib/jobs';
+import { errorKindLabel, jobKindLabel, jobLive, jobProgress, outputLines, stepKind, type StepKind } from '@/lib/jobs';
 import { useNow } from '@/lib/useNow';
 import { copyText } from '@/lib/clipboard';
 import * as F from '@/lib/format';
@@ -125,7 +125,7 @@ function JobDetail({ id }: { id: string }) {
         )}
       </Panel>
 
-      <Panel title="步骤" sub={`${stepsDone(j)} / ${j.step_count || j.steps.length}`}>
+      <Panel title="步骤" sub={`${jobProgress(j).done} / ${jobProgress(j).total}`}>
         <ol className="steps">
           {j.steps.map((s) => {
             const k = stepKind(s);

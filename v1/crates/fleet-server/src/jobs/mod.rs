@@ -108,7 +108,10 @@ pub fn title_of(kind: &str, key: &str) -> &'static str {
     defs(kind).iter().find(|d| d.key == key).map(|d| d.title).unwrap_or("")
 }
 
-pub fn cancellable(kind: &str) -> bool { kind.starts_with("provision_") || kind.starts_with("restore_") || kind == "attach_entry" || kind == "move_entry" }
+/// 上架类作业（含恢复）：目标机器处于上架中，失败时机器标为上架失败
+pub fn provisions(kind: &str) -> bool { kind.starts_with("provision_") || kind.starts_with("restore_") }
+
+pub fn cancellable(kind: &str) -> bool { provisions(kind) || kind == "attach_entry" || kind == "move_entry" }
 
 /// 作业走到第 `step` 步时还能不能取消：换线路机一旦开始摘旧入口就只能重试到完成（回滚会让节点没有入口）
 pub fn cancellable_at(kind: &str, step: i32) -> bool { cancellable(kind) && !(kind == "move_entry" && step >= MOVE_POINT_OF_NO_RETURN) }
@@ -486,6 +489,9 @@ async fn fail(st: &AppState, job: &JobRow, owner: &str, d: &StepDef, kind: ErrKi
     if n == 0 {
         return lost(st, job).await;
     }
+    let err = format!("{}：{msg}", d.title);
+    // 作业置失败与机器置「上架失败」同一事务：看到作业失败时机器状态已经变了
+    let mut tx = st.db.begin().await?;
     let state: Option<String> = sqlx::query_scalar(
         "update job set state = case when state = 'cancelling' then state else 'failed' end, error = $2,
             finished_at = case when state = 'cancelling' then finished_at else now() end,
@@ -494,14 +500,31 @@ async fn fail(st: &AppState, job: &JobRow, owner: &str, d: &StepDef, kind: ErrKi
          where id = $1 and lease_owner = $3 returning state::text",
     )
     .bind(job.id)
-    .bind(format!("{}：{msg}", d.title))
+    .bind(&err)
     .bind(owner)
-    .fetch_optional(&st.db)
+    .fetch_optional(&mut *tx)
     .await?;
     let Some(state) = state else { return lost(st, job).await };
-    log(st, job.id, "error", format!("失败：{}：{msg}", d.title)).await;
+    // 上架/恢复失败：机器标为「上架失败」（重试回到上架中，取消则补偿退役）
+    let marked = state == "failed"
+        && provisions(&job.kind)
+        && sqlx::query(
+            "update machine set lifecycle = 'failed', lifecycle_reason = $2, revision = revision + 1, updated_at = now()
+             where id = $1 and lifecycle = 'provisioning'",
+        )
+        .bind(job.target_id)
+        .bind(&err)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+            > 0;
+    tx.commit().await?;
+    log(st, job.id, "error", format!("失败：{err}")).await;
     if state == "cancelling" {
         log(st, job.id, "warn", "作业正在取消，将执行补偿").await;
+    }
+    if marked {
+        st.emit(Event::Machines);
     }
     notify(st, job);
     Ok(())
