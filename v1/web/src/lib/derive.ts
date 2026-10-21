@@ -56,9 +56,9 @@ export type BeatCell = 'ok' | 'warn' | 'bad' | null;
  */
 export const beatCells = (buckets: ProbeBucket[] | undefined): BeatCell[] =>
   (buckets ?? []).map(([n, ok, ms]) => { if (!n) return null; const r = ok / n; return r < 0.5 ? 'bad' : r < 0.95 || (ms ?? 0) >= 150 ? 'warn' : 'ok'; });
-/** 入口探测摘要：最差 TCP 延迟与出口延迟 */
+/** 入口探测摘要：平均 TCP 延迟与出口延迟。只算 active 的入口（同服务端健康规则）：应用中的还没有探测 */
 export function probeSummary(m: MachineView) {
-  const es = m.entries.filter((e) => e.lifecycle === 'active' || e.lifecycle === 'provisioning');
+  const es = m.entries.filter((e) => e.lifecycle === 'active');
   const tcpOk = es.filter((e) => e.tcp?.ok).length;
   const lat = es.map((e) => e.tcp?.latency_ms).filter((x): x is number => x != null);
   const eg = es.map((e) => e.egress?.latency_ms).filter((x): x is number => x != null);
@@ -69,8 +69,8 @@ export function probeSummary(m: MachineView) {
  * 预付了多期时比例大于 1；已过期为 0。
  */
 export function remainingValue(s: Subscription | null) {
-  const months = s && F.CYCLE_MONTHS[s.cycle];
-  if (!s || !months) return null;
+  if (!s) return null;
+  const months = F.CYCLE_MONTHS[s.cycle];
   const days = Math.round((Date.parse(s.due_date) - Date.parse(F.addMonths(s.due_date, -months))) / 86_400_000);
   const frac = Math.max(0, s.due_days / days);
   return { cents: Math.round(s.price_cents * frac), currency: s.currency, frac, days };

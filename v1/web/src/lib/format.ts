@@ -104,7 +104,7 @@ export const pad2 = p2;
 /** 显示名：团队名 + '-' + 两位编号 */
 export const displayName = (team: string, n: number) => `${team}-${p2(n)}`;
 
-/** 计费周期的月数（一次性没有周期） */
+/** 计费周期的月数 */
 export const CYCLE_MONTHS: Record<string, number> = { monthly: 1, quarterly: 3, semiannual: 6, yearly: 12 };
 /** YYYY-MM-DD 加 n 个月（n 可为负）；目标月没有那一天时落到月末 */
 export function addMonths(date: string, n: number): string {

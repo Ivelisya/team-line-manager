@@ -721,6 +721,8 @@ pub fn overview_of(ms: &[MachineView]) -> Value {
     let mut nodes = json!({"total": 0, "ok": 0, "degraded": 0, "down": 0, "unknown": 0, "maintenance": 0});
     let mut relays = nodes.clone();
     let (mut provisioning, mut retiring, mut due_7d, mut up, mut down, mut rx, mut tx) = (0, 0, 0, 0i64, 0i64, 0f64, 0f64);
+    // 在线/离线按 agent 连通（同前端 isQuiet）：agent 没有近期上报为离线；家宽代理没有 agent，算在线。和健康无关
+    let (mut online, mut offline) = (0, 0);
     // 月费按币种分别汇总（不做汇率折算）
     let mut cost: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
     for m in ms {
@@ -767,13 +769,18 @@ pub fn overview_of(ms: &[MachineView]) -> Value {
         // 实时速率只算数据没过期的：agent 离线的机器，最后一份上报的速率不算（同前端 liveRate）。
         // 告警（哪怕严重）不影响：机器照常每 10 秒上报
         let stale = m.agent.as_ref().is_some_and(|a| !a.online);
+        if stale {
+            offline += 1;
+        } else {
+            online += 1;
+        }
         if let Some(h) = m.host.as_ref().filter(|_| !stale) {
             rx += h.net_rx_bps.unwrap_or(0.0);
             tx += h.net_tx_bps.unwrap_or(0.0);
         }
     }
     json!({
-        "nodes": nodes, "relays": relays, "provisioning": provisioning, "retiring": retiring, "due_7d": due_7d,
+        "nodes": nodes, "relays": relays, "provisioning": provisioning, "retiring": retiring, "due_7d": due_7d, "online": online, "offline": offline,
         "monthly_cost": cost.into_iter().map(|(c, v)| json!({"currency": c, "cents": v})).collect::<Vec<_>>(), "traffic_month": {"up": up, "down": down}, "net_rx_bps": rx, "net_tx_bps": tx,
     })
 }
@@ -830,6 +837,26 @@ mod tests {
         assert_eq!(ov["net_rx_bps"], 1000.0);
         assert_eq!(ov["net_tx_bps"], 500.0);
         assert_eq!(ov["nodes"]["down"], 2);
+    }
+
+    #[test]
+    fn overview_online_by_agent_not_health() {
+        let now = OffsetDateTime::now_utc();
+        // 严重告警（已过期）但 agent 在线：在线
+        let mut crit = base("vps");
+        crit.subscription = Some(sub(-3));
+        crit.health = health::evaluate(&crit, now);
+        assert_eq!(crit.health.status, Status::Down);
+        let mut off = base("relay");
+        off.agent.as_mut().unwrap().online = false;
+        // 家宽代理没有 agent：在线
+        let mut proxy = base("proxy");
+        proxy.agent = None;
+        let mut retired = base("vps");
+        retired.lifecycle = "retired".into();
+        retired.agent.as_mut().unwrap().online = false;
+        let ov = overview_of(&[crit, off, proxy, retired]);
+        assert_eq!((ov["online"].as_i64(), ov["offline"].as_i64()), (Some(2), Some(1)));
     }
 
     #[test]

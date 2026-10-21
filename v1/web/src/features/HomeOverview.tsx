@@ -68,19 +68,12 @@ export function OverviewSection({ o, loading }: { o: Overview | undefined; loadi
 const ONLINE_N = 24;
 function ClusterPanel({ o }: { o: Overview | undefined }) {
   const trace = useFleetSeries();
-  const sum = (k: keyof Overview['nodes']) => (o ? o.nodes[k] + o.relays[k] : 0);
-  const total = sum('total'); const down = sum('down'); const unknown = sum('unknown'); const degraded = sum('degraded');
-  const offline = down + unknown; const online = total - offline;
+  // 在线/离线按 agent 连通（服务端算，同 isQuiet）：有告警但照常上报的机器算在线；降级 / 故障只决定状态胶囊
+  const online = o?.online ?? 0; const offline = o?.offline ?? 0; const total = online + offline;
+  const down = o ? o.nodes.down + o.relays.down : 0; const degraded = o ? o.nodes.degraded + o.relays.degraded : 0;
   const rate = total ? (online / total) * 100 : 0;
-  // 格条按比例分段着色：正常（含维护）绿、降级黄、故障红、未知灰
-  const colors = React.useMemo(() => {
-    const parts: [number, string][] = [[online - degraded, 'var(--ok)'], [degraded, 'var(--warn)'], [down, 'var(--bad)'], [unknown, 'var(--neutral)']];
-    return Array.from({ length: ONLINE_N }, (_, i) => {
-      let x = ((i + 0.5) / ONLINE_N) * total;
-      for (const [n, c] of parts) { if (x < n) return c; x -= n; }
-      return 'var(--neutral)';
-    });
-  }, [online, degraded, down, unknown, total]);
+  // 格条按比例分段着色：在线绿、离线红；没有机器全灰
+  const colors = React.useMemo(() => Array.from({ length: ONLINE_N }, (_, i) => (!total ? 'var(--neutral)' : ((i + 0.5) / ONLINE_N) * total < online ? 'var(--ok)' : 'var(--bad)')), [online, total]);
   const healthy = o && !down && !degraded;
   const now = o ? o.net_rx_bps + o.net_tx_bps : 0; const sc = F.rateScale(now);
   return (

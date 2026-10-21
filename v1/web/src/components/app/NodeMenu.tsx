@@ -24,7 +24,8 @@ export function useNodeMenu(m: MachineView): MenuEntry[] {
   const share = async (entryId: string) => {
     try { const r = await fetchShare(entryId); await copyText(r.url, '分享链接'); } catch (e) { toast.err(e); }
   };
-  const shareable = m.entries.filter((e) => e.lifecycle !== 'provisioning');
+  // 还在应用或正在移除的入口不给分享
+  const shareable = m.entries.filter((e) => e.lifecycle !== 'pending' && e.lifecycle !== 'removing');
   const shareItem: MenuEntry = shareable.length > 1
     ? { key: 'share', label: '复制分享链接', icon: <Link2 />, children: shareable.map((e) => ({ key: `share-${e.id}`, label: m.kind === 'relay' ? `${e.port} · ${e.node.name}` : `${e.relay.name}:${e.port}`, onSelect: () => void share(e.id) })) }
     : { key: 'share', label: '复制分享链接', icon: <Link2 />, disabled: shareable.length === 0 || retired, onSelect: () => void share(shareable[0].id) };

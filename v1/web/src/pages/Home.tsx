@@ -104,7 +104,7 @@ export function HomePage() {
       <OverviewSection o={o} loading={!o && !ov.isError /* 失败时不要一直停在骨架：显示“—”和重试 */} />
 
       <HomeSection icon={<Server />} label="服务器集群" headRef={pg.anchor}
-        title={<h2 className="hsec-title">节点矩阵与实时监控</h2>} sub="实时监控负载、资源占用、网络吞吐与在线状态；点读数或迹线可直接打开历史曲线。"
+        title={<h2 className="hsec-title">机器矩阵与实时监控</h2>} sub="实时监控负载、资源占用、网络吞吐与在线状态；点读数或迹线可直接打开历史曲线。"
         actions={<>
           <Select sm value={sort} onChange={(v) => setS(v as SortKey)} options={SORTS} className="w-[150px]" aria-label="排序" />
           <Segmented sm label="视图" value={layout} onChange={setL} items={[

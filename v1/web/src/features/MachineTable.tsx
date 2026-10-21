@@ -32,8 +32,8 @@ export const TABLE_SORTS: Record<string, (a: MachineView, b: MachineView) => num
   value: (a, b) => (remainingValue(a.subscription)?.cents ?? -1) - (remainingValue(b.subscription)?.cents ?? -1),
 };
 const monthly = (m: MachineView) => {
-  const s = m.subscription; const n = s && F.CYCLE_MONTHS[s.cycle];
-  return s ? (n ? F.money(Math.round(s.price_cents / n), s.currency) : `${F.money(s.price_cents, s.currency)} 一次性`) : null;
+  const s = m.subscription;
+  return s ? F.money(Math.round(s.price_cents / F.CYCLE_MONTHS[s.cycle]), s.currency) : null;
 };
 
 /** first：可排序列首次点击的方向（数值先降序；名称、到期先升序） */

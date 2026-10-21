@@ -157,7 +157,7 @@ export function buildDb(): Db {
   {
     const p = plan('pl1'); const team = teams[0];
     const id = 'm-t1-13p';
-    const e: EntryView = { id: `e${eSeq++}`, relay: { id: 'r1', name: '线路机1' }, node: { id, name: displayName(team.name, 13) }, port: 20000 + entriesByRelay.r1.length + 1, lifecycle: 'provisioning', applied: false, apply_error: null, tcp: null, egress: null, traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 } };
+    const e: EntryView = { id: `e${eSeq++}`, relay: { id: 'r1', name: '线路机1' }, node: { id, name: displayName(team.name, 13) }, port: 20000 + entriesByRelay.r1.length + 1, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 } };
     entriesByRelay.r1.push(e);
     machines.push(base({
       id, kind: 'vps', name: displayName(team.name, 13), team: { id: team.id, name: team.name }, number: 13, ip: '198.51.100.77', lifecycle: 'provisioning', activated_at: null, created_at: iso(now() - 6 * 60_000),

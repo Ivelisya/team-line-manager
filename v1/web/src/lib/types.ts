@@ -2,6 +2,8 @@
 
 export type Kind = 'relay' | 'vps' | 'proxy';
 export type Lifecycle = 'draft' | 'provisioning' | 'active' | 'retiring' | 'retired' | 'failed';
+/** 入口生命周期：pending = 已建、等线路机应用；removing = 等线路机删掉 */
+export type EntryLifecycle = 'pending' | 'active' | 'disabled' | 'removing' | 'removed';
 export type HealthStatus = 'ok' | 'degraded' | 'down' | 'unknown' | 'maintenance' | 'inactive';
 export type Cycle = 'monthly' | 'quarterly' | 'semiannual' | 'yearly' | string;
 
@@ -18,7 +20,7 @@ export interface ProbeResult { ok: boolean; latency_ms: number | null; detail: s
 export interface EntryTraffic { today_up: number; today_down: number; month_up: number; month_down: number }
 export interface EntryView {
   id: string; relay: { id: string; name: string }; node: { id: string; name: string }; port: number;
-  lifecycle: Lifecycle | 'disabled' | string; applied: boolean; apply_error: string | null;
+  lifecycle: EntryLifecycle; applied: boolean; apply_error: string | null;
   tcp: ProbeResult | null; egress: ProbeResult | null; traffic: EntryTraffic;
 }
 export interface HealthReason { key: string; severity: 'info' | 'warning' | 'critical' | string; text: string }
@@ -54,6 +56,8 @@ export interface Plan {
 export interface Overview {
   nodes: Record<'total' | 'ok' | 'degraded' | 'down' | 'unknown' | 'maintenance', number>;
   relays: Record<'total' | 'ok' | 'degraded' | 'down' | 'unknown' | 'maintenance', number>;
+  /** 在线/离线按 agent 连通（同 isQuiet），与健康无关 */
+  online: number; offline: number;
   provisioning: number; retiring: number; due_7d: number; monthly_cost: { currency: string; cents: number }[];
   traffic_month: { up: number; down: number }; net_rx_bps: number; net_tx_bps: number;
 }
