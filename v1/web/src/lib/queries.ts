@@ -11,12 +11,22 @@ export const useProviders = () => useQuery({ queryKey: ['providers'], queryFn: (
 export const usePlans = () => useQuery({ queryKey: ['plans'], queryFn: () => get<Plan[]>('/plans'), staleTime: 60_000 });
 export const useOverview = () => useQuery({ queryKey: ['overview'], queryFn: ({ signal }) => get<Overview>('/overview', signal) });
 
+const machinesQuery = (scope: 'live' | 'retired' | 'all') => ({ queryKey: ['machines', scope], queryFn: ({ signal }: { signal: AbortSignal }) => get<MachineView[]>(`/machines?scope=${scope}`, signal) });
 /** 机器列表，已按默认顺序排好：线路机 → 团队 → 编号（故障/离线不下沉） */
 export function useMachines(scope: 'live' | 'retired' | 'all' = 'live', enabled = true) {
   const teams = useTeams().data;
   // select 排序：只在列表或团队变化时重算；返回的是查询结果本身，调用方按属性追踪
   const select = useCallback((d: MachineView[]) => [...d].sort(makeDefaultCompare(teams ?? [])), [teams]);
-  return useQuery({ queryKey: ['machines', scope], queryFn: ({ signal }) => get<MachineView[]>(`/machines?scope=${scope}`, signal), select, enabled });
+  return useQuery({ ...machinesQuery(scope), select, enabled });
+}
+/** 只用名称等少量字段的页面（访问监控的节点下拉、告警页的对象与续费）：读数不进来 */
+export type MachineBrief = Pick<MachineView, 'id' | 'name' | 'kind' | 'team' | 'subscription'>;
+const brief = (m: MachineView): MachineBrief => ({ id: m.id, name: m.name, kind: m.kind, team: m.team, subscription: m.subscription });
+/** 与 useMachines 同一份缓存、同样的默认顺序。select 的结果做结构共享：实时推送只改读数时这些字段不变，引用不变，页面不重渲染 */
+export function useMachineBriefs() {
+  const teams = useTeams().data;
+  const select = useCallback((d: MachineView[]) => [...d].sort(makeDefaultCompare(teams ?? [])).map(brief), [teams]);
+  return useQuery({ ...machinesQuery('live'), select });
 }
 /** 按键等“用时才读”的场景：直接读缓存里的机器列表（同样的默认顺序），不订阅、不触发请求 */
 export function readMachines(qc: QueryClient, scope: 'live' | 'retired' | 'all' = 'live'): MachineView[] | undefined {
@@ -40,10 +50,13 @@ const relaysQuery = { queryKey: ['relays'], queryFn: ({ signal }: { signal: Abor
 export const useRelays = () => useQuery({ ...relaysQuery, select: sortRelays });
 /** 只要“已上线线路机的 id 和名称”（上架页的下拉和名称匹配用）。select 的结果会做结构共享：机器的探测、流量等字段每次推送都在变，但 id/名称不变时引用不变，批量网格的 memo 才不会被击穿 */
 export const useRelayChoices = () => useQuery({ ...relaysQuery, select: relayChoices });
-/** 卡片心跳条：全部机器近 1 小时的探测，一次取回（每 2 分钟，页面回到前台时若已过期也重取）。
- *  pick 取一台的那份：结构共享下这台的数据没变时引用不变，心跳条不重渲染 */
-export const useProbeBeats = <T,>(pick: (d: ProbeBeats) => T) =>
-  useQuery({ queryKey: ['probe-beats'], queryFn: ({ signal }) => get<ProbeBeats>('/probe-beats', signal), select: pick, staleTime: 120_000, refetchInterval: 120_000 });
+/** 卡片心跳条：全部机器近 1 小时的探测，一次取回（页面回到前台时若已过期也重取）。
+ *  pick 取一台的那份：结构共享下这台的数据没变时引用不变，心跳条不重渲染。
+ *  每 2 分钟的轮询只由首页挂一个（useProbeBeatsPoll），不必每张卡各带一个 refetchInterval */
+const probeBeatsQuery = { queryKey: ['probe-beats'], queryFn: ({ signal }: { signal: AbortSignal }) => get<ProbeBeats>('/probe-beats', signal), staleTime: 120_000 };
+export const useProbeBeats = <T,>(pick: (d: ProbeBeats) => T) => useQuery({ ...probeBeatsQuery, select: pick });
+const noBeats = () => null; // 轮询观察者不读数据：select 恒为 null，数据变了也不重渲染首页
+export const useProbeBeatsPoll = (enabled: boolean) => { useQuery({ ...probeBeatsQuery, select: noBeats, refetchInterval: 120_000, enabled }); };
 /** poll：实时流只推当前读数不推曲线，抽屉曲线按这个间隔刷新；此时 staleTime 同间隔、切回窗口不重取 */
 export const useSeries = (id: string | null, metric: 'host' | 'traffic' | 'probe', range: string, enabled = true, poll?: number) =>
   useQuery({ queryKey: ['series', id, metric, range], queryFn: ({ signal }) => get<SeriesResp>(`/machines/${id}/series?metric=${metric}&range=${range}`, signal), enabled: !!id && enabled, staleTime: poll ?? 30_000, refetchInterval: poll, refetchOnWindowFocus: poll ? false : undefined });

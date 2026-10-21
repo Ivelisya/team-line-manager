@@ -3,7 +3,7 @@
 // 默认排序：线路机 → 团队 → 编号；故障/离线不下沉。其它排序是用户的显式选择；表格视图另可点表头排序。
 import * as React from 'react';
 import { AlertTriangle, CircleGauge, Inbox, LayoutGrid, Server, Table2 } from 'lucide-react';
-import { useMachines, useOverview, useTeams } from '@/lib/queries';
+import { useMachines, useOverview, useProbeBeatsPoll, useTeams } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import { monthTraffic } from '@/lib/derive';
 import type { MachineView } from '@/lib/types';
@@ -66,6 +66,7 @@ export function HomePage() {
   const setL = (v: Layout) => { setLayout(v); store.set('fleet:layout', v); };
   const setV = (v: CardView) => { setView(v); store.set('fleet:view', v); };
   const setS = (v: SortKey) => { setSort(v); setTsort(null); store.set('fleet:sort', v); };
+  useProbeBeatsPoll(layout === 'cards'); // 卡片心跳条每 2 分钟刷新：全页一个轮询
 
   const all = machines.data ?? EMPTY_MACHINES; // live 范围已不含已退役
   const counts = React.useMemo(() => ({

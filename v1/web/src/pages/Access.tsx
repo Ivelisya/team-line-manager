@@ -8,7 +8,7 @@ import {
   ACCESS_WINDOWS, EVENTS_PAGE, isAccessWindow, useAccessEvents, useAccessSources, useAccessSummary, useAccessTargets, useNewTargets,
   type AccessFilter, type AccessWindow, type TargetSort,
 } from '@/lib/access';
-import { useMachines, useTeams } from '@/lib/queries';
+import { useMachineBriefs, useTeams } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
@@ -57,7 +57,7 @@ export function AccessPage() {
   React.useEffect(() => { const t = setTimeout(() => updRef.current({ q: text.trim() }), 250); return () => clearTimeout(t); }, [text]);
 
   const teams = useTeams().data ?? [];
-  const machines = useMachines('live').data ?? [];
+  const machines = useMachineBriefs().data ?? [];
   const nodes = machines.filter((m) => m.kind !== 'relay' && (!f.team || m.team?.id === f.team));
   const summary = useAccessSummary(f);
   const k = summary.data?.kpi;
