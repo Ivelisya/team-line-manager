@@ -1,13 +1,16 @@
 // 机器详情抽屉：概览 / 连接质量 / 流量 / 主机 / 费用 / 管理。开关由 URL 的 ?m= 控制。
 import * as React from 'react';
 import { Link } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/dialog';
 import { Tabs, TabsList, TabsTrigger, Tip } from '@/components/ui/overlays';
+import { IconButton } from '@/components/ui/button';
 import { ErrorBoundary } from '@/components/app/ErrorBoundary';
 import { Skeleton } from '@/components/ui/skeleton';
 import type { MachineView } from '@/lib/types';
 import { useMachine, useAudit } from '@/lib/queries';
-import { DRAWER_TABS, useDrawer, type DrawerTab } from '@/lib/drawer';
+import { DRAWER_TABS, drawerSiblings, useDrawer, type DrawerTab } from '@/lib/drawer';
 import { useHeld } from '@/lib/useHeld';
 import * as F from '@/lib/format';
 import { KIND_LABEL } from '@/lib/sort';
@@ -25,7 +28,8 @@ const HostTab = React.lazy(() => import('./DrawerCharts').then((m) => ({ default
 const AccessTab = React.lazy(() => import('./AccessTab').then((m) => ({ default: m.AccessTab })));
 
 export function NodeDrawer() {
-  const { id, tab: liveTab, setTab, close } = useDrawer();
+  const { id, tab: liveTab, setTab, switchTo, close } = useDrawer();
+  const qc = useQueryClient();
   const q = useMachine(id);
   // 关闭时 id/tab 已从地址里清掉，但抽屉还要播滑出动画：沿用最后一次的机器、页签和 id，别闪成加载骨架或跳回“概览”
   const m = useHeld(id, q.data);
@@ -41,6 +45,16 @@ export function NodeDrawer() {
     if (bodyRef.current) bodyRef.current.scrollTop = 0;
     tabsRef.current?.querySelector('[data-state="active"]')?.scrollIntoView({ inline: 'nearest', block: 'nearest' });
   }, [shownId, tab]);
+  // 标签页标题换成这台机器的名字，关上抽屉恢复
+  const titleName = id ? m?.name : undefined;
+  React.useEffect(() => {
+    if (!titleName) return;
+    const prev = document.title;
+    document.title = `${titleName} · 团队线路管理`;
+    return () => { document.title = prev; };
+  }, [titleName]);
+  // 上一台 / 下一台：同 [ ] 键，用沿用的 id，关闭动画期间按钮不消失
+  const sib = drawerSiblings(qc, shownId);
   return (
     <Sheet open={!!id} onOpenChange={(o) => !o && close()}>
       <SheetContent aria-describedby={undefined}>
@@ -59,6 +73,12 @@ export function NodeDrawer() {
                 <div className="m-head-row"><SheetTitle className="drawer-title ellipsis">{m.name}</SheetTitle><HealthPill m={m} />{m.kind !== 'vps' && <Chip variant="neutral">{KIND_LABEL[m.kind]}</Chip>}</div>
                 <SheetDescription className="ellipsis" style={{ margin: 0, color: 'var(--fg-2)', fontSize: 12 }}>{m.ip} · {m.provider?.name ?? '未设供应商'} · {m.plan?.name ?? '未设套餐'}</SheetDescription>
               </div>
+              {sib && (
+                <div className="drawer-nav">
+                  <IconButton label="上一台" tip={false} data-tip="上一台（快捷键 [）" aria-keyshortcuts="[" disabled={!sib.prev} onClick={() => sib.prev && switchTo(sib.prev)}><ChevronLeft size={16} /></IconButton>
+                  <IconButton label="下一台" tip={false} data-tip="下一台（快捷键 ]）" aria-keyshortcuts="]" disabled={!sib.next} onClick={() => sib.next && switchTo(sib.next)}><ChevronRight size={16} /></IconButton>
+                </div>
+              )}
             </header>
             <Tabs value={tab} onValueChange={(v) => setTab(v as DrawerTab)} className="drawer-tabs">
               <TabsList ref={tabsRef}>{DRAWER_TABS.map((t) => <TabsTrigger key={t.value} value={t.value} noPanel>{t.label}</TabsTrigger>)}</TabsList>

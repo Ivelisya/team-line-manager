@@ -10,9 +10,10 @@
 .form-grid .span-2 { grid-column: 1 / -1; }
 @media (max-width: 560px) { .form-grid { grid-template-columns: minmax(0, 1fr); } }
 
-/* 抽屉内：机器头部 */
+/* 抽屉内：机器头部。上一台 / 下一台贴顶，与右上角的关闭按钮同一排 */
 .m-head { display: grid; gap: var(--sp-4); min-width: 0; }
 .m-head-row { display: flex; align-items: center; gap: var(--sp-8); flex-wrap: wrap; min-width: 0; }
+.drawer-nav { flex: none; align-self: flex-start; display: flex; gap: var(--sp-2); }
 .reason-list { display: grid; gap: var(--sp-6); margin: 0; padding: 0; list-style: none; }
 .reason-list li { display: flex; align-items: flex-start; gap: var(--sp-8); font-size: var(--fs-body); }
 .reason-list .dot { margin-top: 7px; }
