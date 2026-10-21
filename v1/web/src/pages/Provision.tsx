@@ -41,15 +41,17 @@ export function ProvisionPage() {
   const [created, setCreated] = React.useState<{ machine_id: string; job_id: string; name: string }[] | null>(null);
   const check = useProvisionCheck(); const provision = useProvision();
 
-  // ?host=<宿主机 id>：宿主机候选到了之后预填一次——落地机、打开「在已有机器上添加 IP」，团队与线路机带出宿主机的
-  const [sp] = useSearchParams();
-  const pendingHost = React.useRef(sp.get('host'));
+  // ?host=<宿主机 id>：宿主机候选到了之后预填一次——单台、落地机、打开「在已有机器上添加 IP」，团队与线路机带出宿主机的。
+  // 抽屉开在上架页时点「添加 IP 节点」只换地址参数、页面不重挂，所以跟着参数走，不只在挂载时读
+  const hostParam = useSearchParams()[0].get('host');
+  const prefilled = React.useRef<string | null>(null);
   React.useEffect(() => {
-    const h = hosts.find((x) => x.id === pendingHost.current);
-    if (!h) return;
-    pendingHost.current = null;
+    const h = hosts.find((x) => x.id === hostParam);
+    if (!h || prefilled.current === h.id) return;
+    prefilled.current = h.id;
+    setMode('single'); setResults(null); setLocalErrs(null); setCreated(null);
     setRows([newRow({ kind: 'vps', add_ip: true, host_id: h.id, team_id: h.team_id, relay_id: h.relay_id })]);
-  }, [hosts]);
+  }, [hostParam, hosts]);
 
   const items = React.useMemo(() => rows.map((r) => toItem(r)), [rows]);
   const curSig = JSON.stringify([items, rows.map((r) => r.unresolved)]);

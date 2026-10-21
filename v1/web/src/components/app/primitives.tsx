@@ -71,14 +71,14 @@ export const Mark = ({ children, tip }: { children: React.ReactNode; tip?: strin
 
 /** 同机关系标（卡片、环形卡、机器表共用）：同机 IP 节点「同机 · 宿主机名」、宿主机「+N IP」，点击打开对应机器的抽屉——
  *  宿主机上有几个同机节点时打开宿主机自己（概览里逐个列着）。在表格行里点它不触发行的点击。没有同机关系的机器不渲染（也不订阅地址） */
-type HostTagProps = { id: string; host: MachineView['host_machine']; nodes: MachineView['ip_nodes']; short?: boolean };
+type HostTagProps = { id: string; host: MachineView['host_machine']; nodes: MachineView['ip_nodes']; short?: boolean; tabIndex?: number };
 export const HostTag = (p: HostTagProps) => (p.host || p.nodes.length ? <HostTagButton {...p} /> : null);
-function HostTagButton({ id, host, nodes, short }: HostTagProps) {
+function HostTagButton({ id, host, nodes, short, tabIndex }: HostTagProps) {
   const { open } = useDrawer();
   const r = hostRel(host, nodes, short)!;
   const to = host ? host.id : nodes.length === 1 ? nodes[0].id : id;
   const act = host ? '点击打开宿主机' : nodes.length === 1 ? '点击打开它' : '点击在这台机器的详情里查看';
-  return <button type="button" className="tag" data-c="violet" data-tip={`${r.tip}。${act}`} onClick={(e) => { e.stopPropagation(); open(to); }}>{r.text}</button>;
+  return <button type="button" className="tag" data-c="violet" data-tip={`${r.tip}。${act}`} tabIndex={tabIndex} onClick={(e) => { e.stopPropagation(); open(to); }}>{r.text}</button>;
 }
 
 /** 类型标（原版国旗位）：线路机 / 落地机 / 家宽代理 */

@@ -234,7 +234,8 @@ const Tags = memo(function Tags({ code, provider, kind, service, maintenance, pr
   useEffect(() => watchSize(list.current!.parentElement!, count), [count]); // 看整行：行宽只随卡片变，「+N」进出不会让它再触发
   return (
     <div className="nc-tags">
-      <div className="nc-tags-list" ref={list}>{items.map((t, i) => (t.rel ? <HostTag key={i} id={id} host={host} nodes={nodes} /> : <Tag key={i} c={t.c} tip={t.tip}>{t.text}</Tag>))}</div>
+      {/* 同机关系标被收起时不进 Tab 顺序：聚焦会把裁掉的第二行滚出来 */}
+      <div className="nc-tags-list" ref={list}>{items.map((t, i) => (t.rel ? <HostTag key={i} id={id} host={host} nodes={nodes} tabIndex={i >= items.length - cut ? -1 : undefined} /> : <Tag key={i} c={t.c} tip={t.tip}>{t.text}</Tag>))}</div>
       {/* 收起的标签仍在读屏顺序里，「+N」只给眼睛看 */}
       {cut > 0 && <span className="tag" data-c="gray" aria-hidden data-tip={items.slice(-cut).map((t) => (t.tip ? `${t.text}（${t.tip}）` : t.text)).join('、')}>+{cut}</span>}
       {price && <span className="nc-price"><CircleDollarSign /><span className="num">{price}</span></span>}
