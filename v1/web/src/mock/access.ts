@@ -122,13 +122,17 @@ export function installAccessMock(R: Reg, machines: () => MachineView[]) {
   R('GET', '/access/events', ({ query }) => {
     cache ??= build(machines());
     const node = query.get('node') ?? ''; const team = query.get('team') ?? ''; const search = (query.get('search') ?? '').trim(); const action = query.get('action') ?? ''; const kind = query.get('kind') ?? '';
-    const before = query.get('before');
+    // before 是不透明游标（同服务端：前端原样传回 next_before）；mock 里是 base64 的 [时间, 同一时间已翻过的条数]
+    const [bts, bskip] = query.get('before') ? JSON.parse(atob(query.get('before')!)) as [string, number] : ['', 0];
     const limit = Math.min(500, +(query.get('limit') ?? 100));
     const all = cache.filter((n) => (!node || n.m.id === node) && (!team || n.m.team?.id === team)).flatMap((n) => n.events)
-      .filter((e) => (!before || e.ts < before) && (!search || like(e.dest_host, search) || like(e.src_ip ?? '', search)) && (!action || (action === 'blocked') === e.blocked) && (!kind || (isIp(e.dest_host) ? 'ip' : 'domain') === kind))
+      .filter((e) => (!bts || e.ts <= bts) && (!search || like(e.dest_host, search) || like(e.src_ip ?? '', search)) && (!action || (action === 'blocked') === e.blocked) && (!kind || (isIp(e.dest_host) ? 'ip' : 'domain') === kind))
       .sort((a, b) => b.ts.localeCompare(a.ts));
-    const items = all.slice(0, limit);
-    return { items, next_before: items.length === limit && all.length > limit ? items[items.length - 1].ts : null };
+    const rest = all.slice(bskip); // 等于 bts 的排在最前，跳过已翻过的
+    const items = rest.slice(0, limit);
+    const last = items[items.length - 1];
+    const skip = last ? items.filter((e) => e.ts === last.ts).length + (last.ts === bts ? bskip : 0) : 0;
+    return { items, next_before: items.length === limit && rest.length > limit ? btoa(JSON.stringify([last.ts, skip])) : null };
   });
 
   R('GET', '/machines/([^/]+)/access', ({ params, query }) => {

@@ -42,8 +42,11 @@ export const ReasonList = ({ reasons, className }: { reasons: HealthReason[]; cl
   </ul>
 );
 const reasonsTip = (reasons: HealthReason[]) => (reasons.length ? <ReasonList reasons={reasons} className="tip-list" /> : null);
-/** 健康状态圆点：颜色之外给读屏与悬停一份文字 */
-export const StatusDot = ({ status }: { status: string }) => <span className="dot" data-tone={HEALTH_TONE[status]} role="img" aria-label={HEALTH_LABEL[status]} title={HEALTH_LABEL[status]} />;
+/** 健康状态圆点：颜色之外给读屏与悬停一份文字。上架中 / 上架失败 / 退役中的健康是 inactive，文字改用生命周期（同 HealthPill），上架失败标红 */
+export const StatusDot = ({ status, lifecycle }: { status: string; lifecycle: Lifecycle }) => {
+  const text = lifecycle === 'provisioning' || lifecycle === 'failed' || lifecycle === 'retiring' ? LIFECYCLE_LABEL[lifecycle] : HEALTH_LABEL[status];
+  return <span className="dot" data-tone={lifecycle === 'failed' ? 'bad' : HEALTH_TONE[status]} role="img" aria-label={text} title={text} />;
+};
 /** 到期读数：N 天后 / 今天 / 已过期 N 天，7 天内黄、过期红（卡片、表格、悬浮卡共用）。
  *  tail：没有“到期”标签的地方接上“到期”（3 天后到期 / 今天到期 / 已过期 3 天） */
 export function Due({ days, tail }: { days: number | null | undefined; tail?: boolean }) {

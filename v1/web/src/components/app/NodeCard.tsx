@@ -40,10 +40,10 @@ function useLatest(m: MachineView): Latest {
 }
 
 /** 标题：圆点 + 类型标 + 名称 + 右侧操作。“⋯”菜单的内容只在打开时挂载 */
-const Head = memo(function Head({ name, kind, ip, status, view, onOpen, menu }: { name: string; kind: MachineView['kind']; ip: string; status: string; view: CardView; onOpen: Open; menu: Latest }) {
+const Head = memo(function Head({ name, kind, ip, status, lc, view, onOpen, menu }: { name: string; kind: MachineView['kind']; ip: string; status: string; lc: MachineView['lifecycle']; view: CardView; onOpen: Open; menu: Latest }) {
   return (
     <header className="nc-head">
-      <StatusDot status={status} /><KindIcon kind={kind} />
+      <StatusDot status={status} lifecycle={lc} /><KindIcon kind={kind} />
       <Tip text={`打开 ${name} 的详情`}><button type="button" className="nc-name" onClick={() => onOpen()}>{name}</button></Tip>
       {view === 'compact' && <><span className="nc-ipsep">·</span><span className="nc-ip">{ip}</span></>}
       <div className="nc-actions">
@@ -241,7 +241,7 @@ function NodeCardImpl({ m, view, current, onOpen: open, layoutKey }: { m: Machin
     <ContextMenu>
     <ContextMenuTrigger asChild>
     <mo.article layout="position" layoutDependency={layoutKey} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ layout: SPRING, opacity: { duration: 0.18 } }} className={cn('ncard', current && 'is-current', quiet && 'is-quiet')} data-view={view} data-id={m.id} data-kind={m.kind} data-health={m.health.status} data-offline={quiet ? '1' : undefined}>
-      <Head name={m.name} kind={m.kind} ip={m.ip} status={m.health.status} view={view} onOpen={onOpen} menu={menu} />
+      <Head name={m.name} kind={m.kind} ip={m.ip} status={m.health.status} lc={m.lifecycle} view={view} onOpen={onOpen} menu={menu} />
 
       {view === 'large' && <>
         <LargeInfo {...info} limit={quota(m).limit} />

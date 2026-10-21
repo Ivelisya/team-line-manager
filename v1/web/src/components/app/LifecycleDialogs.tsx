@@ -154,7 +154,7 @@ export function RestoreDialog({ m, open, onOpenChange, onDone }: { m: MachineVie
 
   return (
     <ConfirmDialog open={open} onOpenChange={onOpenChange} size="md" title={`恢复 ${m.name}`} confirmLabel="恢复" confirmDisabled={!ready}
-      description="机器保持原来的 ID（历史、账单、审计都接上），重新走一遍上架的收敛步骤；成功后回到“在用”。取消或失败会回到已退役。"
+      description="机器保持原来的 ID（历史、账单、审计都接上），重新走一遍上架的收敛步骤；成功后回到“在用”。失败会停在“上架失败”，可在作业页重试；取消会回到已退役。"
       onConfirm={submit}>
       {base.isLoading && <div className="hint">正在预检（会试一下中控密钥能不能登录这台机器，最多十几秒）…</div>}
       {base.isError && <Note tone="bad">预检失败：{(base.error as Error).message}</Note>}

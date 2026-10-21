@@ -261,7 +261,7 @@ function NodesView({ f, filtered, open }: { f: AccessFilter; filtered: boolean; 
 }
 
 function EventsView({ f, filtered, open }: { f: AccessFilter; filtered: boolean; open: Open }) {
-  // 游标栈：cur[i] 是第 i+1 页的 before（'' = 最新一页）。筛选一变回到最新一页
+  // 游标栈：cur[i] 是第 i+1 页的 before（上一页的 next_before 原样存，'' = 最新一页）。筛选一变回到最新一页
   const fk = JSON.stringify(f);
   const [st, setSt] = React.useState({ fk, cur: [''] });
   if (st.fk !== fk) setSt({ fk, cur: [''] });

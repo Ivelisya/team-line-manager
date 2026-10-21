@@ -40,7 +40,7 @@ const monthly = (m: MachineView) => {
 interface Col { id: string; header: string; size: number; r?: boolean; first?: 'asc' | 'desc'; cell: (m: MachineView) => React.ReactNode }
 const cols: Col[] = [
   { id: 'name', header: '名称', size: 140, first: 'asc',
-    cell: (m) => <span className="tname"><StatusDot status={m.health.status} /><KindIcon kind={m.kind} /><Tip text={KIND_LABEL[m.kind]}><span className="cell-main strong">{m.name}</span></Tip></span> },
+    cell: (m) => <span className="tname"><StatusDot status={m.health.status} lifecycle={m.lifecycle} /><KindIcon kind={m.kind} /><Tip text={KIND_LABEL[m.kind]}><span className="cell-main strong">{m.name}</span></Tip></span> },
   { id: 'ip', header: 'IP', size: 120, cell: (m) => <span className="cell-main t-sub">{m.ip}</span> },
   ...(['cpu', 'mem', 'disk'] as const).map((k): Col => ({ id: k, header: k === 'cpu' ? 'CPU' : k === 'mem' ? '内存' : '磁盘', size: 84, first: 'desc',
     cell: (m) => { const r = resourceMeters(m); return r ? <MiniMeter pct={r[k].pct} metric={k} empty={isQuiet(m)} /> : <span className="t-muted">—</span>; } })),

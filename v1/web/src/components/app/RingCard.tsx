@@ -30,7 +30,7 @@ function RingCardImpl({ m, current, onOpen }: { m: MachineView; current?: boolea
       <ContextMenuTrigger asChild>
         <article className={cn('rcard', current && 'is-current', quiet && 'is-quiet')} data-health={m.health.status} data-id={m.id}>
           <header className="rc-head">
-            <StatusDot status={m.health.status} /><KindIcon kind={m.kind} />
+            <StatusDot status={m.health.status} lifecycle={m.lifecycle} /><KindIcon kind={m.kind} />
             <button type="button" className="rc-name" onClick={() => onOpen(m.id)}>{m.name}</button>
             <HealthPill m={m} />
           </header>

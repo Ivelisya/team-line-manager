@@ -4,7 +4,8 @@ import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, ArrowDownToLine, Check, CircleDashed, Copy, ListChecks, Loader2, Minus, Pause, Play, RotateCw, Square, Undo2, X } from 'lucide-react';
 import { fetchAllLogs, useCancelJob, useJob, useJobs, useRetryJob } from '@/lib/queries';
 import type { Job, JobLog } from '@/lib/types';
-import { errorKindLabel, jobKindLabel, jobLive, jobProgress, outputLines, stepKind, type StepKind } from '@/lib/jobs';
+import { errorKindLabel, jobKindLabel, jobLive, jobProgress, outputLines, stepFailed, stepKind, type StepKind } from '@/lib/jobs';
+import { CheckRow, Field, Input } from '@/components/ui/form';
 import { useNow } from '@/lib/useNow';
 import { copyText } from '@/lib/clipboard';
 import * as F from '@/lib/format';
@@ -89,7 +90,7 @@ function LiveProgressBar({ job, live }: { job: Job; live: boolean }) {
 function JobDetail({ id }: { id: string }) {
   const { search } = useLocation();
   const q = useJob(id);
-  const retry = useRetryJob(); const cancel = useCancelJob();
+  const cancel = useCancelJob();
   const [cancelAsk, setCancelAsk] = React.useState(false);
   const j = q.data;
   const live = !!j && jobLive(j.state);
@@ -99,7 +100,7 @@ function JobDetail({ id }: { id: string }) {
     <div className="stack">
       <Panel title={<span className="row" style={{ gap: 8 }}><Link to={{ pathname: '/jobs', search }} className="icon-btn icon-btn-sm job-back" aria-label="返回列表"><ArrowLeft size={16} /></Link><span>{jobKindLabel(j.kind)} · {j.target ? <NodeHover id={j.target.id}><span>{j.target.name}</span></NodeHover> : '—'}</span></span>} tools={<>
         <JobPill state={j.state} />
-        {j.state === 'failed' && <Button size="sm" variant="primary" loading={retry.isPending} onClick={() => retry.mutate(j.id, { onSuccess: () => toast.ok('已从失败的步骤重试'), onError: toast.err })}><RotateCw />重试</Button>}
+        {j.state === 'failed' && <RetryButton j={j} />}
         {j.cancellable && <Button size="sm" onClick={() => setCancelAsk(true)}><Square />取消</Button>}
       </>}>
         <div className="stack">
@@ -149,9 +150,48 @@ function JobDetail({ id }: { id: string }) {
       </Panel>
 
       <LogPanel jobId={j.id} state={j.state} />
-      <ConfirmDialog open={cancelAsk} onOpenChange={setCancelAsk} title="取消这个作业？" confirmLabel="取消作业" danger description="已完成的步骤会被补偿（回滚），然后停下。"
+      <ConfirmDialog open={cancelAsk} onOpenChange={setCancelAsk} title="取消这个作业？" confirmLabel="取消作业" danger description={cancelDesc(j)}
         onConfirm={async () => { await cancel.mutateAsync(j.id); toast.ok('作业已取消'); }} />
     </div>
+  );
+}
+
+/** 取消的后果：失败的上架 / 恢复作业取消后机器不再停在「上架失败」 */
+function cancelDesc(j: Job) {
+  if (j.state === 'failed' && j.kind.startsWith('provision_')) return '不再重试这次上架：已完成的步骤会被补偿（回滚），机器会被退役并清理，释放 IP 与编号。';
+  if (j.state === 'failed' && j.kind.startsWith('restore_')) return '不再重试这次恢复：已完成的步骤会被补偿（回滚），机器退回「已退役」。';
+  return '已完成的步骤会被补偿（回滚），然后停下。';
+}
+
+/** 重试：失败原因是主机指纹不符 / SSH 认证失败时先问要不要重置指纹、换密码，其余直接重试 */
+function RetryButton({ j }: { j: Job }) {
+  const retry = useRetryJob();
+  const kind = j.steps.find(stepFailed)?.error_kind;
+  const ask = kind === 'host_key' || kind === 'auth';
+  const [open, setOpen] = React.useState(false);
+  const [reset, setReset] = React.useState(false);
+  const [pw, setPw] = React.useState('');
+  const ok = () => toast.ok('已从失败的步骤重试');
+  const click = () => {
+    if (!ask) { retry.mutate({ id: j.id }, { onSuccess: ok, onError: toast.err }); return; }
+    setReset(kind === 'host_key'); setPw(''); setOpen(true);
+  };
+  return (
+    <>
+      <Button size="sm" variant="primary" loading={retry.isPending && !open} onClick={click}><RotateCw />重试</Button>
+      {ask && (
+        <ConfirmDialog open={open} onOpenChange={setOpen} title="重试作业" confirmLabel="重试"
+          description={kind === 'host_key' ? '机器的主机指纹和记录的不一致。确认机器重装过、IP 没有换给别的机器，再重置指纹重试。' : 'SSH 认证失败：中控密钥登录不上。可以填 SSH 密码，重试时用它重新推送中控公钥。'}
+          onConfirm={async () => { await retry.mutateAsync({ id: j.id, reset_host_key: reset, ...(pw ? { ssh_password: pw } : {}) }); ok(); }}>
+          <div className="stack-sm">
+            <CheckRow checked={reset} onChange={setReset}>重置主机指纹</CheckRow>
+            <Field label={kind === 'auth' ? 'SSH 密码' : 'SSH 密码（选填）'} hint="留空则继续用中控密钥登录">
+              <Input type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="new-password" />
+            </Field>
+          </div>
+        </ConfirmDialog>
+      )}
+    </>
   );
 }
 

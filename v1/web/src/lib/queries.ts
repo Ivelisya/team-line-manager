@@ -114,8 +114,10 @@ export const useProvisionCheck = () => useMutation({ mutationFn: (items: Provisi
 export const useProvision = () => useWrite((items: ProvisionItem[]) => post<{ jobs: { machine_id: string; job_id: string; name: string }[] }>('/provision', { items }), [...M, ['jobs'], ['teams']]);
 export const useUpgradeAgent = () => useWrite((id: string) => post<{ machine_id: string; job_id: string }>(`/machines/${id}/upgrade-agent`), [...M, ['jobs']]);
 export const useUpgradeAllAgents = () => useWrite(() => post<{ jobs: { machine_id: string; job_id: string }[] }>('/agents/upgrade'), [...M, ['jobs']]);
-export const useRetryJob = () => useWrite((id: string) => post(`/jobs/${id}/retry`), [['jobs'], ['job']]);
-export const useCancelJob = () => useWrite((id: string) => post(`/jobs/${id}/cancel`), [['jobs'], ['job']]);
+/** 重试：主机指纹不符 / SSH 认证失败时可带 reset_host_key、ssh_password */
+export interface RetryBody { reset_host_key?: boolean; ssh_password?: string }
+export const useRetryJob = () => useWrite(({ id, ...b }: { id: string } & RetryBody) => post(`/jobs/${id}/retry`, b), [...M, ['jobs'], ['job']]);
+export const useCancelJob = () => useWrite((id: string) => post(`/jobs/${id}/cancel`), [...M, ['jobs'], ['job']]);
 export const useAck = () => useWrite((id: string) => post(`/incidents/${id}/ack`), [['incidents']]);
 export const useAddSilence = () => useWrite((b: Partial<Silence>) => post('/silences', b), [['silences'], ['incidents']]);
 export const useDelSilence = () => useWrite((id: string) => del(`/silences/${id}`), [['silences'], ['incidents']]);

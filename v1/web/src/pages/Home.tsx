@@ -36,7 +36,10 @@ const store = {
 };
 const RANK: Record<string, number> = { down: 0, degraded: 1, unknown: 2, maintenance: 3, ok: 4, inactive: 5 };
 
-const isIssue = (m: MachineView) => m.health.status === 'down' || m.health.status === 'degraded';
+/** 异常：故障、降级、上架失败（上架失败的健康是 inactive，单看健康会漏掉） */
+const isIssue = (m: MachineView) => m.lifecycle === 'failed' || m.health.status === 'down' || m.health.status === 'degraded';
+/** 异常优先的名次：上架失败排在故障之后、降级之前 */
+const rank = (m: MachineView) => (m.lifecycle === 'failed' ? 0.5 : RANK[m.health.status]);
 
 function sortList(list: MachineView[], key: SortKey): MachineView[] {
   if (key === 'default') return list;
@@ -44,7 +47,7 @@ function sortList(list: MachineView[], key: SortKey): MachineView[] {
     name: (a, b) => collator.compare(a.name, b.name),
     due: (a, b) => (a.subscription?.due_days ?? 1e9) - (b.subscription?.due_days ?? 1e9),
     traffic: (a, b) => { const x = monthTraffic(a); const y = monthTraffic(b); return y.up + y.down - (x.up + x.down); },
-    issues: (a, b) => RANK[a.health.status] - RANK[b.health.status],
+    issues: (a, b) => rank(a) - rank(b),
   };
   return [...list].sort(c[key]);
 }

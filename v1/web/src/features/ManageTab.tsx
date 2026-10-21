@@ -176,6 +176,10 @@ function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }
           </div>
         )}
         {busyJob && m.active_job && <Note tone="info">作业进行中，暂不能操作。<Link to={`/jobs/${m.active_job.id}`} style={{ color: 'var(--accent)' }}>查看作业</Link></Note>}
+        {/* 退役作业失败：机器仍是退役中，不能再发起退役，只能重试那个作业 */}
+        {m.lifecycle === 'retiring' && m.failed_job && !m.active_job && (
+          <Note tone="bad">退役作业失败，机器仍在退役中，不能再次发起退役：<Link to={`/jobs/${m.failed_job.id}`} style={{ color: 'var(--accent)' }}>到作业页重试</Link>。</Note>
+        )}
       </div>
 
       <RestoreDialog m={m} open={dlg === 'restore'} onOpenChange={(o) => !o && setDlg(null)} onDone={onClosed} />

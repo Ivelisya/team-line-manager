@@ -1,7 +1,7 @@
 // 实时流：WebSocket /api/v1/stream（JSON 文本帧）。
 // - metrics：实时指标增量，直接写进查询缓存（live.ts），不重取。
 // - 其余是资源变更通知：300ms 合并后按事件类型让对应查询失效（同一类型/同一 id 只算一次）；resync（服务端广播滞后）则全部失效。
-//   整表（机器、线路机、总览）的失效再合并成最多每 2 s 一次，且不打断在途的重取：批量上架时不至于每秒整表重取、请求被反复取消。
+//   整表（机器、线路机、总览、作业列表）的失效再合并成最多每 2 s 一次，且不打断在途的重取：批量上架时不至于每秒整表重取、请求被反复取消。
 // - 断开后指数退避重连（1s → 30s 封顶），期间不轮询（顶栏显示已断开）。首次连上让机器类查询失效一次（首屏请求可能早于订阅）；
 //   断线重连后让全部查询失效：没连着时错过的事件和增量靠这次重取补上。
 // - 页面在后台：失效只标记过期、不重取，metrics 也不写缓存只标记过期（回到前台由 refetchOnWindowFocus 补上）。
@@ -13,7 +13,7 @@ import { setStreamState as setStatus, useStreamState } from './streamState';
 
 const MERGE_MS = 300;
 const LIST_MS = 2000;
-const LISTS = new Set(['machines', 'relays', 'overview']);
+const LISTS = new Set(['machines', 'relays', 'overview', 'jobs']);
 const BACKOFF_MAX = 30_000;
 
 export function useStream(enabled: boolean) {
