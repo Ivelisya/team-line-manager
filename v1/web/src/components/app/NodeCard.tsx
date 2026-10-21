@@ -2,17 +2,17 @@
 // 无论机器是主机、家宽代理还是线路机，同一个槽位都渲染同样高度的内容或占位——配合 cards.css 的 subgrid，同一行的卡片分段永远对齐。
 // 视觉语言：资源用分段格条（每个指标一个颜色），实时速率是大号读数 + 点阵迹线（实时流喂的环形缓冲，见 lib/live），
 // 剩余流量也是格条（绿→黄→红），心跳条同属“格子”语言。迹线与流量可点，直接打开抽屉的“主机 / 流量”页签看历史曲线。
-import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { m as mo } from 'motion/react'; // 别名：组件里的 props 叫 m（机器）
 import { SPRING } from '@/lib/motion';
 import { ArrowDown, ArrowUp, Calendar, CircleDollarSign, Cpu, Database, Gauge, Globe, HardDrive, MemoryStick, MoreHorizontal, Radar, RefreshCw, Settings2, PanelRightOpen, ServerOff, Wallet } from 'lucide-react';
 import type { MachineView, ProbeBeats, Subscription } from '@/lib/types';
 import * as F from '@/lib/format';
-import { beatCells, beatTitles, entryText, hasHost, isQuiet, liveRate, monthTraffic, probeSummary, quota, remainingValue, resourceMeters, subLabel, tagColor } from '@/lib/derive';
+import { beatCells, beatTitles, entryText, hasHost, isQuiet, liveRate, monthTraffic, probeSummary, quota, remainingValue, resourceMeters, subLabel, tagColor, type TagColor } from '@/lib/derive';
 import { useProbeBeats } from '@/lib/queries';
 import { useLiveSeries } from '@/lib/live';
 import { useNow } from '@/lib/useNow';
-import { sharedObserver } from '@/lib/sharedObserver';
+import { sharedObserver, watchSize } from '@/lib/sharedObserver';
 import { type DrawerTab } from '@/lib/drawer';
 import { KIND_LABEL } from '@/lib/sort';
 import { cn } from '@/lib/utils';
@@ -28,13 +28,13 @@ type Open = (tab?: DrawerTab) => void;
 // 卡片里不挂 Radix 根：右键菜单与“⋯”下拉由外面的 NodeMenus 整个网格共用一份（按 data-id / data-node-menu 找到这张卡），
 // 只读的悬停说明写 data-tip，由全站一份 TipHost 显示。
 
-/** 标题：圆点 + 类型标 + 名称 + 右侧操作 */
+/** 标题：圆点 + 类型标 + 名称 + 右侧操作。紧凑卡的 IP 在名称下面一行小字（同表格名称列）：跟在名称后面时只剩约 100px 给名称和 IP，常被截成「· 1…」 */
 const Head = memo(function Head({ name, kind, ip, status, lc, view, onOpen }: { name: string; kind: MachineView['kind']; ip: string; status: string; lc: MachineView['lifecycle']; view: CardView; onOpen: Open }) {
+  const btn = <button type="button" className="nc-name" data-tip={`打开 ${name} 的详情`} onClick={() => onOpen()}>{name}</button>;
   return (
     <header className="nc-head">
       <StatusDot status={status} lifecycle={lc} /><KindIcon kind={kind} />
-      <button type="button" className="nc-name" data-tip={`打开 ${name} 的详情`} onClick={() => onOpen()}>{name}</button>
-      {view === 'compact' && <><span className="nc-ipsep">·</span><span className="nc-ip">{ip}</span></>}
+      {view === 'compact' ? <div className="nc-title">{btn}<span className="nc-ip" data-tip={ip}>{ip}</span></div> : btn}
       <div className="nc-actions">
         <IconButton label="打开详情" tip={false} data-tip="打开详情" onClick={() => onOpen()}><PanelRightOpen size={16} /></IconButton>
         <IconButton label="更多操作" tip={false} data-node-menu="" aria-haspopup="menu"><MoreHorizontal size={16} /></IconButton>
@@ -50,7 +50,7 @@ interface Info { ip: string; sshPort: number; entry: string; plan: MachineView['
 /** 大卡片：地址行 + 入口 / 套餐 / 套餐带宽 / 流量上限 2×2 */
 const LargeInfo = memo(function LargeInfo({ ip, sshPort, entry, plan, limit }: Info & { limit: number }) {
   return <>
-    <div className="nc-addr"><span className="ellipsis">{ip}</span><IpTags ip={ip} sshPort={sshPort} /></div>
+    <div className="nc-addr"><span className="ellipsis" data-tip={ip}>{ip}</span><IpTags ip={ip} sshPort={sshPort} /></div>
     <dl className="nc-fields">
       <LabelValue label="入口">{entry}</LabelValue>
       <LabelValue label="套餐">{plan?.name ?? <span className="t-muted">未设置</span>}</LabelValue>
@@ -59,12 +59,13 @@ const LargeInfo = memo(function LargeInfo({ ip, sshPort, entry, plan, limit }: I
     </dl>
   </>;
 });
-/** 小卡片：地址 + 入口 · 套餐 · 到期两行 */
+/** 小卡片：地址 + 入口 · 套餐 · 到期两行（长了省略，悬停看全文） */
 const SmallInfo = memo(function SmallInfo({ ip, sshPort, entry, plan, dueDays }: Info & { dueDays: number | undefined }) {
+  const meta = `${entry} · ${plan?.name ?? '未设置套餐'}`;
   return (
     <div className="nc-meta2">
-      <div><span>{ip}</span><IpTags ip={ip} sshPort={sshPort} /></div>
-      <div><span>{entry} · {plan?.name ?? '未设置套餐'}</span><span className="nc-due"><Due days={dueDays} tail /></span></div>
+      <div><span data-tip={ip}>{ip}</span><IpTags ip={ip} sshPort={sshPort} /></div>
+      <div><span data-tip={meta}>{meta}</span><span className="nc-due"><Due days={dueDays} tail /></span></div>
     </div>
   );
 });
@@ -204,15 +205,29 @@ const RunRow = memo(function RunRow({ activated, sub }: { activated: string | nu
 });
 
 const KIND_TAG = { relay: 'teal', proxy: 'orange', vps: 'violet' } as const;
+/** 标签行：标签只排一行，放不下的整枚收起（折到看不见的第二行，cards.css），末尾「+N」，悬停列出收起的那几枚。
+ *  收起几枚要排版后才数得出：挂载、标签变了、「+N」出现或变了（列表随之变窄）、卡片变宽变窄时重数；推送不改这几个字段，memo 挡住，不重数 */
 const Tags = memo(function Tags({ code, provider, kind, service, maintenance, price }: { code: string | null; provider?: string; kind: MachineView['kind']; service: string | null; maintenance: boolean; price: string | null }) {
+  const items: { c: TagColor; text: string; tip?: string }[] = [];
+  if (code) items.push({ c: tagColor(code), text: code, tip: provider });
+  items.push({ c: KIND_TAG[kind], text: KIND_LABEL[kind] });
+  if (service) items.push({ c: tagColor(service), text: service });
+  if (maintenance) items.push({ c: 'amber', text: '维护中' });
+  const list = useRef<HTMLDivElement>(null);
+  const [cut, setCut] = useState(0);
+  const count = useCallback(() => {
+    const el = list.current!; const top = (el.firstElementChild as HTMLElement).offsetTop;
+    let n = 0;
+    for (const t of el.children) if ((t as HTMLElement).offsetTop > top) n++;
+    setCut(n);
+  }, []);
+  useLayoutEffect(count, [count, code, kind, service, maintenance, price, cut]);
+  useEffect(() => watchSize(list.current!.parentElement!, count), [count]); // 看整行：行宽只随卡片变，「+N」进出不会让它再触发
   return (
     <div className="nc-tags">
-      <div className="nc-tags-list">
-        {code && <Tag c={tagColor(code)} tip={provider}>{code}</Tag>}
-        <Tag c={KIND_TAG[kind]}>{KIND_LABEL[kind]}</Tag>
-        {service && <Tag c={tagColor(service)}>{service}</Tag>}
-        {maintenance && <Tag c="amber">维护中</Tag>}
-      </div>
+      <div className="nc-tags-list" ref={list}>{items.map((t, i) => <Tag key={i} c={t.c} tip={t.tip}>{t.text}</Tag>)}</div>
+      {/* 收起的标签仍在读屏顺序里，「+N」只给眼睛看 */}
+      {cut > 0 && <span className="tag" data-c="gray" aria-hidden data-tip={items.slice(-cut).map((t) => (t.tip ? `${t.text}（${t.tip}）` : t.text)).join('、')}>+{cut}</span>}
       {price && <span className="nc-price"><CircleDollarSign /><span className="num">{price}</span></span>}
     </div>
   );

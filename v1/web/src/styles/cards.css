@@ -58,16 +58,17 @@
 }
 .nc-name:hover { color: var(--accent); }
 .ncard[data-view="small"] .nc-name, .ncard[data-view="compact"] .nc-name { font-size: var(--fs-emph); line-height: var(--lh-emph); }
-.ncard[data-view="compact"] .nc-name { flex: none; max-width: 60%; }
-.nc-ipsep { flex: none; color: var(--fg-3); }
-.nc-ip { flex: 0 1 auto; min-width: 0; font-size: var(--fs-body); color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 紧凑：名称下面一行小字 IP（同表格名称列），两行合计 34px，头部只比单行高 2px */
+.nc-title { display: grid; min-width: 0; }
+.ncard[data-view="compact"] .nc-name { justify-self: start; max-width: 100%; line-height: 20px; }
+.nc-ip { font-size: var(--fs-micro); line-height: 14px; color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nc-actions { margin-left: auto; margin-right: -8px; display: flex; align-items: center; gap: var(--sp-2); flex: none; }
 .ncard[data-offline="1"] .nc-name { color: var(--fg-2); }
 
 /* 2 地址（小卡片：地址 + 入口/套餐/到期两行） */
 .nc-addr { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); min-height: 22px; margin-top: var(--sp-2); color: var(--fg-2); }
 .nc-marks { display: inline-flex; align-items: center; gap: var(--sp-4); flex: none; }
-.nc-marks .tag { height: 18px; padding: 0 var(--sp-6); font-size: 10.5px; border-radius: 6px; }
+.nc-marks .tag { height: 18px; padding: 0 var(--sp-6); font-size: var(--fs-micro); line-height: 18px; border-radius: 6px; }
 .nc-meta2 { display: grid; min-height: 44px; margin-top: var(--sp-2); font-size: var(--fs-label); line-height: 22px; color: var(--fg-2); }
 .nc-meta2 > div { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); min-width: 0; }
 .nc-meta2 span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -142,7 +143,10 @@
 
 /* 9 标签行 */
 .nc-tags { display: flex; align-items: center; gap: var(--inline-gap); min-height: 24px; margin-top: var(--card-seg); margin-bottom: var(--card-pad); min-width: 0; }
-.nc-tags-list { display: flex; align-items: center; gap: var(--inline-gap); min-width: 0; overflow: hidden; flex: 0 1 auto; }
+/* 标签只排一行：放不下的整枚折到第二行、被裁掉（不再出现切开半个字的胶囊），NodeCard 数出收起几枚、末尾给「+N」；
+   排在第一枚、自己就放不下的才省略 */
+.nc-tags-list { display: flex; flex-wrap: wrap; align-items: center; gap: var(--inline-gap); height: 22px; min-width: 0; overflow: hidden; flex: 0 1 auto; }
+.nc-tags > .tag { flex: none; } /* 「+N」 */
 .nc-price { display: inline-flex; align-items: center; gap: var(--sp-4); flex: none; margin-left: auto; font: var(--fw-semibold) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg); }
 .nc-price .lucide { width: 13px; height: 13px; color: var(--tag-gold-fg); }
 .ncard[data-view="compact"] .nc-tags { margin-top: var(--sp-6); min-height: 22px; margin-bottom: 0; gap: var(--sp-4); }

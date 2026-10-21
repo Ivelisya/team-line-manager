@@ -170,11 +170,12 @@
 .dots > i[data-on] { background: var(--spd, var(--accent)); opacity: calc(0.35 + var(--l) * 0.65); transform: scale(calc(0.8 + var(--l) * 0.7)); }
 
 /* ---------- 彩色标签 ---------- */
+/* 块级、行高撑满：inline-flex 的文字落在匿名项里，text-overflow 不生效，放不下时字被切成半个 */
 .tag {
   --tag-bg: var(--tag-gray-bg); --tag-fg: var(--tag-gray-fg);
-  display: inline-flex; align-items: center; flex: 0 1 auto; min-width: 0; max-width: 10rem; height: 22px; box-sizing: border-box; padding: 0 var(--sp-8);
+  display: inline-block; flex: 0 1 auto; min-width: 0; max-width: 10rem; height: 22px; box-sizing: border-box; padding: 0 var(--sp-8);
   border-radius: 7px; background: var(--tag-bg); color: var(--tag-fg);
-  font: var(--fw-semibold) 11px / 1 var(--font-sans); letter-spacing: 0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font: var(--fw-semibold) var(--fs-micro) / 22px var(--font-sans); letter-spacing: 0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .tag[data-c="blue"] { --tag-bg: var(--tag-blue-bg); --tag-fg: var(--tag-blue-fg); }
 .tag[data-c="orange"] { --tag-bg: var(--tag-orange-bg); --tag-fg: var(--tag-orange-fg); }
