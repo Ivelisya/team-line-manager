@@ -129,8 +129,13 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 |---|---|---|
 | `shared_buffers` | 内存的 25% 左右（4 GB 内存给 1GB） | 原始时序表（主机样本每台每 10 秒一行、探测、访问记录）的当天分区和小时汇总表是一直在读写的热数据，放得进缓存时曲线查询、每 3 秒一次的实时视图不用反复读盘 |
 | `work_mem` | 16–32 MB（4 GB 内存取 16MB） | 每 5 分钟的主机小时汇总要把当前小时的全部样本按（机器, 时间）排序算网卡增量：实验室 136 台、约 6 万行，4MB 时排序落盘约 5 MB 临时文件；机器详情的长时段曲线（按分钟 / 小时分组聚合）同理。它按每个排序 / 哈希节点各算一份，连接池上限 20 条，不要给太大 |
+| `wal_compression` | `lz4`（默认 off） | WAL 里近八成是整页镜像：每次 checkpoint 之后某一页第一次被改，整页写进 WAL。中控一直在写的页（当天分区、小时汇总、agent 状态等）每个 checkpoint 周期都要各来一次。lz4 压缩整页镜像，CPU 开销很小；实验室平均每个整页镜像从约 5.8 KB 压到约 2.6 KB |
+| `checkpoint_timeout` | `15min`（默认 5min） | 整页镜像每个 checkpoint 周期重来一遍，周期拉长后热页的整页镜像次数少很多（实验室同样 15 分钟从约 8100 个降到约 3400 个）；代价是崩溃后恢复要多重放一些 WAL（实验室一个周期约 22 MB，秒级） |
+| `max_wal_size` | `2GB`（默认 1GB） | 两次 checkpoint 之间 WAL 攒到这个量就提前做 checkpoint（又带出一轮整页镜像）；留足余量，批量上架、agent 补传积压时也按 15 分钟一个周期走。平时 pg_wal 只占一两个周期的量 |
 
 改法（`psql` 以超级用户执行）：`alter system set work_mem = '16MB'; select pg_reload_conf();` 立即生效；`alter system set shared_buffers = '1GB';` 要重启 PostgreSQL 才生效（fleet-server 的连接池会自动重连，正在进行的请求会失败一次）。改完用 `show work_mem;`、`show shared_buffers;` 确认。
+
+WAL 三项由 `deploy/central/install.sh` 写进 `/etc/postgresql/<版本>/main/conf.d/fleet.conf`，`systemctl reload postgresql` 生效，不用重启；确认：`select name, setting, sourcefile from pg_settings where name in ('wal_compression', 'checkpoint_timeout', 'max_wal_size');`（用 `alter system` 改过同名参数的话 `postgresql.auto.conf` 优先，先 `alter system reset <参数>`）。实验室实测（fleet 库约 1.4 GB，用 pg_waldump 按库统计，排除测试库）：改前每 5 分钟约 20 MB、整页镜像占 78%，合 66 KB/s（约 5.5 GB/天）；改后每 15 分钟约 22 MB、整页镜像占 40%，合 25 KB/s（约 2 GB/天），少了约 63%。
 
 ## 9. 生产中控：部署与回滚
 

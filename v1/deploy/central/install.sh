@@ -20,6 +20,15 @@ if [ -n "$missing" ]; then
 fi
 systemctl enable -q --now systemd-timesyncd postgresql caddy
 
+# docs/OPS.md §8：WAL 大半是 checkpoint 之后第一次改页写下的整页镜像。压缩整页镜像、checkpoint 间隔拉长到 15 分钟；reload 即生效
+PGCONF="# 由 fleet 的 deploy/central/install.sh 写入，见 docs/OPS.md §8
+wal_compression = lz4
+checkpoint_timeout = 15min
+max_wal_size = 2GB"
+for d in /etc/postgresql/*/main/conf.d; do
+  [ "$(cat "$d/fleet.conf" 2>/dev/null)" = "$PGCONF" ] || { printf '%s\n' "$PGCONF" > "$d/fleet.conf"; systemctl reload postgresql; }
+done
+
 id fleet >/dev/null 2>&1 || useradd --system --home-dir /var/lib/fleet --shell /usr/sbin/nologin fleet
 usermod -aG systemd-journal fleet   # fleetctl server-logs 需要读本机 journal
 install -d -m 750 -o fleet -g fleet /etc/fleet /etc/fleet/ssh /var/lib/fleet
