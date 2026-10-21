@@ -51,8 +51,4 @@ export default {
     },
   },
   plugins: [],
-  // --tw-ring-*、--tw-translate-* 等默认变量不再挂在 *, ::before, ::after 上（全页每个元素都带一份）。
-  // 注意：base 与 utilities 分在两个文件（tw-base.css / tw-utilities.css），按需补的默认变量生成不出来——
-  // ring-*、transform/rotate/scale-*、blur 等依赖这些变量的工具类会失效（目前一个没用；要用就写进 CSS）
-  experimental: { optimizeUniversalDefaults: true },
 } satisfies Config;
