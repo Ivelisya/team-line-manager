@@ -64,6 +64,11 @@ export function NodeDrawer() {
                   上架失败{m.lifecycle_reason && <>：{m.lifecycle_reason}</>}。{m.failed_job && <><Link to={`/jobs/${m.failed_job.id}`} className="btn-link" onClick={close} style={{ color: 'var(--accent)' }}>查看作业</Link>，可在作业页重试；</>}也可以在「管理」里退役，释放 IP 与编号。
                 </Note>
               )}
+              {m.lifecycle === 'retiring' && m.failed_job && !m.active_job && (
+                <Note tone="bad">
+                  退役失败 · <Link to={`/jobs/${m.failed_job.id}`} className="btn-link" onClick={close} style={{ color: 'var(--accent)' }}>查看作业</Link>。机器停在「退役中」，在作业页从失败的步骤重试即可完成退役。
+                </Note>
+              )}
               {m.active_job && (
                 <Note tone="info">
                   {jobKindLabel(m.active_job.kind)}进行中。<Link to={`/jobs/${m.active_job.id}`} className="btn-link" onClick={close} style={{ color: 'var(--accent)' }}>查看作业</Link>

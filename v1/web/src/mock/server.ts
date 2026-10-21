@@ -83,6 +83,7 @@ function overview() {
   return {
     nodes: cnt(live.filter((m) => m.kind !== 'relay')), relays: cnt(live.filter((m) => m.kind === 'relay')),
     provisioning: db.machines.filter((m) => m.lifecycle === 'provisioning').length, retiring: db.machines.filter((m) => m.lifecycle === 'retiring').length,
+    failed: db.machines.filter((m) => m.lifecycle === 'failed').length,
     // 需要续费的：自动续费的只在已过期时算（同服务端）
     // 在线/离线按 agent 连通（同 isQuiet）
     online: live.filter((m) => !isQuiet(m)).length, offline: live.filter(isQuiet).length,
@@ -469,14 +470,26 @@ R('GET', '/jobs', ({ query }) => {
 const jobOf = (id: string) => { const j = db.jobs.find((x) => x.id === id); if (!j) throw bad('作业不存在', 404, 'not_found'); return j; };
 R('GET', '/jobs/([^/]+)', ({ params }) => { const j = clone(jobOf(params[0])); const s = jobSummary(j); return { ...j, step: s.step, step_title: s.step_title }; });
 R('GET', '/jobs/([^/]+)/logs', ({ params, query }) => { const after = +(query.get('after') ?? 0); return clone((db.logs[params[0]] ?? []).filter((l) => l.id > after)); });
-R('POST', '/jobs/([^/]+)/retry', ({ params }) => {
+/** 重试：body { reset_host_key?, ssh_password? }（C1）。指纹不符不重置、认证失败不给密码时 mock 照样失败 */
+R('POST', '/jobs/([^/]+)/retry', ({ params, body }) => {
   const j = jobOf(params[0]); if (j.state !== 'failed') throw bad('只有失败的作业才能重试', 409, 'conflict');
-  const f = j.steps.find((s) => s.state === 'failed')!; f.state = 'running'; f.error = null; j.state = 'running'; j.cancellable = true; j.error = null; j.finished_at = null; log(j.id, 'info', '从失败的步骤重试');
-  drive(j, 2500, () => { const m = db.machines.find((x) => x.id === j.target?.id); if (m) { m.lifecycle = 'active'; m.active_job = null; } }); emit({ type: 'job', id: j.id }); return {};
+  const f = j.steps.find((s) => s.state === 'failed')!;
+  if (f.error_kind === 'host_key' && !body.reset_host_key) throw bad('主机指纹仍与记录的不一致：确认机器重装过后勾选「重置主机指纹」', 409, 'conflict');
+  if (f.error_kind === 'auth' && !body.ssh_password) throw bad('中控密钥仍登录不上：请填写 SSH 密码', 409, 'conflict');
+  f.state = 'running'; f.error = null; f.error_kind = null; j.state = 'running'; j.cancellable = true; j.error = null; j.finished_at = null; log(j.id, 'info', `从失败的步骤重试${body.reset_host_key ? '（已重置主机指纹）' : ''}`);
+  const m = db.machines.find((x) => x.id === j.target?.id);
+  if (m) { if (m.lifecycle === 'failed') m.lifecycle = 'provisioning'; m.failed_job = null; m.active_job = { id: j.id, kind: j.kind, state: 'running' }; }
+  drive(j, 2500, () => { if (!m) return; if (j.kind === 'retire') { finishRetire(m); refreshCounts(); return; } m.lifecycle = 'active'; m.active_job = null; m.health = { status: 'ok', reasons: [] }; });
+  emit({ type: 'job', id: j.id }); emit({ type: 'machines' }); return {};
 });
+/** 取消：进行中的作业，或失败的上架 / 恢复作业（上架 → 退役并清理；恢复 → 退回已退役） */
 R('POST', '/jobs/([^/]+)/cancel', ({ params }) => {
-  const j = jobOf(params[0]); if (j.state !== 'running') throw bad('作业不在进行中', 409, 'conflict');
-  j.state = 'cancelled'; j.cancellable = false; j.finished_at = iso(); j.steps.forEach((s) => { if (s.state === 'running' || s.state === 'pending') s.state = 'skipped'; }); log(j.id, 'warn', '作业已取消，已完成的步骤已补偿'); emit({ type: 'job', id: j.id }); return {};
+  const j = jobOf(params[0]); if (!j.cancellable) throw bad('这个作业不能取消', 409, 'conflict');
+  const failed = j.state === 'failed';
+  j.state = 'cancelled'; j.cancellable = false; j.finished_at = iso(); j.steps.forEach((s) => { if (s.state === 'running' || s.state === 'pending' || s.state === 'failed') s.state = 'skipped'; else if (s.state === 'done') s.state = 'compensated'; }); log(j.id, 'warn', '作业已取消，已完成的步骤已补偿');
+  const m = db.machines.find((x) => x.id === j.target?.id);
+  if (failed && m && m.lifecycle === 'failed') { m.failed_job = null; finishRetire(m); refreshCounts(); }
+  emit({ type: 'job', id: j.id }); return {};
 });
 
 R('GET', '/overview', () => overview());

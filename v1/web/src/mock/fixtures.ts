@@ -111,6 +111,7 @@ export function buildDb(): Db {
   const ov = (team: string, n: number, patch: Partial<Def>) => Object.assign(defs.find((d) => d.team === team && d.n === n)!, patch);
   ov('t1', 5, { status: 'down' }); ov('t2', 3, { status: 'down', online: true }); ov('t1', 3, { resetDay: 15 }); ov('t1', 4, { resetDay: 31 }); ov('t1', 9, { status: 'degraded', cpu: 91 }); ov('t2', 4, { status: 'maintenance' });
   ov('t2', 7, { lifecycle: 'retiring', status: 'inactive' }); ov('t2', 9, { status: 'unknown' });
+  ov('t2', 10, { lifecycle: 'retiring', status: 'inactive' }); // 退役作业失败（j-retfail），停在退役中
   ov('t1', 10, { cpu: 86 });
 
   for (const d of defs) {
@@ -166,6 +167,15 @@ export function buildDb(): Db {
       active_job: { id: 'j-run', kind: 'provision_vps', state: 'running' },
     }));
   }
+  // 上架失败（j-fail：主机指纹不符）
+  {
+    const p = plan('pl1'); const team = teams[1];
+    machines.push(base({
+      id: 'x1', kind: 'vps', name: displayName(team.name, 12), team: { id: team.id, name: team.name }, number: 12, ip: '203.0.113.77', lifecycle: 'failed', lifecycle_reason: '上架作业失败', activated_at: null, created_at: iso(now() - 95 * 60_000),
+      provider: { id: 'p1', name: '搬瓦工' }, provider_code: 'BWH', plan: { id: p.id, name: p.name, bandwidth_mbps: p.bandwidth_mbps, traffic_gb: p.traffic_gb },
+      health: { status: 'inactive', reasons: [] }, failed_job: { id: 'j-fail', kind: 'provision_vps', state: 'failed' },
+    }));
+  }
   // 已退役 ×2
   for (const [tid, n, ip, days] of [['t1', 3, '198.51.100.88', 40], ['t2', 5, '203.0.113.99', 12]] as const) {
     const team = teams.find((t) => t.id === tid)!; const p = plan('pl2');
@@ -218,14 +228,18 @@ export function buildDb(): Db {
   const RSTEPS: [string, string][] = [['detach', '停用入口'], ['cleanup', '清理节点上的服务'], ['revoke', '撤销令牌'], ['finalize', '标记为已退役']];
   const jobs: Job[] = [
     mk('j-run', 'provision_vps', { id: 'm-t1-13p', name: '团队1-13' }, 'running', PSTEPS, 2, 6),
-    mk('j-fail', 'provision_vps', { id: 'x1', name: '团队2-13' }, 'failed', PSTEPS, 0, 95, 'SSH 连接被拒绝：Permission denied (password)'),
+    mk('j-fail', 'provision_vps', { id: 'x1', name: '团队2-12' }, 'failed', PSTEPS, 0, 95, '主机指纹与记录的不一致：203.0.113.77 可能重装过'),
     mk('j-ret', 'retire', { id: 'm-t2-07', name: '团队2-07' }, 'running', RSTEPS, 1, 3),
+    mk('j-retfail', 'retire', { id: 'm-t2-10', name: '团队2-10' }, 'failed', RSTEPS, 1, 30, 'SSH 连接超时：203.0.113.30:22'),
     mk('j-done1', 'retire', { id: 'm-t2-5r', name: '团队2-05' }, 'succeeded', RSTEPS, 4, 60 * 24 * 12),
     mk('j-done2', 'provision_vps', { id: 'm-t1-12', name: '团队1-12' }, 'succeeded', PSTEPS, 5, 60 * 24 * 30),
     mk('j-done3', 'retire', { id: 'm-t1-3r', name: '团队1-03' }, 'succeeded', RSTEPS, 4, 60 * 24 * 40),
   ];
   jobs[0].steps[3].state = 'pending';
-  jobs.find((j) => j.id === 'j-fail')!.steps.find((x) => x.state === 'failed')!.error_kind = 'auth';
+  const failStep = (id: string, kind: string) => { const j = jobs.find((x) => x.id === id)!; j.steps.find((x) => x.state === 'failed')!.error_kind = kind; return j; };
+  failStep('j-fail', 'host_key').cancellable = true; // 失败的上架作业可以取消（机器退役并清理）
+  failStep('j-retfail', 'network');
+  machines.find((m) => m.id === 'm-t2-10')!.failed_job = { id: 'j-retfail', kind: 'retire', state: 'failed' };
   // 已取消并补偿的上架、升级 agent 作业，让步骤条的“已补偿 / 已跳过”和 upgrade_agent 都有样本
   const cj = mk('j-cancel', 'provision_vps', { id: 'x2', name: '团队2-14' }, 'cancelled', PSTEPS, 3, 180);
   cj.steps.forEach((x, i) => { x.state = i < 3 ? 'compensated' : 'skipped'; if (i >= 3) { x.started_at = null; x.finished_at = null; } });
@@ -237,7 +251,8 @@ export function buildDb(): Db {
     logs[jobId] = lines.map(([level, msg], i) => ({ id: i + 1, ts: iso(c + 2000 + i * 7000), level, msg }));
   };
   logT('j-run', [['info', '开始上架 团队1-13 (198.51.100.77)'], ['info', '连接 198.51.100.77:22 ...'], ['info', '系统: Debian 12 x86_64，内存 4096 MB'], ['info', '步骤 1/5 完成'], ['info', '下载 agent 1.0.3 ...'], ['info', '注册 agent，令牌已写入 /etc/fleet/agent.toml'], ['info', '步骤 2/5 完成'], ['info', '写入 /etc/ss/config.json，端口 8388'], ['warn', 'ufw 未启用，跳过防火墙规则'], ['info', '启动 ss-server ...']]);
-  logT('j-fail', [['info', '开始上架 团队2-13 (203.0.113.77)'], ['info', '连接 203.0.113.77:22 ...'], ['error', 'SSH 连接被拒绝：Permission denied (password)']]);
+  logT('j-fail', [['info', '开始上架 团队2-12 (203.0.113.77)'], ['info', '连接 203.0.113.77:22 ...'], ['error', '主机指纹与记录的不一致：203.0.113.77 可能重装过']]);
+  logT('j-retfail', [['info', '开始退役 团队2-10'], ['info', '停用入口 线路机2:20010，已应用'], ['info', '清理节点上的服务 ...'], ['error', 'SSH 连接超时：203.0.113.30:22']]);
   logT('j-ret', [['info', '开始退役 团队2-07'], ['info', '停用入口 线路机2:20007，已应用'], ['info', '清理节点上的服务 ...']]);
   logT('j-done1', [['info', '退役完成']]); logT('j-done2', [['info', '上架完成']]); logT('j-done3', [['info', '退役完成']]);
 

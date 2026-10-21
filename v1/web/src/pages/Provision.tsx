@@ -303,8 +303,10 @@ const GridCell = React.memo(function GridCell({ col, ci, row, opts, onChange, on
 }) {
   const na = col.key !== 'kind' && !applies(col, row.kind);
   const paste = (e: React.ClipboardEvent) => onPaste(e, row.id, ci);
+  // 从下拉里选了：这一格不再是“粘贴进来但没匹配上”的值，去掉它的 unresolved
+  const resolved = (key: keyof Row) => { const { [key]: _drop, ...rest } = row.unresolved; return rest; };
   const sel = (value: string, key: keyof Row, empty = '—') => (
-    <select className="gcell" value={value} disabled={na} aria-label={col.label} onChange={(e) => onChange(row.id, { [key]: e.target.value, ...(key === 'provider_id' ? { plan_id: '' } : {}), unresolved: { ...row.unresolved, [key]: '' } })} onPaste={paste}>
+    <select className="gcell" value={value} disabled={na} aria-label={col.label} onChange={(e) => onChange(row.id, { [key]: e.target.value, ...(key === 'provider_id' ? { plan_id: '' } : {}), unresolved: resolved(key) })} onPaste={paste}>
       <option value="">{empty}</option>{(opts ?? []).map((x) => <option key={x.value} value={x.value}>{x.label}</option>)}
     </select>
   );

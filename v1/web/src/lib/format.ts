@@ -52,6 +52,10 @@ export function money(cents: number | null | undefined, currency = 'CNY'): strin
   const v = cents / 100;
   return `${currencySym(currency)}${Number.isInteger(v) ? v : v.toFixed(2)}`;
 }
+/** 币种下拉的常用选项 */
+export const CURRENCY_OPTIONS = ['CNY', 'USD', 'EUR', 'HKD', 'JPY'].map((c) => ({ value: c, label: `${c} ${currencySym(c).trim()}` }));
+/** 当前值不在常用选项里（供应商时区 Asia/Hong_Kong、套餐币种 GBP 等）时补进去，否则下拉显示为空 */
+export const withCurrent = (opts: { value: string; label: string }[], v: string) => (opts.some((o) => o.value === v) ? opts : [{ value: v, label: v }, ...opts]);
 export const CYCLE: Record<string, string> = { monthly: '月', quarterly: '季', semiannual: '半年', yearly: '年' };
 /** 计费周期下拉选项：每月 / 每季 / … */
 export const CYCLE_OPTIONS = Object.entries(CYCLE).map(([value, label]) => ({ value, label: `每${label}` }));

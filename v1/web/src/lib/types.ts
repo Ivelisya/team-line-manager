@@ -41,7 +41,7 @@ export interface MachineView {
   quota: { used: number; period_start: string };
   health: { status: HealthStatus; reasons: HealthReason[] };
   active_job: { id: string; kind: string; state: string } | null;
-  /** 上架失败（lifecycle = failed）时：失败的上架/恢复作业 */
+  /** 上架失败（lifecycle = failed）：失败的上架/恢复作业；退役中（retiring）且最近的退役作业失败：那个退役作业 */
   failed_job: { id: string; kind: string; state: string } | null;
   open_incidents: number; maintenance: boolean;
   relay: { public_host: string; generation: number; applied_generation: number; applied_at: string | null; apply_error: string | null; port_min: number; port_max: number } | null;
@@ -60,7 +60,8 @@ export interface Overview {
   relays: Record<'total' | 'ok' | 'degraded' | 'down' | 'unknown' | 'maintenance', number>;
   /** 在线/离线按 agent 连通（同 isQuiet），与健康无关 */
   online: number; offline: number;
-  provisioning: number; retiring: number; due_7d: number; monthly_cost: { currency: string; cents: number }[];
+  /** failed：上架失败（lifecycle = failed）的台数 */
+  provisioning: number; retiring: number; failed: number; due_7d: number; monthly_cost: { currency: string; cents: number }[];
   traffic_month: { up: number; down: number }; net_rx_bps: number; net_tx_bps: number;
 }
 

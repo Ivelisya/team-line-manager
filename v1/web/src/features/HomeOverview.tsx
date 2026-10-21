@@ -28,7 +28,9 @@ export function HomeSection({ icon, label, title, sub, actions, children, classN
 function statusLine(o: Overview | undefined, issues: number): string {
   if (!o) return '正在汇总机器状态…';
   const due = o.due_7d ? `，${o.due_7d} 台 7 天内到期` : '';
-  if (issues) return `有 ${issues} 台机器故障或降级${due}，点“故障与降级”查看告警。`;
+  const fail = o.failed ? `，${o.failed} 台上架失败` : '';
+  if (issues) return `有 ${issues} 台机器故障或降级${fail}${due}，点“故障与降级”查看告警。`;
+  if (o.failed) return `${o.failed} 台机器上架失败${due}，可在作业页重试或在详情里退役。`;
   return `全部 ${o.nodes.total + o.relays.total} 台机器运行良好${due}，监控数据持续采集中。`;
 }
 
@@ -49,7 +51,7 @@ export function OverviewSection({ o, loading }: { o: Overview | undefined; loadi
             caption={nodes && <><DotCount tone="warn" n={nodes.degraded} label="降级" /><DotCount tone="bad" n={nodes.down} label="故障" /><DotCount tone="neutral" n={nodes.unknown} label="未知" /></>} />
           <Stat loading={loading} tone="teal" icon={<Waypoints />} label="线路机正常" value={<CountUp value={relays?.ok} />} unit={relays ? `/ ${relays.total}` : undefined}
             caption={relays && <><DotCount tone="warn" n={relays.degraded} label="降级" /><DotCount tone="bad" n={relays.down} label="故障" /></>} />
-          <Stat loading={loading} tone="bad" icon={<AlertTriangle />} label="故障与降级" value={<CountUp value={o ? issues : undefined} />} unit="台" to="/incidents" caption={o ? (issues ? '点击查看告警' : '一切正常') : undefined} />
+          <Stat loading={loading} tone="bad" icon={<AlertTriangle />} label="故障与降级" value={<CountUp value={o ? issues : undefined} />} unit="台" to="/incidents" caption={o && <>{issues ? '点击查看告警' : !o.failed && '一切正常'}{o.failed > 0 && <DotCount tone="bad" n={o.failed} label="上架失败" />}</>} />
           <Stat loading={loading} tone="amber" icon={<CalendarClock />} label="7 天内到期" value={<CountUp value={o?.due_7d} />} unit="台" to="/nodes?sort=due" caption="需要续费的机器" />
           <Stat loading={loading} tone="gold" icon={<CircleDollarSign />} label="每月费用" value={cost0 ? F.money(cost0.cents, cost0.currency) : '—'}
             caption={costMore.length ? `另有 ${costMore.map((c) => F.money(c.cents, c.currency)).join(' + ')}（不同币种分开计）` : '在用机器按月折算'} />

@@ -99,6 +99,25 @@ const scenes = {
   },
   async 'jobs-run'() { const { page, errors } = await open('/jobs/j-run', { h: 1500 }); await shot(page, 'ui-jobs-running'); return { page, errors }; },
   async 'jobs-fail'() { const { page, errors } = await open('/jobs/j-fail', { h: 1300 }); await shot(page, 'ui-jobs-failed'); return { page, errors }; },
+  async 'jobs-retry'() {
+    const { page, errors } = await open('/jobs/j-fail', { h: 1000 });
+    await clickText(page, 'button', '重试'); await sleep(600);
+    await shot(page, 'ui-jobs-retry-dialog');
+    await clickText(page, '.dialog button', '重试'); await sleep(1500);
+    await shot(page, 'ui-jobs-retried');
+    return { page, errors };
+  },
+  async 'jobs-cancel-failed'() {
+    const { page, errors } = await open('/jobs/j-fail', { h: 1000 });
+    await clickText(page, 'button', '取消'); await sleep(600);
+    await shot(page, 'ui-jobs-cancel-failed');
+    return { page, errors };
+  },
+  async 'drawer-retire-failed'() {
+    const { page, errors } = await open('/nodes?m=m-t2-10&tab=manage', { h: 1100 });
+    await shot(page, 'ui-drawer-retire-failed');
+    return { page, errors };
+  },
   async 'jobs-cancel'() { const { page, errors } = await open('/jobs/j-cancel', { h: 1300 }); await shot(page, 'ui-jobs-cancelled'); return { page, errors }; },
   async 'jobs-dark'() { const { page, errors } = await open('/jobs/j-run', { h: 1500, theme: 'dark' }); await shot(page, 'ui-jobs-running-dark'); return { page, errors }; },
   async 'jobs-popover'() {
