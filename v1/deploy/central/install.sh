@@ -2,6 +2,8 @@
 # 在生产中控机（Debian 13，root）上安装 / 升级 fleet-server。由 deploy.sh 连同安装包传上来执行，包就在本脚本所在目录。
 # 第一次：装系统包，建 PostgreSQL 库与角色、fleet 用户、密钥（secret.key、中控 SSH 密钥）、fleet.toml、Caddy。
 # 之后每次：只替换 fleet-server、dist、前端、ipintel 脚本并重启 fleet-server；已有的配置和密钥不动。
+# 换下来的旧 fleet-server 留在 /opt/fleet/fleet-server.prev（回滚见 docs/OPS.md §9）；重启后未登录访问 /api/v1/auth/me 不是 401
+# 就打出最近日志、退出码 1。
 # /etc/fleet/secret.key 丢了，库里所有 SS 密码、REALITY 私钥、通知渠道配置都解不开：首次部署后把它拷到中控机以外的地方保管。
 set -euo pipefail
 DOMAIN=${1:?用法：install.sh <域名>}
@@ -67,6 +69,10 @@ fi
 
 install -m 755 "$PKG/bin/fleet-agent" "$PKG/bin/xray" "$PKG/bin/ssserver" /opt/fleet/dist/
 install -m 644 "$PKG/bin/geoip.dat" /opt/fleet/dist/
+# 换下来的旧版留作 fleet-server.prev（同一个二进制重复部署时不覆盖它），回滚见 docs/OPS.md §9
+if [ -f /opt/fleet/fleet-server ] && ! cmp -s "$PKG/bin/fleet-server" /opt/fleet/fleet-server; then
+  cp -p /opt/fleet/fleet-server /opt/fleet/fleet-server.prev
+fi
 install -m 755 "$PKG/bin/fleet-server" /opt/fleet/fleet-server.new && mv -f /opt/fleet/fleet-server.new /opt/fleet/fleet-server
 rm -rf /opt/fleet/web.new /opt/fleet/web.old
 cp -r "$PKG/web" /opt/fleet/web.new
@@ -116,9 +122,17 @@ if [ "$(cat /etc/caddy/Caddyfile 2>/dev/null)" != "$CADDY" ]; then
   systemctl reload caddy
 fi
 
-for _ in $(seq 30); do
+# fleet-server 启动时先跑数据库迁移再监听：最多等 60 秒，未登录访问应回 401
+code=000
+for _ in $(seq 60); do
   code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/v1/auth/me || true)
   [ "$code" = 401 ] && break
   sleep 1
 done
+if [ "$code" != 401 ]; then
+  echo "fleet-server 没有正常启动（$(systemctl is-active fleet-server)）：未登录访问 /api/v1/auth/me 应回 401，实际 $code。最近日志："
+  journalctl -u fleet-server -n 60 --no-pager || true
+  echo "旧版本在 /opt/fleet/fleet-server.prev，回滚见 docs/OPS.md §9"
+  exit 1
+fi
 echo "fleet-server $(systemctl is-active fleet-server)，api=$code，agent $(/opt/fleet/dist/fleet-agent version 2>/dev/null | head -1)"
