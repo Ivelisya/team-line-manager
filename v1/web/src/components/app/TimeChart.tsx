@@ -22,7 +22,7 @@ function timeTicks(min: number, max: number, range: string): number[] | undefine
   const d = new Date(min); d.setHours(0, 0, 0, 0);
   const out: number[] = [];
   for (let t = d.getTime() + Math.ceil((min - d.getTime()) / step) * step; t <= max; t += step) out.push(t);
-  return out;
+  return out.length >= 2 ? out : undefined; // 数据比一个步长还短（刚上架的机器看 7 天）：交给 recharts 自己取
 }
 
 /** 纵轴刻度：从 0 起 4 段。速率（1000 进位）每段取 1/2/2.5/5×10^k，字节（1024 进位）每段取 2 的幂，
@@ -34,6 +34,7 @@ function valueTicks(max: number, base: 1000 | 1024): number[] | undefined {
   let step: number;
   if (base === 1024) step = 2 ** Math.ceil(Math.log2(raw));
   else { const e = 10 ** Math.floor(Math.log10(raw)); step = ([1, 2, 2.5, 5, 10].find((n) => n * e >= raw) ?? 10) * e; }
+  if (unit === 1) step = Math.max(1, step); // 最小单位（B / bps）不分小数格，否则标签取整后重复
   return [0, 1, 2, 3, 4].map((i) => i * step * unit);
 }
 
