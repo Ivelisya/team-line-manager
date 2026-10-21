@@ -210,6 +210,8 @@ const KIND_TAG = { relay: 'teal', proxy: 'orange', vps: 'violet' } as const;
 const NO_NODES: MachineView['ip_nodes'] = [];
 /** 标签行：标签只排一行，放不下的整枚收起（折到看不见的第二行，cards.css），末尾「+N」，悬停列出收起的那几枚。
  *  收起几枚要排版后才数得出：挂载、标签变了、「+N」出现或变了（列表随之变窄）、卡片变宽变窄时重数；推送不改这几个字段，memo 挡住，不重数。
+ *  列表按剩下的宽度伸满，收起的标签让出的空白留在它末尾：数的时候顺带量出这段空白，「+N」往左平移过去、紧跟最后一枚露出的标签
+ *  （价格仍靠右）。只是平移，不改排版，不会再触发重数。
  *  host / nodes：紧凑卡的同机关系标排在类型后面（可点，见 HostTag）；其它密度不传 */
 const Tags = memo(function Tags({ code, provider, kind, service, maintenance, price, id, host, nodes }: {
   code: string | null; provider?: string; kind: MachineView['kind']; service: string | null; maintenance: boolean; price: string | null;
@@ -223,12 +225,16 @@ const Tags = memo(function Tags({ code, provider, kind, service, maintenance, pr
   if (service) items.push({ c: tagColor(service), text: service });
   if (maintenance) items.push({ c: 'amber', text: '维护中' });
   const list = useRef<HTMLDivElement>(null);
+  const more = useRef<HTMLSpanElement>(null);
   const [cut, setCut] = useState(0);
   const count = useCallback(() => {
     const el = list.current!; const top = (el.firstElementChild as HTMLElement).offsetTop;
     let n = 0;
     for (const t of el.children) if ((t as HTMLElement).offsetTop > top) n++;
     setCut(n);
+    // 「+N」这一轮还没渲染出来（刚从 0 变多）时跳过：setCut 引起的重数会再来一遍
+    const last = el.children[el.children.length - 1 - n];
+    if (more.current) more.current.style.translate = `${last.getBoundingClientRect().right - el.getBoundingClientRect().right}px`;
   }, []);
   useLayoutEffect(count, [count, code, kind, service, maintenance, price, host, nodes, cut]);
   useEffect(() => watchSize(list.current!.parentElement!, count), [count]); // 看整行：行宽只随卡片变，「+N」进出不会让它再触发
@@ -237,7 +243,7 @@ const Tags = memo(function Tags({ code, provider, kind, service, maintenance, pr
       {/* 同机关系标被收起时不进 Tab 顺序：聚焦会把裁掉的第二行滚出来 */}
       <div className="nc-tags-list" ref={list}>{items.map((t, i) => (t.rel ? <HostTag key={i} id={id} host={host} nodes={nodes} tabIndex={i >= items.length - cut ? -1 : undefined} /> : <Tag key={i} c={t.c} tip={t.tip}>{t.text}</Tag>))}</div>
       {/* 收起的标签仍在读屏顺序里，「+N」只给眼睛看 */}
-      {cut > 0 && <span className="tag" data-c="gray" aria-hidden data-tip={items.slice(-cut).map((t) => (t.tip ? `${t.text}（${t.tip}）` : t.text)).join('、')}>+{cut}</span>}
+      {cut > 0 && <span ref={more} className="tag" data-c="gray" aria-hidden data-tip={items.slice(-cut).map((t) => (t.tip ? `${t.text}（${t.tip}）` : t.text)).join('、')}>+{cut}</span>}
       {price && <span className="nc-price"><CircleDollarSign /><span className="num">{price}</span></span>}
     </div>
   );

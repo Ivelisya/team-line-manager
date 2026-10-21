@@ -74,9 +74,11 @@ a { color: inherit; }
 }
 .top-btn[aria-expanded="true"] { background: color-mix(in srgb, var(--accent-soft) 82%, var(--accent)); }
 @media (hover: hover) { .top-btn:hover { background: color-mix(in srgb, var(--accent-soft) 82%, var(--accent)); } }
-/* 顶栏告警胶囊（链到告警页）：悬停底色加深一级，按下同文字控件微缩（components.css「交互状态」）；行内的 a 不能缩放，改 inline-flex */
+/* 顶栏告警胶囊（链到告警页）：悬停底色加深一级，按下同文字控件微缩（components.css「交互状态」）；行内的 a 不能缩放，改 inline-flex。
+   悬停预览开着时（含键盘聚焦打开的）底色同悬停，同作业徽标开着弹层时 */
 .top-alert { display: inline-flex; flex: none; border-radius: var(--r-pill); text-decoration: none; transition: scale var(--dur-2) var(--ease-out); }
 .top-alert > .pill { transition: background-color var(--dur-1) var(--ease-std); }
+.top-alert[data-state="open"] > .pill { --pill-bg: color-mix(in srgb, var(--bad) calc(var(--tint) + 8%), transparent); }
 @media (hover: hover) { .top-alert:hover > .pill { --pill-bg: color-mix(in srgb, var(--bad) calc(var(--tint) + 8%), transparent); } }
 .nav-toggle { display: none; background: transparent; color: var(--fg-2); } /* 汉堡按钮不带软色底，悬停才给浅底 */
 @media (hover: hover) { .nav-toggle:hover { background: var(--hover); color: var(--fg); } }
@@ -163,7 +165,7 @@ a { color: inherit; }
 /* 页面里的滚动区（抽屉正文、对话框里的列表、表格横向滚动…）一律细滚动条、跟随主题线色；页面本身的滚动条保持系统样式 */
 body * { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
 /* 独立滚动的面板：滚到头不把滚动链到页面 */
-.drawer-body, .sidebar, .logbox, .cmd-list, .jobs-pop-list, .menu, .pol-tree, .pol-pv-table, .pol-chips, .reason-list, .select-content [data-radix-select-viewport] { overscroll-behavior: contain; }
+.drawer-body, .sidebar, .logbox, .cmd-list, .pop-list, .menu, .pol-tree, .pol-pv-table, .pol-chips, .reason-list, .select-content [data-radix-select-viewport] { overscroll-behavior: contain; }
 /* 横向滚动区（表格、分段、页签、步骤条、规则编辑器）：触控板横扫到头不触发浏览器的前进 / 后退手势 */
 .table-wrap, .seg, .tabs-list, .stepbar-wrap, .pol-ta { overscroll-behavior-x: contain; }
 
@@ -179,7 +181,7 @@ body * { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent;
     mask-image: linear-gradient(to right, transparent, #000 var(--fs), #000 calc(100% - var(--fe)), transparent);
     animation: edge-fade linear both; animation-timeline: scroll(self inline);
   }
-  .reason-list, .cmd-list, .jobs-pop-list, .logbox {
+  .reason-list, .cmd-list, .pop-list, .logbox {
     mask-image: linear-gradient(to bottom, transparent, #000 var(--fs), #000 calc(100% - var(--fe)), transparent);
     animation: edge-fade linear both; animation-timeline: scroll(self block);
   }

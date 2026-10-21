@@ -99,6 +99,12 @@ export const useJob = (id: string | null) => useQuery({ queryKey: ['job', id], q
 export const INCIDENT_PAGE = 50;
 export const useIncidents = (state: 'firing' | 'resolved' | 'all' = 'all', offset = 0, limit = INCIDENT_PAGE) =>
   useQuery({ queryKey: ['incidents', state, offset, limit], queryFn: ({ signal }) => get<Paged<Incident>>(`/incidents?state=${state}&limit=${limit}&offset=${offset}`, signal), placeholderData: keepPreviousData, staleTime: Infinity });
+/** 抽屉「最近告警」：这台机器最近的 5 条（进行中、已恢复都要）。服务端是严重度优先，这里只有几条，按进行中在前、再按开始时间新的在前排，读起来是时间顺序。
+ *  键在 ['incidents'] 下：随 incidents 事件、确认与静默等写操作一起失效 */
+const byRecent = (a: Incident, b: Incident) => (a.state === b.state ? Date.parse(b.opened_at) - Date.parse(a.opened_at) : a.state === 'firing' ? -1 : 1);
+const recentIncidents = (d: Paged<Incident>) => [...d.items].sort(byRecent);
+export const useMachineIncidents = (id: string) =>
+  useQuery({ queryKey: ['incidents', 'machine', id], queryFn: ({ signal }) => get<Paged<Incident>>(`/incidents?subject_id=${id}&state=all&limit=5`, signal), select: recentIncidents, staleTime: Infinity });
 /** 静默到期（ends_at 过了就不再列出）没有事件，仍按时间过期 */
 export const useSilences = () => useQuery({ queryKey: ['silences'], queryFn: () => get<Silence[]>('/silences') });
 

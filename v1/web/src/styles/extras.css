@@ -58,14 +58,24 @@
 .top-btn.jobs-ind { position: relative; }
 .top-btn.jobs-ind > .lucide { animation: breathe var(--dur-loop) var(--ease-std) infinite; }
 .jobs-ind-n { position: absolute; top: -5px; right: -5px; min-width: 16px; height: 16px; box-sizing: border-box; padding: 0 4px; border-radius: 8px; background: var(--accent-solid); color: var(--on-accent); font-size: 10px; line-height: 16px; text-align: center; box-shadow: 0 0 0 2px var(--surface); }
-.popover.jobs-pop { width: 320px; max-width: calc(100vw - 24px); padding: 0; }
-.jobs-pop-head { display: flex; align-items: center; justify-content: space-between; padding: var(--sp-10) var(--sp-12); font: var(--fw-semibold) var(--fs-body) / var(--lh-body) var(--font-sans); border-bottom: 1px solid var(--line); }
-.jobs-pop-list { margin: 0; padding: var(--sp-4); list-style: none; display: grid; max-height: 320px; overflow: auto; }
-.jobs-pop-item { display: grid; gap: var(--sp-4); padding: var(--sp-8) var(--sp-8); border-radius: var(--r-control); color: inherit; text-decoration: none; transition: background-color var(--dur-1) var(--ease-std); }
-.jobs-pop-item:hover { background-color: var(--hover); }
-.jobs-pop-t { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-8); min-width: 0; }
-.jobs-pop-all { display: block; padding: var(--sp-8) var(--sp-12); border-top: 1px solid var(--line); font-size: var(--fs-label); color: var(--accent); text-decoration: none; }
-.jobs-pop-all:hover { text-decoration: underline; text-underline-offset: 3px; }
+/* 顶栏的列表弹层（进行中的作业、告警预览）：标题行 + 列表（每项可点，悬停浅底）+ 底部「查看全部」。告警预览是悬浮卡（.hover-card），这里盖掉它的宽度与内边距 */
+.popover:is(.jobs-pop, .alerts-pop) { width: 320px; max-width: calc(100vw - 24px); padding: 0; }
+.pop-head { display: flex; align-items: center; justify-content: space-between; padding: var(--sp-10) var(--sp-12); font: var(--fw-semibold) var(--fs-body) / var(--lh-body) var(--font-sans); border-bottom: 1px solid var(--line); }
+.pop-list { margin: 0; padding: var(--sp-4); list-style: none; display: grid; max-height: 320px; overflow: auto; }
+.pop-item {
+  display: grid; gap: var(--sp-4); width: 100%; box-sizing: border-box; padding: var(--sp-8); border: 0; border-radius: var(--r-control);
+  background-color: transparent; color: inherit; font: inherit; text-align: left; text-decoration: none; cursor: pointer; transition: background-color var(--dur-1) var(--ease-std);
+}
+.pop-item:hover { background-color: var(--hover); }
+.pop-t { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-8); min-width: 0; }
+.pop-all { display: block; padding: var(--sp-8) var(--sp-12); border-top: 1px solid var(--line); font-size: var(--fs-label); color: var(--accent); text-decoration: none; }
+.pop-all:hover { text-decoration: underline; text-underline-offset: 3px; }
+/* 告警预览一行：级别点 + 对象名 + 规则名（放不下先省略规则），右边已持续多久；下一行摘要，和名称左对齐 */
+.alerts-pop-row { display: flex; align-items: center; gap: var(--sp-6); min-width: 0; }
+.alerts-pop-row > b { flex: none; max-width: 60%; font-weight: var(--fw-medium); }
+.alerts-pop-rule { flex: 1; color: var(--fg-2); }
+.alerts-pop-age { flex: none; font-size: var(--fs-label); color: var(--fg-2); white-space: nowrap; }
+.alerts-pop-sum { padding-left: calc(var(--dot) + var(--sp-6)); }
 
 /* ========== 命令面板 ========== */
 .overlay.cmd-overlay { z-index: calc(var(--z-palette) - 1); }
@@ -233,6 +243,6 @@ html[data-overlay] :is(.app, .drawer) .progress-fill { transition: none; }
    `font:` 简写会把 font-variant-numeric 重置成 normal，body 上设的 tabular-nums 在这些控件里就丢了（数字跳动时会左右抖）。
    这条放在所有样式表之后的最后一份普通样式里，统一补回。 */
 .btn, .seg-item, .tab, .fchip, .input, .textarea, .select-trigger, .pill, .chip, .mark, .nav-item, .menu-item, .select-item,
-.cmd-item, .cmd-trigger, .cmd-input, .kbd, .toast-action, .label, .sec-head, .brand, .jobs-pop-head { font-variant-numeric: tabular-nums; }
+.cmd-item, .cmd-trigger, .cmd-input, .kbd, .toast-action, .label, .sec-head, .brand, .pop-head { font-variant-numeric: tabular-nums; }
 /* 首页读数（集群大数、离线台数、圆环中心、迹线坐标与时间）：同 .num / .stat-value 用 --num-variant（tabular + 斜线零） */
 .cluster-big > .num, .cluster-kv b, .gauge-center b, .spark-axis, .spark-time { font-variant-numeric: var(--num-variant); }
