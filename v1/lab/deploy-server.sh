@@ -4,8 +4,9 @@
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 bash "$HERE/sync-server.sh"
-# 远端目录没有 .git：提交哈希在本机取，经环境变量交给远端的 cargo，agent 与中控的版本号成为 0.1.0+<哈希>
-GIT_HASH=$(git -C "$HERE" rev-parse --short HEAD)
+# 远端目录没有 .git：提交哈希在本机取，经环境变量交给远端的 cargo，agent 与中控的版本号成为 0.1.0+<哈希>。
+# 取最后一次改动编译输入的提交：纯前端、纯文档的提交不换哈希，不会让 server、agent 全量重编
+GIT_HASH=$(git -C "$HERE/.." log -1 --format=%h -- Cargo.toml Cargo.lock crates migrations deploy)
 ssh -F "$HOME/.ssh/fleetlab_config" fleet-dev "FLEET_GIT_HASH=$GIT_HASH bash -s" <<'REMOTE'
 set -euo pipefail
 export PATH=$HOME/.cargo/bin:$PATH

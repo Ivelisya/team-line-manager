@@ -10,8 +10,11 @@ HOST=${1:?用法：deploy.sh <中控 ssh 主机> <域名>}
 DOMAIN=${2:?用法：deploy.sh <中控 ssh 主机> <域名>}
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
-[ -z "$(git -C "$ROOT" status --porcelain -- crates migrations web/src)" ] || { echo "crates / migrations / web 有未提交的改动，先提交再部署"; exit 1; }
-GIT_HASH=$(git -C "$ROOT" rev-parse --short HEAD)
+# 进包的都要已提交：deploy/ 下的单元与 logrotate 由 scripts.rs 编进 fleet-server，web 下 src 以外的文件也影响前端构建
+[ -z "$(git -C "$ROOT" status --porcelain -- Cargo.toml Cargo.lock crates migrations deploy web)" ] \
+  || { echo "Cargo.toml / Cargo.lock / crates / migrations / deploy / web 有未提交的改动，先提交再部署"; exit 1; }
+# 版本号取最后一次改动编译输入的提交：纯前端、纯文档的提交不换哈希，fleet-dev 上不用全量重编
+GIT_HASH=$(git -C "$ROOT" log -1 --format=%h -- Cargo.toml Cargo.lock crates migrations deploy)
 LAB="ssh -F $HOME/.ssh/fleetlab_config fleet-dev"
 
 echo "== 编译 $GIT_HASH（fleet-dev）"
