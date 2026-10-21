@@ -56,9 +56,12 @@
   display: flex; align-items: baseline; gap: var(--sp-4); min-width: 0; min-height: 30px; overflow: hidden; white-space: nowrap;
   font: 700 24px / 30px var(--font-num); font-variant-numeric: var(--num-variant); letter-spacing: -0.02em; color: var(--fg);
 }
-.stat-value small { font: var(--fw-medium) var(--fs-label) / var(--lh-label) var(--font-num); letter-spacing: 0; color: var(--fg-3); }
+.stat-value small { font: var(--fw-medium) var(--fs-label) / var(--lh-label) var(--font-num); letter-spacing: 0; color: var(--fg-2); }
 .stat-cap { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-8); min-width: 0; min-height: 16px; font-size: 11.5px; line-height: 16px; color: var(--fg-3); }
 .stat-cap > * { white-space: nowrap; }
+/* 说明行里的数字（下载 1.2 TB、降级 3）：数字 --fg 加粗，单位跟着数字、不再比数字大一号（.unit 默认 12px 灰，比 11.5px 的数字还显眼） */
+.stat-cap .num { color: var(--fg); font-weight: var(--fw-semibold); }
+.stat-cap .unit { font-size: inherit; color: inherit; }
 .stat-cap .dotline { display: inline-flex; align-items: center; gap: var(--sp-4); }
 .stat-cap .stat-who { display: inline-flex; align-items: baseline; gap: var(--sp-4); min-width: 0; } /* 流量额度「最紧 某台 已用 93%」：名称放不下时省略，百分比留着 */
 @media (max-width: 760px) { .stat { padding: var(--sp-12); min-height: 92px; } .stat-value { font-size: 19px; } }
@@ -84,13 +87,14 @@
 .cluster-row { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--sp-8); min-width: 0; }
 .cluster-big { display: inline-flex; align-items: baseline; gap: var(--sp-6); min-width: 0; white-space: nowrap; }
 .cluster-big > .num { font: 800 26px / 1 var(--font-num); letter-spacing: -0.03em; color: var(--fg); }
-.cluster-big small { font-size: 11px; font-weight: var(--fw-medium); color: var(--fg-3); }
+/* 单位、读数的名称、在线 / 总计台数都是要读的信息：--fg-2（--fg-3 只给占位、缺测这类不承载信息的字，tokens.css） */
+.cluster-big small { font-size: 11px; font-weight: var(--fw-medium); color: var(--fg-2); }
 .cluster-kv { display: grid; justify-items: end; gap: 1px; }
-.cluster-kv small { font-size: 10px; line-height: 1.2; color: var(--fg-3); }
+.cluster-kv small { font-size: var(--fs-micro); line-height: 1.2; color: var(--fg-2); }
 .cluster-kv b { font: 700 var(--fs-label) / 1.2 var(--font-sans); color: var(--fg); }
 .cluster-kv b[data-bad] { color: var(--bad-text); }
-.cluster-foot { display: flex; justify-content: space-between; gap: var(--sp-8); font-size: 11px; line-height: 16px; color: var(--fg-3); }
-.cluster-foot b { font-weight: var(--fw-semibold); color: var(--fg-2); }
+.cluster-foot { display: flex; justify-content: space-between; gap: var(--sp-8); font-size: 11px; line-height: 16px; color: var(--fg-2); }
+.cluster-foot b { font-weight: var(--fw-semibold); color: var(--fg); }
 .cluster-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-8); min-width: 0; }
 @container (max-width: 340px) { .cluster-charts { grid-template-columns: minmax(0, 1fr); } }
 .cchart { display: grid; gap: var(--sp-4); min-width: 0; padding: var(--sp-8) var(--sp-10) var(--sp-6); background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
