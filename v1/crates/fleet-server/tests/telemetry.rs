@@ -20,11 +20,6 @@ const D: i64 = 86_400_000;
 
 fn hour_floor(ms: i64) -> i64 { ms.div_euclid(H) * H }
 
-/// 把告警相关表里的时间戳往回拨：汇总/通知的「刚刚」保护不挡测试
-async fn age_dirty(t: &T) {
-    sqlx::query("update rollup_dirty set touched_at = now() - interval '1 minute'").execute(&t.st.db).await.unwrap();
-}
-
 /// 评估一轮。告警用的在用机器视图有 3 s 短缓存，测试里上报完马上评估，先作废
 async fn pass(t: &T, s: &mut AlertState, base: OffsetDateTime, secs: i64) {
     t.st.live.invalidate();
@@ -132,8 +127,6 @@ async fn rollup_covers_backfilled_hours_and_counter_resets() {
     r.entries = vec![entry_sample(entry, h0 + 5_000, 100, 200), entry_sample(entry, h0 + 15_000, 50, 25)];
     r.probes = vec![probe(entry, h0 + 5_000, ProbeKind::Egress, true), probe(entry, h0 + 15_000, ProbeKind::Egress, false)];
     assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
-    // 刚标脏的（10 秒内）留到下一轮；这里把标记拨旧，模拟「已经过了一会儿」
-    age_dirty(&t).await;
     db::rollup_hours(&t.st.db).await.unwrap();
 
     let (rx, txb): (i64, i64) = sqlx::query_as("select net_rx, net_tx from host_metric_hourly where machine_id = $1 and extract(epoch from hour)::bigint * 1000 = $2")
@@ -165,8 +158,8 @@ async fn rollup_covers_backfilled_hours_and_counter_resets() {
     r2.host = vec![host(h0 + 50_000, 20.0, 600, 1200)];
     r2.entries = vec![entry_sample(entry, h0 + 25_000, 10, 0)];
     assert_eq!(t.report("tok1", &r2).await.0, StatusCode::OK);
-    assert_eq!(t.count("select count(*) from rollup_dirty").await, 1);
-    age_dirty(&t).await;
+    assert_eq!(t.count(&format!("select count(*) from rollup_dirty where extract(epoch from hour)::bigint * 1000 = {h0}")).await, 1);
+    assert_eq!(t.count("select count(*) from rollup_dirty").await, 2, "另一个是当前小时的标记，下个小时第一轮收尾");
     db::rollup_hours(&t.st.db).await.unwrap();
     let rx: i64 = sqlx::query_scalar("select net_rx from host_metric_hourly where machine_id = $1 and extract(epoch from hour)::bigint * 1000 = $2")
         .bind(relay)
@@ -296,6 +289,47 @@ async fn desired_long_poll_returns_when_generation_differs_even_if_smaller() {
 }
 
 // ── T4 / T5：健康与告警 ─────────────────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn probe_alerts_debounce_longer() {
+    let t = setup().await;
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let team = seed_team(&t, "团队1").await;
+    let (_node, entry) = seed_node(&t, relay, team, 1, "203.0.113.5", 20000).await;
+    let mut r = blank_report(1);
+    r.xray = Some(xray(true));
+    r.probes = vec![probe(entry, now_ms() - 2_000, ProbeKind::Egress, false), probe(entry, now_ms() - 2_000, ProbeKind::Tcp, false)];
+    assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
+    let rules = |v: Vec<Value>| {
+        let mut r: Vec<String> = v.iter().map(|i| i["rule"].as_str().unwrap().to_string()).collect();
+        r.sort();
+        r
+    };
+
+    // 开：TCP 不通满 90 s、出口不通满 150 s 才开（其余规则 60 s）
+    let mut state = AlertState::default();
+    let base = OffsetDateTime::now_utc();
+    pass(&t, &mut state, base, 0).await;
+    pass(&t, &mut state, base, 61).await;
+    assert!(incidents(&t, "firing").await.is_empty(), "探测类 60 s 还不开");
+    pass(&t, &mut state, base, 91).await;
+    assert_eq!(rules(incidents(&t, "firing").await), ["tcp_fail"]);
+    pass(&t, &mut state, base, 151).await;
+    assert_eq!(rules(incidents(&t, "firing").await), ["egress_fail", "tcp_fail"]);
+
+    // 关：探测恢复后同样按各自时长去抖
+    let mut r = blank_report(2);
+    r.xray = Some(xray(true));
+    r.probes = vec![probe(entry, now_ms(), ProbeKind::Egress, true), probe(entry, now_ms(), ProbeKind::Tcp, true)];
+    assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
+    pass(&t, &mut state, base, 200).await;
+    pass(&t, &mut state, base, 261).await;
+    assert_eq!(rules(incidents(&t, "firing").await), ["egress_fail", "tcp_fail"], "消失 60 s 还不恢复");
+    pass(&t, &mut state, base, 291).await;
+    assert_eq!(rules(incidents(&t, "firing").await), ["egress_fail"]);
+    pass(&t, &mut state, base, 351).await;
+    assert!(incidents(&t, "firing").await.is_empty());
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn relay_xray_down_alert_lifecycle() {
@@ -646,6 +680,30 @@ async fn alert_notifications_firing_repeat_silence_and_resolved() {
     sqlx::query("update machine set lifecycle = 'retired', retired_at = now() where id = $1").bind(relay).execute(&t.st.db).await.unwrap();
     let log = t.get("/api/v1/notify-log?limit=100").await;
     assert!(log.as_array().unwrap().iter().all(|l| l["subject_name"] == "线路机1（已退役）"), "{log}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn notifications_sent_in_order_and_wait_on_429() {
+    let t = setup().await;
+    let mock = Mock::start().await;
+    t.post("/api/v1/notify-channels", json!({"name": "tg", "kind": "telegram", "config": {"bot_token": "1:A", "chat_id": 1, "api_base": mock.url("/limited")}, "min_severity": "info", "enabled": true})).await;
+    // 同一轮开两条告警（Xray 未运行 + 配置未应用）
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let mut r = blank_report(1);
+    r.xray = Some(xray(false));
+    assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
+    sqlx::query("update relay set generation = 3, applied_generation = 1, generation_at = now() - interval '5 minutes' where machine_id = $1").bind(relay).execute(&t.st.db).await.unwrap();
+    let mut state = AlertState::default();
+    let base = OffsetDateTime::now_utc();
+    pass(&t, &mut state, base, 0).await;
+    pass(&t, &mut state, base, 61).await;
+    assert_eq!(incidents(&t, "firing").await.len(), 2);
+    // 第一条被限流（retry_after = 1 s）：等满 1 秒前不重发，第二条也排在后面不并发发出
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(mock.count("/limited"), 1);
+    mock.wait("/limited", 3).await;
+    log_settles(&t, 2).await;
+    assert_eq!(t.count("select count(*) from notify_log where ok").await, 2, "限流后重试成功，两条都送达");
 }
 
 async fn xray_report(t: &T, seq: u64, up: bool) {

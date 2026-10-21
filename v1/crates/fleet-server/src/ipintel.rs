@@ -9,7 +9,8 @@
 //! 库缺失或部分缺失时降级：能查多少查多少，查不到的字段为 null，`/ipintel/status` 说明缺什么；一个库都没有时
 //! 来源汇总不推进（等库装好后一次补上）。
 
-use crate::access::{self, floor_hour, SourceRow, Window};
+use crate::access::{self, SourceRow, Window};
+use crate::db::floor_hour;
 use crate::config::IpintelConfig;
 use crate::error::{ApiError, ApiResult};
 use crate::notify::{self, Kind, Notice};
@@ -659,7 +660,7 @@ pub async fn reconcile_incidents(st: &AppState, now: OffsetDateTime, rep: &mut S
         if res.rows_affected() > 0 {
             rep.opened += 1;
             changed = true;
-            notify::spawn_dispatch(
+            notify::enqueue(
                 st,
                 Notice {
                     kind: Kind::Firing,
@@ -671,7 +672,8 @@ pub async fn reconcile_incidents(st: &AppState, now: OffsetDateTime, rep: &mut S
                     at: now,
                     opened_at: Some(now),
                 },
-            );
+            )
+            .await;
         }
     }
     // 剩下的 firing = 已经没有 open 值（或节点不再 active）→ 恢复；一次性异常结束不发恢复通知

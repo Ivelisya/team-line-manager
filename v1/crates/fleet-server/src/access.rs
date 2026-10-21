@@ -4,6 +4,7 @@
 //! - 随机子域名合并在库里的 `access_collapse()`（见迁移 0006），汇总和 1h 查询共用同一份规则。
 //! - 目标按 (节点, 目标) 聚合。「来源数」在小时表里是各小时去重数的最大值（跨小时无法精确去重，偏小的近似）。
 
+use crate::db::floor_hour;
 use crate::state::AppState;
 use serde::Serialize;
 use sqlx::{FromRow, PgPool};
@@ -16,17 +17,13 @@ const LOCK_KEY: i64 = 0x6163_6365_7373;
 /// 小时汇总表保留天数
 pub const HOURLY_DAYS: i64 = 90;
 
-pub fn floor_hour(t: OffsetDateTime) -> OffsetDateTime {
-    let s = t.unix_timestamp();
-    OffsetDateTime::from_unix_timestamp(s - s.rem_euclid(3600)).unwrap_or(t)
-}
-
 // ── 汇总 ─────────────────────────────────────────────────────────────────────
 
 /// 重算 [hour, hour+1h) 的汇总。$1 = hour, $2 = hour + 1h, $3 = 「已关闭」的边界（早于它的小时可能已被来源画像累加过）。
 /// 一次扫描原始记录，同时产出 access_hourly、access_source_hourly、access_target_seen 三张表。
 /// 先按 (节点, 目标, 来源) 分组，再只对去重后的目标做合并，避免对每条记录调用 plpgsql。
 /// target_seen.total 按「本次重算值 - 旧值」累加，所以重复执行不会重复计数。
+/// 三处 upsert 都只在值真的变了时才写（重算当前小时时大部分行没变，不产生死元组）。
 /// 早于 $3 的小时若来源连接数变了，把差值记进 access_source_late，由 ipintel 的来源同步补记（见 ipintel::sync_sources）。
 const ROLLUP: &str = "
 with rawg as (
@@ -49,6 +46,8 @@ with rawg as (
     select node_id, relay_id, $1, dest_host, kind, conns, blocked, sources from agg
     on conflict (node_id, hour, relay_id, dest_host) do update
       set kind = excluded.kind, conns = excluded.conns, blocked = excluded.blocked, sources = excluded.sources
+      where (access_hourly.kind, access_hourly.conns, access_hourly.blocked, access_hourly.sources)
+            is distinct from (excluded.kind, excluded.conns, excluded.blocked, excluded.sources)
     returning 1
 ), nw as (
     select node_id, dest_host, sum(conns)::bigint c, min(f) f, max(l) l from agg group by 1, 2
@@ -58,6 +57,7 @@ with rawg as (
     insert into access_source_hourly (node_id, relay_id, hour, src_ip, conns)
     select node_id, relay_id, $1, src_ip, conns from src
     on conflict (node_id, hour, relay_id, src_ip) do update set conns = excluded.conns
+      where access_source_hourly.conns is distinct from excluded.conns
     returning 1
 ), late as (
     insert into access_source_late (node_id, hour, src_ip, delta)
@@ -74,7 +74,8 @@ from nw n left join old o on o.node_id = n.node_id and o.dest_host = n.dest_host
 on conflict (node_id, dest_host) do update
   set first_seen = least(access_target_seen.first_seen, excluded.first_seen),
       last_seen  = greatest(access_target_seen.last_seen, excluded.last_seen),
-      total      = greatest(access_target_seen.total + excluded.total, 0)";
+      total      = greatest(access_target_seen.total + excluded.total, 0)
+  where excluded.total <> 0 or excluded.first_seen < access_target_seen.first_seen or excluded.last_seen > access_target_seen.last_seen";
 
 /// 重算一个整点小时（UTC 对齐）
 pub async fn rollup_hour(db: &PgPool, hour: OffsetDateTime) -> anyhow::Result<()> {
@@ -95,39 +96,8 @@ pub async fn rollup_recent(db: &PgPool) -> anyhow::Result<()> {
     rollup_hour(db, now).await
 }
 
-/// 一轮最多补算的脏小时数（长时间断网后的积压分几轮消化）
-const DIRTY_BATCH: i64 = 96;
-
-/// 后台循环每轮做的事：当前小时必算；被标脏的小时（agent 补传的迟到数据）补算。
-/// 上一小时关闭后不再无条件重算——每轮算完当前小时会给它留一个脏标记，所以它在下一个小时的第一轮恰好再算一次收尾，
-/// 之后只有迟到数据到来（上报时标脏）才会再算。
-/// 标记按 (小时, touched_at) 精确删除：补算期间又有新数据落进来的小时，标记已被刷新，不会被误删。
-pub async fn rollup_pending(db: &PgPool) -> anyhow::Result<()> {
-    let cur = floor_hour(OffsetDateTime::now_utc());
-    let dirty: Vec<(OffsetDateTime, OffsetDateTime)> =
-        sqlx::query_as("select hour, touched_at from access_dirty where hour <= $1 order by hour limit $2").bind(cur).bind(DIRTY_BATCH).fetch_all(db).await?;
-    let mut hours: std::collections::BTreeSet<OffsetDateTime> = dirty.iter().map(|d| d.0).collect();
-    hours.insert(cur);
-    for h in &hours {
-        rollup_hour(db, *h).await?;
-    }
-    if !dirty.is_empty() {
-        let (hs, ts): (Vec<OffsetDateTime>, Vec<OffsetDateTime>) = dirty.into_iter().unzip();
-        sqlx::query("delete from access_dirty d using unnest($1::timestamptz[], $2::timestamptz[]) u(h, t) where d.hour = u.h and d.touched_at = u.t")
-            .bind(&hs)
-            .bind(&ts)
-            .execute(db)
-            .await?;
-    }
-    sqlx::query(
-        "insert into access_dirty (hour, touched_at) values ($1, clock_timestamp())
-         on conflict (hour) do update set touched_at = excluded.touched_at",
-    )
-    .bind(cur)
-    .execute(db)
-    .await?;
-    Ok(())
-}
+/// 后台循环每轮做的事：当前小时必算，被标脏的小时（agent 补传的迟到数据）补算（语义见 `db::rollup_dirty`）
+pub async fn rollup_pending(db: &PgPool) -> anyhow::Result<()> { crate::db::rollup_dirty(db, "access_dirty", |h| rollup_hour(db, h)).await }
 
 /// 补算 [from, 现在] 的所有小时（逐小时，内存有界）。
 pub async fn rollup_since(db: &PgPool, from: OffsetDateTime) -> anyhow::Result<()> {
@@ -521,6 +491,9 @@ pub fn parse_event_cursor(s: &str) -> Option<(OffsetDateTime, i64)> {
 
 /// 原始记录（access_event，按 (ts, id) 倒序）。f.from 是下界，before 是上一页最后一条的 (ts, id)（严格小于）。
 pub async fn events(db: &PgPool, f: &Filter, before: Option<(OffsetDateTime, i64)>, limit: i64) -> sqlx::Result<Vec<EventRow>> {
+    if f.nodes.is_some() || f.relay.is_some() {
+        return events_of_entries(db, f, before, limit).await;
+    }
     let sql = format!(
         "select e.id, e.ts, en.node_id, {NAME} name, host(e.src_ip) src_ip, e.dest_host, e.dest_port, e.network, e.blocked
          from access_event e join entry en on en.id = e.entry_id join machine m on m.id = en.node_id left join team t on t.id = m.team_id
@@ -534,6 +507,40 @@ pub async fn events(db: &PgPool, f: &Filter, before: Option<(OffsetDateTime, i64
          order by e.ts desc, e.id desc limit $10"
     );
     full!(sqlx::query_as(&sql), f).bind(before.map(|b| b.0)).bind(before.map(|b| b.1)).bind(limit).fetch_all(db).await
+}
+
+/// 按节点 / 线路机筛选的原始记录：先取这些入口，逐个入口沿 (entry_id, ts desc) 索引各取前 limit 条，再合并取前 limit 条，
+/// 不用把窗口内全部记录按时间扫一遍。排序与游标同 `events`。
+/// 绑定顺序：$1 from、$2 入口、$3 like、$4 kind、$5 action、$6 limit，翻页时 $7 ts、$8 id。
+async fn events_of_entries(db: &PgPool, f: &Filter, before: Option<(OffsetDateTime, i64)>, limit: i64) -> sqlx::Result<Vec<EventRow>> {
+    let ids: Vec<Uuid> = sqlx::query_scalar(
+        "select id from entry where ($1::uuid[] is null or node_id = any($1)) and ($2::uuid is null or relay_id = $2)
+           and ($3::uuid is null or node_id in (select id from machine where team_id = $3))",
+    )
+    .bind(&f.nodes)
+    .bind(f.relay)
+    .bind(f.team)
+    .fetch_all(db)
+    .await?;
+    // 游标条件只在翻页时拼上：ts 上界能进索引条件
+    let cursor = if before.is_some() { "and e.ts <= $7 and (e.ts, e.id) < ($7, $8)" } else { "" };
+    let sql = format!(
+        "select e.id, e.ts, en.node_id, {NAME} name, host(e.src_ip) src_ip, e.dest_host, e.dest_port, e.network, e.blocked
+         from unnest($2::uuid[]) x(id) cross join lateral (
+             select e.id, e.entry_id, e.ts, e.src_ip, e.dest_host, e.dest_port, e.network, e.blocked from access_event e
+             where e.entry_id = x.id and e.ts >= $1 {cursor}
+               and ($3::text is null or e.dest_host ilike $3 or host(e.src_ip) ilike $3)
+               and ($4::text is null or access_kind(lower(rtrim(e.dest_host, '.'))) = $4)
+               and case $5::text when 'blocked' then e.blocked when 'routed' then not e.blocked else true end
+             order by e.ts desc, e.id desc limit $6) e
+         join entry en on en.id = e.entry_id join machine m on m.id = en.node_id left join team t on t.id = m.team_id
+         order by e.ts desc, e.id desc limit $6"
+    );
+    let mut q = sqlx::query_as(&sql).bind(f.from).bind(&ids).bind(&f.like).bind(&f.kind).bind(f.action).bind(limit);
+    if let Some((ts, id)) = before {
+        q = q.bind(ts).bind(id);
+    }
+    q.fetch_all(db).await
 }
 
 #[derive(Debug, Serialize, FromRow)]
