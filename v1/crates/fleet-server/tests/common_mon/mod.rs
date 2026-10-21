@@ -1,22 +1,17 @@
-//! 访问监控测试的公共部分：建库、登录、造机器和入口、塞访问记录。
-//! 需要 PostgreSQL：环境变量 FLEET_TEST_DB（默认 postgres://fleet:fleet@127.0.0.1/fleet_test）。会清空该库的 public schema。
+//! 访问监控测试的公共部分：造机器和入口、塞访问记录（建库与登录见 common）。
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use fleet_server::{config::Config, crypto::SecretBox, db, state::AppState};
 use http_body_util::BodyExt;
-use serde_json::{json, Value};
+use serde_json::Value;
 use time::{Duration, OffsetDateTime};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-pub struct T {
-    pub app: axum::Router,
-    pub st: AppState,
-    pub cookie: String,
-}
+pub use crate::common::T;
 
 impl T {
+    /// GET，`with_cookie` 为假时不带会话（测未登录）
     pub async fn raw(&self, path: &str, with_cookie: bool) -> (StatusCode, Value) {
         let mut b = Request::builder().method("GET").uri(path);
         if with_cookie {
@@ -27,55 +22,20 @@ impl T {
         let bytes = res.into_body().collect().await.unwrap().to_bytes();
         (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
     }
-    pub async fn get(&self, p: &str) -> Value {
-        let (s, v) = self.raw(p, true).await;
-        assert_eq!(s, StatusCode::OK, "GET {p}: {v}");
-        v["data"].clone()
-    }
 }
 
 /// 不启动后台任务：汇总由测试自己调用，结果才可预期
 pub async fn setup() -> T {
-    let url = std::env::var("FLEET_TEST_DB").unwrap_or_else(|_| "postgres://fleet:fleet@127.0.0.1/fleet_test".into());
-    let pool = db::connect(&url).await.unwrap();
-    sqlx::query("drop schema public cascade").execute(&pool).await.unwrap();
-    sqlx::query("create schema public").execute(&pool).await.unwrap();
-    db::MIGRATOR.run(&pool).await.unwrap();
-    db::maintain_partitions(&pool, 14, 7, 2).await.unwrap();
+    let t = crate::common::boot(false, "access_cache_secs = 0").await;
     // 测试要塞过去几天的记录：补齐最近 6 天的 access_event 分区（不超过保留期）
     let today = OffsetDateTime::now_utc().date();
     for i in 1..=6 {
         let d = today - Duration::days(i);
         let n = format!("access_event_{:04}{:02}{:02}", d.year(), u8::from(d.month()), d.day());
         let sql = format!("create table if not exists {n} partition of access_event for values from ('{d}') to ('{e}')", e = d + Duration::days(1));
-        sqlx::query(&sql).execute(&pool).await.unwrap();
+        sqlx::query(&sql).execute(&t.st.db).await.unwrap();
     }
-    let cfg: Config = toml::from_str(&format!(
-        r#"database_url = "{url}"
-           secret_key_file = "/dev/null"
-           public_url = "http://fleet.test"
-           ssh_key = "/nonexistent"
-           known_hosts = "/tmp/fleet-test-known-hosts"
-           dist_dir = "/nonexistent"
-           access_cache_secs = 0"#
-    ))
-    .unwrap();
-    let st = AppState::new(cfg, pool.clone(), SecretBox::from_key(&[9u8; 32]).unwrap());
-    fleet_server::auth::upsert_user(&pool, "admin", "correct horse battery").await.unwrap();
-    let app = fleet_server::app(st.clone());
-    let res = app
-        .clone()
-        .oneshot(
-            Request::post("/api/v1/auth/login")
-                .header("content-type", "application/json")
-                .body(Body::from(json!({"username": "admin", "password": "correct horse battery"}).to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let cookie = res.headers().get("set-cookie").unwrap().to_str().unwrap().split(';').next().unwrap().to_string();
-    T { app, st, cookie }
+    t
 }
 
 pub struct Fx {

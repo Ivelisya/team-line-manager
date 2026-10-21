@@ -1,6 +1,7 @@
 //! 访问监控：构造 access_event → 跑汇总 → 各接口的聚合结果。
-//! 需要 PostgreSQL（见 common_mon.rs）。
+//! 需要 PostgreSQL（见 common）。
 
+mod common;
 mod common_mon;
 
 use axum::http::StatusCode;
@@ -9,9 +10,6 @@ use fleet_server::access;
 use serde_json::Value;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
-
-/// 两个测试共用一个库，串行跑
-static DB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn row<'a>(d: &'a Value, key: &str, field: &str, val: &str) -> &'a Value {
     d[key].as_array().unwrap().iter().find(|n| n[field] == val).unwrap_or_else(|| panic!("{key} 里没有 {field}={val}：{d}"))
@@ -54,7 +52,6 @@ async fn fixture(t: &T) -> common_mon::Fx {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn collapse_and_kind_rules() {
-    let _g = DB_LOCK.lock().await;
     let t = setup().await;
     let cases = [
         ("www.google.com", "www.google.com"),
@@ -86,7 +83,6 @@ async fn collapse_and_kind_rules() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn summary_targets_sources_events() {
-    let _g = DB_LOCK.lock().await;
     let t = setup().await;
     let (st, _) = t.raw("/api/v1/access/summary", false).await;
     assert_eq!(st, StatusCode::UNAUTHORIZED);
@@ -308,7 +304,6 @@ async fn summary_targets_sources_events() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn new_targets_machine_and_idempotent_rollup() {
-    let _g = DB_LOCK.lock().await;
     let t = setup().await;
     let fx = fixture(&t).await;
     let (n1, e1) = (fx.n[0], fx.e[0]);

@@ -1,7 +1,8 @@
 //! 遥测入库 / 小时汇总 / 健康判定 / 告警 / 通知 / 实时流 / 保留期。
-//! 需要 PostgreSQL：环境变量 FLEET_TEST_DB（默认 postgres://fleet:fleet@127.0.0.1/fleet_test）。会清空该库的 public schema。
+//! 需要 PostgreSQL（见 common）。
 //! 不起后台循环：告警评估、小时汇总、实时指标比对都由测试手动驱动（告警评估的「当前时间」可以快进，不用真等去抖）。
 
+mod common;
 mod common_tele;
 
 use axum::http::StatusCode;
@@ -93,13 +94,13 @@ async fn report_ingest_errors_are_classified() {
     assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{v}");
 }
 
-/// 连接池用尽：等 5 秒拿不到连接就回 503（agent 退避重试），不按 sqlx 默认的 30 秒干等
+/// 连接池用尽：等 5 秒拿不到连接就回 503（agent 退避重试），不按 sqlx 默认的 30 秒干等（测试池的等待时间与 db::connect 相同）
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn report_gets_503_when_pool_exhausted() {
     let t = setup().await;
     seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
     let mut held = vec![];
-    while held.len() < 20 {
+    while held.len() < t.st.db.options().get_max_connections() as usize {
         held.push(t.st.db.acquire().await.unwrap());
     }
     let t0 = std::time::Instant::now();
@@ -775,7 +776,8 @@ async fn alert_notifications_firing_repeat_silence_and_resolved() {
     mock.wait("/wecom/send", 1).await;
     mock.wait("/hook/a", 2).await;
     mock.wait("/fail/x", 2).await;
-    for _ in 0..100 {
+    // 坏渠道每条按 0.5 s、2 s 退避重试两次，两条排队发完约 5 秒
+    for _ in 0..200 {
         if t.count("select count(*) from notify_log").await == 7 {
             break;
         }

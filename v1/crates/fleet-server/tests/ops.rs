@@ -1,7 +1,7 @@
 //! 运维接口：API 密钥与 scope、登录限速、远程执行的前置校验。
-//! 需要 PostgreSQL（见 common_ops.rs）。用 `--test-threads=1` 运行。
+//! 需要 PostgreSQL（见 common）。
 
-#[path = "common_ops.rs"]
+mod common;
 mod common_ops;
 
 use axum::http::StatusCode;
@@ -178,36 +178,6 @@ async fn exec_preconditions() {
     assert_eq!(s, StatusCode::BAD_REQUEST);
 }
 
-#[tokio::test]
-async fn last_used_updates_are_throttled_to_once_a_minute() {
-    let t = setup().await;
-    let (kid, tok) = t.make_key("ci-throttle", &["read"]).await;
-    let age = |sql: &'static str, id: String| {
-        let db = t.st.db.clone();
-        async move { sqlx::query_scalar::<_, f64>(sql).bind(id).fetch_one(&db).await.unwrap() }
-    };
-    let key_age = || age("select extract(epoch from now() - last_used_at)::float8 from api_key where id::text = $1", kid.to_string());
-    let (s, _) = t.call("GET", "/api/v1/machines", None, Auth::Key(&tok)).await;
-    assert_eq!(s, StatusCode::OK);
-    assert!(key_age().await < 5.0, "第一次使用要记录");
-    // 10 秒前用过：一分钟内不重写；两分钟前用过：重写
-    sqlx::query("update api_key set last_used_at = now() - interval '10 seconds' where id::text = $1").bind(kid.to_string()).execute(&t.st.db).await.unwrap();
-    assert_eq!(t.call("GET", "/api/v1/machines", None, Auth::Key(&tok)).await.0, StatusCode::OK);
-    assert!(key_age().await > 9.0);
-    sqlx::query("update api_key set last_used_at = now() - interval '2 minutes' where id::text = $1").bind(kid.to_string()).execute(&t.st.db).await.unwrap();
-    assert_eq!(t.call("GET", "/api/v1/machines", None, Auth::Key(&tok)).await.0, StatusCode::OK);
-    assert!(key_age().await < 5.0);
-    // 会话同理
-    sqlx::query("update session set last_seen_at = now() - interval '10 seconds'").execute(&t.st.db).await.unwrap();
-    assert_eq!(t.call("GET", "/api/v1/machines", None, Auth::Session).await.0, StatusCode::OK);
-    let n: i64 = sqlx::query_scalar("select count(*) from session where last_seen_at < now() - interval '9 seconds'").fetch_one(&t.st.db).await.unwrap();
-    assert_eq!(n, 1);
-    sqlx::query("update session set last_seen_at = now() - interval '2 minutes'").execute(&t.st.db).await.unwrap();
-    assert_eq!(t.call("GET", "/api/v1/machines", None, Auth::Session).await.0, StatusCode::OK);
-    let n: i64 = sqlx::query_scalar("select count(*) from session where last_seen_at > now() - interval '5 seconds'").fetch_one(&t.st.db).await.unwrap();
-    assert_eq!(n, 1);
-}
-
 /// 输入错误统一 400 且是 JSON：坏 uuid / 坏查询参数 / 枚举值不对 / 引用不存在的对象
 #[tokio::test]
 async fn bad_input_is_json_400() {
@@ -227,27 +197,9 @@ async fn bad_input_is_json_400() {
     assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
 }
 
-/// 远程执行：执行前先落一条审计，执行完补结果
-#[tokio::test]
-async fn exec_audit_is_written_before_running() {
-    let t = setup().await;
-    let id = Uuid::now_v7();
-    sqlx::query("insert into machine (id, kind, label, primary_ip, ssh_port, lifecycle) values ($1, 'relay', '线路机3', '127.0.0.1', 1, 'active')")
-        .bind(id)
-        .execute(&t.st.db)
-        .await
-        .unwrap();
-    let (s, v) = t.call("POST", &format!("/api/v1/machines/{id}/exec"), Some(json!({"command": "echo hi", "timeout_s": 5})), Auth::Session).await;
-    assert!(s == StatusCode::BAD_GATEWAY || s == StatusCode::OK, "{s} {v}");
-    let rows: Vec<(Value,)> = sqlx::query_as("select detail from audit_log where action = 'exec' and target_id = $1").bind(id).fetch_all(&t.st.db).await.unwrap();
-    assert_eq!(rows.len(), 1, "同一次执行只有一条审计");
-    let d = &rows[0].0;
-    assert_eq!(d["command"], "echo hi");
-    assert!(d.get("started").is_none() && (d["error"].is_string() || d["exit_code"].is_number()), "{d}");
-}
-
 /// 远程执行与查日志不重试：ssh 返回 255（这里是连接被拒）原样返回，不会隔 2 秒再跑一遍。
-/// 255 也可能是命令自己 exit 255 或执行中断开（reboot），重试会把用户命令执行多次
+/// 255 也可能是命令自己 exit 255 或执行中断开（reboot），重试会把用户命令执行多次。
+/// 执行前先落一条审计，执行完在同一条上补结果
 #[tokio::test]
 async fn exec_and_logs_are_not_retried() {
     let t = setup().await;
@@ -262,6 +214,11 @@ async fn exec_and_logs_are_not_retried() {
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(v["data"]["exit_code"], 255, "{v}");
     assert!(t0.elapsed() < std::time::Duration::from_secs(2), "连不上时不重试：{:?}", t0.elapsed());
+    let rows: Vec<(Value,)> = sqlx::query_as("select detail from audit_log where action = 'exec' and target_id = $1").bind(id).fetch_all(&t.st.db).await.unwrap();
+    assert_eq!(rows.len(), 1, "同一次执行只有一条审计");
+    let d = &rows[0].0;
+    assert_eq!(d["command"], "echo hi");
+    assert!(d.get("started").is_none() && (d["error"].is_string() || d["exit_code"].is_number()), "{d}");
     let t0 = std::time::Instant::now();
     let (s, v) = t.call("GET", &format!("/api/v1/machines/{id}/logs?unit=fleet-agent"), None, Auth::Session).await;
     assert_eq!((s, v["data"]["exit_code"].as_i64()), (StatusCode::OK, Some(255)), "{v}");

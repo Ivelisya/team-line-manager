@@ -27,6 +27,9 @@ pub fn new_id() -> Uuid { Uuid::now_v7() }
 /// 按天分区的时序表
 pub const PARTITIONED: &[&str] = &["host_metric", "entry_traffic", "probe_result", "access_event"];
 
+/// 查分区时只看当前 schema（search_path 的第一个）：同一个库里别的 schema 有同名表时（集成测试每个测试一个 schema）不能算数
+const OWN_SCHEMA: &str = "(select oid from pg_namespace where nspname = current_schema())";
+
 fn part_name(table: &str, d: Date) -> String {
     format!("{table}_{:04}{:02}{:02}", d.year(), u8::from(d.month()), d.day())
 }
@@ -39,10 +42,10 @@ pub async fn maintain_partitions(db: &PgPool, raw_days: u32, access_days: u32, a
         // 所以限 2 秒，拿不到就记 warn、下次维护再试（上报时缺分区还会按需补建）
         let days: BTreeSet<Date> = (-1..=ahead).map(|i| today + Duration::days(i)).collect();
         let names: Vec<String> = days.iter().map(|d| part_name(t, *d)).collect();
-        let existing: Vec<(String,)> = sqlx::query_as(
+        let existing: Vec<(String,)> = sqlx::query_as(&format!(
             "select c.relname::text from pg_class c join pg_inherits i on i.inhrelid = c.oid join pg_class p on p.oid = i.inhparent
-             where p.relname = $1 and c.relname = any($2)",
-        )
+             where p.relname = $1 and c.relname = any($2) and p.relnamespace = {OWN_SCHEMA}"
+        ))
         .bind(t)
         .bind(&names)
         .fetch_all(db)
@@ -79,10 +82,10 @@ async fn drop_expired(db: &PgPool, t: &str, cutoff: &str) -> anyhow::Result<()> 
 }
 
 async fn drop_expired_on(conn: &mut sqlx::PgConnection, t: &str, cutoff: &str) -> anyhow::Result<()> {
-    let attached: Vec<(String,)> = sqlx::query_as(
+    let attached: Vec<(String,)> = sqlx::query_as(&format!(
         "select c.relname::text from pg_inherits i join pg_class c on c.oid = i.inhrelid
-         join pg_class p on p.oid = i.inhparent where p.relname = $1 and c.relname < $2 order by 1",
-    )
+         join pg_class p on p.oid = i.inhparent where p.relname = $1 and c.relname < $2 and p.relnamespace = {OWN_SCHEMA} order by 1"
+    ))
     .bind(t)
     .bind(cutoff)
     .fetch_all(&mut *conn)
@@ -103,11 +106,11 @@ async fn drop_expired_on(conn: &mut sqlx::PgConnection, t: &str, cutoff: &str) -
         }
     }
     // 摘下后没来得及删的残留表
-    let orphans: Vec<(String,)> = sqlx::query_as(
+    let orphans: Vec<(String,)> = sqlx::query_as(&format!(
         "select c.relname::text from pg_class c
-         where c.relkind = 'r' and not c.relispartition and c.relnamespace = (select oid from pg_namespace where nspname = current_schema())
-           and c.relname ~ ('^' || $1 || '_[0-9]{8}$') and c.relname < $2",
-    )
+         where c.relkind = 'r' and not c.relispartition and c.relnamespace = {OWN_SCHEMA}
+           and c.relname ~ ('^' || $1 || '_[0-9]{{8}}$') and c.relname < $2"
+    ))
     .bind(t)
     .bind(cutoff)
     .fetch_all(&mut *conn)
@@ -128,9 +131,9 @@ pub async fn ensure_partitions(db: &PgPool, table: &str, days: &BTreeSet<Date>) 
         return vec![];
     }
     let names: Vec<String> = days.iter().map(|d| part_name(table, *d)).collect();
-    let existing: Vec<(String,)> = sqlx::query_as(
-        "select c.relname::text from pg_class c join pg_inherits i on i.inhrelid = c.oid where c.relname = any($1)",
-    )
+    let existing: Vec<(String,)> = sqlx::query_as(&format!(
+        "select c.relname::text from pg_class c join pg_inherits i on i.inhrelid = c.oid where c.relname = any($1) and c.relnamespace = {OWN_SCHEMA}"
+    ))
     .bind(&names)
     .fetch_all(db)
     .await
@@ -144,9 +147,9 @@ pub async fn ensure_partitions(db: &PgPool, table: &str, days: &BTreeSet<Date>) 
         }
         if let Err(e) = create_partition(db, table, *d).await {
             // 并发的另一份上报可能刚建好
-            let again: Option<(String,)> = sqlx::query_as(
-                "select c.relname::text from pg_class c join pg_inherits i on i.inhrelid = c.oid where c.relname = $1",
-            )
+            let again: Option<(String,)> = sqlx::query_as(&format!(
+                "select c.relname::text from pg_class c join pg_inherits i on i.inhrelid = c.oid where c.relname = $1 and c.relnamespace = {OWN_SCHEMA}"
+            ))
             .bind(&n)
             .fetch_optional(db)
             .await
