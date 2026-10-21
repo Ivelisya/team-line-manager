@@ -45,7 +45,8 @@ echo "== 构建前端"
 (cd "$ROOT/web" && pnpm build >/dev/null)
 cp -r "$ROOT/web/dist/." "$STAGE/pkg/web/"
 cp "$HERE/install.sh" "$ROOT/deploy/ipintel/fetch-dbs.sh" "$ROOT/deploy/ipintel/fleet-ipintel-fetch.service" \
-  "$ROOT/deploy/ipintel/fleet-ipintel-fetch.timer" "$STAGE/pkg/"
+  "$ROOT/deploy/ipintel/fleet-ipintel-fetch.timer" "$ROOT/deploy/backup/fleet-backup.sh" "$ROOT/deploy/backup/fleet-backup-latest.sh" \
+  "$ROOT/deploy/backup/fleet-backup.service" "$ROOT/deploy/backup/fleet-backup.timer" "$STAGE/pkg/"
 
 echo "== 上传并安装到 $HOST"
 tar -C "$STAGE/pkg" -czf - . | ssh "$HOST" "set -e; trap 'rm -rf /root/fleet-pkg' EXIT; rm -rf /root/fleet-pkg; mkdir -p /root/fleet-pkg
