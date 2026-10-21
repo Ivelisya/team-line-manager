@@ -267,14 +267,18 @@
 
 .drawer {
   position: fixed; z-index: var(--z-drawer); top: 0; right: 0; bottom: 0; width: var(--drawer-w);
-  display: flex; flex-direction: column; max-width: 100vw; background: var(--surface); border-left: 1px solid var(--line); box-shadow: var(--shadow-float);
+  display: flex; flex-direction: column; max-width: 100vw; background: var(--surface); border-left: 1px solid var(--line);
   animation: drawer-in var(--dur-sheet) var(--ease-sheet);
 }
 .drawer-overlay { position: fixed; inset: 0; z-index: calc(var(--z-drawer) - 1); background: var(--scrim); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); animation: fade-in var(--dur-panel) var(--ease-out); }
-/* 苹果式面板：整幅从右侧滑入（--ease-sheet 先快后缓），收起走更短的 --dur-panel；阴影随位移淡入，避免屏幕外的投影在右缘露一条暗边 */
-@keyframes drawer-in { from { transform: translateX(100%); box-shadow: 0 8px 30px transparent; } to { transform: none; box-shadow: var(--shadow-float); } }
+/* 苹果式面板：整幅从右侧滑入（--ease-sheet 先快后缓），收起走更短的 --dur-panel；阴影随位移淡入，避免屏幕外的投影在右缘露一条暗边。
+   位移只动 transform、阴影放在 ::before 上只动 opacity：两者都能交给合成器，滑入这段正是抽屉挂载、下载懒块的时候，不能回落主线程逐帧重绘阴影 */
+@keyframes drawer-in { from { transform: translateX(100%); } to { transform: none; } }
 .drawer[data-state="closed"] { animation: drawer-out var(--dur-panel) var(--ease-std) forwards; }
-@keyframes drawer-out { from { transform: none; box-shadow: var(--shadow-float); } to { transform: translateX(100%); box-shadow: 0 8px 30px transparent; } }
+@keyframes drawer-out { from { transform: none; } to { transform: translateX(100%); } }
+/* 左边多出 1px 盖住左边框，投影与原先挂在边框盒上一致；z-index -1 只在抽屉自身的层叠上下文里垫在内容下面 */
+.drawer::before { content: ""; position: absolute; inset: 0 0 0 -1px; z-index: -1; pointer-events: none; box-shadow: var(--shadow-float); animation: fade-in var(--dur-sheet) var(--ease-sheet); }
+.drawer[data-state="closed"]::before { animation: fade-out var(--dur-panel) var(--ease-std) forwards; }
 .drawer-head { flex: none; display: flex; align-items: center; gap: var(--sp-8); padding: var(--sp-12) var(--sp-16); border-bottom: 0; min-width: 0; }
 .drawer-title { margin: 0; min-width: 0; font: var(--fw-semibold) var(--fs-title) / var(--lh-title) var(--font-sans); letter-spacing: var(--tracking-title); }
 .drawer-tabs { flex: none; padding: 0 var(--sp-16); }

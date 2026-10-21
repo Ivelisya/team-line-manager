@@ -50,7 +50,7 @@ const cols: Col[] = [
   { id: 'traffic', header: '本月业务流量', size: 112, r: true, first: 'desc', cell: (m) => { const t = monthTraffic(m); return <Num f={F.bytes(t.up + t.down)} />; } },
   { id: 'quota', header: '剩余流量', size: 106, first: 'desc',
     cell: (m) => { const q = quota(m); return <span className="tquota" title={`本周期已用 ${F.str(F.bytes(q.used))}（${q.start.slice(5)} 起）`}>{q.rem != null && <Cells pct={q.pct} n={8} colors={Q8} />}{q.rem == null ? <span className="t-sub">不限</span> : q.rem > 0 ? <Num f={F.bytes(q.rem)} /> : <span className="due" data-tone="bad">已超限</span>}</span>; } },
-  { id: 'due', header: '到期', size: 96, r: true, first: 'asc', cell: (m) => <Due days={m.subscription?.due_days} /> },
+  { id: 'due', header: '到期', size: 96, r: true, first: 'asc', cell: (m) => (m.subscription ? <Due days={m.subscription.due_days} /> : <span className="t-muted">—</span>) },
   { id: 'value', header: '剩余价值', size: 76, r: true, first: 'desc', cell: (m) => { const v = remainingValue(m.subscription); return v ? <span className="num">{F.money(v.cents, v.currency)}</span> : <span className="t-muted">—</span>; } },
   { id: 'fee', header: '月费', size: 72, r: true, cell: (m) => monthly(m) ?? <span className="t-muted">—</span> },
 ];

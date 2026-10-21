@@ -124,15 +124,19 @@
 
 /* ========== 进度条 ========== */
 .progress { position: relative; height: var(--quota-h); border-radius: var(--r-pill); background: var(--line); overflow: hidden; }
-.progress-fill { position: absolute; inset: 0 auto 0 0; border-radius: var(--r-pill); background: var(--accent); transition: width var(--dur-bar) var(--ease-std), background-color var(--dur-fast); }
+/* 填充条整宽、按进度往左平移（组件里写 translateX），左端被轨道裁掉：只动 transform 不触发布局；
+   不用 scaleX——右端圆角和下面的细纹都会被压扁 */
+.progress-fill { position: absolute; inset: 0; overflow: hidden; border-radius: var(--r-pill); background: var(--accent); transition: transform var(--dur-bar) var(--ease-std), background-color var(--dur-fast); }
 .progress[data-tone="ok"] .progress-fill { background: var(--ok); }
 .progress[data-tone="bad"] .progress-fill { background: var(--bad); }
 .progress[data-tone="warn"] .progress-fill { background: var(--warn); }
-.progress[data-live="1"] .progress-fill {
+/* 细纹层左边多出一个纹样周期，循环右移一个周期首尾无缝；填充条的 overflow 把右边移出去的部分裁掉 */
+.progress[data-live="1"] .progress-fill::after {
+  content: ""; position: absolute; inset: 0 0 0 -14px;
   background-image: linear-gradient(115deg, rgba(255, 255, 255, 0.28) 25%, transparent 25%, transparent 50%, rgba(255, 255, 255, 0.28) 50%, rgba(255, 255, 255, 0.28) 75%, transparent 75%);
   background-size: 14px 14px; animation: progress-flow 1s linear infinite;
 }
-@keyframes progress-flow { to { background-position: 14px 0; } }
+@keyframes progress-flow { to { transform: translateX(14px); } }
 .job-prog { display: grid; gap: var(--sp-6); }
 .job-prog-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-12); min-width: 0; font-size: var(--fs-body); }
 .job-prog-head > .num { flex: none; font-weight: var(--fw-semibold); }
@@ -192,12 +196,19 @@
 .kind-ic .lucide { width: 14px; height: 14px; }
 .test-result { display: inline-flex; align-items: center; gap: var(--sp-4); font-size: var(--fs-label); white-space: nowrap; }
 
+/* 毛玻璃遮罩（对话框、命令面板、抽屉）打开期间暂停下面一层的无限循环动画：backdrop-filter 下面每帧有变化，GPU 就要每帧重做一遍全屏模糊。
+   浮层都 Portal 到 body、不在 .app 里，自己的动画照常；对话框叠在抽屉上时，抽屉也算下面一层。骨架屏不管 */
+:is(body:has(.drawer-overlay[data-state="open"], .overlay[data-state="open"]) .app, body:has(.overlay[data-state="open"]) .drawer)
+  :is(.spin, .flow-live[data-live] i, .top-btn.jobs-ind > .lucide, .stepbar-item[data-kind="running"] .stepbar-node),
+:is(body:has(.drawer-overlay[data-state="open"], .overlay[data-state="open"]) .app, body:has(.overlay[data-state="open"]) .drawer) .pill[data-dot="pulse"]::before,
+:is(body:has(.drawer-overlay[data-state="open"], .overlay[data-state="open"]) .app, body:has(.overlay[data-state="open"]) .drawer) .progress[data-live="1"] .progress-fill::after { animation-play-state: paused; }
+
 @media (prefers-reduced-motion: reduce) {
-  .progress[data-live="1"] .progress-fill, .stepbar-item[data-kind="running"] .stepbar-node, .top-btn.jobs-ind > .lucide, .toast-timer { animation: none; }
+  .progress[data-live="1"] .progress-fill::after, .stepbar-item[data-kind="running"] .stepbar-node, .top-btn.jobs-ind > .lucide, .toast-timer { animation: none; }
   /* 无限循环的呼吸/脉冲也停掉（骨架静止显示） */
   .pill[data-dot="pulse"]::before, .skel { animation: none; }
-  /* 浮层关闭：不播退出动画，Radix 立即卸载 */
-  .overlay[data-state="closed"], .drawer-overlay[data-state="closed"], .dialog[data-state="closed"], .cmd-dialog[data-state="closed"], .drawer[data-state="closed"],
+  /* 浮层关闭：不播退出动画，Radix 立即卸载（抽屉的投影层一起） */
+  .overlay[data-state="closed"], .drawer-overlay[data-state="closed"], .dialog[data-state="closed"], .cmd-dialog[data-state="closed"], .drawer[data-state="closed"], .drawer[data-state="closed"]::before,
   .menu[data-state="closed"], .popover[data-state="closed"], .select-content[data-state="closed"], .tooltip[data-state="closed"], .hover-card[data-state="closed"], .page-in { animation: none; }
 }
 

@@ -159,7 +159,8 @@ a.stat:active { translate: 0 0; } /* 按下只取消上浮，阴影不去掉：�
 
 /* ---------- 点阵迹线 ---------- */
 .dots { display: flex; flex: 1 1 auto; align-items: center; justify-content: space-between; min-width: 0; height: 10px; }
-.dots > i { width: 4px; height: 4px; flex: none; border-radius: 50%; background: var(--cell-off); transform: scale(0.75); transition: transform var(--dur-bar) var(--ease-std), background-color var(--dur-bar), opacity var(--dur-bar); }
+/* 不加过渡：迹线是滑动窗口，每来一个点整排右移一格、每个点的 --l 都变，逐点渐变看起来是在原地抖而不是往前走，每次推送还要起上千个过渡 */
+.dots > i { width: 4px; height: 4px; flex: none; border-radius: 50%; background: var(--cell-off); transform: scale(0.75); }
 .dots > i[data-on] { background: var(--spd, var(--accent)); opacity: calc(0.35 + var(--l) * 0.65); transform: scale(calc(0.8 + var(--l) * 0.7)); }
 
 /* ---------- 彩色标签 ---------- */

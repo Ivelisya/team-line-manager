@@ -152,11 +152,11 @@ a { color: inherit; }
 [data-theme-swap] *, [data-theme-swap] *::before, [data-theme-swap] *::after { transition: none !important; animation-duration: 0s !important; }
 ::view-transition-old(root), ::view-transition-new(root) { animation-duration: var(--dur-panel); animation-timing-function: var(--ease-std); }
 
-/* 内部滚动区：细滚动条（跟随主题线色）+ 不把滚动链到页面 */
-.drawer-body, .sidebar, .logbox, .cmd-list, .jobs-pop-list, .pol-tree, .pol-pv-table, .pol-chips, .select-content [data-radix-select-viewport] {
-  scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; overscroll-behavior: contain;
-}
-.table-wrap { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; overscroll-behavior-x: contain; }
+/* 页面里的滚动区（抽屉正文、对话框里的列表、表格横向滚动…）一律细滚动条、跟随主题线色；页面本身的滚动条保持系统样式 */
+body * { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+/* 独立滚动的面板：滚到头不把滚动链到页面 */
+.drawer-body, .sidebar, .logbox, .cmd-list, .jobs-pop-list, .pol-tree, .pol-pv-table, .pol-chips, .reason-list, .select-content [data-radix-select-viewport] { overscroll-behavior: contain; }
+.table-wrap { overscroll-behavior-x: contain; }
 
 /* 登录页 */
 .login-screen { min-height: 100vh; display: grid; place-items: center; padding: var(--sp-16); }

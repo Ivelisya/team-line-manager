@@ -57,8 +57,10 @@ export function AccessPage() {
   React.useEffect(() => { const t = setTimeout(() => updRef.current({ q: text.trim() }), 250); return () => clearTimeout(t); }, [text]);
 
   const teams = useTeams().data ?? [];
-  const machines = useMachineBriefs().data ?? [];
-  const nodes = machines.filter((m) => m.kind !== 'relay' && (!f.team || m.team?.id === f.team));
+  // 节点选项与回调保持稳定：搜索框每敲一个字整页重渲时，节点下拉（Select 是 memo）不跟着重画全部选项
+  const machines = useMachineBriefs().data;
+  const nodeOpts = React.useMemo(() => (machines ?? []).filter((m) => m.kind !== 'relay' && (!f.team || m.team?.id === f.team)).map((m) => ({ value: m.id, label: m.name })), [machines, f.team]);
+  const onNode = React.useCallback((v: string) => upd({ node: v }), [upd]);
   const summary = useAccessSummary(f);
   const k = summary.data?.kpi;
   const filtered = !!(f.team || f.node || f.search || f.kind || f.action);
@@ -72,7 +74,7 @@ export function AccessPage() {
       <div className="row" role="search">
         <SearchInput value={text} onChange={(e) => setText(e.target.value)} placeholder="搜索域名或来源 IP…" aria-label="搜索域名或来源 IP" className="w-full sm:w-[260px]" />
         <div className="w-[140px]"><Select value={f.team} onChange={(v) => upd({ team: v, node: '' })} allowEmpty="全部团队" placeholder="团队" options={teams.map((t) => ({ value: t.id, label: t.name }))} aria-label="团队" /></div>
-        <div className="w-[150px]"><Select value={f.node} onChange={(v) => upd({ node: v })} allowEmpty="全部节点" placeholder="节点" options={nodes.map((m) => ({ value: m.id, label: m.name }))} aria-label="节点" /></div>
+        <div className="w-[150px]"><Select value={f.node} onChange={onNode} allowEmpty="全部节点" placeholder="节点" options={nodeOpts} aria-label="节点" /></div>
         <div className="w-[130px]"><Select value={f.kind} onChange={(v) => upd({ kind: v })} allowEmpty="全部类型" placeholder="目标类型" options={[{ value: 'domain', label: '域名' }, { value: 'ip', label: 'IP' }]} aria-label="目标类型" /></div>
         <div className="w-[130px]"><Select value={f.action} onChange={(v) => upd({ act: v })} allowEmpty="全部结果" placeholder="处理结果" options={[{ value: 'routed', label: '已转发' }, { value: 'blocked', label: '已阻止' }]} aria-label="处理结果" /></div>
         {filtered && <Button variant="quiet" size="md" onClick={clear}>清除筛选</Button>}
@@ -111,8 +113,9 @@ function NodeLink({ id, name, open }: { id: string; name: string; open: Open }) 
   return <button type="button" className="btn btn-link" style={{ maxWidth: '100%' }} onClick={(e) => { e.stopPropagation(); open(id, 'access'); }}><span className="ellipsis">{name}</span></button>;
 }
 
-/** total：同一筛选下 summary 的「访问目标」数，正是这张表的总行数 */
-function TargetsView({ open, f, sort, setSort, filtered, total }: { f: AccessFilter; sort: TargetSort; setSort: (s: TargetSort) => void; filtered: boolean; open: Open; total: number | undefined }) {
+/** total：同一筛选下 summary 的「访问目标」数，正是这张表的总行数。
+ *  五个视图都 memo：搜索框打字只改页面里的 text，f 要停手 250ms 写进 URL 后才变，期间不重画表格 */
+const TargetsView = React.memo(function TargetsView({ open, f, sort, setSort, filtered, total }: { f: AccessFilter; sort: TargetSort; setSort: (s: TargetSort) => void; filtered: boolean; open: Open; total: number | undefined }) {
   const pg = usePage({ total, sizes: [50, 100, 200], size: 100, reset: [f, sort] });
   const q = useAccessTargets(f, sort, pg.offset, pg.size);
   const rows = q.data?.items ?? [];
@@ -144,9 +147,9 @@ function TargetsView({ open, f, sort, setSort, filtered, total }: { f: AccessFil
       <Pagination pg={pg} unit="个" />
     </Panel>
   );
-}
+});
 
-function NewView({ f, filtered, open }: { f: AccessFilter; filtered: boolean; open: Open }) {
+const NewView = React.memo(function NewView({ f, filtered, open }: { f: AccessFilter; filtered: boolean; open: Open }) {
   // 页码先于查询算出（偏移量进查询）；总数取上一次的结果
   const [total, setTotal] = React.useState<number>();
   const pg = usePage({ total, sizes: [50, 100, 200], size: 100, reset: [f] });
@@ -179,7 +182,7 @@ function NewView({ f, filtered, open }: { f: AccessFilter; filtered: boolean; op
       <Pagination pg={pg} unit="个" />
     </Panel>
   );
-}
+});
 
 /** 已阻止占比：有阻止但不到 0.1% 时写“不到 0.1%”，不显示成 0.0% */
 function blockedShare(blocked: number, conns: number) {
@@ -188,7 +191,7 @@ function blockedShare(blocked: number, conns: number) {
   return `占 ${p.toFixed(p < 10 && p % 1 ? 1 : 0)}%`;
 }
 
-function SourcesView({ f, filtered, open }: { f: AccessFilter; filtered: boolean; open: Open }) {
+const SourcesView = React.memo(function SourcesView({ f, filtered, open }: { f: AccessFilter; filtered: boolean; open: Open }) {
   const q = useAccessSources(f);
   const [ct, setCt] = React.useState('');
   const all = q.data?.items ?? [];
@@ -232,9 +235,9 @@ function SourcesView({ f, filtered, open }: { f: AccessFilter; filtered: boolean
       </Panel>
     </>
   );
-}
+});
 
-function NodesView({ f, filtered, open }: { f: AccessFilter; filtered: boolean; open: Open }) {
+const NodesView = React.memo(function NodesView({ f, filtered, open }: { f: AccessFilter; filtered: boolean; open: Open }) {
   const q = useAccessSummary(f);
   const rows = q.data?.nodes ?? [];
   const pg = usePage({ total: q.data ? rows.length : undefined, sizes: [50, 100], size: 50, reset: [f] });
@@ -265,9 +268,9 @@ function NodesView({ f, filtered, open }: { f: AccessFilter; filtered: boolean; 
       <Pagination pg={pg} unit="个" />
     </Panel>
   );
-}
+});
 
-function EventsView({ f, filtered, open }: { f: AccessFilter; filtered: boolean; open: Open }) {
+const EventsView = React.memo(function EventsView({ f, filtered, open }: { f: AccessFilter; filtered: boolean; open: Open }) {
   // 游标栈：cur[i] 是第 i+1 页的 before（上一页的 next_before 原样存，'' = 最新一页）。筛选一变回到最新一页
   const fk = JSON.stringify(f);
   const [st, setSt] = React.useState({ fk, cur: [''] });
@@ -306,4 +309,4 @@ function EventsView({ f, filtered, open }: { f: AccessFilter; filtered: boolean;
         onOlder={older && !q.isPlaceholderData ? () => go([...cur, older]) : undefined} />
     </Panel>
   );
-}
+});

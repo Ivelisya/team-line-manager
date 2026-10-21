@@ -5,9 +5,10 @@ import { cn } from '@/lib/utils';
 
 export interface Option { value: string; label: React.ReactNode; disabled?: boolean }
 
-/** shadcn Select 的一体化封装：<Select value onChange options placeholder />。空值用 '' 表示（内部转成哨兵）。 */
+/** shadcn Select 的一体化封装：<Select value onChange options placeholder />。空值用 '' 表示（内部转成哨兵）。
+ *  memo：Radix 关着时也把全部选项渲染进离屏片段（为了显示选中项文字），选项多的下拉传稳定的 options / onChange 就不随父组件重画 */
 const EMPTY = '__empty__';
-export function Select({ value, onChange, options, placeholder = '请选择', className, sm, disabled, id, 'aria-label': aria, allowEmpty }: {
+export const Select = React.memo(function Select({ value, onChange, options, placeholder = '请选择', className, sm, disabled, id, 'aria-label': aria, allowEmpty }: {
   value: string; onChange: (v: string) => void; options: Option[]; placeholder?: string; className?: string; sm?: boolean; disabled?: boolean; id?: string; 'aria-label'?: string; allowEmpty?: string;
 }) {
   return (
@@ -33,4 +34,4 @@ export function Select({ value, onChange, options, placeholder = '请选择', cl
       </SelectPrimitive.Portal>
     </SelectPrimitive.Root>
   );
-}
+});
