@@ -105,7 +105,7 @@ function Silences() {
               <colgroup><col style={{ width: 140 }} /><col style={{ width: 110 }} /><col style={{ width: 230 }} /><col /><col style={{ width: 64 }} /></colgroup>
               <thead><tr><th>对象</th><th>类型</th><th>时间</th><th>备注</th><th /></tr></thead>
               <tbody>{list.map((s) => (
-                <tr key={s.id}><td className="strong">{s.subject_name ?? '全部机器'}</td><td>{s.is_maintenance ? <Pill tone="info"><Wrench size={11} />维护</Pill> : <Pill>静默</Pill>}</td>
+                <tr key={s.id}><td className="strong">{s.subject_name ?? '全部机器'}</td><td>{s.is_maintenance ? <Pill tone="info" dot="none"><Wrench size={11} />维护</Pill> : <Pill>静默</Pill>}</td>
                   <td>{F.dt(s.starts_at)} → {F.dt(s.ends_at)}</td><td><Trunc className="cell-main">{s.comment}</Trunc></td>
                   <td className="c"><IconButton label="删除静默" size="sm" onClick={() => setAskDel(s)}><Trash2 size={14} /></IconButton></td></tr>
               ))}</tbody>

@@ -44,9 +44,10 @@ function ApplyStatus({ m }: { m: MachineView }) {
   const pendingEntries = m.entries.filter((e) => !e.applied && e.lifecycle !== 'disabled').length;
   return (
     <div className="apply-box">
-      {r.apply_error ? <Pill tone="bad"><CircleAlert size={12} />应用失败</Pill>
-        : pending ? <Pill tone="info" dot="pulse"><Loader2 size={12} className="spin" />应用中</Pill>
-        : <Pill tone="ok"><CheckCircle2 size={12} />已应用</Pill>}
+      {/* 带图标的不再画圆点：「应用中」原先呼吸点加转圈，两样一起动 */}
+      {r.apply_error ? <Pill tone="bad" dot="none"><CircleAlert size={12} />应用失败</Pill>
+        : pending ? <Pill tone="info" dot="none"><Loader2 size={12} className="spin" />应用中</Pill>
+        : <Pill tone="ok" dot="none"><CheckCircle2 size={12} />已应用</Pill>}
       <Tip text="两个数相等表示线路机已同步"><span tabIndex={0}>配置版本 <b className="num" style={{ color: 'var(--fg)' }}>{r.generation}</b> · 已生效 <b className="num" style={{ color: 'var(--fg)' }}>{r.applied_generation}</b></span></Tip>
       {pending && <span>{pendingEntries} 条入口应用中</span>}
       <span style={{ marginLeft: 'auto' }}>上次应用 {r.applied_at ? F.ago(r.applied_at) : '—'}</span>
