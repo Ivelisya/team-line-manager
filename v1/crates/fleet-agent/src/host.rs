@@ -3,6 +3,7 @@
 
 use crate::util::now_ms;
 use fleet_proto::{HostSample, SystemInfo};
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -120,6 +121,34 @@ pub fn pick_ifaces(all: &[String], has_device: impl Fn(&str) -> bool) -> Vec<Str
         return phys;
     }
     all.iter().filter(|n| !virtual_iface(n)).cloned().collect()
+}
+
+/// 主机网络流量计数器：按网卡分别记上一次读数，只把各网卡的增量累加进本进程自己维护的单调计数器（从 0 起）。
+/// 网卡集合会变（每 300 s 重新挑选，容器里网卡也会增减）：直接把各网卡的开机累计值相加上报的话，网卡一少总和变小，
+/// 服务端当计数器重置把剩下网卡的整段开机累计量记进当小时；网卡一多，新网卡的历史累计也被加进来。
+#[derive(Default)]
+pub struct NetCounter {
+    /// 网卡 → 上一次的 (rx, tx) 累计读数
+    prev: HashMap<String, (u64, u64)>,
+    pub rx: u64,
+    pub tx: u64,
+}
+
+impl NetCounter {
+    /// 喂入这一轮选中网卡的累计读数 (网卡, rx, tx)：新出现的网卡只记基线不计增量，没出现的网卡丢掉基线；
+    /// 某网卡读数变小 = 它的计数器重置了（网卡重建等），增量取新值
+    pub fn update(&mut self, readings: impl IntoIterator<Item = (String, u64, u64)>) {
+        let delta = |cur: u64, prev: u64| if cur >= prev { cur - prev } else { cur };
+        let mut next = HashMap::new();
+        for (n, r, t) in readings {
+            if let Some(&(pr, pt)) = self.prev.get(&n) {
+                self.rx += delta(r, pr);
+                self.tx += delta(t, pt);
+            }
+            next.insert(n, (r, t));
+        }
+        self.prev = next;
+    }
 }
 
 // ── cgroup v2（容器）──────────────────────────────────────────────────────────
@@ -296,15 +325,23 @@ pub struct HostCollector {
     /// 本命名空间里能看到的线程数（判断 loadavg 是不是宿主机的）：遍历 /proc 较重，随网卡一起刷新
     threads: usize,
     ifaces_at: std::time::Instant,
+    net: NetCounter,
 }
 
 impl HostCollector {
     pub fn new() -> Self {
         let cg = Cgroup::detect(Path::new("/sys/fs/cgroup"));
-        let mut c = Self { prev_cpu: None, cg, ifaces: vec![], threads: 0, ifaces_at: std::time::Instant::now() };
+        let mut c = Self { prev_cpu: None, cg, ifaces: vec![], threads: 0, ifaces_at: std::time::Instant::now(), net: NetCounter::default() };
         c.refresh_ifaces();
         c.prev_cpu = parse_cpu(&read("/proc/stat"));
+        // 先记下各网卡基线，第一个样本就有增量
+        c.read_net();
         c
+    }
+
+    fn read_net(&mut self) {
+        let ifaces = &self.ifaces;
+        self.net.update(parse_net_dev(&read("/proc/net/dev")).into_iter().filter(|(n, _, _)| ifaces.contains(n)));
     }
 
     fn refresh_ifaces(&mut self) {
@@ -328,13 +365,7 @@ impl HostCollector {
             None => (proc_cpu_pct(&mut self.prev_cpu), host_total.saturating_sub(avail), host_total),
         };
         let (disk_used, disk_total) = disk_root();
-        let (mut rx, mut tx) = (0u64, 0u64);
-        for (n, r, t) in parse_net_dev(&read("/proc/net/dev")) {
-            if self.ifaces.contains(&n) {
-                rx += r;
-                tx += t;
-            }
-        }
+        self.read_net();
         HostSample {
             ts_ms: now_ms(),
             cpu_pct: pct,
@@ -343,8 +374,8 @@ impl HostCollector {
             mem_total,
             disk_used,
             disk_total,
-            net_rx_bytes: rx,
-            net_tx_bytes: tx,
+            net_rx_bytes: self.net.rx,
+            net_tx_bytes: self.net.tx,
             tcp_conns: parse_curr_estab(&read("/proc/net/snmp")),
         }
     }
@@ -422,6 +453,25 @@ mod tests {
         assert_eq!(pick_ifaces(&names, |_| false), vec!["eth0".to_string()]);
         let all = vec!["lo".to_string(), "eth0".to_string(), "docker0".to_string(), "ens3".to_string()];
         assert_eq!(pick_ifaces(&all, |n| n == "ens3"), vec!["ens3".to_string()]);
+    }
+
+    #[test]
+    fn net_counter_survives_iface_changes() {
+        let r = |v: &[(&str, u64, u64)]| v.iter().map(|&(n, a, b)| (n.to_string(), a, b)).collect::<Vec<_>>();
+        let mut c = NetCounter::default();
+        c.update(r(&[("eth0", 1_000_000, 2_000_000)]));
+        assert_eq!((c.rx, c.tx), (0, 0), "第一次只记基线，开机累计量不算");
+        c.update(r(&[("eth0", 1_000_100, 2_000_200)]));
+        assert_eq!((c.rx, c.tx), (100, 200));
+        // 多出一块网卡：它的历史累计不计入
+        c.update(r(&[("eth0", 1_000_150, 2_000_250), ("eth1", 9_000_000, 9_000_000)]));
+        assert_eq!((c.rx, c.tx), (150, 250));
+        // eth0 消失：总数不倒退
+        c.update(r(&[("eth1", 9_000_010, 9_000_020)]));
+        assert_eq!((c.rx, c.tx), (160, 270));
+        // eth1 计数器重置（网卡重建）：增量取新值
+        c.update(r(&[("eth1", 5, 7)]));
+        assert_eq!((c.rx, c.tx), (165, 277));
     }
 
     #[test]
