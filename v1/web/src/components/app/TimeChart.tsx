@@ -39,10 +39,13 @@ function valueTicks(max: number, base: 1000 | 1024): number[] | undefined {
 }
 
 export interface Line { key: string; label: string; color: string }
-/** yBase：数值是速率（1000 进位）或字节（1024 进位）时给出，纵轴按该进位取整档刻度；百分比等固定范围的用 domain */
-export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 'area', yFmt, valueFmt, domain, yBase, height = 180 }: {
+/** 悬停点：描边取卡片底色（recharts 默认白描边，暗色下是一圈白边） */
+const ACTIVE_DOT = { r: 3.5, strokeWidth: 2, stroke: 'var(--surface)' };
+/** yBase：数值是速率（1000 进位）或字节（1024 进位）时给出，纵轴按该进位取整档刻度；百分比等固定范围的用 domain。
+ *  empty：每条曲线全为 0（或缺测）时不画图，原处显示这句话（否则纵轴只剩一组 0–4 的空刻度） */
+export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 'area', yFmt, valueFmt, domain, yBase, height = 180, empty }: {
   points: SeriesPoint[] | undefined; lines: Line[]; range: string; kind?: 'area' | 'line'; yFmt: (v: number) => string; valueFmt?: (k: string, v: number) => string;
-  domain?: [number | 'auto', number | 'auto']; yBase?: 1000 | 1024; height?: number;
+  domain?: [number | 'auto', number | 'auto']; yBase?: 1000 | 1024; height?: number; empty?: string;
 }) {
   const config = useMemo<ChartConfig>(() => Object.fromEntries(lines.map((l) => [l.key, { label: l.label, color: l.color }])), [lines]);
   // 图例点掉的曲线：不画，纵轴刻度也只按还显示的曲线取
@@ -56,6 +59,8 @@ export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 
     for (const d of data) for (const l of lines) { if (hidden.has(l.key)) continue; const v = (d as Record<string, unknown>)[l.key]; if (typeof v === 'number' && v > max) max = v; }
     return valueTicks(max, yBase);
   }, [data, lines, yBase, hidden]);
+  const none = useMemo(() => !!empty && data.every((d) => lines.every((l) => !(d as Record<string, unknown>)[l.key])), [data, lines, empty]);
+  if (none) return <div className="chart-empty" style={{ height }}>{empty}</div>;
   const common = {
     data, margin: { top: 6, right: 8, bottom: 0, left: 0 },
   };
@@ -75,13 +80,13 @@ export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 
           <AreaChart {...common}>
             {axes}
             {lines.map((l, i) => (
-              <Area key={l.key} dataKey={l.key} type="monotone" stroke={`var(--color-${l.key})`} strokeWidth={1.5} fill={`var(--color-${l.key})`} fillOpacity={i === 0 ? 0.1 : 0.04} hide={hidden.has(l.key)} dot={false} isAnimationActive={false} />
+              <Area key={l.key} dataKey={l.key} type="monotone" stroke={`var(--color-${l.key})`} strokeWidth={1.5} fill={`var(--color-${l.key})`} fillOpacity={i === 0 ? 0.1 : 0.04} hide={hidden.has(l.key)} dot={false} activeDot={ACTIVE_DOT} isAnimationActive={false} />
             ))}
           </AreaChart>
         ) : (
           <LineChart {...common}>
             {axes}
-            {lines.map((l) => <Line key={l.key} dataKey={l.key} type="monotone" stroke={`var(--color-${l.key})`} strokeWidth={1.5} hide={hidden.has(l.key)} dot={false} isAnimationActive={false} />)}
+            {lines.map((l) => <Line key={l.key} dataKey={l.key} type="monotone" stroke={`var(--color-${l.key})`} strokeWidth={1.5} hide={hidden.has(l.key)} dot={false} activeDot={ACTIVE_DOT} isAnimationActive={false} />)}
           </LineChart>
         )}
       </ChartContainer>

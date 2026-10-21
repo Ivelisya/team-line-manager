@@ -4,7 +4,7 @@ import type { MachineView } from '@/lib/types';
 import * as F from '@/lib/format';
 import { isQuiet, liveRate, monthTraffic, quota, remainingValue, resourceMeters } from '@/lib/derive';
 import { KIND_LABEL } from '@/lib/sort';
-import { Due, KindIcon, Num, StatusDot, type SortState } from '@/components/app/primitives';
+import { Due, HostTag, KindIcon, Num, StatusDot, type SortState } from '@/components/app/primitives';
 import { MachineGrid, byNum, byStr, sortByCol, type Col } from '@/components/app/MachineGrid';
 import { Cells, MiniMeter, quotaColors } from '@/components/app/viz';
 
@@ -20,17 +20,21 @@ const monthly = (m: MachineView) => {
 };
 
 // 列宽合计 1074：1426 宽窗口下内容区约 1079，不出横向滚动。名称两行（名称 + 小字 IP，同机器页），不再单列 IP；
-// 名称列 176 扣掉首列左内边距、状态点、类型标后剩约 110px，「模拟线路机01」这类名字完整显示
+// 名称列 176 扣掉首列左内边距、状态点、类型标后剩约 110px，「模拟线路机01」这类名字完整显示。
+// 同机关系标跟在名称后面，只写「同机」/「+N IP」（宿主机名在悬停说明里），放不下时先省略名称
 const cols: Col[] = [
   { id: 'name', header: '名称', size: 176, ...byStr((m) => m.name),
-    cell: (m) => <div className="tname"><StatusDot status={m.health.status} lifecycle={m.lifecycle} /><KindIcon kind={m.kind} /><div><span className="cell-main strong" data-tip={KIND_LABEL[m.kind]}>{m.name}</span><span className="sub">{m.ip}</span></div></div> },
+    cell: (m) => <div className="tname"><StatusDot status={m.health.status} lifecycle={m.lifecycle} /><KindIcon kind={m.kind} /><div>
+      <div className="row" style={{ flexWrap: 'nowrap', gap: 6 }}><span className="cell-main strong" data-tip={KIND_LABEL[m.kind]}>{m.name}</span><HostTag id={m.id} host={m.host_machine} nodes={m.ip_nodes} short /></div>
+      <span className="sub">{m.ip}</span>
+    </div></div> },
   ...(['cpu', 'mem', 'disk'] as const).map((k): Col => ({ id: k, header: k === 'cpu' ? 'CPU' : k === 'mem' ? '内存' : '磁盘', size: 84, ...byNum(PCT[k]),
     cell: (m) => { const r = resourceMeters(m); return r ? <MiniMeter pct={r[k].pct} metric={k} empty={isQuiet(m)} /> : <span className="t-muted">—</span>; } })),
   ...(['up', 'down'] as const).map((k): Col => ({ id: k, header: k === 'up' ? '上行' : '下行', size: 92, r: true, ...byNum((m) => (k === 'up' ? liveRate(m)?.tx : liveRate(m)?.rx) ?? -1),
     cell: (m) => { const r = liveRate(m); const v = r && (k === 'up' ? r.tx : r.rx); return <span className="trate" data-speed={r ? F.speedOf(v) : undefined}><Num f={F.rate(v)} /></span>; } })),
   { id: 'traffic', header: '本月业务流量', size: 112, r: true, ...byNum((m) => { const t = monthTraffic(m); return t.up + t.down; }), cell: (m) => { const t = monthTraffic(m); return <Num f={F.bytes(t.up + t.down)} />; } },
   { id: 'quota', header: '剩余流量', size: 106, ...byNum((m) => quota(m).rem ?? Infinity),
-    cell: (m) => { const q = quota(m); return <span className="tquota" data-tip={`本周期已用 ${F.str(F.bytes(q.used))}（${q.start.slice(5)} 起）`}>{q.rem != null && <Cells pct={q.pct} n={8} colors={Q8} />}{q.rem == null ? <span className="t-sub">不限</span> : q.rem > 0 ? <Num f={F.bytes(q.rem)} /> : <span className="due" data-tone="bad">已超限</span>}</span>; } },
+    cell: (m) => { const q = quota(m); return <span className="tquota" data-tip={`本周期已用 ${F.str(F.bytes(q.used))}（${q.start.slice(5)} 起）${q.shared ? '，额度与宿主机共用' : ''}`}>{q.rem != null && <Cells pct={q.pct} n={8} colors={Q8} />}{q.rem == null ? <span className="t-sub">{q.shared ? '随宿主机' : '不限'}</span> : q.rem > 0 ? <Num f={F.bytes(q.rem)} /> : <span className="due" data-tone="bad">已超限</span>}</span>; } },
   { id: 'due', header: '到期', size: 96, r: true, ...byNum((m) => m.subscription?.due_days ?? 1e9, 'asc'), cell: (m) => (m.subscription ? <Due days={m.subscription.due_days} /> : <span className="t-muted">—</span>) },
   { id: 'value', header: '剩余价值', size: 76, r: true, ...byNum((m) => remainingValue(m.subscription)?.cents ?? -1), cell: (m) => { const v = remainingValue(m.subscription); return v ? <span className="num">{F.money(v.cents, v.currency)}</span> : <span className="t-muted">—</span>; } },
   { id: 'fee', header: '月费', size: 72, r: true, cell: (m) => monthly(m) ?? <span className="t-muted">—</span> },

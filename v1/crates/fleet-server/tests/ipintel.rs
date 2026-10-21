@@ -245,7 +245,7 @@ async fn profile_anomalies_and_alert_lifecycle() {
     assert_eq!(open, 0);
 }
 
-/// 首次扫描分页（40 天前的数据要被扫到）；水位之前的小时被补算后，差值只累加一次；水位之后的差值丢弃（扫描本来就会覆盖）
+/// 首次扫描分页（30 天前的数据要被扫到）；水位之前的小时被补算后，差值只累加一次；水位之后的差值丢弃（扫描本来就会覆盖）
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn late_hours_are_added_once_and_scan_is_paged() {
     let t = setup(true).await;
@@ -253,12 +253,12 @@ async fn late_hours_are_added_once_and_scan_is_paged() {
     let now = OffsetDateTime::now_utc();
     let n0 = fx.n[0];
     t.put_cache("202.102.224.68", "中国联通", "CN", Some("河南省"), Some("郑州市"), "residential").await;
-    t.put_hourly(n0, now - Duration::days(40), "202.102.224.68", 20).await;
+    t.put_hourly(n0, now - Duration::days(30), "202.102.224.68", 20).await;
     t.put_hourly(n0, now - Duration::days(3), "202.102.224.68", 100).await;
     let conns = || async { sqlx::query_scalar::<_, i64>("select conns from node_source_seen where node_id = $1 and dim = 'isp' and value = '中国联通'").bind(n0).fetch_one(&t.st.db).await.unwrap() };
 
     ipintel::maintain_once(&t.st, now).await.unwrap();
-    assert_eq!(conns().await, 120, "40 天前和 3 天前的都累加了");
+    assert_eq!(conns().await, 120, "30 天前和 3 天前的都累加了");
 
     // 3 天前那个小时被补算，多了 30 条；当前小时的差值（水位之后）不该再加
     let late = |hour: OffsetDateTime, delta: i32| {

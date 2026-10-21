@@ -6,6 +6,7 @@ scp -q -F "$HOME/.ssh/fleetlab_config" "$HERE/seed/catalog.json" fleet-dev:/root
 ssh -F "$HOME/.ssh/fleetlab_config" fleet-dev 'bash -s' <<'REMOTE'
 set -euo pipefail
 B=http://127.0.0.1:8080/api/v1; J=/tmp/fleet-import.cookies; S=/root/catalog.json
+trap 'rm -f "$J" "$S"' EXIT   # 登录 cookie 与传上来的清单，失败也删
 jq -n --rawfile p /root/fleet-admin-password '{username:"admin",password:($p|rtrimstr("\n"))}' \
   | curl -fsS -c $J -H 'content-type: application/json' -d @- $B/auth/login >/dev/null
 api() { curl -fsS -b $J -H 'content-type: application/json' -H 'x-fleet-request: 1' "$@"; }
@@ -25,5 +26,4 @@ jq -c '.plans[]' $S | while read -r p; do
   api -d "$(jq -c --argjson prov "$prov" '{provider_id:$prov[.provider],name,cpu_cores,mem_mb,disk_gb,bandwidth_mbps,traffic_gb,price_cents,currency,cycle,notes}' <<<"$p")" $B/plans >/dev/null
 done
 echo "teams=$(api $B/teams | jq '.data|length') providers=$(api $B/providers | jq '.data|length') plans=$(api $B/plans | jq '.data|length')"
-rm -f $J
 REMOTE

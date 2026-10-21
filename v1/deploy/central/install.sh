@@ -1,12 +1,15 @@
 #!/bin/bash
 # 在生产中控机（Debian 13，root）上安装 / 升级 fleet-server。由 deploy.sh 连同安装包传上来执行，包就在本脚本所在目录。
 # 第一次：装系统包，建 PostgreSQL 库与角色、fleet 用户、密钥（secret.key、中控 SSH 密钥）、fleet.toml、Caddy。
-# 之后每次：只替换 fleet-server、dist、前端、ipintel 脚本并重启 fleet-server；已有的配置和密钥不动。
-# /etc/fleet/secret.key 丢了，库里所有 SS 密码、REALITY 私钥、通知渠道配置都解不开：首次部署后把它拷到中控机以外的地方保管。
+# 之后每次：只替换 fleet-server、dist、前端、ipintel 与备份脚本并重启 fleet-server；已有的配置和密钥不动。
+# 换下来的旧 fleet-server 留在 /opt/fleet/fleet-server.prev（回滚见 docs/OPS.md §9）；重启后未登录访问 /api/v1/auth/me 不是 401
+# 就打出最近日志、退出码 1。
+# /etc/fleet/secret.key 丢了，库里所有 SS 密码、REALITY 私钥、通知渠道配置都解不开：每天的备份连它一起打包（/var/backups/fleet），
+# 家里 PVE 每天取走一份，见 docs/OPS.md §10。
 set -euo pipefail
 DOMAIN=${1:?用法：install.sh <域名>}
 PKG=$(cd "$(dirname "$0")" && pwd)
-chmod 755 "$PKG/bin/fleet-server" "$PKG/bin/fleet-agent" "$PKG/bin/xray" "$PKG/bin/ssserver"   # 包经 Windows 中转会丢可执行位
+chmod 755 "$PKG/bin/fleet-server"   # 包经 Windows 中转会丢可执行位；首次安装要直接运行它生成密钥
 export DEBIAN_FRONTEND=noninteractive
 
 missing=$(for p in postgresql caddy sshpass openssh-client systemd-timesyncd curl jq; do dpkg -s "$p" >/dev/null 2>&1 || echo "$p"; done)
@@ -17,10 +20,19 @@ if [ -n "$missing" ]; then
 fi
 systemctl enable -q --now systemd-timesyncd postgresql caddy
 
+# docs/OPS.md §8：WAL 大半是 checkpoint 之后第一次改页写下的整页镜像。压缩整页镜像、checkpoint 间隔拉长到 15 分钟；reload 即生效
+PGCONF="# 由 fleet 的 deploy/central/install.sh 写入，见 docs/OPS.md §8
+wal_compression = lz4
+checkpoint_timeout = 15min
+max_wal_size = 2GB"
+for d in /etc/postgresql/*/main/conf.d; do
+  [ "$(cat "$d/fleet.conf" 2>/dev/null)" = "$PGCONF" ] || { printf '%s\n' "$PGCONF" > "$d/fleet.conf"; systemctl reload postgresql; }
+done
+
 id fleet >/dev/null 2>&1 || useradd --system --home-dir /var/lib/fleet --shell /usr/sbin/nologin fleet
 usermod -aG systemd-journal fleet   # fleetctl server-logs 需要读本机 journal
 install -d -m 750 -o fleet -g fleet /etc/fleet /etc/fleet/ssh /var/lib/fleet
-install -d -m 755 /opt/fleet /opt/fleet/dist /opt/fleet/ipintel
+install -d -m 755 /opt/fleet /opt/fleet/dist /opt/fleet/ipintel /opt/fleet/backup
 
 if [ ! -f /etc/fleet/fleet.toml ]; then
   # 库密码只写进 fleet.toml；SQL 走标准输入，不出现在进程列表里
@@ -65,8 +77,14 @@ fi
 [ -f /etc/fleet/ssh/id_ed25519 ] || { ssh-keygen -q -t ed25519 -N "" -C "fleet-central@$DOMAIN" -f /etc/fleet/ssh/id_ed25519; chown fleet:fleet /etc/fleet/ssh/id_ed25519*; }
 [ -f /var/lib/fleet/known_hosts ] || install -m 640 -o fleet -g fleet /dev/null /var/lib/fleet/known_hosts
 
-install -m 755 "$PKG/bin/fleet-agent" "$PKG/bin/xray" "$PKG/bin/ssserver" /opt/fleet/dist/
-install -m 644 "$PKG/bin/geoip.dat" /opt/fleet/dist/
+# xray、ssserver、geoip.dat 只在与这台中控上的不同时才随包带来（deploy.sh 先比对 sha256），没带的保持原样
+install -m 755 "$PKG/bin/fleet-agent" /opt/fleet/dist/
+for f in xray ssserver; do [ ! -f "$PKG/bin/$f" ] || install -m 755 "$PKG/bin/$f" /opt/fleet/dist/; done
+[ ! -f "$PKG/bin/geoip.dat" ] || install -m 644 "$PKG/bin/geoip.dat" /opt/fleet/dist/
+# 换下来的旧版留作 fleet-server.prev（同一个二进制重复部署时不覆盖它），回滚见 docs/OPS.md §9
+if [ -f /opt/fleet/fleet-server ] && ! cmp -s "$PKG/bin/fleet-server" /opt/fleet/fleet-server; then
+  cp -p /opt/fleet/fleet-server /opt/fleet/fleet-server.prev
+fi
 install -m 755 "$PKG/bin/fleet-server" /opt/fleet/fleet-server.new && mv -f /opt/fleet/fleet-server.new /opt/fleet/fleet-server
 rm -rf /opt/fleet/web.new /opt/fleet/web.old
 cp -r "$PKG/web" /opt/fleet/web.new
@@ -99,9 +117,23 @@ install -m 644 "$PKG/fetch-dbs.sh" /opt/fleet/ipintel/fetch-dbs.sh
 install -d -m 750 -o fleet -g fleet /var/lib/fleet/ipintel
 install -m 644 "$PKG/fleet-ipintel-fetch.service" "$PKG/fleet-ipintel-fetch.timer" /etc/systemd/system/
 
+# 每天备份（docs/OPS.md §10）：北京时间 03:30 把库与密钥打包到 /var/backups/fleet，留 14 份。
+# 家里 PVE 用 fleet-backup 用户取最新一份：/etc/fleet/backup.pub（PVE 的公钥）存在才写进它的 authorized_keys，
+# 登录后只能执行 forced command（把最新一份 cat 出来）；文件由 root 持有，这个用户自己改不了
+id fleet-backup >/dev/null 2>&1 || useradd --system --home-dir /var/lib/fleet-backup --shell /bin/sh fleet-backup
+install -d -m 750 -o root -g fleet-backup /var/backups/fleet
+install -m 644 "$PKG/fleet-backup.sh" /opt/fleet/backup/fleet-backup.sh
+install -m 755 "$PKG/fleet-backup-latest.sh" /opt/fleet/backup/fleet-backup-latest.sh
+install -m 644 "$PKG/fleet-backup.service" "$PKG/fleet-backup.timer" /etc/systemd/system/
+if [ -f /etc/fleet/backup.pub ]; then
+  install -d -m 755 /var/lib/fleet-backup /var/lib/fleet-backup/.ssh
+  printf 'restrict,command="/opt/fleet/backup/fleet-backup-latest.sh" %s\n' "$(head -n 1 /etc/fleet/backup.pub)" > /var/lib/fleet-backup/.ssh/authorized_keys
+  chmod 644 /var/lib/fleet-backup/.ssh/authorized_keys
+fi
+
 systemctl daemon-reload
-systemctl enable -q fleet-server fleet-ipintel-fetch.timer
-systemctl start fleet-ipintel-fetch.timer
+systemctl enable -q fleet-server fleet-ipintel-fetch.timer fleet-backup.timer
+systemctl start fleet-ipintel-fetch.timer fleet-backup.timer
 [ -n "$(ls -A /var/lib/fleet/ipintel)" ] || systemctl start --no-block fleet-ipintel-fetch.service
 systemctl restart fleet-server
 
@@ -116,9 +148,18 @@ if [ "$(cat /etc/caddy/Caddyfile 2>/dev/null)" != "$CADDY" ]; then
   systemctl reload caddy
 fi
 
-for _ in $(seq 30); do
+# fleet-server 启动时先跑数据库迁移再监听：最多等 60 秒，未登录访问应回 401
+code=000
+for _ in $(seq 60); do
   code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/v1/auth/me || true)
   [ "$code" = 401 ] && break
   sleep 1
 done
+if [ "$code" != 401 ]; then
+  echo "fleet-server 没有正常启动（$(systemctl is-active fleet-server)）：未登录访问 /api/v1/auth/me 应回 401，实际 $code。最近日志："
+  journalctl -u fleet-server -n 60 --no-pager || true
+  echo "旧版本在 /opt/fleet/fleet-server.prev，回滚见 docs/OPS.md §9"
+  exit 1
+fi
+ls /var/backups/fleet/fleet-*.tar >/dev/null 2>&1 || systemctl start --no-block fleet-backup.service   # 第一次装上备份：先做一份
 echo "fleet-server $(systemctl is-active fleet-server)，api=$code，agent $(/opt/fleet/dist/fleet-agent version 2>/dev/null | head -1)"

@@ -23,9 +23,19 @@ ProtectHome=yes
 PrivateTmp=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
+ProtectKernelLogs=yes
 ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
 RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
 LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+# 不加 SystemCallFilter / MemoryDenyWriteExecute：Xray 是 Go 程序，升级 Xray 时运行时用到的系统调用会变，兼容风险大于收益。
+# 不加 ProcSubset=pid：它藏掉 /proc/sys，Go 读不到 somaxconn，入口的监听队列从 4096 掉到 128（安全评分不变）
 
 [Install]
 WantedBy=multi-user.target

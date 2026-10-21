@@ -50,6 +50,9 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
 `MachineView`（列表与详情同形）：
 ```
 { id, kind: "relay"|"vps"|"proxy", name, team:{id,name}|null, number|null, label|null, ip, ssh_port,
+  host_machine:{id,name}|null,  // 同机 IP 节点（kind 仍是 vps）：它所在的宿主机；它没有自己的 agent 和 SSH，下面的 agent、host 就是宿主机的，
+                                // ssh_port 是宿主机的（只展示），provider 取宿主机的、plan 为 null；其它机器为 null
+  ip_nodes:[{id,name}],         // 宿主机：它上面未退役的同机 IP 节点（按团队、编号）；其它机器为 []
   provider:{id,name}|null, provider_code|null, plan:{id,name,bandwidth_mbps,traffic_gb}|null, service_ref|null,
   lifecycle: "draft"|"provisioning"|"active"|"retiring"|"retired"|"failed", lifecycle_reason|null, note, revision,
   created_at, activated_at|null, retired_at|null,
@@ -66,12 +69,13 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
   removed_traffic: {today_up,today_down,month_up,month_down},  // 已移除入口（如换线路机后的旧入口）本月/今天的流量，不在 entries 里
   quota: {used, period_start},  // 流量额度周期已用的业务流量（字节，下载+上传，含已移除入口）与周期起点（日期）。
                                 // 订阅有 traffic_reset_day：账单时区里今天或之前最近一次重置日起（月份没有这一天按月末，如 31 号在 9 月是 30 号），
-                                // 从该日账单时区零点累计；否则为北京时间的本月。来自小时汇总表，每次汇总后更新
+                                // 从该日账单时区零点累计；否则为北京时间的本月。来自小时汇总表，每次汇总后更新。
+                                // 宿主机的 used 含它的同机 IP 节点（含已退役的）入口的流量（额度共用）；同机 IP 节点自己的 used 只算它自己的
   health: {status: "ok"|"degraded"|"down"|"unknown"|"maintenance"|"inactive", reasons:[{key,severity,text}]},
   active_job: {id,kind,state}|null,                    // 进行中的作业（queued/running/waiting/cancelling）
   failed_job: {id,kind,state}|null,                    // lifecycle = failed（上架失败）时：失败的上架/恢复作业，重试回到 provisioning，取消则补偿退役；
                                                        // lifecycle = retiring 且退役作业失败时：该 retire 作业（等重试）；其它情况 null
-  open_incidents, maintenance,
+  open_incidents, maintenance,   // maintenance：同机 IP 节点在宿主机维护时也为 true
   relay: {public_host,generation,applied_generation,applied_at,apply_error,port_min,port_max}|null }
 EntryView = { id, relay:{id,name}, node:{id,name}, direct, port, lifecycle, applied, apply_error,
   tcp:{ok,latency_ms,detail,ts}|null, egress:{…}|null, traffic:{today_up,today_down,month_up,month_down} }
@@ -80,15 +84,15 @@ EntryView = { id, relay:{id,name}, node:{id,name}, direct, port, lifecycle, appl
 ```
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/machines?scope=live\|retired\|all` | 默认 live（未退役）。排序：线路机在前，然后按团队、编号。加 `view=brief` 只返回 `{id, kind, name, label, ip, lifecycle, team:{id,name}\|null}`（fleetctl 按名字找机器用） |
+| GET | `/machines?scope=live\|retired\|all` | 默认 live（未退役）。排序：线路机在前，然后按团队、编号。加 `view=brief` 只返回 `{id, kind, name, label, ip, lifecycle, host_id, team:{id,name}\|null}`（fleetctl 按名字找机器用；`host_id` 非 null 的是同机 IP 节点） |
 | GET | `/machines/{id}` | 单台 |
 | PATCH | `/machines/{id}` | `{revision, team_id?, number?, label?, note?, provider_id?, plan_id?, service_ref?}`。改团队/编号 = 改名：线路机备注随后自动同步，不换令牌、不断连接 |
-| GET | `/machines/{id}/series?metric=host\|traffic\|probe&range=1h\|6h\|24h\|7d\|30d` | 时序。≤24h 用原始点（1 分钟聚合），更长用小时汇总 |
-| GET | `/machines/{id}/retire` | 退役预览：`{data:{name, renames:[{machine_id,old_name,new_name}]}}`——编号保持连续，退役后同团队后面的节点依次前移 |
-| POST | `/machines/{id}/retire` | `{confirm: <显示名>, reason?, cleanup?: true}` → `{data:{job_id}}`。退役完成时同团队编号自动压缩成 01..N（写审计）。线路机上还有节点入口时 409（提示先搬空）；它自己的直出入口不算，由退役作业的「摘除入口」一并摘掉 |
-| POST | `/machines/{id}/purge` | 仅已退役。`{confirm: <显示名>}` → 作业；彻底删除机器与遥测，保留审计。它的入口近 35 天有小时流量、且入口另一端的机器未退役时 409：「这台机器的入口在 YYYY-MM-DD 前仍计入其他机器的流量统计，届时再彻底删除」（作业执行时再查一次） |
-| POST | `/machines/{id}/upgrade-agent` | 推送中控当前版本的 agent 并重启（作业 `upgrade_agent`；令牌顺带轮换） |
-| POST | `/agents/upgrade` | 所有在用线路机与落地机各建一个 `upgrade_agent` 作业（有进行中作业的跳过；每台单独提交，一台冲突不影响其他台） → `{data:{jobs:[{machine_id,job_id}], skipped:[{machine_id,reason}]}}` |
+| GET | `/machines/{id}/series?metric=host\|traffic\|probe&range=1h\|6h\|24h\|7d\|30d` | 时序。≤24h 用原始点（1 分钟聚合），更长用小时汇总。同机 IP 节点的 `metric=host` 是宿主机的曲线 |
+| GET | `/machines/{id}/retire` | 退役预览：`{data:{name, renames:[{machine_id,old_name,new_name}], ip_nodes:[{id,name}]}}`——编号保持连续，退役后同团队后面的节点依次前移；`ip_nodes` 是会一并退役的同机 IP 节点（宿主机才有，还没开始退役的），`renames` 按所有受影响的团队算 |
+| POST | `/machines/{id}/retire` | `{confirm: <显示名>, reason?, cleanup?: true}` → `{data:{job_id, ip_node_jobs:[{machine_id,name,job_id}]}}`。退役完成时同团队编号自动压缩成 01..N（写审计）。线路机上还有节点入口时 409（提示先搬空）；它自己的直出入口不算，由退役作业的「摘除入口」一并摘掉。**宿主机**：它上面还没开始退役的同机 IP 节点在同一事务里一并置为退役中（`lifecycle_reason`「随宿主机「名字」退役」），作废它们进行中 / 失败的作业、关掉它们的告警，各建一个退役作业（`cleanup: false`：只摘入口，不登录清理——宿主机的清理连同所有实例一起删），列在 `ip_node_jobs`（没有为 []），各写一条审计 `machine.retire`。单独退役同机 IP 节点只删它自己的实例 |
+| POST | `/machines/{id}/purge` | 仅已退役。`{confirm: <显示名>}` → 作业；彻底删除机器与遥测，保留审计。宿主机上还有同机 IP 节点（含已退役的）没删时 409：「这台机器上还有同机 IP 节点没有彻底删除（含已退役的）：…；先删它们」。它的入口近 35 天有小时流量、且入口另一端的机器未退役时 409：「这台机器的入口在 YYYY-MM-DD 前仍计入其他机器的流量统计，届时再彻底删除」（作业执行时再查一次） |
+| POST | `/machines/{id}/upgrade-agent` | 推送中控当前版本的 agent 并重启（作业 `upgrade_agent`；令牌顺带轮换）。同机 IP 节点 409（agent 是宿主机的，升级宿主机） |
+| POST | `/agents/upgrade` | 所有在用线路机与落地机（不含同机 IP 节点）各建一个 `upgrade_agent` 作业（有进行中作业的跳过；每台单独提交，一台冲突不影响其他台） → `{data:{jobs:[{machine_id,job_id}], skipped:[{machine_id,reason}]}}` |
 | PUT | `/machines/{id}/subscription` | `{price_cents,currency,cycle,due_date,billing_tz,auto_renew,remind_days,traffic_gb?,traffic_reset_day?}` |
 | POST | `/machines/{id}/renewals` | `{new_due,amount_cents?,note?}` |
 | GET | `/machines/{id}/renewals` | |
@@ -98,7 +102,7 @@ EntryView = { id, relay:{id,name}, node:{id,name}, direct, port, lifecycle, appl
 ## 上架
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/provision/check` | 校验（不落库）：`{items:[ProvisionItem]}` → `{data:{items:[{ok,errors:[...],name,number,relay_port?}]}}` |
+| POST | `/provision/check` | 校验（不落库）：`{items:[ProvisionItem]}` → `{data:{items:[{ok,errors:[...],name,number,ss_port}]}}`（`ss_port`：同机 IP 节点暂定的 SS 端口，其它为 null） |
 | POST | `/provision` | 同样的 body，全部通过才创建：每台建机器（provisioning）+ 一个作业 → `{data:{jobs:[{machine_id,job_id,name}]}}` |
 
 ```
@@ -115,9 +119,15 @@ ProvisionItem = {
   // 节点上 ssserver 与防火墙固定在 8388，这个值只写进线路机出站
   ss_port?: 8388,
   // 没给的：price_cents / currency / cycle 取套餐，billing_tz 取供应商时区（机器的供应商，否则套餐的）；都没有时 0 / USD / monthly / Asia/Shanghai
-  subscription?: {price_cents?, currency?, due_date, cycle?, billing_tz?}
+  subscription?: {price_cents?, currency?, due_date, cycle?, billing_tz?},
+  // 同机 IP 节点（kind 必须是 vps）：加在这台落地机（宿主机）上，ip 是它自己的出口 IP（要已直接配在宿主机网卡上，EIP / NAT 映射的不行）。
+  // 宿主机必须存在、是在用的普通落地机（不是线路机、家宽代理或同机 IP 节点）。这时 ssh_port / login / ss_port / provider_id / plan_id / reset_host_key
+  // 不适用（忽略）：SSH 端口与供应商取宿主机的、不带套餐、不收 root 密码；SS 端口由中控在宿主机上分配（8389 起，同批依次递增，跳过宿主机上未退役同机节点已占的）。
+  // 作业是 provision_ip；费用默认不记（subscription 照常可给）
+  host_id?: uuid
 }
 ```
+校验时先锁团队行再锁宿主机行：同一台宿主机上的端口分配一次一个事务，和退役宿主机互斥。
 
 ## 线路机与入口
 | 方法 | 路径 | 说明 |
@@ -141,14 +151,14 @@ ProvisionItem = {
 需要 `exec` scope（会话用户直接可用）。中控用自己的 SSH 密钥和 known_hosts 登录；机器必须不是已退役、不是家宽代理（proxy 没有 SSH）。命令原样当 bash 脚本执行（stdin 接 /dev/null），超时由远端 `timeout` 杀掉。每次执行写审计（actor、机器、命令全文、退出码、耗时），**不要在命令里写密码**。
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/machines/{id}/exec` | `{command, timeout_s?: 1-600 (默认 60)}` → `{data:{exit_code, stdout, stderr, duration_ms, truncated, timed_out}}`。stdout/stderr 各截断到 256 KiB（`truncated=true`）；超时 `timed_out=true`：到点远端 `timeout` 发 TERM，`exit_code=124`；命令不理会 TERM 的，再过 5 秒被 KILL（`timeout -k 5`），`exit_code=137`；远端没能按时结束、中控本地等到 `timeout_s+15` 秒仍没返回时也按超时返回 `exit_code=124`。SSH 连不上时 `exit_code=255` 且 stderr 有原因（命令自己退出 255 也是 255）。**只执行一次、不自动重试**（255 时命令可能已经执行过）。机器不存在 404、已退役或 proxy 409、命令空/超时越界 400、SSH 无法启动 502 |
-| GET | `/machines/{id}/logs?unit=fleet-agent\|fleet-xray\|ssserver&lines=200` | 白名单 unit（`ssserver` 对应 `fleet-ssserver`），lines 1-2000；内部走同一 exec 通道跑 `journalctl`，返回形状同 exec，另有 `unit`、`lines`。审计动作 `machine.logs` |
+| POST | `/machines/{id}/exec` | `{command, timeout_s?: 1-600 (默认 60)}` → `{data:{exit_code, stdout, stderr, duration_ms, truncated, timed_out}}`。同机 IP 节点没有自己的 SSH：命令在它的宿主机上执行（审计记在这台节点名下）。stdout/stderr 各截断到 256 KiB（`truncated=true`）；超时 `timed_out=true`：到点远端 `timeout` 发 TERM，`exit_code=124`；命令不理会 TERM 的，再过 5 秒被 KILL（`timeout -k 5`），`exit_code=137`；远端没能按时结束、中控本地等到 `timeout_s+15` 秒仍没返回时也按超时返回 `exit_code=124`。SSH 连不上时 `exit_code=255` 且 stderr 有原因（命令自己退出 255 也是 255）。**只执行一次、不自动重试**（255 时命令可能已经执行过）。机器不存在 404、已退役或 proxy 409、命令空/超时越界 400、SSH 无法启动 502 |
+| GET | `/machines/{id}/logs?unit=fleet-agent\|fleet-xray\|ssserver&lines=200` | 白名单 unit（`ssserver` 对应 `fleet-ssserver`；同机 IP 节点对应宿主机上它自己的实例 `fleet-ssserver@<SS 端口>`，`fleet-agent` 是宿主机的），lines 1-2000；内部走同一 exec 通道跑 `journalctl`，返回形状同 exec，另有 `unit`（实际查的单元）、`lines`。审计动作 `machine.logs` |
 | GET | `/server/logs?lines=200` | 中控自己的 `journalctl -u fleet-server`。fleet 用户通常没权限读 journal：journalctl 报错时 424（`error.code="journal_denied"`，message 说明如何授权：`usermod -aG systemd-journal fleet`）；journalctl 无法运行或 20 秒没返回时 500 |
 
 ## 总览与告警
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/overview` | `{nodes:{total,ok,degraded,down,unknown,maintenance}, relays:{…}, provisioning, retiring, failed（上架失败的机器数，网页「有问题」里也算它们）, due_7d（7 天内到期或已过期、需要续费的：自动续费的只在已过期时算）, online, offline（按 agent 连通：agent 没有近期上报为离线，家宽代理没有 agent 算在线；与健康无关，有严重告警但照常上报的算在线）, monthly_cost:[{currency,cents}]（按币种分别汇总，不折算）, traffic_month:{up,down}, net_rx_bps, net_tx_bps}`（只统计 active；速率不含 agent 离线的机器——告警不影响，照常上报的机器照算） |
+| GET | `/overview` | `{nodes:{total,ok,degraded,down,unknown,maintenance}, relays:{…}, provisioning, retiring, failed（上架失败的机器数，网页「有问题」里也算它们）, due_7d（7 天内到期或已过期、需要续费的：自动续费的只在已过期时算）, online, offline（按 agent 连通：agent 没有近期上报为离线，家宽代理没有 agent 算在线；与健康无关，有严重告警但照常上报的算在线）, monthly_cost:[{currency,cents}]（按币种分别汇总，不折算）, traffic_month:{up,down}, net_rx_bps, net_tx_bps}`（只统计 active；速率不含 agent 离线的机器——告警不影响，照常上报的机器照算；同机 IP 节点的读数就是宿主机的，速率不重复算，节点数与在线 / 离线照常按节点计） |
 | GET | `/overview/series?minutes=30` | 总览网速曲线：`{points:[{ts, net_rx_bps, net_tx_bps}]}`，`minutes` 1–60（默认 30，越界 400）；最近 N 个**结束满 20 s** 的分钟（agent 每 10 s 上报，刚结束的那一分钟还缺最后的上报，不给）每分钟一个点、旧→新，`ts` 为该分钟起点（RFC3339）。每个点 = 该分钟有主机指标的 active 机器速率之和，单台算法同 `/machines/{id}/series?metric=host`（每分钟计数器最大值与上一个有数据的分钟相减 ×8 / 秒数；计数器回绕的那一段不计）；没有数据的分钟为 0 |
 | GET | `/probe-beats` | 探测心跳条：`{<机器id>: [[n, ok, ms], …20 格]}`。每格 3 分钟、按墙钟对齐（`date_bin('3 minutes', ts, 'epoch')`，即每小时的 :00 / :03 / … ），旧→新，最后一格是当前这格（还没走完）；第 i 格 = `[cb-57m+3i 分, cb-57m+3(i+1) 分)`，cb = 当前这格的起点；`n` = TCP 探测次数，`ok` = 成功次数，`ms` = 成功探测的平均延迟（没有成功的为 null）；没有探测的格为 `[0,0,null]`。节点汇总它的入口、线路机汇总挂在它上面的所有入口；只含这 20 格里有探测数据的在用机器 |
 | GET | `/incidents?state=firing\|resolved\|all&limit=100&offset=0` | 分页：`{items:[{id,rule,rule_name,subject:{id,name},subject_id,subject_name,severity,state,summary,opened_at,last_seen_at,resolved_at,ack_at,ack_by,reopen_count}], total, next_offset}`；`state` 默认 firing；`reopen_count`：恢复后 30 分钟内同一（规则, 对象）复发会重开原告警而不是新建，每次 +1；顺序：进行中在前 → 严重度高在前 → 开始时间新在前（同时刻按 id，翻页不重不漏） |
@@ -161,13 +171,17 @@ ProvisionItem = {
 
 - `health.reasons[]`：`{key, rule_name, severity, text}`；`rule_name` 是规则中文名（同通知）；`severity`：`"info"` | `"warning"` | `"critical"`（info 只有 `policy_blocked`，不影响健康）。
   `clock_skew`（warning，「agent 时钟不准」）：agent 在线且 `|agent.clock_skew_ms|` > 60 秒，文案如「agent 时钟慢 17 分钟：读数可能缺失或冻结，请校时」——样本按 agent 的时间入库，当前读数只看最近 15 分钟、持续负载只看最近 5 分钟。和其它 warning 原因一样满 60 秒去抖后开告警。
+  同机 IP 节点不报 `agent_offline`、`clock_skew`、`host_cpu_high` / `host_mem_high` / `host_disk_high`（agent 与主机是宿主机的，由宿主机报）；`egress_fail`、`tcp_fail`、`no_entry`、续费照常自己报（宿主机整台宕机时宿主机和它的每个同机节点各报各的探测告警，不抑制）。
 - `GET /machines/{id}/series` → `{metric, range, resolution: "1m"|"1h", points: [...]}`，点里时间字段统一叫 `ts`：
   - host：`{ts, cpu_pct, mem_pct, disk_pct, load1, net_rx_bps, net_tx_bps}`（1h 分辨率另有 `cpu_max`，无 `load1`）
   - traffic：`{ts, up, down, conns}`（字节，该时间桶内的增量）
   - probe：`{ts, tcp_ok, tcp_ms, egress_ok, egress_ms}`（失败时 `*_ms` 为 null；1m 分辨率另有 `tcp_n`、`tcp_ok_n`（该分钟 TCP 探测次数 / 成功次数，线路机为其所有入口合计）；1h 分辨率另有 `tcp_success_pct`、`egress_success_pct`）
 - 作业 `Job`：`{id, kind, target: {id,name}|null, state, step, step_count, step_title, error, created_by, created_at, started_at, finished_at}`（`step` 当前或失败的步骤下标，`step_title` 它的标题，做完为 null）；
   `state` ∈ `queued | running | waiting | cancelling | succeeded | failed | cancelled`；详情另有 `steps[]`（`output` 是 JSON 对象或 null；各步骤输出的 key 与中文展示见 `web/src/lib/jobs.ts` 的 `OUTPUT`，跳过的步骤为 `{reason}`）与 `cancellable`。
-  作业 `kind` ∈ `provision_vps | provision_proxy | provision_relay | restore_vps | restore_proxy | restore_relay | attach_entry | move_entry | retire | purge | upgrade_agent`。
+  作业 `kind` ∈ `provision_vps | provision_proxy | provision_relay | provision_ip | restore_vps | restore_proxy | restore_relay | restore_ip | attach_entry | move_entry | retire | purge | upgrade_agent`。
+  `provision_ip`（上架同机 IP 节点）/ `restore_ip`（恢复同机 IP 节点）的步骤：`ip_check`（在宿主机上核对 IP，输出 `{ss_port, local_ips, egress_ip}`：最终的 SS 端口、宿主机本机的 IPv4（逗号加空格分隔的字符串）、经这个 IP 访问中控 /echo 回显的地址）→ `converge`（推 ssserver、装它自己的实例与防火墙，输出同落地机，`bbr` 为 null——不做系统基线）→ `attach` → `wait_applied` → `verify` → `activate`。
+  `ip_check` 失败：宿主机 SSH 连不上（network）；IP 不在宿主机网卡上（「IP x 不在宿主机 H 的网卡上（本机：…）」，remote）；回显的来源不是这个 IP（出站路由不对，remote）。暂定的 SS 端口在宿主机上被占用时自动换成最小空闲端口，日志里有一条警告。
+  同机 IP 节点的退役作业 `cleanup` 一步只删它自己的实例（输出 `ss` 是 gone / still_listening，指它自己的端口）。
 - 告警 `Incident`：`{id, rule, rule_name（规则中文名，同通知）, subject: {id,name}, subject_id, subject_name, severity, state: "firing"|"resolved", summary, opened_at, last_seen_at, resolved_at, ack_at, ack_by, reopen_count}`（`subject_name` 机器已删除时为 null）。
 - 静默 `Silence`：`{id, subject_id, subject_name, rule, starts_at, ends_at, is_maintenance, comment}`。
 - 续费 `Renewal`：`{id, old_due, new_due, amount_cents, note, actor, created_at}`。
@@ -202,7 +216,7 @@ ProvisionItem = {
 `POST /agent/v1/report` 入库失败按类回：数据本身入不了库（SQLSTATE 22 类：坏字节、NUL、越界；23 类：违反约束）→ 422（`error.code="bad_report"`），agent 把这份报告移入 `dead/` 不再重发；其它（连接池超时、断连、磁盘满、只读…）→ 503，agent 退避重试（受本地队列的字节与时长上限约束）。agent 只把 4xx（401 撤销、403/404/408/429 除外）当永久拒绝，5xx 和网络错误一律重试。
 
 ## 访问监控
-线路机 agent 解析 Xray 访问日志上报，服务端写入 `access_event`（原始记录保留 `retention.access_days`=7 天），并每 5 分钟把当前小时和被标脏的小时重算进小时汇总（`access_hourly` / `access_source_hourly` / `access_target_seen`，保留 90 天，幂等；agent 断网后补传的旧记录在上报时把所在小时记进 `access_dirty`，下一轮补算；启动时补算缺口）。24h/7d/30d 的结果在进程内缓存：每轮汇总成功后整体作废；`summary` / `targets`（第一页）/ `sources` 最多缓存 `access_cache_secs`（默认 300）秒，单台机器的 `/machines/{id}/access` 与 `/machines/{id}/sources`（带最近原始记录、来源基线与异常）最多 30 秒；设 0 关闭。全部为只读 GET，读权限即可。
+线路机 agent 解析 Xray 访问日志上报，服务端写入 `access_event`（原始记录保留 `retention.access_days`=7 天），并每 5 分钟把当前小时和被标脏的小时重算进小时汇总（`access_hourly` / `access_source_hourly` 保留 31 天，窗口最长 30d；`access_target_seen` 记每个目标的首次 / 最近出现，最近出现超 90 天才删；幂等；agent 断网后补传的旧记录在上报时把所在小时记进 `access_dirty`，下一轮补算；启动时补算缺口）。24h/7d/30d 的结果在进程内缓存：每轮汇总成功后整体作废；`summary` / `targets`（第一页）/ `sources` 最多缓存 `access_cache_secs`（默认 300）秒，单台机器的 `/machines/{id}/access` 与 `/machines/{id}/sources`（带最近原始记录、来源基线与异常）最多 30 秒；设 0 关闭。全部为只读 GET，读权限即可。
 
 公共筛选参数（空串等同没给，非法值返回 400）：`window=1h|24h|7d|30d`（默认 24h，events 默认 7d）、`team=<团队id>`、`node=<节点id>`、`search=`（大小写不敏感的子串，`%` `_` 按字面）、`action=all|blocked|routed`、`kind=all|domain|ip`。
 
@@ -256,6 +270,8 @@ ProvisionItem = {
 预检 `GET /machines/{id}/restore` 返回：`{id, kind, lifecycle, ip, old_name, name（恢复后的名字）, team:{id,name}|null, number, label, restorable, blockers[], warnings[], ip_conflict:{machine_id,name,lifecycle}|null, last_relay:{id,name}|null, retired_reason, ssh:{reachable,key_login:ok|denied|error|unreachable,host_key?}|null, needs:{relay,upstream,password:required|optional|no}}`。编号默认取团队里最小的空号（编号连续时就是 N+1），可用 `number` 指定空号；线路机按 label 唯一约束检查，原名被占用时用 `label` 改名。`ssh` 是服务端用中控密钥试一次登录（临时 known_hosts，不碰正式的）的结果，`probe=false` 跳过；试登录和 `POST` 恢复一样要 `write` scope（只读密钥 403，可加 `probe=false`），并写审计 `restore.probe`；`needs.password=required` 表示中控密钥被拒、必须给 root 密码。
 
 `POST` 请求体：`{team_id?, number?, label?, relay_id?（节点要接入的在用线路机，节点必填）, login?:{password}（只用来推一次中控公钥，用完即丢）, upstream?:{protocol,host,port,username?,password?}（proxy 必填：退役时出站参数已删除）, ss_port?（vps，公网（NAT 映射）端口，默认 8388；节点上 ssserver 固定监听 8388，非 NAT 机不要填；vps 恢复时重新生成 SS 密码）, reason?, reset_host_key?（机器重装过，允许预检覆盖已记录的主机指纹；退役时已忘记指纹，所以默认是重新记录）}`。
+
+**同机 IP 节点的恢复**（作业 `restore_ip`，步骤同 `provision_ip`）：宿主机必须在用，否则预检 `restorable=false`、blockers 里有「宿主机「名字」现在是「…」：同机 IP 节点要等宿主机在用才能恢复」，`POST` 409。预检不试 SSH（`ssh` 为 null、`needs.password` 为 `"no"`）；`login`、`ss_port`、`reset_host_key` 不适用（忽略）；SS 端口在宿主机上重新分配（原来的可能已给了别的同机节点），SS 密码重新生成。
 
 ## 访问策略（域名黑白名单）
 按团队或节点设置：有效策略 = 节点策略（`mode≠inherit`）> 团队策略 > 默认 `observe`。模式：`observe`（不产生规则）、`allowlist`（只放行名单内域名，其余阻止）、`denylist`（阻止名单内域名，其余放行）、`blocked`（暂停该节点所有新连接）、`inherit`（仅节点：跟随团队）。`allowlist`/`denylist` 至少一个域名。GET 需 `read`，写操作需 `write` 并写审计；预览是 POST 但无副作用（也需 `write`）。

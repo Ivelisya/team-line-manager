@@ -411,14 +411,25 @@ async fn new_targets_machine_and_idempotent_rollup() {
     let d = t.get(&format!("/api/v1/machines/{}/access?window=7d", fx.n[2])).await;
     assert_eq!(d["top_domains"].as_array().unwrap().len(), 1);
 
-    // 清理：90 天前的汇总被删
-    sqlx::query("insert into access_hourly (node_id, relay_id, hour, dest_host, kind, conns) values ($1, $2, now() - interval '100 days', 'gone.example.com', 'domain', 1)")
+    // 清理：小时表 31 天前的被删，目标出现记录 90 天没再出现才删
+    sqlx::query("insert into access_hourly (node_id, relay_id, hour, dest_host, kind, conns) values ($1, $2, now() - interval '32 days', 'gone.example.com', 'domain', 1)")
         .bind(n1)
         .bind(fx.relay)
         .execute(&t.st.db)
         .await
         .unwrap();
+    for ago in [32, 91] {
+        sqlx::query("insert into access_target_seen (node_id, dest_host, first_seen, last_seen, total) values ($1, $2, now() - make_interval(days => $3), now() - make_interval(days => $3), 1)")
+            .bind(n1)
+            .bind(format!("seen{ago}.example.com"))
+            .bind(ago)
+            .execute(&t.st.db)
+            .await
+            .unwrap();
+    }
     access::prune(&t.st.db).await.unwrap();
     let n: i64 = sqlx::query_scalar("select count(*) from access_hourly where dest_host = 'gone.example.com'").fetch_one(&t.st.db).await.unwrap();
     assert_eq!(n, 0);
+    let seen: Vec<String> = sqlx::query_scalar("select dest_host from access_target_seen where dest_host like 'seen%'").fetch_all(&t.st.db).await.unwrap();
+    assert_eq!(seen, ["seen32.example.com"]);
 }

@@ -163,6 +163,12 @@ pub async fn series(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<
     };
     let raw = hours <= 24;
     let since = OffsetDateTime::now_utc() - time::Duration::hours(hours);
+    // 同机 IP 节点没有自己的主机指标：主机曲线是宿主机的
+    let id = if q.metric == "host" {
+        sqlx::query_scalar("select coalesce(host_id, id) from machine where id = $1").bind(id).fetch_optional(&st.db).await?.unwrap_or(id)
+    } else {
+        id
+    };
     // 返回可直接画图的点：时间 ts，速率 bit/s，占用百分比，延迟 ms（失败为 null）
     let sql = match (q.metric.as_str(), raw) {
         ("host", true) => HOST_RAW,
@@ -256,6 +262,8 @@ pub async fn retire(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<U
             return Err(ApiError::conflict(format!("这台线路机上还有 {n} 个节点入口：先把节点迁走或退役。可先用「搬空线路机」把节点换到其他线路机")));
         }
     }
+    // 宿主机退役：它上面的同机 IP 节点一并退役（它们的 SSH、agent、ssserver 都在这台机器上）
+    let ip_nodes = ip_nodes_of(&mut tx, id, true).await?;
     let n = sqlx::query(
         "update machine set lifecycle = 'retiring', lifecycle_reason = $2, revision = revision + 1, updated_at = now()
          where id = $1 and lifecycle not in ('retiring', 'retired')",
@@ -268,25 +276,33 @@ pub async fn retire(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<U
     if n == 0 {
         return Err(ApiError::conflict("这台机器刚刚被别人退役了"));
     }
-    // 这台机器上其它没做完或失败的作业（上架做到一半、加入口失败…）全部作废，否则之后重试会把退役的机器又拉回去
-    let dead: Vec<(Uuid,)> = sqlx::query_as(
+    let ip_ids: Vec<Uuid> = ip_nodes.iter().map(|x| x.0).collect();
+    let ip_reason = format!("随宿主机「{name}」退役");
+    sqlx::query("update machine set lifecycle = 'retiring', lifecycle_reason = $2, revision = revision + 1, updated_at = now() where id = any($1)")
+        .bind(&ip_ids)
+        .bind(&ip_reason)
+        .execute(&mut *tx)
+        .await?;
+    let all: Vec<Uuid> = std::iter::once(id).chain(ip_ids.iter().copied()).collect();
+    // 这些机器上其它没做完或失败的作业（上架做到一半、加入口失败…）全部作废，否则之后重试会把退役的机器又拉回去
+    let dead: Vec<(Uuid, Uuid)> = sqlx::query_as(
         "update job set state = 'cancelled', finished_at = now(), lease_owner = null, lease_until = null,
             params = params - 'login', error = coalesce(error, '机器进入退役，作业已作废')
-         where target_id = $1 and state in ('queued', 'running', 'waiting', 'cancelling', 'failed') returning id",
+         where target_id = any($1) and state in ('queued', 'running', 'waiting', 'cancelling', 'failed') returning id, target_id",
     )
-    .bind(id)
+    .bind(&all)
     .fetch_all(&mut *tx)
     .await?;
-    for (jid,) in &dead {
+    for (jid, _) in &dead {
         sqlx::query("insert into job_log (job_id, level, msg) values ($1, 'warn', '机器进入退役，本作业已作废（不会再重试）')").bind(jid).execute(&mut *tx).await?;
     }
     // 退役中的机器退出监控（不再评估，也不当成恢复）：未结告警现在就关（不发恢复通知）。
     // 退役作业失败会停在退役中等重试（步骤不可回滚），告警不能等到收尾才关
     let closed = sqlx::query(
         "update incident set state = 'resolved', resolved_at = now(), detail = detail || '{\"closed_by\":\"retire\"}'
-         where state = 'firing' and subject_id = $1",
+         where state = 'firing' and subject_id = any($1)",
     )
-    .bind(id)
+    .bind(&all)
     .execute(&mut *tx)
     .await?
     .rows_affected();
@@ -304,46 +320,79 @@ pub async fn retire(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<U
         "machine.retire",
         "machine",
         Some(id),
-        json!({"name": name, "reason": b.reason, "job_id": job, "cancelled_jobs": dead.iter().map(|(j,)| j).collect::<Vec<_>>()}),
+        json!({"name": name, "reason": b.reason, "job_id": job, "cancelled_jobs": dead.iter().map(|(j, _)| j).collect::<Vec<_>>(),
+               "ip_nodes": ip_nodes.iter().map(|x| &x.1).collect::<Vec<_>>()}),
     )
     .await?;
+    // 同机 IP 节点各自一个退役作业：只摘自己的入口、不登录清理（宿主机的清理连同它们的实例一起删）
+    let mut ip_jobs = vec![];
+    for (xid, xname, xlc) in &ip_nodes {
+        let j = jobs::enqueue(&mut tx, "retire", Some(*xid), json!({"cleanup": false, "reason": ip_reason, "prev_lifecycle": xlc}), &a.name).await?;
+        audit(&mut tx, &a.name, "machine.retire", "machine", Some(*xid), json!({"name": xname, "reason": ip_reason, "job_id": j, "host": name})).await?;
+        ip_jobs.push(json!({"machine_id": xid, "name": xname, "job_id": j}));
+    }
     tx.commit().await?;
     st.wake_jobs();
     // 在用 → 退役中：列表要变
     st.emit(Event::Machines);
     st.emit(Event::Job { id: job, target: Some(id) });
+    for j in &ip_jobs {
+        let uuid = |k: &str| j[k].as_str().and_then(|s| Uuid::try_parse(s).ok());
+        if let Some(jid) = uuid("job_id") {
+            st.emit(Event::Job { id: jid, target: uuid("machine_id") });
+        }
+    }
     if closed > 0 {
         st.emit(Event::Incidents);
     }
-    for (j,) in dead {
-        st.emit(Event::Job { id: j, target: Some(id) });
+    for (j, t) in dead {
+        st.emit(Event::Job { id: j, target: Some(t) });
     }
-    Ok(ok(json!({"job_id": job})))
+    Ok(ok(json!({"job_id": job, "ip_node_jobs": ip_jobs})))
 }
 
-/// 退役预览：同团队里会因压缩而改名的节点
+/// 宿主机上还没开始退役的同机 IP 节点：(id, 显示名, 生命周期)，按团队、编号排。`lock`：锁住这些机器行（退役时）
+async fn ip_nodes_of(conn: &mut sqlx::PgConnection, host: Uuid, lock: bool) -> sqlx::Result<Vec<(Uuid, String, String)>> {
+    sqlx::query_as(&format!(
+        "select m.id, display_name(m.kind::text, m.label, t.name, m.number), m.lifecycle::text from machine m left join team t on t.id = m.team_id
+         where m.host_id = $1 and m.lifecycle not in ('retiring', 'retired') order by t.sort_order, t.name, m.number{}",
+        if lock { " for update of m" } else { "" }
+    ))
+    .bind(host)
+    .fetch_all(conn)
+    .await
+}
+
+/// 退役预览：会一并退役的同机 IP 节点（宿主机才有），以及涉及的团队里会因压缩而改名的节点
 pub async fn retire_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     let (name, _kind, _lc) = display_name_of(&st.db, id).await?;
-    let row: Option<(Option<Uuid>, Option<String>)> =
-        sqlx::query_as("select m.team_id, t.name from machine m left join team t on t.id = m.team_id where m.id = $1")
-            .bind(id)
-            .fetch_optional(&st.db)
-            .await?;
+    let mut conn = st.db.acquire().await?;
+    let ip_nodes = ip_nodes_of(&mut conn, id, false).await?;
+    let leaving: Vec<Uuid> = std::iter::once(id).chain(ip_nodes.iter().map(|x| x.0)).collect();
     let mut renames = vec![];
-    if let (true, Some((Some(team_id), Some(team)))) = (st.cfg.numbering.auto_compact, row) {
-        let nodes: Vec<(Uuid, i32)> = sqlx::query_as(
-            "select id, number from machine where team_id = $1 and kind <> 'relay' and lifecycle <> 'retired' and id <> $2 order by number",
-        )
-        .bind(team_id)
-        .bind(id)
-        .fetch_all(&st.db)
-        .await?;
-        renames = compact_numbers(nodes)
-            .into_iter()
-            .map(|(mid, o, n)| json!({"machine_id": mid, "old_name": node_name(&team, o), "new_name": node_name(&team, n)}))
-            .collect();
+    if st.cfg.numbering.auto_compact {
+        let teams: Vec<(Uuid, String)> =
+            sqlx::query_as("select id, name from team where id in (select team_id from machine where id = any($1)) order by sort_order, name")
+                .bind(&leaving)
+                .fetch_all(&mut *conn)
+                .await?;
+        for (team_id, team) in teams {
+            let nodes: Vec<(Uuid, i32)> = sqlx::query_as(
+                "select id, number from machine where team_id = $1 and kind <> 'relay' and lifecycle <> 'retired' and id <> all($2) order by number",
+            )
+            .bind(team_id)
+            .bind(&leaving)
+            .fetch_all(&mut *conn)
+            .await?;
+            renames.extend(
+                compact_numbers(nodes)
+                    .into_iter()
+                    .map(|(mid, o, n)| json!({"machine_id": mid, "old_name": node_name(&team, o), "new_name": node_name(&team, n)})),
+            );
+        }
     }
-    Ok(ok(json!({"name": name, "renames": renames})))
+    let ip_nodes: Vec<Value> = ip_nodes.iter().map(|(i, n, _)| json!({"id": i, "name": n})).collect();
+    Ok(ok(json!({"name": name, "renames": renames, "ip_nodes": ip_nodes})))
 }
 
 #[derive(Deserialize)]
@@ -406,11 +455,17 @@ async fn enqueue_upgrade(st: &AppState, actor: &str, ids: &[Uuid]) -> ApiResult<
 
 /// 单台：推送中控上当前版本的 agent 并重启（令牌顺带轮换）
 pub async fn upgrade_agent(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
-    let (kind, lc): (String, String) = sqlx::query_as("select kind::text, lifecycle::text from machine where id = $1")
-        .bind(id)
-        .fetch_optional(&st.db)
-        .await?
-        .ok_or_else(|| ApiError::not_found("没有这台机器"))?;
+    let (kind, lc, host): (String, String, Option<String>) = sqlx::query_as(
+        "select m.kind::text, m.lifecycle::text, display_name(h.kind::text, h.label, t.name, h.number)
+         from machine m left join machine h on h.id = m.host_id left join team t on t.id = h.team_id where m.id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&st.db)
+    .await?
+    .ok_or_else(|| ApiError::not_found("没有这台机器"))?;
+    if let Some(h) = host {
+        return Err(ApiError::conflict(format!("同机 IP 节点没有自己的 agent，用的是宿主机「{h}」的：升级宿主机的 agent")));
+    }
     if kind == "proxy" || lc != "active" {
         return Err(ApiError::conflict("只有在用的线路机和落地机有 agent"));
     }
@@ -418,9 +473,9 @@ pub async fn upgrade_agent(a: Actor, State(st): State<AppState>, ApiPath(id): Ap
     v.into_iter().next().map(ok).ok_or_else(|| ApiError::conflict(skipped[0]["reason"].as_str().unwrap_or("这台机器还有进行中的作业")))
 }
 
-/// 全部在用的线路机与落地机
+/// 全部在用的线路机与落地机（同机 IP 节点没有自己的 agent，不算）
 pub async fn upgrade_all_agents(a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
-    let ids: Vec<(Uuid,)> = sqlx::query_as("select id from machine where kind <> 'proxy' and lifecycle = 'active' order by kind = 'relay' desc")
+    let ids: Vec<(Uuid,)> = sqlx::query_as("select id from machine where kind <> 'proxy' and lifecycle = 'active' and host_id is null order by kind = 'relay' desc")
         .fetch_all(&st.db)
         .await?;
     let ids: Vec<Uuid> = ids.into_iter().map(|(i,)| i).collect();

@@ -12,3 +12,6 @@ export function sharedObserver<E extends { target: Element }>(make: (onEntries: 
     return () => { callbacks.delete(el); obs?.unobserve(el); };
   };
 }
+
+/** 全站共用的 ResizeObserver（省略文本 Trunc、机器表是否放得下、卡片标签行） */
+export const watchSize = sharedObserver<ResizeObserverEntry>((cb) => new ResizeObserver(cb));

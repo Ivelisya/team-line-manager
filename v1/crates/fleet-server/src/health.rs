@@ -112,8 +112,10 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
     let mut unknown = false;
     let mut probe_unknown = false;
     let agent_online = m.agent.as_ref().is_some_and(|a| a.online);
+    // 同机 IP 节点的 agent 与主机读数是宿主机的：agent 离线、时钟、持续高负载只由宿主机报，入口和续费照常自己报
+    let own_agent = m.host_machine.is_none();
 
-    if let Some(a) = &m.agent {
+    if let Some(a) = m.agent.as_ref().filter(|_| own_agent) {
         if !a.online {
             let ago = a.last_report_at.map(|t| (now - t).whole_seconds());
             rs.push(Reason {
@@ -136,7 +138,7 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
     }
 
     // 持续高负载：只在 agent 在线时判定（离线本身已经是严重告警）
-    if agent_online && m.sustained.span_s >= SUSTAIN_MIN_SPAN_S {
+    if own_agent && agent_online && m.sustained.span_s >= SUSTAIN_MIN_SPAN_S {
         let s = &m.sustained;
         for (key, label, min, limit) in [
             ("host_cpu_high", "CPU", s.cpu_min, CPU_HIGH_PCT),
@@ -228,6 +230,8 @@ pub(crate) mod tests {
             label: None,
             ip: "192.0.2.1".into(),
             ssh_port: 22,
+            host_machine: None,
+            ip_nodes: vec![],
             provider: None,
             provider_code: None,
             plan: None,
@@ -460,6 +464,28 @@ pub(crate) mod tests {
         // 同时有真故障时照常降级
         n.entries = vec![entry(false, false)];
         assert_eq!(evaluate(&n, now).status, Status::Down);
+    }
+
+    #[test]
+    fn ip_node_leaves_agent_and_host_reasons_to_its_host() {
+        let now = OffsetDateTime::now_utc();
+        let mut x = base("vps");
+        x.host_machine = Some(Ref { id: Uuid::now_v7(), name: "团队1-03".into() });
+        x.entries = vec![entry(false, true)];
+        // 借来的宿主机 agent 离线、时钟偏、持续高负载：都由宿主机自己报
+        let a = x.agent.as_mut().unwrap();
+        (a.online, a.last_report_at, a.clock_skew_ms) = (false, Some(now - Duration::hours(1)), Some(10 * 60_000));
+        x.sustained = Sustained { span_s: 290, cpu_min: Some(99.0), mem_min: Some(99.0), disk_min: Some(99.0) };
+        let h = evaluate(&x, now);
+        assert!(h.reasons.is_empty() && h.status == Status::Ok, "{:?}", keys(&h));
+        x.agent.as_mut().unwrap().online = true;
+        assert!(keys(&evaluate(&x, now)).is_empty());
+        // 自己的入口、续费照常报
+        x.entries = vec![entry(false, false)];
+        x.subscription = Some(sub(2));
+        assert_eq!(keys(&evaluate(&x, now)), ["egress_fail", "tcp_fail", "renewal_due"]);
+        x.entries.clear();
+        assert_eq!(keys(&evaluate(&x, now))[0], "no_entry");
     }
 
     #[test]

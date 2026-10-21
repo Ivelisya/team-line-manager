@@ -120,7 +120,21 @@ impl From<axum::extract::rejection::QueryRejection> for ApiError {
 }
 
 impl From<anyhow::Error> for ApiError {
-    fn from(e: anyhow::Error) -> Self { Self::internal(format!("{e:#}")) }
+    /// 包着的是数据库错误（如 agent 接口的 entries::desired_state / on_applied）就按数据库错误映射：连接池超时同样回 503。
+    /// 映射成 5xx 时（原因只进日志）留整条上下文链，日志里看得出是哪一步出的错
+    fn from(e: anyhow::Error) -> Self {
+        let chain = format!("{e:#}");
+        match e.downcast::<sqlx::Error>() {
+            Ok(db) => {
+                let mut a = Self::from(db);
+                if a.status.is_server_error() {
+                    a.message = chain;
+                }
+                a
+            }
+            Err(_) => Self::internal(chain),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -147,6 +161,12 @@ mod tests {
             assert!(m.contains("服务器内部错误") && m.contains("编号"), "{m}");
             assert!(!m.contains("hunter2") && !m.contains("secret_table") && !m.contains("10.0.0.5"), "{m}");
         }
+    }
+
+    #[tokio::test]
+    async fn db_errors_inside_anyhow_keep_their_status() {
+        let (s, v) = body_of(ApiError::from(anyhow::Error::from(sqlx::Error::PoolTimedOut))).await;
+        assert_eq!((s, v["error"]["code"].as_str()), (StatusCode::SERVICE_UNAVAILABLE, Some("unavailable")));
     }
 
     #[tokio::test]

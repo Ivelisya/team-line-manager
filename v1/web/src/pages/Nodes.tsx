@@ -1,5 +1,6 @@
 // 节点：表格视图。固定列宽；筛选（团队 / 类型 / 线路机 / 状态 / 范围）+ 搜索；点行打开右侧抽屉。
-// 默认顺序 = 线路机 → 团队 → 编号（不排序时保持），表头排序是用户的显式选择，可一键恢复；排序记在 URL（?sort=due 升序、?sort=-due 降序，首页“7 天内到期”链到这里）。
+// 默认顺序 = 线路机 → 团队 → 编号（不排序时保持），表头排序是用户的显式选择，可一键恢复；排序记在 URL（?sort=due 升序、?sort=-due 降序，首页“7 天内到期”链到这里），
+// 范围也是（?scope=retired 已退役，缺省在用）。
 // 分页在筛选、排序之后（每页 50）。
 import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
@@ -15,7 +16,7 @@ import { SearchInput } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { Segmented, Trunc } from '@/components/ui/overlays';
 import { SkeletonRows } from '@/components/ui/skeleton';
-import { Due, Empty, ErrorNote, HealthPill, KindIcon, Num, PageHead, Panel, Pill, type SortState } from '@/components/app/primitives';
+import { Due, Empty, ErrorNote, HealthPill, HostTag, KindIcon, Num, PageHead, Panel, Pill, type SortState } from '@/components/app/primitives';
 import { NodeHover } from '@/components/app/NodeHover';
 import { MachineGrid, byNum, byStr, sortByCol, type Col } from '@/components/app/MachineGrid';
 import { Pagination } from '@/components/app/Pagination';
@@ -32,7 +33,9 @@ const STATUS_OPTS = [...Object.entries(HEALTH_LABEL).filter(([k]) => k !== 'inac
 const SCOPES: { value: Scope; label: string }[] = [{ value: 'live', label: '在用' }, { value: 'retired', label: '已退役' }];
 
 export function NodesPage() {
-  const [scope, setScope] = React.useState<Scope>('live');
+  const [sp, setSp] = useSearchParams();
+  // 范围同排序记在 URL（?scope=retired），刷新、后退或从链接打开都停在原来的范围
+  const scope: Scope = sp.get('scope') === 'retired' ? 'retired' : 'live';
   const q = useMachines(scope);
   const teams = useTeams().data;
   const teamOpts = React.useMemo(() => (teams ?? []).map((t) => ({ value: t.id, label: t.name })), [teams]);
@@ -42,11 +45,13 @@ export function NodesPage() {
   const [kind, setKind] = React.useState('');
   const [relay, setRelay] = React.useState('');
   const [status, setStatus] = React.useState('');
-  const [sp, setSp] = useSearchParams();
   const rawSort = sp.get('sort');
   const sort = React.useMemo<SortState | null>(() => (rawSort ? { id: rawSort.replace(/^-/, ''), desc: rawSort.startsWith('-') } : null), [rawSort]); // null = 默认顺序
   const setSort = (s: SortState | null) => setSp((p) => { const n = new URLSearchParams(p); if (s) n.set('sort', `${s.desc ? '-' : ''}${s.id}`); else n.delete('sort'); return n; }, { replace: true });
-  const onScope = React.useCallback((v: Scope) => { setScope(v); setStatus(''); }, []);
+  const onScope = React.useCallback((v: Scope) => {
+    setSp((p) => { const n = new URLSearchParams(p); if (v === 'retired') n.set('scope', v); else n.delete('scope'); return n; }, { replace: true });
+    setStatus('');
+  }, [setSp]);
 
   const all = q.data ?? EMPTY;
   // 线路机选项只随名单变：实时推送每次都换机器列表，线路机和名字没变时选项引用不变
@@ -68,13 +73,17 @@ export function NodesPage() {
   const columns = React.useMemo<Col[]>(() => {
     const retired = scope === 'retired';
     const c: Col[] = [
+      // 同机关系标跟在名称后面（在悬浮卡的触发区外），只写「同机」/「+N IP」，宿主机名在悬停说明里
       { id: 'name', header: '名称', size: retired ? 250 : 190, ...byStr((m) => m.name),
-        cell: (m) => <div className="row" style={{ flexWrap: 'nowrap', gap: 8 }}><KindIcon kind={m.kind} /><div style={{ minWidth: 0 }}><NodeHover id={m.id} m={m}><span className="cell-main strong">{m.name}{m.lifecycle === 'retired' && <> <Pill tone="neutral" dot="ring">已退役</Pill></>}</span></NodeHover><span className="sub">{m.ip}</span></div></div> },
+        cell: (m) => <div className="row" style={{ flexWrap: 'nowrap', gap: 8 }}><KindIcon kind={m.kind} /><div style={{ minWidth: 0 }}>
+          <div className="row" style={{ flexWrap: 'nowrap', gap: 6 }}><NodeHover id={m.id} m={m}><span className="cell-main strong">{m.name}{m.lifecycle === 'retired' && <> <Pill tone="neutral" dot="ring">已退役</Pill></>}</span></NodeHover><HostTag id={m.id} host={m.host_machine} nodes={m.ip_nodes} short /></div>
+          <span className="sub">{m.ip}</span>
+        </div></div> },
       { id: 'kind', header: '类型', size: 84, ...byStr((m) => KIND_LABEL[m.kind]), cell: (m) => KIND_LABEL[m.kind] },
       { id: 'status', header: '状态', size: 96, cell: (m) => <HealthPill m={m} /> },
       { id: 'entry', header: '线路机:端口', size: 150, cell: (m) => <Trunc className="cell-main">{entryText(m)}</Trunc> },
       { id: 'plan', header: '供应商 · 套餐', size: 190,
-        cell: (m) => <>{m.plan ? <Trunc className="cell-main">{m.plan.name}</Trunc> : <span className="cell-main t-muted">未设置</span>}<span className="sub">{m.provider?.name ?? '—'}</span></> },
+        cell: (m) => <>{m.plan ? <Trunc className="cell-main">{m.plan.name}</Trunc> : <span className="cell-main t-muted">{m.host_machine ? '不带套餐' : '未设置'}</span>}<span className="sub">{m.provider?.name ?? '—'}</span></> },
       { id: 'traffic', header: '本月业务流量', size: 120, r: true, ...byNum((m) => { const t = monthTraffic(m); return t.up + t.down; }),
         cell: (m) => { const t = monthTraffic(m); return <><Num f={F.bytes(t.up + t.down)} /><span className="sub">下载 {F.bytes(t.down).v} {F.bytes(t.down).u}</span></>; } },
     ];

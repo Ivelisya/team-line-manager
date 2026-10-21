@@ -1,6 +1,6 @@
 // 首页的小型数据图形（全部是 HTML/SVG，不进 recharts 块）：
 // 分段格条 Cells、带标题的资源格条 CellMeter、迷你资源条 MiniMeter、圆环 Ring、点阵迹线 DotTrace、面积折线 AreaSpark、彩色标签 Tag。
-// 动效只靠 CSS：值变化走 transition，首次出现走 @starting-style（圆环）/ 挂载时的 @keyframes（格条逐格点亮）；令牌在系统“减少动态效果”时归零。
+// 动效只靠 CSS：首次出现走挂载时的 @keyframes（格条逐格点亮、圆环转到位），之后读数变化直接到位、不过渡；令牌在系统“减少动态效果”时归零。
 import * as React from 'react';
 import type { Fmt } from '@/lib/format';
 import * as F from '@/lib/format';

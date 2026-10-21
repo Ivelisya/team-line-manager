@@ -73,16 +73,45 @@ pub fn resolve_target(ctx: &Ctx, list: &Value, q: &str) -> anyhow::Result<Target
     bail!("「{q}」不在任何团队里，没有访问策略")
 }
 
+/// `policy ls` 的精简对象：与表格同列（另带 id），域名只给个数；节点的 mode / domains / source 是生效值，draft / revision 是节点自己的。
+/// `--json` 输出这些而不是完整的 `GET /policies`（每个节点都带着生效值与草稿生效值的整份域名列表）；某个范围的完整策略用 policy show
+fn ls_data(d: &Value) -> Value {
+    let draft = |p: &Value| match &p["draft"] {
+        Value::Null => Value::Null,
+        x => json!({"mode": x["mode"], "domains": domains_of(&x["domains"]).len()}),
+    };
+    let teams: Vec<Value> = d["teams"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|t| {
+            let p = &t["policy"];
+            let nodes: Vec<Value> = t["nodes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|x| {
+                    let e = &x["effective"];
+                    json!({
+                        "id": x["id"], "name": x["name"], "mode": e["mode"], "domains": domains_of(&e["domains"]).len(), "source": e["source"],
+                        "draft": draft(&x["policy"]), "revision": x["policy"]["revision"],
+                    })
+                })
+                .collect();
+            json!({"id": t["id"], "name": t["name"], "mode": p["mode"], "domains": domains_of(&p["domains"]).len(), "draft": draft(p), "revision": p["revision"], "nodes": nodes})
+        })
+        .collect();
+    json!({"draft_count": d["draft_count"], "teams": teams})
+}
+
 pub fn ls(ctx: &Ctx) -> anyhow::Result<u8> {
-    let d = ctx.c.get("/policies")?;
+    let d = ls_data(&ctx.c.get("/policies")?);
     ctx.emit(&d, || {
         let mut rows: Vec<Vec<String>> = vec![];
         for t in d["teams"].as_array().into_iter().flatten() {
-            let p = &t["policy"];
-            rows.push(vec!["团队".into(), st(t, "/name"), brief(&st(p, "/mode"), domains_of(&p["domains"]).len()), draft_brief(p), st(p, "/revision")]);
+            rows.push(vec!["团队".into(), st(t, "/name"), brief(&st(t, "/mode"), n(t, "/domains") as usize), draft_brief(&t["draft"]), st(t, "/revision")]);
             for node in t["nodes"].as_array().into_iter().flatten() {
-                let (p, e) = (&node["policy"], &node["effective"]);
-                let src = match st(e, "/source").as_str() {
+                let src = match st(node, "/source").as_str() {
                     "team" => "（跟随团队）",
                     "default" => "（默认）",
                     _ => "",
@@ -90,9 +119,9 @@ pub fn ls(ctx: &Ctx) -> anyhow::Result<u8> {
                 rows.push(vec![
                     "节点".into(),
                     format!("  {}", st(node, "/name")),
-                    format!("{}{src}", brief(&st(e, "/mode"), domains_of(&e["domains"]).len())),
-                    draft_brief(p),
-                    st(p, "/revision"),
+                    format!("{}{src}", brief(&st(node, "/mode"), n(node, "/domains") as usize)),
+                    draft_brief(&node["draft"]),
+                    st(node, "/revision"),
                 ]);
             }
         }
@@ -105,9 +134,9 @@ pub fn ls(ctx: &Ctx) -> anyhow::Result<u8> {
     Ok(0)
 }
 
-fn draft_brief(p: &Value) -> String {
-    let d = &p["draft"];
-    if d.is_null() { "-".into() } else { brief(&st(d, "/mode"), domains_of(&d["domains"]).len()) }
+/// `d` 是 `ls_data` 里的草稿：null 或 {mode, domains: 个数}
+fn draft_brief(d: &Value) -> String {
+    if d.is_null() { "-".into() } else { brief(&st(d, "/mode"), n(d, "/domains") as usize) }
 }
 
 pub fn show(ctx: &Ctx, who: &str) -> anyhow::Result<u8> {
@@ -340,8 +369,8 @@ mod tests {
     fn brief_texts() {
         assert_eq!(brief("denylist", 3), "黑名单 · 3 个域名");
         assert_eq!(brief("blocked", 0), "暂停新连接");
-        assert_eq!(draft_brief(&json!({"draft": null})), "-");
-        assert_eq!(draft_brief(&json!({"draft": {"mode": "allowlist", "domains": ["a.com"]}})), "白名单 · 1 个域名");
+        assert_eq!(draft_brief(&Value::Null), "-");
+        assert_eq!(draft_brief(&json!({"mode": "allowlist", "domains": 1})), "白名单 · 1 个域名");
     }
 
     #[test]

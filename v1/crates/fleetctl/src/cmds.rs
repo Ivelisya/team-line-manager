@@ -130,11 +130,13 @@ fn job_kind_cn(k: &str) -> &str {
         "provision_vps" => "上架落地机",
         "provision_proxy" => "上架家宽代理",
         "provision_relay" => "上架线路机",
+        "provision_ip" => "上架同机 IP 节点",
         "attach_entry" => "新增入口",
         "move_entry" => "换线路机",
         "restore_vps" => "恢复落地机",
         "restore_proxy" => "恢复家宽代理",
         "restore_relay" => "恢复线路机",
+        "restore_ip" => "恢复同机 IP 节点",
         "retire" => "退役",
         "purge" => "彻底删除",
         "upgrade_agent" => "升级 agent",
@@ -244,7 +246,7 @@ fn items(mut v: Value) -> anyhow::Result<Value> { v.get_mut("items").map(Value::
 
 pub fn status(ctx: &Ctx) -> anyhow::Result<u8> {
     let ov = ctx.c.get("/overview")?;
-    let inc = items(ctx.c.get_q("/incidents", &[("state", "firing".to_string()), ("limit", "500".to_string())])?)?;
+    let inc = incident_items(ctx, "firing")?;
     let both = json!({"overview": ov, "incidents": inc});
     ctx.emit(&both, || {
         let bucket = |k: &str| {
@@ -273,6 +275,24 @@ pub fn status(ctx: &Ctx) -> anyhow::Result<u8> {
     Ok(0)
 }
 
+/// 告警列表（state = firing | all，最多 500 条），每条是 `incident_item`
+fn incident_items(ctx: &Ctx, state: &str) -> anyhow::Result<Value> {
+    let d = items(ctx.c.get_q("/incidents", &[("state", state.to_string()), ("limit", "500".to_string())])?)?;
+    Ok(Value::Array(d.as_array().map(Vec::as_slice).unwrap_or_default().iter().map(incident_item).collect()))
+}
+
+/// `incidents` / `status` 的一条告警：与表格同列（另带规则 key、对象 id、状态与恢复时间），`--json` 输出这些而不是完整的告警对象。
+/// 对象名取 subject.name：机器已删除时是「（已删除）」
+fn incident_item(i: &Value) -> Value {
+    json!({
+        "id": i["id"], "severity": i["severity"], "rule": i["rule"], "rule_name": i["rule_name"],
+        "subject_id": i["subject_id"], "subject_name": i.pointer("/subject/name"),
+        "summary": i["summary"], "reopen_count": i["reopen_count"], "state": i["state"],
+        "opened_at": i["opened_at"], "resolved_at": i["resolved_at"], "ack_by": i["ack_by"],
+    })
+}
+
+/// `list` 是 `incident_item` 的输出
 fn incident_table(list: &[Value]) -> String {
     let rows: Vec<Vec<String>> = list
         .iter()
@@ -280,13 +300,13 @@ fn incident_table(list: &[Value]) -> String {
             vec![
                 severity_cn(&st(i, "/severity")).to_string(),
                 st(i, "/rule_name"),
-                if i.get("subject_name").is_some() { st(i, "/subject_name") } else { st(i, "/subject/name") },
+                st(i, "/subject_name"),
                 match i["reopen_count"].as_i64() {
                     Some(n) if n > 0 => format!("{}（反复 {} 次）", st(i, "/summary"), n + 1),
                     _ => st(i, "/summary"),
                 },
                 table::ts(&st(i, "/opened_at")),
-                if i["ack_at"].is_null() { "".into() } else { format!("已确认 {}", st(i, "/ack_by")) },
+                if i["ack_by"].is_null() { "".into() } else { format!("已确认 {}", st(i, "/ack_by")) },
                 st(i, "/id"),
             ]
         })
@@ -403,12 +423,22 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
             ("种类", kind_cn(&st(&m, "/kind")).to_string()),
             ("生命周期", format!("{}{}", lifecycle_cn(&st(&m, "/lifecycle")), m["lifecycle_reason"].as_str().map(|r| format!("（{r}）")).unwrap_or_default())),
             ("健康", health_cn(&st(&m, "/health/status")).to_string()),
-            ("IP", format!("{}:{}", st(&m, "/ip"), st(&m, "/ssh_port"))),
+            // 同机 IP 节点没有自己的 SSH（登录宿主机），只写 IP，不拼上宿主机的 SSH 端口
+            ("IP", if m["host_machine"].is_null() { format!("{}:{}", st(&m, "/ip"), st(&m, "/ssh_port")) } else { st(&m, "/ip") }),
+        ];
+        // 同机关系：同机 IP 节点的 SSH、agent、主机读数都是宿主机的；宿主机列出它上面的同机 IP 节点
+        if !m["host_machine"].is_null() {
+            rows.push(("宿主机", format!("{}（SSH、agent、主机读数都用它的）", st(&m, "/host_machine/name"))));
+        }
+        if let Some(xs) = m["ip_nodes"].as_array().filter(|a| !a.is_empty()) {
+            rows.push(("同机 IP 节点", xs.iter().map(|x| st(x, "/name")).collect::<Vec<_>>().join("、")));
+        }
+        rows.extend([
             ("供应商/套餐", format!("{} / {}", st(&m, "/provider/name"), st(&m, "/plan/name"))),
             ("备注", st(&m, "/note")),
             ("创建", table::ts(&st(&m, "/created_at"))),
             ("revision", st(&m, "/revision")),
-        ];
+        ]);
         if !m["agent"].is_null() {
             rows.push(("agent", format!("{}  版本 {}  最近上报 {}", if m["agent"]["online"] == true { "在线" } else { "离线" }, st(&m, "/agent/version"), table::ts(&st(&m, "/agent/last_report_at")))));
         }
@@ -584,7 +614,7 @@ pub fn series(ctx: &Ctx, machine: &str, range: &str, metric: &str) -> anyhow::Re
 }
 
 pub fn incidents(ctx: &Ctx, all: bool) -> anyhow::Result<u8> {
-    let d = items(ctx.c.get_q("/incidents", &[("state", if all { "all" } else { "firing" }.to_string()), ("limit", "500".to_string())])?)?;
+    let d = incident_items(ctx, if all { "all" } else { "firing" })?;
     ctx.emit(&d, || {
         let list = d.as_array().cloned().unwrap_or_default();
         if list.is_empty() { "没有告警".to_string() } else { format!("{}\n共 {} 条", incident_table(&list), list.len()) }

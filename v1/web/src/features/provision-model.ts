@@ -9,24 +9,27 @@ export interface Row {
   login_user: string; login_pw: string;
   up_protocol: string; up_host: string; up_port: string; up_user: string; up_pw: string;
   ss_port: string; due_date: string; price: string;
+  /** 同机 IP 节点：add_ip 是单台表单的「在已有机器上添加 IP」开关（批量里随「宿主机」格填没填），host_id 是宿主机 */
+  add_ip: boolean; host_id: string;
   /** 粘贴时没匹配上的文本：字段 → 原文，用于本地报错 */
   unresolved: Record<string, string>;
 }
-export type Field = Exclude<keyof Row, 'id' | 'unresolved' | 'kind'>;
+export type Field = Exclude<keyof Row, 'id' | 'unresolved' | 'kind' | 'add_ip'>;
 
 let rowSeq = 0;
 export const newRow = (p?: Partial<Row>): Row => ({
   id: `r${++rowSeq}`, kind: 'vps', ip: '', ssh_port: '', team_id: '', number: '', label: '', relay_id: '', provider_id: '', plan_id: '', service_ref: '', note: '',
-  login_user: '', login_pw: '', up_protocol: 'socks5', up_host: '', up_port: '', up_user: '', up_pw: '', ss_port: '', due_date: '', price: '', unresolved: {}, ...p,
+  login_user: '', login_pw: '', up_protocol: 'socks5', up_host: '', up_port: '', up_user: '', up_pw: '', ss_port: '', due_date: '', price: '', add_ip: false, host_id: '', unresolved: {}, ...p,
 });
 
-export type ColType = 'text' | 'num' | 'date' | 'kind' | 'team' | 'relay' | 'provider' | 'plan' | 'proto' | 'secret';
+export type ColType = 'text' | 'num' | 'date' | 'kind' | 'host' | 'team' | 'relay' | 'provider' | 'plan' | 'proto' | 'secret';
 export interface Col { key: 'kind' | Field; label: string; w: number; type: ColType; kinds: Kind[]; ph?: string }
 const ALL: Kind[] = ['relay', 'vps', 'proxy'];
 /** 表头顺序即粘贴的列顺序 */
 export const COLS: Col[] = [
   { key: 'kind', label: '类型', w: 104, type: 'kind', kinds: ALL },
   { key: 'ip', label: 'IP', w: 132, type: 'text', kinds: ALL, ph: '198.51.100.20' },
+  { key: 'host_id', label: '宿主机', w: 116, type: 'host', kinds: ['vps'] },
   { key: 'ssh_port', label: 'SSH 端口', w: 84, type: 'num', kinds: ['relay', 'vps'], ph: '22' },
   { key: 'team_id', label: '团队', w: 104, type: 'team', kinds: ['vps', 'proxy'] },
   { key: 'number', label: '编号', w: 76, type: 'num', kinds: ['vps', 'proxy'], ph: '自动' },
@@ -47,11 +50,15 @@ export const COLS: Col[] = [
   { key: 'price', label: '周期费用', w: 96, type: 'text', kinds: ALL },
   { key: 'note', label: '备注', w: 140, type: 'text', kinds: ALL },
 ];
-export const applies = (c: Col, kind: Kind) => c.kinds.includes(kind);
+/** 同机 IP 节点：落地机行打开了「在已有机器上添加 IP」（批量里是填了宿主机） */
+export const isIpNode = (r: Pick<Row, 'kind' | 'add_ip'>) => r.kind === 'vps' && r.add_ip;
+/** 同机 IP 节点不适用的列：SSH 端口、首次登录、SS 端口与供应商都取宿主机的，不带套餐 */
+const HOST_NA = new Set<Col['key']>(['ssh_port', 'login_user', 'login_pw', 'ss_port', 'provider_id', 'plan_id']);
+export const applies = (c: Col, r: Pick<Row, 'kind' | 'add_ip'>) => c.kinds.includes(r.kind) && !(isIpNode(r) && HOST_NA.has(c.key));
 
 const KIND_ALIAS: Record<string, Kind> = { relay: 'relay', 线路机: 'relay', 中转: 'relay', vps: 'vps', 落地机: 'vps', 节点: 'vps', 落地: 'vps', proxy: 'proxy', 家宽: 'proxy', 家宽代理: 'proxy' };
 
-export interface Ctx { teams: Team[]; relays: { id: string; name: string }[]; providers: Provider[]; plans: Plan[] }
+export interface Ctx { teams: Team[]; relays: { id: string; name: string }[]; hosts: { id: string; name: string }[]; providers: Provider[]; plans: Plan[] }
 
 /** 把一个粘贴来的文本单元格写进行：选择型字段按名称匹配 */
 export function setCell(row: Row, col: Col, raw: string, ctx: Ctx): Row {
@@ -61,6 +68,7 @@ export function setCell(row: Row, col: Col, raw: string, ctx: Ctx): Row {
   const find = <T,>(list: T[], pick: (t: T) => string[]) => list.find((t) => pick(t).some((s) => s && s.toLowerCase() === v.toLowerCase()));
   switch (col.type) {
     case 'kind': { const k = KIND_ALIAS[v.toLowerCase()] ?? KIND_ALIAS[v]; if (k) r.kind = k; else if (v) r.unresolved.kind = v; break; }
+    case 'host': { const t = find(ctx.hosts, (x) => [x.name, x.id]); r.host_id = t?.id ?? ''; r.add_ip = !!v; if (v && !t) r.unresolved.host_id = v; break; }
     case 'team': { const t = find(ctx.teams, (x) => [x.name, x.id]); r.team_id = t?.id ?? ''; if (v && !t) r.unresolved.team_id = v; break; }
     case 'relay': { const t = find(ctx.relays, (x) => [x.name, x.id]); r.relay_id = t?.id ?? ''; if (v && !t) r.unresolved.relay_id = v; break; }
     case 'provider': { const t = find(ctx.providers, (x) => [x.name, x.code, x.id]); r.provider_id = t?.id ?? ''; if (v && !t) r.unresolved.provider_id = v; break; }
@@ -72,19 +80,22 @@ export function setCell(row: Row, col: Col, raw: string, ctx: Ctx): Row {
 }
 
 const num = (s: string) => (s.trim() === '' ? undefined : Number(s));
-/** 订阅只带到期日和手填的费用：币种、周期取套餐，账单时区取供应商，都由服务端补 */
+/** 订阅只带到期日和手填的费用：币种、周期取套餐，账单时区取供应商，都由服务端补。
+ *  同机 IP 节点带 host_id，不带它不适用的字段（SSH 端口、登录、SS 端口、供应商、套餐；服务端也会忽略） */
 export function toItem(r: Row): ProvisionItem {
   const it: ProvisionItem = { kind: r.kind, ip: r.ip.trim() };
-  if (r.kind !== 'proxy' && r.ssh_port) it.ssh_port = num(r.ssh_port);
+  const ipNode = isIpNode(r);
+  if (ipNode) it.host_id = r.host_id;
+  if (r.kind !== 'proxy' && r.ssh_port && !ipNode) it.ssh_port = num(r.ssh_port);
   if (r.kind === 'relay') it.label = r.label.trim();
   else { it.team_id = r.team_id; it.number = r.number.trim() === '' ? null : Number(r.number); it.relay_id = r.relay_id; }
-  if (r.provider_id) it.provider_id = r.provider_id;
-  if (r.plan_id) it.plan_id = r.plan_id;
+  if (r.provider_id && !ipNode) it.provider_id = r.provider_id;
+  if (r.plan_id && !ipNode) it.plan_id = r.plan_id;
   if (r.service_ref.trim()) it.service_ref = r.service_ref.trim();
   if (r.note.trim()) it.note = r.note.trim();
-  if (r.kind !== 'proxy' && (r.login_user.trim() || r.login_pw)) it.login = { user: r.login_user.trim() || 'root', password: r.login_pw || undefined };
+  if (r.kind !== 'proxy' && !ipNode && (r.login_user.trim() || r.login_pw)) it.login = { user: r.login_user.trim() || 'root', password: r.login_pw || undefined };
   if (r.kind === 'proxy') it.upstream = { protocol: r.up_protocol === 'http' ? 'http' : 'socks5', host: r.up_host.trim(), port: Number(r.up_port) || 0, username: r.up_user.trim() || undefined, password: r.up_pw || undefined };
-  if (r.kind === 'vps' && r.ss_port) it.ss_port = num(r.ss_port);
+  if (r.kind === 'vps' && r.ss_port && !ipNode) it.ss_port = num(r.ss_port);
   if (r.due_date) it.subscription = { due_date: r.due_date, price_cents: r.price.trim() ? Math.round(Number(r.price) * 100) : undefined };
   return it;
 }
@@ -93,12 +104,15 @@ export function toItem(r: Row): ProvisionItem {
 export function localIssues(r: Row): { key: keyof Row; msg: string }[] {
   const e: { key: keyof Row; msg: string }[] = [];
   const add = (key: keyof Row, msg: string) => e.push({ key, msg });
-  for (const [k, v] of Object.entries(r.unresolved)) { const c = COLS.find((x) => x.key === k); add(k as keyof Row, `${c?.label ?? k}「${v}」不存在`); }
+  const col = (k: Col['key']) => COLS.find((c) => c.key === k)!;
+  // 不适用的格子（灰格：类型不对、同机 IP 节点沿用宿主机的）不提交，里面残留的内容不报错
+  for (const [k, v] of Object.entries(r.unresolved)) { const c = col(k as Col['key']); if (applies(c, r)) add(k as keyof Row, `${c.label}「${v}」不存在`); }
   if (!r.ip.trim()) add('ip', '请填写 IP');
+  if (isIpNode(r) && !r.host_id && !r.unresolved.host_id) add('host_id', '请选择宿主机');
   if (r.kind === 'relay' && !r.label.trim()) add('label', '请填写线路机名');
   if (r.kind !== 'relay') { if (!r.team_id && !r.unresolved.team_id) add('team_id', '请选择团队'); if (!r.relay_id && !r.unresolved.relay_id) add('relay_id', '请选择挂载的线路机'); }
   if (r.number.trim() !== '' && (!/^\d+$/.test(r.number.trim()) || Number(r.number) < 1 || Number(r.number) > 999)) add('number', '编号应为 1–999 的整数，或留空自动编号');
-  for (const k of ['ssh_port', 'ss_port', 'up_port'] as const) if (r[k].trim() !== '' && !/^\d+$/.test(r[k].trim())) add(k, `${COLS.find((c) => c.key === k)!.label}应为整数`);
+  for (const k of ['ssh_port', 'ss_port', 'up_port'] as const) if (applies(col(k), r) && r[k].trim() !== '' && !/^\d+$/.test(r[k].trim())) add(k, `${col(k).label}应为整数`);
   if (r.kind === 'proxy' && (!r.up_host.trim() || !r.up_port.trim())) add(r.up_host.trim() ? 'up_port' : 'up_host', '家宽代理要填上游协议（socks5/http）、主机和端口');
   if (r.due_date && !/^\d{4}-\d{2}-\d{2}$/.test(r.due_date)) add('due_date', '到期日格式应为 YYYY-MM-DD');
   if (r.price.trim() && !isFinite(Number(r.price))) add('price', '费用应为数字');

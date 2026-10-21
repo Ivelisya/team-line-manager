@@ -8,7 +8,7 @@ import { ChevronRight } from 'lucide-react';
 import { m } from 'motion/react';
 import { cn } from '@/lib/utils';
 import { SPRING } from '@/lib/motion';
-import { sharedObserver } from '@/lib/sharedObserver';
+import { watchSize } from '@/lib/sharedObserver';
 
 /* ---- Tabs（下划线页签）：当前页签底下的 2px 下划线是一个共享 layoutId 的 motion 元素，切换时在页签之间滑动 ---- */
 const TabsCtx = React.createContext<{ id: string; value: string | undefined } | null>(null);
@@ -124,10 +124,7 @@ export function TipHost() {
   );
 }
 
-// 全站共享一个 ResizeObserver：表格里每个单元格一个 Trunc，不必各建一个观察器
-const watchSize = sharedObserver<ResizeObserverEntry>((cb) => new ResizeObserver(cb));
-
-/** 单行省略文本：只有真的被截断时悬停才出现完整内容的提示 */
+/** 单行省略文本：只有真的被截断时悬停才出现完整内容的提示（表格里每个单元格一个，共用一个 ResizeObserver） */
 export function Trunc({ children, text, className }: { children: React.ReactNode; text?: string; className?: string }) {
   const ref = React.useRef<HTMLSpanElement>(null);
   const [cut, setCut] = React.useState(false);

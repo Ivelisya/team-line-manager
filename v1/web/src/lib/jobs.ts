@@ -4,8 +4,9 @@ import { ENTRY_LABEL } from './sort';
 import { dtFull } from './format';
 
 const JOB_KIND: Record<string, string> = {
-  provision_vps: '上架落地机', provision_proxy: '上架家宽代理', provision_relay: '上架线路机',
-  attach_entry: '新增入口', move_entry: '换线路机', restore_vps: '恢复落地机', restore_proxy: '恢复家宽代理', restore_relay: '恢复线路机', retire: '退役', purge: '彻底删除', upgrade_agent: '升级 agent',
+  provision_vps: '上架落地机', provision_proxy: '上架家宽代理', provision_relay: '上架线路机', provision_ip: '上架同机 IP 节点',
+  attach_entry: '新增入口', move_entry: '换线路机', restore_vps: '恢复落地机', restore_proxy: '恢复家宽代理', restore_relay: '恢复线路机', restore_ip: '恢复同机 IP 节点',
+  retire: '退役', purge: '彻底删除', upgrade_agent: '升级 agent',
 };
 export const jobKindLabel = (k: string) => JOB_KIND[k] ?? k;
 
@@ -43,14 +44,17 @@ type OutFmt = (v: unknown) => string;
 const text: OutFmt = (v) => String(v);
 const unit = (u: string): OutFmt => (v) => `${v} ${u}`;
 const yesNo = (y: string, n: string): OutFmt => (v) => (v ? y : n);
-const CLEANUP_SS: Record<string, string> = { gone: '已停止', still_listening: '仍在监听 8388' };
+// 输出里没有端口号：落地机是 8388，同机 IP 节点是它自己的 SS 端口，统一不写具体端口
+const CLEANUP_SS: Record<string, string> = { gone: '已停止', still_listening: '仍在监听 SS 端口' };
 /** [中文标签, 取值格式]；null = 内部 id，不显示 */
 const OUTPUT: Record<string, [string, OutFmt] | null> = {
   // preflight
   host_key: ['主机指纹', text], arch: ['架构', text], os: ['系统', text], kernel: ['内核', text], mem_mb: ['内存', unit('MB')],
+  // ip_check（同机 IP 节点，在宿主机上执行；egress_ip 同出口验收）：local_ips 是逗号加空格分隔的字符串
+  ss_port: ['SS 端口', text], local_ips: ['宿主机本机 IP', text],
   // bootstrap
   method: ['登录方式', () => '用 root 密码推送了中控公钥'],
-  // converge / converge_relay
+  // converge / converge_relay（同机 IP 节点不做系统基线，bbr 为 null、不显示）
   bbr: ['BBR', yesNo('已启用', '未启用')], nft_relays: ['防火墙放行', text], ssserver_updated: ['ssserver', yesNo('已更新', '已是最新')], xray: ['Xray 版本', text],
   // agent / wait_report
   binary_updated: ['agent 程序', yesNo('已更新', '已是最新')], token_id: null,

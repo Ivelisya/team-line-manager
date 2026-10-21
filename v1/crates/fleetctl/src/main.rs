@@ -23,7 +23,7 @@ use std::process::ExitCode;
     name = "fleetctl",
     version,
     about = "团队线路管理 运维命令行",
-    after_help = "连接配置：环境变量 FLEET_URL、FLEET_TOKEN，或 `fleetctl login` 写入的配置文件。\n<机器> 可以写 机器 id、显示名（团队1-06）、线路机名、IP。\n加 --json 输出一行 JSON：ls / entries 是与表格同列的精简对象（单台完整视图用 show），其余是 API 返回的 data 原样；错误一律走 stderr 且退出码非 0。"
+    after_help = "连接配置：环境变量 FLEET_URL、FLEET_TOKEN，或 `fleetctl login` 写入的配置文件。\n<机器> 可以写 机器 id、显示名（团队1-06）、线路机名、IP。\n加 --json 输出一行 JSON：ls / entries / incidents / policy ls 是与表格同列的精简对象（单台完整视图用 show、policy show），其余是 API 返回的 data 原样；错误一律走 stderr 且退出码非 0。"
 )]
 struct Cli {
     /// 输出 JSON（给脚本和 AI）
@@ -122,7 +122,7 @@ fn keys_user(c: &KeysCmd) -> Option<&str> {
 
 #[derive(Args)]
 struct ProvisionArgs {
-    /// 批量文件（JSON 数组或 {"items":[…]}；条目里 team/relay/provider/plan 可直接写名字）
+    /// 批量文件（JSON 数组或 {"items":[…]}；条目里 team/relay/provider/plan/host 可直接写名字）
     #[arg(long)]
     file: Option<PathBuf>,
     /// vps | proxy | relay
@@ -130,6 +130,10 @@ struct ProvisionArgs {
     kind: Option<String>,
     #[arg(long)]
     ip: Option<String>,
+    /// 同机 IP 节点：加在这台已有的落地机（宿主机）上，用它的 SSH 与 agent；--ip 是新的出口 IP（要已配在宿主机网卡上），
+    /// 不用填 --ssh-port / --ssh-password-env / --ss-port（SS 端口由中控分配），供应商取宿主机的
+    #[arg(long)]
+    host: Option<String>,
     #[arg(long)]
     ssh_port: Option<u16>,
     /// 团队名（节点）
@@ -540,6 +544,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
                 file: a.file,
                 kind: a.kind,
                 ip: a.ip,
+                host: a.host,
                 ssh_port: a.ssh_port,
                 team: a.team,
                 number: a.number,

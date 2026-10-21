@@ -62,6 +62,17 @@ export function Shell() {
   const firing = useIncidents('firing').data?.total ?? 0;
 
   React.useEffect(() => { setNavOpen(false); }, [loc.pathname]);
+  // 窄屏侧栏（左侧抽屉）开着时 Esc 收起，焦点回到汉堡按钮；上面叠着对话框、命令面板或节点抽屉时 Esc 归它们
+  const navBtn = React.useRef<HTMLButtonElement>(null);
+  React.useEffect(() => {
+    if (!navOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || document.querySelector('.dialog, .cmd-dialog, .drawer')) return;
+      setNavOpen(false); navBtn.current?.focus();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [navOpen]);
   // 换页（不是前进/后退）回到顶部：窗口滚动是全站共用的，不重置的话新页面会停在上一页的滚动位置
   const section = loc.pathname.split('/')[1] ?? '';
   const navType = useNavigationType();
@@ -112,7 +123,7 @@ export function Shell() {
       <div className="app" data-nav={navOpen ? 'open' : 'closed'}>
         <button className="skip-link" onClick={() => document.getElementById('main')?.focus()}>跳到内容</button>
         <header className="topbar">
-          <button className="top-btn nav-toggle" aria-label="打开导航" onClick={() => setNavOpen((o) => !o)}><Menu size={18} /></button>
+          <button ref={navBtn} className="top-btn nav-toggle" aria-label="导航菜单" aria-expanded={navOpen} aria-controls="sidebar" onClick={() => setNavOpen((o) => !o)}><Menu size={18} /></button>
           <NavLink to="/" className="brand"><span className="brand-mark"><Boxes size={14} /></span>团队线路管理</NavLink>
           <PaletteTrigger />
           <div className="topbar-right">
@@ -140,7 +151,7 @@ export function Shell() {
           </div>
         </header>
   
-        <aside className="sidebar" aria-label="主导航">
+        <aside className="sidebar" id="sidebar" aria-label="主导航">
           <nav><ul className="nav-list">
             {NAV.map((n) => (
               <li key={n.to}>

@@ -1,13 +1,16 @@
 // 机器详情抽屉：概览 / 连接质量 / 流量 / 主机 / 费用 / 管理。开关由 URL 的 ?m= 控制。
 import * as React from 'react';
 import { Link } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/dialog';
 import { Tabs, TabsList, TabsTrigger, Tip } from '@/components/ui/overlays';
+import { IconButton } from '@/components/ui/button';
 import { ErrorBoundary } from '@/components/app/ErrorBoundary';
 import { Skeleton } from '@/components/ui/skeleton';
-import type { MachineView } from '@/lib/types';
+import type { AuditEntry, MachineView } from '@/lib/types';
 import { useMachine, useAudit } from '@/lib/queries';
-import { DRAWER_TABS, useDrawer, type DrawerTab } from '@/lib/drawer';
+import { DRAWER_TABS, drawerSiblings, useDrawer, type DrawerTab } from '@/lib/drawer';
 import { useHeld } from '@/lib/useHeld';
 import * as F from '@/lib/format';
 import { KIND_LABEL } from '@/lib/sort';
@@ -25,7 +28,8 @@ const HostTab = React.lazy(() => import('./DrawerCharts').then((m) => ({ default
 const AccessTab = React.lazy(() => import('./AccessTab').then((m) => ({ default: m.AccessTab })));
 
 export function NodeDrawer() {
-  const { id, tab: liveTab, setTab, close } = useDrawer();
+  const { id, tab: liveTab, setTab, switchTo, close } = useDrawer();
+  const qc = useQueryClient();
   const q = useMachine(id);
   // 关闭时 id/tab 已从地址里清掉，但抽屉还要播滑出动画：沿用最后一次的机器、页签和 id，别闪成加载骨架或跳回“概览”
   const m = useHeld(id, q.data);
@@ -41,6 +45,16 @@ export function NodeDrawer() {
     if (bodyRef.current) bodyRef.current.scrollTop = 0;
     tabsRef.current?.querySelector('[data-state="active"]')?.scrollIntoView({ inline: 'nearest', block: 'nearest' });
   }, [shownId, tab]);
+  // 标签页标题换成这台机器的名字，关上抽屉恢复
+  const titleName = id ? m?.name : undefined;
+  React.useEffect(() => {
+    if (!titleName) return;
+    const prev = document.title;
+    document.title = `${titleName} · 团队线路管理`;
+    return () => { document.title = prev; };
+  }, [titleName]);
+  // 上一台 / 下一台：同 [ ] 键，用沿用的 id，关闭动画期间按钮不消失
+  const sib = drawerSiblings(qc, shownId);
   return (
     <Sheet open={!!id} onOpenChange={(o) => !o && close()}>
       <SheetContent aria-describedby={undefined}>
@@ -57,8 +71,14 @@ export function NodeDrawer() {
               <KindIcon kind={m.kind} />
               <div className="m-head" style={{ flex: 1 }}>
                 <div className="m-head-row"><SheetTitle className="drawer-title ellipsis">{m.name}</SheetTitle><HealthPill m={m} />{m.kind !== 'vps' && <Chip variant="neutral">{KIND_LABEL[m.kind]}</Chip>}</div>
-                <SheetDescription className="ellipsis" style={{ margin: 0, color: 'var(--fg-2)', fontSize: 12 }}>{m.ip} · {m.provider?.name ?? '未设供应商'} · {m.plan?.name ?? '未设套餐'}</SheetDescription>
+                <SheetDescription className="ellipsis" style={{ margin: 0, color: 'var(--fg-2)', fontSize: 12 }}>{m.ip} · {m.provider?.name ?? '未设供应商'} · {m.host_machine ? `同机 · ${m.host_machine.name}` : m.plan?.name ?? '未设套餐'}</SheetDescription>
               </div>
+              {sib && (
+                <div className="drawer-nav">
+                  <IconButton label="上一台" tip={false} data-tip="上一台（快捷键 [）" aria-keyshortcuts="[" disabled={!sib.prev} onClick={() => sib.prev && switchTo(sib.prev)}><ChevronLeft size={16} /></IconButton>
+                  <IconButton label="下一台" tip={false} data-tip="下一台（快捷键 ]）" aria-keyshortcuts="]" disabled={!sib.next} onClick={() => sib.next && switchTo(sib.next)}><ChevronRight size={16} /></IconButton>
+                </div>
+              )}
             </header>
             <Tabs value={tab} onValueChange={(v) => setTab(v as DrawerTab)} className="drawer-tabs">
               <TabsList ref={tabsRef}>{DRAWER_TABS.map((t) => <TabsTrigger key={t.value} value={t.value} noPanel>{t.label}</TabsTrigger>)}</TabsList>
@@ -69,17 +89,17 @@ export function NodeDrawer() {
               )}
               {m.lifecycle === 'failed' && (
                 <Note tone="bad">
-                  上架失败{m.lifecycle_reason && <>：{m.lifecycle_reason}</>}。{m.failed_job && <><Link to={`/jobs/${m.failed_job.id}`} className="btn-link" onClick={close} style={{ color: 'var(--accent)' }}>查看作业</Link>，可在作业页重试；</>}也可以在「管理」里退役，释放 IP 与编号。
+                  上架失败{m.lifecycle_reason && <>：{m.lifecycle_reason}</>}。{m.failed_job && <><Link to={`/jobs/${m.failed_job.id}`} className="btn btn-link" onClick={close}>查看作业</Link>，可在作业页重试；</>}也可以在「管理」里退役，释放 IP 与编号。
                 </Note>
               )}
               {m.lifecycle === 'retiring' && m.failed_job && !m.active_job && (
                 <Note tone="bad">
-                  退役失败 · <Link to={`/jobs/${m.failed_job.id}`} className="btn-link" onClick={close} style={{ color: 'var(--accent)' }}>查看作业</Link>。机器停在「退役中」，在作业页从失败的步骤重试即可完成退役。
+                  退役失败 · <Link to={`/jobs/${m.failed_job.id}`} className="btn btn-link" onClick={close}>查看作业</Link>。机器停在「退役中」，在作业页从失败的步骤重试即可完成退役。
                 </Note>
               )}
               {m.active_job && (
                 <Note tone="info">
-                  {jobKindLabel(m.active_job.kind)}进行中。<Link to={`/jobs/${m.active_job.id}`} className="btn-link" onClick={close} style={{ color: 'var(--accent)' }}>查看作业</Link>
+                  {jobKindLabel(m.active_job.kind)}进行中。<Link to={`/jobs/${m.active_job.id}`} className="btn btn-link" onClick={close}>查看作业</Link>
                 </Note>
               )}
               <div key={tab} className="tab-pane">
@@ -125,9 +145,24 @@ function AgentHealthNote({ m }: { m: MachineView }) {
   );
 }
 
+/** 宿主机概览里的一个同机 IP 节点：名称（点开它的抽屉）、IP、状态。用机器列表缓存里的那份，没有时单取这台 */
+function IpNodeLine({ id, name, onOpen }: { id: string; name: string; onOpen: (id: string) => void }) {
+  const n = useMachine(id).data;
+  return (
+    <div className="row" style={{ gap: 8, flexWrap: 'nowrap' }}>
+      <button type="button" className="btn btn-link" onClick={() => onOpen(id)}>{name}</button>
+      {n && <><span className="t-sub num">{n.ip}</span><HealthPill m={n} /></>}
+    </div>
+  );
+}
+
 function OverviewTab({ m }: { m: MachineView }) {
   const audit = useAudit(m.id);
+  const { open } = useDrawer();
   const ps = probeSummary(m);
+  // 同机 IP 节点：SSH 端口、agent 都是宿主机的
+  const h = m.host_machine;
+  const ofHost = h ? '（宿主机的）' : '';
   return (
     <>
       {m.health.reasons.length > 0 && (
@@ -139,19 +174,25 @@ function OverviewTab({ m }: { m: MachineView }) {
       <Section>
         <SectionHeader title="基本信息" />
         <LabelValueGrid>
-          <LabelValue label="类型">{KIND_LABEL[m.kind]}</LabelValue>
+          <LabelValue label="类型">{`${KIND_LABEL[m.kind]}${h ? ' · 同机 IP 节点' : ''}`}</LabelValue>
           <LabelValue label="团队 / 编号">{m.team ? `${m.team.name} / ${m.number != null ? F.pad2(m.number) : '—'}` : '—'}</LabelValue>
           <LabelValue label="IP">{m.ip}</LabelValue>
-          <LabelValue label="SSH 端口">{m.ssh_port}</LabelValue>
+          {h && <LabelValue label="宿主机"><button type="button" className="btn btn-link" onClick={() => open(h.id)}>{h.name}</button></LabelValue>}
+          <LabelValue label="SSH 端口">{`${m.ssh_port}${ofHost}`}</LabelValue>
           <LabelValue label="供应商">{m.provider?.name}</LabelValue>
-          <LabelValue label="套餐">{m.plan?.name}</LabelValue>
+          <LabelValue label="套餐">{m.plan?.name ?? (h ? '不带套餐' : undefined)}</LabelValue>
           <LabelValue label="服务编号">{m.service_ref}</LabelValue>
           <LabelValue label="生命周期"><LifecyclePill lc={m.lifecycle} />{m.lifecycle_reason && <span className="t-sub"> {m.lifecycle_reason}</span>}</LabelValue>
           <LabelValue label="上架时间">{F.dtFull(m.activated_at)}</LabelValue>
           {m.retired_at && <LabelValue label="退役时间">{F.dtFull(m.retired_at)}</LabelValue>}
-          <LabelValue label="agent">{m.agent ? `${m.agent.version ?? '版本未知'} · ${m.agent.last_report_at ? F.ago(m.agent.last_report_at) : '尚未上报'}` : '无（家宽代理不装 agent）'}</LabelValue>
+          <LabelValue label="agent">{m.agent ? `${m.agent.version ?? '版本未知'} · ${m.agent.last_report_at ? F.ago(m.agent.last_report_at) : '尚未上报'}${ofHost}` : '无（家宽代理不装 agent）'}</LabelValue>
           {/* 只数经节点的入口：直出入口没有 TCP 探测 */}
           <LabelValue label="入口探测">{ps.total ? `${ps.tcpOk}/${ps.total} 连通` : '—'}</LabelValue>
+          {m.ip_nodes.length > 0 && (
+            <LabelValue label="同机 IP 节点" className="span-2" wrap>
+              <div className="stack-sm" style={{ marginTop: 2 }}>{m.ip_nodes.map((x) => <IpNodeLine key={x.id} id={x.id} name={x.name} onOpen={open} />)}</div>
+            </LabelValue>
+          )}
           {m.note && <LabelValue label="备注" className="span-2" wrap>{m.note}</LabelValue>}
         </LabelValueGrid>
         <AgentHealthNote m={m} />
@@ -175,9 +216,35 @@ function OverviewTab({ m }: { m: MachineView }) {
       <Section>
         <SectionHeader title="最近操作" />
         {audit.data?.length ? (
-          <ul className="reason-list">{audit.data.map((a) => <li key={a.id}><span className="dot" data-tone="neutral" /><span><b style={{ fontWeight: 500 }}>{a.title}</b> <span className="t-sub">{a.summary} · {a.actor} · {F.ago(a.ts)}</span></span></li>)}</ul>
+          <ul className="audit-list">
+            {audit.data.map((a) => {
+              const p = auditParts(a);
+              return (
+                <li key={a.id}>
+                  <span className="dot" data-tone="neutral" />
+                  <div className="audit-body">
+                    <div className="audit-head">
+                      <span className="audit-what"><b>{a.title}</b>{p.target && <> {p.target}</>}</span>
+                      <span className="audit-meta">{a.actor} · <span data-tip={F.dtFull(a.ts)}>{F.ago(a.ts)}</span></span>
+                    </div>
+                    {p.rest && <div className="audit-detail mono" data-tip={p.rest}>{p.rest}</div>}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
         ) : audit.isError ? <ErrorNote error={audit.error} onRetry={() => void audit.refetch()} /> : <div className="hint">{audit.isLoading ? '加载中…' : '暂无记录'}</div>}
       </Section>
     </>
   );
+}
+
+/** 一条操作记录拆成对象与详情：摘要以记录里的显示名开头时（上架、执行命令、换线路机…），名字接在动作后面，其余是详情。
+ *  名字保持记录时的样子，之后改过名也不跟着变 */
+function auditParts(a: AuditEntry): { target: string; rest: string } {
+  const name = (a.detail as { name?: unknown } | null)?.name;
+  if (typeof name !== 'string' || !name) return { target: '', rest: a.summary };
+  if (a.summary === name) return { target: name, rest: '' };
+  if (a.summary.startsWith(`${name} · `)) return { target: name, rest: a.summary.slice(name.length + 3) };
+  return { target: '', rest: a.summary };
 }

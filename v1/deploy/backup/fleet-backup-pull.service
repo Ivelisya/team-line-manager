@@ -1,0 +1,12 @@
+# /etc/systemd/system/fleet-backup-pull.service — 家里 PVE：从生产中控取最新一份备份（由 .timer 每天触发，也可手动 systemctl start）
+# 脚本装在 /usr/local/sbin/fleet-backup-pull.sh；FLEET_BACKUP_HOST 写中控的 SSH 地址（域名走 CDN 时写 IP，端口写进 /root/.ssh/config）。
+[Unit]
+Description=fleet: pull latest production backup to /var/backups/fleet-prod
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=FLEET_BACKUP_HOST=fleet-backup@fleet.kismet613.com
+ExecStart=/bin/bash /usr/local/sbin/fleet-backup-pull.sh
+TimeoutStartSec=1h

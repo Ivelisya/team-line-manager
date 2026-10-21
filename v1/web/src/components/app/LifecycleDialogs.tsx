@@ -14,7 +14,7 @@ import { entryState, Note } from './primitives';
 import { ConfirmDialog } from './dialogs';
 import { RetireDialog } from './RetireDialog';
 
-const SHARE_WARN = '换线完成后分享链接会变：需要把新的分享链接发给客户端（作业完成的通知里有“复制新分享链接”）。';
+const SHARE_WARN = '换线完成后分享链接会变：需要把新的分享链接发给客户端（作业完成的通知里有「复制新分享链接」）。';
 
 /** 节点当前在用的入口（可以被换走的）。线路机的直出入口不搬：退役线路机时随之摘除 */
 export const movableEntries = (m: MachineView) => m.entries.filter((e) => e.lifecycle === 'active' && !e.direct);
@@ -70,7 +70,7 @@ export const EvacuateDialog = resetOnOpen(function EvacuateDialog({ relay, open,
   const hasDirect = relay.entries.some((e) => e.direct);
   return (
     <ConfirmDialog open={open} onOpenChange={onOpenChange} size="md" title={`搬空 ${relay.name}`} confirmLabel={`搬走 ${movable.length} 个节点`} confirmDisabled={!to || movable.length === 0}
-      description="为这台线路机上每个在用入口的节点各建一个“换线路机”作业，搬完后就可以安全退役这台线路机。"
+      description="为这台线路机上每个在用入口的节点各建一个「换线路机」作业，搬完后就可以安全退役这台线路机。"
       onConfirm={async () => {
         const r = await evac.mutateAsync({ id: relay.id, to_relay_id: to });
         toast.ok(`已为 ${r.jobs.length} 个节点提交换线路机作业${r.skipped.length ? `，${r.skipped.length} 个被跳过` : ''}`);
@@ -116,6 +116,8 @@ export const RestoreDialog = resetOnOpen(function RestoreDialog({ m, open, onOpe
   const relays = useRelayChoices().data ?? [];
   const isRelay = m.kind === 'relay';
   const isProxy = m.kind === 'proxy';
+  // 同机 IP 节点：用中控密钥登录宿主机，预检不试 SSH、不要密码、不重置指纹；宿主机不在用时预检的 blockers 里有原因（不能恢复）
+  const host = m.host_machine;
   const [team, setTeam] = React.useState(m.team?.id ?? '');
   const [num, setNum] = React.useState('');
   const [label, setLabel] = React.useState('');
@@ -170,9 +172,9 @@ export const RestoreDialog = resetOnOpen(function RestoreDialog({ m, open, onOpe
 
   return (
     <ConfirmDialog asForm dirty={dirty} open={open} onOpenChange={onOpenChange} size="md" title={`恢复 ${m.name}`} confirmLabel="恢复" confirmDisabled={!ready}
-      description="机器保持原来的 ID（历史、账单、审计都接上），重新走一遍上架的收敛步骤；成功后回到“在用”。失败会停在“上架失败”，可在作业页重试；取消会回到已退役。"
+      description="机器保持原来的 ID（历史、账单、审计都接上），重新走一遍上架的收敛步骤；成功后回到「在用」。失败会停在「上架失败」，可在作业页重试；取消会回到已退役。"
       onConfirm={submit}>
-      {!base.isFetchedAfterMount && <div className="hint">正在预检（会试一下中控密钥能不能登录这台机器，最多十几秒）…</div>}
+      {!base.isFetchedAfterMount && <div className="hint">{host ? '正在预检…' : '正在预检（会试一下中控密钥能不能登录这台机器，最多十几秒）…'}</div>}
       {base.isFetchedAfterMount && base.isError && <Note tone="bad">预检失败：{(base.error as Error).message}</Note>}
       {pv && (
         <div className="stack-sm">
@@ -211,7 +213,7 @@ export const RestoreDialog = resetOnOpen(function RestoreDialog({ m, open, onOpe
           )}
           {!isProxy && needs && (
             needs.password === 'no' ? (
-              <div className="hint span-2">{KEY_LOGIN[b?.ssh?.key_login ?? 'ok']}。</div>
+              <div className="hint span-2">{host ? `同机 IP 节点用中控密钥登录宿主机「${host.name}」，不需要密码；SS 端口会在宿主机上重新分配。` : `${KEY_LOGIN[b?.ssh?.key_login ?? 'ok']}。`}</div>
             ) : (
               <Field className="span-2" label={needs.password === 'required' ? 'root 密码（必填）' : 'root 密码（选填）'}
                 hint={needs.password === 'required' ? `${KEY_LOGIN[b?.ssh?.key_login ?? 'denied']}。密码只用来推一次中控公钥，用完即丢。` : `${KEY_LOGIN[b?.ssh?.key_login ?? 'error'] ?? ''}。中控密钥登录不了时才会用到这个密码。`}>
@@ -220,7 +222,7 @@ export const RestoreDialog = resetOnOpen(function RestoreDialog({ m, open, onOpe
             )
           )}
           <Field label="原因（选填）" className="span-2"><Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="例如：客户续约" /></Field>
-          {!isProxy && <div className="span-2"><CheckRow checked={reset} onChange={setReset}>机器重装过：允许覆盖已记录的主机指纹</CheckRow></div>}
+          {!isProxy && !host && <div className="span-2"><CheckRow checked={reset} onChange={setReset}>机器重装过：允许覆盖已记录的主机指纹</CheckRow></div>}
         </div>
       )}
     </ConfirmDialog>

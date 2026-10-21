@@ -6,9 +6,10 @@ import { cn } from '@/lib/utils';
 import { dueFmt, type Fmt } from '@/lib/format';
 import type { EntryView, HealthReason, Kind, Lifecycle, MachineView } from '@/lib/types';
 import { ENTRY_LABEL, HEALTH_LABEL, HEALTH_TONE, KIND_LABEL, LIFECYCLE_LABEL } from '@/lib/sort';
-import { Tip } from '@/components/ui/overlays';
+import { Tip, Trunc } from '@/components/ui/overlays';
 import { useCountUp } from '@/lib/useCountUp';
-import type { BeatCell } from '@/lib/derive';
+import { hostRel, type BeatCell } from '@/lib/derive';
+import { useDrawer } from '@/lib/drawer';
 import { copyText } from '@/lib/clipboard';
 
 /** 数值 + 灰色小单位 */
@@ -68,6 +69,18 @@ export function Chip({ children, variant, tip, className }: { children: React.Re
 }
 export const Mark = ({ children, tip }: { children: React.ReactNode; tip?: string }) => <span className="mark" data-tip={tip}>{children}</span>;
 
+/** 同机关系标（卡片、环形卡、机器表共用）：同机 IP 节点「同机 · 宿主机名」、宿主机「+N IP」，点击打开对应机器的抽屉——
+ *  宿主机上有几个同机节点时打开宿主机自己（概览里逐个列着）。在表格行里点它不触发行的点击。没有同机关系的机器不渲染（也不订阅地址） */
+type HostTagProps = { id: string; host: MachineView['host_machine']; nodes: MachineView['ip_nodes']; short?: boolean; tabIndex?: number };
+export const HostTag = (p: HostTagProps) => (p.host || p.nodes.length ? <HostTagButton {...p} /> : null);
+function HostTagButton({ id, host, nodes, short, tabIndex }: HostTagProps) {
+  const { open } = useDrawer();
+  const r = hostRel(host, nodes, short)!;
+  const to = host ? host.id : nodes.length === 1 ? nodes[0].id : id;
+  const act = host ? '点击打开宿主机' : nodes.length === 1 ? '点击打开它' : '点击在这台机器的详情里查看';
+  return <button type="button" className="tag" data-c="violet" data-tip={`${r.tip}。${act}`} tabIndex={tabIndex} onClick={(e) => { e.stopPropagation(); open(to); }}>{r.text}</button>;
+}
+
 /** 类型标（原版国旗位）：线路机 / 落地机 / 家宽代理 */
 export function KindIcon({ kind }: { kind: Kind }) {
   const Ic = kind === 'relay' ? Waypoints : kind === 'proxy' ? Home : Server;
@@ -101,8 +114,9 @@ export function CountUp({ value, format }: { value: number | null | undefined; f
   if (value == null) return <>—</>;
   return <>{format ? format(v) : Math.round(v)}</>;
 }
+/** KPI 说明行里的「● 降级 3」：数字的字重、颜色同说明行里的其它数字（home.css .stat-cap .num） */
 export const DotCount = ({ tone, n, label }: { tone: Tone; n: number; label: string }) => (
-  <span className="dotline"><span className="dot" data-tone={tone} />{label} <b className="num" style={{ fontWeight: 600, color: 'var(--fg)' }}>{n}</b></span>
+  <span className="dotline"><span className="dot" data-tone={tone} />{label} <b className="num">{n}</b></span>
 );
 
 /** 表头排序：首次点击按 first 的方向（数值列多为先降序，名称、到期先升序），再点反向，第三次回到默认顺序（null） */
@@ -123,9 +137,10 @@ export function SortHead({ cols, sort, onSort }: { cols: { id: string; header: s
   );
 }
 
-/** 标签/值（唯一实现） */
+/** 标签/值（唯一实现）：值单行显示；字符串值放不下时省略、悬停看全文（IPv6、公网地址），wrap 的折行显示 */
 export function LabelValue({ label, children, wrap, className }: { label: string; children: React.ReactNode; wrap?: boolean; className?: string }) {
-  return <div className={cn('lv', className)}><dt>{label}</dt><dd className={cn(wrap && 'wrap')}>{children ?? '—'}</dd></div>;
+  const v = children ?? '—';
+  return <div className={cn('lv', className)}><dt>{label}</dt><dd className={cn(wrap && 'wrap')}>{typeof v === 'string' && !wrap ? <Trunc>{v}</Trunc> : v}</dd></div>;
 }
 export const LabelValueGrid = ({ children, cols2 }: { children: React.ReactNode; cols2?: boolean }) => <dl className={cn('lv-grid', cols2 && 'cols-2')}>{children}</dl>;
 

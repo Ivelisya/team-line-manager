@@ -16,9 +16,10 @@ const MERGE_MS = 300;
 const LIST_MS = 2000;
 const LISTS = new Set(['machines', 'relays', 'overview', 'jobs']);
 const BACKOFF_MAX = 30_000;
-// 恢复 / 退役预检会真的 SSH 探测机器：重连、resync 的全部失效不带上它们（改选项或重开对话框才重查）
-const SSH_PREVIEWS = new Set(['restore-preview', 'retire-preview']);
-const notProbe = (q: Query) => !SSH_PREVIEWS.has(q.queryKey[0] as string);
+// 重连、resync 的全部失效不带上这几类：恢复 / 退役预检会真的 SSH 探测机器（改选项或重开对话框才重查）；
+// 集群速率历史只用来垫在实时点前面（live.ts 的 seedFleet 只补现有最早点之前的），重取补不上断线的空档，白取
+const NO_RESYNC = new Set(['restore-preview', 'retire-preview', 'overview-series']);
+const resyncable = (q: Query) => !NO_RESYNC.has(q.queryKey[0] as string);
 
 export function useStream(enabled: boolean) {
   const qc = useQueryClient();
@@ -37,7 +38,7 @@ export function useStream(enabled: boolean) {
     const listKeys = new Map<string, unknown[]>();
     let all = false;
 
-    const inv = (queryKey?: unknown[], cancelRefetch = true) => qc.invalidateQueries({ queryKey, predicate: notProbe, refetchType: document.hidden ? 'none' : 'active' }, { cancelRefetch });
+    const inv = (queryKey?: unknown[], cancelRefetch = true) => qc.invalidateQueries({ queryKey, predicate: resyncable, refetchType: document.hidden ? 'none' : 'active' }, { cancelRefetch });
     const flush = () => {
       mergeTimer = undefined;
       if (all) inv();

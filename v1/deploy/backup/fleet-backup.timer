@@ -1,0 +1,10 @@
+# /etc/systemd/system/fleet-backup.timer — 每天北京时间 03:30 备份；错过（关机）则开机后补跑。家里 PVE 04:30 来取
+[Unit]
+Description=fleet-server: daily backup
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 Asia/Shanghai
+Persistent=true
+
+[Install]
+WantedBy=timers.target

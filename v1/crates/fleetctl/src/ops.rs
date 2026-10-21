@@ -38,6 +38,7 @@ pub struct ProvisionOpts {
     pub file: Option<std::path::PathBuf>,
     pub kind: Option<String>,
     pub ip: Option<String>,
+    pub host: Option<String>,
     pub ssh_port: Option<u16>,
     pub team: Option<String>,
     pub number: Option<i32>,
@@ -93,7 +94,7 @@ pub(crate) fn lookup(list: &Value, q: &str, keys: &[&str], what: &str) -> anyhow
     }
 }
 
-/// 把条目里的人类写法（team/relay/provider/plan 名）换成 id；已经是 *_id 的不动
+/// 把条目里的人类写法（team/relay/provider/plan/host 名）换成 id；已经是 *_id 的不动
 fn normalize_item(ctx: &Ctx, item: &mut Value, cache: &mut Cache) -> anyhow::Result<()> {
     let Some(o) = item.as_object_mut() else { bail!("上架条目必须是对象") };
     if let Some(t) = o.remove("team").and_then(|v| v.as_str().map(String::from)) {
@@ -111,6 +112,13 @@ fn normalize_item(ctx: &Ctx, item: &mut Value, cache: &mut Cache) -> anyhow::Res
             bail!("「{r}」不是线路机");
         }
         o.insert("relay_id".into(), m["id"].clone());
+    }
+    if let Some(h) = o.remove("host").and_then(|v| v.as_str().map(String::from)) {
+        let m = ctx.find(&h, Want::Live)?;
+        if m["kind"] != "vps" || !m["host_id"].is_null() {
+            bail!("「{h}」不能当宿主机：宿主机要是普通落地机（不能是线路机、家宽代理或同机 IP 节点）");
+        }
+        o.insert("host_id".into(), m["id"].clone());
     }
     Ok(())
 }
@@ -164,6 +172,7 @@ fn single_item(o: &ProvisionOpts) -> anyhow::Result<Value> {
             m.insert(k.into(), v);
         }
     };
+    put("host", o.host.as_ref().map(|v| json!(v)));
     put("ssh_port", o.ssh_port.map(|v| json!(v)));
     put("team", o.team.as_ref().map(|v| json!(v)));
     put("number", o.number.map(|v| json!(v)));
@@ -244,8 +253,13 @@ pub fn retire(ctx: &Ctx, machine: &str, reason: Option<&str>, no_cleanup: bool, 
     let m = ctx.find(machine, Want::Live)?;
     let (id, name) = (st(&m, "/id"), st(&m, "/name"));
     let pre = ctx.c.get(&format!("/machines/{id}/retire"))?;
+    // 宿主机上的同机 IP 节点一并退役
+    let ip_nodes: Vec<String> = pre["ip_nodes"].as_array().map(|a| a.iter().map(|x| st(x, "/name")).collect()).unwrap_or_default();
     if !ctx.json {
         outln(format!("将退役 {name}（{}）。", st(&m, "/ip")));
+        if !ip_nodes.is_empty() {
+            outln(format!("它上面的同机 IP 节点会一并退役：{}", ip_nodes.join("、")));
+        }
         if let Some(rs) = pre["renames"].as_array().filter(|r| !r.is_empty()) {
             outln("同团队编号会前移：");
             for r in rs {
@@ -253,14 +267,28 @@ pub fn retire(ctx: &Ctx, machine: &str, reason: Option<&str>, no_cleanup: bool, 
             }
         }
     }
-    confirm(&format!("确认退役 {name}？会摘掉入口、停掉机器上的服务"), yes)?;
+    let also = if ip_nodes.is_empty() { String::new() } else { format!("（连同 {}）", ip_nodes.join("、")) };
+    confirm(&format!("确认退役 {name}{also}？会摘掉入口、停掉机器上的服务"), yes)?;
     let mut body = json!({"confirm": name, "cleanup": !no_cleanup});
     if let Some(r) = reason {
         body["reason"] = json!(r);
     }
     let d = ctx.c.post(&format!("/machines/{id}/retire"), &body)?;
-    ctx.emit(&d, || format!("已提交退役作业 {}\n看进度：fleetctl job {} --follow", st(&d, "/job_id"), st(&d, "/job_id")));
-    follow_if(ctx, follow, &st(&d, "/job_id"))
+    let ip_jobs = d["ip_node_jobs"].as_array().cloned().unwrap_or_default();
+    ctx.emit(&d, || {
+        let mut s = format!("已提交退役作业 {}\n看进度：fleetctl job {} --follow", st(&d, "/job_id"), st(&d, "/job_id"));
+        for j in &ip_jobs {
+            s += &format!("\n一并退役 {}：作业 {}", st(j, "/name"), st(j, "/job_id"));
+        }
+        s
+    });
+    let mut code = follow_if(ctx, follow, &st(&d, "/job_id"))?;
+    if follow {
+        for j in &ip_jobs {
+            code = code.max(cmds::follow_job(ctx, &st(j, "/job_id"))?);
+        }
+    }
+    Ok(code)
 }
 
 pub fn purge(ctx: &Ctx, machine: &str, yes: bool, follow: bool) -> anyhow::Result<u8> {
@@ -424,6 +452,22 @@ struct ExecResult {
     data: anyhow::Result<Value>,
 }
 
+/// `--team` 的执行目标：团队里在用的线路机与落地机（家宽代理没有 SSH）。同机 IP 节点登录的是宿主机：按登录的那台机器（host_id，没有就是自己）
+/// 去重，同一台物理机只执行一次——宿主机也在团队里时留宿主机，否则留第一个同机节点
+fn team_targets(all: &[Value], team: &str) -> Vec<ExecTarget> {
+    let members: Vec<&Value> = all.iter().filter(|m| st(m, "/team/name") == team && st(m, "/lifecycle") == "active" && st(m, "/kind") != "proxy").collect();
+    let ids: Vec<String> = members.iter().map(|m| st(m, "/id")).collect();
+    let mut seen = std::collections::HashSet::new();
+    members
+        .into_iter()
+        .filter(|m| match m["host_id"].as_str() {
+            Some(h) => !ids.iter().any(|i| i == h) && seen.insert(h.to_string()),
+            None => true,
+        })
+        .map(|m| ExecTarget { id: st(m, "/id"), name: st(m, "/name") })
+        .collect()
+}
+
 fn run_one(ctx: &Ctx, t: &ExecTarget, command: &str, timeout: u64) -> ExecResult {
     let data = ctx
         .c
@@ -444,9 +488,7 @@ pub fn exec(ctx: &Ctx, o: ExecOpts<'_>) -> anyhow::Result<u8> {
     let all = ctx.machines()?;
     let mut targets: Vec<ExecTarget> = vec![];
     if let Some(team) = o.team {
-        for m in all.iter().filter(|m| st(m, "/team/name") == team && st(m, "/lifecycle") == "active" && st(m, "/kind") != "proxy") {
-            targets.push(ExecTarget { id: st(m, "/id"), name: st(m, "/name") });
-        }
+        targets = team_targets(&all, team);
         if targets.is_empty() {
             bail!("团队「{team}」下没有可执行命令的在用机器");
         }
@@ -664,5 +706,20 @@ mod tests {
         assert!(parse_upstream("ftp://x:1").is_err());
         assert!(parse_upstream("socks5://nohostport").is_err());
         assert!(parse_upstream("socks5://h:abc").is_err());
+    }
+
+    #[test]
+    fn team_exec_runs_once_per_host() {
+        let m = |id: &str, team: &str, kind: &str, lc: &str, host: Option<&str>| json!({"id": id, "name": id, "team": {"name": team}, "kind": kind, "lifecycle": lc, "host_id": host});
+        let all = [
+            m("h", "团队1", "vps", "active", None),
+            m("x", "团队1", "vps", "active", Some("h")),      // 宿主机同在团队里：跳过
+            m("y", "团队1", "vps", "active", Some("other")),  // 宿主机在别的团队：照常执行（登录的是宿主机）
+            m("y2", "团队1", "vps", "active", Some("other")), // 和 y 同一台宿主机：只执行一次
+            m("p", "团队1", "proxy", "active", None),
+            m("r", "团队1", "vps", "retired", None),
+            m("z", "团队2", "vps", "active", None),
+        ];
+        assert_eq!(team_targets(&all, "团队1").iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["h", "y"]);
     }
 }

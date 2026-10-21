@@ -1,6 +1,6 @@
 //! 访问监控：把 access_event 汇总成小时表（每 5 分钟重算当前小时和被标脏的小时，幂等），以及各个查询。
 //!
-//! - 1h 窗口直接查 access_event（原始记录，保留 access_days 天）；24h 及以上查小时汇总表（保留 90 天）。
+//! - 1h 窗口直接查 access_event（原始记录，保留 access_days 天）；24h 及以上查小时汇总表（保留 31 天，窗口最长 30d）。
 //! - 随机子域名合并在库里的 `access_collapse()`（见迁移 0006），汇总和 1h 查询共用同一份规则。
 //! - 目标按 (节点, 目标) 聚合。「来源数」在小时表里是各小时去重数的最大值（跨小时无法精确去重，偏小的近似）。
 
@@ -16,8 +16,10 @@ use uuid::Uuid;
 
 /// 汇总用的咨询锁：同一时刻只让一个汇总在跑（增量累计 total 依赖这点）
 const LOCK_KEY: i64 = 0x6163_6365_7373;
-/// 小时汇总表保留天数
-pub const HOURLY_DAYS: i64 = 90;
+/// 小时汇总表（access_hourly / access_source_hourly / access_source_late）保留天数：查询窗口最长 30d，多留 1 天
+pub const HOURLY_DAYS: i64 = 31;
+/// 目标首次 / 最近出现（access_target_seen）按最近出现保留的天数：「新目标」靠它判断是不是第一次出现，比小时表留得久
+const TARGET_SEEN_DAYS: i64 = 90;
 
 // ── 汇总 ─────────────────────────────────────────────────────────────────────
 
@@ -113,15 +115,16 @@ pub async fn backfill(db: &PgPool, access_days: u32) -> anyhow::Result<()> {
     rollup_since(db, from).await
 }
 
-/// 清理 90 天前的汇总
+/// 清理过期的汇总：小时表 HOURLY_DAYS 天前的小时（脏标记同），目标出现记录 TARGET_SEEN_DAYS 天没再出现的
 pub async fn prune(db: &PgPool) -> anyhow::Result<()> {
-    let cutoff = OffsetDateTime::now_utc() - Duration::days(HOURLY_DAYS);
-    for s in [
-        "delete from access_hourly where hour < $1",
-        "delete from access_source_hourly where hour < $1",
-        "delete from access_target_seen where last_seen < $1",
-        "delete from access_source_late where hour < $1",
-        "delete from access_dirty where hour < $1",
+    let now = OffsetDateTime::now_utc();
+    let (hourly, seen) = (now - Duration::days(HOURLY_DAYS), now - Duration::days(TARGET_SEEN_DAYS));
+    for (s, cutoff) in [
+        ("delete from access_hourly where hour < $1", hourly),
+        ("delete from access_source_hourly where hour < $1", hourly),
+        ("delete from access_target_seen where last_seen < $1", seen),
+        ("delete from access_source_late where hour < $1", hourly),
+        ("delete from access_dirty where hour < $1", hourly),
     ] {
         sqlx::query(s).bind(cutoff).execute(db).await?;
     }

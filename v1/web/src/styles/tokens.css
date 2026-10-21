@@ -38,7 +38,7 @@
   --on-accent: #ffffff;
   --accent-soft: #e3e4fb;               /* N 侧栏选中胶囊底 --accent-4（用户喜欢的“软靛蓝胶囊”）；也用于顶栏图标按钮底、已选筛选 chip、命令面板当前项 */
   --accent-soft-fg: color-mix(in srgb, var(--accent) 86%, #000); /* N 选中字 #5961dc，加深到 ≥4.5:1 */
-  --focus: color-mix(in srgb, var(--accent) 55%, transparent);   /* 焦点环 2px（H 3px 20% 光环太淡，dna-home I3） */
+  --focus: color-mix(in srgb, var(--accent) 75%, transparent);   /* 焦点环 2px：强调色 75%，白底约 3.3:1（粉紫 3.7:1）、暗色卡片上 3.3:1 以上，过 3:1；原 55% 只有 2.3–2.5:1（H 3px 20% 光环太淡，dna-home I3） */
   --focus-halo: color-mix(in srgb, var(--accent) 20%, transparent); /* H/O 输入框聚焦 3px 光环 accent 20% */
 
   /* ---------- 5. 状态（点/线/图标用本色，字用加深一级，底 10%） ---------- */
@@ -65,8 +65,7 @@
   /* ---------- 7. 字体 ---------- */
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Hiragino Sans GB",
     "Microsoft YaHei", system-ui, sans-serif;                  /* H refined.css:3 body / O style.css:127 */
-  --font-num: "Inter Variable", "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui,
-    sans-serif;                                                 /* H --font-numeric（O/N 的系统字数字统一到它） */
+  --font-num: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif; /* H --font-numeric：系统字体 + --num-variant 等宽数字。原先首选的 Inter 没打包、用户机器上也没装，等于没写 */
   --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace; /* 只给 UUID 前缀、令牌、指纹、日志正文 */
   --num-variant: tabular-nums slashed-zero;                     /* H 全部数字 */
 
@@ -179,7 +178,7 @@
   --dur-1: 140ms;                       /* 悬停与颜色等原地变化；锚定弹层、顶部面板的退场 */
   --dur-2: 220ms;                       /* 浮层与面板进场、松开回弹、悬停上浮、页签内容；抽屉与 toast 的退场 */
   --dur-3: 340ms;                       /* 边缘抽屉滑入（节点抽屉、窄屏侧栏） */
-  --dur-data: 450ms;                    /* 读数变化：格条、心跳格、进度线、圆环、曲线展开、KPI 滚数（lib/useCountUp 读它） */
+  --dur-data: 450ms;                    /* 数据图形：格条首次逐格点亮、圆环进场、进度线、曲线展开、KPI 滚数（lib/useCountUp 读它）。格条、圆环、心跳格之后的读数变化不过渡 */
   --dur-loop: 2s;                       /* 循环的统一节拍：呼吸点、作业徽标、状态胶囊脉冲、骨架、步骤环。改这里要同步 NodeCard.tsx LiveDot 的 2000（按它对齐呼吸相位） */
   --ease-out: cubic-bezier(0.32, 0.72, 0, 1); /* 苹果式先快后缓：所有进场、移动到位、回弹 */
   --ease-std: cubic-bezier(0.4, 0, 0.2, 1);   /* 原地状态变化（颜色、透明度）、退场 */
@@ -246,7 +245,7 @@
   --accent-solid: #5b5bd6;
   --accent-soft: #303553;               /* N 暗色选中胶囊 */
   --accent-soft-fg: #a5a8ff;            /* N #747bef 提亮到 ≥4.5:1 */
-  --focus: color-mix(in srgb, var(--accent) 65%, transparent);
+  --focus: color-mix(in srgb, var(--accent) 75%, transparent);  /* 65% 在卡片 #1c1c1f 上只有 2.8:1 */
   --focus-halo: color-mix(in srgb, var(--accent) 28%, transparent);
   --ok: #22c55e;      --ok-text: #4ade80;
   --warn: #f59e0b;    --warn-text: #fbbf24;
@@ -277,7 +276,7 @@
   --fg: #2a0b3d; --fg-2: #6b5e72; --fg-3: #a397a8;
   --accent: #8e3bb0; --accent-strong: #43195c; --accent-solid: #2a0b3d; --on-accent: #ffffff;
   --accent-soft: #f3e6f5; --accent-soft-fg: #5b1e70;
-  --focus: color-mix(in srgb, var(--accent) 55%, transparent);
+  --focus: color-mix(in srgb, var(--accent) 75%, transparent);
   --focus-halo: color-mix(in srgb, var(--accent) 20%, transparent);
   --chart-1: #8e3bb0;
   --grad-soft: linear-gradient(90deg, #f3e6f5 0%, #fbe1f2 100%);
@@ -295,7 +294,7 @@
   --fg: #f4f4f5; --fg-2: #a1a1aa; --fg-3: #71717a;
   --accent: #d9a6ea; --accent-strong: #7a2f92; --accent-solid: #8f3aa9; --on-accent: #ffffff;
   --accent-soft: #3a2445; --accent-soft-fg: #f3c8f6;
-  --focus: color-mix(in srgb, var(--accent) 65%, transparent);
+  --focus: color-mix(in srgb, var(--accent) 75%, transparent);
   --focus-halo: color-mix(in srgb, var(--accent) 28%, transparent);
   --chart-1: #d9a6ea;
   --grad-soft: linear-gradient(90deg, #3a2445 0%, #4a2447 100%);

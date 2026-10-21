@@ -2,7 +2,7 @@ import * as React from 'react';
 import { CheckCircle2, Info, X, XCircle } from 'lucide-react';
 import { m } from 'motion/react';
 import { cn } from '@/lib/utils';
-import { SPRING } from '@/lib/motion';
+import { SPRING, durMs } from '@/lib/motion';
 
 // 堆叠式通知：toast.ok('已保存') / toast.err(error) / toast.show({ tone, title, text, action })。操作名与按钮名一致（“保存” → “已保存”）。
 // 同样的消息在显示期间只叠一次（右上角计数）；鼠标停在上面时暂停计时；错误用 role="alert"。
@@ -19,8 +19,6 @@ export const toast = {
   show: (t: ToastInput) => push?.(t),
 };
 
-/** 离场过渡时长：读 .toast 退场过渡所用的 --dur-2 令牌（减弱动效时是 0ms） */
-const leaveMs = () => parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--dur-2'));
 
 const ICON = { ok: CheckCircle2, bad: XCircle, info: Info } as const;
 const LIFE = { ok: 3600, info: 5000, bad: 7000 } as const;
@@ -60,7 +58,7 @@ export function Toaster() {
   const seq = React.useRef(0);
   const close = React.useCallback((id: number) => {
     setList((l) => l.map((x) => (x.id === id ? { ...x, leaving: true } : x)));
-    setTimeout(() => setList((l) => l.filter((x) => x.id !== id)), leaveMs());
+    setTimeout(() => setList((l) => l.filter((x) => x.id !== id)), durMs('--dur-2')); // 等 .toast 的退场过渡（--dur-2，减弱动效时 0）播完再卸载
   }, []);
   React.useEffect(() => {
     push = (t) => setList((l) => {

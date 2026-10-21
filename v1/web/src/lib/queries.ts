@@ -5,7 +5,8 @@ import { useCallback } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { del, get, patch, post, put } from './api';
 import { collator, makeDefaultCompare } from './sort';
-import type { ApiKey, Incident, Job, JobSummary, Paged, JobLog, MachineView, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RestoreBody, RestorePreview, MoveResult, EvacuateResult, ProbeBeats, SeriesResp, Silence, Subscription, Team, AuditEntry, NotifyChannel, NotifyLogEntry } from './types';
+import { quotaTight } from './derive';
+import type { ApiKey, Incident, Job, JobSummary, Paged, JobLog, MachineView, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RetireResult, RestoreBody, RestorePreview, MoveResult, EvacuateResult, ProbeBeats, SeriesResp, Silence, Subscription, Team, AuditEntry, NotifyChannel, NotifyLogEntry } from './types';
 
 export const useMe = () => useQuery({ queryKey: ['me'], queryFn: () => get<{ username: string }>('/auth/me'), retry: false, staleTime: 5 * 60_000 });
 // 团队、套餐带着由机器算出来的台数（node_count / machine_count），机器增减不发 catalog 事件，仍按时间过期；供应商只随 catalog 事件变
@@ -37,6 +38,15 @@ function useMachinesPicked<T>(pick: (m: MachineView) => T) {
 }
 export const useMachineBriefs = () => useMachinesPicked(brief);
 export const useMachineLabels = () => useMachinesPicked(label);
+/** 上架页「在已有机器上添加 IP」的宿主机候选：在用、自身不是同机 IP 节点的落地机，带出它的团队、线路机（第一个入口的）、SSH 端口与供应商。
+ *  同一份机器列表缓存，结果做结构共享：推送只改读数时引用不变（批量网格的 memo 不被击穿） */
+export interface HostChoice { id: string; name: string; team_id: string; relay_id: string; ssh_port: number; provider: string | null }
+const hostChoices = (d: MachineView[]) => d.filter((m) => m.kind === 'vps' && m.lifecycle === 'active' && !m.host_machine)
+  .map((m): HostChoice => ({ id: m.id, name: m.name, team_id: m.team?.id ?? '', relay_id: m.entries[0]?.relay.id ?? '', ssh_port: m.ssh_port, provider: m.provider?.name ?? null }))
+  .sort((a, b) => collator.compare(a.name, b.name));
+export const useHostChoices = () => useQuery({ ...machinesQuery('live'), select: hostChoices });
+/** 首页 KPI「流量额度」：同一份机器列表缓存，只取吃紧的台数与最紧的一台；结果做结构共享，没变时首页总览不跟着推送重渲染 */
+export const useQuotaTight = () => useQuery({ ...machinesQuery('live'), select: quotaTight });
 /** 按键等“用时才读”的场景：直接读缓存里的机器列表（同样的默认顺序），不订阅、不触发请求 */
 export function readMachines(qc: QueryClient): MachineView[] | undefined {
   const raw = qc.getQueryData<MachineView[]>(['machines', 'live']);
@@ -131,7 +141,7 @@ export type SubscriptionBody = Omit<Subscription, 'due_days'>;
 export type PlanBody = Omit<Plan, 'id' | 'archived_at' | 'machine_count'>;
 export const useLogin = () => useWrite((b: { username: string; password: string }) => post<{ username: string }>('/auth/login', b), [['me']]);
 export const usePatchMachine = () => useWrite(({ id, ...b }: { id: string } & MachinePatchBody) => patch<MachineView>(`/machines/${id}`, b), [...M, ['teams']]);
-export const useRetire = () => useWrite(({ id, ...b }: { id: string; confirm: string; reason?: string; cleanup?: boolean }) => post<{ job_id: string }>(`/machines/${id}/retire`, b), [...M, ['jobs']]);
+export const useRetire = () => useWrite(({ id, ...b }: { id: string; confirm: string; reason?: string; cleanup?: boolean }) => post<RetireResult>(`/machines/${id}/retire`, b), [...M, ['jobs']]);
 export const usePurge = () => useWrite(({ id, ...b }: { id: string; confirm: string }) => post<{ job_id: string }>(`/machines/${id}/purge`, b), [...M, ['jobs']]);
 export const useSaveSubscription = () => useWrite(({ id, ...b }: { id: string } & SubscriptionBody) => put(`/machines/${id}/subscription`, b), M);
 export const useRenew = () => useWrite(({ id, ...b }: { id: string; new_due: string; amount_cents?: number; note?: string }) => post(`/machines/${id}/renewals`, b), [...M, ['renewals']]);
