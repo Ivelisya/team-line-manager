@@ -73,13 +73,13 @@ export function PolicyPage() {
 
   return (
     <div className="stack">
-      <PageHead title="访问监控" note="访问规则：改动先存为草稿，发布后才会下发到线路机" tools={<AccessViewSwitch value="policy" />} />
+      <PageHead title="访问监控" note="访问规则：改动先存为草稿，发布后才会应用到线路机" tools={<AccessViewSwitch value="policy" />} />
 
       <div className="pol-bar" data-draft={draftCount > 0 ? '1' : undefined}>
         <div className="pol-bar-main">
           {draftCount > 0
             ? <><Chip variant="warn">草稿</Chip><span><b>{draftCount}</b> 份改动还没有发布，线路机上的规则没有变化</span></>
-            : <span className="t-sub row" style={{ gap: 6, flexWrap: 'nowrap' }}><ShieldCheck size={14} />没有未发布的草稿，当前生效的规则已经全部下发</span>}
+            : <span className="t-sub row" style={{ gap: 6, flexWrap: 'nowrap' }}><ShieldCheck size={14} />没有未发布的草稿，当前生效的规则已经全部应用</span>}
         </div>
         <div className="row">
           <Button variant="quiet" disabled={draftCount === 0} onClick={() => setAskDiscard(true)}><Trash2 />丢弃全部草稿</Button>
@@ -379,7 +379,7 @@ function PreviewDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o
         onConfirm={async () => {
           if (!d?.draft_hash) throw new Error('草稿已变化，请重新预览');
           const v = await publish.mutateAsync(d.draft_hash);
-          toast.ok(v.relays.length ? `已发布为版本 ${v.seq}，正在下发到 ${v.relays.length} 台线路机` : `已发布为版本 ${v.seq}`);
+          toast.ok(v.relays.length ? `已发布为版本 ${v.seq}，正在应用到 ${v.relays.length} 台线路机` : `已发布为版本 ${v.seq}`);
           onOpenChange(false);
         }} />
     </>
@@ -425,7 +425,7 @@ function VersionsPanel() {
                     <td title={F.dtFull(v.created_at)}>{F.dt(v.created_at)}<span className="sub">{v.actor}</span></td>
                     <td><VersionChanges changes={v.changes} /></td>
                     <td>
-                      {v.relays.length === 0 ? <span className="t-muted">无需下发</span> : (
+                      {v.relays.length === 0 ? <span className="t-muted">无需应用</span> : (
                         <span className="pol-relays">
                           {v.relays.map((r) => (
                             <Tip key={r.relay_id} text={r.error ? `${r.name ?? '线路机'}：${r.error}` : `${r.name ?? '线路机'}：期望代数 ${r.generation}，已应用 ${r.applied_generation ?? '—'}`}>
@@ -445,7 +445,7 @@ function VersionsPanel() {
         )}
       </Panel>
       <ConfirmDialog open={!!ask} onOpenChange={(o) => !o && setAsk(null)} confirmLabel="回滚" title={`回滚到版本 v${ask?.seq ?? ''}？`}
-        description="会把当前生效的访问规则整体换成这个版本的内容，作为新版本发布并下发到线路机。未发布的草稿不受影响。"
+        description="会把当前生效的访问规则整体换成这个版本的内容，作为新版本发布并应用到线路机。未发布的草稿不受影响。"
         onConfirm={async () => { const v = await rollback.mutateAsync(ask!.id); toast.ok(`已回滚，新版本 v${v.seq}`); }} />
     </>
   );

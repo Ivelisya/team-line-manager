@@ -79,7 +79,7 @@ enum PolicyCmd {
         /// 团队名，或节点（显示名 / id / IP）
         who: String,
     },
-    /// 设置草稿（不生效，publish 才下发）。不写 --domains / --note 就沿用现有的
+    /// 设置草稿（不生效，publish 才应用到线路机）。不写 --domains / --note 就沿用现有的
     Set {
         who: String,
         /// observe | allowlist | denylist | blocked | inherit（仅节点）
@@ -155,7 +155,7 @@ struct ProvisionArgs {
     /// vps 的 SS 端口
     #[arg(long)]
     ss_port: Option<u16>,
-    /// proxy 的上游：socks5://用户:密码@主机:端口
+    /// 家宽代理（proxy）的上游：socks5://用户:密码@主机:端口
     #[arg(long)]
     upstream: Option<String>,
     /// 首次登录用的 root 密码放在哪个环境变量里（不填则用中控的密钥）
@@ -449,7 +449,7 @@ enum Cmd {
         /// 线路机恢复时改名（原名被占用时）
         #[arg(long)]
         label: Option<String>,
-        /// 上游代理节点：socks5://用户:密码@主机:端口（退役时出站参数已清掉）
+        /// 家宽代理：socks5://用户:密码@主机:端口（退役时出站参数已清掉）
         #[arg(long)]
         upstream: Option<String>,
         /// vps 的 SS 端口

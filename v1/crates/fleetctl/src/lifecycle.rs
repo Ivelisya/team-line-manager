@@ -189,7 +189,7 @@ pub fn restore(ctx: &Ctx, o: RestoreOpts) -> anyhow::Result<u8> {
         body["relay_id"] = find_relay(ctx, r)?["id"].clone();
     }
     if pv["needs"]["upstream"] == true {
-        let u = o.upstream.ok_or_else(|| anyhow!("上游代理在退役时已清掉出站参数：加 --upstream socks5://用户:密码@主机:端口"))?;
+        let u = o.upstream.ok_or_else(|| anyhow!("家宽代理在退役时已清掉出站参数：加 --upstream socks5://用户:密码@主机:端口"))?;
         body["upstream"] = parse_upstream(u)?;
     }
     let need_pw = pv["needs"]["password"] == "required";

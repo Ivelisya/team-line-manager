@@ -39,13 +39,13 @@ const PROVISION_VPS: &[StepDef] = &[
     s("agent", "安装 agent", 600),
     s("wait_report", "等待首次上报", 180),
     s("attach", "接入线路机", 60),
-    s("wait_applied", "等待线路机生效", 300),
+    s("wait_applied", "等待线路机应用", 300),
     s("verify", "出口验收", 300),
     s("activate", "上线", 30),
 ];
 const PROVISION_PROXY: &[StepDef] = &[
     s("attach", "接入线路机", 60),
-    s("wait_applied", "等待线路机生效", 300),
+    s("wait_applied", "等待线路机应用", 300),
     s("verify", "出口验收", 300),
     s("activate", "上线", 30),
 ];
@@ -55,13 +55,13 @@ const PROVISION_RELAY: &[StepDef] = &[
     s("converge_relay", "线路机收敛（SSH 加固、Xray）", 2400),
     s("agent", "安装 agent", 600),
     s("wait_report", "等待首次上报", 180),
-    s("wait_applied", "等待 Xray 配置生效", 300),
+    s("wait_applied", "等待 Xray 配置应用", 300),
     s("activate", "上线", 30),
 ];
 const ATTACH_ENTRY: &[StepDef] = &[
     s("attach", "接入线路机", 60),
     s("firewall", "更新节点防火墙", 300),
-    s("wait_applied", "等待线路机生效", 300),
+    s("wait_applied", "等待线路机应用", 300),
     s("verify", "出口验收", 300),
 ];
 const RETIRE: &[StepDef] = &[
@@ -75,7 +75,7 @@ const RETIRE: &[StepDef] = &[
 const MOVE_ENTRY: &[StepDef] = &[
     s("attach_new", "在新线路机建入口", 60),
     s("firewall_widen", "放行新线路机（节点防火墙）", 300),
-    s("wait_applied_new", "等待新线路机生效", 300),
+    s("wait_applied_new", "等待新线路机应用", 300),
     s("verify_new", "经新入口出口验收", 300),
     s("detach_old", "摘除旧入口", 60),
     s("wait_detached_old", "等待旧线路机摘除", 600),

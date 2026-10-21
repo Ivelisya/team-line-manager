@@ -395,7 +395,7 @@ async fn attach(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
 async fn firewall(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let m = c.machine().await?;
     if m.kind != "vps" {
-        return Ok(Outcome::Skipped("上游代理没有防火墙要改".into()));
+        return Ok(Outcome::Skipped("家宽代理没有防火墙要改".into()));
     }
     let allow = relay_ips_for(c, m.id, None).await?;
     let out = c.ssh(&m, None).run(&(vars(&[("SS_PORT", "8388"), ("ALLOW", &allow)]) + scripts::NODE_NFT_ONLY), Duration::from_secs(60)).await?;
@@ -558,7 +558,7 @@ async fn wait_detached(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
 async fn cleanup(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let m = c.machine().await?;
     if m.kind == "proxy" {
-        return Ok(Outcome::Skipped("上游代理没有要清理的服务".into()));
+        return Ok(Outcome::Skipped("家宽代理没有要清理的服务".into()));
     }
     if c.job.params["cleanup"] == json!(false) {
         return Ok(Outcome::Skipped("选择了不清理机器".into()));

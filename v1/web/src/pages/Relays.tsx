@@ -1,4 +1,4 @@
-// 线路：每台线路机一张卡——下发状态（配置代数 vs 已下发）+ 入口表（端口、节点、状态、是否已下发、TCP/出口探测、流量）。
+// 线路：每台线路机一张卡——应用状态（配置代数 vs 已应用）+ 入口表（端口、节点、状态、是否已应用、TCP/出口探测、流量）。
 // 入口多的线路机（几十条）只先露前 ENTRY_CAP 条，表尾「显示全部 N 条」展开：线路机只有几台，一页里放几个分页器反而难用。
 import * as React from 'react';
 import { CheckCircle2, CircleAlert, Loader2, PackageOpen, PanelRightOpen } from 'lucide-react';
@@ -25,11 +25,11 @@ function ApplyStatus({ m }: { m: MachineView }) {
   const pendingEntries = m.entries.filter((e) => !e.applied && e.lifecycle !== 'disabled').length;
   return (
     <div className="apply-box">
-      {r.apply_error ? <Pill tone="bad"><CircleAlert size={12} />下发失败</Pill>
-        : pending ? <Pill tone="info" dot="pulse"><Loader2 size={12} className="spin" />下发中</Pill>
-        : <Pill tone="ok"><CheckCircle2 size={12} />已下发</Pill>}
+      {r.apply_error ? <Pill tone="bad"><CircleAlert size={12} />应用失败</Pill>
+        : pending ? <Pill tone="info" dot="pulse"><Loader2 size={12} className="spin" />应用中</Pill>
+        : <Pill tone="ok"><CheckCircle2 size={12} />已应用</Pill>}
       <span>配置代数 <b className="num" style={{ color: 'var(--fg)' }}>{r.generation}</b> · 已应用 <b className="num" style={{ color: 'var(--fg)' }}>{r.applied_generation}</b></span>
-      {pending && <span>待下发 {pendingEntries} 条入口</span>}
+      {pending && <span>{pendingEntries} 条入口应用中</span>}
       <span style={{ marginLeft: 'auto' }}>上次应用 {r.applied_at ? F.ago(r.applied_at) : '—'}</span>
       {r.apply_error && <div style={{ flexBasis: '100%', color: 'var(--bad-text)' }}>{r.apply_error}</div>}
     </div>
@@ -57,14 +57,14 @@ function RelayCard({ m, open }: { m: MachineView; open: ReturnType<typeof useDra
       <div className="table-wrap">
         <table className="dt is-one" style={{ minWidth: 760 }}>
           <colgroup><col style={{ width: 84 }} /><col style={{ width: 150 }} /><col style={{ width: 104 }} /><col style={{ width: 84 }} /><col style={{ width: 80 }} /><col style={{ width: 80 }} /><col style={{ width: 120 }} /><col style={{ width: 52 }} /></colgroup>
-          <thead><tr><th>端口</th><th>节点</th><th>状态</th><th>已下发</th><th className="r">TCP</th><th className="r">出口</th><th className="r">本月业务流量</th><th /></tr></thead>
+          <thead><tr><th>端口</th><th>节点</th><th>状态</th><th>已应用</th><th className="r">TCP</th><th className="r">出口</th><th className="r">本月业务流量</th><th /></tr></thead>
           <tbody>
             {entries.map((e) => (
               <tr key={e.id}>
                 <td className="strong num">{e.port}</td>
                 <td><NodeHover id={e.node.id}><button className="btn-link btn" style={{ height: 'auto', padding: 0, border: 0, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis' }} onClick={() => open(e.node.id)}>{e.node.name}</button></NodeHover></td>
                 <td>{entryState(e)}</td>
-                <td>{e.lifecycle === 'disabled' ? <span className="t-muted">—</span> : e.applied ? <CheckCircle2 size={14} style={{ color: 'var(--ok)' }} aria-label="已下发" /> : <span title={e.apply_error ?? '等待下发'} style={{ color: e.apply_error ? 'var(--bad-text)' : 'var(--fg-2)' }}>{e.apply_error ? '失败' : '待下发'}</span>}</td>
+                <td>{e.lifecycle === 'disabled' ? <span className="t-muted">—</span> : e.applied ? <CheckCircle2 size={14} style={{ color: 'var(--ok)' }} aria-label="已应用" /> : <span title={e.apply_error ?? '应用中'} style={{ color: e.apply_error ? 'var(--bad-text)' : 'var(--fg-2)' }}>{e.apply_error ? '应用失败' : '应用中'}</span>}</td>
                 <td className="r">{probe(e.tcp)}</td><td className="r">{probe(e.egress)}</td>
                 <td className="r"><Num f={F.bytes(e.traffic.month_up + e.traffic.month_down)} /></td>
                 <td className="c"><EntryActions entry={e} /></td>

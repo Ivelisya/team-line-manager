@@ -102,6 +102,25 @@ pub struct Traffic {
     pub month_down: i64,
 }
 
+/// 流量额度周期：有流量重置日的按账单时区里最近一次重置日起算，否则是北京时间的本月
+#[derive(Debug, Clone, Serialize)]
+pub struct Quota {
+    /// 周期内业务流量（下载 + 上传，含已移除的入口）
+    pub used: i64,
+    pub period_start: Date,
+}
+
+/// 今天或之前最近一次重置日；月份没有这一天的按月末算（31 号在 30 天的月份是 30 号）
+pub fn period_start(today: Date, reset_day: u8) -> Date {
+    let at = |y: i32, m: time::Month| Date::from_calendar_date(y, m, reset_day.min(m.length(y))).expect("合法日期");
+    let d = at(today.year(), today.month());
+    if d <= today {
+        return d;
+    }
+    let pm = today.month().previous();
+    at(if pm == time::Month::December { today.year() - 1 } else { today.year() }, pm)
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct EntryView {
     pub id: Uuid,
@@ -158,6 +177,8 @@ pub struct MachineView {
     pub entries: Vec<EntryView>,
     /// 已移除入口（如换线路机后的旧入口）本月 / 今天的流量：入口列表里没有它们，但这些流量仍属于这台机器
     pub removed_traffic: Traffic,
+    /// 流量额度周期里已用的业务流量
+    pub quota: Quota,
     pub health: Health,
     pub active_job: Option<JobRef>,
     pub open_incidents: i64,
@@ -256,7 +277,11 @@ pub struct LiveCache {
     rolled: AtomicU64,
     /// 流量只在小时汇总后（或跨天、跨月）才变：按汇总轮次缓存，到库里时钟的下一个北京时间零点过期
     traffic: tokio::sync::Mutex<Option<((u64, Instant), TrafficMap)>>,
+    /// 有重置日的机器的周期已用：(机器, 周期起点, 账单时区) → 字节，同样只在汇总后作废
+    quota: tokio::sync::Mutex<(u64, HashMap<QuotaKey, i64>)>,
 }
+
+type QuotaKey = (Uuid, Date, String);
 
 impl LiveCache {
     pub fn invalidate(&self) {
@@ -318,6 +343,36 @@ async fn traffic(st: &AppState) -> sqlx::Result<TrafficMap> {
     Ok(v)
 }
 
+/// 这些机器各自周期起（账单时区零点）的业务流量，走 `LiveCache.quota`，缺的才查
+async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<Uuid, i64>> {
+    let c = &st.live;
+    let mut slot = c.quota.lock().await;
+    let rolled = c.rolled.load(Ordering::SeqCst);
+    if slot.0 != rolled {
+        *slot = (rolled, HashMap::new());
+    }
+    let miss: Vec<&QuotaKey> = keys.iter().filter(|k| !slot.1.contains_key(*k)).collect();
+    if !miss.is_empty() {
+        let rows: Vec<(Uuid, i64)> = sqlx::query_as(
+            "select q.mid, coalesce(sum(h.up_bytes + h.down_bytes), 0)::bigint
+             from unnest($1::uuid[], $2::date[], $3::text[]) q(mid, start, tz)
+             join entry e on e.node_id = q.mid or e.relay_id = q.mid
+             join entry_traffic_hourly h on h.entry_id = e.id and h.hour >= q.start::timestamp at time zone q.tz
+             group by q.mid",
+        )
+        .bind(miss.iter().map(|k| k.0).collect::<Vec<_>>())
+        .bind(miss.iter().map(|k| k.1).collect::<Vec<_>>())
+        .bind(miss.iter().map(|k| k.2.clone()).collect::<Vec<_>>())
+        .fetch_all(&st.db)
+        .await?;
+        let got: HashMap<Uuid, i64> = rows.into_iter().collect();
+        for k in miss {
+            slot.1.insert(k.clone(), got.get(&k.0).copied().unwrap_or(0));
+        }
+    }
+    Ok(keys.into_iter().map(|k| (k.0, slot.1[&k])).collect())
+}
+
 pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Result<Vec<MachineView>> {
     let db = &st.db;
     let lc = match scope {
@@ -351,6 +406,11 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     }
     let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
     let now = OffsetDateTime::now_utc();
+    // 有流量重置日的订阅：账单时区里的今天 → 周期起点
+    let periods: Vec<QuotaKey> = rows
+        .iter()
+        .filter_map(|r| Some((r.id, period_start(r.s_today?, r.s_reset? as u8), r.s_tz.clone()?)))
+        .collect();
 
     // 最近两条主机样本 → 当前值与网卡速率
     #[derive(sqlx::FromRow)]
@@ -474,8 +534,9 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     )
     .bind(&ids)
     .fetch_all(db);
-    let (hs, (es, ps), (traffic, removed), jobs, inc, maint, su, policies) =
-        tokio::try_join!(hs_q, entries_q, traffic_q, jobs_q, inc_q, maint_q, su_q, crate::policy::load_current(db))?;
+    let period_of: HashMap<Uuid, Date> = periods.iter().map(|k| (k.0, k.1)).collect();
+    let (hs, (es, ps), (traffic, removed), jobs, inc, maint, su, policies, period_used) =
+        tokio::try_join!(hs_q, entries_q, traffic_q, jobs_q, inc_q, maint_q, su_q, crate::policy::load_current(db), quota_used(st, periods))?;
 
     let mut host: HashMap<Uuid, HostNow> = HashMap::new();
     let mut prev: HashMap<Uuid, (OffsetDateTime, Option<i64>, Option<i64>)> = HashMap::new();
@@ -596,6 +657,16 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 port_max: r.r_pmax.unwrap_or(0),
             });
             let entries = entries_by.remove(&r.id).unwrap_or_default();
+            let removed_traffic = removed_by.remove(&r.id).unwrap_or_default();
+            let quota = match period_of.get(&r.id) {
+                Some(&start) => Quota { used: period_used[&r.id], period_start: start },
+                None => Quota {
+                    used: entries.iter().map(|e| e.traffic.month_up + e.traffic.month_down).sum::<i64>()
+                        + removed_traffic.month_up
+                        + removed_traffic.month_down,
+                    period_start: today.replace_day(1).expect("1 号"),
+                },
+            };
             let maintenance = maint_all || maint.contains(&r.id);
             let policy_blocked = r.kind != "relay" && policies.effective(r.id, r.team_id).0.mode == crate::policy::Mode::Blocked;
             let mut v = MachineView {
@@ -627,7 +698,8 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 agent,
                 host: host.remove(&r.id),
                 entries,
-                removed_traffic: removed_by.remove(&r.id).unwrap_or_default(),
+                removed_traffic,
+                quota,
                 health: Health::default(),
                 active_job: jobs.get(&r.id).cloned(),
                 open_incidents: inc.get(&r.id).copied().unwrap_or(0),
@@ -669,7 +741,8 @@ pub fn overview_of(ms: &[MachineView]) -> Value {
         bucket["total"] = json!(bucket["total"].as_i64().unwrap_or(0) + 1);
         bucket[key] = json!(bucket[key].as_i64().unwrap_or(0) + 1);
         if let Some(s) = &m.subscription {
-            if s.due_days <= 7 {
+            // 需要续费的：同告警规则，自动续费的只在已过期时算
+            if s.due_days <= 7 && (s.due_days < 0 || !s.auto_renew) {
                 due_7d += 1;
             }
             // 折成月费
@@ -689,8 +762,9 @@ pub fn overview_of(ms: &[MachineView]) -> Value {
             up += m.removed_traffic.month_up;
             down += m.removed_traffic.month_down;
         }
-        // 实时速率只算数据没过期的：故障或 agent 离线的机器，最后一份上报的速率不算（同前端 liveRate）
-        let stale = m.health.status == Status::Down || m.agent.as_ref().is_some_and(|a| !a.online);
+        // 实时速率只算数据没过期的：agent 离线的机器，最后一份上报的速率不算（同前端 liveRate）。
+        // 告警（哪怕严重）不影响：机器照常每 10 秒上报
+        let stale = m.agent.as_ref().is_some_and(|a| !a.online);
         if let Some(h) = m.host.as_ref().filter(|_| !stale) {
             rx += h.net_rx_bps.unwrap_or(0.0);
             tx += h.net_tx_bps.unwrap_or(0.0);
@@ -700,4 +774,70 @@ pub fn overview_of(ms: &[MachineView]) -> Value {
         "nodes": nodes, "relays": relays, "provisioning": provisioning, "retiring": retiring, "due_7d": due_7d,
         "monthly_cost": cost.into_iter().map(|(c, v)| json!({"currency": c, "cents": v})).collect::<Vec<_>>(), "traffic_month": {"up": up, "down": down}, "net_rx_bps": rx, "net_tx_bps": tx,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::health::tests::{base, sub};
+    use time::macros::date;
+
+    #[test]
+    fn reset_day_period_boundaries() {
+        // 今天在重置日之后 / 当天 / 之前
+        assert_eq!(period_start(date!(2026 - 10 - 20), 15), date!(2026 - 10 - 15));
+        assert_eq!(period_start(date!(2026 - 10 - 15), 15), date!(2026 - 10 - 15));
+        assert_eq!(period_start(date!(2026 - 10 - 14), 15), date!(2026 - 09 - 15));
+        // 31 号：30 天的月份按 30 号，2 月按月末
+        assert_eq!(period_start(date!(2026 - 09 - 30), 31), date!(2026 - 09 - 30));
+        assert_eq!(period_start(date!(2026 - 09 - 29), 31), date!(2026 - 08 - 31));
+        assert_eq!(period_start(date!(2026 - 10 - 30), 31), date!(2026 - 09 - 30));
+        assert_eq!(period_start(date!(2028 - 03 - 01), 31), date!(2028 - 02 - 29));
+        // 跨年
+        assert_eq!(period_start(date!(2027 - 01 - 05), 10), date!(2026 - 12 - 10));
+        assert_eq!(period_start(date!(2027 - 01 - 01), 1), date!(2027 - 01 - 01));
+    }
+
+    #[test]
+    fn overview_counts_alerting_machines_as_live() {
+        let now = OffsetDateTime::now_utc();
+        let host = |rx: f64| HostNow {
+            ts: now,
+            cpu_pct: None,
+            load1: None,
+            mem_used: None,
+            mem_total: None,
+            disk_used: None,
+            disk_total: None,
+            net_rx_bps: Some(rx),
+            net_tx_bps: Some(rx / 2.0),
+            tcp_conns: None,
+        };
+        // 已过期（严重告警，健康为故障）但照常上报：速率照算
+        let mut down = base("vps");
+        down.subscription = Some(sub(-3));
+        down.host = Some(host(1000.0));
+        down.health = health::evaluate(&down, now);
+        assert_eq!(down.health.status, Status::Down);
+        // agent 离线：最后一份速率不算
+        let mut off = base("vps");
+        off.agent.as_mut().unwrap().online = false;
+        off.host = Some(host(5000.0));
+        off.health = health::evaluate(&off, now);
+        let ov = overview_of(&[down, off]);
+        assert_eq!(ov["net_rx_bps"], 1000.0);
+        assert_eq!(ov["net_tx_bps"], 500.0);
+        assert_eq!(ov["nodes"]["down"], 2);
+    }
+
+    #[test]
+    fn due_7d_skips_auto_renew_until_overdue() {
+        let with = |due: i64, auto: bool| {
+            let mut m = base("vps");
+            m.subscription = Some(Subscription { auto_renew: auto, ..sub(due) });
+            m
+        };
+        let ov = overview_of(&[with(3, false), with(3, true), with(-1, true), with(10, false)]);
+        assert_eq!(ov["due_7d"], 2);
+    }
 }

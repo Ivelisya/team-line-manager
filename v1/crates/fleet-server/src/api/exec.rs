@@ -63,7 +63,7 @@ async fn run_on(st: &AppState, a: &Actor, id: Uuid, command: &str, timeout_s: u6
         return Err(ApiError::conflict(format!("{name} 已退役，不能再登录执行命令")));
     }
     if kind == "proxy" {
-        return Err(ApiError::conflict(format!("{name} 是上游代理，没有 SSH，不能执行命令")));
+        return Err(ApiError::conflict(format!("{name} 是家宽代理，没有 SSH，不能执行命令")));
     }
     let (ip, port): (String, i32) = sqlx::query_as("select host(primary_ip), ssh_port from machine where id = $1")
         .bind(id)

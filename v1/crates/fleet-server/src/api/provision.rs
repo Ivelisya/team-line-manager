@@ -135,10 +135,10 @@ async fn validate(tx: &mut Tx<'_>, items: &[Item]) -> ApiResult<Vec<Checked>> {
         if !batch_ips.insert(ip) {
             errors.push("这一批里 IP 重复".into());
         }
-        // 节点防火墙的放行集合是 ipv4_addr、ssserver 只监听 0.0.0.0：线路机和 VPS 节点目前只支持 IPv4
-        // （上游代理不受限，它的出站地址另填）
+        // 节点防火墙的放行集合是 ipv4_addr、ssserver 只监听 0.0.0.0：线路机和落地机目前只支持 IPv4
+        // （家宽代理不受限，它的出站地址另填）
         if ip.is_ipv6() && matches!(it.kind.as_str(), "vps" | "relay") {
-            errors.push("暂不支持 IPv6 地址：线路机和 VPS 节点的防火墙放行名单、SS 监听都只处理 IPv4，请填 IPv4 地址".into());
+            errors.push("暂不支持 IPv6 地址：线路机和落地机的防火墙放行名单、SS 监听都只处理 IPv4，请填 IPv4 地址".into());
         }
         match it.kind.as_str() {
             "vps" | "proxy" => {
@@ -153,7 +153,7 @@ async fn validate(tx: &mut Tx<'_>, items: &[Item]) -> ApiResult<Vec<Checked>> {
                 if it.kind == "proxy" {
                     match &it.upstream {
                         Some(u) if matches!(u.protocol.as_str(), "socks5" | "http") && !u.host.trim().is_empty() && u.port > 0 => {}
-                        _ => errors.push("上游代理要填协议（socks5/http）、地址和端口".into()),
+                        _ => errors.push("家宽代理要填上游协议（socks5/http）、主机和端口".into()),
                     }
                 }
                 if let Some(n) = it.number {

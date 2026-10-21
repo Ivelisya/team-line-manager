@@ -277,7 +277,7 @@ pub async fn retire(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>, 
     // 退役作业失败会停在退役中等重试（步骤不可回滚），告警不能等到收尾才关
     let closed = sqlx::query(
         "update incident set state = 'resolved', resolved_at = now(), detail = detail || '{\"closed_by\":\"retire\"}'
-         where state = 'firing' and (subject_id = $1 or subject_id in (select id from entry where node_id = $1 or relay_id = $1))",
+         where state = 'firing' and subject_id = $1",
     )
     .bind(id)
     .execute(&mut *tx)
@@ -393,13 +393,13 @@ pub async fn upgrade_agent(a: Actor, State(st): State<AppState>, Path(id): Path<
         .await?
         .ok_or_else(|| ApiError::not_found("没有这台机器"))?;
     if kind == "proxy" || lc != "active" {
-        return Err(ApiError::conflict("只有在用的线路机和 VPS 节点有 agent"));
+        return Err(ApiError::conflict("只有在用的线路机和落地机有 agent"));
     }
     let v = enqueue_upgrade(&st, &a.name, &[id]).await?;
     v.into_iter().next().map(ok).ok_or_else(|| ApiError::conflict("这台机器还有进行中的作业"))
 }
 
-/// 全部在用的线路机与 VPS 节点
+/// 全部在用的线路机与落地机
 pub async fn upgrade_all_agents(a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
     let ids: Vec<(Uuid,)> = sqlx::query_as("select id from machine where kind <> 'proxy' and lifecycle = 'active' order by kind = 'relay' desc")
         .fetch_all(&st.db)

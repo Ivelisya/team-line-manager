@@ -50,7 +50,7 @@ async fn plan_move(tx: &mut Tx<'_>, node_id: Uuid, from: Option<Uuid>, to: Uuid)
     let Some((kind, lc, label, team, number)) = node else { return Err(ApiError::not_found("没有这台机器")) };
     let name = display_name(&kind, label.as_deref(), team.as_deref(), number);
     if kind == "relay" {
-        return Ok(Err(format!("「{name}」是线路机，只有节点（VPS / 上游代理）能换线路机")));
+        return Ok(Err(format!("「{name}」是线路机，只有节点（落地机 / 家宽代理）能换线路机")));
     }
     if lc != "active" {
         return Ok(Err(format!("「{name}」现在是「{}」，只有在用的节点能换线路机", jobs::lifecycle_zh(&lc))));
@@ -87,10 +87,10 @@ async fn plan_move(tx: &mut Tx<'_>, node_id: Uuid, from: Option<Uuid>, to: Uuid)
     if elc != "active" {
         let zh = match elc.as_str() {
             "disabled" => "已停用",
-            "pending" => "还没生效",
+            "pending" => "还在应用中",
             o => o,
         };
-        return Ok(Err(format!("「{name}」在 {from_name} 上的入口{zh}：先启用或等它生效再换线路机")));
+        return Ok(Err(format!("「{name}」在 {from_name} 上的入口{zh}：先启用或等它应用完再换线路机")));
     }
     if from_relay == to {
         return Ok(Err(format!("目标线路机「{to_name}」就是节点当前所在的线路机")));
@@ -451,7 +451,7 @@ pub struct RestoreIn {
     /// 节点要接入的线路机
     relay_id: Option<Uuid>,
     login: Option<LoginIn>,
-    /// 上游代理节点：退役时出站参数已删除，要重新填
+    /// 家宽代理：退役时出站参数已删除，要重新填
     upstream: Option<UpstreamIn>,
     ss_port: Option<u16>,
     reason: Option<String>,
@@ -481,7 +481,7 @@ pub async fn restore(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>,
     if m.kind == "proxy" {
         match &b.upstream {
             Some(u) if matches!(u.protocol.as_str(), "socks5" | "http") && !u.host.trim().is_empty() && u.port > 0 => {}
-            _ => return Err(ApiError::bad_request("上游代理在退役时已清掉出站参数，要重新填协议（socks5/http）、地址和端口")),
+            _ => return Err(ApiError::bad_request("家宽代理在退役时已清掉出站参数，要重新填协议（socks5/http）、地址和端口")),
         }
     }
     let reason = b.reason.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(String::from);

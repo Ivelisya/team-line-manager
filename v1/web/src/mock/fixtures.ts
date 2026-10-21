@@ -15,6 +15,17 @@ const now = () => Date.now();
 const iso = (t: number) => new Date(t).toISOString();
 const dateOnly = (t: number) => iso(t).slice(0, 10);
 
+/** 流量额度周期（同服务端 views::period_start）：有重置日取今天或之前最近一次（月份没有这一天按月末），否则本月 1 号；已用按本月业务流量估 */
+export function quotaOf(m: MachineView): MachineView['quota'] {
+  const d = new Date(); const day = m.subscription?.traffic_reset_day ?? 1;
+  const at = (y: number, mo: number) => new Date(Date.UTC(y, mo, Math.min(day, new Date(Date.UTC(y, mo + 1, 0)).getUTCDate())));
+  let s = at(d.getFullYear(), d.getMonth());
+  if (s.getUTCDate() > d.getDate()) s = at(d.getFullYear(), d.getMonth() - 1);
+  let used = m.removed_traffic.month_up + m.removed_traffic.month_down;
+  for (const e of m.entries) used += e.traffic.month_up + e.traffic.month_down;
+  return { used, period_start: s.toISOString().slice(0, 10) };
+}
+
 export interface Db {
   user: string;
   teams: Team[]; providers: Provider[]; plans: Plan[];
@@ -68,7 +79,7 @@ export function buildDb(): Db {
   const base = (o: Partial<MachineView> & Pick<MachineView, 'id' | 'kind' | 'name' | 'ip'>): MachineView => ({
     team: null, number: null, label: null, ssh_port: 22, provider: null, provider_code: null, plan: null, service_ref: null,
     lifecycle: 'active', lifecycle_reason: null, note: '', revision: 1, created_at: iso(now() - 120 * DAY), activated_at: iso(now() - 100 * DAY), retired_at: null,
-    subscription: null, agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, health: { status: 'ok', reasons: [] },
+    subscription: null, agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, quota: { used: 0, period_start: '' }, health: { status: 'ok', reasons: [] },
     active_job: null, open_incidents: 0, maintenance: false, relay: null, ...o,
   });
 
@@ -89,7 +100,7 @@ export function buildDb(): Db {
   }
 
   // 节点定义：团队、编号、套餐、状态
-  type Def = { team: 't1' | 't2'; n: number; kind: 'vps' | 'proxy'; planId: string; relay: 'r1' | 'r2'; due: number; status?: HealthStatus; lifecycle?: Lifecycle; cpu?: number; octet?: number; provider?: string };
+  type Def = { team: 't1' | 't2'; n: number; kind: 'vps' | 'proxy'; planId: string; relay: 'r1' | 'r2'; due: number; status?: HealthStatus; online?: boolean; resetDay?: number; lifecycle?: Lifecycle; cpu?: number; octet?: number; provider?: string };
   const defs: Def[] = [];
   const t1Plans = ['pl1', 'pl2', 'pl1', 'pl1', 'pl2', 'pl1', 'pl2', 'pl1', 'pl1', 'pl2', 'pl1', 'pl2'];
   for (let i = 1; i <= 12; i++) defs.push({ team: 't1', n: i, kind: 'vps', planId: t1Plans[i - 1], relay: 'r1', due: [22, 41, 8, 60, 2, 75, 33, 15, 90, 4, 28, 51][i - 1], cpu: 8 + Math.floor(r() * 40), octet: 10 + i });
@@ -98,7 +109,7 @@ export function buildDb(): Db {
   defs.push({ team: 't2', n: 11, kind: 'proxy', planId: 'pl4', relay: 'r2', due: 11, octet: 41, provider: 'p3' });
   // 状态覆盖
   const ov = (team: string, n: number, patch: Partial<Def>) => Object.assign(defs.find((d) => d.team === team && d.n === n)!, patch);
-  ov('t1', 5, { status: 'down' }); ov('t1', 9, { status: 'degraded', cpu: 91 }); ov('t2', 4, { status: 'maintenance' });
+  ov('t1', 5, { status: 'down' }); ov('t2', 3, { status: 'down', online: true }); ov('t1', 3, { resetDay: 15 }); ov('t1', 4, { resetDay: 31 }); ov('t1', 9, { status: 'degraded', cpu: 91 }); ov('t2', 4, { status: 'maintenance' });
   ov('t2', 7, { lifecycle: 'retiring', status: 'inactive' }); ov('t2', 9, { status: 'unknown' });
   ov('t1', 10, { cpu: 86 });
 
@@ -111,18 +122,19 @@ export function buildDb(): Db {
     const relay = machines.find((m) => m.id === d.relay)!;
     const port = 20000 + entriesByRelay[d.relay].length + 1;
     const status: HealthStatus = d.status ?? 'ok';
-    const down = status === 'down';
+    const down = status === 'down'; const offline = down && !d.online; // 故障但 agent 照常上报（如出口不通）
     const lifecycle: Lifecycle = d.lifecycle ?? 'active';
     const entry: EntryView = {
       id: `e${eSeq++}`, relay: { id: relay.id, name: relay.name }, node: { id, name }, port,
       lifecycle: lifecycle === 'retiring' ? 'disabled' : 'active', applied: true, apply_error: null,
-      tcp: { ok: !down, latency_ms: down ? null : Math.round(18 + r() * 160), detail: down ? '连接超时' : null, ts: iso(now() - 20_000) },
+      tcp: { ok: !offline, latency_ms: offline ? null : Math.round(18 + r() * 160), detail: offline ? '连接超时' : null, ts: iso(now() - 20_000) },
       egress: { ok: !down, latency_ms: down ? null : Math.round(120 + r() * 220), detail: down ? '出口探测失败' : null, ts: iso(now() - 40_000) },
       traffic: { today_up: Math.round((0.3 + r() * 6) * GiB), today_down: Math.round((0.5 + r() * 14) * GiB), month_up: Math.round((20 + r() * 220) * GiB), month_down: Math.round((60 + r() * 520) * GiB) },
     };
     if (d.kind === 'proxy') entry.egress = { ok: true, latency_ms: 210, detail: null, ts: iso(now() - 30_000) };
     entriesByRelay[d.relay].push(entry);
-    const reasons = status === 'down' ? [{ key: 'agent_offline', severity: 'critical', text: 'agent 已离线 14 分钟' }, { key: 'tcp_fail', severity: 'critical', text: '线路机到节点 TCP 探测连续失败' }]
+    const reasons = offline ? [{ key: 'agent_offline', severity: 'critical', text: '14 分钟没有上报' }, { key: 'tcp_fail', severity: 'critical', text: '线路机1 到节点 TCP 不通' }]
+      : down ? [{ key: 'egress_fail', severity: 'critical', text: `${relay.name}:${port} 出口不通：timeout` }]
       : status === 'degraded' ? [{ key: 'cpu_high', severity: 'warning', text: 'CPU 持续高于 90%' }]
       : status === 'maintenance' ? [{ key: 'maintenance', severity: 'info', text: '维护窗口内，告警已静默' }]
       : status === 'unknown' ? [{ key: 'no_data', severity: 'warning', text: '尚无探测数据' }] : [];
@@ -130,13 +142,13 @@ export function buildDb(): Db {
       id, kind: d.kind, name, team: { id: team.id, name: team.name }, number: d.n, ip: `${d.team === 't1' ? '198.51.100' : '203.0.113'}.${d.octet ?? 50}`,
       provider: { id: pv.id, name: pv.name }, provider_code: pv.code, plan: { id: p.id, name: p.name, bandwidth_mbps: p.bandwidth_mbps, traffic_gb: p.traffic_gb },
       service_ref: `SVC-${1000 + d.n + (d.team === 't2' ? 40 : 0)}`, lifecycle, lifecycle_reason: lifecycle === 'retiring' ? '客户退租' : null,
-      subscription: sub(d.planId, d.due, p.traffic_gb || null),
-      agent: d.kind === 'proxy' ? null : { version: '1.0.3', last_report_at: iso(now() - (down ? 14 * 60_000 : 9000)), online: !down && status !== 'unknown', xray_running: null, cores: 2 },
+      subscription: { ...sub(d.planId, d.due, p.traffic_gb || null), traffic_reset_day: d.resetDay ?? 1 },
+      agent: d.kind === 'proxy' ? null : { version: '1.0.3', last_report_at: iso(now() - (offline ? 14 * 60_000 : 9000)), online: !offline && status !== 'unknown', xray_running: null, cores: 2 },
       host: d.kind === 'proxy' || status === 'unknown' ? null : hostOf(id, d.cpu ?? 20),
-      entries: [entry], health: { status, reasons }, maintenance: status === 'maintenance', open_incidents: down ? 2 : status === 'degraded' ? 1 : 0,
+      entries: [entry], health: { status, reasons }, maintenance: status === 'maintenance', open_incidents: offline ? 2 : down ? 1 : status === 'degraded' ? 1 : 0,
       note: d.n === 1 ? '主力线路，勿动' : '',
     });
-    if (down && m.host) { m.host.ts = iso(now() - 14 * 60_000); }
+    if (offline && m.host) { m.host.ts = iso(now() - 14 * 60_000); }
     if (id === 'm-t2-06' && m.host) m.host.load1 = null; // LXC 容器：agent 拿不到本机负载
     machines.push(m);
   }
@@ -170,10 +182,11 @@ export function buildDb(): Db {
     m.entries = entriesByRelay[rl];
     if (rl === 'r2') { const last = m.entries[m.entries.length - 1]; last.applied = false; last.apply_error = null; }
   }
-  // 线路机 2 的最后一个入口还没下发 → 降级提示
-  machines[1].health = { status: 'degraded', reasons: [{ key: 'apply_pending', severity: 'warning', text: '配置代数 8，已下发 7，有 1 条入口待下发' }] };
+  // 线路机 2 的最后一个入口还没应用 → 降级提示
+  machines[1].health = { status: 'degraded', reasons: [{ key: 'relay_apply_lag', severity: 'warning', text: '配置未应用（配置代数 8 · 已应用 7）' }] };
   machines[1].host = hostOf('r2', 58);
 
+  for (const m of machines) m.quota = quotaOf(m);
   // 统计
   for (const t of teams) t.node_count = machines.filter((m) => m.team?.id === t.id && m.lifecycle !== 'retired').length;
   for (const p of plans) p.machine_count = machines.filter((m) => m.plan?.id === p.id && m.lifecycle !== 'retired').length;
@@ -193,7 +206,7 @@ export function buildDb(): Db {
       })),
     };
   };
-  const PSTEPS: [string, string][] = [['ssh', '连接并检查系统'], ['agent', '安装 agent'], ['ss', '配置 Shadowsocks'], ['entry', '下发线路机入口'], ['verify', '验证连通性']];
+  const PSTEPS: [string, string][] = [['ssh', '连接并检查系统'], ['agent', '安装 agent'], ['ss', '配置 Shadowsocks'], ['entry', '接入线路机'], ['verify', '验证连通性']];
   const RSTEPS: [string, string][] = [['disable', '停用入口'], ['cleanup', '清理节点上的服务'], ['revoke', '吊销凭据'], ['mark', '标记为已退役']];
   const jobs: Job[] = [
     mk('j-run', 'provision_vps', { id: 'm-t1-13p', name: '团队1-13' }, 'running', PSTEPS, 2, 6),
@@ -217,14 +230,14 @@ export function buildDb(): Db {
   };
   logT('j-run', [['info', '开始上架 团队1-13 (198.51.100.77)'], ['info', '连接 198.51.100.77:22 ...'], ['info', '系统: Debian 12 x86_64，内存 4096 MB'], ['info', '步骤 1/5 完成'], ['info', '下载 agent 1.0.3 ...'], ['info', '注册 agent，令牌已写入 /etc/fleet/agent.toml'], ['info', '步骤 2/5 完成'], ['info', '写入 /etc/ss/config.json，端口 8388'], ['warn', 'ufw 未启用，跳过防火墙规则'], ['info', '启动 ss-server ...']]);
   logT('j-fail', [['info', '开始上架 团队2-13 (203.0.113.77)'], ['info', '连接 203.0.113.77:22 ...'], ['error', 'SSH 连接被拒绝：Permission denied (password)']]);
-  logT('j-ret', [['info', '开始退役 团队2-07'], ['info', '停用入口 线路机2:20007，已下发'], ['info', '清理节点上的服务 ...']]);
+  logT('j-ret', [['info', '开始退役 团队2-07'], ['info', '停用入口 线路机2:20007，已应用'], ['info', '清理节点上的服务 ...']]);
   logT('j-done1', [['info', '退役完成']]); logT('j-done2', [['info', '上架完成']]); logT('j-done3', [['info', '退役完成']]);
 
   const incidents: Incident[] = [
     { id: 'i1', subject: { id: 'm-t1-05', name: '团队1-05' }, subject_id: 'm-t1-05', subject_name: '团队1-05', rule: 'agent_offline', severity: 'critical', state: 'firing', summary: 'agent 已离线 14 分钟', opened_at: iso(now() - 14 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 0 },
     { id: 'i2', subject: { id: 'm-t1-05', name: '团队1-05' }, subject_id: 'm-t1-05', subject_name: '团队1-05', rule: 'tcp_fail', severity: 'critical', state: 'firing', summary: '线路机到节点 TCP 探测连续失败 5 次', opened_at: iso(now() - 12 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: iso(now() - 5 * 60_000), ack_by: 'admin', reopen_count: 0 },
     { id: 'i3', subject: { id: 'm-t1-09', name: '团队1-09' }, subject_id: 'm-t1-09', subject_name: '团队1-09', rule: 'egress_fail', severity: 'warning', state: 'firing', summary: '出口验证连续失败 3 次（经线路机1:20009 访问外网超时）', opened_at: iso(now() - 50 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 2 },
-    { id: 'i4', subject: { id: 'r2', name: '线路机2' }, subject_id: 'r2', subject_name: '线路机2', rule: 'relay_apply_lag', severity: 'warning', state: 'firing', summary: '配置代数 8 未下发完成（已下发 7）', opened_at: iso(now() - 25 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 0 },
+    { id: 'i4', subject: { id: 'r2', name: '线路机2' }, subject_id: 'r2', subject_name: '线路机2', rule: 'relay_apply_lag', severity: 'warning', state: 'firing', summary: '线路机2：配置未应用（配置代数 8 · 已应用 7）', opened_at: iso(now() - 25 * 60_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 0 },
     { id: 'i5', subject: { id: 'm-t2-03', name: '团队2-03' }, subject_id: 'm-t2-03', subject_name: '团队2-03', rule: 'renewal_due', severity: 'info', state: 'resolved', summary: '7 天内到期，请安排续费', opened_at: iso(now() - 26 * 3600_000), resolved_at: iso(now() - 25 * 3600_000), last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 0 },
   ];
   const silences: Silence[] = [{ id: 's1', subject_id: 'm-t2-04', subject_name: '团队2-04', rule: null, starts_at: iso(now() - 3600_000), ends_at: iso(now() + 3 * 3600_000), is_maintenance: true, comment: '换内核，预计 4 小时' }];

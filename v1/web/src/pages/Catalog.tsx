@@ -234,7 +234,7 @@ function PlansTab() {
           {num('cpu_cores', 'CPU 核数')}{num('mem_gb', '内存（GB）')}{num('disk_gb', '磁盘（GB）')}{num('bandwidth_mbps', '带宽（Mbps）')}
           {num('traffic_gb', '流量（GiB / 周期）', '留空或 0 = 不限')}{num('price', '价格')}
           <Field label="币种"><Select value={f.currency} onChange={(v) => setF({ ...f, currency: v })} options={['CNY', 'USD', 'EUR', 'HKD', 'JPY'].map((c) => ({ value: c, label: c }))} /></Field>
-          <Field label="计费周期"><Select value={f.cycle} onChange={(v) => setF({ ...f, cycle: v })} options={Object.entries(F.CYCLE).filter(([k]) => k !== 'once').map(([value, l]) => ({ value, label: `每${l}` }))} /></Field>
+          <Field label="计费周期"><Select value={f.cycle} onChange={(v) => setF({ ...f, cycle: v })} options={F.CYCLE_OPTIONS} /></Field>
           <Field label="备注" className="span-2"><Input value={f.notes} onChange={(e) => setF({ ...f, notes: e.target.value })} /></Field>
         </div>
       </FormDialog>

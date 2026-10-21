@@ -90,7 +90,7 @@ function EntrySection({ m }: { m: MachineView }) {
         {m.entries.length === 0 && <div className="hint">这台机器还没有入口，选一台线路机把它挂上去。</div>}
         {m.entries.map((e) => (
           <div key={e.id} className="manage-row" style={{ border: '1px solid var(--line)', borderRadius: 'var(--r-float)', padding: '8px 12px' }}>
-            <div><div className="t">{m.kind === 'relay' ? `${e.port} · ${e.node.name}` : entryLabel(e)}</div><div className="hint">{e.apply_error ?? (e.applied ? '已下发到线路机' : '等待下发')}</div></div>
+            <div><div className="t">{m.kind === 'relay' ? `${e.port} · ${e.node.name}` : entryLabel(e)}</div><div className="hint">{e.apply_error ?? (e.applied ? '已应用到线路机' : '应用中')}</div></div>
             <span className="row" style={{ gap: 8 }}>{entryState(e)}<EntryActions entry={e} /></span>
           </div>
         ))}
@@ -109,7 +109,7 @@ function EntrySection({ m }: { m: MachineView }) {
         {m.kind !== 'relay' && opts.length > 0 && (
           <div className="row">
             <div style={{ width: 200 }}><Select value={relay} onChange={setRelay} options={opts} placeholder="再挂到另一台线路机" /></div>
-            <Button disabled={!relay || add.isPending} loading={add.isPending} onClick={() => add.mutate({ id: m.id, relay_id: relay }, { onSuccess: () => { toast.ok('已提交，新入口正在下发'); setRelay(''); }, onError: toast.err })}><Plus />添加入口</Button>
+            <Button disabled={!relay || add.isPending} loading={add.isPending} onClick={() => add.mutate({ id: m.id, relay_id: relay }, { onSuccess: () => { toast.ok('已提交，新入口正在应用'); setRelay(''); }, onError: toast.err })}><Plus />添加入口</Button>
           </div>
         )}
       </div>

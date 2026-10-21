@@ -51,7 +51,7 @@ pub(super) async fn attach_new(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     tx.commit().await?;
     c.st.relay_bumped(to);
     let (label,): (String,) = sqlx::query_as("select coalesce(label, '') from machine where id = $1").bind(to).fetch_one(&c.st.db).await?;
-    c.log(format!("新入口已建：{label}:{port}（等线路机生效）；旧入口保持不动，换线期间不断网")).await;
+    c.log(format!("新入口已建：{label}:{port}（等线路机应用）；旧入口保持不动，换线期间不断网")).await;
     Ok(Outcome::Done(json!({"entry_id": eid, "relay_id": to, "relay": label, "port": port, "generation": gen})))
 }
 
