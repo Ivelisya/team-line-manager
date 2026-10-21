@@ -423,7 +423,8 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
             ("种类", kind_cn(&st(&m, "/kind")).to_string()),
             ("生命周期", format!("{}{}", lifecycle_cn(&st(&m, "/lifecycle")), m["lifecycle_reason"].as_str().map(|r| format!("（{r}）")).unwrap_or_default())),
             ("健康", health_cn(&st(&m, "/health/status")).to_string()),
-            ("IP", format!("{}:{}", st(&m, "/ip"), st(&m, "/ssh_port"))),
+            // 同机 IP 节点没有自己的 SSH（登录宿主机），只写 IP，不拼上宿主机的 SSH 端口
+            ("IP", if m["host_machine"].is_null() { format!("{}:{}", st(&m, "/ip"), st(&m, "/ssh_port")) } else { st(&m, "/ip") }),
         ];
         // 同机关系：同机 IP 节点的 SSH、agent、主机读数都是宿主机的；宿主机列出它上面的同机 IP 节点
         if !m["host_machine"].is_null() {
