@@ -74,9 +74,10 @@ function RenameSection({ m }: { m: MachineView }) {
           </>
         )}
         <div className="span-2 row row-between">
+          {/* 没改动时只显示当前名，改了才出现「旧名 → 新名」 */}
           <span className="row" style={{ gap: 8 }}>
-            <span className="t-sub">新显示名</span>
-            <span className="preview-name">{m.name}<ArrowRight size={14} style={{ color: 'var(--fg-3)' }} />{preview || '—'}</span>
+            <span className="t-sub">{changed ? '新显示名' : '当前显示名'}</span>
+            <span className="preview-name">{changed ? <>{m.name}<ArrowRight size={14} style={{ color: 'var(--fg-3)' }} />{preview || '—'}</> : m.name}</span>
           </span>
           <Button type="submit" variant="primary" disabled={!changed || !valid || patch.isPending} loading={patch.isPending}>保存</Button>
         </div>
@@ -95,10 +96,12 @@ function EntrySection({ m }: { m: MachineView }) {
   const opts = relays.filter((r) => !used.has(r.id)).map((r) => ({ value: r.id, label: r.name }));
   // 线路机直出入口：每台至多一条（移除中的也占着，摘完才能再加，同服务端）
   const canAddDirect = m.kind === 'relay' && m.lifecycle === 'active' && !m.entries.some((e) => e.direct);
+  const canMove = m.lifecycle === 'active' && movableEntries(m).length > 0; // 节点换线路机、线路机搬空
+  const canAdd = m.kind !== 'relay' && opts.length > 0;
   return (
     <Section>
       <SectionHeader title="入口" meta="停用 / 启用 / 轮换凭据 / 分享链接" />
-      {/* 入口的“⋯”菜单与对话框整个入口区共用一份 */}
+      {/* 入口的“⋯”菜单与对话框整个入口列表共用一份 */}
       <EntryMenus entries={m.entries}><div className="stack-sm">
         {m.entries.length === 0 && <div className="hint">{m.kind === 'relay' ? '这台线路机上还没有入口：节点的入口在节点上添加；也可以给它加一条直出入口。' : '这台机器还没有入口，选一台线路机把它挂上去。'}</div>}
         {m.entries.map((e) => (
@@ -107,32 +110,40 @@ function EntrySection({ m }: { m: MachineView }) {
             <span className="row" style={{ gap: 8 }}>{entryState(e)}<EntryMenuButton entry={e} /></span>
           </div>
         ))}
-        {m.kind !== 'relay' && m.lifecycle === 'active' && movableEntries(m).length > 0 && (
-          <div className="manage-row">
-            <div><div className="t">换线路机</div><div className="hint">把入口换到另一台线路机：新入口验收通过后才摘旧入口，不断网；完成后分享链接会变。</div></div>
-            <Button variant="secondary" disabled={!!m.active_job} onClick={() => setDlg('move')}><Repeat2 />换线路机…</Button>
-          </div>
-        )}
-        {m.kind === 'relay' && m.lifecycle === 'active' && movableEntries(m).length > 0 && (
-          <div className="manage-row">
-            <div><div className="t">搬空线路机</div><div className="hint">把上面所有节点换到另一台线路机，之后就能安全退役这台。节点的分享链接会变。</div></div>
-            <Button variant="secondary" onClick={() => setDlg('evacuate')}><PackageOpen />搬空到…</Button>
-          </div>
-        )}
-        {canAddDirect && (
-          <div className="manage-row">
-            <div><div className="t">直出入口</div><div className="hint">从这台线路机自己的 IP（{m.ip}）出去，不经落地节点；每台线路机一条，分享链接名「{m.name}-直出」。</div></div>
-            <Button variant="secondary" disabled={add.isPending || !!m.active_job} loading={add.isPending}
-              onClick={() => add.mutate({ id: m.id, relay_id: m.id }, { onSuccess: () => toast.ok('已提交，直出入口正在应用'), onError: toast.err })}><Plus />添加直出入口</Button>
-          </div>
-        )}
-        {m.kind !== 'relay' && opts.length > 0 && (
-          <div className="row">
-            <div style={{ width: 200 }}><Select value={relay} onChange={setRelay} options={opts} placeholder="再挂到另一台线路机" /></div>
-            <Button disabled={!relay || add.isPending} loading={add.isPending} onClick={() => add.mutate({ id: m.id, relay_id: relay }, { onSuccess: () => { toast.ok('已提交，新入口正在应用'); setRelay(''); }, onError: toast.err })}><Plus />添加入口</Button>
-          </div>
-        )}
       </div></EntryMenus>
+      {/* 列表下面的入口操作单成一组：与列表隔一道线，每项一行、各有小标题 */}
+      {(canMove || canAddDirect || canAdd) && (
+        <div className="manage-group">
+          {canMove && m.kind !== 'relay' && (
+            <div className="manage-row">
+              <div><div className="t">换线路机</div><div className="hint">把入口换到另一台线路机：新入口验收通过后才摘旧入口，不断网；完成后分享链接会变。</div></div>
+              <Button variant="secondary" disabled={!!m.active_job} onClick={() => setDlg('move')}><Repeat2 />换线路机…</Button>
+            </div>
+          )}
+          {canMove && m.kind === 'relay' && (
+            <div className="manage-row">
+              <div><div className="t">搬空线路机</div><div className="hint">把上面所有节点换到另一台线路机，之后就能安全退役这台。节点的分享链接会变。</div></div>
+              <Button variant="secondary" onClick={() => setDlg('evacuate')}><PackageOpen />搬空到…</Button>
+            </div>
+          )}
+          {canAddDirect && (
+            <div className="manage-row">
+              <div><div className="t">直出入口</div><div className="hint">从这台线路机自己的 IP（{m.ip}）出去，不经落地节点；每台线路机一条，分享链接名「{m.name}-直出」。</div></div>
+              <Button variant="secondary" disabled={add.isPending || !!m.active_job} loading={add.isPending}
+                onClick={() => add.mutate({ id: m.id, relay_id: m.id }, { onSuccess: () => toast.ok('已提交，直出入口正在应用'), onError: toast.err })}><Plus />添加直出入口</Button>
+            </div>
+          )}
+          {canAdd && (
+            <div className="manage-row">
+              <div><div className="t">加入口</div><div className="hint">再挂到另一台线路机，多一条入口和分享链接；原有的入口不受影响。</div></div>
+              <span className="row" style={{ gap: 8, flexWrap: 'nowrap' }}>
+                <div style={{ width: 160 }}><Select value={relay} onChange={setRelay} options={opts} placeholder="选择线路机" aria-label="要挂到的线路机" /></div>
+                <Button disabled={!relay || add.isPending} loading={add.isPending} onClick={() => add.mutate({ id: m.id, relay_id: relay }, { onSuccess: () => { toast.ok('已提交，新入口正在应用'); setRelay(''); }, onError: toast.err })}><Plus />添加入口</Button>
+              </span>
+            </div>
+          )}
+        </div>
+      )}
       <MoveDialog m={m} open={dlg === 'move'} onOpenChange={(o) => !o && setDlg(null)} onDone={() => setDlg(null)} />
       <EvacuateDialog relay={m} open={dlg === 'evacuate'} onOpenChange={(o) => !o && setDlg(null)} onDone={() => setDlg(null)} />
     </Section>
@@ -190,15 +201,15 @@ function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }
           <div className="manage-row">
             <div>
               <div className="t">退役</div>
-              <div className="hint">停用入口、撤销令牌，机器进入“已退役”，不再出现在首页和统计里。{m.kind !== 'relay' && '同团队后面的节点会自动前移补号。'}</div>
+              <div className="hint">停用入口、撤销令牌，机器进入「已退役」，不再出现在首页和统计里。{m.kind !== 'relay' && '同团队后面的节点会自动前移补号。'}</div>
             </div>
             <Button variant="outline-danger" disabled={busyJob || m.lifecycle === 'retiring'} onClick={() => setDlg('retire')}>退役…</Button>
           </div>
         )}
-        {busyJob && m.active_job && <Note tone="info">作业进行中，暂不能操作。<Link to={`/jobs/${m.active_job.id}`} style={{ color: 'var(--accent)' }}>查看作业</Link></Note>}
+        {busyJob && m.active_job && <Note tone="info">作业进行中，暂不能操作。<Link to={`/jobs/${m.active_job.id}`} className="btn btn-link" onClick={onClosed}>查看作业</Link></Note>}
         {/* 退役作业失败：机器仍是退役中，不能再发起退役，只能重试那个作业 */}
         {m.lifecycle === 'retiring' && m.failed_job && !m.active_job && (
-          <Note tone="bad">退役作业失败，机器仍在退役中，不能再次发起退役：<Link to={`/jobs/${m.failed_job.id}`} style={{ color: 'var(--accent)' }}>到作业页重试</Link>。</Note>
+          <Note tone="bad">退役作业失败，机器仍在退役中，不能再次发起退役：<Link to={`/jobs/${m.failed_job.id}`} className="btn btn-link" onClick={onClosed}>到作业页重试</Link>。</Note>
         )}
       </div>
 

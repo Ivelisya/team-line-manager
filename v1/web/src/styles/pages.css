@@ -72,6 +72,8 @@
 .manage-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-12); flex-wrap: wrap; }
 .manage-row > div:first-child { min-width: 0; flex: 1 1 220px; }
 .manage-row .t { font-weight: var(--fw-medium); }
+/* 管理页「入口」段里列表下面的操作（换线路机 / 搬空 / 直出入口 / 加入口）：与列表隔一道线，间距同段与段之间；组内行距同退役区 */
+.manage-group { display: grid; gap: var(--sp-12); margin-top: var(--card-seg); padding-top: var(--card-seg); border-top: 1px solid var(--line); }
 .preview-name { display: inline-flex; align-items: center; gap: var(--sp-8); padding: var(--sp-6) var(--sp-12); border-radius: var(--r-control); background: var(--sunken); font-weight: var(--fw-semibold); font-size: var(--fs-emph); }
 
 /* 线路机卡 */
