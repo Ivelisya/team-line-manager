@@ -122,12 +122,13 @@ nft -f $N || { echo nft=error; exit 21; }
 echo "nft_relays=$(nft list set inet ss_guard relays | tr -d '\n' | sed 's/.*elements = { \(.*\) }.*/\1/' | tr -d ' \t')"
 "#;
 
-/// 线路机：fleet-xray 单元（配置由 agent 生成）。xray 二进制与 geo 文件已推到 /usr/local/bin、/usr/local/share/xray。
-pub fn relay_xray() -> String { RELAY_XRAY.replace("__UNIT__", XRAY_UNIT.trim_end()) }
+/// 线路机：fleet-xray 单元与访问日志轮转（配置由 agent 生成）。xray 二进制与 geoip.dat 已推到 /usr/local/bin、/usr/local/share/xray。
+pub fn relay_xray() -> String { RELAY_XRAY.replace("__UNIT__", XRAY_UNIT.trim_end()).replace("__LOGROTATE__", XRAY_LOGROTATE.trim_end()) }
 
-/// systemd 单元：唯一来源在 deploy/units/
+/// systemd 单元、logrotate 配置：唯一来源在 deploy/
 pub const AGENT_UNIT: &str = include_str!("../../../../deploy/units/fleet-agent.service");
 pub const XRAY_UNIT: &str = include_str!("../../../../deploy/units/fleet-xray.service");
+pub const XRAY_LOGROTATE: &str = include_str!("../../../../deploy/logrotate/fleet-xray");
 
 const RELAY_XRAY: &str = r#"
 set -eu
@@ -137,6 +138,11 @@ cat > $U.tmp <<'UNIT'
 __UNIT__
 UNIT
 cmp -s $U.tmp $U && rm -f $U.tmp || { mv $U.tmp $U; systemctl daemon-reload; }
+L=/etc/logrotate.d/fleet-xray
+cat > $L.tmp <<'LOGROTATE'
+__LOGROTATE__
+LOGROTATE
+cmp -s $L.tmp $L && rm -f $L.tmp || mv $L.tmp $L
 systemctl enable -q fleet-xray
 echo "xray_version=$(/usr/local/bin/xray version 2>/dev/null | head -1 | awk '{print $2}')"
 "#;
@@ -198,12 +204,12 @@ ss -Hltn 'sport = :8388' | grep -q . && echo ss=still_listening || echo ss=gone
 echo cleanup=done
 "##;
 
-/// 退役清理（线路机）：停 agent 与 xray，删配置
+/// 退役清理（线路机）：停 agent 与 xray，删配置、日志轮转和 xray 二进制与数据文件
 pub const RELAY_CLEANUP: &str = r#"
 set -u
 systemctl disable --now fleet-agent 2>/dev/null; systemctl disable --now fleet-xray 2>/dev/null
-rm -f /etc/systemd/system/fleet-agent.service /etc/systemd/system/fleet-xray.service
-rm -rf /etc/fleet-agent /var/lib/fleet-agent /var/log/fleet-xray /usr/local/bin/fleet-agent
+rm -f /etc/systemd/system/fleet-agent.service /etc/systemd/system/fleet-xray.service /etc/logrotate.d/fleet-xray
+rm -rf /etc/fleet-agent /var/lib/fleet-agent /var/log/fleet-xray /usr/local/bin/fleet-agent /usr/local/bin/xray /usr/local/share/xray
 systemctl daemon-reload
 echo cleanup=done
 "#;
@@ -224,5 +230,14 @@ mod tests {
             assert!(s.contains("nft -f $N || {"));
         }
         assert!(super::NODE_NFT_ONLY.contains("[^}]*"), "替换放行名单的 sed 不能吃掉集合的右花括号");
+    }
+
+    #[test]
+    fn relay_xray_installs_logrotate() {
+        let s = super::relay_xray();
+        assert!(!s.contains("__"), "占位符都已替换");
+        assert!(s.contains("/var/log/fleet-xray/access.log {") && s.contains("copytruncate"));
+        assert!(s.contains("mv $L.tmp $L"));
+        assert!(super::RELAY_CLEANUP.contains("/etc/logrotate.d/fleet-xray"));
     }
 }

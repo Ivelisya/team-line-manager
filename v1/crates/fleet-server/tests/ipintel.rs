@@ -264,7 +264,7 @@ async fn late_hours_are_added_once_and_scan_is_paged() {
     let late = |hour: OffsetDateTime, delta: i32| {
         sqlx::query("insert into access_source_late (node_id, hour, src_ip, delta) values ($1, $2, '202.102.224.68'::inet, $3)")
             .bind(n0)
-            .bind(fleet_server::access::floor_hour(hour))
+            .bind(fleet_server::db::floor_hour(hour))
             .bind(delta)
             .execute(&t.st.db)
     };

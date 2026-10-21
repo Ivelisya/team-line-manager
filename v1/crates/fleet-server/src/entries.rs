@@ -70,12 +70,14 @@ pub fn state_zh(s: &str) -> &str {
 
 /// 改入口状态（enable/disable/removing/rotate）并 +1 代数。返回 (relay_id, generation)。
 pub async fn transition(tx: &mut Tx<'_>, entry_id: Uuid, to: &str, rotate: bool) -> ApiResult<(Uuid, i64)> {
-    let (relay_id, cur): (Uuid, String) =
-        sqlx::query_as("select relay_id, lifecycle::text from entry where id = $1 for update")
-            .bind(entry_id)
-            .fetch_optional(&mut **tx)
-            .await?
-            .ok_or_else(|| ApiError::not_found("没有这个入口"))?;
+    // 先锁线路机再锁入口，与 on_applied 同序（入口所属的线路机不会变，先不加锁读出来）
+    let relay_id: Uuid = sqlx::query_scalar("select relay_id from entry where id = $1")
+        .bind(entry_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or_else(|| ApiError::not_found("没有这个入口"))?;
+    sqlx::query("select 1 from relay where machine_id = $1 for update").bind(relay_id).execute(&mut **tx).await?;
+    let cur: String = sqlx::query_scalar("select lifecycle::text from entry where id = $1 for update").bind(entry_id).fetch_one(&mut **tx).await?;
     let allowed = matches!(
         (cur.as_str(), to),
         ("active", "disabled") | ("disabled", "active") | ("pending" | "active" | "disabled", "removing") | ("removing", "removing")
@@ -83,7 +85,6 @@ pub async fn transition(tx: &mut Tx<'_>, entry_id: Uuid, to: &str, rotate: bool)
     if !allowed {
         return Err(ApiError::conflict(format!("入口当前是「{}」，不能变成「{}」", state_zh(&cur), state_zh(to))));
     }
-    sqlx::query("select 1 from relay where machine_id = $1 for update").bind(relay_id).execute(&mut **tx).await?;
     let gen = bump_relay(tx, relay_id).await?;
     sqlx::query(
         "update entry set lifecycle = $2::entry_lifecycle, changed_gen = $3, apply_error = null, updated_at = now(),

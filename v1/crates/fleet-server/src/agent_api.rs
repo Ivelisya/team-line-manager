@@ -1,6 +1,7 @@
 //! `/agent/v1/*`：边缘上报、期望状态长轮询、应用回报；`/echo` 回显来源 IP。
 
 use crate::crypto::sha256;
+use crate::db::floor_hour;
 use crate::entries;
 use crate::error::ApiJson;
 use crate::error::{ApiError, ApiResult};
@@ -120,10 +121,6 @@ fn warn_dropped(machine: Uuid, dropped: usize, seq: u64) {
     }
 }
 
-fn hour_start(t: OffsetDateTime) -> OffsetDateTime {
-    OffsetDateTime::from_unix_timestamp(t.unix_timestamp().div_euclid(3600) * 3600).unwrap_or(t)
-}
-
 /// 上报入库失败：数据库错误单独保留，按 SQLSTATE 分类后再回给 agent
 enum IngestErr {
     Api(ApiError),
@@ -183,25 +180,25 @@ async fn ingest(st: &AppState, h: &HeaderMap, r: Report) -> Result<Json<ReportAc
     warn_dropped(a.machine_id, dropped, r.seq);
 
     // 有新原始数据的整点小时：标脏，小时汇总补算。当前小时的汇总循环每轮都会算，不用标。
-    let cur_hour = hour_start(now);
+    let cur_hour = floor_hour(now);
     let dirty: Vec<OffsetDateTime> = host
         .iter()
         .map(|(_, t)| *t)
         .chain(es.iter().map(|(_, t)| *t))
         .chain(ps.iter().map(|(_, t)| *t))
-        .map(hour_start)
+        .map(floor_hour)
         .filter(|h| *h < cur_hour)
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
     // 访问记录单独标脏（access_dirty，由访问汇总循环消费），和遥测的 rollup_dirty 互不干扰
-    let access_dirty: Vec<OffsetDateTime> = ac.iter().map(|(_, t)| hour_start(*t)).filter(|h| *h < cur_hour).collect::<BTreeSet<_>>().into_iter().collect();
+    let access_dirty: Vec<OffsetDateTime> = ac.iter().map(|(_, t)| floor_hour(*t)).filter(|h| *h < cur_hour).collect::<BTreeSet<_>>().into_iter().collect();
 
     let mut tx = st.db.begin().await?;
-    let last: Option<(i64, Option<String>)> =
-        sqlx::query_as("select last_seq, boot_id from agent_state where machine_id = $1 for update").bind(a.machine_id).fetch_optional(&mut *tx).await?;
+    let last: Option<i64> =
+        sqlx::query_scalar("select last_seq from agent_state where machine_id = $1 for update").bind(a.machine_id).fetch_optional(&mut *tx).await?;
     // 去重：同一份数据重发（seq 不增）直接确认；但这仍说明 agent 活着，要刷新最近上报时间
-    if let Some((seq, _)) = &last {
+    if let Some(seq) = &last {
         if r.seq as i64 <= *seq {
             sqlx::query("update agent_state set last_report_at = now(), last_seq = greatest(last_seq, $2) where machine_id = $1")
                 .bind(a.machine_id)

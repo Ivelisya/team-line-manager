@@ -120,7 +120,7 @@ async fn summary_targets_sources_events() {
     sqlx::query("insert into access_hourly (node_id, relay_id, hour, dest_host, kind, conns) values ($1, $2, $3, 'seeded.example.com', 'domain', 7)")
         .bind(n1)
         .bind(fx.relay)
-        .bind(access::floor_hour(OffsetDateTime::now_utc() - Duration::days(20)))
+        .bind(fleet_server::db::floor_hour(OffsetDateTime::now_utc() - Duration::days(20)))
         .execute(&t.st.db)
         .await
         .unwrap();
@@ -262,6 +262,36 @@ async fn summary_targets_sources_events() {
         }
     }
     assert_eq!(got, 9, "8 条同一时刻的 + 原来 1 条");
+
+    // 按线路机筛选（逐入口取再合并）：多个入口同一时刻的记录交错，按 (ts, id) 倒序翻页一条不漏、不重复
+    for e in [fx.e[0], fx.e[1], fx.e[0], fx.e[1]] {
+        sqlx::query("insert into access_event (entry_id, ts, src_ip, dest_host, dest_port, network, blocked) values ($1, $2, '3.3.3.8', 'mix.example.net', 443, 'tcp', false)")
+            .bind(e)
+            .bind(same)
+            .execute(&t.st.db)
+            .await
+            .unwrap();
+    }
+    let mut f = access::Filter::new(access::Window::D7, OffsetDateTime::now_utc());
+    f.relay = Some(fx.relay);
+    let (mut keys, mut before) = (vec![], None);
+    loop {
+        let page = access::events(&t.st.db, &f, before, 4).await.unwrap();
+        keys.extend(page.iter().map(|e| (e.ts, e.id)));
+        if page.len() < 4 {
+            break;
+        }
+        before = page.last().map(|e| (e.ts, e.id));
+    }
+    let want: Vec<(OffsetDateTime, i64)> = sqlx::query_as(
+        "select ts, id from access_event where entry_id in (select id from entry where relay_id = $1) and ts >= $2 order by ts desc, id desc",
+    )
+    .bind(fx.relay)
+    .bind(f.from)
+    .fetch_all(&t.st.db)
+    .await
+    .unwrap();
+    assert_eq!(keys, want, "逐页拼起来等于一次按 (ts, id) 倒序取全");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
