@@ -15,6 +15,7 @@ import { toast } from '@/components/ui/toast';
 import { ConfirmDialog } from '@/components/app/dialogs';
 import { Chip, CopyButton, Empty, ErrorNote, Note, PageHead, Panel, Pill } from '@/components/app/primitives';
 import { copyText } from '@/lib/clipboard';
+import { useHeld } from '@/lib/useHeld';
 
 export function SettingsPage() {
   const [sp, setSp] = useSearchParams();
@@ -56,6 +57,9 @@ function ApiKeysSection() {
   const [name, setName] = React.useState(''); const [scopes, setScopes] = React.useState<string[]>(['read']); const [exp, setExp] = React.useState('90');
   const [token, setToken] = React.useState<string | null>(null); // 创建成功后的明文，只在这个对话框里出现一次
   const [ask, setAsk] = React.useState<ApiKey | null>(null);
+  // 关闭动画期间沿用最近的值：标题、密钥框不变空
+  const askHeld = useHeld(ask?.id, ask ?? undefined);
+  const tokenHeld = useHeld(token, token ?? undefined);
   const copyRef = React.useRef<HTMLButtonElement>(null);
   const list = q.data ?? [];
   const openNew = () => { setName(''); setScopes(['read']); setExp('90'); setOpen(true); };
@@ -69,7 +73,7 @@ function ApiKeysSection() {
       <Panel title="API 密钥" count={list.length} sub="给脚本和运维命令行调用中控用；只有登录会话能管理密钥" flush
         tools={<Button variant="primary" onClick={openNew}><Plus />新建密钥</Button>}>
         {q.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div>}
-        {q.isLoading ? <SkeletonRows rows={3} /> : list.length === 0 && !q.isError ? (
+        {q.isLoading ? <SkeletonRows rows={3} head /> : list.length === 0 && !q.isError ? (
           <Empty icon={<KeyRound size={22} />} text="还没有 API 密钥" hint="新建一个，用 Authorization: Bearer 调用接口"><Button variant="primary" onClick={openNew}><Plus />新建密钥</Button></Empty>
         ) : (
           <div className="table-wrap">
@@ -82,8 +86,8 @@ function ApiKeysSection() {
                     <td><Trunc className="cell-main strong">{k.name}</Trunc><span className="sub mono">flk_{k.prefix}…</span></td>
                     <td><span className="scope-tags">{k.scopes.map((s) => <Chip key={s} variant={s === 'exec' || s === 'secrets' ? 'warn' : 'neutral'}>{SCOPE_LABEL[s] ?? s}</Chip>)}</span></td>
                     <td>{F.dt(k.created_at)}</td>
-                    <td>{k.last_used_at ? <>{F.dt(k.last_used_at)}<span className="sub">{F.ago(k.last_used_at)}</span></> : <span className="t-muted">从未使用</span>}</td>
-                    <td>{k.expires_at ? F.dt(k.expires_at) : <span className="t-muted">永不</span>}</td>
+                    <td>{k.last_used_at ? <>{F.dt(k.last_used_at)}<span className="sub">{F.ago(k.last_used_at)}</span></> : <span className="t-sub">从未使用</span>}</td>
+                    <td>{k.expires_at ? F.dt(k.expires_at) : <span className="t-sub">永不</span>}</td>
                     <td>{keyStatus(k)}</td>
                     <td className="c">{!k.revoked_at && <IconButton label="撤销密钥" size="sm" onClick={() => setAsk(k)}><Ban size={14} /></IconButton>}</td>
                   </tr>
@@ -124,7 +128,7 @@ function ApiKeysSection() {
         <DialogContent size="md" onInteractOutside={(e) => e.preventDefault()} onEscapeKeyDown={(e) => e.preventDefault()} onOpenAutoFocus={(e) => { e.preventDefault(); copyRef.current?.focus(); }}>
           <DialogHeader><DialogTitle>密钥已创建</DialogTitle><DialogDescription>请现在复制并保存。</DialogDescription></DialogHeader>
           <Note tone="warn" icon={<ShieldAlert size={14} />}><b>只显示这一次。</b>关闭后无法再次查看完整密钥；丢了只能撤销后重建。</Note>
-          <div className="token-box"><code>{token}</code><CopyButton text={token ?? ''} label="密钥" size={15} /></div>
+          <div className="token-box"><code>{tokenHeld}</code><CopyButton text={tokenHeld ?? ''} label="密钥" size={15} /></div>
           <DialogFooter>
             <Button ref={copyRef} onClick={() => void copyText(token ?? '', '密钥')}>复制密钥</Button>
             <Button variant="primary" onClick={() => setToken(null)}>我已保存</Button>
@@ -132,7 +136,7 @@ function ApiKeysSection() {
         </DialogContent>
       </Dialog>
 
-      <ConfirmDialog open={!!ask} onOpenChange={(o) => !o && setAsk(null)} title={`撤销密钥“${ask?.name ?? ''}”？`} confirmLabel="撤销" danger
+      <ConfirmDialog open={!!ask} onOpenChange={(o) => !o && setAsk(null)} title={`撤销密钥“${askHeld?.name ?? ''}”？`} confirmLabel="撤销" danger
         description="撤销后使用这个密钥的脚本会立即收到 401，无法恢复。需要的话只能新建一个。"
         onConfirm={async () => { await revoke.mutateAsync(ask!.id); toast.ok('密钥已撤销'); }} />
     </>
@@ -157,6 +161,7 @@ function NotifySection() {
   const patch = usePatchChannel(); const del = useDelChannel(); const test = useTestChannel();
   const [edit, setEdit] = React.useState<NotifyChannel | 'new' | null>(null);
   const [ask, setAsk] = React.useState<NotifyChannel | null>(null);
+  const askHeld = useHeld(ask?.id, ask ?? undefined);
   const [results, setResults] = React.useState<Record<string, TestResult>>({});
   const list = q.data ?? [];
   const runTest = (c: NotifyChannel) => {
@@ -170,7 +175,7 @@ function NotifySection() {
       <Panel title="告警通知渠道" count={list.length} sub="告警触发时按“最低级别”推送到这些渠道" flush
         tools={<Button variant="primary" onClick={() => setEdit('new')}><Plus />新建渠道</Button>}>
         {q.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div>}
-        {q.isLoading ? <SkeletonRows rows={3} /> : list.length === 0 && !q.isError ? (
+        {q.isLoading ? <SkeletonRows rows={3} head /> : list.length === 0 && !q.isError ? (
           <Empty icon={<Bell size={22} />} text="还没有通知渠道" hint="告警现在只显示在页面里。添加一个渠道，让它主动推到你的 Telegram、企业微信或自己的服务。"><Button variant="primary" onClick={() => setEdit('new')}><Plus />新建渠道</Button></Empty>
         ) : (
           <div className="table-wrap">
@@ -189,7 +194,9 @@ function NotifySection() {
                       <td>
                         <span className="row" style={{ flexWrap: 'nowrap', gap: 8 }}>
                           <Button size="sm" loading={test.isPending && test.variables === c.id} disabled={test.isPending} onClick={() => runTest(c)}><FlaskConical size={13} />发送测试</Button>
-                          {r && <span className="test-result" style={{ color: r.ok ? 'var(--ok-text)' : 'var(--bad-text)' }} role={r.ok ? 'status' : 'alert'}><span title={r.error ?? undefined}>{r.ok ? '✓ 已送达' : '✗ 失败'}</span></span>}
+                          {r && (r.ok
+                            ? <span className="test-result" style={{ color: 'var(--ok-text)' }} role="status">✓ 已送达</span>
+                            : <span className="test-result" style={{ color: 'var(--bad-text)', minWidth: 0 }} role="alert"><Trunc text={`失败：${r.error ?? '未知错误'}`}>✗ 失败：{r.error ?? '未知错误'}</Trunc></span>)}
                         </span>
                       </td>
                       <td className="r"><span className="row" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap', gap: 0 }}>
@@ -207,7 +214,7 @@ function NotifySection() {
 
       <Panel title="最近发送记录" count={log.data?.length} sub="最近 100 条，含测试消息" flush>
         {log.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={log.error} onRetry={() => void log.refetch()} /></div>}
-        {log.isLoading ? <SkeletonRows rows={3} /> : !log.data?.length && !log.isError ? <Empty icon={<Send size={22} />} text="还没有发送记录" /> : (
+        {log.isLoading ? <SkeletonRows rows={3} one head /> : !log.data?.length && !log.isError ? <Empty icon={<Send size={22} />} text="还没有发送记录" /> : (
           <div className="table-wrap" style={{ maxHeight: 420, overflowY: 'auto' }}>
             <table className="dt is-one" style={{ minWidth: 640 }}>
               <colgroup><col style={{ width: 156 }} /><col style={{ width: 170 }} /><col style={{ width: 90 }} /><col style={{ width: 240 }} /><col /></colgroup>
@@ -228,7 +235,7 @@ function NotifySection() {
       </Panel>
 
       <ChannelDialog target={edit} onClose={() => setEdit(null)} />
-      <ConfirmDialog open={!!ask} onOpenChange={(o) => !o && setAsk(null)} title={`删除渠道“${ask?.name ?? ''}”？`} confirmLabel="删除" danger
+      <ConfirmDialog open={!!ask} onOpenChange={(o) => !o && setAsk(null)} title={`删除渠道“${askHeld?.name ?? ''}”？`} confirmLabel="删除" danger
         description="删除后告警不会再推送到这个渠道；发送记录保留。"
         onConfirm={async () => { await del.mutateAsync(ask!.id); toast.ok('渠道已删除'); }} />
     </>
@@ -237,13 +244,16 @@ function NotifySection() {
 
 function ChannelDialog({ target, onClose }: { target: NotifyChannel | 'new' | null; onClose: () => void }) {
   const add = useAddChannel(); const patch = usePatchChannel();
-  const isNew = target === 'new';
-  const ch = target && target !== 'new' ? target : null;
+  // 关闭动画期间沿用最近的对象，标题和字段不闪变
+  const held = useHeld(target === 'new' ? 'new' : target?.id, target ?? undefined);
+  const isNew = held === 'new';
+  const ch = held && held !== 'new' ? held : null;
   const [name, setName] = React.useState(''); const [kind, setKind] = React.useState('telegram');
   const [cfg, setCfg] = React.useState<Record<string, string>>({}); const [sev, setSev] = React.useState('warning'); const [enabled, setEnabled] = React.useState(true);
+  const [touched, setTouched] = React.useState(false); // 动过配置字段后才提示“填写完整”，不一打开就标红
   React.useEffect(() => {
     if (!target) return;
-    setCfg({});
+    setCfg({}); setTouched(false);
     if (target === 'new') { setName(''); setKind('telegram'); setSev('warning'); setEnabled(true); }
     else { setName(target.name); setKind(target.kind); setSev(target.min_severity); setEnabled(target.enabled); }
   }, [target]);
@@ -254,13 +264,14 @@ function ChannelDialog({ target, onClose }: { target: NotifyChannel | 'new' | nu
   const valid = name.trim().length > 0 && cfgOk;
   const config = Object.fromEntries(k.fields.map((f) => [f.key, (cfg[f.key] ?? '').trim()]));
   const busy = add.isPending || patch.isPending;
+  const dirty = filled > 0 || (isNew ? name.trim() !== '' : !!ch && (name !== ch.name || sev !== ch.min_severity || enabled !== ch.enabled));
   const submit = () => {
     if (isNew) add.mutate({ name: name.trim(), kind, config, min_severity: sev, enabled }, { onSuccess: () => { toast.ok('渠道已创建'); onClose(); }, onError: toast.err });
     else if (ch) patch.mutate({ id: ch.id, name: name.trim(), min_severity: sev, enabled, ...(filled ? { config } : {}) }, { onSuccess: () => { toast.ok('渠道已保存'); onClose(); }, onError: toast.err });
   };
   return (
     <Dialog open={!!target} onOpenChange={(o) => !o && !busy && onClose()}>
-      <DialogContent size="md">
+      <DialogContent size="md" onInteractOutside={(e) => { if (dirty) e.preventDefault(); }}>
         <form style={{ display: 'grid', gap: 16 }} onSubmit={(e) => { e.preventDefault(); if (valid && !busy) submit(); }}>
           <DialogHeader><DialogTitle>{isNew ? '新建通知渠道' : `编辑渠道 · ${ch?.name ?? ''}`}</DialogTitle><DialogDescription>配置加密保存，保存后页面不再显示明文。</DialogDescription></DialogHeader>
           <div className="form-grid">
@@ -270,11 +281,11 @@ function ChannelDialog({ target, onClose }: { target: NotifyChannel | 'new' | nu
           <div className="form-grid">
             {k.fields.map((f) => (
               <Field key={f.key} label={f.label} className={k.fields.length === 1 ? 'span-2' : undefined} hint={!isNew && ch ? `留空则保持不变（当前：${ch.config_hint}）` : undefined}>
-                <Input type={f.secret ? 'password' : 'text'} value={cfg[f.key] ?? ''} onChange={(e) => setCfg((c) => ({ ...c, [f.key]: e.target.value }))} placeholder={f.ph} autoComplete="off" spellCheck={false} />
+                <Input type={f.secret ? 'password' : 'text'} value={cfg[f.key] ?? ''} onChange={(e) => { setCfg((c) => ({ ...c, [f.key]: e.target.value })); setTouched(true); }} placeholder={f.ph} autoComplete="off" spellCheck={false} />
               </Field>
             ))}
           </div>
-          {!cfgOk && <div className="hint is-error">{isNew ? '请把配置填写完整' : '要修改配置，需要把这一类型的所有字段都填上'}</div>}
+          {!cfgOk && touched && <div className="hint is-error">{isNew ? '请把配置填写完整' : '要修改配置，需要把这一类型的所有字段都填上'}</div>}
           <div className="form-grid">
             <Field label="最低级别" hint="低于这个级别的告警不会推送"><Select value={sev} onChange={setSev} options={SEVERITIES} /></Field>
             <Field label="状态"><label className="check-row" style={{ gap: 10, height: 'var(--h-lg)' }}><Switch checked={enabled} onCheckedChange={setEnabled} /><span>{enabled ? '启用' : '已停用'}</span></label></Field>

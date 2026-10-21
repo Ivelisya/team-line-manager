@@ -8,7 +8,8 @@ import { usePage } from '@/lib/usePage';
 import { Pagination } from '@/components/app/Pagination';
 import { useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
-import type { Incident } from '@/lib/types';
+import type { Incident, Silence } from '@/lib/types';
+import { useHeld } from '@/lib/useHeld';
 import { Button, IconButton } from '@/components/ui/button';
 import { CheckRow, Field, Input } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
@@ -35,7 +36,8 @@ export function IncidentsPage() {
   // 续费类告警的「登记续费」要用机器的订阅信息；续费后下一轮评估（≤30 秒）自动恢复
   const machines = useMachineBriefs().data;
   const [renewId, setRenewId] = React.useState<string | null>(null);
-  const renewM = machines?.find((m) => m.id === renewId);
+  // 关闭后沿用最近的机器，对话框常驻挂载、播完退场动画
+  const renewM = useHeld(renewId, machines?.find((m) => m.id === renewId));
   return (
     <div className="stack" ref={pg.anchor}>
       <PageHead title="告警" note={q.data ? `${q.data.total} 条` : undefined}
@@ -68,7 +70,7 @@ export function IncidentsPage() {
         </div>
         <Pagination pg={pg} unit="条" />
       </Panel>
-      {renewM?.subscription && <RenewDialog m={renewM} s={renewM.subscription} open onOpenChange={(o) => !o && setRenewId(null)} />}
+      {renewM?.subscription && <RenewDialog m={renewM} s={renewM.subscription} open={!!renewId} onOpenChange={(o) => !o && setRenewId(null)} />}
       <Silences />
     </div>
   );
@@ -83,6 +85,8 @@ function Silences() {
   const [sp, setSp] = useSearchParams();
   const [open, setOpen] = React.useState(false);
   const [askAll, setAskAll] = React.useState(false);
+  const [askDel, setAskDel] = React.useState<Silence | null>(null);
+  const delHeld = useHeld(askDel?.id, askDel ?? undefined);
   const [subject, setSubject] = React.useState(''); const [hours, setHours] = React.useState('4');
   const [maint, setMaint] = React.useState(true); const [comment, setComment] = React.useState('');
   // 命令面板 / 右键菜单：/incidents?silence=<机器id> 直接打开“新建静默”并选好对象；silence=new 不预选
@@ -105,7 +109,7 @@ function Silences() {
     <>
       <Panel title="静默与维护窗口" count={list.length} sub="窗口内不会产生告警" tools={<Button onClick={() => { setSubject(''); setHours('4'); setMaint(true); setComment(''); setOpen(true); }}><Plus />新建静默</Button>} flush>
         {q.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div>}
-        {q.isLoading ? <SkeletonRows rows={2} /> : list.length === 0 && !q.isError ? <Empty icon={<BellOff size={22} />} text="当前没有生效的静默" hint="维护机器前先建一个，期间不会发告警" /> : (
+        {q.isLoading ? <SkeletonRows rows={2} one head /> : list.length === 0 && !q.isError ? <Empty icon={<BellOff size={22} />} text="当前没有生效的静默" hint="维护机器前先建一个，期间不会发告警" /> : (
           <div className="table-wrap">
             <table className="dt is-one" style={{ minWidth: 640 }}>
               <colgroup><col style={{ width: 140 }} /><col style={{ width: 110 }} /><col style={{ width: 230 }} /><col /><col style={{ width: 64 }} /></colgroup>
@@ -113,7 +117,7 @@ function Silences() {
               <tbody>{list.map((s) => (
                 <tr key={s.id}><td className="strong">{s.subject_name ?? '全部机器'}</td><td>{s.is_maintenance ? <Pill tone="info"><Wrench size={11} />维护</Pill> : <Pill>静默</Pill>}</td>
                   <td>{F.dt(s.starts_at)} → {F.dt(s.ends_at)}</td><td><Trunc className="cell-main">{s.comment}</Trunc></td>
-                  <td className="c"><IconButton label="删除静默" size="sm" disabled={del.isPending} onClick={() => del.mutate(s.id, { onSuccess: () => toast.ok('已删除静默'), onError: toast.err })}><Trash2 size={14} /></IconButton></td></tr>
+                  <td className="c"><IconButton label="删除静默" size="sm" onClick={() => setAskDel(s)}><Trash2 size={14} /></IconButton></td></tr>
               ))}</tbody>
             </table>
           </div>
@@ -121,15 +125,20 @@ function Silences() {
       </Panel>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
-          <DialogHeader><DialogTitle>新建静默</DialogTitle><DialogDescription>从现在开始，指定时长内所选对象不会触发告警。</DialogDescription></DialogHeader>
-          <Field label="对象" hint="必须选择：是哪台机器要静默"><Select value={subject} onChange={setSubject} placeholder="选择机器" options={[{ value: ALL, label: '全部机器（影响所有告警）' }, ...machines.map((m) => ({ value: m.id, label: m.name }))]} /></Field>
-          {subject === ALL && <Note tone="warn">静默“全部机器”会让所有机器在这段时间内都不发告警。提交时需要再确认一次。</Note>}
-          <Field label="时长（小时）" hint={`最长 ${MAX_HOURS} 小时（30 天）`} error={hoursErr}><Input inputMode="numeric" value={hours} onChange={(e) => setHours(e.target.value.replace(/\D/g, ''))} aria-invalid={!!hoursErr} /></Field>
-          <CheckRow checked={maint} onChange={setMaint}>标记为维护（卡片显示“维护中”）</CheckRow>
-          <Field label="备注"><Input value={comment} onChange={(e) => setComment(e.target.value)} placeholder="例如：换内核" /></Field>
-          <DialogFooter><Button onClick={() => setOpen(false)}>取消</Button><Button variant="primary" loading={add.isPending} disabled={!valid} onClick={() => (subject === ALL ? setAskAll(true) : submit())}>创建</Button></DialogFooter>
+          <form style={{ display: 'grid', gap: 16 }} onSubmit={(e) => { e.preventDefault(); if (valid && !add.isPending) { if (subject === ALL) setAskAll(true); else submit(); } }}>
+            <DialogHeader><DialogTitle>新建静默</DialogTitle><DialogDescription>从现在开始，指定时长内所选对象不会触发告警。</DialogDescription></DialogHeader>
+            <Field label="对象" hint="必须选择：是哪台机器要静默"><Select value={subject} onChange={setSubject} placeholder="选择机器" options={[{ value: ALL, label: '全部机器（影响所有告警）' }, ...machines.map((m) => ({ value: m.id, label: m.name }))]} /></Field>
+            {subject === ALL && <Note tone="warn">静默“全部机器”会让所有机器在这段时间内都不发告警。提交时需要再确认一次。</Note>}
+            <Field label="时长（小时）" hint={`最长 ${MAX_HOURS} 小时（30 天）`} error={hoursErr}><Input inputMode="numeric" value={hours} onChange={(e) => setHours(e.target.value.replace(/\D/g, ''))} aria-invalid={!!hoursErr} /></Field>
+            <CheckRow checked={maint} onChange={setMaint}>标记为维护（卡片显示“维护中”）</CheckRow>
+            <Field label="备注"><Input value={comment} onChange={(e) => setComment(e.target.value)} placeholder="例如：换内核" /></Field>
+            <DialogFooter><Button onClick={() => setOpen(false)}>取消</Button><Button type="submit" variant="primary" loading={add.isPending} disabled={!valid}>创建</Button></DialogFooter>
+          </form>
         </DialogContent>
       </Dialog>
+      <ConfirmDialog open={!!askDel} onOpenChange={(o) => !o && setAskDel(null)} title={`删除「${delHeld?.subject_name ?? '全部机器'}」的${delHeld?.is_maintenance ? '维护窗口' : '静默'}？`} confirmLabel="删除" danger
+        description={`删除后立即恢复告警：${delHeld?.subject_name ?? '所有机器'}若仍异常，会马上发出通知。`}
+        onConfirm={async () => { await del.mutateAsync(askDel!.id); toast.ok('已删除静默'); }} />
       <ConfirmDialog open={askAll} onOpenChange={setAskAll} title="静默全部机器？" confirmLabel="静默全部机器" danger
         description={`接下来 ${hours || 0} 小时内，所有机器的告警都不会发出。确认是要这样做吗？`}
         onConfirm={async () => { await add.mutateAsync({ subject_id: null, starts_at: new Date().toISOString(), ends_at: new Date(Date.now() + h * 3600_000).toISOString(), is_maintenance: maint, comment: comment.trim() }); toast.ok('已创建静默'); setOpen(false); }} />

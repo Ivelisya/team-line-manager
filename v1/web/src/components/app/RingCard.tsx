@@ -38,7 +38,7 @@ function RingCardImpl({ m, current, onOpen }: { m: MachineView; current?: boolea
             {ring('cpu', 'CPU', r?.cpu)}{ring('mem', '内存', r?.mem)}{ring('disk', '磁盘', r?.disk)}<span className="sr-only">（查看主机曲线）</span>
           </button>
           <footer className="rc-foot">
-            {h ? <>{rate('up', lr?.tx)}{rate('down', lr?.rx)}</> : <span className="t-muted">{m.kind === 'proxy' ? '家宽代理没有主机指标' : '暂无主机指标'}</span>}
+            {h ? <>{rate('up', lr?.tx)}{rate('down', lr?.rx)}</> : <span className="t-sub">{m.kind === 'proxy' ? '家宽代理没有主机指标' : '暂无主机指标'}</span>}
           </footer>
         </article>
       </ContextMenuTrigger>

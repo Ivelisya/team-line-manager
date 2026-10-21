@@ -16,6 +16,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, Di
 import { SkeletonRows } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
 import { ConfirmDialog } from '@/components/app/dialogs';
+import { useHeld } from '@/lib/useHeld';
 import { AccessViewSwitch } from '@/components/app/AccessViewSwitch';
 import { Chip, Empty, ErrorNote, Note, PageHead, Panel, Pill, type Tone } from '@/components/app/primitives';
 import '@/styles/policy.css';
@@ -190,14 +191,14 @@ function Editor({ scope, name, sp, team, node, onDirty }: { scope: 'team' | 'nod
   const invalid = (uses && (parsed.issues.length > 0 || !!parsed.overall)) || note.length > MAX_NOTE;
   const canSave = dirty && !invalid && !noDomains;
 
-  const submit = (body: PolicyBody) => save.mutate({ scope, id: sp.id, ...body, expected_revision: synced.revision }, {
-    onSuccess: (r) => {
-      const b = r.policy.draft ?? curOf(r.policy);
-      setMode(b.mode); setText(domainsToText(b.domains)); setNote(b.note); setSynced({ revision: r.policy.revision, body: b });
-      toast.ok(r.policy.draft ? '草稿已保存' : '草稿已清除（与生效值相同）');
-    },
-    onError: toast.err,
-  });
+  const req = (body: PolicyBody) => ({ scope, id: sp.id, ...body, expected_revision: synced.revision });
+  const onSaved = (r: Awaited<ReturnType<typeof save.mutateAsync>>) => {
+    const b = r.policy.draft ?? curOf(r.policy);
+    setMode(b.mode); setText(domainsToText(b.domains)); setNote(b.note); setSynced({ revision: r.policy.revision, body: b });
+    toast.ok(r.policy.draft ? '草稿已保存' : '草稿已清除（与生效值相同）');
+  };
+  const submit = (body: PolicyBody) => save.mutate(req(body), { onSuccess: onSaved, onError: toast.err });
+  const [askDrop, setAskDrop] = React.useState(false);
 
   const cur = curOf(sp);
   // 节点「跟随团队」时对比里要说明团队当前是什么
@@ -252,10 +253,13 @@ function Editor({ scope, name, sp, team, node, onDirty }: { scope: 'team' | 'nod
         <div className="pol-actions">
           <Button variant="primary" disabled={!canSave} loading={save.isPending} onClick={() => submit(form)}><Save />保存草稿</Button>
           <Button variant="quiet" disabled={!dirty || save.isPending} onClick={() => load(sp)}><Undo2 />还原编辑</Button>
-          {sp.draft && <Button variant="outline-danger" disabled={save.isPending} onClick={() => submit(cur)}><Trash2 />放弃这份草稿</Button>}
+          {sp.draft && <Button variant="outline-danger" disabled={save.isPending} onClick={() => setAskDrop(true)}><Trash2 />放弃这份草稿</Button>}
           <span className="pol-meta t-sub">{sp.updated_at ? `最近修改 ${F.dtFull(sp.updated_at)}${sp.updated_by ? ` · ${sp.updated_by}` : ''}` : '还没有修改过'}</span>
         </div>
       </div>
+      <ConfirmDialog open={askDrop} onOpenChange={setAskDrop} title={`放弃「${name}」的草稿？`} confirmLabel="放弃草稿" danger
+        description={`这份草稿里的改动会丢失，生效中的规则不变。${dirty ? '你正在编辑、还没保存的内容也会一起丢掉。' : ''}`}
+        onConfirm={() => save.mutateAsync(req(cur)).then(onSaved)} />
     </Panel>
   );
 }
@@ -406,12 +410,13 @@ function VersionsPanel() {
   const q = usePolicyVersions();
   const rollback = useRollbackPolicy();
   const [ask, setAsk] = React.useState<PolicyVersion | null>(null);
+  const askHeld = useHeld(ask?.id, ask ?? undefined); // 关闭动画期间标题里的版本号不变空
   const list = q.data ?? [];
   return (
     <>
       <Panel title="发布记录" count={q.data ? `最近 ${list.length} 个版本` : undefined} sub="每次发布都是一个完整快照；回滚 = 把旧版本作为新版本再发布一次" flush>
         {q.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div>}
-        {q.isLoading ? <SkeletonRows rows={3} /> : list.length === 0 && !q.isError ? (
+        {q.isLoading ? <SkeletonRows rows={3} head /> : list.length === 0 && !q.isError ? (
           <Empty icon={<ShieldCheck size={22} />} text="还没有发布过访问规则" hint="在上面编辑并保存草稿，预览后发布" />
         ) : (
           <div className="table-wrap">
@@ -425,10 +430,10 @@ function VersionsPanel() {
                     <td title={F.dtFull(v.created_at)}>{F.dt(v.created_at)}<span className="sub">{v.actor}</span></td>
                     <td><VersionChanges changes={v.changes} /></td>
                     <td>
-                      {v.relays.length === 0 ? <span className="t-muted">无需应用</span> : (
+                      {v.relays.length === 0 ? <span className="t-sub">无需应用</span> : (
                         <span className="pol-relays">
                           {v.relays.map((r) => (
-                            <Tip key={r.relay_id} text={r.error ? `${r.name ?? '线路机'}：${r.error}` : `${r.name ?? '线路机'}：期望代数 ${r.generation}，已应用 ${r.applied_generation ?? '—'}`}>
+                            <Tip key={r.relay_id} text={r.error ? `${r.name ?? '线路机'}：${r.error}` : `${r.name ?? '线路机'}：配置版本 ${r.generation} · 已生效 ${r.applied_generation ?? '—'}（两个数相等表示线路机已同步）`}>
                               <span className="pol-relay" tabIndex={0}><i className="dot" data-tone={STATUS[r.status].tone === 'neutral' ? undefined : STATUS[r.status].tone} />{r.name ?? '线路机'}<small>{STATUS[r.status].label}</small></span>
                             </Tip>
                           ))}
@@ -444,7 +449,7 @@ function VersionsPanel() {
           </div>
         )}
       </Panel>
-      <ConfirmDialog open={!!ask} onOpenChange={(o) => !o && setAsk(null)} confirmLabel="回滚" title={`回滚到版本 v${ask?.seq ?? ''}？`}
+      <ConfirmDialog open={!!ask} onOpenChange={(o) => !o && setAsk(null)} confirmLabel="回滚" title={`回滚到版本 v${askHeld?.seq ?? ''}？`}
         description="会把当前生效的访问规则整体换成这个版本的内容，作为新版本发布并应用到线路机。未发布的草稿不受影响。"
         onConfirm={async () => { const v = await rollback.mutateAsync(ask!.id); toast.ok(`已回滚，新版本 v${v.seq}`); }} />
     </>
@@ -452,7 +457,7 @@ function VersionsPanel() {
 }
 
 function VersionChanges({ changes }: { changes: PolicyChange[] }) {
-  if (!changes.length) return <span className="t-muted">只改了备注</span>;
+  if (!changes.length) return <span className="t-sub">只改了备注</span>;
   const one = (c: PolicyChange) => `${c.name}：${MODE_LABEL[c.from.mode]} → ${MODE_LABEL[c.to.mode]}${needsDomains(c.to.mode) ? `（${c.to.domains} 个域名）` : ''}`;
   const full = changes.map(one).join('\n');
   return (

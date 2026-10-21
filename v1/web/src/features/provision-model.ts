@@ -89,22 +89,24 @@ export function toItem(r: Row): ProvisionItem {
   return it;
 }
 
-/** 提交前的本地校验（不依赖后端）：返回每行的错误 */
-export function localErrors(r: Row): string[] {
-  const e: string[] = [];
-  for (const [k, v] of Object.entries(r.unresolved)) { const c = COLS.find((x) => x.key === k); e.push(`${c?.label ?? k}「${v}」不存在`); }
-  if (!r.ip.trim()) e.push('请填写 IP');
-  if (r.kind === 'relay' && !r.label.trim()) e.push('请填写线路机名');
-  if (r.kind !== 'relay') { if (!r.team_id && !r.unresolved.team_id) e.push('请选择团队'); if (!r.relay_id && !r.unresolved.relay_id) e.push('请选择挂载的线路机'); }
-  if (r.number.trim() !== '' && (!/^\d+$/.test(r.number.trim()) || Number(r.number) < 1 || Number(r.number) > 999)) e.push('编号应为 1–999 的整数，或留空自动编号');
-  for (const k of ['ssh_port', 'ss_port', 'up_port'] as const) if (r[k].trim() !== '' && !/^\d+$/.test(r[k].trim())) e.push(`${COLS.find((c) => c.key === k)!.label}应为整数`);
-  if (r.kind === 'proxy' && (!r.up_host.trim() || !r.up_port.trim())) e.push('家宽代理要填上游协议（socks5/http）、主机和端口');
-  if (r.due_date && !/^\d{4}-\d{2}-\d{2}$/.test(r.due_date)) e.push('到期日格式应为 YYYY-MM-DD');
-  if (r.price.trim() && !isFinite(Number(r.price))) e.push('费用应为数字');
+/** 提交前的本地校验（不依赖后端）：每条错误带出错的字段，单台表单把它标在字段旁 */
+export function localIssues(r: Row): { key: keyof Row; msg: string }[] {
+  const e: { key: keyof Row; msg: string }[] = [];
+  const add = (key: keyof Row, msg: string) => e.push({ key, msg });
+  for (const [k, v] of Object.entries(r.unresolved)) { const c = COLS.find((x) => x.key === k); add(k as keyof Row, `${c?.label ?? k}「${v}」不存在`); }
+  if (!r.ip.trim()) add('ip', '请填写 IP');
+  if (r.kind === 'relay' && !r.label.trim()) add('label', '请填写线路机名');
+  if (r.kind !== 'relay') { if (!r.team_id && !r.unresolved.team_id) add('team_id', '请选择团队'); if (!r.relay_id && !r.unresolved.relay_id) add('relay_id', '请选择挂载的线路机'); }
+  if (r.number.trim() !== '' && (!/^\d+$/.test(r.number.trim()) || Number(r.number) < 1 || Number(r.number) > 999)) add('number', '编号应为 1–999 的整数，或留空自动编号');
+  for (const k of ['ssh_port', 'ss_port', 'up_port'] as const) if (r[k].trim() !== '' && !/^\d+$/.test(r[k].trim())) add(k, `${COLS.find((c) => c.key === k)!.label}应为整数`);
+  if (r.kind === 'proxy' && (!r.up_host.trim() || !r.up_port.trim())) add(r.up_host.trim() ? 'up_port' : 'up_host', '家宽代理要填上游协议（socks5/http）、主机和端口');
+  if (r.due_date && !/^\d{4}-\d{2}-\d{2}$/.test(r.due_date)) add('due_date', '到期日格式应为 YYYY-MM-DD');
+  if (r.price.trim() && !isFinite(Number(r.price))) add('price', '费用应为数字');
   // 费用只挂在订阅上：没有到期日就没有订阅，填了的费用会被悄悄丢掉——在这里拦下
-  if (r.price.trim() && !r.due_date) e.push('填了费用，也需要填到期日');
+  if (r.price.trim() && !r.due_date) add('due_date', '填了费用，也需要填到期日');
   return e;
 }
+export const localErrors = (r: Row): string[] => localIssues(r).map((x) => x.msg);
 
 /** 把 TSV 文本解析成二维数组（支持引号包裹的单元格） */
 export function parseTsv(text: string): string[][] {
