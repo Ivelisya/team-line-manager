@@ -13,7 +13,7 @@ mod resolve;
 mod table;
 
 use clap::{Args, Parser, Subcommand};
-use client::{ApiError, Client, Cred};
+use client::{Client, Cred};
 use cmds::Ctx;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -616,15 +616,7 @@ fn main() -> ExitCode {
         Ok(code) => ExitCode::from(code),
         Err(e) => {
             if json {
-                let (code, status) = match e.downcast_ref::<ApiError>() {
-                    Some(a) => (a.code.clone(), Some(a.status)),
-                    None => ("error".to_string(), None),
-                };
-                let msg = match e.downcast_ref::<ApiError>() {
-                    Some(a) if !e.to_string().contains('\n') => a.message.clone(),
-                    _ => format!("{e:#}"),
-                };
-                eprintln!("{}", serde_json::json!({"error": {"code": code, "message": msg, "status": status}}));
+                eprintln!("{}", serde_json::json!({"error": cmds::error_json(&e)}));
             } else {
                 eprintln!("错误：{e:#}");
             }

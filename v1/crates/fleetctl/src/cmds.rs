@@ -1,6 +1,6 @@
 //! 只读与作业类命令：status / ls / show / series / incidents / jobs / entries / audit / logs / watch …
 
-use crate::client::Client;
+use crate::client::{ApiError, Client};
 use crate::resolve::{self, Want};
 use crate::table::{self, bps, bytes, money};
 use anyhow::{anyhow, bail};
@@ -29,6 +29,17 @@ pub fn out_raw(s: &str) {
     let mut o = std::io::stdout().lock();
     let _ = o.write_all(s.as_bytes());
     let _ = o.flush();
+}
+
+/// `--json` 下的错误对象 `{"code","message","status"}`：stderr 的 `{"error": …}` 与 exec 多台时每台的 error 共用
+pub fn error_json(e: &anyhow::Error) -> Value {
+    match e.downcast_ref::<ApiError>() {
+        Some(a) => {
+            let msg = if e.to_string().contains('\n') { format!("{e:#}") } else { a.message.clone() };
+            json!({"code": a.code, "message": msg, "status": a.status})
+        }
+        None => json!({"code": "error", "message": format!("{e:#}"), "status": null}),
+    }
 }
 
 /// 取字符串/数字/布尔字段（JSON Pointer），缺失或 null 给 "-"
@@ -584,7 +595,24 @@ pub fn job(ctx: &Ctx, id: &str, follow: bool) -> anyhow::Result<u8> {
         }
         s
     });
-    Ok(if j["state"] == "failed" { 1 } else { 0 })
+    Ok(job_end(ctx, &j))
+}
+
+/// 作业的退出码：失败 / 取消为 1，`--json` 时 stderr 另给 `{"error":{"code":"job_failed"|"job_cancelled",…}}`；其余为 0
+fn job_end(ctx: &Ctx, j: &Value) -> u8 {
+    let (code, what) = match j["state"].as_str() {
+        Some("failed") => ("job_failed", "作业失败"),
+        Some("cancelled") => ("job_cancelled", "作业已取消"),
+        _ => return 0,
+    };
+    if ctx.json {
+        let msg = match j["error"].as_str().filter(|e| !e.is_empty()) {
+            Some(e) => format!("{what}：{e}"),
+            None => what.to_string(),
+        };
+        eprintln!("{}", json!({"error": {"code": code, "message": msg, "status": null}}));
+    }
+    1
 }
 
 /// follow 时连续这么多次取进度失败才放弃
@@ -642,7 +670,7 @@ pub fn follow_job(ctx: &Ctx, id: &str) -> anyhow::Result<u8> {
             } else if state != "succeeded" {
                 outln(format!("作业{}：{}", if state == "failed" { "失败" } else { "已取消" }, st(&j, "/error")));
             }
-            return Ok(if state == "succeeded" { 0 } else { 1 });
+            return Ok(job_end(ctx, &j));
         }
         std::thread::sleep(Duration::from_secs(1));
     }
@@ -797,6 +825,12 @@ mod tests {
         // 外面包了 context 也认得出底下的 ApiError
         assert!(!follow_error_is_transient(&api(403).context("读取")));
         assert!(follow_error_is_transient(&api(503).context("读取")));
+    }
+
+    #[test]
+    fn error_json_keeps_api_code_and_status() {
+        assert_eq!(error_json(&api(403)), json!({"code": "x", "message": "m", "status": 403}));
+        assert_eq!(error_json(&anyhow!("坏了")), json!({"code": "error", "message": "坏了", "status": null}));
     }
 
     #[test]

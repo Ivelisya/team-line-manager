@@ -411,14 +411,13 @@ struct ExecTarget {
 struct ExecResult {
     name: String,
     id: String,
-    data: Result<Value, String>,
+    data: anyhow::Result<Value>,
 }
 
 fn run_one(ctx: &Ctx, t: &ExecTarget, command: &str, timeout: u64) -> ExecResult {
     let data = ctx
         .c
-        .post_t(&format!("/machines/{}/exec", t.id), &json!({"command": command, "timeout_s": timeout}), Duration::from_secs(timeout + 40))
-        .map_err(|e| e.to_string());
+        .post_t(&format!("/machines/{}/exec", t.id), &json!({"command": command, "timeout_s": timeout}), Duration::from_secs(timeout + 40));
     ExecResult { name: t.name.clone(), id: t.id.clone(), data }
 }
 
@@ -457,7 +456,8 @@ pub fn exec(ctx: &Ctx, o: ExecOpts<'_>) -> anyhow::Result<u8> {
     // 单台：stdout/stderr 原样转出，退出码沿用远端的
     if targets.len() == 1 {
         let r = run_one(ctx, &targets[0], &command, o.timeout);
-        let d = r.data.map_err(|e| anyhow!(e))?;
+        // 错误原样交给 main：--json 时带上 ApiError 的 code / status
+        let d = r.data?;
         if ctx.json {
             outln(serde_json::to_string_pretty(&d)?);
         } else {
@@ -504,7 +504,7 @@ pub fn exec(ctx: &Ctx, o: ExecOpts<'_>) -> anyhow::Result<u8> {
                     v["id"] = json!(r.id);
                     v
                 }
-                Err(e) => json!({"machine": r.name, "id": r.id, "exit_code": null, "error": e}),
+                Err(e) => json!({"machine": r.name, "id": r.id, "exit_code": null, "error": cmds::error_json(e)}),
             })
             .collect();
         outln(serde_json::to_string_pretty(&arr)?);
@@ -522,14 +522,14 @@ pub fn exec(ctx: &Ctx, o: ExecOpts<'_>) -> anyhow::Result<u8> {
                         outln(format!("[stderr]\n{}", e.trim_end()));
                     }
                 }
-                Err(e) => outln(format!("== {} 失败 ==\n{e}", r.name)),
+                Err(e) => outln(format!("== {} 失败 ==\n{e:#}", r.name)),
             }
         }
         let rows: Vec<Vec<String>> = results
             .iter()
             .map(|r| match &r.data {
                 Ok(d) => vec![r.name.clone(), st(d, "/exit_code"), format!("{} ms", st(d, "/duration_ms")), if d["timed_out"] == true { "超时".into() } else { "".into() }],
-                Err(e) => vec![r.name.clone(), "-".into(), "-".into(), e.clone()],
+                Err(e) => vec![r.name.clone(), "-".into(), "-".into(), format!("{e:#}")],
             })
             .collect();
         outln(format!("\n汇总：{} 台，成功 {}，失败 {}\n{}", results.len(), results.len() - failed, failed, table::render(&["机器", "退出码", "耗时", "备注"], &rows)));

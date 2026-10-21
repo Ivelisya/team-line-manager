@@ -11,7 +11,7 @@ use crate::state::{access_cursor_path, stats_path, SeqState, Shared};
 use crate::util::{backoff, load_json, now_ms, save_json};
 use crate::xray::access::{local_utc_offset_s, Cursor, Tailer};
 use fleet_proto::{AgentHealth, Report};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use tokio::sync::watch;
@@ -26,6 +26,8 @@ const QUEUE_MAX_AGE_MS: i64 = 6 * 3600 * 1000;
 const REVOKED_SLEEP: Duration = Duration::from_secs(600);
 const FLUSH_MAX_REPORTS: usize = 200;
 const FLUSH_MAX_TIME: Duration = Duration::from_secs(20);
+/// 访问日志有积压时，一轮里追加只含访问事件的报告最多花这么久（之后先去发送，下一轮再追）
+const CATCHUP_MAX_TIME: Duration = Duration::from_secs(3);
 /// 上报连续失败（断网 / 服务端不可达）时，建报间隔至少拉长到这么久：
 /// 合并更多样本进同一份报告，少产生队列文件（每份离线报告恢复后都要一次 RTT 重放）
 const OFFLINE_BUILD_INTERVAL: Duration = Duration::from_secs(60);
@@ -44,6 +46,8 @@ fn lock(core: &Mutex<Core>) -> MutexGuard<'_, Core> {
 pub struct Reporter {
     sh: Arc<Shared>,
     core: Arc<Mutex<Core>>,
+    /// 队列长度（Queue 维护），异步线程上只读它，不拿 core 的锁
+    queue_len: Arc<AtomicUsize>,
     client: Arc<ServerClient>,
     boot_id: String,
     interval_s: u32,
@@ -68,8 +72,9 @@ impl Reporter {
         let seq = SeqState::load(crate::state::state_path(&cfg), queue.newest());
         let tailer = (cfg.role == Role::Relay).then(|| Tailer::new(cfg.access_log.clone(), load_json::<Cursor>(&access_cursor_path(&cfg))));
         tracing::info!(pending = queue.len(), seq = seq.seq, "上报器启动");
+        let queue_len = queue.len_handle();
         let core = Arc::new(Mutex::new(Core { queue, seq, tailer }));
-        Ok(Self { sh, core, client, boot_id: host::boot_id(), interval_s: 10, fails: 0, next_send: Instant::now() })
+        Ok(Self { sh, core, queue_len, client, boot_id: host::boot_id(), interval_s: 10, fails: 0, next_send: Instant::now() })
     }
 
     pub async fn run(mut self, mut sd: watch::Receiver<bool>) {
@@ -89,15 +94,12 @@ impl Reporter {
             if now >= next_build {
                 next_build = now + build_interval(self.interval_s, self.fails);
                 let mut more = self.build_and_push(true).await;
-                // 访问日志有积压：追加几个只含访问事件的报告，尽快追上
-                for _ in 0..4 {
-                    if !more {
-                        break;
-                    }
+                // 访问日志有积压：在时间预算内追加只含访问事件的报告，尽快追上
+                while more && now.elapsed() < CATCHUP_MAX_TIME {
                     more = self.build_and_push(false).await;
                 }
             }
-            if now >= self.next_send && !lock(&self.core).queue.is_empty() {
+            if now >= self.next_send && self.queue_len.load(Ordering::Relaxed) > 0 {
                 self.flush(&mut sd).await;
                 // flush 里等 POST 时收到了关停信号：直接落盘缓冲退出，不再等那个请求
                 if *sd.borrow() {
@@ -123,7 +125,7 @@ impl Reporter {
     fn note_failure(&mut self, why: &str) {
         self.fails += 1;
         if self.fails <= 3 || self.fails.is_multiple_of(10) {
-            tracing::warn!(fails = self.fails, pending = lock(&self.core).queue.len(), "上报失败：{why}");
+            tracing::warn!(fails = self.fails, pending = self.queue_len.load(Ordering::Relaxed), "上报失败：{why}");
         }
     }
 
@@ -192,6 +194,8 @@ impl Reporter {
                 }
                 Outcome::Revoked => {
                     tracing::error!("服务端回 401：令牌已被撤销或无效。停止上报 {} 秒后重试（数据继续在本地排队）", REVOKED_SLEEP.as_secs());
+                    // 也算失败：建报间隔随之放长，少攒队列文件
+                    self.fails += 1;
                     self.next_send = Instant::now() + REVOKED_SLEEP;
                     return;
                 }

@@ -14,6 +14,16 @@ use uuid::Uuid;
 
 const MAX_LINE: usize = 32 * 1024;
 const MAX_WINDOW: u64 = 2 * 1024 * 1024;
+/// 按每条事件这么多字节估算一次读多少（正常一行 200 字节左右，留出非入口流量行的余量）
+const BYTES_PER_EVENT: u64 = 512;
+
+/// 窗口下限：两倍行上限，超长行多半能整行装进一个窗口里丢掉
+const MIN_WINDOW: u64 = 2 * MAX_LINE as u64;
+
+/// 一次读取的窗口：按条数估算，夹在 MIN_WINDOW 与 MAX_WINDOW 之间
+fn window_for(max_events: usize) -> u64 {
+    (max_events as u64).saturating_mul(BYTES_PER_EVENT).clamp(MIN_WINDOW, MAX_WINDOW)
+}
 
 #[derive(Debug)]
 pub enum Parsed {
@@ -288,7 +298,8 @@ impl Tailer {
             cur.offset = 0;
             cur.fp = None;
         }
-        let want = (fsize - cur.offset).min(MAX_WINDOW) as usize;
+        let window = window_for(max_events);
+        let want = (fsize - cur.offset).min(window) as usize;
         let mut buf = vec![0u8; want];
         if want > 0 {
             let mut f = std::fs::File::open(&read_path).with_context(|| format!("打开 {}", read_path.display()))?;
@@ -343,7 +354,7 @@ impl Tailer {
         if reading_old && at_eof {
             next = Cursor { inode, offset: 0, fp: None };
         }
-        let more = hit_cap || (want as u64 == MAX_WINDOW && !at_eof) || (reading_old && !at_eof);
+        let more = hit_cap || (want as u64 == window && !at_eof) || (reading_old && !at_eof);
         Ok(Batch { events, next: Some(next), more })
     }
 }
@@ -591,6 +602,28 @@ mod tests {
         let b = t.read_batch(10, 0).unwrap();
         assert_eq!(hosts(&b), ["nnn.com"]);
         assert_eq!(t.counters.dropped_lines, 1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn window_follows_max_events_and_reports_more() {
+        assert_eq!(window_for(2000), 2000 * BYTES_PER_EVENT);
+        assert_eq!(window_for(1), MIN_WINDOW);
+        assert_eq!(window_for(usize::MAX), MAX_WINDOW);
+        // 窗口装满了非入口流量的行（不计条数）：读一窗、报还有积压，下次接着读
+        let d = tmp("win");
+        let p = d.join("access.log");
+        let probe = format!("2026/10/20 13:50:56 from 127.0.0.1:5 accepted tcp:a.com:80 [probe-{} -> out-x]\n", id().simple());
+        let n = MIN_WINDOW as usize / probe.len() + 10;
+        std::fs::write(&p, format!("{}{}", probe.repeat(n), line(&h('z')))).unwrap();
+        let mut t = Tailer::new(p.clone(), Some(Cursor { inode: std::fs::metadata(&p).unwrap().ino(), offset: 0, fp: None }));
+        let b = t.read_batch(1, 0).unwrap();
+        assert!(b.events.is_empty() && b.more);
+        assert!(b.next.unwrap().offset <= MIN_WINDOW);
+        t.commit(b.next);
+        let b = t.read_batch(1, 0).unwrap();
+        assert_eq!(hosts(&b), ["zzz.com"]);
+        assert!(!b.more);
         let _ = std::fs::remove_dir_all(&d);
     }
 
