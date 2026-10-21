@@ -15,6 +15,8 @@ const xFmt = (range: string) => (t: string | number) => {
 
 const MIN = 60_000; const HOUR = 60 * MIN; const DAY = 24 * HOUR;
 const TICK_STEP: Record<string, number> = { '1h': 10 * MIN, '6h': HOUR, '24h': 3 * HOUR, '7d': DAY, '30d': 5 * DAY };
+/** 刻度步长与格式按数据实际跨度取，不按所选范围：刚上架或早已离线的机器看「7 天」，数据只有一天多，按 7 天只标日期会标出一排相同的 10-20 */
+const spanRange = (span: number) => (span <= HOUR ? '1h' : span <= 6 * HOUR ? '6h' : span <= 2 * DAY ? '24h' : span <= 7 * DAY ? '7d' : '30d');
 /** 横轴刻度落在本地时间的整十分 / 整点 / 零点上（recharts 自己取的是 13:46、16:40 这种） */
 function timeTicks(min: number, max: number, range: string): number[] | undefined {
   const step = TICK_STEP[range];
@@ -52,7 +54,8 @@ export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 
   const [hidden, setHidden] = useState<ReadonlySet<string>>(() => new Set());
   const toggle = useCallback((k: string) => setHidden((h) => { const n = new Set(h); if (!n.delete(k)) n.add(k); return n; }), []);
   const data = useMemo(() => (points ?? []).map((p) => ({ ...p, t: new Date(p.ts).getTime() })), [points]);
-  const xTicks = useMemo(() => (data.length > 1 ? timeTicks(data[0].t, data[data.length - 1].t, range) : undefined), [data, range]);
+  const xRange = data.length > 1 ? spanRange(data[data.length - 1].t - data[0].t) : range;
+  const xTicks = useMemo(() => (data.length > 1 ? timeTicks(data[0].t, data[data.length - 1].t, xRange) : undefined), [data, xRange]);
   const yTicks = useMemo(() => {
     if (!yBase) return undefined;
     let max = 0;
@@ -67,7 +70,7 @@ export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 
   const axes = (
     <>
       <CartesianGrid vertical={false} stroke="var(--chart-grid)" />
-      <XAxis dataKey="t" type="number" scale="time" domain={['dataMin', 'dataMax']} ticks={xTicks} tickFormatter={xFmt(range)} {...axisProps} minTickGap={32} />
+      <XAxis dataKey="t" type="number" scale="time" domain={['dataMin', 'dataMax']} ticks={xTicks} tickFormatter={xFmt(xRange)} {...axisProps} minTickGap={32} />
       <YAxis width={60} tickFormatter={yFmt} {...axisProps} interval={0} ticks={yTicks} domain={yTicks ? [0, yTicks[yTicks.length - 1]] : domain ?? [0, 'auto']} />
       {chartTooltip(config, (l) => { const d = new Date(Number(l)); return `${d.getMonth() + 1}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`; }, valueFmt)}
     </>
