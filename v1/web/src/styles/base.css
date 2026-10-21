@@ -166,12 +166,13 @@ body * { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent;
 
 /* 放不下而在滚动的区域，边缘渐隐提示“那边还有”：还有内容藏着的一侧淡出 20px，滚到头的一侧不淡（首页分组分段控件窄屏时团队藏在右边，过去看不出来）。
    纯 CSS：滚动驱动动画按滚动位置推 --fs / --fe（开头 / 末尾的渐隐宽度）；不能滚动时滚动时间线不生效，两个值停在初始 0，外观不变；
-   不支持滚动驱动动画的浏览器不加遮罩。菜单不加：遮罩会连它的毛玻璃底、边框一起淡掉，还会裁掉投影 */
+   不支持滚动驱动动画的浏览器不加遮罩。菜单不加：遮罩会连它的毛玻璃底、边框一起淡掉，还会裁掉投影。
+   放得下的机器表（data-fit，表头吸顶）不加：本来就不滚，免得整张表带着遮罩合成 */
 @property --fs { syntax: "<length>"; inherits: false; initial-value: 0px; }
 @property --fe { syntax: "<length>"; inherits: false; initial-value: 0px; }
 @keyframes edge-fade { 0% { --fs: 0px; --fe: 20px; } 6%, 94% { --fs: 20px; --fe: 20px; } 100% { --fs: 20px; --fe: 0px; } }
 @supports (animation-timeline: scroll()) {
-  .seg, .tabs-list {
+  .seg, .tabs-list, .table-wrap:not([data-fit]) {
     mask-image: linear-gradient(to right, transparent, #000 var(--fs), #000 calc(100% - var(--fe)), transparent);
     animation: edge-fade linear both; animation-timeline: scroll(self inline);
   }

@@ -4,6 +4,7 @@ import * as React from 'react';
 import type { MachineView } from '@/lib/types';
 import { isQuiet } from '@/lib/derive';
 import { collator } from '@/lib/sort';
+import { watchSize } from '@/lib/sharedObserver';
 import { cn } from '@/lib/utils';
 import { SortHead, type SortState } from './primitives';
 import { NodeMenus } from './NodeMenu';
@@ -23,14 +24,18 @@ export function sortByCol(rows: MachineView[], cols: Col[], sort: SortState | nu
 }
 
 /** 整张表：固定列宽（colgroup，最小宽度为列宽合计），点行 / 回车打开抽屉，右键菜单整个 tbody 共用一份（NodeMenus）。
- *  dim：哪些行调淡（首页是数据过期的，机器页只调淡已退役的）；须是模块常量，行是 memo 的 */
+ *  dim：哪些行调淡（首页是数据过期的，机器页只调淡已退役的）；须是模块常量，行是 memo 的。
+ *  放得下（不用横滑）时容器带 data-fit，表头吸顶（table.css）；随宽度变化直接改属性，不重渲染 */
 export function MachineGrid({ cols, rows, sort, onSort, openId, onOpen, dim = isQuiet, className }: {
   cols: Col[]; rows: MachineView[]; sort: SortState | null; onSort: (s: SortState | null) => void;
   openId: string | null; onOpen: (id: string) => void; dim?: (m: MachineView) => boolean; className?: string;
 }) {
+  const minWidth = cols.reduce((s, c) => s + c.size, 0);
+  const wrap = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => watchSize(wrap.current!, (e) => e.target.toggleAttribute('data-fit', e.contentRect.width >= minWidth)), [minWidth]);
   return (
-    <div className={cn('table-wrap', className)}>
-      <table className="dt" style={{ minWidth: cols.reduce((s, c) => s + c.size, 0) }}>
+    <div ref={wrap} className={cn('table-wrap', className)}>
+      <table className="dt" style={{ minWidth }}>
         <colgroup>{cols.map((c) => <col key={c.id} style={{ width: c.size }} />)}</colgroup>
         <SortHead cols={cols} sort={sort} onSort={onSort} />
         <NodeMenus rows={rows}><tbody>{rows.map((m) => <Row key={m.id} m={m} current={m.id === openId} onOpen={onOpen} cols={cols} dim={dim} />)}</tbody></NodeMenus>
