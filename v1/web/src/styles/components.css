@@ -392,7 +392,6 @@
   font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2);
 }
 .panel .pager { padding: var(--sp-6) var(--card-pad); border: 0; border-top: 1px solid var(--line); border-radius: 0; background: color-mix(in srgb, var(--sunken) 55%, var(--surface)); }
-.pager .num { font-family: var(--font-num); font-variant-numeric: var(--num-variant); }
 .pager-range { display: inline-flex; align-items: baseline; gap: var(--sp-4); white-space: nowrap; }
 .pager-range > .num { color: var(--fg); font-weight: var(--fw-medium); }
 .pager-of { color: var(--fg-3); }
@@ -411,7 +410,7 @@
    行（菜单项、下拉项、命令项、表格行、导航项、作业项、树节点、权限行）不缩放：悬停底上叠一层 --state-press。
    禁用的按钮不响应（:not(:disabled)）；禁用的菜单项是 pointer-events: none，不会按下。导航当前项的底是渐变（粉紫），不叠 */
 :is(.icon-btn, .top-btn, .copy-btn, .toast-x, .pol-chev, .cal-day):active:not(:disabled) { scale: var(--press-sm); transition-duration: var(--dur-press); }
-:is(.btn, .fchip, .seg-item, .tab, .chart-legend-item, .cmd-trigger, .top-alert, .nc-name, .rc-name):active:not(:disabled) { scale: var(--press-md); transition-duration: var(--dur-press); }
+:is(.btn, .fchip, .seg-item, .tab, .chart-legend-item, .cmd-trigger, .top-alert, .nc-name):active:not(:disabled) { scale: var(--press-md); transition-duration: var(--dur-press); }
 .tab:active:not(:disabled) .tab-ind { scale: calc(1 / var(--press-md)) 1; transition-duration: var(--dur-press); }
 :is(.flow-trend, .flow-foot, .nc-quota, .rc-rings, a.stat):active:not(:disabled) { scale: var(--press-lg); transition-duration: var(--dur-press); }
 :is(.menu-item, .select-item, .cmd-item, .job-item, .jobs-pop-item, .pol-item, .scope-row):active, .nav-item:active:not([aria-current="page"]), .dt tr.is-link:active { background-image: var(--state-press); }

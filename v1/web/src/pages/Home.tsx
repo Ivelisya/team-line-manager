@@ -148,7 +148,7 @@ export function HomePage() {
             {layout === 'ring' && <NodeMenus rows={page}><div key={`r${pg.page}`} className="rings page-in">
               {page.map((m) => <RingCard key={m.id} m={m} current={m.id === openId} onOpen={open} />)}
             </div></NodeMenus>}
-            {layout === 'table' && <div key="t" className="hpanel page-in"><MachineTable rows={page} sort={tsort} onSort={setTsort} openId={openId} onOpen={open} /></div>}
+            {layout === 'table' && <div key="t" className="panel page-in"><MachineTable rows={page} sort={tsort} onSort={setTsort} openId={openId} onOpen={open} /></div>}
             <Pagination pg={pg} unit="台" />
           </>
         )}

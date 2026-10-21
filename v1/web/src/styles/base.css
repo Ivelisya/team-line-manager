@@ -143,7 +143,7 @@ a { color: inherit; }
   min-height: var(--h-bar); margin: 0 0 var(--section-gap); padding: var(--sp-4) 0;
 }
 .page-title { margin: 0; font: var(--fw-semibold) var(--fs-page) / var(--lh-page) var(--font-sans); letter-spacing: var(--tracking-title); color: var(--fg); white-space: nowrap; }
-.page-note { font-size: var(--fs-body); color: var(--fg-2); white-space: nowrap; text-wrap: balance; }
+.page-note { font-size: var(--fs-body); color: var(--fg-2); text-wrap: balance; }
 .page-tools { margin-left: auto; display: flex; align-items: center; gap: var(--control-gap); flex-wrap: wrap; min-width: 0; }
 @media (max-width: 600px) {
   .page-tools { margin-left: 0; width: 100%; }

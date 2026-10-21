@@ -29,8 +29,7 @@
 .ncard[data-health="degraded"] { border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
 .ncard.is-current { border-color: var(--accent); }
 .ncard.is-quiet .flow-rate, .ncard.is-quiet .nc-run-val { color: var(--fg-3); }
-.ncard.is-quiet .cells, .ncard.is-quiet .dots { opacity: 0.45; }
-.ncard.is-quiet .beat-cells > i { background: transparent; box-shadow: inset 0 0 0 1px var(--line-strong); }
+.ncard.is-quiet .cells, .ncard.is-quiet .dots { opacity: 0.45; } /* 心跳条：卡片把 quiet 传成 Beat 的 stale（components.css .beat.is-stale） */
 
 /* 槽位通用：左右留白 = 卡片内边距；分段线在内边距之内 */
 .ncard > * { margin-inline: var(--card-pad); min-width: 0; }
@@ -186,9 +185,8 @@
 .rcard[data-health="degraded"] { border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
 .rcard.is-current { border-color: var(--accent); }
 .rc-head { display: flex; align-items: center; gap: var(--inline-gap); min-width: 0; }
-.rc-name { flex: 1 1 auto; min-width: 0; padding: 0; border: 0; border-radius: var(--r-xs); background: none; cursor: pointer; text-align: left; font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-sans); letter-spacing: -0.02em; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transform-origin: 0 50%; transition: color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out); } /* 同 .nc-name */
-@media (hover: hover) { .rc-name:hover { color: var(--accent); } }
-.rcard.is-quiet .rc-name { color: var(--fg-2); }
+.rcard .nc-name { flex: 1 1 auto; font-size: var(--fs-emph); line-height: var(--lh-emph); } /* 名称按钮同节点卡（.nc-name），占满状态胶囊左边 */
+.rcard.is-quiet .nc-name { color: var(--fg-2); }
 .rc-rings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-4); margin: 0 calc(-1 * var(--sp-6)); padding: var(--sp-6); border: 0; border-radius: var(--r-float); background: none; font: inherit; color: inherit; cursor: pointer; transition: background-color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out); }
 @media (hover: hover) { .rc-rings:hover:not(:disabled) { background: var(--hover); } }
 .rc-rings:disabled { cursor: default; }
@@ -198,8 +196,7 @@
 .rc-rate .lucide { width: 14px; height: 14px; stroke-width: 2.2; color: var(--fg-2); }
 .rc-rate .unit { font-size: 11px; letter-spacing: 0; color: var(--fg-3); }
 
-/* ========== 表格视图 ========== */
-.hpanel { min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); overflow: clip; box-shadow: var(--shadow-card); }
+/* ========== 表格视图（外框是通用的 .panel） ========== */
 .mtable { --cell-px: 10px; }
 .mtable .tname { display: flex; align-items: center; gap: var(--inline-gap); min-width: 0; }
 .mtable .tname > div { min-width: 0; } /* 名称 + 小字 IP 两行（同机器页名称列），长了各自省略 */
