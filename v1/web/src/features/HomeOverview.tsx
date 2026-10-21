@@ -98,7 +98,7 @@ function ClusterPanel({ o }: { o: Overview | undefined }) {
       </div>
       <div className="cluster-box">
         <div className="cluster-row">
-          <span className="cluster-big"><span className="num">{o ? <CountUp value={now} format={(n) => F.inScale(n, sc)} /> : '—'}</span><small>{o ? sc.u : ''} 网卡速率（实时）</small></span>
+          <span className="cluster-big"><span className="num">{o ? F.inScale(now, sc) : '—'}</span><small>{o ? sc.u : ''} 网卡速率（实时）</small></span>
         </div>
         <div className="cluster-charts">
           <div className="cchart" data-dir="up">

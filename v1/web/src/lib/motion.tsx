@@ -17,3 +17,10 @@ export function MotionProvider({ children }: { children: React.ReactNode }) {
 
 /** 指示器与卡片重排共用的弹簧：轻微回弹、约 0.35s */
 export const SPRING = { type: 'spring', bounce: 0.18, duration: 0.35 } as const;
+
+/** 读动效时长令牌（tokens.css §15），换算成毫秒。生产构建压缩 CSS 时会把 450ms 写成 .45s（更短就换单位），不能直接 parseFloat 当毫秒用 */
+export function durMs(token: string): number {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(token).trim();
+  const n = parseFloat(v);
+  return v.endsWith('ms') ? n : v.endsWith('s') ? n * 1000 : n;
+}
