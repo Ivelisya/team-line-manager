@@ -15,7 +15,7 @@ import { ConfirmDialog } from '@/components/app/dialogs';
 import { toast } from '@/components/ui/toast';
 import { copyText } from '@/lib/clipboard';
 import { Note, PageHead, Panel, Pill } from '@/components/app/primitives';
-import { COLS, applies, isIpNode, localErrors, localIssues, newRow, parseTsv, setCell, toItem, type Col, type Ctx, type Row } from '@/features/provision-model';
+import { COLS, applies, isIpNode, localErrors, localIssues, newRow, parseTsv, pasteLine, toItem, type Col, type Ctx, type Row } from '@/features/provision-model';
 
 const KIND_OPTS = (Object.entries(KIND_LABEL) as [Kind, string][]).map(([value, label]) => ({ value, label }));
 
@@ -29,8 +29,6 @@ export function ProvisionPage() {
   const plans = usePlans().data ?? NONE;
   // 只能挂在已上线的线路机上。只取 id/名称，引用在内容不变时保持稳定，ctx 不随每次轮询变化（GridCell 的 memo 才有效）
   const relays = useRelayChoices().data ?? NONE_RELAYS;
-  const hosts = useHostChoices().data ?? NONE_HOSTS;
-  const ctx: Ctx = React.useMemo(() => ({ teams, relays, hosts, providers, plans }), [teams, relays, hosts, providers, plans]);
 
   const [mode, setMode] = React.useState<'single' | 'batch'>('single');
   const [rows, setRows] = React.useState<Row[]>([newRow()]);
@@ -40,18 +38,22 @@ export function ProvisionPage() {
   const [confirm, setConfirm] = React.useState(false);
   const [created, setCreated] = React.useState<{ machine_id: string; job_id: string; name: string }[] | null>(null);
   const check = useProvisionCheck(); const provision = useProvision();
+  const [sp, setSp] = useSearchParams();
+  const hostParam = sp.get('host');
+  // 宿主机候选取自整份机器列表，订阅着时列表随实时推送最多每 2 秒整表重取（批量上架期间一直在推）：只在用得到时订阅——
+  // 单台开了「在已有机器上添加 IP」、批量（哪一行都能填宿主机）；带着 ?host= 等预填时总要取（停在「已开始上架」面板时从抽屉点「添加 IP 节点…」也要能预填）
+  const hosts = useHostChoices(hostParam != null || (!created && (mode === 'batch' || rows[0].add_ip))).data ?? NONE_HOSTS;
+  const ctx: Ctx = React.useMemo(() => ({ teams, relays, hosts, providers, plans }), [teams, relays, hosts, providers, plans]);
 
-  // ?host=<宿主机 id>：宿主机候选到了之后预填一次——单台、落地机、打开「在已有机器上添加 IP」，团队与线路机带出宿主机的。
-  // 抽屉开在上架页时点「添加 IP 节点」只换地址参数、页面不重挂，所以跟着参数走，不只在挂载时读
-  const hostParam = useSearchParams()[0].get('host');
-  const prefilled = React.useRef<string | null>(null);
+  // ?host=<宿主机 id>：宿主机候选到了之后预填——单台、落地机、打开「在已有机器上添加 IP」，团队与线路机带出宿主机的；预填完把参数从地址里删掉
+  // （替换当前历史）。抽屉开在上架页时点「添加 IP 节点」只换地址参数、页面不重挂，跟着参数走，同一台宿主机再点一次也会再预填
   React.useEffect(() => {
     const h = hosts.find((x) => x.id === hostParam);
-    if (!h || prefilled.current === h.id) return;
-    prefilled.current = h.id;
+    if (!h) return;
     setMode('single'); setResults(null); setLocalErrs(null); setCreated(null);
     setRows([newRow({ kind: 'vps', add_ip: true, host_id: h.id, team_id: h.team_id, relay_id: h.relay_id })]);
-  }, [hostParam, hosts]);
+    setSp((p) => { const n = new URLSearchParams(p); n.delete('host'); return n; }, { replace: true });
+  }, [hostParam, hosts, setSp]);
 
   const items = React.useMemo(() => rows.map((r) => toItem(r)), [rows]);
   const curSig = JSON.stringify([items, rows.map((r) => r.unresolved)]);
@@ -79,7 +81,11 @@ export function ProvisionPage() {
   const reset = () => { setRows([newRow()]); setResults(null); setLocalErrs(null); setCreated(null); };
   const switchMode = (m: 'single' | 'batch') => {
     setMode(m); setResults(null); setLocalErrs(null);
-    if (m === 'batch') setRows((rs) => (rs.length >= 3 ? rs : [...rs, ...Array.from({ length: 3 - rs.length }, () => newRow({ kind: rs[0]?.kind, team_id: rs[0]?.team_id, relay_id: rs[0]?.relay_id }))]));
+    // 批量里是不是同机 IP 节点只看宿主机格：单台开了开关却没选宿主机的，切过去不再按同机 IP 节点置灰（宿主机格是「—」）
+    if (m === 'batch') setRows((rs) => {
+      const xs = rs.map((r) => (r.add_ip && !(r.host_id || r.unresolved.host_id) ? { ...r, add_ip: false } : r));
+      return xs.length >= 3 ? xs : [...xs, ...Array.from({ length: 3 - xs.length }, () => newRow({ kind: xs[0]?.kind, team_id: xs[0]?.team_id, relay_id: xs[0]?.relay_id }))];
+    });
   };
 
   if (created) {
@@ -123,7 +129,7 @@ export function ProvisionPage() {
       </div>
 
       {mode === 'single'
-        ? <SingleForm row={rows[0]} onChange={(p) => setRow(0, p)} ctx={ctx} hosts={hosts} result={results?.[0]} errors={localErrs?.[0]} stale={stale} />
+        ? <SingleForm row={rows[0]} onChange={(p) => setRow(0, p)} ctx={ctx} result={results?.[0]} errors={localErrs?.[0]} stale={stale} />
         : <BatchGrid rows={rows} setRows={setRows} ctx={ctx} results={results} errors={localErrs} stale={stale} />}
 
       <div className="panel sticky-bar" style={{ padding: '10px 16px' }}>
@@ -142,7 +148,7 @@ export function ProvisionPage() {
         <ul className="reason-list" style={{ maxHeight: 220, overflow: 'auto' }}>
           {results?.map((r, i) => (
             <li key={i}><span className="dot" /><span><b>{r.name}</b> <span className="t-sub">
-              {isIpNode(active[i]) ? `同机 · ${hostName(active[i].host_id)}` : KIND_LABEL[active[i].kind]} · {active[i].ip}{r.relay_port ? ` · 入口端口 ${r.relay_port}` : ''}{r.ss_port ? ` · SS 端口 ${r.ss_port}` : ''}
+              {isIpNode(active[i]) ? `同机 · ${hostName(active[i].host_id)}` : KIND_LABEL[active[i].kind]} · {active[i].ip}{r.relay_port ? ` · 入口端口 ${r.relay_port}` : ''}{r.ss_port ? ` · SS 端口暂定 ${r.ss_port}` : ''}
             </span></span></li>
           ))}
         </ul>
@@ -174,14 +180,14 @@ function useOpts(ctx: Ctx) {
 }
 
 /* ------------------------------------------------------------------ 单台表单 */
-function SingleForm({ row, onChange, ctx, hosts, result, errors, stale }: { row: Row; onChange: (p: Partial<Row>) => void; ctx: Ctx; hosts: HostChoice[]; result?: ProvisionCheckItem; errors?: string[]; stale: boolean }) {
+function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; onChange: (p: Partial<Row>) => void; ctx: Ctx; result?: ProvisionCheckItem; errors?: string[]; stale: boolean }) {
   const o = useOpts(ctx);
   const k = row.kind;
-  // 同机 IP 节点：SSH 端口、首次登录、SS 端口、供应商、套餐不适用，换成禁用的格子写明沿用宿主机
+  // 同机 IP 节点：SSH 端口、首次登录、SS 端口、供应商、套餐不适用，换成禁用的格子写明怎么定（沿用宿主机 / 中控分配 / 不带套餐）
   const ip = isIpNode(row);
-  const host = ip ? hosts.find((h) => h.id === row.host_id) : undefined;
+  const host = ip ? ctx.hosts.find((h) => h.id === row.host_id) : undefined;
   // 选了宿主机：团队与线路机带出宿主机的（之后可改）
-  const pickHost = (v: string) => { const h = hosts.find((x) => x.id === v); onChange(h ? { host_id: v, team_id: h.team_id, relay_id: h.relay_id } : { host_id: v }); };
+  const pickHost = (v: string) => { const h = ctx.hosts.find((x) => x.id === v); onChange(h ? { host_id: v, team_id: h.team_id, relay_id: h.relay_id } : { host_id: v }); };
   // 上次检查有本地错误时，把错误按字段标在字段旁（按当前内容重算，改对了就消失）
   const fe: Partial<Record<keyof Row, string>> = {};
   if (errors?.length) for (const x of localIssues(row)) fe[x.key] ??= x.msg;
@@ -292,13 +298,7 @@ function BatchGrid({ rows, setRows, ctx, results, errors, stale }: { rows: Row[]
       grid.forEach((line, dy) => {
         const idx = ri + dy;
         while (next.length <= idx) next.push(newRow());
-        let r = next[idx];
-        line.forEach((cell, dx) => {
-          const col = COLS[ci + dx]; if (!col) return;
-          if (col.key !== 'kind' && !applies(col, r)) return;
-          r = setCell(r, col, cell, ctx);
-        });
-        next[idx] = r;
+        next[idx] = pasteLine(next[idx], line, ci, ctx);
       });
       return next;
     });
@@ -338,7 +338,7 @@ function BatchGrid({ rows, setRows, ctx, results, errors, stale }: { rows: Row[]
           </table>
         </div>
       </Panel>
-      <Note icon={<ClipboardPaste size={14} />}>编号留空 = 自动编号（接在末尾）。灰色格子对当前类型不适用，粘贴时会自动跳过。选择列可直接粘贴名称（如「团队1」「线路机1」）。填了「宿主机」的落地机行是同机 IP 节点（宿主机上另配的 IP）：SSH 端口、SS 端口、登录、供应商与套餐沿用宿主机，这几格变灰。</Note>
+      <Note icon={<ClipboardPaste size={14} />}>编号留空 = 自动编号（接在末尾）。灰色格子对当前类型不适用，粘贴时会自动跳过。选择列可直接粘贴名称（如「团队1」「线路机1」）。最后一列填了「宿主机」的落地机行是同机 IP 节点（宿主机上另配的 IP）：SSH 端口、登录与供应商沿用宿主机的，SS 端口由中控在宿主机上分配，不带套餐，这几格变灰。</Note>
       {results && <CheckOutput results={results} rows={rows} errors={errors} stale={stale} />}
       <ConfirmDialog open={askClear} onOpenChange={setAskClear} title="清空批量表格？" confirmLabel="清空" danger
         description="表格里所有行已填写的内容（含登录密码）都会丢失，无法撤销。" onConfirm={() => setRows([newRow()])} />

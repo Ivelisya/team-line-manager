@@ -246,7 +246,7 @@ fn items(mut v: Value) -> anyhow::Result<Value> { v.get_mut("items").map(Value::
 
 pub fn status(ctx: &Ctx) -> anyhow::Result<u8> {
     let ov = ctx.c.get("/overview")?;
-    let inc = incident_items(ctx, "firing")?;
+    let inc = incident_items(ctx, "firing", None)?;
     let both = json!({"overview": ov, "incidents": inc});
     ctx.emit(&both, || {
         let bucket = |k: &str| {
@@ -268,16 +268,20 @@ pub fn status(ctx: &Ctx) -> anyhow::Result<u8> {
         s.push_str(&format!("\n\n告警（进行中 {}）", list.len()));
         if !list.is_empty() {
             s.push('\n');
-            s.push_str(&incident_table(&list));
+            s.push_str(&incident_table(&list, false));
         }
         s
     });
     Ok(0)
 }
 
-/// 告警列表（state = firing | all，最多 500 条），每条是 `incident_item`
-fn incident_items(ctx: &Ctx, state: &str) -> anyhow::Result<Value> {
-    let d = items(ctx.c.get_q("/incidents", &[("state", state.to_string()), ("limit", "500".to_string())])?)?;
+/// 告警列表（state = firing | all，最多 500 条；`subject` 是机器 id 时只看这台），每条是 `incident_item`
+fn incident_items(ctx: &Ctx, state: &str, subject: Option<&str>) -> anyhow::Result<Value> {
+    let mut q = vec![("state", state.to_string()), ("limit", "500".to_string())];
+    if let Some(id) = subject {
+        q.push(("subject_id", id.to_string()));
+    }
+    let d = items(ctx.c.get_q("/incidents", &q)?)?;
     Ok(Value::Array(d.as_array().map(Vec::as_slice).unwrap_or_default().iter().map(incident_item).collect()))
 }
 
@@ -292,12 +296,12 @@ fn incident_item(i: &Value) -> Value {
     })
 }
 
-/// `list` 是 `incident_item` 的输出
-fn incident_table(list: &[Value]) -> String {
+/// `list` 是 `incident_item` 的输出。`with_state`：列表里有已恢复的（`incidents --all`）时加一列状态（进行中 / 恢复时间）
+fn incident_table(list: &[Value], with_state: bool) -> String {
     let rows: Vec<Vec<String>> = list
         .iter()
         .map(|i| {
-            vec![
+            let mut r = vec![
                 severity_cn(&st(i, "/severity")).to_string(),
                 st(i, "/rule_name"),
                 st(i, "/subject_name"),
@@ -306,12 +310,17 @@ fn incident_table(list: &[Value]) -> String {
                     _ => st(i, "/summary"),
                 },
                 table::ts(&st(i, "/opened_at")),
-                if i["ack_by"].is_null() { "".into() } else { format!("已确认 {}", st(i, "/ack_by")) },
-                st(i, "/id"),
-            ]
+            ];
+            if with_state {
+                r.push(if i["state"] == "resolved" { format!("已恢复 {}", table::ts(&st(i, "/resolved_at"))) } else { "进行中".into() });
+            }
+            r.push(if i["ack_by"].is_null() { "".into() } else { format!("已确认 {}", st(i, "/ack_by")) });
+            r.push(st(i, "/id"));
+            r
         })
         .collect();
-    table::render(&["级别", "规则", "对象", "摘要", "开始", "确认", "id"], &rows)
+    let head: &[&str] = if with_state { &["级别", "规则", "对象", "摘要", "开始", "状态", "确认", "id"] } else { &["级别", "规则", "对象", "摘要", "开始", "确认", "id"] };
+    table::render(head, &rows)
 }
 
 pub fn ls(ctx: &Ctx, team: Option<&str>, kind: Option<&str>, status: Option<&str>, retired: bool) -> anyhow::Result<u8> {
@@ -613,11 +622,13 @@ pub fn series(ctx: &Ctx, machine: &str, range: &str, metric: &str) -> anyhow::Re
     Ok(0)
 }
 
-pub fn incidents(ctx: &Ctx, all: bool) -> anyhow::Result<u8> {
-    let d = incident_items(ctx, if all { "all" } else { "firing" })?;
+pub fn incidents(ctx: &Ctx, all: bool, machine: Option<&str>) -> anyhow::Result<u8> {
+    // 告警历史也要看已退役的机器
+    let id = machine.map(|m| ctx.find_id(m, Want::Any)).transpose()?.map(|(id, _)| id);
+    let d = incident_items(ctx, if all { "all" } else { "firing" }, id.as_deref())?;
     ctx.emit(&d, || {
         let list = d.as_array().cloned().unwrap_or_default();
-        if list.is_empty() { "没有告警".to_string() } else { format!("{}\n共 {} 条", incident_table(&list), list.len()) }
+        if list.is_empty() { "没有告警".to_string() } else { format!("{}\n共 {} 条", incident_table(&list, all), list.len()) }
     });
     Ok(0)
 }

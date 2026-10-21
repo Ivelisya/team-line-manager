@@ -142,6 +142,9 @@ pub struct Quota {
     /// 周期内业务流量（下载 + 上传，含已移除的入口）
     pub used: i64,
     pub period_start: Date,
+    /// 有流量重置日时距下次重置还有几天（账单时区的日历天，≥ 1）；没有重置日为 None。流量额度告警的摘要用，不对外输出
+    #[serde(skip)]
+    pub reset_in_days: Option<i64>,
 }
 
 /// 今天或之前最近一次重置日；月份没有这一天的按月末算（31 号在 30 天的月份是 30 号）
@@ -153,6 +156,13 @@ pub fn period_start(today: Date, reset_day: u8) -> Date {
     }
     let pm = today.month().previous();
     at(if pm == time::Month::December { today.year() - 1 } else { today.year() }, pm)
+}
+
+/// 周期起点（`period_start` 的结果）之后的下一次重置日：下个月的这一天，同样按月末截断
+pub fn next_reset(start: Date, reset_day: u8) -> Date {
+    let m = start.month().next();
+    let y = if m == time::Month::January { start.year() + 1 } else { start.year() };
+    Date::from_calendar_date(y, m, reset_day.min(m.length(y))).expect("合法日期")
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -753,13 +763,18 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
             let entries = entries_by.remove(&r.id).unwrap_or_default();
             let removed_traffic = removed_by.remove(&r.id).unwrap_or_default();
             let quota = match period_of.get(&r.id) {
-                Some(&start) => Quota { used: period_used[&r.id], period_start: start },
+                Some(&start) => Quota {
+                    used: period_used[&r.id],
+                    period_start: start,
+                    reset_in_days: r.s_today.zip(r.s_reset).map(|(t, d)| (next_reset(start, d as u8) - t).whole_days()),
+                },
                 None => Quota {
                     used: entries.iter().map(|e| e.traffic.month_up + e.traffic.month_down).sum::<i64>()
                         + removed_traffic.month_up
                         + removed_traffic.month_down
                         + ipn_month.get(&r.id).copied().unwrap_or(0),
                     period_start: today.replace_day(1).expect("1 号"),
+                    reset_in_days: None,
                 },
             };
             // 宿主机维护时它上面的同机 IP 节点一起维护（是同一台机器）
@@ -919,6 +934,11 @@ mod tests {
         // 跨年
         assert_eq!(period_start(date!(2027 - 01 - 05), 10), date!(2026 - 12 - 10));
         assert_eq!(period_start(date!(2027 - 01 - 01), 1), date!(2027 - 01 - 01));
+        // 下一次重置：下个月这一天（按月末截断、跨年）
+        assert_eq!(next_reset(date!(2026 - 09 - 30), 31), date!(2026 - 10 - 31));
+        assert_eq!(next_reset(date!(2026 - 08 - 31), 31), date!(2026 - 09 - 30));
+        assert_eq!(next_reset(date!(2026 - 12 - 10), 10), date!(2027 - 01 - 10));
+        assert_eq!(next_reset(date!(2028 - 01 - 31), 31), date!(2028 - 02 - 29));
     }
 
     #[test]

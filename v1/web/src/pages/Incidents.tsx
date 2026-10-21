@@ -8,6 +8,7 @@ import { usePage } from '@/lib/usePage';
 import { Pagination } from '@/components/app/Pagination';
 import { useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
+import { severityOf } from '@/lib/derive';
 import type { Incident, Silence } from '@/lib/types';
 import { resetOnOpen, useHeld } from '@/lib/useHeld';
 import { Button, IconButton } from '@/components/ui/button';
@@ -21,7 +22,7 @@ import { NodeHover } from '@/components/app/NodeHover';
 import { Empty, ErrorNote, Note, PageHead, Panel, Pill } from '@/components/app/primitives';
 
 const PAGE_SIZES = [20, INCIDENT_PAGE, 100];
-const SEV = (i: Incident) => (i.state === 'resolved' ? <Pill tone="ok" dot="ring">已恢复</Pill> : i.severity === 'critical' ? <Pill tone="bad">严重</Pill> : i.severity === 'info' ? <Pill tone="info">提示</Pill> : <Pill tone="warn">警告</Pill>);
+const SEV = (i: Incident) => { const s = severityOf(i.severity); return i.state === 'resolved' ? <Pill tone="ok" dot="ring">已恢复</Pill> : <Pill tone={s.tone}>{s.label}</Pill>; };
 
 export function IncidentsPage() {
   const [state, setState] = React.useState<'firing' | 'resolved' | 'all'>('firing');

@@ -36,7 +36,7 @@ export function BillingTab({ m }: { m: MachineView }) {
             <LabelValue label="费用"><span className="num">{F.money(s.price_cents, s.currency)}</span> <span className="unit">/ {F.cycleLabel(s.cycle)}</span></LabelValue>
             <LabelValue label="到期日">{s.due_date}（<Due days={s.due_days} />）</LabelValue>
             <LabelValue label="剩余价值" wrap>{rv ? <><span className="num">{F.money(rv.cents, rv.currency)}</span> <span className="unit">{rv.frac > 1 ? `已预付 ${rv.frac.toFixed(1)} 期 · 每期 ${rv.days} 天` : `本期还剩 ${Math.round(rv.frac * 100)}%（剩 ${Math.max(0, s.due_days)} 天 / 共 ${rv.days} 天）`}</span></> : <span className="t-muted">—</span>}</LabelValue>
-            <LabelValue label={m.ip_nodes.length ? '本周期已用（含同机节点）' : '本周期已用'}><span className="num">{F.str(F.bytes(q.used))}</span> <span className="unit">/ {q.limit > 0 ? F.str(F.gb(q.limit)) : q.shared ? '与宿主机共用' : '不限'}</span></LabelValue>
+            <LabelValue label={m.ip_nodes.length ? '本周期已用（含同机 IP 节点）' : '本周期已用'}><span className="num">{F.str(F.bytes(q.used))}</span> <span className="unit">/ {q.limit > 0 ? F.str(F.gb(q.limit)) : q.shared ? '与宿主机共用' : '不限'}</span></LabelValue>
             <LabelValue label="流量周期"><span className="num">{q.start.slice(5)}</span> 起</LabelValue>
             <LabelValue label="自动续费">{s.auto_renew ? '是' : '否'}</LabelValue>
           </LabelValueGrid>

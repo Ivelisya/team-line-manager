@@ -16,8 +16,9 @@ function MiniCard({ m }: { m: MachineView }) {
   const r = resourceMeters(m);
   const quiet = isQuiet(m);
   const team = m.team ? `${m.team.name}${m.number != null ? ` / ${F.pad2(m.number)}` : ''}` : KIND_LABEL[m.kind];
-  // 故障、降级等不正常时直接列出原因（同状态胶囊悬停提示的那份），不用再去悬停胶囊；上架中、退役中这些生命周期状态没有健康原因
-  const reasons = m.lifecycle === 'active' && m.health.status !== 'ok' ? m.health.reasons : [];
+  // 有原因就直接列出（同状态胶囊悬停提示的那份），不用再去悬停胶囊：故障、降级的原因，以及不改状态的提醒（流量额度吃紧）；
+  // info 级（如来源画像的学习期说明）不列。上架中、退役中这些生命周期状态没有健康原因
+  const reasons = m.lifecycle === 'active' ? m.health.reasons.filter((r) => r.severity !== 'info') : [];
   return (
     <div className="hc">
       <div className="hc-head">

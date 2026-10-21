@@ -57,7 +57,8 @@ export function JobsIndicator() {
   const [open, setOpen] = React.useState(false);
   const live = q.data?.items ?? [];
   const n = q.data?.total ?? 0; // 数量取服务端 total，列表只是第一页
-  if (!n) return null;
+  // 作业都结束时弹层随徽标一起卸掉，开关也复位：不然下一个作业开始时弹层会自己打开
+  if (!n) { if (open) setOpen(false); return null; }
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <Tip text={`${n} 个作业进行中`}>
@@ -69,14 +70,14 @@ export function JobsIndicator() {
         </PopoverTrigger>
       </Tip>
       <PopoverContent align="end" className="jobs-pop">
-        <div className="jobs-pop-head">进行中的作业<span className="t-sub">{n}</span></div>
-        <ul className="jobs-pop-list">
+        <div className="pop-head">进行中的作业<span className="t-sub">{n}</span></div>
+        <ul className="pop-list">
           {live.map((j) => {
             const p = jobProgress(j);
             return (
               <li key={j.id}>
-                <Link to={`/jobs/${j.id}`} onClick={() => setOpen(false)} className="jobs-pop-item">
-                  <span className="jobs-pop-t"><b className="ellipsis">{jobKindLabel(j.kind)} · {j.target?.name ?? '—'}</b><span className="num t-sub">{p.done}/{p.total}</span></span>
+                <Link to={`/jobs/${j.id}`} onClick={() => setOpen(false)} className="pop-item">
+                  <span className="pop-t"><b className="ellipsis">{jobKindLabel(j.kind)} · {j.target?.name ?? '—'}</b><span className="num t-sub">{p.done}/{p.total}</span></span>
                   <Progress value={p.pct} live label={`${jobKindLabel(j.kind)}进度`} />
                   <span className="hint ellipsis">{currentStepTitle(j) ?? '排队中'}</span>
                 </Link>
@@ -84,7 +85,7 @@ export function JobsIndicator() {
             );
           })}
         </ul>
-        <Link to="/jobs" onClick={() => setOpen(false)} className="jobs-pop-all">查看全部作业{n > SHOW ? `（还有 ${n - SHOW} 个）` : ''}</Link>
+        <Link to="/jobs" onClick={() => setOpen(false)} className="pop-all">查看全部作业{n > SHOW ? `（还有 ${n - SHOW} 个）` : ''}</Link>
       </PopoverContent>
     </Popover>
   );

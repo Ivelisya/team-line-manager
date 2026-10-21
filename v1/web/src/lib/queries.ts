@@ -44,7 +44,7 @@ export interface HostChoice { id: string; name: string; team_id: string; relay_i
 const hostChoices = (d: MachineView[]) => d.filter((m) => m.kind === 'vps' && m.lifecycle === 'active' && !m.host_machine)
   .map((m): HostChoice => ({ id: m.id, name: m.name, team_id: m.team?.id ?? '', relay_id: m.entries[0]?.relay.id ?? '', ssh_port: m.ssh_port, provider: m.provider?.name ?? null }))
   .sort((a, b) => collator.compare(a.name, b.name));
-export const useHostChoices = () => useQuery({ ...machinesQuery('live'), select: hostChoices });
+export const useHostChoices = (enabled: boolean) => useQuery({ ...machinesQuery('live'), select: hostChoices, enabled });
 /** 首页 KPI「流量额度」：同一份机器列表缓存，只取吃紧的台数与最紧的一台；结果做结构共享，没变时首页总览不跟着推送重渲染 */
 export const useQuotaTight = () => useQuery({ ...machinesQuery('live'), select: quotaTight });
 /** 按键等“用时才读”的场景：直接读缓存里的机器列表（同样的默认顺序），不订阅、不触发请求 */
@@ -99,6 +99,11 @@ export const useJob = (id: string | null) => useQuery({ queryKey: ['job', id], q
 export const INCIDENT_PAGE = 50;
 export const useIncidents = (state: 'firing' | 'resolved' | 'all' = 'all', offset = 0, limit = INCIDENT_PAGE) =>
   useQuery({ queryKey: ['incidents', state, offset, limit], queryFn: ({ signal }) => get<Paged<Incident>>(`/incidents?state=${state}&limit=${limit}&offset=${offset}`, signal), placeholderData: keepPreviousData, staleTime: Infinity });
+/** 抽屉「最近告警」：这台机器最近的 5 条（进行中、已恢复都要）。带 subject_id 时服务端按时间排：进行中在前、再按开始时间新的在前。
+ *  键在 ['incidents'] 下：随 incidents 事件、确认与静默等写操作一起失效 */
+const items = (d: Paged<Incident>) => d.items;
+export const useMachineIncidents = (id: string) =>
+  useQuery({ queryKey: ['incidents', 'machine', id], queryFn: ({ signal }) => get<Paged<Incident>>(`/incidents?subject_id=${id}&state=all&limit=5`, signal), select: items, staleTime: Infinity });
 /** 静默到期（ends_at 过了就不再列出）没有事件，仍按时间过期 */
 export const useSilences = () => useQuery({ queryKey: ['silences'], queryFn: () => get<Silence[]>('/silences') });
 

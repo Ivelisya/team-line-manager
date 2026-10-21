@@ -8,7 +8,7 @@ import type { EntryView, HealthReason, Kind, Lifecycle, MachineView } from '@/li
 import { ENTRY_LABEL, HEALTH_LABEL, HEALTH_TONE, KIND_LABEL, LIFECYCLE_LABEL } from '@/lib/sort';
 import { Tip, Trunc } from '@/components/ui/overlays';
 import { useCountUp } from '@/lib/useCountUp';
-import { hostRel, type BeatCell } from '@/lib/derive';
+import { hostRel, severityOf, type BeatCell } from '@/lib/derive';
 import { useDrawer } from '@/lib/drawer';
 import { copyText } from '@/lib/clipboard';
 
@@ -41,7 +41,7 @@ export function HealthPill({ m }: { m: Pick<MachineView, 'health' | 'lifecycle' 
 /** 健康原因列表（带严重度圆点）：健康 pill 的悬停提示与抽屉“状态原因”共用 */
 export const ReasonList = ({ reasons, className }: { reasons: HealthReason[]; className: string }) => (
   <ul className={className}>
-    {reasons.map((r, i) => <li key={i}><span className="dot" data-tone={r.severity === 'critical' ? 'bad' : r.severity === 'warning' ? 'warn' : 'info'} />{r.text}</li>)}
+    {reasons.map((r, i) => <li key={i}><span className="dot" data-tone={severityOf(r.severity).tone} />{r.text}</li>)}
   </ul>
 );
 const reasonsTip = (reasons: HealthReason[]) => (reasons.length ? <ReasonList reasons={reasons} className="tip-list" /> : null);
@@ -49,6 +49,11 @@ const reasonsTip = (reasons: HealthReason[]) => (reasons.length ? <ReasonList re
 export const StatusDot = ({ status, lifecycle }: { status: string; lifecycle: Lifecycle }) => {
   const text = lifecycle === 'provisioning' || lifecycle === 'failed' || lifecycle === 'retiring' ? LIFECYCLE_LABEL[lifecycle] : HEALTH_LABEL[status];
   return <span className="dot" data-tone={lifecycle === 'failed' ? 'bad' : HEALTH_TONE[status]} role="img" aria-label={text} data-tip={text} />;
+};
+/** 告警级别圆点（顶栏告警预览、抽屉「最近告警」）：颜色之外给读屏与悬停一份文字 */
+export const SeverityDot = ({ severity }: { severity: string }) => {
+  const s = severityOf(severity);
+  return <span className="dot" data-tone={s.tone} role="img" aria-label={s.label} data-tip={s.label} />;
 };
 /** 到期读数：N 天后 / 今天 / 已过期 N 天，7 天内黄、过期红（卡片、表格、悬浮卡共用）。
  *  tail：没有“到期”标签的地方接上“到期”（3 天后到期 / 今天到期 / 已过期 3 天） */

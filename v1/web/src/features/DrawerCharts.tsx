@@ -1,7 +1,7 @@
 // 抽屉里带图表的三个页签：连接质量 / 流量 / 主机。单独成文件按需加载，recharts 只在打开这些页签时才下载。
 import * as React from 'react';
 import { Cpu, Globe, MemoryStick, Network, Radar, ServerOff } from 'lucide-react';
-import type { MachineView } from '@/lib/types';
+import type { MachineView, SeriesResp } from '@/lib/types';
 import type { UseQueryResult } from '@tanstack/react-query';
 import { useSeries } from '@/lib/queries';
 import * as F from '@/lib/format';
@@ -38,11 +38,21 @@ function RangeBar({ range, setRange }: { range: string; setRange: (r: string) =>
   return <Segmented sm label="时间范围" value={range} onChange={setRange} items={RANGES} />;
 }
 
-/** 图表的加载 / 出错状态：出错给重试，不要显示一张空图；换时间范围、新数据未到时沿用的旧曲线调淡 */
-function ChartFrame({ q, height = 180, children }: { q: UseQueryResult<unknown>; height?: number; children: React.ReactNode }) {
+const RANGE_MS: Record<string, number> = { '1h': 3600_000, '6h': 6 * 3600_000, '24h': 24 * 3600_000, '7d': 7 * 86400_000, '30d': 30 * 86400_000 };
+/** 点不到两个、画不成线时的说明：还在上架、或在所选时间范围内才上架的，是数据还在积累；其余（离线、已退役）是这段时间没有数据 */
+const fewText = (m: MachineView, range: string) =>
+  m.lifecycle === 'provisioning' || (m.activated_at != null && Date.now() - Date.parse(m.activated_at) < (RANGE_MS[range] ?? 0)) ? '刚上架，数据积累中' : '这段时间没有数据';
+
+/** 图表的加载 / 出错状态：出错给重试，不要显示一张空图；换时间范围、新数据未到时沿用的旧曲线调淡。
+ *  点不到两个时只剩一副空坐标轴：同全为 0 的空状态，占住图高、写一句说明（few） */
+function ChartFrame({ q, few, height = 180, children }: { q: UseQueryResult<SeriesResp>; few: string; height?: number; children: React.ReactNode }) {
   if (q.isError) return <ErrorNote error={q.error} onRetry={() => void q.refetch()}>曲线加载失败：</ErrorNote>;
   if (q.isLoading) return <Skeleton h={height} style={{ borderRadius: 'var(--r-float)' }} />;
-  return <div className="chart-frame" data-stale={q.isPlaceholderData} aria-busy={q.isPlaceholderData || undefined}>{children}</div>;
+  return (
+    <div className="chart-frame" data-stale={q.isPlaceholderData} aria-busy={q.isPlaceholderData || undefined}>
+      {(q.data?.points.length ?? 0) < 2 ? <div className="chart-empty" style={{ height }}>{few}</div> : children}
+    </div>
+  );
 }
 
 /** 图表卡：一张曲线一张卡，边框、底色与顶部色条取指标色（--cc）。卡头左边图标 + 标题，右边当前值 + 一行小字；
@@ -67,7 +77,7 @@ export function QualityTab({ m }: { m: MachineView }) {
     <>
       <Section>
         <ChartCard c="var(--chart-1)" icon={<Radar />} title="延迟" meta="线路机 → 节点 TCP 与出口验证" tools={<RangeBar range={range} setRange={setRange} />}>
-          <ChartFrame q={s}>
+          <ChartFrame q={s} few={fewText(m, range)}>
             <TimeChart points={s.data?.points} range={s.data?.range ?? range} kind="line" lines={L_PROBE} yFmt={yMs} valueFmt={vMs} />
             <div className="hint" style={{ marginTop: 4 }}>缺口表示该时刻探测失败。</div>
           </ChartFrame>
@@ -98,7 +108,7 @@ export function TrafficTab({ m }: { m: MachineView }) {
       </Section>
       <Section>
         <ChartCard c="var(--chart-1)" icon={<Globe />} title="业务流量" meta={s.data?.resolution === '1h' ? '每小时的流量' : '每分钟的流量'} tools={<RangeBar range={range} setRange={setRange} />}>
-          <ChartFrame q={s}>
+          <ChartFrame q={s} few={fewText(m, range)}>
             <TimeChart points={s.data?.points} range={s.data?.range ?? range} lines={L_TRAFFIC} yFmt={yBytes} valueFmt={vBytes} yBase={1024} empty="这段时间没有业务流量" />
           </ChartFrame>
         </ChartCard>
@@ -113,28 +123,32 @@ export function TrafficTab({ m }: { m: MachineView }) {
 
 export function HostTab({ m }: { m: MachineView }) {
   const [range, setRange] = React.useState('6h');
-  const host = hasHost(m);
-  const s = useSeries(m.id, 'host', range, host, poll(range));
-  if (!host) return <Empty icon={<ServerOff size={22} />} text={m.kind === 'proxy' ? '家宽代理没有主机，不采集 CPU / 内存 / 磁盘 / 网卡指标。' : '暂时没有主机指标'} />;
-  const h = m.host!;
-  const r = resourceMeters(m)!;
+  // 家宽代理没有主机；其它机器即使现在没有读数（agent 离线、还没上报），历史曲线照样能看——排查掉线前发生了什么正要看它
+  const agentful = m.kind !== 'proxy';
+  const s = useSeries(m.id, 'host', range, agentful, poll(range));
+  if (!agentful) return <Empty icon={<ServerOff size={22} />} text="家宽代理没有主机，不采集 CPU / 内存 / 磁盘 / 网卡指标。" />;
+  const h = hasHost(m) ? m.host! : null;
+  const r = h ? resourceMeters(m)! : null;
+  const few = fewText(m, range);
   return (
     <>
       <Section>
-        <SectionHeader title="当前" meta={`更新于 ${F.ago(h.ts)}`}><RangeBar range={range} setRange={setRange} /></SectionHeader>
-        <LabelValueGrid>
-          <LabelValue label="内存"><Num f={F.bytes(h.mem_used)} /> <span className="t-sub">/ <Num f={F.bytes(h.mem_total)} /></span></LabelValue>
-          <LabelValue label="磁盘"><Num f={F.bytes(h.disk_used)} /> <span className="t-sub">/ <Num f={F.bytes(h.disk_total)} /></span></LabelValue>
-          <LabelValue label="负载"><Num f={r.load.value} /> <span className="t-sub">{r.load.sub}</span></LabelValue>
-          <LabelValue label="TCP 连接数"><span className="num">{h.tcp_conns ?? '—'}</span></LabelValue>
-        </LabelValueGrid>
+        <SectionHeader title="当前" meta={h ? `更新于 ${F.ago(h.ts)}` : m.agent?.last_report_at ? `最后上报于 ${F.ago(m.agent.last_report_at)}` : '还没上报过'}><RangeBar range={range} setRange={setRange} /></SectionHeader>
+        {h && r ? (
+          <LabelValueGrid>
+            <LabelValue label="内存"><Num f={F.bytes(h.mem_used)} /> <span className="t-sub">/ <Num f={F.bytes(h.mem_total)} /></span></LabelValue>
+            <LabelValue label="磁盘"><Num f={F.bytes(h.disk_used)} /> <span className="t-sub">/ <Num f={F.bytes(h.disk_total)} /></span></LabelValue>
+            <LabelValue label="负载"><Num f={r.load.value} /> <span className="t-sub">{r.load.sub}</span></LabelValue>
+            <LabelValue label="TCP 连接数"><span className="num">{h.tcp_conns ?? '—'}</span></LabelValue>
+          </LabelValueGrid>
+        ) : <div className="hint">agent 离线或还没上报过，没有当前读数；下面是所选时间范围内的历史曲线。</div>}
         {m.host_machine && <div style={{ marginTop: 8 }}><Note>这是宿主机「{m.host_machine.name}」的读数：同机 IP 节点和宿主机是同一台机器，CPU、内存、磁盘与网卡都共用。</Note></div>}
       </Section>
       {/* 三张图表卡同属一段，之间不再画分隔线 */}
       <Section className="chart-stack">
-        <ChartCard c="var(--m-cpu)" icon={<Cpu />} title="CPU" value={<Num f={F.pct(h.cpu_pct, 1)} />} caption="使用率"><ChartFrame q={s} height={140}><TimeChart points={s.data?.points} range={s.data?.range ?? range} lines={L_CPU} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></ChartCard>
-        <ChartCard c="var(--m-mem)" icon={<MemoryStick />} title="内存" value={<Num f={F.pct(r.mem.pct, 1)} />} caption="使用率"><ChartFrame q={s} height={140}><TimeChart points={s.data?.points} range={s.data?.range ?? range} lines={L_MEM} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></ChartCard>
-        <ChartCard c="var(--chart-1)" icon={<Network />} title="网卡速率" value={<>↓ <Num f={F.rate(h.net_rx_bps)} /> <span className="t-sub">·</span> ↑ <Num f={F.rate(h.net_tx_bps)} /></>} caption="当前速率"><ChartFrame q={s} height={160}><TimeChart points={s.data?.points} range={s.data?.range ?? range} lines={L_NET} yFmt={yRate} valueFmt={vRate} yBase={1000} height={160} /></ChartFrame></ChartCard>
+        <ChartCard c="var(--m-cpu)" icon={<Cpu />} title="CPU" value={h ? <Num f={F.pct(h.cpu_pct, 1)} /> : '—'} caption="使用率"><ChartFrame q={s} few={few} height={140}><TimeChart points={s.data?.points} range={s.data?.range ?? range} lines={L_CPU} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></ChartCard>
+        <ChartCard c="var(--m-mem)" icon={<MemoryStick />} title="内存" value={r ? <Num f={F.pct(r.mem.pct, 1)} /> : '—'} caption="使用率"><ChartFrame q={s} few={few} height={140}><TimeChart points={s.data?.points} range={s.data?.range ?? range} lines={L_MEM} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></ChartCard>
+        <ChartCard c="var(--chart-1)" icon={<Network />} title="网卡速率" value={h ? <>↓ <Num f={F.rate(h.net_rx_bps)} /> <span className="t-sub">·</span> ↑ <Num f={F.rate(h.net_tx_bps)} /></> : '—'} caption="当前速率"><ChartFrame q={s} few={few} height={160}><TimeChart points={s.data?.points} range={s.data?.range ?? range} lines={L_NET} yFmt={yRate} valueFmt={vRate} yBase={1000} height={160} /></ChartFrame></ChartCard>
       </Section>
     </>
   );

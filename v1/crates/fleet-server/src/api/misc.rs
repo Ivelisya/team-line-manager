@@ -1,7 +1,7 @@
 use crate::error::ApiJson;
 use super::{ok, paged};
 use crate::auth::Actor;
-use crate::db::{audit as audit_log, new_id};
+use crate::db::{audit as audit_log, new_id, Args};
 use crate::error::{ApiError, ApiPath, ApiQuery, ApiResult};
 use crate::state::{AppState, Event};
 use crate::views;
@@ -118,6 +118,8 @@ struct IncidentOut {
 #[derive(Deserialize)]
 pub struct IncQ {
     state: Option<String>,
+    /// 只看这台机器的告警
+    subject_id: Option<Uuid>,
     limit: Option<i64>,
     offset: Option<i64>,
 }
@@ -128,16 +130,29 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
         Some("all") => "true",
         _ => "i.state = 'firing'",
     };
+    let (limit, offset) = (q.limit.unwrap_or(100).clamp(1, 500), q.offset.unwrap_or(0).max(0));
+    // 按机器筛选的条件只在给了 subject_id 时才拼上（列表与总数各拼一份），走 (subject_id, opened_at desc) 索引
+    let cond = |a: &mut Args| match q.subject_id {
+        Some(s) => format!("{f} and i.subject_id = {}", a.add(s)),
+        None => f.to_string(),
+    };
+    // 全站列表严重的在前；一台机器的（抽屉「最近告警」）只按时间：进行中在前、再按触发时间新的在前，旧的严重告警不挤掉新的
+    let order = if q.subject_id.is_some() { "i.state, i.opened_at desc, i.id desc" } else { "i.state, i.severity desc, i.opened_at desc, i.id desc" };
+    let mut a = Args::default();
     let sql = format!(
         "select i.id, i.rule, i.subject_id,
             display_name(m.kind::text, m.label, t.name, m.number) subject_name,
             i.severity::text severity, i.state::text state, i.summary, i.opened_at, i.last_seen_at, i.resolved_at, i.ack_at, i.ack_by, i.reopen_count
          from incident i left join machine m on m.id = i.subject_id left join team t on t.id = m.team_id
-         where {f} order by i.state, i.severity desc, i.opened_at desc, i.id desc limit $1 offset $2"
+         where {} order by {order} limit {} offset {}",
+        cond(&mut a),
+        a.add(limit),
+        a.add(offset)
     );
-    let (limit, offset) = (q.limit.unwrap_or(100).clamp(1, 500), q.offset.unwrap_or(0).max(0));
-    let v: Vec<IncidentOut> = sqlx::query_as(&sql).bind(limit).bind(offset).fetch_all(&st.db).await?;
-    let total: i64 = sqlx::query_scalar(&format!("select count(*) from incident i where {f}")).fetch_one(&st.db).await?;
+    let v: Vec<IncidentOut> = sqlx::query_as_with(&sql, a.0).fetch_all(&st.db).await?;
+    let mut a = Args::default();
+    let sql = format!("select count(*) from incident i where {}", cond(&mut a));
+    let total: i64 = sqlx::query_scalar_with(&sql, a.0).fetch_one(&st.db).await?;
     let out: Vec<Value> = v
         .iter()
         .map(|i| {

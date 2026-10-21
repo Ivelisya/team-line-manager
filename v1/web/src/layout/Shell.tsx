@@ -8,6 +8,7 @@ import { ApiError, AUTH_EVENT, post } from '@/lib/api';
 import { useIncidents, useMe } from '@/lib/queries';
 import { useStream } from '@/lib/stream';
 import { useTheme, type ThemePref } from '@/lib/theme';
+import { useTitleAlerts } from '@/lib/title';
 import { closeEvacuate, closeMove, closeRestore, closeRetire, useEvacuateTarget, useMoveTarget, useRestoreTarget, useRetireTarget } from '@/lib/nodeActions';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, Tip, TipHost } from '@/components/ui/overlays';
 import { Button } from '@/components/ui/button';
@@ -15,6 +16,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Toaster } from '@/components/ui/toast';
 import { useDrawer } from '@/lib/drawer';
 import { Hotkeys, PaletteTrigger } from '@/features/Hotkeys';
+import { AlertsIndicator } from '@/features/AlertsIndicator';
 import { JobsIndicator } from '@/features/JobsIndicator';
 import { ErrorBoundary } from '@/components/app/ErrorBoundary';
 import { Note, Pill } from '@/components/app/primitives';
@@ -60,6 +62,7 @@ export function Shell() {
   const theme = useTheme();
   const stream = useStream(!!me.data);
   const firing = useIncidents('firing').data?.total ?? 0;
+  useTitleAlerts(firing);
 
   React.useEffect(() => { setNavOpen(false); }, [loc.pathname]);
   // 窄屏侧栏（左侧抽屉）开着时 Esc 收起，焦点回到汉堡按钮；上面叠着对话框、命令面板或节点抽屉时 Esc 归它们
@@ -127,7 +130,7 @@ export function Shell() {
           <NavLink to="/" className="brand"><span className="brand-mark"><Boxes size={14} /></span>团队线路管理</NavLink>
           <PaletteTrigger />
           <div className="topbar-right">
-            {firing > 0 && <NavLink to="/incidents" className="top-alert" aria-label={`${firing} 条告警`}><Pill tone="bad">{firing}<span className="hide-sm"> 条告警</span></Pill></NavLink>}
+            <AlertsIndicator />
             <JobsIndicator />
             {stream === 'error'
               ? <Pill tone="warn" dot="pulse" role="status" tip="页面数据暂停更新，连上后自动补齐"><span>实时已断开<span className="hide-sm">，正在重连…</span></span></Pill>

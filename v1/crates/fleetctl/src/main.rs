@@ -225,6 +225,9 @@ enum Cmd {
         /// 含已恢复的
         #[arg(long)]
         all: bool,
+        /// 只看某台机器（id / 显示名 / 线路机名 / IP，含已退役的）
+        #[arg(long)]
+        machine: Option<String>,
     },
     /// 确认告警
     Ack { id: String },
@@ -532,7 +535,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Ls { team, kind, status, retired } => cmds::ls(x, team.as_deref(), kind.as_deref(), status.as_deref(), retired),
         Cmd::Show { machine } => cmds::show(x, &machine),
         Cmd::Series { machine, range, metric } => cmds::series(x, &machine, &range, &metric),
-        Cmd::Incidents { all } => cmds::incidents(x, all),
+        Cmd::Incidents { all, machine } => cmds::incidents(x, all, machine.as_deref()),
         Cmd::Ack { id } => cmds::ack(x, &id),
         Cmd::Jobs { active, limit } => cmds::jobs(x, active, limit),
         Cmd::Job { id, follow } => cmds::job(x, &id, follow),

@@ -25,7 +25,8 @@ export const RetireDialog = resetOnOpen(function RetireDialog({ m, open, onOpenC
   // 重开时缓存里还是上一次的预检（关闭动画期间对话框还挂着、观察者没走，gcTime 0 也回收不了）：只认这次打开后取回的
   const done = pv.isFetchedAfterMount;
   const h = m.host_machine;
-  const xs = done && pv.isSuccess ? pv.data.ip_nodes : [];
+  // 预览取不到时退回机器自己带的名单（含已在退役中的）：会连带退役的同机 IP 节点照样列出来
+  const xs = !done ? [] : pv.isSuccess ? pv.data.ip_nodes : m.ip_nodes;
   return (
     <TypedConfirmDialog open={open} onOpenChange={onOpenChange} size="md" title={`退役 ${m.name}？`} expected={m.name} prompt="请输入显示名" confirmLabel="退役" danger
       description="入口会立即停用，已有连接会断开。之后可以在「管理」页恢复，但要重新上架。"
@@ -37,7 +38,7 @@ export const RetireDialog = resetOnOpen(function RetireDialog({ m, open, onOpenC
       }}>
       {!done && <div className="hint">正在检查退役后会受影响的节点…</div>}
       {done && pv.isError && <Note tone="warn">无法预览改名影响：{(pv.error as Error).message}。仍可继续退役，但无法提前看到后面节点的新名字。</Note>}
-      {h && <Note>只摘除这个 IP 的节点（它的入口与宿主机上它自己的 SS 实例），宿主机「{h.name}」不受影响。</Note>}
+      {h && <Note>只退役这个 IP 的节点：摘除它的入口{cleanup ? '，停掉宿主机上它自己的 SS 实例' : '；不清理时，它在宿主机上的 SS 实例留着'}。宿主机「{h.name}」不受影响。</Note>}
       {xs.length > 0 && (
         <Note tone="warn">
           <div style={{ fontWeight: 500, marginBottom: 4 }}>以下同机 IP 节点在这台机器上，会一起退役：</div>

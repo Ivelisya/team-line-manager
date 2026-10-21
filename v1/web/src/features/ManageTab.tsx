@@ -200,6 +200,7 @@ function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }
   // 已退役的同机 IP 节点：宿主机在用才能恢复（SSH、agent 都是宿主机的）
   const host = useMachine(retired && m.host_machine ? m.host_machine.id : null).data;
   const hostDown = !!host && host.lifecycle !== 'active';
+  // ip_nodes 含已在退役中的；退役宿主机只连带还没开始退役的（同服务端），说法按这个写
   const n = m.ip_nodes.length;
 
   return (
@@ -229,8 +230,8 @@ function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }
             <div>
               <div className="t">退役</div>
               <div className="hint">
-                {m.host_machine ? `只摘除这个 IP 的节点（它的入口与 SS 实例），宿主机「${m.host_machine.name}」不受影响。` : '停用入口、撤销令牌，机器进入「已退役」，不再出现在首页和统计里。'}
-                {m.kind !== 'relay' && '同团队后面的节点会自动前移补号。'}{n > 0 && `这台机器上的 ${n} 个同机 IP 节点会一起退役。`}
+                {m.host_machine ? `只退役这个 IP 的节点：摘除它的入口，宿主机上它自己的 SS 实例可在退役时选择清理；宿主机「${m.host_machine.name}」不受影响。` : '停用入口、撤销令牌，机器进入「已退役」，不再出现在首页和统计里。'}
+                {m.kind !== 'relay' && '同团队后面的节点会自动前移补号。'}{n > 0 && `这台机器上有 ${n} 个同机 IP 节点，还没开始退役的会一起退役。`}
               </div>
             </div>
             <Button variant="outline-danger" disabled={busyJob || m.lifecycle === 'retiring'} onClick={() => setDlg('retire')}>退役…</Button>

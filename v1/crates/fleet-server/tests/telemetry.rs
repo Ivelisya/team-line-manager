@@ -613,6 +613,94 @@ async fn relay_renewal_and_global_maintenance() {
     assert!(m.as_array().unwrap().iter().all(|x| x["health"]["status"] == "maintenance"));
 }
 
+/// 把入口在 `hour` 这一桶的业务流量设成 `mib` MiB，并让视图里的流量缓存作废（同小时汇总跑完）
+async fn set_traffic(t: &T, entry: Uuid, hour: OffsetDateTime, mib: i64) {
+    sqlx::query(
+        "insert into entry_traffic_hourly (entry_id, hour, up_bytes, down_bytes) values ($1, $2, 0, $3)
+         on conflict (entry_id, hour) do update set down_bytes = excluded.down_bytes",
+    )
+    .bind(entry)
+    .bind(hour)
+    .bind(mib * 1024 * 1024)
+    .execute(&t.st.db)
+    .await
+    .unwrap();
+    t.st.live.rolled_up();
+}
+
+/// 流量额度：本周期已用 ≥ 90% 立即开警告，≥ 100% 升严重并马上再通知一次，回落（新周期已用归零）立即恢复；
+/// 只开告警，健康状态不变；没设上限的机器不评估
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn traffic_quota_alert_lifecycle() {
+    let t = setup().await;
+    let mock = Mock::start().await;
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "webhook", "config": {"url": mock.url("/hook/a")}, "min_severity": "info", "enabled": true})).await;
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let team = seed_team(&t, "团队1").await;
+    let (node, entry) = seed_node(&t, relay, team, 1, "203.0.113.5", 20000).await;
+    xray_report(&t, 1, true).await;
+    // 线路机额度 1 GiB、每月 1 号重置（账单时区北京）；节点没有订阅也没有套餐：不限
+    sqlx::query("insert into subscription (machine_id, price_cents, due_date, traffic_gb, traffic_reset_day) values ($1, 500, current_date + 60, 1, 1)")
+        .bind(relay)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let (hour, days): (OffsetDateTime, i32) = sqlx::query_as(
+        "select date_trunc('hour', now()), (date_trunc('month', now() at time zone 'Asia/Shanghai') + interval '1 month')::date - (now() at time zone 'Asia/Shanghai')::date",
+    )
+    .fetch_one(&t.st.db)
+    .await
+    .unwrap();
+    let mut state = AlertState::default();
+    let base = OffsetDateTime::now_utc();
+
+    set_traffic(&t, entry, hour, 911).await;
+    assert_eq!(t.health(relay).await, ("ok".to_string(), vec![]), "89% 不报");
+    // 92%：不去抖，评估一轮就开警告；健康状态仍是正常；节点同样有这些流量，但不限额度，不评估
+    set_traffic(&t, entry, hour, 950).await;
+    assert_eq!(t.health(relay).await, ("ok".to_string(), vec!["traffic_quota_high".to_string()]));
+    assert!(t.health(node).await.1.is_empty());
+    pass(&t, &mut state, base, 0).await;
+    let inc = incidents(&t, "firing").await;
+    assert_eq!(inc.len(), 1, "{inc:?}");
+    assert_eq!((inc[0]["rule"].as_str(), inc[0]["rule_name"].as_str(), inc[0]["severity"].as_str()), (Some("traffic_quota_high"), Some("流量额度吃紧"), Some("warning")));
+    assert_eq!(inc[0]["subject_id"], relay.to_string());
+    assert_eq!(inc[0]["summary"], format!("线路机1：本周期流量已用 92%（950 MiB / 1 GiB），{days} 天后重置"));
+    log_settles(&t, 1).await;
+    t.post(&format!("/api/v1/incidents/{}/ack", inc[0]["id"].as_str().unwrap()), json!({})).await;
+
+    // 超过 100%：同一条告警升为严重，马上再通知一次（不等每天一次的提醒），对「吃紧」的确认清掉；健康状态仍不变
+    set_traffic(&t, entry, hour, 1100).await;
+    pass(&t, &mut state, base, 30).await;
+    let inc = incidents(&t, "firing").await;
+    assert_eq!((inc.len(), inc[0]["severity"].as_str()), (1, Some("critical")));
+    assert!(inc[0]["ack_at"].is_null(), "{inc:?}");
+    assert_eq!(inc[0]["summary"], format!("线路机1：本周期流量已超出额度（已用 107%，1.07 GiB / 1 GiB），{days} 天后重置"));
+    assert_eq!(t.health(relay).await.0, "ok");
+    log_settles(&t, 2).await;
+    pass(&t, &mut state, base, 60).await;
+    log_settles(&t, 2).await;
+
+    // 上限调到 2 GiB、回到吃紧：摘要跟着变，严重度不降（收到过「严重」的渠道恢复时按严重收到），也不再通知
+    sqlx::query("update subscription set traffic_gb = 2 where machine_id = $1").bind(relay).execute(&t.st.db).await.unwrap();
+    set_traffic(&t, entry, hour, 1900).await;
+    pass(&t, &mut state, base, 75).await;
+    let inc = incidents(&t, "firing").await;
+    assert_eq!((inc.len(), inc[0]["severity"].as_str()), (1, Some("critical")));
+    assert_eq!(inc[0]["summary"], format!("线路机1：本周期流量已用 92%（1.86 GiB / 2 GiB），{days} 天后重置"));
+    log_settles(&t, 2).await;
+
+    // 新周期开始、已用归零：下一轮立即恢复
+    sqlx::query("delete from entry_traffic_hourly").execute(&t.st.db).await.unwrap();
+    t.st.live.rolled_up();
+    pass(&t, &mut state, base, 90).await;
+    assert!(incidents(&t, "firing").await.is_empty());
+    log_settles(&t, 3).await;
+    let sent: Vec<(String, String)> = mock.bodies("/hook/a").iter().map(|b| (b["event"].as_str().unwrap().into(), b["severity"].as_str().unwrap().into())).collect();
+    let want = [("firing", "warning"), ("firing", "critical"), ("resolved", "critical")].map(|(e, s)| (e.to_string(), s.to_string()));
+    assert_eq!(sent, want);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn apply_lag_counts_from_generation_at() {
     let t = setup().await;
@@ -1214,6 +1302,40 @@ async fn incidents_list_pages_with_total() {
     assert_eq!((ids(&past).len(), past["total"].as_i64(), past["next_offset"].is_null()), (0, Some(7), true), "越过末尾：空页，但总数照给");
     assert_eq!(page("state=all").await["total"].as_i64(), Some(9));
     assert_eq!(page("state=resolved").await["total"].as_i64(), Some(2));
+}
+
+/// 按机器筛选（抽屉的「最近告警」）：subject_id 与 state、limit、offset 组合，total 也只数这台的
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn incidents_filter_by_subject() {
+    let t = setup().await;
+    let (a, b) = (Uuid::now_v7(), Uuid::now_v7());
+    for (subject, state, mins) in [(a, "resolved", 1), (a, "firing", 2), (a, "resolved", 3), (b, "firing", 4)] {
+        sqlx::query(&format!(
+            "insert into incident (id, rule, subject_id, severity, state, summary, opened_at, resolved_at) values ($1, 'agent_offline', $2, 'warning', '{state}', 's',
+             now() - interval '{mins} minutes', case when '{state}' = 'resolved' then now() end)"
+        ))
+        .bind(Uuid::now_v7())
+        .bind(subject)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    }
+    let get = |q: String| {
+        let t = &t;
+        async move { t.get(&format!("/api/v1/incidents?{q}")).await }
+    };
+    let subjects = |v: &Value| v["items"].as_array().unwrap().iter().map(|i| i["subject_id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+
+    let p1 = get(format!("subject_id={a}&state=all&limit=2")).await;
+    assert_eq!((p1["total"].as_i64(), p1["next_offset"].as_i64()), (Some(3), Some(2)));
+    assert_eq!(subjects(&p1), [a.to_string(), a.to_string()]);
+    assert_eq!((p1["items"][0]["state"].as_str(), p1["items"][1]["state"].as_str()), (Some("firing"), Some("resolved")), "进行中在前");
+    let p2 = get(format!("subject_id={a}&state=all&limit=2&offset=2")).await;
+    assert_eq!((p2["total"].as_i64(), p2["next_offset"].is_null(), subjects(&p2)), (Some(3), true, vec![a.to_string()]));
+    assert_eq!(get(format!("subject_id={a}")).await["total"].as_i64(), Some(1), "默认只看进行中");
+    assert_eq!(get(format!("subject_id={b}&state=resolved")).await["total"].as_i64(), Some(0));
+    assert_eq!(get("state=all".into()).await["total"].as_i64(), Some(4), "不带 subject_id 照旧");
+    assert_eq!(t.req("GET", "/api/v1/incidents?subject_id=x", None, None).await.0, StatusCode::BAD_REQUEST);
 }
 
 // ── 访问汇总：agent 断网很久后补传的记录也要汇总进去 ──────────────────────────

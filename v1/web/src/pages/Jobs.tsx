@@ -167,11 +167,18 @@ function cancelDesc(j: Job) {
   return '已完成的步骤会被补偿（回滚），然后停下。';
 }
 
-/** 重试：失败原因是主机指纹不符 / SSH 认证失败时先问要不要重置指纹、换密码，其余直接重试 */
+/** 重试：失败原因是主机指纹不符 / SSH 认证失败时先问要不要重置指纹、换密码，其余直接重试。
+ *  同机 IP 节点的上架 / 恢复用中控密钥登录宿主机、没有「引导密钥」这一步，密码用不上（服务端只在那一步读）：不给填，
+ *  认证失败时说明要先在宿主机上把中控公钥加回去；重置的指纹是宿主机的（服务端按宿主机的 IP 重置） */
 function RetryButton({ j }: { j: Job }) {
   const retry = useRetryJob();
   const kind = j.steps.find((s) => s.state === 'failed')?.error_kind;
   const ask = kind === 'host_key' || kind === 'auth';
+  const ip = j.kind === 'provision_ip' || j.kind === 'restore_ip';
+  const desc = kind === 'host_key'
+    ? (ip ? '宿主机的主机指纹和记录的不一致（同机 IP 节点用中控密钥登录宿主机）。确认宿主机重装过、IP 没有换给别的机器，再重置指纹重试。' : '机器的主机指纹和记录的不一致。确认机器重装过、IP 没有换给别的机器，再重置指纹重试。')
+    : ip ? 'SSH 认证失败：中控密钥登录不了宿主机。同机 IP 节点没有引导密钥这一步，填密码也用不上：先把中控公钥（中控上的 /etc/fleet/ssh/id_ed25519.pub）加回宿主机 root 的 authorized_keys，再重试。'
+    : 'SSH 认证失败：中控密钥登录不上。可以填 SSH 密码，重试时用它重新推送中控公钥。';
   const [open, setOpen] = React.useState(false);
   const [reset, setReset] = React.useState(false);
   const [pw, setPw] = React.useState('');
@@ -184,14 +191,15 @@ function RetryButton({ j }: { j: Job }) {
     <>
       <Button size="sm" variant="primary" loading={retry.isPending && !open} onClick={click}><RotateCw />重试</Button>
       {ask && (
-        <ConfirmDialog open={open} onOpenChange={setOpen} title="重试作业" confirmLabel="重试"
-          description={kind === 'host_key' ? '机器的主机指纹和记录的不一致。确认机器重装过、IP 没有换给别的机器，再重置指纹重试。' : 'SSH 认证失败：中控密钥登录不上。可以填 SSH 密码，重试时用它重新推送中控公钥。'}
+        <ConfirmDialog open={open} onOpenChange={setOpen} title="重试作业" confirmLabel="重试" description={desc}
           onConfirm={async () => { await retry.mutateAsync({ id: j.id, reset_host_key: reset, ...(pw ? { ssh_password: pw } : {}) }); ok(); }}>
           <div className="stack-sm">
-            <CheckRow checked={reset} onChange={setReset}>重置主机指纹</CheckRow>
-            <Field label={kind === 'auth' ? 'SSH 密码' : 'SSH 密码（选填）'} hint="留空则继续用中控密钥登录">
-              <Input type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="new-password" />
-            </Field>
+            <CheckRow checked={reset} onChange={setReset}>{ip ? '重置宿主机的主机指纹' : '重置主机指纹'}</CheckRow>
+            {!ip && (
+              <Field label={kind === 'auth' ? 'SSH 密码' : 'SSH 密码（选填）'} hint="留空则继续用中控密钥登录">
+                <Input type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="new-password" />
+              </Field>
+            )}
           </div>
         </ConfirmDialog>
       )}

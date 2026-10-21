@@ -85,6 +85,7 @@ pub fn rule_name(key: &str) -> &str {
         "host_cpu_high" => "CPU 持续偏高",
         "host_mem_high" => "内存持续偏高",
         "host_disk_high" => "磁盘空间不足",
+        "traffic_quota_high" => "流量额度吃紧",
         "ipintel_new_isp" => "来源出现新运营商",
         "ipintel_new_city" => "来源出现新城市",
         "ipintel_datacenter_source" => "机房 / VPN 来源",
@@ -118,6 +119,20 @@ pub fn fmt_duration(secs: i64) -> String {
     } else {
         format!("{} 分钟", m.max(if secs > 0 { 1 } else { 0 }))
     }
+}
+
+/// 字节数，二进制单位，写法同网页 format.ts 的 bytes：`1.84 TiB`、`950 MiB`、`2 TiB`
+pub fn fmt_bytes(n: f64) -> String {
+    const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+    let (mut x, mut i) = (n.max(0.0), 0);
+    while x >= 1024.0 && i + 1 < UNITS.len() {
+        x /= 1024.0;
+        i += 1;
+    }
+    let digits = if i == 0 || x >= 100.0 { 0 } else if x >= 10.0 { 1 } else { 2 };
+    let s = format!("{x:.digits$}");
+    let s = if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.') } else { &s };
+    format!("{s} {}", UNITS[i])
 }
 
 /// 去掉摘要开头的「机器名：」（通知里机器名单独成行）
@@ -503,6 +518,12 @@ mod tests {
         assert_eq!(fmt_duration(0), "0 分钟");
         assert_eq!(fmt_duration(7800), "2 小时 10 分钟");
         assert_eq!(fmt_duration(90_000), "1 天 1 小时");
+        let gib = 1024f64.powi(3);
+        assert_eq!(fmt_bytes(1.84 * 1024.0 * gib), "1.84 TiB");
+        assert_eq!(fmt_bytes(2048.0 * gib), "2 TiB");
+        assert_eq!(fmt_bytes(950.0 * 1024.0 * 1024.0), "950 MiB");
+        assert_eq!(fmt_bytes(12.5 * gib), "12.5 GiB");
+        assert_eq!(fmt_bytes(512.0), "512 B");
         assert_eq!(strip_machine("团队1-02：5 分钟没有上报", "团队1-02"), "5 分钟没有上报");
         assert_eq!(strip_machine("别的：x", "团队1-02"), "别的：x");
         assert_eq!(rule_name("relay_xray_down"), "Xray 未运行");
