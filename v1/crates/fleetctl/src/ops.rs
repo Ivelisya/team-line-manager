@@ -452,6 +452,17 @@ struct ExecResult {
     data: anyhow::Result<Value>,
 }
 
+/// `--team` 的执行目标：团队里在用的线路机与落地机（家宽代理没有 SSH）。同机 IP 节点登录的是宿主机：宿主机也在这个团队里时跳过它，同一台机器只执行一次
+fn team_targets(all: &[Value], team: &str) -> Vec<ExecTarget> {
+    let members: Vec<&Value> = all.iter().filter(|m| st(m, "/team/name") == team && st(m, "/lifecycle") == "active" && st(m, "/kind") != "proxy").collect();
+    let ids: Vec<String> = members.iter().map(|m| st(m, "/id")).collect();
+    members
+        .into_iter()
+        .filter(|m| !m["host_id"].as_str().is_some_and(|h| ids.iter().any(|i| i == h)))
+        .map(|m| ExecTarget { id: st(m, "/id"), name: st(m, "/name") })
+        .collect()
+}
+
 fn run_one(ctx: &Ctx, t: &ExecTarget, command: &str, timeout: u64) -> ExecResult {
     let data = ctx
         .c
@@ -472,9 +483,7 @@ pub fn exec(ctx: &Ctx, o: ExecOpts<'_>) -> anyhow::Result<u8> {
     let all = ctx.machines()?;
     let mut targets: Vec<ExecTarget> = vec![];
     if let Some(team) = o.team {
-        for m in all.iter().filter(|m| st(m, "/team/name") == team && st(m, "/lifecycle") == "active" && st(m, "/kind") != "proxy") {
-            targets.push(ExecTarget { id: st(m, "/id"), name: st(m, "/name") });
-        }
+        targets = team_targets(&all, team);
         if targets.is_empty() {
             bail!("团队「{team}」下没有可执行命令的在用机器");
         }
@@ -692,5 +701,19 @@ mod tests {
         assert!(parse_upstream("ftp://x:1").is_err());
         assert!(parse_upstream("socks5://nohostport").is_err());
         assert!(parse_upstream("socks5://h:abc").is_err());
+    }
+
+    #[test]
+    fn team_exec_runs_once_per_host() {
+        let m = |id: &str, team: &str, kind: &str, lc: &str, host: Option<&str>| json!({"id": id, "name": id, "team": {"name": team}, "kind": kind, "lifecycle": lc, "host_id": host});
+        let all = [
+            m("h", "团队1", "vps", "active", None),
+            m("x", "团队1", "vps", "active", Some("h")),      // 宿主机同在团队里：跳过
+            m("y", "团队1", "vps", "active", Some("other")),  // 宿主机在别的团队：照常执行（登录的是宿主机）
+            m("p", "团队1", "proxy", "active", None),
+            m("r", "团队1", "vps", "retired", None),
+            m("z", "团队2", "vps", "active", None),
+        ];
+        assert_eq!(team_targets(&all, "团队1").iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["h", "y"]);
     }
 }
