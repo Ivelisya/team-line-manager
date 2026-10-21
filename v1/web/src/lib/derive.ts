@@ -56,6 +56,20 @@ export type BeatCell = 'ok' | 'warn' | 'bad' | null;
  */
 export const beatCells = (buckets: ProbeBucket[] | undefined): BeatCell[] =>
   (buckets ?? []).map(([n, ok, ms]) => { if (!n) return null; const r = ok / n; return r < 0.5 ? 'bad' : r < 0.95 || (ms ?? 0) >= 150 ? 'warn' : 'ok'; });
+const BEAT_MS = 3 * 60_000;
+const BEAT_LEGEND = '绿：全部成功 · 黄：有失败或平均延迟 ≥ 150 ms · 红：一半以上失败 · 灰：没有探测';
+/** 心跳格的悬停说明（与 beatCells 一一对应）：这 3 分钟的时段、探测次数与成功率、平均延迟，第二行是颜色含义。
+ *  桶按墙钟 3 分钟对齐，最后一格是当前这格（见 API.md /probe-beats） */
+export function beatTitles(buckets: ProbeBucket[] | undefined, now = Date.now()): string[] {
+  const bs = buckets ?? [];
+  const cur = Math.floor(now / BEAT_MS) * BEAT_MS;
+  const hm = (t: number) => { const d = new Date(t); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+  return bs.map(([n, ok, ms], i) => {
+    const t0 = cur - (bs.length - 1 - i) * BEAT_MS;
+    const what = !n ? '没有探测' : `探测 ${n} 次，成功 ${ok} 次（${Math.round((ok / n) * 100)}%）${ms != null ? ` · 平均 ${Math.round(ms)} ms` : ''}`;
+    return `${hm(t0)}–${hm(t0 + BEAT_MS)}${i === bs.length - 1 ? '（进行中）' : ''} · ${what}\n${BEAT_LEGEND}`;
+  });
+}
 /** 入口探测摘要：平均 TCP 延迟与出口延迟。只算 active 的入口（同服务端健康规则）：应用中的还没有探测 */
 export function probeSummary(m: MachineView) {
   const es = m.entries.filter((e) => e.lifecycle === 'active');

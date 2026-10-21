@@ -195,13 +195,14 @@ export function CopyButton({ text, label = '内容', className, size = 14 }: { t
   );
 }
 
-/** 心跳条：n 格，ok/warn/bad/空 */
-export function Beat({ cells, caption, win, stale, n = 20 }: { cells: BeatCell[]; caption: React.ReactNode; win?: string; stale?: boolean; n?: number }) {
-  const pad = Array.from({ length: Math.max(0, n - cells.length) }, () => null as null);
+/** 心跳条：n 格，ok/warn/bad/空；titles 与 cells 一一对应，作每格的悬停说明 */
+export function Beat({ cells, titles, caption, win, stale, n = 20 }: { cells: BeatCell[]; titles?: string[]; caption: React.ReactNode; win?: string; stale?: boolean; n?: number }) {
+  const pad = Math.max(0, n - cells.length);
+  const shown = cells.slice(-n); const tips = titles?.slice(-n);
   return (
     <div className={cn('beat', stale && 'is-stale')}>
       <div className="beat-cap"><span className="beat-main ellipsis">{caption}</span>{win && <span className="beat-win">{win}</span>}</div>
-      <div className="beat-cells">{[...pad, ...cells.slice(-n)].map((c, i) => <i key={i} data-t={c ?? undefined} />)}</div>
+      <div className="beat-cells">{Array.from({ length: pad + shown.length }, (_, i) => i < pad ? <i key={i} /> : <i key={i} data-t={shown[i - pad] ?? undefined} title={tips?.[i - pad]} />)}</div>
     </div>
   );
 }

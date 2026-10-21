@@ -176,7 +176,8 @@ function ProvidersTab() {
 
 /* ---------------------------------------------------------------- 套餐 */
 /** 规格：核数 / 内存，没填的部分显示 “—”；都没填只显示 “—” */
-const planSpec = (p: Plan) => (!p.cpu_cores && !p.mem_mb ? '—' : `${p.cpu_cores || '—'} 核 / ${p.mem_mb ? +(p.mem_mb / 1024).toFixed(1) : '—'} GB`);
+// 与全站一致用 1024 进位的 GiB / MiB（256 MB 内存写 256 MiB，不写 0.3 GB）
+const planSpec = (p: Plan) => (!p.cpu_cores && !p.mem_mb ? '—' : `${p.cpu_cores || '—'} 核 / ${p.mem_mb ? F.str(F.bytes(p.mem_mb * 1024 * 1024)) : '—'}`);
 const EMPTY_PLAN = { name: '', provider_id: '', cpu_cores: '', mem_gb: '', disk_gb: '', bandwidth_mbps: '', traffic_gb: '', price: '', currency: 'USD', cycle: 'monthly', notes: '' };
 function PlansTab() {
   const q = usePlans(); const providers = useProviders().data ?? [];
@@ -215,7 +216,7 @@ function PlansTab() {
                 <tr key={p.id} className={p.archived_at ? 'is-retired' : undefined}>
                   <td><span className="cell-main strong">{p.name}</span><span className="sub">{p.archived_at ? '已归档' : p.notes ?? ''}</span></td>
                   <td>{pname(p.provider_id)}</td>
-                  <td>{planSpec(p)}<span className="sub">{p.disk_gb ? `磁盘 ${p.disk_gb} GB` : ''}</span></td>
+                  <td>{planSpec(p)}<span className="sub">{p.disk_gb ? `磁盘 ${p.disk_gb} GiB` : ''}</span></td>
                   <td className="r"><Num f={F.mbps(p.bandwidth_mbps)} /></td><td className="r"><Num f={p.traffic_gb ? F.gb(p.traffic_gb) : { v: '不限', u: '' }} /></td>
                   <td className="r"><span className="num">{F.money(p.price_cents, p.currency)}</span><span className="sub">/ {F.cycleLabel(p.cycle)}</span></td>
                   <td className="r num">{p.machine_count}</td>
@@ -233,7 +234,7 @@ function PlansTab() {
         <div className="form-grid">
           <Field label="套餐名"><Input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} autoFocus /></Field>
           <Field label="供应商"><Select value={f.provider_id} onChange={(v) => setF({ ...f, provider_id: v })} options={providers.map((p) => ({ value: p.id, label: p.name }))} /></Field>
-          {num('cpu_cores', 'CPU 核数')}{num('mem_gb', '内存（GB）')}{num('disk_gb', '磁盘（GB）')}{num('bandwidth_mbps', '带宽（Mbps）')}
+          {num('cpu_cores', 'CPU 核数')}{num('mem_gb', '内存（GiB）')}{num('disk_gb', '磁盘（GiB）')}{num('bandwidth_mbps', '带宽（Mbps）')}
           {num('traffic_gb', '流量（GiB / 周期）', '留空或 0 = 不限')}{num('price', '价格')}
           <Field label="币种"><Select value={f.currency} onChange={(v) => setF({ ...f, currency: v })} options={F.withCurrent(F.CURRENCY_OPTIONS, f.currency)} /></Field>
           <Field label="计费周期"><Select value={f.cycle} onChange={(v) => setF({ ...f, cycle: v })} options={F.CYCLE_OPTIONS} /></Field>

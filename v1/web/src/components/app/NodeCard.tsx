@@ -8,7 +8,7 @@ import { SPRING } from '@/lib/motion';
 import { ArrowDown, ArrowUp, Calendar, CircleDollarSign, Cpu, Database, Gauge, Globe, HardDrive, MemoryStick, MoreHorizontal, Radar, RefreshCw, Settings2, PanelRightOpen, ServerOff, Wallet } from 'lucide-react';
 import type { MachineView, ProbeBeats, Subscription } from '@/lib/types';
 import * as F from '@/lib/format';
-import { beatCells, entryText, hasHost, isQuiet, liveRate, monthTraffic, probeSummary, quota, remainingValue, resourceMeters, subLabel, tagColor } from '@/lib/derive';
+import { beatCells, beatTitles, entryText, hasHost, isQuiet, liveRate, monthTraffic, probeSummary, quota, remainingValue, resourceMeters, subLabel, tagColor } from '@/lib/derive';
 import { useProbeBeats } from '@/lib/queries';
 import { useLiveSeries } from '@/lib/live';
 import { useNow } from '@/lib/useNow';
@@ -179,11 +179,14 @@ function QuotaSlot({ m, onOpen }: { m: MachineView; onOpen: Open }) {
 /** 心跳条：近 1 小时的探测（全部卡片共用一个 /probe-beats 查询，各取自己的那份） */
 const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, quiet, tcpOk, total, tcp, egress }: { id: string; kind: MachineView['kind']; lifecycle: MachineView['lifecycle']; quiet: boolean; tcpOk: number; total: number; tcp: number | null; egress: number | null }) {
   const live = lifecycle === 'active';
-  const beats = useProbeBeats(useCallback((d: ProbeBeats) => d[id], [id])).data;
+  const bq = useProbeBeats(useCallback((d: ProbeBeats) => d[id], [id]));
+  const beats = bq.data;
   const cap = !live ? <span className="t-muted">{lifecycle === 'retired' ? '已退役' : '尚未开始探测'}</span>
     : kind === 'relay' ? <>入口连通 <b className="num" style={tcpOk < total ? { color: 'var(--warn-text)' } : undefined}>{tcpOk}/{total}</b></>
     : <>TCP <b><Num f={F.ms(tcp)} /></b> · 出口 <b><Num f={F.ms(egress)} /></b></>;
-  return <Beat cells={live ? beatCells(beats) : []} caption={cap} win="近 1 小时" stale={quiet} />;
+  // 时段按这份数据取回的时刻对齐（轮询间隔 2 分钟，用当前时刻在跨格时会错一格）
+  const titles = useMemo(() => (live ? beatTitles(beats, bq.dataUpdatedAt) : undefined), [live, beats, bq.dataUpdatedAt]);
+  return <Beat cells={live ? beatCells(beats) : []} titles={titles} caption={cap} win="近 1 小时" stale={quiet} />;
 });
 
 /** 已上架 · 到期 · 剩余价值：彩色读数。已上架按分钟走（memo 挡住推送，自己每分钟重画） */
