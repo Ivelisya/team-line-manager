@@ -287,16 +287,37 @@ async fn ack_incident_and_silence_validation() {
     let n: i64 = sqlx::query_scalar("select count(*) from audit_log where action = 'incident.ack' and target_id = $1").bind(inc).fetch_one(&t.st.db).await.unwrap();
     assert_eq!(n, 1);
 
+    // 窗口按现在算（默认从现在起 1 小时）：结束时间已经过去的会被拒
+    let (f, now) = (time::format_description::well_known::Rfc3339, time::OffsetDateTime::now_utc());
+    let (h, d) = (time::Duration::hours, time::Duration::days);
+    let at = |off: time::Duration| (now + off).format(&f).unwrap();
     let win = |extra: Value| {
-        let mut b = json!({"starts_at": "2026-01-01T00:00:00Z", "ends_at": "2026-01-02T00:00:00Z"});
+        let mut b = json!({"starts_at": at(h(0)), "ends_at": at(h(1))});
         b.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
         b
     };
-    let (s, _) = t.call("POST", "/api/v1/silences", Some(win(json!({"rule": "no_such_rule"}))), Auth::Session).await;
-    assert_eq!(s, StatusCode::BAD_REQUEST);
-    let (s, _) = t.call("POST", "/api/v1/silences", Some(win(json!({"subject_id": Uuid::now_v7()}))), Auth::Session).await;
-    assert_eq!(s, StatusCode::BAD_REQUEST);
-    t.ok("POST", "/api/v1/silences", Some(win(json!({"rule": "agent_offline", "subject_id": mid})))).await;
+    for (extra, want) in [
+        (json!({"rule": "no_such_rule"}), "没有「no_such_rule」这条告警规则"),
+        (json!({"subject_id": Uuid::now_v7()}), "subject_id 指向的机器不存在"),
+        (json!({"ends_at": at(h(0))}), "结束时间要晚于开始时间"),
+        (json!({"ends_at": at(d(30) + h(1))}), "最长 30 天；更久的请直接把机器退役"),
+        (json!({"starts_at": at(-h(2)), "ends_at": at(-h(1))}), "结束时间已经过去了"),
+        (json!({"starts_at": at(d(91)), "ends_at": at(d(91) + h(1))}), "最多提前 90 天预约"),
+    ] {
+        let (s, v) = t.call("POST", "/api/v1/silences", Some(win(extra.clone())), Auth::Session).await;
+        assert_eq!((s, v["error"]["message"].as_str()), (StatusCode::BAD_REQUEST, Some(want)), "{extra}");
+    }
+    // 开始时间已经过去、结束时间还没到的照常建（「从现在开始」按客户端的时钟填）；整 30 天、89 天后开始的都可以
+    let cur = t.ok("POST", "/api/v1/silences", Some(win(json!({"rule": "agent_offline", "subject_id": mid, "starts_at": at(-h(1))})))).await["id"].clone();
+    t.ok("POST", "/api/v1/silences", Some(win(json!({"starts_at": at(d(89)), "ends_at": at(d(119))})))).await;
+    // 预约：还没开始的照样列出，按开始时间排在进行中的后面；但此刻不生效（不算维护中）
+    let pre = t.ok("POST", "/api/v1/silences", Some(win(json!({"subject_id": mid, "is_maintenance": true, "starts_at": at(d(1)), "ends_at": at(d(1) + h(2))})))).await["id"].clone();
+    let list = t.ok("GET", "/api/v1/silences", None).await;
+    let ids: Vec<Value> = list.as_array().unwrap().iter().map(|s| s["id"].clone()).collect();
+    assert_eq!(ids[..2], [cur, pre], "{list}");
+    assert_eq!((list[0]["rule_name"].as_str(), list[1]["rule_name"].is_null()), (Some("agent 离线"), true), "{list}");
+    let live = fleet_server::silence::Silences::load(&t.st.db).await.unwrap();
+    assert!(live.matches("agent_offline", mid) && !live.maintenance(mid), "预约的维护还没开始");
 }
 
 /// 批量升级 agent：一台冲突（建作业时撞上别人刚建的作业）只跳过这台
