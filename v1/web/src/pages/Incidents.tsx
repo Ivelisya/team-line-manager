@@ -143,9 +143,9 @@ const SilenceDialog = resetOnOpen(function SilenceDialog({ open, onOpenChange, p
       <FormDialog open={open} onOpenChange={onOpenChange} title="新建静默" desc="从现在开始，指定时长内所选对象不会触发告警。" submitLabel="创建" busy={add.isPending} valid={valid}
         onSubmit={() => (subject === ALL ? setAskAll(true) : submit())}>
         <Field label="对象" hint="必须选择：是哪台机器要静默"><Select value={subject} onChange={setSubject} placeholder="选择机器" options={options} /></Field>
-        {subject === ALL && <Note tone="warn">静默“全部机器”会让所有机器在这段时间内都不发告警。提交时需要再确认一次。</Note>}
+        {subject === ALL && <Note tone="warn">静默「全部机器」会让所有机器在这段时间内都不发告警。提交时需要再确认一次。</Note>}
         <Field label="时长（小时）" hint={`最长 ${MAX_HOURS} 小时（30 天）`} error={hoursErr}><Input inputMode="numeric" value={hours} onChange={(e) => setHours(e.target.value.replace(/\D/g, ''))} aria-invalid={!!hoursErr} /></Field>
-        <CheckRow checked={maint} onChange={setMaint}>标记为维护（卡片显示“维护中”）</CheckRow>
+        <CheckRow checked={maint} onChange={setMaint}>标记为维护（卡片显示「维护中」）</CheckRow>
         <Field label="备注"><Input value={comment} onChange={(e) => setComment(e.target.value)} placeholder="例如：换内核" /></Field>
       </FormDialog>
       <ConfirmDialog open={askAll} onOpenChange={setAskAll} title="静默全部机器？" confirmLabel="静默全部机器" danger

@@ -113,7 +113,7 @@ export const RenewDialog = resetOnOpen(function RenewDialog({ m, s, open, onOpen
   const ok = /^\d{4}-\d{2}-\d{2}$/.test(newDue) && newDue > s.due_date && amount.trim() !== '' && !amountBad;
   const submit = () => renew.mutate({ id: m.id, new_due: newDue, amount_cents: Math.round(Number(amount) * 100), note: note.trim() || undefined }, { onSuccess: () => { toast.ok(`已登记续费，到期日 ${newDue}`); onOpenChange(false); }, onError: toast.err });
   return (
-    <FormDialog open={open} onOpenChange={onOpenChange} title={`登记续费 · ${m.name}`} desc={`只记录“已续费”，到期日顺延；不会向供应商付款。当前到期日 ${s.due_date}。`}
+    <FormDialog open={open} onOpenChange={onOpenChange} title={`登记续费 · ${m.name}`} desc={`只记录「已续费」，到期日顺延；不会向供应商付款。当前到期日 ${s.due_date}。`}
       submitLabel="登记续费" busy={renew.isPending} valid={ok} onSubmit={submit}>
       <div className="form-grid">
         <Field label="新到期日" error={newDue && newDue <= s.due_date ? '应晚于当前到期日' : undefined}><DateField value={newDue} onChange={setNewDue} min={F.addDays(s.due_date, 1)} /></Field>

@@ -100,7 +100,7 @@ export function RelaysPage() {
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       {q.isLoading && <Skeleton h={220} />}
       {list.map((m) => <RelayCard key={m.id} m={m} open={open} />)}
-      {q.data && list.length === 0 && <Empty icon={<Waypoints size={22} />} text="还没有线路机" hint="去“上架”添加第一台线路机" />}
+      {q.data && list.length === 0 && <Empty icon={<Waypoints size={22} />} text="还没有线路机" hint="去「上架」添加第一台线路机" />}
     </div>
   );
 }

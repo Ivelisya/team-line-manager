@@ -50,7 +50,7 @@ function TeamsTab() {
   return (
     <>
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
-      <Panel title="团队" count={list.length} sub="首页与表格按“排序”从小到大排列" tools={<Button variant="primary" size="md" onClick={() => setEdit('new')}><Plus />新建团队</Button>} flush>
+      <Panel title="团队" count={list.length} sub="首页与表格按「排序」从小到大排列" tools={<Button variant="primary" size="md" onClick={() => setEdit('new')}><Plus />新建团队</Button>} flush>
         <div className="table-wrap">
           <table className="dt is-one" style={{ minWidth: 520 }}>
             <colgroup><col /><col style={{ width: 90 }} /><col style={{ width: 90 }} /><col style={{ width: 220 }} /></colgroup>
@@ -170,7 +170,7 @@ const ProviderDialog = resetOnOpen(function ProviderDialog({ provider, open, onC
   };
   return (
     <FormDialog open={open} onOpenChange={(o) => !o && onClose()} title={provider === 'new' ? '新增供应商' : '编辑供应商'} submitLabel="保存" busy={add.isPending || patch.isPending} valid={f.name.trim() !== '' && f.code.trim() !== ''}
-      desc={provider !== 'new' && '改时区只影响之后上架的机器；已上架机器的账单时区在各自的“费用”页修改。'} onSubmit={save}>
+      desc={provider !== 'new' && '改时区只影响之后上架的机器；已上架机器的账单时区在各自的「费用」页修改。'} onSubmit={save}>
       <div className="form-grid">
         <Field label="名称"><Input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} autoFocus /></Field>
         <Field label="代码" hint="卡片上显示的缩写，如 BWH"><Input value={f.code} onChange={(e) => setF({ ...f, code: e.target.value })} /></Field>
