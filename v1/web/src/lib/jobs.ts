@@ -62,7 +62,7 @@ const OUTPUT: Record<string, [string, OutFmt] | null> = {
   binary_updated: ['agent 程序', yesNo('已更新', '已是最新')], token_id: null,
   first_report_at: ['首次上报', (v) => dtFull(String(v))], agent_version: ['agent 版本', text], old_tokens_revoked: ['撤销旧令牌', unit('枚')],
   // attach / attach_new / detach_old / wait_applied
-  entry_id: null, relay_id: null, old_entry_id: null, relay: ['线路机', text], port: ['入口端口', text], generation: ['配置代数', text],
+  entry_id: null, relay_id: null, old_entry_id: null, relay: ['线路机', text], port: ['入口端口', text], generation: ['配置版本', text],
   entry: ['入口状态', (v) => ENTRY_LABEL[v as EntryLifecycle]],
   // verify
   latency_ms: ['出口延迟', (v) => `${Math.round(Number(v))} ms`], egress_ip: ['出口 IP', text],

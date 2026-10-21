@@ -1,4 +1,4 @@
-// 线路：每台线路机一张卡——应用状态（配置代数 vs 已应用）+ 入口表（端口、节点、状态、是否已应用、TCP/出口探测、流量）。
+// 线路：每台线路机一张卡——应用状态（配置版本 vs 已生效）+ 入口表（端口、节点、状态、是否已应用、TCP/出口探测、流量）。
 // 入口多的线路机（几十条）只先露前 ENTRY_CAP 条，表尾「显示全部 N 条」展开：线路机只有几台，一页里放几个分页器反而难用。
 import * as React from 'react';
 import { CheckCircle2, CircleAlert, Loader2, PackageOpen, PanelRightOpen } from 'lucide-react';
@@ -7,6 +7,7 @@ import { useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
 import type { EntryView, MachineView } from '@/lib/types';
 import { Button } from '@/components/ui/button';
+import { Tip } from '@/components/ui/overlays';
 import { Chip, Due, Empty, ErrorNote, HealthPill, KindIcon, Num, PageHead, Pill } from '@/components/app/primitives';
 import { NodeHover } from '@/components/app/NodeHover';
 import { Waypoints } from 'lucide-react';
@@ -28,7 +29,7 @@ function ApplyStatus({ m }: { m: MachineView }) {
       {r.apply_error ? <Pill tone="bad"><CircleAlert size={12} />应用失败</Pill>
         : pending ? <Pill tone="info" dot="pulse"><Loader2 size={12} className="spin" />应用中</Pill>
         : <Pill tone="ok"><CheckCircle2 size={12} />已应用</Pill>}
-      <span>配置代数 <b className="num" style={{ color: 'var(--fg)' }}>{r.generation}</b> · 已应用 <b className="num" style={{ color: 'var(--fg)' }}>{r.applied_generation}</b></span>
+      <Tip text="两个数相等表示线路机已同步"><span tabIndex={0}>配置版本 <b className="num" style={{ color: 'var(--fg)' }}>{r.generation}</b> · 已生效 <b className="num" style={{ color: 'var(--fg)' }}>{r.applied_generation}</b></span></Tip>
       {pending && <span>{pendingEntries} 条入口应用中</span>}
       <span style={{ marginLeft: 'auto' }}>上次应用 {r.applied_at ? F.ago(r.applied_at) : '—'}</span>
       {r.apply_error && <div style={{ flexBasis: '100%', color: 'var(--bad-text)' }}>{r.apply_error}</div>}

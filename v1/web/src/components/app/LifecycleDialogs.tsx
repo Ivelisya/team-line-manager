@@ -33,7 +33,7 @@ export function MoveDialog({ m, open, onOpenChange, onDone }: { m: MachineView; 
   const multi = cur.length > 1;
   const ready = !!to && cur.length > 0 && (!multi || !!from);
   return (
-    <ConfirmDialog open={open} onOpenChange={onOpenChange} size="md" title={`把 ${m.name} 换到另一台线路机`} confirmLabel="开始换线" confirmDisabled={!ready}
+    <ConfirmDialog asForm open={open} onOpenChange={onOpenChange} size="md" title={`把 ${m.name} 换到另一台线路机`} confirmLabel="开始换线" confirmDisabled={!ready}
       description="先在新线路机建好入口并验收出口，通过后才摘掉旧入口；换线期间节点始终有一个可用入口，不会断网。"
       onConfirm={async () => {
         const r = await move.mutateAsync({ id: m.id, to_relay_id: to, from_relay_id: multi ? from : undefined });
@@ -135,6 +135,8 @@ export function RestoreDialog({ m, open, onOpenChange, onDone }: { m: MachineVie
   const upOk = !isProxy || (up.host.trim() !== '' && Number(up.port) > 0);
   const pwOk = needs?.password !== 'required' || pw !== '';
   const ready = !!pv && pv.restorable && !!needs && (!needs.relay || !!relay) && upOk && pwOk && !live.isFetching;
+  // 填过东西就别让误点遮罩关掉（Esc、取消仍可关）
+  const dirty = edited || !!pw || !!reason.trim() || reset || relay !== (base.data?.last_relay?.id ?? '') || !!(up.host || up.port || up.username || up.password);
 
   const submit = async () => {
     const body: Parameters<typeof restore.mutateAsync>[0] = { id: m.id };
@@ -153,7 +155,7 @@ export function RestoreDialog({ m, open, onOpenChange, onDone }: { m: MachineVie
   };
 
   return (
-    <ConfirmDialog open={open} onOpenChange={onOpenChange} size="md" title={`恢复 ${m.name}`} confirmLabel="恢复" confirmDisabled={!ready}
+    <ConfirmDialog asForm dirty={dirty} open={open} onOpenChange={onOpenChange} size="md" title={`恢复 ${m.name}`} confirmLabel="恢复" confirmDisabled={!ready}
       description="机器保持原来的 ID（历史、账单、审计都接上），重新走一遍上架的收敛步骤；成功后回到“在用”。失败会停在“上架失败”，可在作业页重试；取消会回到已退役。"
       onConfirm={submit}>
       {base.isLoading && <div className="hint">正在预检（会试一下中控密钥能不能登录这台机器，最多十几秒）…</div>}

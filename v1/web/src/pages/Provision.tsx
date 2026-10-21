@@ -14,7 +14,7 @@ import { ConfirmDialog } from '@/components/app/dialogs';
 import { toast } from '@/components/ui/toast';
 import { copyText } from '@/lib/clipboard';
 import { Note, PageHead, Panel, Pill } from '@/components/app/primitives';
-import { COLS, applies, localErrors, newRow, parseTsv, setCell, toItem, type Col, type Ctx, type Row } from '@/features/provision-model';
+import { COLS, applies, localErrors, localIssues, newRow, parseTsv, setCell, toItem, type Col, type Ctx, type Row } from '@/features/provision-model';
 
 const KIND_OPTS = (Object.entries(KIND_LABEL) as [Kind, string][]).map(([value, label]) => ({ value, label }));
 
@@ -49,7 +49,8 @@ export function ProvisionPage() {
   const runCheck = async () => {
     const errs = active.map(localErrors);
     setLocalErrs(errs);
-    if (errs.some((e) => e.length)) { setResults(null); toast.err('有行信息不完整，请先修正标红的内容'); return; }
+    const bad = errs.filter((e) => e.length).length;
+    if (bad) { setResults(null); toast.err(mode === 'single' ? '信息不完整，请按字段旁标红的提示修改' : `${bad} 行信息不完整，见表格的「检查结果」列`); return; }
     try {
       const r = await check.mutateAsync(items.slice(0, active.length));
       setResults(r.items); setSig(curSig);
@@ -149,8 +150,11 @@ function useOpts(ctx: Ctx) {
 function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; onChange: (p: Partial<Row>) => void; ctx: Ctx; result?: ProvisionCheckItem; errors?: string[]; stale: boolean }) {
   const o = useOpts(ctx);
   const k = row.kind;
+  // 上次检查有本地错误时，把错误按字段标在字段旁（按当前内容重算，改对了就消失）
+  const fe: Partial<Record<keyof Row, string>> = {};
+  if (errors?.length) for (const x of localIssues(row)) fe[x.key] ??= x.msg;
   const T = (key: keyof Row, label: string, p?: { hint?: string; ph?: string; num?: boolean }) => (
-    <Field label={label} hint={p?.hint}>
+    <Field label={label} hint={p?.hint} error={fe[key]}>
       <Input inputMode={p?.num ? 'numeric' : undefined} placeholder={p?.ph} value={row[key] as string} onChange={(e) => onChange({ [key]: p?.num ? e.target.value.replace(/\D/g, '') : e.target.value })} />
     </Field>
   );
@@ -164,9 +168,9 @@ function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; o
             {k !== 'proxy' && T('ssh_port', 'SSH 端口', { ph: '22', num: true })}
             {k === 'relay' ? <div className="span-2">{T('label', '线路机名', { ph: '线路机3', hint: '显示名与线路机备注都用它' })}</div> : (
               <>
-                <Field label="团队"><Select value={row.team_id} onChange={(v) => onChange({ team_id: v })} options={o.team} /></Field>
-                <Field label="编号" hint="留空自动编号（接在末尾）"><Input inputMode="numeric" placeholder="自动" value={row.number} onChange={(e) => onChange({ number: e.target.value.replace(/\D/g, '') })} /></Field>
-                <Field label="挂在线路机"><Select value={row.relay_id} onChange={(v) => onChange({ relay_id: v })} options={o.relay} /></Field>
+                <Field label="团队" error={fe.team_id}><Select value={row.team_id} onChange={(v) => onChange({ team_id: v })} options={o.team} /></Field>
+                <Field label="编号" hint="留空自动编号（接在末尾）" error={fe.number}><Input inputMode="numeric" placeholder="自动" value={row.number} onChange={(e) => onChange({ number: e.target.value.replace(/\D/g, '') })} /></Field>
+                <Field label="挂在线路机" error={fe.relay_id}><Select value={row.relay_id} onChange={(v) => onChange({ relay_id: v })} options={o.relay} /></Field>
                 {k === 'vps' && T('ss_port', 'SS 端口', { ph: '8388', num: true, hint: 'NAT 机填供应商映射后的公网端口' })}
               </>
             )}
@@ -198,7 +202,7 @@ function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; o
           <Field label="供应商"><Select value={row.provider_id} onChange={(v) => onChange({ provider_id: v, plan_id: '' })} options={o.provider} allowEmpty="不设置" /></Field>
           <Field label="套餐"><Select value={row.plan_id} onChange={(v) => onChange({ plan_id: v })} options={o.planFor(row.provider_id)} allowEmpty="不设置" /></Field>
           {T('service_ref', '服务编号', { ph: 'SVC-1042' })}
-          <Field label="到期日"><DateField value={row.due_date} onChange={(v) => onChange({ due_date: v })} /></Field>
+          <Field label="到期日" error={fe.due_date}><DateField value={row.due_date} onChange={(v) => onChange({ due_date: v })} /></Field>
           {T('price', '费用', { ph: '默认取套餐价格' })}
           <div className="span-2"><Field label="备注"><Input value={row.note} onChange={(e) => onChange({ note: e.target.value })} /></Field></div>
         </div>
@@ -229,6 +233,7 @@ function CheckOutput({ results, rows, errors, stale }: { results: ProvisionCheck
 function BatchGrid({ rows, setRows, ctx, results, errors, stale }: { rows: Row[]; setRows: React.Dispatch<React.SetStateAction<Row[]>>; ctx: Ctx; results: ProvisionCheckItem[] | null; errors: string[][] | null; stale: boolean }) {
   const addRows = (n: number) => setRows((rs) => { const last = rs[rs.length - 1]; const base = last ? { kind: last.kind, team_id: last.team_id, relay_id: last.relay_id, provider_id: last.provider_id, plan_id: last.plan_id, login_user: last.login_user } : {}; return [...rs, ...Array.from({ length: n }, () => newRow(base))]; });
   const total = COLS.reduce((s, c) => s + c.w, 0) + 40 + 56 + 220;
+  const [askClear, setAskClear] = React.useState(false);
 
   // 单元格拿到的回调必须稳定（GridCell 是 memo），所以按行 id 工作，不捕获行下标
   const opts = useOpts(ctx);
@@ -261,7 +266,7 @@ function BatchGrid({ rows, setRows, ctx, results, errors, stale }: { rows: Row[]
   return (
     <div className="stack">
       <Panel title="批量上架" sub="可从表格软件整块粘贴（Tab 分隔，列顺序同表头）" flush
-        tools={<><Button size="sm" onClick={copyHeader}><ClipboardPaste />复制表头</Button><Button size="sm" onClick={() => addRows(1)}><Plus />加一行</Button><Button size="sm" onClick={() => addRows(5)}>加 5 行</Button><Button size="sm" variant="quiet" onClick={() => setRows([newRow()])}>清空</Button></>}>
+        tools={<><Button size="sm" onClick={copyHeader}><ClipboardPaste />复制表头</Button><Button size="sm" onClick={() => addRows(1)}><Plus />加一行</Button><Button size="sm" onClick={() => addRows(5)}>加 5 行</Button><Button size="sm" variant="quiet" onClick={() => (rows.length > 1 ? setAskClear(true) : setRows([newRow()]))}>清空</Button></>}>
         <div className="table-wrap">
           <table className="dt dt-grid" style={{ minWidth: total }}>
             <colgroup><col style={{ width: 40 }} />{COLS.map((c) => <col key={c.key} style={{ width: c.w }} />)}<col style={{ width: 220 }} /><col style={{ width: 56 }} /></colgroup>
@@ -293,6 +298,8 @@ function BatchGrid({ rows, setRows, ctx, results, errors, stale }: { rows: Row[]
       </Panel>
       <Note icon={<ClipboardPaste size={14} />}>编号留空 = 自动编号（接在末尾）。灰色格子对当前类型不适用，粘贴时会自动跳过。选择列可直接粘贴名称（如“团队1”“线路机1”）。</Note>
       {results && <CheckOutput results={results} rows={rows} errors={errors} stale={stale} />}
+      <ConfirmDialog open={askClear} onOpenChange={setAskClear} title="清空批量表格？" confirmLabel="清空" danger
+        description="表格里所有行已填写的内容（含登录密码）都会丢失，无法撤销。" onConfirm={() => setRows([newRow()])} />
     </div>
   );
 }

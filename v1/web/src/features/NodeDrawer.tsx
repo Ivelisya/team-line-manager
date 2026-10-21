@@ -2,7 +2,7 @@
 import * as React from 'react';
 import { Link } from 'react-router-dom';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/dialog';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/overlays';
+import { Tabs, TabsList, TabsTrigger, Tip } from '@/components/ui/overlays';
 import { ErrorBoundary } from '@/components/app/ErrorBoundary';
 import { Skeleton } from '@/components/ui/skeleton';
 import type { MachineView } from '@/lib/types';
@@ -129,7 +129,7 @@ function OverviewTab({ m }: { m: MachineView }) {
           <LabelValueGrid>
             <LabelValue label="公网地址">{m.relay.public_host}</LabelValue>
             <LabelValue label="端口范围">{m.relay.port_min}–{m.relay.port_max}</LabelValue>
-            <LabelValue label="配置代数">{m.relay.generation} · 已应用 {m.relay.applied_generation}</LabelValue>
+            <LabelValue label="配置版本"><Tip text="两个数相等表示线路机已同步"><span tabIndex={0}>{m.relay.generation} · 已生效 {m.relay.applied_generation}</span></Tip></LabelValue>
             <LabelValue label="上次应用">{F.dtFull(m.relay.applied_at)}</LabelValue>
           </LabelValueGrid>
           {m.relay.apply_error && <div style={{ marginTop: 8 }}><Note tone="bad">{m.relay.apply_error}</Note></div>}
