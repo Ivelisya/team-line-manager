@@ -1032,9 +1032,9 @@ async fn ws_requires_auth_and_resyncs_when_subscriber_lags() {
         other => panic!("未登录应 401：{:?}", other.map(|_| ())),
     }
     let mut ws = t.ws(true).await.unwrap();
-    // 一口气广播远超缓冲（256）的事件，服务端逐帧往外写跟不上 → 落后
+    // 一口气广播远超缓冲（256）的事件，服务端逐帧往外写跟不上 → 落后（machines 有 1 s 合并节流，用不节流的 catalog）
     for _ in 0..5000 {
-        t.st.emit(Event::Machines);
+        t.st.emit(Event::Catalog);
     }
     ws_next(&mut ws, "resync").await;
 }

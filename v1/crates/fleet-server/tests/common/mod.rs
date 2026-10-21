@@ -62,10 +62,10 @@ impl T {
 
     pub async fn job(&self, id: &str) -> Value { self.get(&format!("/api/v1/jobs/{id}")).await }
 
-    /// 把在等待的作业提前到现在：步骤的 Wait(2~10 秒) 是给真实线路机留的，测试里模拟的线路机每轮都即时回报，不必干等。
-    /// 作业引擎空闲时每 0.8 秒领取一次，所以提前后最多再等 0.8 秒
+    /// 把在等待的作业提前到现在并唤醒作业引擎：步骤的 Wait(5~10 秒) 是给真实线路机留的兜底，测试里模拟的线路机每轮都即时回报，不必干等
     pub async fn nudge_jobs(&self) {
         sqlx::query("update job set run_after = now() where state = 'waiting' and run_after > now()").execute(&self.st.db).await.unwrap();
+        self.st.wake_jobs();
     }
 
     /// 等作业到某个状态；中途变成了别的终态（尤其是想要的不是 failed 却 failed 了）直接 panic 并带上日志

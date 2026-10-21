@@ -11,6 +11,7 @@ import { quota, remainingValue } from '@/lib/derive';
 import { Select } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogHeader } from '@/components/ui/dialog';
 import { toast } from '@/components/ui/toast';
+import { resetOnOpen } from '@/lib/useHeld';
 import { Due, ErrorNote, LabelValue, LabelValueGrid, Note, Section, SectionHeader } from '@/components/app/primitives';
 
 const TZS = ['Asia/Shanghai', 'America/Los_Angeles', 'America/New_York', 'Europe/London', 'Asia/Tokyo', 'UTC'].map((z) => ({ value: z, label: z }));
@@ -102,15 +103,12 @@ function SubForm({ m }: { m: MachineView }) {
   );
 }
 
-/** 告警页「即将到期 / 已过期」的行操作也用这个 */
-export function RenewDialog({ m, s, open, onOpenChange }: { m: Pick<MachineView, 'id' | 'name'>; s: Subscription; open: boolean; onOpenChange: (o: boolean) => void }) {
+/** 告警页「即将到期 / 已过期」的行操作也用这个。每次打开重新挂载（resetOnOpen）：表单按当前订阅预填，关闭动画期间不变 */
+export const RenewDialog = resetOnOpen(function RenewDialog({ m, s, open, onOpenChange }: { m: Pick<MachineView, 'id' | 'name'>; s: Subscription; open: boolean; onOpenChange: (o: boolean) => void }) {
   const renew = useRenew();
-  const [newDue, setNewDue] = React.useState('');
-  const [amount, setAmount] = React.useState('');
+  const [newDue, setNewDue] = React.useState(() => F.addMonths(s.due_date, F.CYCLE_MONTHS[s.cycle] ?? 1));
+  const [amount, setAmount] = React.useState(() => String(s.price_cents / 100));
   const [note, setNote] = React.useState('');
-  React.useEffect(() => {
-    if (open) { setNewDue(F.addMonths(s.due_date, F.CYCLE_MONTHS[s.cycle] ?? 1)); setAmount(String(s.price_cents / 100)); setNote(''); }
-  }, [open, s.due_date, s.cycle, s.price_cents]);
   const amountBad = amount.trim() !== '' && !(isFinite(Number(amount)) && Number(amount) >= 0);
   const ok = /^\d{4}-\d{2}-\d{2}$/.test(newDue) && newDue > s.due_date && amount.trim() !== '' && !amountBad;
   const submit = () => renew.mutate({ id: m.id, new_due: newDue, amount_cents: Math.round(Number(amount) * 100), note: note.trim() || undefined }, { onSuccess: () => { toast.ok(`已登记续费，到期日 ${newDue}`); onOpenChange(false); }, onError: toast.err });
@@ -132,4 +130,4 @@ export function RenewDialog({ m, s, open, onOpenChange }: { m: Pick<MachineView,
       </DialogContent>
     </Dialog>
   );
-}
+});

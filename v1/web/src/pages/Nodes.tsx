@@ -8,25 +8,22 @@ import { useMachines, useTeams } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
 import { entryText, monthTraffic } from '@/lib/derive';
-import { collator, HEALTH_LABEL, KIND_LABEL, useStableOrder } from '@/lib/sort';
+import { HEALTH_LABEL, KIND_LABEL, useStableOrder } from '@/lib/sort';
 import type { MachineView } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { SearchInput } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { Segmented, Trunc } from '@/components/ui/overlays';
 import { SkeletonRows } from '@/components/ui/skeleton';
-import { Due, Empty, ErrorNote, HealthPill, KindIcon, Num, PageHead, Panel, Pill, SortHead, type SortState } from '@/components/app/primitives';
+import { Due, Empty, ErrorNote, HealthPill, KindIcon, Num, PageHead, Panel, Pill, type SortState } from '@/components/app/primitives';
 import { NodeHover } from '@/components/app/NodeHover';
-import { NodeMenus } from '@/components/app/NodeMenu';
+import { MachineGrid, byNum, byStr, sortByCol, type Col } from '@/components/app/MachineGrid';
 import { Pagination } from '@/components/app/Pagination';
 import { usePage } from '@/lib/usePage';
 
 type Scope = 'live' | 'retired';
-type Cmp = (a: MachineView, b: MachineView) => number;
-/** cmp（升序）+ first（首次点击的方向）：有它们才能点表头排序 */
-interface Col { id: string; header: string; size: number; r?: boolean; first?: 'asc' | 'desc'; cmp?: Cmp; cell: (m: MachineView) => React.ReactNode }
-const byStr = (f: (m: MachineView) => string) => ({ first: 'asc' as const, cmp: (a: MachineView, b: MachineView) => collator.compare(f(a), f(b)) });
-const byNum = (f: (m: MachineView) => number, first: 'asc' | 'desc' = 'desc') => ({ first, cmp: (a: MachineView, b: MachineView) => f(a) - f(b) });
+/** 只调淡已退役的行：机器页看的是资产信息，离线机器的这些字段照常可读（首页表格调淡的是读数过期的） */
+const isRetired = (m: MachineView) => m.lifecycle === 'retired';
 // 筛选下拉的固定选项与空列表兜底用模块常量：页面随实时推送重渲染时，memo 的下拉（Select）不被新数组击穿
 const EMPTY: MachineView[] = [];
 const PAGE_SIZES = [25, 50, 100];
@@ -94,16 +91,10 @@ export function NodesPage() {
   }, [scope]);
 
   // 表头排序：稳定排序，相同值保持默认顺序
-  const rows = React.useMemo(() => {
-    const cmp = columns.find((c) => c.id === sort?.id)?.cmp;
-    if (!sort || !cmp) return data;
-    const sign = sort.desc ? -1 : 1;
-    return [...data].sort((a, b) => sign * cmp(a, b));
-  }, [data, columns, sort]);
+  const rows = React.useMemo(() => sortByCol(data, columns, sort), [data, columns, sort]);
   const pg = usePage({ total: q.data ? rows.length : undefined, sizes: PAGE_SIZES, size: 50, reset: [scope, text, team, kind, relay, status, sort] });
   const stable = useStableOrder(rows, sort?.id === 'traffic' ? JSON.stringify([scope, text, team, kind, relay, status, sort, pg.page, pg.size]) : null);
   const pageRows = React.useMemo(() => stable.slice(pg.offset, pg.offset + pg.size), [stable, pg.offset, pg.size]);
-  const total = columns.reduce((s, c) => s + c.size, 0);
 
   return (
     <div className="stack">
@@ -121,15 +112,7 @@ export function NodesPage() {
 
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       <Panel flush>
-        <div className="table-wrap">
-          <table className="dt" style={{ minWidth: total }}>
-            <colgroup>{columns.map((c) => <col key={c.id} style={{ width: c.size }} />)}</colgroup>
-            <SortHead cols={columns} sort={sort} onSort={setSort} />
-            <NodeMenus rows={pageRows}><tbody>
-              {pageRows.map((m) => <Row key={m.id} m={m} current={m.id === openId} onOpen={open} columns={columns} />)}
-            </tbody></NodeMenus>
-          </table>
-        </div>
+        <MachineGrid cols={columns} rows={pageRows} sort={sort} onSort={setSort} openId={openId} onOpen={open} dim={isRetired} />
         {!q.isLoading && !q.isError && rows.length === 0 && <Empty icon={<SearchX size={22} />} text={scope === 'retired' ? '还没有已退役的机器' : '没有符合条件的机器'} hint={all.length && scope === 'live' ? '换个筛选条件试试' : undefined} />}
         {q.isLoading && <SkeletonRows rows={6} />}
         <Pagination pg={pg} unit="台" />
@@ -137,14 +120,3 @@ export function NodesPage() {
     </div>
   );
 }
-
-/** 一行一个 memo：实时推送只换变了的那台机器的引用，其余行不重渲染（onOpen 来自 useDrawer、columns 按范围 memo，都稳定）。
- *  右键菜单由 tbody 上的 NodeMenus 共用一份（按 data-id 找到这一行） */
-const Row = React.memo(function Row({ m, current, onOpen, columns }: { m: MachineView; current: boolean; onOpen: (id: string) => void; columns: Col[] }) {
-  return (
-    <tr className={`is-link${current ? ' is-current' : ''}${m.lifecycle === 'retired' ? ' is-retired' : ''}`} tabIndex={0} data-id={m.id}
-      onClick={() => onOpen(m.id)} onKeyDown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) onOpen(m.id); }}>
-      {columns.map((c) => <td key={c.id} className={c.id === 'chev' ? 'chev' : c.r ? 'r' : undefined}>{c.cell(m)}</td>)}
-    </tr>
-  );
-});

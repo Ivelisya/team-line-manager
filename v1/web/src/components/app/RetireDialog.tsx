@@ -6,14 +6,15 @@ import { useRetire, useRetirePreview } from '@/lib/queries';
 import { CheckRow, Field, Input } from '@/components/ui/form';
 import { toast } from '@/components/ui/toast';
 import { Note } from './primitives';
+import { resetOnOpen } from '@/lib/useHeld';
 import { TypedConfirmDialog } from './dialogs';
 
-export function RetireDialog({ m, open, onOpenChange, onDone }: { m: MachineView; open: boolean; onOpenChange: (o: boolean) => void; onDone?: () => void }) {
+/** 每次打开重新挂载（resetOnOpen）：选项回到默认，关闭动画期间不变 */
+export const RetireDialog = resetOnOpen(function RetireDialog({ m, open, onOpenChange, onDone }: { m: MachineView; open: boolean; onOpenChange: (o: boolean) => void; onDone?: () => void }) {
   const retire = useRetire();
   const [cleanup, setCleanup] = React.useState(true);
   const [reason, setReason] = React.useState('');
   const pv = useRetirePreview(m.id, open);
-  React.useEffect(() => { if (open) { setCleanup(true); setReason(''); } }, [open]);
   return (
     <TypedConfirmDialog open={open} onOpenChange={onOpenChange} size="md" title={`退役 ${m.name}？`} expected={m.name} prompt="请输入显示名" confirmLabel="退役" danger
       description="入口会立即停用，已有连接会断开。之后可以在「管理」页恢复，但要重新上架。"
@@ -33,4 +34,4 @@ export function RetireDialog({ m, open, onOpenChange, onDone }: { m: MachineView
       <Field label="原因（选填）"><Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="例如：供应商到期不续" /></Field>
     </TypedConfirmDialog>
   );
-}
+});

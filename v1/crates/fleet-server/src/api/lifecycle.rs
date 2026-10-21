@@ -128,6 +128,7 @@ pub async fn move_node(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPat
     let plan = plan_move(&mut tx, id, b.from_relay_id, b.to_relay_id).await?.map_err(ApiError::conflict)?;
     let job = enqueue_move(&mut tx, &a.name, id, &plan, b.to_relay_id, "move").await?;
     tx.commit().await?;
+    st.wake_jobs();
     st.emit(Event::Job { id: job, target: Some(id) });
     Ok(ok(json!({
         "job_id": job, "name": plan.node_name, "from": plan.from_name, "to": plan.to_name,
@@ -203,6 +204,7 @@ pub async fn evacuate(a: Actor, State(st): State<AppState>, ApiPath(relay): ApiP
     )
     .await?;
     tx.commit().await?;
+    st.wake_jobs();
     for j in &created {
         let uuid = |k: &str| j[k].as_str().and_then(|s| Uuid::try_parse(s).ok());
         if let Some(id) = uuid("job_id") {
@@ -576,6 +578,7 @@ pub async fn restore(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<
     )
     .await?;
     tx.commit().await?;
+    st.wake_jobs();
     if m.kind == "relay" {
         st.relay_bumped(id);
     }

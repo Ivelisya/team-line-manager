@@ -9,7 +9,7 @@ import { closeEvacuate, closeMove, closeRestore, useEvacuateTarget, useMoveTarge
 import { CheckRow, Field, Input } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
-import { useHeld } from '@/lib/useHeld';
+import { resetOnOpen, useHeld } from '@/lib/useHeld';
 import { entryState, Note } from './primitives';
 import { ConfirmDialog } from './dialogs';
 
@@ -20,14 +20,14 @@ export const movableEntries = (m: MachineView) => m.entries.filter((e) => e.life
 
 // ── 换线路机 ────────────────────────────────────────────────────────────
 
-export function MoveDialog({ m, open, onOpenChange, onDone }: { m: MachineView; open: boolean; onOpenChange: (o: boolean) => void; onDone?: () => void }) {
+// 三个对话框都每次打开重新挂载（resetOnOpen）：表单状态直接从 props 初始化，关闭动画期间不变
+export const MoveDialog = resetOnOpen(function MoveDialog({ m, open, onOpenChange, onDone }: { m: MachineView; open: boolean; onOpenChange: (o: boolean) => void; onDone?: () => void }) {
   const nav = useNavigate();
   const move = useMoveEntry();
   const relays = useRelayChoices().data ?? [];
   const cur = movableEntries(m);
   const [to, setTo] = React.useState('');
-  const [from, setFrom] = React.useState('');
-  React.useEffect(() => { if (open) { setTo(''); setFrom(cur.length === 1 ? cur[0].relay.id : ''); } }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [from, setFrom] = React.useState(() => (cur.length === 1 ? cur[0].relay.id : ''));
   const used = new Set(m.entries.map((e) => e.relay.id));
   const opts = relays.filter((r) => !used.has(r.id)).map((r) => ({ value: r.id, label: r.name }));
   const multi = cur.length > 1;
@@ -54,16 +54,15 @@ export function MoveDialog({ m, open, onOpenChange, onDone }: { m: MachineView; 
       <Note tone="warn">{SHARE_WARN}</Note>
     </ConfirmDialog>
   );
-}
+});
 
 // ── 搬空线路机 ──────────────────────────────────────────────────────────
 
-export function EvacuateDialog({ relay, open, onOpenChange, onDone }: { relay: MachineView; open: boolean; onOpenChange: (o: boolean) => void; onDone?: () => void }) {
+export const EvacuateDialog = resetOnOpen(function EvacuateDialog({ relay, open, onOpenChange, onDone }: { relay: MachineView; open: boolean; onOpenChange: (o: boolean) => void; onDone?: () => void }) {
   const nav = useNavigate();
   const evac = useEvacuate();
   const relays = useRelayChoices().data ?? [];
   const [to, setTo] = React.useState('');
-  React.useEffect(() => { if (open) setTo(''); }, [open]);
   const opts = relays.filter((r) => r.id !== relay.id).map((r) => ({ value: r.id, label: r.name }));
   const list = relay.entries.filter((e) => e.lifecycle !== 'removing' && e.lifecycle !== 'removed');
   const movable = list.filter((e) => e.lifecycle === 'active');
@@ -94,7 +93,7 @@ export function EvacuateDialog({ relay, open, onOpenChange, onDone }: { relay: M
       <Note tone="warn">{SHARE_WARN}</Note>
     </ConfirmDialog>
   );
-}
+});
 
 // ── 恢复已退役的机器 ────────────────────────────────────────────────────
 
@@ -107,7 +106,7 @@ function useSettled<T>(v: T, ms: number): T {
 
 const KEY_LOGIN: Record<string, string> = { ok: '中控密钥仍可登录，不需要密码', denied: '中控密钥被拒绝，需要 root 密码重新引导', unreachable: 'SSH 现在连不上', error: '探测失败' };
 
-export function RestoreDialog({ m, open, onOpenChange, onDone }: { m: MachineView; open: boolean; onOpenChange: (o: boolean) => void; onDone?: () => void }) {
+export const RestoreDialog = resetOnOpen(function RestoreDialog({ m, open, onOpenChange, onDone }: { m: MachineView; open: boolean; onOpenChange: (o: boolean) => void; onDone?: () => void }) {
   const nav = useNavigate();
   const restore = useRestore();
   const teams = useTeams().data ?? [];
@@ -117,16 +116,11 @@ export function RestoreDialog({ m, open, onOpenChange, onDone }: { m: MachineVie
   const [team, setTeam] = React.useState(m.team?.id ?? '');
   const [num, setNum] = React.useState('');
   const [label, setLabel] = React.useState('');
-  const [relay, setRelay] = React.useState('');
+  const [pickedRelay, setRelay] = React.useState<string | null>(null); // null = 还没选：用预检给的上次接的线路机
   const [pw, setPw] = React.useState('');
   const [up, setUp] = React.useState({ protocol: 'socks5', host: '', port: '', username: '', password: '' });
   const [reason, setReason] = React.useState('');
   const [reset, setReset] = React.useState(false);
-  React.useEffect(() => {
-    if (!open) return;
-    setTeam(m.team?.id ?? ''); setNum(''); setLabel(''); setRelay(''); setPw(''); setReason(''); setReset(false);
-    setUp({ protocol: 'socks5', host: '', port: '', username: '', password: '' });
-  }, [open, m.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 第一份预检带 SSH 探测（慢一点），决定要不要密码；改团队/编号/名字后只重算名字（probe=false）。
   // 编号、名字停手 300ms 后才进预检（查询键）；提交用的是当下的输入（over），没跟上之前不让提交
@@ -143,7 +137,7 @@ export function RestoreDialog({ m, open, onOpenChange, onDone }: { m: MachineVie
   const live = useRestorePreview(m.id, open && !!(asked.team_id || asked.number != null || asked.label), { ...asked, probe: false });
   const pv = edited && live.data ? live.data : base.data;
   const needs = base.data?.needs;
-  React.useEffect(() => { if (open && base.data && !relay) setRelay(base.data.last_relay?.id ?? ''); }, [base.data, open]); // eslint-disable-line react-hooks/exhaustive-deps
+  const relay = pickedRelay ?? base.data?.last_relay?.id ?? '';
 
   const relayOpts = relays.map((r) => ({ value: r.id, label: r.name }));
   const upOk = !isProxy || (up.host.trim() !== '' && Number(up.port) > 0);
@@ -225,7 +219,7 @@ export function RestoreDialog({ m, open, onOpenChange, onDone }: { m: MachineVie
       )}
     </ConfirmDialog>
   );
-}
+});
 
 // ── 外壳里唯一一份：菜单/命令面板触发的对话框 ──────────────────────────
 

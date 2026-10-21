@@ -5,6 +5,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, Di
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/form';
 import { toast } from '@/components/ui/toast';
+import { resetOnOpen } from '@/lib/useHeld';
 import { Note } from './primitives';
 
 interface Base {
@@ -41,14 +42,13 @@ export function ConfirmDialog({ open, onOpenChange, title, description, confirmL
   );
 }
 
-/** 需要输入 expected 才能确认。expected 区分大小写，两端空格忽略 */
-export function TypedConfirmDialog({ expected, prompt, ...base }: Base & { expected: string; prompt?: string }) {
+/** 需要输入 expected 才能确认。expected 区分大小写，两端空格忽略。
+ *  每次打开重新挂载（resetOnOpen）：输入与上次的失败原因清空，关闭动画期间内容保持原样 */
+export const TypedConfirmDialog = resetOnOpen(function TypedConfirmDialog({ expected, prompt, ...base }: Base & { expected: string; prompt?: string }) {
   const [text, setText] = React.useState('');
   const [busy, setBusy] = React.useState(false);
   const [err, setErr] = React.useState<string | null>(null);
   const input = React.useRef<HTMLInputElement>(null);
-  // 打开时才清空：关闭动画期间内容保持原样
-  React.useEffect(() => { if (base.open) { setText(''); setErr(null); } }, [base.open]);
   const ok = text.trim() === expected && !base.confirmDisabled;
   const run = async () => {
     setBusy(true); setErr(null);
@@ -73,4 +73,4 @@ export function TypedConfirmDialog({ expected, prompt, ...base }: Base & { expec
       </DialogContent>
     </Dialog>
   );
-}
+});

@@ -130,6 +130,7 @@ pub async fn add_entry(a: Actor, State(st): State<AppState>, ApiPath(node_id): A
     let job = jobs::enqueue(&mut tx, "attach_entry", Some(node_id), json!({"relay_id": b.relay_id}), &a.name).await?;
     audit(&mut tx, &a.name, "entry.add", "machine", Some(node_id), json!({"relay_id": b.relay_id, "job_id": job})).await?;
     tx.commit().await?;
+    st.wake_jobs();
     st.emit(Event::Job { id: job, target: Some(node_id) });
     Ok(ok(json!({"job_id": job})))
 }
