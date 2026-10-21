@@ -64,8 +64,9 @@ pub struct Inner {
     pub live: crate::views::LiveCache,
     /// 有新上报、实时指标该重新比对了（`live::run_forever` 消费）
     pub metrics_dirty: AtomicBool,
-    /// 告警通知发送队列，每个渠道一个（`notify::enqueue` 第一次给某渠道入队时建好并启动它的发送任务）
-    pub notify_queues: std::sync::Mutex<std::collections::HashMap<Uuid, tokio::sync::mpsc::UnboundedSender<crate::notify::Notice>>>,
+    /// 告警通知发送队列，每个渠道一个、有容量上限（`notify::enqueue` 第一次给某渠道入队时建好并启动它的发送任务；
+    /// 渠道被删除或停用后，发送任务发现时把自己移出这里并退出）
+    pub notify_queues: std::sync::Mutex<std::collections::HashMap<Uuid, crate::notify::Queue>>,
 }
 
 impl std::ops::Deref for AppState {

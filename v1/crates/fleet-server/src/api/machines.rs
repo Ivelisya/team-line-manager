@@ -19,6 +19,8 @@ use uuid::Uuid;
 #[derive(Deserialize)]
 pub struct ListQ {
     scope: Option<String>,
+    /// `brief`：只给按名字找机器要用的字段（见 `views::brief`）
+    view: Option<String>,
 }
 
 pub async fn list(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<ListQ>) -> ApiResult<Json<Value>> {
@@ -27,6 +29,9 @@ pub async fn list(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<L
         Some("all") => Scope::All,
         _ => Scope::Live,
     };
+    if q.view.as_deref() == Some("brief") {
+        return Ok(ok(views::brief(&st, scope).await?));
+    }
     if scope == Scope::Live {
         return Ok(ok(&*views::live(&st).await?));
     }
@@ -365,20 +370,12 @@ pub async fn purge(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
 
 // ── agent 升级 ────────────────────────────────────────────────────────────
 
-/// 返回 (建好的作业, 跳过的机器)。每台一个 savepoint：一台冲突（期间别人建了作业）只跳过这台，不整批回滚。
+/// 返回 (建好的作业, 跳过的机器)。已有进行中作业的机器由唯一索引 job_one_active_per_target 挡住（409「这台机器还有进行中的作业」），
+/// 不另外预查；每台一个 savepoint：一台冲突只跳过这台，不整批回滚。
 async fn enqueue_upgrade(st: &AppState, actor: &str, ids: &[Uuid]) -> ApiResult<(Vec<Value>, Vec<Value>)> {
     let mut tx = st.db.begin().await?;
     let (mut out, mut skipped) = (vec![], vec![]);
     for id in ids {
-        // 已有进行中作业的机器跳过（唯一索引也会挡住）
-        let busy: Option<(Uuid,)> = sqlx::query_as("select id from job where target_id = $1 and state in ('queued','running','waiting','cancelling')")
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?;
-        if busy.is_some() {
-            skipped.push(json!({"machine_id": id, "reason": "还有进行中的作业"}));
-            continue;
-        }
         let mut sp = sqlx::Connection::begin(&mut *tx).await?;
         match jobs::enqueue(&mut sp, "upgrade_agent", Some(*id), json!({}), actor).await {
             Ok(job) => {

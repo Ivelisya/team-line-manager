@@ -297,9 +297,9 @@ pub fn rename(ctx: &Ctx, machine: &str, team: Option<&str>, number: Option<i32>,
     if let Some(n) = note {
         body["note"] = json!(n);
     }
+    // PATCH 返回改完后的完整视图，新名字直接从里面取
     let d = ctx.c.patch(&format!("/machines/{id}"), &body)?;
-    let after = ctx.c.get(&format!("/machines/{id}"))?;
-    ctx.emit(&d, || format!("{} → {}", st(&cur, "/name"), st(&after, "/name")));
+    ctx.emit(&d, || format!("{} → {}", st(&cur, "/name"), st(&d, "/name")));
     Ok(0)
 }
 

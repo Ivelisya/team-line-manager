@@ -24,6 +24,20 @@ pub async fn connect(url: &str) -> anyhow::Result<PgPool> {
 
 pub fn new_id() -> Uuid { Uuid::now_v7() }
 
+/// 边拼 SQL 边绑定参数：`add` 绑定一个值并返回它的占位符 `$n`，SQL 里的序号和绑定顺序不会对不上。
+/// 可选的筛选条件只在给了参数时才拼进 SQL：写成 `($n is null or col = $n)` 的话，PG 对预编译语句改用通用执行计划后
+/// 折叠不掉这个条件，索引用不上。拼好后 `sqlx::query_as_with(&sql, args.0)`
+#[derive(Default)]
+pub struct Args(pub sqlx::postgres::PgArguments);
+
+impl Args {
+    pub fn add<'q, T: 'q + sqlx::Encode<'q, Postgres> + sqlx::Type<Postgres>>(&mut self, v: T) -> String {
+        // 同 sqlx 自己的 QueryBuilder::push_bind：这里的类型（uuid、文本、整数、时间、数组）编码不会失败
+        sqlx::Arguments::add(&mut self.0, v).expect("绑定查询参数");
+        format!("${}", sqlx::Arguments::len(&self.0))
+    }
+}
+
 /// 按天分区的时序表
 pub const PARTITIONED: &[&str] = &["host_metric", "entry_traffic", "probe_result", "access_event"];
 

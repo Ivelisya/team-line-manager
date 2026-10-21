@@ -109,6 +109,25 @@ impl Output {
     }
 }
 
+/// 单路输出最多保留 1 MiB（远程执行回给用户的上限是 256 KiB，作业脚本的输出只有几 KB）
+const OUT_CAP: usize = 1024 * 1024;
+
+/// 把子进程的一路输出读完：前 OUT_CAP 字节留下，之后继续读但丢掉，让子进程不会因为管道满而卡住
+async fn read_capped<R: tokio::io::AsyncRead + Unpin>(mut r: R) -> Vec<u8> {
+    use tokio::io::AsyncReadExt;
+    let mut kept = Vec::new();
+    let mut buf = [0u8; 16 * 1024];
+    loop {
+        match r.read(&mut buf).await {
+            Ok(0) | Err(_) => return kept,
+            Ok(n) => {
+                let room = OUT_CAP.saturating_sub(kept.len());
+                kept.extend_from_slice(&buf[..n.min(room)]);
+            }
+        }
+    }
+}
+
 fn host_spec(ip: &str, port: u16) -> String {
     if port == 22 { ip.to_string() } else { format!("[{ip}]:{port}") }
 }
@@ -166,13 +185,20 @@ impl Target {
             let _ = stdin.write_all(body.as_bytes()).await;
             let _ = stdin.shutdown().await;
         });
-        let out = tokio::time::timeout(timeout, child.wait_with_output())
+        // 边读边限量：超过 OUT_CAP 的部分只排空不保存（`cat` 几 GB 的日志不会把中控撑爆）；多余的在调用方按各自上限再截
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let run = async {
+            let (o, e, status) = tokio::join!(read_capped(stdout), read_capped(stderr), child.wait());
+            (o, e, status)
+        };
+        let (stdout, stderr, status) = tokio::time::timeout(timeout, run)
             .await
-            .map_err(|_| StepError::err(ErrKind::Timeout, format!("ssh 执行超过 {} 秒", timeout.as_secs())))??;
+            .map_err(|_| StepError::err(ErrKind::Timeout, format!("ssh 执行超过 {} 秒", timeout.as_secs())))?;
         Ok(self.normalize(Output {
-            code: out.status.code().unwrap_or(-1),
-            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+            code: status?.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&stderr).into_owned(),
         }))
     }
 

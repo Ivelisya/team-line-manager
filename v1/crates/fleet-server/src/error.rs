@@ -52,6 +52,10 @@ impl From<sqlx::Error> for ApiError {
         if let sqlx::Error::RowNotFound = e {
             return Self::not_found("对象不存在");
         }
+        // 等不到空闲连接（池子吃紧，见 db::connect）、和数据库的连接断了：是中控暂时不可用，不是请求的问题，回 503（同 agent 上报接口）
+        if matches!(e, sqlx::Error::PoolTimedOut | sqlx::Error::Io(_)) {
+            return Self::new(StatusCode::SERVICE_UNAVAILABLE, "unavailable", format!("数据库暂时不可用：{e}"));
+        }
         if let Some(db) = e.as_database_error() {
             match db.code().as_deref() {
                 // unique_violation：把约束名翻译成人话
