@@ -68,7 +68,9 @@ function DrawerHost() {
 }
 
 function LifecycleHost() {
-  const ever = useEver(!!(useMoveTarget() || useEvacuateTarget() || useRestoreTarget()));
+  // 三个 hook 都要无条件调用：写成 a() || b() 会短路，hook 数量随渲染变化，React 报错
+  const move = useMoveTarget(), evacuate = useEvacuateTarget(), restore = useRestoreTarget();
+  const ever = useEver(!!(move || evacuate || restore));
   return ever ? <React.Suspense fallback={null}><LifecycleDialogsHost /></React.Suspense> : null;
 }
 
@@ -130,7 +132,7 @@ export function Shell() {
     <div className="app" data-nav={navOpen ? 'open' : 'closed'}>
       <button className="skip-link" onClick={() => document.getElementById('main')?.focus()}>跳到内容</button>
       <header className="topbar">
-        <button className="top-btn nav-toggle is-muted" aria-label="打开导航" onClick={() => setNavOpen((o) => !o)} style={{ background: 'transparent', color: 'var(--fg-2)' }}><Menu size={18} /></button>
+        <button className="top-btn nav-toggle" aria-label="打开导航" onClick={() => setNavOpen((o) => !o)}><Menu size={18} /></button>
         <NavLink to="/" className="brand"><span className="brand-mark"><Boxes size={14} /></span>团队线路管理</NavLink>
         <PaletteTrigger />
         <div className="topbar-right">

@@ -41,6 +41,7 @@
   --ok: #16a34a;      --ok-text: #15803d;                       /* H/O --ok；字加深一级（新增，12px 字在 10% 底上达 4.5:1） */
   --warn: #d97706;    --warn-text: #b45309;                     /* H/O --warn */
   --bad: #dc2626;     --bad-text: #b91c1c;                      /* H/O --bad */
+  --bad-solid: #dc2626;                                         /* 危险按钮、告警计数徽标的实底：亮暗同值，白字 4.8:1（暗色 --bad 上白字只有 3.8:1） */
   --info: #2563eb;    --info-text: #1d4ed8;                     /* H/O --info（维护中、进行中） */
   --neutral: #6b7280; --neutral-text: #4b5563;                  /* H --neutral（未知、跳过、排队、无主机） */
   --tint: 10%;                                                  /* H 状态底色 10%（暗 16%） */

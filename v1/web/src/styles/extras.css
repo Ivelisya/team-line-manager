@@ -16,7 +16,8 @@
 .block { display: block; }
 
 /* ========== 复制按钮 ========== */
-.copy-btn { display: inline-grid; place-items: center; flex: none; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--fg-2); cursor: pointer; transition: background-color var(--dur-fast), color var(--dur-fast); }
+.copy-btn { position: relative; display: inline-grid; place-items: center; flex: none; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--fg-2); cursor: pointer; transition: background-color var(--dur-fast), color var(--dur-fast); }
+.copy-btn::after { content: ""; position: absolute; inset: -5px; } /* 可点范围扩到 32px，外观不变 */
 .copy-btn:hover { background: var(--hover); color: var(--fg); }
 .copy-btn.is-done { color: var(--ok); animation: copy-pop var(--dur-base) var(--ease-out); }
 @keyframes copy-pop { 0% { transform: scale(.8); } 60% { transform: scale(1.15); } 100% { transform: none; } }
@@ -24,6 +25,9 @@
 /* ========== 悬浮卡片 ========== */
 .hover-card { width: 288px; max-width: calc(100vw - 24px); padding: var(--sp-12); animation: pop-fade var(--dur-base) var(--ease-out); }
 @keyframes pop-fade { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+/* 收起与进场对称：往下退 3px 淡出（盖掉 .popover 的缩小退场） */
+.hover-card[data-state="closed"] { animation: pop-fade-out var(--dur-fast) var(--ease-std) forwards; }
+@keyframes pop-fade-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(3px); } }
 .hc { display: grid; gap: var(--sp-10); min-width: 0; }
 .hc-head { display: flex; align-items: center; gap: var(--sp-8); min-width: 0; }
 .hc-name { flex: 1; font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-sans); letter-spacing: var(--tracking-title); }
@@ -77,7 +81,11 @@
 .cmd-input-wrap { display: flex; align-items: center; gap: var(--sp-10); height: 52px; padding: 0 var(--sp-16); border-bottom: 1px solid var(--line); color: var(--fg-3); }
 .cmd-input { flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; outline: none; background: transparent; color: var(--fg); font: var(--fw-regular) var(--fs-emph) / var(--lh-emph) var(--font-sans); }
 .cmd-input::placeholder { color: var(--fg-3); }
-.cmd-list { max-height: min(432px, calc(100dvh - 240px)); overflow-y: auto; overscroll-behavior: contain; padding: var(--sp-6); scroll-padding-block: var(--sp-6); }
+/* 高度跟着结果数平滑伸缩：cmdk 把内容高度写在 --cmdk-list-height 上，加上下内边距（border-box）；超过 max-height 时仍被它截住、内部滚动 */
+.cmd-list {
+  height: calc(var(--cmdk-list-height) + 2 * var(--sp-6)); max-height: min(432px, calc(100dvh - 240px)); overflow-y: auto; overscroll-behavior: contain;
+  padding: var(--sp-6); scroll-padding-block: var(--sp-6); transition: height var(--dur-base) var(--ease-out);
+}
 .cmd-group [cmdk-group-heading] { padding: var(--sp-8) var(--sp-10) var(--sp-4); font: var(--fw-medium) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2); }
 .cmd-group + .cmd-group { margin-top: var(--sp-4); }
 .cmd-item {
@@ -190,7 +198,7 @@
   .pill[data-dot="pulse"]::before, .skel { animation: none; }
   /* 浮层关闭：不播退出动画，Radix 立即卸载 */
   .overlay[data-state="closed"], .drawer-overlay[data-state="closed"], .dialog[data-state="closed"], .cmd-dialog[data-state="closed"], .drawer[data-state="closed"],
-  .menu[data-state="closed"], .popover[data-state="closed"], .select-content[data-state="closed"], .page-in { animation: none; }
+  .menu[data-state="closed"], .popover[data-state="closed"], .select-content[data-state="closed"], .tooltip[data-state="closed"], .hover-card[data-state="closed"], .page-in { animation: none; }
 }
 
 /* ========== 来源画像：分布横条（抽屉「访问记录」页签） ========== */
@@ -207,3 +215,5 @@
    这条放在所有样式表之后的最后一份普通样式里，统一补回。 */
 .btn, .seg-item, .tab, .fchip, .input, .textarea, .select-trigger, .pill, .chip, .mark, .nav-item, .menu-item, .select-item,
 .cmd-item, .cmd-trigger, .cmd-input, .kbd, .toast-action, .label, .sec-head, .brand, .jobs-pop-head { font-variant-numeric: tabular-nums; }
+/* 首页读数（集群大数、离线台数、圆环中心、迹线坐标与时间）：同 .num / .stat-value 用 --num-variant（tabular + 斜线零） */
+.cluster-big > .num, .cluster-kv b, .gauge-center b, .spark-axis, .spark-time { font-variant-numeric: var(--num-variant); }

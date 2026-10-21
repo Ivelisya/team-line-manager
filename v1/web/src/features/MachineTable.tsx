@@ -38,10 +38,11 @@ const monthly = (m: MachineView) => {
 
 /** first：可排序列首次点击的方向（数值先降序；名称、到期先升序） */
 interface Col { id: string; header: string; size: number; r?: boolean; first?: 'asc' | 'desc'; cell: (m: MachineView) => React.ReactNode }
+// 列宽合计 1074：1426 宽窗口下内容区约 1079，不出横向滚动。名称两行（名称 + 小字 IP，同机器页），不再单列 IP；
+// 名称列 176 扣掉首列左内边距、状态点、类型标后剩约 110px，「模拟线路机01」这类名字完整显示
 const cols: Col[] = [
-  { id: 'name', header: '名称', size: 140, first: 'asc',
-    cell: (m) => <span className="tname"><StatusDot status={m.health.status} lifecycle={m.lifecycle} /><KindIcon kind={m.kind} /><Tip text={KIND_LABEL[m.kind]}><span className="cell-main strong">{m.name}</span></Tip></span> },
-  { id: 'ip', header: 'IP', size: 120, cell: (m) => <span className="cell-main t-sub">{m.ip}</span> },
+  { id: 'name', header: '名称', size: 176, first: 'asc',
+    cell: (m) => <div className="tname"><StatusDot status={m.health.status} lifecycle={m.lifecycle} /><KindIcon kind={m.kind} /><div><Tip text={KIND_LABEL[m.kind]}><span className="cell-main strong">{m.name}</span></Tip><span className="sub">{m.ip}</span></div></div> },
   ...(['cpu', 'mem', 'disk'] as const).map((k): Col => ({ id: k, header: k === 'cpu' ? 'CPU' : k === 'mem' ? '内存' : '磁盘', size: 84, first: 'desc',
     cell: (m) => { const r = resourceMeters(m); return r ? <MiniMeter pct={r[k].pct} metric={k} empty={isQuiet(m)} /> : <span className="t-muted">—</span>; } })),
   ...(['up', 'down'] as const).map((k): Col => ({ id: k, header: k === 'up' ? '上行' : '下行', size: 92, r: true, first: 'desc',
@@ -58,7 +59,8 @@ const TOTAL = cols.reduce((s, c) => s + c.size, 0);
 export function MachineTable({ rows, sort, onSort, openId, onOpen }: { rows: MachineView[]; sort: SortState | null; onSort: (s: SortState | null) => void; openId: string | null; onOpen: (id: string, tab?: DrawerTab) => void }) {
   return (
     <div className="table-wrap mtable">
-      <table className="dt is-one" style={{ minWidth: TOTAL }}>
+      {/* 两行名称：行高用 --row-2，与机器页一致 */}
+      <table className="dt" style={{ minWidth: TOTAL }}>
         <colgroup>{cols.map((c) => <col key={c.id} style={{ width: c.size }} />)}</colgroup>
         <SortHead cols={cols} sort={sort} onSort={onSort} />
         <tbody>{rows.map((m) => <Row key={m.id} m={m} current={m.id === openId} onOpen={onOpen} columns={cols} />)}</tbody>

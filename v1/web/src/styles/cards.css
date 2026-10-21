@@ -172,7 +172,7 @@
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); box-shadow: var(--shadow-card);
   transition: border-color var(--dur-fast), box-shadow var(--dur-base) var(--ease-sheet), translate var(--dur-base) var(--ease-sheet);
 }
-.rcard:hover { border-color: var(--line-strong); box-shadow: var(--shadow-card-hover); translate: 0 -2px; }
+.rcard:hover { border-color: var(--line-strong); box-shadow: var(--shadow-card-hover); translate: 0 -1px; } /* 上浮 1px，同 KPI 卡 */
 .rcard[data-health="down"] { border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); }
 .rcard[data-health="degraded"] { border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
 .rcard.is-current { border-color: var(--accent); }
@@ -193,7 +193,7 @@
 .hpanel { min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); overflow: clip; box-shadow: var(--shadow-card); }
 .mtable { --cell-px: 10px; }
 .mtable .tname { display: flex; align-items: center; gap: var(--inline-gap); min-width: 0; }
-.mtable .tname .cell-main { min-width: 0; }
+.mtable .tname > div { min-width: 0; } /* 名称 + 小字 IP 两行（同机器页名称列），长了各自省略 */
 .tmeter, .tquota { display: flex; align-items: center; gap: var(--sp-8); min-width: 0; }
 .tmeter .cells, .tquota .cells { flex: 1 1 auto; height: 6px; gap: 2px; }
 .tmeter > .num { flex: none; width: 34px; text-align: right; font-size: var(--fs-label); }

@@ -28,8 +28,8 @@
 .btn-text:hover:not(:disabled) { color: var(--fg); text-decoration: underline; text-underline-offset: 3px; }
 .btn-link { height: auto; padding: 0; border: 0; color: var(--accent); }
 .btn-link:hover { text-decoration: underline; text-underline-offset: 3px; }
-.btn-danger { background: var(--bad); color: #fff; }
-.btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--bad) 86%, black); }
+.btn-danger { background: var(--bad-solid); color: #fff; }
+.btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--bad-solid) 86%, black); }
 .btn-outline-danger { background: var(--surface); color: var(--bad-text); border-color: color-mix(in srgb, var(--bad) 35%, var(--line)); }
 .btn-outline-danger:hover:not(:disabled) { background: var(--bad-bg); border-color: color-mix(in srgb, var(--bad) 50%, var(--line)); }
 .btn-block { width: 100%; }
@@ -199,7 +199,7 @@
 
 .empty { display: grid; justify-items: center; gap: var(--sp-8); padding: var(--sp-24) var(--sp-16); color: var(--fg-2); text-align: center; }
 .empty .lucide { color: var(--fg-3); }
-.skel { display: block; border-radius: var(--r-xs); background: var(--sunken); animation: skel-pulse 1.4s ease-in-out infinite; }
+.skel { display: block; border-radius: var(--r-xs); background: var(--cell-off); animation: skel-pulse 1.4s ease-in-out infinite; } /* 同格条未点亮色：暗色下 --sunken 比卡片还暗，骨架几乎看不见 */
 .skel-row { display: flex; align-items: center; height: var(--row-2); box-sizing: border-box; padding: 0 var(--cell-edge); border-bottom: 1px solid var(--line); }
 .skel-row.is-one { height: var(--row-1); }
 .skel-row:last-child { border-bottom: 0; }
@@ -217,6 +217,7 @@
   transition: border-color var(--dur-fast), box-shadow var(--dur-fast);
 }
 .input::placeholder, .textarea::placeholder { color: var(--fg-3); }
+.select-trigger:hover:not(:disabled, :focus-visible, [data-state="open"]) { border-color: color-mix(in srgb, var(--line-strong), var(--fg) 12%); }
 .input:focus, .textarea:focus, .select-trigger:focus-visible, .select-trigger[data-state="open"] { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-halo); }
 .input:disabled, .textarea:disabled, .select-trigger:disabled { background: var(--sunken); color: var(--fg-3); cursor: default; }
 .input[aria-invalid="true"] { border-color: var(--bad); }
@@ -244,6 +245,9 @@
 .overlay { position: fixed; inset: 0; z-index: var(--z-dialog); background: var(--scrim); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); animation: fade-in var(--dur-base) var(--ease-out); }
 /* 关闭动画：Radix Presence 会等 [data-state=closed] 上的动画播完再卸载；减弱动效时在 extras.css 末尾置 none */
 .overlay[data-state="closed"], .drawer-overlay[data-state="closed"] { animation: fade-out var(--dur-base) var(--ease-std) forwards; }
+/* 退场动画期间不再拦截点击：用户已经可以点下面的东西。Radix 在遮罩（及模态层里的浮层）上内联了 pointer-events: auto，要 !important 才盖得住 */
+.overlay[data-state="closed"], .drawer-overlay[data-state="closed"], .dialog[data-state="closed"], .drawer[data-state="closed"], .cmd-dialog[data-state="closed"],
+.menu[data-state="closed"], .popover[data-state="closed"], .select-content[data-state="closed"] { pointer-events: none !important; }
 /* 顶部锚定（同命令面板）：内容异步变多时只往下长，不上下跳；矮屏时自身滚动 */
 .dialog {
   position: fixed; z-index: var(--z-dialog); left: 50%; top: min(10vh, 96px); transform: translateX(-50%);
@@ -306,9 +310,10 @@
   z-index: var(--z-tooltip); max-width: 280px; padding: var(--sp-4) var(--sp-8); border-radius: var(--r-control);
   background: var(--fg); color: var(--canvas); font-size: var(--fs-label); line-height: var(--lh-label); animation: fade-in var(--dur-fast);
 }
+.tooltip[data-state="closed"] { animation: fade-out var(--dur-fast) var(--ease-std) forwards; } /* 与进场对称：淡出，不是一下消失 */
 
 /* 堆叠式通知：新的在最下面，旧的往上排；相同消息合并计数；底部细线是剩余时间，鼠标停上去暂停 */
-.toasts { position: fixed; z-index: var(--z-toast); right: var(--sp-16); bottom: var(--sp-16); display: flex; flex-direction: column; gap: var(--sp-8); width: min(380px, calc(100vw - 32px)); pointer-events: none; }
+.toasts { position: fixed; z-index: var(--z-toast); right: calc(var(--sp-16) + var(--removed-body-scroll-bar-size, 0px)); bottom: var(--sp-16); display: flex; flex-direction: column; gap: var(--sp-8); width: min(380px, calc(100vw - 32px)); pointer-events: none; } /* right 同顶栏：锁滚动时补回让出的槽位 */
 .toast {
   position: relative; display: flex; gap: var(--sp-10); align-items: flex-start; padding: var(--sp-10) var(--sp-12); overflow: hidden; pointer-events: auto;
   background: var(--raised); border: 1px solid var(--line); border-radius: var(--r-float); box-shadow: var(--shadow-float);
@@ -326,7 +331,8 @@
 .toast-action { margin-top: var(--sp-4); padding: 0; border: 0; background: none; cursor: pointer; font: var(--fw-medium) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--accent); }
 .toast-action:hover { text-decoration: underline; text-underline-offset: 3px; }
 .toast-count { flex: none; align-self: center; padding: 0 var(--sp-6); border-radius: var(--r-pill); background: var(--sunken); color: var(--fg-2); font-size: var(--fs-micro); line-height: 18px; }
-.toast-x { flex: none; width: 22px; height: 22px; margin: -2px -4px 0 0; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--fg-3); cursor: pointer; transition: background-color var(--dur-fast), color var(--dur-fast); }
+.toast-x { position: relative; flex: none; width: 22px; height: 22px; margin: -2px -4px 0 0; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--fg-3); cursor: pointer; transition: background-color var(--dur-fast), color var(--dur-fast); }
+.toast-x::after { content: ""; position: absolute; inset: -6px; } /* 可点范围扩到 34px，外观不变（仍在通知的内边距里，不被裁） */
 .toast-x:hover { background: var(--hover); color: var(--fg); }
 .toast-timer { position: absolute; left: 0; bottom: 0; height: 2px; width: 100%; background: var(--fg-3); opacity: 0.45; transform-origin: left; animation: toast-timer linear forwards; }
 .toast[data-tone="ok"] .toast-timer { background: var(--ok); }

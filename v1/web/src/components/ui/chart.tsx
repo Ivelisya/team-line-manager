@@ -19,6 +19,7 @@ export function ChartTooltip({ config, labelFormat, valueFormat }: { config: Cha
   return (
     <Recharts.Tooltip
       cursor={{ stroke: 'var(--line-strong)' }}
+      isAnimationActive={false} // 提示框紧跟十字线；默认的 400ms 位移动画会让它拖在后面
       content={({ active, payload, label }: TipProps) => {
         if (!active || !payload?.length) return null;
         return (
