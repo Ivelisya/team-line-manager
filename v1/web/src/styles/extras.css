@@ -206,8 +206,8 @@
 html[data-overlay] :is(.app, .drawer) :is(.spin, .flow-dot, .top-btn.jobs-ind > .lucide, .stepbar-item[data-kind="running"] .stepbar-node),
 html[data-overlay] :is(.app, .drawer) .pill[data-dot="pulse"]::before,
 html[data-overlay] :is(.app, .drawer) .progress[data-live="1"] .progress-fill::after { animation-play-state: paused; }
-/* 读数的过渡不播，推送来了直接跳到新值（格条、圆环、进度线；KPI 数字见 useCountUp） */
-html[data-overlay] :is(.app, .drawer) :is(.cells > i, .gauge-val, .progress-fill) { transition: none; }
+/* 读数的过渡不播，推送来了直接跳到新值（进度线；格条、圆环、心跳格本来就不过渡，KPI 数字见 useCountUp） */
+html[data-overlay] :is(.app, .drawer) .progress-fill { transition: none; }
 
 @media (prefers-reduced-motion: reduce) {
   .progress[data-live="1"] .progress-fill::after, .stepbar-item[data-kind="running"] .stepbar-node, .top-btn.jobs-ind > .lucide, .toast-timer { animation: none; }
