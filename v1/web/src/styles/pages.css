@@ -17,6 +17,16 @@
 .reason-list { display: grid; gap: var(--sp-6); margin: 0; padding: 0; list-style: none; }
 .reason-list li { display: flex; align-items: flex-start; gap: var(--sp-8); font-size: var(--fs-body); }
 .reason-list .dot { margin-top: 7px; }
+/* 抽屉「最近操作」：第一行动作 + 对象，右边谁 · 多久前（悬停看具体时间）；第二行命令 / 详情，等宽浅色单行省略（悬停看全文） */
+.audit-list { display: grid; gap: var(--sp-10); margin: 0; padding: 0; list-style: none; }
+.audit-list li { display: flex; align-items: flex-start; gap: var(--sp-8); min-width: 0; }
+.audit-list .dot { margin-top: 7px; }
+.audit-body { flex: 1; min-width: 0; display: grid; gap: var(--sp-2); }
+.audit-head { display: flex; align-items: baseline; gap: var(--sp-12); min-width: 0; }
+.audit-what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.audit-what b { font-weight: var(--fw-medium); }
+.audit-meta { flex: none; font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); white-space: nowrap; }
+.audit-detail { line-height: var(--lh-label); color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chart-box { height: 180px; min-width: 0; }
 .chart-legend { display: flex; flex-wrap: wrap; gap: var(--sp-6); align-items: center; }
 /* 图例胶囊（--lc 是曲线色）：点掉后色块变空心、文字变淡；按下同其它文字控件微缩（components.css「交互状态」） */

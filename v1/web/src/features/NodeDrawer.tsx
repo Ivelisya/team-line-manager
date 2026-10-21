@@ -8,7 +8,7 @@ import { Tabs, TabsList, TabsTrigger, Tip } from '@/components/ui/overlays';
 import { IconButton } from '@/components/ui/button';
 import { ErrorBoundary } from '@/components/app/ErrorBoundary';
 import { Skeleton } from '@/components/ui/skeleton';
-import type { MachineView } from '@/lib/types';
+import type { AuditEntry, MachineView } from '@/lib/types';
 import { useMachine, useAudit } from '@/lib/queries';
 import { DRAWER_TABS, drawerSiblings, useDrawer, type DrawerTab } from '@/lib/drawer';
 import { useHeld } from '@/lib/useHeld';
@@ -89,17 +89,17 @@ export function NodeDrawer() {
               )}
               {m.lifecycle === 'failed' && (
                 <Note tone="bad">
-                  上架失败{m.lifecycle_reason && <>：{m.lifecycle_reason}</>}。{m.failed_job && <><Link to={`/jobs/${m.failed_job.id}`} className="btn-link" onClick={close} style={{ color: 'var(--accent)' }}>查看作业</Link>，可在作业页重试；</>}也可以在「管理」里退役，释放 IP 与编号。
+                  上架失败{m.lifecycle_reason && <>：{m.lifecycle_reason}</>}。{m.failed_job && <><Link to={`/jobs/${m.failed_job.id}`} className="btn btn-link" onClick={close}>查看作业</Link>，可在作业页重试；</>}也可以在「管理」里退役，释放 IP 与编号。
                 </Note>
               )}
               {m.lifecycle === 'retiring' && m.failed_job && !m.active_job && (
                 <Note tone="bad">
-                  退役失败 · <Link to={`/jobs/${m.failed_job.id}`} className="btn-link" onClick={close} style={{ color: 'var(--accent)' }}>查看作业</Link>。机器停在「退役中」，在作业页从失败的步骤重试即可完成退役。
+                  退役失败 · <Link to={`/jobs/${m.failed_job.id}`} className="btn btn-link" onClick={close}>查看作业</Link>。机器停在「退役中」，在作业页从失败的步骤重试即可完成退役。
                 </Note>
               )}
               {m.active_job && (
                 <Note tone="info">
-                  {jobKindLabel(m.active_job.kind)}进行中。<Link to={`/jobs/${m.active_job.id}`} className="btn-link" onClick={close} style={{ color: 'var(--accent)' }}>查看作业</Link>
+                  {jobKindLabel(m.active_job.kind)}进行中。<Link to={`/jobs/${m.active_job.id}`} className="btn btn-link" onClick={close}>查看作业</Link>
                 </Note>
               )}
               <div key={tab} className="tab-pane">
@@ -195,9 +195,35 @@ function OverviewTab({ m }: { m: MachineView }) {
       <Section>
         <SectionHeader title="最近操作" />
         {audit.data?.length ? (
-          <ul className="reason-list">{audit.data.map((a) => <li key={a.id}><span className="dot" data-tone="neutral" /><span><b style={{ fontWeight: 500 }}>{a.title}</b> <span className="t-sub">{a.summary} · {a.actor} · {F.ago(a.ts)}</span></span></li>)}</ul>
+          <ul className="audit-list">
+            {audit.data.map((a) => {
+              const p = auditParts(a);
+              return (
+                <li key={a.id}>
+                  <span className="dot" data-tone="neutral" />
+                  <div className="audit-body">
+                    <div className="audit-head">
+                      <span className="audit-what"><b>{a.title}</b>{p.target && <> {p.target}</>}</span>
+                      <span className="audit-meta">{a.actor} · <span data-tip={F.dtFull(a.ts)}>{F.ago(a.ts)}</span></span>
+                    </div>
+                    {p.rest && <div className="audit-detail mono" data-tip={p.rest}>{p.rest}</div>}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
         ) : audit.isError ? <ErrorNote error={audit.error} onRetry={() => void audit.refetch()} /> : <div className="hint">{audit.isLoading ? '加载中…' : '暂无记录'}</div>}
       </Section>
     </>
   );
+}
+
+/** 一条操作记录拆成对象与详情：摘要以记录里的显示名开头时（上架、执行命令、换线路机…），名字接在动作后面，其余是详情。
+ *  名字保持记录时的样子，之后改过名也不跟着变 */
+function auditParts(a: AuditEntry): { target: string; rest: string } {
+  const name = (a.detail as { name?: unknown } | null)?.name;
+  if (typeof name !== 'string' || !name) return { target: '', rest: a.summary };
+  if (a.summary === name) return { target: name, rest: '' };
+  if (a.summary.startsWith(`${name} · `)) return { target: name, rest: a.summary.slice(name.length + 3) };
+  return { target: '', rest: a.summary };
 }

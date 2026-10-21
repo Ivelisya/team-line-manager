@@ -265,8 +265,10 @@ export function buildDb(): Db {
   ];
   const silences: Silence[] = [{ id: 's1', subject_id: 'm-t2-04', subject_name: '团队2-04', rule: null, starts_at: iso(now() - 3600_000), ends_at: iso(now() + 3 * 3600_000), is_maintenance: true, comment: '换内核，预计 4 小时' }];
   const audit: AuditEntry[] = [
+    { id: 'a3', ts: iso(now() - 25 * 60_000), actor: '运维 CLI', action: 'exec', title: '执行命令', summary: '团队1-03 · journalctl -u fleet-agent --since "1 hour ago" --no-pager | grep -i -E "err… · 退出码 0', target_kind: 'machine', target_id: 'm-t1-03', detail: { name: '团队1-03', command: 'journalctl -u fleet-agent --since "1 hour ago" --no-pager | grep -i -E "error|warn" | tail -n 200', exit_code: 0 } },
     { id: 'a1', ts: iso(now() - 40 * 60_000), actor: 'admin', action: 'machine.rename', title: '改名', summary: '团队1-07 → 团队1-03', target_kind: 'machine', target_id: 'm-t1-03', detail: { old: '团队1-07', new: '团队1-03' } },
     { id: 'a2', ts: iso(now() - 3 * 3600_000), actor: 'admin', action: 'renewal.create', title: '登记续费', summary: '团队2-09 到期日顺延 3 个月', target_kind: 'machine', target_id: 'm-t2-09', detail: { months: 3 } },
+    { id: 'a4', ts: iso(now() - 12 * DAY), actor: 'admin', action: 'machine.provision', title: '上架', summary: '团队1-07 · 198.51.100.13', target_kind: 'machine', target_id: 'm-t1-03', detail: { name: '团队1-07', ip: '198.51.100.13', kind: 'vps' } },
   ];
   const apiKeys: ApiKey[] = [
     { id: 'k1', name: '备份脚本', prefix: 'a3f9c2d1', scopes: ['read'], created_at: iso(now() - 40 * DAY), expires_at: iso(now() + 50 * DAY), last_used_at: iso(now() - 2 * 3600_000), revoked_at: null },
