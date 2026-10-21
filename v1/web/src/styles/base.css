@@ -68,10 +68,10 @@ a { color: inherit; }
   width: var(--h-md); height: var(--h-md); padding: 0; border: 0; border-radius: var(--r-control);
   display: inline-grid; place-items: center; cursor: pointer;
   background: var(--accent-soft); color: var(--accent-soft-fg);
-  transition: background-color var(--dur-fast), transform var(--dur-press);
+  transition: background-color var(--dur-fast), transform var(--dur-base) var(--ease-sheet);
 }
 .top-btn:hover, .top-btn[aria-expanded="true"] { background: color-mix(in srgb, var(--accent-soft) 82%, var(--accent)); }
-.top-btn:active { transform: scale(0.94); }
+.top-btn:active:not(:disabled) { transform: scale(0.94); transition-duration: var(--dur-press); } /* 快按慢回，同 .btn */
 .nav-toggle { display: none; background: transparent; color: var(--fg-2); } /* 汉堡按钮不带软色底，悬停才给浅底 */
 .nav-toggle:hover { background: var(--hover); color: var(--fg); }
 

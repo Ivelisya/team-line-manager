@@ -97,6 +97,7 @@
 .cmd-item[data-selected="true"] { background: var(--accent-soft); color: var(--accent-soft-fg); }
 .cmd-item[data-selected="true"] > .lucide { color: var(--accent-soft-fg); }
 .cmd-item[data-selected="true"] .cmd-aside { color: var(--accent-soft-fg); }
+.cmd-item:active { background-image: linear-gradient(var(--hover), var(--hover)); } /* 按下：同菜单项，当前项底上再叠一层悬停色 */
 .cmd-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--sp-8); }
 .cmd-main > b { font-weight: var(--fw-medium); }
 .cmd-aside { flex: none; font-size: var(--fs-label); color: var(--fg-2); }
@@ -121,6 +122,9 @@
 /* 换时间范围时先留着上一段曲线：取新数据期间调淡，到了再柔和地亮回来 */
 .chart-frame { transition: opacity var(--dur-base) var(--ease-std); }
 .chart-frame[data-stale] { opacity: 0.45; }
+/* 曲线第一次有数据时从左往右展开一次：.chart-frame 在数据到了才挂载（之前是骨架），之后的轮询刷新、换时间范围（上面的沿用旧曲线调淡）都不重新挂载，不会再播 */
+.chart-frame .chart-box { animation: chart-reveal 600ms var(--ease-out); }
+@keyframes chart-reveal { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0); } }
 
 /* ========== 进度条 ========== */
 .progress { position: relative; height: var(--quota-h); border-radius: var(--r-pill); background: var(--line); overflow: hidden; }
@@ -210,6 +214,8 @@
   /* 浮层关闭：不播退出动画，Radix 立即卸载（抽屉的投影层一起） */
   .overlay[data-state="closed"], .drawer-overlay[data-state="closed"], .dialog[data-state="closed"], .cmd-dialog[data-state="closed"], .drawer[data-state="closed"], .drawer[data-state="closed"]::before,
   .menu[data-state="closed"], .popover[data-state="closed"], .select-content[data-state="closed"], .tooltip[data-state="closed"], .hover-card[data-state="closed"], .page-in { animation: none; }
+  /* 曲线展开、悬停提示的缩放位移进场：直接出现 */
+  .chart-frame .chart-box, .tooltip { animation: none; }
 }
 
 /* ========== 来源画像：分布横条（抽屉「访问记录」页签） ========== */

@@ -20,6 +20,7 @@
 .dt .cell-main { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dt tr.is-link { cursor: pointer; transition: background-color var(--dur-fast); }
 .dt tr.is-link:hover { background: var(--hover); }
+.dt tr.is-link:active { background-image: linear-gradient(var(--hover), var(--hover)); } /* 按下：同菜单项，悬停底上再叠一层，不缩放 */
 .dt tr.is-current { background: var(--selected); }
 .dt tr.is-current td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
 .dt tr.is-retired td { color: var(--fg-2); }

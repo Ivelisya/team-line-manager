@@ -19,11 +19,13 @@
   margin-bottom: var(--grid-gap);
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); overflow: hidden;
   box-shadow: var(--shadow-card);
-  transition: border-color var(--dur-fast), box-shadow var(--dur-base) var(--ease-sheet);
+  transition: border-color var(--dur-fast), box-shadow var(--dur-base) var(--ease-sheet), translate var(--dur-base) var(--ease-sheet);
 }
 .ncard[data-view="small"] { --rows: 7; }
 .ncard[data-view="compact"] { --rows: 6; }
-.ncard:hover { border-color: var(--line-strong); box-shadow: var(--shadow-card-hover); } /* 不加位移：卡片的 transform 归 motion 的布局动画管 */
+/* 悬停上浮 2px：卡片的 transform 归 motion 的布局动画管，位移用独立的 translate 属性，互不覆盖（同 KPI 卡）。
+   卡片本身不可点（点里面的读数、按钮），不做按下缩放 */
+.ncard:hover { border-color: var(--line-strong); box-shadow: var(--shadow-card-hover); translate: 0 -2px; }
 .ncard[data-health="down"] { border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); }
 .ncard[data-health="degraded"] { border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
 .ncard.is-current { border-color: var(--accent); }
@@ -172,7 +174,7 @@
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); box-shadow: var(--shadow-card);
   transition: border-color var(--dur-fast), box-shadow var(--dur-base) var(--ease-sheet), translate var(--dur-base) var(--ease-sheet);
 }
-.rcard:hover { border-color: var(--line-strong); box-shadow: var(--shadow-card-hover); translate: 0 -1px; } /* 上浮 1px，同 KPI 卡 */
+.rcard:hover { border-color: var(--line-strong); box-shadow: var(--shadow-card-hover); translate: 0 -2px; } /* 卡片类上浮 2px（KPI 卡 1px） */
 .rcard[data-health="down"] { border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); }
 .rcard[data-health="degraded"] { border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
 .rcard.is-current { border-color: var(--accent); }

@@ -93,7 +93,7 @@
 
   /* ---------- 9. 阴影：卡片、KPI、面板有一层很轻的静止抬升（owner 2026-10-21 放开，原“卡片与面板无阴影”作废）；浮层更深 ---------- */
   --shadow-card: 0 1px 2px rgba(17, 24, 39, 0.04), 0 4px 16px rgba(17, 24, 39, 0.04);        /* 卡片/KPI/面板静止态 */
-  --shadow-card-hover: 0 1px 2px rgba(17, 24, 39, 0.05), 0 8px 24px rgba(17, 24, 39, 0.08);  /* 可点击卡片悬停：更深一点 */
+  --shadow-card-hover: 0 1px 2px rgba(17, 24, 39, 0.05), 0 10px 24px -6px rgba(17, 24, 39, 0.1); /* 可点击卡片悬停：更深一点，落在下方配合上浮（参照 CFSM-SAO 0 10px 24px -6px） */
   --shadow-float: 0 8px 30px rgba(0, 0, 0, 0.12);   /* H --floating-shadow：弹层、菜单、toast、对话框、抽屉、命令面板（N 0 20px 70px .2 统一到它） */
   --shadow-thumb: 0 1px 4px rgba(0, 0, 0, 0.12);    /* H --segment-shadow：分段选中项（O 用线色当阴影，看不见） */
   --shadow-btn: 0 1px 2px rgba(0, 0, 0, 0.08);      /* O 主按钮 */
@@ -294,7 +294,7 @@
   --grad-soft: linear-gradient(90deg, #f3e6f5 0%, #fbe1f2 100%);
   --shadow-thumb: 0 1px 4px rgba(42, 11, 61, 0.14);
   --shadow-card: 0 1px 2px rgba(42, 11, 61, 0.04), 0 4px 16px rgba(42, 11, 61, 0.05);        /* 粉紫：阴影带一点紫调 */
-  --shadow-card-hover: 0 1px 2px rgba(42, 11, 61, 0.05), 0 8px 24px rgba(42, 11, 61, 0.09);
+  --shadow-card-hover: 0 1px 2px rgba(42, 11, 61, 0.05), 0 10px 24px -6px rgba(42, 11, 61, 0.11);
 }
 :root:not([data-palette="indigo"])[data-theme="dark"] {
   /* 表面、线、文字与上面的炭黑暗色相同（这里要重写一遍，否则粉紫亮色块的同级选择器会盖住它们）；只保留粉紫的强调色 */

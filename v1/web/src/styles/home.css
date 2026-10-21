@@ -35,10 +35,10 @@
   display: flex; flex-direction: column; justify-content: space-between; gap: var(--sp-6); min-width: 0; min-height: 100px; box-sizing: border-box;
   padding: 13px 15px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card);
   box-shadow: var(--shadow-card); text-decoration: none; color: inherit;
-  transition: border-color var(--dur-base), box-shadow var(--dur-base) var(--ease-sheet), translate var(--dur-base) var(--ease-sheet);
+  transition: border-color var(--dur-base), box-shadow var(--dur-base) var(--ease-sheet), translate var(--dur-base) var(--ease-sheet), scale var(--dur-base) var(--ease-sheet);
 }
-a.stat:hover { border-color: var(--line-strong); box-shadow: var(--shadow-card-hover); translate: 0 -1px; }
-a.stat:active { translate: 0 0; } /* 按下只取消上浮，阴影不去掉：比静止还平会“塌”一下 */
+a.stat:hover { border-color: var(--line-strong); box-shadow: var(--shadow-card-hover); translate: 0 -1px; } /* KPI 上浮 1px，卡片类 2px */
+a.stat:active { translate: 0 0; scale: 0.99; transition-duration: var(--dur-press); } /* 按下取消上浮、微缩（快按慢回），阴影不去掉：比静止还平会“塌”一下 */
 .stat-label { display: flex; align-items: center; gap: 7px; min-width: 0; font: var(--fw-semibold) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2); white-space: nowrap; }
 .stat-ic { display: inline-flex; color: var(--tc); }
 .stat-ic .lucide { width: 15px; height: 15px; stroke-width: 2; }

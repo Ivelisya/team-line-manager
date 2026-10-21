@@ -23,11 +23,11 @@ export function ChartTooltip({ config, labelFormat, valueFormat }: { config: Cha
       content={({ active, payload, label }: TipProps) => {
         if (!active || !payload?.length) return null;
         return (
-          <div className="popover" style={{ padding: '8px 10px', minWidth: 140, fontSize: 12 }}>
-            <div style={{ color: 'var(--fg-2)', marginBottom: 4 }}>{labelFormat && label != null ? labelFormat(label) : label}</div>
+          <div className="chart-tip">
+            <div className="chart-tip-t">{labelFormat && label != null ? labelFormat(label) : label}</div>
             {payload.map((p) => (
-              <div key={String(p.dataKey)} style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
-                <span><i style={{ display: 'inline-block', width: 8, height: 8, borderRadius: 2, background: p.color, marginRight: 6 }} />{config[String(p.dataKey)]?.label ?? p.dataKey}</span>
+              <div key={String(p.dataKey)} className="chart-tip-row">
+                <span><i style={{ background: p.color }} />{config[String(p.dataKey)]?.label ?? p.dataKey}</span>
                 <b className="num">{typeof p.value !== 'number' ? '—' : valueFormat ? valueFormat(String(p.dataKey), p.value) : p.value}</b>
               </div>
             ))}

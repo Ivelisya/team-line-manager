@@ -1,4 +1,4 @@
-// 时序小图：细线 + 淡填充（原版详情图的语言）。颜色取图表 token：--chart-1 / --chart-2 / --chart-3。
+// 时序小图：细线 + 淡填充（原版详情图的语言）。颜色由调用方给：图表 token --chart-1 / --chart-2 / --chart-3，或首页的指标色 --m-cpu / --m-mem。
 // memo：抽屉随实时推送重渲染时，曲线点没变（lines / 格式化函数由调用方放在模块常量里）就不重画
 import { memo, useMemo } from 'react';
 import type { SeriesPoint } from '@/lib/types';
