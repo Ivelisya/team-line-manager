@@ -56,8 +56,7 @@ raw_days = 3
 access_days = 7
 
 [numbering]
-# 接管旧机器期间关掉：上架作业被取消时不自动压缩团队编号，名字与旧系统保持一致。接管完成后可改回 true
-auto_compact = false
+auto_compact = true
 TOML
   chown fleet:fleet /etc/fleet/fleet.toml
   chmod 640 /etc/fleet/fleet.toml
