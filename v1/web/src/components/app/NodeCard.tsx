@@ -48,7 +48,7 @@ const IpTags = ({ id, ip, sshPort, host, nodes }: Pick<Info, 'id' | 'ip' | 'sshP
   <span className="nc-marks">{ip.includes(':') ? <Tag c="blue">V6</Tag> : <Tag c="green">V4</Tag>}{sshPort !== 22 && <Mark tip="SSH 端口">SSH {sshPort}</Mark>}<HostTag id={id} host={host} nodes={nodes} /></span>
 );
 interface Info { id: string; ip: string; sshPort: number; entry: string; plan: MachineView['plan']; host: MachineView['host_machine']; nodes: MachineView['ip_nodes'] }
-/** 大卡片：地址行 + 入口 / 套餐 / 套餐带宽 / 流量上限 2×2。同机 IP 节点不带套餐，自己没设上限时额度随宿主机 */
+/** 大卡片：地址行 + 入口 / 套餐 / 套餐带宽 / 流量上限 2×2。同机 IP 节点不带套餐，自己没设上限时额度与宿主机共用 */
 const LargeInfo = memo(function LargeInfo({ entry, plan, limit, ...a }: Info & { limit: number }) {
   return <>
     <div className="nc-addr"><span className="ellipsis" data-tip={a.ip}>{a.ip}</span><IpTags {...a} /></div>
@@ -56,7 +56,7 @@ const LargeInfo = memo(function LargeInfo({ entry, plan, limit, ...a }: Info & {
       <LabelValue label="入口">{entry}</LabelValue>
       <LabelValue label="套餐">{plan?.name ?? <span className="t-muted">{a.host ? '不带套餐' : '未设置'}</span>}</LabelValue>
       <LabelValue label="套餐带宽">{plan ? <Num f={F.mbps(plan.bandwidth_mbps)} /> : '—'}</LabelValue>
-      <LabelValue label="流量上限">{a.host && !(limit > 0) ? '随宿主机' : <Num f={F.gb(limit)} />}</LabelValue>
+      <LabelValue label="流量上限">{a.host && !(limit > 0) ? '与宿主机共用' : <Num f={F.gb(limit)} />}</LabelValue>
     </dl>
   </>;
 });
