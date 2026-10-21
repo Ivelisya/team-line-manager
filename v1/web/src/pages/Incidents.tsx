@@ -3,7 +3,7 @@ import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { BellOff, CalendarPlus, Check, CheckCircle2, Plus, Trash2, Wrench } from 'lucide-react';
 import { RenewDialog } from '@/features/BillingTab';
-import { INCIDENT_PAGE, useAck, useAddSilence, useDelSilence, useIncidents, useMachines, useSilences } from '@/lib/queries';
+import { INCIDENT_PAGE, useAck, useAddSilence, useDelSilence, useIncidents, useMachineBriefs, useSilences } from '@/lib/queries';
 import { usePage } from '@/lib/usePage';
 import { Pagination } from '@/components/app/Pagination';
 import { useDrawer } from '@/lib/drawer';
@@ -33,7 +33,7 @@ export function IncidentsPage() {
   const { open } = useDrawer();
   const list = q.data?.items ?? [];
   // 续费类告警的「登记续费」要用机器的订阅信息；续费后下一轮评估（≤30 秒）自动恢复
-  const machines = useMachines('live').data;
+  const machines = useMachineBriefs().data;
   const [renewId, setRenewId] = React.useState<string | null>(null);
   const renewM = machines?.find((m) => m.id === renewId);
   return (
@@ -79,7 +79,7 @@ const MAX_HOURS = 720; // 30 天
 
 function Silences() {
   const q = useSilences(); const del = useDelSilence(); const add = useAddSilence();
-  const machines = useMachines('live').data ?? [];
+  const machines = useMachineBriefs().data ?? [];
   const [sp, setSp] = useSearchParams();
   const [open, setOpen] = React.useState(false);
   const [askAll, setAskAll] = React.useState(false);

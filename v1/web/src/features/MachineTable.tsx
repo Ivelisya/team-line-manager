@@ -61,18 +61,23 @@ export function MachineTable({ rows, sort, onSort, openId, onOpen }: { rows: Mac
       <table className="dt is-one" style={{ minWidth: TOTAL }}>
         <colgroup>{cols.map((c) => <col key={c.id} style={{ width: c.size }} />)}</colgroup>
         <SortHead cols={cols} sort={sort} onSort={onSort} />
-        <tbody>{rows.map((m) => (
-          <ContextMenu key={m.id}>
-            <ContextMenuTrigger asChild>
-              <tr className={cn('is-link', m.id === openId && 'is-current', isQuiet(m) && 'is-quiet')} tabIndex={0} data-id={m.id}
-                onClick={() => onOpen(m.id)} onKeyDown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) onOpen(m.id); }}>
-                {cols.map((c) => <td key={c.id} className={c.r ? 'r' : undefined}>{c.cell(m)}</td>)}
-              </tr>
-            </ContextMenuTrigger>
-            <ContextMenuContent><NodeContextItems m={m} /></ContextMenuContent>
-          </ContextMenu>
-        ))}</tbody>
+        <tbody>{rows.map((m) => <Row key={m.id} m={m} current={m.id === openId} onOpen={onOpen} columns={cols} />)}</tbody>
       </table>
     </div>
   );
 }
+
+/** 一行一个 memo：实时推送只换变了的那台机器的引用，其余行不重渲染（onOpen 来自 useDrawer，稳定；cols 是模块常量） */
+const Row = React.memo(function Row({ m, current, onOpen, columns }: { m: MachineView; current: boolean; onOpen: (id: string) => void; columns: Col[] }) {
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <tr className={cn('is-link', current && 'is-current', isQuiet(m) && 'is-quiet')} tabIndex={0} data-id={m.id}
+          onClick={() => onOpen(m.id)} onKeyDown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) onOpen(m.id); }}>
+          {columns.map((c) => <td key={c.id} className={c.r ? 'r' : undefined}>{c.cell(m)}</td>)}
+        </tr>
+      </ContextMenuTrigger>
+      <ContextMenuContent><NodeContextItems m={m} /></ContextMenuContent>
+    </ContextMenu>
+  );
+});

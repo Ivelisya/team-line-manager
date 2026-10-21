@@ -35,7 +35,8 @@ export const TabsTrigger = React.forwardRef<React.ElementRef<typeof TabsPrimitiv
   return (
     <TabsPrimitive.Trigger ref={ref} className={cn('tab', className)} {...(noPanel ? { 'aria-controls': undefined } : null)} {...p}>
       {children}
-      {ctx && ctx.value === p.value && <m.span aria-hidden className="tab-ind" layoutId={`tab-ind-${ctx.id}`} transition={SPRING} />}
+      {/* layoutDependency：当前页签不变时重渲染不量位置 */}
+      {ctx && ctx.value === p.value && <m.span aria-hidden className="tab-ind" layoutId={`tab-ind-${ctx.id}`} layoutDependency={ctx.value} transition={SPRING} />}
     </TabsPrimitive.Trigger>
   );
 });
@@ -126,8 +127,9 @@ export function Segmented<T extends string>({ value, onChange, items, label, sm,
     <ToggleGroup.Root type="single" value={value} onValueChange={(v) => v && onChange(v as T)} aria-label={label} className={cn('seg', sm && 'seg-sm', className)}>
       {items.map((it) => (
         <ToggleGroup.Item key={it.value} value={it.value} disabled={it.disabled} className="seg-item">
-          {/* 选中胶囊：共享 layoutId，换项时滑过去；圆角写在 style 里，motion 才会在缩放过程中修正它 */}
-          {value === it.value && <m.span aria-hidden className="seg-ind" layoutId={`seg-ind-${gid}`} style={{ borderRadius: 999 }} transition={SPRING} />}
+          {/* 选中胶囊：共享 layoutId，换项时滑过去；圆角写在 style 里，motion 才会在缩放过程中修正它。
+              layoutDependency：选中项不变时父级重渲染（如实时推送）不再量位置 */}
+          {value === it.value && <m.span aria-hidden className="seg-ind" layoutId={`seg-ind-${gid}`} layoutDependency={value} style={{ borderRadius: 999 }} transition={SPRING} />}
           {it.label}{it.count != null && <span className="seg-count">{it.count}</span>}
         </ToggleGroup.Item>
       ))}

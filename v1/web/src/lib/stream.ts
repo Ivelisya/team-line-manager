@@ -6,7 +6,7 @@
 //   断线重连后让全部查询失效：没连着时错过的事件和增量靠这次重取补上。
 // - 页面在后台：失效只标记过期、不重取，metrics 也不写缓存只标记过期（回到前台由 refetchOnWindowFocus 补上）。
 import { useEffect } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQueryClient, type Query } from '@tanstack/react-query';
 import { eventKeys, type StreamEvent } from './queries';
 import { applyMetrics, LIVE_KEYS, type MetricsMsg } from './live';
 import { setStreamState as setStatus, useStreamState } from './streamState';
@@ -15,6 +15,9 @@ const MERGE_MS = 300;
 const LIST_MS = 2000;
 const LISTS = new Set(['machines', 'relays', 'overview', 'jobs']);
 const BACKOFF_MAX = 30_000;
+// 恢复 / 退役预检会真的 SSH 探测机器：重连、resync 的全部失效不带上它们（改选项或重开对话框才重查）
+const SSH_PREVIEWS = new Set(['restore-preview', 'retire-preview']);
+const notProbe = (q: Query) => !SSH_PREVIEWS.has(q.queryKey[0] as string);
 
 export function useStream(enabled: boolean) {
   const qc = useQueryClient();
@@ -33,7 +36,7 @@ export function useStream(enabled: boolean) {
     const listKeys = new Map<string, unknown[]>();
     let all = false;
 
-    const inv = (queryKey?: unknown[], cancelRefetch = true) => qc.invalidateQueries({ queryKey, refetchType: document.hidden ? 'none' : 'active' }, { cancelRefetch });
+    const inv = (queryKey?: unknown[], cancelRefetch = true) => qc.invalidateQueries({ queryKey, predicate: notProbe, refetchType: document.hidden ? 'none' : 'active' }, { cancelRefetch });
     const flush = () => {
       mergeTimer = undefined;
       if (all) inv();
