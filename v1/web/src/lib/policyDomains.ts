@@ -1,14 +1,14 @@
 // 访问规则的域名规范化与校验：和服务端 crates/fleet-server/src/policy.rs 的 normalize_one 保持一致（保存时服务端仍会再校验一遍）。
 // 纯函数，不依赖 React，便于单独测试。
 
-export const MAX_DOMAINS = 300;
+const MAX_DOMAINS = 300;
 export const MAX_NOTE = 500;
 
 const SEP = /[\s,，、;；]+/;
 const PREFIXES = ['domain:', 'full:', 'regexp:', 'keyword:', 'geosite:', 'ext:'];
 
 /** 单个域名：返回规范化结果（精确匹配保留 `=` 前缀）或中文错误信息 */
-export function normalizeOne(tok: string): { ok: true; value: string } | { ok: false; error: string } {
+function normalizeOne(tok: string): { ok: true; value: string } | { ok: false; error: string } {
   const shown = [...tok].slice(0, 80).join('');
   const bad = (error: string) => ({ ok: false as const, error });
   const exact = tok.startsWith('=');

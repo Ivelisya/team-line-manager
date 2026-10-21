@@ -14,11 +14,10 @@ import { Button } from '@/components/ui/button';
 import { SearchInput } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { Segmented, Trunc } from '@/components/ui/overlays';
-import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from '@/components/ui/context-menu';
 import { SkeletonRows } from '@/components/ui/skeleton';
 import { Due, Empty, ErrorNote, HealthPill, KindIcon, Num, PageHead, Panel, Pill, SortHead, type SortState } from '@/components/app/primitives';
 import { NodeHover } from '@/components/app/NodeHover';
-import { NodeContextItems } from '@/components/app/NodeMenu';
+import { NodeMenus } from '@/components/app/NodeMenu';
 import { Pagination } from '@/components/app/Pagination';
 import { usePage } from '@/lib/usePage';
 
@@ -28,11 +27,18 @@ type Cmp = (a: MachineView, b: MachineView) => number;
 interface Col { id: string; header: string; size: number; r?: boolean; first?: 'asc' | 'desc'; cmp?: Cmp; cell: (m: MachineView) => React.ReactNode }
 const byStr = (f: (m: MachineView) => string) => ({ first: 'asc' as const, cmp: (a: MachineView, b: MachineView) => collator.compare(f(a), f(b)) });
 const byNum = (f: (m: MachineView) => number, first: 'asc' | 'desc' = 'desc') => ({ first, cmp: (a: MachineView, b: MachineView) => f(a) - f(b) });
+// 筛选下拉的固定选项与空列表兜底用模块常量：页面随实时推送重渲染时，memo 的下拉（Select）不被新数组击穿
+const EMPTY: MachineView[] = [];
+const PAGE_SIZES = [25, 50, 100];
+const KIND_OPTS = Object.entries(KIND_LABEL).map(([value, label]) => ({ value, label }));
+const STATUS_OPTS = [...Object.entries(HEALTH_LABEL).filter(([k]) => k !== 'inactive').map(([value, label]) => ({ value, label })), { value: 'provisioning', label: '上架中' }, { value: 'failed', label: '上架失败' }, { value: 'retiring', label: '退役中' }];
+const SCOPES: { value: Scope; label: string }[] = [{ value: 'live', label: '在用' }, { value: 'retired', label: '已退役' }];
 
 export function NodesPage() {
   const [scope, setScope] = React.useState<Scope>('live');
   const q = useMachines(scope);
-  const teams = useTeams().data ?? [];
+  const teams = useTeams().data;
+  const teamOpts = React.useMemo(() => (teams ?? []).map((t) => ({ value: t.id, label: t.name })), [teams]);
   const { id: openId, open } = useDrawer();
   const [text, setText] = React.useState('');
   const [team, setTeam] = React.useState('');
@@ -43,9 +49,13 @@ export function NodesPage() {
   const rawSort = sp.get('sort');
   const sort = React.useMemo<SortState | null>(() => (rawSort ? { id: rawSort.replace(/^-/, ''), desc: rawSort.startsWith('-') } : null), [rawSort]); // null = 默认顺序
   const setSort = (s: SortState | null) => setSp((p) => { const n = new URLSearchParams(p); if (s) n.set('sort', `${s.desc ? '-' : ''}${s.id}`); else n.delete('sort'); return n; }, { replace: true });
+  const onScope = React.useCallback((v: Scope) => { setScope(v); setStatus(''); }, []);
 
-  const all = q.data ?? [];
+  const all = q.data ?? EMPTY;
+  // 线路机选项只随名单变：实时推送每次都换机器列表，线路机和名字没变时选项引用不变
   const relays = all.filter((m) => m.kind === 'relay');
+  const relaySig = relays.map((r) => `${r.id}:${r.name}`).join();
+  const relayOpts = React.useMemo(() => relays.map((r) => ({ value: r.id, label: r.name })), [relaySig]); // eslint-disable-line react-hooks/exhaustive-deps
   const data = React.useMemo(() => {
     const t = text.trim().toLowerCase();
     return all.filter((m) => {
@@ -90,23 +100,22 @@ export function NodesPage() {
     const sign = sort.desc ? -1 : 1;
     return [...data].sort((a, b) => sign * cmp(a, b));
   }, [data, columns, sort]);
-  const pg = usePage({ total: q.data ? rows.length : undefined, sizes: [25, 50, 100], size: 50, reset: [scope, text, team, kind, relay, status, sort] });
+  const pg = usePage({ total: q.data ? rows.length : undefined, sizes: PAGE_SIZES, size: 50, reset: [scope, text, team, kind, relay, status, sort] });
   const stable = useStableOrder(rows, sort?.id === 'traffic' ? JSON.stringify([scope, text, team, kind, relay, status, sort, pg.page, pg.size]) : null);
   const pageRows = React.useMemo(() => stable.slice(pg.offset, pg.offset + pg.size), [stable, pg.offset, pg.size]);
   const total = columns.reduce((s, c) => s + c.size, 0);
-  const statusOpts = [...Object.entries(HEALTH_LABEL).filter(([k]) => k !== 'inactive').map(([value, label]) => ({ value, label })), { value: 'provisioning', label: '上架中' }, { value: 'failed', label: '上架失败' }, { value: 'retiring', label: '退役中' }];
 
   return (
     <div className="stack">
       <PageHead title="机器" note={`${data.length}${data.length !== all.length ? ` / ${all.length}` : ''} 台`}
-        tools={<Segmented label="范围" value={scope} onChange={(v) => { setScope(v); setStatus(''); }} items={[{ value: 'live', label: '在用' }, { value: 'retired', label: '已退役' }]} />} />
+        tools={<Segmented label="范围" value={scope} onChange={onScope} items={SCOPES} />} />
 
       <div className="row" role="search" ref={pg.anchor}>
         <SearchInput value={text} onChange={(e) => setText(e.target.value)} placeholder="搜索名称、IP、套餐、服务编号…" aria-label="搜索" className="w-full sm:w-[260px]" />
-        <div className="w-[140px]"><Select value={team} onChange={setTeam} allowEmpty="全部团队" placeholder="团队" options={teams.map((t) => ({ value: t.id, label: t.name }))} aria-label="团队" /></div>
-        <div className="w-[130px]"><Select value={kind} onChange={setKind} allowEmpty="全部类型" placeholder="类型" options={Object.entries(KIND_LABEL).map(([value, label]) => ({ value, label }))} aria-label="类型" /></div>
-        <div className="w-[140px]"><Select value={relay} onChange={setRelay} allowEmpty="全部线路机" placeholder="线路机" options={relays.map((r) => ({ value: r.id, label: r.name }))} aria-label="线路机" /></div>
-        {scope === 'live' && <div className="w-[130px]"><Select value={status} onChange={setStatus} allowEmpty="全部状态" placeholder="状态" options={statusOpts} aria-label="状态" /></div>}
+        <div className="w-[140px]"><Select value={team} onChange={setTeam} allowEmpty="全部团队" placeholder="团队" options={teamOpts} aria-label="团队" /></div>
+        <div className="w-[130px]"><Select value={kind} onChange={setKind} allowEmpty="全部类型" placeholder="类型" options={KIND_OPTS} aria-label="类型" /></div>
+        <div className="w-[140px]"><Select value={relay} onChange={setRelay} allowEmpty="全部线路机" placeholder="线路机" options={relayOpts} aria-label="线路机" /></div>
+        {scope === 'live' && <div className="w-[130px]"><Select value={status} onChange={setStatus} allowEmpty="全部状态" placeholder="状态" options={STATUS_OPTS} aria-label="状态" /></div>}
         {sort && <Button variant="quiet" size="md" onClick={() => setSort(null)}><RotateCcw />恢复默认顺序</Button>}
       </div>
 
@@ -116,9 +125,9 @@ export function NodesPage() {
           <table className="dt" style={{ minWidth: total }}>
             <colgroup>{columns.map((c) => <col key={c.id} style={{ width: c.size }} />)}</colgroup>
             <SortHead cols={columns} sort={sort} onSort={setSort} />
-            <tbody>
+            <NodeMenus rows={pageRows}><tbody>
               {pageRows.map((m) => <Row key={m.id} m={m} current={m.id === openId} onOpen={open} columns={columns} />)}
-            </tbody>
+            </tbody></NodeMenus>
           </table>
         </div>
         {!q.isLoading && !q.isError && rows.length === 0 && <Empty icon={<SearchX size={22} />} text={scope === 'retired' ? '还没有已退役的机器' : '没有符合条件的机器'} hint={all.length && scope === 'live' ? '换个筛选条件试试' : undefined} />}
@@ -129,17 +138,13 @@ export function NodesPage() {
   );
 }
 
-/** 一行一个 memo：实时推送只换变了的那台机器的引用，其余行不重渲染（onOpen 来自 useDrawer、columns 按范围 memo，都稳定） */
+/** 一行一个 memo：实时推送只换变了的那台机器的引用，其余行不重渲染（onOpen 来自 useDrawer、columns 按范围 memo，都稳定）。
+ *  右键菜单由 tbody 上的 NodeMenus 共用一份（按 data-id 找到这一行） */
 const Row = React.memo(function Row({ m, current, onOpen, columns }: { m: MachineView; current: boolean; onOpen: (id: string) => void; columns: Col[] }) {
   return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild>
-        <tr className={`is-link${current ? ' is-current' : ''}${m.lifecycle === 'retired' ? ' is-retired' : ''}`} tabIndex={0}
-          onClick={() => onOpen(m.id)} onKeyDown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) onOpen(m.id); }}>
-          {columns.map((c) => <td key={c.id} className={c.id === 'chev' ? 'chev' : c.r ? 'r' : undefined}>{c.cell(m)}</td>)}
-        </tr>
-      </ContextMenuTrigger>
-      <ContextMenuContent><NodeContextItems m={m} /></ContextMenuContent>
-    </ContextMenu>
+    <tr className={`is-link${current ? ' is-current' : ''}${m.lifecycle === 'retired' ? ' is-retired' : ''}`} tabIndex={0} data-id={m.id}
+      onClick={() => onOpen(m.id)} onKeyDown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) onOpen(m.id); }}>
+      {columns.map((c) => <td key={c.id} className={c.id === 'chev' ? 'chev' : c.r ? 'r' : undefined}>{c.cell(m)}</td>)}
+    </tr>
   );
 });

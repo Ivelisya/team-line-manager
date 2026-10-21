@@ -189,14 +189,13 @@ pub async fn enqueue(tx: &mut Tx<'_>, kind: &str, target: Option<Uuid>, params: 
         .bind(actor)
         .execute(&mut **tx)
         .await?;
-    for (i, d) in defs(kind).iter().enumerate() {
-        sqlx::query("insert into job_step (job_id, idx, key) values ($1, $2, $3)")
-            .bind(id)
-            .bind(i as i32)
-            .bind(d.key)
-            .execute(&mut **tx)
-            .await?;
-    }
+    // 步骤一条语句插完：idx 按定义顺序从 0 起
+    let keys: Vec<&str> = defs(kind).iter().map(|d| d.key).collect();
+    sqlx::query("insert into job_step (job_id, idx, key) select $1, (i - 1)::int, k from unnest($2::text[]) with ordinality u(k, i)")
+        .bind(id)
+        .bind(&keys)
+        .execute(&mut **tx)
+        .await?;
     Ok(id)
 }
 
@@ -453,22 +452,23 @@ async fn finish_cancel(st: &AppState, job: &JobRow, owner: &str) -> anyhow::Resu
         return lost(st, job).await;
     }
     steps::compensate(st, job, owner).await;
-    // 先标步骤、再把作业置为已取消：外面看到 cancelled 时步骤已经是补偿后的状态
-    if let Err(e) = sqlx::query("update job_step set state = 'compensated' where job_id = $1 and state in ('done', 'running')").bind(job.id).execute(&st.db).await {
-        log(st, job.id, "warn", format!("标记步骤已补偿失败：{e}")).await;
-    }
+    // 置为已取消与标步骤已补偿同一事务：外面看到 cancelled 时步骤已经是补偿后的状态。
+    // 先改作业行（带租约条件，顺带锁住它）：租约已不在自己手里时一步都不改，不去动别人正在推进的作业的步骤
+    let mut tx = st.db.begin().await?;
     let n = sqlx::query(
         "update job set state = 'cancelled', finished_at = now(), lease_until = null, lease_owner = null, params = params - 'login'
          where id = $1 and lease_owner = $2 and state = 'cancelling'",
     )
     .bind(job.id)
     .bind(owner)
-    .execute(&st.db)
+    .execute(&mut *tx)
     .await?
     .rows_affected();
     if n == 0 {
         return lost(st, job).await;
     }
+    sqlx::query("update job_step set state = 'compensated' where job_id = $1 and state in ('done', 'running')").bind(job.id).execute(&mut *tx).await?;
+    tx.commit().await?;
     log(st, job.id, "warn", "已取消").await;
     notify(st, job);
     // 补偿可能把机器退役 / 退回已退役

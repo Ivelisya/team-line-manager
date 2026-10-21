@@ -9,6 +9,7 @@ import { monthTraffic } from '@/lib/derive';
 import type { MachineView } from '@/lib/types';
 import { Empty, ErrorNote, FilterChip, type SortState } from '@/components/app/primitives';
 import { NodeCard, SkeletonCard, type CardView } from '@/components/app/NodeCard';
+import { NodeMenus } from '@/components/app/NodeMenu';
 import { RingCard } from '@/components/app/RingCard';
 import { Segmented } from '@/components/ui/overlays';
 import { Select } from '@/components/ui/select';
@@ -26,6 +27,13 @@ const SORTS: { value: SortKey; label: string }[] = [
 type Layout = 'cards' | 'table' | 'ring';
 const LAYOUTS: Layout[] = ['cards', 'table', 'ring'];
 const DENSITIES: CardView[] = ['large', 'small', 'compact'];
+// 分段控件的选项用模块常量：首页随实时推送重渲染时，memo 的分段控件不跟着重画
+const DENSITY_ITEMS: { value: CardView; label: string }[] = [{ value: 'large', label: '大' }, { value: 'small', label: '小' }, { value: 'compact', label: '紧凑' }];
+const LAYOUT_ITEMS: { value: Layout; label: React.ReactNode }[] = [
+  { value: 'cards', label: <><LayoutGrid size={14} />卡片</> }, { value: 'table', label: <><Table2 size={14} />表格</> }, { value: 'ring', label: <><CircleGauge size={14} />环形</> },
+];
+/** 一页超过这么多张卡就不做筛选 / 排序 / 换密度时的弹簧重排：几十张卡同时量位置、逐帧变换，比直接换位更卡 */
+const LAYOUT_ANIM_MAX = 24;
 /** 每页条数：卡片与环形都是 2、3、4、6 的倍数，常见列数下最后一行是满的；中间那档是默认 */
 const PAGE_SIZES: Record<CardView | 'table' | 'ring', number[]> = { large: [12, 24, 48], small: [18, 36, 72], compact: [24, 48, 96], table: [25, 50, 100], ring: [24, 48, 96] };
 const EMPTY_MACHINES: MachineView[] = [];
@@ -63,9 +71,9 @@ export function HomePage() {
   const [tsort, setTsort] = React.useState<SortState | null>(null); // 表格视图的表头排序（优先于上面的排序）
   const [team, setTeam] = React.useState<string>('all');
   const [onlyIssues, setOnlyIssues] = React.useState(false);
-  const setL = (v: Layout) => { setLayout(v); store.set('fleet:layout', v); };
-  const setV = (v: CardView) => { setView(v); store.set('fleet:view', v); };
-  const setS = (v: SortKey) => { setSort(v); setTsort(null); store.set('fleet:sort', v); };
+  const setL = React.useCallback((v: Layout) => { setLayout(v); store.set('fleet:layout', v); }, []);
+  const setV = React.useCallback((v: CardView) => { setView(v); store.set('fleet:view', v); }, []);
+  const setS = React.useCallback((v: string) => { setSort(v as SortKey); setTsort(null); store.set('fleet:sort', v); }, []);
   useProbeBeatsPoll(layout === 'cards'); // 卡片心跳条每 2 分钟刷新：全页一个轮询
 
   const all = machines.data ?? EMPTY_MACHINES; // live 范围已不含已退役
@@ -91,14 +99,16 @@ export function HomePage() {
   const liveSort = !!ts || sort === 'traffic' || sort === 'issues'; // 依据随实时推送变的排序
   const stable = useStableOrder(shown, liveSort ? JSON.stringify([team, onlyIssues, sort, ts, pg.page, pg.size]) : null);
   const page = React.useMemo(() => stable.slice(pg.offset, pg.offset + pg.size), [stable, pg.offset, pg.size]);
-  const layoutKey = `${team}|${onlyIssues}|${sort}|${view}`;
+  const layoutKey = page.length > LAYOUT_ANIM_MAX ? null : `${team}|${onlyIssues}|${sort}|${view}`;
 
   const o = ov.data;
-  const groups = [
+  // 分组选项只随计数变：实时推送每次都换机器列表（counts 跟着重算），台数没变时选项引用不变，分组控件不重画
+  const countSig = `${counts.all}|${counts.relay}|${[...counts.byTeam.values()].join()}`;
+  const groups = React.useMemo(() => [
     { value: 'all', label: '全部', count: counts.all },
     { value: 'relay', label: '线路机', count: counts.relay },
     ...(teams.data ?? []).map((t) => ({ value: t.id, label: t.name, count: counts.byTeam.get(t.id) ?? 0 })),
-  ];
+  ], [countSig, teams.data]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="stack home">
@@ -109,11 +119,9 @@ export function HomePage() {
         title={<h2 className="hsec-title">机器矩阵与实时监控</h2>} sub="实时监控负载、资源占用、网络吞吐与在线状态；点读数或迹线可直接打开历史曲线。"
         actions={<>
           {/* 视图切换固定在最右：密度只在卡片视图出现，放在它左边，出现/消失时不把视图切换挤开 */}
-          <Select sm value={sort} onChange={(v) => setS(v as SortKey)} options={SORTS} className="w-[150px]" aria-label="排序" />
-          {layout === 'cards' && <Segmented sm label="卡片密度" value={view} onChange={setV} items={[{ value: 'large', label: '大' }, { value: 'small', label: '小' }, { value: 'compact', label: '紧凑' }]} />}
-          <Segmented sm label="视图" value={layout} onChange={setL} items={[
-            { value: 'cards', label: <><LayoutGrid size={14} />卡片</> }, { value: 'table', label: <><Table2 size={14} />表格</> }, { value: 'ring', label: <><CircleGauge size={14} />环形</> },
-          ]} />
+          <Select sm value={sort} onChange={setS} options={SORTS} className="w-[150px]" aria-label="排序" />
+          {layout === 'cards' && <Segmented sm label="卡片密度" value={view} onChange={setV} items={DENSITY_ITEMS} />}
+          <Segmented sm label="视图" value={layout} onChange={setL} items={LAYOUT_ITEMS} />
         </>}>
         <div className="hgroups" role="group" aria-label="筛选">
           <Segmented label="分组" value={team} onChange={setTeam} items={groups} className="seg-fill" />
@@ -127,13 +135,14 @@ export function HomePage() {
           <Empty icon={<Inbox size={28} />} text={all.length ? '没有符合筛选条件的机器' : '还没有机器，去“上架”添加第一台'} />
         ) : (
           <>
-            {/* 每页一个容器（key=页码+视图）：翻页、换视图是整页淡入。卡片页内：筛选/排序/密度变了（layoutKey 变）才量位置、滑到新位置 */}
-            {layout === 'cards' && <div key={`c${pg.page}`} className="cards page-in" data-view={view}>
+            {/* 每页一个容器（key=页码+视图）：翻页、换视图是整页淡入。卡片页内：筛选/排序/密度变了（layoutKey 变）才量位置、滑到新位置。
+                右键与“⋯”菜单整页共用一份（NodeMenus） */}
+            {layout === 'cards' && <NodeMenus rows={page}><div key={`c${pg.page}`} className="cards page-in" data-view={view}>
               {page.map((m) => <NodeCard key={m.id} m={m} view={view} current={m.id === openId} onOpen={open} layoutKey={layoutKey} />)}
-            </div>}
-            {layout === 'ring' && <div key={`r${pg.page}`} className="rings page-in">
+            </div></NodeMenus>}
+            {layout === 'ring' && <NodeMenus rows={page}><div key={`r${pg.page}`} className="rings page-in">
               {page.map((m) => <RingCard key={m.id} m={m} current={m.id === openId} onOpen={open} />)}
-            </div>}
+            </div></NodeMenus>}
             {layout === 'table' && <div key="t" className="hpanel page-in"><MachineTable rows={page} sort={tsort} onSort={setTsort} openId={openId} onOpen={open} /></div>}
             <Pagination pg={pg} unit="台" />
           </>

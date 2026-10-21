@@ -119,12 +119,16 @@ a.stat:active { translate: 0 0; scale: 0.99; transition-duration: var(--dur-pres
 
 /* ---------- 分段格条 / 资源读数 ---------- */
 .cells { display: flex; gap: 2px; height: 8px; min-width: 0; }
+/* 从左往右逐格点亮只在格条第一次出现时播（animation 只在元素挂载时跑一次）；之后读数变化直接过渡、不再逐格错开——
+   以前把逐格延迟写在 transition 上，每次推送都要等最右一格的延迟走完，上千个格子的过渡拖得更久。
+   没点亮的格子也挂着这段动画：起止都是底色，看不出来，但这样点亮与否变化时不会重新触发 */
 .cells > i {
   flex: 1 1 0; min-width: 0; border-radius: 2px; background: var(--cell-off);
-  transition: background-color var(--dur-bar) var(--ease-std) calc(var(--i, 0) * var(--cell-stagger)), opacity var(--dur-bar) var(--ease-std);
+  transition: background-color var(--dur-bar) var(--ease-std), opacity var(--dur-bar) var(--ease-std);
+  animation: cell-in var(--dur-bar) var(--ease-std) calc(var(--i, 0) * var(--cell-stagger)) backwards;
 }
 .cells > i[data-on] { background: var(--c); opacity: calc(0.42 + var(--l, 1) * 0.58); }
-@starting-style { .cells > i[data-on] { background: var(--cell-off); opacity: 1; } }
+@keyframes cell-in { from { background-color: var(--cell-off); opacity: 1; } }
 .cells-lg { height: 9px; gap: 3px; }
 
 .cmeter { display: grid; gap: 5px; min-width: 0; }
@@ -200,5 +204,3 @@ a.stat:active { translate: 0 0; scale: 0.99; transition-duration: var(--dur-pres
 .cal-day:focus-visible { outline-offset: 0; }
 .cal-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); margin-top: var(--sp-8); padding-top: var(--sp-8); border-top: 1px solid var(--line); }
 .cal-cur { font-size: var(--fs-label); color: var(--fg-2); }
-
-@media (prefers-reduced-motion: reduce) { .flow-live[data-live] i { animation: none; } }

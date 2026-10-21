@@ -610,6 +610,8 @@ pub async fn reconcile_incidents(st: &AppState, now: OffsetDateTime, rep: &mut S
     let silenced = |rule: &str, id: Uuid| silences.iter().any(|(s, r)| s.is_none_or(|s| s == id) && r.as_deref().is_none_or(|r| r == rule));
 
     let mut changed = false;
+    // 摘要没变、只需刷新 last_seen_at 的，循环后一条语句批量改
+    let mut touch: Vec<Uuid> = vec![];
     for ((rule, node), vals) in &want {
         let Some(name) = names.get(node) else { continue };
         let total = vals.len();
@@ -638,7 +640,7 @@ pub async fn reconcile_incidents(st: &AppState, now: OffsetDateTime, rep: &mut S
                 rep.updated += 1;
                 changed = true;
             } else {
-                sqlx::query("update incident set last_seen_at = now() where id = $1").bind(inc.id).execute(db).await?;
+                touch.push(inc.id);
             }
             continue;
         }
@@ -676,15 +678,19 @@ pub async fn reconcile_incidents(st: &AppState, now: OffsetDateTime, rep: &mut S
             .await;
         }
     }
+    if !touch.is_empty() {
+        sqlx::query("update incident set last_seen_at = now() where id = any($1)").bind(&touch).execute(db).await?;
+    }
     // 剩下的 firing = 已经没有 open 值（或节点不再 active）→ 恢复；一次性异常结束不发恢复通知
-    for (_, inc) in have {
+    let gone: Vec<Uuid> = have.into_values().map(|inc| inc.id).collect();
+    if !gone.is_empty() {
         sqlx::query(
-            "update incident set state = 'resolved', resolved_at = now(), detail = detail || '{\"closed_by\":\"ipintel_ttl\"}' where id = $1 and state = 'firing'",
+            "update incident set state = 'resolved', resolved_at = now(), detail = detail || '{\"closed_by\":\"ipintel_ttl\"}' where id = any($1) and state = 'firing'",
         )
-        .bind(inc.id)
+        .bind(&gone)
         .execute(db)
         .await?;
-        rep.resolved += 1;
+        rep.resolved += gone.len();
         changed = true;
     }
     if changed {

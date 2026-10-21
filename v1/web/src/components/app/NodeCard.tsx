@@ -2,7 +2,7 @@
 // 无论机器是主机、家宽代理还是线路机，同一个槽位都渲染同样高度的内容或占位——配合 cards.css 的 subgrid，同一行的卡片分段永远对齐。
 // 视觉语言：资源用分段格条（每个指标一个颜色），实时速率是大号读数 + 点阵迹线（实时流喂的环形缓冲，见 lib/live），
 // 剩余流量也是格条（绿→黄→红），心跳条同属“格子”语言。迹线与流量可点，直接打开抽屉的“主机 / 流量”页签看历史曲线。
-import { memo, useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
 import { m as mo } from 'motion/react'; // 别名：组件里的 props 叫 m（机器）
 import { SPRING } from '@/lib/motion';
 import { ArrowDown, ArrowUp, Calendar, CircleDollarSign, Cpu, Database, Gauge, Globe, HardDrive, MemoryStick, MoreHorizontal, Radar, RefreshCw, Settings2, PanelRightOpen, ServerOff, Wallet } from 'lucide-react';
@@ -12,51 +12,36 @@ import { beatCells, beatTitles, entryText, hasHost, isQuiet, liveRate, monthTraf
 import { useProbeBeats } from '@/lib/queries';
 import { useLiveSeries } from '@/lib/live';
 import { useNow } from '@/lib/useNow';
+import { sharedObserver } from '@/lib/sharedObserver';
 import { type DrawerTab } from '@/lib/drawer';
 import { KIND_LABEL } from '@/lib/sort';
 import { cn } from '@/lib/utils';
 import { Beat, Due, HealthPill, KindIcon, LabelValue, Mark, Num, StatusDot } from './primitives';
 import { CellMeter, Cells, DotTrace, QUOTA_COLORS, Tag } from './viz';
 import { Button, IconButton } from '@/components/ui/button';
-import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from '@/components/ui/context-menu';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger, Tip } from '@/components/ui/overlays';
-import { NodeContextItems, NodeDropdownItems } from './NodeMenu';
 
 export type CardView = 'large' | 'small' | 'compact';
 type Open = (tab?: DrawerTab) => void;
 
 // 卡片随实时推送重渲染（m 换了引用）。静态的几块（标题、地址与字段、标签、运行行、footer、心跳条）各自 memo、只收用到的字段，
 // 推送只重画读数（资源格条、速率、剩余流量）。
+// 卡片里不挂 Radix 根：右键菜单与“⋯”下拉由外面的 NodeMenus 整个网格共用一份（按 data-id / data-node-menu 找到这张卡），
+// 只读的悬停说明写 data-tip，由全站一份 TipHost 显示。
 
-/** 卡片最新的机器：Head 是 memo 的，“⋯”菜单打开期间靠订阅它跟上推送 */
-interface Latest { get: () => MachineView; sub: (f: () => void) => () => void }
-function useLatest(m: MachineView): Latest {
-  const [s] = useState(() => {
-    let cur = m; const subs = new Set<() => void>();
-    return { get: () => cur, sub: (f: () => void) => { subs.add(f); return () => { subs.delete(f); }; }, set: (v: MachineView) => { cur = v; subs.forEach((f) => f()); } };
-  });
-  useEffect(() => { s.set(m); }, [s, m]);
-  return s;
-}
-
-/** 标题：圆点 + 类型标 + 名称 + 右侧操作。“⋯”菜单的内容只在打开时挂载 */
-const Head = memo(function Head({ name, kind, ip, status, lc, view, onOpen, menu }: { name: string; kind: MachineView['kind']; ip: string; status: string; lc: MachineView['lifecycle']; view: CardView; onOpen: Open; menu: Latest }) {
+/** 标题：圆点 + 类型标 + 名称 + 右侧操作 */
+const Head = memo(function Head({ name, kind, ip, status, lc, view, onOpen }: { name: string; kind: MachineView['kind']; ip: string; status: string; lc: MachineView['lifecycle']; view: CardView; onOpen: Open }) {
   return (
     <header className="nc-head">
       <StatusDot status={status} lifecycle={lc} /><KindIcon kind={kind} />
-      <Tip text={`打开 ${name} 的详情`}><button type="button" className="nc-name" onClick={() => onOpen()}>{name}</button></Tip>
+      <button type="button" className="nc-name" data-tip={`打开 ${name} 的详情`} onClick={() => onOpen()}>{name}</button>
       {view === 'compact' && <><span className="nc-ipsep">·</span><span className="nc-ip">{ip}</span></>}
       <div className="nc-actions">
-        <IconButton label="打开详情" onClick={() => onOpen()}><PanelRightOpen size={16} /></IconButton>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild><IconButton label="更多操作" tip={false}><MoreHorizontal size={16} /></IconButton></DropdownMenuTrigger>
-          <DropdownMenuContent align="end"><MenuItems menu={menu} /></DropdownMenuContent>
-        </DropdownMenu>
+        <IconButton label="打开详情" tip={false} data-tip="打开详情" onClick={() => onOpen()}><PanelRightOpen size={16} /></IconButton>
+        <IconButton label="更多操作" tip={false} data-node-menu="" aria-haspopup="menu"><MoreHorizontal size={16} /></IconButton>
       </div>
     </header>
   );
 });
-const MenuItems = ({ menu }: { menu: Latest }) => <NodeDropdownItems m={useSyncExternalStore(menu.sub, menu.get)} />;
 
 const IpTags = ({ ip, sshPort }: { ip: string; sshPort: number }) => (
   <span className="nc-marks">{ip.includes(':') ? <Tag c="blue">V6</Tag> : <Tag c="green">V4</Tag>}{sshPort !== 22 && <Mark title="SSH 端口">SSH {sshPort}</Mark>}</span>
@@ -98,7 +83,20 @@ function Meters({ m, compact }: { m: MachineView; compact?: boolean }) {
   );
 }
 
-/** 网卡速率一列：方向 + 大号读数（按量级着色）、点阵迹线（点击看主机曲线） */
+// 实时状态点的呼吸只给视口里的卡片：一页几十张卡各一个无限动画，滚出视口的没必要跟着跑（毛玻璃顶栏下面每帧有变化还得重做模糊）。
+// 直接改 DOM 属性，不触发重渲染；进入视口时按全站同一个 2 秒节拍对齐相位，各卡的点仍是一起呼吸
+const watchVis = sharedObserver<IntersectionObserverEntry>((cb) => new IntersectionObserver(cb));
+function LiveDot({ live }: { live: boolean }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  useEffect(() => watchVis(ref.current!, (e) => {
+    const el = e.target as HTMLElement;
+    if (e.isIntersecting) el.style.animationDelay = `${-(performance.now() % 2000)}ms`;
+    el.toggleAttribute('data-vis', e.isIntersecting);
+  }), []);
+  return <span ref={ref} className="flow-live" data-live={live ? '' : undefined}><i className="flow-dot" />{live ? '实时' : '离线'}</span>;
+}
+
+/** 网卡速率一列：方向 + 大号读数（按量级着色）、点阵迹线（点击看主机曲线）。实时 / 离线标两列各一个（保持两列等宽对称），呼吸只给视口里的卡 */
 function FlowCol({ dir, rate, values, live, onOpen }: { dir: 'up' | 'down'; rate: number | null; values: number[]; live: boolean; onOpen: Open }) {
   const up = dir === 'up';
   return (
@@ -107,10 +105,10 @@ function FlowCol({ dir, rate, values, live, onOpen }: { dir: 'up' | 'down'; rate
         <span className="flow-label">{up ? <ArrowUp /> : <ArrowDown />}{up ? '上行' : '下行'}</span>
         <span className="flow-rate"><Num f={F.rate(rate)} /></span>
       </div>
-      <Tip text="查看主机曲线"><button type="button" className="flow-trend" onClick={() => onOpen('host')} aria-label={`${up ? '上行' : '下行'}速率：查看主机曲线`}>
+      <button type="button" className="flow-trend" data-tip="查看主机曲线" onClick={() => onOpen('host')} aria-label={`${up ? '上行' : '下行'}速率：查看主机曲线`}>
         <DotTrace values={values} />
-        <span className="flow-live" data-live={live ? '' : undefined}><i />{live ? '实时' : '离线'}</span>
-      </button></Tip>
+        <LiveDot live={live} />
+      </button>
     </div>
   );
 }
@@ -230,10 +228,10 @@ const Foot = memo(function Foot({ health, lifecycle, maintenance, onOpen }: Pick
 });
 
 /** 卡片只吃稳定的 props（onOpen 回调不随地址变化），配合 memo，抽屉开关时只有变了的那张重渲染。
- *  layoutKey：筛选/排序/视图的签名，变了才量位置做布局动画（layoutDependency），平时重渲染不量 */
-function NodeCardImpl({ m, view, current, onOpen: open, layoutKey }: { m: MachineView; view: CardView; current?: boolean; onOpen: (id: string, tab?: DrawerTab) => void; layoutKey: string }) {
+ *  layoutKey：筛选/排序/视图的签名，变了才量位置做布局动画（layoutDependency），平时重渲染不量；null = 不做布局动画（卡片太多时由首页传）。
+ *  出现时的淡入走 CSS（cards.css），不等 motion 特性包：特性包到位之前 initial 的透明度会一直停在 0 */
+function NodeCardImpl({ m, view, current, onOpen: open, layoutKey }: { m: MachineView; view: CardView; current?: boolean; onOpen: (id: string, tab?: DrawerTab) => void; layoutKey: string | null }) {
   const onOpen = useCallback<Open>((tab) => open(m.id, tab), [open, m.id]);
-  const menu = useLatest(m);
   const host = hasHost(m);
   const quiet = isQuiet(m);
   const info: Info = { ip: m.ip, sshPort: m.ssh_port, entry: entryText(m), plan: m.plan };
@@ -241,10 +239,8 @@ function NodeCardImpl({ m, view, current, onOpen: open, layoutKey }: { m: Machin
   const beat = <section className="slot-seg"><BeatSlot id={m.id} kind={m.kind} lifecycle={m.lifecycle} quiet={quiet} {...probeSummary(m)} /></section>;
 
   return (
-    <ContextMenu>
-    <ContextMenuTrigger asChild>
-    <mo.article layout="position" layoutDependency={layoutKey} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ layout: SPRING, opacity: { duration: 0.18 } }} className={cn('ncard', current && 'is-current', quiet && 'is-quiet')} data-view={view} data-id={m.id} data-kind={m.kind} data-health={m.health.status} data-offline={quiet ? '1' : undefined}>
-      <Head name={m.name} kind={m.kind} ip={m.ip} status={m.health.status} lc={m.lifecycle} view={view} onOpen={onOpen} menu={menu} />
+    <mo.article layout={layoutKey == null ? false : 'position'} layoutDependency={layoutKey} transition={SPRING} className={cn('ncard', current && 'is-current', quiet && 'is-quiet')} data-view={view} data-id={m.id} data-kind={m.kind} data-health={m.health.status} data-offline={quiet ? '1' : undefined}>
+      <Head name={m.name} kind={m.kind} ip={m.ip} status={m.health.status} lc={m.lifecycle} view={view} onOpen={onOpen} />
 
       {view === 'large' && <>
         <LargeInfo {...info} limit={quota(m).limit} />
@@ -273,9 +269,6 @@ function NodeCardImpl({ m, view, current, onOpen: open, layoutKey }: { m: Machin
 
       <Foot health={m.health} lifecycle={m.lifecycle} maintenance={m.maintenance} onOpen={onOpen} />
     </mo.article>
-    </ContextMenuTrigger>
-    <ContextMenuContent><NodeContextItems m={m} /></ContextMenuContent>
-    </ContextMenu>
   );
 }
 export const NodeCard = memo(NodeCardImpl);

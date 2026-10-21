@@ -53,11 +53,12 @@ export interface PolicyVersion {
   is_latest: boolean; is_current: boolean; rollbackable: boolean;
 }
 
-export const usePolicies = () => useQuery({ queryKey: ['policies', 'list'], queryFn: () => get<PolicyList>('/policies') });
+/** 草稿 / 发布由 policies 事件、范围树里的节点由机器与目录事件失效（见 queries.ts 的 eventKeys），不按时间过期 */
+export const usePolicies = () => useQuery({ queryKey: ['policies', 'list'], queryFn: () => get<PolicyList>('/policies'), staleTime: Infinity });
 
-/** 发布记录：有进行中的版本时 3 秒轮询一次（线路机回报应用结果不会触发实时事件） */
+/** 发布记录：有进行中的版本时 3 秒轮询一次（线路机回报应用结果不会触发实时事件）；新版本由 policies 事件失效 */
 export const usePolicyVersions = () => useQuery({
-  queryKey: ['policies', 'versions'], queryFn: () => get<PolicyVersion[]>('/policies/versions'),
+  queryKey: ['policies', 'versions'], queryFn: () => get<PolicyVersion[]>('/policies/versions'), staleTime: Infinity,
   refetchInterval: (q) => (q.state.data?.some((v) => v.status === 'applying') ? 3000 : false),
 });
 

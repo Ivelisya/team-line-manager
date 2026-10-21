@@ -31,8 +31,8 @@ fn ticker(period: Duration) -> tokio::time::Interval {
 
 /// 主机采样 + SystemInfo（启动时、变化时、每小时兜底重发）
 pub async fn host_task(sh: Arc<Shared>, mut sd: watch::Receiver<bool>) {
-    let mut hc = HostCollector::new();
-    let mut last_info = host::collect_info();
+    // 采样读一串 /proc 文件，每 300 s 还要遍历整个 /proc 数线程：都放阻塞线程，采集器在两边来回移交
+    let (mut hc, mut last_info) = tokio::task::spawn_blocking(|| (HostCollector::new(), host::collect_info())).await.expect("主机采样任务异常终止");
     sh.buf.lock().unwrap().info = Some(last_info.clone());
     let mut info_sent_at = Instant::now();
     let mut tick = ticker(SAMPLE_INTERVAL);
@@ -42,10 +42,16 @@ pub async fn host_task(sh: Arc<Shared>, mut sd: watch::Receiver<bool>) {
             _ = tick.tick() => {}
             _ = sd.changed() => return,
         }
-        let s = hc.sample();
         n += 1;
+        let want_info = n.is_multiple_of(30);
+        let (back, s, cur) = tokio::task::spawn_blocking(move || {
+            let s = hc.sample();
+            (hc, s, want_info.then(host::collect_info))
+        })
+        .await
+        .expect("主机采样任务异常终止");
+        hc = back;
         // 读 /proc 等 IO 在拿锁之前做完，持锁只做内存操作
-        let cur = n.is_multiple_of(30).then(host::collect_info);
         let mut b = sh.buf.lock().unwrap();
         b.push_host(s);
         if let Some(cur) = cur {
@@ -185,13 +191,6 @@ fn entry_sig(e: &DesiredEntry) -> String {
     format!("{}|{:?}", e.port, e.outbound)
 }
 
-fn outbound_hostport(e: &DesiredEntry) -> (String, u16) {
-    use fleet_proto::Outbound::*;
-    match &e.outbound {
-        Shadowsocks { host, port, .. } | Socks5 { host, port, .. } | Http { host, port, .. } => (host.clone(), *port),
-    }
-}
-
 /// 入口 → (探测端口, 经该端口出去的客户端)
 type ProbeClients = HashMap<uuid::Uuid, (u16, reqwest::Client)>;
 
@@ -203,7 +202,7 @@ pub async fn probe_task(sh: Arc<Shared>, mut sd: watch::Receiver<bool>) {
     let mut tick = interval_at(Instant::now() + Duration::from_secs(2), Duration::from_secs(1));
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut first_pass = true;
-    let api_port = sh.cfg.api_port();
+    let api_port = render::RenderCtx::of(&sh.cfg).api_port();
     let mut probes_cache: Option<(Arc<DesiredState>, ProbeClients)> = None;
     loop {
         tokio::select! {
@@ -251,8 +250,8 @@ pub async fn probe_task(sh: Arc<Shared>, mut sd: watch::Receiver<bool>) {
             if now >= s.next_tcp && !s.tcp_busy.swap(true, Ordering::AcqRel) {
                 s.next_tcp = now + tcp_every;
                 let busy = BusyGuard(s.tcp_busy.clone());
-                let (host, port) = outbound_hostport(e);
-                let (sh2, id) = (sh.clone(), e.id);
+                let (host, port) = e.outbound.addr();
+                let (sh2, id, host) = (sh.clone(), e.id, host.to_string());
                 let tcp_sem2 = tcp_sem.clone();
                 tokio::spawn(async move {
                     let _busy = busy;

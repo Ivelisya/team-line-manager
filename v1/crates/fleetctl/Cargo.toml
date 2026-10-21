@@ -16,7 +16,8 @@ serde.workspace = true
 serde_json.workspace = true
 time.workspace = true
 toml.workspace = true
-reqwest = { workspace = true, features = ["blocking"] }
+# gzip：中控的响应都过 CompressionLayer，机器列表、作业日志这类大 JSON 压缩后小一个数量级
+reqwest = { workspace = true, features = ["blocking", "gzip"] }
 clap = { version = "4", features = ["derive", "env"] }
 # 实时流（watch）：阻塞式 WebSocket，TLS 与 reqwest 共用 rustls
 tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }

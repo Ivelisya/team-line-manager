@@ -35,7 +35,7 @@ const subseq = (s: string, q: string) => { const t = [...q]; let i = 0; for (con
 /** 匹配档位（大的在前）：名称相同 > 名称前缀 > 名称包含 > 去前导零后名称包含 > IP 等其它字段包含 > 名称模糊。
  *  模糊（子序列）只对名称：IP、UUID 里数字多，短数字串对它们做子序列几乎条条命中。
  *  条目 value 写成「名称\t其它字段」；没有 \t 的（页面、动作）整串当名称 */
-export function matchTier(value: string, q: string): number {
+function matchTier(value: string, q: string): number {
   const [name, rest = ''] = value.toLowerCase().split('\t');
   if (name === q) return 7;
   if (name.startsWith(q)) return 6;

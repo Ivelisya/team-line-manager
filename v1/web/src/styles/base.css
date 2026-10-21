@@ -3,10 +3,11 @@
 html { background: var(--canvas); scroll-padding-top: var(--topbar-h); scrollbar-gutter: stable; } /* 锚点/焦点滚动不被固定顶栏遮住；滚动条槽位常驻，长短页面切换时内容与顶栏不横移 */
 /* Radix 弹层锁滚动时让出槽位：遮罩才盖满全宽（否则右侧留一条不变暗的边）；库会给 body 补同宽的右外边距，内容不动 */
 html:has(> body[data-scroll-locked]) { scrollbar-gutter: auto; }
+/* 背景光晕：固定在视口的一层 body::before（z-index -1：在根背景 --canvas 之上、所有内容之下）。
+   以前写成 body 的背景 + background-attachment: fixed：非根元素上的 fixed 背景会让浏览器放弃合成滚动，每滚一帧都重画整页背景 */
+body::before { content: ""; position: fixed; inset: 0; z-index: -1; background: var(--canvas-glow); pointer-events: none; }
 body {
   margin: 0;
-  background: var(--canvas-glow), var(--canvas);
-  background-attachment: fixed;
   color: var(--fg);
   font: var(--fw-regular) var(--fs-body) / var(--lh-body) var(--font-sans);
   font-variant-numeric: tabular-nums;
@@ -54,7 +55,7 @@ a { color: inherit; }
   display: flex; align-items: center; gap: var(--sp-4);
   padding: 0 calc(var(--sp-16) + var(--removed-body-scroll-bar-size, 0px)) 0 var(--sp-10); /* 锁滚动期间视口变宽，右侧按钮补回让出的槽位，位置不动 */
   background: color-mix(in srgb, var(--surface) 78%, transparent); border-bottom: 1px solid var(--line);
-  -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px); /* 毛玻璃：内容从顶栏下滚过时隐约透出 */
+  -webkit-backdrop-filter: saturate(180%) blur(12px); backdrop-filter: saturate(180%) blur(12px); /* 毛玻璃：内容从顶栏下滚过时隐约透出（半径 12：滚动时每帧都要重做，20 的采样开销大、观感差别很小） */
 }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .topbar { background: var(--surface); } }
 .brand {

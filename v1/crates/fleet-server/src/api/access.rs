@@ -6,9 +6,12 @@ use crate::auth::Actor;
 use crate::error::{ApiError, ApiPath, ApiQuery, ApiResult};
 use crate::state::AppState;
 use axum::extract::State;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::future::Future;
+use std::sync::Arc;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -71,21 +74,29 @@ fn page_of(q: &Q, default_limit: i64) -> ApiResult<(i64, i64)> {
     Ok((limit, offset))
 }
 
-pub async fn summary(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Q>) -> ApiResult<Json<Value>> {
-    let f = filter_of(&q, Window::H24)?;
-    let key = (!f.events).then(|| format!("summary|{f:?}"));
+/// 走 `access_cache`：命中时直接序列化缓存里的那份；没命中就算出来放进去。`key` 为 None（1h 窗口读原始记录）时不缓存
+pub(super) async fn cached(st: &AppState, key: Option<String>, compute: impl Future<Output = ApiResult<Value>>) -> ApiResult<Response> {
     if let Some(v) = key.as_deref().and_then(|k| st.access_cache.get(k)) {
-        return Ok(Json(v));
+        return Ok(Json(&*v).into_response());
     }
-    let (kpi, nodes) = access::summary(&st.db, &f).await?;
-    let out = ok(json!({"kpi": kpi, "nodes": nodes, "window_start": access::fmt_ts(f.from)}));
+    let v = Arc::new(compute.await?);
     if let Some(k) = key {
-        st.access_cache.put(k, out.0.clone());
+        st.access_cache.put(k, v.clone());
     }
-    Ok(out)
+    Ok(Json(&*v).into_response())
 }
 
-pub async fn targets(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Q>) -> ApiResult<Json<Value>> {
+pub async fn summary(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Q>) -> ApiResult<Response> {
+    let f = filter_of(&q, Window::H24)?;
+    let key = (!f.events).then(|| format!("summary|{f:?}"));
+    cached(&st, key, async {
+        let (kpi, nodes) = access::summary(&st.db, &f).await?;
+        Ok(ok(json!({"kpi": kpi, "nodes": nodes, "window_start": access::fmt_ts(f.from)})).0)
+    })
+    .await
+}
+
+pub async fn targets(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Q>) -> ApiResult<Response> {
     let f = filter_of(&q, Window::H24)?;
     let (limit, offset) = page_of(&q, 100)?;
     let sort = match nonempty(&q.sort) {
@@ -94,33 +105,27 @@ pub async fn targets(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuer
         Some("first") => TargetSort::First,
         Some(_) => return Err(ApiError::bad_request("sort 只能是 conns、last、first")),
     };
-    let key = (!f.events).then(|| format!("targets|{f:?}|{sort:?}|{limit}|{offset}"));
-    if let Some(v) = key.as_deref().and_then(|k| st.access_cache.get(k)) {
-        return Ok(Json(v));
-    }
-    let items = access::targets(&st.db, &f, sort, limit, offset).await?;
-    let next = (items.len() as i64 == limit).then_some(offset + limit);
-    let out = ok(json!({"items": items, "next_offset": next, "window_start": access::fmt_ts(f.from)}));
-    if let Some(k) = key {
-        st.access_cache.put(k, out.0.clone());
-    }
-    Ok(out)
+    // 只缓存第一页：往后翻的页一般只有正在看它的那个页面在轮询，进缓存命中不了几次，
+    // 反而按页数把缓存撑满、把第一页这些常用的挤掉
+    let key = (!f.events && offset == 0).then(|| format!("targets|{f:?}|{sort:?}|{limit}"));
+    cached(&st, key, async {
+        let items = access::targets(&st.db, &f, sort, limit, offset).await?;
+        let next = (items.len() as i64 == limit).then_some(offset + limit);
+        Ok(ok(json!({"items": items, "next_offset": next, "window_start": access::fmt_ts(f.from)})).0)
+    })
+    .await
 }
 
-pub async fn sources(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Q>) -> ApiResult<Json<Value>> {
+pub async fn sources(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Q>) -> ApiResult<Response> {
     let f = filter_of(&q, Window::H24)?;
     let (limit, _) = page_of(&q, 100)?;
     let key = (!f.events).then(|| format!("sources|{f:?}|{limit}"));
-    if let Some(v) = key.as_deref().and_then(|k| st.access_cache.get(k)) {
-        return Ok(Json(v));
-    }
-    let mut items = access::sources(&st.db, &f, limit).await?;
-    crate::ipintel::attach(&st, &mut items).await;
-    let out = ok(json!({"items": items, "window_start": access::fmt_ts(f.from)}));
-    if let Some(k) = key {
-        st.access_cache.put(k, out.0.clone());
-    }
-    Ok(out)
+    cached(&st, key, async {
+        let mut items = access::sources(&st.db, &f, limit).await?;
+        crate::ipintel::attach(&st, &mut items).await;
+        Ok(ok(json!({"items": items, "window_start": access::fmt_ts(f.from)})).0)
+    })
+    .await
 }
 
 /// 原始记录：按时间倒序，`before` 原样传回上一页的 `next_before`（不透明游标），最多回看 7 天
@@ -146,17 +151,13 @@ pub async fn new_targets(_a: Actor, State(st): State<AppState>, ApiQuery(q): Api
     Ok(ok(json!({"items": items, "total": total, "next_offset": next, "window_start": access::fmt_ts(f.from)})))
 }
 
-pub async fn machine(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<Q>) -> ApiResult<Json<Value>> {
+pub async fn machine(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<Q>) -> ApiResult<Response> {
     let w = window_of(&q, Window::H24)?;
     let key = (w != Window::H1).then(|| format!("machine|{id}|{w:?}"));
-    if let Some(v) = key.as_deref().and_then(|k| st.access_cache.get(k)) {
-        return Ok(Json(v));
-    }
-    let mut m = access::machine_access(&st.db, id, w).await?;
-    crate::ipintel::attach(&st, &mut m.top_sources).await;
-    let out = ok(m);
-    if let Some(k) = key {
-        st.access_cache.put(k, out.0.clone());
-    }
-    Ok(out)
+    cached(&st, key, async {
+        let mut m = access::machine_access(&st.db, id, w).await?;
+        crate::ipintel::attach(&st, &mut m.top_sources).await;
+        Ok(ok(m).0)
+    })
+    .await
 }

@@ -230,8 +230,13 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
         }
     }
     state.first_seen.retain(|k, _| current.contains(k));
+    // 原因没变的在告警只在 last_seen_at 旧了 5 分钟以上才刷新：每 30 秒把所有在告警的行都重写一遍只会产生死元组，
+    // 界面上的「最近仍在」差几分钟无所谓
     if !touch.is_empty() {
-        sqlx::query("update incident set last_seen_at = now() where id = any($1)").bind(&touch).execute(&st.db).await?;
+        sqlx::query("update incident set last_seen_at = now() where id = any($1) and last_seen_at < now() - interval '5 minutes'")
+            .bind(&touch)
+            .execute(&st.db)
+            .await?;
     }
 
     // 原因消失的告警恢复：只处理 active 的机器。其它生命周期 evaluate 不给原因，不能当成「恢复」——

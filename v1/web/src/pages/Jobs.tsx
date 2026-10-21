@@ -4,7 +4,7 @@ import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, ArrowDownToLine, Check, CircleDashed, Copy, ListChecks, Loader2, Minus, Pause, Play, RotateCw, Square, Undo2, X } from 'lucide-react';
 import { fetchAllLogs, useCancelJob, useJob, useJobs, useRetryJob } from '@/lib/queries';
 import type { Job, JobLog } from '@/lib/types';
-import { errorKindLabel, jobKindLabel, jobLive, jobProgress, outputLines, stepFailed, stepKind, type StepKind } from '@/lib/jobs';
+import { errorKindLabel, jobKindLabel, jobLive, jobProgress, outputLines, stepKind, type StepKind } from '@/lib/jobs';
 import { CheckRow, Field, Input } from '@/components/ui/form';
 import { useNow } from '@/lib/useNow';
 import { copyText } from '@/lib/clipboard';
@@ -30,18 +30,18 @@ const STATE: Record<string, { label: string; tone: Tone; dot?: 'pulse' | 'ring' 
 /** 作业列表每页条数：列表在窄栏里，固定一档，不给每页条数下拉 */
 const JOB_PAGE = [20];
 
-export const JobPill = ({ state }: { state: string }) => { const s = STATE[state] ?? { label: state, tone: 'neutral' as Tone }; return <Pill tone={s.tone} dot={s.dot}>{s.label}</Pill>; };
+const JobPill = ({ state }: { state: string }) => { const s = STATE[state] ?? { label: state, tone: 'neutral' as Tone }; return <Pill tone={s.tone} dot={s.dot}>{s.label}</Pill>; };
 
 export function JobsPage() {
   const { id } = useParams();
   const nav = useNavigate();
   const { search } = useLocation(); // 列表 ↔ 详情切换时带着 ?p=，回到列表还在原来那页
   const [filter, setFilter] = React.useState<'all' | 'active' | 'done'>('all');
-  // 页码要先于查询算出来（偏移量进查询）；总数来自上一次的结果，用来夹页和显示分页器
+  // 页码要先于查询算出来（偏移量进查询）；总数来自上一次的结果，用来夹页和显示分页器。渲染中直接跟上（不等 effect 提交一遍再重渲染）
   const [total, setTotal] = React.useState<number>();
   const pg = usePage({ total, sizes: JOB_PAGE, reset: [filter] });
   const jobs = useJobs(filter, pg.offset, pg.size);
-  React.useEffect(() => { if (jobs.data) setTotal(jobs.data.total); }, [jobs.data]);
+  if (jobs.data && jobs.data.total !== total) setTotal(jobs.data.total);
   const list = jobs.data?.items ?? [];
   const selected = id ?? null;
   const go = (jid: string) => nav({ pathname: `/jobs/${jid}`, search });
@@ -166,7 +166,7 @@ function cancelDesc(j: Job) {
 /** 重试：失败原因是主机指纹不符 / SSH 认证失败时先问要不要重置指纹、换密码，其余直接重试 */
 function RetryButton({ j }: { j: Job }) {
   const retry = useRetryJob();
-  const kind = j.steps.find(stepFailed)?.error_kind;
+  const kind = j.steps.find((s) => s.state === 'failed')?.error_kind;
   const ask = kind === 'host_key' || kind === 'auth';
   const [open, setOpen] = React.useState(false);
   const [reset, setReset] = React.useState(false);
@@ -212,12 +212,14 @@ const LogPanel = React.memo(function LogPanel({ jobId, state }: { jobId: string;
   const live = jobLive(state);
 
   React.useEffect(() => { all.current = []; setLogs([]); setDropped(0); setFrozen(null); setStuck(true); setErr(null); last.current = 0; }, [jobId]);
+  // 只随作业和“是否进行中”重启：进行中的状态之间切换（running ↔ waiting）不必重来；离开或换作业时中止在途的请求
   React.useEffect(() => {
     let stop = false; let timer: ReturnType<typeof setTimeout>;
+    const ac = new AbortController();
     const pull = async () => {
       // 进行中且页面在后台：跳过这一轮（下一轮再拉）；已结束的最后一次补拉不跳过
       if (!live || !document.hidden) try {
-        const more = await fetchAllLogs(jobId, last.current);
+        const more = await fetchAllLogs(jobId, last.current, ac.signal);
         if (stop) return;
         setErr(null);
         if (more.length) {
@@ -232,8 +234,8 @@ const LogPanel = React.memo(function LogPanel({ jobId, state }: { jobId: string;
       if (!stop && live) timer = setTimeout(pull, 1500);
     };
     void pull();
-    return () => { stop = true; clearTimeout(timer); };
-  }, [jobId, live, state]);
+    return () => { stop = true; clearTimeout(timer); ac.abort(); };
+  }, [jobId, live]);
 
   const shown = React.useMemo(() => {
     if (frozen == null) return logs;

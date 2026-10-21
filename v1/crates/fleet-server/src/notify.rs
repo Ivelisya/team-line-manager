@@ -9,14 +9,26 @@
 
 use crate::state::AppState;
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use time::OffsetDateTime;
+use tokio::sync::mpsc::error::TrySendError;
 use uuid::Uuid;
 
 /// 单次发送超时
 const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 const TELEGRAM_BASE: &str = "https://api.telegram.org";
+
+/// 每个渠道的发送队列最多积压这么多条（渠道一直超时、被限流时），满了新的直接丢弃
+const QUEUE_CAP: usize = 500;
+/// 排队超过这么久还没轮到的通知不再发：告警多半已经恢复或又提醒过了，晚到的旧消息只会误导
+const MAX_QUEUED: Duration = Duration::from_secs(600);
+/// 因队列满丢弃的通知累计条数（进程启动起），写进 warn 日志
+static DROPPED: AtomicU64 = AtomicU64::new(0);
+
+/// 一个渠道的发送队列：(入队时间, 通知)
+pub type Queue = tokio::sync::mpsc::Sender<(Instant, Notice)>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -357,17 +369,25 @@ async fn deliver(st: &AppState, ch: &Channel, n: &Notice) -> Result<(), String> 
     res
 }
 
-/// 一个渠道的发送任务：逐条按顺序发。排队期间渠道可能被删除或停用，发送时以数据库里的当前配置为准，查不到就跳过
-fn channel_worker(st: &AppState, id: Uuid) -> tokio::sync::mpsc::UnboundedSender<Notice> {
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Notice>();
+/// 一个渠道的发送任务：逐条按顺序发，排队超过 MAX_QUEUED 的丢弃。排队期间渠道可能被删除或停用，发送时以数据库里的当前配置为准；
+/// 查不到（已删除或停用）就把自己从队列表里移除并退出，队列里剩下的一起丢掉（再启用后下一条通知会重建任务）
+fn channel_worker(st: &AppState, id: Uuid) -> Queue {
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<(Instant, Notice)>(QUEUE_CAP);
     let st = st.clone();
     tokio::spawn(async move {
-        while let Some(n) = rx.recv().await {
+        while let Some((queued, n)) = rx.recv().await {
+            if queued.elapsed() > MAX_QUEUED {
+                tracing::warn!(channel = %id, rule = %n.rule, "通知排队超过 {} 分钟还没发出，丢弃", MAX_QUEUED.as_secs() / 60);
+                continue;
+            }
             match sqlx::query_as::<_, Channel>("select id, kind, config_enc from notify_channel where id = $1 and enabled").bind(id).fetch_optional(&st.db).await {
                 Ok(Some(ch)) => {
                     let _ = deliver(&st, &ch, &n).await;
                 }
-                Ok(None) => {}
+                Ok(None) => {
+                    st.notify_queues.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+                    break;
+                }
                 Err(e) => tracing::warn!(channel = %id, "读取通知渠道失败：{e}"),
             }
         }
@@ -375,7 +395,7 @@ fn channel_worker(st: &AppState, id: Uuid) -> tokio::sync::mpsc::UnboundedSender
     tx
 }
 
-/// 不阻塞告警循环：放进所有已启用、且 `min_severity` 不高于它的渠道各自的发送队列。
+/// 不阻塞告警循环：放进所有已启用、且 `min_severity` 不高于它的渠道各自的发送队列（队列满了丢弃这条并记 warn）。
 /// 同一渠道内逐条按顺序发（一批告警同时触发时不会并发打到同一个渠道，Telegram 等不容易被限流）；
 /// 渠道之间互不等待，一个渠道一直超时不拖慢别的。
 /// 触发/持续提醒在入队时就刷新 `incident.notified_at`（持续提醒的计时起点）：队列积压时下一轮评估不会重复入队。
@@ -398,9 +418,13 @@ pub async fn enqueue(st: &AppState, n: Notice) {
             return;
         }
     };
+    let now = Instant::now();
     let mut qs = st.notify_queues.lock().unwrap_or_else(|e| e.into_inner());
     for id in ids {
-        let _ = qs.entry(id).or_insert_with(|| channel_worker(st, id)).send(n.clone());
+        if let Err(TrySendError::Full(_)) = qs.entry(id).or_insert_with(|| channel_worker(st, id)).try_send((now, n.clone())) {
+            let total = DROPPED.fetch_add(1, Ordering::Relaxed) + 1;
+            tracing::warn!(channel = %id, rule = %n.rule, "通知发送队列已满（{QUEUE_CAP} 条），丢弃这条（累计丢弃 {total} 条）");
+        }
     }
 }
 

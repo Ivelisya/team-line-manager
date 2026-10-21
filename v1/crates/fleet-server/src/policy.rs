@@ -342,6 +342,21 @@ fn build_set(rows: &[Row], drafts: bool) -> PolicySet {
 
 pub async fn load_current(db: &PgPool) -> sqlx::Result<PolicySet> { Ok(set_current(&load_rows(db, false).await?)) }
 
+/// 只有各范围生效的 mode（域名、备注为空，不读草稿）：实时视图每 3 秒重建一次，只用它判断节点是否「暂停新连接」
+pub async fn load_modes(db: &PgPool) -> sqlx::Result<PolicySet> {
+    let rows: Vec<(String, Uuid, String)> = sqlx::query_as("select scope, scope_id, mode from policy").fetch_all(db).await?;
+    let mut s = PolicySet::default();
+    for (scope, id, mode) in rows {
+        let (Some(scope), Some(mode)) = (Scope::parse(&scope), Mode::parse(&mode)) else { continue };
+        let d = Data { mode, ..Data::default() };
+        match scope {
+            Scope::Team => s.team.insert(id, d),
+            Scope::Node => s.node.insert(id, d),
+        };
+    }
+    Ok(s)
+}
+
 /// 当前生效版本号（最新 policy_version.seq；还没有版本为 0）
 pub async fn current_version<'e, E: sqlx::PgExecutor<'e>>(ex: E) -> sqlx::Result<i64> {
     sqlx::query_scalar("select coalesce(max(seq), 0)::bigint from policy_version").fetch_one(ex).await

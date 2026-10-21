@@ -34,13 +34,17 @@ const parseSel = (s: string | null): Sel | null => {
   const m = /^(team|node):([\w-]+)$/.exec(s ?? '');
   return m ? { scope: m[1] as Sel['scope'], id: m[2] } : null;
 };
+const NO_TEAMS: PolicyTeam[] = [];
 
 export function PolicyPage() {
   const [sp, setSp] = useSearchParams();
   const q = usePolicies();
-  const teams = q.data?.teams ?? [];
+  const teams = q.data?.teams ?? NO_TEAMS;
   const draftCount = q.data?.draft_count ?? 0;
-  const sel = parseSel(sp.get('s')) ?? (teams[0] ? { scope: 'team' as const, id: teams[0].id } : null);
+  // sel 按值缓存：每次渲染新建对象会让下面按它算的 target、展开分组的 effect 每次都重跑
+  const rawSel = sp.get('s');
+  const firstTeam = teams[0]?.id;
+  const sel = React.useMemo<Sel | null>(() => parseSel(rawSel) ?? (firstTeam ? { scope: 'team', id: firstTeam } : null), [rawSel, firstTeam]);
   const apply = (s: Sel) => setSp((p) => { const n = new URLSearchParams(p); n.set('s', `${s.scope}:${s.id}`); return n; }, { replace: true });
   // 编辑器有未保存的改动时，切换范围会让它重新挂载并丢掉编辑：先拦下来，用页面内对话框确认
   const dirtyRef = React.useRef(false);

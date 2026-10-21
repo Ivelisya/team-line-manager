@@ -10,7 +10,7 @@ const CONF: Record<string, string> = { high: '高', medium: '中', low: '低' };
 const INSTALL_HINT = 'IP 库未安装：在中控运行 lab/install-ipintel.sh';
 
 /** 接入方式徽标：住宅 / 移动 / 机房 / VPN / 未知各一个色调，悬停看判定理由 */
-export function ConnPill({ intel }: { intel: Pick<IpIntel, 'conn_type' | 'conn_label' | 'confidence' | 'reason'> }) {
+function ConnPill({ intel }: { intel: Pick<IpIntel, 'conn_type' | 'conn_label' | 'confidence' | 'reason'> }) {
   return <Pill tone={TONE[intel.conn_type] ?? 'neutral'} title={`${intel.reason}（置信度${CONF[intel.confidence] ?? intel.confidence}）`}>{intel.conn_label}</Pill>;
 }
 

@@ -36,7 +36,7 @@ function HostBars({ items, limit }: { items: MachineAccess['top_domains']; limit
 
 const p2 = F.pad2;
 /** 每小时连接数柱状图 */
-export function HourlyBars({ points, height = 160 }: { points: MachineAccess['hourly']; height?: number }) {
+function HourlyBars({ points, height = 160 }: { points: MachineAccess['hourly']; height?: number }) {
   const long = points.length > 30;
   const data = React.useMemo(() => points.map((p) => ({ t: new Date(p.hour).getTime(), routed: Math.max(0, p.conns - p.blocked), blocked: p.blocked })), [points]);
   const tick = (t: number) => { const d = new Date(t); return long ? `${p2(d.getMonth() + 1)}-${p2(d.getDate())}` : `${p2(d.getHours())}:00`; };

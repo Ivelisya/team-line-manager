@@ -21,15 +21,16 @@ import { ConfirmDialog } from '@/components/app/dialogs';
 import { NodeHover } from '@/components/app/NodeHover';
 import { Empty, ErrorNote, Note, PageHead, Panel, Pill } from '@/components/app/primitives';
 
+const PAGE_SIZES = [20, INCIDENT_PAGE, 100];
 const SEV = (i: Incident) => (i.state === 'resolved' ? <Pill tone="ok" dot="ring">已恢复</Pill> : i.severity === 'critical' ? <Pill tone="bad">严重</Pill> : i.severity === 'info' ? <Pill tone="info">提示</Pill> : <Pill tone="warn">警告</Pill>);
 
 export function IncidentsPage() {
   const [state, setState] = React.useState<'firing' | 'resolved' | 'all'>('firing');
-  // 页码先于查询算出（偏移量进查询）；总数取上一次的结果
+  // 页码先于查询算出（偏移量进查询）；总数取上一次的结果。渲染中直接跟上（不等 effect 提交一遍再重渲染）
   const [total, setTotal] = React.useState<number>();
-  const pg = usePage({ total, sizes: [20, INCIDENT_PAGE, 100], size: INCIDENT_PAGE, reset: [state] });
+  const pg = usePage({ total, sizes: PAGE_SIZES, size: INCIDENT_PAGE, reset: [state] });
   const q = useIncidents(state, pg.offset, pg.size);
-  React.useEffect(() => { if (q.data) setTotal(q.data.total); }, [q.data]);
+  if (q.data && q.data.total !== total) setTotal(q.data.total);
   const ack = useAck();
   const { open } = useDrawer();
   const list = q.data?.items ?? [];

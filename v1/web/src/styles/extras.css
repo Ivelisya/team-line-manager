@@ -4,8 +4,13 @@
 /* ========== 菜单附加：子菜单箭头、右键打开时的触发元素高亮 ========== */
 .menu-item[data-state="open"] { background: var(--hover); }
 .menu-chev { margin-left: auto; width: 14px; height: 14px; color: var(--fg-3); }
-.ncard[data-state="open"] { border-color: var(--accent); }
-.dt tr.is-link[data-state="open"] { background: var(--hover); }
+/* 右键菜单开着时它所属的卡片 / 行（菜单整个网格共用一份，data-menu 由 NodeMenus 写在被点的那张上） */
+.ncard[data-menu] { border-color: var(--accent); }
+.dt tr.is-link[data-menu] { background: var(--hover); }
+/* 共用“⋯”下拉的定位锚：插在被点的按钮里、盖满它（随按钮移动）；共用悬停提示的定位锚：固定定位框，出现时盖在悬停 / 聚焦的元素上。都看不见、不接指针 */
+[data-node-menu] { position: relative; }
+.menu-anchor { position: absolute; inset: 0; visibility: hidden; pointer-events: none; }
+.float-anchor { position: fixed; visibility: hidden; pointer-events: none; }
 .dt tr.is-link:focus-visible { outline-offset: -2px; }
 
 /* ========== Tooltip 里的原因列表（健康 pill） ========== */
@@ -200,12 +205,15 @@
 .kind-ic .lucide { width: 14px; height: 14px; }
 .test-result { display: inline-flex; align-items: center; gap: var(--sp-4); font-size: var(--fs-label); white-space: nowrap; }
 
-/* 毛玻璃遮罩（对话框、命令面板、抽屉）打开期间暂停下面一层的无限循环动画：backdrop-filter 下面每帧有变化，GPU 就要每帧重做一遍全屏模糊。
-   浮层都 Portal 到 body、不在 .app 里，自己的动画照常；对话框叠在抽屉上时，抽屉也算下面一层。骨架屏不管 */
-:is(body:has(.drawer-overlay[data-state="open"], .overlay[data-state="open"]) .app, body:has(.overlay[data-state="open"]) .drawer)
-  :is(.spin, .flow-live[data-live] i, .top-btn.jobs-ind > .lucide, .stepbar-item[data-kind="running"] .stepbar-node),
-:is(body:has(.drawer-overlay[data-state="open"], .overlay[data-state="open"]) .app, body:has(.overlay[data-state="open"]) .drawer) .pill[data-dot="pulse"]::before,
-:is(body:has(.drawer-overlay[data-state="open"], .overlay[data-state="open"]) .app, body:has(.overlay[data-state="open"]) .drawer) .progress[data-live="1"] .progress-fill::after { animation-play-state: paused; }
+/* 毛玻璃遮罩（对话框、命令面板、抽屉）打开期间，下面一层不再每帧变化：backdrop-filter 下面每帧有变化，GPU 就要每帧重做一遍全屏模糊。
+   开关是 <html data-overlay>（dialog.tsx 的 Scrim 挂着时写上；对话框 / 命令面板为 "dialog"，这时抽屉也算下面一层）。
+   浮层都 Portal 到 body、不在 .app 里，自己的动画照常。骨架屏不管。
+   无限循环的动画暂停： */
+:is(html[data-overlay] .app, html[data-overlay="dialog"] .drawer) :is(.spin, .flow-dot, .top-btn.jobs-ind > .lucide, .stepbar-item[data-kind="running"] .stepbar-node),
+:is(html[data-overlay] .app, html[data-overlay="dialog"] .drawer) .pill[data-dot="pulse"]::before,
+:is(html[data-overlay] .app, html[data-overlay="dialog"] .drawer) .progress[data-live="1"] .progress-fill::after { animation-play-state: paused; }
+/* 读数的过渡不播，推送来了直接跳到新值（格条、圆环、进度线；KPI 数字见 useCountUp） */
+:is(html[data-overlay] .app, html[data-overlay="dialog"] .drawer) :is(.cells > i, .gauge-val, .progress-fill) { transition: none; }
 
 @media (prefers-reduced-motion: reduce) {
   .progress[data-live="1"] .progress-fill::after, .stepbar-item[data-kind="running"] .stepbar-node, .top-btn.jobs-ind > .lucide, .toast-timer { animation: none; }

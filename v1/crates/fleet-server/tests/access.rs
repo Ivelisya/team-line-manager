@@ -17,6 +17,13 @@ fn row<'a>(d: &'a Value, key: &str, field: &str, val: &str) -> &'a Value {
 
 fn ts(v: &Value) -> OffsetDateTime { OffsetDateTime::parse(v.as_str().unwrap(), &time::format_description::well_known::Rfc3339).unwrap() }
 
+/// 重算 `at` 所在小时和当前小时：刚塞的记录离整点近时落在上一个小时
+async fn rollup_recent(t: &T, at: OffsetDateTime) {
+    for h in [at, OffsetDateTime::now_utc()] {
+        access::rollup_hour(&t.st.db, fleet_server::db::floor_hour(h)).await.unwrap();
+    }
+}
+
 fn hosts(d: &Value) -> Vec<String> { d["items"].as_array().unwrap().iter().map(|i| i["dest_host"].as_str().unwrap().to_string()).collect() }
 
 fn item<'a>(d: &'a Value, host: &str, node: &str) -> &'a Value {
@@ -332,7 +339,6 @@ async fn new_targets_machine_and_idempotent_rollup() {
 
     // 重复汇总不改变结果（含 target_seen.total）
     let before = t.get("/api/v1/access/summary?window=7d").await;
-    access::rollup_recent(&t.st.db).await.unwrap();
     access::rollup_since(&t.st.db, OffsetDateTime::now_utc() - Duration::days(6)).await.unwrap();
     assert_eq!(t.get("/api/v1/access/summary?window=7d").await["kpi"], before["kpi"]);
     let d = t.get(&format!("/api/v1/access/new-targets?window=24h&node={n1}")).await;
@@ -340,9 +346,10 @@ async fn new_targets_machine_and_idempotent_rollup() {
 
     // 增量：新来一条，重算后只加 1，first_seen 不变
     let first = item(&d, "google.com", "团队1-01")["first_seen"].clone();
-    put_events(&t, e1, OffsetDateTime::now_utc() - Duration::seconds(30), Some("1.1.1.9"), "google.com", 1, false).await;
-    access::rollup_recent(&t.st.db).await.unwrap();
-    access::rollup_recent(&t.st.db).await.unwrap();
+    let at = OffsetDateTime::now_utc() - Duration::seconds(30);
+    put_events(&t, e1, at, Some("1.1.1.9"), "google.com", 1, false).await;
+    rollup_recent(&t, at).await;
+    rollup_recent(&t, at).await;
     let d = t.get(&format!("/api/v1/access/new-targets?window=24h&node={n1}")).await;
     assert_eq!(item(&d, "google.com", "团队1-01")["total"], 6);
     assert_eq!(item(&d, "google.com", "团队1-01")["first_seen"], first);
@@ -380,8 +387,9 @@ async fn new_targets_machine_and_idempotent_rollup() {
         .execute(&t.st.db)
         .await
         .unwrap();
-    put_events(&t, e_via2, OffsetDateTime::now_utc() - Duration::minutes(2), Some("9.9.9.9"), "via2.example.com", 3, false).await;
-    access::rollup_recent(&t.st.db).await.unwrap();
+    let at = OffsetDateTime::now_utc() - Duration::minutes(2);
+    put_events(&t, e_via2, at, Some("9.9.9.9"), "via2.example.com", 3, false).await;
+    rollup_recent(&t, at).await;
     for w in ["1h", "24h"] {
         let d = t.get(&format!("/api/v1/machines/{}/access?window={w}", fx.relay)).await;
         assert!(!d["top_domains"].to_string().contains("via2"), "{w}：{d}");

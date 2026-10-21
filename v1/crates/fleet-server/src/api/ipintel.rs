@@ -6,6 +6,7 @@ use crate::auth::Actor;
 use crate::error::{ApiError, ApiPath, ApiQuery, ApiResult};
 use crate::state::AppState;
 use axum::extract::State;
+use axum::response::Response;
 use axum::Json;
 use fleet_ipintel::EXPECTED_DBS;
 use serde::Deserialize;
@@ -25,7 +26,13 @@ fn parse_ip(s: &str) -> ApiResult<IpAddr> {
 /// `GET /ipintel/status`：各库是否加载、版本 / 日期、条目数、缺什么
 pub async fn status(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
     let mut s = st.ipintel.intel.status();
-    let cache: i64 = sqlx::query_scalar("select count(*) from ip_intel_cache").fetch_one(&st.db).await?;
+    // 前端每分钟轮询：用统计信息里的行数估计，不每次 count(*) 全表；表还没被 vacuum / analyze 过时（reltuples = -1）才真数
+    let cache: i64 = sqlx::query_scalar(
+        "select case when reltuples >= 0 then reltuples::bigint else (select count(*) from ip_intel_cache) end
+         from pg_class where oid = 'ip_intel_cache'::regclass",
+    )
+    .fetch_one(&st.db)
+    .await?;
     s["enabled"] = json!(st.ipintel.enabled);
     s["cache_rows"] = json!(cache);
     if !st.ipintel.enabled {
@@ -89,7 +96,7 @@ pub struct SourcesQ {
 }
 
 /// `GET /machines/{id}/sources?window=24h|7d|30d&limit=50`：来源画像分布、top 来源（带画像）、已学基线、学习期
-pub async fn machine_sources(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<SourcesQ>) -> ApiResult<Json<Value>> {
+pub async fn machine_sources(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<SourcesQ>) -> ApiResult<Response> {
     let w = match q.window.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         None => Window::H24,
         Some("24h") => Window::H24,
@@ -103,10 +110,5 @@ pub async fn machine_sources(_a: Actor, State(st): State<AppState>, ApiPath(id):
     };
     // 抽屉每 30 秒轮询一次，读的是小时汇总：和访问概况共用短 TTL 缓存
     let key = format!("sources|{id}|{w:?}|{limit}");
-    if let Some(v) = st.access_cache.get(&key) {
-        return Ok(Json(v));
-    }
-    let out = ok(crate::ipintel::sources_profile(&st, id, w, limit, OffsetDateTime::now_utc()).await?);
-    st.access_cache.put(key, out.0.clone());
-    Ok(out)
+    super::access::cached(&st, Some(key), async { Ok(ok(crate::ipintel::sources_profile(&st, id, w, limit, OffsetDateTime::now_utc()).await?).0) }).await
 }

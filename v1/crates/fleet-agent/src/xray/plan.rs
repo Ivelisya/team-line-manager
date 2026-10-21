@@ -2,7 +2,8 @@
 //!
 //! 顺序（spec/edge.md §5.3 第 8 步）：
 //!   1. 出站：新增 ado；变化 rmo+ado
-//!   2. 入站：先全部 rmi（删除的 + 变化的），再全部 adi（变化的 + 新增的）——端口互换也不冲突
+//!   2. 入站：先 rmi 运行态多余的；变化的彼此没有端口冲突时同一入站 rmi、adi 相邻，
+//!      有冲突（端口互换等）就先全部 rmi 再全部 adi；最后 adi 新增的
 //!   3. 规则：不一致时整表替换 adrules（原子，保证位置）
 //!   4. 出站删除 rmo（此时规则已不再引用）
 
@@ -60,38 +61,40 @@ pub fn plan(rt: &Runtime, prev: &Rendered, cand: &Rendered) -> Vec<Step> {
         steps.push(Step { op: Op::AddOutbound((*v).clone()), undo: Some(Op::RemoveOutbound(t.into())), tag: t.into() });
     }
 
-    // 2a. 入站先删：运行态多余的 + 内容变化的。旧骨架的 api 入站不删：读不到旧配置（prev 按新骨架算）时
+    // 2. 入站
+    let rmi = |t: &str| Step { op: Op::RemoveInbound(t.into()), undo: prev_i.get(t).map(|o| Op::AddInbound((*o).clone())), tag: t.into() };
+    let adi = |v: &Value| Step { op: Op::AddInbound(v.clone()), undo: Some(Op::RemoveInbound(tag_of(v).into())), tag: tag_of(v).into() };
+    // 2a. 先删运行态多余的（孤儿的内容、端口都未知，必须最先腾出来）。旧骨架的 api 入站不删：读不到旧配置（prev 按新骨架算）时
     // 正在运行的 Xray 可能还是旧骨架，经 API 删掉它等于把 API 自己删了
-    let mut inbound_adds: Vec<&Value> = Vec::new();
     let mut seen = HashSet::new();
     for t in rt.inbounds.iter().map(|s| s.as_str()).filter(|t| *t != API_TAG && !cand_i_tags.contains(t)) {
         if seen.insert(t) {
-            steps.push(Step {
-                op: Op::RemoveInbound(t.into()),
-                undo: prev_i.get(t).map(|o| Op::AddInbound((*o).clone())),
-                tag: t.into(),
-            });
+            steps.push(rmi(t));
         }
     }
-    for v in &cand_i {
-        let t = tag_of(v);
-        if rt_i.contains(t) && prev_i.get(t) == Some(v) {
-            continue;
+    // 2b. 内容变化的（运行态有）要 rmi + adi，新增的只 adi
+    let (changed, added): (Vec<&Value>, Vec<&Value>) = cand_i
+        .iter()
+        .copied()
+        .filter(|v| !(rt_i.contains(tag_of(v)) && prev_i.get(tag_of(v)) == Some(v)))
+        .partition(|v| rt_i.contains(tag_of(v)));
+    // 变化的入站彼此没有端口冲突时，同一入站删、加相邻：每个入口只断开一步（整体替换时不必让第一个入口等 N 步）。
+    // 某个入站的新端口正被另一个待替换的入站占着（端口互换），或另一个的旧内容未知（不知道它占着哪个端口），就先全部删再全部加
+    let port_of = |v: &Value| v.get("port").and_then(Value::as_u64);
+    let conflict = changed
+        .iter()
+        .any(|&v| changed.iter().any(|&u| tag_of(u) != tag_of(v) && prev_i.get(tag_of(u)).is_none_or(|&o| port_of(o) == port_of(v))));
+    if conflict {
+        steps.extend(changed.iter().map(|&v| rmi(tag_of(v))));
+        steps.extend(changed.iter().copied().map(adi));
+    } else {
+        for &v in &changed {
+            steps.push(rmi(tag_of(v)));
+            steps.push(adi(v));
         }
-        if rt_i.contains(t) {
-            steps.push(Step {
-                op: Op::RemoveInbound(t.into()),
-                undo: prev_i.get(t).map(|o| Op::AddInbound((*o).clone())),
-                tag: t.into(),
-            });
-        }
-        inbound_adds.push(v);
     }
-    // 2b. 再加
-    for v in inbound_adds {
-        let t = tag_of(v);
-        steps.push(Step { op: Op::AddInbound((*v).clone()), undo: Some(Op::RemoveInbound(t.into())), tag: t.into() });
-    }
+    // 2c. 新增的最后加：它们的端口在候选里唯一，多余的、变化的此时都已腾出旧端口
+    steps.extend(added.into_iter().map(adi));
 
     // 3. 规则
     if cand.rules != prev.rules || rule_pairs(&cand.rules) != rt.rules {
@@ -264,6 +267,22 @@ mod tests {
         let k2 = kinds(&plan(&rt_of(&prev), &prev, &c2));
         assert_eq!(k2.len(), 2);
         assert!(k2[0].starts_with("rmo") && k2[1].starts_with("ado"));
+    }
+
+    #[test]
+    fn whole_replacement_interleaves_per_inbound() {
+        // 整体替换（例如换 REALITY 私钥）且没有端口冲突：同一入站删、加相邻，每个入口只断开一步
+        let es = || vec![entry(1, 20001, true), entry(2, 20002, true)];
+        let prev = render(&desired(es()), &ctx()).unwrap();
+        let mut d = desired(es());
+        d.relay.reality_private_key = "NEWKEY".into();
+        let cand = render(&d, &ctx()).unwrap();
+        let steps = plan(&rt_of(&prev), &prev, &cand);
+        let (a, b) = (tags::inbound(Uuid::from_u128(1)), tags::inbound(Uuid::from_u128(2)));
+        assert_eq!(kinds(&steps), vec![format!("rmi {a}"), format!("adi {a}"), format!("rmi {b}"), format!("adi {b}")]);
+        let mut rt = rt_of(&prev);
+        simulate(&mut rt, &steps).unwrap();
+        assert!(verify(&rt, &cand).is_ok());
     }
 
     #[test]

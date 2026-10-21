@@ -434,25 +434,28 @@ struct VRow {
     rollback_of_seq: Option<i64>,
     actor: String,
     created_at: OffsetDateTime,
-    snapshot: Value,
+    /// 快照与当前生效的规则一致
+    is_current: bool,
     changes: Value,
     relays: Value,
 }
 
 async fn load_versions(st: &AppState, only: Option<Uuid>) -> ApiResult<Vec<Value>> {
+    // 是否「当前」在库里比：快照与当前规则都由 snapshot_of 按同一顺序生成，转成 jsonb 后文本一致，只比 md5，不把 30 份完整快照读出来
+    let rows = policy::load_rows(&st.db, false).await?;
+    let current = Value::Array(policy::snapshot_of(&rows));
     let vs: Vec<VRow> = sqlx::query_as(
-        "select v.id, v.seq, v.kind, p.seq rollback_of_seq, v.actor, v.created_at, v.snapshot, v.changes, v.relays
+        "select v.id, v.seq, v.kind, p.seq rollback_of_seq, v.actor, v.created_at, md5(v.snapshot::text) = md5($3::jsonb::text) is_current, v.changes, v.relays
          from policy_version v left join policy_version p on p.id = v.rollback_of
          where ($1::uuid is null or v.id = $1) order by v.seq desc limit $2",
     )
     .bind(only)
     .bind(VERSIONS_SHOWN)
+    .bind(&current)
     .fetch_all(&st.db)
     .await?;
     let latest: Option<i64> = sqlx::query_scalar("select max(seq) from policy_version").fetch_one(&st.db).await?;
     let latest = latest.unwrap_or(0);
-    let rows = policy::load_rows(&st.db, false).await?;
-    let current = policy::parse_snapshot(&Value::Array(policy::snapshot_of(&rows)));
 
     let relay_ids: Vec<Uuid> = vs
         .iter()
@@ -508,7 +511,7 @@ async fn load_versions(st: &AppState, only: Option<Uuid>) -> ApiResult<Vec<Value
             } else {
                 "applied"
             };
-            let is_current = policy::parse_snapshot(&v.snapshot) == current;
+            let is_current = v.is_current;
             json!({
                 "id": v.id, "seq": v.seq, "kind": v.kind, "rollback_of_seq": v.rollback_of_seq, "actor": v.actor,
                 "created_at": rfc3339(v.created_at), "status": status, "changes": v.changes, "relays": rel,

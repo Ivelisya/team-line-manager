@@ -129,6 +129,14 @@ async fn full_lifecycle() {
     assert!(live.as_array().unwrap().iter().all(|m| m["id"] != ids[0].as_str()), "退役的不在默认列表");
     let retired = t.get("/api/v1/machines?scope=retired").await;
     assert_eq!(retired[0]["lifecycle"], "retired");
+    // 精简列表（fleetctl 按名字找机器用）：顺序和这几个字段与完整视图一致
+    let (brief, full) = (t.get("/api/v1/machines?scope=all&view=brief").await, t.get("/api/v1/machines?scope=all").await);
+    assert_eq!(brief.as_array().unwrap().len(), full.as_array().unwrap().len());
+    for (b, f) in brief.as_array().unwrap().iter().zip(full.as_array().unwrap()) {
+        for k in ["id", "kind", "name", "label", "ip", "lifecycle", "team"] {
+            assert_eq!(b[k], f[k], "{k}：{b}");
+        }
+    }
     // 新上架接在末尾：一队-03
     let chk = t.post("/api/v1/provision/check", json!({"items": [{"kind": "proxy", "ip": "203.0.113.10", "team_id": team, "relay_id": relay,
         "upstream": {"protocol": "socks5", "host": "x", "port": 1}}]})).await;

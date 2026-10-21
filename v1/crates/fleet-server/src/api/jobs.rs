@@ -1,6 +1,6 @@
 use super::{ok, paged};
 use crate::auth::Actor;
-use crate::db::audit;
+use crate::db::{audit, Args};
 use crate::error::{ApiError, ApiPath, ApiQuery, ApiResult};
 use crate::jobs::{self, cancellable, cancellable_at, title_of};
 use crate::state::{AppState, Event};
@@ -67,12 +67,17 @@ pub async fn list(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<L
         _ => "true",
     };
     let (limit, offset) = (q.limit.unwrap_or(100).clamp(1, 500), q.offset.unwrap_or(0).max(0));
-    let sql = format!("{SELECT} where {filter} and ($1::uuid is null or j.target_id = $1) order by j.id desc limit $2 offset $3");
-    let v: Vec<JobOut> = sqlx::query_as(&sql).bind(q.target_id).bind(limit).bind(offset).fetch_all(&st.db).await?;
-    let total: i64 = sqlx::query_scalar(&format!("select count(*) from job j where {filter} and ($1::uuid is null or j.target_id = $1)"))
-        .bind(q.target_id)
-        .fetch_one(&st.db)
-        .await?;
+    // 按机器筛选的条件只在给了 target_id 时才拼上（列表与总数各拼一份）
+    let cond = |a: &mut Args| match q.target_id {
+        Some(t) => format!("{filter} and j.target_id = {}", a.add(t)),
+        None => filter.to_string(),
+    };
+    let mut a = Args::default();
+    let sql = format!("{SELECT} where {} order by j.id desc limit {} offset {}", cond(&mut a), a.add(limit), a.add(offset));
+    let v: Vec<JobOut> = sqlx::query_as_with(&sql, a.0).fetch_all(&st.db).await?;
+    let mut a = Args::default();
+    let sql = format!("select count(*) from job j where {}", cond(&mut a));
+    let total: i64 = sqlx::query_scalar_with(&sql, a.0).fetch_one(&st.db).await?;
     Ok(paged(v.iter().map(job_json).collect(), total, offset))
 }
 

@@ -76,7 +76,7 @@ EntryView = { id, relay:{id,name}, node:{id,name}, port, lifecycle, applied, app
 ```
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/machines?scope=live\|retired\|all` | 默认 live（未退役）。排序：线路机在前，然后按团队、编号 |
+| GET | `/machines?scope=live\|retired\|all` | 默认 live（未退役）。排序：线路机在前，然后按团队、编号。加 `view=brief` 只返回 `{id, kind, name, label, ip, lifecycle, team:{id,name}\|null}`（fleetctl 按名字找机器用） |
 | GET | `/machines/{id}` | 单台 |
 | PATCH | `/machines/{id}` | `{revision, team_id?, number?, label?, note?, provider_id?, plan_id?, service_ref?}`。改团队/编号 = 改名：线路机备注随后自动同步，不换令牌、不断连接 |
 | GET | `/machines/{id}/series?metric=host\|traffic\|probe&range=1h\|6h\|24h\|7d\|30d` | 时序。≤24h 用原始点（1 分钟聚合），更长用小时汇总 |

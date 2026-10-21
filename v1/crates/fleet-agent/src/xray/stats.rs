@@ -15,6 +15,34 @@ pub struct StatsState {
     pub prev: HashMap<String, u64>,
 }
 
+/// 入口 → (上行, 下行) 字节：离线队列淘汰掉的报告里的流量，由下一份报告补报
+pub type Carry = HashMap<Uuid, (u64, u64)>;
+
+/// stats.json 的完整内容：流量基线（stats_task 算，经 `Buffers::stats_commit` 交给上报器）+ 结转表（上报器维护）。
+/// 只有上报器写这个文件；stats_task 启动时按 `StatsState` 读，多出的 carry 键被忽略
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct StatsFile {
+    #[serde(flatten)]
+    pub base: StatsState,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub carry: Carry,
+}
+
+/// 流量样本累加进结转表
+pub fn add_carry(carry: &mut Carry, samples: &[EntrySample]) {
+    for s in samples {
+        let c = carry.entry(s.entry_id).or_default();
+        c.0 = c.0.saturating_add(s.up_bytes);
+        c.1 = c.1.saturating_add(s.down_bytes);
+    }
+}
+
+/// 结转表 → 补报样本。样本本来就是"一个间隔内的增量"、中控按求和汇总，多一条同入口的样本只是把这段流量记在补报时刻；
+/// 连接数记 0（中控对连接数取 max，不受影响）
+pub fn carry_samples(carry: &Carry, ts_ms: i64) -> Vec<EntrySample> {
+    carry.iter().map(|(&entry_id, &(up_bytes, down_bytes))| EntrySample { entry_id, ts_ms, up_bytes, down_bytes, conns: 0 }).collect()
+}
+
 /// 计算每个计数器的增量并更新状态。
 /// - 首次（无基线）：只记基线，增量 0
 /// - 纪元变了（Xray 重启）：计数从 0 重来，增量 = 当前值

@@ -195,15 +195,17 @@ impl Ctx {
         Self { c, base, json, machines_cache: Mutex::new(None), teams_cache: Mutex::new(None) }
     }
 
-    /// 全部机器（含已退役）。同一命令内只请求一次
+    /// 全部机器（含已退役）的精简列表：id、kind、name、label、ip、lifecycle、team{id,name}。同一命令内只请求一次
     pub fn machines(&self) -> anyhow::Result<Vec<Value>> {
         self.with_machines(|all| all.to_vec())
     }
 
+    /// 解析名字只要几个字段：取 `view=brief`，中控一条查询，不为找一台机器组装全部机器的完整视图
     fn with_machines<R>(&self, f: impl FnOnce(&[Value]) -> R) -> anyhow::Result<R> {
         let mut cache = self.machines_cache.lock().unwrap_or_else(|e| e.into_inner());
         if cache.is_none() {
-            *cache = Some(self.c.get_q("/machines", &[("scope", "all".to_string())])?.as_array().cloned().unwrap_or_default());
+            let q = [("scope", "all".to_string()), ("view", "brief".to_string())];
+            *cache = Some(self.c.get_q("/machines", &q)?.as_array().cloned().unwrap_or_default());
         }
         Ok(f(cache.as_deref().unwrap_or_default()))
     }
@@ -350,7 +352,7 @@ fn load_cn(load1: Option<f64>, cores: Option<i64>) -> String {
 fn agent_health_cn(h: &Value) -> String {
     let n = |k: &str| st(h, &format!("/{k}"));
     let mut s = format!(
-        "离线队列待发 {} 份；自 agent 启动起：因积压太久丢弃 {} 份、被中控拒收 {} 份，访问日志轮转漏读 {} 次、被截断 {} 次",
+        "离线队列待发 {} 份；自 agent 启动起：因离线队列超限被丢弃 {} 份、被中控拒收 {} 份，访问日志轮转漏读 {} 次、被截断 {} 次",
         n("queue_len"),
         n("queue_dropped"),
         n("queue_dead"),
@@ -878,7 +880,7 @@ mod tests {
     #[test]
     fn agent_health_wording() {
         let mut h = json!({"queue_len": 3, "queue_dropped": 0, "queue_dead": 1, "access_lines": 900, "access_rotation_gaps": 2, "access_truncations": 0});
-        assert_eq!(agent_health_cn(&h), "离线队列待发 3 份；自 agent 启动起：因积压太久丢弃 0 份、被中控拒收 1 份，访问日志轮转漏读 2 次、被截断 0 次");
+        assert_eq!(agent_health_cn(&h), "离线队列待发 3 份；自 agent 启动起：因离线队列超限被丢弃 0 份、被中控拒收 1 份，访问日志轮转漏读 2 次、被截断 0 次");
         h["last_apply_error"] = json!("xray 配置校验失败");
         assert!(agent_health_cn(&h).ends_with("被截断 0 次；最近一次应用配置失败：xray 配置校验失败"));
     }

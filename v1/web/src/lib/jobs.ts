@@ -3,7 +3,7 @@ import type { EntryLifecycle, JobStep, JobSummary } from './types';
 import { ENTRY_LABEL } from './sort';
 import { dtFull } from './format';
 
-export const JOB_KIND: Record<string, string> = {
+const JOB_KIND: Record<string, string> = {
   provision_vps: '上架落地机', provision_proxy: '上架家宽代理', provision_relay: '上架线路机',
   attach_entry: '新增入口', move_entry: '换线路机', restore_vps: '恢复落地机', restore_proxy: '恢复家宽代理', restore_relay: '恢复线路机', retire: '退役', purge: '彻底删除', upgrade_agent: '升级 agent',
 };
@@ -11,18 +11,12 @@ export const jobKindLabel = (k: string) => JOB_KIND[k] ?? k;
 
 /** 进行中：还没到终态 */
 export const jobLive = (state: string) => ['queued', 'running', 'waiting', 'cancelling'].includes(state);
-// 步骤状态（服务端）：pending / running / done / skipped / failed / compensated
-export const stepDone = (s: JobStep) => s.state === 'done';
-export const stepFailed = (s: JobStep) => s.state === 'failed';
-export const stepSkipped = (s: JobStep) => s.state === 'skipped';
-export const stepRunning = (s: JobStep) => s.state === 'running';
-/** 已补偿：作业取消或失败后，做过的步骤被逆序撤销 */
-export const stepCompensated = (s: JobStep) => s.state === 'compensated';
 
-/** 步骤的展示类别（步骤条、时间线共用） */
+/** 步骤的展示类别（步骤条、时间线共用）。服务端的步骤状态：pending / running / done / skipped / failed / compensated
+ *  （已补偿：作业取消或失败后，做过的步骤被逆序撤销）；不认识的按“等待”显示 */
 export type StepKind = 'done' | 'running' | 'failed' | 'skipped' | 'compensated' | 'pending';
-export const stepKind = (s: JobStep): StepKind =>
-  stepDone(s) ? 'done' : stepFailed(s) ? 'failed' : stepRunning(s) ? 'running' : stepCompensated(s) ? 'compensated' : stepSkipped(s) ? 'skipped' : 'pending';
+const STEP_KINDS = new Set<string>(['done', 'running', 'failed', 'skipped', 'compensated']);
+export const stepKind = (s: JobStep): StepKind => (STEP_KINDS.has(s.state) ? (s.state as StepKind) : 'pending');
 export const STEP_KIND_LABEL: Record<StepKind, string> = { done: '已完成', running: '进行中', failed: '失败', skipped: '已跳过', compensated: '已补偿', pending: '等待' };
 
 /** 总进度：已走过的步骤（step 之前的，完成或跳过）/ 总步骤；作业成功时一定是 100。列表项与详情通用 */
@@ -37,7 +31,7 @@ export function currentStepTitle(j: JobSummary): string | null {
 }
 
 /** error_kind 的中文说明（服务端 ssh.rs ErrKind）；未收录的原样显示 */
-export const ERROR_KIND_LABEL: Record<string, string> = {
+const ERROR_KIND_LABEL: Record<string, string> = {
   network: '网络错误', auth: 'SSH 认证失败', host_key: '主机指纹不符', remote: '远端命令失败', timeout: '超时', internal: '中控内部错误',
 };
 export const errorKindLabel = (k: string) => ERROR_KIND_LABEL[k] ?? k;

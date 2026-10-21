@@ -34,7 +34,8 @@ function statusLine(o: Overview | undefined, issues: number): string {
   return `全部 ${o.nodes.total + o.relays.total} 台机器运行良好${due}，监控数据持续采集中。`;
 }
 
-export function OverviewSection({ o, loading }: { o: Overview | undefined; loading: boolean }) {
+/** memo：首页因机器列表推送、筛选、开关抽屉重渲染时，总览只在 overview 数据变了才重画（它的数据由 metrics 推送单独更新） */
+export const OverviewSection = React.memo(function OverviewSection({ o, loading }: { o: Overview | undefined; loading: boolean }) {
   const me = useMe().data;
   const nodes = o?.nodes; const relays = o?.relays;
   const issues = (nodes?.down ?? 0) + (nodes?.degraded ?? 0) + (relays?.down ?? 0) + (relays?.degraded ?? 0);
@@ -65,7 +66,7 @@ export function OverviewSection({ o, loading }: { o: Overview | undefined; loadi
       </div>
     </HomeSection>
   );
-}
+});
 
 const ONLINE_N = 24;
 function ClusterPanel({ o }: { o: Overview | undefined }) {

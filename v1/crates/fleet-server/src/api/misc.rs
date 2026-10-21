@@ -67,6 +67,7 @@ pub async fn overview_series(_a: Actor, State(st): State<AppState>, ApiQuery(q):
 
 /// 探测心跳条：每台在用机器的 TCP 探测，按墙钟 3 分钟整格（date_bin 对齐 epoch）共 20 格，旧→新，最后一格是当前这格（还没走完）；
 /// 每格 [次数, 成功次数, 成功的平均延迟 ms 或 null]。线路机汇总它上面所有入口；这 20 格里没有探测的机器不出现。
+/// 只看未移除或在窗口内才移除的入口：更早移除的在窗口里不会有探测，不必逐个去探测表里找
 pub async fn probe_beats(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
     const BUCKETS: usize = 20;
     let rows: Vec<(Uuid, i32, i64, i64, Option<f64>)> = sqlx::query_as(
@@ -75,7 +76,8 @@ pub async fn probe_beats(_a: Actor, State(st): State<AppState>) -> ApiResult<Jso
            select e.node_id, e.relay_id, floor(extract(epoch from x.ts - w.s) / 180)::int i, x.ok, x.latency_ms
            from w cross join entry e cross join lateral (
              select ts, ok, latency_ms from probe_result
-             where entry_id = e.id and kind = 'tcp' and ts >= w.s and ts < w.e) x)
+             where entry_id = e.id and kind = 'tcp' and ts >= w.s and ts < w.e) x
+           where e.lifecycle <> 'removed' or e.removed_at >= w.s)
          select v.m, p.i, count(*), count(*) filter (where p.ok), (avg(p.latency_ms) filter (where p.ok))::float8
          from p cross join lateral (values (p.node_id), (p.relay_id)) v(m)
          join machine m on m.id = v.m and m.lifecycle <> 'retired'
@@ -271,15 +273,20 @@ struct AuditOut {
 }
 
 pub async fn audit(a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<AuditQ>) -> ApiResult<Json<Value>> {
-    let v: Vec<AuditOut> = sqlx::query_as(
-        "select id, ts, actor, action, target_kind, target_id, detail from audit_log
-         where ($1::uuid is null or target_id = $1) and ($3::bigint is null or id < $3) order by id desc limit $2",
-    )
-    .bind(q.target_id)
-    .bind(q.limit.unwrap_or(100).clamp(1, 1000))
-    .bind(q.before_id)
-    .fetch_all(&st.db)
-    .await?;
+    // 只拼给了的条件：按对象查时才走得上 (target_id, id desc) 索引
+    let mut args = crate::db::Args::default();
+    let mut w = String::from("true");
+    if let Some(t) = q.target_id {
+        w += &format!(" and target_id = {}", args.add(t));
+    }
+    if let Some(b) = q.before_id {
+        w += &format!(" and id < {}", args.add(b));
+    }
+    let sql = format!(
+        "select id, ts, actor, action, target_kind, target_id, detail from audit_log where {w} order by id desc limit {}",
+        args.add(q.limit.unwrap_or(100).clamp(1, 1000))
+    );
+    let v: Vec<AuditOut> = sqlx::query_as_with(&sql, args.0).fetch_all(&st.db).await?;
     // 没有 exec 权限的密钥看不到命令（第一行也可能带口令）：只给字数，摘要随之隐藏
     let can_exec = a.require_scope("exec").is_ok();
     let out: Vec<Value> = v

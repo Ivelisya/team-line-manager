@@ -7,10 +7,8 @@ import * as F from '@/lib/format';
 import { isQuiet, liveRate, monthTraffic, quota, remainingValue, resourceMeters } from '@/lib/derive';
 import { collator, KIND_LABEL } from '@/lib/sort';
 import { cn } from '@/lib/utils';
-import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from '@/components/ui/context-menu';
-import { Tip } from '@/components/ui/overlays';
 import { Due, KindIcon, Num, SortHead, StatusDot, type SortState } from '@/components/app/primitives';
-import { NodeContextItems } from '@/components/app/NodeMenu';
+import { NodeMenus } from '@/components/app/NodeMenu';
 import { Cells, MiniMeter, quotaColors } from '@/components/app/viz';
 
 const Q8 = quotaColors(8);
@@ -42,7 +40,7 @@ interface Col { id: string; header: string; size: number; r?: boolean; first?: '
 // 名称列 176 扣掉首列左内边距、状态点、类型标后剩约 110px，「模拟线路机01」这类名字完整显示
 const cols: Col[] = [
   { id: 'name', header: '名称', size: 176, first: 'asc',
-    cell: (m) => <div className="tname"><StatusDot status={m.health.status} lifecycle={m.lifecycle} /><KindIcon kind={m.kind} /><div><Tip text={KIND_LABEL[m.kind]}><span className="cell-main strong">{m.name}</span></Tip><span className="sub">{m.ip}</span></div></div> },
+    cell: (m) => <div className="tname"><StatusDot status={m.health.status} lifecycle={m.lifecycle} /><KindIcon kind={m.kind} /><div><span className="cell-main strong" data-tip={KIND_LABEL[m.kind]}>{m.name}</span><span className="sub">{m.ip}</span></div></div> },
   ...(['cpu', 'mem', 'disk'] as const).map((k): Col => ({ id: k, header: k === 'cpu' ? 'CPU' : k === 'mem' ? '内存' : '磁盘', size: 84, first: 'desc',
     cell: (m) => { const r = resourceMeters(m); return r ? <MiniMeter pct={r[k].pct} metric={k} empty={isQuiet(m)} /> : <span className="t-muted">—</span>; } })),
   ...(['up', 'down'] as const).map((k): Col => ({ id: k, header: k === 'up' ? '上行' : '下行', size: 92, r: true, first: 'desc',
@@ -63,23 +61,19 @@ export function MachineTable({ rows, sort, onSort, openId, onOpen }: { rows: Mac
       <table className="dt" style={{ minWidth: TOTAL }}>
         <colgroup>{cols.map((c) => <col key={c.id} style={{ width: c.size }} />)}</colgroup>
         <SortHead cols={cols} sort={sort} onSort={onSort} />
-        <tbody>{rows.map((m) => <Row key={m.id} m={m} current={m.id === openId} onOpen={onOpen} columns={cols} />)}</tbody>
+        <NodeMenus rows={rows}><tbody>{rows.map((m) => <Row key={m.id} m={m} current={m.id === openId} onOpen={onOpen} columns={cols} />)}</tbody></NodeMenus>
       </table>
     </div>
   );
 }
 
-/** 一行一个 memo：实时推送只换变了的那台机器的引用，其余行不重渲染（onOpen 来自 useDrawer，稳定；cols 是模块常量） */
+/** 一行一个 memo：实时推送只换变了的那台机器的引用，其余行不重渲染（onOpen 来自 useDrawer，稳定；cols 是模块常量）。
+ *  右键菜单由 tbody 上的 NodeMenus 共用一份（按 data-id 找到这一行） */
 const Row = React.memo(function Row({ m, current, onOpen, columns }: { m: MachineView; current: boolean; onOpen: (id: string) => void; columns: Col[] }) {
   return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild>
-        <tr className={cn('is-link', current && 'is-current', isQuiet(m) && 'is-quiet')} tabIndex={0} data-id={m.id}
-          onClick={() => onOpen(m.id)} onKeyDown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) onOpen(m.id); }}>
-          {columns.map((c) => <td key={c.id} className={c.r ? 'r' : undefined}>{c.cell(m)}</td>)}
-        </tr>
-      </ContextMenuTrigger>
-      <ContextMenuContent><NodeContextItems m={m} /></ContextMenuContent>
-    </ContextMenu>
+    <tr className={cn('is-link', current && 'is-current', isQuiet(m) && 'is-quiet')} tabIndex={0} data-id={m.id}
+      onClick={() => onOpen(m.id)} onKeyDown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) onOpen(m.id); }}>
+      {columns.map((c) => <td key={c.id} className={c.r ? 'r' : undefined}>{c.cell(m)}</td>)}
+    </tr>
   );
 });

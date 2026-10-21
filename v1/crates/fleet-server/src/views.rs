@@ -20,6 +20,34 @@ pub enum Scope {
     All,
 }
 
+impl Scope {
+    /// 对 `machine m` 的条件
+    fn cond(self) -> &'static str {
+        match self {
+            Scope::Live => "m.lifecycle <> 'retired'",
+            Scope::Retired => "m.lifecycle = 'retired'",
+            Scope::All => "true",
+        }
+    }
+}
+
+/// 精简列表（`GET /machines?view=brief`）：id、类型、显示名、线路机名、IP、生命周期、团队，排序同完整视图。
+/// fleetctl 按名字 / IP 找机器只要这些：一条查询，不为解析一个名字组装全部机器（含已退役）的完整视图
+pub async fn brief(st: &AppState, scope: Scope) -> sqlx::Result<Value> {
+    sqlx::query_scalar(&format!(
+        "select coalesce(json_agg(json_build_object(
+                    'id', m.id, 'kind', m.kind, 'name', display_name(m.kind::text, m.label, t.name, m.number), 'label', m.label,
+                    'ip', host(m.primary_ip), 'lifecycle', m.lifecycle,
+                    'team', case when t.id is not null then json_build_object('id', t.id, 'name', t.name) end)
+                  order by m.kind = 'relay' desc, t.sort_order nulls first, t.name, m.number, m.label), '[]')
+         from machine m left join team t on t.id = m.team_id
+         where {}",
+        scope.cond()
+    ))
+    .fetch_one(&st.db)
+    .await
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Ref {
     pub id: Uuid,
@@ -383,11 +411,7 @@ async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<
 
 pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Result<Vec<MachineView>> {
     let db = &st.db;
-    let lc = match scope {
-        Scope::Live => "m.lifecycle <> 'retired'",
-        Scope::Retired => "m.lifecycle = 'retired'",
-        Scope::All => "true",
-    };
+    let lc = scope.cond();
     let sql = format!(
         "select m.id, m.kind::text kind, m.team_id, t.name team_name, m.number, m.label, host(m.primary_ip) ip, m.ssh_port,
                 m.provider_id, p.name provider_name, p.code provider_code, m.plan_id, pl.name plan_name,
@@ -552,7 +576,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     .fetch_all(db);
     let period_of: HashMap<Uuid, Date> = periods.iter().map(|k| (k.0, k.1)).collect();
     let (hs, (es, ps), (traffic, removed), jobs, inc, maint, su, policies, period_used) =
-        tokio::try_join!(hs_q, entries_q, traffic_q, jobs_q, inc_q, maint_q, su_q, crate::policy::load_current(db), quota_used(st, periods))?;
+        tokio::try_join!(hs_q, entries_q, traffic_q, jobs_q, inc_q, maint_q, su_q, crate::policy::load_modes(db), quota_used(st, periods))?;
 
     let mut host: HashMap<Uuid, HostNow> = HashMap::new();
     let mut prev: HashMap<Uuid, (OffsetDateTime, Option<i64>, Option<i64>)> = HashMap::new();

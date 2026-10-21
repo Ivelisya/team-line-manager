@@ -1,4 +1,6 @@
 // TanStack Query 封装：查询 hook + 写操作 hook。写操作成功后按范围失效（实时流也会再推一次，重复无害）。
+// 内容只会因实时流事件而变的查询（eventKeys 覆盖到的）staleTime 设成 Infinity：切回窗口、重新挂载都不再重取，靠事件失效；
+// 断线重连时 stream.ts 会让全部查询失效一次，没连着时错过的变化照样补上。
 import { useCallback } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { del, get, patch, post, put } from './api';
@@ -6,8 +8,9 @@ import { collator, makeDefaultCompare } from './sort';
 import type { ApiKey, Incident, Job, JobSummary, Paged, JobLog, MachineView, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RestoreBody, RestorePreview, MoveResult, EvacuateResult, ProbeBeats, SeriesResp, Silence, Subscription, Team, AuditEntry, NotifyChannel, NotifyLogEntry } from './types';
 
 export const useMe = () => useQuery({ queryKey: ['me'], queryFn: () => get<{ username: string }>('/auth/me'), retry: false, staleTime: 5 * 60_000 });
+// 团队、套餐带着由机器算出来的台数（node_count / machine_count），机器增减不发 catalog 事件，仍按时间过期；供应商只随 catalog 事件变
 export const useTeams = () => useQuery({ queryKey: ['teams'], queryFn: () => get<Team[]>('/teams'), staleTime: 60_000 });
-export const useProviders = () => useQuery({ queryKey: ['providers'], queryFn: () => get<Provider[]>('/providers'), staleTime: 60_000 });
+export const useProviders = () => useQuery({ queryKey: ['providers'], queryFn: () => get<Provider[]>('/providers'), staleTime: Infinity });
 export const usePlans = () => useQuery({ queryKey: ['plans'], queryFn: () => get<Plan[]>('/plans'), staleTime: 60_000 });
 export const useOverview = () => useQuery({ queryKey: ['overview'], queryFn: ({ signal }) => get<Overview>('/overview', signal) });
 
@@ -39,21 +42,21 @@ export function readMachines(qc: QueryClient, scope: 'live' | 'retired' | 'all' 
   const raw = qc.getQueryData<MachineView[]>(['machines', scope]);
   return raw ? [...raw].sort(makeDefaultCompare(qc.getQueryData<Team[]>(['teams']) ?? [])) : undefined;
 }
-/** 抽屉用：单台详情取回之前先拿机器列表缓存里的那份占位（在用 / 已退役都找），切换机器时不闪“加载中” */
+/** 机器列表缓存（在用 / 已退役 / 全部都找）里的这台，和那份列表取回的时刻 */
+function fromLists(qc: QueryClient, id: string | null) {
+  for (const q of qc.getQueryCache().findAll({ queryKey: ['machines'] })) {
+    const m = (q.state.data as MachineView[] | undefined)?.find((x) => x.id === id);
+    if (m) return { m, at: q.state.dataUpdatedAt };
+  }
+}
+/** 单台机器（抽屉、悬浮卡、各对话框共用一个 hook、一份缓存）：列表缓存里的那份直接当初始数据，并带上列表取回的时刻——
+ *  列表还新鲜就不再单独取这台（列表与详情是同一份视图，实时推送两边都写），切换机器时也不闪“加载中” */
 export function useMachine(id: string | null) {
   const qc = useQueryClient();
   return useQuery<MachineView>({
     queryKey: ['machine', id], queryFn: ({ signal }) => get<MachineView>(`/machines/${id}`, signal), enabled: !!id,
-    placeholderData: () => { for (const [, d] of qc.getQueriesData<MachineView[]>({ queryKey: ['machines'] })) { const m = d?.find((x) => x.id === id); if (m) return m; } return undefined; },
-  });
-}
-/** 悬浮卡用：先用机器列表缓存里的那份（立即有内容），再按需取单台 */
-export function useMachinePreview(id: string | null) {
-  const qc = useQueryClient();
-  return useQuery({
-    queryKey: ['machine', id], queryFn: ({ signal }) => get<MachineView>(`/machines/${id}`, signal), enabled: !!id, staleTime: 15_000,
-    initialData: () => qc.getQueryData<MachineView[]>(['machines', 'live'])?.find((m) => m.id === id),
-    initialDataUpdatedAt: () => qc.getQueryState(['machines', 'live'])?.dataUpdatedAt,
+    initialData: () => fromLists(qc, id)?.m,
+    initialDataUpdatedAt: () => fromLists(qc, id)?.at,
   });
 }
 const byName = (a: { name: string }, b: { name: string }) => collator.compare(a.name, b.name);
@@ -79,28 +82,32 @@ export const useRenewals = (id: string | null) => useQuery({ queryKey: ['renewal
 export const useAudit = (id: string | null) => useQuery({ queryKey: ['audit', id], queryFn: ({ signal }) => get<AuditEntry[]>(`/audit?target_id=${id}&limit=10`, signal), enabled: !!id });
 /** 作业列表一页（按创建先后倒序）；换页时先留着上一页，不闪骨架 */
 export const useJobs = (state: 'active' | 'done' | 'all' = 'all', offset = 0, limit = 100) =>
-  useQuery({ queryKey: ['jobs', state, offset, limit], queryFn: ({ signal }) => get<Paged<JobSummary>>(`/jobs?state=${state}&limit=${limit}&offset=${offset}`, signal), placeholderData: keepPreviousData });
+  useQuery({ queryKey: ['jobs', state, offset, limit], queryFn: ({ signal }) => get<Paged<JobSummary>>(`/jobs?state=${state}&limit=${limit}&offset=${offset}`, signal), placeholderData: keepPreviousData, staleTime: Infinity });
 /** 作业详情：靠实时流的 job 事件失效重取 */
-export const useJob = (id: string | null) => useQuery({ queryKey: ['job', id], queryFn: ({ signal }) => get<Job>(`/jobs/${id}`, signal), enabled: !!id });
+export const useJob = (id: string | null) => useQuery({ queryKey: ['job', id], queryFn: ({ signal }) => get<Job>(`/jobs/${id}`, signal), enabled: !!id, staleTime: Infinity });
 /** 告警列表一页（严重度优先）。默认参数与告警页第一页相同：顶栏徽标取 total，和告警页共用同一份缓存 */
 export const INCIDENT_PAGE = 50;
 export const useIncidents = (state: 'firing' | 'resolved' | 'all' = 'all', offset = 0, limit = INCIDENT_PAGE) =>
-  useQuery({ queryKey: ['incidents', state, offset, limit], queryFn: ({ signal }) => get<Paged<Incident>>(`/incidents?state=${state}&limit=${limit}&offset=${offset}`, signal), placeholderData: keepPreviousData });
+  useQuery({ queryKey: ['incidents', state, offset, limit], queryFn: ({ signal }) => get<Paged<Incident>>(`/incidents?state=${state}&limit=${limit}&offset=${offset}`, signal), placeholderData: keepPreviousData, staleTime: Infinity });
+/** 静默到期（ends_at 过了就不再列出）没有事件，仍按时间过期 */
 export const useSilences = () => useQuery({ queryKey: ['silences'], queryFn: () => get<Silence[]>('/silences') });
 
 export interface StreamEvent { type: string; id?: string }
 /** 事件对应要失效的查询键（实时流用）。resync 由 stream.ts 处理成全部失效。
  *  machine_job：作业推进时服务端给目标机器发的，只重取详情（列表的 active_job 由 metrics 推送；改生命周期时服务端另发 machines）
- *  incidents：机器的健康与总览不看告警表，不重取整表；静默带来的「维护中」由服务端随后的 metrics 推送送达 */
+ *  incidents：机器的健康与总览不看告警表，不重取整表；静默带来的「维护中」由服务端随后的 metrics 推送送达
+ *  audit：抽屉里机器的操作记录，随改名、续费、退役等机器变更增加；policies：策略页的范围树列着各团队的节点（名字、有没有入口），
+ *  机器增减、改名换团队、团队改名都会改它（只有挂着的查询会重取，策略页没开时只是标成过期）；
+ *  incidents / jobs 列表里带机器名，machine（改名、生命周期）很少发，顺带重取让名字立刻跟上 */
 export function eventKeys(ev: StreamEvent): unknown[][] {
   switch (ev.type) {
-    case 'machine': return [['machine', ev.id], ['machines'], ['overview']];
+    case 'machine': return [['machine', ev.id], ['machines'], ['overview'], ['audit'], ['policies'], ['incidents'], ['jobs']];
     case 'machine_job': return [['machine', ev.id]];
-    case 'machines': return [['machine'], ['machines'], ['relays'], ['overview']];
+    case 'machines': return [['machine'], ['machines'], ['relays'], ['overview'], ['audit'], ['policies']];
     case 'relay': return [['relays'], ['machines']];
     case 'job': return [['jobs'], ['job', ev.id]];
     case 'incidents': return [['incidents'], ['silences']];
-    case 'catalog': return [['teams'], ['providers'], ['plans'], ['machines'], ['machine'], ['notify-channels']];
+    case 'catalog': return [['teams'], ['providers'], ['plans'], ['machines'], ['machine'], ['notify-channels'], ['policies']];
     case 'api_keys': return [['api-keys']];
     case 'policies': return [['policies'], ['machines'], ['relays']];
     default: return [];
@@ -112,7 +119,7 @@ function useWrite<A, R>(fn: (a: A) => Promise<R>, keys: unknown[][]) {
   const qc = useQueryClient();
   return useMutation({ mutationFn: fn, onSuccess: () => { keys.forEach((k) => qc.invalidateQueries({ queryKey: k })); } });
 }
-const M = [['machines'], ['machine'], ['relays'], ['overview']];
+const M = [['machines'], ['machine'], ['relays'], ['overview'], ['audit']];
 /** PATCH /machines/{id}：没传的不改；provider_id / plan_id / service_ref 传 null = 清空 */
 export interface MachinePatchBody {
   revision: number; team_id?: string; number?: number; label?: string; note?: string;
@@ -168,13 +175,13 @@ export const usePatchProvider = () => useWrite(({ id, ...b }: { id: string } & P
 export const useAddPlan = () => useWrite((b: PlanBody) => post('/plans', b), [['plans']]);
 export const usePatchPlan = () => useWrite(({ id, ...b }: { id: string; archived?: boolean } & Partial<PlanBody>) => patch(`/plans/${id}`, b), [['plans'], ...M]);
 export const fetchShare = (entryId: string) => get<{ url: string }>(`/entries/${entryId}/share`);
-export const fetchLogs = (jobId: string, after: number) => get<JobLog[]>(`/jobs/${jobId}/logs?after=${after}`);
+const fetchLogs = (jobId: string, after: number, signal?: AbortSignal) => get<JobLog[]>(`/jobs/${jobId}/logs?after=${after}`, signal);
 const LOG_PAGE = 1000; // 服务端单次最多返回 1000 条
-/** 取 after 之后的全部日志：满页就接着往后拉，直到拉完 */
-export async function fetchAllLogs(jobId: string, after: number): Promise<JobLog[]> {
+/** 取 after 之后的全部日志：满页就接着往后拉，直到拉完。signal：离开页面 / 换作业时中止 */
+export async function fetchAllLogs(jobId: string, after: number, signal?: AbortSignal): Promise<JobLog[]> {
   const all: JobLog[] = [];
   for (let guard = 0; guard < 200; guard++) {
-    const page = await fetchLogs(jobId, after);
+    const page = await fetchLogs(jobId, after, signal);
     all.push(...page);
     if (page.length < LOG_PAGE) break;
     after = page[page.length - 1].id;
@@ -183,10 +190,11 @@ export async function fetchAllLogs(jobId: string, after: number): Promise<JobLog
 }
 
 // ---- 设置页：API 密钥与告警通知渠道 ----
+/** 最近使用时间（last_used_at）随调用更新、不发事件，仍按时间过期 */
 export const useApiKeys = () => useQuery({ queryKey: ['api-keys'], queryFn: () => get<ApiKey[]>('/api-keys') });
 export const useCreateApiKey = () => useWrite((b: { name: string; scopes: string[]; expires_days?: number }) => post<{ id: string; token: string }>('/api-keys', b), [['api-keys']]);
 export const useRevokeApiKey = () => useWrite((id: string) => del(`/api-keys/${id}`), [['api-keys']]);
-export const useNotifyChannels = () => useQuery({ queryKey: ['notify-channels'], queryFn: () => get<NotifyChannel[]>('/notify-channels') });
+export const useNotifyChannels = () => useQuery({ queryKey: ['notify-channels'], queryFn: () => get<NotifyChannel[]>('/notify-channels'), staleTime: Infinity });
 export const useAddChannel = () => useWrite((b: { name: string; kind: string; config: Record<string, string>; min_severity: string; enabled: boolean }) => post<{ id: string }>('/notify-channels', b), [['notify-channels']]);
 export const usePatchChannel = () => useWrite(({ id, ...b }: { id: string; name?: string; config?: Record<string, string>; min_severity?: string; enabled?: boolean }) => patch(`/notify-channels/${id}`, b), [['notify-channels']]);
 export const useDelChannel = () => useWrite((id: string) => del(`/notify-channels/${id}`), [['notify-channels'], ['notify-log']]);

@@ -4,10 +4,11 @@
 //! - 随机子域名合并在库里的 `access_collapse()`（见迁移 0006），汇总和 1h 查询共用同一份规则。
 //! - 目标按 (节点, 目标) 聚合。「来源数」在小时表里是各小时去重数的最大值（跨小时无法精确去重，偏小的近似）。
 
-use crate::db::floor_hour;
+use crate::db::{floor_hour, Args};
 use crate::state::AppState;
 use serde::Serialize;
 use sqlx::{FromRow, PgPool};
+use std::sync::Arc;
 use std::time::Duration as StdDuration;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
@@ -89,13 +90,6 @@ pub async fn rollup_hour(db: &PgPool, hour: OffsetDateTime) -> anyhow::Result<()
     Ok(())
 }
 
-/// 重算上一个整点小时和当前小时
-pub async fn rollup_recent(db: &PgPool) -> anyhow::Result<()> {
-    let now = floor_hour(OffsetDateTime::now_utc());
-    rollup_hour(db, now - Duration::hours(1)).await?;
-    rollup_hour(db, now).await
-}
-
 /// 后台循环每轮做的事：当前小时必算，被标脏的小时（agent 补传的迟到数据）补算（语义见 `db::rollup_dirty`）
 pub async fn rollup_pending(db: &PgPool) -> anyhow::Result<()> { crate::db::rollup_dirty(db, "access_dirty", |h| rollup_hour(db, h)).await }
 
@@ -161,9 +155,10 @@ pub async fn run_forever(st: AppState) {
 /// 24h / 7d / 30d 聚合结果的短 TTL 缓存（键 = 接口 + 全部查询参数）。
 /// 这些窗口读的是小时汇总表，本来就最多每 5 分钟变一次，缓存几十秒不影响结果；
 /// 一个页面同时发的 summary / targets / machine 请求也不会各自全量聚合一遍。1h 窗口读原始记录，不缓存。
+/// 存 `Arc`：命中时直接拿去序列化响应，不深拷贝整份结果
 pub struct QueryCache {
     ttl: StdDuration,
-    map: std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, serde_json::Value)>>,
+    map: std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, Arc<serde_json::Value>)>>,
 }
 
 impl QueryCache {
@@ -173,7 +168,7 @@ impl QueryCache {
         Self { ttl, map: Default::default() }
     }
 
-    pub fn get(&self, key: &str) -> Option<serde_json::Value> {
+    pub fn get(&self, key: &str) -> Option<Arc<serde_json::Value>> {
         if self.ttl.is_zero() {
             return None;
         }
@@ -181,7 +176,7 @@ impl QueryCache {
         m.get(key).filter(|(at, _)| at.elapsed() < self.ttl).map(|(_, v)| v.clone())
     }
 
-    pub fn put(&self, key: String, v: serde_json::Value) {
+    pub fn put(&self, key: String, v: Arc<serde_json::Value>) {
         if self.ttl.is_zero() {
             return;
         }
@@ -225,7 +220,7 @@ impl Window {
     }
 }
 
-/// 一次查询的筛选条件。绑定顺序固定：$1 from、$2 team、$3 nodes、$4 like、$5 relay、$6 kind、$7 action。
+/// 一次查询的筛选条件。拼 SQL 时只拼给了的条件（见 `db::Args`）
 #[derive(Debug, Clone)]
 pub struct Filter {
     /// 窗口起点。events=false 时已对齐到整点小时
@@ -269,39 +264,69 @@ pub fn like_pattern(s: &str) -> Option<String> {
     Some(out)
 }
 
-macro_rules! base {
-    ($q:expr, $f:expr) => {
-        $q.bind($f.from).bind($f.team).bind(&$f.nodes).bind(&$f.like).bind($f.relay)
-    };
-}
-macro_rules! full {
-    ($q:expr, $f:expr) => {
-        base!($q, $f).bind(&$f.kind).bind($f.action)
-    };
-}
-
 /// 机器显示名（SQL 函数 display_name，与 names::display_name 一致）。退役机器的编号已被回收给别的机器，
 /// 历史记录里不加标注会和现在同名的机器混在一起，所以带上「（已退役）」。
 const NAME: &str = "display_name(m.kind::text, m.label, t.name, m.number) || case when m.lifecycle = 'retired' then '（已退役）' else '' end";
 
-/// 小时表聚合：(节点, 目标) → 连接数、阻止数、来源数
-const AGG_HOURLY: &str = "agg as (
-    select h.node_id, h.dest_host, h.kind, sum(h.conns)::bigint conns, sum(h.blocked)::bigint blocked, max(h.sources)::bigint sources,
-           null::timestamptz first_ts, null::timestamptz last_ts
-    from access_hourly h
-    where h.hour >= $1 and ($3::uuid[] is null or h.node_id = any($3))
-      and ($2::uuid is null or h.node_id in (select id from machine where team_id = $2))
-      and ($4::text is null or h.dest_host ilike $4) and ($5::uuid is null or h.relay_id = $5)
-    group by h.node_id, h.dest_host, h.kind)";
+/// 原始记录（access_event e）的公共条件：窗口起点、节点、团队、线路机（都换成入口 id 列表，走 (entry_id, ts) 索引）、搜索。
+/// `search_src_only`：搜索只匹配来源 IP（来源排行）；否则目标或来源 IP 匹配都算
+fn event_where(f: &Filter, a: &mut Args, search_src_only: bool) -> String {
+    let mut w = format!("e.ts >= {}", a.add(f.from));
+    if let Some(n) = &f.nodes {
+        w += &format!(" and e.entry_id = any(array(select id from entry where node_id = any({})))", a.add(n));
+    }
+    if let Some(t) = f.team {
+        w += &format!(" and e.entry_id = any(array(select x.id from entry x join machine mx on mx.id = x.node_id where mx.team_id = {}))", a.add(t));
+    }
+    if let Some(l) = &f.like {
+        let l = a.add(l);
+        w += &if search_src_only { format!(" and host(e.src_ip) ilike {l}") } else { format!(" and (e.dest_host ilike {l} or host(e.src_ip) ilike {l})") };
+    }
+    if let Some(r) = f.relay {
+        w += &format!(" and e.entry_id = any(array(select id from entry where relay_id = {}))", a.add(r));
+    }
+    w
+}
 
-/// 原始记录聚合（1h 窗口）：同样的输出列
-const AGG_EVENTS: &str = "rawg as (
+/// 原始记录逐条按目标类型、处理结果筛选（拼在 `event_where` 后面）
+fn event_kind_action(f: &Filter, a: &mut Args) -> String {
+    let mut w = f.kind.as_ref().map(|k| format!(" and access_kind(lower(rtrim(e.dest_host, '.'))) = {}", a.add(k))).unwrap_or_default();
+    w += match f.action {
+        "blocked" => " and e.blocked",
+        "routed" => " and not e.blocked",
+        _ => "",
+    };
+    w
+}
+
+/// 小时表（access_hourly / access_source_hourly，别名 `t`）的公共条件；`search` 是搜索要匹配的列
+fn hourly_where(f: &Filter, a: &mut Args, t: &str, search: &str) -> String {
+    let mut w = format!("{t}.hour >= {}", a.add(f.from));
+    if let Some(n) = &f.nodes {
+        w += &format!(" and {t}.node_id = any({})", a.add(n));
+    }
+    if let Some(team) = f.team {
+        w += &format!(" and {t}.node_id in (select id from machine where team_id = {})", a.add(team));
+    }
+    if let Some(l) = &f.like {
+        w += &format!(" and {search} ilike {}", a.add(l));
+    }
+    if let Some(r) = f.relay {
+        w += &format!(" and {t}.relay_id = {}", a.add(r));
+    }
+    w
+}
+
+/// 聚合成 (节点, 目标) → 连接数、阻止数、来源数：小时表，或原始记录（1h 窗口，同样的输出列）；
+/// 再按目标类型与处理结果筛选（blocked 视图里连接数就是被阻止数，routed 视图里去掉被阻止的）
+fn cte(f: &Filter, a: &mut Args) -> String {
+    let agg = if f.events {
+        format!(
+            "rawg as (
     select en.node_id, lower(rtrim(e.dest_host, '.')) h, e.src_ip,
            count(*) c, count(*) filter (where e.blocked) b, min(e.ts) f, max(e.ts) l
     from access_event e join entry en on en.id = e.entry_id
-    where e.ts >= $1 and ($3::uuid[] is null or e.entry_id = any(array(select id from entry where node_id = any($3))))
-      and ($2::uuid is null or e.entry_id = any(array(select x.id from entry x join machine mx on mx.id = x.node_id where mx.team_id = $2)))
-      and ($4::text is null or e.dest_host ilike $4 or host(e.src_ip) ilike $4) and ($5::uuid is null or e.entry_id = any(array(select id from entry where relay_id = $5)))
+    where {}
     group by 1, 2, 3
 ), hm as (
     select h, access_collapse(h) c from (select distinct h from rawg) d
@@ -309,20 +334,27 @@ const AGG_EVENTS: &str = "rawg as (
     select r.node_id, hm.c dest_host, access_kind(hm.c) kind, sum(r.c)::bigint conns, sum(r.b)::bigint blocked,
            count(distinct r.src_ip)::bigint sources, min(r.f) first_ts, max(r.l) last_ts
     from rawg r join hm on hm.h = r.h
-    group by r.node_id, hm.c)";
-
-/// 目标类型与处理结果筛选；blocked 视图里连接数就是被阻止数，routed 视图里去掉被阻止的
-const FILTERED: &str = "f as (
-    select node_id, dest_host, kind,
-           case $7::text when 'blocked' then blocked when 'routed' then conns - blocked else conns end conns,
-           case $7::text when 'routed' then 0 else blocked end blocked,
-           sources, first_ts, last_ts
-    from agg
-    where ($6::text is null or kind = $6)
-      and case $7::text when 'blocked' then blocked > 0 when 'routed' then conns > blocked else true end)";
-
-fn cte(f: &Filter) -> String {
-    format!("with {}, {FILTERED}", if f.events { AGG_EVENTS } else { AGG_HOURLY })
+    group by r.node_id, hm.c)",
+            event_where(f, a, false)
+        )
+    } else {
+        format!(
+            "agg as (
+    select h.node_id, h.dest_host, h.kind, sum(h.conns)::bigint conns, sum(h.blocked)::bigint blocked, max(h.sources)::bigint sources,
+           null::timestamptz first_ts, null::timestamptz last_ts
+    from access_hourly h
+    where {}
+    group by h.node_id, h.dest_host, h.kind)",
+            hourly_where(f, a, "h", "h.dest_host")
+        )
+    };
+    let (conns, blocked, keep) = match f.action {
+        "blocked" => ("blocked", "blocked", "blocked > 0"),
+        "routed" => ("conns - blocked", "0::bigint", "conns > blocked"),
+        _ => ("conns", "blocked", "true"),
+    };
+    let kind = f.kind.as_ref().map(|k| format!(" and kind = {}", a.add(k))).unwrap_or_default();
+    format!("with {agg}, f as (select node_id, dest_host, kind, {conns} conns, {blocked} blocked, sources, first_ts, last_ts from agg where {keep}{kind})")
 }
 
 #[derive(Debug, Serialize, FromRow)]
@@ -351,6 +383,7 @@ pub struct Kpi {
 
 /// 节点概览 + 四张 KPI。访问目标是各节点分别去重后相加。
 pub async fn summary(db: &PgPool, f: &Filter) -> sqlx::Result<(Kpi, Vec<NodeRow>)> {
+    let mut a = Args::default();
     let sql = format!(
         "{} select f.node_id, {NAME} name, t.name team, sum(f.conns)::bigint conns, count(*)::bigint targets,
                 count(*) filter (where f.kind = 'domain')::bigint domains, sum(f.blocked)::bigint blocked,
@@ -359,27 +392,25 @@ pub async fn summary(db: &PgPool, f: &Filter) -> sqlx::Result<(Kpi, Vec<NodeRow>
               left join access_target_seen s on s.node_id = f.node_id and s.dest_host = f.dest_host
          group by f.node_id, m.kind, m.label, m.number, m.lifecycle, t.name
          order by conns desc, name",
-        cte(f)
+        cte(f, &mut a)
     );
-    let mut nodes: Vec<NodeRow> = full!(sqlx::query_as(&sql), f).fetch_all(db).await?;
+    let mut nodes: Vec<NodeRow> = sqlx::query_as_with(&sql, a.0).fetch_all(db).await?;
 
     // 来源数和旁边的连接数同一套筛选：原始记录逐条带上搜索、目标类型、处理结果；
     // 来源小时表没有目标维度，带这几类筛选时算不出来，给 null（不拿没筛过的数冒充）
     let srcs: Option<Vec<(Uuid, i64)>> = if f.events {
-        let sql = "select en.node_id, count(distinct e.src_ip)::bigint from access_event e join entry en on en.id = e.entry_id
-         where e.ts >= $1 and ($3::uuid[] is null or e.entry_id = any(array(select id from entry where node_id = any($3))))
-           and ($2::uuid is null or e.entry_id = any(array(select x.id from entry x join machine mx on mx.id = x.node_id where mx.team_id = $2)))
-           and ($4::text is null or e.dest_host ilike $4 or host(e.src_ip) ilike $4) and ($5::uuid is null or e.entry_id = any(array(select id from entry where relay_id = $5)))
-           and ($6::text is null or access_kind(lower(rtrim(e.dest_host, '.'))) = $6)
-           and case $7::text when 'blocked' then e.blocked when 'routed' then not e.blocked else true end
-         group by 1";
-        Some(full!(sqlx::query_as(sql), f).fetch_all(db).await?)
+        let mut a = Args::default();
+        let sql = format!(
+            "select en.node_id, count(distinct e.src_ip)::bigint from access_event e join entry en on en.id = e.entry_id
+             where {}{} group by 1",
+            event_where(f, &mut a, false),
+            event_kind_action(f, &mut a)
+        );
+        Some(sqlx::query_as_with(&sql, a.0).fetch_all(db).await?)
     } else if f.like.is_none() && f.kind.is_none() && f.action == "all" {
-        let sql = "select node_id, count(distinct src_ip)::bigint from access_source_hourly
-         where hour >= $1 and ($3::uuid[] is null or node_id = any($3))
-           and ($2::uuid is null or node_id in (select id from machine where team_id = $2)) and ($4::uuid is null or relay_id = $4)
-         group by 1";
-        Some(sqlx::query_as(sql).bind(f.from).bind(f.team).bind(&f.nodes).bind(f.relay).fetch_all(db).await?)
+        let mut a = Args::default();
+        let sql = format!("select s.node_id, count(distinct s.src_ip)::bigint from access_source_hourly s where {} group by 1", hourly_where(f, &mut a, "s", "host(s.src_ip)"));
+        Some(sqlx::query_as_with(&sql, a.0).fetch_all(db).await?)
     } else {
         None
     };
@@ -426,15 +457,18 @@ pub async fn targets(db: &PgPool, f: &Filter, sort: TargetSort, limit: i64, offs
         TargetSort::Last => "last_seen desc nulls last, f.dest_host, f.node_id",
         TargetSort::First => "first_seen desc nulls last, f.dest_host, f.node_id",
     };
+    let mut a = Args::default();
     let sql = format!(
         "{} select f.node_id, {NAME} name, f.dest_host, f.kind, f.conns, f.sources, f.blocked,
                 coalesce(s.first_seen, f.first_ts) first_seen, coalesce(f.last_ts, s.last_seen) last_seen
          from f join machine m on m.id = f.node_id left join team t on t.id = m.team_id
               left join access_target_seen s on s.node_id = f.node_id and s.dest_host = f.dest_host
-         order by {order} limit $8 offset $9",
-        cte(f)
+         order by {order} limit {} offset {}",
+        cte(f, &mut a),
+        a.add(limit),
+        a.add(offset)
     );
-    full!(sqlx::query_as(&sql), f).bind(limit).bind(offset).fetch_all(db).await
+    sqlx::query_as_with(&sql, a.0).fetch_all(db).await
 }
 
 #[derive(Debug, Serialize, FromRow)]
@@ -452,27 +486,29 @@ pub struct SourceRow {
 
 /// 按 (节点, 来源 IP) 的连接数 top。search 在这里匹配来源 IP。
 pub async fn sources(db: &PgPool, f: &Filter, limit: i64) -> sqlx::Result<Vec<SourceRow>> {
+    let mut a = Args::default();
     let sql = if f.events {
         format!(
             "select en.node_id, {NAME} name, host(e.src_ip) src_ip, count(*)::bigint conns, max(e.ts) last_ts
              from access_event e join entry en on en.id = e.entry_id join machine m on m.id = en.node_id left join team t on t.id = m.team_id
-             where e.ts >= $1 and e.src_ip is not null and ($3::uuid[] is null or e.entry_id = any(array(select id from entry where node_id = any($3))))
-               and ($2::uuid is null or e.entry_id = any(array(select x.id from entry x join machine mx on mx.id = x.node_id where mx.team_id = $2))) and ($4::text is null or host(e.src_ip) ilike $4)
-               and ($5::uuid is null or e.entry_id = any(array(select id from entry where relay_id = $5)))
+             where {} and e.src_ip is not null
              group by en.node_id, m.kind, m.label, m.number, m.lifecycle, t.name, e.src_ip
-             order by conns desc, src_ip limit $6"
+             order by conns desc, src_ip limit {}",
+            event_where(f, &mut a, true),
+            a.add(limit)
         )
     } else {
         format!(
             "select s.node_id, {NAME} name, host(s.src_ip) src_ip, sum(s.conns)::bigint conns, max(s.hour) last_ts
              from access_source_hourly s join machine m on m.id = s.node_id left join team t on t.id = m.team_id
-             where s.hour >= $1 and ($3::uuid[] is null or s.node_id = any($3))
-               and ($2::uuid is null or m.team_id = $2) and ($4::text is null or host(s.src_ip) ilike $4) and ($5::uuid is null or s.relay_id = $5)
+             where {}
              group by s.node_id, m.kind, m.label, m.number, m.lifecycle, t.name, s.src_ip
-             order by conns desc, src_ip limit $6"
+             order by conns desc, src_ip limit {}",
+            hourly_where(f, &mut a, "s", "host(s.src_ip)"),
+            a.add(limit)
         )
     };
-    base!(sqlx::query_as(&sql), f).bind(limit).fetch_all(db).await
+    sqlx::query_as_with(&sql, a.0).fetch_all(db).await
 }
 
 #[derive(Debug, Serialize, FromRow)]
@@ -504,53 +540,62 @@ pub async fn events(db: &PgPool, f: &Filter, before: Option<(OffsetDateTime, i64
     if f.nodes.is_some() || f.relay.is_some() {
         return events_of_entries(db, f, before, limit).await;
     }
+    let mut a = Args::default();
+    let mut w = event_where(f, &mut a, false);
+    if let Some((ts, id)) = before {
+        w += &format!(" and (e.ts, e.id) < ({}, {})", a.add(ts), a.add(id));
+    }
+    w += &event_kind_action(f, &mut a);
     let sql = format!(
         "select e.id, e.ts, en.node_id, {NAME} name, host(e.src_ip) src_ip, e.dest_host, e.dest_port, e.network, e.blocked
          from access_event e join entry en on en.id = e.entry_id join machine m on m.id = en.node_id left join team t on t.id = m.team_id
-         where e.ts >= $1 and ($8::timestamptz is null or (e.ts, e.id) < ($8, $9))
-           and ($3::uuid[] is null or e.entry_id = any(array(select id from entry where node_id = any($3))))
-           and ($2::uuid is null or e.entry_id = any(array(select x.id from entry x join machine mx on mx.id = x.node_id where mx.team_id = $2)))
-           and ($4::text is null or e.dest_host ilike $4 or host(e.src_ip) ilike $4)
-           and ($5::uuid is null or e.entry_id = any(array(select id from entry where relay_id = $5)))
-           and ($6::text is null or access_kind(lower(rtrim(e.dest_host, '.'))) = $6)
-           and case $7::text when 'blocked' then e.blocked when 'routed' then not e.blocked else true end
-         order by e.ts desc, e.id desc limit $10"
+         where {w}
+         order by e.ts desc, e.id desc limit {}",
+        a.add(limit)
     );
-    full!(sqlx::query_as(&sql), f).bind(before.map(|b| b.0)).bind(before.map(|b| b.1)).bind(limit).fetch_all(db).await
+    sqlx::query_as_with(&sql, a.0).fetch_all(db).await
 }
 
 /// 按节点 / 线路机筛选的原始记录：先取这些入口，逐个入口沿 (entry_id, ts desc) 索引各取前 limit 条，再合并取前 limit 条，
 /// 不用把窗口内全部记录按时间扫一遍。排序与游标同 `events`。
-/// 绑定顺序：$1 from、$2 入口、$3 like、$4 kind、$5 action、$6 limit，翻页时 $7 ts、$8 id。
 async fn events_of_entries(db: &PgPool, f: &Filter, before: Option<(OffsetDateTime, i64)>, limit: i64) -> sqlx::Result<Vec<EventRow>> {
-    let ids: Vec<Uuid> = sqlx::query_scalar(
-        "select id from entry where ($1::uuid[] is null or node_id = any($1)) and ($2::uuid is null or relay_id = $2)
-           and ($3::uuid is null or node_id in (select id from machine where team_id = $3))",
-    )
-    .bind(&f.nodes)
-    .bind(f.relay)
-    .bind(f.team)
-    .fetch_all(db)
-    .await?;
+    let mut a = Args::default();
+    let mut w = String::from("true");
+    if let Some(n) = &f.nodes {
+        w += &format!(" and node_id = any({})", a.add(n));
+    }
+    if let Some(r) = f.relay {
+        w += &format!(" and relay_id = {}", a.add(r));
+    }
+    if let Some(t) = f.team {
+        w += &format!(" and node_id in (select id from machine where team_id = {})", a.add(t));
+    }
+    let ids: Vec<Uuid> = sqlx::query_scalar_with(&format!("select id from entry where {w}"), a.0).fetch_all(db).await?;
+
+    let mut a = Args::default();
+    let entries = a.add(&ids);
+    let mut w = format!("e.entry_id = x.id and e.ts >= {}", a.add(f.from));
     // 游标条件只在翻页时拼上：ts 上界能进索引条件
-    let cursor = if before.is_some() { "and e.ts <= $7 and (e.ts, e.id) < ($7, $8)" } else { "" };
+    if let Some((ts, id)) = before {
+        let ts = a.add(ts);
+        w += &format!(" and e.ts <= {ts} and (e.ts, e.id) < ({ts}, {})", a.add(id));
+    }
+    if let Some(l) = &f.like {
+        let l = a.add(l);
+        w += &format!(" and (e.dest_host ilike {l} or host(e.src_ip) ilike {l})");
+    }
+    w += &event_kind_action(f, &mut a);
+    let limit = a.add(limit);
     let sql = format!(
         "select e.id, e.ts, en.node_id, {NAME} name, host(e.src_ip) src_ip, e.dest_host, e.dest_port, e.network, e.blocked
-         from unnest($2::uuid[]) x(id) cross join lateral (
+         from unnest({entries}::uuid[]) x(id) cross join lateral (
              select e.id, e.entry_id, e.ts, e.src_ip, e.dest_host, e.dest_port, e.network, e.blocked from access_event e
-             where e.entry_id = x.id and e.ts >= $1 {cursor}
-               and ($3::text is null or e.dest_host ilike $3 or host(e.src_ip) ilike $3)
-               and ($4::text is null or access_kind(lower(rtrim(e.dest_host, '.'))) = $4)
-               and case $5::text when 'blocked' then e.blocked when 'routed' then not e.blocked else true end
-             order by e.ts desc, e.id desc limit $6) e
+             where {w}
+             order by e.ts desc, e.id desc limit {limit}) e
          join entry en on en.id = e.entry_id join machine m on m.id = en.node_id left join team t on t.id = m.team_id
-         order by e.ts desc, e.id desc limit $6"
+         order by e.ts desc, e.id desc limit {limit}"
     );
-    let mut q = sqlx::query_as(&sql).bind(f.from).bind(&ids).bind(&f.like).bind(&f.kind).bind(f.action).bind(limit);
-    if let Some((ts, id)) = before {
-        q = q.bind(ts).bind(id);
-    }
-    q.fetch_all(db).await
+    sqlx::query_as_with(&sql, a.0).fetch_all(db).await
 }
 
 #[derive(Debug, Serialize, FromRow)]
@@ -566,26 +611,40 @@ pub struct NewTargetRow {
     pub total: i64,
 }
 
-const NEW_WHERE: &str = "s.first_seen >= $1 and ($3::uuid[] is null or s.node_id = any($3)) and ($2::uuid is null or m.team_id = $2)
-           and ($4::text is null or s.dest_host ilike $4) and ($5::text is null or access_kind(s.dest_host) = $5)";
+/// access_target_seen s（连 machine m）上的新目标条件
+fn new_where(f: &Filter, a: &mut Args) -> String {
+    let mut w = format!("s.first_seen >= {}", a.add(f.from));
+    if let Some(n) = &f.nodes {
+        w += &format!(" and s.node_id = any({})", a.add(n));
+    }
+    if let Some(t) = f.team {
+        w += &format!(" and m.team_id = {}", a.add(t));
+    }
+    if let Some(l) = &f.like {
+        w += &format!(" and s.dest_host ilike {}", a.add(l));
+    }
+    if let Some(k) = &f.kind {
+        w += &format!(" and access_kind(s.dest_host) = {}", a.add(k));
+    }
+    w
+}
 
 /// 窗口内第一次出现的目标（f.from 取精确的 now - window，不对齐整点）；同时返回符合条件的总数
 pub async fn new_targets(db: &PgPool, f: &Filter, limit: i64, offset: i64) -> sqlx::Result<(Vec<NewTargetRow>, i64)> {
+    let mut a = Args::default();
     let sql = format!(
         "select s.node_id, {NAME} name, s.dest_host, access_kind(s.dest_host) kind, s.first_seen, s.last_seen, s.total
          from access_target_seen s join machine m on m.id = s.node_id left join team t on t.id = m.team_id
-         where {NEW_WHERE}
-         order by s.first_seen desc, s.dest_host, s.node_id limit $6 offset $7"
+         where {}
+         order by s.first_seen desc, s.dest_host, s.node_id limit {} offset {}",
+        new_where(f, &mut a),
+        a.add(limit),
+        a.add(offset)
     );
-    let items = sqlx::query_as(&sql).bind(f.from).bind(f.team).bind(&f.nodes).bind(&f.like).bind(&f.kind).bind(limit).bind(offset).fetch_all(db).await?;
-    let total = sqlx::query_scalar(&format!("select count(*) from access_target_seen s join machine m on m.id = s.node_id where {NEW_WHERE}"))
-        .bind(f.from)
-        .bind(f.team)
-        .bind(&f.nodes)
-        .bind(&f.like)
-        .bind(&f.kind)
-        .fetch_one(db)
-        .await?;
+    let items = sqlx::query_as_with(&sql, a.0).fetch_all(db).await?;
+    let mut a = Args::default();
+    let sql = format!("select count(*) from access_target_seen s join machine m on m.id = s.node_id where {}", new_where(f, &mut a));
+    let total = sqlx::query_scalar_with(&sql, a.0).fetch_one(db).await?;
     Ok((items, total))
 }
 
@@ -631,12 +690,13 @@ pub async fn machine_access(db: &PgPool, machine_id: Uuid, window: Window) -> Re
         f.nodes = Some(vec![machine_id]);
     }
 
+    let mut a = Args::default();
     let sql = format!(
         "{} select dest_host, kind, sum(conns)::bigint conns, sum(blocked)::bigint blocked, max(sources)::bigint sources
          from f group by dest_host, kind order by conns desc, dest_host limit 30",
-        cte(&f)
+        cte(&f, &mut a)
     );
-    let top_domains: Vec<TopDomain> = full!(sqlx::query_as(&sql), f).fetch_all(db).await?;
+    let top_domains: Vec<TopDomain> = sqlx::query_as_with(&sql, a.0).fetch_all(db).await?;
     let top_sources = sources(db, &f, 20).await?;
 
     let mut ef = Filter::new(Window::D7, now);
@@ -680,12 +740,12 @@ mod tests {
     fn query_cache_ttl() {
         let c = QueryCache::new(StdDuration::from_millis(60));
         assert!(c.get("a").is_none());
-        c.put("a".into(), serde_json::json!(1));
-        assert_eq!(c.get("a"), Some(serde_json::json!(1)));
+        c.put("a".into(), Arc::new(serde_json::json!(1)));
+        assert_eq!(c.get("a").as_deref(), Some(&serde_json::json!(1)));
         std::thread::sleep(StdDuration::from_millis(80));
         assert!(c.get("a").is_none(), "过期不再命中");
         let off = QueryCache::new(StdDuration::ZERO);
-        off.put("a".into(), serde_json::json!(1));
+        off.put("a".into(), Arc::new(serde_json::json!(1)));
         assert!(off.get("a").is_none(), "ttl 为 0 等于不缓存");
     }
 

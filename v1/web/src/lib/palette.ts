@@ -8,5 +8,5 @@ const subscribe = (f: () => void) => { subs.add(f); return () => { subs.delete(f
 export const setOverlay = (o: Overlay) => { if (o !== current) { current = o; subs.forEach((f) => f()); } };
 export const useOverlay = () => useSyncExternalStore(subscribe, () => current, () => null);
 
-export const isMac = () => typeof navigator !== 'undefined' && /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent);
+const isMac = () => typeof navigator !== 'undefined' && /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent);
 export const modKey = () => (isMac() ? '⌘' : 'Ctrl');

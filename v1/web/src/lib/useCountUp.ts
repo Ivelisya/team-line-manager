@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 
-/** 数值变化时平滑过渡（KPI 用）。首次渲染直接显示目标值，不从 0 数起；减少动效偏好下直接跳变。 */
+/** 数值变化时平滑过渡（KPI 用）。首次渲染直接显示目标值，不从 0 数起；减少动效偏好下直接跳变。
+ *  毛玻璃遮罩开着（<html data-overlay>，见 dialog.tsx）时也直接跳变：KPI 在遮罩下面，逐帧滚动会让 GPU 每帧重做全屏模糊 */
 export function useCountUp(target: number, ms = 450): number {
   const [shown, setShown] = useState(target);
   const from = useRef(target);
@@ -10,8 +11,8 @@ export function useCountUp(target: number, ms = 450): number {
     if (from.current === target) return;
     // 之前没有有效值（数据刚到）：直接显示，不从 0 数起
     if (!Number.isFinite(from.current)) { from.current = target; setShown(target); return; }
-    const reduce = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if (reduce) { from.current = target; setShown(target); return; }
+    const jump = document.documentElement.hasAttribute('data-overlay') || matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (jump) { from.current = target; setShown(target); return; }
     const a = from.current; const t0 = performance.now();
     const step = (t: number) => {
       const p = Math.min(1, (t - t0) / ms);

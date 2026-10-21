@@ -3,7 +3,7 @@
 import * as React from 'react';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card';
 import type { MachineView } from '@/lib/types';
-import { useMachinePreview } from '@/lib/queries';
+import { useMachine } from '@/lib/queries';
 import * as F from '@/lib/format';
 import { entryText, isQuiet, resourceMeters } from '@/lib/derive';
 import { KIND_LABEL } from '@/lib/sort';
@@ -40,7 +40,7 @@ function MiniCard({ m }: { m: MachineView }) {
 }
 
 function Lookup({ id, m }: { id: string; m?: MachineView }) {
-  const q = useMachinePreview(m ? null : id);
+  const q = useMachine(m ? null : id);
   const data = m ?? q.data;
   if (!data) return <div className="hc" style={{ minHeight: 64 }}><div className="hint">{q.isError ? '无法加载这台机器' : '加载中…'}</div></div>;
   return <MiniCard m={data} />;

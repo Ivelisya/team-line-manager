@@ -29,6 +29,13 @@ const VIEWS: { value: View; label: string }[] = [
 ];
 const isView = (v: string | null): v is View => VIEWS.some((x) => x.value === v);
 const winLabel = (w: AccessWindow) => ACCESS_WINDOWS.find((x) => x.value === w)!.long;
+// 选项、每页条数用模块常量：搜索框每敲一个字整页重渲，memo 的下拉 / 分段控件 / 分页器不被新数组击穿
+const WINDOW_ITEMS = ACCESS_WINDOWS.map((x) => ({ value: x.value, label: x.label }));
+const KIND_OPTS = [{ value: 'domain', label: '域名' }, { value: 'ip', label: 'IP' }];
+const ACT_OPTS = [{ value: 'routed', label: '已转发' }, { value: 'blocked', label: '已阻止' }];
+const SORT_ITEMS: { value: TargetSort; label: string }[] = [{ value: 'conns', label: '连接数' }, { value: 'last', label: '最近' }, { value: 'first', label: '首次' }];
+const SERVER_SIZES = [50, 100, 200];
+const LOCAL_SIZES = [50, 100];
 
 export function AccessPage() {
   const [sp, setSp] = useSearchParams();
@@ -38,14 +45,18 @@ export function AccessPage() {
     return n;
   }, { replace: true }), [setSp]);
 
+  // 先取出各个字符串再进依赖：整份 URL 参数（sp）一变就重建 f 的话，打开抽屉（?m=）也会让下面五个 memo 的视图全部重渲染
   const w = sp.get('w');
   const view = sp.get('view');
   const kind = sp.get('kind');
   const act = sp.get('act');
+  const team = sp.get('team') ?? '';
+  const node = sp.get('node') ?? '';
+  const search = sp.get('q') ?? '';
   const f = React.useMemo<AccessFilter>(() => ({
-    window: isAccessWindow(w) ? w : '24h', team: sp.get('team') ?? '', node: sp.get('node') ?? '', search: sp.get('q') ?? '',
+    window: isAccessWindow(w) ? w : '24h', team, node, search,
     kind: kind === 'domain' || kind === 'ip' ? kind : '', action: act === 'routed' || act === 'blocked' ? act : '',
-  }), [w, sp, kind, act]);
+  }), [w, team, node, search, kind, act]);
   const tab: View = isView(view) ? view : 'targets';
   const { open } = useDrawer(); // 一次：各视图的行里不再各自订阅 URL
   const [sort, setSort] = React.useState<TargetSort>('conns');
@@ -56,11 +67,16 @@ export function AccessPage() {
   const updRef = React.useRef(upd); updRef.current = upd;
   React.useEffect(() => { const t = setTimeout(() => updRef.current({ q: text.trim() }), 250); return () => clearTimeout(t); }, [text]);
 
-  const teams = useTeams().data ?? [];
+  const teams = useTeams().data;
+  const teamOpts = React.useMemo(() => (teams ?? []).map((t) => ({ value: t.id, label: t.name })), [teams]);
   // 节点选项与回调保持稳定：搜索框每敲一个字整页重渲时，节点下拉（Select 是 memo）不跟着重画全部选项
   const machines = useMachineBriefs().data;
   const nodeOpts = React.useMemo(() => (machines ?? []).filter((m) => m.kind !== 'relay' && (!f.team || m.team?.id === f.team)).map((m) => ({ value: m.id, label: m.name })), [machines, f.team]);
   const onNode = React.useCallback((v: string) => upd({ node: v }), [upd]);
+  const onTeam = React.useCallback((v: string) => upd({ team: v, node: '' }), [upd]);
+  const onKind = React.useCallback((v: string) => upd({ kind: v }), [upd]);
+  const onAct = React.useCallback((v: string) => upd({ act: v }), [upd]);
+  const onWindow = React.useCallback((v: AccessWindow) => upd({ w: v === '24h' ? '' : v }), [upd]);
   const summary = useAccessSummary(f);
   const k = summary.data?.kpi;
   const filtered = !!(f.team || f.node || f.search || f.kind || f.action);
@@ -69,14 +85,14 @@ export function AccessPage() {
   return (
     <div className="stack">
       <PageHead title="访问监控" note={`每 30 秒刷新${summary.data ? ` · 统计自 ${F.dt(summary.data.window_start)}` : ''}`}
-        tools={<><IpIntelStatusChip /><Segmented label="时间范围" value={f.window} onChange={(v) => upd({ w: v === '24h' ? '' : v })} items={ACCESS_WINDOWS.map((x) => ({ value: x.value, label: x.label }))} /><AccessViewSwitch value="behavior" /></>} /* 视图切换在最右，与访问规则页同位 */ />
+        tools={<><IpIntelStatusChip /><Segmented label="时间范围" value={f.window} onChange={onWindow} items={WINDOW_ITEMS} /><AccessViewSwitch value="behavior" /></>} /* 视图切换在最右，与访问规则页同位 */ />
 
       <div className="row" role="search">
         <SearchInput value={text} onChange={(e) => setText(e.target.value)} placeholder="搜索域名或来源 IP…" aria-label="搜索域名或来源 IP" className="w-full sm:w-[260px]" />
-        <div className="w-[140px]"><Select value={f.team} onChange={(v) => upd({ team: v, node: '' })} allowEmpty="全部团队" placeholder="团队" options={teams.map((t) => ({ value: t.id, label: t.name }))} aria-label="团队" /></div>
+        <div className="w-[140px]"><Select value={f.team} onChange={onTeam} allowEmpty="全部团队" placeholder="团队" options={teamOpts} aria-label="团队" /></div>
         <div className="w-[150px]"><Select value={f.node} onChange={onNode} allowEmpty="全部节点" placeholder="节点" options={nodeOpts} aria-label="节点" /></div>
-        <div className="w-[130px]"><Select value={f.kind} onChange={(v) => upd({ kind: v })} allowEmpty="全部类型" placeholder="目标类型" options={[{ value: 'domain', label: '域名' }, { value: 'ip', label: 'IP' }]} aria-label="目标类型" /></div>
-        <div className="w-[130px]"><Select value={f.action} onChange={(v) => upd({ act: v })} allowEmpty="全部结果" placeholder="处理结果" options={[{ value: 'routed', label: '已转发' }, { value: 'blocked', label: '已阻止' }]} aria-label="处理结果" /></div>
+        <div className="w-[130px]"><Select value={f.kind} onChange={onKind} allowEmpty="全部类型" placeholder="目标类型" options={KIND_OPTS} aria-label="目标类型" /></div>
+        <div className="w-[130px]"><Select value={f.action} onChange={onAct} allowEmpty="全部结果" placeholder="处理结果" options={ACT_OPTS} aria-label="处理结果" /></div>
         {filtered && <Button variant="quiet" size="md" onClick={clear}>清除筛选</Button>}
       </div>
 
@@ -116,12 +132,12 @@ function NodeLink({ id, name, open }: { id: string; name: string; open: Open }) 
 /** total：同一筛选下 summary 的「访问目标」数，正是这张表的总行数。
  *  五个视图都 memo：搜索框打字只改页面里的 text，f 要停手 250ms 写进 URL 后才变，期间不重画表格 */
 const TargetsView = React.memo(function TargetsView({ open, f, sort, setSort, filtered, total }: { f: AccessFilter; sort: TargetSort; setSort: (s: TargetSort) => void; filtered: boolean; open: Open; total: number | undefined }) {
-  const pg = usePage({ total, sizes: [50, 100, 200], size: 100, reset: [f, sort] });
+  const pg = usePage({ total, sizes: SERVER_SIZES, size: 100, reset: [f, sort] });
   const q = useAccessTargets(f, sort, pg.offset, pg.size);
   const rows = q.data?.items ?? [];
   return (
     <Panel ref={pg.anchor} title="域名与 IP" count={total != null ? `${fmtN(total)} 个` : undefined} sub="同一节点的随机子域名已合并为 *.域名"
-      tools={<Segmented sm label="排序" value={sort} onChange={setSort} items={[{ value: 'conns', label: '连接数' }, { value: 'last', label: '最近' }, { value: 'first', label: '首次' }]} />} flush>
+      tools={<Segmented sm label="排序" value={sort} onChange={setSort} items={SORT_ITEMS} />} flush>
       {q.isError && <div style={{ padding: 12 }}><ErrNote e={q.error} /></div>}
       <div className="table-wrap">
         <table className="dt" style={{ minWidth: 900 }}>
@@ -150,11 +166,11 @@ const TargetsView = React.memo(function TargetsView({ open, f, sort, setSort, fi
 });
 
 const NewView = React.memo(function NewView({ f, filtered, open }: { f: AccessFilter; filtered: boolean; open: Open }) {
-  // 页码先于查询算出（偏移量进查询）；总数取上一次的结果
+  // 页码先于查询算出（偏移量进查询）；总数取上一次的结果。渲染中直接跟上（不等 effect 提交一遍再重渲染）
   const [total, setTotal] = React.useState<number>();
-  const pg = usePage({ total, sizes: [50, 100, 200], size: 100, reset: [f] });
+  const pg = usePage({ total, sizes: SERVER_SIZES, size: 100, reset: [f] });
   const q = useNewTargets(f, pg.offset, pg.size);
-  React.useEffect(() => { if (q.data) setTotal(q.data.total); }, [q.data]);
+  if (q.data && q.data.total !== total) setTotal(q.data.total);
   const rows = q.data?.items ?? [];
   return (
     <Panel ref={pg.anchor} title="新出现的目标" count={q.data ? `${fmtN(q.data.total)} 个` : undefined}
@@ -196,7 +212,7 @@ const SourcesView = React.memo(function SourcesView({ f, filtered, open }: { f: 
   const [ct, setCt] = React.useState('');
   const all = q.data?.items ?? [];
   const rows = all.filter((s) => connMatches(s.intel, ct));
-  const pg = usePage({ total: q.data ? rows.length : undefined, sizes: [50, 100], size: 50, reset: [f, ct] });
+  const pg = usePage({ total: q.data ? rows.length : undefined, sizes: LOCAL_SIZES, size: 50, reset: [f, ct] });
   return (
     <>
       <IpIntelHint />
@@ -240,7 +256,7 @@ const SourcesView = React.memo(function SourcesView({ f, filtered, open }: { f: 
 const NodesView = React.memo(function NodesView({ f, filtered, open }: { f: AccessFilter; filtered: boolean; open: Open }) {
   const q = useAccessSummary(f);
   const rows = q.data?.nodes ?? [];
-  const pg = usePage({ total: q.data ? rows.length : undefined, sizes: [50, 100], size: 50, reset: [f] });
+  const pg = usePage({ total: q.data ? rows.length : undefined, sizes: LOCAL_SIZES, size: 50, reset: [f] });
   return (
     <Panel ref={pg.anchor} title="节点概览" count={q.data ? `${rows.length} 个节点` : undefined} sub="点一行打开该节点的访问记录" flush>
       {q.isError && <div style={{ padding: 12 }}><ErrNote e={q.error} /></div>}

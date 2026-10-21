@@ -157,19 +157,25 @@ impl XrayCli {
         // 日志路径不属于本次变更，且 -test 会真的去打开它（目录可能还不存在 / 沙箱里只读）→ 副本里关掉
         let mut cfg = cfg.clone();
         cfg["log"] = json!({"access": "none", "error": "none", "loglevel": "none"});
-        let f = self.tmp_file("test", &serde_json::to_vec_pretty(&cfg)?)?;
+        let f = self.tmp_file("test", cfg).await?;
         let r = self.run(&["run", "-test", "-c", f.to_str().unwrap_or("")], TEST_TIMEOUT).await;
         let _ = std::fs::remove_file(&f);
         r.map(|_| ())
     }
 
-    fn tmp_file(&self, kind: &str, data: &[u8]) -> Result<PathBuf> {
+    /// 把 JSON 写成 tmp_dir 下的临时文件：序列化整份配置与写盘放阻塞线程
+    async fn tmp_file(&self, kind: &str, v: Value) -> Result<PathBuf> {
         use std::sync::atomic::{AtomicU64, Ordering};
         static N: AtomicU64 = AtomicU64::new(0);
-        std::fs::create_dir_all(&self.tmp_dir)?;
-        let p = self.tmp_dir.join(format!("{kind}-{}-{}.json", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
-        crate::util::write_atomic(&p, data, false)?;
-        Ok(p)
+        let dir = self.tmp_dir.clone();
+        let p = dir.join(format!("{kind}-{}-{}.json", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+        tokio::task::spawn_blocking(move || -> Result<PathBuf> {
+            std::fs::create_dir_all(&dir)?;
+            crate::util::write_atomic(&p, &serde_json::to_vec(&v)?, false)?;
+            Ok(p)
+        })
+        .await
+        .context("写临时文件任务异常终止")?
     }
 
     pub async fn exec(&self, op: &Op) -> Result<()> {
@@ -184,7 +190,7 @@ impl XrayCli {
             self.api(sub, &[t]).await?;
             return Ok(());
         }
-        let f = self.tmp_file(sub, &serde_json::to_vec(&extra_json.expect("有内容"))?)?;
+        let f = self.tmp_file(sub, extra_json.expect("有内容")).await?;
         let r = self.api(sub, &[f.to_str().unwrap_or("")]).await;
         let _ = std::fs::remove_file(&f);
         r.map(|_| ())

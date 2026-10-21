@@ -10,7 +10,7 @@ export const isQuiet = (m: MachineView) => (m.agent != null && !m.agent.online) 
 /** 当前网卡速率：无主机或数据过期（isQuiet）时为 null——各处显示 “—”，也不进迹线 */
 export const liveRate = (m: MachineView) => (hasHost(m) && !isQuiet(m) ? { rx: m.host!.net_rx_bps, tx: m.host!.net_tx_bps } : null);
 /** 容器（LXC 等）里 /proc/loadavg 是宿主机的，agent 不报负载（null） */
-export const LOAD_NA = '容器内无法获取本机负载';
+const LOAD_NA = '容器内无法获取本机负载';
 
 export function entryText(m: MachineView): string {
   if (m.kind === 'relay') return `${m.entries.length} 条入口`;
@@ -92,7 +92,7 @@ export function remainingValue(s: Subscription | null) {
 
 /** 标签配色：固定语义的用固定色（类型：线路机青、落地机紫、家宽橙；维护中琥珀），
  *  其余（供应商代号、服务编号）按文字散列到剩下的几种颜色，同一个代号永远同色、也不会和类型标签撞色 */
-export const TAG_COLORS = ['blue', 'pink', 'cyan', 'green'] as const;
+const TAG_COLORS = ['blue', 'pink', 'cyan', 'green'] as const;
 export type TagColor = (typeof TAG_COLORS)[number] | 'gray' | 'teal' | 'violet' | 'orange' | 'amber';
 export function tagColor(text: string): TagColor {
   let h = 0;

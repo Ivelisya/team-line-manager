@@ -1,6 +1,6 @@
 // 首页的小型数据图形（全部是 HTML/SVG，不进 recharts 块）：
 // 分段格条 Cells、带标题的资源格条 CellMeter、迷你资源条 MiniMeter、圆环 Ring、点阵迹线 DotTrace、面积折线 AreaSpark、彩色标签 Tag。
-// 动效只靠 CSS：值变化走 transition，首次出现走 @starting-style；令牌在系统“减少动态效果”时归零。
+// 动效只靠 CSS：值变化走 transition，首次出现走 @starting-style（圆环）/ 挂载时的 @keyframes（格条逐格点亮）；令牌在系统“减少动态效果”时归零。
 import * as React from 'react';
 import type { Fmt } from '@/lib/format';
 import * as F from '@/lib/format';
@@ -11,7 +11,7 @@ import { Num } from './primitives';
 
 type Vars = React.CSSProperties & Record<`--${string}`, string | number>;
 const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
-export const CELL_N = 18;
+const CELL_N = 18;
 
 /** 分段格条：n 格，按比例点亮；最后一格按剩余比例半亮。colors 给了就逐格取色（额度条的绿→黄→红）。
  *  memo：卡片随推送重渲染时，比例没变的格条（额度、磁盘）不重画；colors 传模块常量 */

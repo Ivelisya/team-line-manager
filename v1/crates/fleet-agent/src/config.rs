@@ -12,7 +12,6 @@ pub enum Role {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
     pub server_url: String,
@@ -40,6 +39,10 @@ pub struct Config {
     /// 自签证书的中控可在这里放 CA（PEM）
     #[serde(default)]
     pub ca_file: Option<PathBuf>,
+    /// 不认识的键：只警告、不拒绝启动。中控生成的 agent.toml 比 agent 新（多了新版才有的键）时，
+    /// 旧 agent 拒绝启动就再也收不到升级；拼写错误也只是该项回落到默认值，日志里看得到
+    #[serde(flatten)]
+    unknown: toml::Table,
 }
 
 fn d_token_file() -> PathBuf { "/etc/fleet-agent/token".into() }
@@ -55,16 +58,15 @@ impl Config {
     pub fn load(path: &Path) -> Result<Self> {
         let s = std::fs::read_to_string(path).with_context(|| format!("读取配置 {}", path.display()))?;
         let c: Config = toml::from_str(&s).with_context(|| format!("解析配置 {}", path.display()))?;
+        for k in c.unknown.keys() {
+            tracing::warn!("配置 {} 里有不认识的项 {k}，已忽略（拼写错误，或配置比 agent 版本新）", path.display());
+        }
         Ok(c)
     }
 
     /// 本地诊断子命令（render/apply）在没有配置文件时使用的默认值
     pub fn relay_default() -> Self {
         toml::from_str("role = \"relay\"").expect("默认配置")
-    }
-
-    pub fn api_port(&self) -> u16 {
-        self.xray_api.rsplit_once(':').and_then(|(_, p)| p.parse().ok()).unwrap_or(62789)
     }
 }
 
@@ -76,7 +78,9 @@ mod tests {
     fn defaults_and_unknown_fields() {
         let c = Config::relay_default();
         assert_eq!(c.role, Role::Relay);
-        assert_eq!(c.api_port(), 62789);
-        assert!(toml::from_str::<Config>("role = \"node\"\nbogus = 1").is_err());
+        assert_eq!(c.xray_api, "127.0.0.1:62789");
+        let c = toml::from_str::<Config>("role = \"node\"\nbogus = 1\ndata_dir = \"/x\"").unwrap();
+        assert_eq!((c.role, c.data_dir.to_str()), (Role::Node, Some("/x")));
+        assert_eq!(c.unknown.keys().collect::<Vec<_>>(), ["bogus"]);
     }
 }

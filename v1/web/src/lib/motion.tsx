@@ -3,9 +3,12 @@
 import * as React from 'react';
 import { LazyMotion, MotionConfig } from 'motion/react';
 
-// 布局动画（layout / layoutId）需要 domMax 特性包；用异步加载放到单独的块里，不占首屏主包。
-// 特性包到位之前 m.* 元素按静态元素渲染（指示器已在正确位置，只是不带动画），所以不会闪也不会错位。
-const loadFeatures = () => import('./motionFeatures').then((x) => x.default);
+// 布局动画（layout / layoutId）需要 domMax 特性包（约 88 KB）；用异步加载放到单独的块里，不占首屏主包，
+// 而且等浏览器空闲了再取（不支持 requestIdleCallback 的 Safari 等 3 秒）：登录后首屏的脚本与数据请求不和它抢。
+// 特性包到位之前 m.* 元素按静态元素渲染（指示器已在正确位置，只是不带动画），所以不会闪也不会错位；
+// 也因此 m.* 上不写 initial / animate 这类进场动画（到位之前会一直停在 initial），卡片的淡入走 CSS。
+const idle = () => new Promise<void>((r) => { if ('requestIdleCallback' in window) requestIdleCallback(() => r()); else setTimeout(r, 3000); });
+const loadFeatures = () => idle().then(() => import('./motionFeatures')).then((x) => x.default);
 
 /** 根部提供者：reducedMotion="user" 让系统“减少动态效果”时位移/布局动画直接跳到终点 */
 export function MotionProvider({ children }: { children: React.ReactNode }) {
