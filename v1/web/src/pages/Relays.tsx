@@ -47,7 +47,7 @@ function RelayCard({ m, open }: { m: MachineView; open: ReturnType<typeof useDra
         <KindIcon kind="relay" />
         <span className="ttl">{m.name}</span>
         <HealthPill m={m} />
-        <span className="t-sub">{r?.public_host ?? m.ip} · {m.ip}</span>
+        <span className="t-sub">{r?.public_host && r.public_host !== m.ip ? `${r.public_host} · ${m.ip}` : m.ip}</span>
         {m.subscription && <Chip variant={due.tone === 'warn' || due.tone === 'bad' ? 'warn' : undefined}><Due days={m.subscription.due_days} tail /></Chip>}
         <span style={{ marginLeft: 'auto' }} className="row">
           {m.lifecycle === 'active' && m.entries.some((e) => e.lifecycle === 'active') && <Button size="sm" onClick={() => openEvacuate(m.id)}><PackageOpen size={14} />搬空到…</Button>}
