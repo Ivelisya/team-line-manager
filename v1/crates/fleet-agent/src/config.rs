@@ -27,8 +27,6 @@ pub struct Config {
     pub xray_bin: PathBuf,
     #[serde(default = "d_xray_config")]
     pub xray_config: PathBuf,
-    #[serde(default = "d_xray_api")]
-    pub xray_api: String,
     #[serde(default = "d_xray_service")]
     pub xray_service: String,
     #[serde(default = "d_access_log")]
@@ -36,9 +34,6 @@ pub struct Config {
     /// geoip.dat / geosite.dat 所在目录（XRAY_LOCATION_ASSET）
     #[serde(default = "d_asset_dir")]
     pub xray_asset_dir: PathBuf,
-    /// 自签证书的中控可在这里放 CA（PEM）
-    #[serde(default)]
-    pub ca_file: Option<PathBuf>,
     /// 不认识的键：只警告、不拒绝启动。中控生成的 agent.toml 比 agent 新（多了新版才有的键）时，
     /// 旧 agent 拒绝启动就再也收不到升级；拼写错误也只是该项回落到默认值，日志里看得到
     #[serde(flatten)]
@@ -49,7 +44,6 @@ fn d_token_file() -> PathBuf { "/etc/fleet-agent/token".into() }
 fn d_data_dir() -> PathBuf { "/var/lib/fleet-agent".into() }
 fn d_xray_bin() -> PathBuf { "/usr/local/bin/xray".into() }
 fn d_xray_config() -> PathBuf { "/etc/fleet-agent/xray.json".into() }
-fn d_xray_api() -> String { "127.0.0.1:62789".into() }
 fn d_xray_service() -> String { "fleet-xray.service".into() }
 fn d_access_log() -> PathBuf { "/var/log/fleet-xray/access.log".into() }
 fn d_asset_dir() -> PathBuf { "/usr/local/share/xray".into() }
@@ -78,9 +72,10 @@ mod tests {
     fn defaults_and_unknown_fields() {
         let c = Config::relay_default();
         assert_eq!(c.role, Role::Relay);
-        assert_eq!(c.xray_api, "127.0.0.1:62789");
-        let c = toml::from_str::<Config>("role = \"node\"\nbogus = 1\ndata_dir = \"/x\"").unwrap();
+        assert_eq!(c.xray_service, "fleet-xray.service");
+        // 旧版中控生成的 xray_api 已不认识：只告警，不拒绝启动
+        let c = toml::from_str::<Config>("role = \"node\"\nxray_api = \"127.0.0.1:62789\"\ndata_dir = \"/x\"").unwrap();
         assert_eq!((c.role, c.data_dir.to_str()), (Role::Node, Some("/x")));
-        assert_eq!(c.unknown.keys().collect::<Vec<_>>(), ["bogus"]);
+        assert_eq!(c.unknown.keys().collect::<Vec<_>>(), ["xray_api"]);
     }
 }

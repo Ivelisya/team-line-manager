@@ -57,7 +57,7 @@ pub fn access(ctx: &Ctx, o: AccessOpts) -> anyhow::Result<u8> {
                     num(k, "/conns"),
                     num(k, "/targets"),
                     num(k, "/blocked"),
-                    table::render(&["节点", "团队", "连接", "域名", "来源", "阻止", "最近(UTC)"], &rows)
+                    table::render(&["节点", "团队", "连接", "域名", "来源", "阻止", "最近"], &rows)
                 )
             });
         }
@@ -79,7 +79,7 @@ pub fn access(ctx: &Ctx, o: AccessOpts) -> anyhow::Result<u8> {
                         vec![st(t, "/dest_host"), st(t, "/kind"), st(t, "/name"), total, num(t, "/sources"), num(t, "/blocked"), table::ts(&st(t, "/first_seen")), table::ts(&st(t, "/last_seen"))]
                     })
                     .collect();
-                format!("{}\n共 {} 条", table::render(&["目标", "类型", "节点", "连接", "来源", "阻止", "首次(UTC)", "最近(UTC)"], &rows), rows.len())
+                format!("{}\n共 {} 条", table::render(&["目标", "类型", "节点", "连接", "来源", "阻止", "首次", "最近"], &rows), rows.len())
             });
         }
         "sources" => {
@@ -89,7 +89,7 @@ pub fn access(ctx: &Ctx, o: AccessOpts) -> anyhow::Result<u8> {
             ctx.emit(&d, || {
                 let list = d["items"].as_array().cloned().unwrap_or_default();
                 let rows: Vec<Vec<String>> = list.iter().map(|s| vec![st(s, "/src_ip"), st(s, "/name"), num(s, "/conns"), table::ts(&st(s, "/last_ts"))]).collect();
-                format!("{}\n共 {} 条", table::render(&["来源 IP", "节点", "连接", "最近(UTC)"], &rows), rows.len())
+                format!("{}\n共 {} 条", table::render(&["来源 IP", "节点", "连接", "最近"], &rows), rows.len())
             });
         }
         _ => {
@@ -105,7 +105,7 @@ pub fn access(ctx: &Ctx, o: AccessOpts) -> anyhow::Result<u8> {
                         vec![table::ts(&st(e, "/ts")), st(e, "/name"), st(e, "/src_ip"), format!("{}:{port}", st(e, "/dest_host")), st(e, "/network"), res.into()]
                     })
                     .collect();
-                format!("{}\n共 {} 条", table::render(&["时间(UTC)", "节点", "来源", "目标", "协议", "结果"], &rows), rows.len())
+                format!("{}\n共 {} 条", table::render(&["时间", "节点", "来源", "目标", "协议", "结果"], &rows), rows.len())
             });
         }
     }

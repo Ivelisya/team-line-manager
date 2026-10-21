@@ -103,7 +103,6 @@ async fn periodic_align(sh: &Shared, applier: &Applier, gate: &mut RestartGate) 
     if rep.ok {
         gate.clear();
         note_apply(sh, &rep, None);
-        sh.health.realign_fixes.fetch_add(1, Ordering::Relaxed);
         tracing::info!(generation = d.generation, "已修复到与期望状态一致");
     } else {
         let note = res.disruptive_restart.then(|| {
@@ -156,7 +155,8 @@ async fn report_applied(sh: &Shared, client: &ServerClient, rep: &ApplyReport, s
 pub async fn desired_task(sh: Arc<Shared>, applier: Arc<Applier>, client: Arc<ServerClient>, mut sd: watch::Receiver<bool>) {
     let mut fails = 0u32;
     let mut gate = RestartGate::default();
-    // 本版本解析不了的最新代数：已回报"版本过旧"，之后带着它去长轮询，直到中控出了更新的一代（升级 agent 会重启进程，自然清零）
+    // 本版本解析不了的最新代数：已回报"版本过旧"，之后带着它去长轮询，直到中控出了更新的一代。
+    // 应用成功就清零：中控代数回退（比它小）后不能再带着它去轮询，否则每次都立刻拿回同一代、无间隔空转
     let mut unreadable = 0u64;
     startup_align(&sh, &applier).await;
     let mut last_align = Instant::now();
@@ -215,6 +215,7 @@ pub async fn desired_task(sh: Arc<Shared>, applier: Arc<Applier>, client: Arc<Se
                     let _ = tokio::task::spawn_blocking(move || save_applied(&cfg, &d2)).await;
                     *sh.applied.write().unwrap() = Some(d);
                     sh.applied_gen.store(generation, Ordering::Relaxed);
+                    unreadable = 0;
                     fails = 0;
                 } else {
                     tracing::error!(generation = d.generation, "应用失败：{}", rep.error.as_deref().unwrap_or(""));

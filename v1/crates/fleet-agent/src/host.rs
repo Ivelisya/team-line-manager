@@ -239,13 +239,6 @@ pub fn collect_info() -> SystemInfo {
         .find_map(|l| l.strip_prefix("PRETTY_NAME="))
         .map(|v| v.trim_matches('"').to_string())
         .unwrap_or_default();
-    let cpuinfo = read("/proc/cpuinfo");
-    let cpu_model = cpuinfo
-        .lines()
-        .find(|l| l.starts_with("model name"))
-        .and_then(|l| l.split_once(':'))
-        .map(|(_, v)| v.trim().to_string())
-        .unwrap_or_default();
     // 可用核数（认 cgroup 配额与 CPU 亲和性）：容器里 /proc/stat 列的是宿主机全部 CPU
     let cores = std::thread::available_parallelism().map_or(1, |n| n.get() as u32);
     let (ipv4, ipv6) = local_ips();
@@ -253,7 +246,6 @@ pub fn collect_info() -> SystemInfo {
         hostname: read("/proc/sys/kernel/hostname").trim().to_string(),
         kernel: read("/proc/sys/kernel/osrelease").trim().to_string(),
         os,
-        cpu_model,
         cpu_cores: cores,
         arch: std::env::consts::ARCH.to_string(),
         ipv4,

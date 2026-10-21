@@ -11,11 +11,13 @@ description: 团队线路管理（fleet）的运维入口。查节点或线路�
 
 ```
 fleetctl whoami            # 确认连得上，并看本密钥的 scopes
-fleetctl --json <命令>      # AI 一律加 --json，拿 API 的 data 原样 JSON
+fleetctl --json <命令>      # AI 一律加 --json，输出一行 JSON
 ```
 
 - 配置：环境变量 `FLEET_URL`、`FLEET_TOKEN`，或 `fleetctl login --url <地址> --token <密钥>`。实验室中控是 `http://192.168.31.60:8080`。
+- `--json` 的 `ls` / `entries` 是与表格同列的精简对象（字段见文末速查），一台机器的完整视图用 `show`；其余命令是 API 的 data 原样。机器上百台时 `ls` 仍有几万字符，先用 `--team` / `--kind` / `--status` 缩小。
 - 成功退出码 0；失败退出码 1，错误 JSON 在 stderr（`{"error":{"code","message","status"}}`）。`exec` 单台时退出码等于远端命令的退出码。`job` / `job --follow`（以及各命令的 `--follow`）遇到作业失败或取消也退出 1，stderr 给 `{"error":{"code":"job_failed"|"job_cancelled","message",…}}`。
+- 没拿到中控响应时 `status` 为 null、`code` 是 `unreachable`（连不上，请求没发出去，可直接重试；`message` 带最底层原因）或 `timeout`（请求已发出、等响应超时）。`timeout` 时操作可能已在中控执行：先 `fleetctl --json jobs --active` / `fleetctl --json audit --limit 10` 核对，再决定是否重试，尤其是上架、退役、换线路机这类会建作业的命令。
 - `<机器>` 写机器 id、显示名（`团队1-06`）、线路机名（`线路机2`）或 IP。歧义时命令报错并列出候选，照候选里的 id 重试。
 
 ## 先看，再动
@@ -83,10 +85,12 @@ fleetctl retry <作业> [--reset-host-key] [--password-env VAR]   # 重试失败
 
 ## --json 字段速查
 
-- `ls` / `show`（MachineView）：`id name kind(relay|vps|proxy) lifecycle(active|provisioning|retiring|retired|failed) ip ssh_port revision`；`health.status`（ok|degraded|down|unknown|maintenance|inactive）与 `health.reasons[{key,rule_name,severity,text}]`（`rule_name` 是规则中文名，同通知）；`agent.online`；`host.{cpu_pct,mem_used,mem_total,disk_used,disk_total,load1}`；`entries[]`；`active_job`；`open_incidents`。
+- `ls`（每台一个精简对象）：`id name kind(relay|vps|proxy) lifecycle(active|provisioning|retiring|retired|failed) health(ok|degraded|down|unknown|maintenance|inactive) ip agent_online cpu_pct mem_pct disk_pct entries(入口数) open_incidents active_job{id,kind,state}`；百分比是整数，取不到为 null；家宽代理没有 agent，`agent_online` 为 null。
+- `show`（MachineView）：上面这些的完整版（`health.status`、`agent.online`、`host.{cpu_pct,mem_used,mem_total,disk_used,disk_total,load1}`、`entries[]` 完整入口视图），另有 `ssh_port revision`、`health.reasons[{key,rule_name,severity,text}]`（`rule_name` 是规则中文名，同通知）、`agent.health`（agent 自报：离线队列、访问日志解析不了 / 丢弃的行数等）、`failed_job`。
+- `entries`（每个入口一个精简对象）：`id relay port node lifecycle(active|pending|disabled|removing|removed) applied apply_error tcp_ok egress_ok today_down today_up`（今日业务流量，字节）；`tcp_ok` / `egress_ok` 为 null 表示还没探测过。
 - `incidents`：`id rule rule_name subject_name severity(warning|critical) summary opened_at ack_by reopen_count`（恢复后 30 分钟内复发会重开同一条并 +1，表格里显示「反复 N 次」；大于 0 说明在抖，查探测/网络而不是只看当前状态）。规则 key：agent_offline、no_entry、egress_fail、tcp_fail、renewal_due、renewal_overdue、relay_apply_lag、relay_apply_error、relay_xray_down、host_cpu_high、host_mem_high、host_disk_high、ipintel_new_isp（来源出现新运营商）、ipintel_new_city（来源出现新城市）、ipintel_datacenter_source（机房 / VPN 来源 IP），后三个是 warning、学习期 7 天后才有、最后一次出现 24 小时后自动恢复，不用手动处理。
-- `status --json` 的 `overview.failed`：上架失败（lifecycle=failed）的机器数，算在「有问题」里。`ls`/`show` 的 `failed_job{id,kind,state}`：上架失败或退役失败（退役中）的机器带最近失败的作业，拿它的 id 去 `fleetctl job` / `fleetctl retry`。
-- 不加 `--json` 的 `status` / `show` / `entries` / `incidents` 是给人看的：种类、生命周期、健康、严重度、规则、入口状态、作业种类与状态都显示中文，时间是北京时间；`ls` 的种类 / 生命周期 / 健康列保留原值（就是 `--kind`、`--status` 的取值）。脚本和 AI 只解析 `--json`。
+- `status --json` 的 `overview.failed`：上架失败（lifecycle=failed）的机器数，算在「有问题」里。`show` 的 `failed_job{id,kind,state}`：上架失败或退役失败（退役中）的机器带最近失败的作业，拿它的 id 去 `fleetctl job` / `fleetctl retry`（`ls --status failed` / `ls --status retiring` 找出这些机器）。
+- 不加 `--json` 的 `status` / `show` / `entries` / `incidents` 是给人看的：种类、生命周期、健康、严重度、规则、入口状态、作业种类与状态都显示中文；所有命令表格里的时间都是北京时间（`--json` 里是 API 原样的 RFC 3339）；`ls` 的种类 / 生命周期 / 健康列保留原值（就是 `--kind`、`--status` 的取值）。脚本和 AI 只解析 `--json`。
 - `status --json` 的 `overview.online` / `offline`：按 agent 连通计（家宽代理没有 agent 算在线），与健康无关。
 - `job`：`state`（queued|running|waiting|cancelling|succeeded|failed|cancelled）、`error`、`steps[]`、`logs[]`。
 - `exec`：`exit_code stdout stderr duration_ms truncated timed_out`；多台时是这些字段加 `machine` 的数组，某台没执行成（请求被拒、连不上）时那一项是 `{machine,id,exit_code:null,error:{code,message,status}}`。

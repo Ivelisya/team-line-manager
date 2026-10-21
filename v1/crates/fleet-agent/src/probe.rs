@@ -1,5 +1,6 @@
 //! 探测：TCP 握手延迟；出口探测 = 经本机回环 SOCKS 入站（路由到该入口的真实出站）访问回显服务，核对出口 IP。
 
+use crate::util::error_chain;
 use anyhow::Result;
 use fleet_proto::{ProbeKind, ProbeSample};
 use std::net::{IpAddr, SocketAddr};
@@ -42,19 +43,6 @@ fn reason_cn(full: &str, inner: &str, timeout_s: u64) -> String {
 /// 超时的统一说法
 fn timeout_text(secs: u64) -> String { format!("超时 {secs} 秒") }
 
-/// 错误连同 source 链拼成一行，另给最里层的那个（reqwest 的顶层只有「error sending request」，真正原因在 source 里）
-fn chain(e: &dyn std::error::Error) -> (String, String) {
-    let (mut s, mut inner) = (e.to_string(), e.to_string());
-    let mut src = e.source();
-    while let Some(x) = src {
-        inner = x.to_string();
-        s.push_str(": ");
-        s.push_str(&inner);
-        src = x.source();
-    }
-    (s, inner)
-}
-
 // ── TCP 探测 ────────────────────────────────────────────────────────────────
 
 pub async fn tcp_probe(entry_id: Uuid, host: &str, port: u16, timeout: Duration, ts_ms: i64) -> ProbeSample {
@@ -64,7 +52,7 @@ pub async fn tcp_probe(entry_id: Uuid, host: &str, port: u16, timeout: Duration,
         Ok(Ok(_)) => (true, None),
         Ok(Err(e)) => {
             tracing::debug!(host, port, "TCP 探测失败：{e}");
-            let (full, inner) = chain(&e);
+            let (full, inner) = error_chain(&e);
             (false, Some(reason_cn(&full, &inner, timeout.as_secs())))
         }
         Err(_) => (false, Some(timeout_text(timeout.as_secs()))),
@@ -107,7 +95,7 @@ async fn http_get(client: &reqwest::Client, url: &str, timeout: Duration) -> Res
         Ok(Ok(Ok(body))) => Ok(body),
         Ok(Ok(Err(code))) => Err(format!("HTTP 状态码 {code}")),
         Ok(Err(e)) => {
-            let (full, inner) = chain(&e);
+            let (full, inner) = error_chain(&e);
             tracing::debug!(url, "出口探测失败：{full}");
             Err(reason_cn(&full, &inner, timeout.as_secs()))
         }

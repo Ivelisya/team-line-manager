@@ -8,7 +8,6 @@ ConditionPathExists=/etc/fleet-agent/xray.json
 [Service]
 Type=simple
 Environment=XRAY_LOCATION_ASSET=/usr/local/share/xray
-ExecStartPre=/usr/local/bin/xray run -test -c /etc/fleet-agent/xray.json
 ExecStart=/usr/local/bin/xray run -c /etc/fleet-agent/xray.json
 Restart=always
 RestartSec=2

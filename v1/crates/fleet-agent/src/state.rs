@@ -68,8 +68,6 @@ impl Buffers {
 /// Agent 自身健康里不属于队列/尾读器的那部分（各任务写，上报器读）
 #[derive(Default)]
 pub struct Health {
-    pub probes_skipped: AtomicU64,
-    pub realign_fixes: AtomicU64,
     /// 访问日志连续读取失败次数（成功即清零，仅用于日志限流）
     pub access_read_errs: AtomicU64,
     pub last_apply_error: Mutex<Option<String>>,

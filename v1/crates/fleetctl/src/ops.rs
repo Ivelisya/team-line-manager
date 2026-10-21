@@ -97,7 +97,7 @@ pub(crate) fn lookup(list: &Value, q: &str, keys: &[&str], what: &str) -> anyhow
 fn normalize_item(ctx: &Ctx, item: &mut Value, cache: &mut Cache) -> anyhow::Result<()> {
     let Some(o) = item.as_object_mut() else { bail!("上架条目必须是对象") };
     if let Some(t) = o.remove("team").and_then(|v| v.as_str().map(String::from)) {
-        o.insert("team_id".into(), json!(lookup(cache.teams(ctx)?, &t, &["name"], "团队")?));
+        o.insert("team_id".into(), json!(lookup(&ctx.teams()?, &t, &["name"], "团队")?));
     }
     if let Some(p) = o.remove("provider").and_then(|v| v.as_str().map(String::from)) {
         o.insert("provider_id".into(), json!(lookup(cache.providers(ctx)?, &p, &["name", "code"], "供应商")?));
@@ -115,19 +115,13 @@ fn normalize_item(ctx: &Ctx, item: &mut Value, cache: &mut Cache) -> anyhow::Res
     Ok(())
 }
 
+/// 批量上架时供应商 / 套餐只取一次（团队列表走 `Ctx::teams`）
 #[derive(Default)]
 pub struct Cache {
-    teams: Option<Value>,
     providers: Option<Value>,
     plans: Option<Value>,
 }
 impl Cache {
-    fn teams(&mut self, ctx: &Ctx) -> anyhow::Result<&Value> {
-        if self.teams.is_none() {
-            self.teams = Some(ctx.c.get("/teams")?);
-        }
-        Ok(self.teams.as_ref().unwrap())
-    }
     fn providers(&mut self, ctx: &Ctx) -> anyhow::Result<&Value> {
         if self.providers.is_none() {
             self.providers = Some(ctx.c.get("/providers")?);
@@ -461,7 +455,7 @@ pub fn exec(ctx: &Ctx, o: ExecOpts<'_>) -> anyhow::Result<u8> {
         // 错误原样交给 main：--json 时带上 ApiError 的 code / status
         let d = r.data?;
         if ctx.json {
-            outln(serde_json::to_string_pretty(&d)?);
+            outln(d.to_string());
         } else {
             out_raw(d["stdout"].as_str().unwrap_or(""));
             let e = d["stderr"].as_str().unwrap_or("");
@@ -509,7 +503,7 @@ pub fn exec(ctx: &Ctx, o: ExecOpts<'_>) -> anyhow::Result<u8> {
                 Err(e) => json!({"machine": r.name, "id": r.id, "exit_code": null, "error": cmds::error_json(e)}),
             })
             .collect();
-        outln(serde_json::to_string_pretty(&arr)?);
+        outln(Value::Array(arr).to_string());
     } else {
         for r in &results {
             match &r.data {
@@ -600,7 +594,7 @@ pub fn keys_ls(ctx: &Ctx, a: &KeyAuth) -> anyhow::Result<u8> {
                 ]
             })
             .collect();
-        if rows.is_empty() { "没有 API 密钥".into() } else { table::render(&["名称", "前缀", "权限", "创建(UTC)", "过期", "最近使用", "状态", "id"], &rows) }
+        if rows.is_empty() { "没有 API 密钥".into() } else { table::render(&["名称", "前缀", "权限", "创建", "过期", "最近使用", "状态", "id"], &rows) }
     });
     Ok(0)
 }

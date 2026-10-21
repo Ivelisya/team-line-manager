@@ -60,7 +60,7 @@ fn parse_args() -> Result<Args> {
 fn usage() {
     println!(
         "fleet-agent {}\n\n用法：fleet-agent [--config PATH] <命令>\n\n命令：\n  run                 常驻运行（默认）\n  once                采集并打印一份上报 JSON（诊断）\n  render --desired F  按期望状态生成 xray.json 并打印\n  apply  --desired F  不经中控，在本机直接应用期望状态（实验室测试）\n  version             打印版本\n\n配置默认 {DEFAULT_CONFIG}（也可用环境变量 FLEET_AGENT_CONFIG）。",
-        env!("CARGO_PKG_VERSION")
+        fleet_proto::build_version()
     );
 }
 
@@ -96,7 +96,7 @@ async fn real_main() -> Result<()> {
     let a = parse_args()?;
     match a.cmd.as_str() {
         "help" => usage(),
-        "version" => println!("fleet-agent {}", env!("CARGO_PKG_VERSION")),
+        "version" => println!("fleet-agent {}", fleet_proto::build_version()),
         "render" => {
             let cfg = load_config(&a, true)?;
             let d = read_desired(&a)?;
@@ -135,12 +135,12 @@ async fn once(cfg: Config) -> Result<()> {
     if cfg.role == Role::Relay {
         let ap = xray::apply::Applier::new(Arc::new(cfg.clone()));
         let up = ap.cli.runtime().await;
-        xs = Some(fleet_proto::XrayStatus { running: up.is_ok(), version: ap.cli.version().await.ok(), started_at_ms: None, applied_generation: state::load_applied(&cfg).map(|a| a.generation).unwrap_or(0) });
+        xs = Some(fleet_proto::XrayStatus { running: up.is_ok(), version: ap.cli.version().await.ok(), applied_generation: state::load_applied(&cfg).map(|a| a.generation).unwrap_or(0) });
     }
     let r = Report {
         seq: 0,
         boot_id: host::boot_id(),
-        agent_version: env!("CARGO_PKG_VERSION").into(),
+        agent_version: fleet_proto::build_version().into(),
         sent_at_ms: util::now_ms(),
         info: Some(host::collect_info()),
         host: hs,
@@ -164,7 +164,7 @@ async fn run(cfg: Config) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&cfg.data_dir, std::fs::Permissions::from_mode(0o700));
     }
-    tracing::info!(role = ?cfg.role, machine_id = %cfg.machine_id, version = env!("CARGO_PKG_VERSION"), "fleet-agent 启动");
+    tracing::info!(role = ?cfg.role, machine_id = %cfg.machine_id, version = fleet_proto::build_version(), "fleet-agent 启动");
     server::warn_if_plain_http(&cfg.server_url);
     let cfg = Arc::new(cfg);
     let sh = state::Shared::new(cfg.clone());
@@ -173,7 +173,7 @@ async fn run(cfg: Config) -> Result<()> {
     let mut set: JoinSet<&'static str> = JoinSet::new();
     spawn_named(&mut set, "host_task", collect::host_task(sh.clone(), sd_rx.clone()));
     let mut applier_handle: Option<Arc<xray::apply::Applier>> = None;
-    let client = Arc::new(server::ServerClient::new(&cfg.server_url, cfg.token_file.clone(), cfg.ca_file.as_ref())?);
+    let client = Arc::new(server::ServerClient::new(&cfg.server_url, cfg.token_file.clone())?);
 
     if cfg.role == Role::Relay {
         let applier = Arc::new(xray::apply::Applier::new(cfg.clone()));

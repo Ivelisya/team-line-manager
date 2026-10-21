@@ -11,7 +11,6 @@ pub mod classify;
 pub mod iptoasn;
 pub mod lists;
 pub mod lookup;
-pub mod mem;
 pub mod service;
 pub mod xdb;
 

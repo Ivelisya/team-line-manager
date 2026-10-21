@@ -42,7 +42,7 @@ cargo build -p fleet-agent --release --target x86_64-unknown-linux-musl   # 约 
 6. 任一步失败：按相反顺序撤回，回报 `ok=false`（被点名的入口带错误，其余被回滚的入口标 `已回滚`）。
 7. 只有「API 连不上且 systemd 里该服务不是 active」才写配置并 `systemctl restart`；Xray 在运行但 API 查询出错时**绝不重启**（重启会断开所有客户连接）。骨架（log/api/policy/静态出站）变化也只能重启生效。
 8. 每个 DesiredState 重复应用是空操作。失败后按 15 s…5 min 退避重试同一代。
-9. **启动对齐**：启动时若有 `applied.json`，先幂等再应用一遍（磁盘配置缺失/被改、Xray 新起都会被补齐），成功后才对外报告该代数；失败则代数报 0，向中控重新拉取期望状态。此外每 10 分钟做一次轻量对齐检查（磁盘 xray.json 等于期望渲染结果 + 运行态核对，不跑 `xray -test`），不一致就修复并记 warn 日志（计入 `agent_health.realign_fixes`）。
+9. **启动对齐**：启动时若有 `applied.json`，先幂等再应用一遍（磁盘配置缺失/被改、Xray 新起都会被补齐），成功后才对外报告该代数；失败则代数报 0，向中控重新拉取期望状态。此外每 10 分钟做一次轻量对齐检查（磁盘 xray.json 等于期望渲染结果 + 运行态核对，不跑 `xray -test`），不一致就修复并记 warn 日志。
 
 ## 上报与健康
 

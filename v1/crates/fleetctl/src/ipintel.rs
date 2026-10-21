@@ -139,7 +139,7 @@ pub fn sources(ctx: &Ctx, machine: &str, window: &str, limit: i64) -> anyhow::Re
         let an = d["anomalies"].as_array().cloned().unwrap_or_default();
         if !an.is_empty() {
             let rows: Vec<Vec<String>> = an.iter().map(|a| vec![st(a, "/rule_name"), st(a, "/summary"), table::ts(&st(a, "/opened_at"))]).collect();
-            out.push(format!("进行中的画像异常\n{}", table::render(&["类型", "摘要", "开始(UTC)"], &rows)));
+            out.push(format!("进行中的画像异常\n{}", table::render(&["类型", "摘要", "开始"], &rows)));
         }
         out.join("\n\n")
     });

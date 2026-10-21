@@ -13,31 +13,51 @@ pub fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// 错误连同 source 链拼成一行，另给最里层的那个（reqwest 的顶层只有「error sending request」，真正原因在 source 里）
+pub fn error_chain(e: &dyn std::error::Error) -> (String, String) {
+    let (mut s, mut inner) = (e.to_string(), e.to_string());
+    let mut src = e.source();
+    while let Some(x) = src {
+        inner = x.to_string();
+        s.push_str(": ");
+        s.push_str(&inner);
+        src = x.source();
+    }
+    (s, inner)
+}
+
 /// 同目录临时文件 → fsync → rename → fsync 目录；权限 0600。
+/// 写入 / fsync / 改名任一步失败都删掉临时文件（磁盘满时不留下半截文件占空间）
 pub fn write_atomic(path: &Path, data: &[u8], fsync: bool) -> Result<()> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("file");
     let tmp = dir.join(format!(".{name}.tmp"));
-    {
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&tmp)
-            .with_context(|| format!("创建 {}", tmp.display()))?;
-        f.write_all(data)?;
-        if fsync {
-            f.sync_all()?;
-        }
+    if let Err(e) = write_then_rename(&tmp, path, data, fsync) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
     }
-    std::fs::rename(&tmp, path).with_context(|| format!("rename → {}", path.display()))?;
     if fsync {
         if let Ok(d) = std::fs::File::open(dir) {
             let _ = d.sync_all();
         }
     }
     Ok(())
+}
+
+fn write_then_rename(tmp: &Path, path: &Path, data: &[u8], fsync: bool) -> Result<()> {
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(tmp)
+        .with_context(|| format!("创建 {}", tmp.display()))?;
+    f.write_all(data).with_context(|| format!("写入 {}", tmp.display()))?;
+    if fsync {
+        f.sync_all().with_context(|| format!("fsync {}", tmp.display()))?;
+    }
+    drop(f);
+    std::fs::rename(tmp, path).with_context(|| format!("rename → {}", path.display()))
 }
 
 pub fn load_json<T: DeserializeOwned>(path: &Path) -> Option<T> {
@@ -75,6 +95,11 @@ mod tests {
         save_json(&p, &serde_json::json!({"a":1}), true).unwrap();
         let v: serde_json::Value = load_json(&p).unwrap();
         assert_eq!(v["a"], 1);
+        // 改名失败（目标是目录）：临时文件要删掉，不能每失败一次留一个
+        let target = d.join("dir.json");
+        std::fs::create_dir_all(target.join("sub")).unwrap();
+        assert!(write_atomic(&target, b"{}", true).is_err());
+        assert!(!d.join(".dir.json.tmp").exists());
         let _ = std::fs::remove_dir_all(&d);
     }
 

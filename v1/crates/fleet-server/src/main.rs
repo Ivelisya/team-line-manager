@@ -72,7 +72,7 @@ async fn main() -> anyhow::Result<()> {
             fleet_server::spawn_background(&st);
             let app = fleet_server::app(st);
             let l = tokio::net::TcpListener::bind(listen).await?;
-            tracing::info!("fleet-server {} 监听 {listen}", env!("CARGO_PKG_VERSION"));
+            tracing::info!("fleet-server {} 监听 {listen}", fleet_proto::build_version());
             axum::serve(l, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
         }
         _ => bail!("{USAGE}"),

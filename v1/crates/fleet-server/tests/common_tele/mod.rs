@@ -142,7 +142,7 @@ pub fn access(entry_id: Uuid, ts_ms: i64) -> AccessEvent {
 }
 
 pub fn xray(running: bool) -> XrayStatus {
-    XrayStatus { running, version: Some("1.8.0".into()), started_at_ms: None, applied_generation: 1 }
+    XrayStatus { running, version: Some("1.8.0".into()), applied_generation: 1 }
 }
 
 /// 空报告；调用方按需往里填

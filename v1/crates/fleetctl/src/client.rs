@@ -29,6 +29,45 @@ impl fmt::Display for ApiError {
 }
 impl std::error::Error for ApiError {}
 
+/// 没拿到中控响应的网络错误。`code`：`unreachable` = 连不上（请求没发出去，可以直接重试）；
+/// `timeout` = 请求已发出、等响应超时（操作可能已在中控执行）
+#[derive(Debug)]
+pub struct NetError {
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl fmt::Display for NetError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(&self.message) }
+}
+impl std::error::Error for NetError {}
+
+/// 错误连同 source 链拼成一行，另给最里层的那个（reqwest 的顶层只有「error sending request for url (…)」，真正原因在 source 里）
+fn error_chain(e: &dyn std::error::Error) -> (String, String) {
+    let (mut s, mut inner) = (e.to_string(), e.to_string());
+    let mut src = e.source();
+    while let Some(x) = src {
+        inner = x.to_string();
+        s.push_str(": ");
+        s.push_str(&inner);
+        src = x.source();
+    }
+    (s, inner)
+}
+
+/// 发请求失败 → 按是否连上区分。连接超时（connect_timeout）也算连不上，所以先判 is_connect
+fn send_error(base: &str, timeout: Duration, e: &reqwest::Error) -> anyhow::Error {
+    let (full, inner) = error_chain(e);
+    if e.is_connect() {
+        NetError { code: "unreachable", message: format!("连不上中控 {base}：{inner}") }.into()
+    } else if e.is_timeout() {
+        let message = format!("等中控响应超过 {} 秒：操作可能已在中控执行，先用 fleetctl jobs / audit 核对再决定是否重试", timeout.as_secs());
+        NetError { code: "timeout", message }.into()
+    } else {
+        anyhow!("与中控 {base} 的连接出错：{full}（操作可能已在中控执行，先用 fleetctl jobs / audit 核对再决定是否重试）")
+    }
+}
+
 pub enum Cred {
     Bearer(String),
     /// 会话 Cookie 的 `name=value`（密钥管理只认会话）
@@ -76,7 +115,7 @@ impl Client {
         if let Some(b) = body {
             r = r.json(b);
         }
-        let res = r.send().map_err(|e| anyhow!("连不上中控 {}：{e}", self.base))?;
+        let res = r.send().map_err(|e| send_error(&self.base, timeout, &e))?;
         Self::check(res)
     }
 

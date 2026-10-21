@@ -1,6 +1,6 @@
 //! 只读与作业类命令：status / ls / show / series / incidents / jobs / entries / audit / logs / watch …
 
-use crate::client::{ApiError, Client};
+use crate::client::{ApiError, Client, NetError};
 use crate::resolve::{self, Want};
 use crate::table::{self, bps, bytes, money};
 use anyhow::{anyhow, bail};
@@ -31,15 +31,15 @@ pub fn out_raw(s: &str) {
     let _ = o.flush();
 }
 
-/// `--json` 下的错误对象 `{"code","message","status"}`：stderr 的 `{"error": …}` 与 exec 多台时每台的 error 共用
+/// `--json` 下的错误对象 `{"code","message","status"}`：stderr 的 `{"error": …}` 与 exec 多台时每台的 error 共用。
+/// 没拿到中控响应时 code 是 `unreachable` / `timeout`（见 `NetError`），status 为 null
 pub fn error_json(e: &anyhow::Error) -> Value {
-    match e.downcast_ref::<ApiError>() {
-        Some(a) => {
-            let msg = if e.to_string().contains('\n') { format!("{e:#}") } else { a.message.clone() };
-            json!({"code": a.code, "message": msg, "status": a.status})
-        }
-        None => json!({"code": "error", "message": format!("{e:#}"), "status": null}),
+    if let Some(a) = e.downcast_ref::<ApiError>() {
+        let msg = if e.to_string().contains('\n') { format!("{e:#}") } else { a.message.clone() };
+        return json!({"code": a.code, "message": msg, "status": a.status});
     }
+    let code = e.downcast_ref::<NetError>().map_or("error", |n| n.code);
+    json!({"code": code, "message": format!("{e:#}"), "status": null})
 }
 
 /// 取字符串/数字/布尔字段（JSON Pointer），缺失或 null 给 "-"
@@ -182,10 +182,10 @@ pub(crate) fn entry_state_cn(e: &Value) -> &'static str {
 }
 
 impl Ctx {
-    /// 打印：--json 时输出 data 原样，否则输出人类可读文本
+    /// 打印：--json 时输出 data 原样（紧凑一行：AI 工具按字符数截断输出，缩进和换行白占字符），否则输出人类可读文本
     pub fn emit(&self, data: &Value, human: impl FnOnce() -> String) {
         if self.json {
-            outln(serde_json::to_string_pretty(data).unwrap_or_default());
+            outln(data.to_string());
         } else {
             outln(human());
         }
@@ -285,7 +285,7 @@ fn incident_table(list: &[Value]) -> String {
                     Some(n) if n > 0 => format!("{}（反复 {} 次）", st(i, "/summary"), n + 1),
                     _ => st(i, "/summary"),
                 },
-                table::ts_cn(&st(i, "/opened_at")),
+                table::ts(&st(i, "/opened_at")),
                 if i["ack_at"].is_null() { "".into() } else { format!("已确认 {}", st(i, "/ack_by")) },
                 st(i, "/id"),
             ]
@@ -305,30 +305,34 @@ pub fn ls(ctx: &Ctx, team: Option<&str>, kind: Option<&str>, status: Option<&str
         .filter(|m| team.is_none_or(|t| st(m, "/team/name") == t))
         .filter(|m| kind.is_none_or(|k| st(m, "/kind") == k))
         .filter(|m| status.is_none_or(|s| st(m, "/health/status") == s || st(m, "/lifecycle") == s))
+        .map(|m| ls_item(&m))
         .collect();
-    ctx.emit(&Value::Array(list.clone()), || {
+    let items = Value::Array(list);
+    ctx.emit(&items, || {
+        let list = items.as_array().map(Vec::as_slice).unwrap_or_default();
+        let pct_cell = |i: &Value, p: &str| num(i, p).map(|x| format!("{x:.0}%")).unwrap_or("-".into());
         let rows: Vec<Vec<String>> = list
             .iter()
-            .map(|m| {
-                let agent = match m.pointer("/agent/online").and_then(|x| x.as_bool()) {
+            .map(|i| {
+                let agent = match i["agent_online"].as_bool() {
                     Some(true) => "在线",
                     Some(false) => "离线",
                     None => "-",
                 };
                 vec![
-                    st(m, "/name"),
-                    st(m, "/kind"),
-                    st(m, "/lifecycle"),
-                    st(m, "/health/status"),
-                    st(m, "/ip"),
+                    st(i, "/name"),
+                    st(i, "/kind"),
+                    st(i, "/lifecycle"),
+                    st(i, "/health"),
+                    st(i, "/ip"),
                     agent.into(),
-                    num(m, "/host/cpu_pct").map(|x| format!("{x:.0}%")).unwrap_or("-".into()),
-                    pct(num(m, "/host/mem_used"), num(m, "/host/mem_total")),
-                    pct(num(m, "/host/disk_used"), num(m, "/host/disk_total")),
-                    m["entries"].as_array().map(|a| a.len().to_string()).unwrap_or("-".into()),
-                    st(m, "/open_incidents"),
-                    match m.pointer("/active_job/state") {
-                        Some(Value::String(s)) => format!("{} {}", job_kind_cn(&st(m, "/active_job/kind")), job_state_cn(s)),
+                    pct_cell(i, "/cpu_pct"),
+                    pct_cell(i, "/mem_pct"),
+                    pct_cell(i, "/disk_pct"),
+                    st(i, "/entries"),
+                    st(i, "/open_incidents"),
+                    match i.pointer("/active_job/state") {
+                        Some(Value::String(s)) => format!("{} {}", job_kind_cn(&st(i, "/active_job/kind")), job_state_cn(s)),
                         _ => "".into(),
                     },
                 ]
@@ -337,6 +341,24 @@ pub fn ls(ctx: &Ctx, team: Option<&str>, kind: Option<&str>, status: Option<&str
         format!("{}\n共 {} 台", table::render(&["名称", "种类", "生命周期", "健康", "IP", "agent", "CPU", "内存", "磁盘", "入口", "告警", "作业"], &rows), list.len())
     });
     Ok(0)
+}
+
+/// `ls` 的一行：与表格同列（另带 id），百分比取整；`--json` 输出这些而不是完整视图（完整视图用 show 取单台）
+fn ls_item(m: &Value) -> Value {
+    let pct = |used: &str, total: &str| match (num(m, used), num(m, total)) {
+        (Some(u), Some(t)) if t > 0.0 => Some((u * 100.0 / t).round() as i64),
+        _ => None,
+    };
+    json!({
+        "id": m["id"], "name": m["name"], "kind": m["kind"], "lifecycle": m["lifecycle"], "health": m.pointer("/health/status"), "ip": m["ip"],
+        "agent_online": m.pointer("/agent/online"),
+        "cpu_pct": num(m, "/host/cpu_pct").map(|x| x.round() as i64),
+        "mem_pct": pct("/host/mem_used", "/host/mem_total"),
+        "disk_pct": pct("/host/disk_used", "/host/disk_total"),
+        "entries": m["entries"].as_array().map(Vec::len),
+        "open_incidents": m["open_incidents"],
+        "active_job": m["active_job"],
+    })
 }
 
 /// 负载同网页：1 分钟平均负载 ÷ agent 报的核数，折成百分比；容器里不报负载（null）
@@ -348,7 +370,8 @@ fn load_cn(load1: Option<f64>, cores: Option<i64>) -> String {
     }
 }
 
-/// agent 自报的健康数据（`MachineView.agent.health`）：离线队列现有多少份；其余是 agent 进程启动以来的累计次数
+/// agent 自报的健康数据（`MachineView.agent.health`）：离线队列现有多少份；其余是 agent 进程启动以来的累计次数。
+/// 访问日志解析不了 / 丢弃的行数为 0 时不显示
 fn agent_health_cn(h: &Value) -> String {
     let n = |k: &str| st(h, &format!("/{k}"));
     let mut s = format!(
@@ -359,6 +382,11 @@ fn agent_health_cn(h: &Value) -> String {
         n("access_rotation_gaps"),
         n("access_truncations")
     );
+    for (k, what) in [("access_unparsed", "解析不了"), ("access_dropped_lines", "被丢弃（超长、含非法字符或不完整）")] {
+        if let Some(c) = h[k].as_u64().filter(|c| *c > 0) {
+            s.push_str(&format!("、{c} 行{what}"));
+        }
+    }
     if let Some(e) = h["last_apply_error"].as_str() {
         s.push_str(&format!("；最近一次应用配置失败：{e}"));
     }
@@ -378,11 +406,11 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
             ("IP", format!("{}:{}", st(&m, "/ip"), st(&m, "/ssh_port"))),
             ("供应商/套餐", format!("{} / {}", st(&m, "/provider/name"), st(&m, "/plan/name"))),
             ("备注", st(&m, "/note")),
-            ("创建", table::ts_cn(&st(&m, "/created_at"))),
+            ("创建", table::ts(&st(&m, "/created_at"))),
             ("revision", st(&m, "/revision")),
         ];
         if !m["agent"].is_null() {
-            rows.push(("agent", format!("{}  版本 {}  最近上报 {}", if m["agent"]["online"] == true { "在线" } else { "离线" }, st(&m, "/agent/version"), table::ts_cn(&st(&m, "/agent/last_report_at")))));
+            rows.push(("agent", format!("{}  版本 {}  最近上报 {}", if m["agent"]["online"] == true { "在线" } else { "离线" }, st(&m, "/agent/version"), table::ts(&st(&m, "/agent/last_report_at")))));
         }
         if let Some(h) = m.pointer("/agent/health").filter(|h| !h.is_null()) {
             rows.push(("agent 自报", agent_health_cn(h)));
@@ -433,30 +461,41 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
         }
         if let Some(es) = m["entries"].as_array().filter(|e| !e.is_empty()) {
             s.push_str("\n\n入口\n");
-            s.push_str(&entry_table(es));
+            s.push_str(&entry_table(&es.iter().map(entry_item).collect::<Vec<_>>()));
         }
         s
     });
     Ok(0)
 }
 
-fn entry_table(es: &[Value]) -> String {
-    let rows: Vec<Vec<String>> = es
+/// `entries` 的一行：与表格同列（id 完整、流量是字节数），`--json` 输出这些而不是完整的入口视图
+fn entry_item(e: &Value) -> Value {
+    json!({
+        "id": e["id"], "relay": e.pointer("/relay/name"), "port": e["port"], "node": e.pointer("/node/name"),
+        "lifecycle": e["lifecycle"], "applied": e["applied"], "apply_error": e["apply_error"],
+        "tcp_ok": e.pointer("/tcp/ok"), "egress_ok": e.pointer("/egress/ok"),
+        "today_down": e.pointer("/traffic/today_down"), "today_up": e.pointer("/traffic/today_up"),
+    })
+}
+
+/// `items` 是 `entry_item` 的输出
+fn entry_table(items: &[Value]) -> String {
+    let rows: Vec<Vec<String>> = items
         .iter()
         .map(|e| {
-            let probe = |k: &str| match e.pointer(&format!("/{k}/ok")).and_then(|x| x.as_bool()) {
+            let probe = |k: &str| match e[k].as_bool() {
                 Some(true) => "通".to_string(),
                 Some(false) => "不通".to_string(),
                 None => "-".to_string(),
             };
             vec![
                 st(e, "/id").chars().take(8).collect(),
-                format!("{}:{}", st(e, "/relay/name"), st(e, "/port")),
-                st(e, "/node/name"),
+                format!("{}:{}", st(e, "/relay"), st(e, "/port")),
+                st(e, "/node"),
                 entry_state_cn(e).into(),
-                probe("tcp"),
-                probe("egress"),
-                format!("下载 {} / 上传 {}", bytes(num(e, "/traffic/today_down").unwrap_or(0.0)), bytes(num(e, "/traffic/today_up").unwrap_or(0.0))),
+                probe("tcp_ok"),
+                probe("egress_ok"),
+                format!("下载 {} / 上传 {}", bytes(num(e, "/today_down").unwrap_or(0.0)), bytes(num(e, "/today_up").unwrap_or(0.0))),
                 e["apply_error"].as_str().unwrap_or("").to_string(),
             ]
         })
@@ -464,20 +503,33 @@ fn entry_table(es: &[Value]) -> String {
     table::render(&["id", "入口", "节点", "状态", "TCP", "出口", "今日业务流量", "错误"], &rows)
 }
 
-/// 全部入口（取线路机上挂的，避免节点和线路机两边重复）
+fn take_entries(mut m: Value) -> Vec<Value> {
+    match m["entries"].take() {
+        Value::Array(a) => a,
+        _ => vec![],
+    }
+}
+
+/// 全部入口（完整的入口视图，取线路机上挂的，避免节点和线路机两边重复）
 pub fn all_entries(ctx: &Ctx) -> anyhow::Result<Vec<Value>> {
-    let ms = ctx.c.get_q("/machines", &[("scope", "live".to_string())])?;
-    Ok(ms.as_array().cloned().unwrap_or_default().into_iter().filter(|m| m["kind"] == "relay").flat_map(|m| m["entries"].as_array().cloned().unwrap_or_default()).collect())
+    let Value::Array(relays) = ctx.c.get("/relays")? else { return Ok(vec![]) };
+    Ok(relays.into_iter().flat_map(take_entries).collect())
 }
 
 pub fn entries(ctx: &Ctx, machine: Option<&str>) -> anyhow::Result<u8> {
-    let mut es = all_entries(ctx)?;
-    if let Some(q) = machine {
-        let m = ctx.find(q, Want::Live)?;
-        let id = st(&m, "/id");
-        es.retain(|e| st(e, "/relay/id") == id || st(e, "/node/id") == id);
-    }
-    ctx.emit(&Value::Array(es.clone()), || format!("{}\n共 {} 个入口", entry_table(&es), es.len()));
+    let es = match machine {
+        // 节点：它的入口；线路机：挂在它上面的入口。只取这一台的视图
+        Some(q) => {
+            let (id, _) = ctx.find_id(q, Want::Live)?;
+            take_entries(ctx.c.get(&format!("/machines/{id}"))?)
+        }
+        None => all_entries(ctx)?,
+    };
+    let items = Value::Array(es.iter().map(entry_item).collect());
+    ctx.emit(&items, || {
+        let list = items.as_array().map(Vec::as_slice).unwrap_or_default();
+        format!("{}\n共 {} 个入口", entry_table(list), list.len())
+    });
     Ok(0)
 }
 
@@ -522,7 +574,7 @@ pub fn series(ctx: &Ctx, machine: &str, range: &str, metric: &str) -> anyhow::Re
         let step = pts.len().div_ceil(12).max(1);
         let sampled: Vec<&Value> = pts.iter().step_by(step).collect();
         let rows: Vec<Vec<String>> = sampled.iter().map(|p| std::iter::once(table::ts(&st(p, "/ts"))).chain(cols.iter().map(|c| fmt(c, p))).collect()).collect();
-        let mut hdr = vec!["时间(UTC)"];
+        let mut hdr = vec!["时间"];
         hdr.extend(cols.iter());
         head.push_str("\n\n");
         head.push_str(&table::render(&hdr, &rows));
@@ -567,7 +619,7 @@ pub fn jobs(ctx: &Ctx, active: bool, limit: i64) -> anyhow::Result<u8> {
             return "没有作业".to_string();
         }
         let rows: Vec<Vec<String>> = list.iter().map(job_row).collect();
-        format!("{}\n共 {} 个", table::render(&["id", "种类", "目标", "状态", "步骤", "创建者", "创建(UTC)", "错误"], &rows), rows.len())
+        format!("{}\n共 {} 个", table::render(&["id", "种类", "目标", "状态", "步骤", "创建者", "创建", "错误"], &rows), rows.len())
     });
     Ok(0)
 }
@@ -739,8 +791,8 @@ pub fn audit(ctx: &Ctx, target: Option<&str>, limit: i64, before: Option<i64>) -
         match last {
             None => "没有审计记录".into(),
             // 服务端把 limit 夹到 1..=1000
-            Some(id) if rows.len() as i64 >= limit.clamp(1, 1000) => format!("{}\n更早的记录：--before {id}", table::render(&["时间(UTC)", "操作者", "操作", "摘要"], &rows)),
-            Some(_) => table::render(&["时间(UTC)", "操作者", "操作", "摘要"], &rows),
+            Some(id) if rows.len() as i64 >= limit.clamp(1, 1000) => format!("{}\n更早的记录：--before {id}", table::render(&["时间", "操作者", "操作", "摘要"], &rows)),
+            Some(_) => table::render(&["时间", "操作者", "操作", "摘要"], &rows),
         }
     });
     Ok(0)
@@ -749,7 +801,7 @@ pub fn audit(ctx: &Ctx, target: Option<&str>, limit: i64, before: Option<i64>) -
 /// 日志类接口返回 {exit_code, stdout, stderr}：stdout 原样输出，stderr 走 stderr
 fn print_text_result(ctx: &Ctx, d: &Value) -> u8 {
     if ctx.json {
-        outln(serde_json::to_string_pretty(d).unwrap_or_default());
+        outln(d.to_string());
     } else {
         out_raw(d["stdout"].as_str().unwrap_or(""));
         let e = d["stderr"].as_str().unwrap_or("");
@@ -774,8 +826,9 @@ pub fn server_logs(ctx: &Ctx, lines: u32) -> anyhow::Result<u8> {
     Ok(print_text_result(ctx, &d))
 }
 
-fn utc_hms() -> String {
-    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+/// 当前北京时间的时分秒（同 `table::ts`）
+fn now_hms() -> String {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) + 8 * 3600;
     format!("{:02}:{:02}:{:02}", (secs / 3600) % 24, (secs / 60) % 60, secs % 60)
 }
 
@@ -821,7 +874,7 @@ pub fn watch(ctx: &Ctx, count: Option<usize>, metrics: bool) -> anyhow::Result<u
                     if ctx.json {
                         outln(ev.to_string());
                     } else {
-                        outln(format!("{}  {:<10} {}", utc_hms(), st(&ev, "/type"), event_summary(&ev)));
+                        outln(format!("{}  {:<10} {}", now_hms(), st(&ev, "/type"), event_summary(&ev)));
                     }
                     seen += 1;
                     if count.is_some_and(|c| seen >= c) {
@@ -862,6 +915,9 @@ mod tests {
     fn error_json_keeps_api_code_and_status() {
         assert_eq!(error_json(&api(403)), json!({"code": "x", "message": "m", "status": 403}));
         assert_eq!(error_json(&anyhow!("坏了")), json!({"code": "error", "message": "坏了", "status": null}));
+        // 网络错误：超时和连不上在 --json 里分得开（超时的操作可能已执行，不能盲目重试）
+        let n: anyhow::Error = NetError { code: "timeout", message: "等中控响应超过 30 秒".into() }.into();
+        assert_eq!(error_json(&n.context("取作业进度")), json!({"code": "timeout", "message": "取作业进度: 等中控响应超过 30 秒", "status": null}));
     }
 
     #[test]
@@ -879,10 +935,11 @@ mod tests {
 
     #[test]
     fn agent_health_wording() {
-        let mut h = json!({"queue_len": 3, "queue_dropped": 0, "queue_dead": 1, "access_lines": 900, "access_rotation_gaps": 2, "access_truncations": 0});
+        let mut h = json!({"queue_len": 3, "queue_dropped": 0, "queue_dead": 1, "access_unparsed": 0, "access_dropped_lines": 0, "access_rotation_gaps": 2, "access_truncations": 0});
         assert_eq!(agent_health_cn(&h), "离线队列待发 3 份；自 agent 启动起：因离线队列超限被丢弃 0 份、被中控拒收 1 份，访问日志轮转漏读 2 次、被截断 0 次");
+        h["access_unparsed"] = json!(4);
         h["last_apply_error"] = json!("xray 配置校验失败");
-        assert!(agent_health_cn(&h).ends_with("被截断 0 次；最近一次应用配置失败：xray 配置校验失败"));
+        assert!(agent_health_cn(&h).ends_with("被截断 0 次、4 行解析不了；最近一次应用配置失败：xray 配置校验失败"));
     }
 
     #[test]

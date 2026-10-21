@@ -9,25 +9,20 @@ use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 pub const API_TAG: &str = "api";
+/// Xray API 监听地址：只在本机回环，agent 经 `xray api --server=` 连它。没有需要改它的场景，不做成配置项
+pub const API_HOST: &str = "127.0.0.1";
+pub const API_PORT: u16 = 62789;
 pub const STATIC_OUTBOUNDS: [&str; 3] = ["deny", "direct", "blocked"];
 /// mihomo 兼容：minClientVer 不得高于此值
 pub const MAX_MIN_CLIENT_VER: &str = "1.8.2";
 
 pub struct RenderCtx {
     pub access_log: String,
-    /// "127.0.0.1:62789"
-    pub api_addr: String,
 }
 
 impl RenderCtx {
     pub fn of(cfg: &Config) -> Self {
-        Self { access_log: cfg.access_log.to_string_lossy().into(), api_addr: cfg.xray_api.clone() }
-    }
-    pub fn api_port(&self) -> u16 {
-        self.api_addr.rsplit_once(':').and_then(|(_, p)| p.parse().ok()).unwrap_or(62789)
-    }
-    pub fn api_host(&self) -> &str {
-        self.api_addr.rsplit_once(':').map(|x| x.0).unwrap_or("127.0.0.1")
+        Self { access_log: cfg.access_log.to_string_lossy().into() }
     }
 }
 
@@ -97,8 +92,8 @@ fn parse_ver(s: &str) -> Option<(u32, u32, u32)> {
 }
 
 /// 每个启用入口的回环探测入站端口 = 入口端口 + 10000。超出 65535 或与其它端口冲突则没有探测入站。
-pub fn probe_ports(entries: &[DesiredEntry], api_port: u16) -> HashMap<Uuid, u16> {
-    let taken: HashSet<u16> = entries.iter().filter(|e| e.enabled).map(|e| e.port).chain([api_port]).collect();
+pub fn probe_ports(entries: &[DesiredEntry]) -> HashMap<Uuid, u16> {
+    let taken: HashSet<u16> = entries.iter().filter(|e| e.enabled).map(|e| e.port).chain([API_PORT]).collect();
     entries
         .iter()
         .filter(|e| e.enabled)
@@ -227,7 +222,7 @@ fn probe_inbound_json(id: Uuid, port: u16) -> Value {
     })
 }
 
-fn validate(d: &DesiredState, api_port: u16) -> Result<String> {
+fn validate(d: &DesiredState) -> Result<String> {
     let rp = &d.relay;
     ensure!(!rp.reality_private_key.trim().is_empty(), "reality_private_key 为空");
     ensure!(!rp.reality_sni.trim().is_empty(), "reality_sni 为空");
@@ -241,7 +236,7 @@ fn validate(d: &DesiredState, api_port: u16) -> Result<String> {
     let mut ports = HashSet::new();
     for e in d.entries.iter().filter(|e| e.enabled) {
         ensure!(ids.insert(e.id), "入口 id 重复：{}", e.id);
-        ensure!(e.port != 0 && e.port != api_port, "入口 {} 端口 {} 不可用", e.id, e.port);
+        ensure!(e.port != 0 && e.port != API_PORT, "入口 {} 端口 {} 不可用", e.id, e.port);
         ensure!(ports.insert(e.port), "入口端口重复：{}", e.port);
         let sid = &e.short_id;
         ensure!(
@@ -270,7 +265,7 @@ fn skeleton_parts(ctx: &RenderCtx) -> (Value, Value, Value, Value) {
     let log = json!({"access": ctx.access_log, "error": "", "loglevel": "warning"});
     // API 用 api.listen 直接监听，不经入站与路由：否则每次调 `xray api` 都在访问日志里记一行 [api -> api]
     let api = json!({
-        "tag": API_TAG, "listen": format!("{}:{}", ctx.api_host(), ctx.api_port()),
+        "tag": API_TAG, "listen": format!("{API_HOST}:{API_PORT}"),
         "services": ["HandlerService", "StatsService", "RoutingService"]
     });
     let policy = json!({
@@ -281,9 +276,9 @@ fn skeleton_parts(ctx: &RenderCtx) -> (Value, Value, Value, Value) {
 }
 
 pub fn render(d: &DesiredState, ctx: &RenderCtx) -> Result<Rendered> {
-    let min_ver = validate(d, ctx.api_port())?;
+    let min_ver = validate(d)?;
     let (log, api, stats, policy) = skeleton_parts(ctx);
-    let probes = probe_ports(&d.entries, ctx.api_port());
+    let probes = probe_ports(&d.entries);
     let enabled: Vec<&DesiredEntry> = d.entries.iter().filter(|e| e.enabled).collect();
 
     let mut inbounds = vec![];
@@ -339,7 +334,7 @@ pub mod tests {
     use std::net::IpAddr;
 
     pub fn ctx() -> RenderCtx {
-        RenderCtx { access_log: "/var/log/fleet-xray/access.log".into(), api_addr: "127.0.0.1:62789".into() }
+        RenderCtx { access_log: "/var/log/fleet-xray/access.log".into() }
     }
 
     pub fn entry(n: u128, port: u16, enabled: bool) -> DesiredEntry {
@@ -461,7 +456,7 @@ pub mod tests {
     #[test]
     fn probe_port_rules() {
         let es = vec![entry(1, 20001, true), entry(2, 30001, true), entry(3, 60000, true), entry(4, 20004, false)];
-        let p = probe_ports(&es, 62789);
+        let p = probe_ports(&es);
         // 20001+10000=30001 与入口 2 冲突；60000+10000 溢出
         assert!(!p.contains_key(&es[0].id));
         assert_eq!(p[&es[1].id], 40001);
