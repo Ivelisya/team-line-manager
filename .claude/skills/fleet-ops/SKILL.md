@@ -1,6 +1,6 @@
 ---
 name: fleet-ops
-description: 团队线路管理（fleet）的运维入口。查节点或线路机状态、排查告警、看服务日志、在节点上执行命令、上架新机器、退役或删除机器、改名与编号、升级 agent、取入口分享链接时使用；一律先用 fleetctl，不要直接 ssh、psql 或手拼 curl。
+description: 团队线路管理（fleet）的运维入口。查节点或线路机状态、排查告警、维护前开维护窗口或静默告警（可预约）、看服务日志、在节点上执行命令、上架新机器、退役或删除机器、改名与编号、升级 agent、取入口分享链接时使用；一律先用 fleetctl，不要直接 ssh、psql 或手拼 curl。
 ---
 
 # fleet-ops
@@ -15,7 +15,7 @@ fleetctl --json <命令>      # AI 一律加 --json，输出一行 JSON
 ```
 
 - 配置：环境变量 `FLEET_URL`、`FLEET_TOKEN`，或 `fleetctl login --url <地址> --token <密钥>`。实验室中控是 `http://192.168.31.60:8080`。
-- `--json` 的 `ls` / `entries` / `incidents` / `policy ls` 是与表格同列的精简对象（字段见文末速查），一台机器的完整视图用 `show`、一个团队或节点的完整策略用 `policy show`；其余命令是 API 的 data 原样。机器上百台时 `ls` 仍有几万字符，先用 `--team` / `--kind` / `--status` 缩小。
+- `--json` 的 `ls` / `entries` / `incidents` / `policy ls` / `silence` 是与表格同列的精简对象（字段见文末速查），一台机器的完整视图用 `show`、一个团队或节点的完整策略用 `policy show`；其余命令是 API 的 data 原样。机器上百台时 `ls` 仍有几万字符，先用 `--team` / `--kind` / `--status` 缩小。
 - 成功退出码 0；失败退出码 1，错误 JSON 在 stderr（`{"error":{"code","message","status"}}`）。`exec` 单台时退出码等于远端命令的退出码。`job` / `job --follow`（以及各命令的 `--follow`）遇到作业失败或取消也退出 1，stderr 给 `{"error":{"code":"job_failed"|"job_cancelled","message",…}}`。
 - 没拿到中控响应时 `status` 为 null、`code` 是 `unreachable`（连不上，请求没发出去，可直接重试；`message` 带最底层原因）或 `timeout`（请求已发出、等响应超时）。`timeout` 时操作可能已在中控执行：先 `fleetctl --json jobs --active` / `fleetctl --json audit --limit 10` 核对，再决定是否重试，尤其是上架、退役、换线路机这类会建作业的命令。
 - `<机器>` 写机器 id、显示名（`团队1-06`）、线路机名（`线路机2`）或 IP。歧义时命令报错并列出候选，照候选里的 id 重试。
@@ -29,6 +29,7 @@ fleetctl --json <命令>      # AI 一律加 --json，输出一行 JSON
 | 一台机器的详情与健康原因 | `fleetctl --json show <机器>` |
 | 指标曲线 | `fleetctl --json series <机器> --range 1h\|6h\|24h\|7d [--metric host\|traffic\|probe]` |
 | 告警 / 确认告警 | `fleetctl --json incidents [--all] [--machine <机器>]`、`fleetctl ack <id>` |
+| 静默与维护窗口（进行中 / 已预约） | `fleetctl --json silence ls`（开、删见下文「维护窗口与静默」） |
 | 入口列表 | `fleetctl --json entries [<机器>]` |
 | 作业 | `fleetctl --json jobs [--active]`、`fleetctl job <id>`、`fleetctl job <id> --follow` |
 | 审计 | `fleetctl --json audit [--target <机器>] [--limit 50] [--before <上一页最后一条的 id>]` |
@@ -59,6 +60,22 @@ fleetctl exec --team 团队1 --timeout 30 -- uptime           # 多台并发 4�
 - 输出每个流最多 256 KiB（`truncated`）；超时 `timed_out=true`。
 - 执行只读命令（systemctl status、journalctl、df、ss、cat 日志）。会改动机器状态的命令先向用户确认。
 - 命令全文进审计，所以命令里不放密码或令牌。
+
+## 维护窗口与静默
+
+要动机器之前（重启、换内核、改网络、迁机房，或用户说要停机维护），先给它开维护窗口：窗口内这台机器不开告警、不发通知，卡片显示「维护中」、暂停健康判定，免得一边维护一边告警刷屏。做完就删，别等它自己到期。
+
+```
+fleetctl silence add <机器> --for 2h --maintenance --comment "换内核"                               # 从现在开始
+fleetctl silence add <机器> --start "2026-10-23 02:00" --for 4h --maintenance --comment "机房割接"    # 预约：--start 按本机时区，最多提前 90 天
+fleetctl silence add <机器> --rule agent_offline --for 30m --comment "重启 agent"                    # 只静默一条规则（规则 key 见文末）
+fleetctl --json silence ls                                                                          # 进行中的在前，已预约的随后
+fleetctl silence rm <id 前缀>                                                                       # 提前结束 / 取消预约，告警即刻恢复
+```
+
+- `--for` 写 `30m` / `4h` / `2d`（可组合，如 `1h30m`），最长 30 天；更久说明机器不用了，该退役。`--comment` 写清在干什么，网页列表和审计里都看得到。
+- 给单台机器开维护窗口是维护流程的一部分，不必另问；`--all`（全部机器）要加 `--yes`，先向用户确认。不要拿静默盖住没处理的故障：机器正在告警、又不打算马上修时，先问用户。
+- 表格里的时间是北京时间；`--start` 按本机时区解析，`--start` 早于现在会报错（多半是时区写错了），带时区写法如 `2026-10-23T02:00:00+08:00` 不受本机时区影响。`id` 列是前 13 位，`rm` 给能唯一确定的前缀即可。
 
 ## 会改变状态的操作：先向用户确认
 
@@ -92,6 +109,7 @@ fleetctl retry <作业> [--reset-host-key] [--password-env VAR]   # 重试失败
   同机关系：`host_machine{id,name}` 非 null 的是同机 IP 节点（它的 `agent`、`host` 都是宿主机的，agent 离线 / 高负载告警在宿主机名下；`logs --unit ssserver` 看它自己的实例 `fleet-ssserver@<端口>`，`exec` 在宿主机上执行；不能单独 `upgrade-agent`）；`ip_nodes[{id,name}]` 是宿主机上未退役的同机 IP 节点。
 - `entries`（每个入口一个精简对象）：`id relay port node lifecycle(active|pending|disabled|removing|removed) applied apply_error tcp_ok egress_ok today_down today_up`（今日业务流量，字节）；`tcp_ok` / `egress_ok` 为 null 表示还没探测过。`node` 是「线路机名-直出」的是线路机直出入口：没有节点，`tcp_ok` 恒为 null；它出口不通时告警对象是线路机（`egress_fail`）；搬空不搬它，退役线路机时自动摘除。
 - `incidents`（每条一个精简对象，`status` 里的 `incidents` 相同）：`id severity(warning|critical) rule rule_name subject_id subject_name summary reopen_count state(firing|resolved) opened_at resolved_at ack_by`（`ack_by` 非 null 即已确认；恢复后 30 分钟内复发会重开同一条并 +1，表格里显示「反复 N 次」；大于 0 说明在抖，查探测/网络而不是只看当前状态）。规则 key：agent_offline、clock_skew、no_entry、egress_fail、tcp_fail、renewal_due、renewal_overdue、traffic_quota_high（流量额度：本周期已用 ≥ 90% warning、≥ 100% critical，不改健康状态，新周期或调高上限后自动恢复）、relay_apply_lag、relay_apply_error、relay_xray_down、host_cpu_high、host_mem_high、host_disk_high、ipintel_new_isp（来源出现新运营商）、ipintel_new_city（来源出现新城市）、ipintel_datacenter_source（机房 / VPN 来源 IP），后三个是 warning、学习期 7 天后才有、最后一次出现 24 小时后自动恢复，不用手动处理。
+- `silence ls`（每条一个精简对象；`silence add` / `silence rm` 输出新建 / 删掉的那一条，同形）：`id subject_id subject_name rule rule_name starts_at ends_at state(active|scheduled) is_maintenance comment`；`subject_id` 为 null = 全部机器，`rule` 为 null = 全部规则；`state` 是 `active`（进行中）或 `scheduled`（已预约，还没开始）。只列没结束的。
 - `policy ls`：`draft_count teams[{id name mode domains draft revision nodes[{id name mode domains source(node|team|default) draft revision}]}]`；`domains` 是域名个数，`draft` 为 null 或 `{mode,domains}`；节点的 `mode` / `domains` / `source` 是生效值，`draft` / `revision` 是节点自己的。
 - `status --json` 的 `overview.failed`：上架失败（lifecycle=failed）的机器数，算在「有问题」里。`show` 的 `failed_job{id,kind,state}`：上架失败或退役失败（退役中）的机器带最近失败的作业，拿它的 id 去 `fleetctl job` / `fleetctl retry`（`ls --status failed` / `ls --status retiring` 找出这些机器）。
 - 不加 `--json` 的 `status` / `show` / `entries` / `incidents` 是给人看的：种类、生命周期、健康、严重度、规则、入口状态、作业种类与状态都显示中文；所有命令表格里的时间都是北京时间（`--json` 里是 API 原样的 RFC 3339）；`ls` 的种类 / 生命周期 / 健康列保留原值（就是 `--kind`、`--status` 的取值）。脚本和 AI 只解析 `--json`。
