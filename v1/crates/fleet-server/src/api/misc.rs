@@ -233,8 +233,8 @@ pub async fn create_silence(a: Actor, State(st): State<AppState>, ApiJson(b): Ap
     .await?;
     audit_log(&mut tx, &a.name, "silence.create", "silence", Some(id), json!({"subject_id": b.subject_id, "maintenance": b.is_maintenance})).await?;
     tx.commit().await?;
+    // 卡片上的「维护中」随 Incidents 标记的实时指标比对送达（最多 3 s），不发 Machines 让前端整表重取
     st.emit(Event::Incidents);
-    st.emit(Event::Machines);
     Ok(ok(json!({"id": id})))
 }
 
@@ -247,7 +247,6 @@ pub async fn delete_silence(a: Actor, State(st): State<AppState>, ApiPath(id): A
     audit_log(&mut tx, &a.name, "silence.delete", "silence", Some(id), json!({})).await?;
     tx.commit().await?;
     st.emit(Event::Incidents);
-    st.emit(Event::Machines);
     Ok(ok(json!({"ok": true})))
 }
 

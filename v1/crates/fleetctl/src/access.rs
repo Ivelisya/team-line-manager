@@ -47,7 +47,8 @@ pub fn access(ctx: &Ctx, o: AccessOpts) -> anyhow::Result<u8> {
                     .cloned()
                     .unwrap_or_default()
                     .iter()
-                    .map(|n| vec![st(n, "/name"), st(n, "/team"), num(n, "/conns"), num(n, "/domains"), num(n, "/sources"), num(n, "/blocked"), table::ts(&st(n, "/last_ts"))])
+                    // 来源数：24h 以上带搜索 / 类型 / 处理结果筛选时中控给 null（算不出），显示「-」
+                    .map(|n| vec![st(n, "/name"), st(n, "/team"), num(n, "/conns"), num(n, "/domains"), st(n, "/sources"), num(n, "/blocked"), table::ts(&st(n, "/last_ts"))])
                     .collect();
                 format!(
                     "自 {} 起：有活动的节点 {} · 连接 {} · 访问目标 {} · 已阻止 {}\n{}",

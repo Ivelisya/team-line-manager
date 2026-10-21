@@ -24,6 +24,10 @@ pub struct Health {
     pub status: Status,
     /// 机器可读的原因键（告警规则名同名）
     pub reasons: Vec<Reason>,
+    /// 有在用入口 15 分钟内没有探测结果（线路机 agent 离线、探测停了）：出口 / TCP 判不出好坏，
+    /// 告警引擎不能把这两条规则的原因消失当成恢复（只给告警用，不对外输出）
+    #[serde(skip)]
+    pub probe_unknown: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -58,13 +62,14 @@ const SUSTAIN_MIN_SPAN_S: i64 = 270;
 
 pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
     if m.lifecycle != "active" {
-        return Health { status: Status::Inactive, reasons: vec![] };
+        return Health { status: Status::Inactive, ..Default::default() };
     }
     if m.maintenance {
-        return Health { status: Status::Maintenance, reasons: vec![] };
+        return Health { status: Status::Maintenance, ..Default::default() };
     }
     let mut rs: Vec<Reason> = vec![];
     let mut unknown = false;
+    let mut probe_unknown = false;
     let agent_online = m.agent.as_ref().is_some_and(|a| a.online);
 
     if let Some(a) = &m.agent {
@@ -131,6 +136,10 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
                     unknown = true;
                     continue;
                 }
+                // 15 分钟内没有探测结果（视图只取这么久的）：这条入口通不通不知道
+                if e.egress.is_none() || e.tcp.is_none() {
+                    probe_unknown = true;
+                }
                 match &e.egress {
                     Some(p) if !p.ok => {
                         egress.push(format!("{}:{}", e.relay.name, e.port));
@@ -179,7 +188,7 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
     } else {
         Status::Ok
     };
-    Health { status, reasons: rs }
+    Health { status, reasons: rs, probe_unknown }
 }
 
 #[cfg(test)]
@@ -212,7 +221,7 @@ pub(crate) mod tests {
             activated_at: Some(now),
             retired_at: None,
             subscription: None,
-            agent: Some(Agent { version: None, last_report_at: Some(now), online: true, xray_running: Some(true), cores: None }),
+            agent: Some(Agent { version: None, last_report_at: Some(now), online: true, xray_running: Some(true), cores: None, health: None }),
             host: None,
             entries: vec![],
             removed_traffic: Default::default(),
@@ -313,6 +322,27 @@ pub(crate) mod tests {
         // 恢复一个：摘要只剩另一个
         n.entries[0] = entry(false, true);
         assert_eq!(evaluate(&n, now).reasons[0].text, "线路机B:20003 出口不通：refused");
+    }
+
+    #[test]
+    fn missing_probes_mark_probe_unknown() {
+        let now = OffsetDateTime::now_utc();
+        let mut n = base("vps");
+        n.entries = vec![entry(false, true)];
+        assert!(!evaluate(&n, now).probe_unknown);
+        n.entries[0].egress = None;
+        let h = evaluate(&n, now);
+        assert!(h.probe_unknown && h.status == Status::Unknown);
+        assert!(serde_json::to_value(&h).unwrap().get("probe_unknown").is_none(), "不对外输出");
+        // 一条入口失败、另一条没有 TCP 探测：照常报，同时标记（告警不能因另一条入口判不出而恢复）
+        n.entries = vec![entry(false, false), entry(false, true)];
+        n.entries[1].tcp = None;
+        let h = evaluate(&n, now);
+        assert_eq!(keys(&h), ["egress_fail", "tcp_fail"]);
+        assert!(h.probe_unknown);
+        // 线路机 Xray 没在运行的入口交给线路机的告警，不算探测过期
+        n.entries = vec![entry(true, false)];
+        assert!(!evaluate(&n, now).probe_unknown);
     }
 
     #[test]

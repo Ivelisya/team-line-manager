@@ -184,12 +184,15 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
             if (!immediate && (now - since).whole_seconds() < debounce_s(r.key)) || silenced(r.key, m.id) {
                 continue;
             }
-            // 窗口内刚恢复过：重开原告警（清掉确认），按 `due` 决定是否马上通知（退役等流程关掉的、带 closed_by 的不重开）
+            // 窗口内刚恢复过：重开原告警（清掉确认），按 `due` 决定是否马上通知（退役等流程关掉的、带 closed_by 的不重开）。
+            // 重开与新建都要求机器此刻仍在用：视图是稍早取的，退役事务若在那之后提交（发起退役时已关掉它的告警），
+            // 不能再给退役中的机器开一条永远不会恢复的告警。for share：退役事务还没提交时等它提交，再按新的 lifecycle 判断
             let reopened = sqlx::query_as::<_, Open>(&format!(
                 "update incident set state = 'firing', resolved_at = null, ack_at = null, ack_by = null, reopen_count = reopen_count + 1, last_seen_at = now(),
                      severity = $3::severity, summary = $4
                  where id = (select id from incident where rule = $1 and subject_id = $2 and state = 'resolved' and resolved_at > $5 and not detail ? 'closed_by'
                              order by resolved_at desc limit 1)
+                   and exists (select 1 from machine where id = $2 and lifecycle = 'active' for share)
                  returning {OPEN_COLS}"
             ))
             .bind(r.key)
@@ -209,7 +212,7 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
             let id = crate::db::new_id();
             let res = sqlx::query(
                 "insert into incident (id, rule, subject_id, severity, summary, detail)
-                 values ($1, $2, $3, $4::severity, $5, $6)
+                 select $1, $2, $3, $4::severity, $5, $6 where exists (select 1 from machine where id = $3 and lifecycle = 'active' for share)
                  on conflict (rule, subject_id) where state = 'firing' do nothing",
             )
             .bind(id)
@@ -234,9 +237,16 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
     // 原因消失的告警恢复：只处理 active 的机器。其它生命周期 evaluate 不给原因，不能当成「恢复」——
     // 退役中的在发起退役时已经关掉（closed_by = retire，见 api/machines.rs retire）。
     // `open` 里剩下的就是这一轮没有对应原因的告警。
-    let names: HashMap<Uuid, &str> = ms.iter().filter(|m| m.lifecycle == "active").map(|m| (m.id, m.name.as_str())).collect();
+    let active: HashMap<Uuid, (&str, bool)> =
+        ms.iter().filter(|m| m.lifecycle == "active").map(|m| (m.id, (m.name.as_str(), m.health.probe_unknown))).collect();
     for (_, inc) in open {
-        let Some(name) = names.get(&inc.subject_id) else { continue };
+        let Some(&(name, probe_unknown)) = active.get(&inc.subject_id) else { continue };
+        // 探测结果过期（线路机 agent 离线、探测停了）：出口 / TCP 的原因消失不等于恢复，保持原状，
+        // 等有新探测再判（去抖从那时重新算），否则线路机一离线这些告警就成批假恢复、补传后又重开
+        if probe_unknown && matches!(inc.rule.as_str(), "egress_fail" | "tcp_fail") {
+            state.clean_since.remove(&inc.id);
+            continue;
+        }
         let since = *state.clean_since.entry(inc.id).or_insert(now);
         if !inc.rule.starts_with("renewal_") && (now - since).whole_seconds() < debounce_s(&inc.rule) {
             continue;

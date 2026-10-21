@@ -58,6 +58,9 @@ pub struct Agent {
     pub xray_running: Option<bool>,
     /// agent 报的可用核数（容器里是限额）；没报过为 None
     pub cores: Option<i32>,
+    /// agent 自报的健康数据（离线队列、访问日志尾读、探测与对齐，自 agent 进程启动起累计）；旧 agent 没报过为 None。
+    /// 每次上报都变，不进实时指标推送（live.rs 的 agent 字段不含它），随 REST 重取更新
+    pub health: Option<fleet_proto::AgentHealth>,
 }
 
 /// 最近 5 分钟主机负载的「最低值」：最低值都超阈值才算持续高负载（健康判定用，不对外输出）
@@ -249,6 +252,7 @@ struct MRow {
     a_last: Option<OffsetDateTime>,
     a_xray: Option<bool>,
     a_cores: Option<i32>,
+    a_health: Option<sqlx::types::Json<fleet_proto::AgentHealth>>,
     r_host: Option<String>,
     r_gen: Option<i64>,
     r_applied: Option<i64>,
@@ -392,7 +396,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 s.price_cents s_price, s.currency s_currency, s.cycle::text s_cycle, s.due_date s_due, s.billing_tz s_tz,
                 local_date(s.billing_tz) s_today, s.auto_renew s_auto, s.remind_days s_remind, s.traffic_gb s_traffic, s.traffic_reset_day s_reset,
                 a.agent_version a_version, a.last_report_at a_last, (a.info->'xray'->>'running')::bool a_xray, (a.info->>'cpu_cores')::int a_cores,
-                r.public_host r_host, r.generation r_gen, r.applied_generation r_applied, r.applied_at r_applied_at, r.generation_at r_gen_at,
+                a.info->'agent_health' a_health, r.public_host r_host, r.generation r_gen, r.applied_generation r_applied, r.applied_at r_applied_at, r.generation_at r_gen_at,
                 r.apply_error r_err, r.port_min r_pmin, r.port_max r_pmax
          from machine m
          left join team t on t.id = m.team_id
@@ -494,9 +498,13 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
         .fetch_all(db)
         .await?;
         let eids: Vec<Uuid> = es.iter().map(|e| e.id).collect();
+        // 每个入口 × (tcp, egress) 沿 (entry_id, kind, ts desc) 索引各取最新一条（不把 15 分钟内的探测全读出来排序）；
+        // 上界同主机样本，剪掉预建的未来分区
         let ps = sqlx::query_as::<_, P>(
-            "select distinct on (entry_id, kind) entry_id, kind, ok, latency_ms, detail, ts from probe_result
-             where entry_id = any($1) and kind in ('tcp', 'egress') and ts > now() - interval '15 minutes' order by entry_id, kind, ts desc",
+            "select x.* from unnest($1::uuid[]) e(id) cross join (values ('tcp'), ('egress')) k(kind) cross join lateral (
+                select entry_id, kind, ok, latency_ms, detail, ts from probe_result
+                where entry_id = e.id and kind = k.kind and ts > now() - interval '15 minutes' and ts <= now() + interval '1 day'
+                order by ts desc limit 1) x",
         )
         .bind(&eids)
         .fetch_all(db)
@@ -645,6 +653,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 online: r.a_last.is_some_and(|t| (now - t).whole_seconds() < AGENT_OFFLINE_S),
                 xray_running: r.a_xray,
                 cores: r.a_cores,
+                health: r.a_health.map(|h| h.0),
             });
             let subscription = r.s_price.map(|price| Subscription {
                 price_cents: price,

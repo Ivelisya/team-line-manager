@@ -11,8 +11,15 @@ pub type Tx<'a> = Transaction<'a, Postgres>;
 
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations");
 
+/// 等空闲连接最多 5 秒（sqlx 默认 30 秒，比 agent 上报的 15 秒超时还长）：池子吃紧时尽快回 503
+/// （上报入库按 503 退避重试，见 agent_api::ingest_error），而不是让请求越积越多
 pub async fn connect(url: &str) -> anyhow::Result<PgPool> {
-    PgPoolOptions::new().max_connections(20).connect(url).await.with_context(|| "连接 PostgreSQL")
+    PgPoolOptions::new()
+        .max_connections(20)
+        .acquire_timeout(std::time::Duration::from_secs(5))
+        .connect(url)
+        .await
+        .with_context(|| "连接 PostgreSQL")
 }
 
 pub fn new_id() -> Uuid { Uuid::now_v7() }
@@ -221,7 +228,9 @@ where
 pub async fn rollup_hours(db: &PgPool) -> anyhow::Result<()> { rollup_dirty(db, "rollup_dirty", |h| rollup_hour(db, h)).await }
 
 /// 重算一个整点小时。主机网络流量取相邻样本的正增量之和（lag），计数器回绕（重启清零）时
-/// 当前读数就是重启后的增量；上一小时最后一个样本参与第一个增量的计算，不丢小时交界处的流量。
+/// 当前读数就是重启后的增量；整点前 15 分钟内的最后一个样本参与第一个增量的计算，不丢小时交界处的流量。
+/// 只回看 15 分钟（回看整小时要多读一倍样本、排序落盘）：整点前 15 分钟内没有样本（agent 离线超过 15 分钟）时，
+/// 本小时第一个样本没有前值、不计增量，缺口那段的流量不记到这一小时（agent 重启本来就按计数器重置处理，同样不计）。
 async fn rollup_hour(db: &PgPool, hour: OffsetDateTime) -> anyhow::Result<()> {
     let q = [
         "insert into host_metric_hourly (machine_id, hour, cpu_avg, cpu_max, mem_used_avg, mem_total_max, disk_used_max, disk_total_max, net_rx, net_tx)
@@ -230,7 +239,7 @@ async fn rollup_hour(db: &PgPool, hour: OffsetDateTime) -> anyhow::Result<()> {
                 coalesce(sum(case when tx is null or prev_tx is null then 0 when tx >= prev_tx then tx - prev_tx else tx end), 0)::bigint
          from (select machine_id, ts, cpu_pct, mem_used, mem_total, disk_used, disk_total,
                       net_rx_bytes rx, lag(net_rx_bytes) over w prev_rx, net_tx_bytes tx, lag(net_tx_bytes) over w prev_tx
-               from host_metric where ts >= $1 - interval '1 hour' and ts < $1 + interval '1 hour'
+               from host_metric where ts >= $1 - interval '15 minutes' and ts < $1 + interval '1 hour'
                window w as (partition by machine_id order by ts)) x
          where ts >= $1 group by machine_id
          on conflict (machine_id, hour) do update set cpu_avg = excluded.cpu_avg, cpu_max = excluded.cpu_max,

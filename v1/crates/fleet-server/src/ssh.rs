@@ -193,8 +193,9 @@ impl Target {
     }
 
     /// 推文件：sha256 相同则跳过；否则写临时文件再原子替换。连接类的瞬时错误同样重试。
+    /// 文件只读进内存一次，每次尝试交给写 stdin 的任务的只是引用计数（不再整份复制）
     pub async fn push(&self, local: &Path, remote: &str, mode: &str, timeout: Duration) -> anyhow::Result<bool> {
-        let data = tokio::fs::read(local).await.with_context(|| format!("读取 {}", local.display()))?;
+        let data: std::sync::Arc<[u8]> = tokio::fs::read(local).await.with_context(|| format!("读取 {}", local.display()))?.into();
         let sha = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&data));
         let chk = self.run(&format!("sha256sum '{remote}' 2>/dev/null | cut -d' ' -f1"), Duration::from_secs(20)).await?;
         if chk.stdout.trim() == sha {

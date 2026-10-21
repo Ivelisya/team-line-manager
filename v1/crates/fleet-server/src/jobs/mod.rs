@@ -273,13 +273,15 @@ pub async fn run_forever(st: AppState) {
 }
 
 /// 领取一个可执行的作业，租约先给 3 分钟；每步开始前会按该步的超时续租。
+/// 升级 agent 排在其它作业之后：「全部升级」一次建一百多个，不能让之后的上架、换线路机、退役排在它们后面。
+/// 同一事务建的作业 created_at 相同，再按 id（UUIDv7，按生成先后递增）：全部升级里先建的线路机先领。
 pub async fn claim(st: &AppState, owner: &str) -> anyhow::Result<Option<JobRow>> {
     Ok(sqlx::query_as(
         "update job set lease_owner = $1, lease_until = now() + interval '3 minutes',
             state = case when state in ('queued', 'waiting') then 'running'::job_state else state end,
             started_at = coalesce(started_at, now())
          where id = (select id from job where state in ('queued', 'running', 'waiting', 'cancelling') and run_after <= now()
-                     and (lease_until is null or lease_until < now()) order by created_at for update skip locked limit 1)
+                     and (lease_until is null or lease_until < now()) order by kind = 'upgrade_agent', created_at, id for update skip locked limit 1)
          returning id, kind, target_id, params, state::text state, step, created_by",
     )
     .bind(owner)
@@ -451,6 +453,10 @@ async fn finish_cancel(st: &AppState, job: &JobRow, owner: &str) -> anyhow::Resu
         return lost(st, job).await;
     }
     steps::compensate(st, job, owner).await;
+    // 先标步骤、再把作业置为已取消：外面看到 cancelled 时步骤已经是补偿后的状态
+    if let Err(e) = sqlx::query("update job_step set state = 'compensated' where job_id = $1 and state in ('done', 'running')").bind(job.id).execute(&st.db).await {
+        log(st, job.id, "warn", format!("标记步骤已补偿失败：{e}")).await;
+    }
     let n = sqlx::query(
         "update job set state = 'cancelled', finished_at = now(), lease_until = null, lease_owner = null, params = params - 'login'
          where id = $1 and lease_owner = $2 and state = 'cancelling'",
@@ -462,9 +468,6 @@ async fn finish_cancel(st: &AppState, job: &JobRow, owner: &str) -> anyhow::Resu
     .rows_affected();
     if n == 0 {
         return lost(st, job).await;
-    }
-    if let Err(e) = sqlx::query("update job_step set state = 'compensated' where job_id = $1 and state in ('done', 'running')").bind(job.id).execute(&st.db).await {
-        log(st, job.id, "warn", format!("标记步骤已补偿失败：{e}")).await;
     }
     log(st, job.id, "warn", "已取消").await;
     notify(st, job);

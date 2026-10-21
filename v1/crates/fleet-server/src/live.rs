@@ -126,6 +126,7 @@ fn machine_fields(m: &MachineView) -> Fields {
     let host = m.host.as_ref().map(|h| {
         (secs(h.ts), h.cpu_pct, h.load1, h.mem_used, h.mem_total, h.disk_used, h.disk_total, h.net_rx_bps.map(|v| v.round() as i64), h.net_tx_bps.map(|v| v.round() as i64), h.tcp_conns)
     });
+    // 不含 last_report_at（单独的 seen）和 health（agent 自报的累计计数每次上报都变，推它等于每条消息都带整份；随 REST 重取）
     #[derive(Serialize)]
     struct AgentState<'a> {
         version: &'a Option<String>,

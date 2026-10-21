@@ -118,3 +118,13 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 
 ## 7. 版本升级顺序
 先升中控（`lab/deploy-server.sh` 就是先装 fleet-server、再把新 agent 放进 dist），再 `fleetctl upgrade-agent --all --yes` 升 agent：新 agent 的上报可能带旧中控不认的字段形状（如容器里 `load1` 为 null），旧中控会拒收整份上报。
+
+## 8. PostgreSQL 参数建议
+发行版默认值（`shared_buffers = 128MB`、`work_mem = 4MB`）对中控偏小，建议在中控机上调：
+
+| 参数 | 建议 | 原因 |
+|---|---|---|
+| `shared_buffers` | 内存的 25% 左右（4 GB 内存给 1GB） | 原始时序表（主机样本每台每 10 秒一行、探测、访问记录）的当天分区和小时汇总表是一直在读写的热数据，放得进缓存时曲线查询、每 3 秒一次的实时视图不用反复读盘 |
+| `work_mem` | 16–32 MB（4 GB 内存取 16MB） | 每 5 分钟的主机小时汇总要把当前小时的全部样本按（机器, 时间）排序算网卡增量：实验室 136 台、约 6 万行，4MB 时排序落盘约 5 MB 临时文件；机器详情的长时段曲线（按分钟 / 小时分组聚合）同理。它按每个排序 / 哈希节点各算一份，连接池上限 20 条，不要给太大 |
+
+改法（`psql` 以超级用户执行）：`alter system set work_mem = '16MB'; select pg_reload_conf();` 立即生效；`alter system set shared_buffers = '1GB';` 要重启 PostgreSQL 才生效（fleet-server 的连接池会自动重连，正在进行的请求会失败一次）。改完用 `show work_mem;`、`show shared_buffers;` 确认。

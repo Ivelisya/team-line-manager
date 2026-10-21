@@ -101,6 +101,11 @@ async fn degrades_without_dbs_never_500() {
     let b = t.get("/api/v1/ipintel?ips=9.9.9.9").await;
     assert_eq!(b["items"][0]["intel"]["isp"], "当前版本");
     assert_eq!(b["items"][0]["intel"]["conn_label"], "机房");
+
+    // 访问监控的来源列表（24h 及以上）同样走短 TTL 缓存：汇总变了，同参数仍是缓存里的；limit 不同是另一份
+    sqlx::query("update access_source_hourly set conns = conns + 100").execute(&t.st.db).await.unwrap();
+    assert_eq!(t.get("/api/v1/access/sources?window=7d").await, a);
+    assert_eq!(t.get("/api/v1/access/sources?window=7d&limit=50").await["items"][0]["conns"], 105);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

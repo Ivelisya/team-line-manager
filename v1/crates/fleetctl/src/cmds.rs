@@ -346,6 +346,23 @@ fn load_cn(load1: Option<f64>, cores: Option<i64>) -> String {
     }
 }
 
+/// agent 自报的健康数据（`MachineView.agent.health`）：离线队列现有多少份；其余是 agent 进程启动以来的累计次数
+fn agent_health_cn(h: &Value) -> String {
+    let n = |k: &str| st(h, &format!("/{k}"));
+    let mut s = format!(
+        "离线队列待发 {} 份；自 agent 启动起丢弃 {} 份、移入 dead {} 份，访问日志轮转缺口 {} 次、被截断 {} 次",
+        n("queue_len"),
+        n("queue_dropped"),
+        n("queue_dead"),
+        n("access_rotation_gaps"),
+        n("access_truncations")
+    );
+    if let Some(e) = h["last_apply_error"].as_str() {
+        s.push_str(&format!("；最近应用失败：{e}"));
+    }
+    s
+}
+
 pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
     let (id, _) = ctx.find_id(machine, Want::Any)?;
     let m = ctx.c.get(&format!("/machines/{id}"))?;
@@ -364,6 +381,9 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
         ];
         if !m["agent"].is_null() {
             rows.push(("agent", format!("{}  版本 {}  最近上报 {}", if m["agent"]["online"] == true { "在线" } else { "离线" }, st(&m, "/agent/version"), table::ts_cn(&st(&m, "/agent/last_report_at")))));
+        }
+        if let Some(h) = m.pointer("/agent/health").filter(|h| !h.is_null()) {
+            rows.push(("agent 自报", agent_health_cn(h)));
         }
         if !m["host"].is_null() {
             rows.push((
@@ -853,6 +873,14 @@ mod tests {
         assert_eq!(load_cn(Some(0.5), Some(2)), "25%（1 分钟 0.50 · 2 核）");
         assert_eq!(load_cn(Some(0.5), None), "1 分钟 0.50");
         assert_eq!(load_cn(None, Some(2)), "-");
+    }
+
+    #[test]
+    fn agent_health_wording() {
+        let mut h = json!({"queue_len": 3, "queue_dropped": 0, "queue_dead": 1, "access_lines": 900, "access_rotation_gaps": 2, "access_truncations": 0});
+        assert_eq!(agent_health_cn(&h), "离线队列待发 3 份；自 agent 启动起丢弃 0 份、移入 dead 1 份，访问日志轮转缺口 2 次、被截断 0 次");
+        h["last_apply_error"] = json!("xray 配置校验失败");
+        assert!(agent_health_cn(&h).ends_with("被截断 0 次；最近应用失败：xray 配置校验失败"));
     }
 
     #[test]

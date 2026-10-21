@@ -303,6 +303,42 @@ async fn stale_lease_holder_cannot_write() {
     assert_eq!((state.as_str(), step), ("waiting", 1));
 }
 
+/// 「全部升级」一个事务建的一批升级作业（created_at 相同）不挡住之后建的其它作业；升级作业之间按建立先后领，线路机在前
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bulk_upgrades_do_not_block_other_jobs() {
+    let t = setup(false).await;
+    let team = seed_team(&t, "团队1").await;
+    // 落地机先插入（id 更小），线路机后插入：领取顺序要看建作业的先后，不是机器 id
+    for i in 1..=3 {
+        sqlx::query("insert into machine (id, kind, team_id, number, primary_ip, lifecycle) values ($1, 'vps', $2, $3, $4::inet, 'active')")
+            .bind(Uuid::now_v7())
+            .bind(team)
+            .bind(i)
+            .bind(format!("203.0.113.{}", 20 + i))
+            .execute(&t.st.db)
+            .await
+            .unwrap();
+    }
+    let (relay, _) = seed_relay(&t).await;
+    let up = t.post("/api/v1/agents/upgrade", json!({})).await;
+    let ups: Vec<Uuid> = up["jobs"].as_array().unwrap().iter().map(|j| j["job_id"].as_str().unwrap().parse().unwrap()).collect();
+    assert_eq!(ups.len(), 4, "{up}");
+
+    let node = seed_node(&t, team, 9, "203.0.113.10", "provisioning").await;
+    let mut tx = t.st.db.begin().await.unwrap();
+    let prov = jobs::enqueue(&mut tx, "provision_proxy", Some(node), json!({"relay_id": relay}), "test").await.unwrap();
+    tx.commit().await.unwrap();
+
+    let mut order = vec![];
+    while let Some(j) = jobs::claim(&t.st, "test").await.unwrap() {
+        order.push((j.id, j.target_id));
+    }
+    assert_eq!(order.len(), 5);
+    assert_eq!(order[0].0, prov, "后建的上架作业先领");
+    assert_eq!(order[1].1, Some(relay), "升级作业里线路机先领");
+    assert_eq!(order[1..].iter().map(|o| o.0).collect::<Vec<_>>(), ups, "升级作业按建立先后");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn relay_with_entries_cannot_be_retired() {
     let t = setup(false).await;

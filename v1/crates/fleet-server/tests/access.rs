@@ -114,6 +114,18 @@ async fn summary_targets_sources_events() {
     assert_eq!((a["conns"].as_i64(), a["targets"].as_i64(), a["sources"].as_i64()), (Some(15), Some(5), Some(4)));
     assert_eq!(d["kpi"]["conns"], 20);
 
+    // 节点的来源数跟随筛选（和同行的连接数同一批连接）：1h 在原始记录上逐条筛；
+    // 24h 以上来源小时表没有目标维度，带搜索 / 类型 / 处理结果筛选时给 null
+    let src1 = |d: &Value| row(d, "nodes", "name", "团队1-01")["sources"].clone();
+    assert_eq!(src1(&t.get("/api/v1/access/summary?window=1h&action=blocked").await), 1, "被阻止的只来自 1.1.1.1");
+    assert_eq!(src1(&t.get("/api/v1/access/summary?window=1h&action=routed").await), 4);
+    assert_eq!(src1(&t.get("/api/v1/access/summary?window=1h&search=google").await), 2);
+    assert_eq!(src1(&t.get("/api/v1/access/summary?window=1h&kind=ip").await), 1);
+    for q in ["search=google", "kind=ip", "action=blocked"] {
+        assert!(src1(&t.get(&format!("/api/v1/access/summary?window=24h&{q}")).await).is_null(), "{q}");
+    }
+    assert_eq!(src1(&t.get("/api/v1/access/summary?window=24h&kind=all&action=all").await), 5, "all 等于没筛");
+
     // ── 7d / 30d 窗口；30d 里再塞一条 20 天前的小时汇总 ──
     let d = t.get("/api/v1/access/summary?window=7d").await;
     assert_eq!(row(&d, "nodes", "name", "团队1-01")["conns"], 19);

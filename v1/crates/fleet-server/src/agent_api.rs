@@ -41,27 +41,20 @@ async fn authenticate(st: &AppState, h: &HeaderMap) -> ApiResult<AgentId> {
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .ok_or_else(ApiError::unauthorized)?;
-    let digest = sha256(tok.trim().as_bytes());
+    // 查令牌与刷新最近使用时间一次往返；最近使用时间一分钟内不重复写（agent 每 10 秒上报一次，没必要每次都改这一行）
     let row: Option<(Uuid, String)> = sqlx::query_as(
-        "select m.id, m.kind::text from agent_token t join machine m on m.id = t.machine_id
-         where t.token_hash = $1 and t.revoked_at is null and m.lifecycle <> 'retired'",
+        "with a as (select m.id, m.kind::text kind from agent_token t join machine m on m.id = t.machine_id
+                    where t.token_hash = $1 and t.revoked_at is null and m.lifecycle <> 'retired'),
+              _u as (update agent_token set last_used_at = now()
+                     where token_hash = $1 and revoked_at is null and (last_used_at is null or last_used_at < now() - interval '1 minute')
+                       and exists (select 1 from a))
+         select id, kind from a",
     )
-    .bind(&digest)
+    .bind(sha256(tok.trim().as_bytes()))
     .fetch_optional(&st.db)
     .await
     .map_err(ingest_error)?;
     let (machine_id, kind) = row.ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "token_revoked", "令牌无效或已撤销"))?;
-    // 最近使用时间一分钟内不重复写（agent 每 10 秒上报一次，没必要每次都改这一行）；失败不影响认证
-    if let Err(e) = sqlx::query(
-        "update agent_token set last_used_at = now()
-         where token_hash = $1 and revoked_at is null and (last_used_at is null or last_used_at < now() - interval '1 minute')",
-    )
-    .bind(&digest)
-    .execute(&st.db)
-    .await
-    {
-        tracing::warn!("更新令牌最近使用时间失败：{e}");
-    }
     Ok(AgentId { machine_id, kind })
 }
 
