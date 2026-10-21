@@ -136,13 +136,15 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
         Some(s) => format!("{f} and i.subject_id = {}", a.add(s)),
         None => f.to_string(),
     };
+    // 全站列表严重的在前；一台机器的（抽屉「最近告警」）只按时间：进行中在前、再按触发时间新的在前，旧的严重告警不挤掉新的
+    let order = if q.subject_id.is_some() { "i.state, i.opened_at desc, i.id desc" } else { "i.state, i.severity desc, i.opened_at desc, i.id desc" };
     let mut a = Args::default();
     let sql = format!(
         "select i.id, i.rule, i.subject_id,
             display_name(m.kind::text, m.label, t.name, m.number) subject_name,
             i.severity::text severity, i.state::text state, i.summary, i.opened_at, i.last_seen_at, i.resolved_at, i.ack_at, i.ack_by, i.reopen_count
          from incident i left join machine m on m.id = i.subject_id left join team t on t.id = m.team_id
-         where {} order by i.state, i.severity desc, i.opened_at desc, i.id desc limit {} offset {}",
+         where {} order by {order} limit {} offset {}",
         cond(&mut a),
         a.add(limit),
         a.add(offset)
