@@ -30,16 +30,19 @@ export function AlertsIndicator() {
         <ul className="pop-list">
           {list.map((i) => {
             const sid = i.subject?.id ?? i.subject_id;
+            const name = i.subject?.name ?? i.subject_name ?? '—';
+            // 摘要以「对象名：」开头（告警通知要能单独看懂），这里名字已在上一行，去掉不重复
+            const sum = i.summary.startsWith(`${name}：`) ? i.summary.slice(name.length + 1) : i.summary;
             return (
               <li key={i.id}>
                 <button type="button" className="pop-item" onClick={() => { setOpen(false); if (sid) openDrawer(sid); }}>
                   <span className="alerts-pop-row">
                     <SeverityDot severity={i.severity} />
-                    <b className="ellipsis">{i.subject?.name ?? i.subject_name ?? '—'}</b>
+                    <b className="ellipsis">{name}</b>
                     <span className="alerts-pop-rule ellipsis">{i.rule_name}</span>
                     <span className="alerts-pop-age">已持续 {F.str(F.since(i.opened_at, now))}</span>
                   </span>
-                  <span className="alerts-pop-sum hint ellipsis">{i.summary}</span>
+                  <span className="alerts-pop-sum hint ellipsis" data-tip={sum}>{sum}</span>
                 </button>
               </li>
             );

@@ -212,6 +212,7 @@
 .field { display: grid; gap: var(--sp-6); min-width: 0; align-content: start; }
 .label { font: var(--fw-medium) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2); }
 .hint { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); text-wrap: pretty; }
+.hint.ellipsis { white-space: nowrap; } /* text-wrap 是简写，上一条的 pretty 会把 .ellipsis（base.css）的不折行重置成折行 */
 .hint.is-error { color: var(--bad-text); }
 .input, .textarea, .select-trigger {
   width: 100%; min-width: 0; box-sizing: border-box; height: var(--h-lg); padding: 0 var(--sp-10);
