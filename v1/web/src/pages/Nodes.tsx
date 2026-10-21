@@ -1,5 +1,6 @@
 // 节点：表格视图。固定列宽；筛选（团队 / 类型 / 线路机 / 状态 / 范围）+ 搜索；点行打开右侧抽屉。
-// 默认顺序 = 线路机 → 团队 → 编号（不排序时保持），表头排序是用户的显式选择，可一键恢复；排序记在 URL（?sort=due 升序、?sort=-due 降序，首页“7 天内到期”链到这里）。
+// 默认顺序 = 线路机 → 团队 → 编号（不排序时保持），表头排序是用户的显式选择，可一键恢复；排序记在 URL（?sort=due 升序、?sort=-due 降序，首页“7 天内到期”链到这里），
+// 范围也是（?scope=retired 已退役，缺省在用）。
 // 分页在筛选、排序之后（每页 50）。
 import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
@@ -32,7 +33,9 @@ const STATUS_OPTS = [...Object.entries(HEALTH_LABEL).filter(([k]) => k !== 'inac
 const SCOPES: { value: Scope; label: string }[] = [{ value: 'live', label: '在用' }, { value: 'retired', label: '已退役' }];
 
 export function NodesPage() {
-  const [scope, setScope] = React.useState<Scope>('live');
+  const [sp, setSp] = useSearchParams();
+  // 范围同排序记在 URL（?scope=retired），刷新、后退或从链接打开都停在原来的范围
+  const scope: Scope = sp.get('scope') === 'retired' ? 'retired' : 'live';
   const q = useMachines(scope);
   const teams = useTeams().data;
   const teamOpts = React.useMemo(() => (teams ?? []).map((t) => ({ value: t.id, label: t.name })), [teams]);
@@ -42,11 +45,13 @@ export function NodesPage() {
   const [kind, setKind] = React.useState('');
   const [relay, setRelay] = React.useState('');
   const [status, setStatus] = React.useState('');
-  const [sp, setSp] = useSearchParams();
   const rawSort = sp.get('sort');
   const sort = React.useMemo<SortState | null>(() => (rawSort ? { id: rawSort.replace(/^-/, ''), desc: rawSort.startsWith('-') } : null), [rawSort]); // null = 默认顺序
   const setSort = (s: SortState | null) => setSp((p) => { const n = new URLSearchParams(p); if (s) n.set('sort', `${s.desc ? '-' : ''}${s.id}`); else n.delete('sort'); return n; }, { replace: true });
-  const onScope = React.useCallback((v: Scope) => { setScope(v); setStatus(''); }, []);
+  const onScope = React.useCallback((v: Scope) => {
+    setSp((p) => { const n = new URLSearchParams(p); if (v === 'retired') n.set('scope', v); else n.delete('scope'); return n; }, { replace: true });
+    setStatus('');
+  }, [setSp]);
 
   const all = q.data ?? EMPTY;
   // 线路机选项只随名单变：实时推送每次都换机器列表，线路机和名字没变时选项引用不变
