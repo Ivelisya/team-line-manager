@@ -47,7 +47,8 @@ async fn authenticate(st: &AppState, h: &HeaderMap) -> ApiResult<AgentId> {
     )
     .bind(&digest)
     .fetch_optional(&st.db)
-    .await?;
+    .await
+    .map_err(ingest_error)?;
     let (machine_id, kind) = row.ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "token_revoked", "令牌无效或已撤销"))?;
     // 最近使用时间一分钟内不重复写（agent 每 10 秒上报一次，没必要每次都改这一行）；失败不影响认证
     if let Err(e) = sqlx::query(
@@ -123,8 +124,39 @@ fn hour_start(t: OffsetDateTime) -> OffsetDateTime {
     OffsetDateTime::from_unix_timestamp(t.unix_timestamp().div_euclid(3600) * 3600).unwrap_or(t)
 }
 
+/// 上报入库失败：数据库错误单独保留，按 SQLSTATE 分类后再回给 agent
+enum IngestErr {
+    Api(ApiError),
+    Db(sqlx::Error),
+}
+
+impl From<ApiError> for IngestErr {
+    fn from(e: ApiError) -> Self { Self::Api(e) }
+}
+impl From<sqlx::Error> for IngestErr {
+    fn from(e: sqlx::Error) -> Self { Self::Db(e) }
+}
+
+/// agent 只把 4xx 移入 dead/、5xx 一直重试：
+/// 数据错误（SQLSTATE 22 类：坏字节 / NUL / 越界；23 类：违反约束）→ 422，这份报告重发也不会成功；
+/// 其它（连接池超时、断连、磁盘满、只读…）→ 503，中控恢复后原样重发
+fn ingest_error(e: sqlx::Error) -> ApiError {
+    let class = e.as_database_error().and_then(|d| d.code()).map(|c| c.chars().take(2).collect::<String>());
+    match class.as_deref() {
+        Some("22" | "23") => ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "bad_report", format!("上报数据无法入库，已拒收：{e}")),
+        _ => ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "unavailable", format!("上报入库失败（中控暂时不可用）：{e}")),
+    }
+}
+
 async fn report(State(st): State<AppState>, h: HeaderMap, ApiJson(r): ApiJson<Report>) -> ApiResult<Json<ReportAck>> {
-    let a = authenticate(&st, &h).await?;
+    ingest(&st, &h, r).await.map_err(|e| match e {
+        IngestErr::Api(e) => e,
+        IngestErr::Db(e) => ingest_error(e),
+    })
+}
+
+async fn ingest(st: &AppState, h: &HeaderMap, r: Report) -> Result<Json<ReportAck>, IngestErr> {
+    let a = authenticate(st, h).await?;
     let now = OffsetDateTime::now_utc();
     let now_ms = (now.unix_timestamp_nanos() / 1_000_000) as i64;
     let hi = now_ms + DAY_MS;
@@ -135,18 +167,18 @@ async fn report(State(st): State<AppState>, h: HeaderMap, ApiJson(r): ApiJson<Re
 
     // ── 入库前整理：时间窗口过滤、补建分区。单条坏样本绝不能让整份上报失败 ──
     let host = windowed(r.host.iter(), |s| s.ts_ms, raw_lo, hi, &mut dropped);
-    let host = with_partitions(&st, "host_metric", host, today, &mut dropped).await;
+    let host = with_partitions(st, "host_metric", host, today, &mut dropped).await;
     let (mut es, mut ps, mut ac) = (vec![], vec![], vec![]);
     // 线路机数据：只收属于这台线路机的入口
     if a.kind == "relay" && (!r.entries.is_empty() || !r.probes.is_empty() || !r.access.is_empty()) {
         let mine: Vec<(Uuid,)> = sqlx::query_as("select id from entry where relay_id = $1").bind(a.machine_id).fetch_all(&st.db).await?;
         let mine: std::collections::HashSet<Uuid> = mine.into_iter().map(|(e,)| e).collect();
         es = windowed(r.entries.iter().filter(|e| mine.contains(&e.entry_id)), |e| e.ts_ms, raw_lo, hi, &mut dropped);
-        es = with_partitions(&st, "entry_traffic", es, today, &mut dropped).await;
+        es = with_partitions(st, "entry_traffic", es, today, &mut dropped).await;
         ps = windowed(r.probes.iter().filter(|p| mine.contains(&p.entry_id)), |p| p.ts_ms, raw_lo, hi, &mut dropped);
-        ps = with_partitions(&st, "probe_result", ps, today, &mut dropped).await;
+        ps = with_partitions(st, "probe_result", ps, today, &mut dropped).await;
         ac = windowed(r.access.iter().filter(|x| mine.contains(&x.entry_id)).take(5000), |x| x.ts_ms, acc_lo, hi, &mut dropped);
-        ac = with_partitions(&st, "access_event", ac, today, &mut dropped).await;
+        ac = with_partitions(st, "access_event", ac, today, &mut dropped).await;
     }
     warn_dropped(a.machine_id, dropped, r.seq);
 

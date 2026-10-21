@@ -97,6 +97,20 @@ async fn retired_machine_old_provision_job_cannot_be_retried() {
     t.wait_job(&job, "failed").await;
     assert_eq!(t.machine_lifecycle(machine).await, "failed");
 
+    // 带 root 密码重试（原密码已被清掉）：和上架时一样加密存进作业参数，供重试的作业使用
+    sqlx::query("update job set params = params - 'login' where id = $1::uuid").bind(&job).execute(&t.st.db).await.unwrap();
+    t.post(&format!("/api/v1/jobs/{job}/retry"), json!({"ssh_password": "new-root-pw"})).await;
+    t.wait_job(&job, "failed").await;
+    let enc: String = sqlx::query_scalar("select params->'login'->>'password_enc' from job where id = $1::uuid").bind(&job).fetch_one(&t.st.db).await.unwrap();
+    use base64::Engine as _;
+    let raw = base64::engine::general_purpose::STANDARD.decode(enc).unwrap();
+    assert_eq!(t.st.secrets.open_str(&raw).unwrap(), "new-root-pw");
+    let (s, v) = t.req("POST", &format!("/api/v1/jobs/{job}/retry"), Some(json!({"ssh_password": 5})), None).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    // 上架失败计入总览
+    let ov = t.get("/api/v1/overview").await;
+    assert_eq!(ov["failed"], 1, "{ov}");
+
     // 把这台上架失败的机器退役
     let name = t.get(&format!("/api/v1/machines/{machine}")).await["name"].as_str().unwrap().to_string();
     let rj = t.post(&format!("/api/v1/machines/{machine}/retire"), json!({"confirm": name})).await["job_id"].as_str().unwrap().to_string();
@@ -117,6 +131,23 @@ async fn retired_machine_old_provision_job_cannot_be_retried() {
     assert_eq!(t.machine_lifecycle(machine).await, "retired", "机器没有被拉回去");
 }
 
+/// 退役中的机器、退役作业失败：详情带 failed_job（网页据此给「查看作业 / 重试」）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retiring_machine_shows_failed_retire_job() {
+    let t = setup(true).await;
+    let team = seed_team(&t, "团队1").await;
+    let node = seed_node(&t, team, 1, "203.0.113.10", "retiring").await;
+    let job = Uuid::now_v7();
+    sqlx::query("insert into job (id, kind, target_id, state, created_by, finished_at) values ($1, 'retire', $2, 'failed', 't', now())")
+        .bind(job)
+        .bind(node)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let m = t.get(&format!("/api/v1/machines/{node}")).await;
+    assert_eq!(m["failed_job"], json!({"id": job, "kind": "retire", "state": "failed"}), "{m}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn purge_runs_twice_without_error() {
     let t = setup(true).await;
@@ -126,7 +157,7 @@ async fn purge_runs_twice_without_error() {
     // 该节点的访问汇总和分区表里的主机指标，彻底删除时要一并清掉
     for sql in [
         "insert into access_hourly (node_id, relay_id, hour, dest_host, kind, conns) values ($1, gen_random_uuid(), now(), 'a.com', 'domain', 1)",
-        "insert into access_source_hourly (node_id, hour, src_ip, conns) values ($1, now(), '1.1.1.1', 1)",
+        "insert into access_source_hourly (node_id, relay_id, hour, src_ip, conns) values ($1, gen_random_uuid(), now(), '1.1.1.1', 1)",
         "insert into access_target_seen (node_id, dest_host, first_seen, last_seen, total) values ($1, 'a.com', now(), now(), 1)",
         "insert into access_source_late (node_id, hour, src_ip, delta) values ($1, now(), '1.1.1.1', 1)",
         "insert into host_metric (machine_id, ts, cpu_pct, load1, mem_used, mem_total, disk_used, disk_total, net_rx_bytes, net_tx_bytes, tcp_conns) values ($1, now(), 1, 1, 1, 1, 1, 1, 1, 1, 1)",

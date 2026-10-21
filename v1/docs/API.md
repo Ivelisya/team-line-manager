@@ -62,7 +62,8 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
                                 // 从该日账单时区零点累计；否则为北京时间的本月。来自小时汇总表，每次汇总后更新
   health: {status: "ok"|"degraded"|"down"|"unknown"|"maintenance"|"inactive", reasons:[{key,severity,text}]},
   active_job: {id,kind,state}|null,                    // 进行中的作业（queued/running/waiting/cancelling）
-  failed_job: {id,kind,state}|null,                    // lifecycle = failed（上架失败）时：失败的上架/恢复作业；重试回到 provisioning，取消则补偿退役
+  failed_job: {id,kind,state}|null,                    // lifecycle = failed（上架失败）时：失败的上架/恢复作业，重试回到 provisioning，取消则补偿退役；
+                                                       // lifecycle = retiring 且退役作业失败时：该 retire 作业（等重试）；其它情况 null
   open_incidents, maintenance,
   relay: {public_host,generation,applied_generation,applied_at,apply_error,port_min,port_max}|null }
 EntryView = { id, relay:{id,name}, node:{id,name}, port, lifecycle, applied, apply_error,
@@ -117,13 +118,13 @@ ProvisionItem = {
 | POST | `/machines/{node_id}/entries` | 给节点再挂一条入口：`{relay_id}` → 作业 |
 
 ## 作业
-`Job = {id,kind,target:{id,name}|null,state,step,error,created_by,created_at,started_at,finished_at,steps:[{idx,key,title,state,started_at,finished_at,output,error}]}`
+`Job = {id,kind,target:{id,name}|null,state,step,step_count,step_title,error,created_by,created_at,started_at,finished_at,steps:[{idx,key,title,state,started_at,finished_at,output,error}]}`（`step_count` = 该种作业的步骤数，`step_title` = 第 `step` 步的标题，做完为 null）
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/jobs?state=active\|done\|all\|failed&target_id=&limit=100&offset=0` | 分页：`{items:[Job（不含 steps、cancellable、result，另有 step_title）], total, next_offset}`，按创建先后倒序（`id desc`） |
 | GET | `/jobs/{id}` | 含 steps |
 | GET | `/jobs/{id}/logs?after=<log id>` | `[{id,ts,level,msg}]` |
-| POST | `/jobs/{id}/retry` | 失败的作业从失败那一步重来 |
+| POST | `/jobs/{id}/retry` | 失败的作业从失败那一步重来。可选请求体 `{reset_host_key?: bool, ssh_password?: string}`（不带请求体 = 都不要）：`reset_host_key` 先清掉 known_hosts 里这台机器的记录、按现在的主机公钥重新记录（报「主机指纹变化」且确认机器重装过才用；拿不到公钥 409）；`ssh_password` 是 root 密码，和上架时一样加密存进作业参数，供重试的作业在中控密钥登录不了时用（用过即丢；失败作业留存的密码 3 天后清除，之后重试要重新给）。只有 failed 的作业能重试（否则 409）；上架/恢复失败的机器重试时回到 provisioning。审计 `job.retry` 记 `reset_host_key` 与是否给了密码（不记密码） |
 | POST | `/jobs/{id}/cancel` | 进行中的作业：补偿已完成的步骤后停下 |
 
 ## 运维：远程执行与日志
@@ -132,12 +133,12 @@ ProvisionItem = {
 |---|---|---|
 | POST | `/machines/{id}/exec` | `{command, timeout_s?: 1-600 (默认 60)}` → `{data:{exit_code, stdout, stderr, duration_ms, truncated, timed_out}}`。stdout/stderr 各截断到 256 KiB（`truncated=true`）；超时 `timed_out=true`、`exit_code=124`；SSH 连不上时 `exit_code=255` 且 stderr 有原因。机器不存在 404、已退役或 proxy 409、命令空/超时越界 400、SSH 无法启动 502 |
 | GET | `/machines/{id}/logs?unit=fleet-agent\|fleet-xray\|ssserver&lines=200` | 白名单 unit（`ssserver` 对应 `fleet-ssserver`），lines 1-2000；内部走同一 exec 通道跑 `journalctl`，返回形状同 exec，另有 `unit`、`lines`。审计动作 `machine.logs` |
-| GET | `/server/logs?lines=200` | 中控自己的 `journalctl -u fleet-server`。fleet 用户通常没权限读 journal：失败时 500 并说明如何授权（`usermod -aG systemd-journal fleet`） |
+| GET | `/server/logs?lines=200` | 中控自己的 `journalctl -u fleet-server`。fleet 用户通常没权限读 journal：journalctl 报错时 424（`error.code="journal_denied"`，message 说明如何授权：`usermod -aG systemd-journal fleet`）；journalctl 无法运行或 20 秒没返回时 500 |
 
 ## 总览与告警
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/overview` | `{nodes:{total,ok,degraded,down,unknown,maintenance}, relays:{…}, provisioning, retiring, due_7d（7 天内到期或已过期、需要续费的：自动续费的只在已过期时算）, online, offline（按 agent 连通：agent 没有近期上报为离线，家宽代理没有 agent 算在线；与健康无关，有严重告警但照常上报的算在线）, monthly_cost:[{currency,cents}]（按币种分别汇总，不折算）, traffic_month:{up,down}, net_rx_bps, net_tx_bps}`（只统计 active；速率不含 agent 离线的机器——告警不影响，照常上报的机器照算） |
+| GET | `/overview` | `{nodes:{total,ok,degraded,down,unknown,maintenance}, relays:{…}, provisioning, retiring, failed（上架失败的机器数，网页「有问题」里也算它们）, due_7d（7 天内到期或已过期、需要续费的：自动续费的只在已过期时算）, online, offline（按 agent 连通：agent 没有近期上报为离线，家宽代理没有 agent 算在线；与健康无关，有严重告警但照常上报的算在线）, monthly_cost:[{currency,cents}]（按币种分别汇总，不折算）, traffic_month:{up,down}, net_rx_bps, net_tx_bps}`（只统计 active；速率不含 agent 离线的机器——告警不影响，照常上报的机器照算） |
 | GET | `/overview/series?minutes=30` | 总览网速曲线：`{points:[{ts, net_rx_bps, net_tx_bps}]}`，`minutes` 1–60（默认 30，越界 400）；最近 N 个**结束满 20 s** 的分钟（agent 每 10 s 上报，刚结束的那一分钟还缺最后的上报，不给）每分钟一个点、旧→新，`ts` 为该分钟起点（RFC3339）。每个点 = 该分钟有主机指标的 active 机器速率之和，单台算法同 `/machines/{id}/series?metric=host`（每分钟计数器最大值与上一个有数据的分钟相减 ×8 / 秒数；计数器回绕的那一段不计）；没有数据的分钟为 0 |
 | GET | `/probe-beats` | 探测心跳条：`{<机器id>: [[n, ok, ms], …20 格]}`。每格 3 分钟、按墙钟对齐（`date_bin('3 minutes', ts, 'epoch')`，即每小时的 :00 / :03 / … ），旧→新，最后一格是当前这格（还没走完）；第 i 格 = `[cb-57m+3i 分, cb-57m+3(i+1) 分)`，cb = 当前这格的起点；`n` = TCP 探测次数，`ok` = 成功次数，`ms` = 成功探测的平均延迟（没有成功的为 null）；没有探测的格为 `[0,0,null]`。节点汇总它的入口、线路机汇总挂在它上面的所有入口；只含这 20 格里有探测数据的在用机器 |
 | GET | `/incidents?state=firing\|resolved\|all&limit=100&offset=0` | 分页：`{items:[{id,rule,rule_name,subject:{id,name},subject_id,subject_name,severity,state,summary,opened_at,last_seen_at,resolved_at,ack_at,ack_by,reopen_count}], total, next_offset}`；`state` 默认 firing；`reopen_count`：恢复后 30 分钟内同一（规则, 对象）复发会重开原告警而不是新建，每次 +1；顺序：进行中在前 → 严重度高在前 → 开始时间新在前（同时刻按 id，翻页不重不漏） |
@@ -155,7 +156,7 @@ ProvisionItem = {
   - probe：`{ts, tcp_ok, tcp_ms, egress_ok, egress_ms}`（失败时 `*_ms` 为 null；1m 分辨率另有 `tcp_n`、`tcp_ok_n`（该分钟 TCP 探测次数 / 成功次数，线路机为其所有入口合计）；1h 分辨率另有 `tcp_success_pct`、`egress_success_pct`）
 - 作业 `Job`：`{id, kind, target: {id,name}|null, state, step, step_count, step_title, error, created_by, created_at, started_at, finished_at}`（`step` 当前或失败的步骤下标，`step_title` 它的标题，做完为 null）；
   `state` ∈ `queued | running | waiting | cancelling | succeeded | failed | cancelled`；详情另有 `steps[]`（`output` 是 JSON 对象或 null；各步骤输出的 key 与中文展示见 `web/src/lib/jobs.ts` 的 `OUTPUT`，跳过的步骤为 `{reason}`）与 `cancellable`。
-  作业 `kind` ∈ `provision_vps | provision_proxy | provision_relay | attach_entry | retire | purge | upgrade_agent`。
+  作业 `kind` ∈ `provision_vps | provision_proxy | provision_relay | restore_vps | restore_proxy | restore_relay | attach_entry | move_entry | retire | purge | upgrade_agent`。
 - 告警 `Incident`：`{id, rule, rule_name（规则中文名，同通知）, subject: {id,name}, subject_id, subject_name, severity, state: "firing"|"resolved", summary, opened_at, last_seen_at, resolved_at, ack_at, ack_by, reopen_count}`（`subject_name` 机器已删除时为 null）。
 - 静默 `Silence`：`{id, subject_id, subject_name, rule, starts_at, ends_at, is_maintenance, comment}`。
 - 续费 `Renewal`：`{id, old_due, new_due, amount_cents, note, actor, created_at}`。
@@ -184,6 +185,8 @@ ProvisionItem = {
 ## agent（`/agent/v1`，Bearer 令牌）
 见 `crates/fleet-proto/src/lib.rs`。另：`GET /echo` 返回请求方 IP（纯文本），供出口探测用，无需鉴权。
 
+`POST /agent/v1/report` 入库失败按类回：数据本身入不了库（SQLSTATE 22 类：坏字节、NUL、越界；23 类：违反约束）→ 422（`error.code="bad_report"`），agent 把这份报告移入 `dead/` 不再重发；其它（连接池超时、断连、磁盘满、只读…）→ 503，agent 退避重试（受本地队列的字节与时长上限约束）。agent 只把 4xx（401 撤销、403/404/408/429 除外）当永久拒绝，5xx 和网络错误一律重试。
+
 ## 访问监控
 线路机 agent 解析 Xray 访问日志上报，服务端写入 `access_event`（原始记录保留 `retention.access_days`=7 天），并每 5 分钟把当前小时和被标脏的小时重算进小时汇总（`access_hourly` / `access_source_hourly` / `access_target_seen`，保留 90 天，幂等；agent 断网后补传的旧记录在上报时把所在小时记进 `access_dirty`，下一轮补算；启动时补算缺口）。24h/7d/30d 的聚合结果在进程内缓存 `access_cache_secs`（默认 30）秒，设 0 关闭。全部为只读 GET，读权限即可。
 
@@ -199,9 +202,9 @@ ProvisionItem = {
 | GET | `/access/summary?…` | `{kpi:{active_nodes,conns,targets,blocked}, nodes:[{node_id,name,team,conns,targets,domains,sources,blocked,last_ts}], window_start}`。`targets` 是各节点分别去重后相加；节点按连接数降序 |
 | GET | `/access/targets?…&sort=conns\|last\|first&limit=100&offset=0` | `{items:[{node_id,name,dest_host,kind,conns,sources,blocked,first_seen,last_seen}], next_offset, window_start}`；`limit` 1–500，`offset` ≤ 100000，满页才给 `next_offset`；`first_seen` 是该节点历史上第一次出现（不限窗口）。不单独回总数：同一筛选下 `/access/summary` 的 `kpi.targets` 就是这张表的总行数（同一个聚合） |
 | GET | `/access/sources?…&limit=100` | `{items:[{node_id,name,src_ip,conns,last_ts}], window_start}`，按 (节点, 来源 IP) 连接数降序；`search` 在这里匹配来源 IP；`limit` ≤ 500 |
-| GET | `/access/events?node=&team=&search=&action=&kind=&window=&limit=100&before=<RFC3339>` | `{items:[{ts,node_id,name,src_ip,dest_host,dest_port,network,blocked}], next_before}`，按时间倒序；`before` 取上一页最后一条的 `ts`（严格小于）；`search` 同时匹配目标和来源 IP；只有最近 7 天 |
+| GET | `/access/events?node=&team=&search=&action=&kind=&window=&limit=100&before=<游标>` | `{items:[{ts,node_id,name,src_ip,dest_host,dest_port,network,blocked}], next_before}`，按 (时间, 记录 id) 倒序；`next_before` 是不透明游标（满页才给），下一页把它原样放进 `before`（要 URL 编码）；同一时刻的多条记录不会被跳过；格式不对 400。`search` 同时匹配目标和来源 IP；只有最近 7 天 |
 | GET | `/access/new-targets?window=24h&node=…&limit=200&offset=0` | `{items:[{node_id,name,dest_host,kind,first_seen,last_seen,total}], total, next_offset, window_start}`：顶层 `total` 是符合筛选的目标总数，`next_offset` 只在后面还有时给出；窗口内第一次出现的目标，按首次出现倒序；`total` 为累计连接数（汇总保留期内）。这是旧系统「新域名」的替代，**不产生告警** |
-| GET | `/machines/{id}/access?window=24h` | `{window_start, top_domains:[{dest_host,kind,conns,blocked,sources}]（30）, top_sources:[{node_id,name,src_ip,conns,last_ts}]（20）, recent:[事件]（最近 20 条）, hourly:[{hour,conns,blocked}]（缺的小时补 0；至少 24 小时）}`。线路机汇总它名下所有节点；机器不存在 404 |
+| GET | `/machines/{id}/access?window=24h` | `{window_start, top_domains:[{dest_host,kind,conns,blocked,sources}]（30）, top_sources:[{node_id,name,src_ip,conns,last_ts}]（20）, recent:[事件]（最近 20 条）, hourly:[{hour,conns,blocked}]（缺的小时补 0；至少 24 小时）}`。线路机只算经它的流量（它名下的入口，含已移除的；同一节点经别的线路机的流量不算），节点算它自己全部入口的；机器不存在 404 |
 
 ## 来源 IP 画像（IP 情报）
 离线库在 fleet-server 进程内查询（ip2region v4/v6、DB-IP City/ASN Lite、iptoasn，mmap），**只查本地，绝不把 IP 发往在线服务**。库由 `deploy/ipintel/fetch-dbs.sh`（systemd timer `fleet-ipintel-fetch` 每月一次）下载到 `[ipintel] db_dir`（默认 `/var/lib/fleet/ipintel`），文件 mtime 变化后 5 分钟内自动热重载。库缺失或不全时降级：能查多少查多少，查不到的字段为 null，接口不报错。ASN 分类清单内置在 `crates/fleet-ipintel/data/asn-lists.toml`，可用 `/etc/fleet/ipintel-overrides.toml`（同样的 `[[vpn]] asn=[…] name="…"` 写法，`name=""` 表示删除）覆盖或追加。线路机和节点的 `primary_ip` 自动算「内部地址」（`[ipintel] internal_ips` 可追加运维出口）。全部为只读 GET，读权限即可。
@@ -213,7 +216,7 @@ ProvisionItem = {
 | GET | `/ipintel/{ip}` | 单个地址的完整画像（`isp asn as_org country region city lat lon type type_word type_confidence type_reason type_alt flags sources dbs{四库原始结果}`）加 `degraded`（库没加载全）、`loaded`。非法 IP 400 |
 | GET | `/ipintel?ips=a,b,c` | ≤200 个，`{items:[{ip, intel}|{ip, intel:null, error}], loaded, degraded}`；不写缓存 |
 | GET | `/ipintel/status` | `{enabled, installed, loaded, expected:5, db_dir, version, files:[{id, loaded, bytes, mtime, build, entries}], errors, hosting_asns, lists（各清单条目数）, overrides{path,used,error}, cache_rows, mem, hint}`；未安装时 `hint` 提示运行 `lab/install-ipintel.sh` |
-| GET | `/machines/{id}/sources?window=24h\|7d\|30d&limit=50` | 节点（线路机取名下全部节点）的来源画像：`distribution.{isp,city,province,country,conn_type}[{value,label,conns,sources,pct}]`（只统计外部来源；我方机器和非公网地址分别计入 `internal_conns` / `private_conns`）、`top_sources[{src_ip,conns,last_ts,intel}]`、`known.{isp,city,conn_type}[{value,label,first_seen,last_seen,conns,anomaly}]`（已学基线）、`learning{started_at,ends_at,learn_days,done,remaining_hours}`、`anomalies[]`（进行中的 ipintel 告警）、`empty`、`degraded`、`unresolved_sources` |
+| GET | `/machines/{id}/sources?window=24h\|7d\|30d&limit=50` | 节点的来源画像（线路机：分布与 top 来源只算经它的流量；`known` 基线与 `anomalies` 按节点记，取它名下入口的节点）：`distribution.{isp,city,province,country,conn_type}[{value,label,conns,sources,pct}]`（只统计外部来源；我方机器和非公网地址分别计入 `internal_conns` / `private_conns`）、`top_sources[{src_ip,conns,last_ts,intel}]`、`known.{isp,city,conn_type}[{value,label,first_seen,last_seen,conns,anomaly}]`（已学基线）、`learning{started_at,ends_at,learn_days,done,remaining_hours}`、`anomalies[]`（进行中的 ipintel 告警）、`empty`、`degraded`、`unresolved_sources` |
 
 **异常告警**（warning，进 incident 表并走通知渠道）：节点第一条来源记录起 `learn_days`（默认 7）天内只学习；之后某节点出现新的运营商 → `ipintel_new_isp`，新的城市 → `ipintel_new_city`，某 (节点, 来源 IP) 第一次出现且为机房/VPN → `ipintel_datacenter_source`。跳过非公网地址和我方机器。一次性异常最后一次出现 `alert_ttl_hours`（默认 24）小时后自动恢复，不发恢复通知；同一个值恢复后不会再次告警。后台每 5 分钟从 `access_source_hourly` 增量维护 `node_source_seen`（水位在 `ipintel_state`；水位之前的小时若被补算，连接数差值经 `access_source_late` 补记，首次扫描按 7 天一页）。
 

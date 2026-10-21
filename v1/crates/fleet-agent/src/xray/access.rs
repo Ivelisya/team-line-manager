@@ -21,6 +21,13 @@ pub enum Parsed {
     /// 合法但不是入口流量（探测入站等）
     Other,
     Bad,
+    /// 目标主机名含非法字符（控制字符、NUL、非 ASCII…）：整行丢弃，计入 dropped_lines，不让坏字节进上报
+    BadHost,
+}
+
+/// 主机名 / IP 只允许这些字符：字母数字与 `-._:`（IPv6 去掉方括号后含 `:`）
+fn host_ok(h: &str) -> bool {
+    h.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b':'))
 }
 
 /// 本机当前 UTC 偏移（秒）
@@ -103,6 +110,9 @@ pub fn parse_line(line: &str, utc_offset_s: i64) -> Parsed {
     let Ok(port) = port.parse::<u16>() else { return Parsed::Bad };
     if host.is_empty() || host.len() > 253 {
         return Parsed::Bad;
+    }
+    if !host_ok(&host) {
+        return Parsed::BadHost;
     }
     // 路由 [in -> out]
     let tail = &tok[i + 2..];
@@ -312,6 +322,7 @@ impl Tailer {
                 }
                 Parsed::Other => {}
                 Parsed::Bad => self.counters.unparsed += 1,
+                Parsed::BadHost => self.counters.dropped_lines += 1,
             }
         }
         let reading_old = read_path != self.path;
@@ -363,6 +374,17 @@ mod tests {
 
     fn id() -> Uuid {
         Uuid::from_u128(0xabc)
+    }
+
+    #[test]
+    fn invalid_host_chars_drop_the_line() {
+        let line = |h: &str| format!("2026/10/20 13:50:56 from 1.2.3.4:5678 accepted tcp:{h}:443 [in-{} -> out-x] email: e-{}", id().simple(), id().simple());
+        for h in ["bad\u{0}host", "a\u{7}b.com", "例子.com", "a\u{fffd}b"] {
+            assert!(matches!(parse_line(&line(h), 0), Parsed::BadHost), "{h:?}");
+        }
+        for h in ["a_b-c.example.com", "[2001:db8::1]", "10.0.0.1"] {
+            assert!(matches!(parse_line(&line(h), 0), Parsed::Event(_)), "{h:?}");
+        }
     }
 
     #[test]

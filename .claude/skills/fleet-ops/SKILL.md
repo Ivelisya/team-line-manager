@@ -73,6 +73,7 @@ fleetctl move <节点> --to <线路机> --yes [--from <线路机>] [--follow]   
 fleetctl evacuate <线路机> --to <线路机> --yes [--follow]          # 搬空线路机（退役前）：每个在用节点一个换线路机作业
 fleetctl restore <已退役机器> --relay <线路机> [--team --number --label --upstream --password-env VAR --reason --reset-host-key] --yes [--follow]   # 恢复：先预检（IP 冲突、新名字、是否要 root 密码）再提交
 fleetctl provision ...                                     # 先 check，再确认，再提交
+fleetctl retry <作业> [--reset-host-key] [--password-env VAR]   # 重试失败作业；报「主机指纹变化」且确认重装过才加 --reset-host-key；报「没有可用的 root 密码」时用 --password-env 补密码
 ```
 
 - 上架：`fleetctl --json provision --file batch.json --dry-run` 只校验；通过后让用户确认名单，再去掉 `--dry-run` 加 `--yes --follow`。单台参数：`--kind vps --ip 1.2.3.4 --team 团队1 --relay 线路机2 --provider ATTVPS --plan 基础版`。root 密码放环境变量，用 `--ssh-password-env VAR` 传名字。
@@ -84,6 +85,7 @@ fleetctl provision ...                                     # 先 check，再确�
 
 - `ls` / `show`（MachineView）：`id name kind(relay|vps|proxy) lifecycle(active|provisioning|retiring|retired|failed) ip ssh_port revision`；`health.status`（ok|degraded|down|unknown|maintenance|inactive）与 `health.reasons[{key,rule_name,severity,text}]`（`rule_name` 是规则中文名，同通知）；`agent.online`；`host.{cpu_pct,mem_used,mem_total,disk_used,disk_total,load1}`；`entries[]`；`active_job`；`open_incidents`。
 - `incidents`：`id rule rule_name subject_name severity(warning|critical) summary opened_at ack_by reopen_count`（恢复后 30 分钟内复发会重开同一条并 +1，表格里显示「反复 N 次」；大于 0 说明在抖，查探测/网络而不是只看当前状态）。规则 key：agent_offline、no_entry、egress_fail、tcp_fail、renewal_due、renewal_overdue、relay_apply_lag、relay_apply_error、relay_xray_down、host_cpu_high、host_mem_high、host_disk_high、ipintel_new_isp（来源出现新运营商）、ipintel_new_city（来源出现新城市）、ipintel_datacenter_source（机房 / VPN 来源 IP），后三个是 warning、学习期 7 天后才有、最后一次出现 24 小时后自动恢复，不用手动处理。
+- `status --json` 的 `overview.failed`：上架失败（lifecycle=failed）的机器数，算在「有问题」里。`ls`/`show` 的 `failed_job{id,kind,state}`：上架失败或退役失败（退役中）的机器带最近失败的作业，拿它的 id 去 `fleetctl job` / `fleetctl retry`。
 - 不加 `--json` 的 `status` / `show` / `entries` / `incidents` 是给人看的：种类、生命周期、健康、严重度、规则、入口状态、作业种类与状态都显示中文，时间是北京时间；`ls` 的种类 / 生命周期 / 健康列保留原值（就是 `--kind`、`--status` 的取值）。脚本和 AI 只解析 `--json`。
 - `status --json` 的 `overview.online` / `offline`：按 agent 连通计（家宽代理没有 agent 算在线），与健康无关。
 - `job`：`state`（queued|running|waiting|cancelling|succeeded|failed|cancelled）、`error`、`steps[]`、`logs[]`。

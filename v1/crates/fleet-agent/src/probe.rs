@@ -11,32 +11,48 @@ fn ms(t: Instant) -> f32 {
     (t.elapsed().as_secs_f64() * 1000.0) as f32
 }
 
-/// 探测失败原因 → 中文（进健康原因、告警、通知）；原始错误只记 agent 日志
-fn reason_cn(raw: &str) -> String {
-    let l = raw.to_ascii_lowercase();
-    if l.contains("socks") {
+/// 探测失败原因 → 中文（进健康原因、告警、通知）；原始错误只记 agent 日志。
+/// `full` 是整条错误链（用来匹配），`inner` 是链上最里层的错误（认不出时原样带上它，顶层往往只有「error sending request」）
+fn reason_cn(full: &str, inner: &str, timeout_s: u64) -> String {
+    let l = full.to_ascii_lowercase();
+    let has = |ks: &[&str]| ks.iter().any(|k| l.contains(k));
+    if has(&["socks"]) {
         "代理握手失败".into()
-    } else if l.contains("refused") {
+    } else if has(&["refused"]) {
         "连接被拒绝".into()
-    } else if l.contains("lookup") || l.contains("resolve") || l.contains("dns") || l.contains("not known") {
+    } else if has(&["reset"]) {
+        "连接被重置".into()
+    } else if has(&["unexpected eof", "incomplete message", "closed before message completed", "end of file"]) {
+        "对端提前断开".into()
+    } else if has(&["connection closed", "broken pipe", "connection aborted"]) {
+        "连接被关闭".into()
+    } else if has(&["tls", "ssl", "certificate", "handshake"]) {
+        "TLS 握手失败".into()
+    } else if has(&["unreachable"]) {
+        "网络不可达".into()
+    } else if has(&["lookup", "resolve", "dns", "not known"]) {
         "无法解析主机".into()
-    } else if l.contains("timed out") || l.contains("timeout") {
-        "连接超时".into()
+    } else if has(&["timed out", "timeout"]) {
+        timeout_text(timeout_s)
     } else {
-        format!("其他：{}", raw.chars().take(80).collect::<String>())
+        format!("其他：{}", inner.chars().take(80).collect::<String>())
     }
 }
 
-/// 错误连同 source 链拼成一行（reqwest 的顶层只有「error sending request」，真正原因在 source 里）
-fn chain(e: &dyn std::error::Error) -> String {
-    let mut s = e.to_string();
+/// 超时的统一说法
+fn timeout_text(secs: u64) -> String { format!("超时 {secs} 秒") }
+
+/// 错误连同 source 链拼成一行，另给最里层的那个（reqwest 的顶层只有「error sending request」，真正原因在 source 里）
+fn chain(e: &dyn std::error::Error) -> (String, String) {
+    let (mut s, mut inner) = (e.to_string(), e.to_string());
     let mut src = e.source();
     while let Some(x) = src {
+        inner = x.to_string();
         s.push_str(": ");
-        s.push_str(&x.to_string());
+        s.push_str(&inner);
         src = x.source();
     }
-    s
+    (s, inner)
 }
 
 // ── TCP 探测 ────────────────────────────────────────────────────────────────
@@ -48,9 +64,10 @@ pub async fn tcp_probe(entry_id: Uuid, host: &str, port: u16, timeout: Duration,
         Ok(Ok(_)) => (true, None),
         Ok(Err(e)) => {
             tracing::debug!(host, port, "TCP 探测失败：{e}");
-            (false, Some(reason_cn(&e.to_string())))
+            let (full, inner) = chain(&e);
+            (false, Some(reason_cn(&full, &inner, timeout.as_secs())))
         }
-        Err(_) => (false, Some(format!("连接超时 {} 秒", timeout.as_secs()))),
+        Err(_) => (false, Some(timeout_text(timeout.as_secs()))),
     };
     // 失败时不给延迟，避免被当成慢而不是挂
     ProbeSample { entry_id, ts_ms, kind: ProbeKind::Tcp, ok, latency_ms: ok.then(|| ms(t)), detail }
@@ -77,13 +94,13 @@ async fn http_get(client: &reqwest::Client, url: &str, timeout: Duration) -> Res
     })
     .await;
     match r {
-        Err(_) => Err(format!("超时 {} 秒", timeout.as_secs())),
+        Err(_) => Err(timeout_text(timeout.as_secs())),
         Ok(Ok(Ok(body))) => Ok(body),
         Ok(Ok(Err(code))) => Err(format!("HTTP 状态码 {code}")),
         Ok(Err(e)) => {
-            let raw = chain(&e);
-            tracing::debug!(url, "出口探测失败：{raw}");
-            Err(reason_cn(&raw))
+            let (full, inner) = chain(&e);
+            tracing::debug!(url, "出口探测失败：{full}");
+            Err(reason_cn(&full, &inner, timeout.as_secs()))
         }
     }
 }
@@ -187,11 +204,19 @@ mod tests {
 
     #[test]
     fn reasons_are_chinese() {
-        assert_eq!(reason_cn("Connection refused (os error 111)"), "连接被拒绝");
-        assert_eq!(reason_cn("failed to lookup address information: Name or service not known"), "无法解析主机");
-        assert_eq!(reason_cn("Connection timed out (os error 110)"), "连接超时");
-        assert_eq!(reason_cn("error sending request: client error (Connect): socks connect error: Connection refused"), "代理握手失败");
-        assert_eq!(reason_cn("Network is unreachable (os error 101)"), "其他：Network is unreachable (os error 101)");
+        let r = |s: &str| reason_cn(s, s, 5);
+        assert_eq!(r("Connection refused (os error 111)"), "连接被拒绝");
+        assert_eq!(r("failed to lookup address information: Name or service not known"), "无法解析主机");
+        assert_eq!(r("Connection timed out (os error 110)"), "超时 5 秒");
+        assert_eq!(r("error sending request: client error (Connect): socks connect error: Connection refused"), "代理握手失败");
+        assert_eq!(r("Network is unreachable (os error 101)"), "网络不可达");
+        assert_eq!(r("error sending request: connection error: Connection reset by peer (os error 104)"), "连接被重置");
+        assert_eq!(r("error sending request: connection closed before message completed"), "对端提前断开");
+        assert_eq!(r("error reading a body from connection: unexpected EOF during handshake"), "对端提前断开");
+        assert_eq!(r("Broken pipe (os error 32)"), "连接被关闭");
+        assert_eq!(r("error sending request: invalid peer certificate: UnknownIssuer"), "TLS 握手失败");
+        // 认不出：带最里层的错误，不是顶层的「error sending request」
+        assert_eq!(reason_cn("error sending request for url (http://x/): weird thing", "weird thing", 5), "其他：weird thing");
     }
 
     #[tokio::test]

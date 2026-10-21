@@ -85,6 +85,19 @@ async fn api_key_scopes_and_revoke() {
     assert!(!audit.to_string().contains(&read_tok));
 }
 
+/// 并发的错误密码一起涌进来：最多 5 次真正校验密码，其余被限速
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn login_rate_limit_holds_under_concurrency() {
+    let t = setup().await;
+    let res = futures::future::join_all((0..12).map(|_| t.login("admin", "wrong-password"))).await;
+    let n401 = res.iter().filter(|(s, _)| *s == StatusCode::UNAUTHORIZED).count();
+    let n429 = res.iter().filter(|(s, _)| *s == StatusCode::TOO_MANY_REQUESTS).count();
+    // 同时在判断的两条互相看得见，可能多拦一次（只会更严，不会放过第 6 次）
+    assert!((4..=5).contains(&n401) && n401 + n429 == 12, "{res:?}");
+    let (n,): (i64,) = sqlx::query_as("select count(*) from login_failure where username = 'admin'").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(n, n401 as i64, "被限速的尝试不留记录");
+}
+
 #[tokio::test]
 async fn login_rate_limit_and_audit() {
     let t = setup().await;

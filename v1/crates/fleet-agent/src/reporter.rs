@@ -26,37 +26,9 @@ const QUEUE_MAX_AGE_MS: i64 = 6 * 3600 * 1000;
 const REVOKED_SLEEP: Duration = Duration::from_secs(600);
 const FLUSH_MAX_REPORTS: usize = 200;
 const FLUSH_MAX_TIME: Duration = Duration::from_secs(20);
-/// 同一个 seq 连续被服务端回 500 达到这个次数（或持续这么久），且这期间别的请求（期望状态长轮询等）最近成功过：
-/// 服务端是好的、是这份报告触发了错误 → 当作"毒丸"移入 dead/，不再堵住后面的报告。
-/// 中控整体不可用（别的请求也失败）时永不移走：报告留在队列里，由队列的字节 / 时长上限兜底
-const POISON_MAX_HITS: u32 = 20;
-const POISON_MAX_AGE: Duration = Duration::from_secs(30 * 60);
-/// 「最近成功过」的窗口：长轮询 50 秒一轮，服务端正常时这个窗口里一定有成功
-const POISON_HEALTHY_WITHIN: Duration = Duration::from_secs(120);
 /// 上报连续失败（断网 / 服务端不可达）时，建报间隔至少拉长到这么久：
 /// 合并更多样本进同一份报告，少产生队列文件（每份离线报告恢复后都要一次 RTT 重放）
 const OFFLINE_BUILD_INTERVAL: Duration = Duration::from_secs(60);
-
-/// 跟踪"最旧的那个 seq 反复 500"
-#[derive(Debug)]
-struct Poison {
-    seq: u64,
-    hits: u32,
-    since: Instant,
-}
-
-impl Poison {
-    /// 记一次 500。`last_ok` = 最近一次任何请求成功的时间。返回 true = 该 seq 该移入 dead/ 了
-    fn hit(slot: &mut Option<Poison>, seq: u64, now: Instant, last_ok: Option<Instant>) -> bool {
-        let p = match slot {
-            Some(p) if p.seq == seq => p,
-            _ => slot.insert(Poison { seq, hits: 0, since: now }),
-        };
-        p.hits += 1;
-        let healthy = last_ok.is_some_and(|t| t > p.since && now.duration_since(t) < POISON_HEALTHY_WITHIN);
-        healthy && (p.hits >= POISON_MAX_HITS || now.duration_since(p.since) >= POISON_MAX_AGE)
-    }
-}
 
 /// 磁盘相关状态：队列、序号、访问日志尾读器
 struct Core {
@@ -77,7 +49,6 @@ pub struct Reporter {
     interval_s: u32,
     fails: u32,
     next_send: Instant,
-    poison: Option<Poison>,
 }
 
 /// 失败期间建报的间隔：正常 interval_s，连续失败时至少 OFFLINE_BUILD_INTERVAL
@@ -98,7 +69,7 @@ impl Reporter {
         let tailer = (cfg.role == Role::Relay).then(|| Tailer::new(cfg.access_log.clone(), load_json::<Cursor>(&access_cursor_path(&cfg))));
         tracing::info!(pending = queue.len(), seq = seq.seq, "上报器启动");
         let core = Arc::new(Mutex::new(Core { queue, seq, tailer }));
-        Ok(Self { sh, core, client, boot_id: host::boot_id(), interval_s: 10, fails: 0, next_send: Instant::now(), poison: None })
+        Ok(Self { sh, core, client, boot_id: host::boot_id(), interval_s: 10, fails: 0, next_send: Instant::now() })
     }
 
     pub async fn run(mut self, mut sd: watch::Receiver<bool>) {
@@ -187,7 +158,6 @@ impl Reporter {
             };
             match out {
                 Outcome::Ok(ack) => {
-                    self.poison = None;
                     if ack.interval_s > 0 {
                         self.interval_s = ack.interval_s.clamp(2, 300);
                     }
@@ -215,23 +185,12 @@ impl Reporter {
                         return;
                     }
                 }
-                Outcome::Retry { wait, why, server_err } => {
-                    if server_err && Poison::hit(&mut self.poison, seq, Instant::now(), self.client.last_ok()) {
-                        tracing::error!(seq, "同一报告被服务端连续回 500、而别的请求正常，疑似该报告本身触发服务端错误，移入 dead/ 继续发后面的：{why}");
-                        self.blocking(move |c| c.queue.dead_letter(seq)).await;
-                        self.poison = None;
-                        self.fails = 0;
-                        continue;
-                    }
-                    if !server_err {
-                        self.poison = None;
-                    }
+                Outcome::Retry { wait, why } => {
                     self.note_failure(&why);
                     self.next_send = Instant::now() + wait.unwrap_or_else(|| backoff(self.fails, 5, 60));
                     return;
                 }
                 Outcome::Revoked => {
-                    self.poison = None;
                     tracing::error!("服务端回 401：令牌已被撤销或无效。停止上报 {} 秒后重试（数据继续在本地排队）", REVOKED_SLEEP.as_secs());
                     self.next_send = Instant::now() + REVOKED_SLEEP;
                     return;
@@ -366,61 +325,6 @@ fn health_of(sh: &Shared, queue: &Queue, tailer: Option<&Tailer>) -> AgentHealth
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// 服务端别的请求刚成功过（t 时刻）
-    fn ok_at(t: Instant) -> Option<Instant> { Some(t) }
-
-    #[test]
-    fn poison_after_n_consecutive_500_while_server_healthy() {
-        let mut slot = None;
-        let t0 = Instant::now();
-        let ok = ok_at(t0 + Duration::from_secs(1));
-        let t = t0 + Duration::from_secs(2);
-        assert!(!Poison::hit(&mut slot, 7, t0, None));
-        for _ in 2..POISON_MAX_HITS {
-            assert!(!Poison::hit(&mut slot, 7, t, ok));
-        }
-        assert!(Poison::hit(&mut slot, 7, t, ok));
-    }
-
-    #[test]
-    fn central_down_never_poisons() {
-        // 别的请求也一直失败（中控整体不可用）：多少次、多久都不移走
-        let mut slot = None;
-        let t0 = Instant::now();
-        for _ in 0..POISON_MAX_HITS * 3 {
-            assert!(!Poison::hit(&mut slot, 7, t0 + POISON_MAX_AGE * 2, None));
-        }
-        // 成功发生在这一轮 500 开始之前、或已经过去太久：也不算服务端正常
-        let mut slot = None;
-        let before = t0;
-        let t1 = t0 + Duration::from_secs(5);
-        assert!(!Poison::hit(&mut slot, 7, t1, Some(before)));
-        assert!(!Poison::hit(&mut slot, 7, t1 + POISON_MAX_AGE, Some(before)));
-        let stale = t1 + Duration::from_secs(1);
-        assert!(!Poison::hit(&mut slot, 7, stale + POISON_MAX_AGE, Some(stale)));
-    }
-
-    #[test]
-    fn poison_counter_resets_on_other_seq() {
-        let mut slot = None;
-        let t0 = Instant::now();
-        for _ in 1..POISON_MAX_HITS {
-            assert!(!Poison::hit(&mut slot, 7, t0, None));
-        }
-        // 换了个 seq（7 已确认/移走）：从头计
-        assert!(!Poison::hit(&mut slot, 8, t0, None));
-        assert_eq!(slot.as_ref().unwrap().hits, 1);
-    }
-
-    #[test]
-    fn poison_after_age_even_with_few_hits() {
-        let mut slot = None;
-        let t0 = Instant::now();
-        assert!(!Poison::hit(&mut slot, 7, t0, None));
-        let t = t0 + POISON_MAX_AGE;
-        assert!(Poison::hit(&mut slot, 7, t, ok_at(t - Duration::from_secs(10))));
-    }
 
     #[test]
     fn build_interval_stretches_only_when_failing() {

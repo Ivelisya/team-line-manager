@@ -293,7 +293,7 @@ pub async fn pin_host_key(known_hosts: &Path, ip: &str, port: u16, allow_reset: 
             bail!(StepError {
                 kind: ErrKind::HostKey,
                 msg: format!(
-                    "主机指纹变化：{ip}:{port} 原来记录的是 {}，现在是 {}。确认是同一台机器重装后再重试时勾选「重置主机指纹」，否则可能是 IP 被冒用",
+                    "主机指纹变化：{ip}:{port} 原来记录的是 {}，现在是 {}。确认是同一台机器重装过，再在网页作业的「重试」里勾选「重置主机指纹」，或 fleetctl retry <作业> --reset-host-key；否则可能是 IP 被冒用",
                     fingerprint(&old),
                     fingerprint(&seen[0])
                 )

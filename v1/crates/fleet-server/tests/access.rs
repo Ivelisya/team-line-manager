@@ -213,10 +213,10 @@ async fn summary_targets_sources_events() {
     let mut next = d["next_before"].as_str().map(String::from);
     let mut last_ts = ts(&d["items"][6]["ts"]);
     while let Some(b) = next {
-        let q = b.replace('+', "%2B");
+        let q = b.replace('+', "%2B").replace('|', "%7C");
         let d = t.get(&format!("/api/v1/access/events?node={n1}&limit=7&before={q}")).await;
         for e in d["items"].as_array().unwrap() {
-            assert!(ts(&e["ts"]) < last_ts, "时间严格递减");
+            assert!(ts(&e["ts"]) <= last_ts, "时间递减");
         }
         seen += d["items"].as_array().unwrap().len();
         if let Some(l) = d["items"].as_array().unwrap().last() {
@@ -240,6 +240,28 @@ async fn summary_targets_sources_events() {
     assert_eq!(t.get("/api/v1/access/events?limit=3").await["items"].as_array().unwrap().len(), 3);
     let (s, _) = t.raw("/api/v1/access/events?before=yesterday", true).await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
+
+    // 同一时刻的多条记录：按 (ts, id) 游标翻页，一条不漏、不重复
+    let same = OffsetDateTime::now_utc() - Duration::minutes(3);
+    for _ in 0..8 {
+        sqlx::query("insert into access_event (entry_id, ts, src_ip, dest_host, dest_port, network, blocked) values ($1, $2, '3.3.3.9', 'same.example.net', 443, 'tcp', false)")
+            .bind(fx.e[2])
+            .bind(same)
+            .execute(&t.st.db)
+            .await
+            .unwrap();
+    }
+    let (mut got, mut next) = (0, None::<String>);
+    loop {
+        let q = next.as_deref().map(|b| format!("&before={}", b.replace('+', "%2B").replace('|', "%7C"))).unwrap_or_default();
+        let d = t.get(&format!("/api/v1/access/events?node={n3}&limit=3{q}")).await;
+        got += d["items"].as_array().unwrap().len();
+        next = d["next_before"].as_str().map(String::from);
+        if next.is_none() {
+            break;
+        }
+    }
+    assert_eq!(got, 9, "8 条同一时刻的 + 原来 1 条");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -309,6 +331,35 @@ async fn new_targets_machine_and_idempotent_rollup() {
     let d = t.get(&format!("/api/v1/machines/{}/access?window=24h", fx.relay)).await;
     assert_eq!(d["top_domains"][0]["dest_host"], "google.com");
     assert_eq!(d["top_domains"][0]["conns"], 8);
+    // 节点1 后来也经另一台线路机走过流量（入口已移除）：只算到那台线路机和节点1 上，不算到原线路机
+    let relay2 = Uuid::now_v7();
+    sqlx::query("insert into machine (id, kind, label, primary_ip, lifecycle) values ($1, 'relay', '线路机3', '198.51.100.3', 'active')").bind(relay2).execute(&t.st.db).await.unwrap();
+    let e_via2 = Uuid::now_v7();
+    sqlx::query("insert into entry (id, relay_id, node_id, port, client_uuid, short_id, lifecycle) values ($1, $2, $3, 21000, $4, 'cd', 'removed')")
+        .bind(e_via2)
+        .bind(relay2)
+        .bind(n1)
+        .bind(Uuid::now_v7())
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    put_events(&t, e_via2, OffsetDateTime::now_utc() - Duration::minutes(2), Some("9.9.9.9"), "via2.example.com", 3, false).await;
+    access::rollup_recent(&t.st.db).await.unwrap();
+    for w in ["1h", "24h"] {
+        let d = t.get(&format!("/api/v1/machines/{}/access?window={w}", fx.relay)).await;
+        assert!(!d["top_domains"].to_string().contains("via2"), "{w}：{d}");
+        assert!(!d["top_sources"].to_string().contains("9.9.9.9"), "{w}：{d}");
+        assert!(!d["recent"].to_string().contains("via2"), "{w}：{d}");
+        let d = t.get(&format!("/api/v1/machines/{relay2}/access?window={w}")).await;
+        assert_eq!(d["top_domains"].as_array().unwrap().len(), 1, "{w}：{d}");
+        assert_eq!((d["top_domains"][0]["dest_host"].as_str(), d["top_domains"][0]["conns"].as_i64()), (Some("via2.example.com"), Some(3)), "{w}");
+        assert_eq!(d["top_sources"].as_array().unwrap().len(), 1, "{w}：{d}");
+        assert_eq!(d["top_sources"][0]["src_ip"], "9.9.9.9");
+        assert_eq!(d["recent"].as_array().unwrap().len(), 3);
+        assert!(t.get(&format!("/api/v1/machines/{n1}/access?window={w}")).await["top_domains"].to_string().contains("via2.example.com"));
+    }
+    let d = t.get(&format!("/api/v1/machines/{relay2}/access?window=24h")).await;
+    assert_eq!(d["hourly"].as_array().unwrap().iter().map(|h| h["conns"].as_i64().unwrap()).sum::<i64>(), 3);
     let (s, _) = t.raw(&format!("/api/v1/machines/{}/access", Uuid::now_v7()), true).await;
     assert_eq!(s, StatusCode::NOT_FOUND);
     // 没有任何记录的节点：全是空的，不报错

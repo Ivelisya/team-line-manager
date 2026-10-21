@@ -226,7 +226,7 @@ pub fn provision(ctx: &Ctx, o: ProvisionOpts) -> anyhow::Result<u8> {
         return Ok(if all_ok { 0 } else { 1 });
     }
     if !ctx.json {
-        let names: Vec<String> = res.iter().map(|r| format!("{}（{}）", st(r, "/name"), st(r, "/relay_port"))).collect();
+        let names: Vec<String> = res.iter().zip(&items).map(|(r, it)| format!("{}（{}）", st(r, "/name"), st(it, "/ip"))).collect();
         outln(format!("校验通过，将上架 {} 台：{}", res.len(), names.join("、")));
     }
     confirm(&format!("确认上架这 {} 台机器？会登录机器安装软件", res.len()), o.yes)?;
@@ -371,7 +371,12 @@ pub fn entry_action(ctx: &Ctx, action: &str, entry: &str, yes: bool) -> anyhow::
         confirm(&format!("确认停用入口 {label}（→ {}）？", st(e, "/node/name")), yes)?;
     }
     let d = ctx.c.post(&format!("/entries/{}/actions", st(e, "/id")), &body)?;
-    ctx.emit(&d, || format!("已{} {label}（期望状态代数 {}）", action, st(&d, "/generation")));
+    let done = match action {
+        "enable" => "启用",
+        "disable" => "停用",
+        _ => "轮换凭据",
+    };
+    ctx.emit(&d, || format!("已{done} {label}（期望状态代数 {}）", st(&d, "/generation")));
     Ok(0)
 }
 

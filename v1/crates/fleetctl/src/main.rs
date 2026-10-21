@@ -238,7 +238,15 @@ enum Cmd {
         follow: bool,
     },
     /// 重试失败的作业
-    Retry { id: String },
+    Retry {
+        id: String,
+        /// 机器重装过、主机指纹变了：清掉已记录的指纹，按现在的重新记录
+        #[arg(long)]
+        reset_host_key: bool,
+        /// root 密码放在哪个环境变量里（作业报「中控密钥登录不了，也没有可用的 root 密码」时用）
+        #[arg(long)]
+        password_env: Option<String>,
+    },
     /// 取消进行中的作业
     Cancel { id: String },
     /// 上架：先 check 再提交（单台参数或 --file 批量）
@@ -514,8 +522,8 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Ack { id } => cmds::ack(x, &id),
         Cmd::Jobs { active, limit } => cmds::jobs(x, active, limit),
         Cmd::Job { id, follow } => cmds::job(x, &id, follow),
-        Cmd::Retry { id } => cmds::job_action(x, &id, "retry"),
-        Cmd::Cancel { id } => cmds::job_action(x, &id, "cancel"),
+        Cmd::Retry { id, reset_host_key, password_env } => cmds::job_retry(x, &id, reset_host_key, password_env.as_deref()),
+        Cmd::Cancel { id } => cmds::job_cancel(x, &id),
         Cmd::Provision(a) => ops::provision(
             x,
             ops::ProvisionOpts {

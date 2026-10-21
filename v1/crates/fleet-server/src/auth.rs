@@ -54,9 +54,8 @@ fn verify_password(pw: &str, phc: &str) -> bool {
     PasswordHash::new(phc).map(|h| Argon2::default().verify_password(pw.as_bytes(), &h).is_ok()).unwrap_or(false)
 }
 
-/// 在阻塞线程池里校验密码（最多 2 个并发）。`phc` 为 None（用户不存在）时对固定哈希做一次等价计算，抹平耗时差。
+/// 在阻塞线程池里校验密码（调用方先拿 HASH_SEM 的许可）。`phc` 为 None（用户不存在）时对固定哈希做一次等价计算，抹平耗时差。
 async fn verify_blocking(pw: String, phc: Option<String>) -> bool {
-    let Ok(_permit) = HASH_SEM.acquire().await else { return false };
     tokio::task::spawn_blocking(move || match phc {
         Some(p) => verify_password(&pw, &p),
         None => {
@@ -173,11 +172,11 @@ impl FromRequestParts<AppState> for Actor {
     }
 }
 
-/// 请求来源 IP：`trust` 时取 X-Forwarded-For 的最后一项（反代追加的那一项；客户端或沿途 HTTP 代理塞的在前面，不可信），
+/// 请求来源 IP：`trust` 时取 X-Forwarded-For 的最后一项（多行头取最后一行的最后一项：反代追加的那一项；客户端或沿途 HTTP 代理塞的在前面，不可信），
 /// 取不到或不是合法 IP 时用连接对端地址。登录限速与出口回显共用
 pub fn client_ip(h: &HeaderMap, peer: Option<IpAddr>, trust: bool) -> Option<IpAddr> {
     let fwd = trust
-        .then(|| h.get("x-forwarded-for")?.to_str().ok()?.rsplit(',').next()?.trim().parse::<IpAddr>().ok())
+        .then(|| h.get_all("x-forwarded-for").iter().next_back()?.to_str().ok()?.rsplit(',').next()?.trim().parse::<IpAddr>().ok())
         .flatten();
     fwd.or(peer).map(|ip| ip.to_canonical())
 }
@@ -204,7 +203,7 @@ fn wait_text(secs: i64) -> String {
     if secs < 60 { format!("{} 秒", secs.max(1)) } else { format!("{} 分钟", (secs + 59) / 60) }
 }
 
-/// 窗口内失败次数已到上限时，返回还要等多少秒（最早一条要滑出窗口才会降到上限以下）
+/// 窗口内失败次数（含本次先记下的这一条）超过上限时，返回还要等多少秒（之前第 N 条要滑出窗口才会降到上限以下）
 async fn blocked_secs(st: &AppState, user: &str, ip: Option<IpAddr>) -> ApiResult<Option<i64>> {
     let secs = format!("{FAIL_WINDOW_MIN} minutes");
     let by_user: Option<(f64,)> = sqlx::query_as(
@@ -212,7 +211,7 @@ async fn blocked_secs(st: &AppState, user: &str, ip: Option<IpAddr>) -> ApiResul
          where username = $1 and ts > now() - $3::text::interval order by ts desc offset $2 limit 1",
     )
     .bind(user)
-    .bind(FAIL_PER_USER - 1)
+    .bind(FAIL_PER_USER)
     .bind(&secs)
     .fetch_optional(&st.db)
     .await?;
@@ -223,7 +222,7 @@ async fn blocked_secs(st: &AppState, user: &str, ip: Option<IpAddr>) -> ApiResul
                  where ip = $1 and ts > now() - $3::text::interval order by ts desc offset $2 limit 1",
             )
             .bind(ipnetwork::IpNetwork::from(ip))
-            .bind(FAIL_PER_IP - 1)
+            .bind(FAIL_PER_IP)
             .bind(&secs)
             .fetch_optional(&st.db)
             .await?
@@ -241,7 +240,16 @@ pub async fn login(
 ) -> ApiResult<(CookieJar, Json<Value>)> {
     // 限速键：用户名截断，避免超长字符串灌库
     let uname: String = r.username.chars().take(64).collect();
+    let _permit = HASH_SEM.acquire().await.map_err(|e| ApiError::internal(format!("登录限流信号量：{e}")))?;
+    // 先按失败记下这次尝试再判断：并发的尝试各占一个名额（后提交的一定看得到先提交的），不会一起挤过限速；
+    // 被限速的这条删掉（不延长封禁），登录成功时连同该用户的失败记录一起清掉
+    let attempt: i64 = sqlx::query_scalar("insert into login_failure (username, ip) values ($1, $2) returning id")
+        .bind(&uname)
+        .bind(ip.map(ipnetwork::IpNetwork::from))
+        .fetch_one(&st.db)
+        .await?;
     if let Some(wait) = blocked_secs(&st, &uname, ip).await? {
+        sqlx::query("delete from login_failure where id = $1").bind(attempt).execute(&st.db).await?;
         return Err(ApiError::new(StatusCode::TOO_MANY_REQUESTS, "rate_limited", format!("登录失败次数过多，请 {}后再试", wait_text(wait)))
             .with_detail(json!({"retry_after_s": wait})));
     }
@@ -258,12 +266,7 @@ pub async fn login(
     let ip_s = ip.map(|i| i.to_string());
     let Some(uid) = uid.filter(|_| good) else {
         let mut tx = st.db.begin().await?;
-        sqlx::query("insert into login_failure (username, ip) values ($1, $2)")
-            .bind(&uname)
-            .bind(ip.map(ipnetwork::IpNetwork::from))
-            .execute(&mut *tx)
-            .await?;
-        // 顺手清掉一天前的旧记录
+        // 失败记录开头已经写了；顺手清掉一天前的旧记录
         sqlx::query("delete from login_failure where ts < now() - interval '1 day'").execute(&mut *tx).await?;
         audit(&mut tx, &uname, "auth.login_failed", "user", None, json!({"ip": ip_s})).await?;
         tx.commit().await?;
@@ -344,6 +347,11 @@ mod tests {
         h.insert("x-forwarded-for", "1.2.3.4, garbage".parse().unwrap());
         assert_eq!(client_ip(&h, peer, true), peer, "最后一项不是 IP：用连接对端，不退到前面的");
         assert_eq!(client_ip(&HeaderMap::new(), Some("::ffff:198.51.100.2".parse().unwrap()), true), Some("198.51.100.2".parse().unwrap()));
+        // 多行 X-Forwarded-For：取最后一行（反代追加的）的最后一项
+        let mut h = HeaderMap::new();
+        h.append("x-forwarded-for", "6.6.6.6".parse().unwrap());
+        h.append("x-forwarded-for", "1.2.3.4, 203.0.113.9".parse().unwrap());
+        assert_eq!(client_ip(&h, peer, true), Some("203.0.113.9".parse().unwrap()));
     }
 
     #[test]

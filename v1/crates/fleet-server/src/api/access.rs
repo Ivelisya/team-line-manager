@@ -115,15 +115,15 @@ pub async fn sources(_a: Actor, State(st): State<AppState>, Query(q): Query<Q>) 
     Ok(ok(json!({"items": items, "window_start": access::fmt_ts(f.from)})))
 }
 
-/// 原始记录：按时间倒序，`before` 是上一页最后一条的 ts（RFC 3339），最多回看 7 天
+/// 原始记录：按时间倒序，`before` 原样传回上一页的 `next_before`（不透明游标），最多回看 7 天
 pub async fn events(_a: Actor, State(st): State<AppState>, Query(q): Query<Q>) -> ApiResult<Json<Value>> {
     let f = filter_of(&q, Window::D7)?;
     let (limit, _) = page_of(&q, 100)?;
     let before = nonempty(&q.before)
-        .map(|s| OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).map_err(|_| ApiError::bad_request("before 要写成 RFC 3339 时间")))
+        .map(|s| access::parse_event_cursor(s).ok_or_else(|| ApiError::bad_request("before 不对：原样传上一页返回的 next_before")))
         .transpose()?;
     let items = access::events(&st.db, &f, before, limit).await?;
-    let next = (items.len() as i64 == limit).then(|| items.last().map(|e| access::fmt_ts(e.ts))).flatten();
+    let next = (items.len() as i64 == limit).then(|| items.last().map(access::event_cursor)).flatten();
     Ok(ok(json!({"items": items, "next_before": next})))
 }
 

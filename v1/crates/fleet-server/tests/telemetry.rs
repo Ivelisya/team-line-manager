@@ -78,6 +78,26 @@ async fn report_drops_bad_timestamps_and_keeps_the_rest() {
     assert_eq!(t.count("select count(*) from host_metric").await, 2);
 }
 
+/// 入库失败按类回：数据错误 422（agent 移入 dead/），基础设施错误 503（agent 继续重试）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn report_ingest_errors_are_classified() {
+    let t = setup().await;
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let team = seed_team(&t, "团队1").await;
+    let (_node, entry) = seed_node(&t, relay, team, 1, "203.0.113.5", 20000).await;
+    let mut r = blank_report(1);
+    let mut a = access(entry, now_ms() - 5_000);
+    a.dest_host = "bad\0host".into();
+    r.access = vec![a];
+    let (s, v) = t.report("tok1", &r).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("无法入库"), "{v}");
+
+    t.st.db.close().await;
+    let (s, v) = t.report("tok1", &blank_report(2)).await;
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{v}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn relay_probe_series_covers_its_entries() {
     let t = setup().await;
@@ -621,6 +641,11 @@ async fn alert_notifications_firing_repeat_silence_and_resolved() {
     let last_wc = mock.bodies("/wecom/send").pop().unwrap();
     assert!(last_wc["markdown"]["content"].as_str().unwrap().contains("告警已恢复"), "{last_wc}");
     assert!(mock.bodies("/hook/a").iter().any(|b| b["event"] == "resolved" && b["rule"] == "relay_xray_down"));
+
+    // 机器退役后，记录里的对象名带「（已退役）」，不和接过同名的新机器混淆
+    sqlx::query("update machine set lifecycle = 'retired', retired_at = now() where id = $1").bind(relay).execute(&t.st.db).await.unwrap();
+    let log = t.get("/api/v1/notify-log?limit=100").await;
+    assert!(log.as_array().unwrap().iter().all(|l| l["subject_name"] == "线路机1（已退役）"), "{log}");
 }
 
 async fn xray_report(t: &T, seq: u64, up: bool) {

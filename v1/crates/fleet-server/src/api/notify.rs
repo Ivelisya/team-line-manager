@@ -205,7 +205,7 @@ struct LogOut {
 pub async fn log(_a: Actor, State(st): State<AppState>, Query(q): Query<LogQ>) -> ApiResult<Json<Value>> {
     let mut v: Vec<LogOut> = sqlx::query_as(
         "select l.id, l.channel_id, c.name channel_name, l.incident_id, l.ts, l.ok, l.error, l.kind,
-                display_name(m.kind::text, m.label, t.name, m.number) subject_name, i.rule
+                display_name(m.kind::text, m.label, t.name, m.number) || case when m.lifecycle = 'retired' then '（已退役）' else '' end subject_name, i.rule
          from notify_log l left join notify_channel c on c.id = l.channel_id
          left join incident i on i.id = l.incident_id left join machine m on m.id = i.subject_id left join team t on t.id = m.team_id
          order by l.id desc limit $1",

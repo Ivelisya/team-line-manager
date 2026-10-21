@@ -775,7 +775,7 @@ pub fn conn_label(t: &str) -> &'static str {
 }
 
 /// `GET /machines/{id}/sources`：来源画像分布、top 来源、已学基线、学习期状态、该节点当前的画像异常。
-/// 线路机取它名下所有入口对应的节点（与访问概况一致）。
+/// 线路机：分布与 top 来源只算经它的流量（与访问概况一致）；已学基线与画像异常是按节点记的，取它名下入口对应的节点。
 pub async fn sources_profile(st: &AppState, machine_id: Uuid, window: Window, limit: i64, now: OffsetDateTime) -> ApiResult<Value> {
     let db = &st.db;
     let kind: String = sqlx::query_scalar("select kind::text from machine where id = $1")
@@ -792,11 +792,12 @@ pub async fn sources_profile(st: &AppState, machine_id: Uuid, window: Window, li
     svc.ensure_internal(db).await;
     let from = access::Filter::new(window, now).from;
 
-    let rows: Vec<(String, i64, OffsetDateTime)> = sqlx::query_as(
-        "select host(src_ip), sum(conns)::bigint c, max(hour) from access_source_hourly where node_id = any($1) and hour >= $2
-         group by src_ip order by c desc, 1 limit 20000",
-    )
-    .bind(&nodes)
+    let col = if kind == "relay" { "relay_id" } else { "node_id" };
+    let rows: Vec<(String, i64, OffsetDateTime)> = sqlx::query_as(&format!(
+        "select host(src_ip), sum(conns)::bigint c, max(hour) from access_source_hourly where {col} = $1 and hour >= $2
+         group by src_ip order by c desc, 1 limit 20000"
+    ))
+    .bind(machine_id)
     .bind(from)
     .fetch_all(db)
     .await?;

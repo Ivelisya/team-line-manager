@@ -648,10 +648,28 @@ pub fn follow_job(ctx: &Ctx, id: &str) -> anyhow::Result<u8> {
     }
 }
 
-pub fn job_action(ctx: &Ctx, id: &str, action: &str) -> anyhow::Result<u8> {
+pub fn job_cancel(ctx: &Ctx, id: &str) -> anyhow::Result<u8> {
     let id = job_id(ctx, id)?;
-    let d = ctx.c.post(&format!("/jobs/{id}/{action}"), &json!({}))?;
-    ctx.emit(&d, || format!("已{}作业 {id}", if action == "retry" { "重试" } else { "取消" }));
+    let d = ctx.c.post(&format!("/jobs/{id}/cancel"), &json!({}))?;
+    ctx.emit(&d, || format!("已取消作业 {id}"));
+    Ok(0)
+}
+
+pub fn job_retry(ctx: &Ctx, id: &str, reset_host_key: bool, password_env: Option<&str>) -> anyhow::Result<u8> {
+    let id = job_id(ctx, id)?;
+    let mut body = json!({});
+    if reset_host_key {
+        body["reset_host_key"] = json!(true);
+    }
+    if let Some(var) = password_env {
+        let pw = std::env::var(var).map_err(|_| anyhow!("环境变量 {var} 没有设置"))?;
+        if pw.is_empty() {
+            bail!("环境变量 {var} 是空的");
+        }
+        body["ssh_password"] = json!(pw);
+    }
+    let d = ctx.c.post(&format!("/jobs/{id}/retry"), &body)?;
+    ctx.emit(&d, || format!("已重试作业 {id}"));
     Ok(0)
 }
 

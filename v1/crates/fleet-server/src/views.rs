@@ -181,7 +181,7 @@ pub struct MachineView {
     pub quota: Quota,
     pub health: Health,
     pub active_job: Option<JobRef>,
-    /// 上架失败（lifecycle = failed）：最近一次失败的上架/恢复作业，网页据此给出「查看作业」
+    /// 上架失败（lifecycle = failed）：最近一次失败的上架/恢复作业；退役中（retiring）：失败的退役作业。网页据此给出「查看作业」
     pub failed_job: Option<JobRef>,
     pub open_incidents: i64,
     pub maintenance: bool,
@@ -518,7 +518,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     let jobs_q = sqlx::query_as::<_, (Uuid, Uuid, String, String)>(
         "select target_id, id, kind, state::text from job
          where target_id = any($1) and (state in ('queued','running','waiting','cancelling')
-           or (state = 'failed' and kind ~ '^(provision|restore)_'))
+           or (state = 'failed' and kind ~ '^((provision|restore)_|retire$)'))
          order by created_at",
     )
     .bind(&ids)
@@ -680,7 +680,15 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
             };
             let maintenance = maint_all || maint.contains(&r.id);
             let policy_blocked = r.kind != "relay" && policies.effective(r.id, r.team_id).0.mode == crate::policy::Mode::Blocked;
-            let failed_job = if r.lifecycle == "failed" { failed_jobs.get(&r.id).cloned() } else { None };
+            // 上架失败：最近失败的上架/恢复作业；退役中：失败的退役作业（等重试）
+            let failed_job = failed_jobs
+                .get(&r.id)
+                .filter(|j: &&JobRef| match r.lifecycle.as_str() {
+                    "failed" => j.kind != "retire",
+                    "retiring" => j.kind == "retire",
+                    _ => false,
+                })
+                .cloned();
             let mut v = MachineView {
                 id: r.id,
                 kind: r.kind,
@@ -731,7 +739,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
 pub fn overview_of(ms: &[MachineView]) -> Value {
     let mut nodes = json!({"total": 0, "ok": 0, "degraded": 0, "down": 0, "unknown": 0, "maintenance": 0});
     let mut relays = nodes.clone();
-    let (mut provisioning, mut retiring, mut due_7d, mut up, mut down, mut rx, mut tx) = (0, 0, 0, 0i64, 0i64, 0f64, 0f64);
+    let (mut provisioning, mut retiring, mut failed, mut due_7d, mut up, mut down, mut rx, mut tx) = (0, 0, 0, 0, 0i64, 0i64, 0f64, 0f64);
     // 在线/离线按 agent 连通（同前端 isQuiet）：agent 没有近期上报为离线；家宽代理没有 agent，算在线。和健康无关
     let (mut online, mut offline) = (0, 0);
     // 月费按币种分别汇总（不做汇率折算）
@@ -740,6 +748,8 @@ pub fn overview_of(ms: &[MachineView]) -> Value {
         match m.lifecycle.as_str() {
             "provisioning" | "draft" => provisioning += 1,
             "retiring" => retiring += 1,
+            // 上架失败：网页「有问题」里也算它
+            "failed" => failed += 1,
             _ => {}
         }
         if m.lifecycle != "active" {
@@ -791,7 +801,7 @@ pub fn overview_of(ms: &[MachineView]) -> Value {
         }
     }
     json!({
-        "nodes": nodes, "relays": relays, "provisioning": provisioning, "retiring": retiring, "due_7d": due_7d, "online": online, "offline": offline,
+        "nodes": nodes, "relays": relays, "provisioning": provisioning, "retiring": retiring, "failed": failed, "due_7d": due_7d, "online": online, "offline": offline,
         "monthly_cost": cost.into_iter().map(|(c, v)| json!({"currency": c, "cents": v})).collect::<Vec<_>>(), "traffic_month": {"up": up, "down": down}, "net_rx_bps": rx, "net_tx_bps": tx,
     })
 }

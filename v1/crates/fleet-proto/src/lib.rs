@@ -11,8 +11,6 @@ use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use uuid::Uuid;
 
-pub const PROTOCOL_VERSION: u32 = 1;
-
 // ── 上报 ────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

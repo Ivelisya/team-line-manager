@@ -5,9 +5,7 @@ use fleet_proto::{ApplyReport, DesiredState, ReportAck};
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
 use std::time::Duration;
-use tokio::time::Instant;
 
 pub struct ServerClient {
     http: reqwest::Client,
@@ -15,8 +13,6 @@ pub struct ServerClient {
     token_file: PathBuf,
     /// 令牌文件权限过宽的警告只打一次
     perm_warned: AtomicBool,
-    /// 最近一次任何请求成功（2xx/204）的时间：上报器据此判断「服务端是好的、只是这份报告触发 500」
-    last_ok: Mutex<Option<Instant>>,
 }
 
 /// 小于这个字节数的请求体不压缩
@@ -54,13 +50,12 @@ pub fn plain_http_over_public(url: &str) -> bool {
 #[derive(Debug, PartialEq)]
 pub enum Outcome<T> {
     Ok(T),
-    /// 可重试（网络、5xx、429、403…），带建议等待
-    /// `server_err` = 服务端回 500（疑似这份报告触发服务端错误）：同一 seq 反复 500、且期间别的请求成功过时，上报器把它移入 dead/。
-    /// 502/503/504（中控挂了、代理连不上上游）与网络错误一律不算，无限重试（受队列的字节与时长上限约束）
-    Retry { wait: Option<Duration>, why: String, server_err: bool },
+    /// 可重试（网络、全部 5xx、408、429、403、404），带建议等待；受队列的字节与时长上限约束
+    Retry { wait: Option<Duration>, why: String },
     /// 令牌无效/被撤销：停止发送，长睡
     Revoked,
-    /// 永久拒绝（400/413/422 等其它 4xx）
+    /// 永久拒绝（400/413/422 等其它 4xx）：只有这类移入 dead/。服务端把数据问题（坏字节、违反约束）回 422，
+    /// 基础设施问题（连接池超时、磁盘满、只读）回 503
     Rejected(String),
 }
 
@@ -70,11 +65,11 @@ pub fn classify(status: u16, retry_after_s: Option<u64>, body: &str) -> Outcome<
     match status {
         200..=299 => Outcome::Ok(()),
         401 => Outcome::Revoked,
-        429 => Outcome::Retry { wait: Some(Duration::from_secs(retry_after_s.unwrap_or(5).clamp(1, 600))), why: short(), server_err: false },
+        429 => Outcome::Retry { wait: Some(Duration::from_secs(retry_after_s.unwrap_or(5).clamp(1, 600))), why: short() },
         // 403：令牌与机器不匹配等，不丢数据，响亮地重试
-        403 | 404 | 408 => Outcome::Retry { wait: None, why: short(), server_err: false },
+        403 | 404 | 408 => Outcome::Retry { wait: None, why: short() },
         400..=499 => Outcome::Rejected(short()),
-        _ => Outcome::Retry { wait: None, why: short(), server_err: status == 500 },
+        _ => Outcome::Retry { wait: None, why: short() },
     }
 }
 
@@ -95,7 +90,7 @@ impl ServerClient {
             let pem = std::fs::read(ca).with_context(|| format!("读取 CA {}", ca.display()))?;
             b = b.add_root_certificate(reqwest::Certificate::from_pem(&pem)?);
         }
-        Ok(Self { http: b.build()?, base: base.trim_end_matches('/').to_string(), token_file, perm_warned: AtomicBool::new(false), last_ok: Mutex::new(None) })
+        Ok(Self { http: b.build()?, base: base.trim_end_matches('/').to_string(), token_file, perm_warned: AtomicBool::new(false) })
     }
 
     /// 每次请求重读令牌，换令牌无需重启
@@ -117,10 +112,6 @@ impl ServerClient {
         }
     }
 
-    fn mark_ok(&self) { *self.last_ok.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now()); }
-
-    pub fn last_ok(&self) -> Option<Instant> { *self.last_ok.lock().unwrap_or_else(|e| e.into_inner()) }
-
     fn retry_after(r: &reqwest::Response) -> Option<u64> {
         r.headers().get("retry-after")?.to_str().ok()?.trim().parse().ok()
     }
@@ -130,7 +121,7 @@ impl ServerClient {
     pub async fn post_report(&self, body: Vec<u8>) -> Outcome<ReportAck> {
         let token = match self.token() {
             Ok(t) => t,
-            Err(e) => return Outcome::Retry { wait: Some(Duration::from_secs(30)), why: format!("{e:#}"), server_err: false },
+            Err(e) => return Outcome::Retry { wait: Some(Duration::from_secs(30)), why: format!("{e:#}") },
         };
         if body.len() < GZIP_MIN_BYTES {
             return self.send_report(&token, body, false).await;
@@ -147,20 +138,17 @@ impl ServerClient {
         let res = req.timeout(Duration::from_secs(15)).body(body).send().await;
         let r = match res {
             Ok(r) => r,
-            Err(e) => return Outcome::Retry { wait: None, why: format!("网络错误：{e}"), server_err: false },
+            Err(e) => return Outcome::Retry { wait: None, why: format!("网络错误：{e}") },
         };
         let (status, ra) = (r.status().as_u16(), Self::retry_after(&r));
         let text = r.text().await.unwrap_or_default();
         match classify(status, ra, &text) {
             Outcome::Ok(()) => match serde_json::from_str::<ReportAck>(&text) {
-                Ok(a) => {
-                    self.mark_ok();
-                    Outcome::Ok(a)
-                }
-                // 2xx 但正文不对（中间代理的页面等）：不算毒丸，照常重试
-                Err(e) => Outcome::Retry { wait: None, why: format!("ReportAck 解析失败：{e}"), server_err: false },
+                Ok(a) => Outcome::Ok(a),
+                // 2xx 但正文不对（中间代理的页面等）：照常重试
+                Err(e) => Outcome::Retry { wait: None, why: format!("ReportAck 解析失败：{e}") },
             },
-            Outcome::Retry { wait, why, server_err } => Outcome::Retry { wait, why, server_err },
+            Outcome::Retry { wait, why } => Outcome::Retry { wait, why },
             Outcome::Revoked => Outcome::Revoked,
             Outcome::Rejected(s) => Outcome::Rejected(s),
         }
@@ -170,7 +158,7 @@ impl ServerClient {
     pub async fn get_desired(&self, after: u64) -> Outcome<Option<DesiredState>> {
         let token = match self.token() {
             Ok(t) => t,
-            Err(e) => return Outcome::Retry { wait: Some(Duration::from_secs(30)), why: format!("{e:#}"), server_err: false },
+            Err(e) => return Outcome::Retry { wait: Some(Duration::from_secs(30)), why: format!("{e:#}") },
         };
         let res = self
             .http
@@ -183,12 +171,11 @@ impl ServerClient {
         // 服务端自己会在 hold 到期后回 204；这里在拿到响应头之前的任何错误（含连接超时、服务端挂起到客户端超时）都是失败
         let r = match res {
             Ok(r) => r,
-            Err(e) if e.is_timeout() => return Outcome::Retry { wait: None, why: format!("等待响应头超时（服务端挂起？）：{e}"), server_err: false },
-            Err(e) => return Outcome::Retry { wait: None, why: format!("网络错误：{e}"), server_err: false },
+            Err(e) if e.is_timeout() => return Outcome::Retry { wait: None, why: format!("等待响应头超时（服务端挂起？）：{e}") },
+            Err(e) => return Outcome::Retry { wait: None, why: format!("网络错误：{e}") },
         };
         let (status, ra) = (r.status().as_u16(), Self::retry_after(&r));
         if status == 204 {
-            self.mark_ok();
             return Outcome::Ok(None);
         }
         let text = match r.text().await {
@@ -199,22 +186,19 @@ impl ServerClient {
         };
         match classify(status, ra, &text) {
             Outcome::Ok(()) => match serde_json::from_str::<DesiredState>(&text) {
-                Ok(d) => {
-                    self.mark_ok();
-                    Outcome::Ok(Some(d))
-                }
-                Err(e) => Outcome::Retry { wait: None, why: format!("DesiredState 解析失败：{e}"), server_err: false },
+                Ok(d) => Outcome::Ok(Some(d)),
+                Err(e) => Outcome::Retry { wait: None, why: format!("DesiredState 解析失败：{e}") },
             },
-            Outcome::Retry { wait, why, server_err } => Outcome::Retry { wait, why, server_err },
+            Outcome::Retry { wait, why } => Outcome::Retry { wait, why },
             Outcome::Revoked => Outcome::Revoked,
-            Outcome::Rejected(s) => Outcome::Retry { wait: None, why: s, server_err: false },
+            Outcome::Rejected(s) => Outcome::Retry { wait: None, why: s },
         }
     }
 
     pub async fn post_applied(&self, rep: &ApplyReport) -> Outcome<()> {
         let token = match self.token() {
             Ok(t) => t,
-            Err(e) => return Outcome::Retry { wait: Some(Duration::from_secs(30)), why: format!("{e:#}"), server_err: false },
+            Err(e) => return Outcome::Retry { wait: Some(Duration::from_secs(30)), why: format!("{e:#}") },
         };
         let res = self
             .http
@@ -226,15 +210,11 @@ impl ServerClient {
             .await;
         let r = match res {
             Ok(r) => r,
-            Err(e) => return Outcome::Retry { wait: None, why: format!("网络错误：{e}"), server_err: false },
+            Err(e) => return Outcome::Retry { wait: None, why: format!("网络错误：{e}") },
         };
         let (status, ra) = (r.status().as_u16(), Self::retry_after(&r));
         let text = r.text().await.unwrap_or_default();
-        let o = classify(status, ra, &text);
-        if o == Outcome::Ok(()) {
-            self.mark_ok();
-        }
-        o
+        classify(status, ra, &text)
     }
 }
 
@@ -332,15 +312,16 @@ mod tests {
         assert!(matches!(classify(429, Some(7), ""), Outcome::Retry { wait: Some(d), .. } if d.as_secs() == 7));
         assert!(matches!(classify(429, Some(9999), ""), Outcome::Retry { wait: Some(d), .. } if d.as_secs() == 600));
         assert!(matches!(classify(403, None, "x"), Outcome::Retry { .. }));
-        // 只有 500 可能是报告本身的问题；中控挂了（502/503/504）不算
-        assert!(matches!(classify(500, None, "x"), Outcome::Retry { server_err: true, .. }));
-        for s in [502, 503, 504] {
-            assert!(matches!(classify(s, None, "x"), Outcome::Retry { server_err: false, .. }), "{s}");
+        // 5xx 一律重试，永不移入 dead/（数据问题服务端回 422）
+        for s in [500, 502, 503, 504] {
+            assert!(matches!(classify(s, None, "x"), Outcome::Retry { .. }), "{s}");
         }
-        assert!(matches!(classify(429, None, "x"), Outcome::Retry { server_err: false, .. }));
-        assert!(matches!(classify(403, None, "x"), Outcome::Retry { server_err: false, .. }));
-        assert!(matches!(classify(400, None, "bad"), Outcome::Rejected(_)));
-        assert!(matches!(classify(413, None, "big"), Outcome::Rejected(_)));
+        for s in [408, 429, 403, 404] {
+            assert!(matches!(classify(s, None, "x"), Outcome::Retry { .. }), "{s}");
+        }
+        for s in [400, 413, 422] {
+            assert!(matches!(classify(s, None, "bad"), Outcome::Rejected(_)), "{s}");
+        }
     }
 
     #[test]

@@ -61,14 +61,18 @@ impl T {
 
     /// 塞一条来源小时汇总
     pub async fn put_hourly(&self, node: Uuid, hour: OffsetDateTime, ip: &str, conns: i32) {
-        sqlx::query("insert into access_source_hourly (node_id, hour, src_ip, conns) values ($1, $2, $3::inet, $4)")
-            .bind(node)
-            .bind(fleet_server::access::floor_hour(hour))
-            .bind(ip)
-            .bind(conns)
-            .execute(&self.st.db)
-            .await
-            .unwrap();
+        // 线路机取这个节点入口所在的那台
+        sqlx::query(
+            "insert into access_source_hourly (node_id, relay_id, hour, src_ip, conns)
+             values ($1, coalesce((select relay_id from entry where node_id = $1 limit 1), gen_random_uuid()), $2, $3::inet, $4)",
+        )
+        .bind(node)
+        .bind(fleet_server::access::floor_hour(hour))
+        .bind(ip)
+        .bind(conns)
+        .execute(&self.st.db)
+        .await
+        .unwrap();
     }
 
     /// 某条规则当前的告警：(state, summary)

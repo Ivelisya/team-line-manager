@@ -69,12 +69,12 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
 
     if let Some(a) = &m.agent {
         if !a.online {
-            let ago = a.last_report_at.map(|t| (now - t).whole_minutes());
+            let ago = a.last_report_at.map(|t| (now - t).whole_seconds());
             rs.push(Reason {
                 key: "agent_offline",
                 severity: "critical",
                 text: match ago {
-                    Some(m) => format!("{m} 分钟没有上报"),
+                    Some(s) => format!("{}没有上报", crate::notify::fmt_duration(s)),
                     None => "从未上报".into(),
                 },
             });
@@ -121,6 +121,9 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
             if live.is_empty() {
                 rs.push(Reason { key: "no_entry", severity: "warning", text: "没有在用的入口".into() });
             }
+            // 同一条规则一台机器只开一个告警：几个入口同时失败合成一条原因，文字列出全部入口，
+            // 其中一个恢复时摘要随之变化，不会悄悄换成另一个入口
+            let (mut egress, mut details, mut tcp) = (vec![], vec![], vec![]);
             for e in live {
                 // 线路机的 Xray 没在运行时，经它的探测必然失败：不在节点上重复报严重告警（线路机自己有
                 // relay_xray_down），这条入口按「未知」处理。
@@ -129,23 +132,25 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
                     continue;
                 }
                 match &e.egress {
-                    Some(p) if !p.ok => rs.push(Reason {
-                        key: "egress_fail",
-                        severity: "critical",
-                        text: format!("{}:{} 出口不通：{}", e.relay.name, e.port, p.detail.clone().unwrap_or_default()),
-                    }),
+                    Some(p) if !p.ok => {
+                        egress.push(format!("{}:{}", e.relay.name, e.port));
+                        let d = p.detail.clone().unwrap_or_default();
+                        if !d.is_empty() && !details.contains(&d) {
+                            details.push(d);
+                        }
+                    }
                     None => unknown = true,
                     _ => {}
                 }
-                if let Some(p) = &e.tcp {
-                    if !p.ok {
-                        rs.push(Reason {
-                            key: "tcp_fail",
-                            severity: "critical",
-                            text: format!("{} 到节点 TCP 不通", e.relay.name),
-                        });
-                    }
+                if e.tcp.as_ref().is_some_and(|p| !p.ok) {
+                    tcp.push(e.relay.name.clone());
                 }
+            }
+            if !egress.is_empty() {
+                rs.push(Reason { key: "egress_fail", severity: "critical", text: format!("{} 出口不通：{}", egress.join("、"), details.join("；")) });
+            }
+            if !tcp.is_empty() {
+                rs.push(Reason { key: "tcp_fail", severity: "critical", text: format!("{} 到节点 TCP 不通", tcp.join("、")) });
             }
         }
     }
@@ -291,6 +296,33 @@ pub(crate) mod tests {
         assert_eq!(h.status, Status::Unknown);
         n.entries = vec![entry(false, false)];
         assert_eq!(keys(&evaluate(&n, OffsetDateTime::now_utc())), ["egress_fail", "tcp_fail"]);
+    }
+
+    #[test]
+    fn same_rule_failures_merge_into_one_reason() {
+        let now = OffsetDateTime::now_utc();
+        let mut n = base("vps");
+        let (mut a, mut b) = (entry(false, false), entry(false, false));
+        (a.relay.name, a.port, b.relay.name, b.port) = ("线路机A".into(), 20001, "线路机B".into(), 20003);
+        b.egress.as_mut().unwrap().detail = Some("refused".into());
+        n.entries = vec![a, b];
+        let h = evaluate(&n, now);
+        assert_eq!(keys(&h), ["egress_fail", "tcp_fail"], "每条规则只一条原因");
+        assert_eq!(h.reasons[0].text, "线路机A:20001、线路机B:20003 出口不通：timeout；refused");
+        assert_eq!(h.reasons[1].text, "线路机A、线路机B 到节点 TCP 不通");
+        // 恢复一个：摘要只剩另一个
+        n.entries[0] = entry(false, true);
+        assert_eq!(evaluate(&n, now).reasons[0].text, "线路机B:20003 出口不通：refused");
+    }
+
+    #[test]
+    fn offline_duration_is_human() {
+        let now = OffsetDateTime::now_utc();
+        let mut m = base("vps");
+        m.entries = vec![entry(false, true)];
+        let a = m.agent.as_mut().unwrap();
+        (a.online, a.last_report_at) = (false, Some(now - Duration::days(3)));
+        assert_eq!(evaluate(&m, now).reasons[0].text, "3 天 0 小时没有上报");
     }
 
     #[test]
