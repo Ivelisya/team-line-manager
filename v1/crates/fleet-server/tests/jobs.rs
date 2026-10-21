@@ -113,6 +113,24 @@ async fn purge_runs_twice_without_error() {
     ] {
         sqlx::query(sql).bind(node).execute(&t.st.db).await.unwrap();
     }
+    // 对端线路机（有重置日）的周期已用含这台节点的流量；彻底删除后缓存要立刻作废，不等下一轮汇总
+    let (relay, _) = seed_relay(&t).await;
+    let eid = Uuid::now_v7();
+    sqlx::query("insert into entry (id, relay_id, node_id, port, client_uuid, short_id, lifecycle) values ($1, $2, $3, 20001, $4, 'ab', 'removed')")
+        .bind(eid)
+        .bind(relay)
+        .bind(node)
+        .bind(Uuid::now_v7())
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    sqlx::query("insert into entry_traffic_hourly (entry_id, hour, up_bytes, down_bytes) values ($1, date_trunc('hour', now()), 100, 0)").bind(eid).execute(&t.st.db).await.unwrap();
+    let day: i32 = sqlx::query_scalar("select extract(day from now() at time zone 'Asia/Shanghai')::int").fetch_one(&t.st.db).await.unwrap();
+    let (s, v) = t
+        .req("PUT", &format!("/api/v1/machines/{relay}/subscription"), Some(json!({"price_cents": 100, "due_date": "2030-01-01", "billing_tz": "Asia/Shanghai", "traffic_reset_day": day})), None)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(t.get(&format!("/api/v1/machines/{relay}")).await["quota"]["used"], 100);
     let first = t.post(&format!("/api/v1/machines/{node}/purge"), json!({"confirm": name})).await["job_id"].as_str().unwrap().to_string();
     let j = t.wait_job(&first, "succeeded").await;
     assert_eq!(j["steps"][0]["state"], "done");
@@ -124,6 +142,7 @@ async fn purge_runs_twice_without_error() {
     assert_eq!(n, 0);
     let (s, _) = t.req("GET", &format!("/api/v1/machines/{node}"), None, None).await;
     assert_eq!(s, StatusCode::NOT_FOUND);
+    assert_eq!(t.get(&format!("/api/v1/machines/{relay}")).await["quota"]["used"], 0, "对端的周期已用随彻底删除刷新");
 
     // 机器已经不在了，再来一个 purge 作业（比如上一次跑到一半进程挂了、重新领取）也应该直接成功
     let mut tx = t.st.db.begin().await.unwrap();
