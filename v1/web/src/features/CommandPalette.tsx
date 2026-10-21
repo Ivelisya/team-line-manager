@@ -3,7 +3,7 @@
 import * as React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowUpCircle, BellOff, BellRing, Briefcase, Clipboard, CloudUpload, Gauge, LayoutGrid, ListChecks, Moon, PackageOpen, Server, Settings, ShieldCheck, Sun, Waypoints } from 'lucide-react';
-import { useMachines, useUpgradeAllAgents } from '@/lib/queries';
+import { useMachineLabels, useUpgradeAllAgents } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import { copyText } from '@/lib/clipboard';
 import { KIND_LABEL } from '@/lib/sort';
@@ -69,7 +69,8 @@ export default function CommandPalette({ theme }: { theme: Theme }) {
 function PaletteBody({ theme, askUpgrade }: { theme: Theme; askUpgrade: () => void }) {
   const nav = useNavigate();
   const { open: openDrawer } = useDrawer();
-  const machines = useMachines('live').data ?? [];
+  // 只取面板用到的字段：开着面板时实时推送只改读数，不会让整表重渲染
+  const machines = useMachineLabels().data ?? [];
   const [search, setSearch] = React.useState('');
   const [mode, setMode] = React.useState<'root' | 'copy-ip' | 'evacuate'>('root');
   const go = (to: string) => { close(); nav(to); };

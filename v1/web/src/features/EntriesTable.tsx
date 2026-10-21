@@ -8,7 +8,8 @@ import { ShowAll } from '@/components/app/Pagination';
 /** 入口表先露的条数（抽屉入口表、线路机页共用） */
 export const ENTRY_CAP = 10;
 
-const probeCell = (p: EntryView['tcp']) => (p == null ? <span className="t-muted">—</span> : p.ok ? <Num f={F.ms(p.latency_ms)} /> : <span style={{ color: 'var(--bad-text)' }} title={p.detail ?? undefined}>失败</span>);
+/** TCP / 出口探测单元格（线路机页共用） */
+export const probeCell = (p: EntryView['tcp']) => (p == null ? <span className="t-muted">—</span> : p.ok ? <Num f={F.ms(p.latency_ms)} /> : <span style={{ color: 'var(--bad-text)' }} title={p.detail ?? undefined}>失败</span>);
 
 export function EntriesTable({ m, traffic }: { m: MachineView; traffic?: boolean }) {
   const [all, setAll] = React.useState(false);

@@ -2,12 +2,12 @@
 // memo：抽屉随实时推送重渲染时，曲线点没变（lines / 格式化函数由调用方放在模块常量里）就不重画
 import { memo, useMemo } from 'react';
 import type { SeriesPoint } from '@/lib/types';
+import { pad2 as p2 } from '@/lib/format';
 import { ChartContainer, ChartLegend, ChartTooltip, Recharts, axisProps, type ChartConfig } from '@/components/ui/chart';
 
 const { AreaChart, Area, LineChart, Line, XAxis, YAxis, CartesianGrid } = Recharts;
 export const RANGES = [{ value: '1h', label: '1 小时' }, { value: '6h', label: '6 小时' }, { value: '24h', label: '24 小时' }, { value: '7d', label: '7 天' }, { value: '30d', label: '30 天' }] as const;
 
-const p2 = (n: number) => String(n).padStart(2, '0');
 const xFmt = (range: string) => (t: string | number) => {
   const d = new Date(t);
   return range === '7d' || range === '30d' ? `${p2(d.getMonth() + 1)}-${p2(d.getDate())}` : `${p2(d.getHours())}:${p2(d.getMinutes())}`;

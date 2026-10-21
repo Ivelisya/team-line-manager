@@ -89,7 +89,7 @@ export function NodeDrawer() {
                   {tab === 'traffic' && <TrafficTab m={m} />}
                   {tab === 'host' && <HostTab m={m} />}
                   {tab === 'billing' && <BillingTab m={m} />}
-                  {tab === 'access' && <AccessTab m={m} />}
+                  {tab === 'access' && <AccessTab id={m.id} relay={m.kind === 'relay'} />}
                   {tab === 'manage' && <ManageTab m={m} onClosed={close} />}
                 </React.Suspense>
               </div>

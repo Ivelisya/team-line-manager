@@ -34,8 +34,9 @@ export interface IpIntelStatus {
 /** 画像分布支持 24h / 7d / 30d；1h 按 24h 查 */
 export type ProfileWindow = '24h' | '7d' | '30d';
 
+/** 换时间范围时先留着上一份；换了机器不沿用别台的 */
 export const useSourcesProfile = (id: string | null, window: ProfileWindow) =>
-  useQuery({ queryKey: ['ipintel', 'sources', id, window], enabled: !!id, refetchInterval: 30_000, placeholderData: keepPreviousData, queryFn: () => get<SourcesProfile>(`/machines/${id}/sources?window=${window}&limit=10`) });
+  useQuery({ queryKey: ['ipintel', 'sources', id, window], enabled: !!id, refetchInterval: 30_000, placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[2] === id ? keepPreviousData(prev) : undefined), queryFn: () => get<SourcesProfile>(`/machines/${id}/sources?window=${window}&limit=10`) });
 
 export const useIpIntelStatus = () =>
   useQuery({ queryKey: ['ipintel', 'status'], refetchInterval: 60_000, queryFn: () => get<IpIntelStatus>('/ipintel/status') });

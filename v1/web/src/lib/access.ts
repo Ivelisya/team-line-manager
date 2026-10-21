@@ -81,5 +81,6 @@ export const useAccessEvents = (f: AccessFilter, before: string, enabled = true)
     queryFn: ({ signal }) => get<AccessEvents>(`/access/events?${accessQS(f, { limit: EVENTS_PAGE, before })}`, signal),
   });
 
+/** 换时间范围时先留着上一份；换了机器（抽屉里 [ ] 切换）不沿用别台的 */
 export const useMachineAccess = (id: string | null, window: AccessWindow) =>
-  useQuery({ queryKey: ['access', 'machine', id, window], enabled: !!id, refetchInterval: POLL, placeholderData: keepPreviousData, queryFn: ({ signal }) => get<MachineAccess>(`/machines/${id}/access?window=${window}`, signal) });
+  useQuery<MachineAccess>({ queryKey: ['access', 'machine', id, window], enabled: !!id, refetchInterval: POLL, placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[2] === id ? keepPreviousData(prev) : undefined), queryFn: ({ signal }) => get<MachineAccess>(`/machines/${id}/access?window=${window}`, signal) });
