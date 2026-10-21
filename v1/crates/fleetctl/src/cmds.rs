@@ -246,7 +246,7 @@ fn items(mut v: Value) -> anyhow::Result<Value> { v.get_mut("items").map(Value::
 
 pub fn status(ctx: &Ctx) -> anyhow::Result<u8> {
     let ov = ctx.c.get("/overview")?;
-    let inc = incident_items(ctx, "firing")?;
+    let inc = incident_items(ctx, "firing", None)?;
     let both = json!({"overview": ov, "incidents": inc});
     ctx.emit(&both, || {
         let bucket = |k: &str| {
@@ -275,9 +275,13 @@ pub fn status(ctx: &Ctx) -> anyhow::Result<u8> {
     Ok(0)
 }
 
-/// 告警列表（state = firing | all，最多 500 条），每条是 `incident_item`
-fn incident_items(ctx: &Ctx, state: &str) -> anyhow::Result<Value> {
-    let d = items(ctx.c.get_q("/incidents", &[("state", state.to_string()), ("limit", "500".to_string())])?)?;
+/// 告警列表（state = firing | all，最多 500 条；`subject` 是机器 id 时只看这台），每条是 `incident_item`
+fn incident_items(ctx: &Ctx, state: &str, subject: Option<&str>) -> anyhow::Result<Value> {
+    let mut q = vec![("state", state.to_string()), ("limit", "500".to_string())];
+    if let Some(id) = subject {
+        q.push(("subject_id", id.to_string()));
+    }
+    let d = items(ctx.c.get_q("/incidents", &q)?)?;
     Ok(Value::Array(d.as_array().map(Vec::as_slice).unwrap_or_default().iter().map(incident_item).collect()))
 }
 
@@ -613,8 +617,10 @@ pub fn series(ctx: &Ctx, machine: &str, range: &str, metric: &str) -> anyhow::Re
     Ok(0)
 }
 
-pub fn incidents(ctx: &Ctx, all: bool) -> anyhow::Result<u8> {
-    let d = incident_items(ctx, if all { "all" } else { "firing" })?;
+pub fn incidents(ctx: &Ctx, all: bool, machine: Option<&str>) -> anyhow::Result<u8> {
+    // 告警历史也要看已退役的机器
+    let id = machine.map(|m| ctx.find_id(m, Want::Any)).transpose()?.map(|(id, _)| id);
+    let d = incident_items(ctx, if all { "all" } else { "firing" }, id.as_deref())?;
     ctx.emit(&d, || {
         let list = d.as_array().cloned().unwrap_or_default();
         if list.is_empty() { "没有告警".to_string() } else { format!("{}\n共 {} 条", incident_table(&list), list.len()) }
