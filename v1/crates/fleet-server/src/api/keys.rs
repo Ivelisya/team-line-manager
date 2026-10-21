@@ -5,9 +5,9 @@ use super::ok;
 use crate::auth::{Actor, ALL_SCOPES};
 use crate::crypto::{random_token, sha256};
 use crate::db::{audit, new_id};
-use crate::error::{ApiError, ApiJson, ApiResult};
+use crate::error::{ApiError, ApiJson, ApiPath, ApiResult};
 use crate::state::{AppState, Event};
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -92,7 +92,7 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Cr
     Ok(ok(json!({"id": id, "token": token})))
 }
 
-pub async fn revoke(a: Actor, State(st): State<AppState>, Path(id): Path<Uuid>) -> ApiResult<Json<Value>> {
+pub async fn revoke(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     a.require_session()?;
     let mut tx = st.db.begin().await?;
     let cur: (String, String, Option<OffsetDateTime>) = sqlx::query_as("select name, prefix, revoked_at from api_key where id = $1 for update")

@@ -701,8 +701,11 @@ pub fn job_retry(ctx: &Ctx, id: &str, reset_host_key: bool, password_env: Option
     Ok(0)
 }
 
-pub fn audit(ctx: &Ctx, target: Option<&str>, limit: i64) -> anyhow::Result<u8> {
+pub fn audit(ctx: &Ctx, target: Option<&str>, limit: i64, before: Option<i64>) -> anyhow::Result<u8> {
     let mut q = vec![("limit", limit.to_string())];
+    if let Some(b) = before {
+        q.push(("before_id", b.to_string()));
+    }
     if let Some(t) = target {
         let (id, _) = ctx.find_id(t, Want::Any)?;
         q.push(("target_id", id));
@@ -710,7 +713,13 @@ pub fn audit(ctx: &Ctx, target: Option<&str>, limit: i64) -> anyhow::Result<u8> 
     let d = ctx.c.get_q("/audit", &q)?;
     ctx.emit(&d, || {
         let rows: Vec<Vec<String>> = d.as_array().cloned().unwrap_or_default().iter().map(|a| vec![table::ts(&st(a, "/ts")), st(a, "/actor"), st(a, "/title"), st(a, "/summary")]).collect();
-        if rows.is_empty() { "没有审计记录".into() } else { table::render(&["时间(UTC)", "操作者", "操作", "摘要"], &rows) }
+        let last = d.as_array().and_then(|a| a.last()).and_then(|a| a["id"].as_i64());
+        match last {
+            None => "没有审计记录".into(),
+            // 服务端把 limit 夹到 1..=1000
+            Some(id) if rows.len() as i64 >= limit.clamp(1, 1000) => format!("{}\n更早的记录：--before {id}", table::render(&["时间(UTC)", "操作者", "操作", "摘要"], &rows)),
+            Some(_) => table::render(&["时间(UTC)", "操作者", "操作", "摘要"], &rows),
+        }
     });
     Ok(0)
 }

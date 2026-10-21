@@ -9,7 +9,15 @@ use sqlx::PgPool;
 use std::net::IpAddr;
 use uuid::Uuid;
 
+/// 策略锁的共享锁：发布在锁内读在用节点，建入口的事务拿着它就不会被漏掉。
+/// 必须在事务开头、任何行锁之前拿（和发布的加锁顺序一致，否则会和发布互相等）。
+pub async fn lock_policy_shared(tx: &mut Tx<'_>) -> ApiResult<()> {
+    sqlx::query("select pg_advisory_xact_lock_shared($1)").bind(crate::policy::LOCK_KEY).execute(&mut **tx).await?;
+    Ok(())
+}
+
 /// 新建入口：锁线路机 → 取最小空闲端口 → 代数 +1。返回 (entry_id, port, generation)。
+/// 调用方须已在事务开头调过 [`lock_policy_shared`]。
 pub async fn create(tx: &mut Tx<'_>, relay_id: Uuid, node_id: Uuid) -> ApiResult<(Uuid, i32, i64)> {
     let (pmin, pmax): (i32, i32) = sqlx::query_as(
         "select r.port_min, r.port_max from relay r join machine m on m.id = r.machine_id

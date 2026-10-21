@@ -29,7 +29,7 @@ fleetctl --json <命令>      # AI 一律加 --json，拿 API 的 data 原样 JS
 | 告警 / 确认告警 | `fleetctl --json incidents [--all]`、`fleetctl ack <id>` |
 | 入口列表 | `fleetctl --json entries [<机器>]` |
 | 作业 | `fleetctl --json jobs [--active]`、`fleetctl job <id>`、`fleetctl job <id> --follow` |
-| 审计 | `fleetctl --json audit [--target <机器>] [--limit 50]` |
+| 审计 | `fleetctl --json audit [--target <机器>] [--limit 50] [--before <上一页最后一条的 id>]` |
 | 实时事件 | `fleetctl watch --count 20` |
 | 访问监控：节点访问了哪些域名/IP | `fleetctl --json access [targets\|summary\|new\|sources\|events] [--node <机器>] [--team 团队1] [--window 1h\|24h\|7d\|30d] [--search 域名] [--blocked] [--kind domain\|ip]` |
 | 来源 IP 画像：某 IP 的运营商/城市/接入方式 | `fleetctl --json ip <ip> [<ip>...]`（只查中控本地离线库，不外发） |
@@ -71,12 +71,12 @@ fleetctl upgrade-agent <机器> | --all --yes                # 重启 agent
 fleetctl renumber <团队> --yes                             # 不加 --yes 只预览
 fleetctl move <节点> --to <线路机> --yes [--from <线路机>] [--follow]   # 换线路机：新入口验收后才摘旧入口，不断网；分享链接会变，完成后 fleetctl share <节点> 取新链接
 fleetctl evacuate <线路机> --to <线路机> --yes [--follow]          # 搬空线路机（退役前）：每个在用节点一个换线路机作业
-fleetctl restore <已退役机器> --relay <线路机> [--team --number --label --upstream --password-env VAR --reason --reset-host-key] --yes [--follow]   # 恢复：先预检（IP 冲突、新名字、是否要 root 密码）再提交
+fleetctl restore <已退役机器> --relay <线路机> [--team --number --label --upstream --ss-port --password-env VAR --reason --reset-host-key --no-probe] --yes [--follow]   # 恢复：先预检（IP 冲突、新名字、是否要 root 密码）再提交；预检试 SSH 登录和恢复一样要 write 权限，不想试登录就加 --no-probe
 fleetctl provision ...                                     # 先 check，再确认，再提交
 fleetctl retry <作业> [--reset-host-key] [--password-env VAR]   # 重试失败作业；报「主机指纹变化」且确认重装过才加 --reset-host-key；报「没有可用的 root 密码」时用 --password-env 补密码
 ```
 
-- 上架：`fleetctl --json provision --file batch.json --dry-run` 只校验；通过后让用户确认名单，再去掉 `--dry-run` 加 `--yes --follow`。单台参数：`--kind vps --ip 1.2.3.4 --team 团队1 --relay 线路机2 --provider ATTVPS --plan 基础版`。root 密码放环境变量，用 `--ssh-password-env VAR` 传名字。
+- 上架：`fleetctl --json provision --file batch.json --dry-run` 只校验；通过后让用户确认名单，再去掉 `--dry-run` 加 `--yes --follow`。单台参数：`--kind vps --ip 1.2.3.4 --team 团队1 --relay 线路机2 --provider ATTVPS --plan 基础版`。root 密码放环境变量，用 `--ssh-password-env VAR` 传名字。`--ss-port`（批量文件里 `ss_port`）是线路机连节点用的公网（NAT 映射）端口，节点上 ssserver 固定监听 8388；非 NAT 机不要填。
 - 改名：`fleetctl rename <机器> --team 团队2 --number 3`。
 - 分享链接 `fleetctl share <入口>` 需要 `secrets` scope，会记审计；链接是凭据，只给用户本人，不写进文件或日志。
 - 密钥管理（`fleetctl keys ...`）只认登录会话，AI 不做；需要新密钥时请用户在网页「设置 → API 密钥」创建。

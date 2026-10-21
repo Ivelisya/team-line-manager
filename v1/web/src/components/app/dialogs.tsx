@@ -10,23 +10,32 @@ import { Note } from './primitives';
 interface Base {
   open: boolean; onOpenChange: (o: boolean) => void; title: string; description?: React.ReactNode;
   confirmLabel: string; danger?: boolean; /** 额外的禁用条件（例如预览还没加载完） */ confirmDisabled?: boolean; onConfirm: () => Promise<unknown> | unknown; children?: React.ReactNode; size?: 'sm' | 'md';
+  /** 有未提交的改动：点遮罩不关闭（Esc 与取消仍可关） */ dirty?: boolean;
 }
 
-export function ConfirmDialog({ open, onOpenChange, title, description, confirmLabel, danger, confirmDisabled, onConfirm, children, size }: Base) {
+/** asForm：内容包在 form 里，可确认时在输入框里按 Enter 即执行 */
+export function ConfirmDialog({ open, onOpenChange, title, description, confirmLabel, danger, confirmDisabled, onConfirm, children, size, dirty, asForm }: Base & { asForm?: boolean }) {
   const [busy, setBusy] = React.useState(false);
   const run = async () => {
     setBusy(true);
     try { await onConfirm(); onOpenChange(false); } catch (e) { toast.err(e); } finally { setBusy(false); }
   };
+  const body = (
+    <>
+      <DialogHeader><DialogTitle>{title}</DialogTitle>{description && <DialogDescription>{description}</DialogDescription>}</DialogHeader>
+      {children}
+      <DialogFooter>
+        <Button onClick={() => onOpenChange(false)} disabled={busy}>取消</Button>
+        <Button type={asForm ? 'submit' : 'button'} variant={danger ? 'danger' : 'primary'} loading={busy} disabled={confirmDisabled} onClick={asForm ? undefined : run}>{confirmLabel}</Button>
+      </DialogFooter>
+    </>
+  );
   return (
     <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
-      <DialogContent size={size}>
-        <DialogHeader><DialogTitle>{title}</DialogTitle>{description && <DialogDescription>{description}</DialogDescription>}</DialogHeader>
-        {children}
-        <DialogFooter>
-          <Button onClick={() => onOpenChange(false)} disabled={busy}>取消</Button>
-          <Button variant={danger ? 'danger' : 'primary'} loading={busy} disabled={confirmDisabled} onClick={run}>{confirmLabel}</Button>
-        </DialogFooter>
+      <DialogContent size={size} onInteractOutside={(e) => { if (dirty) e.preventDefault(); }}>
+        {asForm
+          ? <form style={{ display: 'grid', gap: 16 }} onSubmit={(e) => { e.preventDefault(); e.stopPropagation(); if (!confirmDisabled && !busy) void run(); }}>{body}</form>
+          : body}
       </DialogContent>
     </Dialog>
   );
@@ -37,7 +46,9 @@ export function TypedConfirmDialog({ expected, prompt, ...base }: Base & { expec
   const [text, setText] = React.useState('');
   const [busy, setBusy] = React.useState(false);
   const [err, setErr] = React.useState<string | null>(null);
-  React.useEffect(() => { if (!base.open) { setText(''); setErr(null); } }, [base.open]);
+  const input = React.useRef<HTMLInputElement>(null);
+  // 打开时才清空：关闭动画期间内容保持原样
+  React.useEffect(() => { if (base.open) { setText(''); setErr(null); } }, [base.open]);
   const ok = text.trim() === expected && !base.confirmDisabled;
   const run = async () => {
     setBusy(true); setErr(null);
@@ -45,12 +56,13 @@ export function TypedConfirmDialog({ expected, prompt, ...base }: Base & { expec
   };
   return (
     <Dialog open={base.open} onOpenChange={(o) => !busy && base.onOpenChange(o)}>
-      <DialogContent size={base.size}>
+      {/* 焦点直接落在确认输入框（默认会落到前面的复选框等控件上） */}
+      <DialogContent size={base.size} onOpenAutoFocus={(e) => { e.preventDefault(); input.current?.focus(); }}>
         <DialogHeader><DialogTitle>{base.title}</DialogTitle>{base.description && <DialogDescription>{base.description}</DialogDescription>}</DialogHeader>
         {base.children}
         <div className="field">
           <label className="label" htmlFor="typed-confirm">{prompt ?? '请输入'} <b className="mono" style={{ color: 'var(--fg)' }}>{expected}</b> 以确认</label>
-          <Input id="typed-confirm" value={text} onChange={(e) => setText(e.target.value)} autoComplete="off" spellCheck={false} placeholder={expected}
+          <Input ref={input} id="typed-confirm" value={text} onChange={(e) => setText(e.target.value)} autoComplete="off" spellCheck={false} placeholder={expected}
             onKeyDown={(e) => { if (e.key === 'Enter' && ok && !busy) void run(); }} />
         </div>
         {err && <Note tone="bad">{err}</Note>}

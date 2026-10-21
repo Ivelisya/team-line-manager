@@ -71,7 +71,11 @@ impl From<sqlx::Error> for ApiError {
                     };
                     return Self::conflict(m);
                 }
-                Some("23503") => return Self::conflict("被其他数据引用，不能这样改"),
+                // foreign_key_violation：按引用方插入/修改处理（400）。两种违反的错误字段相同、报错文字随 lc_messages 变，分不出来；
+                // 会硬删/改动被引用父对象的接口要自己把 23503 映射成 409（目前没有：父对象都是软删、级联，或走带 purge_blocker 的作业）
+                Some("23503") => return Self::bad_request("引用的对象不存在"),
+                // invalid_text_representation：枚举等类型解析失败（如 cycle="weekly"）
+                Some("22P02") => return Self::bad_request("填写的值格式不对"),
                 // check_violation：约束名只进日志，不给用户（该校验的字段应在接口里先拦下）
                 Some("23514") => {
                     tracing::warn!(constraint = db.constraint().unwrap_or("?"), "违反检查约束");
@@ -91,6 +95,24 @@ pub struct ApiJson<T>(pub T);
 
 impl From<axum::extract::rejection::JsonRejection> for ApiError {
     fn from(r: axum::extract::rejection::JsonRejection) -> Self { Self::bad_request(format!("请求内容不对：{}", r.body_text())) }
+}
+
+/// 路径参数提取器：解析失败（如编号不是合法 uuid）时同样返回 JSON 400
+#[derive(axum::extract::FromRequestParts)]
+#[from_request(via(axum::extract::Path), rejection(ApiError))]
+pub struct ApiPath<T>(pub T);
+
+impl From<axum::extract::rejection::PathRejection> for ApiError {
+    fn from(r: axum::extract::rejection::PathRejection) -> Self { Self::bad_request(format!("路径参数不对：{}", r.body_text())) }
+}
+
+/// 查询参数提取器：解析失败时同样返回 JSON 400
+#[derive(axum::extract::FromRequestParts)]
+#[from_request(via(axum::extract::Query), rejection(ApiError))]
+pub struct ApiQuery<T>(pub T);
+
+impl From<axum::extract::rejection::QueryRejection> for ApiError {
+    fn from(r: axum::extract::rejection::QueryRejection) -> Self { Self::bad_request(format!("查询参数不对：{}", r.body_text())) }
 }
 
 impl From<anyhow::Error> for ApiError {

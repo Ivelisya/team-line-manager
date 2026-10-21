@@ -152,7 +152,7 @@ struct ProvisionArgs {
     service_ref: Option<String>,
     #[arg(long)]
     note: Option<String>,
-    /// vps 的 SS 端口
+    /// vps 的公网（NAT 映射）SS 端口；节点上 ssserver 固定监听 8388，非 NAT 机不要填
     #[arg(long)]
     ss_port: Option<u16>,
     /// 家宽代理（proxy）的上游：socks5://用户:密码@主机:端口
@@ -358,6 +358,9 @@ enum Cmd {
         target: Option<String>,
         #[arg(long, default_value_t = 50)]
         limit: i64,
+        /// 翻页：只看编号小于它的记录（上一页末尾提示的编号）
+        #[arg(long)]
+        before: Option<i64>,
     },
     /// 访问监控：哪个节点访问了哪些域名/IP
     Access {
@@ -460,7 +463,7 @@ enum Cmd {
         /// 家宽代理：socks5://用户:密码@主机:端口（退役时出站参数已清掉）
         #[arg(long)]
         upstream: Option<String>,
-        /// vps 的 SS 端口
+        /// vps 的公网（NAT 映射）SS 端口；节点上 ssserver 固定监听 8388，非 NAT 机不要填
         #[arg(long)]
         ss_port: Option<u16>,
         /// root 密码放在哪个环境变量里（预检说中控密钥登录不了时必填）
@@ -471,6 +474,9 @@ enum Cmd {
         /// 机器重装过、主机指纹变了：允许覆盖已记录的指纹
         #[arg(long)]
         reset_host_key: bool,
+        /// 预检不试 SSH 登录（只做库内检查）
+        #[arg(long)]
+        no_probe: bool,
         #[arg(long)]
         yes: bool,
         #[arg(long)]
@@ -568,7 +574,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
                 KeysCmd::Revoke { which, auth } => ops::keys_revoke(x, &ka(auth), &which),
             }
         }
-        Cmd::Audit { target, limit } => cmds::audit(x, target.as_deref(), limit),
+        Cmd::Audit { target, limit, before } => cmds::audit(x, target.as_deref(), limit, before),
         Cmd::Access { view, node, team, window, search, blocked, kind, limit } => access::access(
             x,
             access::AccessOpts { view: &view, node: node.as_deref(), team: team.as_deref(), window: &window, search: search.as_deref(), blocked, kind: kind.as_deref(), limit },
@@ -589,7 +595,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Watch { count, metrics } => cmds::watch(x, count, metrics),
         Cmd::Move { node, to, from, yes, follow } => lifecycle::mv(x, &node, &to, from.as_deref(), yes, follow),
         Cmd::Evacuate { relay, to, yes, follow } => lifecycle::evacuate(x, &relay, &to, yes, follow),
-        Cmd::Restore { machine, team, number, relay, label, upstream, ss_port, password_env, reason, reset_host_key, yes, follow } => lifecycle::restore(
+        Cmd::Restore { machine, team, number, relay, label, upstream, ss_port, password_env, reason, reset_host_key, no_probe, yes, follow } => lifecycle::restore(
             x,
             lifecycle::RestoreOpts {
                 machine: &machine,
@@ -602,6 +608,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
                 password_env: password_env.as_deref(),
                 reason: reason.as_deref(),
                 reset_host_key,
+                no_probe,
                 yes,
                 follow,
             },

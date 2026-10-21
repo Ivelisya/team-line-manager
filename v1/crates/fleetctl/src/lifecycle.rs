@@ -121,6 +121,7 @@ pub struct RestoreOpts<'a> {
     pub password_env: Option<&'a str>,
     pub reason: Option<&'a str>,
     pub reset_host_key: bool,
+    pub no_probe: bool,
     pub yes: bool,
     pub follow: bool,
 }
@@ -138,6 +139,9 @@ pub fn restore(ctx: &Ctx, o: RestoreOpts) -> anyhow::Result<u8> {
     }
     if let Some(l) = o.label {
         q.push(("label", l.to_string()));
+    }
+    if o.no_probe {
+        q.push(("probe", "false".into()));
     }
     let pv = ctx.c.get_q(&format!("/machines/{id}/restore"), &q)?;
     if !ctx.json {

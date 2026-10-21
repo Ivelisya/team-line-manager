@@ -12,6 +12,9 @@
 }
 .btn:active:not(:disabled) { transform: scale(0.98); }
 .btn:disabled, .btn[aria-disabled="true"] { opacity: 0.45; cursor: default; }
+/* 加载中不显示成禁用的半透明；转圈替换原图标，按钮宽度不变 */
+.btn[aria-busy="true"]:disabled { opacity: 1; cursor: progress; }
+.btn[aria-busy="true"] > .lucide:not(.spin) { display: none; }
 .btn .lucide { width: var(--icon-sm); height: var(--icon-sm); }
 .btn-md { height: var(--h-md); padding: 0 var(--sp-12); }
 .btn-sm { height: var(--h-sm); padding: 0 var(--sp-10); font-size: var(--fs-label); line-height: var(--lh-label); }
@@ -197,6 +200,10 @@
 .empty { display: grid; justify-items: center; gap: var(--sp-8); padding: var(--sp-24) var(--sp-16); color: var(--fg-2); text-align: center; }
 .empty .lucide { color: var(--fg-3); }
 .skel { display: block; border-radius: var(--r-xs); background: var(--sunken); animation: skel-pulse 1.4s ease-in-out infinite; }
+.skel-row { display: flex; align-items: center; height: var(--row-2); box-sizing: border-box; padding: 0 var(--cell-edge); border-bottom: 1px solid var(--line); }
+.skel-row.is-one { height: var(--row-1); }
+.skel-row:last-child { border-bottom: 0; }
+.skel-head { height: var(--thead-h); background: var(--sunken); border-bottom: 1px solid var(--line); }
 
 /* ========== 表单 ========== */
 .field { display: grid; gap: var(--sp-6); min-width: 0; align-content: start; }
@@ -237,11 +244,12 @@
 .overlay { position: fixed; inset: 0; z-index: var(--z-dialog); background: var(--scrim); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); animation: fade-in var(--dur-base) var(--ease-out); }
 /* 关闭动画：Radix Presence 会等 [data-state=closed] 上的动画播完再卸载；减弱动效时在 extras.css 末尾置 none */
 .overlay[data-state="closed"], .drawer-overlay[data-state="closed"] { animation: fade-out var(--dur-base) var(--ease-std) forwards; }
+/* 顶部锚定（同命令面板）：内容异步变多时只往下长，不上下跳；矮屏时自身滚动 */
 .dialog {
-  position: fixed; z-index: var(--z-dialog); left: 50%; top: 50%; transform: translate(-50%, -50%);
-  width: min(var(--dialog-sm), calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: auto;
+  position: fixed; z-index: var(--z-dialog); left: 50%; top: min(10vh, 96px); transform: translateX(-50%);
+  width: min(var(--dialog-sm), calc(100vw - 32px)); max-height: calc(100dvh - min(10vh, 96px) - 16px); overflow: auto;
   background: var(--raised); border: 1px solid var(--line); border-radius: var(--r-card); box-shadow: var(--shadow-float);
-  padding: var(--sp-20); display: grid; gap: var(--sp-16); animation: pop-in var(--dur-base) var(--ease-out);
+  padding: var(--sp-20); display: grid; gap: var(--sp-16); animation: pop-in var(--dur-panel) var(--ease-sheet);
 }
 .dialog-md { width: min(var(--dialog-md), calc(100vw - 32px)); }
 .dialog-lg { width: min(var(--dialog-lg), calc(100vw - 32px)); }
@@ -249,9 +257,9 @@
 .dialog-desc { margin: 0; color: var(--fg-2); font-size: var(--fs-body); line-height: var(--lh-body); text-wrap: pretty; }
 .dialog-head { display: grid; gap: var(--sp-6); }
 .dialog-foot { display: flex; justify-content: flex-end; gap: var(--control-gap); flex-wrap: wrap; }
-@keyframes pop-in { from { opacity: 0; transform: translate(-50%, calc(-50% + 6px)) scale(.98); } to { opacity: 1; transform: translate(-50%, -50%); } }
+@keyframes pop-in { from { opacity: 0; transform: translateX(-50%) scale(.96); } to { opacity: 1; transform: translateX(-50%); } }
 .dialog[data-state="closed"] { animation: pop-out var(--dur-base) var(--ease-std) forwards; }
-@keyframes pop-out { from { opacity: 1; transform: translate(-50%, -50%); } to { opacity: 0; transform: translate(-50%, -50%) scale(.98); } }
+@keyframes pop-out { from { opacity: 1; transform: translateX(-50%); } to { opacity: 0; transform: translateX(-50%) scale(.98); } }
 
 .drawer {
   position: fixed; z-index: var(--z-drawer); top: 0; right: 0; bottom: 0; width: var(--drawer-w);

@@ -86,9 +86,9 @@ async fn draft_preview_publish_apply_rollback() {
         .await;
     assert_ne!(changed["draft_hash"].as_str().unwrap(), hash);
     let m = t.fail("POST", "/api/v1/policies/publish", Some(json!({"draft_hash": hash})), StatusCode::CONFLICT).await;
-    assert!(m.contains("草稿已变化"), "{m}");
+    assert!(m.contains("已变化"), "{m}");
     let m = t.fail("POST", "/api/v1/policies/discard", Some(json!({"draft_hash": hash})), StatusCode::CONFLICT).await;
-    assert!(m.contains("草稿已变化"), "{m}");
+    assert!(m.contains("已变化"), "{m}");
     // 重新预览：3 份草稿；团队2 暂停 → 团队2-01 全部阻止
     let pv = t.post("/api/v1/policies/preview", json!({})).await;
     assert_eq!(pv["draft_count"], 3);
@@ -252,6 +252,29 @@ async fn revision_conflicts_and_stale_hash() {
     let rev = list["teams"][0]["policy"]["revision"].as_i64().unwrap();
     assert!(rev > 3);
     t.fail("PUT", &format!("/api/v1/policies/team/{}", fx.team1), Some(body(3, "z.com")), StatusCode::CONFLICT).await;
+}
+
+/// 预览之后有人回滚：草稿没变，但生效版本变了，旧的 draft_hash 不能直接发布
+#[tokio::test]
+async fn rollback_invalidates_old_preview() {
+    let t = setup().await;
+    let fx = seed(&t).await;
+    t.put_policy("team", fx.team1, json!({"mode": "denylist", "domains": ["a.com"], "note": "", "expected_revision": 0})).await;
+    let pv = t.post("/api/v1/policies/preview", json!({})).await;
+    let v1 = t.post("/api/v1/policies/publish", json!({"draft_hash": pv["draft_hash"]})).await;
+    t.put_policy("team", fx.team1, json!({"mode": "observe", "domains": [], "note": "", "expected_revision": 2})).await;
+    let pv = t.post("/api/v1/policies/preview", json!({})).await;
+    t.post("/api/v1/policies/publish", json!({"draft_hash": pv["draft_hash"]})).await;
+
+    t.put_policy("node", fx.n[2], json!({"mode": "blocked", "domains": [], "note": "", "expected_revision": 0})).await;
+    let old = t.post("/api/v1/policies/preview", json!({})).await["draft_hash"].as_str().unwrap().to_string();
+    t.post(&format!("/api/v1/policies/versions/{}/rollback", v1["id"].as_str().unwrap()), json!({})).await;
+    let m = t.fail("POST", "/api/v1/policies/publish", Some(json!({"draft_hash": old})), StatusCode::CONFLICT).await;
+    assert!(m.contains("生效版本已变化"), "{m}");
+    let new = t.post("/api/v1/policies/preview", json!({})).await["draft_hash"].as_str().unwrap().to_string();
+    assert_ne!(new, old);
+    let v = t.post("/api/v1/policies/publish", json!({"draft_hash": new})).await;
+    assert_eq!(v["seq"], 4);
 }
 
 #[tokio::test]

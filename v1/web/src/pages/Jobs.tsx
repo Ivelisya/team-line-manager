@@ -51,7 +51,7 @@ export function JobsPage() {
         tools={<Segmented label="筛选" value={filter} onChange={setFilter} items={[{ value: 'all', label: '全部' }, { value: 'active', label: '进行中' }, { value: 'done', label: '已结束' }]} />} />
       <div className="jobs-layout" data-detail={selected ? '1' : '0'}>
         <Panel ref={pg.anchor} className="jobs-list" flush>
-          {jobs.isLoading && <SkeletonRows rows={5} />}
+          {jobs.isLoading && <SkeletonRows rows={5} list />}
           {jobs.isError && <div style={{ padding: 'var(--sp-12)' }}><ErrorNote error={jobs.error} onRetry={() => void jobs.refetch()} /></div>}
           {list.map((j) => (
             <div key={j.id} className="job-item" role="button" tabIndex={0} aria-current={j.id === selected} onClick={() => go(j.id)}
@@ -260,7 +260,7 @@ const LogPanel = React.memo(function LogPanel({ jobId, state }: { jobId: string;
       <div className="logbox" ref={box} role="log" aria-live="off" tabIndex={0} aria-label="作业日志"
         onScroll={(e) => { const el = e.currentTarget; setStuck(el.scrollHeight - el.scrollTop - el.clientHeight < 24); }}>
         {logs.length === 0 && <span className="t-muted">暂无日志</span>}
-        {(dropped > 0 || shown.length > SHOW_MAX) && <div className="logline logline-note"><span /><span /><span className="msg t-muted">{dropped > 0 ? `页面只保留最近 ${KEEP_MAX} 行，更早的 ${dropped} 行已省略；` : ''}仅显示最近 {Math.min(SHOW_MAX, shown.length)} 行，共 {shown.length + dropped} 行</span></div>}
+        {(dropped > 0 || shown.length > SHOW_MAX) && <div className="logline logline-note"><span /><span /><span className="msg t-sub">{dropped > 0 ? `页面只保留最近 ${KEEP_MAX} 行，更早的 ${dropped} 行已省略；` : ''}仅显示最近 {Math.min(SHOW_MAX, shown.length)} 行，共 {shown.length + dropped} 行</span></div>}
         {view.map((l) => <LogLine key={l.id} l={l} />)}
       </div>
     </Panel>

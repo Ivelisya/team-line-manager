@@ -36,7 +36,15 @@ function RenameSection({ m }: { m: MachineView }) {
   const [team, setTeam] = React.useState(m.team?.id ?? '');
   const [num, setNum] = React.useState(m.number != null ? String(m.number) : '');
   const [label, setLabel] = React.useState(m.label ?? '');
-  React.useEffect(() => { setTeam(m.team?.id ?? ''); setNum(m.number != null ? String(m.number) : ''); setLabel(m.label ?? ''); }, [m.id, m.revision, m.team?.id, m.number, m.label]);
+  // 实时推送会改 revision 和编号（如同团队有机器退役后自动压缩编号）：只同步用户没动过的字段（输入仍等于上次的服务端值），
+  // 正在编辑的不覆盖；换了机器则全部重置
+  const srv = { id: m.id, team: m.team?.id ?? '', num: m.number != null ? String(m.number) : '', label: m.label ?? '' };
+  const last = React.useRef(srv);
+  React.useEffect(() => {
+    const prev = last.current; last.current = srv;
+    const keep = (v: string, was: string, now: string) => (prev.id === srv.id && v !== was ? v : now);
+    setTeam((v) => keep(v, prev.team, srv.team)); setNum((v) => keep(v, prev.num, srv.num)); setLabel((v) => keep(v, prev.label, srv.label));
+  }, [srv.id, srv.team, srv.num, srv.label]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const teamName = teams.find((t) => t.id === team)?.name;
   const n = Number(num);
@@ -52,7 +60,7 @@ function RenameSection({ m }: { m: MachineView }) {
   return (
     <Section>
       <SectionHeader title={isRelay ? '改名' : '改名 / 改编号'} />
-      <div className="form-grid">
+      <form className="form-grid" onSubmit={(e) => { e.preventDefault(); if (changed && valid && !patch.isPending) save(); }}>
         {isRelay ? (
           <Field label="线路机名称" className="span-2"><Input value={label} onChange={(e) => setLabel(e.target.value)} /></Field>
         ) : (
@@ -68,10 +76,10 @@ function RenameSection({ m }: { m: MachineView }) {
             <span className="t-sub">新显示名</span>
             <span className="preview-name">{m.name}<ArrowRight size={14} style={{ color: 'var(--fg-3)' }} />{preview || '—'}</span>
           </span>
-          <Button variant="primary" disabled={!changed || !valid || patch.isPending} loading={patch.isPending} onClick={save}>保存</Button>
+          <Button type="submit" variant="primary" disabled={!changed || !valid || patch.isPending} loading={patch.isPending}>保存</Button>
         </div>
         <div className="hint span-2">改名只改显示名与线路机上的备注，不换令牌，不会断开现有连接。</div>
-      </div>
+      </form>
     </Section>
   );
 }
