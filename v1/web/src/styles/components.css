@@ -243,6 +243,10 @@
 .switch[data-state="checked"] { background: var(--accent-solid); }
 .switch > span { display: block; width: 16px; height: 16px; border-radius: 999px; background: #fff; box-shadow: var(--shadow-btn); transition: transform var(--dur-2) var(--ease-out), width var(--dur-2) var(--ease-out); } /* 圆钮是移动到位：进场曲线；按住拉长见文末「交互状态」 */
 .switch[data-state="checked"] > span { transform: translateX(14px); }
+/* 禁用（如保存中的开关）：同图标按钮半透明、不再像能点；在 .check-row 里时后面的说明文字一起调淡 */
+.checkbox:disabled, .switch:disabled { opacity: 0.45; cursor: default; }
+.check-row > :disabled ~ span { opacity: 0.45; }
+.check-row:has(> :disabled) { cursor: default; }
 
 /* ========== 浮层：对话框、抽屉、菜单、提示、toast ==========
    进出场三类（关键帧只写起点或终点，另一端取元素自身的样式）：

@@ -109,7 +109,7 @@
 /* 窄卡（手机）：方向标签放到读数上面，两列之间不挤。容器设在 .flow 上——卡片本身不能设 container-type（布局包含会让 subgrid 失效） */
 .flow { container-type: inline-size; }
 @container (max-width: 320px) { .flow-head { flex-direction: column; align-items: flex-start; gap: 0; } }
-.flow-live { display: inline-flex; align-items: center; gap: 5px; flex: none; font: var(--fw-semibold) 10px / 14px var(--font-sans); letter-spacing: 0.04em; color: var(--fg-3); }
+.flow-live { display: inline-flex; align-items: center; gap: 5px; flex: none; font: var(--fw-semibold) var(--fs-micro) / 14px var(--font-sans); letter-spacing: 0.04em; color: var(--fg-3); }
 .flow-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--fg-3); opacity: 0.6; }
 .flow-live[data-live] .flow-dot { background: var(--spd, var(--ok)); opacity: 1; }
 /* 呼吸只在卡片进入视口时（data-vis 由 NodeCard 的 IntersectionObserver 写；animation-delay 对齐全站同一节拍） */
