@@ -293,13 +293,15 @@ pub struct HostCollector {
     /// 在容器里：CPU、内存读 cgroup
     cg: Option<Cgroup>,
     ifaces: Vec<String>,
+    /// 本命名空间里能看到的线程数（判断 loadavg 是不是宿主机的）：遍历 /proc 较重，随网卡一起刷新
+    threads: usize,
     ifaces_at: std::time::Instant,
 }
 
 impl HostCollector {
     pub fn new() -> Self {
         let cg = Cgroup::detect(Path::new("/sys/fs/cgroup"));
-        let mut c = Self { prev_cpu: None, cg, ifaces: vec![], ifaces_at: std::time::Instant::now() };
+        let mut c = Self { prev_cpu: None, cg, ifaces: vec![], threads: 0, ifaces_at: std::time::Instant::now() };
         c.refresh_ifaces();
         c.prev_cpu = parse_cpu(&read("/proc/stat"));
         c
@@ -308,6 +310,7 @@ impl HostCollector {
     fn refresh_ifaces(&mut self) {
         let names: Vec<String> = parse_net_dev(&read("/proc/net/dev")).into_iter().map(|x| x.0).collect();
         self.ifaces = pick_ifaces(&names, |n| std::path::Path::new(&format!("/sys/class/net/{n}/device")).exists());
+        self.threads = visible_threads(std::path::Path::new("/proc"));
         self.ifaces_at = std::time::Instant::now();
     }
 
@@ -335,7 +338,7 @@ impl HostCollector {
         HostSample {
             ts_ms: now_ms(),
             cpu_pct: pct,
-            load1: parse_load1(&read("/proc/loadavg"), visible_threads(std::path::Path::new("/proc"))),
+            load1: parse_load1(&read("/proc/loadavg"), self.threads),
             mem_used,
             mem_total,
             disk_used,

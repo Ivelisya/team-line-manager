@@ -7,6 +7,8 @@ use anyhow::Result;
 use fleet_proto::Report;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 const DEAD_KEEP: usize = 50;
 
@@ -20,6 +22,8 @@ pub struct Queue {
     pub dropped: u64,
     /// 本进程内移入 dead/ 的报告数
     pub dead: u64,
+    /// 队列长度的副本：入队 / 确认 / 移入 dead/ 时更新，供不持锁的读者用
+    len_hint: Arc<AtomicUsize>,
 }
 
 fn path_of(dir: &std::path::Path, seq: u64) -> PathBuf {
@@ -29,7 +33,7 @@ fn path_of(dir: &std::path::Path, seq: u64) -> PathBuf {
 impl Queue {
     pub fn open(dir: PathBuf, max_bytes: u64, max_age_ms: i64) -> Result<Self> {
         std::fs::create_dir_all(dir.join("dead"))?;
-        let mut q = Self { dir, items: BTreeMap::new(), bytes: 0, max_bytes, max_age_ms, dropped: 0, dead: 0 };
+        let mut q = Self { dir, items: BTreeMap::new(), bytes: 0, max_bytes, max_age_ms, dropped: 0, dead: 0, len_hint: Arc::default() };
         for e in std::fs::read_dir(&q.dir)? {
             let e = e?;
             let name = e.file_name().to_string_lossy().to_string();
@@ -48,12 +52,23 @@ impl Queue {
             q.bytes += md.len();
             q.items.insert(seq, (md.len(), mt));
         }
+        q.sync_len();
         Ok(q)
+    }
+
+    fn sync_len(&self) {
+        self.len_hint.store(self.items.len(), Ordering::Relaxed);
+    }
+
+    /// 队列长度的原子副本（不用拿外层的锁就能读）
+    pub fn len_handle(&self) -> Arc<AtomicUsize> {
+        self.len_hint.clone()
     }
 
     pub fn len(&self) -> usize {
         self.items.len()
     }
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
@@ -76,6 +91,7 @@ impl Queue {
         }
         self.bytes += body.len() as u64;
         self.evict();
+        self.sync_len();
         Ok(())
     }
 
@@ -113,6 +129,7 @@ impl Queue {
                 self.bytes -= sz;
             }
         }
+        self.sync_len();
         done.len()
     }
 
@@ -128,6 +145,7 @@ impl Queue {
         if let Some((sz, _)) = self.items.remove(&seq) {
             self.bytes -= sz;
         }
+        self.sync_len();
         if let Ok(rd) = std::fs::read_dir(self.dir.join("dead")) {
             let mut names: Vec<_> = rd.filter_map(|e| e.ok()).map(|e| e.path()).collect();
             names.sort();
@@ -168,18 +186,23 @@ mod tests {
     fn push_ack_reopen() {
         let d = tmpdir("a");
         let mut q = Queue::open(d.clone(), 1 << 20, i64::MAX / 2).unwrap();
+        let len = q.len_handle();
         for s in 1..=3 {
             q.push(&rep(s, 10)).unwrap();
         }
+        assert_eq!(len.load(Ordering::Relaxed), 3);
         assert_eq!(q.oldest(), Some(1));
         let q2 = Queue::open(d.clone(), 1 << 20, i64::MAX / 2).unwrap();
         assert_eq!(q2.len(), 3);
+        assert_eq!(q2.len_handle().load(Ordering::Relaxed), 3);
         assert_eq!(q.ack_through(2), 2);
+        assert_eq!(len.load(Ordering::Relaxed), 1);
         assert_eq!(q.oldest(), Some(3));
         assert_eq!(serde_json::from_slice::<Report>(&q.read(3).unwrap()).unwrap().seq, 3);
         q.dead_letter(3);
         assert_eq!(q.dead, 1);
         assert!(q.is_empty());
+        assert_eq!(len.load(Ordering::Relaxed), 0);
         assert_eq!(q.bytes, 0);
         let _ = std::fs::remove_dir_all(&d);
     }
