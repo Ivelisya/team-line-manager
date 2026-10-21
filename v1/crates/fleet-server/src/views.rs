@@ -1,7 +1,7 @@
 //! 机器视图：一次把列表页、卡片、抽屉需要的东西组装好（约百台规模，分几条查询再在内存里拼）。
 
 use crate::health::{self, Health, Status};
-use crate::names::display_name;
+use crate::names::{direct_name, display_name};
 use crate::state::AppState;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -159,7 +159,10 @@ pub fn period_start(today: Date, reset_day: u8) -> Date {
 pub struct EntryView {
     pub id: Uuid,
     pub relay: Ref,
+    /// 直出入口的节点就是线路机自己（id 同 relay，名字是「线路机名-直出」）
     pub node: Ref,
+    /// 线路机直出：从线路机自己的 IP 出去，没有落地节点，也就没有 TCP 探测（tcp 恒为 null）
+    pub direct: bool,
     pub port: i32,
     pub lifecycle: String,
     /// 线路机已应用到这条入口的最近一次改动
@@ -618,11 +621,12 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
         probes.insert((p.entry_id, p.kind), Probe { ok: p.ok, latency_ms: p.latency_ms, detail: p.detail, ts: p.ts });
     }
 
-    // 每条已移除入口的流量同时记到它的节点和线路机上（两端是不同的机器，不会在同一台上重复计）
+    // 每条已移除入口的流量同时记到它的节点和线路机上；直出入口两端是同一台，只记一次
     let mut removed_by: HashMap<Uuid, Traffic> = HashMap::new();
     for (id, node, relay) in removed {
         let x = &traffic[&id];
-        for m in [node, relay] {
+        let ends: &[Uuid] = if node == relay { &[node] } else { &[node, relay] };
+        for &m in ends {
             let t = removed_by.entry(m).or_default();
             t.today_up += x.today_up;
             t.today_down += x.today_down;
@@ -633,13 +637,19 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
 
     let mut entries_by: HashMap<Uuid, Vec<EntryView>> = HashMap::new();
     for e in es {
+        let direct = e.node_id == e.relay_id;
         let v = EntryView {
             id: e.id,
             relay: Ref { id: e.relay_id, name: e.relay_label.clone() },
             node: Ref {
                 id: e.node_id,
-                name: display_name("vps", e.node_label.as_deref(), e.node_team.as_deref(), e.node_number),
+                name: if direct {
+                    direct_name(&e.relay_label)
+                } else {
+                    display_name("vps", e.node_label.as_deref(), e.node_team.as_deref(), e.node_number)
+                },
             },
+            direct,
             port: e.port,
             lifecycle: e.lifecycle,
             applied: e.applied,
@@ -649,7 +659,10 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
             egress: probes.get(&(e.id, "egress".into())).cloned(),
             traffic: traffic.get(&e.id).cloned().unwrap_or_default(),
         };
-        entries_by.entry(e.node_id).or_default().push(v.clone());
+        // 直出入口的节点和线路机是同一台：只列一次
+        if !direct {
+            entries_by.entry(e.node_id).or_default().push(v.clone());
+        }
         entries_by.entry(e.relay_id).or_default().push(v);
     }
 
@@ -812,6 +825,7 @@ pub fn overview_of(ms: &[MachineView]) -> Value {
             };
             *cost.entry(s.currency.clone()).or_default() += s.price_cents as i64 / months;
         }
+        // 业务流量按节点端算（每条入口恰好属于一个节点）；线路机只算它的直出入口（节点就是它自己）
         if m.kind != "relay" {
             for e in &m.entries {
                 up += e.traffic.month_up;
@@ -819,6 +833,11 @@ pub fn overview_of(ms: &[MachineView]) -> Value {
             }
             up += m.removed_traffic.month_up;
             down += m.removed_traffic.month_down;
+        } else {
+            for e in m.entries.iter().filter(|e| e.direct) {
+                up += e.traffic.month_up;
+                down += e.traffic.month_down;
+            }
         }
         // 实时速率只算数据没过期的：agent 离线的机器，最后一份上报的速率不算（同前端 liveRate）。
         // 告警（哪怕严重）不影响：机器照常每 10 秒上报

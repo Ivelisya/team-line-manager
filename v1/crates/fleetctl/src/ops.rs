@@ -352,9 +352,23 @@ pub fn share(ctx: &Ctx, entry: &str) -> anyhow::Result<u8> {
     Ok(0)
 }
 
+/// 线路机直出入口：节点就是线路机自己，出口是线路机自己的 IP。走「新增入口」作业（建入口 → 等应用 → 出口验收）
+pub fn add_direct(ctx: &Ctx, relay: &str, yes: bool, follow: bool) -> anyhow::Result<u8> {
+    let m = ctx.find(relay, Want::Live)?;
+    let (id, name) = (st(&m, "/id"), st(&m, "/name"));
+    if st(&m, "/kind") != "relay" {
+        bail!("「{name}」不是线路机：直出入口只能加在线路机上");
+    }
+    confirm(&format!("确认给 {name} 加直出入口（从 {} 出去，新分享链接名「{name}-直出」）？", st(&m, "/ip")), yes)?;
+    let d = ctx.c.post(&format!("/machines/{id}/entries"), &json!({"relay_id": id}))?;
+    let job = st(&d, "/job_id");
+    ctx.emit(&d, || format!("已提交新增直出入口作业 {job}\n看进度：fleetctl job {job} --follow；完成后 fleetctl share {name}-直出 取分享链接"));
+    follow_if(ctx, follow, &job)
+}
+
 pub fn entry_action(ctx: &Ctx, action: &str, entry: &str, yes: bool) -> anyhow::Result<u8> {
     if !matches!(action, "enable" | "disable" | "rotate") {
-        bail!("动作只能是 enable / disable / rotate");
+        bail!("动作只能是 enable / disable / rotate / add-direct");
     }
     let es = cmds::all_entries(ctx)?;
     let e = resolve::entry(&es, entry).map_err(|e| anyhow!(e))?;

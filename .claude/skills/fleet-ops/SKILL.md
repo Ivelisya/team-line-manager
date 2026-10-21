@@ -69,6 +69,7 @@ fleetctl retire <机器> [--reason 原因] --yes [--follow]    # 摘入口、停
 fleetctl purge <机器> --yes                                # 只对已退役；删除机器与遥测，不可恢复。入口近 35 天的流量还计入另一端未退役的机器时被拒（409，报错给出可删日期），到期再删；不要为绕过它去退役对端
 fleetctl entry rotate <入口> --yes                         # 旧分享链接立即失效
 fleetctl entry disable <入口> --yes
+fleetctl entry add-direct <线路机> --yes [--follow]          # 线路机直出入口：从线路机自己的 IP 出去（旧系统的「节点00-默认」），每台至多一条；链接 fleetctl share <线路机>-直出
 fleetctl upgrade-agent <机器> | --all --yes                # 重启 agent
 fleetctl renumber <团队> --yes                             # 不加 --yes 只预览
 fleetctl move <节点> --to <线路机> --yes [--from <线路机>] [--follow]   # 换线路机：新入口验收后才摘旧入口，不断网；分享链接会变，完成后 fleetctl share <节点> 取新链接
@@ -87,7 +88,7 @@ fleetctl retry <作业> [--reset-host-key] [--password-env VAR]   # 重试失败
 
 - `ls`（每台一个精简对象）：`id name kind(relay|vps|proxy) lifecycle(active|provisioning|retiring|retired|failed) health(ok|degraded|down|unknown|maintenance|inactive) ip agent_online cpu_pct mem_pct disk_pct entries(入口数) open_incidents active_job{id,kind,state}`；百分比是整数，取不到为 null；家宽代理没有 agent，`agent_online` 为 null。
 - `show`（MachineView）：上面这些的完整版（`health.status`、`agent.online`、`host.{cpu_pct,mem_used,mem_total,disk_used,disk_total,load1}`、`entries[]` 完整入口视图），另有 `ssh_port revision`、`health.reasons[{key,rule_name,severity,text}]`（`rule_name` 是规则中文名，同通知）、`agent.health`（agent 自报：离线队列、访问日志解析不了 / 丢弃的行数等）、`failed_job`。
-- `entries`（每个入口一个精简对象）：`id relay port node lifecycle(active|pending|disabled|removing|removed) applied apply_error tcp_ok egress_ok today_down today_up`（今日业务流量，字节）；`tcp_ok` / `egress_ok` 为 null 表示还没探测过。
+- `entries`（每个入口一个精简对象）：`id relay port node lifecycle(active|pending|disabled|removing|removed) applied apply_error tcp_ok egress_ok today_down today_up`（今日业务流量，字节）；`tcp_ok` / `egress_ok` 为 null 表示还没探测过。`node` 是「线路机名-直出」的是线路机直出入口：没有节点，`tcp_ok` 恒为 null；它出口不通时告警对象是线路机（`egress_fail`）；搬空不搬它，退役线路机时自动摘除。
 - `incidents`：`id rule rule_name subject_name severity(warning|critical) summary opened_at ack_by reopen_count`（恢复后 30 分钟内复发会重开同一条并 +1，表格里显示「反复 N 次」；大于 0 说明在抖，查探测/网络而不是只看当前状态）。规则 key：agent_offline、no_entry、egress_fail、tcp_fail、renewal_due、renewal_overdue、relay_apply_lag、relay_apply_error、relay_xray_down、host_cpu_high、host_mem_high、host_disk_high、ipintel_new_isp（来源出现新运营商）、ipintel_new_city（来源出现新城市）、ipintel_datacenter_source（机房 / VPN 来源 IP），后三个是 warning、学习期 7 天后才有、最后一次出现 24 小时后自动恢复，不用手动处理。
 - `status --json` 的 `overview.failed`：上架失败（lifecycle=failed）的机器数，算在「有问题」里。`show` 的 `failed_job{id,kind,state}`：上架失败或退役失败（退役中）的机器带最近失败的作业，拿它的 id 去 `fleetctl job` / `fleetctl retry`（`ls --status failed` / `ls --status retiring` 找出这些机器）。
 - 不加 `--json` 的 `status` / `show` / `entries` / `incidents` 是给人看的：种类、生命周期、健康、严重度、规则、入口状态、作业种类与状态都显示中文；所有命令表格里的时间都是北京时间（`--json` 里是 API 原样的 RFC 3339）；`ls` 的种类 / 生命周期 / 健康列保留原值（就是 `--kind`、`--status` 的取值）。脚本和 AI 只解析 `--json`。

@@ -2,7 +2,7 @@
 //!
 //! 只对 `active` 的机器判定；其它生命周期直接返回对应状态，不参与告警、统计。
 
-use crate::views::MachineView;
+use crate::views::{EntryView, MachineView};
 use serde::Serialize;
 use time::OffsetDateTime;
 
@@ -62,6 +62,45 @@ const SUSTAIN_MIN_SPAN_S: i64 = 270;
 /// agent 时钟偏差超过这么久（毫秒）报警告：样本按 agent 的时间入库，当前读数只看最近 15 分钟、持续负载看最近 5 分钟
 const CLOCK_SKEW_MAX_MS: i64 = 60_000;
 
+/// 在用入口的探测结果 → egress_fail / tcp_fail。
+/// 同一条规则一台机器只开一个告警：几个入口同时失败合成一条原因，文字列出全部入口，
+/// 其中一个恢复时摘要随之变化，不会悄悄换成另一个入口
+fn probe_reasons(live: &[&EntryView], rs: &mut Vec<Reason>, unknown: &mut bool, probe_unknown: &mut bool) {
+    let (mut egress, mut details, mut tcp) = (vec![], vec![], vec![]);
+    for e in live {
+        // 线路机的 Xray 没在运行时，经它的探测必然失败：不在节点上重复报严重告警（线路机自己有
+        // relay_xray_down），这条入口按「未知」处理。
+        if e.relay_xray_down {
+            *unknown = true;
+            continue;
+        }
+        // 15 分钟内没有探测结果（视图只取这么久的）：这条入口通不通不知道。直出入口本来就没有 TCP 探测
+        if e.egress.is_none() || (e.tcp.is_none() && !e.direct) {
+            *probe_unknown = true;
+        }
+        match &e.egress {
+            Some(p) if !p.ok => {
+                egress.push(format!("{}:{}", e.relay.name, e.port));
+                let d = p.detail.clone().unwrap_or_default();
+                if !d.is_empty() && !details.contains(&d) {
+                    details.push(d);
+                }
+            }
+            None => *unknown = true,
+            _ => {}
+        }
+        if e.tcp.as_ref().is_some_and(|p| !p.ok) {
+            tcp.push(e.relay.name.clone());
+        }
+    }
+    if !egress.is_empty() {
+        rs.push(Reason { key: "egress_fail", severity: "critical", text: format!("{} 出口不通：{}", egress.join("、"), details.join("；")) });
+    }
+    if !tcp.is_empty() {
+        rs.push(Reason { key: "tcp_fail", severity: "critical", text: format!("{} 到节点 TCP 不通", tcp.join("、")) });
+    }
+}
+
 pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
     if m.lifecycle != "active" {
         return Health { status: Status::Inactive, ..Default::default() };
@@ -115,6 +154,10 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
             if agent_online && m.agent.as_ref().and_then(|a| a.xray_running) == Some(false) {
                 rs.push(Reason { key: "relay_xray_down", severity: "critical", text: "Xray 未运行".into() });
             }
+            // 直出入口（节点就是这台线路机）：出口不通照节点入口报 egress_fail；没有 TCP 探测，也不报 no_entry。
+            // 挂在它上面的节点入口仍由各自的节点报
+            let direct: Vec<&EntryView> = m.entries.iter().filter(|e| e.direct && e.lifecycle == "active").collect();
+            probe_reasons(&direct, &mut rs, &mut unknown, &mut probe_unknown);
             if let Some(r) = &m.relay {
                 // 从期望代数最近一次变化起算（没有记录就退回上次应用时间）
                 let since = r.generation_at.or(r.applied_at);
@@ -136,41 +179,7 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
             if live.is_empty() {
                 rs.push(Reason { key: "no_entry", severity: "warning", text: "没有在用的入口".into() });
             }
-            // 同一条规则一台机器只开一个告警：几个入口同时失败合成一条原因，文字列出全部入口，
-            // 其中一个恢复时摘要随之变化，不会悄悄换成另一个入口
-            let (mut egress, mut details, mut tcp) = (vec![], vec![], vec![]);
-            for e in live {
-                // 线路机的 Xray 没在运行时，经它的探测必然失败：不在节点上重复报严重告警（线路机自己有
-                // relay_xray_down），这条入口按「未知」处理。
-                if e.relay_xray_down {
-                    unknown = true;
-                    continue;
-                }
-                // 15 分钟内没有探测结果（视图只取这么久的）：这条入口通不通不知道
-                if e.egress.is_none() || e.tcp.is_none() {
-                    probe_unknown = true;
-                }
-                match &e.egress {
-                    Some(p) if !p.ok => {
-                        egress.push(format!("{}:{}", e.relay.name, e.port));
-                        let d = p.detail.clone().unwrap_or_default();
-                        if !d.is_empty() && !details.contains(&d) {
-                            details.push(d);
-                        }
-                    }
-                    None => unknown = true,
-                    _ => {}
-                }
-                if e.tcp.as_ref().is_some_and(|p| !p.ok) {
-                    tcp.push(e.relay.name.clone());
-                }
-            }
-            if !egress.is_empty() {
-                rs.push(Reason { key: "egress_fail", severity: "critical", text: format!("{} 出口不通：{}", egress.join("、"), details.join("；")) });
-            }
-            if !tcp.is_empty() {
-                rs.push(Reason { key: "tcp_fail", severity: "critical", text: format!("{} 到节点 TCP 不通", tcp.join("、")) });
-            }
+            probe_reasons(&live, &mut rs, &mut unknown, &mut probe_unknown);
         }
     }
 
@@ -274,6 +283,7 @@ pub(crate) mod tests {
             id: Uuid::now_v7(),
             relay: Ref { id: Uuid::now_v7(), name: "线路机1".into() },
             node: Ref { id: Uuid::now_v7(), name: "n".into() },
+            direct: false,
             port: 20000,
             lifecycle: "active".into(),
             applied: true,
@@ -353,6 +363,45 @@ pub(crate) mod tests {
         // 线路机 Xray 没在运行的入口交给线路机的告警，不算探测过期
         n.entries = vec![entry(true, false)];
         assert!(!evaluate(&n, now).probe_unknown);
+    }
+
+    #[test]
+    fn relay_direct_entry_alerts_on_egress_only() {
+        let now = OffsetDateTime::now_utc();
+        let mut r = base("relay");
+        let direct = |ok: bool| {
+            let mut e = entry(false, ok);
+            (e.direct, e.tcp, e.relay.name) = (true, None, "线路机2".into());
+            e
+        };
+        // 挂在线路机上的节点入口失败：由节点报，线路机自己不报；线路机也不报 no_entry
+        r.entries = vec![entry(false, false)];
+        let h = evaluate(&r, now);
+        assert!(h.reasons.is_empty() && h.status == Status::Ok && !h.probe_unknown, "{:?}", keys(&h));
+        // 直出入口通：没有 TCP 探测不算「判不出」
+        r.entries = vec![direct(true), entry(false, false)];
+        let h = evaluate(&r, now);
+        assert!(h.reasons.is_empty() && h.status == Status::Ok && !h.probe_unknown, "{:?}", keys(&h));
+        // 直出入口出口不通：线路机报 egress_fail，不报 tcp_fail
+        r.entries = vec![direct(false)];
+        let h = evaluate(&r, now);
+        assert_eq!(keys(&h), ["egress_fail"]);
+        assert_eq!(h.reasons[0].text, "线路机2:20000 出口不通：timeout");
+        assert_eq!(h.status, Status::Down);
+        // 还没有出口探测结果：未知，告警不能因此恢复
+        r.entries[0].egress = None;
+        let h = evaluate(&r, now);
+        assert!(h.reasons.is_empty() && h.status == Status::Unknown && h.probe_unknown);
+        // Xray 没在运行：只报 relay_xray_down
+        r.entries = vec![direct(false)];
+        r.entries[0].relay_xray_down = true;
+        r.agent.as_mut().unwrap().xray_running = Some(false);
+        assert_eq!(keys(&evaluate(&r, now)), ["relay_xray_down"]);
+        // 停用的直出入口不判
+        r = base("relay");
+        r.entries = vec![direct(false)];
+        r.entries[0].lifecycle = "disabled".into();
+        assert!(evaluate(&r, now).reasons.is_empty());
     }
 
     #[test]

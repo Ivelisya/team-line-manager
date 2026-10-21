@@ -284,7 +284,9 @@ pub fn like_pattern(s: &str) -> Option<String> {
 
 /// 机器显示名（SQL 函数 display_name，与 names::display_name 一致）。退役机器的编号已被回收给别的机器，
 /// 历史记录里不加标注会和现在同名的机器混在一起，所以带上「（已退役）」。
-const NAME: &str = "display_name(m.kind::text, m.label, t.name, m.number) || case when m.lifecycle = 'retired' then '（已退役）' else '' end";
+/// 这里的 m 都是入口的节点端：节点是线路机的只有直出入口，名字同入口列表「线路机名-直出」
+const NAME: &str = "display_name(m.kind::text, m.label, t.name, m.number) || case when m.kind = 'relay' then '-直出' else '' end
+    || case when m.lifecycle = 'retired' then '（已退役）' else '' end";
 
 /// 原始记录（access_event e）的公共条件：窗口起点、节点、团队、线路机（都换成入口 id 列表，走 (entry_id, ts) 索引）、搜索。
 /// `search_src_only`：搜索只匹配来源 IP（来源排行）；否则目标或来源 IP 匹配都算

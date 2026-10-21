@@ -1,9 +1,12 @@
 //! 入口（线路机上的一条 VLESS REALITY 入站 → 节点）的领域逻辑：端口分配、期望状态、应用回报。
+//!
+//! 直出入口：节点就是线路机自己（`relay_id = node_id`），出站是 freedom，从线路机自己的公网 IP 出去。
+//! 不需要 node_outbound 行，「直出」完全由入口的形状决定；(node_id, relay_id) 的唯一索引保证每台线路机至多一条在用的直出入口。
 
 use crate::crypto::{short_id, SecretBox};
 use crate::db::{bump_relay, new_id, Tx};
 use crate::error::{ApiError, ApiResult};
-use crate::names::display_name;
+use crate::names::entry_name;
 use fleet_proto::{ApplyReport, DesiredEntry, DesiredState, Outbound, RelayParams};
 use sqlx::PgPool;
 use std::net::IpAddr;
@@ -28,13 +31,15 @@ pub async fn create(tx: &mut Tx<'_>, relay_id: Uuid, node_id: Uuid) -> ApiResult
     .await?
     .ok_or_else(|| ApiError::conflict("线路机不存在或不在用"))?;
     // 节点机器行也加共享锁：和退役（对机器行 for update）互斥，退役开始后就不会再有新入口挂上来
-    let node_lc: Option<(String,)> = sqlx::query_as("select lifecycle::text from machine where id = $1 for share")
+    let node: Option<(String, String)> = sqlx::query_as("select lifecycle::text, kind::text from machine where id = $1 for share")
         .bind(node_id)
         .fetch_optional(&mut **tx)
         .await?;
-    match node_lc {
+    match node {
         None => return Err(ApiError::not_found("没有这台节点")),
-        Some((lc,)) if lc == "retiring" || lc == "retired" => return Err(ApiError::conflict("节点正在退役或已退役，不能再加入口")),
+        Some((lc, _)) if lc == "retiring" || lc == "retired" => return Err(ApiError::conflict("节点正在退役或已退役，不能再加入口")),
+        // 线路机只能当自己的「节点」（直出入口），不能挂到别的线路机上
+        Some((_, kind)) if kind == "relay" && node_id != relay_id => return Err(ApiError::conflict("线路机不能当别的线路机的节点：线路机上只能加它自己的直出入口")),
         Some(_) => {}
     }
     // 端口永不复用（含已删除的入口）：旧分享链接不会误连到新节点
@@ -131,19 +136,21 @@ pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, ech
         number: Option<i32>,
         label: Option<String>,
         ip: String,
-        protocol: String,
-        host: String,
-        oport: i32,
+        direct: bool,
+        protocol: Option<String>,
+        host: Option<String>,
+        oport: Option<i32>,
         method: Option<String>,
         username: Option<String>,
-        secret_enc: Vec<u8>,
+        secret_enc: Option<Vec<u8>>,
     }
+    // 直出入口没有 node_outbound 行（节点就是线路机自己）；节点入口缺出站参数的照旧不下发
     let rows: Vec<Row> = sqlx::query_as(
         "select e.id, e.node_id, m.team_id, e.port, e.lifecycle::text lifecycle, e.client_uuid, e.short_id, m.kind::text kind, t.name team, m.number,
-                m.label, host(m.primary_ip) ip, o.protocol, o.host, o.port oport, o.method, o.username, o.secret_enc
+                m.label, host(m.primary_ip) ip, e.node_id = e.relay_id direct, o.protocol, o.host, o.port oport, o.method, o.username, o.secret_enc
          from entry e join machine m on m.id = e.node_id left join team t on t.id = m.team_id
-         join node_outbound o on o.machine_id = e.node_id
-         where e.relay_id = $1 and e.lifecycle in ('pending', 'active', 'disabled')
+         left join node_outbound o on o.machine_id = e.node_id
+         where e.relay_id = $1 and e.lifecycle in ('pending', 'active', 'disabled') and (e.node_id = e.relay_id or o.machine_id is not null)
          order by e.port",
     )
     .bind(relay_id)
@@ -152,22 +159,23 @@ pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, ech
     let policies = crate::policy::load_current(db).await?;
     let mut entries = Vec::with_capacity(rows.len());
     for r in rows {
-        let secret = secrets.open_str(&r.secret_enc)?;
-        let outbound = match r.protocol.as_str() {
-            "shadowsocks" => Outbound::Shadowsocks {
-                host: r.host,
-                port: r.oport as u16,
-                method: r.method.unwrap_or_else(|| "aes-256-gcm".into()),
-                password: secret,
-            },
-            "socks5" => Outbound::Socks5 { host: r.host, port: r.oport as u16, username: r.username, password: Some(secret).filter(|s| !s.is_empty()) },
-            _ => Outbound::Http { host: r.host, port: r.oport as u16, username: r.username, password: Some(secret).filter(|s| !s.is_empty()) },
+        let outbound = match (r.direct, r.protocol.as_deref(), r.host, r.oport, r.secret_enc) {
+            (true, ..) => Outbound::Direct,
+            (false, Some(p), Some(host), Some(oport), Some(enc)) => {
+                let (secret, port) = (secrets.open_str(&enc)?, oport as u16);
+                match p {
+                    "shadowsocks" => Outbound::Shadowsocks { host, port, method: r.method.unwrap_or_else(|| "aes-256-gcm".into()), password: secret },
+                    "socks5" => Outbound::Socks5 { host, port, username: r.username, password: Some(secret).filter(|s| !s.is_empty()) },
+                    _ => Outbound::Http { host, port, username: r.username, password: Some(secret).filter(|s| !s.is_empty()) },
+                }
+            }
+            _ => anyhow::bail!("入口 {} 的节点出站参数不全", r.id),
         };
         entries.push(DesiredEntry {
             id: r.id,
             port: r.port as u16,
             enabled: r.lifecycle != "disabled",
-            remark: display_name(&r.kind, r.label.as_deref(), r.team.as_deref(), r.number),
+            remark: entry_name(r.direct, &r.kind, r.label.as_deref(), r.team.as_deref(), r.number),
             client_uuid: r.client_uuid,
             short_id: r.short_id,
             outbound,

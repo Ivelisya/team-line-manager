@@ -307,13 +307,17 @@ enum Cmd {
         /// 入口 id、`线路机名:端口` 或节点显示名
         entry: String,
     },
-    /// 入口启用/停用/轮换凭据
+    /// 入口启用/停用/轮换凭据；add-direct 给线路机加直出入口（从线路机自己的 IP 出去，每台至多一条）
     Entry {
-        /// enable | disable | rotate
+        /// enable | disable | rotate | add-direct
         action: String,
+        /// 入口（id、`线路机名:端口`、节点显示名）；add-direct 时是线路机
         entry: String,
         #[arg(long)]
         yes: bool,
+        /// add-direct：提交后跟随作业直到结束
+        #[arg(long)]
+        follow: bool,
     },
     /// 在机器上执行命令（需要 exec 权限，全程审计）。多台：逗号分隔或 --team，并发 4。
     /// 单个参数原样当脚本（可含管道）；多个参数会逐个加引号。
@@ -562,7 +566,8 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::UpgradeAgent { machine, all, yes, follow } => ops::upgrade_agent(x, machine.as_deref(), all, yes, follow),
         Cmd::Entries { machine } => cmds::entries(x, machine.as_deref()),
         Cmd::Share { entry } => ops::share(x, &entry),
-        Cmd::Entry { action, entry, yes } => ops::entry_action(x, &action, &entry, yes),
+        Cmd::Entry { action, entry, yes, follow } if action == "add-direct" => ops::add_direct(x, &entry, yes, follow),
+        Cmd::Entry { action, entry, yes, .. } => ops::entry_action(x, &action, &entry, yes),
         Cmd::Exec { machine, team, timeout, script, command } => ops::exec(x, ops::ExecOpts { machine: machine.as_deref(), team: team.as_deref(), timeout, script: script.as_deref(), command: &command }),
         Cmd::Logs { machine, unit, lines } => cmds::logs(x, &machine, &unit, lines),
         Cmd::ServerLogs { lines } => cmds::server_logs(x, lines),

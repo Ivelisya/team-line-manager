@@ -31,6 +31,7 @@ job ─< job_step ─< job_log      audit_log      user / session / api_key
   - `(team_id, number)` 在未退役的节点中唯一；`primary_ip` 在未退役的机器中唯一（查重键）。
   - 编号保持连续：节点退役（或上架取消）后，该团队剩下的节点自动压缩成 01..N；新上架接在末尾（N+1），也可手动指定空号。每次重编都写审计（旧名 → 新名）。身份是 machine.id，重编号不换令牌、不断连接，线路机备注自动同步。
 - **entry**：线路机上的一个入口（VLESS REALITY 入站 → SS 出站到节点）。`id, relay_id, node_id, port, client_uuid, short_id, lifecycle, applied_generation`。备注由节点显示名生成，改名后随期望状态自动同步。
+  直出入口：`node_id = relay_id`（节点就是线路机自己），freedom 出站，从线路机自己的 IP 出去；每台线路机至多一条（同一个 (node_id, relay_id) 唯一索引），备注「线路机名-直出」，随线路机退役摘除。
 - **subscription**：机器的账单。`plan_id, price_cents, currency, cycle, due_date, billing_tz, auto_renew, remind_days`；续费记录单独一张表。
 - **job**：`kind (provision_node | provision_relay | retire | move_entry | rotate_entry | renumber | purge), target, params, state, steps[]`。每一步记录开始、结束、输出、错误类别；失败可从该步重试，取消会执行已完成步骤的补偿。
 
