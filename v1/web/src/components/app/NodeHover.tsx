@@ -30,6 +30,8 @@ function MiniCard({ m }: { m: MachineView }) {
       <dl className="hc-rows">
         <div><dt>IP</dt><dd><span className="hc-ip">{m.ip}</span><CopyButton text={m.ip} label=" IP" size={13} /></dd></div>
         <div><dt>团队 / 编号</dt><dd>{team}</dd></div>
+        {/* 同机 IP 节点：下面的 CPU / 内存是宿主机的 */}
+        {m.host_machine && <div><dt>宿主机</dt><dd className="ellipsis">{m.host_machine.name}（读数共用）</dd></div>}
         <div><dt>{m.kind === 'relay' ? '入口' : '线路机:端口'}</dt><dd className="ellipsis">{entryText(m)}</dd></div>
         <div><dt>到期</dt><dd>{m.subscription ? <><Due days={m.subscription.due_days} /> <span className="t-sub">· {m.subscription.due_date}</span></> : <span className="t-muted">未设置</span>}</dd></div>
       </dl>

@@ -43,9 +43,10 @@ function useNodeMenu(m: MachineView): MenuEntry[] {
   }
   items.push(shareItem, { key: 'sep1', sep: true });
   items.push(
-    { key: 'upgrade', label: '升级 agent', icon: <ArrowUpCircle />, disabled: !m.agent || m.lifecycle !== 'active' || !!m.active_job || upgrade.isPending,
+    // 同机 IP 节点没有自己的 agent（用宿主机的），不给升级
+    ...(m.host_machine ? [] : [{ key: 'upgrade', label: '升级 agent', icon: <ArrowUpCircle />, disabled: !m.agent || m.lifecycle !== 'active' || !!m.active_job || upgrade.isPending,
       // 菜单选中后内容会卸载，mutate 的回调届时不再触发；用 Promise 才能保证提示一定出现
-      onSelect: () => { upgrade.mutateAsync(m.id).then(() => toast.ok('已提交升级作业'), (e) => toast.err(e)); } },
+      onSelect: () => { upgrade.mutateAsync(m.id).then(() => toast.ok('已提交升级作业'), (e) => toast.err(e)); } } as MenuEntry]),
     { key: 'rename', label: '改名 / 改编号', icon: <PencilLine />, onSelect: () => open(m.id, 'manage') },
     ...(m.kind !== 'relay' && m.lifecycle === 'active' && m.entries.some((e) => e.lifecycle === 'active')
       ? [{ key: 'move', label: '换线路机…', icon: <Repeat2 />, disabled: !!m.active_job, onSelect: () => openMove(m.id) } as MenuEntry] : []),

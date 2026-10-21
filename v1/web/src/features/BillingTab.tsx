@@ -20,8 +20,15 @@ export function BillingTab({ m }: { m: MachineView }) {
   const renewals = useRenewals(m.id);
   const [renew, setRenew] = React.useState(false);
   const rv = remainingValue(m.subscription); const q = quota(m);
+  const h = m.host_machine;
   return (
     <>
+      {/* 同机 IP 节点：费用默认记在宿主机、不单独记；流量额度和宿主机共用（宿主机的已用含它的流量） */}
+      {h && (
+        <Section>
+          <Note>同机 IP 节点默认不单独记费用，费用记在宿主机「{h.name}」；供应商对附加 IP 另收费时可以在这里单独填。流量额度与宿主机共用：宿主机的「本周期已用」含这台节点的流量。</Note>
+        </Section>
+      )}
       {s && (
         <Section>
           <SectionHeader title="当前订阅" />
@@ -29,7 +36,7 @@ export function BillingTab({ m }: { m: MachineView }) {
             <LabelValue label="费用"><span className="num">{F.money(s.price_cents, s.currency)}</span> <span className="unit">/ {F.cycleLabel(s.cycle)}</span></LabelValue>
             <LabelValue label="到期日">{s.due_date}（<Due days={s.due_days} />）</LabelValue>
             <LabelValue label="剩余价值" wrap>{rv ? <><span className="num">{F.money(rv.cents, rv.currency)}</span> <span className="unit">{rv.frac > 1 ? `已预付 ${rv.frac.toFixed(1)} 期 · 每期 ${rv.days} 天` : `本期还剩 ${Math.round(rv.frac * 100)}%（剩 ${Math.max(0, s.due_days)} 天 / 共 ${rv.days} 天）`}</span></> : <span className="t-muted">—</span>}</LabelValue>
-            <LabelValue label="本周期已用"><span className="num">{F.str(F.bytes(q.used))}</span> <span className="unit">/ {q.limit > 0 ? F.str(F.gb(q.limit)) : '不限'}</span></LabelValue>
+            <LabelValue label={m.ip_nodes.length ? '本周期已用（含同机节点）' : '本周期已用'}><span className="num">{F.str(F.bytes(q.used))}</span> <span className="unit">/ {q.limit > 0 ? F.str(F.gb(q.limit)) : q.shared ? '与宿主机共用' : '不限'}</span></LabelValue>
             <LabelValue label="流量周期"><span className="num">{q.start.slice(5)}</span> 起</LabelValue>
             <LabelValue label="自动续费">{s.auto_renew ? '是' : '否'}</LabelValue>
           </LabelValueGrid>
@@ -38,7 +45,7 @@ export function BillingTab({ m }: { m: MachineView }) {
       )}
       <Section>
         <SectionHeader title={s ? '修改订阅' : '设置订阅'} />
-        {!s && <div style={{ marginBottom: 12 }}><Note>这台机器还没有订阅信息。填写后会参与到期提醒与费用统计。</Note></div>}
+        {!s && !h && <div style={{ marginBottom: 12 }}><Note>这台机器还没有订阅信息。填写后会参与到期提醒与费用统计。</Note></div>}
         <SubForm key={m.id + (s?.due_date ?? '')} m={m} />
       </Section>
       {s && (
@@ -95,7 +102,7 @@ function SubForm({ m }: { m: MachineView }) {
       <Field label="到期日" hint={dueDate === '' ? '必填' : undefined} error={dueBad ? '格式应为 YYYY-MM-DD' : undefined}><DateField value={dueDate} onChange={setDueDate} /></Field>
       <Field label="账单时区" hint="到期按这个时区的日期算"><Select value={tz} onChange={setTz} options={F.withCurrent(TZS, tz)} /></Field>
       <Field label="提前提醒（天）"><Input inputMode="numeric" value={remind} onChange={(e) => setRemind(e.target.value.replace(/\D/g, ''))} /></Field>
-      <Field label="流量上限（GiB）" hint="留空 = 按套餐"><Input inputMode="numeric" value={traffic} placeholder={m.plan?.traffic_gb ? `套餐 ${m.plan.traffic_gb}` : '套餐不限'} onChange={(e) => setTraffic(e.target.value.replace(/\D/g, ''))} /></Field>
+      <Field label="流量上限（GiB）" hint={m.host_machine ? '留空 = 与宿主机共用额度' : '留空 = 按套餐'}><Input inputMode="numeric" value={traffic} placeholder={m.host_machine ? '与宿主机共用' : m.plan?.traffic_gb ? `套餐 ${m.plan.traffic_gb}` : '套餐不限'} onChange={(e) => setTraffic(e.target.value.replace(/\D/g, ''))} /></Field>
       <Field label="流量重置日（每月几号）" hint="按账单时区；月份没有这一天按月末" error={resetBad ? '填 1–31' : undefined}><Input inputMode="numeric" maxLength={2} value={resetDay} onChange={(e) => setResetDay(e.target.value.replace(/\D/g, ''))} /></Field>
       <label className="check-row span-2" style={{ gap: 10 }}><Switch checked={auto} onCheckedChange={setAuto} /><span>到期自动续费（只用于提醒口径，不会真的扣款）</span></label>
       <div className="span-2 row" style={{ justifyContent: 'flex-end' }}><Button variant="primary" disabled={!valid || save.isPending} loading={save.isPending} onClick={submit}>保存订阅</Button></div>

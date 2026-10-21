@@ -8,7 +8,7 @@ import * as F from '@/lib/format';
 import { hasHost, monthTraffic, resourceMeters } from '@/lib/derive';
 import { Segmented } from '@/components/ui/overlays';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Empty, ErrorNote, LabelValue, LabelValueGrid, Num, Section, SectionHeader } from '@/components/app/primitives';
+import { Empty, ErrorNote, LabelValue, LabelValueGrid, Note, Num, Section, SectionHeader } from '@/components/app/primitives';
 import { RANGES, TimeChart } from '@/components/app/TimeChart';
 import { EntriesTable } from './EntriesTable';
 
@@ -128,6 +128,7 @@ export function HostTab({ m }: { m: MachineView }) {
           <LabelValue label="负载"><Num f={r.load.value} /> <span className="t-sub">{r.load.sub}</span></LabelValue>
           <LabelValue label="TCP 连接数"><span className="num">{h.tcp_conns ?? '—'}</span></LabelValue>
         </LabelValueGrid>
+        {m.host_machine && <div style={{ marginTop: 8 }}><Note>这是宿主机「{m.host_machine.name}」的读数：同机 IP 节点和宿主机是同一台机器，CPU、内存、磁盘与网卡都共用。</Note></div>}
       </Section>
       {/* 三张图表卡同属一段，之间不再画分隔线 */}
       <Section className="chart-stack">

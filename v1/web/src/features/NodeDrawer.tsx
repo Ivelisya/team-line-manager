@@ -71,7 +71,7 @@ export function NodeDrawer() {
               <KindIcon kind={m.kind} />
               <div className="m-head" style={{ flex: 1 }}>
                 <div className="m-head-row"><SheetTitle className="drawer-title ellipsis">{m.name}</SheetTitle><HealthPill m={m} />{m.kind !== 'vps' && <Chip variant="neutral">{KIND_LABEL[m.kind]}</Chip>}</div>
-                <SheetDescription className="ellipsis" style={{ margin: 0, color: 'var(--fg-2)', fontSize: 12 }}>{m.ip} · {m.provider?.name ?? '未设供应商'} · {m.plan?.name ?? '未设套餐'}</SheetDescription>
+                <SheetDescription className="ellipsis" style={{ margin: 0, color: 'var(--fg-2)', fontSize: 12 }}>{m.ip} · {m.provider?.name ?? '未设供应商'} · {m.host_machine ? `同机 · ${m.host_machine.name}` : m.plan?.name ?? '未设套餐'}</SheetDescription>
               </div>
               {sib && (
                 <div className="drawer-nav">
@@ -145,9 +145,24 @@ function AgentHealthNote({ m }: { m: MachineView }) {
   );
 }
 
+/** 宿主机概览里的一个同机 IP 节点：名称（点开它的抽屉）、IP、状态。用机器列表缓存里的那份，没有时单取这台 */
+function IpNodeLine({ id, name, onOpen }: { id: string; name: string; onOpen: (id: string) => void }) {
+  const n = useMachine(id).data;
+  return (
+    <div className="row" style={{ gap: 8, flexWrap: 'nowrap' }}>
+      <button type="button" className="btn btn-link" onClick={() => onOpen(id)}>{name}</button>
+      {n && <><span className="t-sub num">{n.ip}</span><HealthPill m={n} /></>}
+    </div>
+  );
+}
+
 function OverviewTab({ m }: { m: MachineView }) {
   const audit = useAudit(m.id);
+  const { open } = useDrawer();
   const ps = probeSummary(m);
+  // 同机 IP 节点：SSH 端口、agent 都是宿主机的
+  const h = m.host_machine;
+  const ofHost = h ? '（宿主机的）' : '';
   return (
     <>
       {m.health.reasons.length > 0 && (
@@ -159,19 +174,25 @@ function OverviewTab({ m }: { m: MachineView }) {
       <Section>
         <SectionHeader title="基本信息" />
         <LabelValueGrid>
-          <LabelValue label="类型">{KIND_LABEL[m.kind]}</LabelValue>
+          <LabelValue label="类型">{`${KIND_LABEL[m.kind]}${h ? ' · 同机 IP 节点' : ''}`}</LabelValue>
           <LabelValue label="团队 / 编号">{m.team ? `${m.team.name} / ${m.number != null ? F.pad2(m.number) : '—'}` : '—'}</LabelValue>
           <LabelValue label="IP">{m.ip}</LabelValue>
-          <LabelValue label="SSH 端口">{m.ssh_port}</LabelValue>
+          {h && <LabelValue label="宿主机"><button type="button" className="btn btn-link" onClick={() => open(h.id)}>{h.name}</button></LabelValue>}
+          <LabelValue label="SSH 端口">{`${m.ssh_port}${ofHost}`}</LabelValue>
           <LabelValue label="供应商">{m.provider?.name}</LabelValue>
-          <LabelValue label="套餐">{m.plan?.name}</LabelValue>
+          <LabelValue label="套餐">{m.plan?.name ?? (h ? '不带套餐' : undefined)}</LabelValue>
           <LabelValue label="服务编号">{m.service_ref}</LabelValue>
           <LabelValue label="生命周期"><LifecyclePill lc={m.lifecycle} />{m.lifecycle_reason && <span className="t-sub"> {m.lifecycle_reason}</span>}</LabelValue>
           <LabelValue label="上架时间">{F.dtFull(m.activated_at)}</LabelValue>
           {m.retired_at && <LabelValue label="退役时间">{F.dtFull(m.retired_at)}</LabelValue>}
-          <LabelValue label="agent">{m.agent ? `${m.agent.version ?? '版本未知'} · ${m.agent.last_report_at ? F.ago(m.agent.last_report_at) : '尚未上报'}` : '无（家宽代理不装 agent）'}</LabelValue>
+          <LabelValue label="agent">{m.agent ? `${m.agent.version ?? '版本未知'} · ${m.agent.last_report_at ? F.ago(m.agent.last_report_at) : '尚未上报'}${ofHost}` : '无（家宽代理不装 agent）'}</LabelValue>
           {/* 只数经节点的入口：直出入口没有 TCP 探测 */}
           <LabelValue label="入口探测">{ps.total ? `${ps.tcpOk}/${ps.total} 连通` : '—'}</LabelValue>
+          {m.ip_nodes.length > 0 && (
+            <LabelValue label="同机 IP 节点" className="span-2" wrap>
+              <div className="stack-sm" style={{ marginTop: 2 }}>{m.ip_nodes.map((x) => <IpNodeLine key={x.id} id={x.id} name={x.name} onOpen={open} />)}</div>
+            </LabelValue>
+          )}
           {m.note && <LabelValue label="备注" className="span-2" wrap>{m.note}</LabelValue>}
         </LabelValueGrid>
         <AgentHealthNote m={m} />

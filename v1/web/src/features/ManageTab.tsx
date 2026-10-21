@@ -1,9 +1,11 @@
-// 抽屉“管理”页：改名/改编号（带实时预览）、入口操作、退役、彻底删除（仅已退役）。
+// 抽屉“管理”页：改名/改编号（带实时预览）、入口操作、同机 IP 节点、agent、退役、彻底删除（仅已退役）。
 import * as React from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowRight, PackageOpen, Plus, Repeat2, Trash2, Undo2 } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
-import { useAddEntry, usePatchMachine, usePurge, useRelayChoices, useTeams, useUpgradeAgent } from '@/lib/queries';
+import { useAddEntry, useMachine, usePatchMachine, usePurge, useRelayChoices, useTeams, useUpgradeAgent } from '@/lib/queries';
+import { useDrawer } from '@/lib/drawer';
+import { LIFECYCLE_LABEL } from '@/lib/sort';
 import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
 import { Field, Input } from '@/components/ui/form';
@@ -22,6 +24,8 @@ export function ManageTab({ m, onClosed }: { m: MachineView; onClosed: () => voi
       {!retired && <RenameSection m={m} />}
       {/* 在用的机器没有入口时也要能加：节点「添加入口」，线路机「添加直出入口」 */}
       {!retired && (m.lifecycle === 'active' || m.entries.length > 0) && <EntrySection m={m} />}
+      {/* 在用的普通落地机都能当宿主机：上面另配的公网 IP 各上架成一台同机 IP 节点 */}
+      {m.kind === 'vps' && !m.host_machine && m.lifecycle === 'active' && <IpNodesSection m={m} />}
       {m.agent && m.lifecycle === 'active' && <AgentSection m={m} />}
       <DangerSection m={m} onClosed={onClosed} />
     </>
@@ -150,20 +154,38 @@ function EntrySection({ m }: { m: MachineView }) {
   );
 }
 
-/** agent：版本、最近上报；升级 = 推送中控当前版本并重启（作业） */
+/** 宿主机：添加同机 IP 节点（去上架页，宿主机、团队与线路机预填好） */
+function IpNodesSection({ m }: { m: MachineView }) {
+  return (
+    <Section>
+      <SectionHeader title="同机 IP 节点" meta={m.ip_nodes.length ? `${m.ip_nodes.length} 个` : undefined} />
+      <div className="manage-row">
+        <div><div className="t">添加 IP 节点</div><div className="hint">这台机器上另配了公网 IP 时，每个 IP 上架成一台独立节点（自己的团队编号、入口与分享链接）；SSH、agent 与主机读数都用这台的。</div></div>
+        <Button asChild variant="secondary"><Link to={`/provision?host=${m.id}`}><Plus />添加 IP 节点…</Link></Button>
+      </div>
+    </Section>
+  );
+}
+
+/** agent：版本、最近上报；升级 = 推送中控当前版本并重启（作业）。同机 IP 节点没有自己的 agent：不给升级，指向宿主机 */
 function AgentSection({ m }: { m: MachineView }) {
   const up = useUpgradeAgent();
+  const { open } = useDrawer();
   const a = m.agent!;
+  const h = m.host_machine;
+  const seen = `最近上报 ${a.last_report_at ? F.ago(a.last_report_at) : '从未'}`;
   return (
     <Section>
       <SectionHeader title="agent" meta={a.online ? '在线' : '离线'} />
       <div className="manage-row">
         <div>
           <div className="t">版本 {a.version ?? '未知'}</div>
-          <div className="hint">最近上报 {a.last_report_at ? F.ago(a.last_report_at) : '从未'}。升级会推送中控上的当前版本并重启 agent，不影响线路上的连接。</div>
+          <div className="hint">{h ? `agent 在宿主机「${h.name}」上（${seen}），这台同机 IP 节点没有自己的 agent；要升级就升级宿主机的。` : `${seen}。升级会推送中控上的当前版本并重启 agent，不影响线路上的连接。`}</div>
         </div>
-        <Button variant="secondary" loading={up.isPending} disabled={!!m.active_job}
-          onClick={() => up.mutate(m.id, { onSuccess: () => toast.ok('已提交升级作业'), onError: toast.err })}>升级 agent</Button>
+        {h ? <Button variant="secondary" onClick={() => open(h.id, 'manage')}>打开宿主机</Button> : (
+          <Button variant="secondary" loading={up.isPending} disabled={!!m.active_job}
+            onClick={() => up.mutate(m.id, { onSuccess: () => toast.ok('已提交升级作业'), onError: toast.err })}>升级 agent</Button>
+        )}
       </div>
     </Section>
   );
@@ -175,6 +197,10 @@ function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }
   // 上架中有作业在跑、退役中：不能退役；上架失败（或上架中但作业已不在跑）可以退役，释放 IP 与编号
   const busyJob = (m.lifecycle === 'provisioning' || m.lifecycle === 'retiring') && !!m.active_job;
   const retired = m.lifecycle === 'retired';
+  // 已退役的同机 IP 节点：宿主机在用才能恢复（SSH、agent 都是宿主机的）
+  const host = useMachine(retired && m.host_machine ? m.host_machine.id : null).data;
+  const hostDown = !!host && host.lifecycle !== 'active';
+  const n = m.ip_nodes.length;
 
   return (
     <Section>
@@ -185,9 +211,10 @@ function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }
             <div className="manage-row">
               <div>
                 <div className="t">恢复</div>
-                <div className="hint">已于 {F.dtFull(m.retired_at)} 退役。恢复会保持原来的机器 ID（历史、账单、审计接上），重新走一遍上架，编号接在团队末尾。</div>
+                <div className="hint">已于 {F.dtFull(m.retired_at)} 退役。恢复会保持原来的机器 ID（历史、账单、审计接上），重新走一遍上架，编号接在团队末尾。
+                  {hostDown && `宿主机「${host.name}」现在是「${LIFECYCLE_LABEL[host.lifecycle]}」：同机 IP 节点要等宿主机在用才能恢复。`}</div>
               </div>
-              <Button variant="primary" onClick={() => setDlg('restore')}><Undo2 />恢复…</Button>
+              <Button variant="primary" disabled={hostDown} onClick={() => setDlg('restore')}><Undo2 />恢复…</Button>
             </div>
             <div className="manage-row">
               <div>
@@ -201,7 +228,10 @@ function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }
           <div className="manage-row">
             <div>
               <div className="t">退役</div>
-              <div className="hint">停用入口、撤销令牌，机器进入「已退役」，不再出现在首页和统计里。{m.kind !== 'relay' && '同团队后面的节点会自动前移补号。'}</div>
+              <div className="hint">
+                {m.host_machine ? `只摘除这个 IP 的节点（它的入口与 SS 实例），宿主机「${m.host_machine.name}」不受影响。` : '停用入口、撤销令牌，机器进入「已退役」，不再出现在首页和统计里。'}
+                {m.kind !== 'relay' && '同团队后面的节点会自动前移补号。'}{n > 0 && `这台机器上的 ${n} 个同机 IP 节点会一起退役。`}
+              </div>
             </div>
             <Button variant="outline-danger" disabled={busyJob || m.lifecycle === 'retiring'} onClick={() => setDlg('retire')}>退役…</Button>
           </div>
