@@ -2,7 +2,7 @@
 import * as React from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, ArrowDownToLine, Check, CircleDashed, Copy, ListChecks, Loader2, Minus, Pause, Play, RotateCw, Square, Undo2, X } from 'lucide-react';
-import { fetchAllLogs, fetchTailLogs, useCancelJob, useJob, useJobs, useMachine, useMachineBriefs, useRetryJob } from '@/lib/queries';
+import { fetchAllLogs, fetchTailLogs, useCancelJob, useJob, useJobs, useMachine, useMachineBriefs, useRecycleBin, useRetryJob } from '@/lib/queries';
 import type { Job, JobLog } from '@/lib/types';
 import { errorKindLabel, jobKindLabel, jobLive, jobProgress, jobText, outputLines, stepKind, type StepKind } from '@/lib/jobs';
 import { jobStateLabel } from '@/lib/derive';
@@ -67,24 +67,29 @@ export function JobsPage() {
   const jobs = useJobs(filter, pg.offset, pg.size, kind);
   if (jobs.data && jobs.data.total !== total) setTotal(jobs.data.total);
   const list = jobs.data?.items ?? [];
-  // 退役进备用后机器改了名：列表标题带上原名（机器视图的 spare_from；已回收的不在视图里，不写）
-  const origin = new Map((useMachineBriefs().data ?? []).filter((m) => m.spare_from).map((m) => [m.id, m.spare_from]));
+  // 退役进备用后机器改了名：列表标题带上原名（还在备用的取机器视图的 spare_from，已回收的取回收站里那条的退役前的名字）
+  const recycled = useRecycleBin({ q: '', source: 'fleet', offset: 0, limit: 100 }).data?.items;
+  const origin = new Map<string, string | null>([
+    ...(recycled ?? []).flatMap((r) => (r.machine_id ? [[r.machine_id, r.name] as const] : [])),
+    ...(useMachineBriefs().data ?? []).filter((m) => m.spare_from).map((m) => [m.id, m.spare_from] as const),
+  ]);
   const selected = id ?? null;
-  // 地址里没有作业时，右栏默认显示第一条失败的（没有就第一条）；窄屏（单栏）仍先看列表，所以 data-detail 只认地址
-  const shown = selected ?? (list.find((j) => j.state === 'failed') ?? list[0])?.id ?? null;
+  // 地址里没有作业时，右栏默认显示最近 24 小时内第一条失败的（没有就第一条）：更早的失败在列表里看不到，右栏却先展示它会让人摸不着头脑；
+  // 窄屏（单栏）仍先看列表，所以 data-detail 只认地址
+  const shown = selected ?? (list.find((j) => j.state === 'failed' && Date.now() - Date.parse(j.created_at) < 24 * 3600_000) ?? list[0])?.id ?? null;
   // 列表为空、也没打开作业：整页只留一个与筛选相符的空状态（右栏不再同时写「选择左侧作业」）
   const none = !!jobs.data && list.length === 0 && !selected;
   const noneText = `没有${view === 'all' ? '' : `${VIEWS.find((v) => v.value === view)!.label}的`}${kind ? `「${kindOpts.find((o) => o.value === kind)!.label}」` : ''}作业`;
   const go = (jid: string) => nav({ pathname: `/jobs/${jid}`, search });
-  // 按地址打开的作业：在列表里滚到看得见（每个作业只滚一次；点列表里的本来就看得见）
+  // 选中的作业（地址里的、或默认选中的）：在列表里滚到看得见（每个作业只滚一次；点列表里的本来就看得见）
   const scrolled = React.useRef<string | null>(null);
   React.useEffect(() => {
-    if (!selected || scrolled.current === selected) return;
-    const el = document.querySelector(`.job-item[data-id="${CSS.escape(selected)}"]`);
+    if (!shown || scrolled.current === shown) return;
+    const el = document.querySelector(`.job-item[data-id="${CSS.escape(shown)}"]`);
     if (!el) return;
-    scrolled.current = selected;
+    scrolled.current = shown;
     el.scrollIntoView({ block: 'nearest' });
-  }, [selected, list]);
+  }, [shown, list]);
   return (
     <div className="stack">
       <PageHead title="作业" note={jobs.data ? `${jobs.data.total} 个` : undefined}
@@ -100,7 +105,7 @@ export function JobsPage() {
             <div key={j.id} data-id={j.id} className="job-item" role="button" tabIndex={0} aria-current={j.id === shown} onClick={() => go(j.id)}
               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(j.id); } }}>
               <span className="l1">
-                <b className="ellipsis">{jobKindLabel(j.kind)} · {j.target ? <NodeHover id={j.target.id} noFocus><span>{j.target.name}</span></NodeHover> : '—'}{j.target && origin.has(j.target.id) && <span className="t-sub">（原 {origin.get(j.target.id)}）</span>}</b>
+                <b className="ellipsis">{jobKindLabel(j.kind)} · {j.target ? <NodeHover id={j.target.id} noFocus><span>{j.target.name}</span></NodeHover> : '—'}{j.target && origin.get(j.target.id) && origin.get(j.target.id) !== j.target.name && <span className="t-sub">（原 {origin.get(j.target.id)}）</span>}</b>
                 <span style={{ marginLeft: 'auto' }}><JobPill state={j.state} /></span>
               </span>
               {jobLive(j.state) && <span className="l-prog"><Progress value={jobProgress(j).pct} live label="总进度" /><span className="num">{jobProgress(j).done}/{jobProgress(j).total}</span></span>}

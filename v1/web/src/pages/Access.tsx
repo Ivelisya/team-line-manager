@@ -107,7 +107,7 @@ export function AccessPage() {
       {summary.isError && <ErrNote q={summary} />}
       {/* 换时间范围、筛选后新数字未到时，沿用的旧数字调淡（components.css [data-stale]）；下面各视图的表格同样 */}
       <div className="stat-grid" data-stale={summary.isPlaceholderData}>
-        <Stat tone="blue" icon={<Server />} label="有活动的节点" value={k ? fmtN(k.active_nodes) : '—'} unit="台" loading={summary.isLoading} caption={`最近 ${winLabel(f.window)}`} />
+        <Stat tone="blue" icon={<Server />} label="有活动的节点" info="时间窗口内有访问记录的节点，包括之后已退役或回收的，所以可能比现有节点总数多" value={k ? fmtN(k.active_nodes) : '—'} unit="台" loading={summary.isLoading} caption={`最近 ${winLabel(f.window)}`} />
         <Stat tone="teal" icon={<Activity />} label="连接记录" info="含已阻止的连接" value={k ? fmtN(k.conns) : '—'} unit="次" loading={summary.isLoading} />
         <Stat tone="violet" icon={<Target />} label="访问目标" info="访问过的不同域名与 IP 个数，多个节点访问同一个只算 1 个；同「域名与 IP」的总数" value={k ? fmtN(k.unique_targets) : '—'} unit="个" loading={summary.isLoading} />
         <Stat tone="bad" icon={<ShieldX />} label="已阻止的连接" value={k ? fmtN(k.blocked) : '—'} unit="次" loading={summary.isLoading} caption={k && k.conns > 0 ? blockedShare(k.blocked, k.conns) : undefined} />

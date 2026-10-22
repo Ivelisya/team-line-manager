@@ -35,14 +35,14 @@ const summaryText = (i: Incident) => {
   const name = i.subject?.name ?? i.subject_name;
   return errText(name && i.summary.startsWith(`${name}：`) ? i.summary.slice(name.length + 1) : i.summary);
 };
-/** 已恢复的告警里，同一分钟开始的同一条规则（如一批 agent 同时离线）连着出现 3 条起折成一行；只合并相邻的，顺序仍是服务端的 */
+/** 同一状态（进行中 / 已恢复）里，同一分钟开始的同一条规则（如一批 agent 同时离线、一批线路机入口连不上）连着出现 3 条起折成一行；只合并相邻的，顺序仍是服务端的 */
 const BATCH_MIN = 3;
 const batchKey = (i: Incident) => `${i.rule}|${i.opened_at.slice(0, 16)}`;
 function foldBatches(list: Incident[]): (Incident | Incident[])[] {
   const out: (Incident | Incident[])[] = [];
   for (let a = 0; a < list.length;) {
     let b = a + 1;
-    if (list[a].state === 'resolved') while (b < list.length && list[b].state === 'resolved' && batchKey(list[b]) === batchKey(list[a])) b++;
+    while (b < list.length && list[b].state === list[a].state && batchKey(list[b]) === batchKey(list[a])) b++;
     if (b - a >= BATCH_MIN) out.push(list.slice(a, b)); else out.push(...list.slice(a, b));
     a = b;
   }
@@ -115,7 +115,9 @@ export function IncidentsPage() {
                   <React.Fragment key={k}>
                     <tr data-open={on ? '' : undefined}>
                       <td>{SEV(r[0])}</td>
-                      <td colSpan={3}><button type="button" className="btn btn-link inc-fold" aria-expanded={on} onClick={() => toggle(k)}><ChevronRight />{r[0].rule_name} × {r.length} 台</button><span className="sub">已恢复</span></td>
+                      <td><button type="button" className="btn btn-link inc-fold" aria-expanded={on} onClick={() => toggle(k)}><ChevronRight />{on ? '收起' : '展开'}</button></td>
+                      <td>{r[0].rule_name}</td>
+                      <td>{r.length} 台{r[0].state === 'resolved' && <span className="sub">已恢复</span>}</td>
                       <td>{F.dt(r[0].opened_at)}<span className="sub">{F.ago(r[0].opened_at)}</span></td>
                       <td />
                     </tr>

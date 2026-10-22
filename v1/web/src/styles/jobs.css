@@ -88,6 +88,7 @@
 /* 系统调优的结果块：摘要一行、参数表、其余几项一行 */
 .tune-res { display: grid; gap: var(--sp-6); margin-top: var(--sp-4); min-width: 0; }
 .tune-sum { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); }
+.tune-more { justify-self: start; height: auto; padding: 0; font-size: var(--fs-label); }
 .tune-sum b { color: var(--fg); font-weight: var(--fw-semibold); }
 .tune-tbl { justify-self: start; border-collapse: collapse; font-size: var(--fs-label); line-height: var(--lh-label); max-width: 100%; }
 .tune-tbl th { padding: 2px var(--sp-16) 2px 0; text-align: left; font-weight: var(--fw-medium); color: var(--fg-2); }
