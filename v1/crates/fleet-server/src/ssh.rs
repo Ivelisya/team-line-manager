@@ -483,9 +483,9 @@ async fn connect(ip: &str, port: u16, timeout: Duration) -> Result<tokio::net::T
 }
 
 /// 连上之后等 SSH 版本行的时长
-const SSH_BANNER_WAIT: Duration = Duration::from_secs(3);
+const SSH_BANNER_WAIT: Duration = Duration::from_secs(5);
 
-/// SSH 端口能用：TCP 连上（`timeout` 内），并且 3 秒内读到服务端的版本行（`SSH-` 开头；按 RFC 4253，之前可以有别的行）。
+/// SSH 端口能用：TCP 连上（`timeout` 内），并且 5 秒内读到服务端的版本行（`SSH-` 开头；按 RFC 4253，之前可以有别的行）。
 /// 只看 TCP 不够：中控出网经透明代理时，任何地址的 TCP 都「连得上」（代理先接住），不存在的机器也会被判成通。
 /// 不通时给原因（给人看），接在「SSH ip:port」后面：「连不上（…）」「没有响应 SSH 握手」「回的不是 SSH 版本行」
 pub async fn ssh_probe(ip: &str, port: u16, timeout: Duration) -> Result<(), String> {

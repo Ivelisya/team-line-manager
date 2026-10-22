@@ -604,14 +604,25 @@ pub struct SourceRow {
 }
 
 /// 按 (节点, 来源 IP) 的连接数 top。search 在这里匹配来源 IP。
-pub async fn sources(db: &PgPool, f: &Filter, limit: i64) -> sqlx::Result<Vec<SourceRow>> {
+/// `conn`：(接入方式, 画像库版本)，去掉画像缓存里（这个库版本）已经查过、接入方式不是它的来源；
+/// 缓存里没有的（刚出现、库换了版本）留着，由调用方查过画像后再筛
+pub async fn sources(db: &PgPool, f: &Filter, conn: Option<(&str, &str)>, limit: i64) -> sqlx::Result<Vec<SourceRow>> {
     let mut a = Args::default();
+    let src = if f.events { "e.src_ip" } else { "s.src_ip" };
+    let having = match conn {
+        Some((c, ver)) => format!(
+            " having not exists (select 1 from ip_intel_cache c where c.ip = {src} and c.db_version = {} and c.conn_type <> {})",
+            a.add(ver.to_string()),
+            a.add(c.to_string())
+        ),
+        None => String::new(),
+    };
     let sql = if f.events {
         format!(
             "select en.node_id, {NAME} name, host(e.src_ip) src_ip, count(*)::bigint conns, max(e.ts) last_ts
              from access_event e join entry en on en.id = e.entry_id join machine m on m.id = en.node_id left join team t on t.id = m.team_id
              where {} and e.src_ip is not null
-             group by en.node_id, m.kind, m.label, m.number, m.lifecycle, t.name, e.src_ip
+             group by en.node_id, m.kind, m.label, m.number, m.lifecycle, t.name, e.src_ip{having}
              order by conns desc, src_ip limit {}",
             event_where(f, &mut a, true),
             a.add(limit)
@@ -621,7 +632,7 @@ pub async fn sources(db: &PgPool, f: &Filter, limit: i64) -> sqlx::Result<Vec<So
             "select s.node_id, {NAME} name, host(s.src_ip) src_ip, sum(s.conns)::bigint conns, max(s.hour) last_ts
              from access_source_hourly s join machine m on m.id = s.node_id left join team t on t.id = m.team_id
              where {}
-             group by s.node_id, m.kind, m.label, m.number, m.lifecycle, t.name, s.src_ip
+             group by s.node_id, m.kind, m.label, m.number, m.lifecycle, t.name, s.src_ip{having}
              order by conns desc, src_ip limit {}",
             hourly_where(f, &mut a, "s", "host(s.src_ip)"),
             a.add(limit)
@@ -817,7 +828,7 @@ pub async fn machine_access(db: &PgPool, machine_id: Uuid, window: Window, raw_d
         cte(&f, &mut a)
     );
     let top_domains: Vec<TopDomain> = sqlx::query_as_with(&sql, a.0).fetch_all(db).await?;
-    let top_sources = sources(db, &f, 20).await?;
+    let top_sources = sources(db, &f, None, 20).await?;
 
     // 最近的原始记录回看整个保留期：逐入口沿 (entry_id, ts desc) 索引各取前 20 条，回看多久都不慢
     let mut ef = Filter { from: now - Duration::days(raw_days as i64), ..Filter::new(Window::H1, now) };

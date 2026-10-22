@@ -262,6 +262,16 @@ async fn summary_targets_sources_events() {
     assert_eq!(n(t.get(&format!("/api/v1/access/sources?window=24h&node={n1}&conn=unknown&limit=3")).await), 3);
     assert_eq!(n(t.get(&format!("/api/v1/access/sources?window=24h&node={n1}&conn=residential")).await), 0);
     assert_eq!(t.raw("/api/v1/access/sources?conn=x", true).await.0, StatusCode::BAD_REQUEST);
+    // 画像缓存里查过的在库里就按接入方式筛（1.1.1.1 是家宽）；没取满 5000 个，不算截断
+    sqlx::query("insert into ip_intel_cache (ip, conn_type, db_version) values ('1.1.1.1', 'residential', $1)")
+        .bind(t.st.ipintel.version())
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let d = t.get(&format!("/api/v1/access/sources?window=24h&node={n1}&conn=residential&limit=50")).await;
+    assert_eq!((d["items"][0]["src_ip"].as_str(), n(d.clone()), d["scan_capped"].as_bool()), (Some("1.1.1.1"), 1, Some(false)), "{d}");
+    let d = t.get(&format!("/api/v1/access/sources?window=1h&node={n1}&conn=unknown")).await;
+    assert!(d["items"].as_array().unwrap().iter().all(|s| s["src_ip"] != "1.1.1.1"), "{d}");
 
     // ── 原始记录：倒序分页、过滤 ──
     let d = t.get(&format!("/api/v1/access/events?node={n1}&limit=7")).await;

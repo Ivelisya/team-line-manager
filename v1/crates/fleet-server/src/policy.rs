@@ -336,6 +336,13 @@ pub async fn load_rows<'e, E: sqlx::PgExecutor<'e>>(ex: E, lock: bool) -> sqlx::
     Ok(raw.into_iter().filter_map(RowRaw::into_row).collect())
 }
 
+/// 一个范围的那一行（还没有记录为 None），规范化同 `load_rows`
+pub async fn load_row<'e, E: sqlx::PgExecutor<'e>>(ex: E, scope: Scope, id: Uuid) -> sqlx::Result<Option<Row>> {
+    let sql = format!("select {ROW_COLS} from policy where scope = $1 and scope_id = $2");
+    let raw: Option<RowRaw> = sqlx::query_as(&sql).bind(scope.as_str()).bind(id).fetch_optional(ex).await?;
+    Ok(raw.and_then(RowRaw::into_row))
+}
+
 /// 生效值视图
 pub fn set_current(rows: &[Row]) -> PolicySet { build_set(rows, false) }
 /// 草稿覆盖后的视图（没有草稿的范围用生效值）

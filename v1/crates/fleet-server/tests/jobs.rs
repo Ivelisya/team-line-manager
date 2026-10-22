@@ -55,6 +55,21 @@ async fn check_reports_unreachable_ssh() {
     drop(silent);
 }
 
+/// 作业预检同「检查」：TCP 连得上但不说 SSH 的（透明代理）判网络错误，不去登录、等 ssh 自己超时
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn preflight_needs_ssh_banner() {
+    let t = setup(true).await;
+    let (relay, _) = seed_relay(&t).await;
+    let team = seed_team(&t, "团队1").await;
+    let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = silent.local_addr().unwrap().port();
+    let created = t.post("/api/v1/provision", json!({"items": [{"kind": "vps", "ip": "127.0.0.1", "ssh_port": port, "team_id": team, "relay_id": relay}]})).await;
+    let j = t.wait_job(created["jobs"][0]["job_id"].as_str().unwrap(), "failed").await;
+    assert_eq!(j["steps"][0]["error_kind"], "network", "{j}");
+    assert!(j["steps"][0]["error"].as_str().unwrap().contains(&format!("SSH 127.0.0.1:{port} 没有响应 SSH 握手")), "{j}");
+    drop(silent);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancel_while_running_ends_cancelled_and_compensates() {
     let t = setup(true).await;
