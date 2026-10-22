@@ -67,6 +67,8 @@ async fn cancel_while_running_ends_cancelled_and_compensates() {
     }
     assert!(running, "作业应当进入运行中");
     t.post(&format!("/api/v1/jobs/{job}/cancel"), json!({})).await;
+    let au = t.get(&format!("/api/v1/audit?target_id={job}")).await;
+    assert_eq!((&au[0]["title"], &au[0]["summary"]), (&json!("取消作业"), &json!("上架 VPS 节点 · 团队1-01")), "审计写明取消的是哪个作业：{au}");
 
     // 步骤随后失败，但作业不能被覆盖成 failed：最终是 cancelled，并执行了补偿
     let j = t.wait_job(&job, "cancelled").await;

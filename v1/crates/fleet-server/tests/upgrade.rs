@@ -216,6 +216,8 @@ async fn upgrade_keeps_prev_and_waits_for_the_new_version() {
     let (m, root) = machine(&t, "192.0.2.11", "0.1.0+old", "0.1.0+new").await;
     let (bin, prev) = (root.join("usr/local/bin/fleet-agent"), root.join("usr/local/bin/fleet-agent.prev"));
     let job = upgrade(&t, m).await;
+    let au = t.get("/api/v1/audit?cat=machine").await;
+    assert_eq!((&au[0]["title"], &au[0]["summary"]), (&json!("升级 agent"), &json!("团队1-01")), "审计写明升级的是哪台：{au}");
     let j = run_round(&t, &job).await;
     assert_eq!((j["state"].as_str(), j["step"].as_i64()), (Some("waiting"), Some(1)), "{j}");
     let out = &j["steps"][0]["output"];

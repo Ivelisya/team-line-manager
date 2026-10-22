@@ -218,6 +218,19 @@ async fn reset_target(tx: &mut crate::db::Tx<'_>, job: Uuid, step: i32, target: 
     Ok((ip, port.unwrap_or(22) as u16))
 }
 
+/// 审计里写是哪个作业：作业类型与目标机器的显示名（摘要「换线路机 · 团队1-03」）；没有目标、目标已删除的不写 name
+async fn job_ref(tx: &mut crate::db::Tx<'_>, kind: &str, target: Option<Uuid>) -> sqlx::Result<Value> {
+    let name: Option<String> = match target {
+        Some(t) => sqlx::query_scalar("select display_name(m.kind::text, m.label, t.name, m.number) from machine m left join team t on t.id = m.team_id where m.id = $1")
+            .bind(t)
+            .fetch_optional(&mut **tx)
+            .await?
+            .flatten(),
+        None => None,
+    };
+    Ok(json!({"kind": kind, "name": name}))
+}
+
 pub async fn retry(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, body: axum::body::Bytes) -> ApiResult<Json<Value>> {
     let b: RetryIn = if body.iter().all(u8::is_ascii_whitespace) {
         RetryIn::default()
@@ -285,7 +298,11 @@ pub async fn retry(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     .bind(from)
     .execute(&mut *tx)
     .await?;
-    audit(&mut tx, &a.name, "job.retry", "job", Some(id), json!({"step": step, "reset_host_key": reset, "password": password.is_some()})).await?;
+    let mut detail = job_ref(&mut tx, &kind, target).await?;
+    detail["step"] = json!(step);
+    detail["reset_host_key"] = json!(reset);
+    detail["password"] = json!(password.is_some());
+    audit(&mut tx, &a.name, "job.retry", "job", Some(id), detail).await?;
     // 所有检查（含「同一台机器只能有一个进行中的作业」）都过了才动 known_hosts。在事务里做：作业此刻还不会被领走，
     // 重置失败则整个重试作废；keyscan 最多十来秒，其间机器行与作业行一直锁着
     if let Some((ip, port)) = pin {
@@ -317,7 +334,8 @@ pub async fn cancel(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<U
         .bind(id)
         .execute(&mut *tx)
         .await?;
-    audit(&mut tx, &a.name, "job.cancel", "job", Some(id), json!({})).await?;
+    let detail = job_ref(&mut tx, &kind, target).await?;
+    audit(&mut tx, &a.name, "job.cancel", "job", Some(id), detail).await?;
     tx.commit().await?;
     st.wake_jobs();
     st.emit(Event::Job { id, target });

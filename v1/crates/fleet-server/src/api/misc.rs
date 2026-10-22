@@ -637,10 +637,28 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
             (b, a) if b != a => format!("{} · 国家 {} → {}", s("name"), b.unwrap_or("自动"), a.unwrap_or("自动")),
             _ => s("name"),
         },
-        "agent.upgrade" => match d["skipped"].as_u64() {
-            Some(k) if k > 0 => format!("{} 台，跳过 {k} 台", d["count"]),
-            _ => format!("{} 台", d["count"]),
-        },
+        // 「团队1-03」「5 台（团队1-03、团队1-04、团队1-05、…），跳过 1 台」；这一版之前的记录没有台名，只写台数
+        "agent.upgrade" => {
+            let n = d["count"].as_u64().unwrap_or(0);
+            let names: Vec<&str> = d["names"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+            let mut s = match names.as_slice() {
+                [one] if n == 1 => one.to_string(),
+                [] => format!("{n} 台"),
+                l => format!("{n} 台（{}{}）", l.join("、"), if n as usize > l.len() { "、…" } else { "" }),
+            };
+            if let Some(k) = d["skipped"].as_u64().filter(|k| *k > 0) {
+                s += &format!("，跳过 {k} 台");
+            }
+            s
+        }
+        // 「换线路机 · 团队1-03」：这一版之前的记录没有作业类型，不写摘要
+        "job.cancel" | "job.retry" if d["kind"].is_string() => {
+            let k = crate::meta::job_kind_label(d["kind"].as_str().unwrap_or(""));
+            match d["name"].as_str() {
+                Some(n) => format!("{k} · {n}"),
+                None => k.to_string(),
+            }
+        }
         "exec" => {
             // 命令只取第一行、最多 60 字
             let cmd = s("command");
@@ -941,6 +959,13 @@ mod tests {
         assert_eq!(t("machine.rename", json!({"name": "团队1-03", "old_name": "团队1-07"})).1, "团队1-07 → 团队1-03");
         assert_eq!(t("policy.draft", json!({"name": "团队1", "mode": "denylist", "domains": 2, "cleared": false})).1, "团队1 · 黑名单 · 2 个域名");
         assert_eq!(t("agent.upgrade", json!({"count": 12, "skipped": 1})).1, "12 台，跳过 1 台");
+        assert_eq!(t("agent.upgrade", json!({"count": 1, "skipped": 0, "names": ["团队1-03"]})).1, "团队1-03");
+        let three = json!(["团队1-03", "团队1-04", "线路机2"]);
+        assert_eq!(t("agent.upgrade", json!({"count": 5, "skipped": 1, "names": three})).1, "5 台（团队1-03、团队1-04、线路机2、…），跳过 1 台");
+        assert_eq!(t("agent.upgrade", json!({"count": 3, "skipped": 0, "names": three})).1, "3 台（团队1-03、团队1-04、线路机2）");
+        assert_eq!(t("job.cancel", json!({"kind": "move_entry", "name": "模拟团队C-21"})), ("取消作业".to_string(), "换线路机 · 模拟团队C-21".to_string()));
+        assert_eq!(t("job.retry", json!({"kind": "upgrade_agent", "name": null, "step": 0})).1, "升级 agent");
+        assert_eq!(t("job.cancel", json!({})).1, "");
     }
 
     #[test]

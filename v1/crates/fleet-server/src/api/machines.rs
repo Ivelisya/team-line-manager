@@ -572,7 +572,9 @@ async fn enqueue_upgrade(st: &AppState, actor: &str, ms: &[(Uuid, String, String
             Err(e) => return Err(e),
         }
     }
-    audit(&mut tx, actor, "agent.upgrade", "machine", None, json!({"count": out.len(), "skipped": skipped.len()})).await?;
+    // 摘要写出升级了哪几台（最多列 3 台）
+    let names: Vec<&Value> = out.iter().take(3).map(|j| &j["name"]).collect();
+    audit(&mut tx, actor, "agent.upgrade", "machine", None, json!({"count": out.len(), "skipped": skipped.len(), "names": names})).await?;
     tx.commit().await?;
     st.wake_jobs();
     for j in &out {
