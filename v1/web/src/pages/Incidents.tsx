@@ -19,7 +19,7 @@ import { Popover, PopoverContent, PopoverTrigger, Segmented, Trunc } from '@/com
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { collator } from '@/lib/sort';
 import { matchTier, sv } from '@/lib/match';
-import { DurationField, useDuration, type DurationItem } from '@/components/app/DurationField';
+import { DurationField, SILENCE_MAX_MIN, useDuration, type DurationItem } from '@/components/app/DurationField';
 import type { MachineBrief } from '@/lib/queries';
 import { SkeletonRows } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
@@ -106,7 +106,6 @@ export function IncidentsPage() {
 }
 
 const ALL = '__all__';
-const MAX_MIN = 720 * 60; // 30 天
 const AHEAD_DAYS = 90; // 最多提前 90 天预约（同中控）
 const MIN = 60_000;
 type StartMode = 'now' | 'at';
@@ -183,7 +182,7 @@ const SilenceDialog = resetOnOpen(function SilenceDialog({ open, onOpenChange, p
   const add = useAddSilence();
   const [subject, setSubject] = React.useState(preset);
   const [mode, setMode] = React.useState<StartMode>('now'); const [start, setStart] = React.useState(nextHour);
-  const d = useDuration(240, MAX_MIN);
+  const d = useDuration(240, SILENCE_MAX_MIN);
   const [maint, setMaint] = React.useState(false); const [comment, setComment] = React.useState('');
   const what = maint ? '维护窗口' : '静默';
   const [askAll, setAskAll] = React.useState(false);
