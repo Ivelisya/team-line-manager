@@ -25,6 +25,7 @@ use crate::state::{AppState, Event};
 use serde_json::{json, Value};
 use sqlx::PgPool;
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use time::OffsetDateTime;
@@ -308,10 +309,13 @@ pub async fn wake_for(st: &AppState, machine: Uuid) {
 #[derive(Default)]
 pub struct Running {
     ids: Mutex<HashSet<Uuid>>,
+    /// 中控要退出了：不再领取，推进中的做完当前这一步就放手（见 `drain`）
+    stopping: AtomicBool,
 }
 
 impl Running {
     fn ids(&self) -> Vec<Uuid> { self.ids.lock().unwrap().iter().copied().collect() }
+    fn stopping(&self) -> bool { self.stopping.load(Ordering::SeqCst) }
 }
 
 /// 本进程在推进这个作业；drop 时（推进结束，含 panic）移出 `Running`
@@ -330,9 +334,9 @@ fn enter(st: &AppState, id: Uuid) -> Entered {
     Entered { st: st.clone(), id }
 }
 
-/// 后台循环：领取并推进作业
-pub async fn run_forever(st: AppState) {
-    // 单实例：重启前留下的租约属于已经不存在的执行者，清掉让作业立刻被重新领取（每步幂等，从当前步重跑）
+/// 进程启动时（main 占住端口之后、起后台任务之前）调一次：单实例，重启前留下的租约属于已经不存在的执行者，
+/// 清掉让作业立刻被重新领取（每步幂等，从当前步重跑）。不放在 `run_forever` 里：引擎循环被重新拉起时不能清掉本进程还在推进的租约
+pub async fn release_stale_leases(st: &AppState) {
     match sqlx::query(
         "update job set lease_owner = null, lease_until = null, run_after = now() where state in ('running', 'cancelling') and lease_owner is not null",
     )
@@ -343,9 +347,31 @@ pub async fn run_forever(st: AppState) {
         Ok(_) => {}
         Err(e) => tracing::error!("启动时释放旧租约失败：{e:#}"),
     }
+}
+
+/// 优雅退出：不再领取新作业；正在推进的做完当前这一步就放开租约（见 `advance`），重启后从下一步接着做。
+/// 最多等 `max`，返回到时还在推进的作业数（它们这一步被打断，重启后从这一步重做）
+pub async fn drain(st: &AppState, max: Duration) -> usize {
+    st.jobs_running.stopping.store(true, Ordering::SeqCst);
+    let until = tokio::time::Instant::now() + max;
+    loop {
+        let n = st.jobs_running.ids.lock().unwrap().len();
+        if n == 0 || tokio::time::Instant::now() >= until {
+            return n;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// 后台循环：领取并推进作业
+pub async fn run_forever(st: AppState) {
     let sem = Arc::new(Semaphore::new(st.cfg.job_workers.max(1)));
     loop {
         let permit = sem.clone().acquire_owned().await.expect("semaphore");
+        if st.jobs_running.stopping() {
+            // 要退出了：不再领取。不返回，免得被当成引擎意外退出
+            return std::future::pending().await;
+        }
         // 每次领取都用新的执行者名：租约过期被接管后，旧任务对作业的写入一律落空
         let owner = format!("{}-{}", std::process::id(), Uuid::new_v4().simple());
         match claim(&st, &owner).await {
@@ -462,6 +488,16 @@ pub async fn advance(st: &AppState, mut job: JobRow, owner: &str) -> anyhow::Res
     let defs = defs(&job.kind);
     while (job.step as usize) < defs.len() {
         let d = &defs[job.step as usize];
+        if st.jobs_running.stopping() {
+            // 中控要退出了：做完的步骤都已记下，放开租约，重启后从这一步接着做
+            sqlx::query("update job set lease_until = null, lease_owner = null, run_after = now() where id = $1 and lease_owner = $2")
+                .bind(job.id)
+                .bind(owner)
+                .execute(&st.db)
+                .await?;
+            log(st, job.id, "info", format!("中控正在重启：「{}」等重启后接着做", d.title)).await;
+            return Ok(());
+        }
         // 旧作业不能在机器已经换了状态之后继续跑（例如退役后重试上架）
         let lc = target_lifecycle(&st.db, job.target_id).await?;
         if let Err(why) = check_target(&job.kind, lc.as_deref()) {
