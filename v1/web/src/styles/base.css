@@ -188,6 +188,8 @@ a { color: inherit; }
 .page-title { margin: 0; font: var(--fw-semibold) var(--fs-page) / var(--lh-page) var(--font-sans); letter-spacing: var(--tracking-title); color: var(--fg); white-space: nowrap; }
 .page-note { font-size: var(--fs-body); color: var(--fg-2); text-wrap: balance; }
 .page-tools { margin-left: auto; display: flex; align-items: center; gap: var(--control-gap); flex-wrap: wrap; min-width: 0; }
+.page-tools:empty { display: none; } /* 窄屏时它占满一行，空着也会留出一行高 */
+.stack > .page-head { margin-bottom: 0; } /* 在 .stack 里时与下面的间距由 gap 给，不再叠一份外边距 */
 @media (max-width: 600px) {
   .page-tools { margin-left: 0; width: 100%; }
   .page-title { font-size: 20px; line-height: 28px; }
