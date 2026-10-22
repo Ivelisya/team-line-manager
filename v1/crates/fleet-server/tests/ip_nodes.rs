@@ -180,6 +180,21 @@ async fn ip_node_borrows_host_agent_and_metrics() {
     .await;
     let xv = t.get(&format!("/api/v1/machines/{x}")).await;
     assert_eq!((xv["maintenance"].clone(), xv["health"]["status"].clone()), (json!(true), json!("maintenance")), "{xv}");
+
+    // 流量额度：宿主机的已用含同机节点入口的流量——没设重置日（按本月）、设了重置日（按周期）两种算法都算上
+    sqlx::query("insert into entry_traffic_hourly (entry_id, hour, up_bytes, down_bytes) values ($1, date_trunc('hour', now()), 100, 200)")
+        .bind(e)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    t.st.live.rolled_up();
+    assert_eq!(t.get(&format!("/api/v1/machines/{host}")).await["quota"]["used"], 300);
+    sqlx::query("insert into subscription (machine_id, price_cents, due_date, traffic_gb, traffic_reset_day) values ($1, 500, current_date + 60, 1, 1)")
+        .bind(host)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    assert_eq!(t.get(&format!("/api/v1/machines/{host}")).await["quota"]["used"], 300);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

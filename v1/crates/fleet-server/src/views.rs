@@ -402,6 +402,9 @@ async fn traffic(st: &AppState) -> sqlx::Result<TrafficMap> {
 
 /// 这些机器各自周期起（账单时区零点）的业务流量，走 `LiveCache.quota`，缺的才查
 async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<Uuid, i64>> {
+    if keys.is_empty() {
+        return Ok(HashMap::new());
+    }
     let c = &st.live;
     let mut slot = c.quota.lock().await;
     let rolled = c.rolled.load(Ordering::SeqCst);
@@ -412,13 +415,19 @@ async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<
     if !miss.is_empty() {
         // 小时表按 UTC 整点分桶：周期起点所在的那一桶整桶算进来（半小时时区如 Asia/Kolkata 多算起点前至多 30 分钟，
         // 不漏算周期开头）；整点时区（北京、洛杉矶）起点正好是桶边界，和今天 / 本月的算法一致。
-        // 宿主机的额度和它的同机 IP 节点（含已退役的）共用：它们的入口流量一起算
+        // 宿主机的额度和它的同机 IP 节点（含已退役的）共用：它们的入口流量一起算。
+        // 先展开「机器 → 入口」，再逐个入口按小时表主键求和：同机节点的子查询放在 OR 连接条件里时，规划器会先连出
+        // 全部小时行再逐行跑子查询（实验室 64 台要 11 s，期间整份机器视图都在等）
         let rows: Vec<(Uuid, i64)> = sqlx::query_as(
-            "select q.mid, coalesce(sum(h.up_bytes + h.down_bytes), 0)::bigint
-             from unnest($1::uuid[], $2::date[], $3::text[]) q(mid, start, tz)
-             join entry e on e.node_id = q.mid or e.relay_id = q.mid or e.node_id in (select x.id from machine x where x.host_id = q.mid)
-             join entry_traffic_hourly h on h.entry_id = e.id and h.hour > (q.start::timestamp at time zone q.tz) - interval '1 hour'
-             group by q.mid",
+            "with q as (select * from unnest($1::uuid[], $2::date[], $3::text[]) q(mid, start, tz)),
+             qe as (select q.mid, q.start, q.tz, e.id eid from q join entry e on e.node_id = q.mid or e.relay_id = q.mid
+                    union
+                    select q.mid, q.start, q.tz, e.id from q join machine x on x.host_id = q.mid join entry e on e.node_id = x.id)
+             select qe.mid, coalesce(sum(t.b), 0)::bigint
+             from qe cross join lateral (
+               select sum(h.up_bytes + h.down_bytes) b from entry_traffic_hourly h
+               where h.entry_id = qe.eid and h.hour > (qe.start::timestamp at time zone qe.tz) - interval '1 hour') t
+             group by qe.mid",
         )
         .bind(miss.iter().map(|k| k.0).collect::<Vec<_>>())
         .bind(miss.iter().map(|k| k.1).collect::<Vec<_>>())
