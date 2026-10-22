@@ -45,6 +45,8 @@
 .audit-meta[data-tone="warn"] { color: var(--warn-text); }
 .audit-meta[data-tone="info"] { color: var(--info-text); }
 .audit-list li[data-resolved] > .dot { opacity: 0.4; }
+/* 告警页：已恢复的仍按原级别着色，调淡一些，眼睛先落在进行中的上面 */
+.pill.is-past { opacity: 0.6; }
 .chart-box { height: 180px; min-width: 0; }
 /* 曲线全为 0 时的空状态：占住图的高度（换时间范围时卡片不跳），一句浅色说明居中 */
 .chart-empty { display: grid; place-items: center; min-width: 0; font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); text-align: center; }

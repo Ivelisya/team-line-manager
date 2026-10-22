@@ -1,7 +1,7 @@
 // 告警：事件列表（确认 / 查看机器，服务端分页）+ 静默与维护窗口（可预约开始时间）。列表都保持服务端顺序（告警严重度优先，静默按开始时间），前端不重排。
 import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { BellOff, CalendarPlus, Check, CheckCircle2, Plus, Trash2, Wrench } from 'lucide-react';
+import { BellOff, CalendarPlus, Check, CheckCircle2, ChevronDown, Plus, Trash2, Wrench } from 'lucide-react';
 import { RenewDialog } from '@/features/BillingTab';
 import { INCIDENT_PAGE, useAck, useAddSilence, useDelSilence, useIncidents, useMachineBriefs, useSilences } from '@/lib/queries';
 import { usePage } from '@/lib/usePage';
@@ -14,20 +14,28 @@ import type { Incident, Silence } from '@/lib/types';
 import { resetOnOpen, useHeld } from '@/lib/useHeld';
 import { useNow } from '@/lib/useNow';
 import { Button, IconButton } from '@/components/ui/button';
-import { CheckRow, Field, InfoTip, Input } from '@/components/ui/form';
-import { Select } from '@/components/ui/select';
-import { Segmented, Trunc } from '@/components/ui/overlays';
+import { CheckRow, Field, InfoTip, Input, UnitInput } from '@/components/ui/form';
+import { Popover, PopoverContent, PopoverTrigger, Segmented, Trunc } from '@/components/ui/overlays';
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
+import { collator } from '@/lib/sort';
+import type { MachineBrief } from '@/lib/queries';
 import { SkeletonRows } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
 import { ConfirmDialog, FormDialog } from '@/components/app/dialogs';
 import { NodeHover } from '@/components/app/NodeHover';
-import { Empty, ErrorNote, FilterChip, Note, PageHead, Panel, Pill } from '@/components/app/primitives';
+import { Empty, ErrorNote, FilterChip, Note, PageHead, Panel, Pill, TableWrap } from '@/components/app/primitives';
 
 const PAGE_SIZES = [20, INCIDENT_PAGE, 100];
-const SEV = (i: Incident) => { const s = severityOf(i.severity); return i.state === 'resolved' ? <Pill tone="ok">已恢复</Pill> : <Pill tone={s.tone}>{s.label}</Pill>; };
+/** 级别一直按原级别（严重 / 警告）显示；已恢复的调淡，状态写在说明下面 */
+const SEV = (i: Incident) => { const s = severityOf(i.severity); return <Pill tone={s.tone} className={i.state === 'resolved' ? 'is-past' : undefined}>{s.label}</Pill>; };
+type State = 'firing' | 'resolved' | 'all';
+const STATES: { value: State; label: string }[] = [{ value: 'firing', label: '进行中' }, { value: 'resolved', label: '已恢复' }, { value: 'all', label: '全部' }];
 
 export function IncidentsPage() {
-  const [state, setState] = React.useState<'firing' | 'resolved' | 'all'>('firing');
+  // 页签写进 URL 的 ?state=（进行中是默认，不写）；页码在 usePage 里（?p=）
+  const [sp, setSp] = useSearchParams();
+  const state: State = STATES.find((s) => s.value === sp.get('state'))?.value ?? 'firing';
+  const setState = (v: State) => setSp((p) => { const n = new URLSearchParams(p); if (v === 'firing') n.delete('state'); else n.set('state', v); return n; }, { replace: true });
   // 页码先于查询算出（偏移量进查询）；总数取上一次的结果。渲染中直接跟上（不等 effect 提交一遍再重渲染）
   const [total, setTotal] = React.useState<number>();
   const pg = usePage({ total, sizes: PAGE_SIZES, size: INCIDENT_PAGE, reset: [state] });
@@ -44,11 +52,15 @@ export function IncidentsPage() {
   const renewM = useHeld(renewId, machines?.find((m) => m.id === renewId));
   return (
     <div className="stack" ref={pg.anchor}>
-      <PageHead title="告警" note={q.data ? `${q.data.total} 条` : undefined}
-        tools={<Segmented label="状态" value={state} onChange={setState} items={[{ value: 'firing', label: '进行中' }, { value: 'resolved', label: '已恢复' }, { value: 'all', label: '全部' }]} />} />
+      <PageHead title="告警" note={q.data ? `${q.data.total.toLocaleString('zh-CN')} 条` : undefined}
+        tools={<>
+          <Segmented label="状态" value={state} onChange={setState} items={STATES} />
+          {/* 静默与维护窗口的列表在页面最下面：新建入口放在页头（走 ?silence=new，同命令面板） */}
+          <Button onClick={() => setSp((p) => { const n = new URLSearchParams(p); n.set('silence', 'new'); return n; }, { replace: true })}><BellOff />新建静默</Button>
+        </>} />
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       <Panel flush>
-        <div className="table-wrap">
+        <TableWrap>
           <table className="dt" style={{ minWidth: 820 }}>
             {/* 末列 120：「登记续费」小按钮 90（边框 2 + 内边距 20 + 图标 14 + 间距 6 + 四个字 48）+ 单元格内边距 12 + 16 = 118，留 2px 余量；多出的从说明列（自适应）让出 */}
             <colgroup><col style={{ width: 100 }} /><col style={{ width: 150 }} /><col style={{ width: 150 }} /><col /><col style={{ width: 110 }} /><col style={{ width: 120 }} /></colgroup>
@@ -64,7 +76,9 @@ export function IncidentsPage() {
                     <td>{sid && isRouterIncident(i) ? <button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => openRouter(sid)}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button>
                       : sid ? <NodeHover id={sid}><button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => open(sid)}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button></NodeHover> : (i.subject_name ?? '—')}</td>
                     <td>{i.rule_name}{i.reopen_count > 0 && <span className="sub" data-tip={`恢复后 30 分钟内又复发 ${i.reopen_count} 次，合并为这一条`}>反复 {i.reopen_count + 1} 次</span>}</td>
-                    <td><Trunc className="cell-main">{i.summary}</Trunc><span className="sub">{i.resolved_at ? `恢复于 ${F.dt(i.resolved_at)}` : i.ack_at ? `${i.ack_by ?? ''} 已确认 · ${F.ago(i.ack_at)}` : '未确认'}</span></td>
+                    <td><span className="cell-main" data-tip={i.summary}>{i.summary}</span><span className="sub">{i.resolved_at
+                      ? <span data-tip={`恢复于 ${F.dtFull(i.resolved_at)}`}>已恢复 · 持续 {F.span(Date.parse(i.resolved_at) - Date.parse(i.opened_at))}</span>
+                      : i.ack_at ? `${i.ack_by ? F.actor(i.ack_by) : ''} 已确认 · ${F.ago(i.ack_at)}` : '未确认'}</span></td>
                     <td>{F.dt(i.opened_at)}<span className="sub">{F.ago(i.opened_at)}</span></td>
                     <td className="r">{canRenew && <Button size="sm" onClick={() => setRenewId(sid)}><CalendarPlus size={13} />登记续费</Button>}{!canRenew && i.state === 'firing' && !i.ack_at && <Button size="sm" loading={ack.isPending && ack.variables === i.id} disabled={ack.isPending} onClick={() => ack.mutate(i.id, { onSuccess: () => toast.ok('已确认'), onError: toast.err })}><Check size={13} />确认</Button>}</td>
                   </tr>
@@ -74,7 +88,7 @@ export function IncidentsPage() {
           </table>
           {q.isLoading && <SkeletonRows rows={4} />}
           {q.data && list.length === 0 && <Empty icon={state === 'firing' ? <CheckCircle2 size={22} /> : undefined} text={state === 'firing' ? '没有进行中的告警' : '没有记录'} />}
-        </div>
+        </TableWrap>
         <Pagination pg={pg} unit="条" />
       </Panel>
       {renewM?.subscription && <RenewDialog m={renewM} s={renewM.subscription} open={!!renewId} onOpenChange={(o) => !o && setRenewId(null)} />}
@@ -120,10 +134,10 @@ function Silences() {
   const list = (q.data ?? []).filter((s) => Date.parse(s.ends_at) > now);
   return (
     <>
-      <Panel title="静默与维护窗口" count={list.length} sub="窗口内不会产生告警" tools={<Button onClick={() => { setPreset(''); setOpen(true); }}><Plus />新建静默</Button>} flush>
+      <Panel title="静默与维护窗口" count={list.length} sub={<InfoTip text="窗口内不会产生告警" />} tools={<Button onClick={() => { setPreset(''); setOpen(true); }}><Plus />新建静默</Button>} flush>
         {q.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div>}
         {q.isLoading ? <SkeletonRows rows={2} head /> : list.length === 0 && !q.isError ? <Empty icon={<BellOff size={22} />} text="没有进行中或已预约的静默" /> : (
-          <div className="table-wrap">
+          <TableWrap>
             {/* 服务端按开始时间排：进行中的在前，已预约的随后 */}
             <table className="dt" style={{ minWidth: 760 }}>
               <colgroup><col style={{ width: 150 }} /><col style={{ width: 90 }} /><col style={{ width: 90 }} /><col style={{ width: 230 }} /><col /><col style={{ width: 64 }} /></colgroup>
@@ -142,7 +156,7 @@ function Silences() {
                 );
               })}</tbody>
             </table>
-          </div>
+          </TableWrap>
         )}
       </Panel>
       <SilenceDialog open={open} onOpenChange={setOpen} preset={preset} />
@@ -158,9 +172,6 @@ function Silences() {
 /** 新建静默。每次打开重新挂载（resetOnOpen）：对象按 preset 预选，其余回到默认（现在开始、4 小时、标记为维护）。选“全部机器”时提交前再确认一次（写明起止） */
 const SilenceDialog = resetOnOpen(function SilenceDialog({ open, onOpenChange, preset }: { open: boolean; onOpenChange: (o: boolean) => void; preset: string }) {
   const add = useAddSilence();
-  const machines = useMachineBriefs().data;
-  // 选项随机器列表变（结构共享：只改读数的推送不换引用），不随每次输入重建：几百台时 Select 不必每敲一个字重渲全部选项
-  const options = React.useMemo(() => [{ value: ALL, label: '全部机器（影响所有告警）' }, ...(machines ?? []).map((m) => ({ value: m.id, label: m.name }))], [machines]);
   const [subject, setSubject] = React.useState(preset);
   const [mode, setMode] = React.useState<StartMode>('now'); const [start, setStart] = React.useState(nextHour);
   const [dur, setDur] = React.useState<number | 'custom'>(240); const [hours, setHours] = React.useState('');
@@ -175,7 +186,7 @@ const SilenceDialog = resetOnOpen(function SilenceDialog({ open, onOpenChange, p
     : startMs > now + AHEAD_DAYS * 1440 * MIN ? `最多提前 ${AHEAD_DAYS} 天预约` : undefined;
   const h = Number(hours);
   const minutes = dur === 'custom' ? h * 60 : dur;
-  const hoursErr = dur === 'custom' && hours !== '' && (h < 1 || h > MAX_HOURS) ? `时长应在 1–${MAX_HOURS} 小时之间` : undefined;
+  const hoursErr = dur === 'custom' && hours !== '' && (h < 1 || h > MAX_HOURS) ? `填 1–${MAX_HOURS} 小时` : undefined;
   const valid = !!subject && !startErr && (dur !== 'custom' || (h >= 1 && h <= MAX_HOURS));
   const durText = dur === 'custom' ? `${hours || 0} 小时` : DURATIONS.find((d) => d.min === dur)?.label;
   // 改成自定义时带上刚才选的时长（不足 1 小时按 1 小时）
@@ -192,15 +203,15 @@ const SilenceDialog = resetOnOpen(function SilenceDialog({ open, onOpenChange, p
       <FormDialog open={open} onOpenChange={onOpenChange} title="新建静默" desc={desc} submitLabel="创建" busy={add.isPending} valid={valid}
         dirty={subject !== preset || mode !== 'now' || dur !== 240 || !maint || !!comment.trim()}
         onSubmit={() => (subject === ALL ? setAskAll(true) : submit())}>
-        <Field label="对象"><Select value={subject} onChange={setSubject} placeholder="选择机器" options={options} /></Field>
-        {subject === ALL && <Note tone="warn">这段时间所有机器都不发告警</Note>}
+        <Field label="对象"><SubjectSelect value={subject} onChange={setSubject} /></Field>
+        {subject === ALL && <Note tone="warn">全部机器不发告警</Note>}
         <div className="field">
           <span className="label">开始</span>
           <div className="row">
             <Segmented label="开始" value={mode} onChange={setMode} items={START_ITEMS} />
             {mode === 'at' && <Input type="datetime-local" aria-label="开始时间" value={start} min={localInput(now)} max={localInput(now + AHEAD_DAYS * 1440 * MIN)} onChange={(e) => setStart(e.target.value)} aria-invalid={!!startErr} style={{ flex: '1 1 200px', width: 'auto' }} />}
           </div>
-          {startErr ? <div className="hint is-error">{startErr}</div> : mode === 'at' && <div className="hint">按本机时间，最多提前 {AHEAD_DAYS} 天</div>}
+          {startErr ? <div className="hint is-error">{startErr}</div> : mode === 'at' && <div className="hint">最多提前 {AHEAD_DAYS} 天 <InfoTip text="按这台电脑的本地时间" /></div>}
         </div>
         <div className="field">
           <span className="label">时长</span>
@@ -208,8 +219,8 @@ const SilenceDialog = resetOnOpen(function SilenceDialog({ open, onOpenChange, p
             {DURATIONS.map((d) => <FilterChip key={d.min} pressed={dur === d.min} onClick={() => setDur(d.min)}>{d.label}</FilterChip>)}
             <FilterChip pressed={dur === 'custom'} onClick={pickCustom}>自定义</FilterChip>
           </div>
-          {dur === 'custom' && <Input inputMode="numeric" aria-label="自定义时长（小时）" placeholder="小时数" autoFocus value={hours} onChange={(e) => setHours(e.target.value.replace(/\D/g, ''))} aria-invalid={!!hoursErr} />}
-          {hoursErr ? <div className="hint is-error">{hoursErr}</div> : dur === 'custom' && <div className="hint">最长 {MAX_HOURS} 小时（30 天）</div>}
+          {dur === 'custom' && <UnitInput unit="小时" width={140} inputMode="numeric" aria-label="自定义时长（小时）" placeholder={`1–${MAX_HOURS}`} autoFocus value={hours} onChange={(e) => setHours(e.target.value.replace(/\D/g, ''))} aria-invalid={!!hoursErr} />}
+          {hoursErr && <div className="hint is-error">{hoursErr}</div>}
         </div>
         <div className="row" style={{ gap: 4 }}><CheckRow checked={maint} onChange={setMaint}>标记为维护</CheckRow><InfoTip text="卡片显示「维护」" /></div>
         <Field label="备注"><Input value={comment} onChange={(e) => setComment(e.target.value)} placeholder="例如：换内核" /></Field>
@@ -220,3 +231,46 @@ const SilenceDialog = resetOnOpen(function SilenceDialog({ open, onOpenChange, p
     </>
   );
 });
+
+/** 静默对象：可搜索的下拉（名称、团队都能搜），按线路机 / 各团队分组；最前一项「全部机器」。接口一次只收一个对象 */
+function SubjectSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const machines = useMachineBriefs().data;
+  const [open, setOpen] = React.useState(false);
+  // 分组随机器列表变（结构共享：只改读数的推送不换引用）
+  const groups = React.useMemo(() => {
+    const by = new Map<string, MachineBrief[]>();
+    for (const m of machines ?? []) {
+      const g = m.kind === 'relay' ? '线路机' : m.team?.name ?? '未分团队';
+      by.set(g, [...(by.get(g) ?? []), m]);
+    }
+    return [...by].sort(([a], [b]) => (a === '线路机' ? -1 : b === '线路机' ? 1 : collator.compare(a, b)));
+  }, [machines]);
+  const name = value === ALL ? '全部机器' : machines?.find((m) => m.id === value)?.name;
+  const pick = (v: string) => { setOpen(false); onChange(v); };
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button type="button" className="select-trigger cs-trigger" aria-label="对象">
+          <span className={name ? undefined : 't-muted'}>{name ?? '选择机器'}</span><ChevronDown />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="cs-pop" align="start">
+        {/* 列表只在打开时建（一两百台），关着不占渲染 */}
+        {open && (
+          <Command loop>
+            <CommandInput placeholder="搜索机器或团队" />
+            <CommandList>
+              <CommandEmpty>没有这台机器</CommandEmpty>
+              <CommandItem value={ALL} keywords={['全部机器', '所有']} onSelect={pick}><span className="cmd-main">全部机器</span><span className="cmd-aside">所有告警</span>{value === ALL && <Check className="cs-check" />}</CommandItem>
+              {groups.map(([g, list]) => (
+                <CommandGroup key={g} heading={g}>
+                  {list.map((m) => <CommandItem key={m.id} value={m.id} keywords={[m.name, g]} onSelect={pick}><span className="cmd-main">{m.name}</span>{m.id === value && <Check className="cs-check" />}</CommandItem>)}
+                </CommandGroup>
+              ))}
+            </CommandList>
+          </Command>
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+}
