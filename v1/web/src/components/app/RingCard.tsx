@@ -31,7 +31,7 @@ function RingCardImpl({ m, current, onOpen, show }: { m: MachineView; current?: 
   );
   const t = proxy ? monthTraffic(m) : null; const ps = proxy ? probeSummary(m) : null;
   const ms = (v: number | null, fail: boolean) => (fail ? <span style={{ color: 'var(--bad-text)' }}>失败</span> : <Num f={F.ms(v)} />);
-  // 按到期、本月业务流量排序时：排序依据接在名称这一行最右（环形卡上没有这两个字段）
+  // 按到期、本月流量排序时：排序依据接在名称这一行最右（环形卡上没有这两个字段）
   const extra = show === 'due' ? (m.subscription ? <Due days={m.subscription.due_days} state={m.subscription.due_state} tail /> : <span className="t-muted">没有到期日</span>)
     : show === 'traffic' && !proxy ? <span className="rc-show">本月 <Num f={F.bytes(trafficTotal(m))} /></span> : null;
   // 右键菜单由外面的 NodeMenus 整个网格共用一份（按 data-id 找到这张卡）

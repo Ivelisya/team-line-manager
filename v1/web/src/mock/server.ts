@@ -8,8 +8,7 @@ import { makeDefaultCompare } from '@/lib/sort';
 import { cycleMonths, META, subCalc } from './meta';
 
 const LIFECYCLE_LABEL = META.lifecycles;
-import { buildDb, countryOf, hashStr, IP_STEPS, quotaOf, rng, type Db } from './fixtures';
-import { calibration } from './fixtures';
+import { buildDb, countryOf, hashStr, IP_STEPS, rng, trafficOf, type Db } from './fixtures';
 import { installAccessMock } from './access';
 import { installPolicyMock } from './policy';
 import { installRoutersMock } from './routers';
@@ -359,7 +358,7 @@ function createMachine(it: ProvisionItem, c: ProvisionCheckItem): MachineView {
     plan: plan ? { id: plan.id, name: plan.name, bandwidth_mbps: plan.bandwidth_mbps, traffic_gb: plan.traffic_gb } : null, service_ref: it.service_ref ?? null,
     lifecycle: 'provisioning', lifecycle_reason: null, note: it.note ?? '', revision: 1, created_at: iso(), activated_at: null, retired_at: null,
     subscription: it.subscription?.due_date ? subCalc({ price_cents: it.subscription.price_cents ?? plan?.price_cents ?? 0, currency: plan?.currency ?? META.defaults.currency, cycle: it.subscription.cycle ?? plan?.cycle ?? META.defaults.cycle, due_date: it.subscription.due_date, due_days: 0, billing_tz: it.subscription.billing_tz ?? pv?.timezone ?? META.org_timezone, auto_renew: false, remind_days: pv?.remind_days ?? META.defaults.remind_days, traffic_gb: plan?.traffic_gb || null, traffic_reset_day: 1 } as NonNullable<MachineView['subscription']>) : null,
-    agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, quota: { used: 0, period_start: '', rule: null, base: null, base_at: null }, health: { status: 'unknown', reasons: [{ key: 'provisioning', severity: 'info', text: '上架作业进行中' }] }, active_job: null, failed_job: null, open_incidents: 0, maintenance: false,
+    agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, nic: null, month_counted_from: null, quota: { used: 0, period_start: '', period_end: null, mode: 'monthly', counted_from: null, rule: null, base: null }, health: { status: 'unknown', reasons: [{ key: 'provisioning', severity: 'info', text: '上架作业进行中' }] }, active_job: null, failed_job: null, open_incidents: 0, maintenance: false,
     relay: it.kind === 'relay' ? { public_host: it.ip, generation: 1, applied_generation: 0, applied_at: null, apply_error: null, port_min: 20001, port_max: 20999 } : null,
   };
   if (h) borrowHost(m, h);
@@ -368,7 +367,7 @@ function createMachine(it: ProvisionItem, c: ProvisionCheckItem): MachineView {
     const e: EntryView = { id: `e${db.seq++}`, relay: { id: relay.id, name: relay.name }, node: { id, name: m.name }, direct: false, port: c.relay_port ?? 20999, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 } };
     m.entries = [e]; relay.entries.push(e);
   }
-  recomputeDue(m); m.quota = quotaOf(m, db.machines);
+  recomputeDue(m); Object.assign(m, trafficOf(m, db.machines));
   db.machines.push(m); refreshCounts();
   return m;
 }
@@ -557,10 +556,9 @@ R('POST', '/machines/([^/]+)/purge', ({ params, body }) => {
 });
 R('PUT', '/machines/([^/]+)/subscription', ({ params, body }) => {
   const m = machine(params[0]);
-  // 按面板校准（traffic_used_gb，GB）：记下校准值与时间，不进订阅；null 清掉，没传不动
-  if (body.traffic_used_gb !== undefined) { if (body.traffic_used_gb == null) delete calibration[m.id]; else calibration[m.id] = { base: Math.round(body.traffic_used_gb * 1e9), at: iso() }; delete body.traffic_used_gb; }
+  if (body.traffic_used_gb !== undefined) throw bad('流量已用改为由 agent 按网卡统计，不再按面板校准', 400, 'bad_request');
   m.subscription = { traffic_gb: null, traffic_reset_day: null, ...(m.subscription ?? {} as any), ...body, due_days: 0 };
-  recomputeDue(m); m.quota = quotaOf(m, db.machines); emit({ type: 'machine', id: m.id }); emit({ type: 'machines' }); return clone(m.subscription);
+  recomputeDue(m); Object.assign(m, trafficOf(m, db.machines)); emit({ type: 'machine', id: m.id }); emit({ type: 'machines' }); return clone(m.subscription);
 });
 R('GET', '/machines/([^/]+)/renewals', ({ params }) => clone(db.renewals[params[0]] ?? []));
 R('POST', '/machines/([^/]+)/renewals', ({ params, body }) => {

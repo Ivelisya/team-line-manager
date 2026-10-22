@@ -15,6 +15,7 @@ type ProbeTuple = [boolean, N, number, string | null, N?];
 interface MachinePatch {
   host?: HostTuple | null; seen?: N; agent?: { version: string | null; online: boolean; xray_running: boolean | null; cores: number | null } | null;
   health?: MachineView['health']; maintenance?: boolean; due_days?: N; due_state?: string | null; removed_traffic?: MachineView['removed_traffic']; quota?: MachineView['quota'];
+  nic?: MachineView['nic']; month_counted_from?: MachineView['month_counted_from'];
   active_job?: MachineView['active_job'];
 }
 interface EntryPatch { tcp?: ProbeTuple | null; egress?: ProbeTuple | null; traffic?: EntryView['traffic'] }
@@ -52,6 +53,8 @@ function patchMachine(m: MachineView, msg: MetricsMsg): MachineView {
   if ((d.due_days != null || d.due_state != null) && m.subscription) n.subscription = { ...m.subscription, ...(d.due_days != null && { due_days: d.due_days }), ...(d.due_state != null && { due_state: d.due_state as NonNullable<MachineView['subscription']>['due_state'] }) };
   if (d.removed_traffic) n.removed_traffic = d.removed_traffic;
   if (d.quota) n.quota = d.quota;
+  if (d.nic !== undefined) n.nic = d.nic;
+  if (d.month_counted_from !== undefined) n.month_counted_from = d.month_counted_from;
   if (d.active_job !== undefined) n.active_job = d.active_job;
   const h = d.host;
   if (h && h[7] != null && h[8] != null && !isQuiet(n)) record(m.id, { t: h[0] * 1000, rx: h[7], tx: h[8] });

@@ -3,8 +3,8 @@
 import { MoreHorizontal } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
 import * as F from '@/lib/format';
-import { cycleLabel, isQuiet, liveRate, monthlyHint, quota, quotaGb, remainingValue, resourceMeters, statusRank, trafficTotal } from '@/lib/derive';
-import { Due, Flag, HealthPill, HostTag, Num, type SortState } from '@/components/app/primitives';
+import { cycleLabel, isQuiet, liveRate, monthlyHint, quota, quotaGb, quotaTip, quotaUsedLabel, remainingValue, resourceMeters, statusRank, trafficTotal } from '@/lib/derive';
+import { Due, Flag, HealthPill, HostTag, MonthFlowCell, Num, type SortState } from '@/components/app/primitives';
 import { MachineGrid, byNum, byStr, sortByCol, type Col } from '@/components/app/MachineGrid';
 import { Cells, MiniMeter, quotaColors } from '@/components/app/viz';
 import { IconButton } from '@/components/ui/button';
@@ -16,7 +16,7 @@ const memPct = (m: MachineView) => (!isQuiet(m) && m.host?.mem_total ? (m.host.m
 const diskPct = (m: MachineView) => (!isQuiet(m) && m.host?.disk_total ? (m.host.disk_used ?? 0) / m.host.disk_total : null);
 const PCT = { cpu: cpuPct, mem: memPct, disk: diskPct };
 
-// 列宽合计 1194：1426 宽窗口下内容区约 1079，先收起「月费」「剩余价值」（1046）；更窄时再收「磁盘」「内存」（1267 宽窗口内容区约 921 放得下 882）。
+// 列宽合计 1226：1426 宽窗口下内容区约 1079，先收起「月费」「剩余价值」（1078）；更窄时再收「磁盘」「内存」（1267 宽窗口内容区约 921 放得下 914）。
 // 名称两行（名称 + 小字 IP，同机器页），不再单列 IP；状态单独一列（名称后面不再标）。同机关系标跟在名称后面，只写「同机」/「+N IP」（宿主机名在悬停说明里），
 // 放不下时先省略名称。行尾「⋯」与右键是同一份菜单（MachineGrid 外面的 NodeMenus）
 const cols: Col[] = [
@@ -30,10 +30,10 @@ const cols: Col[] = [
     cell: (m) => { const r = resourceMeters(m); return r ? <MiniMeter pct={r[k].pct} metric={k} empty={isQuiet(m)} /> : <span className="t-muted">—</span>; } })),
   ...(['up', 'down'] as const).map((k): Col => ({ id: k, header: k === 'up' ? '上行' : '下行', size: 92, r: true, ...byNum((m) => (k === 'up' ? liveRate(m)?.tx : liveRate(m)?.rx) ?? null),
     cell: (m) => { const r = liveRate(m); const v = r && (k === 'up' ? r.tx : r.rx); return <span className="trate" data-speed={r ? F.speedOf(v) : undefined}><Num f={F.rate(v)} /></span>; } })),
-  { id: 'traffic', header: '本月业务流量', size: 112, r: true, ...byNum(trafficTotal), cell: (m) => <Num f={F.bytes(trafficTotal(m))} /> },
+  { id: 'traffic', header: '本月流量', size: 144, r: true, ...byNum(trafficTotal), cell: (m) => <MonthFlowCell m={m} /> },
   // 不限额度、与宿主机共用的没有「剩余」可比，排在最后
   { id: 'quota', header: '剩余流量', size: 106, ...byNum((m) => quota(m).rem),
-    cell: (m) => { const q = quota(m); return <span className="tquota" data-tip={`本周期已用 ${F.str(quotaGb(q.used))}（${q.start.slice(5)} 起）${q.shared ? '，额度与宿主机共用' : ''}`}>{q.rem != null && <Cells pct={q.pct} n={8} colors={Q8} />}{q.rem == null ? <span className="t-sub">{q.shared ? '与宿主机共用' : '不限'}</span> : q.rem > 0 ? <Num f={quotaGb(q.rem)} /> : <span className="due" data-tone="bad">已超限</span>}</span>; } },
+    cell: (m) => { const q = quota(m); return <span className="tquota" data-tip={q.rem == null ? (q.shared ? '额度与宿主机共用' : undefined) : `${quotaUsedLabel(q)} ${F.str(quotaGb(q.used))}\n${quotaTip(m)}`}>{q.rem != null && <Cells pct={q.pct} n={8} colors={Q8} />}{q.rem == null ? <span className="t-sub">{q.shared ? '与宿主机共用' : '不限'}</span> : q.rem > 0 ? <Num f={quotaGb(q.rem)} /> : <span className="due" data-tone="bad">已超限</span>}</span>; } },
   { id: 'due', header: '到期', size: 96, r: true, ...byNum((m) => m.subscription?.due_days ?? null, 'asc'), cell: (m) => (m.subscription ? <Due days={m.subscription.due_days} state={m.subscription.due_state} /> : <span className="t-muted">—</span>) },
   { id: 'value', header: '剩余价值', size: 76, r: true, drop: 2, ...byNum((m) => remainingValue(m.subscription)?.cents ?? null), cell: (m) => { const v = remainingValue(m.subscription); return v ? <span className="num">{F.money(v.cents, v.currency)}</span> : <span className="t-muted">—</span>; } },
   // 服务端折好的月费（不同币种直接按数值比）；季付、年付的悬停写原价

@@ -21,24 +21,52 @@ const now = () => Date.now();
 const iso = (t: number) => new Date(t).toISOString();
 const dateOnly = (t: number) => iso(t).slice(0, 10);
 
-/** 按面板校准（PUT subscription 的 traffic_used_gb）：机器 → 校准值（字节）与时间 */
-export const calibration: Record<string, { base: number; at: string }> = {};
+/** 接入前的面板读数（割接遗留，字节）：线路机1 本周期含 400 GB，演示额度格的「含接入前」 */
+const OPENING: Record<string, number> = { r1: 400e9 };
+/** 自己有 agent 的机器（线路机、VPS、宿主机）的网卡流量：业务流量 ×1.08（加密与包头开销），宿主机连同它的同机 IP 节点一起算；家宽代理、同机 IP 节点没有 */
+export function nicOf(m: MachineView, all: MachineView[]): MachineView['nic'] {
+  if (m.kind === 'proxy' || m.host_machine || !m.agent) return null;
+  let tu = 0; let td = 0; let mu = 0; let md = 0;
+  for (const x of [m, ...all.filter((x) => x.host_machine?.id === m.id)]) {
+    const r = x.removed_traffic; tu += r.today_up; td += r.today_down; mu += r.month_up; md += r.month_down;
+    for (const e of x.entries) { tu += e.traffic.today_up; td += e.traffic.today_down; mu += e.traffic.month_up; md += e.traffic.month_down; }
+  }
+  const k = (n: number) => Math.round(n * 1.08);
+  return { today_rx: k(td), today_tx: k(tu), month_rx: k(md), month_tx: k(mu) };
+}
+/** 数据从哪天起才有：上架晚于起点（YYYY-MM-DD）时是上架那天，否则 null */
+const countedFrom = (m: MachineView, since: string) => (m.activated_at && dateOnly(Date.parse(m.activated_at)) > since ? dateOnly(Date.parse(m.activated_at)) : null);
 
-/** 流量额度周期（同服务端 views::period_start）：有重置日取今天或之前最近一次（月份没有这一天按月末），否则本月 1 号；已用按本月业务流量估
- *  （服务端有 agent 的机器按网卡，mock 没有网卡累计，规则一律按取大显示），宿主机连同它的同机 IP 节点（含已退役的）一起算；校准过的加上校准值 */
+/** 流量额度周期（同服务端 views::period_start）：有重置日取今天或之前最近一次（月份没有这一天按月末），否则本月 1 号；搬瓦工的机器（没单独设置重置日的）是滚动 30 天，
+ *  起点 = 今天往前 29 天、没有下次重置日。已用：有网卡读数的机器按供应商规则从网卡算，家宽代理与同机 IP 节点是业务流量（宿主机连同它的同机 IP 节点含已退役的一起算）；
+ *  加上接入前读数（OPENING） */
 export function quotaOf(m: MachineView, all: MachineView[]): MachineView['quota'] {
-  const cal = calibration[m.id];
-  const rule = m.kind === 'proxy' || m.host_machine ? null : 'max';
+  const rule = m.kind === 'proxy' || m.host_machine ? null : ({ p1: 'min', p2: 'out' } as Record<string, MachineView['quota']['rule']>)[m.provider?.id ?? ''] ?? 'max';
   const d = new Date(); const day = m.subscription?.traffic_reset_day ?? 1;
   const at = (y: number, mo: number) => new Date(Date.UTC(y, mo, Math.min(day, new Date(Date.UTC(y, mo + 1, 0)).getUTCDate())));
   let s = at(d.getFullYear(), d.getMonth());
   if (s.getUTCDate() > d.getDate()) s = at(d.getFullYear(), d.getMonth() - 1);
+  const rolling = m.provider?.id === 'p1' && day === 1;
+  if (rolling) s = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate() - 29));
+  const nic = nicOf(m, all);
   let used = 0;
-  for (const x of [m, ...all.filter((x) => x.host_machine?.id === m.id)]) {
+  if (nic && rule) used = rule === 'min' ? Math.min(nic.month_rx, nic.month_tx) : rule === 'max' ? Math.max(nic.month_rx, nic.month_tx) : rule === 'out' ? nic.month_tx : nic.month_rx + nic.month_tx;
+  else for (const x of [m, ...all.filter((x) => x.host_machine?.id === m.id)]) {
     used += x.removed_traffic.month_up + x.removed_traffic.month_down;
     for (const e of x.entries) used += e.traffic.month_up + e.traffic.month_down;
   }
-  return { used: used + (cal?.base ?? 0), period_start: s.toISOString().slice(0, 10), rule, base: cal?.base ?? null, base_at: cal?.at ?? null };
+  const base = OPENING[m.id] ?? null; const start = s.toISOString().slice(0, 10);
+  const limit = m.subscription?.traffic_gb ?? m.plan?.traffic_gb ?? null;
+  return {
+    used: used + (base ?? 0), period_start: start, period_end: rolling ? null : at(d.getFullYear(), d.getMonth() + (s.getUTCMonth() === d.getMonth() ? 1 : 0)).toISOString().slice(0, 10),
+    mode: rolling ? 'rolling30' : 'monthly', counted_from: base == null ? countedFrom(m, start) : null, rule, base,
+    limit_gb: limit && limit > 0 ? limit : null, limit_source: m.host_machine ? 'host' : limit && limit > 0 ? (m.subscription?.traffic_gb != null ? 'subscription' : 'plan') : 'none',
+  };
+}
+/** 机器的流量字段（服务端算好的）：网卡今日 / 本月、本月从哪天起有数、额度周期 */
+export function trafficOf(m: MachineView, all: MachineView[]): Pick<MachineView, 'nic' | 'month_counted_from' | 'quota'> {
+  const d = new Date();
+  return { nic: nicOf(m, all), month_counted_from: countedFrom(m, new Date(Date.UTC(d.getFullYear(), d.getMonth(), 0)).toISOString().slice(0, 10)), quota: quotaOf(m, all) };
 }
 
 export interface Db {
@@ -60,8 +88,8 @@ export function buildDb(): Db {
     { id: 't2', name: '团队2', sort_order: 2, spare: false, node_count: 0 },
   ];
   const providers: Provider[] = [
-    { id: 'p1', name: '搬瓦工', code: 'BWH', panel_url: 'https://panel.example.com/bwh', timezone: 'America/Los_Angeles', traffic_rule: 'min' },
-    { id: 'p2', name: '腾讯云', code: 'TCT', panel_url: 'https://panel.example.com/tct', timezone: 'Asia/Shanghai', traffic_rule: 'out' },
+    { id: 'p1', name: '搬瓦工', code: 'BWH', panel_url: 'https://panel.example.com/bwh', timezone: 'America/Los_Angeles', traffic_rule: 'min', traffic_reset: 'rolling30' },
+    { id: 'p2', name: '腾讯云', code: 'TCT', panel_url: 'https://panel.example.com/tct', timezone: 'Asia/Shanghai', traffic_rule: 'out', traffic_reset: 'billing' },
     { id: 'p3', name: '家宽服务商', code: 'HOME', panel_url: null, timezone: null, traffic_rule: 'max' },
   ];
   const plans: Plan[] = [
@@ -96,7 +124,7 @@ export function buildDb(): Db {
   const base = (o: Partial<MachineView> & Pick<MachineView, 'id' | 'kind' | 'name' | 'ip'>): MachineView => ({
     team: null, spare: false, number: null, label: null, ssh_port: 22, country: countryOf(o.ip), country_set: null, host_machine: null, bind_ip: null, ip_nodes: [], provider: null, provider_code: null, plan: null, service_ref: null,
     lifecycle: 'active', lifecycle_reason: null, note: '', revision: 1, created_at: iso(now() - 120 * DAY), activated_at: iso(now() - 100 * DAY), retired_at: null,
-    subscription: null, agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, quota: { used: 0, period_start: '', rule: null, base: null, base_at: null }, health: { status: 'ok', reasons: [] },
+    subscription: null, agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, nic: null, month_counted_from: null, quota: { used: 0, period_start: '', period_end: null, mode: 'monthly', counted_from: null, rule: null, base: null }, health: { status: 'ok', reasons: [] },
     active_job: null, failed_job: null, open_incidents: 0, maintenance: false, relay: null, ...o,
   });
 
@@ -110,14 +138,14 @@ export function buildDb(): Db {
     machines.push(base({
       id: d.id, kind: 'relay', name: d.label, label: d.label, ip: d.ip, provider: { id: 'p2', name: '腾讯云' }, provider_code: 'TCT',
       plan: { id: p.id, name: p.name, bandwidth_mbps: p.bandwidth_mbps, traffic_gb: p.traffic_gb }, subscription: sub(d.planId, d.due, p.traffic_gb),
-      agent: { version: '1.0.3', last_report_at: iso(now() - 8000), online: true, xray_running: true, cores: 2, health: null }, host: hostOf(d.id, d.id === 'r1' ? 32 : 18),
+      agent: { version: '1.0.3', last_report_at: iso(now() - 8000), online: true, xray_running: true, cores: 2, health: null, nic_ifaces: ['ens3'] }, host: hostOf(d.id, d.id === 'r1' ? 32 : 18),
       relay: { public_host: d.host, generation: d.gen, applied_generation: d.applied, applied_at: iso(now() - 2 * 3600_000), apply_error: null, port_min: 20001, port_max: 20999 },
       health: { status: 'ok', reasons: [] },
     }));
   }
 
   // 节点定义：团队、编号、套餐、状态
-  type Def = { team: 't1' | 't2'; n: number; kind: 'vps' | 'proxy'; planId: string; relay: 'r1' | 'r2'; due: number; status?: HealthStatus; online?: boolean; resetDay?: number; lifecycle?: Lifecycle; cpu?: number; octet?: number; provider?: string };
+  type Def = { team: 't1' | 't2'; n: number; kind: 'vps' | 'proxy'; planId: string; relay: 'r1' | 'r2'; due: number; status?: HealthStatus; online?: boolean; resetDay?: number; lifecycle?: Lifecycle; cpu?: number; octet?: number; provider?: string; unlimited?: boolean; fresh?: number };
   const defs: Def[] = [];
   const t1Plans = ['pl1', 'pl2', 'pl1', 'pl1', 'pl2', 'pl1', 'pl2', 'pl1', 'pl1', 'pl2', 'pl1', 'pl2'];
   for (let i = 1; i <= 12; i++) defs.push({ team: 't1', n: i, kind: 'vps', planId: t1Plans[i - 1], relay: 'r1', due: [22, 41, 8, 60, 2, 75, 33, 15, 90, 4, 28, 51][i - 1], cpu: 8 + Math.floor(r() * 40), octet: 10 + i });
@@ -130,6 +158,8 @@ export function buildDb(): Db {
   ov('t2', 7, { lifecycle: 'retiring', status: 'inactive' }); ov('t2', 9, { status: 'unknown' });
   ov('t2', 10, { lifecycle: 'retiring', status: 'inactive' }); // 退役作业失败（j-retfail），停在退役中
   ov('t1', 10, { cpu: 86 });
+  ov('t1', 6, { unlimited: true }); ov('t2', 6, { unlimited: true }); // 不限流量的 VPS
+  ov('t1', 12, { fresh: 3 }); ov('t2', 11, { fresh: 3 }); // 刚接入几天：本月 / 本周期数据不完整（「X 起」）
 
   for (const d of defs) {
     const team = teams.find((t) => t.id === d.team)!;
@@ -160,11 +190,11 @@ export function buildDb(): Db {
       id, kind: d.kind, name, team: { id: team.id, name: team.name }, number: d.n, ip: `${d.team === 't1' ? '198.51.100' : '203.0.113'}.${d.octet ?? 50}`,
       provider: { id: pv.id, name: pv.name }, provider_code: pv.code, plan: { id: p.id, name: p.name, bandwidth_mbps: p.bandwidth_mbps, traffic_gb: p.traffic_gb },
       service_ref: `SVC-${1000 + d.n + (d.team === 't2' ? 40 : 0)}`, lifecycle, lifecycle_reason: lifecycle === 'retiring' ? '客户退租' : null,
-      subscription: { ...sub(d.planId, d.due, p.traffic_gb || null), traffic_reset_day: d.resetDay ?? 1 },
-      agent: d.kind === 'proxy' ? null : { version: '1.0.3', last_report_at: iso(now() - (offline ? 14 * 60_000 : 9000)), online: !offline && status !== 'unknown', xray_running: null, cores: 2, health: null },
+      subscription: { ...sub(d.planId, d.due, d.unlimited ? 0 : p.traffic_gb || null), traffic_reset_day: d.resetDay ?? 1 },
+      agent: d.kind === 'proxy' ? null : { version: '1.0.3', last_report_at: iso(now() - (offline ? 14 * 60_000 : 9000)), online: !offline && status !== 'unknown', xray_running: null, cores: 2, health: null, nic_ifaces: ['ens3'] },
       host: d.kind === 'proxy' || status === 'unknown' ? null : hostOf(id, d.cpu ?? 20),
       entries: [entry], health: { status, reasons }, maintenance: status === 'maintenance', open_incidents: offline ? 2 : down ? 1 : status === 'degraded' ? 1 : 0,
-      note: d.n === 1 ? '主力线路，勿动' : '',
+      note: d.n === 1 ? '主力线路，勿动' : '', ...(d.fresh && { activated_at: iso(now() - d.fresh * DAY) }),
     });
     if (offline && m.host) { m.host.ts = iso(now() - 14 * 60_000); }
     if (id === 'm-t2-06' && m.host) m.host.load1 = null; // LXC 容器：agent 拿不到本机负载
@@ -230,7 +260,7 @@ export function buildDb(): Db {
   machines[1].health = { status: 'degraded', reasons: [{ key: 'relay_apply_lag', severity: 'warning', text: '配置未应用（配置代数 8 · 已应用 7）' }] };
   machines[1].host = hostOf('r2', 58);
 
-  for (const m of machines) m.quota = quotaOf(m, machines);
+  for (const m of machines) Object.assign(m, trafficOf(m, machines));
   // 统计
   for (const t of teams) t.node_count = machines.filter((m) => m.team?.id === t.id && m.lifecycle !== 'retired').length;
   for (const p of plans) p.machine_count = machines.filter((m) => m.plan?.id === p.id && m.lifecycle !== 'retired').length;

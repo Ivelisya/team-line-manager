@@ -26,8 +26,10 @@ export const ruleLabel = (k: string) => lbl(meta().rules, k);
 export const trafficRuleLabel = (k: string) => lbl(meta().traffic_rules, k);
 /** 网卡计量规则写在费用页签「本周期已用」下面一行：「按网卡流量：入站和出站取较大值」（名字同供应商对话框，来自 /meta） */
 export const trafficRulePlain = (k: string) => `按网卡流量：${trafficRuleLabel(k)}`;
-/** 流量重置方式：自然月 / 账单日 */
+/** 流量重置方式：自然月 / 账单日 / 滚动 30 天 */
 export const trafficResetLabel = (k: string) => lbl(meta().traffic_resets, k);
+/** 流量重置方式的说法：按自然月、按账单日、滚动 30 天 */
+export const trafficResetText = (k: string) => (k === 'rolling30' ? trafficResetLabel(k) : `按${trafficResetLabel(k)}`);
 /** 计费周期的那个字：月 / 季 / 半年 / 年 */
 export const cycleLabel = (k: string) => meta().cycles.find((c) => c.key === k)?.label ?? k;
 export const dueStateLabel = (k: string) => lbl(meta().due_states, k);
@@ -59,8 +61,26 @@ export function monthTraffic(m: MachineView) {
   for (const e of m.entries) { up += e.traffic.month_up; down += e.traffic.month_down; tu += e.traffic.today_up; td += e.traffic.today_down; }
   return { up, down, today_up: tu, today_down: td };
 }
-/** 本月业务流量合计（下载 + 上传）：卡片、表格、机器页按「本月业务流量」排序共用 */
-export const trafficTotal = (m: MachineView) => { const t = monthTraffic(m); return t.up + t.down; };
+/** 本月流量（卡片底行、首页表格、机器页的「本月流量」）：自己有 agent 的机器是网卡口径（down = 下行、up = 上行），
+ *  家宽代理、同机 IP 节点是业务口径（down = 下载、up = 上传）；from：数据从哪天起才有（不完整时） */
+export function monthFlow(m: MachineView) {
+  const from = m.month_counted_from ?? null;
+  if (m.nic) return { kind: 'nic' as const, down: m.nic.month_rx, up: m.nic.month_tx, total: m.nic.month_rx + m.nic.month_tx, from };
+  const t = monthTraffic(m);
+  return { kind: 'biz' as const, down: t.down, up: t.up, total: t.down + t.up, from };
+}
+/** 本月流量合计（主值）：卡片、表格、机器页按「本月流量」排序共用 */
+export const trafficTotal = (m: MachineView) => monthFlow(m).total;
+/** 日期写成「10-22」：服务端给日期（YYYY-MM-DD）或时刻，时刻取组织时区的那一天 */
+export const mmdd = (s: string) => (/^\d{4}-\d{2}-\d{2}$/.test(s) ? s : new Intl.DateTimeFormat('sv-SE', { timeZone: meta().org_timezone }).format(new Date(s))).slice(5);
+/** 本月流量的悬停说明（卡片底行、表格、流量页签）：口径，数据不完整时再加全句（数字后面只留灰字「10-22 起」） */
+export function monthFlowTip(m: MachineView) {
+  const f = monthFlow(m);
+  return [
+    f.kind === 'nic' ? '网卡流量（供应商计费口径）：下行 = 本机收，上行 = 本机发' : m.host_machine ? '网卡与宿主机共用，这里是经它的业务流量（下载 / 上传）' : '业务流量（用户视角）：经入口的下载 / 上传',
+    f.from && `${mmdd(f.from)} 起才有这台机器的流量数据，之前的用量不在内；供应商控制台按自开通累计，数会更大`,
+  ].filter(Boolean).join('\n');
+}
 
 /** 探测 / 应用的英文原始错误 → 中文（抽屉、卡片的健康原因、告警悬停卡片共用）。只换认得的片段，前面的中文（「出口不通：」）
  *  和认不出的原样留着。片段只吃 ASCII 字符，不会把前缀一起吞掉。
@@ -94,9 +114,39 @@ const GB = 1e9;
 export function quota(m: MachineView) {
   // 旧接口（模拟数据）没有 limit_gb 时退回订阅 / 套餐的
   const limit = m.quota.limit_gb !== undefined ? m.quota.limit_gb ?? 0 : m.subscription?.traffic_gb ?? m.plan?.traffic_gb ?? 0;
-  const { used, period_start: start, rule, base_at: baseAt } = m.quota;
+  const { used, period_start: start, period_end: end, counted_from: from, rule, base } = m.quota;
   const shared = m.quota.limit_source ? m.quota.limit_source === 'host' : !!m.host_machine && !(limit > 0);
-  return { limit, used, start, rule, baseAt, pct: limit > 0 ? (used / (limit * GB)) * 100 : null, rem: limit > 0 ? Math.max(0, limit * GB - used) : null, shared, source: m.quota.limit_source };
+  return { limit, used, start, end, from, base, rolling: m.quota.mode === 'rolling30', rule, pct: limit > 0 ? (used / (limit * GB)) * 100 : null, rem: limit > 0 ? Math.max(0, limit * GB - used) : null, shared, unlimited: !(limit > 0) && !shared, source: m.quota.limit_source };
+}
+/** 额度格里已用的叫法：滚动 30 天的是「近 30 天已用」 */
+export const quotaUsedLabel = (q: ReturnType<typeof quota>) => (q.rolling ? '近 30 天已用' : '本周期已用');
+/** 额度怎么计的一句话：规则 · 按哪块网卡（家宽代理、同机 IP 节点是业务流量，没有规则） */
+export function quotaRuleText(m: MachineView) {
+  const { rule } = m.quota; const nics = m.agent?.nic_ifaces;
+  return rule ? `${trafficRulePlain(rule)}${nics?.length ? ` · 按 ${nics.join('、')} 计` : ''}` : '按业务流量';
+}
+/** 流量周期（费用页签）：「每月 13 号重置（跟随供应商：按账单日）· 10-13 → 11-13」，滚动 30 天「滚动 30 天（跟随供应商）」 */
+export function quotaCycleText(m: MachineView) {
+  const q = quota(m);
+  if (q.rolling) return '滚动 30 天（跟随供应商）';
+  const from = isOverridden(m.subscription, 'traffic_reset_day') ? '单独设置' : m.sub_template ? `${inheritSource(m, 'traffic_reset_day')}：${trafficResetText(m.sub_template.traffic_reset)}` : '';
+  return `每月 ${m.subscription?.traffic_reset_day ?? Number(q.start.slice(8))} 号重置${from && `（${from}）`} · ${mmdd(q.start)} → ${mmdd(q.end!)}`;
+}
+/** 已用的补充说明（各一句）：含接入前读数、数据不完整（之前的用量不在内） */
+export function quotaNotes(m: MachineView) {
+  const q = quota(m);
+  return [
+    q.base != null && `含接入前 ${F.str(quotaGb(q.base))}（供应商面板读数，${mmdd(q.end!)} 起不再使用）`,
+    q.from && `${mmdd(q.from)} 起才有数据，之前的用量不在内，实际剩余可能更少`,
+  ].filter((x): x is string => !!x);
+}
+/** 额度格右侧「已用 / 上限」的悬停：周期起止 · 计量规则（含按哪块网卡），再接补充说明 */
+export function quotaTip(m: MachineView) {
+  const q = quota(m);
+  return [
+    `${q.rolling ? `近 30 天（${mmdd(q.start)} 起）` : `${mmdd(q.start)} → ${mmdd(q.end!)}（每月 ${m.subscription?.traffic_reset_day ?? Number(q.start.slice(8))} 号重置）`} · ${quotaRuleText(m)}`,
+    ...quotaNotes(m),
+  ].join('\n');
 }
 
 /** 订阅各项跟随谁：价格、币种、周期、流量上限跟随套餐，账单时区、提前提醒、流量重置日跟随供应商（同服务端 sub_template） */
@@ -136,7 +186,8 @@ export function subValueText(k: SubField, v: string | number | null, currency?: 
 export function inheritSummary(plan: Plan, pv: Provider | undefined) {
   const M = meta();
   const fee = `${subValueText('price_cents', plan.price_cents, plan.currency)} / ${cycleLabel(plan.cycle)}`;
-  const reset = `按${lbl(M.traffic_resets, pv?.traffic_reset ?? M.defaults.traffic_reset)}重置`;
+  const rk = pv?.traffic_reset ?? M.defaults.traffic_reset;
+  const reset = rk === 'rolling30' ? trafficResetLabel(rk) : `${trafficResetText(rk)}重置`;
   return {
     text: `跟随套餐「${plan.name}」`,
     tip: `套餐：${fee} · 流量 ${subValueText('traffic_gb', plan.traffic_gb)}\n`

@@ -7,17 +7,17 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { flushSync } from 'react-dom';
 import { m as mo } from 'motion/react'; // 别名：组件里的 props 叫 m（机器）
 import { SPRING } from '@/lib/motion';
-import { ArrowDown, ArrowUp, Calendar, CircleDollarSign, Cpu, Database, Gauge, Globe, HardDrive, MemoryStick, MoreHorizontal, Radar, RefreshCw, Settings2, PanelRightOpen, ServerOff, Wallet } from 'lucide-react';
+import { ArrowDown, ArrowDownUp, ArrowUp, Calendar, CircleDollarSign, Cpu, Database, Gauge, Globe, HardDrive, MemoryStick, MoreHorizontal, Radar, RefreshCw, Settings2, PanelRightOpen, ServerOff, Wallet } from 'lucide-react';
 import type { DueState, MachineView, ProbeBeats, Subscription } from '@/lib/types';
 import * as F from '@/lib/format';
-import { autoDeletes, BEAT_LEGEND, BEAT_LEGEND_RELAY, beatCells, beatRate, beatTitles, dueTone, entryText, errText, hasHost, hostRel, isQuiet, limitGb, liveRate, monthlyHint, monthTraffic, probeSummary, quota, quotaGb, remainingValue, resourceMeters, subLabel, trafficTotal } from '@/lib/derive';
+import { autoDeletes, BEAT_LEGEND, BEAT_LEGEND_RELAY, beatCells, beatRate, beatTitles, dueTone, entryText, errText, hasHost, hostRel, isQuiet, limitGb, liveRate, monthFlow, monthFlowTip, monthlyHint, monthTraffic, probeSummary, quota, quotaGb, quotaTip, quotaUsedLabel, remainingValue, resourceMeters, subLabel, trafficTotal } from '@/lib/derive';
 import { useProbeBeats } from '@/lib/queries';
 import { useLiveSeries } from '@/lib/live';
 import { useNow } from '@/lib/useNow';
 import { sharedObserver, watchSize } from '@/lib/sharedObserver';
 import { type DrawerTab } from '@/lib/drawer';
 import { cn } from '@/lib/utils';
-import { Beat, Due, Flag, HealthPill, LabelValue, Mark, Num, SpareDue } from './primitives';
+import { Beat, Due, Flag, FromTag, HealthPill, LabelValue, Mark, Num, SpareDue } from './primitives';
 import { MachineTag, machineTagItems } from './MachineTags';
 import { CellMeter, Cells, DotTrace, QUOTA_COLORS, Tag } from './viz';
 import { Button, IconButton } from '@/components/ui/button';
@@ -121,16 +121,16 @@ function FlowCol({ dir, rate, values, dots, live, onOpen }: { dir: 'up' | 'down'
 function Flow({ m, onOpen, totals, compact, paused }: { m: MachineView; onOpen: Open; totals?: boolean; compact?: boolean; paused: Paused }) {
   const tr = useLiveSeries(m.id, paused);
   const tx = useMemo(() => tr.map((p) => p.tx), [tr]); const rx = useMemo(() => tr.map((p) => p.rx), [tr]); // 迹线没变时 DotTrace（memo）不重画
-  const r = liveRate(m); const t = monthTraffic(m);
+  const r = liveRate(m); const t = monthFlow(m);
   return (
     <div className="flow">
       <FlowCol dir="up" rate={r?.tx ?? null} values={tx} dots={compact ? 20 : undefined} live={r != null} onOpen={onOpen} />
       <FlowCol dir="down" rate={r?.rx ?? null} values={rx} dots={compact ? 20 : undefined} live={r != null} onOpen={onOpen} />
-      {/* 业务流量按用户视角（下载 = downlink、上传 = uplink），和本机网卡的上行 / 下行不是一回事，单独一行 */}
+      {/* 本月流量单独一行：有 agent 的是网卡口径（下行 / 上行，供应商计费口径）；同机 IP 节点没有自己的网卡，是业务流量（用户视角的下载 / 上传）。两种不混在一行 */}
       {totals && (
-        <button type="button" className="flow-foot flow-biz" onClick={() => onOpen('traffic')}>
-          <span className="flow-foot-label"><Globe />本月业务</span>
-          <span>下载 <Num f={F.bytes(t.down)} /> · 上传 <Num f={F.bytes(t.up)} /></span><span className="sr-only">（查看流量页签）</span>
+        <button type="button" className="flow-foot flow-biz" data-tip={monthFlowTip(m)} onClick={() => onOpen('traffic')}>
+          {t.kind === 'nic' ? <span className="flow-foot-label"><ArrowDownUp />本月</span> : <span className="flow-foot-label"><Globe />本月业务</span>}
+          <span className="flow-vals">{t.kind === 'nic' ? <>↓ 下行 <Num f={F.bytes(t.down)} /> · ↑ 上行 <Num f={F.bytes(t.up)} /></> : <>下载 <Num f={F.bytes(t.down)} /> · 上传 <Num f={F.bytes(t.up)} /></>}<FromTag from={t.from} /></span><span className="sr-only">（查看流量页签）</span>
         </button>
       )}
     </div>
@@ -138,9 +138,9 @@ function Flow({ m, onOpen, totals, compact, paused }: { m: MachineView; onOpen: 
 }
 
 /** 两列大号读数（家宽代理：本月业务流量、探测延迟），外观同网卡速率；整块可点，打开对应页签 */
-function Pair({ cols, tab, label, onOpen }: { cols: { icon: React.ReactNode; label: string; value: React.ReactNode; sub?: React.ReactNode }[]; tab: DrawerTab; label: string; onOpen: Open }) {
+function Pair({ cols, tab, label, tip, onOpen }: { cols: { icon: React.ReactNode; label: string; value: React.ReactNode; sub?: React.ReactNode }[]; tab: DrawerTab; label: string; tip?: string; onOpen: Open }) {
   return (
-    <button type="button" className="flow nc-pair nc-click" onClick={() => onOpen(tab)}>
+    <button type="button" className="flow nc-pair nc-click" data-tip={tip} onClick={() => onOpen(tab)}>
       {cols.map((c) => (
         <span key={c.label} className="flow-col">
           <span className="flow-head"><span className="flow-label">{c.icon}{c.label}</span><span className="flow-rate">{c.value}</span></span>
@@ -151,11 +151,11 @@ function Pair({ cols, tab, label, onOpen }: { cols: { icon: React.ReactNode; lab
     </button>
   );
 }
-/** 家宽代理：本月业务流量（下载 / 上传），副行今日 */
+/** 家宽代理：本月业务流量（下载 / 上传），副行今日；不完整时今日后面跟灰字「10-22 起」 */
 function BizPair({ m, onOpen, today }: { m: MachineView; onOpen: Open; today?: boolean }) {
   const t = monthTraffic(m);
-  return <Pair tab="traffic" label="查看流量页签" onOpen={onOpen} cols={[
-    { icon: <ArrowDown />, label: '本月下载', value: <Num f={F.bytes(t.down)} />, sub: today && <>今日 <Num f={F.bytes(t.today_down)} /></> },
+  return <Pair tab="traffic" label="查看流量页签" onOpen={onOpen} tip={monthFlowTip(m)} cols={[
+    { icon: <ArrowDown />, label: '本月下载', value: <Num f={F.bytes(t.down)} />, sub: today && <>今日 <Num f={F.bytes(t.today_down)} /><FromTag from={m.month_counted_from} /></> },
     { icon: <ArrowUp />, label: '本月上传', value: <Num f={F.bytes(t.up)} />, sub: today && <>今日 <Num f={F.bytes(t.today_up)} /></> },
   ]} />;
 }
@@ -173,17 +173,20 @@ function ProbePair({ m, onOpen }: { m: MachineView; onOpen: Open }) {
   ]} />;
 }
 
-/** 剩余流量：标题 + 剩余量，右侧本周期已用 / 上限（周期按流量重置日），下面绿→黄→红的格条（不限额度不画）；点击打开流量页签。
+/** 剩余流量：标题 + 剩余量，右侧本周期已用 / 上限（滚动 30 天的是近 30 天已用；周期起止、计量规则、数据不完整的说明在悬停里），
+ *  下面绿→黄→红的格条；点击打开流量页签。不限流量的只写「流量不限」（不显示已用，也不画格条）。
  *  同机 IP 节点自己没设上限：额度与宿主机共用（算在宿主机的已用里） */
 function QuotaSlot({ m, onOpen }: { m: MachineView; onOpen: Open }) {
   const q = quota(m);
   return (
     <button type="button" className="nc-quota" onClick={() => onOpen('traffic')}>
       <span className="nc-qhead">
-        <span className="nc-qlabel"><Database />剩余流量
-          <b className={cn('num', q.rem === 0 && 'is-bad')}>{q.rem == null ? (q.shared ? '与宿主机共用' : '不限') : q.rem > 0 ? <Num f={quotaGb(q.rem)} /> : '已超限'}</b>
-        </span>
-        <span className="nc-quse" data-tip={`周期 ${q.start.slice(5)} 起`}>本周期已用 <Num f={quotaGb(q.used)} />{q.limit > 0 && <> / <Num f={limitGb(q.limit)} /></>}</span>
+        {q.unlimited ? <span className="nc-qlabel"><Database />流量不限</span> : (
+          <span className="nc-qlabel"><Database />剩余流量
+            <b className={cn('num', q.rem === 0 && 'is-bad')}>{q.rem == null ? '与宿主机共用' : q.rem > 0 ? <Num f={quotaGb(q.rem)} /> : '已超限'}</b>
+          </span>
+        )}
+        {q.limit > 0 && <span className="nc-quse" data-tip={quotaTip(m)}>{quotaUsedLabel(q)} <Num f={quotaGb(q.used)} /> / <Num f={limitGb(q.limit)} /><FromTag from={q.from} /></span>}
       </span>
       {q.rem != null && <Cells pct={q.pct} colors={QUOTA_COLORS} />}
       <span className="sr-only">（查看流量页签）</span>
@@ -293,7 +296,7 @@ const Foot = memo(function Foot({ health, lifecycle, maintenance, show, showTone
     </footer>
   );
 });
-/** footer 里的排序依据（文字）：详细卡、标准卡本来就有到期的不写；详细卡有本月业务流量的不写 */
+/** footer 里的排序依据（文字）：详细卡、标准卡本来就有到期的不写；详细卡有本月流量的不写 */
 function showOf(m: MachineView, show: CardShow | undefined, view: CardView): { text?: string; tone?: string } {
   if (show === 'due' && view === 'compact') {
     const s = m.subscription; if (!s) return { text: '没有到期日' };

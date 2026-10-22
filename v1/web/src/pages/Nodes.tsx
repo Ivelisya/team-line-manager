@@ -8,7 +8,7 @@ import { ChevronRight, RotateCcw, SearchX, X } from 'lucide-react';
 import { useMachines, usePlans, useTeams } from '@/lib/queries';
 import { setDrawerOrder, useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
-import { cycleLabel, healthLabel, kindLabel, lifecycleLabel, meta, monthTraffic, statusOf, statusRank, trafficTotal } from '@/lib/derive';
+import { cycleLabel, healthLabel, kindLabel, lifecycleLabel, meta, monthFlow, statusOf, statusRank, trafficTotal } from '@/lib/derive';
 import { HEALTH_TONE, KIND_ORDER, useStableOrder } from '@/lib/sort';
 import type { MachineView } from '@/lib/types';
 import { Button } from '@/components/ui/button';
@@ -16,7 +16,7 @@ import { SearchInput } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { Segmented, Trunc } from '@/components/ui/overlays';
 import { SkeletonRows } from '@/components/ui/skeleton';
-import { Due, Empty, ErrorNote, Flag, HealthPill, HostTag, Num, PageHead, Panel } from '@/components/app/primitives';
+import { Due, Empty, ErrorNote, Flag, HealthPill, HostTag, MonthFlowCell, Num, PageHead, Panel } from '@/components/app/primitives';
 import { NodeHover } from '@/components/app/NodeHover';
 import { MachineGrid, byNum, byStr, sortByCol, type Col } from '@/components/app/MachineGrid';
 import { Pagination } from '@/components/app/Pagination';
@@ -44,9 +44,9 @@ const notMonthly = (cycle: string) => meta().cycles.find((c) => c.key === cycle)
 /** 行签名：这页的列只显示资产信息（流量按显示精度），不显示实时读数，推送只改读数时行不重渲染（MachineGrid sig）。
  *  列里显示的东西都要在这里——每加一列、列里多显示一个字段，都要同步改这里；悬浮卡不传 m，打开时自己取这台的最新数据 */
 const rowSig = (m: MachineView) => {
-  const t = monthTraffic(m); const s = m.subscription;
+  const f = monthFlow(m); const s = m.subscription;
   return [m.name, m.ip, m.country, m.country_set, m.kind, m.lifecycle, m.maintenance, m.health.status, m.health.reasons.map((r) => `${r.severity}${r.text}`).join(),
-    m.host_machine?.id, m.host_machine?.name, m.ip_nodes.map((x) => `${x.id}:${x.name}`).join(), m.entries.map(entryOf).join(), m.plan?.name, m.provider?.name, F.str(F.bytes(t.up + t.down)), F.str(F.bytes(t.down)),
+    m.host_machine?.id, m.host_machine?.name, m.ip_nodes.map((x) => `${x.id}:${x.name}`).join(), m.entries.map(entryOf).join(), m.plan?.name, m.provider?.name, f.kind, F.str(F.bytes(f.total)), F.str(F.bytes(f.down)), F.str(F.bytes(f.up)), f.from,
     s?.due_days, s?.due_state, s?.due_date, s?.price_cents, s?.monthly_cents, s?.currency, s?.cycle, m.retired_at, m.lifecycle_reason].join('\u0001');
 };
 
@@ -125,8 +125,8 @@ export function NodesPage() {
       { id: 'entry', header: '入口', size: 188, cell: (m) => <EntryCell m={m} /> },
       { id: 'plan', header: '供应商 · 套餐', size: 176, drop: 3,
         cell: (m) => <>{m.plan ? <Trunc className="cell-main">{m.plan.name}</Trunc> : <span className="cell-main t-muted">{m.host_machine ? '不带套餐' : '未设置'}</span>}<span className="sub">{m.provider?.name ?? '—'}</span></> },
-      { id: 'traffic', header: '本月业务流量', size: 112, r: true, ...byNum(trafficTotal),
-        cell: (m) => { const t = monthTraffic(m); return retired && !(t.up + t.down) ? <span className="t-muted">—</span> : <><Num f={F.bytes(t.up + t.down)} /><span className="sub">下载 {F.str(F.bytes(t.down))}</span></>; } },
+      { id: 'traffic', header: '本月流量', size: 144, r: true, ...byNum(trafficTotal),
+        cell: (m) => <MonthFlowCell m={m} empty={retired} /> },
     ];
     if (retired) {
       c.push({ id: 'retired', header: '退役时间 · 原因', size: 170, ...byStr((m) => m.retired_at ?? ''), cell: (m) => <><span className="cell-main">{F.dtFull(m.retired_at)}</span><span className="sub">{m.lifecycle_reason ?? ''}</span></> });

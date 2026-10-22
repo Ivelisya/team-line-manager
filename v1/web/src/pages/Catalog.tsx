@@ -5,7 +5,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { Archive, ArchiveRestore, ArrowRight, ExternalLink, ListOrdered, Pencil, Plus, Trash2 } from 'lucide-react';
 import { fetchRenumber, useAddPlan, useAddProvider, useAddTeam, useDelPlan, useDelProvider, useDelTeam, usePatchPlan, usePatchProvider, usePatchTeam, usePlans, useProviders, useRenumber, useTeams, useTeamsCompact } from '@/lib/queries';
 import type { Plan, Provider, Team, TrafficReset, TrafficRule } from '@/lib/types';
-import { currencyOptions, cycleLabel, cycleOptions, limitGb, meta, trafficResetLabel, trafficRuleLabel } from '@/lib/derive';
+import { currencyOptions, cycleLabel, cycleOptions, limitGb, meta, trafficResetText, trafficRuleLabel } from '@/lib/derive';
 import { collator } from '@/lib/sort';
 import { tzLabel } from '@/lib/tz';
 import { useUrlSort, useUrlState } from '@/lib/urlState';
@@ -183,8 +183,8 @@ const emptyProvider = () => {
 /** 流量计量下拉：供应商怎么算本周期用量（网卡入、出总量） */
 const ruleOptions = () => Object.entries(meta().traffic_rules).map(([value, label]) => ({ value, label }));
 /** 流量重置：每个流量周期从哪天起（括注只是说明） */
-const RESET_NOTE: Record<string, string> = { month: '（每月 1 号）', billing: '（到期日那天）' };
-const resetOptions = () => Object.entries(meta().traffic_resets).map(([value, label]) => ({ value, label: `按${label}${RESET_NOTE[value] ?? ''}` }));
+const RESET_NOTE: Record<string, string> = { month: '（每月 1 号）', billing: '（到期日那天）', rolling30: '（含今天往前 30 天）' };
+const resetOptions = () => Object.keys(meta().traffic_resets).map((value) => ({ value, label: `${trafficResetText(value)}${RESET_NOTE[value] ?? ''}` }));
 /** 留空的账单时区跟随组织时区：「跟随组织 · 上海（UTC+8）」 */
 const orgTz = () => `跟随组织 · ${tzLabel(meta().org_timezone)}`;
 const PROVIDER_COLS = [
@@ -222,7 +222,7 @@ function ProvidersTab() {
               <tr key={p.id}><td className="strong">{p.name}</td><td><Chip>{p.code}</Chip></td>
                 <td data-tip={p.timezone ?? meta().org_timezone}>{p.timezone ? tzLabel(p.timezone) : <span className="t-muted">{orgTz()}</span>}</td>
                 <td>{trafficRuleLabel(p.traffic_rule)}</td>
-                <td data-tip={resetOptions().find((o) => o.value === (p.traffic_reset ?? meta().defaults.traffic_reset))?.label}>按{trafficResetLabel(p.traffic_reset ?? meta().defaults.traffic_reset)}</td>
+                <td data-tip={resetOptions().find((o) => o.value === (p.traffic_reset ?? meta().defaults.traffic_reset))?.label}>{trafficResetText(p.traffic_reset ?? meta().defaults.traffic_reset)}</td>
                 <td>提前 <span className="num">{p.remind_days ?? meta().defaults.remind_days}</span> 天</td>
                 <td className="r num">{planCount.get(p.id) ?? <span className="t-muted">0</span>}</td>
                 {panel && <td>{p.panel_url && /^https?:\/\//i.test(p.panel_url) ? <a href={p.panel_url} target="_blank" rel="noreferrer noopener" className="btn-link btn" style={{ gap: 4, maxWidth: '100%' }}><span className="ellipsis">{p.panel_url.replace(/^https?:\/\//, '')}</span><ExternalLink size={12} /></a> : (p.panel_url || <span className="t-muted">—</span>)}</td>}
@@ -267,7 +267,7 @@ const ProviderDialog = resetOnOpen(function ProviderDialog({ provider, open, onC
         <Field label="面板地址（选填）" className="span-2"><Input value={f.panel_url} onChange={(e) => setF({ ...f, panel_url: e.target.value })} placeholder="https://" /></Field>
         <Field label="账单时区" info="到期日、流量周期按这个时区的日期算" className="span-2"><TzInput value={f.timezone} onChange={(v) => setF({ ...f, timezone: v })} emptyLabel={orgTz()} aria-label="账单时区" /></Field>
         <Field label="流量计量" info="供应商面板怎么算本周期用量（如 GOMAMI 是取较小值）；不清楚就选取较大值，不会少算" className="span-2"><Select value={f.traffic_rule} onChange={(v) => setF({ ...f, traffic_rule: v as TrafficRule })} options={ruleOptions()} /></Field>
-        <Field label="流量重置" info="每个流量周期从哪天起（按账单时区）：按账单日 = 每台机器到期日是几号就几号，月份没有这一天按月末"><Select value={f.traffic_reset} onChange={(v) => setF({ ...f, traffic_reset: v as TrafficReset })} options={resetOptions()} /></Field>
+        <Field label="流量重置" info="每个流量周期从哪天起（按账单时区）：按账单日 = 每台机器到期日是几号就几号，月份没有这一天按月末；滚动 30 天 = 含今天往前 30 天，没有重置日"><Select value={f.traffic_reset} onChange={(v) => setF({ ...f, traffic_reset: v as TrafficReset })} options={resetOptions()} /></Field>
         <Field label="到期提醒" info="到期前多少天开始提醒" error={remindBad ? '填 0–60' : undefined}><UnitInput unit="天前" width={120} inputMode="numeric" value={f.remind_days} onChange={(e) => setF({ ...f, remind_days: e.target.value.replace(/\D/g, '') })} /></Field>
       </div>
     </FormDialog>

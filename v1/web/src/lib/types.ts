@@ -25,7 +25,7 @@ export type DueState = 'ok' | 'soon' | 'overdue';
 export type SubField = 'price_cents' | 'currency' | 'cycle' | 'billing_tz' | 'remind_days' | 'traffic_gb' | 'traffic_reset_day';
 /** 机器的订阅模板：订阅没单独设置的项取这里。没有套餐时 price_cents 为 null（要单独设置价格）；traffic_reset：供应商按自然月 / 账单日重置流量 */
 export interface SubTemplate { price_cents: number | null; currency: string; cycle: Cycle; billing_tz: string; remind_days: number; traffic_gb: number | null; traffic_reset: TrafficReset }
-export type TrafficReset = 'month' | 'billing';
+export type TrafficReset = 'month' | 'billing' | 'rolling30';
 /** 指标缺测（agent 刚装、上报不全）时对应字段为 null，使用处一律按可空处理 */
 export interface HostMetrics {
   ts: string; cpu_pct: number | null; load1: number | null; mem_used: number | null; mem_total: number | null;
@@ -34,6 +34,8 @@ export interface HostMetrics {
 /** median_ms：TCP 探测近 1 小时成功样本的延迟中位数（卡片读数）；出口探测为 null */
 export interface ProbeResult { ok: boolean; latency_ms: number | null; detail: string | null; ts: string; median_ms?: number | null }
 export interface EntryTraffic { today_up: number; today_down: number; month_up: number; month_down: number }
+/** 网卡口径的今日 / 本月流量（字节）：rx = 本机收（下行）、tx = 本机发（上行）。只有自己有 agent 的机器有 */
+export interface NicTraffic { today_rx: number; today_tx: number; month_rx: number; month_tx: number }
 export interface EntryView {
   id: string; relay: { id: string; name: string }; node: { id: string; name: string };
   /** 线路机直出：节点就是线路机自己（node.id = relay.id，node.name =「线路机名-直出」），从线路机自己的 IP 出去；没有 TCP 探测，不能换线路机 / 搬空 */
@@ -75,14 +77,20 @@ export interface MachineView {
   sub_template?: SubTemplate;
   /** cores：agent 报的可用核数（容器里是限额），没报过为 null */
   /** health：agent 自报的健康数据（自 agent 进程启动起累计；旧 agent 没报过为 null），不随实时推送更新 */
-  agent: { version: string | null; last_report_at: string | null; online: boolean; xray_running: boolean | null; cores: number | null; health: AgentHealth | null } | null;
+  agent: { version: string | null; last_report_at: string | null; online: boolean; xray_running: boolean | null; cores: number | null; health: AgentHealth | null; nic_ifaces?: string[] } | null;
   host: HostMetrics | null;
   entries: EntryView[];
   removed_traffic: EntryTraffic; // 已移除入口（如换线路机后的旧入口）今天/本月的流量，不在 entries 里
+  /** 网卡口径的今日 / 本月流量：自己有 agent 的机器（线路机、VPS、宿主机）才有；家宽代理、同机 IP 节点没有，只看业务流量（entries） */
+  nic: NicTraffic | null;
+  /** 本月数据从哪天起才有：机器上架晚于本月 1 号时有值，之前的流量不在内；完整为 null */
+  month_counted_from: string | null;
   /** 流量额度周期：起点（YYYY-MM-DD，有流量重置日按它，否则本月 1 号）与周期内已用（字节）。有 agent 的机器按网卡、照供应商的
-   *  rule 算；家宽代理与同机 IP 节点 rule 为 null，是业务流量。base / base_at：本周期按供应商面板校准时的读数（字节）与时间，没有为 null */
+   *  rule 算；家宽代理与同机 IP 节点 rule 为 null，是业务流量。
+   *  period_end：下次重置日（滚动 30 天为 null）；mode：monthly 按重置日、rolling30 滚动 30 天；counted_from：数据不完整时从哪天起才有；
+   *  base：接入前的面板读数（字节，割接遗留、只读，下个周期起不再使用），没有为 null */
   /** limit_gb / limit_source：生效的流量上限（GB，没有为 null）与来源——subscription 单独设置、plan 跟随套餐、host 同机 IP 节点与宿主机共用、none 不限 */
-  quota: { used: number; period_start: string; rule: TrafficRule | null; base: number | null; base_at: string | null; limit_gb?: number | null; limit_source?: 'subscription' | 'plan' | 'host' | 'none' };
+  quota: { used: number; period_start: string; period_end: string | null; mode: 'monthly' | 'rolling30'; counted_from: string | null; rule: TrafficRule | null; base: number | null; limit_gb?: number | null; limit_source?: 'subscription' | 'plan' | 'host' | 'none' };
   health: { status: HealthStatus; reasons: HealthReason[] };
   active_job: { id: string; kind: string; state: string } | null;
   /** 上架失败（lifecycle = failed）：失败的上架/恢复作业；退役中（retiring）且最近的退役作业失败：那个退役作业 */

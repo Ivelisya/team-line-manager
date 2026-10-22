@@ -26,7 +26,7 @@ import { useStableOrder } from '@/lib/sort';
 /** 排序写成「列 id」，降序前面加「-」（同机器页的 ?sort=）；下拉里的几种常用排序。default = 默认顺序 */
 const SORTS = [
   { value: 'default', label: '默认排序' }, { value: 'name', label: '名称' }, { value: 'due', label: '到期最近' },
-  { value: '-traffic', label: '本月业务流量最多' }, { value: 'status', label: '异常优先' },
+  { value: '-traffic', label: '本月流量最多' }, { value: 'status', label: '异常优先' },
 ];
 const SORTS_CUSTOM = [...SORTS, { value: 'custom', label: '自定义' }];
 const homeSort = (s: string) => (s === 'default' ? null : parseSort(s));
@@ -117,7 +117,7 @@ export function HomePage() {
   // 抽屉的上一台 / 下一台按这里的顺序走（整份筛选结果，不只当前页）；离开首页还给默认顺序
   React.useEffect(() => { setDrawerOrder(stable.map((m) => m.id)); }, [stable]);
   React.useEffect(() => () => setDrawerOrder(null), []);
-  // 按到期、本月业务流量排序时，卡片上露出排序依据
+  // 按到期、本月流量排序时，卡片上露出排序依据
   const show: CardShow | undefined = sort?.id === 'due' ? 'due' : sort?.id === 'traffic' ? 'traffic' : undefined;
 
   const o = ov.data;
