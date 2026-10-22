@@ -2,6 +2,7 @@
 //!
 //! 主机公钥：上架预检时 keyscan 一次并写入中控自己的 known_hosts（TOFU），之后一律 StrictHostKeyChecking=yes。
 //! 已有记录的主机指纹变化时预检失败（除非作业明确允许重置）。known_hosts 是共用文件，读写由全局锁串行化。
+//! 退役时记录从 known_hosts 删掉、存到机器行（retired_host_keys），恢复时放回再核对，不重新首次信任。
 //! 连接类的瞬时错误（超时、拒绝、被重置…）在 `run` / `push` 里自动重试 3 次；用户命令走 `run_once`，不重试。
 
 use anyhow::{bail, Context};
@@ -295,13 +296,61 @@ pub fn fingerprint(key: &str) -> String {
     }
 }
 
+/// known_hosts 文本里这台主机（host_spec）的记录行
+fn lines_of<'a>(text: &'a str, spec: &str) -> Vec<&'a str> {
+    text.lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .filter(|l| {
+            let p: Vec<&str> = l.split_whitespace().collect();
+            p.len() >= 3 && p[0].split(',').any(|h| h == spec)
+        })
+        .collect()
+}
+
+/// known_hosts 行（可多行）里的「类型 公钥」，不管主机字段
+pub fn keys_of(lines: &str) -> Vec<String> {
+    lines
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .filter_map(|l| {
+            let p: Vec<&str> = l.split_whitespace().collect();
+            (p.len() >= 3).then(|| format!("{} {}", p[1], p[2]))
+        })
+        .collect()
+}
+
 /// known_hosts 里这台主机已记录的「类型 公钥」
 async fn pinned_key(known_hosts: &Path, spec: &str) -> Option<String> {
     let text = tokio::fs::read_to_string(known_hosts).await.ok()?;
-    text.lines().filter(|l| !l.trim_start().starts_with('#')).find_map(|l| {
-        let p: Vec<&str> = l.split_whitespace().collect();
-        (p.len() >= 3 && p[0].split(',').any(|h| h == spec)).then(|| format!("{} {}", p[1], p[2]))
-    })
+    lines_of(&text, spec).first().and_then(|l| keys_of(l).pop())
+}
+
+/// known_hosts 里这台主机的记录行（退役、取消时存到 machine.retired_host_keys），没有记录为 None
+pub async fn host_lines(known_hosts: &Path, ip: &str, port: u16) -> anyhow::Result<Option<String>> {
+    let _g = KNOWN_HOSTS_LOCK.lock().await;
+    let text = match tokio::fs::read_to_string(known_hosts).await {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).context("读 known_hosts"),
+    };
+    let ls = lines_of(&text, &host_spec(ip, port));
+    Ok((!ls.is_empty()).then(|| ls.join("\n")))
+}
+
+/// 恢复时把退役时存下的公钥放回 known_hosts（主机字段按现在的 IP 和端口写）。这台主机已有记录就不动：
+/// 那是本次恢复先前放回的、或重试时重置过的。之后照常 pin_host_key（不许重置）核对。返回是否写了
+pub async fn put_back_host_keys(known_hosts: &Path, ip: &str, port: u16, saved: &str) -> anyhow::Result<bool> {
+    let spec = host_spec(ip, port);
+    let keys = keys_of(saved);
+    let _g = KNOWN_HOSTS_LOCK.lock().await;
+    if keys.is_empty() || pinned_key(known_hosts, &spec).await.is_some() {
+        return Ok(false);
+    }
+    let text: String = keys.iter().map(|k| format!("{spec} {k}\n")).collect();
+    let mut f = tokio::fs::OpenOptions::new().create(true).append(true).open(known_hosts).await?;
+    f.write_all(text.as_bytes()).await?;
+    f.flush().await?;
+    Ok(true)
 }
 
 /// keyscan 拿 ed25519 公钥（两次，必须一致）并写入 known_hosts。返回「类型 公钥」。
@@ -402,5 +451,25 @@ mod tests {
         assert_eq!(host_spec("1.2.3.4", 22), "1.2.3.4");
         assert_eq!(host_spec("1.2.3.4", 2222), "[1.2.3.4]:2222");
         assert!(fingerprint("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGWz").starts_with("SHA256:"));
+    }
+
+    #[tokio::test]
+    async fn retired_keys_round_trip() {
+        let text = "# c\n[1.2.3.4]:2222 ssh-ed25519 AAAA1\n1.2.3.4 ssh-ed25519 AAAA2\n[1.2.3.40]:2222 ssh-ed25519 AAAA3\n";
+        assert_eq!(lines_of(text, "[1.2.3.4]:2222"), ["[1.2.3.4]:2222 ssh-ed25519 AAAA1"]);
+        assert_eq!(keys_of("[1.2.3.4]:2222 ssh-ed25519 AAAA1\nbad\n"), ["ssh-ed25519 AAAA1"]);
+        let dir = std::env::temp_dir().join(format!("fleet-kh-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let kh = dir.join("known_hosts");
+        assert_eq!(host_lines(&kh, "1.2.3.4", 2222).await.unwrap(), None, "文件不存在");
+        std::fs::write(&kh, text).unwrap();
+        let saved = host_lines(&kh, "1.2.3.4", 2222).await.unwrap().unwrap();
+        assert_eq!(saved, "[1.2.3.4]:2222 ssh-ed25519 AAAA1");
+        // 已有记录不覆盖；没有记录时按现在的端口写回
+        assert!(!put_back_host_keys(&kh, "1.2.3.4", 2222, "x ssh-ed25519 OTHER").await.unwrap());
+        assert!(put_back_host_keys(&kh, "1.2.3.4", 2200, &saved).await.unwrap());
+        assert_eq!(pinned_key(&kh, "[1.2.3.4]:2200").await.as_deref(), Some("ssh-ed25519 AAAA1"));
+        assert!(!put_back_host_keys(&kh, "5.6.7.8", 22, "").await.unwrap(), "存的内容为空不写");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

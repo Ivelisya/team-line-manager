@@ -146,6 +146,10 @@ pub fn restore(ctx: &Ctx, o: RestoreOpts) -> anyhow::Result<u8> {
     if o.no_probe {
         q.push(("probe", "false".into()));
     }
+    // 主机指纹与退役时不同：带了 --reset-host-key 只提醒，不阻断
+    if o.reset_host_key {
+        q.push(("reset_host_key", "true".into()));
+    }
     let pv = ctx.c.call(reqwest::Method::GET, &format!("/machines/{id}/restore"), &q, None, RESTORE_PREVIEW_TIMEOUT)?;
     if !ctx.json {
         let mut rows = vec![

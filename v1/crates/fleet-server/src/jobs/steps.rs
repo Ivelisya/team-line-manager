@@ -165,6 +165,18 @@ const NO_PASSWORD_HINT: &str = "（提供过的密码用过即丢，失败作业
 
 async fn preflight(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let m = c.machine().await?;
+    // 该 IP 已有记录且指纹变了：失败，除非作业参数明确允许重置（机器重装过）
+    let allow_reset = c.job.params["reset_host_key"].as_bool().unwrap_or(false);
+    // 恢复：退役时存下的主机公钥先放回 known_hosts，下面 pin_host_key 就按它核对（IP 换了主人则失败，不首次信任）。
+    // 勾了「重置主机指纹」、或这次改动之前退役没存过的，照旧按现在的公钥重新记录
+    if c.job.kind.starts_with("restore_") && !allow_reset {
+        let saved: Option<String> = sqlx::query_scalar("select retired_host_keys from machine where id = $1").bind(m.id).fetch_one(&c.st.db).await?;
+        if let Some(s) = saved {
+            if ssh::put_back_host_keys(&c.st.cfg.known_hosts, &m.ip, m.ssh_port as u16, &s).await? {
+                c.log("已放回退役时记录的主机公钥，按它核对").await;
+            }
+        }
+    }
     let mut up = false;
     for _ in 0..3 {
         if ssh::tcp_ok(&m.ip, m.ssh_port as u16, Duration::from_secs(5)).await {
@@ -176,8 +188,6 @@ async fn preflight(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     if !up {
         return Err(StepError::err(ErrKind::Network, format!("{}:{} 的 SSH 端口连不上", m.ip, m.ssh_port)));
     }
-    // 该 IP 已有记录且指纹变了：失败，除非作业参数明确允许重置（机器重装过）
-    let allow_reset = c.job.params["reset_host_key"].as_bool().unwrap_or(false);
     let fp = ssh::pin_host_key(&c.st.cfg.known_hosts, &m.ip, m.ssh_port as u16, allow_reset).await?;
     c.log(format!("主机公钥已记录/核对 {}", ssh::fingerprint(&fp))).await;
     let mut out = c.ssh(&m, None).run(scripts::FACTS, Duration::from_secs(30)).await?;
@@ -772,13 +782,13 @@ async fn verify(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
 async fn activate(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let id = c.target_id()?;
     if c.job.kind.starts_with("restore_") {
-        // 恢复已退役的机器：清掉退役时间，原因记「已恢复：…」，历史、账单、审计都挂在原来的机器 id 上
+        // 恢复已退役的机器：清掉退役时间（和退役时存的主机公钥，known_hosts 里已有），原因记「已恢复：…」，历史、账单、审计都挂在原来的机器 id 上
         let reason = match c.job.params["reason"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
             Some(r) => format!("已恢复：{r}"),
             None => "已恢复".to_string(),
         };
         sqlx::query(
-            "update machine set lifecycle = 'active', activated_at = coalesce(activated_at, now()), retired_at = null, lifecycle_reason = $2,
+            "update machine set lifecycle = 'active', activated_at = coalesce(activated_at, now()), retired_at = null, retired_host_keys = null, lifecycle_reason = $2,
                 revision = revision + 1, updated_at = now() where id = $1 and lifecycle = 'provisioning'",
         )
         .bind(id)
@@ -876,6 +886,8 @@ async fn revoke(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
 
 async fn finalize(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let m = c.machine().await?;
+    // 主机公钥先存到机器行再从 known_hosts 删（恢复时放回核对）。同机 IP 节点没有自己的；重跑时 known_hosts 里已删了就保留上次存的
+    let host_keys = if m.host_id.is_none() { ssh::host_lines(&c.st.cfg.known_hosts, &m.ip, m.ssh_port as u16).await? } else { None };
     let mut tx = c.st.db.begin().await?;
     // 先锁团队行再改机器行：宿主机连同它的同机 IP 节点退役时，同团队的几个退役作业会同时收尾，
     // 压缩编号要改同团队别的节点，都按「团队 → 机器」的顺序加锁才不会互相等
@@ -884,9 +896,11 @@ async fn finalize(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         sqlx::query("select 1 from team where id = $1 for update").bind(t).execute(&mut *tx).await?;
     }
     sqlx::query(
-        "update machine set lifecycle = 'retired', retired_at = now(), revision = revision + 1, updated_at = now() where id = $1",
+        "update machine set lifecycle = 'retired', retired_at = now(), retired_host_keys = coalesce($2, retired_host_keys),
+            revision = revision + 1, updated_at = now() where id = $1",
     )
     .bind(m.id)
+    .bind(host_keys)
     .execute(&mut *tx)
     .await?;
     // 秘密不再需要
@@ -1080,9 +1094,23 @@ pub async fn compensate(st: &AppState, job: &JobRow, owner: &str) {
         .await;
     }
     note(st, job.id, "删除出站秘密", sqlx::query("delete from node_outbound where machine_id = $1").bind(id).execute(&st.db).await).await;
-    // 同机 IP 节点记着的主机公钥是宿主机的，不能忘
+    // 同机 IP 节点记着的主机公钥是宿主机的，不能忘。其余的先存到机器行（恢复时放回核对，见 finalize），没存成就不删
     if m.host_id.is_none() {
-        note(st, job.id, "忘记主机公钥", ssh::forget_host(&st.cfg.known_hosts, &m.ip, m.ssh_port as u16).await).await;
+        let saved = match note(st, job.id, "读取主机公钥", ssh::host_lines(&st.cfg.known_hosts, &m.ip, m.ssh_port as u16).await).await {
+            Some(Some(lines)) => note(
+                st,
+                job.id,
+                "保存主机公钥",
+                sqlx::query("update machine set retired_host_keys = $2 where id = $1").bind(id).bind(lines).execute(&st.db).await,
+            )
+            .await
+            .is_some(),
+            Some(None) => true,
+            None => false,
+        };
+        if saved {
+            note(st, job.id, "忘记主机公钥", ssh::forget_host(&st.cfg.known_hosts, &m.ip, m.ssh_port as u16).await).await;
+        }
     }
     if st.cfg.numbering.auto_compact {
         if let Some((Some(t),)) = team {
