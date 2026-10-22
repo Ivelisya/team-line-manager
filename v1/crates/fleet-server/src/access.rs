@@ -124,6 +124,7 @@ pub async fn backfill(db: &PgPool, raw_days: u32) -> anyhow::Result<()> {
 ///   不在告警中（open）的。之后再出现按「新运营商 / 新城市 / 首次出现的机房来源」再告警一次，即「新」= 这段时间内没见过；
 ///   学习期起点是节点剩下的行里最早的首次出现，一个节点的行全删光（闲置超过这么久）之后再有流量，学习期从头算；
 /// - 画像异常告警（ipintel_ 开头，摘要里写着来源 IP、运营商、城市）：恢复超过 `profile_days` 天的（别的告警仍是 180 天）。
+///
 /// 原始记录按天分区，由 `db::maintain_partitions` 删。
 pub async fn prune(db: &PgPool, ret: AccessRetention, profile_days: u32) -> anyhow::Result<u64> {
     let hour = floor_hour(OffsetDateTime::now_utc());

@@ -11,6 +11,7 @@ mod lifecycle;
 mod ops;
 mod policy;
 mod resolve;
+mod settings;
 mod silence;
 mod table;
 
@@ -146,6 +147,21 @@ enum SilenceCmd {
     },
     /// 删除静默（id 前缀，见 silence ls 的 id 列）：进行中的提前结束、告警即刻恢复，已预约的取消
     Rm { id: String },
+}
+
+#[derive(Subcommand)]
+enum SettingsCmd {
+    /// 访问记录保留期：不带参数显示当前的；--raw / --hourly 改（只给一个时另一个不变）。调短后超出的访问记录几分钟内删掉，找不回来
+    Retention {
+        /// 原始访问记录（每一条：时间、来源 IP、目标）保留天数，1–90
+        #[arg(long)]
+        raw: Option<i64>,
+        /// 汇总（小时汇总、新目标、来源画像）保留天数，1–90、不短于 --raw；访问页最长能看这么久
+        #[arg(long)]
+        hourly: Option<i64>,
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -524,7 +540,7 @@ enum Cmd {
         node: Option<String>,
         #[arg(long)]
         team: Option<String>,
-        /// 1h | 24h | 7d | 30d（events 固定取最近记录）
+        /// 1h | 24h | 7d | 30d，不能比汇总的保留期长（见 settings retention）；events 固定取最近记录
         #[arg(long, default_value = "24h")]
         window: String,
         /// 搜索域名（events / sources 也匹配来源 IP）
@@ -547,7 +563,7 @@ enum Cmd {
     /// 节点（或线路机名下全部节点）的来源画像分布：运营商 / 城市 / 接入方式、top 来源、学习期
     Sources {
         machine: String,
-        /// 24h | 7d | 30d
+        /// 24h | 7d | 30d，不能比汇总的保留期长（见 settings retention）
         #[arg(long, default_value = "24h")]
         window: String,
         #[arg(long, default_value_t = 20)]
@@ -555,6 +571,11 @@ enum Cmd {
     },
     /// IP 情报离线库状态（加载了几个、版本、缺什么）
     IpintelStatus,
+    /// 面板设置：访问记录保留期（settings retention）
+    Settings {
+        #[command(subcommand)]
+        cmd: SettingsCmd,
+    },
     /// 访问策略：团队/节点的域名黑白名单（草稿 → 预览 → 发布 → 回滚）
     Policy {
         #[command(subcommand)]
@@ -810,6 +831,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Ip { ips } => ipintel::ip(x, &ips),
         Cmd::Sources { machine, window, limit } => ipintel::sources(x, &machine, &window, limit),
         Cmd::IpintelStatus => ipintel::status(x),
+        Cmd::Settings { cmd: SettingsCmd::Retention { raw, hourly, yes } } => settings::retention(x, raw, hourly, yes),
         Cmd::Policy { cmd } => match cmd {
             PolicyCmd::Ls => policy::ls(x),
             PolicyCmd::Show { who } => policy::show(x, &who),

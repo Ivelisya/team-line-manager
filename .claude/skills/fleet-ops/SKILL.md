@@ -40,11 +40,13 @@ fleetctl --json <命令>      # AI 一律加 --json，输出一行 JSON
 | 来源 IP 画像：某 IP 的运营商/城市/接入方式 | `fleetctl --json ip <ip> [<ip>...]`（只查中控本地离线库，不外发） |
 | 节点来源画像分布（运营商/城市/接入方式、top 来源、学习期） | `fleetctl --json sources <机器> [--window 24h\|7d\|30d] [--limit 20]` |
 | IP 库状态（加载了几个、缺什么） | `fleetctl --json ipintel-status`（`loaded` 应为 5；未安装时在中控跑 `lab/install-ipintel.sh`） |
+| 访问记录保留期（原始记录、汇总各留几天） | `fleetctl --json settings retention`（改见下文「会改变状态的操作」） |
 | 访问规则（域名黑白名单，按团队/节点） | `fleetctl policy ls`、`policy show <团队\|节点>`；`policy set <团队\|节点> --mode observe\|allowlist\|denylist\|blocked\|inherit --domains a.com,=exact.org [--note …]`（只存草稿，不生效）；`policy preview`（最近 24h 每节点会阻止多少）→ `policy publish --yes`；`policy discard --yes`；`policy versions`；`policy rollback <版本> --yes`。`=` 开头是精确匹配，否则含子域。发布 / 回滚会立即改写线路机路由规则，先向用户确认 |
 
 访问规则的健康提示：节点被设为 `blocked` 时健康原因里有 `policy_blocked`（info，不降级、不开告警）。
 
 访问监控只有线路机开了访问日志、且有真实客户端流量时才有数据；`new` 是窗口内第一次出现的目标（旧系统的「新域名」），不是告警。
+访问记录只留用户设的天数（`settings retention`：原始记录默认 7 天、汇总默认 31 天），到期中控自动删除：`access` / `sources` 的 `--window` 不能比汇总的保留期长（超了报错 400，换短一点的窗口，不要去改保留期）；`events` 只有原始记录保留期内的；「新目标」「新运营商 / 新城市」指保留期内没见过的。
 
 排查顺序：`status` 找到告警 → `show <机器>` 读 `health.reasons` → `logs <机器>` 读服务日志 → 仍不明再 `exec`。
 
@@ -121,6 +123,7 @@ fleetctl provision ...                                     # 先 check，再确�
 fleetctl retry <作业> [--reset-host-key] [--password-env VAR]   # 重试失败作业；只有作业因主机指纹不符失败、且确认机器重装过才加 --reset-host-key（同机 IP 节点不行：对宿主机升级 agent 后重试那个作业）；在用机器指纹变了也走这条：先 upgrade-agent 让它失败再重试；报「没有可用的 root 密码」时用 --password-env 补密码
 fleetctl renew <机器> [--cycles N | --to YYYY-MM-DD] [--amount 39.46] [--note …] --yes   # 登记续费：用户确认付过款之后（见「到期与续费」）
 fleetctl subscription set <机器> --price 45 … --yes          # 改订阅：只改给了的字段；值 = 单独设置，none = 改回跟随套餐 / 供应商
+fleetctl settings retention [--raw 7] [--hourly 31] --yes   # 访问记录保留期（各 1–90 天，汇总不短于原始记录；只给一个时另一个不变）：调短后超出的访问记录几分钟内删掉、找不回来，只在用户明确要求时改
 ```
 
 - 上架：`fleetctl --json provision --file batch.json --dry-run` 只校验；通过后让用户确认名单，再去掉 `--dry-run` 加 `--yes --follow`。单台参数：`--kind vps --ip 1.2.3.4 --team 团队1 --relay 线路机2 --provider ATTVPS --plan 基础版 --due 2026-12-01`。选了套餐必须给 `--due`（到期日；价格、流量等跟随套餐，时区、提醒跟随供应商，`--provider` 可不给、取套餐的）；只有这台和套餐不同时才加 `--price 45` / `--currency` / `--cycle` / `--tz` / `--traffic-gb` / `--reset-day`（单独设置）。没有套餐时给了 `--due` 就要给 `--price`。root 密码放环境变量，用 `--ssh-password-env VAR` 传名字。`--ss-port`（批量文件里 `ss_port`）是线路机连节点用的公网（NAT 映射）端口，节点上 ssserver 固定监听 8388；非 NAT 机不要填。
@@ -141,6 +144,7 @@ fleetctl subscription set <机器> --price 45 … --yes          # 改订阅：�
 - `silence ls`（每条一个精简对象；`silence add` / `silence rm` 输出新建 / 删掉的那一条，同形）：`id subject_id subject_name rule rule_name starts_at ends_at state(active|scheduled) is_maintenance comment`；`subject_id` 为 null = 全部机器，`rule` 为 null = 全部规则；`state` 是 `active`（进行中）或 `scheduled`（已预约，还没开始）。只列没结束的。
 - `billing`：`id name host_machine subscription sub_template traffic_limit_gb quota{limit_gb,limit_source,used,period_start,rule,base,base_at} quota_pct renewals renewal_count`。`subscription` 为 null 是没有订阅，否则 `{price_cents currency cycle(monthly|quarterly|semiannual|yearly) due_date due_days billing_tz auto_renew remind_days traffic_gb traffic_reset_day overrides}`，全是生效值，`overrides` 是单独设置了的字段名（其余跟随 `sub_template`：`{price_cents currency cycle billing_tz remind_days traffic_gb traffic_reset(month|billing)}`）；金额都是分（`price_cents` 3946 = 39.46，币种看 `currency`）。`traffic_gb` 0 / null = 不限，`traffic_limit_gb`（= `quota.limit_gb`）是生效的上限（null = 不限），`quota.limit_source` 是它的来源（`subscription` 单独设置 / `plan` 跟随套餐 / `host` 同机 IP 节点与宿主机共用 / `none`），`quota_pct` 是本周期已用（`quota.used`，字节）占它（GB × 10⁹）的百分比（向下取整，没有上限为 null）；`quota.rule` 是网卡计量规则（`min|max|sum|out`，null = 业务流量），`quota.base_at` 非 null 是本周期按面板校准过（`base` 为当时面板读数，字节）。`renewals` 是最近 10 条续费记录（新→旧）`{id old_due new_due amount_cents note actor created_at}`，`renewal_count` 是总条数。
 - `renew`：刚登记的这条续费记录（同 `billing` 的 `renewals[]`）。`subscription set`：改完的 `subscription`（同上，`due_days` 按新到期日算）；没有变化时不提交，输出现在的。
+- `settings retention`（改了之后输出改完的，同形）：`{raw_days, hourly_days, min, max, profile_days}`；`raw_days` 是原始访问记录（每一条：时间、来源 IP、目标）留几天，`hourly_days` 是汇总（小时汇总、新目标、来源画像）留几天、也是访问页能看的最长范围，`profile_days` 是来源画像实际留几天（不短于 IP 情报的学习期，只读）。没有变化时不提交，输出现在的。
 - `policy ls`：`draft_count teams[{id name mode domains draft revision nodes[{id name mode domains source(node|team|default) draft revision}]}]`；`domains` 是域名个数，`draft` 为 null 或 `{mode,domains}`；节点的 `mode` / `domains` / `source` 是生效值，`draft` / `revision` 是节点自己的。
 - `status --json` 的 `overview.failed`：上架失败（lifecycle=failed）的机器数，算在「有问题」里。`show` 的 `failed_job{id,kind,state}`：上架失败或退役失败（退役中）的机器带最近失败的作业，拿它的 id 去 `fleetctl job` / `fleetctl retry`（`ls --status failed` / `ls --status retiring` 找出这些机器）。
 - 不加 `--json` 的 `status` / `show` / `entries` / `incidents` 是给人看的：种类、生命周期、健康、严重度、规则、入口状态、作业种类与状态都显示中文；所有命令表格里的时间都是北京时间（`--json` 里是 API 原样的 RFC 3339）；`ls` 的种类 / 生命周期 / 健康列保留原值（就是 `--kind`、`--status` 的取值）。脚本和 AI 只解析 `--json`。
