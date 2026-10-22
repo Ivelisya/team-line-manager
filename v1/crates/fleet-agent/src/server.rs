@@ -34,7 +34,7 @@ fn gzip(data: &[u8]) -> Vec<u8> {
 }
 
 /// 回环 / 内网（RFC1918、链路本地、ULA）地址
-fn is_private_ip(ip: IpAddr) -> bool {
+pub(crate) fn is_private_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
         IpAddr::V6(v6) => v6.is_loopback() || (v6.segments()[0] & 0xfe00) == 0xfc00 || (v6.segments()[0] & 0xffc0) == 0xfe80,

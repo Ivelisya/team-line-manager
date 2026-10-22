@@ -90,6 +90,9 @@ pub struct SystemInfo {
     pub ipv4: Vec<IpAddr>,
     #[serde(default)]
     pub ipv6: Vec<IpAddr>,
+    /// 流量计量用的网卡（默认路由所在网卡 ∪ 有公网地址的物理网卡，或 agent.toml 的 nic_ifaces）；旧 agent 不带
+    #[serde(default)]
+    pub nic_ifaces: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,8 +106,8 @@ pub struct HostSample {
     pub mem_total: u64,
     pub disk_used: u64,
     pub disk_total: u64,
-    /// agent 进程内的累计计数器：从 0 起，只累加选中网卡（不含 lo 等虚拟网卡）各自的增量；
-    /// agent 重启归零，服务端按计数器重置处理
+    /// 选中网卡（`SystemInfo::nic_ifaces`）各自增量的持久累计值：自 agent 首次安装起单调，跨 agent 重启、开机接续
+    /// （data_dir/nic.json）；状态文件丢失时从 0 重来。旧 agent 是进程内计数、重启归零。服务端对两者一样：变小 = 重置、读数即增量
     pub net_rx_bytes: u64,
     pub net_tx_bytes: u64,
     pub tcp_conns: u32,

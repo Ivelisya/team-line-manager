@@ -34,6 +34,9 @@ pub struct Config {
     /// geoip.dat / geosite.dat 所在目录（XRAY_LOCATION_ASSET）
     #[serde(default = "d_asset_dir")]
     pub xray_asset_dir: PathBuf,
+    /// 流量计量只计这些网卡（特殊机型手动指定）；不写则按默认路由 / 公网地址自动挑选
+    #[serde(default)]
+    pub nic_ifaces: Vec<String>,
     /// 不认识的键：只警告、不拒绝启动。中控生成的 agent.toml 比 agent 新（多了新版才有的键）时，
     /// 旧 agent 拒绝启动就再也收不到升级；拼写错误也只是该项回落到默认值，日志里看得到
     #[serde(flatten)]

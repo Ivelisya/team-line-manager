@@ -106,6 +106,9 @@ pub fn stats_path(cfg: &Config) -> PathBuf {
 pub fn access_cursor_path(cfg: &Config) -> PathBuf {
     cfg.data_dir.join("access.json")
 }
+pub fn nic_path(cfg: &Config) -> PathBuf {
+    cfg.data_dir.join("nic.json")
+}
 
 #[derive(Serialize, Deserialize, Default)]
 struct SeqFile {

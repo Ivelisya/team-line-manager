@@ -2,7 +2,7 @@
 
 use crate::host::{self, HostCollector};
 use crate::probe;
-use crate::state::{stats_path, Shared};
+use crate::state::{nic_path, stats_path, Shared};
 use crate::util::{load_json, now_ms};
 use crate::xray::cli::XrayCli;
 use crate::xray::{conns, ctl, render, stats};
@@ -31,10 +31,17 @@ fn ticker(period: Duration) -> tokio::time::Interval {
     t
 }
 
-/// 主机采样 + SystemInfo（启动时、变化时、每小时兜底重发）
+/// 主机采样 + SystemInfo（启动时、变化时、每小时兜底重发）；网卡累计值每 60 s 存盘一次、关停时再存一次
 pub async fn host_task(sh: Arc<Shared>, mut sd: watch::Receiver<bool>) {
     // 采样读一串 /proc 文件，每 300 s 还要遍历整个 /proc 数线程：都放阻塞线程，采集器在两边来回移交
-    let (mut hc, mut last_info) = tokio::task::spawn_blocking(|| (HostCollector::new(), host::collect_info())).await.expect("主机采样任务异常终止");
+    let (nic, fixed) = (nic_path(&sh.cfg), sh.cfg.nic_ifaces.clone());
+    let (mut hc, mut last_info) = tokio::task::spawn_blocking(|| {
+        let hc = HostCollector::new(Some(nic), fixed);
+        let info = host::collect_info(hc.ifaces());
+        (hc, info)
+    })
+    .await
+    .expect("主机采样任务异常终止");
     sh.buf.lock().unwrap().info = Some(last_info.clone());
     let mut info_sent_at = Instant::now();
     let mut tick = ticker(SAMPLE_INTERVAL);
@@ -42,13 +49,22 @@ pub async fn host_task(sh: Arc<Shared>, mut sd: watch::Receiver<bool>) {
     loop {
         tokio::select! {
             _ = tick.tick() => {}
-            _ = sd.changed() => return,
+            _ = sd.changed() => {
+                // 关停：网卡累计值存盘，下次启动按它求差，停机期间的流量也算上
+                let _ = tokio::task::spawn_blocking(move || hc.save_nic()).await;
+                return;
+            }
         }
         n += 1;
         let want_info = n.is_multiple_of(30);
+        let save_nic = n.is_multiple_of(6);
         let (back, s, cur) = tokio::task::spawn_blocking(move || {
             let s = hc.sample();
-            (hc, s, want_info.then(host::collect_info))
+            if save_nic {
+                hc.save_nic();
+            }
+            let info = want_info.then(|| host::collect_info(hc.ifaces()));
+            (hc, s, info)
         })
         .await
         .expect("主机采样任务异常终止");

@@ -1,8 +1,9 @@
 //! 主机遥测：/proc 解析 + 采样器（两种角色共用）。
 //! 容器里（cgroup v2、非根 cgroup）CPU 与内存改读 cgroup：/proc/stat 是宿主机的，/proc/meminfo 没有 lxcfs 时也是。
 
-use crate::util::now_ms;
+use crate::util::{load_json, now_ms, save_json};
 use fleet_proto::{HostSample, SystemInfo};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
@@ -111,11 +112,42 @@ pub fn parse_curr_estab(s: &str) -> u32 {
 }
 
 fn virtual_iface(n: &str) -> bool {
-    ["lo", "docker", "veth", "br-", "virbr", "tun", "tap", "wg", "ifb", "dummy"].iter().any(|p| n.starts_with(p))
+    [
+        "lo", "docker", "veth", "br-", "virbr", "lxdbr", "lxcbr", "incusbr", "cni", "flannel", "vxlan", "geneve", "cilium", "kube", "tun", "tap", "wg",
+        "tailscale", "zt", "gre", "sit", "ip6tnl", "ipip", "ifb", "dummy",
+    ]
+    .iter()
+    .any(|p| n.starts_with(p))
 }
 
-/// 选取参与求和的网卡：有物理设备的优先（/sys/class/net/<n>/device），没有（容器、虚拟机里常见）则取所有非虚拟网卡。
-pub fn pick_ifaces(all: &[String], has_device: impl Fn(&str) -> bool) -> Vec<String> {
+/// 默认路由所在的网卡：/proc/net/route 里 Destination、Mask 都是 00000000 的行，/proc/net/ipv6_route 里目的为 ::/0 的行。
+/// lo 上的 ::/0 是 unreachable 路由，和其它虚拟网卡一样由调用方排除
+pub fn parse_default_route(route: &str, ipv6_route: &str) -> Vec<String> {
+    let v4 = route.lines().skip(1).filter_map(|l| {
+        let f: Vec<&str> = l.split_whitespace().collect();
+        (f.len() > 7 && f[1] == "00000000" && f[7] == "00000000").then(|| f[0].to_string())
+    });
+    let v6 = ipv6_route.lines().filter_map(|l| {
+        let f: Vec<&str> = l.split_whitespace().collect();
+        (f.len() > 9 && f[0].bytes().all(|b| b == b'0') && f[1] == "00").then(|| f[9].to_string())
+    });
+    let mut v: Vec<String> = v4.chain(v6).collect();
+    v.sort();
+    v.dedup();
+    v
+}
+
+/// 选取计量的网卡（供应商按它计费的那几块）：
+/// 1. 默认路由所在的网卡 ∪ 有物理设备（/sys/class/net/<n>/device）且配有公网地址的网卡（附加公网 IP 配在第二块网卡上时）；
+///    只有内网地址的 VPC 网卡不算，默认路由指向虚拟网卡（全局 WireGuard 的 wg0 等）时跳过它；
+/// 2. 以上为空：有物理设备的网卡，再没有（容器、OpenVZ）则取所有非虚拟网卡。
+/// agent.toml 写了 nic_ifaces 时不走这里
+pub fn pick_ifaces(all: &[String], default_route: &[String], has_device: impl Fn(&str) -> bool, has_public: impl Fn(&str) -> bool) -> Vec<String> {
+    let v: Vec<String> =
+        all.iter().filter(|n| !virtual_iface(n) && (default_route.contains(n) || (has_device(n) && has_public(n)))).cloned().collect();
+    if !v.is_empty() {
+        return v;
+    }
     let phys: Vec<String> = all.iter().filter(|n| *n != "lo" && has_device(n)).cloned().collect();
     if !phys.is_empty() {
         return phys;
@@ -123,31 +155,59 @@ pub fn pick_ifaces(all: &[String], has_device: impl Fn(&str) -> bool) -> Vec<Str
     all.iter().filter(|n| !virtual_iface(n)).cloned().collect()
 }
 
-/// 主机网络流量计数器：按网卡分别记上一次读数，只把各网卡的增量累加进本进程自己维护的单调计数器（从 0 起）。
-/// 网卡集合会变（每 300 s 重新挑选，容器里网卡也会增减）：直接把各网卡的开机累计值相加上报的话，网卡一少总和变小，
-/// 服务端当计数器重置把剩下网卡的整段开机累计量记进当小时；网卡一多，新网卡的历史累计也被加进来。
-#[derive(Default)]
-pub struct NetCounter {
-    /// 网卡 → 上一次的 (rx, tx) 累计读数
-    prev: HashMap<String, (u64, u64)>,
+/// 网卡流量的持久累计值（data_dir/nic.json）：自 agent 首次安装起单调累加选中网卡的增量，跨 agent 重启、跨开机都接得上。
+/// 网卡集合会变（每 300 s 重新挑选，容器里网卡也会增减）：所以按网卡分别记上一次读数、只累加各自的增量，
+/// 而不是直接上报各网卡开机累计值之和（网卡一少总和变小、一多新网卡的历史也被算进来）。
+/// 存盘稍旧也不要紧：下次启动按旧读数求差，结果一样，不重复也不丢
+#[derive(Default, Serialize, Deserialize)]
+pub struct NicMeter {
+    boot_id: String,
+    /// 网卡 → 上一次的 (rx, tx) 内核累计读数
+    ifaces: HashMap<String, (u64, u64)>,
     pub rx: u64,
     pub tx: u64,
 }
 
-impl NetCounter {
-    /// 喂入这一轮选中网卡的累计读数 (网卡, rx, tx)：新出现的网卡只记基线不计增量，没出现的网卡丢掉基线；
+impl NicMeter {
+    /// 启动时载入。同一次开机（agent 重启）：按文件里各网卡读数求差，停机期间的流量也算上；
+    /// 开机了（boot_id 变了）：选中网卡的当前内核读数全部计入（开机以来的量），只丢关机前最后一次存盘之后的那一段；
+    /// 文件不存在（首次安装、状态丢失）：只记基线，从 0 起——不能把开机以来的读数当初值，否则升级那一刻中控看到一个 TB 级的跳变
+    pub fn load(path: &Path, boot_id: &str, readings: impl IntoIterator<Item = (String, u64, u64)>) -> Self {
+        let Some(mut m) = load_json::<NicMeter>(path) else {
+            let mut m = Self { boot_id: boot_id.to_string(), ..Default::default() };
+            m.absorb(readings, false);
+            return m;
+        };
+        let rebooted = m.boot_id != boot_id;
+        m.boot_id = boot_id.to_string();
+        m.absorb(readings, rebooted);
+        m
+    }
+
+    /// 喂入这一轮选中网卡的内核读数 (网卡, rx, tx)：新选中的网卡只记基线（它的历史不属于我们），不再选中的丢掉基线；
     /// 某网卡读数变小 = 它的计数器重置了（网卡重建等），增量取新值
     pub fn update(&mut self, readings: impl IntoIterator<Item = (String, u64, u64)>) {
+        self.absorb(readings, false);
+    }
+
+    /// from_zero：开机后第一次，各网卡的前值按 0 算
+    fn absorb(&mut self, readings: impl IntoIterator<Item = (String, u64, u64)>, from_zero: bool) {
         let delta = |cur: u64, prev: u64| if cur >= prev { cur - prev } else { cur };
         let mut next = HashMap::new();
         for (n, r, t) in readings {
-            if let Some(&(pr, pt)) = self.prev.get(&n) {
+            let prev = if from_zero { Some((0, 0)) } else { self.ifaces.get(&n).copied() };
+            if let Some((pr, pt)) = prev {
                 self.rx += delta(r, pr);
                 self.tx += delta(t, pt);
             }
             next.insert(n, (r, t));
         }
-        self.prev = next;
+        self.ifaces = next;
+    }
+
+    /// 不 fsync：异常断电只丢最后一次存盘之后的量
+    pub fn save(&self, path: &Path) -> anyhow::Result<()> {
+        save_json(path, self, false)
     }
 }
 
@@ -233,7 +293,8 @@ pub fn boot_id() -> String {
     if s.is_empty() { "unknown".into() } else { s.to_string() }
 }
 
-pub fn collect_info() -> SystemInfo {
+/// nic_ifaces：计量用的网卡（`HostCollector::ifaces`）
+pub fn collect_info(nic_ifaces: &[String]) -> SystemInfo {
     let os = read("/etc/os-release")
         .lines()
         .find_map(|l| l.strip_prefix("PRETTY_NAME="))
@@ -250,16 +311,27 @@ pub fn collect_info() -> SystemInfo {
         arch: std::env::consts::ARCH.to_string(),
         ipv4,
         ipv6,
+        nic_ifaces: nic_ifaces.to_vec(),
     }
 }
 
-/// getifaddrs：非回环、非链路本地的地址，排序去重以便比较"是否变化"
+/// 非回环、非链路本地的地址，排序去重以便比较"是否变化"
 fn local_ips() -> (Vec<IpAddr>, Vec<IpAddr>) {
-    let (mut v4, mut v6) = (Vec::new(), Vec::new());
+    let (mut v4, mut v6): (Vec<IpAddr>, Vec<IpAddr>) = if_addrs().into_iter().map(|x| x.1).partition(|ip| ip.is_ipv4());
+    v4.sort();
+    v4.dedup();
+    v6.sort();
+    v6.dedup();
+    (v4, v6)
+}
+
+/// getifaddrs：已启用的非回环网卡上、非链路本地的 (网卡, 地址)
+fn if_addrs() -> Vec<(String, IpAddr)> {
+    let mut v = Vec::new();
     unsafe {
         let mut ifap: *mut libc::ifaddrs = std::ptr::null_mut();
         if libc::getifaddrs(&mut ifap) != 0 {
-            return (v4, v6);
+            return v;
         }
         let mut cur = ifap;
         while !cur.is_null() {
@@ -268,31 +340,26 @@ fn local_ips() -> (Vec<IpAddr>, Vec<IpAddr>) {
             if a.ifa_addr.is_null() || a.ifa_flags & (libc::IFF_LOOPBACK as u32) != 0 || a.ifa_flags & (libc::IFF_UP as u32) == 0 {
                 continue;
             }
-            match (*a.ifa_addr).sa_family as i32 {
+            let ip = match (*a.ifa_addr).sa_family as i32 {
                 libc::AF_INET => {
                     let sa = &*(a.ifa_addr as *const libc::sockaddr_in);
                     let ip = std::net::Ipv4Addr::from(u32::from_be(sa.sin_addr.s_addr));
-                    if !ip.is_link_local() {
-                        v4.push(IpAddr::V4(ip));
-                    }
+                    (!ip.is_link_local()).then_some(IpAddr::V4(ip))
                 }
                 libc::AF_INET6 => {
                     let sa = &*(a.ifa_addr as *const libc::sockaddr_in6);
                     let ip = std::net::Ipv6Addr::from(sa.sin6_addr.s6_addr);
-                    if (ip.segments()[0] & 0xffc0) != 0xfe80 {
-                        v6.push(IpAddr::V6(ip));
-                    }
+                    ((ip.segments()[0] & 0xffc0) != 0xfe80).then_some(IpAddr::V6(ip))
                 }
-                _ => {}
+                _ => None,
+            };
+            if let Some(ip) = ip {
+                v.push((std::ffi::CStr::from_ptr(a.ifa_name).to_string_lossy().into_owned(), ip));
             }
         }
         libc::freeifaddrs(ifap);
     }
-    v4.sort();
-    v4.dedup();
-    v6.sort();
-    v6.dedup();
-    (v4, v6)
+    v
 }
 
 fn disk_root() -> (u64, u64) {
@@ -321,11 +388,15 @@ pub struct HostCollector {
     host_mem_total: u64,
     parallelism: f64,
     ifaces_at: std::time::Instant,
-    net: NetCounter,
+    net: NicMeter,
+    /// nic.json；None（`once`）时不落盘、从 0 起
+    nic_path: Option<PathBuf>,
+    /// agent.toml 的 nic_ifaces：写了就只计这些网卡
+    fixed_ifaces: Vec<String>,
 }
 
 impl HostCollector {
-    pub fn new() -> Self {
+    pub fn new(nic_path: Option<PathBuf>, fixed_ifaces: Vec<String>) -> Self {
         let cg = Cgroup::detect(Path::new("/sys/fs/cgroup"));
         let mut c = Self {
             prev_cpu: None,
@@ -335,24 +406,55 @@ impl HostCollector {
             host_mem_total: 0,
             parallelism: 1.0,
             ifaces_at: std::time::Instant::now(),
-            net: NetCounter::default(),
+            net: NicMeter::default(),
+            nic_path,
+            fixed_ifaces,
         };
         c.refresh_slow();
         c.prev_cpu = parse_cpu(&read("/proc/stat"));
-        // 先记下各网卡基线，第一个样本就有增量
-        c.read_net();
+        // 载入累计值并记下各网卡基线，第一个样本就有增量
+        let readings = c.net_readings();
+        match &c.nic_path {
+            Some(p) => c.net = NicMeter::load(p, &boot_id(), readings),
+            None => c.net.update(readings),
+        }
         c
     }
 
-    fn read_net(&mut self) {
-        let ifaces = &self.ifaces;
-        self.net.update(parse_net_dev(&read("/proc/net/dev")).into_iter().filter(|(n, _, _)| ifaces.contains(n)));
+    /// 选中网卡的内核累计读数
+    fn net_readings(&self) -> Vec<(String, u64, u64)> {
+        parse_net_dev(&read("/proc/net/dev")).into_iter().filter(|(n, _, _)| self.ifaces.contains(n)).collect()
+    }
+
+    /// 计量用的网卡（随 SystemInfo 上报）
+    pub fn ifaces(&self) -> &[String] {
+        &self.ifaces
+    }
+
+    /// 网卡累计值存盘（每 60 s 一次 + 关停时）
+    pub fn save_nic(&self) {
+        if let Some(p) = &self.nic_path {
+            if let Err(e) = self.net.save(p) {
+                tracing::warn!("保存 {} 失败：{e:#}", p.display());
+            }
+        }
     }
 
     /// 每 300 s 刷新一次的：网卡集合、可见线程数，容器里还有 MemTotal 与可用核数
     fn refresh_slow(&mut self) {
-        let names: Vec<String> = parse_net_dev(&read("/proc/net/dev")).into_iter().map(|x| x.0).collect();
-        self.ifaces = pick_ifaces(&names, |n| std::path::Path::new(&format!("/sys/class/net/{n}/device")).exists());
+        self.ifaces = if self.fixed_ifaces.is_empty() {
+            let names: Vec<String> = parse_net_dev(&read("/proc/net/dev")).into_iter().map(|x| x.0).collect();
+            let routes = parse_default_route(&read("/proc/net/route"), &read("/proc/net/ipv6_route"));
+            let addrs = if_addrs();
+            pick_ifaces(
+                &names,
+                &routes,
+                |n| Path::new(&format!("/sys/class/net/{n}/device")).exists(),
+                |n| addrs.iter().any(|(i, ip)| i == n && !crate::server::is_private_ip(*ip)),
+            )
+        } else {
+            self.fixed_ifaces.clone()
+        };
         self.threads = visible_threads(std::path::Path::new("/proc"));
         if self.cg.is_some() {
             self.host_mem_total = parse_meminfo(&read("/proc/meminfo")).0;
@@ -376,7 +478,8 @@ impl HostCollector {
             }
         };
         let (disk_used, disk_total) = disk_root();
-        self.read_net();
+        let readings = self.net_readings();
+        self.net.update(readings);
         HostSample {
             ts_ms: now_ms(),
             cpu_pct: pct,
@@ -456,33 +559,63 @@ mod tests {
 
     const NETDEV: &str = "Inter-|   Receive                                                |  Transmit\n face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n    lo: 500 5 0 0 0 0 0 0 500 5 0 0 0 0 0 0\n  eth0: 1000 10 0 0 0 0 0 0 2000 20 0 0 0 0 0 0\n";
 
+    const ROUTE: &str = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n\
+        ens3\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n\
+        ens3\t0001A8C0\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0\n\
+        lxdbr0\t0084FB0A\t00000000\t0001\t0\t0\t0\t00FFFFFF\t0\t0\t0\n\
+        docker0\t000011AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n";
+    /// lo 上的 ::/0 是 unreachable 路由
+    const ROUTE6: &str = "00000000000000000000000000000000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 ffffffff 00000001 00000000 00200200       lo\n\
+        fe800000000000000000000000000000 40 00000000000000000000000000000000 00 00000000000000000000000000000000 00000100 00000001 00000000 00000001     ens3\n";
+
     #[test]
     fn net_dev_and_ifaces() {
         let v = parse_net_dev(NETDEV);
         assert_eq!(v, vec![("lo".into(), 500, 500), ("eth0".into(), 1000, 2000)]);
-        let names: Vec<String> = v.into_iter().map(|x| x.0).collect();
-        assert_eq!(pick_ifaces(&names, |_| false), vec!["eth0".to_string()]);
-        let all = vec!["lo".to_string(), "eth0".to_string(), "docker0".to_string(), "ens3".to_string()];
-        assert_eq!(pick_ifaces(&all, |n| n == "ens3"), vec!["ens3".to_string()]);
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let all = s(&["lo", "ens3", "lxdbr0", "docker0", "veth12ab", "ens4"]);
+        // 默认路由所在网卡；lo 上的 unreachable ::/0 由虚拟网卡规则排除
+        let routes = parse_default_route(ROUTE, ROUTE6);
+        assert_eq!(routes, s(&["ens3", "lo"]));
+        // ens4 是只有内网地址的 VPC 网卡：不计
+        assert_eq!(pick_ifaces(&all, &routes, |n| n.starts_with("ens"), |_| false), s(&["ens3"]));
+        // ens4 配了公网地址（附加 IP）：一起计
+        assert_eq!(pick_ifaces(&all, &routes, |n| n.starts_with("ens"), |n| n == "ens4"), s(&["ens3", "ens4"]));
+        // 默认路由在 wg0（全局 WireGuard）：跳过它，退回物理网卡
+        let wg = parse_default_route("Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\n wg0\t00000000\t00000000\t0001\t0\t0\t0\t00000000\n", "");
+        assert_eq!(wg, s(&["wg0"]));
+        let all_wg = s(&["lo", "ens3", "wg0"]);
+        assert_eq!(pick_ifaces(&all_wg, &wg, |n| n == "ens3", |_| false), s(&["ens3"]));
+        // 都没有（容器、读不到路由）：旧规则，容器网络与隧道的前缀都排除
+        let ct = s(&["lo", "eth0", "lxcbr0", "cni0", "flannel.1", "tailscale0", "docker0"]);
+        assert_eq!(pick_ifaces(&ct, &[], |_| false, |_| false), s(&["eth0"]));
     }
 
     #[test]
-    fn net_counter_survives_iface_changes() {
+    fn nic_meter_persists_across_restart_and_boot() {
         let r = |v: &[(&str, u64, u64)]| v.iter().map(|&(n, a, b)| (n.to_string(), a, b)).collect::<Vec<_>>();
-        let mut c = NetCounter::default();
-        c.update(r(&[("eth0", 1_000_000, 2_000_000)]));
-        assert_eq!((c.rx, c.tx), (0, 0), "第一次只记基线，开机累计量不算");
-        c.update(r(&[("eth0", 1_000_100, 2_000_200)]));
-        assert_eq!((c.rx, c.tx), (100, 200));
-        // 多出一块网卡：它的历史累计不计入
-        c.update(r(&[("eth0", 1_000_150, 2_000_250), ("eth1", 9_000_000, 9_000_000)]));
-        assert_eq!((c.rx, c.tx), (150, 250));
-        // eth0 消失：总数不倒退
-        c.update(r(&[("eth1", 9_000_010, 9_000_020)]));
-        assert_eq!((c.rx, c.tx), (160, 270));
-        // eth1 计数器重置（网卡重建）：增量取新值
-        c.update(r(&[("eth1", 5, 7)]));
-        assert_eq!((c.rx, c.tx), (165, 277));
+        let d = std::env::temp_dir().join(format!("fa-nic-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("nic.json");
+        // 首次安装：只记基线，开机以来的读数不当初值（升级那一刻不能有 TB 级跳变）
+        let mut m = NicMeter::load(&p, "boot-a", r(&[("eth0", 1_000_000, 2_000_000)]));
+        assert_eq!((m.rx, m.tx), (0, 0));
+        m.update(r(&[("eth0", 1_000_100, 2_000_200)]));
+        assert_eq!((m.rx, m.tx), (100, 200));
+        m.save(&p).unwrap();
+        // 同一次开机里 agent 重启：停机期间的内核增量计入
+        let mut m = NicMeter::load(&p, "boot-a", r(&[("eth0", 1_000_400, 2_000_600)]));
+        assert_eq!((m.rx, m.tx), (400, 600));
+        // 新选中的网卡只记基线；eth0 读数变小（网卡重建）：增量取新值
+        m.update(r(&[("eth0", 1_000_450, 2_000_650), ("eth1", 9_000_000, 9_000_000)]));
+        assert_eq!((m.rx, m.tx), (450, 650));
+        m.update(r(&[("eth0", 5, 7), ("eth1", 9_000_010, 9_000_020)]));
+        assert_eq!((m.rx, m.tx), (465, 677));
+        m.save(&p).unwrap();
+        // 开机了：选中网卡开机以来的读数全部计入
+        let m = NicMeter::load(&p, "boot-b", r(&[("eth0", 30, 40)]));
+        assert_eq!((m.rx, m.tx), (495, 717));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
