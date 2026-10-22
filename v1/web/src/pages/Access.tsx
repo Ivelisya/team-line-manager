@@ -12,7 +12,7 @@ import { useMachineBriefs, useTeams } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
-import { SearchInput } from '@/components/ui/form';
+import { InfoTip, SearchInput } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { Segmented, Tabs, TabsList, TabsTrigger } from '@/components/ui/overlays';
 import { Empty, ErrorNote, PageHead, Panel, Pill, Stat } from '@/components/app/primitives';
@@ -305,7 +305,7 @@ const EventsView = React.memo(function EventsView({ f, filtered, open }: { f: Ac
   const top = React.useRef<HTMLElement>(null);
   const go = (next: string[]) => { setSt({ fk, cur: next }); scrollBackTo(top.current); };
   return (
-    <Panel ref={top} title="原始记录" sub={`最新在前；原始记录只保留 ${rawDays} 天，目标不做合并`} flush>
+    <Panel ref={top} title={<>原始记录<InfoTip className="ml-1 align-[-3px]" text="最新在前；目标不做合并" /></>} sub={`保留 ${rawDays} 天`} flush>
       {q.isError && <div style={{ padding: 12 }}><ErrNote q={q} /></div>}
       <div className="table-wrap" data-stale={q.isPlaceholderData}>
         <table className="dt is-one" style={{ minWidth: 820 }}>
