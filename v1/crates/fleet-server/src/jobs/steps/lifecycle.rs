@@ -186,9 +186,9 @@ pub(super) async fn compensate_move(c: &Ctx<'_>) {
                     match c.ssh(&m, None).run(&nft_only(&table, &allow), Duration::from_secs(60)).await {
                         Ok(out) => match check_nft(&out, &allow, &table) {
                             Ok(()) => log(st, job.id, "info", format!("节点防火墙已恢复为 [{allow}]")).await,
-                            Err(e) => log(st, job.id, "warn", format!("补偿「恢复防火墙」失败（已忽略）：{e:#}")).await,
+                            Err(e) => log(st, job.id, "warn", super::clip(&format!("补偿「恢复防火墙」失败（已忽略）：{e:#}"))).await,
                         },
-                        Err(e) => log(st, job.id, "warn", format!("补偿「恢复防火墙」失败（已忽略）：{e:#}")).await,
+                        Err(e) => log(st, job.id, "warn", super::clip(&format!("补偿「恢复防火墙」失败（已忽略）：{e:#}"))).await,
                     }
                 }
             }

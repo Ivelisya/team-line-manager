@@ -55,6 +55,20 @@ pub async fn display_name_of(db: &sqlx::PgPool, id: Uuid) -> ApiResult<(String, 
     Ok((crate::names::display_name(&kind, label.as_deref(), team.as_deref(), number), kind, lifecycle))
 }
 
+pub const MAX_LABEL_CHARS: usize = 200;
+pub const MAX_NOTE_CHARS: usize = 2000;
+
+/// 线路机名、备注的长度上限（上架、修改共用）
+pub fn check_text(label: Option<&str>, note: Option<&str>) -> Result<(), String> {
+    if label.is_some_and(|l| l.chars().count() > MAX_LABEL_CHARS) {
+        return Err(format!("线路机名最多 {MAX_LABEL_CHARS} 个字符"));
+    }
+    if note.is_some_and(|n| n.chars().count() > MAX_NOTE_CHARS) {
+        return Err(format!("备注最多 {MAX_NOTE_CHARS} 个字符"));
+    }
+    Ok(())
+}
+
 #[derive(Deserialize)]
 pub struct PatchIn {
     revision: i32,
@@ -101,6 +115,7 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     } else {
         cur.4.clone()
     };
+    check_text(if is_relay { b.label.as_deref().map(str::trim) } else { None }, b.note.as_deref()).map_err(ApiError::bad_request)?;
     let renamed = team_id != cur.2 || number != cur.3 || label != cur.4;
 
     sqlx::query(
@@ -285,6 +300,8 @@ pub async fn retire(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<U
     if b.confirm.trim() != name {
         return Err(ApiError::bad_request(format!("确认文字不对：请输入「{name}」")));
     }
+    // 退役原因同备注的上限（写进机器的状态原因）
+    check_text(None, b.reason.as_deref()).map_err(|_| ApiError::bad_request(format!("退役原因最多 {MAX_NOTE_CHARS} 个字符")))?;
     let mut tx = st.db.begin().await?;
     // 先锁机器行再判断、再计数：和「给线路机加入口」（对同一行 for share）互斥，守卫不会被并发挤穿
     let (lifecycle,): (String,) = sqlx::query_as("select lifecycle::text from machine where id = $1 for update")
@@ -312,6 +329,23 @@ pub async fn retire(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<U
     }
     // 宿主机退役：它上面的同机 IP 节点一并退役（它们的 SSH、agent、ssserver 都在这台机器上）
     let ip_nodes = ip_nodes_of(&mut tx, id, true).await?;
+    let ip_ids: Vec<Uuid> = ip_nodes.iter().map(|x| x.0).collect();
+    let all: Vec<Uuid> = std::iter::once(id).chain(ip_ids.iter().copied()).collect();
+    // 有作业正在执行一步（租约未过期）：库里标成作废拦不住它，那一步还会接着跑（装 agent、签令牌…），和退役的清理撞在一起。
+    // 先锁住这些机器上没结束的作业（领取跳过锁住的行），再看租约
+    let open: Vec<(String, bool)> = sqlx::query_as(
+        "select kind, state in ('running', 'cancelling') and lease_until > now() from job
+         where target_id = any($1) and state in ('queued', 'running', 'waiting', 'cancelling') for update",
+    )
+    .bind(&all)
+    .fetch_all(&mut *tx)
+    .await?;
+    if let Some((k, _)) = open.iter().find(|j| j.1) {
+        return Err(ApiError::conflict(format!(
+            "有作业（{}）正在执行一步：先在作业页取消它，等它停下再退役（升级 agent 不能取消，等它做完）",
+            jobs::kind_zh(k)
+        )));
+    }
     let n = sqlx::query(
         "update machine set lifecycle = 'retiring', lifecycle_reason = $2, revision = revision + 1, updated_at = now()
          where id = $1 and lifecycle not in ('retiring', 'retired')",
@@ -324,14 +358,12 @@ pub async fn retire(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<U
     if n == 0 {
         return Err(ApiError::conflict("这台机器刚刚被别人退役了"));
     }
-    let ip_ids: Vec<Uuid> = ip_nodes.iter().map(|x| x.0).collect();
     let ip_reason = format!("随宿主机「{name}」退役");
     sqlx::query("update machine set lifecycle = 'retiring', lifecycle_reason = $2, revision = revision + 1, updated_at = now() where id = any($1)")
         .bind(&ip_ids)
         .bind(&ip_reason)
         .execute(&mut *tx)
         .await?;
-    let all: Vec<Uuid> = std::iter::once(id).chain(ip_ids.iter().copied()).collect();
     // 这些机器上其它没做完或失败的作业（上架做到一半、加入口失败…）全部作废，否则之后重试会把退役的机器又拉回去
     let dead: Vec<(Uuid, Uuid)> = sqlx::query_as(
         "update job set state = 'cancelled', finished_at = now(), lease_owner = null, lease_until = null,
