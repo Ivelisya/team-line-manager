@@ -22,6 +22,7 @@
 .dt.is-one td { height: var(--row-1); }
 .dt td.r, .dt th.r { text-align: right; }
 .dt td.c, .dt th.c { text-align: center; }
+.dt :is(td, th).c:last-child { padding-inline: var(--sp-6); } /* 居中的末列（只放一个图标按钮，列宽 52 左右）：不再套首末列的 16px 边距，按钮放得下、不出省略号 */
 .dt td.r, .dt td .num { font-variant-numeric: var(--num-variant); }
 .dt .strong { font-weight: var(--fw-semibold); }
 .dt .sub { display: block; font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -46,13 +47,15 @@
 @media (hover: hover) { .th-sort:hover { color: var(--fg); } }
 .th-sort .lucide { width: var(--icon-2xs); height: var(--icon-2xs); color: var(--fg-3); }
 .th-sort[data-dir] .lucide { color: var(--accent); }
-/* 手机上横滑的表：首列（名称）吸在左边、操作列（末列里有按钮）吸在右边，滑到中间也知道是哪一行、点得到「确认 / 撤销」。
+/* 手机上横滑的表：首列（名称）吸在左边、窄的操作列吸在右边，滑到中间也知道是哪一行、点得到「确认 / 撤销」。
+   窄的操作列 = 末列里只放一个按钮，或只放几个图标按钮；放几个文字按钮的宽操作列（团队与套餐的「改名 / 重新编号」）吸住会占掉大半屏，不吸。
    边缘渐隐靠滚动驱动动画，iOS Safari 不支持，这里不依赖它。吸住的格子要不透明：取表面色，当前行取选中色 */
 @media (max-width: 600px) {
+  .table-wrap:not([data-fit]) { mask-image: none; animation: none; } /* 两侧吸住了，不再用边缘渐隐（会把吸住的列一起淡掉） */
   .table-wrap:not([data-fit]) .dt:not(.dt-grid) :is(th, td):first-child { position: sticky; left: 0; z-index: 1; background: var(--surface); box-shadow: 1px 0 0 var(--line); }
-  .table-wrap:not([data-fit]) .dt:not(.dt-grid) td:last-child:has(button),
-  .table-wrap:not([data-fit]) .dt:not(.dt-grid):has(td:last-child button) th:last-child { position: sticky; right: 0; z-index: 1; background: var(--surface); box-shadow: -1px 0 0 var(--line), var(--shadow-edge-l); }
-  .table-wrap:not([data-fit]) .dt:not(.dt-grid) thead th:is(:first-child, :last-child) { background: var(--sunken); }
+  .table-wrap:not([data-fit]) .dt:not(.dt-grid):has(td:last-child > :is(.btn:only-child, .icon-btn), td:last-child > .row > .icon-btn):not(:has(td:last-child > .row > .btn)) :is(th, td):last-child { position: sticky; right: 0; z-index: 1; background: var(--surface); box-shadow: -1px 0 0 var(--line), var(--shadow-edge-l); }
+  .table-wrap:not([data-fit]) .dt:not(.dt-grid) thead th:first-child,
+  .table-wrap:not([data-fit]) .dt:not(.dt-grid):has(td:last-child > :is(.btn:only-child, .icon-btn), td:last-child > .row > .icon-btn):not(:has(td:last-child > .row > .btn)) thead th:last-child { background: var(--sunken); }
   .table-wrap:not([data-fit]) .dt tr.is-current > td:first-child { background: var(--selected); box-shadow: inset 2px 0 0 var(--accent), 1px 0 0 var(--line); }
   .table-wrap:not([data-fit]) .dt tr.acc-sub > td:first-child { background: var(--sunken); }
 }
