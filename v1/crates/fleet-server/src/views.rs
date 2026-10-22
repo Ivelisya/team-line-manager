@@ -251,6 +251,8 @@ pub struct MachineView {
     pub ssh_port: i32,
     /// 同机 IP 节点：它所在的宿主机（SSH、agent、主机读数都是宿主机的，`agent` / `host` 就是宿主机的）；其它机器为 null
     pub host_machine: Option<Ref>,
+    /// 同机 IP 节点的公网 IP 是 1:1 NAT 映射的：它在宿主机网卡上的本地地址（ssserver 监听并从它出站）；公网 IP 就在网卡上的、其它机器为 null
+    pub bind_ip: Option<String>,
     /// 宿主机：它上面未退役的同机 IP 节点
     pub ip_nodes: Vec<Ref>,
     pub provider: Option<Ref>,
@@ -319,6 +321,7 @@ struct MRow {
     ssh_port: i32,
     host_id: Option<Uuid>,
     host_name: Option<String>,
+    bind_ip: Option<String>,
     provider_id: Option<Uuid>,
     provider_name: Option<String>,
     provider_code: Option<String>,
@@ -958,7 +961,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     // 同机 IP 节点没有自己的 agent：agent 状态取宿主机的
     let sql = format!(
         "select m.id, m.kind::text kind, m.team_id, t.name team_name, m.number, m.label, host(m.primary_ip) ip, coalesce(hm.ssh_port, m.ssh_port) ssh_port,
-                m.host_id, display_name(hm.kind::text, hm.label, ht.name, hm.number) host_name,
+                m.host_id, display_name(hm.kind::text, hm.label, ht.name, hm.number) host_name, host(m.bind_ip) bind_ip,
                 p.id provider_id, p.name provider_name, p.code provider_code, m.plan_id, pl.name plan_name,
                 pl.bandwidth_mbps plan_bw, pl.traffic_gb plan_traffic, m.service_ref, m.country, m.lifecycle::text lifecycle,
                 m.lifecycle_reason, m.note, m.revision, m.created_at, m.activated_at, m.retired_at,
@@ -1226,6 +1229,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 ip: r.ip,
                 ssh_port: r.ssh_port,
                 host_machine: r.host_id.map(|id| Ref { id, name: r.host_name.clone().unwrap_or_default() }),
+                bind_ip: r.bind_ip,
                 ip_nodes: ip_nodes.remove(&r.id).unwrap_or_default(),
                 provider: r.provider_id.map(|id| Ref { id, name: r.provider_name.clone().unwrap_or_default() }),
                 provider_code: r.provider_code,

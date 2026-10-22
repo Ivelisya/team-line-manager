@@ -56,16 +56,20 @@ echo "cc=$(cat /proc/sys/net/ipv4/tcp_congestion_control)"
 "#;
 
 /// 节点上的一个 ssserver 实例。宿主机（普通 VPS 节点）：单元 `fleet-ssserver`、配置 config.json、nft 表 `ss_guard`，监听 0.0.0.0:8388；
-/// 同机 IP 节点：模板单元的实例 `fleet-ssserver@<端口>`、配置 `<端口>.json`、nft 表 `ss_guard_<端口>`，监听自己的 IP 并从它出站
+/// 同机 IP 节点：模板单元的实例 `fleet-ssserver@<端口>`、配置 `<端口>.json`、nft 表 `ss_guard_<端口>`，监听自己的 bind 地址并从它出站
 pub struct SsInst {
     /// 本机监听端口
     pub port: u16,
-    /// 同机 IP 节点自己的 IP；宿主机为 None
+    /// 同机 IP 节点在宿主机网卡上的地址（bind 地址）：公网 IP 直接配在网卡上时就是它，1:1 NAT 映射的是映射到的本地地址
+    /// （`machine.bind_ip`）。线路机连的仍是公网 IP，这里只用于 ssserver 的监听与出站；宿主机为 None
     pub ip: Option<String>,
 }
 
 impl SsInst {
     pub fn host() -> Self { SsInst { port: crate::meta::SS_PORT, ip: None } }
+
+    /// 同机 IP 节点的实例：`bind` 是 `machine.bind_ip`（1:1 NAT 映射到的本地地址），为空时公网 IP `public` 就在网卡上、用它
+    pub fn ip_node(port: u16, public: &str, bind: Option<&str>) -> Self { SsInst { port, ip: Some(bind.unwrap_or(public).to_string()) } }
 
     /// systemd 单元
     pub fn svc(&self) -> String {
@@ -80,7 +84,7 @@ impl SsInst {
 
 /// 节点：ssserver + 只放行线路机的 nft 规则。变量 SS_PORT SS_METHOD SS_PASSWORD ALLOW（逗号分隔的线路机 IP）。
 /// 宿主机渲染出的脚本除了开头的锁，和引入同机 IP 节点之前逐字相同：已上架的节点重新收敛时配置、单元、nft、include 行都不变，
-/// 不会重启 ssserver。同机 IP 节点的 IP 直接写进配置（校验过的 IPv4，不含引号和 %）。
+/// 不会重启 ssserver。同机 IP 节点的 bind 地址直接写进配置（校验过的或 `ip -4 addr` 列出的 IPv4，不含引号和 %）。
 /// 重跑时以运行中的实例为准：配置、单元比它新（换上之后没来得及重启就被打断）也重启。输出 `linklocal_dns=1` 见 `LINKLOCAL_DNS`
 pub fn node_ss(i: &SsInst) -> String {
     let (conf, unit, unit_conf, listen, bind) = match &i.ip {
@@ -196,32 +200,69 @@ nft -f $N || { echo nft=error; exit 21; }
 echo "nft_relays=$(nft list set inet $NFT_TABLE relays | tr -d '\n' | sed 's/.*elements = { \(.*\) }.*/\1/' | tr -d ' \t')"
 "#;
 
-/// 本机的 IPv4（不含回环），逗号分隔：输出 `local_ips=…` 一行
-macro_rules! local_ips {
+/// 本机的 IPv4（不含回环），逗号分隔：输出 `local_ips=…` 一行。变量 WANT（逗号分隔的公网 IP）里有不在网卡上的时
+/// （1:1 NAT 映射：公网 IP 映射到网卡上的某个内网地址），再让每个本机 IPv4 各自经它访问中控 /echo（变量 ECHO），
+/// 输出 `nat=本地地址>回显,…`：回显不是 IPv4 的（docker0 之类不通外网的地址、curl 报错）记为空。各地址同时探测、各 8 秒封顶，
+/// 整段最多多花 8 秒多一点；WANT 都在网卡上时不探测、不输出 nat。shell 变量 MISS（有不在网卡上的为 1）、NAT 留给后面的脚本用
+macro_rules! host_ips {
     () => {
-        r#"echo "local_ips=$(ip -4 -o addr show | awk '{split($4, a, "/"); if (a[1] !~ /^127\./) print a[1]}' | paste -sd, -)""#
+        r#"
+L=$(ip -4 -o addr show | awk '{split($4, a, "/"); if (a[1] !~ /^127\./) print a[1]}')
+echo "local_ips=$(echo "$L" | paste -sd, -)"
+MISS=; NAT=
+for w in $(echo "$WANT" | tr ',' ' '); do echo "$L" | grep -qxF "$w" || MISS=1; done
+if [ -n "$MISS" ]; then
+  D=$(mktemp -d)
+  for l in $L; do curl -4 -sS -m 8 --interface "$l" "$ECHO" 2>/dev/null | head -c 64 | tr -d '\r\n' > "$D/$l" & done
+  wait
+  NAT=$(for l in $L; do printf '%s>%s\n' "$l" "$(grep -xE '[0-9]{1,3}(\.[0-9]{1,3}){3}' "$D/$l")"; done | paste -sd, -)
+  rm -rf "$D"
+  echo "nat=$NAT"
+fi
+"#
     };
 }
-/// 同上，单独一段：上架「检查」时登录宿主机看同机 IP 节点的 IP 在不在网卡上（作业里的 `IP_CHECK` 也是这一行）
-pub const LOCAL_IPS: &str = local_ips!();
+/// 同上，单独一段：上架「检查」时登录宿主机看同机 IP 节点的 IP 在不在网卡上、不在时是不是 NAT 映射到哪个本机地址上
+/// （作业里的 `IP_CHECK` 也是这一段）。变量 WANT（这台宿主机上要检查的全部公网 IP，逗号分隔）ECHO（中控的 /echo 地址）
+pub const HOST_IPS: &str = concat!("\nset -u\n", host_ips!());
 
-/// `local_ips`（`LOCAL_IPS` 的输出）里没有 `ip` 时的错误（给人看）；上架检查与作业第一步共用
-pub fn ip_not_on_host(ip: &str, host: &str, local_ips: &str) -> Option<String> {
-    (!local_ips.split(',').any(|x| x.trim() == ip)).then(|| {
-        format!("IP {ip} 不在宿主机 {host} 的网卡上（本机：{}）：只支持直接配在网卡上的公网 IPv4，EIP / NAT 映射的 IP 不行", local_ips.replace(',', ", "))
-    })
+/// 同机 IP 节点的公网 IP `ip` 在宿主机 `host` 上用哪个本地地址（`local_ips`、`nat` 是 `HOST_IPS` 的输出）：直接配在网卡上 → `Ok(None)`；
+/// 不在网卡上、恰好一个本机地址经 NAT 出去是它 → `Ok(Some(这个地址))`（ssserver 监听并从它出站）；都不是 → `Err`（给人看）。
+/// 上架检查与作业第一步共用
+pub fn bind_addr(ip: &str, host: &str, local_ips: &str, nat: &str) -> Result<Option<String>, String> {
+    if local_ips.split(',').any(|x| x.trim() == ip) {
+        return Ok(None);
+    }
+    let pairs: Vec<(&str, &str)> = nat.split(',').filter_map(|p| p.split_once('>')).map(|(l, e)| (l.trim(), e.trim())).filter(|(l, _)| l.parse::<std::net::Ipv4Addr>().is_ok()).collect();
+    let hits: Vec<&str> = pairs.iter().filter(|(_, e)| *e == ip).map(|(l, _)| *l).collect();
+    match hits[..] {
+        [l] => Ok(Some(l.to_string())),
+        [] => {
+            let seen = pairs.iter().map(|(l, e)| format!("{l} → {}", if e.is_empty() { "不通" } else { e })).collect::<Vec<_>>().join("、");
+            Err(format!(
+                "IP {ip} 不在宿主机 {host} 的网卡上（本机：{}），也没有哪个本机地址经 NAT 出去是这个 IP（{}）：\
+                 只支持直接配在网卡上、或 1:1 NAT 映射到网卡上某个地址（经它出站也是这个 IP）的公网 IPv4",
+                if local_ips.is_empty() { "无".to_string() } else { local_ips.replace(',', ", ") },
+                if seen.is_empty() { "没探测到结果".to_string() } else { format!("各本机地址出去是：{seen}") },
+            ))
+        }
+        // 和上一条一样以「IP 」开头：网页上架表单（provision-model.ts）按它把错误归到 IP 一栏
+        _ => Err(format!("IP {ip} 不在宿主机 {host} 的网卡上，有几个本机地址经 NAT 出去都是它（{}）：分不清 ssserver 该绑哪个，先理顺宿主机的策略路由", hits.join(", "))),
+    }
 }
 
-/// 同机 IP 节点上架前在宿主机上核对：本机的 IPv4、经这个 IP 访问中控 /echo 看到的来源、正在监听的端口（TCP + UDP），
-/// 以及配置里本来就绑着这个 IP 的实例端口（这台节点上次退役没清理掉的旧实例：恢复时收敛会覆盖它，不算被别人占用）。
-/// 变量 IP（节点自己的 IP）ECHO（中控的 /echo 地址）
+/// 同机 IP 节点上架前在宿主机上核对：本机的 IPv4（公网 IP 不在网卡上时连同各本机地址经 NAT 出去的 IP，见 `HOST_IPS`）、
+/// 经 bind 地址访问中控 /echo 看到的来源、正在监听的端口（TCP + UDP），以及配置里本来就绑着 bind 地址的实例端口
+/// （这台节点上次退役没清理掉的旧实例：恢复时收敛会覆盖它，不算被别人占用）。bind 地址：公网 IP 在网卡上就是它自己；
+/// 不在时是经 NAT 出去是它的那个本机地址（有几个取第一个，中控按 `bind_addr` 报错），探测时已经回显过，不再访问一次
+/// （总时长不超过原来只访问一次的 10 秒）。变量 IP（节点自己的公网 IP）ECHO（中控的 /echo 地址）
 pub const IP_CHECK: &str = concat!(
-    "\nset -u\n",
-    local_ips!(),
-    r#"
-echo "echo=$(curl -4 -sS -m 10 --interface "$IP" "$ECHO" 2>&1 | tr -d '\r\n' | head -c 200)"
+    "\nset -u\nWANT=$IP\n",
+    host_ips!(),
+    r#"if [ -z "$MISS" ]; then B=$IP; echo "echo=$(curl -4 -sS -m 10 --interface "$IP" "$ECHO" 2>&1 | tr -d '\r\n' | head -c 200)"
+else B=$(echo "$NAT" | tr ',' '\n' | awk -F'>' -v ip="$IP" '$2 == ip {print $1; exit}'); echo "echo=${B:+$IP}"; fi
 echo "busy=$(ss -Hltun | awk '{n = split($5, a, ":"); print a[n]}' | sort -un | paste -sd, -)"
-echo "own=$(grep -lF "\"server\":\"$IP\"" /etc/shadowsocks-rust/[0-9]*.json 2>/dev/null | sed 's#.*/##; s#\.json$##' | paste -sd, -)"
+echo "own=$(grep -lF "\"server\":\"${B:-$IP}\"" /etc/shadowsocks-rust/[0-9]*.json 2>/dev/null | sed 's#.*/##; s#\.json$##' | paste -sd, -)"
 "#
 );
 
@@ -621,6 +662,78 @@ echo "nft_relays=$(nft list set inet ss_guard relays | tr -d '\n' | sed 's/.*ele
             assert!(!s.contains(host), "{host}");
         }
         assert_eq!((i.svc(), i.table()), ("fleet-ssserver@8389".to_string(), "ss_guard_8389".to_string()));
+    }
+
+    /// 1:1 NAT 映射的同机 IP 节点：ssserver 监听并从映射到的本地地址出站，公网 IP 不出现在配置里；没有 bind 地址的照旧用公网 IP
+    #[test]
+    fn nat_ip_node_render_uses_bind_addr() {
+        let i = SsInst::ip_node(8390, "209.240.166.50", Some("10.116.0.67"));
+        let s = node_ss(&i);
+        assert!(s.contains(
+            r#"printf '{"server":"10.116.0.67","server_port":%s,"password":"%s","method":"%s","mode":"tcp_and_udp","timeout":300,"outbound_bind_addr":"10.116.0.67"%s}\n'"#
+        ), "{s}");
+        assert!(!s.contains("209.240.166.50") && !s.contains("__"), "{s}");
+        // 端口、单元、nft 表都按端口，和 bind 地址无关
+        assert_eq!((i.svc(), i.table()), ("fleet-ssserver@8390".to_string(), "ss_guard_8390".to_string()));
+        assert!(s.contains("tcp dport $SS_PORT ip saddr @relays accept"));
+        let direct = SsInst::ip_node(8389, "203.0.113.7", None);
+        assert_eq!(direct.ip.as_deref(), Some("203.0.113.7"));
+    }
+
+    /// 公网 IP 在网卡上 → 不用 bind 地址；不在时找经 NAT 出去是它的那一个本机地址；找不到、找到几个都报错
+    #[test]
+    fn bind_addr_from_nat_probe() {
+        use super::bind_addr;
+        let (local, nat) = ("10.116.0.66,10.116.0.67,172.17.0.1", "10.116.0.66>209.240.166.49,10.116.0.67>209.240.166.50,172.17.0.1>");
+        assert_eq!(bind_addr("10.116.0.67", "H", local, ""), Ok(None), "在网卡上的照旧");
+        assert_eq!(bind_addr("209.240.166.50", "H", local, nat), Ok(Some("10.116.0.67".into())));
+        let e = bind_addr("209.240.166.51", "H", local, nat).unwrap_err();
+        assert!(e.contains("IP 209.240.166.51 不在宿主机 H 的网卡上（本机：10.116.0.66, 10.116.0.67, 172.17.0.1）"), "{e}");
+        assert!(e.contains("10.116.0.67 → 209.240.166.50、172.17.0.1 → 不通") && e.contains("1:1 NAT"), "{e}");
+        let e = bind_addr("209.240.166.51", "H", "", "").unwrap_err();
+        assert!(e.contains("（本机：无）") && e.contains("没探测到结果"), "{e}");
+        let e = bind_addr("209.240.166.49", "H", local, "10.116.0.66>209.240.166.49,10.116.0.67>209.240.166.49").unwrap_err();
+        assert!(e.contains("10.116.0.66, 10.116.0.67") && e.contains("分不清"), "{e}");
+        // 不是 IPv4 的本地地址（输出被截断、混进了别的）不当 bind 地址
+        assert!(bind_addr("209.240.166.50", "H", local, "10.116.0.67\"x>209.240.166.50").is_err());
+    }
+
+    /// 宿主机上的核对脚本整段在 bash 里真跑（ip、curl、ss 换成函数）：公网 IP 在网卡上时不探测，经它自己访问一次；
+    /// 不在时各本机地址各探测一次，回显是它的那个就是 bind 地址，own 按 bind 地址找旧实例，不再访问一次
+    #[cfg(unix)]
+    #[test]
+    fn ip_check_probes_nat_only_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().display().to_string();
+        std::fs::write(dir.path().join("8390.json"), r#"{"server":"10.116.0.67","server_port":8390}"#).unwrap();
+        let run = |ip: &str| {
+            let sh = format!(
+                "ip() {{ printf '%s\\n' '1: lo    inet 127.0.0.1/8 scope host lo' '2: eth0    inet 10.116.0.66/24 brd 10.116.0.255 scope global eth0' \
+                 '3: ens19    inet 10.116.0.67/32 scope global ens19' '4: docker0    inet 172.17.0.1/16 scope global docker0'; }}\n\
+                 curl() {{ while [ $1 != --interface ]; do shift; done; echo \"curl $2\" >> {d}/log; \
+                 case $2 in 10.116.0.66) echo 209.240.166.49;; 10.116.0.67) echo 209.240.166.50;; 172.17.0.1) echo 'curl: (28) timeout' >&2; return 28;; *) echo \"curl: (45) bind failed\";; esac; }}\n\
+                 ss() {{ printf '%s\\n' 'tcp LISTEN 0 128 0.0.0.0:8388 0.0.0.0:*' 'udp UNCONN 0 0 10.116.0.67:8390 0.0.0.0:*'; }}\n\
+                 IP={ip} ECHO=http://c/echo\n{}",
+                super::IP_CHECK.replace("/etc/shadowsocks-rust", &d)
+            );
+            let _ = std::fs::remove_file(dir.path().join("log"));
+            let out = std::process::Command::new("bash").arg("-c").arg(&sh).output().unwrap();
+            assert!(out.status.success(), "{out:?}");
+            let o = crate::ssh::Output { code: 0, stdout: String::from_utf8_lossy(&out.stdout).into_owned(), stderr: String::new() };
+            let log = std::fs::read_to_string(dir.path().join("log")).unwrap_or_default();
+            (o, log)
+        };
+        let (o, log) = run("10.116.0.67");
+        assert_eq!((o.kv("local_ips"), o.kv("nat"), o.kv("echo"), o.kv("own")), (Some("10.116.0.66,10.116.0.67,172.17.0.1"), None, Some("209.240.166.50"), Some("8390")), "{}", o.stdout);
+        assert_eq!(log, "curl 10.116.0.67\n");
+        let (o, log) = run("209.240.166.50");
+        assert_eq!(o.kv("nat"), Some("10.116.0.66>209.240.166.49,10.116.0.67>209.240.166.50,172.17.0.1>"), "{}", o.stdout);
+        assert_eq!((o.kv("echo"), o.kv("busy"), o.kv("own")), (Some("209.240.166.50"), Some("8388,8390"), Some("8390")), "{}", o.stdout);
+        assert_eq!(log.lines().count(), 3, "每个本机地址探测一次，不再多访问一次：{log}");
+        assert_eq!(super::bind_addr("209.240.166.50", "H", o.kv("local_ips").unwrap(), o.kv("nat").unwrap()), Ok(Some("10.116.0.67".into())));
+        // 找不到：echo 为空、own 按公网 IP 找（找不到），中控按 bind_addr 报错
+        let (o, _) = run("209.240.166.51");
+        assert_eq!((o.kv("echo"), o.kv("own")), (Some(""), Some("")), "{}", o.stdout);
     }
 
     #[test]

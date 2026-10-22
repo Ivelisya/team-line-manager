@@ -53,8 +53,9 @@ const CLEANUP_SS: Record<string, string> = { gone: '已停止', still_listening:
 const OUTPUT: Record<string, [string, OutFmt] | null> = {
   // preflight
   host_key: ['主机指纹', text], arch: ['架构', text], os: ['系统', text], kernel: ['内核', text], mem_mb: ['内存', (v) => str(mem(Number(v) * 1024 * 1024))],
-  // ip_check（同机 IP 节点，在宿主机上执行；egress_ip 同出口验收）：local_ips 是逗号加空格分隔的字符串
-  ss_port: ['SS 端口', text], local_ips: ['宿主机本机 IP', text],
+  // ip_check（同机 IP 节点，在宿主机上执行；egress_ip 同出口验收）：local_ips 是逗号加空格分隔的字符串；
+  // bind_ip 只有 1:1 NAT 映射的才有（公网 IP 映射到的宿主机本地地址），在网卡上的为 null、不显示
+  ss_port: ['SS 端口', text], local_ips: ['宿主机本机 IP', text], bind_ip: ['本地地址（NAT）', text],
   // bootstrap
   method: ['登录方式', () => '用 root 密码推送了中控公钥'],
   // converge / converge_relay（同机 IP 节点不做系统基线，bbr 为 null、不显示）

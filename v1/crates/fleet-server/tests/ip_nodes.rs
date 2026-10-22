@@ -166,6 +166,21 @@ async fn ip_node_borrows_host_agent_and_metrics() {
     }
     assert_eq!(ds.entries[0].expect_egress_ip.to_string(), "203.0.113.7");
 
+    // 1:1 NAT 映射的（ip_check 记下了 bind_ip）：详情带本地地址；线路机连的、出口验收期望的仍是公网 IP。只有同机 IP 节点能有 bind_ip
+    assert_eq!(xv["bind_ip"], Value::Null, "{xv}");
+    sqlx::query("update machine set bind_ip = '10.116.0.67' where id = $1").bind(x).execute(&t.st.db).await.unwrap();
+    assert_eq!(t.get(&format!("/api/v1/machines/{x}")).await["bind_ip"], "10.116.0.67");
+    let (_, v) = t.req("GET", "/agent/v1/desired?after=0", None, Some(&tok)).await;
+    let ds: DesiredState = serde_json::from_value(v).unwrap();
+    match &ds.entries[0].outbound {
+        Outbound::Shadowsocks { host, .. } => assert_eq!(host.as_str(), "203.0.113.7"),
+        o => panic!("{o:?}"),
+    }
+    assert_eq!(ds.entries[0].expect_egress_ip.to_string(), "203.0.113.7");
+    let err = sqlx::query("update machine set bind_ip = '10.116.0.66' where id = $1").bind(host).execute(&t.st.db).await.unwrap_err();
+    assert!(err.to_string().contains("machine_bind_ip_host"), "{err}");
+    assert_eq!(t.get(&format!("/api/v1/machines/{host}")).await["bind_ip"], Value::Null);
+
     // 宿主机 agent 离线：只有宿主机报 agent_offline，同机节点跟着显示离线但不重复报
     sqlx::query("update agent_state set last_report_at = now() - interval '10 minutes' where machine_id = $1").bind(host).execute(&t.st.db).await.unwrap();
     let hv = t.get(&format!("/api/v1/machines/{host}")).await;

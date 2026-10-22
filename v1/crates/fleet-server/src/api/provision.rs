@@ -371,7 +371,7 @@ pub async fn check(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Bat
             None => probe.push(i),
         }
     }
-    // 同机 IP 节点：登录宿主机看这个 IP 配没配在它的网卡上（同上架作业的第一步，同一段脚本），不用等作业失败。
+    // 同机 IP 节点：登录宿主机看这个 IP 配没配在它的网卡上、不在时是不是 1:1 NAT 映射到哪个本机地址上（同上架作业的第一步，同一段脚本），不用等作业失败。
     // 每台宿主机只登录一次，拿到的本机 IP 对照它上面的全部条目；每台宿主机也算一次探测
     let on_host: Vec<usize> = (0..v.len()).filter(|&i| v[i].errors.is_empty() && v[i].host.is_some()).collect();
     let host_ids: Vec<Uuid> = on_host.iter().filter_map(|&i| v[i].item.host_id).collect::<HashSet<_>>().into_iter().collect();
@@ -403,10 +403,19 @@ pub async fn check(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Bat
         })
         .buffered(PROBE_CONCURRENCY)
         .collect::<Vec<_>>();
+    // 每台宿主机上要核对的公网 IP：有不在网卡上的，脚本才逐个本机地址探测 NAT 映射
+    let mut want: HashMap<Uuid, Vec<String>> = HashMap::new();
+    for &i in &on_host {
+        if let Some(h) = v[i].item.host_id {
+            want.entry(h).or_default().push(v[i].ip.to_string());
+        }
+    }
+    let echo = format!("{}/echo", st.cfg.public_url.trim_end_matches('/'));
     let logins = futures::stream::iter(host_rows)
         .map(|(id, ip, port, name)| {
             let t = crate::ssh::Target { ip, port: port as u16, key: st.cfg.ssh_key.clone(), known_hosts: st.cfg.known_hosts.clone(), password: None };
-            async move { (id, (tokio::time::timeout_at(deadline, local_ips(&t, &name)).await.unwrap_or_else(|_| Err(timed_out())), name)) }
+            let script = jobs::scripts::vars(&[("WANT", &want.get(&id).map(|w| w.join(",")).unwrap_or_default()), ("ECHO", &echo)]) + jobs::scripts::HOST_IPS;
+            async move { (id, (tokio::time::timeout_at(deadline, host_ips(&t, &name, &script)).await.unwrap_or_else(|_| Err(timed_out())), name)) }
         })
         .buffered(PROBE_CONCURRENCY)
         .collect::<HashMap<_, _>>();
@@ -423,8 +432,9 @@ pub async fn check(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Bat
             c.errors.push("宿主机不存在".into());
             continue;
         };
+        // 在网卡上、或恰好一个本机地址经 NAT 出去是它，都算通过（bind 地址由上架作业的第一步再核对一次并记下）
         let e = match r {
-            Ok(ips) => jobs::scripts::ip_not_on_host(&c.ip.to_string(), host, ips),
+            Ok((ips, nat)) => jobs::scripts::bind_addr(&c.ip.to_string(), host, ips, nat).err(),
             Err(e) => Some(e.clone()),
         };
         c.errors.extend(e);
@@ -435,15 +445,16 @@ pub async fn check(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Bat
 /// 「检查」整体的时限（端口探测与登录宿主机一起算）
 const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// 登录宿主机 `host` 取它网卡上的 IPv4（`LOCAL_IPS` 的输出）：先看 SSH 端口（连不上时不用等 ssh 自己超时），再登录。
+/// 登录宿主机 `host` 跑 `script`（`HOST_IPS`），取它网卡上的 IPv4 与（要核对的 IP 有不在网卡上的时）各本机地址经 NAT 出去的 IP：
+/// `(local_ips, nat)`。先看 SSH 端口（连不上时不用等 ssh 自己超时），再登录。
 /// 只读、不改宿主机，不写操作记录；登录过哪些宿主机记在中控的服务日志里
-async fn local_ips(t: &crate::ssh::Target, host: &str) -> Result<String, String> {
+async fn host_ips(t: &crate::ssh::Target, host: &str, script: &str) -> Result<(String, String), String> {
     crate::ssh::ssh_probe(&t.ip, t.port, Duration::from_secs(3)).await.map_err(|why| format!("宿主机 {host} 的 SSH {}:{} {why}", t.ip, t.port))?;
-    let out = t.run_once(jobs::scripts::LOCAL_IPS, Duration::from_secs(15)).await.map_err(|e| format!("登录宿主机 {host} 核对 IP 失败：{e:#}"))?;
+    let out = t.run_once(script, Duration::from_secs(15)).await.map_err(|e| format!("登录宿主机 {host} 核对 IP 失败：{e:#}"))?;
     if !out.ok() {
         return Err(format!("登录宿主机 {host} 核对 IP 失败：{}", out.stderr.trim()));
     }
-    Ok(out.kv("local_ips").unwrap_or("").to_string())
+    Ok((out.kv("local_ips").unwrap_or("").to_string(), out.kv("nat").unwrap_or("").to_string()))
 }
 
 pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Batch>) -> ApiResult<Json<Value>> {

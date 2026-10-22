@@ -227,7 +227,7 @@ function drive(job: Job, stepMs: number, onDone: () => void, outputs: Record<str
 function borrowHost(m: MachineView, h: MachineView) { m.agent = h.agent; m.host = h.host; }
 /** 同机 IP 节点上架 / 恢复的步骤输出：在宿主机上核对 IP、收敛（不做系统基线，bbr 为 null） */
 const ipOutputs = (m: MachineView, h: MachineView) => [
-  { ss_port: db.ssPorts[m.id], local_ips: `${h.ip}, ${m.ip}`, egress_ip: m.ip },
+  { ss_port: db.ssPorts[m.id], local_ips: `${h.ip}, ${m.ip}`, egress_ip: m.ip, bind_ip: m.bind_ip },
   { bbr: null, nft_relays: m.entries.map((e) => machine(e.relay.id).ip).join(', '), ssserver_updated: false },
 ];
 function startProvisionJob(m: MachineView) {
@@ -355,7 +355,7 @@ function createMachine(it: ProvisionItem, c: ProvisionCheckItem): MachineView {
   if (h) db.ssPorts[id] = c.ss_port!;
   const m: MachineView = {
     id, kind: it.kind, name: c.name, team: team ? { id: team.id, name: team.name } : null, number: it.kind === 'relay' ? null : c.number, label: it.kind === 'relay' ? it.label ?? null : null,
-    ip: it.ip, ssh_port: h?.ssh_port ?? it.ssh_port ?? 22, country: it.country ?? countryOf(it.ip), country_set: it.country ?? null, host_machine: h && { id: h.id, name: h.name }, ip_nodes: [], provider: pv ? { id: pv.id, name: pv.name } : null, provider_code: pv?.code ?? null,
+    ip: it.ip, ssh_port: h?.ssh_port ?? it.ssh_port ?? 22, country: it.country ?? countryOf(it.ip), country_set: it.country ?? null, host_machine: h && { id: h.id, name: h.name }, bind_ip: null, ip_nodes: [], provider: pv ? { id: pv.id, name: pv.name } : null, provider_code: pv?.code ?? null,
     plan: plan ? { id: plan.id, name: plan.name, bandwidth_mbps: plan.bandwidth_mbps, traffic_gb: plan.traffic_gb } : null, service_ref: it.service_ref ?? null,
     lifecycle: 'provisioning', lifecycle_reason: null, note: it.note ?? '', revision: 1, created_at: iso(), activated_at: null, retired_at: null,
     subscription: it.subscription?.due_date ? subCalc({ price_cents: it.subscription.price_cents ?? plan?.price_cents ?? 0, currency: plan?.currency ?? META.defaults.currency, cycle: it.subscription.cycle ?? plan?.cycle ?? META.defaults.cycle, due_date: it.subscription.due_date, due_days: 0, billing_tz: it.subscription.billing_tz ?? pv?.timezone ?? META.org_timezone, auto_renew: false, remind_days: pv?.remind_days ?? META.defaults.remind_days, traffic_gb: plan?.traffic_gb || null, traffic_reset_day: 1 } as NonNullable<MachineView['subscription']>) : null,

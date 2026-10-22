@@ -389,6 +389,10 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
         // 同机关系：同机 IP 节点的 SSH、agent、主机读数都是宿主机的；宿主机列出它上面的同机 IP 节点
         if !m["host_machine"].is_null() {
             rows.push(("宿主机", format!("{}（SSH、agent、主机读数都用它的）", st(&m, "/host_machine/name"))));
+            // 1:1 NAT 映射的附加 IP：ssserver 监听并从这个本地地址出站，线路机连的仍是上面的 IP
+            if let Some(b) = m["bind_ip"].as_str() {
+                rows.push(("本地地址", format!("{b}（公网 IP 经 1:1 NAT 映射到这里，ssserver 监听并从它出站）")));
+            }
         }
         if let Some(xs) = m["ip_nodes"].as_array().filter(|a| !a.is_empty()) {
             rows.push(("同机 IP 节点", xs.iter().map(|x| st(x, "/name")).collect::<Vec<_>>().join("、")));
