@@ -696,15 +696,15 @@ async fn relay_renewal_and_global_maintenance() {
     assert!(m.as_array().unwrap().iter().all(|x| x["health"]["status"] == "maintenance"));
 }
 
-/// 把入口在 `hour` 这一桶的业务流量设成 `mib` MiB，并让视图里的流量缓存作废（同小时汇总跑完）
-async fn set_traffic(t: &T, entry: Uuid, hour: OffsetDateTime, mib: i64) {
+/// 把机器网卡在 `hour` 这一桶的出站设成 `mb` MB（十进制）、入站设成它的一半，并让视图里的额度缓存作废（同小时汇总跑完）
+async fn set_nic(t: &T, machine: Uuid, hour: OffsetDateTime, mb: i64) {
     sqlx::query(
-        "insert into entry_traffic_hourly (entry_id, hour, up_bytes, down_bytes) values ($1, $2, 0, $3)
-         on conflict (entry_id, hour) do update set down_bytes = excluded.down_bytes",
+        "insert into host_metric_hourly (machine_id, hour, net_rx, net_tx) values ($1, $2, $3 / 2, $3)
+         on conflict (machine_id, hour) do update set net_rx = excluded.net_rx, net_tx = excluded.net_tx",
     )
-    .bind(entry)
+    .bind(machine)
     .bind(hour)
-    .bind(mib * 1024 * 1024)
+    .bind(mb * 1_000_000)
     .execute(&t.st.db)
     .await
     .unwrap();
@@ -712,7 +712,7 @@ async fn set_traffic(t: &T, entry: Uuid, hour: OffsetDateTime, mib: i64) {
 }
 
 /// 流量额度：本周期已用 ≥ 90% 立即开警告，≥ 100% 升严重并马上再通知一次，回落（新周期已用归零）立即恢复；
-/// 只开告警，健康状态不变；没设上限的机器不评估
+/// 只开告警，健康状态不变；没设上限的机器不评估。已用按网卡（线路机没有供应商，规则取大），上限是十进制 GB
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn traffic_quota_alert_lifecycle() {
     let t = setup().await;
@@ -720,9 +720,9 @@ async fn traffic_quota_alert_lifecycle() {
     t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "webhook", "config": {"url": mock.url("/hook/a")}, "min_severity": "info", "enabled": true})).await;
     let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
     let team = seed_team(&t, "团队1").await;
-    let (node, entry) = seed_node(&t, relay, team, 1, "203.0.113.5", 20000).await;
+    let (node, _) = seed_node(&t, relay, team, 1, "203.0.113.5", 20000).await;
     xray_report(&t, 1, true).await;
-    // 线路机额度 1 GiB、每月 1 号重置（账单时区北京）；节点没有订阅也没有套餐：不限
+    // 线路机额度 1 GB、每月 1 号重置（账单时区北京）；节点没有订阅也没有套餐：不限
     sqlx::query("insert into subscription (machine_id, price_cents, due_date, traffic_gb, traffic_reset_day) values ($1, 500, current_date + 60, 1, 1)")
         .bind(relay)
         .execute(&t.st.db)
@@ -737,10 +737,11 @@ async fn traffic_quota_alert_lifecycle() {
     let mut state = AlertState::default();
     let base = OffsetDateTime::now_utc();
 
-    set_traffic(&t, entry, hour, 911).await;
+    set_nic(&t, relay, hour, 899).await;
     assert_eq!(t.health(relay).await, ("ok".to_string(), vec![]), "89% 不报");
     // 92%：不去抖，评估一轮就开警告；健康状态仍是正常；节点同样有这些流量，但不限额度，不评估
-    set_traffic(&t, entry, hour, 950).await;
+    set_nic(&t, relay, hour, 920).await;
+    set_nic(&t, node, hour, 920).await;
     assert_eq!(t.health(relay).await, ("ok".to_string(), vec!["traffic_quota_high".to_string()]));
     assert!(t.health(node).await.1.is_empty());
     pass(&t, &mut state, base, 0).await;
@@ -748,33 +749,33 @@ async fn traffic_quota_alert_lifecycle() {
     assert_eq!(inc.len(), 1, "{inc:?}");
     assert_eq!((inc[0]["rule"].as_str(), inc[0]["rule_name"].as_str(), inc[0]["severity"].as_str()), (Some("traffic_quota_high"), Some("流量额度吃紧"), Some("warning")));
     assert_eq!(inc[0]["subject_id"], relay.to_string());
-    assert_eq!(inc[0]["summary"], format!("线路机1：本周期流量已用 92%（950 MiB / 1 GiB），{days} 天后重置"));
+    assert_eq!(inc[0]["summary"], format!("线路机1：本周期流量已用 92%（0.92 GB / 1 GB），{days} 天后重置"));
     log_settles(&t, 1).await;
     t.post(&format!("/api/v1/incidents/{}/ack", inc[0]["id"].as_str().unwrap()), json!({})).await;
 
     // 超过 100%：同一条告警升为严重，马上再通知一次（不等每天一次的提醒），对「吃紧」的确认清掉；健康状态仍不变
-    set_traffic(&t, entry, hour, 1100).await;
+    set_nic(&t, relay, hour, 1070).await;
     pass(&t, &mut state, base, 30).await;
     let inc = incidents(&t, "firing").await;
     assert_eq!((inc.len(), inc[0]["severity"].as_str()), (1, Some("critical")));
     assert!(inc[0]["ack_at"].is_null(), "{inc:?}");
-    assert_eq!(inc[0]["summary"], format!("线路机1：本周期流量已超出额度（已用 107%，1.07 GiB / 1 GiB），{days} 天后重置"));
+    assert_eq!(inc[0]["summary"], format!("线路机1：本周期流量已超出额度（已用 107%，1.07 GB / 1 GB），{days} 天后重置"));
     assert_eq!(t.health(relay).await.0, "ok");
     log_settles(&t, 2).await;
     pass(&t, &mut state, base, 60).await;
     log_settles(&t, 2).await;
 
-    // 上限调到 2 GiB、回到吃紧：摘要跟着变，严重度不降（收到过「严重」的渠道恢复时按严重收到），也不再通知
+    // 上限调到 2 GB、回到吃紧：摘要跟着变，严重度不降（收到过「严重」的渠道恢复时按严重收到），也不再通知
     sqlx::query("update subscription set traffic_gb = 2 where machine_id = $1").bind(relay).execute(&t.st.db).await.unwrap();
-    set_traffic(&t, entry, hour, 1900).await;
+    set_nic(&t, relay, hour, 1840).await;
     pass(&t, &mut state, base, 75).await;
     let inc = incidents(&t, "firing").await;
     assert_eq!((inc.len(), inc[0]["severity"].as_str()), (1, Some("critical")));
-    assert_eq!(inc[0]["summary"], format!("线路机1：本周期流量已用 92%（1.86 GiB / 2 GiB），{days} 天后重置"));
+    assert_eq!(inc[0]["summary"], format!("线路机1：本周期流量已用 92%（1.84 GB / 2 GB），{days} 天后重置"));
     log_settles(&t, 2).await;
 
     // 新周期开始、已用归零：下一轮立即恢复
-    sqlx::query("delete from entry_traffic_hourly").execute(&t.st.db).await.unwrap();
+    sqlx::query("delete from host_metric_hourly").execute(&t.st.db).await.unwrap();
     t.st.live.rolled_up();
     pass(&t, &mut state, base, 90).await;
     assert!(incidents(&t, "firing").await.is_empty());

@@ -139,9 +139,16 @@ pub struct Traffic {
 /// 流量额度周期：有流量重置日的按账单时区里最近一次重置日起算，否则是北京时间的本月
 #[derive(Debug, Clone, Serialize)]
 pub struct Quota {
-    /// 周期内业务流量（下载 + 上传，含已移除的入口）
+    /// 周期内已用（字节）：有 agent 的机器按网卡流量、照供应商的计量规则算（宿主机含同机 IP 节点）；
+    /// 家宽代理与同机 IP 节点没有自己的网卡读数，是业务流量（下载 + 上传，含已移除的入口）
     pub used: i64,
     pub period_start: Date,
+    /// 网卡计量规则（min / max / sum / out，没有供应商按 max）；按业务流量算的为 None
+    pub rule: Option<&'static str>,
+    /// 本周期按供应商面板校准过：校准时面板上的已用（字节）与校准时间。校准不在当前周期内的不算，为 None
+    pub base: Option<i64>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub base_at: Option<OffsetDateTime>,
     /// 有流量重置日时距下次重置还有几天（账单时区的日历天，≥ 1）；没有重置日为 None。流量额度告警的摘要用，不对外输出
     #[serde(skip)]
     pub reset_in_days: Option<i64>,
@@ -228,7 +235,7 @@ pub struct MachineView {
     pub entries: Vec<EntryView>,
     /// 已移除入口（如换线路机后的旧入口）本月 / 今天的流量：入口列表里没有它们，但这些流量仍属于这台机器
     pub removed_traffic: Traffic,
-    /// 流量额度周期里已用的业务流量
+    /// 流量额度：周期里已用（网卡按供应商规则，或业务流量）
     pub quota: Quota,
     pub health: Health,
     pub active_job: Option<JobRef>,
@@ -298,6 +305,9 @@ struct MRow {
     s_remind: Option<i32>,
     s_traffic: Option<i32>,
     s_reset: Option<i32>,
+    s_base: Option<i64>,
+    s_base_at: Option<OffsetDateTime>,
+    p_rule: Option<String>,
     a_version: Option<String>,
     a_last: Option<OffsetDateTime>,
     a_xray: Option<bool>,
@@ -334,11 +344,22 @@ pub struct LiveCache {
     rolled: AtomicU64,
     /// 流量只在小时汇总后（或跨天、跨月）才变：按汇总轮次缓存，到库里时钟的下一个北京时间零点过期
     traffic: tokio::sync::Mutex<Option<((u64, Instant), TrafficMap)>>,
-    /// 有重置日的机器的周期已用：(机器, 周期起点, 账单时区) → 字节，同样只在汇总后作废
-    quota: tokio::sync::Mutex<(u64, HashMap<QuotaKey, i64>)>,
+    /// 机器的周期已用（不含校准值）与校准是否在周期内，同样只在汇总后作废
+    quota: tokio::sync::Mutex<(u64, HashMap<QuotaKey, (i64, bool)>)>,
 }
 
-type QuotaKey = (Uuid, Date, String);
+/// (机器, 周期起点, 周期时区, 网卡计量规则（None = 业务流量）, 校准时间)
+type QuotaKey = (Uuid, Date, String, Option<&'static str>, Option<OffsetDateTime>);
+
+/// 供应商的网卡计量规则；没有供应商按 max
+fn nic_rule(r: Option<&str>) -> &'static str {
+    match r {
+        Some("min") => "min",
+        Some("sum") => "sum",
+        Some("out") => "out",
+        _ => "max",
+    }
+}
 
 impl LiveCache {
     pub fn invalidate(&self) {
@@ -400,8 +421,8 @@ async fn traffic(st: &AppState) -> sqlx::Result<TrafficMap> {
     Ok(v)
 }
 
-/// 这些机器各自周期起（账单时区零点）的业务流量，走 `LiveCache.quota`，缺的才查
-async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<Uuid, i64>> {
+/// 这些机器各自周期里（校准过的从校准时刻起）的用量与校准是否在周期内，走 `LiveCache.quota`，缺的才查
+async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<Uuid, (i64, bool)>> {
     if keys.is_empty() {
         return Ok(HashMap::new());
     }
@@ -415,28 +436,39 @@ async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<
     if !miss.is_empty() {
         // 小时表按 UTC 整点分桶：周期起点所在的那一桶整桶算进来（半小时时区如 Asia/Kolkata 多算起点前至多 30 分钟，
         // 不漏算周期开头）；整点时区（北京、洛杉矶）起点正好是桶边界，和今天 / 本月的算法一致。
-        // 宿主机的额度和它的同机 IP 节点（含已退役的）共用：它们的入口流量一起算。
-        // 先展开「机器 → 入口」，再逐个入口按小时表主键求和：同机节点的子查询放在 OR 连接条件里时，规划器会先连出
-        // 全部小时行再逐行跑子查询（实验室 64 台要 11 s，期间整份机器视图都在等）
-        let rows: Vec<(Uuid, i64)> = sqlx::query_as(
-            "with q as (select * from unnest($1::uuid[], $2::date[], $3::text[]) q(mid, start, tz)),
-             qe as (select q.mid, q.start, q.tz, e.id eid from q join entry e on e.node_id = q.mid or e.relay_id = q.mid
-                    union
-                    select q.mid, q.start, q.tz, e.id from q join machine x on x.host_id = q.mid join entry e on e.node_id = x.id)
-             select qe.mid, coalesce(sum(t.b), 0)::bigint
-             from qe cross join lateral (
-               select sum(h.up_bytes + h.down_bytes) b from entry_traffic_hourly h
-               where h.entry_id = qe.eid and h.hour > (qe.start::timestamp at time zone qe.tz) - interval '1 hour') t
-             group by qe.mid",
+        // 校准时刻在周期内的从校准时刻所在整点的下一桶算起：那一小时里校准之后的流量不计（至多差 1 小时）。
+        // 网卡：逐台按 host_metric_hourly 主键区间求本周期入、出总量，再按规则取小 / 取大 / 相加 / 只取出站。
+        // 业务流量（家宽代理、同机 IP 节点）：先展开「机器 → 入口」，再逐个入口按小时表主键求和
+        // （子查询放在 OR 连接条件里时规划器会先连出全部小时行，实验室 64 台要 11 s）
+        let rows: Vec<(Uuid, i64, bool)> = sqlx::query_as(
+            "with q as (select q.mid, q.rule, q.base_at >= s.s0 cal,
+                               case when q.base_at >= s.s0 then date_trunc('hour', q.base_at) else s.s0 - interval '1 hour' end since
+                        from unnest($1::uuid[], $2::date[], $3::text[], $4::text[], $5::timestamptz[]) q(mid, start, tz, rule, base_at)
+                        cross join lateral (select q.start::timestamp at time zone q.tz s0) s),
+             qe as (select q.mid, q.since, e.id eid from q join entry e on e.node_id = q.mid or e.relay_id = q.mid where q.rule is null)
+             select q.mid, case q.rule when 'min' then least(t.rx, t.tx) when 'max' then greatest(t.rx, t.tx) when 'sum' then t.rx + t.tx else t.tx end,
+                    coalesce(q.cal, false)
+             from q cross join lateral (
+               select coalesce(sum(h.net_rx), 0)::bigint rx, coalesce(sum(h.net_tx), 0)::bigint tx from host_metric_hourly h
+               where h.machine_id = q.mid and h.hour > q.since) t
+             where q.rule is not null
+             union all
+             select q.mid, coalesce(sum(t.b), 0)::bigint, coalesce(q.cal, false)
+             from q left join qe on qe.mid = q.mid left join lateral (
+               select sum(h.up_bytes + h.down_bytes) b from entry_traffic_hourly h where h.entry_id = qe.eid and h.hour > qe.since) t on true
+             where q.rule is null
+             group by q.mid, q.cal",
         )
         .bind(miss.iter().map(|k| k.0).collect::<Vec<_>>())
         .bind(miss.iter().map(|k| k.1).collect::<Vec<_>>())
         .bind(miss.iter().map(|k| k.2.clone()).collect::<Vec<_>>())
+        .bind(miss.iter().map(|k| k.3).collect::<Vec<_>>())
+        .bind(miss.iter().map(|k| k.4).collect::<Vec<_>>())
         .fetch_all(&st.db)
         .await?;
-        let got: HashMap<Uuid, i64> = rows.into_iter().collect();
+        let got: HashMap<Uuid, (i64, bool)> = rows.into_iter().map(|(m, b, cal)| (m, (b, cal))).collect();
         for k in miss {
-            slot.1.insert(k.clone(), got.get(&k.0).copied().unwrap_or(0));
+            slot.1.insert(k.clone(), got.get(&k.0).copied().unwrap_or((0, false)));
         }
     }
     Ok(keys.into_iter().map(|k| (k.0, slot.1[&k])).collect())
@@ -454,6 +486,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 m.lifecycle_reason, m.note, m.revision, m.created_at, m.activated_at, m.retired_at,
                 s.price_cents s_price, s.currency s_currency, s.cycle::text s_cycle, s.due_date s_due, s.billing_tz s_tz,
                 local_date(s.billing_tz) s_today, s.auto_renew s_auto, s.remind_days s_remind, s.traffic_gb s_traffic, s.traffic_reset_day s_reset,
+                s.traffic_used_base s_base, s.traffic_used_base_at s_base_at, p.traffic_rule p_rule,
                 a.agent_version a_version, a.last_report_at a_last, (a.info->'xray'->>'running')::bool a_xray, (a.info->>'cpu_cores')::int a_cores,
                 a.info->'agent_health' a_health, (a.info->>'clock_skew_ms')::bigint a_skew, r.public_host r_host, r.generation r_gen, r.applied_generation r_applied, r.applied_at r_applied_at, r.generation_at r_gen_at,
                 r.apply_error r_err, r.port_min r_pmin, r.port_max r_pmax
@@ -477,10 +510,19 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     // 主机读数按机器所在的那台算：同机 IP 节点取宿主机的
     let hids: Vec<Uuid> = rows.iter().map(|r| r.host_id.unwrap_or(r.id)).collect::<HashSet<_>>().into_iter().collect();
     let now = OffsetDateTime::now_utc();
-    // 有流量重置日的订阅：账单时区里的今天 → 周期起点
+    // 流量额度周期：有流量重置日的按账单时区里的今天算周期起点，否则是北京时间的本月。
+    // 有自己 agent 的机器按网卡计量（规则取供应商的），家宽代理、同机 IP 节点按业务流量
+    let month_start = now.to_offset(time::macros::offset!(+8)).date().replace_day(1).expect("1 号");
     let periods: Vec<QuotaKey> = rows
         .iter()
-        .filter_map(|r| Some((r.id, period_start(r.s_today?, r.s_reset? as u8), r.s_tz.clone()?)))
+        .map(|r| {
+            let (start, tz) = match (r.s_today, r.s_reset, &r.s_tz) {
+                (Some(t), Some(d), Some(tz)) => (period_start(t, d as u8), tz.clone()),
+                _ => (month_start, "Asia/Shanghai".to_string()),
+            };
+            let rule = (r.kind != "proxy" && r.host_id.is_none()).then(|| nic_rule(r.p_rule.as_deref()));
+            (r.id, start, tz, rule, r.s_base_at)
+        })
         .collect();
 
     // 最近两条主机样本 → 当前值与网卡速率
@@ -586,13 +628,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
         .bind(&ids)
         .fetch_all(db)
         .await?;
-        // 宿主机上同机 IP 节点（含已退役的）的入口：流量额度和宿主机共用，本月流量也算进宿主机的
-        let ipn: Vec<(Uuid, Uuid)> = sqlx::query_as("select e.id, x.host_id from entry e join machine x on x.id = e.node_id where e.id = any($1) and x.host_id = any($2)")
-            .bind(&with_traffic)
-            .bind(&ids)
-            .fetch_all(db)
-            .await?;
-        Ok::<_, sqlx::Error>((tr, removed, ipn))
+        Ok::<_, sqlx::Error>((tr, removed))
     };
     let jobs_q = sqlx::query_as::<_, (Uuid, Uuid, String, String)>(
         "select target_id, id, kind, state::text from job
@@ -621,8 +657,8 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     )
     .bind(&ids)
     .fetch_all(db);
-    let period_of: HashMap<Uuid, Date> = periods.iter().map(|k| (k.0, k.1)).collect();
-    let (hs, (es, ps), (traffic, removed, ipn_entries), jobs, inc, silences, su, policies, period_used, ipn) =
+    let period_of: HashMap<Uuid, (Date, Option<&'static str>)> = periods.iter().map(|k| (k.0, (k.1, k.3))).collect();
+    let (hs, (es, ps), (traffic, removed), jobs, inc, silences, su, policies, period_used, ipn) =
         tokio::try_join!(hs_q, entries_q, traffic_q, jobs_q, inc_q, sil_q, su_q, crate::policy::load_modes(db), quota_used(st, periods), ipn_q)?;
 
     let mut host: HashMap<Uuid, HostNow> = HashMap::new();
@@ -678,12 +714,6 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
             t.month_up += x.month_up;
             t.month_down += x.month_down;
         }
-    }
-    // 宿主机 → 它的同机 IP 节点本月的业务流量（额度共用）
-    let mut ipn_month: HashMap<Uuid, i64> = HashMap::new();
-    for (e, h) in ipn_entries {
-        let x = &traffic[&e];
-        *ipn_month.entry(h).or_default() += x.month_up + x.month_down;
     }
     let mut ip_nodes: HashMap<Uuid, Vec<Ref>> = HashMap::new();
     for (h, id, name) in ipn {
@@ -771,20 +801,16 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
             });
             let entries = entries_by.remove(&r.id).unwrap_or_default();
             let removed_traffic = removed_by.remove(&r.id).unwrap_or_default();
-            let quota = match period_of.get(&r.id) {
-                Some(&start) => Quota {
-                    used: period_used[&r.id],
-                    period_start: start,
-                    reset_in_days: r.s_today.zip(r.s_reset).map(|(t, d)| (next_reset(start, d as u8) - t).whole_days()),
-                },
-                None => Quota {
-                    used: entries.iter().map(|e| e.traffic.month_up + e.traffic.month_down).sum::<i64>()
-                        + removed_traffic.month_up
-                        + removed_traffic.month_down
-                        + ipn_month.get(&r.id).copied().unwrap_or(0),
-                    period_start: today.replace_day(1).expect("1 号"),
-                    reset_in_days: None,
-                },
+            let (start, rule) = period_of[&r.id];
+            let (after, cal) = period_used[&r.id];
+            let base = r.s_base.filter(|_| cal);
+            let quota = Quota {
+                used: base.unwrap_or(0) + after,
+                period_start: start,
+                rule,
+                base,
+                base_at: r.s_base_at.filter(|_| cal),
+                reset_in_days: r.s_today.zip(r.s_reset).map(|(t, d)| (next_reset(start, d as u8) - t).whole_days()),
             };
             // 宿主机维护时它上面的同机 IP 节点一起维护（是同一台机器）
             let maintenance = silences.maintenance(r.id) || r.host_id.is_some_and(|h| silences.maintenance(h));

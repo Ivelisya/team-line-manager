@@ -181,20 +181,28 @@ async fn ip_node_borrows_host_agent_and_metrics() {
     let xv = t.get(&format!("/api/v1/machines/{x}")).await;
     assert_eq!((xv["maintenance"].clone(), xv["health"]["status"].clone()), (json!(true), json!("maintenance")), "{xv}");
 
-    // 流量额度：宿主机的已用含同机节点入口的流量——没设重置日（按本月）、设了重置日（按周期）两种算法都算上
+    // 流量额度：宿主机按自己的网卡计量（同机节点的流量也走这块网卡），同机节点没有自己的网卡读数，是它入口的业务流量
     sqlx::query("insert into entry_traffic_hourly (entry_id, hour, up_bytes, down_bytes) values ($1, date_trunc('hour', now()), 100, 200)")
         .bind(e)
         .execute(&t.st.db)
         .await
         .unwrap();
+    sqlx::query("insert into host_metric_hourly (machine_id, hour, net_rx, net_tx) values ($1, date_trunc('hour', now()), 320, 310)")
+        .bind(host)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
     t.st.live.rolled_up();
-    assert_eq!(t.get(&format!("/api/v1/machines/{host}")).await["quota"]["used"], 300);
+    let tr = &t;
+    let q = |id: Uuid| async move { tr.get(&format!("/api/v1/machines/{id}")).await["quota"].clone() };
+    assert_eq!((q(host).await["used"].as_i64(), q(host).await["rule"].as_str()), (Some(320), Some("max")));
+    assert_eq!((q(x).await["used"].as_i64(), q(x).await["rule"].clone()), (Some(300), Value::Null));
     sqlx::query("insert into subscription (machine_id, price_cents, due_date, traffic_gb, traffic_reset_day) values ($1, 500, current_date + 60, 1, 1)")
         .bind(host)
         .execute(&t.st.db)
         .await
         .unwrap();
-    assert_eq!(t.get(&format!("/api/v1/machines/{host}")).await["quota"]["used"], 300);
+    assert_eq!(q(host).await["used"], 320);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

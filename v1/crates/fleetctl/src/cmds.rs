@@ -518,7 +518,7 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
                 ),
             ));
         }
-        rows.push(("流量额度", format!("本周期已用 {}（{} 起）", bytes(num(&m, "/quota/used").unwrap_or(0.0)), st(&m, "/quota/period_start"))));
+        rows.push(("流量额度", format!("本周期已用 {}（{} 起）", table::gb(num(&m, "/quota/used").unwrap_or(0.0)), st(&m, "/quota/period_start"))));
         if !m["relay"].is_null() {
             rows.push(("线路机", format!("{}  配置代数 {} · 已应用 {}  {}", st(&m, "/relay/public_host"), st(&m, "/relay/generation"), st(&m, "/relay/applied_generation"), m["relay"]["apply_error"].as_str().unwrap_or(""))));
         }

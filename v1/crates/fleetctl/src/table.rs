@@ -88,6 +88,13 @@ pub fn bytes(n: f64) -> String {
     if i == 0 { format!("{v:.0} B") } else { format!("{v:.1} {}", units[i]) }
 }
 
+/// 流量额度的写法同供应商面板：十进制 GB（10⁹ 字节），不换算成 TB（同中控的流量额度告警）
+pub fn gb(n: f64) -> String {
+    let x = n.max(0.0) / 1e9;
+    let s = if x < 10.0 { format!("{x:.2}") } else { format!("{x:.1}") };
+    format!("{} GB", s.trim_end_matches('0').trim_end_matches('.'))
+}
+
 /// 速率（bit/s）
 pub fn bps(n: f64) -> String {
     let units = ["bps", "Kbps", "Mbps", "Gbps"];

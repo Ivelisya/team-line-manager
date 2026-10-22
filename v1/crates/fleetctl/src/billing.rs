@@ -4,7 +4,7 @@
 use crate::cmds::{cycle_cn, due_cn, num, st, Ctx};
 use crate::ops::confirm;
 use crate::resolve::Want;
-use crate::table::{self, bytes, money};
+use crate::table::{self, gb, money};
 use anyhow::{anyhow, bail};
 use serde_json::{json, Map, Value};
 use std::ops::RangeInclusive;
@@ -13,8 +13,9 @@ use time::{Date, Month};
 
 /// billing 列出的续费记录条数（新→旧）
 const RECENT: usize = 10;
-const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
-/// `PUT /machines/{id}/subscription` 的字段：整份替换，没给的字段会被改成中控的默认值
+/// 流量上限是供应商的十进制 GB
+const GB: f64 = 1e9;
+/// `PUT /machines/{id}/subscription` 的字段：整份替换，没给的字段会被改成中控的默认值（另有 traffic_used_gb：没传 = 不改）
 const SUB_KEYS: [&str; 9] = ["price_cents", "currency", "cycle", "due_date", "billing_tz", "auto_renew", "remind_days", "traffic_gb", "traffic_reset_day"];
 
 /// 金额：`39.46` / `39` / `0.5`（最多两位小数，不带正负号）→ 分。接口收整数分，币种是订阅的
@@ -75,7 +76,18 @@ fn traffic_gb_cn(v: &Value) -> String {
     match v.as_i64() {
         None => "不单独设".into(),
         Some(0) => "不限".into(),
-        Some(g) => format!("{g} GiB"),
+        Some(g) => format!("{g} GB"),
+    }
+}
+
+/// 额度怎么量（同网页）：有 agent 的机器按网卡、照供应商的规则；家宽代理与同机 IP 节点是业务流量
+fn rule_cn(v: &Value) -> &'static str {
+    match v.as_str() {
+        Some("min") => "网卡入出取小",
+        Some("max") => "网卡入出取大",
+        Some("sum") => "网卡入出相加",
+        Some("out") => "只算网卡出站",
+        _ => "业务流量",
     }
 }
 
@@ -95,7 +107,7 @@ fn sub_fields(s: &Value) -> [(&'static str, String); 7] {
     ]
 }
 
-/// 生效的流量上限（GiB）：订阅的 traffic_gb，没填按套餐的；0 或都没有 = 不限（同中控的流量额度告警与网页）
+/// 生效的流量上限（GB）：订阅的 traffic_gb，没填按套餐的；0 或都没有 = 不限（同中控的流量额度告警与网页）
 fn traffic_limit(m: &Value) -> Option<i64> {
     m.pointer("/subscription/traffic_gb").and_then(Value::as_i64).or_else(|| m.pointer("/plan/traffic_gb").and_then(Value::as_i64)).filter(|g| *g > 0)
 }
@@ -103,11 +115,20 @@ fn traffic_limit(m: &Value) -> Option<i64> {
 /// billing 的流量上限：生效值与来源；没有上限时同机 IP 节点是与宿主机共用（宿主机的已用含它的流量），其余是不限
 fn limit_cn(m: &Value, limit: Option<i64>) -> String {
     match limit {
-        Some(g) if m.pointer("/subscription/traffic_gb").is_some_and(|v| !v.is_null()) => format!("{g} GiB"),
-        Some(g) => format!("{g} GiB（按套餐「{}」）", st(m, "/plan/name")),
+        Some(g) if m.pointer("/subscription/traffic_gb").is_some_and(|v| !v.is_null()) => format!("{g} GB"),
+        Some(g) => format!("{g} GB（按套餐「{}」）", st(m, "/plan/name")),
         None if !m["host_machine"].is_null() => format!("与宿主机「{}」共用", st(m, "/host_machine/name")),
         None => "不限".into(),
     }
+}
+
+/// `901.6 GB / 2000 GB（45%），2026-10-13 起，网卡入出取小；已按面板校准（2026-10-22 15:30:00）`
+fn used_cn(m: &Value, limit: Option<i64>, pct: Option<i64>, incl: &str) -> String {
+    let lim = limit.map(|g| format!(" / {g} GB")).unwrap_or_default();
+    let p = pct.map(|p| format!("（{p}%）")).unwrap_or_default();
+    let cal = m.pointer("/quota/base_at").and_then(Value::as_str).map(|t| format!("；已按面板校准（{}）", table::ts(t))).unwrap_or_default();
+    let used = gb(num(m, "/quota/used").unwrap_or(0.0));
+    format!("{used}{lim}{p}，{} 起，{}{incl}{cal}", st(m, "/quota/period_start"), rule_cn(&m["quota"]["rule"]))
 }
 
 fn billing_text(name: &str, m: &Value, limit: Option<i64>, pct: Option<i64>, renewals: &[Value], total: usize) -> String {
@@ -121,8 +142,7 @@ fn billing_text(name: &str, m: &Value, limit: Option<i64>, pct: Option<i64>, ren
         rows.push(("流量上限", limit_cn(m, limit)));
     }
     let incl = if m["ip_nodes"].as_array().is_some_and(|a| !a.is_empty()) { "，含同机 IP 节点" } else { "" };
-    let p = pct.map(|p| format!("（{p}%）")).unwrap_or_default();
-    rows.push(("本周期已用", format!("{}{p}，{} 起{incl}", bytes(num(m, "/quota/used").unwrap_or(0.0)), st(m, "/quota/period_start"))));
+    rows.push(("本周期已用", used_cn(m, limit, pct, incl)));
     let out = table::kv(&rows);
     if s.is_null() {
         let set = format!("fleetctl subscription set {name} --price <金额> --due <YYYY-MM-DD>");
@@ -162,7 +182,7 @@ pub fn billing(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
     let recent = &all[..all.len().min(RECENT)];
     let limit = traffic_limit(&m);
     // 向下取整（同流量额度告警）：还没用满时不会写成 100%
-    let pct = limit.map(|g| (num(&m, "/quota/used").unwrap_or(0.0) * 100.0 / (g as f64 * GIB)).floor() as i64);
+    let pct = limit.map(|g| (num(&m, "/quota/used").unwrap_or(0.0) * 100.0 / (g as f64 * GB)).floor() as i64);
     let d = json!({
         "id": id, "name": name, "host_machine": m["host_machine"], "subscription": m["subscription"],
         "traffic_limit_gb": limit, "quota": m["quota"], "quota_pct": pct, "renewals": recent, "renewal_count": all.len(),
@@ -224,6 +244,7 @@ pub struct SubSetOpts<'a> {
     pub tz: Option<&'a str>,
     pub traffic_gb: Option<&'a str>,
     pub reset_day: Option<&'a str>,
+    pub used: Option<&'a str>,
     pub yes: bool,
 }
 
@@ -276,6 +297,15 @@ fn sub_patch(o: &SubSetOpts<'_>) -> anyhow::Result<Map<String, Value>> {
     if let Some(v) = o.reset_day {
         p.insert("traffic_reset_day".into(), int_or_none(v, 1..=31, "--reset-day 写 1–31（每月几号），或 none（不设，按北京时间的自然月）")?);
     }
+    if let Some(v) = o.used {
+        let v = v.trim();
+        let g = if v.eq_ignore_ascii_case("none") {
+            Value::Null
+        } else {
+            v.parse::<f64>().ok().filter(|g| g.is_finite() && *g >= 0.0).map(|g| json!(g)).ok_or_else(|| anyhow!("--used 写供应商面板上本周期已用的 GB 数（如 901.6），或 none（清掉校准）"))?
+        };
+        p.insert("traffic_used_gb".into(), g);
+    }
     Ok(p)
 }
 
@@ -295,19 +325,26 @@ fn merge_sub(cur: &Value, patch: Map<String, Value>) -> anyhow::Result<Value> {
     Ok(b)
 }
 
-/// 改了哪些（`费用 39.46 USD / 月 → 45.00 USD / 月`）；新建时列出全部
+/// 改了哪些（`费用 39.46 USD / 月 → 45.00 USD / 月`）；新建时列出全部。按面板校准不在现有订阅里，给了就列
 fn sub_changes(cur: &Value, new: &Value) -> Vec<String> {
-    if cur.is_null() {
-        return sub_fields(new).into_iter().map(|(k, v)| format!("{k} {v}")).collect();
+    let mut v: Vec<String> = if cur.is_null() {
+        sub_fields(new).into_iter().map(|(k, v)| format!("{k} {v}")).collect()
+    } else {
+        sub_fields(cur).into_iter().zip(sub_fields(new)).filter(|(a, b)| a.1 != b.1).map(|((k, a), (_, b))| format!("{k} {a} → {b}")).collect()
+    };
+    match new.get("traffic_used_gb") {
+        Some(Value::Null) => v.push("清掉按面板的校准".into()),
+        Some(g) => v.push(format!("按面板校准本周期已用为 {}（之后按网卡流量累加）", gb(g.as_f64().unwrap_or(0.0) * GB))),
+        None => {}
     }
-    sub_fields(cur).into_iter().zip(sub_fields(new)).filter(|(a, b)| a.1 != b.1).map(|((k, a), (_, b))| format!("{k} {a} → {b}")).collect()
+    v
 }
 
 /// `subscription set <机器>`：先读现有订阅、只改给了的字段再整份提交。`--json` 输出改完的订阅（同 show 的 subscription）
 pub fn subscription_set(ctx: &Ctx, o: SubSetOpts<'_>) -> anyhow::Result<u8> {
     let patch = sub_patch(&o)?;
     if patch.is_empty() {
-        bail!("没有要改的内容：给 --price / --currency / --cycle / --due / --auto-renew / --remind-days / --tz / --traffic-gb / --reset-day 之一");
+        bail!("没有要改的内容：给 --price / --currency / --cycle / --due / --auto-renew / --remind-days / --tz / --traffic-gb / --reset-day / --used 之一");
     }
     let (id, name) = ctx.find_id(o.machine, Want::Live)?;
     let m = ctx.c.get(&format!("/machines/{id}"))?;
@@ -370,7 +407,13 @@ mod tests {
         let want = json!({"price_cents": 4500, "currency": "USD", "cycle": "monthly", "due_date": "2026-10-25", "billing_tz": "America/Los_Angeles",
             "auto_renew": false, "remind_days": 7, "traffic_gb": null, "traffic_reset_day": 15});
         assert_eq!(b, want);
-        assert_eq!(sub_changes(&cur, &b), ["费用 39.46 USD / 月 → 45.00 USD / 月", "流量上限 2000 GiB → 不单独设"]);
+        assert_eq!(sub_changes(&cur, &b), ["费用 39.46 USD / 月 → 45.00 USD / 月", "流量上限 2000 GB → 不单独设"]);
+        // 按面板校准：不在现有订阅里，给了就提交（GB，可带小数），none = 清掉
+        let b = merge_sub(&cur, sub_patch(&SubSetOpts { used: Some("901.6"), ..Default::default() }).unwrap()).unwrap();
+        assert_eq!((b["traffic_used_gb"].as_f64(), b["price_cents"].as_i64()), (Some(901.6), Some(3946)));
+        assert_eq!(sub_changes(&cur, &b), ["按面板校准本周期已用为 901.6 GB（之后按网卡流量累加）"]);
+        let b = merge_sub(&cur, sub_patch(&SubSetOpts { used: Some("none"), ..Default::default() }).unwrap()).unwrap();
+        assert_eq!(sub_changes(&cur, &b), ["清掉按面板的校准"]);
         let same = SubSetOpts { cycle: Some("monthly"), currency: Some("usd"), ..Default::default() };
         assert!(sub_changes(&cur, &merge_sub(&cur, sub_patch(&same).unwrap()).unwrap()).is_empty());
         // 没有订阅：新建要价格和到期日，其余取网页「设置订阅」表单的默认值
@@ -392,6 +435,8 @@ mod tests {
             SubSetOpts { due: Some("2026-11-31"), ..Default::default() },
             SubSetOpts { currency: Some("US"), ..Default::default() },
             SubSetOpts { price: Some("1.999"), ..Default::default() },
+            SubSetOpts { used: Some("-1"), ..Default::default() },
+            SubSetOpts { used: Some("901.6GB"), ..Default::default() },
         ];
         for o in &bad {
             assert!(sub_patch(o).is_err());
@@ -402,13 +447,18 @@ mod tests {
     #[test]
     fn limit_and_billing_wording() {
         let m = json!({"subscription": {"traffic_gb": null}, "plan": {"name": "Mini", "traffic_gb": 2000}, "host_machine": null});
-        assert_eq!((traffic_limit(&m), limit_cn(&m, traffic_limit(&m))), (Some(2000), "2000 GiB（按套餐「Mini」）".into()));
+        assert_eq!((traffic_limit(&m), limit_cn(&m, traffic_limit(&m))), (Some(2000), "2000 GB（按套餐「Mini」）".into()));
+        // 已用同供应商面板：十进制 GB；校准过的注明
+        let q = json!({"ip_nodes": [], "quota": {"used": 901_600_000_000i64, "period_start": "2026-10-13", "rule": "min", "base": 869_700_000_000i64, "base_at": "2026-10-22T07:30:00Z"}});
+        assert_eq!(used_cn(&q, Some(2000), Some(45), ""), "901.6 GB / 2000 GB（45%），2026-10-13 起，网卡入出取小；已按面板校准（2026-10-22 15:30:00）");
+        let q = json!({"quota": {"used": 31_900_000, "period_start": "2026-10-01", "rule": null, "base_at": null}});
+        assert_eq!(used_cn(&q, None, None, ""), "0.03 GB，2026-10-01 起，业务流量");
         // 订阅填 0 = 不限，不再看套餐
         let m = json!({"subscription": {"traffic_gb": 0}, "plan": {"name": "Mini", "traffic_gb": 2000}, "host_machine": null});
         assert_eq!(limit_cn(&m, traffic_limit(&m)), "不限");
         let m = json!({"subscription": null, "plan": null, "host_machine": {"id": "h", "name": "团队1-03"}});
         assert_eq!(limit_cn(&m, traffic_limit(&m)), "与宿主机「团队1-03」共用");
         let m = json!({"subscription": {"traffic_gb": 500}, "plan": null, "host_machine": null});
-        assert_eq!(limit_cn(&m, traffic_limit(&m)), "500 GiB");
+        assert_eq!(limit_cn(&m, traffic_limit(&m)), "500 GB");
     }
 }
