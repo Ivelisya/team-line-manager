@@ -99,7 +99,7 @@ function LiveDot({ live }: { live: boolean }) {
 }
 
 /** 网卡速率一列：方向 + 大号读数（按量级着色）、点阵迹线（点击看主机曲线）。实时 / 离线标两列各一个（保持两列等宽对称），呼吸只给视口里的卡 */
-function FlowCol({ dir, rate, values, live, onOpen }: { dir: 'up' | 'down'; rate: number | null; values: number[]; live: boolean; onOpen: Open }) {
+function FlowCol({ dir, rate, values, dots, live, onOpen }: { dir: 'up' | 'down'; rate: number | null; values: number[]; dots?: number; live: boolean; onOpen: Open }) {
   const up = dir === 'up';
   return (
     <div className="flow-col" data-dir={dir} data-speed={live ? F.speedOf(rate) : undefined}>
@@ -108,21 +108,22 @@ function FlowCol({ dir, rate, values, live, onOpen }: { dir: 'up' | 'down'; rate
         <span className="flow-rate"><Num f={F.rate(rate)} /></span>
       </div>
       <button type="button" className="flow-trend" data-tip="查看主机曲线" onClick={() => onOpen('host')} aria-label={`${up ? '上行' : '下行'}速率：查看主机曲线`}>
-        <DotTrace values={values} />
+        <DotTrace values={values} n={dots} />
         <LiveDot live={live} />
       </button>
     </div>
   );
 }
 
-function Flow({ m, onOpen, totals }: { m: MachineView; onOpen: Open; totals?: boolean }) {
+/** compact：紧凑卡的流量列窄（约 120px），迹线只画最近 20 个点，30 个点挤在一起看不清 */
+function Flow({ m, onOpen, totals, compact }: { m: MachineView; onOpen: Open; totals?: boolean; compact?: boolean }) {
   const tr = useLiveSeries(m.id);
   const tx = useMemo(() => tr.map((p) => p.tx), [tr]); const rx = useMemo(() => tr.map((p) => p.rx), [tr]); // 迹线没变时 DotTrace（memo）不重画
   const r = liveRate(m); const t = monthTraffic(m);
   return (
     <div className="flow">
-      <FlowCol dir="up" rate={r?.tx ?? null} values={tx} live={r != null} onOpen={onOpen} />
-      <FlowCol dir="down" rate={r?.rx ?? null} values={rx} live={r != null} onOpen={onOpen} />
+      <FlowCol dir="up" rate={r?.tx ?? null} values={tx} dots={compact ? 20 : undefined} live={r != null} onOpen={onOpen} />
+      <FlowCol dir="down" rate={r?.rx ?? null} values={rx} dots={compact ? 20 : undefined} live={r != null} onOpen={onOpen} />
       {/* 业务流量按用户视角（下载 = downlink、上传 = uplink），和本机网卡的上行 / 下行不是一回事，单独一行 */}
       {totals && (
         <button type="button" className="flow-foot flow-biz" onClick={() => onOpen('traffic')}>
@@ -300,7 +301,7 @@ function NodeCardImpl({ m, view, current, onOpen: open, layoutKey }: { m: Machin
       {view === 'compact' && <>
         {tags}
         <section className="slot-seg"><Meters m={m} compact /></section>
-        <section className="slot-seg">{host ? <Flow m={m} onOpen={onOpen} /> : <FlowRow m={m} />}</section>
+        <section className="slot-seg">{host ? <Flow m={m} onOpen={onOpen} compact /> : <FlowRow m={m} />}</section>
         {beat}
       </>}
 

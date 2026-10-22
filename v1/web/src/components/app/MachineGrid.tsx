@@ -24,9 +24,10 @@ export function sortByCol(rows: MachineView[], cols: Col[], sort: SortState | nu
   return [...rows].sort((a, b) => sign * cmp(a, b));
 }
 
-/** 按容器宽度要收起几列（drop 小的先收）才放得下，以及收起后放不放得下；全部收起仍放不下就不收，横滑 */
-function fitCols(cols: Col[], width: number) {
-  const order = cols.filter((c) => c.drop != null).sort((a, b) => a.drop! - b.drop!);
+/** 可以收起的列，按收起的先后（drop 小的先收）；正在按它排序的列不收，排序标记和取消排序的表头一直看得见 */
+const droppable = (cols: Col[], sortId: string | undefined) => cols.filter((c) => c.drop != null && c.id !== sortId).sort((a, b) => a.drop! - b.drop!);
+/** 按容器宽度要收起几列才放得下，以及收起后放不放得下；全部收起仍放不下就不收，横滑 */
+function fitCols(cols: Col[], order: Col[], width: number) {
   let w = cols.reduce((s, c) => s + c.size, 0);
   let n = 0;
   while (w > width && n < order.length) w -= order[n++].size;
@@ -44,18 +45,19 @@ export function MachineGrid({ cols, rows, sort, onSort, openId, onOpen, dim = is
 }) {
   const wrap = React.useRef<HTMLDivElement>(null);
   const [dropped, setDropped] = React.useState(0);
+  const order = React.useMemo(() => droppable(cols, sort?.id), [cols, sort?.id]);
   // 挂载、换列（在用 / 已退役）时先在绘制前按当前宽度算一次，不先露出全部列和横向滚动条再收；之后的宽度变化交给共享的 ResizeObserver
   React.useLayoutEffect(() => {
     const el = wrap.current!;
-    const apply = (w: number) => { const f = fitCols(cols, w); el.toggleAttribute('data-fit', f.fit); setDropped(f.n); };
+    const apply = (w: number) => { const f = fitCols(cols, order, w); el.toggleAttribute('data-fit', f.fit); setDropped(f.n); };
     apply(el.clientWidth);
     return watchSize(el, (e) => apply(e.contentRect.width));
-  }, [cols]);
+  }, [cols, order]);
   const shown = React.useMemo(() => {
     if (!dropped) return cols;
-    const gone = new Set(cols.filter((c) => c.drop != null).sort((a, b) => a.drop! - b.drop!).slice(0, dropped).map((c) => c.id));
+    const gone = new Set(order.slice(0, dropped).map((c) => c.id));
     return cols.filter((c) => !gone.has(c.id));
-  }, [cols, dropped]);
+  }, [cols, order, dropped]);
   const minWidth = shown.reduce((s, c) => s + c.size, 0);
   return (
     <div ref={wrap} className={cn('table-wrap', className)}>

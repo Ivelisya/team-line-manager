@@ -177,10 +177,8 @@
 .gauge[data-tone="bad"] .gauge-center b { color: var(--bad-text); }
 
 /* ---------- 点阵迹线 ---------- */
-.dots { display: flex; flex: 1 1 auto; align-items: center; justify-content: space-between; min-width: 0; height: 10px; }
-/* 不加过渡：迹线是滑动窗口，每来一个点整排右移一格、每个点的 --l 都变，逐点渐变看起来是在原地抖而不是往前走，每次推送还要起上千个过渡 */
-.dots > i { width: 4px; height: 4px; flex: none; border-radius: 50%; background: var(--cell-off); transform: scale(0.75); }
-.dots > i[data-on] { background: var(--spd, var(--accent)); opacity: calc(0.35 + var(--l) * 0.65); transform: scale(calc(0.8 + var(--l) * 0.7)); }
+.dots { display: block; flex: 1 1 auto; min-width: 0; height: 10px; }
+/* 点阵画在背景里（viz.tsx DotTrace，每点一层径向渐变）。不加过渡：迹线是滑动窗口，每来一个点整排右移一格，渐变过去看起来是在原地抖而不是往前走 */
 
 /* ---------- 彩色标签 ---------- */
 /* 块级、行高撑满：inline-flex 的文字落在匿名项里，text-overflow 不生效，放不下时字被切成半个 */
