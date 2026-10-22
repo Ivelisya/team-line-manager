@@ -254,7 +254,7 @@ function SubjectSelect({ value, onChange }: { value: string; onChange: (v: strin
           <span className={name ? undefined : 't-muted'}>{name ?? '选择机器'}</span><ChevronDown />
         </button>
       </PopoverTrigger>
-      <PopoverContent className="cs-pop" align="start">
+      <PopoverContent className="cs-pop is-wide" align="start">
         {/* 列表只在打开时建（一两百台），关着不占渲染 */}
         {open && (
           <Command loop>

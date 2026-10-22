@@ -206,14 +206,14 @@ function ProvidersTab() {
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       <Panel title="供应商" count={list.length} sub={<InfoTip text="名下机器的账单时区、流量重置、到期提醒跟随这里" />} tools={<Button variant="primary" onClick={() => setEdit('new')}><Plus />新建供应商</Button>} flush>
         <TableWrap>
-          <table className="dt is-one" style={{ minWidth: panel ? 1000 : 820 }}>
-            <colgroup><col style={{ width: 170 }} /><col style={{ width: 84 }} /><col style={{ width: 190 }} /><col style={{ width: 170 }} /><col style={{ width: 150 }} /><col style={{ width: 96 }} />{panel && <col />}<col style={{ width: 128 }} /></colgroup>
+          <table className="dt is-one" style={{ minWidth: panel ? 1100 : 960 }}>
+            <colgroup><col style={{ width: 170 }} /><col style={{ width: 84 }} /><col style={{ width: 190 }} /><col style={{ width: 170 }} /><col style={{ width: 110 }} /><col style={{ width: 96 }} />{panel && <col />}<col style={{ width: 128 }} /></colgroup>
             <thead><tr><th>名称</th><th>代码</th><th>账单时区</th><th>流量计量</th><th>流量重置</th><th>到期提醒</th>{panel && <th>面板</th>}<th /></tr></thead>
             <tbody>{list.map((p) => (
               <tr key={p.id}><td className="strong">{p.name}</td><td><Chip>{p.code}</Chip></td>
                 <td data-tip={p.timezone ?? meta().org_timezone}>{p.timezone ? tzLabel(p.timezone) : <span className="t-muted">{orgTz()}</span>}</td>
                 <td>{trafficRuleLabel(p.traffic_rule)}</td>
-                <td>{resetOptions().find((o) => o.value === (p.traffic_reset ?? meta().defaults.traffic_reset))?.label ?? trafficResetLabel(p.traffic_reset ?? meta().defaults.traffic_reset)}</td>
+                <td data-tip={resetOptions().find((o) => o.value === (p.traffic_reset ?? meta().defaults.traffic_reset))?.label}>按{trafficResetLabel(p.traffic_reset ?? meta().defaults.traffic_reset)}</td>
                 <td>提前 <span className="num">{p.remind_days ?? meta().defaults.remind_days}</span> 天</td>
                 {panel && <td>{p.panel_url && /^https?:\/\//i.test(p.panel_url) ? <a href={p.panel_url} target="_blank" rel="noreferrer noopener" className="btn-link btn" style={{ gap: 4, maxWidth: '100%' }}><span className="ellipsis">{p.panel_url.replace(/^https?:\/\//, '')}</span><ExternalLink size={12} /></a> : (p.panel_url || <span className="t-muted">—</span>)}</td>}
                 <td className="r"><span className="row" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap' }}>

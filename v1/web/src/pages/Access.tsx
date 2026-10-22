@@ -343,7 +343,7 @@ const EventsView = React.memo(function EventsView({ f, filtered, onClear, open }
       {q.isError && <div style={{ padding: 12 }}><ErrNote q={q} /></div>}
       <TableWrap data-stale={q.isPlaceholderData}>
         <table className="dt is-one" style={{ minWidth: 820 }}>
-          <colgroup><col style={{ width: 150 }} /><col style={{ width: 130 }} /><col style={{ width: 140 }} /><col /><col style={{ width: 70 }} /><col style={{ width: 96 }} /></colgroup>
+          <colgroup><col style={{ width: 150 }} /><col style={{ width: 130 }} /><col style={{ width: 140 }} /><col /><col style={{ width: 70 }} /><col style={{ width: 108 }} /></colgroup>
           <thead><tr><th>时间</th><th>节点</th><th>来源 IP</th><th>目标</th><th>协议</th><th>结果</th></tr></thead>
           <tbody>
             {rows.map((e, i) => (

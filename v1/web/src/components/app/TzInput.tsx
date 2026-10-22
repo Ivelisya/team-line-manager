@@ -27,7 +27,7 @@ export function TzInput({ id, value, onChange, emptyLabel, placeholder = '选择
           <ChevronDown />
         </button>
       </PopoverTrigger>
-      <PopoverContent className="cs-pop" align="start">
+      <PopoverContent className="cs-pop is-wide" align="start">
         {opts && (
           <Command loop>
             <CommandInput placeholder="搜索：城市、时区名或 UTC+8" />
