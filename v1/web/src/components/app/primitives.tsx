@@ -244,7 +244,7 @@ export function CopyButton({ text, label = '内容', className, size = 14 }: { t
   React.useEffect(() => { if (!done) return; const h = setTimeout(() => setDone(false), 1400); return () => clearTimeout(h); }, [done]);
   return (
     <Tip text={done ? '已复制' : `复制${label}`}>
-      <button type="button" className={cn('copy-btn', done && 'is-done', className)} aria-label={`复制${label}`}
+      <button type="button" className={cn('icon-btn icon-btn-xs copy-btn', done && 'is-done', className)} aria-label={`复制${label}`}
         onClick={async (e) => { e.stopPropagation(); if (await copyText(text, label)) setDone(true); }}>
         {done ? <Check size={size} /> : <Copy size={size} />}
       </button>

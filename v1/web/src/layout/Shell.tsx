@@ -200,7 +200,7 @@ export function Shell() {
                 <NavLink to={n.to} end={n.end} className="nav-item">
                   {() => <>
                     <n.icon size={16} /><span className="nav-label">{n.label}</span>
-                    {n.badge && firing > 0 && <span className="nav-badge">{firing}</span>}
+                    {n.badge && firing > 0 && <span className="count-badge">{firing}</span>}
                   </>}
                 </NavLink>
               </li>
