@@ -1,4 +1,5 @@
 //! 上报循环：每 interval_s 把缓冲打成一个 Report → 先落盘进队列 → 按序发送，确认后删除。
+//! 写不进磁盘（磁盘满等）时这份留在内存里、排在队列之后直接发送（`Unsaved`）：中控照样收得到遥测，健康信息里带着写盘错误。
 //!
 //! 磁盘 IO（读访问日志、fsync 写队列、删文件）全部放在 `spawn_blocking` 里，不占 async 运行时的工作线程；
 //! 队列 / seq / 访问日志尾读器收在一个 `Core` 里由 std Mutex 保护，锁只在阻塞线程或不跨 await 的短临界区里持有。
@@ -33,17 +34,69 @@ const CATCHUP_MAX_TIME: Duration = Duration::from_secs(3);
 /// 上报连续失败（断网 / 服务端不可达 / 连续拒收）时，建报间隔至少拉长到这么久：
 /// 合并更多样本进同一份报告，少产生队列文件（每份离线报告恢复后都要一次 RTT 重放）
 const OFFLINE_BUILD_INTERVAL: Duration = Duration::from_secs(60);
+/// 报告持续写不进磁盘时，错误日志每隔这么久再打一条
+const DISK_LOG_EVERY: Duration = Duration::from_secs(3600);
 
-/// 磁盘相关状态：队列、序号、访问日志尾读器、stats.json（最近落盘的流量基线 + 结转表）
+/// 磁盘相关状态：队列、序号、访问日志尾读器、stats.json（最近落盘的流量基线 + 结转表）、写盘失败的日志限流
 struct Core {
     queue: Queue,
     seq: SeqState,
     tailer: Option<Tailer>,
     stats: StatsFile,
+    disk: DiskLog,
 }
 
 fn lock(core: &Mutex<Core>) -> MutexGuard<'_, Core> {
     core.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// 报告写盘（预留序号、入队）失败的日志限流：开始失败、恢复时各打一条，持续失败每 DISK_LOG_EVERY 再打一条
+#[derive(Default)]
+struct DiskLog {
+    /// 失败中：(连续失败次数, 上次打日志的时刻)
+    failing: Option<(u64, std::time::Instant)>,
+}
+
+impl DiskLog {
+    fn fail(&mut self, e: &anyhow::Error) {
+        match &mut self.failing {
+            None => {
+                tracing::error!("报告写不进磁盘：{e:#}；改为留在内存里直接发送（持续失败时每小时再提醒一次）");
+                self.failing = Some((1, std::time::Instant::now()));
+            }
+            Some((n, at)) => {
+                *n += 1;
+                if at.elapsed() >= DISK_LOG_EVERY {
+                    tracing::error!(fails = *n, "报告仍写不进磁盘：{e:#}");
+                    *at = std::time::Instant::now();
+                }
+            }
+        }
+    }
+
+    fn ok(&mut self) {
+        if let Some((n, _)) = self.failing.take() {
+            tracing::info!(fails = n, "报告恢复写入磁盘队列");
+        }
+    }
+}
+
+/// 写不进磁盘队列（磁盘满等）的那份报告：留在内存里，排在队列之后直接发送（`Reporter::flush`），有了结果才提交它的
+/// 访问日志游标与流量基线。只活一轮：这一轮发不出去（退避中、前面的还没发完、发送失败）就把内容放回缓冲，下一轮重建
+/// （换了 seq：中控其实已入库、只是响应丢了的那份会再入库一次——只有写不进磁盘时才走这条路，不为它在内存里排队）。
+/// 不带结转补报的流量（结转表留给下一份写得进磁盘的报告），健康信息里带着写盘错误
+struct Unsaved {
+    report: Report,
+    cursor: Option<Cursor>,
+    stats_commit: Option<StatsState>,
+}
+
+impl Unsaved {
+    /// 样本、系统信息、流量基线放回缓冲；访问事件不放（游标没前移，下次从原处重读）
+    fn restore(self, sh: &Shared) {
+        let Report { host, entries, probes, info, .. } = self.report;
+        sh.buf.lock().unwrap().restore(host, entries, probes, info, self.stats_commit);
+    }
 }
 
 pub struct Reporter {
@@ -56,6 +109,7 @@ pub struct Reporter {
     /// 服务端连续拒收的报告数（被接收一次就清零）
     rejects: u32,
     next_send: Instant,
+    unsaved: Option<Unsaved>,
 }
 
 /// 失败期间建报的间隔：正常 interval_s，连续失败时至少 OFFLINE_BUILD_INTERVAL
@@ -76,8 +130,8 @@ impl Reporter {
         let tailer = (cfg.role == Role::Relay).then(|| Tailer::new(cfg.access_log.clone(), load_json::<Cursor>(&access_cursor_path(&cfg))));
         let stats = load_json::<StatsFile>(&stats_path(&cfg)).unwrap_or_default();
         tracing::info!(pending = queue.len(), seq = seq.seq, carried_entries = stats.carry.len(), "上报器启动");
-        let core = Arc::new(Mutex::new(Core { queue, seq, tailer, stats }));
-        Ok(Self { sh, core, client, boot_id: host::boot_id(), interval_s: 10, fails: 0, rejects: 0, next_send: Instant::now() })
+        let core = Arc::new(Mutex::new(Core { queue, seq, tailer, stats, disk: DiskLog::default() }));
+        Ok(Self { sh, core, client, boot_id: host::boot_id(), interval_s: 10, fails: 0, rejects: 0, next_send: Instant::now(), unsaved: None })
     }
 
     pub async fn run(mut self, mut sd: watch::Receiver<bool>) {
@@ -103,13 +157,17 @@ impl Reporter {
                     more = self.build_and_push(false).await;
                 }
             }
-            if now >= self.next_send && !lock(&self.core).queue.is_empty() {
+            if now >= self.next_send && (self.unsaved.is_some() || !lock(&self.core).queue.is_empty()) {
                 self.flush(&mut sd).await;
-                // flush 里等 POST 时收到了关停信号：直接落盘缓冲退出，不再等那个请求
-                if *sd.borrow() {
-                    self.build_and_push(true).await;
-                    return;
-                }
+            }
+            // 写不进磁盘的那份这一轮没发出去（退避中、前面的还没发完、发送失败）：内容放回缓冲，下一轮重建
+            if let Some(u) = self.unsaved.take() {
+                u.restore(&self.sh);
+            }
+            // flush 里等 POST 时收到了关停信号：直接落盘缓冲退出，不再等那个请求
+            if *sd.borrow() {
+                self.build_and_push(true).await;
+                return;
             }
         }
     }
@@ -120,10 +178,30 @@ impl Reporter {
         tokio::task::spawn_blocking(move || f(&mut lock(&core))).await.expect("上报器的阻塞任务异常终止")
     }
 
-    /// 取走缓冲 → 分配 seq → 落盘入队。返回访问日志是否还有积压。
-    async fn build_and_push(&self, with_samples: bool) -> bool {
+    /// 取走缓冲 → 分配 seq → 落盘入队；写不进磁盘的留在 `self.unsaved` 待发。返回访问日志是否还有积压。
+    async fn build_and_push(&mut self, with_samples: bool) -> bool {
         let (sh, core, boot_id, online) = (self.sh.clone(), self.core.clone(), self.boot_id.clone(), self.fails == 0);
-        tokio::task::spawn_blocking(move || build_and_push_blocking(&sh, &core, &boot_id, with_samples, online)).await.expect("上报器的阻塞任务异常终止")
+        let (more, unsaved) =
+            tokio::task::spawn_blocking(move || build_and_push_blocking(&sh, &core, &boot_id, with_samples, online)).await.expect("上报器的阻塞任务异常终止");
+        // 一轮至多一份：写不进磁盘时 more 为 false，本轮不再追加建报
+        if unsaved.is_some() {
+            self.unsaved = unsaved;
+        }
+        more
+    }
+
+    /// 内存里的那份有了结果（入库，或被永久拒绝）：这时才提交它的访问日志游标与流量基线。
+    /// 被拒时写不进磁盘、没法留进 dead/，只计数；其中的入口流量照样结转（它不带结转补报的流量，见 `Queue::dead_letter`）
+    async fn settle_unsaved(&mut self, rejected: bool) {
+        let (u, sh) = (self.unsaved.take().expect("刚发出的就是它"), self.sh.clone());
+        self.blocking(move |c| {
+            if rejected {
+                c.queue.dead += 1;
+                add_carry(&mut c.stats.carry, &u.report.entries);
+            }
+            commit(&sh, &mut c.tailer, u.cursor, &mut c.stats, u.stats_commit, rejected);
+        })
+        .await;
     }
 
     fn note_failure(&mut self, why: &str) {
@@ -133,29 +211,39 @@ impl Reporter {
         }
     }
 
-    /// 严格有序补传：最旧的先发，确认后再发下一个。
+    /// 严格有序补传：最旧的先发，确认后再发下一个；队列发空了再发写不进磁盘、留在内存里的那份（序号最大）。
     /// 不并发：服务端按 seq 大小去重（seq <= 已收到的最大值就当重复丢弃），乱序到达会让较小的 seq 被静默丢掉。
     async fn flush(&mut self, sd: &mut watch::Receiver<bool>) {
         let t0 = Instant::now();
         let mut sent = 0;
         loop {
+            // path 为 None：发内存里的那份
             let (seq, path) = {
                 let c = lock(&self.core);
-                let Some(seq) = c.queue.oldest() else { break };
-                (seq, c.queue.file_path(seq))
+                match (c.queue.oldest(), &self.unsaved) {
+                    (Some(seq), _) => (seq, Some(c.queue.file_path(seq))),
+                    (None, Some(u)) => (u.report.seq, None),
+                    (None, None) => break,
+                }
             };
             if sent >= FLUSH_MAX_REPORTS || t0.elapsed() > FLUSH_MAX_TIME {
                 self.next_send = Instant::now() + Duration::from_secs(1);
                 return;
             }
-            let read = tokio::task::spawn_blocking(move || std::fs::read(path)).await.map_err(|e| e.to_string()).and_then(|r| r.map_err(|e| e.to_string()));
-            let body = match read {
-                Ok(b) => b,
-                Err(e) => {
-                    tracing::error!(seq, "读取队列文件失败，丢弃：{e}");
-                    self.blocking(move |c| c.queue.ack_through(seq)).await;
-                    continue;
+            let in_memory = path.is_none();
+            let body = match path {
+                Some(path) => {
+                    let read = tokio::task::spawn_blocking(move || std::fs::read(path)).await.map_err(|e| e.to_string()).and_then(|r| r.map_err(|e| e.to_string()));
+                    match read {
+                        Ok(b) => b,
+                        Err(e) => {
+                            tracing::error!(seq, "读取队列文件失败，丢弃：{e}");
+                            self.blocking(move |c| c.queue.ack_through(seq)).await;
+                            continue;
+                        }
+                    }
                 }
+                None => serde_json::to_vec(&self.unsaved.as_ref().expect("刚取到").report).expect("报告序列化成 JSON 不会失败"),
             };
             let out = tokio::select! {
                 o = self.client.post_report(body) => o,
@@ -179,7 +267,10 @@ impl Reporter {
                     }
                     // 成功响应就说明这份已入库：新入库的回本份 seq，重复的回中控已存的 seq（不小于本份）
                     let through = seq.max(ack.accepted_seq);
-                    let n = self.blocking(move |c| c.queue.ack_through(through)).await;
+                    let n = self.blocking(move |c| c.queue.ack_through(through)).await + usize::from(in_memory);
+                    if in_memory {
+                        self.settle_unsaved(false).await;
+                    }
                     if self.fails > 0 {
                         tracing::info!("上报恢复，已确认 {n} 个报告");
                     }
@@ -200,10 +291,15 @@ impl Reporter {
                     return;
                 }
                 Outcome::Rejected(why) => {
-                    // 永久拒绝：移入 dead/ 留证，其中的入口流量结转到下一份报告；继续发后面的，不堵队列
-                    tracing::error!(seq, "服务端永久拒绝该报告（已移入 dead/ 目录）：{why}");
-                    let sh = self.sh.clone();
-                    self.blocking(move |c| reject(&sh, c, seq)).await;
+                    if in_memory {
+                        tracing::error!(seq, "服务端永久拒绝该报告（写不进磁盘，没有留存）：{why}");
+                        self.settle_unsaved(true).await;
+                    } else {
+                        // 永久拒绝：移入 dead/ 留证，其中的入口流量结转到下一份报告；继续发后面的，不堵队列
+                        tracing::error!(seq, "服务端永久拒绝该报告（已移入 dead/ 目录）：{why}");
+                        let sh = self.sh.clone();
+                        self.blocking(move |c| reject(&sh, c, seq)).await;
+                    }
                     self.rejects += 1;
                     if self.rejects >= REJECTS_AS_FAILURE {
                         // 连续拒收多半是系统性问题（agent 与中控版本不配套等）：照常建报、读访问日志只会把数据成批送进 dead/。
@@ -247,9 +343,10 @@ fn commit(sh: &Shared, tailer: &mut Option<Tailer>, cursor: Option<Cursor>, stat
     }
 }
 
-/// 阻塞线程里的建报：取走缓冲 → 读访问日志 → 分配 seq → 落盘入队。返回访问日志是否还有积压。
+/// 阻塞线程里的建报：取走缓冲 → 读访问日志 → 分配 seq → 落盘入队。返回访问日志是否还有积压，
+/// 以及写不进磁盘、留在内存里待发的这份（见 `Unsaved`）。
 /// `online`：上报没有连续失败（Reporter::fails == 0）
-fn build_and_push_blocking(sh: &Shared, core: &Mutex<Core>, boot_id: &str, with_samples: bool, online: bool) -> bool {
+fn build_and_push_blocking(sh: &Shared, core: &Mutex<Core>, boot_id: &str, with_samples: bool, online: bool) -> (bool, Option<Unsaved>) {
     let (mut host, mut entries, mut probes, mut info, mut xray, mut stats_commit) = (vec![], vec![], vec![], None, None, None);
     if with_samples {
         let mut b = sh.buf.lock().unwrap();
@@ -264,7 +361,7 @@ fn build_and_push_blocking(sh: &Shared, core: &Mutex<Core>, boot_id: &str, with_
         stats_commit = b.stats_commit.take();
     }
     let mut guard = lock(core);
-    let Core { queue, seq, tailer, stats } = &mut *guard;
+    let Core { queue, seq, tailer, stats, disk } = &mut *guard;
     // 访问日志：上报连续失败或队列积压过半时暂停读取（日志文件就是缓冲，不丢行）。
     // 离线时读进队列的事件会随报告一起被 QUEUE_MAX_AGE_MS 淘汰；留在日志里，恢复后从游标处接着读
     let (mut access, mut next_cursor, mut more) = (vec![], None, false);
@@ -289,20 +386,17 @@ fn build_and_push_blocking(sh: &Shared, core: &Mutex<Core>, boot_id: &str, with_
     if host.is_empty() && entries.is_empty() && probes.is_empty() && access.is_empty() && info.is_none() && xray.is_none() {
         // 没有内容；但访问日志游标（例如首次定位到文件末尾）仍要提交
         commit(sh, tailer, next_cursor, stats, stats_commit, false);
-        return more;
+        return (more, None);
     }
-    let seq = match seq.next() {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!("分配 seq 失败（磁盘问题？）：{e:#}，数据留在内存缓冲");
-            sh.buf.lock().unwrap().restore(host, entries, probes, info, stats_commit);
-            return false;
-        }
+    // 预留号段要写 state.json：写不进去也照样在内存里分配序号，这份不入队、留在内存里发
+    let (seq, seq_err) = match seq.next() {
+        Ok(s) => (s, None),
+        Err(e) => (seq.next_unreserved(), Some(e.context("预留上报序号"))),
     };
-    // 之前被淘汰 / 拒收的报告里结转下来的入口流量，接在本轮样本后面随这份报告补报（落盘失败时截掉，结转表不动）
+    // 之前被淘汰 / 拒收的报告里结转下来的入口流量，接在本轮样本后面随这份报告补报（写不进磁盘时截掉，结转表不动）
     let sampled = entries.len();
     entries.extend(carry_samples(&stats.carry, now_ms()));
-    let report = Report {
+    let mut report = Report {
         seq,
         boot_id: boot_id.to_string(),
         agent_version: fleet_proto::build_version().to_string(),
@@ -315,22 +409,26 @@ fn build_and_push_blocking(sh: &Shared, core: &Mutex<Core>, boot_id: &str, with_
         xray,
         agent_health: with_samples.then(|| health_of(sh, queue, tailer.as_ref())),
     };
-    match queue.push(&report, report.entries.len() > sampled) {
-        Ok(evicted) => {
-            // 结转表里的流量已经落进这份报告；换成这次入队时被淘汰的报告里的
-            let carry_changed = !(stats.carry.is_empty() && evicted.is_empty());
-            stats.carry = evicted;
-            commit(sh, tailer, next_cursor, stats, stats_commit, carry_changed);
-            more
-        }
-        Err(e) => {
-            tracing::error!("报告落盘失败：{e:#}，数据留在内存缓冲");
-            let Report { host, mut entries, probes, info, .. } = report;
-            entries.truncate(sampled);
-            sh.buf.lock().unwrap().restore(host, entries, probes, info, stats_commit);
-            false
-        }
+    let err = match seq_err {
+        Some(e) => e,
+        None => match queue.push(&report, report.entries.len() > sampled) {
+            Ok(evicted) => {
+                disk.ok();
+                // 结转表里的流量已经落进这份报告；换成这次入队时被淘汰的报告里的
+                let carry_changed = !(stats.carry.is_empty() && evicted.is_empty());
+                stats.carry = evicted;
+                commit(sh, tailer, next_cursor, stats, stats_commit, carry_changed);
+                return (more, None);
+            }
+            Err(e) => e,
+        },
+    };
+    disk.fail(&err);
+    report.entries.truncate(sampled);
+    if let Some(h) = report.agent_health.as_mut() {
+        h.disk_write_error = Some(format!("{err:#}"));
     }
+    (false, Some(Unsaved { report, cursor: next_cursor, stats_commit }))
 }
 
 /// `health` 的拆借用版本：建报时 queue / tailer 已被解构借出，不能再传整个 Core
@@ -345,6 +443,7 @@ fn health_of(sh: &Shared, queue: &Queue, tailer: Option<&Tailer>) -> AgentHealth
         access_rotation_gaps: cnt.rotation_gaps,
         access_truncations: cnt.truncations,
         last_apply_error: sh.health.last_apply_error.lock().unwrap().clone(),
+        disk_write_error: None,
     }
 }
 
@@ -376,7 +475,7 @@ mod tests {
 
     fn core_with(d: &std::path::Path, seq_path: std::path::PathBuf, tailer: Option<Tailer>, max_bytes: u64) -> Mutex<Core> {
         let queue = Queue::open(d.join("queue"), max_bytes, QUEUE_MAX_AGE_MS).unwrap();
-        Mutex::new(Core { queue, seq: SeqState::load(seq_path, None), tailer, stats: StatsFile::default() })
+        Mutex::new(Core { queue, seq: SeqState::load(seq_path, None), tailer, stats: StatsFile::default(), disk: DiskLog::default() })
     }
 
     fn core(d: &std::path::Path, seq_path: std::path::PathBuf, tailer: Option<Tailer>) -> Mutex<Core> {
@@ -461,28 +560,71 @@ mod tests {
     }
 
     #[test]
-    fn failed_build_puts_info_and_stats_back() {
+    fn report_that_cannot_be_written_stays_in_memory() {
+        use crate::xray::stats::Carry;
         let d = tmp("putback");
         let sh = shared(&d);
+        let id = uuid::Uuid::from_u128(5);
         {
             let mut b = sh.buf.lock().unwrap();
             b.info = Some(Default::default());
             b.stats_commit = Some(Default::default());
+            b.push_entries(vec![fleet_proto::EntrySample { entry_id: id, ts_ms: 0, up_bytes: 1, down_bytes: 2, conns: 0 }]);
         }
-        // 放回了缓冲，流量基线也没被提前持久化
-        let check = || {
+        // 留在内存里待发：健康信息带着写盘错误，不带结转的流量（结转表留给写得进磁盘的报告）；
+        // 这一轮发不出去就放回缓冲，流量基线也没被提前持久化
+        let check = |c: &Mutex<Core>, why: &str| {
+            lock(c).stats.carry = Carry::from([(id, (10, 20))]);
+            let (more, u) = build_and_push_blocking(&sh, c, "b", true, true);
+            let u = u.expect("留在内存里待发");
+            let err = u.report.agent_health.as_ref().and_then(|h| h.disk_write_error.clone()).unwrap_or_default();
+            assert!(!more && err.contains(why), "{err}");
+            assert_eq!(u.report.entries.iter().map(|e| e.up_bytes).collect::<Vec<_>>(), [1]);
+            assert_eq!(lock(c).stats.carry.len(), 1);
+            u.restore(&sh);
             let b = sh.buf.lock().unwrap();
-            assert!(b.info.is_some() && b.stats_commit.is_some());
+            assert!(b.info.is_some() && b.stats_commit.is_some() && b.entries.len() == 1);
             assert!(!stats_path(&sh.cfg).exists());
         };
-        // 分配序号失败：状态文件所在目录不存在
-        build_and_push_blocking(&sh, &core(&d, d.join("missing").join("state.json"), None), "b", true, true);
-        check();
-        // 落盘失败：队列目录没了
+        // 预留序号失败：状态文件所在目录不存在
+        check(&core(&d, d.join("missing").join("state.json"), None), "预留上报序号");
+        // 入队失败：队列目录没了
         let c = core(&d, d.join("state.json"), None);
         std::fs::remove_dir_all(d.join("queue")).unwrap();
-        build_and_push_blocking(&sh, &c, "b", true, true);
-        check();
+        check(&c, "queue");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 写不进磁盘的那份排在队列之后从内存发出：中控先收到队列里更早的（序号小，否则会被当重复丢掉），再收到它；
+    /// 入库后才提交它的流量基线
+    #[tokio::test]
+    async fn unsaved_report_goes_out_after_the_queue() {
+        let d = tmp("unsaved");
+        let sh = shared(&d);
+        let (base, seen) = crate::server::tests::mock_server().await;
+        let (client, tok_dir) = crate::server::tests::client_for(&base, "unsaved");
+        let mut r = Reporter::new(sh.clone(), Arc::new(client)).unwrap();
+        sh.buf.lock().unwrap().info = Some(Default::default());
+        r.build_and_push(true).await;
+        // 下一份的临时文件位置被目录占住：写不进队列
+        let next = lock(&r.core).seq.seq + 1;
+        std::fs::create_dir_all(d.join("queue").join(format!(".{next:020}.json.tmp"))).unwrap();
+        {
+            let mut b = sh.buf.lock().unwrap();
+            b.info = Some(Default::default());
+            b.stats_commit = Some(StatsState { initialized: true, ..Default::default() });
+        }
+        r.build_and_push(true).await;
+        assert!(r.unsaved.is_some() && lock(&r.core).queue.len() == 1);
+        let (_tx, mut sd) = watch::channel(false);
+        r.flush(&mut sd).await;
+        let got: Vec<Report> = seen.lock().unwrap().iter().map(|(_, b)| serde_json::from_slice(b).unwrap()).collect();
+        assert_eq!(got.iter().map(|r| r.seq).collect::<Vec<_>>(), [next - 1, next]);
+        let errs: Vec<_> = got.iter().map(|r| r.agent_health.as_ref().unwrap().disk_write_error.is_some()).collect();
+        assert_eq!(errs, [false, true]);
+        assert!(r.unsaved.is_none() && lock(&r.core).queue.is_empty());
+        assert!(lock(&r.core).stats.base.initialized, "入库后才提交流量基线");
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&tok_dir);
     }
 }

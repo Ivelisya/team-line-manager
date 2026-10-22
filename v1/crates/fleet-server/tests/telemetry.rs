@@ -434,6 +434,7 @@ async fn agent_health_is_shown_in_machine_view() {
         queue_dead: 1,
         access_rotation_gaps: 2,
         last_apply_error: Some("xray 配置校验失败".into()),
+        disk_write_error: Some("No space left on device (os error 28)".into()),
         ..Default::default()
     });
     assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
@@ -447,6 +448,7 @@ async fn agent_health_is_shown_in_machine_view() {
         "{m}"
     );
     assert_eq!(h["last_apply_error"], "xray 配置校验失败");
+    assert_eq!(h["disk_write_error"], "No space left on device (os error 28)");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

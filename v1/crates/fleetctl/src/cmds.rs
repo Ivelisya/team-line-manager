@@ -419,6 +419,9 @@ fn agent_health_cn(h: &Value) -> String {
     if let Some(e) = h["last_apply_error"].as_str() {
         s.push_str(&format!("；最近一次应用配置失败：{e}"));
     }
+    if let Some(e) = h["disk_write_error"].as_str() {
+        s.push_str(&format!("；报告写不进磁盘、正从内存直接上报：{e}"));
+    }
     s
 }
 
@@ -1022,6 +1025,8 @@ mod tests {
         h["access_unparsed"] = json!(4);
         h["last_apply_error"] = json!("xray 配置校验失败");
         assert!(agent_health_cn(&h).ends_with("被截断 0 次、4 行解析不了；最近一次应用配置失败：xray 配置校验失败"));
+        h["disk_write_error"] = json!("No space left on device (os error 28)");
+        assert!(agent_health_cn(&h).ends_with("；报告写不进磁盘、正从内存直接上报：No space left on device (os error 28)"));
     }
 
     #[test]

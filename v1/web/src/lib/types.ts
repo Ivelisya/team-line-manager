@@ -31,6 +31,7 @@ export interface HealthReason { key: string; severity: 'info' | 'warning' | 'cri
 export interface AgentHealth {
   queue_len: number; queue_dropped: number; queue_dead: number;
   access_unparsed: number; access_dropped_lines: number; access_rotation_gaps: number; access_truncations: number; last_apply_error?: string | null;
+  disk_write_error?: string | null;
 }
 export interface MachineView {
   id: string; kind: Kind; name: string; team: { id: string; name: string } | null; number: number | null; label: string | null;
