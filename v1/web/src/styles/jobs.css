@@ -91,7 +91,6 @@
 .step-err { margin: var(--sp-4) 0 0; font-size: var(--fs-label); color: var(--bad-text); overflow-wrap: anywhere; }
 .step-err-box { display: flex; align-items: flex-start; gap: var(--sp-8); margin-top: var(--sp-4); }
 .step-err-box .step-err { margin: 0; min-width: 0; }
-.err-kind { flex: none; display: inline-flex; align-items: center; height: var(--h-chip-sm); padding: 0 var(--sp-8); border-radius: var(--r-pill); background: var(--bad-bg); color: var(--bad-text); font: var(--fw-medium) var(--fs-micro) / var(--lh-micro) var(--font-sans); white-space: nowrap; }
 
 /* ========== 日志 ========== */
 .logbox { background: var(--sunken); border-radius: var(--r-float); padding: var(--sp-10) var(--sp-12); max-height: 360px; min-height: 120px; overflow: auto; font: var(--fs-label) / 18px var(--font-mono); }

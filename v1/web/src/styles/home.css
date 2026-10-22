@@ -1,5 +1,5 @@
 /* 首页的结构与新件（参照 CFSM-SAO 主题，用本项目的强调色与字体）：
-   大圆角浅灰分区 .hsec（胶囊标签 + 标题 + 一行说明）、KPI 卡 .stat、集群状态 .cluster、
+   大圆角浅灰分区 .hsec（胶囊标签 + 标题 + 一行说明）、KPI 卡 .stat、集群状态 .cluster（状态胶囊是 .pill.is-outlined）、
    分段格条 .cells、资源格条 .cmeter、圆环 .gauge、点阵 .dots、面积折线 .spark、彩色标签 .tag、分组分段控件 .seg-fill、日期选择 .cal。 */
 
 .stack.home { gap: var(--sp-24); }
@@ -13,7 +13,7 @@
 .hsec-head { display: grid; gap: var(--sp-12); min-width: 0; }
 .hsec-top { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-12); flex-wrap: wrap; min-width: 0; }
 .hsec-badge {
-  display: inline-flex; align-items: center; gap: var(--sp-6); height: 26px; box-sizing: border-box; padding: 0 var(--sp-10);
+  display: inline-flex; align-items: center; gap: var(--sp-6); height: var(--h-chip-lg); box-sizing: border-box; padding: 0 var(--sp-10);
   border: 1px solid var(--line); border-radius: var(--r-pill); background: var(--track);
   font: var(--fw-semibold) var(--fs-label) / 1 var(--font-sans); color: var(--fg); white-space: nowrap;
 }
@@ -80,15 +80,6 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 .cluster-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-10); }
 .cluster-title { display: flex; align-items: center; gap: 7px; margin: 0; font: var(--fw-bold) var(--fs-emph) / 1.2 var(--font-sans); color: var(--fg); }
 .cluster-title .lucide { width: var(--icon-md); height: var(--icon-md); stroke-width: var(--icon-stroke-strong); }
-.cpill {
-  --pc: var(--ok-text); display: inline-flex; align-items: center; gap: var(--sp-6); flex: none; height: var(--h-tag); box-sizing: border-box; padding: 0 9px;
-  border: 1px solid color-mix(in srgb, var(--pc) 30%, transparent); border-radius: var(--r-pill); background: color-mix(in srgb, var(--pc) 13%, transparent);
-  font: var(--fw-semibold) var(--fs-micro) / 1 var(--font-sans); color: var(--pc); white-space: nowrap;
-}
-.cpill[data-tone="warn"] { --pc: var(--warn-text); }
-.cpill[data-tone="bad"] { --pc: var(--bad-text); }
-.cpill i { width: var(--icon-2xs); height: var(--icon-2xs); background: currentColor; -webkit-mask: var(--ic-ok) center / contain no-repeat; mask: var(--ic-ok) center / contain no-repeat; }
-.cpill[data-tone="bad"] i { -webkit-mask-image: var(--ic-bad); mask-image: var(--ic-bad); }
 .cluster-box { display: grid; gap: var(--sp-8); min-width: 0; padding: 11px 13px; border: 1px solid var(--line); border-radius: var(--r-inner); background: color-mix(in srgb, var(--section) 40%, var(--surface)); }
 .cluster-row { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--sp-8); min-width: 0; }
 .cluster-big { display: inline-flex; align-items: baseline; gap: var(--sp-6); min-width: 0; white-space: nowrap; }

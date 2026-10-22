@@ -127,6 +127,12 @@
 .pill[data-tone="warn"] { --pill-bg: var(--warn-bg); --pill-fg: var(--warn-text); }
 .pill[data-tone="bad"] { --pill-bg: var(--bad-bg); --pill-fg: var(--bad-text); }
 .pill[data-tone="info"] { --pill-bg: var(--info-bg); --pill-fg: var(--info-text); }
+.pill[data-tone="accent"] { --pill-bg: var(--accent-soft); --pill-fg: var(--accent-soft-fg); }
+/* 小号（作业步骤的错误类别、规则预览的范围、当前版本）：同 .mark 的高度 */
+.pill-sm { height: var(--h-chip-sm); gap: var(--sp-4); padding: 0 var(--sp-6); font-size: var(--fs-micro); line-height: var(--lh-micro); }
+/* 描边款（首页集群状态）：多一圈同色 30% 的细边，正常时也带一个勾 */
+.pill.is-outlined { border: 1px solid color-mix(in srgb, currentColor 30%, transparent); }
+.pill.is-outlined[data-tone="ok"]:not([data-dot])::before { content: ""; --pill-ic: var(--ic-ok); }
 /* 名字后面的状态标（卡片头、表格名称列、顶栏告警预览）：正常不标，其余一个小图标 */
 .smark { display: inline-block; flex: none; width: var(--icon-xs); height: var(--icon-xs); color: var(--smark-c); background: currentColor; -webkit-mask: var(--smark-ic) center / contain no-repeat; mask: var(--smark-ic) center / contain no-repeat; }
 .smark[data-tone="bad"] { --smark-c: var(--bad); --smark-ic: var(--ic-bad); }
@@ -486,7 +492,7 @@
 .toast-text { color: var(--fg-2); font-size: var(--fs-label); line-height: var(--lh-label); }
 .toast-action { margin-top: var(--sp-4); padding: 0; border: 0; background: none; cursor: pointer; font: var(--fw-medium) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--accent); }
 @media (hover: hover) { .toast-action:hover { text-decoration: underline; text-underline-offset: 3px; } }
-.toast-count { flex: none; align-self: center; padding: 0 var(--sp-6); border-radius: var(--r-pill); background: var(--sunken); color: var(--fg-2); font-size: var(--fs-micro); line-height: 18px; }
+.toast-count { flex: none; align-self: center; padding: 0 var(--sp-6); border-radius: var(--r-pill); background: var(--sunken); color: var(--fg-2); font-size: var(--fs-micro); line-height: var(--h-chip-sm); }
 .toast-x { position: relative; flex: none; width: var(--h-xs); height: var(--h-xs); margin: -2px -4px 0 0; display: grid; place-items: center; border: 0; border-radius: var(--r-tag); background: transparent; color: var(--fg-3); cursor: pointer; transition: background-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out); }
 .toast-x::after { content: ""; position: absolute; inset: -6px; } /* 可点范围扩到 34px，外观不变（仍在通知的内边距里，不被裁） */
 @media (hover: hover) { .toast-x:hover:not(:disabled) { background: var(--hover); color: var(--fg); } }

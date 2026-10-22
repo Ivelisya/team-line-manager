@@ -439,7 +439,7 @@ function ChangeList({ changes }: { changes: PolicyChange[] }) {
   const sum = (c: PolicyChange['from']) => `${modeLabel(c.mode)}${needsDomains(c.mode) ? ` · ${c.domains} 个域名` : ''}`;
   return (
     <ul className="pol-changes">
-      {changes.map((c) => <li key={`${c.scope}:${c.id}`}><span className="pol-kind">{c.scope === 'team' ? '团队' : '节点'}</span><b>{c.name}</b><span className="t-sub">{sum(c.from)}</span><span className="pol-arrow">→</span><span>{sum(c.to)}</span></li>)}
+      {changes.map((c) => <li key={`${c.scope}:${c.id}`}><span className="pill pill-sm">{c.scope === 'team' ? '团队' : '节点'}</span><b>{c.name}</b><span className="t-sub">{sum(c.from)}</span><span className="pol-arrow">→</span><span>{sum(c.to)}</span></li>)}
     </ul>
   );
 }
@@ -471,7 +471,7 @@ function VersionsPanel() {
               <tbody>
                 {list.map((v) => (
                   <tr key={v.id}>
-                    <td><b className="strong">v{v.seq}</b>{v.is_current && <span className="pol-cur" data-tip="当前生效的就是这个版本的内容">当前</span>}<span className="sub">{v.kind === 'rollback' ? `回滚到 v${v.rollback_of_seq ?? '?'}` : '发布'}</span></td>
+                    <td><b className="strong">v{v.seq}</b>{v.is_current && <span className="pill pill-sm pol-cur" data-tone="accent" data-tip="当前生效的就是这个版本的内容">当前</span>}<span className="sub">{v.kind === 'rollback' ? `回滚到 v${v.rollback_of_seq ?? '?'}` : '发布'}</span></td>
                     <td data-tip={F.dtFull(v.created_at)}>{F.dt(v.created_at)}<span className="sub">{F.actor(v.actor)}</span></td>
                     <td><VersionChanges changes={v.changes} /></td>
                     <td><VersionApply v={v} /></td>

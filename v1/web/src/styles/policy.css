@@ -77,7 +77,6 @@
 .pol-sum small { font-size: var(--fs-label); color: var(--fg-2); }
 .pol-changes { margin: 0; padding: 0; list-style: none; display: grid; gap: var(--sp-4); font-size: var(--fs-body); }
 .pol-changes li { display: flex; align-items: baseline; gap: var(--sp-8); flex-wrap: wrap; }
-.pol-kind { font-size: var(--fs-micro); padding: 0 var(--sp-6); border-radius: var(--r-pill); background: var(--neutral-bg); color: var(--neutral-text); }
 .pol-arrow { color: var(--fg-3); }
 .pol-hosts { display: flex; align-items: center; gap: var(--sp-4); flex-wrap: nowrap; min-width: 0; overflow: hidden; }
 .pol-hosts .pol-tag { flex: 0 1 auto; min-width: 0; }
@@ -86,7 +85,7 @@
 .pol-tip b { margin-left: var(--sp-6); }
 
 /* 发布记录 */
-.pol-cur { margin-left: var(--sp-6); font-size: var(--fs-micro); padding: 0 var(--sp-6); border-radius: var(--r-pill); background: var(--accent-soft); color: var(--accent-soft-fg); }
+.pol-cur { margin-left: var(--sp-6); } /* 「当前」小胶囊（.pill-sm）跟在版本号后面 */
 .pol-apply { display: flex; align-items: center; gap: var(--sp-8); flex-wrap: wrap; min-width: 0; }
 .pol-relays { display: flex; flex-wrap: wrap; gap: var(--sp-4) var(--sp-10); }
 .pol-relay { display: inline-flex; align-items: center; gap: var(--sp-6); font-size: var(--fs-label); }

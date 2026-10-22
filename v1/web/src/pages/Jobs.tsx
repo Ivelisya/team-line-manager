@@ -196,7 +196,7 @@ function JobDetail({ id }: { id: string }) {
                   {outputLines(s.output).length > 0 && <pre className="step-out">{outputLines(s.output).join('\n')}</pre>}
                   {(s.error || s.error_kind) && (
                     <div className="step-err-box">
-                      {s.error_kind && <span className="err-kind">{errorKindLabel(s.error_kind, s.error)}</span>}
+                      {s.error_kind && <span className="pill pill-sm" data-tone="bad" data-dot="none">{errorKindLabel(s.error_kind, s.error)}</span>}
                       {s.error && <p className="step-err">{jobText(s.error)}</p>}
                     </div>
                   )}
