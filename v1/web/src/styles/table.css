@@ -25,6 +25,7 @@
 .dt .cell-main { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dt tr.is-link { cursor: pointer; transition: background-color var(--dur-1) var(--ease-std); }
 @media (hover: hover) { .dt tr.is-link:hover { background-color: var(--hover); } } /* 只写底色：按下时叠的那层 background-image（components.css「交互状态」）不能被简写清掉，下同 */
+.dt tr.is-link[data-menu] { background: var(--hover); } /* 右键菜单开着时它所属的行 */
 .dt tr.is-current { background: var(--selected); }
 .dt tr.is-current td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
 .dt tr.is-retired td { color: var(--fg-2); }
@@ -58,3 +59,8 @@
 .dt-grid td.is-bad { box-shadow: inset 0 0 0 1px var(--bad); background: var(--bad-bg); }
 .dt-grid td.is-na { background: var(--sunken); }
 .dt-grid tr.is-row-bad td.idx { color: var(--bad-text); }
+/* 「检查结果」与删除列吸附在右侧，二十几列横滑时也一直看得见；结果放不下省略，悬停看全文。左缘一道线 + 淡阴影，和滑到下面的格子分开 */
+.dt-grid .gc-res, .dt-grid .gc-del { position: sticky; z-index: 1; background: var(--surface); }
+.dt-grid thead :is(.gc-res, .gc-del) { background: var(--sunken); }
+.dt-grid .gc-res { right: 56px; padding: 0 var(--sp-8); box-shadow: -1px 0 0 var(--line), -8px 0 12px -10px rgb(17 24 39 / 0.25); }
+.dt-grid .gc-del { right: 0; border-right: 0; }

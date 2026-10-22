@@ -190,7 +190,7 @@
   --card-min-compact: 260px;            /* H 紧凑（组件原意 260）：视口约 ≥1420（侧栏展开）排 4 列；再窄卡内放不下，不要再压 */
 
   /* ---------- 15. 动效：6 个时长 + 2 条曲线 + 3 档按下缩放。每条过渡都写“时长令牌 + 曲线令牌”，不留默认 ease；
-     系统“减少动态效果”时时长归零（文件末尾）。motion 的弹簧（lib/motion.tsx SPRING）只管滑块与卡片重排，不在这里 ---------- */
+     系统“减少动态效果”时时长归零（overrides.css）。motion 的弹簧（lib/motion.tsx SPRING）只管滑块与卡片重排，不在这里 ---------- */
   --dur-press: 80ms;                    /* 按下缩放：快按，松开按元素自己的 --dur-2 慢回 */
   --dur-1: 140ms;                       /* 悬停与颜色等原地变化；锚定弹层、顶部面板的退场 */
   --dur-2: 220ms;                       /* 浮层与面板进场、松开回弹、悬停上浮、页签内容；抽屉与 toast 的退场 */
@@ -322,9 +322,4 @@
   --shadow-thumb: 0 1px 3px rgba(0, 0, 0, 0.5);
   --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.25);
   --shadow-card-hover: 0 12px 28px -6px rgba(0, 0, 0, 0.6);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  /* 循环动画（--dur-loop）不靠归零，各处显式 animation: none（extras.css 末尾、cards.css） */
-  :root { --dur-press: 0ms; --dur-1: 0ms; --dur-2: 0ms; --dur-3: 0ms; --dur-data: 0ms; --cell-stagger: 0ms; }
 }

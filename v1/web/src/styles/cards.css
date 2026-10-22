@@ -25,9 +25,11 @@
 .ncard[data-view="compact"] { --rows: 6; }
 /* 悬停上浮 2px 写在 components.css「交互状态」。卡片本身不可点（点里面的读数、按钮），不做按下缩放。
    出现时不各自淡入：翻页 / 换视图由网格容器整块淡入一次（Home 的 .page-in），一页几十张卡不再各起一条动画 */
-.ncard[data-health="down"] { border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); }
-.ncard[data-health="degraded"] { border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
+/* 健康色边框（节点卡与环形卡共用）；当前卡、右键菜单开着的卡（data-menu 由 NodeMenus 写在被点的那张上）盖过健康色 */
+:is(.ncard, .rcard)[data-health="down"] { border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); }
+:is(.ncard, .rcard)[data-health="degraded"] { border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
 .ncard.is-current { border-color: var(--accent); }
+.ncard[data-menu] { border-color: var(--accent); }
 .ncard.is-quiet .flow-rate, .ncard.is-quiet .nc-run-val { color: var(--fg-3); }
 .ncard.is-quiet .cells, .ncard.is-quiet .dots { opacity: var(--o-stale); } /* 心跳条：卡片把 quiet 传成 Beat 的 stale（components.css .beat.is-stale） */
 
@@ -191,8 +193,6 @@
 }
 /* 视口外的环形卡跳过排版与绘制（一页最多 96 张）；占位高度按实际卡高（约 200px），滚动条不跳 */
 .rcard { content-visibility: auto; contain-intrinsic-size: auto 200px; }
-.rcard[data-health="down"] { border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); }
-.rcard[data-health="degraded"] { border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
 .rcard.is-current { border-color: var(--accent); }
 .rc-head { display: flex; align-items: center; gap: var(--inline-gap); min-width: 0; }
 .rcard .nc-name { font-size: var(--fs-emph); line-height: var(--lh-emph); } /* 名称按钮同节点卡（.nc-name），只占名字的宽度：同机关系标紧跟在名称后面 */

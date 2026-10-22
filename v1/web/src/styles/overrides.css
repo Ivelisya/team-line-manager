@@ -1,0 +1,35 @@
+/* 全站覆盖：毛玻璃遮罩开着时的降负载、减弱动效、数字等宽补丁。
+   放在所有组件与页面样式之后（main.tsx 的 import 顺序，只在 tw-utilities 之前）：同优先级靠文件顺序胜出，这里的规则要盖过前面所有同名规则 */
+
+/* ========== 毛玻璃遮罩开着时 ==========
+   毛玻璃遮罩（对话框、命令面板）打开期间，下面一层不再每帧变化：backdrop-filter 下面每帧有变化，GPU 就要每帧重做一遍全屏模糊。
+   开关是 <html data-overlay>（dialog.tsx 的 Scrim 挂着时写上）。节点抽屉的遮罩只压暗不模糊，自己不挂开关；它开着时上面再叠对话框，抽屉也算下面一层。
+   浮层都 Portal 到 body、不在 .app 里，自己的动画照常。骨架屏不管。
+   无限循环的动画暂停： */
+html[data-overlay] :is(.app, .drawer) :is(.spin, .top-btn.jobs-ind > .lucide, .stepbar-item[data-kind="running"] .stepbar-node),
+html[data-overlay] :is(.app, .drawer) .pill[data-dot="pulse"]::before,
+html[data-overlay] :is(.app, .drawer) .smark[data-spin],
+html[data-overlay] :is(.app, .drawer) .progress[data-live="1"] .progress-fill::after { animation-play-state: paused; }
+/* 读数的过渡不播，推送来了直接跳到新值（进度线；格条、圆环、心跳格本来就不过渡，KPI 数字见 useCountUp） */
+html[data-overlay] :is(.app, .drawer) .progress-fill { transition: none; }
+
+/* ========== 减弱动效 ========== */
+@media (prefers-reduced-motion: reduce) {
+  /* 一次性的过渡与进场时长归零（tokens.css 的动效令牌）；循环动画（--dur-loop）不靠归零，下面显式 animation: none */
+  :root { --dur-press: 0ms; --dur-1: 0ms; --dur-2: 0ms; --dur-3: 0ms; --dur-data: 0ms; --cell-stagger: 0ms; }
+  .progress[data-live="1"] .progress-fill::after, .stepbar-item[data-kind="running"] .stepbar-node, .top-btn.jobs-ind > .lucide, .toast-timer { animation: none; }
+  /* 无限循环的呼吸/脉冲也停掉（骨架静止显示） */
+  .pill[data-dot="pulse"]::before, .smark[data-spin], .skel { animation: none; }
+  /* 浮层关闭：不播退出动画，Radix 立即卸载（抽屉的投影层一起；悬浮卡、日历、作业弹层都是 .popover） */
+  .overlay[data-state="closed"], .drawer-overlay[data-state="closed"], .dialog[data-state="closed"], .cmd-dialog[data-state="closed"], .drawer[data-state="closed"], .drawer[data-state="closed"]::before,
+  .menu[data-state="closed"], .popover[data-state="closed"], .select-content[data-state="closed"], .tooltip[data-state="closed"], .page-in { animation: none; }
+  /* 曲线展开、悬停提示的缩放位移进场：直接出现 */
+  .chart-frame .chart-box, .tooltip { animation: none; }
+}
+
+/* ========== 数字等宽恢复 ==========
+   `font:` 简写会把 font-variant-numeric 重置成 normal，body 上设的 tabular-nums 在这些控件里就丢了（数字跳动时会左右抖）。统一在这里补回 */
+.btn, .seg-item, .tab, .fchip, .input, .textarea, .select-trigger, .pill, .chip, .mark, .nav-item, .menu-item, .select-item,
+.cmd-item, .cmd-trigger, .cmd-input, .kbd, .toast-action, .label, .sec-head, .brand, .pop-head { font-variant-numeric: tabular-nums; }
+/* 首页读数（集群大数、离线台数、圆环中心、迹线坐标与时间）：同 .num / .stat-value 用 --num-variant（tabular + 斜线零） */
+.cluster-big > .num, .cluster-kv b, .gauge-center b, .spark-axis, .spark-time { font-variant-numeric: var(--num-variant); }

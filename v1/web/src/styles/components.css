@@ -52,6 +52,13 @@
 .icon-btn-sm { width: var(--h-sm); height: var(--h-sm); }
 .icon-btn-lg { width: var(--h-lg); height: var(--h-lg); }
 
+/* 复制按钮 */
+.copy-btn { position: relative; display: inline-grid; place-items: center; flex: none; width: var(--h-xs); height: var(--h-xs); padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--fg-2); cursor: pointer; transition: background-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out); }
+.copy-btn::after { content: ""; position: absolute; inset: -5px; } /* 可点范围扩到 32px，外观不变 */
+.copy-btn:hover { background: var(--hover); color: var(--fg); }
+.copy-btn.is-done { color: var(--ok); animation: copy-pop var(--dur-2) var(--ease-out); }
+@keyframes copy-pop { 0% { transform: scale(.8); } 60% { transform: scale(1.15); } }
+
 /* ========== 分段控件 ========== */
 .seg {
   position: relative; display: inline-flex; align-items: center; gap: var(--sp-2); flex: none;
@@ -75,6 +82,8 @@
 .seg-count { font-weight: var(--fw-regular); color: var(--fg-2); font-variant-numeric: tabular-nums; }
 .seg-sm { height: var(--h-sm); }
 .seg-sm .seg-item { height: var(--seg-item-sm); padding: 0 var(--sp-10); font-size: var(--fs-label); line-height: var(--lh-label); }
+/* 置灰的分段项（首页卡片密度在表格 / 环形视图下）：照常占位，工具栏不跳 */
+.seg-item[data-disabled] { opacity: var(--o-disabled); cursor: default; }
 
 /* ========== 下划线页签 ========== */
 .tabs-list { display: flex; align-items: stretch; gap: var(--sp-20); border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
@@ -90,6 +99,9 @@
 /* 下划线不跟着缩：页签以底边中点为原点缩放（下划线不上移），按下时下划线横向放回原宽（文末「交互状态」）。
    用独立的 scale 属性，motion 滑动下划线写的是 transform，互不覆盖 */
 .tab-ind { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; border-radius: 1px 1px 0 0; background: var(--accent); pointer-events: none; transition: scale var(--dur-2) var(--ease-out); }
+/* 页签内容（抽屉各页签）：切换时淡入上移 4px */
+.tab-pane { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-16); align-content: start; animation: tab-in var(--dur-2) var(--ease-out); }
+@keyframes tab-in { from { opacity: 0; transform: translateY(4px); } }
 
 /* ========== pill / chip / mark / dot ========== */
 .pill {
@@ -182,6 +194,22 @@
 .beat-cells > i[data-t="bad"] { background: var(--bad); }
 .beat.is-stale .beat-cells > i { background: transparent; box-shadow: inset 0 0 0 1px var(--line-strong); }
 
+/* ========== 进度条 ========== */
+.progress { position: relative; height: var(--quota-h); border-radius: var(--r-pill); background: var(--line); overflow: hidden; }
+/* 填充条整宽、按进度往左平移（组件里写 translateX），左端被轨道裁掉：只动 transform 不触发布局；
+   不用 scaleX——右端圆角和下面的细纹都会被压扁 */
+.progress-fill { position: absolute; inset: 0; overflow: hidden; border-radius: var(--r-pill); background: var(--accent); transition: transform var(--dur-data) var(--ease-out), background-color var(--dur-1) var(--ease-std); }
+.progress[data-tone="ok"] .progress-fill { background: var(--ok); }
+.progress[data-tone="bad"] .progress-fill { background: var(--bad); }
+.progress[data-tone="warn"] .progress-fill { background: var(--warn); }
+/* 细纹层左边多出一个纹样周期，循环右移一个周期首尾无缝；填充条的 overflow 把右边移出去的部分裁掉 */
+.progress[data-live="1"] .progress-fill::after {
+  content: ""; position: absolute; inset: 0 0 0 -14px;
+  background-image: linear-gradient(115deg, rgba(255, 255, 255, 0.28) 25%, transparent 25%, transparent 50%, rgba(255, 255, 255, 0.28) 50%, rgba(255, 255, 255, 0.28) 75%, transparent 75%);
+  background-size: 14px 14px; animation: progress-flow 1s linear infinite;
+}
+@keyframes progress-flow { to { transform: translateX(14px); } }
+
 /* ========== 面板 / 分段 / 标签-值 / 提示条 ========== */
 .panel { min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); overflow: clip; box-shadow: var(--shadow-card); }
 .panel-head { display: flex; align-items: center; gap: var(--sp-8); min-height: 52px; box-sizing: border-box; padding: 0 var(--card-pad); }
@@ -223,11 +251,17 @@
 .note[data-tone="bad"] { --note-bg: var(--bad-bg); --note-ic: var(--bad); }
 
 .empty { display: grid; justify-items: center; gap: var(--sp-8); padding: var(--sp-24) var(--sp-16); color: var(--fg-2); text-align: center; }
+.empty-ic { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; background: var(--sunken); box-shadow: inset 0 0 0 1px var(--line); color: var(--fg-3); }
+.empty-text { font-weight: var(--fw-medium); text-wrap: pretty; }
 .skel { display: block; border-radius: var(--r-xs); background: var(--cell-off); animation: skel-pulse var(--dur-loop) var(--ease-std) infinite; } /* 同格条未点亮色：暗色下 --sunken 比卡片还暗，骨架几乎看不见 */
 .skel-row { display: flex; align-items: center; height: var(--row-2); box-sizing: border-box; padding: 0 var(--cell-edge); border-bottom: 1px solid var(--line); }
 .skel-row.is-one { height: var(--row-1); }
 .skel-row:last-child { border-bottom: 0; }
 .skel-head { height: var(--thead-h); background: var(--sunken); border-bottom: 1px solid var(--line); }
+/* 换时间范围、筛选或翻页时先留着上一份数据：取新数据期间调淡，到了再柔和地亮回来（抽屉曲线、访问监控的 KPI 与表格、抽屉「访问记录」）。
+   元素上一直写着 data-stale（值是查询的 isPlaceholderData，"true" / "false"）：过渡留在元素上，亮回来才是渐变 */
+[data-stale] { transition: opacity var(--dur-2) var(--ease-std); }
+[data-stale="true"] { opacity: var(--o-stale); }
 
 /* ========== 表单 ========== */
 .field { display: grid; gap: var(--sp-6); min-width: 0; align-content: start; }
@@ -286,7 +320,7 @@
    1 锚定弹层（下拉、右键、选择、日期、作业弹层、悬浮卡、提示、图表提示）：float-in / float-out
    2 顶部锚定面板（对话框、命令面板）：panel-in / panel-out
    3 边缘抽屉（节点抽屉；窄屏侧栏走 base.css 的过渡）：drawer-in / drawer-out，遮罩同步淡入淡出
-   关闭动画：Radix Presence 会等 [data-state=closed] 上的动画播完再卸载；减弱动效时在 extras.css 末尾置 none */
+   关闭动画：Radix Presence 会等 [data-state=closed] 上的动画播完再卸载；减弱动效时在 overrides.css 置 none */
 /* 退场动画期间不再拦截点击：用户已经可以点下面的东西。Radix 在遮罩（及模态层里的浮层）上内联了 pointer-events: auto，要 !important 才盖得住 */
 .overlay[data-state="closed"], .drawer-overlay[data-state="closed"], .dialog[data-state="closed"], .drawer[data-state="closed"], .cmd-dialog[data-state="closed"],
 .menu[data-state="closed"], .popover[data-state="closed"], .select-content[data-state="closed"] { pointer-events: none !important; }
@@ -312,6 +346,15 @@
 .dialog[data-state="closed"] { animation: panel-out var(--dur-1) var(--ease-std) forwards; }
 @keyframes panel-in { from { opacity: 0; transform: translateY(-6px) scale(.98); } }
 @keyframes panel-out { to { opacity: 0; transform: translateY(-4px); } }
+/* 快捷键帮助：标题右边的关闭按钮、按键列表 */
+.dialog-head.hk-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); margin: calc(-1 * var(--sp-6)) calc(-1 * var(--sp-8)) 0 0; }
+.hk-list { margin: 0; padding: 0; list-style: none; }
+.hk-list li { display: flex; align-items: center; gap: var(--sp-16); padding: var(--sp-8) 0; border-top: 1px solid var(--line); font-size: var(--fs-body); }
+.hk-list li:first-child { border-top: 0; }
+.hk-keys { flex: none; display: inline-flex; align-items: center; gap: var(--sp-4); min-width: 88px; }
+/* 错误卡（ErrorBoundary） */
+.err-card { display: grid; justify-items: center; gap: var(--sp-10); padding: var(--sp-24) var(--sp-16); text-align: center; color: var(--warn); }
+.err-card-t { font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-sans); color: var(--fg); }
 
 /* ---- 3 边缘抽屉 ----
    苹果式面板：整幅从右侧滑入（--dur-3 / --ease-out 先快后缓），收起走更短的 --dur-2 / --ease-std；阴影随位移淡入，避免屏幕外的投影在右缘露一条暗边。
@@ -338,6 +381,13 @@
 .drawer-tabs { flex: none; padding: 0 var(--sp-16); overflow: hidden; scrollbar-gutter: stable; } /* 同正文留出滚动条槽：页签下的线与正文右缘对齐 */
 .drawer-body { flex: 1 1 auto; overflow-y: auto; scrollbar-gutter: stable; padding: var(--sp-16); display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-16); align-content: start; } /* 滚动条槽位常驻：切页签、内容长短变化时正文不左右横跳 */
 @media (max-width: 600px) { :root { --drawer-w: 100vw; } }
+/* 页签里吸顶的一条（主机页签的时间范围）：贴在抽屉正文滚动区的顶边（抵掉正文的上内边距），毛玻璃底，滚过去的曲线从下面淡淡透出 */
+.tab-sticky {
+  position: sticky; top: calc(-1 * var(--sp-16)); z-index: 3; display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8);
+  margin: calc(-1 * var(--sp-16)) calc(-1 * var(--sp-16)) calc(-1 * var(--sp-8)); padding: var(--sp-10) var(--sp-16);
+  background: color-mix(in srgb, var(--surface) 82%, transparent); -webkit-backdrop-filter: blur(12px) saturate(1.4); backdrop-filter: blur(12px) saturate(1.4);
+  border-bottom: 1px solid var(--line); font-size: var(--fs-label); color: var(--fg-2);
+}
 
 /* ---- 1 锚定弹层 ----
    进场 --dur-2 / --ease-out：淡入、从 .96 放大，同时朝远离触发元素的方向走 4px（Radix 写 data-side：在上方的往上、在下方的往下）；
@@ -372,6 +422,9 @@
 .menu-item[data-disabled], .select-item[data-disabled] { color: var(--fg-3); pointer-events: none; }
 .menu-item.is-danger { color: var(--bad-text); }
 .menu-item.is-danger .lucide { color: var(--bad-text); }
+/* 子菜单：打开着的触发项、右侧箭头 */
+.menu-item[data-state="open"] { background: var(--hover); }
+.menu-chev { margin-left: auto; width: 14px; height: 14px; color: var(--fg-3); }
 .menu-sep { height: 1px; margin: var(--sp-4) 0; background: var(--line); }
 .menu-label { padding: var(--sp-6) var(--sp-10) var(--sp-2); font: var(--fw-medium) var(--fs-micro) / var(--lh-micro) var(--font-sans); color: var(--fg-3); }
 .menu-check { display: inline-flex; margin-left: auto; }
@@ -387,6 +440,24 @@
 .swatch[data-palette="indigo"] { background: linear-gradient(135deg, #c7c9f7, #5b5bd6); }
 .select-item { justify-content: space-between; }
 .select-item .lucide { width: 14px; height: 14px; color: var(--accent); }
+/* 共用“⋯”下拉的定位锚：插在被点的按钮里、盖满它（随按钮移动）；共用悬停提示的定位锚：固定定位框，出现时盖在悬停 / 聚焦的元素上。都看不见、不接指针 */
+[data-node-menu], [data-entry-menu] { position: relative; }
+.menu-anchor { position: absolute; inset: 0; visibility: hidden; pointer-events: none; }
+.float-anchor { position: fixed; visibility: hidden; pointer-events: none; }
+
+/* 悬浮卡片（进出场同其它锚定弹层：按 data-side 朝外） */
+.hover-card { width: 288px; max-width: calc(100vw - 24px); padding: var(--sp-12); }
+.hc { display: grid; gap: var(--sp-10); min-width: 0; }
+.hc-head { display: flex; align-items: center; gap: var(--sp-8); min-width: 0; }
+.hc-name { flex: 1; font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-sans); letter-spacing: var(--tracking-title); }
+.hc-rows { display: grid; gap: var(--sp-6); margin: 0; }
+.hc-rows > div { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-12); min-width: 0; }
+.hc-rows dt { flex: none; font-size: var(--fs-label); color: var(--fg-2); }
+.hc-rows dd { display: inline-flex; align-items: center; gap: var(--sp-4); min-width: 0; margin: 0; font-size: var(--fs-body); text-align: right; }
+.hc-ip { font-variant-numeric: var(--num-variant); }
+.hc-bars { display: grid; gap: var(--sp-6); padding-top: var(--sp-10); border-top: 1px solid var(--line); }
+.hc-bar { display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: center; gap: var(--sp-8); font-size: var(--fs-label); }
+.hc-bar-l { color: var(--fg-2); }
 
 /* 提示框：反色实底（亮色深底白字）；pre-line 让 data-tip 里的换行生效（心跳格说明分行） */
 .tooltip {

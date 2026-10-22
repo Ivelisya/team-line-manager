@@ -104,7 +104,7 @@ export function AccessPage() {
       </div>
 
       {summary.isError && <ErrNote q={summary} />}
-      {/* 换时间范围、筛选后新数字未到时，沿用的旧数字调淡（extras.css [data-stale]）；下面各视图的表格同样 */}
+      {/* 换时间范围、筛选后新数字未到时，沿用的旧数字调淡（components.css [data-stale]）；下面各视图的表格同样 */}
       <div className="stat-grid" data-stale={summary.isPlaceholderData}>
         <Stat tone="blue" icon={<Server />} label="有活动的节点" value={k ? fmtN(k.active_nodes) : '—'} loading={summary.isLoading} caption={`最近 ${winLabel(f.window)}`} />
         <Stat tone="teal" icon={<Activity />} label="连接记录" info="含已阻止的连接" value={k ? fmtN(k.conns) : '—'} loading={summary.isLoading} />

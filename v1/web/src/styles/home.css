@@ -132,9 +132,6 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 }
 .spark-time { grid-column: 2; display: flex; justify-content: space-between; margin-top: var(--sp-4); font: var(--fs-micro) / 12px var(--font-num); color: var(--fg-3); }
 
-/* 置灰的分段控件（卡片密度在表格 / 环形视图下）：照常占位，工具栏不跳 */
-.seg-item[data-disabled] { opacity: var(--o-disabled); cursor: default; }
-
 /* ---------- 分组：整行分段控件 + 仅看异常 ---------- */
 .hgroups { display: flex; align-items: center; gap: var(--sp-10); min-width: 0; }
 .seg.seg-fill { flex: 1 1 auto; display: flex; min-width: 0; }

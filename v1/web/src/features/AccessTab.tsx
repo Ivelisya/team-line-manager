@@ -113,7 +113,7 @@ export const AccessTab = React.memo(function AccessTab({ id, relay }: { id: stri
   // 来源按连接数，同次数按 IP 数值
   const sources = [...d.top_sources].sort((a, b) => b.conns - a.conns || byIp(a.src_ip, b.src_ip));
   const none = d.top_domains.length === 0 && d.recent.length === 0;
-  // 换时间范围、新数据未到时沿用的旧数据调淡（extras.css [data-stale]）；段标题和时间范围控件不调淡
+  // 换时间范围、新数据未到时沿用的旧数据调淡（components.css [data-stale]）；段标题和时间范围控件不调淡
   const stale = q.isPlaceholderData;
   return (
     <>

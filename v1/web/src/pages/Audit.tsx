@@ -59,7 +59,7 @@ export function AuditPage() {
       </div>
       {/* 第一页取不到：整页重取；往前翻的那一页取不到：只重试那一页 */}
       {q.isError && <ErrorNote error={q.error} onRetry={() => void (q.isFetchNextPageError ? q.fetchNextPage() : q.refetch())} />}
-      {/* 换分类、搜索后新结果未到时，沿用的旧结果调淡（extras.css [data-stale]） */}
+      {/* 换分类、搜索后新结果未到时，沿用的旧结果调淡（components.css [data-stale]） */}
       <Panel title="记录" count={q.data ? (q.hasNextPage ? `已加载 ${rows.length} 条` : `${rows.length} 条`) : undefined}>
         <div data-stale={q.isPlaceholderData}>
           {q.isLoading ? <SkeletonRows rows={6} />

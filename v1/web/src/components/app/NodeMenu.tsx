@@ -146,7 +146,7 @@ export function NodeMenus({ rows, children }: { rows: MachineView[]; children: R
     const el = (e.target as Element).closest<HTMLElement>('[data-id]');
     if (el && find(el.dataset.id)) picked.current = el; else e.preventDefault();
   };
-  // 打开期间给那张卡 / 那一行写 data-menu（高亮，见 extras.css）
+  // 打开期间给那张卡 / 那一行写 data-menu（高亮，见 cards.css、table.css）
   const onCtx = (open: boolean) => {
     const el = picked.current;
     el?.toggleAttribute('data-menu', open);
