@@ -15,6 +15,7 @@ import { ConfirmDialog, FormDialog } from '@/components/app/dialogs';
 import { Chip, CopyButton, Empty, ErrorNote, Note, Panel, Pill } from '@/components/app/primitives';
 import { copyText } from '@/lib/clipboard';
 import { resetOnOpen, useHeld } from '@/lib/useHeld';
+import { ShowAll } from '@/components/app/Pagination';
 
 const MIN_PASSWORD = 12;
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -217,12 +218,16 @@ function uaLabel(ua: string | null): string {
   return b ? [b, os].filter(Boolean).join(' · ') : ua.split(' ')[0];
 }
 
+const SESSION_CAP = 8;
 function SessionsPanel() {
   const q = useSessions(); const revoke = useRevokeSession(); const others = useRevokeOtherSessions();
   const [ask, setAsk] = React.useState<AccountSession | 'others' | null>(null);
   const askHeld = useHeld(ask === 'others' ? 'others' : ask?.id, ask);
   const list = q.data ?? [];
   const nOthers = list.filter((s) => !s.current).length;
+  // 会话可能有一二十个（多是开启设备记录之前的「未知设备」）：先露前 SESSION_CAP 个（按服务端的顺序，最近活动的在前），表尾展开全部
+  const [all, setAll] = React.useState(false);
+  const shown = all ? list : list.slice(0, SESSION_CAP);
   return (
     <>
       <Panel title="登录会话" count={list.length} sub="正在登录着的设备；不认识的立即撤销" flush
@@ -234,7 +239,7 @@ function SessionsPanel() {
               <colgroup><col style={{ width: 260 }} /><col style={{ width: 170 }} /><col style={{ width: 112 }} /><col style={{ width: 128 }} /><col style={{ width: 112 }} /><col style={{ width: 52 }} /></colgroup>
               <thead><tr><th>设备</th><th>IP</th><th>登录</th><th>最近活动</th><th>到期</th><th /></tr></thead>
               <tbody>
-                {list.map((s) => (
+                {shown.map((s) => (
                   <tr key={s.id}>
                     <td>
                       <div className="row" style={{ flexWrap: 'nowrap', gap: 8 }}><Trunc className="cell-main strong">{uaLabel(s.user_agent)}</Trunc>{s.current && <Chip>本设备</Chip>}</div>
@@ -249,6 +254,7 @@ function SessionsPanel() {
                 ))}
               </tbody>
             </table>
+            <ShowAll total={list.length} cap={SESSION_CAP} open={all} onToggle={() => setAll((v) => !v)} unit="个" />
           </div>
         )}
       </Panel>
