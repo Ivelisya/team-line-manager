@@ -27,6 +27,8 @@ export default defineConfig({
           if (!m) return undefined;
           const pkg = m[1];
           if (['recharts', 'recharts-scale', 'victory-vendor', 'internmap', 'decimal.js-light', 'lodash', 'react-smooth', 'fast-equals', 'react-transition-group', 'dom-helpers', 'eventemitter3'].includes(pkg) || pkg.startsWith('d3-')) return 'charts';
+          // 网页终端只在打开终端时才加载（features/Terminal 懒加载），xterm 单独成块
+          if (pkg.startsWith('@xterm/')) return 'xterm';
           if (['clsx', 'react', 'react-dom', 'scheduler', 'react-router', 'react-router-dom', '@remix-run/router', '@tanstack/react-query', '@tanstack/query-core'].includes(pkg)) return 'vendor';
           return undefined;
         },

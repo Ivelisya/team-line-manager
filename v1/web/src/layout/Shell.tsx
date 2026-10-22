@@ -10,6 +10,7 @@ import { useStream } from '@/lib/stream';
 import { useTheme, type Palette, type ThemePref } from '@/lib/theme';
 import { useTitleAlerts } from '@/lib/title';
 import { closeEvacuate, closeMove, closeRenew, closeRestore, closeRetire, useEvacuateTarget, useMoveTarget, useRenewTarget, useRestoreTarget, useRetireTarget } from '@/lib/nodeActions';
+import { resetTerminal, useTerminalTarget } from '@/lib/terminal';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger, Tip, TipHost } from '@/components/ui/overlays';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -26,6 +27,8 @@ import { MotionProvider } from '@/lib/motion';
 // 加载失败（发版后旧块 404）由外面的 silent ErrorBoundary 接住并提示刷新。
 const NodeDrawer = React.lazy(() => import('@/features/NodeDrawer').then((m) => ({ default: m.NodeDrawer })));
 const LifecycleDialogsHost = React.lazy(() => import('@/components/app/LifecycleDialogs').then((m) => ({ default: m.LifecycleDialogsHost })));
+// 网页终端连同 xterm（约 290KB）同理：第一次打开终端时才下载
+const TerminalHost = React.lazy(() => import('@/features/Terminal').then((m) => ({ default: m.TerminalHost })));
 
 /** 一旦为真就一直为真：懒加载的浮层第一次需要时挂载，之后保持挂载（关闭动画、再次打开都不用重来） */
 function useEver(v: boolean) {
@@ -55,6 +58,11 @@ function LifecycleHost() {
   const move = useMoveTarget(), evacuate = useEvacuateTarget(), restore = useRestoreTarget(), retire = useRetireTarget(), renew = useRenewTarget();
   const ever = useEver(!!(move || evacuate || restore || retire || renew));
   return ever ? <React.Suspense fallback={null}><LifecycleDialogsHost /></React.Suspense> : null;
+}
+
+function TermHost() {
+  const ever = useEver(!!useTerminalTarget());
+  return ever ? <React.Suspense fallback={null}><TerminalHost /></React.Suspense> : null;
 }
 
 export function Shell() {
@@ -187,6 +195,7 @@ export function Shell() {
         {/* 浮层宿主各包一层边界：它们出错（图表、懒加载块失败等）只收起自己，不拖垮整页 */}
         <ErrorBoundary silent resetKey={loc.search}><DrawerHost /></ErrorBoundary>
         <ErrorBoundary silent resetKey={loc.pathname} onError={closeLifecycle}><LifecycleHost /></ErrorBoundary>
+        <ErrorBoundary silent resetKey={loc.pathname} onError={resetTerminal}><TermHost /></ErrorBoundary>
         <Hotkeys theme={theme} />
         <TipHost />
         <Toaster />
