@@ -3,7 +3,7 @@
 //! - 1h 窗口直接查 access_event（原始记录）；24h 及以上查小时汇总表。各留多久按面板里设的访问记录保留期（settings.rs），
 //!   窗口不能比汇总的保留期长（`Window::retained`），过期的由 `prune` 与分区维护删掉。
 //! - 随机子域名合并在库里的 `access_collapse()`（见迁移 0006），汇总和 1h 查询共用同一份规则。
-//! - 目标按 (节点, 目标) 聚合。「来源数」在小时表里是各小时去重数的最大值（跨小时无法精确去重，偏小的近似）。
+//! - 目标按 (节点, 目标) 聚合，「域名与 IP」默认再按目标合并（`target_groups`）。「来源数」在小时表里是各小时去重数的最大值（跨小时无法精确去重，偏小的近似）。
 
 use crate::db::{floor_hour, Args};
 use crate::settings::AccessRetention;
@@ -284,13 +284,15 @@ pub struct Filter {
     pub kind: Option<String>,
     /// all | blocked | routed
     pub action: &'static str,
+    /// 只看这一个目标（合并后的名字，精确匹配）：「域名与 IP」按目标聚合时展开看各节点
+    pub host: Option<String>,
 }
 
 impl Filter {
     pub fn new(window: Window, now: OffsetDateTime) -> Self {
         let events = window == Window::H1;
         let raw = now - window.duration();
-        Self { from: if events { raw } else { floor_hour(raw) }, events, team: None, nodes: None, relay: None, like: None, kind: None, action: "all" }
+        Self { from: if events { raw } else { floor_hour(raw) }, events, team: None, nodes: None, relay: None, like: None, kind: None, action: "all", host: None }
     }
 }
 
@@ -367,9 +369,11 @@ fn hourly_where(f: &Filter, a: &mut Args, t: &str, search: &str) -> String {
 }
 
 /// 聚合成 (节点, 目标) → 连接数、阻止数、来源数：小时表，或原始记录（1h 窗口，同样的输出列）；
-/// 再按目标类型与处理结果筛选（blocked 视图里连接数就是被阻止数，routed 视图里去掉被阻止的）
+/// 再按目标类型与处理结果筛选（blocked 视图里连接数就是被阻止数，routed 视图里去掉被阻止的）。
+/// 只看一个目标时：小时表直接按目标查（走 (dest_host, hour) 索引）；原始记录要先合并随机子域名，合并后再筛
 fn cte(f: &Filter, a: &mut Args) -> String {
     let agg = if f.events {
+        let host = f.host.as_ref().map(|h| format!(" where hm.c = {}", a.add(h))).unwrap_or_default();
         format!(
             "rawg as (
     select en.node_id, lower(rtrim(e.dest_host, '.')) h, e.src_ip,
@@ -382,19 +386,22 @@ fn cte(f: &Filter, a: &mut Args) -> String {
 ), agg as (
     select r.node_id, hm.c dest_host, access_kind(hm.c) kind, sum(r.c)::bigint conns, sum(r.b)::bigint blocked,
            count(distinct r.src_ip)::bigint sources, min(r.f) first_ts, max(r.l) last_ts
-    from rawg r join hm on hm.h = r.h
+    from rawg r join hm on hm.h = r.h{host}
     group by r.node_id, hm.c)",
             event_where(f, a, false)
         )
     } else {
+        let mut w = hourly_where(f, a, "h", "h.dest_host");
+        if let Some(h) = &f.host {
+            w += &format!(" and h.dest_host = {}", a.add(h));
+        }
         format!(
             "agg as (
     select h.node_id, h.dest_host, h.kind, sum(h.conns)::bigint conns, sum(h.blocked)::bigint blocked, max(h.sources)::bigint sources,
            null::timestamptz first_ts, null::timestamptz last_ts
     from access_hourly h
-    where {}
-    group by h.node_id, h.dest_host, h.kind)",
-            hourly_where(f, a, "h", "h.dest_host")
+    where {w}
+    group by h.node_id, h.dest_host, h.kind)"
         )
     };
     let (conns, blocked, keep) = match f.action {
@@ -518,6 +525,58 @@ pub async fn targets(db: &PgPool, f: &Filter, sort: TargetSort, limit: i64, offs
         a.add(offset)
     );
     sqlx::query_as_with(&sql, a.0).fetch_all(db).await
+}
+
+/// 按目标聚合的一行：几个节点访问了它、合计连接数与阻止数、任一节点第一次 / 最近一次访问它的时间
+#[derive(Debug, Serialize, FromRow)]
+pub struct TargetGroupRow {
+    pub dest_host: String,
+    pub kind: String,
+    pub nodes: i64,
+    pub conns: i64,
+    pub blocked: i64,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub first_seen: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub last_seen: Option<OffsetDateTime>,
+    /// 符合条件的目标总数（每行都带，接口层取出来）
+    #[serde(skip)]
+    pub total: i64,
+}
+
+/// 「域名与 IP」按目标聚合：在 (节点, 目标) 聚合（`cte`，同 `targets`）上再按目标合并，同时返回目标总数。
+/// 来源数各节点分别去重，合并后相加没有意义，不给
+pub async fn target_groups(db: &PgPool, f: &Filter, sort: TargetSort, limit: i64, offset: i64) -> sqlx::Result<(Vec<TargetGroupRow>, i64)> {
+    let order = match sort {
+        TargetSort::Conns => "conns desc, dest_host",
+        TargetSort::Last => "last_seen desc nulls last, dest_host",
+        TargetSort::First => "first_seen desc nulls last, dest_host",
+    };
+    let mut a = Args::default();
+    let sql = format!(
+        "{}, g as (
+            select f.dest_host, f.kind, count(*)::bigint nodes, sum(f.conns)::bigint conns, sum(f.blocked)::bigint blocked,
+                   min(coalesce(s.first_seen, f.first_ts)) first_seen, max(coalesce(f.last_ts, s.last_seen)) last_seen
+            from f join machine m on m.id = f.node_id
+                 left join access_target_seen s on s.node_id = f.node_id and s.dest_host = f.dest_host
+            group by f.dest_host, f.kind)
+         select *, count(*) over ()::bigint total from g order by {order} limit {} offset {}",
+        cte(f, &mut a),
+        a.add(limit),
+        a.add(offset)
+    );
+    let items: Vec<TargetGroupRow> = sqlx::query_as_with(&sql, a.0).fetch_all(db).await?;
+    let total = match items.first() {
+        Some(r) => r.total,
+        None if offset == 0 => 0,
+        // 翻过了最后一页：总数单独数一次
+        None => {
+            let mut a = Args::default();
+            let sql = format!("{} select count(distinct f.dest_host) from f join machine m on m.id = f.node_id", cte(f, &mut a));
+            sqlx::query_scalar_with(&sql, a.0).fetch_one(db).await?
+        }
+    };
+    Ok((items, total))
 }
 
 #[derive(Debug, Serialize, FromRow)]

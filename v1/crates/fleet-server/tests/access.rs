@@ -88,6 +88,36 @@ async fn collapse_and_kind_rules() {
     }
 }
 
+/// 「域名与 IP」按目标合并：google.com 节点1 5 次 + 节点2 2 次；展开（target=）看各节点
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn targets_grouped_by_target() {
+    let t = setup().await;
+    fixture(&t).await;
+    for w in ["24h", "1h"] {
+        let d = t.get(&format!("/api/v1/access/targets?window={w}&group=target")).await;
+        let g = row(&d, "items", "dest_host", "google.com");
+        assert_eq!((g["nodes"].as_i64(), g["conns"].as_i64(), g["blocked"].as_i64()), (Some(2), Some(7), Some(0)), "{w}");
+        assert!(g["first_seen"].is_string() && g["last_seen"].is_string() && g.get("node_id").is_none());
+        assert_eq!(d["items"][0]["dest_host"], "google.com", "{w} 按合计连接数排");
+        assert_eq!(d["total"].as_i64(), Some(d["items"].as_array().unwrap().len() as i64), "{w}");
+        // 展开：同样的筛选只看这一个目标，一个节点一行
+        let d = t.get(&format!("/api/v1/access/targets?window={w}&target=google.com")).await;
+        let mut per: Vec<_> = d["items"].as_array().unwrap().iter().map(|i| (i["name"].as_str().unwrap().to_string(), i["conns"].as_i64().unwrap())).collect();
+        per.sort();
+        assert_eq!(per, [("团队1-01".to_string(), 5), ("团队1-02".to_string(), 2)], "{w}");
+    }
+    // 筛选、分页照常：只看被阻止的就只剩 ads.tracker.net；翻过最后一页仍给总数
+    let d = t.get("/api/v1/access/targets?window=24h&group=target&action=blocked").await;
+    assert_eq!((hosts(&d), d["total"].as_i64()), (vec!["ads.tracker.net".to_string()], Some(1)));
+    let all = t.get("/api/v1/access/targets?window=24h&group=target").await["total"].as_i64().unwrap();
+    let p = t.get("/api/v1/access/targets?window=24h&group=target&limit=2&offset=2").await;
+    assert_eq!((p["items"].as_array().unwrap().len(), p["total"].as_i64(), p["next_offset"].as_i64()), (2, Some(all), Some(4)));
+    let p = t.get("/api/v1/access/targets?window=24h&group=target&offset=1000").await;
+    assert_eq!((p["items"].as_array().unwrap().len(), p["total"].as_i64()), (0, Some(all)));
+    let (s, _) = t.raw("/api/v1/access/targets?group=x", true).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn summary_targets_sources_events() {
     let t = setup().await;
