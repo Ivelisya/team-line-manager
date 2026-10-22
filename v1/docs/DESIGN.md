@@ -34,7 +34,7 @@ job ─< job_step ─< job_log      audit_log      user / session / api_key
   - **同机 IP 节点**：一台 VPS 节点上配了几个公网 IP 时，每个附加的 IP 是一台独立的节点（`kind = vps`，自己的团队、编号、`primary_ip` = 它的出口 IP、`node_outbound`、入口），`host_id` 指向持有 SSH 与 agent 的那台 VPS 节点（宿主机，必须是在用、自身 `host_id` 为空的 VPS 节点）。
     它没有自己的 agent 和 SSH：作业、远程执行都登录宿主机，视图里的 agent 状态与主机读数借宿主机的（总览网速不重复算），agent 离线、时钟、持续高负载只由宿主机报，入口探测、无入口、续费照常自己报；宿主机维护时它也维护。
     `ssh_port` 不存（null，迁移 0029；读时取宿主机的），供应商取宿主机的、不带套餐、默认不记费用（可在它的「费用」里单独填）；宿主机的流量额度按它的网卡计量，同机节点的流量也走这块网卡（共用额度）；同机节点自己的「已用」是它入口的业务流量。
-    节点在宿主机上是 ssserver 模板单元的一个实例 `fleet-ssserver@<SS 端口>`（端口从 8389 起由中控分配）：监听并从自己的 IP 出站（`outbound_bind_addr`），nft 表 `ss_guard_<端口>` 只放行它自己的线路机；宿主机原来的 `fleet-ssserver` / `ss_guard`（8388）只多一项：出站绑宿主机自己的地址（`outbound_bind_addr`：公网 IP 在网卡上就是它，1:1 NAT 是去掉同机 IP 节点地址后剩下的唯一一个本地地址，分不出就不绑、作业记 warn）。不绑时内核按网卡主地址选源地址，附加 IP 开机时先配上就成了主地址，宿主机节点的出口 IP 跟着变。宿主机第一次有同机 IP 节点时（那个 IP 节点的收敛步骤里）改一次、重启宿主机的 ssserver 几秒；已经绑过的不再动；没有同机 IP 节点的宿主机渲染出的脚本不变。
+    节点在宿主机上是 ssserver 模板单元的一个实例 `fleet-ssserver@<SS 端口>`（端口从 8389 起由中控分配）：监听并从自己的 IP 出站（`outbound_bind_addr`），nft 表 `ss_guard_<端口>` 只放行它自己的线路机；宿主机原来的 `fleet-ssserver` / `ss_guard`（8388）原样不动。
 - **entry**：线路机上的一个入口（VLESS REALITY 入站 → SS 出站到节点）。`id, relay_id, node_id, port, client_uuid, short_id, lifecycle, changed_gen`（最近一次改动时线路机的期望代数；线路机 `applied_generation ≥ changed_gen` 即已应用）。备注由节点显示名生成，改名后随期望状态自动同步。
   直出入口：`node_id = relay_id`（节点就是线路机自己），freedom 出站，从线路机自己的 IP 出去；每台线路机至多一条（同一个 (node_id, relay_id) 唯一索引），备注「线路机名-直出」，随线路机退役摘除。
 - **备用团队**（`team.spare`，唯一索引 `team_one_spare`，迁移 0041 建好「备用」）：系统管理，不能新建、取消、删除，可以改名。退役的、替换下来的机器放这里，`spare_since` / `spare_from` 记进备用的时刻与原名（`patch_tx` 统一维护：退役、替换、手动改团队进出都一样；移出 = 撤销退役，一并清空）。
