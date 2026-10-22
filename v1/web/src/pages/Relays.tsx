@@ -64,7 +64,7 @@ function RelayCard({ m, open }: { m: MachineView; open: Open }) {
   return (
     <section className="panel relay-card">
       <header className="relay-head">
-        <Flag country={m.country} ip={m.ip} />
+        <Flag country={m.country} manual={!!m.country_set} ip={m.ip} />
         <span className="ttl">{m.name}</span>
         <HealthPill m={m} />
         <span className="t-sub">{r?.public_host && r.public_host !== m.ip ? `${r.public_host} · ${m.ip}` : m.ip}</span>

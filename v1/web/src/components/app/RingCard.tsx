@@ -27,7 +27,7 @@ function RingCardImpl({ m, current, onOpen }: { m: MachineView; current?: boolea
   return (
     <article className={cn('rcard', current && 'is-current', quiet && 'is-quiet')} data-health={m.health.status} data-id={m.id}>
       <header className="rc-head">
-        <Flag country={m.country} ip={m.ip} />
+        <Flag country={m.country} manual={!!m.country_set} ip={m.ip} />
         <button type="button" className="nc-name" onClick={() => onOpen(m.id)}>{m.name}</button>
         <StatusMark status={m.health.status} lifecycle={m.lifecycle} />
         <HostTag id={m.id} host={m.host_machine} nodes={m.ip_nodes} short />

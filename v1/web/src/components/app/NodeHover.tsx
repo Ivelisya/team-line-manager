@@ -22,7 +22,7 @@ function MiniCard({ m }: { m: MachineView }) {
   return (
     <div className="hc">
       <div className="hc-head">
-        <Flag country={m.country} ip={m.ip} />
+        <Flag country={m.country} manual={!!m.country_set} ip={m.ip} />
         <b className="hc-name ellipsis">{m.name}</b>
         <HealthPill m={m} />
       </div>

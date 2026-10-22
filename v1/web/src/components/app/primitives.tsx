@@ -97,11 +97,11 @@ function HostTagButton({ id, host, nodes, short, tabIndex }: HostTagProps) {
 }
 
 /** 名字前的国旗（原版国旗位）：机器自己 IP 所在的国家（中控离线 IP 库按 IP 查）；查不到（内网地址、家宽代理填的是域名、库没装）
- *  是一个中性的小地球——类型（线路机 / 家宽代理）在标签行里，这里不再放类型图标。悬停：中文国名 · IP */
-export function Flag({ country, ip }: { country?: string | null; ip?: string }) {
+ *  是一个中性的小地球——类型（线路机 / 家宽代理）在标签行里，这里不再放类型图标。悬停：中文国名（手动设的标注）· IP */
+export function Flag({ country, manual, ip }: { country?: string | null; manual?: boolean; ip?: string }) {
   const url = country ? flagUrl(country) : undefined;
   const name = country ? countryName(country) : '国家未知';
-  const tip = ip ? `${name} · ${ip}` : name;
+  const tip = [manual ? `${name}（手动设置）` : name, ip].filter(Boolean).join(' · ');
   return url
     ? <img className="nc-flag" src={url} alt={name} data-tip={tip} />
     : <span className="nc-flag is-none" role="img" aria-label={name} data-tip={tip}><Globe /></span>;
