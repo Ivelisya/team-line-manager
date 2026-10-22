@@ -116,9 +116,9 @@
 .flow-rate { min-width: 0; overflow: hidden; white-space: nowrap; font: var(--fw-semibold) var(--fs-metric) / 24px var(--font-num); font-variant-numeric: var(--num-variant); letter-spacing: -0.03em; color: var(--num-c, var(--fg)); }
 .flow-rate .unit { margin-left: 1px; font-size: var(--fs-micro); font-weight: var(--fw-medium); letter-spacing: 0; color: var(--fg-2); }
 .ncard[data-view="small"] .flow-rate, .ncard[data-view="compact"] .flow-rate { font-size: var(--fs-metric-sm); line-height: 22px; }
-/* 速率读数用正文色、迹线用主题色；空闲（< 1 Mbps）读数与迹线都退成灰；只有接近套餐带宽（≥ 80%）才换提示色。颜色不表示状态 */
+/* 速率读数用正文色、迹线用主题色；空闲（< 100 Kbps）读数退成次要色、迹线退成灰；只有接近套餐带宽（≥ 80%）才换提示色。颜色不表示状态 */
 [data-speed="ok"] { --num-c: var(--fg); }
-[data-speed="idle"] { --num-c: var(--fg-3); --spd: var(--fg-3); }
+[data-speed="idle"] { --num-c: var(--fg-2); --spd: var(--fg-3); }
 [data-speed="near"] { --num-c: var(--speed-near); --spd: var(--speed-near); }
 .flow-trend { align-items: center; gap: var(--sp-10); min-width: 0; min-height: 14px; } /* min-width 0：点阵按列宽收，不把列撑宽、把「实时」挤出卡外 */
 /* 窄卡（手机）：方向标签放到读数上面，两列之间不挤。容器设在 .flow 上——卡片本身不能设 container-type（布局包含会让 subgrid 失效） */

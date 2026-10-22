@@ -453,9 +453,9 @@
 .menu, .popover, .toast, .chart-tip { background: var(--glass); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .menu, .popover, .toast, .chart-tip { background: var(--raised); } }
 .menu, .popover, .select-content { z-index: var(--z-popover); border-radius: var(--r-float); padding: var(--sp-4); min-width: var(--pop-w-sm); }
-/* 菜单高度只受固定上限约束（不读 Radix 的可用高度）：下方放不下时 Radix 整体翻到上方、不把菜单压矮出滚动条；
-   只有超长的（线路机「复制分享链接」子菜单可有几十条入口）才在菜单里滚动 */
-.menu { max-height: min(420px, calc(100dvh - 16px)); overflow-y: auto; }
+/* 菜单高度只受视口约束（不读 Radix 的可用高度，也没有固定上限）：下方放不下时 Radix 整体翻到上方、不把菜单压矮出滚动条；
+   内容比视口还高的（线路机「复制分享链接」子菜单可有几十条入口）才在菜单里滚动 */
+.menu { max-height: calc(100dvh - 16px); overflow-y: auto; }
 .select-content { min-width: var(--radix-select-trigger-width); max-height: 320px; overflow: hidden; background: var(--raised); }
 .popover { padding: var(--sp-12); width: var(--pop-w-md); max-width: calc(100vw - 24px); }
 .menu-item, .select-item {

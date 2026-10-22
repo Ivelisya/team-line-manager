@@ -29,7 +29,7 @@ const cols: Col[] = [
   { id: 'status', header: '状态', size: 88, ...byNum(statusRank, 'asc'), cell: (m) => <HealthPill m={m} /> },
   ...(['cpu', 'mem', 'disk'] as const).map((k): Col => ({ id: k, header: k === 'cpu' ? 'CPU' : k === 'mem' ? '内存' : '磁盘', size: 82, drop: k === 'disk' ? 3 : k === 'mem' ? 4 : undefined, ...byNum(PCT[k]),
     cell: (m) => { const r = resourceMeters(m); return r ? <MiniMeter pct={r[k].pct} metric={k} empty={isQuiet(m)} /> : <span className="t-muted">—</span>; } })),
-  ...(['up', 'down'] as const).map((k): Col => ({ id: k, header: k === 'up' ? '上行' : '下行', size: 92, r: true, ...byNum((m) => (k === 'up' ? liveRate(m)?.tx : liveRate(m)?.rx) ?? null),
+  ...(['down', 'up'] as const).map((k): Col => ({ id: k, header: k === 'up' ? '上行' : '下行', size: 92, r: true, ...byNum((m) => (k === 'up' ? liveRate(m)?.tx : liveRate(m)?.rx) ?? null),
     cell: (m) => { const r = liveRate(m); const v = r && (k === 'up' ? r.tx : r.rx); return <span className="trate" data-speed={r && v != null ? F.speedOf(v, m.plan?.bandwidth_mbps) : undefined}><Num f={F.rate(v)} /></span>; } })),
   { id: 'traffic', header: '本月流量', size: 144, r: true, ...byNum(trafficTotal), cell: (m) => <MonthFlowCell m={m} /> },
   // 不限额度、与宿主机共用的没有「剩余」可比，排在最后
@@ -46,7 +46,7 @@ const cols: Col[] = [
   // 服务端折好的月费（不同币种直接按数值比）；季付、年付的悬停写原价
   { id: 'fee', header: '月费', size: 72, r: true, drop: 1, ...byNum((m) => m.subscription?.monthly_cents ?? null),
     cell: (m) => { const s = m.subscription; return s ? <span className="num" data-tip={monthlyHint(s) ? `原价 ${F.money(s.price_cents, s.currency)}/${cycleLabel(s.cycle)}` : undefined}>{F.money(s.monthly_cents, s.currency)}</span> : <span className="t-muted">—</span>; } },
-  { id: 'menu', header: '', size: 40, cell: () => <IconButton label="更多操作" tip={false} data-node-menu="" aria-haspopup="menu"><MoreHorizontal size={16} /></IconButton> },
+  { id: 'menu', header: '', size: 48, cell: () => <IconButton label="更多操作" tip={false} data-node-menu="" aria-haspopup="menu"><MoreHorizontal size={16} /></IconButton> },
 ];
 export const sortTable = (rows: MachineView[], sort: SortState | null) => sortByCol(rows, cols, sort);
 

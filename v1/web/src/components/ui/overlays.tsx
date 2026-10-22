@@ -127,7 +127,7 @@ export function TipHost() {
     };
     const on: [EventTarget, string, EventListener, boolean][] = [
       [document, 'pointerover', over as EventListener, false], [document, 'pointerout', leave as EventListener, false], [document, 'pointerdown', down as EventListener, true], [document, 'click', click as EventListener, false],
-      [document, 'focusin', focus as EventListener, false], [document, 'focusout', close, false], [window, 'scroll', close, true],
+      [document, 'focusin', focus as EventListener, false], [document, 'focusout', close, false], [window, 'scroll', close, true], [window, 'wheel', close, true],
     ];
     on.forEach(([t, n, f, c]) => t.addEventListener(n, f, c));
     return () => { clearTimeout(timer); on.forEach(([t, n, f, c]) => t.removeEventListener(n, f, c)); };

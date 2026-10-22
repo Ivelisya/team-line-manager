@@ -141,10 +141,10 @@ export function addMonths(date: string, n: number): string {
 /** YYYY-MM-DD 加减天数（UTC 计算，避免夏令时把一天算成 23 小时） */
 export const addDays = (s: string, n: number) => { const [y, m, d] = s.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10); };
 
-/** 实时速率的提示档：空闲（< 1 Mbps）、常态、接近套餐带宽（≥ 80%，只有知道套餐带宽时才判）。颜色不当状态用：常态读数用正文色，只有接近套餐带宽才换成提示色 */
+/** 实时速率的提示档：空闲（< 100 Kbps）、常态、接近套餐带宽（≥ 80%，只有知道套餐带宽时才判）。颜色不当状态用：常态读数用正文色，只有接近套餐带宽才换成提示色 */
 export type Speed = 'idle' | 'ok' | 'near';
 export const speedOf = (bps: number | null | undefined, planMbps?: number | null): Speed =>
-  bps == null || bps < 1e6 ? 'idle' : planMbps && bps >= planMbps * 1e6 * 0.8 ? 'near' : 'ok';
+  bps == null || bps < 1e5 ? 'idle' : planMbps && bps >= planMbps * 1e6 * 0.8 ? 'near' : 'ok';
 
 /** 按本地时间问候 */
 export function greeting(h = new Date().getHours()): string {
