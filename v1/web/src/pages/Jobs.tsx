@@ -40,19 +40,6 @@ const STATE_OF: Record<View, 'all' | 'active' | 'done'> = { all: 'all', running:
 const KIND_VALUES = ['provision', 'restore', 'attach_entry', 'move_entry', 'upgrade_agent', 'retire', 'purge'];
 const KIND_GROUP: Record<string, string> = { provision: '上架', restore: '恢复' };
 
-/** 宽屏时详情栏吸顶、自己滚动：最大高度按它此刻在视口里的上沿算（页面在顶部时它还没吸住，上面有页头），
- *  不按吸住后的位置算——否则页面在顶部时底部超出视口、最后几行看不到。单栏时 CSS 不用这个变量 */
-function useFitViewport(ref: React.RefObject<HTMLElement | null>) {
-  React.useEffect(() => {
-    const el = ref.current; if (!el) return;
-    let raf = 0;
-    const fit = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(() => el.style.setProperty('--fit-h', `${Math.max(240, innerHeight - el.getBoundingClientRect().top - 16)}px`)); };
-    fit();
-    addEventListener('scroll', fit, { passive: true }); addEventListener('resize', fit);
-    return () => { cancelAnimationFrame(raf); removeEventListener('scroll', fit); removeEventListener('resize', fit); };
-  }, [ref]);
-}
-
 const JobPill = ({ state }: { state: string }) => { const s = STATE[state] ?? { tone: 'neutral' as Tone }; return <Pill tone={s.tone} dot={s.dot}>{jobStateLabel(state)}</Pill>; };
 
 export function JobsPage() {
@@ -83,10 +70,9 @@ export function JobsPage() {
   const none = !!jobs.data && list.length === 0 && !selected;
   const noneText = `没有${view === 'all' ? '' : `${VIEWS.find((v) => v.value === view)!.label}的`}${kind ? `「${kindOpts.find((o) => o.value === kind)!.label}」` : ''}作业`;
   const go = (jid: string) => nav({ pathname: `/jobs/${jid}`, search });
-  // 宽屏时详情栏吸顶、自己滚动（pages.css .jobs-detail）：换作业回到详情顶部
+  // 详情跟着页面滚（只有日志框自己滚）：在列表下面点了作业、详情顶部已滚出视口时，滚回详情顶部
   const detail = React.useRef<HTMLDivElement>(null);
-  React.useLayoutEffect(() => { if (detail.current) detail.current.scrollTop = 0; }, [selected]);
-  useFitViewport(detail);
+  React.useLayoutEffect(() => { const el = detail.current; if (el && selected && el.getBoundingClientRect().top < 0) el.scrollIntoView({ block: 'start' }); }, [selected]);
   // 按地址打开的作业：在列表里滚到看得见（每个作业只滚一次；点列表里的本来就看得见）
   const scrolled = React.useRef<string | null>(null);
   React.useEffect(() => {
@@ -138,9 +124,10 @@ function Dur({ a, b, live }: { a: string | null; b: string | null; live: boolean
   const now = useNow(live);
   return <>{F.duration(a, b, now)}</>;
 }
-function LiveProgressBar({ job, live }: { job: Job; live: boolean }) {
+/** 总进度与横向步骤条：进行中（含取消中）每秒走表，步骤条上「进行中 · N 秒」与下面的步骤时间线一起走 */
+function LiveProgress({ job, live }: { job: Job; live: boolean }) {
   const now = useNow(live);
-  return <JobProgressBar job={job} now={now} />;
+  return <><JobProgressBar job={job} now={now} /><StepBar job={job} now={now} /></>;
 }
 
 function JobDetail({ id }: { id: string }) {
@@ -160,12 +147,11 @@ function JobDetail({ id }: { id: string }) {
         {j.cancellable && <Button size="sm" onClick={() => setCancelAsk(true)}><Square />取消</Button>}
       </>}>
         <div className="stack">
-          <LiveProgressBar job={j} live={live} />
-          <StepBar job={j} />
+          {/* 用时写在进度条右上（进行中「已用时」、结束后「用时」），信息格不再重复 */}
+          <LiveProgress job={j} live={live} />
           <LabelValueGrid>
             <LabelValue label="创建人">{F.actor(j.created_by)}</LabelValue>
             <LabelValue label="创建时间">{F.dtFull(j.created_at)}</LabelValue>
-            <LabelValue label="用时">{j.started_at ? <Dur a={j.started_at} b={j.finished_at} live={live} /> : live ? '排队中' : '未执行'}</LabelValue>
             <LabelValue label="作业 ID"><span className="mono">{j.id}</span></LabelValue>
           </LabelValueGrid>
         </div>
@@ -209,7 +195,7 @@ function JobDetail({ id }: { id: string }) {
 
       {/* key：换作业时整个日志面板重新挂载，日志、暂停状态从空开始，不先闪一帧上一个作业的日志 */}
       <LogPanel key={j.id} jobId={j.id} state={j.state} />
-      <ConfirmDialog open={cancelAsk} onOpenChange={setCancelAsk} title="取消这个作业？" confirmLabel="取消作业" danger description={cancelDesc(j)}
+      <ConfirmDialog open={cancelAsk} onOpenChange={setCancelAsk} title="取消这个作业？" confirmLabel="取消作业" cancelLabel="返回" danger description={cancelDesc(j)}
         onConfirm={async () => { await cancel.mutateAsync(j.id); toast.info('正在取消…'); }} /> {/* 要等回滚做完才结束，结束时状态胶囊变成「已取消」 */}
     </div>
   );
