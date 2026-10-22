@@ -151,7 +151,7 @@ pub struct ImportIn {
 const IMPORT_MAX: usize = 1000;
 
 /// 旧面板的退役机器导入回收站（source 固定为 legacy）。幂等键 (source, source_id)：导入过的跳过，重复导入不出错。
-/// 防止导错：IP 或（供应商, 供应商编号）对上面板里还没回收的机器的跳过，说明是哪台。默认只预演，`confirm: true` 才写
+/// 防止导错：IP 或（供应商, 供应商编号）对上面板里还没回收的机器、或已经以面板机器身份进了回收站的跳过，说明是哪台 / 哪一行。默认只预演，`confirm: true` 才写
 pub async fn import(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<ImportIn>) -> ApiResult<Json<Value>> {
     if b.items.is_empty() || b.items.len() > IMPORT_MAX {
         return Err(ApiError::bad_request(format!("items 要有 1–{IMPORT_MAX} 条")));
@@ -181,6 +181,23 @@ pub async fn import(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Im
         let had: Option<i64> = sqlx::query_scalar("select id from recycle_bin where source = 'legacy' and source_id = $1").bind(sid).fetch_optional(&mut *tx).await?;
         if let Some(id) = had {
             skipped.push(skip(format!("已经导入过（回收站 #{id}）")));
+            continue;
+        }
+        // 同一台已经以面板机器的身份回收过（同 IP，或同供应商 + 服务编号；回收站记的是供应商名，导入的也可以写代码）
+        let binned: Option<i64> = sqlx::query_scalar(
+            "select b.id from recycle_bin b where b.source = 'fleet'
+               and (b.ip = $1::inet
+                    or ($2::text <> '' and $3::text <> '' and b.service_ref = $3
+                        and (lower(b.provider) = lower($2) or exists (select 1 from provider p where p.name = b.provider and lower(p.code) = lower($2)))))
+             order by b.id desc limit 1",
+        )
+        .bind(x.ip.as_deref().map(str::trim))
+        .bind(x.provider.as_deref().map(str::trim).unwrap_or(""))
+        .bind(x.service_ref.as_deref().map(str::trim).unwrap_or(""))
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(id) = binned {
+            skipped.push(skip(format!("已经在回收站（#{id}）")));
             continue;
         }
         let live: Option<(String, String)> = sqlx::query_as(

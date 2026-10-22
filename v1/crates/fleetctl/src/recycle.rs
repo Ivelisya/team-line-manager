@@ -6,9 +6,9 @@ use anyhow::{bail, Context};
 use serde_json::{json, Value};
 use std::path::Path;
 
-/// 「2026-10-21」：时间只取日期
+/// 「2026-10-21」：时间按组织时区（同其它命令）只取日期
 fn day(v: &Value, p: &str) -> String {
-    let s = st(v, p);
+    let s = table::ts(&st(v, p));
     s.get(..10).unwrap_or(if s.is_empty() { "-" } else { &s }).to_string()
 }
 

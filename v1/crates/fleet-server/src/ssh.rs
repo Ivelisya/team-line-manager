@@ -2,7 +2,7 @@
 //!
 //! 主机公钥：上架预检时 keyscan 一次并写入中控自己的 known_hosts（TOFU），之后一律 StrictHostKeyChecking=yes。
 //! 已有记录的主机指纹变化时预检失败（除非作业明确允许重置）。known_hosts 是共用文件，读写由全局锁串行化。
-//! 退役时记录从 known_hosts 删掉、存到机器行（retired_host_keys），恢复时放回再核对，不重新首次信任。
+//! 退役、彻底删除时把记录从 known_hosts 删掉（`forget_host`）；退役不可恢复，同一 IP 再上架按新机器重新首次信任。
 //! 连接类的瞬时错误（超时、拒绝、被重置…）在 `run` / `push` 里自动重试 3 次；用户命令走 `run_once`，不重试。
 
 use anyhow::{bail, Context};

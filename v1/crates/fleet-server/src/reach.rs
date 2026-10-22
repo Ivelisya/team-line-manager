@@ -3,7 +3,8 @@
 //! 每 30 秒对每台在用、有在用入口的线路机做一次 TCP 建连：目标是客户连的地址（relay.public_host）+ 它的在用入口端口，
 //! 每轮换下一个（N 条入口 N 轮连一遍）——线路机在不在线、客户连的每个口连不连得上（防火墙、供应商封口、单个入站没起来）。
 //! 只建连，不做 REALITY 握手。只记通不通，不记延迟：中控在德国，到美国线路机的往返时间不代表客户体验。
-//! 同一台线路机最近 3 轮都连不上，健康判定报 relay_unreachable（views 的 `RelayInfo::unreachable`；结论变了就发 `Event::Machine`）。
+//! 同一台线路机最近 3 轮都连不上（整台不通），或同一个端口最近 3 次都连不上（单个口坏了），健康判定报 relay_unreachable
+//! （views 的 `RelayInfo::unreachable`；结论变了就发 `Event::Machine`）。
 //! 不连 SSH 口：每 30 秒一次未认证就断开的连接会刷 sshd 日志，线路机上若有 fail2ban 还可能把中控封掉。
 //! Xray 的 REALITY 入站对只建连、不发数据的连接不记访问日志。
 //!
@@ -41,14 +42,22 @@ pub async fn run_forever(st: AppState) {
     }
 }
 
-/// 线路机 `relay`（SQL 表达式）最近 3 轮（5 分钟内）都连不上时，这 3 次的失败原因（去重，带端口）；否则 null。
+/// 线路机 `relay`（SQL 表达式）连不上时的失败原因（去重，带端口），否则 null：
+/// - 整台不通：最近 3 轮（5 分钟内）都连不上，取这 3 次的原因；
+/// - 单个口坏了：某个在用入口端口最近 3 次都连不上（轮流连，N 个口每 N 轮才轮到一次：看 30 分钟与 3 遍轮换里取长的），取它最近一次的原因。
+///
 /// 视图的 `RelayInfo::unreachable` 与本轮前后的比对共用
 pub(crate) fn unreachable_sql(relay: &str) -> String {
     format!(
-        "(select string_agg(distinct x.detail, '；' order by x.detail) from (
-           select coalesce(rr.detail, '-') detail, rr.ok from relay_reach rr
-           where rr.relay_id = {relay} and rr.ts > now() - interval '5 minutes' order by rr.ts desc limit 3) x
-         having count(*) = 3 and not bool_or(x.ok))"
+        "(with x as (select rr.port, rr.ok, coalesce(rr.detail, '-') detail, rr.ts > now() - interval '5 minutes' fresh,
+                            row_number() over (order by rr.ts desc) n, row_number() over (partition by rr.port order by rr.ts desc) np
+                     from relay_reach rr where rr.relay_id = {relay} and rr.ts > now() - greatest(interval '30 minutes',
+                       interval '90 seconds' * (select count(*) from entry e where e.relay_id = {relay} and e.lifecycle = 'active'))),
+               whole as (select count(*) = 3 and not bool_or(ok) down from x where n <= 3 and fresh),
+               bad as (select port from x where np <= 3 and port in (select e.port from entry e where e.relay_id = {relay} and e.lifecycle = 'active')
+                       group by port having count(*) = 3 and not bool_or(ok))
+          select string_agg(distinct detail, '；' order by detail) from x
+          where (n <= 3 and fresh and (select down from whole)) or (np = 1 and port in (select port from bad)))"
     )
 }
 
@@ -82,13 +91,16 @@ pub async fn round(st: &AppState, controls: &[&str], turn: usize) -> anyhow::Res
     let ids: Vec<Uuid> = targets.iter().map(|t| t.0).collect();
     let unreach = format!("select {} from unnest($1::uuid[]) with ordinality u(id, i) order by i", unreachable_sql("u.id"));
     let before: Vec<Option<String>> = sqlx::query_scalar(&unreach).bind(&ids).fetch_all(db).await?;
-    sqlx::query("insert into relay_reach (relay_id, ts, ok, detail) select u.id, $2, u.ok, u.detail from unnest($1::uuid[], $3::bool[], $4::text[]) u(id, ok, detail)")
-        .bind(&ids)
-        .bind(ts)
-        .bind(&oks)
-        .bind(&details)
-        .execute(db)
-        .await?;
+    sqlx::query(
+        "insert into relay_reach (relay_id, ts, ok, detail, port) select u.id, $2, u.ok, u.detail, u.port from unnest($1::uuid[], $3::bool[], $4::text[], $5::int[]) u(id, ok, detail, port)",
+    )
+    .bind(&ids)
+    .bind(ts)
+    .bind(&oks)
+    .bind(&details)
+    .bind(ports.iter().map(|&p| i32::from(p)).collect::<Vec<_>>())
+    .execute(db)
+    .await?;
     let after: Vec<Option<String>> = sqlx::query_scalar(&unreach).bind(&ids).fetch_all(db).await?;
     for ((id, b), a) in ids.iter().zip(&before).zip(&after) {
         if b != a {

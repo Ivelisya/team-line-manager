@@ -349,8 +349,9 @@ where
 /// 遥测小时汇总的一轮（脏小时语义见 `rollup_dirty`）。同一小时从原始数据重算并覆盖，幂等。
 pub async fn rollup_hours(db: &PgPool) -> anyhow::Result<()> { rollup_dirty(db, "rollup_dirty", |h| rollup_hour(db, h)).await }
 
-/// 重算一个整点小时。主机网络流量取相邻样本的正增量之和（lag），计数器变小（旧 agent 重启清零、nic.json 丢失）时
-/// 当前读数就是重置后的增量。每台机器本小时第一个样本的前值 = 它在本小时之前的最后一个样本（不限回看多久，
+/// 重算一个整点小时。主机网络流量取相邻样本的正增量之和（lag）。读数明显回到小值（不到前值的一半：旧 agent 重启清零、
+/// nic.json 丢失、新计数器）时当前读数就是重置后的增量；只往回跳了一点（持久累计值在异常重启后退回上次存盘的值、文件比上报旧）
+/// 记 0，不把整个累计值当增量。每台机器本小时第一个样本的前值 = 它在本小时之前的最后一个样本（不限回看多久，
 /// 只受原始数据保留期限制）：agent 离线、中控停机、离线队列淘汰造成的缺口，缺口内的增量整笔记进恢复后的这一小时，不丢；
 /// 晚到的样本把下一小时也标脏（agent_api），下一小时的第一个增量跟着重算。前值按唯一索引 (machine_id, ts) 倒序取一行。
 /// 每段增量不超过 10 Gbit/s（1.25e9 字节/秒 × 两个样本的间隔），入口流量每小时不超过 10 Gbit/s 跑满一小时（4.5e12 字节）：
@@ -359,8 +360,8 @@ async fn rollup_hour(db: &PgPool, hour: OffsetDateTime) -> anyhow::Result<()> {
     let q = [
         "insert into host_metric_hourly (machine_id, hour, cpu_avg, cpu_max, mem_used_avg, mem_total_max, disk_used_max, disk_total_max, net_rx, net_tx)
          select machine_id, $1, avg(cpu_pct), max(cpu_pct), avg(mem_used)::bigint, max(mem_total), max(disk_used), max(disk_total),
-                coalesce(sum(least(case when rx is null or prev_rx is null then 0 when rx >= prev_rx then rx - prev_rx else rx end, cap)), 0)::bigint,
-                coalesce(sum(least(case when tx is null or prev_tx is null then 0 when tx >= prev_tx then tx - prev_tx else tx end, cap)), 0)::bigint
+                coalesce(sum(least(case when rx is null or prev_rx is null then 0 when rx >= prev_rx then rx - prev_rx when rx <= prev_rx / 2 then rx else 0 end, cap)), 0)::bigint,
+                coalesce(sum(least(case when tx is null or prev_tx is null then 0 when tx >= prev_tx then tx - prev_tx when tx <= prev_tx / 2 then tx else 0 end, cap)), 0)::bigint
          from (select machine_id, ts, cpu_pct, mem_used, mem_total, disk_used, disk_total,
                       net_rx_bytes rx, lag(net_rx_bytes) over w prev_rx, net_tx_bytes tx, lag(net_tx_bytes) over w prev_tx,
                       1.25e9 * extract(epoch from ts - lag(ts) over w) cap

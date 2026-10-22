@@ -135,7 +135,21 @@ pub async fn patch_tx(tx: &mut crate::db::Tx<'_>, actor: &str, id: Uuid, b: Patc
     }
     let is_relay = cur.1 == "relay";
     let team_id = if is_relay { None } else { b.team_id.or(cur.2) };
-    let number = if is_relay { None } else { b.number.or(cur.3) };
+    let number = if is_relay {
+        None
+    } else if b.number.is_none() && team_id != cur.2 {
+        // 换团队没给编号：排到新团队的最小空号（原编号在新团队里多半已经有人，「移出备用」照提示只给团队也能成）
+        let n: Option<i32> = sqlx::query_scalar(
+            "select min(n)::int from generate_series(1, 999) n
+             where not exists (select 1 from machine where team_id = $1 and number = n and kind <> 'relay' and lifecycle <> 'retired')",
+        )
+        .bind(team_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        Some(n.ok_or_else(|| ApiError::conflict("这个团队的编号用完了"))?)
+    } else {
+        b.number.or(cur.3)
+    };
     if let Some(n) = number {
         if !(1..=999).contains(&n) {
             return Err(ApiError::bad_request("编号范围 1–999"));
@@ -429,19 +443,20 @@ pub async fn move_to_spare(st: &AppState, actor: &str, id: Uuid, reason: Option<
     }
     let (spare_id, spare_name, taken) = spare_team(&mut tx).await?;
     let mut free = (1..=999).filter(|n| !taken.contains(n));
-    let revs: Vec<(Uuid, i32, Option<Uuid>, String)> = sqlx::query_as(
+    let mut revs: Vec<(Uuid, i32, Option<Uuid>, String)> = sqlx::query_as(
         "select m.id, m.revision, m.team_id, display_name(m.kind::text, m.label, t.name, m.number) from machine m left join team t on t.id = m.team_id
          where m.id = any($1)",
     )
     .bind(&all)
     .fetch_all(&mut *tx)
     .await?;
+    // 按 all 的顺序：宿主机在前
+    revs.sort_by_key(|r| all.iter().position(|x| *x == r.0));
     let ip_reason = revs.iter().find(|r| r.0 == id).map(|r| format!("随宿主机「{}」退役", r.3)).unwrap_or_default();
     // (id, 原名, 新名)，宿主机在前
     let mut moved: Vec<(Uuid, String, String)> = vec![];
     let mut relays = vec![];
-    for mid in &all {
-        let Some((_, rev, _, from)) = revs.iter().find(|r| r.0 == *mid) else { continue };
+    for (mid, rev, _, from) in &revs {
         let n = free.next().ok_or_else(|| ApiError::conflict(format!("备用团队「{spare_name}」的编号用完了")))?;
         relays.extend(patch_tx(&mut tx, actor, *mid, PatchIn::rename(*rev, spare_id, n)).await?);
         sqlx::query("update machine set lifecycle_reason = $2 where id = $1")
@@ -486,7 +501,8 @@ pub async fn move_to_spare(st: &AppState, actor: &str, id: Uuid, reason: Option<
 
 /// 立即回收：建退役作业（摘入口 → 等线路机 → 清理 → 撤令牌 → 收尾时移进回收站）。手动「立即回收」与备用团队到期自动回收（spare.rs）
 /// 走这同一条路径。`name`、`kind` 是调用方刚读出的显示名与种类；
-/// `auto`：中控自动发起时的标记（记进作业参数与审计的 auto，同机 IP 节点的作业也带上），手动退役为 None。
+/// `auto`：中控自动发起时的标记（记进作业参数与审计的 auto，同机 IP 节点的作业也带上）与发起这一轮的时刻，手动退役为 None。
+/// 备用到期（spare::AUTO）的锁住机器后按这一刻再核对一次还在备用团队、还过期满 1 天，不成立就 409（spare.rs 记 warn，下一轮再看）。
 /// 返回 `{job_id, ip_node_jobs}`
 #[allow(clippy::too_many_arguments)]
 pub async fn start_retire(
@@ -497,7 +513,7 @@ pub async fn start_retire(
     kind: &str,
     reason: Option<&str>,
     cleanup: bool,
-    auto: Option<&str>,
+    auto: Option<(&str, OffsetDateTime)>,
 ) -> ApiResult<Value> {
     let mut tx = st.db.begin().await?;
     // 先锁机器行再判断、再计数：和「给线路机加入口」（对同一行 for share）互斥，守卫不会被并发挤穿
@@ -506,6 +522,20 @@ pub async fn start_retire(
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| ApiError::not_found("没有这台机器"))?;
+    // 查出过期列表到这里之间，可能有人登记了续费、改了到期日，或者把它改回了原团队
+    if let Some((crate::spare::AUTO, now)) = auto {
+        let still: bool = sqlx::query_scalar(
+            "select exists (select 1 from machine m join team t on t.id = m.team_id join subscription_eff s on s.machine_id = m.id
+                            where m.id = $1 and t.spare and ($2::timestamptz at time zone s.billing_tz)::date > s.due_date + 1)",
+        )
+        .bind(id)
+        .bind(now)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !still {
+            return Err(ApiError::conflict("已经不在备用团队，或已续费：不自动回收"));
+        }
+    }
     // 宿主机退役：它上面的同机 IP 节点一并退役（它们的 SSH、agent、ssserver 都在这台机器上）
     let ip_nodes = ip_nodes_of(&mut tx, id, true).await?;
     let ip_ids: Vec<Uuid> = ip_nodes.iter().map(|x| x.0).collect();
@@ -555,7 +585,7 @@ pub async fn start_retire(
     .rows_affected();
     // 自动发起的：作业参数与审计带上 auto（审计里和手动退役分得开；收尾时记进回收站的审计）
     let tag = |mut v: Value| {
-        if let Some(x) = auto {
+        if let Some((x, _)) = auto {
             v["auto"] = json!(x);
         }
         v

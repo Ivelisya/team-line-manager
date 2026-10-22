@@ -560,6 +560,7 @@ async fn tune_script_writes_reads_back_and_skips() {
         "# fleet tune-v1（中控生成，勿手改）\nnet.core.rmem_max = 16777216\nnet.ipv4.tcp_rmem = 4096 131072 16777216\nnet.ipv4.tcp_slow_start_after_idle = 0\n"
     );
     assert!(!root.join("etc/sysctl.d/90-fleet-bbr.conf").exists() && read(&journald).contains("SystemMaxUse=300M\n") && journald_restarts() == 1);
+    assert!(!root.join("etc/modules-load.d/90-fleet-conntrack.conf").exists(), "没有 conntrack 键：不写开机载入");
     // 步骤结果：逐键凭据；非容器里写不进的键记警告
     let r = jobs::tune::parse(&o.stdout);
     assert_eq!((&r.result["applied"], &r.result["kept"]), (&json!(["net.core.rmem_max", "net.ipv4.tcp_rmem"]), &json!(["net.core.somaxconn"])));
@@ -578,12 +579,17 @@ async fn tune_script_writes_reads_back_and_skips() {
     put_sysctl(&root, "net.ipv4.ip_local_reserved_ports", "20001-20999\n");
     put_sysctl(&root, "net.ipv4.ip_local_port_range", "32768\t60999\n");
     put_sysctl(&root, "net.ipv4.tcp_tw_reuse", "2\n");
+    put_sysctl(&root, "net.netfilter.nf_conntrack_max", "65536\n");
     let o = run(rip, jobs::tune::Role::Relay { port_min: 20000, port_max: 29999 }).await;
     assert_eq!(o.code, 0, "{o:?}");
-    assert_eq!(read(&sysctl_file(&root, "net.ipv4.ip_local_reserved_ports")), "20000-39999");
+    assert_eq!(read(&sysctl_file(&root, "net.ipv4.ip_local_reserved_ports")), "20000-39999,62789");
     assert_eq!((read(&sysctl_file(&root, "net.ipv4.ip_local_port_range")), read(&sysctl_file(&root, "net.ipv4.tcp_tw_reuse"))), ("10240 65535".into(), "1".into()));
     let c = read(&root.join("etc/sysctl.d/99-zz-fleet-tune.conf"));
-    assert!(c.find("ip_local_reserved_ports = 20000-39999").unwrap() < c.find("ip_local_port_range = 10240 65535").unwrap(), "{c}");
+    assert!(c.find("ip_local_reserved_ports = 20000-39999,62789\n").unwrap() < c.find("ip_local_port_range = 10240 65535").unwrap(), "{c}");
+    // conntrack 键存在：设上，并让开机时 systemd-sysctl 之前先载入模块
+    assert_eq!((o.kv("tune.net.netfilter.nf_conntrack_max"), read(&sysctl_file(&root, "net.netfilter.nf_conntrack_max"))), (Some("applied"), "262144".into()));
+    assert!(c.contains("net.netfilter.nf_conntrack_max = 262144\n"), "{c}");
+    assert_eq!(read(&root.join("etc/modules-load.d/90-fleet-conntrack.conf")), "# fleet tune-v1（中控生成，勿手改）\nnf_conntrack\n");
     assert!(read(&root.join("systemctl.log")).contains("show -p LimitNOFILE --value fleet-xray"));
 }
 

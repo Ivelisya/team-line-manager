@@ -143,10 +143,11 @@ async fn retire_moves_into_spare() {
     let r = t.post(&format!("/api/v1/machines/{n2}/retire"), json!({"confirm": "团队1-01", "now": true, "cleanup": false})).await;
     assert!(r["mode"] == "now" && r["job_id"].is_string(), "{r}");
 
-    // 移出备用 = 撤销退役：标记、退役原因清掉，不再自动回收
+    // 移出备用 = 撤销退役：标记、退役原因清掉，不再自动回收。照提示只给团队（备用里的 2 号在原团队已经有了）：排到原团队的最小空号
     let rev = t.get(&format!("/api/v1/machines/{n1}")).await["revision"].clone();
-    let (s, v) = t.req("PATCH", &format!("/api/v1/machines/{n1}"), Some(json!({"revision": rev, "team_id": team, "number": 5})), None).await;
-    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v) = t.req("PATCH", &format!("/api/v1/machines/{n1}"), Some(json!({"revision": rev, "team_id": team})), None).await;
+    let v = &v["data"];
+    assert_eq!((s, v["name"].as_str(), v["spare"].as_bool()), (StatusCode::OK, Some("团队1-03"), Some(false)), "{v}");
     assert_eq!((v["spare_from"].clone(), v["spare_since"].clone(), v["recycle_on"].clone(), v["lifecycle_reason"].clone()), (Value::Null, Value::Null, Value::Null, Value::Null), "{v}");
 
     // 宿主机进备用：上面的同机 IP 节点一起进，编号挨着
@@ -383,6 +384,68 @@ async fn host_cascades_to_ip_nodes() {
     assert!(gone(&t, host).await && gone(&t, x).await);
 }
 
+/// 备用到期自动退役在锁住机器后再核对一次：查出过期列表之后续了费（到期日改了）或移出了备用团队的，不退役
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn auto_retire_rechecks_spare_and_expiry_under_lock() {
+    let t = setup(true).await;
+    let sp = spare_team(&t).await;
+    let team = seed_team(&t, "团队2").await;
+    let renewed = seed_node(&t, sp, 1, "203.0.113.21", "active").await;
+    sub(&t, renewed, "2030-03-01", "UTC").await;
+    let moved_out = seed_node(&t, team, 1, "203.0.113.22", "active").await;
+    sub(&t, moved_out, "2030-01-01", "UTC").await;
+    let now = datetime!(2030-01-05 00:00 UTC);
+    for m in [renewed, moved_out] {
+        let r = fleet_server::api::machines::start_retire(&t.st, spare::ACTOR, m, "x", "proxy", None, true, Some((spare::AUTO, now))).await;
+        assert!(r.is_err(), "{m}");
+        let lc: String = sqlx::query_scalar("select lifecycle::text from machine where id = $1").bind(m).fetch_one(&t.st.db).await.unwrap();
+        assert_eq!(lc, "active");
+    }
+}
+
+/// 迁移 0042：0041 之前进备用的机器按最近一条改进备用团队的改名审计回填 spare_since / spare_from（旧记录没有 old_name，按 before 拼）；
+/// 备用团队里改编号的不算；查不到的留空。没结束的 renewal_overdue 静默改成 renewal_due
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn migration_0042_backfills_spare_columns_from_audit() {
+    let t = setup(false).await;
+    let sp = spare_team(&t).await;
+    let team = seed_team(&t, "团队2").await;
+    let (a, b, c) = (
+        seed_node(&t, sp, 1, "203.0.113.31", "active").await,
+        seed_node(&t, sp, 2, "203.0.113.32", "active").await,
+        seed_node(&t, sp, 3, "203.0.113.33", "active").await,
+    );
+    let audit = |m: Uuid, ts: &'static str, detail: Value| {
+        sqlx::query("insert into audit_log (ts, actor, action, target_kind, target_id, detail) values ($1::timestamptz, 'u', 'machine.rename', 'machine', $2, $3)")
+            .bind(ts)
+            .bind(m)
+            .bind(detail)
+            .execute(&t.st.db)
+    };
+    audit(a, "2026-10-01T00:00:00Z", json!({"name": "团队2 备用-01", "old_name": "团队2-07", "before": {"team_id": team, "number": 7}, "after": {"team_id": sp, "number": 1}})).await.unwrap();
+    audit(a, "2026-10-05T00:00:00Z", json!({"name": "团队2 备用-01", "old_name": "团队2 备用-03", "before": {"team_id": sp, "number": 3}, "after": {"team_id": sp, "number": 1}})).await.unwrap();
+    audit(b, "2026-10-02T00:00:00Z", json!({"before": {"team_id": team, "number": 9, "label": null}, "after": {"team_id": sp, "number": 2}})).await.unwrap();
+    sqlx::query("insert into silence (id, rule, starts_at, ends_at, created_by) values ($1, 'renewal_overdue', now(), now() + interval '1 day', 'u'), ($2, 'renewal_overdue', now() - interval '2 days', now() - interval '1 day', 'u')")
+        .bind(Uuid::now_v7())
+        .bind(Uuid::now_v7())
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    sqlx::raw_sql(include_str!("../../../../migrations/0042_reach_port_spare_backfill.sql")).execute(&t.st.db).await.unwrap();
+    let got: Vec<(Uuid, Option<String>, Option<String>)> =
+        sqlx::query_as("select id, spare_from, to_char(spare_since at time zone 'UTC', 'YYYY-MM-DD') from machine where id = any($1) order by number")
+            .bind(vec![a, b, c])
+            .fetch_all(&t.st.db)
+            .await
+            .unwrap();
+    assert_eq!(
+        got,
+        [(a, Some("团队2-07".into()), Some("2026-10-01".into())), (b, Some("团队2-09".into()), Some("2026-10-02".into())), (c, None, None)]
+    );
+    let rules: Vec<String> = sqlx::query_scalar("select rule from silence order by ends_at").fetch_all(&t.st.db).await.unwrap();
+    assert_eq!(rules, ["renewal_overdue", "renewal_due"], "结束了的不动");
+}
+
 /// 旧面板导入：默认只预演；同一个 source_id 导两次只有一行；IP 或（供应商, 供应商编号）对上面板里还没回收的机器的跳过并说明；格式不对 400
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn legacy_import_is_idempotent_and_skips_live_machines() {
@@ -418,6 +481,19 @@ async fn legacy_import_is_idempotent_and_skips_live_machines() {
     assert_eq!((one["source"].as_str(), one["snapshot"].clone(), one["traffic_down"].clone(), one["due_date"].as_str()), (Some("legacy"), json!({"uuid": "01"}), Value::Null, Some("2026-10-01")), "{one}");
     let au = t.get("/api/v1/audit?cat=machine").await;
     assert!(au.as_array().unwrap().iter().any(|a| a["action"] == "recycle.import" && a["summary"] == "导入 1 台，跳过 2 台"), "{au}");
+
+    // 同一台已经以面板机器的身份进了回收站（同 IP，或同供应商 + 服务编号）：跳过，写出是哪一行
+    let fleet_bin: Vec<i64> = sqlx::query_scalar(
+        "insert into recycle_bin (source, source_id, kind, name, ip, provider, service_ref, actor, snapshot)
+         values ('fleet', 'm1', 'vps', '团队2-07', '75.37.237.50', null, null, '系统', '{}'), ('fleet', 'm2', 'vps', '团队2-08', null, 'ATTVPS', '61000', '系统', '{}')
+         returning id",
+    )
+    .fetch_all(&t.st.db)
+    .await
+    .unwrap();
+    let r = t.post("/api/v1/recycle-bin/import", json!({"items": [item("04", "75.37.237.50", "1"), item("05", "75.37.237.51", "61000")]})).await;
+    let why: Vec<&str> = r["skipped"].as_array().unwrap().iter().map(|s| s["why"].as_str().unwrap()).collect();
+    assert_eq!(why, [format!("已经在回收站（#{}）", fleet_bin[0]), format!("已经在回收站（#{}）", fleet_bin[1])], "{r}");
 
     let (s, _) = t.req("POST", "/api/v1/recycle-bin/import", Some(json!({"items": [{"source_id": "x", "kind": "router", "name": "x"}]})), None).await;
     assert_eq!(s, StatusCode::BAD_REQUEST);

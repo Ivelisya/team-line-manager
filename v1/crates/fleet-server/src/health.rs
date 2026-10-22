@@ -126,6 +126,12 @@ fn probe_reasons(live: &[&EntryView], rs: &mut Vec<Reason>, unknown: &mut bool, 
             *unknown = true;
             continue;
         }
+        // 线路机 agent 离线（探测是它做的）：最后报的那次结果不再更新，失败的不开告警，开着的也不因此恢复
+        if e.relay_offline {
+            *unknown = true;
+            *probe_unknown = true;
+            continue;
+        }
         // 15 分钟内没有探测结果（视图只取这么久的）：这条入口通不通不知道。直出入口本来就没有 TCP 探测
         if e.egress.is_none() || (e.tcp.is_none() && !e.direct) {
             *probe_unknown = true;
@@ -393,6 +399,7 @@ pub(crate) mod tests {
             applied: true,
             apply_error: None,
             relay_xray_down,
+            relay_offline: false,
             tcp: Some(Probe { ok: egress_ok, latency_ms: None, detail: None, ts, median_ms: None }),
             egress: Some(Probe { ok: egress_ok, latency_ms: None, detail: Some("timeout".into()), ts, median_ms: None }),
             traffic: Traffic::default(),
@@ -430,8 +437,10 @@ pub(crate) mod tests {
         m.router_exits = vec!["团队2 新办公室 · 节点20".into(), "办公室2 · 美国".into()];
         assert_eq!(text(&m).as_deref(), Some("今天到期，备用节点后天自动回收；软路由出口 团队2 新办公室 · 节点20、办公室2 · 美国 还指向它"));
         m.router_exits.clear();
-        m.subscription = Some(sub_with(-1, true));
+        m.subscription = Some(sub(-1));
         assert_eq!(text(&m).as_deref(), Some("已过期 1 天，备用节点明天自动回收"));
+        m.subscription = Some(sub_with(-1, true));
+        assert_eq!(text(&m), None, "自动续费的过期放宽 1 天");
         m.subscription = Some(sub_with(0, true));
         assert_eq!(text(&m), None);
         m.spare = false;
@@ -455,6 +464,19 @@ pub(crate) mod tests {
         assert_eq!(h.status, Status::Unknown);
         n.entries = vec![entry(false, false)];
         assert_eq!(keys(&evaluate(&n, OffsetDateTime::now_utc())), ["egress_fail", "tcp_fail"]);
+    }
+
+    #[test]
+    fn offline_relay_probes_count_as_unknown() {
+        let now = OffsetDateTime::now_utc();
+        let mut n = base("vps");
+        n.entries = vec![entry(false, false)];
+        n.entries[0].relay_offline = true;
+        let h = evaluate(&n, now);
+        assert!(h.reasons.is_empty() && h.status == Status::Unknown && h.probe_unknown, "线路机离线：它最后报的失败不开告警，开着的也不恢复：{:?}", keys(&h));
+        // 另一条入口的线路机在线、探测失败：照常报
+        n.entries.push(entry(false, false));
+        assert_eq!(keys(&evaluate(&n, now)), ["egress_fail", "tcp_fail"]);
     }
 
     #[test]
