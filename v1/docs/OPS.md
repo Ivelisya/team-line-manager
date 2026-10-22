@@ -89,10 +89,12 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
    - 通知先写进库里的发送队列（`notify_outbox`）再发：中控重启、部署后接着发，不丢。每个渠道一个发送任务，同一渠道内按入队顺序逐条发（一批告警同时触发时不会并发打到同一渠道），渠道之间互不等待（一个渠道一直超时不拖慢别的）。发送失败（网络错误、5xx）隔 0.5 秒、2 秒、10 秒、30 秒、1 分钟、之后每 2 分钟重发同一条（后面的排着），回 429 时按渠道给的等待时长（Telegram 的 `parameters.retry_after`、通用的 `Retry-After` 头，最多 60 秒）；渠道拒绝（令牌不对、errcode 非 0）不重试，记一条失败。入队满 30 分钟还没发出的放弃，发送记录里记一条失败；渠道连续失败满 5 分钟另开告警 `central_channel_failing`。某个渠道没收到一条告警的「触发」（放弃了，或渠道是后来加的），这条告警恢复时也不给它发「恢复」。
    - 新建、删除静默 / 维护窗口会给所有启用的渠道发一条「静默 / 维护变更」（谁、新建还是删除、对象、维护还是静默、起止、备注；不看渠道的最低级别，也不受任何静默影响）：全部机器的一律发（含预约的），单台的只在此刻生效时发。
 2. **agent 离线**：`fleetctl show <机器>` 看最近上报时间；`fleetctl exec <机器> -- 'systemctl is-active fleet-agent; uptime'`。exec 返回 255 且 stderr 是连接失败 → 机器本身不通（去供应商面板看机器状态/重启）。agent 没运行则 `fleetctl logs <机器> --unit fleet-agent` 找原因，再 `fleetctl exec <机器> -- systemctl restart fleet-agent`（修改状态，先确认）。
+   中控或库停过之后：停机这段不算 agent 的沉默（停之前在报的，恢复后它退避中的重发最长约 90 秒才到，这期间不判离线、不开告警，等摘除的作业也不判线路机不在线）；停之前就不报了的照样离线。
 3. **入口不通**：`fleetctl show <节点>` 看入口的 TCP/出口探测；`fleetctl logs <节点> --unit ssserver`；`fleetctl exec <节点> -- 'ss -ltnp | grep -E "8388|ssserver"'`；再看线路机 `fleetctl logs <线路机> --unit fleet-xray`。告警对象是线路机时，是它的直出入口（没有节点、没有 TCP 探测）出口不通：看线路机自己的出网（`fleetctl exec <线路机> -- 'curl -sS -m 10 https://1.1.1.1 -o /dev/null -w %{http_code}'`）和 fleet-xray 日志。
    同机 IP 节点（`show` 里有「宿主机」）：`logs <节点> --unit ssserver` 看的是宿主机上它自己的实例 `fleet-ssserver@<SS 端口>`，`exec <节点>` 在宿主机上执行；它的 agent 离线、高负载告警都在宿主机名下。出口不对时 `fleetctl exec <节点> -- 'ip -4 addr; curl -4 -sS --interface <它的 IP> <中控地址>/echo'` 看 IP 还在不在网卡上、回显的是不是它自己。
 4. **线路机配置未应用**：`fleetctl show <线路机>`（代数与 apply_error）；`fleetctl logs <线路机> --unit fleet-agent`；`fleetctl logs <线路机> --unit fleet-xray`。xray 配置错误会写在这里。
 5. **作业失败**：`fleetctl job <id>` 看失败步骤和日志；修好原因后 `fleetctl retry <id>`；放弃用 `fleetctl cancel <id>`（已完成的步骤会补偿回退）。报「主机指纹变化」且确认机器重装过：`fleetctl retry <id> --reset-host-key`；报「没有可用的 root 密码」：`ROOT_PW=… fleetctl retry <id> --password-env ROOT_PW`（网页作业的「重试」里同样能勾选 / 填写）。
+   作业日志里的「引擎错误：…（10 秒后从这一步重做）」多半是库暂时连不上（PG 重启）：作业不失败，库恢复后自己从这一步接着做，不用重试；「中控正在重启：「…」等重启后接着做」是部署时停在了两步之间，重启后自动接着做。
 6. **中控本身异常**：告警对象是「中控」的按 §12 处理；`fleetctl server-logs` 看日志，读不到时按错误提示授权 journal（`usermod -aG systemd-journal fleet` 后重启 fleet-server）。中控整个挂了时 fleetctl 也用不了，靠死人开关（§12）知道，ssh 进中控按 §4 处理。
 
 ## 4. 何时才需要直接 ssh
@@ -118,7 +120,7 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 - 通知渠道（webhook、企业微信、Telegram 的 `api_base`）不能指向内网、环回、链路本地（云元数据）地址，也不能是内嵌 IPv4 的转换地址（NAT64 `64:ff9b::/32`、6to4 `2002::/16`、Teredo `2001::/32`）；域名在发送时只解析公网地址，发送不走环境变量里的 HTTP 代理（代理会替它解析域名）。确实要用内网 webhook 时在 `fleet.toml` 写 `[notify] allow_private = true`。改 Telegram 的 `api_base` 要同时重新填 `bot_token`。
 - 全部机器的静默 / 维护等于把监控关掉：API 密钥建的最长 24 小时（账号登录的 30 天）；新建、删除静默 / 维护都会通知所有启用的渠道（不受静默影响），悄悄关监控会被看到。
 - 中控：fleet-server 在 systemd 沙箱里运行（无任何特权、只写 `/var/lib/fleet`、系统调用白名单），`/etc/fleet` 归 root、fleet 只读；部署后 `journalctl -u fleet-server` 里出现 SIGSYS / Permission denied 先看沙箱。Caddy 管理接口在 `/run/caddy/admin.sock`（只有 caddy 能连），改配置后用 `systemctl reload caddy`，直接 `caddy reload` 不带 `--config` 会连不上。网页带 CSP（只许本站脚本），不能再加内联脚本或外部 CDN。
-- 线路机：Xray 以 systemd 动态用户运行（不是 root），配置由 systemd 经标准输入交给它，读不到 `/etc/fleet-agent`、`/etc/ssh`，连不上本机的 systemd / D-Bus；访问日志实际在 `/var/log/private/fleet-xray`（`/var/log/fleet-xray` 是符号链接），agent 靠 `CAP_DAC_READ_SEARCH` 读。Xray 与落地机的 ssserver 都拦了链路本地网段与 100.100.100.200（客户经域名也到不了云元数据服务）；机器的 `/etc/resolv.conf` 若用 169.254.x 的 DNS，它们会解析不了域名。这些单元改动在升级 agent / 收敛时写入，Xray 下次重启、ssserver 下次收敛时生效。agent 上报按机器限速（突发 600 份、每秒补 1 份，超了回 429），agent 拒绝连公网的明文 http 中控。
+- 线路机：Xray 以 systemd 动态用户运行（不是 root），配置由 systemd 经标准输入交给它，读不到 `/etc/fleet-agent`、`/etc/ssh`，连不上本机的 systemd / D-Bus；访问日志实际在 `/var/log/private/fleet-xray`（`/var/log/fleet-xray` 是符号链接），agent 靠 `CAP_DAC_READ_SEARCH` 读。Xray 与落地机的 ssserver 都拦了链路本地网段与 100.100.100.200（客户经域名也到不了云元数据服务）；机器的 `/etc/resolv.conf` 用链路本地地址的 DNS（169.254.x、fe80::，GCE、Oracle 等不经 systemd-resolved 的镜像）时拦了就解析不了域名，这样的机器上装单元时不加这条拦截，作业日志记一条 warn。这些单元改动在升级 agent / 收敛时写入，Xray 下次重启、ssserver 下次收敛时生效。agent 上报按机器限速（突发 600 份、每秒补 1 份，超了回 429），agent 拒绝连公网的明文 http 中控。
 - 危险操作（退役、删除、轮换、批量升级、会改状态的 exec）先向负责人确认，再加 `--yes`。
 
 ## 6. 换线路机 / 搬空线路机 / 恢复已退役的机器 / 同机 IP 节点
@@ -192,6 +194,9 @@ WAL 三项由 `deploy/central/install.sh` 写进 `/etc/postgresql/<版本>/main/
 - 编译失败、或 install.sh 重启后等 60 秒未登录访问 `/api/v1/auth/me` 仍不是 401，部署以非 0 退出，后者会打出 fleet-server 最近 60 行日志。中控上的安装包无论成败都删掉。
 - 换下来的旧 fleet-server 留在中控 `/opt/fleet/fleet-server.prev`（同一个二进制重复部署时不覆盖它）。
 - 迁移 0029 先把币种去空白转大写，再给套餐 / 订阅 / 续费记录的币种（3 个大写字母）和通知渠道种类（telegram / wecom / webhook）加约束；存量里还有不合规的不让迁移失败，日志里有「0029：… 暂不验证」的警告。看到时查出那几行（如 `select id, currency from plan where currency !~ '^[A-Z]{3}$'`）改成正确的币种，再 `alter table plan validate constraint plan_currency_iso`（订阅 / 续费记录 / 渠道同理：`subscription_currency_iso`、`renewal_currency_iso`、`notify_channel_kind_check`）。
+- 重启时 fleet-server 优雅退出：不再领新作业，正在跑的步骤做完就停在两步之间（最多等 60 秒，没做完的重启后从这一步重做），这期间接口照常；之后停止接新连接，进行中的请求最多再等 10 秒。有作业在跑时一次重启最多约 70 秒才换上新版本。
+- fleet-server 启动时先占端口再碰库：手动再起一个 `fleet-server serve` 会因端口被占直接退出，不会动在跑实例的作业。
+- 启动时（之后每小时）删过期分区前核对本机时钟：要删的分区不能晚于该表最新一条数据减保留期；表里没有数据、或最新数据比本机时间早一天以上（开机时钟大幅超前，或很久没收到上报）时这次不删，日志里是 warn「…这次不删过期分区」，时钟和上报正常后下一小时照常删。
 
 回滚（新版起不来，或上线后有严重问题）：
 

@@ -1,4 +1,5 @@
-//! 作业引擎：取消与补偿、退役后旧作业不能复活、purge 幂等、租约持有者校验、线路机退役守卫、退役即关告警、作业清理、重试重置主机指纹的范围、有步骤在执行时拒绝退役。
+//! 作业引擎：取消与补偿、退役后旧作业不能复活、purge 幂等、租约持有者校验、线路机退役守卫、退役即关告警、作业清理、重试重置主机指纹的范围、有步骤在执行时拒绝退役、
+//! 不重复领本进程还在推进的作业、步骤里库暂时不可用时从这一步重做、优雅退出与先占端口、中控刚恢复时不判线路机不在线。
 //! 需要 PostgreSQL（见 common）。
 //!
 //! 「上架」类测试用 VPS 指向 127.0.0.1:1（必定连接被拒）：预检会失败，不需要真的 SSH 到任何机器。
@@ -715,4 +716,249 @@ async fn retire_refused_while_a_step_is_running() {
     assert_eq!(t.machine_lifecycle(node).await, "retiring");
     let st0: String = sqlx::query_scalar("select state::text from job where id = $1").bind(job).fetch_one(&t.st.db).await.unwrap();
     assert_eq!(st0, "cancelled");
+}
+
+/// 一台在用的家宽代理发起退役，返回作业 id。退役的步骤不登录机器；最后一步「完成退役」要 for update 锁团队行：
+/// 先拿着 `team` 行的 for share 锁（不挡插入机器时外键要的 key share）再调，作业就停在这一步（库里等锁）
+async fn retire_blocked_on_team(t: &common::T, team: Uuid) -> String {
+    let node = seed_node(t, team, 1, "203.0.113.10", "active").await;
+    let name = t.get(&format!("/api/v1/machines/{node}")).await["name"].as_str().unwrap().to_string();
+    t.post(&format!("/api/v1/machines/{node}/retire"), json!({"confirm": name})).await["job_id"].as_str().unwrap().to_string()
+}
+
+/// 退役步骤里会等行锁的语句开头：「完成退役」锁团队行、「撤销令牌」改令牌行
+const FINALIZE: &str = "select 1 from team where id = $1 for update";
+const REVOKE: &str = "update agent_token set revoked_at = now() where machine_id = $1";
+
+/// 本测试里正在执行 `$1` 开头的语句、等行锁的连接。后台任务等咨询锁的不算：那把锁各测试共用
+const WAITERS: &str = "from pg_stat_activity where application_name = current_setting('application_name') and wait_event_type = 'Lock'
+                       and left(query, length($1)) = $1";
+
+async fn lock_waiters(t: &common::T, stmt: &str) -> i64 {
+    sqlx::query_scalar(&format!("select count(*) {WAITERS}")).bind(stmt).fetch_one(&t.st.db).await.unwrap()
+}
+
+/// 等到恰好有 `n` 个连接在执行 `stmt` 时等锁
+async fn wait_lock_waiters(t: &common::T, stmt: &str, n: i64) {
+    for _ in 0..100 {
+        if lock_waiters(t, stmt).await == n {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("等锁的连接没到 {n} 个：{}", lock_waiters(t, stmt).await);
+}
+
+/// 本进程还在推进的作业，租约过期了（墙钟前跳、续租前库卡住）也不会被本进程再领一次：同一步不会两个任务同时跑
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn engine_does_not_reclaim_a_job_it_is_still_running() {
+    let t = setup(true).await;
+    let team = seed_team(&t, "团队1").await;
+    let mut lock = t.st.db.begin().await.unwrap();
+    sqlx::query("select 1 from team where id = $1 for share").bind(team).execute(&mut *lock).await.unwrap();
+    let job = retire_blocked_on_team(&t, team).await;
+    wait_lock_waiters(&t, FINALIZE, 1).await;
+    let owner = "select lease_owner from job where id = $1::uuid";
+    let before: Option<String> = sqlx::query_scalar(owner).bind(&job).fetch_one(&t.st.db).await.unwrap();
+    assert!(before.is_some(), "作业在推进中");
+
+    sqlx::query("update job set lease_until = now() - interval '1 second' where id = $1::uuid").bind(&job).execute(&t.st.db).await.unwrap();
+    t.st.wake_jobs();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let after: Option<String> = sqlx::query_scalar(owner).bind(&job).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(after, before, "没有被再领一次");
+    assert_eq!(lock_waiters(&t, FINALIZE).await, 1, "「完成退役」只有一个任务在跑");
+
+    lock.rollback().await.unwrap();
+    let j = t.wait_job(&job, "succeeded").await;
+    assert_eq!(j["steps"][4]["state"], "done", "{j}");
+}
+
+/// 步骤里遇到库暂时不可用（这里把等锁的连接断开，同 PG 重启时被断开的查询）：作业不失败，放开租约，10 秒后从这一步重做
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn step_retried_when_the_database_drops_its_query() {
+    let t = setup(true).await;
+    let team = seed_team(&t, "团队1").await;
+    let mut lock = t.st.db.begin().await.unwrap();
+    sqlx::query("select 1 from team where id = $1 for share").bind(team).execute(&mut *lock).await.unwrap();
+    let job = retire_blocked_on_team(&t, team).await;
+    wait_lock_waiters(&t, FINALIZE, 1).await;
+    sqlx::query(&format!("select pg_terminate_backend(pid) {WAITERS}")).bind(FINALIZE).execute(&t.st.db).await.unwrap();
+
+    let mut released = false;
+    for _ in 0..100 {
+        let (owner, later): (Option<String>, bool) = sqlx::query_as("select lease_owner, run_after > now() + interval '5 seconds' from job where id = $1::uuid")
+            .bind(&job)
+            .fetch_one(&t.st.db)
+            .await
+            .unwrap();
+        if owner.is_none() && later {
+            released = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(released, "放开租约、约 10 秒后重做");
+    let j = t.job(&job).await;
+    assert_eq!((j["state"].as_str(), j["step"].as_i64(), j["steps"][4]["state"].as_str()), (Some("running"), Some(4), Some("running")), "{j}");
+    assert!(j["error"].is_null() && j["steps"][4]["error"].is_null(), "{j}");
+    let logs = t.get(&format!("/api/v1/jobs/{job}/logs")).await;
+    assert!(logs.as_array().unwrap().iter().any(|l| l["msg"].as_str().unwrap().contains("10 秒后从这一步重做")), "{logs}");
+
+    // 库恢复（锁放开）后重做这一步，作业完成
+    lock.rollback().await.unwrap();
+    sqlx::query("update job set run_after = now() where id = $1::uuid").bind(&job).execute(&t.st.db).await.unwrap();
+    t.st.wake_jobs();
+    let j = t.wait_job(&job, "succeeded").await;
+    assert_eq!(j["steps"][4]["state"], "done", "{j}");
+}
+
+/// 优雅退出：不再领新作业；推进中的做完当前这一步就放开租约，不往下做，重启后从下一步接着做；等不完的到时返回还在推进的个数
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn drain_lets_the_running_step_finish_then_lets_go() {
+    let t = setup(true).await;
+    let team = seed_team(&t, "团队1").await;
+    let node = seed_node(&t, team, 1, "203.0.113.10", "active").await;
+    sqlx::query("insert into agent_token (id, machine_id, token_hash) values ($1, $2, $3)")
+        .bind(Uuid::now_v7())
+        .bind(node)
+        .bind(fleet_server::crypto::sha256(b"fa1_drain"))
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    // 拿着令牌行的锁：退役停在「撤销令牌」
+    let mut lock = t.st.db.begin().await.unwrap();
+    sqlx::query("select 1 from agent_token where machine_id = $1 for share").bind(node).execute(&mut *lock).await.unwrap();
+    let name = t.get(&format!("/api/v1/machines/{node}")).await["name"].as_str().unwrap().to_string();
+    let job = t.post(&format!("/api/v1/machines/{node}/retire"), json!({"confirm": name})).await["job_id"].as_str().unwrap().to_string();
+    wait_lock_waiters(&t, REVOKE, 1).await;
+    assert_eq!(jobs::drain(&t.st, Duration::from_millis(300)).await, 1, "「撤销令牌」还没做完");
+
+    lock.rollback().await.unwrap();
+    assert_eq!(jobs::drain(&t.st, Duration::from_secs(10)).await, 0);
+    let j = t.job(&job).await;
+    let steps = |i: usize| j["steps"][i]["state"].as_str().unwrap().to_string();
+    assert_eq!((j["state"].as_str(), j["step"].as_i64(), steps(3), steps(4)), (Some("running"), Some(4), "done".into(), "pending".into()), "{j}");
+    let logs = t.get(&format!("/api/v1/jobs/{job}/logs")).await;
+    assert!(logs.as_array().unwrap().iter().any(|l| l["msg"] == "中控正在重启：「完成退役」等重启后接着做"), "{logs}");
+    // 租约放开、到点了，也没人再领
+    t.st.wake_jobs();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let (owner, step4): (Option<String>, String) =
+        sqlx::query_as("select j.lease_owner, s.state from job j join job_step s on s.job_id = j.id and s.idx = 4 where j.id = $1::uuid")
+            .bind(&job)
+            .fetch_one(&t.st.db)
+            .await
+            .unwrap();
+    assert_eq!((owner, step4.as_str()), (None, "pending"));
+}
+
+/// 中控刚恢复：等摘除的退役不因线路机「不在线」失败——线路机停机前一直在报，只是重发还没到（停机这段收不到上报，不算它的沉默）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn wait_detached_tolerates_central_outage() {
+    let t = setup(false).await;
+    let (relay, _) = seed_relay(&t).await;
+    let team = seed_team(&t, "团队1").await;
+    let node = seed_node(&t, team, 1, "203.0.113.10", "active").await;
+    sqlx::query("insert into entry (id, relay_id, node_id, port, client_uuid, short_id, lifecycle) values ($1, $2, $3, 20001, $4, 'ab', 'active')")
+        .bind(Uuid::now_v7())
+        .bind(relay)
+        .bind(node)
+        .bind(Uuid::now_v7())
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    // 中控停了 5 分钟：线路机最后一次上报在停的那一刻
+    sqlx::query("insert into agent_state (machine_id, agent_version, last_report_at) values ($1, 'v', now() - interval '5 minutes')").bind(relay).execute(&t.st.db).await.unwrap();
+    let name = t.get(&format!("/api/v1/machines/{node}")).await["name"].as_str().unwrap().to_string();
+    let job: Uuid = t.post(&format!("/api/v1/machines/{node}/retire"), json!({"confirm": name})).await["job_id"].as_str().unwrap().parse().unwrap();
+    let j = run_one(&t, job).await;
+    assert_eq!((j["state"].as_str(), j["step"].as_i64()), (Some("waiting"), Some(1)), "摘除入口，开始等线路机摘除：{j}");
+    // 「等线路机摘除」已经等了 2 分钟
+    let stale = "update job_step set started_at = now() - interval '2 minutes' where job_id = $1 and idx = 1";
+    let due = "update job set run_after = now() where id = $1";
+    for q in [stale, due] {
+        sqlx::query(q).bind(job).execute(&t.st.db).await.unwrap();
+    }
+    // 按墙钟算线路机 5 分钟没报：判不在线，失败
+    let j = run_one(&t, job).await;
+    assert!(j["state"] == "failed" && j["error"].as_str().unwrap().contains("线路机2 不在线"), "{j}");
+
+    // 中控刚启动（停机这段收不到上报）：线路机算在线，接着等
+    t.st.report_gaps.started(&t.st.db).await.unwrap();
+    t.post(&format!("/api/v1/jobs/{job}/retry"), json!({})).await;
+    for q in [stale, due] {
+        sqlx::query(q).bind(job).execute(&t.st.db).await.unwrap();
+    }
+    let j = run_one(&t, job).await;
+    assert_eq!((j["state"].as_str(), j["step"].as_i64()), (Some("waiting"), Some(1)), "{j}");
+}
+
+/// fleet-server serve 进程：先占端口再碰库——同一份配置再起一个，因端口被占在碰库之前退出，不会清掉在跑实例手里的作业租约；
+/// SIGTERM 时优雅退出
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn second_serve_exits_before_touching_the_database() {
+    let t = setup(false).await;
+    let schema: String = sqlx::query_scalar("select current_schema()").fetch_one(&t.st.db).await.unwrap();
+    let url = std::env::var("FLEET_TEST_DB").unwrap_or_else(|_| "postgres://fleet:fleet@127.0.0.1/fleet_test".into());
+    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let d = t.dir.path().display().to_string();
+    std::fs::write(t.dir.path().join("secret.key"), [7u8; 32]).unwrap();
+    let cfg = t.dir.path().join("fleet.toml");
+    std::fs::write(
+        &cfg,
+        format!(
+            r#"listen = "127.0.0.1:{port}"
+               database_url = "{url}?options[search_path]={schema}"
+               secret_key_file = "{d}/secret.key"
+               public_url = "http://fleet.test"
+               ssh_key = "/nonexistent"
+               known_hosts = "{d}/known_hosts"
+               dist_dir = "{d}/dist"
+               ipintel.db_dir = "{d}/ipintel"
+               ipintel.overrides = "/nonexistent/ipintel-overrides.toml""#
+        ),
+    )
+    .unwrap();
+    let serve = || {
+        tokio::process::Command::new(env!("CARGO_BIN_EXE_fleet-server"))
+            .args(["serve", "-c"])
+            .arg(&cfg)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap()
+    };
+    let first = serve();
+    // 端口一开始就占住了（迁移、分区维护在后面）：等到能应答请求，才算起来了
+    let mut up = false;
+    for _ in 0..300 {
+        let me = reqwest::Client::new().get(format!("http://127.0.0.1:{port}/api/v1/auth/me")).timeout(Duration::from_secs(1)).send().await;
+        if me.is_ok_and(|r| r.status().as_u16() == 401) {
+            up = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(up, "第一个没起来");
+    // 在跑实例手里的一个作业（租约有效）
+    let team = seed_team(&t, "团队1").await;
+    let node = seed_node(&t, team, 1, "203.0.113.10", "active").await;
+    let mut tx = t.st.db.begin().await.unwrap();
+    let job = jobs::enqueue(&mut tx, "attach_entry", Some(node), json!({}), "test").await.unwrap();
+    tx.commit().await.unwrap();
+    sqlx::query("update job set state = 'running', lease_owner = 'w', lease_until = now() + interval '5 minutes' where id = $1").bind(job).execute(&t.st.db).await.unwrap();
+
+    let second = tokio::time::timeout(Duration::from_secs(30), serve().wait_with_output()).await.expect("第二个应当马上退出").unwrap();
+    let err = String::from_utf8_lossy(&second.stderr);
+    assert!(!second.status.success() && err.contains(&format!("监听 127.0.0.1:{port}")), "{err}");
+    let owner: Option<String> = sqlx::query_scalar("select lease_owner from job where id = $1").bind(job).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(owner.as_deref(), Some("w"), "第二个没有碰库");
+
+    let pid = first.id().unwrap().to_string();
+    assert!(tokio::process::Command::new("kill").args(["-TERM", &pid]).status().await.unwrap().success());
+    let out = tokio::time::timeout(Duration::from_secs(30), first.wait_with_output()).await.expect("SIGTERM 后应当退出").unwrap();
+    let log = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success() && log.contains("收到退出信号") && log.contains("fleet-server 已退出"), "{log}");
 }

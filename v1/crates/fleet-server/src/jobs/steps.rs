@@ -386,6 +386,7 @@ async fn converge_node(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     if out.kv("ss") != Some("listening") {
         return Err(remote(format!("ssserver 没有起来：{}", out.stdout.trim())));
     }
+    warn_linklocal_dns(c, &out, "ssserver").await;
     if pushed {
         // 只重启这台节点自己的实例：同一台机器上别的 ssserver（宿主机的、别的同机 IP 节点的）下次重启时才换上新程序
         t.run(&format!("systemctl restart {}", inst.svc()), Duration::from_secs(30)).await?;
@@ -410,7 +411,18 @@ async fn converge_relay(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     if !out.ok() {
         return Err(out.fail("安装 fleet-xray 失败"));
     }
+    warn_linklocal_dns(c, &out, "Xray").await;
     Ok(Outcome::Done(json!({"xray": out.kv("xray_version"), "bbr": base.kv("cc") == Some("bbr")})))
+}
+
+/// 装单元的脚本报了 `linklocal_dns=1`（见 scripts::LINKLOCAL_DNS）：记一条 warn。`what` 是哪个程序的单元
+async fn warn_linklocal_dns(c: &Ctx<'_>, out: &Output, what: &str) {
+    if out.kv("linklocal_dns") == Some("1") {
+        c.warn(format!(
+            "这台机器的 DNS（/etc/resolv.conf）是链路本地地址：{what} 的单元没加元数据拦截（IPAddressDeny，拦了就解析不了域名），客户经域名能到云厂商的元数据服务"
+        ))
+        .await;
+    }
 }
 
 /// agent 程序在机器上的位置；推新版本时旧的留在同目录的 `.prev`
@@ -580,6 +592,7 @@ async fn agent(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     if out.kv("xray_unit") == Some("error") {
         c.warn(format!("fleet-xray 单元没更新上：{}", out.stderr.trim())).await;
     }
+    warn_linklocal_dns(c, &out, "Xray").await;
     if out.kv("logrotate") == Some("error") {
         c.warn(format!("访问日志轮转配置没装上：{}", out.stderr.trim())).await;
     }
@@ -853,10 +866,11 @@ async fn wait_detached(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     if left.is_empty() {
         return Ok(Outcome::Done(json!({})));
     }
-    // 线路机本身在退役（摘的是自己身上的入口）：agent 会照常应用空配置
+    // 线路机本身在退役（摘的是自己身上的入口）：agent 会照常应用空配置。
+    // 在不在线同机器视图（中控收不到上报的时段不算：中控、库刚恢复时线路机的重发还没到）
     let now = OffsetDateTime::now_utc();
     for (relay, port, seen) in &left {
-        if seen.is_none_or(|t| (now - t).whole_seconds() > 120) && (now - c.started).whole_seconds() > 60 {
+        if seen.is_none_or(|t| !c.st.report_gaps.online(t, now)) && (now - c.started).whole_seconds() > 60 {
             return Err(StepError::err(ErrKind::Network, format!("线路机 {relay} 不在线，入口 {relay}:{port} 摘不掉；线路机恢复后点重试")));
         }
     }

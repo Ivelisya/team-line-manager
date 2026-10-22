@@ -1,8 +1,10 @@
 //! 升级 agent 的回滚：推送时旧程序留成 .prev，新版本起不来、或重启后 2 分钟没有上报，就换回去并让作业失败；
 //! 「全部升级」里哪种失败会让编排停下（要真的执行步骤）。需要 PostgreSQL（见 common）。编排的领取顺序在 tests/jobs.rs。
+//! 还有系统基线、节点 ssserver 脚本重跑时以运行中的 sshd / 实例为准（不建作业，脚本直接经假 ssh 跑）。
 //!
-//! 机器是假的：PATH 最前面放一个假 ssh，远端命令在「机器根目录」`<临时目录>/<IP>/` 里真的执行（/usr/local/bin、/etc、/var/lib
+//! 机器是假的：PATH 最前面放一个假 ssh，远端命令在「机器根目录」`<临时目录>/<IP>/` 里真的执行（/run、/usr/local/bin、/etc、/var/lib
 //! 改到里面；根目录里有 refuse 时登录被拒），systemctl 换成桩：记下调用；装着的 agent 版本号里带 crash 的，每次查主进程号都不一样（起来就退出、被反复拉起）。
+//! 会改测试机本身的命令（建用户、nft、sysctl、apt-get…）也换成桩（见 STUBS）。
 //! agent 程序是 shell 脚本，`--version` 打印版本。上报由测试直接写库模拟；线路机的用作业装到机器上的令牌走真的上报接口
 //! （Xray 状态要记上报它的版本）。
 //! PATH 是整个测试进程共用的，所以单独一个测试文件；各测试的机器 IP 不同，根目录互不相干。
@@ -18,6 +20,8 @@ use serde_json::{json, Value};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
+use std::time::Duration;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// 假 ssh：参数里 `root@` 后面是 IP，最后一个参数是远端命令（`bash -s` 时脚本从 stdin 来，推文件时 stdin 是文件内容）
@@ -25,25 +29,59 @@ const SSH: &str = r#"#!/bin/sh
 for a; do last=$a; case $a in root@*) ip=${a#root@};; esac; done
 export R="$FAKE_ROOT/$ip"
 [ -e "$R/refuse" ] && { echo "root@$ip: Permission denied (publickey)." >&2; exit 255; }
-mkdir -p "$R/etc/systemd/system"
-fix() { sed "s#/usr/local/bin/#$R/usr/local/bin/#g; s#/etc/#$R/etc/#g; s#/var/lib/#$R/var/lib/#g"; }
+mkdir -p "$R/etc/systemd/system" "$R/run"
+fix() { sed "s#/run/#$R/run/#g; s#/usr/local/bin/#$R/usr/local/bin/#g; s#/etc/#$R/etc/#g; s#/var/lib/#$R/var/lib/#g"; }
 if [ "$last" = "bash -s" ]; then fix | bash -s; else sh -c "$(printf '%s' "$last" | fix)"; fi
 "#;
 
+/// systemctl 桩：记下调用。别的单元的主进程号、启动时刻（systemd 的显示格式）读机器根目录里的 pid.<单元>、started.<单元>，
+/// 重启时把启动时刻写成现在；有 need-reload.<单元> 时报单元要重新加载，daemon-reload 清掉它
 const SYSTEMCTL: &str = r#"#!/bin/sh
 echo "$*" >> "$R/systemctl.log"
+for u; do :; done
 case "$*" in
   *is-active*) echo active ;;
-  *MainPID*) if grep -q crash "$R/usr/local/bin/fleet-agent"; then date +%N; else echo 4242; fi ;;
+  *MainPID*fleet-agent) if grep -q crash "$R/usr/local/bin/fleet-agent"; then date +%N; else echo 4242; fi ;;
+  *MainPID*) cat "$R/pid.$u" 2>/dev/null || echo 0 ;;
+  *ExecMainStartTimestamp*) cat "$R/started.$u" 2>/dev/null || true ;;
+  *NeedDaemonReload*) [ -e "$R/need-reload.$u" ] && echo yes || echo no ;;
+  daemon-reload) rm -f "$R"/need-reload.* ;;
+  restart*) date -u '+%a %Y-%m-%d %H:%M:%S UTC' > "$R/started.$u" ;;
 esac
 "#;
 
-/// bin/ 下是假 ssh 与 systemctl，各机器的根目录按 IP 放在旁边。整个进程只装一次（目录留在 /tmp，进程结束也不删）
+/// 去掉「-g 组」（测试机上没有 fleet-ss 这个组），其余交给真的 install
+const INSTALL: &str = r#"#!/bin/sh
+for a; do shift; if [ -n "$skip" ]; then skip=; elif [ "$a" = -g ]; then skip=1; else set -- "$@" "$a"; fi; done
+exec /usr/bin/install "$@"
+"#;
+
+/// 节点、基线脚本里会改测试机本身的命令换成桩：不建用户和组、不动它的防火墙、内核参数和软件包。
+/// sshd -T 报只允许密钥；nft 列出放行集合；ss 报端口在监听
+const STUBS: &[(&str, &str)] = &[
+    ("id", "#!/bin/sh\n"),
+    ("chgrp", "#!/bin/sh\n"),
+    ("sysctl", "#!/bin/sh\n"),
+    ("modprobe", "#!/bin/sh\n"),
+    ("apt-get", "#!/bin/sh\n"),
+    ("sshd", "#!/bin/sh\n[ \"$1\" = -T ] && echo 'passwordauthentication no'\nexit 0\n"),
+    ("ss", "#!/bin/sh\necho 'LISTEN 0 4096 0.0.0.0:8388 0.0.0.0:*'\n"),
+    ("nft", r#"#!/bin/sh
+[ "$1" = list ] && printf 'table inet ss_guard {\n\tset relays {\n\t\ttype ipv4_addr\n\t\telements = { 198.51.100.2 }\n\t}\n}\n'
+exit 0
+"#),
+    ("install", INSTALL),
+];
+
+/// bin/ 下是假 ssh、systemctl 等桩，各机器的根目录按 IP 放在旁边。整个进程只装一次（目录留在 /tmp，进程结束也不删）
 static FAKE: LazyLock<tempfile::TempDir> = LazyLock::new(|| {
     let dir = tempfile::tempdir().unwrap();
     let bin = dir.path().join("bin");
     exe(&bin.join("ssh"), SSH);
     exe(&bin.join("systemctl"), SYSTEMCTL);
+    for (name, body) in STUBS {
+        exe(&bin.join(name), body);
+    }
     std::env::set_var("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default()));
     std::env::set_var("FAKE_ROOT", dir.path());
     dir
@@ -352,4 +390,102 @@ async fn bulk_upgrade_goes_on_after_a_failure_before_push() {
     assert_eq!(run_round(&t, &ids[1]).await["state"], "waiting", "线路机3 照常开始");
     agent_report(&t, &r3, 1, "0.1.0+new", json!({"running": true, "applied_generation": 3}), None).await;
     assert_eq!(run_round(&t, &ids[1]).await["state"], "succeeded");
+}
+
+// ── 脚本重跑：以运行中的 sshd / ssserver 实例为准（脚本直接经假 ssh 跑，不建作业）─────────────────
+
+fn target(ip: &str) -> fleet_server::ssh::Target {
+    fleet_server::ssh::Target { ip: ip.into(), port: 22, key: "/nonexistent".into(), known_hosts: "/nonexistent".into(), password: None }
+}
+
+/// 桩里单元 `unit` 的启动时刻（systemctl show 在 TZ=UTC0 下的显示格式）
+fn started(root: &Path, unit: &str, at: OffsetDateTime) {
+    let f = time::macros::format_description!("[weekday repr:short] [year]-[month]-[day] [hour]:[minute]:[second] UTC");
+    std::fs::write(root.join(format!("started.{unit}")), at.format(&f).unwrap()).unwrap();
+}
+
+fn set_mtime(p: &Path, at: OffsetDateTime) { std::fs::File::options().write(true).open(p).unwrap().set_modified(at.into()).unwrap() }
+
+/// 系统基线重跑时以运行中的 sshd 为准：换上配置之后没来得及重启就被打断（配置比运行中的 sshd 新），重跑时文件没变也重启，
+/// 否则 sshd -T 读文件报 no、运行中的 sshd 却还允许密码登录；sshd 在配置改过之后启动的不重启
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn baseline_restarts_sshd_older_than_its_config() {
+    let ip = "192.0.2.41";
+    let root = FAKE.path().join(ip);
+    for d in ["etc/ssh", "etc/sysctl.d"] {
+        std::fs::create_dir_all(root.join(d)).unwrap();
+    }
+    std::fs::write(root.join("etc/ssh/sshd_config"), "PasswordAuthentication yes\n").unwrap();
+    let conf = [root.join("etc/ssh/sshd_config.d/00-fleet-keyonly.conf"), root.join("etc/ssh/sshd_config")];
+    let restarts = || read(&root.join("systemctl.log")).lines().filter(|l| *l == "restart ssh").count();
+    let run = move || async move { target(ip).run(jobs::scripts::BASELINE, Duration::from_secs(60)).await.unwrap() };
+    let now = OffsetDateTime::now_utc();
+    let hours = |h: i64| now - time::Duration::hours(h);
+
+    // 第一次：换上只允许密钥的配置、在主配置第一行引入它，重启 sshd
+    started(&root, "ssh", hours(1));
+    let o = run().await;
+    assert_eq!((o.code, o.kv("sshd_password"), restarts()), (0, Some("no"), 1), "{o:?}");
+    assert!(read(&conf[1]).starts_with("Include "), "{}", read(&conf[1]));
+    // sshd 在配置改过之后启动：不重启
+    for f in &conf {
+        set_mtime(f, hours(2));
+    }
+    started(&root, "ssh", hours(1));
+    assert_eq!((run().await.code, restarts()), (0, 1));
+    // 换上配置之后没来得及重启就被打断：配置比运行中的 sshd 新，这次文件没变也重启
+    set_mtime(&conf[0], now - time::Duration::minutes(10));
+    let o = run().await;
+    assert_eq!((o.code, o.kv("sshd_password"), restarts()), (0, Some("no"), 2), "{o:?}");
+}
+
+/// 节点的 ssserver 重跑时以运行中的实例为准：换上新密码之后没来得及重启就被打断（配置比实例新），重跑时文件没变也重启，
+/// 否则 ssserver 一直用旧密码；配置、单元、程序都没变且实例在它们之后启动的不重启（不断客户的连接）；单元换了没重新加载的先加载再重启。
+/// /etc/resolv.conf 的 DNS 是链路本地地址时单元不带 IPAddressDeny（拦了就解析不了域名），报 linklocal_dns=1
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn node_ss_restarts_an_instance_older_than_its_config() {
+    let ip = "192.0.2.42";
+    let root = FAKE.path().join(ip);
+    // 在跑的 ssserver：磁盘上的程序是指向 sleep 的符号链接，由它起的进程当主进程（「进程跑的是磁盘上的程序」成立）。
+    // 不复制：刚写完就执行，别的测试线程同时 fork 出的子进程还拿着写句柄时会 ETXTBSY
+    let bin = root.join("usr/local/bin/ssserver");
+    std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink("/bin/sleep", &bin).unwrap();
+    let ss = tokio::process::Command::new(&bin).arg("600").kill_on_drop(true).spawn().unwrap();
+    std::fs::write(root.join("pid.fleet-ssserver"), ss.id().unwrap().to_string()).unwrap();
+    let script = |pw: &str| {
+        jobs::scripts::vars(&[("SS_PORT", "8388"), ("SS_METHOD", "aes-256-gcm"), ("SS_PASSWORD", pw), ("ALLOW", "198.51.100.2")])
+            + &jobs::scripts::node_ss(&jobs::scripts::SsInst::host())
+    };
+    let run = move |s: String| async move { target(ip).run(&s, Duration::from_secs(60)).await.unwrap() };
+    let count = |what: &str| read(&root.join("systemctl.log")).lines().filter(|l| *l == what).count();
+    let restarts = || count("restart fleet-ssserver");
+    let (conf, unit) = (root.join("etc/shadowsocks-rust/config.json"), root.join("etc/systemd/system/fleet-ssserver.service"));
+    let now = OffsetDateTime::now_utc();
+
+    // 第一次：写配置、单元，重启
+    let o = run(script("pw1")).await;
+    assert_eq!((o.code, o.kv("ss"), o.kv("nft_relays"), o.kv("linklocal_dns")), (0, Some("listening"), Some("198.51.100.2"), None), "{o:?}");
+    assert!(read(&conf).contains(r#""password":"pw1""#) && read(&unit).contains("\nIPAddressDeny=link-local 100.100.100.200/32\n"));
+    assert_eq!(restarts(), 1);
+    // 都没变、实例在配置和单元之后启动：不重启
+    for f in [&conf, &unit] {
+        set_mtime(f, now - time::Duration::hours(2));
+    }
+    started(&root, "fleet-ssserver", now - time::Duration::hours(1));
+    assert_eq!((run(script("pw1")).await.code, restarts()), (0, 1));
+    // 换上新密码之后没来得及重启就被打断：配置比运行中的实例新，这次文件没变也重启
+    assert_eq!((run(script("pw2")).await.code, restarts()), (0, 2));
+    started(&root, "fleet-ssserver", now - time::Duration::hours(1));
+    assert_eq!((run(script("pw2")).await.code, restarts()), (0, 3));
+    // 单元换了、systemd 还没重新加载：先加载再重启
+    std::fs::write(root.join("need-reload.fleet-ssserver"), "").unwrap();
+    let reloads = count("daemon-reload");
+    assert_eq!((run(script("pw2")).await.code, count("daemon-reload"), restarts()), (0, reloads + 1, 4));
+    // DNS 是链路本地地址：单元去掉 IPAddressDeny（单元变了，加载、重启），报 linklocal_dns=1
+    std::fs::write(root.join("etc/resolv.conf"), "nameserver 169.254.169.254\n").unwrap();
+    let o = run(script("pw2")).await;
+    assert_eq!((o.code, o.kv("linklocal_dns"), restarts()), (0, Some("1"), 5), "{o:?}");
+    assert!(!read(&unit).contains("IPAddressDeny") && read(&unit).contains("PrivateTmp=yes\n"), "{}", read(&unit));
+    drop(ss);
 }

@@ -209,7 +209,7 @@ if [ "$(cat /etc/caddy/Caddyfile 2>/dev/null)" != "$CADDY" ]; then
 fi
 [ "$caddy_restart" = 0 ] || systemctl restart caddy
 
-# fleet-server 启动时先跑数据库迁移再监听：最多等 60 秒，未登录访问应回 401
+# fleet-server 启动时先占端口、再跑数据库迁移（迁移期间连接先挂着，迁移完才应答）：最多等 60 秒，未登录访问应回 401
 code=000
 for _ in $(seq 60); do
   code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/v1/auth/me || true)

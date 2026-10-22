@@ -357,8 +357,65 @@ struct MRow {
     r_pmax: Option<i32>,
 }
 
-/// agent 多久没上报算离线
+/// agent 多久没上报算离线（中控收不到上报的时段不算，见 `ReportGaps`）
 pub const AGENT_OFFLINE_S: i64 = 120;
+
+/// 中控收不到上报的时段：中控没在跑（进程启动时补记：库里最新的上报时刻到启动）；库连不上——agent 的请求因库不可用
+/// （`db::unavailable`）处理不了，而且整整 `GAP_MIN_S` 秒一份上报都没入库（中途有入库的，只是个别请求失败，不算）。
+/// 判 agent 离线时这些时段不算它的沉默：恢复后各 agent 退避中的重发（最长约 90 秒）要一会儿才到，按墙钟算会把一直在线的
+/// 机器成批判成离线（开一批「agent 离线」严重告警再成批恢复），等摘除的退役、换线路机作业也会判线路机不在线而失败。
+/// 停机之前就已经离线的机器照样离线：只扣掉中断的那一段，不是从恢复时重新计时
+#[derive(Default)]
+pub struct ReportGaps(std::sync::Mutex<Gaps>);
+
+#[derive(Default)]
+struct Gaps {
+    /// 最近一次上报入库（进程启动也算）
+    last_ok: Option<OffsetDateTime>,
+    /// 这之后最近一次因库不可用失败
+    last_fail: Option<OffsetDateTime>,
+    /// 已经结束的中断时段 [起, 止]
+    done: Vec<(OffsetDateTime, OffsetDateTime)>,
+}
+
+/// 连续这么久一份上报都没入库、其间又有因库不可用失败的，才算中控收不到上报
+const GAP_MIN_S: i64 = 30;
+
+impl ReportGaps {
+    /// 进程启动时调：上一个进程最后收到的上报（库里最新的上报时刻）到现在都算收不到
+    pub async fn started(&self, db: &sqlx::PgPool) -> sqlx::Result<()> {
+        let last: Option<OffsetDateTime> = sqlx::query_scalar("select max(last_report_at) from agent_state").fetch_one(db).await?;
+        let now = OffsetDateTime::now_utc();
+        let mut g = self.0.lock().unwrap();
+        g.done.extend(last.filter(|l| *l < now).map(|l| (l, now)));
+        g.last_ok = Some(now);
+        Ok(())
+    }
+
+    /// 一份上报入库了：之前在失败的，从上次入库到现在算一段（够 `GAP_MIN_S` 的话）
+    pub fn ok(&self, now: OffsetDateTime) {
+        let mut g = self.0.lock().unwrap();
+        if let (Some(from), Some(_)) = (g.last_ok, g.last_fail.take()) {
+            if (now - from).whole_seconds() >= GAP_MIN_S {
+                g.done.push((from, now));
+            }
+        }
+        g.last_ok = Some(now);
+        // 结束一小时以上的不再影响判定：之后一直没报的早就按自己的沉默算离线了
+        g.done.retain(|(_, to)| (now - *to).whole_hours() < 1);
+    }
+
+    /// agent 的请求因库不可用没能处理
+    pub fn failed(&self, now: OffsetDateTime) { self.0.lock().unwrap().last_fail = Some(now); }
+
+    /// 上次上报在 `last` 的 agent 到 `now` 算不算在线：沉默的时长扣掉其间中控收不到上报的时段（还没恢复的这一段算到最近一次失败）
+    pub fn online(&self, last: OffsetDateTime, now: OffsetDateTime) -> bool {
+        let g = self.0.lock().unwrap();
+        let open = g.last_ok.zip(g.last_fail).filter(|(from, to)| (*to - *from).whole_seconds() >= GAP_MIN_S);
+        let deaf: i64 = g.done.iter().copied().chain(open).filter(|(_, to)| *to > last).map(|(from, to)| (to - from.max(last)).whole_seconds()).sum();
+        (now - last).whole_seconds() - deaf < AGENT_OFFLINE_S
+    }
+}
 
 /// 在用机器全量视图的短缓存：/machines、/relays、/overview、告警评估、实时指标共用，并发请求合并成一次查询（单飞）。
 /// 资源变更事件（`AppState::emit`）让它立刻作废；agent 上报的指标不发事件，靠 TTL 过期。
@@ -806,7 +863,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
             let agent = (r.kind != "proxy").then(|| Agent {
                 version: r.a_version.clone(),
                 last_report_at: r.a_last,
-                online: r.a_last.is_some_and(|t| (now - t).whole_seconds() < AGENT_OFFLINE_S),
+                online: r.a_last.is_some_and(|t| st.report_gaps.online(t, now)),
                 xray_running: r.a_xray,
                 cores: r.a_cores,
                 health: r.a_health.map(|h| h.0),
@@ -1014,6 +1071,38 @@ mod tests {
     use super::*;
     use crate::health::tests::{base, sub};
     use time::macros::date;
+
+    /// 中控收不到上报的时段不算 agent 的沉默；停机之前就离线的照样离线；中途有入库的不算中控收不到
+    #[test]
+    fn report_gaps_do_not_count_as_silence() {
+        let t0 = OffsetDateTime::now_utc();
+        let s = |n: i64| t0 + time::Duration::seconds(n);
+        // 中控停了 0–300 秒（进程启动时补记的那段）：停之前 20 秒报过的，恢复后 99 秒还算在线、101 秒算离线
+        let g = ReportGaps::default();
+        {
+            let mut x = g.0.lock().unwrap();
+            x.done.push((s(0), s(300)));
+            x.last_ok = Some(s(300));
+        }
+        assert!(g.online(s(-20), s(399)) && !g.online(s(-20), s(401)));
+        assert!(!g.online(s(-3600), s(301)), "停机之前一小时就不报了：照样离线");
+        assert!(!ReportGaps::default().online(s(-20), s(399)), "没有中断：按墙钟算");
+        // 库连不上：400 秒入库之后一直失败，还没恢复的这一段算到最近一次失败
+        g.ok(s(400));
+        g.failed(s(410));
+        g.failed(s(560));
+        assert!(g.online(s(395), s(565)));
+        // 恢复：400–570 记成一段
+        g.ok(s(570));
+        assert!(g.online(s(395), s(640)) && !g.online(s(395), s(700)));
+        // 中途有入库的（个别请求失败），不算中控收不到
+        let h = ReportGaps::default();
+        for (i, ok) in [(0, true), (5, false), (10, true), (15, false), (20, true), (40, false)] {
+            if ok { h.ok(s(i)) } else { h.failed(s(i)) }
+        }
+        assert!(h.0.lock().unwrap().done.is_empty());
+        assert!(!h.online(s(-120), s(41)));
+    }
 
     #[test]
     fn reset_day_period_boundaries() {

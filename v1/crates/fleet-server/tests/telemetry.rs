@@ -751,6 +751,39 @@ async fn relay_xray_down_alert_lifecycle() {
     assert!(matches!(ev.try_recv(), Ok(Event::Incidents)));
 }
 
+/// 中控停机后恢复：停机这段不算 agent 的沉默——停之前在报的，恢复后头一两分钟里重发还没到也不算离线、不开告警；
+/// 停之前就不报了的照样离线、照样开告警
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn central_outage_is_not_agent_silence() {
+    let t = setup().await;
+    let a = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let b = seed_relay(&t, "线路机2", "198.51.100.2", "tok2").await;
+    let c = seed_relay(&t, "线路机3", "198.51.100.3", "tok3").await;
+    // 中控 5 分钟前停的：c 停的那一刻还在报，a 停之前 20 秒报过最后一次，b 停之前一小时就不报了
+    for (m, ago) in [(a, 320), (b, 3900), (c, 300)] {
+        sqlx::query("insert into agent_state (machine_id, agent_version, last_report_at) values ($1, 'v', now() - make_interval(secs => $2))")
+            .bind(m)
+            .bind(ago as f64)
+            .execute(&t.st.db)
+            .await
+            .unwrap();
+    }
+    let offline = |r: Vec<String>| r.contains(&"agent_offline".to_string());
+    assert!(offline(t.health(a).await.1), "按墙钟算 a 5 分多钟没报");
+
+    // 中控启动：停机这段收不到上报
+    t.st.report_gaps.started(&t.st.db).await.unwrap();
+    t.st.live.invalidate();
+    assert!(!offline(t.health(a).await.1) && !offline(t.health(c).await.1));
+    assert!(offline(t.health(b).await.1));
+    let mut state = AlertState::default();
+    let base = OffsetDateTime::now_utc();
+    pass(&t, &mut state, base, 0).await;
+    pass(&t, &mut state, base, 61).await;
+    let inc = incidents(&t, "firing").await;
+    assert_eq!(inc.iter().map(|i| (i["rule"].as_str().unwrap(), i["subject_id"].as_str().unwrap())).collect::<Vec<_>>(), [("agent_offline", b.to_string().as_str())]);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn retiring_machine_alerts_are_left_to_retire_flow() {
     let t = setup().await;
@@ -1733,9 +1766,10 @@ async fn maintenance_silence_reaches_cards_via_metrics() {
 async fn expired_partitions_are_dropped_and_leftovers_cleaned() {
     let t = setup().await;
     let db = &t.st.db;
-    // 一个过期的已挂载分区（带数据）和一个脱离父表的残留表
+    // 一个过期的已挂载分区（带数据）和一个脱离父表的残留表；两张表都有刚进来的数据（删分区前核对本机时钟要看它）
     sqlx::query("create table host_metric_20200101 partition of host_metric for values from ('2020-01-01') to ('2020-01-02')").execute(db).await.unwrap();
-    sqlx::query("insert into host_metric (machine_id, ts) values ($1, '2020-01-01 03:00:00+00')").bind(Uuid::now_v7()).execute(db).await.unwrap();
+    sqlx::query("insert into host_metric (machine_id, ts) values ($1, '2020-01-01 03:00:00+00'), ($1, now())").bind(Uuid::now_v7()).execute(db).await.unwrap();
+    sqlx::query("insert into probe_result (entry_id, ts, kind, ok) values ($1, now(), 'tcp', true)").bind(Uuid::now_v7()).execute(db).await.unwrap();
     sqlx::query("create table probe_result_20200102 (like probe_result)").execute(db).await.unwrap();
     db::maintain_partitions(db, 14, 7, 2).await.unwrap();
     let gone: Vec<Option<String>> = sqlx::query_scalar("select to_regclass('host_metric_20200101')::text union all select to_regclass('probe_result_20200102')::text").fetch_all(db).await.unwrap();
@@ -1749,6 +1783,29 @@ async fn expired_partitions_are_dropped_and_leftovers_cleaned() {
     }
     // 重复执行幂等
     db::maintain_partitions(db, 14, 7, 2).await.unwrap();
+}
+
+/// 删分区前的时钟健全检查：本机时钟大幅超前（开机校时之前）时保留期内的分区不能被当成过期删掉；
+/// 表里只有很久以前的数据（核对不了时钟）时过期分区也先不删
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn partitions_survive_a_clock_far_ahead() {
+    let t = setup().await;
+    let db = &t.st.db;
+    sqlx::query("insert into host_metric (machine_id, ts) values ($1, now() - interval '1 minute')").bind(Uuid::now_v7()).execute(db).await.unwrap();
+    let exists = |name: String| async move { sqlx::query_scalar::<_, Option<String>>("select to_regclass($1)::text").bind(name).fetch_one(db).await.unwrap().is_some() };
+    let today = format!("host_metric_{}", OffsetDateTime::now_utc().date().to_string().replace('-', ""));
+    db::maintain_partitions_at(db, OffsetDateTime::now_utc() + time::Duration::days(400), 14, 7, 2).await.unwrap();
+    assert!(exists(today.clone()).await, "本机时钟快了 400 天，今天的分区不算过期");
+    assert_eq!(t.count("select count(*) from host_metric").await, 1);
+
+    sqlx::query("create table probe_result_20200101 partition of probe_result for values from ('2020-01-01') to ('2020-01-02')").execute(db).await.unwrap();
+    sqlx::query("insert into probe_result (entry_id, ts, kind, ok) values ($1, '2020-01-01 03:00:00+00', 'tcp', true)").bind(Uuid::now_v7()).execute(db).await.unwrap();
+    db::maintain_partitions(db, 14, 7, 2).await.unwrap();
+    assert!(exists("probe_result_20200101".into()).await, "最新数据是 2020 年的：核对不了本机时钟，先不删");
+    // 有了新数据：时钟核对得上，照常删
+    sqlx::query("insert into probe_result (entry_id, ts, kind, ok) values ($1, now(), 'tcp', true)").bind(Uuid::now_v7()).execute(db).await.unwrap();
+    db::maintain_partitions(db, 14, 7, 2).await.unwrap();
+    assert!(!exists("probe_result_20200101".into()).await && exists(today).await);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
