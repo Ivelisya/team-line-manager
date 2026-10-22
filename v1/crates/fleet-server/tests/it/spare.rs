@@ -4,7 +4,7 @@
 //! db::purge_blocker 放行后自动物理删除（同机 IP 节点先于宿主机）；旧面板导入的幂等与防导错。
 //! 需要 PostgreSQL（见 common）。
 
-mod common;
+use crate::common;
 
 use axum::http::StatusCode;
 use common::{seed_node, seed_relay, seed_team, setup, T};

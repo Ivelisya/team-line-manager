@@ -399,10 +399,11 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 `name` 退役前的名字（进过备用的是 `spare_from`），`last_name` 回收时的名字（「备用-03」；立即回收的同 `name`，导入的为 null），`team` 退役前的团队；`retired_at` 进备用的时刻（立即回收的是退役作业完成的时刻）；价格、币种、周期是订阅的生效值（没有订阅取模板）；`reason` 退役原因（到期回收的接上「备用到期自动回收（到期日 …）」）；`traffic_*` 入口业务流量合计（字节，整个生命周期；线路机按它上面全部入口算），`nic_*` 网卡累计（没有网卡读数的家宽代理、同机 IP 节点为 null）。数值的口径以流量改造为准。
 `snapshot`（fleet）：`{machine（机器行，不含秘密）, name, team, host, provider, plan, subscription（生效值）, renewals[], entries:[{relay,node,port,lifecycle,created_at,removed_at}], outbound（出站参数，不含秘密）}`；legacy 是导入时给的原始记录。回收站不受保留期清理影响，一直保留。
 
-**退役预览** `GET /machines/{id}/retire` → `{name, renames:[{machine_id,old_name,new_name}], ip_nodes:[{id,name}], spare:{ok, why|null, team:{id,name}, to_name|null, recycle_on|null, ip_nodes:[{id,name,to_name}]}, routers:[{id,name,exits:[{exit,node}]}]}`：
+**退役预览** `GET /machines/{id}/retire` → `{name, renames:[{machine_id,old_name,new_name}], ip_nodes:[{id,name}], spare:{ok, why|null, team:{id,name}, to_name|null, recycle_on|null, ip_nodes:[{id,name,to_name}]}, routers:[{id,name,exits:[{exit,node}]}], blockers:[string]}`：
 - `renames`：机器离开后原团队压缩编号的改名（两种去向一样；`numbering.auto_compact` 关掉时为 []）；`ip_nodes`：立即回收时一并回收的同机 IP 节点（宿主机才有）。
 - `spare`：能不能移进备用（`ok`，不能时 `why`：线路机、已经在备用团队里、还没上线（上架中或上架失败）、没有订阅、订阅已经过期满 1 天——这些只能立即回收）；进去后的名字（备用团队最小的空号）、自动回收的日子（账单时区）、一起进备用的同机 IP 节点与它们的新名字（已经在备用团队的不算）。
 - `routers`：各软路由最近一次采集里还指向这台（和它的同机 IP 节点）的出口，`node` 是指向的那台；只提示、不阻断，软路由不自动改（要换掉先「替换」）。
+- `blockers`：立即回收提交时会 409 的原因，与提交时同一段判断（已经退役 / 退役中、线路机上还有节点入口、这台或它的同机 IP 节点有作业正在执行一步）；[] = 能立即回收。
 
 **移进备用**（默认）：一个事务、不建作业。先锁团队（原团队、同机 IP 节点的团队、备用团队）再锁机器；进不了备用（同 `spare.why`）409「不能移进备用：…。要现在就清理并移进回收站，选「立即回收」（now: true）」；它或它的同机 IP 节点有进行中的作业 409；`reason` 最多 2000 字。改到备用团队最小的空号（与 `PATCH /machines/{id}` 同一段代码：审计 `machine.rename`、刷新线路机备注，并记下 `spare_since` / `spare_from`），`lifecycle_reason` 记退役原因；宿主机上还没退役、不在备用团队的同机 IP 节点一起进（编号挨着，原因「随宿主机「名字」退役」）；原团队压缩编号。机器照常运行：入口、端口、软路由出口都不动，告警照常（备用期间故障照常通知）。审计 `machine.retire`（`detail.mode = "spare"`，`{name, to, reason, recycle_on, ip_nodes}`；同机 IP 节点各一条，带 `host`），摘要「团队1-01 → 备用-02（换新机）」。
 移出备用（改到别的团队）= 撤销退役：`spare_since`、`spare_from`、`lifecycle_reason` 清空。

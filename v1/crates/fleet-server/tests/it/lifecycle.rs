@@ -1,10 +1,10 @@
 //! 换线路机（move_entry）、搬空线路机（evacuate）。
 //! 需要 PostgreSQL（见 common）。
 //!
-//! 线路机用 `Sim` 模拟：拉期望状态、回报全部应用成功、给每个入口报一个成功的出口探测（和 tests/flow.rs 一样）。
+//! 线路机用 `Sim` 模拟：拉期望状态、回报全部应用成功、给每个入口报一个成功的出口探测（和 tests/it/flow.rs 一样）。
 //! 节点用上游代理（没有 SSH，整条流程可以在测试里走通）。
 
-mod common;
+use crate::common;
 
 use axum::http::StatusCode;
 use common::{seed_node, seed_relay, seed_team, setup, T};

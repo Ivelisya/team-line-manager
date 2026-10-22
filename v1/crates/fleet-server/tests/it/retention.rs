@@ -2,12 +2,10 @@
 //! 改长后不误删，学习期比汇总长时来源画像以学习期为准；访问页的窗口不能超过汇总的保留期；上报只收原始记录保留期以内的。
 //! 需要 PostgreSQL（见 common）。不起后台循环：改了之后的清理由接口自己在后台跑，测试等它删完。
 
-mod common;
-mod common_mon;
-mod common_tele;
+use crate::common;
 
 use axum::http::StatusCode;
-use common_mon::{put_events, seed, setup, T};
+use common::mon::{put_events, seed, setup, T};
 use fleet_server::db::floor_hour;
 use fleet_server::settings::{self, AccessRetention};
 use fleet_server::state::Event;
@@ -127,7 +125,7 @@ async fn shortening_deletes_expired_rows_everywhere_lengthening_keeps_them() {
     let ago = |d: i64| now - Duration::days(d);
     let hour_ago = |d: i64| floor_hour(now) - Duration::days(d);
 
-    // 原始记录：现在、2 天前、5 天前（分区在 common_mon::setup 里建好了）。要有现在的：删过期分区前先拿表里最新的数据核对本机时钟
+    // 原始记录：现在、2 天前、5 天前（分区在 common::mon::setup 里建好了）。要有现在的：删过期分区前先拿表里最新的数据核对本机时钟
     // （db::drop_before），最新的离现在超过一天就不删
     put_events(&t, e1, now, Some("1.1.1.1"), "now.example.com", 1, false).await;
     put_events(&t, e1, ago(2), Some("1.1.1.2"), "two.example.com", 1, false).await;
@@ -292,8 +290,8 @@ async fn windows_cannot_exceed_hourly_retention() {
 /// 上报只收原始记录保留期以内的访问记录：设成 1 天后，2 天前的不再入库
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn report_accepts_access_events_only_within_raw_retention() {
-    use common_tele::{access, blank_report, now_ms, seed_node, seed_relay, seed_team};
-    let t = common_tele::setup().await;
+    use common::tele::{access, blank_report, now_ms, seed_node, seed_relay, seed_team};
+    let t = common::tele::setup().await;
     let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
     let team = seed_team(&t, "团队1").await;
     let (_node, entry) = seed_node(&t, relay, team, 1, "203.0.113.5", 20000).await;

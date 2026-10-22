@@ -10,13 +10,13 @@
 // 采集结果的 json! 字面量层数多
 #![recursion_limit = "256"]
 
+#[path = "it/common/mod.rs"]
 mod common;
-mod common_tele;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use common::{seed_team, T};
-use common_tele::Mock;
+use common::tele::Mock;
 use fleet_server::routers::{self, alerts, collect};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
@@ -103,7 +103,7 @@ const LOGIN_PUB: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICentralLoginKeyCen
 /// 测试环境：假的路由、中控 sshd 主机公钥与中控登录公钥都备好；通知渠道允许指向本机
 async fn setup() -> T {
     LazyLock::force(&FAKE);
-    let t = common_tele::setup().await;
+    let t = common::tele::setup().await;
     std::fs::create_dir_all(t.dir.path().join("ssh")).unwrap();
     std::fs::write(t.dir.path().join("ssh/id_ed25519.pub"), format!("{LOGIN_PUB}\n")).unwrap();
     std::fs::write(t.dir.path().join("ssh_host_ed25519_key.pub"), format!("{HOST_KEY} root@central\n")).unwrap();

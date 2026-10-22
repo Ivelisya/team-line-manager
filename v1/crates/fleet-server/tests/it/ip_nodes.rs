@@ -2,7 +2,7 @@
 //! 需要 PostgreSQL（见 common）。宿主机不真的登录：要跑到 SSH 的作业让宿主机指向 127.0.0.1:1（必定连接被拒），
 //! 退役用 cleanup=false。
 
-mod common;
+use crate::common;
 
 use axum::http::StatusCode;
 use common::{seed_node, seed_relay, seed_team, setup, T};

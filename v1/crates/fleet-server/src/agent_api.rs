@@ -54,7 +54,7 @@ async fn authenticate(st: &AppState, h: &HeaderMap) -> ApiResult<AgentId> {
     .fetch_optional(&st.db)
     .await
     .map_err(|e| {
-        // 库连不上时最先失败的就是这里：记进中控收不到上报的时段（views::ReportGaps；只认连接断了，池子被挤满不算）
+        // 库连不上时最先失败的就是这里：记进中控收不到上报的时段（report_gaps::ReportGaps；只认连接断了，池子被挤满不算）
         if crate::db::connection_lost(&e) {
             st.report_gaps.failed(OffsetDateTime::now_utc());
         }
@@ -297,7 +297,7 @@ fn sanitize(r: &mut Report) {
 
 async fn report(State(st): State<AppState>, h: HeaderMap, ApiJson(r): ApiJson<Report>) -> Result<Response, ApiError> {
     let res = ingest(&st, &h, r).await;
-    // 中控收不到上报的时段（views::ReportGaps）：入库了、库不可用没入成
+    // 中控收不到上报的时段（report_gaps::ReportGaps）：入库了、库不可用没入成
     match &res {
         Ok(_) => {
             // 库刚恢复、记下了一段中断：存进库里，之后马上重启也接着算

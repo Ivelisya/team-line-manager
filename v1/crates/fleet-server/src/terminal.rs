@@ -665,7 +665,7 @@ async fn run(io: &mut Io<'_>, st: &AppState, who: &Who, mut events: broadcast::R
     // 撤销通知从握手前就在收（之后的循环里处理）；握手到这里之间被撤销的这里再查一次
     match session_valid(&st.db, &who.session).await {
         Ok(true) => {}
-        Ok(false) => return (End { code: crate::api::misc::CLOSE_REVOKED, reason: SESSION_GONE.into() }, false),
+        Ok(false) => return (End { code: crate::api::stream::CLOSE_REVOKED, reason: SESSION_GONE.into() }, false),
         Err(e) => return (End::internal("核对登录会话失败", e), false),
     }
     let mut slot = match st.terminals.enter(who.user_id, &who.session) {
@@ -717,7 +717,7 @@ async fn run(io: &mut Io<'_>, st: &AppState, who: &Who, mut events: broadcast::R
     // 名额在写完「关闭」审计之后才还：中控退出时等名额归零，就是等审计写完
     drop(slot);
     let code = match stop {
-        Stop::Kicked(_) => crate::api::misc::CLOSE_REVOKED,
+        Stop::Kicked(_) => crate::api::stream::CLOSE_REVOKED,
         // 1012 = Service Restart
         Stop::Shutdown => 1012,
         Stop::TooLarge => 1009,
@@ -1010,7 +1010,7 @@ fn duration(s: u64) -> String {
     }
 }
 
-/// 审计「打开 / 关闭网页终端」的一句话摘要（api::misc::audit_text 用）
+/// 审计「打开 / 关闭网页终端」的一句话摘要（api::audit::audit_text 用）
 pub fn audit_summary(action: &str, d: &Value) -> String {
     let name = d["name"].as_str().unwrap_or("");
     let target = match d["host"]["name"].as_str() {

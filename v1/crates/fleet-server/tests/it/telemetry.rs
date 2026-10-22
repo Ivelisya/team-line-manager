@@ -2,11 +2,10 @@
 //! 需要 PostgreSQL（见 common）。
 //! 不起后台循环：告警评估、小时汇总、实时指标比对都由测试手动驱动（告警评估的「当前时间」可以快进，不用真等去抖）。
 
-mod common;
-mod common_tele;
+use crate::common;
 
 use axum::http::StatusCode;
-use common_tele::*;
+use common::tele::*;
 use fleet_proto::ProbeKind;
 use fleet_server::alerts::{self, AlertState};
 use fleet_server::crypto::SecretBox;
@@ -621,12 +620,16 @@ async fn relay_reach_rounds_feed_relay_beats() {
     let ctl_ok = ctl.local_addr().unwrap().to_string();
     let ctl_bad = format!("127.0.0.1:{closed}");
     use fleet_server::reach::round;
-    assert_eq!(round(&t.st.db, &[&ctl_bad, &ctl_ok], 0).await.unwrap(), 2, "没有在用入口的线路机不探");
-    assert_eq!(round(&t.st.db, &[&ctl_bad], 1).await.unwrap(), 0, "对照目标都连不上：中控自己的问题，不记");
+    assert_eq!(round(&t.st, &[&ctl_bad, &ctl_ok], 0).await.unwrap(), 2, "没有在用入口的线路机不探");
+    assert_eq!(round(&t.st, &[&ctl_bad], 1).await.unwrap(), 0, "对照目标都连不上：中控自己的问题，不记");
     // 线路机1 再挂一条入口（端口不通）：每轮换下一个端口，两个口轮流连到；线路机2 一直不通，两台同时不通也照记
     seed_node(&t, up, team, 3, "203.0.113.7", closed2 as i32).await;
-    assert_eq!(round(&t.st.db, &[&ctl_ok], 1).await.unwrap(), 2);
-    assert_eq!(round(&t.st.db, &[&ctl_ok], 2).await.unwrap(), 2);
+    let unreachable = |v: &[fleet_server::views::MachineView]| v.iter().find(|m| m.id == down).unwrap().health.reasons.iter().any(|r| r.key == "relay_unreachable");
+    assert!(!unreachable(&fleet_server::views::live(&t.st).await.unwrap()));
+    assert_eq!(round(&t.st, &[&ctl_ok], 1).await.unwrap(), 2);
+    assert_eq!(round(&t.st, &[&ctl_ok], 2).await.unwrap(), 2);
+    // 缓存的视图（列表、告警评估）不等完整重算：结论变了，这一轮发了机器事件
+    assert!(unreachable(&fleet_server::views::live(&t.st).await.unwrap()));
     let v = t.get("/api/v1/probe-beats").await;
     let sum = |id: Uuid| {
         v[id.to_string()].as_array().unwrap().iter().fold((0, 0), |(n, ok), b| (n + b[0].as_i64().unwrap(), ok + b[1].as_i64().unwrap()))
@@ -935,13 +938,13 @@ async fn central_outage_is_not_agent_silence() {
     // 恢复后不久又重启了一次（连着两次部署、崩溃重启）：c 在两次启动之间报过，库里最新的上报已是恢复之后的；
     // 前一段停机从库里接着算，a 的重发还没到照样不算离线，b 照样离线
     sqlx::query("update agent_state set last_report_at = now() where machine_id = $1").bind(c).execute(&t.st.db).await.unwrap();
-    let again = fleet_server::views::ReportGaps::default();
+    let again = fleet_server::report_gaps::ReportGaps::default();
     again.started(&t.st.db).await.unwrap();
     let now = OffsetDateTime::now_utc();
     assert!(again.online(now - time::Duration::seconds(330), now), "前一段停机仍不算 a 的沉默");
     assert!(!again.online(now - time::Duration::seconds(3900), now));
     // 一直没收到上报时连着重启：每次补记的起点相同，并成一段，不重复扣（否则 b 这种早就不报的也会被扣成在线）
-    let third = fleet_server::views::ReportGaps::default();
+    let third = fleet_server::report_gaps::ReportGaps::default();
     third.started(&t.st.db).await.unwrap();
     third.started(&t.st.db).await.unwrap();
     assert!(!third.online(now - time::Duration::seconds(3900), OffsetDateTime::now_utc()));
@@ -957,7 +960,7 @@ async fn restart_gap_starts_at_central_alive_time() {
     sqlx::query("insert into agent_state (machine_id, agent_version, last_report_at) values ($1, 'v', now() - interval '3 hours')").bind(a).execute(&t.st.db).await.unwrap();
     // 上一个进程 20 秒前还记了一次存活；之后 10 秒内再记不重写
     let alive = OffsetDateTime::now_utc() - time::Duration::seconds(20);
-    let prev = fleet_server::views::ReportGaps::default();
+    let prev = fleet_server::report_gaps::ReportGaps::default();
     prev.alive(&t.st.db, alive).await.unwrap();
     prev.alive(&t.st.db, alive + time::Duration::seconds(10)).await.unwrap();
     let saved: String = sqlx::query_scalar("select value #>> '{}' from app_setting where key = 'central_alive_at'").fetch_one(&t.st.db).await.unwrap();
@@ -968,7 +971,7 @@ async fn restart_gap_starts_at_central_alive_time() {
     assert!(t.health(a).await.1.contains(&"agent_offline".to_string()), "3 小时没报：重启后照样离线");
     let now = OffsetDateTime::now_utc();
     assert!(t.st.report_gaps.online(now - time::Duration::seconds(130), now), "停机的约 20 秒不算沉默");
-    assert!(!fleet_server::views::ReportGaps::default().online(now - time::Duration::seconds(130), now));
+    assert!(!fleet_server::report_gaps::ReportGaps::default().online(now - time::Duration::seconds(130), now));
 }
 
 /// 有 agent 的在用机器同时离线超过一半且至少 3 台：不开单机的 agent 离线，开一条中控侧的「agent 同时失联」；
@@ -2176,7 +2179,7 @@ async fn retention_cleanup_removes_only_expired_rows() {
             .await
             .unwrap();
     }
-    // 访问记录（汇总、来源画像）按面板里设的保留期删，见 tests/retention.rs
+    // 访问记录（汇总、来源画像）按面板里设的保留期删，见 tests/it/retention.rs
     let sessions_before = t.count("select count(*) from session").await;
     db::cleanup_retention(db).await.unwrap();
     assert_eq!(t.count("select count(*) from silence").await, 1, "结束超 90 天的静默删掉");

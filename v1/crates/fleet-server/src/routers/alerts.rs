@@ -1,5 +1,5 @@
 //! 软路由的告警（规则 `router_` 开头，对象是路由：incident.subject_id = router.id）。采集每轮之后评估一次，
-//! 写法同 selfmon.rs：此刻成立的问题对齐到 incident 表，开、关、通知走 notify::enqueue（渠道的最低级别、严重的每 4 小时提醒、
+//! 同 selfmon.rs 走 incident.rs：此刻成立的问题对齐到 incident 表，开、关、通知走 notify::enqueue（渠道的最低级别、严重的每 4 小时提醒、
 //! 全局静默与维护都同机器的告警；路由本身的静默第二期再做）。与「降级算正常、故障才是异常」的口径一致：
 //!
 //! | 规则 | 级别 | 开 |
@@ -14,10 +14,9 @@
 //! 严重度只升不降（升到严重马上再发一次「触发」），同 alerts.rs。
 
 use super::collect::Snapshot;
-use crate::alerts::{repeat_interval_s, same_summary};
-use crate::notify::{self, Kind, Notice};
-use crate::silence::Silences;
-use crate::state::{AppState, Event};
+use crate::incident::{self, Close, Want};
+use crate::notify;
+use crate::state::AppState;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use time::OffsetDateTime;
@@ -140,44 +139,18 @@ pub fn problems(v: &View, cpu_high_since: Option<OffsetDateTime>, now: OffsetDat
     (out, true)
 }
 
-#[derive(sqlx::FromRow)]
-struct Open {
-    id: Uuid,
-    rule: String,
-    subject_id: Uuid,
-    severity: String,
-    summary: String,
-    opened_at: OffsetDateTime,
-    notified_at: Option<OffsetDateTime>,
-}
-
-fn rank(s: &str) -> u8 {
-    match s {
-        "critical" => 2,
-        "warning" => 1,
-        _ => 0,
-    }
-}
-
-/// 评估一轮，把路由的告警对齐到 incident 表。`now` 由调用方给（测试可以快进）
+/// 评估一轮，把路由的告警对齐到 incident 表（incident.rs）。`now` 由调用方给（测试可以快进）
 pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime) -> anyhow::Result<()> {
     let rows = super::load(&st.db, None).await?;
     let views: Vec<View> = rows
         .iter()
         .map(|r| View { id: r.id, name: r.name.clone(), state: r.state(), error: r.error.clone(), last_ok_at: r.last_ok_at, snap: r.snapshot() })
         .collect();
-    let open: Vec<Open> = sqlx::query_as(
-        "select id, rule, subject_id, severity::text severity, summary, opened_at, notified_at from incident
-         where state = 'firing' and rule like 'router!_%' escape '!'",
-    )
-    .fetch_all(&st.db)
-    .await?;
-    let silences = Silences::load(&st.db).await?;
-    let mut open: HashMap<(String, Uuid), Open> = open.into_iter().map(|o| ((o.rule.clone(), o.subject_id), o)).collect();
-    let open_ids: HashSet<Uuid> = open.values().map(|o| o.id).collect();
+    let open = incident::firing(&st.db, "router").await?;
+    let open_ids: HashSet<Uuid> = open.iter().map(|o| o.id).collect();
     let mut seen: HashSet<(&'static str, Uuid)> = HashSet::new();
     let mut known: HashSet<Uuid> = HashSet::new();
-    let mut changed = false;
+    let mut want = vec![];
     for v in &views {
         // CPU 从什么时候起一直超过 90%（连不上的这一轮不动它）
         if v.state == "online" {
@@ -194,124 +167,43 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
         if judged {
             known.insert(v.id);
         }
-        let notice = |kind, id, rule: &str, severity: &str, text: &str, opened_at| Notice {
-            kind,
-            incident_id: Some(id),
-            rule: rule.into(),
-            severity: severity.into(),
-            machine: v.name.clone(),
-            summary: text.into(),
-            at: now,
-            opened_at: Some(opened_at),
-        };
         for p in ps {
             let key = (p.rule, v.id);
             seen.insert(key);
             let since = *state.first_seen.entry(key).or_insert(now);
-            let summary = format!("{}：{}", v.name, p.text);
-            let silenced = silences.matches(p.rule, v.id);
-            if let Some(inc) = open.remove(&(p.rule.to_string(), v.id)) {
-                state.clean_since.remove(&inc.id);
-                let escalated = rank(p.severity) > rank(&inc.severity);
-                let sev = if escalated { p.severity } else { inc.severity.as_str() };
-                if escalated || !same_summary(&inc.summary, &summary) {
-                    sqlx::query("update incident set summary = $2, severity = $3::severity, last_seen_at = now() where id = $1")
-                        .bind(inc.id)
-                        .bind(&summary)
-                        .bind(sev)
-                        .execute(&st.db)
-                        .await?;
-                    changed = true;
-                }
-                // 开的时候没能写进发送队列的补发「触发」；升到严重马上再发一次；严重的每 4 小时提醒一次
-                let kind = match inc.notified_at {
-                    _ if escalated => Some(Kind::Firing),
-                    None => Some(Kind::Firing),
-                    Some(n) => repeat_interval_s(p.rule, sev).filter(|every| (now - n).whole_seconds() >= *every).map(|_| Kind::Repeat),
-                };
-                if let Some(kind) = kind.filter(|_| !silenced) {
-                    notify::enqueue(st, notice(kind, inc.id, p.rule, sev, &p.text, inc.opened_at)).await;
-                }
-                continue;
-            }
-            if (p.hold_s > 0 && !held(since, now, p.hold_s)) || silenced {
-                continue;
-            }
-            let id = crate::db::new_id();
-            let res = sqlx::query(
-                "insert into incident (id, rule, subject_id, severity, summary, detail)
-                 select $1, $2, $3, $4::severity, $5, $6 where exists (select 1 from router where id = $3)
-                 on conflict (rule, subject_id) where state = 'firing' do nothing",
-            )
-            .bind(id)
-            .bind(p.rule)
-            .bind(v.id)
-            .bind(p.severity)
-            .bind(&summary)
-            .bind(json!({"name": v.name, "kind": "router"}))
-            .execute(&st.db)
-            .await?;
-            if res.rows_affected() > 0 {
-                changed = true;
-                notify::enqueue(st, notice(Kind::Firing, id, p.rule, p.severity, &p.text, now)).await;
-            }
+            let ready = p.hold_s == 0 || held(since, now, p.hold_s);
+            want.push(Want { rule: p.rule, subject: v.id, name: &v.name, severity: p.severity, text: p.text, detail: Some(json!({"name": v.name, "kind": "router"})), ready });
         }
     }
     state.first_seen.retain(|k, _| seen.contains(k));
-    let names: HashMap<Uuid, &str> = views.iter().map(|v| (v.id, v.name.as_str())).collect();
-    for (_, inc) in open {
-        let Some(name) = names.get(&inc.subject_id).copied() else {
-            // 路由已经删了（删除接口会关掉，这里兜底）：关掉、不发恢复
-            close(st, inc.id, Some("router_deleted")).await?;
-            changed = true;
-            continue;
-        };
-        // 连不上的路由：除离线外无从判断，保持原状
-        if inc.rule != OFFLINE && !known.contains(&inc.subject_id) {
-            state.clean_since.remove(&inc.id);
-            continue;
-        }
-        let since = *state.clean_since.entry(inc.id).or_insert(now);
-        if !held(since, now, DEBOUNCE_S) {
-            continue;
-        }
-        state.clean_since.remove(&inc.id);
-        close(st, inc.id, None).await?;
-        changed = true;
-        if inc.notified_at.is_some() && !silences.matches(&inc.rule, inc.subject_id) {
-            notify::enqueue(
-                st,
-                Notice {
-                    kind: Kind::Resolved,
-                    incident_id: Some(inc.id),
-                    rule: inc.rule.clone(),
-                    severity: inc.severity.clone(),
-                    machine: name.to_string(),
-                    summary: notify::strip_machine(&inc.summary, name).to_string(),
-                    at: now,
-                    opened_at: Some(inc.opened_at),
-                },
-            )
-            .await;
+    // 问题还在的：恢复的去抖从头算
+    for o in &open {
+        if seen.contains(&(o.rule.as_str(), o.subject_id)) {
+            state.clean_since.remove(&o.id);
         }
     }
+    let names: HashMap<Uuid, &str> = views.iter().map(|v| (v.id, v.name.as_str())).collect();
+    let clean_since = &mut state.clean_since;
+    incident::reconcile(st, open, want, "exists (select 1 from router where id = $3)", now, |inc| {
+        // 路由已经删了（删除接口会关掉，这里兜底）：关掉、不发恢复
+        let Some(name) = names.get(&inc.subject_id).copied() else { return Close::Quiet("router_deleted") };
+        // 连不上的路由：除离线外无从判断，保持原状
+        if inc.rule != OFFLINE && !known.contains(&inc.subject_id) {
+            clean_since.remove(&inc.id);
+            return Close::Keep;
+        }
+        let since = *clean_since.entry(inc.id).or_insert(now);
+        if !held(since, now, DEBOUNCE_S) {
+            return Close::Keep;
+        }
+        clean_since.remove(&inc.id);
+        Close::Resolve(name)
+    })
+    .await?;
     state.clean_since.retain(|id, _| open_ids.contains(id));
     let ids: HashSet<Uuid> = views.iter().map(|v| v.id).collect();
     state.cpu_high_since.retain(|id, _| ids.contains(id));
-    if changed {
-        st.emit(Event::Incidents);
-    }
     Ok(())
-}
-
-async fn close(st: &AppState, id: Uuid, closed_by: Option<&str>) -> sqlx::Result<()> {
-    let detail = closed_by.map(|c| json!({"closed_by": c})).unwrap_or_else(|| json!({}));
-    sqlx::query("update incident set state = 'resolved', resolved_at = now(), detail = detail || $2 where id = $1 and state = 'firing'")
-        .bind(id)
-        .bind(detail)
-        .execute(&st.db)
-        .await
-        .map(|_| ())
 }
 
 /// 删除路由时（同一事务）关掉它在告警中的告警：不发恢复

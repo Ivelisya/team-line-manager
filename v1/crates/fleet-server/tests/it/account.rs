@@ -1,12 +1,11 @@
 //! 账户安全：两步验证（启用、登录、重放、恢复码、停用、重新生成、CLI 重置）、登录会话、改密码。
 //! 需要 PostgreSQL（见 common）。
 
-mod common;
-mod common_ops;
+use crate::common;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use common_ops::{setup, Auth, ADMIN_PW, T};
+use common::ops::{setup, Auth, ADMIN_PW, T};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;

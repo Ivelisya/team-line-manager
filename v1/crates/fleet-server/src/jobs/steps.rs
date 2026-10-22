@@ -254,6 +254,7 @@ async fn ip_check(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     }
     // 记下（或清掉）bind 地址：收敛时 ssserver 监听并从它出站。每次按这次核对的结果写
     sqlx::query("update machine set bind_ip = $2::inet where id = $1").bind(m.id).bind(&bind).execute(&c.st.db).await?;
+    c.st.emit(Event::Machine { id: m.id });
     if let Some(b) = &bind {
         c.log(format!("{ip} 不在宿主机网卡上，是 1:1 NAT 映射到本地地址 {b} 的：ssserver 监听并从 {b} 出站")).await;
     }

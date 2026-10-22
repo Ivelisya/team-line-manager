@@ -360,7 +360,7 @@ pub struct RelayInfo {
     pub port_min: i32,
     pub port_max: i32,
     /// 中控 → 线路机最近 3 轮（5 分钟内，reach.rs）都连不上：这 3 次的失败原因（去重，带端口）；否则为 None。
-    /// 健康判定据此报 relay_unreachable；随完整加载更新（最多旧 `FULL_EVERY`），不对外输出
+    /// 健康判定据此报 relay_unreachable；它变了 reach.rs 发 `Event::Machine`（视图完整重算），不对外输出
     #[serde(skip)]
     pub unreachable: Option<String>,
 }
@@ -467,154 +467,17 @@ impl ACols {
     }
 }
 
-/// agent 多久没上报算离线（中控收不到上报的时段不算，见 `ReportGaps`）
+/// agent 多久没上报算离线（中控收不到上报的时段不算，见 report_gaps.rs）
 pub const AGENT_OFFLINE_S: i64 = 120;
-
-/// 中控收不到上报的时段：中控没在跑（进程启动时补记：上一个进程最后还在跑的时刻到启动，见 `started`）；库连不上——agent 的请求因库不可用
-/// （`db::unavailable`）处理不了，而且整整 `GAP_MIN_S` 秒一份上报都没入库（中途有入库的，只是个别请求失败，不算）。
-/// 判 agent 离线时这些时段不算它的沉默：恢复后各 agent 退避中的重发（最长约 90 秒）要一会儿才到，按墙钟算会把一直在线的
-/// 机器成批判成离线（开一批「agent 离线」严重告警再成批恢复），等摘除的退役、换线路机作业也会判线路机不在线而失败。
-/// 停机之前就已经离线的机器照样离线：只扣掉中断的那一段，不是从恢复时重新计时。
-/// 最近一小时的时段同时存进库里（app_setting 的 `report_gaps`）：中断恢复后不久又重启一次（连着两次部署、崩溃重启），
-/// 新进程只看得到上一个进程最后还在跑的时刻——那已经是恢复之后的了，前一段中断要从库里接着算，否则重发还没到的 agent 照样成批判离线
-#[derive(Default)]
-pub struct ReportGaps(std::sync::Mutex<Gaps>);
-
-#[derive(Default)]
-struct Gaps {
-    /// 最近一次上报入库（进程启动也算）
-    last_ok: Option<OffsetDateTime>,
-    /// 这之后最近一次因库不可用失败
-    last_fail: Option<OffsetDateTime>,
-    /// 已经结束的中断时段 [起, 止]
-    done: Vec<(OffsetDateTime, OffsetDateTime)>,
-    /// 最近一次写进库里的存活时刻（`alive`）
-    alive_saved: Option<OffsetDateTime>,
-}
-
-/// 连续这么久一份上报都没入库、其间又有因库不可用失败的，才算中控收不到上报
-const GAP_MIN_S: i64 = 30;
-/// 存中断时段的 app_setting 键：`[["起", "止"], …]`（RFC 3339）
-const GAPS_KEY: &str = "report_gaps";
-/// 中控自己记的存活时刻（app_setting，RFC 3339 字符串）：告警循环每轮写，进程启动时它就是上一个进程最后还在跑的时刻
-const ALIVE_KEY: &str = "central_alive_at";
-/// 存活时刻和库里的相差这么久以上才重写（每轮都写一遍只会产生死元组）
-const ALIVE_EVERY_S: i64 = 30;
-
-/// 加一段中断，和已有的重叠、相接的并成一段：同一段停机不会因为连着重启记两次而被重复扣掉
-/// （一直没收到上报时，每次启动补记的都是「库里最新的上报时刻 → 启动」，起点相同）
-fn add_gap(done: &mut Vec<(OffsetDateTime, OffsetDateTime)>, gap: (OffsetDateTime, OffsetDateTime)) {
-    done.push(gap);
-    done.sort();
-    let mut merged: Vec<(OffsetDateTime, OffsetDateTime)> = Vec::with_capacity(done.len());
-    for (from, to) in done.drain(..) {
-        match merged.last_mut() {
-            Some(last) if from <= last.1 => last.1 = last.1.max(to),
-            _ => merged.push((from, to)),
-        }
-    }
-    *done = merged;
-}
-
-impl ReportGaps {
-    /// 进程启动时调：之前的进程记在库里的时段接着算，再补一段「上一个进程最后还在跑的时刻 → 现在」，存回库里。
-    /// 起点取它自己记的存活时刻（`alive`）与库里最新的上报时刻中晚的那个；没记过存活时刻（第一次部署）就是最新的上报时刻。
-    /// 不能只看上报：上一个进程在跑、只是全网都没上报的时段（模拟器停了、边缘机挂了）不是中控收不到，扣掉的话一直离线的机器每次重启后都被判在线
-    pub async fn started(&self, db: &sqlx::PgPool) -> sqlx::Result<()> {
-        let last: Option<OffsetDateTime> = sqlx::query_scalar(
-            "select greatest((select max(last_report_at) from agent_state), (select (value #>> '{}')::timestamptz from app_setting where key = $1))",
-        )
-        .bind(ALIVE_KEY)
-        .fetch_one(db)
-        .await?;
-        let saved: Option<Value> = sqlx::query_scalar("select value from app_setting where key = $1").bind(GAPS_KEY).fetch_optional(db).await?;
-        let now = OffsetDateTime::now_utc();
-        {
-            let mut g = self.0.lock().unwrap();
-            let rfc = |v: &Value| OffsetDateTime::parse(v.as_str()?, &time::format_description::well_known::Rfc3339).ok();
-            for p in saved.as_ref().and_then(Value::as_array).into_iter().flatten() {
-                if let (Some(from), Some(to)) = (rfc(&p[0]), rfc(&p[1])) {
-                    add_gap(&mut g.done, (from, to));
-                }
-            }
-            if let Some(l) = last.filter(|l| *l < now) {
-                add_gap(&mut g.done, (l, now));
-            }
-            g.done.retain(|(_, to)| (now - *to).whole_hours() < 1);
-            g.last_ok = Some(now);
-        }
-        self.save(db).await
-    }
-
-    /// 把最近一小时的时段存进库里（启动时、库中断恢复后）
-    pub async fn save(&self, db: &sqlx::PgPool) -> sqlx::Result<()> {
-        let fmt = |t: OffsetDateTime| t.format(&time::format_description::well_known::Rfc3339).unwrap_or_default();
-        let v: Vec<[String; 2]> = self.0.lock().unwrap().done.iter().map(|(f, t)| [fmt(*f), fmt(*t)]).collect();
-        sqlx::query(
-            "insert into app_setting (key, value, updated_by) values ($1, $2, 'fleet-server')
-             on conflict (key) do update set value = excluded.value, updated_at = now(), updated_by = excluded.updated_by",
-        )
-        .bind(GAPS_KEY)
-        .bind(json!(v))
-        .execute(db)
-        .await
-        .map(|_| ())
-    }
-
-    /// 告警循环每轮调：把「中控此刻还在跑」记进库里（和上次写的相差满 `ALIVE_EVERY_S` 才写），下次启动时 `started` 从这里补中断
-    pub async fn alive(&self, db: &sqlx::PgPool, now: OffsetDateTime) -> sqlx::Result<()> {
-        if self.0.lock().unwrap().alive_saved.is_some_and(|t| (now - t).whole_seconds() < ALIVE_EVERY_S) {
-            return Ok(());
-        }
-        let at = now.format(&time::format_description::well_known::Rfc3339).unwrap_or_default();
-        sqlx::query(
-            "insert into app_setting (key, value, updated_by) values ($1, $2, 'fleet-server')
-             on conflict (key) do update set value = excluded.value, updated_at = now(), updated_by = excluded.updated_by",
-        )
-        .bind(ALIVE_KEY)
-        .bind(json!(at))
-        .execute(db)
-        .await?;
-        self.0.lock().unwrap().alive_saved = Some(now);
-        Ok(())
-    }
-
-    /// 一份上报入库了：之前在失败的，从上次入库到现在算一段（够 `GAP_MIN_S` 的话）。记了新的一段返回 true（调用方存进库里）
-    pub fn ok(&self, now: OffsetDateTime) -> bool {
-        let mut g = self.0.lock().unwrap();
-        let mut added = false;
-        if let (Some(from), Some(_)) = (g.last_ok, g.last_fail.take()) {
-            if (now - from).whole_seconds() >= GAP_MIN_S {
-                add_gap(&mut g.done, (from, now));
-                added = true;
-            }
-        }
-        g.last_ok = Some(now);
-        // 结束一小时以上的不再影响判定：之后一直没报的早就按自己的沉默算离线了
-        g.done.retain(|(_, to)| (now - *to).whole_hours() < 1);
-        added
-    }
-
-    /// agent 的请求因库不可用没能处理
-    pub fn failed(&self, now: OffsetDateTime) { self.0.lock().unwrap().last_fail = Some(now); }
-
-    /// 上次上报在 `last` 的 agent 到 `now` 算不算在线：沉默的时长扣掉其间中控收不到上报的时段（还没恢复的这一段算到最近一次失败）
-    pub fn online(&self, last: OffsetDateTime, now: OffsetDateTime) -> bool {
-        let g = self.0.lock().unwrap();
-        let open = g.last_ok.zip(g.last_fail).filter(|(from, to)| (*to - *from).whole_seconds() >= GAP_MIN_S);
-        let deaf: i64 = g.done.iter().copied().chain(open).filter(|(_, to)| *to > last).map(|(from, to)| (to - from.max(last)).whole_seconds()).sum();
-        (now - last).whole_seconds() - deaf < AGENT_OFFLINE_S
-    }
-}
 
 /// 在用机器全量视图的短缓存：/machines、/relays、/overview、告警评估、实时指标共用，并发请求合并成一次查询（单飞）。
 /// 资源变更事件（`AppState::emit`）让它作废、下次完整加载；agent 上报的指标不发事件，TTL 过了就在上一份上补指标（`refresh`），
-/// 每 `FULL_EVERY` 或小时汇总之后才再完整加载一次。
+/// 每 `FULL_EVERY`、跨天或小时汇总之后才再完整加载一次。
 struct Snap {
     /// 最近一次加载或补指标的时刻（TTL 从这里算）
     at: Instant,
-    /// 最近一次完整加载的时刻
-    full_at: Instant,
+    /// 到这个时刻再完整加载：上次完整加载 + `FULL_EVERY`，最晚到组织时区的下一个零点（流量缓存同时过期）
+    full_until: Instant,
     gen: u64,
     rolled: u64,
     touched: u64,
@@ -622,8 +485,9 @@ struct Snap {
 }
 /// 指标（心跳、探测）最多旧这么久
 const LIVE_TTL: std::time::Duration = std::time::Duration::from_secs(3);
-/// 只补指标最多这么久，之后完整加载一次：跨天的到期天数与流量周期、国旗画像、作业步骤里改了机器却没发事件的，都在这时跟上
-const FULL_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+/// 只补指标最多这么久，之后完整加载一次（与小时汇总同一节奏）：账单时区跨天的到期天数与流量周期、国旗画像在这时跟上。
+/// 改机器的地方都发事件（含作业步骤、线路机连通性的结论），不靠它兜底
+const FULL_EVERY: std::time::Duration = std::time::Duration::from_secs(300);
 /// 入口 id → 今天 / 本月流量（组织时区，来自小时汇总表，含已移除的入口）
 pub type TrafficMap = Arc<HashMap<Uuid, Traffic>>;
 /// 机器 id → 按网卡计的今天 / 本月流量（组织时区，来自小时汇总表）
@@ -698,7 +562,7 @@ async fn cached(st: &AppState, ttl: std::time::Duration) -> sqlx::Result<Arc<Vec
         if s.touched == touched && s.at.elapsed() < ttl {
             return Ok(s.v.clone());
         }
-        if s.full_at.elapsed() < FULL_EVERY {
+        if Instant::now() < s.full_until {
             s.v = Arc::new(refresh(st, &s.v, s.touched != touched).await?);
             (s.at, s.touched) = (Instant::now(), touched);
             return Ok(s.v.clone());
@@ -706,7 +570,10 @@ async fn cached(st: &AppState, ttl: std::time::Duration) -> sqlx::Result<Arc<Vec
     }
     let v = Arc::new(load(st, Scope::Live, None).await?);
     let at = Instant::now();
-    *slot = Some(Snap { at, full_at: at, gen, rolled, touched, v: v.clone() });
+    // 流量缓存（load 刚取过）到组织时区的下一个零点过期：跨天时今天的流量清零，完整加载一次
+    let day_end = c.traffic.lock().await.as_ref().map(|((_, exp), _)| *exp);
+    let full_until = day_end.map_or(at + FULL_EVERY, |e| e.min(at + FULL_EVERY));
+    *slot = Some(Snap { at, full_until, gen, rolled, touched, v: v.clone() });
     Ok(v)
 }
 
@@ -1101,11 +968,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 s.traffic_used_base s_base, s.traffic_used_base_at s_base_at, s.overrides s_overrides, sb.billing_day::int s_bday, p.traffic_rule p_rule,
                 tp.price_cents t_price, tp.currency t_currency, tp.cycle::text t_cycle, tp.billing_tz t_tz, tp.traffic_gb t_traffic, tp.traffic_reset t_reset, tp.remind_days t_remind, local_date(tp.billing_tz) t_today,
                 {A_COLS}, r.public_host r_host, r.generation r_gen, r.applied_generation r_applied, r.applied_at r_applied_at, r.generation_at r_gen_at,
-                r.apply_error r_err, r.port_min r_pmin, r.port_max r_pmax, m.tune_profile, m.tuned_at,
-                (select string_agg(distinct x.detail, '；' order by x.detail) from (
-                   select coalesce(rr.detail, '-') detail, rr.ok from relay_reach rr
-                   where rr.relay_id = m.id and rr.ts > now() - interval '5 minutes' order by rr.ts desc limit 3) x
-                 having count(*) = 3 and not bool_or(x.ok)) r_unreach
+                r.apply_error r_err, r.port_min r_pmin, r.port_max r_pmax, m.tune_profile, m.tuned_at, {unreach} r_unreach
          from machine m
          left join team t on t.id = m.team_id
          left join machine hm on hm.id = m.host_id
@@ -1118,7 +981,8 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
          left join agent_state a on a.machine_id = coalesce(m.host_id, m.id)
          left join relay r on r.machine_id = m.id
          where {lc} and ($1::uuid is null or m.id = $1)
-         order by m.kind = 'relay' desc, t.sort_order nulls first, t.name, m.number, m.label, m.id"
+         order by m.kind = 'relay' desc, t.sort_order nulls first, t.name, m.number, m.label, m.id",
+        unreach = crate::reach::unreachable_sql("m.id")
     );
     let rows: Vec<MRow> = sqlx::query_as(&sql).bind(only).fetch_all(db).await?;
     if rows.is_empty() {
@@ -1516,42 +1380,6 @@ mod tests {
     use super::*;
     use crate::health::tests::{base, sub};
     use time::macros::date;
-
-    /// 中控收不到上报的时段不算 agent 的沉默；停机之前就离线的照样离线；中途有入库的不算中控收不到
-    #[test]
-    fn report_gaps_do_not_count_as_silence() {
-        let t0 = OffsetDateTime::now_utc();
-        let s = |n: i64| t0 + time::Duration::seconds(n);
-        // 中控停了 0–300 秒（进程启动时补记的那段）：停之前 20 秒报过的，恢复后 99 秒还算在线、101 秒算离线
-        let g = ReportGaps::default();
-        {
-            let mut x = g.0.lock().unwrap();
-            x.done.push((s(0), s(300)));
-            x.last_ok = Some(s(300));
-        }
-        assert!(g.online(s(-20), s(399)) && !g.online(s(-20), s(401)));
-        assert!(!g.online(s(-3600), s(301)), "停机之前一小时就不报了：照样离线");
-        assert!(!ReportGaps::default().online(s(-20), s(399)), "没有中断：按墙钟算");
-        // 库连不上：400 秒入库之后一直失败，还没恢复的这一段算到最近一次失败
-        g.ok(s(400));
-        g.failed(s(410));
-        g.failed(s(560));
-        assert!(g.online(s(395), s(565)));
-        // 恢复：400–570 记成一段
-        g.ok(s(570));
-        assert!(g.online(s(395), s(640)) && !g.online(s(395), s(700)));
-        // 中途有入库的（个别请求失败），不算中控收不到
-        let h = ReportGaps::default();
-        for (i, ok) in [(0, true), (5, false), (10, true), (15, false), (20, true), (40, false)] {
-            if ok {
-                h.ok(s(i));
-            } else {
-                h.failed(s(i));
-            }
-        }
-        assert!(h.0.lock().unwrap().done.is_empty());
-        assert!(!h.online(s(-120), s(41)));
-    }
 
     #[test]
     fn reset_day_period_boundaries() {
