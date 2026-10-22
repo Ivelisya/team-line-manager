@@ -191,8 +191,9 @@
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); box-shadow: var(--shadow-card);
   transition: border-color var(--dur-1) var(--ease-std), box-shadow var(--dur-2) var(--ease-out), translate var(--dur-2) var(--ease-out);
 }
-/* 视口外的环形卡跳过排版与绘制（一页最多 96 张）；占位高度按实际卡高（约 200px），滚动条不跳 */
-.rcard { content-visibility: auto; contain-intrinsic-size: auto 200px; }
+/* 视口外的环形卡跳过排版与绘制（一页最多 96 张）；占位高度按实际卡高，滚动条不跳。
+   contain-intrinsic-size 量的是内容盒：卡高约 198 = 170 + 上下内边距 26 + 边框 2（原来写 200，占位成了约 228） */
+.rcard { content-visibility: auto; contain-intrinsic-size: auto 170px; }
 .rcard.is-current { border-color: var(--accent); }
 .rc-head { display: flex; align-items: center; gap: var(--inline-gap); min-width: 0; }
 .rcard .nc-name { font-size: var(--fs-emph); line-height: var(--lh-emph); } /* 名称按钮同节点卡（.nc-name），只占名字的宽度：同机关系标紧跟在名称后面 */

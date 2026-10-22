@@ -26,6 +26,8 @@
 .hsec-sub { margin: 0; font-size: var(--fs-body); line-height: 1.5; color: var(--fg-2); text-wrap: pretty; }
 
 .hero-grid { display: grid; gap: var(--sp-16); min-width: 0; }
+/* 手机：分区底与它里面的白卡是两层边框两层内边距，屏幕本来就窄——去掉分区的底、边框与内边距，卡片直接排在页面上 */
+@media (max-width: 600px) { .hsec { padding: 0; border: 0; background: none; } }
 @container content (min-width: 1100px) { .hero-grid { grid-template-columns: minmax(0, 1.48fr) minmax(0, 1fr); } }
 
 /* ---------- KPI ---------- */
