@@ -375,6 +375,9 @@ async fn ingest(st: &AppState, h: &HeaderMap, mut r: Report) -> Result<Json<Repo
     let access_dirty: Vec<OffsetDateTime> = ac.iter().map(|(_, t)| floor_hour(*t)).filter(|h| *h < cur_hour).collect::<BTreeSet<_>>().into_iter().collect();
 
     let mut tx = st.db.begin().await?;
+    // 主连接池不设语句超时：一条卡住的语句（如插分区表时排在建 / 摘分区的父表锁后面）会让这份一直占着处理位置，
+    // 这台机器之后的上报就一直 429。10 秒（加上等连接最多 5 秒，在 agent 的 15 秒超时以内）没完就取消、回 503，agent 退避重发
+    sqlx::query("set local statement_timeout = '10s'").execute(&mut *tx).await?;
     let prev: Option<(i64, bool)> =
         sqlx::query_as("select last_seq, coalesce(last_report_at > now() - interval '30 seconds', false) from agent_state where machine_id = $1 for update")
             .bind(a.machine_id)

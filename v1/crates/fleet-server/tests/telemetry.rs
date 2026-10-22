@@ -162,6 +162,22 @@ async fn concurrent_reports_for_one_machine_get_429() {
     assert_eq!(t.report("tok1", &blank_report(3)).await.0, StatusCode::OK);
 }
 
+/// 上报事务里的语句卡住（等别人的锁）：10 秒语句超时后回 503（agent 退避重发），放开处理位置，不让这台机器之后的上报一直 429
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stuck_report_times_out_with_503() {
+    let t = setup().await;
+    let id = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    assert_eq!(t.report("tok1", &blank_report(1)).await.0, StatusCode::OK);
+    let mut lock = t.st.db.begin().await.unwrap();
+    sqlx::query("select 1 from agent_state where machine_id = $1 for update").bind(id).execute(&mut *lock).await.unwrap();
+    let t0 = std::time::Instant::now();
+    let (s, v) = t.report("tok1", &blank_report(2)).await;
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{v}");
+    assert!(t0.elapsed() < Duration::from_secs(14), "{:?}", t0.elapsed());
+    lock.rollback().await.unwrap();
+    assert_eq!(t.report("tok1", &blank_report(2)).await.0, StatusCode::OK);
+}
+
 /// 主机样本：同一时刻只收一条（重报不多占）；最多超前 10 分钟；每台机器按余额收（24 小时的量，之后 5 秒补一个）
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn host_samples_dedup_future_window_and_budget() {
