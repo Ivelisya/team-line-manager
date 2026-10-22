@@ -1,0 +1,30 @@
+# 实验室软路由的网络（lab/mkrouter.sh 在容器第一次启动前写入，之后不再覆盖）。
+# eth0 接 PVE 的 vmbr0，也就是家里的局域网：只能当 wan 用静态地址，绝不能在上面发 DHCP / RA
+# （OpenWrt 默认把唯一的网口当 lan、开 DHCP 服务，所以必须在第一次启动前写好这份）。
+# lan 是没有端口的空网桥（地址段同生产 team1 / team1b 的 lan 192.168.124.x），只为让接口清单像生产；
+# lab-traffic 把三个「模拟客户端」地址加在它上面。
+
+config interface 'loopback'
+	option device 'lo'
+	option proto 'static'
+	option ipaddr '127.0.0.1'
+	option netmask '255.0.0.0'
+
+config device
+	option name 'br-lan'
+	option type 'bridge'
+	option bridge_empty '1'
+
+config interface 'lan'
+	option device 'br-lan'
+	option proto 'static'
+	option ipaddr '192.168.124.1'
+	option netmask '255.255.255.0'
+
+config interface 'wan'
+	option device 'eth0'
+	option proto 'static'
+	option ipaddr '192.168.31.70'
+	option netmask '255.255.255.0'
+	option gateway '192.168.31.2'
+	list dns '192.168.31.2'

@@ -1,0 +1,14 @@
+# 实验室软路由的系统设置（lab/mkrouter.sh 在容器第一次启动前写入，之后不再覆盖）。时区同生产。
+# LXC 容器不能改时钟（时间跟着 PVE 宿主机走），所以不开 NTP。
+
+config system
+	option hostname 'lab-router1'
+	option zonename 'Asia/Shanghai'
+	option timezone 'CST-8'
+	option ttylogin '0'
+	option log_size '128'
+	option urandom_seed '0'
+
+config timeserver 'ntp'
+	option enabled '0'
+	option enable_server '0'

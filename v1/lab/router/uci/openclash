@@ -1,0 +1,9 @@
+# 实验室模拟的 OpenClash 设置（lab/router/setup.sh 每次按这份重写，只保留已有的 dashboard_password）。
+# 只有采集会读的几项，键名同生产：uci get openclash.config.{enable,config_path,cn_port,dashboard_password,en_mode}
+
+config openclash 'config'
+	option enable '1'
+	option config_path '/etc/openclash/config/lab-exits.yaml'
+	option cn_port '9090'
+	option dashboard_password '__DASHBOARD_PASSWORD__'
+	option en_mode 'rule'

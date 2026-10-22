@@ -1,0 +1,5 @@
+# 实验室软路由（lab/router/lab-traffic.sysctl → /etc/sysctl.d/90-lab-traffic.conf）：TCP 收发缓冲上限压到 256 KB。
+# 流量发生器的长连接限速 1 KB/s，默认上限（发送 4 MB、接收 32 MB）下 mihomo 发往 curl 的队列会在开头一下子灌进几 MB，
+# 之后这个出口好几分钟没流量；压低后开头最多几百 KB，之后稳定 1 KB/s，总流量也有了上限。容器自己的网络命名空间，不影响宿主机。
+net.ipv4.tcp_wmem = 4096 16384 262144
+net.ipv4.tcp_rmem = 4096 131072 262144
