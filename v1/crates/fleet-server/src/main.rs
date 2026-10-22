@@ -87,6 +87,8 @@ async fn main() -> anyhow::Result<()> {
             fleet_server::spawn_background(&st);
             let app = fleet_server::app(st.clone());
             tracing::info!("fleet-server {} 监听 {listen}", fleet_proto::build_version());
+            // 开始处理请求之前就装上信号处理：能应答请求时 SIGTERM 一定走优雅退出
+            let term = terminated();
             let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
             let mut http = tokio::spawn(
                 axum::serve(l, app.into_make_service_with_connect_info::<SocketAddr>())
@@ -100,7 +102,7 @@ async fn main() -> anyhow::Result<()> {
                     r??;
                     bail!("HTTP 服务意外结束");
                 }
-                _ = terminated() => {}
+                _ = term => {}
             }
             // 优雅退出：先不领新作业、等进行中的步骤做完（最多 60 秒），这期间接口照常；再停止接新连接，进行中的请求最多再等 10 秒
             tracing::info!("收到退出信号：不再领新作业，等进行中的步骤做完（最多 60 秒）");
@@ -119,13 +121,16 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 等退出信号：systemd 停服务发 SIGTERM，前台运行时 Ctrl-C 是 SIGINT
-async fn terminated() {
+/// 退出信号：systemd 停服务发 SIGTERM，前台运行时 Ctrl-C 是 SIGINT。调用时立刻装上处理（之后到的信号不再直接杀掉进程），
+/// 返回等信号到来的 future
+fn terminated() -> impl std::future::Future<Output = ()> {
     use tokio::signal::unix::{signal, SignalKind};
     let mut term = signal(SignalKind::terminate()).expect("SIGTERM");
     let mut int = signal(SignalKind::interrupt()).expect("SIGINT");
-    tokio::select! {
-        _ = term.recv() => {}
-        _ = int.recv() => {}
+    async move {
+        tokio::select! {
+            _ = term.recv() => {}
+            _ = int.recv() => {}
+        }
     }
 }

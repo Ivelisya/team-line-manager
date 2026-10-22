@@ -931,9 +931,11 @@ async fn second_serve_exits_before_touching_the_database() {
             .unwrap()
     };
     let first = serve();
+    // 端口一开始就占住了（迁移、分区维护在后面）：等到能应答请求，才算起来了
     let mut up = false;
     for _ in 0..300 {
-        if tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+        let me = reqwest::Client::new().get(format!("http://127.0.0.1:{port}/api/v1/auth/me")).timeout(Duration::from_secs(1)).send().await;
+        if me.is_ok_and(|r| r.status().as_u16() == 401) {
             up = true;
             break;
         }
