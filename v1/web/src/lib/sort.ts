@@ -16,8 +16,8 @@ export function makeDefaultCompare(teams: Team[]) {
     const oa = a.team ? (order.get(a.team.id) ?? 1e9) : 1e9 + 1;
     const ob = b.team ? (order.get(b.team.id) ?? 1e9) : 1e9 + 1;
     if (oa !== ob) return oa - ob;
-    const tn = collator.compare(a.team?.name ?? '', b.team?.name ?? '');
-    if (tn) return tn;
+    // 同一团队（绝大多数比较）不用再按团队名比：每条推送都整表重排，collator 比较是这里最贵的一步
+    if (a.team?.id !== b.team?.id) { const tn = collator.compare(a.team?.name ?? '', b.team?.name ?? ''); if (tn) return tn; }
     const na = a.number ?? 1e9; const nb = b.number ?? 1e9;
     if (na !== nb) return na - nb;
     return collator.compare(a.name, b.name);

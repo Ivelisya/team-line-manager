@@ -15,9 +15,9 @@ export const useProviders = () => useQuery({ queryKey: ['providers'], queryFn: (
 export const usePlans = () => useQuery({ queryKey: ['plans'], queryFn: () => get<Plan[]>('/plans'), staleTime: 60_000 });
 export const useOverview = () => useQuery({ queryKey: ['overview'], queryFn: ({ signal }) => get<Overview>('/overview', signal) });
 
-const machinesQuery = (scope: 'live' | 'retired' | 'all') => ({ queryKey: ['machines', scope], queryFn: ({ signal }: { signal: AbortSignal }) => get<MachineView[]>(`/machines?scope=${scope}`, signal) });
+const machinesQuery = (scope: 'live' | 'retired') => ({ queryKey: ['machines', scope], queryFn: ({ signal }: { signal: AbortSignal }) => get<MachineView[]>(`/machines?scope=${scope}`, signal) });
 /** 机器列表，已按默认顺序排好：线路机 → 团队 → 编号（故障/离线不下沉） */
-export function useMachines(scope: 'live' | 'retired' | 'all' = 'live') {
+export function useMachines(scope: 'live' | 'retired' = 'live') {
   const teams = useTeams().data;
   // select 排序：只在列表或团队变化时重算；返回的是查询结果本身，调用方按属性追踪
   const select = useCallback((d: MachineView[]) => [...d].sort(makeDefaultCompare(teams ?? [])), [teams]);
@@ -52,7 +52,7 @@ export function readMachines(qc: QueryClient): MachineView[] | undefined {
   const raw = qc.getQueryData<MachineView[]>(['machines', 'live']);
   return raw && [...raw].sort(makeDefaultCompare(qc.getQueryData<Team[]>(['teams']) ?? []));
 }
-/** 机器列表缓存（在用 / 已退役 / 全部都找）里的这台，和那份列表取回的时刻 */
+/** 机器列表缓存（在用 / 已退役都找）里的这台，和那份列表取回的时刻 */
 function fromLists(qc: QueryClient, id: string | null) {
   for (const q of qc.getQueryCache().findAll({ queryKey: ['machines'] })) {
     const m = (q.state.data as MachineView[] | undefined)?.find((x) => x.id === id);
@@ -115,19 +115,19 @@ export interface StreamEvent { type: string; id?: string }
 /** 事件对应要失效的查询键（实时流用）。resync 由 stream.ts 处理成全部失效。
  *  machine_job：作业推进时服务端给目标机器发的，只重取详情（列表的 active_job 由 metrics 推送；改生命周期时服务端另发 machines）
  *  incidents：机器的健康与总览不看告警表，不重取整表；静默带来的「维护中」由服务端随后的 metrics 推送送达
- *  audit：抽屉里机器的操作记录，随改名、续费、退役等机器变更增加；policies：策略页的范围树列着各团队的节点（名字、有没有入口），
- *  机器增减、改名换团队、团队改名都会改它（只有挂着的查询会重取，策略页没开时只是标成过期）；
+ *  audit：抽屉里机器的操作记录，随改名、续费、退役等机器变更增加；['policies', 'list']：策略页的范围树列着各团队的节点（名字、有没有入口），
+ *  机器增减、改名换团队、团队改名都会改它（只有挂着的查询会重取，策略页没开时只是标成过期；不带发布确认框里的预览，免得框开着时内容在眼前变）；
  *  incidents / jobs 列表里带机器名，machine（改名、生命周期）很少发，顺带重取让名字立刻跟上；
  *  availability：近 N 天可用率按账单时区分天，改订阅（machine 事件）可能换了时区 */
 export function eventKeys(ev: StreamEvent): unknown[][] {
   switch (ev.type) {
-    case 'machine': return [['machine', ev.id], ['machines'], ['overview'], ['audit'], ['policies'], ['incidents'], ['jobs'], ['availability', ev.id]];
+    case 'machine': return [['machine', ev.id], ['machines'], ['overview'], ['audit'], ['policies', 'list'], ['incidents'], ['jobs'], ['availability', ev.id]];
     case 'machine_job': return [['machine', ev.id]];
-    case 'machines': return [['machine'], ['machines'], ['relays'], ['overview'], ['audit'], ['policies']];
+    case 'machines': return [['machine'], ['machines'], ['relays'], ['overview'], ['audit'], ['policies', 'list']];
     case 'relay': return [['relays'], ['machines']];
     case 'job': return [['jobs'], ['job', ev.id]];
     case 'incidents': return [['incidents'], ['silences']];
-    case 'catalog': return [['teams'], ['providers'], ['plans'], ['machines'], ['machine'], ['notify-channels'], ['policies']];
+    case 'catalog': return [['teams'], ['providers'], ['plans'], ['machines'], ['machine'], ['notify-channels'], ['policies', 'list']];
     case 'api_keys': return [['api-keys']];
     case 'policies': return [['policies'], ['machines'], ['relays']];
     default: return [];

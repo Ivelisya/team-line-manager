@@ -65,9 +65,10 @@ export const OverviewSection = React.memo(function OverviewSection({ o, loading 
           <Stat loading={loading} tone="amber" icon={<CalendarClock />} label="7 天内到期" value={<CountUp value={o?.due_7d} />} unit="台" to="/nodes?sort=due" caption="需要续费的机器" />
           <Stat loading={loading} tone="gold" icon={<CircleDollarSign />} label="每月费用" value={cost0 ? F.money(cost0.cents, cost0.currency) : '—'}
             caption={costMore.length ? `另有 ${costMore.map((c) => F.money(c.cents, c.currency)).join(' + ')}（不同币种分开计）` : '在用机器按月折算'} />
-          <Stat loading={loading} tone="sky" icon={<TrendingUp />} label="本月业务流量" value={tr ? <CountUp value={trTotal} format={(n) => F.inScale(n, trScale)} /> : '—'} unit={tr ? trScale.u : undefined}
+          {/* 每条推送都在涨，不滚数（滚到的位数也显示不出来，白白逐帧重画）：同网卡速率，直接到位 */}
+          <Stat loading={loading} tone="sky" icon={<TrendingUp />} label="本月业务流量" value={tr ? F.inScale(trTotal, trScale) : '—'} unit={tr ? trScale.u : undefined}
             caption={tr && <><span>下载 <Num f={F.bytes(tr.down)} /></span><span>上传 <Num f={F.bytes(tr.up)} /></span></>} />
-          <Stat loading={loading} tone="violet" icon={<Database />} label="流量额度" value={<CountUp value={qt?.n} />} unit={qt ? '台' : undefined}
+          <Stat loading={loading} tone="violet" icon={<Database />} label="流量额度吃紧" value={<CountUp value={qt?.n} />} unit={qt ? '台' : undefined}
             caption={qt && (qt.top ? <span className="stat-who">最紧<span className="ellipsis">{qt.top.name}</span>已用<b className="num">{qt.top.pct}%</b></span> : '都在 80% 以下')} />
           <Stat loading={loading} tone="blue" icon={<CloudUpload />} label="上架中 · 退役中" value={o ? <CountUp value={o.provisioning + o.retiring} /> : '—'} unit="台" to="/jobs" caption={o && <span>上架 <b className="num">{o.provisioning}</b> · 退役 <b className="num">{o.retiring}</b></span>} />
         </div>
