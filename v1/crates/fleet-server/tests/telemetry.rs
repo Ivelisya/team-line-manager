@@ -910,6 +910,93 @@ async fn central_outage_is_not_agent_silence() {
     assert!(!third.online(now - time::Duration::seconds(480), OffsetDateTime::now_utc()), "停机约 300 秒只扣一次");
 }
 
+/// 上一个进程一直在跑、只是全网都没上报（模拟器停了、边缘机挂了）：重启补记的中断从它自己记的存活时刻算，
+/// 不从库里最新的上报算——一直不报的机器重启后照样离线；刚停的那一小段照样扣
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn restart_gap_starts_at_central_alive_time() {
+    let t = setup().await;
+    let a = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    sqlx::query("insert into agent_state (machine_id, agent_version, last_report_at) values ($1, 'v', now() - interval '3 hours')").bind(a).execute(&t.st.db).await.unwrap();
+    // 上一个进程 20 秒前还记了一次存活；之后 10 秒内再记不重写
+    let alive = OffsetDateTime::now_utc() - time::Duration::seconds(20);
+    let prev = fleet_server::views::ReportGaps::default();
+    prev.alive(&t.st.db, alive).await.unwrap();
+    prev.alive(&t.st.db, alive + time::Duration::seconds(10)).await.unwrap();
+    let saved: String = sqlx::query_scalar("select value #>> '{}' from app_setting where key = 'central_alive_at'").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(OffsetDateTime::parse(&saved, &time::format_description::well_known::Rfc3339).unwrap(), alive);
+
+    t.st.report_gaps.started(&t.st.db).await.unwrap();
+    t.st.live.invalidate();
+    assert!(t.health(a).await.1.contains(&"agent_offline".to_string()), "3 小时没报：重启后照样离线");
+    let now = OffsetDateTime::now_utc();
+    assert!(t.st.report_gaps.online(now - time::Duration::seconds(130), now), "停机的约 20 秒不算沉默");
+    assert!(!fleet_server::views::ReportGaps::default().online(now - time::Duration::seconds(130), now));
+}
+
+/// 有 agent 的在用机器同时离线超过一半且至少 3 台：不开单机的 agent 离线，开一条中控侧的「agent 同时失联」；
+/// 大部分回来后那条恢复，还没回来的去抖之后再按单机报
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mass_agent_loss_opens_one_central_alert() {
+    let t = setup().await;
+    let a = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let b = seed_relay(&t, "线路机2", "198.51.100.2", "tok2").await;
+    let c = seed_relay(&t, "线路机3", "198.51.100.3", "tok3").await;
+    for m in [a, b, c] {
+        sqlx::query("insert into agent_state (machine_id, agent_version, last_report_at) values ($1, 'v', now() - interval '10 minutes')").bind(m).execute(&t.st.db).await.unwrap();
+    }
+    let mut state = AlertState::default();
+    let base = OffsetDateTime::now_utc();
+    let firing = || async { incidents(&t, "firing").await.into_iter().map(|i| (i["rule"].as_str().unwrap().to_string(), i["summary"].as_str().unwrap().to_string())).collect::<Vec<_>>() };
+    for secs in [0, 61, 121] {
+        pass(&t, &mut state, base, secs).await;
+        selfmon::check_once(&t.st, base + time::Duration::seconds(secs)).await.unwrap();
+    }
+    assert_eq!(firing().await, [("central_ingress".to_string(), "中控：3/3 台 agent 同时失联：检查边缘机 / Caddy / DNS".to_string())]);
+    // a、b 回来了：中控侧的恢复；c 从这时起去抖，满 60 秒按单机报
+    for m in [a, b] {
+        sqlx::query("update agent_state set last_report_at = now() where machine_id = $1").bind(m).execute(&t.st.db).await.unwrap();
+    }
+    t.st.live.invalidate();
+    selfmon::check_once(&t.st, base + time::Duration::seconds(150)).await.unwrap();
+    pass(&t, &mut state, base, 150).await;
+    assert!(firing().await.is_empty());
+    pass(&t, &mut state, base, 211).await;
+    let f = firing().await;
+    assert_eq!(f.len(), 1);
+    assert_eq!((f[0].0.as_str(), f[0].1.starts_with("线路机3：")), ("agent_offline", true), "{f:?}");
+}
+
+/// 维护中健康判定不给原因：进行中的告警不算恢复，保持原状，维护结束后按那时的状态再判
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn maintenance_does_not_resolve_open_alerts() {
+    let t = setup().await;
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    xray_report(&t, 1, false).await;
+    let mut state = AlertState::default();
+    let base = OffsetDateTime::now_utc();
+    pass(&t, &mut state, base, 0).await;
+    pass(&t, &mut state, base, 61).await;
+    assert!(has_rule(&incidents(&t, "firing").await, "relay_xray_down"));
+    let f = time::format_description::well_known::Rfc3339;
+    let now = OffsetDateTime::now_utc();
+    let win = t.post("/api/v1/silences", json!({
+        "subject_id": relay, "is_maintenance": true, "comment": "换机房",
+        "starts_at": (now - time::Duration::minutes(1)).format(&f).unwrap(), "ends_at": (now + time::Duration::hours(1)).format(&f).unwrap(),
+    })).await["id"].as_str().unwrap().to_string();
+    for secs in [91, 151, 211] {
+        pass(&t, &mut state, base, secs).await;
+    }
+    assert!(has_rule(&incidents(&t, "firing").await, "relay_xray_down"), "维护中不恢复");
+    assert!(incidents(&t, "resolved").await.is_empty());
+    // 维护结束、Xray 已经好了：原因消失满 60 秒恢复
+    let (s, _) = t.req("DELETE", &format!("/api/v1/silences/{win}"), None, None).await;
+    assert_eq!(s, StatusCode::OK);
+    xray_report(&t, 2, true).await;
+    pass(&t, &mut state, base, 241).await;
+    pass(&t, &mut state, base, 302).await;
+    assert!(incidents(&t, "firing").await.is_empty());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn retiring_machine_alerts_are_left_to_retire_flow() {
     let t = setup().await;

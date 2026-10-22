@@ -411,13 +411,13 @@ impl ACols {
 /// agent 多久没上报算离线（中控收不到上报的时段不算，见 `ReportGaps`）
 pub const AGENT_OFFLINE_S: i64 = 120;
 
-/// 中控收不到上报的时段：中控没在跑（进程启动时补记：库里最新的上报时刻到启动）；库连不上——agent 的请求因库不可用
+/// 中控收不到上报的时段：中控没在跑（进程启动时补记：上一个进程最后还在跑的时刻到启动，见 `started`）；库连不上——agent 的请求因库不可用
 /// （`db::unavailable`）处理不了，而且整整 `GAP_MIN_S` 秒一份上报都没入库（中途有入库的，只是个别请求失败，不算）。
 /// 判 agent 离线时这些时段不算它的沉默：恢复后各 agent 退避中的重发（最长约 90 秒）要一会儿才到，按墙钟算会把一直在线的
 /// 机器成批判成离线（开一批「agent 离线」严重告警再成批恢复），等摘除的退役、换线路机作业也会判线路机不在线而失败。
 /// 停机之前就已经离线的机器照样离线：只扣掉中断的那一段，不是从恢复时重新计时。
 /// 最近一小时的时段同时存进库里（app_setting 的 `report_gaps`）：中断恢复后不久又重启一次（连着两次部署、崩溃重启），
-/// 新进程只看得到「库里最新的上报时刻」——那已经是恢复之后的了，前一段中断要从库里接着算，否则重发还没到的 agent 照样成批判离线
+/// 新进程只看得到上一个进程最后还在跑的时刻——那已经是恢复之后的了，前一段中断要从库里接着算，否则重发还没到的 agent 照样成批判离线
 #[derive(Default)]
 pub struct ReportGaps(std::sync::Mutex<Gaps>);
 
@@ -429,12 +429,18 @@ struct Gaps {
     last_fail: Option<OffsetDateTime>,
     /// 已经结束的中断时段 [起, 止]
     done: Vec<(OffsetDateTime, OffsetDateTime)>,
+    /// 最近一次写进库里的存活时刻（`alive`）
+    alive_saved: Option<OffsetDateTime>,
 }
 
 /// 连续这么久一份上报都没入库、其间又有因库不可用失败的，才算中控收不到上报
 const GAP_MIN_S: i64 = 30;
 /// 存中断时段的 app_setting 键：`[["起", "止"], …]`（RFC 3339）
 const GAPS_KEY: &str = "report_gaps";
+/// 中控自己记的存活时刻（app_setting，RFC 3339 字符串）：告警循环每轮写，进程启动时它就是上一个进程最后还在跑的时刻
+const ALIVE_KEY: &str = "central_alive_at";
+/// 存活时刻和库里的相差这么久以上才重写（每轮都写一遍只会产生死元组）
+const ALIVE_EVERY_S: i64 = 30;
 
 /// 加一段中断，和已有的重叠、相接的并成一段：同一段停机不会因为连着重启记两次而被重复扣掉
 /// （一直没收到上报时，每次启动补记的都是「库里最新的上报时刻 → 启动」，起点相同）
@@ -452,9 +458,16 @@ fn add_gap(done: &mut Vec<(OffsetDateTime, OffsetDateTime)>, gap: (OffsetDateTim
 }
 
 impl ReportGaps {
-    /// 进程启动时调：之前的进程记在库里的时段接着算，再补一段「上一个进程最后收到的上报（库里最新的上报时刻）→ 现在」，存回库里
+    /// 进程启动时调：之前的进程记在库里的时段接着算，再补一段「上一个进程最后还在跑的时刻 → 现在」，存回库里。
+    /// 起点取它自己记的存活时刻（`alive`）与库里最新的上报时刻中晚的那个；没记过存活时刻（第一次部署）就是最新的上报时刻。
+    /// 不能只看上报：上一个进程在跑、只是全网都没上报的时段（模拟器停了、边缘机挂了）不是中控收不到，扣掉的话一直离线的机器每次重启后都被判在线
     pub async fn started(&self, db: &sqlx::PgPool) -> sqlx::Result<()> {
-        let last: Option<OffsetDateTime> = sqlx::query_scalar("select max(last_report_at) from agent_state").fetch_one(db).await?;
+        let last: Option<OffsetDateTime> = sqlx::query_scalar(
+            "select greatest((select max(last_report_at) from agent_state), (select (value #>> '{}')::timestamptz from app_setting where key = $1))",
+        )
+        .bind(ALIVE_KEY)
+        .fetch_one(db)
+        .await?;
         let saved: Option<Value> = sqlx::query_scalar("select value from app_setting where key = $1").bind(GAPS_KEY).fetch_optional(db).await?;
         let now = OffsetDateTime::now_utc();
         {
@@ -487,6 +500,24 @@ impl ReportGaps {
         .execute(db)
         .await
         .map(|_| ())
+    }
+
+    /// 告警循环每轮调：把「中控此刻还在跑」记进库里（和上次写的相差满 `ALIVE_EVERY_S` 才写），下次启动时 `started` 从这里补中断
+    pub async fn alive(&self, db: &sqlx::PgPool, now: OffsetDateTime) -> sqlx::Result<()> {
+        if self.0.lock().unwrap().alive_saved.is_some_and(|t| (now - t).whole_seconds() < ALIVE_EVERY_S) {
+            return Ok(());
+        }
+        let at = now.format(&time::format_description::well_known::Rfc3339).unwrap_or_default();
+        sqlx::query(
+            "insert into app_setting (key, value, updated_by) values ($1, $2, 'fleet-server')
+             on conflict (key) do update set value = excluded.value, updated_at = now(), updated_by = excluded.updated_by",
+        )
+        .bind(ALIVE_KEY)
+        .bind(json!(at))
+        .execute(db)
+        .await?;
+        self.0.lock().unwrap().alive_saved = Some(now);
+        Ok(())
     }
 
     /// 一份上报入库了：之前在失败的，从上次入库到现在算一段（够 `GAP_MIN_S` 的话）。记了新的一段返回 true（调用方存进库里）

@@ -9,6 +9,8 @@
 //!     或目录里没有备份、读不了。目录不存在（没装备份，如实验室）不检查
 //!   - `central_disk_low`（严重）：中控本机 /、PostgreSQL 数据目录、/var/lib/fleet、备份目录所在的文件系统剩余低于 10%（同 df 的可用），
 //!     回到 11% 以上才恢复
+//!   - `central_ingress`（严重）：有自己 agent 的在用机器里同时离线的超过一半、且至少 3 台（alerts::agents_unreachable）——
+//!     中控在跑、库也好，是 agent 到不了中控（边缘机反代、Caddy、DNS）。这期间不新开单机的 agent 离线，这条恢复后还没回来的再按单机报
 //!
 //!   不去抖（条件本身带了时长或余量），恢复后再出现新开一条；被静默的不开、不发通知；严重的每 4 小时提醒一次（同机器的告警）。
 //!   对象是「中控」：subject_id 是全零 uuid（渠道连续失败是渠道 id），接口里这类告警的 subject / subject_id 为 null、subject_name 是「中控」。
@@ -30,6 +32,7 @@ use uuid::Uuid;
 pub const CHANNEL_FAILING: &str = "central_channel_failing";
 pub const BACKUP_STALE: &str = "central_backup_stale";
 pub const DISK_LOW: &str = "central_disk_low";
+pub const INGRESS: &str = "central_ingress";
 /// 中控自身告警的对象 id（不是机器；渠道连续失败的告警用渠道 id）
 pub const CENTRAL: Uuid = Uuid::nil();
 /// 告警、通知里中控的名字
@@ -131,6 +134,9 @@ pub async fn check_once(st: &AppState, now: OffsetDateTime) -> anyhow::Result<()
     let pct = if open.iter().any(|o| o.rule == DISK_LOW) { DISK_OK_PCT } else { DISK_LOW_PCT };
     if let Some(text) = disk_problem(&disk_usage(dir), pct) {
         want.push(Problem { rule: DISK_LOW, subject: CENTRAL, severity: "critical", text });
+    }
+    if let Some((off, total)) = alerts::agents_unreachable(&crate::views::live(st).await?) {
+        want.push(Problem { rule: INGRESS, subject: CENTRAL, severity: "critical", text: format!("{off}/{total} 台 agent 同时失联：检查边缘机 / Caddy / DNS") });
     }
     let enabled: HashSet<Uuid> = channels.iter().map(|c| c.0).collect();
     reconcile(st, open, want, &enabled, now).await
@@ -301,7 +307,7 @@ mod tests {
 
     #[test]
     fn central_rules() {
-        assert!(is_central(CHANNEL_FAILING) && is_central(BACKUP_STALE) && is_central(DISK_LOW));
+        assert!(is_central(CHANNEL_FAILING) && is_central(BACKUP_STALE) && is_central(DISK_LOW) && is_central(INGRESS));
         assert!(!is_central("agent_offline") && !is_central("ipintel_new_isp"));
     }
 }
