@@ -246,7 +246,7 @@ ProvisionItem = {
 - **滞后**：服务端广播缓冲 256 条，某个连接读得太慢丢了消息时补发 `{type:"resync"}`，客户端应让全部缓存失效重取。
 - **重连**：客户端断线后自己退避重连；连上后应重取一次机器类数据（断开期间错过的 `metrics` 增量不会补发）。
 
-**资源变更通知**（收到后让对应查询失效重取）：`{type:"machine",id}`、`{type:"machine_job",id}`（作业推进到这台机器：只需重取它的详情；列表里的 `active_job` 走 `metrics`，改生命周期时另发 `machines`）、`{type:"machines"}`、`{type:"relay",id}`、`{type:"job",id}`、`{type:"incidents"}`、`{type:"catalog"}`、`{type:"api_keys"}`（密钥增删撤销）、`{type:"policies"}`、`{type:"resync"}`。
+**资源变更通知**（收到后让对应查询失效重取）：`{type:"machine",id}`、`{type:"machine_job",id}`（作业推进到这台机器：只需重取它的详情；列表里的 `active_job` 走 `metrics`，改生命周期时另发 `machines`）、`{type:"machines"}`、`{type:"relay",id}`、`{type:"job",id}`、`{type:"incidents"}`、`{type:"catalog"}`、`{type:"api_keys"}`（密钥增删撤销）、`{type:"policies"}`、`{type:"settings"}`（面板设置变了：访问记录保留期）、`{type:"resync"}`。
 
 **实时指标** `{type:"metrics", machines:{<机器id>:{…}}, entries:{<入口id>:{…}}, overview?}`：在用机器视图（`GET /machines` 的 `MachineView`）里随上报与时间变化的字段，和上一条相比**只带变了的字段**（没变的键不出现），客户端把它们写进本地缓存，不必重取。有新上报或作业推进时最多每 3 s 一条，没有也每 30 s 比对一次（离线、到期天数、维护窗口随时间变）；没有变化不发。
 - `machines[id]` 的键：
@@ -267,14 +267,14 @@ ProvisionItem = {
 
 `POST /agent/v1/report` 入库失败按类回：数据本身入不了库（SQLSTATE 22 类：坏字节、NUL、越界；23 类：违反约束）→ 422（`error.code="bad_report"`），agent 把这份报告移入 `dead/` 不再重发，其中的入口流量结转到下一份报告补报（同离线队列超限淘汰；这份本身带着结转补报的流量时不再结转，免得一份接一份地被拒）；其它（连接池超时、断连、磁盘满、只读…）→ 503，agent 退避重试（受本地队列的字节与时长上限约束）。agent 只把 4xx（401 撤销、403/404/408/429 除外）当永久拒绝，5xx 和网络错误一律重试。
 
-上报的限额（按机器，在内存里，中控重启归满）：新的一份（seq 大于入库提交过的）要有一个令牌，突发 600、之后每秒补 1，扣不到回 429 + `Retry-After`；入库提交之后才扣令牌与主机样本余额，入库失败的那份不扣、也不算「提交过的 seq」（重发的同一份不扣）。agent 给的字符串里的 NUL 入库前去掉（text / jsonb 不收）。主机网卡计数器的每段增量在小时汇总里按 10 Gbit/s × 两个样本的间隔封顶、入口流量每小时按 10 Gbit/s 跑满封顶，用量求和夹到 9e18：离谱的计数器不会让汇总或机器列表溢出。样本时间戳只收「保留期以内 ~ 中控时间往后 10 分钟」（agent 时钟快得更多时样本丢弃，健康原因 `clock_skew` 在偏差超过 60 秒时就已报出）。主机样本按 (机器, 时刻) 唯一，同一时刻重报的不再入库；另有主机样本余额：容量 8640 个（24 小时的量），每 5 秒补一个（两倍于 agent 10 秒一个的采样），超出的丢最早的——正常 agent 补传积压（最多 6 小时离线队列 + 12 小时内存缓冲）期间余额按两倍速回满，用不完；一台机器一天最多入库约 2.6 万条（正常 8640）。
+上报的限额（按机器，在内存里，中控重启归满）：新的一份（seq 大于入库提交过的）要有一个令牌，突发 600、之后每秒补 1，扣不到回 429 + `Retry-After`；入库提交之后才扣令牌与主机样本余额，入库失败的那份不扣、也不算「提交过的 seq」（重发的同一份不扣）。agent 给的字符串里的 NUL 入库前去掉（text / jsonb 不收）。主机网卡计数器的每段增量在小时汇总里按 10 Gbit/s × 两个样本的间隔封顶、入口流量每小时按 10 Gbit/s 跑满封顶，用量求和夹到 9e18：离谱的计数器不会让汇总或机器列表溢出。样本时间戳只收「保留期以内 ~ 中控时间往后 10 分钟」（访问记录按面板里设的原始记录保留期，其余按 `[retention] raw_days`；agent 时钟快得更多时样本丢弃，健康原因 `clock_skew` 在偏差超过 60 秒时就已报出）。主机样本按 (机器, 时刻) 唯一，同一时刻重报的不再入库；另有主机样本余额：容量 8640 个（24 小时的量），每 5 秒补一个（两倍于 agent 10 秒一个的采样），超出的丢最早的——正常 agent 补传积压（最多 6 小时离线队列 + 12 小时内存缓冲）期间余额按两倍速回满，用不完；一台机器一天最多入库约 2.6 万条（正常 8640）。
 
 `POST /agent/v1/applied`：每台线路机突发 120 份、之后 2 秒一份，超出回 429 + `Retry-After`（agent 照 Retry-After 重试，三次不成落盘、下轮补发）。`error` 与 `entries[].error` 截到 512 字，`entries` 最多 3000 条（不属于这台线路机的入口 id 忽略）。回报没改变任何东西（重发的同一份、同样的错误）时不发 `relay` / `machines` 失效通知。
 
 ## 访问监控
-线路机 agent 解析 Xray 访问日志上报，服务端写入 `access_event`（原始记录保留 `retention.access_days`=7 天），并每 5 分钟把当前小时和被标脏的小时重算进小时汇总（`access_hourly` / `access_source_hourly` 保留 31 天，窗口最长 30d；`access_target_seen` 记每个目标的首次 / 最近出现，最近出现超 90 天才删；幂等；agent 断网后补传的旧记录在上报时把所在小时记进 `access_dirty`，下一轮补算；启动时补算缺口）。24h/7d/30d 的结果在进程内缓存：每轮汇总成功后整体作废；`summary` / `targets`（第一页）/ `sources` 最多缓存 `access_cache_secs`（默认 300）秒，单台机器的 `/machines/{id}/access` 与 `/machines/{id}/sources`（带最近原始记录、来源基线与异常）最多 30 秒；设 0 关闭。全部为只读 GET，读权限即可。
+线路机 agent 解析 Xray 访问日志上报，服务端写入 `access_event`（原始记录，默认留 7 天），并每 5 分钟把当前小时和被标脏的小时重算进小时汇总（`access_hourly` / `access_source_hourly`，默认留 31 天，窗口最长 30d 且不超过汇总的保留期；`access_target_seen` 记每个目标的首次 / 最近出现，最近一次出现超过汇总的保留期就删；留多久见下文「访问记录保留期」；幂等；agent 断网后补传的旧记录在上报时把所在小时记进 `access_dirty`，下一轮补算；启动时补算缺口）。24h/7d/30d 的结果在进程内缓存：每轮汇总成功后整体作废；`summary` / `targets`（第一页）/ `sources` 最多缓存 `access_cache_secs`（默认 300）秒，单台机器的 `/machines/{id}/access` 与 `/machines/{id}/sources`（带最近原始记录、来源基线与异常）最多 30 秒；设 0 关闭。全部为只读 GET，读权限即可。
 
-公共筛选参数（空串等同没给，非法值返回 400）：`window=1h|24h|7d|30d`（默认 24h，events 默认 7d）、`team=<团队id>`、`node=<节点id>`、`search=`（大小写不敏感的子串，`%` `_` 按字面）、`action=all|blocked|routed`、`kind=all|domain|ip`。
+公共筛选参数（空串等同没给，非法值返回 400）：`window=1h|24h|7d|30d`（默认 24h，events 默认 7d；除 events 外不能比汇总的保留期 `hourly_days` 长，超了 400，见「访问记录保留期」）、`team=<团队id>`、`node=<节点id>`、`search=`（大小写不敏感的子串，`%` `_` 按字面）、`action=all|blocked|routed`、`kind=all|domain|ip`。
 
 - **窗口口径**：`1h` 直接查原始记录；`24h` 及以上查小时汇总，起点对齐到整点（`window_start` 返回实际起点），最新数据最多晚 5 分钟。
 - **随机子域名合并**：注册域名之下的标签含 UUID、或 ≥8 位纯十六进制且 ≥2 位数字、或 ≥20 位字母数字且 ≥4 位数字，则整条合并为 `*.<注册域名>`（注册域名取最后两段，倒数第二段是 com/net/org/gov/edu/co 且最后一段是两字母国家码时取最后三段）。`events` 返回的是未合并的原始目标。
@@ -287,9 +287,26 @@ ProvisionItem = {
 | GET | `/access/summary?…` | `{kpi:{active_nodes,conns,targets,blocked}, nodes:[{node_id,name,team,conns,targets,domains,sources,blocked,last_ts}], window_start}`。`targets` 是各节点分别去重后相加；节点按连接数降序。节点的 `sources` 是去重来源 IP 数，跟随全部筛选（和同行的 `conns` 同一批连接）：`1h` 在原始记录上逐条带上 `search`（目标或来源 IP）、`kind`、`action`；`24h` 及以上来自来源小时表，没有目标维度，带了 `search`、`kind`、`action`（非 all）任一筛选时为 `null`（界面显示「—」） |
 | GET | `/access/targets?…&sort=conns\|last\|first&limit=100&offset=0` | `{items:[{node_id,name,dest_host,kind,conns,sources,blocked,first_seen,last_seen}], next_offset, window_start}`；`limit` 1–500，`offset` ≤ 100000，满页才给 `next_offset`；`first_seen` 是该节点历史上第一次出现（不限窗口）。不单独回总数：同一筛选下 `/access/summary` 的 `kpi.targets` 就是这张表的总行数（同一个聚合） |
 | GET | `/access/sources?…&limit=100` | `{items:[{node_id,name,src_ip,conns,last_ts}], window_start}`，按 (节点, 来源 IP) 连接数降序；`search` 在这里匹配来源 IP；`limit` ≤ 500 |
-| GET | `/access/events?node=&team=&search=&action=&kind=&window=&limit=100&before=<游标>` | `{items:[{ts,node_id,name,src_ip,dest_host,dest_port,network,blocked}], next_before}`，按 (时间, 记录 id) 倒序；`next_before` 是不透明游标（满页才给），下一页把它原样放进 `before`（要 URL 编码）；同一时刻的多条记录不会被跳过；格式不对 400。`search` 同时匹配目标和来源 IP；只有最近 7 天 |
-| GET | `/access/new-targets?window=24h&node=…&limit=200&offset=0` | `{items:[{node_id,name,dest_host,kind,first_seen,last_seen,total}], total, next_offset, window_start}`：顶层 `total` 是符合筛选的目标总数，`next_offset` 只在后面还有时给出；窗口内第一次出现的目标，按首次出现倒序；`total` 为累计连接数（汇总保留期内）。这是旧系统「新域名」的替代，**不产生告警** |
-| GET | `/machines/{id}/access?window=24h` | `{window_start, top_domains:[{dest_host,kind,conns,blocked,sources}]（30）, top_sources:[{node_id,name,src_ip,conns,last_ts}]（20）, recent:[事件]（最近 20 条）, hourly:[{hour,conns,blocked}]（缺的小时补 0；至少 24 小时）}`。线路机只算经它的流量（它名下的入口，含已移除的；同一节点经别的线路机的流量不算），节点算它自己全部入口的；机器不存在 404 |
+| GET | `/access/events?node=&team=&search=&action=&kind=&window=&limit=100&before=<游标>` | `{items:[{ts,node_id,name,src_ip,dest_host,dest_port,network,blocked}], next_before}`，按 (时间, 记录 id) 倒序；`next_before` 是不透明游标（满页才给），下一页把它原样放进 `before`（要 URL 编码）；同一时刻的多条记录不会被跳过；格式不对 400。`search` 同时匹配目标和来源 IP；回看所选窗口，只有原始记录保留期（`raw_days`）以内的，窗口比它长不报错 |
+| GET | `/access/new-targets?window=24h&node=…&limit=200&offset=0` | `{items:[{node_id,name,dest_host,kind,first_seen,last_seen,total}], total, next_offset, window_start}`：顶层 `total` 是符合筛选的目标总数，`next_offset` 只在后面还有时给出；窗口内第一次出现的目标（之前在汇总的保留期内没见过），按首次出现倒序；`total` 为累计连接数（汇总保留期内）。这是旧系统「新域名」的替代，**不产生告警** |
+| GET | `/machines/{id}/access?window=24h` | `{window_start, top_domains:[{dest_host,kind,conns,blocked,sources}]（30）, top_sources:[{node_id,name,src_ip,conns,last_ts}]（20）, recent:[事件]（原始记录保留期内最近 20 条）, hourly:[{hour,conns,blocked}]（缺的小时补 0；至少 24 小时）}`。线路机只算经它的流量（它名下的入口，含已移除的；同一节点经别的线路机的流量不算），节点算它自己全部入口的；机器不存在 404 |
+
+## 访问记录保留期
+
+访问监控照常记录，访问记录只留面板里设的天数，到期中控自动删除（`settings.rs`；设置存在 `app_setting` 表，迁移 0028）。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/settings/access-retention` | `{raw_days, hourly_days, min:1, max:90, profile_days}`：`raw_days` 是原始访问记录（`access_event`，每一条：时间、来源 IP、目标）留几天；`hourly_days` 是汇总留几天，也是访问页汇总类视图能选的最长窗口；`profile_days` 是来源画像实际留几天 = max(`hourly_days`, `[ipintel] learn_days`)（ipintel 关掉时就是 `hourly_days`），只读。没设过时 `raw_days` = 配置文件的 `[retention] access_days`（默认 7），`hourly_days` = 31 |
+| PUT | `/settings/access-retention` | 同形，只认 `raw_days` / `hourly_days`（两个都要给，其余字段忽略），要 `write`：各 1–90 的整数、`hourly_days` ≥ `raw_days`（汇总是从原始记录算的），否则 400（中文原因）。返回改完的（同 GET）。有变化时写审计 `settings.access_retention`（`detail:{from:{raw_days,hourly_days}, to:{…}}`，摘要如「原始记录 7 → 3 天，汇总 31 → 14 天」）、发实时事件 `{type:"settings"}`，并马上在后台按新期限清一次（不等每小时的维护；删得多时要几分钟）；没有变化时什么都不写 |
+
+各管什么（后台每小时按当前期限清一次，截止时间对齐整点）：
+- `raw_days`：原始访问记录（按天分区，过期的整天删掉，最多多留不到一天）；agent 上报的访问记录只收这么久以内的；中控启动时补算汇总、机器抽屉的最近记录都回看这么久。
+- `hourly_days`：小时汇总（`access_hourly`）、来源小时汇总（`access_source_hourly`）、补算用的迟到差值与脏标记、目标首次 / 最近出现（`access_target_seen`，最近一次出现超过这么久的删掉）、来源 IP 画像缓存（`ip_intel_cache`，超过这么久前查的删掉，再用到时重查离线库）。
+- `profile_days`：来源画像（`node_source_seen` 的运营商 / 城市 / 接入方式 / 机房·VPN 来源 IP，最近一次出现超过这么久、且不在告警中的删掉）与已恢复的画像异常告警（`ipintel_*`，摘要里有来源 IP、城市；别的告警仍是恢复后 180 天删）。学习期比汇总长时按学习期留：学习期里学到的基线要留到学习期结束，否则学完一出现就被当成「新的」告警；多留的只是这几类汇总值，原始记录和小时汇总照样按上面两个天数删。
+- 「新目标」「新运营商 / 新城市 / 首次出现的机房来源」都是「保留期内没见过」：超过期限没再出现的记录删了，之后再出现就算新的。
+- 汇总类视图（`/access/summary`、`/access/targets`、`/access/sources`、`/access/new-targets`、`/machines/{id}/access`、`/machines/{id}/sources`）的 `window` 不能比 `hourly_days` 长（`1h` 读原始记录，总能看）：超了 400「访问记录的汇总只保留 N 天，看不了最近 7 天；要看更久，先在设置里把保留期调长」。`/access/events` 不拦，窗口比原始记录的保留期长时更早的已经没有了。
+- 调长不会找回已经删掉的数据。每日备份里的汇总与来源画像随备份轮换才消失（OPS.md §13）。
 
 ## 来源 IP 画像（IP 情报）
 离线库在 fleet-server 进程内查询（ip2region v4/v6、DB-IP City/ASN Lite、iptoasn，mmap），**只查本地，绝不把 IP 发往在线服务**。库由 `deploy/ipintel/fetch-dbs.sh`（systemd timer `fleet-ipintel-fetch` 每月一次）下载到 `[ipintel] db_dir`（默认 `/var/lib/fleet/ipintel`），文件 mtime 变化后 5 分钟内自动热重载。库缺失或不全时降级：能查多少查多少，查不到的字段为 null，接口不报错。ASN 分类清单内置在 `crates/fleet-ipintel/data/asn-lists.toml`，可用 `/etc/fleet/ipintel-overrides.toml`（同样的 `[[vpn]] asn=[…] name="…"` 写法，`name=""` 表示删除）覆盖或追加。线路机和节点的 `primary_ip` 自动算「内部地址」（`[ipintel] internal_ips` 可追加运维出口）。全部为只读 GET，读权限即可。
@@ -301,9 +318,9 @@ ProvisionItem = {
 | GET | `/ipintel/{ip}` | 单个地址的完整画像（`isp asn as_org country region city lat lon type type_word type_confidence type_reason type_alt flags sources dbs{四库原始结果}`）加 `degraded`（库没加载全）、`loaded`。非法 IP 400 |
 | GET | `/ipintel?ips=a,b,c` | ≤200 个，`{items:[{ip, intel}|{ip, intel:null, error}], loaded, degraded}`；不写缓存 |
 | GET | `/ipintel/status` | `{enabled, installed, loaded, expected:5, db_dir, version, files:[{id, loaded, bytes, mtime, build, entries}], errors, lists（各清单条目数）, overrides{path,used,error}, cache_rows, hint}`；未安装时 `hint` 提示运行 `lab/install-ipintel.sh` |
-| GET | `/machines/{id}/sources?window=24h\|7d\|30d&limit=50` | 节点的来源画像（线路机：分布与 top 来源只算经它的流量；`known` 基线与 `anomalies` 按节点记，取它名下入口的节点）：`distribution.{isp,city,province,country,conn_type}[{value,label,conns,sources,pct}]`（只统计外部来源；我方机器和非公网地址分别计入 `internal_conns` / `private_conns`）、`top_sources[{src_ip,conns,last_ts,intel}]`、`known.{isp,city,conn_type}[{value,label,first_seen,last_seen,conns,anomaly}]`（已学基线）、`learning{started_at,ends_at,learn_days,done,remaining_hours}`、`anomalies[]`（进行中的 ipintel 告警）、`empty`、`degraded`、`unresolved_sources` |
+| GET | `/machines/{id}/sources?window=24h\|7d\|30d&limit=50` | `window` 不能比汇总的保留期长（超了 400）。节点的来源画像（线路机：分布与 top 来源只算经它的流量；`known` 基线与 `anomalies` 按节点记，取它名下入口的节点）：`distribution.{isp,city,province,country,conn_type}[{value,label,conns,sources,pct}]`（只统计外部来源；我方机器和非公网地址分别计入 `internal_conns` / `private_conns`）、`top_sources[{src_ip,conns,last_ts,intel}]`、`known.{isp,city,conn_type}[{value,label,first_seen,last_seen,conns,anomaly}]`（已学基线）、`learning{started_at,ends_at,learn_days,done,remaining_hours}`、`anomalies[]`（进行中的 ipintel 告警）、`empty`、`degraded`、`unresolved_sources` |
 
-**异常告警**（warning，进 incident 表并走通知渠道）：节点第一条来源记录起 `learn_days`（默认 7）天内只学习；之后某节点出现新的运营商 → `ipintel_new_isp`，新的城市 → `ipintel_new_city`，某 (节点, 来源 IP) 第一次出现且为机房/VPN → `ipintel_datacenter_source`。跳过非公网地址和我方机器。一次性异常最后一次出现 `alert_ttl_hours`（默认 24）小时后自动恢复，不发恢复通知；同一个值恢复后不会再次告警。机房/VPN 来源 IP 一个 IP 一行，超过 max(`learn_days`, 31) + 1 天没再出现的由每小时的保留期清理删掉（运营商、城市、接入方式不删）：之后这个 IP 再出现算「首次出现」，会再告警一次。后台每 5 分钟从 `access_source_hourly` 增量维护 `node_source_seen`（水位在 `ipintel_state`；水位之前的小时若被补算，连接数差值经 `access_source_late` 补记，首次扫描按 7 天一页）。
+**异常告警**（warning，进 incident 表并走通知渠道）：节点第一条来源记录起 `learn_days`（默认 7）天内只学习；之后某节点出现新的运营商 → `ipintel_new_isp`，新的城市 → `ipintel_new_city`，某 (节点, 来源 IP) 第一次出现且为机房/VPN → `ipintel_datacenter_source`。跳过非公网地址和我方机器。一次性异常最后一次出现 `alert_ttl_hours`（默认 24）小时后自动恢复，不发恢复通知；同一个值恢复后，只要它还在来源画像里就不会再告警。来源画像（运营商、城市、接入方式、机房/VPN 来源 IP，一个值一行）最近一次出现超过 `profile_days`（见「访问记录保留期」）、且不在告警中的由每小时的清理删掉：之后同一个值再出现算「新的」，会再告警一次；一个节点的画像全删光（闲置超过这么久）后再有流量，学习期从头算。后台每 5 分钟从 `access_source_hourly` 增量维护 `node_source_seen`（水位在 `ipintel_state`；水位之前的小时若被补算，连接数差值经 `access_source_late` 补记，首次扫描按 7 天一页）。
 
 ## 生命周期操作：换线路机、搬空线路机、恢复已退役的机器
 都是作业（可续跑、幂等、留日志），接口只做校验、建作业、写审计。
