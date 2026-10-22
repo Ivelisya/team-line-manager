@@ -221,19 +221,34 @@ impl Target {
     /// 推文件：sha256 相同则跳过；否则写临时文件再原子替换。连接类的瞬时错误同样重试。
     /// 文件只读进内存一次，每次尝试交给写 stdin 的任务的只是引用计数（不再整份复制）
     pub async fn push(&self, local: &Path, remote: &str, mode: &str, timeout: Duration) -> anyhow::Result<bool> {
+        self.push_as(local, remote, mode, false, timeout).await
+    }
+
+    /// 同 `push`，替换之前把旧文件留成同目录的 `<remote>.prev`（硬链接，不另占空间；上一次留的被覆盖）：升级 agent 失败时换回去。
+    /// 远端已经是新文件时不动 .prev（推送中途断线、重试时前一次其实已经换上了），免得旧的被新的顶掉
+    pub async fn push_keep_prev(&self, local: &Path, remote: &str, mode: &str, timeout: Duration) -> anyhow::Result<bool> {
+        self.push_as(local, remote, mode, true, timeout).await
+    }
+
+    async fn push_as(&self, local: &Path, remote: &str, mode: &str, keep_prev: bool, timeout: Duration) -> anyhow::Result<bool> {
         let data: std::sync::Arc<[u8]> = tokio::fs::read(local).await.with_context(|| format!("读取 {}", local.display()))?.into();
         let sha = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&data));
         let chk = self.run(&format!("sha256sum '{remote}' 2>/dev/null | cut -d' ' -f1"), Duration::from_secs(20)).await?;
         if chk.stdout.trim() == sha {
             return Ok(false);
         }
+        let prev = if keep_prev {
+            format!("if [ -f '{remote}' ] && [ \"$(sha256sum '{remote}' | cut -d' ' -f1)\" != '{sha}' ]; then ln -f '{remote}' '{remote}.prev'; fi; ")
+        } else {
+            String::new()
+        };
         let mut attempt = 0;
         loop {
             let mut c = self.base();
             c.arg(format!(
                 "set -e; d=$(dirname '{remote}'); mkdir -p \"$d\"; t=\"$d/.push.$$\"; cat > \"$t\"; \
                  [ \"$(sha256sum \"$t\" | cut -d' ' -f1)\" = '{sha}' ] || {{ rm -f \"$t\"; echo SHA_MISMATCH >&2; exit 3; }}; \
-                 chmod {mode} \"$t\"; mv -f \"$t\" '{remote}'"
+                 chmod {mode} \"$t\"; {prev}mv -f \"$t\" '{remote}'"
             ));
             c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
             let mut child = c.spawn().context("启动 ssh")?;

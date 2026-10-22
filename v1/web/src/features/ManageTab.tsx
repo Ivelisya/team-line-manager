@@ -180,7 +180,7 @@ function AgentSection({ m }: { m: MachineView }) {
       <div className="manage-row">
         <div>
           <div className="t">版本 {a.version ?? '未知'}</div>
-          <div className="hint">{h ? `agent 在宿主机「${h.name}」上（${seen}），这台同机 IP 节点没有自己的 agent；要升级就升级宿主机的。` : `${seen}。升级会推送中控上的当前版本并重启 agent，不影响线路上的连接。`}</div>
+          <div className="hint">{h ? `agent 在宿主机「${h.name}」上（${seen}），这台同机 IP 节点没有自己的 agent；要升级就升级宿主机的。` : `${seen}。升级会推送中控上的当前版本并重启 agent，不影响线路上的连接；新版本起不来或 2 分钟内没有上报，会自动换回旧版本。`}</div>
         </div>
         {h ? <Button variant="secondary" onClick={() => open(h.id, 'manage')}>打开宿主机</Button> : (
           <Button variant="secondary" loading={up.isPending} disabled={!!m.active_job}

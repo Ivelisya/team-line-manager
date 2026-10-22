@@ -250,8 +250,30 @@ systemctl enable -q fleet-xray
 echo "xray_version=$(/usr/local/bin/xray version 2>/dev/null | head -1 | awk '{print $2}')"
 "#;
 
-/// 装 agent：变量 SERVER_URL ROLE MACHINE_ID，TOKEN（可空：空则沿用节点上已有的令牌文件）
-pub fn agent() -> String { AGENT.replace("__UNIT__", AGENT_UNIT.trim_end()) }
+/// 装 agent：变量 SERVER_URL ROLE MACHINE_ID，TOKEN（可空：空则沿用节点上已有的令牌文件）。
+/// 输出 `agent`（active 才算起来了）、`version`（磁盘上这份程序的版本）、`prev_version`（有 .prev 时它的版本）
+pub fn agent() -> String { AGENT.replace("__UNIT__", AGENT_UNIT.trim_end()).replace("__AGENT_STATE__", AGENT_STATE) }
+
+/// 升级失败时换回旧的 agent：.prev 换上去并重启。输出 `agent`、`version`（换回去的版本）；没有 .prev 时 `rollback=no_prev` 并以 6 退出
+pub fn agent_rollback() -> String { AGENT_ROLLBACK.replace("__AGENT_STATE__", AGENT_STATE) }
+
+/// 重启 agent 之后（`pid` 是刚重启时的主进程号；没重启过为空）输出 `agent=`。Type=simple 下刚重启时 is-active 一定是 active，
+/// 所以重启过的隔 3 秒再看：主进程换了，是起来就退出、被 systemd（RestartSec=3）又拉起了一个，记为 crashing
+const AGENT_STATE: &str = r#"[ -n "$pid" ] && sleep 3
+st=$(systemctl is-active fleet-agent || true)
+[ -n "$pid" ] && [ "$st" = active ] && [ "$(systemctl show -p MainPID --value fleet-agent)" != "$pid" ] && st=crashing
+echo "agent=$st""#;
+
+const AGENT_ROLLBACK: &str = r#"
+set -eu
+B=/usr/local/bin/fleet-agent
+[ -f $B.prev ] || { echo rollback=no_prev; exit 6; }
+# 换上去的是 .prev 的硬链接，.prev 原样留着：再执行一次结果相同
+ln -f $B.prev $B.rollback; mv -f $B.rollback $B
+systemctl restart fleet-agent; pid=$(systemctl show -p MainPID --value fleet-agent)
+__AGENT_STATE__
+echo "version=$($B --version 2>/dev/null | awk '{print $2}')"
+"#;
 
 const AGENT: &str = r#"
 set -eu
@@ -279,8 +301,12 @@ UNIT
 cmp -s $U.tmp $U && rm -f $U.tmp || { mv $U.tmp $U; systemctl daemon-reload; RESTART=1; }
 [ "${BIN_CHANGED:-0}" = 1 ] && RESTART=1
 systemctl enable -q fleet-agent
-if [ $RESTART = 1 ] || ! systemctl -q is-active fleet-agent; then systemctl restart fleet-agent; fi
-echo "agent=$(systemctl is-active fleet-agent)"
+pid=
+if [ $RESTART = 1 ] || ! systemctl -q is-active fleet-agent; then systemctl restart fleet-agent; pid=$(systemctl show -p MainPID --value fleet-agent); fi
+__AGENT_STATE__
+B=/usr/local/bin/fleet-agent
+echo "version=$($B --version 2>/dev/null | awk '{print $2}')"
+[ -f $B.prev ] && echo "prev_version=$($B.prev --version 2>/dev/null | awk '{print $2}')"
 echo "boot_id=$(cat /proc/sys/kernel/random/boot_id)"
 "#;
 
@@ -295,7 +321,7 @@ for f in /etc/shadowsocks-rust/[0-9]*.json; do
   systemctl disable --now "fleet-ssserver@$p" 2>/dev/null; nft delete table inet "ss_guard_$p" 2>/dev/null
 done
 rm -f /etc/systemd/system/fleet-agent.service /etc/systemd/system/fleet-ssserver.service /etc/systemd/system/fleet-ssserver@.service
-rm -rf /etc/fleet-agent /var/lib/fleet-agent /etc/shadowsocks-rust /usr/local/bin/ssserver /usr/local/bin/fleet-agent
+rm -rf /etc/fleet-agent /var/lib/fleet-agent /etc/shadowsocks-rust /usr/local/bin/ssserver /usr/local/bin/fleet-agent /usr/local/bin/fleet-agent.prev
 nft delete table inet ss_guard 2>/dev/null; rm -f /etc/fleet/nft/ss_guard.nft /etc/fleet/nft/ss_guard_*.nft
 [ -f /etc/nftables.conf ] && sed -i '\#include "/etc/fleet/nft/ss_guard#d' /etc/nftables.conf
 userdel fleet-ss 2>/dev/null
@@ -322,7 +348,7 @@ set -u
 systemctl disable --now fleet-agent 2>/dev/null; systemctl disable --now fleet-xray 2>/dev/null; systemctl disable --now fleet-xray-logrotate.timer 2>/dev/null
 rm -f /etc/systemd/system/fleet-agent.service /etc/systemd/system/fleet-xray.service /etc/logrotate.d/fleet-xray
 rm -f /etc/systemd/system/fleet-xray-logrotate.service /etc/systemd/system/fleet-xray-logrotate.timer
-rm -rf /etc/fleet-agent /var/lib/fleet-agent /var/log/fleet-xray /usr/local/bin/fleet-agent /usr/local/bin/xray /usr/local/share/xray
+rm -rf /etc/fleet-agent /var/lib/fleet-agent /var/log/fleet-xray /usr/local/bin/fleet-agent /usr/local/bin/fleet-agent.prev /usr/local/bin/xray /usr/local/share/xray
 systemctl daemon-reload
 echo cleanup=done
 "#;
@@ -475,6 +501,17 @@ echo "nft_relays=$(nft list set inet ss_guard relays | tr -d '\n' | sed 's/.*ele
         let c = super::RELAY_CLEANUP;
         assert!(c.contains("/etc/logrotate.d/fleet-xray") && c.contains("systemctl disable --now fleet-xray-logrotate.timer"));
         assert!(c.contains("/etc/systemd/system/fleet-xray-logrotate.service /etc/systemd/system/fleet-xray-logrotate.timer"));
+    }
+
+    /// 升级时留下的旧 agent（.prev）退役清理时一起删
+    #[test]
+    fn cleanup_removes_previous_agent() {
+        for s in [super::NODE_CLEANUP, super::RELAY_CLEANUP] {
+            assert!(s.contains(" /usr/local/bin/fleet-agent /usr/local/bin/fleet-agent.prev"), "{s}");
+        }
+        for s in [super::agent(), super::agent_rollback()] {
+            assert!(!s.contains("__") && s.contains("\necho \"agent=$st\"\n"), "{s}");
+        }
     }
 
     #[test]

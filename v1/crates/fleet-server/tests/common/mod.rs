@@ -28,7 +28,7 @@ pub struct T {
     pub app: axum::Router,
     pub st: AppState,
     pub cookie: String,
-    /// 本测试的临时目录：known_hosts、离线 IP 库（ipintel/）
+    /// 本测试的临时目录：known_hosts、离线 IP 库（ipintel/）、推给机器的程序（dist/，默认不存在）
     pub dir: tempfile::TempDir,
     _schema: Schema,
 }
@@ -186,7 +186,7 @@ pub async fn boot_in(dir: tempfile::TempDir, background: bool, extra: &str) -> T
            public_url = "http://fleet.test"
            ssh_key = "/nonexistent"
            known_hosts = "{d}/known_hosts"
-           dist_dir = "/nonexistent"
+           dist_dir = "{d}/dist"
            ipintel.db_dir = "{d}/ipintel"
            ipintel.overrides = "/nonexistent/ipintel-overrides.toml"
            {extra}"#

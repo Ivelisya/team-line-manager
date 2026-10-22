@@ -98,7 +98,8 @@ const MOVE_ENTRY: &[StepDef] = &[
 /// MOVE_ENTRY 里 detach_old 的下标：作业走到这一步（含）之后不能再取消
 const MOVE_POINT_OF_NO_RETURN: i32 = 4;
 const PURGE: &[StepDef] = &[s("purge", "删除数据", 600)];
-const UPGRADE_AGENT: &[StepDef] = &[s("agent", "推送并重启 agent", 600), s("wait_report", "等待重新上报", 180)];
+// 推送时旧程序留成 .prev；起不来、或 2 分钟内等不到新版本上报，就换回去并让作业失败（见 steps::agent / wait_report）。重试从推送重来
+const UPGRADE_AGENT: &[StepDef] = &[s("agent", "推送并重启 agent", 600), s("wait_report", "等待新版本上报", 180)];
 
 pub fn defs(kind: &str) -> &'static [StepDef] {
     match kind {

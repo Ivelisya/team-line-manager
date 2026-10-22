@@ -216,19 +216,25 @@ pub async fn retry(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     }
     // 机器状态已经变了（比如上架一半的机器后来退役了）：旧作业不能复活
     jobs::check_target(&kind, lc.as_deref()).map_err(ApiError::conflict)?;
-    sqlx::query("update job_step set state = 'pending', started_at = null, finished_at = null, error = null, error_kind = null where job_id = $1 and idx = $2")
-        .bind(id)
-        .bind(step)
-        .execute(&mut *tx)
-        .await?;
+    // 从失败那一步重来；升级 agent 从推送重来：失败时多半已经换回了旧程序，只重跑「等待新版本上报」永远等不到
+    let from = if kind == "upgrade_agent" { 0 } else { step };
+    sqlx::query(
+        "update job_step set state = 'pending', started_at = null, finished_at = null, output = null, error = null, error_kind = null
+         where job_id = $1 and idx >= $2",
+    )
+    .bind(id)
+    .bind(from)
+    .execute(&mut *tx)
+    .await?;
     let login = password.as_deref().map(|pw| json!({"login": {"password_enc": base64::engine::general_purpose::STANDARD.encode(st.secrets.seal_str(pw))}}));
     sqlx::query(
-        "update job set state = 'queued', error = null, finished_at = null, run_after = now(), lease_until = null, lease_owner = null,
+        "update job set state = 'queued', step = $3, error = null, finished_at = null, run_after = now(), lease_until = null, lease_owner = null,
             params = params || coalesce($2, '{}'::jsonb)
          where id = $1",
     )
     .bind(id)
     .bind(login)
+    .bind(from)
     .execute(&mut *tx)
     .await?;
     audit(&mut tx, &a.name, "job.retry", "job", Some(id), json!({"step": step, "reset_host_key": reset, "password": password.is_some()})).await?;
