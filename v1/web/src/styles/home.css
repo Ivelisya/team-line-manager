@@ -124,11 +124,11 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 .spark-dot { position: absolute; width: 6px; height: 6px; margin: -3px 0 0 -3px; border-radius: 50%; background: var(--cc); box-shadow: 0 0 0 3px color-mix(in srgb, var(--cc) 22%, transparent); } /* 不给 top 过渡：折线是瞬间换形的，圆点慢慢滑会悬在线外 */
 .spark-plot { cursor: crosshair; }
 .spark-cursor { stroke: var(--cc); stroke-opacity: 0.45; stroke-dasharray: 2 2; }
-/* 悬停读数：贴在折线上方，靠两端时不出框（translate 由组件按位置给） */
+/* 悬停读数：贴在折线上方，靠两端时不出框（translate 由组件按位置给）；外观同提示框（.tooltip） */
 .spark-tip {
   position: absolute; bottom: calc(100% + 4px); z-index: 1; pointer-events: none; white-space: nowrap;
-  padding: 2px 6px; border-radius: 6px; background: var(--fg); color: var(--surface);
-  font: var(--fw-semibold) var(--fs-micro) / 16px var(--font-num); font-variant-numeric: var(--num-variant); box-shadow: var(--shadow-card);
+  padding: 2px 6px; border-radius: var(--r-control); background: var(--tip-bg); color: var(--tip-fg); box-shadow: var(--shadow-pop), inset 0 0 0 0.5px var(--tip-ring);
+  font: var(--fw-semibold) var(--fs-micro) / var(--lh-micro) var(--font-num); font-variant-numeric: var(--num-variant);
 }
 .spark-time { grid-column: 2; display: flex; justify-content: space-between; margin-top: var(--sp-4); font: var(--fs-micro) / 12px var(--font-num); color: var(--chart-axis); }
 

@@ -460,13 +460,12 @@
 .hc-bar { display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: center; gap: var(--sp-8); font-size: var(--fs-label); }
 .hc-bar-l { color: var(--fg-2); }
 
-/* 提示框：反色实底（亮色深底白字）；pre-line 让 data-tip 里的换行生效（心跳格说明分行） */
+/* 提示框：反色实底（--tip-*，暗色见 tokens.css）；pre-line 让 data-tip 里的换行生效（心跳格说明分行） */
 .tooltip {
   z-index: var(--z-tooltip); max-width: 280px; padding: var(--sp-4) var(--sp-8); border-radius: var(--r-control);
-  background: var(--fg); color: var(--canvas); font-size: var(--fs-label); line-height: var(--lh-label); white-space: pre-line;
+  background: var(--tip-bg); color: var(--tip-fg); box-shadow: var(--shadow-pop), inset 0 0 0 0.5px var(--tip-ring);
+  font-size: var(--fs-label); line-height: var(--lh-label); white-space: pre-line;
 }
-/* 暗色反色会是一块近白的亮斑，改成比浮层再亮一级的深灰底 + 正文色，0.5px 内描边收边 */
-:root[data-theme="dark"] .tooltip { background: #3a3a3f; color: var(--fg); box-shadow: var(--shadow-pop), inset 0 0 0 0.5px rgb(255 255 255 / 0.1); }
 
 /* 堆叠式通知：新的在最下面，旧的往上排；相同消息合并计数；底部细线是剩余时间，鼠标停上去暂停。
    从下方升起（--dur-2 / --ease-out），关闭、超时、超过上限被挤掉都向右滑出淡去（--dur-2 / --ease-std，toast.tsx 按 --dur-2 等它播完再卸载） */

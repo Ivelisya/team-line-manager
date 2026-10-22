@@ -110,6 +110,10 @@
   --shadow-modal: 0 8px 20px rgb(17 24 39 / 0.08), 0 28px 64px -12px rgb(17 24 39 / 0.28); /* 模态面板：对话框、命令面板、节点抽屉、窄屏侧栏 */
   --shadow-thumb: 0 1px 4px rgba(0, 0, 0, 0.12);    /* H --segment-shadow：分段选中项（O 用线色当阴影，看不见） */
   --shadow-btn: 0 1px 2px rgba(0, 0, 0, 0.08);      /* O 主按钮 */
+  --shadow-bar-up: 0 -8px 24px -12px rgb(17 24 39 / 0.14);   /* 吸底条（上架页底部操作条）：阴影朝上 */
+  --shadow-edge-l: -8px 0 12px -10px rgb(17 24 39 / 0.25);   /* 右吸附列的左缘（批量网格「检查结果」列）：和滑到下面的格子分开 */
+  /* 提示框（.tooltip 与首页迹线的悬停读数）：亮色反色实底；暗色反色会是一块近白的亮斑，改比浮层再亮一级的深灰底 + 正文色，0.5px 内描边收边 */
+  --tip-bg: var(--fg); --tip-fg: var(--canvas); --tip-ring: transparent;
 
   /* 透明度：禁用的控件；换数据期间调淡的旧值（[data-stale]、安静卡片的格条与点阵） */
   --o-disabled: 0.45;
@@ -289,6 +293,9 @@
   --shadow-btn: none;
   --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.25);                 /* 暗色：近乎不可见，靠 1px 边线分层 */
   --shadow-card-hover: 0 12px 28px -6px rgba(0, 0, 0, 0.6);
+  --shadow-bar-up: 0 -8px 24px -12px rgb(0 0 0 / 0.6);
+  --shadow-edge-l: -8px 0 12px -10px rgb(0 0 0 / 0.7);
+  --tip-bg: #3a3a3f; --tip-fg: var(--fg); --tip-ring: rgb(255 255 255 / 0.1);
   --scrim-stacked: rgb(0 0 0 / 0.24);   /* 暗底上同样的压暗看不出来，加一档 */
 }
 
@@ -309,6 +316,8 @@
   --shadow-thumb: 0 1px 4px rgba(42, 11, 61, 0.14);
   --shadow-card: 0 1px 2px rgba(42, 11, 61, 0.04), 0 4px 16px rgba(42, 11, 61, 0.05);        /* 粉紫：阴影带一点紫调 */
   --shadow-card-hover: 0 1px 2px rgba(42, 11, 61, 0.05), 0 10px 24px -6px rgba(42, 11, 61, 0.11);
+  --shadow-bar-up: 0 -8px 24px -12px rgb(42 11 61 / 0.15);
+  --shadow-edge-l: -8px 0 12px -10px rgb(42 11 61 / 0.25);
 }
 :root:not([data-palette="indigo"])[data-theme="dark"] {
   /* 表面、线、文字与上面的炭黑暗色相同（这里要重写一遍，否则粉紫亮色块的同级选择器会盖住它们）；只保留粉紫的强调色 */
@@ -327,4 +336,6 @@
   --shadow-thumb: 0 1px 3px rgba(0, 0, 0, 0.5);
   --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.25);
   --shadow-card-hover: 0 12px 28px -6px rgba(0, 0, 0, 0.6);
+  --shadow-bar-up: 0 -8px 24px -12px rgb(0 0 0 / 0.6);
+  --shadow-edge-l: -8px 0 12px -10px rgb(0 0 0 / 0.7);
 }

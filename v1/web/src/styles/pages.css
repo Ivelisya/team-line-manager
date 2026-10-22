@@ -135,7 +135,7 @@
 .sticky-bar { position: sticky; bottom: 0; z-index: var(--z-sticky); }
 /* 上架页底部操作条：与顶栏同一种毛玻璃，阴影朝上（顶边的线由面板自己的边框给）——表单从它下面滚过时隐约透出、分得清层次 */
 .panel.sticky-bar {
-  background: var(--glass-bar); box-shadow: 0 -8px 24px -12px rgb(17 24 39 / 0.14);
+  background: var(--glass-bar); box-shadow: var(--shadow-bar-up);
   -webkit-backdrop-filter: var(--glass-bar-blur); backdrop-filter: var(--glass-bar-blur);
 }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .panel.sticky-bar { background: var(--surface); } }
