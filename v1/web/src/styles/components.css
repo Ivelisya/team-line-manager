@@ -208,6 +208,7 @@
 .beat-cells > i[data-t="warn"] { background: var(--warn); }
 .beat-cells > i[data-t="bad"] { background: var(--bad); }
 .beat.is-stale .beat-cells > i { background: transparent; box-shadow: inset 0 0 0 1px var(--line-strong); }
+.beat.is-empty .beat-cells > i { background: transparent; border: 1px dashed var(--line-strong); box-sizing: border-box; } /* 整条都没有探测：虚线空格 */
 
 /* ========== 进度条 ========== */
 .progress { position: relative; height: var(--quota-h); border-radius: var(--r-pill); background: var(--line); overflow: hidden; }
@@ -246,6 +247,7 @@
 .sec-head > .sec-meta { font-weight: var(--fw-regular); }
 .sec { padding-top: var(--card-seg); margin-top: var(--card-seg); border-top: 1px solid var(--line); }
 .sec:first-child { padding-top: 0; margin-top: 0; border-top: 0; }
+.sec:has(> .mgroup:only-child) { border-top: 0; padding-top: 0; } /* 只有一个分组容器的段：容器自己有边框，不再画段间的线 */
 .tab-sticky + .sec { border-top: 0; } /* 吸顶条自带下边线，紧跟的一段不再画一道 */
 
 /* 标签/值（LabelValue 唯一实现）：dt 12 灰、dd 13 */
@@ -451,8 +453,9 @@
 .menu, .popover, .toast, .chart-tip { background: var(--glass); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .menu, .popover, .toast, .chart-tip { background: var(--raised); } }
 .menu, .popover, .select-content { z-index: var(--z-popover); border-radius: var(--r-float); padding: var(--sp-4); min-width: var(--pop-w-sm); }
-/* 菜单不超出视口：最高到 Radix 量出的可用高度（已扣掉 collisionPadding 8px 的留白），超出的在菜单里滚动（线路机「复制分享链接」子菜单可有几十条入口） */
-.menu { max-height: min(var(--radix-popper-available-height, 100vh), 420px); overflow-y: auto; }
+/* 菜单高度只受固定上限约束（不读 Radix 的可用高度）：下方放不下时 Radix 整体翻到上方、不把菜单压矮出滚动条；
+   只有超长的（线路机「复制分享链接」子菜单可有几十条入口）才在菜单里滚动 */
+.menu { max-height: min(420px, calc(100dvh - 16px)); overflow-y: auto; }
 .select-content { min-width: var(--radix-select-trigger-width); max-height: 320px; overflow: hidden; background: var(--raised); }
 .popover { padding: var(--sp-12); width: var(--pop-w-md); max-width: calc(100vw - 24px); }
 .menu-item, .select-item {
@@ -463,6 +466,7 @@
 .menu-item .lucide { color: var(--fg-2); width: var(--icon-sm); height: var(--icon-sm); }
 .menu-item[data-highlighted], .select-item[data-highlighted] { background: var(--row-highlight); }
 .menu-item[data-disabled], .select-item[data-disabled] { color: var(--fg-3); pointer-events: none; }
+.menu-item[data-disabled][data-tip] { pointer-events: auto; cursor: default; } /* 写了原因的禁用项：不能点，但悬停能看到为什么 */
 .menu-item.is-danger { color: var(--bad-text); }
 .menu-item.is-danger .lucide { color: var(--bad-text); }
 /* 子菜单：打开着的触发项、右侧箭头 */
