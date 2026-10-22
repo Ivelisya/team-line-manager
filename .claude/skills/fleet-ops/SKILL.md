@@ -115,7 +115,7 @@ fleetctl move <节点> --to <线路机> --yes [--from <线路机>] [--follow]   
 fleetctl evacuate <线路机> --to <线路机> --yes [--follow]          # 搬空线路机（退役前）：每个在用节点一个换线路机作业
 fleetctl restore <已退役机器> --relay <线路机> [--team --number --label --upstream --ss-port --password-env VAR --reason --reset-host-key --no-probe] --yes [--follow]   # 恢复：先预检（IP 冲突、新名字、是否要 root 密码）再提交；预检试 SSH 登录和恢复一样要 write 权限，不想试登录就加 --no-probe
 fleetctl provision ...                                     # 先 check，再确认，再提交
-fleetctl retry <作业> [--reset-host-key] [--password-env VAR]   # 重试失败作业；报「主机指纹变化」且确认重装过才加 --reset-host-key；报「没有可用的 root 密码」时用 --password-env 补密码
+fleetctl retry <作业> [--reset-host-key] [--password-env VAR]   # 重试失败作业；只有作业因主机指纹不符失败、且确认机器重装过才加 --reset-host-key（同机 IP 节点不行：对宿主机升级 agent 后重试那个作业）；在用机器指纹变了也走这条：先 upgrade-agent 让它失败再重试；报「没有可用的 root 密码」时用 --password-env 补密码
 fleetctl renew <机器> [--cycles N | --to YYYY-MM-DD] [--amount 39.46] [--note …] --yes   # 登记续费：用户确认付过款之后（见「到期与续费」）
 fleetctl subscription set <机器> --price 45 … --yes          # 改订阅：只改给了的字段
 ```
