@@ -52,6 +52,8 @@ pub struct Item {
     provider_id: Option<Uuid>,
     plan_id: Option<Uuid>,
     service_ref: Option<String>,
+    /// 国家（ISO 3166-1 两位代码，名字旁的国旗）；不填 = 按 IP 自动定
+    country: Option<String>,
     note: Option<String>,
     relay_id: Option<Uuid>,
     login: Option<Login>,
@@ -92,6 +94,8 @@ struct Checked {
     ss_port: Option<u16>,
     /// 所选套餐的供应商
     plan_provider: Option<Uuid>,
+    /// 规范化后的国家（None = 按 IP 自动）
+    country: Option<String>,
     errors: Vec<String>,
 }
 
@@ -215,6 +219,10 @@ async fn validate(tx: &mut Tx<'_>, items: &[Item]) -> ApiResult<Vec<Checked>> {
         if let Err(e) = super::machines::check_text(it.label.as_deref().map(str::trim), it.note.as_deref()) {
             errors.push(e);
         }
+        let country = crate::country::normalize(it.country.as_deref().unwrap_or("")).unwrap_or_else(|e| {
+            errors.push(e);
+            None
+        });
         // 同机 IP 节点不带套餐（填了也忽略）
         let plan = it.plan_id.filter(|_| it.host_id.is_none());
         if let Some(p) = plan {
@@ -271,7 +279,7 @@ async fn validate(tx: &mut Tx<'_>, items: &[Item]) -> ApiResult<Vec<Checked>> {
             }
         }
         let plan_provider = plan.and_then(|p| plans.get(&p).copied());
-        out.push(Checked { item: it.clone(), ip, number: it.number, name: String::new(), host, ss_port, plan_provider, errors });
+        out.push(Checked { item: it.clone(), ip, number: it.number, name: String::new(), host, ss_port, plan_provider, country, errors });
     }
     for c in out.iter_mut() {
         if c.item.kind == "relay" {
@@ -327,8 +335,8 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Ba
             None => (Some(it.ssh_port.unwrap_or(22) as i32), c.plan_provider.or(it.provider_id), it.plan_id),
         };
         sqlx::query(
-            "insert into machine (id, kind, team_id, number, label, primary_ip, ssh_port, provider_id, plan_id, service_ref, note, host_id, lifecycle)
-             values ($1, $2::machine_kind, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'provisioning')",
+            "insert into machine (id, kind, team_id, number, label, primary_ip, ssh_port, provider_id, plan_id, service_ref, note, host_id, country, lifecycle)
+             values ($1, $2::machine_kind, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'provisioning')",
         )
         .bind(id)
         .bind(kind)
@@ -342,6 +350,7 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Ba
         .bind(&it.service_ref)
         .bind(it.note.as_deref().unwrap_or(""))
         .bind(it.host_id)
+        .bind(&c.country)
         .execute(&mut *tx)
         .await?;
         match kind {

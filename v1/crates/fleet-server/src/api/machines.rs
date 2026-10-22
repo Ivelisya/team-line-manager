@@ -82,12 +82,22 @@ pub struct PatchIn {
     plan_id: Option<Option<Uuid>>,
     #[serde(default, deserialize_with = "super::some")]
     service_ref: Option<Option<String>>,
+    /// 国家（ISO 3166-1 两位代码）；null 或空串 = 改回按 IP 自动
+    #[serde(default, deserialize_with = "super::some")]
+    country: Option<Option<String>>,
 }
 
+/// PATCH 前锁住的当前值：(revision, kind, team_id, number, label, lifecycle, country)
+type PatchCur = (i32, String, Option<Uuid>, Option<i32>, Option<String>, String, Option<String>);
+
 pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<PatchIn>) -> ApiResult<Json<Value>> {
+    let country = match &b.country {
+        Some(c) => Some(crate::country::normalize(c.as_deref().unwrap_or("")).map_err(ApiError::bad_request)?),
+        None => None,
+    };
     let mut tx = st.db.begin().await?;
-    let cur: (i32, String, Option<Uuid>, Option<i32>, Option<String>, String) = sqlx::query_as(
-        "select revision, kind::text, team_id, number, label, lifecycle::text from machine where id = $1 for update",
+    let cur: PatchCur = sqlx::query_as(
+        "select revision, kind::text, team_id, number, label, lifecycle::text, country from machine where id = $1 for update",
     )
     .bind(id)
     .fetch_optional(&mut *tx)
@@ -124,6 +134,7 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
             provider_id = case when $6 then $7 else provider_id end,
             plan_id = case when $8 then $9 else plan_id end,
             service_ref = case when $10 then $11 else service_ref end,
+            country = case when $12 then $13 else country end,
             revision = revision + 1, updated_at = now()
          where id = $1",
     )
@@ -138,6 +149,8 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     .bind(b.plan_id.flatten())
     .bind(b.service_ref.is_some())
     .bind(b.service_ref.clone().flatten())
+    .bind(country.is_some())
+    .bind(country.clone().flatten())
     .execute(&mut *tx)
     .await?;
     // 有套餐时供应商就是套餐的：只换了套餐的跟着换供应商，明确给了另一个供应商的报错
@@ -161,7 +174,8 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
         if renamed { "machine.rename" } else { "machine.update" },
         "machine",
         Some(id),
-        json!({"before": {"team_id": cur.2, "number": cur.3, "label": cur.4}, "after": {"team_id": team_id, "number": number, "label": label}}),
+        json!({"before": {"team_id": cur.2, "number": cur.3, "label": cur.4, "country": cur.6},
+               "after": {"team_id": team_id, "number": number, "label": label, "country": country.clone().unwrap_or(cur.6.clone())}}),
     )
     .await?;
     tx.commit().await?;

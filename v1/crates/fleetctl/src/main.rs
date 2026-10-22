@@ -230,6 +230,9 @@ struct ProvisionArgs {
     plan: Option<String>,
     #[arg(long)]
     service_ref: Option<String>,
+    /// 国家（名字旁的国旗）：ISO 3166-1 两位代码，如 US、JP；不填按 IP 自动定
+    #[arg(long)]
+    country: Option<String>,
     #[arg(long)]
     note: Option<String>,
     /// vps 的公网（NAT 映射）SS 端口；节点上 ssserver 固定监听 8388，非 NAT 机不要填
@@ -414,7 +417,7 @@ enum Cmd {
         #[arg(long)]
         follow: bool,
     },
-    /// 改名 = 改团队/编号/线路机名/备注
+    /// 改名 = 改团队/编号/线路机名/备注；也改国家（名字旁的国旗）
     Rename {
         machine: String,
         #[arg(long)]
@@ -425,6 +428,9 @@ enum Cmd {
         label: Option<String>,
         #[arg(long)]
         note: Option<String>,
+        /// ISO 3166-1 两位代码（如 US、JP）；auto = 改回按 IP 自动
+        #[arg(long)]
+        country: Option<String>,
     },
     /// 团队编号压缩成连续；不加 --yes 只预览
     Renumber {
@@ -756,6 +762,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
                 provider: a.provider,
                 plan: a.plan,
                 service_ref: a.service_ref,
+                country: a.country,
                 note: a.note,
                 ss_port: a.ss_port,
                 upstream: a.upstream,
@@ -775,7 +782,9 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         ),
         Cmd::Retire { machine, reason, no_cleanup, yes, follow } => ops::retire(x, &machine, reason.as_deref(), no_cleanup, yes, follow),
         Cmd::Purge { machine, yes, follow } => ops::purge(x, &machine, yes, follow),
-        Cmd::Rename { machine, team, number, label, note } => ops::rename(x, &machine, team.as_deref(), number, label.as_deref(), note.as_deref()),
+        Cmd::Rename { machine, team, number, label, note, country } => {
+            ops::rename(x, &machine, team.as_deref(), number, label.as_deref(), note.as_deref(), country.as_deref())
+        }
         Cmd::Renumber { team, yes } => ops::renumber(x, &team, yes),
         Cmd::UpgradeAgent { machine, all, yes, follow } => ops::upgrade_agent(x, machine.as_deref(), all, yes, follow),
         Cmd::Entries { machine } => cmds::entries(x, machine.as_deref()),

@@ -6,6 +6,7 @@ use crate::state::AppState;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -231,6 +232,11 @@ pub struct MachineView {
     pub number: Option<i32>,
     pub label: Option<String>,
     pub ip: String,
+    /// 国家（ISO 3166-1 两位代码，如 "US"），名字旁显示国旗：手动指定的（`country_set`），没指定按地址查离线 IP 库
+    /// （走画像缓存，同访问监控的来源画像）；内网地址、家宽代理填的域名、库里查不到的为 null
+    pub country: Option<String>,
+    /// 上架或修改时手动指定的国家；null = 按 IP 自动
+    pub country_set: Option<String>,
     pub ssh_port: i32,
     /// 同机 IP 节点：它所在的宿主机（SSH、agent、主机读数都是宿主机的，`agent` / `host` 就是宿主机的）；其它机器为 null
     pub host_machine: Option<Ref>,
@@ -310,6 +316,7 @@ struct MRow {
     plan_bw: Option<i32>,
     plan_traffic: Option<i32>,
     service_ref: Option<String>,
+    country: Option<String>,
     lifecycle: String,
     lifecycle_reason: Option<String>,
     note: String,
@@ -573,7 +580,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
         "select m.id, m.kind::text kind, m.team_id, t.name team_name, m.number, m.label, host(m.primary_ip) ip, coalesce(hm.ssh_port, m.ssh_port) ssh_port,
                 m.host_id, display_name(hm.kind::text, hm.label, ht.name, hm.number) host_name,
                 p.id provider_id, p.name provider_name, p.code provider_code, m.plan_id, pl.name plan_name,
-                pl.bandwidth_mbps plan_bw, pl.traffic_gb plan_traffic, m.service_ref, m.lifecycle::text lifecycle,
+                pl.bandwidth_mbps plan_bw, pl.traffic_gb plan_traffic, m.service_ref, m.country, m.lifecycle::text lifecycle,
                 m.lifecycle_reason, m.note, m.revision, m.created_at, m.activated_at, m.retired_at,
                 s.price_cents s_price, s.currency s_currency, s.cycle::text s_cycle, s.due_date s_due, s.billing_tz s_tz,
                 local_date(s.billing_tz) s_today, s.auto_renew s_auto, s.remind_days s_remind, s.traffic_gb s_traffic, s.traffic_reset_day s_reset,
@@ -603,6 +610,9 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     // 主机读数按机器所在的那台算：同机 IP 节点取宿主机的
     let hids: Vec<Uuid> = rows.iter().map(|r| r.host_id.unwrap_or(r.id)).collect::<HashSet<_>>().into_iter().collect();
     let now = OffsetDateTime::now_utc();
+    // 国旗：没手动指定国家的按机器地址取画像（先读画像缓存，没命中的现查并写回；尽力而为，查不到就是 null）
+    let auto_ips: Vec<IpAddr> = rows.iter().filter(|r| r.country.is_none()).filter_map(|r| r.ip.parse().ok()).collect();
+    let intel = if auto_ips.is_empty() { HashMap::new() } else { st.ipintel.enrich(db, &auto_ips, true).await };
     // 流量额度周期：有订阅的按账单时区里的今天和生效的重置日（单独设置的，或供应商按账单日 / 自然月）算周期起点，
     // 没有订阅的是模板时区（供应商的，没有供应商为北京时间）的本月。
     // 有自己 agent 的机器按网卡计量（规则取供应商的），家宽代理、同机 IP 节点按业务流量
@@ -947,6 +957,8 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 team: r.team_id.map(|id| Ref { id, name: r.team_name.clone().unwrap_or_default() }),
                 number: r.number,
                 label: r.label,
+                country: r.country.clone().or_else(|| r.ip.parse::<IpAddr>().ok().and_then(|ip| intel.get(&ip)).and_then(|b| b.country.clone())),
+                country_set: r.country,
                 ip: r.ip,
                 ssh_port: r.ssh_port,
                 host_machine: r.host_id.map(|id| Ref { id, name: r.host_name.clone().unwrap_or_default() }),

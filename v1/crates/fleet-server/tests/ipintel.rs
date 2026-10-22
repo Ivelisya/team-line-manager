@@ -103,6 +103,26 @@ async fn degrades_without_dbs_never_500() {
     sqlx::query("update access_source_hourly set conns = conns + 100").execute(&t.st.db).await.unwrap();
     assert_eq!(t.get("/api/v1/access/sources?window=7d").await, a);
     assert_eq!(t.get("/api/v1/access/sources?window=7d&limit=50").await["items"][0]["conns"], 105);
+
+    // 机器视图的国家（名字旁的国旗）：没手动指定的按机器地址取画像，没有库时只有缓存里有的查得到，查不到为 null
+    t.put_cache("203.0.113.10", "测试运营商", "JP", None, None, "datacenter").await;
+    let m0 = t.get(&format!("/api/v1/machines/{}", fx.n[0])).await;
+    assert_eq!((m0["country"].as_str(), m0["country_set"].is_null()), (Some("JP"), true));
+    let m1 = t.get(&format!("/api/v1/machines/{}", fx.n[1])).await;
+    assert!(m1["country"].is_null());
+    // 手动指定优先于按 IP；代码按 ISO 表校验（小写转大写，UK 提示 GB）；null 改回自动
+    let patch = |rev: &Value, c: Value| serde_json::json!({"revision": rev, "country": c});
+    let (s, b) = t.req("PATCH", &format!("/api/v1/machines/{}", fx.n[0]), Some(patch(&m0["revision"], "UK".into())), None).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    assert!(b["error"]["message"].as_str().unwrap().contains("GB"), "{b}");
+    let (s, _) = t.req("PATCH", &format!("/api/v1/machines/{}", fx.n[0]), Some(patch(&m0["revision"], "de".into())), None).await;
+    assert_eq!(s, StatusCode::OK);
+    let m0 = t.get(&format!("/api/v1/machines/{}", fx.n[0])).await;
+    assert_eq!((m0["country"].as_str(), m0["country_set"].as_str()), (Some("DE"), Some("DE")));
+    let (s, _) = t.req("PATCH", &format!("/api/v1/machines/{}", fx.n[0]), Some(patch(&m0["revision"], Value::Null)), None).await;
+    assert_eq!(s, StatusCode::OK);
+    let m0 = t.get(&format!("/api/v1/machines/{}", fx.n[0])).await;
+    assert_eq!((m0["country"].as_str(), m0["country_set"].is_null()), (Some("JP"), true));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
