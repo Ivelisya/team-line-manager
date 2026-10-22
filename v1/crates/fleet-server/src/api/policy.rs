@@ -132,21 +132,27 @@ pub struct PutIn {
 
 pub async fn put_one(a: Actor, State(st): State<AppState>, ApiPath((scope, id)): ApiPath<(String, Uuid)>, ApiJson(b): ApiJson<PutIn>) -> ApiResult<Json<Value>> {
     let scope = Scope::parse(&scope).ok_or_else(|| ApiError::bad_request("范围只能是 team 或 node"))?;
-    match scope {
-        Scope::Team => {
-            let n: Option<(i32,)> = sqlx::query_as("select 1 from team where id = $1").bind(id).fetch_optional(&st.db).await?;
-            n.ok_or_else(|| ApiError::not_found("没有这个团队"))?;
-        }
+    // 范围的显示名（团队名 / 节点名）写进审计：「团队1 · 黑名单 · 2 个域名」
+    let name = match scope {
+        Scope::Team => sqlx::query_scalar::<_, String>("select name from team where id = $1")
+            .bind(id)
+            .fetch_optional(&st.db)
+            .await?
+            .ok_or_else(|| ApiError::not_found("没有这个团队"))?,
         Scope::Node => {
-            let m: Option<(String, String)> = sqlx::query_as("select kind::text, lifecycle::text from machine where id = $1").bind(id).fetch_optional(&st.db).await?;
+            let m: Option<(String, String, Option<String>, Option<String>, Option<i32>)> =
+                sqlx::query_as("select m.kind::text, m.lifecycle::text, m.label, t.name, m.number from machine m left join team t on t.id = m.team_id where m.id = $1")
+                    .bind(id)
+                    .fetch_optional(&st.db)
+                    .await?;
             match m {
                 None => return Err(ApiError::not_found("没有这台节点")),
-                Some((k, _)) if k == "relay" => return Err(ApiError::bad_request("线路机没有访问策略，请设置它上面节点的策略")),
-                Some((_, lc)) if lc == "retired" => return Err(ApiError::conflict("节点已退役")),
-                Some(_) => {}
+                Some((k, ..)) if k == "relay" => return Err(ApiError::bad_request("线路机没有访问策略，请设置它上面节点的策略")),
+                Some((_, lc, ..)) if lc == "retired" => return Err(ApiError::conflict("节点已退役")),
+                Some((k, _, label, team, number)) => crate::names::display_name(&k, label.as_deref(), team.as_deref(), number),
             }
         }
-    }
+    };
     let domains = match &b.domains {
         DomainsIn::List(l) => policy::normalize_list(l),
         DomainsIn::Text(t) => policy::normalize_domains(t),
@@ -205,7 +211,7 @@ pub async fn put_one(a: Actor, State(st): State<AppState>, ApiPath((scope, id)):
         "policy.draft",
         scope.as_str(),
         Some(id),
-        json!({"mode": data.mode.as_str(), "domains": data.domains.len(), "note": data.note, "cleared": draft.is_none()}),
+        json!({"name": name, "mode": data.mode.as_str(), "domains": data.domains.len(), "note": data.note, "cleared": draft.is_none()}),
     )
     .await?;
     tx.commit().await?;

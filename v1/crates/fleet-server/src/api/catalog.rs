@@ -99,6 +99,39 @@ pub async fn patch_team(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPa
     Ok(ok(json!({"id": id})))
 }
 
+/// 「还有 3 台机器（另有 2 台已退役）、1 台软路由」：删目录项前列出还有谁用着它；都没有时为 None
+fn in_use(parts: &[(i64, &str)]) -> Option<String> {
+    let v: Vec<String> = parts.iter().filter(|(n, _)| *n > 0).map(|(n, w)| format!("{n} {w}")).collect();
+    (!v.is_empty()).then(|| v.join("、"))
+}
+
+/// 删团队：还有机器（含已退役的——可能恢复，外键也拦着）或软路由时拒绝；它自己那一行访问规则一起删（团队没有节点，规则不影响任何线路机）
+pub async fn delete_team(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
+    let mut tx = st.db.begin().await?;
+    let name: String = sqlx::query_scalar("select name from team where id = $1 for update")
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| ApiError::not_found("没有这个团队"))?;
+    let (live, retired, routers): (i64, i64, i64) = sqlx::query_as(
+        "select count(*) filter (where lifecycle <> 'retired'), count(*) filter (where lifecycle = 'retired'), (select count(*) from router where team_id = $1)
+         from machine where team_id = $1",
+    )
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if let Some(u) = in_use(&[(live, "台机器"), (retired, "台已退役的机器"), (routers, "台软路由")]) {
+        return Err(ApiError::conflict(format!("「{name}」还有 {u}：先把它们移到别的团队（已退役的先彻底删除）再删")));
+    }
+    sqlx::query("delete from policy where scope = 'team' and scope_id = $1").bind(id).execute(&mut *tx).await?;
+    sqlx::query("delete from team where id = $1").bind(id).execute(&mut *tx).await?;
+    audit(&mut tx, &a.name, "team.delete", "team", Some(id), json!({"name": name})).await?;
+    tx.commit().await?;
+    st.emit(Event::Catalog);
+    st.emit(Event::Policies);
+    Ok(ok(json!({"id": id})))
+}
+
 // ── 供应商 ────────────────────────────────────────────────────────────────
 
 #[derive(Serialize, sqlx::FromRow)]
@@ -255,6 +288,28 @@ pub async fn patch_provider(a: Actor, State(st): State<AppState>, ApiPath(id): A
                "after": {"name": name, "code": code, "panel_url": panel_url, "timezone": tz, "traffic_rule": rule, "traffic_reset": reset, "remind_days": remind}})).await?;
     tx.commit().await?;
     // 机器视图里的供应商名 / 缩写：Catalog 事件已让视图缓存和前端机器列表作废
+    st.emit(Event::Catalog);
+    Ok(ok(json!({"id": id})))
+}
+
+/// 删供应商：还有套餐（含已归档的）或机器（含已退役的）时拒绝
+pub async fn delete_provider(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
+    let mut tx = st.db.begin().await?;
+    let name: String = sqlx::query_scalar("select name from provider where id = $1 for update")
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| ApiError::not_found("没有这个供应商"))?;
+    let (plans, machines): (i64, i64) = sqlx::query_as("select (select count(*) from plan where provider_id = $1), (select count(*) from machine where provider_id = $1)")
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+    if let Some(u) = in_use(&[(plans, "个套餐"), (machines, "台机器")]) {
+        return Err(ApiError::conflict(format!("「{name}」还有 {u}（含已归档、已退役的）：先删掉或改到别的供应商再删")));
+    }
+    sqlx::query("delete from provider where id = $1").bind(id).execute(&mut *tx).await?;
+    audit(&mut tx, &a.name, "provider.delete", "provider", Some(id), json!({"name": name})).await?;
+    tx.commit().await?;
     st.emit(Event::Catalog);
     Ok(ok(json!({"id": id})))
 }
@@ -417,7 +472,30 @@ pub async fn patch_plan(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPa
             now.insert(k.clone(), v.clone());
         }
     }
-    audit(&mut tx, &a.name, "plan.update", "plan", Some(id), json!({"before": was, "after": now})).await?;
+    // 套餐名、币种（改后的）写在外层：摘要要写「归档套餐 X」「价格 59.00 → 69.00 USD」，只记了改动字段的 before / after 里不一定有
+    audit(&mut tx, &a.name, "plan.update", "plan", Some(id), json!({"name": after["name"], "currency": after["currency"], "before": was, "after": now})).await?;
+    tx.commit().await?;
+    st.emit(Event::Catalog);
+    Ok(ok(json!({"id": id})))
+}
+
+/// 删套餐：还有机器（含已退役的，可能恢复）用着时拒绝，用不着的套餐建议归档
+pub async fn delete_plan(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
+    let mut tx = st.db.begin().await?;
+    let name: String = sqlx::query_scalar("select name from plan where id = $1 for update")
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| ApiError::not_found("没有这个套餐"))?;
+    let (live, retired): (i64, i64) = sqlx::query_as("select count(*) filter (where lifecycle <> 'retired'), count(*) filter (where lifecycle = 'retired') from machine where plan_id = $1")
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+    if let Some(u) = in_use(&[(live, "台机器"), (retired, "台已退役的机器")]) {
+        return Err(ApiError::conflict(format!("「{name}」还有 {u}用着：不再上架的可以归档")));
+    }
+    sqlx::query("delete from plan where id = $1").bind(id).execute(&mut *tx).await?;
+    audit(&mut tx, &a.name, "plan.delete", "plan", Some(id), json!({"name": name})).await?;
     tx.commit().await?;
     st.emit(Event::Catalog);
     Ok(ok(json!({"id": id})))
