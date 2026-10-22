@@ -3,8 +3,6 @@
 
 .rt-warn { color: var(--warn-text); }
 .rt-bad { color: var(--bad-text); }
-/* 跟在一行字后面的「(i)」：与文字下沿对齐、隔开一点 */
-.rt-info { margin-left: var(--sp-4); vertical-align: -3px; }
 
 /* ---- 总览：大号数字 + 一句话，不带框（页头、抽屉概览） ---- */
 .rt-hero { display: grid; gap: var(--sp-6); min-width: 0; }

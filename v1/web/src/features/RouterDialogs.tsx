@@ -107,7 +107,7 @@ const DeployDialog = resetOnOpen(function DeployDialog({ open, id, name }: { ope
   };
   return (
     <FormDialog size="md" open={open} onOpenChange={(o) => !o && closeDeploy()} title={`重新部署「${name}」`} submitLabel="开始部署" busy={deploy.isPending} valid={sshValid(ssh)} dirty={!!ssh.password} onSubmit={submit}>
-      {r?.state === 'online' && <Note tone="warn">这台在线：部署时约半分钟连不上<InfoTip className="rt-info" text="会换一把隧道密钥并重启 fleet-tunnel；不影响 OpenClash 和客户端上网" /></Note>}
+      {r?.state === 'online' && <Note tone="warn">这台在线：部署时约半分钟连不上<InfoTip text="会换一把隧道密钥并重启 fleet-tunnel；不影响 OpenClash 和客户端上网" /></Note>}
       <SshFields d={ssh} set={setSsh} autoFocus />
       <div className="hint">中控连不上？<button type="button" className="btn btn-link btn-sm" style={{ height: 'auto', padding: 0 }} disabled={boot.pending}
         onClick={() => { closeDeploy(); void boot.run({ id, name, last_seen_at: r?.last_seen_at ?? null }); }}><Terminal size={12} />改用在路由上执行命令</button></div>
@@ -132,7 +132,7 @@ function BootstrapDialog() {
       <DialogContent size="md" onInteractOutside={(e) => e.preventDefault()}>
         <DialogHeader>
           <DialogTitle>{done ? `「${b.name}」已接入` : `接入「${b.name}」`}</DialogTitle>
-          <DialogDescription>在路由的 SSH 里粘贴执行<InfoTip className="rt-info" text={`30 分钟内有效、只能用一次。\n${ONLY_ADDS}`} /></DialogDescription>
+          <DialogDescription>在路由的 SSH 里粘贴执行<InfoTip text={`30 分钟内有效、只能用一次。\n${ONLY_ADDS}`} /></DialogDescription>
         </DialogHeader>
         {b.replaced && !done && <Note tone="warn">旧隧道已断开，执行这条命令后恢复</Note>}
         <div className="token-box rt-cmd"><code>{b.cmd}</code><CopyButton text={b.cmd} label="接入命令" size={15} /></div>
@@ -155,7 +155,7 @@ function RemovedDialog() {
   return (
     <Dialog open={!!name} onOpenChange={(o) => !o && closeRemoved()}>
       <DialogContent size="md">
-        <DialogHeader><DialogTitle>已删除「{held}」</DialogTitle><DialogDescription>在路由上执行这条，停掉 fleet-tunnel<InfoTip className="rt-info" text="中控已撤销它的隧道公钥，路由上的 fleet-tunnel 之后连不上中控、会一直重试。这条命令停掉并删掉这个服务；原来连 ivekasy 的 router-tunnel 不受影响" /></DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>已删除「{held}」</DialogTitle><DialogDescription>在路由上执行这条，停掉 fleet-tunnel<InfoTip text="中控已撤销它的隧道公钥，路由上的 fleet-tunnel 之后连不上中控、会一直重试。这条命令停掉并删掉这个服务；原来连 ivekasy 的 router-tunnel 不受影响" /></DialogDescription></DialogHeader>
         <div className="token-box rt-cmd"><code>{TUNNEL_CLEANUP}</code><CopyButton text={TUNNEL_CLEANUP} label="清理命令" size={15} /></div>
         <DialogFooter><Button variant="primary" onClick={closeRemoved}>知道了</Button></DialogFooter>
       </DialogContent>

@@ -109,10 +109,10 @@ function Head({ r, detail, onClosed }: { r: RouterView; detail: RouterDetail | n
       </div>
       <EditDialog open={edit} onOpenChange={setEdit} r={r} />
       <ConfirmDialog open={askRegen} onOpenChange={setAskRegen} title={`重新生成「${r.name}」的接入命令？`} confirmLabel="重新生成" danger
-        description={<>路由会立刻断开，执行新命令后恢复<InfoTip className="rt-info" text="会换一把隧道密钥：路由上现在的 fleet-tunnel 立刻连不上中控，直到在路由上执行新命令。不影响 OpenClash 和客户端上网，只是这段时间看不到它的状态" /></>}
+        description={<>路由会立刻断开，执行新命令后恢复<InfoTip text="会换一把隧道密钥：路由上现在的 fleet-tunnel 立刻连不上中控，直到在路由上执行新命令。不影响 OpenClash 和客户端上网，只是这段时间看不到它的状态" /></>}
         onConfirm={() => boot.run(r)} />
       <TypedConfirmDialog open={askDel} onOpenChange={setAskDel} title={`删除软路由「${r.name}」？`} confirmLabel="删除" danger expected={r.name} prompt="请输入名称"
-        description={<>删掉采集历史，路由本身不受影响<InfoTip className="rt-info" text="撤销它的隧道公钥、删掉采集的历史；OpenClash、原来的 router-tunnel 照常。删除后会给出在路由上停掉 fleet-tunnel 的命令" /></>}
+        description={<>删掉采集历史，路由本身不受影响<InfoTip text="撤销它的隧道公钥、删掉采集的历史；OpenClash、原来的 router-tunnel 照常。删除后会给出在路由上停掉 fleet-tunnel 的命令" /></>}
         onConfirm={async () => { await del.mutateAsync(r.id); onClosed(); showRemoved(r.name); }} />
     </header>
   );
@@ -138,7 +138,7 @@ const EditDialog = resetOnOpen(function EditDialog({ open, onOpenChange, r }: { 
 
 // ---- 分组列表（同 iOS 设置）：一组一个底，行间细线，标签在左、值在右 ----
 const Group = ({ title, info, foot, children }: { title?: string; info?: string; foot?: React.ReactNode; children: React.ReactNode }) => (
-  <section className="rt-gsec">{title && <h3 className="rt-group-title">{title}{info && <InfoTip className="rt-info" text={info} />}</h3>}<ul className="rt-group">{children}</ul>{foot && <div className="rt-group-foot hint">{foot}</div>}</section>
+  <section className="rt-gsec">{title && <h3 className="rt-group-title">{title}{info && <InfoTip text={info} />}</h3>}<ul className="rt-group">{children}</ul>{foot && <div className="rt-group-foot hint">{foot}</div>}</section>
 );
 const Row = ({ label, children, tip }: { label: React.ReactNode; children: React.ReactNode; tip?: string }) => (
   <li className="rt-row"><span className="rt-row-label" data-tip={tip}>{label}</span><span className="rt-row-value">{children ?? '—'}</span></li>
@@ -154,7 +154,7 @@ function OverviewTab({ r, detail }: { r: RouterView; detail: RouterDetail | null
   const oc = detail?.openclash;
   return (
     <div className="rt-groups">
-      {r.state === 'offline' && <Note tone="bad">连不上路由（最后在线 <Seen at={r.last_seen_at} />）{r.error && <>：<span className="mono">{r.error}</span></>}<InfoTip className="rt-info" text="隧道断了时 OpenClash 与客户端上网照常，只是这里看不到它的状态" /></Note>}
+      {r.state === 'offline' && <Note tone="bad">连不上路由（最后在线 <Seen at={r.last_seen_at} />）{r.error && <>：<span className="mono">{r.error}</span></>}<InfoTip text="隧道断了时 OpenClash 与客户端上网照常，只是这里看不到它的状态" /></Note>}
       {showDeployTl && <Group title="一键部署"><li className="rt-row rt-row-tl"><DeployTimeline r={r} /></li></Group>}
       {/* 总览：大号的出口可用数 + 一句话，不带框 */}
       {s && (
@@ -176,7 +176,7 @@ function OverviewTab({ r, detail }: { r: RouterView; detail: RouterDetail | null
         {r.note && <Row label="备注"><span className="rt-row-wrap">{r.note}</span></Row>}
       </Group>
       {sys && (
-        <Group title="系统" foot={sys.clock_skew_s != null && Math.abs(sys.clock_skew_s) > 5 ? <span className="rt-warn">时钟差 {Math.round(sys.clock_skew_s)} 秒，出口可能连不上<InfoTip className="rt-info" text="路由的时钟和中控差太多：TLS 与 reality 出口对时间敏感，会连不上" /></span> : undefined}>
+        <Group title="系统" foot={sys.clock_skew_s != null && Math.abs(sys.clock_skew_s) > 5 ? <span className="rt-warn">时钟差 {Math.round(sys.clock_skew_s)} 秒，出口可能连不上<InfoTip text="路由的时钟和中控差太多：TLS 与 reality 出口对时间敏感，会连不上" /></span> : undefined}>
           <Row label="系统">{sys.os}</Row>
           <Row label="内核"><span className="mono">{sys.kernel}</span></Row>
           <Row label="CPU">{sys.cpu_model} · {sys.cores} 核</Row>
@@ -236,7 +236,7 @@ function ExitsTab({ id, d }: { id: string; d: RouterDetail }) {
   const drift = d.exits.filter((e) => e.sync === 'drift').length;
   return (
     <>
-      <p className="rt-lead">{d.exits.length} 个出口 · <b>{alive}</b> 个可用 · {managed} 个对应 fleet 入口{drift > 0 && <> · <span className="rt-warn">{drift} 个参数不一致</span></>}<InfoTip className="rt-info" text="延迟每 5 分钟测一次（经出口访问 generate_204）" /></p>
+      <p className="rt-lead">{d.exits.length} 个出口 · <b>{alive}</b> 个可用 · {managed} 个对应 fleet 入口{drift > 0 && <> · <span className="rt-warn">{drift} 个参数不一致</span></>}<InfoTip text="延迟每 5 分钟测一次（经出口访问 generate_204）" /></p>
       <Section>
         <SectionHeader title="出口 → 线路机 → 节点" />
         <Topology exits={d.exits} onOpen={openMachine} />
@@ -246,7 +246,7 @@ function ExitsTab({ id, d }: { id: string; d: RouterDetail }) {
         <div className="table-wrap">
           <table className="dt" style={{ minWidth: 960 }}>
             <colgroup><col style={{ width: 120 }} /><col style={{ width: 150 }} /><col style={{ width: 170 }} /><col style={{ width: 80 }} /><col style={{ width: 90 }} /><col style={{ width: 96 }} /><col style={{ width: 60 }} /><col style={{ width: 130 }} /><col style={{ width: 64 }} /></colgroup>
-            <thead><tr><th>出口</th><th>服务器</th><th>对应 fleet 入口</th><th>参数<InfoTip className="rt-info" text={(['drift', 'unmanaged'] as const).map((k) => `${SYNC[k].label}：${SYNC[k].tip}`).join('\n')} /></th><th className="r">延迟</th><th>近 6 小时</th><th className="r">连接</th><th className="r">↓ / ↑ 速率</th><th className="r">客户端</th></tr></thead>
+            <thead><tr><th>出口</th><th>服务器</th><th>对应 fleet 入口</th><th>参数<InfoTip text={(['drift', 'unmanaged'] as const).map((k) => `${SYNC[k].label}：${SYNC[k].tip}`).join('\n')} /></th><th className="r">延迟</th><th>近 6 小时</th><th className="r">连接</th><th className="r">↓ / ↑ 速率</th><th className="r">客户端</th></tr></thead>
             <tbody>{d.exits.map((e) => <ExitRow key={e.name} e={e} delays={m.get(e.name)} onOpen={openMachine} />)}</tbody>
           </table>
         </div>
@@ -333,7 +333,7 @@ function ClientsTab({ d }: { d: RouterDetail }) {
   const online = list.filter((c) => c.online).length;
   return (
     <>
-      <p className="rt-lead"><b>{online}</b> 台在线 · 共 {list.length} 台<InfoTip className="rt-info" text="来自 DHCP 租约、邻居表与经过 OpenClash 的来源 IP（旁路由没有租约，只认得 IP）" /></p>
+      <p className="rt-lead"><b>{online}</b> 台在线 · 共 {list.length} 台<InfoTip text="来自 DHCP 租约、邻居表与经过 OpenClash 的来源 IP（旁路由没有租约，只认得 IP）" /></p>
       <div className="table-wrap">
         <table className="dt" style={{ minWidth: 640 }}>
           <colgroup><col style={{ width: 200 }} /><col style={{ width: 70 }} /><col style={{ width: 70 }} /><col /></colgroup>
