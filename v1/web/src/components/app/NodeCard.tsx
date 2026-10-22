@@ -8,7 +8,7 @@ import { SPRING } from '@/lib/motion';
 import { ArrowDown, ArrowUp, Calendar, CircleDollarSign, Cpu, Database, Gauge, Globe, HardDrive, MemoryStick, MoreHorizontal, Radar, RefreshCw, Settings2, PanelRightOpen, ServerOff, Wallet } from 'lucide-react';
 import type { MachineView, ProbeBeats, Subscription } from '@/lib/types';
 import * as F from '@/lib/format';
-import { beatCells, beatTitles, entryText, hasHost, hostRel, isQuiet, liveRate, monthTraffic, probeSummary, quota, remainingValue, resourceMeters, subLabel, tagColor, type TagColor } from '@/lib/derive';
+import { beatCells, beatTitles, entryText, hasHost, hostRel, isQuiet, limitGb, liveRate, monthTraffic, probeSummary, quota, quotaGb, remainingValue, resourceMeters, subLabel, tagColor, type TagColor } from '@/lib/derive';
 import { useProbeBeats } from '@/lib/queries';
 import { useLiveSeries } from '@/lib/live';
 import { useNow } from '@/lib/useNow';
@@ -56,7 +56,7 @@ const LargeInfo = memo(function LargeInfo({ entry, plan, limit, ...a }: Info & {
       <LabelValue label="入口">{entry}</LabelValue>
       <LabelValue label="套餐">{plan?.name ?? <span className="t-muted">{a.host ? '不带套餐' : '未设置'}</span>}</LabelValue>
       <LabelValue label="套餐带宽">{plan ? <Num f={F.mbps(plan.bandwidth_mbps)} /> : '—'}</LabelValue>
-      <LabelValue label="流量上限">{a.host && !(limit > 0) ? '与宿主机共用' : <Num f={F.gb(limit)} />}</LabelValue>
+      <LabelValue label="流量上限">{a.host && !(limit > 0) ? '与宿主机共用' : <Num f={limitGb(limit)} />}</LabelValue>
     </dl>
   </>;
 });
@@ -171,9 +171,9 @@ function QuotaSlot({ m, onOpen }: { m: MachineView; onOpen: Open }) {
     <button type="button" className="nc-quota" onClick={() => onOpen('traffic')}>
       <span className="nc-qhead">
         <span className="nc-qlabel"><Database />剩余流量
-          <b className={cn('num', q.rem === 0 && 'is-bad')}>{q.rem == null ? (q.shared ? '与宿主机共用' : '不限') : q.rem > 0 ? <Num f={F.bytes(q.rem)} /> : '已超限'}</b>
+          <b className={cn('num', q.rem === 0 && 'is-bad')}>{q.rem == null ? (q.shared ? '与宿主机共用' : '不限') : q.rem > 0 ? <Num f={quotaGb(q.rem)} /> : '已超限'}</b>
         </span>
-        <span className="nc-quse" data-tip={`周期 ${q.start.slice(5)} 起`}>本周期已用 <Num f={F.bytes(q.used)} />{q.limit > 0 && <> / <Num f={F.gb(q.limit)} /></>}</span>
+        <span className="nc-quse" data-tip={`周期 ${q.start.slice(5)} 起`}>本周期已用 <Num f={quotaGb(q.used)} />{q.limit > 0 && <> / <Num f={limitGb(q.limit)} /></>}</span>
       </span>
       {q.rem != null && <Cells pct={q.pct} colors={QUOTA_COLORS} />}
       <span className="sr-only">（查看流量页签）</span>

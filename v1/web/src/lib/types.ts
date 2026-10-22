@@ -39,7 +39,7 @@ export interface MachineView {
   /** 同机 IP 节点（kind 仍是 vps）：它所在的宿主机。它没有自己的 agent 和 SSH——agent、host（主机读数）、ssh_port 都是宿主机的，
    *  plan 为 null，宿主机维护时 maintenance 也为 true；其它机器为 null */
   host_machine: { id: string; name: string } | null;
-  /** 宿主机：它上面未退役的同机 IP 节点（按团队、编号）；其它机器为 []。宿主机的 quota.used 含它们（含已退役的）的流量 */
+  /** 宿主机：它上面未退役的同机 IP 节点（按团队、编号）；其它机器为 []。宿主机的 quota.used 按网卡算，含它们的流量 */
   ip_nodes: { id: string; name: string }[];
   provider: { id: string; name: string } | null; provider_code: string | null;
   plan: { id: string; name: string; bandwidth_mbps: number | null; traffic_gb: number | null } | null; service_ref: string | null;
@@ -52,8 +52,9 @@ export interface MachineView {
   host: HostMetrics | null;
   entries: EntryView[];
   removed_traffic: EntryTraffic; // 已移除入口（如换线路机后的旧入口）今天/本月的流量，不在 entries 里
-  /** 流量额度周期：起点（YYYY-MM-DD，有流量重置日按它，否则本月 1 号）与周期内业务流量（字节，含已移除入口） */
-  quota: { used: number; period_start: string };
+  /** 流量额度周期：起点（YYYY-MM-DD，有流量重置日按它，否则本月 1 号）与周期内已用（字节）。有 agent 的机器按网卡、照供应商的
+   *  rule 算；家宽代理与同机 IP 节点 rule 为 null，是业务流量。base / base_at：本周期按供应商面板校准时的读数（字节）与时间，没有为 null */
+  quota: { used: number; period_start: string; rule: TrafficRule | null; base: number | null; base_at: string | null };
   health: { status: HealthStatus; reasons: HealthReason[] };
   active_job: { id: string; kind: string; state: string } | null;
   /** 上架失败（lifecycle = failed）：失败的上架/恢复作业；退役中（retiring）且最近的退役作业失败：那个退役作业 */
@@ -63,7 +64,9 @@ export interface MachineView {
 }
 
 export interface Team { id: string; name: string; sort_order: number; node_count: number }
-export interface Provider { id: string; name: string; code: string; panel_url: string | null; timezone: string | null }
+/** 供应商怎么计量流量额度：网卡本周期入、出总量取小 / 取大 / 相加 / 只算出站 */
+export type TrafficRule = 'min' | 'max' | 'sum' | 'out';
+export interface Provider { id: string; name: string; code: string; panel_url: string | null; timezone: string | null; traffic_rule: TrafficRule }
 export interface Plan {
   id: string; provider_id: string; name: string; cpu_cores: number | null; mem_mb: number | null; disk_gb: number | null;
   bandwidth_mbps: number | null; traffic_gb: number | null; price_cents: number; currency: string; cycle: Cycle; notes: string | null;
