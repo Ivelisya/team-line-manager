@@ -113,11 +113,13 @@ impl Output {
 /// 单路输出最多保留 1 MiB（远程执行回给用户的上限是 256 KiB，作业脚本的输出只有几 KB）
 const OUT_CAP: usize = 1024 * 1024;
 
-/// 把子进程的一路输出读完：前 OUT_CAP 字节留下，之后继续读但丢掉，让子进程不会因为管道满而卡住
+/// 把子进程的一路输出读完：前 OUT_CAP 字节留下，之后继续读但丢掉，让子进程不会因为管道满而卡住。
+/// 读缓冲放在堆上：跨 await 的数组会整个算进 future，每个跑 ssh 的 future（作业步骤、远程执行…）都跟着大 32 KB，
+/// 调试构建里层层嵌套的轮询栈帧再各留一份，升级回滚这样深的路径会撑爆 2 MB 的线程栈
 async fn read_capped<R: tokio::io::AsyncRead + Unpin>(mut r: R) -> Vec<u8> {
     use tokio::io::AsyncReadExt;
     let mut kept = Vec::new();
-    let mut buf = [0u8; 16 * 1024];
+    let mut buf = vec![0u8; 16 * 1024];
     loop {
         match r.read(&mut buf).await {
             Ok(0) | Err(_) => return kept,

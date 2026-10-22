@@ -75,8 +75,6 @@ export function readMachines(qc: QueryClient): MachineView[] | undefined {
   sortedCache.set(raw, { teams, list });
   return list;
 }
-/** 用时才取一次的在用机器列表（不订阅）：缓存 30 秒内新鲜就直接用。上架页给「IP 已被占用」补上是哪台 */
-export const fetchMachines = (qc: QueryClient) => qc.fetchQuery({ ...machinesQuery('live'), staleTime: 30_000 });
 /** 机器列表缓存（在用 / 已退役都找）里的这台，和那份列表取回的时刻 */
 function fromLists(qc: QueryClient, id: string | null) {
   for (const q of qc.getQueryCache().findAll({ queryKey: ['machines'] })) {

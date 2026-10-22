@@ -3,8 +3,7 @@
 import * as React from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Check, CheckCircle2, ChevronDown, ClipboardPaste, ListChecks, Plus, Trash2, TriangleAlert } from 'lucide-react';
-import { useQueryClient } from '@tanstack/react-query';
-import { fetchMachines, useHostChoices, usePlans, useProviders, useProvision, useProvisionCheck, useRelayChoices, useTeams, type HostChoice } from '@/lib/queries';
+import { useHostChoices, usePlans, useProviders, useProvision, useProvisionCheck, useRelayChoices, useTeams, type HostChoice } from '@/lib/queries';
 import type { Kind, ProvisionCheckItem } from '@/lib/types';
 import { KIND_ORDER } from '@/lib/sort';
 import { inheritSummary, kindLabel, meta } from '@/lib/derive';
@@ -30,8 +29,6 @@ const NONE: never[] = [];
 const BATCH_TIP = '· 可从表格软件整块粘贴，带表头按列名对上\n· 编号留空自动接在末尾\n· 灰格不适用，粘贴时跳过\n· 选择列粘名称；国家粘代码或中文名，空 = 按 IP\n· 填宿主机 = 同机 IP 节点，登录、供应商沿用宿主机';
 /** 检查结果的通知只留最新一条，内容一改就收起 */
 const CHECK_TOAST = 'provision-check';
-/** 服务端检查的「IP 已被占用」（api/provision.rs）只说被占用、不说被谁：按意思宽松地认（「属于一台…」），原话改了几个字也认得；补上名字后不再命中 */
-const IP_TAKEN = /IP.*属于一台/;
 const checkToast = (tone: ToastTone, text: string) => toast.show({ tone, text, key: CHECK_TOAST });
 const NONE_RELAYS: { id: string; name: string }[] = [];
 const NONE_HOSTS: HostChoice[] = [];
@@ -62,7 +59,6 @@ export function ProvisionPage() {
   const [confirm, setConfirm] = React.useState(false);
   const [created, setCreated] = React.useState<{ machine_id: string; job_id: string; name: string }[] | null>(null);
   const check = useProvisionCheck(); const provision = useProvision();
-  const qc = useQueryClient();
   const hostParam = sp.get('host');
   // 宿主机候选取自整份机器列表，订阅着时列表随实时推送最多每 2 秒整表重取（批量上架期间一直在推）：只在用得到时订阅——
   // 单台开了「在已有机器上添加 IP」、批量（哪一行都能填宿主机）；带着 ?host= 等预填时总要取（停在「已开始上架」面板时从抽屉点「添加 IP 节点…」也要能预填）
@@ -119,11 +115,6 @@ export function ProvisionPage() {
     if (bad) { setResults(null); setJump((n) => n + 1); checkToast('bad', mode === 'single' ? '信息不完整，见标红的字段' : `${bad} 行信息不完整，见「检查结果」列`); return; }
     try {
       const r = await check.mutateAsync(items);
-      // 「IP 已被占用」服务端不说是哪台：按 IP 在机器列表里找到就补上名字（取不到列表就保持原话）
-      if (r.items.some((x) => x.errors.some((e) => IP_TAKEN.test(e)))) {
-        const owners = new Map((await fetchMachines(qc).catch(() => [])).map((m) => [m.ip, m.name]));
-        r.items = r.items.map((x, i) => ({ ...x, errors: x.errors.map((e) => (IP_TAKEN.test(e) && owners.has(items[i].ip) ? `这个 IP 已经属于 ${owners.get(items[i].ip)}` : e)) }));
-      }
       setResults(r.items); setSig(curSig);
       const failed = r.items.filter((x) => !x.ok).length;
       if (!failed) checkToast('ok', `检查通过：${r.items.length} 台`);

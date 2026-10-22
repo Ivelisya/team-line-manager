@@ -111,7 +111,7 @@ async fn provision_checks_host_and_allocates_ports() {
                              ip_item("203.0.113.22", xs[0], team, relay), proxy, ip_item("203.0.113.5", host, team, relay)]}),
         )
         .await;
-    for (i, want) in ["宿主机不存在", "不能当宿主机", "不能当宿主机", "只有 VPS 节点", "已经属于一台未退役的机器"].iter().enumerate() {
+    for (i, want) in ["宿主机不存在", "不能当宿主机", "不能当宿主机", "只有 VPS 节点", "已经属于 团队1-01"].iter().enumerate() {
         assert!(errors(&chk, i).contains(want), "{i}: {}", errors(&chk, i));
     }
     // 宿主机不在用

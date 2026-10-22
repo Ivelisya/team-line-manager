@@ -119,17 +119,13 @@ async fn upgrade(t: &T, m: Uuid) -> String {
     t.post(&format!("/api/v1/machines/{m}/upgrade-agent"), json!({})).await["job_id"].as_str().unwrap().to_string()
 }
 
-/// 领取并推进一轮（在等的先提前到现在），返回作业详情。
-/// 推进放在堆上：调试构建不复用栈槽，测试函数里每处调用的临时 future 各占一份栈，几轮下来会撑爆测试线程 2 MB 的栈
+/// 领取并推进一轮（在等的先提前到现在），返回作业详情
 async fn run_round(t: &T, job: &str) -> Value {
-    Box::pin(async {
-        sqlx::query("update job set run_after = now() where id = $1::uuid").bind(job).execute(&t.st.db).await.unwrap();
-        let j = jobs::claim(&t.st, "test").await.unwrap().expect("有可领取的作业");
-        assert_eq!(j.id.to_string(), job);
-        jobs::advance(&t.st, j, "test").await.unwrap();
-        t.job(job).await
-    })
-    .await
+    sqlx::query("update job set run_after = now() where id = $1::uuid").bind(job).execute(&t.st.db).await.unwrap();
+    let j = jobs::claim(&t.st, "test").await.unwrap().expect("有可领取的作业");
+    assert_eq!(j.id.to_string(), job);
+    jobs::advance(&t.st, j, "test").await.unwrap();
+    t.job(job).await
 }
 
 /// agent 用这个作业签发的新令牌报了一次，版本是 `version`

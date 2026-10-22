@@ -277,7 +277,7 @@ function freeSsPort(hostId: string, extra: number[] = [], except?: string) {
 function checkProvision(items: ProvisionItem[]): ProvisionCheckItem[] {
   const usedNum = new Map<string, Set<number>>();
   for (const m of db.machines) if (m.team && m.number != null && m.lifecycle !== 'retired') { const s = usedNum.get(m.team.id) ?? new Set(); s.add(m.number); usedNum.set(m.team.id, s); }
-  const ips = new Set(db.machines.filter((m) => m.lifecycle !== 'retired').map((m) => m.ip));
+  const ips = new Map(db.machines.filter((m) => m.lifecycle !== 'retired').map((m) => [m.ip, m.name]));
   const portUsed = new Map<string, number>();
   const ssBatch = new Map<string, number[]>(); // 宿主机 → 这一批分到的 SS 端口
   const out: ProvisionCheckItem[] = [];
@@ -285,7 +285,7 @@ function checkProvision(items: ProvisionItem[]): ProvisionCheckItem[] {
   for (const it of items) {
     const errors: string[] = [];
     if (!IP_RE.test(it.ip ?? '') || it.ip.split('.').some((x) => +x > 255)) errors.push('IP 格式不正确');
-    else if (ips.has(it.ip)) errors.push('这个 IP 已经属于一台未退役的机器'); // 同服务端原话
+    else if (ips.has(it.ip)) errors.push(`这个 IP 已经属于 ${ips.get(it.ip)}`); // 同服务端原话
     else if (seenIp.has(it.ip)) errors.push('这一批里 IP 重复');
     seenIp.add(it.ip);
     if (it.ssh_port != null && (it.ssh_port < 1 || it.ssh_port > 65535)) errors.push('SSH 端口应在 1–65535');
