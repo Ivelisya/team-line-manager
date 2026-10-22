@@ -61,7 +61,7 @@ fn pct(a: Option<f64>, b: Option<f64>) -> String {
 }
 
 /// 计费周期：月 / 季 / 半年 / 年（同网页）
-fn cycle_cn(c: &str) -> &str {
+pub(crate) fn cycle_cn(c: &str) -> &str {
     match c {
         "monthly" => "月",
         "quarterly" => "季",
@@ -72,7 +72,7 @@ fn cycle_cn(c: &str) -> &str {
 }
 
 /// 到期：N 天后到期 / 今天到期 / 已过期 N 天（同网页与告警）
-fn due_cn(days: i64) -> String {
+pub(crate) fn due_cn(days: i64) -> String {
     match days {
         d if d < 0 => format!("已过期 {} 天", -d),
         0 => "今天到期".into(),
@@ -323,10 +323,21 @@ fn incident_table(list: &[Value], with_state: bool) -> String {
     table::render(head, &rows)
 }
 
-pub fn ls(ctx: &Ctx, team: Option<&str>, kind: Option<&str>, status: Option<&str>, retired: bool) -> anyhow::Result<u8> {
+/// `ls --due N`：在用、有订阅、N 天内到期（含已过期）。自动续费的也算（到期列标出来）
+fn due_within(m: &Value, n: i64) -> bool {
+    st(m, "/lifecycle") == "active" && m.pointer("/subscription/due_days").and_then(Value::as_i64).is_some_and(|d| d <= n)
+}
+
+/// `ls --due` 的到期列：`2026-10-25（3 天后到期）`；自动续费的到期前不提醒、过期才告警，标出来
+fn due_cell(i: &Value) -> String {
+    let auto = if i["auto_renew"] == true { "，自动续费" } else { "" };
+    format!("{}（{}{auto}）", st(i, "/due_date"), due_cn(i["due_days"].as_i64().unwrap_or(0)))
+}
+
+pub fn ls(ctx: &Ctx, team: Option<&str>, kind: Option<&str>, status: Option<&str>, retired: bool, due: Option<i64>) -> anyhow::Result<u8> {
     let scope = if retired { "retired" } else { "live" };
     let all = ctx.c.get_q("/machines", &[("scope", scope.to_string())])?;
-    let list: Vec<Value> = all
+    let mut list: Vec<Value> = all
         .as_array()
         .cloned()
         .unwrap_or_default()
@@ -334,11 +345,19 @@ pub fn ls(ctx: &Ctx, team: Option<&str>, kind: Option<&str>, status: Option<&str
         .filter(|m| team.is_none_or(|t| st(m, "/team/name") == t))
         .filter(|m| kind.is_none_or(|k| st(m, "/kind") == k))
         .filter(|m| status.is_none_or(|s| st(m, "/health/status") == s || st(m, "/lifecycle") == s))
-        .map(|m| ls_item(&m))
+        .filter(|m| due.is_none_or(|n| due_within(m, n)))
+        .map(|m| ls_item(&m, due.is_some()))
         .collect();
+    // 按还剩几天排（各按自己的账单时区算），过期最久的在前；剩的天数一样再按到期日，都一样保持列表原来的顺序
+    if due.is_some() {
+        list.sort_by_key(|i| (i["due_days"].as_i64(), i["due_date"].as_str().map(String::from)));
+    }
     let items = Value::Array(list);
     ctx.emit(&items, || {
         let list = items.as_array().map(Vec::as_slice).unwrap_or_default();
+        if let (Some(n), true) = (due, list.is_empty()) {
+            return format!("没有 {n} 天内到期（含已过期）的在用机器");
+        }
         let pct_cell = |i: &Value, p: &str| num(i, p).map(|x| format!("{x:.0}%")).unwrap_or("-".into());
         let rows: Vec<Vec<String>> = list
             .iter()
@@ -348,7 +367,7 @@ pub fn ls(ctx: &Ctx, team: Option<&str>, kind: Option<&str>, status: Option<&str
                     Some(false) => "离线",
                     None => "-",
                 };
-                vec![
+                let mut r = vec![
                     st(i, "/name"),
                     st(i, "/kind"),
                     st(i, "/lifecycle"),
@@ -364,21 +383,30 @@ pub fn ls(ctx: &Ctx, team: Option<&str>, kind: Option<&str>, status: Option<&str
                         Some(Value::String(s)) => format!("{} {}", job_kind_cn(&st(i, "/active_job/kind")), job_state_cn(s)),
                         _ => "".into(),
                     },
-                ]
+                ];
+                if due.is_some() {
+                    r.insert(1, due_cell(i));
+                }
+                r
             })
             .collect();
-        format!("{}\n共 {} 台", table::render(&["名称", "种类", "生命周期", "健康", "IP", "agent", "CPU", "内存", "磁盘", "入口", "告警", "作业"], &rows), list.len())
+        let mut head = vec!["名称", "种类", "生命周期", "健康", "IP", "agent", "CPU", "内存", "磁盘", "入口", "告警", "作业"];
+        if due.is_some() {
+            head.insert(1, "到期");
+        }
+        format!("{}\n共 {} 台", table::render(&head, &rows), list.len())
     });
     Ok(0)
 }
 
-/// `ls` 的一行：与表格同列（另带 id），百分比取整；`--json` 输出这些而不是完整视图（完整视图用 show 取单台）
-fn ls_item(m: &Value) -> Value {
+/// `ls` 的一行：与表格同列（另带 id），百分比取整；`--json` 输出这些而不是完整视图（完整视图用 show 取单台）。
+/// `with_due`（`--due`）：表格多一列到期，这里同样多 `due_date` / `due_days` / `auto_renew`；平时不带（上百台时整个列表要多出两成）
+fn ls_item(m: &Value, with_due: bool) -> Value {
     let pct = |used: &str, total: &str| match (num(m, used), num(m, total)) {
         (Some(u), Some(t)) if t > 0.0 => Some((u * 100.0 / t).round() as i64),
         _ => None,
     };
-    json!({
+    let mut i = json!({
         "id": m["id"], "name": m["name"], "kind": m["kind"], "lifecycle": m["lifecycle"], "health": m.pointer("/health/status"), "ip": m["ip"],
         "agent_online": m.pointer("/agent/online"),
         "cpu_pct": num(m, "/host/cpu_pct").map(|x| x.round() as i64),
@@ -387,7 +415,13 @@ fn ls_item(m: &Value) -> Value {
         "entries": m["entries"].as_array().map(Vec::len),
         "open_incidents": m["open_incidents"],
         "active_job": m["active_job"],
-    })
+    });
+    if with_due {
+        for k in ["due_date", "due_days", "auto_renew"] {
+            i[k] = m["subscription"][k].clone();
+        }
+    }
+    i
 }
 
 /// 负载同网页：1 分钟平均负载 ÷ agent 报的核数，折成百分比；容器里不报负载（null）
@@ -1006,6 +1040,19 @@ mod tests {
     fn due_and_cycle_wording() {
         assert_eq!((due_cn(3), due_cn(0), due_cn(-2)), ("3 天后到期".to_string(), "今天到期".to_string(), "已过期 2 天".to_string()));
         assert_eq!((cycle_cn("monthly"), cycle_cn("semiannual"), cycle_cn("yearly")), ("月", "半年", "年"));
+    }
+
+    #[test]
+    fn ls_due_filter_and_cell() {
+        let m = |lc: &str, due_days: i64| json!({"lifecycle": lc, "subscription": {"due_date": "2026-10-20", "due_days": due_days, "auto_renew": false}});
+        assert!(due_within(&m("active", 7), 7) && due_within(&m("active", -2), 0));
+        // 不在用的、到期还远的、没有订阅的不列
+        assert!(!due_within(&m("active", 8), 7) && !due_within(&m("provisioning", 1), 7) && !due_within(&json!({"lifecycle": "active", "subscription": null}), 7));
+        assert_eq!(due_cell(&ls_item(&m("active", -2), true)), "2026-10-20（已过期 2 天）");
+        let auto = ls_item(&json!({"subscription": {"due_date": "2026-10-25", "due_days": 3, "auto_renew": true}}), true);
+        assert_eq!(due_cell(&auto), "2026-10-25（3 天后到期，自动续费）");
+        // 到期三项只在 --due 时带，平时的精简对象不变
+        assert!(ls_item(&m("active", 3), false).get("due_days").is_none());
     }
 
     #[test]

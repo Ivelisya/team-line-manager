@@ -18,7 +18,7 @@
    ```
    配置也可用环境变量 `FLEET_URL`、`FLEET_TOKEN`；文件位置：Linux/macOS `~/.config/fleetctl/config.toml`，Windows `%APPDATA%\fleetctl\config.toml`。
 
-约定：脚本和 AI 都加 `--json`（一行 JSON：`ls` / `entries` / `incidents` / `policy ls` / `silence` 是与表格同列的精简对象，单台完整视图用 `show`、`policy show`；其余是 API `data` 原样）；错误走 stderr、退出码非 0（没拿到中控响应时 code 为 `unreachable` 或 `timeout`，后者说明操作可能已执行，先查 `jobs` / `audit` 再决定重试）；人看的输出时间一律是北京时间；`<机器>` 可写 id、显示名（团队1-06）、线路机名、IP，歧义时命令会列出候选。
+约定：脚本和 AI 都加 `--json`（一行 JSON：`ls` / `entries` / `incidents` / `policy ls` / `silence` 是与表格同列的精简对象，单台完整视图用 `show`、`policy show`；`billing` 是订阅、流量额度与最近续费记录合成的对象；其余是 API `data` 原样）；错误走 stderr、退出码非 0（没拿到中控响应时 code 为 `unreachable` 或 `timeout`，后者说明操作可能已执行，先查 `jobs` / `audit` 再决定重试）；人看的输出时间一律是北京时间；`<机器>` 可写 id、显示名（团队1-06）、线路机名、IP，歧义时命令会列出候选。
 
 ## 2. 常见任务 → 命令
 
@@ -32,6 +32,7 @@
 | 入口的流量与探测 | `fleetctl series 团队1-06 --metric traffic` / `--metric probe` |
 | 告警列表、确认 | `fleetctl incidents`、`fleetctl ack <id>`；一台机器的告警历史 `fleetctl incidents --all --machine 团队1-06` |
 | 维护前开维护窗口（免得告警刷屏），或预约 | `fleetctl silence add 团队1-06 --for 2h --maintenance --comment 换内核`；预约加 `--start "2026-10-23 02:00"`（北京时间）；只静默一条规则 `--rule agent_offline`；`fleetctl silence ls`，做完 `fleetctl silence rm <id 前缀>`；全部机器 `--all --yes` |
+| 到期与续费：快到期的机器、看订阅、登记续费、改订阅 | `fleetctl ls --due 7`（7 天内到期、含已过期的在用机器）、`fleetctl billing 团队1-06`（订阅与续费记录）；确认已付款后 `fleetctl renew 团队1-06 --yes`（默认同网页：按订阅周期推一个周期、金额取订阅价格；一次付几期 `--cycles 3`，按面板 `--to 2027-01-15 --amount 39.46 --note …`）；改订阅 `fleetctl subscription set 团队1-06 --price 45 --yes`（只改给了的字段） |
 | 服务日志 | `fleetctl logs 团队1-06 --unit fleet-agent --lines 300`（unit：fleet-agent / fleet-xray / ssserver） |
 | 中控自己的日志 | `fleetctl server-logs --lines 300` |
 | 在一台机器上执行命令 | `fleetctl exec 团队1-06 -- systemctl status fleet-agent` |
@@ -77,7 +78,7 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
    - `relay_apply_lag` / `relay_apply_error`：线路机没应用最新配置，到 4。
    - `relay_xray_down`：线路机上的 xray 停了，到 4。
    - `clock_skew`：agent 所在机器的时钟偏了超过 1 分钟（读数会缺失或停在旧值）；`fleetctl exec <机器> -- 'timedatectl'` 看 NTP 是否同步，没开就 `timedatectl set-ntp true`（修改状态，先确认）。
-   - `renewal_due` / `renewal_overdue`：续费提醒，不是故障。网页告警页这一行可直接「登记续费」，下一轮评估（≤30 秒）自动恢复。
+   - `renewal_due` / `renewal_overdue`：续费提醒，不是故障。网页告警页这一行可直接「登记续费」（或 `fleetctl billing <机器>` 看订阅、确认已付款后 `fleetctl renew <机器> --yes`），下一轮评估（≤30 秒）自动恢复。
    - `traffic_quota_high`：流量额度吃紧（本周期已用 ≥ 90% 警告，≥ 100% 严重：供应商可能限速或另收费），不是故障、不改健康状态。`fleetctl show <机器>` 看「流量额度」；找供应商加流量、调高订阅的流量上限或把流量分走。新周期开始、上限调高后下一轮评估自动恢复。
    - 告警恢复后 30 分钟内又出现会重开原告警（`reopen_count` +1，告警页显示「反复 N 次」），不会每抖一次发一对触发/恢复通知。
    - 去抖：原因连续出现满 60 秒才开告警、连续消失满 60 秒才恢复；探测类更长（`egress_fail` 150 秒、`tcp_fail` 90 秒），偶发一次探测失败不报。续费类、流量额度不去抖。
