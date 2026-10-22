@@ -194,12 +194,12 @@ ProvisionItem = {
 `Job = {id,kind,target:{id,name}|null,state,step,step_count,step_title,error,created_by,created_at,started_at,finished_at,steps:[{idx,key,title,state,started_at,finished_at,output,error}]}`（`step_count` = 该种作业的步骤数，`step_title` = 第 `step` 步的标题，做完为 null）
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/jobs?state=active\|done\|all\|failed&target_id=&kind=&limit=100&offset=0` | `kind`：`provision`（各类上架）、`restore`（各类恢复）或作业类型原值（`attach_entry`、`move_entry`、`retire`、`purge`、`upgrade_agent`、`provision_vps`…），别的值 400，与 `state` 等一起生效。分页：`{items:[Job（不含 steps、cancellable、result，另有 step_title）], total, next_offset}`，按创建先后倒序（`id desc`） |
+| GET | `/jobs?state=active\|done\|all\|failed&target_id=&kind=&limit=100&offset=0` | `kind`：`provision`（各类上架）、`restore`（各类恢复）或作业类型原值（`attach_entry`、`move_entry`、`replace`、`retire`、`purge`、`upgrade_agent`、`provision_vps`…），别的值 400，与 `state` 等一起生效。分页：`{items:[Job（不含 steps、cancellable、result，另有 step_title）], total, next_offset}`，按创建先后倒序（`id desc`） |
 | GET | `/jobs/{id}` | 含 steps |
 | GET | `/jobs/{id}/logs?after=<log id>` | `[{id,ts,level,msg}]`，按 id 升序，一次最多 1000 行（满页按最后一行的 id 接着拉） |
 | GET | `/jobs/{id}/logs?tail=<N>[&after=<log id>]` | （after 之后的）最后 N 行（1-5000）：`{logs:[{id,ts,level,msg}], skipped, after}`，`skipped` 是前面没给的行数，`after` 是续拉用的游标（最后一行的 id，没有日志时原样返回） |
 | POST | `/jobs/{id}/retry` | 失败的作业从失败那一步重来（`upgrade_agent` 从推送重来：失败时多半已经换回了旧程序）。可选请求体 `{reset_host_key?: bool, ssh_password?: string}`（不带请求体 = 都不要）：`reset_host_key` 清掉 known_hosts 里这台机器的记录、按现在的主机公钥重新记录：只允许失败那一步的类别是 `host_key`（中控确实看到了指纹不符）、目标不是同机 IP 节点（它登录的是宿主机：对宿主机的作业重试）的作业，否则 409；在其它检查都通过之后才做（拿不到公钥 409，整个重试作废）。确认机器重装过才用；`ssh_password` 是 root 密码，和上架时一样加密存进作业参数，供重试的作业在中控密钥登录不了时用（用过即丢；失败作业留存的密码 3 天后清除，之后重试要重新给）。只有 failed 的作业能重试（否则 409）；上架/恢复失败的机器重试时回到 provisioning。审计 `job.retry` 记 `reset_host_key` 与是否给了密码（不记密码） |
-| POST | `/jobs/{id}/cancel` | 进行中的作业：补偿已完成的步骤后停下。`upgrade_agent` 只能在排队（queued）时取消：领到就收尾（没开始过，`started_at` 为 null、步骤原样），「全部升级」里等它的随后跟着取消；进行中、失败的 409（推送、重启到一半中断更危险）。详情的 `cancellable` 与这里同一套规则 |
+| POST | `/jobs/{id}/cancel` | 进行中的作业：补偿已完成的步骤后停下。`upgrade_agent` 只能在排队（queued）时取消：领到就收尾（没开始过，`started_at` 为 null、步骤原样），「全部升级」里等它的随后跟着取消；进行中、失败的 409（推送、重启到一半中断更危险）。`replace` 只能在排队时、或第一步（改软路由）失败后取消。详情的 `cancellable` 与这里同一套规则 |
 
 ## 运维：远程执行与日志
 需要 `exec` scope（会话用户直接可用）。中控用自己的 SSH 密钥和 known_hosts 登录；机器必须不是已退役、不是家宽代理（proxy 没有 SSH）。命令原样当 bash 脚本执行（stdin 接 /dev/null），超时由远端 `timeout` 杀掉。每次执行写审计（actor、机器、命令全文、退出码、耗时），**不要在命令里写密码**。
@@ -361,11 +361,13 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 
 **异常告警**（warning，进 incident 表并走通知渠道）：节点第一条来源记录起 `learn_days`（默认 7）天内只学习；之后某节点出现新的运营商 → `ipintel_new_isp`，新的城市 → `ipintel_new_city`，某 (节点, 来源 IP) 第一次出现且为机房/VPN → `ipintel_datacenter_source`。跳过非公网地址和我方机器。一次性异常最后一次出现 `alert_ttl_hours`（默认 24）小时后自动恢复，不发恢复通知；同一个值恢复后，只要它还在来源画像里就不会再告警。来源画像（运营商、城市、接入方式、机房/VPN 来源 IP，一个值一行）最近一次出现超过 `profile_days`（见「访问记录保留期」）、且不在告警中的由每小时的清理删掉：之后同一个值再出现算「新的」，会再告警一次；一个节点的画像全删光（闲置超过这么久）后再有流量，学习期从头算。后台每 5 分钟从 `access_source_hourly` 增量维护 `node_source_seen`（水位在 `ipintel_state`；水位之前的小时若被补算，连接数差值经 `access_source_late` 补记，首次扫描按 7 天一页）。
 
-## 生命周期操作：换线路机、搬空线路机、恢复已退役的机器
+## 生命周期操作：换线路机、搬空线路机、替换节点、恢复已退役的机器
 都是作业（可续跑、幂等、留日志），接口只做校验、建作业、写审计。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
+| GET | `/machines/{old}/replace?new_machine_id=&team_id=&number=&routers=` | 替换节点预览（只读库，不登录路由）。见下 |
+| POST | `/machines/{old}/replace` | `{new_machine_id, old_to?:{team_id?, number?}, routers?（默认 true）}` → 预览同样的内容加 `job_id`。输入不对 400（新节点不存在 / 就是旧节点、指定的团队不存在、编号不在 1–999、没指定团队又找不到备用团队）；不满足条件 409（见 blockers）。写审计 `machine.replace`（不含凭据） |
 | POST | `/machines/{id}/move` | `{to_relay_id, from_relay_id?}` → `{job_id, name, from, to, share_changed:true, note}`。节点（vps / proxy）必须 active 且恰有一个 active 入口（有多个时用 `from_relay_id` 指定换掉哪条）；目标线路机必须 active、不同于当前、节点在它上面没有未移除入口；节点有进行中的作业时 409。写审计 `entry.move` |
 | POST | `/relays/{id}/evacuate` | `{to_relay_id}` → `{from, to, jobs:[{machine_id,name,job_id}], skipped:[{machine_id,name,reason}], share_changed, note}`。为该线路机上每个在用入口的节点各建一个 move_entry 作业；暂时不能搬的（入口停用/还在应用中、节点有别的作业、目标上已有入口…）列入 `skipped`，不影响其它节点。线路机自己的直出入口不搬、也不列入 `skipped`（退役线路机时随之摘除；退役守卫只数节点入口）。写审计 `relay.evacuate` 与每个节点一条 `entry.move` |
 | GET | `/machines/{id}/restore?team_id=&number=&label=&probe=` | 恢复预检（只对已退役机器）。见下 |
@@ -376,6 +378,16 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 - **分享链接会变**：新入口有新的端口和凭据。`GET /jobs/{id}` 对 move_entry 多返回 `result:{new_entry_id, old_entry_id, from_relay_id, to_relay_id, share_changed:true, note}`；用 `GET /entries/{new_entry_id}/share` 取新链接（需要 secrets 权限）。作业日志里也有「客户端需要换成新的分享链接」。
 - 旧线路机不在线时 `wait_detached_old` 会失败，线路机恢复后重试。
 - 线路机退役守卫的错误提示里指向「搬空线路机」。
+
+**替换节点**：新节点接替旧节点——软路由上指向旧节点入口的出口改成新节点的入口，新节点接旧编号，旧节点去备用团队（不退役，由备用到期自动删除接手）。
+- 预览 `GET /machines/{old}/replace` 返回 `{old:{id,name,kind,team:{id,name}|null}, new:{同}, new_name（新节点替换后的名字 = 旧节点现在的名字）, old_to:{team:{id,name,spare}|null, number, name}, renames:[{machine_id,old_name,new_name}]（numbering.auto_compact 时新节点原来的团队压缩编号）, routers_enabled, routers:[{id,name,state:online|offline|pending, exits:[{exit,old_entry_id,new_entry_id,from:"server:port",to:"server:port"}]}], ok, blockers[], warnings[]}`。
+- 条件：旧、新都是在用（active）的节点（不是线路机）、都没有进行中的作业、旧节点有团队编号、新节点至少有一个 active 入口。新节点可以在别的团队（替换时改到旧节点的团队，warnings 里提示）。`old_to.team_id` 不给时找「同团队的备用团队」：备用团队里名字以旧团队名开头的恰好一个就用它，否则只有一个备用团队就用它，都不是 400；编号不给取目标团队最小的空号（作业执行时再取一次）。
+- 要改的路由：按各路由 `router_status.data` 里的出口（见软路由），出口对上的入口属于旧节点、未删除的都算。新入口按线路机一一对应（同一台线路机上的新入口；没有时新节点只有一个 active 入口就用它，否则 blockers 说明对不上）；出口原来写的是线路机 IP 就换成新线路机的 IP，否则换成它的 public_host。`routers_enabled` 时任何一台要改的路由不在线（`state` 不是 online）都是 blocker；`routers=false` 不看路由、只交换编号。
+
+**替换作业 `replace`**（目标 = 旧节点，要求 active）步骤：`routers`「改软路由出口」→ `renumber`「交换编号」。计划（改哪些路由的哪些出口）发起时存进作业参数（不含凭据）。
+- `routers`：先确认计划里的路由全部在线（有不在线的：一台都不改，失败，`error_kind=network`）；再逐台经隧道执行 `routers/replace.rs` 的脚本：备份源配置（`uci get openclash.config.config_path`）到 `/etc/fleet-backup/openclash/<文件名>.<UTC 时间戳>`、只改出口代理块里的 server / port / uuid / servername（或 sni）/ reality-opts 的 public-key / short-id 6 行（核对它现在指向旧入口或已经是新入口，认不出、行数不对一行不写）、重启 OpenClash、等 mihomo API、逐个测出口延迟（generate_204，各 3 次）。一台失败：它自己换回备份，之前改好的按各自的备份换回（`routers_applied` 参数记着时间戳），作业失败；回滚也失败的写明要人工处理及备份位置。凭据执行时从库里取（同分享链接），只进 ssh 的 stdin。步骤输出 `{routers:[{id,name,exits:[{exit,to}],backup,delay_ms[]}]}`。没有路由要改、或 `routers=false` 时跳过。
+- `renumber`：一个事务里先锁团队再锁两台机器，旧节点改到 `old_to`、新节点改成旧团队 + 旧编号，与 `PATCH /machines/{id}` 同一段代码（审计各一条 `machine.rename`、刷新入口所在线路机）；`numbering.auto_compact` 时新节点原来的团队压缩编号（审计 `team.renumber`）。已经换好（重跑）的跳过；旧节点的团队编号在发起后被改过则失败（不猜）。
+- **取消**：只在开始改路由之前——排队中，或 `routers` 失败（路由已换回）停在第一步；之后只能重试到完成。重试从失败那一步重来。
 
 **恢复作业 `restore_vps` / `restore_relay` / `restore_proxy`**（目标 = 机器，要求 provisioning）：机器保持原 id（历史、账单、审计接上），lifecycle retired → provisioning，步骤与同类型上架完全相同（vps：preflight、bootstrap、converge、agent、wait_report、attach、wait_applied、verify、activate；relay：…、converge_relay、…；proxy：只有 attach、wait_applied、verify、activate）。旧入口已 removed，不复活，`attach` 建新入口。成功后 `retired_at` 清空，`lifecycle_reason` 记「已恢复：<原因>」，订阅保留。取消（或失败后取消）：机器回到 retired（团队、编号、退役原因回到恢复之前），摘掉已建的入口、撤销令牌、清掉出站秘密（出站参数的其余部分留着），团队编号压缩。
 

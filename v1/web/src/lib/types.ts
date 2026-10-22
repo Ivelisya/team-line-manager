@@ -143,7 +143,7 @@ export interface Meta {
 export type UsageMetric = 'cpu' | 'mem' | 'disk' | 'load';
 
 export type JobState = 'queued' | 'running' | 'waiting' | 'cancelling' | 'succeeded' | 'failed' | 'cancelled';
-export type JobKind = 'provision_vps' | 'provision_proxy' | 'provision_relay' | 'provision_ip' | 'attach_entry' | 'move_entry' | 'restore_vps' | 'restore_proxy' | 'restore_relay' | 'restore_ip' | 'retire' | 'purge' | 'upgrade_agent';
+export type JobKind = 'provision_vps' | 'provision_proxy' | 'provision_relay' | 'provision_ip' | 'attach_entry' | 'move_entry' | 'restore_vps' | 'restore_proxy' | 'restore_relay' | 'restore_ip' | 'retire' | 'purge' | 'upgrade_agent' | 'replace';
 /** 步骤 state 文档未列全，前端按 pending/running/waiting/succeeded(done)/failed/skipped(cancelled) 宽松处理 */
 export interface JobStep { idx: number; key: string; title: string; state: string; started_at: string | null; finished_at: string | null; output: Record<string, unknown> | null; error: string | null; error_kind?: string | null }
 /** 作业列表（GET /jobs）的一项：不带 steps。step = 当前（或失败的）步骤下标，step_title 为它的标题，做完为 null */
@@ -230,6 +230,18 @@ export interface RestoreBody {
   /** 没给的字段沿用退役时留下的；username 给空串 = 去掉 */
   login?: { password: string }; upstream?: { protocol?: 'socks5' | 'http'; host?: string; port?: number; username?: string; password?: string };
 }
+/** 替换节点预览（GET /machines/{old}/replace）：新节点接旧编号（new_name），旧节点去 old_to（默认同团队的备用团队）；
+ *  routers：出口指向旧节点、会改成新节点入口的软路由（state 不是 online 时 blockers 里有原因）；renames：新节点原来的团队压缩编号 */
+export interface ReplaceSide { id: string; name: string; kind: Kind; team: { id: string; name: string } | null }
+export interface ReplacePreview {
+  old: ReplaceSide; new: ReplaceSide; new_name: string;
+  old_to: { team: { id: string; name: string; spare: boolean } | null; number: number | null; name: string };
+  renames: { machine_id: string; old_name: string; new_name: string }[];
+  routers_enabled: boolean;
+  routers: { id: string; name: string; state: 'online' | 'offline' | 'pending' | string; exits: { exit: string; old_entry_id: string; new_entry_id: string; from: string; to: string }[] }[];
+  ok: boolean; blockers: string[]; warnings: string[];
+}
+export interface ReplaceBody { new_machine_id: string; old_to?: { team_id?: string; number?: number }; routers?: boolean }
 /** 退役预览：退役后同团队后面的节点会依次前移改名。ip_nodes：会一并退役的同机 IP 节点（宿主机才有），renames 按所有受影响的团队算 */
 export interface RetirePreview { name: string; renames: { machine_id: string; old_name: string; new_name: string }[]; ip_nodes: { id: string; name: string }[] }
 /** 退役：宿主机的同机 IP 节点各一个退役作业（ip_node_jobs，没有为 []） */

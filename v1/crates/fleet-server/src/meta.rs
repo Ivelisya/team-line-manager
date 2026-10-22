@@ -215,6 +215,7 @@ pub const JOB_KINDS: Labels = &[
     ("retire", "退役"),
     ("purge", "彻底删除"),
     ("upgrade_agent", "升级 agent"),
+    ("replace", "替换节点"),
 ];
 
 pub const JOB_STATES: Labels = &[

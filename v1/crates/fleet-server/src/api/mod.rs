@@ -12,6 +12,7 @@ pub mod notify;
 pub mod policy;
 pub mod provision;
 pub mod relays;
+pub mod replace;
 pub mod routers;
 pub mod settings;
 pub mod terminal;
@@ -77,6 +78,8 @@ pub fn router() -> Router<AppState> {
         .route("/machines/{id}/move", post(lifecycle::move_node))
         .route("/relays/{id}/evacuate", post(lifecycle::evacuate))
         .route("/machines/{id}/restore", get(lifecycle::restore_preview).post(lifecycle::restore))
+        // 替换节点：GET 预览，POST 建作业（改软路由出口 → 交换编号）
+        .route("/machines/{id}/replace", get(replace::preview).post(replace::replace))
         // 上架
         .route("/provision/check", post(provision::check))
         .route("/provision", post(provision::create))

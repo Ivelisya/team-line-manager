@@ -512,7 +512,7 @@ pub async fn audit(a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<A
 
 /// 所有写审计的动作（git grep 'audit(' 核对过）；新增动作时补这里和 audit_text。按标题搜索时在这里面找
 const AUDIT_ACTIONS: &[&str] = &[
-    "machine.provision", "machine.retire", "machine.purge", "machine.rename", "machine.update", "machine.restore", "subscription.set", "renewal",
+    "machine.provision", "machine.retire", "machine.purge", "machine.rename", "machine.update", "machine.restore", "machine.replace", "subscription.set", "renewal",
     "team.create", "team.update", "team.delete", "team.renumber", "provider.create", "provider.update", "provider.delete", "plan.create", "plan.update", "plan.delete", "entry.enable",
     "entry.disable", "entry.rotate", "entry.share", "entry.add", "entry.move", "relay.evacuate", "job.retry", "job.cancel", "silence.create",
     "silence.delete", "incident.ack", "restore.probe", "agent.upgrade", "notify.create", "notify.update", "notify.delete", "exec", "machine.logs", "server.logs", "apikey.create",
@@ -556,6 +556,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "entry.move" => "换线路机",
         "relay.evacuate" => "搬空线路机",
         "machine.restore" => "恢复机器",
+        "machine.replace" => "替换节点",
         "job.retry" => "重试作业",
         "job.cancel" => "取消作业",
         // 标记为维护的叫维护窗口，否则叫静默（同界面）
@@ -629,6 +630,12 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         }
         "entry.move" => format!("{} · {} → {}", s("name"), s("from"), s("to")),
         "relay.evacuate" => format!("{} → {}（{} 个作业）", s("from"), s("to"), d["jobs"].as_array().map_or(0, |a| a.len())),
+        // 「团队2-01 由 团队2-20 接替，旧节点改为 备用-03（改 2 台软路由）」
+        "machine.replace" => {
+            let n = d["routers"].as_array().map_or(0, |a| a.len());
+            let r = if n > 0 { format!("（改 {n} 台软路由）") } else { "（不改软路由）".into() };
+            format!("{} 由 {} 接替，旧节点改为 {}{r}", s("name"), s("new"), s("old_to"))
+        }
         "machine.restore" => match d["reason"].as_str().filter(|r| !r.is_empty()) {
             Some(r) => format!("{} → {}（{r}）", s("old_name"), s("name")),
             None => format!("{} → {}", s("old_name"), s("name")),

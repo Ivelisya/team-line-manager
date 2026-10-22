@@ -16,6 +16,7 @@ pub mod alerts;
 pub mod clash;
 pub mod collect;
 pub mod deploy;
+pub mod replace;
 pub mod scripts;
 pub mod tunnel;
 

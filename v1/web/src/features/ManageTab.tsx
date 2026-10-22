@@ -1,7 +1,7 @@
 // 抽屉“管理”页：改名/改编号（带实时预览）、入口操作、同机 IP 节点、agent、退役、彻底删除（仅已退役）。
 import * as React from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, PackageOpen, Plus, Repeat2, Trash2, Undo2, Wrench } from 'lucide-react';
+import { ArrowRight, PackageOpen, Plus, Repeat2, Replace, Trash2, Undo2, Wrench } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
 import { maintOwner, useAddEntry, useEndMaintenance, useMachine, usePatchMachine, usePurge, useRelayChoices, useSilences, useTeams } from '@/lib/queries';
 import { openMaint, openUpgrade } from '@/lib/nodeActions';
@@ -17,6 +17,7 @@ import { TypedConfirmDialog } from '@/components/app/dialogs';
 import { RetireDialog } from '@/components/app/RetireDialog';
 import { EntryMenuButton, EntryMenus, entryLabel } from '@/components/app/EntryActions';
 import { EvacuateDialog, MoveDialog, RestoreDialog, movableEntries } from '@/components/app/LifecycleDialogs';
+import { ReplaceDialog, canReplace } from '@/components/app/ReplaceDialog';
 import { CountrySelect } from '@/components/app/CountrySelect';
 import { countryName } from '@/lib/flags';
 
@@ -29,6 +30,7 @@ export function ManageTab({ m, onClosed }: { m: MachineView; onClosed: () => voi
       {/* 在用的机器没有入口时也要能加：节点「添加入口」，线路机「添加直出入口」 */}
       {!retired && (m.lifecycle === 'active' || m.entries.length > 0) && <EntrySection m={m} />}
       {/* 在用的普通 VPS 节点都能当宿主机：上面另配的公网 IP 各上架成一台同机 IP 节点 */}
+      {canReplace(m) && <ReplaceSection m={m} />}
       {m.kind === 'vps' && !m.host_machine && m.lifecycle === 'active' && <IpNodesSection m={m} />}
       {m.agent && m.lifecycle === 'active' && <AgentSection m={m} />}
       {m.lifecycle === 'active' && <MaintSection m={m} />}
@@ -169,6 +171,21 @@ function EntrySection({ m }: { m: MachineView }) {
       )}
       <MoveDialog m={m} open={dlg === 'move'} onOpenChange={(o) => !o && setDlg(null)} onDone={() => setDlg(null)} />
       <EvacuateDialog relay={m} open={dlg === 'evacuate'} onOpenChange={(o) => !o && setDlg(null)} onDone={() => setDlg(null)} />
+    </Section>
+  );
+}
+
+/** 替换节点：另一台在用节点接替这台（软路由出口跟着换、编号交换，这台进备用团队） */
+function ReplaceSection({ m }: { m: MachineView }) {
+  const [open, setOpen] = React.useState(false);
+  return (
+    <Section>
+      <SectionHeader title="替换" />
+      <div className="manage-row">
+        <div className="t">替换为另一台节点 <InfoTip text={'新节点接这台的编号，软路由上指向这台的出口改成新节点的入口。\n这台改到备用团队，订阅过期满 1 天后自动删除。'} /></div>
+        <Button variant="secondary" disabled={!!m.active_job} onClick={() => setOpen(true)}><Replace />替换为…</Button>
+      </div>
+      <ReplaceDialog m={m} open={open} onOpenChange={setOpen} onDone={() => setOpen(false)} />
     </Section>
   );
 }

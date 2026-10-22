@@ -104,6 +104,10 @@ const MOVE_ENTRY: &[StepDef] = &[
 /// MOVE_ENTRY 里 detach_old 的下标：作业走到这一步（含）之后不能再取消
 const MOVE_POINT_OF_NO_RETURN: i32 = 4;
 const PURGE: &[StepDef] = &[s("purge", "删除数据", 600)];
+// 替换节点（见 steps/replace.rs）：先把软路由上指向旧节点的出口换成新节点的入口（一台一台改，失败的连同已改好的都换回原配置），
+// 再交换编号（旧节点去备用团队 / 空号，新节点接旧编号）。改路由一开始就不能取消（见 cancel_blocker）。
+// 一台路由：改配置 + 重启 OpenClash + 等 API + 测延迟最多约 7 分钟（routers::replace::APPLY_TIMEOUT），回滚约 4 分钟；按两三台留足
+const REPLACE: &[StepDef] = &[s("routers", "改软路由出口", 1800), s("renumber", "交换编号", 60)];
 // 推送时旧程序留成 .prev；起不来、或 2 分钟内等不到新版本上报，就换回去并让作业失败（见 steps::agent / wait_report）。重试从推送重来
 const UPGRADE_AGENT: &[StepDef] = &[s("agent", "推送并重启 agent", 600), s("wait_report", "等待新版本上报", 180)];
 
@@ -123,6 +127,7 @@ pub fn defs(kind: &str) -> &'static [StepDef] {
         "retire" => RETIRE,
         "purge" => PURGE,
         "upgrade_agent" => UPGRADE_AGENT,
+        "replace" => REPLACE,
         _ => &[],
     }
 }
@@ -134,10 +139,11 @@ pub fn title_of(kind: &str, key: &str) -> &'static str {
 /// 上架类作业（含恢复）：目标机器处于上架中，失败时机器标为上架失败
 pub fn provisions(kind: &str) -> bool { kind.starts_with("provision_") || kind.starts_with("restore_") }
 
-pub fn cancellable(kind: &str) -> bool { provisions(kind) || matches!(kind, "attach_entry" | "move_entry" | "upgrade_agent") }
+pub fn cancellable(kind: &str) -> bool { provisions(kind) || matches!(kind, "attach_entry" | "move_entry" | "upgrade_agent" | "replace") }
 
 /// 作业走到第 `step` 步、处于 `state` 时为什么不能取消；能取消返回 None。
-/// 换线路机一旦开始摘旧入口就只能重试到完成（回滚会让节点没有入口）；升级 agent 只能在排队时取消（推送、重启到一半中断更危险）
+/// 换线路机一旦开始摘旧入口就只能重试到完成（回滚会让节点没有入口）；升级 agent 只能在排队时取消（推送、重启到一半中断更危险）；
+/// 替换节点只能在开始改路由之前取消：排队中，或改路由失败（已换回原配置）还停在第一步
 pub fn cancel_blocker(kind: &str, step: i32, state: &str) -> Option<&'static str> {
     if !cancellable(kind) {
         return Some("这类作业不能取消（可以重试到完成）");
@@ -147,6 +153,9 @@ pub fn cancel_blocker(kind: &str, step: i32, state: &str) -> Option<&'static str
     }
     if !matches!(state, "queued" | "running" | "waiting" | "failed") {
         return Some("作业已结束");
+    }
+    if kind == "replace" && (step > 0 || !matches!(state, "queued" | "failed")) {
+        return Some("软路由已经开始改（或已经改好），不能再取消：失败了点重试到完成");
     }
     if kind != "upgrade_agent" || state == "queued" {
         return None;
@@ -165,7 +174,7 @@ fn outer_timeout(d: &StepDef) -> Duration { Duration::from_secs(d.timeout_s as u
 fn required_lifecycle(kind: &str) -> Option<&'static str> {
     match kind {
         k if k.starts_with("provision_") || k.starts_with("restore_") => Some("provisioning"),
-        "attach_entry" | "move_entry" | "upgrade_agent" => Some("active"),
+        "attach_entry" | "move_entry" | "upgrade_agent" | "replace" => Some("active"),
         "retire" => Some("retiring"),
         "purge" => Some("retired"),
         _ => None,
@@ -821,7 +830,7 @@ mod tests {
     fn outer_timeout_covers_step_timeout() {
         for k in [
             "provision_vps", "provision_proxy", "provision_relay", "provision_ip", "attach_entry", "retire", "purge", "upgrade_agent", "move_entry",
-            "restore_vps", "restore_proxy", "restore_relay", "restore_ip",
+            "restore_vps", "restore_proxy", "restore_relay", "restore_ip", "replace",
         ] {
             for d in defs(k) {
                 assert!(outer_timeout(d).as_secs() as i64 >= d.timeout_s + 120);
@@ -851,5 +860,13 @@ mod tests {
         // 升级 agent 只能在排队时取消
         assert!(can("upgrade_agent", 0, "queued"));
         assert!(["running", "waiting", "failed", "cancelling"].iter().all(|s| !can("upgrade_agent", 0, s)));
+        // 替换节点：排队中、或改路由失败（已换回原配置）停在第一步时能取消；改路由在跑、已经走到交换编号都不能
+        assert!(can("replace", 0, "queued") && can("replace", 0, "failed"));
+        assert!(!can("replace", 0, "running") && !can("replace", 1, "failed") && !can("replace", 1, "queued"));
+        assert_eq!(defs("replace").iter().map(|d| d.key).collect::<Vec<_>>(), ["routers", "renumber"]);
+        assert!(check_target("replace", Some("active")).is_ok() && check_target("replace", Some("retiring")).is_err());
+        // 路由一台最多 APPLY_TIMEOUT，失败时还要回滚：至少放得下两台改加两台回滚
+        let d = &defs("replace")[0];
+        assert!(d.timeout_s as u64 >= 2 * (crate::routers::replace::APPLY_TIMEOUT + crate::routers::replace::ROLLBACK_TIMEOUT).as_secs());
     }
 }

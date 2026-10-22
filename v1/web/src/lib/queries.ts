@@ -6,7 +6,7 @@ import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClie
 import { del, get, patch, post, put } from './api';
 import { collator, makeDefaultCompare } from './sort';
 import { offlineNames, quotaTight, setMeta } from './derive';
-import type { ApiKey, Availability, Incident, Job, JobSummary, Paged, JobLog, MachineView, Meta, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RetireResult, RestoreBody, RestorePreview, MoveResult, EvacuateResult, ProbeBeats, SeriesResp, Silence, SubField, Team, AuditEntry, NotifyChannel, NotifyLogEntry, AccountSession, TotpSetup, TotpStatus } from './types';
+import type { ApiKey, Availability, Incident, Job, JobSummary, Paged, JobLog, MachineView, Meta, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RetireResult, RestoreBody, RestorePreview, ReplaceBody, ReplacePreview, MoveResult, EvacuateResult, ProbeBeats, SeriesResp, Silence, SubField, Team, AuditEntry, NotifyChannel, NotifyLogEntry, AccountSession, TotpSetup, TotpStatus } from './types';
 
 export const useMe = () => useQuery({ queryKey: ['me'], queryFn: () => get<{ username: string }>('/auth/me'), retry: false, staleTime: 5 * 60_000 });
 /** 中文名、枚举、阈值、默认值（服务端 meta.rs），一次会话内不变：取回时同时交给 derive 的同步读取（kindLabel 等）。外壳等它到了才渲染页面 */
@@ -220,6 +220,20 @@ export const useRestorePreview = (id: string | null, enabled: boolean, o: { team
       return get<RestorePreview>(`/machines/${id}/restore${q.size ? `?${q}` : ''}`, signal);
     },
   });
+/** 替换节点：预览（只读库，不登录机器）与提交（建 replace 作业：改软路由出口 → 交换编号） */
+export const useReplacePreview = (id: string | null, enabled: boolean, o: { new_machine_id: string; team_id?: string; number?: number; routers: boolean }) =>
+  useQuery<ReplacePreview>({
+    queryKey: ['replace-preview', id, o.new_machine_id, o.team_id ?? '', o.number ?? '', o.routers], enabled: !!id && !!o.new_machine_id && enabled,
+    staleTime: 0, gcTime: 0, placeholderData: (p) => p, refetchOnWindowFocus: false,
+    queryFn: ({ signal }) => {
+      const q = new URLSearchParams({ new_machine_id: o.new_machine_id });
+      if (o.team_id) q.set('team_id', o.team_id);
+      if (o.number != null) q.set('number', String(o.number));
+      if (!o.routers) q.set('routers', 'false');
+      return get<ReplacePreview>(`/machines/${id}/replace?${q}`, signal);
+    },
+  });
+export const useReplace = () => useWrite(({ id, ...b }: { id: string } & ReplaceBody) => post<ReplacePreview & { job_id: string }>(`/machines/${id}/replace`, b), [...M, ['jobs'], ['teams']]);
 export const useProvisionCheck = () => useMutation({ mutationFn: (items: ProvisionItem[]) => post<{ items: ProvisionCheckItem[] }>('/provision/check', { items }) });
 export const useProvision = () => useWrite((items: ProvisionItem[]) => post<{ jobs: { machine_id: string; job_id: string; name: string }[] }>('/provision', { items }), [...M, ['jobs'], ['teams']]);
 export const useUpgradeAgent = () => useWrite((id: string) => post<{ machine_id: string; job_id: string }>(`/machines/${id}/upgrade-agent`), [...M, ['jobs']]);

@@ -90,20 +90,39 @@ pub struct PatchIn {
     country: Option<Option<String>>,
 }
 
+impl PatchIn {
+    /// 只改团队与编号（改名）：替换节点（jobs/steps/replace.rs）用，其余字段不动
+    pub fn rename(revision: i32, team_id: Uuid, number: i32) -> Self {
+        PatchIn { revision, team_id: Some(team_id), number: Some(number), label: None, note: None, provider_id: None, plan_id: None, service_ref: None, country: None }
+    }
+}
+
 /// PATCH 前锁住的当前值：(revision, kind, team_id, number, label, lifecycle, country)
 type PatchCur = (i32, String, Option<Uuid>, Option<i32>, Option<String>, String, Option<String>);
 
 pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<PatchIn>) -> ApiResult<Json<Value>> {
+    let mut tx = st.db.begin().await?;
+    let relays = patch_tx(&mut tx, &a.name, id, b).await?;
+    tx.commit().await?;
+    for r in relays {
+        st.relay_bumped(r);
+    }
+    st.emit(Event::Machine { id });
+    get_one(a, State(st), ApiPath(id)).await
+}
+
+/// PATCH 的全部校验与写入（含审计），在调用方的事务里做；返回要刷新的线路机（提交后调 `relay_bumped`）。
+/// 改团队 / 编号（改名）只走这里：网页、fleetctl rename 与替换节点（jobs/steps/replace.rs）同一套规则与审计
+pub async fn patch_tx(tx: &mut crate::db::Tx<'_>, actor: &str, id: Uuid, b: PatchIn) -> ApiResult<Vec<Uuid>> {
     let country = match &b.country {
         Some(c) => Some(crate::country::normalize(c.as_deref().unwrap_or("")).map_err(ApiError::bad_request)?),
         None => None,
     };
-    let mut tx = st.db.begin().await?;
     let cur: PatchCur = sqlx::query_as(
         "select revision, kind::text, team_id, number, label, lifecycle::text, country from machine where id = $1 for update",
     )
     .bind(id)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut **tx)
     .await?
     .ok_or_else(|| ApiError::not_found("没有这台机器"))?;
     if cur.0 != b.revision {
@@ -154,34 +173,34 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     .bind(b.service_ref.clone().flatten())
     .bind(country.is_some())
     .bind(country.clone().flatten())
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await?;
     // 有套餐时供应商就是套餐的：只换了套餐的跟着换供应商，明确给了另一个供应商的报错
     let other: Option<(Uuid,)> = sqlx::query_as(
         "select pl.provider_id from machine m join plan pl on pl.id = m.plan_id where m.id = $1 and m.provider_id is distinct from pl.provider_id",
     )
     .bind(id)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut **tx)
     .await?;
     if let Some((pv,)) = other {
         if b.provider_id.is_some() {
             return Err(ApiError::bad_request("套餐不属于所选的供应商"));
         }
-        sqlx::query("update machine set provider_id = $2 where id = $1").bind(id).bind(pv).execute(&mut *tx).await?;
+        sqlx::query("update machine set provider_id = $2 where id = $1").bind(id).bind(pv).execute(&mut **tx).await?;
     }
     // 入口备注随节点名变：节点改名刷新它挂的线路机；线路机改名只影响它自己的直出入口（「线路机名-直出」），没有就不动
-    let relays = if renamed { bump_relays_of_nodes(&mut tx, &[id]).await? } else { vec![] };
+    let relays = if renamed { bump_relays_of_nodes(tx, &[id]).await? } else { vec![] };
     // 审计写上改前改后的显示名（「团队1-07 → 团队1-03」）：记录保持当时的样子，之后再改名也不跟着变
     let (old_team, new_team): (Option<String>, Option<String>) = sqlx::query_as("select (select name from team where id = $1), (select name from team where id = $2)")
         .bind(cur.2)
         .bind(team_id)
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await?;
     let old_name = crate::names::display_name(&cur.1, cur.4.as_deref(), old_team.as_deref(), cur.3);
     let name = crate::names::display_name(&cur.1, label.as_deref(), new_team.as_deref(), number);
     audit(
-        &mut tx,
-        &a.name,
+        tx,
+        actor,
         if renamed { "machine.rename" } else { "machine.update" },
         "machine",
         Some(id),
@@ -190,12 +209,7 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
                "after": {"team_id": team_id, "number": number, "label": label, "country": country.clone().unwrap_or(cur.6.clone())}}),
     )
     .await?;
-    tx.commit().await?;
-    for r in relays {
-        st.relay_bumped(r);
-    }
-    st.emit(Event::Machine { id });
-    get_one(a, State(st), ApiPath(id)).await
+    Ok(relays)
 }
 
 // ── 时序 ──────────────────────────────────────────────────────────────────

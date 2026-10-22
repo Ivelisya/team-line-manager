@@ -6,7 +6,8 @@ import { ArrowRight } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
 import { useEvacuate, useMachine, useMoveEntry, useRelayChoices, useRelays, useRestore, useRestorePreview, useTeams } from '@/lib/queries';
 import { HEALTH_TONE } from '@/lib/sort';
-import { closeEvacuate, closeMove, closeRenew, closeRestore, closeRetire, useEvacuateTarget, useMoveTarget, useRenewTarget, useRestoreTarget, useRetireTarget } from '@/lib/nodeActions';
+import { closeEvacuate, closeMove, closeRenew, closeReplace, closeRestore, closeRetire, useEvacuateTarget, useMoveTarget, useRenewTarget, useReplaceTarget, useRestoreTarget, useRetireTarget } from '@/lib/nodeActions';
+import { ReplaceDialog } from './ReplaceDialog';
 import { RenewDialog } from '@/features/BillingTab';
 import { useDrawer } from '@/lib/drawer';
 import { NODE_FILTERS } from '@/lib/urlState';
@@ -296,6 +297,8 @@ export function LifecycleDialogsHost() {
   const restoreId = useRestoreTarget();
   const retireId = useRetireTarget();
   const renewId = useRenewTarget();
+  const replaceId = useReplaceTarget();
+  const rp = useHeld(replaceId, useMachine(replaceId).data);
   // id 清空后继续用最近的机器渲染 open=false 的对话框，让 Radix 播完关闭动画再卸载
   const mv = useHeld(moveId, useMachine(moveId).data);
   const ev = useHeld(evacId, useMachine(evacId).data);
@@ -308,6 +311,7 @@ export function LifecycleDialogsHost() {
   return (
     <>
       {mv && <MoveDialog key={mv.id} m={mv} open={!!moveId} onOpenChange={(o) => { if (!o) closeMove(); }} onDone={closeMove} />}
+      {rp && <ReplaceDialog key={rp.id} m={rp} open={!!replaceId} onOpenChange={(o) => { if (!o) closeReplace(); }} onDone={closeReplace} />}
       {ev && <EvacuateDialog key={ev.id} relay={ev} open={!!evacId} onOpenChange={(o) => { if (!o) closeEvacuate(); }} onDone={closeEvacuate} />}
       {rs && <RestoreDialog key={rs.id} m={rs} open={!!restoreId} onOpenChange={(o) => { if (!o) closeRestore(); }} onDone={closeRestore} />}
       {rt && <RetireDialog key={rt.id} m={rt} open={!!retireId} onOpenChange={(o) => { if (!o) closeRetire(); }} onDone={closeRetire} />}

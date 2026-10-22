@@ -19,6 +19,12 @@ export const openMove = move.open;
 export const closeMove = move.close;
 export const useMoveTarget = move.use;
 
+/** 替换节点（目标是旧节点）：对话框见 components/app/ReplaceDialog */
+const replace = target();
+export const openReplace = replace.open;
+export const closeReplace = replace.close;
+export const useReplaceTarget = replace.use;
+
 /** 搬空线路机（目标是线路机） */
 const evacuate = target();
 export const openEvacuate = evacuate.open;

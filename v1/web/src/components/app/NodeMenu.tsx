@@ -3,11 +3,11 @@
 // 菜单本身由 NodeMenus 按网格 / 表格挂一份，卡片和行里不放 Radix 根。
 import * as React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowUpCircle, BellOff, CalendarPlus, Copy, Link2, PanelRightOpen, PencilLine, Power, Repeat2, SquareTerminal, Undo2, Wrench } from 'lucide-react';
+import { ArrowUpCircle, BellOff, CalendarPlus, Copy, Link2, PanelRightOpen, PencilLine, Power, Repeat2, Replace, SquareTerminal, Undo2, Wrench } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
 import { fetchShare, maintOwner, useEndMaintenance, useSilences } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
-import { openMaint, openMove, openRenew, openRestore, openRetire, openUpgrade } from '@/lib/nodeActions';
+import { openMaint, openMove, openRenew, openReplace, openRestore, openRetire, openUpgrade } from '@/lib/nodeActions';
 import { collator } from '@/lib/sort';
 import { openTerminal } from '@/lib/terminal';
 import { copyShareLink, copyText } from '@/lib/clipboard';
@@ -67,6 +67,9 @@ function useNodeMenu(m: MachineView): MenuEntry[] {
       : { key: 'renew', label: '设置费用…', icon: <CalendarPlus />, onSelect: () => open(m.id, 'billing') },
     ...(m.kind !== 'relay' && m.lifecycle === 'active' && m.entries.some((e) => e.lifecycle === 'active')
       ? [{ key: 'move', label: '换线路机…', icon: <Repeat2 />, disabled: !!m.active_job, onSelect: () => openMove(m.id) } as MenuEntry] : []),
+    // 替换：另一台在用节点接替它（软路由出口跟着换，编号交换，它进备用团队）
+    ...(m.kind !== 'relay' && m.lifecycle === 'active'
+      ? [{ key: 'replace', label: '替换为…', icon: <Replace />, disabled: !!m.active_job, onSelect: () => openReplace(m.id) } as MenuEntry] : []),
     // 维护中的：结束这台自己的（同机 IP 节点可能是宿主机的）维护窗口；全部机器的那种要到告警页结束，mutation 会报错说明
     m.maintenance
       ? { key: 'maint', label: maintOnHost ? '结束宿主机维护' : '结束维护', icon: <Wrench />,

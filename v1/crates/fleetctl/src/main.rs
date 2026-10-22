@@ -324,7 +324,7 @@ enum Cmd {
     Jobs {
         #[arg(long)]
         active: bool,
-        /// 只看这类作业：provision（各类上架）| restore（各类恢复）| attach_entry | move_entry | upgrade_agent | retire | purge
+        /// 只看这类作业：provision（各类上架）| restore（各类恢复）| attach_entry | move_entry | replace | upgrade_agent | retire | purge
         #[arg(long)]
         kind: Option<String>,
         #[arg(long, default_value_t = 30)]
@@ -572,6 +572,28 @@ enum Cmd {
         /// 搬到哪台线路机
         #[arg(long)]
         to: String,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        follow: bool,
+    },
+    /// 替换节点：新节点接替旧节点。软路由上指向旧节点的出口改成新节点的入口（备份、重启 OpenClash、测延迟，失败全部换回），
+    /// 旧节点去备用团队（或 --to 指定的团队），新节点接旧编号。不加 --yes 只打印预览
+    Replace {
+        /// 旧节点（id / 显示名 / IP）
+        old: String,
+        /// 新节点
+        #[arg(long = "with")]
+        new: String,
+        /// 旧节点去哪个团队（默认：同团队的备用团队）
+        #[arg(long)]
+        to: Option<String>,
+        /// 旧节点在那个团队里的编号（默认第一个空号）
+        #[arg(long)]
+        number: Option<i32>,
+        /// 不改软路由，只交换编号
+        #[arg(long)]
+        no_routers: bool,
         #[arg(long)]
         yes: bool,
         #[arg(long)]
@@ -875,6 +897,9 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Watch { count, metrics } => cmds::watch(x, count, metrics),
         Cmd::Move { node, to, from, yes, follow } => lifecycle::mv(x, &node, &to, from.as_deref(), yes, follow),
         Cmd::Evacuate { relay, to, yes, follow } => lifecycle::evacuate(x, &relay, &to, yes, follow),
+        Cmd::Replace { old, new, to, number, no_routers, yes, follow } => {
+            lifecycle::replace(x, lifecycle::ReplaceOpts { old: &old, new: &new, to: to.as_deref(), number, no_routers, yes, follow })
+        }
         Cmd::Restore { machine, team, number, relay, label, upstream, ss_port, password_env, reason, reset_host_key, no_probe, yes, follow } => lifecycle::restore(
             x,
             lifecycle::RestoreOpts {
