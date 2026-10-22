@@ -173,7 +173,7 @@
   --m-cpu: #3b82f6; --m-mem: #8b5cf6; --m-disk: #e97b35; --m-load: #ec4899;
   --m-cpu-text: #2563eb;                /* 同色当 15px 文字（节点卡「已上架」）：#3b82f6 白底只有 3.7:1，加深一级 5.2:1；暗色沿用 --m-cpu */
   /* 速率量级色（卡片、表格、环形卡的速率读数与点阵）：浅色底上要当文字读，对比度都在 4.5:1 以上（原来的琥珀约 2.5:1）；深色主题另有一套 */
-  --speed-idle: #1d7f4f; --speed-low: #9a6400; --speed-high: #b4541a; --speed-max: #c23a31;
+  --speed-near: var(--warn-text);
   --tag-blue-bg: rgba(37, 99, 235, 0.12);   --tag-blue-fg: #1d4ed8;
   --tag-orange-bg: rgba(249, 115, 22, 0.14); --tag-orange-fg: #c2410c;
   --tag-teal-bg: rgba(13, 148, 136, 0.14);   --tag-teal-fg: #0f766e;
@@ -272,7 +272,6 @@
   --fg-3: #71717a;
   --cell-off: rgba(255, 255, 255, 0.08);
   --m-disk: #f97316; --m-cpu-text: var(--m-cpu);
-  --speed-idle: #10b981; --speed-low: #f59e0b; --speed-high: #f97316; --speed-max: #ef4444;
   --tag-blue-bg: rgba(59, 130, 246, 0.18);   --tag-blue-fg: #60a5fa;
   --tag-orange-bg: rgba(249, 115, 22, 0.18); --tag-orange-fg: #fb923c;
   --tag-teal-bg: rgba(20, 184, 166, 0.18);   --tag-teal-fg: #2dd4bf;

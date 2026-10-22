@@ -6,8 +6,9 @@
 
 /* ---------- 分区 ---------- */
 .hsec {
+  --hsec-pad: clamp(14px, 1.6vw, 20px);
   display: grid; gap: var(--sp-16); min-width: 0;
-  padding: clamp(14px, 1.6vw, 20px); /* 1440 宽（侧栏 240）下内宽 ≥ 3 张大卡片 */
+  padding: var(--hsec-pad); /* 1440 宽（侧栏 240）下内宽 ≥ 3 张大卡片 */
   background: var(--section); border: 1px solid var(--section-line); border-radius: var(--r-section);
 }
 .hsec-head { display: grid; gap: var(--sp-12); min-width: 0; }
@@ -27,7 +28,7 @@
 
 .hero-grid { display: grid; gap: var(--sp-16); min-width: 0; }
 /* 手机：分区底与它里面的白卡是两层边框两层内边距，屏幕本来就窄——去掉分区的底、边框与内边距，卡片直接排在页面上 */
-@media (max-width: 600px) { .hsec { padding: 0; border: 0; background: none; } }
+@media (max-width: 600px) { .hsec { --hsec-pad: 0px; border: 0; background: none; } }
 @container content (min-width: 1100px) { .hero-grid { grid-template-columns: minmax(0, 1.48fr) minmax(0, 1fr); } }
 
 /* ---------- KPI ---------- */
@@ -141,6 +142,36 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 .seg-fill .seg-item { flex: 1 0 auto; justify-content: center; }
 .hgroups .fchip { height: var(--h-lg); }
 @media (max-width: 600px) { .hgroups { flex-wrap: wrap; } .seg.seg-fill { flex-basis: 100%; } }
+
+/* 首页「机器矩阵」的吸顶条：平时透明、融在分区底上；滚过去吸在顶栏下面，铺毛玻璃（同顶栏）并加底线。
+   条向两边伸出分区的内边距、上下各让 8px 内边距，吸住时才盖满整行，没吸住时版面位置不变。哨兵是条的原位（高 0，抵掉一格间距） */
+.hbar-sentinel { height: 0; margin-top: calc(-1 * var(--sp-16)); }
+.hbar, .hbar > .hgroups {
+  transition: background-color var(--dur-2) var(--ease-std), border-color var(--dur-2) var(--ease-std);
+  border-bottom: 1px solid transparent;
+}
+.hbar {
+  position: sticky; top: var(--topbar-h); z-index: var(--z-sticky); min-width: 0;
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-8) var(--sp-12);
+  margin: calc(-1 * var(--sp-8)) calc(-1 * var(--hsec-pad)); padding: var(--sp-8) var(--hsec-pad);
+}
+.hbar > .hgroups { flex: 1 1 360px; }
+.hctrls { display: flex; align-items: center; gap: var(--control-gap); flex-wrap: wrap; min-width: 0; margin-left: auto; }
+.hbar[data-stuck], .hbar[data-stuck] > .hgroups { border-bottom-color: var(--line); }
+.hbar[data-stuck] { background: var(--glass-bar); -webkit-backdrop-filter: var(--glass-bar-blur); backdrop-filter: var(--glass-bar-blur); }
+/* 窄屏：只吸团队页签那一行，排序 / 视图随页面滚走（.hbar 退成 display: contents，两块直接成了分区网格的子项） */
+@media (max-width: 760px) {
+  .hbar { display: contents; }
+  .hbar[data-stuck] { background: none; -webkit-backdrop-filter: none; backdrop-filter: none; border-bottom-color: transparent; }
+  .hbar > .hgroups {
+    position: sticky; top: var(--topbar-h); z-index: var(--z-sticky);
+    margin: calc(-1 * var(--sp-8)) calc(-1 * var(--hsec-pad)); padding: var(--sp-8) var(--hsec-pad);
+  }
+  .hbar[data-stuck] > .hgroups { background: var(--glass-bar); -webkit-backdrop-filter: var(--glass-bar-blur); backdrop-filter: var(--glass-bar-blur); }
+  .hctrls { margin-left: 0; }
+}
+/* 手机：团队页签与「仅看异常」排在一行（页签自己横滑），吸住时只占一行高 */
+@media (max-width: 600px) { .hbar > .hgroups { flex-wrap: nowrap; } .hbar > .hgroups > .seg.seg-fill { flex: 1 1 0; } .hbar > .hgroups > .fchip { flex: none; } }
 
 /* ---------- 分段格条 / 资源读数 ---------- */
 /* 一条格条只有一个元素：mask 按 --tile（一格加一道缝）横向平铺，切出 n 个圆角格（缝是精确的 px，圆角半径 --r）；

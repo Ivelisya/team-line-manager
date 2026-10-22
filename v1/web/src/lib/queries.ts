@@ -5,7 +5,7 @@ import { useCallback } from 'react';
 import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { del, get, patch, post, put } from './api';
 import { collator, makeDefaultCompare } from './sort';
-import { offlineNames, quotaTight, setMeta } from './derive';
+import { nextDue, offlineNames, quotaTight, setMeta } from './derive';
 import type { ApiKey, Availability, Incident, Job, JobSummary, Paged, JobLog, MachineView, Meta, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RetireResult, RecycleItem, RecycleDetail, ReplaceBody, ReplacePreview, MoveResult, EvacuateResult, ProbeBeats, SeriesResp, Silence, SubField, Team, AuditEntry, NotifyChannel, NotifyLogEntry, AccountSession, TotpSetup, TotpStatus } from './types';
 
 export const useMe = () => useQuery({ queryKey: ['me'], queryFn: () => get<{ username: string }>('/auth/me'), retry: false, staleTime: 5 * 60_000 });
@@ -62,6 +62,8 @@ export const useTeamsCompact = () => useQuery({ ...machinesQuery, select: number
 export const useQuotaTight = () => useQuery({ ...machinesQuery, select: quotaTight });
 /** 集群状态在线率格条的悬停：离线机器的名字。同一份缓存，结构共享：没人上下线时引用不变 */
 export const useOfflineNames = () => useQuery({ ...machinesQuery, select: offlineNames });
+/** 首页 KPI「即将到期」：最近到期的一台（同一份缓存，结构共享） */
+export const useNextDue = () => useQuery({ ...machinesQuery, select: nextDue });
 /** readMachines 的排序结果按原数组引用缓存：抽屉每次渲染都要算上一台 / 下一台，列表没换（推送间隙）就不再复制、排序整表 */
 const sortedCache = new WeakMap<MachineView[], { teams: Team[] | undefined; list: MachineView[] }>();
 /** 按键等“用时才读”的场景：直接读缓存里的机器列表（同样的默认顺序），不订阅、不触发请求 */

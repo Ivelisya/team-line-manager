@@ -25,9 +25,9 @@
 .ncard[data-view="compact"] { --rows: 6; }
 /* 悬停上浮 2px 写在 components.css「交互状态」。卡片本身不可点（点里面的读数、按钮），不做按下缩放。
    出现时不各自淡入：翻页 / 换视图由网格容器整块淡入一次（Home 的 .page-in），一页几十张卡不再各起一条动画 */
-/* 健康色边框（节点卡与环形卡共用）；当前卡、右键菜单开着的卡（data-menu 由 NodeMenus 写在被点的那张上）盖过健康色 */
+/* 故障描红边（节点卡与环形卡共用）；降级照常服务、算正常，不描边，只在状态胶囊上体现。
+   当前卡、右键菜单开着的卡（data-menu 由 NodeMenus 写在被点的那张上）盖过健康色 */
 :is(.ncard, .rcard)[data-health="down"] { border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); }
-:is(.ncard, .rcard)[data-health="degraded"] { border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
 .ncard.is-current { border-color: var(--accent); }
 .ncard[data-menu] { border-color: var(--accent); }
 .ncard.is-quiet .flow-rate, .ncard.is-quiet .nc-run-val { color: var(--fg-3); }
@@ -113,32 +113,33 @@
 .flow-label .lucide { width: var(--icon-sm); height: var(--icon-sm); stroke-width: var(--icon-stroke-strong); color: var(--dir-c); }
 .flow-col[data-dir="up"] { --dir-c: var(--chart-2); }
 .flow-col[data-dir="down"] { --dir-c: var(--chart-1); }
-.flow-rate { min-width: 0; overflow: hidden; white-space: nowrap; font: var(--fw-semibold) var(--fs-metric) / 24px var(--font-num); font-variant-numeric: var(--num-variant); letter-spacing: -0.03em; color: var(--spd, var(--fg)); }
+.flow-rate { min-width: 0; overflow: hidden; white-space: nowrap; font: var(--fw-semibold) var(--fs-metric) / 24px var(--font-num); font-variant-numeric: var(--num-variant); letter-spacing: -0.03em; color: var(--num-c, var(--fg)); }
 .flow-rate .unit { margin-left: 1px; font-size: var(--fs-micro); font-weight: var(--fw-medium); letter-spacing: 0; color: var(--fg-2); }
 .ncard[data-view="small"] .flow-rate, .ncard[data-view="compact"] .flow-rate { font-size: var(--fs-metric-sm); line-height: 22px; }
-[data-speed="idle"] { --spd: var(--speed-idle); }
-[data-speed="low"] { --spd: var(--speed-low); }
-[data-speed="high"] { --spd: var(--speed-high); }
-[data-speed="max"] { --spd: var(--speed-max); }
+/* 速率读数用正文色、迹线用主题色；空闲（< 1 Mbps）读数与迹线都退成灰；只有接近套餐带宽（≥ 80%）才换提示色。颜色不表示状态 */
+[data-speed="ok"] { --num-c: var(--fg); }
+[data-speed="idle"] { --num-c: var(--fg-3); --spd: var(--fg-3); }
+[data-speed="near"] { --num-c: var(--speed-near); --spd: var(--speed-near); }
 .flow-trend { align-items: center; gap: var(--sp-10); min-width: 0; min-height: 14px; } /* min-width 0：点阵按列宽收，不把列撑宽、把「实时」挤出卡外 */
 /* 窄卡（手机）：方向标签放到读数上面，两列之间不挤。容器设在 .flow 上——卡片本身不能设 container-type（布局包含会让 subgrid 失效） */
 .flow { container-type: inline-size; }
 @container (max-width: 320px) { .flow-head { flex-direction: column; align-items: flex-start; gap: 0; } }
-/* 「实时 / 离线」只是文字，不配小圆点；实时的取速率色，只在悬停这张卡时轻轻呼吸：
+/* 「实时 / 离线 / 无读数」只是文字，不配小圆点，统一 --fg-3；实时的只在悬停这张卡时轻轻呼吸：
    一页几十张卡平时不跑无限动画（毛玻璃顶栏下面每帧有变化还得重做模糊），也就不用再按视口开关 */
 .flow-live { flex: none; font: var(--fw-semibold) var(--fs-micro) / 14px var(--font-sans); letter-spacing: 0.04em; color: var(--fg-3); }
-.flow-live[data-live] { color: var(--spd, var(--ok)); }
+.flow-live[data-live] { color: var(--fg-3); }
 @media (hover: hover) and (prefers-reduced-motion: no-preference) { .ncard:hover .flow-live[data-live] { animation: breathe var(--dur-loop) var(--ease-std) infinite; } }
 .flow-foot { align-items: center; justify-content: space-between; gap: var(--sp-8); font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); white-space: nowrap; }
 .flow-foot-label { display: inline-flex; align-items: center; gap: var(--sp-6); }
 .flow-foot-label .lucide { width: var(--icon-xs); height: var(--icon-xs); color: var(--dir-c); }
 .flow-foot .num { color: var(--fg); font-weight: var(--fw-medium); }
-.flow-biz { grid-column: 1 / -1; --dir-c: var(--fg-3); } /* 本月业务流量（用户视角的下载 / 上传）：横跨两列，和网卡上行 / 下行分开 */
+.flow-month { grid-column: 1 / -1; --dir-c: var(--fg-3); } /* 本月业务流量（用户视角的下载 / 上传）：横跨两列，和网卡上行 / 下行分开 */
 .flow-foot-label { flex: none; }
 .flow-vals { min-width: 0; overflow: hidden; text-overflow: ellipsis; } /* 窄卡放不下「10-22 起」时先省略它，全文在悬停里 */
 
 /* 6 剩余流量 */
 .nc-quota { display: grid; gap: var(--sp-8); }
+.nc-quota.is-unl { align-content: center; } /* 不限流量没有格条：一行读数在槽位里垂直居中，不在下面留一截空白 */
 .nc-qhead { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-8); font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); white-space: nowrap; min-width: 0; }
 .nc-qlabel { display: inline-flex; align-items: baseline; gap: var(--sp-6); flex: none; font-weight: var(--fw-semibold); } /* 剩余量是主读数：不收缩，放不下时让右边的「本周期已用」省略 */
 .nc-qlabel .lucide { width: var(--icon-xs); height: var(--icon-xs); align-self: center; color: var(--ok); }
@@ -146,6 +147,9 @@
 .nc-qlabel b.is-bad { color: var(--bad-text); }
 .nc-quse { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--fg-2); } /* 本周期已用 / 上限：要读的信息，不用 --fg-3；窄卡放不下时先省略它 */
 
+/* 备用机器：到期旁直接写哪天自动回收（短句，说明在悬停里） */
+.nc-run-note { margin-left: var(--sp-4); font-weight: var(--fw-regular); color: var(--fg-3); }
+.nc-recycle { margin-right: var(--sp-6); font-weight: var(--fw-regular); color: var(--fg-3); }
 /* 8 已上架 · 到期 · 剩余价值：彩色读数 */
 .nc-run { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-12); }
 .nc-run-item { display: grid; gap: var(--sp-2); min-width: 0; }
@@ -210,29 +214,33 @@
 /* 底部：状态胶囊（同卡片视图的 footer 左侧）+ 上行 / 下行速率 */
 .rc-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); min-height: 22px; padding-top: var(--sp-10); border-top: 1px solid var(--line); font-size: var(--fs-label); }
 .rc-foot > .pill { flex: none; }
-.rc-rates { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: var(--sp-2) var(--sp-10); min-width: 0; }
-/* 速率只留方向箭头（「上行 / 下行」给读屏），字号比原来收一档：和状态胶囊排在一行，窄卡放不下时折到第二行 */
+.rc-rates { display: flex; align-items: center; justify-content: flex-end; flex-wrap: nowrap; gap: var(--sp-8); min-width: 0; }
+/* 速率只留方向箭头（「上行 / 下行」给读屏），字号比原来收一档：和状态胶囊排在一行，永不折行（折行会让这张卡的圆环比同行的卡高低不一），放不下时单位先收起 */
 .rc-rates .rc-rate { font-size: var(--fs-body); line-height: var(--lh-body); }
+.rc-rates .rc-rate .lucide { width: var(--icon-xs); height: var(--icon-xs); }
+.rc-rates .rc-rate .unit { font-size: var(--fs-micro); }
 /* 家宽代理：圆环的位置放本月业务与探测延迟两行，高度同三个圆环 */
 .rc-pair { grid-template-columns: minmax(0, 1fr); align-content: center; gap: var(--sp-8); min-height: 96px; text-align: left; }
 .rc-pair > span:not(.sr-only) { display: flex; align-items: center; gap: var(--sp-6); min-width: 0; font-size: var(--fs-label); color: var(--fg-2); white-space: nowrap; }
 .rc-pair .lucide { width: var(--icon-xs); height: var(--icon-xs); flex: none; color: var(--fg-3); }
 .rc-pair b { margin-left: auto; font: var(--fw-semibold) var(--fs-body) / var(--lh-body) var(--font-num); font-variant-numeric: var(--num-variant); color: var(--fg); overflow: hidden; text-overflow: ellipsis; }
 .rc-pair b .unit { font-weight: var(--fw-regular); }
-.rc-rate { display: inline-flex; align-items: center; gap: var(--sp-4); font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-num); letter-spacing: -0.02em; color: var(--spd, var(--fg-3)); white-space: nowrap; }
+.rc-rate { display: inline-flex; align-items: center; gap: var(--sp-4); font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-num); letter-spacing: -0.02em; color: var(--num-c, var(--fg-3)); white-space: nowrap; }
 .rc-rate .lucide { width: var(--icon-sm); height: var(--icon-sm); stroke-width: var(--icon-stroke-strong); color: var(--fg-2); }
 .rc-rate .unit { font-size: var(--fs-micro); letter-spacing: 0; color: var(--fg-2); }
 
 /* ========== 表格视图（外框是通用的 .panel） ========== */
 .mtable { --cell-px: 10px; }
+.mtable :is(th, td):last-child { padding-right: var(--sp-12); } /* 行尾「⋯」不贴着容器边（表格外层 overflow-x: clip 会把贴边的 1px 裁成残影） */
 .mtable .tname { display: flex; align-items: center; gap: var(--inline-gap); min-width: 0; }
 .mtable .tname > div { min-width: 0; } /* 名称 + 小字 IP 两行（同机器页名称列），长了各自省略 */
 .tmeter, .tquota { display: flex; align-items: center; gap: var(--sp-8); min-width: 0; }
 .tmeter .cells, .tquota .cells { flex: 1 1 auto; height: 6px; }
+.tquota.is-click { width: 100%; padding: 0; border: 0; background: none; font: inherit; color: inherit; cursor: pointer; }
 .tmeter > .num { flex: none; width: 34px; text-align: right; font-size: var(--fs-label); }
 .tmeter[data-tone="warn"] > .num { color: var(--warn-text); }
 .tmeter[data-tone="bad"] > .num { color: var(--bad-text); }
 .tquota > .num, .tquota > .t-sub { flex: none; min-width: 52px; margin-left: auto; text-align: right; font-size: var(--fs-label); }
-.trate { font-weight: var(--fw-semibold); color: var(--spd, var(--fg-3)); }
+.trate { font-weight: var(--fw-semibold); color: var(--num-c, var(--fg-3)); }
 .dt tr.is-quiet td { color: var(--fg-2); }
 .dt tr.is-quiet .cells { opacity: var(--o-stale); }

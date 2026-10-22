@@ -28,6 +28,7 @@ a { color: inherit; }
 
 /* 度量值一律 .num；IP、端口、日期用正文字体 + tabular */
 .num { font-family: var(--font-num); font-variant-numeric: var(--num-variant); }
+.nowrap { white-space: nowrap; }
 .unit { font-size: var(--fs-label); color: var(--fg-2); font-weight: var(--fw-regular); }
 .mono { font-family: var(--font-mono); font-size: var(--fs-label); }
 .t-muted { color: var(--fg-3); }
