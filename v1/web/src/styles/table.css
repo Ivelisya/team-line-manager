@@ -56,6 +56,13 @@
 .dt-grid .gcell { width: 100%; height: 100%; box-sizing: border-box; padding: 0 var(--sp-8); border: 0; border-radius: 0; background: transparent; color: var(--fg); font: inherit; text-overflow: ellipsis; }
 .dt-grid .gcell:focus { outline: 2px solid var(--focus); outline-offset: -2px; background: var(--surface); }
 .dt-grid .gcell:disabled { background: var(--sunken); color: var(--fg-3); }
+/* 格子里的原生下拉（类型、团队、线路机…）：去掉系统外观，右侧画一个同全站下拉的细箭头（两道斜渐变拼成），聚焦换底色时箭头留着 */
+.dt-grid select.gcell, .dt-grid select.gcell:focus {
+  appearance: none; -webkit-appearance: none; padding-right: 22px; cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, var(--fg-2) 50%), linear-gradient(135deg, var(--fg-2) 50%, transparent 50%);
+  background-position: calc(100% - 13px) 50%, calc(100% - 9px) 50%; background-size: 4px 4px; background-repeat: no-repeat;
+}
+.dt-grid select.gcell:disabled { cursor: default; background-image: none; }
 .dt-grid .gcell-date { display: flex; align-items: center; height: 100%; }
 .dt-grid .gcell-date > .gcell { flex: 1 1 auto; min-width: 0; }
 .dt-grid .gcell-date > .icon-btn { flex: none; margin-right: var(--sp-4); }
@@ -67,3 +74,7 @@
 .dt-grid thead :is(.gc-res, .gc-del) { background: var(--sunken); }
 .dt-grid .gc-res { right: 56px; padding: 0 var(--sp-8); box-shadow: -1px 0 0 var(--line), var(--shadow-edge-l); }
 .dt-grid .gc-del { right: 0; border-right: 0; }
+/* 窄容器（手机、竖屏平板）：两列右吸附就占掉大半屏，左边只剩「# / 类型」能编辑——不再吸附，跟着整表横滑 */
+@container content (max-width: 640px) {
+  .dt-grid :is(.gc-res, .gc-del) { position: static; box-shadow: none; }
+}
