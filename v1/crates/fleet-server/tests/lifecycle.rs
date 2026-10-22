@@ -430,11 +430,11 @@ async fn quota_by_nic_rule_and_panel_calibration() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn provider_create_defaults_and_patch() {
     let t = setup(false).await;
-    // 时区 null / 空白 = 列默认值 UTC（界面清空时区原先发 null 直接 400）
+    // 时区 null / 空白 = 跟随组织时区，存 null（界面清空时区原先发 null 直接 400）
     let a = t.post("/api/v1/providers", json!({"name": "甲", "code": "A", "panel_url": null, "timezone": null})).await["id"].as_str().unwrap().to_string();
     t.post("/api/v1/providers", json!({"name": "乙", "code": "B", "timezone": " "})).await;
     let ps = t.get("/api/v1/providers").await;
-    assert!(ps.as_array().unwrap().iter().all(|p| p["timezone"] == "UTC" && p["panel_url"].is_null()), "{ps}");
+    assert!(ps.as_array().unwrap().iter().all(|p| p["timezone"].is_null() && p["panel_url"].is_null()), "{ps}");
     let (s, v) = t.req("POST", "/api/v1/providers", Some(json!({"name": "甲", "code": "C"})), None).await;
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
     assert!(v.to_string().contains("已有同名供应商"), "{v}");
@@ -457,11 +457,11 @@ async fn provider_create_defaults_and_patch() {
     assert_eq!(t.req("POST", "/api/v1/providers", Some(json!({"name": "丙", "code": "D", "panel_url": "panel.example"})), None).await.0, StatusCode::BAD_REQUEST);
     assert_eq!(t.req("PATCH", &format!("/api/v1/providers/{}", Uuid::now_v7()), Some(json!({"name": "x"})), None).await.0, StatusCode::NOT_FOUND);
     assert_eq!(get().await["name"], "甲改");
-    // 清空：panel_url null、时区空串 = 回到 UTC；没传的字段不动
+    // 清空：panel_url null、时区空串 = 跟随组织时区（null）；没传的字段不动
     let (s, v) = t.req("PATCH", &path, Some(json!({"panel_url": null, "timezone": ""})), None).await;
     assert_eq!(s, StatusCode::OK, "{v}");
     let p = get().await;
-    assert_eq!((p["name"].as_str(), p["panel_url"].is_null(), p["timezone"].as_str()), (Some("甲改"), true, Some("UTC")));
+    assert_eq!((p["name"].as_str(), p["panel_url"].is_null(), p["timezone"].is_null()), (Some("甲改"), true, true));
     let audit = t.get("/api/v1/audit?limit=50").await;
     assert_eq!(audit.as_array().unwrap().iter().filter(|e| e["action"] == "provider.update" && e["title"] == "修改供应商").count(), 2, "{audit}");
 }

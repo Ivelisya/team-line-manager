@@ -8,6 +8,7 @@ import * as F from '@/lib/format';
 import { useMe, useQuotaTight } from '@/lib/queries';
 import { useFleetSeries } from '@/lib/live';
 import { cn } from '@/lib/utils';
+import { meta } from '@/lib/derive';
 import { CountUp, DotCount, Num, Stat } from '@/components/app/primitives';
 import { AreaSpark, Bar } from '@/components/app/viz';
 
@@ -32,7 +33,7 @@ const normal = (c: Counts) => c.total - c.down - c.unknown;
 
 function statusLine(o: Overview | undefined, down: number, degraded: number): string {
   if (!o) return '正在汇总机器状态…';
-  const due = o.due_7d ? `，${o.due_7d} 台 7 天内到期` : '';
+  const due = (o.due_soon ? `，${o.due_soon} 台即将到期` : '') + (o.overdue ? `，${o.overdue} 台已过期` : '');
   const fail = o.failed ? `，${o.failed} 台上架失败` : '';
   if (down) return `有 ${down} 台机器故障${fail}${due}，点「故障」查看告警。`;
   if (o.failed) return `${o.failed} 台机器上架失败${due}，可在作业页重试或在详情里退役。`;
@@ -62,14 +63,14 @@ export const OverviewSection = React.memo(function OverviewSection({ o, loading 
           <Stat loading={loading} tone="teal" icon={<Waypoints />} label="线路机正常" value={<span data-tip="正常 = 总数 − 故障 − 未知：降级、维护照常服务，也算在正常里"><CountUp value={relays && normal(relays)} /></span>} unit={relays ? `/ ${relays.total}` : undefined}
             caption={relays && <><DotCount tone="warn" n={relays.degraded} label="降级" />{relays.maintenance > 0 && <DotCount tone="neutral" n={relays.maintenance} label="维护" />}<DotCount tone="bad" n={relays.down} label="故障" />{relays.unknown > 0 && <DotCount tone="neutral" n={relays.unknown} label="未知" />}</>} />
           <Stat loading={loading} tone="bad" icon={<AlertTriangle />} label="故障" value={<CountUp value={o ? down : undefined} />} unit="台" to="/incidents" caption={o && <>{down ? '点击查看告警' : !o.failed && '一切正常'}{o.failed > 0 && <DotCount tone="bad" n={o.failed} label="上架失败" />}</>} />
-          <Stat loading={loading} tone="amber" icon={<CalendarClock />} label="7 天内到期" value={<CountUp value={o?.due_7d} />} unit="台" to="/nodes?sort=due" caption="需要续费的机器" />
+          <Stat loading={loading} tone="amber" icon={<CalendarClock />} label="即将到期" value={<CountUp value={o?.due_soon} />} unit="台" to="/nodes?sort=due" caption={o?.overdue ? `另有 ${o.overdue} 台已过期` : '需要续费的机器'} />
           <Stat loading={loading} tone="gold" icon={<CircleDollarSign />} label="每月费用" value={cost0 ? F.money(cost0.cents, cost0.currency) : '—'}
             caption={costMore.length ? `另有 ${costMore.map((c) => F.money(c.cents, c.currency)).join(' + ')}（不同币种分开计）` : '在用机器按月折算'} />
           {/* 每条推送都在涨，不滚数（滚到的位数也显示不出来，白白逐帧重画）：同网卡速率，直接到位 */}
           <Stat loading={loading} tone="sky" icon={<TrendingUp />} label="本月业务流量" value={tr ? F.inScale(trTotal, trScale) : '—'} unit={tr ? trScale.u : undefined}
             caption={tr && <><span>下载 <Num f={F.bytes(tr.down)} /></span><span>上传 <Num f={F.bytes(tr.up)} /></span></>} />
           <Stat loading={loading} tone="violet" icon={<Database />} label="流量额度吃紧" value={<CountUp value={qt?.n} />} unit={qt ? '台' : undefined}
-            caption={qt && (qt.top ? <span className="stat-who">最紧<span className="ellipsis">{qt.top.name}</span>已用<b className="num">{qt.top.pct}%</b></span> : '都在 80% 以下')} />
+            caption={qt && (qt.top ? <span className="stat-who">最紧<span className="ellipsis">{qt.top.name}</span>已用<b className="num">{qt.top.pct}%</b></span> : `都在 ${meta().thresholds.traffic_quota_warn_pct}% 以下`)} />
           <Stat loading={loading} tone="blue" icon={<CloudUpload />} label="上架中 · 退役中" value={o ? <CountUp value={o.provisioning + o.retiring} /> : '—'} unit="台" to="/jobs" caption={o && <span>上架 <b className="num">{o.provisioning}</b> · 退役 <b className="num">{o.retiring}</b></span>} />
         </div>
         <ClusterPanel o={o} />

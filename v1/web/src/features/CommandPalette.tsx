@@ -7,7 +7,7 @@ import { NAV, type NavItem } from '@/lib/nav';
 import { useMachineLabels, useUpgradeAllAgents } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import { copyText } from '@/lib/clipboard';
-import { KIND_LABEL } from '@/lib/sort';
+import { kindLabel } from '@/lib/derive';
 import { setOverlay, useOverlay } from '@/lib/palette';
 import { openEvacuate, openRenew } from '@/lib/nodeActions';
 import type { ThemePref } from '@/lib/theme';
@@ -70,7 +70,7 @@ function PaletteBody({ theme, askUpgrade }: { theme: Theme; askUpgrade: () => vo
 
   const pool = mode === 'evacuate' ? machines.filter((m) => m.kind === 'relay') : machines;
   const list = search.trim() || mode === 'evacuate' ? pool : pool.slice(0, LIMIT);
-  const value = (m: (typeof list)[number]) => `${m.name}\t${m.ip} ${m.team?.name ?? ''} ${KIND_LABEL[m.kind]}`;
+  const value = (m: (typeof list)[number]) => `${m.name}\t${m.ip} ${m.team?.name ?? ''} ${kindLabel(m.kind)}`;
   // cmdk 按分数排序、同分保留上一次排完的 DOM 顺序：加一个小于档差的位次分，同档始终按默认机器顺序
   const order = new Map(list.map((m, i) => [value(m), i]));
   const filter = (v: string, s: string, kw?: string[]) => {
@@ -101,7 +101,7 @@ function PaletteBody({ theme, askUpgrade }: { theme: Theme; askUpgrade: () => vo
               ))}
             </CommandGroup>
             <CommandGroup heading="动作">
-              <CommandItem value="上架机器 provision 添加机器 VPS 节点 落地机 家宽代理 线路机" onSelect={() => go('/provision')}><CloudUpload /><span className="cmd-main">上架机器</span></CommandItem>
+              <CommandItem value="上架机器 provision 添加机器 VPS 节点 家宽代理 线路机" onSelect={() => go('/provision')}><CloudUpload /><span className="cmd-main">上架机器</span></CommandItem>
               <CommandItem value="新建静默 silence 维护窗口" onSelect={() => go('/incidents?silence=new')}><BellOff /><span className="cmd-main">新建静默</span></CommandItem>
               <CommandItem value="复制某机器 IP copy ip" onSelect={() => { setSearch(''); setMode('copy-ip'); }}><Clipboard /><span className="cmd-main">复制某台机器的 IP…</span></CommandItem>
               <CommandItem value="登记续费 renew 续费 续期 到期" onSelect={() => { setSearch(''); setMode('renew'); }}><CalendarPlus /><span className="cmd-main">登记续费…</span></CommandItem>

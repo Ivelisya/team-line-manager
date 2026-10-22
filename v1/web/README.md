@@ -61,5 +61,5 @@ tools/                       shoot.mjs、smoke.mjs（puppeteer-core）
 - `GET /silences`：`{id, subject_id, subject_name, rule, starts_at, ends_at, is_maintenance, comment}`；`GET /audit`：`{id, ts, actor, action, target_name, detail}`；`GET /machines/{id}/renewals`：`{id, old_due, new_due, amount_cents, note, created_by, created_at}`。
 - `/jobs`：`state` 取 `queued|running|done|failed|canceled`，步骤 state 取 `pending|running|done|failed|skipped`。日志 level 取 `info|warn|error`。
 - 入口 `lifecycle` 用 `disabled` 表示已停用。
-- 机器没有地区信息，卡片标题的“国旗位”改为类型图标（线路机 / 落地机 / 家宽代理）。
+- 机器没有地区信息，卡片标题的“国旗位”改为类型图标（线路机 / VPS 节点 / 家宽代理）。
 - 流量额度“本周期已用” = 服务端 `quota.used`：有流量重置日的按账单时区里最近一次重置日起，否则本月；含已移除入口；“已上架”时长取 `activated_at`。

@@ -1,10 +1,11 @@
-// Mock 数据：约 28 台机器（2 线路机、团队1/团队2 的落地机、1 台无主机家宽代理、1 台故障、1 台退役中、2 台已退役、1 台上架中、
+// Mock 数据：约 28 台机器（2 线路机、团队1/团队2 的 VPS 节点、1 台无主机家宽代理、1 台故障、1 台退役中、2 台已退役、1 台上架中、
 // 团队1-03 上的 1 个同机 IP 节点）。
 // IP 只用文档保留段 203.0.113.0/24 与 198.51.100.0/24。
 
 import type { ApiKey, Incident, Job, NotifyChannel, NotifyLogEntry, JobLog, MachineView, Plan, Provider, Renewal, Silence, AuditEntry, Team, EntryView, Lifecycle, HealthStatus, Subscription } from '@/lib/types';
 import { addMonths, displayName, str } from '@/lib/format';
 import { quota, quotaGb } from '@/lib/derive';
+import { META, subCalc } from './meta';
 
 /** mock 的国家：内网地址查不到（同中控的离线 IP 库），其余按地址末段分到几个国家 */
 export const countryOf = (ip: string) => (/^(10|192\.168|127)\./.test(ip) || ip.includes(':') ? null : ['US', 'US', 'US', 'JP', 'HK', 'SG', 'DE'][Number(ip.split('.').pop()) % 7]);
@@ -61,7 +62,7 @@ export function buildDb(): Db {
   const providers: Provider[] = [
     { id: 'p1', name: '搬瓦工', code: 'BWH', panel_url: 'https://panel.example.com/bwh', timezone: 'America/Los_Angeles', traffic_rule: 'min' },
     { id: 'p2', name: '腾讯云', code: 'TCT', panel_url: 'https://panel.example.com/tct', timezone: 'Asia/Shanghai', traffic_rule: 'out' },
-    { id: 'p3', name: '家宽服务商', code: 'HOME', panel_url: null, timezone: 'Asia/Shanghai', traffic_rule: 'max' },
+    { id: 'p3', name: '家宽服务商', code: 'HOME', panel_url: null, timezone: null, traffic_rule: 'max' },
   ];
   const plans: Plan[] = [
     { id: 'pl1', provider_id: 'p1', name: 'CN2 GIA 2C/4G', cpu_cores: 2, mem_mb: 4096, disk_gb: 80, bandwidth_mbps: 1000, traffic_gb: 1000, price_cents: 6900, currency: 'USD', cycle: 'quarterly', notes: '限速 1Gbps', archived_at: null, machine_count: 0 },
@@ -80,7 +81,7 @@ export function buildDb(): Db {
 
   const sub = (planId: string, dueDays: number, trafficGb: number | null): Subscription => {
     const p = plan(planId);
-    return { price_cents: p.price_cents, currency: p.currency, cycle: p.cycle, due_date: dateOnly(now() + dueDays * DAY), due_days: dueDays, billing_tz: prov(p.provider_id).timezone ?? 'Asia/Shanghai', auto_renew: false, remind_days: 7, traffic_gb: trafficGb, traffic_reset_day: 1 };
+    return subCalc({ price_cents: p.price_cents, currency: p.currency, cycle: p.cycle, due_date: dateOnly(now() + dueDays * DAY), due_days: dueDays, billing_tz: prov(p.provider_id).timezone ?? META.org_timezone, auto_renew: false, remind_days: META.defaults.remind_days, traffic_gb: trafficGb, traffic_reset_day: 1 } as Subscription);
   };
   const hostOf = (id: string, cpuBase: number): MachineView['host'] => {
     const rr = rng(hashStr(id));

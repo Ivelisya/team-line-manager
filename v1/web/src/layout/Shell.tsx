@@ -5,7 +5,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Boxes, LogOut, Menu, Monitor, Moon, RotateCw, Sun } from 'lucide-react';
 import { NAV } from '@/lib/nav';
 import { ApiError, AUTH_EVENT, post } from '@/lib/api';
-import { useIncidents, useMe } from '@/lib/queries';
+import { useIncidents, useMe, useMeta } from '@/lib/queries';
 import { useStream } from '@/lib/stream';
 import { useTheme, type Palette, type ThemePref } from '@/lib/theme';
 import { useTitleAlerts } from '@/lib/title';
@@ -59,6 +59,8 @@ function LifecycleHost() {
 
 export function Shell() {
   const me = useMe();
+  // 中文名、阈值等（/meta）到了才渲染外壳与页面：derive 里的 kindLabel 等同步读取它
+  const meta = useMeta(!!me.data);
   const qc = useQueryClient();
   const loc = useLocation();
   const [navOpen, setNavOpen] = React.useState(false);
@@ -106,19 +108,20 @@ export function Shell() {
 
   // 只有确认是 401 才去登录页；网络错误 / 5xx 显示可重试的错误态，不要把人踢走
   if (me.isError && me.error instanceof ApiError && me.error.status === 401) return <Navigate to="/login" replace state={{ from: loc.pathname + loc.search }} />;
-  if (me.isError && !me.data) {
+  const failed = me.isError && !me.data ? me : meta.isError && !meta.data ? meta : null;
+  if (failed) {
     return (
       <div className="login-screen">
         <div className="login-card" role="alert">
           <div className="login-brand"><span className="brand-mark"><Boxes size={14} /></span>团队线路管理</div>
-          <Note tone="bad">{me.error instanceof Error ? me.error.message : '无法连接到中控'}</Note>
+          <Note tone="bad">{failed.error instanceof Error ? failed.error.message : '无法连接到中控'}</Note>
           <div className="hint">这不是登录问题：中控暂时连不上或返回了错误，已登录的会话仍然有效。</div>
-          <Button variant="primary" loading={me.isFetching} onClick={() => void me.refetch()}><RotateCw />重试</Button>
+          <Button variant="primary" loading={failed.isFetching} onClick={() => void failed.refetch()}><RotateCw />重试</Button>
         </div>
       </div>
     );
   }
-  if (!me.data) return <div className="login-screen"><span className="skel" style={{ width: 160, height: 16 }} /></div>;
+  if (!me.data || !meta.data) return <div className="login-screen"><span className="skel" style={{ width: 160, height: 16 }} /></div>;
 
   const ThemeIcon = theme.pref === 'dark' ? Moon : theme.pref === 'light' ? Sun : Monitor;
   const logout = async () => { try { await post('/auth/logout'); } finally { qc.clear(); window.location.assign('/login'); } };

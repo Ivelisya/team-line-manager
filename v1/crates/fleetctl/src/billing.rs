@@ -2,6 +2,7 @@
 //! 默认值与说法同网页抽屉的「费用」页签：续费默认按订阅周期推一个周期、金额取订阅价格；只记账，不会向供应商付款。
 
 use crate::cmds::{cycle_cn, due_cn, num, st, Ctx};
+use crate::meta;
 use crate::ops::confirm;
 use crate::resolve::Want;
 use crate::table::{self, gb, money};
@@ -9,7 +10,7 @@ use anyhow::{anyhow, bail};
 use serde_json::{json, Map, Value};
 use std::ops::RangeInclusive;
 use time::macros::format_description;
-use time::{Date, Month};
+use time::Date;
 
 /// billing 列出的续费记录条数（新→旧）
 const RECENT: usize = 10;
@@ -63,40 +64,15 @@ fn parse_money(s: &str) -> anyhow::Result<i32> {
 /// `YYYY-MM-DD`
 fn date(s: &str) -> Option<Date> { Date::parse(s.trim(), format_description!("[year]-[month]-[day]")).ok() }
 
-/// 计费周期的月数（同网页 CYCLE_MONTHS；中控的计费周期只有这四种）
-fn cycle_months(c: &str) -> Option<i64> {
-    match c {
-        "monthly" => Some(1),
-        "quarterly" => Some(3),
-        "semiannual" => Some(6),
-        "yearly" => Some(12),
-        _ => None,
-    }
-}
-
-/// 加 n 个月，目标月没有那一天时落到月末（1-31 加一个月是 2-28，闰年 2-29），同网页 addMonths。
-/// 从原日期一次加够，不逐月累加：1-31 加两个月是 3-31，不是 3-28
-fn add_months(d: Date, n: i64) -> anyhow::Result<Date> {
-    let m = i64::from(d.year()) * 12 + i64::from(u8::from(d.month())) - 1 + n;
-    let month = Month::try_from((m.rem_euclid(12) + 1) as u8)?;
-    let year = i32::try_from(m.div_euclid(12)).map_err(|_| anyhow!("新到期日超出范围"))?;
-    Date::from_calendar_date(year, month, d.day().min(month.length(year))).map_err(|_| anyhow!("新到期日超出范围"))
-}
-
-/// 新到期日：给了 `--to` 用它；否则从当前到期日按订阅周期推 `cycles` 个周期（网页「登记续费」默认推一个周期）
-fn renew_to(due: Date, cycle: &str, to: Option<&str>, cycles: u32) -> anyhow::Result<Date> {
-    let new = match to {
-        Some(t) => date(t).ok_or_else(|| anyhow!("--to 写成 YYYY-MM-DD，如 2026-11-25"))?,
+/// 登记续费的请求体：给了 `--to` 交新到期日；否则交周期数，由中控按订阅周期从当前到期日推（小月按月末，同网页）
+fn renew_body(to: Option<&str>, cycles: u32, amount: i64, note: Option<&str>) -> anyhow::Result<Value> {
+    let mut b = json!({"amount_cents": amount, "note": note});
+    match to {
+        Some(t) => b["new_due"] = json!(date(t).ok_or_else(|| anyhow!("--to 写成 YYYY-MM-DD，如 2026-11-25"))?.to_string()),
         None if cycles == 0 => bail!("--cycles 至少是 1"),
-        None => {
-            let months = cycle_months(cycle).ok_or_else(|| anyhow!("不认识订阅的计费周期「{cycle}」：用 --to 直接给新到期日"))?;
-            add_months(due, months * i64::from(cycles))?
-        }
-    };
-    if new <= due {
-        bail!("新到期日 {new} 要晚于当前到期日 {due}");
+        None => b["cycles"] = json!(cycles),
     }
-    Ok(new)
+    Ok(b)
 }
 
 /// 费用：`39.46 USD / 月`（同网页）
@@ -121,24 +97,15 @@ fn src(s: &Value, m: &Value, keys: &[&str]) -> &'static str {
     }
 }
 
-/// 额度怎么量（同网页）：有 agent 的机器按网卡、照供应商的规则；家宽代理与同机 IP 节点是业务流量
-fn rule_cn(v: &Value) -> &'static str {
-    match v.as_str() {
-        Some("min") => "网卡入出取小",
-        Some("max") => "网卡入出取大",
-        Some("sum") => "网卡入出相加",
-        Some("out") => "只算网卡出站",
-        _ => "业务流量",
-    }
-}
+/// 额度怎么量（中控 /meta 的 traffic_rules）：有 agent 的机器按网卡、照供应商的规则；家宽代理与同机 IP 节点是业务流量
+fn rule_cn(v: &Value) -> &str { v.as_str().map_or("业务流量", |r| meta::label("traffic_rules", r)) }
 
 /// 流量重置日（生效值）：跟随供应商时注明按账单日还是自然月
 fn reset_day_cn(s: &Value, m: &Value) -> String {
     let d = s["traffic_reset_day"].as_i64().unwrap_or(1);
     match m.pointer("/sub_template/traffic_reset").and_then(Value::as_str) {
         _ if overridden(s, "traffic_reset_day") => format!("每月 {d} 号（单独设置）"),
-        Some("billing") if !m["provider"].is_null() => format!("每月 {d} 号（跟随供应商：按账单日）"),
-        _ if !m["provider"].is_null() => format!("每月 {d} 号（跟随供应商：按自然月）"),
+        Some(r) if !m["provider"].is_null() => format!("每月 {d} 号（跟随供应商：按{}）", meta::label("traffic_resets", r)),
         _ => format!("每月 {d} 号（默认）"),
     }
 }
@@ -257,7 +224,6 @@ pub fn renew(ctx: &Ctx, o: RenewOpts<'_>) -> anyhow::Result<u8> {
         bail!("{name} 还没有订阅（费用、到期日），不能登记续费：先用 fleetctl subscription set {name} --price <金额> --due <YYYY-MM-DD> 填写");
     }
     let due = date(&st(s, "/due_date")).ok_or_else(|| anyhow!("中控返回的到期日不是 YYYY-MM-DD：{}", st(s, "/due_date")))?;
-    let new = renew_to(due, &st(s, "/cycle"), o.to, o.cycles)?;
     let cur = st(s, "/currency");
     let amount = match o.amount {
         Some(a) => i64::from(parse_money(a)?),
@@ -266,8 +232,17 @@ pub fn renew(ctx: &Ctx, o: RenewOpts<'_>) -> anyhow::Result<u8> {
     };
     let note = o.note.map(str::trim).filter(|n| !n.is_empty());
     let note_cn = note.map(|n| format!("，备注「{n}」")).unwrap_or_default();
-    confirm(&format!("确认给 {name} 登记续费：到期 {due} → {new}，实付 {}{note_cn}？只记录「已续费」、顺延到期日，不会向供应商付款", money(amount, &cur)), o.yes)?;
-    let rid = st(&ctx.c.post(&format!("/machines/{id}/renewals"), &json!({"new_due": new.to_string(), "amount_cents": amount, "note": note}))?, "/id");
+    let body = renew_body(o.to, o.cycles, amount, note)?;
+    // 新到期日由中控算：推一个周期的就是订阅里的 next_due
+    let target = match (o.to, o.cycles) {
+        (Some(t), _) => format!("到期 {due} → {}", t.trim()),
+        (None, 1) => format!("到期 {due} → {}", st(s, "/next_due")),
+        (None, n) => format!("到期 {due} 按订阅周期（{}）顺延 {n} 期", cycle_cn(&st(s, "/cycle"))),
+    };
+    confirm(&format!("确认给 {name} 登记续费：{target}，实付 {}{note_cn}？只记录「已续费」、顺延到期日，不会向供应商付款", money(amount, &cur)), o.yes)?;
+    let res = ctx.c.post(&format!("/machines/{id}/renewals"), &body)?;
+    let rid = st(&res, "/id");
+    let new = date(&st(&res, "/new_due")).ok_or_else(|| anyhow!("中控返回的新到期日不是 YYYY-MM-DD：{}", st(&res, "/new_due")))?;
     // 回读：到期日以中控为准（登记时中控锁住订阅、取当时的到期日作旧值）
     let all = ctx.c.get(&format!("/machines/{id}/renewals"))?;
     let r = all.as_array().and_then(|a| a.iter().find(|r| r["id"] == rid.as_str())).ok_or_else(|| anyhow!("刚登记的续费 {rid} 不在续费记录里"))?;
@@ -316,9 +291,10 @@ pub(crate) fn sub_patch(o: &SubSetOpts<'_>) -> anyhow::Result<Map<String, Value>
     }
     if let Some(c) = o.currency {
         let c = c.trim().to_uppercase();
+        // 同中控的币种校验：3 个字母
         let v = match c.as_str() {
             "NONE" => Value::Null,
-            _ if c.len() == 3 && c.bytes().all(|b| b.is_ascii_alphabetic()) => json!(c),
+            _ if c.len() == 3 && c.bytes().all(|b| b.is_ascii_uppercase()) => json!(c),
             _ => bail!("--currency 写 3 个字母的币种代码，如 USD / CNY；none = 跟随套餐"),
         };
         p.insert("currency".into(), v);
@@ -326,8 +302,12 @@ pub(crate) fn sub_patch(o: &SubSetOpts<'_>) -> anyhow::Result<Map<String, Value>
     if let Some(c) = o.cycle {
         let v = match c.trim() {
             c if is_none(c) => Value::Null,
-            c if cycle_months(c).is_some() => json!(c),
-            _ => bail!("--cycle 只能是 monthly / quarterly / semiannual / yearly（月 / 季 / 半年 / 年）；none = 跟随套餐"),
+            // 计费周期以中控 /meta 为准；取不到时交给中控校验
+            c if meta::cycles().all(|x| x["key"] != c) && meta::cycles().next().is_some() => {
+                let all: Vec<String> = meta::cycles().map(|x| format!("{}（{}）", st(x, "/key"), st(x, "/label"))).collect();
+                bail!("--cycle 只能是 {}；none = 跟随套餐", all.join(" / "))
+            }
+            c => json!(c),
         };
         p.insert("cycle".into(), v);
     }
@@ -428,7 +408,6 @@ pub fn subscription_set(ctx: &Ctx, o: SubSetOpts<'_>) -> anyhow::Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use time::macros::date;
 
     #[test]
     fn money_in_yuan_to_cents() {
@@ -439,23 +418,11 @@ mod tests {
     }
 
     #[test]
-    fn cycles_push_due_date_like_web() {
-        let push = |due: Date, cycle: &str, cycles: u32| renew_to(due, cycle, None, cycles).unwrap();
-        // 目标月没有那一天按月末（同网页 addMonths）
-        assert_eq!(push(date!(2026-01-31), "monthly", 1), date!(2026-02-28));
-        assert_eq!(push(date!(2028-01-31), "monthly", 1), date!(2028-02-29));
-        assert_eq!(push(date!(2026-11-30), "quarterly", 1), date!(2027-02-28));
-        assert_eq!(push(date!(2026-08-31), "semiannual", 1), date!(2027-02-28));
-        assert_eq!(push(date!(2028-02-29), "yearly", 1), date!(2029-02-28));
-        assert_eq!(push(date!(2026-12-15), "monthly", 1), date!(2027-01-15));
-        // 几个周期从原日期一次加够，不逐月累加（1-31 推两个月是 3-31）
-        assert_eq!(push(date!(2026-01-31), "monthly", 2), date!(2026-03-31));
-        assert_eq!(push(date!(2026-10-25), "quarterly", 4), date!(2027-10-25));
-        assert_eq!(renew_to(date!(2026-10-25), "monthly", Some(" 2027-01-01 "), 1).unwrap(), date!(2027-01-01));
-        // 不晚于当前到期日、写法不对、0 个周期、推出日期范围（不 panic）、不认识的周期都报错
-        for (to, cycles, cycle) in [(Some("2026-10-25"), 1, "monthly"), (Some("2026-10-01"), 1, "monthly"), (Some("2026/11/25"), 1, "monthly"), (None, 0, "monthly"), (None, u32::MAX, "yearly"), (None, 1, "weekly")] {
-            assert!(renew_to(date!(2026-10-25), cycle, to, cycles).is_err(), "{to:?} {cycles} {cycle}");
-        }
+    fn renew_sends_cycles_or_date() {
+        // 推几个周期交给中控算（小月按月末、一次加够）；--to 原样交日期
+        assert_eq!(renew_body(None, 3, 11838, None).unwrap(), json!({"amount_cents": 11838, "note": null, "cycles": 3}));
+        assert_eq!(renew_body(Some(" 2027-01-01 "), 1, 100, Some("账单 #1")).unwrap(), json!({"amount_cents": 100, "note": "账单 #1", "new_due": "2027-01-01"}));
+        assert!(renew_body(None, 0, 1, None).is_err() && renew_body(Some("2026/11/25"), 1, 1, None).is_err());
     }
 
     /// 机器：套餐 Mini（2000 GB、39.46 USD / 月），供应商按账单日重置、洛杉矶时区、提前 7 天；订阅单独设置了价格
@@ -470,6 +437,7 @@ mod tests {
 
     #[test]
     fn subscription_set_merges_given_fields() {
+        crate::meta::test_init();
         let m = machine();
         let cur = &m["subscription"];
         // 跟随的提交 null（不把套餐的值抄进订阅），单独设置的照旧；due_days 是中控算的，不提交
@@ -527,6 +495,7 @@ mod tests {
 
     #[test]
     fn billing_fields_show_source() {
+        crate::meta::test_init();
         let m = machine();
         let f = sub_fields(&m["subscription"], &m);
         assert_eq!(f[0].1, "42.00 USD / 月（单独设置）");
@@ -535,6 +504,7 @@ mod tests {
 
     #[test]
     fn limit_and_billing_wording() {
+        crate::meta::test_init();
         let q = |limit: Value, source: &str| json!({"plan": {"name": "Mini"}, "host_machine": {"id": "h", "name": "团队1-03"}, "quota": {"limit_gb": limit, "limit_source": source}});
         let m = q(json!(2000), "plan");
         assert_eq!((traffic_limit(&m), limit_cn(&m, traffic_limit(&m))), (Some(2000), "2000 GB（跟随套餐「Mini」）".into()));

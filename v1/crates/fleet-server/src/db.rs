@@ -380,7 +380,7 @@ pub async fn purge_blocker(db: &PgPool, machine: Uuid) -> sqlx::Result<Option<St
         return Ok(Some(format!("这台机器上还有同机 IP 节点没有彻底删除（含已退役的）：{names}；先删它们")));
     }
     let until: Option<Date> = sqlx::query_scalar(
-        "select ((max(h.hour) + interval '35 days 1 hour') at time zone 'Asia/Shanghai')::date + 1
+        "select ((max(h.hour) + interval '35 days 1 hour') at time zone org_tz())::date + 1
          from entry e join entry_traffic_hourly h on h.entry_id = e.id
               join machine o on o.id = case when e.node_id = $1 then e.relay_id else e.node_id end
          where (e.node_id = $1 or e.relay_id = $1) and h.hour >= now() - interval '35 days' and o.lifecycle <> 'retired'",
@@ -391,8 +391,8 @@ pub async fn purge_blocker(db: &PgPool, machine: Uuid) -> sqlx::Result<Option<St
     Ok(until.map(|d| format!("这台机器的入口在 {d} 前仍计入其他机器的流量统计，届时再彻底删除")))
 }
 
-/// 同机 IP 节点的 SS 端口从这里往上分（宿主机自己的 ssserver 固定 8388）
-const IP_NODE_PORT_MIN: u16 = 8389;
+/// 同机 IP 节点的 SS 端口从这里往上分（宿主机自己的 ssserver 固定 meta::SS_PORT）
+const IP_NODE_PORT_MIN: u16 = crate::meta::SS_PORT + 1;
 
 /// 宿主机上未退役的同机 IP 节点占着的 SS 端口（`except` 这台不算）。调用方先锁住宿主机行，同一台宿主机上的端口一次只有一个事务在分
 pub async fn ip_node_ports(conn: &mut sqlx::PgConnection, host: Uuid, except: Option<Uuid>) -> sqlx::Result<HashSet<u16>> {

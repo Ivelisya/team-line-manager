@@ -164,7 +164,7 @@ pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, ech
             (false, Some(p), Some(host), Some(oport), Some(enc)) => {
                 let (secret, port) = (secrets.open_str(&enc)?, oport as u16);
                 match p {
-                    "shadowsocks" => Outbound::Shadowsocks { host, port, method: r.method.unwrap_or_else(|| "aes-256-gcm".into()), password: secret },
+                    "shadowsocks" => Outbound::Shadowsocks { host, port, method: r.method.unwrap_or_else(|| crate::meta::SS_METHOD.into()), password: secret },
                     "socks5" => Outbound::Socks5 { host, port, username: r.username, password: Some(secret).filter(|s| !s.is_empty()) },
                     _ => Outbound::Http { host, port, username: r.username, password: Some(secret).filter(|s| !s.is_empty()) },
                 }

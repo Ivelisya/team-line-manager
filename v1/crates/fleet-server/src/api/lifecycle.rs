@@ -6,6 +6,7 @@ use crate::auth::Actor;
 use crate::db::{audit, bump_relay, Tx};
 use crate::error::{ApiError, ApiJson, ApiPath, ApiQuery, ApiResult};
 use crate::jobs;
+use crate::meta;
 use crate::names::{display_name, node_name};
 use crate::ssh;
 use crate::state::{AppState, Event};
@@ -50,23 +51,23 @@ async fn plan_move(tx: &mut Tx<'_>, node_id: Uuid, from: Option<Uuid>, to: Uuid)
     let Some((kind, lc, label, team, number)) = node else { return Err(ApiError::not_found("没有这台机器")) };
     let name = display_name(&kind, label.as_deref(), team.as_deref(), number);
     if kind == "relay" {
-        return Ok(Err(format!("「{name}」是线路机，只有节点（落地机 / 家宽代理）能换线路机")));
+        return Ok(Err(format!("「{name}」是线路机，只有节点（VPS 节点 / 家宽代理）能换线路机")));
     }
     if lc != "active" {
-        return Ok(Err(format!("「{name}」现在是「{}」，只有在用的节点能换线路机", jobs::lifecycle_zh(&lc))));
+        return Ok(Err(format!("「{name}」现在是「{}」，只有在用的节点能换线路机", meta::lifecycle_label(&lc))));
     }
     let target: Option<(String, String)> =
         sqlx::query_as("select coalesce(label, ''), lifecycle::text from machine where id = $1 and kind = 'relay' for share").bind(to).fetch_optional(&mut **tx).await?;
     let Some((to_name, to_lc)) = target else { return Ok(Err("目标线路机不存在".into())) };
     if to_lc != "active" {
-        return Ok(Err(format!("目标线路机「{to_name}」现在是「{}」，只能换到在用的线路机", jobs::lifecycle_zh(&to_lc))));
+        return Ok(Err(format!("目标线路机「{to_name}」现在是「{}」，只能换到在用的线路机", meta::lifecycle_label(&to_lc))));
     }
     let busy: Option<(String,)> = sqlx::query_as("select kind from job where target_id = $1 and state in ('queued', 'running', 'waiting', 'cancelling') limit 1")
         .bind(node_id)
         .fetch_optional(&mut **tx)
         .await?;
     if let Some((k,)) = busy {
-        return Ok(Err(format!("「{name}」还有进行中的作业（{}）：等它结束再换线路机", jobs::kind_zh(&k))));
+        return Ok(Err(format!("「{name}」还有进行中的作业（{}）：等它结束再换线路机", meta::job_kind_label(&k))));
     }
     let live: Vec<(Uuid, Uuid, String, String)> = sqlx::query_as(
         "select e.id, e.relay_id, e.lifecycle::text, coalesce(rm.label, '') from entry e join machine rm on rm.id = e.relay_id
@@ -165,7 +166,7 @@ pub async fn evacuate(a: Actor, State(st): State<AppState>, ApiPath(relay): ApiP
         .await?;
     let (to_name, to_lc) = to.ok_or_else(|| ApiError::not_found("目标线路机不存在"))?;
     if to_lc != "active" {
-        return Err(ApiError::conflict(format!("目标线路机「{to_name}」现在是「{}」，只能搬到在用的线路机", jobs::lifecycle_zh(&to_lc))));
+        return Err(ApiError::conflict(format!("目标线路机「{to_name}」现在是「{}」，只能搬到在用的线路机", meta::lifecycle_label(&to_lc))));
     }
     let nodes: Vec<(Uuid,)> = sqlx::query_as(
         "select distinct e.node_id from entry e join machine n on n.id = e.node_id
@@ -272,7 +273,7 @@ async fn restore_plan(conn: &mut PgConnection, id: Uuid, m: &RM, team_ov: Option
     };
     let old_name = display_name(&m.kind, m.label.as_deref(), old_team.as_deref(), m.number);
     if m.lifecycle != "retired" {
-        blockers.push(format!("这台机器现在是「{}」，只有已退役的机器能恢复", jobs::lifecycle_zh(&m.lifecycle)));
+        blockers.push(format!("这台机器现在是「{}」，只有已退役的机器能恢复", meta::lifecycle_label(&m.lifecycle)));
     }
     // IP 已被别的未退役机器占用（退役时 IP 就释放了，可能已经上架给了别的机器）
     let conflict: Option<MachineRow> = sqlx::query_as(
@@ -364,7 +365,7 @@ async fn restore_plan(conn: &mut PgConnection, id: Uuid, m: &RM, team_ov: Option
         );
         let (hl, hn): (String, String) = sqlx::query_as(&sql).bind(h).fetch_one(&mut *conn).await?;
         if hl != "active" {
-            blockers.push(format!("宿主机「{hn}」现在是「{}」：同机 IP 节点要等宿主机在用才能恢复", jobs::lifecycle_zh(&hl)));
+            blockers.push(format!("宿主机「{hn}」现在是「{}」：同机 IP 节点要等宿主机在用才能恢复", meta::lifecycle_label(&hl)));
         }
     }
     Ok(RPlan { old_name, team_id, team_name, number, label, new_name, blockers, invalid, ip_conflict })
@@ -601,10 +602,10 @@ pub async fn restore(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<
                     let taken = crate::db::ip_node_ports(&mut tx, h, Some(id)).await?;
                     stored.filter(|p| !taken.contains(p)).or_else(|| crate::db::free_ss_port(&taken)).ok_or_else(|| ApiError::conflict("宿主机上没有空闲的 SS 端口"))?
                 }
-                None => b.ss_port.or(stored).unwrap_or(8388),
+                None => b.ss_port.or(stored).unwrap_or(meta::SS_PORT),
             };
             sqlx::query(
-                "insert into node_outbound (machine_id, protocol, host, port, method, secret_enc) values ($1, 'shadowsocks', $2, $3, 'aes-256-gcm', $4)
+                "insert into node_outbound (machine_id, protocol, host, port, method, secret_enc) values ($1, 'shadowsocks', $2, $3, $5, $4)
                  on conflict (machine_id) do update set protocol = excluded.protocol, host = excluded.host, port = excluded.port, method = excluded.method,
                     username = null, secret_enc = excluded.secret_enc, updated_at = now()",
             )
@@ -612,6 +613,7 @@ pub async fn restore(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<
             .bind(&m.ip)
             .bind(port as i32)
             .bind(st.secrets.seal_str(&super::provision::ss_password()))
+            .bind(meta::SS_METHOD)
             .execute(&mut *tx)
             .await?;
         }

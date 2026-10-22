@@ -92,11 +92,25 @@ async fn subscription_follows_plan_and_provider() {
     assert_eq!((s["traffic_reset_day"].as_i64(), s["remind_days"].as_i64()), (Some(1), Some(9)));
     assert_eq!(t.req("PATCH", &format!("/api/v1/providers/{}", pv.as_str().unwrap()), Some(json!({"traffic_reset": "weekly"})), None).await.0, StatusCode::BAD_REQUEST);
 
-    // 续费按生效的周期推（客户端算新到期日），续费后单独设置照旧
-    let (st, v) = t.req("POST", &format!("/api/v1/machines/{id}/renewals"), Some(json!({"new_due": "2027-04-30", "amount_cents": 4000})), None).await;
-    assert_eq!(st, StatusCode::OK, "{v}");
+    // 续费：直接给新到期日；续费后单独设置照旧
+    let renew = format!("/api/v1/machines/{id}/renewals");
+    let (st, v) = t.req("POST", &renew, Some(json!({"new_due": "2027-04-30", "amount_cents": 4000})), None).await;
+    assert_eq!((st, v["data"]["old_due"].as_str(), v["data"]["new_due"].as_str()), (StatusCode::OK, Some("2027-01-31"), Some("2027-04-30")), "{v}");
     let s = machine(&t, &id).await["subscription"].clone();
     assert_eq!((s["due_date"].as_str(), s["cycle"].as_str(), s["overrides"].clone()), (Some("2027-04-30"), Some("quarterly"), json!(["traffic_gb"])));
+    // 或给周期数：中控按生效的周期从当前到期日一次推够（小月按月末）；两个都给、都不给、0 期都是 400
+    for bad in [json!({}), json!({"cycles": 0}), json!({"cycles": 1, "new_due": "2028-01-01"})] {
+        assert_eq!(t.req("POST", &renew, Some(bad.clone()), None).await.0, StatusCode::BAD_REQUEST, "{bad}");
+    }
+    let (st, v) = t.req("POST", &renew, Some(json!({"cycles": 2, "amount_cents": 8000})), None).await;
+    assert_eq!((st, v["data"]["old_due"].as_str(), v["data"]["new_due"].as_str()), (StatusCode::OK, Some("2027-04-30"), Some("2027-10-30")), "{v}");
+    // 视图带出：下次续费默认推到哪天、这一期几天（2027-07-30 → 10-30）、折成每月（季付 4000 → 1333）、到期状态
+    let s = machine(&t, &id).await["subscription"].clone();
+    assert_eq!(
+        (s["next_due"].as_str(), s["period_days"].as_i64(), s["monthly_cents"].as_i64(), s["due_state"].as_str()),
+        (Some("2028-01-30"), Some(92), Some(1333), Some("ok")),
+        "{s}"
+    );
 
     // 套餐有机器用着时不能换供应商
     let (st, v) = t.req("PATCH", &plan_path, Some(json!({"provider_id": other})), None).await;
@@ -116,7 +130,7 @@ async fn machine_without_plan_must_set_price() {
         b.as_object_mut().unwrap().extend(bad.as_object().unwrap().clone());
         assert_eq!(put_sub(&t, &rid, b.clone()).await.0, StatusCode::BAD_REQUEST, "{b}");
     }
-    // 没有供应商：时区、提醒、币种、周期是默认值（北京时间、7 天、USD、按月），重置日按自然月
+    // 没有供应商：时区、提醒、币种、周期是默认值（组织时区、7 天、USD、按月），重置日按自然月
     let (st, v) = put_sub(&t, &rid, json!({"due_date": "2027-01-15", "price_cents": 500})).await;
     assert_eq!(st, StatusCode::OK, "{v}");
     let s = machine(&t, &rid).await["subscription"].clone();
@@ -206,4 +220,35 @@ async fn migration_normalizes_hard_coded_subscriptions() {
     // 生效值不变（价格、流量），重置日按 GM 的账单日
     let s = machine(&t, &ids[3].to_string()).await["subscription"].clone();
     assert_eq!((s["price_cents"].as_i64(), s["traffic_gb"].as_i64(), s["traffic_reset_day"].as_i64()), (Some(1000), Some(0), Some(5)));
+}
+
+/// GET /meta：枚举的中文名、阈值、默认值与组织时区只在中控一处；到期状态按生效的提前提醒天数，总览照它计数
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn meta_and_due_state() {
+    let t = setup(false).await;
+    let m = t.get("/api/v1/meta").await;
+    assert_eq!(
+        (m["org_timezone"].as_str(), m["kinds"]["vps"].as_str(), m["job_kinds"]["restore_vps"].as_str(), m["healths"]["maintenance"].as_str()),
+        (Some("Asia/Shanghai"), Some("VPS 节点"), Some("恢复 VPS 节点"), Some("维护"))
+    );
+    assert_eq!((m["cycles"].as_array().map(Vec::len), m["thresholds"]["traffic_quota_warn_pct"].as_f64()), (Some(4), Some(90.0)));
+    assert_eq!((m["rules"]["renewal_due"].as_str(), m["severities"]["critical"]["label"].as_str()), (Some("即将到期"), Some("严重")));
+    assert!(!m.to_string().contains("落地机"), "{m}");
+
+    let (relay, _) = seed_relay(&t).await;
+    let rid = relay.to_string();
+    let today: time::Date = sqlx::query_scalar("select local_date(org_tz())").fetch_one(&t.st.db).await.unwrap();
+    for (days, remind, want, soon, overdue) in [(3, 7, "soon", 1, 0), (3, 2, "ok", 0, 0), (-1, 7, "overdue", 0, 1)] {
+        let due = (today + time::Duration::days(days)).to_string();
+        let (st, v) = put_sub(&t, &rid, json!({"due_date": due, "price_cents": 100, "remind_days": remind})).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        let s = machine(&t, &rid).await["subscription"].clone();
+        assert_eq!(s["due_state"].as_str(), Some(want), "{s}");
+        let ov = t.get("/api/v1/overview").await;
+        assert_eq!((ov["due_soon"].as_i64(), ov["overdue"].as_i64()), (Some(soon), Some(overdue)), "{ov}");
+    }
+    // 币种只认 3 个字母（套餐、订阅同一个校验）
+    for bad in ["USDT", "US", "U$D"] {
+        assert_eq!(put_sub(&t, &rid, json!({"due_date": "2027-01-01", "price_cents": 1, "currency": bad})).await.0, StatusCode::BAD_REQUEST, "{bad}");
+    }
 }

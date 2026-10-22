@@ -5,8 +5,7 @@ import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/h
 import type { MachineView } from '@/lib/types';
 import { useMachine } from '@/lib/queries';
 import * as F from '@/lib/format';
-import { entryText, isQuiet, resourceMeters } from '@/lib/derive';
-import { KIND_LABEL } from '@/lib/sort';
+import { entryText, isQuiet, kindLabel, resourceMeters } from '@/lib/derive';
 import { CopyButton, Due, Flag, HealthPill, ReasonList } from './primitives';
 import { MiniMeter } from './viz';
 
@@ -15,7 +14,7 @@ const REASONS_MAX = 3;
 function MiniCard({ m }: { m: MachineView }) {
   const r = resourceMeters(m);
   const quiet = isQuiet(m);
-  const team = m.team ? `${m.team.name}${m.number != null ? ` / ${F.pad2(m.number)}` : ''}` : KIND_LABEL[m.kind];
+  const team = m.team ? `${m.team.name}${m.number != null ? ` / ${F.pad2(m.number)}` : ''}` : kindLabel(m.kind);
   // 有原因就直接列出（同状态胶囊悬停提示的那份），不用再去悬停胶囊：故障、降级的原因，以及不改状态的提醒（流量额度吃紧）；
   // info 级（如来源画像的学习期说明）不列。上架中、退役中这些生命周期状态没有健康原因
   const reasons = m.lifecycle === 'active' ? m.health.reasons.filter((r) => r.severity !== 'info') : [];
@@ -34,7 +33,7 @@ function MiniCard({ m }: { m: MachineView }) {
         {/* 同机 IP 节点：下面的 CPU / 内存是宿主机的 */}
         {m.host_machine && <div><dt>宿主机</dt><dd className="ellipsis">{m.host_machine.name}（读数共用）</dd></div>}
         <div><dt>{m.kind === 'relay' ? '入口' : '线路机:端口'}</dt><dd className="ellipsis">{entryText(m)}</dd></div>
-        <div><dt>到期</dt><dd>{m.subscription ? <><Due days={m.subscription.due_days} /> <span className="t-sub">· {m.subscription.due_date}</span></> : <span className="t-muted">未设置</span>}</dd></div>
+        <div><dt>到期</dt><dd>{m.subscription ? <><Due days={m.subscription.due_days} state={m.subscription.due_state} /> <span className="t-sub">· {m.subscription.due_date}</span></> : <span className="t-muted">未设置</span>}</dd></div>
       </dl>
       {r ? (
         <div className="hc-bars">

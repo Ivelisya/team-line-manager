@@ -13,6 +13,7 @@ pub mod health;
 pub mod ipintel;
 pub mod jobs;
 pub mod live;
+pub mod meta;
 pub mod names;
 pub mod notify;
 pub mod policy;
@@ -158,12 +159,16 @@ where
     });
 }
 
-/// 每小时：分区维护（原始访问记录按面板里设的保留期，见 settings.rs）、作业清理、保留期清理。
+/// 每小时：组织时区偏移、分区维护（原始访问记录按面板里设的保留期，见 settings.rs）、作业清理、保留期清理。
 /// 访问汇总与来源画像的保留期清理在访问汇总的循环里（`access::prune`）
 async fn housekeeping(s: AppState) {
     let mut t = tokio::time::interval(std::time::Duration::from_secs(3600));
     loop {
         t.tick().await;
+        // 组织时区的 UTC 偏移（夏令时）
+        if let Err(e) = meta::sync_org_tz(&s.db, &s.cfg.org_timezone).await {
+            tracing::error!("刷新组织时区失败：{e:#}");
+        }
         if let Err(e) = db::maintain_partitions(&s.db, s.cfg.retention.raw_days, s.access_retention().raw_days, 3).await {
             tracing::error!("分区维护失败：{e:#}");
         }

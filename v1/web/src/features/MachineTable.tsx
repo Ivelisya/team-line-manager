@@ -14,7 +14,7 @@ const diskPct = (m: MachineView) => (!isQuiet(m) && m.host?.disk_total ? (m.host
 const PCT = { cpu: cpuPct, mem: memPct, disk: diskPct };
 const monthly = (m: MachineView) => {
   const s = m.subscription;
-  return s ? F.money(Math.round(s.price_cents / F.CYCLE_MONTHS[s.cycle]), s.currency) : null;
+  return s ? F.money(s.monthly_cents, s.currency) : null; // 服务端折好的月费
 };
 
 // 列宽合计 1066：1426 宽窗口下内容区约 1079，不出横向滚动；更窄时先收起「月费」再收「剩余价值」（918，1267 宽窗口内容区约 921 也放得下）。
@@ -33,7 +33,7 @@ const cols: Col[] = [
   { id: 'traffic', header: '本月业务流量', size: 112, r: true, ...byNum((m) => { const t = monthTraffic(m); return t.up + t.down; }), cell: (m) => { const t = monthTraffic(m); return <Num f={F.bytes(t.up + t.down)} />; } },
   { id: 'quota', header: '剩余流量', size: 106, ...byNum((m) => quota(m).rem ?? Infinity),
     cell: (m) => { const q = quota(m); return <span className="tquota" data-tip={`本周期已用 ${F.str(quotaGb(q.used))}（${q.start.slice(5)} 起）${q.shared ? '，额度与宿主机共用' : ''}`}>{q.rem != null && <Bar pct={q.pct} gradient={QUOTA_FILL} />}{q.rem == null ? <span className="t-sub">{q.shared ? '与宿主机共用' : '不限'}</span> : q.rem > 0 ? <Num f={quotaGb(q.rem)} /> : <span className="due" data-tone="bad">已超限</span>}</span>; } },
-  { id: 'due', header: '到期', size: 96, r: true, ...byNum((m) => m.subscription?.due_days ?? 1e9, 'asc'), cell: (m) => (m.subscription ? <Due days={m.subscription.due_days} /> : <span className="t-muted">—</span>) },
+  { id: 'due', header: '到期', size: 96, r: true, ...byNum((m) => m.subscription?.due_days ?? 1e9, 'asc'), cell: (m) => (m.subscription ? <Due days={m.subscription.due_days} state={m.subscription.due_state} /> : <span className="t-muted">—</span>) },
   { id: 'value', header: '剩余价值', size: 76, r: true, drop: 2, ...byNum((m) => remainingValue(m.subscription)?.cents ?? -1), cell: (m) => { const v = remainingValue(m.subscription); return v ? <span className="num">{F.money(v.cents, v.currency)}</span> : <span className="t-muted">—</span>; } },
   { id: 'fee', header: '月费', size: 72, r: true, drop: 1, cell: (m) => monthly(m) ?? <span className="t-muted">—</span> },
 ];

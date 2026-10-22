@@ -1,6 +1,7 @@
 //! 机器视图：一次把列表页、卡片、抽屉需要的东西组装好（约百台规模，分几条查询再在内存里拼）。
 
 use crate::health::{self, Health, Status};
+use crate::meta;
 use crate::names::{direct_name, display_name};
 use crate::state::AppState;
 use serde::Serialize;
@@ -71,6 +72,8 @@ pub struct Subscription {
     pub cycle: String,
     pub due_date: Date,
     pub due_days: i64,
+    /// ok / soon / overdue（meta::due_state，按生效的提前提醒天数）：续费告警、总览「即将到期」、网页与 fleetctl 都按它
+    pub due_state: &'static str,
     pub billing_tz: String,
     pub auto_renew: bool,
     pub remind_days: i32,
@@ -80,6 +83,12 @@ pub struct Subscription {
     pub traffic_reset_day: Option<i32>,
     /// 单独设置了的字段（price_cents / currency / cycle / billing_tz / remind_days / traffic_gb / traffic_reset_day），其余跟随 `sub_template`
     pub overrides: Vec<String>,
+    /// 折成每月的费用（分，四舍五入，meta::monthly_cents）：总览的月费合计、网页的月费列
+    pub monthly_cents: i64,
+    /// 到期日再推一个周期（小月按月末）：登记续费的默认新到期日
+    pub next_due: Date,
+    /// 当前这一期的天数（到期日往前推一个周期到到期日）：网页算剩余价值
+    pub period_days: i64,
 }
 
 /// 机器的订阅模板（库里的 sub_template）：订阅没单独设置的项取这里。没有套餐时 price_cents 为 null（订阅要单独设置价格）
@@ -155,7 +164,7 @@ pub struct Traffic {
     pub month_down: i64,
 }
 
-/// 流量额度周期：有订阅的按账单时区里最近一次（生效的）重置日起算，没有订阅的是北京时间的本月
+/// 流量额度周期：有订阅的按账单时区里最近一次（生效的）重置日起算，没有订阅的是模板时区（供应商的，没填为组织时区）的本月
 #[derive(Debug, Clone, Serialize)]
 pub struct Quota {
     /// 生效的流量上限（GB，十进制）；没有上限为 None。告警、网页、fleetctl 都读它，不各自再算
@@ -429,7 +438,7 @@ impl ReportGaps {
 type Cached = (Instant, u64, Arc<Vec<MachineView>>);
 /// 指标（心跳、探测）最多旧这么久
 const LIVE_TTL: std::time::Duration = std::time::Duration::from_secs(3);
-/// 入口 id → 今天 / 本月流量（北京时间，来自小时汇总表，含已移除的入口）
+/// 入口 id → 今天 / 本月流量（组织时区，来自小时汇总表，含已移除的入口）
 type TrafficMap = Arc<HashMap<Uuid, Traffic>>;
 
 #[derive(Default)]
@@ -439,7 +448,7 @@ pub struct LiveCache {
     slot: tokio::sync::Mutex<Option<Cached>>,
     /// 小时汇总每跑完一轮 +1
     rolled: AtomicU64,
-    /// 流量只在小时汇总后（或跨天、跨月）才变：按汇总轮次缓存，到库里时钟的下一个北京时间零点过期
+    /// 流量只在小时汇总后（或跨天、跨月）才变：按汇总轮次缓存，到库里时钟的下一个组织时区零点过期
     traffic: tokio::sync::Mutex<Option<((u64, Instant), TrafficMap)>>,
     /// 机器的周期已用（不含校准值）与校准是否在周期内，同样只在汇总后作废
     quota: tokio::sync::Mutex<(u64, HashMap<QuotaKey, (i64, bool)>)>,
@@ -496,18 +505,18 @@ async fn traffic(st: &AppState) -> sqlx::Result<TrafficMap> {
             return Ok(v.clone());
         }
     }
-    // 跨天看库里的时钟（“今天”也是按库里的 now() 算的）：离下一个北京时间零点还有多少秒
+    // 跨天看库里的时钟（“今天”也是按库里的 now() 算的）：离下一个组织时区零点还有多少秒
     let left: f64 = sqlx::query_scalar(
-        "select extract(epoch from date_trunc('day', now() at time zone 'Asia/Shanghai') + interval '1 day' - now() at time zone 'Asia/Shanghai')::float8",
+        "select extract(epoch from date_trunc('day', now() at time zone org_tz()) + interval '1 day' - now() at time zone org_tz())::float8",
     )
     .fetch_one(&st.db)
     .await?;
     let rows: Vec<(Uuid, i64, i64, i64, i64)> = sqlx::query_as(
         "select entry_id,
-           least(coalesce(sum(up_bytes) filter (where hour >= date_trunc('day', now() at time zone 'Asia/Shanghai') at time zone 'Asia/Shanghai'), 0), 9e18)::bigint,
-           least(coalesce(sum(down_bytes) filter (where hour >= date_trunc('day', now() at time zone 'Asia/Shanghai') at time zone 'Asia/Shanghai'), 0), 9e18)::bigint,
+           least(coalesce(sum(up_bytes) filter (where hour >= date_trunc('day', now() at time zone org_tz()) at time zone org_tz()), 0), 9e18)::bigint,
+           least(coalesce(sum(down_bytes) filter (where hour >= date_trunc('day', now() at time zone org_tz()) at time zone org_tz()), 0), 9e18)::bigint,
            least(coalesce(sum(up_bytes), 0), 9e18)::bigint, least(coalesce(sum(down_bytes), 0), 9e18)::bigint
-         from entry_traffic_hourly where hour >= date_trunc('month', now() at time zone 'Asia/Shanghai') at time zone 'Asia/Shanghai'
+         from entry_traffic_hourly where hour >= date_trunc('month', now() at time zone org_tz()) at time zone org_tz()
          group by entry_id",
     )
     .fetch_all(&st.db)
@@ -614,7 +623,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     let auto_ips: Vec<IpAddr> = rows.iter().filter(|r| r.country.is_none()).filter_map(|r| r.ip.parse().ok()).collect();
     let intel = if auto_ips.is_empty() { HashMap::new() } else { st.ipintel.enrich(db, &auto_ips, true).await };
     // 流量额度周期：有订阅的按账单时区里的今天和生效的重置日（单独设置的，或供应商按账单日 / 自然月）算周期起点，
-    // 没有订阅的是模板时区（供应商的，没有供应商为北京时间）的本月。
+    // 没有订阅的是模板时区（供应商的，供应商没填为组织时区）的本月。
     // 有自己 agent 的机器按网卡计量（规则取供应商的），家宽代理、同机 IP 节点按业务流量
     let periods: Vec<QuotaKey> = rows
         .iter()
@@ -864,7 +873,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     let sustained: HashMap<Uuid, Sustained> =
         su.into_iter().map(|r| (r.machine_id, Sustained { span_s: r.span_s.unwrap_or(0), cpu_min: r.cpu_min, mem_min: r.mem_min, disk_min: r.disk_min })).collect();
 
-    let today = now.to_offset(time::macros::offset!(+8)).date();
+    let today = now.to_offset(meta::org_offset()).date();
     Ok(rows
         .into_iter()
         .map(|r| {
@@ -879,19 +888,30 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 health: r.a_health.map(|h| h.0),
                 clock_skew_ms: r.a_skew,
             });
-            let subscription = r.s_price.map(|price| Subscription {
-                price_cents: price,
-                currency: r.s_currency.clone().unwrap_or_default(),
-                cycle: r.s_cycle.clone().unwrap_or_default(),
-                due_date: r.s_due.unwrap_or(today),
-                // 按订阅自己的账单时区算「今天」（取不到时退回北京时间）
-                due_days: (r.s_due.unwrap_or(today) - r.s_today.unwrap_or(today)).whole_days(),
-                billing_tz: r.s_tz.clone().unwrap_or_default(),
-                auto_renew: r.s_auto.unwrap_or(false),
-                remind_days: r.s_remind.unwrap_or(r.t_remind),
-                traffic_gb: r.s_traffic,
-                traffic_reset_day: r.s_reset,
-                overrides: r.s_overrides.clone().unwrap_or_default(),
+            let subscription = r.s_price.map(|price| {
+                let due = r.s_due.unwrap_or(today);
+                // 按订阅自己的账单时区算「今天」（取不到时退回组织时区）
+                let due_days = (due - r.s_today.unwrap_or(today)).whole_days();
+                let cycle = r.s_cycle.clone().unwrap_or_default();
+                let months = i64::from(meta::cycle_months(&cycle).unwrap_or(1));
+                let (auto_renew, remind_days) = (r.s_auto.unwrap_or(false), r.s_remind.unwrap_or(r.t_remind));
+                Subscription {
+                    price_cents: price,
+                    currency: r.s_currency.clone().unwrap_or_default(),
+                    monthly_cents: meta::monthly_cents(price, &cycle),
+                    next_due: meta::add_months(due, months).unwrap_or(due),
+                    period_days: meta::add_months(due, -months).map_or(1, |p| (due - p).whole_days().max(1)),
+                    cycle,
+                    due_date: due,
+                    due_days,
+                    due_state: meta::due_state(due_days, remind_days, auto_renew),
+                    billing_tz: r.s_tz.clone().unwrap_or_default(),
+                    auto_renew,
+                    remind_days,
+                    traffic_gb: r.s_traffic,
+                    traffic_reset_day: r.s_reset,
+                    overrides: r.s_overrides.clone().unwrap_or_default(),
+                }
             });
             let sub_template = SubTemplate {
                 price_cents: r.t_price,
@@ -1005,7 +1025,9 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
 pub fn overview_of(ms: &[MachineView]) -> Value {
     let mut nodes = json!({"total": 0, "ok": 0, "degraded": 0, "down": 0, "unknown": 0, "maintenance": 0});
     let mut relays = nodes.clone();
-    let (mut provisioning, mut retiring, mut failed, mut due_7d, mut up, mut down, mut rx, mut tx) = (0, 0, 0, 0, 0i64, 0i64, 0f64, 0f64);
+    let (mut provisioning, mut retiring, mut failed, mut up, mut down, mut rx, mut tx) = (0, 0, 0, 0i64, 0i64, 0f64, 0f64);
+    // 到期：按订阅的 due_state（同续费告警）分别计即将到期、已过期
+    let (mut due_soon, mut overdue) = (0, 0);
     // 在线/离线按 agent 连通（同前端 isQuiet）：agent 没有近期上报为离线；家宽代理没有 agent，算在线。和健康无关
     let (mut online, mut offline) = (0, 0);
     // 月费按币种分别汇总（不做汇率折算）
@@ -1032,18 +1054,13 @@ pub fn overview_of(ms: &[MachineView]) -> Value {
         bucket["total"] = json!(bucket["total"].as_i64().unwrap_or(0) + 1);
         bucket[key] = json!(bucket[key].as_i64().unwrap_or(0) + 1);
         if let Some(s) = &m.subscription {
-            // 需要续费的：同告警规则，自动续费的只在已过期时算
-            if s.due_days <= 7 && (s.due_days < 0 || !s.auto_renew) {
-                due_7d += 1;
+            match s.due_state {
+                "soon" => due_soon += 1,
+                "overdue" => overdue += 1,
+                _ => {}
             }
-            // 折成月费
-            let months = match s.cycle.as_str() {
-                "quarterly" => 3,
-                "semiannual" => 6,
-                "yearly" => 12,
-                _ => 1,
-            };
-            *cost.entry(s.currency.clone()).or_default() += s.price_cents as i64 / months;
+            // 月费：各台折好的 monthly_cents 按币种（大写）相加
+            *cost.entry(s.currency.trim().to_ascii_uppercase()).or_default() += s.monthly_cents;
         }
         // 业务流量按节点端算（每条入口恰好属于一个节点）；线路机只算它的直出入口（节点就是它自己）
         if m.kind != "relay" {
@@ -1073,7 +1090,7 @@ pub fn overview_of(ms: &[MachineView]) -> Value {
         }
     }
     json!({
-        "nodes": nodes, "relays": relays, "provisioning": provisioning, "retiring": retiring, "failed": failed, "due_7d": due_7d, "online": online, "offline": offline,
+        "nodes": nodes, "relays": relays, "provisioning": provisioning, "retiring": retiring, "failed": failed, "due_soon": due_soon, "overdue": overdue, "online": online, "offline": offline,
         "monthly_cost": cost.into_iter().map(|(c, v)| json!({"currency": c, "cents": v})).collect::<Vec<_>>(), "traffic_month": {"up": up, "down": down}, "net_rx_bps": rx, "net_tx_bps": tx,
     })
 }
@@ -1199,13 +1216,18 @@ mod tests {
     }
 
     #[test]
-    fn due_7d_skips_auto_renew_until_overdue() {
+    fn overview_counts_due_state_and_monthly_cents() {
         let with = |due: i64, auto: bool| {
             let mut m = base("vps");
-            m.subscription = Some(Subscription { auto_renew: auto, ..sub(due) });
+            m.subscription = Some(crate::health::tests::sub_with(due, auto));
             m
         };
-        let ov = overview_of(&[with(3, false), with(3, true), with(-1, true), with(10, false)]);
-        assert_eq!(ov["due_7d"], 2);
+        // 即将到期按提前提醒天数（7）算、自动续费的不算；已过期另计
+        let mut far = with(10, false);
+        far.subscription.as_mut().unwrap().monthly_cents = 33;
+        let ov = overview_of(&[with(3, false), with(3, true), with(-1, true), with(7, false), far]);
+        assert_eq!((ov["due_soon"].as_i64(), ov["overdue"].as_i64()), (Some(2), Some(1)));
+        // 月费是各台 monthly_cents 之和
+        assert_eq!(ov["monthly_cost"], json!([{"currency": "USD", "cents": 433}]));
     }
 }
