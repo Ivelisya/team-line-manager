@@ -5,7 +5,13 @@ export type ThemePref = 'light' | 'dark' | 'system';
 export type Palette = 'plum' | 'indigo';
 const read = (k: string, d: string) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
 const mq = matchMedia('(prefers-color-scheme: dark)');
-const applyTheme = (p: ThemePref) => { document.documentElement.dataset.theme = p === 'dark' || (p === 'system' && mq.matches) ? 'dark' : 'light'; };
+/** 手机浏览器的地址栏 / 状态栏跟顶栏同色（<meta name="theme-color">），深浅色一换就跟着换 */
+function syncThemeColor() {
+  let meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+  if (!meta) { meta = document.createElement('meta'); meta.name = 'theme-color'; document.head.append(meta); }
+  meta.content = getComputedStyle(document.documentElement).getPropertyValue('--surface').trim();
+}
+const applyTheme = (p: ThemePref) => { document.documentElement.dataset.theme = p === 'dark' || (p === 'system' && mq.matches) ? 'dark' : 'light'; syncThemeColor(); };
 const applyPalette = (p: Palette) => { document.documentElement.dataset.palette = p; };
 
 /** 用户切换主题 / 配色（首次挂载不走这里）：切换那一帧给 <html> 加 data-theme-swap 关掉全部过渡与动画（base.css），

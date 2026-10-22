@@ -2,15 +2,15 @@
 import * as React from 'react';
 import { NavLink, Navigate, Outlet, useLocation, useNavigationType } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { Boxes, LogOut, Menu, Monitor, Moon, Palette, RotateCw, Sun } from 'lucide-react';
+import { Boxes, Check, LogOut, Menu, Monitor, Moon, RotateCw, Sun } from 'lucide-react';
 import { NAV } from '@/lib/nav';
 import { ApiError, AUTH_EVENT, post } from '@/lib/api';
 import { useIncidents, useMe } from '@/lib/queries';
 import { useStream } from '@/lib/stream';
-import { useTheme, type ThemePref } from '@/lib/theme';
+import { useTheme, type Palette, type ThemePref } from '@/lib/theme';
 import { useTitleAlerts } from '@/lib/title';
 import { closeEvacuate, closeMove, closeRestore, closeRetire, useEvacuateTarget, useMoveTarget, useRestoreTarget, useRetireTarget } from '@/lib/nodeActions';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, Tip, TipHost } from '@/components/ui/overlays';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger, Tip, TipHost } from '@/components/ui/overlays';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Toaster } from '@/components/ui/toast';
@@ -40,6 +40,9 @@ function PageFallback() {
 }
 
 const closeLifecycle = () => { closeMove(); closeEvacuate(); closeRestore(); closeRetire(); };
+
+const THEMES: [ThemePref, string, typeof Sun][] = [['light', '浅色', Sun], ['dark', '深色', Moon], ['system', '跟随系统', Monitor]];
+const PALETTES: [Palette, string][] = [['plum', '粉紫'], ['indigo', '靛蓝']];
 
 function DrawerHost() {
   const { id } = useDrawer();
@@ -137,14 +140,18 @@ export function Shell() {
               : <Tip text={stream === 'open' ? '实时连接正常' : '正在连接…'} side="bottom">
                 <span className="dot" data-tone={stream === 'open' ? undefined : 'neutral'} tabIndex={0} role="img" aria-label={stream === 'open' ? '实时连接正常' : '正在连接'} />
               </Tip>}
-            <Tip text={`配色：${theme.palette === 'plum' ? '粉紫' : '靛蓝'}（点击切换）`} side="bottom">
-              <button className="top-btn" data-top="palette" aria-label="切换配色（粉紫 / 靛蓝）" onClick={() => theme.setPalette(theme.palette === 'plum' ? 'indigo' : 'plum')}><Palette size={16} /></button>
-            </Tip>
+            {/* 深浅色与配色在同一个菜单里（原来配色是单独一个盲切的按钮，窄屏还被藏起来）；色块就是该配色的强调色 */}
             <DropdownMenu>
-              <DropdownMenuTrigger asChild><button className="top-btn" aria-label="外观"><ThemeIcon size={16} /></button></DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                {([['light', '浅色', Sun], ['dark', '深色', Moon], ['system', '跟随系统', Monitor]] as [ThemePref, string, typeof Sun][]).map(([v, l, I]) => (
-                  <DropdownMenuItem key={v} onSelect={() => theme.setPref(v)}><I />{l}{theme.pref === v && <span style={{ marginLeft: 'auto', color: 'var(--accent)' }}>✓</span>}</DropdownMenuItem>
+              <DropdownMenuTrigger asChild><button className="top-btn" aria-label="外观：深浅色与配色"><ThemeIcon size={16} /></button></DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="menu-appearance">
+                <DropdownMenuLabel>外观</DropdownMenuLabel>
+                {THEMES.map(([v, l, I]) => (
+                  <DropdownMenuItem key={v} onSelect={() => theme.setPref(v)}><I />{l}{theme.pref === v && <Check className="menu-check" />}</DropdownMenuItem>
+                ))}
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel>配色</DropdownMenuLabel>
+                {PALETTES.map(([v, l]) => (
+                  <DropdownMenuItem key={v} onSelect={() => theme.setPalette(v)}><i className="swatch" data-palette={v} />{l}{theme.palette === v && <Check className="menu-check" />}</DropdownMenuItem>
                 ))}
               </DropdownMenuContent>
             </DropdownMenu>
