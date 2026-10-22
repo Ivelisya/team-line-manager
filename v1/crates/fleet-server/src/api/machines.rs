@@ -171,13 +171,22 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     }
     // 入口备注随节点名变：节点改名刷新它挂的线路机；线路机改名只影响它自己的直出入口（「线路机名-直出」），没有就不动
     let relays = if renamed { bump_relays_of_nodes(&mut tx, &[id]).await? } else { vec![] };
+    // 审计写上改前改后的显示名（「团队1-07 → 团队1-03」）：记录保持当时的样子，之后再改名也不跟着变
+    let (old_team, new_team): (Option<String>, Option<String>) = sqlx::query_as("select (select name from team where id = $1), (select name from team where id = $2)")
+        .bind(cur.2)
+        .bind(team_id)
+        .fetch_one(&mut *tx)
+        .await?;
+    let old_name = crate::names::display_name(&cur.1, cur.4.as_deref(), old_team.as_deref(), cur.3);
+    let name = crate::names::display_name(&cur.1, label.as_deref(), new_team.as_deref(), number);
     audit(
         &mut tx,
         &a.name,
         if renamed { "machine.rename" } else { "machine.update" },
         "machine",
         Some(id),
-        json!({"before": {"team_id": cur.2, "number": cur.3, "label": cur.4, "country": cur.6},
+        json!({"name": name, "old_name": old_name,
+               "before": {"team_id": cur.2, "number": cur.3, "label": cur.4, "country": cur.6},
                "after": {"team_id": team_id, "number": number, "label": label, "country": country.clone().unwrap_or(cur.6.clone())}}),
     )
     .await?;

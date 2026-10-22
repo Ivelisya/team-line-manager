@@ -336,7 +336,7 @@
 ## 6. IP 情报（`crates/ipintel`）
 
 - 做什么：**只查本地离线库，不把任何 IP 发往在线服务**。四个库 mmap：ip2region xdb、DB-IP City Lite、DB-IP ASN Lite、iptoasn TSV（`/v1/ipintel/status` 的 `loaded` 应为 5，`API.md:362`、`lib.rs:1-9`）。库由 systemd timer `fleetd-ipintel-fetch` 定期更新，变化后 20 个 tick 内热重载（`app.rs:859`）。
-- 对每个 IP 合成画像：运营商 `isp`、ASN/`as_org`、国家/省/市/`place`、坐标、接入方式 `conn_type`（住宅宽带 residential / 移动网络 mobile / 机房 datacenter / VPN·代理 vpn / 未知 unknown）+ 理由 + 置信度（high/medium/low）、`flags`（`internal`=我方线路机/落地/运维出口，`private`=非公网）。
+- 对每个 IP 合成画像：运营商 `isp`、ASN/`as_org`、国家/省/市/`place`、坐标、接入方式 `conn_type`（住宅宽带 residential / 移动网络 mobile / 机房 datacenter / VPN / 代理 vpn / 未知 unknown）+ 理由 + 置信度（high/medium/low）、`flags`（`internal`=我方线路机/落地/运维出口，`private`=非公网）。
 - 接入方式判定顺序（`classify.rs:1-16`）：① 非公网→unknown+private；② 内部地址只打 `internal` 标；③ 精选 ASN 列表：VPN（M247、Datacamp/CDN77、PacketHub、Proton、Mullvad、NordVPN）→vpn；云（AWS/Google/Azure/Cloudflare/阿里腾讯华为百度/Oracle/DO/Vultr/Linode/OVH/Hetzner/Contabo…）→datacenter；IDC/托管（含我方线路机所在的 AS979 NetLab）→datacenter；蜂窝专用 ASN→mobile（均 high）；④ AS 名称关键词：5G/LTE/WIRELESS/CELLULAR/MOBILITY→mobile high，VPN/PROXY/ANONYM/TOR→vpn medium；⑤ 机房关键词（HOSTING/SERVER/CLOUD/DATACENTER/IDC/VPS/COLO/DEDICATED）或 iptoasn 机房集合→datacenter medium；⑥ 中国三大运营商骨干/省网 ASN→residential low（`alt=mobile`，家宽与手机共用）；⑦ 固网运营商列表（AT&T 固网、Comcast、Charter、Verizon 固网、Cox、Lumen、Frontier、Telmex、Megacable、StarHub、Singtel 等）→residential medium；⑧ 其余→unknown low。**局限（代码注释自己写了）：没有 VPN/Tor 出口清单，只能靠 ASN；识别不了住宅代理。** 重写要把这些 ASN 清单做成数据（可热更新的表）而不是硬编码。
 - 学习与异常（`service.rs:422-606`，配置默认 `:62-89`）：
   - 节点第一条事件时间 = 学习期起点，**`learn_s`=7 天内只学习**（按事件时间算，回填历史也成立）。

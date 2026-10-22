@@ -428,6 +428,31 @@ R('PATCH', '/providers/([^/]+)', ({ params, body }) => {
   if (body.traffic_rule !== undefined) p.traffic_rule = body.traffic_rule;
   emit({ type: 'catalog' }); return { id: p.id };
 });
+// 删目录项：同中控，还有机器（含已退役的）、套餐用着时 409 写明还有什么
+const inUse = (parts: [number, string][]) => parts.filter(([n]) => n > 0).map(([n, w]) => `${n} ${w}`).join('、');
+const delAudit = (action: string, title: string, kind: string, id: string, name: string) => db.audit.unshift({ id: `a${db.seq++}`, ts: iso(), actor: db.user, action, title, summary: name, target_kind: kind, target_id: id, detail: { name } });
+R('DELETE', '/teams/([^/]+)', ({ params }) => {
+  const t = teamOf(params[0]);
+  const ms = db.machines.filter((m) => m.team?.id === t.id);
+  const u = inUse([[ms.filter((m) => m.lifecycle !== 'retired').length, '台机器'], [ms.filter((m) => m.lifecycle === 'retired').length, '台已退役的机器']]);
+  if (u) throw bad(`「${t.name}」还有 ${u}：先把它们移到别的团队（已退役的先彻底删除）再删`, 409, 'conflict');
+  db.teams = db.teams.filter((x) => x.id !== t.id); delAudit('team.delete', '删除团队', 'team', t.id, t.name);
+  emit({ type: 'catalog' }); return { id: t.id };
+});
+R('DELETE', '/providers/([^/]+)', ({ params }) => {
+  const p = db.providers.find((x) => x.id === params[0]); if (!p) throw bad('没有这个供应商', 404, 'not_found');
+  const u = inUse([[db.plans.filter((x) => x.provider_id === p.id).length, '个套餐'], [db.machines.filter((m) => m.provider?.id === p.id).length, '台机器']]);
+  if (u) throw bad(`「${p.name}」还有 ${u}（含已归档、已退役的）：先删掉或改到别的供应商再删`, 409, 'conflict');
+  db.providers = db.providers.filter((x) => x.id !== p.id); delAudit('provider.delete', '删除供应商', 'provider', p.id, p.name);
+  emit({ type: 'catalog' }); return { id: p.id };
+});
+R('DELETE', '/plans/([^/]+)', ({ params }) => {
+  const p = db.plans.find((x) => x.id === params[0]); if (!p) throw bad('没有这个套餐', 404, 'not_found');
+  const u = inUse([[db.machines.filter((m) => m.plan?.id === p.id).length, '台机器']]);
+  if (u) throw bad(`「${p.name}」还有 ${u}用着：不再上架的可以归档`, 409, 'conflict');
+  db.plans = db.plans.filter((x) => x.id !== p.id); delAudit('plan.delete', '删除套餐', 'plan', p.id, p.name);
+  emit({ type: 'catalog' }); return { id: p.id };
+});
 R('GET', '/plans', () => clone(db.plans));
 R('POST', '/plans', ({ body }) => {
   if (!body.name || !body.provider_id) throw bad('套餐名与供应商必填');
@@ -436,8 +461,14 @@ R('POST', '/plans', ({ body }) => {
 });
 R('PATCH', '/plans/([^/]+)', ({ params, body }) => {
   const p = db.plans.find((x) => x.id === params[0]); if (!p) throw bad('套餐不存在', 404, 'not_found');
+  const before = { ...p } as Record<string, unknown>;
   const { archived, ...rest } = body; Object.assign(p, rest);
   if (archived === true) p.archived_at = iso(); if (archived === false) p.archived_at = null;
+  // 同中控：审计记套餐名与改了的字段（before / after）；只改了归档的标题写归档 / 取消归档（摘要的改动明细这里从简）
+  const after = p as unknown as Record<string, unknown>;
+  const keys = Object.keys(after).filter((k) => JSON.stringify(after[k]) !== JSON.stringify(before[k]));
+  const title = keys.length === 1 && keys[0] === 'archived_at' ? (p.archived_at ? '归档套餐' : '取消归档套餐') : '修改套餐';
+  db.audit.unshift({ id: `a${db.seq++}`, ts: iso(), actor: db.user, action: 'plan.update', title, summary: p.name, target_kind: 'plan', target_id: p.id, detail: { name: p.name, currency: p.currency, before: Object.fromEntries(keys.map((k) => [k, before[k]])), after: Object.fromEntries(keys.map((k) => [k, after[k]])) } });
   emit({ type: 'catalog' }); return p;
 });
 

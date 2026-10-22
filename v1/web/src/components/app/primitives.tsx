@@ -8,10 +8,12 @@ import type { DueState, EntryView, HealthReason, Lifecycle, MachineView } from '
 import { HEALTH_TONE } from '@/lib/sort';
 import { countryName, flagUrl } from '@/lib/flags';
 import { Tip, Trunc } from '@/components/ui/overlays';
+import { InfoTip } from '@/components/ui/form';
 import { useCountUp } from '@/lib/useCountUp';
 import { dueTone, entryLabel, healthLabel, hostRel, lifecycleLabel, severityOf, type BeatCell } from '@/lib/derive';
 import { useDrawer } from '@/lib/drawer';
 import { copyText } from '@/lib/clipboard';
+import { watchSize } from '@/lib/sharedObserver';
 
 /** 数值 + 灰色小单位 */
 export function Num({ f }: { f: Fmt }) {
@@ -117,11 +119,12 @@ export function FilterChip({ pressed, onClick, children, count }: { pressed: boo
 }
 
 type StatTone = 'ok' | 'teal' | 'bad' | 'amber' | 'gold' | 'sky' | 'violet' | 'blue';
-/** KPI 卡（唯一实现）：彩色图标 + 标签，大号读数 + 小单位，一行灰色说明；三行固定，同一排等高。可点的（to）标题行最右多一个小箭头 */
-export function Stat({ icon, tone, label, value, unit, caption, to, loading }: { icon: React.ReactNode; tone: StatTone; label: string; value: React.ReactNode; unit?: string; caption?: React.ReactNode; to?: string; loading?: boolean }) {
+/** KPI 卡（唯一实现）：彩色图标 + 标签，大号读数 + 小单位，一行灰色说明；三行固定，同一排等高。可点的（to）标题行最右多一个小箭头。
+ *  info：口径说明（含不含什么、怎么算的），标签旁的「(i)」悬停看 */
+export function Stat({ icon, tone, label, info, value, unit, caption, to, loading }: { icon: React.ReactNode; tone: StatTone; label: string; info?: string; value: React.ReactNode; unit?: string; caption?: React.ReactNode; to?: string; loading?: boolean }) {
   const inner = (
     <>
-      <span className="stat-label"><span className="stat-ic" data-tone={tone}>{icon}</span>{label}{to && <ChevronRight className="stat-go" aria-hidden />}</span>
+      <span className="stat-label"><span className="stat-ic" data-tone={tone}>{icon}</span>{label}{info && <InfoTip text={info} />}{to && <ChevronRight className="stat-go" aria-hidden />}</span>
       <span className="stat-value">{loading ? <span className="skel" style={{ width: 64, height: 20 }} /> : <>{value}{unit && <small>{unit}</small>}</>}</span>
       <span className="stat-cap">{loading ? '' : caption ?? ' '}</span>
     </>
@@ -186,6 +189,22 @@ export const Panel = React.forwardRef<HTMLElement, { title?: React.ReactNode; co
     </section>
   );
 });
+
+/** 页面里的表格容器：表放得下（不用横滑）时写上 data-fit，表头吸顶在顶栏下方（table.css）；放不下时照常横滑、不吸顶。
+ *  抽屉、对话框里的表不用它：那里的滚动容器不是页面，吸顶的位置不对 */
+export function TableWrap({ className, children, ...p }: React.HTMLAttributes<HTMLDivElement> & { 'data-stale'?: boolean }) {
+  const ref = React.useRef<HTMLDivElement>(null);
+  React.useLayoutEffect(() => {
+    const el = ref.current!;
+    const t = el.querySelector('table');
+    if (!t) return;
+    const apply = () => el.toggleAttribute('data-fit', t.offsetWidth <= el.clientWidth + 1);
+    apply();
+    const a = watchSize(el, apply); const b = watchSize(t, apply);
+    return () => { a(); b(); };
+  }, []);
+  return <div ref={ref} className={cn('table-wrap', className)} {...p}>{children}</div>;
+}
 
 /** 页头：全站同一个 */
 export function PageHead({ title, note, tools }: { title: string; note?: React.ReactNode; tools?: React.ReactNode }) {

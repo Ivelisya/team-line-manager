@@ -24,11 +24,14 @@
 .btn-quiet { color: var(--fg-2); }
 .btn-text { height: var(--h-sm); padding: 0 var(--sp-6); color: var(--fg-2); font-size: var(--fs-label); line-height: var(--lh-label); }
 .btn-link { height: auto; padding: 0; border: 0; color: var(--accent); }
+/* 表格里可点的数字（团队的在用节点数 → 机器页）：紫色、等宽数字，悬停下划线 */
+.num-link { color: var(--accent); font-weight: var(--fw-medium); font-variant-numeric: var(--num-variant); text-decoration: none; text-underline-offset: 3px; }
+@media (hover: hover) { .num-link:hover { text-decoration: underline; } }
 .btn-danger { background: var(--bad-solid); color: #fff; }
 .btn-outline-danger { background: var(--surface); color: var(--bad-text); border-color: color-mix(in srgb, var(--bad) 35%, var(--line)); }
 @media (hover: hover) {
   .btn-primary:hover:not(:disabled) { background: var(--accent-strong); }
-  .btn-secondary:hover:not(:disabled) { background: linear-gradient(var(--hover), var(--hover)), var(--surface); }
+  .btn-secondary:hover:not(:disabled, [aria-disabled="true"]) { background: linear-gradient(var(--hover), var(--hover)), var(--surface); }
   .btn-quiet:hover:not(:disabled) { background: var(--hover); color: var(--fg); }
   .btn-text:hover:not(:disabled) { color: var(--fg); text-decoration: underline; text-underline-offset: 3px; }
   .btn-link:hover { text-decoration: underline; text-underline-offset: 3px; }
@@ -260,6 +263,9 @@
 .search { position: relative; display: inline-flex; align-items: center; min-width: 0; }
 .search > .lucide { position: absolute; left: var(--sp-10); color: var(--fg-3); pointer-events: none; width: 14px; height: 14px; }
 .search > .input { padding-left: 30px; }
+.input-unit { position: relative; display: inline-flex; align-items: center; min-width: 0; max-width: 100%; }
+.input-unit > .input { padding-right: calc(var(--sp-10) + 2.5em); font-variant-numeric: tabular-nums; }
+.input-unit-u { position: absolute; right: var(--sp-10); color: var(--fg-2); font-size: var(--fs-body); pointer-events: none; }
 
 .checkbox { width: 16px; height: 16px; flex: none; border: 1px solid var(--line-strong); border-radius: var(--r-xs); background: var(--surface); display: inline-grid; place-items: center; cursor: pointer; color: var(--on-accent); transition: background-color var(--dur-1) var(--ease-std), border-color var(--dur-1) var(--ease-std); }
 .checkbox[data-state="checked"] { background: var(--accent-solid); border-color: var(--accent-solid); }

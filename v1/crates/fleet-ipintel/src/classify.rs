@@ -1,4 +1,4 @@
-//! 运营商归一与接入方式（住宅 / 移动 / 机房 / VPN·代理）判定。全部是启发式，每条结果都带理由和置信度。
+//! 运营商归一与接入方式（住宅 / 移动 / 机房 / VPN / 代理）判定。全部是启发式，每条结果都带理由和置信度。
 //! ASN 清单不在这里：见 `lists.rs` 和 `data/asn-lists.toml`（内置默认 + 可选覆盖文件）。
 //!
 //! 判定顺序（先命中先用）：
@@ -44,7 +44,7 @@ impl ConnType {
             ConnType::Residential => "住宅宽带",
             ConnType::Mobile => "移动网络",
             ConnType::Datacenter => "机房",
-            ConnType::Vpn => "VPN·代理",
+            ConnType::Vpn => "VPN / 代理",
             ConnType::Unknown => "未知",
         }
     }

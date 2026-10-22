@@ -198,11 +198,13 @@
 
 /* ========== 设置页 ========== */
 .set-tabs { margin-bottom: var(--section-gap); }
-.scope-list { display: grid; gap: var(--sp-8); }
-.scope-row { display: flex; align-items: flex-start; gap: var(--sp-10); padding: var(--sp-8) var(--sp-12); border: 1px solid var(--line); border-radius: var(--r-float); cursor: pointer; transition: background-color var(--dur-1) var(--ease-std), border-color var(--dur-1) var(--ease-std); }
+/* 权限：每项一行（名称 + (i) 说明 + 敏感标），两列排 */
+.scope-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--sp-8); }
+.scope-name { display: inline-flex; align-items: center; gap: var(--sp-4); min-width: 0; }
+.scope-name .chip { margin-left: var(--sp-4); }
+.scope-row { display: flex; align-items: center; gap: var(--sp-10); padding: var(--sp-8) var(--sp-12); border: 1px solid var(--line); border-radius: var(--r-float); cursor: pointer; transition: background-color var(--dur-1) var(--ease-std), border-color var(--dur-1) var(--ease-std); }
 .scope-row:hover { background-color: var(--hover); }
 .scope-row[data-on="1"] { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); background-color: var(--selected); }
-.scope-row .checkbox { margin-top: 2px; }
 .scope-row b { font-weight: var(--fw-medium); }
 .scope-row .hint { margin-top: 0; }
 .scope-tags { display: flex; flex-wrap: wrap; gap: var(--sp-4); }
@@ -256,6 +258,10 @@ html[data-overlay] :is(.app, .drawer) .progress-fill { transition: none; }
 .dist-fill { display: block; height: 100%; border-radius: var(--r-pill); background: var(--chart-1); }
 .dist-pct { text-align: right; color: var(--fg-2); font-variant-numeric: tabular-nums; }
 
+/* 访问监控「域名与 IP」「新出现的目标」：目标名可点（把搜索设成它），平时同正文，悬停变紫加下划线 */
+.host-pick { min-width: 0; padding: 0; border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; text-underline-offset: 3px; transition: color var(--dur-1) var(--ease-std); }
+@media (hover: hover) { .host-pick:hover { color: var(--accent); text-decoration: underline; } }
+
 /* ========== 数字等宽恢复 ==========
    `font:` 简写会把 font-variant-numeric 重置成 normal，body 上设的 tabular-nums 在这些控件里就丢了（数字跳动时会左右抖）。
    这条放在所有样式表之后的最后一份普通样式里，统一补回。 */
@@ -267,8 +273,9 @@ html[data-overlay] :is(.app, .drawer) .progress-fill { transition: none; }
 /* 国家选择器（CountrySelect）：触发器里国旗 + 名称；弹层是一个可搜索的短列表 */
 .cs-value { display: inline-flex; align-items: center; gap: var(--sp-8); min-width: 0; }
 .cs-trigger .nc-flag .lucide { width: 11px; height: 11px; }
-.cs-pop { width: 280px; padding: 0; }
-.cs-pop.hs-pop { width: max(var(--radix-popover-trigger-width), 280px); } /* 上架页的宿主机选择：同触发器一样宽 */
+/* 可搜索的下拉（国家、时区、静默对象、上架页的宿主机）同下拉选择用实底：常开在对话框里，玻璃会透出底下的表单字 */
+.popover.cs-pop { width: 280px; padding: 0; background: var(--raised); -webkit-backdrop-filter: none; backdrop-filter: none; }
+.popover.cs-pop:is(.is-wide, .hs-pop) { width: max(280px, var(--radix-popover-trigger-width)); } /* 时区、静默对象、宿主机：和输入框一样宽 */
 .cs-pop .cmd-input-wrap { height: 40px; padding: 0 var(--sp-12); gap: var(--sp-8); }
 .cs-pop .cmd-input { font-size: var(--fs-body); }
 .cs-pop .cmd-list { max-height: 300px; }

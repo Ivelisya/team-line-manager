@@ -326,9 +326,18 @@ export function buildDb(): Db {
     { id: 's3', subject_id: 'r2', subject_name: '线路机2', rule: null, rule_name: null, starts_at: iso(tomorrow2.getTime()), ends_at: iso(tomorrow2.getTime() + 4 * 3600_000), is_maintenance: true, comment: '机房割接（供应商通知）' },
   ];
   const audit: AuditEntry[] = [
-    { id: 'a3', ts: iso(now() - 25 * 60_000), actor: '运维 CLI', action: 'exec', title: '执行命令', summary: '团队1-03 · journalctl -u fleet-agent --since "1 hour ago" --no-pager | grep -i -E "err… · 退出码 0', target_kind: 'machine', target_id: 'm-t1-03', detail: { name: '团队1-03', command: 'journalctl -u fleet-agent --since "1 hour ago" --no-pager | grep -i -E "error|warn" | tail -n 200', exit_code: 0 } },
-    { id: 'a1', ts: iso(now() - 40 * 60_000), actor: 'admin', action: 'machine.rename', title: '改名', summary: '团队1-07 → 团队1-03', target_kind: 'machine', target_id: 'm-t1-03', detail: { old: '团队1-07', new: '团队1-03' } },
+    // 下面几条照中控的写法：title / summary 是 audit_text 按 detail 拼的
+    { id: 'a9', ts: iso(now() - 8 * 60_000), actor: 'apikey:运维 CLI', action: 'plan.update', title: '归档套餐', summary: 'CN2 GIA 1C/2G', target_kind: 'plan', target_id: 'pl2', detail: { name: 'CN2 GIA 1C/2G', currency: 'USD', before: { archived_at: null }, after: { archived_at: iso(now() - 8 * 60_000) } } },
+    { id: 'a8', ts: iso(now() - 9 * 60_000), actor: 'admin', action: 'plan.update', title: '修改套餐', summary: 'CN2 GIA 2C/4G · 价格 59.00 → 69.00 USD，流量 800 → 1000 GB', target_kind: 'plan', target_id: 'pl1', detail: { name: 'CN2 GIA 2C/4G', currency: 'USD', before: { price_cents: 5900, traffic_gb: 800 }, after: { price_cents: 6900, traffic_gb: 1000 } } },
+    { id: 'a7', ts: iso(now() - 15 * 60_000), actor: 'admin', action: 'exec', title: '执行命令', summary: '团队1-05 · systemctl restart fleet-agent · 退出码 1', target_kind: 'machine', target_id: 'm-t1-05', detail: { name: '团队1-05', command: 'systemctl restart fleet-agent', exit_code: 1, duration_ms: 1840, timed_out: false } },
+    { id: 'a6', ts: iso(now() - 20 * 60_000), actor: 'admin', action: 'ssh.login', title: 'SSH 登录', summary: '团队1-03 · 交互式', target_kind: 'vps', target_id: 'm-t1-03', detail: { name: '团队1-03', command: false } },
+    { id: 'a3', ts: iso(now() - 25 * 60_000), actor: 'apikey:运维 CLI', action: 'exec', title: '执行命令', summary: '团队1-03 · journalctl -u fleet-agent --since "1 hour ago" --no-pager | grep -i -E "err… · 退出码 0', target_kind: 'machine', target_id: 'm-t1-03', detail: { name: '团队1-03', command: 'journalctl -u fleet-agent --since "1 hour ago" --no-pager | grep -i -E "error|warn" | tail -n 200', exit_code: 0, duration_ms: 640, timed_out: false } },
+    { id: 'a1', ts: iso(now() - 40 * 60_000), actor: 'admin', action: 'machine.rename', title: '改名', summary: '团队1-07 → 团队1-03', target_kind: 'machine', target_id: 'm-t1-03', detail: { name: '团队1-03', old_name: '团队1-07' } },
     { id: 'a2', ts: iso(now() - 3 * 3600_000), actor: 'admin', action: 'renewal.create', title: '登记续费', summary: '团队2-09 到期日顺延 3 个月', target_kind: 'machine', target_id: 'm-t2-09', detail: { months: 3 } },
+    { id: 'a5', ts: iso(now() - 13 * 3600_000), actor: 'cli', action: 'exec', title: '执行命令', summary: '团队2-02 · apt-get update · 执行中或中断（未记录结果）', target_kind: 'machine', target_id: 'm-t2-02', detail: { name: '团队2-02', command: 'apt-get update', started: true } },
+    { id: 'a10', ts: iso(now() - 26 * 3600_000), actor: 'admin', action: 'agent.upgrade', title: '升级 agent', summary: '12 台，跳过 1 台', target_kind: 'machine', target_id: null, detail: { count: 12, skipped: 1 } },
+    { id: 'a11', ts: iso(now() - 27 * 3600_000), actor: 'admin', action: 'machine.update', title: '修改资料', summary: '团队1-05 · 国家 HK → JP', target_kind: 'machine', target_id: 'm-t1-05', detail: { name: '团队1-05', old_name: '团队1-05', before: { team_id: 't1', number: 5, label: null, country: 'HK' }, after: { team_id: 't1', number: 5, label: null, country: 'JP' } } },
+    { id: 'a12', ts: iso(now() - 28 * 3600_000), actor: 'admin', action: 'auth.login_failed', title: '登录失败', summary: '203.0.113.9', target_kind: 'user', target_id: null, detail: { ip: '203.0.113.9' } },
     { id: 'a4', ts: iso(now() - 12 * DAY), actor: 'admin', action: 'machine.provision', title: '上架', summary: '团队1-07 · 198.51.100.13', target_kind: 'machine', target_id: 'm-t1-03', detail: { name: '团队1-07', ip: '198.51.100.13', kind: 'vps' } },
   ];
   const apiKeys: ApiKey[] = [
@@ -345,6 +354,8 @@ export function buildDb(): Db {
     { id: 'n1', channel_id: 'c1', channel_name: '运维群', incident_id: 'i1-0000-aaaa', ts: iso(now() - 14 * 60_000), ok: true, error: null, kind: 'firing', subject_name: '团队1-04', rule_name: '出口不通' },
     { id: 'n2', channel_id: 'c2', channel_name: '值班企业微信', incident_id: 'i1-0000-aaaa', ts: iso(now() - 14 * 60_000), ok: true, error: null, kind: 'firing', subject_name: '团队1-04', rule_name: '出口不通' },
     { id: 'n3', channel_id: 'c1', channel_name: '运维群', incident_id: 'i3-0000-bbbb', ts: iso(now() - 50 * 60_000), ok: false, error: 'Telegram 返回 429：请求过于频繁，请 17 秒后重试', kind: 'resolved', subject_name: '线路机2', rule_name: '配置未应用' },
+    // 渠道已删除：名字随渠道没了（中控 left join 为 null）
+    { id: 'n6', channel_id: 'c9', channel_name: null, incident_id: 'i9-0000-cccc', ts: iso(now() - 2 * DAY), ok: true, error: null, kind: 'firing', subject_name: '团队2-01', rule_name: 'agent 离线' },
     { id: 'n4', channel_id: 'c3', channel_name: '自建告警网关', incident_id: null, ts: iso(now() - 3 * DAY), ok: true, error: null, kind: 'test', subject_name: null, rule_name: null },
     { id: 'n5', channel_id: 'c1', channel_name: '运维群', incident_id: 'i9-0000-cccc', ts: iso(now() - 4 * DAY), ok: true, error: null, kind: 'repeat', subject_name: null, rule_name: 'agent 离线' },
   ];

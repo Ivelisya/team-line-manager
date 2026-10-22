@@ -7,15 +7,16 @@ import { meta } from './derive';
 export type PolicyMode = 'observe' | 'allowlist' | 'denylist' | 'blocked' | 'inherit';
 export type EffectiveMode = Exclude<PolicyMode, 'inherit'>;
 
-/** 模式的中文名（/meta 的 policy_modes）；下面的说明是界面文案 */
+/** 模式的中文名（/meta 的 policy_modes）；下面的说明是界面文案：一句短的跟在模式下面，补充的放进「(i)」 */
 export const modeLabel = (m: string) => meta().policy_modes[m] ?? m;
 export const MODE_HINT: Record<PolicyMode, string> = {
   observe: '只记录访问，不拦截',
   allowlist: '只放行名单内的域名',
   denylist: '只阻止名单内的域名',
-  blocked: '暂停所有新连接，已建立的不受影响',
+  blocked: '暂停新连接',
   inherit: '使用所在团队的设置',
 };
+export const MODE_INFO: Partial<Record<PolicyMode, string>> = { blocked: '已经建立的连接不受影响，新连接一律拒绝' };
 
 export interface PolicyBody { mode: PolicyMode; domains: string[]; note: string }
 export interface ScopePolicy extends PolicyBody {

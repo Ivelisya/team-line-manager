@@ -1,7 +1,7 @@
 /* DataTable：固定列宽（table-layout: fixed + colgroup），长文字省略，数字 tabular。移植自原版 table.css */
 
 .table-wrap { overflow-x: auto; min-width: 0; }
-/* 机器表（MachineGrid）放得下、不用横滑时组件写上 data-fit：overflow-x: clip 不建滚动容器，表头吸顶在顶栏下方，一百多行往下滚列名一直在。
+/* 页面里的表（机器表 MachineGrid、其余页面的 TableWrap）放得下、不用横滑时组件写上 data-fit：overflow-x: clip 不建滚动容器，表头吸顶在顶栏下方，一百多行往下滚列名一直在。
    滚动容器里的 sticky 只相对容器本身，容器又不竖向滚动，表头就跟着滚走了。窄屏仍横滑，此时不吸顶 */
 .table-wrap[data-fit] { overflow-x: clip; }
 .table-wrap[data-fit] thead th { position: sticky; top: var(--topbar-h); z-index: var(--z-sticky); }

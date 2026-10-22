@@ -8,7 +8,10 @@
 @container content (max-width: 900px) { .pol-layout { grid-template-columns: minmax(0, 1fr); } }
 
 /* 范围树 */
-.pol-tree { display: grid; padding: var(--sp-4) 0 var(--sp-8); max-height: 640px; overflow: auto; }
+/* 不设内层滚动：团队默认折叠，节点多时有搜索框，列表跟着页面滚 */
+.pol-tree { display: grid; padding: var(--sp-4) 0 var(--sp-8); }
+.pol-find { padding: 0 var(--card-pad) var(--sp-8); }
+.pol-find .search { width: 100%; }
 .pol-row { display: flex; align-items: stretch; min-width: 0; }
 /* 展开箭头与节点行：按下反馈、焦点环内收（树的滚动容器会裁外圈）写在 components.css「交互状态」 */
 .pol-chev { flex: none; width: 28px; display: grid; place-items: center; border: 0; background: transparent; color: var(--fg-2); cursor: pointer; border-radius: var(--r-control); transition: background-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out); }
@@ -42,6 +45,7 @@
 .pol-issues b { flex: none; font-weight: var(--fw-semibold); }
 .pol-actions { display: flex; align-items: center; gap: var(--sp-8); flex-wrap: wrap; }
 .pol-meta { margin-left: auto; font-size: var(--fs-label); }
+.pol-dirty { color: var(--warn-text); font-weight: var(--fw-medium); }
 
 /* 生效值 vs 草稿 */
 .pol-cmp { border: 1px solid var(--line); border-radius: var(--r-float); overflow: clip; min-width: 0; }
@@ -86,6 +90,7 @@
 
 /* 发布记录 */
 .pol-cur { margin-left: var(--sp-6); font-size: var(--fs-micro); padding: 0 var(--sp-6); border-radius: var(--r-pill); background: var(--accent-soft); color: var(--accent-soft-fg); }
+.pol-apply { display: flex; align-items: center; gap: var(--sp-8); flex-wrap: wrap; min-width: 0; }
 .pol-relays { display: flex; flex-wrap: wrap; gap: var(--sp-4) var(--sp-10); }
 .pol-relay { display: inline-flex; align-items: center; gap: var(--sp-6); font-size: var(--fs-label); }
 .pol-relay small { color: var(--fg-2); font-size: var(--fs-label); }
