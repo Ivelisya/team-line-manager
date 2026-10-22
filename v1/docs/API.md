@@ -39,14 +39,14 @@
 | `read` | 所有 GET，**不含**下面三类 |
 | `write` | 所有非 GET 的业务写操作（不含 `/machines/{id}/exec`） |
 | `secrets` | `GET /entries/{id}/share` 这类凭据 |
-| `exec` | `POST /machines/{id}/exec`、`GET /machines/{id}/logs`、`GET /server/logs`（都是通过 SSH 或本机读取） |
+| `exec` | `POST /machines/{id}/exec`、`GET /machines/{id}/logs`、`GET /server/logs`（都是通过 SSH 或本机读取）；`POST /audit/ssh`（`fleetctl ssh` 登录前报的审计） |
 
 scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` 的管理只允许会话用户，用密钥调用一律 403。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api-keys` | `[{id,name,prefix,scopes,created_at,expires_at,last_used_at,revoked_at}]`（永不返回 token） |
-| POST | `/api-keys` | `{name, scopes:["read",…], expires_days?: 1-3650, password, totp?}`（当前密码；开了两步验证还要 `totp`，或恢复码，失败同账户安全的再次校验）→ `{data:{id, token}}`，**token 只返回这一次**；写审计，实时流发 `api_keys`。`fleetctl keys create --user` 用登录的密码；命令行登录不支持两步验证，开了的账户到网页上建 |
+| POST | `/api-keys` | `{name, scopes:["read",…], expires_days?: 1-3650, password, totp?}`（当前密码；开了两步验证还要 `totp`，或恢复码，失败同账户安全的再次校验）→ `{data:{id, token}}`，**token 只返回这一次**；写审计，实时流发 `api_keys`。`fleetctl keys create --user` 用登录的密码；命令行登录不支持两步验证，开了的账户到网页上建。名称 `central-local` 留给中控本机的 fleetctl（`fleet-server local-admin` 建，见 OPS.md §13），用它 400 |
 | DELETE | `/api-keys/{id}` | 撤销（幂等）；之后用它的请求 401，用它连着的实时流马上以 `4401` 关闭 |
 
 ## 目录
@@ -191,6 +191,7 @@ ProvisionItem = {
 | POST | `/machines/{id}/exec` | `{command, timeout_s?: 1-600 (默认 60)}` → `{data:{exit_code, stdout, stderr, duration_ms, truncated, timed_out}}`。同机 IP 节点没有自己的 SSH：命令在它的宿主机上执行（审计记在这台节点名下）。stdout/stderr 各截断到 256 KiB（`truncated=true`）；超时 `timed_out=true`：到点远端 `timeout` 发 TERM，`exit_code=124`；命令不理会 TERM 的，再过 5 秒被 KILL（`timeout -k 5`），`exit_code=137`；远端没能按时结束、中控本地等到 `timeout_s+15` 秒仍没返回时也按超时返回 `exit_code=124`。SSH 连不上时 `exit_code=255` 且 stderr 有原因（命令自己退出 255 也是 255）。**只执行一次、不自动重试**（255 时命令可能已经执行过）。机器不存在 404、已退役或 proxy 409、命令空/超时越界 400、SSH 无法启动 502；同时最多 8 条命令在执行，排队 30 秒还轮不到回 429（`busy`） |
 | GET | `/machines/{id}/logs?unit=fleet-agent\|fleet-xray\|ssserver&lines=200` | 白名单 unit（`ssserver` 对应 `fleet-ssserver`；同机 IP 节点对应宿主机上它自己的实例 `fleet-ssserver@<SS 端口>`，`fleet-agent` 是宿主机的），lines 1-2000；内部走同一 exec 通道跑 `journalctl`，返回形状同 exec，另有 `unit`（实际查的单元）、`lines`。审计动作 `machine.logs` |
 | GET | `/server/logs?lines=200` | 中控自己的 `journalctl -u fleet-server`。fleet 用户通常没权限读 journal：journalctl 报错时 424（`error.code="journal_denied"`，message 说明如何授权：`usermod -aG systemd-journal fleet`）；journalctl 无法运行或 20 秒没返回时 500 |
+| POST | `/audit/ssh` | `fleetctl ssh` 在中控本机用中控的密钥直接 ssh（不经中控执行），登录前报一声：`{kind: "machine"\|"router", id, command?: bool}` → `{ok:true}`，写审计 `ssh.login`（`target_kind` 是 kind，`detail = {name, command}`：对象名按库里的写，`command` 只记带没带命令，命令内容不记）。机器不存在 404，已退役、家宽代理 409；软路由按 `router` 表核对，不存在 404；kind 不对 400。fleetctl 没记上就不登录 |
 
 ## 总览与告警
 | 方法 | 路径 | 说明 |
