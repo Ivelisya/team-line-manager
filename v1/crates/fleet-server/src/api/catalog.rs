@@ -4,7 +4,7 @@ use crate::auth::Actor;
 use crate::db::{audit, new_id};
 use crate::error::{ApiError, ApiPath, ApiResult};
 use crate::meta;
-use crate::policy::{Mode, Scope};
+use crate::policy::{self, Scope};
 use crate::state::{AppState, Event};
 use axum::extract::State;
 use axum::Json;
@@ -127,16 +127,12 @@ pub async fn delete_team(a: Actor, State(st): State<AppState>, ApiPath(id): ApiP
     if let Some(u) = in_use(&[(live, "台机器"), (retired, "台已退役的机器"), (routers, "台软路由")]) {
         return Err(ApiError::conflict(format!("「{name}」还有 {u}：先把它们移到别的团队（已退役的先彻底删除）再删")));
     }
-    let rule: Option<(String, Vec<String>, String, bool)> =
-        sqlx::query_as("select mode, domains, note, draft is not null from policy where scope = 'team' and scope_id = $1")
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?;
-    if let Some((mode, domains, note, draft)) = rule {
-        let default = Scope::Team.default_data();
-        if draft || Mode::parse(&mode) != Some(default.mode) || domains != default.domains || note != default.note {
+    // 按规范化后的值比（仅观察不看域名：旧数据里改回仅观察时可能还留着隐藏的域名）
+    let rows = policy::load_rows(&mut *tx, false).await?;
+    if let Some(r) = rows.iter().find(|r| r.scope == Scope::Team && r.scope_id == id) {
+        if r.draft.is_some() || r.cur != Scope::Team.default_data() {
             return Err(ApiError::conflict(format!(
-                "「{name}」的访问规则不是默认的「仅观察」或有未发布的草稿：先在「访问规则」里把它改回仅观察（清空域名和备注）并发布（有草稿的先发布或丢弃），再删团队"
+                "「{name}」的访问规则不是默认的「仅观察」或有未发布的草稿：先在「访问规则」里把它改回仅观察（清空备注）并发布（有草稿的先发布或丢弃），再删团队"
             )));
         }
     }
