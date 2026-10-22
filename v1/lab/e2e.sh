@@ -5,8 +5,9 @@ set -euo pipefail
 F="-F $HOME/.ssh/fleetlab_config"
 ssh $F fleet-dev 'bash -s' <<'REMOTE'
 set -euo pipefail
-B=http://127.0.0.1:8080/api/v1; J=/tmp/e2e.cookies; P=/root/lab-root-passwords
-trap 'rm -f $J' EXIT   # 登录 cookie 失败也删
+B=http://127.0.0.1:8080/api/v1; P=/root/lab-root-passwords
+J=$(mktemp /tmp/e2e.cookies.XXXXXX)   # admin 的会话 cookie：随机名、0600，不能是别人能抢先建好的固定路径
+trap 'rm -f "$J"' EXIT   # 登录 cookie 失败也删
 ok() { echo "  ✓ $*"; }
 die() { echo "  ✗ $*"; exit 1; }
 jq -n --rawfile p /root/fleet-admin-password '{username:"admin",password:($p|rtrimstr("\n"))}' | curl -fsS -c $J -H 'content-type: application/json' -d @- $B/auth/login >/dev/null

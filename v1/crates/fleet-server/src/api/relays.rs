@@ -72,11 +72,12 @@ pub async fn share(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
         number: Option<i32>,
         label: Option<String>,
         direct: bool,
+        relay_label: Option<String>,
     }
     let r: Row = sqlx::query_as(
         "select e.client_uuid, e.short_id, e.port, r.public_host, r.reality_sni, r.reality_public_key,
-                n.kind::text kind, t.name team, n.number, n.label, e.node_id = e.relay_id direct
-         from entry e join relay r on r.machine_id = e.relay_id join machine n on n.id = e.node_id
+                n.kind::text kind, t.name team, n.number, n.label, e.node_id = e.relay_id direct, rm.label relay_label
+         from entry e join relay r on r.machine_id = e.relay_id join machine rm on rm.id = e.relay_id join machine n on n.id = e.node_id
          left join team t on t.id = n.team_id where e.id = $1 and e.lifecycle <> 'removed'",
     )
     .bind(id)
@@ -86,7 +87,8 @@ pub async fn share(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     let remark = crate::names::entry_name(r.direct, &r.kind, r.label.as_deref(), r.team.as_deref(), r.number);
     let url = entries::share_url(r.client_uuid, &r.public_host, r.port, &r.reality_sni, &r.reality_public_key, &r.short_id, &remark);
     let mut tx = st.db.begin().await?;
-    audit(&mut tx, &a.name, "entry.share", "entry", Some(id), json!({})).await?;
+    // 记是哪条入口（同启用 / 停用的写法加入口名），不记链接本身
+    audit(&mut tx, &a.name, "entry.share", "entry", Some(id), json!({"relay": r.relay_label, "port": r.port, "entry": remark})).await?;
     tx.commit().await?;
     Ok(ok(json!({"url": url})))
 }

@@ -94,6 +94,8 @@ fn quota_reason(m: &MachineView) -> Option<Reason> {
     })
 }
 
+const DETAIL_MAX: usize = 120;
+
 /// 在用入口的探测结果 → egress_fail / tcp_fail。
 /// 同一条规则一台机器只开一个告警：几个入口同时失败合成一条原因，文字列出全部入口，
 /// 其中一个恢复时摘要随之变化，不会悄悄换成另一个入口
@@ -113,7 +115,8 @@ fn probe_reasons(live: &[&EntryView], rs: &mut Vec<Reason>, unknown: &mut bool, 
         match &e.egress {
             Some(p) if !p.ok => {
                 egress.push(format!("{}:{}", e.relay.name, e.port));
-                let d = p.detail.clone().unwrap_or_default();
+                // 探测详情是线路机报的自由文本，进告警摘要和通知：截到 DETAIL_MAX 个字
+                let d: String = p.detail.as_deref().unwrap_or_default().chars().take(DETAIL_MAX).collect();
                 if !d.is_empty() && !details.contains(&d) {
                     details.push(d);
                 }
@@ -380,6 +383,9 @@ pub(crate) mod tests {
         // 恢复一个：摘要只剩另一个
         n.entries[0] = entry(false, true);
         assert_eq!(evaluate(&n, now).reasons[0].text, "线路机B:20003 出口不通：refused");
+        // 线路机报的超长详情截到 120 个字再进摘要
+        n.entries[1].egress.as_mut().unwrap().detail = Some("错".repeat(5000));
+        assert_eq!(evaluate(&n, now).reasons[0].text, format!("线路机B:20003 出口不通：{}", "错".repeat(DETAIL_MAX)));
     }
 
     #[test]

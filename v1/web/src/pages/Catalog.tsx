@@ -147,7 +147,7 @@ function ProvidersTab() {
             <thead><tr><th>名称</th><th>代码</th><th>时区</th><th>流量计量</th><th>面板</th><th /></tr></thead>
             <tbody>{list.map((p) => (
               <tr key={p.id}><td className="strong">{p.name}</td><td><Chip>{p.code}</Chip></td><td>{p.timezone ?? '—'}</td><td>{RULE_LABEL[p.traffic_rule] ?? p.traffic_rule}</td>
-                <td>{p.panel_url && /^https?:\/\//i.test(p.panel_url) ?<a href={p.panel_url} target="_blank" rel="noreferrer noopener" className="btn-link btn" style={{ gap: 4 }}>{p.panel_url.replace(/^https?:\/\//, '')}<ExternalLink size={12} /></a> : (p.panel_url || <span className="t-muted">—</span>)}</td>
+                <td>{p.panel_url && /^https?:\/\//i.test(p.panel_url) ? <a href={p.panel_url} target="_blank" rel="noreferrer noopener" className="btn-link btn" style={{ gap: 4 }}>{p.panel_url.replace(/^https?:\/\//, '')}<ExternalLink size={12} /></a> : (p.panel_url || <span className="t-muted">—</span>)}</td>
                 <td className="r"><Button size="sm" variant="quiet" onClick={() => setEdit(p)}><Pencil size={13} />编辑</Button></td></tr>
             ))}</tbody>
           </table>
