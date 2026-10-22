@@ -46,7 +46,7 @@ function readTheme(): ITheme {
 /** 服务端没先发 exit 就关掉时，按关闭码说原因（服务端一般会先发 exit） */
 const CLOSE_REASON: Record<number, string> = { 1009: '一次发送的内容太大', 1011: '中控内部错误', 4401: '登录已失效，请重新登录' };
 
-const PILL: Record<Exclude<Phase['s'], 'closed'>, [Tone, string]> = { auth: ['info', '正在验证'], cred: ['warn', '正在验证'], connecting: ['info', '正在连接'], open: ['ok', '已连接'] };
+const PILL: Record<Exclude<Phase['s'], 'closed'>, [Tone, string]> = { auth: ['info', '正在验证'], cred: ['warn', '待验证'], connecting: ['info', '正在连接'], open: ['ok', '已连接'] };
 
 /** 一个终端窗口。kind 现在只有 machine，router 以后同样走它 */
 export function Terminal({ kind, id, name }: TermTarget) {
