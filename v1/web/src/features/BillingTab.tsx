@@ -7,11 +7,11 @@ import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
 import { Field, InfoTip, Input, Switch } from '@/components/ui/form';
 import { DateField } from '@/components/ui/date-field';
-import { inheritedValue, inheritSource, inheritText, isOverridden, limitGb, quota, quotaGb, remainingValue, trafficRulePlain, cycleLabel, currencyOptions, cycleOptions, meta } from '@/lib/derive';
+import { autoDeletes, inheritedValue, inheritSource, inheritText, isOverridden, limitGb, quota, quotaGb, remainingValue, trafficRulePlain, cycleLabel, currencyOptions, cycleOptions, meta } from '@/lib/derive';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
 import { resetOnOpen } from '@/lib/useHeld';
-import { Due, ErrorNote, LabelValue, LabelValueGrid, Note, Section, SectionHeader } from '@/components/app/primitives';
+import { Due, ErrorNote, LabelValue, LabelValueGrid, Note, Section, SectionHeader, SpareDue } from '@/components/app/primitives';
 import { FormDialog } from '@/components/app/dialogs';
 import { TzInput } from '@/components/app/TzInput';
 
@@ -35,7 +35,7 @@ export function BillingTab({ m }: { m: MachineView }) {
           <LabelValueGrid>
             <LabelValue label="费用"><span className="num">{F.money(s.price_cents, s.currency)}</span> <span className="unit">/ {cycleLabel(s.cycle)}</span>
               {m.sub_template && <div className="hint">{(['price_cents', 'currency', 'cycle'] as const).some((k) => isOverridden(s, k)) ? '单独设置' : inheritSource(m, 'price_cents')}</div>}</LabelValue>
-            <LabelValue label="到期日">{s.due_date}（<Due days={s.due_days} state={s.due_state} />）</LabelValue>
+            <LabelValue label="到期日">{s.due_date}（<Due days={s.due_days} state={s.due_state} />）{autoDeletes(m) && <div className="hint"><SpareDue /></div>}</LabelValue>
             {/* 剩余比例只写一个百分数，天数在悬停里；预付了多期只写金额，期数在 (i) 里 */}
             <LabelValue label="剩余价值">{rv ? <><span className="num">{F.money(rv.cents, rv.currency)}</span> {rv.frac > 1
               ? <InfoTip text={`已预付 ${rv.frac.toFixed(1)} 期 · 每期 ${rv.days} 天`} />

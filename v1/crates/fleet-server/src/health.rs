@@ -221,11 +221,13 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
     }
 
     // 续费提醒：线路机和节点都有账单。到期状态由视图按生效的提前提醒天数算（meta::due_state），总览、网页、fleetctl 同一口径
+    // 备用团队的机器过期满 1 天自动删除（spare.rs）：提醒后面写明哪天删，过期第 1 天的「已过期」告警就是「明天自动删除」的通知
     if let Some(s) = &m.subscription {
+        let note = if m.spare { crate::spare::due_note(s.due_days) } else { "" };
         match s.due_state {
-            "overdue" => rs.push(Reason { key: "renewal_overdue", severity: "critical", text: format!("已过期 {} 天", -s.due_days) }),
+            "overdue" => rs.push(Reason { key: "renewal_overdue", severity: "critical", text: format!("已过期 {} 天{note}", -s.due_days) }),
             "soon" => {
-                let text = if s.due_days == 0 { "今天到期".into() } else { format!("{} 天后到期", s.due_days) };
+                let text = if s.due_days == 0 { format!("今天到期{note}") } else { format!("{} 天后到期{note}", s.due_days) };
                 rs.push(Reason { key: "renewal_due", severity: "warning", text });
             }
             _ => {}
@@ -260,6 +262,7 @@ pub(crate) mod tests {
             kind: kind.into(),
             name: "m".into(),
             team: None,
+            spare: false,
             number: None,
             label: None,
             ip: "192.0.2.1".into(),
@@ -364,6 +367,26 @@ pub(crate) mod tests {
         let h = evaluate(&m, OffsetDateTime::now_utc());
         assert_eq!(keys(&h), ["renewal_overdue"]);
         assert_eq!(h.status, Status::Down);
+    }
+
+    /// 备用团队的机器：续费提醒写明哪天自动删除（过期第 1 天的「已过期」告警就是「明天删」的通知）；自动续费的到期前不提醒，过期照样说
+    #[test]
+    fn spare_renewal_text_says_when_deleted() {
+        let now = OffsetDateTime::now_utc();
+        let mut m = base("proxy");
+        m.spare = true;
+        let text = |m: &MachineView| evaluate(m, now).reasons.iter().find(|r| r.key.starts_with("renewal_")).map(|r| r.text.clone());
+        m.subscription = Some(sub(3));
+        assert_eq!(text(&m).as_deref(), Some("3 天后到期，备用节点过期满 1 天后自动删除"));
+        m.subscription = Some(sub(0));
+        assert_eq!(text(&m).as_deref(), Some("今天到期，备用节点后天自动删除"));
+        m.subscription = Some(sub_with(-1, true));
+        assert_eq!(text(&m).as_deref(), Some("已过期 1 天，备用节点明天自动删除"));
+        m.subscription = Some(sub_with(0, true));
+        assert_eq!(text(&m), None);
+        m.spare = false;
+        m.subscription = Some(sub(-1));
+        assert_eq!(text(&m).as_deref(), Some("已过期 1 天"), "不是备用团队：不提删除");
     }
 
     #[test]

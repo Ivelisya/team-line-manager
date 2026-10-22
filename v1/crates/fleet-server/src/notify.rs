@@ -41,6 +41,8 @@ pub enum Kind {
     Test,
     /// 有人新建 / 删除了静默或维护窗口（发给所有启用的渠道，不受静默影响，见 api/misc.rs `tell_channels`）
     Silence,
+    /// 中控自动做了会删机器的操作（备用团队的机器到期自动删除，见 spare.rs）：同静默变更，发给所有启用的渠道，不看级别、不受静默影响
+    Auto,
 }
 
 impl Kind {
@@ -51,8 +53,12 @@ impl Kind {
             Kind::Resolved => "resolved",
             Kind::Test => "test",
             Kind::Silence => "silence",
+            Kind::Auto => "auto",
         }
     }
+
+    /// 发给所有启用的渠道（不看渠道的最低级别）
+    fn to_all(self) -> bool { matches!(self, Kind::Silence | Kind::Auto) }
 }
 
 /// 一条通知。入队时整条存进 `notify_outbox.notice`（JSON），发送时按入队时的样子发
@@ -128,6 +134,7 @@ fn title(n: &Notice) -> String {
         (Kind::Resolved, None) => "告警已恢复".into(),
         (Kind::Test, _) => "测试通知".into(),
         (Kind::Silence, _) => "静默 / 维护变更".into(),
+        (Kind::Auto, _) => "自动删除".into(),
     }
 }
 
@@ -139,6 +146,10 @@ pub fn format_text(n: &Notice) -> String {
     // 静默 / 维护变更：摘要是写好的几行（谁、新建还是删除、对象、起止、备注）
     if n.kind == Kind::Silence {
         return format!("【{}】{}\n时间：{}", title(n), n.summary, when(n.at));
+    }
+    // 自动删除：标题后面接机器名，摘要写为什么删、删到哪一步
+    if n.kind == Kind::Auto {
+        return format!("【{}】{}\n{}\n时间：{}", title(n), n.machine, n.summary, when(n.at));
     }
     format!(
         "【{}】{}\n机器：{}\n规则：{}\n摘要：{}\n时间：{}",
@@ -183,6 +194,9 @@ pub fn format_wecom(n: &Notice) -> String {
     if n.kind == Kind::Silence {
         let body: Vec<String> = n.summary.lines().map(|l| format!("> {}", md(l, 300))).collect();
         return format!("### <font color=\"warning\">{}</font>\n{}\n> 时间：{}", title(n), body.join("\n"), when(n.at));
+    }
+    if n.kind == Kind::Auto {
+        return format!("### <font color=\"warning\">【{}】{}</font>\n> {}\n> 时间：{}", title(n), md(&n.machine, 64), md(&n.summary, 500), when(n.at));
     }
     let color = match (n.kind, n.severity.as_str()) {
         (Kind::Resolved, _) => "info",
@@ -618,7 +632,7 @@ pub fn start(st: &AppState) {
 }
 
 /// 不阻塞告警循环：给每个已启用、`min_severity` 不高于它的渠道各写一行待发（`notify_outbox`，中控重启、部署后照样发），唤醒发送循环。
-/// 静默 / 维护变更发给所有已启用的渠道，不看级别。告警对象就是某个渠道时（渠道连续失败的告警）不发给它自己。
+/// 静默 / 维护变更、自动删除发给所有已启用的渠道，不看级别。告警对象就是某个渠道时（渠道连续失败的告警）不发给它自己。
 /// 触发 / 持续提醒在同一事务里刷新 `incident.notified_at`：持续提醒从这时起计时，恢复时据此判断报过触发没有（见 alerts.rs）。
 /// 写进去了才算通知过：入队失败（库出错）不刷新，下一轮评估补发「触发」
 pub async fn enqueue(st: &AppState, n: Notice) {
@@ -639,7 +653,7 @@ async fn enqueue_tx(st: &AppState, n: &Notice) -> sqlx::Result<()> {
     .bind(n.incident_id)
     .bind(sqlx::types::Json(n))
     .bind(&n.severity)
-    .bind(n.kind == Kind::Silence)
+    .bind(n.kind.to_all())
     .execute(&mut *tx)
     .await?;
     if let (Kind::Firing | Kind::Repeat, Some(id)) = (n.kind, n.incident_id) {
@@ -747,6 +761,25 @@ mod tests {
         let w = format_wecom(&n);
         assert!(w.contains("\n> 对象：全部机器（全部规则）\n> 备注：换 ＊＊内核＊＊ ［点我］（http://x）\n> 时间："), "{w}");
         assert_eq!((webhook_body(&n)["event"].as_str(), webhook_body(&n)["machine"].as_str()), (Some("silence"), Some("全部机器")));
+    }
+
+    #[test]
+    fn auto_delete_text() {
+        let n = Notice {
+            kind: Kind::Auto,
+            rule: crate::spare::AUTO.into(),
+            severity: "warning".into(),
+            machine: "备用-03".into(),
+            summary: "备用节点已过期满 1 天（到期日 2026-10-20）：已自动发起退役".into(),
+            opened_at: None,
+            ..notice(Kind::Firing)
+        };
+        let t = format_text(&n);
+        assert!(t.starts_with("【自动删除】备用-03\n备用节点已过期满 1 天（到期日 2026-10-20）：已自动发起退役\n时间："), "{t}");
+        let w = format_wecom(&n);
+        assert!(w.starts_with("### <font color=\"warning\">【自动删除】备用-03</font>\n> 备用节点已过期满 1 天（到期日 2026-10-20）：已自动发起退役\n> 时间："), "{w}");
+        assert_eq!(webhook_body(&n)["event"], "auto");
+        assert!(Kind::Auto.to_all() && Kind::Silence.to_all() && !Kind::Firing.to_all());
     }
 
     #[test]

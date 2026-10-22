@@ -18,7 +18,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, Di
 import { SkeletonRows } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
 import { resetOnOpen, useHeld } from '@/lib/useHeld';
-import { Chip, Empty, ErrorNote, Note, Num, PageHead, Panel, SortHead, TableWrap, type SortState } from '@/components/app/primitives';
+import { Chip, Empty, ErrorNote, Note, Num, PageHead, Panel, SortHead, SPARE_TIP, TableWrap, type SortState } from '@/components/app/primitives';
 import { ConfirmDialog, FormDialog } from '@/components/app/dialogs';
 import { TzInput } from '@/components/app/TzInput';
 
@@ -97,7 +97,7 @@ function TeamsTab() {
                 // 编号已经连续（或团队里还没有节点）就没有可调的；机器列表还没到时先不禁用
                 const done = compact ? compact[t.id] ?? true : false;
                 return (
-                  <tr key={t.id}><td className="strong">{t.name}</td><td className="r num">{t.sort_order}</td><td className="r num"><CountLink n={t.node_count} to={`/nodes?team=${t.id}`} /></td>
+                  <tr key={t.id}><td className="strong">{t.name}{t.spare && <> <Chip variant="neutral" tip={SPARE_TIP}>备用</Chip></>}</td><td className="r num">{t.sort_order}</td><td className="r num"><CountLink n={t.node_count} to={`/nodes?team=${t.id}`} /></td>
                     <td className="r"><span className="row" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
                       <Button size="sm" variant="quiet" onClick={() => setEdit(t)}><Pencil size={13} />改名 / 排序</Button>
                       {/* aria-disabled 而不是 disabled：禁用的按钮收不到悬停，看不到为什么不能点 */}
@@ -124,18 +124,20 @@ const TeamDialog = resetOnOpen(function TeamDialog({ team, open, onClose }: { te
   const add = useAddTeam(); const patch = usePatchTeam();
   const [name, setName] = React.useState(team === 'new' ? '' : team.name);
   const [order, setOrder] = React.useState(team === 'new' ? '' : String(team.sort_order));
+  const [spare, setSpare] = React.useState(team === 'new' ? false : team.spare);
   const save = () => {
     const sort_order = order.trim() === '' ? undefined : Number(order);
     const ok = () => { toast.ok(team === 'new' ? '团队已创建' : '团队已保存'); onClose(); };
-    if (team === 'new') add.mutate({ name: name.trim(), sort_order }, { onSuccess: ok, onError: toast.err });
-    else patch.mutate({ id: team.id, name: name.trim() !== team.name ? name.trim() : undefined, sort_order }, { onSuccess: ok, onError: toast.err });
+    if (team === 'new') add.mutate({ name: name.trim(), sort_order, spare }, { onSuccess: ok, onError: toast.err });
+    else patch.mutate({ id: team.id, name: name.trim() !== team.name ? name.trim() : undefined, sort_order, spare: spare !== team.spare ? spare : undefined }, { onSuccess: ok, onError: toast.err });
   };
   return (
     <FormDialog open={open} onOpenChange={(o) => !o && onClose()} title={team === 'new' ? '新建团队' : `修改 ${team.name}`} submitLabel="保存" busy={add.isPending || patch.isPending} valid={name.trim().length > 0}
-      dirty={team === 'new' ? !!(name.trim() || order) : name !== team.name || order !== String(team.sort_order)}
+      dirty={team === 'new' ? !!(name.trim() || order || spare) : name !== team.name || order !== String(team.sort_order) || spare !== team.spare}
       desc={team !== 'new' && <>所有节点的显示名会一起变 <InfoTip text="线路机上的备注自动同步，不换令牌、不断连接。" /></>} onSubmit={save}>
       <Field label="团队名"><Input value={name} onChange={(e) => setName(e.target.value)} autoFocus /></Field>
       <Field label="排序"><Input inputMode="numeric" placeholder="越小越靠前，留空放最后" value={order} onChange={(e) => setOrder(e.target.value.replace(/\D/g, ''))} /></Field>
+      <div className="row" style={{ gap: 4 }}><CheckRow checked={spare} onChange={setSpare}>备用团队</CheckRow><InfoTip text={SPARE_TIP} /></div>
     </FormDialog>
   );
 });

@@ -64,6 +64,12 @@ export function Due({ days, state, tail }: { days: number | null | undefined; st
   const post = d.post + (tail && days != null && !d.past ? '到期' : '');
   return <span className="due" data-tone={d.tone || undefined}>{d.pre && <span className="due-t">{d.pre}</span>}{d.f && <Num f={d.f} />}{post && <span className="due-t">{post}</span>}</span>;
 }
+/** 备用团队的说明（团队编辑、团队列表、机器卡片与抽屉的到期旁共用） */
+export const SPARE_TIP = '备用团队里在用的机器，订阅过期满 1 天（按账单时区，到期日的次日过完）后，中控自动退役（清理服务）并彻底删除；续费顺延了到期日就不删。';
+/** 备用团队在用机器的到期旁：「到期 +1 天自动删除」+ (i)；iconOnly 只放 (i)（卡片上地方小，短句放进悬停） */
+export function SpareDue({ iconOnly }: { iconOnly?: boolean }) {
+  return <>{' '}{!iconOnly && <span className="t-sub">到期 +1 天自动删除</span>}<InfoTip text={iconOnly ? `到期 +1 天自动删除：${SPARE_TIP}` : SPARE_TIP} /></>;
+}
 export const LifecyclePill = ({ lc }: { lc: Lifecycle | string }) => (
   <Pill tone={lc === 'active' ? 'ok' : lc === 'provisioning' || lc === 'retiring' ? 'info' : lc === 'failed' ? 'bad' : 'neutral'}>{lifecycleLabel(lc)}</Pill>
 );

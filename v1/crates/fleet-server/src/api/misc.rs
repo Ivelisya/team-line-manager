@@ -598,6 +598,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
             Some(r) => format!("{}（{r}）", s("name")),
             None => s("name"),
         },
+        "machine.purge" if d["auto"] == crate::spare::AUTO => format!("{}（备用到期自动删除）", s("name")),
         "machine.purge" => s("name"),
         "renewal" => format!("到期 {} → {}", d["old_due"].as_str().unwrap_or("?"), d["new_due"].as_str().unwrap_or("?")),
         // 「团队1-03 · 价格 5.00 → 6.00 USD，到期 2026-11-01 → 2026-12-01」；这一版之前的记录没有改动前后，不写摘要
@@ -626,15 +627,22 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         a if a.starts_with("entry.") && d["relay"].is_string() => format!("{}:{}", s("relay"), d["port"]),
         "entry.add" if d["direct"] == true => "线路机直出入口".into(),
         "provider.update" => d["after"]["name"].as_str().unwrap_or("").to_string(),
+        "team.create" if d["spare"] == true => format!("{}（备用）", s("name")),
         "team.create" | "team.delete" | "provider.create" | "provider.delete" | "plan.create" | "plan.delete" | "notify.create" | "notify.update" | "notify.delete" => s("name"),
-        // 「测试团队 → 测试团队改，排序 200 → 50」：改了名写从什么改成什么，没改名只写名字
+        // 「测试团队 → 测试团队改，排序 200 → 50，设为备用」：改了名写从什么改成什么，没改名只写名字。这一版之前的记录没有 spare
         "team.update" => {
             let (b, a) = (&d["before"], &d["after"]);
             let name = if b["name"] == a["name"] { val(&a["name"]) } else { format!("{} → {}", val(&b["name"]), val(&a["name"])) };
-            match (b["sort_order"].as_i64(), a["sort_order"].as_i64()) {
+            let mut out = match (b["sort_order"].as_i64(), a["sort_order"].as_i64()) {
                 (Some(x), Some(y)) if x != y => format!("{name}，排序 {x} → {y}"),
                 _ => name,
+            };
+            match (b["spare"].as_bool(), a["spare"].as_bool()) {
+                (Some(false), Some(true)) => out.push_str("，设为备用"),
+                (Some(true), Some(false)) => out.push_str("，取消备用"),
+                _ => {}
             }
+            out
         }
         // 「ATTVPS 基础版 · 价格 59.00 → 69.00 USD，流量 800 → 1000 GB」；只改了归档的只写名字（标题已经说了归档）。这一版之前的记录没有名字
         "plan.update" => {

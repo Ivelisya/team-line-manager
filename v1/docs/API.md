@@ -57,9 +57,9 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
 ## 目录
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/teams` | `[{id,name,sort_order,node_count}]` |
-| POST | `/teams` | `{name,sort_order?}` |
-| PATCH | `/teams/{id}` | `{name?,sort_order?}`（改团队名 = 该团队所有节点显示名一起变） |
+| GET | `/teams` | `[{id,name,sort_order,spare,node_count}]`（`spare`：备用团队，里面在用、有订阅的机器过期满 1 天后中控自动退役并彻底删除；机器视图的 `spare` 同它） |
+| POST | `/teams` | `{name,sort_order?,spare?}` |
+| PATCH | `/teams/{id}` | `{name?,sort_order?,spare?}`（改团队名 = 该团队所有节点显示名一起变） |
 | DELETE | `/teams/{id}` | 还有机器（含已退役的）或软路由时 409（写明还有几台）；没有才删，团队自己的访问规则一起删。审计 `team.delete` |
 | GET | `/providers` | `[{id,name,code,panel_url,timezone,traffic_rule,traffic_reset,remind_days}]`；`traffic_rule` 是这家怎么计量流量额度（网卡本周期入、出总量）：`min` 取小（如 GOMAMI）/ `max` 取大 / `sum` 相加 / `out` 只算出站。供应商同时是名下机器订阅的**模板**：`timezone`（账单时区）、`traffic_reset`（流量周期：`month` 账单时区的自然月、每月 1 号起；`billing` 账单日，即每台机器到期日是几号就几号起，月份没有这一天按月末）、`remind_days`（到期前几天提醒，0–60）——订阅没单独设置这几项的跟随它，改了立即生效 |
 | POST | `/providers` | `{name,code,panel_url?,timezone?,traffic_rule?,traffic_reset?,remind_days?}`；`traffic_rule` 不传 = `max`（不知道的供应商按取大，不会少算），`traffic_reset` 不传 = `month`，`remind_days` 不传 = 7，别的值 400；`panel_url` 须是 http(s) 地址（400）；`timezone` 不传 / null / 空串 = 存 null、跟随组织时区（`/meta` 的 org_timezone），否则须是 `at time zone` 认的时区（400）；名称或缩写重复 409 |

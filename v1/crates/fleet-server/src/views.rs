@@ -240,6 +240,8 @@ pub struct MachineView {
     pub kind: String,
     pub name: String,
     pub team: Option<Ref>,
+    /// 所在团队是备用团队：在用时订阅过期满 1 天由中控自动退役并彻底删除（见 spare.rs）。没有团队为 false
+    pub spare: bool,
     pub number: Option<i32>,
     pub label: Option<String>,
     pub ip: String,
@@ -313,6 +315,7 @@ struct MRow {
     kind: String,
     team_id: Option<Uuid>,
     team_name: Option<String>,
+    team_spare: Option<bool>,
     number: Option<i32>,
     label: Option<String>,
     ip: String,
@@ -957,7 +960,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     let lc = scope.cond();
     // 同机 IP 节点没有自己的 agent：agent 状态取宿主机的
     let sql = format!(
-        "select m.id, m.kind::text kind, m.team_id, t.name team_name, m.number, m.label, host(m.primary_ip) ip, coalesce(hm.ssh_port, m.ssh_port) ssh_port,
+        "select m.id, m.kind::text kind, m.team_id, t.name team_name, t.spare team_spare, m.number, m.label, host(m.primary_ip) ip, coalesce(hm.ssh_port, m.ssh_port) ssh_port,
                 m.host_id, display_name(hm.kind::text, hm.label, ht.name, hm.number) host_name,
                 p.id provider_id, p.name provider_name, p.code provider_code, m.plan_id, pl.name plan_name,
                 pl.bandwidth_mbps plan_bw, pl.traffic_gb plan_traffic, m.service_ref, m.country, m.lifecycle::text lifecycle,
@@ -1219,6 +1222,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 kind: r.kind,
                 name,
                 team: r.team_id.map(|id| Ref { id, name: r.team_name.clone().unwrap_or_default() }),
+                spare: r.team_spare.unwrap_or(false),
                 number: r.number,
                 label: r.label,
                 country: r.country.clone().or_else(|| r.ip.parse::<IpAddr>().ok().and_then(|ip| intel.get(&ip)).and_then(|b| b.country.clone())),
