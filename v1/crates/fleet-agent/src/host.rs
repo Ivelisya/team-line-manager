@@ -368,9 +368,10 @@ fn disk_root() -> (u64, u64) {
     if unsafe { libc::statvfs(c.as_ptr(), &mut s) } != 0 {
         return (0, 0);
     }
+    // 同 df 的 Use%：总量 = 已用 + 普通进程还能用的（f_bavail），不含 root 预留块（ext4 默认 5%），写满时显示 100% 而不是约 95%
     let fr = s.f_frsize as u64;
-    let total = s.f_blocks as u64 * fr;
     let used = (s.f_blocks as u64).saturating_sub(s.f_bfree as u64) * fr;
+    let total = used + s.f_bavail as u64 * fr;
     (used, total)
 }
 
