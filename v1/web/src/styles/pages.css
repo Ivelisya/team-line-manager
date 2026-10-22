@@ -85,7 +85,7 @@
 .chart-card {
   --cc: var(--chart-1);
   display: grid; gap: var(--sp-8); min-width: 0; padding: 11px 12px;
-  border: 1px solid color-mix(in srgb, var(--cc) 30%, transparent); border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--cc) 30%, transparent); border-radius: var(--r-card);
   background:
     linear-gradient(90deg, color-mix(in srgb, var(--cc) 75%, transparent), transparent) 0 0 / 100% 2px no-repeat,
     linear-gradient(var(--raised), var(--raised)) 0 0 / 100% 1px no-repeat,

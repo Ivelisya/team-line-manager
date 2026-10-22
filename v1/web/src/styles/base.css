@@ -65,7 +65,7 @@ a { color: inherit; }
   font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-sans);
   color: var(--fg); text-decoration: none; white-space: nowrap; padding: 0 var(--sp-4); border-radius: var(--r-control);
 }
-.brand-mark { width: 22px; height: 22px; border-radius: 6px; background: var(--accent-solid); color: var(--on-accent); display: inline-grid; place-items: center; }
+.brand-mark { width: 22px; height: 22px; border-radius: var(--r-tag); background: var(--accent-solid); color: var(--on-accent); display: inline-grid; place-items: center; }
 .topbar-right { margin-left: auto; display: flex; align-items: center; gap: var(--control-gap); }
 .top-btn {
   width: var(--h-md); height: var(--h-md); padding: 0; border: 0; border-radius: var(--r-control);
@@ -102,7 +102,7 @@ a { color: inherit; }
 /* 顶栏：进行中作业徽标 */
 .top-btn.jobs-ind { position: relative; }
 .top-btn.jobs-ind > .lucide { animation: breathe var(--dur-loop) var(--ease-std) infinite; }
-.jobs-ind-n { position: absolute; top: -5px; right: -5px; min-width: 16px; height: 16px; box-sizing: border-box; padding: 0 4px; border-radius: 8px; background: var(--accent-solid); color: var(--on-accent); font-size: var(--fs-micro); line-height: 16px; text-align: center; box-shadow: 0 0 0 2px var(--surface); }
+.jobs-ind-n { position: absolute; top: -5px; right: -5px; min-width: 16px; height: 16px; box-sizing: border-box; padding: 0 4px; border-radius: var(--r-pill); background: var(--accent-solid); color: var(--on-accent); font-size: var(--fs-micro); line-height: 16px; text-align: center; box-shadow: 0 0 0 2px var(--surface); }
 /* 顶栏的列表弹层（进行中的作业、告警预览）：标题行 + 列表（每项可点，悬停浅底）+ 底部「查看全部」。告警预览是悬浮卡（.hover-card），这里盖掉它的宽度与内边距 */
 .popover:is(.jobs-pop, .alerts-pop) { width: 320px; max-width: calc(100vw - 24px); padding: 0; }
 .pop-head { display: flex; align-items: center; justify-content: space-between; padding: var(--sp-10) var(--sp-12); font: var(--fw-semibold) var(--fs-body) / var(--lh-body) var(--font-sans); border-bottom: 1px solid var(--line); }
@@ -142,7 +142,7 @@ a { color: inherit; }
 .nav-item[aria-current="page"] { background: var(--grad-soft); color: var(--accent-soft-fg); font-weight: var(--fw-semibold); }
 .nav-item[aria-current="page"] .lucide { color: var(--accent-soft-fg); }
 .nav-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.nav-badge { margin-left: auto; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--bad-solid); color: var(--on-solid); font-size: var(--fs-micro); line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; }
+.nav-badge { margin-left: auto; min-width: 18px; height: 18px; padding: 0 5px; border-radius: var(--r-pill); background: var(--bad-solid); color: var(--on-solid); font-size: var(--fs-micro); line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; }
 /* 侧栏底部的「? 快捷键」：点开快捷键帮助；--fg-2（原来 --fg-3 太淡，看不出能点） */
 .nav-foot {
   display: inline-flex; align-items: center; gap: var(--sp-6); align-self: flex-start; margin: auto 0 0; padding: var(--sp-6) var(--sp-10);
