@@ -433,3 +433,17 @@ async fn new_targets_machine_and_idempotent_rollup() {
     let seen: Vec<String> = sqlx::query_scalar("select dest_host from access_target_seen where dest_host like 'seen%'").fetch_all(&t.st.db).await.unwrap();
     assert_eq!(seen, ["seen32.example.com"]);
 }
+
+/// 访问监控的查询走单独的小池：连接上设了语句超时，主池不限时（汇总、清理等后台任务走它）；语句超时回 503 和一句人话
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn access_queries_run_on_a_small_pool_with_a_statement_timeout() {
+    let t = setup().await;
+    let timeout = |db: sqlx::PgPool| async move { sqlx::query_scalar::<_, String>("select current_setting('statement_timeout')").fetch_one(&db).await.unwrap() };
+    assert_eq!(timeout(t.st.access_db.clone()).await, "20s");
+    assert_eq!(timeout(t.st.db.clone()).await, "0");
+    let mut tx = t.st.db.begin().await.unwrap();
+    sqlx::query("set local statement_timeout = '10ms'").execute(&mut *tx).await.unwrap();
+    let e = sqlx::query("select pg_sleep(1)").execute(&mut *tx).await.unwrap_err();
+    let e = fleet_server::error::ApiError::from(e);
+    assert_eq!((e.status, e.message.as_str()), (StatusCode::SERVICE_UNAVAILABLE, "查询太慢，已中止：缩小时间范围或换更具体的搜索"));
+}

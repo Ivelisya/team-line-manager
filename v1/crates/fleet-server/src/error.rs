@@ -80,6 +80,10 @@ impl From<sqlx::Error> for ApiError {
                 Some("23503") => return Self::bad_request("引用的对象不存在"),
                 // invalid_text_representation：枚举等类型解析失败（如 cycle="weekly"）
                 Some("22P02") => return Self::bad_request("填写的值格式不对"),
+                // query_canceled：语句超时（访问监控的查询池设了 statement_timeout，见 state::Inner::access_db）
+                Some("57014") => {
+                    return Self::new(StatusCode::SERVICE_UNAVAILABLE, "unavailable", "查询太慢，已中止：缩小时间范围或换更具体的搜索");
+                }
                 // check_violation：约束名只进日志，不给用户（该校验的字段应在接口里先拦下）
                 Some("23514") => {
                     tracing::warn!(constraint = db.constraint().unwrap_or("?"), "违反检查约束");
