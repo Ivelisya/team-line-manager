@@ -248,9 +248,9 @@ fn due_cell(i: &Value) -> String {
     format!("{}（{}{auto}）", st(i, "/due_date"), due_cn(i["due_days"].as_i64().unwrap_or(0)))
 }
 
-pub fn ls(ctx: &Ctx, team: Option<&str>, kind: Option<&str>, status: Option<&str>, retired: bool, due: Option<i64>) -> anyhow::Result<u8> {
-    let scope = if retired { "retired" } else { "live" };
-    let all = ctx.c.get_q("/machines", &[("scope", scope.to_string())])?;
+/// 机器列表（未退役的；退役完的在回收站，看 fleetctl recycle ls）
+pub fn ls(ctx: &Ctx, team: Option<&str>, kind: Option<&str>, status: Option<&str>, due: Option<i64>) -> anyhow::Result<u8> {
+    let all = ctx.c.get("/machines")?;
     let mut list: Vec<Value> = all
         .as_array()
         .cloned()
