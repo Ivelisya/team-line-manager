@@ -245,6 +245,9 @@ pub struct EntryView {
     /// 这条入口所在线路机的 Xray 已确认没在运行（节点侧据此抑制出口/TCP 告警）
     #[serde(skip)]
     pub relay_xray_down: bool,
+    /// 这条入口所在线路机的 agent 离线：探测是它做的，最后一次结果之后不再更新（全网失联时尤其如此），节点侧按「判不出」处理
+    #[serde(skip)]
+    pub relay_offline: bool,
     pub tcp: Option<Probe>,
     pub egress: Option<Probe>,
     pub traffic: Traffic,
@@ -793,13 +796,13 @@ async fn refresh(st: &AppState, prev: &[MachineView], jobs: bool) -> sqlx::Resul
             m.open_incidents = inc.get(&m.id).copied().unwrap_or(0);
         }
     }
-    // 入口的 relay_xray_down 同完整加载：线路机报了 Xray 没在运行、且这份报告还新（不看中控收不到上报的时段）
-    let xray_down: HashMap<Uuid, bool> = out
+    // 入口的 relay_xray_down 同完整加载：线路机报了 Xray 没在运行、且这份报告还新（不看中控收不到上报的时段）；relay_offline 跟线路机的在线状态
+    let xray_down: HashMap<Uuid, (bool, bool)> = out
         .iter()
         .filter(|m| m.kind == "relay")
         .map(|m| {
             let down = m.agent.as_ref().is_some_and(|a| a.xray_running == Some(false) && a.last_report_at.is_some_and(|t| (now - t).whole_seconds() < AGENT_OFFLINE_S));
-            (m.id, down)
+            (m.id, (down, !m.agent.as_ref().is_some_and(|a| a.online)))
         })
         .collect();
     for m in &mut out {
@@ -808,8 +811,8 @@ async fn refresh(st: &AppState, prev: &[MachineView], jobs: bool) -> sqlx::Resul
                 e.tcp = probes.get(&(e.id, "tcp".into())).cloned();
                 e.egress = probes.get(&(e.id, "egress".into())).cloned();
             }
-            if let Some(d) = xray_down.get(&e.relay.id) {
-                e.relay_xray_down = *d;
+            if let Some(&(d, off)) = xray_down.get(&e.relay.id) {
+                (e.relay_xray_down, e.relay_offline) = (d, off);
             }
         }
         m.health = health::evaluate(m, now);
@@ -1173,13 +1176,15 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
         applied: bool,
         apply_error: Option<String>,
         relay_xray_down: bool,
+        relay_last: Option<OffsetDateTime>,
     }
     // 下面这些查询互不依赖（探测要等入口列表），并发跑
     let entries_q = async {
         let es: Vec<E> = sqlx::query_as(
             "select e.id, e.relay_id, rm.label relay_label, e.node_id, nm.label node_label, t.name node_team, nm.number node_number, e.port,
                     e.lifecycle::text lifecycle, r.applied_generation >= e.changed_gen applied, e.apply_error,
-                    coalesce((ra.info->'xray'->>'running')::bool = false and ra.last_report_at > now() - make_interval(secs => $2), false) relay_xray_down
+                    coalesce((ra.info->'xray'->>'running')::bool = false and ra.last_report_at > now() - make_interval(secs => $2), false) relay_xray_down,
+                    ra.last_report_at relay_last
              from entry e join machine rm on rm.id = e.relay_id join relay r on r.machine_id = e.relay_id
              left join agent_state ra on ra.machine_id = e.relay_id
              join machine nm on nm.id = e.node_id left join team t on t.id = nm.team_id
@@ -1274,6 +1279,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
             applied: e.applied,
             apply_error: e.apply_error,
             relay_xray_down: e.relay_xray_down,
+            relay_offline: !e.relay_last.is_some_and(|t| st.report_gaps.online(t, now)),
             tcp: probes.get(&(e.id, "tcp".into())).cloned(),
             egress: probes.get(&(e.id, "egress".into())).cloned(),
             traffic: traffic.get(&e.id).cloned().unwrap_or_default(),
