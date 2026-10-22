@@ -1,5 +1,5 @@
 // 访问监控的 mock：几个节点、几十个域名 / IP，按窗口缩放连接数。数据在模块加载时按种子生成，刷新页面保持稳定。
-import type { AccessEvent, AccessNode, AccessSource, AccessTarget, MachineAccess, NewTarget } from '@/lib/access';
+import type { AccessEvent, AccessNode, AccessSource, AccessTarget, AccessTargetGroup, MachineAccess, NewTarget } from '@/lib/access';
 import type { MachineView } from '@/lib/types';
 import type { DistItem, IpIntel, IpIntelStatus, KnownItem, SourcesProfile } from '@/lib/ipintel';
 import { hashStr, rng } from './fixtures';
@@ -103,10 +103,27 @@ export function installAccessMock(R: Reg, machines: () => MachineView[]) {
   });
 
   R('GET', '/access/targets', ({ query }) => {
-    const all = stats(machines(), query).flatMap((x) => x.targets);
+    const target = query.get('target') ?? '';
+    const all = stats(machines(), query).flatMap((x) => x.targets).filter((t) => !target || t.dest_host === target);
     const sort = query.get('sort') ?? 'conns';
-    all.sort((a, b) => (sort === 'last' ? b.last_seen!.localeCompare(a.last_seen!) : sort === 'first' ? b.first_seen!.localeCompare(a.first_seen!) : b.conns - a.conns));
+    const bySort = <T extends { conns: number; first_seen: string | null; last_seen: string | null }>(a: T, b: T) =>
+      (sort === 'last' ? b.last_seen!.localeCompare(a.last_seen!) : sort === 'first' ? b.first_seen!.localeCompare(a.first_seen!) : b.conns - a.conns);
     const limit = Math.min(500, +(query.get('limit') ?? 100)); const offset = +(query.get('offset') ?? 0);
+    if (query.get('group') === 'target') {
+      // 同中控：按目标合并各节点，带总数
+      const m = new Map<string, AccessTargetGroup>();
+      for (const t of all) {
+        const g = m.get(t.dest_host);
+        if (!g) { m.set(t.dest_host, { dest_host: t.dest_host, kind: t.kind, nodes: 1, conns: t.conns, blocked: t.blocked, first_seen: t.first_seen, last_seen: t.last_seen }); continue; }
+        g.nodes += 1; g.conns += t.conns; g.blocked += t.blocked;
+        if (t.first_seen! < g.first_seen!) g.first_seen = t.first_seen;
+        if (t.last_seen! > g.last_seen!) g.last_seen = t.last_seen;
+      }
+      const groups = [...m.values()].sort(bySort);
+      const end = Math.min(groups.length, offset + limit);
+      return { items: groups.slice(offset, end), total: groups.length, next_offset: end < groups.length ? end : null, window_start: win(query) };
+    }
+    all.sort(bySort);
     const items = all.slice(offset, offset + limit).map(({ ...t }) => { delete (t as { base?: number }).base; return t; });
     return { items, next_offset: offset + limit < all.length ? offset + limit : null, window_start: win(query) };
   });

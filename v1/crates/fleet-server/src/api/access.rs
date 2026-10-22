@@ -28,6 +28,8 @@ pub struct Q {
     offset: Option<String>,
     sort: Option<String>,
     before: Option<String>,
+    group: Option<String>,
+    target: Option<String>,
 }
 
 fn nonempty(s: &Option<String>) -> Option<&str> { s.as_deref().map(str::trim).filter(|s| !s.is_empty()) }
@@ -110,8 +112,10 @@ pub async fn summary(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuer
     .await
 }
 
+/// 域名与 IP。`group=target`：按目标合并各节点（带 `total`）；缺省是「目标 × 节点」行，`target=` 只看一个目标（展开看各节点）
 pub async fn targets(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Q>) -> ApiResult<Response> {
-    let f = filter_of(&q, agg_window(&st, &q)?)?;
+    let mut f = filter_of(&q, agg_window(&st, &q)?)?;
+    f.host = nonempty(&q.target).map(String::from);
     let (limit, offset) = page_of(&q, 100)?;
     let sort = match nonempty(&q.sort) {
         None | Some("conns") => TargetSort::Conns,
@@ -119,13 +123,24 @@ pub async fn targets(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuer
         Some("first") => TargetSort::First,
         Some(_) => return Err(ApiError::bad_request("sort 只能是 conns、last、first")),
     };
+    let by_target = match nonempty(&q.group) {
+        None | Some("node") => false,
+        Some("target") => true,
+        Some(_) => return Err(ApiError::bad_request("group 只能是 node、target")),
+    };
     // 只缓存第一页：往后翻的页一般只有正在看它的那个页面在轮询，进缓存命中不了几次，
     // 反而按页数把缓存撑满、把第一页这些常用的挤掉
-    let key = (!f.events && offset == 0).then(|| format!("targets|{f:?}|{sort:?}|{limit}"));
+    let key = (!f.events && offset == 0).then(|| format!("targets|{f:?}|{sort:?}|{limit}|{by_target}"));
     cached(&st, key, false, async {
+        let window_start = access::fmt_ts(f.from);
+        if by_target {
+            let (items, total) = access::target_groups(&st.access_db, &f, sort, limit, offset).await?;
+            let next = (offset + (items.len() as i64) < total).then_some(offset + items.len() as i64);
+            return Ok(ok(json!({"items": items, "total": total, "next_offset": next, "window_start": window_start})).0);
+        }
         let items = access::targets(&st.access_db, &f, sort, limit, offset).await?;
         let next = (items.len() as i64 == limit).then_some(offset + limit);
-        Ok(ok(json!({"items": items, "next_offset": next, "window_start": access::fmt_ts(f.from)})).0)
+        Ok(ok(json!({"items": items, "next_offset": next, "window_start": window_start})).0)
     })
     .await
 }

@@ -380,6 +380,43 @@ pub struct AuditQ {
     limit: Option<i64>,
     /// 翻页：只要 id 小于它的（上一页最后一条的 id）
     before_id: Option<i64>,
+    /// 分类：all | auth | exec | machine | config（见 `audit_cat`）
+    cat: Option<String>,
+    /// 搜索标题、摘要、操作人（见 `audit_search`）
+    q: Option<String>,
+}
+
+/// 远程执行类的动作：在机器上跑命令、SSH 登录、网页终端、取日志、恢复预检登录机器
+const EXEC_ACTIONS: &[&str] = &["exec", "ssh.login", "terminal.open", "terminal.close", "machine.logs", "server.logs", "restore.probe"];
+
+/// 分类条件（操作记录页的分段）：登录与账户（auth.*）、远程执行（`EXEC_ACTIONS`）、
+/// 机器与入口（生命周期、改名、费用续费、入口、作业、升级 agent），其余是设置与告警（目录、密钥、通知、静默、告警、访问规则）
+fn audit_cat(args: &mut Args, cat: &str) -> ApiResult<String> {
+    const MACHINE: &str = "action ~ '^(machine|entry|relay|subscription|agent|job|renewal)(\\.|$)'";
+    let exec = args.add(EXEC_ACTIONS);
+    Ok(match cat {
+        "auth" => " and action like 'auth.%'".into(),
+        "exec" => format!(" and action = any({exec})"),
+        "machine" => format!(" and {MACHINE} and action <> all({exec})"),
+        "config" => format!(" and action not like 'auth.%' and action <> all({exec}) and not {MACHINE}"),
+        _ => return Err(ApiError::bad_request("cat 只能是 all、auth、exec、machine、config")),
+    })
+}
+
+/// 搜索条件：操作人（按界面上的写法：中控命令行、「名称（API 密钥）」）、标题（标题含关键字的动作）、
+/// 摘要（摘要由 detail 里的值拼成：搜 detail 里各层的字符串与数字值，不搜键名）。
+/// 没有 exec 权限时命令是隐藏的，不搜命令（否则能靠搜索试出命令内容）
+fn audit_search(args: &mut Args, q: &str, can_exec: bool) -> Option<String> {
+    let like = crate::access::like_pattern(q)?;
+    let lower = q.trim().to_lowercase();
+    let titles: Vec<&str> = AUDIT_ACTIONS.iter().copied().filter(|a| audit_text(a, &json!({})).0.to_lowercase().contains(&lower)).collect();
+    let (l, t) = (args.add(like), args.add(titles));
+    let detail = if can_exec { "detail" } else { "(detail - 'command')" };
+    Some(format!(
+        " and (case when actor = 'cli' then '中控命令行' when actor like 'apikey:%' then substr(actor, 8) || '（API 密钥）' else actor end ilike {l}
+           or action = any({t})
+           or exists (select 1 from jsonb_path_query({detail}, 'strict $.**') v where jsonb_typeof(v) in ('string', 'number') and v #>> '{{}}' ilike {l}))"
+    ))
 }
 
 #[derive(Serialize, sqlx::FromRow)]
@@ -395,8 +432,10 @@ struct AuditOut {
 }
 
 pub async fn audit(a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<AuditQ>) -> ApiResult<Json<Value>> {
-    // 只拼给了的条件：按对象查时才走得上 (target_id, id desc) 索引
-    let mut args = crate::db::Args::default();
+    // 没有 exec 权限的密钥看不到命令（第一行也可能带口令）：只给字数，摘要随之隐藏
+    let can_exec = a.require_scope("exec").is_ok();
+    // 只拼给了的条件：按对象查时才走得上 (target_id, id desc) 索引；分类、搜索沿主键倒序边扫边筛，同样按 before_id 往前翻
+    let mut args = Args::default();
     let mut w = String::from("true");
     if let Some(t) = q.target_id {
         w += &format!(" and target_id = {}", args.add(t));
@@ -404,13 +443,18 @@ pub async fn audit(a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<A
     if let Some(b) = q.before_id {
         w += &format!(" and id < {}", args.add(b));
     }
+    match q.cat.as_deref().map(str::trim) {
+        None | Some("" | "all") => {}
+        Some(c) => w += &audit_cat(&mut args, c)?,
+    }
+    if let Some(s) = q.q.as_deref().and_then(|s| audit_search(&mut args, s, can_exec)) {
+        w += &s;
+    }
     let sql = format!(
         "select id, ts, actor, action, target_kind, target_id, detail from audit_log where {w} order by id desc limit {}",
         args.add(q.limit.unwrap_or(100).clamp(1, 1000))
     );
     let v: Vec<AuditOut> = sqlx::query_as_with(&sql, args.0).fetch_all(&st.db).await?;
-    // 没有 exec 权限的密钥看不到命令（第一行也可能带口令）：只给字数，摘要随之隐藏
-    let can_exec = a.require_scope("exec").is_ok();
     let out: Vec<Value> = v
         .into_iter()
         .map(|mut a| {
@@ -428,6 +472,18 @@ pub async fn audit(a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<A
         .collect();
     Ok(ok(out))
 }
+
+/// 所有写审计的动作（git grep 'audit(' 核对过）；新增动作时补这里和 audit_text。按标题搜索时在这里面找
+const AUDIT_ACTIONS: &[&str] = &[
+    "machine.provision", "machine.retire", "machine.purge", "machine.rename", "machine.update", "machine.restore", "subscription.set", "renewal",
+    "team.create", "team.update", "team.delete", "team.renumber", "provider.create", "provider.update", "provider.delete", "plan.create", "plan.update", "plan.delete", "entry.enable",
+    "entry.disable", "entry.rotate", "entry.share", "entry.add", "entry.move", "relay.evacuate", "job.retry", "job.cancel", "silence.create",
+    "silence.delete", "incident.ack", "restore.probe", "agent.upgrade", "notify.create", "notify.update", "notify.delete", "exec", "machine.logs", "server.logs", "apikey.create",
+    "apikey.revoke", "auth.login", "auth.login_failed", "auth.logout", "auth.totp_enabled", "auth.totp_disabled", "auth.totp_recovery_used",
+    "auth.totp_recovery_regenerated", "auth.password_changed", "auth.session_revoked", "auth.verify_failed", "policy.draft", "policy.discard", "policy.publish", "policy.rollback",
+    "settings.access_retention", "terminal.open", "terminal.close", "ssh.login",
+    "router.create", "router.update", "router.delete", "router.bootstrap", "router.bootstrap_used", "router.deploy",
+];
 
 /// 审计记录的中文标题与一句话摘要（界面直接显示）
 pub fn audit_text(action: &str, d: &Value) -> (String, String) {
@@ -835,17 +891,7 @@ mod tests {
 
     #[test]
     fn every_audit_action_has_title() {
-        // 所有写审计的动作（git grep 'audit(' 核对过）；新增动作时补这里和 audit_text
-        for a in [
-            "machine.provision", "machine.retire", "machine.purge", "machine.rename", "machine.update", "machine.restore", "subscription.set", "renewal",
-            "team.create", "team.update", "team.delete", "team.renumber", "provider.create", "provider.update", "provider.delete", "plan.create", "plan.update", "plan.delete", "entry.enable",
-            "entry.disable", "entry.rotate", "entry.share", "entry.add", "entry.move", "relay.evacuate", "job.retry", "job.cancel", "silence.create",
-            "silence.delete", "agent.upgrade", "notify.create", "notify.update", "notify.delete", "exec", "machine.logs", "server.logs", "apikey.create",
-            "apikey.revoke", "auth.login", "auth.login_failed", "auth.logout", "auth.totp_enabled", "auth.totp_disabled", "auth.totp_recovery_used",
-            "auth.totp_recovery_regenerated", "auth.password_changed", "auth.session_revoked", "auth.verify_failed", "policy.draft", "policy.discard", "policy.publish", "policy.rollback",
-            "settings.access_retention", "terminal.open", "terminal.close", "ssh.login",
-            "router.create", "router.update", "router.delete", "router.bootstrap", "router.bootstrap_used", "router.deploy",
-        ] {
+        for &a in AUDIT_ACTIONS {
             assert_ne!(audit_text(a, &json!({})).0, a, "{a} 没有中文标题");
         }
     }

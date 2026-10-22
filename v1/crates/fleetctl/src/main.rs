@@ -309,6 +309,9 @@ enum Cmd {
     Jobs {
         #[arg(long)]
         active: bool,
+        /// 只看这类作业：provision（各类上架）| restore（各类恢复）| attach_entry | move_entry | upgrade_agent | retire | purge
+        #[arg(long)]
+        kind: Option<String>,
         #[arg(long, default_value_t = 30)]
         limit: i64,
     },
@@ -460,6 +463,12 @@ enum Cmd {
         /// 翻页：只看编号小于它的记录（上一页末尾提示的编号）
         #[arg(long)]
         before: Option<i64>,
+        /// 分类：auth（登录与账户）| exec（远程执行）| machine（机器与入口）| config（设置与告警）
+        #[arg(long)]
+        cat: Option<String>,
+        /// 搜索标题、摘要、操作人
+        #[arg(short, long)]
+        q: Option<String>,
     },
     /// 访问监控：哪个节点访问了哪些域名/IP
     Access {
@@ -794,7 +803,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             ),
             SilenceCmd::Rm { id } => silence::rm(x, &id),
         },
-        Cmd::Jobs { active, limit } => cmds::jobs(x, active, limit),
+        Cmd::Jobs { active, kind, limit } => cmds::jobs(x, active, kind.as_deref(), limit),
         Cmd::Job { id, follow } => cmds::job(x, &id, follow),
         Cmd::Retry { id, reset_host_key, password_env } => cmds::job_retry(x, &id, reset_host_key, password_env.as_deref()),
         Cmd::Cancel { id } => cmds::job_cancel(x, &id),
@@ -820,7 +829,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
                 KeysCmd::Revoke { which, auth } => ops::keys_revoke(x, &ka(auth), &which),
             }
         }
-        Cmd::Audit { target, limit, before } => cmds::audit(x, target.as_deref(), limit, before),
+        Cmd::Audit { target, limit, before, cat, q } => cmds::audit(x, cmds::AuditOpts { target: target.as_deref(), limit, before, cat: cat.as_deref(), q: q.as_deref() }),
         Cmd::Access { view, node, team, window, search, blocked, kind, limit } => access::access(
             x,
             access::AccessOpts { view: &view, node: node.as_deref(), team: team.as_deref(), window: &window, search: search.as_deref(), blocked, kind: kind.as_deref(), limit },

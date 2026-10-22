@@ -42,7 +42,7 @@
 | 登录机器或软路由（在中控上，见 §14） | `fleetctl ssh 团队1-06`（交互式）、`fleetctl ssh 团队1-06 -- 'df -h'`（退出码同远端）、`fleetctl ssh router <名称>` |
 | 上架 | `fleetctl provision --file batch.json --dry-run`，确认后 `fleetctl provision --file batch.json --yes --follow` |
 | 已有 VPS 节点上多了一个 IP，加成一台节点（同机 IP 节点，见 §6） | `fleetctl provision --kind vps --host 团队1-03 --ip 203.0.113.7 --team 团队1 --relay 线路机2 --yes --follow` |
-| 看作业进度、失败原因 | `fleetctl jobs --active`、`fleetctl job <id> --follow`；失败后 `fleetctl retry <id>` |
+| 看作业进度、失败原因 | `fleetctl jobs --active`（`--kind upgrade_agent` 等只看一类）、`fleetctl job <id> --follow`；失败后 `fleetctl retry <id>` |
 | 退役 | `fleetctl retire 团队1-06 --reason 到期不续 --yes --follow`（宿主机上的同机 IP 节点会一并退役，命令先列出来） |
 | 彻底删除已退役机器 | `fleetctl purge 团队1-06 --yes`（它的入口近 35 天的流量还计入另一端未退役的机器时会被拒，报错里给出可删日期；另一端已退役的不受限） |
 | 把节点换到另一台线路机 | `fleetctl move 团队1-06 --to 线路机3 --yes --follow`（分享链接会变，见 §6） |
@@ -54,7 +54,7 @@
 | 入口启停、轮换凭据 | `fleetctl entries`、`fleetctl entry disable 线路机2:20001 --yes`、`fleetctl entry rotate … --yes` |
 | 线路机直出入口（从线路机自己的 IP 出去，旧系统的「节点00-默认」） | `fleetctl entry add-direct 线路机2 --yes --follow`（每台线路机至多一条；线路机 agent 要先升到新版本）；链接 `fleetctl share 线路机2-直出` |
 | 分享链接 | `fleetctl share 线路机2:20001`（需要 secrets，记审计） |
-| 谁做过什么 | `fleetctl audit --target 团队1-06` |
+| 谁做过什么 | `fleetctl audit --target 团队1-06`；按分类、搜索：`fleetctl audit --cat exec -q reboot` |
 | 盯实时变化 | `fleetctl watch` |
 | 访问记录留几天、改保留期（见 §13） | `fleetctl settings retention`；`fleetctl settings retention --raw 3 --hourly 14 --yes`（调短会删数据） |
 | 密钥管理 | 网页，或 `FLEET_PASSWORD=… fleetctl keys ls --user admin`（密钥管理只认登录会话） |

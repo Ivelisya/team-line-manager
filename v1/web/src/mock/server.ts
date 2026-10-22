@@ -619,7 +619,10 @@ const jobSummary = ({ steps, cancellable: _c, result: _r, ...j }: Job): JobSumma
 };
 R('GET', '/jobs', ({ query }) => {
   const s = query.get('state') ?? 'all';
-  return paged(db.jobs.filter((j) => s === 'all' || (s === 'active' ? j.state === 'running' || j.state === 'queued' : j.state !== 'running' && j.state !== 'queued')).map(jobSummary), query);
+  // 同中控：provision / restore 是大类，其余按作业类型原值
+  const k = query.get('kind') ?? '';
+  const kindOk = (kind: string) => !k || (k === 'provision' || k === 'restore' ? kind.startsWith(`${k}_`) : kind === k);
+  return paged(db.jobs.filter((j) => kindOk(j.kind) && (s === 'all' || (s === 'active' ? j.state === 'running' || j.state === 'queued' : j.state !== 'running' && j.state !== 'queued'))).map(jobSummary), query);
 });
 const jobOf = (id: string) => { const j = db.jobs.find((x) => x.id === id); if (!j) throw bad('作业不存在', 404, 'not_found'); return j; };
 R('GET', '/jobs/([^/]+)', ({ params }) => { const j = clone(jobOf(params[0])); const s = jobSummary(j); return { ...j, step: s.step, step_title: s.step_title }; });
@@ -696,8 +699,13 @@ R('DELETE', '/silences/([^/]+)', ({ params }) => {
   if (!db.silences.some((s) => s.id === params[0])) throw bad('没有这条静默', 404, 'not_found');
   db.silences = db.silences.filter((s) => s.id !== params[0]); emit({ type: 'incidents' }); return { ok: true };
 });
+/** 同中控 api/misc.rs audit_cat：操作记录的分类 */
+const AUDIT_EXEC = new Set(['exec', 'ssh.login', 'terminal.open', 'terminal.close', 'machine.logs', 'server.logs', 'restore.probe']);
+const auditCat = (action: string) => (action.startsWith('auth.') ? 'auth' : AUDIT_EXEC.has(action) ? 'exec' : /^(machine|entry|relay|subscription|agent|job|renewal)(\.|$)/.test(action) ? 'machine' : 'config');
 R('GET', '/audit', ({ query }) => {
-  const list = db.audit.filter((a) => !query.get('target_id') || a.target_id === query.get('target_id'));
+  const cat = query.get('cat') ?? ''; const q = (query.get('q') ?? '').trim().toLowerCase();
+  const list = db.audit.filter((a) => (!query.get('target_id') || a.target_id === query.get('target_id')) && (!cat || cat === 'all' || auditCat(a.action) === cat)
+    && (!q || `${a.title} ${a.summary} ${a.actor}`.toLowerCase().includes(q)));
   const before = query.get('before_id'); const from = before ? list.findIndex((a) => a.id === before) + 1 : 0;
   return clone(list.slice(from, from + +(query.get('limit') ?? 50)));
 });

@@ -12,6 +12,7 @@ import { copyText } from '@/lib/clipboard';
 import * as F from '@/lib/format';
 import { Button, IconButton } from '@/components/ui/button';
 import { Segmented } from '@/components/ui/overlays';
+import { Select } from '@/components/ui/select';
 import { Progress } from '@/components/ui/progress';
 import { SkeletonRows } from '@/components/ui/skeleton';
 import { ConfirmDialog } from '@/components/app/dialogs';
@@ -35,6 +36,9 @@ const JOB_PAGE = [20];
 type View = 'all' | 'running' | 'done';
 const VIEWS: { value: View; label: string }[] = [{ value: 'all', label: '全部' }, { value: 'running', label: '进行中' }, { value: 'done', label: '已结束' }];
 const STATE_OF: Record<View, 'all' | 'active' | 'done'> = { all: 'all', running: 'active', done: 'done' };
+/** 类型筛选（?kind=，与页签组合）：上架、恢复各含四类机器，按大类筛（同列表接口的 kind）；其余是作业类型原值，名字取 /meta */
+const KIND_VALUES = ['provision', 'restore', 'attach_entry', 'move_entry', 'upgrade_agent', 'retire', 'purge'];
+const KIND_GROUP: Record<string, string> = { provision: '上架', restore: '恢复' };
 
 /** 宽屏时详情栏吸顶、自己滚动：最大高度按它此刻在视口里的上沿算（页面在顶部时它还没吸住，上面有页头），
  *  不按吸住后的位置算——否则页面在顶部时底部超出视口、最后几行看不到。单栏时 CSS 不用这个变量 */
@@ -58,17 +62,20 @@ export function JobsPage() {
   const [sp] = useSearchParams();
   const view: View = VIEWS.some((v) => v.value === sp.get('view')) ? (sp.get('view') as View) : 'all';
   const filter = STATE_OF[view];
-  // 换页签回到列表（不再停在上一个页签里选中的作业：进行中为 0 时右边还挂着之前的已结束作业）
-  const setView = (v: View) => {
+  const kind = KIND_VALUES.includes(sp.get('kind') ?? '') ? sp.get('kind')! : '';
+  const kindOpts = React.useMemo(() => KIND_VALUES.map((k) => ({ value: k, label: KIND_GROUP[k] ?? jobKindLabel(k) })), []);
+  // 换页签、类型回到列表（不再停在之前选中的作业：进行中为 0 时右边还挂着之前的已结束作业）
+  const setParam = (k: 'view' | 'kind', v: string) => {
     const n = new URLSearchParams(search); n.delete('p');
-    if (v === 'all') n.delete('view'); else n.set('view', v);
+    if (v) n.set(k, v); else n.delete(k);
     const q = n.toString();
     nav({ pathname: '/jobs', search: q ? `?${q}` : '' }, { replace: true });
   };
+  const setView = (v: View) => setParam('view', v === 'all' ? '' : v);
   // 页码要先于查询算出来（偏移量进查询）；总数来自上一次的结果，用来夹页和显示分页器。渲染中直接跟上（不等 effect 提交一遍再重渲染）
   const [total, setTotal] = React.useState<number>();
-  const pg = usePage({ total, sizes: JOB_PAGE, reset: [filter] });
-  const jobs = useJobs(filter, pg.offset, pg.size);
+  const pg = usePage({ total, sizes: JOB_PAGE, reset: [filter, kind] });
+  const jobs = useJobs(filter, pg.offset, pg.size, kind);
   if (jobs.data && jobs.data.total !== total) setTotal(jobs.data.total);
   const list = jobs.data?.items ?? [];
   const selected = id ?? null;
@@ -89,7 +96,10 @@ export function JobsPage() {
   return (
     <div className="stack">
       <PageHead title="作业" note={jobs.data ? `${jobs.data.total} 个` : undefined}
-        tools={<Segmented label="筛选" value={view} onChange={setView} items={VIEWS} />} />
+        tools={<>
+          <div className="w-[140px]"><Select value={kind} onChange={(v) => setParam('kind', v)} allowEmpty="全部类型" placeholder="作业类型" options={kindOpts} aria-label="作业类型" /></div>
+          <Segmented label="筛选" value={view} onChange={setView} items={VIEWS} />
+        </>} />
       <div className="jobs-layout" data-detail={selected ? '1' : '0'}>
         <Panel ref={pg.anchor} className="jobs-list" flush>
           {jobs.isLoading && <SkeletonRows rows={5} list />}
