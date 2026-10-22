@@ -102,7 +102,7 @@ a { color: inherit; }
 /* 顶栏：进行中作业徽标 */
 .top-btn.jobs-ind { position: relative; }
 .top-btn.jobs-ind > .lucide { animation: breathe var(--dur-loop) var(--ease-std) infinite; }
-.jobs-ind-n { position: absolute; top: -5px; right: -5px; min-width: 16px; height: 16px; box-sizing: border-box; padding: 0 4px; border-radius: 8px; background: var(--accent-solid); color: var(--on-accent); font-size: 10px; line-height: 16px; text-align: center; box-shadow: 0 0 0 2px var(--surface); }
+.jobs-ind-n { position: absolute; top: -5px; right: -5px; min-width: 16px; height: 16px; box-sizing: border-box; padding: 0 4px; border-radius: 8px; background: var(--accent-solid); color: var(--on-accent); font-size: var(--fs-micro); line-height: 16px; text-align: center; box-shadow: 0 0 0 2px var(--surface); }
 /* 顶栏的列表弹层（进行中的作业、告警预览）：标题行 + 列表（每项可点，悬停浅底）+ 底部「查看全部」。告警预览是悬浮卡（.hover-card），这里盖掉它的宽度与内边距 */
 .popover:is(.jobs-pop, .alerts-pop) { width: 320px; max-width: calc(100vw - 24px); padding: 0; }
 .pop-head { display: flex; align-items: center; justify-content: space-between; padding: var(--sp-10) var(--sp-12); font: var(--fw-semibold) var(--fs-body) / var(--lh-body) var(--font-sans); border-bottom: 1px solid var(--line); }

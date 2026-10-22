@@ -112,9 +112,9 @@
 .flow-label .lucide { width: 14px; height: 14px; stroke-width: 2.2; color: var(--dir-c); }
 .flow-col[data-dir="up"] { --dir-c: var(--chart-2); }
 .flow-col[data-dir="down"] { --dir-c: var(--chart-1); }
-.flow-rate { min-width: 0; overflow: hidden; white-space: nowrap; font: var(--fw-semibold) 20px / 24px var(--font-num); font-variant-numeric: var(--num-variant); letter-spacing: -0.03em; color: var(--spd, var(--fg)); }
+.flow-rate { min-width: 0; overflow: hidden; white-space: nowrap; font: var(--fw-semibold) var(--fs-metric) / 24px var(--font-num); font-variant-numeric: var(--num-variant); letter-spacing: -0.03em; color: var(--spd, var(--fg)); }
 .flow-rate .unit { margin-left: 1px; font-size: var(--fs-micro); font-weight: var(--fw-medium); letter-spacing: 0; color: var(--fg-2); }
-.ncard[data-view="small"] .flow-rate, .ncard[data-view="compact"] .flow-rate { font-size: 17px; line-height: 22px; }
+.ncard[data-view="small"] .flow-rate, .ncard[data-view="compact"] .flow-rate { font-size: var(--fs-metric-sm); line-height: 22px; }
 [data-speed="idle"] { --spd: var(--speed-idle); }
 [data-speed="low"] { --spd: var(--speed-low); }
 [data-speed="high"] { --spd: var(--speed-high); }

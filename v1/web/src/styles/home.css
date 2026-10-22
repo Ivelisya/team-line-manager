@@ -20,8 +20,8 @@
 .hsec-badge .lucide { width: 13px; height: 13px; stroke-width: 2; }
 .hsec-actions { display: flex; align-items: center; gap: var(--control-gap); flex-wrap: wrap; min-width: 0; }
 .hsec-titles { display: grid; gap: var(--sp-4); min-width: 0; }
-.hsec-title { margin: 0; font: 700 18px / 26px var(--font-sans); letter-spacing: -0.015em; color: var(--fg); }
-.hero-greet { margin: 0; font: 700 clamp(21px, 2vw, 26px) / 1.25 var(--font-sans); letter-spacing: -0.025em; color: var(--fg); }
+.hsec-title { margin: 0; font: var(--fw-bold) var(--fs-section) / var(--lh-section) var(--font-sans); letter-spacing: -0.015em; color: var(--fg); }
+.hero-greet { margin: 0; font: var(--fw-bold) clamp(21px, 2vw, 26px) / 1.25 var(--font-sans); letter-spacing: -0.025em; color: var(--fg); }
 .hero-name { background: linear-gradient(90deg, var(--accent), color-mix(in oklab, var(--accent) 50%, var(--m-load))); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .hsec-sub { margin: 0; font-size: var(--fs-body); line-height: 1.5; color: var(--fg-2); text-wrap: pretty; }
 
@@ -55,12 +55,12 @@
 /* 读数行、说明行给出正常时的高度（30 = 读数行高、16 = 说明行高）：加载中是 20px 骨架、说明为空，数据到了卡片不长高 */
 .stat-value {
   display: flex; align-items: baseline; gap: var(--sp-4); min-width: 0; min-height: 30px; overflow: hidden; white-space: nowrap;
-  font: 700 24px / 30px var(--font-num); font-variant-numeric: var(--num-variant); letter-spacing: -0.02em; color: var(--fg);
+  font: var(--fw-bold) var(--fs-kpi) / var(--lh-kpi) var(--font-num); font-variant-numeric: var(--num-variant); letter-spacing: -0.02em; color: var(--fg);
 }
 .stat-value small { font: var(--fw-medium) var(--fs-label) / var(--lh-label) var(--font-num); letter-spacing: 0; color: var(--fg-2); }
-.stat-cap { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-8); min-width: 0; min-height: 16px; font-size: 11.5px; line-height: 16px; color: var(--fg-2); }
+.stat-cap { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-8); min-width: 0; min-height: 16px; font-size: var(--fs-micro); line-height: var(--lh-micro); color: var(--fg-2); }
 .stat-cap > * { white-space: nowrap; }
-/* 说明行里的数字（下载 1.2 TB、降级 3）：数字 --fg 加粗，单位跟着数字、不再比数字大一号（.unit 默认 12px 灰，比 11.5px 的数字还显眼） */
+/* 说明行里的数字（下载 1.2 TB、降级 3）：数字 --fg 加粗，单位跟着数字、不再比数字大一号（.unit 默认 12px 灰，比 11px 的数字还显眼） */
 .stat-cap .num { color: var(--fg); font-weight: var(--fw-semibold); }
 .stat-cap .unit { font-size: inherit; color: inherit; }
 .stat-cap .dotline { display: inline-flex; align-items: center; gap: var(--sp-4); }
@@ -70,7 +70,7 @@
 a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 @media (hover: hover) { a.dotline:hover { text-decoration: underline; text-underline-offset: 2px; } }
 .stat-cap .stat-who { display: inline-flex; align-items: center; gap: var(--sp-4); min-width: 0; } /* 流量额度「最紧 某台 已用 93%」：名称放不下时省略，百分比留着 */
-@media (max-width: 760px) { .stat { padding: var(--sp-12); min-height: 92px; } .stat-value { font-size: 19px; } }
+@media (max-width: 760px) { .stat { padding: var(--sp-12); min-height: 92px; } .stat-value { font-size: var(--fs-metric); } }
 
 /* ---------- 集群状态 ---------- */
 .cluster {
@@ -78,12 +78,12 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
   padding: clamp(14px, 1.8vw, 18px); background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); box-shadow: var(--shadow-card);
 }
 .cluster-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-10); }
-.cluster-title { display: flex; align-items: center; gap: 7px; margin: 0; font: 700 var(--fs-emph) / 1.2 var(--font-sans); color: var(--fg); }
+.cluster-title { display: flex; align-items: center; gap: 7px; margin: 0; font: var(--fw-bold) var(--fs-emph) / 1.2 var(--font-sans); color: var(--fg); }
 .cluster-title .lucide { width: 16px; height: 16px; stroke-width: 2; }
 .cpill {
   --pc: var(--ok-text); display: inline-flex; align-items: center; gap: var(--sp-6); flex: none; height: var(--h-tag); box-sizing: border-box; padding: 0 9px;
   border: 1px solid color-mix(in srgb, var(--pc) 30%, transparent); border-radius: var(--r-pill); background: color-mix(in srgb, var(--pc) 13%, transparent);
-  font: 650 var(--fs-micro) / 1 var(--font-sans); color: var(--pc); white-space: nowrap;
+  font: var(--fw-semibold) var(--fs-micro) / 1 var(--font-sans); color: var(--pc); white-space: nowrap;
 }
 .cpill[data-tone="warn"] { --pc: var(--warn-text); }
 .cpill[data-tone="bad"] { --pc: var(--bad-text); }
@@ -92,12 +92,12 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 .cluster-box { display: grid; gap: var(--sp-8); min-width: 0; padding: 11px 13px; border: 1px solid var(--line); border-radius: 12px; background: color-mix(in srgb, var(--section) 40%, var(--surface)); }
 .cluster-row { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--sp-8); min-width: 0; }
 .cluster-big { display: inline-flex; align-items: baseline; gap: var(--sp-6); min-width: 0; white-space: nowrap; }
-.cluster-big > .num { font: 800 26px / 1 var(--font-num); letter-spacing: -0.03em; color: var(--fg); }
+.cluster-big > .num { font: var(--fw-bold) var(--fs-kpi) / 1 var(--font-num); letter-spacing: -0.03em; color: var(--fg); }
 /* 单位、读数的名称、在线 / 总计台数都是要读的信息：--fg-2（--fg-3 只给占位、缺测这类不承载信息的字，tokens.css） */
 .cluster-big small { font-size: var(--fs-micro); font-weight: var(--fw-medium); color: var(--fg-2); }
 .cluster-kv { display: grid; justify-items: end; gap: 1px; }
 .cluster-kv small { font-size: var(--fs-micro); line-height: 1.2; color: var(--fg-2); }
-.cluster-kv b { font: 700 var(--fs-label) / 1.2 var(--font-sans); color: var(--fg); }
+.cluster-kv b { font: var(--fw-bold) var(--fs-label) / 1.2 var(--font-sans); color: var(--fg); }
 .cluster-kv b[data-bad] { color: var(--bad-text); }
 .cluster-foot { display: flex; justify-content: space-between; gap: var(--sp-8); font-size: var(--fs-micro); line-height: var(--lh-micro); color: var(--fg-2); }
 .cluster-foot b { font-weight: var(--fw-semibold); color: var(--fg); }
@@ -106,7 +106,7 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 .cchart { display: grid; gap: var(--sp-4); min-width: 0; padding: var(--sp-8) var(--sp-10) var(--sp-6); background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
 .cchart[data-dir="up"] { --cc: var(--chart-2); }
 .cchart[data-dir="down"] { --cc: var(--chart-1); }
-.cchart-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-6); min-width: 0; font: 700 11.5px / 16px var(--font-sans); color: var(--fg); white-space: nowrap; }
+.cchart-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-6); min-width: 0; font: var(--fw-bold) var(--fs-micro) / var(--lh-micro) var(--font-sans); color: var(--fg); white-space: nowrap; }
 .cchart-head > span { display: inline-flex; align-items: center; gap: var(--sp-4); }
 .cchart-head .lucide { width: 13px; height: 13px; stroke-width: 2.2; color: var(--cc); }
 .cchart-head b { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: var(--fs-label); color: var(--cc); }
@@ -187,7 +187,7 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 .gauge-val { fill: none; stroke: var(--mc); stroke-linecap: round; stroke-dashoffset: var(--ring-off); animation: ring-in var(--dur-data) var(--ease-out); }
 @keyframes ring-in { from { stroke-dashoffset: var(--ring-c); } }
 .gauge-center { position: absolute; inset: 0; display: flex; align-items: baseline; justify-content: center; padding-top: 22px; box-sizing: border-box; }
-.gauge-center b { font: 700 var(--fs-body) / 1 var(--font-num); letter-spacing: -0.02em; color: var(--fg); }
+.gauge-center b { font: var(--fw-bold) var(--fs-body) / 1 var(--font-num); letter-spacing: -0.02em; color: var(--fg); }
 .gauge-center small { margin-left: 1px; font-size: var(--fs-micro); color: var(--fg-2); }
 .gauge[data-tone="warn"] .gauge-center b { color: var(--warn-text); }
 .gauge[data-tone="bad"] .gauge-center b { color: var(--bad-text); }

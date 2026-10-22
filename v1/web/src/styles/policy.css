@@ -73,7 +73,7 @@
 .pol-sum { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-8); }
 .pol-sum > div { display: grid; grid-template-columns: auto auto; justify-content: start; align-items: baseline; column-gap: var(--sp-6); padding: var(--sp-10) var(--sp-12); border: 1px solid var(--line); border-radius: var(--r-float); background: var(--sunken); }
 .pol-sum span { grid-column: 1 / -1; font-size: var(--fs-label); color: var(--fg-2); }
-.pol-sum b { font: var(--fw-semibold) var(--fs-kpi) / var(--lh-kpi) var(--font-sans); font-variant-numeric: tabular-nums; }
+.pol-sum b { font: var(--fw-semibold) var(--fs-kpi) / var(--lh-kpi) var(--font-num); font-variant-numeric: var(--num-variant); }
 .pol-sum small { font-size: var(--fs-label); color: var(--fg-2); }
 .pol-changes { margin: 0; padding: 0; list-style: none; display: grid; gap: var(--sp-4); font-size: var(--fs-body); }
 .pol-changes li { display: flex; align-items: baseline; gap: var(--sp-8); flex-wrap: wrap; }

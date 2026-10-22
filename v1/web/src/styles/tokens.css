@@ -79,18 +79,23 @@
   --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace; /* 只给 UUID 前缀、令牌、指纹、日志正文 */
   --num-variant: tabular-nums slashed-zero;                     /* H 全部数字 */
 
-  /* 字阶：只用首页出现过的字号（O 17 种、N 8 种、H 8 种收拢成 7 个） */
-  --fs-micro: 11px;  --lh-micro: 16px;  /* H 11：资源副行、IP 版本标记、表格第三级、坐标轴刻度 */
+  /* 字阶：正文 7 档（O 17 种、N 8 种、H 8 种收拢）+ 首页分区标题 + 大读数 4 档（--fs-display ＞ --fs-kpi ＞ --fs-metric ＞ --fs-metric-sm） */
+  --fs-micro: 11px;  --lh-micro: 16px;  /* H 11：资源副行、IP 版本标记、表格第三级、坐标轴刻度、读数单位、计数徽标 */
   --fs-label: 12px;  --lh-label: 18px;  /* H 12：标签、副行、单位、chip、表头、小按钮、鲜度文字 */
   --fs-body: 13px;   --lh-body: 20px;   /* H/O/N 13：正文、字段值、表格、按钮、输入（H 19.5 取 20） */
   --fs-emph: 15px;   --lh-emph: 22px;   /* H 15：卡内大读数（持续运行/到期）、小卡片与紧凑卡标题、面板标题（O 15） */
   --fs-title: 16px;  --lh-title: 22px;  /* H 16：大卡片标题；抽屉标题（O 17）、对话框标题（O 19、N 18）统一到它 */
+  --fs-section: 18px; --lh-section: 26px; /* 首页大分区标题（监控总览、服务器集群） */
   --fs-page: 24px;   --lh-page: 32px;   /* H/O 24：页面标题（N 22/17 统一到它） */
-  --fs-kpi: 27px;    --lh-kpi: 32px;    /* H 27：KPI 主值（O 28 系统字统一到它） */
+  --fs-display: 34px;                   /* 不带框的总览大数（软路由页头），行高 1 */
+  --fs-kpi: 24px;    --lh-kpi: 30px;    /* KPI 主值：首页 KPI 卡、集群在线率、访问规则预览的汇总（原 27 / 26 / 24 三种统一） */
+  --fs-metric: 20px;                    /* 卡内主读数：节点卡实时速率、窄屏 KPI、页头大数的分母 */
+  --fs-metric-sm: 17px;                 /* 小卡片 / 紧凑卡的实时速率 */
 
-  --fw-regular: 400;                    /* 字重只留 3 档（H 11 档：400…720） */
+  --fw-regular: 400;                    /* 字重 4 档（H 11 档：400…720）：正文 / 控件 / 标题与读数 / 首页大标题与 KPI 数字 */
   --fw-medium: 500;
   --fw-semibold: 600;
+  --fw-bold: 700;                       /* 只给首页：分区标题、问候语、KPI 与集群读数、小图标题 */
 
   --tracking-title: -0.01em;            /* H 页面标题、卡片标题（O −0.6px、N 品牌 +.015em 统一到它） */
 
