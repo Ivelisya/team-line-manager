@@ -1,4 +1,4 @@
-// 机器详情抽屉的开关由 URL 控制：?m=<机器id>&tab=<页签>。任何页面都可以打开它，后退键关闭。
+// 机器详情抽屉的开关由 URL 控制：?m=<机器id>&tab=<页签>&range=<曲线时间范围>。任何页面都可以打开它，后退键关闭。
 import { useCallback, useRef } from 'react';
 import { useSearchParams, type SetURLSearchParams } from 'react-router-dom';
 import type { QueryClient } from '@tanstack/react-query';
@@ -10,11 +10,15 @@ export const DRAWER_TABS: { value: DrawerTab; label: string }[] = [
   { value: 'host', label: '主机' }, { value: 'billing', label: '费用' }, { value: 'access', label: '访问记录' }, { value: 'manage', label: '管理' },
 ];
 
+/** 曲线页签（连接质量 / 流量 / 主机）共用的时间范围，写在 ?range=：切页签不丢；默认 24 小时（不写进地址） */
+const RANGE_KEYS = ['1h', '6h', '24h', '7d', '30d'];
+const DEFAULT_RANGE = '24h';
+
 // 全站只有一个路由：任意一处 useDrawer 渲染时记下地址参数的写函数，模块级的 openDrawer 用它（同机关系标等成批的小按钮不必各自订阅地址）
 let setLatest: { current: SetURLSearchParams } | null = null;
 /** drop：同一步里一起删掉的地址参数（背后列表的筛选会把要打开的那台筛掉时） */
 const openWith = (set: SetURLSearchParams, mid: string, t?: DrawerTab, drop?: readonly string[]) =>
-  set((p) => { const n = new URLSearchParams(p); drop?.forEach((k) => n.delete(k)); n.set('m', mid); if (t) n.set('tab', t); else n.delete('tab'); return n; });
+  set((p) => { const n = new URLSearchParams(p); drop?.forEach((k) => n.delete(k)); n.set('m', mid); if (t) n.set('tab', t); else n.delete('tab'); n.delete('range'); return n; });
 /** 打开抽屉（不订阅地址）：外壳里一直挂着 useDrawer，调用时总有写函数 */
 export const openDrawer = (mid: string, t?: DrawerTab, drop?: readonly string[]) => { if (setLatest) openWith(setLatest.current, mid, t, drop); };
 
@@ -23,14 +27,17 @@ export function useDrawer() {
   const id = sp.get('m');
   const rawTab = sp.get('tab');
   const tab: DrawerTab = DRAWER_TABS.some((t) => t.value === rawTab) ? (rawTab as DrawerTab) : 'overview';
+  const rawRange = sp.get('range');
+  const range = RANGE_KEYS.includes(rawRange ?? '') ? rawRange! : DEFAULT_RANGE;
   // react-router 的 setSearchParams 每次地址变化都换身份；用 ref 兜住，open/setTab/close 才稳定（卡片 memo 依赖它）
   const setRef = useRef(setSp); setRef.current = setSp; setLatest = setRef;
   const open = useCallback((mid: string, t?: DrawerTab, drop?: readonly string[]) => openWith(setRef.current, mid, t, drop), []);
   // 抽屉开着、只是换一台（[ ] 键、抽屉头部的上一台 / 下一台）：留在当前页签，替换当前历史，后退键仍是一步关掉抽屉
   const switchTo = useCallback((mid: string) => setRef.current((p) => { const n = new URLSearchParams(p); n.set('m', mid); return n; }, { replace: true }), []);
   const setTab = useCallback((t: DrawerTab) => setRef.current((p) => { const n = new URLSearchParams(p); n.set('tab', t); return n; }, { replace: true }), []);
-  const close = useCallback(() => setRef.current((p) => { const n = new URLSearchParams(p); n.delete('m'); n.delete('tab'); return n; }), []);
-  return { id, tab, open, switchTo, setTab, close };
+  const setRange = useCallback((r: string) => setRef.current((p) => { const n = new URLSearchParams(p); if (r === DEFAULT_RANGE) n.delete('range'); else n.set('range', r); return n; }, { replace: true }), []);
+  const close = useCallback(() => setRef.current((p) => { const n = new URLSearchParams(p); n.delete('m'); n.delete('tab'); n.delete('range'); return n; }), []);
+  return { id, tab, range, open, switchTo, setTab, setRange, close };
 }
 
 // 上一台 / 下一台的顺序来源：列着机器的页面（首页、机器页）把当前筛选、排序、分组后的整份顺序（不只当前页）交过来，离开页面时清掉

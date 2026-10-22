@@ -5,10 +5,10 @@ import type { MachineView, SubField, Subscription } from '@/lib/types';
 import { useRenew, useRenewals, useSaveSubscription, type SubscriptionBody } from '@/lib/queries';
 import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
-import { Field, InfoTip, Input, Label, Switch } from '@/components/ui/form';
+import { Field, InfoTip, Input, Label, Switch, UnitInput } from '@/components/ui/form';
 import { Segmented } from '@/components/ui/overlays';
 import { DateField } from '@/components/ui/date-field';
-import { inheritedValue, inheritSource, inheritText, isOverridden, limitGb, monthFlow, monthFlowTip, quota, quotaCycleText, quotaGb, quotaNotes, quotaRuleText, quotaUsedLabel, recycleOn, remainingValue, cycleLabel, currencyOptions, cycleOptions, meta } from '@/lib/derive';
+import { inheritedValue, inheritSource, inheritText, inheritValueText, isOverridden, limitGb, monthFlow, monthFlowTip, quota, quotaCycleText, quotaGb, quotaNotes, quotaRuleText, quotaUsedLabel, recycleOn, remainingValue, cycleLabel, currencyOptions, cycleOptions, meta } from '@/lib/derive';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
 import { resetOnOpen } from '@/lib/useHeld';
@@ -56,7 +56,7 @@ export function BillingTab({ m }: { m: MachineView }) {
               </LabelValue>
             )}
           </LabelValueGrid>
-          <div style={{ marginTop: 12 }}><Button variant="primary" onClick={() => setRenew(true)}><CalendarPlus />登记续费</Button></div>
+          <div style={{ marginTop: 12 }}><Button onClick={() => setRenew(true)}><CalendarPlus />登记续费</Button></div>
         </Section>
       )}
       <Section>
@@ -89,14 +89,15 @@ export function BillingTab({ m }: { m: MachineView }) {
 const OV_FIELDS: SubField[] = ['price_cents', 'currency', 'cycle', 'billing_tz', 'remind_days', 'traffic_gb', 'traffic_reset_day'];
 
 const OV_ITEMS = [{ value: 'follow', label: '跟随' }, { value: 'own', label: '单独' }];
-/** 可跟随的一项：标签右边一个紧凑的「跟随 / 单独」切换。跟随时显示套餐 / 供应商给的值（不可编辑），切到「单独」才能改；
+/** 可跟随的一项：标签右边一个紧凑的「跟随 / 单独」切换。跟随时显示套餐 / 供应商给的值（灰色文字，不是输入框），切到「单独」才能改；
  *  跟随的来源与值在切换的悬停里（提交的字段不变：单独的带值，跟随的为 null） */
 function OvField({ m, k, label, info, on, setOn, due, error, locked, children }: {
   m: MachineView; k: SubField; label: string; info?: string; on: boolean; setOn: (on: boolean) => void; due: string; error?: string; locked?: boolean; children: React.ReactElement;
 }) {
   const id = React.useId();
   // 同机 IP 节点没有套餐：流量上限跟随的是宿主机的额度
-  const follow = k === 'traffic_gb' && m.host_machine && !m.plan ? '与宿主机共用额度' : inheritText(m, k, due);
+  const shared = k === 'traffic_gb' && m.host_machine && !m.plan;
+  const follow = shared ? '与宿主机共用额度' : inheritText(m, k, due);
   const toggle = !locked && follow != null && (
     <span data-tip={`跟随${inheritSource(m, k)}：${follow}`}><Segmented sm label={`${label}：跟随或单独设置`} value={on ? 'own' : 'follow'} onChange={(v) => setOn(v === 'own')} items={OV_ITEMS} /></span>
   );
@@ -106,7 +107,7 @@ function OvField({ m, k, label, info, on, setOn, due, error, locked, children }:
         <span className="field-label"><Label htmlFor={id}>{label}</Label>{info && <InfoTip text={info} />}</span>
         {toggle}
       </div>
-      {on ? React.cloneElement(children as React.ReactElement<{ id?: string }>, { id }) : <Input id={id} disabled value={follow ?? ''} />}
+      {on ? React.cloneElement(children as React.ReactElement<{ id?: string }>, { id }) : <div id={id} className="ov-follow">{shared ? follow : inheritValueText(m, k, due)}</div>}
       {on && error && <div className="hint is-error">{error}</div>}
     </div>
   );
@@ -145,22 +146,27 @@ function SubForm({ m }: { m: MachineView }) {
   const tzBad = ov.billing_tz && tz === '';
   const dueBad = dueDate !== '' && !/^\d{4}-\d{2}-\d{2}$/.test(dueDate);
   const valid = dueDate !== '' && !dueBad && !priceBad && !remindBad && !resetBad && !trafficBad && !tzBad;
+  const val: Record<SubField, string | number> = {
+    price_cents: Math.round(priceNum * 100), currency, cycle, billing_tz: tz, remind_days: Number(remind), traffic_gb: Number(traffic), traffic_reset_day: Number(resetDay),
+  };
+  // 没改动时不能保存：和上一次保存（或打开时）提交的内容比
+  const sig = JSON.stringify([dueDate, auto, OV_FIELDS.map((k) => (ov[k] ? val[k] : null))]);
+  const saved = React.useRef(sig);
   const submit = () => {
-    const val: Record<SubField, string | number> = {
-      price_cents: Math.round(priceNum * 100), currency, cycle, billing_tz: tz, remind_days: Number(remind), traffic_gb: Number(traffic), traffic_reset_day: Number(resetDay),
-    };
     const body: SubscriptionBody = {
       due_date: dueDate, auto_renew: auto, ...Object.fromEntries(OV_FIELDS.map((k) => [k, ov[k] ? val[k] : null])),
     };
-    save.mutate({ id: m.id, ...body }, { onSuccess: () => toast.ok('订阅已保存'), onError: toast.err });
+    save.mutate({ id: m.id, ...body }, { onSuccess: () => { saved.current = sig; toast.ok('订阅已保存'); }, onError: toast.err });
   };
+  // 费用框里的单位：生效的币种 / 周期（单独设置的取输入，跟随的取套餐 / 供应商的）
+  const priceUnit = `${ov.currency ? currency : m.sub_template?.currency ?? currency} / ${cycleLabel(ov.cycle ? cycle : m.sub_template?.cycle ?? cycle)}`;
   const o = (k: SubField, label: string, children: React.ReactElement, error?: string, info?: string) => (
     <OvField m={m} k={k} label={label} info={info} on={ov[k]} setOn={setOn(k)} due={dueDate} error={error} locked={legacy || (k === 'price_cents' && priceLocked)}>{children}</OvField>
   );
   return (
     <div className="form-grid">
       <Field label="到期日" hint={dueDate === '' ? '必填' : undefined} error={dueBad ? '格式应为 YYYY-MM-DD' : undefined}><DateField value={dueDate} onChange={setDueDate} /></Field>
-      {o('price_cents', '费用', <Input inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="68" aria-invalid={priceBad || undefined} />, priceBad ? (price.trim() === '' ? '必填，免费填 0' : '应为 0 或正数') : undefined)}
+      {o('price_cents', '费用', <UnitInput width="full" unit={priceUnit} style={{ paddingRight: `calc(var(--sp-10) + ${priceUnit.length * 0.62 + 0.4}em)` }} inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="68" aria-invalid={priceBad || undefined} />, priceBad ? (price.trim() === '' ? '必填，免费填 0' : '应为 0 或正数') : undefined)}
       {o('currency', '币种', <Select value={currency} onChange={setCurrency} options={F.withCurrent(currencyOptions(), currency)} />)}
       {o('cycle', '计费周期', <Select value={cycle} onChange={setCycle} options={cycleOptions()} />)}
       {o('billing_tz', '账单时区', <TzInput value={tz} onChange={setTz} aria-label="账单时区" />, tzBad ? '填 IANA 时区名，如 Asia/Shanghai' : undefined, '到期日按这个时区的日期算')}
@@ -168,7 +174,7 @@ function SubForm({ m }: { m: MachineView }) {
       {o('traffic_gb', '流量上限（GB）', <Input inputMode="numeric" value={traffic} onChange={(e) => setTraffic(e.target.value.replace(/\D/g, ''))} placeholder="0 = 不限" />, trafficBad ? '填 GB 数，0 = 不限' : undefined)}
       {o('traffic_reset_day', '流量重置日', <Input inputMode="numeric" maxLength={2} value={resetDay} onChange={(e) => setResetDay(e.target.value.replace(/\D/g, ''))} placeholder="1–31" />, resetBad ? '填 1–31' : undefined, '每月几号重置，按账单时区；月份没有这一天按月末')}
       <div className="row span-2" style={{ gap: 4 }}><label className="check-row" style={{ gap: 10 }}><Switch checked={auto} onCheckedChange={setAuto} /><span>到期自动续费</span></label><InfoTip text="只用于提醒口径，不会真的扣款" /></div>
-      <div className="span-2 row" style={{ justifyContent: 'flex-end' }}><Button variant="primary" disabled={!valid || save.isPending} loading={save.isPending} onClick={submit}>保存订阅</Button></div>
+      <div className="span-2 row" style={{ justifyContent: 'flex-end' }}><Button variant="primary" disabled={!valid || sig === saved.current || save.isPending} loading={save.isPending} onClick={submit}>保存订阅</Button></div>
     </div>
   );
 }

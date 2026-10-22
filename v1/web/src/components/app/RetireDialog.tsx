@@ -1,4 +1,4 @@
-// 退役确认：输入显示名确认。线路机还挂着节点入口时预览带阻断原因（blockers）：对话框先说清做不了、给「搬空到…」，确认按钮禁用。两种去向：移入备用（默认，机器照常运行，订阅到期满 1 天后自动回收）或立即清理并移入回收站；
+// 退役确认：输入显示名确认。线路机还挂着节点入口时预览带阻断原因（blockers）：对话框只留原因条、「搬空到…」和「关闭」，不要原因框、确认输入和确认按钮。两种去向：移入备用（默认，机器照常运行，订阅到期满 1 天后自动回收）或立即清理并移入回收站；
 // 附“后面的节点会改名”预览、还指向它的软路由出口（警告，可跳去「替换为…」）。抽屉“管理”页和卡片/表格的右键菜单共用这一份。
 // 宿主机：预览列出会一并走的同机 IP 节点；同机 IP 节点：只动它自己，宿主机不受影响。已在备用里的机器只能立即回收。
 import * as React from 'react';
@@ -52,7 +52,7 @@ export const RetireDialog = resetOnOpen(function RetireDialog({ m, open, onOpenC
     <TypedConfirmDialog open={open} onOpenChange={onOpenChange} size="md" title={`${inSpare ? '回收' : '退役'} ${m.name}？`} expected={m.name} prompt="请输入显示名" danger
       confirmLabel={mode === 'spare' ? '移入备用' : inSpare ? '立即回收' : '清理并回收'}
       description={p && !canSpare ? <>已有连接会断开 <InfoTip text="入口会立即停用，机器移入回收站，不能恢复；要重新用只能重新上架。" /></> : undefined}
-      confirmDisabled={!p || blocked}
+      confirmDisabled={!p} blocked={blocked}
       onConfirm={async () => {
         const r = await retire.mutateAsync({ id: m.id, confirm: m.name, now: mode === 'now', cleanup: mode === 'now' ? cleanup : undefined, reason: reason.trim() || undefined });
         if (r.mode === 'spare') toast.ok(`已移入备用：${r.from} → ${r.name}${r.ip_nodes.length ? `，连同 ${r.ip_nodes.length} 个同机 IP 节点` : ''}`);
@@ -115,13 +115,13 @@ export const RetireDialog = resetOnOpen(function RetireDialog({ m, open, onOpenC
           )}
         </Note>
       )}
-      {mode === 'now' && m.kind !== 'relay' && (
+      {mode === 'now' && m.kind !== 'relay' && !blocked && (
         <div className="row" style={{ gap: 4 }}>
           <CheckRow checked={cleanup} onChange={setCleanup}>{h ? '清理这个 IP 的服务' : '清理节点上的服务'}</CheckRow>
           <InfoTip text={h ? '停掉它在宿主机上的 SS 实例、删掉它的防火墙规则' : xs.length ? '卸载 agent 与代理服务，连同同机 IP 节点的实例' : '卸载 agent 与代理服务'} />
         </div>
       )}
-      <Field label="原因（选填）"><Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="例如：供应商到期不续" /></Field>
+      {!blocked && <Field label="原因（选填）"><Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="例如：供应商到期不续" /></Field>}
     </TypedConfirmDialog>
   );
 });
