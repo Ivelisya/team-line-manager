@@ -9,6 +9,7 @@ import {
 } from '@/lib/policy';
 import { MAX_NOTE, diffDomains, domainsToText, parseDomainText } from '@/lib/policyDomains';
 import * as F from '@/lib/format';
+import { meta } from '@/lib/derive';
 import { Button } from '@/components/ui/button';
 import { Field, Input, Textarea } from '@/components/ui/form';
 import { Segmented, Tip, Trunc } from '@/components/ui/overlays';
@@ -456,7 +457,7 @@ function VersionsPanel() {
                         <span className="pol-relays">
                           {v.relays.map((r) => (
                             <Tip key={r.relay_id} text={r.error ? `${r.name ?? '线路机'}：${r.error}` : `${r.name ?? '线路机'}：配置版本 ${r.generation} · 已生效 ${r.applied_generation ?? '—'}（两个数相等表示线路机已同步）`}>
-                              <span className="pol-relay" tabIndex={0}>{r.name ?? '线路机'}<small>{STATUS[r.status].label}</small>{(r.status === 'failed' || r.status === 'applying') && <i className="smark" data-tone={STATUS[r.status].tone} data-spin={r.status === 'applying' ? '' : undefined} aria-hidden />}</span>
+                              <span className="pol-relay" tabIndex={0}>{r.name ?? '线路机'}<small>{meta().policy_sync_states[r.status] ?? r.status}</small>{(r.status === 'failed' || r.status === 'applying') && <i className="smark" data-tone={STATUS[r.status].tone} data-spin={r.status === 'applying' ? '' : undefined} aria-hidden />}</span>
                             </Tip>
                           ))}
                         </span>

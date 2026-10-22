@@ -22,6 +22,7 @@ export const META: Meta = {
   traffic_rules: { min: '网卡入出取小', max: '网卡入出取大', sum: '网卡入出相加', out: '只算网卡出站' },
   traffic_resets: { month: '自然月', billing: '账单日' },
   due_states: { ok: '未到期', soon: '即将到期', overdue: '已过期' },
+  policy_sync_states: { applied: '已应用', applying: '进行中', failed: '失败', gone: '已退役' },
   policy_modes: { observe: '仅观察', allowlist: '白名单', denylist: '黑名单', blocked: '暂停新连接', inherit: '跟随团队' },
   rules: {
     agent_offline: 'agent 离线', clock_skew: 'agent 时钟不准', no_entry: '没有在用入口', egress_fail: '出口不通', tcp_fail: '线路到节点不通', renewal_due: '即将到期', renewal_overdue: '已过期',

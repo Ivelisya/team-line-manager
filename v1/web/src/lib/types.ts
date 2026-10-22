@@ -121,6 +121,8 @@ export interface Meta {
   traffic_rules: Record<string, string>; traffic_resets: Record<string, string>; due_states: Record<string, string>;
   /** 访问策略的模式 → 中文名 */
   policy_modes: Record<string, string>;
+  /** 策略版本在线路机上的同步状态：applied / applying / failed / gone */
+  policy_sync_states: Record<string, string>;
   /** 告警规则 key → 中文名 */
   rules: Record<string, string>;
   severities: Record<string, { label: string; tone: 'bad' | 'warn' | 'info' }>;
