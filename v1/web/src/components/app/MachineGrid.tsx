@@ -40,7 +40,7 @@ function fitCols(cols: Col[], order: Col[], width: number) {
 
 /** 整张表：固定列宽（colgroup，最小宽度为显示列的列宽合计），点行 / 回车打开抽屉，右键菜单整个 tbody 共用一份（NodeMenus）。
  *  容器窄时先收起次要列（Col.drop），收完放得下就不横滑；收起几列只在跨过阈值时变，其余宽度变化不重渲染。
- *  dim：哪些行调淡（首页是数据过期的，机器页只调淡已退役的）；须是模块常量，行是 memo 的。
+ *  dim：哪些行调淡（首页是数据过期的，机器页都不调淡）；须是模块常量，行是 memo 的。
  *  sig：列里不显示实时读数的表（机器页）给一份行签名（模块常量），推送只换了读数、签名没变的行不重渲染。
  *  放得下（不用横滑）时容器带 data-fit，表头吸顶（table.css）；随宽度变化直接改属性 */
 export function MachineGrid({ cols, rows, sort, onSort, openId, onOpen, dim = isQuiet, sig, className }: {
@@ -50,7 +50,7 @@ export function MachineGrid({ cols, rows, sort, onSort, openId, onOpen, dim = is
   const wrap = React.useRef<HTMLDivElement>(null);
   const [dropped, setDropped] = React.useState(0);
   const order = React.useMemo(() => droppable(cols, sort?.id), [cols, sort?.id]);
-  // 挂载、换列（在用 / 已退役）时先在绘制前按当前宽度算一次，不先露出全部列和横向滚动条再收；之后的宽度变化交给共享的 ResizeObserver
+  // 挂载、换列时先在绘制前按当前宽度算一次，不先露出全部列和横向滚动条再收；之后的宽度变化交给共享的 ResizeObserver
   React.useLayoutEffect(() => {
     const el = wrap.current!;
     const apply = (w: number) => { const f = fitCols(cols, order, w); el.toggleAttribute('data-fit', f.fit); setDropped(f.n); };

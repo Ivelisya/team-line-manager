@@ -31,12 +31,6 @@ export const openEvacuate = evacuate.open;
 export const closeEvacuate = evacuate.close;
 export const useEvacuateTarget = evacuate.use;
 
-/** 恢复已退役的机器 */
-const restore = target();
-export const openRestore = restore.open;
-export const closeRestore = restore.close;
-export const useRestoreTarget = restore.use;
-
 /** 给一台机器开维护窗口（卡片菜单、抽屉「管理」）：对话框见 components/app/MaintenanceDialog */
 const maint = target();
 export const openMaint = maint.open;

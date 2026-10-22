@@ -6,7 +6,7 @@ import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClie
 import { del, get, patch, post, put } from './api';
 import { collator, makeDefaultCompare } from './sort';
 import { offlineNames, quotaTight, setMeta } from './derive';
-import type { ApiKey, Availability, Incident, Job, JobSummary, Paged, JobLog, MachineView, Meta, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RetireResult, RestoreBody, RestorePreview, ReplaceBody, ReplacePreview, MoveResult, EvacuateResult, ProbeBeats, SeriesResp, Silence, SubField, Team, AuditEntry, NotifyChannel, NotifyLogEntry, AccountSession, TotpSetup, TotpStatus } from './types';
+import type { ApiKey, Availability, Incident, Job, JobSummary, Paged, JobLog, MachineView, Meta, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RetireResult, RecycleItem, RecycleDetail, ReplaceBody, ReplacePreview, MoveResult, EvacuateResult, ProbeBeats, SeriesResp, Silence, SubField, Team, AuditEntry, NotifyChannel, NotifyLogEntry, AccountSession, TotpSetup, TotpStatus } from './types';
 
 export const useMe = () => useQuery({ queryKey: ['me'], queryFn: () => get<{ username: string }>('/auth/me'), retry: false, staleTime: 5 * 60_000 });
 /** 中文名、枚举、阈值、默认值（服务端 meta.rs），一次会话内不变：取回时同时交给 derive 的同步读取（kindLabel 等）。外壳等它到了才渲染页面 */
@@ -19,15 +19,15 @@ export const useProviders = () => useQuery({ queryKey: ['providers'], queryFn: (
 export const usePlans = () => useQuery({ queryKey: ['plans'], queryFn: () => get<Plan[]>('/plans'), staleTime: 60_000 });
 export const useOverview = () => useQuery({ queryKey: ['overview'], queryFn: ({ signal }) => get<Overview>('/overview', signal) });
 
-const machinesQuery = (scope: 'live' | 'retired') => ({ queryKey: ['machines', scope], queryFn: ({ signal }: { signal: AbortSignal }) => get<MachineView[]>(`/machines?scope=${scope}`, signal) });
+const machinesQuery = { queryKey: ['machines', 'live'], queryFn: ({ signal }: { signal: AbortSignal }) => get<MachineView[]>('/machines?scope=live', signal) };
 /** 按默认顺序排好的副本（线路机 → 团队 → 编号，故障/离线不下沉）：机器列表的几个 select 与 readMachines 共用 */
 const sortDefault = (d: MachineView[], teams: Team[] | undefined) => [...d].sort(makeDefaultCompare(teams ?? []));
 /** 机器列表，已按默认顺序排好 */
-export function useMachines(scope: 'live' | 'retired' = 'live') {
+export function useMachines() {
   const teams = useTeams().data;
   // select 排序：只在列表或团队变化时重算；返回的是查询结果本身，调用方按属性追踪
   const select = useCallback((d: MachineView[]) => sortDefault(d, teams), [teams]);
-  return useQuery({ ...machinesQuery(scope), select });
+  return useQuery({ ...machinesQuery, select });
 }
 /** 只用名称等少量字段的页面（访问监控的节点下拉、告警页的对象与续费）：读数不进来 */
 export type MachineBrief = Pick<MachineView, 'id' | 'name' | 'kind' | 'team' | 'subscription'>;
@@ -40,7 +40,7 @@ const label = (m: MachineView): MachineLabel => ({ id: m.id, name: m.name, ip: m
 function useMachinesPicked<T>(pick: (m: MachineView) => T) {
   const teams = useTeams().data;
   const select = useCallback((d: MachineView[]) => sortDefault(d, teams).map(pick), [teams, pick]);
-  return useQuery({ ...machinesQuery('live'), select });
+  return useQuery({ ...machinesQuery, select });
 }
 export const useMachineBriefs = () => useMachinesPicked(brief);
 export const useMachineLabels = () => useMachinesPicked(label);
@@ -50,18 +50,18 @@ export interface HostChoice { id: string; name: string; ip: string; team_id: str
 const hostChoices = (d: MachineView[]) => d.filter((m) => m.kind === 'vps' && m.lifecycle === 'active' && !m.host_machine)
   .map((m): HostChoice => ({ id: m.id, name: m.name, ip: m.ip, team_id: m.team?.id ?? '', relay_id: m.entries[0]?.relay.id ?? '', ssh_port: m.ssh_port, provider: m.provider?.name ?? null }))
   .sort((a, b) => collator.compare(a.name, b.name));
-export const useHostChoices = (enabled: boolean) => useQuery({ ...machinesQuery('live'), select: hostChoices, enabled });
+export const useHostChoices = (enabled: boolean) => useQuery({ ...machinesQuery, select: hostChoices, enabled });
 /** 团队与套餐页：各团队的编号是否已经连续（01..N），已连续时「重新编号」不可点。范围同服务端重新编号：团队里未退役的非线路机 */
 const numbersCompact = (d: MachineView[]) => {
   const by: Record<string, number[]> = {};
   for (const m of d) if (m.team && m.kind !== 'relay' && m.lifecycle !== 'retired' && m.number != null) (by[m.team.id] ??= []).push(m.number);
   return Object.fromEntries(Object.entries(by).map(([t, ns]) => [t, ns.sort((a, b) => a - b).every((n, i) => n === i + 1)]));
 };
-export const useTeamsCompact = () => useQuery({ ...machinesQuery('live'), select: numbersCompact });
+export const useTeamsCompact = () => useQuery({ ...machinesQuery, select: numbersCompact });
 /** 首页 KPI「流量额度」：同一份机器列表缓存，只取吃紧的台数与最紧的一台；结果做结构共享，没变时首页总览不跟着推送重渲染 */
-export const useQuotaTight = () => useQuery({ ...machinesQuery('live'), select: quotaTight });
+export const useQuotaTight = () => useQuery({ ...machinesQuery, select: quotaTight });
 /** 集群状态在线率格条的悬停：离线机器的名字。同一份缓存，结构共享：没人上下线时引用不变 */
-export const useOfflineNames = () => useQuery({ ...machinesQuery('live'), select: offlineNames });
+export const useOfflineNames = () => useQuery({ ...machinesQuery, select: offlineNames });
 /** readMachines 的排序结果按原数组引用缓存：抽屉每次渲染都要算上一台 / 下一台，列表没换（推送间隙）就不再复制、排序整表 */
 const sortedCache = new WeakMap<MachineView[], { teams: Team[] | undefined; list: MachineView[] }>();
 /** 按键等“用时才读”的场景：直接读缓存里的机器列表（同样的默认顺序），不订阅、不触发请求 */
@@ -75,7 +75,7 @@ export function readMachines(qc: QueryClient): MachineView[] | undefined {
   sortedCache.set(raw, { teams, list });
   return list;
 }
-/** 机器列表缓存（在用 / 已退役都找）里的这台，和那份列表取回的时刻 */
+/** 机器列表缓存里的这台，和那份列表取回的时刻 */
 function fromLists(qc: QueryClient, id: string | null) {
   for (const q of qc.getQueryCache().findAll({ queryKey: ['machines'] })) {
     const m = (q.state.data as MachineView[] | undefined)?.find((x) => x.id === id);
@@ -132,7 +132,7 @@ export const useAuditLog = (cat: string, q: string) => useInfiniteQuery({
   },
   getNextPageParam: (last) => (last.length < AUDIT_PAGE ? undefined : String(last[last.length - 1].id)),
 });
-/** 作业列表一页（按创建先后倒序）；kind：作业类型（provision / restore 是大类，其余是作业类型原值，'' = 全部）。换页时先留着上一页，不闪骨架 */
+/** 作业列表一页（按创建先后倒序）；kind：作业类型（provision 是大类，其余是作业类型原值，'' = 全部）。换页时先留着上一页，不闪骨架 */
 export const useJobs = (state: 'active' | 'done' | 'all' = 'all', offset = 0, limit = 100, kind = '') =>
   useQuery({ queryKey: ['jobs', state, offset, limit, kind], queryFn: ({ signal }) => get<Paged<JobSummary>>(`/jobs?state=${state}&limit=${limit}&offset=${offset}${kind ? `&kind=${kind}` : ''}`, signal), placeholderData: keepPreviousData, staleTime: Infinity });
 /** 作业详情：靠实时流的 job 事件失效重取 */
@@ -158,8 +158,8 @@ export interface StreamEvent { type: string; id?: string }
  *  availability：近 N 天可用率按账单时区分天，改订阅（machine 事件）可能换了时区 */
 export function eventKeys(ev: StreamEvent): unknown[][] {
   switch (ev.type) {
-    case 'machine': return [['machine', ev.id], ['machines'], ['overview'], ['audit'], ['policies', 'list'], ['policies', 'versions'], ['incidents'], ['jobs'], ['availability', ev.id]];
-    case 'machines': return [['machine'], ['machines'], ['relays'], ['overview'], ['audit'], ['policies', 'list'], ['policies', 'versions']];
+    case 'machine': return [['machine', ev.id], ['machines'], ['recycle-bin'], ['overview'], ['audit'], ['policies', 'list'], ['policies', 'versions'], ['incidents'], ['jobs'], ['availability', ev.id]];
+    case 'machines': return [['machine'], ['machines'], ['recycle-bin'], ['relays'], ['overview'], ['audit'], ['policies', 'list'], ['policies', 'versions']];
     case 'relay': return [['relays'], ['machines']];
     case 'job': return [['jobs'], ['job', ev.id]];
     case 'incidents': return [['incidents'], ['silences']];
@@ -194,8 +194,7 @@ export type SubscriptionBody = { due_date: string; auto_renew?: boolean }
 export type PlanBody = Omit<Plan, 'id' | 'archived_at' | 'machine_count'>;
 export const useLogin = () => useWrite((b: { username: string; password: string; totp?: string }) => post<{ username: string }>('/auth/login', b), [['me']]);
 export const usePatchMachine = () => useWrite(({ id, ...b }: { id: string } & MachinePatchBody) => patch<MachineView>(`/machines/${id}`, b), [...M, ['teams']]);
-export const useRetire = () => useWrite(({ id, ...b }: { id: string; confirm: string; reason?: string; cleanup?: boolean }) => post<RetireResult>(`/machines/${id}/retire`, b), [...M, ['jobs']]);
-export const usePurge = () => useWrite(({ id, ...b }: { id: string; confirm: string }) => post<{ job_id: string }>(`/machines/${id}/purge`, b), [...M, ['jobs']]);
+export const useRetire = () => useWrite(({ id, ...b }: { id: string; confirm: string; reason?: string; now?: boolean; cleanup?: boolean }) => post<RetireResult>(`/machines/${id}/retire`, b), [...M, ['jobs'], ['teams'], ['recycle-bin']]);
 export const useSaveSubscription = () => useWrite(({ id, ...b }: { id: string } & SubscriptionBody) => put(`/machines/${id}/subscription`, b), M);
 /** 续费：new_due 与 cycles（续几个周期，服务端算新到期日）二选一 */
 export const useRenew = () => useWrite(({ id, ...b }: { id: string; amount_cents?: number; note?: string } & ({ new_due: string } | { cycles: number })) =>
@@ -204,22 +203,6 @@ export const useEntryAction = () => useWrite(({ id, ...b }: { id: string; action
 export const useAddEntry = () => useWrite(({ id, relay_id }: { id: string; relay_id: string }) => post<{ job_id: string }>(`/machines/${id}/entries`, { relay_id }), [...M, ['jobs']]);
 export const useMoveEntry = () => useWrite(({ id, ...b }: { id: string; to_relay_id: string; from_relay_id?: string }) => post<MoveResult>(`/machines/${id}/move`, b), [...M, ['jobs']]);
 export const useEvacuate = () => useWrite(({ id, to_relay_id }: { id: string; to_relay_id: string }) => post<EvacuateResult>(`/relays/${id}/evacuate`, { to_relay_id }), [...M, ['jobs']]);
-export const useRestore = () => useWrite(({ id, ...b }: { id: string } & RestoreBody) => post<{ job_id: string; machine_id: string; name: string; old_name: string; number: number | null }>(`/machines/${id}/restore`, b), [...M, ['jobs'], ['teams']]);
-/** 恢复预检；probe=false 不试 SSH（改团队/编号时只想看新名字，不必每次重新探测） */
-export const useRestorePreview = (id: string | null, enabled: boolean, o: { team_id?: string; number?: number; label?: string; probe?: boolean } = {}) =>
-  useQuery<RestorePreview>({
-    queryKey: ['restore-preview', id, o.team_id ?? '', o.number ?? '', o.label ?? '', o.probe !== false], enabled: !!id && enabled, staleTime: 0, gcTime: 0, placeholderData: (p) => p,
-    // 预检会真的 SSH 探测机器：切回窗口 / 网络恢复时不要自动重跑，改选项（queryKey 变化）才重查
-    refetchOnWindowFocus: false, refetchOnReconnect: false,
-    queryFn: ({ signal }) => {
-      const q = new URLSearchParams();
-      if (o.team_id) q.set('team_id', o.team_id);
-      if (o.number != null) q.set('number', String(o.number));
-      if (o.label) q.set('label', o.label);
-      if (o.probe === false) q.set('probe', 'false');
-      return get<RestorePreview>(`/machines/${id}/restore${q.size ? `?${q}` : ''}`, signal);
-    },
-  });
 /** 替换节点：预览（只读库，不登录机器）与提交（建 replace 作业：改软路由出口 → 交换编号） */
 export const useReplacePreview = (id: string | null, enabled: boolean, o: { new_machine_id: string; team_id?: string; number?: number; routers: boolean }) =>
   useQuery<ReplacePreview>({
@@ -276,8 +259,8 @@ export const useEndMaintenance = () => {
     return owner;
   }, [['silences'], ['incidents'], ['machines'], ['machine'], ['overview']]);
 };
-export const useAddTeam = () => useWrite((b: { name: string; sort_order?: number; spare?: boolean }) => post('/teams', b), [['teams']]);
-export const usePatchTeam = () => useWrite(({ id, ...b }: { id: string; name?: string; sort_order?: number; spare?: boolean }) => patch(`/teams/${id}`, b), [['teams'], ...M]);
+export const useAddTeam = () => useWrite((b: { name: string; sort_order?: number }) => post('/teams', b), [['teams']]);
+export const usePatchTeam = () => useWrite(({ id, ...b }: { id: string; name?: string; sort_order?: number }) => patch(`/teams/${id}`, b), [['teams'], ...M]);
 export const useRenumber = () => useWrite(({ id, token }: { id: string; token: string }) => post(`/teams/${id}/renumber`, { token }), [['teams'], ...M]);
 export const fetchRenumber = (id: string) => get<RenumberPreview>(`/teams/${id}/renumber`);
 export const useAddProvider = () => useWrite((b: Partial<Provider>) => post('/providers', b), [['providers']]);
@@ -318,6 +301,7 @@ export const usePatchChannel = () => useWrite(({ id, ...b }: { id: string; name?
 export const useDelChannel = () => useWrite((id: string) => del(`/notify-channels/${id}`), [['notify-channels'], ['notify-log']]);
 export const useTestChannel = () => useWrite((id: string) => post<{ ok: boolean; error: string | null }>(`/notify-channels/${id}/test`), [['notify-log']]);
 export const useNotifyLog = () => useQuery({ queryKey: ['notify-log'], queryFn: () => get<NotifyLogEntry[]>('/notify-log?limit=100') });
+/** 退役预览：进备用的可行性（spare）、同机 IP 节点、还指向它的软路由出口、原团队的改名 */
 export const useRetirePreview = (id: string | null, enabled: boolean) => useQuery({ queryKey: ['retire-preview', id], queryFn: ({ signal }) => get<RetirePreview>(`/machines/${id}/retire`, signal), enabled: !!id && enabled, staleTime: 0, gcTime: 0, refetchOnWindowFocus: false, refetchOnReconnect: false });
 
 // ---- 设置页：账户安全（两步验证、登录会话、改密码） ----
@@ -333,3 +317,16 @@ export const useRevokeSession = () => useWrite((id: string) => del(`/account/ses
 export const useRevokeOtherSessions = () => useWrite((b: { password: string; totp?: string }) => post<{ revoked: number }>('/account/sessions/revoke-others', b), [['account', 'sessions']]);
 /** 改密码：成功后服务端撤销本设备以外的所有会话；revoke_api_keys 同时撤销全部 API 密钥 */
 export const useChangePassword = () => useWrite((b: { current: string; new: string; totp?: string; revoke_api_keys?: boolean }) => post<{ ok: boolean; revoked_sessions: number; revoked_api_keys: number }>('/account/password', b), [['account', 'sessions'], ['api-keys']]);
+
+// ---- 回收站（只读）：退役后到期清理、移出面板的机器，来源 fleet（本面板）或 legacy（旧面板导入） ----
+export const useRecycleBin = (o: { q: string; source: string; offset: number; limit: number }) => useQuery({
+  queryKey: ['recycle-bin', o.q, o.source, o.offset, o.limit], placeholderData: keepPreviousData,
+  queryFn: ({ signal }) => {
+    const p = new URLSearchParams({ limit: String(o.limit), offset: String(o.offset) });
+    if (o.q) p.set('q', o.q);
+    if (o.source) p.set('source', o.source);
+    return get<Paged<RecycleItem>>(`/recycle-bin?${p}`, signal);
+  },
+});
+/** 展开一行才取：快照里的关键字段 */
+export const useRecycleDetail = (id: number | null) => useQuery({ queryKey: ['recycle-bin', 'one', id], enabled: id != null, staleTime: Infinity, queryFn: ({ signal }) => get<RecycleDetail>(`/recycle-bin/${id}`, signal) });

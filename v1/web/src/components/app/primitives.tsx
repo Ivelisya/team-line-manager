@@ -25,11 +25,9 @@ export function FromTag({ from, tip }: { from: string | null | undefined; tip?: 
   return from ? <> <span className="unit" data-tip={tip}>{mmdd(from)} 起</span></> : null;
 }
 
-/** 表格「本月流量」格：主值 = 下行 + 上行（家宽代理、同机 IP 节点是下载 + 上传），副行「↓ X ↑ Y」/「业务 · 下载 X」，不完整时副行末尾灰字「10-22 起」。
- *  empty：没有流量时写 “—”（已退役的） */
-export function MonthFlowCell({ m, empty }: { m: MachineView; empty?: boolean }) {
+/** 表格「本月流量」格：主值 = 下行 + 上行（家宽代理、同机 IP 节点是下载 + 上传），副行「↓ X ↑ Y」/「业务 · 下载 X」，不完整时副行末尾灰字「10-22 起」。 */
+export function MonthFlowCell({ m }: { m: MachineView }) {
   const f = monthFlow(m);
-  if (empty && !f.total) return <span className="t-muted">—</span>;
   return (
     <div data-tip={monthFlowTip(m)}>
       <Num f={bytes(f.total)} />
@@ -83,10 +81,10 @@ export function Due({ days, state, tail }: { days: number | null | undefined; st
   return <span className="due" data-tone={d.tone || undefined}>{d.pre && <span className="due-t">{d.pre}</span>}{d.f && <Num f={d.f} />}{post && <span className="due-t">{post}</span>}</span>;
 }
 /** 备用团队的说明（团队编辑、团队列表、机器卡片与抽屉的到期旁共用） */
-export const SPARE_TIP = '备用团队里在用的机器，订阅过期满 1 天（按账单时区，到期日的次日过完）后，中控自动退役（清理服务）并彻底删除；续费顺延了到期日就不删。';
-/** 备用团队在用机器的到期旁：「到期 +1 天自动删除」+ (i)；iconOnly 只放 (i)（卡片上地方小，短句放进悬停） */
-export function SpareDue({ iconOnly }: { iconOnly?: boolean }) {
-  return <>{' '}{!iconOnly && <span className="t-sub">到期 +1 天自动删除</span>}<InfoTip text={iconOnly ? `到期 +1 天自动删除：${SPARE_TIP}` : SPARE_TIP} /></>;
+export const SPARE_TIP = '备用团队里在用的机器，订阅过期满 1 天（按账单时区，到期日的次日过完）后，中控自动清理节点上的服务并移入回收站；续费顺延了到期日就不回收。';
+/** 备用团队在用机器的到期旁：「MM-DD 起自动回收」+ (i)；iconOnly 只放 (i)（卡片上地方小，短句放进悬停） */
+export function SpareDue({ on, iconOnly }: { on: string; iconOnly?: boolean }) {
+  return <>{' '}{!iconOnly && <span className="t-sub">{on} 起自动回收</span>}<InfoTip text={iconOnly ? `${on} 起自动回收：${SPARE_TIP}` : SPARE_TIP} /></>;
 }
 export const LifecyclePill = ({ lc }: { lc: Lifecycle | string }) => (
   <Pill tone={lc === 'active' ? 'ok' : lc === 'provisioning' || lc === 'retiring' ? 'info' : lc === 'failed' ? 'bad' : 'neutral'}>{lifecycleLabel(lc)}</Pill>

@@ -323,6 +323,12 @@
 /* 禁用（如保存中的开关）：同图标按钮半透明、不再像能点；在 .check-row 里时后面的说明文字一起调淡 */
 .check-row > :disabled ~ span { opacity: var(--o-disabled); }
 .check-row:has(> :disabled) { cursor: default; }
+/* 对话框里的单选项（退役：移入备用 / 立即回收）：整行可点，选中的描边换主色 */
+.choice-list { display: grid; gap: var(--sp-6); }
+.choice { display: flex; align-items: center; gap: var(--sp-8); padding: var(--sp-8) var(--sp-12); border: 1px solid var(--line); border-radius: var(--r-control); font-size: var(--fs-body); cursor: pointer; transition: border-color var(--dur-1) var(--ease-std), background-color var(--dur-1) var(--ease-std); }
+.choice input { flex: none; margin: 0; accent-color: var(--accent-solid); }
+.choice:has(input:checked) { border-color: var(--accent); background: var(--selected); }
+.choice:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 /* ========== 浮层：对话框、抽屉、菜单、提示、toast ==========
    进出场三类（关键帧只写起点或终点，另一端取元素自身的样式）：

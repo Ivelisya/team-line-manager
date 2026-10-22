@@ -1,9 +1,9 @@
-// Mock 数据：约 28 台机器（2 线路机、团队1/团队2 的 VPS 节点、1 台无主机家宽代理、1 台故障、1 台退役中、2 台已退役、1 台上架中、
-// 团队1-03 上的 1 个同机 IP 节点）。
+// Mock 数据：约 28 台机器（2 线路机、团队1/团队2 的 VPS 节点、1 台无主机家宽代理、1 台故障、1 台退役中、3 台备用、1 台上架中、
+// 团队1-03 上的 1 个同机 IP 节点），外加回收站里的几条记录。
 // IP 只用文档保留段 203.0.113.0/24 与 198.51.100.0/24。
 
-import type { ApiKey, Incident, Job, NotifyChannel, NotifyLogEntry, JobLog, MachineView, Plan, Provider, Renewal, Silence, AuditEntry, Team, EntryView, Lifecycle, HealthStatus, Subscription } from '@/lib/types';
-import { addMonths, displayName, str } from '@/lib/format';
+import type { ApiKey, Incident, Job, NotifyChannel, NotifyLogEntry, JobLog, MachineView, Plan, Provider, Renewal, Silence, AuditEntry, Team, EntryView, Lifecycle, HealthStatus, Subscription, RecycleDetail } from '@/lib/types';
+import { addDays, addMonths, displayName, str } from '@/lib/format';
 import { quota, quotaGb } from '@/lib/derive';
 import { META, subCalc } from './meta';
 
@@ -78,6 +78,8 @@ export interface Db {
   apiKeys: ApiKey[]; channels: (NotifyChannel & { config: Record<string, string> })[]; notifyLog: NotifyLogEntry[];
   /** 同机 IP 节点在宿主机上的 SS 端口（服务端存在 node_outbound，MachineView 里没有） */
   ssPorts: Record<string, number>;
+  /** 回收站（只读列表）：新回收的插在最前 */
+  recycle: RecycleDetail[];
   seq: number;
 }
 
@@ -86,6 +88,7 @@ export function buildDb(): Db {
   const teams: Team[] = [
     { id: 't1', name: '团队1', sort_order: 1, spare: false, node_count: 0 },
     { id: 't2', name: '团队2', sort_order: 2, spare: false, node_count: 0 },
+    { id: 'ts', name: '备用', sort_order: 999, spare: true, node_count: 0 },
   ];
   const providers: Provider[] = [
     { id: 'p1', name: '搬瓦工', code: 'BWH', panel_url: 'https://panel.example.com/bwh', timezone: 'America/Los_Angeles', traffic_rule: 'min', traffic_reset: 'rolling30' },
@@ -123,7 +126,7 @@ export function buildDb(): Db {
   };
   const base = (o: Partial<MachineView> & Pick<MachineView, 'id' | 'kind' | 'name' | 'ip'>): MachineView => ({
     team: null, spare: false, number: null, label: null, ssh_port: 22, country: countryOf(o.ip), country_set: null, host_machine: null, bind_ip: null, ip_nodes: [], provider: null, provider_code: null, plan: null, service_ref: null,
-    lifecycle: 'active', lifecycle_reason: null, note: '', revision: 1, created_at: iso(now() - 120 * DAY), activated_at: iso(now() - 100 * DAY), retired_at: null,
+    lifecycle: 'active', lifecycle_reason: null, note: '', revision: 1, created_at: iso(now() - 120 * DAY), activated_at: iso(now() - 100 * DAY), retired_at: null, spare_from: null, spare_since: null, recycle_on: null,
     subscription: null, agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, nic: null, month_counted_from: null, quota: { used: 0, period_start: '', period_end: null, mode: 'monthly', counted_from: null, rule: null, base: null }, health: { status: 'ok', reasons: [] },
     active_job: null, failed_job: null, open_incidents: 0, maintenance: false, relay: null,
     tune: o.kind === 'proxy' || o.host_machine ? null : { profile: 'tune-v1', at: iso(now() - 3 * DAY), current: true }, ...o,
@@ -224,15 +227,23 @@ export function buildDb(): Db {
       health: { status: 'inactive', reasons: [] }, failed_job: { id: 'j-fail', kind: 'provision_vps', state: 'failed' },
     }));
   }
-  // 已退役 ×2
-  for (const [tid, n, ip, days] of [['t1', 3, '198.51.100.88', 40], ['t2', 5, '203.0.113.99', 12]] as const) {
-    const team = teams.find((t) => t.id === tid)!; const p = plan('pl2');
+  // 备用 ×3：退役时移进备用团队，机器照常运行；订阅到期 + 2 天 0 点起自动回收
+  [['t1', 3, '198.51.100.88', 40, 4, '线路淘汰'], ['t2', 5, '203.0.113.99', 12, 11, '供应商到期未续'], ['t1', 8, '198.51.100.89', 25, -1, '换新机']].forEach(([tid, n, ip, days, due, why], i) => {
+    const team = teams.find((t) => t.id === tid)!; const spare = teams.find((t) => t.spare)!; const p = plan('pl2'); const rid = tid === 't1' ? 'r1' : 'r2'; const relay = machines.find((x) => x.id === rid)!;
+    const id = `m-ts-${i + 1}`; const name = displayName(spare.name, i + 1); const sb = sub('pl2', due as number, p.traffic_gb || null);
+    const e: EntryView = {
+      id: `e${eSeq++}`, relay: { id: relay.id, name: relay.name }, node: { id, name }, direct: false, port: 20000 + entriesByRelay[rid].length + 1, lifecycle: 'active', applied: true, apply_error: null,
+      tcp: { ok: true, latency_ms: Math.round(30 + r() * 120), detail: null, ts: iso(now() - 20_000) }, egress: { ok: true, latency_ms: Math.round(120 + r() * 200), detail: null, ts: iso(now() - 40_000) },
+      traffic: { today_up: Math.round(r() * GiB), today_down: Math.round(r() * 3 * GiB), month_up: Math.round(r() * 30 * GiB), month_down: Math.round(r() * 90 * GiB) },
+    };
+    entriesByRelay[rid].push(e);
     machines.push(base({
-      id: `m-${tid}-${n}r`, kind: 'vps', name: displayName(team.name, n), team: { id: team.id, name: team.name }, number: n, ip, lifecycle: 'retired', lifecycle_reason: n === 3 ? '线路淘汰' : '供应商到期未续',
-      retired_at: iso(now() - days * DAY), provider: { id: 'p1', name: '搬瓦工' }, provider_code: 'BWH', plan: { id: p.id, name: p.name, bandwidth_mbps: p.bandwidth_mbps, traffic_gb: p.traffic_gb },
-      health: { status: 'inactive', reasons: [] },
+      id, kind: 'vps', name, team: { id: spare.id, name: spare.name }, spare: true, number: i + 1, ip: ip as string, service_ref: `SVC-${2000 + i}`, lifecycle_reason: why as string,
+      spare_from: displayName(team.name, n as number), spare_since: iso(now() - (days as number) * DAY / 4), recycle_on: addDays(sb.due_date, 2),
+      provider: { id: 'p1', name: '搬瓦工' }, provider_code: 'BWH', plan: { id: p.id, name: p.name, bandwidth_mbps: p.bandwidth_mbps, traffic_gb: p.traffic_gb }, subscription: sb,
+      agent: { version: '1.0.3', last_report_at: iso(now() - 9000), online: true, xray_running: null, cores: 2, health: null }, host: hostOf(id, 12), entries: [e],
     }));
-  }
+  });
   // 同机 IP 节点：团队1-03 上另配的一个 IP。SSH 端口、供应商、agent 与主机读数是宿主机的（agent、host 与宿主机同一个对象，读数一起变），
   // 不带套餐、默认不记费用；SS 端口 8389
   {
@@ -300,9 +311,9 @@ export function buildDb(): Db {
     mk('j-fail', 'provision_vps', { id: 'x1', name: '团队2-12' }, 'failed', PSTEPS, 0, 95, '主机指纹与记录的不一致：203.0.113.77 可能重装过'),
     mk('j-ret', 'retire', { id: 'm-t2-07', name: '团队2-07' }, 'running', RSTEPS, 1, 3),
     mk('j-retfail', 'retire', { id: 'm-t2-10', name: '团队2-10' }, 'failed', RSTEPS, 1, 30, 'SSH 连接超时：203.0.113.30:22'),
-    mk('j-done1', 'retire', { id: 'm-t2-5r', name: '团队2-05' }, 'succeeded', RSTEPS, 4, 60 * 24 * 12),
+    mk('j-done1', 'retire', { id: 'm-t2-05', name: '团队2-05' }, 'succeeded', RSTEPS, 4, 60 * 24 * 12),
     mk('j-done2', 'provision_vps', { id: 'm-t1-12', name: '团队1-12' }, 'succeeded', PSTEPS, 5, 60 * 24 * 30),
-    mk('j-done3', 'retire', { id: 'm-t1-3r', name: '团队1-03' }, 'succeeded', RSTEPS, 4, 60 * 24 * 40),
+    mk('j-done3', 'retire', { id: 'm-t1-03', name: '团队1-03' }, 'succeeded', RSTEPS, 4, 60 * 24 * 40),
   ];
   jobs[0].steps[3].state = 'pending';
   const failStep = (id: string, kind: string) => { const j = jobs.find((x) => x.id === id)!; j.steps.find((x) => x.state === 'failed')!.error_kind = kind; return j; };
@@ -396,8 +407,43 @@ export function buildDb(): Db {
   ];
   const s3 = machines.find((m) => m.id === 'm-t1-03')!.subscription!;
   const renewals: Record<string, Renewal[]> = { 'm-t1-03': [{ id: 'rn1', old_due: addMonths(s3.due_date, -3), new_due: s3.due_date, amount_cents: s3.price_cents, currency: s3.currency, note: '账单 #2041', actor: 'admin', created_at: iso(now() - 84 * DAY) }] };
-  return { user: 'admin', teams, providers, plans, machines, jobs, logs, incidents, silences, audit, renewals, apiKeys, channels, notifyLog, ssPorts: { 'm-t1-14': 8389 }, seq: 100 };
+  return { user: 'admin', teams, providers, plans, machines, jobs, logs, incidents, silences, audit, renewals, apiKeys, channels, notifyLog, ssPorts: { 'm-t1-14': 8389 }, recycle: recycled(), seq: 100 };
 }
 
 /** 同机 IP 节点上架 / 恢复的步骤（同服务端 jobs::PROVISION_IP） */
 export const IP_STEPS: [string, string][] = [['ip_check', '在宿主机上核对 IP'], ['converge', '节点收敛（SS 实例、防火墙）'], ['attach', '接入线路机'], ['wait_applied', '等待线路机应用'], ['verify', '出口验收'], ['activate', '上线']];
+
+/** 回收站里的几条记录：本面板（fleet）回收的和旧面板（legacy）导入的 */
+function recycled(): RecycleDetail[] {
+  const GiB = 1024 ** 3;
+  const ago = (d: number) => iso(now() - d * DAY);
+  const row = (id: number, o: Partial<RecycleDetail> & Pick<RecycleDetail, 'source' | 'kind' | 'name'>): RecycleDetail => ({
+    id, source_id: o.source === 'legacy' ? `legacy-${id}` : `m-gone-${id}`, machine_id: o.source === 'legacy' ? null : `m-gone-${id}`, last_name: null, team: null, ip: null, host_name: null,
+    provider: null, plan: null, service_ref: null, price_cents: null, currency: null, cycle: null, activated_at: null, retired_at: null, due_date: null, recycled_at: ago(1), reason: null,
+    traffic_up: null, traffic_down: null, nic_rx: null, nic_tx: null, actor: '系统', snapshot: {}, ...o,
+  });
+  return [
+    row(5, { source: 'fleet', kind: 'vps', name: '团队2-07', last_name: '备用-01', team: '团队2', ip: '203.0.113.31', provider: '搬瓦工', plan: 'KVM 2C4G', service_ref: 'SVC-1031', price_cents: 1999, currency: 'USD', cycle: 'monthly',
+      activated_at: ago(130), retired_at: ago(6), due_date: dateOnly(now() - 4 * DAY), recycled_at: ago(1), reason: `备用到期自动回收（到期日 ${dateOnly(now() - 4 * DAY)}）`,
+      traffic_up: 310 * GiB, traffic_down: 1240 * GiB, nic_rx: 1400 * GiB, nic_tx: 330 * GiB, snapshot: {
+        machine: { note: '客户退租' }, name: '备用-01', team: '备用', host: null, provider: '搬瓦工', plan: 'KVM 2C4G', subscription: { due_date: dateOnly(now() - 4 * DAY), price_cents: 1999 },
+        renewals: [0, 1, 2].map((i) => ({ id: `rn-gone-${i}`, old_due: dateOnly(now() - (34 + 30 * i) * DAY), new_due: dateOnly(now() - (4 + 30 * i) * DAY), amount_cents: 1999, currency: 'USD', note: '', actor: 'admin', created_at: ago(34 + 30 * i) })),
+        entries: [{ relay: '线路机1', node: '团队2-07', port: 20011, lifecycle: 'removed', created_at: ago(120), removed_at: ago(6) }, { relay: '线路机2', node: '团队2-07', port: 20034, lifecycle: 'removed', created_at: ago(100), removed_at: ago(6) }],
+        outbound: { protocol: 'shadowsocks', host: '203.0.113.31', port: 8388, method: 'aes-256-gcm', username: null, updated_at: ago(130) },
+      } }),
+    row(4, { source: 'fleet', kind: 'vps', name: '团队1-12', team: '团队1', ip: '198.51.100.42', provider: '搬瓦工', plan: 'KVM 1C2G', service_ref: 'SVC-1012', price_cents: 1299, currency: 'USD', cycle: 'quarterly',
+      activated_at: ago(210), retired_at: ago(22), due_date: dateOnly(now() - 20 * DAY), recycled_at: ago(19), reason: '手动立即回收：线路淘汰', actor: 'admin',
+      traffic_up: 120 * GiB, traffic_down: 640 * GiB, nic_rx: 700 * GiB, nic_tx: 140 * GiB, snapshot: {
+        machine: { note: '' }, name: '团队1-12', team: '团队1', host: null, provider: '搬瓦工', plan: 'KVM 1C2G', subscription: { due_date: dateOnly(now() - 20 * DAY), price_cents: 1299 },
+        renewals: [{ id: 'rn-gone-9', old_due: dateOnly(now() - 110 * DAY), new_due: dateOnly(now() - 20 * DAY), amount_cents: 1299, currency: 'USD', note: '', actor: 'admin', created_at: ago(112) }],
+        entries: [{ relay: '线路机1', node: '团队1-12', port: 20003, lifecycle: 'removed', created_at: ago(200), removed_at: ago(22) }],
+        outbound: { protocol: 'shadowsocks', host: '198.51.100.42', port: 8388, method: 'aes-256-gcm', username: null, updated_at: ago(210) },
+      } }),
+    row(3, { source: 'fleet', kind: 'proxy', name: '团队2-09', team: '团队2', ip: 'hk-home.example.net', provider: 'IPRoyal', plan: '家宽 10G', price_cents: 3500, currency: 'USD', cycle: 'monthly',
+      activated_at: ago(90), retired_at: ago(41), due_date: dateOnly(now() - 40 * DAY), recycled_at: ago(38), reason: '备用到期自动回收', traffic_up: 22 * GiB, traffic_down: 180 * GiB }),
+    row(2, { source: 'legacy', kind: 'vps', name: '团队1-33', team: '团队1', ip: '198.51.100.120', provider: '搬瓦工', plan: 'KVM 2C4G', service_ref: '60131', price_cents: 1999, currency: 'USD', cycle: 'monthly',
+      activated_at: ago(300), retired_at: ago(60), due_date: dateOnly(now() - 59 * DAY), recycled_at: ago(5), reason: '旧面板已退役（迁移时未接管）', actor: 'admin', traffic_up: 80 * GiB, traffic_down: 410 * GiB }),
+    row(1, { source: 'legacy', kind: 'relay', name: '线路机0', ip: '203.0.113.5', provider: '腾讯云', plan: '2C4G 5M', price_cents: 9800, currency: 'CNY', cycle: 'monthly',
+      activated_at: ago(420), retired_at: ago(120), recycled_at: ago(5), reason: '旧面板已退役', actor: 'admin' }),
+  ];
+}

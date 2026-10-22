@@ -68,7 +68,7 @@ export function NodeDrawer() {
               <Flag country={m.country} manual={!!m.country_set} ip={m.ip} />
               <div className="m-head" style={{ flex: 1 }}>
                 <div className="m-head-row"><SheetTitle className="drawer-title ellipsis">{m.name}</SheetTitle><HealthPill m={m} /><MachineTags m={m} /></div>
-                <SheetDescription className="drawer-sub ellipsis">{m.ip} · {m.host_machine ? `同机 · ${m.host_machine.name}` : m.plan?.name ?? '未设套餐'}{!m.provider && ' · 未设供应商'}</SheetDescription>
+                <SheetDescription className="drawer-sub ellipsis">{m.ip} · {m.host_machine ? `同机 · ${m.host_machine.name}` : m.plan?.name ?? '未设套餐'}{!m.provider && ' · 未设供应商'}{m.spare_from && ` · 原 ${m.spare_from}`}</SheetDescription>
               </div>
               {sib && (
                 <div className="drawer-nav">
@@ -82,7 +82,7 @@ export function NodeDrawer() {
             </Tabs>
             <div className="drawer-body" ref={bodyRef}>
               {m.lifecycle === 'retired' && (
-                <Note tone="warn"><b>{m.name}</b> 已于 {F.dtFull(m.retired_at)} 退役{m.lifecycle_reason && <>：{errText(m.lifecycle_reason)}</>} <InfoTip text="退役机器保留原编号，可能与在用机器同名，请以 IP 和机器 ID 区分。" /></Note>
+                <Note tone="warn"><b>{m.name}</b> 已于 {F.dtFull(m.retired_at)} 退役{m.lifecycle_reason && <>：{errText(m.lifecycle_reason)}</>} <InfoTip text="清理已完成，很快移入回收站，之后不再出现在面板里。" /></Note>
               )}
               {m.lifecycle === 'failed' && (
                 <Note tone="bad">

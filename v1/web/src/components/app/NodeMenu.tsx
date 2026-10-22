@@ -3,11 +3,11 @@
 // 菜单本身由 NodeMenus 按网格 / 表格挂一份，卡片和行里不放 Radix 根。
 import * as React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowUpCircle, BellOff, CalendarPlus, Copy, Link2, PanelRightOpen, PencilLine, Power, Repeat2, Replace, SquareTerminal, Undo2, Wrench } from 'lucide-react';
+import { ArrowUpCircle, BellOff, CalendarPlus, Copy, Link2, PanelRightOpen, PencilLine, Power, Repeat2, Replace, SquareTerminal, Wrench } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
 import { fetchShare, maintOwner, useEndMaintenance, useSilences } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
-import { openMaint, openMove, openRenew, openReplace, openRestore, openRetire, openUpgrade } from '@/lib/nodeActions';
+import { openMaint, openMove, openRenew, openReplace, openRetire, openUpgrade } from '@/lib/nodeActions';
 import { collator } from '@/lib/sort';
 import { openTerminal } from '@/lib/terminal';
 import { copyShareLink, copyText } from '@/lib/clipboard';
@@ -47,10 +47,7 @@ function useNodeMenu(m: MachineView): MenuEntry[] {
     { key: 'ip', label: '复制 IP', icon: <Copy />, onSelect: () => void copyText(m.ip, ' IP', true) },
     { key: 'name', label: '复制名称', icon: <Copy />, onSelect: () => void copyText(m.name, '名称', true) },
   ];
-  if (retired) {
-    items.push({ key: 'sep1', sep: true }, { key: 'restore', label: '恢复…', icon: <Undo2 />, onSelect: () => openRestore(m.id) });
-    return items;
-  }
+  if (retired) return items; // 退役作业刚做完、还没移入回收站的一瞬间
   items.push(shareItem, { key: 'sep1', sep: true });
   items.push(
     // 家宽代理没有主机可登录；同机 IP 节点没有自己的 SSH，中控连到它的宿主机
@@ -77,7 +74,7 @@ function useNodeMenu(m: MachineView): MenuEntry[] {
       : { key: 'maint', label: '维护窗口…', icon: <Wrench />, onSelect: () => openMaint(m.id) },
     { key: 'silence', label: '新建静默', icon: <BellOff />, onSelect: () => nav(`/incidents?silence=${m.id}`) },
     { key: 'sep2', sep: true },
-    { key: 'retire', label: '退役…', icon: <Power />, danger: true, disabled: m.lifecycle === 'retiring' || (m.lifecycle === 'provisioning' && !!m.active_job), onSelect: () => openRetire(m.id) },
+    { key: 'retire', label: m.spare && m.lifecycle === 'active' ? '立即回收…' : '退役…', icon: <Power />, danger: true, disabled: m.lifecycle === 'retiring' || (m.lifecycle === 'provisioning' && !!m.active_job), onSelect: () => openRetire(m.id) },
   );
   return items;
 }

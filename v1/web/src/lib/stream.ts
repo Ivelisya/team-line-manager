@@ -21,9 +21,9 @@ const LISTS = new Set(['machines', 'relays', 'overview', 'jobs', 'audit', 'incid
 const BACKOFF_MAX = 30_000;
 // 服务端每 15 s 发一个文本心跳 {type:"hb"}：连着这么久什么都没收到就当连接已死
 const STALE_MS = 45_000;
-// 重连、resync 的全部失效不带上这几类：恢复 / 退役预检会真的 SSH 探测机器（改选项或重开对话框才重查）；
+// 重连、resync 的全部失效不带上这几类：退役预检（重开对话框才重查）；
 // 集群速率历史只用来垫在实时点前面（live.ts 的 seedFleet 只补现有最早点之前的），重取补不上断线的空档，白取
-const NO_RESYNC = new Set(['restore-preview', 'retire-preview', 'overview-series']);
+const NO_RESYNC = new Set(['retire-preview', 'overview-series']);
 const resyncable = (q: Query) => !NO_RESYNC.has(q.queryKey[0] as string);
 
 export function useStream(enabled: boolean) {

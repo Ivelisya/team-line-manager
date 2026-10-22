@@ -1,22 +1,22 @@
-// 抽屉“管理”页：改名/改编号（带实时预览）、入口操作、同机 IP 节点、agent、退役、彻底删除（仅已退役）。
+// 抽屉“管理”页：改名/改编号（带实时预览）、入口操作、同机 IP 节点、agent、退役（移入备用）/ 立即回收（备用里的机器）。
 import * as React from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, PackageOpen, Plus, Repeat2, Replace, Trash2, Undo2, Wrench } from 'lucide-react';
+import { ArrowRight, PackageOpen, Plus, Repeat2, Replace, Wrench } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
-import { maintOwner, useAddEntry, useEndMaintenance, useMachine, usePatchMachine, usePurge, useRelayChoices, useSilences, useTeams, useTune } from '@/lib/queries';
+import { maintOwner, useAddEntry, useEndMaintenance, usePatchMachine, useRelayChoices, useSilences, useTeams, useTune } from '@/lib/queries';
 import { openMaint, openUpgrade } from '@/lib/nodeActions';
 import { useDrawer } from '@/lib/drawer';
-import { errText, lifecycleLabel } from '@/lib/derive';
+import { errText, recycleOn } from '@/lib/derive';
 import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
 import { Field, InfoTip, Input } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
 import { entryState, Note, Section, SectionHeader } from '@/components/app/primitives';
-import { ConfirmDialog, TypedConfirmDialog } from '@/components/app/dialogs';
+import { ConfirmDialog } from '@/components/app/dialogs';
 import { RetireDialog } from '@/components/app/RetireDialog';
 import { EntryMenuButton, EntryMenus, entryLabel } from '@/components/app/EntryActions';
-import { EvacuateDialog, MoveDialog, RestoreDialog, movableEntries } from '@/components/app/LifecycleDialogs';
+import { EvacuateDialog, MoveDialog, movableEntries } from '@/components/app/LifecycleDialogs';
 import { ReplaceDialog, canReplace } from '@/components/app/ReplaceDialog';
 import { CountrySelect } from '@/components/app/CountrySelect';
 import { countryName } from '@/lib/flags';
@@ -183,7 +183,7 @@ function ReplaceSection({ m }: { m: MachineView }) {
     <Section>
       <SectionHeader title="替换" />
       <div className="manage-row">
-        <div className="t">替换为另一台节点 <InfoTip text={'新节点接这台的编号，软路由上指向这台的出口改成新节点的入口。\n这台改到备用团队，订阅过期满 1 天后自动删除。'} /></div>
+        <div className="t">替换为另一台节点 <InfoTip text={'新节点接这台的编号，软路由上指向这台的出口改成新节点的入口。\n这台改到备用团队，订阅过期满 1 天后自动回收。'} /></div>
         <Button variant="secondary" disabled={!!m.active_job} onClick={() => setOpen(true)}><Replace />替换为…</Button>
       </div>
       <ReplaceDialog m={m} open={open} onOpenChange={setOpen} onDone={() => setOpen(false)} />
@@ -266,56 +266,43 @@ function MaintSection({ m }: { m: MachineView }) {
 }
 
 function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }) {
-  const [dlg, setDlg] = React.useState<null | 'retire' | 'purge' | 'restore'>(null);
-  const purge = usePurge();
+  const [open, setOpen] = React.useState(false);
   // 上架中有作业在跑、退役中：不能退役；上架失败（或上架中但作业已不在跑）可以退役，释放 IP 与编号
   const busyJob = (m.lifecycle === 'provisioning' || m.lifecycle === 'retiring') && !!m.active_job;
-  const retired = m.lifecycle === 'retired';
-  // 已退役的同机 IP 节点：宿主机在用才能恢复（SSH、agent 都是宿主机的）
-  const host = useMachine(retired && m.host_machine ? m.host_machine.id : null).data;
-  const hostDown = !!host && host.lifecycle !== 'active';
+  // 备用里的机器：退役已经做过了，这里只剩提前回收；要留下它就改回别的团队（上面的改名）
+  const inSpare = m.spare && m.lifecycle === 'active';
+  const on = recycleOn(m);
   // ip_nodes 含已在退役中的；退役宿主机只连带还没开始退役的（同服务端），说法按这个写
   const n = m.ip_nodes.length;
+  if (m.lifecycle === 'retired') return null;
 
   return (
     <Section>
-      <SectionHeader title={retired ? '已退役' : '退役'} />
+      <SectionHeader title={inSpare ? '回收' : '退役'} />
       <div className="danger-zone">
-        {retired ? (
-          <>
-            <div className="manage-row">
-              <div>
-                <div className="t">恢复</div>
-                {/* 宿主机不在用：只说为什么不能恢复，退役时间与宿主机的状态放进 (i) */}
-                <div className="hint">{hostDown ? '宿主机不在用，暂不能恢复' : `已于 ${F.dtFull(m.retired_at)} 退役`} <InfoTip text={hostDown
-                  ? `已于 ${F.dtFull(m.retired_at)} 退役；宿主机「${host.name}」${lifecycleLabel(host.lifecycle)}。\n同机 IP 节点要等宿主机在用才能恢复。`
-                  : '恢复会保持原来的机器 ID（历史、账单、审计接上），重新走一遍上架，编号接在团队末尾。'} /></div>
+        <div className="manage-row">
+          {inSpare ? (
+            <div>
+              <div className="t">立即回收</div>
+              <div className="hint">
+                已于 {F.md(m.spare_since)} 退役{m.spare_from && `（原 ${m.spare_from}）`}，{on ? `${on} 起自动回收` : '没有订阅，不会自动回收'}
+                {' '}<InfoTip text={'清理节点上的服务并移入回收站，不等到期。\n要留下它，在上面「改名」里改回别的团队。'} />
               </div>
-              <Button variant="primary" disabled={hostDown} onClick={() => setDlg('restore')}><Undo2 />恢复…</Button>
             </div>
-            <div className="manage-row">
-              <div>
-                <div className="t">彻底删除</div>
-                <div className="hint">无法找回，审计记录保留</div>
-              </div>
-              <Button variant="outline-danger" onClick={() => setDlg('purge')}><Trash2 />彻底删除…</Button>
-            </div>
-          </>
-        ) : (
-          <div className="manage-row">
+          ) : (
             <div>
               <div className="t">退役</div>
               <div className="hint">
                 {m.host_machine ? `宿主机「${m.host_machine.name}」不受影响 ` : n > 0 ? `${n} 个同机 IP 节点会一起退役 ` : ''}
                 <InfoTip text={[
-                  m.host_machine ? '只退役这个 IP 的节点：摘除它的入口，宿主机上它自己的 SS 实例可在退役时选择清理。' : '停用入口、撤销令牌，机器进入「已退役」，不再出现在首页和统计里。',
-                  m.kind !== 'relay' && '同团队后面的节点会自动前移补号。', n > 0 && `这台机器上有 ${n} 个同机 IP 节点，还没开始退役的会一起退役。`,
+                  m.host_machine ? '只退役这个 IP 的节点，宿主机不受影响。' : '默认移入备用团队，机器照常服务，订阅过期满 1 天后自动回收；也可以选择立即清理，移入回收站。',
+                  m.kind !== 'relay' && '同团队后面的节点会自动前移补号。', n > 0 && `这台机器上有 ${n} 个同机 IP 节点，还没开始退役的会一起走。`,
                 ].filter(Boolean).join('\n')} />
               </div>
             </div>
-            <Button variant="outline-danger" disabled={busyJob || m.lifecycle === 'retiring'} onClick={() => setDlg('retire')}>退役…</Button>
-          </div>
-        )}
+          )}
+          <Button variant="outline-danger" disabled={busyJob || m.lifecycle === 'retiring'} onClick={() => setOpen(true)}>{inSpare ? '立即回收…' : '退役…'}</Button>
+        </div>
         {busyJob && m.active_job && <Note tone="info">作业进行中，暂不能操作。<Link to={`/jobs/${m.active_job.id}`} className="btn btn-link" onClick={onClosed}>查看作业</Link></Note>}
         {/* 退役作业失败：机器仍是退役中，不能再发起退役，只能重试那个作业 */}
         {m.lifecycle === 'retiring' && m.failed_job && !m.active_job && (
@@ -323,12 +310,7 @@ function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }
         )}
       </div>
 
-      <RestoreDialog m={m} open={dlg === 'restore'} onOpenChange={(o) => !o && setDlg(null)} onDone={onClosed} />
-      <RetireDialog m={m} open={dlg === 'retire'} onOpenChange={(o) => !o && setDlg(null)} onDone={onClosed} />
-
-      <TypedConfirmDialog open={dlg === 'purge'} onOpenChange={(o) => !o && setDlg(null)} title={`彻底删除 ${m.name}？`} expected={m.name} prompt="请输入显示名" confirmLabel="彻底删除" danger
-        description={<>删除后无法找回 <InfoTip text={'会删除机器记录与全部遥测数据；审计记录保留。\n它的入口近 35 天的流量还计入其他在用机器的统计时，要等到期后才能删。'} /></>}
-        onConfirm={async () => { await purge.mutateAsync({ id: m.id, confirm: m.name }); toast.ok('已提交删除作业'); onClosed(); }} />
+      <RetireDialog m={m} open={open} onOpenChange={setOpen} onDone={onClosed} />
     </Section>
   );
 }

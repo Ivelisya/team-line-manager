@@ -1,22 +1,20 @@
-// 生命周期对话框：换线路机（节点）、搬空线路机（线路机）、恢复已退役的机器。
+// 生命周期对话框：换线路机（节点）、搬空线路机（线路机）。
 // 抽屉“管理”页、线路页、卡片/表格的右键菜单、命令面板共用；菜单触发的（连同退役）走 LifecycleDialogsHost（外壳里只渲染一份）。
 import * as React from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
-import { ArrowRight } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import type { MachineView } from '@/lib/types';
-import { useEvacuate, useMachine, useMoveEntry, useRelayChoices, useRelays, useRestore, useRestorePreview, useTeams } from '@/lib/queries';
+import { useEvacuate, useMachine, useMoveEntry, useRelays } from '@/lib/queries';
 import { HEALTH_TONE } from '@/lib/sort';
-import { closeEvacuate, closeMove, closeRenew, closeReplace, closeRestore, closeRetire, useEvacuateTarget, useMoveTarget, useRenewTarget, useReplaceTarget, useRestoreTarget, useRetireTarget } from '@/lib/nodeActions';
+import { closeEvacuate, closeMove, closeRenew, closeReplace, closeRetire, useEvacuateTarget, useMoveTarget, useRenewTarget, useReplaceTarget, useRetireTarget } from '@/lib/nodeActions';
 import { ReplaceDialog } from './ReplaceDialog';
 import { RenewDialog } from '@/features/BillingTab';
 import { useDrawer } from '@/lib/drawer';
-import { NODE_FILTERS } from '@/lib/urlState';
-import { healthLabel, meta } from '@/lib/derive';
-import { CheckRow, Field, Input, InfoTip } from '@/components/ui/form';
+import { healthLabel } from '@/lib/derive';
+import { Field, InfoTip } from '@/components/ui/form';
 import { Select, type Option } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
 import { resetOnOpen, useHeld } from '@/lib/useHeld';
-import { Due, entryState, ErrorNote, Note } from './primitives';
+import { Due, entryState, Note } from './primitives';
 import { ConfirmDialog } from './dialogs';
 import { RetireDialog } from './RetireDialog';
 
@@ -119,182 +117,11 @@ export const EvacuateDialog = resetOnOpen(function EvacuateDialog({ relay, open,
   );
 });
 
-// ── 恢复已退役的机器 ────────────────────────────────────────────────────
-
-/** 值停下来 ms 毫秒后才跟上：编号、名字输入框每按一次键不必各发一次预检 */
-function useSettled<T>(v: T, ms: number): T {
-  const [s, setS] = React.useState(v);
-  React.useEffect(() => { const t = setTimeout(() => setS(v), ms); return () => clearTimeout(t); }, [v, ms]);
-  return s;
-}
-
-const KEY_LOGIN: Record<string, string> = { ok: '中控密钥可登录', denied: '中控密钥被拒绝', unreachable: 'SSH 连不上', error: '探测失败' };
-
-export const RestoreDialog = resetOnOpen(function RestoreDialog({ m, open, onOpenChange, onDone }: { m: MachineView; open: boolean; onOpenChange: (o: boolean) => void; onDone?: () => void }) {
-  const nav = useNavigate();
-  const restore = useRestore();
-  const { open: openDrawer } = useDrawer();
-  const { pathname } = useLocation();
-  // 打开占用这个 IP 的那台（在用的）：在机器页时一起切回「在用」、清掉筛选（按这台退役机器筛的多半筛不到它），背后的列表与抽屉的上一台 / 下一台跟它一致
-  const openOwner = (id: string) => openDrawer(id, undefined, pathname === '/nodes' ? ['scope', ...NODE_FILTERS] : undefined);
-  const teams = useTeams().data ?? [];
-  const relays = useRelayChoices().data ?? [];
-  const isRelay = m.kind === 'relay';
-  const isProxy = m.kind === 'proxy';
-  const isVps = m.kind === 'vps';
-  // 同机 IP 节点：用中控密钥登录宿主机，预检不试 SSH、不要密码、不重置指纹；宿主机不在用时预检的 blockers 里有原因（不能恢复）
-  const host = m.host_machine;
-  const [team, setTeam] = React.useState(m.team?.id ?? '');
-  const [num, setNum] = React.useState('');
-  const [label, setLabel] = React.useState('');
-  const [pickedRelay, setRelay] = React.useState<string | null>(null); // null = 还没选：用预检给的上次接的线路机
-  const [pw, setPw] = React.useState('');
-  // 出站参数：没改过的字段沿用预检给的退役前的值（家宽代理的上游、VPS 节点的 SS 端口）
-  const [upEdit, setUpEdit] = React.useState<Partial<Record<'protocol' | 'host' | 'port' | 'username' | 'password', string>>>({});
-  const [ssPortEdit, setSsPort] = React.useState<string | null>(null);
-  const [reason, setReason] = React.useState('');
-  const [reset, setReset] = React.useState(false);
-
-  // 第一份预检带 SSH 探测（慢一点），决定要不要密码；改团队/编号/名字后只重算名字（probe=false）。
-  // 编号、名字停手 300ms 后才进预检（查询键）；提交用的是当下的输入（over），没跟上之前不让提交
-  const toOver = (numText: string, labelText: string) => {
-    const n = Number(numText);
-    return { team_id: team && team !== m.team?.id ? team : undefined, number: numText && Number.isInteger(n) && n > 0 ? n : undefined, label: labelText.trim() || undefined };
-  };
-  const over = toOver(num, label);
-  const settledNum = useSettled(num, 300), settledLabel = useSettled(label, 300);
-  const settled = settledNum === num && settledLabel === label;
-  const asked = toOver(settledNum, settledLabel);
-  const edited = !!(over.team_id || over.number != null || over.label);
-  const base = useRestorePreview(m.id, open, {});
-  // 重开时缓存里还是上一次的预检（关闭动画期间对话框还挂着、观察者没走，gcTime 0 也回收不了）：
-  // 只认这次打开后成功取回的，之前不显示、也不让提交（要不要密码、要不要选线路机都以它为准）
-  const b = base.isFetchedAfterMount && base.isSuccess ? base.data : undefined;
-  const live = useRestorePreview(m.id, open && !!(asked.team_id || asked.number != null || asked.label), { ...asked, probe: false });
-  const pv = edited && live.data ? live.data : b;
-  const needs = b?.needs;
-  const relay = pickedRelay ?? b?.last_relay?.id ?? '';
-  const ob = b?.outbound ?? null;
-  const up = { protocol: ob?.protocol === 'http' ? 'http' : 'socks5', host: ob?.host ?? '', port: ob ? String(ob.port) : '', username: ob?.username ?? '', password: '', ...upEdit };
-  const setUp = (p: typeof upEdit) => setUpEdit((e) => ({ ...e, ...p }));
-  const ssPort = ssPortEdit ?? (ob ? String(ob.port) : '');
-
-  const relayOpts = relays.map((r) => ({ value: r.id, label: r.name }));
-  // 上游有用户名就要密码（退役时已清掉）
-  const upPwNeeded = isProxy && up.username.trim() !== '';
-  const upOk = !isProxy || (up.host.trim() !== '' && Number(up.port) > 0 && Number(up.port) <= 65535 && (!upPwNeeded || up.password !== ''));
-  const ssOk = !isVps || !!host || ssPort === '' || (Number(ssPort) > 0 && Number(ssPort) <= 65535);
-  const pwOk = needs?.password !== 'required' || pw !== '';
-  // 主机指纹与退役时不同（ssh.host_key_changed）：服务端列为阻断，勾了「重置主机指纹」放行。只有带探测的第一份预检知道，改团队/编号后的预检也照它算
-  const keyChanged = b?.ssh?.host_key_changed === true;
-  const keyNote = keyChanged ? b?.blockers.find((x) => x.startsWith('主机指纹')) : undefined;
-  const blockers = (pv?.blockers ?? []).filter((x) => x !== keyNote);
-  // 改了团队 / 编号后的预检取不到时，名字还是旧的那份，不能提交
-  const liveFailed = edited && live.isError;
-  // IP 被在用的机器占着：怎么填都恢复不了，只说原因、给占用它的那台的入口，不显示表单和改名预览
-  const conflict = b?.ip_conflict ?? null;
-  const ready = !!pv && !conflict && !liveFailed && blockers.length === 0 && !(keyChanged && !reset) && !!needs && (!needs.relay || !!relay) && upOk && ssOk && pwOk && settled && !live.isFetching;
-  // 填过东西就别让误点遮罩关掉（Esc、取消仍可关）
-  const dirty = edited || !!pw || !!reason.trim() || reset || relay !== (b?.last_relay?.id ?? '') || Object.keys(upEdit).length > 0 || ssPortEdit != null;
-
-  const submit = async () => {
-    const body: Parameters<typeof restore.mutateAsync>[0] = { id: m.id };
-    if (over.team_id) body.team_id = over.team_id;
-    if (over.number != null) body.number = over.number;
-    if (over.label) body.label = over.label;
-    if (needs?.relay) body.relay_id = relay;
-    // 用户名清空也要带上（空串 = 去掉；不带服务端会沿用退役前的）
-    if (isProxy) body.upstream = { protocol: up.protocol as 'socks5' | 'http', host: up.host.trim(), port: Number(up.port), username: up.username.trim(), password: up.password || undefined };
-    // 清空了预填的退役前端口 = 用默认端口（同提示）；不带的话服务端会沿用退役前的
-    if (isVps && !host && (ssPort || ob)) body.ss_port = ssPort ? Number(ssPort) : meta().defaults.ss_port;
-    if (pw) body.login = { password: pw };
-    if (reason.trim()) body.reason = reason.trim();
-    if (reset) body.reset_host_key = true;
-    const r = await restore.mutateAsync(body);
-    toast.ok(`已提交恢复：${r.old_name} → ${r.name}`);
-    onDone?.();
-    nav(`/jobs/${r.job_id}`);
-  };
-
-  return (
-    <ConfirmDialog asForm scroll dirty={dirty} open={open} onOpenChange={onOpenChange} size="md" title={`恢复 ${m.name}`} confirmLabel="恢复" confirmDisabled={!ready}
-      description={<>重新上架，保留原 ID <InfoTip text={'机器保持原来的 ID（历史、账单、审计都接上），重新走一遍上架的收敛步骤；成功后回到「在用」。\n失败会停在「上架失败」，可在作业页重试；取消会回到已退役。'} /></>}
-      onConfirm={submit}>
-      {!base.isFetchedAfterMount && <div className="hint">{host ? '正在预检…' : '正在预检（最多十几秒）…'}</div>}
-      {base.isFetchedAfterMount && base.isError && <ErrorNote error={base.error} onRetry={() => void base.refetch()}>预检失败：</ErrorNote>}
-      {liveFailed && <ErrorNote error={live.error} onRetry={() => void live.refetch()}>按新的团队 / 编号预检失败：</ErrorNote>}
-      {conflict && (
-        // 占用者常和这台同名（退役后编号回收、同一 IP 又上架了一次）：写明是另一台
-        <Note tone="bad">IP {b!.ip} 已被{conflict.name === m.name ? '另一台未退役的' : '未退役的'}{' '}
-          <button type="button" className="btn btn-link btn-sm" style={{ height: 'auto', padding: 0 }} onClick={() => { onOpenChange(false); openOwner(conflict.machine_id); }}>{conflict.name}</button>
-          {conflict.name === m.name && '（与这台同名）'}占用，不能恢复 <InfoTip text="先把它退役，或确认这台机器的 IP 没有变。" />
-        </Note>
-      )}
-      {pv && !conflict && (
-        <div className="stack-sm">
-          <div className="row row-between">
-            <span className="row" style={{ gap: 8 }}>
-              <span className="t-sub">恢复后的名字</span>
-              <span className="preview-name">{pv.old_name}<ArrowRight size={14} style={{ color: 'var(--fg-3)' }} />{pv.name}</span>
-            </span>
-            <span className="t-sub">IP {pv.ip}</span>
-          </div>
-          {blockers.map((b) => <Note key={b} tone="bad">{b}</Note>)}
-          {keyNote && <Note tone={reset ? 'warn' : 'bad'}>{keyNote}</Note>}
-          {pv.warnings.map((w) => <Note key={w} tone="warn">{w}</Note>)}
-          {pv.retired_reason && <div className="hint">退役原因：{pv.retired_reason}</div>}
-        </div>
-      )}
-
-      {pv && !conflict && (
-        <div className="form-grid">
-          {!isRelay && <Field label="团队"><Select value={team} onChange={setTeam} options={teams.map((t) => ({ value: t.id, label: t.name }))} /></Field>}
-          {!isRelay && <Field label="编号"><Input inputMode="numeric" value={num} onChange={(e) => setNum(e.target.value.replace(/\D/g, ''))} placeholder={pv.number != null ? `自动：${pv.number}` : '自动'} /></Field>}
-          {isRelay && <Field label="线路机名称" hint="原名被占用时换一个" className="span-2"><Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder={pv.label ?? ''} /></Field>}
-          {needs?.relay && (
-            <Field label="接入的线路机" info="旧入口不会复活，会在所选线路机上建新入口" hint={b?.last_relay ? `上次是 ${b.last_relay.name}` : undefined} className="span-2">
-              <Select value={relay} onChange={setRelay} options={relayOpts} placeholder="选择线路机" />
-            </Field>
-          )}
-          {isProxy && (
-            <>
-              <Field label="上游协议"><Select value={up.protocol} onChange={(v) => setUp({ protocol: v })} options={[{ value: 'socks5', label: 'SOCKS5' }, { value: 'http', label: 'HTTP' }]} /></Field>
-              <Field label="上游端口"><Input inputMode="numeric" value={up.port} onChange={(e) => setUp({ port: e.target.value.replace(/\D/g, '') })} /></Field>
-              <Field label="上游地址" className="span-2" hint={ob ? undefined : '退役时没留下，需重填'}><Input value={up.host} onChange={(e) => setUp({ host: e.target.value })} placeholder="例如 proxy.example.com" /></Field>
-              <Field label="用户名（选填）"><Input value={up.username} onChange={(e) => setUp({ username: e.target.value })} autoComplete="off" /></Field>
-              <Field label={upPwNeeded ? '密码（必填）' : '密码（选填）'}><Input type="password" value={up.password} onChange={(e) => setUp({ password: e.target.value })} autoComplete="new-password" placeholder={upPwNeeded && ob?.username ? '退役时已清掉，请重填' : undefined} /></Field>
-            </>
-          )}
-          {isVps && !host && (
-            <Field label="SS 端口（公网）" className="span-2" hint={ob ? `沿用退役前的 ${ob.port}` : undefined} info={`NAT 机填服务商映射的公网端口，节点上 ssserver 固定监听 ${meta().defaults.ss_port}；不是 NAT 机留空（${meta().defaults.ss_port}）`}>
-              <Input inputMode="numeric" value={ssPort} onChange={(e) => setSsPort(e.target.value.replace(/\D/g, ''))} placeholder={String(meta().defaults.ss_port)} aria-invalid={!ssOk || undefined} />
-            </Field>
-          )}
-          {!isProxy && needs && (
-            needs.password === 'no' ? (
-              <div className="hint span-2">{host ? <>不需要密码 <InfoTip text={`同机 IP 节点用中控密钥登录宿主机「${host.name}」；${ob ? `SS 端口沿用原来的 ${ob.port}（已被宿主机上别的同机节点占用时重新分配）` : 'SS 端口会在宿主机上重新分配'}。`} /></> : `${KEY_LOGIN[b?.ssh?.key_login ?? 'ok']}，不需要密码`}</div>
-            ) : (
-              <Field className="span-2" label={needs.password === 'required' ? 'root 密码（必填）' : 'root 密码（选填）'}
-                hint={b?.ssh?.key_login === 'unreachable' ? undefined /* 连不上：上面的警告已写明原因，不重复 */ : KEY_LOGIN[b?.ssh?.key_login ?? (needs.password === 'required' ? 'denied' : 'error')]}
-                info={needs.password === 'required' ? '密码只用来推一次中控公钥，用完即丢' : '中控密钥登录不了时才会用到这个密码，只用一次、用完即丢'}>
-                <Input type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="new-password" placeholder={needs.password === 'required' ? undefined : '留空用中控密钥'} />
-              </Field>
-            )
-          )}
-          <Field label="原因（选填）" className="span-2"><Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="例如：客户续约" /></Field>
-          {!isProxy && !host && <div className="span-2"><CheckRow checked={reset} onChange={setReset}>机器重装过，重置主机指纹</CheckRow></div>}
-        </div>
-      )}
-    </ConfirmDialog>
-  );
-});
-
 // ── 外壳里唯一一份：菜单/命令面板触发的对话框 ──────────────────────────
 
 export function LifecycleDialogsHost() {
   const moveId = useMoveTarget();
   const evacId = useEvacuateTarget();
-  const restoreId = useRestoreTarget();
   const retireId = useRetireTarget();
   const renewId = useRenewTarget();
   const replaceId = useReplaceTarget();
@@ -302,7 +129,6 @@ export function LifecycleDialogsHost() {
   // id 清空后继续用最近的机器渲染 open=false 的对话框，让 Radix 播完关闭动画再卸载
   const mv = useHeld(moveId, useMachine(moveId).data);
   const ev = useHeld(evacId, useMachine(evacId).data);
-  const rs = useHeld(restoreId, useMachine(restoreId).data);
   const rt = useHeld(retireId, useMachine(retireId).data);
   const rn = useHeld(renewId, useMachine(renewId).data);
   // 还没有订阅的（命令面板里选的）登记不了续费：改为打开它抽屉的「费用」页去填
@@ -313,7 +139,6 @@ export function LifecycleDialogsHost() {
       {mv && <MoveDialog key={mv.id} m={mv} open={!!moveId} onOpenChange={(o) => { if (!o) closeMove(); }} onDone={closeMove} />}
       {rp && <ReplaceDialog key={rp.id} m={rp} open={!!replaceId} onOpenChange={(o) => { if (!o) closeReplace(); }} onDone={closeReplace} />}
       {ev && <EvacuateDialog key={ev.id} relay={ev} open={!!evacId} onOpenChange={(o) => { if (!o) closeEvacuate(); }} onDone={closeEvacuate} />}
-      {rs && <RestoreDialog key={rs.id} m={rs} open={!!restoreId} onOpenChange={(o) => { if (!o) closeRestore(); }} onDone={closeRestore} />}
       {rt && <RetireDialog key={rt.id} m={rt} open={!!retireId} onOpenChange={(o) => { if (!o) closeRetire(); }} onDone={closeRetire} />}
       {rn?.subscription && <RenewDialog key={rn.id} m={rn} s={rn.subscription} open={!!renewId} onOpenChange={(o) => { if (!o) closeRenew(); }} />}
     </>
