@@ -810,7 +810,17 @@ async fn verify(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
             c.warn(format!("出口探测未通过：{}（继续等待重试）", detail.unwrap_or_default())).await;
             Ok(Outcome::Wait(10))
         }
-        None => Ok(Outcome::Wait(5)),
+        None => {
+            // 等满步骤超时都没有一份出口探测：失败原因写明是线路机没报（probe.rs 在这两种情况下不上报），不只是「等了 300 秒」
+            let limit = super::defs(&c.job.kind).iter().find(|d| d.key == "verify").map_or(300, |d| d.timeout_s);
+            if (OffsetDateTime::now_utc() - c.started).whole_seconds() + 5 > limit {
+                return Err(StepError::err(
+                    ErrKind::Timeout,
+                    format!("等了 {limit} 秒没有出口探测结果：这段时间线路机没有报出口探测（回显服务直连不通，或经入口访问备用目标通）"),
+                ));
+            }
+            Ok(Outcome::Wait(5))
+        }
     }
 }
 

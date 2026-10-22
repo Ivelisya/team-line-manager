@@ -575,13 +575,16 @@ async fn entry_view_carries_tcp_median_of_last_hour() {
     assert!(e["egress"]["median_ms"].is_null(), "{m}");
 }
 
-/// 中控 → 线路机：连客户入口（public_host + 最小的在用入口端口），只记通不通；中控自己的网络有问题时整轮不记
+/// 中控 → 线路机：轮流连客户入口（public_host + 各在用入口端口），只记通不通；对照目标都连不上时整轮不记，
+/// 两台线路机同时不通照记；同一台最近 3 轮都连不上报 relay_unreachable
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn relay_reach_rounds_feed_relay_beats() {
     let t = setup().await;
     let open = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let ctl = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap().port();
+    let (c1, c2) = (tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap(), tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap());
+    let (closed, closed2) = (c1.local_addr().unwrap().port(), c2.local_addr().unwrap().port());
+    drop((c1, c2));
     let up = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
     let down = seed_relay(&t, "线路机2", "198.51.100.2", "tok2").await;
     let idle = seed_relay(&t, "线路机3", "198.51.100.3", "tok3").await;
@@ -592,20 +595,29 @@ async fn relay_reach_rounds_feed_relay_beats() {
     let ctl_ok = ctl.local_addr().unwrap().to_string();
     let ctl_bad = format!("127.0.0.1:{closed}");
     use fleet_server::reach::round;
-    assert_eq!(round(&t.st.db, &[&ctl_bad, &ctl_ok]).await.unwrap(), 2, "没有在用入口的线路机不探");
-    assert_eq!(round(&t.st.db, &[&ctl_bad]).await.unwrap(), 0, "对照目标都连不上：中控自己的问题，不记");
-    drop(open);
-    assert_eq!(round(&t.st.db, &[&ctl_ok]).await.unwrap(), 0, "两台线路机全不通：不记");
+    assert_eq!(round(&t.st.db, &[&ctl_bad, &ctl_ok], 0).await.unwrap(), 2, "没有在用入口的线路机不探");
+    assert_eq!(round(&t.st.db, &[&ctl_bad], 1).await.unwrap(), 0, "对照目标都连不上：中控自己的问题，不记");
+    // 线路机1 再挂一条入口（端口不通）：每轮换下一个端口，两个口轮流连到；线路机2 一直不通，两台同时不通也照记
+    seed_node(&t, up, team, 3, "203.0.113.7", closed2 as i32).await;
+    assert_eq!(round(&t.st.db, &[&ctl_ok], 1).await.unwrap(), 2);
+    assert_eq!(round(&t.st.db, &[&ctl_ok], 2).await.unwrap(), 2);
     let v = t.get("/api/v1/probe-beats").await;
     let sum = |id: Uuid| {
         v[id.to_string()].as_array().unwrap().iter().fold((0, 0), |(n, ok), b| (n + b[0].as_i64().unwrap(), ok + b[1].as_i64().unwrap()))
     };
-    assert_eq!(sum(up), (1, 1), "{v}");
-    assert_eq!(sum(down), (1, 0), "{v}");
+    assert_eq!(sum(up), (3, 2), "{v}");
+    assert_eq!(sum(down), (3, 0), "{v}");
     assert!(v.get(idle.to_string()).is_none(), "{v}");
     assert!(v[up.to_string()].as_array().unwrap().iter().all(|b| b[2].is_null() && b[3] == 0), "线路机只判通不通：{v}");
-    let d: Option<String> = sqlx::query_scalar("select detail from relay_reach where relay_id = $1").bind(down).fetch_one(&t.st.db).await.unwrap();
-    assert_eq!(d.as_deref(), Some("连接被拒绝"));
+    let d: Vec<Option<String>> = sqlx::query_scalar("select detail from relay_reach where relay_id = $1 and not ok").bind(up).fetch_all(&t.st.db).await.unwrap();
+    assert_eq!(d, [Some(format!("端口 {closed2}：连接被拒绝"))], "失败原因带上端口");
+    // 线路机2 连续 3 轮连不上：严重告警；线路机1 只有一个口不通，不报
+    let h = t.health(down).await;
+    assert!(h.1.contains(&"relay_unreachable".to_string()), "{h:?}");
+    assert!(!t.health(up).await.1.contains(&"relay_unreachable".to_string()));
+    let m = t.get(&format!("/api/v1/machines/{down}")).await;
+    let text = m["health"]["reasons"].as_array().unwrap().iter().find(|r| r["key"] == "relay_unreachable").unwrap()["text"].clone();
+    assert_eq!(text, format!("中控连续 3 次连不上客户入口（端口 {closed}：连接被拒绝）"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

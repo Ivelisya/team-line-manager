@@ -4,7 +4,7 @@
 //! uuid、flow、servername、reality-opts（public-key、short-id）只用来和入口当前的参数比对、算出 sync，不落库、不输出。
 //! server:port 对上「线路机的 public_host 或公网 IP + 入口端口」就是这个入口（端口永不复用，含已删除的入口）：
 //! - ok：参数和入口一致；
-//! - drift：对上了入口，但入口已删除 / 正在删除，或 uuid / SNI / 公钥 / short-id / flow 和入口现在的不一样（凭据轮换、换线路机之后没同步）；
+//! - drift：对上了入口，但入口已删除 / 正在删除 / 已停用，或 uuid / SNI / 公钥 / short-id / flow 和入口现在的不一样（凭据轮换、换线路机之后没同步）；
 //! - unmanaged：不是 fleet 的入口（或配置里没有它）。
 
 use serde::{Deserialize, Serialize};
@@ -151,7 +151,7 @@ pub fn match_entry(p: &Proxy, entries: &[Entry]) -> (Option<EntryRef>, &'static 
     let Some(e) = best else { return (None, "unmanaged") };
     let same = |a: &Option<String>, b: &str| a.as_deref().is_some_and(|a| a.eq_ignore_ascii_case(b));
     let c = &p.creds;
-    let ok = !matches!(e.lifecycle.as_str(), "removed" | "removing")
+    let ok = !matches!(e.lifecycle.as_str(), "removed" | "removing" | "disabled")
         && p.kind.as_deref().is_some_and(|k| k.eq_ignore_ascii_case("vless"))
         && same(&c.uuid, &e.client_uuid.to_string())
         && same(&c.sni, &e.sni)
@@ -268,6 +268,8 @@ rules:
         let gone = entry(20003, "removed", "01234567");
         assert_eq!(match_entry(&ps[0], std::slice::from_ref(&gone)).1, "drift");
         assert_eq!(match_entry(&ps[0], &[gone, live.clone()]).0.unwrap().id, live.id);
+        // 入口已停用：线路机上没有这个入站了，也是 drift
+        assert_eq!(match_entry(&ps[0], &[entry(20003, "disabled", "01234567")]).1, "drift");
         // 按 public_host 也认；uuid 不对 → drift
         assert_eq!(match_entry(&ps[1], &[entry(20004, "active", "ab")]).1, "drift");
         // 不是 fleet 的入口

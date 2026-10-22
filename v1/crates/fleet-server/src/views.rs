@@ -311,6 +311,10 @@ pub struct RelayInfo {
     pub apply_error: Option<String>,
     pub port_min: i32,
     pub port_max: i32,
+    /// 中控 → 线路机最近 3 轮（5 分钟内，reach.rs）都连不上：这 3 次的失败原因（去重，带端口）；否则为 None。
+    /// 健康判定据此报 relay_unreachable；随完整加载更新（最多旧 `FULL_EVERY`），不对外输出
+    #[serde(skip)]
+    pub unreachable: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -378,6 +382,7 @@ struct MRow {
     r_err: Option<String>,
     r_pmin: Option<i32>,
     r_pmax: Option<i32>,
+    r_unreach: Option<String>,
 }
 
 /// agent_state 里视图要的列（`A_COLS`，表别名 a）：完整加载与补指标共用
@@ -1014,7 +1019,11 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 s.traffic_used_base s_base, s.traffic_used_base_at s_base_at, s.overrides s_overrides, sb.billing_day::int s_bday, p.traffic_rule p_rule,
                 tp.price_cents t_price, tp.currency t_currency, tp.cycle::text t_cycle, tp.billing_tz t_tz, tp.traffic_gb t_traffic, tp.traffic_reset t_reset, tp.remind_days t_remind, local_date(tp.billing_tz) t_today,
                 {A_COLS}, r.public_host r_host, r.generation r_gen, r.applied_generation r_applied, r.applied_at r_applied_at, r.generation_at r_gen_at,
-                r.apply_error r_err, r.port_min r_pmin, r.port_max r_pmax
+                r.apply_error r_err, r.port_min r_pmin, r.port_max r_pmax,
+                (select string_agg(distinct x.detail, '；' order by x.detail) from (
+                   select coalesce(rr.detail, '-') detail, rr.ok from relay_reach rr
+                   where rr.relay_id = m.id and rr.ts > now() - interval '5 minutes' order by rr.ts desc limit 3) x
+                 having count(*) = 3 and not bool_or(x.ok)) r_unreach
          from machine m
          left join team t on t.id = m.team_id
          left join machine hm on hm.id = m.host_id
@@ -1230,6 +1239,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 apply_error: r.r_err.clone(),
                 port_min: r.r_pmin.unwrap_or(0),
                 port_max: r.r_pmax.unwrap_or(0),
+                unreachable: r.r_unreach.clone(),
             });
             let entries = entries_by.remove(&r.id).unwrap_or_default();
             let removed_traffic = removed_by.remove(&r.id).unwrap_or_default();

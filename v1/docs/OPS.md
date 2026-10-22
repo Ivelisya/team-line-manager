@@ -83,6 +83,7 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
    - `egress_fail` / `tcp_fail`：入口到出口不通，到 3。
    - `relay_apply_lag` / `relay_apply_error`：线路机没应用最新配置，到 4。
    - `relay_xray_down`：线路机上的 xray 停了，到 4。
+   - `relay_unreachable`：中控连续 3 轮（每 30 秒一轮，轮流连线路机的各个入口端口）连不上线路机的客户入口（public_host + 端口），摘要里有失败的端口与原因。只是 TCP 建连，不做 REALITY 握手。线路机 agent 也离线多半是机器挂了；agent 在线则查线路机防火墙、供应商是否封了端口（`fleetctl exec <线路机> -- 'ss -ltnp'` 看端口在不在听）。
    - `clock_skew`：agent 所在机器的时钟偏了超过 1 分钟（读数会缺失或停在旧值）；`fleetctl exec <机器> -- 'timedatectl'` 看 NTP 是否同步，没开就 `timedatectl set-ntp true`（修改状态，先确认）。
    - `renewal_due` / `renewal_overdue`：续费提醒，不是故障。网页告警页这一行可直接「登记续费」（或 `fleetctl billing <机器>` 看订阅、确认已付款后 `fleetctl renew <机器> --yes`），下一轮评估（≤30 秒）自动恢复。
    - `traffic_quota_high`：流量额度吃紧（本周期已用 ≥ 90% 警告，≥ 100% 严重：供应商可能限速或另收费），不是故障、不改健康状态。`fleetctl billing <机器>` 看本周期已用与上限（注明跟随套餐还是单独设置）；找供应商加流量、调高上限（整个套餐都加了改套餐，只这台加了 `subscription set --traffic-gb`）或把流量分走。新周期开始、上限调高后下一轮评估自动恢复。

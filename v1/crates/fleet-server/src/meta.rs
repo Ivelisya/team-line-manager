@@ -261,6 +261,7 @@ pub const RULES: Labels = &[
     ("relay_apply_lag", "配置未应用"),
     ("relay_apply_error", "配置应用失败"),
     ("relay_xray_down", "Xray 未运行"),
+    ("relay_unreachable", "客户入口连不上"),
     ("host_cpu_high", "CPU 持续偏高"),
     ("host_mem_high", "内存持续偏高"),
     ("host_disk_high", "磁盘空间不足"),

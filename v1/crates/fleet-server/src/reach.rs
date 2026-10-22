@@ -1,13 +1,16 @@
 //! 中控 → 线路机的连通性（线路机卡片的心跳格，/probe-beats）。
 //!
-//! 每 30 秒对每台在用、有在用入口的线路机做一次 TCP 建连：目标是客户连的地址（relay.public_host）+ 它最小的在用入口端口——
-//! 线路机在不在线、客户那个口连不连得上。只记通不通，不记延迟：中控在德国，到美国线路机的往返时间不代表客户体验。
+//! 每 30 秒对每台在用、有在用入口的线路机做一次 TCP 建连：目标是客户连的地址（relay.public_host）+ 它的在用入口端口，
+//! 每轮换下一个（N 条入口 N 轮连一遍）——线路机在不在线、客户连的每个口连不连得上（防火墙、供应商封口、单个入站没起来）。
+//! 只建连，不做 REALITY 握手。只记通不通，不记延迟：中控在德国，到美国线路机的往返时间不代表客户体验。
+//! 同一台线路机最近 3 轮都连不上，健康判定报 relay_unreachable（views 的 `RelayInfo::unreachable`）。
 //! 不连 SSH 口：每 30 秒一次未认证就断开的连接会刷 sshd 日志，线路机上若有 fail2ban 还可能把中控封掉。
 //! Xray 的 REALITY 入站对只建连、不发数据的连接不记访问日志。
 //!
 //! 中控自己的网络有问题（刚重启网络没好、出口断了）时不能记成线路机故障，整轮作废、不写：
 //! - 对照目标（公共 DNS 的 443 口）一个都连不上；
-//! - 或两台以上线路机全部连不上（不会每台都同时坏）。
+//! - 或三台以上线路机全部连不上（不会每台都同时坏）。对照目标通时两台同时连不上照记：
+//!   生产两台线路机在同一家供应商的同一个 /24，一起出问题并不罕见，正是要报的时候。
 //!
 //! 结果进 relay_reach，保留 2 天（db::cleanup_retention）。
 
@@ -28,18 +31,20 @@ pub async fn run_forever(st: AppState) {
     tokio::time::sleep(Duration::from_secs(15)).await;
     let mut t = tokio::time::interval(EVERY);
     t.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut turn = 0usize;
     loop {
         t.tick().await;
-        if let Err(e) = round(&st.db, CONTROLS).await {
+        if let Err(e) = round(&st.db, CONTROLS, turn).await {
             tracing::warn!("中控 → 线路机连通性：{e:#}");
         }
+        turn = turn.wrapping_add(1);
     }
 }
 
-/// 一轮：返回写入的行数（整轮作废为 0）
-pub async fn round(db: &sqlx::PgPool, controls: &[&str]) -> anyhow::Result<usize> {
-    let targets: Vec<(Uuid, String, i32)> = sqlx::query_as(
-        "select m.id, r.public_host, min(e.port) from machine m join relay r on r.machine_id = m.id
+/// 一轮：每台线路机连它第 `turn`（对入口数取余）个在用入口端口，返回写入的行数（整轮作废为 0）
+pub async fn round(db: &sqlx::PgPool, controls: &[&str], turn: usize) -> anyhow::Result<usize> {
+    let targets: Vec<(Uuid, String, Vec<i32>)> = sqlx::query_as(
+        "select m.id, r.public_host, array_agg(e.port order by e.port) from machine m join relay r on r.machine_id = m.id
          join entry e on e.relay_id = m.id and e.lifecycle = 'active'
          where m.kind = 'relay' and m.lifecycle = 'active' group by m.id, r.public_host",
     )
@@ -49,28 +54,31 @@ pub async fn round(db: &sqlx::PgPool, controls: &[&str]) -> anyhow::Result<usize
         return Ok(0);
     }
     let ts = OffsetDateTime::now_utc();
-    let relays = futures::future::join_all(targets.iter().map(|(_, host, port)| connect(host.clone(), *port as u16)));
+    let ports: Vec<u16> = targets.iter().map(|(_, _, ps)| ps[turn % ps.len()] as u16).collect();
+    let relays = futures::future::join_all(targets.iter().zip(&ports).map(|((_, host, _), port)| connect(host.clone(), *port)));
     let ctl = futures::future::join_all(controls.iter().map(|a| connect_addr(a)));
     let (res, ctl) = tokio::join!(relays, ctl);
     let control_ok = controls.is_empty() || ctl.iter().any(|r| r.is_ok());
     let oks: Vec<bool> = res.iter().map(|r| r.is_ok()).collect();
     if !keep_round(&oks, control_ok) {
-        tracing::debug!(control_ok, relays = oks.len(), "中控 → 线路机：中控自己的网络像是有问题，这一轮不记");
+        tracing::warn!(control_ok, relays = oks.len(), "中控 → 线路机：中控自己的网络像是有问题，这一轮不记");
         return Ok(0);
     }
+    // 失败原因带上端口：轮流连的，告警摘要里要看得出是哪个口
+    let details: Vec<Option<String>> = res.iter().zip(&ports).map(|(r, port)| r.as_ref().err().map(|e| format!("端口 {port}：{e}"))).collect();
     sqlx::query("insert into relay_reach (relay_id, ts, ok, detail) select u.id, $2, u.ok, u.detail from unnest($1::uuid[], $3::bool[], $4::text[]) u(id, ok, detail)")
         .bind(targets.iter().map(|t| t.0).collect::<Vec<_>>())
         .bind(ts)
         .bind(&oks)
-        .bind(res.iter().map(|r| r.as_ref().err().cloned()).collect::<Vec<_>>())
+        .bind(&details)
         .execute(db)
         .await?;
     Ok(targets.len())
 }
 
-/// 这一轮记不记：对照目标都连不上，或两台以上线路机全部失败 → 是中控自己的问题，不记
+/// 这一轮记不记：对照目标都连不上，或三台以上线路机全部失败 → 是中控自己的问题，不记
 pub fn keep_round(oks: &[bool], control_ok: bool) -> bool {
-    control_ok && (oks.len() < 2 || oks.iter().any(|&o| o))
+    control_ok && (oks.len() < 3 || oks.iter().any(|&o| o))
 }
 
 async fn connect(host: String, port: u16) -> Result<(), String> {
@@ -108,7 +116,8 @@ mod tests {
     fn central_side_failures_discard_the_round() {
         assert!(keep_round(&[true, false], true), "一台不通照记");
         assert!(keep_round(&[false], true), "只有一台线路机：靠对照目标判断");
-        assert!(!keep_round(&[false, false], true), "两台以上全不通：中控自己的问题");
+        assert!(keep_round(&[false, false], true), "两台全不通照记：同一家供应商一起出问题");
+        assert!(!keep_round(&[false, false, false], true), "三台以上全不通：中控自己的问题");
         assert!(!keep_round(&[true, true], false), "对照目标都连不上：不记");
         assert!(keep_round(&[], true));
     }
