@@ -1,7 +1,8 @@
-// 线路：每台线路机一张卡——应用状态（配置版本 vs 已生效）+ 入口表（端口、节点、状态、是否已应用、TCP/出口探测、流量）。
+// 线路：每台线路机一张卡——应用状态（配置版本 vs 已生效）+ 入口表（端口、节点、状态、TCP/出口探测、流量）。
 // 入口多的线路机（几十条）只先露前 ENTRY_CAP 条，表尾「显示全部 N 条」展开：线路机只有几台，一页里放几个分页器反而难用。
+// 有问题的入口（探测不通、应用失败）排在最前、一直露着，不被折叠。点行打开节点抽屉（同机器页），点线路机名打开线路机抽屉。
 import * as React from 'react';
-import { CheckCircle2, CircleAlert, Loader2, PackageOpen, PanelRightOpen } from 'lucide-react';
+import { CheckCircle2, ChevronRight, CircleAlert, Loader2, PackageOpen } from 'lucide-react';
 import { useRelays } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
@@ -17,20 +18,28 @@ import { entryState } from '@/components/app/primitives';
 import { openEvacuate } from '@/lib/nodeActions';
 import { movableEntries } from '@/components/app/LifecycleDialogs';
 import { ShowAll } from '@/components/app/Pagination';
+import { scrollBackTo } from '@/lib/usePage';
 import { ENTRY_CAP, probeCell, tcpCell } from '@/features/EntriesTable';
 
 type Open = ReturnType<typeof useDrawer>['open'];
 
+/** 运行中的入口探测全部失败（直出入口不做 TCP 探测）：状态写「不通」，悬停看探测的错误 */
+const probeFail = (e: EntryView) => (e.lifecycle !== 'active' || !e.applied ? null : (!e.direct && e.tcp && !e.tcp.ok ? e.tcp : e.egress && !e.egress.ok ? e.egress : null));
+/** 有问题的入口：探测不通或应用失败 */
+const isBad = (e: EntryView) => !!probeFail(e) || (e.lifecycle === 'active' && !!e.apply_error);
+
 /** 入口一行。memo：实时推送对没变的入口原样返回（live.ts 的 patchEntry），open 是稳定引用，只有变了的那几行重渲染 */
 const EntryRow = React.memo(function EntryRow({ e, open }: { e: EntryView; open: Open }) {
+  const fail = probeFail(e);
   return (
-    <tr>
+    // 行里的「⋯」由外面的 EntryMenus 接住，不当成点行
+    <tr className="is-link" tabIndex={0} onClick={(ev) => { if (!(ev.target as Element).closest('button')) open(e.node.id); }}
+      onKeyDown={(ev) => { if (ev.key === 'Enter' && ev.target === ev.currentTarget) open(e.node.id); }}>
       <td className="strong num">{e.port}</td>
-      {/* 直出入口的节点就是这台线路机自己：不做链接 */}
-      <td>{e.direct ? <span data-tip="从线路机自己的 IP 出去，不经节点">{e.node.name}</span>
-        : <NodeHover id={e.node.id}><button className="btn-link btn" style={{ height: 'auto', padding: 0, border: 0, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis' }} onClick={() => open(e.node.id)}>{e.node.name}</button></NodeHover>}</td>
-      <td>{entryState(e)}</td>
-      <td>{e.lifecycle === 'disabled' ? <span className="t-muted">—</span> : e.applied ? <CheckCircle2 size={14} style={{ color: 'var(--ok)' }} aria-label="已应用" /> : <span data-tip={e.apply_error ?? '应用中'} style={{ color: e.apply_error ? 'var(--bad-text)' : 'var(--fg-2)' }}>{e.apply_error ? '应用失败' : '应用中'}</span>}</td>
+      {/* 直出入口的节点就是这台线路机自己 */}
+      <td>{e.direct ? <span className="ellipsis block" data-tip="从线路机自己的 IP 出去，不经节点">{e.node.name}</span>
+        : <NodeHover id={e.node.id} noFocus><span className="ellipsis block">{e.node.name}</span></NodeHover>}</td>
+      <td>{fail ? <Pill tone="bad" tip={fail.detail ?? undefined}>不通</Pill> : entryState(e)}</td>
       <td className="r">{tcpCell(e)}</td><td className="r">{probeCell(e.egress)}</td>
       <td className="r"><Num f={F.bytes(e.traffic.month_up + e.traffic.month_down)} /></td>
       <td className="c"><EntryMenuButton entry={e} /></td>
@@ -50,7 +59,7 @@ function ApplyStatus({ m }: { m: MachineView }) {
         : <Pill tone="ok" dot="none"><CheckCircle2 size={12} />已应用</Pill>}
       <Tip text="两个数相等表示线路机已同步"><span tabIndex={0}>配置版本 <b className="num" style={{ color: 'var(--fg)' }}>{r.generation}</b> · 已生效 <b className="num" style={{ color: 'var(--fg)' }}>{r.applied_generation}</b></span></Tip>
       {pending && <span>{pendingEntries} 条入口应用中</span>}
-      <span style={{ marginLeft: 'auto' }}>上次应用 {r.applied_at ? F.ago(r.applied_at) : '—'}</span>
+      <span style={{ marginLeft: 'auto' }} data-tip={r.applied_at ? F.dtFull(r.applied_at) : undefined}>最近应用 {F.dt(r.applied_at)}</span>
       {r.apply_error && <div style={{ flexBasis: '100%', color: 'var(--bad-text)' }}>{r.apply_error}</div>}
     </div>
   );
@@ -60,32 +69,35 @@ function RelayCard({ m, open }: { m: MachineView; open: Open }) {
   const r = m.relay;
   const dueWarn = !!m.subscription && m.subscription.due_state !== 'ok';
   const [all, setAll] = React.useState(false);
-  const entries = all ? m.entries : m.entries.slice(0, ENTRY_CAP);
+  const card = React.useRef<HTMLElement>(null);
+  // 有问题的排前面（稳定：同组内保持原顺序），折叠时也全部露出
+  const sorted = React.useMemo(() => [...m.entries.filter(isBad), ...m.entries.filter((e) => !isBad(e))], [m.entries]);
+  const cap = Math.max(ENTRY_CAP, m.entries.filter(isBad).length);
+  const entries = all ? sorted : sorted.slice(0, cap);
   return (
-    <section className="panel relay-card">
+    <section ref={card} className="panel relay-card">
       <header className="relay-head">
         <Flag country={m.country} manual={!!m.country_set} ip={m.ip} />
-        <span className="ttl">{m.name}</span>
+        <button type="button" className="ttl relay-name" onClick={() => open(m.id)}>{m.name}<ChevronRight size={16} aria-hidden /></button>
         <HealthPill m={m} />
         <span className="t-sub">{r?.public_host && r.public_host !== m.ip ? `${r.public_host} · ${m.ip}` : m.ip}</span>
         {m.subscription && <Chip variant={dueWarn ? 'warn' : undefined}><Due days={m.subscription.due_days} state={m.subscription.due_state} tail /></Chip>}
-        <span style={{ marginLeft: 'auto' }} className="row">
-          {m.lifecycle === 'active' && movableEntries(m).length > 0 && <Button size="sm" onClick={() => openEvacuate(m.id)}><PackageOpen size={14} />搬空到…</Button>}
-          <Button size="sm" onClick={() => open(m.id)}><PanelRightOpen size={14} />详情</Button></span>
+        {m.lifecycle === 'active' && movableEntries(m).length > 0 && <Button size="sm" style={{ marginLeft: 'auto' }} onClick={() => openEvacuate(m.id)}><PackageOpen size={14} />搬空到…</Button>}
       </header>
       <ApplyStatus m={m} />
       {/* 入口的“⋯”菜单与对话框整张卡共用一份 */}
       <EntryMenus entries={m.entries}><div className="table-wrap">
-        <table className="dt is-one" style={{ minWidth: 760 }}>
-          <colgroup><col style={{ width: 84 }} /><col style={{ width: 150 }} /><col style={{ width: 104 }} /><col style={{ width: 84 }} /><col style={{ width: 80 }} /><col style={{ width: 80 }} /><col style={{ width: 120 }} /><col style={{ width: 52 }} /></colgroup>
-          <thead><tr><th>端口</th><th>节点</th><th>状态</th><th>已应用</th><th className="r">TCP</th><th className="r">出口</th><th className="r">本月业务流量</th><th /></tr></thead>
+        <table className="dt is-one" style={{ minWidth: 700 }}>
+          <colgroup><col style={{ width: 84 }} /><col style={{ width: 160 }} /><col style={{ width: 104 }} /><col style={{ width: 96 }} /><col style={{ width: 96 }} /><col style={{ width: 120 }} /><col style={{ width: 52 }} /></colgroup>
+          <thead><tr><th>端口</th><th>节点</th><th>状态</th><th className="r">TCP 延迟</th><th className="r">出口延迟</th><th className="r">本月业务流量</th><th /></tr></thead>
           <tbody>
             {entries.map((e) => <EntryRow key={e.id} e={e} open={open} />)}
           </tbody>
         </table>
         {m.entries.length === 0 && <Empty text="还没有入口" />}
       </div></EntryMenus>
-      <ShowAll total={m.entries.length} cap={ENTRY_CAP} open={all} onToggle={() => setAll((v) => !v)} />
+      {/* 收起后回到这张卡的顶部，不停在下一台线路机中间 */}
+      <ShowAll total={m.entries.length} cap={cap} open={all} onToggle={() => { if (all) scrollBackTo(card.current); setAll((v) => !v); }} />
     </section>
   );
 }
