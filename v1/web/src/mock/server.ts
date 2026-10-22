@@ -52,6 +52,7 @@ function refreshCounts() {
   for (const t of db.teams) t.node_count = db.machines.filter((m) => m.team?.id === t.id && m.lifecycle !== 'retired').length;
   for (const p of db.plans) p.machine_count = db.machines.filter((m) => m.plan?.id === p.id && m.lifecycle !== 'retired').length;
   const order = makeDefaultCompare(db.teams);
+  for (const m of db.machines) recomputeDue(m);
   for (const m of db.machines) m.ip_nodes = db.machines.filter((x) => x.host_machine?.id === m.id && x.lifecycle !== 'retired').sort(order).map((x) => ({ id: x.id, name: x.name }));
 }
 function renameMachine(m: MachineView) {
@@ -71,20 +72,39 @@ function compactPlan(teamId: string, exclude: string[] = []) {
   const list = db.machines.filter((x) => x.team?.id === teamId && !exclude.includes(x.id) && x.lifecycle !== 'retired' && x.number != null).sort((a, b) => a.number! - b.number!);
   return list.map((x, i) => ({ m: x, n: i + 1, old_name: x.name, new_name: displayName(team.name, i + 1) })).filter((c) => c.m.number !== c.n);
 }
-/** 退役完成：释放编号（number=null，名称保留作历史），并压缩同团队编号 */
+/** 压缩同团队编号并记一条审计 */
+function compactApply(tid: string, why: string) {
+  const plan = compactPlan(tid);
+  for (const c of plan) { c.m.number = c.n; c.m.revision++; renameMachine(c.m); }
+  if (plan.length) db.audit.unshift({ id: `a${db.seq++}`, ts: iso(), actor: 'system', action: 'team.compact', title: '自动压缩编号', summary: `${why} ${plan.length} 台前移`, target_kind: 'team', target_id: tid, detail: { count: plan.length } });
+}
+/** 回收站的一行（同服务端 recycle::record）：name 是退役前的名字，进过备用的 last_name 是回收时的备用名 */
+function recycleRecord(m: MachineView) {
+  const up = m.entries.reduce((a, e) => a + e.traffic.month_up, 0), down = m.entries.reduce((a, e) => a + e.traffic.month_down, 0);
+  const s = m.subscription;
+  db.recycle.unshift({
+    id: Math.max(0, ...db.recycle.map((r) => r.id)) + 1, source: 'fleet', source_id: m.id, machine_id: m.id, kind: m.kind,
+    name: m.spare_from ?? m.name, last_name: m.spare_from ? m.name : null, team: m.spare_from ? m.spare_from.replace(/-\d+$/, '') : m.team?.name ?? null, ip: m.ip, host_name: m.host_machine?.name ?? null,
+    provider: m.provider?.name ?? null, plan: m.plan?.name ?? null, service_ref: m.service_ref, price_cents: s?.price_cents ?? null, currency: s?.currency ?? null, cycle: s?.cycle ?? null,
+    activated_at: m.activated_at, retired_at: m.spare_since ?? m.retired_at, due_date: s?.due_date ?? null, recycled_at: iso(), reason: m.lifecycle_reason, traffic_up: up, traffic_down: down, nic_rx: null, nic_tx: null,
+    actor: db.user, snapshot: { note: m.note, entries: clone(m.entries), renewals: clone(db.renewals[m.id] ?? []) },
+  });
+}
+/** 立即回收完成（同服务端 finalize）：记进回收站，机器从列表里消失，原团队编号前移补号 */
 function finishRetire(m: MachineView) {
-  m.lifecycle = 'retired'; m.retired_at = iso(); m.active_job = null; m.health = { status: 'inactive', reasons: [] };
-  const tid = m.team?.id; // 退役机器保留原编号与名称（可能和在用机器同名）
-  if (tid) {
-    const plan = compactPlan(tid);
-    for (const c of plan) { c.m.number = c.n; c.m.revision++; renameMachine(c.m); }
-    if (plan.length) db.audit.unshift({ id: `a${db.seq++}`, ts: iso(), actor: 'system', action: 'team.compact', title: '自动压缩编号', summary: `${m.name} 退役后 ${plan.length} 台前移`, target_kind: 'team', target_id: tid, detail: { count: plan.length } });
-  }
+  m.lifecycle = 'retired'; m.retired_at = iso(); m.active_job = null;
+  const tid = m.team?.id;
+  recycleRecord(m);
+  db.machines = db.machines.filter((x) => x !== m);
+  for (const x of db.machines) if (x.kind === 'relay') x.entries = x.entries.filter((e) => e.node.id !== m.id);
+  if (tid) compactApply(tid, `${m.name} 回收后`);
+  refreshCounts();
   emit({ type: 'machines' });
 }
 /** 距到期天数与服务端算的几项（到期状态、月费、续一期的到期日、每期天数） */
 function recomputeDue(m: MachineView) {
   if (m.subscription) { m.subscription.due_days = Math.ceil((new Date(m.subscription.due_date).getTime() - Date.now()) / DAY); subCalc(m.subscription); }
+  m.recycle_on = m.spare && m.lifecycle === 'active' && m.subscription ? addDays(m.subscription.due_date, 2) : null; // 备用：到期 + 2 天 0 点起自动回收
 }
 
 function overview() {
@@ -357,7 +377,7 @@ function createMachine(it: ProvisionItem, c: ProvisionCheckItem): MachineView {
     id, kind: it.kind, name: c.name, team: team ? { id: team.id, name: team.name } : null, spare: team?.spare ?? false, number: it.kind === 'relay' ? null : c.number, label: it.kind === 'relay' ? it.label ?? null : null,
     ip: it.ip, ssh_port: h?.ssh_port ?? it.ssh_port ?? 22, country: it.country ?? countryOf(it.ip), country_set: it.country ?? null, host_machine: h && { id: h.id, name: h.name }, bind_ip: null, ip_nodes: [], provider: pv ? { id: pv.id, name: pv.name } : null, provider_code: pv?.code ?? null,
     plan: plan ? { id: plan.id, name: plan.name, bandwidth_mbps: plan.bandwidth_mbps, traffic_gb: plan.traffic_gb } : null, service_ref: it.service_ref ?? null,
-    lifecycle: 'provisioning', lifecycle_reason: null, note: it.note ?? '', revision: 1, created_at: iso(), activated_at: null, retired_at: null,
+    lifecycle: 'provisioning', lifecycle_reason: null, note: it.note ?? '', revision: 1, created_at: iso(), activated_at: null, retired_at: null, spare_from: null, spare_since: null, recycle_on: null,
     subscription: it.subscription?.due_date ? subCalc({ price_cents: it.subscription.price_cents ?? plan?.price_cents ?? 0, currency: plan?.currency ?? META.defaults.currency, cycle: it.subscription.cycle ?? plan?.cycle ?? META.defaults.cycle, due_date: it.subscription.due_date, due_days: 0, billing_tz: it.subscription.billing_tz ?? pv?.timezone ?? META.org_timezone, auto_renew: false, remind_days: pv?.remind_days ?? META.defaults.remind_days, traffic_gb: plan?.traffic_gb || null, traffic_reset_day: 1 } as NonNullable<MachineView['subscription']>) : null,
     agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, quota: { used: 0, period_start: '', rule: null, base: null, base_at: null }, health: { status: 'unknown', reasons: [{ key: 'provisioning', severity: 'info', text: '上架作业进行中' }] }, active_job: null, failed_job: null, open_incidents: 0, maintenance: false,
     relay: it.kind === 'relay' ? { public_host: it.ip, generation: 1, applied_generation: 0, applied_at: null, apply_error: null, port_min: 20001, port_max: 20999 } : null,
@@ -387,7 +407,7 @@ R('GET', '/teams', () => clone(db.teams));
 R('POST', '/teams', ({ body }) => {
   if (!body.name?.trim()) throw bad('团队名不能为空');
   if (db.teams.some((t) => t.name === body.name)) throw bad('团队名已存在', 409, 'conflict');
-  const t = { id: `t${db.seq++}`, name: body.name.trim(), sort_order: body.sort_order ?? db.teams.length + 1, spare: !!body.spare, node_count: 0 };
+  const t = { id: `t${db.seq++}`, name: body.name.trim(), sort_order: body.sort_order ?? db.teams.length + 1, spare: false, node_count: 0 };
   db.teams.push(t); emit({ type: 'catalog' }); return t;
 });
 R('PATCH', '/teams/([^/]+)', ({ params, body }) => {
@@ -399,11 +419,6 @@ R('PATCH', '/teams/([^/]+)', ({ params, body }) => {
     emit({ type: 'machines' });
   }
   if (body.sort_order != null) t.sort_order = body.sort_order;
-  // 备用团队：机器视图里的 spare 跟着变（到期旁的「到期 +1 天自动删除」）。mock 不模拟到期后的自动删除
-  if (body.spare != null && body.spare !== t.spare) {
-    t.spare = !!body.spare; db.machines.filter((m) => m.team?.id === t.id).forEach((m) => { m.spare = t.spare; });
-    emit({ type: 'machines' });
-  }
   emit({ type: 'catalog' }); return t;
 });
 const renumberPlan = (tid: string) => {
@@ -437,14 +452,14 @@ R('PATCH', '/providers/([^/]+)', ({ params, body }) => {
   if (body.traffic_rule !== undefined) p.traffic_rule = body.traffic_rule;
   emit({ type: 'catalog' }); return { id: p.id };
 });
-// 删目录项：同中控，还有机器（含已退役的）、套餐用着时 409 写明还有什么
+// 删目录项：同中控，还有机器、套餐用着时 409 写明还有什么
 const inUse = (parts: [number, string][]) => parts.filter(([n]) => n > 0).map(([n, w]) => `${n} ${w}`).join('、');
 const delAudit = (action: string, title: string, kind: string, id: string, name: string) => db.audit.unshift({ id: `a${db.seq++}`, ts: iso(), actor: db.user, action, title, summary: name, target_kind: kind, target_id: id, detail: { name } });
 R('DELETE', '/teams/([^/]+)', ({ params }) => {
   const t = teamOf(params[0]);
-  const ms = db.machines.filter((m) => m.team?.id === t.id);
-  const u = inUse([[ms.filter((m) => m.lifecycle !== 'retired').length, '台机器'], [ms.filter((m) => m.lifecycle === 'retired').length, '台已退役的机器']]);
-  if (u) throw bad(`「${t.name}」还有 ${u}：先把它们移到别的团队（已退役的先彻底删除）再删`, 409, 'conflict');
+  if (t.spare) throw bad('备用团队由系统管理，不能删除', 409, 'conflict');
+  const u = inUse([[db.machines.filter((m) => m.team?.id === t.id).length, '台机器']]);
+  if (u) throw bad(`「${t.name}」还有 ${u}：先把它们移到别的团队再删`, 409, 'conflict');
   db.teams = db.teams.filter((x) => x.id !== t.id); delAudit('team.delete', '删除团队', 'team', t.id, t.name);
   emit({ type: 'catalog' }); return { id: t.id };
 });
@@ -481,10 +496,16 @@ R('PATCH', '/plans/([^/]+)', ({ params, body }) => {
   emit({ type: 'catalog' }); return p;
 });
 
-R('GET', '/machines', ({ query }) => {
-  const scope = query.get('scope') ?? 'live';
-  const list = db.machines.filter((m) => scope === 'all' || (scope === 'retired' ? m.lifecycle === 'retired' : m.lifecycle !== 'retired'));
-  return clone(list);
+R('GET', '/recycle-bin', ({ query }) => {
+  const q = (query.get('q') ?? '').trim().toLowerCase(); const src = query.get('source') ?? '';
+  const off = Number(query.get('offset') ?? 0), lim = Number(query.get('limit') ?? 50);
+  const hit = db.recycle.filter((r) => (!src || r.source === src) && (!q || [r.name, r.last_name, r.ip, r.team, r.provider, r.plan, r.service_ref].some((v) => v?.toLowerCase().includes(q))));
+  const items = hit.slice(off, off + lim).map(({ snapshot: _s, ...r }) => r);
+  return { items, total: hit.length, next_offset: off + lim < hit.length ? off + lim : null };
+});
+R('GET', '/recycle-bin/([^/]+)', ({ params }) => { const r = db.recycle.find((x) => String(x.id) === params[0]); if (!r) throw bad('记录不存在', 404, 'not_found'); return clone(r); });
+R('GET', '/machines', () => {
+  return clone(db.machines); // 回收了的不在列表里（scope=live / all 同）
 });
 R('GET', '/machines/([^/]+)', ({ params }) => clone(machine(params[0])));
 R('PATCH', '/machines/([^/]+)', ({ params, body }) => {
@@ -494,7 +515,9 @@ R('PATCH', '/machines/([^/]+)', ({ params, body }) => {
     const team = teamOf(body.team_id ?? m.team?.id);
     const number = body.number ?? m.number;
     if (db.machines.some((x) => x.id !== m.id && x.team?.id === team.id && x.number === number && x.lifecycle !== 'retired')) throw bad(`${displayName(team.name, number)} 已被占用`, 409, 'conflict');
+    const wasSpare = m.spare, oldName = m.name;
     m.team = { id: team.id, name: team.name }; m.spare = team.spare; m.number = number;
+    if (m.spare && !wasSpare) { m.spare_from = oldName; m.spare_since = iso(); } else if (!m.spare) { m.spare_from = null; m.spare_since = null; } // 同服务端 patch_tx
   }
   if (body.label !== undefined) m.label = body.label;
   if (body.country !== undefined) {
@@ -516,6 +539,19 @@ R('GET', '/machines/([^/]+)/series', ({ params, query }) => {
 R('GET', '/machines/([^/]+)/availability', ({ params, query }) => availability(machine(params[0]), Number(query.get('days') ?? 30)));
 /** 宿主机上还没开始退役的同机 IP 节点：退役宿主机时一并退役 */
 const ipNodesLeaving = (m: MachineView) => db.machines.filter((x) => x.host_machine?.id === m.id && x.lifecycle !== 'retiring' && x.lifecycle !== 'retired');
+/** 软路由里还指向这台的出口（mock 只有每个团队一台软路由，出口名按编号） */
+const exitsUsing = (m: MachineView) => (m.team && !m.spare && m.entries.some((e) => e.lifecycle === 'active') ? [{ id: `rt-${m.team.id}`, name: `${m.team.name}-路由A`, exits: [`节点${String(m.number ?? 1).padStart(2, '0')}`] }] : []);
+/** 不能移入备用的原因（同服务端 spare_eligible），能则 null */
+function spareWhy(m: MachineView): string | null {
+  if (m.kind === 'relay') return '线路机不属于任何团队';
+  if (m.spare) return '已经在备用里';
+  if (m.lifecycle !== 'active') return '只有在用的机器能进备用';
+  if (!m.subscription) return '没有订阅，没有到期日可等';
+  if (m.subscription.due_days <= -2) return '订阅已过期满 1 天，马上就会被清理';
+  return null;
+}
+const spareTeam = () => db.teams.find((t) => t.spare)!;
+const freeSpareNumber = (skip: string[] = []) => { const taken = new Set(db.machines.filter((x) => x.team?.id === spareTeam().id && !skip.includes(x.id)).map((x) => x.number)); let n = 1; while (taken.has(n)) n++; return n; };
 R('GET', '/machines/([^/]+)/retire', ({ params }) => {
   const m = machine(params[0]);
   const xs = ipNodesLeaving(m);
@@ -523,8 +559,19 @@ R('GET', '/machines/([^/]+)/retire', ({ params }) => {
   const leaving = m.lifecycle !== 'retired' ? [m, ...xs] : [];
   const teams = [...new Set(leaving.flatMap((x) => (x.team ? [x.team.id] : [])))];
   const renames = teams.flatMap((t) => compactPlan(t, leaving.map((x) => x.id))).map((c) => ({ machine_id: c.m.id, old_name: c.old_name, new_name: c.new_name }));
-  return { name: m.name, renames, ip_nodes: xs.map((x) => ({ id: x.id, name: x.name })) };
+  const why = spareWhy(m);
+  const ips = xs.map((x) => ({ id: x.id, name: x.name }));
+  return {
+    name: m.name, renames, ip_nodes: ips, routers: exitsUsing(m),
+    spare: { ok: !why, ...(why ? { why } : {}), to_name: displayName(spareTeam().name, freeSpareNumber()), recycle_on: m.subscription ? addDays(m.subscription.due_date, 2) : null, ip_nodes: ips },
+  };
 });
+/** 移入备用（同服务端 move_to_spare）：机器照常运行，改到备用团队最小的空号，原团队前移补号 */
+function moveToSpare(m: MachineView, reason: string | null) {
+  const sp = spareTeam(); const from = m.team!;
+  m.spare_from = m.name; m.spare_since = iso(); m.team = { id: sp.id, name: sp.name }; m.spare = true; m.number = freeSpareNumber([m.id]); m.lifecycle_reason = reason; m.revision++;
+  renameMachine(m); compactApply(from.id, `${m.spare_from} 退役后`);
+}
 function startRetire(m: MachineView, cleanup: boolean, reason: string | null) {
   const steps: [string, string][] = [['disable', '停用入口'], ...(cleanup ? [['cleanup', '清理节点上的服务'] as [string, string]] : []), ['revoke', '撤销令牌'], ['mark', '标记为已退役']];
   const job = newJob('retire', { id: m.id, name: m.name }, steps);
@@ -537,23 +584,24 @@ R('POST', '/machines/([^/]+)/retire', ({ params, body }) => {
   if (m.lifecycle === 'retired') throw bad('这台机器已退役');
   if (body.confirm !== m.name) throw bad('确认名称不匹配', 400, 'confirm_mismatch');
   const xs = ipNodesLeaving(m);
+  if (!body.now) {
+    const why = spareWhy(m);
+    if (why) throw bad(`不能移入备用：${why}`, 409, 'conflict');
+    const from = m.name;
+    moveToSpare(m, body.reason ?? null);
+    for (const x of xs) moveToSpare(x, `随宿主机「${from}」退役`);
+    refreshCounts();
+    db.audit.unshift({ id: `a${db.seq++}`, ts: iso(), actor: db.user, action: 'machine.retire', title: '退役机器', summary: `${from} 移入备用 → ${m.name}`, target_kind: 'machine', target_id: m.id, detail: { mode: 'spare' } });
+    emit({ type: 'machines' }); emit({ type: 'catalog' });
+    return { mode: 'spare', name: m.name, from, recycle_on: m.recycle_on, ip_nodes: xs.map((x) => ({ id: x.id, name: x.name })) };
+  }
   const job = startRetire(m, !!body.cleanup, body.reason ?? null);
   // 宿主机：同机 IP 节点一并退役，进行中 / 失败的作业作废，各自一个退役作业（不登录清理：宿主机的清理连同它们的实例一起删）
   const ip_node_jobs = xs.map((x) => {
     for (const j of db.jobs) if (j.target?.id === x.id && ['queued', 'running', 'failed'].includes(j.state)) { j.state = 'cancelled'; j.cancellable = false; j.finished_at = iso(); }
     return { machine_id: x.id, name: x.name, job_id: startRetire(x, false, `随宿主机「${m.name}」退役`).id };
   });
-  emit({ type: 'machines' }); return { job_id: job.id, ip_node_jobs };
-});
-R('POST', '/machines/([^/]+)/purge', ({ params, body }) => {
-  const m = machine(params[0]);
-  if (m.lifecycle !== 'retired') throw bad('只有已退役的机器才能彻底删除', 409, 'conflict');
-  if (body.confirm !== m.name) throw bad('确认名称不匹配', 400, 'confirm_mismatch');
-  const left = db.machines.filter((x) => x.host_machine?.id === m.id);
-  if (left.length) throw bad(`这台机器上还有同机 IP 节点没有彻底删除（含已退役的）：${left.map((x) => x.name).join('、')}；先删它们`, 409, 'conflict');
-  const job = newJob('purge', { id: m.id, name: m.name }, [['telemetry', '删除遥测数据'], ['record', '删除机器记录']]);
-  drive(job, 1800, () => { db.machines = db.machines.filter((x) => x.id !== m.id); db.machines.forEach((x) => { x.entries = x.entries.filter((e) => e.node.id !== m.id); }); refreshCounts(); });
-  return { job_id: job.id };
+  emit({ type: 'machines' }); return { mode: 'now', job_id: job.id, ip_node_jobs };
 });
 R('PUT', '/machines/([^/]+)/subscription', ({ params, body }) => {
   const m = machine(params[0]);
@@ -628,9 +676,9 @@ const jobSummary = ({ steps, cancellable: _c, result: _r, ...j }: Job): JobSumma
 };
 R('GET', '/jobs', ({ query }) => {
   const s = query.get('state') ?? 'all';
-  // 同中控：provision / restore 是大类，其余按作业类型原值
+  // 同中控：provision 是大类，其余按作业类型原值
   const k = query.get('kind') ?? '';
-  const kindOk = (kind: string) => !k || (k === 'provision' || k === 'restore' ? kind.startsWith(`${k}_`) : kind === k);
+  const kindOk = (kind: string) => !k || (k === 'provision' ? kind.startsWith(`${k}_`) : kind === k);
   return paged(db.jobs.filter((j) => kindOk(j.kind) && (s === 'all' || (s === 'active' ? j.state === 'running' || j.state === 'queued' : j.state !== 'running' && j.state !== 'queued'))).map(jobSummary), query);
 });
 const jobOf = (id: string) => { const j = db.jobs.find((x) => x.id === id); if (!j) throw bad('作业不存在', 404, 'not_found'); return j; };
@@ -647,7 +695,7 @@ R('GET', '/jobs/([^/]+)/logs', ({ params, query }) => {
 R('POST', '/jobs/([^/]+)/retry', ({ params, body }) => {
   const j = jobOf(params[0]); if (j.state !== 'failed') throw bad('只有失败的作业才能重试', 409, 'conflict');
   const f = j.steps.find((s) => s.state === 'failed')!;
-  const ipNode = j.kind === 'provision_ip' || j.kind === 'restore_ip' || !!db.machines.find((x) => x.id === j.target?.id)?.host_machine;
+  const ipNode = j.kind === 'provision_ip' || !!db.machines.find((x) => x.id === j.target?.id)?.host_machine;
   if (body.reset_host_key && (f.error_kind !== 'host_key' || ipNode)) throw bad(ipNode ? '同机 IP 节点不能在这里重置主机指纹：先在宿主机的作业里重置' : '只有主机指纹不符的失败才能重置指纹', 409, 'conflict');
   if (f.error_kind === 'host_key' && !body.reset_host_key) throw bad('主机指纹仍与记录的不一致：确认机器重装过后勾选「重置主机指纹」', 409, 'conflict');
   if (f.error_kind === 'auth' && !body.ssh_password) throw bad('中控密钥仍登录不上：请填写 SSH 密码', 409, 'conflict');
@@ -726,7 +774,7 @@ R('DELETE', '/silences/([^/]+)', ({ params }) => {
   db.silences = db.silences.filter((s) => s.id !== params[0]); syncMaint(); emit({ type: 'incidents' }); return { ok: true };
 });
 /** 同中控 api/misc.rs audit_cat：操作记录的分类 */
-const AUDIT_EXEC = new Set(['exec', 'ssh.login', 'terminal.open', 'terminal.close', 'machine.logs', 'server.logs', 'restore.probe']);
+const AUDIT_EXEC = new Set(['exec', 'ssh.login', 'terminal.open', 'terminal.close', 'machine.logs', 'server.logs']);
 const auditCat = (action: string) => (action.startsWith('auth.') ? 'auth' : AUDIT_EXEC.has(action) ? 'exec' : /^(machine|entry|relay|subscription|agent|job|renewal)(\.|$)/.test(action) ? 'machine' : 'config');
 R('GET', '/audit', ({ query }) => {
   const cat = query.get('cat') ?? ''; const q = (query.get('q') ?? '').trim().toLowerCase();
@@ -807,9 +855,8 @@ R('POST', '/agents/upgrade', () => {
   emit({ type: 'machines' }); return { jobs, skipped: [], order };
 });
 
-// ---------- 换线路机 / 搬空线路机 / 恢复已退役的机器 ----------
+// ---------- 换线路机 / 搬空线路机 ----------
 const MOVE_STEPS: [string, string][] = [['attach_new', '在新线路机建入口'], ['firewall_widen', '放行新线路机（节点防火墙）'], ['wait_applied_new', '等待新线路机应用'], ['verify_new', '经新入口出口验收'], ['detach_old', '摘除旧入口'], ['wait_detached_old', '等待旧线路机摘除'], ['firewall_narrow', '收紧节点防火墙']];
-const RESTORE_STEPS: [string, string][] = [['preflight', '预检与身份'], ['bootstrap', '引导密钥'], ['converge', '节点收敛（SSH 加固、SS、防火墙）'], ['agent', '安装 agent'], ['wait_report', '等待首次上报'], ['attach', '接入线路机'], ['wait_applied', '等待线路机生效'], ['verify', '出口验收'], ['activate', '上线']];
 const SHARE_NOTE = '换线路机后分享链接会变：客户端需要换成新的分享链接（作业完成后到节点的入口里复制）';
 const blankTraffic = () => ({ today_up: 0, today_down: 0, month_up: 0, month_down: 0 });
 
@@ -873,82 +920,6 @@ R('POST', '/relays/([^/]+)/evacuate', ({ params, body }) => {
   return { from: src.name, to: dst.name, jobs, skipped, share_changed: jobs.length > 0, note: SHARE_NOTE };
 });
 
-function restorePlan(m: MachineView, teamId: string | null, number: string | null, label: string | null) {
-  const blockers: string[] = [];
-  if (m.lifecycle !== 'retired') blockers.push('这台机器现在不是已退役状态，不能恢复');
-  const other = db.machines.find((x) => x.id !== m.id && x.ip === m.ip && x.lifecycle !== 'retired');
-  const ip_conflict = other ? { machine_id: other.id, name: other.name, lifecycle: other.lifecycle } : null;
-  if (other) blockers.push(`IP ${m.ip} 已被未退役的机器「${other.name}」占用：先把它退役，或确认这台机器的 IP 没有变`);
-  let name = m.name; let num: number | null = null; let team = m.team;
-  if (m.kind === 'relay') {
-    name = (label?.trim() || m.label || m.name);
-    if (db.machines.some((x) => x.kind === 'relay' && x.lifecycle !== 'retired' && x.label === name && x.id !== m.id)) blockers.push(`已经有同名线路机「${name}」：恢复时换一个名字`);
-  } else {
-    const t = teamId ? db.teams.find((x) => x.id === teamId) : db.teams.find((x) => x.id === m.team?.id);
-    if (!t) blockers.push('团队不存在'); else {
-      team = { id: t.id, name: t.name };
-      const taken = new Set(db.machines.filter((x) => x.team?.id === t.id && x.id !== m.id && x.lifecycle !== 'retired' && x.number != null).map((x) => x.number!));
-      if (number) { const n = +number; if (taken.has(n)) blockers.push(`编号 ${n} 已被占用`); else num = n; } else { let n = 1; while (taken.has(n)) n++; num = n; }
-      if (num != null) name = displayName(t.name, num);
-    }
-  }
-  // 同机 IP 节点：SSH、agent 都是宿主机的，宿主机要在用
-  const h = m.host_machine && machine(m.host_machine.id);
-  if (h && h.lifecycle !== 'active') blockers.push(`宿主机「${h.name}」现在是「${LIFECYCLE_LABEL[h.lifecycle]}」：同机 IP 节点要等宿主机在用才能恢复`);
-  return { blockers, ip_conflict, name, num, team, label: m.kind === 'relay' ? name : null };
-}
-R('GET', '/machines/([^/]+)/restore', ({ params, query }) => {
-  const m = machine(params[0]);
-  const p = restorePlan(m, query.get('team_id'), query.get('number'), query.get('label'));
-  // 同机 IP 节点不试 SSH：它用中控密钥登录宿主机
-  const probe = query.get('probe') !== 'false' && m.kind !== 'proxy' && !m.host_machine;
-  const keyLogin = m.id === 'm-t1-3r' ? 'denied' : 'ok';
-  const last = db.machines.find((x) => x.kind === 'relay' && x.lifecycle === 'active' && x.id === (m.team?.id === 't2' ? 'r2' : 'r1'));
-  return {
-    id: m.id, kind: m.kind, lifecycle: m.lifecycle, ip: m.ip, old_name: m.name, name: p.name, team: p.team, number: p.num, label: p.label,
-    restorable: p.blockers.length === 0, blockers: p.blockers, warnings: [], ip_conflict: p.ip_conflict, retired_reason: m.lifecycle_reason,
-    last_relay: last ? { id: last.id, name: last.name } : null,
-    // 退役时留下的出站参数：家宽代理的上游（假定有用户名，密码要重新填）、VPS 节点的 SS 端口
-    outbound: m.kind === 'relay' ? null : m.kind === 'proxy' ? { protocol: 'socks5', host: `up-${m.ip.replace(/\./g, '-')}.example.net`, port: 1080, username: 'fleet' }
-      : { protocol: 'shadowsocks', host: m.ip, port: db.ssPorts[m.id] ?? 8388, username: null },
-    ssh: probe ? { reachable: true, key_login: keyLogin, host_key: 'SHA256:q3Zp1vJm0cJ2oWfX8sB9tqk1eYb7rUo5nHj2LdPaVx4' } : null,
-    needs: { relay: m.kind !== 'relay', upstream: false, upstream_password: m.kind === 'proxy', password: m.kind === 'proxy' || m.host_machine ? 'no' : keyLogin === 'denied' ? 'required' : 'no' },
-  };
-});
-R('POST', '/machines/([^/]+)/restore', ({ params, body }) => {
-  const m = machine(params[0]);
-  const p = restorePlan(m, body.team_id ?? null, body.number != null ? String(body.number) : null, body.label ?? null);
-  if (p.blockers.length) throw bad(p.blockers.join('；'), 409, 'conflict');
-  const relay = m.kind === 'relay' ? null : db.machines.find((x) => x.id === body.relay_id && x.kind === 'relay' && x.lifecycle === 'active');
-  if (m.kind !== 'relay' && !relay) throw bad('要选一台在用的线路机');
-  if (m.kind === 'proxy' && !body.upstream?.password) throw bad('上游有用户名：密码在退役时已清掉，要在 upstream.password 里重新填');
-  const old = m.name;
-  m.lifecycle = 'provisioning'; m.lifecycle_reason = '恢复中'; if (p.team) { m.team = p.team; m.spare = teamOf(p.team.id).spare; } m.number = p.num; if (m.kind === 'relay') m.label = p.label; m.name = p.name; m.revision++;
-  m.health = { status: 'unknown', reasons: [{ key: 'provisioning', severity: 'info', text: '恢复作业进行中' }] };
-  let e: EntryView | null = null;
-  if (relay) {
-    e = { id: `e${db.seq++}`, relay: { id: relay.id, name: relay.name }, node: { id: m.id, name: m.name }, direct: false, port: Math.max(20000, ...relay.entries.map((x) => x.port)) + 1, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, traffic: blankTraffic() };
-    m.entries = [e]; relay.entries.push(e);
-  }
-  const relaySteps: [string, string][] = [['preflight', '预检与身份'], ['bootstrap', '引导密钥'], ['converge_relay', '线路机收敛（SSH 加固、Xray）'], ['agent', '安装 agent'], ['wait_report', '等待首次上报'], ['wait_applied', '等待 Xray 配置生效'], ['activate', '上线']];
-  // 同机 IP 节点：SS 端口在宿主机上重新分配（原来的可能已给了别的同机节点）
-  const h = m.host_machine && machine(m.host_machine.id);
-  if (h) db.ssPorts[m.id] = freeSsPort(h.id, [], m.id);
-  const steps = h ? IP_STEPS : m.kind === 'proxy' ? RESTORE_STEPS.filter(([k]) => ['attach', 'wait_applied', 'verify', 'activate'].includes(k)) : m.kind === 'relay' ? relaySteps : RESTORE_STEPS;
-  const job = newJob(h ? 'restore_ip' : `restore_${m.kind}`, { id: m.id, name: m.name }, steps);
-  m.active_job = { id: job.id, kind: job.kind, state: 'running' };
-  drive(job, 2000, () => {
-    m.lifecycle = 'active'; m.retired_at = null; m.lifecycle_reason = `已恢复${body.reason ? `：${body.reason}` : ''}`; m.active_job = null; m.health = { status: 'ok', reasons: [] };
-    if (h) borrowHost(m, h);
-    else if (m.kind !== 'proxy') { m.agent = { version: '1.0.3', last_report_at: iso(), online: true, xray_running: null, cores: 2, health: null }; m.host = { ts: iso(), cpu_pct: 5, load1: 0.1, mem_used: 380 * 1024 ** 2, mem_total: 4 * GiB, disk_used: 4 * GiB, disk_total: 60 * GiB, net_rx_bps: 2e5, net_tx_bps: 1e5, tcp_conns: 10 }; }
-    if (e) { e.lifecycle = 'active'; e.applied = true; e.tcp = { ok: true, latency_ms: 50, detail: null, ts: iso() }; e.egress = { ok: true, latency_ms: 180, detail: null, ts: iso() }; }
-    refreshCounts();
-  }, h ? ipOutputs(m, h) : []);
-  db.audit.unshift({ id: `a${db.seq++}`, ts: iso(), actor: db.user, action: 'machine.restore', title: '恢复机器', summary: `${old} → ${m.name}`, target_kind: 'machine', target_id: m.id, detail: {} });
-  refreshCounts(); emit({ type: 'machines' }); emit({ type: 'catalog' });
-  return { job_id: job.id, machine_id: m.id, name: m.name, old_name: old, number: m.number };
-});
-
 // ---------- 替换节点 ----------
 const REPLACE_STEPS: [string, string][] = [['routers', '改软路由出口'], ['renumber', '交换编号']];
 /** 模拟的计划：旧节点去「备用」团队（没有就要求指定），新节点接旧编号；软路由按旧节点的在用入口编一台「<团队>-路由A」 */
@@ -962,14 +933,14 @@ function replacePlan(old: MachineView, newId: string | null, teamId: string | nu
     if (x.active_job) blockers.push(`「${x.name}」还有进行中的作业：等它结束再替换`);
   }
   if (!nw.entries.some((e) => e.lifecycle === 'active')) blockers.push(`新节点「${nw.name}」没有在用的入口`);
-  const spare = teamId ? db.teams.find((t) => t.id === teamId) : db.teams.filter((t) => t.spare).length === 1 ? db.teams.find((t) => t.spare) : undefined;
+  const spare = teamId ? db.teams.find((t) => t.id === teamId) : db.teams.find((t) => t.spare);
   if (!spare) blockers.push('没有找到旧节点要去的备用团队：指定旧节点去哪个团队');
   let num: number | null = null;
   if (spare) {
     const taken = new Set(db.machines.filter((x) => x.team?.id === spare.id && x.id !== old.id && x.id !== nw.id && x.lifecycle !== 'retired' && x.number != null).map((x) => x.number!));
     if (spare.id === old.team?.id && old.number != null) taken.add(old.number);
     if (number) { const n = +number; if (taken.has(n)) blockers.push(`编号 ${n} 已被占用`); else num = n; } else { let n = 1; while (taken.has(n)) n++; num = n; }
-    if (!spare.spare) warnings.push('旧节点要去的不是备用团队：不会到期自动删除');
+    if (!spare.spare) warnings.push('旧节点要去的不是备用团队：不会到期自动回收');
   }
   if (nw.team?.id !== old.team?.id) warnings.push(`新节点「${nw.name}」不在旧节点的团队，替换时改到这个团队`);
   const rts = old.entries.filter((e) => e.lifecycle === 'active').length && old.team ? [{
@@ -1001,7 +972,7 @@ R('POST', '/machines/([^/]+)/replace', ({ params, body }) => {
   old.active_job = { id: job.id, kind: 'replace', state: 'running' };
   drive(job, 2500, () => {
     const [team, number] = [old.team, old.number];
-    old.team = { id: spare!.id, name: spare!.name }; old.spare = spare!.spare; old.number = num; old.name = displayName(spare!.name, num!); old.revision++;
+    if (spare!.spare && !old.spare) { old.spare_from = old.name; old.spare_since = iso(); } old.team = { id: spare!.id, name: spare!.name }; old.spare = spare!.spare; old.number = num; old.name = displayName(spare!.name, num!); old.revision++;
     nw.team = team; nw.spare = false; nw.number = number; nw.name = p.view.new_name; nw.revision++;
     old.active_job = null; refreshCounts();
   }, [{ routers: p.view.routers.map((r) => ({ id: r.id, name: r.name, exits: r.exits.map((e) => ({ exit: e.exit, to: e.to })), delay_ms: r.exits.map(() => 120) })) }, { old: p.view.old_to.name, new: p.view.new_name, renumbered: 0 }]);

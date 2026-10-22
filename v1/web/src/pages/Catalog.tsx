@@ -58,7 +58,7 @@ function DeleteDialog({ what, item, onClose, run }: { what: string; item: { id: 
   const held = useHeld(item?.id, item);
   return (
     <ConfirmDialog open={!!item} onOpenChange={(o) => !o && onClose()} danger confirmLabel="删除" title={`删除${what}「${held?.name ?? ''}」？`}
-      description={<>删了不能恢复 <InfoTip text={what === '供应商' ? '还有机器（含已退役的）、套餐（含已归档的）用着时删不掉，会提示还有哪些' : '还有机器用着（含已退役的）时删不掉，会提示还有哪些'} /></>}
+      description={<>删了不能恢复 <InfoTip text={what === '供应商' ? '还有机器（含回收后等待清除的）、套餐（含已归档的）用着时删不掉，会提示还有哪些' : '还有机器用着（含回收后等待清除的）时删不掉，会提示还有哪些'} /></>}
       onConfirm={async () => { await run(item!.id); toast.ok(`${what}「${item!.name}」已删除`); }} />
   );
 }
@@ -102,7 +102,7 @@ function TeamsTab() {
                       <Button size="sm" variant="quiet" onClick={() => setEdit(t)}><Pencil size={13} />改名 / 排序</Button>
                       {/* aria-disabled 而不是 disabled：禁用的按钮收不到悬停，看不到为什么不能点 */}
                       <Button size="sm" aria-disabled={done || undefined} data-tip={done ? '编号已连续' : undefined} onClick={() => { if (!done) setRenum(t); }}><ListOrdered size={13} />重新编号</Button>
-                      <IconButton size="sm" label="删除团队" onClick={() => setAskDel(t)}><Trash2 size={14} /></IconButton></span></td></tr>
+                      <IconButton size="sm" label={t.spare ? '备用团队不能删除' : '删除团队'} aria-disabled={t.spare || undefined} onClick={() => { if (!t.spare) setAskDel(t); }}><Trash2 size={14} /></IconButton></span></td></tr>
                 );
               })}
             </tbody>
@@ -124,20 +124,18 @@ const TeamDialog = resetOnOpen(function TeamDialog({ team, open, onClose }: { te
   const add = useAddTeam(); const patch = usePatchTeam();
   const [name, setName] = React.useState(team === 'new' ? '' : team.name);
   const [order, setOrder] = React.useState(team === 'new' ? '' : String(team.sort_order));
-  const [spare, setSpare] = React.useState(team === 'new' ? false : team.spare);
   const save = () => {
     const sort_order = order.trim() === '' ? undefined : Number(order);
     const ok = () => { toast.ok(team === 'new' ? '团队已创建' : '团队已保存'); onClose(); };
-    if (team === 'new') add.mutate({ name: name.trim(), sort_order, spare }, { onSuccess: ok, onError: toast.err });
-    else patch.mutate({ id: team.id, name: name.trim() !== team.name ? name.trim() : undefined, sort_order, spare: spare !== team.spare ? spare : undefined }, { onSuccess: ok, onError: toast.err });
+    if (team === 'new') add.mutate({ name: name.trim(), sort_order }, { onSuccess: ok, onError: toast.err });
+    else patch.mutate({ id: team.id, name: name.trim() !== team.name ? name.trim() : undefined, sort_order }, { onSuccess: ok, onError: toast.err });
   };
   return (
     <FormDialog open={open} onOpenChange={(o) => !o && onClose()} title={team === 'new' ? '新建团队' : `修改 ${team.name}`} submitLabel="保存" busy={add.isPending || patch.isPending} valid={name.trim().length > 0}
-      dirty={team === 'new' ? !!(name.trim() || order || spare) : name !== team.name || order !== String(team.sort_order) || spare !== team.spare}
+      dirty={team === 'new' ? !!(name.trim() || order) : name !== team.name || order !== String(team.sort_order)}
       desc={team !== 'new' && <>所有节点的显示名会一起变 <InfoTip text="线路机上的备注自动同步，不换令牌、不断连接。" /></>} onSubmit={save}>
       <Field label="团队名"><Input value={name} onChange={(e) => setName(e.target.value)} autoFocus /></Field>
       <Field label="排序"><Input inputMode="numeric" placeholder="越小越靠前，留空放最后" value={order} onChange={(e) => setOrder(e.target.value.replace(/\D/g, ''))} /></Field>
-      <div className="row" style={{ gap: 4 }}><CheckRow checked={spare} onChange={setSpare}>备用团队</CheckRow><InfoTip text={SPARE_TIP} /></div>
     </FormDialog>
   );
 });

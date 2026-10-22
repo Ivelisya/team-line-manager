@@ -10,7 +10,7 @@ import { SPRING } from '@/lib/motion';
 import { ArrowDown, ArrowUp, Calendar, CircleDollarSign, Cpu, Database, Gauge, Globe, HardDrive, MemoryStick, MoreHorizontal, Radar, RefreshCw, Settings2, PanelRightOpen, ServerOff, Wallet } from 'lucide-react';
 import type { DueState, MachineView, ProbeBeats, Subscription } from '@/lib/types';
 import * as F from '@/lib/format';
-import { autoDeletes, BEAT_LEGEND, BEAT_LEGEND_RELAY, beatCells, beatRate, beatTitles, dueTone, entryText, errText, hasHost, hostRel, isQuiet, limitGb, liveRate, monthlyHint, monthTraffic, probeSummary, quota, quotaGb, remainingValue, resourceMeters, subLabel, trafficTotal } from '@/lib/derive';
+import { recycleOn, BEAT_LEGEND, BEAT_LEGEND_RELAY, beatCells, beatRate, beatTitles, dueTone, entryText, errText, hasHost, hostRel, isQuiet, limitGb, liveRate, monthlyHint, monthTraffic, probeSummary, quota, quotaGb, remainingValue, resourceMeters, subLabel, trafficTotal } from '@/lib/derive';
 import { useProbeBeats } from '@/lib/queries';
 import { useLiveSeries } from '@/lib/live';
 import { useNow } from '@/lib/useNow';
@@ -34,12 +34,12 @@ type Paused = { readonly current: boolean };
 // 只读的悬停说明写 data-tip，由全站一份 TipHost 显示。
 
 /** 标题：国旗 + 名称 + 右侧操作（状态只看底部的胶囊，名称旁不再重复标）。紧凑卡的 IP 在名称下面一行小字（同表格名称列） */
-const Head = memo(function Head({ name, country, manual, ip, view, onOpen }: { name: string; country: string | null | undefined; manual: boolean; ip: string; view: CardView; onOpen: Open }) {
-  const btn = <button type="button" className="nc-name" data-tip={`打开 ${name} 的详情`} onClick={() => onOpen()}>{name}</button>;
+const Head = memo(function Head({ name, from, country, manual, ip, view, onOpen }: { name: string; from: string | null; country: string | null | undefined; manual: boolean; ip: string; view: CardView; onOpen: Open }) {
+  const btn = <button type="button" className="nc-name" data-tip={from ? `打开 ${name}（原 ${from}）的详情` : `打开 ${name} 的详情`} onClick={() => onOpen()}>{name}</button>;
   return (
     <header className="nc-head">
       <Flag country={country} manual={manual} ip={ip} />
-      {view === 'compact' ? <div className="nc-title">{btn}<span className="nc-ip" data-tip={ip}>{ip}</span></div> : btn}
+      {view === 'compact' ? <div className="nc-title">{btn}<span className="nc-ip" data-tip={ip}>{ip}</span></div> : <>{btn}{from && <span className="nc-from">原 {from}</span>}</>}
       {/* 打开详情：点名字或底部「详情」，标题行只留「⋯」 */}
       <div className="nc-actions">
         <IconButton label="更多操作" tip={false} data-node-menu="" aria-haspopup="menu"><MoreHorizontal size={16} /></IconButton>
@@ -66,12 +66,12 @@ const LargeInfo = memo(function LargeInfo({ entry, plan, limit, ...a }: Info & {
   </>;
 });
 /** 标准卡：地址 + 入口 · 套餐 · 到期两行（长了省略，悬停看全文） */
-const SmallInfo = memo(function SmallInfo({ entry, plan, dueDays, dueState, spare, ...a }: Info & { dueDays: number | undefined; dueState: DueState | undefined; spare: boolean }) {
+const SmallInfo = memo(function SmallInfo({ entry, plan, dueDays, dueState, recycle, ...a }: Info & { dueDays: number | undefined; dueState: DueState | undefined; recycle: string | null }) {
   const meta = `${entry} · ${plan?.name ?? (a.host ? '不带套餐' : '未设置套餐')}`;
   return (
     <div className="nc-meta2">
       <div><span data-tip={a.ip}>{a.ip}</span><IpTags {...a} /></div>
-      <div><span data-tip={meta}>{meta}</span><span className="nc-due"><Due days={dueDays} state={dueState} tail />{spare && <SpareDue iconOnly />}</span></div>
+      <div><span data-tip={meta}>{meta}</span><span className="nc-due"><Due days={dueDays} state={dueState} tail />{recycle && <SpareDue on={recycle} iconOnly />}</span></div>
     </div>
   );
 });
@@ -216,13 +216,13 @@ const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, reason, onOpen, t
 });
 
 /** 已上架 · 到期 · 剩余价值：彩色读数。已上架按分钟走（memo 挡住推送，自己每分钟重画） */
-const RunRow = memo(function RunRow({ activated, sub, spare }: { activated: string | null; sub: Subscription | null; spare: boolean }) {
+const RunRow = memo(function RunRow({ activated, sub, recycle }: { activated: string | null; sub: Subscription | null; recycle: string | null }) {
   const now = useNow(true, 60_000);
   const rv = remainingValue(sub);
   return (
     <section className="slot-seg nc-run">
       <div className="nc-run-item"><span className="nc-run-label"><RefreshCw />已上架</span><span className="nc-run-val" data-c="up"><Num f={F.since(activated, now)} /></span></div>
-      <div className="nc-run-item"><span className="nc-run-label"><Calendar />到期</span><span className="nc-run-val"><Due days={sub?.due_days} state={sub?.due_state} />{spare && <SpareDue iconOnly />}</span></div>
+      <div className="nc-run-item"><span className="nc-run-label"><Calendar />到期</span><span className="nc-run-val"><Due days={sub?.due_days} state={sub?.due_state} />{recycle && <SpareDue on={recycle} iconOnly />}</span></div>
       <div className="nc-run-item"><span className="nc-run-label"><Wallet />剩余价值</span><span className="nc-run-val">{rv ? <span className="num">{F.money(rv.cents, rv.currency)}</span> : <span className="t-muted">—</span>}</span></div>
     </section>
   );
@@ -337,7 +337,7 @@ const CardBody = memo(function CardBody({ m, view, current, onOpen: open, layout
 
   return (
     <mo.article ref={cardRef} layout={layoutKey == null ? false : 'position'} layoutDependency={layoutKey} transition={SPRING} className={cn('ncard', current && 'is-current', quiet && 'is-quiet')} data-view={view} data-id={m.id} data-kind={m.kind} data-health={m.health.status} data-offline={quiet ? '1' : undefined}>
-      <Head name={m.name} country={m.country} manual={!!m.country_set} ip={m.ip} view={view} onOpen={onOpen} />
+      <Head name={m.name} from={m.spare_from} country={m.country} manual={!!m.country_set} ip={m.ip} view={view} onOpen={onOpen} />
 
       {view === 'large' && <>
         <LargeInfo {...info} limit={quota(m).limit} />
@@ -345,12 +345,12 @@ const CardBody = memo(function CardBody({ m, view, current, onOpen: open, layout
         <section className="slot-seg">{flow}</section>
         <section className="slot-seg"><QuotaSlot m={m} onOpen={onOpen} /></section>
         {beat}
-        <RunRow activated={m.activated_at} sub={m.subscription} spare={autoDeletes(m)} />
+        <RunRow activated={m.activated_at} sub={m.subscription} recycle={recycleOn(m)} />
         {tags}
       </>}
 
       {view === 'small' && <>
-        <SmallInfo {...info} dueDays={m.subscription?.due_days} dueState={m.subscription?.due_state} spare={autoDeletes(m)} />
+        <SmallInfo {...info} dueDays={m.subscription?.due_days} dueState={m.subscription?.due_state} recycle={recycleOn(m)} />
         <section className="slot-seg">{res}</section>
         <section className="slot-seg">{flow}</section>
         <section className="slot-seg"><QuotaSlot m={m} onOpen={onOpen} /></section>

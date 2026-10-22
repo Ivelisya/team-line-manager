@@ -9,7 +9,7 @@ import { useIncidents, useMe, useMeta } from '@/lib/queries';
 import { useStream } from '@/lib/stream';
 import { useTheme, type Palette, type ThemePref } from '@/lib/theme';
 import { useTitleAlerts } from '@/lib/title';
-import { closeEvacuate, closeMaint, closeMove, closeRenew, closeRestore, closeRetire, closeUpgrade, useEvacuateTarget, useMaintTarget, useMoveTarget, useRenewTarget, useRestoreTarget, useRetireTarget, useUpgradeTarget } from '@/lib/nodeActions';
+import { closeEvacuate, closeMaint, closeMove, closeRenew, closeRetire, closeUpgrade, useEvacuateTarget, useMaintTarget, useMoveTarget, useRenewTarget, useRetireTarget, useUpgradeTarget } from '@/lib/nodeActions';
 import { resetTerminal, useTerminalTarget } from '@/lib/terminal';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger, Tip, TipHost } from '@/components/ui/overlays';
 import { Button } from '@/components/ui/button';
@@ -25,7 +25,7 @@ import { ErrorBoundary } from '@/components/app/ErrorBoundary';
 import { Note, Pill } from '@/components/app/primitives';
 import { MotionProvider } from '@/lib/motion';
 
-// 抽屉（含各页签、图表、对话框）和生命周期对话框（换线路机、搬空、恢复、退役）只在第一次用到时才下载，登录页和首屏不背这份体积。
+// 抽屉（含各页签、图表、对话框）和生命周期对话框（换线路机、搬空、替换、退役）只在第一次用到时才下载，登录页和首屏不背这份体积。
 // 加载失败（发版后旧块 404）由外面的 silent ErrorBoundary 接住并提示刷新。
 const NodeDrawer = React.lazy(() => import('@/features/NodeDrawer').then((m) => ({ default: m.NodeDrawer })));
 const LifecycleDialogsHost = React.lazy(() => import('@/components/app/LifecycleDialogs').then((m) => ({ default: m.LifecycleDialogsHost })));
@@ -55,7 +55,7 @@ function PageFallback() {
   return <div className="stack" role="status" aria-label="加载中"><Skeleton w={160} h={28} /><Skeleton h={96} /><Skeleton h={220} /></div>;
 }
 
-const closeLifecycle = () => { closeMove(); closeEvacuate(); closeRestore(); closeRetire(); closeRenew(); };
+const closeLifecycle = () => { closeMove(); closeEvacuate(); closeRetire(); closeRenew(); };
 
 const THEMES: [ThemePref, string, typeof Sun][] = [['light', '浅色', Sun], ['dark', '深色', Moon], ['system', '跟随系统', Monitor]];
 const PALETTES: [Palette, string][] = [['plum', '粉紫'], ['indigo', '靛蓝']];
@@ -76,8 +76,8 @@ function RouterHost() {
 
 function LifecycleHost() {
   // 四个 hook 都要无条件调用：写成 a() || b() 会短路，hook 数量随渲染变化，React 报错
-  const move = useMoveTarget(), evacuate = useEvacuateTarget(), restore = useRestoreTarget(), retire = useRetireTarget(), renew = useRenewTarget();
-  const ever = useEver(!!(move || evacuate || restore || retire || renew));
+  const move = useMoveTarget(), evacuate = useEvacuateTarget(), retire = useRetireTarget(), renew = useRenewTarget();
+  const ever = useEver(!!(move || evacuate || retire || renew));
   return ever ? <React.Suspense fallback={null}><LifecycleDialogsHost /></React.Suspense> : null;
 }
 

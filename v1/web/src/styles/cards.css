@@ -71,6 +71,7 @@
 .nc-named > .nc-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nc-title { display: grid; min-width: 0; }
 .ncard[data-view="compact"] .nc-name { justify-self: start; max-width: 100%; line-height: 20px; }
+.nc-from { flex: 0 1 auto; min-width: 0; font-size: var(--fs-micro); color: var(--fg-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .nc-ip { font-size: var(--fs-micro); line-height: 14px; color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nc-actions { margin-left: auto; margin-right: -8px; display: flex; align-items: center; gap: var(--sp-2); flex: none; }
 .ncard[data-offline="1"] .nc-name { color: var(--fg-2); }

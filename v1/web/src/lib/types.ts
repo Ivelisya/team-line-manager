@@ -51,8 +51,10 @@ export interface AgentHealth {
 }
 export interface MachineView {
   id: string; kind: Kind; name: string; team: { id: string; name: string } | null; number: number | null; label: string | null;
-  /** 所在团队是备用团队：在用时订阅过期满 1 天（账单时区的「到期日 + 1 天」过完）由中控自动退役并彻底删除 */
+  /** 所在团队是备用团队：在用时订阅过期满 1 天（账单时区的「到期日 + 1 天」过完）由中控自动清理并移入回收站 */
   spare: boolean;
+  /** 备用里的机器：进备用前的显示名（如 团队2-07）与进备用（= 退役）的时刻、自动回收的起始日（YYYY-MM-DD，没有订阅为 null）；不在备用里为 null */
+  spare_from: string | null; spare_since: string | null; recycle_on: string | null;
   ip: string; ssh_port: number;
   /** 国家或地区（ISO 3166-1 两位大写，如 US）：手动设了用手动的，否则中控离线 IP 库按机器自己的 IP 查；
    *  内网、家宽代理填的域名、库没装时为 null */
@@ -91,7 +93,7 @@ export interface MachineView {
   relay: { public_host: string; generation: number; applied_generation: number; applied_at: string | null; apply_error: string | null; port_min: number; port_max: number } | null;
 }
 
-/** spare：备用团队（里面在用的机器订阅过期满 1 天后自动删除） */
+/** spare：唯一的备用团队（系统管理，不能删、不能取消；里面在用的机器订阅过期满 1 天后自动回收） */
 export interface Team { id: string; name: string; sort_order: number; spare: boolean; node_count: number }
 /** 供应商怎么计量流量额度：网卡本周期入、出总量取小 / 取大 / 相加 / 只算出站 */
 export type TrafficRule = 'min' | 'max' | 'sum' | 'out';
@@ -143,7 +145,7 @@ export interface Meta {
 export type UsageMetric = 'cpu' | 'mem' | 'disk' | 'load';
 
 export type JobState = 'queued' | 'running' | 'waiting' | 'cancelling' | 'succeeded' | 'failed' | 'cancelled';
-export type JobKind = 'provision_vps' | 'provision_proxy' | 'provision_relay' | 'provision_ip' | 'attach_entry' | 'move_entry' | 'restore_vps' | 'restore_proxy' | 'restore_relay' | 'restore_ip' | 'retire' | 'purge' | 'upgrade_agent' | 'replace';
+export type JobKind = 'provision_vps' | 'provision_proxy' | 'provision_relay' | 'provision_ip' | 'attach_entry' | 'move_entry' | 'retire' | 'purge' | 'upgrade_agent' | 'replace';
 /** 步骤 state 文档未列全，前端按 pending/running/waiting/succeeded(done)/failed/skipped(cancelled) 宽松处理 */
 export interface JobStep { idx: number; key: string; title: string; state: string; started_at: string | null; finished_at: string | null; output: Record<string, unknown> | null; error: string | null; error_kind?: string | null }
 /** 作业列表（GET /jobs）的一项：不带 steps。step = 当前（或失败的）步骤下标，step_title 为它的标题，做完为 null */
@@ -209,27 +211,9 @@ export interface Renewal { id: string; old_due: string | null; new_due: string; 
 /** 审计：界面只显示 title 与 summary（服务端生成的中文）；detail 是原始 JSON，不要直接渲染 */
 export interface AuditEntry { id: string; ts: string; actor: string; action: string; title: string; summary: string; target_kind: string | null; target_id: string | null; detail: unknown }
 export interface RenumberPreview { changes: { machine_id: string; old_name: string; new_name: string }[]; token: string }
-/** 换线路机 / 搬空线路机 / 恢复已退役机器（API.md「生命周期操作」） */
+/** 换线路机 / 搬空线路机（API.md「生命周期操作」） */
 export interface MoveResult { job_id: string; name: string; from: string; to: string; share_changed: boolean; note: string }
 export interface EvacuateResult { from: string; to: string; jobs: { machine_id: string; name: string; job_id: string }[]; skipped: { machine_id: string; name: string | null; reason: string }[]; share_changed: boolean; note: string }
-export interface RestorePreview {
-  id: string; kind: Kind; lifecycle: Lifecycle; ip: string; old_name: string; name: string; team: { id: string; name: string } | null; number: number | null; label: string | null;
-  restorable: boolean; blockers: string[]; warnings: string[]; ip_conflict: { machine_id: string; name: string; lifecycle: string } | null;
-  last_relay: { id: string; name: string } | null; retired_reason: string | null;
-  /** 同机 IP 节点不试 SSH（用中控密钥登录宿主机），为 null、needs.password 为 no；宿主机不在用时 blockers 里有原因 */
-  /** host_key_changed：退役时存过主机公钥才有；true 时 blockers 里有「主机指纹与退役时不同…」（请求带 reset_host_key=true 时改在 warnings） */
-  ssh: { reachable: boolean; key_login: 'ok' | 'denied' | 'error' | 'unreachable' | string; host_key?: string; host_key_changed?: boolean; detail?: string } | null;
-  /** 退役时留下的出站参数（不含秘密），恢复时默认沿用：VPS 节点是 SS 端口（NAT 映射的公网端口），家宽代理是上游。迁移 0029 之前退役的为 null */
-  outbound: { protocol: 'shadowsocks' | 'socks5' | 'http'; host: string; port: number; username: string | null } | null;
-  /** password：required 中控密钥登录被拒、必须给 root 密码；optional 探测不到、可选；no 不需要。
-   *  upstream：家宽代理没留下上游、要给全；upstream_password：留下的上游有用户名，密码退役时已清掉、要重新给 */
-  needs: { relay: boolean; upstream: boolean; upstream_password: boolean; password: 'required' | 'optional' | 'no' };
-}
-export interface RestoreBody {
-  team_id?: string; number?: number; label?: string; relay_id?: string; reason?: string; reset_host_key?: boolean; ss_port?: number;
-  /** 没给的字段沿用退役时留下的；username 给空串 = 去掉 */
-  login?: { password: string }; upstream?: { protocol?: 'socks5' | 'http'; host?: string; port?: number; username?: string; password?: string };
-}
 /** 替换节点预览（GET /machines/{old}/replace）：新节点接旧编号（new_name），旧节点去 old_to（默认同团队的备用团队）；
  *  routers：出口指向旧节点、会改成新节点入口的软路由（state 不是 online 时 blockers 里有原因）；renames：新节点原来的团队压缩编号 */
 export interface ReplaceSide { id: string; name: string; kind: Kind; team: { id: string; name: string } | null }
@@ -242,10 +226,32 @@ export interface ReplacePreview {
   ok: boolean; blockers: string[]; warnings: string[];
 }
 export interface ReplaceBody { new_machine_id: string; old_to?: { team_id?: string; number?: number }; routers?: boolean }
-/** 退役预览：退役后同团队后面的节点会依次前移改名。ip_nodes：会一并退役的同机 IP 节点（宿主机才有），renames 按所有受影响的团队算 */
-export interface RetirePreview { name: string; renames: { machine_id: string; old_name: string; new_name: string }[]; ip_nodes: { id: string; name: string }[] }
-/** 退役：宿主机的同机 IP 节点各一个退役作业（ip_node_jobs，没有为 []） */
-export interface RetireResult { job_id: string; ip_node_jobs: { machine_id: string; name: string; job_id: string }[] }
+/** 退役预览：spare = 能不能移入备用（ok；不能时 why 写原因）、去哪（to_name）、从哪天起自动回收（recycle_on）；
+ *  ip_nodes：会一并走的同机 IP 节点（宿主机才有）；routers：还指向它的软路由出口（只警告）；
+ *  renames：原团队后面的节点前移补号，按所有受影响的团队算 */
+export interface RetirePreview {
+  name: string;
+  spare: { ok: boolean; why?: string; to_name: string; recycle_on: string | null; ip_nodes: { id: string; name: string }[] };
+  routers: { id: string; name: string; exits: string[] }[];
+  renames: { machine_id: string; old_name: string; new_name: string }[];
+  ip_nodes: { id: string; name: string }[];
+}
+/** 退役：mode=spare 已移入备用（name 是新名、from 原名、recycle_on 起自动回收）；mode=now 提交了清理作业（宿主机的同机 IP 节点各一个，没有为 []） */
+export type RetireResult =
+  | { mode: 'spare'; name: string; from: string; recycle_on: string | null; ip_nodes: { id: string; name: string }[] }
+  | { mode: 'now'; job_id: string; ip_node_jobs: { machine_id: string; name: string; job_id: string }[] };
+
+/** 回收站一行（GET /recycle-bin，只读）：source = fleet 本面板 / legacy 旧面板导入；name 是退役前的名字，last_name 回收时的名字 */
+export interface RecycleItem {
+  id: number; source: 'fleet' | 'legacy'; source_id: string; machine_id: string | null; kind: Kind;
+  name: string; last_name: string | null; team: string | null; ip: string | null; host_name: string | null;
+  provider: string | null; plan: string | null; service_ref: string | null;
+  price_cents: number | null; currency: string | null; cycle: string | null;
+  activated_at: string | null; retired_at: string | null; due_date: string | null; recycled_at: string; reason: string | null;
+  traffic_up: number | null; traffic_down: number | null; nic_rx: number | null; nic_tx: number | null; actor: string;
+}
+/** GET /recycle-bin/{id}：带回收时的快照（MachineView、订阅、续费、入口历史等；旧面板导入的是原始记录），形状不固定，界面只挑几项 */
+export interface RecycleDetail extends RecycleItem { snapshot: Record<string, unknown> }
 
 // ---- 设置页：API 密钥、告警通知渠道（契约见 COMMON.md） ----
 export type ApiScope = 'read' | 'write' | 'secrets' | 'exec';
@@ -255,7 +261,7 @@ export type NotifySeverity = 'info' | 'warning' | 'critical';
 export interface NotifyChannel { id: string; name: string; kind: NotifyKind | string; min_severity: NotifySeverity | string; enabled: boolean; created_at: string; config_hint: string }
 /** channel_name：渠道删了之后为 null（发送记录还留着） */
 export interface NotifyLogEntry { id: string; channel_id: string; channel_name: string | null; incident_id: string | null; ts: string; ok: boolean; error: string | null;
-  /** firing / repeat / resolved / test；silence 静默 / 维护变更；auto 备用团队的机器到期自动删除 */
+  /** firing / repeat / resolved / test；silence 静默 / 维护变更；auto 备用团队的机器到期自动回收 */
   kind: 'firing' | 'repeat' | 'resolved' | 'test' | 'silence' | 'auto'; subject_name: string | null; rule_name: string | null }
 
 /** 服务端分页列表（/jobs、/incidents）：next_offset 只在后面还有数据时给出 */

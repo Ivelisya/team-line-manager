@@ -36,9 +36,9 @@ const JOB_PAGE = [20];
 type View = 'all' | 'running' | 'done';
 const VIEWS: { value: View; label: string }[] = [{ value: 'all', label: '全部' }, { value: 'running', label: '进行中' }, { value: 'done', label: '已结束' }];
 const STATE_OF: Record<View, 'all' | 'active' | 'done'> = { all: 'all', running: 'active', done: 'done' };
-/** 类型筛选（?kind=，与页签组合）：上架、恢复各含四类机器，按大类筛（同列表接口的 kind）；其余是作业类型原值，名字取 /meta */
-const KIND_VALUES = ['provision', 'restore', 'attach_entry', 'move_entry', 'replace', 'upgrade_agent', 'retire', 'purge'];
-const KIND_GROUP: Record<string, string> = { provision: '上架', restore: '恢复' };
+/** 类型筛选（?kind=，与页签组合）：上架含四类机器，按大类筛（同列表接口的 kind）；其余是作业类型原值，名字取 /meta */
+const KIND_VALUES = ['provision', 'attach_entry', 'move_entry', 'replace', 'upgrade_agent', 'retire', 'purge'];
+const KIND_GROUP: Record<string, string> = { provision: '上架' };
 
 const JobPill = ({ state }: { state: string }) => { const s = STATE[state] ?? { tone: 'neutral' as Tone }; return <Pill tone={s.tone} dot={s.dot}>{jobStateLabel(state)}</Pill>; };
 
@@ -204,7 +204,6 @@ function JobDetail({ id }: { id: string }) {
 /** 取消的后果：失败的上架 / 恢复作业取消后机器不再停在「上架失败」；升级 agent 只有排队中的能取消 */
 function cancelDesc(j: Job): React.ReactNode {
   if (j.state === 'failed' && j.kind.startsWith('provision_')) return <>机器会被退役并清理 <InfoTip text="不再重试这次上架：已完成的步骤会被补偿（回滚），机器会被退役并清理，释放 IP 与编号。" /></>;
-  if (j.state === 'failed' && j.kind.startsWith('restore_')) return <>机器退回「已退役」 <InfoTip text="不再重试这次恢复：已完成的步骤会被补偿（回滚），机器退回「已退役」。" /></>;
   if (j.kind === 'upgrade_agent') return <>不升了，排在后面的也取消 <InfoTip text="这台还没开始升级，取消后不升了；「全部升级」里排在它后面、等它的机器也会跟着取消。" /></>;
   return '已完成的步骤会回滚';
 }
@@ -218,7 +217,7 @@ function RetryButton({ j }: { j: Job }) {
   const kind = j.steps.find((s) => s.state === 'failed')?.error_kind;
   const ask = kind === 'host_key' || kind === 'auth';
   const target = useMachine(ask ? j.target?.id ?? null : null);
-  const ip = j.kind === 'provision_ip' || j.kind === 'restore_ip' || !!target.data?.host_machine;
+  const ip = j.kind === 'provision_ip' || !!target.data?.host_machine;
   // 目标机器还没取回时不知道是不是同机 IP 节点：先不给重置（没有目标的作业不用等）
   const canReset = kind === 'host_key' && !ip && (!j.target || !!target.data);
   const [short, tip] = kind === 'host_key'

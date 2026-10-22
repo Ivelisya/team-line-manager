@@ -38,7 +38,7 @@ let order: readonly string[] | null = null;
 export const setDrawerOrder = (ids: readonly string[] | null) => { order = ids; };
 
 /** 抽屉里的上一台 / 下一台（[ ] 键与抽屉头部的按钮共用）：按页面交来的顺序（setDrawerOrder）；没有、或这台不在其中时按机器列表缓存的默认顺序。
- *  到头为 null，不绕回。不订阅列表（订阅会让每个页面都跟着取 /machines），用时读缓存；列表没取过、或这台不在在用列表里（已退役）时返回 undefined */
+ *  到头为 null，不绕回。不订阅列表（订阅会让每个页面都跟着取 /machines），用时读缓存；列表没取过、或这台不在在用列表里（已回收）时返回 undefined */
 export function drawerSiblings(qc: QueryClient, id: string | null): { prev: string | null; next: string | null } | undefined {
   if (!id) return undefined;
   const at = (n: number, i: number, idAt: (k: number) => string) => (i < 0 ? undefined : { prev: i > 0 ? idAt(i - 1) : null, next: i < n - 1 ? idAt(i + 1) : null });

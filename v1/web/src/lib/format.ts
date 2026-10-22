@@ -93,6 +93,8 @@ export function dt(iso: string | null | undefined): string {
   const d = new Date(iso);
   return `${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
 }
+/** 月-日（MM-DD） */
+export const md = (iso: string | null | undefined): string => (iso ? dt(iso).slice(0, 5) : '—');
 export function dtFull(iso: string | null | undefined): string {
   if (!iso) return '—';
   const d = new Date(iso);

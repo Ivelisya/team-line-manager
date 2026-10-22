@@ -53,7 +53,7 @@ const P_LAYOUT = 'fleet:layout'; const P_VIEW = 'fleet:view'; const P_SORT = 'fl
 const isIssue = (m: MachineView) => m.lifecycle === 'failed' || m.health.status === 'down';
 
 export function HomePage() {
-  const machines = useMachines('live');
+  const machines = useMachines();
   const teams = useTeams();
   const ov = useOverview();
   const { id: openId, open } = useDrawer();
@@ -84,7 +84,7 @@ export function HomePage() {
   useProbeBeatsPoll(layout === 'cards'); // 卡片心跳条每 2 分钟刷新：全页一个轮询
 
   // 实时推送每条都换一份机器列表：按可打断的优先级重渲染（用户的点击、输入先处理，推送晚一点跟上）
-  const all = React.useDeferredValue(machines.data ?? EMPTY_MACHINES); // live 范围已不含已退役
+  const all = React.useDeferredValue(machines.data ?? EMPTY_MACHINES); // 列表不含已回收的
   // 首份列表刚到、推迟的那一轮还没渲染：仍按加载中处理（不闪「还没有机器」，也不把地址里的页码夹回第 1 页）
   const pending = all === EMPTY_MACHINES && !!machines.data?.length;
   const counts = React.useMemo(() => ({

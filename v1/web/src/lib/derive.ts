@@ -267,8 +267,8 @@ export function probeSummary(m: MachineView) {
     tcpFail: allFailed(viaNode.map((e) => e.tcp)), egressFail: allFailed(es.map((e) => e.egress)), egressOk: es.some((e) => e.egress?.ok),
   };
 }
-/** 备用团队里在用、有订阅的机器：到期 +1 天由中控自动删除（到期旁标出来）。旧接口没有 spare 时按否 */
-export const autoDeletes = (m: Pick<MachineView, 'spare' | 'lifecycle' | 'subscription'>) => !!m.spare && m.lifecycle === 'active' && !!m.subscription;
+/** 备用团队里在用、有订阅的机器：从哪天起自动回收（MM-DD，到期旁标出来）；不在备用里、没有订阅为 null */
+export const recycleOn = (m: Pick<MachineView, 'lifecycle' | 'recycle_on'>) => (m.lifecycle === 'active' ? m.recycle_on?.slice(5) ?? null : null);
 /**
  * 剩余价值：已付还没用掉的部分，按天折算。每期天数 = 服务端的 period_days（到期日往前推一个周期 → 到期日），剩余比例 = 距到期天数 / 每期天数；
  * 预付了多期时比例大于 1；已过期为 0。
