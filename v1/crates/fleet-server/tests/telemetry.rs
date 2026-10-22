@@ -467,6 +467,24 @@ async fn rollup_covers_backfilled_hours_and_counter_resets() {
     assert!(want.2 >= 7, "{want:?}");
 }
 
+/// 持久累计值往回跳一点（异常重启后 nic.json 比上报旧）记 0，不把整个累计值当增量；读数明显回到小值（新计数器）照旧记读数
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rollup_ignores_small_backward_jump_of_persistent_counter() {
+    let t = setup().await;
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let h0 = hour_floor(now_ms() - 2 * D);
+    let mut r = blank_report(1);
+    r.host = [(h0 + 10_000, 5_000_000_000_000u64), (h0 + 70_000, 4_990_000_000_000), (h0 + 80_000, 4_990_000_001_000), (h0 + 90_000, 300), (h0 + 100_000, 500)]
+        .iter()
+        .map(|(ts, rx)| host(*ts, 1.0, *rx, rx * 2))
+        .collect();
+    assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
+    db::rollup_hours(&t.st.db).await.unwrap();
+    let got: (i64, i64) = sqlx::query_as("select net_rx, net_tx from host_metric_hourly where machine_id = $1").bind(relay).fetch_one(&t.st.db).await.unwrap();
+    // 往回跳 10 GB 记 0（不是 60 s × 10 Gbit/s 的 75 GB）+ 1000 + 300（回到小值：读数即增量）+ 200
+    assert_eq!(got, (1000 + 300 + 200, 2 * (1000 + 300 + 200)));
+}
+
 /// agent 报离谱的计数器（0 → u64::MAX，一小时里跳两次）：汇总不溢出（每段增量按 10 Gbit/s 封顶），
 /// 库里已有的超大小时行也不让机器列表、详情报错
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
