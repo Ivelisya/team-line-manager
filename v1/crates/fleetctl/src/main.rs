@@ -10,6 +10,7 @@ mod lifecycle;
 mod ops;
 mod policy;
 mod resolve;
+mod silence;
 mod table;
 
 use clap::{Args, Parser, Subcommand};
@@ -23,7 +24,7 @@ use std::process::ExitCode;
     name = "fleetctl",
     version,
     about = "团队线路管理 运维命令行",
-    after_help = "连接配置：环境变量 FLEET_URL、FLEET_TOKEN，或 `fleetctl login` 写入的配置文件。\n<机器> 可以写 机器 id、显示名（团队1-06）、线路机名、IP。\n加 --json 输出一行 JSON：ls / entries / incidents / policy ls 是与表格同列的精简对象（单台完整视图用 show、policy show），其余是 API 返回的 data 原样；错误一律走 stderr 且退出码非 0。"
+    after_help = "连接配置：环境变量 FLEET_URL、FLEET_TOKEN，或 `fleetctl login` 写入的配置文件。\n<机器> 可以写 机器 id、显示名（团队1-06）、线路机名、IP。\n加 --json 输出一行 JSON：ls / entries / incidents / policy ls / silence 是与表格同列的精简对象（单台完整视图用 show、policy show），其余是 API 返回的 data 原样；错误一律走 stderr 且退出码非 0。"
 )]
 struct Cli {
     /// 输出 JSON（给脚本和 AI）
@@ -112,6 +113,38 @@ enum PolicyCmd {
         #[arg(long)]
         yes: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum SilenceCmd {
+    /// 进行中与已预约的静默（含维护窗口），进行中的在前
+    Ls,
+    /// 新建静默：一台机器，或 --all（全部机器，要 --yes）。--start 预约开始时间
+    Add {
+        /// 机器（id / 显示名 / 线路机名 / IP）
+        machine: Option<String>,
+        /// 静默全部机器
+        #[arg(long)]
+        all: bool,
+        /// 只静默这条告警规则（规则 key，如 agent_offline；不填 = 全部规则）
+        #[arg(long)]
+        rule: Option<String>,
+        /// 开始时间，按本机时区：2026-10-23 02:00（也可写带时区的 2026-10-23T02:00:00+08:00）；不填 = 现在，最多提前 90 天
+        #[arg(long)]
+        start: Option<String>,
+        /// 时长：30m / 4h / 2d，可组合（1h30m）；最长 30 天
+        #[arg(long = "for", value_name = "DURATION")]
+        dur: String,
+        /// 标成维护：卡片显示「维护中」，期间暂停健康判定
+        #[arg(long)]
+        maintenance: bool,
+        #[arg(long)]
+        comment: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// 删除静默（id 前缀，见 silence ls 的 id 列）：进行中的提前结束、告警即刻恢复，已预约的取消
+    Rm { id: String },
 }
 
 fn keys_user(c: &KeysCmd) -> Option<&str> {
@@ -238,6 +271,11 @@ enum Cmd {
     },
     /// 确认告警
     Ack { id: String },
+    /// 静默与维护窗口（可预约）：维护前先开维护窗口，免得告警刷屏
+    Silence {
+        #[command(subcommand)]
+        cmd: SilenceCmd,
+    },
     /// 作业列表
     Jobs {
         #[arg(long)]
@@ -545,6 +583,14 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Uptime { machine, days } => cmds::uptime(x, &machine, days),
         Cmd::Incidents { all, machine } => cmds::incidents(x, all, machine.as_deref()),
         Cmd::Ack { id } => cmds::ack(x, &id),
+        Cmd::Silence { cmd } => match cmd {
+            SilenceCmd::Ls => silence::ls(x),
+            SilenceCmd::Add { machine, all, rule, start, dur, maintenance, comment, yes } => silence::add(
+                x,
+                silence::AddOpts { machine: machine.as_deref(), all, rule: rule.as_deref(), start: start.as_deref(), dur: &dur, maintenance, comment: comment.as_deref(), yes },
+            ),
+            SilenceCmd::Rm { id } => silence::rm(x, &id),
+        },
         Cmd::Jobs { active, limit } => cmds::jobs(x, active, limit),
         Cmd::Job { id, follow } => cmds::job(x, &id, follow),
         Cmd::Retry { id, reset_host_key, password_env } => cmds::job_retry(x, &id, reset_host_key, password_env.as_deref()),

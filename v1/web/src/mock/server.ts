@@ -610,9 +610,30 @@ R('GET', '/incidents', ({ query }) => {
   return paged(db.incidents.filter((i) => (s === 'all' || i.state === s) && (!sid || i.subject_id === sid)).sort(order), query);
 });
 R('POST', '/incidents/([^/]+)/ack', ({ params }) => { const i = db.incidents.find((x) => x.id === params[0]); if (!i) throw bad('告警不存在', 404, 'not_found'); i.ack_at = iso(); i.ack_by = db.user; emit({ type: 'incidents' }); return {}; });
-R('GET', '/silences', () => clone(db.silences));
-R('POST', '/silences', ({ body }) => { const m = body.subject_id ? machine(body.subject_id) : null; const s = { id: `s${db.seq++}`, subject_name: m?.name ?? null, rule: null, subject_id: null, ...body }; db.silences.push(s); emit({ type: 'incidents' }); return s; });
-R('DELETE', '/silences/([^/]+)', ({ params }) => { db.silences = db.silences.filter((s) => s.id !== params[0]); emit({ type: 'incidents' }); return {}; });
+/** 静默同服务端：只列没结束的（含还没开始的预约），按开始时间排；新建的校验顺序与中文原因同服务端 */
+const RULE_NAMES: Record<string, string> = {
+  agent_offline: 'agent 离线', clock_skew: 'agent 时钟不准', no_entry: '没有在用入口', egress_fail: '出口不通', tcp_fail: '线路到节点不通', renewal_due: '即将到期', renewal_overdue: '已过期',
+  relay_apply_lag: '配置未应用', relay_apply_error: '配置应用失败', relay_xray_down: 'Xray 未运行', host_cpu_high: 'CPU 持续偏高', host_mem_high: '内存持续偏高', host_disk_high: '磁盘空间不足',
+  traffic_quota_high: '流量额度吃紧', ipintel_new_isp: '来源出现新运营商', ipintel_new_city: '来源出现新城市', ipintel_datacenter_source: '机房 / VPN 来源', policy_blocked: '访问策略暂停',
+};
+R('GET', '/silences', () => clone(db.silences.filter((s) => Date.parse(s.ends_at) > Date.now()).sort((a, b) => Date.parse(a.starts_at) - Date.parse(b.starts_at))));
+R('POST', '/silences', ({ body }) => {
+  const s = Date.parse(body.starts_at); const e = Date.parse(body.ends_at); const now = Date.now();
+  if (!(e > s)) throw bad('结束时间要晚于开始时间');
+  if (e - s > 30 * DAY) throw bad('最长 30 天；更久的请直接把机器退役');
+  if (e <= now) throw bad('结束时间已经过去了');
+  if (s > now + 90 * DAY) throw bad('最多提前 90 天预约');
+  if (body.rule && !RULE_NAMES[body.rule]) throw bad(`没有「${body.rule}」这条告警规则`);
+  const m = body.subject_id ? db.machines.find((x) => x.id === body.subject_id) : null;
+  if (body.subject_id && !m) throw bad('subject_id 指向的机器不存在');
+  const id = `s${db.seq++}`;
+  db.silences.push({ id, subject_id: m?.id ?? null, subject_name: m?.name ?? null, rule: body.rule ?? null, rule_name: body.rule ? RULE_NAMES[body.rule] : null, starts_at: body.starts_at, ends_at: body.ends_at, is_maintenance: !!body.is_maintenance, comment: body.comment ?? '' });
+  emit({ type: 'incidents' }); return { id };
+});
+R('DELETE', '/silences/([^/]+)', ({ params }) => {
+  if (!db.silences.some((s) => s.id === params[0])) throw bad('没有这条静默', 404, 'not_found');
+  db.silences = db.silences.filter((s) => s.id !== params[0]); emit({ type: 'incidents' }); return { ok: true };
+});
 R('GET', '/audit', ({ query }) => clone(db.audit.filter((a) => !query.get('target_id') || a.target_id === query.get('target_id')).slice(0, +(query.get('limit') ?? 50))));
 
 installAccessMock(R, () => db.machines);

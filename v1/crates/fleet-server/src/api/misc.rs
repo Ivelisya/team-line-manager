@@ -206,6 +206,7 @@ pub struct Silence {
     subject_name: Option<String>,
 }
 
+/// 没结束的静默（含还没开始的预约），按开始时间排：进行中的自然在前，已预约的随后。`rule_name` 是规则中文名（同告警），不限规则时为 null
 pub async fn list_silences(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
     let v: Vec<Silence> = sqlx::query_as(
         "select s.id, s.subject_id, s.rule, s.starts_at, s.ends_at, s.is_maintenance, s.comment,
@@ -215,15 +216,31 @@ pub async fn list_silences(_a: Actor, State(st): State<AppState>) -> ApiResult<J
     )
     .fetch_all(&st.db)
     .await?;
-    Ok(ok(v))
+    let out: Vec<Value> = v
+        .iter()
+        .map(|s| {
+            let mut j = serde_json::to_value(s).unwrap_or_default();
+            j["rule_name"] = json!(s.rule.as_deref().map(crate::notify::rule_name));
+            j
+        })
+        .collect();
+    Ok(ok(out))
 }
 
 pub async fn create_silence(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Silence>) -> ApiResult<Json<Value>> {
     if b.ends_at <= b.starts_at {
         return Err(ApiError::bad_request("结束时间要晚于开始时间"));
     }
-    if (b.ends_at - b.starts_at).whole_days() > 30 {
+    if b.ends_at - b.starts_at > time::Duration::days(30) {
         return Err(ApiError::bad_request("最长 30 天；更久的请直接把机器退役"));
+    }
+    // 开始时间可以已经过去（「从现在开始」由客户端按它的时钟填），结束时间不行：那样的静默一刻也不会生效
+    let now = OffsetDateTime::now_utc();
+    if b.ends_at <= now {
+        return Err(ApiError::bad_request("结束时间已经过去了"));
+    }
+    if b.starts_at > now + time::Duration::days(90) {
+        return Err(ApiError::bad_request("最多提前 90 天预约"));
     }
     if let Some(r) = b.rule.as_deref() {
         // rule_name 对不认识的规则原样返回
