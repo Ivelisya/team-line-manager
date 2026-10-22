@@ -43,6 +43,11 @@ changed=0
 if ! cmp -s $F.tmp $F; then mv $F.tmp $F; changed=1; else rm -f $F.tmp; fi
 # sshd 同一选项只认第一次出现的值：在主配置第一行单独引入这个文件，供应商镜像里排在它前面的 00-xxx.conf、主配置里的设置都盖不过它
 if ! head -n1 /etc/ssh/sshd_config | grep -qxF "Include $F"; then sed -i "1i Include $F" /etc/ssh/sshd_config; changed=1; fi
+# sshd 只在启动时读配置：以运行中的为准——它比这两个文件旧（上次换上之后没来得及重启就被打断），这次文件没变也重启，
+# 否则下面 sshd -T 读文件报 no、运行中的 sshd 却还允许密码登录。按秒比，同一秒里分不清先后的也重启（多重启一次无妨）
+since=$(TZ=UTC0 systemctl show -p ExecMainStartTimestamp --value ssh)
+[ -n "$since" ] || since=$(TZ=UTC0 systemctl show -p ExecMainStartTimestamp --value sshd)
+[ -z "$since" ] || [ "$(date -d "$since" +%s)" -gt "$(stat -c %Y $F /etc/ssh/sshd_config | sort -n | tail -n1)" ] || changed=1
 if [ $changed = 1 ]; then sshd -t; systemctl restart ssh 2>/dev/null || systemctl restart sshd; fi
 echo "sshd_password=$(sshd -T 2>/dev/null | awk '/^passwordauthentication /{print $2}')"
 printf '%s\n' 'net.core.default_qdisc=fq' 'net.ipv4.tcp_congestion_control=bbr' > /etc/sysctl.d/90-fleet-bbr.conf
@@ -75,7 +80,8 @@ impl SsInst {
 
 /// 节点：ssserver + 只放行线路机的 nft 规则。变量 SS_PORT SS_METHOD SS_PASSWORD ALLOW（逗号分隔的线路机 IP）。
 /// 宿主机渲染出的脚本除了开头的锁，和引入同机 IP 节点之前逐字相同：已上架的节点重新收敛时配置、单元、nft、include 行都不变，
-/// 不会重启 ssserver。同机 IP 节点的 IP 直接写进配置（校验过的 IPv4，不含引号和 %）
+/// 不会重启 ssserver。同机 IP 节点的 IP 直接写进配置（校验过的 IPv4，不含引号和 %）。
+/// 重跑时以运行中的实例为准：配置、单元比它新（换上之后没来得及重启就被打断）也重启
 pub fn node_ss(i: &SsInst) -> String {
     let (conf, unit, unit_conf, listen, bind) = match &i.ip {
         None => ("config.json".to_string(), "fleet-ssserver.service", "config.json", "0.0.0.0".to_string(), String::new()),
@@ -125,8 +131,14 @@ IPAddressDeny=link-local 100.100.100.200/32
 WantedBy=multi-user.target
 UNIT
 cmp -s $U.tmp $U && rm -f $U.tmp || { mv $U.tmp $U; systemctl daemon-reload; RESTART=1; }
+# 单元文件换了、systemd 还没重新加载（上次换上之后没来得及 daemon-reload 就被打断）
+[ "$(systemctl show -p NeedDaemonReload --value __SVC__)" != yes ] || { systemctl daemon-reload; RESTART=1; }
 # 磁盘上的 ssserver 已换成新版（同机别的实例收敛时推的）、这个实例还在跑旧的：也重启，换上新程序；程序没换过时不重启
 [ /proc/$(systemctl show -p MainPID --value __SVC__)/exe -ef /usr/local/bin/ssserver ] || RESTART=1
+# 运行中的实例比它的配置或单元旧（上次换上之后没来得及重启就被打断，ssserver 还在用旧密码；同机别的实例收敛时换了模板单元）：也重启。
+# 按秒比，同一秒里分不清先后的不算旧（不为它多断一次客户的连接）
+since=$(TZ=UTC0 systemctl show -p ExecMainStartTimestamp --value __SVC__)
+[ -z "$since" ] || [ "$(date -d "$since" +%s)" -ge "$(stat -c %Y $C $U | sort -n | tail -n1)" ] || RESTART=1
 systemctl enable -q __SVC__
 if [ $RESTART = 1 ] || ! systemctl -q is-active __SVC__; then systemctl restart __SVC__; fi
 # 防火墙：SS 端口只放行线路机
@@ -438,15 +450,36 @@ echo "nft_relays=$(nft list set inet ss_guard relays | tr -d '\n' | sed 's/.*ele
     const DENY: &str = "# ssserver 自己解析域名：客户经域名（169.254.169.254.nip.io）也到不了云厂商的元数据服务。不拦回环：Ubuntu 上解析要经 127.0.0.53\n\
                         IPAddressDeny=link-local 100.100.100.200/32\n";
 
-    /// 宿主机（普通落地机）除了多一行锁、一行「进程跑的是旧程序才重启」和单元里拦元数据服务的一行，和改动前逐字相同：
-    /// 生产节点升级中控后重新收敛，配置、nft、include 行都不变
+    /// 第 21 轮重跑幂等（以运行中的实例为准）：单元换了没重新加载的先加载；运行中的实例比配置、单元旧的重启——
+    /// 都只看机器上的状态，配置、单元、程序都没变且实例在它们之后启动的，照样不重启
+    const RELOAD: &str = "# 单元文件换了、systemd 还没重新加载（上次换上之后没来得及 daemon-reload 就被打断）\n\
+                          [ \"$(systemctl show -p NeedDaemonReload --value fleet-ssserver)\" != yes ] || { systemctl daemon-reload; RESTART=1; }\n";
+    const OLDER: &str = "# 运行中的实例比它的配置或单元旧（上次换上之后没来得及重启就被打断，ssserver 还在用旧密码；同机别的实例收敛时换了模板单元）：也重启。\n\
+                         # 按秒比，同一秒里分不清先后的不算旧（不为它多断一次客户的连接）\n\
+                         since=$(TZ=UTC0 systemctl show -p ExecMainStartTimestamp --value fleet-ssserver)\n\
+                         [ -z \"$since\" ] || [ \"$(date -d \"$since\" +%s)\" -ge \"$(stat -c %Y $C $U | sort -n | tail -n1)\" ] || RESTART=1\n";
+
+    /// 宿主机（普通落地机）除了多一行锁、一行「进程跑的是旧程序才重启」、单元里拦元数据服务的一行和重跑时以运行中的实例为准的几行，
+    /// 和改动前逐字相同：生产节点升级中控后重新收敛，配置、nft、include 行都不变
     #[test]
     fn host_render_is_unchanged() {
         let s = node_ss(&SsInst::host());
         assert!(s.starts_with(&format!("\nset -eu\n{LOCK}")), "{s}");
         assert!(s.contains(STALE) && s.contains(&format!("PrivateTmp=yes\n{DENY}[Install]\n")), "{s}");
-        assert_eq!(s.replacen(LOCK, "", 1).replacen(STALE, "", 1).replacen(DENY, "", 1), OLD_NODE_SS);
+        assert!(s.contains(&format!("RESTART=1; }}\n{RELOAD}{STALE}{OLDER}systemctl enable")), "{s}");
+        let old = [LOCK, STALE, DENY, RELOAD, OLDER].iter().fold(s, |s, x| s.replacen(x, "", 1));
+        assert_eq!(old, OLD_NODE_SS);
         assert_eq!((SsInst::host().svc(), SsInst::host().table()), ("fleet-ssserver".to_string(), "ss_guard".to_string()));
+    }
+
+    /// 重跑系统基线时以运行中的 sshd 为准：比配置文件旧（换上之后没来得及重启）也重启，同一秒里的也算旧
+    #[test]
+    fn baseline_restarts_sshd_older_than_its_config() {
+        let b = super::BASELINE;
+        assert!(b.contains("since=$(TZ=UTC0 systemctl show -p ExecMainStartTimestamp --value ssh)\n"));
+        assert!(b.contains("[ -z \"$since\" ] || [ \"$(date -d \"$since\" +%s)\" -gt \"$(stat -c %Y $F /etc/ssh/sshd_config | sort -n | tail -n1)\" ] || changed=1\n"));
+        let (restart, check) = (b.find("if [ $changed = 1 ]; then sshd -t;").unwrap(), b.find("echo \"sshd_password=").unwrap());
+        assert!(b.find("since=").unwrap() < restart && restart < check);
     }
 
     #[test]
