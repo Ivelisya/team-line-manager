@@ -1,14 +1,9 @@
-// 作业的展示辅助：kind 中文名、state 分类、步骤输出摘要。取值以 API.md「返回形状补充」为准。
-import type { EntryLifecycle, JobStep, JobSummary } from './types';
-import { ENTRY_LABEL } from './sort';
+// 作业的展示辅助：state 分类、步骤输出摘要。作业类型、步骤状态的中文名在 /meta（derive.jobKindLabel / stepLabel）。
+import type { JobStep, JobSummary } from './types';
+import { entryLabel } from './derive';
 import { dtFull } from './format';
 
-const JOB_KIND: Record<string, string> = {
-  provision_vps: '上架 VPS 节点', provision_proxy: '上架家宽代理', provision_relay: '上架线路机', provision_ip: '上架同机 IP 节点',
-  attach_entry: '新增入口', move_entry: '换线路机', restore_vps: '恢复 VPS 节点', restore_proxy: '恢复家宽代理', restore_relay: '恢复线路机', restore_ip: '恢复同机 IP 节点',
-  retire: '退役', purge: '彻底删除', upgrade_agent: '升级 agent',
-};
-export const jobKindLabel = (k: string) => JOB_KIND[k] ?? k;
+export { jobKindLabel } from './derive';
 
 /** 进行中：还没到终态 */
 export const jobLive = (state: string) => ['queued', 'running', 'waiting', 'cancelling'].includes(state);
@@ -18,7 +13,6 @@ export const jobLive = (state: string) => ['queued', 'running', 'waiting', 'canc
 export type StepKind = 'done' | 'running' | 'failed' | 'skipped' | 'compensated' | 'pending';
 const STEP_KINDS = new Set<string>(['done', 'running', 'failed', 'skipped', 'compensated']);
 export const stepKind = (s: JobStep): StepKind => (STEP_KINDS.has(s.state) ? (s.state as StepKind) : 'pending');
-export const STEP_KIND_LABEL: Record<StepKind, string> = { done: '已完成', running: '进行中', failed: '失败', skipped: '已跳过', compensated: '已补偿', pending: '等待' };
 
 /** 总进度：已走过的步骤（step 之前的，完成或跳过）/ 总步骤；作业成功时一定是 100。列表项与详情通用 */
 export function jobProgress(j: JobSummary) {
@@ -44,7 +38,7 @@ type OutFmt = (v: unknown) => string;
 const text: OutFmt = (v) => String(v);
 const unit = (u: string): OutFmt => (v) => `${v} ${u}`;
 const yesNo = (y: string, n: string): OutFmt => (v) => (v ? y : n);
-// 输出里没有端口号：落地机是 8388，同机 IP 节点是它自己的 SS 端口，统一不写具体端口
+// 输出里没有端口号：普通 VPS 节点是 8388，同机 IP 节点是它自己的 SS 端口，统一不写具体端口
 const CLEANUP_SS: Record<string, string> = { gone: '已停止', still_listening: '仍在监听 SS 端口' };
 /** [中文标签, 取值格式]；null = 内部 id，不显示 */
 const OUTPUT: Record<string, [string, OutFmt] | null> = {
@@ -61,7 +55,7 @@ const OUTPUT: Record<string, [string, OutFmt] | null> = {
   first_report_at: ['首次上报', (v) => dtFull(String(v))], agent_version: ['agent 版本', text], old_tokens_revoked: ['撤销旧令牌', unit('枚')],
   // attach / attach_new / detach_old / wait_applied
   entry_id: null, relay_id: null, old_entry_id: null, relay: ['线路机', text], port: ['入口端口', text], generation: ['配置版本', text],
-  entry: ['入口状态', (v) => ENTRY_LABEL[v as EntryLifecycle]],
+  entry: ['入口状态', (v) => entryLabel(String(v))],
   // verify
   latency_ms: ['出口延迟', (v) => `${Math.round(Number(v))} ms`], egress_ip: ['出口 IP', text],
   // activate（恢复）/ 跳过

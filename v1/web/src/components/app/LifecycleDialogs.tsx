@@ -8,6 +8,7 @@ import { useEvacuate, useMachine, useMoveEntry, useRelayChoices, useRestore, use
 import { closeEvacuate, closeMove, closeRenew, closeRestore, closeRetire, useEvacuateTarget, useMoveTarget, useRenewTarget, useRestoreTarget, useRetireTarget } from '@/lib/nodeActions';
 import { RenewDialog } from '@/features/BillingTab';
 import { useDrawer } from '@/lib/drawer';
+import { meta } from '@/lib/derive';
 import { CheckRow, Field, Input } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
@@ -234,8 +235,8 @@ export const RestoreDialog = resetOnOpen(function RestoreDialog({ m, open, onOpe
             </>
           )}
           {isVps && !host && (
-            <Field label="SS 端口（公网）" className="span-2" hint={ob ? `沿用退役前的 ${ob.port}；NAT 机是服务商映射的公网端口，节点上 ssserver 固定监听 8388` : 'NAT 机填服务商映射的公网端口；不是 NAT 机留空（8388）'}>
-              <Input inputMode="numeric" value={ssPort} onChange={(e) => setSsPort(e.target.value.replace(/\D/g, ''))} placeholder="8388" aria-invalid={!ssOk || undefined} />
+            <Field label="SS 端口（公网）" className="span-2" hint={ob ? `沿用退役前的 ${ob.port}；NAT 机是服务商映射的公网端口，节点上 ssserver 固定监听 ${meta().defaults.ss_port}` : `NAT 机填服务商映射的公网端口；不是 NAT 机留空（${meta().defaults.ss_port}）`}>
+              <Input inputMode="numeric" value={ssPort} onChange={(e) => setSsPort(e.target.value.replace(/\D/g, ''))} placeholder={String(meta().defaults.ss_port)} aria-invalid={!ssOk || undefined} />
             </Field>
           )}
           {!isProxy && needs && (

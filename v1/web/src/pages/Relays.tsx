@@ -27,7 +27,7 @@ const EntryRow = React.memo(function EntryRow({ e, open }: { e: EntryView; open:
     <tr>
       <td className="strong num">{e.port}</td>
       {/* 直出入口的节点就是这台线路机自己：不做链接 */}
-      <td>{e.direct ? <span data-tip="从线路机自己的 IP 出去，不经落地节点">{e.node.name}</span>
+      <td>{e.direct ? <span data-tip="从线路机自己的 IP 出去，不经节点">{e.node.name}</span>
         : <NodeHover id={e.node.id}><button className="btn-link btn" style={{ height: 'auto', padding: 0, border: 0, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis' }} onClick={() => open(e.node.id)}>{e.node.name}</button></NodeHover>}</td>
       <td>{entryState(e)}</td>
       <td>{e.lifecycle === 'disabled' ? <span className="t-muted">—</span> : e.applied ? <CheckCircle2 size={14} style={{ color: 'var(--ok)' }} aria-label="已应用" /> : <span data-tip={e.apply_error ?? '应用中'} style={{ color: e.apply_error ? 'var(--bad-text)' : 'var(--fg-2)' }}>{e.apply_error ? '应用失败' : '应用中'}</span>}</td>
@@ -58,7 +58,7 @@ function ApplyStatus({ m }: { m: MachineView }) {
 
 function RelayCard({ m, open }: { m: MachineView; open: Open }) {
   const r = m.relay;
-  const due = F.dueFmt(m.subscription?.due_days);
+  const dueWarn = !!m.subscription && m.subscription.due_state !== 'ok';
   const [all, setAll] = React.useState(false);
   const entries = all ? m.entries : m.entries.slice(0, ENTRY_CAP);
   return (
@@ -68,7 +68,7 @@ function RelayCard({ m, open }: { m: MachineView; open: Open }) {
         <span className="ttl">{m.name}</span>
         <HealthPill m={m} />
         <span className="t-sub">{r?.public_host && r.public_host !== m.ip ? `${r.public_host} · ${m.ip}` : m.ip}</span>
-        {m.subscription && <Chip variant={due.tone === 'warn' || due.tone === 'bad' ? 'warn' : undefined}><Due days={m.subscription.due_days} tail /></Chip>}
+        {m.subscription && <Chip variant={dueWarn ? 'warn' : undefined}><Due days={m.subscription.due_days} state={m.subscription.due_state} tail /></Chip>}
         <span style={{ marginLeft: 'auto' }} className="row">
           {m.lifecycle === 'active' && movableEntries(m).length > 0 && <Button size="sm" onClick={() => openEvacuate(m.id)}><PackageOpen size={14} />搬空到…</Button>}
           <Button size="sm" onClick={() => open(m.id)}><PanelRightOpen size={14} />详情</Button></span>

@@ -5,7 +5,7 @@ import { ArrowRight, PackageOpen, Plus, Repeat2, Trash2, Undo2 } from 'lucide-re
 import type { MachineView } from '@/lib/types';
 import { useAddEntry, useMachine, usePatchMachine, usePurge, useRelayChoices, useTeams, useUpgradeAgent } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
-import { LIFECYCLE_LABEL } from '@/lib/sort';
+import { lifecycleLabel } from '@/lib/derive';
 import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
 import { Field, Input } from '@/components/ui/form';
@@ -27,7 +27,7 @@ export function ManageTab({ m, onClosed }: { m: MachineView; onClosed: () => voi
       {!retired && <CountrySection m={m} />}
       {/* 在用的机器没有入口时也要能加：节点「添加入口」，线路机「添加直出入口」 */}
       {!retired && (m.lifecycle === 'active' || m.entries.length > 0) && <EntrySection m={m} />}
-      {/* 在用的普通落地机都能当宿主机：上面另配的公网 IP 各上架成一台同机 IP 节点 */}
+      {/* 在用的普通 VPS 节点都能当宿主机：上面另配的公网 IP 各上架成一台同机 IP 节点 */}
       {m.kind === 'vps' && !m.host_machine && m.lifecycle === 'active' && <IpNodesSection m={m} />}
       {m.agent && m.lifecycle === 'active' && <AgentSection m={m} />}
       <DangerSection m={m} onClosed={onClosed} />
@@ -150,7 +150,7 @@ function EntrySection({ m }: { m: MachineView }) {
           )}
           {canAddDirect && (
             <div className="manage-row">
-              <div><div className="t">直出入口</div><div className="hint">从这台线路机自己的 IP（{m.ip}）出去，不经落地节点；每台线路机一条，分享链接名「{m.name}-直出」。</div></div>
+              <div><div className="t">直出入口</div><div className="hint">从这台线路机自己的 IP（{m.ip}）出去，不经节点；每台线路机一条，分享链接名「{m.name}-直出」。</div></div>
               <Button variant="secondary" disabled={add.isPending || !!m.active_job} loading={add.isPending}
                 onClick={() => add.mutate({ id: m.id, relay_id: m.id }, { onSuccess: () => toast.ok('已提交，直出入口正在应用'), onError: toast.err })}><Plus />添加直出入口</Button>
             </div>
@@ -231,7 +231,7 @@ function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }
               <div>
                 <div className="t">恢复</div>
                 <div className="hint">已于 {F.dtFull(m.retired_at)} 退役。恢复会保持原来的机器 ID（历史、账单、审计接上），重新走一遍上架，编号接在团队末尾。
-                  {hostDown && `宿主机「${host.name}」现在是「${LIFECYCLE_LABEL[host.lifecycle]}」：同机 IP 节点要等宿主机在用才能恢复。`}</div>
+                  {hostDown && `宿主机「${host.name}」现在是「${lifecycleLabel(host.lifecycle)}」：同机 IP 节点要等宿主机在用才能恢复。`}</div>
               </div>
               <Button variant="primary" disabled={hostDown} onClick={() => setDlg('restore')}><Undo2 />恢复…</Button>
             </div>

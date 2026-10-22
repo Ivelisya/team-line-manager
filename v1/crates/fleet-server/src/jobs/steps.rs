@@ -66,7 +66,7 @@ impl Ctx<'_> {
         .await?)
     }
 
-    /// 节点在机器上的 ssserver 实例：普通落地机（宿主机）固定 8388；同机 IP 节点的端口是它出站参数里的 SS 端口
+    /// 节点在机器上的 ssserver 实例：普通 VPS 节点（宿主机）固定 meta::SS_PORT；同机 IP 节点的端口是它出站参数里的 SS 端口
     async fn ss_inst(&self, m: &M) -> anyhow::Result<SsInst> {
         if m.host_id.is_none() {
             return Ok(SsInst::host());
@@ -224,7 +224,7 @@ async fn preflight(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         }
     }
     if m.kind == "vps" && out.kv("port8388") == Some("busy") {
-        c.warn("8388 端口已经有程序在监听；收敛时会被 fleet-ssserver 接管").await;
+        c.warn(format!("{} 端口已经有程序在监听；收敛时会被 fleet-ssserver 接管", crate::meta::SS_PORT)).await;
     }
     Ok(Outcome::Done(json!({
         "host_key": ssh::fingerprint(&fp), "arch": arch, "os": out.kv("os"), "kernel": out.kv("kernel"), "mem_mb": out.kv("mem_mb"),
@@ -374,7 +374,7 @@ async fn converge_node(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let inst = c.ss_inst(&m).await?;
     let script = vars(&[
         ("SS_PORT", &inst.port.to_string()),
-        ("SS_METHOD", method.as_deref().unwrap_or("aes-256-gcm")),
+        ("SS_METHOD", method.as_deref().unwrap_or(crate::meta::SS_METHOD)),
         ("SS_PASSWORD", &password),
         ("ALLOW", &allow),
     ]) + &scripts::node_ss(&inst);

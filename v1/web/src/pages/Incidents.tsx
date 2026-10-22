@@ -208,11 +208,11 @@ const SilenceDialog = resetOnOpen(function SilenceDialog({ open, onOpenChange, p
           {dur === 'custom' && <Input inputMode="numeric" aria-label="自定义时长（小时）" placeholder="小时数" autoFocus value={hours} onChange={(e) => setHours(e.target.value.replace(/\D/g, ''))} aria-invalid={!!hoursErr} />}
           {hoursErr ? <div className="hint is-error">{hoursErr}</div> : dur === 'custom' && <div className="hint">填小时数，最长 {MAX_HOURS} 小时（30 天）</div>}
         </div>
-        <CheckRow checked={maint} onChange={setMaint}>标记为维护（卡片显示「维护中」）</CheckRow>
+        <CheckRow checked={maint} onChange={setMaint}>标记为维护（卡片显示「维护」）</CheckRow>
         <Field label="备注"><Input value={comment} onChange={(e) => setComment(e.target.value)} placeholder="例如：换内核" /></Field>
       </FormDialog>
       <ConfirmDialog open={askAll} onOpenChange={setAskAll} title="静默全部机器？" confirmLabel="静默全部机器" danger
-        description={`从${mode === 'now' ? '现在' : ` ${dtMs(startMs)} `}到 ${dtMs(startAt() + minutes * MIN)}，所有机器的告警都不会发出${maint ? '（都显示「维护中」）' : ''}。确认是要这样做吗？`}
+        description={`从${mode === 'now' ? '现在' : ` ${dtMs(startMs)} `}到 ${dtMs(startAt() + minutes * MIN)}，所有机器的告警都不会发出${maint ? '（都显示「维护」）' : ''}。确认是要这样做吗？`}
         onConfirm={async () => { await add.mutateAsync(body()); toast.ok('已创建静默'); onOpenChange(false); }} />
     </>
   );

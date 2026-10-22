@@ -98,7 +98,7 @@ fn agent_bin(p: &Path, version: &str) { exe(p, &format!("#!/bin/sh\necho 'fleet-
 
 fn read(p: &Path) -> String { std::fs::read_to_string(p).unwrap_or_default() }
 
-/// 一台在用的落地机，机器上装着 `old` 版本的 agent，中控 dist 里是 `new`。返回 (机器 id, 机器根目录)
+/// 一台在用的 VPS 节点，机器上装着 `old` 版本的 agent，中控 dist 里是 `new`。返回 (机器 id, 机器根目录)
 async fn machine(t: &T, ip: &str, old: &str, new: &str) -> (Uuid, PathBuf) {
     let root = FAKE.path().join(ip);
     agent_bin(&root.join("usr/local/bin/fleet-agent"), old);

@@ -1,6 +1,7 @@
 //! 只读与作业类命令：status / ls / show / series / uptime / incidents / jobs / entries / audit / logs / watch …
 
 use crate::client::{ApiError, Client, NetError};
+use crate::meta;
 use crate::resolve::{self, Want};
 use crate::table::{self, bps, bytes, money};
 use anyhow::{anyhow, bail};
@@ -60,16 +61,8 @@ fn pct(a: Option<f64>, b: Option<f64>) -> String {
     }
 }
 
-/// 计费周期：月 / 季 / 半年 / 年（同网页）
-pub(crate) fn cycle_cn(c: &str) -> &str {
-    match c {
-        "monthly" => "月",
-        "quarterly" => "季",
-        "semiannual" => "半年",
-        "yearly" => "年",
-        c => c,
-    }
-}
+/// 计费周期：月 / 季 / 半年 / 年（中控 /meta）
+pub(crate) fn cycle_cn(c: &str) -> &str { meta::cycle(c) }
 
 /// 到期：N 天后到期 / 今天到期 / 已过期 N 天（同网页与告警）
 pub(crate) fn due_cn(days: i64) -> String {
@@ -80,106 +73,24 @@ pub(crate) fn due_cn(days: i64) -> String {
     }
 }
 
-// ── 枚举的中文（同网页；ls 的列保留原值，方便当筛选参数用） ──
+// ── 枚举的中文：取中控 /meta（网页同一份）；ls 的列保留原值，方便当筛选参数用 ──
 
-pub(crate) fn kind_cn(k: &str) -> &str {
-    match k {
-        "relay" => "线路机",
-        "vps" => "落地机",
-        "proxy" => "家宽代理",
-        k => k,
-    }
-}
-
-fn lifecycle_cn(l: &str) -> &str {
-    match l {
-        "draft" => "草稿",
-        "provisioning" => "上架中",
-        "active" => "运行中",
-        "retiring" => "退役中",
-        "retired" => "已退役",
-        "failed" => "上架失败",
-        l => l,
-    }
-}
-
-fn health_cn(h: &str) -> &str {
-    match h {
-        "ok" => "正常",
-        "degraded" => "降级",
-        "down" => "故障",
-        "unknown" => "未知",
-        "maintenance" => "维护中",
-        "inactive" => "未启用",
-        h => h,
-    }
-}
-
+pub(crate) fn kind_cn(k: &str) -> &str { meta::label("kinds", k) }
+fn lifecycle_cn(l: &str) -> &str { meta::label("lifecycles", l) }
+fn health_cn(h: &str) -> &str { meta::label("healths", h) }
 /// 严重度：同通知里的【严重】【警告】【提示】
-fn severity_cn(s: &str) -> &str {
-    match s {
-        "critical" => "严重",
-        "warning" => "警告",
-        "info" => "提示",
-        s => s,
-    }
-}
+fn severity_cn(s: &str) -> &str { meta::severity(s) }
+fn job_kind_cn(k: &str) -> &str { meta::label("job_kinds", k) }
+fn job_state_cn(s: &str) -> &str { meta::label("job_states", s) }
+fn step_state_cn(s: &str) -> &str { meta::label("step_states", s) }
 
-fn job_kind_cn(k: &str) -> &str {
-    match k {
-        "provision_vps" => "上架落地机",
-        "provision_proxy" => "上架家宽代理",
-        "provision_relay" => "上架线路机",
-        "provision_ip" => "上架同机 IP 节点",
-        "attach_entry" => "新增入口",
-        "move_entry" => "换线路机",
-        "restore_vps" => "恢复落地机",
-        "restore_proxy" => "恢复家宽代理",
-        "restore_relay" => "恢复线路机",
-        "restore_ip" => "恢复同机 IP 节点",
-        "retire" => "退役",
-        "purge" => "彻底删除",
-        "upgrade_agent" => "升级 agent",
-        k => k,
-    }
-}
-
-fn job_state_cn(s: &str) -> &str {
-    match s {
-        "queued" => "排队中",
-        "running" => "进行中",
-        "waiting" => "等待中",
-        "cancelling" => "取消中",
-        "succeeded" => "已完成",
-        "failed" => "失败",
-        "cancelled" => "已取消",
-        s => s,
-    }
-}
-
-/// 步骤状态（同网页）
-fn step_state_cn(s: &str) -> &str {
-    match s {
-        "pending" => "等待",
-        "running" => "进行中",
-        "done" => "已完成",
-        "skipped" => "已跳过",
-        "failed" => "失败",
-        "compensated" => "已补偿",
-        s => s,
-    }
-}
-
-/// 入口状态：active 按是否已应用细分（同网页）
-pub(crate) fn entry_state_cn(e: &Value) -> &'static str {
+/// 入口状态：active 按是否已应用细分（同网页）——没应用上的按 pending（应用中），应用报错的是「应用失败」
+pub(crate) fn entry_state_cn(e: &Value) -> &str {
     match e["lifecycle"].as_str().unwrap_or("") {
-        "active" if e["applied"] == true => "运行中",
-        "active" if e["apply_error"].is_string() => "应用失败",
-        "active" | "pending" => "应用中",
-        "disabled" => "已停用",
-        "removing" => "移除中",
-        "removed" => "已移除",
-        _ => "-",
+        "active" if e["applied"] != true && e["apply_error"].is_string() => "应用失败",
+        "active" if e["applied"] != true => meta::label("entry_states", "pending"),
+        "" => "-",
+        l => meta::label("entry_states", l),
     }
 }
 
@@ -251,7 +162,8 @@ pub fn status(ctx: &Ctx) -> anyhow::Result<u8> {
     ctx.emit(&both, || {
         let bucket = |k: &str| {
             let n = |f: &str| ov.pointer(&format!("/{k}/{f}")).and_then(|x| x.as_i64()).unwrap_or(0);
-            format!("共 {} · 正常 {} · 降级 {} · 故障 {} · 未知 {} · 维护 {}", n("total"), n("ok"), n("degraded"), n("down"), n("unknown"), n("maintenance"))
+            let parts: Vec<String> = ["ok", "degraded", "down", "unknown", "maintenance"].iter().map(|h| format!("{} {}", health_cn(h), n(h))).collect();
+            format!("共 {} · {}", n("total"), parts.join(" · "))
         };
         let cost = ov["monthly_cost"].as_array().map(|a| a.iter().map(|c| money(c["cents"].as_i64().unwrap_or(0), c["currency"].as_str().unwrap_or(""))).collect::<Vec<_>>().join(" + ")).unwrap_or_default();
         let mut s = table::kv(&[
@@ -259,7 +171,9 @@ pub fn status(ctx: &Ctx) -> anyhow::Result<u8> {
             ("线路机", bucket("relays")),
             ("agent", format!("在线 {} · 离线 {}", st(&ov, "/online"), st(&ov, "/offline"))),
             ("上架中/退役中", format!("{} / {}", st(&ov, "/provisioning"), st(&ov, "/retiring"))),
-            ("7 天内到期", st(&ov, "/due_7d")),
+            // 即将到期 / 已过期：中控按每台的提前提醒天数算（同续费告警）
+            (meta::label("due_states", "soon"), st(&ov, "/due_soon")),
+            (meta::label("due_states", "overdue"), st(&ov, "/overdue")),
             ("每月费用", if cost.is_empty() { "-".into() } else { cost }),
             ("本月业务流量", format!("下载 {} / 上传 {}", bytes(num(&ov, "/traffic_month/down").unwrap_or(0.0)), bytes(num(&ov, "/traffic_month/up").unwrap_or(0.0)))),
             ("网卡速率", format!("下行 {} / 上行 {}", bps(num(&ov, "/net_rx_bps").unwrap_or(0.0)), bps(num(&ov, "/net_tx_bps").unwrap_or(0.0)))),
@@ -945,10 +859,10 @@ pub fn server_logs(ctx: &Ctx, lines: u32) -> anyhow::Result<u8> {
     Ok(print_text_result(ctx, &d))
 }
 
-/// 当前北京时间的时分秒（同 `table::ts`）
+/// 组织时区（默认北京时间）当前的时分秒（同 `table::ts`）
 fn now_hms() -> String {
-    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) + 8 * 3600;
-    format!("{:02}:{:02}:{:02}", (secs / 3600) % 24, (secs / 60) % 60, secs % 60)
+    let t = time::OffsetDateTime::now_utc().to_offset(meta::offset());
+    format!("{:02}:{:02}:{:02}", t.hour(), t.minute(), t.second())
 }
 
 /// 文本模式的一行摘要：metrics 只报条数，其余列出字段
@@ -1041,6 +955,7 @@ mod tests {
 
     #[test]
     fn due_and_cycle_wording() {
+        crate::meta::test_init();
         assert_eq!((due_cn(3), due_cn(0), due_cn(-2)), ("3 天后到期".to_string(), "今天到期".to_string(), "已过期 2 天".to_string()));
         assert_eq!((cycle_cn("monthly"), cycle_cn("semiannual"), cycle_cn("yearly")), ("月", "半年", "年"));
     }

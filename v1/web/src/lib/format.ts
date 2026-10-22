@@ -44,30 +44,27 @@ export const pct = (n: number | null | undefined, d = 0): Fmt => (n == null ? NA
 export const ms = (n: number | null | undefined): Fmt => (n == null ? NA : { v: String(Math.round(n)), u: 'ms' });
 export const mbps = (n: number | null | undefined): Fmt => (n == null ? NA : n >= 1000 ? { v: num(n / 1000), u: 'Gbps' } : { v: String(n), u: 'Mbps' });
 
+// 币种符号只是显示用（币种列表、默认币种在 /meta）；没收录的写代码
 const SYM: Record<string, string> = { CNY: '¥', USD: '$', EUR: '€', HKD: 'HK$', JPY: 'JP¥', GBP: '£' };
 const currencySym = (c: string) => SYM[c] ?? `${c} `;
-export function money(cents: number | null | undefined, currency = 'CNY'): string {
+export function money(cents: number | null | undefined, currency: string): string {
   if (cents == null) return '—';
   const v = cents / 100;
   return `${currencySym(currency)}${Number.isInteger(v) ? v : v.toFixed(2)}`;
 }
-/** 币种下拉的常用选项 */
-export const CURRENCY_OPTIONS = ['CNY', 'USD', 'EUR', 'HKD', 'JPY'].map((c) => ({ value: c, label: `${c} ${currencySym(c).trim()}` }));
-/** 当前值不在常用选项里（供应商时区 Asia/Hong_Kong、套餐币种 GBP 等）时补进去，否则下拉显示为空 */
+/** 币种下拉的一项：「USD $」 */
+export const currencyLabel = (c: string) => `${c} ${currencySym(c).trim()}`.trim();
+/** 当前值不在常用选项里（供应商时区 Asia/Hong_Kong、套餐币种 SGD 等）时补进去，否则下拉显示为空 */
 export const withCurrent = (opts: { value: string; label: string }[], v: string) => (opts.some((o) => o.value === v) ? opts : [{ value: v, label: v }, ...opts]);
-const CYCLE: Record<string, string> = { monthly: '月', quarterly: '季', semiannual: '半年', yearly: '年' };
-/** 计费周期下拉选项：每月 / 每季 / … */
-export const CYCLE_OPTIONS = Object.entries(CYCLE).map(([value, label]) => ({ value, label: `每${label}` }));
-export const cycleLabel = (c: string) => CYCLE[c] ?? c;
 
-/** 到期：N 天后 / 今天 / 已过期 N 天（7 天内为 warn，过期为 bad）。数字在 f 里，文字在 pre / post（不按数字排版）；
- *  past：已过期（后面不再接“到期”二字） */
+/** 到期：N 天后 / 今天 / 已过期 N 天。数字在 f 里，文字在 pre / post（不按数字排版）；past：已过期（后面不再接“到期”二字）。
+ *  tone 由调用方按服务端的 due_state 给（derive.dueTone：已过期红、即将到期黄），这里不自己按天数判断 */
 export interface Due { pre: string; f: Fmt | null; post: string; past: boolean; tone: '' | 'warn' | 'bad' }
-export function dueFmt(days: number | null | undefined): Due {
+export function dueFmt(days: number | null | undefined, tone: Due['tone'] = ''): Due {
   if (days == null) return { pre: '', f: NA, post: '', past: false, tone: '' };
-  if (days < 0) return { pre: '已过期 ', f: { v: String(-days), u: '天' }, post: '', past: true, tone: 'bad' };
-  if (days === 0) return { pre: '今天', f: null, post: '', past: false, tone: 'warn' };
-  return { pre: '', f: { v: String(days), u: '天' }, post: '后', past: false, tone: days <= 7 ? 'warn' : '' };
+  if (days < 0) return { pre: '已过期 ', f: { v: String(-days), u: '天' }, post: '', past: true, tone };
+  if (days === 0) return { pre: '今天', f: null, post: '', past: false, tone };
+  return { pre: '', f: { v: String(days), u: '天' }, post: '后', past: false, tone };
 }
 /** 时长：已上架/已运行 */
 export function since(iso: string | null | undefined, now = Date.now()): Fmt {
@@ -115,9 +112,8 @@ export const pad2 = p2;
 /** 显示名：团队名 + '-' + 两位编号 */
 export const displayName = (team: string, n: number) => `${team}-${p2(n)}`;
 
-/** 计费周期的月数 */
-export const CYCLE_MONTHS: Record<string, number> = { monthly: 1, quarterly: 3, semiannual: 6, yearly: 12 };
-/** YYYY-MM-DD 加 n 个月（n 可为负）；目标月没有那一天时落到月末 */
+/** YYYY-MM-DD 加 n 个月（n 可为负）；目标月没有那一天时落到月末。
+ *  只给日期选择器翻月用（components/ui/date-field）：续费的新到期日、每期天数等账单日期由服务端算（next_due、period_days），不在这里算 */
 export function addMonths(date: string, n: number): string {
   const [y, m, d] = date.split('-').map(Number);
   const t = new Date(Date.UTC(y, m - 1 + n, 1));

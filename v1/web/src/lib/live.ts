@@ -14,7 +14,7 @@ type HostTuple = [number, N, N, N, N, N, N, N, N, N];
 type ProbeTuple = [boolean, N, number, string | null];
 interface MachinePatch {
   host?: HostTuple | null; seen?: N; agent?: { version: string | null; online: boolean; xray_running: boolean | null; cores: number | null } | null;
-  health?: MachineView['health']; maintenance?: boolean; due_days?: N; removed_traffic?: MachineView['removed_traffic']; quota?: MachineView['quota'];
+  health?: MachineView['health']; maintenance?: boolean; due_days?: N; due_state?: string | null; removed_traffic?: MachineView['removed_traffic']; quota?: MachineView['quota'];
   active_job?: MachineView['active_job'];
 }
 interface EntryPatch { tcp?: ProbeTuple | null; egress?: ProbeTuple | null; traffic?: EntryView['traffic'] }
@@ -48,7 +48,8 @@ function patchMachine(m: MachineView, msg: MetricsMsg): MachineView {
   if (d.seen !== undefined && n.agent) n.agent = { ...n.agent, last_report_at: d.seen == null ? null : iso(d.seen) };
   if (d.health) n.health = d.health;
   if (d.maintenance !== undefined) n.maintenance = d.maintenance;
-  if (d.due_days != null && m.subscription) n.subscription = { ...m.subscription, due_days: d.due_days };
+  // 跨天时到期天数和到期状态一起变（状态由中控按提前提醒天数算）
+  if ((d.due_days != null || d.due_state != null) && m.subscription) n.subscription = { ...m.subscription, ...(d.due_days != null && { due_days: d.due_days }), ...(d.due_state != null && { due_state: d.due_state as NonNullable<MachineView['subscription']>['due_state'] }) };
   if (d.removed_traffic) n.removed_traffic = d.removed_traffic;
   if (d.quota) n.quota = d.quota;
   if (d.active_job !== undefined) n.active_job = d.active_job;

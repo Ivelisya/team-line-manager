@@ -161,39 +161,6 @@ pub fn cancel_blocker(kind: &str, step: i32, state: &str) -> Option<&'static str
 /// 外层超时：步骤自己的 timeout_s 再加 120 秒余量
 fn outer_timeout(d: &StepDef) -> Duration { Duration::from_secs(d.timeout_s as u64 + 120) }
 
-/// 机器生命周期的中文（同网页 LIFECYCLE_LABEL）
-pub fn lifecycle_zh(l: &str) -> &str {
-    match l {
-        "draft" => "草稿",
-        "provisioning" => "上架中",
-        "active" => "运行中",
-        "retiring" => "退役中",
-        "retired" => "已退役",
-        "failed" => "上架失败",
-        o => o,
-    }
-}
-
-/// 作业类型的中文（同网页与 fleetctl）
-pub fn kind_zh(k: &str) -> &str {
-    match k {
-        "provision_vps" => "上架落地机",
-        "provision_proxy" => "上架家宽代理",
-        "provision_relay" => "上架线路机",
-        "provision_ip" => "上架同机 IP 节点",
-        "attach_entry" => "新增入口",
-        "move_entry" => "换线路机",
-        "restore_vps" => "恢复落地机",
-        "restore_proxy" => "恢复家宽代理",
-        "restore_relay" => "恢复线路机",
-        "restore_ip" => "恢复同机 IP 节点",
-        "retire" => "退役",
-        "purge" => "彻底删除",
-        "upgrade_agent" => "升级 agent",
-        k => k,
-    }
-}
-
 /// 这类作业要求目标机器处于什么状态。None = 不限。
 fn required_lifecycle(kind: &str) -> Option<&'static str> {
     match kind {
@@ -212,7 +179,7 @@ pub fn check_target(kind: &str, lifecycle: Option<&str>) -> Result<(), String> {
         None if kind == "purge" => Ok(()),
         None => Err("目标机器已经不存在，这个作业不能再继续".into()),
         Some(l) if l == want => Ok(()),
-        Some(l) => Err(format!("目标机器现在是「{}」，这个作业需要机器处于「{}」，不能再继续（旧作业不会自动复活，请重新发起）", lifecycle_zh(l), lifecycle_zh(want))),
+        Some(l) => Err(format!("目标机器现在是「{}」，这个作业需要机器处于「{}」，不能再继续（旧作业不会自动复活，请重新发起）", crate::meta::lifecycle_label(l), crate::meta::lifecycle_label(want))),
     }
 }
 
@@ -846,7 +813,8 @@ mod tests {
         let keys = |k: &str| defs(k).iter().map(|d| d.key).collect::<Vec<_>>();
         assert_eq!(keys("provision_ip"), ["ip_check", "converge", "attach", "wait_applied", "verify", "activate"]);
         assert_eq!(keys("restore_ip"), keys("provision_ip"));
-        assert_eq!((kind_zh("provision_ip"), kind_zh("restore_ip")), ("上架同机 IP 节点", "恢复同机 IP 节点"));
+        let zh = crate::meta::job_kind_label;
+        assert_eq!((zh("provision_ip"), zh("restore_ip"), zh("provision_vps")), ("上架同机 IP 节点", "恢复同机 IP 节点", "上架 VPS 节点"));
     }
 
     #[test]

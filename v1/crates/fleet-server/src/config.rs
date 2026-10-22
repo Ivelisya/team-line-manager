@@ -26,6 +26,9 @@ pub struct Config {
     /// 会话 Cookie 是否带 Secure；不填则按 public_url 是否 https 判断
     #[serde(default)]
     pub cookie_secure: Option<bool>,
+    /// 组织时区（IANA 名）：账单时区、供应商时区没填时按它，通知、审计、fleetctl 里的时间也按它写。默认北京时间
+    #[serde(default = "d_org_tz")]
+    pub org_timezone: String,
     #[serde(default)]
     pub retention: Retention,
     #[serde(default)]
@@ -132,6 +135,7 @@ impl Default for Numbering {
     fn default() -> Self { Self { auto_compact: true } }
 }
 
+fn d_org_tz() -> String { crate::meta::DEFAULT_ORG_TZ.into() }
 fn d_listen() -> String { "127.0.0.1:8080".into() }
 fn d_workers() -> usize { 8 }
 fn d_access_cache() -> u64 { 300 }

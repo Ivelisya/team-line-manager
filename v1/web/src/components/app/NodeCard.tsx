@@ -6,7 +6,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { m as mo } from 'motion/react'; // 别名：组件里的 props 叫 m（机器）
 import { SPRING } from '@/lib/motion';
 import { ArrowDown, ArrowUp, Calendar, CircleDollarSign, Cpu, Database, Gauge, Globe, HardDrive, MemoryStick, MoreHorizontal, Radar, RefreshCw, Settings2, PanelRightOpen, ServerOff, Wallet } from 'lucide-react';
-import type { MachineView, ProbeBeats, Subscription } from '@/lib/types';
+import type { DueState, MachineView, ProbeBeats, Subscription } from '@/lib/types';
 import * as F from '@/lib/format';
 import { beatCells, beatTitles, entryText, hasHost, hostRel, isQuiet, limitGb, liveRate, monthTraffic, probeSummary, quota, quotaGb, remainingValue, resourceMeters, subLabel } from '@/lib/derive';
 import { useProbeBeats } from '@/lib/queries';
@@ -62,12 +62,12 @@ const LargeInfo = memo(function LargeInfo({ entry, plan, limit, ...a }: Info & {
   </>;
 });
 /** 小卡片：地址 + 入口 · 套餐 · 到期两行（长了省略，悬停看全文） */
-const SmallInfo = memo(function SmallInfo({ entry, plan, dueDays, ...a }: Info & { dueDays: number | undefined }) {
+const SmallInfo = memo(function SmallInfo({ entry, plan, dueDays, dueState, ...a }: Info & { dueDays: number | undefined; dueState: DueState | undefined }) {
   const meta = `${entry} · ${plan?.name ?? (a.host ? '不带套餐' : '未设置套餐')}`;
   return (
     <div className="nc-meta2">
       <div><span data-tip={a.ip}>{a.ip}</span><IpTags {...a} /></div>
-      <div><span data-tip={meta}>{meta}</span><span className="nc-due"><Due days={dueDays} tail /></span></div>
+      <div><span data-tip={meta}>{meta}</span><span className="nc-due"><Due days={dueDays} state={dueState} tail /></span></div>
     </div>
   );
 });
@@ -202,7 +202,7 @@ const RunRow = memo(function RunRow({ activated, sub }: { activated: string | nu
   return (
     <section className="slot-seg nc-run">
       <div className="nc-run-item"><span className="nc-run-label"><RefreshCw />已上架</span><span className="nc-run-val" data-c="up"><Num f={F.since(activated, now)} /></span></div>
-      <div className="nc-run-item"><span className="nc-run-label"><Calendar />到期</span><span className="nc-run-val"><Due days={sub?.due_days} /></span></div>
+      <div className="nc-run-item"><span className="nc-run-label"><Calendar />到期</span><span className="nc-run-val"><Due days={sub?.due_days} state={sub?.due_state} /></span></div>
       <div className="nc-run-item"><span className="nc-run-label"><Wallet />剩余价值</span><span className="nc-run-val">{rv ? <span className="num">{F.money(rv.cents, rv.currency)}</span> : <span className="t-muted">—</span>}</span></div>
     </section>
   );
@@ -280,7 +280,7 @@ function NodeCardImpl({ m, view, current, onOpen: open, layoutKey }: { m: Machin
       </>}
 
       {view === 'small' && <>
-        <SmallInfo {...info} dueDays={m.subscription?.due_days} />
+        <SmallInfo {...info} dueDays={m.subscription?.due_days} dueState={m.subscription?.due_state} />
         <section className="slot-seg"><Meters m={m} compact /></section>
         <section className="slot-seg">{host ? <Flow m={m} onOpen={onOpen} /> : <FlowRow m={m} />}</section>
         <section className="slot-seg"><QuotaSlot m={m} onOpen={onOpen} /></section>

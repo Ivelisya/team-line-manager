@@ -2,13 +2,13 @@
 // 编辑只改草稿（乐观锁 revision）；预览返回 draft_hash，发布 / 丢弃必须带上且一致。
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { get, post, put } from './api';
+import { meta } from './derive';
 
 export type PolicyMode = 'observe' | 'allowlist' | 'denylist' | 'blocked' | 'inherit';
 export type EffectiveMode = Exclude<PolicyMode, 'inherit'>;
 
-export const MODE_LABEL: Record<PolicyMode, string> = {
-  observe: '仅观察', allowlist: '白名单', denylist: '黑名单', blocked: '暂停新连接', inherit: '跟随团队',
-};
+/** 模式的中文名（/meta 的 policy_modes）；下面的说明是界面文案 */
+export const modeLabel = (m: string) => meta().policy_modes[m] ?? m;
 export const MODE_HINT: Record<PolicyMode, string> = {
   observe: '不产生任何规则，只记录访问。',
   allowlist: '只放行名单内的域名，其余连接全部阻止。',

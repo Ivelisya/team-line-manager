@@ -106,6 +106,7 @@ pub fn router() -> Router<AppState> {
         .route("/ipintel/status", get(ipintel::status))
         .route("/ipintel/{ip}", get(ipintel::one))
         .route("/machines/{id}/sources", get(ipintel::machine_sources))
+        .route("/meta", get(misc::meta))
         .route("/overview", get(misc::overview))
         .route("/overview/series", get(misc::overview_series))
         .route("/probe-beats", get(misc::probe_beats))

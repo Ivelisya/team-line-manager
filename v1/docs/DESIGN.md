@@ -26,17 +26,18 @@ relay(machine) ─< entry >─ node(machine)
 job ─< job_step ─< job_log      audit_log      user / session / api_key
 ```
 
-- **machine**：`id, role, team_id, number, label, primary_ip (inet), ssh_port, provider_id, host_id, lifecycle, lifecycle_reason, created_at, activated_at, retired_at`。
+- **machine**：`id, kind (vps | proxy | relay), team_id, number, label, primary_ip (inet), ssh_port, provider_id, plan_id, host_id, lifecycle, lifecycle_reason, created_at, activated_at, retired_at`。
+  叫法（中控 `src/meta.rs`，`GET /meta` 给网页与 fleetctl）：`vps` =「VPS 节点」、`proxy` =「家宽代理」、`relay` =「线路机」；加在宿主机上的 vps 叫「同机 IP 节点」；泛说「节点」= 团队的 VPS 节点 / 家宽代理。
   - 显示名 = `team.name + "-" + 两位编号`（如 `团队1-06`），**每次读取时计算**，不存储。
   - `(team_id, number)` 在未退役的节点中唯一；`primary_ip` 在未退役的机器中唯一（查重键）。
   - 编号保持连续：节点退役（或上架取消）后，该团队剩下的节点自动压缩成 01..N；新上架接在末尾（N+1），也可手动指定空号。每次重编都写审计（旧名 → 新名）。身份是 machine.id，重编号不换令牌、不断连接，线路机备注自动同步。
-  - **同机 IP 节点**：一台落地机上配了几个公网 IP 时，每个附加的 IP 是一台独立的节点（`kind = vps`，自己的团队、编号、`primary_ip` = 它的出口 IP、`node_outbound`、入口），`host_id` 指向持有 SSH 与 agent 的那台落地机（宿主机，必须是在用、自身 `host_id` 为空的落地机）。
+  - **同机 IP 节点**：一台 VPS 节点上配了几个公网 IP 时，每个附加的 IP 是一台独立的节点（`kind = vps`，自己的团队、编号、`primary_ip` = 它的出口 IP、`node_outbound`、入口），`host_id` 指向持有 SSH 与 agent 的那台 VPS 节点（宿主机，必须是在用、自身 `host_id` 为空的 VPS 节点）。
     它没有自己的 agent 和 SSH：作业、远程执行都登录宿主机，视图里的 agent 状态与主机读数借宿主机的（总览网速不重复算），agent 离线、时钟、持续高负载只由宿主机报，入口探测、无入口、续费照常自己报；宿主机维护时它也维护。
     `ssh_port` 不存（null，迁移 0029；读时取宿主机的），供应商取宿主机的、不带套餐、默认不记费用（可在它的「费用」里单独填）；宿主机的流量额度按它的网卡计量，同机节点的流量也走这块网卡（共用额度）；同机节点自己的「已用」是它入口的业务流量。
     节点在宿主机上是 ssserver 模板单元的一个实例 `fleet-ssserver@<SS 端口>`（端口从 8389 起由中控分配）：监听并从自己的 IP 出站（`outbound_bind_addr`），nft 表 `ss_guard_<端口>` 只放行它自己的线路机；宿主机原来的 `fleet-ssserver` / `ss_guard`（8388）原样不动。
-- **entry**：线路机上的一个入口（VLESS REALITY 入站 → SS 出站到节点）。`id, relay_id, node_id, port, client_uuid, short_id, lifecycle, applied_generation`。备注由节点显示名生成，改名后随期望状态自动同步。
+- **entry**：线路机上的一个入口（VLESS REALITY 入站 → SS 出站到节点）。`id, relay_id, node_id, port, client_uuid, short_id, lifecycle, changed_gen`（最近一次改动时线路机的期望代数；线路机 `applied_generation ≥ changed_gen` 即已应用）。备注由节点显示名生成，改名后随期望状态自动同步。
   直出入口：`node_id = relay_id`（节点就是线路机自己），freedom 出站，从线路机自己的 IP 出去；每台线路机至多一条（同一个 (node_id, relay_id) 唯一索引），备注「线路机名-直出」，随线路机退役摘除。
-- **subscription**：机器的账单。`plan_id, price_cents, currency, cycle, due_date, billing_tz, auto_renew, remind_days`；续费记录单独一张表。
+- **subscription**：机器的账单。`due_date, auto_renew`，以及可「单独设置」的 `price_cents, currency, cycle, billing_tz, remind_days, traffic_gb, traffic_reset_day`（null = 跟随模板：价格、币种、周期、流量上限跟随机器的套餐 `machine.plan_id`，账单时区、提前提醒、流量重置跟随供应商，供应商没填时区时是组织时区 `org_timezone`）；生效值只在库里的视图 `subscription_eff` 算。到期状态（ok / soon / overdue）、月费、下一个到期日由视图层 `meta` 的同一组函数算；续费记录单独一张表。
 - **job**：`kind (provision_vps | provision_proxy | provision_relay | provision_ip | restore_* | attach_entry | move_entry | retire | purge | upgrade_agent), target, params, state, steps[]`。每一步记录开始、结束、输出、错误类别；失败可从该步重试（升级 agent 从推送重来），取消会执行已完成步骤的补偿。`params.after` 指向要等的作业：它结束前不领取，它在推送之后失败（看它的 `params.pushed`）或被取消就直接取消，推送之前就失败的不算（「全部升级 agent」的金丝雀与线路机逐台）；`params.rollout` 记发起时 dist 里 agent 的 sha256 与版本号，开始前与推送时核对，换了就停。
 
 ## 3. 关键流程

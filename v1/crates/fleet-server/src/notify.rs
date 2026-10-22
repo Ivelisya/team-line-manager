@@ -75,47 +75,16 @@ pub struct Notice {
 
 // ── 格式化 ──────────────────────────────────────────────────────────────────
 
-/// 告警规则的中文名（前端展示也用同一套）
-pub fn rule_name(key: &str) -> &str {
-    match key {
-        "agent_offline" => "agent 离线",
-        "clock_skew" => "agent 时钟不准",
-        "no_entry" => "没有在用入口",
-        "egress_fail" => "出口不通",
-        "tcp_fail" => "线路到节点不通",
-        "renewal_due" => "即将到期",
-        "renewal_overdue" => "已过期",
-        "relay_apply_lag" => "配置未应用",
-        "relay_apply_error" => "配置应用失败",
-        "relay_xray_down" => "Xray 未运行",
-        "host_cpu_high" => "CPU 持续偏高",
-        "host_mem_high" => "内存持续偏高",
-        "host_disk_high" => "磁盘空间不足",
-        "traffic_quota_high" => "流量额度吃紧",
-        "ipintel_new_isp" => "来源出现新运营商",
-        "ipintel_new_city" => "来源出现新城市",
-        "ipintel_datacenter_source" => "机房 / VPN 来源",
-        "policy_blocked" => "访问策略暂停",
-        "central_channel_failing" => "通知渠道发送失败",
-        "central_backup_stale" => "备份过期",
-        "central_disk_low" => "中控磁盘空间不足",
-        other => other,
-    }
-}
+/// 告警规则的中文名（表在 meta::RULES，网页、fleetctl 经 /meta 用同一套）
+pub fn rule_name(key: &str) -> &str { crate::meta::rule_label(key) }
 
-pub fn severity_name(s: &str) -> &'static str {
-    match s {
-        "critical" => "严重",
-        "warning" => "警告",
-        _ => "提示",
-    }
-}
+pub fn severity_name(s: &str) -> &'static str { crate::meta::severity_label(s) }
 
-/// 北京时间 `2026-10-20 15:04:05`
-pub fn beijing(t: OffsetDateTime) -> String {
-    let f = time::macros::format_description!("[year]-[month]-[day] [hour]:[minute]:[second]");
-    t.to_offset(time::macros::offset!(+8)).format(&f).unwrap_or_default()
-}
+/// 组织时区（默认北京时间）的 `2026-10-20 15:04:05`
+pub fn beijing(t: OffsetDateTime) -> String { crate::meta::org_time(t) }
+
+/// 通知里的时间：`2026-10-20 15:04:05（北京时间）`，括注是组织时区的叫法
+fn when(t: OffsetDateTime) -> String { format!("{}（{}）", beijing(t), crate::meta::org_tz_label()) }
 
 /// `5 分钟` / `2 小时 10 分钟` / `1 天 3 小时`
 pub fn fmt_duration(secs: i64) -> String {
@@ -165,20 +134,20 @@ fn title(n: &Notice) -> String {
 /// 纯文本（Telegram、webhook 的 text 字段）
 pub fn format_text(n: &Notice) -> String {
     if n.kind == Kind::Test {
-        return format!("【测试通知】团队线路管理的告警通知渠道可用\n时间：{}（北京时间）", beijing(n.at));
+        return format!("【测试通知】团队线路管理的告警通知渠道可用\n时间：{}", when(n.at));
     }
     // 静默 / 维护变更：摘要是写好的几行（谁、新建还是删除、对象、起止、备注）
     if n.kind == Kind::Silence {
-        return format!("【{}】{}\n时间：{}（北京时间）", title(n), n.summary, beijing(n.at));
+        return format!("【{}】{}\n时间：{}", title(n), n.summary, when(n.at));
     }
     format!(
-        "【{}】{}\n机器：{}\n规则：{}\n摘要：{}\n时间：{}（北京时间）",
+        "【{}】{}\n机器：{}\n规则：{}\n摘要：{}\n时间：{}",
         severity_name(&n.severity),
         title(n),
         n.machine,
         rule_name(&n.rule),
         n.summary,
-        beijing(n.at)
+        when(n.at)
     )
 }
 
@@ -208,12 +177,12 @@ fn md(s: &str, max: usize) -> String {
 /// 企业微信 markdown（颜色：warning 橙红、comment 灰、info 绿）
 pub fn format_wecom(n: &Notice) -> String {
     if n.kind == Kind::Test {
-        return format!("### 测试通知\n> 团队线路管理的告警通知渠道可用\n> 时间：{}（北京时间）", beijing(n.at));
+        return format!("### 测试通知\n> 团队线路管理的告警通知渠道可用\n> 时间：{}", when(n.at));
     }
     // 摘要里有备注、机器名：逐行转义
     if n.kind == Kind::Silence {
         let body: Vec<String> = n.summary.lines().map(|l| format!("> {}", md(l, 300))).collect();
-        return format!("### <font color=\"warning\">{}</font>\n{}\n> 时间：{}（北京时间）", title(n), body.join("\n"), beijing(n.at));
+        return format!("### <font color=\"warning\">{}</font>\n{}\n> 时间：{}", title(n), body.join("\n"), when(n.at));
     }
     let color = match (n.kind, n.severity.as_str()) {
         (Kind::Resolved, _) => "info",
@@ -221,13 +190,13 @@ pub fn format_wecom(n: &Notice) -> String {
         _ => "comment",
     };
     format!(
-        "### <font color=\"{color}\">【{}】{}</font>\n> 机器：**{}**\n> 规则：{}\n> 摘要：{}\n> 时间：{}（北京时间）",
+        "### <font color=\"{color}\">【{}】{}</font>\n> 机器：**{}**\n> 规则：{}\n> 摘要：{}\n> 时间：{}",
         severity_name(&n.severity),
         title(n),
         md(&n.machine, 64),
         md(rule_name(&n.rule), 64),
         md(&n.summary, 500),
-        beijing(n.at)
+        when(n.at)
     )
 }
 

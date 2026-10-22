@@ -5,6 +5,7 @@ import { ArrowLeft, ArrowDownToLine, Check, CircleDashed, Copy, ListChecks, Load
 import { fetchAllLogs, useCancelJob, useJob, useJobs, useMachine, useRetryJob } from '@/lib/queries';
 import type { Job, JobLog } from '@/lib/types';
 import { errorKindLabel, jobKindLabel, jobLive, jobProgress, outputLines, stepKind, type StepKind } from '@/lib/jobs';
+import { jobStateLabel } from '@/lib/derive';
 import { CheckRow, Field, Input } from '@/components/ui/form';
 import { useNow } from '@/lib/useNow';
 import { copyText } from '@/lib/clipboard';
@@ -22,15 +23,16 @@ import { Pagination } from '@/components/app/Pagination';
 import { usePage } from '@/lib/usePage';
 import { Empty, ErrorNote, LabelValue, LabelValueGrid, Note, PageHead, Panel, Pill, type Tone } from '@/components/app/primitives';
 
-const STATE: Record<string, { label: string; tone: Tone; dot?: 'pulse' }> = {
-  queued: { label: '排队中', tone: 'neutral' }, running: { label: '进行中', tone: 'info', dot: 'pulse' }, waiting: { label: '等待中', tone: 'info' },
-  cancelling: { label: '取消中', tone: 'warn', dot: 'pulse' }, succeeded: { label: '已完成', tone: 'ok' },
-  failed: { label: '失败', tone: 'bad' }, cancelled: { label: '已取消', tone: 'neutral' },
+/** 作业状态的色调（界面样式）；中文名在 /meta（jobStateLabel） */
+const STATE: Record<string, { tone: Tone; dot?: 'pulse' }> = {
+  queued: { tone: 'neutral' }, running: { tone: 'info', dot: 'pulse' }, waiting: { tone: 'info' },
+  cancelling: { tone: 'warn', dot: 'pulse' }, succeeded: { tone: 'ok' },
+  failed: { tone: 'bad' }, cancelled: { tone: 'neutral' },
 };
 /** 作业列表每页条数：列表在窄栏里，固定一档，不给每页条数下拉 */
 const JOB_PAGE = [20];
 
-const JobPill = ({ state }: { state: string }) => { const s = STATE[state] ?? { label: state, tone: 'neutral' as Tone }; return <Pill tone={s.tone} dot={s.dot}>{s.label}</Pill>; };
+const JobPill = ({ state }: { state: string }) => { const s = STATE[state] ?? { tone: 'neutral' as Tone }; return <Pill tone={s.tone} dot={s.dot}>{jobStateLabel(state)}</Pill>; };
 
 export function JobsPage() {
   const { id } = useParams();

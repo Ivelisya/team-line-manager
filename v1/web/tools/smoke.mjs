@@ -35,7 +35,7 @@ await page.evaluate(() => {
   const input = document.querySelector('.dt-grid select[aria-label="类型"]');
   input.focus();
   const dt = new DataTransfer();
-  dt.setData('text', '落地机\t198.51.100.150\t\t团队2\t\t\t线路机2\n落地机\t198.51.100.151\t\t团队2\t\t\t线路机2\n线路机\t203.0.113.60\t\t\t\t线路机3');
+  dt.setData('text', 'VPS 节点\t198.51.100.150\t\t团队2\t\t\t线路机2\nVPS 节点\t198.51.100.151\t\t团队2\t\t\t线路机2\n线路机\t203.0.113.60\t\t\t\t线路机3');
   input.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
 });
 await sleep(300);

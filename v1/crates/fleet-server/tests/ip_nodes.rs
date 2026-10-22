@@ -1,4 +1,4 @@
-//! 同机多 IP 节点：一台落地机（宿主机）上的附加 IP 各是一台节点，SSH、agent、主机读数都用宿主机的。
+//! 同机多 IP 节点：一台 VPS 节点（宿主机）上的附加 IP 各是一台节点，SSH、agent、主机读数都用宿主机的。
 //! 需要 PostgreSQL（见 common）。宿主机不真的登录：要跑到 SSH 的作业让宿主机指向 127.0.0.1:1（必定连接被拒），
 //! 退役用 cleanup=false。
 
@@ -10,7 +10,7 @@ use fleet_proto::{DesiredState, Outbound};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-/// 直接在库里放一台落地机当宿主机（同机 IP 节点 `host` 指向它时就是同机 IP 节点；同机 IP 节点不存 SSH 端口，`ssh_port` 忽略）
+/// 直接在库里放一台 VPS 节点当宿主机（同机 IP 节点 `host` 指向它时就是同机 IP 节点；同机 IP 节点不存 SSH 端口，`ssh_port` 忽略）
 async fn seed_vps(t: &T, team: Uuid, number: i32, ip: &str, ssh_port: i32, lifecycle: &str, host: Option<Uuid>) -> Uuid {
     let id = Uuid::now_v7();
     sqlx::query(
@@ -101,7 +101,7 @@ async fn provision_checks_host_and_allocates_ports() {
     let brief = t.get("/api/v1/machines?view=brief").await;
     assert!(brief.as_array().unwrap().iter().any(|m| m["id"] == xs[0].to_string() && m["host_id"] == host.to_string()), "{brief}");
 
-    // 宿主机校验：不存在、不是普通落地机（线路机 / 同机 IP 节点）、只有落地机能加、宿主机自己的 IP 不能再用
+    // 宿主机校验：不存在、不是普通 VPS 节点（线路机 / 同机 IP 节点）、只有 VPS 节点能加、宿主机自己的 IP 不能再用
     let proxy = json!({"kind": "proxy", "ip": "203.0.113.23", "host_id": host, "team_id": team, "relay_id": relay,
                        "upstream": {"protocol": "socks5", "host": "p.example", "port": 1080}});
     let chk = t
@@ -111,13 +111,13 @@ async fn provision_checks_host_and_allocates_ports() {
                              ip_item("203.0.113.22", xs[0], team, relay), proxy, ip_item("203.0.113.5", host, team, relay)]}),
         )
         .await;
-    for (i, want) in ["宿主机不存在", "不能当宿主机", "不能当宿主机", "只有落地机", "已经属于一台未退役的机器"].iter().enumerate() {
+    for (i, want) in ["宿主机不存在", "不能当宿主机", "不能当宿主机", "只有 VPS 节点", "已经属于一台未退役的机器"].iter().enumerate() {
         assert!(errors(&chk, i).contains(want), "{i}: {}", errors(&chk, i));
     }
     // 宿主机不在用
     sqlx::query("update machine set lifecycle = 'retiring' where id = $1").bind(host).execute(&t.st.db).await.unwrap();
     let chk = t.post("/api/v1/provision/check", json!({"items": [ip_item("203.0.113.30", host, team, relay)]})).await;
-    assert!(errors(&chk, 0).contains("只能加在运行中的落地机上"), "{chk}");
+    assert!(errors(&chk, 0).contains("只能加在运行中的 VPS 节点上"), "{chk}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

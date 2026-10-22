@@ -268,6 +268,7 @@ async fn catalog_validation_and_audit_details() {
         (json!({"price_cents": 1, "currency": "US$"}), "币种只能是字母"),
         (json!({"price_cents": 1, "currency": "ABCDEFGHI"}), "币种过长"),
         (json!({"price_cents": 1, "currency": "USDT"}), "币种不是 3 个字母"),
+        (json!({"price_cents": 1, "cycle": "weekly"}), "不认识的计费周期"),
         (json!({"price_cents": 1, "notes": "备".repeat(2001)}), "备注过长"),
         (json!({"price_cents": 1, "name": "名".repeat(33)}), "名字过长"),
     ] {

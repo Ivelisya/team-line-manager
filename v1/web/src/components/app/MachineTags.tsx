@@ -1,8 +1,7 @@
 // 机器的标签：卡片标签行（三种密度）与抽屉头共用同一套、同一顺序——供应商 → 类型（只给线路机、家宽代理；VPS 节点是默认，不出）→ 同机关系 → 维护中。
 // 每枚都有悬停说明（「供应商：DeerVPS」「类型：线路机」…）。服务编号是标识不是分类，不进标签，在抽屉概览里（带复制）。
 import type { MachineView } from '@/lib/types';
-import { tagColor, type TagColor } from '@/lib/derive';
-import { KIND_LABEL } from '@/lib/sort';
+import { healthLabel, kindLabel, tagColor, type TagColor } from '@/lib/derive';
 import { HostTag } from './primitives';
 import { Tag } from './viz';
 
@@ -15,9 +14,9 @@ export function machineTagItems(m: Src): TagItem[] {
   const items: TagItem[] = [];
   const provider = m.provider?.name ?? m.provider_code;
   if (provider) items.push({ key: 'provider', c: tagColor(m.provider_code ?? provider), text: provider, tip: `供应商：${provider}` });
-  if (m.kind !== 'vps') items.push({ key: 'kind', c: KIND_TAG[m.kind], text: KIND_LABEL[m.kind], tip: `类型：${KIND_LABEL[m.kind]}` });
+  if (m.kind !== 'vps') items.push({ key: 'kind', c: KIND_TAG[m.kind], text: kindLabel(m.kind), tip: `类型：${kindLabel(m.kind)}` });
   if (m.host_machine || m.ip_nodes.length) items.push({ key: 'rel' });
-  if (m.maintenance) items.push({ key: 'maint', c: 'amber', text: '维护中', tip: '维护中：在维护窗口里，不发告警、暂停健康判定' });
+  if (m.maintenance) { const t = healthLabel('maintenance'); items.push({ key: 'maint', c: 'amber', text: t, tip: `${t}：在维护窗口里，不发告警、暂停健康判定` }); }
   return items;
 }
 

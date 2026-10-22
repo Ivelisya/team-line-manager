@@ -110,11 +110,11 @@ pub fn bps(n: f64) -> String {
 /// 金额（分）
 pub fn money(cents: i64, cur: &str) -> String { format!("{}.{:02} {cur}", cents / 100, (cents % 100).abs()) }
 
-/// RFC 3339 → 北京时间 `2026-10-20 20:34:56`（同网页与通知，截到秒）；缺失（`-`）原样
+/// RFC 3339 → 组织时区（中控 org_timezone，默认北京时间）的 `2026-10-20 20:34:56`（同通知，截到秒）；缺失（`-`）原样
 pub fn ts(s: &str) -> String {
     let Ok(t) = time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339) else { return s.to_string() };
     let f = time::macros::format_description!("[year]-[month]-[day] [hour]:[minute]:[second]");
-    t.to_offset(time::macros::offset!(+8)).format(&f).unwrap_or_default()
+    t.to_offset(crate::meta::offset()).format(&f).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -144,6 +144,7 @@ mod tests {
 
     #[test]
     fn clip_and_format() {
+        crate::meta::test_init();
         assert_eq!(clip("a\nb", 10), "a b");
         assert_eq!(clip("abcdefghij", 5), "abcd…");
         assert_eq!(bytes(1536.0), "1.5 KiB");

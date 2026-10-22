@@ -8,6 +8,7 @@ mod cmds;
 mod config;
 mod ipintel;
 mod lifecycle;
+mod meta;
 mod ops;
 mod policy;
 mod resolve;
@@ -130,13 +131,13 @@ enum SilenceCmd {
         /// 只静默这条告警规则（规则 key，如 agent_offline；不填 = 全部规则）
         #[arg(long)]
         rule: Option<String>,
-        /// 开始时间，北京时间（同表格）：2026-10-23 02:00（别的时区写带时区的 2026-10-23T02:00:00+09:00）；不填 = 现在，最多提前 90 天
+        /// 开始时间，组织时区（中控的 org_timezone，默认北京时间；同表格）：2026-10-23 02:00（别的时区写带时区的 2026-10-23T02:00:00+09:00）；不填 = 现在，最多提前 90 天
         #[arg(long)]
         start: Option<String>,
         /// 时长：30m / 4h / 2d，可组合（1h30m）；最长 30 天
         #[arg(long = "for", value_name = "DURATION")]
         dur: String,
-        /// 标成维护：卡片显示「维护中」，期间暂停健康判定（针对整台机器，不能和 --rule 一起用）
+        /// 标成维护：卡片显示「维护」，期间暂停健康判定（针对整台机器，不能和 --rule 一起用）
         #[arg(long)]
         maintenance: bool,
         #[arg(long)]
@@ -206,7 +207,7 @@ struct ProvisionArgs {
     kind: Option<String>,
     #[arg(long)]
     ip: Option<String>,
-    /// 同机 IP 节点：加在这台已有的落地机（宿主机）上，用它的 SSH 与 agent；--ip 是新的出口 IP（要已配在宿主机网卡上），
+    /// 同机 IP 节点：加在这台已有的 VPS 节点（宿主机）上，用它的 SSH 与 agent；--ip 是新的出口 IP（要已配在宿主机网卡上），
     /// 不用填 --ssh-port / --ssh-password-env / --ss-port（SS 端口由中控分配），供应商取宿主机的
     #[arg(long)]
     host: Option<String>,
@@ -438,7 +439,7 @@ enum Cmd {
         #[arg(long)]
         yes: bool,
     },
-    /// 升级 agent（单台，或 --all：先升一台做金丝雀，成功后线路机逐台、落地机并发）；新版本起不来、没上报或线路机 Xray 不正常自动换回旧版本
+    /// 升级 agent（单台，或 --all：先升一台做金丝雀，成功后线路机逐台、VPS 节点并发）；新版本起不来、没上报或线路机 Xray 不正常自动换回旧版本
     UpgradeAgent {
         machine: Option<String>,
         #[arg(long)]
@@ -645,6 +646,7 @@ fn make_ctx(json: bool, session_login: bool) -> anyhow::Result<Ctx> {
             _ => return Err(e),
         },
     };
+    meta::init(&url, &token);
     Ok(Ctx::new(Client::new(&url, Cred::Bearer(token))?, url.trim_end_matches('/').to_string(), json))
 }
 

@@ -4,7 +4,7 @@ import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { ChevronRight, Eye, Save, ShieldCheck, Trash2, Undo2 } from 'lucide-react';
 import {
-  MODE_HINT, MODE_LABEL, useDiscardPolicies, usePolicies, usePolicyPreview, usePolicyVersions, usePublishPolicies, useRollbackPolicy, useSavePolicy,
+  MODE_HINT, modeLabel, useDiscardPolicies, usePolicies, usePolicyPreview, usePolicyVersions, usePublishPolicies, useRollbackPolicy, useSavePolicy,
   type PolicyBody, type PolicyChange, type PolicyMode, type PolicyNode, type PolicyTeam, type PolicyVersion, type ScopePolicy, type VersionStatus,
 } from '@/lib/policy';
 import { MAX_NOTE, diffDomains, domainsToText, parseDomainText } from '@/lib/policyDomains';
@@ -26,7 +26,7 @@ const MODE_TONE: Record<PolicyMode, Tone> = { observe: 'neutral', allowlist: 'in
 const needsDomains = (m: PolicyMode) => m === 'allowlist' || m === 'denylist';
 
 function ModePill({ mode }: { mode: PolicyMode }) {
-  return <Pill tone={MODE_TONE[mode]}>{MODE_LABEL[mode]}</Pill>;
+  return <Pill tone={MODE_TONE[mode]}>{modeLabel(mode)}</Pill>;
 }
 
 type Sel = { scope: 'team' | 'node'; id: string };
@@ -145,7 +145,7 @@ function TeamRows({ t, sel, open, toggle, pick }: { t: PolicyTeam; sel: Sel | nu
         <button type="button" className="pol-chev" aria-label={`${open ? '收起' : '展开'}${t.name}`} data-open={open ? '1' : undefined} onClick={toggle}><ChevronRight size={14} /></button>
         <button type="button" className="pol-item" aria-current={here} onClick={() => pick({ scope: 'team', id: t.id })}>
           <span className="pol-name"><Trunc className="strong">{t.name}</Trunc><span className="pol-sub">{t.nodes.length} 个节点{drafts > 0 && !t.policy.draft ? ` · ${drafts} 份草稿` : ''}</span></span>
-          {t.policy.draft && <Tip text={`草稿：${MODE_LABEL[t.policy.draft.mode]}`}><span><Chip variant="warn">草稿</Chip></span></Tip>}
+          {t.policy.draft && <Tip text={`草稿：${modeLabel(t.policy.draft.mode)}`}><span><Chip variant="warn">草稿</Chip></span></Tip>}
           <ModePill mode={t.policy.mode} />
         </button>
       </div>
@@ -159,7 +159,7 @@ function NodeRow({ n, here, pick }: { n: PolicyNode; here: boolean; pick: (s: Se
     <div className="pol-row pol-row-node" role="treeitem" aria-selected={here}>
       <button type="button" className="pol-item" aria-current={here} onClick={() => pick({ scope: 'node', id: n.id })}>
         <span className="pol-name"><Trunc className="strong">{n.name}</Trunc>{!n.has_entry && <span className="pol-sub">还没有入口</span>}</span>
-        {n.policy.draft && <Tip text={`草稿：${MODE_LABEL[n.policy.draft.mode]}`}><span><Chip variant="warn">草稿</Chip></span></Tip>}
+        {n.policy.draft && <Tip text={`草稿：${modeLabel(n.policy.draft.mode)}`}><span><Chip variant="warn">草稿</Chip></span></Tip>}
         {n.effective.source === 'team' && n.effective.mode !== 'observe' && <span className="pol-inh" data-tip="跟随团队的设置">继承</span>}
         <ModePill mode={n.effective.mode} />
       </button>
@@ -229,7 +229,7 @@ function Editor({ scope, name, sp, team, node, onDirty }: { scope: 'team' | 'nod
 
   return (
     <Panel className="pol-edit" title={name} count={scope === 'team' ? '团队策略' : '节点策略'}
-      sub={scope === 'team' ? `团队内选了「跟随团队」的节点都会使用这里的设置` : `当前生效：${MODE_LABEL[node!.effective.mode]}${node!.effective.source === 'team' ? `（来自 ${team.name}）` : ''}`}>
+      sub={scope === 'team' ? `团队内选了「跟随团队」的节点都会使用这里的设置` : `当前生效：${modeLabel(node!.effective.mode)}${node!.effective.source === 'team' ? `（来自 ${team.name}）` : ''}`}>
       <div className="pol-form">
         {stale && (
           <Note tone="warn">
@@ -240,8 +240,8 @@ function Editor({ scope, name, sp, team, node, onDirty }: { scope: 'team' | 'nod
 
         <div className="field">
           <span className="label">模式</span>
-          <Segmented label="模式" value={mode} onChange={setMode} items={modes.map((m) => ({ value: m, label: MODE_LABEL[m] }))} />
-          <div className="hint">{MODE_HINT[mode]}{mode === 'inherit' && <> 团队现在是「{MODE_LABEL[teamCur.mode]}」{needsDomains(teamCur.mode) ? `（${teamCur.domains.length} 个域名）` : ''}。</>}</div>
+          <Segmented label="模式" value={mode} onChange={setMode} items={modes.map((m) => ({ value: m, label: modeLabel(m) }))} />
+          <div className="hint">{MODE_HINT[mode]}{mode === 'inherit' && <> 团队现在是「{modeLabel(teamCur.mode)}」{needsDomains(teamCur.mode) ? `（${teamCur.domains.length} 个域名）` : ''}。</>}</div>
         </div>
 
         <div className="field">
@@ -297,7 +297,7 @@ function Compare({ cur, next, scope, teamCur, teamName }: { cur: PolicyBody; nex
     <div className="pol-side">
       <div className="pol-side-head">
         <ModePill mode={b.mode} />
-        {b.mode === 'inherit' && scope === 'node' && <span className="t-sub">{teamName}：{MODE_LABEL[teamCur.mode]}</span>}
+        {b.mode === 'inherit' && scope === 'node' && <span className="t-sub">{teamName}：{modeLabel(teamCur.mode)}</span>}
         {needsDomains(b.mode) && <span className="t-sub">{fmtN(b.domains.length)} 个域名</span>}
       </div>
       {needsDomains(b.mode) ? <Chips domains={b.domains} mark={mark} marked={set} /> : b.mode === 'inherit' && needsDomains(teamCur.mode) ? <Chips domains={teamCur.domains} /> : <div className="t-muted pol-none">没有域名规则</div>}
@@ -413,7 +413,7 @@ const PreviewDialog = resetOnOpen(function PreviewDialog({ open, onOpenChange }:
 
 function ChangeList({ changes }: { changes: PolicyChange[] }) {
   if (!changes.length) return null;
-  const sum = (c: PolicyChange['from']) => `${MODE_LABEL[c.mode]}${needsDomains(c.mode) ? ` · ${c.domains} 个域名` : ''}`;
+  const sum = (c: PolicyChange['from']) => `${modeLabel(c.mode)}${needsDomains(c.mode) ? ` · ${c.domains} 个域名` : ''}`;
   return (
     <ul className="pol-changes">
       {changes.map((c) => <li key={`${c.scope}:${c.id}`}><span className="pol-kind">{c.scope === 'team' ? '团队' : '节点'}</span><b>{c.name}</b><span className="t-sub">{sum(c.from)}</span><span className="pol-arrow">→</span><span>{sum(c.to)}</span></li>)}
@@ -479,7 +479,7 @@ function VersionsPanel() {
 
 function VersionChanges({ changes }: { changes: PolicyChange[] }) {
   if (!changes.length) return <span className="t-sub">只改了备注</span>;
-  const one = (c: PolicyChange) => `${c.name}：${MODE_LABEL[c.from.mode]} → ${MODE_LABEL[c.to.mode]}${needsDomains(c.to.mode) ? `（${c.to.domains} 个域名）` : ''}`;
+  const one = (c: PolicyChange) => `${c.name}：${modeLabel(c.from.mode)} → ${modeLabel(c.to.mode)}${needsDomains(c.to.mode) ? `（${c.to.domains} 个域名）` : ''}`;
   const full = changes.map(one).join('\n');
   return (
     <Tip text={changes.length > 2 ? <div className="pol-tip">{changes.map((c) => <div key={`${c.scope}:${c.id}`}>{one(c)}</div>)}</div> : null}>
