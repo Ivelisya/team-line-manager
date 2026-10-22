@@ -357,6 +357,18 @@ async fn plan(st: &AppState, conn: &mut PgConnection, old_id: Uuid, b: &ReplaceI
     }
     if to_team.as_ref().is_some_and(|t| !t.2) {
         warnings.push("旧节点要去的不是备用团队：不会到期自动回收".into());
+    } else if to_team.is_some() {
+        // 进备用之后什么时候回收（spare.rs）：没有订阅的永远不回收，已过期满 1 天的下一轮维护就回收；开着的自动续费会关掉（machines::patch_tx）
+        let sub: Option<(time::Date, time::Date, bool)> =
+            sqlx::query_as("select due_date, local_date(billing_tz), auto_renew from subscription_eff where machine_id = $1").bind(old.id).fetch_optional(&mut *conn).await?;
+        match sub {
+            None => warnings.push(format!("旧节点「{old_name}」没有订阅：进备用后没有到期日，不会自动回收（不要了就之后「立即回收」）")),
+            Some((due, today, _)) if crate::spare::expired(today, due) => {
+                warnings.push(format!("旧节点「{old_name}」的订阅已过期满 1 天：进备用后下一轮维护（一小时内）就自动回收；还想留几天对账，先续费或改到期日"))
+            }
+            Some((_, _, true)) => warnings.push(format!("旧节点「{old_name}」开着自动续费：进备用时会关掉，到期后照常回收（供应商那边的自动扣款要自己去关）")),
+            Some(_) => {}
+        }
     }
 
     // 编号压缩：新节点原来的团队少了一台（auto_compact 时，同退役）

@@ -445,7 +445,7 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 
 **替换节点**：新节点接替旧节点——软路由上指向旧节点入口的出口改成新节点的入口，新节点接旧编号，旧节点去备用团队（同「退役」的默认去向：不建退役作业，由备用到期自动回收接手；`spare_from` 记下它原来的名字）。
 - 预览 `GET /machines/{old}/replace` 返回 `{old:{id,name,kind,team:{id,name}|null}, new:{同}, new_name（新节点替换后的名字 = 旧节点现在的名字）, old_to:{team:{id,name,spare}|null, number, name}, renames:[{machine_id,old_name,new_name}]（numbering.auto_compact 时新节点原来的团队压缩编号）, routers_enabled, routers:[{id,name,state:online|offline|pending, exits:[{exit,old_entry_id,new_entry_id,from:"server:port",to:"server:port"}]}], ok, blockers[], warnings[]}`。
-- 条件：旧、新都是在用（active）的节点（不是线路机）、都没有进行中的作业、旧节点有团队编号、新节点至少有一个 active 入口。新节点可以在别的团队（替换时改到旧节点的团队，warnings 里提示）。`old_to.team_id` 不给时去唯一的备用团队；编号不给取目标团队最小的空号（作业执行时再取一次）。
+- 条件：旧、新都是在用（active）的节点（不是线路机）、都没有进行中的作业、旧节点有团队编号、新节点至少有一个 active 入口。新节点可以在别的团队（替换时改到旧节点的团队，warnings 里提示）。旧节点去备用团队时 warnings 还提示什么时候回收：没有订阅（不会自动回收）、已过期满 1 天（一小时内就回收）、开着自动续费（进备用时关掉）。交换编号时旧节点的 `lifecycle_reason` 记「替换下来：新 接替了 旧」，旧节点的来源画像（`node_source_seen`，连接数记 0）复制给新节点，客户换过来不算新出现、新机器不用重新学。`old_to.team_id` 不给时去唯一的备用团队；编号不给取目标团队最小的空号（作业执行时再取一次）。
 - 要改的路由：按各路由 `router_status.data` 里的出口（见软路由），出口对上的入口属于旧节点、未删除的都算（`routers::exits_to`，退役预览、备用到期提醒同一套匹配）。新入口按线路机一一对应（同一台线路机上的新入口；没有时新节点只有一个 active 入口就用它，否则 blockers 说明对不上）；出口原来写的是线路机 IP 就换成新线路机的 IP，否则换成它的 public_host。`routers_enabled` 时任何一台要改的路由不在线（`state` 不是 online）都是 blocker；`routers=false` 不看路由、只交换编号。
 
 **替换作业 `replace`**（目标 = 旧节点，要求 active）步骤：`routers`「改软路由出口」→ `renumber`「交换编号」。计划（改哪些路由的哪些出口）发起时存进作业参数（不含凭据）。

@@ -213,6 +213,23 @@ pub(super) async fn renumber(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     // 旧节点先挪开，旧编号空出来再给新节点（唯一索引 machine_number_live）
     let mut relays = patch_tx(&mut tx, actor, old, PatchIn::rename(o.1, to_team, to_number)).await.map_err(api)?;
     relays.extend(patch_tx(&mut tx, actor, new, PatchIn::rename(n.1, old_team, old_number)).await.map_err(api)?);
+    // 旧节点进了备用：回收站的「原因」写明是被谁替换下来的
+    let (old_before, new_before) = (c.job.params["old_name"].as_str().unwrap_or(""), c.job.params["new_name"].as_str().unwrap_or(""));
+    sqlx::query("update machine m set lifecycle_reason = $2 from team t where m.id = $1 and t.id = m.team_id and t.spare")
+        .bind(old)
+        .bind(format!("替换下来：{new_before} 接替了 {old_before}"))
+        .execute(&mut *tx)
+        .await?;
+    // 来源画像跟着客户走：旧节点见过的运营商 / 城市记到新节点（学习期起点取最早的 first_seen），客户换过来不算「新出现」、
+    // 新机器也不用重新学 7 天。连接数不搬（统计还算在旧节点上）；新节点自己已有的不动
+    sqlx::query(
+        "insert into node_source_seen (node_id, dim, value, first_seen, last_seen, conns, flag)
+         select $2, dim, value, first_seen, last_seen, 0, null from node_source_seen where node_id = $1 on conflict do nothing",
+    )
+    .bind(old)
+    .bind(new)
+    .execute(&mut *tx)
+    .await?;
     let mut renumbered = 0;
     if let Some(t) = new_team0.filter(|_| c.st.cfg.numbering.auto_compact) {
         let (ch, rs) = crate::db::compact_team(&mut tx, t, actor, "替换节点后自动压缩").await?;

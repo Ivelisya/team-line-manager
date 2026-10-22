@@ -171,6 +171,17 @@ async fn preview_and_full_run() {
     assert_eq!(rs[1]["exits"][0]["to"], "relay.test:20020");
     // 新节点原来的 02 空出来，团队里没有 03 以后的：不用压缩
     assert_eq!(p["renames"], json!([]));
+    assert!(p["warnings"].to_string().contains("旧节点「团队2-01」没有订阅：进备用后没有到期日，不会自动回收"), "{p}");
+    // 来源画像：旧节点见过的跟到新节点，新节点自己已有的不动
+    sqlx::query(
+        "insert into node_source_seen (node_id, dim, value, first_seen, last_seen, conns) values
+           ($1, 'isp', '电信', '2026-09-01T00:00:00Z', now(), 50), ($1, 'city', '上海', '2026-09-02T00:00:00Z', now(), 9), ($2, 'isp', '电信', '2026-10-20T00:00:00Z', now(), 3)",
+    )
+    .bind(w.old)
+    .bind(w.new)
+    .execute(&t.st.db)
+    .await
+    .unwrap();
 
     let d = t.post(&format!("/api/v1/machines/{}/replace", w.old), json!({"new_machine_id": w.new})).await;
     let job = d["job_id"].as_str().unwrap().to_string();
@@ -180,7 +191,14 @@ async fn preview_and_full_run() {
     assert_eq!((j["kind"].as_str(), j["steps"][0]["state"].as_str(), j["steps"][1]["state"].as_str()), (Some("replace"), Some("done"), Some("done")));
     assert_eq!((name_of(t, w.new).await, name_of(t, w.old).await), ("团队2-01".to_string(), "团队2备用-01".to_string()));
     assert_eq!(t.machine_lifecycle(w.old).await, "active", "旧节点不退役，放在备用团队");
-    assert_eq!(t.get(&format!("/api/v1/machines/{}", w.old)).await["spare_from"], "团队2-01", "进备用记下原名");
+    let ov = t.get(&format!("/api/v1/machines/{}", w.old)).await;
+    assert_eq!((ov["spare_from"].as_str(), ov["lifecycle_reason"].as_str()), (Some("团队2-01"), Some("替换下来：团队2-02 接替了 团队2-01")), "进备用记下原名和原因");
+    let seen: Vec<(String, String, String, i64)> = sqlx::query_as("select dim, value, first_seen::date::text, conns from node_source_seen where node_id = $1 order by dim")
+        .bind(w.new)
+        .fetch_all(&t.st.db)
+        .await
+        .unwrap();
+    assert_eq!(seen, [("city".to_string(), "上海".to_string(), "2026-09-02".to_string(), 0), ("isp".into(), "电信".into(), "2026-10-20".into(), 3)]);
     // 两台路由各收到一份改配置的脚本：新入口的参数在 stdin 里；作业日志、步骤输出、审计里没有凭据
     for (port, srv) in [(23101, "198.51.100.2"), (23102, "relay.test")] {
         let a = applies(port);
@@ -345,6 +363,15 @@ async fn validation() {
     sqlx::query("insert into job (id, kind, target_id, state, created_by) values ($1, 'upgrade_agent', $2, 'queued', 't')").bind(Uuid::now_v7()).bind(w.old).execute(&t.st.db).await.unwrap();
     assert!(t.get(&url(w.new)).await["blockers"].to_string().contains("「团队2-01」还有进行中的作业（升级 agent）"));
     sqlx::query("delete from job").execute(&t.st.db).await.unwrap();
+    // 旧节点进备用后什么时候回收：开着自动续费的会关掉、已过期满 1 天的一小时内就回收
+    sqlx::query("insert into subscription (machine_id, price_cents, currency, due_date, billing_tz, auto_renew) values ($1, 500, 'USD', '2099-01-01', 'UTC', true)")
+        .bind(w.old)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    assert!(t.get(&url(w.new)).await["warnings"].to_string().contains("开着自动续费：进备用时会关掉"));
+    sqlx::query("update subscription set due_date = '2020-01-01' where machine_id = $1").bind(w.old).execute(&t.st.db).await.unwrap();
+    assert!(t.get(&url(w.new)).await["warnings"].to_string().contains("订阅已过期满 1 天：进备用后下一轮维护（一小时内）就自动回收"));
     // 新节点在别的团队：替换时改到旧节点的团队（提示一下）
     let other = seed_team(t, "待分配").await;
     let x = node(t, other, 1, "203.0.113.30").await;
