@@ -3,9 +3,9 @@
 // 分页：目标与新目标按 offset 翻页（服务端），来源与节点概览是已取回的列表（前端切页），原始记录按时间游标翻页；每页条数各页签相同。
 import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Activity, Radar, Server, ShieldX, Target } from 'lucide-react';
+import { Activity, ChevronRight, Radar, Server, ShieldX, Target } from 'lucide-react';
 import {
-  ACCESS_WINDOWS, EVENTS_PAGE, SOURCES_LIMIT, WINDOW_DAYS, isAccessWindow, useAccessRetention, useAccessEvents, useAccessSources, useAccessSummary, useAccessTargets, useNewTargets,
+  ACCESS_WINDOWS, EVENTS_PAGE, SOURCES_LIMIT, WINDOW_DAYS, isAccessWindow, useAccessRetention, useAccessEvents, useAccessSources, useAccessSummary, useAccessTargetGroups, useAccessTargetNodes, useNewTargets,
   type AccessFilter, type AccessNode, type AccessWindow, type TargetSort,
 } from '@/lib/access';
 import { useMachineBriefs, useTeams } from '@/lib/queries';
@@ -38,8 +38,8 @@ const isTargetSort = (v: string | null): v is TargetSort => SORT_ITEMS.some((x) 
 // 每页条数各页签一样（原始记录是服务端固定的一页 EVENTS_PAGE 条）
 const SIZES = [50, 100, 200];
 const SIZE = 100;
-/** 「首次出现」是这个节点第一次访问到它的时间，不受时间范围限制 */
-const FIRST_SEEN_TIP = '这个节点第一次访问到它的时间（全部时间，不受时间范围限制）';
+/** 「首次出现」不受时间范围限制：合并行是各节点里最早的一次，展开的节点行是这个节点自己的 */
+const FIRST_SEEN_TIP = '最早一次访问到它的时间，不受时间范围限制；展开后是各节点自己的';
 
 export function AccessPage() {
   const [sp, setSp] = useSearchParams();
@@ -121,7 +121,7 @@ export function AccessPage() {
         <TabsList>{VIEWS.map((x) => <TabsTrigger key={x.value} value={x.value} noPanel>{x.label}</TabsTrigger>)}</TabsList>
       </Tabs>
 
-      {tab === 'targets' && <TargetsView open={open} f={f} sort={isTargetSort(sort) ? sort : 'conns'} onSort={onSort} filtered={filtered} onClear={clear} onPick={pick} total={summary.data?.kpi.targets} />}
+      {tab === 'targets' && <TargetsView open={open} f={f} sort={isTargetSort(sort) ? sort : 'conns'} onSort={onSort} filtered={filtered} onClear={clear} onPick={pick} />}
       {tab === 'new' && <NewView open={open} f={f} filtered={filtered} onClear={clear} onPick={pick} />}
       {tab === 'sources' && <SourcesView open={open} f={f} filtered={filtered} onClear={clear} conn={sp.get('conn') ?? ''} upd={upd} />}
       {tab === 'nodes' && <NodesView open={open} f={f} filtered={filtered} onClear={clear} sort={sort} onSort={onSort} />}
@@ -146,32 +146,45 @@ function NodeLink({ id, name, open }: { id: string; name: string; open: Open }) 
   return <button type="button" className="btn btn-link" style={{ maxWidth: '100%' }} onClick={(e) => { e.stopPropagation(); open(id, 'access'); }}><span className="ellipsis">{name}</span></button>;
 }
 
-/** total：同一筛选下 summary 的「访问目标」数，正是这张表的总行数。
+/** 按目标合并各节点，一个目标一行；点行（或「N 个节点」）展开看各节点。换筛选、排序、翻页后展开的收起。
  *  五个视图都 memo：搜索框打字只改页面里的 text，f 要停手 250ms 写进 URL 后才变，期间不重画表格 */
-const TargetsView = React.memo(function TargetsView({ open, f, sort, onSort, filtered, onClear, onPick, total }: { f: AccessFilter; sort: TargetSort; onSort: (s: string) => void; filtered: boolean; onClear: () => void; onPick: (h: string) => void; open: Open; total: number | undefined }) {
+const TargetsView = React.memo(function TargetsView({ open, f, sort, onSort, filtered, onClear, onPick }: { f: AccessFilter; sort: TargetSort; onSort: (s: string) => void; filtered: boolean; onClear: () => void; onPick: (h: string) => void; open: Open }) {
+  // 页码先于查询算出（偏移量进查询）；总数取上一次的结果。渲染中直接跟上（不等 effect 提交一遍再重渲染）
+  const [total, setTotal] = React.useState<number>();
   const pg = usePage({ total, sizes: SIZES, size: SIZE, reset: [f, sort] });
-  const q = useAccessTargets(f, sort, pg.offset, pg.size);
+  const q = useAccessTargetGroups(f, sort, pg.offset, pg.size);
+  if (q.data && q.data.total !== total) setTotal(q.data.total);
   const rows = q.data?.items ?? [];
+  const pk = JSON.stringify([f, sort, pg.offset, pg.size]);
+  const [ex, setEx] = React.useState({ pk, open: new Set<string>() });
+  if (ex.pk !== pk) setEx({ pk, open: new Set() });
+  const toggle = (h: string) => setEx((s) => { const n = new Set(s.open); if (n.has(h)) n.delete(h); else n.add(h); return { pk, open: n }; });
   return (
-    <Panel ref={pg.anchor} title="域名与 IP" count={total != null ? `${fmtN(total)} 个` : undefined} sub={<InfoTip text="同一节点的随机子域名已合并为 *.域名；点目标名只看它" />}
+    <Panel ref={pg.anchor} title="域名与 IP" count={q.data ? `${fmtN(q.data.total)} 个` : undefined} sub={<InfoTip text="随机子域名已合并为 *.域名；点目标名只看它，点行展开看各节点" />}
       tools={<Segmented sm label="排序" value={sort} onChange={(v) => onSort(v === 'conns' ? '' : v)} items={SORT_ITEMS} />} flush>
       {q.isError && <div style={{ padding: 12 }}><ErrNote q={q} /></div>}
       <TableWrap data-stale={q.isPlaceholderData}>
-        <table className="dt" style={{ minWidth: 900 }}>
-          <colgroup><col /><col style={{ width: 130 }} /><col style={{ width: 80 }} /><col style={{ width: 96 }} /><col style={{ width: 210 }} /><col style={{ width: 120 }} /><col style={{ width: 104 }} /></colgroup>
-          <thead><tr><th>目标</th><th>节点</th><th className="r">来源数</th><th className="r">连接数</th><th>处理结果</th><th><span className="field-label">首次出现<InfoTip text={FIRST_SEEN_TIP} /></span></th><th>最近</th></tr></thead>
+        <table className="dt" style={{ minWidth: 820 }}>
+          <colgroup><col /><col style={{ width: 170 }} /><col style={{ width: 96 }} /><col style={{ width: 210 }} /><col style={{ width: 120 }} /><col style={{ width: 104 }} /></colgroup>
+          <thead><tr><th>目标</th><th>节点</th><th className="r">连接数</th><th>处理结果</th><th><span className="field-label">首次出现<InfoTip text={FIRST_SEEN_TIP} /></span></th><th>最近</th></tr></thead>
           <tbody>
-            {rows.map((t) => (
-              <tr key={`${t.node_id}|${t.dest_host}`}>
-                <td><HostCell host={t.dest_host} kind={t.kind} onPick={onPick} /></td>
-                <td><NodeLink id={t.node_id} name={t.name} open={open} /></td>
-                <td className="r">{fmtN(t.sources)}</td>
-                <td className="r strong">{fmtN(t.conns)}</td>
-                <td><ResultPill conns={t.conns} blocked={t.blocked} /></td>
-                <td data-tip={F.dtFull(t.first_seen)}>{F.dt(t.first_seen)}</td>
-                <td data-tip={F.dtFull(t.last_seen)}>{F.ago(t.last_seen)}</td>
-              </tr>
-            ))}
+            {rows.map((t) => {
+              const on = ex.open.has(t.dest_host);
+              return (
+                <React.Fragment key={t.dest_host}>
+                  <tr className="is-link" tabIndex={0} aria-expanded={on} data-open={on ? '' : undefined} onClick={() => toggle(t.dest_host)}
+                    onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); toggle(t.dest_host); } }}>
+                    <td><HostCell host={t.dest_host} kind={t.kind} onPick={onPick} /></td>
+                    <td><span className="acc-nodes"><ChevronRight />{fmtN(t.nodes)} 个节点</span></td>
+                    <td className="r strong">{fmtN(t.conns)}</td>
+                    <td><ResultPill conns={t.conns} blocked={t.blocked} /></td>
+                    <td data-tip={F.dtFull(t.first_seen)}>{F.dt(t.first_seen)}</td>
+                    <td data-tip={F.dtFull(t.last_seen)}>{F.ago(t.last_seen)}</td>
+                  </tr>
+                  {on && <TargetNodes f={f} host={t.dest_host} open={open} />}
+                </React.Fragment>
+              );
+            })}
           </tbody>
         </table>
       </TableWrap>
@@ -181,6 +194,24 @@ const TargetsView = React.memo(function TargetsView({ open, f, sort, onSort, fil
     </Panel>
   );
 });
+
+/** 展开的一个目标：同样的筛选下各节点一行（节点、来源数、连接数、结果、这个节点第一次 / 最近访问它） */
+function TargetNodes({ f, host, open }: { f: AccessFilter; host: string; open: Open }) {
+  const q = useAccessTargetNodes(f, host);
+  if (!q.data) {
+    return <tr className="acc-sub"><td /><td colSpan={5}>{q.isError ? <ErrNote q={q} /> : <span className="skel" style={{ width: '40%', height: 12 }} />}</td></tr>;
+  }
+  return q.data.items.map((n) => (
+    <tr key={n.node_id} className="acc-sub">
+      <td />
+      <td><span className="acc-node"><NodeLink id={n.node_id} name={n.name} open={open} /><span className="sub">{fmtN(n.sources)} 个来源</span></span></td>
+      <td className="r">{fmtN(n.conns)}</td>
+      <td><ResultPill conns={n.conns} blocked={n.blocked} /></td>
+      <td data-tip={F.dtFull(n.first_seen)}>{F.dt(n.first_seen)}</td>
+      <td data-tip={F.dtFull(n.last_seen)}>{F.ago(n.last_seen)}</td>
+    </tr>
+  ));
+}
 
 const NewView = React.memo(function NewView({ f, filtered, onClear, onPick, open }: { f: AccessFilter; filtered: boolean; onClear: () => void; onPick: (h: string) => void; open: Open }) {
   // 页码先于查询算出（偏移量进查询）；总数取上一次的结果。渲染中直接跟上（不等 effect 提交一遍再重渲染）
