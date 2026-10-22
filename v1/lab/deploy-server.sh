@@ -51,8 +51,9 @@ install -m 755 /root/src/target/release/fleet-server /opt/fleet/fleet-server.new
 cat > /etc/systemd/system/fleet-server.service <<'UNIT'
 [Unit]
 Description=fleet-server（团队线路管理 v1）
-After=network-online.target postgresql.service
-Wants=network-online.target
+# 等时钟同步再起：启动时立刻按墙钟删过期分区，开机时钟大幅超前会误删数据
+After=network-online.target postgresql.service time-sync.target
+Wants=network-online.target time-sync.target
 [Service]
 User=fleet
 Group=fleet
