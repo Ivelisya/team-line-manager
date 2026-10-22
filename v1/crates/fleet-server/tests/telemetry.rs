@@ -1766,9 +1766,10 @@ async fn maintenance_silence_reaches_cards_via_metrics() {
 async fn expired_partitions_are_dropped_and_leftovers_cleaned() {
     let t = setup().await;
     let db = &t.st.db;
-    // 一个过期的已挂载分区（带数据）和一个脱离父表的残留表
+    // 一个过期的已挂载分区（带数据）和一个脱离父表的残留表；两张表都有刚进来的数据（删分区前核对本机时钟要看它）
     sqlx::query("create table host_metric_20200101 partition of host_metric for values from ('2020-01-01') to ('2020-01-02')").execute(db).await.unwrap();
-    sqlx::query("insert into host_metric (machine_id, ts) values ($1, '2020-01-01 03:00:00+00')").bind(Uuid::now_v7()).execute(db).await.unwrap();
+    sqlx::query("insert into host_metric (machine_id, ts) values ($1, '2020-01-01 03:00:00+00'), ($1, now())").bind(Uuid::now_v7()).execute(db).await.unwrap();
+    sqlx::query("insert into probe_result (entry_id, ts, kind, ok) values ($1, now(), 'tcp', true)").bind(Uuid::now_v7()).execute(db).await.unwrap();
     sqlx::query("create table probe_result_20200102 (like probe_result)").execute(db).await.unwrap();
     db::maintain_partitions(db, 14, 7, 2).await.unwrap();
     let gone: Vec<Option<String>> = sqlx::query_scalar("select to_regclass('host_metric_20200101')::text union all select to_regclass('probe_result_20200102')::text").fetch_all(db).await.unwrap();
@@ -1782,6 +1783,29 @@ async fn expired_partitions_are_dropped_and_leftovers_cleaned() {
     }
     // 重复执行幂等
     db::maintain_partitions(db, 14, 7, 2).await.unwrap();
+}
+
+/// 删分区前的时钟健全检查：本机时钟大幅超前（开机校时之前）时保留期内的分区不能被当成过期删掉；
+/// 表里只有很久以前的数据（核对不了时钟）时过期分区也先不删
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn partitions_survive_a_clock_far_ahead() {
+    let t = setup().await;
+    let db = &t.st.db;
+    sqlx::query("insert into host_metric (machine_id, ts) values ($1, now() - interval '1 minute')").bind(Uuid::now_v7()).execute(db).await.unwrap();
+    let exists = |name: String| async move { sqlx::query_scalar::<_, Option<String>>("select to_regclass($1)::text").bind(name).fetch_one(db).await.unwrap().is_some() };
+    let today = format!("host_metric_{}", OffsetDateTime::now_utc().date().to_string().replace('-', ""));
+    db::maintain_partitions_at(db, OffsetDateTime::now_utc() + time::Duration::days(400), 14, 7, 2).await.unwrap();
+    assert!(exists(today.clone()).await, "本机时钟快了 400 天，今天的分区不算过期");
+    assert_eq!(t.count("select count(*) from host_metric").await, 1);
+
+    sqlx::query("create table probe_result_20200101 partition of probe_result for values from ('2020-01-01') to ('2020-01-02')").execute(db).await.unwrap();
+    sqlx::query("insert into probe_result (entry_id, ts, kind, ok) values ($1, '2020-01-01 03:00:00+00', 'tcp', true)").bind(Uuid::now_v7()).execute(db).await.unwrap();
+    db::maintain_partitions(db, 14, 7, 2).await.unwrap();
+    assert!(exists("probe_result_20200101".into()).await, "最新数据是 2020 年的：核对不了本机时钟，先不删");
+    // 有了新数据：时钟核对得上，照常删
+    sqlx::query("insert into probe_result (entry_id, ts, kind, ok) values ($1, now(), 'tcp', true)").bind(Uuid::now_v7()).execute(db).await.unwrap();
+    db::maintain_partitions(db, 14, 7, 2).await.unwrap();
+    assert!(!exists("probe_result_20200101".into()).await && exists(today).await);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
