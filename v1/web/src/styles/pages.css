@@ -1,7 +1,8 @@
 /* 页面级排布：stack / row / 两栏 / 抽屉内排布 / 时间线 / 图表卡 / 线路机卡 / 上架 */
 
-.stack { display: grid; gap: var(--section-gap); min-width: 0; }
-.stack-sm { display: grid; gap: var(--sp-8); min-width: 0; }
+/* 竖排的一摞：列轨写死 minmax(0, 1fr)——隐式 auto 列会被子元素的最小内容宽度撑开（宽表格把整页撑出横向滚动，表格外层跟着变宽、误判成放得下） */
+.stack { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--section-gap); min-width: 0; }
+.stack-sm { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-8); min-width: 0; }
 .row { display: flex; align-items: center; gap: var(--control-gap); flex-wrap: wrap; min-width: 0; }
 .row-between { justify-content: space-between; }
 .cols-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--grid-gap); }
