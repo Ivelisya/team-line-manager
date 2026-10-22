@@ -302,7 +302,7 @@ ProvisionItem = {
 
 各管什么（后台每小时按当前期限清一次，截止时间对齐整点）：
 - `raw_days`：原始访问记录（按天分区，过期的整天删掉，最多多留不到一天）；agent 上报的访问记录只收这么久以内的；中控启动时补算汇总、机器抽屉的最近记录都回看这么久。
-- `hourly_days`：小时汇总（`access_hourly`）、来源小时汇总（`access_source_hourly`）、补算用的迟到差值与脏标记、目标首次 / 最近出现（`access_target_seen`，最近一次出现超过这么久的删掉）、来源 IP 画像缓存（`ip_intel_cache`，超过这么久前查的删掉，再用到时重查离线库）。
+- `hourly_days`：小时汇总（`access_hourly`）、来源小时汇总（`access_source_hourly`）、补算用的迟到差值与脏标记、目标首次 / 最近出现（`access_target_seen`，最近一次出现超过这么久的删掉）、IP 画像缓存（`ip_intel_cache`：访问来源的 IP，另有机器自己的地址（国旗用）；超过这么久前查的删掉，再用到时重查离线库）。
 - `profile_days`：来源画像（`node_source_seen` 的运营商 / 城市 / 接入方式 / 机房·VPN 来源 IP，最近一次出现超过这么久、且不在告警中的删掉）与已恢复的画像异常告警（`ipintel_*`，摘要里有来源 IP、城市；别的告警仍是恢复后 180 天删）。学习期比汇总长时按学习期留：学习期里学到的基线要留到学习期结束，否则学完一出现就被当成「新的」告警；多留的只是这几类汇总值，原始记录和小时汇总照样按上面两个天数删。
 - 「新目标」「新运营商 / 新城市 / 首次出现的机房来源」都是「保留期内没见过」：超过期限没再出现的记录删了，之后再出现就算新的。
 - 汇总类视图（`/access/summary`、`/access/targets`、`/access/sources`、`/access/new-targets`、`/machines/{id}/access`、`/machines/{id}/sources`）的 `window` 不能比 `hourly_days` 长（`1h` 读原始记录，总能看）：超了 400「访问记录的汇总只保留 N 天，看不了最近 7 天；要看更久，先在设置里把保留期调长」。`/access/events` 不拦，窗口比原始记录的保留期长时更早的已经没有了。
