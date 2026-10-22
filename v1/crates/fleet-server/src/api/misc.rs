@@ -800,7 +800,11 @@ fn sub_changes(d: &Value) -> String {
         .iter()
         .filter(|(k, ..)| b[*k] != a[*k])
         .map(|(k, label, f)| match *k {
-            "price_cents" => format!("{label} {} → {} {cur}", f(&b[*k]), f(&a[*k])),
+            // 同时换了币种：旧价格按旧币种写
+            "price_cents" => match b["currency"].as_str().filter(|c| *c != cur) {
+                Some(old) => format!("{label} {} {old} → {} {cur}", f(&b[*k]), f(&a[*k])),
+                None => format!("{label} {} → {} {cur}", f(&b[*k]), f(&a[*k])),
+            },
             _ => format!("{label} {} → {}", f(&b[*k]), f(&a[*k])),
         })
         .collect();
@@ -812,7 +816,9 @@ fn sub_changes(d: &Value) -> String {
     out.join("，")
 }
 
-/// 访问规则版本里的一处变更（同前端发布记录的写法）：模式变了写「团队1：黑名单 → 仅观察」，没变写域名个数的变化
+/// 访问规则版本里的一处变更（同前端发布记录的写法）：模式变了写「团队1：黑名单 → 仅观察」，没变写域名、备注改了什么：
+/// 「黑名单 · 域名 2 → 3 个」「黑名单 · 换了域名（2 个），改了备注」「黑名单 · 改了备注」。
+/// 没有 domains_changed / note_changed 的旧记录：用域名的模式算改了域名，不用的算改了备注
 fn policy_change(c: &Value) -> String {
     let (f, t) = (&c["from"], &c["to"]);
     let mode = |v: &Value| crate::meta::label(crate::meta::POLICY_MODES, v["mode"].as_str().unwrap_or("")).to_string();
@@ -820,12 +826,19 @@ fn policy_change(c: &Value) -> String {
     let what = if f["mode"] != t["mode"] {
         let n = if uses(t) { format!("（{} 个域名）", t["domains"]) } else { String::new() };
         format!("{} → {}{n}", mode(f), mode(t))
-    } else if !uses(t) {
-        format!("{} · 改了备注", mode(t))
-    } else if f["domains"] == t["domains"] {
-        format!("{} · 换了域名（{} 个）", mode(t), t["domains"])
     } else {
-        format!("{} · 域名 {} → {} 个", mode(t), f["domains"], t["domains"])
+        let mut parts = vec![];
+        if uses(t) && c["domains_changed"].as_bool().unwrap_or(true) {
+            parts.push(if f["domains"] == t["domains"] {
+                format!("换了域名（{} 个）", t["domains"])
+            } else {
+                format!("域名 {} → {} 个", f["domains"], t["domains"])
+            });
+        }
+        if c["note_changed"].as_bool().unwrap_or(!uses(t)) {
+            parts.push("改了备注".into());
+        }
+        format!("{} · {}", mode(t), parts.join("，"))
     };
     format!("{}：{what}", c["name"].as_str().unwrap_or(""))
 }
@@ -1049,6 +1062,16 @@ mod tests {
             "v5 · 团队1：黑名单 → 仅观察；团队2-03：白名单 · 域名 2 → 3 个 · 6 台线路机"
         );
         assert_eq!(t("policy.rollback", json!({"seq": 6, "rollback_of_seq": 4, "changes": [ch("团队1", "observe", 0, "denylist", 2)], "relays": 0})).1, "v6 · 回滚到 v4 · 团队1：仅观察 → 黑名单（2 个域名）");
+        // 同模式同个数：分得清只改了备注、换了域名、两样都改
+        let same = |dc: bool, nc: bool| {
+            let mut c = ch("团队1", "denylist", 2, "denylist", 2);
+            c["domains_changed"] = json!(dc);
+            c["note_changed"] = json!(nc);
+            t("policy.publish", json!({"seq": 7, "changes": [c], "relays": 0})).1
+        };
+        assert_eq!(same(false, true), "v7 · 团队1：黑名单 · 改了备注");
+        assert_eq!(same(true, false), "v7 · 团队1：黑名单 · 换了域名（2 个）");
+        assert_eq!(same(true, true), "v7 · 团队1：黑名单 · 换了域名（2 个），改了备注");
         assert_eq!(t("silence.create", json!({"is_maintenance": true})).0, "新建维护窗口");
         let sub = |b: Value, a: Value| t("subscription.set", json!({"name": "C-01", "before": b, "after": a})).1;
         let b = json!({"due_date": "2026-11-01", "price_cents": 500, "currency": "USD", "cycle": "monthly", "traffic_gb": null, "remind_days": 7, "auto_renew": false});
@@ -1057,7 +1080,11 @@ mod tests {
             a[k] = v;
         }
         assert_eq!(sub(b.clone(), a), "C-01 · 到期 2026-11-01 → 2026-12-01，价格 5.00 → 6.00 USD，流量 不限 → 1000 GB，自动续费 关 → 开");
-        assert_eq!(sub(b.clone(), b), "C-01 · 没有改动");
+        assert_eq!(sub(b.clone(), b.clone()), "C-01 · 没有改动");
+        let mut a = b.clone();
+        a["price_cents"] = json!(4000);
+        a["currency"] = json!("CNY");
+        assert_eq!(sub(b.clone(), a), "C-01 · 价格 5.00 USD → 40.00 CNY，币种 USD → CNY", "旧价格用旧币种");
         assert_eq!(t("subscription.set", json!({"due_date": "2026-11-01"})).1, "", "旧记录没有改动前后");
         assert_eq!(t("agent.upgrade", json!({"count": 12, "skipped": 1})).1, "12 台，跳过 1 台");
         assert_eq!(t("agent.upgrade", json!({"count": 1, "skipped": 0, "names": ["团队1-03"]})).1, "团队1-03");
