@@ -267,7 +267,9 @@ const SourcesView = React.memo(function SourcesView({ f, filtered, onClear, conn
         {q.isLoading && <Loading />}
         {q.data && rows.length === 0 && (ct && all.length > 0
           ? <Empty icon={<Radar size={22} />} text="没有这种接入方式的来源地址"><Button size="sm" variant="quiet" onClick={() => upd({ conn: '' })}>清除接入方式筛选</Button></Empty>
-          : <None f={f} filtered={filtered} onClear={onClear} what="来源地址" />)}
+          // 来源按小时汇总时只记了来源 IP，不分目标：搜域名在这里搜不到
+          : f.search && !/^[\d.]+$|:/.test(f.search) ? <Empty icon={<Radar size={22} />} text="来源地址只能按 IP 搜索"><Button size="sm" variant="quiet" onClick={onClear}>清除筛选</Button></Empty>
+            : <None f={f} filtered={filtered} onClear={onClear} what="来源地址" />)}
         <Pagination pg={pg} unit="个" />
       </Panel>
     </>

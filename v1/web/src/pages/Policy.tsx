@@ -21,6 +21,7 @@ import { resetOnOpen, useHeld } from '@/lib/useHeld';
 import { AccessViewSwitch } from '@/components/app/AccessViewSwitch';
 import { Chip, Empty, ErrorNote, Note, PageHead, Panel, Pill, type Tone } from '@/components/app/primitives';
 import { fmtN } from '@/features/AccessBits';
+import { ShowAll } from '@/components/app/Pagination';
 import '@/styles/policy.css';
 
 const MODE_TONE: Record<PolicyMode, Tone> = { observe: 'neutral', allowlist: 'info', denylist: 'warn', blocked: 'bad', inherit: 'neutral' };
@@ -356,6 +357,10 @@ const PreviewDialog = resetOnOpen(function PreviewDialog({ open, onOpenChange }:
   const publish = usePublishPolicies();
   const [ask, setAsk] = React.useState(false);
   const d = q.isFetchedAfterMount && q.isSuccess ? q.data : undefined;
+  // 这次发布没改到的节点（比如节点自己的规则）先收起来，排在改到的后面
+  const [showSame, setShowSame] = React.useState(false);
+  const changed = d?.nodes.filter((n) => n.changed) ?? [];
+  const same = d?.nodes.filter((n) => !n.changed) ?? [];
   const totalBlock = d?.nodes.reduce((s, n) => s + n.would_block, 0) ?? 0;
   const total = d?.nodes.reduce((s, n) => s + n.total_conns, 0) ?? 0;
   const empty = !!d && d.draft_count === 0;
@@ -386,9 +391,9 @@ const PreviewDialog = resetOnOpen(function PreviewDialog({ open, onOpenChange }:
                       <colgroup><col style={{ width: 120 }} /><col style={{ width: 96 }} /><col style={{ width: 84 }} /><col style={{ width: 96 }} /><col /></colgroup>
                       <thead><tr><th>节点</th><th>模式</th><th className="r">24h 连接</th><th className="r">将阻止</th><th>被阻止最多的域名</th></tr></thead>
                       <tbody>
-                        {d.nodes.map((n) => (
-                          <tr key={n.node_id}>
-                            <td><Trunc className="cell-main strong">{n.name}</Trunc><span className="sub">{n.source === 'team' ? '跟随团队' : n.source === 'node' ? '节点自己的' : ''}</span></td>
+                        {[...changed, ...(showSame ? same : [])].map((n) => (
+                          <tr key={n.node_id} className={n.changed ? undefined : 'is-retired'}>
+                            <td><Trunc className="cell-main strong">{n.name}</Trunc><span className="sub">{!n.changed ? '这次没变' : n.source === 'team' ? '跟随团队' : n.source === 'node' ? '节点自己的' : ''}</span></td>
                             <td><ModePill mode={n.mode} /></td>
                             <td className="r">{fmtN(n.total_conns)}</td>
                             <td className="r">{n.would_block > 0 ? <><b className="strong">{fmtN(n.would_block)}</b><span className="sub">{n.total_conns > 0 ? pctText(n.would_block, n.total_conns) : ''}</span></> : <span className="t-muted">0</span>}</td>
@@ -406,6 +411,7 @@ const PreviewDialog = resetOnOpen(function PreviewDialog({ open, onOpenChange }:
                         ))}
                       </tbody>
                     </table>
+                    {same.length > 0 && <ShowAll total={changed.length + same.length} cap={changed.length} open={showSame} onToggle={() => setShowSame((v) => !v)} unit="个节点（含这次没变的）" />}
                   </div>
                 )}
             </div>
@@ -479,7 +485,10 @@ function VersionsPanel() {
       </Panel>
       <ConfirmDialog open={!!ask} onOpenChange={(o) => !o && setAsk(null)} confirmLabel="回滚" title={`回滚到版本 v${askHeld?.seq ?? ''}？`}
         description={<>作为新版本发布，草稿不受影响 <InfoTip text="会把当前生效的访问规则整体换成这个版本的内容，作为新版本发布并应用到线路机。" /></>}
-        onConfirm={async () => { const v = await rollback.mutateAsync(ask!.id); toast.ok(`已回滚，新版本 v${v.seq}`); }} />
+        onConfirm={async () => { const v = await rollback.mutateAsync(ask!.id); toast.ok(`已回滚，新版本 v${v.seq}`); }}>
+        {/* 回滚后这个版本改过的范围是什么样：「团队1：黑名单 · 2 个域名」 */}
+        {askHeld && <ul className="pol-changes">{askHeld.changes.length ? askHeld.changes.map((c) => <li key={`${c.scope}:${c.id}`}><b>{c.name}</b><span>{modeLabel(c.to.mode)}{needsDomains(c.to.mode) ? ` · ${c.to.domains} 个域名` : ''}</span></li>) : <li className="t-sub">这个版本只改了备注</li>}</ul>}
+      </ConfirmDialog>
     </>
   );
 }
