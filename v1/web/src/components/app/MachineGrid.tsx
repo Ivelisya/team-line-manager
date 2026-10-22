@@ -11,17 +11,21 @@ import { NodeMenus } from './NodeMenu';
 
 type Cmp = (a: MachineView, b: MachineView) => number;
 /** cmp（升序）+ first（首次点击的方向：数值多为先降序，名称、日期先升序）都有才能点表头排序；r：右对齐；
+ *  nil：这一行在这列没有值（没有订阅的到期、费用），不论升序降序都排在最后；
  *  drop：容器放不下全部列时可以收起，数字小的先收（没有的列一直显示） */
-export interface Col { id: string; header: string; size: number; r?: boolean; first?: 'asc' | 'desc'; cmp?: Cmp; drop?: number; cell: (m: MachineView) => React.ReactNode }
+export interface Col { id: string; header: string; size: number; r?: boolean; first?: 'asc' | 'desc'; cmp?: Cmp; nil?: (m: MachineView) => boolean; drop?: number; cell: (m: MachineView) => React.ReactNode }
 export const byStr = (f: (m: MachineView) => string) => ({ first: 'asc' as const, cmp: (a: MachineView, b: MachineView) => collator.compare(f(a), f(b)) });
-export const byNum = (f: (m: MachineView) => number, first: 'asc' | 'desc' = 'desc') => ({ first, cmp: (a: MachineView, b: MachineView) => f(a) - f(b) });
+/** f 返回 null 的行算没有值（nil） */
+export const byNum = (f: (m: MachineView) => number | null, first: 'asc' | 'desc' = 'desc') =>
+  ({ first, cmp: (a: MachineView, b: MachineView) => (f(a) ?? 0) - (f(b) ?? 0), nil: (m: MachineView) => f(m) == null });
 
-/** 按表头排序：稳定排序，相同值保持原来的（默认）顺序；没有排序时原样返回 */
+/** 按表头排序：稳定排序，相同值保持原来的（默认）顺序，没有值的行排在最后；没有排序时原样返回 */
 export function sortByCol(rows: MachineView[], cols: Col[], sort: SortState | null): MachineView[] {
-  const cmp = cols.find((c) => c.id === sort?.id)?.cmp;
-  if (!sort || !cmp) return rows;
+  const col = cols.find((c) => c.id === sort?.id);
+  if (!sort || !col?.cmp) return rows;
+  const { cmp, nil } = col;
   const sign = sort.desc ? -1 : 1;
-  return [...rows].sort((a, b) => sign * cmp(a, b));
+  return [...rows].sort((a, b) => (nil ? Number(nil(a)) - Number(nil(b)) : 0) || sign * cmp(a, b));
 }
 
 /** 可以收起的列，按收起的先后（drop 小的先收）；正在按它排序的列不收，排序标记和取消排序的表头一直看得见 */
@@ -59,6 +63,15 @@ export function MachineGrid({ cols, rows, sort, onSort, openId, onOpen, dim = is
     return cols.filter((c) => !gone.has(c.id));
   }, [cols, order, dropped]);
   const minWidth = shown.reduce((s, c) => s + c.size, 0);
+  // 抽屉关上后焦点回到打开它的那一行（抽屉是非模态的，Radix 不还焦点）；焦点已被放到抽屉外别处的不抢
+  const lastOpen = React.useRef(openId);
+  React.useEffect(() => {
+    const prev = lastOpen.current; lastOpen.current = openId;
+    if (!prev || openId) return;
+    const a = document.activeElement;
+    if (a && a !== document.body && !a.closest('.drawer')) return;
+    wrap.current?.querySelector<HTMLElement>(`tr[data-id="${CSS.escape(prev)}"]`)?.focus({ preventScroll: true });
+  }, [openId]);
   return (
     <div ref={wrap} className={cn('table-wrap', className)}>
       <table className="dt" style={{ minWidth }}>

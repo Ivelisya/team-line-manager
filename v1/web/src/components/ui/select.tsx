@@ -21,7 +21,7 @@ export const Select = React.memo(function Select({ value, onChange, options, pla
         <SelectPrimitive.Content className="select-content" position="popper" sideOffset={4}>
           <SelectPrimitive.Viewport style={{ maxHeight: 300, overflowY: 'auto' }}>
             {allowEmpty && (
-              <SelectPrimitive.Item value={EMPTY} className="select-item"><SelectPrimitive.ItemText>{allowEmpty}</SelectPrimitive.ItemText></SelectPrimitive.Item>
+              <SelectPrimitive.Item value={EMPTY} className="select-item"><SelectPrimitive.ItemText>{allowEmpty}</SelectPrimitive.ItemText><SelectPrimitive.ItemIndicator><Check /></SelectPrimitive.ItemIndicator></SelectPrimitive.Item>
             )}
             {options.map((o) => (
               <SelectPrimitive.Item key={o.value} value={o.value} disabled={o.disabled} className="select-item">

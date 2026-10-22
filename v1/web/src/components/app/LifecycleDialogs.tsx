@@ -115,6 +115,7 @@ const KEY_LOGIN: Record<string, string> = { ok: '中控密钥可登录', denied:
 export const RestoreDialog = resetOnOpen(function RestoreDialog({ m, open, onOpenChange, onDone }: { m: MachineView; open: boolean; onOpenChange: (o: boolean) => void; onDone?: () => void }) {
   const nav = useNavigate();
   const restore = useRestore();
+  const { open: openDrawer } = useDrawer();
   const teams = useTeams().data ?? [];
   const relays = useRelayChoices().data ?? [];
   const isRelay = m.kind === 'relay';
@@ -169,7 +170,9 @@ export const RestoreDialog = resetOnOpen(function RestoreDialog({ m, open, onOpe
   const blockers = (pv?.blockers ?? []).filter((x) => x !== keyNote);
   // 改了团队 / 编号后的预检取不到时，名字还是旧的那份，不能提交
   const liveFailed = edited && live.isError;
-  const ready = !!pv && !liveFailed && blockers.length === 0 && !(keyChanged && !reset) && !!needs && (!needs.relay || !!relay) && upOk && ssOk && pwOk && settled && !live.isFetching;
+  // IP 被在用的机器占着：怎么填都恢复不了，只说原因、给占用它的那台的入口，不显示表单和改名预览
+  const conflict = b?.ip_conflict ?? null;
+  const ready = !!pv && !conflict && !liveFailed && blockers.length === 0 && !(keyChanged && !reset) && !!needs && (!needs.relay || !!relay) && upOk && ssOk && pwOk && settled && !live.isFetching;
   // 填过东西就别让误点遮罩关掉（Esc、取消仍可关）
   const dirty = edited || !!pw || !!reason.trim() || reset || relay !== (b?.last_relay?.id ?? '') || Object.keys(upEdit).length > 0 || ssPortEdit != null;
 
@@ -199,7 +202,13 @@ export const RestoreDialog = resetOnOpen(function RestoreDialog({ m, open, onOpe
       {!base.isFetchedAfterMount && <div className="hint">{host ? '正在预检…' : '正在预检（最多十几秒）…'}</div>}
       {base.isFetchedAfterMount && base.isError && <ErrorNote error={base.error} onRetry={() => void base.refetch()}>预检失败：</ErrorNote>}
       {liveFailed && <ErrorNote error={live.error} onRetry={() => void live.refetch()}>按新的团队 / 编号预检失败：</ErrorNote>}
-      {pv && (
+      {conflict && (
+        <Note tone="bad">IP {b!.ip} 已被{' '}
+          <button type="button" className="btn btn-link btn-sm" style={{ height: 'auto', padding: 0 }} onClick={() => { onOpenChange(false); openDrawer(conflict.machine_id); }}>{conflict.name}</button>
+          {' '}占用，不能恢复 <InfoTip text="先把它退役，或确认这台机器的 IP 没有变。" />
+        </Note>
+      )}
+      {pv && !conflict && (
         <div className="stack-sm">
           <div className="row row-between">
             <span className="row" style={{ gap: 8 }}>
@@ -208,15 +217,14 @@ export const RestoreDialog = resetOnOpen(function RestoreDialog({ m, open, onOpe
             </span>
             <span className="t-sub">IP {pv.ip}</span>
           </div>
-          {pv.ip_conflict && <Note tone="bad">IP {pv.ip} 已被「{pv.ip_conflict.name}」占用，不能恢复 <InfoTip text="先把它退役，或确认这台机器的 IP 没有变。" /></Note>}
-          {blockers.filter((b) => !pv.ip_conflict || !b.includes(pv.ip)).map((b) => <Note key={b} tone="bad">{b}</Note>)}
+          {blockers.map((b) => <Note key={b} tone="bad">{b}</Note>)}
           {keyNote && <Note tone={reset ? 'warn' : 'bad'}>{keyNote}</Note>}
           {pv.warnings.map((w) => <Note key={w} tone="warn">{w}</Note>)}
           {pv.retired_reason && <div className="hint">退役原因：{pv.retired_reason}</div>}
         </div>
       )}
 
-      {pv && (
+      {pv && !conflict && (
         <div className="form-grid">
           {!isRelay && <Field label="团队"><Select value={team} onChange={setTeam} options={teams.map((t) => ({ value: t.id, label: t.name }))} /></Field>}
           {!isRelay && <Field label="编号"><Input inputMode="numeric" value={num} onChange={(e) => setNum(e.target.value.replace(/\D/g, ''))} placeholder={pv.number != null ? `自动：${pv.number}` : '自动'} /></Field>}
