@@ -44,8 +44,21 @@ pub struct Knob {
 
 const fn k(key: &'static str, val: &'static str, at_least: bool, only: For) -> Knob { Knob { key, val, at_least, only } }
 
-/// 线路机的 ip_local_reserved_ports 目标值是渲染时代入的入口端口池
+/// 线路机的 ip_local_reserved_ports 目标值是渲染时代入的入口端口池（见 `reserved`）
 const RESERVED: &str = "@reserved@";
+
+/// 要保留的本地端口：入口端口池，加上各入口的回环探测入站端口（入口端口 + 10000，见 agent xray/render.rs 的 probe_ports）。
+/// 写成内核读回的格式（相邻或重叠的段合并成一段），读回才对得上
+fn reserved(min: i32, max: i32) -> String {
+    let (pmin, pmax) = (min + 10000, (max + 10000).min(65535));
+    if pmin > 65535 {
+        format!("{min}-{max}")
+    } else if pmin <= max + 1 {
+        format!("{min}-{}", pmax.max(max))
+    } else {
+        format!("{min}-{max},{pmin}-{pmax}")
+    }
+}
 
 /// 顺序就是应用顺序：ip_local_reserved_ports 要先于 ip_local_port_range 写
 pub const KNOBS: &[Knob] = &[
@@ -77,7 +90,7 @@ pub fn knobs(role: Role) -> Vec<(&'static str, &'static str, String)> {
         .filter(|x| matches!((x.only, role), (For::Both, _) | (For::Node, Role::Node) | (For::Relay, Role::Relay { .. })))
         .map(|x| {
             let val = match (x.val, role) {
-                (RESERVED, Role::Relay { port_min, port_max }) => format!("{port_min}-{port_max}"),
+                (RESERVED, Role::Relay { port_min, port_max }) => reserved(port_min, port_max),
                 (v, _) => v.to_string(),
             };
             (if x.at_least { ">=" } else { "=" }, x.key, val)
@@ -239,14 +252,16 @@ mod tests {
     #[test]
     fn relay_script_reserves_the_entry_port_pool_before_the_port_range() {
         let s = script(RELAY);
-        let (res, range) = (s.find("= net.ipv4.ip_local_reserved_ports 20000-29999\n").unwrap(), s.find("= net.ipv4.ip_local_port_range 10240 65535\n").unwrap());
+        // 入口端口池 20000-29999 与回环探测入站 30000-39999 相邻，合成一段
+        let (res, range) = (s.find("= net.ipv4.ip_local_reserved_ports 20000-39999\n").unwrap(), s.find("= net.ipv4.ip_local_port_range 10240 65535\n").unwrap());
         assert!(res < range, "先保留入口端口池，再放宽本地端口范围");
         assert!(s.contains(">= net.netfilter.nf_conntrack_max 262144\n") && !s.contains("nf_conntrack_max 131072"));
         assert!(s.contains("tcp_tw_reuse 1\n") && s.contains("show -p LimitNOFILE --value fleet-xray "));
         assert!(!s.contains("__") && !s.contains(RESERVED));
         // 入口端口池按这台线路机自己的来
         let s = script(Role::Relay { port_min: 21000, port_max: 21999 });
-        assert!(s.contains("= net.ipv4.ip_local_reserved_ports 21000-21999\n"));
+        assert!(s.contains("= net.ipv4.ip_local_reserved_ports 21000-21999,31000-31999\n"));
+        assert_eq!((reserved(60000, 65000), reserved(20000, 35000)), ("60000-65000".into(), "20000-45000".into()));
     }
 
     #[test]

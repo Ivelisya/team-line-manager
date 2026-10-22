@@ -579,10 +579,10 @@ async fn tune_script_writes_reads_back_and_skips() {
     put_sysctl(&root, "net.ipv4.tcp_tw_reuse", "2\n");
     let o = run(rip, jobs::tune::Role::Relay { port_min: 20000, port_max: 29999 }).await;
     assert_eq!(o.code, 0, "{o:?}");
-    assert_eq!(read(&sysctl_file(&root, "net.ipv4.ip_local_reserved_ports")), "20000-29999");
+    assert_eq!(read(&sysctl_file(&root, "net.ipv4.ip_local_reserved_ports")), "20000-39999");
     assert_eq!((read(&sysctl_file(&root, "net.ipv4.ip_local_port_range")), read(&sysctl_file(&root, "net.ipv4.tcp_tw_reuse"))), ("10240 65535".into(), "1".into()));
     let c = read(&root.join("etc/sysctl.d/99-zz-fleet-tune.conf"));
-    assert!(c.find("ip_local_reserved_ports = 20000-29999").unwrap() < c.find("ip_local_port_range = 10240 65535").unwrap(), "{c}");
+    assert!(c.find("ip_local_reserved_ports = 20000-39999").unwrap() < c.find("ip_local_port_range = 10240 65535").unwrap(), "{c}");
     assert!(read(&root.join("systemctl.log")).contains("show -p LimitNOFILE --value fleet-xray"));
 }
 

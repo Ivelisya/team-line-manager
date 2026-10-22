@@ -57,7 +57,7 @@ job ─< job_step ─< job_log      audit_log      user / session / api_key
 
 **系统调优**（调优档 tune-v1，常量在 `jobs/tune.rs`，跟中控版本走）：上架/恢复时在 `converge` / `converge_relay` 里紧跟系统基线固定执行（同机 IP 节点不做：系统设置是宿主机的）；已有机器用作业 `tune`（`fleetctl tune`、网页抽屉「管理 → 重新调优」）重做。
 远端脚本逐键直接写 `/proc/sys/…` 再读回：目标「等于」或「至少」（现值已不小于目标就不动），只把读回一致的键写进 `/etc/sysctl.d/99-zz-fleet-tune.conf`（容器里写不了的 `net.core.*`、conntrack 记「跳过」，不算失败）；
-内容是 BBR+fq、16 MB 的 TCP 缓冲上限、`tcp_notsent_lowat`、`tcp_slow_start_after_idle=0`、MTU 探测、连接队列、`nf_conntrack_max`（模块已加载才设），线路机另有 `ip_local_reserved_ports`（该线路机 relay 行的入口端口池，先于本地端口范围写）、端口范围与 `tcp_tw_reuse`；
+内容是 BBR+fq、16 MB 的 TCP 缓冲上限、`tcp_notsent_lowat`、`tcp_slow_start_after_idle=0`、MTU 探测、连接队列、`nf_conntrack_max`（模块已加载才设），线路机另有 `ip_local_reserved_ports`（该线路机 relay 行的入口端口池，加上各入口的回环探测入站端口 = 入口端口 + 10000；先于本地端口范围写）、端口范围与 `tcp_tw_reuse`；
 另写 journald 体积上限（300 MB）、补装并启用时间同步（非容器且没同步时）、核对服务的 LimitNOFILE。不重启 ssserver / Xray，不断连接。逐键结果（applied/ok/kept/skipped）就是步骤结果，是核对凭据；
 成功后记 `machine.tune_profile` / `tuned_at`（不动 revision）。改任何一项值都升档号（tune-v2…），部署中控后 `fleetctl tune --all` 重做；回滚 = 发新档再重做。
 
