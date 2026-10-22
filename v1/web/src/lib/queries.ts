@@ -6,7 +6,7 @@ import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClie
 import { del, get, patch, post, put } from './api';
 import { collator, makeDefaultCompare } from './sort';
 import { quotaTight } from './derive';
-import type { ApiKey, Availability, Incident, Job, JobSummary, Paged, JobLog, MachineView, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RetireResult, RestoreBody, RestorePreview, MoveResult, EvacuateResult, ProbeBeats, SeriesResp, Silence, Subscription, Team, AuditEntry, NotifyChannel, NotifyLogEntry, AccountSession, TotpSetup, TotpStatus } from './types';
+import type { ApiKey, Availability, Incident, Job, JobSummary, Paged, JobLog, MachineView, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RetireResult, RestoreBody, RestorePreview, MoveResult, EvacuateResult, ProbeBeats, SeriesResp, Silence, SubField, Team, AuditEntry, NotifyChannel, NotifyLogEntry, AccountSession, TotpSetup, TotpStatus } from './types';
 
 export const useMe = () => useQuery({ queryKey: ['me'], queryFn: () => get<{ username: string }>('/auth/me'), retry: false, staleTime: 5 * 60_000 });
 // 团队、套餐带着由机器算出来的台数（node_count / machine_count），机器增减不发 catalog 事件，仍按时间过期；供应商只随 catalog 事件变
@@ -153,8 +153,10 @@ export interface MachinePatchBody {
   revision: number; team_id?: string; number?: number; label?: string; note?: string;
   provider_id?: string | null; plan_id?: string | null; service_ref?: string | null;
 }
-/** PUT /machines/{id}/subscription：整份替换（due_days 由服务端算） */
-export type SubscriptionBody = Omit<Subscription, 'due_days'>;
+/** PUT /machines/{id}/subscription：到期日 + 单独设置，整份替换——没传或 null = 跟随套餐 / 供应商（和模板相同的值服务端也按跟随存）。
+ *  auto_renew 没传 = 不改；traffic_used_gb 按面板校准，没传 = 不改、null = 清掉 */
+export type SubscriptionBody = { due_date: string; auto_renew?: boolean; traffic_used_gb?: number | null }
+  & { [K in SubField]?: (K extends 'currency' | 'cycle' | 'billing_tz' ? string : number) | null };
 /** POST /plans：套餐字段（不含 id 与统计）。PATCH 传其中任意几项（没传的不改，规格类传 null = 清空），archived 归档 / 取消归档 */
 export type PlanBody = Omit<Plan, 'id' | 'archived_at' | 'machine_count'>;
 export const useLogin = () => useWrite((b: { username: string; password: string; totp?: string }) => post<{ username: string }>('/auth/login', b), [['me']]);

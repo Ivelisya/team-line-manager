@@ -140,6 +140,19 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     .bind(b.service_ref.clone().flatten())
     .execute(&mut *tx)
     .await?;
+    // 有套餐时供应商就是套餐的：只换了套餐的跟着换供应商，明确给了另一个供应商的报错
+    let other: Option<(Uuid,)> = sqlx::query_as(
+        "select pl.provider_id from machine m join plan pl on pl.id = m.plan_id where m.id = $1 and m.provider_id is distinct from pl.provider_id",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if let Some((pv,)) = other {
+        if b.provider_id.is_some() {
+            return Err(ApiError::bad_request("套餐不属于所选的供应商"));
+        }
+        sqlx::query("update machine set provider_id = $2 where id = $1").bind(id).bind(pv).execute(&mut *tx).await?;
+    }
     // 入口备注随节点名变：节点改名刷新它挂的线路机；线路机改名只影响它自己的直出入口（「线路机名-直出」），没有就不动
     let relays = if renamed { bump_relays_of_nodes(&mut tx, &[id]).await? } else { vec![] };
     audit(
@@ -253,14 +266,14 @@ struct DayAvailability {
 }
 
 /// 近 N 天每天的探测成功率（抽屉「连接质量」的每日格条、fleetctl uptime）：小时汇总按这台机器的账单时区分到日历天
-/// （流量额度周期也按它；没有订阅按北京时间，同列默认值），旧→新共 N 天、最后一天是今天（还没过完），没有探测的天各项为 0。
+/// （生效的账单时区，同流量额度周期：没有订阅时取模板的，即供应商时区，没有供应商按北京时间），旧→新共 N 天、最后一天是今天（还没过完），没有探测的天各项为 0。
 /// 入口同曲线：节点取自己的，线路机取挂在它上面的（含已移除的）
 pub async fn availability(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<AvailabilityQ>) -> ApiResult<Json<Value>> {
     let days = q.days.unwrap_or(30);
     if !(1..=90).contains(&days) {
         return Err(ApiError::bad_request("days 只能是 1–90"));
     }
-    let tz: String = sqlx::query_scalar("select coalesce(s.billing_tz, 'Asia/Shanghai') from machine m left join subscription s on s.machine_id = m.id where m.id = $1")
+    let tz: String = sqlx::query_scalar("select coalesce(s.billing_tz, t.billing_tz) from sub_template t left join subscription_eff s on s.machine_id = t.machine_id where t.machine_id = $1")
         .bind(id)
         .fetch_optional(&st.db)
         .await?
@@ -618,30 +631,89 @@ fn upgrade_order(jobs: &[Value]) -> String {
 
 // ── 账单 ──────────────────────────────────────────────────────────────────
 
-#[derive(Deserialize, Serialize)]
-pub struct SubIn {
-    price_cents: i32,
-    #[serde(default = "usd")]
-    currency: String,
-    #[serde(default = "monthly")]
-    cycle: String,
-    due_date: Date,
-    #[serde(default = "sh")]
-    billing_tz: String,
-    #[serde(default)]
-    auto_renew: bool,
-    #[serde(default = "seven")]
-    remind_days: i32,
+/// 订阅里可以「单独设置」的字段：没传或 null = 跟随模板（价格、币种、周期、流量上限跟随套餐，账单时区、提前提醒、
+/// 流量重置日跟随供应商，见 views::SubTemplate）；和模板相同的值也按跟随存。上架与改订阅共用
+#[derive(Deserialize, Serialize, Clone, Default)]
+pub struct SubOverrides {
+    price_cents: Option<i32>,
+    currency: Option<String>,
+    cycle: Option<String>,
+    billing_tz: Option<String>,
+    remind_days: Option<i32>,
+    /// 0 = 不限
     traffic_gb: Option<i32>,
     traffic_reset_day: Option<i32>,
+}
+
+impl SubOverrides {
+    pub fn has_price(&self) -> bool { self.price_cents.is_some() }
+
+    /// 校验并规整（币种转大写）：价格、流量上限不为负，周期四选一，提醒 0–60 天，重置日 1–31，时区 at time zone 认
+    pub async fn check(&mut self, db: &mut sqlx::PgConnection) -> ApiResult<()> {
+        if self.price_cents.is_some_and(|p| p < 0) || self.traffic_gb.is_some_and(|g| g < 0) {
+            return Err(ApiError::bad_request("金额、流量上限不能为负"));
+        }
+        if self.cycle.as_deref().is_some_and(|c| !matches!(c, "monthly" | "quarterly" | "semiannual" | "yearly")) {
+            return Err(ApiError::bad_request("计费周期只能是 monthly / quarterly / semiannual / yearly"));
+        }
+        if self.remind_days.is_some_and(|d| !(0..=60).contains(&d)) {
+            return Err(ApiError::bad_request("提醒天数要在 0–60 之间"));
+        }
+        if self.traffic_reset_day.is_some_and(|d| !(1..=31).contains(&d)) {
+            return Err(ApiError::bad_request("流量重置日要在 1–31 之间"));
+        }
+        if let Some(c) = &mut self.currency {
+            let u = c.trim().to_ascii_uppercase();
+            // 同套餐的币种规则（比较「和套餐相同」时口径一致）
+            if u.is_empty() || u.len() > 8 || !u.bytes().all(|x| x.is_ascii_uppercase()) {
+                return Err(ApiError::bad_request("币种是 1–8 个字母，如 USD、CNY"));
+            }
+            *c = u;
+        }
+        if let Some(tz) = &self.billing_tz {
+            check_tz(db, tz).await?;
+        }
+        Ok(())
+    }
+
+    /// 写订阅：到期日 + 这些单独设置（整份替换；自动续费、按面板校准不动），再把和模板相同的改回跟随
+    pub async fn write(&self, db: &mut sqlx::PgConnection, id: Uuid, due: Date) -> ApiResult<()> {
+        sqlx::query(
+            "insert into subscription (machine_id, due_date, price_cents, currency, cycle, billing_tz, remind_days, traffic_gb, traffic_reset_day)
+             values ($1, $2, $3, $4, $5::billing_cycle, $6, $7, $8, $9)
+             on conflict (machine_id) do update set due_date = excluded.due_date, price_cents = excluded.price_cents, currency = excluded.currency,
+               cycle = excluded.cycle, billing_tz = excluded.billing_tz, remind_days = excluded.remind_days, traffic_gb = excluded.traffic_gb,
+               traffic_reset_day = excluded.traffic_reset_day, updated_at = now()",
+        )
+        .bind(id)
+        .bind(due)
+        .bind(self.price_cents)
+        .bind(&self.currency)
+        .bind(&self.cycle)
+        .bind(&self.billing_tz)
+        .bind(self.remind_days)
+        .bind(self.traffic_gb)
+        .bind(self.traffic_reset_day)
+        .execute(&mut *db)
+        .await?;
+        sqlx::query("select subscription_normalize($1)").bind(id).execute(&mut *db).await?;
+        Ok(())
+    }
+}
+
+/// PUT 订阅：到期日 + 单独设置（整份替换，没传 = 跟随）。没有套餐的机器要给 price_cents
+#[derive(Deserialize, Serialize)]
+pub struct SubIn {
+    due_date: Date,
+    #[serde(flatten)]
+    ov: SubOverrides,
+    /// 没传 = 不改（新建为否）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    auto_renew: Option<bool>,
     /// 按供应商面板校准本周期已用（十进制 GB，可带小数）：记下这个数和现在的时间。没传 = 不改，null = 清掉
     #[serde(default, deserialize_with = "super::some", skip_serializing_if = "Option::is_none")]
     traffic_used_gb: Option<Option<f64>>,
 }
-fn usd() -> String { "USD".into() }
-fn monthly() -> String { "monthly".into() }
-fn sh() -> String { "Asia/Shanghai".into() }
-fn seven() -> i32 { 7 }
 
 /// 时区（账单时区、供应商时区）必须能被 `at time zone` 接受：views 里的 local_date 就这么用，不再兜底。
 /// 不认识的时区 PG 报 22023（invalid_parameter_value）
@@ -654,13 +726,7 @@ pub async fn check_tz(db: &mut sqlx::PgConnection, tz: &str) -> ApiResult<()> {
     }
 }
 
-pub async fn put_subscription(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<SubIn>) -> ApiResult<Json<Value>> {
-    if b.price_cents < 0 || !(0..=60).contains(&b.remind_days) {
-        return Err(ApiError::bad_request("金额或提醒天数不合法"));
-    }
-    if b.traffic_reset_day.is_some_and(|d| !(1..=31).contains(&d)) {
-        return Err(ApiError::bad_request("流量重置日要在 1–31 之间"));
-    }
+pub async fn put_subscription(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(mut b): ApiJson<SubIn>) -> ApiResult<Json<Value>> {
     // 校准值：GB → 字节（1 GB = 10⁹ 字节）
     let base = match b.traffic_used_gb {
         Some(Some(g)) if !(g.is_finite() && (0.0..1e9).contains(&g)) => return Err(ApiError::bad_request("本周期已用要填 0 或正数（GB）")),
@@ -669,26 +735,19 @@ pub async fn put_subscription(a: Actor, State(st): State<AppState>, ApiPath(id):
         None => None,
     };
     let mut tx = st.db.begin().await?;
-    check_tz(&mut tx, &b.billing_tz).await?;
-    sqlx::query(
-        "insert into subscription (machine_id, price_cents, currency, cycle, due_date, billing_tz, auto_renew, remind_days, traffic_gb, traffic_reset_day)
-         values ($1,$2,$3,$4::billing_cycle,$5,$6,$7,$8,$9,$10)
-         on conflict (machine_id) do update set price_cents = excluded.price_cents, currency = excluded.currency, cycle = excluded.cycle,
-           due_date = excluded.due_date, billing_tz = excluded.billing_tz, auto_renew = excluded.auto_renew,
-           remind_days = excluded.remind_days, traffic_gb = excluded.traffic_gb, traffic_reset_day = excluded.traffic_reset_day, updated_at = now()",
-    )
-    .bind(id)
-    .bind(b.price_cents)
-    .bind(&b.currency)
-    .bind(&b.cycle)
-    .bind(b.due_date)
-    .bind(&b.billing_tz)
-    .bind(b.auto_renew)
-    .bind(b.remind_days)
-    .bind(b.traffic_gb)
-    .bind(b.traffic_reset_day)
-    .execute(&mut *tx)
-    .await?;
+    b.ov.check(&mut tx).await?;
+    let (template_price,): (Option<i32>,) = sqlx::query_as("select price_cents from sub_template where machine_id = $1")
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| ApiError::not_found("没有这台机器"))?;
+    if !b.ov.has_price() && template_price.is_none() {
+        return Err(ApiError::bad_request("这台机器没有套餐，价格没有可跟随的：要填费用（免费填 0）"));
+    }
+    b.ov.write(&mut tx, id, b.due_date).await?;
+    if let Some(auto) = b.auto_renew {
+        sqlx::query("update subscription set auto_renew = $2 where machine_id = $1").bind(id).bind(auto).execute(&mut *tx).await?;
+    }
     if let Some(base) = base {
         sqlx::query(
             "update subscription set traffic_used_base = $2, traffic_used_base_at = case when $2::bigint is null then null else now() end where machine_id = $1",

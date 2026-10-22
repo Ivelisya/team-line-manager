@@ -150,16 +150,17 @@ enum SilenceCmd {
 
 #[derive(Subcommand)]
 enum SubscriptionCmd {
-    /// 改订阅：先读现有的，只改给了的字段再整份提交；还没有订阅时新建，要给 --price 和 --due
+    /// 改订阅：先读现有的，只改给了的字段再整份提交；还没有订阅时新建，要给 --due（没有套餐的机器还要 --price）。
+    /// 价格、币种、周期、流量上限默认跟随套餐，账单时区、提前提醒、流量重置日跟随供应商；给了值 = 单独设置，给 none = 改回跟随
     Set {
         machine: String,
-        /// 价格，如 39.46（币种的主单位，最多两位小数）
+        /// 价格，如 39.46（币种的主单位，最多两位小数）；none = 跟随套餐
         #[arg(long)]
         price: Option<String>,
-        /// 币种代码，如 USD / CNY（新建默认 USD）
+        /// 币种代码，如 USD / CNY；none = 跟随套餐
         #[arg(long)]
         currency: Option<String>,
-        /// 计费周期：monthly | quarterly | semiannual | yearly（新建默认 monthly）
+        /// 计费周期：monthly | quarterly | semiannual | yearly；none = 跟随套餐
         #[arg(long)]
         cycle: Option<String>,
         /// 到期日 YYYY-MM-DD（账单时区的日期）。续费请用 renew，会留续费记录
@@ -168,16 +169,16 @@ enum SubscriptionCmd {
         /// 到期自动续费：true | false（只影响提醒：自动续费的到期前不提醒，过期才告警；不会真的扣款）
         #[arg(long)]
         auto_renew: Option<bool>,
-        /// 到期前几天开始提醒（0–60，新建默认 7）
+        /// 到期前几天开始提醒（0–60）；none = 跟随供应商
         #[arg(long)]
-        remind_days: Option<i64>,
-        /// 账单时区（IANA 名，新建默认 Asia/Shanghai）：到期与流量周期按它的日期算
+        remind_days: Option<String>,
+        /// 账单时区（IANA 名）：到期与流量周期按它的日期算；none = 跟随供应商
         #[arg(long)]
         tz: Option<String>,
-        /// 流量上限 GB（供应商的十进制 GB；0 = 不限）；none = 不单独设，按套餐（同机 IP 节点 = 与宿主机共用）
+        /// 流量上限 GB（供应商的十进制 GB；0 = 不限）；none = 跟随套餐（同机 IP 节点没有套餐 = 与宿主机共用）
         #[arg(long)]
         traffic_gb: Option<String>,
-        /// 流量每月几号重置（1–31，小月没有这一天按月末；新建默认 1）；none = 不设，按北京时间的自然月
+        /// 流量每月几号重置（1–31，小月没有这一天按月末）；none = 跟随供应商（按账单日 = 到期日几号，或按自然月 = 1 号）
         #[arg(long)]
         reset_day: Option<String>,
         /// 按供应商面板校准本周期已用：填面板上的 GB 数（如 901.6），之后的用量按网卡流量累加；none = 清掉校准。
@@ -240,11 +241,30 @@ struct ProvisionArgs {
     /// 首次登录用的 root 密码放在哪个环境变量里（不填则用中控的密钥）
     #[arg(long)]
     ssh_password_env: Option<String>,
-    /// 到期日 YYYY-MM-DD
+    /// 到期日 YYYY-MM-DD（给了 = 建订阅；选了 --plan 时必填）。订阅其余各项默认跟随套餐 / 供应商，下面几项给了 = 单独设置
     #[arg(long)]
     due: Option<String>,
+    /// 价格，如 39.46（没有套餐的机器必填）
     #[arg(long)]
+    price: Option<String>,
+    /// 价格（分）；同 --price，旧写法
+    #[arg(long, hide = true)]
     price_cents: Option<i64>,
+    /// 币种代码，如 USD / CNY
+    #[arg(long)]
+    currency: Option<String>,
+    /// 计费周期：monthly | quarterly | semiannual | yearly
+    #[arg(long)]
+    cycle: Option<String>,
+    /// 账单时区（IANA 名）
+    #[arg(long)]
+    tz: Option<String>,
+    /// 流量上限 GB（0 = 不限）
+    #[arg(long)]
+    traffic_gb: Option<String>,
+    /// 流量每月几号重置（1–31）
+    #[arg(long)]
+    reset_day: Option<String>,
     /// 只校验，不提交
     #[arg(long)]
     dry_run: bool,
@@ -699,7 +719,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
                 cycle: cycle.as_deref(),
                 due: due.as_deref(),
                 auto_renew,
-                remind_days,
+                remind_days: remind_days.as_deref(),
                 tz: tz.as_deref(),
                 traffic_gb: traffic_gb.as_deref(),
                 reset_day: reset_day.as_deref(),
@@ -742,6 +762,12 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
                 ssh_password_env: a.ssh_password_env,
                 due: a.due,
                 price_cents: a.price_cents,
+                price: a.price,
+                currency: a.currency,
+                cycle: a.cycle,
+                tz: a.tz,
+                traffic_gb: a.traffic_gb,
+                reset_day: a.reset_day,
                 dry_run: a.dry_run,
                 yes: a.yes,
                 follow: a.follow,

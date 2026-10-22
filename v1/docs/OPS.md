@@ -32,7 +32,7 @@
 | 入口的流量与探测 | `fleetctl series 团队1-06 --metric traffic` / `--metric probe` |
 | 告警列表、确认 | `fleetctl incidents`、`fleetctl ack <id>`；一台机器的告警历史 `fleetctl incidents --all --machine 团队1-06` |
 | 维护前开维护窗口（免得告警刷屏），或预约 | `fleetctl silence add 团队1-06 --for 2h --maintenance --comment 换内核`；预约加 `--start "2026-10-23 02:00"`（北京时间）；只静默一条规则 `--rule agent_offline`；`fleetctl silence ls`，做完 `fleetctl silence rm <id 前缀>`；全部机器 `--all --yes`（API 密钥最长 24 小时，更长的在网页用账号建；建、删都会通知所有渠道） |
-| 到期与续费：快到期的机器、看订阅、登记续费、改订阅 | `fleetctl ls --due 7`（7 天内到期、含已过期的在用机器）、`fleetctl billing 团队1-06`（订阅与续费记录）；确认已付款后 `fleetctl renew 团队1-06 --yes`（默认同网页：按订阅周期推一个周期、金额取订阅价格；一次付几期 `--cycles 3`，按面板 `--to 2027-01-15 --amount 39.46 --note …`）；改订阅 `fleetctl subscription set 团队1-06 --price 45 --yes`（只改给了的字段） |
+| 到期与续费：快到期的机器、看订阅、登记续费、改订阅 | `fleetctl ls --due 7`（7 天内到期、含已过期的在用机器）、`fleetctl billing 团队1-06`（订阅与续费记录）；确认已付款后 `fleetctl renew 团队1-06 --yes`（默认同网页：按订阅周期推一个周期、金额取订阅价格；一次付几期 `--cycles 3`，按面板 `--to 2027-01-15 --amount 39.46 --note …`）；改订阅 `fleetctl subscription set 团队1-06 --price 45 --yes`（只改给了的字段；`--price none` 改回跟随套餐）。订阅跟随模板：价格、币种、周期、流量上限跟随**套餐**，账单时区、提前提醒、流量重置（自然月 / 账单日）跟随**供应商**，订阅只存到期日、自动续费和单独设置的项——同一套餐一起调价、改额度在网页「团队与套餐」改套餐，立即对没单独设置的机器生效；上架选了套餐只要填到期日 |
 | 服务日志 | `fleetctl logs 团队1-06 --unit fleet-agent --lines 300`（unit：fleet-agent / fleet-xray / ssserver） |
 | 中控自己的日志 | `fleetctl server-logs --lines 300` |
 | 在一台机器上执行命令 | `fleetctl exec 团队1-06 -- systemctl status fleet-agent` |
@@ -79,7 +79,8 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
    - `relay_xray_down`：线路机上的 xray 停了，到 4。
    - `clock_skew`：agent 所在机器的时钟偏了超过 1 分钟（读数会缺失或停在旧值）；`fleetctl exec <机器> -- 'timedatectl'` 看 NTP 是否同步，没开就 `timedatectl set-ntp true`（修改状态，先确认）。
    - `renewal_due` / `renewal_overdue`：续费提醒，不是故障。网页告警页这一行可直接「登记续费」（或 `fleetctl billing <机器>` 看订阅、确认已付款后 `fleetctl renew <机器> --yes`），下一轮评估（≤30 秒）自动恢复。
-   - `traffic_quota_high`：流量额度吃紧（本周期已用 ≥ 90% 警告，≥ 100% 严重：供应商可能限速或另收费），不是故障、不改健康状态。`fleetctl billing <机器>` 看本周期已用与上限；找供应商加流量、调高订阅的流量上限或把流量分走。新周期开始、上限调高后下一轮评估自动恢复。
+   - `traffic_quota_high`：流量额度吃紧（本周期已用 ≥ 90% 警告，≥ 100% 严重：供应商可能限速或另收费），不是故障、不改健康状态。`fleetctl billing <机器>` 看本周期已用与上限（注明跟随套餐还是单独设置）；找供应商加流量、调高上限（整个套餐都加了改套餐，只这台加了 `subscription set --traffic-gb`）或把流量分走。新周期开始、上限调高后下一轮评估自动恢复。
+     流量周期按供应商的「流量重置」：自然月 = 账单时区每月 1 号起，账单日 = 每台机器到期日是几号就几号起（如 GOMAMI；月份没有这一天按月末）；单台不同的用 `--reset-day` 单独设置。
      已用按网卡计量，规则跟供应商（目录 → 供应商的「流量计量」：网卡入出取小 / 取大 / 相加 / 只算出站，GOMAMI 是取小；不知道的默认取大）；家宽代理和同机 IP 节点没有网卡读数，按业务流量。上限是十进制 GB（同供应商面板）。
      周期中途上架（之前的用量量不到）或和面板对不上时，按面板校准一次：`fleetctl subscription set <机器> --used 901.6 --yes`（面板上本周期已用的 GB 数；之后按网卡累加，至多差 1 小时），网页「费用」页签同样能填；进入下个周期自动失效。
    - 告警恢复后 30 分钟内又出现会重开原告警（`reopen_count` +1，告警页显示「反复 N 次」），不会每抖一次发一对触发/恢复通知。

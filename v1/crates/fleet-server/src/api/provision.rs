@@ -33,13 +33,12 @@ pub struct Upstream {
     password: Option<String>,
 }
 
+/// 订阅只要到期日；其余是「单独设置」，没给 = 跟随套餐 / 供应商（同 PUT subscription）。没有套餐（含同机 IP 节点）要给 price_cents
 #[derive(Deserialize, Clone)]
 pub struct SubIn {
-    price_cents: Option<i32>,
-    currency: Option<String>,
     due_date: Date,
-    cycle: Option<String>,
-    billing_tz: Option<String>,
+    #[serde(flatten)]
+    ov: super::machines::SubOverrides,
 }
 
 #[derive(Deserialize, Clone)]
@@ -92,6 +91,8 @@ struct Checked {
     host: Option<(i32, Option<Uuid>)>,
     /// 同机 IP 节点暂定的 SS 端口（作业在宿主机上核对时发现被占用会改）
     ss_port: Option<u16>,
+    /// 所选套餐的供应商
+    plan_provider: Option<Uuid>,
     errors: Vec<String>,
 }
 
@@ -147,8 +148,9 @@ async fn validate(tx: &mut Tx<'_>, items: &[Item]) -> ApiResult<Vec<Checked>> {
     let labels: Vec<(String,)> =
         sqlx::query_as("select label from machine where kind = 'relay' and lifecycle <> 'retired'").fetch_all(&mut **tx).await?;
     let mut labels: HashSet<String> = labels.into_iter().map(|(s,)| s).collect();
-    let plans: Vec<(Uuid,)> = sqlx::query_as("select id from plan where archived_at is null").fetch_all(&mut **tx).await?;
-    let plans: HashSet<Uuid> = plans.into_iter().map(|(p,)| p).collect();
+    // 在用套餐 → 它的供应商
+    let plans: Vec<(Uuid, Uuid)> = sqlx::query_as("select id, provider_id from plan where archived_at is null").fetch_all(&mut **tx).await?;
+    let plans: HashMap<Uuid, Uuid> = plans.into_iter().collect();
     let providers: Vec<(Uuid,)> = sqlx::query_as("select id from provider").fetch_all(&mut **tx).await?;
     let providers: HashSet<Uuid> = providers.into_iter().map(|(p,)| p).collect();
 
@@ -214,15 +216,36 @@ async fn validate(tx: &mut Tx<'_>, items: &[Item]) -> ApiResult<Vec<Checked>> {
         if let Err(e) = super::machines::check_text(it.label.as_deref().map(str::trim), it.note.as_deref()) {
             errors.push(e);
         }
-        if let Some(p) = it.plan_id {
-            if !plans.contains(&p) {
-                errors.push("套餐不存在或已归档".into());
+        // 同机 IP 节点不带套餐（填了也忽略）
+        let plan = it.plan_id.filter(|_| it.host_id.is_none());
+        if let Some(p) = plan {
+            match plans.get(&p) {
+                None => errors.push("套餐不存在或已归档".into()),
+                // 有套餐时供应商就是套餐的
+                Some(pv) if it.provider_id.is_some_and(|x| x != *pv) => errors.push("套餐不属于所选的供应商".into()),
+                Some(_) => {}
+            }
+            // 选了套餐就建订阅（费用统计、到期提醒要它）：价格等跟随套餐，只要到期日
+            if it.subscription.is_none() {
+                errors.push("选了套餐要填到期日（费用、流量跟随套餐）".into());
             }
         }
         if let Some(p) = it.provider_id {
             if !providers.contains(&p) {
                 errors.push("供应商不存在".into());
             }
+        }
+        // 没有套餐时价格没有可跟随的
+        if it.subscription.as_ref().is_some_and(|s| !s.ov.has_price()) && plan.is_none() {
+            errors.push("没有套餐：订阅要填费用（免费填 0）".into());
+        }
+        if let Some(s) = &it.subscription {
+            // 时区不认时 PG 报错会让事务作废：放在保存点里校验
+            let mut sp = sqlx::Connection::begin(&mut **tx).await?;
+            if let Err(e) = s.ov.clone().check(&mut sp).await {
+                errors.push(e.message);
+            }
+            sp.rollback().await?;
         }
         let (mut host, mut ss_port) = (None, None);
         if let Some(hid) = it.host_id {
@@ -248,7 +271,8 @@ async fn validate(tx: &mut Tx<'_>, items: &[Item]) -> ApiResult<Vec<Checked>> {
                 }
             }
         }
-        out.push(Checked { item: it.clone(), ip, number: it.number, name: String::new(), host, ss_port, errors });
+        let plan_provider = plan.and_then(|p| plans.get(&p).copied());
+        out.push(Checked { item: it.clone(), ip, number: it.number, name: String::new(), host, ss_port, plan_provider, errors });
     }
     for c in out.iter_mut() {
         if c.item.kind == "relay" {
@@ -298,9 +322,10 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Ba
         let id = new_id();
         let kind = it.kind.as_str();
         // 同机 IP 节点：SSH 端口（只展示）和供应商取宿主机的，不带套餐（费用默认不记，要记到它的「费用」里单独填）
+        // 有套餐时供应商取套餐的（校验已保证一致）
         let (ssh_port, provider, plan) = match c.host {
             Some((p, pv)) => (p, pv, None),
-            None => (it.ssh_port.unwrap_or(22) as i32, it.provider_id, it.plan_id),
+            None => (it.ssh_port.unwrap_or(22) as i32, c.plan_provider.or(it.provider_id), it.plan_id),
         };
         sqlx::query(
             "insert into machine (id, kind, team_id, number, label, primary_ip, ssh_port, provider_id, plan_id, service_ref, note, host_id, lifecycle)
@@ -361,27 +386,11 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Ba
                 .await?;
             }
         }
-        // 账单：价格 / 币种 / 周期没给的取套餐，时区没给的取供应商（机器的，否则套餐的）；都没有用列默认
+        // 账单：只存到期日和给了的单独设置，其余跟随套餐（价格、币种、周期、流量）与供应商（时区、流量重置），不再抄一份
         if let Some(s) = &it.subscription {
-            if let Some(tz) = &s.billing_tz {
-                super::machines::check_tz(&mut tx, tz).await?;
-            }
-            sqlx::query(
-                "insert into subscription (machine_id, price_cents, currency, cycle, due_date, billing_tz)
-                 select $1, coalesce($2, p.price_cents, 0), coalesce($3, p.currency, 'USD'), coalesce($4::billing_cycle, p.cycle, 'monthly'),
-                        $5, coalesce($6, v.timezone, 'Asia/Shanghai')
-                 from (select 1) one left join plan p on p.id = $7 left join provider v on v.id = coalesce($8, p.provider_id)",
-            )
-            .bind(id)
-            .bind(s.price_cents)
-            .bind(&s.currency)
-            .bind(&s.cycle)
-            .bind(s.due_date)
-            .bind(&s.billing_tz)
-            .bind(plan)
-            .bind(provider)
-            .execute(&mut *tx)
-            .await?;
+            let mut ov = s.ov.clone();
+            ov.check(&mut tx).await?;
+            ov.write(&mut tx, id, s.due_date).await?;
         }
         let mut params = json!({"relay_id": it.relay_id});
         // 同机 IP 节点用中控密钥登录宿主机：不收 root 密码，也不重置宿主机的主机指纹

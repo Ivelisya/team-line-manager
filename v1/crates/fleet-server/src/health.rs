@@ -74,10 +74,10 @@ fn fmt_gb(n: f64) -> String {
     format!("{} GB", if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.') } else { &s })
 }
 
-/// 流量额度（traffic_quota_high）：上限取订阅的 traffic_gb（GB），没填按套餐的；0 / 空 = 不限，不评估（同前端 quota()）。
+/// 流量额度（traffic_quota_high）：上限取视图算好的 quota.limit_gb（订阅单独设置的或跟随套餐的）；没有上限不评估（同前端 quota()）。
 /// 同机 IP 节点自己没设上限时额度算在宿主机上（宿主机的已用含它的流量），这里也就不评估
 fn quota_reason(m: &MachineView) -> Option<Reason> {
-    let gb = m.subscription.as_ref().and_then(|s| s.traffic_gb).or(m.plan.as_ref().and_then(|p| p.traffic_gb)).filter(|g| *g > 0)?;
+    let gb = m.quota.limit_gb?;
     let limit = gb as f64 * GB;
     let pct = m.quota.used as f64 * 100.0 / limit;
     if pct < QUOTA_WARN_PCT {
@@ -252,7 +252,7 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::views::{Agent, EntryView, PlanRef, Probe, Quota, Ref, RelayInfo, Subscription, Sustained, Traffic};
+    use crate::views::{Agent, EntryView, Probe, Quota, Ref, RelayInfo, SubTemplate, Subscription, Sustained, Traffic};
     use time::Duration;
     use uuid::Uuid;
 
@@ -281,11 +281,20 @@ pub(crate) mod tests {
             activated_at: Some(now),
             retired_at: None,
             subscription: None,
+            sub_template: SubTemplate {
+                price_cents: None,
+                currency: "USD".into(),
+                cycle: "monthly".into(),
+                billing_tz: "Asia/Shanghai".into(),
+                traffic_gb: None,
+                traffic_reset: "month".into(),
+                remind_days: 7,
+            },
             agent: Some(Agent { version: None, last_report_at: Some(now), online: true, xray_running: Some(true), cores: None, health: None, clock_skew_ms: None }),
             host: None,
             entries: vec![],
             removed_traffic: Default::default(),
-            quota: Quota { used: 0, period_start: now.date(), rule: Some("max"), base: None, base_at: None, reset_in_days: None },
+            quota: Quota { limit_gb: None, limit_source: "none", used: 0, period_start: now.date(), rule: Some("max"), base: None, base_at: None, reset_in_days: None },
             health: Health::default(),
             active_job: None,
             failed_job: None,
@@ -310,7 +319,8 @@ pub(crate) mod tests {
             auto_renew: false,
             remind_days: 7,
             traffic_gb: None,
-            traffic_reset_day: None,
+            traffic_reset_day: Some(1),
+            overrides: vec![],
         }
     }
 
@@ -536,8 +546,8 @@ pub(crate) mod tests {
         let mut m = base("relay");
         m.quota.used = 1885 * gb;
         assert!(evaluate(&m, now).reasons.is_empty(), "没有上限（订阅、套餐都没填）：不评估");
-        // 上限按套餐的 2000 GB：92% 警告，健康状态不变
-        m.plan = Some(PlanRef { id: Uuid::now_v7(), name: "p".into(), bandwidth_mbps: None, traffic_gb: Some(2000) });
+        // 上限 2000 GB（视图算好的生效上限，来源见 views 的集成测试）：92% 警告，健康状态不变
+        m.quota.limit_gb = Some(2000);
         m.quota.reset_in_days = Some(9);
         let h = evaluate(&m, now);
         assert_eq!((keys(&h), h.reasons[0].severity, h.status), (vec!["traffic_quota_high"], "warning", Status::Ok));
@@ -550,12 +560,12 @@ pub(crate) mod tests {
         assert_eq!((h.reasons[0].severity, h.status), ("critical", Status::Ok));
         assert_eq!(h.reasons[0].text, "本周期流量已超出额度（已用 100%，2000.4 GB / 2000 GB）");
         m.quota.used = 9_016 * gb / 10;
-        m.plan = Some(PlanRef { id: Uuid::now_v7(), name: "p".into(), bandwidth_mbps: None, traffic_gb: Some(1000) });
+        m.quota.limit_gb = Some(1000);
         assert_eq!(evaluate(&m, now).reasons[0].text, "本周期流量已用 90%（901.6 GB / 1000 GB）");
-        // 订阅的上限优先于套餐：0 = 不限，更大的上限没到 90%
-        m.subscription = Some(Subscription { traffic_gb: Some(0), ..sub(30) });
+        // 更大的上限没到 90%；没有上限不评估
+        m.quota.limit_gb = Some(4096);
         assert!(evaluate(&m, now).reasons.is_empty());
-        m.subscription = Some(Subscription { traffic_gb: Some(4096), ..sub(30) });
+        m.quota.limit_gb = None;
         assert!(evaluate(&m, now).reasons.is_empty());
         // 同机 IP 节点自己没设上限（不带套餐）：额度算在宿主机上，不评估
         let mut x = base("vps");
