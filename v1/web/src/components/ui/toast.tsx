@@ -16,11 +16,11 @@ interface T extends ToastInput { id: number; count: number; leaving?: boolean }
 const MAX = 5;
 let push: ((t: ToastInput) => void) | null = null;
 let dismiss: ((key: string) => void) | null = null;
-export const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+export const errMessage = (e: unknown) => (e instanceof Error ? e.message : String(e));
 export const toast = {
   ok: (text: string) => push?.({ tone: 'ok', text }),
   info: (text: string) => push?.({ tone: 'info', text }),
-  err: (e: unknown) => push?.({ tone: 'bad', text: errText(e) }),
+  err: (e: unknown) => push?.({ tone: 'bad', text: errMessage(e) }),
   show: (t: ToastInput) => push?.(t),
   dismiss: (key: string) => dismiss?.(key),
 };
@@ -54,7 +54,7 @@ function ToastItem({ t, onClose }: { t: T; onClose: (id: number) => void }) {
   }, [paused, t.id, t.count, t.leaving, onClose]);
   const Ic = ICON[t.tone];
   return (
-    <div className="toast" data-tone={t.tone} role={t.tone === 'bad' ? 'alert' : 'status'}data-leaving={t.leaving ? '1' : undefined}
+    <div className="toast" data-tone={t.tone} role={t.tone === 'bad' ? 'alert' : 'status'} data-leaving={t.leaving ? '1' : undefined}
       onMouseEnter={() => setPaused(true)} onMouseLeave={() => setPaused(false)} onFocus={() => setPaused(true)} onBlur={() => setPaused(false)}>
       <Ic size={16} />
       <div className="toast-body">

@@ -16,7 +16,7 @@ import { DateField } from '@/components/ui/date-field';
 import { Popover, PopoverContent, PopoverTrigger, Segmented } from '@/components/ui/overlays';
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { ConfirmDialog } from '@/components/app/dialogs';
-import { errText, toast, useToastLift, type ToastTone } from '@/components/ui/toast';
+import { errMessage, toast, useToastLift, type ToastTone } from '@/components/ui/toast';
 import { copyText } from '@/lib/clipboard';
 import { PageHead, Panel, Pill } from '@/components/app/primitives';
 import { COLS, PASTE_COLS, UNUSED_LABEL, applies, headerCols, ipIssue, isBlank, isIpNode, localErrors, localIssues, newRow, parseTsv, pasteLine, serverField, toItem, type Col, type Ctx, type Row } from '@/features/provision-model';
@@ -128,7 +128,7 @@ export function ProvisionPage() {
       const failed = r.items.filter((x) => !x.ok).length;
       if (!failed) checkToast('ok', `检查通过：${r.items.length} 台`);
       else { setJump((n) => n + 1); checkToast('bad', mode === 'single' ? '检查未通过，见标红的字段' : `${failed} 行未通过，见「检查结果」列`); }
-    } catch (e) { checkToast('bad', errText(e)); }
+    } catch (e) { checkToast('bad', errMessage(e)); }
   };
   const start = async () => {
     const r = await provision.mutateAsync(items);
