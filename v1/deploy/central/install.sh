@@ -22,7 +22,7 @@ if [ ! -f /etc/apt/sources.list.d/caddy-stable.list ]; then
   apt-get install -y -qq -o Dpkg::Options::=--force-confold caddy >/dev/null
 fi
 
-missing=$(for p in postgresql caddy sshpass openssh-client systemd-timesyncd curl jq; do dpkg -s "$p" >/dev/null 2>&1 || echo "$p"; done)
+missing=$(for p in postgresql caddy sshpass openssh-client systemd-timesyncd curl jq age; do dpkg -s "$p" >/dev/null 2>&1 || echo "$p"; done)
 if [ -n "$missing" ]; then
   apt-get update -qq
   apt-get install -y -qq $missing >/dev/null
@@ -107,9 +107,8 @@ mv /opt/fleet/web.new /opt/fleet/web && rm -rf /opt/fleet/web.old
 cat > /etc/systemd/system/fleet-server.service <<'UNIT'
 [Unit]
 Description=fleet-server（团队线路管理 v1）
-# 等时钟同步再起：启动时立刻按墙钟删过期分区，开机时钟大幅超前会误删数据
-After=network-online.target postgresql.service time-sync.target
-Wants=network-online.target time-sync.target
+After=network-online.target postgresql.service
+Wants=network-online.target
 [Service]
 User=fleet
 Group=fleet
@@ -154,7 +153,8 @@ install -m 644 "$PKG/fleet-ipintel-fetch.service" "$PKG/fleet-ipintel-fetch.time
 
 # 每天备份（docs/OPS.md §10）：北京时间 03:30 把库与密钥打包到 /var/backups/fleet，留 14 份。
 # 家里 PVE 用 fleet-backup 用户取最新一份：/etc/fleet/backup.pub（PVE 的公钥）存在才写进它的 authorized_keys，
-# 登录后只能执行 forced command（把最新一份 cat 出来）；文件由 root 持有，这个用户自己改不了
+# 登录后只能执行 forced command（把最新一份 cat 出来）；文件由 root 持有，这个用户自己改不了。
+# /etc/fleet/backup-age.recipients（age 公钥，一行一个）存在时备份用 age 加密成 .tar.age（上面装了 age 包）
 id fleet-backup >/dev/null 2>&1 || useradd --system --home-dir /var/lib/fleet-backup --shell /bin/sh fleet-backup
 install -d -m 750 -o root -g fleet-backup /var/backups/fleet
 install -m 644 "$PKG/fleet-backup.sh" /opt/fleet/backup/fleet-backup.sh
@@ -221,5 +221,5 @@ if [ "$code" != 401 ]; then
   echo "旧版本在 /opt/fleet/fleet-server.prev，回滚见 docs/OPS.md §9"
   exit 1
 fi
-ls /var/backups/fleet/fleet-*.tar >/dev/null 2>&1 || systemctl start --no-block fleet-backup.service   # 第一次装上备份：先做一份
+ls /var/backups/fleet/fleet-*.tar* >/dev/null 2>&1 || systemctl start --no-block fleet-backup.service   # 第一次装上备份：先做一份
 echo "fleet-server $(systemctl is-active fleet-server)，api=$code，agent $(/opt/fleet/dist/fleet-agent version 2>/dev/null | head -1)"

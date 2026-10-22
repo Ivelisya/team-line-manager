@@ -18,6 +18,7 @@ pub mod policy;
 pub mod silence;
 pub mod ssh;
 pub mod state;
+pub mod totp;
 pub mod views;
 
 use axum::extract::State;
@@ -114,7 +115,9 @@ pub fn spawn_background(st: &AppState) {
                 Ok(_) => {}
                 Err(e) => tracing::error!("作业清理失败：{e:#}"),
             }
-            if let Err(e) = db::cleanup_retention(&s.db).await {
+            // 来源 IP 画像：不短于学习期，也不短于访问小时汇总的保留期（来源同步首次扫描回看这么久）
+            let source_ip_days = (s.cfg.ipintel.learn_days as i64).max(access::HOURLY_DAYS) + 1;
+            if let Err(e) = db::cleanup_retention(&s.db, source_ip_days).await {
                 tracing::error!("保留期清理失败：{e:#}");
             }
         }

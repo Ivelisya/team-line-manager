@@ -173,6 +173,24 @@ async fn login_rate_limit_per_source() {
     assert_eq!(t.login_from("admin", ADMIN_PW, "198.51.100.10").await.0, StatusCode::OK, "user-set 后马上能登");
 }
 
+/// 攻击者换 20 个 /64 各错 5 次凑满「同一用户名 100 次」：只拦没登录成功过的来源，本人 30 天内登录成功过的来源照常能登
+#[tokio::test]
+async fn login_global_cap_spares_known_sources() {
+    let t = common::boot(false, "trust_forwarded_for = true").await;
+    assert_eq!(t.login_from("admin", ADMIN_PW, "198.51.100.20").await.0, StatusCode::OK);
+    for n in 0..20 {
+        for i in 1..=5 {
+            let (s, v) = t.login_from("admin", "wrong-password", &format!("2001:db8:0:{n:x}::{i}")).await;
+            assert_eq!(s, StatusCode::UNAUTHORIZED, "{n}/{i}：{v}");
+        }
+    }
+    assert_eq!(t.login_from("admin", ADMIN_PW, "203.0.113.50").await.0, StatusCode::TOO_MANY_REQUESTS, "没登录成功过的来源被总上限拦住");
+    assert_eq!(t.login_from("admin", ADMIN_PW, "198.51.100.20").await.0, StatusCode::OK, "登录成功过的来源不受总上限");
+    // 超过 30 天没再登录成功：不再豁免
+    sqlx::query("update login_source set last_ok_at = now() - interval '31 days'").execute(&t.st.db).await.unwrap();
+    assert_eq!(t.login_from("admin", ADMIN_PW, "198.51.100.20").await.0, StatusCode::TOO_MANY_REQUESTS);
+}
+
 #[tokio::test]
 async fn exec_preconditions() {
     let t = setup().await;
@@ -236,6 +254,51 @@ async fn bad_input_is_json_400() {
     assert!(v["error"]["message"].as_str().unwrap().contains("不存在"), "{v}");
     let plan = t.ok("POST", "/api/v1/plans", Some(json!({"provider_id": p["id"], "name": "基础版", "price_cents": 500}))).await;
     let (s, v) = t.call("PATCH", &format!("/api/v1/plans/{}", plan["id"].as_str().unwrap()), Some(json!({"provider_id": Uuid::now_v7()})), Auth::Session).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+}
+
+/// 目录：套餐字段校验 400；改套餐 / 团队的审计记改了什么；供应商库里的旧控制台地址（http(s) 校验之前存的）原样带回不拦其它字段
+#[tokio::test]
+async fn catalog_validation_and_audit_details() {
+    let t = setup().await;
+    let p = t.ok("POST", "/api/v1/providers", Some(json!({"name": "ATTVPS", "code": "ATT"}))).await;
+    let pid = p["id"].as_str().unwrap();
+    for (body, why) in [
+        (json!({"price_cents": -1}), "负价格"),
+        (json!({"price_cents": 1, "currency": "US$"}), "币种只能是字母"),
+        (json!({"price_cents": 1, "currency": "ABCDEFGHI"}), "币种过长"),
+        (json!({"price_cents": 1, "notes": "备".repeat(2001)}), "备注过长"),
+        (json!({"price_cents": 1, "name": "名".repeat(33)}), "名字过长"),
+    ] {
+        let mut b = json!({"provider_id": pid, "name": "基础版"});
+        b.as_object_mut().unwrap().extend(body.as_object().unwrap().clone());
+        let (s, v) = t.call("POST", "/api/v1/plans", Some(b), Auth::Session).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{why}：{v}");
+    }
+    let plan = t.ok("POST", "/api/v1/plans", Some(json!({"provider_id": pid, "name": "基础版", "price_cents": 500, "currency": " cny "}))).await;
+    let path = format!("/api/v1/plans/{}", plan["id"].as_str().unwrap());
+    for body in [json!({"price_cents": -5}), json!({"currency": ""}), json!({"notes": "备".repeat(2001)})] {
+        let (s, v) = t.call("PATCH", &path, Some(body.clone()), Auth::Session).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{body}：{v}");
+    }
+    t.ok("PATCH", &path, Some(json!({"price_cents": 600, "notes": "改价", "currency": "usd", "name": "基础版"}))).await;
+    let db = &t.st.db;
+    let audit = |action: &'static str| async move {
+        sqlx::query_scalar::<_, Value>("select detail from audit_log where action = $1 order by id desc limit 1").bind(action).fetch_one(db).await.unwrap()
+    };
+    let d = audit("plan.update").await;
+    assert_eq!(d["before"], json!({"price_cents": 500, "notes": "", "currency": "CNY"}), "{d}");
+    assert_eq!(d["after"], json!({"price_cents": 600, "notes": "改价", "currency": "USD"}), "{d}");
+
+    let team = t.ok("POST", "/api/v1/teams", Some(json!({"name": "团队1"}))).await;
+    t.ok("PATCH", &format!("/api/v1/teams/{}", team["id"].as_str().unwrap()), Some(json!({"sort_order": 5}))).await;
+    let d = audit("team.update").await;
+    assert_eq!((d["before"]["sort_order"].as_i64(), d["after"]["sort_order"].as_i64()), (Some(0), Some(5)), "{d}");
+
+    sqlx::query("update provider set panel_url = 'panel.example.com'").execute(&t.st.db).await.unwrap();
+    let ppath = format!("/api/v1/providers/{pid}");
+    t.ok("PATCH", &ppath, Some(json!({"name": "ATTVPS 2", "panel_url": "panel.example.com"}))).await;
+    let (s, v) = t.call("PATCH", &ppath, Some(json!({"panel_url": "javascript:alert(1)"})), Auth::Session).await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
 }
 

@@ -4,7 +4,8 @@ import { useQuery } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { Archive, ArchiveRestore, ArrowRight, ExternalLink, ListOrdered, Pencil, Plus } from 'lucide-react';
 import { fetchRenumber, useAddPlan, useAddProvider, useAddTeam, usePatchPlan, usePatchProvider, usePatchTeam, usePlans, useProviders, useRenumber, useTeams } from '@/lib/queries';
-import type { Plan, Provider, Team } from '@/lib/types';
+import type { Plan, Provider, Team, TrafficRule } from '@/lib/types';
+import { limitGb, RULE_LABEL } from '@/lib/derive';
 import * as F from '@/lib/format';
 import { Button, IconButton } from '@/components/ui/button';
 import { CheckRow, Field, Input } from '@/components/ui/form';
@@ -128,7 +129,9 @@ const RenumberDialog = resetOnOpen(function RenumberDialog({ team, open, onClose
 });
 
 /* ---------------------------------------------------------------- 供应商 */
-const EMPTY_PROVIDER = { name: '', code: '', panel_url: '', timezone: 'Asia/Shanghai' };
+const EMPTY_PROVIDER = { name: '', code: '', panel_url: '', timezone: 'Asia/Shanghai', traffic_rule: 'max' as TrafficRule };
+/** 流量计量下拉：供应商怎么算本周期用量（网卡入、出总量） */
+const RULE_OPTIONS = (['min', 'max', 'sum', 'out'] as const).map((value) => ({ value, label: RULE_LABEL[value] }));
 function ProvidersTab() {
   const q = useProviders();
   const [edit, setEdit] = React.useState<Provider | 'new' | null>(null);
@@ -139,12 +142,12 @@ function ProvidersTab() {
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       <Panel title="供应商" count={list.length} tools={<Button variant="primary" onClick={() => setEdit('new')}><Plus />新增供应商</Button>} flush>
         <div className="table-wrap">
-          <table className="dt is-one" style={{ minWidth: 640 }}>
-            <colgroup><col style={{ width: 180 }} /><col style={{ width: 90 }} /><col style={{ width: 180 }} /><col /><col style={{ width: 112 }} /></colgroup>
-            <thead><tr><th>名称</th><th>代码</th><th>时区</th><th>面板</th><th /></tr></thead>
+          <table className="dt is-one" style={{ minWidth: 780 }}>
+            <colgroup><col style={{ width: 180 }} /><col style={{ width: 90 }} /><col style={{ width: 180 }} /><col style={{ width: 130 }} /><col /><col style={{ width: 112 }} /></colgroup>
+            <thead><tr><th>名称</th><th>代码</th><th>时区</th><th>流量计量</th><th>面板</th><th /></tr></thead>
             <tbody>{list.map((p) => (
-              <tr key={p.id}><td className="strong">{p.name}</td><td><Chip>{p.code}</Chip></td><td>{p.timezone ?? '—'}</td>
-                <td>{p.panel_url ? <a href={p.panel_url} target="_blank" rel="noreferrer noopener" className="btn-link btn" style={{ gap: 4 }}>{p.panel_url.replace(/^https?:\/\//, '')}<ExternalLink size={12} /></a> : <span className="t-muted">—</span>}</td>
+              <tr key={p.id}><td className="strong">{p.name}</td><td><Chip>{p.code}</Chip></td><td>{p.timezone ?? '—'}</td><td>{RULE_LABEL[p.traffic_rule] ?? p.traffic_rule}</td>
+                <td>{p.panel_url && /^https?:\/\//i.test(p.panel_url) ? <a href={p.panel_url} target="_blank" rel="noreferrer noopener" className="btn-link btn" style={{ gap: 4 }}>{p.panel_url.replace(/^https?:\/\//, '')}<ExternalLink size={12} /></a> : (p.panel_url || <span className="t-muted">—</span>)}</td>
                 <td className="r"><Button size="sm" variant="quiet" onClick={() => setEdit(p)}><Pencil size={13} />编辑</Button></td></tr>
             ))}</tbody>
           </table>
@@ -160,10 +163,10 @@ function ProvidersTab() {
 /** 新增 / 编辑供应商。每次打开重新挂载（resetOnOpen）：字段直接按这次的供应商初始化 */
 const ProviderDialog = resetOnOpen(function ProviderDialog({ provider, open, onClose }: { provider: Provider | 'new'; open: boolean; onClose: () => void }) {
   const add = useAddProvider(); const patch = usePatchProvider();
-  const [f, setF] = React.useState(() => (provider === 'new' ? EMPTY_PROVIDER : { name: provider.name, code: provider.code, panel_url: provider.panel_url ?? '', timezone: provider.timezone ?? '' }));
+  const [f, setF] = React.useState(() => (provider === 'new' ? EMPTY_PROVIDER : { name: provider.name, code: provider.code, panel_url: provider.panel_url ?? '', timezone: provider.timezone ?? '', traffic_rule: provider.traffic_rule }));
   // 面板地址、时区留空：服务端分别按清空、列默认值（UTC）处理
   const save = () => {
-    const body = { name: f.name.trim(), code: f.code.trim().toUpperCase(), panel_url: f.panel_url.trim() || null, timezone: f.timezone.trim() || null };
+    const body = { name: f.name.trim(), code: f.code.trim().toUpperCase(), panel_url: f.panel_url.trim() || null, timezone: f.timezone.trim() || null, traffic_rule: f.traffic_rule };
     const ok = () => { toast.ok(provider === 'new' ? '供应商已添加' : '供应商已保存'); onClose(); };
     if (provider === 'new') add.mutate(body, { onSuccess: ok, onError: toast.err });
     else patch.mutate({ id: provider.id, ...body }, { onSuccess: ok, onError: toast.err });
@@ -176,6 +179,7 @@ const ProviderDialog = resetOnOpen(function ProviderDialog({ provider, open, onC
         <Field label="代码" hint="卡片上显示的缩写，如 BWH"><Input value={f.code} onChange={(e) => setF({ ...f, code: e.target.value })} /></Field>
         <Field label="面板地址（选填）" className="span-2"><Input value={f.panel_url} onChange={(e) => setF({ ...f, panel_url: e.target.value })} placeholder="https://" /></Field>
         <Field label="账单时区" hint="IANA 时区名；留空 = UTC" className="span-2"><Input value={f.timezone} onChange={(e) => setF({ ...f, timezone: e.target.value })} placeholder="UTC" /></Field>
+        <Field label="流量计量" hint="供应商面板怎么算本周期用量（如 GOMAMI 是入出取小）；不清楚选取大，不会少算" className="span-2"><Select value={f.traffic_rule} onChange={(v) => setF({ ...f, traffic_rule: v as TrafficRule })} options={RULE_OPTIONS} /></Field>
       </div>
     </FormDialog>
   );
@@ -208,7 +212,7 @@ function PlansTab() {
                   <td><span className="cell-main strong">{p.name}</span><span className="sub">{p.archived_at ? '已归档' : p.notes ?? ''}</span></td>
                   <td>{pname(p.provider_id)}</td>
                   <td>{planSpec(p)}<span className="sub">{p.disk_gb ? `磁盘 ${p.disk_gb} GiB` : ''}</span></td>
-                  <td className="r"><Num f={F.mbps(p.bandwidth_mbps)} /></td><td className="r"><Num f={p.traffic_gb ? F.gb(p.traffic_gb) : { v: '不限', u: '' }} /></td>
+                  <td className="r"><Num f={F.mbps(p.bandwidth_mbps)} /></td><td className="r"><Num f={limitGb(p.traffic_gb)} /></td>
                   <td className="r"><span className="num">{F.money(p.price_cents, p.currency)}</span><span className="sub">/ {F.cycleLabel(p.cycle)}</span></td>
                   <td className="r num">{p.machine_count}</td>
                   <td className="r"><span className="row" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
@@ -254,7 +258,7 @@ const PlanDialog = resetOnOpen(function PlanDialog({ plan, open, onClose }: { pl
         <Field label="套餐名"><Input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} autoFocus /></Field>
         <Field label="供应商"><Select value={f.provider_id} onChange={(v) => setF({ ...f, provider_id: v })} options={providers.map((p) => ({ value: p.id, label: p.name }))} /></Field>
         {num('cpu_cores', 'CPU 核数')}{num('mem_gb', '内存（GiB）')}{num('disk_gb', '磁盘（GiB）')}{num('bandwidth_mbps', '带宽（Mbps）')}
-        {num('traffic_gb', '流量（GiB / 周期）', '留空或 0 = 不限')}{num('price', '价格')}
+        {num('traffic_gb', '流量（GB / 周期）', '留空或 0 = 不限')}{num('price', '价格')}
         <Field label="币种"><Select value={f.currency} onChange={(v) => setF({ ...f, currency: v })} options={F.withCurrent(F.CURRENCY_OPTIONS, f.currency)} /></Field>
         <Field label="计费周期"><Select value={f.cycle} onChange={(v) => setF({ ...f, cycle: v })} options={F.CYCLE_OPTIONS} /></Field>
         <Field label="备注" className="span-2"><Input value={f.notes} onChange={(e) => setF({ ...f, notes: e.target.value })} /></Field>

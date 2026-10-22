@@ -2,8 +2,6 @@
 import type { AvailabilityDay, MachineView, ProbeBucket, ProbeResult, Subscription } from './types';
 import * as F from './format';
 
-const GiB = 1024 ** 3;
-
 export const hasHost = (m: MachineView) => m.kind !== 'proxy' && m.host != null;
 /** 数据过期：agent 离线（没有近期上报）或已退役。和健康无关：有严重告警的机器照常上报，读数照常显示 */
 export const isQuiet = (m: MachineView) => (m.agent != null && !m.agent.online) || m.lifecycle === 'retired';
@@ -24,13 +22,24 @@ export function monthTraffic(m: MachineView) {
   for (const e of m.entries) { up += e.traffic.month_up; down += e.traffic.month_down; tu += e.traffic.today_up; td += e.traffic.today_down; }
   return { up, down, today_up: tu, today_down: td };
 }
-/** 流量额度：上限（GiB，订阅没填按套餐，0/null = 不限）与本周期已用（服务端按流量重置日算，见 MachineView.quota）。
- *  shared：同机 IP 节点自己没设上限——额度与宿主机共用（宿主机的已用含它的流量），不是「不限」 */
+/** 流量额度按供应商的十进制 GB（1 GB = 10⁹ 字节） */
+const GB = 1e9;
+/** 流量额度：上限（GB，订阅没填按套餐，0/null = 不限）与本周期已用（服务端按网卡 / 业务流量、流量重置日算，见 MachineView.quota）。
+ *  shared：同机 IP 节点自己没设上限——额度与宿主机共用（宿主机的网卡含它的流量），不是「不限」 */
 export function quota(m: MachineView) {
   const limit = m.subscription?.traffic_gb ?? m.plan?.traffic_gb ?? 0;
-  const { used, period_start: start } = m.quota;
-  return { limit, used, start, pct: limit > 0 ? (used / (limit * GiB)) * 100 : null, rem: limit > 0 ? Math.max(0, limit * GiB - used) : null, shared: !!m.host_machine && !(limit > 0) };
+  const { used, period_start: start, rule, base_at: baseAt } = m.quota;
+  return { limit, used, start, rule, baseAt, pct: limit > 0 ? (used / (limit * GB)) * 100 : null, rem: limit > 0 ? Math.max(0, limit * GB - used) : null, shared: !!m.host_machine && !(limit > 0) };
 }
+/** 额度用量的写法同供应商面板：十进制 GB，不换算成 TB（901.6 GB）。业务流量等其它字节数仍用 F.bytes */
+export const quotaGb = (bytes: number): F.Fmt => {
+  const x = Math.max(0, bytes) / GB;
+  return { v: (x < 10 ? x.toFixed(2) : x.toFixed(1)).replace(/\.?0+$/, ''), u: 'GB' };
+};
+/** 额度上限（GB 数）：0 / 空 = 不限 */
+export const limitGb = (gb: number | null | undefined): F.Fmt => (gb && gb > 0 ? { v: String(gb), u: 'GB' } : { v: '不限', u: '' });
+/** 网卡计量规则（供应商的「流量计量」）；null = 没有网卡读数，按业务流量 */
+export const RULE_LABEL: Record<string, string> = { min: '网卡入出取小', max: '网卡入出取大', sum: '网卡入出相加', out: '只算网卡出站' };
 /** 同机关系标的文字与悬停说明（卡片、环形卡、机器表）：同机 IP 节点「同机 · 宿主机名」（short：窄处只写「同机」，宿主机名在说明里），
  *  宿主机「+N IP」；没有同机关系为 null */
 export function hostRel(host: MachineView['host_machine'], nodes: MachineView['ip_nodes'], short?: boolean) {

@@ -14,5 +14,5 @@ export const NAV: NavItem[] = [
   { to: '/catalog', label: '团队与套餐', icon: Briefcase, kw: 'catalog teams plans providers 目录 团队 套餐 供应商' },
   { to: '/incidents', label: '告警', icon: BellRing, badge: true, kw: 'incidents alerts 静默' },
   { to: '/audit', label: '操作记录', icon: History, kw: 'audit log 审计 日志 登录 执行' },
-  { to: '/settings', label: '设置', icon: Settings, kw: 'settings api 密钥 通知 key notify' },
+  { to: '/settings', label: '设置', icon: Settings, kw: 'settings api 密钥 通知 key notify 账户 安全 两步验证 2fa totp 密码 password 会话 session' },
 ];

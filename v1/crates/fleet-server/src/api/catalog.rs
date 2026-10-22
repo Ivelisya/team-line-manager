@@ -87,7 +87,8 @@ pub async fn patch_team(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPa
             .await?;
         relays = crate::db::bump_relays_of_nodes(&mut tx, &nodes).await?;
     }
-    audit(&mut tx, &a.name, "team.update", "team", Some(id), json!({"before": {"name": old.0, "sort_order": old.1}, "after": {"name": name}})).await?;
+    audit(&mut tx, &a.name, "team.update", "team", Some(id),
+        json!({"before": {"name": old.0, "sort_order": old.1}, "after": {"name": name, "sort_order": b.sort_order.unwrap_or(old.1)}})).await?;
     tx.commit().await?;
     for r in relays {
         st.relay_bumped(r);
@@ -106,10 +107,12 @@ pub struct Provider {
     code: String,
     panel_url: Option<String>,
     timezone: String,
+    /// 流量额度的网卡计量：min / max / sum / out = 本周期入出取小 / 取大 / 相加 / 只算出站
+    traffic_rule: String,
 }
 
 pub async fn list_providers(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
-    let v: Vec<Provider> = sqlx::query_as("select id, name, code, panel_url, timezone from provider order by name")
+    let v: Vec<Provider> = sqlx::query_as("select id, name, code, panel_url, timezone, traffic_rule from provider order by name")
         .fetch_all(&st.db)
         .await?;
     Ok(ok(v))
@@ -124,6 +127,17 @@ pub struct ProviderIn {
     panel_url: Option<Option<String>>,
     #[serde(default, deserialize_with = "super::some")]
     timezone: Option<Option<String>>,
+    /// 没传 = 不改（新建为 max）
+    traffic_rule: Option<String>,
+}
+
+/// 流量计量规则只认这四种
+fn traffic_rule(v: &Option<String>) -> ApiResult<Option<&str>> {
+    match v.as_deref() {
+        None => Ok(None),
+        Some(r @ ("min" | "max" | "sum" | "out")) => Ok(Some(r)),
+        Some(r) => Err(ApiError::bad_request(format!("流量计量规则「{r}」不认识：只能是 min / max / sum / out（网卡入出取小 / 取大 / 相加 / 只算出站）"))),
+    }
 }
 
 /// 空白当没填
@@ -140,22 +154,24 @@ pub async fn create_provider(a: Actor, State(st): State<AppState>, ApiJson(b): A
     let code = clean_name(b.code.as_deref().unwrap_or(""), "供应商缩写")?;
     let panel = b.panel_url.as_ref().map(panel_url).transpose()?.flatten();
     let tz = b.timezone.as_ref().and_then(blank);
+    let rule = traffic_rule(&b.traffic_rule)?.unwrap_or("max");
     let mut tx = st.db.begin().await?;
     // 上架时供应商时区会被抄进账单时区，按同一标准校验
     if let Some(tz) = tz {
         super::machines::check_tz(&mut tx, tz).await?;
     }
-    sqlx::query("insert into provider (id, name, code, panel_url) values ($1, $2, $3, $4)")
+    sqlx::query("insert into provider (id, name, code, panel_url, traffic_rule) values ($1, $2, $3, $4, $5)")
         .bind(id)
         .bind(&name)
         .bind(&code)
         .bind(panel)
+        .bind(rule)
         .execute(&mut *tx)
         .await?;
     if let Some(tz) = tz {
         sqlx::query("update provider set timezone = $2 where id = $1").bind(id).bind(tz).execute(&mut *tx).await?;
     }
-    audit(&mut tx, &a.name, "provider.create", "provider", Some(id), json!({"name": name, "code": code})).await?;
+    audit(&mut tx, &a.name, "provider.create", "provider", Some(id), json!({"name": name, "code": code, "traffic_rule": rule})).await?;
     tx.commit().await?;
     st.emit(Event::Catalog);
     Ok(ok(json!({"id": id})))
@@ -163,7 +179,7 @@ pub async fn create_provider(a: Actor, State(st): State<AppState>, ApiJson(b): A
 
 pub async fn patch_provider(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<ProviderIn>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
-    let old: Provider = sqlx::query_as("select id, name, code, panel_url, timezone from provider where id = $1 for update")
+    let old: Provider = sqlx::query_as("select id, name, code, panel_url, timezone, traffic_rule from provider where id = $1 for update")
         .bind(id)
         .fetch_optional(&mut *tx)
         .await?
@@ -176,7 +192,9 @@ pub async fn patch_provider(a: Actor, State(st): State<AppState>, ApiPath(id): A
         Some(c) => clean_name(c, "供应商缩写")?,
         None => old.code.clone(),
     };
+    // 网页表单每次都带上控制台地址：和库里一样就不重新校验（http(s) 校验之前存下的旧值不能让别的字段改不了）
     let panel_url = match &b.panel_url {
+        Some(u) if blank(u) == blank(&old.panel_url) => old.panel_url.clone(),
         Some(u) => panel_url(u)?,
         None => old.panel_url.clone(),
     };
@@ -184,14 +202,16 @@ pub async fn patch_provider(a: Actor, State(st): State<AppState>, ApiPath(id): A
         Some(t) => blank(t).map(String::from),
         None => Some(old.timezone.clone()),
     };
+    let rule = traffic_rule(&b.traffic_rule)?.unwrap_or(old.traffic_rule.as_str()).to_string();
     if let Some(tz) = &tz {
         super::machines::check_tz(&mut tx, tz).await?;
     }
-    sqlx::query("update provider set name = $2, code = $3, panel_url = $4 where id = $1")
+    sqlx::query("update provider set name = $2, code = $3, panel_url = $4, traffic_rule = $5 where id = $1")
         .bind(id)
         .bind(&name)
         .bind(&code)
         .bind(&panel_url)
+        .bind(&rule)
         .execute(&mut *tx)
         .await?;
     // 时区清空 = 回到列默认值；已上架机器的账单时区是当时抄过去的，这里不跟着改
@@ -202,8 +222,8 @@ pub async fn patch_provider(a: Actor, State(st): State<AppState>, ApiPath(id): A
     .fetch_one(&mut *tx)
     .await?;
     audit(&mut tx, &a.name, "provider.update", "provider", Some(id),
-        json!({"before": {"name": old.name, "code": old.code, "panel_url": old.panel_url, "timezone": old.timezone},
-               "after": {"name": name, "code": code, "panel_url": panel_url, "timezone": tz}})).await?;
+        json!({"before": {"name": old.name, "code": old.code, "panel_url": old.panel_url, "timezone": old.timezone, "traffic_rule": old.traffic_rule},
+               "after": {"name": name, "code": code, "panel_url": panel_url, "timezone": tz, "traffic_rule": rule}})).await?;
     tx.commit().await?;
     // 机器视图里的供应商名 / 缩写：Catalog 事件已让视图缓存和前端机器列表作废
     st.emit(Event::Catalog);
@@ -264,7 +284,26 @@ pub struct PlanIn {
     archived: Option<bool>,
 }
 
-pub async fn create_plan(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<PlanIn>) -> ApiResult<Json<Value>> {
+/// 套餐字段校验（新建与 PATCH 共用，只看传了的）：价格不为负，币种 1–8 个字母（转成大写），备注不超过 2000 字
+fn check_plan(b: &mut PlanIn) -> ApiResult<()> {
+    if b.price_cents.is_some_and(|p| p < 0) {
+        return Err(ApiError::bad_request("价格不能为负"));
+    }
+    if let Some(c) = &mut b.currency {
+        let u = c.trim().to_ascii_uppercase();
+        if u.is_empty() || u.len() > 8 || !u.bytes().all(|x| x.is_ascii_uppercase()) {
+            return Err(ApiError::bad_request("币种是 1–8 个字母，如 USD、CNY"));
+        }
+        *c = u;
+    }
+    if b.notes.as_ref().is_some_and(|n| n.chars().count() > 2000) {
+        return Err(ApiError::bad_request("备注不超过 2000 字"));
+    }
+    Ok(())
+}
+
+pub async fn create_plan(a: Actor, State(st): State<AppState>, ApiJson(mut b): ApiJson<PlanIn>) -> ApiResult<Json<Value>> {
+    check_plan(&mut b)?;
     let id = new_id();
     let provider = b.provider_id.ok_or_else(|| ApiError::bad_request("缺少 provider_id"))?;
     let name = clean_name(b.name.as_deref().unwrap_or(""), "套餐名")?;
@@ -294,9 +333,11 @@ pub async fn create_plan(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJs
     Ok(ok(json!({"id": id})))
 }
 
-pub async fn patch_plan(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<PlanIn>) -> ApiResult<Json<Value>> {
+pub async fn patch_plan(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(mut b): ApiJson<PlanIn>) -> ApiResult<Json<Value>> {
+    check_plan(&mut b)?;
     let mut tx = st.db.begin().await?;
-    sqlx::query("select 1 from plan where id = $1 for update").bind(id).fetch_one(&mut *tx).await?;
+    const ROW: &str = "select to_jsonb(p) - 'created_at' from plan p where id = $1";
+    let before: Value = sqlx::query_scalar(&format!("{ROW} for update")).bind(id).fetch_one(&mut *tx).await?;
     // 逐字段更新：Option<Option<T>> 区分「没传」与「设为空」
     macro_rules! set {
         ($col:literal, $v:expr) => {
@@ -328,7 +369,16 @@ pub async fn patch_plan(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPa
             .execute(&mut *tx)
             .await?;
     }
-    audit(&mut tx, &a.name, "plan.update", "plan", Some(id), json!({})).await?;
+    // 审计只记改了的字段（同团队、供应商的 before / after）
+    let after: Value = sqlx::query_scalar(ROW).bind(id).fetch_one(&mut *tx).await?;
+    let (mut was, mut now) = (serde_json::Map::new(), serde_json::Map::new());
+    if let (Value::Object(x), Value::Object(y)) = (&before, &after) {
+        for (k, v) in y.iter().filter(|(k, v)| x.get(*k) != Some(*v)) {
+            was.insert(k.clone(), x.get(k).cloned().unwrap_or(Value::Null));
+            now.insert(k.clone(), v.clone());
+        }
+    }
+    audit(&mut tx, &a.name, "plan.update", "plan", Some(id), json!({"before": was, "after": now})).await?;
     tx.commit().await?;
     st.emit(Event::Catalog);
     Ok(ok(json!({"id": id})))

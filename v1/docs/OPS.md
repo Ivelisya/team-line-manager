@@ -1,6 +1,6 @@
 # 运维手册
 
-日常运维一律走 `fleetctl`（人和 AI 共用）。它调中控 API；中控用自己的 SSH 密钥登录机器，所有写操作和每次远程命令都进审计（`fleetctl audit`、网页「审计」）。
+日常运维一律走 `fleetctl`（人和 AI 共用）。它调中控 API；中控用自己的 SSH 密钥登录机器，所有写操作和每次远程命令都进审计（`fleetctl audit`、网页侧栏「操作记录」）。
 
 ## 1. 准备
 
@@ -13,7 +13,7 @@
    - Linux x86_64：在 fleet-dev 上跑 `lab/install-fleetctl.sh`，从 `/opt/fleet/dist/fleetctl` 取。
 3. 写配置并自检：
    ```
-   fleetctl login --url http://192.168.31.60:8080 < 密钥文件     # 或直接运行、按提示粘贴；--token 也能用，但会留在 shell 历史与进程列表里
+   fleetctl login --url http://192.168.31.60:8080 < 密钥文件     # PowerShell：Get-Content 密钥文件 | fleetctl login --url …；或直接运行、按提示粘贴（会回显）；--token 也能用，但会留在 shell 历史与进程列表里
    fleetctl whoami
    ```
    公网地址用明文 `http://` 时会警告（密钥明文传输）。配置也可用环境变量 `FLEET_URL`、`FLEET_TOKEN`；文件位置（unix 上 0600）：Linux/macOS `~/.config/fleetctl/config.toml`，Windows `%APPDATA%\fleetctl\config.toml`。
@@ -79,7 +79,9 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
    - `relay_xray_down`：线路机上的 xray 停了，到 4。
    - `clock_skew`：agent 所在机器的时钟偏了超过 1 分钟（读数会缺失或停在旧值）；`fleetctl exec <机器> -- 'timedatectl'` 看 NTP 是否同步，没开就 `timedatectl set-ntp true`（修改状态，先确认）。
    - `renewal_due` / `renewal_overdue`：续费提醒，不是故障。网页告警页这一行可直接「登记续费」（或 `fleetctl billing <机器>` 看订阅、确认已付款后 `fleetctl renew <机器> --yes`），下一轮评估（≤30 秒）自动恢复。
-   - `traffic_quota_high`：流量额度吃紧（本周期已用 ≥ 90% 警告，≥ 100% 严重：供应商可能限速或另收费），不是故障、不改健康状态。`fleetctl show <机器>` 看「流量额度」；找供应商加流量、调高订阅的流量上限或把流量分走。新周期开始、上限调高后下一轮评估自动恢复。
+   - `traffic_quota_high`：流量额度吃紧（本周期已用 ≥ 90% 警告，≥ 100% 严重：供应商可能限速或另收费），不是故障、不改健康状态。`fleetctl billing <机器>` 看本周期已用与上限；找供应商加流量、调高订阅的流量上限或把流量分走。新周期开始、上限调高后下一轮评估自动恢复。
+     已用按网卡计量，规则跟供应商（目录 → 供应商的「流量计量」：网卡入出取小 / 取大 / 相加 / 只算出站，GOMAMI 是取小；不知道的默认取大）；家宽代理和同机 IP 节点没有网卡读数，按业务流量。上限是十进制 GB（同供应商面板）。
+     周期中途上架（之前的用量量不到）或和面板对不上时，按面板校准一次：`fleetctl subscription set <机器> --used 901.6 --yes`（面板上本周期已用的 GB 数；之后按网卡累加，至多差 1 小时），网页「费用」页签同样能填；进入下个周期自动失效。
    - 告警恢复后 30 分钟内又出现会重开原告警（`reopen_count` +1，告警页显示「反复 N 次」），不会每抖一次发一对触发/恢复通知。
    - 去抖：原因连续出现满 60 秒才开告警、连续消失满 60 秒才恢复；探测类更长（`egress_fail` 150 秒、`tcp_fail` 90 秒），偶发一次探测失败不报。续费类、流量额度不去抖。
    - 通知按渠道各一个发送队列，同一渠道内逐条按顺序发（一批告警同时触发时不会并发打到同一渠道），渠道之间互不等待（一个渠道一直超时不拖慢别的）。渠道回 429 时按它给的等待时长再试（Telegram 的 `parameters.retry_after`、通用的 `Retry-After` 头，最多等 60 秒），其它可重试的失败（网络错误、5xx）隔 0.5 秒、2 秒各再试一次；积压时通知会晚到。
@@ -105,7 +107,10 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 
 - 密钥按最小 scope 发；`exec` 等于 root shell，只给确实需要的 AI 或人。
 - exec 的命令全文会写进审计，不要在命令里放密码、令牌。
-- 登录有限速（15 分钟窗口，来源 = IPv4 地址或 IPv6 /64）：同一用户名从同一来源错 5 次、同一来源错 20 次、同一用户名不分来源错 100 次会被 429 拒绝。别人在别处输错不会把你锁在外面；`fleet-server user-set` 重设密码时清掉该用户的失败记录。
+- 登录有限速（15 分钟窗口，来源 = IPv4 地址或 IPv6 /64）：同一用户名从同一来源错 5 次、同一来源错 20 次、同一用户名不分来源错 100 次会被 429 拒绝；最后这条不拦你 30 天内登录成功过的来源（攻击者换很多地址凑满 100 次也锁不住你常用的网络）。别人在别处输错不会把你锁在外面；`fleet-server user-set` 重设密码时清掉该用户的失败记录。
+- **开两步验证**（网页「设置 → 账户安全」）：这个账户能以 root 登录全部机器，密码之外再要手机认证器上的 6 位验证码。开启时会给 10 个恢复码，只显示一次：存进密码管理器或打印出来，和手机分开放；每个只能用一次（登录页的验证码框里直接输），快用完时在同一页重新生成一组（旧的全部作废）。改密码、看 / 撤销登录会话（不认识的设备立即撤销、「退出其它设备」）也在这一页；改密码后其它设备自动退出。
+- 手机和恢复码都丢了：在中控上以 root 执行 `fleet-server totp-reset -c /etc/fleet/fleet.toml <用户名>` 停用该用户的两步验证（恢复码一并作废，写审计 `auth.totp_disabled`，不输出任何秘密），然后用密码登录、立刻重新开启。忘了密码用 `fleet-server user-set`。
+- API 密钥（fleetctl、脚本）不经过两步验证，也不能调 `/account/*`：密钥本身就是凭据，按最小 scope 发、设有效期。
 - 有 `write` 权限就能上架线路机、把节点挂过去，那台线路机的 agent 会收到节点的 SS 密码与代理账号：`write` 实际上也能拿到凭据，按凭据级别发。
 - 通知渠道（webhook、企业微信、Telegram 的 `api_base`）不能指向内网、环回、链路本地（云元数据）地址，域名在发送时只解析公网地址；确实要用内网 webhook 时在 `fleet.toml` 写 `[notify] allow_private = true`。改 Telegram 的 `api_base` 要同时重新填 `bot_token`。
 - 中控：fleet-server 在 systemd 沙箱里运行（无任何特权、只写 `/var/lib/fleet`、系统调用白名单），`/etc/fleet` 归 root、fleet 只读；部署后 `journalctl -u fleet-server` 里出现 SIGSYS / Permission denied 先看沙箱。Caddy 管理接口在 `/run/caddy/admin.sock`（只有 caddy 能连），改配置后用 `systemctl reload caddy`，直接 `caddy reload` 不带 `--config` 会连不上。网页带 CSP（只许本站脚本），不能再加内联脚本或外部 CDN。
@@ -194,13 +199,25 @@ WAL 三项由 `deploy/central/install.sh` 写进 `/etc/postgresql/<版本>/main/
 
 ## 10. 备份与恢复
 
-中控每天北京时间 03:30 做一份备份（`fleet-backup.timer` → `/opt/fleet/backup/fleet-backup.sh`），放在中控 `/var/backups/fleet/fleet-<北京时间>.tar`，留 14 份；第一次装上时 install.sh 立即做一份。手动做一份：`systemctl start fleet-backup`，`journalctl -u fleet-backup -n 5` 看结果。一份 tar 里有：
+中控每天北京时间 03:30 做一份备份（`fleet-backup.timer` → `/opt/fleet/backup/fleet-backup.sh`），放在中控 `/var/backups/fleet/fleet-<北京时间>.tar`（开了加密是 `.tar.age`，见下文「加密备份」），留 14 份；第一次装上时 install.sh 立即做一份。手动做一份：`systemctl start fleet-backup`，`journalctl -u fleet-backup -n 5` 看结果。一份 tar 里有：
 
 - `fleet.dump`：`pg_dump -Fc` 整库。`host_metric`、`entry_traffic`、`probe_result`、`access_event` 四张原始时序表（按天分区，只保留几天，量最大）只备结构不备数据，其余表（机器、入口、订阅、作业、审计、告警、小时汇总等）全量。恢复后最近几天的 10 秒粒度曲线和访问明细是空的，小时汇总都在。
 - `etc/fleet/`：`secret.key`（库里 SS 密码、REALITY 私钥、通知渠道配置的加密密钥，丢了这些就解不开）、`fleet.toml`、`ssh/id_ed25519`（中控登录所有机器的密钥）。
 - `var/lib/fleet/known_hosts`：各机器的主机指纹。
 
 整个包都是敏感数据：中控上 0640 root:fleet-backup（只有拉取用户能读），PVE 上 0600 root。
+
+### 加密备份（可选，推荐）
+
+不加密时中控 14 份、PVE 30 份，每一份都是库 + `secret.key` + 中控 SSH 私钥的明文：任一边被拿到就等于拿到全部。用 [age](https://age-encryption.org) 加密后，两边存的都是密文，私钥只在离线的地方：
+
+1. 在**离线**的电脑上（不是中控、也不是 PVE）生成身份：`age-keygen -o fleet-backup-key.txt`，屏幕上打印的 `Public key: age1…` 是公钥。`fleet-backup-key.txt` 是唯一能解开备份的东西：存进密码管理器 / 打印出来放好，再备一份到别的地方；丢了备份就废了。
+2. 把公钥写进中控 `/etc/fleet/backup-age.recipients`（一行一个，可以写多个，如再加一个备用身份；`#` 开头是注释）：`echo 'age1…' > /etc/fleet/backup-age.recipients`。
+3. 中控要有 `age` 包：install.sh 已经装（没有才装），老中控跑一次 deploy.sh 或 `apt-get install age`。之后的备份（下次定时或 `systemctl start fleet-backup`）就是 `/var/backups/fleet/fleet-<时间>.tar.age`：tar 经管道直接加密，明文不落盘。PVE 的拉取认得两种格式，加密的存成 `fleet-prod-<时间>.tar.age`（只查 age 文件头和大小，PVE 上没有私钥、解不开）。
+4. 确认能解开：把一份 `.tar.age` 拷到离线电脑，`age -d -i fleet-backup-key.txt fleet-<时间>.tar.age | tar -tv` 能列出 `fleet.dump`、`etc/fleet/secret.key`。
+5. 开启之前的明文备份不会自动消失：中控上按 14 份轮换，PVE 按 30 份；想马上清掉就手动删两边的旧 `.tar`。
+
+关掉加密：删掉 `/etc/fleet/backup-age.recipients`，之后又是明文 `.tar`。换身份：改这个文件即可，旧备份仍要用旧私钥解。
 
 ### 家里 PVE 每天取一份
 
@@ -223,14 +240,14 @@ WAL 三项由 `deploy/central/install.sh` 写进 `/etc/postgresql/<版本>/main/
 在新装（或重装）的中控机上按顺序做：
 
 1. 正常部署一次：`deploy/central/deploy.sh <主机> <域名>`。装好 PostgreSQL、Caddy、fleet 用户、服务与定时器；这时库是空的，密钥是新生成的。
-2. 把备份 tar 拷到中控并解开：`mkdir -p /root/restore && tar -xf fleet-<时间>.tar -C /root/restore`
+2. 把备份拷到中控并解开：`mkdir -p /root/restore && tar -xf fleet-<时间>.tar -C /root/restore`。加密的 `.tar.age` 在离线电脑上先解成 tar（`age -d -i fleet-backup-key.txt -o fleet-<时间>.tar fleet-<时间>.tar.age`）再拷过去，或把私钥临时拷到中控 `age -d -i /root/key.txt fleet-<时间>.tar.age | tar -xf - -C /root/restore`，用完立刻删掉私钥（`shred -u /root/key.txt`）
 3. 停服务、换库（`pg_restore` 以 postgres 执行，从标准输入读，对象属主恢复为 fleet）：
    ```
    systemctl stop fleet-server
    runuser -u postgres -- psql -c 'drop database fleet' -c 'create database fleet owner fleet'
    runuser -u postgres -- pg_restore -d fleet --exit-on-error < /root/restore/fleet.dump
    ```
-4. 放回密钥与主机指纹。fleet.toml 用新装的那份（里面的库密码是第 1 步新生成的），备份里 fleet.toml 改过的其它设置（retention、numbering 等）对照着抄过来；备份里有 `etc/fleet/ipintel-overrides.toml`、`etc/fleet/backup.pub` 也照样放回：
+4. 放回密钥与主机指纹。fleet.toml 用新装的那份（里面的库密码是第 1 步新生成的），备份里 fleet.toml 改过的其它设置（retention、numbering 等）对照着抄过来；备份里有 `etc/fleet/ipintel-overrides.toml`、`etc/fleet/backup.pub`、`etc/fleet/backup-age.recipients` 也照样放回：
    ```
    install -m 600 -o fleet -g fleet /root/restore/etc/fleet/secret.key /etc/fleet/secret.key
    install -m 600 -o fleet -g fleet /root/restore/etc/fleet/ssh/id_ed25519 /etc/fleet/ssh/id_ed25519

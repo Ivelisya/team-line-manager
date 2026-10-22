@@ -174,12 +174,16 @@ enum SubscriptionCmd {
         /// 账单时区（IANA 名，新建默认 Asia/Shanghai）：到期与流量周期按它的日期算
         #[arg(long)]
         tz: Option<String>,
-        /// 流量上限 GiB（0 = 不限）；none = 不单独设，按套餐（同机 IP 节点 = 与宿主机共用）
+        /// 流量上限 GB（供应商的十进制 GB；0 = 不限）；none = 不单独设，按套餐（同机 IP 节点 = 与宿主机共用）
         #[arg(long)]
         traffic_gb: Option<String>,
         /// 流量每月几号重置（1–31，小月没有这一天按月末；新建默认 1）；none = 不设，按北京时间的自然月
         #[arg(long)]
         reset_day: Option<String>,
+        /// 按供应商面板校准本周期已用：填面板上的 GB 数（如 901.6），之后的用量按网卡流量累加；none = 清掉校准。
+        /// 周期中途接入或和面板差得多时用；进入下个周期自动失效
+        #[arg(long)]
+        used: Option<String>,
         #[arg(long)]
         yes: bool,
     },
@@ -643,7 +647,8 @@ fn login(url: &str, token: Option<&str>, json: bool) -> anyhow::Result<u8> {
             }
             let mut l = String::new();
             std::io::stdin().lock().read_line(&mut l)?;
-            l.trim().to_string()
+            // Windows PowerShell 5 写的 UTF-8 文件开头带 BOM
+            l.trim().trim_start_matches('\u{feff}').to_string()
         }
     };
     if token.is_empty() {
@@ -685,7 +690,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Renew { machine, to, cycles, amount, note, yes } => {
             billing::renew(x, billing::RenewOpts { machine: &machine, to: to.as_deref(), cycles, amount: amount.as_deref(), note: note.as_deref(), yes })
         }
-        Cmd::Subscription { cmd: SubscriptionCmd::Set { machine, price, currency, cycle, due, auto_renew, remind_days, tz, traffic_gb, reset_day, yes } } => billing::subscription_set(
+        Cmd::Subscription { cmd: SubscriptionCmd::Set { machine, price, currency, cycle, due, auto_renew, remind_days, tz, traffic_gb, reset_day, used, yes } } => billing::subscription_set(
             x,
             billing::SubSetOpts {
                 machine: &machine,
@@ -698,6 +703,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
                 tz: tz.as_deref(),
                 traffic_gb: traffic_gb.as_deref(),
                 reset_day: reset_day.as_deref(),
+                used: used.as_deref(),
                 yes,
             },
         ),

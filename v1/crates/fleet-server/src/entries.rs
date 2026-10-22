@@ -198,7 +198,8 @@ pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, ech
 }
 
 /// 线路机回报：记录已应用代数，推进入口状态（pending→active，removing→removed）。
-pub async fn on_applied(db: &PgPool, relay_id: Uuid, rep: &ApplyReport) -> anyhow::Result<()> {
+/// 返回是否有改动：同一份回报重发（已应用的代数、同样的错误）什么都不写，调用方也就不推送
+pub async fn on_applied(db: &PgPool, relay_id: Uuid, rep: &ApplyReport) -> anyhow::Result<bool> {
     let mut tx = db.begin().await?;
     let gen = rep.generation as i64;
     // 回报的代数比中控记录的还新：数据库回滚过或 agent 带着旧机器的状态，不能信，忽略
@@ -206,26 +207,33 @@ pub async fn on_applied(db: &PgPool, relay_id: Uuid, rep: &ApplyReport) -> anyho
     if let Some((g,)) = cur {
         if gen > g {
             tracing::warn!(%relay_id, reported = gen, current = g, "忽略超前的应用回报");
-            return Ok(());
+            return Ok(false);
         }
     }
-    sqlx::query("update entry set apply_error = u.err from unnest($2::uuid[], $3::text[]) u(id, err) where entry.id = u.id and entry.relay_id = $1")
-        .bind(relay_id)
-        .bind(rep.entries.iter().map(|e| e.id).collect::<Vec<_>>())
-        .bind(rep.entries.iter().map(|e| if e.ok { None } else { e.error.clone().or(Some("失败".into())) }).collect::<Vec<Option<String>>>())
-        .execute(&mut *tx)
-        .await?;
+    let mut n = sqlx::query(
+        "update entry set apply_error = u.err from unnest($2::uuid[], $3::text[]) u(id, err)
+         where entry.id = u.id and entry.relay_id = $1 and entry.apply_error is distinct from u.err",
+    )
+    .bind(relay_id)
+    .bind(rep.entries.iter().map(|e| e.id).collect::<Vec<_>>())
+    .bind(rep.entries.iter().map(|e| if e.ok { None } else { e.error.clone().or(Some("失败".into())) }).collect::<Vec<Option<String>>>())
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
     if rep.ok {
-        sqlx::query(
-            "update relay set applied_generation = greatest(applied_generation, $2), applied_at = now(), apply_error = null
-             where machine_id = $1",
+        // 上次应用时间照旧每份都刷新；只有代数前进或清掉了错误才算改动（行已在上面锁住，o 读到的是改之前的值）
+        let moved: Option<bool> = sqlx::query_scalar(
+            "with o as (select applied_generation g, apply_error e from relay where machine_id = $1)
+             update relay set applied_generation = greatest(applied_generation, $2), applied_at = now(), apply_error = null
+             from o where machine_id = $1 returning o.g < $2 or o.e is not null",
         )
         .bind(relay_id)
         .bind(gen)
-        .execute(&mut *tx)
+        .fetch_optional(&mut *tx)
         .await?;
+        n += moved.unwrap_or(false) as u64;
         let failed: Vec<Uuid> = rep.entries.iter().filter(|e| !e.ok).map(|e| e.id).collect();
-        sqlx::query(
+        n += sqlx::query(
             "update entry set lifecycle = 'active', updated_at = now()
              where relay_id = $1 and lifecycle = 'pending' and changed_gen <= $2 and not (id = any($3))",
         )
@@ -233,24 +241,27 @@ pub async fn on_applied(db: &PgPool, relay_id: Uuid, rep: &ApplyReport) -> anyho
         .bind(gen)
         .bind(&failed)
         .execute(&mut *tx)
-        .await?;
-        sqlx::query(
+        .await?
+        .rows_affected();
+        n += sqlx::query(
             "update entry set lifecycle = 'removed', removed_at = now(), updated_at = now()
              where relay_id = $1 and lifecycle = 'removing' and changed_gen <= $2",
         )
         .bind(relay_id)
         .bind(gen)
         .execute(&mut *tx)
-        .await?;
+        .await?
+        .rows_affected();
     } else {
-        sqlx::query("update relay set apply_error = $2 where machine_id = $1")
+        n += sqlx::query("update relay set apply_error = $2 where machine_id = $1 and apply_error is distinct from $2")
             .bind(relay_id)
             .bind(rep.error.clone().unwrap_or_else(|| "未知错误".into()))
             .execute(&mut *tx)
-            .await?;
+            .await?
+            .rows_affected();
     }
     tx.commit().await?;
-    Ok(())
+    Ok(n > 0)
 }
 
 fn pct(s: &str) -> String {

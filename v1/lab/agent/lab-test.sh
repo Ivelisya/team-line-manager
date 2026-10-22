@@ -13,8 +13,10 @@ ok()   { echo "  [通过] $*"; }
 fail() { echo "  [失败] $*"; exit 1; }
 
 echo "== 准备"
-sed "s#__REALITY_PRIVATE_KEY__#$REALITY_PRIVATE_KEY#; s#__SS_PASSWORD__#$SS_PASSWORD#" "$HERE/desired-add.json.tmpl" | $SSH lab-relay1 'mkdir -p /root/t && cat > /root/t/add.json && chmod 600 /root/t/add.json'
-sed "s#__REALITY_PRIVATE_KEY__#$REALITY_PRIVATE_KEY#" "$HERE/desired-remove.json.tmpl" | $SSH lab-relay1 'cat > /root/t/remove.json && chmod 600 /root/t/remove.json'
+# 私钥、密码用 bash 自己替换后经 stdin 传过去，不出现在任何进程的命令行里（ps 看得到 sed 的参数）；替换串加引号，& 不被展开
+fill() { local t; t=$(<"$1"); t=${t//__REALITY_PRIVATE_KEY__/"$REALITY_PRIVATE_KEY"}; t=${t//__SS_PASSWORD__/"$SS_PASSWORD"}; printf '%s\n' "$t"; }
+fill "$HERE/desired-add.json.tmpl" | $SSH lab-relay1 'mkdir -p /root/t && umask 077 && cat > /root/t/add.json'
+fill "$HERE/desired-remove.json.tmpl" | $SSH lab-relay1 'umask 077 && cat > /root/t/remove.json'
 $SSH fleet-dev 'mkdir -p /root/xclient'
 $SSH fleet-dev '[ -x /root/xclient/xray ]' || $SSH lab-relay1 'cat /usr/local/bin/xray' | $SSH fleet-dev 'cat > /root/xclient/xray && chmod +x /root/xclient/xray'
 cat <<EOF | $SSH fleet-dev 'cat > /root/xclient/client.json'

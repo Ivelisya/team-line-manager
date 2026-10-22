@@ -25,7 +25,9 @@ export async function api<T = unknown>(path: string, opts: Opts = {}): Promise<T
   let json: { data?: T; error?: { code: string; message: string } } | null = null;
   try { json = await res.json(); } catch { /* 空响应体 */ }
   if (!res.ok) {
-    if (res.status === 401 && !path.startsWith('/auth/')) window.dispatchEvent(new Event(AUTH_EVENT));
+    // 只有「没登录 / 会话失效」才跳登录页；账户安全里输错当前密码、验证码也是 401，但 code 不同（bad_password / totp_invalid…）
+    const code = json?.error?.code ?? 'unauthorized';
+    if (res.status === 401 && !path.startsWith('/auth/') && code === 'unauthorized') window.dispatchEvent(new Event(AUTH_EVENT));
     throw new ApiError(res.status, json?.error?.code ?? 'http', json?.error?.message ?? `请求失败（${res.status}）`);
   }
   return json?.data as T;

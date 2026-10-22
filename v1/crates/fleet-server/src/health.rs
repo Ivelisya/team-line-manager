@@ -64,18 +64,26 @@ const CLOCK_SKEW_MAX_MS: i64 = 60_000;
 /// 流量额度：本周期已用到上限的这么多（%）报警告，到 100%（已超限）报严重
 const QUOTA_WARN_PCT: f64 = 90.0;
 const QUOTA_OVER_PCT: f64 = 100.0;
-const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+/// 流量上限按供应商的十进制 GB（1 GB = 10⁹ 字节）
+const GB: f64 = 1e9;
 
-/// 流量额度（traffic_quota_high）：上限取订阅的 traffic_gb，没填按套餐的；0 / 空 = 不限，不评估（同前端 quota()）。
+/// 额度用量的写法同供应商面板：十进制 GB，不换算成 TB（901.6 GB / 2000 GB）
+fn fmt_gb(n: f64) -> String {
+    let x = n.max(0.0) / GB;
+    let s = if x < 10.0 { format!("{x:.2}") } else { format!("{x:.1}") };
+    format!("{} GB", if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.') } else { &s })
+}
+
+/// 流量额度（traffic_quota_high）：上限取订阅的 traffic_gb（GB），没填按套餐的；0 / 空 = 不限，不评估（同前端 quota()）。
 /// 同机 IP 节点自己没设上限时额度算在宿主机上（宿主机的已用含它的流量），这里也就不评估
 fn quota_reason(m: &MachineView) -> Option<Reason> {
     let gb = m.subscription.as_ref().and_then(|s| s.traffic_gb).or(m.plan.as_ref().and_then(|p| p.traffic_gb)).filter(|g| *g > 0)?;
-    let limit = gb as f64 * GIB;
+    let limit = gb as f64 * GB;
     let pct = m.quota.used as f64 * 100.0 / limit;
     if pct < QUOTA_WARN_PCT {
         return None;
     }
-    let amount = format!("{} / {}", crate::notify::fmt_bytes(m.quota.used as f64), crate::notify::fmt_bytes(limit));
+    let amount = format!("{} / {}", fmt_gb(m.quota.used as f64), fmt_gb(limit));
     let reset = m.quota.reset_in_days.map(|d| format!("，{d} 天后重置")).unwrap_or_default();
     // 向下取整：还没超限时不会写成 100%
     let p = pct.floor();
@@ -85,6 +93,8 @@ fn quota_reason(m: &MachineView) -> Option<Reason> {
         Reason { key: "traffic_quota_high", severity: "warning", text: format!("本周期流量已用 {p:.0}%（{amount}）{reset}") }
     })
 }
+
+const DETAIL_MAX: usize = 120;
 
 /// 在用入口的探测结果 → egress_fail / tcp_fail。
 /// 同一条规则一台机器只开一个告警：几个入口同时失败合成一条原因，文字列出全部入口，
@@ -105,7 +115,8 @@ fn probe_reasons(live: &[&EntryView], rs: &mut Vec<Reason>, unknown: &mut bool, 
         match &e.egress {
             Some(p) if !p.ok => {
                 egress.push(format!("{}:{}", e.relay.name, e.port));
-                let d = p.detail.clone().unwrap_or_default();
+                // 探测详情是线路机报的自由文本，进告警摘要和通知：截到 DETAIL_MAX 个字
+                let d: String = p.detail.as_deref().unwrap_or_default().chars().take(DETAIL_MAX).collect();
                 if !d.is_empty() && !details.contains(&d) {
                     details.push(d);
                 }
@@ -274,7 +285,7 @@ pub(crate) mod tests {
             host: None,
             entries: vec![],
             removed_traffic: Default::default(),
-            quota: Quota { used: 0, period_start: now.date(), reset_in_days: None },
+            quota: Quota { used: 0, period_start: now.date(), rule: Some("max"), base: None, base_at: None, reset_in_days: None },
             health: Health::default(),
             active_job: None,
             failed_job: None,
@@ -372,6 +383,9 @@ pub(crate) mod tests {
         // 恢复一个：摘要只剩另一个
         n.entries[0] = entry(false, true);
         assert_eq!(evaluate(&n, now).reasons[0].text, "线路机B:20003 出口不通：refused");
+        // 线路机报的超长详情截到 120 个字再进摘要
+        n.entries[1].egress.as_mut().unwrap().detail = Some("错".repeat(5000));
+        assert_eq!(evaluate(&n, now).reasons[0].text, format!("线路机B:20003 出口不通：{}", "错".repeat(DETAIL_MAX)));
     }
 
     #[test]
@@ -517,23 +531,27 @@ pub(crate) mod tests {
     #[test]
     fn traffic_quota_alerts_without_changing_status() {
         let now = OffsetDateTime::now_utc();
-        let gib = 1024 * 1024 * 1024;
+        // 上限是供应商的十进制 GB
+        let gb: i64 = 1_000_000_000;
         let mut m = base("relay");
-        m.quota.used = 1885 * gib;
+        m.quota.used = 1885 * gb;
         assert!(evaluate(&m, now).reasons.is_empty(), "没有上限（订阅、套餐都没填）：不评估");
-        // 上限按套餐的 2 TiB：92% 警告，健康状态不变
-        m.plan = Some(PlanRef { id: Uuid::now_v7(), name: "p".into(), bandwidth_mbps: None, traffic_gb: Some(2048) });
+        // 上限按套餐的 2000 GB：92% 警告，健康状态不变
+        m.plan = Some(PlanRef { id: Uuid::now_v7(), name: "p".into(), bandwidth_mbps: None, traffic_gb: Some(2000) });
         m.quota.reset_in_days = Some(9);
         let h = evaluate(&m, now);
         assert_eq!((keys(&h), h.reasons[0].severity, h.status), (vec!["traffic_quota_high"], "warning", Status::Ok));
-        assert_eq!(h.reasons[0].text, "本周期流量已用 92%（1.84 TiB / 2 TiB），9 天后重置");
-        m.quota.used = 1843 * gib;
+        assert_eq!(h.reasons[0].text, "本周期流量已用 94%（1885 GB / 2000 GB），9 天后重置");
+        m.quota.used = 1800 * gb - 1;
         assert!(evaluate(&m, now).reasons.is_empty(), "89.99% 不报");
-        // 超限：严重，仍不影响健康状态；没有重置日不写几天后重置
-        (m.quota.used, m.quota.reset_in_days) = (2100 * gib, None);
+        // 超限：严重，仍不影响健康状态；没有重置日不写几天后重置。1863 GiB 按十进制已超 2000 GB
+        (m.quota.used, m.quota.reset_in_days) = (1863 * 1024 * 1024 * 1024, None);
         let h = evaluate(&m, now);
         assert_eq!((h.reasons[0].severity, h.status), ("critical", Status::Ok));
-        assert_eq!(h.reasons[0].text, "本周期流量已超出额度（已用 102%，2.05 TiB / 2 TiB）");
+        assert_eq!(h.reasons[0].text, "本周期流量已超出额度（已用 100%，2000.4 GB / 2000 GB）");
+        m.quota.used = 9_016 * gb / 10;
+        m.plan = Some(PlanRef { id: Uuid::now_v7(), name: "p".into(), bandwidth_mbps: None, traffic_gb: Some(1000) });
+        assert_eq!(evaluate(&m, now).reasons[0].text, "本周期流量已用 90%（901.6 GB / 1000 GB）");
         // 订阅的上限优先于套餐：0 = 不限，更大的上限没到 90%
         m.subscription = Some(Subscription { traffic_gb: Some(0), ..sub(30) });
         assert!(evaluate(&m, now).reasons.is_empty());
@@ -543,7 +561,7 @@ pub(crate) mod tests {
         let mut x = base("vps");
         x.host_machine = Some(Ref { id: Uuid::now_v7(), name: "团队1-03".into() });
         x.entries = vec![entry(false, true)];
-        x.quota.used = 5000 * gib;
+        x.quota.used = 5000 * gb;
         assert!(keys(&evaluate(&x, now)).is_empty());
     }
 

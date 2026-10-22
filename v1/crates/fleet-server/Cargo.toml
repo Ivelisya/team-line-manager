@@ -32,6 +32,11 @@ argon2 = "0.5"
 chacha20poly1305 = "0.10"
 futures = "0.3"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
+# 两步验证：TOTP（HMAC-SHA1）、密钥的 base32、二维码只要 SVG 输出
+hmac = "=0.12.1"
+sha1 = "=0.10.7"
+data-encoding = "=2.11.1"
+qrcode = { version = "=0.14.1", default-features = false, features = ["svg"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

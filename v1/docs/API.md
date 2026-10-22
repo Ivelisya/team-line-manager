@@ -12,9 +12,24 @@
 ## 认证
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/auth/login` | `{username,password}` → 设 Cookie，`{data:{username}}`。限速（15 分钟窗口；来源 = IPv4 地址或 IPv6 /64）：同一用户名从同一来源失败 5 次、同一来源失败 20 次（不分用户名）、同一用户名失败 100 次（不分来源）→ 429；别处的失败不影响从自己的来源登录，成功登录只清本来源的失败记录（`error.code="rate_limited"`，`error.detail.retry_after_s`，message 含剩余等待时间）。成功、失败、登出都写审计 |
+| POST | `/auth/login` | `{username,password,totp?}` → 设 Cookie，`{data:{username}}`。限速（15 分钟窗口；来源 = IPv4 地址或 IPv6 /64）：同一用户名从同一来源失败 5 次、同一来源失败 20 次（不分用户名）、同一用户名失败 100 次（不分来源；该用户 30 天内登录成功过的来源不受这一条）→ 429；别处的失败不影响从自己的来源登录，成功登录只清本来源的失败记录（`error.code="rate_limited"`，`error.detail.retry_after_s`，message 含剩余等待时间）。成功、失败、登出都写审计。**两步验证**：用户开了 TOTP 时，密码对但没给 `totp` → 401 `totp_required`（不算失败；密码错时一律 `bad_credentials`，猜密码的人看不出开没开）；`totp` 是 6 位验证码（前后各容忍 30 秒，同一个时间步只收一次）或一个恢复码（用掉即作废，写审计 `auth.totp_recovery_used`），不对或重放 → 401 `totp_invalid`，算一次登录失败 |
 | POST | `/auth/logout` | |
 | GET | `/auth/me` | `{data:{username, kind:"session"\|"api_key", scopes:[...]}}`；未登录 401 |
+
+## 账户安全（两步验证、登录会话、改密码）
+只允许会话用户，用 API 密钥调用一律 403（fleetctl 走 API 密钥，不受两步验证影响）。要再输一次密码 / 验证码的接口（停用两步验证、重新生成恢复码、改密码）与登录共用失败限速（同一用户名 + 来源），输错写审计 `auth.verify_failed`。输错当前密码回 401 `bad_password`、验证码不对回 401 `totp_invalid`、该给验证码没给回 401 `totp_required`——只有 `code="unauthorized"` 的 401 才表示会话失效。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/account/totp` | `{enabled, recovery_codes_left}` |
+| POST | `/account/totp/setup` | 生成待确认的密钥（20 字节，加密保存，10 分钟内有效；再调一次换一把）→ `{secret(base32), otpauth_url, qr_svg}`；已开启 409 |
+| POST | `/account/totp/enable` | `{code}`（6 位，核对待确认的密钥）→ 开启并返回 `{recovery_codes:[10 个 xxxx-xxxx-xxxx]}`，**只返回这一次**（库里只存 sha256）；码不对 400 `totp_invalid`；审计 `auth.totp_enabled` |
+| POST | `/account/totp/disable` | `{password, code}`（code 可以是恢复码）→ 停用，恢复码全部作废；审计 `auth.totp_disabled` |
+| POST | `/account/totp/recovery-codes` | `{code}`（验证码或恢复码）→ 新的一组 `{recovery_codes}`，旧的全部作废；审计 `auth.totp_recovery_regenerated` |
+| GET | `/account/sessions` | 当前用户未过期的会话 `[{id, created_at, last_seen_at, expires_at, ip, user_agent, current}]`，本设备排第一；`id` 是会话哈希前 8 字节的十六进制（推不出 Cookie），`user_agent` 最多 200 字符，`last_seen_at` 一分钟内不重复更新 |
+| DELETE | `/account/sessions/{id}` | 撤销一个会话（不存在 404）→ `{ok, current}`；审计 `auth.session_revoked` |
+| POST | `/account/sessions/revoke-others` | 撤销本设备以外的全部会话 → `{revoked}`；审计 `auth.session_revoked` |
+| POST | `/account/password` | `{current, new, totp?}`：新密码至少 12 个字符、不能等于用户名或当前密码；开了两步验证要 `totp`（或恢复码）。成功后撤销本设备以外的全部会话 → `{ok, revoked_sessions}`；审计 `auth.password_changed` |
 
 ## API 密钥与 scope
 密钥是 `flk_<8位十六进制前缀>_<随机串>`，库里只存 sha256 与前缀。每个请求按「方法 + 路径」需要一个 scope，密钥没有就 403（会话用户拥有全部）：
@@ -40,12 +55,12 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
 | GET | `/teams` | `[{id,name,sort_order,node_count}]` |
 | POST | `/teams` | `{name,sort_order?}` |
 | PATCH | `/teams/{id}` | `{name?,sort_order?}`（改团队名 = 该团队所有节点显示名一起变） |
-| GET | `/providers` | `[{id,name,code,panel_url,timezone}]` |
-| POST | `/providers` | `{name,code,panel_url?,timezone?}`；`panel_url` 须是 http(s) 地址（400）；`timezone` 不传 / null / 空串 = 列默认值 UTC，否则须是 `at time zone` 认的时区（400）；名称或缩写重复 409 |
-| PATCH | `/providers/{id}` | `{name?,code?,panel_url?,timezone?}`：没传的不改；`panel_url` null / 空串 = 清空；`timezone` null / 空串 = 回到 UTC。校验同 POST；只影响之后上架的机器（已上架机器的账单时区是当时抄过去的）。写审计 `provider.update` |
+| GET | `/providers` | `[{id,name,code,panel_url,timezone,traffic_rule}]`；`traffic_rule` 是这家怎么计量流量额度（网卡本周期入、出总量）：`min` 取小（如 GOMAMI）/ `max` 取大 / `sum` 相加 / `out` 只算出站 |
+| POST | `/providers` | `{name,code,panel_url?,timezone?,traffic_rule?}`；`traffic_rule` 不传 = `max`（不知道的供应商按取大，不会少算），别的值 400；`panel_url` 须是 http(s) 地址（400）；`timezone` 不传 / null / 空串 = 列默认值 UTC，否则须是 `at time zone` 认的时区（400）；名称或缩写重复 409 |
+| PATCH | `/providers/{id}` | `{name?,code?,panel_url?,timezone?,traffic_rule?}`：没传的不改（`traffic_rule` 改了立即影响这家机器的 `quota.used`）；`panel_url` null / 空串 = 清空；`timezone` null / 空串 = 回到 UTC。校验同 POST（`panel_url` 和库里现有的一样时不校验：加 http(s) 校验之前存下的旧值不挡改别的字段）；只影响之后上架的机器（已上架机器的账单时区是当时抄过去的）。写审计 `provider.update` |
 | GET | `/plans` | `[{id,provider_id,name,cpu_cores,mem_mb,disk_gb,bandwidth_mbps,traffic_gb,price_cents,currency,cycle,notes,archived_at,machine_count}]` |
-| POST | `/plans` | 同上字段（不含 id/统计） |
-| PATCH | `/plans/{id}` | 任意字段（没传的不改；规格类字段传 null = 清空）；`archived:true` 归档 |
+| POST | `/plans` | 同上字段（不含 id/统计）。校验（PATCH 同，只看传了的）：`name` 1–32 字，`price_cents` ≥ 0，`currency` 1–8 个字母（存成大写），`notes` ≤ 2000 字，否则 400 |
+| PATCH | `/plans/{id}` | 任意字段（没传的不改；规格类字段传 null = 清空）；`archived:true` 归档。审计 `plan.update` 记改了的字段 `{before:{…}, after:{…}}` |
 
 ## 机器
 `MachineView`（列表与详情同形）：
@@ -69,10 +84,15 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
   host: {ts,cpu_pct,load1,mem_used,mem_total,disk_used,disk_total,net_rx_bps,net_tx_bps,tcp_conns}|null,  // load1 在容器里为 null（/proc/loadavg 是宿主机的）
   entries: [EntryView],                                // 节点：自己的入口；线路机：挂在上面的入口
   removed_traffic: {today_up,today_down,month_up,month_down},  // 已移除入口（如换线路机后的旧入口）本月/今天的流量，不在 entries 里
-  quota: {used, period_start},  // 流量额度周期已用的业务流量（字节，下载+上传，含已移除入口）与周期起点（日期）。
+  quota: {used, period_start, rule, base, base_at},  // 流量额度周期已用（字节）与周期起点（日期）。
+                                // 有自己 agent 的机器（线路机、落地机、宿主机）按网卡：本周期物理网卡入、出总量按供应商的 traffic_rule
+                                // 取小 / 取大 / 相加 / 只取出站（没有供应商按 max），rule 即所用规则；宿主机的网卡也走了它的同机 IP 节点的流量。
+                                // 家宽代理和同机 IP 节点没有自己的网卡读数：rule 为 null，used 是业务流量（下载+上传，含已移除入口）。
+                                // base / base_at：本周期按供应商面板校准过（见 PUT subscription 的 traffic_used_gb）时的面板读数（字节）与校准时间，
+                                // used = base + 校准时刻所在整点之后的用量（那一小时里校准之后的部分不计，至多差 1 小时；取小 / 取大按校准之后的入、出总量算）；
+                                // 校准时间早于周期起点（已进入新周期）时不算，二者为 null。
                                 // 订阅有 traffic_reset_day：账单时区里今天或之前最近一次重置日起（月份没有这一天按月末，如 31 号在 9 月是 30 号），
                                 // 从该日账单时区零点累计；否则为北京时间的本月。来自小时汇总表，每次汇总后更新。
-                                // 宿主机的 used 含它的同机 IP 节点（含已退役的）入口的流量（额度共用）；同机 IP 节点自己的 used 只算它自己的
   health: {status: "ok"|"degraded"|"down"|"unknown"|"maintenance"|"inactive", reasons:[{key,severity,text}]},
   active_job: {id,kind,state}|null,                    // 进行中的作业（queued/running/waiting/cancelling）
   failed_job: {id,kind,state}|null,                    // lifecycle = failed（上架失败）时：失败的上架/恢复作业，重试回到 provisioning，取消则补偿退役；
@@ -96,7 +116,7 @@ EntryView = { id, relay:{id,name}, node:{id,name}, direct, port, lifecycle, appl
 | POST | `/machines/{id}/purge` | 仅已退役。`{confirm: <显示名>}` → 作业；彻底删除机器与遥测，保留审计。宿主机上还有同机 IP 节点（含已退役的）没删时 409：「这台机器上还有同机 IP 节点没有彻底删除（含已退役的）：…；先删它们」。它的入口近 35 天有小时流量、且入口另一端的机器未退役时 409：「这台机器的入口在 YYYY-MM-DD 前仍计入其他机器的流量统计，届时再彻底删除」（作业执行时再查一次） |
 | POST | `/machines/{id}/upgrade-agent` | 推送中控当前版本的 agent 并重启（作业 `upgrade_agent`；令牌顺带轮换） → `{data:{machine_id,name,kind,job_id,after:null}}`。线路机顺带收敛 fleet-xray 单元（变了只 daemon-reload，不重启 Xray，等它下次重启才生效）与访问日志轮转（配置 + 每小时的 fleet-xray-logrotate.timer），这两样没装上只记警告。**回滚**：推送时机器上的旧程序留成同目录的 `/usr/local/bin/fleet-agent.prev`（硬链接，新程序原子替换；上一次留的被覆盖，成功后也留着）；重启后新版本起不来（隔 3 秒主进程换了，或不是 active），或 2 分钟内没有用新令牌、以新版本号上报，就把 .prev 换回去并重启，作业失败，错误写明「新版本 X 起不来（…）/ 重启后 120 秒没有上报，已回滚到 <旧版本>」；机器上没有 .prev 或换回去也没起来时写明需要人工处理。程序和 dist 里的相同（推送跳过）时不回滚。**线路机**另要新版本自己报的 Xray 状态做到：Xray 在跑、已应用的配置追上升级开始时的期望代数、没有应用错误（`relay.apply_error` 与 agent 自报的 `last_apply_error` 都算）；只查升级前（推送之前读的 agent 最近状态）就做到的项，记在作业参数 `xray_checks`、推送那一步输出 `xray_checks`。2 分钟做不到同样换回并失败，错误「新版本 X 重启后 120 秒线路机检查没通过（Xray 没在跑；已应用的配置代数 2，没到 3；应用配置出错：…），已回滚到 <旧版本>」（`error_kind` remote）。「新版本自己报的」：中控入库时给 `agent_state.info.xray` 记上报它的 agent 版本（`agent_version`）——重启后新进程最先补发旧进程退出时落盘的报告，之后几份不带 Xray 状态，按上报时间分不出来。同机 IP 节点 409（agent 是宿主机的，升级宿主机） |
 | POST | `/agents/upgrade` | 所有在用线路机与落地机（不含同机 IP 节点）各建一个 `upgrade_agent` 作业（有进行中作业的跳过；每台单独提交，一台冲突不影响其他台），但不一起跑：先升一台做**金丝雀**（有线路机先挑线路机；同类里在用入口少的在前，一样少按名字），它成功后其余线路机**一台接一台**，线路机都成功后落地机**并发**（作业引擎的并发上限 `job_workers`）。编排记在作业参数 `after`（要等的作业 id）：那个作业结束之前这个作业领取不到（一直是 queued）；它在推送之后失败了（新版本起不来、没上报、线路机检查没通过）或被取消，这个作业一步都不做、直接取消，`error` 写明原因（如「金丝雀「线路机2」升级失败，其余机器不再升级」「「线路机3」升级失败，后面的机器不再升级」「「线路机3」的升级没有完成（已取消），后面的机器不再升级」，再往后的沿用同一个原因），日志一条「没有开始：…」。它在推送之前就失败的（SSH 连不上、登录被拒、推送失败：机器上的程序没换过，与新版本无关）不算，这个作业照常开始——agent 步骤每次尝试先记作业参数 `pushed=false`，要用 dist 里的程序重启 agent 之前置 true，编排据此判断（没有记的按推送之后算）。排队中的作业可以取消（`POST /jobs/{id}/cancel`），等它的跟着取消。落地机之间互不等待，一台失败不影响别的。发起时把 dist 里 agent 的 sha256 与版本号记进各作业参数 `rollout:{sha256,version}`，每个作业开始前、推送时各核对一次：中途重新部署过中控（dist 换了）就不推，正要推送的失败、没开始的直接取消，`error` 都是「中控上的 agent 在升级过程中换了版本（发起时是 X），请重新发起全部升级」。dist 里没有 agent 程序或读不出版本号（`--version`）时 409、不建作业 → `{data:{jobs:[{machine_id,name,kind,job_id,after}], skipped:[{machine_id,name,reason}], order}}`：`jobs` 按执行顺序（第一个是金丝雀，`after` 为 null）；`order` 是给人看的顺序说明，如「先升「线路机3」做金丝雀，成功后其余 2 台线路机逐台升级，线路机都成功后 40 台落地机并发升级；新版本在任何一台线路机上出问题，没开始的都会取消」（只有一台时「只有「X」一台」，一台都没建时「没有要升级的机器」） |
-| PUT | `/machines/{id}/subscription` | `{price_cents,currency,cycle,due_date,billing_tz,auto_renew,remind_days,traffic_gb?,traffic_reset_day?}` |
+| PUT | `/machines/{id}/subscription` | `{price_cents,currency,cycle,due_date,billing_tz,auto_renew,remind_days,traffic_gb?,traffic_reset_day?,traffic_used_gb?}`。`traffic_gb` 是供应商的十进制 GB（10⁹ 字节）。`traffic_used_gb`：按供应商面板校准本周期已用（GB，可带小数，如 901.6；负数 400），记成字节与当前时间（`quota.base` / `base_at`）；不传 = 不动原有校准（整份替换只针对其余字段），null = 清掉。写审计 `subscription.set` |
 | POST | `/machines/{id}/renewals` | `{new_due,amount_cents?,note?}` |
 | GET | `/machines/{id}/renewals` | |
 | GET | `/teams/{id}/renumber` | 预览：`{data:{changes:[{machine_id,old_name,new_name}],token}}` |
@@ -173,9 +193,9 @@ ProvisionItem = {
 ## 返回形状补充（前端以此为准）
 
 - `health.reasons[]`：`{key, rule_name, severity, text}`；`rule_name` 是规则中文名（同通知）；`severity`：`"info"` | `"warning"` | `"critical"`（info 只有 `policy_blocked`，不影响健康）。
-  `traffic_quota_high`（「流量额度吃紧」）：本周期已用（`quota.used`）到上限（订阅的 `traffic_gb`，没填按套餐的；0 / 空 = 不限，不评估）的 90% 为 warning，到 100% 为 critical，文案如「本周期流量已用 92%（1.84 TiB / 2 TiB），9 天后重置」「本周期流量已超出额度（已用 102%，2.05 TiB / 2 TiB）」（有流量重置日才写几天后重置）。
+  `traffic_quota_high`（「流量额度吃紧」）：本周期已用（`quota.used`）到上限（订阅的 `traffic_gb`，没填按套餐的；0 / 空 = 不限，不评估）的 90% 为 warning，到 100% 为 critical；上限按十进制 GB（1 GB = 10⁹ 字节，同供应商），文案也写 GB、不换算成 TB，如「本周期流量已用 92%（1840 GB / 2000 GB），9 天后重置」「本周期流量已超出额度（已用 102%，2050 GB / 2000 GB）」（有流量重置日才写几天后重置）。
   它和 info 一样**不影响** `health.status`，只开告警：不去抖，回落到 90% 以下（如新周期开始）下一轮评估即恢复；升为 critical 时马上再通知一次，持续提醒每天最多一次（同续费类）。同机 IP 节点自己没设上限时不评估（额度算在宿主机上）。
-  `clock_skew`（warning，「agent 时钟不准」）：agent 在线且 `|agent.clock_skew_ms|` > 60 秒，文案如「agent 时钟慢 17 分钟：读数可能缺失或冻结，请校时」——样本按 agent 的时间入库，当前读数只看最近 15 分钟、持续负载只看最近 5 分钟。和其它 warning 原因一样满 60 秒去抖后开告警。
+  `clock_skew`（warning，「agent 时钟不准」）：agent 在线且 `|agent.clock_skew_ms|` > 60 秒，文案如「agent 时钟慢 17 分钟：读数可能缺失或冻结，请校时」——样本按 agent 的时间入库，当前读数只看最近 15 分钟、持续负载只看最近 5 分钟；比中控超前 10 分钟以上的样本（含入口流量、探测）直接丢弃。和其它 warning 原因一样满 60 秒去抖后开告警。
   同机 IP 节点不报 `agent_offline`、`clock_skew`、`host_cpu_high` / `host_mem_high` / `host_disk_high`（agent 与主机是宿主机的，由宿主机报）；`egress_fail`、`tcp_fail`、`no_entry`、续费照常自己报（宿主机整台宕机时宿主机和它的每个同机节点各报各的探测告警，不抑制）。
 - `GET /machines/{id}/series` → `{metric, range, resolution: "1m"|"1h", points: [...]}`，点里时间字段统一叫 `ts`：
   - host：`{ts, cpu_pct, mem_pct, disk_pct, load1, net_rx_bps, net_tx_bps}`（1h 分辨率另有 `cpu_max`，无 `load1`）
@@ -221,6 +241,10 @@ ProvisionItem = {
 
 `POST /agent/v1/report` 入库失败按类回：数据本身入不了库（SQLSTATE 22 类：坏字节、NUL、越界；23 类：违反约束）→ 422（`error.code="bad_report"`），agent 把这份报告移入 `dead/` 不再重发，其中的入口流量结转到下一份报告补报（同离线队列超限淘汰；这份本身带着结转补报的流量时不再结转，免得一份接一份地被拒）；其它（连接池超时、断连、磁盘满、只读…）→ 503，agent 退避重试（受本地队列的字节与时长上限约束）。agent 只把 4xx（401 撤销、403/404/408/429 除外）当永久拒绝，5xx 和网络错误一律重试。
 
+上报的限额（按机器，在内存里，中控重启归满）：新的一份（seq 变大）扣一个令牌，突发 600、之后每秒补 1，扣不到回 429 + `Retry-After`（重发的同一份不扣）。样本时间戳只收「保留期以内 ~ 中控时间往后 10 分钟」（agent 时钟快得更多时样本丢弃，健康原因 `clock_skew` 在偏差超过 60 秒时就已报出）。主机样本按 (机器, 时刻) 唯一，同一时刻重报的不再入库；另有主机样本余额：容量 8640 个（24 小时的量），每 5 秒补一个（两倍于 agent 10 秒一个的采样），超出的丢最早的——正常 agent 补传积压（最多 6 小时离线队列 + 12 小时内存缓冲）期间余额按两倍速回满，用不完；一台机器一天最多入库约 2.6 万条（正常 8640）。
+
+`POST /agent/v1/applied`：每台线路机突发 120 份、之后 2 秒一份，超出回 429 + `Retry-After`（agent 照 Retry-After 重试，三次不成落盘、下轮补发）。`error` 与 `entries[].error` 截到 512 字，`entries` 最多 3000 条（不属于这台线路机的入口 id 忽略）。回报没改变任何东西（重发的同一份、同样的错误）时不发 `relay` / `machines` 失效通知。
+
 ## 访问监控
 线路机 agent 解析 Xray 访问日志上报，服务端写入 `access_event`（原始记录保留 `retention.access_days`=7 天），并每 5 分钟把当前小时和被标脏的小时重算进小时汇总（`access_hourly` / `access_source_hourly` 保留 31 天，窗口最长 30d；`access_target_seen` 记每个目标的首次 / 最近出现，最近出现超 90 天才删；幂等；agent 断网后补传的旧记录在上报时把所在小时记进 `access_dirty`，下一轮补算；启动时补算缺口）。24h/7d/30d 的结果在进程内缓存：每轮汇总成功后整体作废；`summary` / `targets`（第一页）/ `sources` 最多缓存 `access_cache_secs`（默认 300）秒，单台机器的 `/machines/{id}/access` 与 `/machines/{id}/sources`（带最近原始记录、来源基线与异常）最多 30 秒；设 0 关闭。全部为只读 GET，读权限即可。
 
@@ -253,7 +277,7 @@ ProvisionItem = {
 | GET | `/ipintel/status` | `{enabled, installed, loaded, expected:5, db_dir, version, files:[{id, loaded, bytes, mtime, build, entries}], errors, lists（各清单条目数）, overrides{path,used,error}, cache_rows, hint}`；未安装时 `hint` 提示运行 `lab/install-ipintel.sh` |
 | GET | `/machines/{id}/sources?window=24h\|7d\|30d&limit=50` | 节点的来源画像（线路机：分布与 top 来源只算经它的流量；`known` 基线与 `anomalies` 按节点记，取它名下入口的节点）：`distribution.{isp,city,province,country,conn_type}[{value,label,conns,sources,pct}]`（只统计外部来源；我方机器和非公网地址分别计入 `internal_conns` / `private_conns`）、`top_sources[{src_ip,conns,last_ts,intel}]`、`known.{isp,city,conn_type}[{value,label,first_seen,last_seen,conns,anomaly}]`（已学基线）、`learning{started_at,ends_at,learn_days,done,remaining_hours}`、`anomalies[]`（进行中的 ipintel 告警）、`empty`、`degraded`、`unresolved_sources` |
 
-**异常告警**（warning，进 incident 表并走通知渠道）：节点第一条来源记录起 `learn_days`（默认 7）天内只学习；之后某节点出现新的运营商 → `ipintel_new_isp`，新的城市 → `ipintel_new_city`，某 (节点, 来源 IP) 第一次出现且为机房/VPN → `ipintel_datacenter_source`。跳过非公网地址和我方机器。一次性异常最后一次出现 `alert_ttl_hours`（默认 24）小时后自动恢复，不发恢复通知；同一个值恢复后不会再次告警。后台每 5 分钟从 `access_source_hourly` 增量维护 `node_source_seen`（水位在 `ipintel_state`；水位之前的小时若被补算，连接数差值经 `access_source_late` 补记，首次扫描按 7 天一页）。
+**异常告警**（warning，进 incident 表并走通知渠道）：节点第一条来源记录起 `learn_days`（默认 7）天内只学习；之后某节点出现新的运营商 → `ipintel_new_isp`，新的城市 → `ipintel_new_city`，某 (节点, 来源 IP) 第一次出现且为机房/VPN → `ipintel_datacenter_source`。跳过非公网地址和我方机器。一次性异常最后一次出现 `alert_ttl_hours`（默认 24）小时后自动恢复，不发恢复通知；同一个值恢复后不会再次告警。机房/VPN 来源 IP 一个 IP 一行，超过 max(`learn_days`, 31) + 1 天没再出现的由每小时的保留期清理删掉（运营商、城市、接入方式不删）：之后这个 IP 再出现算「首次出现」，会再告警一次。后台每 5 分钟从 `access_source_hourly` 增量维护 `node_source_seen`（水位在 `ipintel_state`；水位之前的小时若被补算，连接数差值经 `access_source_late` 补记，首次扫描按 7 天一页）。
 
 ## 生命周期操作：换线路机、搬空线路机、恢复已退役的机器
 都是作业（可续跑、幂等、留日志），接口只做校验、建作业、写审计。

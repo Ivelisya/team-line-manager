@@ -7,6 +7,7 @@ const USAGE: &str = "用法：
   fleet-server serve    -c <配置>        启动服务（自动迁移数据库）
   fleet-server migrate  -c <配置>        只执行数据库迁移
   fleet-server user-set -c <配置> <用户名>  新建用户或重设密码（密码从标准输入读一行）
+  fleet-server totp-reset -c <配置> <用户名>  停用该用户的两步验证（手机与恢复码都丢了时用）
   fleet-server gen-key  <路径>            生成 32 字节密钥文件（0600）";
 
 #[tokio::main]
@@ -60,6 +61,13 @@ async fn main() -> anyhow::Result<()> {
             let pool = db::connect(&cfg.database_url).await?;
             auth::upsert_user(&pool, name, pw).await?;
             println!("已设置用户 {name}（该用户的旧会话已失效，登录失败记录已清空）");
+        }
+        "totp-reset" => {
+            let cfg = Config::load(&cfg_path)?;
+            let name = rest.first().context(USAGE)?;
+            let pool = db::connect(&cfg.database_url).await?;
+            auth::totp_reset(&pool, name).await?;
+            println!("已停用用户 {name} 的两步验证（恢复码已作废；登录后可在「设置 → 账户安全」重新开启）");
         }
         "serve" => {
             let cfg = Config::load(&cfg_path)?;

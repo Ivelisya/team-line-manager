@@ -3,8 +3,8 @@
 // IP 只用文档保留段 203.0.113.0/24 与 198.51.100.0/24。
 
 import type { ApiKey, Incident, Job, NotifyChannel, NotifyLogEntry, JobLog, MachineView, Plan, Provider, Renewal, Silence, AuditEntry, Team, EntryView, Lifecycle, HealthStatus, Subscription } from '@/lib/types';
-import { addMonths, bytes, displayName, str } from '@/lib/format';
-import { quota } from '@/lib/derive';
+import { addMonths, displayName, str } from '@/lib/format';
+import { quota, quotaGb } from '@/lib/derive';
 
 export function rng(seed: number) {
   let a = seed >>> 0;
@@ -17,9 +17,14 @@ const now = () => Date.now();
 const iso = (t: number) => new Date(t).toISOString();
 const dateOnly = (t: number) => iso(t).slice(0, 10);
 
-/** 流量额度周期（同服务端 views::period_start）：有重置日取今天或之前最近一次（月份没有这一天按月末），否则本月 1 号；已用按本月业务流量估，
- *  宿主机连同它的同机 IP 节点（含已退役的）一起算（额度共用） */
+/** 按面板校准（PUT subscription 的 traffic_used_gb）：机器 → 校准值（字节）与时间 */
+export const calibration: Record<string, { base: number; at: string }> = {};
+
+/** 流量额度周期（同服务端 views::period_start）：有重置日取今天或之前最近一次（月份没有这一天按月末），否则本月 1 号；已用按本月业务流量估
+ *  （服务端有 agent 的机器按网卡，mock 没有网卡累计，规则一律按取大显示），宿主机连同它的同机 IP 节点（含已退役的）一起算；校准过的加上校准值 */
 export function quotaOf(m: MachineView, all: MachineView[]): MachineView['quota'] {
+  const cal = calibration[m.id];
+  const rule = m.kind === 'proxy' || m.host_machine ? null : 'max';
   const d = new Date(); const day = m.subscription?.traffic_reset_day ?? 1;
   const at = (y: number, mo: number) => new Date(Date.UTC(y, mo, Math.min(day, new Date(Date.UTC(y, mo + 1, 0)).getUTCDate())));
   let s = at(d.getFullYear(), d.getMonth());
@@ -29,7 +34,7 @@ export function quotaOf(m: MachineView, all: MachineView[]): MachineView['quota'
     used += x.removed_traffic.month_up + x.removed_traffic.month_down;
     for (const e of x.entries) used += e.traffic.month_up + e.traffic.month_down;
   }
-  return { used, period_start: s.toISOString().slice(0, 10) };
+  return { used: used + (cal?.base ?? 0), period_start: s.toISOString().slice(0, 10), rule, base: cal?.base ?? null, base_at: cal?.at ?? null };
 }
 
 export interface Db {
@@ -51,9 +56,9 @@ export function buildDb(): Db {
     { id: 't2', name: '团队2', sort_order: 2, node_count: 0 },
   ];
   const providers: Provider[] = [
-    { id: 'p1', name: '搬瓦工', code: 'BWH', panel_url: 'https://panel.example.com/bwh', timezone: 'America/Los_Angeles' },
-    { id: 'p2', name: '腾讯云', code: 'TCT', panel_url: 'https://panel.example.com/tct', timezone: 'Asia/Shanghai' },
-    { id: 'p3', name: '家宽服务商', code: 'HOME', panel_url: null, timezone: 'Asia/Shanghai' },
+    { id: 'p1', name: '搬瓦工', code: 'BWH', panel_url: 'https://panel.example.com/bwh', timezone: 'America/Los_Angeles', traffic_rule: 'min' },
+    { id: 'p2', name: '腾讯云', code: 'TCT', panel_url: 'https://panel.example.com/tct', timezone: 'Asia/Shanghai', traffic_rule: 'out' },
+    { id: 'p3', name: '家宽服务商', code: 'HOME', panel_url: null, timezone: 'Asia/Shanghai', traffic_rule: 'max' },
   ];
   const plans: Plan[] = [
     { id: 'pl1', provider_id: 'p1', name: 'CN2 GIA 2C/4G', cpu_cores: 2, mem_mb: 4096, disk_gb: 80, bandwidth_mbps: 1000, traffic_gb: 1000, price_cents: 6900, currency: 'USD', cycle: 'quarterly', notes: '限速 1Gbps', archived_at: null, machine_count: 0 },
@@ -87,7 +92,7 @@ export function buildDb(): Db {
   const base = (o: Partial<MachineView> & Pick<MachineView, 'id' | 'kind' | 'name' | 'ip'>): MachineView => ({
     team: null, number: null, label: null, ssh_port: 22, host_machine: null, ip_nodes: [], provider: null, provider_code: null, plan: null, service_ref: null,
     lifecycle: 'active', lifecycle_reason: null, note: '', revision: 1, created_at: iso(now() - 120 * DAY), activated_at: iso(now() - 100 * DAY), retired_at: null,
-    subscription: null, agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, quota: { used: 0, period_start: '' }, health: { status: 'ok', reasons: [] },
+    subscription: null, agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, quota: { used: 0, period_start: '', rule: null, base: null, base_at: null }, health: { status: 'ok', reasons: [] },
     active_job: null, failed_job: null, open_incidents: 0, maintenance: false, relay: null, ...o,
   });
 
@@ -306,7 +311,7 @@ export function buildDb(): Db {
     if (m.lifecycle !== 'active' || q.pct == null || q.pct < 90) continue;
     const pct = Math.floor(q.pct);
     incidents.push({ id: `iq-${m.id}`, subject: { id: m.id, name: m.name }, subject_id: m.id, subject_name: m.name, rule: 'traffic_quota_high', rule_name: '流量额度吃紧', severity: pct >= 100 ? 'critical' : 'warning', state: 'firing',
-      summary: `本周期已用 ${pct}%（${str(bytes(q.used))} / ${q.limit} GiB，${q.start.slice(5)} 起）`, opened_at: iso(now() - (2 + 3 * tight++) * 3600_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 0 });
+      summary: `本周期已用 ${pct}%（${str(quotaGb(q.used))} / ${q.limit} GB，${q.start.slice(5)} 起）`, opened_at: iso(now() - (2 + 3 * tight++) * 3600_000), resolved_at: null, last_seen_at: iso(now() - 60_000), ack_at: null, ack_by: null, reopen_count: 0 });
     m.open_incidents++;
   }
   // 进行中的维护、只静默一条规则的、明天凌晨 2 点预约的割接（本地时间）

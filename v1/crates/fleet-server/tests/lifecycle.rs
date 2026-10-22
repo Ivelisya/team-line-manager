@@ -340,6 +340,93 @@ async fn quota_period_in_half_hour_tz_counts_start_bucket() {
     assert_eq!(m["quota"]["used"], 50, "{}", m["quota"]);
 }
 
+/// 有 agent 的机器按网卡计量：本周期入、出总量按供应商的规则取小 / 取大 / 相加 / 只算出站（没有供应商取大）；
+/// 按面板校准后 = 校准值 + 校准时刻所在整点之后的网卡用量，校准在周期之前的不算；上限按十进制 GB 告警
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn quota_by_nic_rule_and_panel_calibration() {
+    let t = setup(false).await;
+    let (relay, _) = seed_relay(&t).await;
+    // 洛杉矶的今天是重置日 → 周期从洛杉矶今天零点起
+    let (start, day): (time::OffsetDateTime, i32) = sqlx::query_as(
+        "select (now() at time zone 'America/Los_Angeles')::date::timestamp at time zone 'America/Los_Angeles', extract(day from now() at time zone 'America/Los_Angeles')::int",
+    )
+    .fetch_one(&t.st.db)
+    .await
+    .unwrap();
+    let sub_path = format!("/api/v1/machines/{relay}/subscription");
+    let sub = json!({"price_cents": 100, "due_date": "2030-01-01", "billing_tz": "America/Los_Angeles", "traffic_reset_day": day, "traffic_gb": 1000});
+    let (s, v) = t.req("PUT", &sub_path, Some(sub.clone()), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    // 起点前一桶不算；起点那桶入 300 出 100，下一桶入 50 出 300 → 入 350、出 400
+    for (h, rx, tx) in [(-1i64, 5000i64, 5000i64), (0, 300, 100), (1, 50, 300)] {
+        sqlx::query("insert into host_metric_hourly (machine_id, hour, net_rx, net_tx) values ($1, $2, $3, $4)")
+            .bind(relay)
+            .bind(start + time::Duration::hours(h))
+            .bind(rx)
+            .bind(tx)
+            .execute(&t.st.db)
+            .await
+            .unwrap();
+    }
+    t.st.live.rolled_up();
+    let quota = || async { t.get(&format!("/api/v1/machines/{relay}")).await["quota"].clone() };
+    let q = quota().await;
+    assert_eq!((q["used"].as_i64(), q["rule"].as_str(), q["base_at"].clone()), (Some(400), Some("max"), Value::Null), "没有供应商取大：{q}");
+
+    // 供应商的计量规则：坏规则 400，新建默认 max
+    assert_eq!(t.req("POST", "/api/v1/providers", Some(json!({"name": "甲", "code": "A", "traffic_rule": "avg"})), None).await.0, StatusCode::BAD_REQUEST);
+    let pv = t.post("/api/v1/providers", json!({"name": "甲", "code": "A"})).await["id"].as_str().unwrap().to_string();
+    assert_eq!(t.get("/api/v1/providers").await[0]["traffic_rule"], "max");
+    sqlx::query("update machine set provider_id = $2 where id = $1").bind(relay).bind(Uuid::parse_str(&pv).unwrap()).execute(&t.st.db).await.unwrap();
+    let pv_path = format!("/api/v1/providers/{pv}");
+    for (rule, used) in [("min", 350), ("sum", 750), ("out", 400), ("max", 400), ("min", 350)] {
+        let (s, v) = t.req("PATCH", &pv_path, Some(json!({"traffic_rule": rule})), None).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        let q = quota().await;
+        assert_eq!((q["used"].as_i64(), q["rule"].as_str()), (Some(used), Some(rule)), "{q}");
+    }
+    assert_eq!(t.req("PATCH", &pv_path, Some(json!({"traffic_rule": "MIN"})), None).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(t.get("/api/v1/providers").await[0]["traffic_rule"], "min", "坏规则不改");
+
+    // 按面板校准：负数 400；901.6 GB 记成字节与当前时间；之后整份 PUT 不带这个字段不动它
+    let with = |g: Value| {
+        let mut b = sub.clone();
+        b["traffic_used_gb"] = g;
+        b
+    };
+    assert_eq!(t.req("PUT", &sub_path, Some(with(json!(-1))), None).await.0, StatusCode::BAD_REQUEST);
+    let (s, v) = t.req("PUT", &sub_path, Some(with(json!(901.6))), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v) = t.req("PUT", &sub_path, Some(sub.clone()), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (base, fresh): (Option<i64>, bool) =
+        sqlx::query_as("select traffic_used_base, traffic_used_base_at > now() - interval '1 minute' from subscription where machine_id = $1").bind(relay).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!((base, fresh), (Some(901_600_000_000), true));
+    // 校准时刻挪到起点后半小时：只加之后整点起的那桶（入 50 出 300 取小 = 50）；上限 1000 GB 已用 90%（按 GiB 算只有 84%）
+    let db = &t.st.db;
+    let set_at = |at: time::OffsetDateTime| async move {
+        sqlx::query("update subscription set traffic_used_base_at = $2 where machine_id = $1").bind(relay).bind(at).execute(db).await.unwrap();
+    };
+    set_at(start + time::Duration::minutes(30)).await;
+    let m = t.get(&format!("/api/v1/machines/{relay}")).await;
+    assert_eq!((m["quota"]["used"].as_i64(), m["quota"]["base"].as_i64()), (Some(901_600_000_050), Some(901_600_000_000)), "{}", m["quota"]);
+    assert!(!m["quota"]["base_at"].is_null());
+    let r = m["health"]["reasons"].as_array().unwrap().iter().find(|r| r["key"] == "traffic_quota_high").cloned().unwrap_or_default();
+    assert!(r["text"].as_str().unwrap_or("").contains("已用 90%（901.6 GB / 1000 GB）"), "{}", m["health"]);
+    // 校准在周期起点之前（上个周期）：不算
+    set_at(start - time::Duration::days(1)).await;
+    let q = quota().await;
+    assert_eq!((q["used"].as_i64(), q["base"].clone(), q["base_at"].clone()), (Some(350), Value::Null, Value::Null), "{q}");
+    // null 清掉
+    let (s, v) = t.req("PUT", &sub_path, Some(with(Value::Null)), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let cleared: (Option<i64>, Option<time::OffsetDateTime>) =
+        sqlx::query_as("select traffic_used_base, traffic_used_base_at from subscription where machine_id = $1").bind(relay).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(cleared, (None, None));
+    let audit = t.get("/api/v1/audit?limit=50").await;
+    assert!(audit.as_array().unwrap().iter().any(|e| e["action"] == "subscription.set" && e["detail"]["traffic_used_gb"] == 901.6), "{audit}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn provider_create_defaults_and_patch() {
     let t = setup(false).await;
