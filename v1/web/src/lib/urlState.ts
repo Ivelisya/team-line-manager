@@ -21,6 +21,17 @@ export function useUrlState() {
   return [sp, upd] as const;
 }
 
+/** 搜索框与 ?q= 双向同步：停手 250ms 后写进地址（不每敲一个字查一次）；地址里的 q 不是自己写的那样变了
+ *  （后退 / 前进、带参链接）输入框跟上。自己写进去的是 text.trim()，打字时末尾的空格不被吃掉。返回输入框的文本与改它的函数 */
+export function useUrlSearch(sp: URLSearchParams, upd: (patch: Record<string, string>) => void) {
+  const search = sp.get('q') ?? '';
+  const [text, setText] = React.useState(search);
+  React.useEffect(() => { const t = setTimeout(() => upd({ q: text.trim() }), 250); return () => clearTimeout(t); }, [text, upd]);
+  const [seen, setSeen] = React.useState(search);
+  if (search !== seen) { setSeen(search); if (search !== text.trim()) setText(search); }
+  return [text, setText] as const;
+}
+
 /** 表头排序记在 ?sort=：返回当前排序与写回它的函数 */
 export function useUrlSort() {
   const [sp, upd] = useUrlState();

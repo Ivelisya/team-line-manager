@@ -20,7 +20,7 @@ import { AccessViewSwitch } from '@/components/app/AccessViewSwitch';
 import { HostCell, ResultPill, fmtN } from '@/features/AccessBits';
 import { CursorPager, Pagination } from '@/components/app/Pagination';
 import { scrollBackTo, usePage } from '@/lib/usePage';
-import { parseSort, useUrlState } from '@/lib/urlState';
+import { parseSort, useUrlSearch, useUrlState } from '@/lib/urlState';
 import { CONN_FILTER_OPTIONS, ConnCell, IpIntelHint, IpIntelStatusChip, IspPlace, connMatches } from '@/features/IpIntelBits';
 
 type View = 'targets' | 'new' | 'sources' | 'nodes' | 'events';
@@ -66,10 +66,8 @@ export function AccessPage() {
   const sort = sp.get('sort') ?? '';
   const onSort = React.useCallback((v: string) => upd({ sort: v }), [upd]);
 
-  // 搜索框：输入即生效，停手 250ms 后写进 URL
-  const [text, setText] = React.useState(f.search);
-  // upd 身份稳定（useUrlState），别的筛选一动不会重跑这个 effect、把旧文本写回 URL
-  React.useEffect(() => { const t = setTimeout(() => upd({ q: text.trim() }), 250); return () => clearTimeout(t); }, [text, upd]);
+  // 搜索框与 ?q= 双向同步（后退 / 前进、带参链接时输入框跟上）
+  const [text, setText] = useUrlSearch(sp, upd);
 
   const teams = useTeams().data;
   const teamOpts = React.useMemo(() => (teams ?? []).map((t) => ({ value: t.id, label: t.name })), [teams]);
