@@ -1,4 +1,4 @@
-// 列表搜索的匹配档位：命令面板、新建静默的对象选择共用（cmdk 的 filter 用它打分）。
+// 列表搜索的打分（cmdk 的 filter 用）：matchTier 给命令面板、新建静默的对象选择；prefixScore 给宿主机、时区这类下拉。
 
 /** 条目的可搜索文本：「名称 \t IP \t 其它（团队、类型、别名）」。名称就是界面上显示的那行字，没有 IP 的留空 */
 export const sv = (name: string, ip: string, rest: string) => `${name}\t${ip}\t${rest}`;
@@ -26,4 +26,12 @@ export function matchTier(value: string, q: string): number {
   if (hasWhole(unpad(name), unpad(q))) return 4;
   if (ip.includes(q) || rest.includes(q)) return 3;
   return !CJK.test(q) && subseq(name, q) ? 2 : 0;
+}
+/** 前缀优先、连续子串：某段文字或其中某个词（按空白、/、_、- 切开）以 q 开头 1，连着出现 0.5，其余 0；q 为空都算命中。
+ *  不做模糊匹配：cmdk 默认的字符散落就算太宽（搜「1.63」带出 10.77.1.36，搜「Tokyo」带出 America/Kentucky/Monticello）。q 已小写、去首尾空白 */
+export function prefixScore(texts: string[], q: string): number {
+  if (!q) return 1;
+  const ts = texts.map((t) => t.toLowerCase());
+  if (ts.some((t) => t.startsWith(q) || t.split(/[\s/_-]+/).some((w) => w.startsWith(q)))) return 1;
+  return ts.some((t) => t.includes(q)) ? 0.5 : 0;
 }

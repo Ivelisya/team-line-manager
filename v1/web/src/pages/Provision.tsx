@@ -6,6 +6,7 @@ import { Check, CheckCircle2, ChevronDown, ClipboardPaste, ListChecks, Plus, Tra
 import { useHostChoices, usePlans, useProviders, useProvision, useProvisionCheck, useRelayChoices, useTeams, type HostChoice } from '@/lib/queries';
 import type { Kind, ProvisionCheckItem } from '@/lib/types';
 import { KIND_ORDER } from '@/lib/sort';
+import { prefixScore } from '@/lib/match';
 import { inheritSummary, kindLabel, meta } from '@/lib/derive';
 import * as F from '@/lib/format';
 import { Button, IconButton } from '@/components/ui/button';
@@ -217,14 +218,8 @@ function StickyBar({ children }: { children: React.ReactNode }) {
   return <div ref={ref} className="panel sticky-bar" style={{ padding: '10px 16px' }}>{children}</div>;
 }
 
-/** 宿主机搜索：名称或 IP 以输入开头的排最前，其次是名称 / IP 里连着出现的，其余不列。
- *  cmdk 默认的模糊匹配（字符按顺序散落就算）太宽：搜「1.63」会带出 10.77.1.36 */
-const hostFilter = (_: string, search: string, keywords?: string[]) => {
-  const q = search.trim().toLowerCase();
-  if (!q) return 1;
-  const ks = (keywords ?? []).map((k) => k.toLowerCase());
-  return ks.some((k) => k.startsWith(q)) ? 1 : ks.some((k) => k.includes(q)) ? 0.5 : 0;
-};
+/** 宿主机搜索：名称或 IP 以输入开头的排最前，其次是名称 / IP 里连着出现的，其余不列（lib/match） */
+const hostFilter = (_: string, search: string, keywords?: string[]) => prefixScore(keywords ?? [], search.trim().toLowerCase());
 
 /** 宿主机选择：在用的 VPS 节点可能上百台，弹出可搜索的列表（名称、IP 都能搜），每项写名称与 IP */
 function HostSelect({ id, value, onChange, hosts }: { id?: string; value: string; onChange: (v: string) => void; hosts: HostChoice[] }) {
