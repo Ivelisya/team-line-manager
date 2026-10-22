@@ -1,7 +1,8 @@
 // 抽屉里带图表的三个页签：连接质量 / 流量 / 主机。单独成文件按需加载，recharts 只在打开这些页签时才下载。
+// 图表卡、加载框与时间范围也给软路由抽屉的「曲线」页签用（RouterCharts）。
 import * as React from 'react';
 import { Cpu, Globe, MemoryStick, Network, Radar, ServerOff } from 'lucide-react';
-import type { MachineView, SeriesResp } from '@/lib/types';
+import type { MachineView } from '@/lib/types';
 import type { UseQueryResult } from '@tanstack/react-query';
 import { useAvailability, useSeries } from '@/lib/queries';
 import * as F from '@/lib/format';
@@ -37,7 +38,7 @@ const vPct = (_: string, v: number) => `${v.toFixed(1)}%`;
 const vBytes = (_: string, v: number) => { const b = F.bytes(v); return `${b.v} ${b.u}`; };
 const vRate = (_: string, v: number) => { const r = F.rate(v); return `${r.v} ${r.u}`; };
 
-function RangeBar({ range, setRange }: { range: string; setRange: (r: string) => void }) {
+export function RangeBar({ range, setRange }: { range: string; setRange: (r: string) => void }) {
   return <Segmented sm label="时间范围" value={range} onChange={setRange} items={RANGES} />;
 }
 
@@ -48,7 +49,7 @@ const fewText = (m: MachineView, range: string) =>
 
 /** 图表的加载 / 出错状态：出错给重试，不要显示一张空图；换时间范围、新数据未到时沿用的旧曲线调淡。
  *  点不到两个时只剩一副空坐标轴：同全为 0 的空状态，占住图高、写一句说明（few） */
-function ChartFrame({ q, few, height = 180, children }: { q: UseQueryResult<SeriesResp>; few: string; height?: number; children: React.ReactNode }) {
+export function ChartFrame<T extends { points: readonly unknown[] }>({ q, few, height = 180, children }: { q: UseQueryResult<T>; few: string; height?: number; children: React.ReactNode }) {
   // 轮询中偶尔一次取不到：留着上一份曲线（下一轮会再取），只有一份都没有时才显示错误
   if (q.isError && !q.data) return <ErrorNote error={q.error} onRetry={() => void q.refetch()}>曲线加载失败：</ErrorNote>;
   if (q.isLoading) return <Skeleton h={height} style={{ borderRadius: 'var(--r-float)' }} />;
@@ -61,7 +62,7 @@ function ChartFrame({ q, few, height = 180, children }: { q: UseQueryResult<Seri
 
 /** 图表卡：一张曲线一张卡，边框、底色与顶部色条取指标色（--cc）。卡头左边图标 + 标题，右边当前值 + 一行小字；
  *  没有当前值的图右边放时间范围（tools） */
-function ChartCard({ c, icon, title, meta, value, caption, tools, children }: { c: string; icon: React.ReactNode; title: string; meta?: string; value?: React.ReactNode; caption?: string; tools?: React.ReactNode; children: React.ReactNode }) {
+export function ChartCard({ c, icon, title, meta, value, caption, tools, children }: { c: string; icon: React.ReactNode; title: string; meta?: string; value?: React.ReactNode; caption?: string; tools?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="chart-card" style={{ '--cc': c } as React.CSSProperties}>
       <div className="chart-card-head">

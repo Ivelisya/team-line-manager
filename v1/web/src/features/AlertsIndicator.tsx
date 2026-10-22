@@ -1,9 +1,10 @@
 // 顶栏告警胶囊：进行中的告警数，点击去告警页；悬停（或键盘聚焦）预览最前面的几条——级别点、对象、规则、摘要、已持续多久，
-// 点一行打开那台机器的抽屉。用的就是顶栏计数那份查询（告警页第一页的缓存，严重度优先），不另取、不轮询
+// 点一行打开那台机器（软路由的告警打开路由）的抽屉。用的就是顶栏计数那份查询（告警页第一页的缓存，严重度优先），不另取、不轮询
 import * as React from 'react';
 import { Link, NavLink } from 'react-router-dom';
 import { useIncidents } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
+import { isRouterIncident, useRouterDrawer } from '@/lib/routers';
 import * as F from '@/lib/format';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card';
 import { Pill, SeverityMark } from '@/components/app/primitives';
@@ -13,6 +14,7 @@ const SHOW = 5;
 export function AlertsIndicator() {
   const q = useIncidents('firing');
   const { open: openDrawer } = useDrawer();
+  const { open: openRouter } = useRouterDrawer();
   // 受控：点了一行要先收起预览——抽屉在弹层下面一层，开着的预览会盖在抽屉上
   const [open, setOpen] = React.useState(false);
   const n = q.data?.total ?? 0;
@@ -35,7 +37,7 @@ export function AlertsIndicator() {
             const sum = i.summary.startsWith(`${name}：`) ? i.summary.slice(name.length + 1) : i.summary;
             return (
               <li key={i.id}>
-                <button type="button" className="pop-item" onClick={() => { setOpen(false); if (sid) openDrawer(sid); }}>
+                <button type="button" className="pop-item" onClick={() => { setOpen(false); if (sid) (isRouterIncident(i) ? openRouter : openDrawer)(sid); }}>
                   <span className="alerts-pop-row">
                     <SeverityMark severity={i.severity} />
                     <b className="ellipsis">{name}</b>
