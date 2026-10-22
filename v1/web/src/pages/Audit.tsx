@@ -2,10 +2,10 @@
 // 一次取 100 条，「加载更早的记录」按 before_id 往前翻；分类与搜索由服务端筛（分类规则见中控 api/misc.rs audit_cat），两者写进 URL。
 // 有明细的记录点开原地展开，对象名点开那台机器的抽屉。
 import * as React from 'react';
-import { useSearchParams } from 'react-router-dom';
 import { History, SearchX } from 'lucide-react';
 import { useAuditLog } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
+import { useUrlState } from '@/lib/urlState';
 import type { AuditEntry } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { SearchInput } from '@/components/ui/form';
@@ -37,15 +37,16 @@ function byDay(rows: AuditEntry[]) {
 export function AuditPage() {
   const { open } = useDrawer();
   // 分类（?cat=）与搜索（?q=）写进 URL：刷新、分享后保持
-  const [sp, setSp] = useSearchParams();
+  const [sp, upd] = useUrlState();
   const cat: Cat = CATS.find((c) => c.value === sp.get('cat'))?.value ?? 'all';
   const search = sp.get('q') ?? '';
-  const set = React.useCallback((k: string, v: string) => setSp((p) => { const n = new URLSearchParams(p); if (v) n.set(k, v); else n.delete(k); return n; }, { replace: true }), [setSp]);
-  const setCat = (v: Cat) => set('cat', v === 'all' ? '' : v);
+  const setCat = (v: Cat) => upd({ cat: v === 'all' ? '' : v });
   // 搜索框：停手 250ms 后写进 URL、交给服务端（不每敲一个字查一次）
   const [text, setText] = React.useState(search);
-  const setRef = React.useRef(set); setRef.current = set;
-  React.useEffect(() => { const t = setTimeout(() => setRef.current('q', text.trim()), 250); return () => clearTimeout(t); }, [text]);
+  React.useEffect(() => { const t = setTimeout(() => upd({ q: text.trim() }), 250); return () => clearTimeout(t); }, [text, upd]);
+  // 地址里的 q 不是自己写的那样变了（后退 / 前进、带参链接）：输入框跟上。自己写进去的是 text.trim()，打字时末尾的空格不被吃掉
+  const [seenQ, setSeenQ] = React.useState(search);
+  if (search !== seenQ) { setSeenQ(search); if (search !== text.trim()) setText(search); }
   const q = useAuditLog(cat === 'all' ? '' : cat, search.trim());
   const rows = React.useMemo(() => q.data?.pages.flat() ?? EMPTY, [q.data]);
   const filtered = cat !== 'all' || !!search.trim();

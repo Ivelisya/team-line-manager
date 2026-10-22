@@ -2,7 +2,6 @@
 // 页签：域名与 IP / 新出现的目标 / 来源地址 / 节点概览 / 原始记录。数据 30 秒轮询（切走页面暂停）。
 // 分页：目标与新目标按 offset 翻页（服务端），来源与节点概览是已取回的列表（前端切页），原始记录按时间游标翻页；每页条数各页签相同。
 import * as React from 'react';
-import { useSearchParams } from 'react-router-dom';
 import { Activity, ChevronRight, Radar, Server, ShieldX, Target } from 'lucide-react';
 import {
   ACCESS_WINDOWS, EVENTS_PAGE, SOURCES_LIMIT, WINDOW_DAYS, isAccessWindow, useAccessRetention, useAccessEvents, useAccessSources, useAccessSummary, useAccessTargetGroups, useAccessTargetNodes, useNewTargets,
@@ -16,11 +15,12 @@ import { Button } from '@/components/ui/button';
 import { InfoTip, SearchInput } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { Segmented, Tabs, TabsList, TabsTrigger } from '@/components/ui/overlays';
-import { Empty, ErrorNote, PageHead, Panel, Pill, SortHead, Stat, TableWrap, type SortState } from '@/components/app/primitives';
+import { Empty, ErrorNote, PageHead, Panel, Pill, SortHead, Stat, TableWrap } from '@/components/app/primitives';
 import { AccessViewSwitch } from '@/components/app/AccessViewSwitch';
 import { HostCell, ResultPill, fmtN } from '@/features/AccessBits';
 import { CursorPager, Pagination } from '@/components/app/Pagination';
 import { scrollBackTo, usePage } from '@/lib/usePage';
+import { parseSort, useUrlState } from '@/lib/urlState';
 import { CONN_FILTER_OPTIONS, ConnCell, IpIntelHint, IpIntelStatusChip, IspPlace, connMatches } from '@/features/IpIntelBits';
 
 type View = 'targets' | 'new' | 'sources' | 'nodes' | 'events';
@@ -42,12 +42,7 @@ const SIZE = 100;
 const FIRST_SEEN_TIP = '最早一次访问到它的时间，不受时间范围限制；展开后是各节点自己的';
 
 export function AccessPage() {
-  const [sp, setSp] = useSearchParams();
-  const upd = React.useCallback((patch: Record<string, string>) => setSp((p) => {
-    const n = new URLSearchParams(p);
-    for (const [k, v] of Object.entries(patch)) { if (v) n.set(k, v); else n.delete(k); }
-    return n;
-  }, { replace: true }), [setSp]);
+  const [sp, upd] = useUrlState();
 
   // 先取出各个字符串再进依赖：整份 URL 参数（sp）一变就重建 f 的话，打开抽屉（?m=）也会让下面五个 memo 的视图全部重渲染
   const w = sp.get('w');
@@ -73,9 +68,8 @@ export function AccessPage() {
 
   // 搜索框：输入即生效，停手 250ms 后写进 URL
   const [text, setText] = React.useState(f.search);
-  // upd 的身份随 URL 变化；放进依赖会让别的筛选一动就重跑这个 effect，把旧文本写回 URL。用 ref 取最新的，只依赖 text。
-  const updRef = React.useRef(upd); updRef.current = upd;
-  React.useEffect(() => { const t = setTimeout(() => updRef.current({ q: text.trim() }), 250); return () => clearTimeout(t); }, [text]);
+  // upd 身份稳定（useUrlState），别的筛选一动不会重跑这个 effect、把旧文本写回 URL
+  React.useEffect(() => { const t = setTimeout(() => upd({ q: text.trim() }), 250); return () => clearTimeout(t); }, [text, upd]);
 
   const teams = useTeams().data;
   const teamOpts = React.useMemo(() => (teams ?? []).map((t) => ({ value: t.id, label: t.name })), [teams]);
@@ -91,8 +85,9 @@ export function AccessPage() {
   const k = summary.data?.kpi;
   const filtered = !!(f.team || f.node || f.search || f.kind || f.action);
   const clear = React.useCallback(() => { setText(''); upd({ team: '', node: '', q: '', kind: '', act: '', conn: '' }); }, [upd]);
-  // 点目标名：搜索框直接换成它（不等防抖）
-  const pick = React.useCallback((host: string) => { setText(host); upd({ q: host }); }, [upd]);
+  // 点目标名：搜索框直接换成它（不等防抖）。合并的「*.域名」搜「.域名」：原始记录里是真实的子域名，
+  // 去掉「*」后各页签（汇总里的合并名、原始记录里的子域名）都按包含匹配到同一批
+  const pick = React.useCallback((host: string) => { const q = host.startsWith('*.') ? host.slice(1) : host; setText(q); upd({ q }); }, [upd]);
 
   return (
     <div className="stack">
@@ -113,7 +108,7 @@ export function AccessPage() {
       <div className="stat-grid" data-stale={summary.isPlaceholderData}>
         <Stat tone="blue" icon={<Server />} label="有活动的节点" value={k ? fmtN(k.active_nodes) : '—'} loading={summary.isLoading} caption={`最近 ${winLabel(f.window)}`} />
         <Stat tone="teal" icon={<Activity />} label="连接记录" info="含已阻止的连接" value={k ? fmtN(k.conns) : '—'} loading={summary.isLoading} />
-        <Stat tone="violet" icon={<Target />} label="访问目标" info="各节点分别去重后相加：两个节点访问同一个域名算 2 个" value={k ? fmtN(k.targets) : '—'} loading={summary.isLoading} />
+        <Stat tone="violet" icon={<Target />} label="节点 × 目标" info={'每个节点访问过的目标数相加：两个节点访问同一个域名算 2 个。\n「域名与 IP」按目标去重，同一个域名只算 1 个'} value={k ? fmtN(k.targets) : '—'} loading={summary.isLoading} />
         <Stat tone="bad" icon={<ShieldX />} label="已阻止的连接" value={k ? fmtN(k.blocked) : '—'} loading={summary.isLoading} caption={k && k.conns > 0 ? blockedShare(k.blocked, k.conns) : undefined} />
       </div>
 
@@ -320,7 +315,7 @@ const NODE_KEY: Record<string, (n: AccessNode) => number | string> = {
 /** sort：?sort= 的原值（「-」开头为降序）；空 = 服务端的顺序 */
 const NodesView = React.memo(function NodesView({ f, filtered, onClear, sort: raw, onSort, open }: { f: AccessFilter; filtered: boolean; onClear: () => void; sort: string; onSort: (s: string) => void; open: Open }) {
   const q = useAccessSummary(f);
-  const sort = React.useMemo<SortState | null>(() => (NODE_KEY[raw.replace(/^-/, '')] ? { id: raw.replace(/^-/, ''), desc: raw.startsWith('-') } : null), [raw]);
+  const sort = React.useMemo(() => { const s = parseSort(raw); return s && NODE_KEY[s.id] ? s : null; }, [raw]);
   const rows = React.useMemo(() => {
     const list = q.data?.nodes ?? [];
     const key = sort && NODE_KEY[sort.id];

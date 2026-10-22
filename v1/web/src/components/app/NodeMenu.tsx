@@ -5,7 +5,7 @@ import * as React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowUpCircle, BellOff, CalendarPlus, Copy, Link2, PanelRightOpen, PencilLine, Power, Repeat2, SquareTerminal, Undo2, Wrench } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
-import { fetchShare, useEndMaintenance, useUpgradeAgent } from '@/lib/queries';
+import { fetchShare, maintOwner, useEndMaintenance, useSilences, useUpgradeAgent } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import { openMaint, openMove, openRenew, openRestore, openRetire } from '@/lib/nodeActions';
 import { collator } from '@/lib/sort';
@@ -28,6 +28,9 @@ function useNodeMenu(m: MachineView): MenuEntry[] {
   const nav = useNavigate();
   const upgrade = useUpgradeAgent();
   const endMaint = useEndMaintenance();
+  // 菜单内容只在打开时挂载，这里取静默列表不给每张卡片加开销；同机 IP 节点因宿主机维护而「维护中」时，结束的是宿主机的
+  const silences = useSilences().data;
+  const maintOnHost = m.maintenance && !!silences && maintOwner(silences, m).onHost;
   const retired = m.lifecycle === 'retired';
   const share = async (entryId: string) => {
     try { const r = await fetchShare(entryId); await copyShareLink(r.url); } catch (e) { toast.err(e); }
@@ -65,9 +68,10 @@ function useNodeMenu(m: MachineView): MenuEntry[] {
       : { key: 'renew', label: '设置费用…', icon: <CalendarPlus />, onSelect: () => open(m.id, 'billing') },
     ...(m.kind !== 'relay' && m.lifecycle === 'active' && m.entries.some((e) => e.lifecycle === 'active')
       ? [{ key: 'move', label: '换线路机…', icon: <Repeat2 />, disabled: !!m.active_job, onSelect: () => openMove(m.id) } as MenuEntry] : []),
-    // 维护中的：结束这台自己的维护窗口（全部机器的那种要到告警页结束，mutation 会报错说明）
+    // 维护中的：结束这台自己的（同机 IP 节点可能是宿主机的）维护窗口；全部机器的那种要到告警页结束，mutation 会报错说明
     m.maintenance
-      ? { key: 'maint', label: '结束维护', icon: <Wrench />, onSelect: () => { endMaint.mutateAsync(m.id).then(() => toast.ok(`${m.name} 已结束维护`), (e) => toast.err(e)); } }
+      ? { key: 'maint', label: maintOnHost ? '结束宿主机维护' : '结束维护', icon: <Wrench />,
+          onSelect: () => { endMaint.mutateAsync(m).then((o) => toast.ok(`${o.name} 已结束维护`), (e) => toast.err(e)); } }
       : { key: 'maint', label: '维护窗口…', icon: <Wrench />, onSelect: () => openMaint(m.id) },
     { key: 'silence', label: '新建静默', icon: <BellOff />, onSelect: () => nav(`/incidents?silence=${m.id}`) },
     { key: 'sep2', sep: true },

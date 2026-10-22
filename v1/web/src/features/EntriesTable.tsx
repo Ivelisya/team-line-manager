@@ -2,7 +2,7 @@
 import * as React from 'react';
 import type { EntryView, MachineView } from '@/lib/types';
 import * as F from '@/lib/format';
-import { errText } from '@/lib/derive';
+import { errText, probeFail } from '@/lib/derive';
 import { entryState, Num, Pill } from '@/components/app/primitives';
 import { ShowAll } from '@/components/app/Pagination';
 
@@ -11,8 +11,6 @@ export const ENTRY_CAP = 10;
 
 /** TCP / 出口探测单元格（线路机页共用）：失败的悬停看错误（英文原始错误换成中文，errText） */
 export const probeCell = (p: EntryView['tcp']) => (p == null ? <span className="t-muted">—</span> : p.ok ? <Num f={F.ms(p.latency_ms)} /> : <span style={{ color: 'var(--bad-text)' }} data-tip={p.detail ? errText(p.detail) : undefined}>失败</span>);
-/** 运行中的入口探测失败（直出入口不做 TCP 探测）：状态列写「不通」，不再和同一行红色的「失败」各说各的 */
-const probeFail = (e: EntryView) => (e.lifecycle !== 'active' || !e.applied ? null : !e.direct && e.tcp && !e.tcp.ok ? e.tcp : e.egress && !e.egress.ok ? e.egress : null);
 /** TCP 单元格：直出入口没有节点，不做 TCP 探测 */
 export const tcpCell = (e: EntryView) => (e.direct ? <span className="t-muted" data-tip="直出入口不经节点，不做 TCP 探测">—</span> : probeCell(e.tcp));
 

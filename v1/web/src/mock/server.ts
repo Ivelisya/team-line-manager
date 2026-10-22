@@ -336,6 +336,8 @@ function checkProvision(items: ProvisionItem[]): ProvisionCheckItem[] {
         ssBatch.set(h.id, [...batch, ssPort]);
       }
     }
+    // 同服务端 provision::check：库里的校验都过了再看 SSH 通不通；模拟里 192.0.2.x（文档用地址段）当作连不上
+    if (!errors.length && it.kind !== 'proxy' && !it.host_id && it.ip.startsWith('192.0.2.')) errors.push(`SSH ${it.ip}:${it.ssh_port ?? 22} 连不上（3 秒没有响应）`);
     out.push({ ok: errors.length === 0, errors, name, number, relay_port: relayPort, ss_port: ssPort });
   }
   return out;

@@ -1,15 +1,14 @@
 // 节点：表格视图。固定列宽（窄时先收起类型、费用列）；筛选（团队 / 类型 / 线路机 / 状态 / 范围）+ 搜索；点行打开右侧抽屉。
 // 默认顺序 = 线路机 → 团队 → 编号（不排序时保持），表头排序是用户的显式选择，可一键恢复；排序记在 URL（?sort=due 升序、?sort=-due 降序，首页“即将到期”链到这里），
 // 范围也是（?scope=retired 已退役，缺省在用）。筛选同样记在 URL，别的页面直接链到筛好的列表：
-// ?team=<团队 id>&kind=<类型>&relay=<线路机 id>&status=<状态>&q=<搜索>&due=soon（即将到期与已过期，同首页 KPI 的 due_state 口径）。
+// ?team=<团队 id>&kind=<类型>&relay=<线路机 id>&status=<状态>&q=<搜索>&due=soon（即将到期与已过期，同首页 KPI 的 due_state 口径）&plan=<套餐 id>（团队与套餐页的台数链过来）。
 // 分页在筛选、排序之后（每页 50）。
 import * as React from 'react';
-import { useSearchParams } from 'react-router-dom';
 import { ChevronRight, RotateCcw, SearchX, X } from 'lucide-react';
-import { useMachines, useTeams } from '@/lib/queries';
+import { useMachines, usePlans, useTeams } from '@/lib/queries';
 import { setDrawerOrder, useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
-import { cycleLabel, healthLabel, kindLabel, lifecycleLabel, meta, monthTraffic, trafficTotal } from '@/lib/derive';
+import { cycleLabel, healthLabel, kindLabel, lifecycleLabel, meta, monthTraffic, statusOf, statusRank, trafficTotal } from '@/lib/derive';
 import { HEALTH_TONE, KIND_ORDER, useStableOrder } from '@/lib/sort';
 import type { MachineView } from '@/lib/types';
 import { Button } from '@/components/ui/button';
@@ -17,11 +16,12 @@ import { SearchInput } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { Segmented, Trunc } from '@/components/ui/overlays';
 import { SkeletonRows } from '@/components/ui/skeleton';
-import { Due, Empty, ErrorNote, Flag, HealthPill, HostTag, Num, PageHead, Panel, type SortState } from '@/components/app/primitives';
+import { Due, Empty, ErrorNote, Flag, HealthPill, HostTag, Num, PageHead, Panel } from '@/components/app/primitives';
 import { NodeHover } from '@/components/app/NodeHover';
 import { MachineGrid, byNum, byStr, sortByCol, type Col } from '@/components/app/MachineGrid';
 import { Pagination } from '@/components/app/Pagination';
 import { usePage } from '@/lib/usePage';
+import { useUrlSort, useUrlState } from '@/lib/urlState';
 
 type Scope = 'live' | 'retired';
 /** 只调淡已退役的行：机器页看的是资产信息，离线机器的这些字段照常可读（首页表格调淡的是读数过期的） */
@@ -38,10 +38,6 @@ const filterOpts = () => (opts ??= {
     ...(['provisioning', 'failed', 'retiring'] as const).map((value) => ({ value, label: lifecycleLabel(value) }))],
 });
 const SCOPES: { value: Scope; label: string }[] = [{ value: 'live', label: '在用' }, { value: 'retired', label: '已退役' }];
-/** 状态筛选、状态列排序用的值：在用的看健康，其余看生命周期（同筛选下拉的 value） */
-const statusOf = (m: MachineView) => (m.lifecycle === 'active' ? m.health.status : m.lifecycle);
-/** 状态列升序：有问题的在前（上架失败、故障、降级…），正常的在后 */
-const STATUS_RANK: Record<string, number> = { failed: 0, down: 1, degraded: 2, unknown: 3, maintenance: 4, provisioning: 5, retiring: 6, ok: 7 };
 const entryOf = (e: MachineView['entries'][number]) => `${e.relay.name}:${e.port}`;
 /** 不是按月付的：费用列副行再写一份月均 */
 const notMonthly = (cycle: string) => meta().cycles.find((c) => c.key === cycle)?.months !== 1;
@@ -68,14 +64,7 @@ function EntryCell({ m }: { m: MachineView }) {
 }
 
 export function NodesPage() {
-  const [sp, setSp] = useSearchParams();
-  // setSearchParams 每次地址变化都换身份；用 ref 兜住，筛选回调才稳定（下拉是 memo 的，同 lib/drawer.ts）
-  const setRef = React.useRef(setSp); setRef.current = setSp;
-  const upd = React.useCallback((patch: Record<string, string>) => setRef.current((p) => {
-    const n = new URLSearchParams(p);
-    for (const [k, v] of Object.entries(patch)) { if (v) n.set(k, v); else n.delete(k); }
-    return n;
-  }, { replace: true }), []);
+  const [sp, upd] = useUrlState(); // upd 身份稳定，筛选回调跟着稳定（下拉是 memo 的）
   // 范围同排序记在 URL（?scope=retired），刷新、后退或从链接打开都停在原来的范围
   const scope: Scope = sp.get('scope') === 'retired' ? 'retired' : 'live';
   const q = useMachines(scope);
@@ -88,15 +77,15 @@ export function NodesPage() {
   const relay = sp.get('relay') ?? '';
   const status = scope === 'live' ? sp.get('status') ?? '' : ''; // 已退役的状态都一样，不筛
   const dueSoon = sp.get('due') === 'soon';
+  const plan = sp.get('plan') ?? '';
+  const planName = usePlans().data?.find((p) => p.id === plan)?.name;
   const setTeam = React.useCallback((v: string) => upd({ team: v }), [upd]);
   const setKind = React.useCallback((v: string) => upd({ kind: v }), [upd]);
   const setRelay = React.useCallback((v: string) => upd({ relay: v }), [upd]);
   const setStatus = React.useCallback((v: string) => upd({ status: v }), [upd]);
-  const filtered = !!(text || team || kind || relay || status || dueSoon);
-  const clearFilters = () => upd({ q: '', team: '', kind: '', relay: '', status: '', due: '' });
-  const rawSort = sp.get('sort');
-  const sort = React.useMemo<SortState | null>(() => (rawSort ? { id: rawSort.replace(/^-/, ''), desc: rawSort.startsWith('-') } : null), [rawSort]); // null = 默认顺序
-  const setSort = (s: SortState | null) => upd({ sort: s ? `${s.desc ? '-' : ''}${s.id}` : '' });
+  const filtered = !!(text || team || kind || relay || status || dueSoon || plan);
+  const clearFilters = () => upd({ q: '', team: '', kind: '', relay: '', status: '', due: '', plan: '' });
+  const [sort, setSort] = useUrlSort(); // null = 默认顺序
   const onScope = React.useCallback((v: Scope) => upd({ scope: v === 'retired' ? v : '', status: '' }), [upd]);
 
   const all = q.data ?? EMPTY;
@@ -112,10 +101,11 @@ export function NodesPage() {
       if (relay && !(m.id === relay || m.entries.some((e) => e.relay.id === relay))) return false;
       if (status && statusOf(m) !== status) return false;
       if (dueSoon && (!m.subscription || m.subscription.due_state === 'ok')) return false;
+      if (plan && m.plan?.id !== plan) return false;
       if (t && !`${m.name} ${m.ip} ${m.provider?.name ?? ''} ${m.plan?.name ?? ''} ${m.service_ref ?? ''} ${m.note}`.toLowerCase().includes(t)) return false;
       return true;
     });
-  }, [all, text, team, kind, relay, status, dueSoon]);
+  }, [all, text, team, kind, relay, status, dueSoon, plan]);
 
   const columns = React.useMemo<Col[]>(() => {
     const retired = scope === 'retired';
@@ -127,7 +117,7 @@ export function NodesPage() {
           <span className="sub">{m.ip}</span>
         </div></div> },
       { id: 'kind', header: '类型', size: 84, drop: 1, ...byStr((m) => kindLabel(m.kind)), cell: (m) => kindLabel(m.kind) },
-      { id: 'status', header: '状态', size: 96, ...byNum((m) => STATUS_RANK[statusOf(m)] ?? 8, 'asc'), cell: (m) => <HealthPill m={m} /> },
+      { id: 'status', header: '状态', size: 96, ...byNum(statusRank, 'asc'), cell: (m) => <HealthPill m={m} /> },
       { id: 'entry', header: '入口', size: 152, cell: (m) => <EntryCell m={m} /> },
       { id: 'plan', header: '供应商 · 套餐', size: 176, drop: 3,
         cell: (m) => <>{m.plan ? <Trunc className="cell-main">{m.plan.name}</Trunc> : <span className="cell-main t-muted">{m.host_machine ? '不带套餐' : '未设置'}</span>}<span className="sub">{m.provider?.name ?? '—'}</span></> },
@@ -150,8 +140,8 @@ export function NodesPage() {
 
   // 表头排序：稳定排序，相同值保持默认顺序
   const rows = React.useMemo(() => sortByCol(data, columns, sort), [data, columns, sort]);
-  const pg = usePage({ total: q.data ? rows.length : undefined, sizes: PAGE_SIZES, size: 50, reset: [scope, text, team, kind, relay, status, dueSoon, sort] });
-  const stable = useStableOrder(rows, sort?.id === 'traffic' ? JSON.stringify([scope, text, team, kind, relay, status, dueSoon, sort, pg.page, pg.size]) : null);
+  const pg = usePage({ total: q.data ? rows.length : undefined, sizes: PAGE_SIZES, size: 50, reset: [scope, text, team, kind, relay, status, dueSoon, plan, sort] });
+  const stable = useStableOrder(rows, sort?.id === 'traffic' ? JSON.stringify([scope, text, team, kind, relay, status, dueSoon, plan, sort, pg.page, pg.size]) : null);
   const pageRows = React.useMemo(() => stable.slice(pg.offset, pg.offset + pg.size), [stable, pg.offset, pg.size]);
   React.useEffect(() => { setDrawerOrder(stable.map((m) => m.id)); }, [stable]);
   React.useEffect(() => () => setDrawerOrder(null), []);
@@ -168,6 +158,7 @@ export function NodesPage() {
         <div className="w-[140px]"><Select value={relay} onChange={setRelay} allowEmpty="全部线路机" placeholder="线路机" options={relayOpts} aria-label="线路机" /></div>
         {scope === 'live' && <div className="w-[130px]"><Select value={status} onChange={setStatus} allowEmpty="全部状态" placeholder="状态" options={filterOpts().status} aria-label="状态" /></div>}
         {dueSoon && <button type="button" className="fchip" aria-pressed="true" aria-label="取消「即将到期」筛选" onClick={() => upd({ due: '' })}>即将到期<X size={14} /></button>}
+        {plan && <button type="button" className="fchip" aria-pressed="true" aria-label="取消套餐筛选" onClick={() => upd({ plan: '' })}>套餐{planName && ` ${planName}`}<X size={14} /></button>}
         {filtered && <Button variant="quiet" size="md" onClick={clearFilters}><X />清除筛选</Button>}
         {sort && <Button variant="quiet" size="md" onClick={() => setSort(null)}><RotateCcw />恢复默认顺序</Button>}
       </div>

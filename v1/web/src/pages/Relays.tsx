@@ -5,6 +5,7 @@ import * as React from 'react';
 import { CheckCircle2, ChevronRight, CircleAlert, Loader2, PackageOpen } from 'lucide-react';
 import { useRelays } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
+import { errText, probeFail } from '@/lib/derive';
 import * as F from '@/lib/format';
 import type { EntryView, MachineView } from '@/lib/types';
 import { Button } from '@/components/ui/button';
@@ -23,8 +24,6 @@ import { ENTRY_CAP, probeCell, tcpCell } from '@/features/EntriesTable';
 
 type Open = ReturnType<typeof useDrawer>['open'];
 
-/** 运行中的入口探测全部失败（直出入口不做 TCP 探测）：状态写「不通」，悬停看探测的错误 */
-const probeFail = (e: EntryView) => (e.lifecycle !== 'active' || !e.applied ? null : (!e.direct && e.tcp && !e.tcp.ok ? e.tcp : e.egress && !e.egress.ok ? e.egress : null));
 /** 有问题的入口：探测不通或应用失败 */
 const isBad = (e: EntryView) => !!probeFail(e) || (e.lifecycle === 'active' && !!e.apply_error);
 
@@ -39,7 +38,7 @@ const EntryRow = React.memo(function EntryRow({ e, open }: { e: EntryView; open:
       {/* 直出入口的节点就是这台线路机自己 */}
       <td>{e.direct ? <span className="ellipsis block" data-tip="从线路机自己的 IP 出去，不经节点">{e.node.name}</span>
         : <NodeHover id={e.node.id} noFocus><span className="ellipsis block">{e.node.name}</span></NodeHover>}</td>
-      <td>{fail ? <Pill tone="bad" tip={fail.detail ?? undefined}>不通</Pill> : entryState(e)}</td>
+      <td>{fail ? <Pill tone="bad" tip={fail.detail ? errText(fail.detail) : undefined}>不通</Pill> : entryState(e)}</td>
       {/* 停用的入口不再探测：留着的是停用前的旧读数，不显示 */}
       {e.lifecycle === 'disabled' ? <><td className="r t-muted">—</td><td className="r t-muted">—</td></> : <><td className="r">{tcpCell(e)}</td><td className="r">{probeCell(e.egress)}</td></>}
       <td className="r"><Num f={F.bytes(e.traffic.month_up + e.traffic.month_down)} /></td>

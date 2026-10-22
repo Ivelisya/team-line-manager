@@ -3,7 +3,7 @@
 import { MoreHorizontal } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
 import * as F from '@/lib/format';
-import { cycleLabel, isQuiet, liveRate, monthlyHint, quota, quotaGb, remainingValue, resourceMeters, trafficTotal } from '@/lib/derive';
+import { cycleLabel, isQuiet, liveRate, monthlyHint, quota, quotaGb, remainingValue, resourceMeters, statusRank, trafficTotal } from '@/lib/derive';
 import { Due, Flag, HealthPill, HostTag, Num, type SortState } from '@/components/app/primitives';
 import { MachineGrid, byNum, byStr, sortByCol, type Col } from '@/components/app/MachineGrid';
 import { Cells, MiniMeter, quotaColors } from '@/components/app/viz';
@@ -15,9 +15,6 @@ const cpuPct = (m: MachineView) => (!isQuiet(m) && m.host?.cpu_pct != null ? m.h
 const memPct = (m: MachineView) => (!isQuiet(m) && m.host?.mem_total ? (m.host.mem_used ?? 0) / m.host.mem_total : null);
 const diskPct = (m: MachineView) => (!isQuiet(m) && m.host?.disk_total ? (m.host.disk_used ?? 0) / m.host.disk_total : null);
 const PCT = { cpu: cpuPct, mem: memPct, disk: diskPct };
-/** 状态列升序：有问题的在前（上架失败、故障、降级…），正常的在后（同机器页的状态列）；首页的「异常优先」就是它 */
-const STATUS_RANK: Record<string, number> = { failed: 0, down: 1, degraded: 2, unknown: 3, maintenance: 4, provisioning: 5, retiring: 6, ok: 7 };
-const statusRank = (m: MachineView) => STATUS_RANK[m.lifecycle === 'active' ? m.health.status : m.lifecycle] ?? 8;
 
 // 列宽合计 1194：1426 宽窗口下内容区约 1079，先收起「月费」「剩余价值」（1046）；更窄时再收「磁盘」「内存」（1267 宽窗口内容区约 921 放得下 882）。
 // 名称两行（名称 + 小字 IP，同机器页），不再单列 IP；状态单独一列（名称后面不再标）。同机关系标跟在名称后面，只写「同机」/「+N IP」（宿主机名在悬停说明里），

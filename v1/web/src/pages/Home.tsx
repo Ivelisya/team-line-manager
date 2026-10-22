@@ -3,11 +3,12 @@
 // 排序只有一份：工具栏的下拉与表格表头改的是同一个状态（下拉列常用的几种，表头点出来的其它排序在下拉里显示「自定义」），卡片 / 环形视图同样按它排。
 // 默认排序：线路机 → 团队 → 编号；故障/离线不下沉。分组、排序、仅看异常、视图、密度都写在地址里（刷新、分享后不变），没写时用上次的选择（本地偏好）。
 import * as React from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { AlertTriangle, CircleGauge, CloudUpload, Inbox, LayoutGrid, Server, Table2 } from 'lucide-react';
 import { useMachines, useOverview, useProbeBeatsPoll, useTeams } from '@/lib/queries';
 import { setDrawerOrder, useDrawer } from '@/lib/drawer';
 import { prefOf, prefs } from '@/lib/prefs';
+import { parseSort, sortParam, useUrlState } from '@/lib/urlState';
 import type { MachineView } from '@/lib/types';
 import { Empty, ErrorNote, FilterChip, type SortState } from '@/components/app/primitives';
 import { NodeCard, SkeletonCard, type CardShow, type CardView } from '@/components/app/NodeCard';
@@ -28,8 +29,8 @@ const SORTS = [
   { value: '-traffic', label: '本月业务流量最多' }, { value: 'status', label: '异常优先' },
 ];
 const SORTS_CUSTOM = [...SORTS, { value: 'custom', label: '自定义' }];
-const parseSort = (s: string): SortState | null => (s && s !== 'default' ? { id: s.replace(/^-/, ''), desc: s.startsWith('-') } : null);
-const sortStr = (s: SortState | null) => (s ? `${s.desc ? '-' : ''}${s.id}` : 'default');
+const homeSort = (s: string) => (s === 'default' ? null : parseSort(s));
+const sortStr = (s: SortState | null) => sortParam(s) || 'default';
 /** 随实时推送变的排序依据（读数、流量、额度、状态）：显示顺序要稳住（useStableOrder），换页、换排序才重排 */
 const STATIC_SORT = new Set(['name', 'due', 'value', 'fee']);
 type Layout = 'cards' | 'table' | 'ring';
@@ -56,26 +57,22 @@ export function HomePage() {
   const teams = useTeams();
   const ov = useOverview();
   const { id: openId, open } = useDrawer();
-  const [sp, setSp] = useSearchParams();
-  // setSearchParams 每次地址变化都换身份；用 ref 兜住，回调才稳定（分段控件是 memo 的，同 lib/drawer.ts）
-  const setRef = React.useRef(setSp); setRef.current = setSp;
-  const upd = React.useCallback((patch: Record<string, string>) => setRef.current((p) => {
-    const n = new URLSearchParams(p);
-    for (const [k, v] of Object.entries(patch)) { if (v) n.set(k, v); else n.delete(k); }
-    return n;
-  }, { replace: true }), []);
-  const layout = LAYOUTS.includes(sp.get('view') as Layout) ? sp.get('view') as Layout : prefOf(P_LAYOUT, 'cards', LAYOUTS);
-  const view = DENSITIES.includes(sp.get('density') as CardView) ? sp.get('density') as CardView : prefOf(P_VIEW, 'large', DENSITIES);
-  const rawSort = sp.get('sort') ?? prefs.get(P_SORT) ?? 'default';
-  const sort = React.useMemo(() => parseSort(rawSort), [rawSort]);
+  const [sp, upd] = useUrlState();
+  // 本地偏好只在打开首页时读一次 localStorage（实时推送每次重渲染都读没必要）；之后改选择时 setL / setV / setSort 同步改这份，
+  // 地址参数被清掉（再点一次侧栏的首页）时退回的是最近的选择
+  const [saved] = React.useState(() => ({ layout: prefOf(P_LAYOUT, 'cards', LAYOUTS), view: prefOf(P_VIEW, 'large', DENSITIES), sort: prefs.get(P_SORT) ?? 'default' }));
+  const layout = LAYOUTS.includes(sp.get('view') as Layout) ? sp.get('view') as Layout : saved.layout;
+  const view = DENSITIES.includes(sp.get('density') as CardView) ? sp.get('density') as CardView : saved.view;
+  const rawSort = sp.get('sort') ?? saved.sort;
+  const sort = React.useMemo(() => homeSort(rawSort), [rawSort]);
   // 分组：线路机一组用 kind=relay，团队用 team=<id>（同机器页的筛选参数名）
   const team = sp.get('kind') === 'relay' ? 'relay' : sp.get('team') ?? 'all';
   const onlyIssues = sp.get('issues') === '1';
   // 写地址的同时记成本地偏好（下次没带参数打开时用）
-  const setL = React.useCallback((v: Layout) => { prefs.set(P_LAYOUT, v); upd({ view: v }); }, [upd]);
-  const setV = React.useCallback((v: CardView) => { prefs.set(P_VIEW, v); upd({ density: v }); }, [upd]);
-  const setSort = React.useCallback((s: SortState | null) => { const v = sortStr(s); prefs.set(P_SORT, v); upd({ sort: v }); }, [upd]);
-  const pickSort = React.useCallback((v: string) => { if (v !== 'custom') setSort(parseSort(v)); }, [setSort]);
+  const setL = React.useCallback((v: Layout) => { prefs.set(P_LAYOUT, v); saved.layout = v; upd({ view: v }); }, [upd, saved]);
+  const setV = React.useCallback((v: CardView) => { prefs.set(P_VIEW, v); saved.view = v; upd({ density: v }); }, [upd, saved]);
+  const setSort = React.useCallback((s: SortState | null) => { const v = sortStr(s); prefs.set(P_SORT, v); saved.sort = v; upd({ sort: v }); }, [upd, saved]);
+  const pickSort = React.useCallback((v: string) => { if (v !== 'custom') setSort(homeSort(v)); }, [setSort]);
   useProbeBeatsPoll(layout === 'cards'); // 卡片心跳条每 2 分钟刷新：全页一个轮询
 
   // 实时推送每条都换一份机器列表：按可打断的优先级重渲染（用户的点击、输入先处理，推送晚一点跟上）

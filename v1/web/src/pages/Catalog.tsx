@@ -8,6 +8,7 @@ import type { Plan, Provider, Team, TrafficReset, TrafficRule } from '@/lib/type
 import { currencyOptions, cycleLabel, cycleOptions, limitGb, meta, trafficResetLabel, trafficRuleLabel } from '@/lib/derive';
 import { collator } from '@/lib/sort';
 import { tzLabel } from '@/lib/tz';
+import { useUrlSort } from '@/lib/urlState';
 import * as F from '@/lib/format';
 import { Button, IconButton } from '@/components/ui/button';
 import { CheckRow, Field, InfoTip, Input, UnitInput } from '@/components/ui/form';
@@ -42,14 +43,6 @@ export function CatalogPage() {
   );
 }
 
-/** 表头排序写进 URL 的 ?sort=（「-」开头为降序，同机器页） */
-function useUrlSort() {
-  const [sp, setSp] = useSearchParams();
-  const raw = sp.get('sort');
-  const sort = React.useMemo<SortState | null>(() => (raw ? { id: raw.replace(/^-/, ''), desc: raw.startsWith('-') } : null), [raw]);
-  const setSort = (s: SortState | null) => setSp((p) => { const n = new URLSearchParams(p); if (s) n.set('sort', `${s.desc ? '-' : ''}${s.id}`); else n.delete('sort'); return n; }, { replace: true });
-  return [sort, setSort] as const;
-}
 /** 按列取值排序：数字按大小，文字按中文名称（编号按数值）；没有排序时保持原顺序 */
 function sortRows<T>(list: T[], sort: SortState | null, key: Record<string, (x: T) => number | string>): T[] {
   const f = sort && key[sort.id];
@@ -312,7 +305,7 @@ function PlansTab() {
                   <td>{planSpec(p)}<span className="sub">{p.disk_gb ? `磁盘 ${p.disk_gb} GiB` : ''}</span></td>
                   <td className="r"><Num f={F.mbps(p.bandwidth_mbps)} /></td><td className="r"><Num f={limitGb(p.traffic_gb)} /></td>
                   <td className="r"><span className="num">{F.money(p.price_cents, p.currency)}</span><span className="sub">/ {cycleLabel(p.cycle)}</span></td>
-                  <td className="r num"><CountLink n={p.machine_count} to={`/nodes?q=${encodeURIComponent(p.name)}`} /></td>
+                  <td className="r num"><CountLink n={p.machine_count} to={`/nodes?plan=${p.id}`} /></td>
                   <td className="r"><span className="row" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
                     <Button size="sm" variant="quiet" onClick={() => setEdit(p)}><Pencil size={13} />编辑</Button>
                     {p.archived_at

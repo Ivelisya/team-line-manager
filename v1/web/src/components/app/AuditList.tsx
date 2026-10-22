@@ -15,15 +15,19 @@ const obj = (v: unknown): Obj => (v && typeof v === 'object' ? (v as Obj) : {});
 const str = (v: unknown) => (typeof v === 'string' ? v : '');
 /** 远程执行超过这么久还没补上结果（中控中途重启、连接断了），就当结果未知：单次最长 600 秒，排队 30 秒 */
 const EXEC_STALE_MS = 15 * 60_000;
+/** 对象是机器的记录：多数写 machine，SSH 登录写的是机器类型 */
+const MACHINE_KINDS = new Set(['machine', 'vps', 'relay', 'proxy']);
 const secs = (ms: number) => (ms < 60_000 ? `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)} 秒` : `${Math.floor(ms / 60_000)} 分 ${Math.round((ms % 60_000) / 1000)} 秒`);
 
 function describe(a: AuditEntry): Desc {
   const d = obj(a.detail);
-  // 摘要以记录里的显示名开头时（上架、执行命令、改套餐、换线路机…），名字接在动作后面，其余是详情。名字保持记录时的样子，之后改过名也不跟着变
+  // 记录里的显示名接在动作后面：摘要以它开头时（上架、执行命令、改套餐、换线路机…）从摘要里拿掉，其余是详情；
+  // 对象是机器、摘要不以名字开头（改名的摘要是「旧 → 新」）时名字照样接上，摘要整句留作详情。名字保持记录时的样子，之后改过名也不跟着变
   const name = str(d.name);
+  const machine = MACHINE_KINDS.has(a.target_kind ?? '') && !!a.target_id;
   const base: Desc = name && a.summary === name ? { title: a.title, target: name, rest: '', more: [] }
     : name && a.summary.startsWith(`${name} · `) ? { title: a.title, target: name, rest: a.summary.slice(name.length + 3), more: [] }
-      : { title: a.title, target: '', rest: a.summary, more: [] };
+      : { title: a.title, target: name && machine ? name : '', rest: a.summary, more: [] };
   if (a.action !== 'exec') return base;
   // 远程执行：结果自己判断（中控摘要里的「执行中或中断」放久了就是结果未知），命令、结果、耗时进展开的明细
   const cmd = str(d.command);
@@ -37,8 +41,6 @@ function describe(a: AuditEntry): Desc {
 }
 
 const p2 = F.pad2;
-/** 对象是机器的记录：多数写 machine，SSH 登录写的是机器类型 */
-const MACHINE_KINDS = new Set(['machine', 'vps', 'relay', 'proxy']);
 const isToday = (iso: string) => new Date(iso).toDateString() === new Date().toDateString();
 
 /** onOpen：给了就让涉及机器的记录里的对象名可点（打开这台机器的抽屉）；抽屉里自己的记录不需要。

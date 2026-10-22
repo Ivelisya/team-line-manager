@@ -3,7 +3,7 @@ import * as React from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowRight, PackageOpen, Plus, Repeat2, Trash2, Undo2, Wrench } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
-import { useAddEntry, useEndMaintenance, useMachine, usePatchMachine, usePurge, useRelayChoices, useTeams, useUpgradeAgent } from '@/lib/queries';
+import { maintOwner, useAddEntry, useEndMaintenance, useMachine, usePatchMachine, usePurge, useRelayChoices, useSilences, useTeams, useUpgradeAgent } from '@/lib/queries';
 import { openMaint } from '@/lib/nodeActions';
 import { useDrawer } from '@/lib/drawer';
 import { lifecycleLabel } from '@/lib/derive';
@@ -211,16 +211,19 @@ function AgentSection({ m }: { m: MachineView }) {
   );
 }
 
-/** 维护：开一个只针对这台的维护窗口（期间不发告警，卡片显示「维护」）；维护中可以提前结束 */
+/** 维护：开一个只针对这台的维护窗口（期间不发告警，卡片显示「维护」）；维护中可以提前结束。
+ *  同机 IP 节点因宿主机维护而「维护中」时，写明是宿主机的，按钮结束宿主机的维护 */
 function MaintSection({ m }: { m: MachineView }) {
   const end = useEndMaintenance();
+  const silences = useSilences().data;
+  const onHost = m.maintenance && !!silences && maintOwner(silences, m).onHost;
   return (
     <Section>
       <SectionHeader title="维护" meta={m.maintenance ? '维护中' : undefined} />
       <div className="manage-row">
-        <div><div className="t">维护窗口</div><div className="hint">期间不发告警</div></div>
+        <div><div className="t">维护窗口</div><div className="hint">{onHost ? `宿主机「${m.host_machine!.name}」在维护中` : '期间不发告警'}</div></div>
         {m.maintenance
-          ? <Button variant="secondary" loading={end.isPending} onClick={() => end.mutate(m.id, { onSuccess: () => toast.ok('已结束维护'), onError: toast.err })}><Wrench />结束维护</Button>
+          ? <Button variant="secondary" loading={end.isPending} onClick={() => end.mutate(m, { onSuccess: (o) => toast.ok(`${o.name} 已结束维护`), onError: toast.err })}><Wrench />{onHost ? '结束宿主机维护' : '结束维护'}</Button>
           : <Button variant="secondary" onClick={() => openMaint(m.id)}><Wrench />维护窗口…</Button>}
       </div>
     </Section>

@@ -233,16 +233,26 @@ export const useCancelJob = () => useWrite((id: string) => post(`/jobs/${id}/can
 export const useAck = () => useWrite((id: string) => post(`/incidents/${id}/ack`), [['incidents']]);
 export const useAddSilence = () => useWrite((b: Partial<Silence>) => post('/silences', b), [['silences'], ['incidents']]);
 export const useDelSilence = () => useWrite((id: string) => del(`/silences/${id}`), [['silences'], ['incidents']]);
-/** 结束一台机器的维护（卡片菜单、抽屉「管理」）：删掉只针对它、正在生效的维护窗口；「全部机器」的那种不动，只有那种时报错。
- *  机器上的「维护中」由服务端随后的 metrics 推送改回 */
+type MaintSubject = Pick<MachineView, 'id' | 'name' | 'host_machine'>;
+/** 让这台机器「维护中」的、正在生效的维护窗口归谁：自己的优先；同机 IP 节点自己没有、宿主机有时是宿主机的（宿主机维护时它也算维护中）。
+ *  windows 为空 = 只在「全部机器」的维护窗口里 */
+export function maintOwner(list: Silence[], m: MaintSubject, now = Date.now()) {
+  const live = (id: string) => list.filter((s) => s.subject_id === id && s.is_maintenance && Date.parse(s.starts_at) <= now && Date.parse(s.ends_at) > now);
+  const own = live(m.id);
+  if (own.length || !m.host_machine) return { owner: m, onHost: false, windows: own };
+  const host = live(m.host_machine.id);
+  return host.length ? { owner: { ...m.host_machine, host_machine: null }, onHost: true, windows: host } : { owner: m, onHost: false, windows: own };
+}
+/** 结束一台机器的维护（卡片菜单、抽屉「管理」）：删掉 maintOwner 找到的维护窗口（同机 IP 节点因宿主机维护时结束的是宿主机的）；
+ *  「全部机器」的那种不动，只有那种时报错。返回结束了谁的维护。机器上的「维护中」由服务端随后的 metrics 推送改回 */
 export const useEndMaintenance = () => {
   const qc = useQueryClient();
-  return useWrite(async (id: string) => {
-    const now = Date.now();
+  return useWrite(async (m: MaintSubject) => {
     const list = await qc.fetchQuery({ queryKey: ['silences'], queryFn: () => get<Silence[]>('/silences'), staleTime: 0 });
-    const own = list.filter((s) => s.subject_id === id && s.is_maintenance && Date.parse(s.starts_at) <= now && Date.parse(s.ends_at) > now);
-    if (!own.length) throw new Error('这台机器在「全部机器」的维护窗口里，请到告警页结束');
-    for (const s of own) await del(`/silences/${s.id}`);
+    const { owner, windows } = maintOwner(list, m);
+    if (!windows.length) throw new Error('这台机器在「全部机器」的维护窗口里，请到告警页结束');
+    for (const s of windows) await del(`/silences/${s.id}`);
+    return owner;
   }, [['silences'], ['incidents']]);
 };
 export const useAddTeam = () => useWrite((b: { name: string; sort_order?: number }) => post('/teams', b), [['teams']]);
