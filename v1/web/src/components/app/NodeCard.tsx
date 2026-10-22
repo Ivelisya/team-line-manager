@@ -8,15 +8,15 @@ import { SPRING } from '@/lib/motion';
 import { ArrowDown, ArrowUp, Calendar, CircleDollarSign, Cpu, Database, Gauge, Globe, HardDrive, MemoryStick, MoreHorizontal, Radar, RefreshCw, Settings2, PanelRightOpen, ServerOff, Wallet } from 'lucide-react';
 import type { MachineView, ProbeBeats, Subscription } from '@/lib/types';
 import * as F from '@/lib/format';
-import { beatCells, beatTitles, entryText, hasHost, hostRel, isQuiet, limitGb, liveRate, monthTraffic, probeSummary, quota, quotaGb, remainingValue, resourceMeters, subLabel, tagColor, type TagColor } from '@/lib/derive';
+import { beatCells, beatTitles, entryText, hasHost, hostRel, isQuiet, limitGb, liveRate, monthTraffic, probeSummary, quota, quotaGb, remainingValue, resourceMeters, subLabel } from '@/lib/derive';
 import { useProbeBeats } from '@/lib/queries';
 import { useLiveSeries } from '@/lib/live';
 import { useNow } from '@/lib/useNow';
 import { sharedObserver, watchSize } from '@/lib/sharedObserver';
 import { type DrawerTab } from '@/lib/drawer';
-import { KIND_LABEL } from '@/lib/sort';
 import { cn } from '@/lib/utils';
-import { Beat, Due, HealthPill, HostTag, KindIcon, LabelValue, Mark, Num, StatusDot } from './primitives';
+import { Beat, Due, HealthPill, KindIcon, LabelValue, Mark, Num, StatusDot } from './primitives';
+import { MachineTag, machineTagItems } from './MachineTags';
 import { CellMeter, Cells, DotTrace, QUOTA_COLORS, Tag } from './viz';
 import { Button, IconButton } from '@/components/ui/button';
 
@@ -43,9 +43,9 @@ const Head = memo(function Head({ name, kind, ip, status, lc, view, onOpen }: { 
   );
 });
 
-/** IP 后面的标：IP 版本、非默认的 SSH 端口、同机关系（同机 IP 节点「同机 · 宿主机名」、宿主机「+N IP」，可点） */
-const IpTags = ({ id, ip, sshPort, host, nodes }: Pick<Info, 'id' | 'ip' | 'sshPort' | 'host' | 'nodes'>) => (
-  <span className="nc-marks">{ip.includes(':') ? <Tag c="blue">V6</Tag> : <Tag c="green">V4</Tag>}{sshPort !== 22 && <Mark tip="SSH 端口">SSH {sshPort}</Mark>}<HostTag id={id} host={host} nodes={nodes} /></span>
+/** IP 后面的标：IP 版本、非默认的 SSH 端口（同机关系在标签行，见 MachineTags） */
+const IpTags = ({ ip, sshPort }: Pick<Info, 'ip' | 'sshPort'>) => (
+  <span className="nc-marks">{ip.includes(':') ? <Tag c="blue" tip="IPv6 地址">V6</Tag> : <Tag c="green" tip="IPv4 地址">V4</Tag>}{sshPort !== 22 && <Mark tip="SSH 端口">SSH {sshPort}</Mark>}</span>
 );
 interface Info { id: string; ip: string; sshPort: number; entry: string; plan: MachineView['plan']; host: MachineView['host_machine']; nodes: MachineView['ip_nodes'] }
 /** 大卡片：地址行 + 入口 / 套餐 / 套餐带宽 / 流量上限 2×2。同机 IP 节点不带套餐，自己没设上限时额度与宿主机共用 */
@@ -207,24 +207,15 @@ const RunRow = memo(function RunRow({ activated, sub }: { activated: string | nu
   );
 });
 
-const KIND_TAG = { relay: 'teal', proxy: 'orange', vps: 'violet' } as const;
-const NO_NODES: MachineView['ip_nodes'] = [];
-/** 标签行：标签只排一行，放不下的整枚收起（折到看不见的第二行，cards.css），末尾「+N」，悬停列出收起的那几枚。
+/** 标签行：同一套标签与顺序（见 MachineTags：供应商 → 类型 → 同机关系 → 维护中），三种密度都一样。只排一行，放不下的整枚收起（折到看不见的第二行，cards.css），末尾「+N」，悬停列出收起的那几枚。
  *  收起几枚要排版后才数得出：挂载、标签变了、「+N」出现或变了（列表随之变窄）、卡片变宽变窄时重数；推送不改这几个字段，memo 挡住，不重数。
  *  列表按剩下的宽度伸满，收起的标签让出的空白留在它末尾：数的时候顺带量出这段空白，「+N」往左平移过去、紧跟最后一枚露出的标签
- *  （价格仍靠右）。只是平移，不改排版，不会再触发重数。
- *  host / nodes：紧凑卡的同机关系标排在类型后面（可点，见 HostTag）；其它密度不传 */
-const Tags = memo(function Tags({ code, provider, kind, service, maintenance, price, id, host, nodes }: {
-  code: string | null; provider?: string; kind: MachineView['kind']; service: string | null; maintenance: boolean; price: string | null;
+ *  （价格仍靠右）。只是平移，不改排版，不会再触发重数 */
+const Tags = memo(function Tags({ code, provider, kind, maintenance, price, id, host, nodes }: {
+  code: string | null; provider: MachineView['provider']; kind: MachineView['kind']; maintenance: boolean; price: string | null;
   id: string; host: MachineView['host_machine']; nodes: MachineView['ip_nodes'];
 }) {
-  const items: { c: TagColor; text: string; tip?: string; rel?: true }[] = [];
-  if (code) items.push({ c: tagColor(code), text: code, tip: provider });
-  items.push({ c: KIND_TAG[kind], text: KIND_LABEL[kind] });
-  const rel = hostRel(host, nodes);
-  if (rel) items.push({ c: 'violet', ...rel, rel: true });
-  if (service) items.push({ c: tagColor(service), text: service });
-  if (maintenance) items.push({ c: 'amber', text: '维护中' });
+  const items = machineTagItems({ provider, provider_code: code, kind, maintenance, host_machine: host, ip_nodes: nodes });
   const list = useRef<HTMLDivElement>(null);
   const more = useRef<HTMLSpanElement>(null);
   const [cut, setCut] = useState(0);
@@ -237,14 +228,14 @@ const Tags = memo(function Tags({ code, provider, kind, service, maintenance, pr
     const last = el.children[el.children.length - 1 - n];
     if (more.current) more.current.style.translate = `${last.getBoundingClientRect().right - el.getBoundingClientRect().right}px`;
   }, []);
-  useLayoutEffect(count, [count, code, kind, service, maintenance, price, host, nodes, cut]);
+  useLayoutEffect(count, [count, code, provider, kind, maintenance, price, host, nodes, cut]);
   useEffect(() => watchSize(list.current!.parentElement!, count), [count]); // 看整行：行宽只随卡片变，「+N」进出不会让它再触发
   return (
     <div className="nc-tags">
       {/* 同机关系标被收起时不进 Tab 顺序：聚焦会把裁掉的第二行滚出来 */}
-      <div className="nc-tags-list" ref={list}>{items.map((t, i) => (t.rel ? <HostTag key={i} id={id} host={host} nodes={nodes} tabIndex={i >= items.length - cut ? -1 : undefined} /> : <Tag key={i} c={t.c} tip={t.tip}>{t.text}</Tag>))}</div>
+      <div className="nc-tags-list" ref={list}>{items.map((t, i) => <MachineTag key={t.key} t={t} m={{ id, host_machine: host, ip_nodes: nodes }} tabIndex={'c' in t || i < items.length - cut ? undefined : -1} />)}</div>
       {/* 收起的标签仍在读屏顺序里，「+N」只给眼睛看 */}
-      {cut > 0 && <span ref={more} className="tag" data-c="gray" aria-hidden data-tip={items.slice(-cut).map((t) => (t.tip ? `${t.text}（${t.tip}）` : t.text)).join('、')}>+{cut}</span>}
+      {cut > 0 && <span ref={more} className="tag" data-c="gray" aria-hidden data-tip={items.slice(-cut).map((t) => ('c' in t ? t.tip : hostRel(host, nodes)?.tip ?? '')).join('\n')}>+{cut}</span>}
       {price && <span className="nc-price"><CircleDollarSign /><span className="num">{price}</span></span>}
     </div>
   );
@@ -270,10 +261,7 @@ function NodeCardImpl({ m, view, current, onOpen: open, layoutKey }: { m: Machin
   const host = hasHost(m);
   const quiet = isQuiet(m);
   const info: Info = { id: m.id, ip: m.ip, sshPort: m.ssh_port, entry: entryText(m), plan: m.plan, host: m.host_machine, nodes: m.ip_nodes };
-  // 同机关系标：大 / 小卡片在 IP 后面（IpTags），紧凑卡没有地址行，放进标签行（放不下整枚收进「+N」）
-  const compact = view === 'compact';
-  const tags = <Tags code={m.provider_code} provider={m.provider?.name} kind={m.kind} service={m.service_ref} maintenance={m.maintenance} price={subLabel(m)}
-    id={m.id} host={compact ? m.host_machine : null} nodes={compact ? m.ip_nodes : NO_NODES} />;
+  const tags = <Tags code={m.provider_code} provider={m.provider} kind={m.kind} maintenance={m.maintenance} price={subLabel(m)} id={m.id} host={m.host_machine} nodes={m.ip_nodes} />;
   const beat = <section className="slot-seg"><BeatSlot id={m.id} kind={m.kind} lifecycle={m.lifecycle} quiet={quiet} {...probeSummary(m)} /></section>;
 
   return (

@@ -146,8 +146,8 @@ export function remainingValue(s: Subscription | null) {
   return { cents: Math.round(s.price_cents * frac), currency: s.currency, frac, days };
 }
 
-/** 标签配色：固定语义的用固定色（类型：线路机青、落地机紫、家宽橙；维护中琥珀），
- *  其余（供应商代号、服务编号）按文字散列到剩下的几种颜色，同一个代号永远同色、也不会和类型标签撞色 */
+/** 标签配色：固定语义的用固定色（类型：线路机青、家宽橙；同机关系紫；维护中琥珀），
+ *  供应商按代号散列到剩下的几种颜色，同一家永远同色、也不会和类型标签撞色 */
 const TAG_COLORS = ['blue', 'pink', 'cyan', 'green'] as const;
 export type TagColor = (typeof TAG_COLORS)[number] | 'gray' | 'teal' | 'violet' | 'orange' | 'amber';
 export function tagColor(text: string): TagColor {

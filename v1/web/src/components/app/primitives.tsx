@@ -86,7 +86,7 @@ function HostTagButton({ id, host, nodes, short, tabIndex }: HostTagProps) {
   return <button type="button" className="tag" data-c="violet" data-tip={`${r.tip}。${act}`} tabIndex={tabIndex} onClick={(e) => { e.stopPropagation(); open(to); }}>{r.text}</button>;
 }
 
-/** 类型标（原版国旗位）：线路机 / 落地机 / 家宽代理 */
+/** 类型标（原版国旗位）：线路机 / VPS 节点 / 家宽代理 */
 export function KindIcon({ kind }: { kind: Kind }) {
   const Ic = kind === 'relay' ? Waypoints : kind === 'proxy' ? Home : Server;
   return <span className="nc-kind" role="img" data-tip={KIND_LABEL[kind]} aria-label={KIND_LABEL[kind]}><Ic /></span>;
