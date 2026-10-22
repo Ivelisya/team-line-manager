@@ -6,6 +6,7 @@ import { useIncidents } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import { isRouterIncident, useRouterDrawer } from '@/lib/routers';
 import * as F from '@/lib/format';
+import { errText } from '@/lib/derive';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card';
 import { Pill, SeverityMark } from '@/components/app/primitives';
 
@@ -34,14 +35,15 @@ export function AlertsIndicator() {
             const sid = i.subject?.id ?? i.subject_id;
             const name = i.subject?.name ?? i.subject_name ?? '—';
             // 摘要以「对象名：」开头（告警通知要能单独看懂），这里名字已在上一行，去掉不重复
-            const sum = i.summary.startsWith(`${name}：`) ? i.summary.slice(name.length + 1) : i.summary;
+            // 英文原始错误换成中文（errText，同卡片与抽屉）
+            const sum = errText(i.summary.startsWith(`${name}：`) ? i.summary.slice(name.length + 1) : i.summary);
             return (
               <li key={i.id}>
                 <button type="button" className="pop-item" onClick={() => { setOpen(false); if (sid) (isRouterIncident(i) ? openRouter : openDrawer)(sid); }}>
                   <span className="alerts-pop-row">
                     <SeverityMark severity={i.severity} />
-                    <b className="ellipsis">{name}</b>
-                    <span className="alerts-pop-rule ellipsis">{i.rule_name}</span>
+                    <b className="ellipsis" data-tip={name}>{name}</b>
+                    <span className="alerts-pop-rule ellipsis" data-tip={i.rule_name}>{i.rule_name}</span>
                     <span className="alerts-pop-age">已持续 {F.str(F.since(i.opened_at, now))}</span>
                   </span>
                   <span className="alerts-pop-sum hint ellipsis" data-tip={sum}>{sum}</span>

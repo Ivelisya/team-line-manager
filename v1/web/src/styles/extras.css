@@ -115,6 +115,7 @@
 .cmd-foot .kbd { margin-right: var(--sp-4); }
 
 /* ========== 快捷键帮助 / 错误卡 ========== */
+.dialog-head.hk-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); margin: calc(-1 * var(--sp-6)) calc(-1 * var(--sp-8)) 0 0; } /* 标题右边的关闭按钮 */
 .hk-list { margin: 0; padding: 0; list-style: none; }
 .hk-list li { display: flex; align-items: center; gap: var(--sp-16); padding: var(--sp-8) 0; border-top: 1px solid var(--line); font-size: var(--fs-body); }
 .hk-list li:first-child { border-top: 0; }
@@ -126,6 +127,15 @@
 .empty-ic { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; background: var(--sunken); box-shadow: inset 0 0 0 1px var(--line); color: var(--fg-3); }
 .empty-text { font-weight: var(--fw-medium); text-wrap: pretty; }
 .tab-pane { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-16); align-content: start; animation: tab-in var(--dur-2) var(--ease-out); }
+/* 访问记录「常访问的目标」条尾的次数 */
+.bar-count { fill: var(--fg-2); font-size: 11px; font-weight: var(--fw-semibold); font-variant-numeric: tabular-nums; }
+/* 页签里吸顶的一条（主机页签的时间范围）：贴在抽屉正文滚动区的顶边（抵掉正文的上内边距），毛玻璃底，滚过去的曲线从下面淡淡透出 */
+.tab-sticky {
+  position: sticky; top: calc(-1 * var(--sp-16)); z-index: 3; display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8);
+  margin: calc(-1 * var(--sp-16)) calc(-1 * var(--sp-16)) calc(-1 * var(--sp-8)); padding: var(--sp-10) var(--sp-16);
+  background: color-mix(in srgb, var(--surface) 82%, transparent); -webkit-backdrop-filter: blur(12px) saturate(1.4); backdrop-filter: blur(12px) saturate(1.4);
+  border-bottom: 1px solid var(--line); font-size: var(--fs-label); color: var(--fg-2);
+}
 @keyframes tab-in { from { opacity: 0; transform: translateY(4px); } }
 /* 换时间范围、筛选或翻页时先留着上一份数据：取新数据期间调淡，到了再柔和地亮回来（抽屉曲线、访问监控的 KPI 与表格、抽屉「访问记录」）。
    元素上一直写着 data-stale（值是查询的 isPlaceholderData，"true" / "false"）：过渡留在元素上，亮回来才是渐变 */

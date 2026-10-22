@@ -1,10 +1,10 @@
-// ⌘K / Ctrl+K 命令面板：跳转页面、搜索机器（名称 / IP / 团队模糊匹配，回车打开抽屉）、常用动作。
+// ⌘K / Ctrl+K 命令面板：跳转页面、搜索机器（名称 / IP / 团队，回车打开抽屉）、团队（跳到机器页的团队筛选）、常用动作。
 // 整个文件按需加载（首次打开时才下载 cmdk）。
 import * as React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowUpCircle, BellOff, CalendarPlus, Clipboard, CloudUpload, Moon, PackageOpen, ShieldCheck, SquareTerminal, Sun } from 'lucide-react';
+import { ArrowUpCircle, BellOff, CalendarPlus, Clipboard, CloudUpload, Moon, PackageOpen, ShieldCheck, SquareTerminal, Sun, Users, type LucideIcon } from 'lucide-react';
 import { NAV, type NavItem } from '@/lib/nav';
-import { useMachineLabels, useUpgradeAllAgents } from '@/lib/queries';
+import { useMachineLabels, useTeams, useUpgradeAllAgents } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import { copyText } from '@/lib/clipboard';
 import { kindLabel } from '@/lib/derive';
@@ -18,28 +18,32 @@ import { InfoTip } from '@/components/ui/form';
 import { ConfirmDialog } from '@/components/app/dialogs';
 import { Flag, HealthPill } from '@/components/app/primitives';
 
-// 与侧栏同一份导航，在「访问监控」后加上「访问规则」（侧栏里它是访问监控页头的视图切换）
-const POLICY: NavItem = { to: '/access/policy', label: '访问规则', icon: ShieldCheck, kw: 'policy access 访问规则 策略 白名单 黑名单 阻止 域名 allowlist denylist' };
+// 与侧栏同一份导航，在「访问监控」后加上「访问规则」（侧栏里它是访问监控页头的视图切换，名字写全路径）
+const POLICY: NavItem = { to: '/access/policy', label: '访问监控 › 访问规则', icon: ShieldCheck, kw: 'policy access 访问规则 策略 白名单 黑名单 阻止 域名 allowlist denylist' };
 const PAGES = NAV.flatMap((n) => (n.to === '/access' ? [n, POLICY] : [n]));
 const LIMIT = 8; // 不输入时只列前几台，输入后在全部机器里搜
 
+/** 条目的可搜索文本：「名称 \t IP \t 其它（团队、类型、别名）」。名称就是界面上显示的那行字，页面、动作、团队没有 IP 一栏 */
+const sv = (name: string, ip: string, rest: string) => `${name}\t${ip}\t${rest}`;
 /** 编号去掉前导零：团队1-04 → 团队1-4，让「1-4」也能按名称命中它 */
 const unpad = (s: string) => s.replace(/\d+/g, (d) => d.replace(/^0+(?=\d)/, ''));
 const subseq = (s: string, q: string) => { const t = [...q]; let i = 0; for (const c of s) if (c === t[i]) i++; return i >= t.length; };
-/** 匹配档位（大的在前）：名称相同 > 名称前缀 > 名称包含 > 去前导零后名称包含 > IP 等其它字段包含 > 名称模糊。
- *  模糊（子序列）只对名称：IP、UUID 里数字多，短数字串对它们做子序列几乎条条命中。
- *  条目 value 写成「名称\t其它字段」；没有 \t 的（页面、动作）整串当名称 */
+const CJK = /[㐀-鿿]/;
+/** 匹配档位（大的在前）：名称相同 > 名称前缀 > IP 前缀 > 名称包含 > 去前导零后名称包含 > IP、团队、别名等包含 > 名称模糊。
+ *  模糊（子序列）只对名称、且只在搜的不含中文时：中文按连续子串匹配（搜「团队1」不该命中「模拟团队B-17」）；IP、UUID 里数字多，短数字串做子序列几乎条条命中 */
 function matchTier(value: string, q: string): number {
-  const [name, rest = ''] = value.toLowerCase().split('\t');
-  if (name === q) return 7;
-  if (name.startsWith(q)) return 6;
+  const [name, ip = '', rest = ''] = value.toLowerCase().split('\t');
+  if (name === q) return 8;
+  if (name.startsWith(q)) return 7;
+  if (ip && ip.startsWith(q)) return 6;
   if (name.includes(q)) return 5;
   if (unpad(name).includes(unpad(q))) return 4;
-  if (rest.includes(q)) return 3;
-  return subseq(name, q) ? 2 : 0;
+  if (ip.includes(q) || rest.includes(q)) return 3;
+  return !CJK.test(q) && subseq(name, q) ? 2 : 0;
 }
 
 type Theme = { pref: ThemePref; setPref: (p: ThemePref) => void };
+type Mode = 'root' | 'copy-ip' | 'evacuate' | 'renew' | 'terminal';
 const close = () => setOverlay(null);
 
 export default function CommandPalette({ theme }: { theme: Theme }) {
@@ -65,15 +69,29 @@ function PaletteBody({ theme, askUpgrade }: { theme: Theme; askUpgrade: () => vo
   const { open: openDrawer } = useDrawer();
   // 只取面板用到的字段：开着面板时实时推送只改读数，不会让整表重渲染
   const machines = useMachineLabels().data ?? [];
+  const teams = useTeams().data ?? [];
   const [search, setSearch] = React.useState('');
-  const [mode, setMode] = React.useState<'root' | 'copy-ip' | 'evacuate' | 'renew' | 'terminal'>('root');
+  const [mode, setMode] = React.useState<Mode>('root');
   const go = (to: string) => { close(); nav(to); };
   const dark = document.documentElement.dataset.theme === 'dark';
+  const pick = (m: Mode) => { setSearch(''); setMode(m); };
+  // 动作：可搜索文本 = 显示的字 + 别名（kw），按看到的字就能搜到
+  const actions: { label: string; kw: string; icon: LucideIcon; run: () => void }[] = [
+    { label: '上架机器', kw: 'provision 添加机器 VPS 节点 家宽代理 线路机', icon: CloudUpload, run: () => go('/provision') },
+    { label: '新建静默', kw: 'silence 维护窗口 维护', icon: BellOff, run: () => go('/incidents?silence=new') },
+    { label: '复制某台机器的 IP…', kw: 'copy ip 复制 IP', icon: Clipboard, run: () => pick('copy-ip') },
+    { label: '登记续费…', kw: 'renew 续费 续期 到期', icon: CalendarPlus, run: () => pick('renew') },
+    { label: '搬空线路机…', kw: 'evacuate 换线路机 退役 下线', icon: PackageOpen, run: () => pick('evacuate') },
+    { label: '打开终端…', kw: 'terminal ssh shell 命令行 登录机器', icon: SquareTerminal, run: () => pick('terminal') },
+    { label: '升级全部 agent', kw: 'upgrade 升级', icon: ArrowUpCircle, run: () => { close(); askUpgrade(); } },
+    { label: `切换到${dark ? '浅色' : '深色'}主题`, kw: '切换主题 深色 浅色 theme dark light 外观', icon: dark ? Sun : Moon, run: () => { close(); theme.setPref(dark ? 'light' : 'dark'); } },
+  ];
 
   // 终端：在用的线路机和节点（家宽代理没有主机可登录）
   const pool = mode === 'evacuate' ? machines.filter((m) => m.kind === 'relay') : mode === 'terminal' ? machines.filter((m) => m.kind !== 'proxy' && m.lifecycle === 'active') : machines;
-  const list = search.trim() || mode === 'evacuate' ? pool : pool.slice(0, LIMIT);
-  const value = (m: (typeof list)[number]) => `${m.name}\t${m.ip} ${m.team?.name ?? ''} ${kindLabel(m.kind)}`;
+  const q = search.trim();
+  const list = q || mode === 'evacuate' ? pool : pool.slice(0, LIMIT);
+  const value = (m: (typeof list)[number]) => sv(m.name, m.ip, `${m.team?.name ?? ''} ${kindLabel(m.kind)}`);
   // cmdk 按分数排序、同分保留上一次排完的 DOM 顺序：加一个小于档差的位次分，同档始终按默认机器顺序
   const order = new Map(list.map((m, i) => [value(m), i]));
   const filter = (v: string, s: string, kw?: string[]) => {
@@ -81,6 +99,9 @@ function PaletteBody({ theme, askUpgrade }: { theme: Theme; askUpgrade: () => vo
     const i = order.get(v);
     return t === 0 ? 0 : t + (i === undefined ? 0 : 0.5 * (1 - i / list.length));
   };
+  // 输入变了：cmdk 选中排在最前的一项，列表滚回顶部，选中项不会停在视口外（回车打开的正是看得见的那一项）
+  const listRef = React.useRef<HTMLDivElement>(null);
+  React.useLayoutEffect(() => { listRef.current?.scrollTo({ top: 0 }); }, [search, mode]);
   const machineItems = list.map((m) => (
     <CommandItem key={m.id} value={value(m)} keywords={[m.id]}
       onSelect={() => { close(); if (mode === 'copy-ip') void copyText(m.ip, ' IP'); else if (mode === 'evacuate') openEvacuate(m.id); else if (mode === 'renew') openRenew(m.id); else if (mode === 'terminal') openTerminal({ kind: 'machine', id: m.id, name: m.name }); else openDrawer(m.id); }}>
@@ -93,34 +114,37 @@ function PaletteBody({ theme, askUpgrade }: { theme: Theme; askUpgrade: () => vo
   return (
     <Command label="命令面板" loop filter={filter}
       onKeyDown={(e) => { if (e.key === 'Backspace' && !search && mode !== 'root') { e.preventDefault(); setMode('root'); } }}>
-      <CommandInput autoFocus value={search} onValueChange={setSearch} placeholder={mode === 'copy-ip' ? '选择要复制 IP 的机器…' : mode === 'evacuate' ? '选择要搬空的线路机…' : mode === 'renew' ? '选择要登记续费的机器…' : mode === 'terminal' ? '选择要打开终端的机器…' : '搜索机器、页面或动作…'} />
-      <CommandList>
+      <CommandInput autoFocus value={search} onValueChange={setSearch} placeholder={mode === 'copy-ip' ? '选择要复制 IP 的机器…' : mode === 'evacuate' ? '选择要搬空的线路机…' : mode === 'renew' ? '选择要登记续费的机器…' : mode === 'terminal' ? '选择要打开终端的机器…' : '搜索机器、团队、页面或动作…'} />
+      <CommandList ref={listRef}>
         <CommandEmpty>没有匹配的结果{search ? `：${search}` : ''}</CommandEmpty>
         {mode === 'root' && (
           <>
             <CommandGroup heading="跳转页面">
               {PAGES.map((p) => (
-                <CommandItem key={p.to} value={`${p.label}\t${p.kw}`} onSelect={() => go(p.to)}><p.icon /><span className="cmd-main">{p.label}</span></CommandItem>
+                <CommandItem key={p.to} value={sv(p.label, '', p.kw)} onSelect={() => go(p.to)}><p.icon /><span className="cmd-main">{p.label}</span></CommandItem>
               ))}
             </CommandGroup>
             <CommandGroup heading="动作">
-              <CommandItem value="上架机器 provision 添加机器 VPS 节点 家宽代理 线路机" onSelect={() => go('/provision')}><CloudUpload /><span className="cmd-main">上架机器</span></CommandItem>
-              <CommandItem value="新建静默 silence 维护窗口" onSelect={() => go('/incidents?silence=new')}><BellOff /><span className="cmd-main">新建静默</span></CommandItem>
-              <CommandItem value="复制某机器 IP copy ip" onSelect={() => { setSearch(''); setMode('copy-ip'); }}><Clipboard /><span className="cmd-main">复制某台机器的 IP…</span></CommandItem>
-              <CommandItem value="登记续费 renew 续费 续期 到期" onSelect={() => { setSearch(''); setMode('renew'); }}><CalendarPlus /><span className="cmd-main">登记续费…</span></CommandItem>
-              <CommandItem value="搬空线路机 evacuate 换线路机 退役 下线" onSelect={() => { setSearch(''); setMode('evacuate'); }}><PackageOpen /><span className="cmd-main">搬空线路机…</span></CommandItem>
-              <CommandItem value="打开终端 terminal ssh shell 命令行 登录机器" onSelect={() => { setSearch(''); setMode('terminal'); }}><SquareTerminal /><span className="cmd-main">打开终端…</span></CommandItem>
-              <CommandItem value="升级全部 agent upgrade" onSelect={() => { close(); askUpgrade(); }}><ArrowUpCircle /><span className="cmd-main">升级全部 agent</span></CommandItem>
-              <CommandItem value="切换主题 深色 浅色 theme dark light" onSelect={() => { close(); theme.setPref(dark ? 'light' : 'dark'); }}>
-                {dark ? <Sun /> : <Moon />}<span className="cmd-main">切换到{dark ? '浅色' : '深色'}主题</span>
-              </CommandItem>
+              {actions.map((a) => (
+                <CommandItem key={a.kw} value={sv(a.label.replace(/…$/, ''), '', a.kw)} onSelect={a.run}><a.icon /><span className="cmd-main">{a.label}</span></CommandItem>
+              ))}
             </CommandGroup>
+            {/* 团队：只在输入后出现，跳到机器页的团队筛选 */}
+            {q && teams.length > 0 && (
+              <CommandGroup heading="团队">
+                {teams.map((t) => (
+                  <CommandItem key={t.id} value={sv(t.name, '', 'team 团队')} onSelect={() => go(`/nodes?team=${t.id}`)}>
+                    <Users /><span className="cmd-main">{t.name}</span><span className="cmd-aside"><span className="num">{t.node_count}</span> 台</span>
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            )}
           </>
         )}
         {machineItems.length > 0 && (
           <CommandGroup heading={mode === 'copy-ip' ? '复制 IP' : mode === 'evacuate' ? '线路机' : mode === 'renew' ? '登记续费' : mode === 'terminal' ? '打开终端' : '机器'}>
             {machineItems}
-            {!search.trim() && mode !== 'evacuate' && pool.length > LIMIT && <div className="cmd-more">还有 {pool.length - LIMIT} 台，输入以搜索</div>}
+            {!q && mode !== 'evacuate' && pool.length > LIMIT && <div className="cmd-more">还有 {pool.length - LIMIT} 台，输入以搜索</div>}
           </CommandGroup>
         )}
       </CommandList>

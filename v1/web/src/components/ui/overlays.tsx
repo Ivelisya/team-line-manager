@@ -183,11 +183,12 @@ PopoverContent.displayName = 'PopoverContent';
 /* ---- 分段控件（单选）：大卡片/小卡片/紧凑、团队筛选等 ---- */
 export interface SegItem<T extends string> { value: T; label: React.ReactNode; count?: number }
 /** memo：父页面随实时推送重渲染时，items / onChange 稳定（模块常量、useMemo、useCallback）的分段控件不跟着重画 */
-type SegProps<T extends string> = { value: T; onChange: (v: T) => void; items: readonly SegItem<T>[]; label: string; sm?: boolean; className?: string };
-export const Segmented = React.memo(function Segmented<T extends string>({ value, onChange, items, label, sm, className }: SegProps<T>) {
+/** disabled：整组置灰（如首页的卡片密度在表格 / 环形视图下），仍占位、不让工具栏跳动 */
+type SegProps<T extends string> = { value: T; onChange: (v: T) => void; items: readonly SegItem<T>[]; label: string; sm?: boolean; disabled?: boolean; className?: string };
+export const Segmented = React.memo(function Segmented<T extends string>({ value, onChange, items, label, sm, disabled, className }: SegProps<T>) {
   const gid = React.useId();
   return (
-    <ToggleGroup.Root type="single" value={value} onValueChange={(v) => v && onChange(v as T)} aria-label={label} className={cn('seg', sm && 'seg-sm', className)}>
+    <ToggleGroup.Root type="single" value={value} onValueChange={(v) => v && onChange(v as T)} aria-label={label} disabled={disabled} className={cn('seg', sm && 'seg-sm', className)}>
       {items.map((it) => (
         <ToggleGroup.Item key={it.value} value={it.value} className="seg-item">
           {/* 选中胶囊：共享 layoutId，换项时滑过去；圆角写在 style 里，motion 才会在缩放过程中修正它。

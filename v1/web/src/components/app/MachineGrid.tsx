@@ -92,7 +92,7 @@ const sameRow = (a: RowProps, b: RowProps) => a.current === b.current && a.onOpe
 const Row = React.memo(function Row({ m, current, onOpen, cols, dim }: RowProps) {
   return (
     <tr className={cn('is-link', current && 'is-current', dim(m) && 'is-quiet')} tabIndex={0} data-id={m.id}
-      onClick={() => onOpen(m.id)} onKeyDown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) onOpen(m.id); }}>
+      onClick={(e) => { if (!(e.target as Element).closest('[data-node-menu]')) onOpen(m.id); }} onKeyDown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) onOpen(m.id); }}>
       {cols.map((c) => <td key={c.id} className={c.id === 'chev' ? 'chev' : c.r ? 'r' : undefined}>{c.cell(m)}</td>)}
     </tr>
   );

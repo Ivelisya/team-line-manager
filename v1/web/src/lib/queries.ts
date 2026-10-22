@@ -5,7 +5,7 @@ import { useCallback } from 'react';
 import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { del, get, patch, post, put } from './api';
 import { collator, makeDefaultCompare } from './sort';
-import { quotaTight, setMeta } from './derive';
+import { offlineNames, quotaTight, setMeta } from './derive';
 import type { ApiKey, Availability, Incident, Job, JobSummary, Paged, JobLog, MachineView, Meta, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RetireResult, RestoreBody, RestorePreview, MoveResult, EvacuateResult, ProbeBeats, SeriesResp, Silence, SubField, Team, AuditEntry, NotifyChannel, NotifyLogEntry, AccountSession, TotpSetup, TotpStatus } from './types';
 
 export const useMe = () => useQuery({ queryKey: ['me'], queryFn: () => get<{ username: string }>('/auth/me'), retry: false, staleTime: 5 * 60_000 });
@@ -20,11 +20,13 @@ export const usePlans = () => useQuery({ queryKey: ['plans'], queryFn: () => get
 export const useOverview = () => useQuery({ queryKey: ['overview'], queryFn: ({ signal }) => get<Overview>('/overview', signal) });
 
 const machinesQuery = (scope: 'live' | 'retired') => ({ queryKey: ['machines', scope], queryFn: ({ signal }: { signal: AbortSignal }) => get<MachineView[]>(`/machines?scope=${scope}`, signal) });
-/** 机器列表，已按默认顺序排好：线路机 → 团队 → 编号（故障/离线不下沉） */
+/** 按默认顺序排好的副本（线路机 → 团队 → 编号，故障/离线不下沉）：机器列表的几个 select 与 readMachines 共用 */
+const sortDefault = (d: MachineView[], teams: Team[] | undefined) => [...d].sort(makeDefaultCompare(teams ?? []));
+/** 机器列表，已按默认顺序排好 */
 export function useMachines(scope: 'live' | 'retired' = 'live') {
   const teams = useTeams().data;
   // select 排序：只在列表或团队变化时重算；返回的是查询结果本身，调用方按属性追踪
-  const select = useCallback((d: MachineView[]) => [...d].sort(makeDefaultCompare(teams ?? [])), [teams]);
+  const select = useCallback((d: MachineView[]) => sortDefault(d, teams), [teams]);
   return useQuery({ ...machinesQuery(scope), select });
 }
 /** 只用名称等少量字段的页面（访问监控的节点下拉、告警页的对象与续费）：读数不进来 */
@@ -37,7 +39,7 @@ const label = (m: MachineView): MachineLabel => ({ id: m.id, name: m.name, ip: m
  *  select 的结果做结构共享：实时推送只改读数时这些字段不变，引用不变，页面不重渲染 */
 function useMachinesPicked<T>(pick: (m: MachineView) => T) {
   const teams = useTeams().data;
-  const select = useCallback((d: MachineView[]) => [...d].sort(makeDefaultCompare(teams ?? [])).map(pick), [teams, pick]);
+  const select = useCallback((d: MachineView[]) => sortDefault(d, teams).map(pick), [teams, pick]);
   return useQuery({ ...machinesQuery('live'), select });
 }
 export const useMachineBriefs = () => useMachinesPicked(brief);
@@ -58,10 +60,20 @@ const numbersCompact = (d: MachineView[]) => {
 export const useTeamsCompact = () => useQuery({ ...machinesQuery('live'), select: numbersCompact });
 /** 首页 KPI「流量额度」：同一份机器列表缓存，只取吃紧的台数与最紧的一台；结果做结构共享，没变时首页总览不跟着推送重渲染 */
 export const useQuotaTight = () => useQuery({ ...machinesQuery('live'), select: quotaTight });
+/** 集群状态在线率格条的悬停：离线机器的名字。同一份缓存，结构共享：没人上下线时引用不变 */
+export const useOfflineNames = () => useQuery({ ...machinesQuery('live'), select: offlineNames });
+/** readMachines 的排序结果按原数组引用缓存：抽屉每次渲染都要算上一台 / 下一台，列表没换（推送间隙）就不再复制、排序整表 */
+const sortedCache = new WeakMap<MachineView[], { teams: Team[] | undefined; list: MachineView[] }>();
 /** 按键等“用时才读”的场景：直接读缓存里的机器列表（同样的默认顺序），不订阅、不触发请求 */
 export function readMachines(qc: QueryClient): MachineView[] | undefined {
   const raw = qc.getQueryData<MachineView[]>(['machines', 'live']);
-  return raw && [...raw].sort(makeDefaultCompare(qc.getQueryData<Team[]>(['teams']) ?? []));
+  if (!raw) return undefined;
+  const teams = qc.getQueryData<Team[]>(['teams']);
+  const hit = sortedCache.get(raw);
+  if (hit && hit.teams === teams) return hit.list;
+  const list = sortDefault(raw, teams);
+  sortedCache.set(raw, { teams, list });
+  return list;
 }
 /** 用时才取一次的在用机器列表（不订阅）：缓存 30 秒内新鲜就直接用。上架页给「IP 已被占用」补上是哪台 */
 export const fetchMachines = (qc: QueryClient) => qc.fetchQuery({ ...machinesQuery('live'), staleTime: 30_000 });
@@ -214,6 +226,18 @@ export const useCancelJob = () => useWrite((id: string) => post(`/jobs/${id}/can
 export const useAck = () => useWrite((id: string) => post(`/incidents/${id}/ack`), [['incidents']]);
 export const useAddSilence = () => useWrite((b: Partial<Silence>) => post('/silences', b), [['silences'], ['incidents']]);
 export const useDelSilence = () => useWrite((id: string) => del(`/silences/${id}`), [['silences'], ['incidents']]);
+/** 结束一台机器的维护（卡片菜单、抽屉「管理」）：删掉只针对它、正在生效的维护窗口；「全部机器」的那种不动，只有那种时报错。
+ *  机器上的「维护中」由服务端随后的 metrics 推送改回 */
+export const useEndMaintenance = () => {
+  const qc = useQueryClient();
+  return useWrite(async (id: string) => {
+    const now = Date.now();
+    const list = await qc.fetchQuery({ queryKey: ['silences'], queryFn: () => get<Silence[]>('/silences'), staleTime: 0 });
+    const own = list.filter((s) => s.subject_id === id && s.is_maintenance && Date.parse(s.starts_at) <= now && Date.parse(s.ends_at) > now);
+    if (!own.length) throw new Error('这台机器在「全部机器」的维护窗口里，请到告警页结束');
+    for (const s of own) await del(`/silences/${s.id}`);
+  }, [['silences'], ['incidents']]);
+};
 export const useAddTeam = () => useWrite((b: { name: string; sort_order?: number }) => post('/teams', b), [['teams']]);
 export const usePatchTeam = () => useWrite(({ id, ...b }: { id: string; name?: string; sort_order?: number }) => patch(`/teams/${id}`, b), [['teams'], ...M]);
 export const useRenumber = () => useWrite(({ id, token }: { id: string; token: string }) => post(`/teams/${id}/renumber`, { token }), [['teams'], ...M]);

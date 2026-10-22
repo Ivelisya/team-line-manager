@@ -7,7 +7,7 @@ import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
 import { Field, InfoTip, Input, Switch } from '@/components/ui/form';
 import { DateField } from '@/components/ui/date-field';
-import { inheritedValue, inheritSource, inheritText, isOverridden, limitGb, quota, quotaGb, remainingValue, trafficRuleLabel, cycleLabel, currencyOptions, cycleOptions, meta } from '@/lib/derive';
+import { inheritedValue, inheritSource, inheritText, isOverridden, limitGb, quota, quotaGb, remainingValue, trafficRulePlain, cycleLabel, currencyOptions, cycleOptions, meta } from '@/lib/derive';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
 import { resetOnOpen } from '@/lib/useHeld';
@@ -36,10 +36,13 @@ export function BillingTab({ m }: { m: MachineView }) {
             <LabelValue label="费用"><span className="num">{F.money(s.price_cents, s.currency)}</span> <span className="unit">/ {cycleLabel(s.cycle)}</span>
               {m.sub_template && <div className="hint">{(['price_cents', 'currency', 'cycle'] as const).some((k) => isOverridden(s, k)) ? '单独设置' : inheritSource(m, 'price_cents')}</div>}</LabelValue>
             <LabelValue label="到期日">{s.due_date}（<Due days={s.due_days} state={s.due_state} />）</LabelValue>
-            <LabelValue label="剩余价值" wrap>{rv ? <><span className="num">{F.money(rv.cents, rv.currency)}</span> <span className="unit">{rv.frac > 1 ? `已预付 ${rv.frac.toFixed(1)} 期 · 每期 ${rv.days} 天` : `本期还剩 ${Math.round(rv.frac * 100)}%（剩 ${Math.max(0, s.due_days)} 天 / 共 ${rv.days} 天）`}</span></> : <span className="t-muted">—</span>}</LabelValue>
+            {/* 剩余比例只写一个百分数，天数在悬停里；预付了多期只写金额，期数在 (i) 里 */}
+            <LabelValue label="剩余价值">{rv ? <><span className="num">{F.money(rv.cents, rv.currency)}</span> {rv.frac > 1
+              ? <InfoTip text={`已预付 ${rv.frac.toFixed(1)} 期 · 每期 ${rv.days} 天`} />
+              : <span className="unit" data-tip={`剩 ${Math.max(0, s.due_days)} 天 / 共 ${rv.days} 天`}>本期剩 {Math.round(rv.frac * 100)}%</span>}</> : <span className="t-muted">—</span>}</LabelValue>
             <LabelValue label={m.ip_nodes.length ? '本周期已用（含同机 IP 节点）' : '本周期已用'} wrap>
               <span className="num">{F.str(quotaGb(q.used))}</span> <span className="unit">/ {q.limit > 0 ? F.str(limitGb(q.limit)) : q.shared ? '与宿主机共用' : '不限'}</span>
-              <div className="hint">{q.rule ? trafficRuleLabel(q.rule) : '业务流量'}{q.baseAt && ` · 已校准 · ${F.dt(q.baseAt)}`}</div>
+              <div className="hint">{q.rule ? trafficRulePlain(q.rule) : '按业务流量'}{q.baseAt && ` · 已校准 · ${F.dt(q.baseAt)}`}</div>
             </LabelValue>
             <LabelValue label="流量周期"><span className="num">{q.start.slice(5)}</span> 起</LabelValue>
             <LabelValue label="自动续费">{s.auto_renew ? '是' : '否'}</LabelValue>

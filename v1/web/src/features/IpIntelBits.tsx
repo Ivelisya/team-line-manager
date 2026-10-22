@@ -19,12 +19,12 @@ function ConnPill({ intel }: { intel: Pick<IpIntel, 'conn_type' | 'conn_label' |
   return <Pill tone={TONE[intel.conn_type] ?? 'neutral'} tip={`${intel.reason}（置信度${CONF[intel.confidence] ?? intel.confidence}）`}>{intel.conn_label}</Pill>;
 }
 
-/** 来源行的「运营商 · 城市」；查不到给一个破折号 */
+/** 来源行的「运营商 · 城市」：放不下时省略，悬停看全文（含 ASN）；查不到给一个破折号 */
 export function IspPlace({ intel }: { intel: IpIntel | null | undefined }) {
   if (!intel) return <span className="t-muted">—</span>;
   const place = placeZh(intel.place);
   return (
-    <span className="ellipsis" data-tip={[intel.isp, place, intel.asn ? `AS${intel.asn} ${intel.as_org ?? ''}` : ''].filter(Boolean).join(' · ')}>
+    <span className="ellipsis block" data-tip={[intel.isp, place, intel.asn ? `AS${intel.asn} ${intel.as_org ?? ''}` : ''].filter(Boolean).join(' · ')}>
       <span className="strong">{intel.isp}</span>{place && <span className="t-sub"> · {place}</span>}
     </span>
   );

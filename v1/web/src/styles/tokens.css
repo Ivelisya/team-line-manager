@@ -136,7 +136,8 @@
   --section-line: rgba(17, 24, 39, 0.06);
   --cell-off: rgba(24, 24, 27, 0.09);   /* 格条 / 圆环 / 点阵的未点亮色 */
   --m-cpu: #3b82f6; --m-mem: #8b5cf6; --m-disk: #e97b35; --m-load: #ec4899;
-  --speed-idle: #2f9e65; --speed-low: #d9992b; --speed-high: #e07a35; --speed-max: #d6463d;
+  /* 速率量级色（卡片、表格、环形卡的速率读数与点阵）：浅色底上要当文字读，对比度都在 4.5:1 以上（原来的琥珀约 2.5:1）；深色主题另有一套 */
+  --speed-idle: #1d7f4f; --speed-low: #9a6400; --speed-high: #b4541a; --speed-max: #c23a31;
   --tag-blue-bg: rgba(37, 99, 235, 0.12);   --tag-blue-fg: #1d4ed8;
   --tag-orange-bg: rgba(249, 115, 22, 0.14); --tag-orange-fg: #c2410c;
   --tag-teal-bg: rgba(13, 148, 136, 0.14);   --tag-teal-fg: #0f766e;

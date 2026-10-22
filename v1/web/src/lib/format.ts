@@ -52,7 +52,8 @@ export function rate(bps: number | null | undefined): Fmt {
   return { v: inScale(bps, s), u: s.u };
 }
 export const pct = (n: number | null | undefined, d = 0): Fmt => (n == null ? NA : { v: n.toFixed(d), u: '%' });
-export const ms = (n: number | null | undefined): Fmt => (n == null ? NA : { v: String(Math.round(n)), u: 'ms' });
+/** 延迟：不到 0.5 ms（同机房、本机）四舍五入成 0，写「<1 ms」，不像是没测到 */
+export const ms = (n: number | null | undefined): Fmt => (n == null ? NA : { v: Math.round(n) < 1 ? '<1' : String(Math.round(n)), u: 'ms' });
 export const mbps = (n: number | null | undefined): Fmt => (n == null ? NA : n >= 1000 ? { v: num(n / 1000), u: 'Gbps' } : { v: String(n), u: 'Mbps' });
 
 // 币种符号只是显示用（币种列表、默认币种在 /meta）；没收录的写代码

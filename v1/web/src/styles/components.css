@@ -376,6 +376,10 @@
 .menu-sep { height: 1px; margin: var(--sp-4) 0; background: var(--line); }
 .menu-label { padding: var(--sp-6) var(--sp-10) var(--sp-2); font: var(--fw-medium) var(--fs-micro) / var(--lh-micro) var(--font-sans); color: var(--fg-3); }
 .menu-check { display: inline-flex; margin-left: auto; }
+/* 子菜单顶上的筛选框（线路机的分享链接）：吸顶，滚长列表时一直在；底色不透明，滚过去的项不从下面透出来 */
+.menu-filter { position: sticky; top: calc(-1 * var(--sp-4)); z-index: 1; margin: calc(-1 * var(--sp-4)) calc(-1 * var(--sp-4)) var(--sp-4); padding: var(--sp-6); background: var(--raised); border-bottom: 1px solid var(--line); border-radius: var(--r-float) var(--r-float) 0 0; }
+.menu-filter input { width: 100%; box-sizing: border-box; height: 28px; padding: 0 var(--sp-8); border: 1px solid var(--line-strong); border-radius: var(--r-xs); background: var(--surface); color: var(--fg); font: var(--fs-label) / 1 var(--font-sans); outline: none; }
+.menu-filter input:focus-visible { border-color: var(--accent); }
 .menu-item .menu-check .lucide { color: var(--accent); }
 .menu-appearance { min-width: 168px; }
 /* 配色色块：各配色亮色下的强调色（与当前深浅色无关，一眼认出是哪套） */
@@ -454,18 +458,18 @@
 :is(.btn, .fchip, .seg-item, .tab, .chart-legend-item, .cmd-trigger, .top-alert, .nc-name):active:not(:disabled) { scale: var(--press-md); transition-duration: var(--dur-press); }
 button.tag:active { scale: var(--press-md); transition-duration: var(--dur-press); } /* 可点的标签（同机关系标）；只认按钮，纯展示的 span 标签按下不缩 */
 .tab:active:not(:disabled) .tab-ind { scale: calc(1 / var(--press-md)) 1; transition-duration: var(--dur-press); }
-:is(.flow-trend, .flow-foot, .nc-quota, .rc-rings, a.stat):active:not(:disabled) { scale: var(--press-lg); transition-duration: var(--dur-press); }
+:is(.flow-trend, .flow-foot, .nc-quota, .nc-click, .rc-rings, .stat.is-link):active:not(:disabled) { scale: var(--press-lg); transition-duration: var(--dur-press); }
 :is(.menu-item, .select-item, .cmd-item, .job-item, .pop-item, .pol-item, .scope-row):active, .nav-item:active:not([aria-current="page"]), .dt tr.is-link:active { background-image: var(--state-press); }
 /* 开关（iOS）：按住时圆钮拉长 4px；选中态同时少移 4px，右缘不动 */
 .switch:active:not(:disabled) > span { width: 20px; transition-duration: var(--dur-press); }
 .switch[data-state="checked"]:active:not(:disabled) > span { transform: translateX(10px); }
 
 /* 悬停上浮 2px + 加深阴影：只给卡片类（节点卡、环形卡、可点的 KPI 卡），只在真有悬停的设备上（触屏点一下不会卡在上浮态）。
-   位移用独立的 translate 属性：卡片的 transform 归 motion 的布局动画管。:is() 不带 a.stat，保持 (0,2,0)，卡片的健康色边框、当前卡边框照样盖过悬停边 */
+   位移用独立的 translate 属性：卡片的 transform 归 motion 的布局动画管。:is() 不带 .stat.is-link，保持 (0,2,0)，卡片的健康色边框、当前卡边框照样盖过悬停边 */
 @media (hover: hover) {
-  :is(.ncard, .rcard):hover, a.stat:hover { border-color: var(--line-strong); box-shadow: var(--shadow-card-hover); translate: 0 -2px; }
+  :is(.ncard, .rcard):hover, .stat.is-link:hover { border-color: var(--line-strong); box-shadow: var(--shadow-card-hover); translate: 0 -2px; }
 }
-a.stat:active { translate: none; } /* 按下落回原位并微缩；阴影不去掉：比静止还平会“塌”一下 */
+.stat.is-link:active { translate: none; } /* 按下落回原位并微缩；阴影不去掉：比静止还平会“塌”一下 */
 
 /* 焦点环：全站 2px 环、2px 间隙（base.css :focus-visible）。会被滚动容器或单元格裁掉的收进元素里面；日历格之间只有 2px 缝，贴边画 */
 :is(.seg-item, .tab, .th-sort, .pol-chev, .pol-item, .job-item, .pop-item, .logbox):focus-visible, .dt tr.is-link:focus-visible { outline-offset: -2px; }

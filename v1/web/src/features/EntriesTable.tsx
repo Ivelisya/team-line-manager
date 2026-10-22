@@ -2,14 +2,17 @@
 import * as React from 'react';
 import type { EntryView, MachineView } from '@/lib/types';
 import * as F from '@/lib/format';
-import { entryState, Num } from '@/components/app/primitives';
+import { errText } from '@/lib/derive';
+import { entryState, Num, Pill } from '@/components/app/primitives';
 import { ShowAll } from '@/components/app/Pagination';
 
 /** 入口表先露的条数（抽屉入口表、线路机页共用） */
 export const ENTRY_CAP = 10;
 
-/** TCP / 出口探测单元格（线路机页共用） */
-export const probeCell = (p: EntryView['tcp']) => (p == null ? <span className="t-muted">—</span> : p.ok ? <Num f={F.ms(p.latency_ms)} /> : <span style={{ color: 'var(--bad-text)' }} data-tip={p.detail}>失败</span>);
+/** TCP / 出口探测单元格（线路机页共用）：失败的悬停看错误（英文原始错误换成中文，errText） */
+export const probeCell = (p: EntryView['tcp']) => (p == null ? <span className="t-muted">—</span> : p.ok ? <Num f={F.ms(p.latency_ms)} /> : <span style={{ color: 'var(--bad-text)' }} data-tip={p.detail ? errText(p.detail) : undefined}>失败</span>);
+/** 运行中的入口探测失败（直出入口不做 TCP 探测）：状态列写「不通」，不再和同一行红色的「失败」各说各的 */
+const probeFail = (e: EntryView) => (e.lifecycle !== 'active' || !e.applied ? null : !e.direct && e.tcp && !e.tcp.ok ? e.tcp : e.egress && !e.egress.ok ? e.egress : null);
 /** TCP 单元格：直出入口没有节点，不做 TCP 探测 */
 export const tcpCell = (e: EntryView) => (e.direct ? <span className="t-muted" data-tip="直出入口不经节点，不做 TCP 探测">—</span> : probeCell(e.tcp));
 
@@ -38,10 +41,11 @@ export function EntriesTable({ m, traffic }: { m: MachineView; traffic?: boolean
 
 /** 一行一个 memo：实时推送只换变了的入口（live.ts 的入口补丁把没变的原样返回），线路机展开全部的上百行不跟着重画 */
 const EntryRow = React.memo(function EntryRow({ e, relay, traffic }: { e: EntryView; relay: boolean; traffic: boolean }) {
+  const fail = probeFail(e);
   return (
     <tr>
       <td className="strong">{relay ? `${e.port} · ${e.node.name}` : `${e.relay.name}:${e.port}`}</td>
-      <td>{entryState(e)}</td><td className="r">{tcpCell(e)}</td><td className="r">{probeCell(e.egress)}</td>
+      <td>{fail ? <Pill tone="bad" tip={fail.detail ? errText(fail.detail) : undefined}>不通</Pill> : entryState(e)}</td><td className="r">{tcpCell(e)}</td><td className="r">{probeCell(e.egress)}</td>
       {traffic && <td className="r"><Num f={F.bytes(e.traffic.month_up + e.traffic.month_down)} /></td>}
     </tr>
   );

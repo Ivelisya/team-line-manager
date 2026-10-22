@@ -9,13 +9,14 @@ import { useIncidents, useMe, useMeta } from '@/lib/queries';
 import { useStream } from '@/lib/stream';
 import { useTheme, type Palette, type ThemePref } from '@/lib/theme';
 import { useTitleAlerts } from '@/lib/title';
-import { closeEvacuate, closeMove, closeRenew, closeRestore, closeRetire, useEvacuateTarget, useMoveTarget, useRenewTarget, useRestoreTarget, useRetireTarget } from '@/lib/nodeActions';
+import { closeEvacuate, closeMaint, closeMove, closeRenew, closeRestore, closeRetire, useEvacuateTarget, useMaintTarget, useMoveTarget, useRenewTarget, useRestoreTarget, useRetireTarget } from '@/lib/nodeActions';
 import { resetTerminal, useTerminalTarget } from '@/lib/terminal';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger, Tip, TipHost } from '@/components/ui/overlays';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Toaster } from '@/components/ui/toast';
 import { useDrawer } from '@/lib/drawer';
+import { setOverlay } from '@/lib/palette';
 import { useBootTarget, useDeployTarget, useRemoved, useRouterDrawer } from '@/lib/routers';
 import { Hotkeys, PaletteTrigger } from '@/features/Hotkeys';
 import { AlertsIndicator } from '@/features/AlertsIndicator';
@@ -31,8 +32,14 @@ const LifecycleDialogsHost = React.lazy(() => import('@/components/app/Lifecycle
 // 软路由抽屉（?r=）与它的对话框（接入命令、重新部署、删除后的说明）：同样第一次用到时才下载
 const RouterDrawer = React.lazy(() => import('@/features/RouterDrawer').then((m) => ({ default: m.RouterDrawer })));
 const RouterDialogsHost = React.lazy(() => import('@/features/RouterDialogs').then((m) => ({ default: m.RouterDialogsHost })));
+// 单台机器的维护窗口对话框（卡片菜单、抽屉「管理」）：第一次用到时才下载
+const MaintenanceHost = React.lazy(() => import('@/components/app/MaintenanceDialog').then((m) => ({ default: m.MaintenanceHost })));
 // 网页终端连同 xterm（约 290KB）同理：第一次打开终端时才下载
 const TerminalHost = React.lazy(() => import('@/features/Terminal').then((m) => ({ default: m.TerminalHost })));
+
+/** 浏览器是否联网（断网时顶栏写「已断开」而不是「重连中…」） */
+const onlineSub = (f: () => void) => { window.addEventListener('online', f); window.addEventListener('offline', f); return () => { window.removeEventListener('online', f); window.removeEventListener('offline', f); }; };
+const useOnline = () => React.useSyncExternalStore(onlineSub, () => navigator.onLine);
 
 /** 一旦为真就一直为真：懒加载的浮层第一次需要时挂载，之后保持挂载（关闭动画、再次打开都不用重来） */
 function useEver(v: boolean) {
@@ -72,6 +79,11 @@ function LifecycleHost() {
   return ever ? <React.Suspense fallback={null}><LifecycleDialogsHost /></React.Suspense> : null;
 }
 
+function MaintHost() {
+  const ever = useEver(!!useMaintTarget());
+  return ever ? <React.Suspense fallback={null}><MaintenanceHost /></React.Suspense> : null;
+}
+
 function TermHost() {
   const ever = useEver(!!useTerminalTarget());
   return ever ? <React.Suspense fallback={null}><TerminalHost /></React.Suspense> : null;
@@ -86,6 +98,7 @@ export function Shell() {
   const [navOpen, setNavOpen] = React.useState(false);
   const theme = useTheme();
   const stream = useStream(!!me.data);
+  const online = useOnline();
   const firing = useIncidents('firing').data?.total ?? 0;
   useTitleAlerts(firing);
 
@@ -135,7 +148,6 @@ export function Shell() {
         <div className="login-card" role="alert">
           <div className="login-brand"><span className="brand-mark"><Boxes size={14} /></span>团队线路管理</div>
           <Note tone="bad">{failed.error instanceof Error ? failed.error.message : '无法连接到中控'}</Note>
-          <div className="hint">不是登录问题，会话仍有效</div>
           <Button variant="primary" loading={failed.isFetching} onClick={() => void failed.refetch()}><RotateCw />重试</Button>
         </div>
       </div>
@@ -158,14 +170,11 @@ export function Shell() {
           <div className="topbar-right">
             <AlertsIndicator />
             <JobsIndicator />
-            {stream === 'error'
-              ? <Pill tone="warn" dot="pulse" role="status" tip="页面数据暂停更新，连上后自动补齐"><span>实时已断开<span className="hide-sm">，正在重连…</span></span></Pill>
-              : <Tip text={stream === 'open' ? '实时连接正常' : '正在连接…'} side="bottom">
-                <span className="dot" data-tone={stream === 'open' ? undefined : 'neutral'} tabIndex={0} role="img" aria-label={stream === 'open' ? '实时连接正常' : '正在连接'} />
-              </Tip>}
+            {/* 实时连接只在出问题时出现（连着、首次连接中都不占位）：断网写「已断开」，其余在退避重连 */}
+            {stream === 'error' && <Pill tone="warn" role="status" tabIndex={0} tip="页面数据暂停更新，连上后自动补齐">{online ? '重连中…' : '已断开'}</Pill>}
             {/* 深浅色与配色在同一个菜单里（原来配色是单独一个盲切的按钮，窄屏还被藏起来）；色块就是该配色的强调色 */}
             <DropdownMenu>
-              <DropdownMenuTrigger asChild><button className="top-btn" aria-label="外观：深浅色与配色"><ThemeIcon size={16} /></button></DropdownMenuTrigger>
+              <DropdownMenuTrigger asChild><button className="top-btn" aria-label="外观：深浅色与配色" data-tip="外观"><ThemeIcon size={16} /></button></DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="menu-appearance">
                 <DropdownMenuLabel>外观</DropdownMenuLabel>
                 <DropdownMenuRadioGroup value={theme.pref} onValueChange={(v) => theme.setPref(v as ThemePref)}>
@@ -197,7 +206,7 @@ export function Shell() {
               </li>
             ))}
           </ul></nav>
-          <div className="nav-foot">已登录：{me.data.username}<br />按 <kbd className="kbd">?</kbd> 查看快捷键</div>
+          <button type="button" className="nav-foot" onClick={() => setOverlay('help')}><kbd className="kbd">?</kbd>快捷键</button>
         </aside>
         <div className="nav-scrim" onClick={() => setNavOpen(false)} />
   
@@ -210,6 +219,7 @@ export function Shell() {
         <ErrorBoundary silent resetKey={loc.search}><DrawerHost /></ErrorBoundary>
         <ErrorBoundary silent resetKey={loc.pathname} onError={closeLifecycle}><LifecycleHost /></ErrorBoundary>
         <ErrorBoundary silent resetKey={loc.pathname} onError={resetTerminal}><TermHost /></ErrorBoundary>
+        <ErrorBoundary silent resetKey={loc.pathname} onError={closeMaint}><MaintHost /></ErrorBoundary>
         <Hotkeys theme={theme} />
         <TipHost />
         <Toaster />

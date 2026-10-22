@@ -111,9 +111,12 @@ function niceMax(v: number) {
   return (NICE.find((n) => n * e >= v) ?? 10) * e;
 }
 
-/** 面积折线（集群状态里的网卡上行 / 下行）：全站每分钟一个点（SERIES_N 个 = 近 30 分钟，见 lib/live）、最新在右；左轴三档刻度，两端标首尾两个点的时间 */
+const hm = (t: number) => { const d = new Date(t); return `${F.pad2(d.getHours())}:${F.pad2(d.getMinutes())}`; };
+/** 面积折线（集群状态里的网卡上行 / 下行）：全站每分钟一个点（SERIES_N 个 = 近 30 分钟，见 lib/live）、最新在右；左轴三档刻度（0 只写「0」），
+ *  两端标首尾两个点的时刻（到分钟）。悬停：竖线 + 那一分钟的时刻与速率 */
 export function AreaSpark({ points, pick, tone }: { points: readonly LivePoint[]; pick: (p: LivePoint) => number; tone: 'up' | 'down' }) {
   const W = 300; const H = 100;
+  const [hover, setHover] = React.useState<number | null>(null);
   const vals = points.map(pick);
   const max = niceMax(Math.max(0, ...vals) * 1.1);
   // 点不满 SERIES_N 时铺满整宽（两端的时间标签照实写），不让一小段线挤在最右边
@@ -122,18 +125,28 @@ export function AreaSpark({ points, pick, tone }: { points: readonly LivePoint[]
   const xy = vals.map((v, i) => [x0 + i * step, H - (v / max) * H] as const);
   const line = xy.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixed(1)} ${y.toFixed(1)}`).join('');
   const last = xy[xy.length - 1];
+  const dot = (p: readonly [number, number]) => ({ left: `${(p[0] / W) * 100}%`, top: `${(p[1] / H) * 100}%` });
+  const onMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (vals.length < 2) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    setHover(Math.max(0, Math.min(vals.length - 1, Math.round(((e.clientX - r.left) / r.width) * (vals.length - 1)))));
+  };
+  const h = hover != null && hover < xy.length ? hover : null;
+  const hx = h != null ? (xy[h][0] / W) * 100 : 0;
   return (
     <div className="spark" data-tone={tone}>
-      <div className="spark-axis" aria-hidden>{[max, max / 2, 0].map((v) => <span key={v}>{F.rate(v).v} {F.rate(v).u || 'bps'}</span>)}</div>
-      <div className="spark-plot">
+      <div className="spark-axis" aria-hidden>{[max, max / 2, 0].map((v) => <span key={v}>{v ? F.str(F.rate(v)) : '0'}</span>)}</div>
+      <div className="spark-plot" onPointerMove={onMove} onPointerLeave={() => setHover(null)}>
         <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" aria-hidden>
           {[0, H / 2, H].map((y) => <line key={y} className="spark-grid" x1={0} x2={W} y1={y} y2={y} vectorEffect="non-scaling-stroke" />)}
           {xy.length > 1 && <path className="spark-area" d={`${line}L${last[0]} ${H}L${x0} ${H}Z`} />}
           {xy.length > 1 && <path className="spark-line" d={line} vectorEffect="non-scaling-stroke" />}
+          {h != null && <line className="spark-cursor" x1={xy[h][0]} x2={xy[h][0]} y1={0} y2={H} vectorEffect="non-scaling-stroke" />}
         </svg>
-        {last && <i className="spark-dot" style={{ left: `${(last[0] / W) * 100}%`, top: `${(last[1] / H) * 100}%` }} />}
+        {last && <i className="spark-dot" style={dot(h != null ? xy[h] : last)} />}
+        {h != null && <span className="spark-tip" style={{ left: `${hx}%`, translate: hx < 25 ? '0 0' : hx > 75 ? '-100% 0' : '-50% 0' }}>{hm(points[h].t)} · {F.str(F.rate(vals[h]))}</span>}
       </div>
-      <div className="spark-time" aria-hidden><span>{points.length > 1 ? F.clock(new Date(points[0].t).toISOString()) : ''}</span><span>{last ? F.clock(new Date(points[points.length - 1].t).toISOString()) : '等待数据…'}</span></div>
+      <div className="spark-time" aria-hidden><span>{points.length > 1 ? hm(points[0].t) : ''}</span><span>{last ? hm(points[points.length - 1].t) : '等待数据…'}</span></div>
     </div>
   );
 }
