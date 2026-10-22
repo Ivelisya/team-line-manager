@@ -143,12 +143,14 @@ export function eventKeys(ev: StreamEvent): unknown[][] {
     case 'api_keys': return [['api-keys']];
     case 'settings': return [['access-retention'], ['access'], ['audit']];
     case 'policies': return [['policies'], ['machines'], ['relays']];
+    // 软路由：增删改与每轮采集（最多一次）都发这一个，列表与各台详情一起重取（曲线另按时间轮询，见 lib/routers）
+    case 'routers': return [['routers']];
     default: return [];
   }
 }
 
 /** 通用写操作：成功后失效 keys */
-function useWrite<A, R>(fn: (a: A) => Promise<R>, keys: unknown[][]) {
+export function useWrite<A, R>(fn: (a: A) => Promise<R>, keys: unknown[][]) {
   const qc = useQueryClient();
   return useMutation({ mutationFn: fn, onSuccess: () => { keys.forEach((k) => qc.invalidateQueries({ queryKey: k })); } });
 }

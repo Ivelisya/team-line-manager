@@ -1,0 +1,122 @@
+/* 软路由：页头总览、卡片（外壳同节点卡 .ncard，见 cards.css）的几处专用样式、抽屉的分组列表 / 出口关系图 / 部署时间线 / 行内迷你折线、接入对话框。
+   容器按信息的性质选（用户：不要每块都是格子）：总览数字不带框，设置类信息是分组列表，关系是连线图，进度是时间线。只用现有的令牌 */
+
+.rt-warn { color: var(--warn-text); }
+.rt-bad { color: var(--bad-text); }
+
+/* ---- 总览：大号数字 + 一句话，不带框（页头、抽屉概览） ---- */
+.rt-hero { display: grid; gap: var(--sp-6); min-width: 0; }
+.rt-hero-main { display: flex; align-items: baseline; gap: var(--sp-8); }
+.rt-hero-num { font: var(--fw-semibold) 34px / 1 var(--font-num); font-variant-numeric: var(--num-variant); letter-spacing: -0.03em; color: var(--fg); }
+.rt-hero-num small { font-size: 20px; font-weight: var(--fw-medium); color: var(--fg-3); letter-spacing: -0.02em; }
+.rt-hero-unit { font: var(--fw-medium) var(--fs-emph) / var(--lh-emph) var(--font-sans); color: var(--fg-2); }
+.rt-hero-sum { margin: 0; font-size: var(--fs-body); line-height: var(--lh-body); color: var(--fg-2); text-wrap: pretty; }
+.rt-hero-sum b { font-weight: var(--fw-semibold); color: var(--fg); }
+.rt-hero-sum b.rt-warn { color: var(--warn-text); }
+.rt-hero .reason-list { margin-top: var(--sp-4); }
+/* 页签开头的一句话（出口、客户端） */
+.rt-lead { margin: 0; font-size: var(--fs-body); line-height: var(--lh-body); color: var(--fg-2); text-wrap: pretty; }
+.rt-lead b { color: var(--fg); font-weight: var(--fw-semibold); }
+
+/* ---- 卡片 ---- */
+/* 资源槽位的占位（等待接入 / 离线）：不画虚线框，只是居中的说明 */
+.nc-hold.rt-hold { flex-direction: column; gap: var(--sp-6); padding-block: var(--sp-10); border: 0; }
+.rt-hold-main { display: inline-flex; align-items: center; gap: var(--sp-6); font-weight: var(--fw-medium); color: var(--fg-2); }
+.rt-hold.is-bad .rt-hold-main { color: var(--bad-text); }
+.rt-hold-err { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--fs-micro) / 16px var(--font-mono); color: var(--fg-2); }
+.rt-hold .hint { color: var(--fg-3); }
+.nc-res.rt-hold-tl { display: block; min-height: 112px; }
+/* 出口槽位：可用数不足黄、参数不一致的提醒黄 */
+.rt-exits b.is-warn { color: var(--warn-text); }
+.nc-quse.rt-drift { color: var(--warn-text); font-weight: var(--fw-medium); }
+.nc-run-val[data-tone="warn"], .rt-temp[data-tone="warn"] { color: var(--warn-text); }
+.nc-run-val[data-tone="bad"], .rt-temp[data-tone="bad"] { color: var(--bad-text); }
+.nc-price.rt-seen { font-weight: var(--fw-regular); color: var(--fg-2); }
+.nc-price.rt-seen.is-bad { color: var(--bad-text); }
+
+/* ---- 部署时间线：竖排圆点 + 连线（结构，不是状态标），当前步骤转圈，失败的红 ---- */
+.rt-tl { display: grid; margin: 0; padding: 0; list-style: none; }
+.rt-tl li { position: relative; display: grid; grid-template-columns: 16px minmax(0, 1fr); column-gap: var(--sp-10); padding-bottom: var(--sp-10); }
+.rt-tl li:last-child { padding-bottom: 0; }
+.rt-tl li:not(:last-child)::after { content: ""; position: absolute; left: 7px; top: 14px; bottom: -2px; width: 2px; border-radius: 1px; background: var(--line-strong); }
+.rt-tl-dot { position: relative; z-index: 1; display: grid; place-items: center; width: 16px; height: 16px; margin-top: 1px; border-radius: 50%; background: var(--surface); box-shadow: inset 0 0 0 2px var(--line-strong); }
+.rt-tl li[data-tone="done"] .rt-tl-dot { box-shadow: inset 0 0 0 5px var(--fg-3); }
+.rt-tl li[data-tone="ok"] .rt-tl-dot { box-shadow: inset 0 0 0 5px var(--ok); }
+.rt-tl li[data-tone="bad"] .rt-tl-dot { box-shadow: inset 0 0 0 5px var(--bad); }
+.rt-tl li[data-tone="run"] .rt-tl-dot { box-shadow: none; color: var(--info); }
+.rt-tl-dot .lucide { width: 16px; height: 16px; }
+.rt-tl-body { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-2) var(--sp-8); min-width: 0; font-size: var(--fs-body); line-height: 18px; }
+.rt-tl-text { min-width: 0; color: var(--fg); }
+.rt-tl li[data-tone="done"] .rt-tl-text { color: var(--fg-2); }
+.rt-tl li[data-tone="bad"] .rt-tl-text { color: var(--bad-text); font-weight: var(--fw-medium); }
+.rt-tl li[data-tone="run"] .rt-tl-text { font-weight: var(--fw-medium); }
+.rt-tl-at { font: var(--fs-micro) / 16px var(--font-num); color: var(--fg-3); }
+.rt-tl-err { flex-basis: 100%; font: var(--fs-label) / var(--lh-label) var(--font-mono); color: var(--fg-2); overflow-wrap: anywhere; }
+.rt-tl-acts { flex-basis: 100%; gap: var(--sp-4); margin-top: var(--sp-4); }
+.ncard .rt-tl-err { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---- 分组列表（同 iOS 设置）：一组一个底，行间细线（左侧缩进），标签在左、值在右 ---- */
+.rt-groups { display: grid; gap: var(--sp-20); min-width: 0; }
+.rt-gsec { min-width: 0; }
+.rt-group-title { margin: 0 0 var(--sp-6) var(--sp-12); font: var(--fw-medium) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2); }
+.rt-group { margin: 0; padding: 0; list-style: none; border-radius: var(--r-float); background: var(--sunken); }
+.rt-row { position: relative; display: flex; align-items: center; justify-content: space-between; gap: var(--sp-16); min-height: 40px; padding: var(--sp-8) var(--sp-12); font-size: var(--fs-body); line-height: var(--lh-body); }
+.rt-row + .rt-row::before { content: ""; position: absolute; top: 0; left: var(--sp-12); right: 0; border-top: 1px solid var(--line); }
+.rt-row-label { display: inline-flex; align-items: center; gap: var(--sp-6); flex: none; color: var(--fg-2); }
+.rt-row-label b { font-weight: var(--fw-medium); color: var(--fg); }
+.rt-row-value { min-width: 0; text-align: right; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rt-row-wrap { white-space: normal; overflow-wrap: anywhere; }
+.rt-row-tl { display: block; padding-block: var(--sp-12); }
+.rt-iface { align-items: flex-start; }
+.rt-iface .rt-row-value { display: grid; gap: var(--sp-2); }
+.rt-iface-sub { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; }
+.rt-group-foot { margin: var(--sp-6) var(--sp-12) 0; }
+
+/* ---- 表格里的读数 ---- */
+.rt-alive { display: inline-flex; align-items: center; gap: var(--sp-4); }
+.rt-alive .lucide { width: 14px; height: 14px; }
+.rt-alive[data-tone="ok"] .lucide { color: var(--ok); }
+.rt-alive[data-tone="bad"] { color: var(--bad-text); }
+.rt-legend { display: grid; gap: var(--sp-4); margin: var(--sp-8) 0 0; padding: 0; list-style: none; }
+.rt-legend li { display: flex; align-items: baseline; gap: var(--sp-8); }
+.rt-legend .pill { flex: none; }
+/* 行内迷你折线（出口延迟）：只有线，颜色随强调色 */
+.rt-spark { display: block; width: 80px; height: 20px; overflow: visible; }
+.rt-spark path { fill: none; stroke: var(--chart-1); stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
+.rt-spark.is-empty { border-bottom: 1px dashed var(--line-strong); height: 10px; }
+.rt-exit-beats { display: grid; gap: var(--sp-10); }
+
+/* ---- 出口 → 线路机 → 节点：三列，按线路机分组，中间一列是这组共用的线路机（竖线把这组的行连到它） ---- */
+.rt-topo { display: grid; gap: var(--sp-14); min-width: 520px; }
+.rt-topo-group { display: grid; grid-template-columns: minmax(0, 1fr) 28px minmax(96px, auto) 28px minmax(0, 1fr); grid-auto-rows: 28px; align-items: center; }
+.rt-topo-group[data-none] { grid-auto-rows: 28px; }
+.rt-topo-pill {
+  display: inline-flex; align-items: center; gap: var(--sp-6); min-width: 0; max-width: 100%; height: 24px; box-sizing: border-box; padding: 0 var(--sp-10);
+  border: 0; border-radius: 999px; background: var(--sunken); font: var(--fw-medium) var(--fs-label) / 24px var(--font-sans); color: var(--fg); white-space: nowrap;
+}
+.rt-topo-pill small { font-size: var(--fs-micro); font-weight: var(--fw-regular); color: var(--fg-3); }
+.rt-topo-pill .lucide { flex: none; width: 13px; height: 13px; }
+button.rt-topo-pill { cursor: pointer; transition: background-color var(--dur-1) var(--ease-std); }
+@media (hover: hover) { button.rt-topo-pill:hover { background: var(--hover); color: var(--accent); } }
+.rt-topo-exit { justify-self: end; }
+.rt-topo-exit[data-tone="bad"] { background: var(--bad-bg); color: var(--bad-text); }
+.rt-topo-exit[data-tone="warn"] { background: var(--warn-bg); color: var(--warn-text); }
+.rt-topo-exit[data-tone="neutral"] { color: var(--fg-2); }
+.rt-topo-node { justify-self: start; }
+/* 连线：行中间一条细线；失败红、参数不一致黄、不受管灰，都是虚线 */
+.rt-topo-link { height: 0; border-top: 1px solid var(--line-strong); }
+.rt-topo-link[data-tone="bad"] { border-top: 1px dashed var(--bad); }
+.rt-topo-link[data-tone="warn"] { border-top: 1px dashed var(--warn); }
+.rt-topo-link[data-tone="neutral"] { border-top-style: dashed; }
+/* 线路机一格竖跨这组的所有行：左右两条竖线从第一行中间到最后一行中间，中间一条横线接到线路机 */
+.rt-topo-relay { position: relative; align-self: stretch; display: grid; place-items: center; background: linear-gradient(var(--line-strong), var(--line-strong)) center / 100% 1px no-repeat; }
+.rt-topo-relay::before, .rt-topo-relay::after { content: ""; position: absolute; top: 14px; bottom: 14px; width: 0; border-left: 1px solid var(--line-strong); }
+.rt-topo-relay::before { left: 0; }
+.rt-topo-relay::after { right: 0; }
+.rt-topo-relay > .rt-topo-pill { position: relative; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-strong); }
+.rt-topo-raw { justify-self: start; padding-left: var(--sp-8); color: var(--fg-2); }
+.rt-topo-note { padding-top: var(--sp-2); }
+
+/* ---- 接入对话框 ---- */
+.rt-method-note { margin: var(--sp-8) 0 0; font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); text-wrap: pretty; }
+.token-box.rt-cmd code { white-space: pre-wrap; }

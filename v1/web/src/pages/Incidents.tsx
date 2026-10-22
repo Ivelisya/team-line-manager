@@ -7,6 +7,7 @@ import { INCIDENT_PAGE, useAck, useAddSilence, useDelSilence, useIncidents, useM
 import { usePage } from '@/lib/usePage';
 import { Pagination } from '@/components/app/Pagination';
 import { useDrawer } from '@/lib/drawer';
+import { isRouterIncident, useRouterDrawer } from '@/lib/routers';
 import * as F from '@/lib/format';
 import { severityOf } from '@/lib/derive';
 import type { Incident, Silence } from '@/lib/types';
@@ -34,6 +35,7 @@ export function IncidentsPage() {
   if (q.data && q.data.total !== total) setTotal(q.data.total);
   const ack = useAck();
   const { open } = useDrawer();
+  const { open: openRouter } = useRouterDrawer();
   const list = q.data?.items ?? [];
   // 续费类告警的「登记续费」要用机器的订阅信息；续费后下一轮评估（≤30 秒）自动恢复
   const machines = useMachineBriefs().data;
@@ -58,8 +60,9 @@ export function IncidentsPage() {
                 return (
                   <tr key={i.id}>
                     <td>{SEV(i)}</td>
-                    {/* 中控自身的告警（central_ 开头）没有机器可点开：只写对象名「中控」 */}
-                    <td>{sid ? <NodeHover id={sid}><button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => open(sid)}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button></NodeHover> : (i.subject_name ?? '—')}</td>
+                    {/* 中控自身的告警（central_ 开头）没有机器可点开：只写对象名「中控」；软路由的（router_ 开头）打开路由抽屉 */}
+                    <td>{sid && isRouterIncident(i) ? <button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => openRouter(sid)}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button>
+                      : sid ? <NodeHover id={sid}><button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => open(sid)}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button></NodeHover> : (i.subject_name ?? '—')}</td>
                     <td>{i.rule_name}{i.reopen_count > 0 && <span className="sub" data-tip={`恢复后 30 分钟内又复发 ${i.reopen_count} 次，合并为这一条`}>反复 {i.reopen_count + 1} 次</span>}</td>
                     <td><Trunc className="cell-main">{i.summary}</Trunc><span className="sub">{i.resolved_at ? `恢复于 ${F.dt(i.resolved_at)}` : i.ack_at ? `${i.ack_by ?? ''} 已确认 · ${F.ago(i.ack_at)}` : '未确认'}</span></td>
                     <td>{F.dt(i.opened_at)}<span className="sub">{F.ago(i.opened_at)}</span></td>

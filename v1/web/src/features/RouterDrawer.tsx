@@ -1,0 +1,357 @@
+// 软路由详情抽屉：概览 / 出口 / 客户端 / 曲线。开关由 URL 的 ?r=（页签 rtab）控制，与机器抽屉（?m=）分开；出口对应的入口点开时换成机器抽屉，后退回来。
+// 容器按信息的性质选（用户：不要每块都是格子）：总览数字不带框、设置类信息用分组列表（行间细线）、出口关系画成「出口 → 线路机 → 节点」、部署进度是时间线。
+import * as React from 'react';
+import { CheckCircle2, CircleX, MoreHorizontal, PencilLine, RefreshCw, Router as RouterIcon, Terminal, Trash2, TriangleAlert, XCircle } from 'lucide-react';
+import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/dialog';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, Tabs, TabsList, TabsTrigger, Trunc } from '@/components/ui/overlays';
+import { IconButton } from '@/components/ui/button';
+import { Field, Input, Textarea } from '@/components/ui/form';
+import { Select } from '@/components/ui/select';
+import { Skeleton } from '@/components/ui/skeleton';
+import { toast } from '@/components/ui/toast';
+import { ErrorBoundary } from '@/components/app/ErrorBoundary';
+import { ConfirmDialog, FormDialog, TypedConfirmDialog } from '@/components/app/dialogs';
+import { ErrorNote, Note, Num, Pill, ReasonList, Section, SectionHeader } from '@/components/app/primitives';
+import { Tag } from '@/components/app/viz';
+import { DeployTimeline, MiniSpark, RouterMeters, RouterStatePill, Seen, useShowBootstrap } from '@/components/app/RouterCard';
+import { useMachineBriefs, useTeams } from '@/lib/queries';
+import { ROUTER_TABS, routerIssues, showDeploy, showRemoved, tempTone, uptimeFmt, useDeleteRouter, usePatchRouter, useRouter, useRouterDrawer, useRouterExitMetrics, useRouters, type RouterClient, type RouterDetail, type RouterExit, type RouterTab, type RouterView } from '@/lib/routers';
+import { tagColor } from '@/lib/derive';
+import { resetOnOpen, useHeld } from '@/lib/useHeld';
+import { useTitleName } from '@/lib/title';
+import * as F from '@/lib/format';
+
+const ChartsTab = React.lazy(() => import('./RouterCharts').then((m) => ({ default: m.RouterChartsTab })));
+
+export function RouterDrawer() {
+  const { id, tab: liveTab, setTab, close } = useRouterDrawer();
+  const q = useRouter(id);
+  // 详情没回来前先用列表里那份（头部、状态马上就有）；关闭动画期间两份都沿用最后一次的，不闪骨架
+  const full = useHeld(id, q.data);
+  const brief = useHeld(id, useRouters().data?.find((x) => x.id === id));
+  const r: RouterView | undefined = full ?? brief;
+  const detail = full?.detail; // undefined = 还在取；null = 没采集成功过
+  const heldTab = React.useRef(liveTab);
+  if (id) heldTab.current = liveTab;
+  const tab = id ? liveTab : heldTab.current;
+  const bodyRef = React.useRef<HTMLDivElement>(null);
+  React.useLayoutEffect(() => { if (bodyRef.current) bodyRef.current.scrollTop = 0; }, [r?.id, tab]);
+  useTitleName(id ? r?.name : undefined);
+  return (
+    <Sheet open={!!id} onOpenChange={(o) => !o && close()}>
+      <SheetContent aria-describedby={undefined}>
+        <ErrorBoundary compact resetKey={`${r?.id}:${tab}`}>
+          {!r ? (
+            <>
+              <div className="drawer-head"><SheetTitle className="drawer-title">{q.isError ? '无法加载软路由' : '加载中…'}</SheetTitle></div>
+              <div className="drawer-body">{q.isError ? <ErrorNote error={q.error} onRetry={() => void q.refetch()} /> : <Skeleton h={120} />}</div>
+            </>
+          ) : (
+            <>
+              <Head r={r} detail={detail} onClosed={close} />
+              <Tabs value={tab} onValueChange={(v) => setTab(v as RouterTab)} className="drawer-tabs">
+                <TabsList>{ROUTER_TABS.map((t) => <TabsTrigger key={t.value} value={t.value} noPanel>{t.label}</TabsTrigger>)}</TabsList>
+              </Tabs>
+              <div className="drawer-body" ref={bodyRef}>
+                {q.isError && !q.data && <ErrorNote error={q.error} onRetry={() => void q.refetch()}>详情加载失败：</ErrorNote>}
+                <div key={tab} className="tab-pane">
+                  <React.Suspense fallback={<Skeleton h={180} style={{ borderRadius: 'var(--r-float)' }} />}>
+                    {tab === 'overview' && <OverviewTab r={r} detail={detail} />}
+                    {tab === 'exits' && <Needs r={r} detail={detail}>{(d) => <ExitsTab id={r.id} d={d} />}</Needs>}
+                    {tab === 'clients' && <Needs r={r} detail={detail}>{(d) => <ClientsTab d={d} />}</Needs>}
+                    {tab === 'charts' && <ChartsTab r={r} />}
+                  </React.Suspense>
+                </div>
+              </div>
+            </>
+          )}
+        </ErrorBoundary>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+/** 出口、客户端只在采集成功过之后才有 */
+function Needs({ r, detail, children }: { r: RouterView; detail: RouterDetail | null | undefined; children: (d: RouterDetail) => React.ReactNode }) {
+  if (detail === undefined) return <Skeleton h={180} style={{ borderRadius: 'var(--r-float)' }} />;
+  if (!detail) return <div className="hint">{r.state === 'pending' ? '路由接入、第一次采集成功之后，这里列出它的出口与客户端。' : '还没有采集成功过。'}</div>;
+  return <>{children(detail)}</>;
+}
+
+/** 头部：类型标 + 名称 + 状态 + 团队，副标题 WAN 与系统；右边「⋯」放管理操作 */
+function Head({ r, detail, onClosed }: { r: RouterView; detail: RouterDetail | null | undefined; onClosed: () => void }) {
+  const [edit, setEdit] = React.useState(false);
+  const [askRegen, setAskRegen] = React.useState(false);
+  const [askDel, setAskDel] = React.useState(false);
+  const boot = useShowBootstrap();
+  const del = useDeleteRouter();
+  const sub = [r.summary?.wan.ip && `WAN ${r.summary.wan.ip}`, detail?.system.os, `隧道端口 ${r.tunnel_port}`].filter(Boolean).join(' · ');
+  return (
+    <header className="drawer-head" style={{ paddingRight: 56 }}>
+      <span className="nc-kind" role="img" aria-label="软路由"><RouterIcon /></span>
+      <div className="m-head" style={{ flex: 1 }}>
+        <div className="m-head-row"><SheetTitle className="drawer-title ellipsis">{r.name}</SheetTitle><RouterStatePill r={r} />{r.team && <Tag c={tagColor(r.team.name)} tip="团队">{r.team.name}</Tag>}</div>
+        <SheetDescription className="ellipsis" style={{ margin: 0, color: 'var(--fg-2)', fontSize: 12 }}>{sub}</SheetDescription>
+      </div>
+      <div className="drawer-nav">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild><IconButton label="管理" tip={false} data-tip="管理：改名、重新接入、删除"><MoreHorizontal size={16} /></IconButton></DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onSelect={() => setEdit(true)}><PencilLine />改名 / 团队 / 备注…</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => showDeploy({ id: r.id, name: r.name })}><RefreshCw />重新部署（填账号密码）…</DropdownMenuItem>
+            {/* 还没连上过的没有隧道可断，直接生成；连上过的先确认（旧隧道立刻失效） */}
+            <DropdownMenuItem onSelect={() => (r.last_seen_at ? setAskRegen(true) : void boot.run(r))}><Terminal />{r.state === 'pending' ? '查看接入命令' : '重新生成接入命令…'}</DropdownMenuItem>
+            {/* 「打开终端」挂在这里：网页终端（/terminal/router/{id}）做好后在这一处加一项 */}
+            <DropdownMenuSeparator />
+            <DropdownMenuItem danger onSelect={() => setAskDel(true)}><Trash2 />删除…</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+      <EditDialog open={edit} onOpenChange={setEdit} r={r} />
+      <ConfirmDialog open={askRegen} onOpenChange={setAskRegen} title={`重新生成「${r.name}」的接入命令？`} confirmLabel="重新生成" danger
+        description="会换一把隧道密钥：路由上现在的 fleet-tunnel 立刻连不上中控，直到在路由上执行新命令（不影响 OpenClash 和客户端上网，只是这段时间看不到它的状态）。"
+        onConfirm={() => boot.run(r)} />
+      <TypedConfirmDialog open={askDel} onOpenChange={setAskDel} title={`删除软路由「${r.name}」？`} confirmLabel="删除" danger expected={r.name} prompt="请输入名称"
+        description="撤销它的隧道公钥、删掉采集的历史；路由本身不受影响（OpenClash、原来的 router-tunnel 照常）。删除后会告诉你在路由上怎么停掉 fleet-tunnel。"
+        onConfirm={async () => { await del.mutateAsync(r.id); onClosed(); showRemoved(r.name); }} />
+    </header>
+  );
+}
+
+/** 改名 / 团队 / 备注：只提交改了的项。每次打开重新挂载，从当前值开始 */
+const EditDialog = resetOnOpen(function EditDialog({ open, onOpenChange, r }: { open: boolean; onOpenChange: (o: boolean) => void; r: RouterView }) {
+  const patch = usePatchRouter();
+  const teams = useTeams().data;
+  const opts = React.useMemo(() => (teams ?? []).map((t) => ({ value: t.id, label: t.name })), [teams]);
+  const [name, setName] = React.useState(r.name); const [team, setTeam] = React.useState(r.team?.id ?? ''); const [note, setNote] = React.useState(r.note);
+  const body = { ...(name.trim() !== r.name ? { name: name.trim() } : {}), ...(team !== (r.team?.id ?? '') ? { team_id: team || null } : {}), ...(note.trim() !== r.note ? { note: note.trim() } : {}) };
+  const dirty = Object.keys(body).length > 0;
+  return (
+    <FormDialog open={open} onOpenChange={onOpenChange} title={`编辑「${r.name}」`} submitLabel="保存" busy={patch.isPending} valid={dirty && !!name.trim()} dirty={dirty}
+      onSubmit={() => patch.mutate({ id: r.id, ...body }, { onSuccess: () => { toast.ok('已保存'); onOpenChange(false); }, onError: toast.err })}>
+      <Field label="名称"><Input value={name} onChange={(e) => setName(e.target.value)} autoFocus autoComplete="off" /></Field>
+      <Field label="团队"><Select value={team} onChange={setTeam} options={opts} allowEmpty="不分团队" placeholder="不分团队" /></Field>
+      <Field label="备注"><Textarea rows={3} value={note} onChange={(e) => setNote(e.target.value)} /></Field>
+    </FormDialog>
+  );
+});
+
+// ---- 分组列表（同 iOS 设置）：一组一个底，行间细线，标签在左、值在右 ----
+const Group = ({ title, foot, children }: { title?: string; foot?: React.ReactNode; children: React.ReactNode }) => (
+  <section className="rt-gsec">{title && <h3 className="rt-group-title">{title}</h3>}<ul className="rt-group">{children}</ul>{foot && <div className="rt-group-foot hint">{foot}</div>}</section>
+);
+const Row = ({ label, children, tip }: { label: React.ReactNode; children: React.ReactNode; tip?: string }) => (
+  <li className="rt-row"><span className="rt-row-label" data-tip={tip}>{label}</span><span className="rt-row-value">{children ?? '—'}</span></li>
+);
+
+function OverviewTab({ r, detail }: { r: RouterView; detail: RouterDetail | null | undefined }) {
+  const s = r.summary;
+  const issues = r.state === 'online' ? routerIssues(s) : [];
+  const d = r.deploy;
+  // 部署时间线：在跑、失败了，或刚做完（10 分钟内）才放
+  const showDeployTl = d && (d.state !== 'done' || (d.finished_at != null && Date.now() - Date.parse(d.finished_at) < 600_000));
+  const sys = detail?.system;
+  const oc = detail?.openclash;
+  return (
+    <div className="rt-groups">
+      {r.state === 'offline' && <Note tone="bad">连不上路由（最后在线 <Seen at={r.last_seen_at} />）{r.error && <>：<span className="mono">{r.error}</span></>}。隧道断了时 OpenClash 与客户端上网照常，只是这里看不到它的状态。</Note>}
+      {showDeployTl && <Group title="一键部署"><li className="rt-row rt-row-tl"><DeployTimeline r={r} /></li></Group>}
+      {/* 总览：大号的出口可用数 + 一句话，不带框 */}
+      {s && (
+        <div className="rt-hero">
+          <div className="rt-hero-main"><b className="rt-hero-num num">{s.exits.alive}<small>/{s.exits.total}</small></b><span className="rt-hero-unit">个出口可用</span></div>
+          <p className="rt-hero-sum">
+            {s.clients} 台客户端在线 · OpenClash {s.openclash.conns.toLocaleString()} 条连接 · WAN ↓ {F.str(F.rate(s.wan.rx_bps))} ↑ {F.str(F.rate(s.wan.tx_bps))} · 已运行 {F.str(uptimeFmt(s.uptime_s))}
+            {s.exits.drift > 0 && <> · <span className="rt-warn">{s.exits.drift} 个出口参数与 fleet 入口不一致</span></>}
+          </p>
+          {issues.length > 0 && <ReasonList reasons={issues.map((text, i) => ({ key: String(i), severity: 'warning', text }))} className="reason-list" />}
+        </div>
+      )}
+      {s && <RouterMeters s={s} />}
+      <Group title="基本信息">
+        <Row label="团队">{r.team?.name ?? <span className="t-muted">不分团队</span>}</Row>
+        <Row label="隧道端口" tip="中控上分给这台的反向隧道端口（路由连上中控后，中控经它登录路由采集）"><span className="num">{r.tunnel_port}</span></Row>
+        <Row label="接入时间">{F.dtFull(r.created_at)}</Row>
+        <Row label={r.state === 'offline' ? '最后在线' : '最近采集'} tip="每 30 秒采集一次">{r.last_seen_at ? <>{F.dt(r.last_seen_at)} <span className="t-sub">· <Seen at={r.last_seen_at} /></span></> : '还没有'}</Row>
+        {r.note && <Row label="备注"><span className="rt-row-wrap">{r.note}</span></Row>}
+      </Group>
+      {sys && (
+        <Group title="系统" foot={sys.clock_skew_s != null && Math.abs(sys.clock_skew_s) > 5 ? <span className="rt-warn">路由的时钟和中控差 {Math.round(sys.clock_skew_s)} 秒：TLS 与 reality 出口对时间敏感，差太多会连不上。</span> : undefined}>
+          <Row label="系统">{sys.os}</Row>
+          <Row label="内核"><span className="mono">{sys.kernel}</span></Row>
+          <Row label="CPU">{sys.cpu_model} · {sys.cores} 核</Row>
+          <Row label="负载" tip="1 / 5 / 15 分钟平均负载；百分比 = 1 分钟负载 ÷ 核数（同机器卡片），超过 100% 表示排队">
+            <Num f={F.pct((sys.load[0] / sys.cores) * 100)} /> <span className="t-sub">· {sys.load.map((x) => x.toFixed(2)).join(' / ')}</span>
+          </Row>
+          <Row label="进程">{sys.procs} 个</Row>
+          <Row label="运行时长"><Num f={uptimeFmt(s?.uptime_s)} /></Row>
+          <Row label="温度"><span className="rt-temp" data-tone={tempTone(s?.temp_c)}>{s?.temp_c != null ? `${s.temp_c.toFixed(0)} °C` : '没有传感器'}</span></Row>
+          <Row label="时钟偏差" tip="路由的系统时间减中控的时间">{sys.clock_skew_s != null ? `${sys.clock_skew_s > 0 ? '+' : ''}${sys.clock_skew_s.toFixed(1)} 秒` : '—'}</Row>
+        </Group>
+      )}
+      {detail && (
+        <Group title="网络接口" foot="速率是两次采集（30 秒）之间的平均；累计从路由开机算。">
+          {detail.interfaces.map((i) => (
+            <li key={i.name} className="rt-row rt-iface">
+              <span className="rt-row-label"><b>{i.name}</b><span className="t-sub"> · {i.device} · {i.proto}</span>{!i.up && <span className="rt-alive" data-tone="bad"><XCircle />断开</span>}</span>
+              <span className="rt-row-value">
+                <span className="num">{i.ip ?? <span className="t-muted">没有地址</span>}</span>
+                <span className="rt-iface-sub">↓ <Num f={F.rate(i.rx_bps)} /> ↑ <Num f={F.rate(i.tx_bps)} /> · 累计 ↓ {F.str(F.bytes(i.rx_bytes))} ↑ {F.str(F.bytes(i.tx_bytes))}{i.uptime_s != null && <> · 连上 {F.str(uptimeFmt(i.uptime_s))}</>}</span>
+              </span>
+            </li>
+          ))}
+        </Group>
+      )}
+      {oc && s && (
+        <Group title="OpenClash">
+          <Row label="状态">{!oc.enabled ? <Pill dot="none">未启用</Pill> : oc.running ? <Pill tone="ok" dot="none">运行中</Pill> : <Pill tone="bad" dot="none" tip="已启用但核心进程（clash）没在运行：客户端此时上不了外网"><CircleX size={12} />核心没在运行</Pill>}</Row>
+          <Row label="核心版本"><span className="mono">{oc.version ?? '—'}</span></Row>
+          <Row label="模式">{oc.mode}</Row>
+          <Row label="配置文件"><Trunc className="mono">{oc.config_path ?? '—'}</Trunc></Row>
+          <Row label="配置修改于">{F.dtFull(oc.config_mtime)}</Row>
+          <Row label="核心内存" tip="clash 进程的常驻内存（VmRSS）"><Num f={F.bytes(sys?.clash_rss)} /></Row>
+          <Row label="代理速率" tip="经 OpenClash 的流量；↓ 是到客户端的方向">↓ <Num f={F.rate(s.openclash.down_bps)} /> ↑ <Num f={F.rate(s.openclash.up_bps)} /></Row>
+          <Row label="连接">{s.openclash.conns.toLocaleString()} 条</Row>
+        </Group>
+      )}
+      {detail === null && r.state === 'pending' && !d && <div className="hint">路由接入、第一次采集成功之后，这里显示它的系统、网络接口与 OpenClash。</div>}
+    </div>
+  );
+}
+
+// ---- 出口 ----
+const SYNC: Record<RouterExit['sync'], { tone: 'ok' | 'warn' | 'neutral'; label: string; tip: string }> = {
+  ok: { tone: 'ok', label: '一致', tip: '参数（uuid、reality 公钥等）与 fleet 入口现在的一致' },
+  drift: { tone: 'warn', label: '不一致', tip: 'server:port 对上了 fleet 入口，但 uuid / reality 参数和入口现在的不一致：入口轮换过凭据或换过线路机，路由上的这个出口可能已连不上' },
+  unmanaged: { tone: 'neutral', label: '不受管', tip: '没对上任何 fleet 入口（server:port 不是线路机的入口端口）：是路由上自己加的，中控不管它' },
+};
+const exitTone = (e: RouterExit) => (e.alive === false ? 'bad' : e.sync === 'drift' ? 'warn' : e.sync === 'unmanaged' ? 'neutral' : 'ok');
+const exitTip = (e: RouterExit) => [`${e.name}（${e.type}）→ ${e.server}:${e.port}`, e.alive === false ? '最近一次延迟测试失败' : e.delay_ms != null ? `延迟 ${e.delay_ms} ms` : '还没测过延迟', e.sync !== 'ok' && SYNC[e.sync].tip].filter(Boolean).join('\n');
+
+function ExitsTab({ id, d }: { id: string; d: RouterDetail }) {
+  const { openMachine } = useRouterDrawer();
+  const m = useExitMetricsMap(id);
+  const alive = d.exits.filter((e) => e.alive).length;
+  const managed = d.exits.filter((e) => e.entry).length;
+  const drift = d.exits.filter((e) => e.sync === 'drift').length;
+  return (
+    <>
+      <p className="rt-lead">{d.exits.length} 个出口 · <b>{alive}</b> 个可用 · {managed} 个对应 fleet 入口{drift > 0 && <> · <span className="rt-warn">{drift} 个参数不一致</span></>}<span className="t-sub"> · 延迟每 5 分钟测一次（经出口访问 generate_204）</span></p>
+      <Section>
+        <SectionHeader title="出口 → 线路机 → 节点" meta="点线路机或节点打开它的详情" />
+        <Topology exits={d.exits} onOpen={openMachine} />
+      </Section>
+      <Section>
+        <SectionHeader title="明细" meta={`${d.exits.length} 个`} />
+        <div className="table-wrap">
+          <table className="dt" style={{ minWidth: 960 }}>
+            <colgroup><col style={{ width: 120 }} /><col style={{ width: 150 }} /><col style={{ width: 170 }} /><col style={{ width: 80 }} /><col style={{ width: 90 }} /><col style={{ width: 96 }} /><col style={{ width: 60 }} /><col style={{ width: 130 }} /><col style={{ width: 64 }} /></colgroup>
+            <thead><tr><th>出口</th><th>服务器</th><th>对应 fleet 入口</th><th>参数</th><th className="r">延迟</th><th>近 6 小时</th><th className="r">连接</th><th className="r">↓ / ↑ 速率</th><th className="r">客户端</th></tr></thead>
+            <tbody>{d.exits.map((e) => <ExitRow key={e.name} e={e} delays={m.get(e.name)} onOpen={openMachine} />)}</tbody>
+          </table>
+        </div>
+        <ul className="rt-legend hint">{(['ok', 'drift', 'unmanaged'] as const).map((k) => <li key={k}><Pill tone={SYNC[k].tone} dot="none">{SYNC[k].label}</Pill>{SYNC[k].tip}</li>)}</ul>
+      </Section>
+    </>
+  );
+}
+
+/** 各出口近 6 小时的延迟（行内迷你折线）：name → 延迟序列（失败为 null） */
+function useExitMetricsMap(id: string) {
+  const q = useRouterExitMetrics(id, '6h');
+  return React.useMemo(() => new Map((q.data?.exits ?? []).map((x) => [x.name, x.points.map((p) => (typeof p.delay_ms === 'number' ? p.delay_ms : null))])), [q.data]);
+}
+
+/** 一行。memo：routers 事件重取详情后，没变的出口结构共享、引用不变（延迟序列另由曲线轮询换） */
+const ExitRow = React.memo(function ExitRow({ e, delays, onOpen }: { e: RouterExit; delays: (number | null)[] | undefined; onOpen: (id: string) => void }) {
+  const s = SYNC[e.sync];
+  return (
+    <tr>
+      <td><span className="cell-main strong">{e.name}</span><span className="sub">{e.type}</span></td>
+      <td><Trunc className="mono">{`${e.server}:${e.port}`}</Trunc></td>
+      <td>{e.entry ? <button type="button" className="btn btn-link" style={{ height: 'auto', padding: 0, maxWidth: '100%' }} data-tip="打开这个节点的详情" onClick={() => onOpen(e.entry!.node_id)}><span className="ellipsis">{e.entry.name}</span></button> : <span className="t-muted">—</span>}</td>
+      <td><Pill tone={s.tone} dot="none" tip={s.tip}>{s.label}</Pill></td>
+      <td className="r">
+        {e.alive === false ? <span className="rt-alive" data-tone="bad"><XCircle />失败</span>
+          : e.alive ? <span className="rt-alive" data-tone="ok"><CheckCircle2 /><Num f={F.ms(e.delay_ms)} /></span> : <span className="t-muted" data-tip="还没测过">—</span>}
+        {e.delay_at && <span className="sub">{F.ago(e.delay_at)}</span>}
+      </td>
+      <td>{delays ? <MiniSpark values={delays} tip="近 6 小时的延迟（缺口是测试失败）" /> : <span className="t-muted">—</span>}</td>
+      <td className="r num">{e.conns}</td>
+      <td className="r"><span className="num">↓ {F.str(F.rate(e.down_bps))}</span><span className="sub">↑ {F.str(F.rate(e.up_bps))}</span></td>
+      <td className="r num">{e.clients}</td>
+    </tr>
+  );
+});
+
+/** 出口 → 线路机 → 节点：按线路机分组，一个出口一行，中间是这组共用的线路机；没对上 fleet 入口的单列一组。
+ *  测试失败的出口红、参数不一致的黄，连线跟着变成虚线。线路机、节点名取机器列表缓存（没取过时用入口名） */
+function Topology({ exits, onOpen }: { exits: RouterExit[]; onOpen: (id: string) => void }) {
+  const machines = useMachineBriefs().data;
+  const name = React.useMemo(() => new Map((machines ?? []).map((m) => [m.id, m.name])), [machines]);
+  const groups = React.useMemo(() => {
+    const by = new Map<string, RouterExit[]>();
+    for (const e of exits) { const k = e.entry?.relay_id ?? ''; by.set(k, [...(by.get(k) ?? []), e]); }
+    return [...by].sort(([a], [b]) => (a === '' ? 1 : b === '' ? -1 : 0));
+  }, [exits]);
+  return (
+    <div className="table-wrap">
+      <div className="rt-topo">
+        {groups.map(([relay, list]) => (
+          <div key={relay || 'none'} className="rt-topo-group" data-none={relay ? undefined : ''}>
+            {list.map((e, i) => (
+              <React.Fragment key={e.name}>
+                <span className="rt-topo-pill rt-topo-exit" data-tone={exitTone(e)} data-tip={exitTip(e)} style={{ gridRow: i + 1 }}>
+                  {exitTone(e) === 'bad' ? <XCircle /> : exitTone(e) === 'warn' ? <TriangleAlert /> : null}<span className="ellipsis">{e.name}</span>
+                  <small className="num">{e.alive === false ? '不通' : e.delay_ms != null ? `${e.delay_ms} ms` : ''}</small>
+                </span>
+                <i className="rt-topo-link" data-tone={exitTone(e)} style={{ gridRow: i + 1, gridColumn: 2 }} />
+                {relay ? <>
+                  <i className="rt-topo-link" data-tone={exitTone(e)} style={{ gridRow: i + 1, gridColumn: 4 }} />
+                  <button type="button" className="rt-topo-pill rt-topo-node" style={{ gridRow: i + 1, gridColumn: 5 }} data-tip={e.entry!.name} onClick={() => onOpen(e.entry!.node_id)}>
+                    <span className="ellipsis">{name.get(e.entry!.node_id) ?? e.entry!.name}</span>
+                  </button>
+                </> : <span className="rt-topo-raw mono" style={{ gridRow: i + 1, gridColumn: '3 / 6' }}>{e.server}:{e.port}</span>}
+              </React.Fragment>
+            ))}
+            {relay ? (
+              <span className="rt-topo-relay" style={{ gridRow: `1 / span ${list.length}`, gridColumn: 3 }}>
+                <button type="button" className="rt-topo-pill" data-tip="打开这台线路机的详情" onClick={() => onOpen(relay)}>{name.get(relay) ?? '线路机'}<small className="num">{list.length}</small></button>
+              </span>
+            ) : <span className="rt-topo-note hint" style={{ gridColumn: '1 / -1' }}>上面这些没对上 fleet 入口：路由上自己配的出口，中控不管</span>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---- 客户端 ----
+const byClient = (a: RouterClient, b: RouterClient) => Number(b.online) - Number(a.online) || b.conns - a.conns;
+function ClientsTab({ d }: { d: RouterDetail }) {
+  const list = React.useMemo(() => [...d.clients].sort(byClient), [d.clients]);
+  const online = list.filter((c) => c.online).length;
+  return (
+    <>
+      <p className="rt-lead"><b>{online}</b> 台在线 · 共 {list.length} 台<span className="t-sub"> · 来自 DHCP 租约、邻居表与经过 OpenClash 的来源 IP（旁路由没有租约，只认得 IP）</span></p>
+      <div className="table-wrap">
+        <table className="dt" style={{ minWidth: 640 }}>
+          <colgroup><col style={{ width: 200 }} /><col style={{ width: 70 }} /><col style={{ width: 70 }} /><col /></colgroup>
+          <thead><tr><th>设备</th><th>状态</th><th className="r">连接</th><th>经过的出口（连接数）</th></tr></thead>
+          <tbody>{list.map((c) => <ClientRow key={c.ip} c={c} />)}</tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+const ClientRow = React.memo(function ClientRow({ c }: { c: RouterClient }) {
+  const via = [...c.exits].sort((a, b) => b.conns - a.conns).map((x) => `${x.name} ${x.conns}`).join(' · ');
+  return (
+    <tr>
+      <td><span className="cell-main strong">{c.hostname ?? <span className="t-muted">未知设备</span>}</span><span className="sub mono">{c.ip}{c.mac && ` · ${c.mac}`}</span></td>
+      <td>{c.online ? <Pill tone="ok" dot="none">在线</Pill> : <Pill dot="none">离线</Pill>}</td>
+      <td className="r num">{c.conns}</td>
+      <td>{via ? <Trunc className="cell-main">{via}</Trunc> : <span className="t-muted">没有经过 OpenClash 的连接</span>}</td>
+    </tr>
+  );
+});

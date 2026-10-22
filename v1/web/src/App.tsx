@@ -9,6 +9,7 @@ import { LoginPage } from './pages/Login';
 const lazyPage = <K extends string>(load: () => Promise<Record<K, React.ComponentType>>, name: K) =>
   React.lazy(() => load().then((m) => ({ default: m[name] })));
 const RelaysPage = lazyPage(() => import('./pages/Relays'), 'RelaysPage');
+const RoutersPage = lazyPage(() => import('./pages/Routers'), 'RoutersPage');
 const ProvisionPage = lazyPage(() => import('./pages/Provision'), 'ProvisionPage');
 const JobsPage = lazyPage(() => import('./pages/Jobs'), 'JobsPage');
 const CatalogPage = lazyPage(() => import('./pages/Catalog'), 'CatalogPage');
@@ -26,6 +27,7 @@ export function App() {
         <Route index element={<HomePage />} />
         <Route path="nodes" element={<NodesPage />} />
         <Route path="relays" element={<RelaysPage />} />
+        <Route path="routers" element={<RoutersPage />} />
         <Route path="provision" element={<ProvisionPage />} />
         <Route path="jobs" element={<JobsPage />} />
         <Route path="jobs/:id" element={<JobsPage />} />
