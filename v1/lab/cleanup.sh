@@ -2,7 +2,7 @@
 # 轮末清理 fleet-dev：调试构建产物、worktree 的源码副本、测试遗留的临时文件与测试库。幂等，可反复跑。
 # 有 cargo 在跑（还有人在编译或测试）就什么都不动，退出码 1。
 # 不动：/root/src 的源码与 release 产物（部署要用）、fleet 库（实验室在用）、fleet_test 库（默认测试库）、/opt/fleet、fleet-sim。
-# worktree 副本 /root/src-wt-<名字> 与它的测试库 fleet_test_<名字>：给了名字只删这几个；不给名字只删 6 小时没同步过的
+# worktree 副本 /root/src-wt-<名字>、它的编译目录 /root/src/target-<名字> 与测试库 fleet_test_<名字>：给了名字只删这几个；不给名字只删 6 小时没同步过的
 # （同步会刷新目录的修改时间），并列出留下的——并行会话正在用的不会被误删。
 # 用法：lab/cleanup.sh [名字...]
 set -euo pipefail
@@ -20,7 +20,7 @@ rm -rf /root/src/target/debug /root/ipintel-install
 if [ $# -gt 0 ]; then names="$*"
 else names=$(find /root -maxdepth 1 -name 'src-wt-*' -type d -mmin +360 -printf '%f\n' | sed 's/^src-wt-//')
 fi
-for n in $names; do rm -rf "/root/src-wt-$n"; echo "已删 worktree 副本 src-wt-$n"; done
+for n in $names; do rm -rf "/root/src-wt-$n" "/root/src/target-$n"; echo "已删 worktree 副本 src-wt-$n 与它的编译目录 target-$n"; done
 left=$(find /root -maxdepth 1 -name 'src-wt-*' -type d -printf '%f ' )
 [ -z "$left" ] || echo "留下（还在用）：$left"
 # 副本已经不在的 worktree 测试库 fleet_test_<名字>；fleet 与默认测试库 fleet_test 不匹配，保留
