@@ -143,10 +143,11 @@ async fn retire_moves_into_spare() {
     let r = t.post(&format!("/api/v1/machines/{n2}/retire"), json!({"confirm": "团队1-01", "now": true, "cleanup": false})).await;
     assert!(r["mode"] == "now" && r["job_id"].is_string(), "{r}");
 
-    // 移出备用 = 撤销退役：标记、退役原因清掉，不再自动回收
+    // 移出备用 = 撤销退役：标记、退役原因清掉，不再自动回收。照提示只给团队（备用里的 2 号在原团队已经有了）：排到原团队的最小空号
     let rev = t.get(&format!("/api/v1/machines/{n1}")).await["revision"].clone();
-    let (s, v) = t.req("PATCH", &format!("/api/v1/machines/{n1}"), Some(json!({"revision": rev, "team_id": team, "number": 5})), None).await;
-    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v) = t.req("PATCH", &format!("/api/v1/machines/{n1}"), Some(json!({"revision": rev, "team_id": team})), None).await;
+    let v = &v["data"];
+    assert_eq!((s, v["name"].as_str(), v["spare"].as_bool()), (StatusCode::OK, Some("团队1-03"), Some(false)), "{v}");
     assert_eq!((v["spare_from"].clone(), v["spare_since"].clone(), v["recycle_on"].clone(), v["lifecycle_reason"].clone()), (Value::Null, Value::Null, Value::Null, Value::Null), "{v}");
 
     // 宿主机进备用：上面的同机 IP 节点一起进，编号挨着

@@ -135,7 +135,21 @@ pub async fn patch_tx(tx: &mut crate::db::Tx<'_>, actor: &str, id: Uuid, b: Patc
     }
     let is_relay = cur.1 == "relay";
     let team_id = if is_relay { None } else { b.team_id.or(cur.2) };
-    let number = if is_relay { None } else { b.number.or(cur.3) };
+    let number = if is_relay {
+        None
+    } else if b.number.is_none() && team_id != cur.2 {
+        // 换团队没给编号：排到新团队的最小空号（原编号在新团队里多半已经有人，「移出备用」照提示只给团队也能成）
+        let n: Option<i32> = sqlx::query_scalar(
+            "select min(n)::int from generate_series(1, 999) n
+             where not exists (select 1 from machine where team_id = $1 and number = n and kind <> 'relay' and lifecycle <> 'retired')",
+        )
+        .bind(team_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        Some(n.ok_or_else(|| ApiError::conflict("这个团队的编号用完了"))?)
+    } else {
+        b.number.or(cur.3)
+    };
     if let Some(n) = number {
         if !(1..=999).contains(&n) {
             return Err(ApiError::bad_request("编号范围 1–999"));

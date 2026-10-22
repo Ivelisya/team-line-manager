@@ -156,7 +156,7 @@ EntryView = { id, relay:{id,name}, node:{id,name}, direct, port, lifecycle, appl
 |---|---|---|
 | GET | `/machines?scope=live\|all` | 默认 live（未退役）；all = 还没进回收站的全部机器（含退役完、还没收进回收站的，最多一小时）；回收站里的看 `GET /recycle-bin`；别的值 400（`retired` 已删）。排序：线路机在前，然后按团队、编号。加 `view=brief` 只返回 `{id, kind, name, label, ip, lifecycle, host_id, team:{id,name}\|null}`（fleetctl 按名字找机器用；`host_id` 非 null 的是同机 IP 节点） |
 | GET | `/machines/{id}` | 单台 |
-| PATCH | `/machines/{id}` | `{revision, team_id?, number?, label?, note?, provider_id?, plan_id?, service_ref?, country?}`。country 是 ISO 3166-1 两位代码（不在表里 400，「UK」提示英国是 GB），null 或空串 = 改回按 IP 自动。改团队/编号 = 改名：线路机备注随后自动同步，不换令牌、不断连接。有套餐时供应商就是套餐的：只改了套餐的，供应商跟着换；同时给了另一个供应商 400 |
+| PATCH | `/machines/{id}` | `{revision, team_id?, number?, label?, note?, provider_id?, plan_id?, service_ref?, country?}`。country 是 ISO 3166-1 两位代码（不在表里 400，「UK」提示英国是 GB），null 或空串 = 改回按 IP 自动。改团队/编号 = 改名（换团队不给编号时排到新团队的最小空号）：线路机备注随后自动同步，不换令牌、不断连接。有套餐时供应商就是套餐的：只改了套餐的，供应商跟着换；同时给了另一个供应商 400 |
 | GET | `/machines/{id}/series?metric=host\|traffic\|probe&range=1h\|6h\|24h\|7d\|30d` | 时序。≤24h 用原始点（1 分钟聚合），更长用小时汇总。同机 IP 节点的 `metric=host` 是宿主机的曲线 |
 | GET | `/machines/{id}/availability?days=30` | 近 N 天（`days` 1–90，默认 30，越界 400）每天的探测成功率：`{data:{days, items:[{date,tcp_total,tcp_ok,egress_total,egress_ok}], tcp_pct, egress_pct}}`。探测小时汇总按这台机器生效的账单时区（没有订阅按 `sub_template.billing_tz`）分到日历天（一个小时桶按起点归天），`items` 旧→新共 `days` 项、最后一项是今天（还没过完），没有探测的天各项为 0；`tcp_pct` / `egress_pct` 是整段的成功率（0–100），没有探测为 null。入口同 `series`：节点取自己的，线路机取挂在它上面的（含已移除的）。机器不存在 404 |
 | GET | `/machines/{id}/retire` | 退役预览，见「退役与回收站」 |
