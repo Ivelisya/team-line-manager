@@ -1,6 +1,6 @@
 // 访问监控：类型（对应 docs/API.md「访问监控」）+ 查询 hook。数据 30 秒轮询，页面不在前台时 TanStack Query 自动暂停。
-import { keepPreviousData, useQuery } from '@tanstack/react-query';
-import { get } from './api';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { get, put } from './api';
 import type { IpIntel } from './ipintel';
 
 export type AccessWindow = '1h' | '24h' | '7d' | '30d';
@@ -9,6 +9,16 @@ export const ACCESS_WINDOWS: { value: AccessWindow; label: string; long: string 
   { value: '7d', label: '7 天', long: '7 天' }, { value: '30d', label: '30 天', long: '30 天' },
 ];
 export const isAccessWindow = (v: string | null): v is AccessWindow => ACCESS_WINDOWS.some((w) => w.value === v);
+/** 各时间范围要多少天的小时汇总：超过保留期的范围不给选（查出来是不全的） */
+export const WINDOW_DAYS: Record<AccessWindow, number> = { '1h': 1, '24h': 1, '7d': 7, '30d': 30 };
+
+/** 访问记录保留期（设置「数据保留」）：原始记录与小时汇总各保留多少天。改动由实时流的 settings 事件失效 */
+export interface AccessRetention { raw_days: number; hourly_days: number; min: number; max: number }
+export const useAccessRetention = () => useQuery({ queryKey: ['access-retention'], queryFn: ({ signal }) => get<AccessRetention>('/settings/access-retention', signal), staleTime: Infinity });
+export function useSaveRetention() {
+  const qc = useQueryClient();
+  return useMutation({ mutationFn: (b: { raw_days: number; hourly_days: number }) => put<AccessRetention>('/settings/access-retention', b), onSuccess: (d) => qc.setQueryData(['access-retention'], d) });
+}
 
 export interface AccessFilter {
   window: AccessWindow; team: string; node: string; search: string;

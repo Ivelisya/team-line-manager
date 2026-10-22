@@ -2,7 +2,8 @@
 // 账户安全（两步验证、修改密码、登录会话，见 features/AccountTab）。
 import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Ban, Bell, FlaskConical, KeyRound, MessagesSquare, Pencil, Plus, Send, ShieldAlert, ShieldCheck, Trash2, Webhook } from 'lucide-react';
+import { Archive, Ban, Bell, FlaskConical, KeyRound, MessagesSquare, Pencil, Plus, Send, ShieldAlert, ShieldCheck, Trash2, Webhook } from 'lucide-react';
+import { RetentionTab } from '@/features/RetentionTab';
 import { AccountTab } from '@/features/AccountTab';
 import { useAddChannel, useApiKeys, useCreateApiKey, useDelChannel, useMe, useNotifyChannels, useNotifyLog, usePatchChannel, useRevokeApiKey, useTestChannel, useTotpStatus } from '@/lib/queries';
 import type { ApiKey, NotifyChannel, NotifyLogEntry } from '@/lib/types';
@@ -22,18 +23,19 @@ import { resetOnOpen, useHeld } from '@/lib/useHeld';
 export function SettingsPage() {
   const [sp, setSp] = useSearchParams();
   const sec = sp.get('section');
-  const tab = sec === 'notify' || sec === 'account' ? sec : 'keys';
+  const tab = sec === 'notify' || sec === 'account' || sec === 'retention' ? sec : 'keys';
   return (
     <div className="stack">
-      <PageHead title="设置" note="API 密钥、告警通知与账户安全" />
+      <PageHead title="设置" note="API 密钥、告警通知、账户安全与数据保留" />
       <Tabs value={tab} onValueChange={(v) => setSp((p) => { const n = new URLSearchParams(p); n.set('section', v); return n; }, { replace: true })}>
         <TabsList className="set-tabs">
           <TabsTrigger value="keys" noPanel><KeyRound size={14} />API 密钥</TabsTrigger>
           <TabsTrigger value="notify" noPanel><Bell size={14} />告警通知</TabsTrigger>
           <TabsTrigger value="account" noPanel><ShieldCheck size={14} />账户安全</TabsTrigger>
+          <TabsTrigger value="retention" noPanel><Archive size={14} />数据保留</TabsTrigger>
         </TabsList>
       </Tabs>
-      {tab === 'keys' ? <ApiKeysSection /> : tab === 'notify' ? <NotifySection /> : <AccountTab />}
+      {tab === 'keys' ? <ApiKeysSection /> : tab === 'notify' ? <NotifySection /> : tab === 'account' ? <AccountTab /> : <RetentionTab />}
     </div>
   );
 }
