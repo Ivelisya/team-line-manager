@@ -1106,7 +1106,8 @@ async fn relay_renewal_and_global_maintenance() {
     let team = seed_team(&t, "团队1").await;
     let (node, _entry) = seed_node(&t, relay, team, 1, "203.0.113.5", 20000).await;
     assert_eq!(t.report("tok1", &blank_report(1)).await.0, StatusCode::OK);
-    sqlx::query("insert into subscription (machine_id, price_cents, due_date, remind_days) values ($1, 500, current_date + 3, 7)").bind(relay).execute(&t.st.db).await.unwrap();
+    // 到期天数按账单时区（这里跟随组织时区）的今天算：到期日也按它取，不用库会话的 current_date（UTC 傍晚以后差一天）
+    sqlx::query("insert into subscription (machine_id, price_cents, due_date, remind_days) values ($1, 500, (now() at time zone org_tz())::date + 3, 7)").bind(relay).execute(&t.st.db).await.unwrap();
     // 线路机也有续费提醒（原先写在节点分支里，线路机永远不报）
     assert_eq!(t.health(relay).await.1, ["renewal_due"]);
     let mut state = AlertState::default();
@@ -1139,7 +1140,8 @@ async fn digit_only_summary_changes_ride_the_5_minute_touch() {
     let t = setup().await;
     let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
     assert_eq!(t.report("tok1", &blank_report(1)).await.0, StatusCode::OK);
-    sqlx::query("insert into subscription (machine_id, price_cents, due_date, remind_days) values ($1, 500, current_date + 3, 7)").bind(relay).execute(&t.st.db).await.unwrap();
+    // 到期天数按账单时区（这里跟随组织时区）的今天算：到期日也按它取，不用库会话的 current_date（UTC 傍晚以后差一天）
+    sqlx::query("insert into subscription (machine_id, price_cents, due_date, remind_days) values ($1, 500, (now() at time zone org_tz())::date + 3, 7)").bind(relay).execute(&t.st.db).await.unwrap();
     let mut state = AlertState::default();
     let base = OffsetDateTime::now_utc();
     pass(&t, &mut state, base, 0).await;
