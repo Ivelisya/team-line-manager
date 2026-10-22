@@ -90,7 +90,7 @@ function RelayCard({ m, open }: { m: MachineView; open: Open }) {
       <EntryMenus entries={m.entries}><div><TableWrap>
         <table className="dt is-one" style={{ minWidth: 700 }}>
           <colgroup><col style={{ width: 84 }} /><col style={{ width: 160 }} /><col style={{ width: 104 }} /><col style={{ width: 96 }} /><col style={{ width: 96 }} /><col style={{ width: 120 }} /><col style={{ width: 52 }} /></colgroup>
-          <thead><tr><th>端口</th><th>节点</th><th>状态</th><th className="r">TCP 延迟</th><th className="r">出口延迟</th><th className="r">本月业务流量</th><th /></tr></thead>
+          <thead><tr><th>端口</th><th>节点</th><th>状态</th><th className="r">TCP 延迟</th><th className="r">出口</th><th className="r">本月业务流量</th><th /></tr></thead>
           <tbody>
             {entries.map((e) => <EntryRow key={e.id} e={e} open={open} />)}
           </tbody>

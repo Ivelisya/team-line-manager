@@ -2,17 +2,27 @@
 import * as React from 'react';
 import type { EntryView, MachineView } from '@/lib/types';
 import * as F from '@/lib/format';
-import { errText, probeFail, probeFailLabel } from '@/lib/derive';
+import { errText, probeFail, probeFailLabel, tcpMs } from '@/lib/derive';
 import { entryState, Num, Pill } from '@/components/app/primitives';
 import { ShowAll } from '@/components/app/Pagination';
 
 /** 入口表先露的条数（抽屉入口表、线路机页共用） */
 export const ENTRY_CAP = 10;
 
-/** TCP / 出口探测单元格（线路机页共用）：失败的悬停看错误（英文原始错误换成中文，errText） */
-export const probeCell = (p: EntryView['tcp']) => (p == null ? <span className="t-muted">—</span> : p.ok ? <Num f={F.ms(p.latency_ms)} /> : <span style={{ color: 'var(--bad-text)' }} data-tip={p.detail ? errText(p.detail) : undefined}>失败</span>);
-/** TCP 单元格：直出入口没有节点，不做 TCP 探测 */
-export const tcpCell = (e: EntryView) => (e.direct ? <span className="t-muted" data-tip="直出入口不经节点，不做 TCP 探测">—</span> : probeCell(e.tcp));
+const failCell = (p: NonNullable<EntryView['tcp']>) => <span style={{ color: 'var(--bad-text)' }} data-tip={p.detail ? errText(p.detail) : undefined}>失败</span>;
+/** 出口单元格（线路机页共用）：只写通不通，悬停给出口 IP 与这次出口验证的耗时（经节点去中控，不是线路延迟）；
+ *  失败的悬停看错误（英文原始错误换成中文，errText） */
+export const probeCell = (p: EntryView['egress']) => (p == null ? <span className="t-muted">—</span> : p.ok
+  ? <span data-tip={`${p.detail ? `出口 IP ${p.detail}\n` : ''}出口验证耗时 ${p.latency_ms == null ? '—' : `${Math.round(p.latency_ms)} ms`}`}>正常</span>
+  : failCell(p));
+/** TCP 单元格：线路机 → 节点的建连延迟，近 1 小时中位数（悬停给最近一次）；直出入口没有节点，不做 TCP 探测 */
+export const tcpCell = (e: EntryView) => {
+  const p = e.tcp;
+  if (e.direct) return <span className="t-muted" data-tip="直出入口不经节点，不做 TCP 探测">—</span>;
+  if (p == null) return <span className="t-muted">—</span>;
+  if (!p.ok) return failCell(p);
+  return <span data-tip={`近 1 小时中位数；最近一次 ${p.latency_ms == null ? '—' : `${Math.round(p.latency_ms)} ms`}`}><Num f={F.ms(tcpMs(p))} /></span>;
+};
 
 export function EntriesTable({ m, traffic }: { m: MachineView; traffic?: boolean }) {
   const [all, setAll] = React.useState(false);

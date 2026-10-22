@@ -197,7 +197,7 @@ function OverviewTab({ m }: { m: MachineView }) {
           {m.lifecycle === 'retired' ? null : m.agent ? <>
             <LabelValue label="agent 版本">{`${m.agent.version ?? '未知'}${ofHost}`}</LabelValue>
             <LabelValue label="最近上报">{m.agent.last_report_at ? F.ago(m.agent.last_report_at) : '尚未上报'}</LabelValue>
-          </> : <LabelValue label="agent"><>无 <InfoTip text="家宽代理不装 agent：没有主机读数，连通性靠中控的探测" /></></LabelValue>}
+          </> : <LabelValue label="agent"><>无 <InfoTip text="家宽代理不装 agent：没有主机读数，连通性靠线路机的探测" /></></LabelValue>}
           {/* TCP 不通与出口不通分开数（同线路页）：TCP 只数经节点的入口（直出入口没有 TCP 探测），出口数全部在用的入口 */}
           <LabelValue label="入口探测">{probeCounts(m)}</LabelValue>
           {m.ip_nodes.length > 0 && (

@@ -482,8 +482,8 @@ async fn ingest(st: &AppState, h: &HeaderMap, mut r: Report) -> Result<Json<Repo
     }
     if !ps.is_empty() {
         sqlx::query(
-            "insert into probe_result (entry_id, ts, kind, ok, latency_ms, detail)
-             select * from unnest($1::uuid[], $2::timestamptz[], $3::text[], $4::bool[], $5::real[], $6::text[])",
+            "insert into probe_result (entry_id, ts, kind, ok, latency_ms, detail, retrans)
+             select * from unnest($1::uuid[], $2::timestamptz[], $3::text[], $4::bool[], $5::real[], $6::text[], $7::smallint[])",
         )
         .bind(ps.iter().map(|(p, _)| p.entry_id).collect::<Vec<_>>())
         .bind(ps.iter().map(|(_, t)| *t).collect::<Vec<_>>())
@@ -491,6 +491,8 @@ async fn ingest(st: &AppState, h: &HeaderMap, mut r: Report) -> Result<Json<Repo
         .bind(ps.iter().map(|(p, _)| p.ok).collect::<Vec<_>>())
         .bind(ps.iter().map(|(p, _)| p.latency_ms).collect::<Vec<_>>())
         .bind(ps.iter().map(|(p, _)| p.detail.clone()).collect::<Vec<_>>())
+        // 旧 agent 不报（null）；超出 smallint 的按上限记（正常是个位数）
+        .bind(ps.iter().map(|(p, _)| p.retrans.map(|r| r.min(i16::MAX as u32) as i16)).collect::<Vec<_>>())
         .execute(&mut *tx)
         .await?;
     }

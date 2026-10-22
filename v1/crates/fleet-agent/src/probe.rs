@@ -1,4 +1,4 @@
-//! 探测：TCP 握手延迟；出口探测 = 经本机回环 SOCKS 入站（路由到该入口的真实出站）访问回显服务，核对出口 IP。
+//! 探测：线路机 → 节点的 TCP 建连（往返时间 + SYN 重发次数）；出口探测 = 经本机回环 SOCKS 入站（路由到该入口的真实出站）访问回显服务，核对出口 IP（只判通不通、IP 对不对）。
 
 use crate::util::error_chain;
 use anyhow::Result;
@@ -45,20 +45,86 @@ fn timeout_text(secs: u64) -> String { format!("超时 {secs} 秒") }
 
 // ── TCP 探测 ────────────────────────────────────────────────────────────────
 
+/// TCP 探测的超时。SYN 丢了内核按 1 s、2 s、4 s 退避重发（第 0、1、3、7 秒各发一次）：原来的 5 秒只等到第二次重发，
+/// 第三次重发才连上的被记成「超时」；10 秒盖住第三次重发和它的回包
+pub const TCP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// 已连上的套接字的 (往返时间 µs, SYN 重发次数)，取自内核 TCP_INFO。往返时间是内核拿 SYN-ACK 量的：
+/// 重发过的建连按时间戳选项算（只算最后那次 SYN 的往返），量不到时为 0
+#[cfg(target_os = "linux")]
+fn tcp_info(s: &TcpStream) -> Option<(u32, u32)> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: tcp_info 是纯数据结构，全零合法；getsockopt 最多写 len 字节
+    let mut info: libc::tcp_info = unsafe { std::mem::zeroed() };
+    let mut len = std::mem::size_of::<libc::tcp_info>() as libc::socklen_t;
+    let r = unsafe { libc::getsockopt(s.as_raw_fd(), libc::IPPROTO_TCP, libc::TCP_INFO, (&mut info as *mut libc::tcp_info).cast(), &mut len) };
+    (r == 0).then_some((info.tcpi_rtt, info.tcpi_total_retrans))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn tcp_info(_: &TcpStream) -> Option<(u32, u32)> {
+    None
+}
+
+/// 建连延迟：有内核往返时间用它（不含重发等待、不受 tokio 调度影响）；内核没量到时，没重发过才用墙钟耗时，
+/// 重发过就不给延迟（墙钟耗时里是 1 s / 3 s 的重发等待，不是线路延迟）
+fn connect_latency(elapsed_ms: f32, info: Option<(u32, u32)>) -> Option<f32> {
+    match info {
+        Some((rtt_us, _)) if rtt_us > 0 => Some(rtt_us as f32 / 1000.0),
+        Some((_, retrans)) if retrans > 0 => None,
+        _ => Some(elapsed_ms),
+    }
+}
+
+/// 线路机 → 节点出站地址的 TCP 建连。计时只算建连：域名先解析（不计时，解析失败照样算不通）；
+/// 连上后读内核的往返时间与 SYN 重发次数（见 `connect_latency`、`ProbeSample::retrans`）
 pub async fn tcp_probe(entry_id: Uuid, host: &str, port: u16, timeout: Duration, ts_ms: i64) -> ProbeSample {
-    let t = Instant::now();
-    let r = tokio::time::timeout(timeout, TcpStream::connect((host, port))).await;
-    let (ok, detail) = match r {
-        Ok(Ok(_)) => (true, None),
-        Ok(Err(e)) => {
-            tracing::debug!(host, port, "TCP 探测失败：{e}");
-            let (full, inner) = error_chain(&e);
-            (false, Some(reason_cn(&full, &inner, timeout.as_secs())))
-        }
-        Err(_) => (false, Some(timeout_text(timeout.as_secs()))),
+    let fail = |detail: String| ProbeSample { entry_id, ts_ms, kind: ProbeKind::Tcp, ok: false, latency_ms: None, detail: Some(detail), retrans: None };
+    let deadline = tokio::time::Instant::now() + timeout;
+    let addrs: Vec<SocketAddr> = match host.parse::<IpAddr>() {
+        Ok(ip) => vec![SocketAddr::new(ip, port)],
+        Err(_) => match tokio::time::timeout_at(deadline, tokio::net::lookup_host((host, port))).await {
+            Ok(Ok(a)) => a.collect(),
+            Ok(Err(e)) => {
+                tracing::debug!(host, port, "TCP 探测解析失败：{e}");
+                let (full, inner) = error_chain(&e);
+                return fail(reason_cn(&full, &inner, timeout.as_secs()));
+            }
+            Err(_) => return fail(timeout_text(timeout.as_secs())),
+        },
     };
+    // 同 TcpStream::connect((host, port))：逐个地址试，用连上的那个；计时从这个地址开始
+    let mut last = None;
+    for a in addrs {
+        let t = Instant::now();
+        match tokio::time::timeout_at(deadline, TcpStream::connect(a)).await {
+            Ok(Ok(s)) => {
+                let info = tcp_info(&s);
+                return ProbeSample {
+                    entry_id,
+                    ts_ms,
+                    kind: ProbeKind::Tcp,
+                    ok: true,
+                    latency_ms: connect_latency(ms(t), info),
+                    detail: None,
+                    retrans: info.map(|i| i.1),
+                };
+            }
+            Ok(Err(e)) => {
+                tracing::debug!(host, port, "TCP 探测失败：{e}");
+                last = Some(e);
+            }
+            Err(_) => return fail(timeout_text(timeout.as_secs())),
+        }
+    }
     // 失败时不给延迟，避免被当成慢而不是挂
-    ProbeSample { entry_id, ts_ms, kind: ProbeKind::Tcp, ok, latency_ms: ok.then(|| ms(t)), detail }
+    match last {
+        Some(e) => {
+            let (full, inner) = error_chain(&e);
+            fail(reason_cn(&full, &inner, timeout.as_secs()))
+        }
+        None => fail("无法解析主机".into()),
+    }
 }
 
 // ── 出口探测 ────────────────────────────────────────────────────────────────
@@ -118,36 +184,64 @@ fn normalize(ip: IpAddr) -> IpAddr {
     }
 }
 
-/// `client` 来自 `socks_client`（该入口的探测入站端口）
-pub async fn egress_probe(entry_id: Uuid, client: &reqwest::Client, echo_url: &str, expect: IpAddr, timeout: Duration, ts_ms: i64) -> ProbeSample {
+/// 出口探测的结果：`answered` = 回显服务经这个入口回了一个 IP（对不对另看 ok）。回了 IP 却不对是实打实的出口错了，
+/// 不必再核对回显服务本身通不通
+struct Egress {
+    sample: ProbeSample,
+    answered: bool,
+}
+
+async fn egress_try(entry_id: Uuid, client: &reqwest::Client, echo_url: &str, expect: IpAddr, timeout: Duration, ts_ms: i64) -> Egress {
     let t = Instant::now();
-    let (ok, detail) = match http_get(client, echo_url, timeout).await {
+    let (ok, answered, detail) = match http_get(client, echo_url, timeout).await {
         Ok(body) => match body.trim().parse::<IpAddr>() {
             Ok(seen) => {
                 let ok = normalize(seen) == normalize(expect);
-                (ok, Some(if ok { seen.to_string() } else { format!("出口 IP {seen}，期望 {expect}") }))
+                (ok, true, Some(if ok { seen.to_string() } else { format!("出口 IP {seen}，期望 {expect}") }))
             }
             // 去掉控制字符：detail 进中控的 PG text 列，一个 NUL 就让整份报告被拒
-            Err(_) => (false, Some(format!("回显内容不是 IP：{}", body.trim().chars().filter(|c| !c.is_control()).take(80).collect::<String>()))),
+            Err(_) => (false, false, Some(format!("回显内容不是 IP：{}", body.trim().chars().filter(|c| !c.is_control()).take(80).collect::<String>()))),
         },
-        Err(why) => (false, Some(why)),
+        Err(why) => (false, false, Some(why)),
     };
-    ProbeSample { entry_id, ts_ms, kind: ProbeKind::Egress, ok, latency_ms: ok.then(|| ms(t)), detail }
+    // latency_ms 是这次出口验证的耗时（经节点去中控的回显服务），不是线路延迟：界面上不当延迟读数
+    Egress { sample: ProbeSample { entry_id, ts_ms, kind: ProbeKind::Egress, ok, latency_ms: ok.then(|| ms(t)), detail, retrans: None }, answered }
 }
 
-/// 出口探测；失败时再用 `direct`（`direct_client`）直连回显服务一次。直连也拿不到 IP，说明是回显服务本身
-/// （中控的 /echo：中控重启、部署时）不可达，不是这个入口的出口坏了：返回 None，这次不上报，只记 debug 日志
-pub async fn egress_probe_checked(entry_id: Uuid, client: &reqwest::Client, direct: &reqwest::Client, echo_url: &str, expect: IpAddr, timeout: Duration, ts_ms: i64) -> Option<ProbeSample> {
-    let s = egress_probe(entry_id, client, echo_url, expect, timeout, ts_ms).await;
-    if s.ok {
+/// `client` 来自 `socks_client`（该入口的探测入站端口）。只有测试直接用；探测任务走 `egress_probe_checked`
+#[cfg(test)]
+pub async fn egress_probe(entry_id: Uuid, client: &reqwest::Client, echo_url: &str, expect: IpAddr, timeout: Duration, ts_ms: i64) -> ProbeSample {
+    egress_try(entry_id, client, echo_url, expect, timeout, ts_ms).await.sample
+}
+
+/// 经入口访问的备用目标：回显服务经入口不通时，用它判断是入口的出口坏了还是只有回显服务这条路不通。
+/// 美国就近、轻量（204 无正文）；探测入站的放行规则也放行它（render::probe_rules）
+pub const EGRESS_ALT_URL: &str = "https://www.gstatic.com/generate_204";
+
+/// 备用目标的超时：只判通不通
+const ALT_CHECK_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// 出口探测；经入口没拿到 IP 时核对两次，任一说明问题不在这个入口的出口，就返回 None（这次不上报，只记 debug 日志）：
+/// 1. 用 `direct`（`direct_client`）从线路机直连回显服务：也拿不到 IP，是回显服务本身（中控的 /echo：重启、部署）不可达；
+/// 2. 经入口访问备用目标 `alt_url`：通，说明出口好好的，只是从节点去回显服务的那条路不通——10-22 22:50 起半小时，
+///    边缘机的反代配置被部署覆盖，所有节点经出口访问 /echo 都 TLS 握手失败，而线路机直连仍拿得到 IP，全部入口被记成出口不通。
+///
+/// 回了 IP 但不是期望的（出口错了）不核对，照常上报失败
+#[allow(clippy::too_many_arguments)]
+pub async fn egress_probe_checked(entry_id: Uuid, client: &reqwest::Client, direct: &reqwest::Client, echo_url: &str, alt_url: &str, expect: IpAddr, timeout: Duration, ts_ms: i64) -> Option<ProbeSample> {
+    let Egress { sample: s, answered } = egress_try(entry_id, client, echo_url, expect, timeout, ts_ms).await;
+    if s.ok || answered {
         return Some(s);
     }
     let why = match http_get(direct, echo_url, ECHO_CHECK_TIMEOUT).await {
-        Ok(body) if body.trim().parse::<IpAddr>().is_ok() => return Some(s),
-        Ok(_) => "回显内容不是 IP".to_string(),
-        Err(why) => why,
+        Ok(body) if body.trim().parse::<IpAddr>().is_ok() => match http_get(client, alt_url, ALT_CHECK_TIMEOUT).await {
+            Ok(_) => format!("经入口访问 {alt_url} 是通的"),
+            Err(_) => return Some(s),
+        },
+        Ok(_) => "直连回显服务，回的不是 IP".to_string(),
+        Err(why) => format!("直连回显服务也不通（{why}）"),
     };
-    tracing::debug!(entry = %tags::inbound(entry_id), "出口探测失败（{}），但直连回显服务也不通（{why}），这次不上报", s.detail.as_deref().unwrap_or(""));
+    tracing::debug!(entry = %tags::inbound(entry_id), "出口探测失败（{}），但{why}，这次不上报", s.detail.as_deref().unwrap_or(""));
     None
 }
 
@@ -247,9 +341,9 @@ mod tests {
         let check = |url: String| {
             let direct = direct.clone();
             async move {
-                // 代理握手失败：经这个入口出不去
+                // 代理握手失败：经这个入口出不去（备用目标经它也出不去：假 SOCKS 只接一个连接）
                 let (addr, _h) = fake_socks(false, "").await;
-                egress_probe_checked(Uuid::nil(), &socks_client(addr.port()).unwrap(), &direct, &url, expect, Duration::from_secs(3), 1).await
+                egress_probe_checked(Uuid::nil(), &socks_client(addr.port()).unwrap(), &direct, &url, "http://alt.test/generate_204", expect, Duration::from_secs(3), 1).await
             }
         };
         // 直连回显服务拿得到 IP：失败照常上报
@@ -261,8 +355,79 @@ mod tests {
         assert!(check(format!("http://{}/ip", fake_echo("<html>502</html>").await)).await.is_none());
         // 成功不必核对（echo.test 直连解析不了，核对了就会被当成不上报）
         let (addr, _h) = fake_socks(true, "203.0.113.9").await;
-        let s = egress_probe_checked(Uuid::nil(), &socks_client(addr.port()).unwrap(), &direct, "http://echo.test/ip", expect, Duration::from_secs(3), 1).await;
+        let s = egress_probe_checked(Uuid::nil(), &socks_client(addr.port()).unwrap(), &direct, "http://echo.test/ip", "http://alt.test/", expect, Duration::from_secs(3), 1).await;
         assert!(s.is_some_and(|s| s.ok));
+    }
+
+    /// 测试用 SOCKS5：依次接受连接，第 n 个连接（不管目标）回 `resps[n]` 这段原始 HTTP 响应；记下每个连接的目标主机
+    async fn fake_socks_seq(resps: Vec<String>) -> (SocketAddr, tokio::task::JoinHandle<Vec<String>>) {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        let h = tokio::spawn(async move {
+            let mut hosts = vec![];
+            for resp in resps {
+                let (mut s, _) = l.accept().await.unwrap();
+                let mut g = [0u8; 3];
+                s.read_exact(&mut g).await.unwrap();
+                s.write_all(&[5, 0]).await.unwrap();
+                let mut h = [0u8; 4];
+                s.read_exact(&mut h).await.unwrap();
+                let host = if h[3] == 3 {
+                    let mut n = [0u8; 1];
+                    s.read_exact(&mut n).await.unwrap();
+                    let mut v = vec![0u8; n[0] as usize];
+                    s.read_exact(&mut v).await.unwrap();
+                    String::from_utf8(v).unwrap()
+                } else {
+                    let mut v = [0u8; 4];
+                    s.read_exact(&mut v).await.unwrap();
+                    std::net::Ipv4Addr::from(v).to_string()
+                };
+                let mut p = [0u8; 2];
+                s.read_exact(&mut p).await.unwrap();
+                hosts.push(host);
+                s.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await.unwrap();
+                let mut buf = vec![0u8; 1024];
+                let _ = s.read(&mut buf).await.unwrap();
+                s.write_all(resp.as_bytes()).await.unwrap();
+            }
+            hosts
+        });
+        (addr, h)
+    }
+
+    #[tokio::test]
+    async fn egress_failure_not_counted_when_alt_target_reachable_via_entry() {
+        let direct = direct_client().unwrap();
+        let expect: IpAddr = "203.0.113.9".parse().unwrap();
+        let echo = format!("http://{}/ip", fake_echo("198.51.100.7").await);
+        let bad = "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n".to_string();
+        let no_content = "HTTP/1.1 204 No Content\r\n\r\n".to_string();
+        // 经入口去回显服务回 502，经入口去备用目标是通的：出口好好的，只是去回显服务的那条路不通 → 不上报
+        let (addr, h) = fake_socks_seq(vec![bad.clone(), no_content]).await;
+        assert!(egress_probe_checked(Uuid::nil(), &socks_client(addr.port()).unwrap(), &direct, &echo, "http://alt.test/generate_204", expect, Duration::from_secs(3), 1).await.is_none());
+        assert_eq!(h.await.unwrap(), vec!["127.0.0.1".to_string(), "alt.test".to_string()]);
+        // 备用目标经入口也不通：照常上报失败
+        let (addr, _h) = fake_socks_seq(vec![bad.clone(), bad]).await;
+        let s = egress_probe_checked(Uuid::nil(), &socks_client(addr.port()).unwrap(), &direct, &echo, "http://alt.test/generate_204", expect, Duration::from_secs(3), 1).await.expect("要上报");
+        assert_eq!((s.ok, s.detail.as_deref()), (false, Some("HTTP 状态码 502")));
+        // 回显服务经入口回了别的 IP：出口错了，不核对（直连地址是关着的端口，核对了就会变成不上报）
+        let closed = TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap();
+        let (addr, _h) = fake_socks_seq(vec!["HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\n198.51.100.1".into()]).await;
+        let s = egress_probe_checked(Uuid::nil(), &socks_client(addr.port()).unwrap(), &direct, &format!("http://{closed}/ip"), "http://alt.test/", expect, Duration::from_secs(3), 1).await.expect("要上报");
+        assert!(!s.ok && s.detail.unwrap().contains("198.51.100.1"));
+    }
+
+    #[test]
+    fn connect_latency_excludes_syn_retransmit_waits() {
+        // 内核量到的往返时间优先（重发过也是最后那次 SYN 的往返）
+        assert_eq!(connect_latency(3091.0, Some((66_500, 2))), Some(66.5));
+        assert_eq!(connect_latency(5.2, Some((4_800, 0))), Some(4.8));
+        // 内核没量到：没重发过用墙钟耗时，重发过不给延迟（耗时里是重发等待）
+        assert_eq!(connect_latency(5.2, Some((0, 0))), Some(5.2));
+        assert_eq!(connect_latency(1062.0, Some((0, 1))), None);
+        // 读不到 TCP_INFO（非 Linux）：墙钟耗时
+        assert_eq!(connect_latency(7.0, None), Some(7.0));
     }
 
     #[tokio::test]
@@ -302,6 +467,11 @@ mod tests {
         let p = l.local_addr().unwrap().port();
         let s = tcp_probe(Uuid::nil(), "127.0.0.1", p, Duration::from_secs(2), 1).await;
         assert!(s.ok && s.latency_ms.is_some());
+        #[cfg(target_os = "linux")]
+        assert_eq!(s.retrans, Some(0), "{s:?}");
+        // 域名先解析再建连
+        let s = tcp_probe(Uuid::nil(), "localhost", p, Duration::from_secs(2), 1).await;
+        assert!(s.ok && s.latency_ms.is_some_and(|x| x < 1000.0), "{s:?}");
         drop(l);
         let s = tcp_probe(Uuid::nil(), "127.0.0.1", p, Duration::from_secs(2), 1).await;
         assert!(!s.ok && s.latency_ms.is_none());

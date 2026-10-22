@@ -386,7 +386,7 @@ async fn rollup_hour(db: &PgPool, hour: OffsetDateTime) -> anyhow::Result<()> {
 }
 
 /// 保留期清理（每小时一次）：已恢复超 180 天的告警、过期会话、超 1 天的登录失败记录、超 30 天没再登录成功的登录来源、
-/// 超 90 天的通知记录、结束超 90 天的静默、超 365 天的审计。访问记录（汇总、来源画像、画像异常告警）按面板里设的保留期删，
+/// 超 90 天的通知记录、结束超 90 天的静默、超 365 天的审计、超 2 天的中控到线路机连通性记录。访问记录（汇总、来源画像、画像异常告警）按面板里设的保留期删，
 /// 见 `access::prune`
 pub async fn cleanup_retention(db: &PgPool) -> anyhow::Result<()> {
     let q = [
@@ -397,6 +397,7 @@ pub async fn cleanup_retention(db: &PgPool) -> anyhow::Result<()> {
         ("通知记录", "delete from notify_log where ts < now() - interval '90 days'"),
         ("静默", "delete from silence where ends_at < now() - interval '90 days'"),
         ("审计", "delete from audit_log where ts < now() - interval '365 days'"),
+        ("中控到线路机的连通性", "delete from relay_reach where ts < now() - interval '2 days'"),
     ];
     for (what, sql) in q {
         let n = sqlx::query(sql).execute(db).await.with_context(|| format!("清理{what}"))?.rows_affected();

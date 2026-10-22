@@ -530,17 +530,82 @@ async fn probe_beats_bucket_tcp_probes_per_machine() {
         probe(entry, cb - 57 * 60_000 - 1_000, ProbeKind::Tcp, true),
     ];
     assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
+    // 新 agent 报的 SYN 重发次数入库，按格计数
+    sqlx::query("update probe_result set retrans = 2 where entry_id = $1 and ts = to_timestamp($2::float8 / 1000) and kind = 'tcp'")
+        .bind(entry)
+        .bind((cb - 1_000) as f64)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
     let v = t.get("/api/v1/probe-beats").await;
-    assert_eq!(v.as_object().unwrap().len(), 2, "只有有探测的机器（线路机汇总它的入口）：{v}");
-    for id in [relay, node] {
-        let b = v[id.to_string()].as_array().unwrap();
-        assert_eq!(b.len(), 20);
-        assert_eq!(b[19], json!([1, 1, 10.0]), "当前这格（没走完）：{v}");
-        assert_eq!(b[18], json!([2, 2, 10.0]), "上一格：{v}");
-        assert_eq!(b[17], json!([1, 0, null]), "cb 前 4 分钟落在倒数第三格：{v}");
-        assert_eq!(b[0], json!([1, 1, 10.0]), "最早一格从 cb - 57 分钟起，再早的不算：{v}");
-        assert!(b[1..17].iter().all(|x| *x == json!([0, 0, null])), "{v}");
-    }
+    assert_eq!(v.as_object().unwrap().len(), 1, "只有有探测的机器；线路机的格子是中控 → 线路机，不再汇总它的入口：{v}");
+    let b = v[node.to_string()].as_array().unwrap();
+    assert_eq!(b.len(), 20);
+    assert_eq!(b[19], json!([1, 1, 10.0, 0]), "当前这格（没走完）：{v}");
+    assert_eq!(b[18], json!([2, 2, 10.0, 1]), "上一格：中位数、重发过的次数：{v}");
+    assert_eq!(b[17], json!([1, 0, null, 0]), "cb 前 4 分钟落在倒数第三格：{v}");
+    assert_eq!(b[0], json!([1, 1, 10.0, 0]), "最早一格从 cb - 57 分钟起，再早的不算：{v}");
+    assert!(b[1..17].iter().all(|x| *x == json!([0, 0, null, 0])), "{v}");
+    assert!(v.get(relay.to_string()).is_none());
+}
+
+/// 卡片读数：TCP 近 1 小时成功样本的中位数（旧 agent 报的含 SYN 重发等待的尖刺不左右它），最新一次照旧给；出口探测没有中位数
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn entry_view_carries_tcp_median_of_last_hour() {
+    let t = setup().await;
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let team = seed_team(&t, "团队1").await;
+    let (node, entry) = seed_node(&t, relay, team, 1, "203.0.113.5", 20000).await;
+    let now = now_ms();
+    let lat = |ms: i64, l: f32, retrans: Option<u32>| fleet_proto::ProbeSample { latency_ms: Some(l), retrans, ..probe(entry, now - ms, ProbeKind::Tcp, true) };
+    let mut r = blank_report(1);
+    r.probes = vec![
+        lat(2 * 3_600_000, 900.0, None), // 一小时前的不算
+        lat(50 * 60_000, 66.0, None),
+        lat(40 * 60_000, 3091.0, None), // 旧 agent：第二次重发才连上
+        lat(30 * 60_000, 67.0, Some(0)),
+        probe(entry, now - 20 * 60_000, ProbeKind::Tcp, false),
+        lat(1_000, 64.0, Some(2)),
+        probe(entry, now, ProbeKind::Egress, true),
+    ];
+    assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
+    let m = t.get(&format!("/api/v1/machines/{node}")).await;
+    let e = &m["entries"][0];
+    assert_eq!((e["tcp"]["latency_ms"].as_f64(), e["tcp"]["median_ms"].as_f64()), (Some(64.0), Some(66.5)), "{m}");
+    assert!(e["egress"]["median_ms"].is_null(), "{m}");
+}
+
+/// 中控 → 线路机：连客户入口（public_host + 最小的在用入口端口），只记通不通；中控自己的网络有问题时整轮不记
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn relay_reach_rounds_feed_relay_beats() {
+    let t = setup().await;
+    let open = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let ctl = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap().port();
+    let up = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let down = seed_relay(&t, "线路机2", "198.51.100.2", "tok2").await;
+    let idle = seed_relay(&t, "线路机3", "198.51.100.3", "tok3").await;
+    let team = seed_team(&t, "团队1").await;
+    seed_node(&t, up, team, 1, "203.0.113.5", open.local_addr().unwrap().port() as i32).await;
+    seed_node(&t, down, team, 2, "203.0.113.6", closed as i32).await;
+    sqlx::query("update relay set public_host = '127.0.0.1'").execute(&t.st.db).await.unwrap();
+    let ctl_ok = ctl.local_addr().unwrap().to_string();
+    let ctl_bad = format!("127.0.0.1:{closed}");
+    use fleet_server::reach::round;
+    assert_eq!(round(&t.st.db, &[&ctl_bad, &ctl_ok]).await.unwrap(), 2, "没有在用入口的线路机不探");
+    assert_eq!(round(&t.st.db, &[&ctl_bad]).await.unwrap(), 0, "对照目标都连不上：中控自己的问题，不记");
+    drop(open);
+    assert_eq!(round(&t.st.db, &[&ctl_ok]).await.unwrap(), 0, "两台线路机全不通：不记");
+    let v = t.get("/api/v1/probe-beats").await;
+    let sum = |id: Uuid| {
+        v[id.to_string()].as_array().unwrap().iter().fold((0, 0), |(n, ok), b| (n + b[0].as_i64().unwrap(), ok + b[1].as_i64().unwrap()))
+    };
+    assert_eq!(sum(up), (1, 1), "{v}");
+    assert_eq!(sum(down), (1, 0), "{v}");
+    assert!(v.get(idle.to_string()).is_none(), "{v}");
+    assert!(v[up.to_string()].as_array().unwrap().iter().all(|b| b[2].is_null() && b[3] == 0), "线路机只判通不通：{v}");
+    let d: Option<String> = sqlx::query_scalar("select detail from relay_reach where relay_id = $1").bind(down).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(d.as_deref(), Some("连接被拒绝"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -140,7 +140,7 @@ pub fn entry_sample(entry_id: Uuid, ts_ms: i64, up: u64, down: u64) -> EntrySamp
 }
 
 pub fn probe(entry_id: Uuid, ts_ms: i64, kind: ProbeKind, ok: bool) -> ProbeSample {
-    ProbeSample { entry_id, ts_ms, kind, ok, latency_ms: Some(10.0), detail: Some(if ok { "203.0.113.1".into() } else { "timeout".into() }) }
+    ProbeSample { entry_id, ts_ms, kind, ok, latency_ms: Some(10.0), detail: Some(if ok { "203.0.113.1".into() } else { "timeout".into() }), retrans: None }
 }
 
 pub fn access(entry_id: Uuid, ts_ms: i64) -> AccessEvent {
