@@ -610,7 +610,7 @@ async fn evacuate_creates_one_job_per_node_and_guard_mentions_it() {
     }
 
     // 线路机上还有入口：不能退役，提示里指向「搬空线路机」
-    let (s, v) = t.req("POST", &format!("/api/v1/machines/{ra}/retire"), Some(json!({"confirm": "线路机2"})), None).await;
+    let (s, v) = t.req("POST", &format!("/api/v1/machines/{ra}/retire"), Some(json!({"now": true, "confirm": "线路机2"})), None).await;
     assert_eq!(s, StatusCode::CONFLICT);
     assert!(v["error"]["message"].as_str().unwrap().contains("搬空线路机"), "{v}");
 
@@ -821,12 +821,12 @@ async fn retire_relay_removes_direct_entry() {
     let de = seed_entry(&t, ra, ra).await;
     let ne = seed_entry(&t, ra, node).await;
     let retire = format!("/api/v1/machines/{ra}/retire");
-    let (s, v) = t.req("POST", &retire, Some(json!({"confirm": "线路机2", "cleanup": false})), None).await;
+    let (s, v) = t.req("POST", &retire, Some(json!({"now": true, "confirm": "线路机2", "cleanup": false})), None).await;
     assert_eq!(s, StatusCode::CONFLICT);
     assert!(v["error"]["message"].as_str().unwrap().contains("还有 1 个节点入口"), "{v}");
     // 节点换走了（这里直接标成已移除）：只剩直出入口，照常退役
     sqlx::query("update entry set lifecycle = 'removed', removed_at = now() where id = $1").bind(ne).execute(&t.st.db).await.unwrap();
-    let job = t.post(&retire, json!({"confirm": "线路机2", "cleanup": false})).await["job_id"].as_str().unwrap().to_string();
+    let job = t.post(&retire, json!({"now": true, "confirm": "线路机2", "cleanup": false})).await["job_id"].as_str().unwrap().to_string();
     // 模拟线路机：拉期望状态、回报已应用，直到直出入口摘除（之后令牌会被撤销）
     let mut emptied = false;
     for _ in 0..200 {
@@ -849,4 +849,8 @@ async fn retire_relay_removes_direct_entry() {
     assert_eq!(lifecycle_of(&t, ra).await, "retired");
     let lc: String = sqlx::query_scalar("select lifecycle::text from entry where id = $1").bind(de).fetch_one(&t.st.db).await.unwrap();
     assert_eq!(lc, "removed");
+    // 收尾时进了回收站：视图里看不到，回收站里记着它（线路机按它上面的全部入口算流量）
+    assert_eq!(t.req("GET", &format!("/api/v1/machines/{ra}"), None, None).await.0, StatusCode::NOT_FOUND);
+    let bin = t.get("/api/v1/recycle-bin?source=fleet").await;
+    assert_eq!((bin["total"].as_i64(), bin["items"][0]["kind"].as_str(), bin["items"][0]["machine_id"].as_str()), (Some(1), Some("relay"), Some(ra.to_string().as_str())), "{bin}");
 }

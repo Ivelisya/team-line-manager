@@ -11,6 +11,7 @@ pub mod misc;
 pub mod notify;
 pub mod policy;
 pub mod provision;
+pub mod recycle;
 pub mod relays;
 pub mod replace;
 pub mod routers;
@@ -67,8 +68,11 @@ pub fn router() -> Router<AppState> {
         .route("/machines/{id}", get(machines::get_one).patch(machines::patch))
         .route("/machines/{id}/series", get(machines::series))
         .route("/machines/{id}/availability", get(machines::availability))
+        // 退役：默认移进备用团队，now = 立即回收（作业）；回收站只读，旧面板的退役机器从这里导入
         .route("/machines/{id}/retire", get(machines::retire_preview).post(machines::retire))
-        .route("/machines/{id}/purge", post(machines::purge))
+        .route("/recycle-bin", get(recycle::list))
+        .route("/recycle-bin/import", post(recycle::import))
+        .route("/recycle-bin/{id}", get(recycle::get_one))
         .route("/machines/{id}/upgrade-agent", post(machines::upgrade_agent))
         .route("/agents/upgrade", post(machines::upgrade_all_agents))
         .route("/machines/{id}/subscription", axum::routing::put(machines::put_subscription))

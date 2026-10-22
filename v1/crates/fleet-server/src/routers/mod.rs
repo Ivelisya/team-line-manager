@@ -26,7 +26,7 @@ use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
 use base64::Engine;
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Duration;
 use time::OffsetDateTime;
@@ -299,6 +299,29 @@ pub async fn load(db: &sqlx::PgPool, id: Option<Uuid>) -> sqlx::Result<Vec<Row>>
         Some(id) => sqlx::query_as(&format!("{SELECT} where r.id = $1")).bind(id).fetch_all(db).await,
         None => sqlx::query_as(&format!("{SELECT} order by t.sort_order nulls first, t.name nulls first, r.name")).fetch_all(db).await,
     }
+}
+
+/// 快照里指向这台节点的出口：出口对上的入口（server:port，见 clash）属于它、且没删除。
+/// 替换节点改哪些出口（api/replace.rs）、退役预览与备用到期提醒列出哪些出口，都按它
+pub fn exits_to(snap: &collect::Snapshot, node: Uuid) -> impl Iterator<Item = (&collect::Exit, &clash::EntryRef)> + '_ {
+    snap.exits.iter().filter_map(move |x| x.entry.as_ref().filter(|er| er.node_id == node && er.lifecycle != "removed").map(|er| (x, er)))
+}
+
+/// 各路由最近一次采集的快照里，还指向这些节点的出口：节点 → [(路由 id, 路由名, 出口名)]，路由按列表的顺序
+pub async fn exits_using(db: &sqlx::PgPool, nodes: &[Uuid]) -> sqlx::Result<HashMap<Uuid, Vec<(Uuid, String, String)>>> {
+    let mut out: HashMap<Uuid, Vec<(Uuid, String, String)>> = HashMap::new();
+    if nodes.is_empty() {
+        return Ok(out);
+    }
+    for r in load(db, None).await? {
+        let Some(snap) = r.snapshot() else { continue };
+        for &n in nodes {
+            for (x, _) in exits_to(&snap, n) {
+                out.entry(n).or_default().push((r.id, r.name.clone(), x.name.clone()));
+            }
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

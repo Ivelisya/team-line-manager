@@ -18,7 +18,7 @@ use uuid::Uuid;
 pub enum Scope {
     /// 未退役（含上架中、退役中）
     Live,
-    Retired,
+    /// 还没进回收站的全部机器（已退役、还没收进回收站的也在内）。回收站里的看 GET /recycle-bin
     All,
 }
 
@@ -27,8 +27,7 @@ impl Scope {
     fn cond(self) -> &'static str {
         match self {
             Scope::Live => "m.lifecycle <> 'retired'",
-            Scope::Retired => "m.lifecycle = 'retired'",
-            Scope::All => "true",
+            Scope::All => "m.recycled_at is null",
         }
     }
 }
@@ -242,8 +241,17 @@ pub struct MachineView {
     pub kind: String,
     pub name: String,
     pub team: Option<Ref>,
-    /// 所在团队是备用团队：在用时订阅过期满 1 天由中控自动退役并彻底删除（见 spare.rs）。没有团队为 false
+    /// 所在团队是备用团队（已退役、等到期回收）：在用时订阅过期满 1 天由中控清理并移进回收站（见 spare.rs）。没有团队为 false
     pub spare: bool,
+    /// 进备用团队前的显示名（「团队2-07」）与进备用的时刻（即退役时间）；不在备用团队为 null
+    pub spare_from: Option<String>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub spare_since: Option<OffsetDateTime>,
+    /// 备用团队里在用、有订阅的机器自动回收的日子（账单时区，到期日 + 2 天，见 spare::recycle_on）；其余为 null
+    pub recycle_on: Option<Date>,
+    /// 备用团队里在用的机器：还指向它的软路由出口（「路由名 · 出口名」），续费提醒里列出来（只给健康判定用，不对外输出）
+    #[serde(skip)]
+    pub router_exits: Vec<String>,
     pub number: Option<i32>,
     pub label: Option<String>,
     pub ip: String,
@@ -320,6 +328,8 @@ struct MRow {
     team_id: Option<Uuid>,
     team_name: Option<String>,
     team_spare: Option<bool>,
+    spare_from: Option<String>,
+    spare_since: Option<OffsetDateTime>,
     number: Option<i32>,
     label: Option<String>,
     ip: String,
@@ -973,7 +983,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     let lc = scope.cond();
     // 同机 IP 节点没有自己的 agent：agent 状态取宿主机的
     let sql = format!(
-        "select m.id, m.kind::text kind, m.team_id, t.name team_name, t.spare team_spare, m.number, m.label, host(m.primary_ip) ip, coalesce(hm.ssh_port, m.ssh_port) ssh_port,
+        "select m.id, m.kind::text kind, m.team_id, t.name team_name, t.spare team_spare, m.spare_from, m.spare_since, m.number, m.label, host(m.primary_ip) ip, coalesce(hm.ssh_port, m.ssh_port) ssh_port,
                 m.host_id, display_name(hm.kind::text, hm.label, ht.name, hm.number) host_name, host(m.bind_ip) bind_ip,
                 p.id provider_id, p.name provider_name, p.code provider_code, m.plan_id, pl.name plan_name,
                 pl.bandwidth_mbps plan_bw, pl.traffic_gb plan_traffic, m.service_ref, m.country, m.lifecycle::text lifecycle,
@@ -1083,8 +1093,11 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     )
     .bind(&ids)
     .fetch_all(db);
+    // 备用团队里在用的机器：还指向它的软路由出口（到期提醒里列出，让人先「替换」）
+    let spare_ids: Vec<Uuid> = rows.iter().filter(|r| r.team_spare == Some(true) && r.lifecycle == "active").map(|r| r.id).collect();
+    let exits_q = crate::routers::exits_using(db, &spare_ids);
     let period_of: HashMap<Uuid, (Date, Option<&'static str>)> = periods.iter().map(|k| (k.0, (k.1, k.3))).collect();
-    let (intel, host, (es, probes), (traffic, removed), (live_jobs, failed_jobs), inc, silences, sustained, policies, period_used, ipn) = tokio::try_join!(
+    let (intel, host, (es, probes), (traffic, removed), (live_jobs, failed_jobs), inc, silences, sustained, policies, period_used, ipn, mut exits) = tokio::try_join!(
         intel_q,
         host_now(db, &hids),
         entries_q,
@@ -1095,7 +1108,8 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
         sustained_of(db, &hids),
         crate::policy::load_modes(db),
         quota_used(st, periods),
-        ipn_q
+        ipn_q,
+        exits_q
     )?;
 
     // 每条已移除入口的流量同时记到它的节点和线路机上；直出入口两端是同一台，只记一次
@@ -1230,12 +1244,19 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
             let maintenance = silences.maintenance(r.id) || r.host_id.is_some_and(|h| silences.maintenance(h));
             let policy_blocked = r.kind != "relay" && policies.effective(r.id, r.team_id).0.mode == crate::policy::Mode::Blocked;
             let failed_job = failed_job(&failed_jobs, r.id, &r.lifecycle);
+            let spare = r.team_spare.unwrap_or(false);
+            let recycle_on = subscription.as_ref().filter(|_| spare && r.lifecycle == "active").map(|s| crate::spare::recycle_on(s.due_date));
+            let router_exits = exits.remove(&r.id).unwrap_or_default().into_iter().map(|(_, rn, x)| format!("{rn} · {x}")).collect();
             let mut v = MachineView {
                 id: r.id,
                 kind: r.kind,
                 name,
                 team: r.team_id.map(|id| Ref { id, name: r.team_name.clone().unwrap_or_default() }),
-                spare: r.team_spare.unwrap_or(false),
+                spare,
+                spare_from: r.spare_from,
+                spare_since: r.spare_since,
+                recycle_on,
+                router_exits,
                 number: r.number,
                 label: r.label,
                 country: r.country.clone().or_else(|| r.ip.parse::<IpAddr>().ok().and_then(|ip| intel.get(&ip)).and_then(|b| b.country.clone())),

@@ -159,7 +159,7 @@ async fn retired_machine_old_provision_job_cannot_be_retried() {
 
     // 把这台上架失败的机器退役
     let name = t.get(&format!("/api/v1/machines/{machine}")).await["name"].as_str().unwrap().to_string();
-    let rj = t.post(&format!("/api/v1/machines/{machine}/retire"), json!({"confirm": name})).await["job_id"].as_str().unwrap().to_string();
+    let rj = t.post(&format!("/api/v1/machines/{machine}/retire"), json!({"now": true, "confirm": name})).await["job_id"].as_str().unwrap().to_string();
     t.wait_job(&rj, "succeeded").await;
     assert_eq!(t.machine_lifecycle(machine).await, "retired");
 
@@ -226,7 +226,11 @@ async fn purge_runs_twice_without_error() {
         .execute(&t.st.db)
         .await
         .unwrap();
-    let first = t.post(&format!("/api/v1/machines/{node}/purge"), json!({"confirm": name})).await["job_id"].as_str().unwrap().to_string();
+    // 后台起来时维护任务先跑一轮：可能已经把它收进回收站、建好了物理删除作业
+    let first = match fleet_server::api::machines::start_purge(&t.st, "test", node, &name, None).await {
+        Ok(j) => j.to_string(),
+        Err(_) => sqlx::query_scalar::<_, Uuid>("select id from job where target_id = $1 and kind = 'purge'").bind(node).fetch_one(&t.st.db).await.unwrap().to_string(),
+    };
     let j = t.wait_job(&first, "succeeded").await;
     assert_eq!(j["steps"][0]["state"], "done");
     for tbl in ["access_hourly", "access_source_hourly", "access_target_seen", "access_source_late"] {
@@ -282,14 +286,10 @@ async fn purge_refused_while_peer_still_counts_traffic() {
         .fetch_one(&t.st.db)
         .await
         .unwrap();
-    let (s, v) = t.req("POST", &format!("/api/v1/machines/{node}/purge"), Some(json!({"confirm": name})), None).await;
-    assert_eq!(s, StatusCode::CONFLICT, "{v}");
-    let msg = v["error"]["message"].as_str().unwrap();
-    assert_eq!(msg, format!("这台机器的入口在 {want} 前仍计入其他机器的流量统计，届时再彻底删除"));
-    let n: i64 = sqlx::query_scalar("select count(*) from job where target_id = $1").bind(node).fetch_one(&t.st.db).await.unwrap();
-    assert_eq!(n, 0, "被拒时不建作业");
+    let msg = fleet_server::db::purge_blocker(&t.st.db, node).await.unwrap();
+    assert_eq!(msg, Some(format!("这台机器的入口在 {want} 前仍计入其他机器的流量统计，届时再彻底删除")));
 
-    // 绕过接口直接建的作业：步骤里再查一次，同样拒绝，什么都不删
+    // 直接建的作业：步骤里再查一次，同样拒绝，什么都不删
     let mut tx = t.st.db.begin().await.unwrap();
     let j1 = jobs::enqueue(&mut tx, "purge", Some(node), json!({}), "test").await.unwrap();
     tx.commit().await.unwrap();
@@ -303,9 +303,9 @@ async fn purge_refused_while_peer_still_counts_traffic() {
     // 线路机也退役了：统计不再用这些流量，两台按任意顺序都能删
     sqlx::query("update machine set lifecycle = 'retired' where id = $1").bind(relay).execute(&t.st.db).await.unwrap();
     let rname = t.get(&format!("/api/v1/machines/{relay}")).await["name"].as_str().unwrap().to_string();
-    let nj: Uuid = t.post(&format!("/api/v1/machines/{node}/purge"), json!({"confirm": name})).await["job_id"].as_str().unwrap().parse().unwrap();
+    let nj = fleet_server::api::machines::start_purge(&t.st, "test", node, &name, None).await.unwrap();
     assert_eq!(run_one(&t, nj).await["state"], "succeeded");
-    let rj: Uuid = t.post(&format!("/api/v1/machines/{relay}/purge"), json!({"confirm": rname})).await["job_id"].as_str().unwrap().parse().unwrap();
+    let rj = fleet_server::api::machines::start_purge(&t.st, "test", relay, &rname, None).await.unwrap();
     assert_eq!(run_one(&t, rj).await["state"], "succeeded");
     for m in [node, relay] {
         assert_eq!(t.req("GET", &format!("/api/v1/machines/{m}"), None, None).await.0, StatusCode::NOT_FOUND);
@@ -521,18 +521,18 @@ async fn relay_with_entries_cannot_be_retired() {
     let (entry, _, _) = fleet_server::entries::create(&mut tx, relay, node).await.unwrap();
     tx.commit().await.unwrap();
 
-    let (s, v) = t.req("POST", &format!("/api/v1/machines/{relay}/retire"), Some(json!({"confirm": "线路机2"})), None).await;
+    let (s, v) = t.req("POST", &format!("/api/v1/machines/{relay}/retire"), Some(json!({"now": true, "confirm": "线路机2"})), None).await;
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
     assert!(v["error"]["message"].as_str().unwrap().contains("节点入口"), "{v}");
     assert_eq!(t.machine_lifecycle(relay).await, "active");
 
     // 入口摘光之后才允许退役
     sqlx::query("update entry set lifecycle = 'removed', removed_at = now() where id = $1").bind(entry).execute(&t.st.db).await.unwrap();
-    let r: Value = t.post(&format!("/api/v1/machines/{relay}/retire"), json!({"confirm": "线路机2"})).await;
+    let r: Value = t.post(&format!("/api/v1/machines/{relay}/retire"), json!({"now": true, "confirm": "线路机2"})).await;
     assert!(r["job_id"].is_string());
     assert_eq!(t.machine_lifecycle(relay).await, "retiring");
     // 已经在退役：再点一次是 409，而不是又排一个作业
-    let (s, _) = t.req("POST", &format!("/api/v1/machines/{relay}/retire"), Some(json!({"confirm": "线路机2"})), None).await;
+    let (s, _) = t.req("POST", &format!("/api/v1/machines/{relay}/retire"), Some(json!({"now": true, "confirm": "线路机2"})), None).await;
     assert_eq!(s, StatusCode::CONFLICT);
     // 退役开始后，不能再往这台线路机上加入口
     let mut tx = t.st.db.begin().await.unwrap();
@@ -552,7 +552,7 @@ async fn retire_closes_open_incidents_up_front() {
         .execute(&t.st.db)
         .await
         .unwrap();
-    let r: Value = t.post(&format!("/api/v1/machines/{relay}/retire"), json!({"confirm": "线路机2"})).await;
+    let r: Value = t.post(&format!("/api/v1/machines/{relay}/retire"), json!({"now": true, "confirm": "线路机2"})).await;
     let closed: (String, Value) = sqlx::query_as("select state::text, detail from incident where id = $1").bind(inc).fetch_one(&t.st.db).await.unwrap();
     assert_eq!((closed.0.as_str(), &closed.1["closed_by"]), ("resolved", &json!("retire")), "发起退役就关掉告警");
     // 作业失败：机器停在退役中等重试（不回 active），告警评估也不会再开或重开
@@ -768,7 +768,7 @@ async fn retire_refused_while_a_step_is_running() {
         .await
         .unwrap();
     let name = t.get(&format!("/api/v1/machines/{node}")).await["name"].as_str().unwrap().to_string();
-    let (s, v) = t.req("POST", &format!("/api/v1/machines/{node}/retire"), Some(json!({"confirm": name})), None).await;
+    let (s, v) = t.req("POST", &format!("/api/v1/machines/{node}/retire"), Some(json!({"now": true, "confirm": name})), None).await;
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
     assert!(v["error"]["message"].as_str().unwrap().contains("正在执行一步"), "{v}");
     assert_eq!(t.machine_lifecycle(node).await, "active");
@@ -776,12 +776,12 @@ async fn retire_refused_while_a_step_is_running() {
     assert_eq!(st0, "running");
 
     // 退役原因有长度上限
-    let (s, v) = t.req("POST", &format!("/api/v1/machines/{node}/retire"), Some(json!({"confirm": name, "reason": "x".repeat(2001)})), None).await;
+    let (s, v) = t.req("POST", &format!("/api/v1/machines/{node}/retire"), Some(json!({"now": true, "confirm": name, "reason": "x".repeat(2001)})), None).await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
 
     // 租约过期：执行者已经不在，作废它、照常退役
     sqlx::query("update job set lease_until = now() - interval '1 second' where id = $1").bind(job).execute(&t.st.db).await.unwrap();
-    t.post(&format!("/api/v1/machines/{node}/retire"), json!({"confirm": name})).await;
+    t.post(&format!("/api/v1/machines/{node}/retire"), json!({"now": true, "confirm": name})).await;
     assert_eq!(t.machine_lifecycle(node).await, "retiring");
     let st0: String = sqlx::query_scalar("select state::text from job where id = $1").bind(job).fetch_one(&t.st.db).await.unwrap();
     assert_eq!(st0, "cancelled");
@@ -792,7 +792,7 @@ async fn retire_refused_while_a_step_is_running() {
 async fn retire_blocked_on_team(t: &common::T, team: Uuid) -> String {
     let node = seed_node(t, team, 1, "203.0.113.10", "active").await;
     let name = t.get(&format!("/api/v1/machines/{node}")).await["name"].as_str().unwrap().to_string();
-    t.post(&format!("/api/v1/machines/{node}/retire"), json!({"confirm": name})).await["job_id"].as_str().unwrap().to_string()
+    t.post(&format!("/api/v1/machines/{node}/retire"), json!({"now": true, "confirm": name})).await["job_id"].as_str().unwrap().to_string()
 }
 
 /// 退役步骤里会等行锁的语句开头：「完成退役」锁团队行、「撤销令牌」改令牌行
@@ -899,7 +899,7 @@ async fn drain_lets_the_running_step_finish_then_lets_go() {
     let mut lock = t.st.db.begin().await.unwrap();
     sqlx::query("select 1 from agent_token where machine_id = $1 for share").bind(node).execute(&mut *lock).await.unwrap();
     let name = t.get(&format!("/api/v1/machines/{node}")).await["name"].as_str().unwrap().to_string();
-    let job = t.post(&format!("/api/v1/machines/{node}/retire"), json!({"confirm": name})).await["job_id"].as_str().unwrap().to_string();
+    let job = t.post(&format!("/api/v1/machines/{node}/retire"), json!({"now": true, "confirm": name})).await["job_id"].as_str().unwrap().to_string();
     wait_lock_waiters(&t, REVOKE, 1).await;
     assert_eq!(jobs::drain(&t.st, Duration::from_millis(300)).await, 1, "「撤销令牌」还没做完");
 
@@ -940,7 +940,7 @@ async fn wait_detached_tolerates_central_outage() {
     // 中控停了 5 分钟：线路机最后一次上报在停的那一刻
     sqlx::query("insert into agent_state (machine_id, agent_version, last_report_at) values ($1, 'v', now() - interval '5 minutes')").bind(relay).execute(&t.st.db).await.unwrap();
     let name = t.get(&format!("/api/v1/machines/{node}")).await["name"].as_str().unwrap().to_string();
-    let job: Uuid = t.post(&format!("/api/v1/machines/{node}/retire"), json!({"confirm": name})).await["job_id"].as_str().unwrap().parse().unwrap();
+    let job: Uuid = t.post(&format!("/api/v1/machines/{node}/retire"), json!({"now": true, "confirm": name})).await["job_id"].as_str().unwrap().parse().unwrap();
     let j = run_one(&t, job).await;
     assert_eq!((j["state"].as_str(), j["step"].as_i64()), (Some("waiting"), Some(1)), "摘除入口，开始等线路机摘除：{j}");
     // 「等线路机摘除」已经等了 2 分钟

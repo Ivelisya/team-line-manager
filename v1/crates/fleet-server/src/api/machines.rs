@@ -15,6 +15,7 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
@@ -26,10 +27,11 @@ pub struct ListQ {
 }
 
 pub async fn list(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<ListQ>) -> ApiResult<Response> {
+    // 回收站里的机器不在任何范围里（看 GET /recycle-bin）
     let scope = match q.scope.as_deref() {
-        Some("retired") => Scope::Retired,
+        None | Some("live") => Scope::Live,
         Some("all") => Scope::All,
-        _ => Scope::Live,
+        Some(_) => return Err(ApiError::bad_request("scope 只能是 live 或 all（回收站看 /recycle-bin）")),
     };
     if q.view.as_deref() == Some("brief") {
         return Ok(ok(views::brief(&st, scope).await?).into_response());
@@ -191,13 +193,22 @@ pub async fn patch_tx(tx: &mut crate::db::Tx<'_>, actor: &str, id: Uuid, b: Patc
     // 入口备注随节点名变：节点改名刷新它挂的线路机；线路机改名只影响它自己的直出入口（「线路机名-直出」），没有就不动
     let relays = if renamed { bump_relays_of_nodes(tx, &[id]).await? } else { vec![] };
     // 审计写上改前改后的显示名（「团队1-07 → 团队1-03」）：记录保持当时的样子，之后再改名也不跟着变
-    let (old_team, new_team): (Option<String>, Option<String>) = sqlx::query_as("select (select name from team where id = $1), (select name from team where id = $2)")
-        .bind(cur.2)
-        .bind(team_id)
-        .fetch_one(&mut **tx)
-        .await?;
+    let (old_team, new_team, old_spare, new_spare): (Option<String>, Option<String>, bool, bool) = sqlx::query_as(
+        "select (select name from team where id = $1), (select name from team where id = $2),
+                coalesce((select spare from team where id = $1), false), coalesce((select spare from team where id = $2), false)",
+    )
+    .bind(cur.2)
+    .bind(team_id)
+    .fetch_one(&mut **tx)
+    .await?;
     let old_name = crate::names::display_name(&cur.1, cur.4.as_deref(), old_team.as_deref(), cur.3);
     let name = crate::names::display_name(&cur.1, label.as_deref(), new_team.as_deref(), number);
+    // 进备用团队（退役、替换下来、手动改到备用）记下时刻和原名；移出备用（撤销退役）清掉，退役原因一并清掉
+    if new_spare && !old_spare {
+        sqlx::query("update machine set spare_since = now(), spare_from = $2 where id = $1").bind(id).bind(&old_name).execute(&mut **tx).await?;
+    } else if old_spare && !new_spare {
+        sqlx::query("update machine set spare_since = null, spare_from = null, lifecycle_reason = null where id = $1").bind(id).execute(&mut **tx).await?;
+    }
     audit(
         tx,
         actor,
@@ -339,15 +350,20 @@ const AVAILABILITY: &str = "with d as (select local_date($2) - i as day from gen
   select d.day as date, coalesce(p.tcp_total, 0) tcp_total, coalesce(p.tcp_ok, 0) tcp_ok, coalesce(p.egress_total, 0) egress_total, coalesce(p.egress_ok, 0) egress_ok
   from d left join p using (day) order by d.day";
 
-// ── 退役与彻底删除 ────────────────────────────────────────────────────────
+// ── 退役（进备用 / 立即回收）与物理删除 ─────────────────────────────────────
 
 #[derive(Deserialize)]
 pub struct RetireIn {
     confirm: String,
     reason: Option<String>,
+    /// 立即回收时清理机器上的服务（默认 true）；进备用时用不上
     cleanup: Option<bool>,
+    /// true = 立即回收（退役作业：摘入口 → 清理 → 撤令牌 → 移进回收站）；默认移进备用团队，订阅过期满 1 天后由中控回收
+    now: Option<bool>,
 }
 
+/// 退役：默认移进备用团队（`move_to_spare`，一个事务、不建作业，机器照常运行）；`now` 走退役作业立即回收（`start_retire`）。
+/// 进不了备用的（线路机、没有订阅、已过期满 1 天、没上线、本来就在备用里，见 spare::spare_eligible）不给 now 回 409 并说明原因
 pub async fn retire(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<RetireIn>) -> ApiResult<Json<Value>> {
     let (name, kind, _) = display_name_of(&st.db, id).await?;
     if b.confirm.trim() != name {
@@ -355,10 +371,121 @@ pub async fn retire(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<U
     }
     // 退役原因同备注的上限（写进机器的状态原因）
     check_text(None, b.reason.as_deref()).map_err(|_| ApiError::bad_request(format!("退役原因最多 {MAX_NOTE_CHARS} 个字符")))?;
-    Ok(ok(start_retire(&st, &a.name, id, &name, &kind, b.reason.as_deref(), b.cleanup.unwrap_or(true), None).await?))
+    if b.now == Some(true) {
+        let mut v = start_retire(&st, &a.name, id, &name, &kind, b.reason.as_deref(), b.cleanup.unwrap_or(true), None).await?;
+        v["mode"] = json!("now");
+        return Ok(ok(v));
+    }
+    Ok(ok(move_to_spare(&st, &a.name, id, b.reason.as_deref()).await?))
 }
 
-/// 发起退役：手动退役与备用团队到期自动删除（spare.rs）走这同一条路径。`name`、`kind` 是调用方刚读出的显示名与种类；
+/// 能不能移进备用（spare::spare_eligible），以及订阅的到期日（算自动回收的日子）
+async fn spare_check(conn: &mut sqlx::PgConnection, id: Uuid) -> ApiResult<(Result<(), &'static str>, Option<Date>)> {
+    let (kind, lc, in_spare, due, today): (String, String, bool, Option<Date>, Option<Date>) = sqlx::query_as(
+        "select m.kind::text, m.lifecycle::text, coalesce(t.spare, false), s.due_date, local_date(s.billing_tz)
+         from machine m left join team t on t.id = m.team_id left join subscription_eff s on s.machine_id = m.id where m.id = $1",
+    )
+    .bind(id)
+    .fetch_optional(conn)
+    .await?
+    .ok_or_else(|| ApiError::not_found("没有这台机器"))?;
+    Ok((crate::spare::spare_eligible(&kind, &lc, in_spare, due.zip(today)), due))
+}
+
+/// 唯一的备用团队 (id, 名字) 与它占着的编号
+async fn spare_team(conn: &mut sqlx::PgConnection) -> sqlx::Result<(Uuid, String, HashSet<i32>)> {
+    let (id, name): (Uuid, String) = sqlx::query_as("select id, name from team where spare").fetch_one(&mut *conn).await?;
+    let taken: Vec<i32> = sqlx::query_scalar("select number from machine where team_id = $1 and number is not null and kind <> 'relay' and lifecycle <> 'retired'")
+        .bind(id)
+        .fetch_all(&mut *conn)
+        .await?;
+    Ok((id, name, taken.into_iter().collect()))
+}
+
+/// 移进备用团队（退役的默认去向）：一个事务里改到备用团队的最小空号（patch_tx：同改名的校验与审计，顺带记下 spare_since / spare_from、
+/// 刷新线路机备注），退役原因记进 lifecycle_reason。宿主机上还没退役、不在备用团队的同机 IP 节点一起进（编号挨着，到期随宿主机回收）。
+/// 原团队压缩编号（auto_compact，同退役完成）。入口、端口、软路由出口都不动。返回 `{mode:"spare", name, from, recycle_on, ip_nodes}`
+pub async fn move_to_spare(st: &AppState, actor: &str, id: Uuid, reason: Option<&str>) -> ApiResult<Value> {
+    let mut tx = st.db.begin().await?;
+    // 先锁团队（原团队、同机 IP 节点的团队、备用团队，按 id 排）再锁机器：和退役收尾、压缩编号同一个顺序（团队 → 机器）
+    let mut teams: Vec<Uuid> = sqlx::query_scalar(
+        "select distinct team_id from machine where team_id is not null and (id = $1 or host_id = $1) union select id from team where spare order by 1",
+    )
+    .bind(id)
+    .fetch_all(&mut *tx)
+    .await?;
+    sqlx::query("select 1 from team where id = any($1) order by id for update").bind(&teams).execute(&mut *tx).await?;
+    sqlx::query("select 1 from machine where id = $1 for update").bind(id).execute(&mut *tx).await?;
+    let (eligible, due) = spare_check(&mut tx, id).await?;
+    eligible.map_err(|why| ApiError::conflict(format!("不能移进备用：{why}。要现在就清理并移进回收站，选「立即回收」（now: true）")))?;
+    let ip_nodes: Vec<(Uuid, String, String, bool)> = ip_nodes_of(&mut tx, id, true).await?.into_iter().filter(|x| !x.3).collect();
+    let all: Vec<Uuid> = std::iter::once(id).chain(ip_nodes.iter().map(|x| x.0)).collect();
+    let busy: Option<String> = sqlx::query_scalar("select kind from job where target_id = any($1) and state in ('queued', 'running', 'waiting', 'cancelling') limit 1")
+        .bind(&all)
+        .fetch_optional(&mut *tx)
+        .await?;
+    if let Some(k) = busy {
+        return Err(ApiError::conflict(format!("有进行中的作业（{}）：等它结束再退役", meta::job_kind_label(&k))));
+    }
+    let (spare_id, spare_name, taken) = spare_team(&mut tx).await?;
+    let mut free = (1..=999).filter(|n| !taken.contains(n));
+    let revs: Vec<(Uuid, i32, Option<Uuid>, String)> = sqlx::query_as(
+        "select m.id, m.revision, m.team_id, display_name(m.kind::text, m.label, t.name, m.number) from machine m left join team t on t.id = m.team_id
+         where m.id = any($1)",
+    )
+    .bind(&all)
+    .fetch_all(&mut *tx)
+    .await?;
+    let ip_reason = revs.iter().find(|r| r.0 == id).map(|r| format!("随宿主机「{}」退役", r.3)).unwrap_or_default();
+    // (id, 原名, 新名)，宿主机在前
+    let mut moved: Vec<(Uuid, String, String)> = vec![];
+    let mut relays = vec![];
+    for mid in &all {
+        let Some((_, rev, _, from)) = revs.iter().find(|r| r.0 == *mid) else { continue };
+        let n = free.next().ok_or_else(|| ApiError::conflict(format!("备用团队「{spare_name}」的编号用完了")))?;
+        relays.extend(patch_tx(&mut tx, actor, *mid, PatchIn::rename(*rev, spare_id, n)).await?);
+        sqlx::query("update machine set lifecycle_reason = $2 where id = $1")
+            .bind(mid)
+            .bind(if *mid == id { reason } else { Some(ip_reason.as_str()) })
+            .execute(&mut *tx)
+            .await?;
+        moved.push((*mid, from.clone(), node_name(&spare_name, n)));
+    }
+    // 原团队少了这几台：压缩编号（同退役完成时）
+    teams.retain(|t| *t != spare_id && revs.iter().any(|r| r.2 == Some(*t)));
+    if st.cfg.numbering.auto_compact {
+        for t in &teams {
+            relays.extend(crate::db::compact_team(&mut tx, *t, actor, "节点退役后自动压缩").await?.1);
+        }
+    }
+    let recycle_on = due.map(crate::spare::recycle_on);
+    let (host_from, host_to) = (moved[0].1.clone(), moved[0].2.clone());
+    let ip_out: Vec<Value> = moved[1..].iter().map(|(x, f, t)| json!({"id": x, "name": t, "from": f})).collect();
+    audit(
+        &mut tx,
+        actor,
+        "machine.retire",
+        "machine",
+        Some(id),
+        json!({"mode": "spare", "name": host_from, "to": host_to, "reason": reason, "recycle_on": recycle_on,
+               "ip_nodes": moved[1..].iter().map(|x| &x.1).collect::<Vec<_>>()}),
+    )
+    .await?;
+    for (x, f, t) in &moved[1..] {
+        audit(&mut tx, actor, "machine.retire", "machine", Some(*x), json!({"mode": "spare", "name": f, "to": t, "reason": ip_reason, "host": host_from})).await?;
+    }
+    tx.commit().await?;
+    relays.sort();
+    relays.dedup();
+    for r in relays {
+        st.relay_bumped(r);
+    }
+    st.emit(Event::Machines);
+    Ok(json!({"mode": "spare", "name": host_to, "from": host_from, "recycle_on": recycle_on, "ip_nodes": ip_out}))
+}
+
+/// 立即回收：建退役作业（摘入口 → 等线路机 → 清理 → 撤令牌 → 收尾时移进回收站）。手动「立即回收」与备用团队到期自动回收（spare.rs）
+/// 走这同一条路径。`name`、`kind` 是调用方刚读出的显示名与种类；
 /// `auto`：中控自动发起时的标记（记进作业参数与审计的 auto，同机 IP 节点的作业也带上），手动退役为 None。
 /// 返回 `{job_id, ip_node_jobs}`
 #[allow(clippy::too_many_arguments)]
@@ -456,7 +583,7 @@ pub async fn start_retire(
     .execute(&mut *tx)
     .await?
     .rows_affected();
-    // 自动发起的：作业参数与审计带上 auto（spare.rs 据退役作业的 auto 接着彻底删除；审计里和手动退役分得开）
+    // 自动发起的：作业参数与审计带上 auto（审计里和手动退役分得开；收尾时记进回收站的审计）
     let tag = |mut v: Value| {
         if let Some(x) = auto {
             v["auto"] = json!(x);
@@ -470,15 +597,15 @@ pub async fn start_retire(
         "machine.retire",
         "machine",
         Some(id),
-        tag(json!({"name": name, "reason": reason, "job_id": job, "cancelled_jobs": dead.iter().map(|(j, _)| j).collect::<Vec<_>>(),
+        tag(json!({"mode": "now", "name": name, "reason": reason, "job_id": job, "cancelled_jobs": dead.iter().map(|(j, _)| j).collect::<Vec<_>>(),
                "ip_nodes": ip_nodes.iter().map(|x| &x.1).collect::<Vec<_>>()})),
     )
     .await?;
     // 同机 IP 节点各自一个退役作业：只摘自己的入口、不登录清理（宿主机的清理连同它们的实例一起删）
     let mut ip_jobs = vec![];
-    for (xid, xname, xlc) in &ip_nodes {
+    for (xid, xname, xlc, _) in &ip_nodes {
         let j = jobs::enqueue(&mut tx, "retire", Some(*xid), tag(json!({"cleanup": false, "reason": ip_reason, "prev_lifecycle": xlc})), actor).await?;
-        audit(&mut tx, actor, "machine.retire", "machine", Some(*xid), tag(json!({"name": xname, "reason": ip_reason, "job_id": j, "host": name}))).await?;
+        audit(&mut tx, actor, "machine.retire", "machine", Some(*xid), tag(json!({"mode": "now", "name": xname, "reason": ip_reason, "job_id": j, "host": name}))).await?;
         ip_jobs.push(json!({"machine_id": xid, "name": xname, "job_id": j}));
     }
     tx.commit().await?;
@@ -501,10 +628,11 @@ pub async fn start_retire(
     Ok(json!({"job_id": job, "ip_node_jobs": ip_jobs}))
 }
 
-/// 宿主机上还没开始退役的同机 IP 节点：(id, 显示名, 生命周期)，按团队、编号排。`lock`：锁住这些机器行（退役时）
-async fn ip_nodes_of(conn: &mut sqlx::PgConnection, host: Uuid, lock: bool) -> sqlx::Result<Vec<(Uuid, String, String)>> {
+/// 宿主机上还没开始退役的同机 IP 节点：(id, 显示名, 生命周期, 在不在备用团队)，按团队、编号排。`lock`：锁住这些机器行（退役时）
+async fn ip_nodes_of(conn: &mut sqlx::PgConnection, host: Uuid, lock: bool) -> sqlx::Result<Vec<(Uuid, String, String, bool)>> {
     sqlx::query_as(&format!(
-        "select m.id, display_name(m.kind::text, m.label, t.name, m.number), m.lifecycle::text from machine m left join team t on t.id = m.team_id
+        "select m.id, display_name(m.kind::text, m.label, t.name, m.number), m.lifecycle::text, coalesce(t.spare, false)
+         from machine m left join team t on t.id = m.team_id
          where m.host_id = $1 and m.lifecycle not in ('retiring', 'retired') order by t.sort_order, t.name, m.number{}",
         if lock { " for update of m" } else { "" }
     ))
@@ -513,7 +641,9 @@ async fn ip_nodes_of(conn: &mut sqlx::PgConnection, host: Uuid, lock: bool) -> s
     .await
 }
 
-/// 退役预览：会一并退役的同机 IP 节点（宿主机才有），以及涉及的团队里会因压缩而改名的节点
+/// 退役预览。立即回收：会一并退役的同机 IP 节点（宿主机才有）、涉及的团队里会因压缩而改名的节点（进备用时原团队同样压缩）；
+/// `spare`：能不能移进备用（不能的原因）、进去后的名字、自动回收的日子（账单时区）、一起进备用的同机 IP 节点；
+/// `routers`：还指向这台（和它的同机 IP 节点）的软路由出口，只提示不阻断（要换掉就先「替换」）
 pub async fn retire_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     let (name, _kind, _lc) = display_name_of(&st.db, id).await?;
     let mut conn = st.db.acquire().await?;
@@ -541,30 +671,36 @@ pub async fn retire_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
             );
         }
     }
-    let ip_nodes: Vec<Value> = ip_nodes.iter().map(|(i, n, _)| json!({"id": i, "name": n})).collect();
-    Ok(ok(json!({"name": name, "renames": renames, "ip_nodes": ip_nodes})))
+    // 进备用：编号按 move_to_spare 的分法（宿主机先取最小的空号，同机 IP 节点接着取）
+    let (eligible, due) = spare_check(&mut conn, id).await?;
+    let (spare_id, spare_name, taken) = spare_team(&mut conn).await?;
+    let mut free = (1..=999).filter(|n| !taken.contains(n));
+    let to_name = free.next().map(|n| node_name(&spare_name, n));
+    let spare_ip: Vec<Value> =
+        ip_nodes.iter().filter(|x| !x.3).map(|(i, n, _, _)| json!({"id": i, "name": n, "to_name": free.next().map(|k| node_name(&spare_name, k))})).collect();
+    let spare = json!({
+        "ok": eligible.is_ok(), "why": eligible.err(), "team": {"id": spare_id, "name": spare_name}, "to_name": to_name,
+        "recycle_on": due.map(crate::spare::recycle_on), "ip_nodes": spare_ip,
+    });
+    // 软路由出口：按路由归在一起，写明指向的是哪台
+    let names: std::collections::HashMap<Uuid, &str> = std::iter::once((id, name.as_str())).chain(ip_nodes.iter().map(|x| (x.0, x.1.as_str()))).collect();
+    let mut routers: Vec<(Uuid, String, Vec<Value>)> = vec![];
+    let exits = crate::routers::exits_using(&st.db, &leaving).await?;
+    for node in &leaving {
+        for (rid, rname, exit) in exits.get(node).into_iter().flatten() {
+            let e = json!({"exit": exit, "node": names[node]});
+            match routers.iter_mut().find(|r| r.0 == *rid) {
+                Some(r) => r.2.push(e),
+                None => routers.push((*rid, rname.clone(), vec![e])),
+            }
+        }
+    }
+    let routers: Vec<Value> = routers.into_iter().map(|(i, n, e)| json!({"id": i, "name": n, "exits": e})).collect();
+    let ip_nodes: Vec<Value> = ip_nodes.iter().map(|(i, n, _, _)| json!({"id": i, "name": n})).collect();
+    Ok(ok(json!({"name": name, "renames": renames, "ip_nodes": ip_nodes, "spare": spare, "routers": routers})))
 }
 
-#[derive(Deserialize)]
-pub struct PurgeIn {
-    confirm: String,
-}
-
-pub async fn purge(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<PurgeIn>) -> ApiResult<Json<Value>> {
-    let (name, _kind, lifecycle) = display_name_of(&st.db, id).await?;
-    if lifecycle != "retired" {
-        return Err(ApiError::conflict("只有已退役的机器才能彻底删除"));
-    }
-    if b.confirm.trim() != name {
-        return Err(ApiError::bad_request(format!("确认文字不对：请输入「{name}」")));
-    }
-    if let Some(why) = crate::db::purge_blocker(&st.db, id).await? {
-        return Err(ApiError::conflict(why));
-    }
-    Ok(ok(json!({"job_id": start_purge(&st, &a.name, id, &name, None).await?})))
-}
-
-/// 建彻底删除作业并记审计（调用方已核对过：已退役、`db::purge_blocker` 不拦）。手动删除与备用到期自动删除（spare.rs）共用；
+/// 建物理删除作业并记审计（调用方已核对过：已进回收站、`db::purge_blocker` 不拦）。只由维护任务调（spare.rs `purge_pass`）；
 /// `auto` 同 `start_retire`。同一台已有进行中的作业时由唯一索引挡住（409）
 pub async fn start_purge(st: &AppState, actor: &str, id: Uuid, name: &str, auto: Option<&str>) -> ApiResult<Uuid> {
     let mut tx = st.db.begin().await?;

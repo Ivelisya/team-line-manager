@@ -903,6 +903,8 @@ async fn finalize(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     .await?;
     // 秘密不再需要；出站参数的其余部分（NAT 映射的 SS 端口、上游代理的地址端口用户名）留作记录
     sqlx::query("update node_outbound set secret_enc = null, updated_at = now() where machine_id = $1").bind(m.id).execute(&mut *tx).await?;
+    // 同一个事务里移进回收站（快照、统计列；机器从视图里消失）。作业带的 auto（备用到期）一并记进审计
+    let bin = crate::recycle::record(&mut tx, m.id, &c.job.created_by, c.job.params["auto"].as_str()).await?;
     // 编号连续：同团队剩下的节点压缩成 01..N
     let mut renamed = vec![];
     let mut relays = vec![];
@@ -922,7 +924,7 @@ async fn finalize(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     if m.host_id.is_none() {
         ssh::forget_host(&c.st.cfg.known_hosts, &m.ip, m.ssh_port as u16).await?;
     }
-    Ok(Outcome::Done(json!({"renumbered": renamed.len()})))
+    Ok(Outcome::Done(json!({"renumbered": renamed.len(), "recycle_bin_id": bin})))
 }
 
 /// 按天分批删分区大表里这台机器（和它名下入口）的原始数据：每天一条语句，走 (entry_id/machine_id, ts) 索引，

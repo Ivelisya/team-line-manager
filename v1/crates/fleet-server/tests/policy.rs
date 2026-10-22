@@ -25,7 +25,7 @@ async fn draft_preview_publish_apply_rollback() {
     assert_eq!(list["draft_hash"], Value::Null);
     assert_eq!(list["draft_count"], 0);
     let teams = list["teams"].as_array().unwrap();
-    assert_eq!(ids(&list["teams"], "name"), vec!["团队1", "团队2"]);
+    assert_eq!(ids(&list["teams"], "name"), vec!["团队1", "团队2", "备用"], "备用团队（迁移建的）排在最后");
     assert_eq!(teams[0]["policy"]["revision"], 0);
     assert_eq!(teams[0]["policy"]["mode"], "observe");
     let nodes = teams[0]["nodes"].as_array().unwrap();

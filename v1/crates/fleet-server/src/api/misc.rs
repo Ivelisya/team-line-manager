@@ -402,9 +402,9 @@ pub struct AuditQ {
 const EXEC_ACTIONS: &[&str] = &["exec", "ssh.login", "terminal.open", "terminal.close", "machine.logs", "server.logs", "restore.probe"];
 
 /// 分类条件（操作记录页的分段）：登录与账户（auth.*）、远程执行（`EXEC_ACTIONS`）、
-/// 机器与入口（生命周期、改名、费用续费、入口、作业、升级 agent），其余是设置与告警（目录、密钥、通知、静默、告警、访问规则）
+/// 机器与入口（生命周期、回收站、改名、费用续费、入口、作业、升级 agent），其余是设置与告警（目录、密钥、通知、静默、告警、访问规则）
 fn audit_cat(args: &mut Args, cat: &str) -> ApiResult<String> {
-    const MACHINE: &str = "action ~ '^(machine|entry|relay|subscription|agent|job|renewal)(\\.|$)'";
+    const MACHINE: &str = "action ~ '^(machine|entry|relay|subscription|agent|job|renewal|recycle)(\\.|$)'";
     let exec = args.add(EXEC_ACTIONS);
     Ok(match cat {
         "auth" => " and action like 'auth.%'".into(),
@@ -513,7 +513,7 @@ pub async fn audit(a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<A
 /// 所有写审计的动作（git grep 'audit(' 核对过）；新增动作时补这里和 audit_text。按标题搜索时在这里面找。
 /// machine.restore、restore.probe 是已删掉的「恢复已退役机器」留下的旧记录，标题照样显示
 const AUDIT_ACTIONS: &[&str] = &[
-    "machine.provision", "machine.retire", "machine.purge", "machine.rename", "machine.update", "machine.restore", "machine.replace", "subscription.set", "renewal",
+    "machine.provision", "machine.retire", "machine.recycle", "recycle.import", "machine.purge", "machine.rename", "machine.update", "machine.restore", "machine.replace", "subscription.set", "renewal",
     "team.create", "team.update", "team.delete", "team.renumber", "provider.create", "provider.update", "provider.delete", "plan.create", "plan.update", "plan.delete", "entry.enable",
     "entry.disable", "entry.rotate", "entry.share", "entry.add", "entry.move", "relay.evacuate", "job.retry", "job.cancel", "silence.create",
     "silence.delete", "incident.ack", "restore.probe", "agent.upgrade", "notify.create", "notify.update", "notify.delete", "exec", "machine.logs", "server.logs", "apikey.create",
@@ -529,6 +529,8 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
     let title = match action {
         "machine.provision" => "上架",
         "machine.retire" => "退役",
+        "machine.recycle" => "移进回收站",
+        "recycle.import" => "导入回收站",
         "machine.purge" => "彻底删除",
         "machine.rename" => "改名",
         "machine.update" => "修改资料",
@@ -605,11 +607,25 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
     .to_string();
     let summary = match action {
         "machine.provision" => format!("{} · {}", s("name"), s("ip")),
-        "machine.retire" => match d["reason"].as_str().filter(|r| !r.is_empty()) {
-            Some(r) => format!("{}（{r}）", s("name")),
-            None => s("name"),
-        },
-        "machine.purge" if d["auto"] == crate::spare::AUTO => format!("{}（备用到期自动删除）", s("name")),
+        // 「团队2-07 → 备用-03（换新机）」：进备用的写去向；立即回收的（和这一版之前的记录）只写名字
+        "machine.retire" => {
+            let to = if d["mode"] == "spare" { format!(" → {}", s("to")) } else { String::new() };
+            match d["reason"].as_str().filter(|r| !r.is_empty()) {
+                Some(r) => format!("{}{to}（{r}）", s("name")),
+                None => format!("{}{to}", s("name")),
+            }
+        }
+        // 「团队2-07（回收时 备用-03）· 备用到期自动回收」
+        "machine.recycle" => {
+            let name = if d["from"] == d["name"] { s("name") } else { format!("{}（回收时 {}）", s("from"), s("name")) };
+            match d["auto"].as_str() {
+                Some(crate::spare::AUTO) => format!("{name} · 备用到期自动回收"),
+                Some(crate::spare::SWEEP) => format!("{name} · 已退役，自动收进回收站"),
+                _ => name,
+            }
+        }
+        "recycle.import" => format!("导入 {} 台，跳过 {} 台", d["inserted"].as_u64().unwrap_or(0), d["skipped"].as_u64().unwrap_or(0)),
+        "machine.purge" if d["auto"] == crate::spare::AUTO => format!("{}（回收站自动清除）", s("name")),
         "machine.purge" => s("name"),
         "renewal" => format!("到期 {} → {}", d["old_due"].as_str().unwrap_or("?"), d["new_due"].as_str().unwrap_or("?")),
         // 「团队1-03 · 价格 5.00 → 6.00 USD，到期 2026-11-01 → 2026-12-01」；这一版之前的记录没有改动前后，不写摘要

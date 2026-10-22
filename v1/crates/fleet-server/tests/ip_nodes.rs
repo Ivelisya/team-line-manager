@@ -275,7 +275,7 @@ async fn retiring_host_retires_its_ip_nodes() {
     assert_eq!(pv["ip_nodes"], json!([{"id": x1, "name": "团队1-02"}, {"id": x2, "name": "团队2-01"}]), "{pv}");
     assert_eq!(pv["renames"], json!([{"machine_id": n3, "old_name": "团队1-03", "new_name": "团队1-01"}]), "{pv}");
 
-    let r = t.post(&format!("/api/v1/machines/{host}/retire"), json!({"confirm": "团队1-01", "cleanup": false, "reason": "到期"})).await;
+    let r = t.post(&format!("/api/v1/machines/{host}/retire"), json!({"now": true, "confirm": "团队1-01", "cleanup": false, "reason": "到期"})).await;
     let ij = r["ip_node_jobs"].as_array().unwrap();
     assert_eq!(ij.iter().map(|j| j["machine_id"].as_str().unwrap().to_string()).collect::<Vec<_>>(), [x1.to_string(), x2.to_string()], "{r}");
     for j in ij {
@@ -297,16 +297,18 @@ async fn retiring_host_retires_its_ip_nodes() {
     }
     assert_eq!(t.get(&format!("/api/v1/machines/{n3}")).await["name"], "团队1-01");
 
-    // 彻底删除：宿主机要等同机节点（含已退役的）先删
-    let (s, v) = t.req("POST", &format!("/api/v1/machines/{host}/purge"), Some(json!({"confirm": "团队1-01"})), None).await;
-    assert_eq!(s, StatusCode::CONFLICT, "{v}");
-    assert!(v["error"]["message"].as_str().unwrap().contains("同机 IP 节点"), "{v}");
+    // 收尾时三台各自进了回收站；物理删除时宿主机要等同机节点（含已退役的）先删
+    let n: i64 = sqlx::query_scalar("select count(*) from recycle_bin where machine_id = any($1)").bind(vec![host, x1, x2]).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(n, 3);
+    assert!(fleet_server::db::purge_blocker(&t.st.db, host).await.unwrap().unwrap().contains("同机 IP 节点"));
+    let now = time::OffsetDateTime::now_utc();
+    let r = fleet_server::spare::run_once(&t.st, now).await.unwrap();
+    assert_eq!(r.purged, [x1, x2], "{r:?}");
     for x in [x1, x2] {
-        let name = t.get(&format!("/api/v1/machines/{x}")).await["name"].as_str().unwrap().to_string();
-        let j = t.post(&format!("/api/v1/machines/{x}/purge"), json!({"confirm": name})).await;
-        t.wait_job(j["job_id"].as_str().unwrap(), "succeeded").await;
+        let j = sqlx::query_scalar::<_, Uuid>("select id from job where target_id = $1 and kind = 'purge'").bind(x).fetch_one(&t.st.db).await.unwrap();
+        t.wait_job(&j.to_string(), "succeeded").await;
     }
-    let j = t.post(&format!("/api/v1/machines/{host}/purge"), json!({"confirm": "团队1-01"})).await;
-    t.wait_job(j["job_id"].as_str().unwrap(), "succeeded").await;
+    let r = fleet_server::spare::run_once(&t.st, now).await.unwrap();
+    assert_eq!(r.purged, [host], "{r:?}");
 }
 
