@@ -10,8 +10,9 @@ import { SortHead, type SortState } from './primitives';
 import { NodeMenus } from './NodeMenu';
 
 type Cmp = (a: MachineView, b: MachineView) => number;
-/** cmp（升序）+ first（首次点击的方向：数值多为先降序，名称、日期先升序）都有才能点表头排序；r：右对齐 */
-export interface Col { id: string; header: string; size: number; r?: boolean; first?: 'asc' | 'desc'; cmp?: Cmp; cell: (m: MachineView) => React.ReactNode }
+/** cmp（升序）+ first（首次点击的方向：数值多为先降序，名称、日期先升序）都有才能点表头排序；r：右对齐；
+ *  drop：容器放不下全部列时可以收起，数字小的先收（没有的列一直显示） */
+export interface Col { id: string; header: string; size: number; r?: boolean; first?: 'asc' | 'desc'; cmp?: Cmp; drop?: number; cell: (m: MachineView) => React.ReactNode }
 export const byStr = (f: (m: MachineView) => string) => ({ first: 'asc' as const, cmp: (a: MachineView, b: MachineView) => collator.compare(f(a), f(b)) });
 export const byNum = (f: (m: MachineView) => number, first: 'asc' | 'desc' = 'desc') => ({ first, cmp: (a: MachineView, b: MachineView) => f(a) - f(b) });
 
@@ -23,34 +24,59 @@ export function sortByCol(rows: MachineView[], cols: Col[], sort: SortState | nu
   return [...rows].sort((a, b) => sign * cmp(a, b));
 }
 
-/** 整张表：固定列宽（colgroup，最小宽度为列宽合计），点行 / 回车打开抽屉，右键菜单整个 tbody 共用一份（NodeMenus）。
+/** 按容器宽度要收起几列（drop 小的先收）才放得下，以及收起后放不放得下；全部收起仍放不下就不收，横滑 */
+function fitCols(cols: Col[], width: number) {
+  const order = cols.filter((c) => c.drop != null).sort((a, b) => a.drop! - b.drop!);
+  let w = cols.reduce((s, c) => s + c.size, 0);
+  let n = 0;
+  while (w > width && n < order.length) w -= order[n++].size;
+  return w > width ? { n: 0, fit: false } : { n, fit: true };
+}
+
+/** 整张表：固定列宽（colgroup，最小宽度为显示列的列宽合计），点行 / 回车打开抽屉，右键菜单整个 tbody 共用一份（NodeMenus）。
+ *  容器窄时先收起次要列（Col.drop），收完放得下就不横滑；收起几列只在跨过阈值时变，其余宽度变化不重渲染。
  *  dim：哪些行调淡（首页是数据过期的，机器页只调淡已退役的）；须是模块常量，行是 memo 的。
- *  放得下（不用横滑）时容器带 data-fit，表头吸顶（table.css）；随宽度变化直接改属性，不重渲染 */
-export function MachineGrid({ cols, rows, sort, onSort, openId, onOpen, dim = isQuiet, className }: {
+ *  sig：列里不显示实时读数的表（机器页）给一份行签名（模块常量），推送只换了读数、签名没变的行不重渲染。
+ *  放得下（不用横滑）时容器带 data-fit，表头吸顶（table.css）；随宽度变化直接改属性 */
+export function MachineGrid({ cols, rows, sort, onSort, openId, onOpen, dim = isQuiet, sig, className }: {
   cols: Col[]; rows: MachineView[]; sort: SortState | null; onSort: (s: SortState | null) => void;
-  openId: string | null; onOpen: (id: string) => void; dim?: (m: MachineView) => boolean; className?: string;
+  openId: string | null; onOpen: (id: string) => void; dim?: (m: MachineView) => boolean; sig?: (m: MachineView) => string; className?: string;
 }) {
-  const minWidth = cols.reduce((s, c) => s + c.size, 0);
   const wrap = React.useRef<HTMLDivElement>(null);
-  React.useEffect(() => watchSize(wrap.current!, (e) => e.target.toggleAttribute('data-fit', e.contentRect.width >= minWidth)), [minWidth]);
+  const [dropped, setDropped] = React.useState(0);
+  React.useEffect(() => watchSize(wrap.current!, (e) => {
+    const f = fitCols(cols, e.contentRect.width);
+    e.target.toggleAttribute('data-fit', f.fit);
+    setDropped(f.n);
+  }), [cols]);
+  const shown = React.useMemo(() => {
+    if (!dropped) return cols;
+    const gone = new Set(cols.filter((c) => c.drop != null).sort((a, b) => a.drop! - b.drop!).slice(0, dropped).map((c) => c.id));
+    return cols.filter((c) => !gone.has(c.id));
+  }, [cols, dropped]);
+  const minWidth = shown.reduce((s, c) => s + c.size, 0);
   return (
     <div ref={wrap} className={cn('table-wrap', className)}>
       <table className="dt" style={{ minWidth }}>
-        <colgroup>{cols.map((c) => <col key={c.id} style={{ width: c.size }} />)}</colgroup>
-        <SortHead cols={cols} sort={sort} onSort={onSort} />
-        <NodeMenus rows={rows}><tbody>{rows.map((m) => <Row key={m.id} m={m} current={m.id === openId} onOpen={onOpen} cols={cols} dim={dim} />)}</tbody></NodeMenus>
+        <colgroup>{shown.map((c) => <col key={c.id} style={{ width: c.size }} />)}</colgroup>
+        <SortHead cols={shown} sort={sort} onSort={onSort} />
+        <NodeMenus rows={rows}><tbody>{rows.map((m) => <Row key={m.id} m={m} current={m.id === openId} onOpen={onOpen} cols={shown} dim={dim} sig={sig} />)}</tbody></NodeMenus>
       </table>
     </div>
   );
 }
 
-/** 一行一个 memo：实时推送只换变了的那台机器的引用，其余行不重渲染（onOpen 来自 useDrawer、cols 是常量或按范围 memo，都稳定）。
- *  右键菜单按 data-id 找到这一行 */
-const Row = React.memo(function Row({ m, current, onOpen, cols, dim }: { m: MachineView; current: boolean; onOpen: (id: string) => void; cols: Col[]; dim: (m: MachineView) => boolean }) {
+type RowProps = { m: MachineView; current: boolean; onOpen: (id: string) => void; cols: Col[]; dim: (m: MachineView) => boolean; sig?: (m: MachineView) => string };
+/** 一行一个 memo 就挡住了：实时推送只换变了的那台机器的引用，其余行不重渲染（onOpen 来自 useDrawer、cols 是常量或按范围 memo，都稳定）；
+ *  给了 sig 时机器换了引用但签名没变也不重渲染 */
+const sameRow = (a: RowProps, b: RowProps) => a.current === b.current && a.onOpen === b.onOpen && a.cols === b.cols && a.dim === b.dim && a.sig === b.sig
+  && (a.m === b.m || (!!b.sig && b.sig(a.m) === b.sig(b.m)));
+/** 右键菜单按 data-id 找到这一行 */
+const Row = React.memo(function Row({ m, current, onOpen, cols, dim }: RowProps) {
   return (
     <tr className={cn('is-link', current && 'is-current', dim(m) && 'is-quiet')} tabIndex={0} data-id={m.id}
       onClick={() => onOpen(m.id)} onKeyDown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) onOpen(m.id); }}>
       {cols.map((c) => <td key={c.id} className={c.id === 'chev' ? 'chev' : c.r ? 'r' : undefined}>{c.cell(m)}</td>)}
     </tr>
   );
-});
+}, sameRow);
