@@ -72,22 +72,42 @@ DialogDescription.displayName = 'DialogDescription';
 export const DialogHeader = ({ className, ...p }: React.HTMLAttributes<HTMLDivElement>) => <div className={cn('dialog-head', className)} {...p} />;
 export const DialogFooter = ({ className, ...p }: React.HTMLAttributes<HTMLDivElement>) => <div className={cn('dialog-foot', className)} {...p} />;
 
-/** 右侧抽屉（shadcn Sheet 的写法：Dialog + 右侧定位） */
-export const Sheet = DialogPrimitive.Root;
+/** 右侧抽屉（shadcn Sheet 的写法：Dialog + 右侧定位）。非模态：模态时 Radix 给 body 设 pointer-events: none、锁滚动（body 加样式与
+ *  CSS 变量），一开一关整页上万个元素重算样式，紧接着的布局读取就是整页强制重排（实测紧凑卡片开约 330 ms、关约 250 ms，
+ *  其中 pointer-events 一项就 140–180 ms）；非模态时一帧都不卡。遮罩自己画（非模态时 Radix 不渲染 Overlay），盖住页面、点它关抽屉；
+ *  Esc、关闭按钮照旧。打开时把焦点放到抽屉上（不滚动），键盘 Tab 从抽屉里开始；焦点移出不关（模态时焦点困在里面，移不出去）。
+ *  代价：焦点不再困在抽屉里，滚轮能滚到后面的页面。抽屉里再开的确认框等仍是模态 */
+const SheetOpen = React.createContext(false);
+export function Sheet({ open, onOpenChange, children }: { open: boolean; onOpenChange: (open: boolean) => void; children: React.ReactNode }) {
+  return <DialogPrimitive.Root open={open} onOpenChange={onOpenChange} modal={false}><SheetOpen.Provider value={open}>{children}</SheetOpen.Provider></DialogPrimitive.Root>;
+}
+/** 右键点遮罩不关（同 Radix 模态的做法：右键像是点在遮罩上） */
+const keepOnRightClick = (cb: OutsideHandler): OutsideHandler => (e) => {
+  const o = e.detail.originalEvent;
+  if (o.button === 2 || (o.button === 0 && o.ctrlKey)) e.preventDefault();
+  cb?.(e);
+};
 export const SheetContent = React.forwardRef<React.ElementRef<typeof DialogPrimitive.Content>, React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & { hideClose?: boolean }>(
-  ({ className, children, hideClose, onPointerDownOutside, ...p }, ref) => (
-    <DialogPrimitive.Portal>
-      <DialogPrimitive.Overlay className="drawer-overlay" />
-      <DialogPrimitive.Content ref={ref} className={cn('drawer', className)} onOpenAutoFocus={(e) => e.preventDefault()} onPointerDownOutside={keepOnToast(onPointerDownOutside)} {...p}>
-        {children}
-        {!hideClose && (
-          <DialogPrimitive.Close asChild>
-            <IconButton label="关闭" className="" style={{ position: 'absolute', top: 12, right: 12 }}><X size={16} /></IconButton>
-          </DialogPrimitive.Close>
-        )}
-      </DialogPrimitive.Content>
-    </DialogPrimitive.Portal>
-  ),
+  ({ className, children, hideClose, onPointerDownOutside, ...p }, ref) => {
+    const open = React.useContext(SheetOpen);
+    const panel = React.useRef<HTMLDivElement>(null);
+    React.useImperativeHandle(ref, () => panel.current!, []);
+    return (
+      <DialogPrimitive.Portal>
+        {/* 退场动画靠 data-state，Portal 里的 Presence 等它播完再卸载 */}
+        <div className="drawer-overlay" data-state={open ? 'open' : 'closed'} aria-hidden />
+        <DialogPrimitive.Content ref={panel} className={cn('drawer', className)} onOpenAutoFocus={(e) => { e.preventDefault(); panel.current?.focus({ preventScroll: true }); }}
+          onFocusOutside={(e) => e.preventDefault()} onPointerDownOutside={keepOnToast(keepOnRightClick(onPointerDownOutside))} {...p}>
+          {children}
+          {!hideClose && (
+            <DialogPrimitive.Close asChild>
+              <IconButton label="关闭" className="" style={{ position: 'absolute', top: 12, right: 12 }}><X size={16} /></IconButton>
+            </DialogPrimitive.Close>
+          )}
+        </DialogPrimitive.Content>
+      </DialogPrimitive.Portal>
+    );
+  },
 );
 SheetContent.displayName = 'SheetContent';
 export const SheetTitle = DialogTitle;
