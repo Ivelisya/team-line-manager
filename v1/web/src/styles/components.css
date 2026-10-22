@@ -104,6 +104,7 @@
   --ic-ok: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='9' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round' d='m8.5 12 2.5 2.5 4.5-5'/%3E%3C/svg%3E");
   --ic-neutral: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='9' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round' stroke-dasharray='3.5 3'/%3E%3C/svg%3E");
   --ic-info: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round' d='M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94z'/%3E%3C/svg%3E");
+  --ic-tip: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='9' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round' d='M12 16v-4.5M12 8h.01'/%3E%3C/svg%3E");
 }
 .pill::before { content: none; flex: none; width: 11px; height: 11px; background: currentColor; -webkit-mask: var(--pill-ic) center / contain no-repeat; mask: var(--pill-ic) center / contain no-repeat; }
 .pill[data-tone="bad"]:not([data-dot])::before { content: ""; --pill-ic: var(--ic-bad); }
@@ -118,6 +119,8 @@
 .smark[data-tone="bad"] { --smark-c: var(--bad); --smark-ic: var(--ic-bad); }
 .smark[data-tone="warn"] { --smark-c: var(--warn); --smark-ic: var(--ic-warn); }
 .smark[data-tone="info"] { --smark-c: var(--info); --smark-ic: var(--ic-info); }
+/* 告警级别「提示」：圆圈里一个 i（维护中的扳手只给机器状态用） */
+.smark[data-sev="info"] { --smark-ic: var(--ic-tip); }
 .smark[data-tone="neutral"] { --smark-c: var(--fg-3); --smark-ic: var(--ic-neutral); }
 .smark[data-spin] { width: 10px; height: 10px; box-sizing: border-box; border: 1.5px solid var(--info); border-top-color: transparent; border-radius: 50%; background: none; -webkit-mask: none; mask: none; animation: spin 0.9s linear infinite; }
 
