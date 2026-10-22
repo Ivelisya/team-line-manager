@@ -142,10 +142,22 @@ impl Target {
             c.args(["-o", "PubkeyAuthentication=no", "-o", "PreferredAuthentications=password,keyboard-interactive"]);
             c
         } else {
-            let mut c = Command::new("ssh");
-            c.args(["-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-i"]).arg(&self.key);
-            c
+            self.with_key()
         };
+        self.common(&mut c);
+        c.arg(format!("root@{}", self.ip));
+        c
+    }
+
+    /// 只用中控密钥登录
+    fn with_key(&self) -> Command {
+        let mut c = Command::new("ssh");
+        c.args(["-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-i"]).arg(&self.key);
+        c
+    }
+
+    /// 登录方式以外的选项（不含目标主机）
+    fn common(&self, c: &mut Command) {
         // 不读 /etc/ssh/ssh_config 与 ~/.ssh/config（ProxyCommand、ForwardAgent、SendEnv、ControlMaster…都不能带进来）：
         // 要用的选项全部在这里给出
         c.args(["-F", "/dev/null"]);
@@ -155,6 +167,14 @@ impl Target {
         c.args(["-o", "GlobalKnownHostsFile=/dev/null"]);
         c.arg("-o").arg(format!("UserKnownHostsFile={}", self.known_hosts.display()));
         c.arg("-p").arg(self.port.to_string());
+    }
+
+    /// 网页终端的交互式登录（由调用方放进 PTY）：选项同上，只用中控密钥（`password` 不看）；`-tt` 要远端分配终端，不带命令即登录 shell。
+    /// `-e none` 关掉转义字符：`~C` 能在会话里临时加端口转发（`-R` 让机器经中控访问中控本机与内网），`~^Z` 会把 ssh 挂起
+    pub fn interactive(&self) -> Command {
+        let mut c = self.with_key();
+        self.common(&mut c);
+        c.args(["-o", "ClearAllForwardings=yes", "-e", "none", "-tt"]);
         c.arg(format!("root@{}", self.ip));
         c
     }

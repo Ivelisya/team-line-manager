@@ -18,6 +18,7 @@ pub mod meta;
 pub mod names;
 pub mod notify;
 pub mod policy;
+pub mod pty;
 pub mod selfmon;
 pub mod settings;
 pub mod silence;
