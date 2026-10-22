@@ -238,12 +238,15 @@ struct RM {
     o_host: Option<String>,
     o_port: Option<i32>,
     o_user: Option<String>,
+    /// 出站密文还在（退役会清掉；从备份写回过的才有）：恢复时没给新密码就沿用它
+    o_has_secret: bool,
 }
 
 async fn load_rm(conn: &mut PgConnection, id: Uuid, lock: bool) -> ApiResult<RM> {
     let sql = format!(
         "select m.kind::text kind, m.team_id, m.number, m.label, host(m.primary_ip) ip, coalesce(h.ssh_port, m.ssh_port) ssh_port, m.lifecycle::text lifecycle,
-            m.lifecycle_reason reason, m.host_id, m.retired_host_keys host_keys, o.protocol o_protocol, o.host o_host, o.port o_port, o.username o_user
+            m.lifecycle_reason reason, m.host_id, m.retired_host_keys host_keys, o.protocol o_protocol, o.host o_host, o.port o_port, o.username o_user,
+            coalesce(length(o.secret_enc), 0) > 0 o_has_secret
          from machine m left join machine h on h.id = m.host_id left join node_outbound o on o.machine_id = m.id
          where m.id = $1{}",
         if lock { " for update of m" } else { "" }
@@ -502,8 +505,8 @@ pub async fn restore_preview(a: Actor, State(st): State<AppState>, ApiPath(id): 
             "relay": m.kind != "relay",
             // 家宽代理没留下上游（迁移 0029 之前退役的）：协议、地址、端口要重新给
             "upstream": m.kind == "proxy" && m.o_protocol.is_none(),
-            // 留下的上游有用户名：密码退役时已清掉，要重新给
-            "upstream_password": m.kind == "proxy" && m.o_user.as_deref().is_some_and(|u| !u.is_empty()),
+            // 留下的上游有用户名：密码退役时已清掉，要重新给（密文还在的沿用，不用给）
+            "upstream_password": m.kind == "proxy" && m.o_user.as_deref().is_some_and(|u| !u.is_empty()) && !m.o_has_secret,
             "password": password,
         },
         "retired_reason": m.reason,
@@ -525,19 +528,22 @@ pub struct UpstreamIn {
     password: Option<String>,
 }
 
-/// 恢复后的上游：(协议, 地址, 端口, 用户名, 密码)。密码退役时已清掉，有用户名就要重新给
-fn restore_upstream(m: &RM, u: Option<&UpstreamIn>) -> Result<(String, String, u16, Option<String>, String), String> {
+/// 恢复后的上游：(协议, 地址, 端口, 用户名, 密码)。密码退役时已清掉，有用户名就要重新给；
+/// 密文还在（`o_has_secret`）时可以不给，密码为 None = 沿用库里的密文
+fn restore_upstream(m: &RM, u: Option<&UpstreamIn>) -> Result<(String, String, u16, Option<String>, Option<String>), String> {
     let protocol = u.and_then(|u| u.protocol.clone()).or_else(|| m.o_protocol.clone()).unwrap_or_default();
     let host = u.and_then(|u| u.host.as_deref()).or(m.o_host.as_deref()).unwrap_or("").trim().to_string();
     let port = u.and_then(|u| u.port).or_else(|| m.o_port.and_then(|p| u16::try_from(p).ok())).unwrap_or(0);
     let username = u.and_then(|u| u.username.as_deref()).or(m.o_user.as_deref()).map(str::trim).filter(|s| !s.is_empty()).map(String::from);
-    let password = u.and_then(|u| u.password.clone()).unwrap_or_default();
+    let password = u.and_then(|u| u.password.clone()).filter(|p| !p.is_empty());
     if !matches!(protocol.as_str(), "socks5" | "http") || host.is_empty() || port == 0 {
         return Err("家宽代理退役时没留下上游参数（迁移 0029 之前退役的），要在 upstream 里给全协议（socks5/http）、地址和端口".into());
     }
-    if username.is_some() && password.is_empty() {
+    if username.is_some() && password.is_none() && !m.o_has_secret {
         return Err("上游有用户名：密码在退役时已清掉，要在 upstream.password 里重新填".into());
     }
+    // 没用户名也没给密码：空密码（与原来一样封进去，不沿用旧密文）
+    let password = if username.is_none() { Some(password.unwrap_or_default()) } else { password };
     Ok((protocol, host, port, username, password))
 }
 
@@ -623,19 +629,37 @@ pub async fn restore(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<
         }
         "proxy" => {
             let (protocol, host, port, username, password) = upstream.expect("validated");
-            sqlx::query(
-                "insert into node_outbound (machine_id, protocol, host, port, username, secret_enc) values ($1, $2, $3, $4, $5, $6)
-                 on conflict (machine_id) do update set protocol = excluded.protocol, host = excluded.host, port = excluded.port, method = null,
-                    username = excluded.username, secret_enc = excluded.secret_enc, updated_at = now()",
-            )
-            .bind(id)
-            .bind(protocol)
-            .bind(host)
-            .bind(port as i32)
-            .bind(username)
-            .bind(st.secrets.seal_str(&password))
-            .execute(&mut *tx)
-            .await?;
+            match password {
+                Some(password) => {
+                    sqlx::query(
+                        "insert into node_outbound (machine_id, protocol, host, port, username, secret_enc) values ($1, $2, $3, $4, $5, $6)
+                         on conflict (machine_id) do update set protocol = excluded.protocol, host = excluded.host, port = excluded.port, method = null,
+                            username = excluded.username, secret_enc = excluded.secret_enc, updated_at = now()",
+                    )
+                    .bind(id)
+                    .bind(protocol)
+                    .bind(host)
+                    .bind(port as i32)
+                    .bind(username)
+                    .bind(st.secrets.seal_str(&password))
+                    .execute(&mut *tx)
+                    .await?;
+                }
+                // 沿用库里的密文（restore_upstream 已核对过它在）：行一定存在，只改其余参数
+                None => {
+                    sqlx::query(
+                        "update node_outbound set protocol = $2, host = $3, port = $4, method = null, username = $5, updated_at = now()
+                         where machine_id = $1 and length(secret_enc) > 0",
+                    )
+                    .bind(id)
+                    .bind(protocol)
+                    .bind(host)
+                    .bind(port as i32)
+                    .bind(username)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+            }
         }
         _ => {
             // 线路机：期望状态代数 +1，等 agent 重新装好后必须真的应用一次（之前记下的已应用代数不能算数）
@@ -702,6 +726,7 @@ mod tests {
             o_host: None,
             o_port: None,
             o_user: None,
+            o_has_secret: false,
         };
         let same = json!({"key_login": "ok", "host_key": "SHA256:x", "host_key_changed": false});
         assert!(host_key_note(&m, &same, false).is_none());
@@ -730,13 +755,19 @@ mod tests {
             o_host: Some("up.example".into()),
             o_port: Some(3128),
             o_user: Some("bob".into()),
+            o_has_secret: false,
         };
         let up = |v: Value| serde_json::from_value::<UpstreamIn>(v).unwrap();
         assert!(restore_upstream(&m, None).unwrap_err().contains("密码"), "有用户名：密码要重新给");
         let r = restore_upstream(&m, Some(&up(json!({"password": "pw"})))).unwrap();
-        assert_eq!(r, ("http".into(), "up.example".into(), 3128, Some("bob".into()), "pw".into()));
+        assert_eq!(r, ("http".into(), "up.example".into(), 3128, Some("bob".into()), Some("pw".into())));
         let r = restore_upstream(&m, Some(&up(json!({"port": 8080, "username": ""})))).unwrap();
-        assert_eq!(r, ("http".into(), "up.example".into(), 8080, None, String::new()), "给了的字段覆盖，用户名空串 = 去掉");
+        assert_eq!(r, ("http".into(), "up.example".into(), 8080, None, Some(String::new())), "给了的字段覆盖，用户名空串 = 去掉");
+        m.o_has_secret = true;
+        assert_eq!(restore_upstream(&m, None).unwrap(), ("http".into(), "up.example".into(), 3128, Some("bob".into()), None), "密文还在：不给密码就沿用");
+        let r = restore_upstream(&m, Some(&up(json!({"password": "new"})))).unwrap();
+        assert_eq!(r.4, Some("new".into()), "给了新密码：用新的");
+        m.o_has_secret = false;
         m.o_protocol = None;
         m.o_host = None;
         m.o_port = None;
