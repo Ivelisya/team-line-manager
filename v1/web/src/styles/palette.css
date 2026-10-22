@@ -37,6 +37,13 @@
 .cmd-more { padding: var(--sp-6) var(--sp-10) var(--sp-4); font-size: var(--fs-label); color: var(--fg-2); }
 .cmd-foot { display: flex; align-items: center; gap: var(--sp-14); padding: var(--sp-8) var(--sp-16); border-top: 1px solid var(--line); background: var(--sunken); font-size: var(--fs-micro); line-height: var(--lh-micro); color: var(--fg-2); }
 .cmd-foot .kbd { margin-right: var(--sp-4); }
+/* 触屏：底部的键盘提示（↑↓ 选择 / ↵ 打开 / esc 关闭）没有意义，收起；输入框右侧出一个「取消」 */
+.cmd-cancel { display: none; }
+@media (pointer: coarse) {
+  .cmd-foot { display: none; }
+  .cmd-cancel { display: inline-flex; position: absolute; top: calc((52px - var(--h-sm)) / 2); right: var(--sp-10); color: var(--accent); }
+  .cmd-dialog > .cmd .cmd-input-wrap { padding-right: 64px; }
+}
 
 /* ========== 国家选择器（CountrySelect）：触发器里国旗 + 名称；弹层是一个可搜索的短列表 ========== */
 .cs-value { display: inline-flex; align-items: center; gap: var(--sp-8); min-width: 0; }
