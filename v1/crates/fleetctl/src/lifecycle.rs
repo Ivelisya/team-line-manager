@@ -8,7 +8,7 @@ use crate::table;
 use anyhow::bail;
 use serde_json::{json, Value};
 
-const SHARE_HINT: &str = "换线路机后分享链接会变：客户端需要换成新的分享链接（作业完成后用 fleetctl share <节点> 取）";
+const SHARE_HINT: &str = "换线路机后分享链接会变：客户端需要换成新的分享链接（作业完成后到节点的入口里复制；命令行用 fleetctl share <节点> 取）";
 
 fn find_relay(ctx: &Ctx, q: &str) -> anyhow::Result<Value> {
     let m = ctx.find(q, Want::Live)?;
@@ -58,19 +58,19 @@ pub fn mv(ctx: &Ctx, node: &str, to: &str, from: Option<&str>, yes: bool, follow
     Ok(0)
 }
 
+/// 线路机视图里将被搬走的入口：在用、待应用、停用的。直出入口不搬：退役线路机时随之摘除
+fn moving_entries(relay: &Value) -> Vec<Value> {
+    let es = relay["entries"].as_array().map(Vec::as_slice).unwrap_or_default();
+    es.iter().filter(|e| matches!(e["lifecycle"].as_str(), Some("active" | "pending" | "disabled")) && e["direct"] != true).cloned().collect()
+}
+
 /// `fleetctl evacuate <线路机> --to <线路机>`
 pub fn evacuate(ctx: &Ctx, relay: &str, to: &str, yes: bool, follow: bool) -> anyhow::Result<u8> {
     let src = find_relay(ctx, relay)?;
     let dst = find_relay(ctx, to)?;
     let (sid, sname, dname) = (st(&src, "/id"), st(&src, "/name"), st(&dst, "/name"));
-    // 将被搬走的节点（线路机视图里自带入口列表）。直出入口不搬：退役线路机时随之摘除
-    let moving: Vec<Value> = src["entries"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|e| matches!(e["lifecycle"].as_str(), Some("active" | "pending" | "disabled")) && e["direct"] != true)
-        .collect();
+    // 将被搬走的节点：线路机完整视图里的入口列表（find 取的是精简列表，没有入口）
+    let moving = moving_entries(&ctx.c.get(&format!("/machines/{sid}"))?);
     if !ctx.json {
         if moving.is_empty() {
             outln(format!("{sname} 上没有在用的入口，无需搬空。"));
@@ -200,4 +200,24 @@ pub fn replace(ctx: &Ctx, o: ReplaceOpts) -> anyhow::Result<u8> {
         return cmds::follow_job(ctx, &st(&d, "/job_id"));
     }
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 搬空的入口来自线路机的完整视图（`GET /machines/{id}`）：精简列表没有 entries，曾因此永远「无需搬空」
+    #[test]
+    fn evacuate_moves_live_non_direct_entries() {
+        let relay = json!({"id": "r1", "kind": "relay", "entries": [
+            {"port": 20000, "lifecycle": "active", "direct": false, "node": {"name": "团队1-01"}},
+            {"port": 20001, "lifecycle": "pending", "direct": false},
+            {"port": 20002, "lifecycle": "disabled", "direct": false},
+            {"port": 20003, "lifecycle": "removing", "direct": false},
+            {"port": 20004, "lifecycle": "active", "direct": true},
+        ]});
+        let ports: Vec<i64> = moving_entries(&relay).iter().filter_map(|e| e["port"].as_i64()).collect();
+        assert_eq!(ports, [20000, 20001, 20002]);
+        assert!(moving_entries(&json!({"id": "r1", "kind": "relay"})).is_empty(), "精简视图没有 entries：不会搬任何东西");
+    }
 }

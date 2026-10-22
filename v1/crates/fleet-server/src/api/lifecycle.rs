@@ -15,7 +15,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-const SHARE_NOTE: &str = "换线路机后分享链接会变：客户端需要换成新的分享链接（作业完成后到节点的入口里复制）";
+const SHARE_NOTE: &str = "换线路机后分享链接会变：客户端需要换成新的分享链接（作业完成后到节点的入口里复制；命令行用 fleetctl share <节点> 取）";
 
 // ── 换线路机 ──────────────────────────────────────────────────────────────
 

@@ -673,6 +673,21 @@ async fn relay_reach_rounds_feed_relay_beats() {
     let text = m["health"]["reasons"].as_array().unwrap().iter().find(|r| r["key"] == "relay_unreachable").map(|r| r["text"].clone());
     assert_eq!(text, Some(json!(format!("中控连续 3 次连不上客户入口（端口 {closed2}：连接被拒绝）"))), "{m}");
     assert_eq!(t.count("select count(*) from relay_reach where port is null").await, 0, "每行记下端口");
+    // 每条在用入口带上中控对它端口最近一次检查：通的 ok、detail 为 null；不通的带原因；线路机2 的入口一直不通
+    let reach = |m: &Value, port: i32| m["entries"].as_array().unwrap().iter().find(|e| e["port"] == port).unwrap()["reach"].clone();
+    let (good, bad) = (reach(&m, open.local_addr().unwrap().port() as i32), reach(&m, closed2 as i32));
+    assert_eq!((good["ok"].clone(), good["detail"].clone()), (json!(true), Value::Null), "{m}");
+    assert!(good["ts"].is_string(), "{m}");
+    assert_eq!((bad["ok"].clone(), bad["detail"].clone()), (json!(false), json!(format!("端口 {closed2}：连接被拒绝"))), "{m}");
+    let m = t.get(&format!("/api/v1/machines/{down}")).await;
+    assert_eq!(reach(&m, closed as i32)["ok"], json!(false), "{m}");
+    // 线路机上的入口表和节点那一侧是同一份；没检查过（线路机3 没有入口，新建的入口还没轮到）为 null
+    let node = t.get(&format!("/api/v1/machines/{}", m["entries"][0]["node"]["id"].as_str().unwrap())).await;
+    assert_eq!(node["entries"][0]["reach"]["ok"], json!(false), "{node}");
+    sqlx::query("delete from relay_reach where relay_id = $1").bind(down).execute(&t.st.db).await.unwrap();
+    t.st.live.invalidate();
+    let m = t.get(&format!("/api/v1/machines/{down}")).await;
+    assert!(reach(&m, closed as i32).is_null(), "{m}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
