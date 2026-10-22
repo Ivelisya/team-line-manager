@@ -58,6 +58,8 @@ export const DialogContent = React.forwardRef<React.ElementRef<typeof DialogPrim
         <DialogPrimitive.Content ref={panel} className={cn('dialog', size === 'md' && 'dialog-md', size === 'lg' && 'dialog-lg', className)}
           onPointerDownOutside={keepOnToast(onPointerDownOutside)} onInteractOutside={bounceWhenKept(onInteractOutside, panel)} onOpenAutoFocus={onOpenAutoFocus ?? skipInfoTip} {...p}>
           {children}
+          {/* 手机上对话框是底部面板，右上角补关闭键；宽屏 display: none（components.css .dialog-x） */}
+          <DialogPrimitive.Close asChild><IconButton label="关闭" className="dialog-x"><X size={16} /></IconButton></DialogPrimitive.Close>
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>
     );

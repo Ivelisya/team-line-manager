@@ -355,6 +355,22 @@
 .dialog[data-state="closed"] { animation: panel-out var(--dur-1) var(--ease-std) forwards; }
 @keyframes panel-in { from { opacity: 0; transform: translateY(-6px) scale(.98); } }
 @keyframes panel-out { to { opacity: 0; transform: translateY(-4px); } }
+/* 手机（≤600px）：对话框改成从底部升起的面板（同 iOS 的 sheet）——通栏、上圆角、底部让出安全区，按钮通栏高 44；右上角补一个关闭键（宽屏不显示，靠取消按钮与 Esc） */
+.dialog-x { display: none; }
+@media (max-width: 600px) {
+  .dialog {
+    top: auto; bottom: 0; left: 0; translate: none; width: 100vw; max-height: calc(100dvh - var(--topbar-h));
+    border-width: 1px 0 0; border-radius: var(--r-card) var(--r-card) 0 0; padding-bottom: calc(var(--sp-20) + env(safe-area-inset-bottom, 0px));
+    transform-origin: 50% 100%; animation-name: sheet-in;
+  }
+  .dialog[data-state="closed"] { animation-name: sheet-out; }
+  .dialog-x { display: inline-grid; position: absolute; top: var(--sp-12); right: var(--sp-12); }
+  .dialog:has(.hk-head) .dialog-x { display: none; } /* 快捷键帮助自带关闭键 */
+  .dialog-head { padding-right: calc(var(--h-md) + var(--sp-4)); }
+  .dialog-foot > .btn { flex: 1 1 0; height: 44px; }
+}
+@keyframes sheet-in { from { transform: translateY(100%); } }
+@keyframes sheet-out { to { transform: translateY(100%); } }
 /* 快捷键帮助：标题右边的关闭按钮、按键列表 */
 .dialog-head.hk-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); margin: calc(-1 * var(--sp-6)) calc(-1 * var(--sp-8)) 0 0; }
 .hk-list { margin: 0; padding: 0; list-style: none; }
