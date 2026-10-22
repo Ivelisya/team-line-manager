@@ -1174,7 +1174,17 @@ pub async fn renumber_preview(_a: Actor, State(st): State<AppState>, ApiPath(tea
         .iter()
         .map(|(id, o, n)| json!({"machine_id": id, "old_name": node_name(&team, *o), "new_name": node_name(&team, *n)}))
         .collect();
-    Ok(ok(json!({"changes": list, "token": plan_token(&changes)})))
+    // 软路由的出口名是路由上自己起的（「节点05」），不跟着改：指向要改名的节点的列出来，对不上的自己去改
+    let ids: Vec<Uuid> = changes.iter().map(|c| c.0).collect();
+    let exits = crate::routers::exits_using(&st.db, &ids).await?;
+    let notes: Vec<String> = changes
+        .iter()
+        .flat_map(|(id, o, n)| {
+            let (from, to) = (node_name(&team, *o), node_name(&team, *n));
+            exits.get(id).into_iter().flatten().map(move |(_, r, x)| format!("软路由「{r}」的出口「{x}」指向 {from}，改名为 {to} 后出口名不跟着改"))
+        })
+        .collect();
+    Ok(ok(json!({"changes": list, "notes": notes, "token": plan_token(&changes)})))
 }
 
 #[derive(Deserialize)]

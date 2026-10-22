@@ -432,7 +432,7 @@ const renumberPlan = (tid: string) => {
   const changes = list.map((m, i) => ({ machine_id: m.id, old_name: m.name, new_name: displayName(team.name, i + 1), n: i + 1 })).filter((c, i) => list[i].number !== c.n);
   return { changes: changes.map(({ n: _n, ...c }) => c), token: `tok-${hashStr(JSON.stringify(changes))}`, raw: changes };
 };
-R('GET', '/teams/([^/]+)/renumber', ({ params }) => { const { changes, token } = renumberPlan(params[0]); return { changes, token }; });
+R('GET', '/teams/([^/]+)/renumber', ({ params }) => { const { changes, token } = renumberPlan(params[0]); return { changes, notes: [], token }; });
 R('POST', '/teams/([^/]+)/renumber', ({ params, body }) => {
   const p = renumberPlan(params[0]);
   if (body.token !== p.token) throw bad('数据在预览后已变化，请重新预览', 409, 'conflict');

@@ -468,7 +468,8 @@ pub fn renumber(ctx: &Ctx, team: &str, yes: bool) -> anyhow::Result<u8> {
     if !yes {
         ctx.emit(&pre, || {
             let rows: Vec<Vec<String>> = changes.iter().map(|c| vec![st(c, "/old_name"), st(c, "/new_name")]).collect();
-            format!("{}\n预览，未生效。加 --yes 执行", table::render(&["现名", "新名"], &rows))
+            let notes: String = pre["notes"].as_array().into_iter().flatten().filter_map(Value::as_str).map(|n| format!("\n注意：{n}")).collect();
+            format!("{}{notes}\n预览，未生效。加 --yes 执行", table::render(&["现名", "新名"], &rows))
         });
         return Ok(0);
     }

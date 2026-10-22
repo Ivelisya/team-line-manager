@@ -518,3 +518,16 @@ async fn evacuate_rewrites_exits_one_job_at_a_time() {
     let a = applies(23171);
     assert!(a.len() == 2 && a[0].contains("NAME_1='节点01'") && a[1].contains("NAME_1='节点02'"), "{a:?}");
 }
+
+/// 重新编号预览：指向要改名的节点的软路由出口列出来（出口名是路由上自己起的，不跟着改）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn renumber_preview_lists_router_exits() {
+    let w = world().await;
+    let t = &w.t;
+    sqlx::query("update machine set number = 3 where id = $1").bind(w.new).execute(&t.st.db).await.unwrap();
+    let ne: Uuid = sqlx::query_scalar("select id from entry where node_id = $1").bind(w.new).fetch_one(&t.st.db).await.unwrap();
+    router(&w, "路由A", 23181, &[("节点03", "198.51.100.2", 20020, Some(ne))]).await;
+    let p = t.get(&format!("/api/v1/teams/{}/renumber", w.team)).await;
+    assert_eq!(p["changes"][0]["new_name"], "团队2-02", "{p}");
+    assert_eq!(p["notes"], json!(["软路由「路由A」的出口「节点03」指向 团队2-03，改名为 团队2-02 后出口名不跟着改"]));
+}

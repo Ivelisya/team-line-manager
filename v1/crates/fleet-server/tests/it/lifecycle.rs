@@ -74,6 +74,23 @@ async fn mv_req(t: &T, node: Uuid, to: Uuid) -> (StatusCode, Value) {
     t.req("POST", &format!("/api/v1/machines/{node}/move"), Some(json!({"to_relay_id": to})), None).await
 }
 
+/// 直接上架进备用团队：上线时记 spare_since（同退役进备用：卡片写「退役于」，到期照常回收），没有原名
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn provision_into_spare_records_spare_since() {
+    let t = setup(true).await;
+    let (ra, ta) = seed_relay(&t).await;
+    let mut a = Sim::new(ta);
+    let sp: Uuid = sqlx::query_scalar("select id from team where spare").fetch_one(&t.st.db).await.unwrap();
+    let team = seed_team(&t, "团队1").await;
+    let (node, pj) = provision_proxy(&t, sp, ra, "203.0.113.30").await;
+    let (other, oj) = provision_proxy(&t, team, ra, "203.0.113.31").await;
+    drive(&t, &mut [&mut a], &pj, "succeeded").await;
+    drive(&t, &mut [&mut a], &oj, "succeeded").await;
+    let v = t.get(&format!("/api/v1/machines/{node}")).await;
+    assert!(v["spare_since"].is_string() && v["spare_from"].is_null(), "{v}");
+    assert!(t.get(&format!("/api/v1/machines/{other}")).await["spare_since"].is_null());
+}
+
 // ── 换线路机 ──────────────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -223,7 +223,8 @@ export interface Silence { id: string; subject_id: string | null; subject_name: 
 export interface Renewal { id: string; old_due: string | null; new_due: string; amount_cents: number | null; currency: string; note: string | null; actor: string; created_at: string }
 /** 审计：界面只显示 title 与 summary（服务端生成的中文）；detail 是原始 JSON，不要直接渲染 */
 export interface AuditEntry { id: string; ts: string; actor: string; action: string; title: string; summary: string; target_kind: string | null; target_id: string | null; detail: unknown }
-export interface RenumberPreview { changes: { machine_id: string; old_name: string; new_name: string }[]; token: string }
+/** notes：指向要改名的节点的软路由出口（出口名不跟着改） */
+export interface RenumberPreview { changes: { machine_id: string; old_name: string; new_name: string }[]; notes: string[]; token: string }
 /** 软路由上要改的出口（替换节点、换线路机、搬空同一个格式）；换线路机的 new_entry_id 为 null、to 写「server:新端口」 */
 export interface RouterExitPlan { id: string; name: string; state: 'online' | 'offline' | 'pending' | string; exits: { exit: string; old_entry_id: string; new_entry_id: string | null; from: string; to: string }[] }
 /** 换线路机 / 搬空线路机（API.md「生命周期操作」）：GET 是预览（没有 job_id），POST 的响应同样的内容加 job_id */

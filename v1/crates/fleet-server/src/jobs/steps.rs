@@ -878,6 +878,7 @@ async fn activate(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let id = c.target_id()?;
     sqlx::query(
         "update machine set lifecycle = 'active', activated_at = coalesce(activated_at, now()), lifecycle_reason = null,
+            spare_since = coalesce(spare_since, case when exists (select 1 from team t where t.id = machine.team_id and t.spare) then now() end),
             revision = revision + 1, updated_at = now() where id = $1 and lifecycle = 'provisioning'",
     )
     .bind(id)
