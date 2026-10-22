@@ -22,7 +22,7 @@ export type Tone = 'ok' | 'warn' | 'bad' | 'info' | 'neutral';
 // 下面几个原件的 tip：悬停 / 键盘聚焦时的说明，写成 data-tip 交给全站一份 TipHost 显示（外观同其它提示框，不用浏览器自带的 title）
 
 /** 状态 pill（唯一实现）：健康、生命周期、作业状态都走它 */
-export const Pill = React.forwardRef<HTMLSpanElement, { tone?: Tone; dot?: 'ring' | 'pulse' | 'none'; children: React.ReactNode; tip?: string; className?: string } & React.HTMLAttributes<HTMLSpanElement>>(
+export const Pill = React.forwardRef<HTMLSpanElement, { tone?: Tone; dot?: 'pulse' | 'none'; children: React.ReactNode; tip?: string; className?: string } & React.HTMLAttributes<HTMLSpanElement>>(
   ({ tone = 'neutral', dot, children, tip, className, ...p }, ref) => (
     <span ref={ref} className={cn('pill', className)} data-tone={tone} data-dot={dot} data-tip={tip} {...p}>{children}</span>
   ),
@@ -32,10 +32,10 @@ export function HealthPill({ m }: { m: Pick<MachineView, 'health' | 'lifecycle' 
   const lc = m.lifecycle;
   if (lc === 'provisioning') return <Pill tone="info" dot="pulse">上架中</Pill>;
   if (lc === 'retiring') return <Pill tone="info" dot="pulse">退役中</Pill>;
-  if (lc === 'retired') return <Pill tone="neutral" dot="ring">已退役</Pill>;
+  if (lc === 'retired') return <Pill tone="neutral">已退役</Pill>;
   if (lc === 'failed') return <Pill tone="bad">上架失败</Pill>;
   const s = m.health.status;
-  const pill = <Pill tone={HEALTH_TONE[s]} dot={s === 'unknown' || s === 'inactive' ? 'ring' : undefined} tabIndex={m.health.reasons.length ? 0 : undefined}>{HEALTH_LABEL[s]}</Pill>;
+  const pill = <Pill tone={HEALTH_TONE[s]} tabIndex={m.health.reasons.length ? 0 : undefined}>{HEALTH_LABEL[s]}</Pill>;
   return <Tip text={reasonsTip(m.health.reasons)}>{pill}</Tip>;
 }
 /** 健康原因列表（带严重度圆点）：健康 pill 的悬停提示与抽屉“状态原因”共用 */
@@ -45,15 +45,24 @@ export const ReasonList = ({ reasons, className }: { reasons: HealthReason[]; cl
   </ul>
 );
 const reasonsTip = (reasons: HealthReason[]) => (reasons.length ? <ReasonList reasons={reasons} className="tip-list" /> : null);
-/** 健康状态圆点：颜色之外给读屏与悬停一份文字。上架中 / 上架失败 / 退役中的健康是 inactive，文字改用生命周期（同 HealthPill），上架失败标红 */
-export const StatusDot = ({ status, lifecycle }: { status: string; lifecycle: Lifecycle }) => {
-  const text = lifecycle === 'provisioning' || lifecycle === 'failed' || lifecycle === 'retiring' ? LIFECYCLE_LABEL[lifecycle] : HEALTH_LABEL[status];
-  return <span className="dot" data-tone={lifecycle === 'failed' ? 'bad' : HEALTH_TONE[status]} role="img" aria-label={text} data-tip={text} />;
+/** 名字后面的状态标（卡片头、表格名称列）：正常不标；故障、降级、维护中、未知各一个小图标，上架中 / 退役中转圈，上架失败同故障。
+ *  颜色之外给读屏与悬停一份文字（不用小圆点：用户嫌不好看） */
+export const StatusMark = ({ status, lifecycle }: { status: string; lifecycle: Lifecycle }) => {
+  const busy = lifecycle === 'provisioning' || lifecycle === 'retiring';
+  const tone = lifecycle === 'failed' ? 'bad' : busy ? 'info' : HEALTH_TONE[status];
+  if (tone === 'ok') return null;
+  const text = busy || lifecycle === 'failed' ? LIFECYCLE_LABEL[lifecycle] : HEALTH_LABEL[status];
+  return <span className="smark" data-tone={tone} data-spin={busy ? '' : undefined} role="img" aria-label={text} data-tip={text} />;
 };
-/** 告警级别圆点（顶栏告警预览、抽屉「最近告警」）：颜色之外给读屏与悬停一份文字 */
+/** 告警级别圆点（抽屉「最近告警」时间线的节点）：颜色之外给读屏与悬停一份文字 */
 export const SeverityDot = ({ severity }: { severity: string }) => {
   const s = severityOf(severity);
   return <span className="dot" data-tone={s.tone} role="img" aria-label={s.label} data-tip={s.label} />;
+};
+/** 告警级别图标（顶栏告警预览的列表）：严重同故障、警告同降级 */
+export const SeverityMark = ({ severity }: { severity: string }) => {
+  const s = severityOf(severity);
+  return <span className="smark" data-tone={s.tone} role="img" aria-label={s.label} data-tip={s.label} />;
 };
 /** 到期读数：N 天后 / 今天 / 已过期 N 天，7 天内黄、过期红（卡片、表格、悬浮卡共用）。
  *  tail：没有“到期”标签的地方接上“到期”（3 天后到期 / 今天到期 / 已过期 3 天） */
@@ -63,11 +72,11 @@ export function Due({ days, tail }: { days: number | null | undefined; tail?: bo
   return <span className="due" data-tone={d.tone || undefined}>{d.pre && <span className="due-t">{d.pre}</span>}{d.f && <Num f={d.f} />}{post && <span className="due-t">{post}</span>}</span>;
 }
 export const LifecyclePill = ({ lc }: { lc: Lifecycle | string }) => (
-  <Pill tone={lc === 'active' ? 'ok' : lc === 'provisioning' || lc === 'retiring' ? 'info' : lc === 'failed' ? 'bad' : 'neutral'} dot={lc === 'retired' ? 'ring' : undefined}>{LIFECYCLE_LABEL[lc] ?? lc}</Pill>
+  <Pill tone={lc === 'active' ? 'ok' : lc === 'provisioning' || lc === 'retiring' ? 'info' : lc === 'failed' ? 'bad' : 'neutral'}>{LIFECYCLE_LABEL[lc] ?? lc}</Pill>
 );
 
 // 入口状态：active 按是否已应用细分
-export const entryState = (e: EntryView) => (e.lifecycle === 'disabled' ? <Pill tone="neutral" dot="ring">已停用</Pill> : e.lifecycle === 'active' ? (e.applied ? <Pill tone="ok">运行中</Pill> : e.apply_error ? <Pill tone="bad" tip={e.apply_error}>应用失败</Pill> : <Pill tone="info" dot="pulse">应用中</Pill>) : <Pill tone="info" dot="pulse">{ENTRY_LABEL[e.lifecycle]}</Pill>);
+export const entryState = (e: EntryView) => (e.lifecycle === 'disabled' ? <Pill tone="neutral">已停用</Pill> : e.lifecycle === 'active' ? (e.applied ? <Pill tone="ok">运行中</Pill> : e.apply_error ? <Pill tone="bad" tip={e.apply_error}>应用失败</Pill> : <Pill tone="info" dot="pulse">应用中</Pill>) : <Pill tone="info" dot="pulse">{ENTRY_LABEL[e.lifecycle]}</Pill>);
 
 export function Chip({ children, variant, tip, className }: { children: React.ReactNode; variant?: 'neutral' | 'warn'; tip?: string; className?: string }) {
   return <span className={cn('chip', variant === 'neutral' && 'chip-neutral', variant === 'warn' && 'chip-warn', className)} data-tip={tip}>{children}</span>;
@@ -120,8 +129,9 @@ export function CountUp({ value, format }: { value: number | null | undefined; f
   return <>{format ? format(v) : Math.round(v)}</>;
 }
 /** KPI 说明行里的「● 降级 3」：数字的字重、颜色同说明行里的其它数字（home.css .stat-cap .num） */
+/** 说明行里的分项计数（含降级 4 · 故障 2）：不配小圆点，有数时数字按级别着色 */
 export const DotCount = ({ tone, n, label }: { tone: Tone; n: number; label: string }) => (
-  <span className="dotline"><span className="dot" data-tone={tone} />{label} <b className="num">{n}</b></span>
+  <span className="dotline" data-tone={n > 0 ? tone : undefined}>{label} <b className="num">{n}</b></span>
 );
 
 /** 表头排序：首次点击按 first 的方向（数值列多为先降序，名称、到期先升序），再点反向，第三次回到默认顺序（null） */

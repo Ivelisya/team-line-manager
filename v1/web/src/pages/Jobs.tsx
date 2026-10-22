@@ -22,10 +22,10 @@ import { Pagination } from '@/components/app/Pagination';
 import { usePage } from '@/lib/usePage';
 import { Empty, ErrorNote, LabelValue, LabelValueGrid, Note, PageHead, Panel, Pill, type Tone } from '@/components/app/primitives';
 
-const STATE: Record<string, { label: string; tone: Tone; dot?: 'pulse' | 'ring' }> = {
-  queued: { label: '排队中', tone: 'neutral', dot: 'ring' }, running: { label: '进行中', tone: 'info', dot: 'pulse' }, waiting: { label: '等待中', tone: 'info', dot: 'ring' },
+const STATE: Record<string, { label: string; tone: Tone; dot?: 'pulse' }> = {
+  queued: { label: '排队中', tone: 'neutral' }, running: { label: '进行中', tone: 'info', dot: 'pulse' }, waiting: { label: '等待中', tone: 'info' },
   cancelling: { label: '取消中', tone: 'warn', dot: 'pulse' }, succeeded: { label: '已完成', tone: 'ok' },
-  failed: { label: '失败', tone: 'bad' }, cancelled: { label: '已取消', tone: 'neutral', dot: 'ring' },
+  failed: { label: '失败', tone: 'bad' }, cancelled: { label: '已取消', tone: 'neutral' },
 };
 /** 作业列表每页条数：列表在窄栏里，固定一档，不给每页条数下拉 */
 const JOB_PAGE = [20];

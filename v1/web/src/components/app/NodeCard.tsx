@@ -15,7 +15,7 @@ import { useNow } from '@/lib/useNow';
 import { sharedObserver, watchSize } from '@/lib/sharedObserver';
 import { type DrawerTab } from '@/lib/drawer';
 import { cn } from '@/lib/utils';
-import { Beat, Due, HealthPill, KindIcon, LabelValue, Mark, Num, StatusDot } from './primitives';
+import { Beat, Due, HealthPill, KindIcon, LabelValue, Mark, Num, StatusMark } from './primitives';
 import { MachineTag, machineTagItems } from './MachineTags';
 import { CellMeter, Cells, DotTrace, QUOTA_COLORS, Tag } from './viz';
 import { Button, IconButton } from '@/components/ui/button';
@@ -28,13 +28,14 @@ type Open = (tab?: DrawerTab) => void;
 // 卡片里不挂 Radix 根：右键菜单与“⋯”下拉由外面的 NodeMenus 整个网格共用一份（按 data-id / data-node-menu 找到这张卡），
 // 只读的悬停说明写 data-tip，由全站一份 TipHost 显示。
 
-/** 标题：圆点 + 类型标 + 名称 + 右侧操作。紧凑卡的 IP 在名称下面一行小字（同表格名称列）：跟在名称后面时只剩约 100px 给名称和 IP，常被截成「· 1…」 */
+/** 标题：类型标 + 名称（不正常时名称后一个状态图标）+ 右侧操作。紧凑卡的 IP 在名称下面一行小字（同表格名称列）：跟在名称后面时只剩约 100px 给名称和 IP，常被截成「· 1…」 */
 const Head = memo(function Head({ name, kind, ip, status, lc, view, onOpen }: { name: string; kind: MachineView['kind']; ip: string; status: string; lc: MachineView['lifecycle']; view: CardView; onOpen: Open }) {
   const btn = <button type="button" className="nc-name" data-tip={`打开 ${name} 的详情`} onClick={() => onOpen()}>{name}</button>;
+  const named = <span className="nc-named">{btn}<StatusMark status={status} lifecycle={lc} /></span>;
   return (
     <header className="nc-head">
-      <StatusDot status={status} lifecycle={lc} /><KindIcon kind={kind} />
-      {view === 'compact' ? <div className="nc-title">{btn}<span className="nc-ip" data-tip={ip}>{ip}</span></div> : btn}
+      <KindIcon kind={kind} />
+      {view === 'compact' ? <div className="nc-title">{named}<span className="nc-ip" data-tip={ip}>{ip}</span></div> : named}
       <div className="nc-actions">
         <IconButton label="打开详情" tip={false} data-tip="打开详情" onClick={() => onOpen()}><PanelRightOpen size={16} /></IconButton>
         <IconButton label="更多操作" tip={false} data-node-menu="" aria-haspopup="menu"><MoreHorizontal size={16} /></IconButton>

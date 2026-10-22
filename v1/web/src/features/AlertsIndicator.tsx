@@ -6,7 +6,7 @@ import { useIncidents } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card';
-import { Pill, SeverityDot } from '@/components/app/primitives';
+import { Pill, SeverityMark } from '@/components/app/primitives';
 
 const SHOW = 5;
 
@@ -37,7 +37,7 @@ export function AlertsIndicator() {
               <li key={i.id}>
                 <button type="button" className="pop-item" onClick={() => { setOpen(false); if (sid) openDrawer(sid); }}>
                   <span className="alerts-pop-row">
-                    <SeverityDot severity={i.severity} />
+                    <SeverityMark severity={i.severity} />
                     <b className="ellipsis">{name}</b>
                     <span className="alerts-pop-rule ellipsis">{i.rule_name}</span>
                     <span className="alerts-pop-age">已持续 {F.str(F.since(i.opened_at, now))}</span>

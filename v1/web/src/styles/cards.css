@@ -58,6 +58,9 @@
 @media (hover: hover) { .nc-name:hover { color: var(--accent); } }
 .ncard[data-view="small"] .nc-name, .ncard[data-view="compact"] .nc-name { font-size: var(--fs-emph); line-height: var(--lh-emph); }
 /* 紧凑：名称下面一行小字 IP（同表格名称列），两行合计 34px，头部只比单行高 2px */
+/* 名称与它后面的状态图标（正常时没有）一起省略、一起占位 */
+.nc-named { display: inline-flex; align-items: center; gap: var(--sp-4); min-width: 0; }
+.nc-named > .nc-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nc-title { display: grid; min-width: 0; }
 .ncard[data-view="compact"] .nc-name { justify-self: start; max-width: 100%; line-height: 20px; }
 .nc-ip { font-size: var(--fs-micro); line-height: 14px; color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
