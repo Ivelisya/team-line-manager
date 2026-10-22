@@ -100,13 +100,16 @@ export function subValueText(k: SubField, v: string | number | null, currency?: 
     default: return String(v);
   }
 }
-/** 上架页选了套餐后的一行：订阅会跟随的值（同服务端 sub_template；供应商没有时是默认值，时区空 = 组织时区） */
+/** 上架页选了套餐后的一行：「跟随套餐「X」」，订阅会跟随的值放进悬停说明 tip（同服务端 sub_template；供应商没有时是默认值，时区空 = 组织时区） */
 export function inheritSummary(plan: Plan, pv: Provider | undefined) {
   const M = meta();
-  const fee = `${subValueText('price_cents', plan.price_cents, plan.currency)} / ${subValueText('cycle', plan.cycle)}`;
+  const fee = `${subValueText('price_cents', plan.price_cents, plan.currency)} / ${cycleLabel(plan.cycle)}`;
   const reset = `按${lbl(M.traffic_resets, pv?.traffic_reset ?? M.defaults.traffic_reset)}重置`;
-  return `跟随套餐「${plan.name}」：${fee} · 流量 ${subValueText('traffic_gb', plan.traffic_gb)}；`
-    + `跟随${pv ? `供应商「${pv.name}」` : '默认'}：账单时区 ${pv?.timezone || M.org_timezone} · 流量${reset} · ${subValueText('remind_days', pv?.remind_days ?? M.defaults.remind_days)}提醒`;
+  return {
+    text: `跟随套餐「${plan.name}」`,
+    tip: `套餐：${fee} · 流量 ${subValueText('traffic_gb', plan.traffic_gb)}\n`
+      + `${pv ? `供应商「${pv.name}」` : '默认'}：账单时区 ${pv?.timezone || M.org_timezone} · 流量${reset} · ${subValueText('remind_days', pv?.remind_days ?? M.defaults.remind_days)}提醒`,
+  };
 }
 /** 「跟随套餐：2000 GB」：没有模板（旧接口）为 null */
 export function inheritText(m: MachineView, k: SubField, due?: string) {

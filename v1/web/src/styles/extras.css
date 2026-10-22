@@ -264,6 +264,7 @@ html[data-overlay] :is(.app, .drawer) .progress-fill { transition: none; }
 .cs-value { display: inline-flex; align-items: center; gap: var(--sp-8); min-width: 0; }
 .cs-trigger .nc-flag .lucide { width: 11px; height: 11px; }
 .cs-pop { width: 280px; padding: 0; }
+.cs-pop.hs-pop { width: max(var(--radix-popover-trigger-width), 280px); } /* 上架页的宿主机选择：同触发器一样宽 */
 .cs-pop .cmd-input-wrap { height: 40px; padding: 0 var(--sp-12); gap: var(--sp-8); }
 .cs-pop .cmd-input { font-size: var(--fs-body); }
 .cs-pop .cmd-list { max-height: 300px; }
