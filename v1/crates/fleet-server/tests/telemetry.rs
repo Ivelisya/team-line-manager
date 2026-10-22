@@ -782,6 +782,21 @@ async fn central_outage_is_not_agent_silence() {
     pass(&t, &mut state, base, 61).await;
     let inc = incidents(&t, "firing").await;
     assert_eq!(inc.iter().map(|i| (i["rule"].as_str().unwrap(), i["subject_id"].as_str().unwrap())).collect::<Vec<_>>(), [("agent_offline", b.to_string().as_str())]);
+
+    // 恢复后不久又重启了一次（连着两次部署、崩溃重启）：c 在两次启动之间报过，库里最新的上报已是恢复之后的；
+    // 前一段停机从库里接着算，a 的重发还没到照样不算离线，b 照样离线
+    sqlx::query("update agent_state set last_report_at = now() where machine_id = $1").bind(c).execute(&t.st.db).await.unwrap();
+    let again = fleet_server::views::ReportGaps::default();
+    again.started(&t.st.db).await.unwrap();
+    let now = OffsetDateTime::now_utc();
+    assert!(again.online(now - time::Duration::seconds(330), now), "前一段停机仍不算 a 的沉默");
+    assert!(!again.online(now - time::Duration::seconds(3900), now));
+    // 一直没收到上报时连着重启：每次补记的起点相同，并成一段，不重复扣（否则 b 这种早就不报的也会被扣成在线）
+    let third = fleet_server::views::ReportGaps::default();
+    third.started(&t.st.db).await.unwrap();
+    third.started(&t.st.db).await.unwrap();
+    assert!(!third.online(now - time::Duration::seconds(3900), OffsetDateTime::now_utc()));
+    assert!(!third.online(now - time::Duration::seconds(480), OffsetDateTime::now_utc()), "停机约 300 秒只扣一次");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

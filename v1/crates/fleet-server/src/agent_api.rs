@@ -278,7 +278,17 @@ async fn report(State(st): State<AppState>, h: HeaderMap, ApiJson(r): ApiJson<Re
     let res = ingest(&st, &h, r).await;
     // 中控收不到上报的时段（views::ReportGaps）：入库了、库不可用没入成
     match &res {
-        Ok(_) => st.report_gaps.ok(OffsetDateTime::now_utc()),
+        Ok(_) => {
+            // 库刚恢复、记下了一段中断：存进库里，之后马上重启也接着算
+            if st.report_gaps.ok(OffsetDateTime::now_utc()) {
+                let st = st.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = st.report_gaps.save(&st.db).await {
+                        tracing::warn!("保存中控收不到上报的时段失败：{e}");
+                    }
+                });
+            }
+        }
         Err(IngestErr::Db(e)) if crate::db::unavailable(e) => st.report_gaps.failed(OffsetDateTime::now_utc()),
         _ => {}
     }
