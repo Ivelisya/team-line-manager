@@ -1,5 +1,5 @@
 // 网页终端：打开 / 关闭的状态与票据接口。窗口本身（features/Terminal.tsx，连同 xterm）只在第一次打开时才下载，
-// 机器菜单、命令面板只引这个小文件。全站同时只开一个终端窗口；服务端另外限制每人最多 3 个终端会话。
+// 机器菜单、命令面板只引这个小文件。全站同时只开一个终端窗口；服务端另外限制每人、全中控同时几个（/meta terminal）。
 import { createStore } from './store';
 import { post } from './api';
 
@@ -33,9 +33,9 @@ export const cancelTerminalAsk = () => asking.set(null);
 /** 窗口出错被边界收起时直接清掉，不再确认 */
 export const resetTerminal = () => show(null);
 
-/** 换票据：两步验证 / 密码只放在这一次请求里，不留存。60 秒内要用它连 WebSocket */
+/** 换票据：两步验证 / 密码只放在这一次请求里，不留存。票据在有效期内（/meta terminal.ticket_ttl_s）连上 WebSocket 后作为第一条消息发过去 */
 export const requestTicket = (body: { kind: TermTarget['kind']; id: string; code?: string; password?: string }) =>
   post<{ ticket: string; expires_at: string }>('/terminal/tickets', body);
 
-export const terminalUrl = (ticket: string) =>
-  `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/v1/terminal/ws?ticket=${encodeURIComponent(ticket)}`;
+/** 票据不放在地址里（反代、中控的请求日志都记不到它），连上后第一条消息 {type: 'auth', ticket, cols, rows} 送过去 */
+export const terminalUrl = () => `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/v1/terminal/ws`;

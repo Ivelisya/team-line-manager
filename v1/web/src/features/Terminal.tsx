@@ -1,6 +1,6 @@
 // 网页终端：经中控 SSH 到受管机器（同机 IP 节点由中控连到它的宿主机）。整个文件连同 xterm 按需加载（Shell 里第一次打开时才下载）。
-// 流程：换票据（可能先要两步验证码或登录密码）→ 60 秒内用票据连 WebSocket → 二进制帧双向传终端字节，文本帧是 JSON 控制消息
-// （客户端发 resize，服务端断开前发 exit 和原因）。窗口是右侧不带遮罩的面板：开着终端也能照常翻页面、看卡片。
+// 流程：换票据（可能先要两步验证码或登录密码）→ 连 WebSocket，第一条消息送票据和行列 → 二进制帧双向传终端字节，文本帧是 JSON 控制消息
+// （客户端发 resize，服务端断开前发 exit 和原因）。上限都取 /meta 的 terminal。窗口是右侧不带遮罩的面板：开着终端也能照常翻页面、看卡片。
 import * as React from 'react';
 import { Terminal as XTerm, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -9,6 +9,7 @@ import '@/styles/terminal.css';
 import { RotateCw, SquareTerminal, X } from 'lucide-react';
 import { ApiError } from '@/lib/api';
 import { useMachine } from '@/lib/queries';
+import { meta } from '@/lib/derive';
 import { useHeld } from '@/lib/useHeld';
 import { cancelTerminalAsk, closeTerminal, confirmTerminalAsk, requestTicket, setTerminalLive, terminalUrl, useTerminalAsk, useTerminalTarget, type TermTarget } from '@/lib/terminal';
 import { Button, IconButton } from '@/components/ui/button';
@@ -42,6 +43,9 @@ function readTheme(): ITheme {
   };
 }
 
+/** 服务端没先发 exit 就关掉时，按关闭码说原因（服务端一般会先发 exit） */
+const CLOSE_REASON: Record<number, string> = { 1009: '一次发送的内容太大', 1011: '中控内部错误', 4401: '登录已失效，请重新登录' };
+
 const PILL: Record<Exclude<Phase['s'], 'closed'>, [Tone, string]> = { auth: ['info', '正在验证'], cred: ['warn', '正在验证'], connecting: ['info', '正在连接'], open: ['ok', '已连接'] };
 
 /** 一个终端窗口。kind 现在只有 machine，router 以后同样走它 */
@@ -64,7 +68,9 @@ export function Terminal({ kind, id, name }: TermTarget) {
     f.fit();
     const enc = new TextEncoder();
     const send = (d: Uint8Array | string) => { const ws = sock.current; if (ws?.readyState === WebSocket.OPEN) ws.send(d); };
-    t.onData((d) => send(enc.encode(d)));
+    // 一条消息有上限（超了服务端以 1009 断开）：大段粘贴切成几条发，终端按字节拼回去
+    const max = meta().terminal.max_message;
+    t.onData((d) => { const b = enc.encode(d); for (let i = 0; i < b.length; i += max) send(b.subarray(i, i + max)); });
     t.onBinary((d) => send(Uint8Array.from(d, (c) => c.charCodeAt(0)))); // 部分鼠标上报是 latin-1 字节串，不能按 UTF-8 编码
     t.onResize(({ cols, rows }) => send(JSON.stringify({ type: 'resize', cols, rows })));
     // 有选中内容时 Ctrl+C 交给浏览器复制（xterm 在 copy 事件里放进剪贴板），不发 ^C；没选中照常中断
@@ -100,7 +106,7 @@ export function Terminal({ kind, id, name }: TermTarget) {
     }
     if (my !== gen.current) return;
     setPhase({ s: 'connecting' });
-    const ws = new WebSocket(terminalUrl(ticket));
+    const ws = new WebSocket(terminalUrl());
     ws.binaryType = 'arraybuffer';
     sock.current = ws;
     let opened = false;
@@ -110,7 +116,7 @@ export function Terminal({ kind, id, name }: TermTarget) {
       setPhase({ s: 'open' });
       const t = term.current!;
       fit.current!.fit();
-      ws.send(JSON.stringify({ type: 'resize', cols: t.cols, rows: t.rows }));
+      ws.send(JSON.stringify({ type: 'auth', ticket, cols: t.cols, rows: t.rows })); // 10 秒内要送到
       t.focus();
     };
     ws.onmessage = (e) => {
@@ -120,7 +126,7 @@ export function Terminal({ kind, id, name }: TermTarget) {
     ws.onclose = (e) => {
       if (sock.current !== ws) return; // 自己关的（重连、关窗、卸载）
       sock.current = null;
-      const reason = exit ?? (e.reason || (opened ? '连接中断' : '没能连上中控（网络问题，或票据已过期）'));
+      const reason = exit ?? (e.reason || CLOSE_REASON[e.code] || (opened ? '连接中断' : '没能连上中控（网络问题，或票据已过期）'));
       note(opened ? `已断开：${reason}` : `连接失败：${reason}`);
       setPhase({ s: 'closed', reason, failed: !opened });
     };
@@ -165,7 +171,7 @@ export function Terminal({ kind, id, name }: TermTarget) {
   );
 }
 
-const LIMIT_INFO = '验证后 5 分钟内再开终端不用重输。输错会计入登录的失败次数，错太多次会被暂时限制登录。';
+const limitInfo = () => `验证后 ${Math.round(meta().terminal.verify_ttl_s / 60)} 分钟内再开终端不用重输。输错会计入登录的失败次数，错太多次会被暂时限制登录。`;
 
 /** 开终端前再验证一次身份：开了两步验证要验证码（或恢复码），没开的要当前登录密码。输入只用于这一次请求，提交即清空 */
 function CredForm({ need, err, busy, onSubmit }: { need: Need; err?: string; busy: boolean; onSubmit: (c: { code: string } | { password: string }) => void }) {
@@ -176,7 +182,7 @@ function CredForm({ need, err, busy, onSubmit }: { need: Need; err?: string; bus
       <form className="term-card" onSubmit={(e) => { e.preventDefault(); if (!v.trim() || busy) return; onSubmit(totp ? { code: v.trim() } : { password: v }); setV(''); }}>
         <div className="term-card-title">{totp ? '输入两步验证码' : '输入当前登录密码'}</div>
         <Field label={totp ? '验证码或恢复码' : '登录密码'} error={err} hint="输错计入登录失败次数"
-          info={`${totp ? '打开终端前要再验证一次：验证器里的 6 位验证码，或一个恢复码（用过即作废）。' : '打开终端前要再输入一次当前登录密码，确认是本人在操作。'}\n${LIMIT_INFO}`}>
+          info={`${totp ? '打开终端前要再验证一次：验证器里的 6 位验证码，或一个恢复码（用过即作废）。' : '打开终端前要再输入一次当前登录密码，确认是本人在操作。'}\n${limitInfo()}`}>
           {/* 恢复码带字母，不能限成纯数字键盘 */}
           {totp
             ? <Input value={v} onChange={(e) => setV(e.target.value)} autoFocus autoComplete="one-time-code" autoCapitalize="off" spellCheck={false} placeholder="6 位验证码，或一个恢复码" />
