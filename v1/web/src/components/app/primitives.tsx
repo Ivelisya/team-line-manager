@@ -8,6 +8,7 @@ import type { DueState, EntryView, HealthReason, Lifecycle, MachineView } from '
 import { HEALTH_TONE } from '@/lib/sort';
 import { countryName, flagUrl } from '@/lib/flags';
 import { Tip, Trunc } from '@/components/ui/overlays';
+import { InfoTip } from '@/components/ui/form';
 import { useCountUp } from '@/lib/useCountUp';
 import { dueTone, entryLabel, healthLabel, hostRel, lifecycleLabel, severityOf, type BeatCell } from '@/lib/derive';
 import { useDrawer } from '@/lib/drawer';
@@ -118,11 +119,12 @@ export function FilterChip({ pressed, onClick, children, count }: { pressed: boo
 }
 
 type StatTone = 'ok' | 'teal' | 'bad' | 'amber' | 'gold' | 'sky' | 'violet' | 'blue';
-/** KPI 卡（唯一实现）：彩色图标 + 标签，大号读数 + 小单位，一行灰色说明；三行固定，同一排等高。可点的（to）标题行最右多一个小箭头 */
-export function Stat({ icon, tone, label, value, unit, caption, to, loading }: { icon: React.ReactNode; tone: StatTone; label: string; value: React.ReactNode; unit?: string; caption?: React.ReactNode; to?: string; loading?: boolean }) {
+/** KPI 卡（唯一实现）：彩色图标 + 标签，大号读数 + 小单位，一行灰色说明；三行固定，同一排等高。可点的（to）标题行最右多一个小箭头。
+ *  info：口径说明（含不含什么、怎么算的），标签旁的「(i)」悬停看 */
+export function Stat({ icon, tone, label, info, value, unit, caption, to, loading }: { icon: React.ReactNode; tone: StatTone; label: string; info?: string; value: React.ReactNode; unit?: string; caption?: React.ReactNode; to?: string; loading?: boolean }) {
   const inner = (
     <>
-      <span className="stat-label"><span className="stat-ic" data-tone={tone}>{icon}</span>{label}{to && <ChevronRight className="stat-go" aria-hidden />}</span>
+      <span className="stat-label"><span className="stat-ic" data-tone={tone}>{icon}</span>{label}{info && <InfoTip text={info} />}{to && <ChevronRight className="stat-go" aria-hidden />}</span>
       <span className="stat-value">{loading ? <span className="skel" style={{ width: 64, height: 20 }} /> : <>{value}{unit && <small>{unit}</small>}</>}</span>
       <span className="stat-cap">{loading ? '' : caption ?? ' '}</span>
     </>

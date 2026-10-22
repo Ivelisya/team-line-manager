@@ -252,6 +252,10 @@ html[data-overlay] :is(.app, .drawer) .progress-fill { transition: none; }
 .dist-fill { display: block; height: 100%; border-radius: var(--r-pill); background: var(--chart-1); }
 .dist-pct { text-align: right; color: var(--fg-2); font-variant-numeric: tabular-nums; }
 
+/* 访问监控「域名与 IP」「新出现的目标」：目标名可点（把搜索设成它），平时同正文，悬停变紫加下划线 */
+.host-pick { min-width: 0; padding: 0; border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; text-underline-offset: 3px; transition: color var(--dur-1) var(--ease-std); }
+@media (hover: hover) { .host-pick:hover { color: var(--accent); text-decoration: underline; } }
+
 /* ========== 数字等宽恢复 ==========
    `font:` 简写会把 font-variant-numeric 重置成 normal，body 上设的 tabular-nums 在这些控件里就丢了（数字跳动时会左右抖）。
    这条放在所有样式表之后的最后一份普通样式里，统一补回。 */
