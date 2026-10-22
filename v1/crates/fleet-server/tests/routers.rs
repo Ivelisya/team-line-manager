@@ -203,10 +203,13 @@ async fn bootstrap_script_is_one_time() {
     let audit = t.get(&format!("/api/v1/audit?target_id={id}")).await;
     assert_eq!((audit[0]["action"].as_str(), audit[0]["actor"].as_str(), audit[0]["title"].as_str()), (Some("router.bootstrap_used"), Some("router-bootstrap"), Some("路由取走接入脚本")));
 
-    // 重新生成接入命令：旧隧道公钥立刻撤掉、端口换一个；新令牌能用
+    // 重新生成接入命令：旧隧道公钥立刻撤掉、端口换一个、马上显示等待接入（哪怕上一轮还连得上）；新令牌能用
+    sqlx::query("insert into router_status (router_id, ts, reachable, last_ok_at) values ($1::uuid, now(), true, now())").bind(&id).execute(&t.st.db).await.unwrap();
+    assert_eq!(t.get(&format!("/api/v1/routers/{id}")).await["state"], "online");
     let d = t.post(&format!("/api/v1/routers/{id}/bootstrap"), json!({})).await;
     let (port2, pk2, _) = router_row(&t, &id).await;
     assert!(pk2.is_none() && port2 != port);
+    assert_eq!(t.get(&format!("/api/v1/routers/{id}")).await["state"], "pending");
     assert_eq!(read(&t.dir.path().join("tunnel-keys")), "");
     let (s, script) = fetch(&t, &format!("/api/v1/router-bootstrap/{}", token_of(d["cmd"].as_str().unwrap()))).await;
     assert_eq!(s, StatusCode::OK);

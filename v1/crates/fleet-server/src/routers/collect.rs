@@ -301,7 +301,8 @@ pub fn build(raw: &Value, prev: &Prev, last: Option<&Snapshot>, config: Option<&
         .unwrap_or_default()
         .iter()
         .filter_map(|x| {
-            let name = s(x, "name")?;
+            // 回环接口不是网络口，不列
+            let name = s(x, "name").filter(|n| n != "loopback")?;
             let device = s(x, "device");
             let cur = device.as_ref().and_then(|d| dev.get(d)).copied();
             let old = device.as_ref().and_then(|d| prev.dev.get(d)).copied();
@@ -864,7 +865,8 @@ mod tests {
             "os": "iStoreOS 24.10.2", "kernel": "6.6.86",
             "ifaces": [
                 {"name": "wan", "up": true, "proto": "dhcp", "device": "eth0", "ip": "192.168.1.2", "uptime": 300},
-                {"name": "lan", "up": true, "proto": "static", "device": "br-lan", "ip": "192.168.124.1", "uptime": 300}
+                {"name": "lan", "up": true, "proto": "static", "device": "br-lan", "ip": "192.168.124.1", "uptime": 300},
+                {"name": "loopback", "up": true, "proto": "static", "device": "lo", "ip": "127.0.0.1", "uptime": 300}
             ],
             "dev": {"eth0": [rx, rx / 2], "br-lan": [5, 5]},
             "oc": oc,
@@ -886,6 +888,7 @@ mod tests {
         assert_eq!((y.mem_used, y.mem_total, y.disk_used, y.disk_total, y.cores), (Some(1_000_000_000), Some(4_000_000_000), Some(100), Some(1000), Some(4)));
         assert_eq!((y.clock_skew_s, y.clash_rss, y.uptime_s), (Some(2), Some(52428800), Some(16863)));
         assert_eq!(b.snap.interfaces[0].rx_bps, None);
+        assert_eq!(b.snap.interfaces.iter().map(|i| i.name.as_str()).collect::<Vec<_>>(), ["wan", "lan"], "回环接口不列");
         assert_eq!(b.snap.openclash.up_bps, None);
         assert_eq!((b.metric.wan_rx_bps, b.metric.conns, b.metric.exits_total), (None, Some(3), 2));
         // 没测过延迟：用 mihomo 自己记的

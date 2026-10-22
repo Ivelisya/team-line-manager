@@ -214,6 +214,8 @@ async fn run_steps(st: &AppState, id: Uuid, l: &Login, kh: &PathBuf, key: &str) 
     .execute(&mut *tx)
     .await
     .map_err(db)?;
+    // 旧隧道作废了：新隧道连上、采集到之前算「等待接入」
+    sqlx::query("update router_status set reachable = false, error = null where router_id = $1").bind(id).execute(&mut *tx).await.map_err(db)?;
     tx.commit().await.map_err(db)?;
     super::sync_files(st).await.map_err(|e| format!("写隧道公钥清单失败：{e:#}"))?;
     tunnel::close_master(&st.cfg, id).await;

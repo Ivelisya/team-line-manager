@@ -208,6 +208,8 @@ pub async fn bootstrap(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPat
     .bind(exp)
     .execute(&mut *tx)
     .await?;
+    // 中控不再经旧隧道连：马上显示「等待接入」，不等下一轮采集（上一份快照留着）
+    sqlx::query("update router_status set reachable = false, error = null where router_id = $1").bind(id).execute(&mut *tx).await?;
     audit(&mut tx, &a.name, "router.bootstrap", "router", Some(id), json!({"name": name, "tunnel_port": port})).await?;
     tx.commit().await?;
     tunnel::close_master(&st.cfg, id).await;

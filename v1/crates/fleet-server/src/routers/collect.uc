@@ -91,15 +91,14 @@ function system() {
 			out[(m[1] == 'MemTotal') ? 'mem_total' : 'mem_avail'] = int(m[2]) * 1024;
 	}
 
-	// 存储：有 /overlay 看它（可写层），否则看 /。总量 = 已用 + 可用（同 df 的 Use%）
+	// 存储：有 /overlay 看它（可写层），否则看 /；路径报 df 给的挂载点（没单独挂 /overlay 时就是 /）。
+	// 总量 = 已用 + 可用（同 df 的 Use%）。文件系统名太长时 busybox df 会折成两行，数字在最后一行
 	let dp = fs.stat('/overlay') ? '/overlay' : '/';
-	let df = lines(run('df -k ' + dp + ' 2>/dev/null'));
+	let df = filter(lines(run('df -k ' + dp + ' 2>/dev/null')), (l) => trim(l) != '');
 	let f2 = words(df[length(df) - 1] || '');
-	if (length(f2) < 5 && length(df) > 1)
-		f2 = words(df[length(df) - 2]);
 	let n = length(f2);
 	if (n >= 5 && num(f2[n - 4]) != null)
-		out.disk = { path: dp, used: int(f2[n - 4]) * 1024, avail: int(f2[n - 3]) * 1024 };
+		out.disk = { path: f2[n - 1], used: int(f2[n - 4]) * 1024, avail: int(f2[n - 3]) * 1024 };
 
 	// 温度：thermal_zone 与 hwmon 里最高的一个（0–150 ℃ 之外的读数不要）
 	let temp = null;

@@ -35,6 +35,11 @@ const OFFLINE_S: i64 = 120;
 const DEBOUNCE_S: i64 = 60;
 /// CPU 持续偏高满这么久
 const CPU_SUSTAIN_S: i64 = 600;
+/// 时长判定的余量：采集每 30 秒一轮、每轮耗时不一，「满 60 秒」实际量到的是 59.x 秒，差这几秒不该再多等一轮
+const SLACK_S: i64 = 5;
+
+/// 从 `since` 到 `now` 已经满 `secs` 秒（含余量）
+fn held(since: OffsetDateTime, now: OffsetDateTime, secs: i64) -> bool { (now - since).whole_seconds() + SLACK_S >= secs }
 
 pub fn is_router(rule: &str) -> bool { rule.starts_with("router_") }
 
@@ -77,7 +82,7 @@ pub fn problems(v: &View, cpu_high_since: Option<OffsetDateTime>, now: OffsetDat
     let mut out = vec![];
     if v.state != "online" {
         if v.state == "offline" {
-            if let Some(ok) = v.last_ok_at.filter(|ok| (now - *ok).whole_seconds() > OFFLINE_S) {
+            if let Some(ok) = v.last_ok_at.filter(|ok| held(*ok, now, OFFLINE_S)) {
                 out.push(Problem {
                     rule: OFFLINE,
                     severity: "critical",
@@ -117,7 +122,7 @@ pub fn problems(v: &View, cpu_high_since: Option<OffsetDateTime>, now: OffsetDat
     }
     let y = &s.system;
     let mut res = vec![];
-    if let Some(since) = cpu_high_since.filter(|t| (now - *t).whole_seconds() >= CPU_SUSTAIN_S) {
+    if let Some(since) = cpu_high_since.filter(|t| held(*t, now, CPU_SUSTAIN_S)) {
         res.push(format!("CPU {:.0}%（超过 90% 已 {}）", y.cpu_pct.unwrap_or(0.0), notify::fmt_duration((now - since).whole_seconds())));
     }
     if let Some(p) = pct(y.mem_used, y.mem_total).filter(|p| *p > 90.0) {
@@ -229,7 +234,7 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
                 }
                 continue;
             }
-            if (now - since).whole_seconds() < p.hold_s || silenced {
+            if (p.hold_s > 0 && !held(since, now, p.hold_s)) || silenced {
                 continue;
             }
             let id = crate::db::new_id();
@@ -267,7 +272,7 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
             continue;
         }
         let since = *state.clean_since.entry(inc.id).or_insert(now);
-        if (now - since).whole_seconds() < DEBOUNCE_S {
+        if !held(since, now, DEBOUNCE_S) {
             continue;
         }
         state.clean_since.remove(&inc.id);

@@ -37,6 +37,15 @@ fn sync_cn(s: &str) -> &str {
     }
 }
 
+/// 运行时长：`3 天 4 小时` / `2 小时 5 分钟` / `7 分钟`
+fn uptime_cn(s: i64) -> String {
+    match (s / 86400, s % 86400 / 3600, s % 3600 / 60) {
+        (0, 0, m) => format!("已运行 {m} 分钟"),
+        (0, h, m) => format!("已运行 {h} 小时 {m} 分钟"),
+        (d, h, _) => format!("已运行 {d} 天 {h} 小时"),
+    }
+}
+
 fn pct(a: Option<f64>, b: Option<f64>) -> String {
     match (a, b) {
         (Some(a), Some(b)) if b > 0.0 => format!("{:.0}%", a * 100.0 / b),
@@ -163,7 +172,7 @@ fn human_show(d: &Value) -> String {
         kv.push(("内存", format!("{} / {}（{}）", bytes(num(y, "/mem_used").unwrap_or(0.0)), bytes(num(y, "/mem_total").unwrap_or(0.0)), pct(num(y, "/mem_used"), num(y, "/mem_total")))));
         kv.push(("存储", format!("{} {} / {}（{}）", st(y, "/disk_path"), bytes(num(y, "/disk_used").unwrap_or(0.0)), bytes(num(y, "/disk_total").unwrap_or(0.0)), pct(num(y, "/disk_used"), num(y, "/disk_total")))));
         kv.push(("连接表", format!("{} / {}（{}）", st(y, "/conntrack"), st(y, "/conntrack_max"), pct(num(y, "/conntrack"), num(y, "/conntrack_max")))));
-        let up = num(y, "/uptime_s").map(|s| format!("{} 天 {} 小时", s as i64 / 86400, s as i64 % 86400 / 3600)).unwrap_or("-".into());
+        let up = num(y, "/uptime_s").map(|s| uptime_cn(s as i64)).unwrap_or("-".into());
         kv.push(("运行", format!("{up} · {} 个进程 · 温度 {} · 时钟偏差 {} 秒", st(y, "/procs"), num(y, "/temp_c").map(|t| format!("{t:.0}℃")).unwrap_or("-".into()), st(y, "/clock_skew_s"))));
     }
     if oc.is_object() {
@@ -442,5 +451,10 @@ mod tests {
         let o = SshOpts { host: Some("10.0.0.1"), port: None, user: None, password_stdin: false };
         assert_eq!(o.body().unwrap().unwrap(), json!({"host": "10.0.0.1", "port": 22, "user": "root"}));
         assert_eq!(o.target(), "root@10.0.0.1:22");
+    }
+
+    #[test]
+    fn uptime_wording() {
+        assert_eq!([uptime_cn(420), uptime_cn(7500), uptime_cn(3 * 86400 + 4 * 3600 + 59)], ["已运行 7 分钟", "已运行 2 小时 5 分钟", "已运行 3 天 4 小时"]);
     }
 }
