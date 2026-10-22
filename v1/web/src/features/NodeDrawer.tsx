@@ -155,10 +155,19 @@ function IpNodeLine({ id, name, onOpen }: { id: string; name: string; onOpen: (i
   );
 }
 
+/** 入口探测的连通数：「TCP 1/1 · 出口 0/1」，有不通的数字标黄；没有在用的入口为「—」 */
+function probeCounts(m: MachineView) {
+  const es = m.entries.filter((e) => e.lifecycle === 'active');
+  if (!es.length) return '—';
+  const ps = probeSummary(m);
+  const egOk = es.filter((e) => e.egress?.ok).length;
+  const n = (ok: number, total: number) => <b className="num" style={ok < total ? { color: 'var(--warn-text)' } : undefined}>{ok}/{total}</b>;
+  return <span data-tip={`TCP：线路机到节点的握手，${ps.total - ps.tcpOk} 条不通\n出口：经入口访问外网的验证，${es.length - egOk} 条不通`}>{ps.total > 0 && <>TCP {n(ps.tcpOk, ps.total)} · </>}出口 {n(egOk, es.length)}</span>;
+}
+
 function OverviewTab({ m }: { m: MachineView }) {
   const audit = useAudit(m.id);
   const { open } = useDrawer();
-  const ps = probeSummary(m);
   // 同机 IP 节点：SSH 端口、agent 都是宿主机的
   const h = m.host_machine;
   const ofHost = h ? '（宿主机的）' : '';
@@ -182,15 +191,15 @@ function OverviewTab({ m }: { m: MachineView }) {
           <LabelValue label="套餐">{m.plan?.name ?? (h ? '不带套餐' : undefined)}</LabelValue>
           {/* 供应商后台里这台的服务号（DeerVPS 的 SRV-…、ATTVPS 的数字），对账、开工单时用：不是分类，不进标签；搜索照样能搜到 */}
           <LabelValue label="供应商服务编号">{m.service_ref ? <span className="row" style={{ gap: 4, flexWrap: 'nowrap', minWidth: 0 }}><Trunc className="mono">{m.service_ref}</Trunc><CopyButton text={m.service_ref} label="服务编号" size={13} /></span> : null}</LabelValue>
-          <LabelValue label="生命周期"><LifecyclePill lc={m.lifecycle} />{m.lifecycle_reason && <span className="t-sub"> {errText(m.lifecycle_reason)}</span>}</LabelValue>
+          {/* 已退役、上架失败的原因与时间在顶上的横幅里，这里只放状态（原因放这格会被截断） */}
+          <LabelValue label="生命周期"><LifecyclePill lc={m.lifecycle} />{m.lifecycle_reason && m.lifecycle !== 'retired' && m.lifecycle !== 'failed' && <span className="t-sub" data-tip={errText(m.lifecycle_reason)}> {errText(m.lifecycle_reason)}</span>}</LabelValue>
           <LabelValue label="上架时间">{F.dtFull(m.activated_at)}</LabelValue>
-          {m.retired_at && <LabelValue label="退役时间">{F.dtFull(m.retired_at)}</LabelValue>}
           {m.lifecycle === 'retired' ? null : m.agent ? <>
             <LabelValue label="agent 版本">{`${m.agent.version ?? '未知'}${ofHost}`}</LabelValue>
             <LabelValue label="最近上报">{m.agent.last_report_at ? F.ago(m.agent.last_report_at) : '尚未上报'}</LabelValue>
           </> : <LabelValue label="agent"><>无 <InfoTip text="家宽代理不装 agent：没有主机读数，连通性靠中控的探测" /></></LabelValue>}
-          {/* 只数经节点的入口：直出入口没有 TCP 探测 */}
-          <LabelValue label="入口探测">{ps.total ? `${ps.tcpOk}/${ps.total} 连通` : '—'}</LabelValue>
+          {/* TCP 不通与出口不通分开数（同线路页）：TCP 只数经节点的入口（直出入口没有 TCP 探测），出口数全部在用的入口 */}
+          <LabelValue label="入口探测">{probeCounts(m)}</LabelValue>
           {m.ip_nodes.length > 0 && (
             <LabelValue label="同机 IP 节点" className="span-2" wrap>
               <div className="stack-sm" style={{ marginTop: 2 }}>{m.ip_nodes.map((x) => <IpNodeLine key={x.id} id={x.id} name={x.name} onOpen={open} />)}</div>
