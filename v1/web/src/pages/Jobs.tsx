@@ -37,7 +37,7 @@ type View = 'all' | 'running' | 'done';
 const VIEWS: { value: View; label: string }[] = [{ value: 'all', label: '全部' }, { value: 'running', label: '进行中' }, { value: 'done', label: '已结束' }];
 const STATE_OF: Record<View, 'all' | 'active' | 'done'> = { all: 'all', running: 'active', done: 'done' };
 /** 类型筛选（?kind=，与页签组合）：上架、恢复各含四类机器，按大类筛（同列表接口的 kind）；其余是作业类型原值，名字取 /meta */
-const KIND_VALUES = ['provision', 'restore', 'attach_entry', 'move_entry', 'upgrade_agent', 'retire', 'purge'];
+const KIND_VALUES = ['provision', 'restore', 'attach_entry', 'move_entry', 'replace', 'upgrade_agent', 'retire', 'purge'];
 const KIND_GROUP: Record<string, string> = { provision: '上架', restore: '恢复' };
 
 const JobPill = ({ state }: { state: string }) => { const s = STATE[state] ?? { tone: 'neutral' as Tone }; return <Pill tone={s.tone} dot={s.dot}>{jobStateLabel(state)}</Pill>; };

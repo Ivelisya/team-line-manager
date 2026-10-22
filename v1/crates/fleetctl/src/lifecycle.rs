@@ -1,4 +1,4 @@
-//! 生命周期命令：换线路机（move）、搬空线路机（evacuate）、恢复已退役的机器（restore）。
+//! 生命周期命令：换线路机（move）、搬空线路机（evacuate）、替换节点（replace）、恢复已退役的机器（restore）。
 //! 都是先看预检/校验、确认后才提交作业；作业本身的进度用 `fleetctl job <id> --follow` 看。
 
 use crate::cmds::{self, outln, st, Ctx};
@@ -111,6 +111,98 @@ pub fn evacuate(ctx: &Ctx, relay: &str, to: &str, yes: bool, follow: bool) -> an
         code = code.max(1);
     }
     Ok(code)
+}
+
+pub struct ReplaceOpts<'a> {
+    pub old: &'a str,
+    pub new: &'a str,
+    pub to: Option<&'a str>,
+    pub number: Option<i32>,
+    pub no_routers: bool,
+    pub yes: bool,
+    pub follow: bool,
+}
+
+/// `fleetctl replace <旧节点> --with <新节点>`：先 GET 预览（改哪些路由的哪些出口、编号怎么变、旧节点去哪）；
+/// 不加 --yes 只打印预览，加了才提交作业
+pub fn replace(ctx: &Ctx, o: ReplaceOpts) -> anyhow::Result<u8> {
+    let old = ctx.find(o.old, Want::Live)?;
+    let new = ctx.find(o.new, Want::Live)?;
+    let id = st(&old, "/id");
+    let mut q: Vec<(&str, String)> = vec![("new_machine_id", st(&new, "/id"))];
+    let mut old_to = json!({});
+    if let Some(t) = o.to {
+        let tid = lookup(&ctx.teams()?, t, &["name"], "团队")?;
+        old_to["team_id"] = json!(tid);
+        q.push(("team_id", tid));
+    }
+    if let Some(n) = o.number {
+        old_to["number"] = json!(n);
+        q.push(("number", n.to_string()));
+    }
+    if o.no_routers {
+        q.push(("routers", "false".into()));
+    }
+    let pv = ctx.c.get_q(&format!("/machines/{id}/replace"), &q)?;
+    if !ctx.json || !o.yes {
+        let team = |p: &str| if pv.pointer(p).is_some_and(|t| t["spare"] == true) { "（备用）" } else { "" };
+        let mut rows = vec![
+            ("新节点", format!("{} → {}", st(&pv, "/new/name"), st(&pv, "/new_name"))),
+            ("旧节点", format!("{} → {}{}", st(&pv, "/old/name"), st(&pv, "/old_to/name"), team("/old_to/team"))),
+        ];
+        let renames: Vec<String> = pv["renames"].as_array().cloned().unwrap_or_default().iter().map(|r| format!("{} → {}", st(r, "/old_name"), st(r, "/new_name"))).collect();
+        if !renames.is_empty() {
+            rows.push(("编号压缩", renames.join("，")));
+        }
+        if pv["routers_enabled"] != true {
+            rows.push(("软路由", "不改（--no-routers）".into()));
+        }
+        if ctx.json {
+            ctx.emit(&pv, String::new);
+        } else {
+            outln(table::kv(&rows));
+            let routers = pv["routers"].as_array().cloned().unwrap_or_default();
+            if pv["routers_enabled"] == true && !routers.is_empty() {
+                let mut t = vec![];
+                for r in &routers {
+                    for e in r["exits"].as_array().cloned().unwrap_or_default() {
+                        let state = match r["state"].as_str() {
+                            Some("online") => "在线",
+                            Some("offline") => "离线",
+                            _ => "未接入",
+                        };
+                        t.push(vec![st(r, "/name"), state.to_string(), st(&e, "/exit"), st(&e, "/from"), st(&e, "/to")]);
+                    }
+                }
+                outln(format!("要改的软路由出口（备份后改，改完重启 OpenClash 并测延迟；任何一台失败全部换回）：\n{}", table::render(&["软路由", "状态", "出口", "现在", "改成"], &t)));
+            }
+            for w in pv["warnings"].as_array().cloned().unwrap_or_default() {
+                outln(format!("注意：{}", w.as_str().unwrap_or("")));
+            }
+        }
+    }
+    if pv["ok"] != true {
+        let why = pv["blockers"].as_array().map(|a| a.iter().filter_map(|s| s.as_str()).collect::<Vec<_>>().join("；")).unwrap_or_default();
+        bail!("现在不能替换：{why}");
+    }
+    if !o.yes {
+        if !ctx.json {
+            outln("以上是预览，没有改动。确认无误后加 --yes 执行（--follow 跟进度）");
+        }
+        return Ok(0);
+    }
+    let mut body = json!({"new_machine_id": new["id"], "old_to": old_to});
+    if o.no_routers {
+        body["routers"] = json!(false);
+    }
+    let d = ctx.c.post(&format!("/machines/{id}/replace"), &body)?;
+    ctx.emit(&d, || {
+        format!("已提交替换作业 {}（{} 由 {} 接替，旧节点改为 {}）\n看进度：fleetctl job {} --follow", st(&d, "/job_id"), st(&d, "/old/name"), st(&d, "/new/name"), st(&d, "/old_to/name"), st(&d, "/job_id"))
+    });
+    if o.follow {
+        return cmds::follow_job(ctx, &st(&d, "/job_id"));
+    }
+    Ok(0)
 }
 
 pub struct RestoreOpts<'a> {

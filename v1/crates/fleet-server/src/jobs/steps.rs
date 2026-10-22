@@ -1,6 +1,7 @@
 //! 各作业步骤的实现。每步幂等：重跑不会重复产生副作用。
 
 mod lifecycle;
+mod replace;
 
 use super::scripts::{self, vars, SsInst};
 use super::{clip, log, JobRow, Outcome};
@@ -157,6 +158,9 @@ pub async fn run(c: &Ctx<'_>, key: &str) -> anyhow::Result<Outcome> {
         "revoke" => revoke(c).await,
         "finalize" => finalize(c).await,
         "purge" => purge(c).await,
+        // 替换节点
+        "routers" => replace::routers(c).await,
+        "renumber" => replace::renumber(c).await,
         _ => bail!("未知步骤 {key}"),
     }
 }

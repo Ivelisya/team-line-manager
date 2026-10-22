@@ -949,6 +949,67 @@ R('POST', '/machines/([^/]+)/restore', ({ params, body }) => {
   return { job_id: job.id, machine_id: m.id, name: m.name, old_name: old, number: m.number };
 });
 
+// ---------- 替换节点 ----------
+const REPLACE_STEPS: [string, string][] = [['routers', '改软路由出口'], ['renumber', '交换编号']];
+/** 模拟的计划：旧节点去「备用」团队（没有就要求指定），新节点接旧编号；软路由按旧节点的在用入口编一台「<团队>-路由A」 */
+function replacePlan(old: MachineView, newId: string | null, teamId: string | null, number: string | null, routers: boolean) {
+  const blockers: string[] = []; const warnings: string[] = [];
+  const nw = db.machines.find((x) => x.id === newId);
+  if (!nw) throw bad('新节点不存在');
+  for (const [x, who] of [[old, '旧节点'], [nw, '新节点']] as const) {
+    if (x.kind === 'relay') blockers.push(`${who}「${x.name}」是线路机：只有节点能替换`);
+    else if (x.lifecycle !== 'active') blockers.push(`${who}「${x.name}」现在不在用，只有在用的节点能替换`);
+    if (x.active_job) blockers.push(`「${x.name}」还有进行中的作业：等它结束再替换`);
+  }
+  if (!nw.entries.some((e) => e.lifecycle === 'active')) blockers.push(`新节点「${nw.name}」没有在用的入口`);
+  const spare = teamId ? db.teams.find((t) => t.id === teamId) : db.teams.filter((t) => t.spare).length === 1 ? db.teams.find((t) => t.spare) : undefined;
+  if (!spare) blockers.push('没有找到旧节点要去的备用团队：指定旧节点去哪个团队');
+  let num: number | null = null;
+  if (spare) {
+    const taken = new Set(db.machines.filter((x) => x.team?.id === spare.id && x.id !== old.id && x.id !== nw.id && x.lifecycle !== 'retired' && x.number != null).map((x) => x.number!));
+    if (spare.id === old.team?.id && old.number != null) taken.add(old.number);
+    if (number) { const n = +number; if (taken.has(n)) blockers.push(`编号 ${n} 已被占用`); else num = n; } else { let n = 1; while (taken.has(n)) n++; num = n; }
+    if (!spare.spare) warnings.push('旧节点要去的不是备用团队：不会到期自动删除');
+  }
+  if (nw.team?.id !== old.team?.id) warnings.push(`新节点「${nw.name}」不在旧节点的团队，替换时改到这个团队`);
+  const rts = old.entries.filter((e) => e.lifecycle === 'active').length && old.team ? [{
+    id: `rt-${old.team.id}`, name: `${old.team.name}-路由A`, state: 'online',
+    exits: old.entries.filter((e) => e.lifecycle === 'active').map((e, i) => {
+      const ne = nw.entries.find((x) => x.relay.id === e.relay.id && x.lifecycle === 'active') ?? nw.entries.find((x) => x.lifecycle === 'active');
+      const host = machine(e.relay.id).ip;
+      return { exit: `节点${String((old.number ?? 1) + i).padStart(2, '0')}`, old_entry_id: e.id, new_entry_id: ne?.id ?? '', from: `${host}:${e.port}`, to: ne ? `${machine(ne.relay.id).ip}:${ne.port}` : '?' };
+    }),
+  }] : [];
+  if (routers && rts.length === 0) warnings.push('没有软路由的出口指向旧节点：只交换编号');
+  const side = (x: MachineView) => ({ id: x.id, name: x.name, kind: x.kind, team: x.team });
+  return {
+    nw, spare, num,
+    view: {
+      old: side(old), new: side(nw), new_name: old.team && old.number != null ? displayName(old.team.name, old.number) : old.name,
+      old_to: { team: spare ? { id: spare.id, name: spare.name, spare: spare.spare } : null, number: num, name: spare && num != null ? displayName(spare.name, num) : old.name },
+      renames: [], routers_enabled: routers, routers: rts, ok: blockers.length === 0, blockers, warnings,
+    },
+  };
+}
+R('GET', '/machines/([^/]+)/replace', ({ params, query }) => replacePlan(machine(params[0]), query.get('new_machine_id'), query.get('team_id'), query.get('number'), query.get('routers') !== 'false').view);
+R('POST', '/machines/([^/]+)/replace', ({ params, body }) => {
+  const old = machine(params[0]);
+  const p = replacePlan(old, body.new_machine_id ?? null, body.old_to?.team_id ?? null, body.old_to?.number != null ? String(body.old_to.number) : null, body.routers !== false);
+  if (!p.view.ok) throw bad(p.view.blockers.join('；'), 409, 'conflict');
+  const { nw, spare, num } = p;
+  const job = newJob('replace', { id: old.id, name: old.name }, REPLACE_STEPS);
+  old.active_job = { id: job.id, kind: 'replace', state: 'running' };
+  drive(job, 2500, () => {
+    const [team, number] = [old.team, old.number];
+    old.team = { id: spare!.id, name: spare!.name }; old.spare = spare!.spare; old.number = num; old.name = displayName(spare!.name, num!); old.revision++;
+    nw.team = team; nw.spare = false; nw.number = number; nw.name = p.view.new_name; nw.revision++;
+    old.active_job = null; refreshCounts();
+  }, [{ routers: p.view.routers.map((r) => ({ id: r.id, name: r.name, exits: r.exits.map((e) => ({ exit: e.exit, to: e.to })), delay_ms: r.exits.map(() => 120) })) }, { old: p.view.old_to.name, new: p.view.new_name, renumbered: 0 }]);
+  db.audit.unshift({ id: `a${db.seq++}`, ts: iso(), actor: db.user, action: 'machine.replace', title: '替换节点', summary: `${old.name} 由 ${nw.name} 接替，旧节点改为 ${p.view.old_to.name}（改 ${p.view.routers.length} 台软路由）`, target_kind: 'machine', target_id: old.id, detail: {} });
+  emit({ type: 'machines' }); emit({ type: 'job', id: job.id });
+  return { ...p.view, job_id: job.id };
+});
+
 // ---------- 设置：API 密钥 / 通知渠道 ----------
 const rand = (n: number) => Array.from({ length: n }, () => 'abcdefghijklmnopqrstuvwxyz0123456789'[Math.floor(Math.random() * 36)]).join('');
 R('GET', '/api-keys', () => clone(db.apiKeys));

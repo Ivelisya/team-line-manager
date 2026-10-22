@@ -132,7 +132,8 @@ pub struct EntryRef {
     pub lifecycle: String,
 }
 
-fn host_eq(a: &str, b: &str) -> bool {
+/// 两个主机名 / IP 是不是同一个（大小写、方括号、末尾的点不算）
+pub fn host_eq(a: &str, b: &str) -> bool {
     let n = |s: &str| s.trim().trim_start_matches('[').trim_end_matches(']').trim_end_matches('.').to_ascii_lowercase();
     n(a) == n(b)
 }

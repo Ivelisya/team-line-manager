@@ -43,8 +43,12 @@ main </dev/null
 "#;
 
 pub fn script(delay: bool) -> String {
-    let url: String = DELAY_URL.bytes().map(|b| if b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b'_' { (b as char).to_string() } else { format!("%{b:02X}") }).collect();
-    crate::jobs::scripts::vars(&[("DELAY", if delay { "1" } else { "0" }), ("DELAY_URL", &url)]) + &WRAPPER.replace("@@PROGRAM@@", include_str!("collect.uc").trim_end())
+    crate::jobs::scripts::vars(&[("DELAY", if delay { "1" } else { "0" }), ("DELAY_URL", &delay_url_param())]) + &WRAPPER.replace("@@PROGRAM@@", include_str!("collect.uc").trim_end())
+}
+
+/// 测延迟的地址按查询参数编码（mihomo 的 `?url=`）：替换节点后测出口延迟也用它（routers::replace）
+pub fn delay_url_param() -> String {
+    DELAY_URL.bytes().map(|b| if b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b'_' { (b as char).to_string() } else { format!("%{b:02X}") }).collect()
 }
 
 // ── 快照（接口的 detail，存在 router_status.data）──────────────────────────
