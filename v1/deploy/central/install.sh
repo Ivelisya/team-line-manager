@@ -142,8 +142,13 @@ if [ -f /etc/fleet/backup.pub ]; then
 fi
 
 systemctl daemon-reload
-systemctl enable -q fleet-server fleet-ipintel-fetch.timer fleet-backup.timer
-systemctl start fleet-ipintel-fetch.timer fleet-backup.timer
+# 大陆优化入口 cn 的优选 IP 每 6 小时自动更新（docs/OPS.md §11）；没有 /etc/fleet/cf-dns.token 时服务按 Condition 跳过
+install -d -m 755 /opt/fleet/cf
+install -m 644 "$PKG/cf-yx-update.sh" /opt/fleet/cf/cf-yx-update.sh
+install -m 644 "$PKG/fleet-cf-yx.service" "$PKG/fleet-cf-yx.timer" /etc/systemd/system/
+
+systemctl enable -q fleet-server fleet-ipintel-fetch.timer fleet-backup.timer fleet-cf-yx.timer
+systemctl start fleet-ipintel-fetch.timer fleet-backup.timer fleet-cf-yx.timer
 [ -n "$(ls -A /var/lib/fleet/ipintel)" ] || systemctl start --no-block fleet-ipintel-fetch.service
 systemctl restart fleet-server
 

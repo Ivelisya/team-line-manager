@@ -1,0 +1,17 @@
+# /etc/systemd/system/fleet-cf-yx.service — 更新 cn.kismet613.com 的优选 IP（由 .timer 触发，也可手动 systemctl start），见 docs/OPS.md §11
+# 没有 /etc/fleet/cf-dns.token（只能改 kismet613.com DNS 的 CF 令牌）就不运行。
+[Unit]
+Description=fleet: refresh preferred Cloudflare IPs for cn.kismet613.com
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/fleet/cf-dns.token
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/fleet/cf/cf-yx-update.sh
+TimeoutStartSec=5min
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX

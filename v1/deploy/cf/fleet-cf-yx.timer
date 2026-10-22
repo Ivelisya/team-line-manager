@@ -1,0 +1,11 @@
+# /etc/systemd/system/fleet-cf-yx.timer — 每 6 小时更新一次优选 IP（社区来源按小时级更新；错过则开机后补跑）
+[Unit]
+Description=fleet: refresh preferred Cloudflare IPs every 6 hours
+
+[Timer]
+OnCalendar=*-*-* 00/6:17:00 Asia/Shanghai
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
