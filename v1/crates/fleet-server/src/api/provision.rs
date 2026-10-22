@@ -323,7 +323,8 @@ pub async fn check(_a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Ba
         }
         crate::ssh::tcp_ok(&c.ip.to_string(), c.item.ssh_port.unwrap_or(22), Duration::from_secs(3)).await
     });
-    for (c, up) in v.iter_mut().zip(futures::future::join_all(probes).await) {
+    let up = futures::future::join_all(probes).await;
+    for (c, up) in v.iter_mut().zip(up) {
         if !up {
             c.errors.push(format!("SSH {}:{} 连不上（3 秒没有响应）", c.ip, c.item.ssh_port.unwrap_or(22)));
         }
