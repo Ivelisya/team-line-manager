@@ -49,7 +49,7 @@ const SCOPE_LABEL = Object.fromEntries(SCOPES.map((s) => [s.value, s.label]));
 const EXPIRES = [{ value: '30', label: '30 天' }, { value: '90', label: '90 天' }, { value: '365', label: '1 年' }, { value: 'never', label: '永不过期' }];
 
 function keyStatus(k: ApiKey) {
-  if (k.revoked_at) return <Pill tone="neutral" dot="ring">已撤销</Pill>;
+  if (k.revoked_at) return <Pill tone="neutral">已撤销</Pill>;
   if (k.expires_at && new Date(k.expires_at).getTime() < Date.now()) return <Pill tone="warn">已过期</Pill>;
   return <Pill tone="ok">有效</Pill>;
 }

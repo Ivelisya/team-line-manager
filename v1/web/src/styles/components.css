@@ -96,14 +96,30 @@
   border-radius: var(--r-pill); background: var(--pill-bg); color: var(--pill-fg);
   font: var(--fw-medium) var(--fs-label) / var(--lh-label) var(--font-sans); white-space: nowrap;
 }
-.pill::before { content: ""; width: var(--dot); height: var(--dot); border-radius: 50%; background: var(--pill-dot); flex: none; }
-.pill[data-tone="ok"] { --pill-bg: var(--ok-bg); --pill-fg: color-mix(in srgb, var(--ok-text) 90%, var(--fg)); --pill-dot: var(--ok); }
-.pill[data-tone="warn"] { --pill-bg: var(--warn-bg); --pill-fg: var(--warn-text); --pill-dot: var(--warn); }
-.pill[data-tone="bad"] { --pill-bg: var(--bad-bg); --pill-fg: var(--bad-text); --pill-dot: var(--bad); }
-.pill[data-tone="info"] { --pill-bg: var(--info-bg); --pill-fg: var(--info-text); --pill-dot: var(--info); }
-.pill[data-dot="ring"]::before { background: transparent; box-shadow: inset 0 0 0 1.5px var(--pill-dot); }
-.pill[data-dot="pulse"]::before { animation: breathe var(--dur-loop) var(--ease-std) infinite; }
-.pill[data-dot="none"]::before { display: none; }
+/* 状态不再配小圆点（用户：不好看）：靠胶囊的浅色底与文字色区分；需要醒目的故障、降级前面加一个小图标（同 lucide 的线条风格），
+   进行中（dot="pulse"）是一个转圈；自己带图标的胶囊写 dot="none"。图标是 mask，颜色跟文字走 */
+:root {
+  --ic-bad: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' fill-rule='evenodd' d='M10.3 3.4a2 2 0 0 1 3.4 0l8.2 14.2a2 2 0 0 1-1.7 3H3.8a2 2 0 0 1-1.7-3zM11 8.5h2v6h-2zM12 16.2a1.3 1.3 0 1 0 0.01 0z'/%3E%3C/svg%3E");
+  --ic-warn: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='9' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath fill='black' d='M12 3a9 9 0 0 0 0 18z'/%3E%3C/svg%3E");
+  --ic-ok: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='9' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round' d='m8.5 12 2.5 2.5 4.5-5'/%3E%3C/svg%3E");
+  --ic-neutral: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='9' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round' stroke-dasharray='3.5 3'/%3E%3C/svg%3E");
+  --ic-info: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round' d='M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94z'/%3E%3C/svg%3E");
+}
+.pill::before { content: none; flex: none; width: 11px; height: 11px; background: currentColor; -webkit-mask: var(--pill-ic) center / contain no-repeat; mask: var(--pill-ic) center / contain no-repeat; }
+.pill[data-tone="bad"]:not([data-dot])::before { content: ""; --pill-ic: var(--ic-bad); }
+.pill[data-tone="warn"]:not([data-dot])::before { content: ""; --pill-ic: var(--ic-warn); }
+.pill[data-dot="pulse"]::before { content: ""; width: 9px; height: 9px; box-sizing: border-box; border: 1.5px solid currentColor; border-top-color: transparent; border-radius: 50%; background: none; -webkit-mask: none; mask: none; animation: spin 0.9s linear infinite; }
+.pill[data-tone="ok"] { --pill-bg: var(--ok-bg); --pill-fg: color-mix(in srgb, var(--ok-text) 90%, var(--fg)); }
+.pill[data-tone="warn"] { --pill-bg: var(--warn-bg); --pill-fg: var(--warn-text); }
+.pill[data-tone="bad"] { --pill-bg: var(--bad-bg); --pill-fg: var(--bad-text); }
+.pill[data-tone="info"] { --pill-bg: var(--info-bg); --pill-fg: var(--info-text); }
+/* 名字后面的状态标（卡片头、表格名称列、顶栏告警预览）：正常不标，其余一个小图标 */
+.smark { display: inline-block; flex: none; width: 13px; height: 13px; color: var(--smark-c); background: currentColor; -webkit-mask: var(--smark-ic) center / contain no-repeat; mask: var(--smark-ic) center / contain no-repeat; }
+.smark[data-tone="bad"] { --smark-c: var(--bad); --smark-ic: var(--ic-bad); }
+.smark[data-tone="warn"] { --smark-c: var(--warn); --smark-ic: var(--ic-warn); }
+.smark[data-tone="info"] { --smark-c: var(--info); --smark-ic: var(--ic-info); }
+.smark[data-tone="neutral"] { --smark-c: var(--fg-3); --smark-ic: var(--ic-neutral); }
+.smark[data-spin] { width: 10px; height: 10px; box-sizing: border-box; border: 1.5px solid var(--info); border-top-color: transparent; border-radius: 50%; background: none; -webkit-mask: none; mask: none; animation: spin 0.9s linear infinite; }
 
 .chip {
   display: inline-flex; align-items: center; gap: var(--sp-4); flex: none;

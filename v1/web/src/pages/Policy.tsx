@@ -26,7 +26,7 @@ const MODE_TONE: Record<PolicyMode, Tone> = { observe: 'neutral', allowlist: 'in
 const needsDomains = (m: PolicyMode) => m === 'allowlist' || m === 'denylist';
 
 function ModePill({ mode }: { mode: PolicyMode }) {
-  return <Pill tone={MODE_TONE[mode]} dot={mode === 'observe' || mode === 'inherit' ? 'ring' : undefined}>{MODE_LABEL[mode]}</Pill>;
+  return <Pill tone={MODE_TONE[mode]}>{MODE_LABEL[mode]}</Pill>;
 }
 
 type Sel = { scope: 'team' | 'node'; id: string };
@@ -422,8 +422,8 @@ function ChangeList({ changes }: { changes: PolicyChange[] }) {
 }
 
 /* ================================================================ 发布记录 */
-const STATUS: Record<VersionStatus | 'gone', { label: string; tone: Tone; dot?: 'pulse' | 'ring' }> = {
-  applied: { label: '已应用', tone: 'ok' }, applying: { label: '进行中', tone: 'info', dot: 'pulse' }, failed: { label: '失败', tone: 'bad' }, gone: { label: '已退役', tone: 'neutral', dot: 'ring' },
+const STATUS: Record<VersionStatus | 'gone', { label: string; tone: Tone; dot?: 'pulse' }> = {
+  applied: { label: '已应用', tone: 'ok' }, applying: { label: '进行中', tone: 'info', dot: 'pulse' }, failed: { label: '失败', tone: 'bad' }, gone: { label: '已退役', tone: 'neutral' },
 };
 const StatusPill = ({ s }: { s: VersionStatus | 'gone' }) => <Pill tone={STATUS[s].tone} dot={STATUS[s].dot}>{STATUS[s].label}</Pill>;
 

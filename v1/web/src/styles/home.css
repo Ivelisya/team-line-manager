@@ -69,6 +69,8 @@ a.stat:active { background: color-mix(in srgb, var(--fg) 7%, var(--surface)); }
 .stat-cap .num { color: var(--fg); font-weight: var(--fw-semibold); }
 .stat-cap .unit { font-size: inherit; color: inherit; }
 .stat-cap .dotline { display: inline-flex; align-items: center; gap: var(--sp-4); }
+.dotline[data-tone="warn"] b { color: var(--warn-text); }
+.dotline[data-tone="bad"] b { color: var(--bad-text); }
 .stat-cap .stat-who { display: inline-flex; align-items: center; gap: var(--sp-4); min-width: 0; } /* 流量额度「最紧 某台 已用 93%」：名称放不下时省略，百分比留着 */
 @media (max-width: 760px) { .stat { padding: var(--sp-12); min-height: 92px; } .stat-value { font-size: 19px; } }
 
@@ -88,7 +90,8 @@ a.stat:active { background: color-mix(in srgb, var(--fg) 7%, var(--surface)); }
 }
 .cpill[data-tone="warn"] { --pc: var(--warn-text); }
 .cpill[data-tone="bad"] { --pc: var(--bad-text); }
-.cpill i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.cpill i { width: 12px; height: 12px; background: currentColor; -webkit-mask: var(--ic-ok) center / contain no-repeat; mask: var(--ic-ok) center / contain no-repeat; }
+.cpill[data-tone="bad"] i { -webkit-mask-image: var(--ic-bad); mask-image: var(--ic-bad); }
 .cluster-box { display: grid; gap: var(--sp-8); min-width: 0; padding: 11px 13px; border: 1px solid var(--line); border-radius: 12px; background: color-mix(in srgb, var(--section) 40%, var(--surface)); }
 .cluster-row { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--sp-8); min-width: 0; }
 .cluster-big { display: inline-flex; align-items: baseline; gap: var(--sp-6); min-width: 0; white-space: nowrap; }

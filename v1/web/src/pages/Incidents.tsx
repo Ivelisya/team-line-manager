@@ -23,7 +23,7 @@ import { NodeHover } from '@/components/app/NodeHover';
 import { Empty, ErrorNote, FilterChip, Note, PageHead, Panel, Pill } from '@/components/app/primitives';
 
 const PAGE_SIZES = [20, INCIDENT_PAGE, 100];
-const SEV = (i: Incident) => { const s = severityOf(i.severity); return i.state === 'resolved' ? <Pill tone="ok" dot="ring">已恢复</Pill> : <Pill tone={s.tone}>{s.label}</Pill>; };
+const SEV = (i: Incident) => { const s = severityOf(i.severity); return i.state === 'resolved' ? <Pill tone="ok">已恢复</Pill> : <Pill tone={s.tone}>{s.label}</Pill>; };
 
 export function IncidentsPage() {
   const [state, setState] = React.useState<'firing' | 'resolved' | 'all'>('firing');
@@ -131,7 +131,7 @@ function Silences() {
                   <tr key={s.id}>
                     <td><span className="cell-main strong">{s.subject_name ?? '全部机器'}</span>{s.rule && <span className="sub">只静默「{s.rule_name ?? s.rule}」</span>}</td>
                     <td>{s.is_maintenance ? <Pill tone="info" dot="none"><Wrench size={11} />维护</Pill> : <Pill>静默</Pill>}</td>
-                    <td>{on ? <Pill tone="ok">进行中</Pill> : <Pill dot="ring">已预约</Pill>}</td>
+                    <td>{on ? <Pill tone="ok">进行中</Pill> : <Pill>已预约</Pill>}</td>
                     <td>{F.dt(s.starts_at)} → {F.dt(s.ends_at)}<span className="sub">{on ? `还剩 ${F.span(Date.parse(s.ends_at) - now)}` : `${F.span(start - now)}后开始`}</span></td>
                     <td><Trunc className="cell-main">{s.comment}</Trunc></td>
                     <td className="c"><IconButton label="删除静默" size="sm" onClick={() => setAskDel(s)}><Trash2 size={14} /></IconButton></td>

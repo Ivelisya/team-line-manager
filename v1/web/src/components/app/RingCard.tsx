@@ -7,7 +7,7 @@ import type { DrawerTab } from '@/lib/drawer';
 import * as F from '@/lib/format';
 import { isQuiet, liveRate, resourceMeters } from '@/lib/derive';
 import { cn } from '@/lib/utils';
-import { HealthPill, HostTag, KindIcon, Num, StatusDot } from './primitives';
+import { HealthPill, HostTag, KindIcon, Num, StatusMark } from './primitives';
 import { Ring } from './viz';
 
 function RingCardImpl({ m, current, onOpen }: { m: MachineView; current?: boolean; onOpen: (id: string, tab?: DrawerTab) => void }) {
@@ -27,8 +27,9 @@ function RingCardImpl({ m, current, onOpen }: { m: MachineView; current?: boolea
   return (
     <article className={cn('rcard', current && 'is-current', quiet && 'is-quiet')} data-health={m.health.status} data-id={m.id}>
       <header className="rc-head">
-        <StatusDot status={m.health.status} lifecycle={m.lifecycle} /><KindIcon kind={m.kind} />
+        <KindIcon kind={m.kind} />
         <button type="button" className="nc-name" onClick={() => onOpen(m.id)}>{m.name}</button>
+        <StatusMark status={m.health.status} lifecycle={m.lifecycle} />
         <HostTag id={m.id} host={m.host_machine} nodes={m.ip_nodes} short />
         <HealthPill m={m} />
       </header>
