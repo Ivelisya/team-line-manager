@@ -1806,8 +1806,11 @@ async fn metrics_refresh_matches_full_load() {
     sqlx::query("update machine set label = '线路机甲' where id = $1").bind(relay).execute(&t.st.db).await.unwrap();
     let name = |v: &[views::MachineView]| v.iter().find(|m| m.id == relay).unwrap().name.clone();
     assert_eq!(name(&views::live_fresh(&t.st).await.unwrap()), "线路机1", "没有资源事件：只补指标");
+    // /machines 的响应体随缓存的那份视图缓存：视图换了，响应跟着换
+    assert_eq!(t.get("/api/v1/machines").await[0]["name"], "线路机1");
     t.st.emit(Event::Machines);
     assert_eq!(name(&views::live_fresh(&t.st).await.unwrap()), "线路机甲");
+    assert_eq!(t.get("/api/v1/machines").await[0]["name"], "线路机甲");
 }
 
 /// 新建 / 删除维护静默：只发 incidents（不发 machines，前端不整表重取），同时标记实时指标该比对，「维护中」经 metrics 送达
