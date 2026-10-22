@@ -194,11 +194,13 @@
 
 /* ========== 设置页 ========== */
 .set-tabs { margin-bottom: var(--section-gap); }
-.scope-list { display: grid; gap: var(--sp-8); }
-.scope-row { display: flex; align-items: flex-start; gap: var(--sp-10); padding: var(--sp-8) var(--sp-12); border: 1px solid var(--line); border-radius: var(--r-float); cursor: pointer; transition: background-color var(--dur-1) var(--ease-std), border-color var(--dur-1) var(--ease-std); }
+/* 权限：每项一行（名称 + (i) 说明 + 敏感标），两列排 */
+.scope-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--sp-8); }
+.scope-name { display: inline-flex; align-items: center; gap: var(--sp-4); min-width: 0; }
+.scope-name .chip { margin-left: var(--sp-4); }
+.scope-row { display: flex; align-items: center; gap: var(--sp-10); padding: var(--sp-8) var(--sp-12); border: 1px solid var(--line); border-radius: var(--r-float); cursor: pointer; transition: background-color var(--dur-1) var(--ease-std), border-color var(--dur-1) var(--ease-std); }
 .scope-row:hover { background-color: var(--hover); }
 .scope-row[data-on="1"] { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); background-color: var(--selected); }
-.scope-row .checkbox { margin-top: 2px; }
 .scope-row b { font-weight: var(--fw-medium); }
 .scope-row .hint { margin-top: 0; }
 .scope-tags { display: flex; flex-wrap: wrap; gap: var(--sp-4); }

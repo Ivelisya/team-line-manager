@@ -354,6 +354,8 @@ export function buildDb(): Db {
     { id: 'n1', channel_id: 'c1', channel_name: '运维群', incident_id: 'i1-0000-aaaa', ts: iso(now() - 14 * 60_000), ok: true, error: null, kind: 'firing', subject_name: '团队1-04', rule_name: '出口不通' },
     { id: 'n2', channel_id: 'c2', channel_name: '值班企业微信', incident_id: 'i1-0000-aaaa', ts: iso(now() - 14 * 60_000), ok: true, error: null, kind: 'firing', subject_name: '团队1-04', rule_name: '出口不通' },
     { id: 'n3', channel_id: 'c1', channel_name: '运维群', incident_id: 'i3-0000-bbbb', ts: iso(now() - 50 * 60_000), ok: false, error: 'Telegram 返回 429：请求过于频繁，请 17 秒后重试', kind: 'resolved', subject_name: '线路机2', rule_name: '配置未应用' },
+    // 渠道已删除：名字随渠道没了（中控 left join 为 null）
+    { id: 'n6', channel_id: 'c9', channel_name: null, incident_id: 'i9-0000-cccc', ts: iso(now() - 2 * DAY), ok: true, error: null, kind: 'firing', subject_name: '团队2-01', rule_name: 'agent 离线' },
     { id: 'n4', channel_id: 'c3', channel_name: '自建告警网关', incident_id: null, ts: iso(now() - 3 * DAY), ok: true, error: null, kind: 'test', subject_name: null, rule_name: null },
     { id: 'n5', channel_id: 'c1', channel_name: '运维群', incident_id: 'i9-0000-cccc', ts: iso(now() - 4 * DAY), ok: true, error: null, kind: 'repeat', subject_name: null, rule_name: 'agent 离线' },
   ];
