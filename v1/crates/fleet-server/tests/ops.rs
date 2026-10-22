@@ -367,6 +367,55 @@ async fn audit_paging_and_command_redaction() {
     assert!(sum.contains(&hidden) && !sum.contains("hunter2"), "{sum}");
 }
 
+/// 操作记录按分类、搜索（标题、摘要、操作人）筛选，与 before_id 翻页一起用
+#[tokio::test]
+async fn audit_filter_by_cat_and_search() {
+    let t = setup().await;
+    // 登录等建库时的记录不算
+    sqlx::query("delete from audit_log").execute(&t.st.db).await.unwrap();
+    for (actor, action, detail) in [
+        ("admin", "exec", json!({"name": "线路机2", "command": "echo hunter2_x", "exit_code": 0})),
+        ("admin", "auth.login", json!({"ip": "203.0.113.7"})),
+        ("apikey:ci-bot", "agent.upgrade", json!({"count": 3})),
+    ] {
+        sqlx::query("insert into audit_log (actor, action, detail) values ($1, $2, $3)").bind(actor).bind(action).bind(detail).execute(&t.st.db).await.unwrap();
+    }
+    for i in 0..3 {
+        t.ok("POST", "/api/v1/teams", Some(json!({"name": format!("团队{i}")}))).await;
+    }
+    // 查询串里的中文按 UTF-8 百分号编码
+    let get = |q: &'static str| {
+        let t = &t;
+        let q: String = q.bytes().map(|b| if b.is_ascii() { (b as char).to_string() } else { format!("%{b:02X}") }).collect();
+        async move { t.ok("GET", &format!("/api/v1/audit?limit=100&{q}"), None).await.as_array().unwrap().iter().map(|a| a["action"].as_str().unwrap().to_string()).collect::<Vec<_>>() }
+    };
+    assert_eq!(get("cat=exec").await, ["exec"]);
+    assert_eq!(get("cat=auth").await, ["auth.login"]);
+    assert_eq!(get("cat=machine").await, ["agent.upgrade"]);
+    assert_eq!(get("cat=config").await, ["team.create"; 3]);
+    assert_eq!(get("cat=all&q=").await.len(), 6, "all 与空搜索等于没筛");
+    // 标题、摘要（detail 里的值）、操作人（界面写法）
+    assert_eq!(get("q=新建团队").await.len(), 3);
+    assert_eq!(get("q=团队1").await, ["team.create"]);
+    assert_eq!(get("q=203.0.113").await, ["auth.login"]);
+    assert_eq!(get("q=API%20密钥").await, ["agent.upgrade"]);
+    assert_eq!(get("cat=config&q=hunter2").await, Vec::<String>::new());
+    // _ 与 % 按字面匹配
+    assert_eq!(get("q=hunter2_").await, ["exec"]);
+    assert_eq!(get("q=%25").await, Vec::<String>::new());
+    // 翻页：分类筛选后按 before_id 往前翻
+    let p1 = t.ok("GET", "/api/v1/audit?cat=config&limit=2", None).await;
+    let last = p1[1]["id"].as_i64().unwrap();
+    let p2 = t.ok("GET", &format!("/api/v1/audit?cat=config&limit=2&before_id={last}"), None).await;
+    assert_eq!((p2.as_array().unwrap().len(), p2[0]["summary"].as_str()), (1, Some("团队0")));
+    let (s, _) = t.call("GET", "/api/v1/audit?cat=x", None, Auth::Session).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    // 没有 exec 权限的密钥看不到命令，也不能靠搜索试出命令
+    let (_, tok) = t.make_key("ci-read", &["read"]).await;
+    let (s, v) = t.call("GET", "/api/v1/audit?q=hunter2", None, Auth::Key(&tok)).await;
+    assert_eq!((s, v["data"].as_array().unwrap().len()), (StatusCode::OK, 0), "{v}");
+}
+
 #[tokio::test]
 async fn ack_incident_and_silence_validation() {
     let t = setup().await;
