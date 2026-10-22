@@ -408,6 +408,13 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "auth.login" => "登录",
         "auth.login_failed" => "登录失败",
         "auth.logout" => "退出登录",
+        "auth.totp_enabled" => "开启两步验证",
+        "auth.totp_disabled" => "关闭两步验证",
+        "auth.totp_recovery_used" => "用恢复码验证",
+        "auth.totp_recovery_regenerated" => "重新生成恢复码",
+        "auth.password_changed" => "修改密码",
+        "auth.session_revoked" => "撤销登录会话",
+        "auth.verify_failed" => "密码或验证码校验失败",
         "policy.draft" => "修改访问规则草稿",
         "policy.discard" => "丢弃访问规则草稿",
         "policy.publish" => "发布访问规则",
@@ -462,7 +469,13 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "incident.ack" => format!("{} · {}", crate::notify::rule_name(d["rule"].as_str().unwrap_or("")), s("summary")),
         "server.logs" => format!("{} 行", d["lines"]),
         "apikey.create" | "apikey.revoke" => format!("{}（{}）", s("name"), s("prefix")),
-        "auth.login" | "auth.login_failed" => s("ip"),
+        "auth.login" | "auth.login_failed" | "auth.totp_recovery_regenerated" | "auth.verify_failed" => s("ip"),
+        "auth.totp_disabled" if d["via"] == "totp-reset" => "中控命令行 totp-reset".into(),
+        "auth.totp_disabled" => s("ip"),
+        "auth.totp_recovery_used" => format!("{} · 剩 {} 个", s("ip"), d["left"]),
+        "auth.password_changed" => format!("{} · 撤销其它 {} 个会话", s("ip"), d["revoked_sessions"]),
+        "auth.session_revoked" if d["others"].is_number() => format!("退出其它设备（{} 个）", d["others"]),
+        "auth.session_revoked" => s("ip"),
         "policy.draft" if d["cleared"] == true => "撤销草稿".into(),
         "policy.draft" => {
             let mode = match d["mode"].as_str().unwrap_or("") {
@@ -622,7 +635,8 @@ mod tests {
             "team.create", "team.update", "team.renumber", "provider.create", "provider.update", "plan.create", "plan.update", "entry.enable",
             "entry.disable", "entry.rotate", "entry.share", "entry.add", "entry.move", "relay.evacuate", "job.retry", "job.cancel", "silence.create",
             "silence.delete", "agent.upgrade", "notify.create", "notify.update", "notify.delete", "exec", "machine.logs", "server.logs", "apikey.create",
-            "apikey.revoke", "auth.login", "auth.login_failed", "auth.logout", "policy.draft", "policy.discard", "policy.publish", "policy.rollback",
+            "apikey.revoke", "auth.login", "auth.login_failed", "auth.logout", "auth.totp_enabled", "auth.totp_disabled", "auth.totp_recovery_used",
+            "auth.totp_recovery_regenerated", "auth.password_changed", "auth.session_revoked", "auth.verify_failed", "policy.draft", "policy.discard", "policy.publish", "policy.rollback",
         ] {
             assert_ne!(audit_text(a, &json!({})).0, a, "{a} 没有中文标题");
         }
