@@ -161,7 +161,7 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
     let open_ids: HashSet<Uuid> = open.values().map(|o| o.id).collect();
     let mut current: HashSet<(String, Uuid)> = HashSet::new();
     let mut changed = false;
-    let mut touch: Vec<Uuid> = vec![];
+    let mut touch: Vec<(Uuid, String)> = vec![];
     for m in ms.iter() {
         for r in &m.health.reasons {
             // info 级只用于界面提示（如访问策略暂停新连接），不开告警
@@ -185,11 +185,12 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
 
             if let Some(inc) = open.remove(&k) {
                 // 已在告警：同步摘要；严重度只升不降（流量额度超限后上限被调高、回到吃紧，仍按严重算到恢复：
-                // 收到过「严重」触发的渠道也要收到恢复）。只有严重度变了或摘要实质变了才通知前端刷新
+                // 收到过「严重」触发的渠道也要收到恢复）。严重度变了或摘要实质变了马上写、通知前端刷新；
+                // 摘要只有数字（分钟数、代数）在变的随 5 分钟一次的「最近仍在」刷新一起写，不每轮重写一遍
                 state.clean_since.remove(&inc.id);
                 let escalated = rank(r.severity) > rank(&inc.severity);
                 let sev = if escalated { r.severity } else { inc.severity.as_str() };
-                if escalated || inc.summary != summary {
+                if escalated || !same_summary(&inc.summary, &summary) {
                     // 升级时清掉之前的确认（同复发重开）：确认的是吃紧，超限是新情况
                     sqlx::query(
                         "update incident set last_seen_at = now(), summary = $2, severity = $3::severity,
@@ -202,9 +203,9 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
                     .bind(escalated)
                     .execute(&st.db)
                     .await?;
-                    changed |= escalated || !same_summary(&inc.summary, &summary);
+                    changed = true;
                 } else {
-                    touch.push(inc.id);
+                    touch.push((inc.id, summary));
                 }
                 // 持续提醒；复发后已报过恢复的，满限流时长再发一次「触发」；升成严重（流量额度从吃紧到超限）不等提醒间隔，马上再发一次「触发」
                 let kind = if escalated { Some(Kind::Firing) } else { due(&inc, sev, now) };
@@ -264,13 +265,18 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
         }
     }
     state.first_seen.retain(|k, _| current.contains(k));
-    // 原因没变的在告警只在 last_seen_at 旧了 5 分钟以上才刷新：每 30 秒把所有在告警的行都重写一遍只会产生死元组，
-    // 界面上的「最近仍在」差几分钟无所谓
+    // 原因没变的在告警只在 last_seen_at 旧了 5 分钟以上才刷新（摘要里的数字随之更新）：每 30 秒把所有在告警的行都重写一遍
+    // 只会产生死元组，界面上的「最近仍在」、摘要里的分钟数差几分钟无所谓
     if !touch.is_empty() {
-        sqlx::query("update incident set last_seen_at = now() where id = any($1) and last_seen_at < now() - interval '5 minutes'")
-            .bind(&touch)
-            .execute(&st.db)
-            .await?;
+        let (ids, sums): (Vec<Uuid>, Vec<String>) = touch.into_iter().unzip();
+        sqlx::query(
+            "update incident set last_seen_at = now(), summary = u.s from unnest($1::uuid[], $2::text[]) u(id, s)
+             where incident.id = u.id and incident.last_seen_at < now() - interval '5 minutes'",
+        )
+        .bind(&ids)
+        .bind(&sums)
+        .execute(&st.db)
+        .await?;
     }
 
     // 原因消失的告警恢复：只处理 active 的机器。其它生命周期 evaluate 不给原因，不能当成「恢复」——

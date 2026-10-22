@@ -943,6 +943,28 @@ async fn relay_renewal_and_global_maintenance() {
     assert!(m.as_array().unwrap().iter().all(|x| x["health"]["status"] == "maintenance"));
 }
 
+/// 在告警的摘要只有数字在变（天数、分钟数）：不每轮重写，随 5 分钟一次的「最近仍在」刷新一起写
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn digit_only_summary_changes_ride_the_5_minute_touch() {
+    let t = setup().await;
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    assert_eq!(t.report("tok1", &blank_report(1)).await.0, StatusCode::OK);
+    sqlx::query("insert into subscription (machine_id, price_cents, due_date, remind_days) values ($1, 500, current_date + 3, 7)").bind(relay).execute(&t.st.db).await.unwrap();
+    let mut state = AlertState::default();
+    let base = OffsetDateTime::now_utc();
+    pass(&t, &mut state, base, 0).await;
+    let summary = || async { sqlx::query_scalar::<_, String>("select summary from incident where rule = 'renewal_due'").fetch_one(&t.st.db).await.unwrap() };
+    assert_eq!(summary().await, "线路机1：3 天后到期");
+    // 上一轮记的是「5 天」：只差数字，这一轮不写
+    sqlx::query("update incident set summary = '线路机1：5 天后到期' where rule = 'renewal_due'").execute(&t.st.db).await.unwrap();
+    pass(&t, &mut state, base, 30).await;
+    assert_eq!(summary().await, "线路机1：5 天后到期");
+    // 「最近仍在」旧了 5 分钟：一起刷新
+    sqlx::query("update incident set last_seen_at = now() - interval '6 minutes' where rule = 'renewal_due'").execute(&t.st.db).await.unwrap();
+    pass(&t, &mut state, base, 60).await;
+    assert_eq!(summary().await, "线路机1：3 天后到期");
+}
+
 /// 把机器网卡在 `hour` 这一桶的出站设成 `mb` MB（十进制）、入站设成它的一半，并让视图里的额度缓存作废（同小时汇总跑完）
 async fn set_nic(t: &T, machine: Uuid, hour: OffsetDateTime, mb: i64) {
     sqlx::query(
