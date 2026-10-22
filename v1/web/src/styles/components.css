@@ -12,6 +12,8 @@
 }
 /* 禁用（全站一条）：半透明之外再去饱和——只调透明度的话，暗底上的危险 / 主按钮看着像一个能点的暗色按钮。悬停规则都带 :not(:disabled) */
 :is(.btn, .icon-btn, .top-btn, .fchip, .seg-item, .checkbox, .switch, .cal-day):is(:disabled, [aria-disabled="true"]), .seg-item[data-disabled] { opacity: var(--o-disabled); filter: saturate(0.4); cursor: default; }
+/* 禁用的主按钮 / 危险按钮不留实色（暗底上像一个被按住的暗紫色按钮）：改成轨道底加三级字，深浅两个主题一样 */
+:is(.btn-primary, .btn-danger):is(:disabled, [aria-disabled="true"]):not([aria-busy="true"]) { background: var(--track); color: var(--fg-3); box-shadow: none; opacity: 1; filter: none; }
 /* 加载中不显示成禁用的样子；转圈替换原图标，按钮宽度不变 */
 .btn[aria-busy="true"]:disabled { opacity: 1; filter: none; cursor: progress; }
 .btn[aria-busy="true"] > .lucide:not(.spin) { display: none; }
@@ -65,6 +67,13 @@
   overflow-x: auto; scrollbar-width: none;
 }
 .seg::-webkit-scrollbar { display: none; }
+/* 放不下时横向滚动、滚动条又是藏起来的：往还能滑的那一侧渐隐一小段，提示可以接着滑（随滚动位置变；不支持滚动驱动动画的浏览器没有渐隐，照常滚） */
+@property --seg-fade-l { syntax: "<length>"; inherits: false; initial-value: 0px; }
+@property --seg-fade-r { syntax: "<length>"; inherits: false; initial-value: 0px; }
+@keyframes seg-fade { 0% { --seg-fade-l: 0px; --seg-fade-r: 20px; } 10%, 90% { --seg-fade-l: 20px; --seg-fade-r: 20px; } 100% { --seg-fade-l: 20px; --seg-fade-r: 0px; } }
+@supports (animation-timeline: scroll(self inline)) {
+  .seg { animation: seg-fade linear both; animation-timeline: scroll(self inline); mask-image: linear-gradient(to right, transparent, #000 var(--seg-fade-l), #000 calc(100% - var(--seg-fade-r)), transparent); }
+}
 .seg-item {
   position: relative; flex: none; display: inline-flex; align-items: center; gap: var(--sp-6);
   height: var(--seg-item); padding: 0 var(--sp-14); box-sizing: border-box;
@@ -382,7 +391,7 @@
 .hk-list { margin: 0; padding: 0; list-style: none; }
 .hk-list li { display: flex; align-items: center; gap: var(--sp-16); padding: var(--sp-8) 0; border-top: 1px solid var(--line); font-size: var(--fs-body); }
 .hk-list li:first-child { border-top: 0; }
-.hk-keys { flex: none; display: inline-flex; align-items: center; gap: var(--sp-4); min-width: 88px; }
+.hk-keys { flex: none; display: inline-flex; align-items: center; gap: var(--sp-4); min-width: 128px; }
 /* 错误卡（ErrorBoundary） */
 .err-card { display: grid; justify-items: center; gap: var(--sp-10); padding: var(--sp-24) var(--sp-16); text-align: center; color: var(--warn); }
 .err-card-t { font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-sans); color: var(--fg); }
