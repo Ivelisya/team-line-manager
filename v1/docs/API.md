@@ -273,10 +273,10 @@ ProvisionItem = {
 `GET /api/v1/stream`：WebSocket（`ws://` / `wss://`），鉴权同其它 GET（会话 Cookie 或 `Authorization: Bearer`，需要 `read`）；用会话 Cookie 连时 `Origin` 必须等于 `public_url` 的协议 + 主机 + 端口，否则 403（WebSocket 握手不受同源策略约束），握手失败返回普通 HTTP 错误（401/403）。服务端只发 JSON 文本帧，不读客户端消息。
 - **保活**：服务端每 15 s 发 ping，到下一次 ping 还没收到 pong 就断开（浏览器自动回 pong）。
 - **会话复核**：每 60 s 查一次会话/密钥是否仍有效，撤销会话或密钥时各连接马上再查一次（服务端内部通知，不推给前端；命令行 `user-set` 经 PostgreSQL `NOTIFY fleet_revoked` 转过来），失效则以关闭码 `4401` 关闭（客户端应回登录页，`fleetctl watch` 报错退出）；复核查询本身失败以 `1011` 关闭，客户端照常退避重连、握手时重新鉴权。
-- **滞后**：服务端广播缓冲 256 条，某个连接读得太慢丢了消息时补发 `{type:"resync"}`，客户端应让全部缓存失效重取。
+- **滞后**：服务端广播缓冲 1024 条，某个连接读得太慢丢了消息时补发 `{type:"resync"}`，客户端应让全部缓存失效重取。
 - **重连**：客户端断线后自己退避重连；连上后应重取一次机器类数据（断开期间错过的 `metrics` 增量不会补发）。
 
-**资源变更通知**（收到后让对应查询失效重取）：`{type:"machine",id}`、`{type:"machine_job",id}`（作业推进到这台机器：只需重取它的详情；列表里的 `active_job` 走 `metrics`，改生命周期时另发 `machines`）、`{type:"machines"}`、`{type:"relay",id}`、`{type:"job",id}`、`{type:"incidents"}`、`{type:"catalog"}`、`{type:"api_keys"}`（密钥增删撤销）、`{type:"policies"}`、`{type:"settings"}`（面板设置变了：访问记录保留期）、`{type:"resync"}`。
+**资源变更通知**（收到后让对应查询失效重取）：`{type:"machine",id}`、`{type:"machines"}`、`{type:"relay",id}`、`{type:"job",id}`（作业推进；目标机器的 `active_job` 走 `metrics`，它变了时客户端可重取这台机器的详情；改生命周期时另发 `machines`）、`{type:"incidents"}`、`{type:"catalog"}`、`{type:"api_keys"}`（密钥增删撤销）、`{type:"policies"}`、`{type:"settings"}`（面板设置变了：访问记录保留期）、`{type:"resync"}`。
 
 **实时指标** `{type:"metrics", machines:{<机器id>:{…}}, entries:{<入口id>:{…}}, overview?}`：在用机器视图（`GET /machines` 的 `MachineView`）里随上报与时间变化的字段，和上一条相比**只带变了的字段**（没变的键不出现），客户端把它们写进本地缓存，不必重取。有新上报或作业推进时最多每 3 s 一条，没有也每 30 s 比对一次（离线、到期天数、维护窗口随时间变）；没有变化不发。
 - `machines[id]` 的键：

@@ -3,6 +3,7 @@
 //!
 //! 有新上报或作业推进时最多每 3 s 比对一次；没有上报也每 30 s 比对一次（离线判定、到期天数、维护窗口随时间变）。没有订阅者时不做。
 //! 视图走 `views::live` 的同一份缓存：REST 拿到的快照不会比上一次推送的基线更旧，前端在快照上叠加增量即可。
+//! 每轮只在上一份视图上补随上报变化的字段（`views::live_fresh`，只查又上报过的那几台），资源变更之后才整份重算。
 
 use crate::state::{AppState, Event};
 use crate::views::{self, EntryView, MachineView, Probe};
@@ -65,9 +66,8 @@ pub async fn run_forever(st: AppState) {
 
 /// 比对一次，有变化就广播。返回是否发了消息
 pub async fn publish(st: &AppState, p: &mut Published) -> sqlx::Result<bool> {
-    // 比对要最新的视图（短缓存 TTL 与比对间隔同为 3 s，不作废会隔一轮才拿到新数据）；新视图存回缓存，REST 接着用
-    st.live.invalidate();
-    let ms = views::live(st).await?;
+    // 比对要最新的视图：在缓存的那份上补指标（资源变更后才完整加载），存回缓存，REST 接着用
+    let ms = views::live_fresh(st).await?;
     p.at = Some(Instant::now());
     let mut msg = Msg { kind: "metrics", machines: HashMap::new(), entries: HashMap::new(), overview: None };
     let mut seen_e = HashSet::new();

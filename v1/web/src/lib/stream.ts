@@ -86,6 +86,8 @@ export function useStream(enabled: boolean) {
     const onMetrics = (msg: MetricsMsg) => {
       if (document.hidden) LIVE_KEYS.forEach((k) => qc.invalidateQueries({ queryKey: k, refetchType: 'none' }));
       else applyMetrics(qc, msg);
+      // 进行中的作业变了（开始、等待 / 运行、结束）：这台的详情重取一次——失败的作业、生命周期原因等不在增量里（服务端不再逐步发事件）
+      for (const [id, d] of Object.entries(msg.machines)) if (d.active_job !== undefined) void inv(['machine', id]);
     };
 
     const open = () => {
