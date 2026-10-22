@@ -195,6 +195,11 @@ async fn summary_targets_sources_events() {
     // 搜索里的 % 和 _ 按字面匹配
     let d = t.get("/api/v1/access/summary?window=24h&search=%25").await;
     assert_eq!(d["kpi"]["conns"], 0);
+    // 照抄合并名「*.example.com」搜索：汇总（存合并名）和原始记录（存真实主机名）都按后缀「.example.com」匹配，两边一致
+    for w in ["1h", "24h"] {
+        let d = t.get(&format!("/api/v1/access/summary?window={w}&search=*.example.com")).await;
+        assert_eq!(d["kpi"]["conns"], 4, "{w}：3 个随机子域名 + www");
+    }
 
     // ── 目标列表：随机子域名合并、阻止数、排序、分页 ──
     let d = t.get(&format!("/api/v1/access/targets?window=24h&node={n1}")).await;
@@ -252,6 +257,11 @@ async fn summary_targets_sources_events() {
     let d = t.get("/api/v1/access/sources?window=1h&search=2.2.2").await;
     assert_eq!((d["items"].as_array().unwrap().len(), d["items"][0]["conns"].as_i64()), (1, Some(4)));
     assert_eq!(d["items"][0]["name"], "团队1-02");
+    // 按接入方式在服务端筛（测试环境没装 IP 库：都查不到画像，算「未知」）
+    let n = |d: Value| d["items"].as_array().unwrap().len();
+    assert_eq!(n(t.get(&format!("/api/v1/access/sources?window=24h&node={n1}&conn=unknown&limit=3")).await), 3);
+    assert_eq!(n(t.get(&format!("/api/v1/access/sources?window=24h&node={n1}&conn=residential")).await), 0);
+    assert_eq!(t.raw("/api/v1/access/sources?conn=x", true).await.0, StatusCode::BAD_REQUEST);
 
     // ── 原始记录：倒序分页、过滤 ──
     let d = t.get(&format!("/api/v1/access/events?node={n1}&limit=7")).await;
