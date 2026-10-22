@@ -268,8 +268,8 @@ const AGENT_ROLLBACK: &str = r#"
 set -eu
 B=/usr/local/bin/fleet-agent
 [ -f $B.prev ] || { echo rollback=no_prev; exit 6; }
-# 换上去的是 .prev 的硬链接，.prev 原样留着：再执行一次结果相同
-ln -f $B.prev $B.rollback; mv -f $B.rollback $B
+# 换上去的是 .prev 的硬链接，.prev 原样留着；已经换过（连接断了重跑）就不再换：同一个文件的两个名字之间 mv 的结果不可靠
+[ $B -ef $B.prev ] || { ln -f $B.prev $B.rollback; mv -f $B.rollback $B; }
 systemctl restart fleet-agent; pid=$(systemctl show -p MainPID --value fleet-agent)
 __AGENT_STATE__
 echo "version=$($B --version 2>/dev/null | awk '{print $2}')"

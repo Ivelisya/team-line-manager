@@ -194,4 +194,10 @@ async fn crashing_new_version_is_rolled_back_at_once() {
     assert_eq!(j["steps"][0]["error_kind"], "remote");
     assert!(read(&root.join("usr/local/bin/fleet-agent")).contains("0.1.0+old"));
     assert_eq!(restarts(&root), 2);
+
+    // 回滚脚本再跑一遍（换完之后连接断了、ssh 重试）：结果相同
+    let ssh = fleet_server::ssh::Target { ip: "192.0.2.13".into(), port: 22, key: "/nonexistent".into(), known_hosts: t.dir.path().join("known_hosts"), password: None };
+    let o = ssh.run(&jobs::scripts::agent_rollback(), std::time::Duration::from_secs(30)).await.unwrap();
+    assert_eq!((o.code, o.kv("agent"), o.kv("version")), (0, Some("active"), Some("0.1.0+old")), "{o:?}");
+    assert!(read(&root.join("usr/local/bin/fleet-agent")).contains("0.1.0+old") && read(&root.join("usr/local/bin/fleet-agent.prev")).contains("0.1.0+old"));
 }
