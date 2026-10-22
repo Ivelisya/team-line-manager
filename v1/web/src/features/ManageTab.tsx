@@ -1,4 +1,5 @@
 // 抽屉“管理”页：改名/改编号（带实时预览）、入口操作、同机 IP 节点、agent、退役（移入备用）/ 立即回收（备用里的机器）。
+// 操作类的行按苹果设置页的分组列表排：一组一个圆角容器（.mgroup），行之间细线分隔，只有行标签，没有重复的小节标题。
 import * as React from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowRight, PackageOpen, Plus, Repeat2, Replace, Wrench } from 'lucide-react';
@@ -23,6 +24,8 @@ import { countryName } from '@/lib/flags';
 
 export function ManageTab({ m, onClosed }: { m: MachineView; onClosed: () => void }) {
   const retired = m.lifecycle === 'retired';
+  const active = m.lifecycle === 'active';
+  const ipNodes = m.kind === 'vps' && !m.host_machine && active;
   return (
     <>
       {!retired && <RenameSection m={m} />}
@@ -30,11 +33,15 @@ export function ManageTab({ m, onClosed }: { m: MachineView; onClosed: () => voi
       {/* 在用的机器没有入口时也要能加：节点「添加入口」，线路机「添加直出入口」 */}
       {!retired && (m.lifecycle === 'active' || m.entries.length > 0) && <EntrySection m={m} />}
       {/* 在用的普通 VPS 节点都能当宿主机：上面另配的公网 IP 各上架成一台同机 IP 节点 */}
-      {canReplace(m) && <ReplaceSection m={m} />}
-      {m.kind === 'vps' && !m.host_machine && m.lifecycle === 'active' && <IpNodesSection m={m} />}
-      {m.agent && m.lifecycle === 'active' && <AgentSection m={m} />}
-      {m.tune && m.lifecycle === 'active' && <TuneSection m={m} />}
-      {m.lifecycle === 'active' && <MaintSection m={m} />}
+      {(canReplace(m) || ipNodes || active) && (
+        <Section><div className="mgroup">
+          {canReplace(m) && <ReplaceRow m={m} />}
+          {ipNodes && <IpNodesRow m={m} />}
+          {m.agent && active && <AgentRow m={m} />}
+          {m.tune && active && <TuneRow m={m} />}
+          {active && <MaintRow m={m} />}
+        </div></Section>
+      )}
       <DangerSection m={m} onClosed={onClosed} />
     </>
   );
@@ -130,16 +137,16 @@ function EntrySection({ m }: { m: MachineView }) {
       {/* 入口的“⋯”菜单与对话框整个入口列表共用一份 */}
       <EntryMenus entries={m.entries}><div className="stack-sm">
         {m.entries.length === 0 && <div className="hint">还没有入口{m.kind === 'relay' && <> <InfoTip text="节点的入口在节点上添加；也可以给这台线路机加一条直出入口。" /></>}</div>}
-        {m.entries.map((e) => (
-          <div key={e.id} className="manage-row" style={{ border: '1px solid var(--line)', borderRadius: 'var(--r-float)', padding: '8px 12px' }}>
+        {m.entries.length > 0 && <div className="mgroup">{m.entries.map((e) => (
+          <div key={e.id} className="manage-row">
             <div><div className="t">{m.kind === 'relay' ? `${e.port} · ${e.node.name}` : entryLabel(e)}</div><div className="hint">{e.apply_error ? errText(e.apply_error) : e.applied ? '已应用' : '应用中'}</div></div>
             <span className="row" style={{ gap: 8 }}>{entryState(e)}<EntryMenuButton entry={e} /></span>
           </div>
-        ))}
+        ))}</div>}
       </div></EntryMenus>
-      {/* 列表下面的入口操作单成一组：与列表隔一道线，每项一行、各有小标题 */}
+      {/* 列表下面的入口操作单成一组：每项一行 */}
       {(canMove || canAddDirect || canAdd) && (
-        <div className="manage-group">
+        <div className="mgroup">
           {canMove && m.kind !== 'relay' && (
             <div className="manage-row">
               <div className="t">换线路机 <InfoTip text={'不断网，完成后分享链接会变。\n把入口换到另一台线路机：新入口验收通过后才摘旧入口。'} /></div>
@@ -177,91 +184,84 @@ function EntrySection({ m }: { m: MachineView }) {
 }
 
 /** 替换节点：另一台在用节点接替这台（软路由出口跟着换、编号交换，这台进备用团队） */
-function ReplaceSection({ m }: { m: MachineView }) {
+function ReplaceRow({ m }: { m: MachineView }) {
   const [open, setOpen] = React.useState(false);
   return (
-    <Section>
-      <SectionHeader title="替换" />
+    <>
       <div className="manage-row">
         <div className="t">替换为另一台节点 <InfoTip text={'新节点接这台的编号，软路由上指向这台的出口改成新节点的入口。\n这台改到备用团队，订阅过期满 1 天后自动回收。'} /></div>
         <Button variant="secondary" disabled={!!m.active_job} onClick={() => setOpen(true)}><Replace />替换为…</Button>
       </div>
       <ReplaceDialog m={m} open={open} onOpenChange={setOpen} onDone={() => setOpen(false)} />
-    </Section>
+    </>
   );
 }
 
 /** 宿主机：添加同机 IP 节点（去上架页，宿主机、团队与线路机预填好） */
-function IpNodesSection({ m }: { m: MachineView }) {
+function IpNodesRow({ m }: { m: MachineView }) {
   return (
-    <Section>
-      <SectionHeader title="同机 IP 节点" meta={m.ip_nodes.length ? `${m.ip_nodes.length} 个` : undefined} />
-      <div className="manage-row">
+    <div className="manage-row">
+      <div>
         <div className="t">添加 IP 节点 <InfoTip text="这台机器上另配了公网 IP 时，每个 IP 上架成一台独立节点（自己的团队编号、入口与分享链接）；SSH、agent 与主机读数都用这台的。" /></div>
-        <Button asChild variant="secondary"><Link to={`/provision?host=${m.id}`}><Plus />添加 IP 节点…</Link></Button>
+        {m.ip_nodes.length > 0 && <div className="hint">已有 {m.ip_nodes.length} 个同机 IP 节点</div>}
       </div>
-    </Section>
+      <Button asChild variant="secondary"><Link to={`/provision?host=${m.id}`}><Plus />添加 IP 节点…</Link></Button>
+    </div>
   );
 }
 
 /** agent：版本、最近上报；升级 = 推送中控当前版本并重启（作业）。同机 IP 节点没有自己的 agent：不给升级，指向宿主机 */
-function AgentSection({ m }: { m: MachineView }) {
+function AgentRow({ m }: { m: MachineView }) {
   const { open } = useDrawer();
   const a = m.agent!;
   const h = m.host_machine;
   const seen = `最近上报 ${a.last_report_at ? F.ago(a.last_report_at) : '从未'}`;
   return (
-    <Section>
-      <SectionHeader title="agent" meta={a.online ? '在线' : '离线'} />
-      <div className="manage-row">
-        <div>
-          <div className="t">版本 {a.version ?? '未知'}</div>
-          <div className="hint">{h ? `用宿主机「${h.name}」的 · ${seen}` : seen} {h && <InfoTip text="这台同机 IP 节点没有自己的 agent；要升级就升级宿主机的。" />}</div>
-        </div>
-        {h ? <Button variant="secondary" onClick={() => open(h.id, 'manage')}>打开宿主机</Button> : (
-          <Button variant="secondary" disabled={!!m.active_job} onClick={() => openUpgrade(m.id)}>升级 agent…</Button>
-        )}
+    <div className="manage-row">
+      <div>
+        <div className="t">agent 版本 {a.version ?? '未知'}</div>
+        <div className="hint">{a.online ? '在线' : '离线'} · {h ? `用宿主机「${h.name}」的 · ${seen}` : seen} {h && <InfoTip text="这台同机 IP 节点没有自己的 agent；要升级就升级宿主机的。" />}</div>
       </div>
-    </Section>
+      {h ? <Button variant="secondary" onClick={() => open(h.id, 'manage')}>打开宿主机</Button> : (
+        <Button variant="secondary" disabled={!!m.active_job} onClick={() => openUpgrade(m.id)}>升级 agent…</Button>
+      )}
+    </div>
   );
 }
 
 /** 系统调优：记录的调优档与时间（「调优：tune-v1 · 10-23」/「旧档 tune-v0 · 10-23」/「未调优」）；重新调优 = 作业 tune，只写内核网络参数等，不重启 ss/Xray */
-function TuneSection({ m }: { m: MachineView }) {
+function TuneRow({ m }: { m: MachineView }) {
   const tune = useTune();
   const [ask, setAsk] = React.useState(false);
   const t = m.tune!;
-  const state = t.profile ? `${t.current ? '' : '旧档 '}${t.profile}${t.at ? ` · ${F.dt(t.at).slice(0, 5)}` : ''}` : '未调优';
+  // 档名是内部名，放进悬停；这里只写「已调优 · 10-23」，旧档写「需要重新调优」
+  const state = !t.profile ? '未调优' : !t.current ? '需要重新调优（旧档）' : `已调优${t.at ? ` · ${F.dt(t.at).slice(0, 5)}` : ''}`;
   return (
-    <Section>
-      <SectionHeader title="系统调优" />
+    <>
       <div className="manage-row">
-        <div className="t">调优：{state} <InfoTip text="内核网络参数（缓冲区、拥塞控制、连接队列等）、日志体积上限、时间同步。逐键结果在作业详情里。" /></div>
-        <Button variant="secondary" disabled={!!m.active_job} onClick={() => setAsk(true)}>重新调优…</Button>
+        <div className="t">系统调优：{state} <InfoTip text={`内核网络参数（缓冲区、拥塞控制、连接队列等）、日志体积上限、时间同步。逐键结果在作业详情里。${t.profile ? `\n档位 ${t.profile}${t.at ? `，${F.dtFull(t.at)}` : ''}` : ''}`} /></div>
+        <Button variant="secondary" disabled={!!m.active_job} onClick={() => setAsk(true)}>{t.profile ? '重新调优…' : '调优…'}</Button>
       </div>
-      <ConfirmDialog open={ask} onOpenChange={setAsk} title={`重新调优 ${m.name}？`} confirmLabel="开始调优" confirmDisabled={!!m.active_job}
-        description="不重启 ss / Xray，不断开客户连接；只可能重启一次 journald。"
+      <ConfirmDialog open={ask} onOpenChange={setAsk} title={`${t.profile ? '重新调优' : '调优'} ${m.name}？`} confirmLabel="开始调优" confirmDisabled={!!m.active_job}
+        description="不重启 ss / Xray，不断开客户连接；只可能重启一次系统日志服务（journald）。"
         onConfirm={async () => { await tune.mutateAsync(m.id); toast.ok(`已提交 ${m.name} 的调优作业`); }} />
-    </Section>
+    </>
   );
 }
 
 /** 维护：开一个只针对这台的维护窗口（期间不发告警，卡片显示「维护」）；维护中可以提前结束。
  *  同机 IP 节点因宿主机维护而「维护中」时，写明是宿主机的，按钮结束宿主机的维护 */
-function MaintSection({ m }: { m: MachineView }) {
+function MaintRow({ m }: { m: MachineView }) {
   const end = useEndMaintenance();
   const silences = useSilences().data;
   const onHost = m.maintenance && !!silences && maintOwner(silences, m).onHost;
   return (
-    <Section>
-      <SectionHeader title="维护" meta={m.maintenance ? '维护中' : undefined} />
-      <div className="manage-row">
-        <div><div className="t">维护窗口 <InfoTip text="期间不发告警，卡片显示「维护」" /></div>{onHost && <div className="hint">宿主机「{m.host_machine!.name}」在维护中</div>}</div>
+    <div className="manage-row">
+        <div><div className="t">维护窗口 <InfoTip text="期间不发告警，卡片显示「维护」" /></div>{m.maintenance && <div className="hint">{onHost ? `宿主机「${m.host_machine!.name}」在维护中` : '维护中'}</div>}</div>
         {m.maintenance
           ? <Button variant="secondary" loading={end.isPending} onClick={() => end.mutate(m, { onSuccess: (o) => toast.ok(`${o.name} 已结束维护`), onError: toast.err })}><Wrench />{onHost ? '结束宿主机维护' : '结束维护'}</Button>
           : <Button variant="secondary" onClick={() => openMaint(m.id)}><Wrench />维护窗口…</Button>}
-      </div>
-    </Section>
+    </div>
   );
 }
 
@@ -278,8 +278,7 @@ function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }
 
   return (
     <Section>
-      <SectionHeader title={inSpare ? '回收' : '退役'} />
-      <div className="danger-zone">
+      <div className="mgroup is-danger">
         <div className="manage-row">
           {inSpare ? (
             <div>
@@ -291,14 +290,12 @@ function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }
             </div>
           ) : (
             <div>
-              <div className="t">退役</div>
-              <div className="hint">
-                {m.host_machine ? `宿主机「${m.host_machine.name}」不受影响 ` : n > 0 ? `${n} 个同机 IP 节点会一起退役 ` : ''}
-                <InfoTip text={[
+              <div className="t">退役{m.kind !== 'relay' && <> <InfoTip text={[
                   m.host_machine ? '只退役这个 IP 的节点，宿主机不受影响。' : '默认移入备用团队，机器照常服务，订阅过期满 1 天后自动回收；也可以选择立即清理，移入回收站。',
-                  m.kind !== 'relay' && '同团队后面的节点会自动前移补号。', n > 0 && `这台机器上有 ${n} 个同机 IP 节点，还没开始退役的会一起走。`,
-                ].filter(Boolean).join('\n')} />
-              </div>
+                  '同团队后面的节点会自动前移补号。', n > 0 && `这台机器上有 ${n} 个同机 IP 节点，还没开始退役的会一起走。`,
+                ].filter(Boolean).join('\n')} /></>}</div>
+              {/* 线路机不能进备用；节点默认移入备用，没有同机关系时也写一句短话，不留一个孤零零的 (i) */}
+              <div className="hint">{m.kind === 'relay' ? '线路机只能立即回收：先搬空节点，直出入口随之摘除' : m.host_machine ? `宿主机「${m.host_machine.name}」不受影响` : n > 0 ? `${n} 个同机 IP 节点会一起退役` : '默认移入备用，到期满 1 天后自动回收'}</div>
             </div>
           )}
           <Button variant="outline-danger" disabled={busyJob || m.lifecycle === 'retiring'} onClick={() => setOpen(true)}>{inSpare ? '立即回收…' : '退役…'}</Button>

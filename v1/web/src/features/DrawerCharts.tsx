@@ -6,13 +6,13 @@ import type { MachineView } from '@/lib/types';
 import type { UseQueryResult } from '@tanstack/react-query';
 import { useAvailability, useSeries } from '@/lib/queries';
 import * as F from '@/lib/format';
-import { AVAIL_LEGEND, availCells, availTitles, hasHost, monthFlowTip, monthTraffic, resourceMeters, successPct } from '@/lib/derive';
+import { AVAIL_LEGEND, availCells, availTitles, fromLabel, hasHost, monthFlowTip, monthTraffic, resourceMeters, successPct } from '@/lib/derive';
 import { Segmented } from '@/components/ui/overlays';
 import { Skeleton } from '@/components/ui/skeleton';
 import { InfoTip } from '@/components/ui/form';
-import { Beat, Empty, ErrorNote, LabelValue, FromTag, LabelValueGrid, Note, Num, Section, SectionHeader } from '@/components/app/primitives';
+import { Beat, Empty, ErrorNote, LabelValue, LabelValueGrid, Note, Num, Section, SectionHeader } from '@/components/app/primitives';
 import { RANGES, TimeChart } from '@/components/app/TimeChart';
-import { EntriesTable } from './EntriesTable';
+import { EntriesTable, entriesMeta } from './EntriesTable';
 
 /** 抽屉开着时曲线的重取间隔（实时流只推当前读数，不推曲线），随范围放大：范围越长点越粗、取一次越贵
  *  （线路机 24 小时流量曲线一次 130–350 ms 数据库时间，每分钟才多一个点） */
@@ -45,6 +45,10 @@ const vRate = (_: string, v: number) => { const r = F.rate(v); return `${r.v} ${
 export function RangeBar({ range, setRange }: { range: string; setRange: (r: string) => void }) {
   return <Segmented sm label="时间范围" value={range} onChange={setRange} items={RANGES} />;
 }
+/** 抽屉各曲线页签统一的时间范围条：放在页签顶部并吸顶（往下翻几张曲线时也能换），默认 24 小时 */
+export const RangeSticky = ({ range, setRange }: { range: string; setRange: (r: string) => void }) => (
+  <div className="tab-sticky"><span>时间范围</span><RangeBar range={range} setRange={setRange} /></div>
+);
 
 const RANGE_MS: Record<string, number> = { '1h': 3600_000, '6h': 6 * 3600_000, '24h': 24 * 3600_000, '7d': 7 * 86400_000, '30d': 30 * 86400_000 };
 /** 点不到两个、画不成线时的说明：还在上架、或在所选时间范围内才上架的，是数据还在积累；其余（离线、已退役）是这段时间没有数据 */
@@ -66,9 +70,9 @@ export function ChartFrame<T extends { points: readonly unknown[] }>({ q, few, h
 
 /** 图表卡：一张曲线一张卡，边框、底色与顶部色条取指标色（--cc）。卡头左边图标 + 标题，右边当前值 + 一行小字；
  *  没有当前值的图右边放时间范围（tools） */
-export function ChartCard({ c, icon, title, meta, value, caption, tools, children }: { c: string; icon: React.ReactNode; title: string; meta?: React.ReactNode; value?: React.ReactNode; caption?: string; tools?: React.ReactNode; children: React.ReactNode }) {
+export function ChartCard({ c, icon, title, meta, value, caption, tools, slim, children }: { c: string; icon: React.ReactNode; title: string; meta?: React.ReactNode; value?: React.ReactNode; caption?: string; tools?: React.ReactNode; slim?: boolean; children?: React.ReactNode }) {
   return (
-    <div className="chart-card" style={{ '--cc': c } as React.CSSProperties}>
+    <div className={slim ? 'chart-card is-slim' : 'chart-card'} style={{ '--cc': c } as React.CSSProperties}>
       <div className="chart-card-head">
         <span className="chart-card-title">{icon}{title}{meta && <span className="chart-card-meta">{meta}</span>}</span>
         {value != null && <span className="chart-card-val"><b>{value}</b>{caption && <small>{caption}</small>}</span>}
@@ -100,7 +104,7 @@ const AvailabilitySection = React.memo(function AvailabilitySection({ id, relay 
   );
 });
 
-/** 连接质量与流量页签的默认范围（两个页签一致） */
+/** 连接质量、流量、主机页签的默认范围（三个页签一致） */
 const DEFAULT_RANGE = '24h';
 
 export function QualityTab({ m }: { m: MachineView }) {
@@ -108,18 +112,19 @@ export function QualityTab({ m }: { m: MachineView }) {
   const s = useSeries(m.id, 'probe', range, true, poll(range));
   return (
     <>
+      <RangeSticky range={range} setRange={setRange} />
       <AvailabilitySection id={m.id} relay={m.kind === 'relay'} />
       <Section>
         {/* 多条入口时曲线是各入口的平均（序列接口不分入口），写明几条、是哪几台线路机 */}
-        <ChartCard c="var(--chart-1)" icon={<Radar />} title="延迟" meta={m.kind !== 'relay' && m.entries.length > 1
-          ? <span data-tip={`${m.entries.map((e) => e.relay.name).join('、')} 的平均`}>线路机 → 节点 · {m.entries.length} 条入口平均</span> : '线路机 → 节点'} tools={<RangeBar range={range} setRange={setRange} />}>
+        <ChartCard c="var(--chart-1)" icon={<Radar />} title="TCP 延迟" meta={m.kind !== 'relay' && m.entries.length > 1
+          ? <span data-tip={`${m.entries.map((e) => e.relay.name).join('、')} 的平均`}>线路机 → 节点 · {m.entries.length} 条入口平均</span> : '线路机 → 节点'}>
           <ChartFrame q={s} few={fewText(m, range)}>
-            <TimeChart full points={s.data?.points} range={s.data?.range ?? range} kind="line" lines={L_PROBE} yFmt={yMs} valueFmt={vMs} />
+            <TimeChart full points={s.data?.points} range={s.data?.range ?? range} kind="line" lines={L_PROBE} yFmt={yMs} valueFmt={vMs} clip />
           </ChartFrame>
         </ChartCard>
       </Section>
       <Section>
-        <SectionHeader title="各入口当前探测" />
+        <SectionHeader title="各入口当前探测" meta={entriesMeta(m)} />
         <EntriesTable m={m} />
       </Section>
     </>
@@ -130,40 +135,41 @@ export function TrafficTab({ m }: { m: MachineView }) {
   const [range, setRange] = React.useState(DEFAULT_RANGE);
   const s = useSeries(m.id, 'traffic', range, true, poll(range));
   const t = monthTraffic(m); const nic = m.nic; const from = m.month_counted_from;
-  // 数据不完整时的全句说明放在标题后的 (i) 里，数字后面只留灰字「10-22 起」
-  const tip = from ? <InfoTip text={monthFlowTip(m)} /> : undefined;
   return (
     <>
+      <RangeSticky range={range} setRange={setRange} />
+      {/* 数据不完整时「X 起」只在这里写一次（短句 + (i) 全句），下面各数字后面不再重复 */}
+      {from && <div className="hint">流量数据从 {fromLabel(from)} 起 <InfoTip text={monthFlowTip(m)} /></div>}
       {/* 有 agent 的机器分两组：网卡（供应商计费口径，下行 / 上行）与业务（Xray 入口，下载 / 上传）；家宽代理、同机 IP 节点只有业务一组 */}
       {nic && (
         <Section>
-          <SectionHeader title="网卡（供应商计费口径）" meta={tip} />
+          <SectionHeader title="网卡（供应商计费口径）" />
           <LabelValueGrid cols2>
             <LabelValue label="今日 ↓ 下行"><Num f={F.bytes(nic.today_rx)} /></LabelValue>
             <LabelValue label="今日 ↑ 上行"><Num f={F.bytes(nic.today_tx)} /></LabelValue>
-            <LabelValue label="本月 ↓ 下行"><Num f={F.bytes(nic.month_rx)} /><FromTag from={from} /></LabelValue>
-            <LabelValue label="本月 ↑ 上行"><Num f={F.bytes(nic.month_tx)} /><FromTag from={from} /></LabelValue>
+            <LabelValue label="本月 ↓ 下行"><Num f={F.bytes(nic.month_rx)} /></LabelValue>
+            <LabelValue label="本月 ↑ 上行"><Num f={F.bytes(nic.month_tx)} /></LabelValue>
           </LabelValueGrid>
         </Section>
       )}
       <Section>
-        <SectionHeader title={nic ? '业务（Xray 入口）' : '汇总'} meta={nic ? undefined : tip} />
+        <SectionHeader title={<>业务（Xray 入口）{m.host_machine && <> <InfoTip text="网卡与宿主机共用，这里是经它的业务流量。" /></>}</>} />
         <LabelValueGrid cols2>
           <LabelValue label="今日 ↓ 下载"><Num f={F.bytes(t.today_down)} /></LabelValue>
           <LabelValue label="今日 ↑ 上传"><Num f={F.bytes(t.today_up)} /></LabelValue>
-          <LabelValue label="本月 ↓ 下载"><Num f={F.bytes(t.down)} /><FromTag from={from} /></LabelValue>
-          <LabelValue label="本月 ↑ 上传"><Num f={F.bytes(t.up)} /><FromTag from={from} /></LabelValue>
+          <LabelValue label="本月 ↓ 下载"><Num f={F.bytes(t.down)} /></LabelValue>
+          <LabelValue label="本月 ↑ 上传"><Num f={F.bytes(t.up)} /></LabelValue>
         </LabelValueGrid>
       </Section>
       <Section>
-        <ChartCard c="var(--chart-1)" icon={<Globe />} title="业务流量" meta={<InfoTip text={s.data?.resolution === '1h' ? '每个点是这一小时的流量' : '每个点是这一分钟的流量'} />} tools={<RangeBar range={range} setRange={setRange} />}>
+        <ChartCard c="var(--chart-1)" icon={<Globe />} title="业务流量" meta={<InfoTip text={s.data?.resolution === '1h' ? '每个点是这一小时的流量' : '每个点是这一分钟的流量'} />}>
           <ChartFrame q={s} few={fewText(m, range)}>
-            <TimeChart full points={s.data?.points} range={s.data?.range ?? range} lines={L_TRAFFIC} yFmt={yBytes} valueFmt={vBytes} yBase={1000} empty="这段时间没有业务流量" />
+            <TimeChart full points={s.data?.points} range={s.data?.range ?? range} lines={L_TRAFFIC} yFmt={yBytes} valueFmt={vBytes} yBase={1000} empty="这段时间没有业务流量" clip />
           </ChartFrame>
         </ChartCard>
       </Section>
       <Section>
-        <SectionHeader title="按入口" />
+        <SectionHeader title="按入口" meta={entriesMeta(m)} />
         <EntriesTable m={m} traffic />
       </Section>
     </>
@@ -171,7 +177,7 @@ export function TrafficTab({ m }: { m: MachineView }) {
 }
 
 export function HostTab({ m }: { m: MachineView }) {
-  const [range, setRange] = React.useState('6h');
+  const [range, setRange] = React.useState(DEFAULT_RANGE);
   // 家宽代理没有主机；其它机器即使现在没有读数（agent 离线、还没上报），历史曲线照样能看——排查掉线前发生了什么正要看它
   const agentful = m.kind !== 'proxy';
   const s = useSeries(m.id, 'host', range, agentful, poll(range));
@@ -185,8 +191,7 @@ export function HostTab({ m }: { m: MachineView }) {
   const hourly = s.data?.resolution === '1h';
   return (
     <>
-      {/* 时间范围在页签里吸顶：往下翻三张曲线时也能换 */}
-      <div className="tab-sticky"><span>时间范围</span><RangeBar range={range} setRange={setRange} /></div>
+      <RangeSticky range={range} setRange={setRange} />
       <Section>
         <SectionHeader title="当前" meta={h ? `更新于 ${F.ago(h.ts)}` : m.agent?.last_report_at ? `最后上报于 ${F.ago(m.agent.last_report_at)}` : '还没上报过'} />
         {h && r ? (
@@ -203,11 +208,14 @@ export function HostTab({ m }: { m: MachineView }) {
       </Section>
       {/* 图表卡同属一段，之间不再画分隔线 */}
       <Section className="chart-stack">
-        <ChartCard c="var(--m-cpu)" icon={<Cpu />} title="CPU" meta={hourly ? '每小时平均与峰值' : undefined} value={h ? <Num f={F.pct(h.cpu_pct, 1)} /> : '—'} caption="使用率"><ChartFrame q={s} few={few} height={140}><TimeChart full points={s.data?.points} range={s.data?.range ?? range} lines={hourly ? L_CPU_HOURLY : L_CPU} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></ChartCard>
-        <ChartCard c="var(--m-mem)" icon={<MemoryStick />} title="内存" value={r ? <Num f={F.pct(r.mem.pct, 1)} /> : '—'} caption="使用率"><ChartFrame q={s} few={few} height={140}><TimeChart full points={s.data?.points} range={s.data?.range ?? range} lines={L_MEM} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></ChartCard>
-        <ChartCard c="var(--m-disk)" icon={<HardDrive />} title="磁盘" value={r ? <Num f={F.pct(r.disk.pct, 1)} /> : '—'} caption="使用率"><ChartFrame q={s} few={few} height={140}><TimeChart full points={s.data?.points} range={s.data?.range ?? range} lines={L_DISK} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></ChartCard>
-        {cores != null && <ChartCard c="var(--m-load)" icon={<Gauge />} title="负载" meta={<InfoTip text={`1 分钟平均负载 ÷ ${cores} 核；超过 100% 表示有任务在排队`} />} value={r ? <Num f={r.load.value} /> : '—'} caption="1 分钟平均"><ChartFrame q={s} few={few} height={140}>{loadPoints ? <TimeChart full points={loadPoints} range={s.data?.range ?? range} lines={L_LOAD} yFmt={yPct} valueFmt={vPct} height={140} /> : <div className="chart-empty" style={{ height: 140 }}>{hourly ? '7 天、30 天的小时汇总不含负载' : '容器内无法获取本机负载'}</div>}</ChartFrame></ChartCard>}
-        <ChartCard c="var(--chart-1)" icon={<Network />} title="网卡速率" value={h ? <>↓ <Num f={F.rate(h.net_rx_bps)} /> <span className="t-sub">·</span> ↑ <Num f={F.rate(h.net_tx_bps)} /></> : '—'} caption="当前速率"><ChartFrame q={s} few={few} height={160}><TimeChart full points={s.data?.points} range={s.data?.range ?? range} lines={L_NET} yFmt={yRate} valueFmt={vRate} yBase={1000} height={160} /></ChartFrame></ChartCard>
+        <ChartCard c="var(--m-cpu)" icon={<Cpu />} title="CPU" meta={hourly ? '每小时平均与峰值' : undefined} value={h ? <Num f={F.pct(h.cpu_pct, 1)} /> : '—'} caption="使用率"><ChartFrame q={s} few={few} height={140}><TimeChart full holeLabel="agent 离线" points={s.data?.points} range={s.data?.range ?? range} lines={hourly ? L_CPU_HOURLY : L_CPU} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></ChartCard>
+        <ChartCard c="var(--m-mem)" icon={<MemoryStick />} title="内存" value={r ? <Num f={F.pct(r.mem.pct, 1)} /> : '—'} caption="使用率"><ChartFrame q={s} few={few} height={140}><TimeChart full holeLabel="agent 离线" points={s.data?.points} range={s.data?.range ?? range} lines={L_MEM} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></ChartCard>
+        <ChartCard c="var(--m-disk)" icon={<HardDrive />} title="磁盘" value={r ? <Num f={F.pct(r.disk.pct, 1)} /> : '—'} caption="使用率"><ChartFrame q={s} few={few} height={140}><TimeChart full holeLabel="agent 离线" points={s.data?.points} range={s.data?.range ?? range} lines={L_DISK} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></ChartCard>
+        {/* 容器里拿不到负载（或小时汇总不含）：图卡缩成一行，不占一整张图的高度 */}
+        {cores != null && (s.data && !loadPoints
+          ? <ChartCard slim c="var(--m-load)" icon={<Gauge />} title="负载" meta={<InfoTip text={`1 分钟平均负载 ÷ ${cores} 核；超过 100% 表示有任务在排队`} />} value="—" caption={hourly ? '小时汇总不含负载' : '容器内不可用'} />
+          : <ChartCard c="var(--m-load)" icon={<Gauge />} title="负载" meta={<InfoTip text={`1 分钟平均负载 ÷ ${cores} 核；超过 100% 表示有任务在排队`} />} value={r ? <Num f={r.load.value} /> : '—'} caption="1 分钟平均"><ChartFrame q={s} few={few} height={140}>{loadPoints && <TimeChart full holeLabel="agent 离线" points={loadPoints} range={s.data?.range ?? range} lines={L_LOAD} yFmt={yPct} valueFmt={vPct} height={140} />}</ChartFrame></ChartCard>)}
+        <ChartCard c="var(--chart-1)" icon={<Network />} title="网卡速率" value={h ? <>↓ <Num f={F.rate(h.net_rx_bps)} /> <span className="t-sub">·</span> ↑ <Num f={F.rate(h.net_tx_bps)} /></> : '—'} caption="当前速率"><ChartFrame q={s} few={few} height={160}><TimeChart full holeLabel="agent 离线" points={s.data?.points} range={s.data?.range ?? range} lines={L_NET} yFmt={yRate} valueFmt={vRate} yBase={1000} height={160} clip /></ChartFrame></ChartCard>
       </Section>
     </>
   );
