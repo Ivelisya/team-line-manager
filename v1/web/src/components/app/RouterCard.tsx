@@ -9,6 +9,7 @@ import { useNow } from '@/lib/useNow';
 import { cn } from '@/lib/utils';
 import { deploySteps, routerIssues, routerMeters, showBootstrap, showDeploy, tempTone, uptimeFmt, useRegenBootstrap, useRouterMetrics, type RouterSummary, type RouterTab, type RouterView } from '@/lib/routers';
 import { Button, IconButton } from '@/components/ui/button';
+import { InfoTip } from '@/components/ui/form';
 import { toast } from '@/components/ui/toast';
 import { Num, Pill } from './primitives';
 import { CellMeter, Cells, DotTrace, Tag } from './viz';
@@ -111,8 +112,7 @@ function Hold({ r }: { r: RouterView }) {
   if (r.state === 'pending') {
     return (
       <div className="nc-res rt-span"><div className="nc-hold rt-hold">
-        <span className="rt-hold-main"><Clock />等路由执行接入命令</span>
-        <span className="hint">在路由的 SSH 里执行接入命令后，约 30 秒内变为在线</span>
+        <span className="rt-hold-main"><Clock />等路由执行接入命令<InfoTip text="在路由的 SSH 里执行接入命令后，约 30 秒内变为在线" /></span>
         <Button size="sm" loading={boot.pending} onClick={() => void boot.run(r)} data-tip="原来的命令只显示一次：这里会重新生成一条，旧的作废"><Terminal size={13} />查看接入命令</Button>
       </div></div>
     );

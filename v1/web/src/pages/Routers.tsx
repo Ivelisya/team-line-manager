@@ -60,7 +60,7 @@ export function RoutersPage() {
       {groups.length > 2 && <div className="hgroups" role="group" aria-label="筛选"><Segmented label="团队" value={cur} onChange={setTeam} items={groups} className="seg-fill" /></div>}
       {q.isLoading && <div className="cards" data-view="large">{Array.from({ length: 3 }, (_, i) => <Skeleton key={i} h={520} style={{ borderRadius: 'var(--r-card)', marginBottom: 'var(--grid-gap)' }} />)}</div>}
       {q.data && all.length === 0 && (
-        <Empty icon={<RouterIcon size={22} />} text="还没有接入软路由" hint="接入后在这里看客户现场路由的资源占用、WAN 与代理速率、各出口是否可用；中控只读采集，不改路由原有的配置">{add}</Empty>
+        <Empty icon={<RouterIcon size={22} />} text="还没有接入软路由">{add}</Empty>
       )}
       {shown.length > 0 && <div className="cards page-in" data-view="large">{shown.map((r) => <RouterCard key={r.id} r={r} current={r.id === openId} onOpen={open} />)}</div>}
       <AddRouterDialog open={adding} onOpenChange={setAdding} />

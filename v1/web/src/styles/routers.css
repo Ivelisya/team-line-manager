@@ -3,6 +3,8 @@
 
 .rt-warn { color: var(--warn-text); }
 .rt-bad { color: var(--bad-text); }
+/* 跟在一行字后面的「(i)」：与文字下沿对齐、隔开一点 */
+.rt-info { margin-left: var(--sp-4); vertical-align: -3px; }
 
 /* ---- 总览：大号数字 + 一句话，不带框（页头、抽屉概览） ---- */
 .rt-hero { display: grid; gap: var(--sp-6); min-width: 0; }
@@ -24,7 +26,6 @@
 .rt-hold-main { display: inline-flex; align-items: center; gap: var(--sp-6); font-weight: var(--fw-medium); color: var(--fg-2); }
 .rt-hold.is-bad .rt-hold-main { color: var(--bad-text); }
 .rt-hold-err { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--fs-micro) / 16px var(--font-mono); color: var(--fg-2); }
-.rt-hold .hint { color: var(--fg-3); }
 .nc-res.rt-hold-tl { display: block; min-height: 112px; }
 /* 没有读数的卡：占位占掉资源、流量、出口、运行四个槽位，内容竖直居中 */
 .ncard > .rt-span { grid-row: span 4; align-content: center; }
@@ -78,9 +79,6 @@
 .rt-alive { display: inline-flex; align-items: center; gap: var(--sp-4); }
 .rt-alive .lucide { width: 14px; height: 14px; }
 .rt-alive[data-tone="bad"] { color: var(--bad-text); }
-.rt-legend { display: grid; gap: var(--sp-4); margin: var(--sp-8) 0 0; padding: 0; list-style: none; }
-.rt-legend li { display: flex; align-items: baseline; gap: var(--sp-8); }
-.rt-legend .pill { flex: none; }
 /* 行内迷你折线（出口延迟）：只有线，颜色随强调色 */
 .rt-spark { display: block; width: 80px; height: 20px; overflow: visible; }
 .rt-spark path { fill: none; stroke: var(--chart-1); stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }

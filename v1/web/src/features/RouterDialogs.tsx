@@ -9,7 +9,7 @@ import { resetOnOpen, useHeld } from '@/lib/useHeld';
 import { useNow } from '@/lib/useNow';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { Field, Input, Textarea } from '@/components/ui/form';
+import { Field, InfoTip, Input, Textarea } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/overlays';
 import { toast } from '@/components/ui/toast';
@@ -18,9 +18,9 @@ import { CopyButton, Note } from '@/components/app/primitives';
 import { useShowBootstrap } from '@/components/app/RouterCard';
 
 type Method = 'ssh' | 'cmd';
-const ONLY_ADDS = '两种方式都只新增：给路由加中控的登录公钥、装 fleet-tunnel 服务（和原来的 router-tunnel 并存）；不改 root 密码、dropbear / LuCI 监听、OpenClash 配置与防火墙。';
-const SSH_NOTE = '中控能 SSH 到路由时最省事：填路由的 SSH 地址，中控登录上去替你装好。密码只随这一次请求发出，中控不保存、之后也不显示；不填就用中控现有的密钥登录。';
-const CMD_NOTE = '路由在 NAT 后面、中控连不上它时用：生成一条命令，在路由的 SSH 里粘贴执行（30 分钟内有效、只能用一次）。';
+// 界面上只留短字，解释放进「(i)」（用户：说明性的小字太多）
+const ONLY_ADDS = '只新增：给路由加中控的登录公钥、装 fleet-tunnel 服务（和原来的 router-tunnel 并存）；不改 root 密码、dropbear / LuCI 监听、OpenClash 配置与防火墙。';
+const METHOD_INFO = `一键部署：中控 SSH 登录路由替你装好，要中控连得到路由。\n执行命令：路由在 NAT 后面、中控连不上时用，生成一条命令在路由的 SSH 里粘贴执行（30 分钟内有效、只能用一次）。\n两种方式都${ONLY_ADDS}`;
 
 /** 这个浏览器上次给这台路由填的 SSH 地址（中控不回传地址；密码从不保存）：「重新部署」预填 */
 const sshKey = (id: string) => `fleet:router-ssh:${id}`;
@@ -35,10 +35,10 @@ function SshFields({ d, set, autoFocus }: { d: SshDraft; set: (p: Partial<SshDra
   const portErr = d.port !== '' && !(/^\d+$/.test(d.port) && +d.port >= 1 && +d.port <= 65535) ? '端口应在 1–65535 之间' : undefined;
   return (
     <div className="form-grid">
-      <Field label="SSH 地址" hint="中控连得到的地址：公网 IP、域名，或经 VPN 能到的内网地址"><Input value={d.host} onChange={(e) => set({ host: e.target.value })} placeholder="例如 203.0.113.20" autoFocus={autoFocus} autoComplete="off" data-1p-ignore data-lpignore="true" spellCheck={false} /></Field>
+      <Field label="SSH 地址" info="中控连得到的地址：公网 IP、域名，或经 VPN 能到的内网地址"><Input value={d.host} onChange={(e) => set({ host: e.target.value })} placeholder="中控能连到的 IP 或域名" autoFocus={autoFocus} autoComplete="off" data-1p-ignore data-lpignore="true" spellCheck={false} /></Field>
       <Field label="端口" error={portErr}><Input inputMode="numeric" value={d.port} onChange={(e) => set({ port: e.target.value.replace(/\D/g, '') })} aria-invalid={!!portErr} /></Field>
       <Field label="用户"><Input value={d.user} onChange={(e) => set({ user: e.target.value })} autoComplete="off" data-1p-ignore data-lpignore="true" spellCheck={false} /></Field>
-      <Field label="密码" hint="可不填：不填就用中控现有的密钥登录"><Input type="password" value={d.password} onChange={(e) => set({ password: e.target.value })} autoComplete="off" data-1p-ignore data-lpignore="true" /></Field>
+      <Field label="密码" info="只随这一次请求发出，中控不保存、之后也不显示；留空就用中控现有的密钥登录"><Input type="password" value={d.password} onChange={(e) => set({ password: e.target.value })} placeholder="留空用中控密钥" autoComplete="off" data-1p-ignore data-lpignore="true" /></Field>
     </div>
   );
 }
@@ -72,19 +72,19 @@ export const AddRouterDialog = resetOnOpen(function AddRouterDialog({ open, onOp
     });
   };
   return (
-    <FormDialog size="md" open={open} onOpenChange={onOpenChange} title="接入软路由" desc={ONLY_ADDS} submitLabel={method === 'ssh' ? '开始部署' : '生成接入命令'} busy={add.isPending} valid={valid} onSubmit={submit}
+    <FormDialog size="md" open={open} onOpenChange={onOpenChange} title="接入软路由" submitLabel={method === 'ssh' ? '开始部署' : '生成接入命令'} busy={add.isPending} valid={valid} onSubmit={submit}
       dirty={!!name.trim() || !!note.trim() || !!ssh.host.trim() || !!ssh.password}>
       <div className="form-grid">
-        <Field label="名称" hint="例如：团队2-路由A" error={dup ? '已有同名的软路由' : undefined}><Input value={name} onChange={(e) => setName(e.target.value)} autoFocus autoComplete="off" data-1p-ignore data-lpignore="true" aria-invalid={dup} /></Field>
+        <Field label="名称" error={dup ? '已有同名的软路由' : undefined}><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如 团队2-路由A" autoFocus autoComplete="off" data-1p-ignore data-lpignore="true" aria-invalid={dup} /></Field>
         <Field label="团队"><Select value={team} onChange={setTeam} options={teamOpts} allowEmpty="不分团队" placeholder="不分团队" /></Field>
         <Field label="备注" className="span-2"><Textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="例如：客户机房 2 楼弱电箱，旁路由" /></Field>
       </div>
       <div className="field">
-        <span className="label">接入方式</span>
+        <span className="field-label"><span className="label">接入方式</span><InfoTip text={METHOD_INFO} /></span>
         <Tabs value={method} onValueChange={(v) => setMethod(v as Method)}>
           <TabsList><TabsTrigger value="ssh" noPanel>填账号密码一键部署</TabsTrigger><TabsTrigger value="cmd" noPanel>在路由上执行命令</TabsTrigger></TabsList>
         </Tabs>
-        <p className="rt-method-note">{method === 'ssh' ? SSH_NOTE : CMD_NOTE}</p>
+        <p className="rt-method-note">{method === 'ssh' ? '要中控能 SSH 到路由' : '中控连不上路由时用'}</p>
       </div>
       {method === 'ssh' && <SshFields d={ssh} set={setSsh} />}
     </FormDialog>
@@ -106,10 +106,10 @@ const DeployDialog = resetOnOpen(function DeployDialog({ open, id, name }: { ope
     });
   };
   return (
-    <FormDialog size="md" open={open} onOpenChange={(o) => !o && closeDeploy()} title={`重新部署「${name}」`} desc={SSH_NOTE} submitLabel="开始部署" busy={deploy.isPending} valid={sshValid(ssh)} dirty={!!ssh.password} onSubmit={submit}>
-      {r?.state === 'online' && <Note tone="warn">这台现在在线：重新部署会换一把隧道密钥并重启 fleet-tunnel，期间约半分钟连不上（不影响 OpenClash 和客户端上网）。</Note>}
+    <FormDialog size="md" open={open} onOpenChange={(o) => !o && closeDeploy()} title={`重新部署「${name}」`} submitLabel="开始部署" busy={deploy.isPending} valid={sshValid(ssh)} dirty={!!ssh.password} onSubmit={submit}>
+      {r?.state === 'online' && <Note tone="warn">这台在线：部署时约半分钟连不上<InfoTip className="rt-info" text="会换一把隧道密钥并重启 fleet-tunnel；不影响 OpenClash 和客户端上网" /></Note>}
       <SshFields d={ssh} set={setSsh} autoFocus />
-      <div className="hint">中控连不上这台路由（在 NAT 后面）？<button type="button" className="btn btn-link btn-sm" style={{ height: 'auto', padding: 0 }} disabled={boot.pending}
+      <div className="hint">中控连不上？<button type="button" className="btn btn-link btn-sm" style={{ height: 'auto', padding: 0 }} disabled={boot.pending}
         onClick={() => { closeDeploy(); void boot.run({ id, name, last_seen_at: r?.last_seen_at ?? null }); }}><Terminal size={12} />改用在路由上执行命令</button></div>
     </FormDialog>
   );
@@ -132,14 +132,13 @@ function BootstrapDialog() {
       <DialogContent size="md" onInteractOutside={(e) => e.preventDefault()}>
         <DialogHeader>
           <DialogTitle>{done ? `「${b.name}」已接入` : `接入「${b.name}」`}</DialogTitle>
-          <DialogDescription>在路由的 SSH 里粘贴执行；30 分钟内有效、只能用一次。</DialogDescription>
+          <DialogDescription>在路由的 SSH 里粘贴执行<InfoTip className="rt-info" text={`30 分钟内有效、只能用一次。\n${ONLY_ADDS}`} /></DialogDescription>
         </DialogHeader>
-        {b.replaced && !done && <Note tone="warn">旧的隧道密钥已作废：路由上原来的 fleet-tunnel 现在连不上中控，执行这条新命令后恢复。</Note>}
+        {b.replaced && !done && <Note tone="warn">旧隧道已断开，执行这条命令后恢复</Note>}
         <div className="token-box rt-cmd"><code>{b.cmd}</code><CopyButton text={b.cmd} label="接入命令" size={15} /></div>
-        {done ? <Note tone="ok" icon={<CircleCheck size={14} />}>路由已连上中控，状态在线。可以关掉这个窗口了。</Note>
-          : left > 0 ? <div className="row hint" style={{ gap: 6 }}><Loader2 size={13} className="spin" />等路由连上：执行后约 30 秒内显示在线（这个窗口开着会自动更新）· 还有 <b className="num">{mmss(left)}</b> 过期</div>
-          : <Note tone="bad">命令已过期（30 分钟）。<button type="button" className="btn btn-link btn-sm" style={{ height: 'auto', padding: 0 }} disabled={boot.pending} onClick={() => void boot.run({ id: b.id, name: b.name, last_seen_at: r?.last_seen_at ?? null })}><RefreshCw size={12} />重新生成</button></Note>}
-        <div className="hint">{ONLY_ADDS}</div>
+        {done ? <Note tone="ok" icon={<CircleCheck size={14} />}>路由已在线，可以关闭了</Note>
+          : left > 0 ? <div className="row hint" style={{ gap: 6 }}><Loader2 size={13} className="spin" />等路由连上 · 还有 <b className="num">{mmss(left)}</b> 过期<InfoTip text="执行后约 30 秒内显示在线，这个窗口开着会自动更新" /></div>
+          : <Note tone="bad">命令已过期。<button type="button" className="btn btn-link btn-sm" style={{ height: 'auto', padding: 0 }} disabled={boot.pending} onClick={() => void boot.run({ id: b.id, name: b.name, last_seen_at: r?.last_seen_at ?? null })}><RefreshCw size={12} />重新生成</button></Note>}
         <DialogFooter>
           <Button onClick={() => void copyText(b.cmd, '接入命令')}>复制命令</Button>
           <Button variant="primary" onClick={closeBootstrap}>{done ? '完成' : '关闭'}</Button>
@@ -156,8 +155,7 @@ function RemovedDialog() {
   return (
     <Dialog open={!!name} onOpenChange={(o) => !o && closeRemoved()}>
       <DialogContent size="md">
-        <DialogHeader><DialogTitle>已删除「{held}」</DialogTitle><DialogDescription>中控已撤销它的隧道公钥，路由上的 fleet-tunnel 之后连不上中控，会一直重试。</DialogDescription></DialogHeader>
-        <div className="hint">在路由的 SSH 里执行下面这条，停掉并删掉这个服务（原来连 ivekasy 的 router-tunnel 不受影响）：</div>
+        <DialogHeader><DialogTitle>已删除「{held}」</DialogTitle><DialogDescription>在路由上执行这条，停掉 fleet-tunnel<InfoTip className="rt-info" text="中控已撤销它的隧道公钥，路由上的 fleet-tunnel 之后连不上中控、会一直重试。这条命令停掉并删掉这个服务；原来连 ivekasy 的 router-tunnel 不受影响" /></DialogDescription></DialogHeader>
         <div className="token-box rt-cmd"><code>{TUNNEL_CLEANUP}</code><CopyButton text={TUNNEL_CLEANUP} label="清理命令" size={15} /></div>
         <DialogFooter><Button variant="primary" onClick={closeRemoved}>知道了</Button></DialogFooter>
       </DialogContent>
