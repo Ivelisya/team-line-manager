@@ -150,7 +150,11 @@ export const RestoreDialog = resetOnOpen(function RestoreDialog({ m, open, onOpe
   const relayOpts = relays.map((r) => ({ value: r.id, label: r.name }));
   const upOk = !isProxy || (up.host.trim() !== '' && Number(up.port) > 0);
   const pwOk = needs?.password !== 'required' || pw !== '';
-  const ready = !!pv && pv.restorable && !!needs && (!needs.relay || !!relay) && upOk && pwOk && settled && !live.isFetching;
+  // 主机指纹与退役时不同（ssh.host_key_changed）：服务端列为阻断，勾了「重置主机指纹」放行。只有带探测的第一份预检知道，改团队/编号后的预检也照它算
+  const keyChanged = b?.ssh?.host_key_changed === true;
+  const keyNote = keyChanged ? b?.blockers.find((x) => x.startsWith('主机指纹')) : undefined;
+  const blockers = (pv?.blockers ?? []).filter((x) => x !== keyNote);
+  const ready = !!pv && blockers.length === 0 && !(keyChanged && !reset) && !!needs && (!needs.relay || !!relay) && upOk && pwOk && settled && !live.isFetching;
   // 填过东西就别让误点遮罩关掉（Esc、取消仍可关）
   const dirty = edited || !!pw || !!reason.trim() || reset || relay !== (b?.last_relay?.id ?? '') || !!(up.host || up.port || up.username || up.password);
 
@@ -186,7 +190,8 @@ export const RestoreDialog = resetOnOpen(function RestoreDialog({ m, open, onOpe
             <span className="t-sub">IP {pv.ip}</span>
           </div>
           {pv.ip_conflict && <Note tone="bad">IP {pv.ip} 已被在用的「{pv.ip_conflict.name}」占用，现在不能恢复。先把它退役，或确认这台机器的 IP 没有变。</Note>}
-          {pv.blockers.filter((b) => !pv.ip_conflict || !b.includes(pv.ip)).map((b) => <Note key={b} tone="bad">{b}</Note>)}
+          {blockers.filter((b) => !pv.ip_conflict || !b.includes(pv.ip)).map((b) => <Note key={b} tone="bad">{b}</Note>)}
+          {keyNote && <Note tone={reset ? 'warn' : 'bad'}>{keyNote}</Note>}
           {pv.warnings.map((w) => <Note key={w} tone="warn">{w}</Note>)}
           {pv.retired_reason && <div className="hint">退役原因：{pv.retired_reason}</div>}
         </div>

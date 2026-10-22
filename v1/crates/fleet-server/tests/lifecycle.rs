@@ -682,6 +682,8 @@ async fn restore_retired_proxy_node_appends_number_and_gets_new_entry() {
     let (s, _) = t.req("POST", &format!("/api/v1/machines/{n1}/restore"), Some(json!({"relay_id": ra})), None).await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
 
+    // 退役时存的主机公钥（家宽代理其实没有，这里直接写一份）：恢复成功后清空
+    sqlx::query("update machine set retired_host_keys = 'x ssh-ed25519 AAAA' where id = $1").bind(n1).execute(&t.st.db).await.unwrap();
     let r = t.post(&format!("/api/v1/machines/{n1}/restore"), json!({"relay_id": ra, "upstream": upstream("p2.example"), "reason": "客户续约"})).await;
     assert_eq!(r["name"], "团队1-02");
     assert_eq!(r["machine_id"], n1.to_string());
@@ -700,6 +702,8 @@ async fn restore_retired_proxy_node_appends_number_and_gets_new_entry() {
     assert_eq!(m["name"], "团队1-02");
     assert!(m["retired_at"].is_null(), "{m}");
     assert_eq!(m["lifecycle_reason"], "已恢复：客户续约");
+    let hk: Option<String> = sqlx::query_scalar("select retired_host_keys from machine where id = $1").bind(n1).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(hk, None, "恢复成功后清掉退役时存的主机公钥");
     // 同一个机器 id：账单还在；旧入口仍是 removed，新入口是另一条 active
     let sub: i64 = sqlx::query_scalar("select count(*) from subscription where machine_id = $1").bind(n1).fetch_one(&t.st.db).await.unwrap();
     assert_eq!(sub, 1);
@@ -843,6 +847,54 @@ async fn restore_vps_precheck_and_job_creation() {
     assert_eq!(reason.as_deref(), Some("到期不续"), "退役原因回到恢复之前");
     let gone: bool = sqlx::query_scalar("select (params->'login') is null from job where id = $1::uuid").bind(&job).fetch_one(&t.st.db).await.unwrap();
     assert!(gone, "取消后加密的 root 密码要清掉");
+}
+
+async fn host_keys_of(t: &T, id: Uuid) -> Option<String> {
+    sqlx::query_scalar("select retired_host_keys from machine where id = $1").bind(id).fetch_one(&t.st.db).await.unwrap()
+}
+
+/// 退役时主机公钥从 known_hosts 存到机器行；恢复作业的预检先放回再核对（不重新首次信任），勾了重置就不放回；取消时存回机器行再删
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retired_host_keys_are_saved_and_put_back_on_restore() {
+    let t = setup(true).await;
+    let (ra, _) = seed_relay(&t).await;
+    let team = seed_team(&t, "团队1").await;
+    let vps = Uuid::now_v7();
+    sqlx::query("insert into machine (id, kind, team_id, number, primary_ip, ssh_port, lifecycle, activated_at) values ($1, 'vps', $2, 1, '127.0.0.1', 1, 'active', now())")
+        .bind(vps)
+        .bind(team)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let kh = t.dir.path().join("known_hosts");
+    let line = "[127.0.0.1]:1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGWzfakefakefakefakefakefakefakefakefakefakefake";
+    std::fs::write(&kh, format!("{line}\n[127.0.0.1]:2 ssh-ed25519 AAAAother\n")).unwrap();
+    let pinned = || std::fs::read_to_string(&kh).unwrap().contains("[127.0.0.1]:1 ");
+
+    let job = t.post(&format!("/api/v1/machines/{vps}/retire"), json!({"confirm": "团队1-01", "cleanup": false})).await["job_id"].as_str().unwrap().to_string();
+    t.wait_job(&job, "succeeded").await;
+    assert_eq!(host_keys_of(&t, vps).await.as_deref(), Some(line));
+    assert!(!pinned() && std::fs::read_to_string(&kh).unwrap().contains("[127.0.0.1]:2 "), "只删这台机器的记录");
+
+    // 恢复：预检先放回退役时的公钥（SSH 连不上，停在网络错误）
+    let job = t.post(&format!("/api/v1/machines/{vps}/restore"), json!({"relay_id": ra})).await["job_id"].as_str().unwrap().to_string();
+    let f = t.wait_job(&job, "failed").await;
+    assert_eq!(f["steps"][0]["error_kind"], "network", "{f}");
+    assert!(pinned(), "放回了退役时的公钥");
+    assert!(log_msgs(&t, &job).await.iter().any(|m| m.contains("已放回退役时记录的主机公钥")));
+    // 取消：再存回机器行、从 known_hosts 删掉
+    t.post(&format!("/api/v1/jobs/{job}/cancel"), json!({})).await;
+    t.wait_job(&job, "cancelled").await;
+    assert!(!pinned());
+    assert_eq!(host_keys_of(&t, vps).await.as_deref(), Some(line));
+
+    // 勾了「重置主机指纹」：不放回（照旧按现在的公钥重新记录）；存的公钥要到恢复成功才清
+    let job = t.post(&format!("/api/v1/machines/{vps}/restore"), json!({"relay_id": ra, "reset_host_key": true})).await["job_id"].as_str().unwrap().to_string();
+    t.wait_job(&job, "failed").await;
+    assert!(!pinned(), "重置时不放回");
+    t.post(&format!("/api/v1/jobs/{job}/cancel"), json!({})).await;
+    t.wait_job(&job, "cancelled").await;
+    assert_eq!(host_keys_of(&t, vps).await.as_deref(), Some(line), "known_hosts 里没有记录时不覆盖存的");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

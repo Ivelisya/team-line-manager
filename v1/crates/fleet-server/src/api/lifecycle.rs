@@ -229,11 +229,14 @@ struct RM {
     reason: Option<String>,
     /// 同机 IP 节点的宿主机
     host_id: Option<Uuid>,
+    /// 退役时存下的主机公钥（known_hosts 行）
+    host_keys: Option<String>,
 }
 
 async fn load_rm(conn: &mut PgConnection, id: Uuid, lock: bool) -> ApiResult<RM> {
     let sql = format!(
-        "select kind::text kind, team_id, number, label, host(primary_ip) ip, ssh_port, lifecycle::text lifecycle, lifecycle_reason reason, host_id
+        "select kind::text kind, team_id, number, label, host(primary_ip) ip, ssh_port, lifecycle::text lifecycle, lifecycle_reason reason, host_id,
+            retired_host_keys host_keys
          from machine where id = $1{}",
         if lock { " for update" } else { "" }
     );
@@ -361,6 +364,7 @@ async fn restore_plan(conn: &mut PgConnection, id: Uuid, m: &RM, team_ov: Option
 }
 
 /// 用中控密钥试登录这台机器（预检用）：先 keyscan 到临时 known_hosts，不碰正式的。
+/// 退役时存过主机公钥的，另给 host_key_changed（现在的公钥不在存的里面）。
 async fn probe_login(st: &AppState, m: &RM) -> Value {
     let port = m.ssh_port as u16;
     if !ssh::tcp_ok(&m.ip, port, Duration::from_secs(3)).await {
@@ -371,17 +375,39 @@ async fn probe_login(st: &AppState, m: &RM) -> Value {
         let key = ssh::pin_host_key(&tmp, &m.ip, port, true).await?;
         let t = ssh::Target { ip: m.ip.clone(), port, key: st.cfg.ssh_key.clone(), known_hosts: tmp.clone(), password: None };
         let out = t.run("true", Duration::from_secs(15)).await?;
-        anyhow::Ok((ssh::fingerprint(&key), out))
+        anyhow::Ok((key, out))
     };
     let res = tokio::time::timeout(Duration::from_secs(30), run).await;
     let _ = tokio::fs::remove_file(&tmp).await;
-    match res {
-        Ok(Ok((fp, out))) if out.ok() => json!({"reachable": true, "key_login": "ok", "host_key": fp}),
-        Ok(Ok((fp, out))) if out.ssh_kind() == Some(ssh::ErrKind::Auth) => json!({"reachable": true, "key_login": "denied", "host_key": fp}),
-        Ok(Ok((fp, out))) => json!({"reachable": true, "key_login": "error", "host_key": fp, "detail": out.stderr.trim()}),
+    let changed = match (&res, m.host_keys.as_deref()) {
+        (Ok(Ok((key, _))), Some(saved)) => Some(!ssh::keys_of(saved).contains(key)),
+        _ => None,
+    };
+    let mut v = match res {
+        Ok(Ok((key, out))) if out.ok() => json!({"reachable": true, "key_login": "ok", "host_key": ssh::fingerprint(&key)}),
+        Ok(Ok((key, out))) if out.ssh_kind() == Some(ssh::ErrKind::Auth) => json!({"reachable": true, "key_login": "denied", "host_key": ssh::fingerprint(&key)}),
+        Ok(Ok((key, out))) => json!({"reachable": true, "key_login": "error", "host_key": ssh::fingerprint(&key), "detail": out.stderr.trim()}),
         Ok(Err(e)) => json!({"reachable": true, "key_login": "error", "detail": format!("{e:#}")}),
         Err(_) => json!({"reachable": true, "key_login": "error", "detail": "探测超时"}),
+    };
+    if let Some(ch) = changed {
+        v["host_key_changed"] = json!(ch);
     }
+    v
+}
+
+/// 预检看到的主机公钥与退役时存的不同：没勾「重置主机指纹」是阻断，勾了只提醒
+fn host_key_note(m: &RM, info: &Value, reset: bool) -> Option<(bool, String)> {
+    if info["host_key_changed"] != true {
+        return None;
+    }
+    let was = m.host_keys.as_deref().and_then(|s| ssh::keys_of(s).into_iter().next()).map(|k| ssh::fingerprint(&k)).unwrap_or_default();
+    let now = info["host_key"].as_str().unwrap_or("");
+    Some(if reset {
+        (false, format!("主机指纹与退役时不同（退役时 {was}，现在 {now}）：已勾选「重置主机指纹」，恢复时按现在的公钥重新记录"))
+    } else {
+        (true, format!("主机指纹与退役时不同（退役时 {was}，现在 {now}）：确认机器重装过再勾选「重置主机指纹」；否则可能是这个 IP 已经换了主人"))
+    })
 }
 
 #[derive(Deserialize)]
@@ -391,11 +417,13 @@ pub struct PreviewQ {
     label: Option<String>,
     /// false = 不试 SSH 登录（只做库内检查）
     probe: Option<bool>,
+    /// 打算勾「重置主机指纹」：主机指纹与退役时不同只提醒、不阻断
+    reset_host_key: Option<bool>,
 }
 
 /// 恢复预检：IP 冲突、将分配的团队/编号/名字、还需要提供哪些参数
 pub async fn restore_preview(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<PreviewQ>) -> ApiResult<Json<Value>> {
-    let (m, p, last_relay) = {
+    let (m, mut p, last_relay) = {
         let mut conn = st.db.acquire().await?;
         let m = load_rm(&mut conn, id, false).await?;
         let p = restore_plan(&mut conn, id, &m, q.team_id, q.number, q.label.clone(), false).await?;
@@ -432,6 +460,12 @@ pub async fn restore_preview(a: Actor, State(st): State<AppState>, ApiPath(id): 
     if let Some(i) = &ssh_info {
         if i["key_login"] == "unreachable" {
             warnings.push(format!("SSH {}:{} 现在连不上：恢复作业会在「预检与身份」一步失败，先确认机器已开机、IP 没变", m.ip, m.ssh_port));
+        }
+        // 只是提示：POST 不再探测，真正的拦截在恢复作业的预检（放回退役时的公钥再核对）
+        match host_key_note(&m, i, q.reset_host_key == Some(true)) {
+            Some((true, msg)) => p.blockers.push(msg),
+            Some((false, msg)) => warnings.push(msg),
+            None => {}
         }
     }
     Ok(super::ok(json!({
@@ -610,4 +644,33 @@ pub async fn restore(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<
     st.emit(Event::Machines);
     st.emit(Event::Job { id: job, target: Some(id) });
     Ok(ok(json!({"job_id": job, "machine_id": id, "name": p.new_name, "old_name": p.old_name, "number": p.number})))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_key_note_blocks_unless_reset() {
+        let m = RM {
+            kind: "vps".into(),
+            team_id: None,
+            number: None,
+            label: None,
+            ip: "203.0.113.1".into(),
+            ssh_port: 22,
+            lifecycle: "retired".into(),
+            reason: None,
+            host_id: None,
+            host_keys: Some("203.0.113.1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOld".into()),
+        };
+        let same = json!({"key_login": "ok", "host_key": "SHA256:x", "host_key_changed": false});
+        assert!(host_key_note(&m, &same, false).is_none());
+        assert!(host_key_note(&m, &json!({"key_login": "unreachable"}), false).is_none(), "探测不到公钥：不判断");
+        let changed = json!({"key_login": "ok", "host_key": "SHA256:new", "host_key_changed": true});
+        let (block, msg) = host_key_note(&m, &changed, false).unwrap();
+        assert!(block && msg.contains("主机指纹与退役时不同") && msg.contains(&ssh::fingerprint("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOld")) && msg.contains("SHA256:new"), "{msg}");
+        let (block, msg) = host_key_note(&m, &changed, true).unwrap();
+        assert!(!block && msg.contains("已勾选"), "{msg}");
+    }
 }

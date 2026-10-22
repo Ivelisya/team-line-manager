@@ -151,7 +151,8 @@ export interface RestorePreview {
   restorable: boolean; blockers: string[]; warnings: string[]; ip_conflict: { machine_id: string; name: string; lifecycle: string } | null;
   last_relay: { id: string; name: string } | null; retired_reason: string | null;
   /** 同机 IP 节点不试 SSH（用中控密钥登录宿主机），为 null、needs.password 为 no；宿主机不在用时 blockers 里有原因 */
-  ssh: { reachable: boolean; key_login: 'ok' | 'denied' | 'error' | 'unreachable' | string; host_key?: string; detail?: string } | null;
+  /** host_key_changed：退役时存过主机公钥才有；true 时 blockers 里有「主机指纹与退役时不同…」（请求带 reset_host_key=true 时改在 warnings） */
+  ssh: { reachable: boolean; key_login: 'ok' | 'denied' | 'error' | 'unreachable' | string; host_key?: string; host_key_changed?: boolean; detail?: string } | null;
   /** password：required 中控密钥登录被拒、必须给 root 密码；optional 探测不到、可选；no 不需要 */
   needs: { relay: boolean; upstream: boolean; password: 'required' | 'optional' | 'no' };
 }
