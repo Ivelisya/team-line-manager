@@ -12,6 +12,7 @@ pub mod notify;
 pub mod policy;
 pub mod provision;
 pub mod relays;
+pub mod settings;
 
 use crate::state::AppState;
 use axum::routing::{get, patch, post};
@@ -101,6 +102,8 @@ pub fn router() -> Router<AppState> {
         .route("/access/events", get(access::events))
         .route("/access/new-targets", get(access::new_targets))
         .route("/machines/{id}/access", get(access::machine))
+        // 访问记录保留期
+        .route("/settings/access-retention", get(settings::get_access_retention).put(settings::put_access_retention))
         // 来源 IP 画像
         .route("/ipintel", get(ipintel::batch))
         .route("/ipintel/status", get(ipintel::status))

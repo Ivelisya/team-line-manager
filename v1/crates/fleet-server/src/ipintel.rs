@@ -5,6 +5,8 @@
 //! 3. 异常：学习期（节点第一条访问记录起 learn_days 天）之后出现新的运营商 / 新的城市 / 机房或 VPN 来源 IP，
 //!    写进 incident 表（规则 ipintel_new_isp / ipintel_new_city / ipintel_datacenter_source，warning）并走 notify。
 //!    一次性异常最后一次出现 alert_ttl_hours 之后自动恢复，不发恢复通知；alerts.rs 的恢复逻辑不碰 ipintel_ 开头的规则。
+//!    来源画像、画像缓存与恢复了的画像异常按访问记录保留期删（来源画像不短于学习期，见 `access::prune`、`settings`）：
+//!    「新运营商 / 新城市 / 首次出现的机房来源」= 这段时间内没见过。
 //!
 //! 库缺失或部分缺失时降级：能查多少查多少，查不到的字段为 null，`/ipintel/status` 说明缺什么；一个库都没有时
 //! 来源汇总不推进（等库装好后一次补上）。
@@ -371,7 +373,7 @@ struct Agg {
     conns: i64,
 }
 
-/// 来源同步每页覆盖的天数：首次扫整个小时表保留期（32 天）、或停摆很久之后按页处理，每页一个事务并各自推进水位
+/// 来源同步每页覆盖的天数：首次扫整个小时汇总的保留期、或停摆很久之后按页处理，每页一个事务并各自推进水位
 const SYNC_PAGE: Duration = Duration::days(7);
 
 /// 增量维护 node_source_seen。
@@ -396,7 +398,8 @@ pub async fn sync_sources(st: &AppState, now: OffsetDateTime) -> anyhow::Result<
     }
     let closed_upto = floor_hour(now) - Duration::hours(1);
     let wm: Option<OffsetDateTime> = sqlx::query_scalar("select ts from ipintel_state where key = $1").bind(WM_KEY).fetch_optional(&st.db).await?;
-    let mut from = wm.unwrap_or(now - Duration::days(access::HOURLY_DAYS + 1));
+    // 第一次（没有水位）扫整个小时汇总的保留期，更早的已经删了
+    let mut from = wm.unwrap_or(now - Duration::days(st.access_retention().hourly_days as i64));
     loop {
         let to = (closed_upto - from > SYNC_PAGE).then(|| from + SYNC_PAGE);
         sync_page(st, now, from, to, closed_upto, &mut rep).await?;

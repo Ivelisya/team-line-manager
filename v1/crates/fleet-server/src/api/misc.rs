@@ -475,6 +475,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "policy.discard" => "丢弃访问规则草稿",
         "policy.publish" => "发布访问规则",
         "policy.rollback" => "回滚访问规则",
+        "settings.access_retention" => "修改访问记录保留期",
         other => other,
     }
     .to_string();
@@ -562,6 +563,15 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "policy.publish" | "policy.rollback" => {
             format!("第 {} 版 · {} 处改动 · {} 台线路机", d["seq"], d["changes"].as_array().map_or(0, |a| a.len()), d["relays"])
         }
+        // 「原始记录 7 → 3 天，汇总 31 天」：改了的写从几天到几天，没改的只写天数
+        "settings.access_retention" => [("raw_days", "原始记录"), ("hourly_days", "汇总")]
+            .iter()
+            .filter_map(|(k, label)| match (d["from"][k].as_i64(), d["to"][k].as_i64()?) {
+                (Some(a), b) if a != b => Some(format!("{label} {a} → {b} 天")),
+                (_, b) => Some(format!("{label} {b} 天")),
+            })
+            .collect::<Vec<_>>()
+            .join("，"),
         _ => String::new(),
     };
     (title, summary)
@@ -713,9 +723,18 @@ mod tests {
             "silence.delete", "agent.upgrade", "notify.create", "notify.update", "notify.delete", "exec", "machine.logs", "server.logs", "apikey.create",
             "apikey.revoke", "auth.login", "auth.login_failed", "auth.logout", "auth.totp_enabled", "auth.totp_disabled", "auth.totp_recovery_used",
             "auth.totp_recovery_regenerated", "auth.password_changed", "auth.session_revoked", "auth.verify_failed", "policy.draft", "policy.discard", "policy.publish", "policy.rollback",
+            "settings.access_retention",
         ] {
             assert_ne!(audit_text(a, &json!({})).0, a, "{a} 没有中文标题");
         }
+    }
+
+    #[test]
+    fn retention_summary_says_from_and_to() {
+        let s = |from: Value, to: Value| audit_text("settings.access_retention", &json!({"from": from, "to": to})).1;
+        assert_eq!(s(json!({"raw_days": 7, "hourly_days": 31}), json!({"raw_days": 3, "hourly_days": 31})), "原始记录 7 → 3 天，汇总 31 天");
+        assert_eq!(s(json!({"raw_days": 7, "hourly_days": 31}), json!({"raw_days": 7, "hourly_days": 60})), "原始记录 7 天，汇总 31 → 60 天");
+        assert_eq!(s(json!({"raw_days": 7, "hourly_days": 31}), json!({"raw_days": 1, "hourly_days": 14})), "原始记录 7 → 1 天，汇总 31 → 14 天");
     }
 
     #[test]

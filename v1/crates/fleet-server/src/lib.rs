@@ -17,6 +17,7 @@ pub mod names;
 pub mod notify;
 pub mod policy;
 pub mod selfmon;
+pub mod settings;
 pub mod silence;
 pub mod ssh;
 pub mod state;
@@ -157,12 +158,13 @@ where
     });
 }
 
-/// 每小时：分区维护、作业清理、保留期清理
+/// 每小时：分区维护（原始访问记录按面板里设的保留期，见 settings.rs）、作业清理、保留期清理。
+/// 访问汇总与来源画像的保留期清理在访问汇总的循环里（`access::prune`）
 async fn housekeeping(s: AppState) {
     let mut t = tokio::time::interval(std::time::Duration::from_secs(3600));
     loop {
         t.tick().await;
-        if let Err(e) = db::maintain_partitions(&s.db, s.cfg.retention.raw_days, s.cfg.retention.access_days, 3).await {
+        if let Err(e) = db::maintain_partitions(&s.db, s.cfg.retention.raw_days, s.access_retention().raw_days, 3).await {
             tracing::error!("分区维护失败：{e:#}");
         }
         match jobs::prune(&s.db).await {
@@ -172,9 +174,7 @@ async fn housekeeping(s: AppState) {
             Ok(_) => {}
             Err(e) => tracing::error!("作业清理失败：{e:#}"),
         }
-        // 来源 IP 画像：不短于学习期，也不短于访问小时汇总的保留期（来源同步首次扫描回看这么久）
-        let source_ip_days = (s.cfg.ipintel.learn_days as i64).max(access::HOURLY_DAYS) + 1;
-        if let Err(e) = db::cleanup_retention(&s.db, source_ip_days).await {
+        if let Err(e) = db::cleanup_retention(&s.db).await {
             tracing::error!("保留期清理失败：{e:#}");
         }
     }

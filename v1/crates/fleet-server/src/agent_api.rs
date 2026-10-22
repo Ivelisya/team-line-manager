@@ -297,7 +297,8 @@ async fn ingest(st: &AppState, h: &HeaderMap, mut r: Report) -> Result<Json<Repo
     let now_ms = (now.unix_timestamp_nanos() / 1_000_000) as i64;
     let hi = now_ms + FUTURE_MS;
     let raw_lo = now_ms - st.cfg.retention.raw_days as i64 * DAY_MS;
-    let acc_lo = now_ms - st.cfg.retention.access_days as i64 * DAY_MS;
+    // 访问记录只收原始记录保留期（面板里设的）以内的：更早的分区已经删了
+    let acc_lo = now_ms - st.access_retention().raw_days as i64 * DAY_MS;
     let today = now.date();
     let mut dropped = 0usize;
 
