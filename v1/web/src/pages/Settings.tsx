@@ -268,7 +268,7 @@ const ChannelDialog = resetOnOpen(function ChannelDialog({ target, open, onClose
       <div className="form-grid">
         {k.fields.map((f) => (
           <Field key={f.key} label={f.label} className={k.fields.length === 1 ? 'span-2' : undefined} hint={ch ? `留空则保持不变（当前：${ch.config_hint}）` : undefined}>
-            <Input type={f.secret ? 'password' : 'text'} value={cfg[f.key] ?? ''} onChange={(e) => { setCfg((c) => ({ ...c, [f.key]: e.target.value })); setTouched(true); }} placeholder={f.ph} autoComplete="off" spellCheck={false} />
+            <Input type={f.secret ? 'password' : 'text'} value={cfg[f.key] ?? ''} onChange={(e) => { setCfg((c) => ({ ...c, [f.key]: e.target.value })); setTouched(true); }} placeholder={f.ph} autoComplete="off" spellCheck={false} data-1p-ignore data-lpignore="true" />
           </Field>
         ))}
       </div>
