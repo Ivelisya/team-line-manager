@@ -266,6 +266,8 @@ pub(crate) mod tests {
             number: None,
             label: None,
             ip: "192.0.2.1".into(),
+            country: None,
+            country_set: None,
             ssh_port: 22,
             host_machine: None,
             ip_nodes: vec![],

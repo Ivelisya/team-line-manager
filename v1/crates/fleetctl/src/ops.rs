@@ -47,6 +47,7 @@ pub struct ProvisionOpts {
     pub provider: Option<String>,
     pub plan: Option<String>,
     pub service_ref: Option<String>,
+    pub country: Option<String>,
     pub note: Option<String>,
     pub ss_port: Option<u16>,
     pub upstream: Option<String>,
@@ -187,6 +188,7 @@ fn single_item(o: &ProvisionOpts) -> anyhow::Result<Value> {
     put("provider", o.provider.as_ref().map(|v| json!(v)));
     put("plan", o.plan.as_ref().map(|v| json!(v)));
     put("service_ref", o.service_ref.as_ref().map(|v| json!(v)));
+    put("country", o.country.as_ref().map(|v| json!(v)));
     put("note", o.note.as_ref().map(|v| json!(v)));
     put("ss_port", o.ss_port.map(|v| json!(v)));
     if let Some(u) = &o.upstream {
@@ -319,9 +321,17 @@ pub fn purge(ctx: &Ctx, machine: &str, yes: bool, follow: bool) -> anyhow::Resul
     follow_if(ctx, follow, &st(&d, "/job_id"))
 }
 
-pub fn rename(ctx: &Ctx, machine: &str, team: Option<&str>, number: Option<i32>, label: Option<&str>, note: Option<&str>) -> anyhow::Result<u8> {
-    if team.is_none() && number.is_none() && label.is_none() && note.is_none() {
-        bail!("没有要改的内容：给 --team / --number / --label / --note 之一");
+pub fn rename(
+    ctx: &Ctx,
+    machine: &str,
+    team: Option<&str>,
+    number: Option<i32>,
+    label: Option<&str>,
+    note: Option<&str>,
+    country: Option<&str>,
+) -> anyhow::Result<u8> {
+    if team.is_none() && number.is_none() && label.is_none() && note.is_none() && country.is_none() {
+        bail!("没有要改的内容：给 --team / --number / --label / --note / --country 之一");
     }
     let (id, _) = ctx.find_id(machine, Want::Live)?;
     let cur = ctx.c.get(&format!("/machines/{id}"))?;
@@ -337,6 +347,10 @@ pub fn rename(ctx: &Ctx, machine: &str, team: Option<&str>, number: Option<i32>,
     }
     if let Some(n) = note {
         body["note"] = json!(n);
+    }
+    // 国家：auto = 改回按 IP 自动（null）；代码由中控按 ISO 表校验
+    if let Some(c) = country {
+        body["country"] = if c.eq_ignore_ascii_case("auto") { Value::Null } else { json!(c) };
     }
     // PATCH 返回改完后的完整视图，新名字直接从里面取
     let d = ctx.c.patch(&format!("/machines/{id}"), &body)?;

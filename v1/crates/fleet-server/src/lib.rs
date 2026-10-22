@@ -4,6 +4,7 @@ pub mod alerts;
 pub mod api;
 pub mod auth;
 pub mod config;
+pub mod country;
 pub mod crypto;
 pub mod db;
 pub mod entries;
