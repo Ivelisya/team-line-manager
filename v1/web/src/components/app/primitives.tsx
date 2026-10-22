@@ -134,7 +134,6 @@ export function CountUp({ value, format }: { value: number | null | undefined; f
   if (value == null) return <>—</>;
   return <>{format ? format(v) : Math.round(v)}</>;
 }
-/** KPI 说明行里的「● 降级 3」：数字的字重、颜色同说明行里的其它数字（home.css .stat-cap .num） */
 /** 说明行里的分项计数（降级 4 · 故障 2，状态名同全站）：不配小圆点，有数时数字按级别着色 */
 export const DotCount = ({ tone, n, label }: { tone: Tone; n: number; label: string }) => (
   <span className="dotline" data-tone={n > 0 ? tone : undefined}>{label} <b className="num">{n}</b></span>

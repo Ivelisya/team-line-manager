@@ -31,15 +31,18 @@ type Counts = Overview['nodes'];
 /** 算正常的：只有故障算异常，降级（照常服务、只是有提醒）与维护都算正常；未知（还判断不了）两头都不算 */
 const normal = (c: Counts) => c.total - c.down - c.unknown;
 
-function statusLine(o: Overview | undefined, down: number, degraded: number): string {
-  if (!o) return '正在汇总机器状态…';
-  const due = (o.due_soon ? `，${o.due_soon} 台即将到期` : '') + (o.overdue ? `，${o.overdue} 台已过期` : '');
-  const fail = o.failed ? `，${o.failed} 台上架失败` : '';
-  if (down) return `有 ${down} 台机器故障${fail}${due}，点「故障」查看告警。`;
-  if (o.failed) return `${o.failed} 台机器上架失败${due}，可在作业页重试或在详情里退役。`;
+/** 问候语下的一行状态：只列要处理的事（故障、上架失败、到期），没有就是「全部正常」 */
+function statusLine(o: Overview | undefined, down: number): string {
+  if (!o) return '';
+  const parts = [
+    down && `${down} 台故障`,
+    o.failed && `${o.failed} 台上架失败`,
+    o.overdue && `${o.overdue} 台已过期`,
+    o.due_soon && `${o.due_soon} 台即将到期`,
+  ].filter(Boolean);
   const unknown = o.nodes.unknown + o.relays.unknown;
-  const lead = unknown ? `${unknown} 台状态未知，其余运行正常` : `全部 ${o.nodes.total + o.relays.total} 台机器运行正常`;
-  return `${lead}${degraded ? `（其中 ${degraded} 台降级）` : ''}${due}，监控数据持续采集中。`;
+  if (!down && !o.failed) parts.unshift(unknown ? `${unknown} 台状态未知` : '全部正常');
+  return parts.join(' · ');
 }
 
 /** memo：首页因机器列表推送、筛选、开关抽屉重渲染时，总览只在 overview 数据（metrics 推送单独更新）或额度吃紧的结果变了才重画 */
@@ -48,13 +51,12 @@ export const OverviewSection = React.memo(function OverviewSection({ o, loading 
   const qt = useQuotaTight().data;
   const nodes = o?.nodes; const relays = o?.relays;
   const down = (nodes?.down ?? 0) + (relays?.down ?? 0);
-  const degraded = (nodes?.degraded ?? 0) + (relays?.degraded ?? 0);
   const tr = o?.traffic_month;
   const trTotal = tr ? tr.up + tr.down : 0; const trScale = F.bytesScale(trTotal);
   const [cost0, ...costMore] = o?.monthly_cost ?? [];
   return (
     <HomeSection className="hsec-hero" icon={<LayoutDashboard />} label="监控总览"
-      title={<h1 className="hero-greet">{F.greeting()}，<span className="hero-name">{me?.username ?? ''}</span></h1>} sub={statusLine(o, down, degraded)}>
+      title={<h1 className="hero-greet">{F.greeting()}，<span className="hero-name">{me?.username ?? ''}</span></h1>} sub={statusLine(o, down) || undefined}>
       <div className="hero-grid">
         <div className="stat-grid">
           {/* 说明行用全站同一套状态名（降级 / 维护 / 故障 / 未知）；「正常」包括降级与维护（照常服务）这一点放在大数字的悬停说明里 */}
@@ -62,10 +64,10 @@ export const OverviewSection = React.memo(function OverviewSection({ o, loading 
             caption={nodes && <><DotCount tone="warn" n={nodes.degraded} label="降级" />{nodes.maintenance > 0 && <DotCount tone="neutral" n={nodes.maintenance} label="维护" />}<DotCount tone="bad" n={nodes.down} label="故障" />{nodes.unknown > 0 && <DotCount tone="neutral" n={nodes.unknown} label="未知" />}</>} />
           <Stat loading={loading} tone="teal" icon={<Waypoints />} label="线路机正常" value={<span data-tip="正常 = 总数 − 故障 − 未知：降级、维护照常服务，也算在正常里"><CountUp value={relays && normal(relays)} /></span>} unit={relays ? `/ ${relays.total}` : undefined}
             caption={relays && <><DotCount tone="warn" n={relays.degraded} label="降级" />{relays.maintenance > 0 && <DotCount tone="neutral" n={relays.maintenance} label="维护" />}<DotCount tone="bad" n={relays.down} label="故障" />{relays.unknown > 0 && <DotCount tone="neutral" n={relays.unknown} label="未知" />}</>} />
-          <Stat loading={loading} tone="bad" icon={<AlertTriangle />} label="故障" value={<CountUp value={o ? down : undefined} />} unit="台" to="/incidents" caption={o && <>{down ? '点击查看告警' : !o.failed && '一切正常'}{o.failed > 0 && <DotCount tone="bad" n={o.failed} label="上架失败" />}</>} />
-          <Stat loading={loading} tone="amber" icon={<CalendarClock />} label="即将到期" value={<CountUp value={o?.due_soon} />} unit="台" to="/nodes?sort=due" caption={o?.overdue ? `另有 ${o.overdue} 台已过期` : '需要续费的机器'} />
-          <Stat loading={loading} tone="gold" icon={<CircleDollarSign />} label="每月费用" value={cost0 ? F.money(cost0.cents, cost0.currency) : '—'}
-            caption={costMore.length ? `另有 ${costMore.map((c) => F.money(c.cents, c.currency)).join(' + ')}（不同币种分开计）` : '在用机器按月折算'} />
+          <Stat loading={loading} tone="bad" icon={<AlertTriangle />} label="故障" value={<CountUp value={o ? down : undefined} />} unit="台" to="/incidents" caption={o && (o.failed > 0 ? <DotCount tone="bad" n={o.failed} label="上架失败" /> : !down && '一切正常')} />
+          <Stat loading={loading} tone="amber" icon={<CalendarClock />} label="即将到期" value={<CountUp value={o?.due_soon} />} unit="台" to="/nodes?sort=due" caption={o?.overdue ? `另有 ${o.overdue} 台已过期` : undefined} />
+          <Stat loading={loading} tone="gold" icon={<CircleDollarSign />} label="每月费用" value={cost0 ? <span data-tip="在用机器按月折算，不同币种分开计">{F.money(cost0.cents, cost0.currency)}</span> : '—'}
+            caption={costMore.length ? `另有 ${costMore.map((c) => F.money(c.cents, c.currency)).join(' + ')}` : undefined} />
           {/* 每条推送都在涨，不滚数（滚到的位数也显示不出来，白白逐帧重画）：同网卡速率，直接到位 */}
           <Stat loading={loading} tone="sky" icon={<TrendingUp />} label="本月业务流量" value={tr ? F.inScale(trTotal, trScale) : '—'} unit={tr ? trScale.u : undefined}
             caption={tr && <><span>下载 <Num f={F.bytes(tr.down)} /></span><span>上传 <Num f={F.bytes(tr.up)} /></span></>} />
@@ -96,7 +98,7 @@ function ClusterPanel({ o }: { o: Overview | undefined }) {
   return (
     <section className="cluster" aria-label="集群状态">
       <header className="cluster-head">
-        <div><h2 className="cluster-title"><Activity />集群状态</h2><p className="cluster-sub">机器在线率与网卡速率</p></div>
+        <h2 className="cluster-title"><Activity />集群状态</h2>
         {o && <span className="cpill" data-tone={down ? 'bad' : 'ok'}><i />{down ? '有故障' : '状态健康'}</span>}
       </header>
       <div className="cluster-box">
@@ -109,7 +111,7 @@ function ClusterPanel({ o }: { o: Overview | undefined }) {
       </div>
       <div className="cluster-box">
         <div className="cluster-row">
-          <span className="cluster-big"><span className="num">{o ? F.inScale(now, sc) : '—'}</span><small>{o ? sc.u : ''} 网卡速率（实时）</small></span>
+          <span className="cluster-big"><span className="num">{o ? F.inScale(now, sc) : '—'}</span><small>{o ? sc.u : ''} 网卡速率</small></span>
         </div>
         <div className="cluster-charts">
           <div className="cchart" data-dir="up">
