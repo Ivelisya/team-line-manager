@@ -38,7 +38,7 @@ function ToastItem({ t, onClose }: { t: T; onClose: (id: number) => void }) {
   }, [paused, t.id, t.count, t.leaving, onClose]);
   const Ic = ICON[t.tone];
   return (
-    <div className="toast" data-tone={t.tone} data-leaving={t.leaving ? '1' : undefined} role={t.tone === 'bad' ? 'alert' : 'status'}
+    <div className="toast" data-tone={t.tone} data-leaving={t.leaving ? '1' : undefined}
       onMouseEnter={() => setPaused(true)} onMouseLeave={() => setPaused(false)} onFocus={() => setPaused(true)} onBlur={() => setPaused(false)}>
       <Ic size={16} />
       <div className="toast-body">
@@ -74,7 +74,7 @@ export function Toaster() {
     if (live.length > MAX) close(live[0].id);
   }, [list, close]);
   return (
-    <div className="toasts">
+    <div className="toasts" aria-live="polite">
       {/* 每条套一层布局容器：有通知进来或离开时，其余的滑到新位置而不是瞬间跳过去。
           layout 不放在 .toast 上：motion 的 transform 会盖掉它离场时的 translateX */}
       {list.map((t) => <m.div key={t.id} layout="position" transition={SPRING}><ToastItem t={t} onClose={close} /></m.div>)}

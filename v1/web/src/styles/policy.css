@@ -31,7 +31,8 @@
 .pol-ed:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-halo); }
 .pol-ed[data-bad="1"] { border-color: var(--bad); }
 .pol-ed[data-off="1"] { background: var(--sunken); }
-.pol-gutter { flex: none; width: 40px; padding: var(--sp-8) 0; overflow: hidden; background: var(--sunken); border-right: 1px solid var(--line); color: var(--fg-3); font: var(--fs-label) / 20px var(--font-mono); text-align: right; user-select: none; height: 260px; box-sizing: border-box; }
+/* 行号栏底部多留一条滚动条的高度：文本框有横向滚动条时可滚距离多出这么多，否则滚到底行号和错行标记会错开一行 */
+.pol-gutter { flex: none; width: 40px; padding: var(--sp-8) 0 calc(var(--sp-8) + 20px); overflow: hidden; background: var(--sunken); border-right: 1px solid var(--line); color: var(--fg-3); font: var(--fs-label) / 20px var(--font-mono); text-align: right; user-select: none; height: 260px; box-sizing: border-box; }
 .pol-gutter > div { height: 20px; padding-right: var(--sp-8); }
 .pol-gutter > div[data-bad="1"] { background: var(--bad-bg); color: var(--bad-text); font-weight: var(--fw-semibold); box-shadow: inset 2px 0 0 var(--bad); }
 .pol-ta.textarea { flex: 1 1 auto; min-width: 0; height: 260px; min-height: 260px; resize: none; border: 0; border-radius: 0; box-shadow: none; background: transparent; padding: var(--sp-8) var(--sp-10); font: var(--fs-label) / 20px var(--font-mono); white-space: pre; overflow: auto; }

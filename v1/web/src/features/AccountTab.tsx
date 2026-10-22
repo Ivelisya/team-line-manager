@@ -31,10 +31,10 @@ export function AccountTab() {
   );
 }
 
-/** 验证码输入框：认证器的 6 位数字，也接受恢复码（字母、连字符） */
+/** 验证码输入框：认证器的 6 位数字，也接受恢复码（字母、连字符）。接受恢复码时不用数字键盘：iOS 的数字键盘切不出字母 */
 const CodeInput = React.forwardRef<HTMLInputElement, { value: string; onChange: (v: string) => void; recovery?: boolean; autoFocus?: boolean; id?: string }>(
   ({ value, onChange, recovery, autoFocus, id }, ref) => (
-    <Input ref={ref} id={id} value={value} onChange={(e) => onChange(e.target.value)} inputMode="numeric" autoComplete="one-time-code" spellCheck={false} autoFocus={autoFocus}
+    <Input ref={ref} id={id} value={value} onChange={(e) => onChange(e.target.value)} inputMode={recovery ? undefined : 'numeric'} autoComplete="one-time-code" spellCheck={false} autoFocus={autoFocus}
       className="mono" maxLength={recovery ? 20 : 7} placeholder={recovery ? '6 位验证码或恢复码' : '6 位验证码'} data-1p-ignore data-lpignore="true" />
   ),
 );
@@ -92,7 +92,7 @@ const EnableTotpDialog = resetOnOpen(function EnableTotpDialog({ open, onClose, 
   };
   return (
     <FormDialog size="md" open={open} onOpenChange={(o) => !o && onClose()} title="开启两步验证" desc="开启后，登录时除了密码还要输入认证器上的验证码。"
-      submitLabel="验证并开启" onSubmit={submit} busy={enable.isPending} valid={!!d && isTotpCode(code)} dirty={!!code}>
+      submitLabel="验证并开启" onSubmit={submit} busy={enable.isPending} valid={!!d && isTotpCode(code)} dirty={!!setup.data || !!code}>
       {setup.isError ? <ErrorNote error={setup.error} onRetry={() => setup.mutate()} /> : (
         <div className="totp-setup">
           {d ? <img className="totp-qr" src={`data:image/svg+xml;utf8,${encodeURIComponent(d.qr_svg)}`} alt="两步验证二维码" width={168} height={168} />
@@ -233,7 +233,7 @@ function SessionsPanel() {
       <Panel title="登录会话" count={list.length} sub="正在登录着的设备；不认识的立即撤销" flush
         tools={<Button disabled={nOthers === 0} onClick={() => setAsk('others')}><LogOut />退出其它设备</Button>}>
         {q.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div>}
-        {q.isLoading ? <SkeletonRows rows={2} head /> : list.length === 0 && !q.isError ? <Empty icon={<MonitorSmartphone size={22} />} text="没有登录会话" /> : (
+        {q.isLoading ? <SkeletonRows rows={2} head /> : q.isError && !q.data ? null : list.length === 0 ? <Empty icon={<MonitorSmartphone size={22} />} text="没有登录会话" /> : (
           <div className="table-wrap">
             <table className="dt" style={{ minWidth: 780 }}>
               <colgroup><col style={{ width: 260 }} /><col style={{ width: 170 }} /><col style={{ width: 112 }} /><col style={{ width: 128 }} /><col style={{ width: 112 }} /><col style={{ width: 52 }} /></colgroup>

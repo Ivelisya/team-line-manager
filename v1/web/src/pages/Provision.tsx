@@ -15,7 +15,7 @@ import { ConfirmDialog } from '@/components/app/dialogs';
 import { toast } from '@/components/ui/toast';
 import { copyText } from '@/lib/clipboard';
 import { Note, PageHead, Panel, Pill } from '@/components/app/primitives';
-import { COLS, applies, isIpNode, localErrors, localIssues, newRow, parseTsv, pasteLine, toItem, type Col, type Ctx, type Row } from '@/features/provision-model';
+import { COLS, applies, isBlank, isIpNode, localErrors, localIssues, newRow, parseTsv, pasteLine, toItem, type Col, type Ctx, type Row } from '@/features/provision-model';
 
 const KIND_OPTS = (Object.entries(KIND_LABEL) as [Kind, string][]).map(([value, label]) => ({ value, label }));
 
@@ -34,6 +34,8 @@ export function ProvisionPage() {
   const [rows, setRows] = React.useState<Row[]>([newRow()]);
   const [results, setResults] = React.useState<ProvisionCheckItem[] | null>(null);
   const [localErrs, setLocalErrs] = React.useState<string[][] | null>(null);
+  // 检查时参与的行（id，顺序同 results / localErrs）：结果按行 id 对回表格，删行、插行后不错位到别的行
+  const [checked, setChecked] = React.useState<string[]>([]);
   const [sig, setSig] = React.useState('');
   const [confirm, setConfirm] = React.useState(false);
   const [created, setCreated] = React.useState<{ machine_id: string; job_id: string; name: string }[] | null>(null);
@@ -55,27 +57,33 @@ export function ProvisionPage() {
     setSp((p) => { const n = new URLSearchParams(p); n.delete('host'); return n; }, { replace: true });
   }, [hostParam, hosts, setSp]);
 
-  const items = React.useMemo(() => rows.map((r) => toItem(r)), [rows]);
-  const curSig = JSON.stringify([items, rows.map((r) => r.unresolved)]);
+  // 批量里没动过的空行（切到批量补的、「加 5 行」多出来的）不参与检查和上架；全是空行时留第一行，让它报「请填写 IP」
+  const active = React.useMemo(() => {
+    if (mode === 'single') return rows.slice(0, 1);
+    const filled = rows.filter((r) => !isBlank(r));
+    return filled.length ? filled : rows.slice(0, 1);
+  }, [mode, rows]);
+  const items = React.useMemo(() => active.map((r) => toItem(r)), [active]);
+  const curSig = JSON.stringify([items, active.map((r) => r.unresolved)]);
   const stale = results != null && sig !== curSig;
   const passed = results != null && !stale && results.every((r) => r.ok);
-
-  const active = mode === 'single' ? rows.slice(0, 1) : rows;
+  const resOf = (id: string) => { const i = checked.indexOf(id); return i < 0 ? undefined : results?.[i]; };
+  const errOf = (id: string) => { const i = checked.indexOf(id); return i < 0 ? undefined : localErrs?.[i]; };
   const setRow = (i: number, p: Partial<Row>) => setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...p } : r)));
 
   const runCheck = async () => {
     const errs = active.map(localErrors);
-    setLocalErrs(errs);
+    setLocalErrs(errs); setChecked(active.map((r) => r.id));
     const bad = errs.filter((e) => e.length).length;
     if (bad) { setResults(null); toast.err(mode === 'single' ? '信息不完整，请按字段旁标红的提示修改' : `${bad} 行信息不完整，见表格的「检查结果」列`); return; }
     try {
-      const r = await check.mutateAsync(items.slice(0, active.length));
+      const r = await check.mutateAsync(items);
       setResults(r.items); setSig(curSig);
       if (r.items.every((x) => x.ok)) toast.ok(`检查通过：${r.items.length} 台`);
     } catch (e) { toast.err(e); }
   };
   const start = async () => {
-    const r = await provision.mutateAsync(items.slice(0, active.length));
+    const r = await provision.mutateAsync(items);
     setCreated(r.jobs);
   };
   const reset = () => { setRows([newRow()]); setResults(null); setLocalErrs(null); setCreated(null); };
@@ -129,8 +137,8 @@ export function ProvisionPage() {
       </div>
 
       {mode === 'single'
-        ? <SingleForm row={rows[0]} onChange={(p) => setRow(0, p)} ctx={ctx} result={results?.[0]} errors={localErrs?.[0]} stale={stale} />
-        : <BatchGrid rows={rows} setRows={setRows} ctx={ctx} results={results} errors={localErrs} stale={stale} />}
+        ? <SingleForm row={rows[0]} onChange={(p) => setRow(0, p)} ctx={ctx} result={resOf(rows[0].id)} errors={errOf(rows[0].id)} stale={stale} />
+        : <BatchGrid rows={rows} setRows={setRows} ctx={ctx} resOf={resOf} errOf={errOf} checkedAny={results != null} stale={stale} />}
 
       <div className="panel sticky-bar" style={{ padding: '10px 16px' }}>
         <div className="row row-between">
@@ -255,16 +263,17 @@ function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; o
           <div className="span-2"><Field label="备注"><Input value={row.note} onChange={(e) => onChange({ note: e.target.value })} /></Field></div>
         </div>
       </Panel>
-      <CheckOutput results={result ? [result] : null} rows={[row]} errors={errors ? [errors] : null} stale={stale} />
+      <CheckOutput rows={[row]} resOf={() => result} errOf={() => errors} stale={stale} />
     </div>
   );
 }
 
-function CheckOutput({ results, rows, errors, stale }: { results: ProvisionCheckItem[] | null; rows: Row[]; errors: string[][] | null; stale: boolean }) {
+/** 检查结果列表：rows 是表格里的行（行号按它算），没参与检查的空行没有结果、不出现 */
+function CheckOutput({ rows, resOf, errOf, stale }: { rows: Row[]; resOf: (id: string) => ProvisionCheckItem | undefined; errOf: (id: string) => string[] | undefined; stale: boolean }) {
   const lines: React.ReactNode[] = [];
-  rows.forEach((_r, i) => {
-    const le = errors?.[i] ?? [];
-    const res = results?.[i];
+  rows.forEach((r, i) => {
+    const le = errOf(r.id) ?? [];
+    const res = resOf(r.id);
     if (le.length) lines.push(<li key={i}><TriangleAlert size={14} style={{ color: 'var(--bad)', marginTop: 3 }} /><span>{rows.length > 1 ? `第 ${i + 1} 行：` : ''}{le.join('；')}</span></li>);
     else if (res && !res.ok) lines.push(<li key={i}><TriangleAlert size={14} style={{ color: 'var(--bad)', marginTop: 3 }} /><span>{rows.length > 1 ? `第 ${i + 1} 行：` : ''}{res.errors.join('；')}</span></li>);
     else if (res) lines.push(<li key={i}><CheckCircle2 size={14} style={{ color: 'var(--ok)', marginTop: 3 }} /><span>{rows.length > 1 ? `第 ${i + 1} 行：` : ''}将创建 <b>{res.name}</b>{res.relay_port ? `，入口端口 ${res.relay_port}` : ''}{res.ss_port ? `，SS 端口暂定 ${res.ss_port}（在宿主机上被占用时作业会换一个）` : ''}</span></li>);
@@ -278,7 +287,7 @@ function CheckOutput({ results, rows, errors, stale }: { results: ProvisionCheck
 }
 
 /* ------------------------------------------------------------------ 批量网格 */
-function BatchGrid({ rows, setRows, ctx, results, errors, stale }: { rows: Row[]; setRows: React.Dispatch<React.SetStateAction<Row[]>>; ctx: Ctx; results: ProvisionCheckItem[] | null; errors: string[][] | null; stale: boolean }) {
+function BatchGrid({ rows, setRows, ctx, resOf, errOf, checkedAny, stale }: { rows: Row[]; setRows: React.Dispatch<React.SetStateAction<Row[]>>; ctx: Ctx; resOf: (id: string) => ProvisionCheckItem | undefined; errOf: (id: string) => string[] | undefined; checkedAny: boolean; stale: boolean }) {
   const addRows = (n: number) => setRows((rs) => { const last = rs[rs.length - 1]; const base = last ? { kind: last.kind, team_id: last.team_id, relay_id: last.relay_id, provider_id: last.provider_id, plan_id: last.plan_id, login_user: last.login_user, add_ip: last.add_ip, host_id: last.host_id } : {}; return [...rs, ...Array.from({ length: n }, () => newRow(base))]; });
   const total = COLS.reduce((s, c) => s + c.w, 0) + 40 + 56 + 220;
   const [askClear, setAskClear] = React.useState(false);
@@ -315,7 +324,7 @@ function BatchGrid({ rows, setRows, ctx, results, errors, stale }: { rows: Row[]
             <thead><tr><th className="c">#</th>{COLS.map((c) => <th key={c.key} style={{ paddingLeft: 8 }}>{c.label}</th>)}<th style={{ paddingLeft: 8 }}>检查结果</th><th /></tr></thead>
             <tbody>
               {rows.map((r, ri) => {
-                const le = errors?.[ri] ?? []; const res = results?.[ri];
+                const le = errOf(r.id) ?? []; const res = resOf(r.id);
                 const bad = le.length > 0 || (res && !res.ok);
                 return (
                   <tr key={r.id} className={bad ? 'is-row-bad' : undefined}>
@@ -339,7 +348,7 @@ function BatchGrid({ rows, setRows, ctx, results, errors, stale }: { rows: Row[]
         </div>
       </Panel>
       <Note icon={<ClipboardPaste size={14} />}>编号留空 = 自动编号（接在末尾）。灰色格子对当前类型不适用，粘贴时会自动跳过。选择列可直接粘贴名称（如「团队1」「线路机1」）。最后一列填了「宿主机」的落地机行是同机 IP 节点（宿主机上另配的 IP）：SSH 端口、登录与供应商沿用宿主机的，SS 端口由中控在宿主机上分配，不带套餐，这几格变灰。</Note>
-      {results && <CheckOutput results={results} rows={rows} errors={errors} stale={stale} />}
+      {checkedAny && <CheckOutput rows={rows} resOf={resOf} errOf={errOf} stale={stale} />}
       <ConfirmDialog open={askClear} onOpenChange={setAskClear} title="清空批量表格？" confirmLabel="清空" danger
         description="表格里所有行已填写的内容（含登录密码）都会丢失，无法撤销。" onConfirm={() => setRows([newRow()])} />
     </div>

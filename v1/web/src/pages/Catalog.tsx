@@ -89,6 +89,7 @@ const TeamDialog = resetOnOpen(function TeamDialog({ team, open, onClose }: { te
   };
   return (
     <FormDialog open={open} onOpenChange={(o) => !o && onClose()} title={team === 'new' ? '新建团队' : `修改 ${team.name}`} submitLabel="保存" busy={add.isPending || patch.isPending} valid={name.trim().length > 0}
+      dirty={team === 'new' ? !!(name.trim() || order) : name !== team.name || order !== String(team.sort_order)}
       desc={team !== 'new' && '改团队名会让该团队所有节点的显示名一起变（线路机上的备注自动同步，不换令牌、不断连接）。'} onSubmit={save}>
       <Field label="团队名"><Input value={name} onChange={(e) => setName(e.target.value)} autoFocus /></Field>
       <Field label="排序" hint="数字越小越靠前，留空放在最后"><Input inputMode="numeric" value={order} onChange={(e) => setOrder(e.target.value.replace(/\D/g, ''))} /></Field>
@@ -163,7 +164,9 @@ function ProvidersTab() {
 /** 新增 / 编辑供应商。每次打开重新挂载（resetOnOpen）：字段直接按这次的供应商初始化 */
 const ProviderDialog = resetOnOpen(function ProviderDialog({ provider, open, onClose }: { provider: Provider | 'new'; open: boolean; onClose: () => void }) {
   const add = useAddProvider(); const patch = usePatchProvider();
-  const [f, setF] = React.useState(() => (provider === 'new' ? EMPTY_PROVIDER : { name: provider.name, code: provider.code, panel_url: provider.panel_url ?? '', timezone: provider.timezone ?? '', traffic_rule: provider.traffic_rule }));
+  const [f0] = React.useState(() => (provider === 'new' ? EMPTY_PROVIDER : { name: provider.name, code: provider.code, panel_url: provider.panel_url ?? '', timezone: provider.timezone ?? '', traffic_rule: provider.traffic_rule }));
+  const [f, setF] = React.useState(f0);
+  const dirty = (Object.keys(f) as (keyof typeof f)[]).some((k) => f[k] !== f0[k]);
   // 面板地址、时区留空：服务端分别按清空、列默认值（UTC）处理
   const save = () => {
     const body = { name: f.name.trim(), code: f.code.trim().toUpperCase(), panel_url: f.panel_url.trim() || null, timezone: f.timezone.trim() || null, traffic_rule: f.traffic_rule };
@@ -172,7 +175,7 @@ const ProviderDialog = resetOnOpen(function ProviderDialog({ provider, open, onC
     else patch.mutate({ id: provider.id, ...body }, { onSuccess: ok, onError: toast.err });
   };
   return (
-    <FormDialog open={open} onOpenChange={(o) => !o && onClose()} title={provider === 'new' ? '新增供应商' : '编辑供应商'} submitLabel="保存" busy={add.isPending || patch.isPending} valid={f.name.trim() !== '' && f.code.trim() !== ''}
+    <FormDialog dirty={dirty} open={open} onOpenChange={(o) => !o && onClose()} title={provider === 'new' ? '新增供应商' : '编辑供应商'} submitLabel="保存" busy={add.isPending || patch.isPending} valid={f.name.trim() !== '' && f.code.trim() !== ''}
       desc={provider !== 'new' && '改时区只影响之后上架的机器；已上架机器的账单时区在各自的「费用」页修改。'} onSubmit={save}>
       <div className="form-grid">
         <Field label="名称"><Input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} autoFocus /></Field>
@@ -223,7 +226,7 @@ function PlansTab() {
             </tbody>
           </table>
           {q.isLoading && <SkeletonRows rows={3} />}
-          {q.data && list.length === 0 && <Empty text="还没有套餐" />}
+          {q.data && list.length === 0 && (q.data.length ? <Empty text="没有在用的套餐" hint="勾选「显示已归档」看已归档的" /> : <Empty text="还没有套餐" />)}
         </div>
       </Panel>
       {held && <PlanDialog plan={held} open={edit != null} onClose={() => setEdit(null)} />}

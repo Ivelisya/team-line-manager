@@ -44,7 +44,7 @@ export function LoginPage() {
         <Field label="密码"><Input type="password" value={p} onChange={(e) => setP(e.target.value)} autoComplete="current-password" /></Field>
         {needCode && (
           <Field label="两步验证码" hint="手机丢了时，输入保存的恢复码（形如 abcd-efgh-jkmn），每个只能用一次">
-            <Input ref={codeRef} value={code} onChange={(e) => setCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" spellCheck={false} placeholder="6 位验证码" maxLength={20} className="mono" />
+            <Input ref={codeRef} value={code} onChange={(e) => setCode(e.target.value)} autoComplete="one-time-code" spellCheck={false} placeholder="6 位验证码" maxLength={20} className="mono" />
           </Field>
         )}
         <Button variant="primary" size="lg" className="btn-block" type="submit" loading={login.isPending} disabled={!u.trim() || !p || (needCode && !code.trim())}>登录</Button>
