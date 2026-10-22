@@ -55,6 +55,9 @@ pub async fn create_ticket(
     let uid = a.user_id.ok_or_else(ApiError::unauthorized)?;
     let session = jar.get(COOKIE).map(|c| sha256(c.value().as_bytes())).ok_or_else(ApiError::unauthorized)?;
     let kind = Kind::parse(&b.kind).ok_or_else(|| ApiError::bad_request("kind 只能是 machine 或 router"))?;
+    if st.terminals.closing() {
+        return Err(ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "unavailable", "中控正在重启，稍后再开终端"));
+    }
     terminal::resolve(&st, kind, b.id).await?;
     st.terminals.room(uid).map_err(limit)?;
     if !st.terminals.verified_recently(&session) {
@@ -126,16 +129,23 @@ pub async fn ws(a: Actor, State(st): State<AppState>, ClientIp(ip): ClientIp, ja
     let Some(uid) = a.user_id else {
         return ApiError::forbidden("网页终端只能由登录用户使用，API 密钥不行").into_response();
     };
-    // WebSocket 握手不受同源策略约束：Origin 必须是中控自己（public_url 的协议 + 主机 + 端口），别的网页借浏览器带上的 Cookie 连不上来
-    let want = reqwest::Url::parse(&st.cfg.public_url).map(|u| u.origin().ascii_serialization()).unwrap_or_default();
-    if headers.get("origin").and_then(|v| v.to_str().ok()) != Some(want.as_str()) {
+    // WebSocket 握手不受同源策略约束：Origin 必须是中控自己（public_url 的协议 + 主机 + 端口），别的网页借浏览器带上的 Cookie 连不上来。
+    // public_url 的 origin 不透明（不是 http(s) 地址）时一律拒绝：它序列化出来是「null」，会和沙箱 iframe 的 `Origin: null` 对上
+    let want = terminal::site_origin(&st.cfg.public_url);
+    if want.is_none() || headers.get("origin").and_then(|v| v.to_str().ok()) != want.as_deref() {
         return ApiError::forbidden("网页终端只接受本站页面的连接（Origin 不符）").into_response();
     }
     let Some(c) = jar.get(COOKIE) else { return ApiError::unauthorized().into_response() };
-    let who = Who { session: sha256(c.value().as_bytes()), user_id: uid, user: a.name, ip };
+    let session = sha256(c.value().as_bytes());
+    // 握手之后到收到票据之间的连接按会话计数，占满了直接拒绝
+    let waiting = match st.terminals.wait_ticket(&session) {
+        Ok(w) => w,
+        Err(m) => return limit(m).into_response(),
+    };
+    let who = Who { session, user_id: uid, user: a.name, ip };
     // 握手前就订阅撤销通知：等票据期间会话被撤销也不漏
     let events = st.events.subscribe();
     ws.max_message_size(terminal::MAX_MESSAGE)
         .max_frame_size(terminal::MAX_MESSAGE)
-        .on_upgrade(move |socket| terminal::serve(socket, st, who, events))
+        .on_upgrade(move |socket| terminal::serve(socket, st, who, events, waiting))
 }

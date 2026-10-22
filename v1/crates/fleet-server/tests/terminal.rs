@@ -238,6 +238,12 @@ async fn ticket_needs_session_and_reverification() {
         let (s, v) = ticket(&t, &t.cookie, json!({"kind": "machine", "id": id})).await;
         assert_eq!(s, StatusCode::CONFLICT, "{kind}/{lc}: {v}");
     }
+    // 同机 IP 节点：它登录的宿主机还没上架完成（或已退役）同样不行
+    let host = seed_machine(&t, team, 20, "vps", "provisioning", ("192.0.2.20", 22), None).await;
+    let node = seed_machine(&t, team, 21, "vps", "active", ("192.0.2.21", 22), Some(host)).await;
+    let (s, v) = ticket(&t, &t.cookie, json!({"kind": "machine", "id": node})).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("团队1-21 的宿主机 团队1-20 还没上架完成"), "{v}");
 
     // 没开两步验证：要当前密码。缺了 password_required（不算失败），错了 password_invalid（算失败、写审计）
     let (s, v) = ticket(&t, &t.cookie, body(json!({}))).await;
@@ -334,6 +340,18 @@ async fn websocket_checks_origin_ticket_and_session() {
         assert_eq!(http_status(connect(addr, Some(&t.cookie), origin, None).await), StatusCode::FORBIDDEN, "{origin:?}");
     }
     assert_eq!(http_status(connect(addr, None, Some(ORIGIN), Some(&key)).await), StatusCode::FORBIDDEN, "API 密钥不行");
+    // 握手之后还没送票据的连接：每个会话最多 5 个，第 6 个握手就被拒；别的会话不受影响
+    let crowd = login(&t, "admin").await;
+    let mut waiting = Vec::new();
+    for _ in 0..5 {
+        waiting.push(connect(addr, Some(&crowd), Some(ORIGIN), None).await.unwrap());
+    }
+    assert_eq!(http_status(connect(addr, Some(&crowd), Some(ORIGIN), None).await), StatusCode::TOO_MANY_REQUESTS);
+    let mut ws = connect(addr, Some(&t.cookie), Some(ORIGIN), None).await.unwrap();
+    ws.close(None).await.unwrap();
+    for mut w in waiting {
+        w.close(None).await.unwrap();
+    }
 
     // 第一条不是票据 / 票据不对
     let mut ws = connect(addr, Some(&t.cookie), Some(ORIGIN), None).await.unwrap();
@@ -484,6 +502,33 @@ async fn limits_disconnect_and_revocation() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     panic!("名额没有全部归还：{}", t.st.terminals.live());
+}
+
+/// 中控退出（main 收到 SIGTERM 后调 terminal::shutdown）：以「中控正在重启」断开全部终端（关闭码 1012、写「关闭」审计、ssh 结束），
+/// 之后不再开票，事先拿到的票据也作废
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn shutdown_closes_terminals() {
+    let t = common_ops::setup().await;
+    let team = seed_team(&t).await;
+    let sshd = FakeSshd::start().await;
+    let m = seed_machine(&t, team, 1, "vps", "active", ("127.0.0.1", sshd.port), None).await;
+    let addr = serve(&t).await;
+    let mut a = open_term(&t, addr, &t.cookie, m).await;
+    let tk = ticket(&t, &t.cookie, json!({"kind": "machine", "id": m})).await.1["data"]["ticket"].as_str().unwrap().to_string();
+    sshd.wait_open(1).await;
+    fleet_server::terminal::shutdown(&t.st, Duration::from_secs(2)).await;
+    assert_eq!(t.st.terminals.live(), 0, "2 秒内收完尾（名额在写完「关闭」审计后才还）");
+    let close = audits(&t, "terminal.close").await;
+    assert_eq!((close.len(), close[0]["why"].as_str()), (1, Some("shutdown")));
+    let (_, reason, code) = until_exit(&mut a, 5).await;
+    assert!(reason.contains("中控正在重启"), "{reason}");
+    assert_eq!(code, Some(1012));
+    sshd.wait_open(0).await;
+    let (s, v) = ticket(&t, &t.cookie, json!({"kind": "machine", "id": m})).await;
+    assert_eq!((s, code_of(&v)), (StatusCode::SERVICE_UNAVAILABLE, "unavailable"), "{v}");
+    let mut b = connect(addr, Some(&t.cookie), Some(ORIGIN), None).await.unwrap();
+    send_ticket(&mut b, &tk).await;
+    assert!(until_exit(&mut b, 5).await.1.contains("票据不对"));
 }
 
 /// 实验室端到端（默认忽略）：连一个真的中控与真的机器，登录 → 开票 → 连上 → `stty size; echo ok` → 改大小 → 再看 `stty size` →
