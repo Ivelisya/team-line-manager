@@ -87,7 +87,8 @@ function RecentTable({ items }: { items: AccessEvent[] }) {
 export const AccessTab = React.memo(function AccessTab({ id, relay }: { id: string; relay: boolean }) {
   const [picked, setW] = React.useState<AccessWindow>('24h');
   // 时间范围不超过小时汇总的保留期（服务端会 400）；保留期调短后选着的退回 24 小时
-  const maxDays = useAccessRetention().data?.hourly_days ?? 90;
+  const ret = useAccessRetention().data;
+  const maxDays = ret?.hourly_days ?? 90; const rawDays = ret?.raw_days ?? 7;
   const items = React.useMemo(() => ACCESS_WINDOWS.filter((x) => x.value !== '30d' && WINDOW_DAYS[x.value] <= maxDays).map((x) => ({ value: x.value, label: x.label })), [maxDays]);
   const w = WINDOW_DAYS[picked] <= maxDays ? picked : '24h';
   const [all, setAll] = React.useState(false);
@@ -158,7 +159,7 @@ export const AccessTab = React.memo(function AccessTab({ id, relay }: { id: stri
           </Section>
           <Section>
             <SectionHeader title="最近记录" meta="最近 20 条" />
-            <div data-stale={stale}>{d.recent.length ? <RecentTable items={d.recent} /> : <div className="hint">最近 7 天没有原始记录</div>}</div>
+            <div data-stale={stale}>{d.recent.length ? <RecentTable items={d.recent} /> : <div className="hint">最近 {rawDays} 天没有原始记录</div>}</div>
           </Section>
         </>
       )}

@@ -12,8 +12,8 @@ const FlagImg = ({ cc }: { cc: string }) => {
   return url ? <img className="nc-flag" src={url} alt="" /> : <span className="nc-flag is-none"><Globe /></span>;
 };
 
-export function CountrySelect({ value, onChange, autoLabel, className, disabled, 'aria-label': aria, onPaste }: {
-  value: string; onChange: (code: string) => void; autoLabel: string; className?: string; disabled?: boolean; 'aria-label'?: string;
+export function CountrySelect({ id, value, onChange, autoLabel, className, disabled, 'aria-label': aria, onPaste }: {
+  id?: string; value: string; onChange: (code: string) => void; autoLabel: string; className?: string; disabled?: boolean; 'aria-label'?: string;
   onPaste?: React.ClipboardEventHandler;
 }) {
   const [open, setOpen] = React.useState(false);
@@ -26,7 +26,7 @@ export function CountrySelect({ value, onChange, autoLabel, className, disabled,
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild disabled={disabled}>
-        <button type="button" className={cn('select-trigger cs-trigger', className)} aria-label={aria} onPaste={onPaste}>
+        <button type="button" id={id} className={cn('select-trigger cs-trigger', className)} aria-label={aria} onPaste={onPaste}>
           <span className="cs-value">{value ? <><FlagImg cc={value} />{countryName(value)}</> : <><span className="nc-flag is-none"><Globe /></span>{autoLabel}</>}</span>
           <ChevronDown />
         </button>

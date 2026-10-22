@@ -179,7 +179,7 @@ export const Panel = React.forwardRef<HTMLElement, { title?: React.ReactNode; co
         <header className="panel-head">
           {title && <h2 className="panel-title">{title}</h2>}
           {count != null && <span className="panel-count">{count}</span>}
-          {sub && <span className="panel-sub ellipsis">{sub}</span>}
+          {sub && <span className={cn('panel-sub', typeof sub === 'string' && 'ellipsis')}>{sub}</span>}
           <div className="panel-tools">{tools}</div>
         </header>
       )}

@@ -43,15 +43,20 @@ export const Scrim = React.forwardRef<HTMLDivElement, { className: string }>(({ 
 Scrim.displayName = 'Scrim';
 
 /** 对话框：size sm 440 / md 660 / lg 760（原版对话框三档） */
+/** 打开时的初始焦点跳过说明里的「(i)」：不然键盘打开对话框时提示气泡立刻盖在内容上、按 Enter 也没反应。落到第一个输入框或按钮上 */
+function skipInfoTip(e: Event) {
+  const el = (e.currentTarget as HTMLElement).querySelector<HTMLElement>('input:not([disabled]), textarea:not([disabled]), select:not([disabled]), button:not([disabled]), [href], [tabindex]:not([tabindex="-1"]):not(.info-tip)');
+  if (el) { e.preventDefault(); el.focus(); }
+}
 export const DialogContent = React.forwardRef<React.ElementRef<typeof DialogPrimitive.Content>, React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & { size?: 'sm' | 'md' | 'lg' }>(
-  ({ className, size = 'sm', children, onPointerDownOutside, onInteractOutside, ...p }, ref) => {
+  ({ className, size = 'sm', children, onPointerDownOutside, onInteractOutside, onOpenAutoFocus, ...p }, ref) => {
     const panel = React.useRef<HTMLDivElement>(null);
     React.useImperativeHandle(ref, () => panel.current!, []);
     return (
       <DialogPrimitive.Portal>
         <Scrim className="overlay" />
         <DialogPrimitive.Content ref={panel} className={cn('dialog', size === 'md' && 'dialog-md', size === 'lg' && 'dialog-lg', className)}
-          onPointerDownOutside={keepOnToast(onPointerDownOutside)} onInteractOutside={bounceWhenKept(onInteractOutside, panel)} {...p}>
+          onPointerDownOutside={keepOnToast(onPointerDownOutside)} onInteractOutside={bounceWhenKept(onInteractOutside, panel)} onOpenAutoFocus={onOpenAutoFocus ?? skipInfoTip} {...p}>
           {children}
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>

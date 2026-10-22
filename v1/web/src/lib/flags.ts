@@ -28,9 +28,15 @@ export function countries() {
 /** 选择器最上面的一组：机器常在的地方 */
 export const COMMON_COUNTRIES = ['HK', 'JP', 'SG', 'US', 'TW', 'KR', 'DE', 'GB'];
 
-/** 粘贴或输入的国家 → 代码：认两位代码、中文名和英文名（不分大小写）；空串是「自动」，认不出是 undefined */
+/** 常见的简称：Intl 给的正式名是「中国香港特别行政区」「Hong Kong SAR China」，表格里一般只写「香港」 */
+const ALIAS: Record<string, string> = {
+  香港: 'HK', 澳门: 'MO', 台湾: 'TW', 'hong kong': 'HK', macau: 'MO', macao: 'MO', taiwan: 'TW',
+  usa: 'US', 'united states of america': 'US', uk: 'GB', 'great britain': 'GB', britain: 'GB', uae: 'AE', 韩国: 'KR', 'south korea': 'KR', korea: 'KR', russia: 'RU',
+};
+/** 粘贴或输入的国家 → 代码：认两位代码、中文名和英文名（不分大小写）与常见简称；空串是「自动」，认不出是 undefined */
 export function parseCountry(raw: string): string | undefined {
   const v = raw.trim(); if (!v) return '';
   const low = v.toLowerCase();
+  if (ALIAS[v] ?? ALIAS[low]) return ALIAS[v] ?? ALIAS[low];
   return countries().find((c) => c.code.toLowerCase() === low || c.zh === v || c.en.toLowerCase() === low)?.code;
 }

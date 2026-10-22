@@ -6,6 +6,7 @@ import { ApiError } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Field, Input } from '@/components/ui/form';
 import { Note } from '@/components/app/primitives';
+import { TipHost } from '@/components/ui/overlays';
 
 export function LoginPage() {
   const me = useMe();
@@ -35,6 +36,7 @@ export function LoginPage() {
   const err = login.error instanceof ApiError && login.error.code === 'totp_required' ? null : (login.error as Error | null);
   return (
     <div className="login-screen">
+      <TipHost /> {/* 登录页在外壳外面：「(i)」的提示要自己的一份 */}
       <form className="login-card" onSubmit={submit}>
         <div className="login-brand"><span className="brand-mark"><Boxes size={14} /></span>团队线路管理</div>
         <div><h1 className="dialog-title">登录</h1></div>

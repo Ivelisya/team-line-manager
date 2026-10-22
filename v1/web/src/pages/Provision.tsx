@@ -17,7 +17,7 @@ import { ConfirmDialog } from '@/components/app/dialogs';
 import { toast } from '@/components/ui/toast';
 import { copyText } from '@/lib/clipboard';
 import { PageHead, Panel, Pill } from '@/components/app/primitives';
-import { COLS, applies, headerCols, isBlank, isIpNode, localErrors, localIssues, newRow, parseTsv, pasteLine, toItem, type Col, type Ctx, type Row } from '@/features/provision-model';
+import { COLS, PASTE_COLS, UNUSED_LABEL, applies, headerCols, isBlank, isIpNode, localErrors, localIssues, newRow, parseTsv, pasteLine, toItem, type Col, type Ctx, type Row } from '@/features/provision-model';
 import { CountrySelect } from '@/components/app/CountrySelect';
 
 // 上架页懒加载、在外壳等到 /meta 之后才求值，类型名、默认端口可以在模块里取
@@ -332,7 +332,7 @@ function BatchGrid({ rows, setRows, ctx, resOf, errOf, checkedAny, stale }: { ro
     const all = parseTsv(text);
     // 带表头（「复制表头」做的模板）按列名对上，列顺序随意；不带表头从光标所在的列起按表头顺序
     const head = all.length ? headerCols(all[0]) : null;
-    const cols = head ?? COLS.slice(ci);
+    const cols = head ?? PASTE_COLS.slice(PASTE_COLS.indexOf(COLS[ci]));
     const grid = head ? all.slice(1) : all;
     const ri = Math.max(0, rowsRef.current.findIndex((r) => r.id === rowId));
     setRows((rs) => {
@@ -345,7 +345,7 @@ function BatchGrid({ rows, setRows, ctx, resOf, errOf, checkedAny, stale }: { ro
       return next;
     });
   }, [setRows, ctx]);
-  const copyHeader = () => void copyText(COLS.map((c) => c.label).join('\t'), '表头（可粘贴到表格软件当模板）');
+  const copyHeader = () => void copyText(PASTE_COLS.map((c) => c?.label ?? UNUSED_LABEL).join('\t'), '表头（可粘贴到表格软件当模板）');
 
   return (
     <div className="stack">

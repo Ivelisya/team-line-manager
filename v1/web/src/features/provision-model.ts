@@ -30,8 +30,8 @@ export const newRow = (p?: Partial<Row>): Row => ({
 export type ColType = 'text' | 'num' | 'date' | 'kind' | 'host' | 'team' | 'relay' | 'provider' | 'plan' | 'proto' | 'secret' | 'country';
 export interface Col { key: 'kind' | Field; label: string; w: number; type: ColType; kinds: Kind[]; ph?: string }
 const ALL: Kind[] = ['relay', 'vps', 'proxy'];
-/** 不带表头粘贴时，表头顺序即列顺序。后加的列（宿主机、国家）排在最后：按旧表头整理的表格粘进来不会整体错一列；
- *  带表头（「复制表头」做的模板）粘贴时按列名对上，见 headerCols */
+/** 表格上的列。不带表头粘贴时按 PASTE_COLS 的顺序（同「复制表头」）；后加的列（宿主机、国家）排在最后：按旧表头整理的表格粘进来不会整体错一列；
+ *  带表头粘贴时按列名对上，见 headerCols */
 export const COLS: Col[] = [
   { key: 'kind', label: '类型', w: 104, type: 'kind', kinds: ALL },
   { key: 'ip', label: 'IP', w: 132, type: 'text', kinds: ALL, ph: '198.51.100.20' },
@@ -86,17 +86,21 @@ export function setCell(row: Row, col: Col, raw: string, ctx: Ctx): Row {
   return r;
 }
 
+/** 粘贴 / 模板的列顺序：表格上的列，加上去掉了的「登录用户」原来的位置（SS 端口后面）留一个空列——
+ *  列只往后加、不从中间删，按旧表头整理的表格不带表头粘进来也不会从这里起整体错一列（「root」掉进密码格）。null = 这一列不读 */
+export const PASTE_COLS: (Col | null)[] = COLS.flatMap((c) => (c.key === 'ss_port' ? [c, null] : [c]));
+export const UNUSED_LABEL = '（不用）';
 /** 粘贴的第一行是不是表头：至少两格是列名、其余格是空的或已去掉的旧列名。是的话返回每格对应的列（旧列为 undefined，跳过） */
-const OLD_LABELS = new Set(['登录用户', '登录密码']);
+const OLD_LABELS = new Set(['登录用户', '登录密码', UNUSED_LABEL]);
 export function headerCols(line: string[]): (Col | undefined)[] | null {
   const cols = line.map((h) => COLS.find((c) => c.label === h.trim() || (c.key === 'login_pw' && h.trim() === '登录密码')));
   const ok = cols.filter(Boolean).length >= 2 && line.every((h, i) => cols[i] || !h.trim() || OLD_LABELS.has(h.trim()));
   return ok ? cols : null;
 }
 
-/** 把粘贴来的一行写进行：cols 是每格对应的列（不带表头时是从光标所在列起的 COLS），对这一行不适用的格子跳过。
+/** 把粘贴来的一行写进行：cols 是每格对应的列（不带表头时是从光标所在列起的 PASTE_COLS，null 的不读），对这一行不适用的格子跳过。
  *  类型和宿主机决定别的格子适不适用，先写这两列——宿主机靠后，按列序写会先把同机 IP 节点不适用的格子（SSH 端口、登录、供应商…）写进去 */
-export function pasteLine(row: Row, line: string[], cols: (Col | undefined)[], ctx: Ctx): Row {
+export function pasteLine(row: Row, line: string[], cols: (Col | null | undefined)[], ctx: Ctx): Row {
   const cells = line.flatMap((cell, dx) => (cols[dx] ? [{ col: cols[dx]!, cell }] : []));
   const lead = ({ col }: { col: Col }) => col.key === 'kind' || col.key === 'host_id';
   let r = row;

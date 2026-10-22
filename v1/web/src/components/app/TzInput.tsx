@@ -3,11 +3,11 @@ import * as React from 'react';
 import { Input } from '@/components/ui/form';
 import { meta } from '@/lib/derive';
 
-export function TzInput({ value, onChange, placeholder, 'aria-label': ariaLabel }: { value: string; onChange: (v: string) => void; placeholder?: string; 'aria-label'?: string }) {
+export function TzInput({ id: inputId, value, onChange, placeholder, 'aria-label': ariaLabel }: { id?: string; value: string; onChange: (v: string) => void; placeholder?: string; 'aria-label'?: string }) {
   const id = React.useId();
   return (
     <>
-      <Input list={id} value={value} onChange={(e) => onChange(e.target.value.trim())} placeholder={placeholder} aria-label={ariaLabel} spellCheck={false} autoComplete="off" />
+      <Input id={inputId} list={id} value={value} onChange={(e) => onChange(e.target.value.trim())} placeholder={placeholder} aria-label={ariaLabel} spellCheck={false} autoComplete="off" />
       <datalist id={id}>{meta().timezones.map((z) => <option key={z} value={z} />)}</datalist>
     </>
   );
