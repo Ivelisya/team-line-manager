@@ -226,7 +226,8 @@
    浮层都 Portal 到 body、不在 .app 里，自己的动画照常。骨架屏不管。
    无限循环的动画暂停： */
 html[data-overlay] :is(.app, .drawer) :is(.spin, .flow-dot, .top-btn.jobs-ind > .lucide, .stepbar-item[data-kind="running"] .stepbar-node),
-html[data-overlay] :is(.app, .drawer) .pill[data-dot="pulse"]::before, .smark[data-spin],
+html[data-overlay] :is(.app, .drawer) .pill[data-dot="pulse"]::before,
+html[data-overlay] :is(.app, .drawer) .smark[data-spin],
 html[data-overlay] :is(.app, .drawer) .progress[data-live="1"] .progress-fill::after { animation-play-state: paused; }
 /* 读数的过渡不播，推送来了直接跳到新值（进度线；格条、圆环、心跳格本来就不过渡，KPI 数字见 useCountUp） */
 html[data-overlay] :is(.app, .drawer) .progress-fill { transition: none; }
