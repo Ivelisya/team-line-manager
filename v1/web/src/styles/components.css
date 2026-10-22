@@ -61,7 +61,7 @@
 .seg {
   position: relative; display: inline-flex; align-items: center; gap: var(--sp-2); flex: none;
   height: var(--h-lg); box-sizing: border-box; padding: var(--seg-pad);
-  border-radius: var(--r-pill); background: var(--track); max-width: 100%;
+  border-radius: var(--r-pill); background: var(--track); max-width: 100%; justify-self: start; /* 放在表单网格里时不被拉满整行（底槽拉满、选项靠左） */
   overflow-x: auto; scrollbar-width: none;
 }
 .seg::-webkit-scrollbar { display: none; }
