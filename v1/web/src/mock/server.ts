@@ -443,8 +443,8 @@ R('DELETE', '/teams/([^/]+)', ({ params }) => {
 });
 R('DELETE', '/providers/([^/]+)', ({ params }) => {
   const p = db.providers.find((x) => x.id === params[0]); if (!p) throw bad('没有这个供应商', 404, 'not_found');
-  const u = inUse([[db.plans.filter((x) => x.provider_id === p.id).length, '个套餐'], [db.machines.filter((m) => m.provider?.id === p.id).length, '台机器']]);
-  if (u) throw bad(`「${p.name}」还有 ${u}（含已归档、已退役的）：先删掉或改到别的供应商再删`, 409, 'conflict');
+  const u = inUse([[db.plans.filter((x) => x.provider_id === p.id).length, '个套餐（含已归档的）'], [db.machines.filter((m) => m.provider?.id === p.id).length, '台机器（含已退役的）']]);
+  if (u) throw bad(`「${p.name}」还有 ${u}：先删掉或改到别的供应商再删`, 409, 'conflict');
   db.providers = db.providers.filter((x) => x.id !== p.id); delAudit('provider.delete', '删除供应商', 'provider', p.id, p.name);
   emit({ type: 'catalog' }); return { id: p.id };
 });
@@ -677,7 +677,8 @@ const byOpened = (a: Incident, b: Incident) => b.opened_at.localeCompare(a.opene
 R('GET', '/incidents', ({ query }) => {
   const s = query.get('state') ?? 'firing'; const sid = query.get('subject_id');
   const order = sid ? (a: Incident, b: Incident) => byState(a, b) || byOpened(a, b) : (a: Incident, b: Incident) => byState(a, b) || bySev(a, b) || byOpened(a, b);
-  return paged(db.incidents.filter((i) => (s === 'all' || i.state === s) && (!sid || i.subject_id === sid)).sort(order), query);
+  const list = db.incidents.filter((i) => (s === 'all' || i.state === s) && (!sid || i.subject_id === sid)).sort(order);
+  return { ...paged(list, query), acked: list.filter((i) => i.ack_at).length };
 });
 R('POST', '/incidents/([^/]+)/ack', ({ params }) => { const i = db.incidents.find((x) => x.id === params[0]); if (!i) throw bad('告警不存在', 404, 'not_found'); i.ack_at = iso(); i.ack_by = db.user; emit({ type: 'incidents' }); return {}; });
 /** 静默同服务端：只列没结束的（含还没开始的预约），按开始时间排；新建的校验顺序与中文原因同服务端 */
