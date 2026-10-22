@@ -16,7 +16,7 @@ import { setStreamState as setStatus, useStreamState } from './streamState';
 
 const MERGE_MS = 300;
 const LIST_MS = 2000;
-const LISTS = new Set(['machines', 'relays', 'overview', 'jobs']);
+const LISTS = new Set(['machines', 'relays', 'overview', 'jobs', 'audit']);
 const BACKOFF_MAX = 30_000;
 // 重连、resync 的全部失效不带上这几类：恢复 / 退役预检会真的 SSH 探测机器（改选项或重开对话框才重查）；
 // 集群速率历史只用来垫在实时点前面（live.ts 的 seedFleet 只补现有最早点之前的），重取补不上断线的空档，白取

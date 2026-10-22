@@ -2,7 +2,7 @@
 import * as React from 'react';
 import { NavLink, Navigate, Outlet, useLocation, useNavigationType } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { Boxes, Check, LogOut, Menu, Monitor, Moon, RotateCw, Sun } from 'lucide-react';
+import { Boxes, LogOut, Menu, Monitor, Moon, RotateCw, Sun } from 'lucide-react';
 import { NAV } from '@/lib/nav';
 import { ApiError, AUTH_EVENT, post } from '@/lib/api';
 import { useIncidents, useMe } from '@/lib/queries';
@@ -10,7 +10,7 @@ import { useStream } from '@/lib/stream';
 import { useTheme, type Palette, type ThemePref } from '@/lib/theme';
 import { useTitleAlerts } from '@/lib/title';
 import { closeEvacuate, closeMove, closeRestore, closeRetire, useEvacuateTarget, useMoveTarget, useRestoreTarget, useRetireTarget } from '@/lib/nodeActions';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger, Tip, TipHost } from '@/components/ui/overlays';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger, Tip, TipHost } from '@/components/ui/overlays';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Toaster } from '@/components/ui/toast';
@@ -145,14 +145,14 @@ export function Shell() {
               <DropdownMenuTrigger asChild><button className="top-btn" aria-label="外观：深浅色与配色"><ThemeIcon size={16} /></button></DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="menu-appearance">
                 <DropdownMenuLabel>外观</DropdownMenuLabel>
-                {THEMES.map(([v, l, I]) => (
-                  <DropdownMenuItem key={v} onSelect={() => theme.setPref(v)}><I />{l}{theme.pref === v && <Check className="menu-check" />}</DropdownMenuItem>
-                ))}
+                <DropdownMenuRadioGroup value={theme.pref} onValueChange={(v) => theme.setPref(v as ThemePref)}>
+                  {THEMES.map(([v, l, I]) => <DropdownMenuRadioItem key={v} value={v}><I />{l}</DropdownMenuRadioItem>)}
+                </DropdownMenuRadioGroup>
                 <DropdownMenuSeparator />
                 <DropdownMenuLabel>配色</DropdownMenuLabel>
-                {PALETTES.map(([v, l]) => (
-                  <DropdownMenuItem key={v} onSelect={() => theme.setPalette(v)}><i className="swatch" data-palette={v} />{l}{theme.palette === v && <Check className="menu-check" />}</DropdownMenuItem>
-                ))}
+                <DropdownMenuRadioGroup value={theme.palette} onValueChange={(v) => theme.setPalette(v as Palette)}>
+                  {PALETTES.map(([v, l]) => <DropdownMenuRadioItem key={v} value={v}><i className="swatch" data-palette={v} />{l}</DropdownMenuRadioItem>)}
+                </DropdownMenuRadioGroup>
               </DropdownMenuContent>
             </DropdownMenu>
             <Tip text={`${me.data.username} · 退出登录`} side="bottom">

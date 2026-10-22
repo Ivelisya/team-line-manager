@@ -74,7 +74,7 @@ export function Toaster() {
     if (live.length > MAX) close(live[0].id);
   }, [list, close]);
   return (
-    <div className="toasts" aria-live="polite">
+    <div className="toasts">
       {/* 每条套一层布局容器：有通知进来或离开时，其余的滑到新位置而不是瞬间跳过去。
           layout 不放在 .toast 上：motion 的 transform 会盖掉它离场时的 translateX */}
       {list.map((t) => <m.div key={t.id} layout="position" transition={SPRING}><ToastItem t={t} onClose={close} /></m.div>)}

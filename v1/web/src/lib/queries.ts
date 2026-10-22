@@ -94,10 +94,11 @@ export const useAvailability = (id: string, days: number) =>
   useQuery({ queryKey: ['availability', id, days], queryFn: ({ signal }) => get<Availability>(`/machines/${id}/availability?days=${days}`, signal), staleTime: 600_000, refetchInterval: 600_000, refetchOnWindowFocus: false });
 export const useRenewals = (id: string | null) => useQuery({ queryKey: ['renewals', id], queryFn: ({ signal }) => get<Renewal[]>(`/machines/${id}/renewals`, signal), enabled: !!id });
 export const useAudit = (id: string | null) => useQuery({ queryKey: ['audit', id], queryFn: ({ signal }) => get<AuditEntry[]>(`/audit?target_id=${id}&limit=10`, signal), enabled: !!id });
-/** 「操作记录」页：全站审计，一页 100 条、按 before_id 往前翻（不满一页就到头了）。键在 ['audit'] 下，随机器类事件与写操作一起失效；登录等不发事件的，切回页面时重取 */
+/** 「操作记录」页：全站审计，一页 100 条、按 before_id 往前翻（不满一页就到头了）。键在 ['audit'] 下，随机器类事件与写操作一起失效
+ *  （实时流把 audit 当整表合并：失效会把已加载的每一页依次重取，批量上架时不能每 300ms 来一轮）；登录等不发事件的，过 30 秒后切回页面时重取 */
 const AUDIT_PAGE = 100;
 export const useAuditLog = () => useInfiniteQuery({
-  queryKey: ['audit', 'all'], initialPageParam: '',
+  queryKey: ['audit', 'all'], initialPageParam: '', staleTime: 30_000,
   queryFn: ({ pageParam, signal }) => get<AuditEntry[]>(`/audit?limit=${AUDIT_PAGE}${pageParam ? `&before_id=${pageParam}` : ''}`, signal),
   getNextPageParam: (last) => (last.length < AUDIT_PAGE ? undefined : String(last[last.length - 1].id)),
 });

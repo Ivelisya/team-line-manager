@@ -55,11 +55,12 @@ function Lookup({ id, m }: { id: string; m?: MachineView }) {
   return <MiniCard m={data} />;
 }
 
-/** 包住任意“节点名”元素：children 必须能接 ref（原生元素即可）。id 为空时不加悬浮卡 */
-export function NodeHover({ id, m, children }: { id: string | null | undefined; m?: MachineView; children: React.ReactElement<{ tabIndex?: number }> }) {
+/** 包住任意“节点名”元素：children 必须能接 ref（原生元素即可）。id 为空时不加悬浮卡。
+ *  noFocus：名字在本身可聚焦的行或按钮里（机器表的行、作业列表项）时不再补 tabIndex，键盘不用每行多停一两下 */
+export function NodeHover({ id, m, noFocus, children }: { id: string | null | undefined; m?: MachineView; noFocus?: boolean; children: React.ReactElement<{ tabIndex?: number }> }) {
   if (!id) return children;
   // 悬浮卡由 Radix 在触发元素获得焦点时打开；触发元素若是普通 span 就聚焦不到，键盘用户永远看不到卡片，所以补 tabIndex
-  const plain = typeof children.type === 'string' && !['a', 'button', 'input', 'select', 'textarea'].includes(children.type) && children.props.tabIndex == null;
+  const plain = !noFocus && typeof children.type === 'string' && !['a', 'button', 'input', 'select', 'textarea'].includes(children.type) && children.props.tabIndex == null;
   return (
     <HoverCard>
       <HoverCardTrigger asChild>{plain ? React.cloneElement(children, { tabIndex: 0 }) : children}</HoverCardTrigger>
