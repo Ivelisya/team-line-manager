@@ -47,6 +47,8 @@ access_days = 7
 auto_compact = true
 TOML
 chown fleet:fleet /etc/fleet/fleet.toml; chmod 640 /etc/fleet/fleet.toml
+# 软路由的反向隧道：同 deploy/central/install.sh（fleet-tunnel 账号、tunnel-keys、sshd 的 Match 段；幂等）
+bash /root/src/deploy/central/tunnel-setup.sh /root/src/deploy/central
 install -m 755 /root/src/target/release/fleet-server /opt/fleet/fleet-server.new && mv -f /opt/fleet/fleet-server.new /opt/fleet/fleet-server
 cat > /etc/systemd/system/fleet-server.service <<'UNIT'
 [Unit]
