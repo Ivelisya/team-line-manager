@@ -1,5 +1,4 @@
 //! 访问监控测试的公共部分：造机器和入口、塞访问记录（建库与登录见 common）。
-#![allow(dead_code)]
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -9,7 +8,7 @@ use time::{Duration, OffsetDateTime};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-pub use crate::common::T;
+pub use super::T;
 
 impl T {
     /// GET，`with_cookie` 为假时不带会话（测未登录）
@@ -27,7 +26,7 @@ impl T {
 
 /// 不启动后台任务：汇总由测试自己调用，结果才可预期
 pub async fn setup() -> T {
-    let t = crate::common::boot(false, "access_cache_secs = 0").await;
+    let t = super::boot(false, "access_cache_secs = 0").await;
     // 测试要塞过去几天的记录：补齐最近 6 天的 access_event 分区（不超过保留期）
     let today = OffsetDateTime::now_utc().date();
     for i in 1..=6 {

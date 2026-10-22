@@ -1,18 +1,12 @@
 //! IP 情报测试的公共部分：造机器和入口、塞来源小时汇总、预置画像缓存（建库与登录见 common）。
 //! 不起后台循环：来源汇总 / 异常 / 告警评估都由测试手动驱动，并且可以传入「现在」来快进时间。
-#![allow(dead_code)]
 
-use axum::http::StatusCode;
-use serde_json::Value;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-pub use crate::common::T;
+pub use super::T;
 
 impl T {
-    /// 带会话的 GET，返回 (状态码, 响应体)
-    pub async fn raw(&self, path: &str) -> (StatusCode, Value) { self.req("GET", path, None, None).await }
-
     /// 预置一条画像缓存，库版本取当前这一代（所以命中）
     pub async fn put_cache(&self, ip: &str, isp: &str, country: &str, province: Option<&str>, city: Option<&str>, conn_type: &str) {
         self.put_cache_v(ip, isp, country, province, city, conn_type, &self.st.ipintel.version()).await
@@ -72,7 +66,7 @@ pub async fn setup(with_dbs: bool) -> T {
     if with_dbs {
         std::fs::write(dir.path().join("ipintel/ip2asn-combined.tsv"), "1.0.0.0\t1.0.0.255\t13335\tAU\tCLOUDFLARENET\n").unwrap();
     }
-    crate::common::boot_in(dir, false, r#"ipintel.internal_ips = ["192.0.2.77"]"#).await
+    super::boot_in(dir, false, r#"ipintel.internal_ips = ["192.0.2.77"]"#).await
 }
 
 pub struct Fx {

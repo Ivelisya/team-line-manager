@@ -1,5 +1,4 @@
-//! tests/ops.rs 的公共代码：带不同鉴权方式的请求封装（建库与登录见 common）。
-#![allow(dead_code)]
+//! ops、account、terminal 套件的公共代码：带不同鉴权方式的请求封装（建库与登录见 common）。
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -7,7 +6,7 @@ use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
-pub use crate::common::{ADMIN_PW, T};
+pub use super::{ADMIN_PW, T};
 
 pub enum Auth<'a> {
     /// 会话 Cookie（写请求带 X-Fleet-Request）
@@ -63,4 +62,4 @@ impl T {
     }
 }
 
-pub async fn setup() -> T { crate::common::boot(false, "").await }
+pub async fn setup() -> T { super::boot(false, "").await }

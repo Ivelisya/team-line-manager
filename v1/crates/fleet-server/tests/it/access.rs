@@ -1,11 +1,10 @@
 //! 访问监控：构造 access_event → 跑汇总 → 各接口的聚合结果。
 //! 需要 PostgreSQL（见 common）。
 
-mod common;
-mod common_mon;
+use crate::common;
 
 use axum::http::StatusCode;
-use common_mon::{put_events, seed, setup, T};
+use common::mon::{put_events, seed, setup, T};
 use fleet_server::access;
 use serde_json::Value;
 use time::{Duration, OffsetDateTime};
@@ -31,7 +30,7 @@ fn item<'a>(d: &'a Value, host: &str, node: &str) -> &'a Value {
 }
 
 /// 节点1 = 团队1-01，节点2 = 团队1-02，节点3 = 团队2-01
-async fn fixture(t: &T) -> common_mon::Fx {
+async fn fixture(t: &T) -> common::mon::Fx {
     let fx = seed(t).await;
     let now = OffsetDateTime::now_utc();
     let m = Duration::minutes;
@@ -464,7 +463,7 @@ async fn new_targets_machine_and_idempotent_rollup() {
     let d = t.get(&format!("/api/v1/machines/{}/access?window=7d", fx.n[2])).await;
     assert_eq!(d["top_domains"].as_array().unwrap().len(), 1);
 
-    // 清理（没在面板里设过：汇总留 31 天）：小时表 31 天前的被删，目标出现记录 31 天没再出现的也删（各表的细节见 tests/retention.rs）
+    // 清理（没在面板里设过：汇总留 31 天）：小时表 31 天前的被删，目标出现记录 31 天没再出现的也删（各表的细节见 tests/it/retention.rs）
     sqlx::query("insert into access_hourly (node_id, relay_id, hour, dest_host, kind, conns) values ($1, $2, now() - interval '32 days', 'gone.example.com', 'domain', 1)")
         .bind(n1)
         .bind(fx.relay)

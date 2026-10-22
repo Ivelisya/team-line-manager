@@ -7,6 +7,7 @@
 
 #![cfg(unix)]
 
+#[path = "it/common/mod.rs"]
 mod common;
 
 use axum::http::StatusCode;

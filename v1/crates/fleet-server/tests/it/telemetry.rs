@@ -2,11 +2,10 @@
 //! 需要 PostgreSQL（见 common）。
 //! 不起后台循环：告警评估、小时汇总、实时指标比对都由测试手动驱动（告警评估的「当前时间」可以快进，不用真等去抖）。
 
-mod common;
-mod common_tele;
+use crate::common;
 
 use axum::http::StatusCode;
-use common_tele::*;
+use common::tele::*;
 use fleet_proto::ProbeKind;
 use fleet_server::alerts::{self, AlertState};
 use fleet_server::crypto::SecretBox;
@@ -2176,7 +2175,7 @@ async fn retention_cleanup_removes_only_expired_rows() {
             .await
             .unwrap();
     }
-    // 访问记录（汇总、来源画像）按面板里设的保留期删，见 tests/retention.rs
+    // 访问记录（汇总、来源画像）按面板里设的保留期删，见 tests/it/retention.rs
     let sessions_before = t.count("select count(*) from session").await;
     db::cleanup_retention(db).await.unwrap();
     assert_eq!(t.count("select count(*) from silence").await, 1, "结束超 90 天的静默删掉");

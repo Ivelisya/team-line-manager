@@ -2,11 +2,10 @@
 //! 节点来源画像分布、学习期后的新运营商 / 新城市 / 机房来源告警、alerts 循环不误恢复、24 小时后自动恢复。
 //! 需要 PostgreSQL（见 common）。
 
-mod common;
-mod common_ipi;
+use crate::common;
 
 use axum::http::StatusCode;
-use common_ipi::{seed, setup};
+use common::ipi::{seed, setup};
 use fleet_server::alerts::{self, AlertState};
 use fleet_server::ipintel;
 use serde_json::Value;
@@ -49,12 +48,12 @@ async fn degrades_without_dbs_never_500() {
     assert!(items[1]["error"].as_str().unwrap().contains("不是有效"));
     assert_eq!(b["degraded"], true);
     // 边界
-    assert_eq!(t.raw("/api/v1/ipintel/not-an-ip").await.0, StatusCode::BAD_REQUEST);
-    assert_eq!(t.raw("/api/v1/ipintel").await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(t.raw("/api/v1/ipintel/not-an-ip", true).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(t.raw("/api/v1/ipintel", true).await.0, StatusCode::BAD_REQUEST);
     let many = (0..201).map(|i| format!("10.0.{}.{}", i / 250, i % 250 + 1)).collect::<Vec<_>>().join(",");
-    assert_eq!(t.raw(&format!("/api/v1/ipintel?ips={many}")).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(t.raw(&format!("/api/v1/ipintel?ips={many}"), true).await.0, StatusCode::BAD_REQUEST);
     let ok200 = (0..200).map(|i| format!("10.0.0.{}", i % 250 + 1)).collect::<Vec<_>>().join(",");
-    assert_eq!(t.raw(&format!("/api/v1/ipintel?ips={ok200}")).await.0, StatusCode::OK);
+    assert_eq!(t.raw(&format!("/api/v1/ipintel?ips={ok200}"), true).await.0, StatusCode::OK);
 
     // 节点来源画像：合法的降级结果（有来源，但没有画像）
     let p = t.get(&format!("/api/v1/machines/{}/sources?window=7d", fx.n[0])).await;
@@ -70,9 +69,9 @@ async fn degrades_without_dbs_never_500() {
     assert_eq!(t.get(&format!("/api/v1/machines/{}/sources?window=7d", fx.n[0])).await, p);
     assert_eq!(t.get(&format!("/api/v1/machines/{}/sources?window=7d&limit=1", fx.n[0])).await["top_sources"].as_array().unwrap().len(), 1);
     assert_eq!(t.get(&format!("/api/v1/machines/{}/sources", fx.n[1])).await["empty"], true);
-    assert_eq!(t.raw(&format!("/api/v1/machines/{}/sources?window=1h", fx.n[0])).await.0, StatusCode::BAD_REQUEST);
-    assert_eq!(t.raw(&format!("/api/v1/machines/{}/sources?limit=abc", fx.n[0])).await.0, StatusCode::BAD_REQUEST);
-    assert_eq!(t.raw(&format!("/api/v1/machines/{}/sources", uuid::Uuid::now_v7())).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(t.raw(&format!("/api/v1/machines/{}/sources?window=1h", fx.n[0]), true).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(t.raw(&format!("/api/v1/machines/{}/sources?limit=abc", fx.n[0]), true).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(t.raw(&format!("/api/v1/machines/{}/sources", uuid::Uuid::now_v7()), true).await.0, StatusCode::NOT_FOUND);
 
     // 访问监控的来源条目：intel 为 null，其余字段不变
     let a = t.get("/api/v1/access/sources?window=7d").await;

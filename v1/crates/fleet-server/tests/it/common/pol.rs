@@ -1,14 +1,12 @@
 //! 访问策略集成测试的公共部分：造线路机 / 节点 / 入口、模拟 agent、塞访问汇总（建库与登录见 common）。
 
-#![allow(dead_code)]
-
 use axum::http::StatusCode;
 use fleet_proto::{ApplyReport, DesiredState, EntryApply};
 use serde_json::Value;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
-pub use crate::common::T;
+pub use super::T;
 
 impl T {
     /// 期望一个特定状态码，返回错误信息
@@ -51,7 +49,7 @@ impl T {
 }
 
 /// 不启动后台任务：汇总、告警都由测试自己驱动
-pub async fn setup() -> T { crate::common::boot(false, "").await }
+pub async fn setup() -> T { super::boot(false, "").await }
 
 pub struct Fx {
     pub relay: Uuid,

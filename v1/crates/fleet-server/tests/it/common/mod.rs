@@ -1,4 +1,4 @@
-//! 集成测试的公共搭建，各套件的 common_* 模块在这之上加自己的辅助函数。
+//! 集成测试的公共搭建，子模块（ipi、mon、ops、pol、tele）在这之上加各套件自己的辅助函数。
 //! 需要 PostgreSQL：环境变量 FLEET_TEST_DB（默认 postgres://fleet:fleet@127.0.0.1/fleet_test）。
 //!
 //! 测试并发安全：每个测试在库里建一个自己的 schema（`t_<建立时的 Unix 秒>_<随机>`），连接池的每条连接都把
@@ -8,9 +8,16 @@
 //! 100 条上限之内。核数很多、库又和别的服务共用时，用 `-- --test-threads=N` 压一下并发。
 //! 离线 IP 库指向测试自己的临时目录（默认是空的，走降级），不读机器上装好的真实库。
 //!
-//! 只跑某个套件：`cargo test -p fleet-server --test telemetry`；只跑其中某个测试再加名字过滤。
+//! 集成测试都在 tests/it 这一个测试目标里（只链接一次）。只跑某个套件：`cargo test -p fleet-server --test it telemetry::`；
+//! 只跑其中某个测试再加名字。改了进程 PATH（放假 ssh）的 replace、routers、upgrade 各自单独一个目标（`--test replace`），也用这里的搭建。
 
 #![allow(dead_code)]
+
+pub mod ipi;
+pub mod mon;
+pub mod ops;
+pub mod pol;
+pub mod tele;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};

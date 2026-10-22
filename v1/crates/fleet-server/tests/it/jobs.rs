@@ -4,7 +4,7 @@
 //!
 //! 「上架」类测试用 VPS 指向 127.0.0.1:1（必定连接被拒）：预检会失败，不需要真的 SSH 到任何机器。
 
-mod common;
+use crate::common;
 
 use axum::http::StatusCode;
 use common::{dist_agent, seed_node, seed_relay, seed_team, setup};

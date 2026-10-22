@@ -1,7 +1,7 @@
 //! 端到端：上架（上游代理节点）→ 线路机应用 → 出口验收 → 上线 → 改名同步 → 退役（摘入口、压缩编号）→ 彻底删除。
 //! 需要 PostgreSQL（见 common）。
 
-mod common;
+use crate::common;
 
 use axum::http::StatusCode;
 use common::{seed_relay, setup, T};
@@ -144,7 +144,7 @@ async fn full_lifecycle() {
     let chk = t.post("/api/v1/provision/check", json!({"items": [{"kind": "proxy", "ip": "203.0.113.10", "team_id": team, "relay_id": relay,
         "upstream": {"protocol": "socks5", "host": "x", "port": 1}}]})).await;
     assert_eq!(chk["items"][0]["name"], "一队-03", "退役机器的 IP 已释放、编号接在末尾");
-    // 物理删除由维护任务在 purge_blocker 放行后自动做（tests/spare.rs）
+    // 物理删除由维护任务在 purge_blocker 放行后自动做（tests/it/spare.rs）
     // 审计里有重编号记录
     let audit = t.get("/api/v1/audit?limit=200").await;
     assert!(audit.as_array().unwrap().iter().any(|a| a["action"] == "team.renumber"));

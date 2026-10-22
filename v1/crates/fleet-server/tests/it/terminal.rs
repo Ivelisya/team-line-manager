@@ -4,13 +4,12 @@
 //! ssh 停在密钥交换上，最多 30 秒），或者一个没人听的端口（ssh 立刻报连接被拒）。
 //! 最后一个 `lab_e2e` 是实验室的端到端（默认忽略，见它的说明）。
 
-mod common;
-mod common_ops;
+use crate::common;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use common::{ADMIN_PW, T};
-use common_ops::Auth;
+use common::ops::Auth;
 use futures::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
@@ -205,7 +204,7 @@ async fn audits(t: &T, action: &str) -> Vec<Value> {
 /// 开票：只给会话用户；目标与名额先查；再验证（没开两步验证要密码，开了要验证码），5 分钟窗口；错误码；限速
 #[tokio::test]
 async fn ticket_needs_session_and_reverification() {
-    let t = common_ops::setup().await;
+    let t = common::ops::setup().await;
     // 网页取上限的地方
     let lim = t.get("/api/v1/meta").await["terminal"].clone();
     assert_eq!((lim["per_user"].as_u64(), lim["global"].as_u64(), lim["max_message"].as_u64(), lim["max_dim"].as_u64()), (Some(3), Some(8), Some(65536), Some(500)), "{lim}");
@@ -281,7 +280,7 @@ async fn ticket_needs_session_and_reverification() {
 /// 开了两步验证：只要验证码（或恢复码），密码不顶用；错了 totp_invalid 并记作验证码错误
 #[tokio::test]
 async fn ticket_with_totp_needs_code() {
-    let t = common_ops::setup().await;
+    let t = common::ops::setup().await;
     let team = seed_team(&t).await;
     let m = seed_machine(&t, team, 1, "vps", "active", ("127.0.0.1", 22), None).await;
     let s = t.ok("POST", "/api/v1/account/totp/setup", Some(json!({"password": ADMIN_PW}))).await;
@@ -323,7 +322,7 @@ async fn ticket_with_totp_needs_code() {
 /// 握手：Cookie、Origin、API 密钥；第一条消息是票据：一次性、绑定会话；ssh 连不上时把它的报错带给浏览器、写审计
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn websocket_checks_origin_ticket_and_session() {
-    let t = common_ops::setup().await;
+    let t = common::ops::setup().await;
     let team = seed_team(&t).await;
     // 没人听的端口：ssh 立刻报连接被拒、退出 255
     let closed = {
@@ -410,7 +409,7 @@ async fn websocket_checks_origin_ticket_and_session() {
 /// 会话没了而没有通知时由复核断开、改窗口大小的消息、太大的消息
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn limits_disconnect_and_revocation() {
-    let t = common_ops::setup().await;
+    let t = common::ops::setup().await;
     let team = seed_team(&t).await;
     let sshd = FakeSshd::start().await;
     let m = seed_machine(&t, team, 1, "vps", "active", ("127.0.0.1", sshd.port), None).await;
@@ -508,7 +507,7 @@ async fn limits_disconnect_and_revocation() {
 /// 之后不再开票，事先拿到的票据也作废
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn shutdown_closes_terminals() {
-    let t = common_ops::setup().await;
+    let t = common::ops::setup().await;
     let team = seed_team(&t).await;
     let sshd = FakeSshd::start().await;
     let m = seed_machine(&t, team, 1, "vps", "active", ("127.0.0.1", sshd.port), None).await;
