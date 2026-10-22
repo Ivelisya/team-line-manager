@@ -107,17 +107,24 @@ export const useAvailability = (id: string, days: number) =>
   useQuery({ queryKey: ['availability', id, days], queryFn: ({ signal }) => get<Availability>(`/machines/${id}/availability?days=${days}`, signal), staleTime: 600_000, refetchInterval: 600_000, refetchOnWindowFocus: false });
 export const useRenewals = (id: string | null) => useQuery({ queryKey: ['renewals', id], queryFn: ({ signal }) => get<Renewal[]>(`/machines/${id}/renewals`, signal), enabled: !!id });
 export const useAudit = (id: string | null) => useQuery({ queryKey: ['audit', id], queryFn: ({ signal }) => get<AuditEntry[]>(`/audit?target_id=${id}&limit=10`, signal), enabled: !!id });
-/** 「操作记录」页：全站审计，一页 100 条、按 before_id 往前翻（不满一页就到头了）。键在 ['audit'] 下，随机器类事件与写操作一起失效
- *  （实时流把 audit 当整表合并：失效会把已加载的每一页依次重取，批量上架时不能每 300ms 来一轮）；登录等不发事件的，过 30 秒后切回页面时重取 */
+/** 「操作记录」页：全站审计，一页 100 条、按 before_id 往前翻（不满一页就到头了）；分类（cat）与搜索（q）由服务端筛。键在 ['audit'] 下，随机器类事件与写操作一起失效
+ *  （实时流把 audit 当整表合并：失效会把已加载的每一页依次重取，批量上架时不能每 300ms 来一轮）；登录等不发事件的，过 30 秒后切回页面时重取。
+ *  换筛选时先留着上一份结果，不闪骨架 */
 const AUDIT_PAGE = 100;
-export const useAuditLog = () => useInfiniteQuery({
-  queryKey: ['audit', 'all'], initialPageParam: '', staleTime: 30_000,
-  queryFn: ({ pageParam, signal }) => get<AuditEntry[]>(`/audit?limit=${AUDIT_PAGE}${pageParam ? `&before_id=${pageParam}` : ''}`, signal),
+export const useAuditLog = (cat: string, q: string) => useInfiniteQuery({
+  queryKey: ['audit', 'all', cat, q], initialPageParam: '', staleTime: 30_000, placeholderData: keepPreviousData,
+  queryFn: ({ pageParam, signal }) => {
+    const p = new URLSearchParams({ limit: String(AUDIT_PAGE) });
+    if (pageParam) p.set('before_id', pageParam);
+    if (cat) p.set('cat', cat);
+    if (q) p.set('q', q);
+    return get<AuditEntry[]>(`/audit?${p}`, signal);
+  },
   getNextPageParam: (last) => (last.length < AUDIT_PAGE ? undefined : String(last[last.length - 1].id)),
 });
-/** 作业列表一页（按创建先后倒序）；换页时先留着上一页，不闪骨架 */
-export const useJobs = (state: 'active' | 'done' | 'all' = 'all', offset = 0, limit = 100) =>
-  useQuery({ queryKey: ['jobs', state, offset, limit], queryFn: ({ signal }) => get<Paged<JobSummary>>(`/jobs?state=${state}&limit=${limit}&offset=${offset}`, signal), placeholderData: keepPreviousData, staleTime: Infinity });
+/** 作业列表一页（按创建先后倒序）；kind：作业类型（provision / restore 是大类，其余是作业类型原值，'' = 全部）。换页时先留着上一页，不闪骨架 */
+export const useJobs = (state: 'active' | 'done' | 'all' = 'all', offset = 0, limit = 100, kind = '') =>
+  useQuery({ queryKey: ['jobs', state, offset, limit, kind], queryFn: ({ signal }) => get<Paged<JobSummary>>(`/jobs?state=${state}&limit=${limit}&offset=${offset}${kind ? `&kind=${kind}` : ''}`, signal), placeholderData: keepPreviousData, staleTime: Infinity });
 /** 作业详情：靠实时流的 job 事件失效重取 */
 export const useJob = (id: string | null) => useQuery({ queryKey: ['job', id], queryFn: ({ signal }) => get<Job>(`/jobs/${id}`, signal), enabled: !!id, staleTime: Infinity });
 /** 告警列表一页（严重度优先）。默认参数与告警页第一页相同：顶栏徽标取 total，和告警页共用同一份缓存 */

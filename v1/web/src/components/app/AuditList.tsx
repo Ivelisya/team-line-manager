@@ -36,9 +36,6 @@ function describe(a: AuditEntry): Desc {
   return { ...base, rest: cmd.split('\n')[0], res, more };
 }
 
-/** 一条记录显示出来的文字（动作、对象、改了什么、操作人），操作记录页的搜索按它匹配 */
-export const auditText = (a: AuditEntry) => { const p = describe(a); return `${p.title} ${p.target} ${p.rest} ${p.res?.text ?? ''} ${F.actor(a.actor)}`; };
-
 const p2 = F.pad2;
 /** 对象是机器的记录：多数写 machine，SSH 登录写的是机器类型 */
 const MACHINE_KINDS = new Set(['machine', 'vps', 'relay', 'proxy']);
