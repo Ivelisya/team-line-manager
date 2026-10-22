@@ -85,7 +85,7 @@ const RETIRE: &[StepDef] = &[
     s("revoke", "撤销令牌", 30),
     s("finalize", "完成退役", 30),
 ];
-// 换线路机：新入口先建好并验收，再摘旧入口，节点全程至少有一个可用入口。detach_old 之后不可回滚（见 cancellable_at）。
+// 换线路机：新入口先建好并验收，再摘旧入口，节点全程至少有一个可用入口。detach_old 之后不可回滚（见 cancel_blocker）。
 const MOVE_ENTRY: &[StepDef] = &[
     s("attach_new", "在新线路机建入口", 60),
     s("firewall_widen", "放行新线路机（节点防火墙）", 300),
@@ -98,7 +98,8 @@ const MOVE_ENTRY: &[StepDef] = &[
 /// MOVE_ENTRY 里 detach_old 的下标：作业走到这一步（含）之后不能再取消
 const MOVE_POINT_OF_NO_RETURN: i32 = 4;
 const PURGE: &[StepDef] = &[s("purge", "删除数据", 600)];
-const UPGRADE_AGENT: &[StepDef] = &[s("agent", "推送并重启 agent", 600), s("wait_report", "等待重新上报", 180)];
+// 推送时旧程序留成 .prev；起不来、或 2 分钟内等不到新版本上报，就换回去并让作业失败（见 steps::agent / wait_report）。重试从推送重来
+const UPGRADE_AGENT: &[StepDef] = &[s("agent", "推送并重启 agent", 600), s("wait_report", "等待新版本上报", 180)];
 
 pub fn defs(kind: &str) -> &'static [StepDef] {
     match kind {
@@ -127,10 +128,29 @@ pub fn title_of(kind: &str, key: &str) -> &'static str {
 /// 上架类作业（含恢复）：目标机器处于上架中，失败时机器标为上架失败
 pub fn provisions(kind: &str) -> bool { kind.starts_with("provision_") || kind.starts_with("restore_") }
 
-pub fn cancellable(kind: &str) -> bool { provisions(kind) || kind == "attach_entry" || kind == "move_entry" }
+pub fn cancellable(kind: &str) -> bool { provisions(kind) || matches!(kind, "attach_entry" | "move_entry" | "upgrade_agent") }
 
-/// 作业走到第 `step` 步时还能不能取消：换线路机一旦开始摘旧入口就只能重试到完成（回滚会让节点没有入口）
-pub fn cancellable_at(kind: &str, step: i32) -> bool { cancellable(kind) && !(kind == "move_entry" && step >= MOVE_POINT_OF_NO_RETURN) }
+/// 作业走到第 `step` 步、处于 `state` 时为什么不能取消；能取消返回 None。
+/// 换线路机一旦开始摘旧入口就只能重试到完成（回滚会让节点没有入口）；升级 agent 只能在排队时取消（推送、重启到一半中断更危险）
+pub fn cancel_blocker(kind: &str, step: i32, state: &str) -> Option<&'static str> {
+    if !cancellable(kind) {
+        return Some("这类作业不能取消（可以重试到完成）");
+    }
+    if kind == "move_entry" && step >= MOVE_POINT_OF_NO_RETURN {
+        return Some("旧入口已经开始摘除，不能再取消（取消会让节点没有入口）：失败了点重试到完成");
+    }
+    if !matches!(state, "queued" | "running" | "waiting" | "failed") {
+        return Some("作业已结束");
+    }
+    if kind != "upgrade_agent" || state == "queued" {
+        return None;
+    }
+    Some(if state == "failed" {
+        "失败的升级作业不用取消：它不占着机器，可以重试或重新发起升级"
+    } else {
+        "升级已经开始，不能取消：推送、重启到一半中断更危险，等它结束（新版本有问题会自动换回旧版本）"
+    })
+}
 
 /// 外层超时：步骤自己的 timeout_s 再加 120 秒余量
 fn outer_timeout(d: &StepDef) -> Duration { Duration::from_secs(d.timeout_s as u64 + 120) }
@@ -314,13 +334,18 @@ pub async fn run_forever(st: AppState) {
 /// 领取一个可执行的作业，租约先给 3 分钟；每步开始前会按该步的超时续租。
 /// 升级 agent 排在其它作业之后：「全部升级」一次建一百多个，不能让之后的上架、换线路机、退役排在它们后面。
 /// 同一事务建的作业 created_at 相同，再按 id（UUIDv7，按生成先后递增）：全部升级里先建的线路机先领。
+/// 参数里有 `after`（「全部升级」的编排：要等的作业）的，那个作业结束之前领不到；它在推送之后失败或被取消，这个作业领到后不开始、直接取消（见 `halted`）。
+/// 排队时被取消的不用等：领到就收尾（没开始过，`started_at` 留空）
 pub async fn claim(st: &AppState, owner: &str) -> anyhow::Result<Option<JobRow>> {
     Ok(sqlx::query_as(
         "update job set lease_owner = $1, lease_until = now() + interval '3 minutes',
             state = case when state in ('queued', 'waiting') then 'running'::job_state else state end,
-            started_at = coalesce(started_at, now())
-         where id = (select id from job where state in ('queued', 'running', 'waiting', 'cancelling') and run_after <= now()
-                     and (lease_until is null or lease_until < now()) order by kind = 'upgrade_agent', created_at, id for update skip locked limit 1)
+            started_at = case when state = 'cancelling' then started_at else coalesce(started_at, now()) end
+         where id = (select id from job j where state in ('queued', 'running', 'waiting', 'cancelling') and run_after <= now()
+                     and (lease_until is null or lease_until < now())
+                     and (state = 'cancelling'
+                          or not exists (select 1 from job p where p.id = (j.params->>'after')::uuid and p.state in ('queued', 'running', 'waiting', 'cancelling')))
+                     order by kind = 'upgrade_agent', created_at, id for update skip locked limit 1)
          returning id, kind, target_id, params, state::text state, step, created_by",
     )
     .bind(owner)
@@ -360,6 +385,15 @@ const OWN: &str = "exists (select 1 from job where id = $1 and lease_owner = $3)
 pub async fn advance(st: &AppState, mut job: JobRow, owner: &str) -> anyhow::Result<()> {
     if job.state == "cancelling" {
         return finish_cancel(st, &job, owner).await;
+    }
+    // 编排：开始前看该不该开始。同一次尝试里中控重启后接着做的不再看：它已经开始了
+    if job.step == 0 {
+        let fresh: Option<bool> = sqlx::query_scalar("select state = 'pending' from job_step where job_id = $1 and idx = 0").bind(job.id).fetch_optional(&st.db).await?;
+        if fresh.unwrap_or(true) {
+            if let Some(why) = halted(st, &job).await? {
+                return halt(st, &job, owner, &why).await;
+            }
+        }
     }
     let defs = defs(&job.kind);
     while (job.step as usize) < defs.len() {
@@ -487,6 +521,73 @@ pub async fn advance(st: &AppState, mut job: JobRow, owner: &str) -> anyhow::Res
     }
     notify(st, &job);
     st.emit(Event::Machines);
+    Ok(())
+}
+
+/// dist 里 agent 程序的 sha256（十六进制）
+pub async fn dist_agent_sha256(st: &AppState) -> std::io::Result<String> {
+    let data = tokio::fs::read(st.cfg.dist_dir.join("fleet-agent")).await?;
+    Ok(hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&data)))
+}
+
+/// 「全部升级」发起之后 dist 里的 agent 换了（中途重新部署过中控）：接着推，后面的机器装上的是金丝雀没验过的版本
+pub fn rollout_changed(params: &Value) -> String {
+    format!("中控上的 agent 在升级过程中换了版本（发起时是 {}），请重新发起全部升级", params["rollout"]["version"].as_str().unwrap_or("?"))
+}
+
+/// 「全部升级」的编排：这个作业不该开始时返回原因（之后一步都不做，见 `halt`）。
+/// dist 里的 agent 已经不是发起时的那个（参数 `rollout`）也停下；推送时还会再核对真正推的内容（steps::agent）
+async fn halted(st: &AppState, job: &JobRow) -> sqlx::Result<Option<String>> {
+    if let Some(why) = after_stopped(st, job).await? {
+        return Ok(Some(why));
+    }
+    let Some(want) = job.params["rollout"]["sha256"].as_str() else { return Ok(None) };
+    Ok((dist_agent_sha256(st).await.ok().as_deref() != Some(want)).then(|| rollout_changed(&job.params)))
+}
+
+/// 要等的作业（参数 `after`）在推送之后失败了（新版本起不来、没上报、线路机检查没通过）或被取消，返回这个作业不再开始的原因。
+/// 它在推送之前就失败的（连不上、推送失败…，机器上的程序没换过，与新版本无关）不算，照常开始。
+/// 要等的那个也是这样停下的（`halted`），就沿用它的原因：一路都指向最先失败的那台
+async fn after_stopped(st: &AppState, job: &JobRow) -> sqlx::Result<Option<String>> {
+    let Some(after) = job.params["after"].as_str().and_then(|s| Uuid::try_parse(s).ok()) else { return Ok(None) };
+    // pushed 由 agent 步骤记（每次尝试从 false 起，要用 dist 里的程序重启 agent 之前置 true）；没有记的按推送之后算
+    let prev = sqlx::query_as::<_, (String, Option<String>, bool, bool, bool, Option<String>)>(
+        "select p.state::text, p.error, p.params ? 'halted', p.params ? 'after', coalesce((p.params->>'pushed')::bool, true),
+                display_name(m.kind::text, m.label, t.name, m.number)
+         from job p left join machine m on m.id = p.target_id left join team t on t.id = m.team_id where p.id = $1",
+    )
+    .bind(after)
+    .fetch_optional(&st.db)
+    .await?;
+    let Some((state, err, was_halted, chained, pushed, name)) = prev.filter(|p| p.0 != "succeeded") else { return Ok(None) };
+    let name = name.unwrap_or_else(|| "（已删除）".into());
+    Ok(match (state.as_str(), chained) {
+        _ if was_halted => Some(err.unwrap_or_default()),
+        ("failed", _) if !pushed => None,
+        ("failed", false) => Some(format!("金丝雀「{name}」升级失败，其余机器不再升级")),
+        ("failed", true) => Some(format!("「{name}」升级失败，后面的机器不再升级")),
+        _ => Some(format!("「{name}」的升级没有完成（{}），后面的机器不再升级", err.as_deref().unwrap_or("已取消"))),
+    })
+}
+
+/// 编排停下了（见 `halted`）：一步都不做，直接取消并写明原因；记上 `halted`，等它的作业沿用同一个原因
+async fn halt(st: &AppState, job: &JobRow, owner: &str, why: &str) -> anyhow::Result<()> {
+    let n = sqlx::query(
+        "update job set state = 'cancelled', error = $3, started_at = null, finished_at = now(), lease_until = null, lease_owner = null,
+            params = params || jsonb_build_object('halted', true)
+         where id = $1 and lease_owner = $2",
+    )
+    .bind(job.id)
+    .bind(owner)
+    .bind(why)
+    .execute(&st.db)
+    .await?
+    .rows_affected();
+    if n == 0 {
+        return lost(st, job).await;
+    }
+    log(st, job.id, "warn", format!("没有开始：{why}")).await;
+    notify(st, job);
     Ok(())
 }
 
@@ -658,11 +759,15 @@ mod tests {
     }
 
     #[test]
-    fn move_cancel_window() {
-        assert!(cancellable_at("move_entry", 0) && cancellable_at("move_entry", 3));
-        assert!(!cancellable_at("move_entry", 4) && !cancellable_at("move_entry", 6), "摘旧入口之后不能取消");
+    fn cancel_window() {
+        let can = |kind, step, state| cancel_blocker(kind, step, state).is_none();
+        assert!(can("move_entry", 0, "running") && can("move_entry", 3, "failed"));
+        assert!(!can("move_entry", 4, "running") && !can("move_entry", 6, "failed"), "摘旧入口之后不能取消");
         assert_eq!(defs("move_entry")[MOVE_POINT_OF_NO_RETURN as usize].key, "detach_old");
-        assert!(cancellable_at("restore_vps", 8) && cancellable_at("provision_vps", 8));
-        assert!(!cancellable_at("retire", 0));
+        assert!(can("restore_vps", 8, "failed") && can("provision_vps", 8, "waiting"));
+        assert!(!can("retire", 0, "queued") && !can("provision_vps", 0, "succeeded"));
+        // 升级 agent 只能在排队时取消
+        assert!(can("upgrade_agent", 0, "queued"));
+        assert!(["running", "waiting", "failed", "cancelling"].iter().all(|s| !can("upgrade_agent", 0, s)));
     }
 }

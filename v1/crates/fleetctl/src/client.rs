@@ -132,6 +132,7 @@ impl Client {
     pub fn post(&self, path: &str, body: &Value) -> anyhow::Result<Value> { self.call(Method::POST, path, &[], Some(body), DEFAULT_TIMEOUT) }
     pub fn post_t(&self, path: &str, body: &Value, timeout: Duration) -> anyhow::Result<Value> { self.call(Method::POST, path, &[], Some(body), timeout) }
     pub fn patch(&self, path: &str, body: &Value) -> anyhow::Result<Value> { self.call(Method::PATCH, path, &[], Some(body), DEFAULT_TIMEOUT) }
+    pub fn put(&self, path: &str, body: &Value) -> anyhow::Result<Value> { self.call(Method::PUT, path, &[], Some(body), DEFAULT_TIMEOUT) }
     pub fn delete(&self, path: &str) -> anyhow::Result<Value> { self.call(Method::DELETE, path, &[], None, DEFAULT_TIMEOUT) }
 
     /// 用户名密码登录，返回会话 Cookie（`name=value`）

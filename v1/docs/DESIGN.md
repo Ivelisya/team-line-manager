@@ -37,7 +37,7 @@ job ─< job_step ─< job_log      audit_log      user / session / api_key
 - **entry**：线路机上的一个入口（VLESS REALITY 入站 → SS 出站到节点）。`id, relay_id, node_id, port, client_uuid, short_id, lifecycle, applied_generation`。备注由节点显示名生成，改名后随期望状态自动同步。
   直出入口：`node_id = relay_id`（节点就是线路机自己），freedom 出站，从线路机自己的 IP 出去；每台线路机至多一条（同一个 (node_id, relay_id) 唯一索引），备注「线路机名-直出」，随线路机退役摘除。
 - **subscription**：机器的账单。`plan_id, price_cents, currency, cycle, due_date, billing_tz, auto_renew, remind_days`；续费记录单独一张表。
-- **job**：`kind (provision_vps | provision_proxy | provision_relay | provision_ip | restore_* | attach_entry | move_entry | retire | purge | upgrade_agent), target, params, state, steps[]`。每一步记录开始、结束、输出、错误类别；失败可从该步重试，取消会执行已完成步骤的补偿。
+- **job**：`kind (provision_vps | provision_proxy | provision_relay | provision_ip | restore_* | attach_entry | move_entry | retire | purge | upgrade_agent), target, params, state, steps[]`。每一步记录开始、结束、输出、错误类别；失败可从该步重试（升级 agent 从推送重来），取消会执行已完成步骤的补偿。`params.after` 指向要等的作业：它结束前不领取，它在推送之后失败（看它的 `params.pushed`）或被取消就直接取消，推送之前就失败的不算（「全部升级 agent」的金丝雀与线路机逐台）；`params.rollout` 记发起时 dist 里 agent 的 sha256 与版本号，开始前与推送时核对，换了就停。
 
 ## 3. 关键流程
 

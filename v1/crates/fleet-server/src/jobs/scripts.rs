@@ -181,44 +181,101 @@ echo "own=$(grep -lF "\"server\":\"$IP\"" /etc/shadowsocks-rust/[0-9]*.json 2>/d
 "#;
 
 /// 线路机：fleet-xray 单元与访问日志轮转（配置由 agent 生成）。xray 二进制与 geoip.dat 已推到 /usr/local/bin、/usr/local/share/xray。
-pub fn relay_xray() -> String { RELAY_XRAY.replace("__UNIT__", XRAY_UNIT.trim_end()).replace("__LOGROTATE_SH__", logrotate_sh().trim()) }
+pub fn relay_xray() -> String { RELAY_XRAY.replace("__XRAY_UNIT_SH__", xray_unit_sh().trim()).replace("__LOGROTATE_SH__", logrotate_sh().trim()) }
 
-/// 升级 agent 时也装一遍访问日志轮转（较早上架、还没有这份配置的线路机升级一次就补上）。
+/// 升级 agent 时也收敛一遍 fleet-xray 单元（加固项随版本变，较早上架的线路机升级一次就换上）。单元变了只 daemon-reload、
+/// 不重启 Xray：新单元等它下次重启（应用时骨架变了、进程退出被拉起、重启机器）才生效。
+/// 只是补装：包在子 shell 里，失败只输出 `xray_unit=error`，不让 agent 步骤失败
+pub fn relay_xray_unit() -> String { format!("(\n{}\n) || echo xray_unit=error\n", xray_unit_sh().trim()) }
+
+fn xray_unit_sh() -> String { XRAY_UNIT_SH.replace("__UNIT__", XRAY_UNIT.trim_end()) }
+
+/// fleet-xray 单元：内容变了才换，只 daemon-reload，从不重启 Xray（重启会断开所有连接）。
+/// 写、换每一步都查结果：升级时这段包在 `( … ) || echo …` 里，set -e 不起作用，磁盘满时写出来的空文件会被当成新单元换上
+const XRAY_UNIT_SH: &str = r#"
+U=/etc/systemd/system/fleet-xray.service
+cat > $U.tmp <<'UNIT' || exit 1
+__UNIT__
+UNIT
+cmp -s $U.tmp $U && rm -f $U.tmp || { mv $U.tmp $U || exit 1; systemctl daemon-reload; }
+"#;
+
+/// 升级 agent 时也装一遍访问日志轮转（较早上架、还没有这份配置或每小时定时器的线路机升级一次就补上）。
 /// 只是补装：包在子 shell 里，失败只输出 `logrotate=error`，不让 agent 步骤失败
 pub fn relay_logrotate() -> String { format!("(\n{}\n) || echo logrotate=error\n", logrotate_sh().trim()) }
 
-fn logrotate_sh() -> String { LOGROTATE_SH.replace("__LOGROTATE__", XRAY_LOGROTATE.trim_end()) }
+fn logrotate_sh() -> String {
+    LOGROTATE_SH
+        .replace("__LOGROTATE__", XRAY_LOGROTATE.trim_end())
+        .replace("__LR_SERVICE__", XRAY_LOGROTATE_SERVICE.trim_end())
+        .replace("__LR_TIMER__", XRAY_LOGROTATE_TIMER.trim_end())
+}
 
-/// 线路机访问日志轮转配置（上架时随 fleet-xray 一起装，失败则该步骤失败）
+/// 线路机访问日志轮转配置（上架时随 fleet-xray 一起装，失败则该步骤失败）。
+/// 系统 logrotate 每天只跑一次：另装一个每小时只跑这一份配置的定时器，maxsize 才起作用。
+/// 写、换每一步都查结果（同 XRAY_UNIT_SH：升级时包在 `( … ) || echo …` 里，set -e 不起作用）
 const LOGROTATE_SH: &str = r#"
-install -d -m 755 /etc/logrotate.d
+install -d -m 755 /etc/logrotate.d || exit 1
 L=/etc/logrotate.d/fleet-xray
-cat > $L.tmp <<'LOGROTATE'
+cat > $L.tmp <<'LOGROTATE' || exit 1
 __LOGROTATE__
 LOGROTATE
-cmp -s $L.tmp $L && rm -f $L.tmp || mv $L.tmp $L
+cmp -s $L.tmp $L && rm -f $L.tmp || mv $L.tmp $L || exit 1
+LR=0
+T=/etc/systemd/system/fleet-xray-logrotate.service
+cat > $T.tmp <<'UNIT' || exit 1
+__LR_SERVICE__
+UNIT
+cmp -s $T.tmp $T && rm -f $T.tmp || { mv $T.tmp $T || exit 1; LR=1; }
+T=/etc/systemd/system/fleet-xray-logrotate.timer
+cat > $T.tmp <<'UNIT' || exit 1
+__LR_TIMER__
+UNIT
+cmp -s $T.tmp $T && rm -f $T.tmp || { mv $T.tmp $T || exit 1; LR=1; }
+[ $LR = 0 ] || systemctl daemon-reload
+systemctl enable -q --now fleet-xray-logrotate.timer
 "#;
 
 /// systemd 单元、logrotate 配置：唯一来源在 deploy/
 pub const AGENT_UNIT: &str = include_str!("../../../../deploy/units/fleet-agent.service");
 pub const XRAY_UNIT: &str = include_str!("../../../../deploy/units/fleet-xray.service");
 pub const XRAY_LOGROTATE: &str = include_str!("../../../../deploy/logrotate/fleet-xray");
+pub const XRAY_LOGROTATE_SERVICE: &str = include_str!("../../../../deploy/units/fleet-xray-logrotate.service");
+pub const XRAY_LOGROTATE_TIMER: &str = include_str!("../../../../deploy/units/fleet-xray-logrotate.timer");
 
 const RELAY_XRAY: &str = r#"
 set -eu
 install -d -m 755 /usr/local/share/xray /etc/fleet-agent
-U=/etc/systemd/system/fleet-xray.service
-cat > $U.tmp <<'UNIT'
-__UNIT__
-UNIT
-cmp -s $U.tmp $U && rm -f $U.tmp || { mv $U.tmp $U; systemctl daemon-reload; }
+__XRAY_UNIT_SH__
 __LOGROTATE_SH__
 systemctl enable -q fleet-xray
 echo "xray_version=$(/usr/local/bin/xray version 2>/dev/null | head -1 | awk '{print $2}')"
 "#;
 
-/// 装 agent：变量 SERVER_URL ROLE MACHINE_ID，TOKEN（可空：空则沿用节点上已有的令牌文件）
-pub fn agent() -> String { AGENT.replace("__UNIT__", AGENT_UNIT.trim_end()) }
+/// 装 agent：变量 SERVER_URL ROLE MACHINE_ID，TOKEN（可空：空则沿用节点上已有的令牌文件）。
+/// 输出 `agent`（active 才算起来了）、`version`（磁盘上这份程序的版本）、`prev_version`（有 .prev 时它的版本）
+pub fn agent() -> String { AGENT.replace("__UNIT__", AGENT_UNIT.trim_end()).replace("__AGENT_STATE__", AGENT_STATE) }
+
+/// 升级失败时换回旧的 agent：.prev 换上去并重启。输出 `agent`、`version`（换回去的版本）；没有 .prev 时 `rollback=no_prev` 并以 6 退出
+pub fn agent_rollback() -> String { AGENT_ROLLBACK.replace("__AGENT_STATE__", AGENT_STATE) }
+
+/// 重启 agent 之后（`pid` 是刚重启时的主进程号；没重启过为空）输出 `agent=`。Type=simple 下刚重启时 is-active 一定是 active，
+/// 所以重启过的隔 3 秒再看：主进程换了，是起来就退出、被 systemd（RestartSec=3）又拉起了一个，记为 crashing
+const AGENT_STATE: &str = r#"[ -n "$pid" ] && sleep 3
+st=$(systemctl is-active fleet-agent || true)
+[ -n "$pid" ] && [ "$st" = active ] && [ "$(systemctl show -p MainPID --value fleet-agent)" != "$pid" ] && st=crashing
+echo "agent=$st""#;
+
+const AGENT_ROLLBACK: &str = r#"
+set -eu
+B=/usr/local/bin/fleet-agent
+[ -f $B.prev ] || { echo rollback=no_prev; exit 6; }
+# 换上去的是 .prev 的硬链接，.prev 原样留着；已经换过（连接断了重跑）就不再换：同一个文件的两个名字之间 mv 的结果不可靠
+[ $B -ef $B.prev ] || { ln -f $B.prev $B.rollback; mv -f $B.rollback $B; }
+systemctl restart fleet-agent; pid=$(systemctl show -p MainPID --value fleet-agent)
+__AGENT_STATE__
+echo "version=$($B --version 2>/dev/null | awk '{print $2}')"
+"#;
 
 const AGENT: &str = r#"
 set -eu
@@ -246,8 +303,12 @@ UNIT
 cmp -s $U.tmp $U && rm -f $U.tmp || { mv $U.tmp $U; systemctl daemon-reload; RESTART=1; }
 [ "${BIN_CHANGED:-0}" = 1 ] && RESTART=1
 systemctl enable -q fleet-agent
-if [ $RESTART = 1 ] || ! systemctl -q is-active fleet-agent; then systemctl restart fleet-agent; fi
-echo "agent=$(systemctl is-active fleet-agent)"
+pid=
+if [ $RESTART = 1 ] || ! systemctl -q is-active fleet-agent; then systemctl restart fleet-agent; pid=$(systemctl show -p MainPID --value fleet-agent); fi
+__AGENT_STATE__
+B=/usr/local/bin/fleet-agent
+echo "version=$($B --version 2>/dev/null | awk '{print $2}')"
+[ -f $B.prev ] && echo "prev_version=$($B.prev --version 2>/dev/null | awk '{print $2}')"
 echo "boot_id=$(cat /proc/sys/kernel/random/boot_id)"
 "#;
 
@@ -262,7 +323,7 @@ for f in /etc/shadowsocks-rust/[0-9]*.json; do
   systemctl disable --now "fleet-ssserver@$p" 2>/dev/null; nft delete table inet "ss_guard_$p" 2>/dev/null
 done
 rm -f /etc/systemd/system/fleet-agent.service /etc/systemd/system/fleet-ssserver.service /etc/systemd/system/fleet-ssserver@.service
-rm -rf /etc/fleet-agent /var/lib/fleet-agent /etc/shadowsocks-rust /usr/local/bin/ssserver /usr/local/bin/fleet-agent
+rm -rf /etc/fleet-agent /var/lib/fleet-agent /etc/shadowsocks-rust /usr/local/bin/ssserver /usr/local/bin/fleet-agent /usr/local/bin/fleet-agent.prev
 nft delete table inet ss_guard 2>/dev/null; rm -f /etc/fleet/nft/ss_guard.nft /etc/fleet/nft/ss_guard_*.nft
 [ -f /etc/nftables.conf ] && sed -i '\#include "/etc/fleet/nft/ss_guard#d' /etc/nftables.conf
 userdel fleet-ss 2>/dev/null
@@ -283,12 +344,13 @@ ss -Hltn "sport = :$SS_PORT" | grep -q . && echo ss=still_listening || echo ss=g
 echo cleanup=done
 "##;
 
-/// 退役清理（线路机）：停 agent 与 xray，删配置、日志轮转和 xray 二进制与数据文件
+/// 退役清理（线路机）：停 agent 与 xray，删配置、日志轮转（含每小时的定时器）和 xray 二进制与数据文件
 pub const RELAY_CLEANUP: &str = r#"
 set -u
-systemctl disable --now fleet-agent 2>/dev/null; systemctl disable --now fleet-xray 2>/dev/null
+systemctl disable --now fleet-agent 2>/dev/null; systemctl disable --now fleet-xray 2>/dev/null; systemctl disable --now fleet-xray-logrotate.timer 2>/dev/null
 rm -f /etc/systemd/system/fleet-agent.service /etc/systemd/system/fleet-xray.service /etc/logrotate.d/fleet-xray
-rm -rf /etc/fleet-agent /var/lib/fleet-agent /var/log/fleet-xray /usr/local/bin/fleet-agent /usr/local/bin/xray /usr/local/share/xray
+rm -f /etc/systemd/system/fleet-xray-logrotate.service /etc/systemd/system/fleet-xray-logrotate.timer
+rm -rf /etc/fleet-agent /var/lib/fleet-agent /var/log/fleet-xray /usr/local/bin/fleet-agent /usr/local/bin/fleet-agent.prev /usr/local/bin/xray /usr/local/share/xray
 systemctl daemon-reload
 echo cleanup=done
 "#;
@@ -431,18 +493,53 @@ echo "nft_relays=$(nft list set inet ss_guard relays | tr -d '\n' | sed 's/.*ele
     fn relay_xray_installs_logrotate() {
         let s = super::relay_xray();
         assert!(!s.contains("__"), "占位符都已替换");
-        assert!(s.contains("/var/log/fleet-xray/access.log {") && s.contains("copytruncate"));
-        assert!(s.contains("install -d -m 755 /etc/logrotate.d\n") && s.contains("mv $L.tmp $L"));
+        assert!(s.contains("/var/log/fleet-xray/access.log {") && s.contains("copytruncate") && s.contains("    maxsize 200M\n"));
+        // 写、换都查结果：升级时这段包在 `( … ) || echo` 里，set -e 不起作用
+        assert!(s.contains("install -d -m 755 /etc/logrotate.d || exit 1\n") && s.contains("cat > $L.tmp <<'LOGROTATE' || exit 1\n"));
+        assert!(s.contains("cmp -s $L.tmp $L && rm -f $L.tmp || mv $L.tmp $L || exit 1\n") && s.contains("{ mv $T.tmp $T || exit 1; LR=1; }"));
+        // 每小时只跑这一份配置的定时器：单元变了才 daemon-reload
+        assert!(s.contains("ExecStart=/usr/sbin/logrotate /etc/logrotate.d/fleet-xray\n") && s.contains("OnCalendar=*-*-* 01..23:00:00\n"));
+        assert!(s.contains("[ $LR = 0 ] || systemctl daemon-reload\nsystemctl enable -q --now fleet-xray-logrotate.timer\n"));
         assert!(!s.contains("logrotate=error"), "上架时装不上要让步骤失败");
         assert!(super::BASELINE.contains(r#"command -v logrotate >/dev/null || need="$need logrotate""#));
-        assert!(super::RELAY_CLEANUP.contains("/etc/logrotate.d/fleet-xray"));
+        let c = super::RELAY_CLEANUP;
+        assert!(c.contains("/etc/logrotate.d/fleet-xray") && c.contains("systemctl disable --now fleet-xray-logrotate.timer"));
+        assert!(c.contains("/etc/systemd/system/fleet-xray-logrotate.service /etc/systemd/system/fleet-xray-logrotate.timer"));
+    }
+
+    /// 升级时留下的旧 agent（.prev）退役清理时一起删
+    #[test]
+    fn cleanup_removes_previous_agent() {
+        for s in [super::NODE_CLEANUP, super::RELAY_CLEANUP] {
+            assert!(s.contains(" /usr/local/bin/fleet-agent /usr/local/bin/fleet-agent.prev"), "{s}");
+        }
+        for s in [super::agent(), super::agent_rollback()] {
+            assert!(!s.contains("__") && s.contains("\necho \"agent=$st\"\n"), "{s}");
+        }
     }
 
     #[test]
     fn agent_logrotate_failure_does_not_fail_step() {
         let s = super::relay_logrotate();
-        assert!(s.starts_with("(\ninstall -d -m 755 /etc/logrotate.d\n"), "{s}");
+        assert!(s.starts_with("(\ninstall -d -m 755 /etc/logrotate.d || exit 1\n"), "{s}");
         assert!(s.ends_with("\n) || echo logrotate=error\n"), "{s}");
         assert!(!s.contains("__"));
+    }
+
+    /// 升级 agent 时收敛 fleet-xray 单元：与上架装的同一段，单元变了只 daemon-reload，绝不重启 Xray；失败不让步骤失败
+    #[test]
+    fn agent_upgrade_converges_xray_unit_without_restart() {
+        let s = super::relay_xray_unit();
+        let body = super::xray_unit_sh();
+        assert_eq!(s, format!("(\n{}\n) || echo xray_unit=error\n", body.trim()));
+        assert!(body.contains("TemporaryFileSystem=/etc/fleet-agent:ro\nBindReadOnlyPaths=/etc/fleet-agent/xray.json\n"), "{body}");
+        assert!(body.contains("InaccessiblePaths=-/etc/ssh -/var/lib/fleet-agent "), "{body}");
+        // 写、换都查结果：包在 `( … ) || echo` 里 set -e 不起作用，写失败的空文件不能被当成新单元换上
+        assert!(body.contains("cat > $U.tmp <<'UNIT' || exit 1\n"));
+        assert!(body.contains("cmp -s $U.tmp $U && rm -f $U.tmp || { mv $U.tmp $U || exit 1; systemctl daemon-reload; }\n"));
+        assert!(super::relay_xray().contains(body.trim()));
+        for s in [s, super::relay_xray()] {
+            assert!(!s.contains("systemctl restart") && !s.contains("__"), "{s}");
+        }
     }
 }

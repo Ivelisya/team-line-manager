@@ -6,7 +6,7 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{seed_node, seed_relay, seed_team, setup};
+use common::{dist_agent, seed_node, seed_relay, seed_team, setup};
 use fleet_server::jobs;
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -299,40 +299,165 @@ async fn stale_lease_holder_cannot_write() {
     assert_eq!((state.as_str(), step), ("waiting", 1));
 }
 
-/// 「全部升级」一个事务建的一批升级作业（created_at 相同）不挡住之后建的其它作业；升级作业之间按建立先后领，线路机在前
+/// 在用的落地机（kind vps），名字「团队-编号」
+async fn seed_vps(t: &common::T, team: Uuid, number: i32, ip: &str) -> Uuid {
+    let id = Uuid::now_v7();
+    sqlx::query("insert into machine (id, kind, team_id, number, primary_ip, lifecycle) values ($1, 'vps', $2, $3, $4::inet, 'active')")
+        .bind(id)
+        .bind(team)
+        .bind(number)
+        .bind(ip)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    id
+}
+
+/// 再放一台在用的线路机（升级只看机器行，不用 relay 参数）
+async fn seed_relay_named(t: &common::T, label: &str, ip: &str) -> Uuid {
+    let id = Uuid::now_v7();
+    sqlx::query("insert into machine (id, kind, label, primary_ip, lifecycle) values ($1, 'relay', $2, $3::inet, 'active')")
+        .bind(id)
+        .bind(label)
+        .bind(ip)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    id
+}
+
+/// 一直领到领不到为止，返回领到的作业
+async fn claim_all(t: &common::T) -> Vec<Uuid> {
+    let mut got = vec![];
+    while let Some(j) = jobs::claim(&t.st, "test").await.unwrap() {
+        got.push(j.id);
+    }
+    got
+}
+
+/// 「全部升级」：一批升级作业不挡住之后建的其它作业；先升金丝雀（线路机里在用入口最少的，一样少按名字），
+/// 它成功后线路机一台接一台，线路机都成功后落地机才领得到（一起领：并发）
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn bulk_upgrades_do_not_block_other_jobs() {
+async fn bulk_upgrade_runs_canary_then_relays_one_by_one() {
     let t = setup(false).await;
     let team = seed_team(&t, "团队1").await;
-    // 落地机先插入（id 更小），线路机后插入：领取顺序要看建作业的先后，不是机器 id
+    // 落地机先插入（id 更小）：领取顺序看编排，不是机器 id
+    let mut vps = vec![];
     for i in 1..=3 {
-        sqlx::query("insert into machine (id, kind, team_id, number, primary_ip, lifecycle) values ($1, 'vps', $2, $3, $4::inet, 'active')")
-            .bind(Uuid::now_v7())
-            .bind(team)
-            .bind(i)
-            .bind(format!("203.0.113.{}", 20 + i))
-            .execute(&t.st.db)
-            .await
-            .unwrap();
+        vps.push(seed_vps(&t, team, i, &format!("203.0.113.{}", 20 + i)).await);
     }
-    let (relay, _) = seed_relay(&t).await;
+    let (r2, _) = seed_relay(&t).await;
+    seed_relay_named(&t, "线路机4", "198.51.100.4").await;
+    seed_relay_named(&t, "线路机3", "198.51.100.3").await;
+    // 线路机2 上有一个经团队1-01 的入口：线路机2 排在线路机里最后、团队1-01 排在落地机里最后
+    let mut tx = t.st.db.begin().await.unwrap();
+    fleet_server::entries::lock_policy_shared(&mut tx).await.unwrap();
+    fleet_server::entries::create(&mut tx, r2, vps[0]).await.unwrap();
+    tx.commit().await.unwrap();
+
+    dist_agent(&t, "0.1.0+a");
     let up = t.post("/api/v1/agents/upgrade", json!({})).await;
-    let ups: Vec<Uuid> = up["jobs"].as_array().unwrap().iter().map(|j| j["job_id"].as_str().unwrap().parse().unwrap()).collect();
-    assert_eq!(ups.len(), 4, "{up}");
+    let list = up["jobs"].as_array().unwrap();
+    let names: Vec<&str> = list.iter().map(|j| j["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["线路机3", "线路机4", "线路机2", "团队1-02", "团队1-03", "团队1-01"], "{up}");
+    assert_eq!(
+        up["order"],
+        "先升「线路机3」做金丝雀，成功后其余 2 台线路机逐台升级，线路机都成功后 3 台落地机并发升级；新版本在任何一台线路机上出问题，没开始的都会取消"
+    );
+    // 编排：线路机一台等前一台，落地机都等最后一台线路机
+    let ids: Vec<Uuid> = list.iter().map(|j| j["job_id"].as_str().unwrap().parse().unwrap()).collect();
+    let after: Vec<Option<Uuid>> = list.iter().map(|j| j["after"].as_str().map(|s| s.parse().unwrap())).collect();
+    assert_eq!(after, [None, Some(ids[0]), Some(ids[1]), Some(ids[2]), Some(ids[2]), Some(ids[2])]);
+    // 每个作业都记着发起时 dist 里 agent 的 sha256 与版本号
+    let sha = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(std::fs::read(t.dir.path().join("dist/fleet-agent")).unwrap()));
+    let rollouts: Vec<Value> = sqlx::query_scalar("select params->'rollout' from job where id = any($1)").bind(&ids).fetch_all(&t.st.db).await.unwrap();
+    assert!(rollouts.iter().all(|r| *r == json!({"sha256": sha, "version": "0.1.0+a"})), "{rollouts:?}");
 
     let node = seed_node(&t, team, 9, "203.0.113.10", "provisioning").await;
     let mut tx = t.st.db.begin().await.unwrap();
-    let prov = jobs::enqueue(&mut tx, "provision_proxy", Some(node), json!({"relay_id": relay}), "test").await.unwrap();
+    let prov = jobs::enqueue(&mut tx, "provision_proxy", Some(node), json!({"relay_id": r2}), "test").await.unwrap();
     tx.commit().await.unwrap();
 
-    let mut order = vec![];
-    while let Some(j) = jobs::claim(&t.st, "test").await.unwrap() {
-        order.push((j.id, j.target_id));
+    // 后建的上架作业先领，然后只有金丝雀
+    assert_eq!(claim_all(&t).await, [prov, ids[0]]);
+    // 前一台成功了才轮到下一台线路机；线路机都成功后三台落地机一起领得到
+    let done = |id: Uuid| {
+        let db = t.st.db.clone();
+        async move {
+            sqlx::query("update job set state = 'succeeded', finished_at = now(), lease_owner = null, lease_until = null where id = $1")
+                .bind(id)
+                .execute(&db)
+                .await
+                .unwrap();
+        }
+    };
+    for k in 1..3 {
+        done(ids[k - 1]).await;
+        assert_eq!(claim_all(&t).await, [ids[k]], "第 {} 台线路机", k + 1);
     }
-    assert_eq!(order.len(), 5);
-    assert_eq!(order[0].0, prov, "后建的上架作业先领");
-    assert_eq!(order[1].1, Some(relay), "升级作业里线路机先领");
-    assert_eq!(order[1..].iter().map(|o| o.0).collect::<Vec<_>>(), ups, "升级作业按建立先后");
+    done(ids[2]).await;
+    assert_eq!(claim_all(&t).await, ids[3..]);
+}
+
+/// 排队中的升级作业可以取消，不用等它要等的那个结束；编排里等它的跟着取消、写明原因。已经开始的不能取消
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn queued_upgrade_can_be_cancelled() {
+    let t = setup(false).await;
+    seed_relay(&t).await;
+    seed_relay_named(&t, "线路机3", "198.51.100.3").await;
+    seed_relay_named(&t, "线路机4", "198.51.100.4").await;
+    dist_agent(&t, "0.1.0+a");
+    let up = t.post("/api/v1/agents/upgrade", json!({})).await;
+    let ids: Vec<Uuid> = up["jobs"].as_array().unwrap().iter().map(|j| j["job_id"].as_str().unwrap().parse().unwrap()).collect();
+    // 金丝雀「线路机2」已经领走开始了：不能取消
+    assert_eq!(jobs::claim(&t.st, "test").await.unwrap().unwrap().id, ids[0]);
+    let (s, v) = t.req("POST", &format!("/api/v1/jobs/{}/cancel", ids[0]), None, None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().starts_with("升级已经开始，不能取消"), "{v}");
+    assert_eq!(t.job(&ids[0].to_string()).await["cancellable"], false);
+
+    // 排在它后面的「线路机3」还在排队：取消后立刻收尾，没开始过
+    assert_eq!(t.job(&ids[1].to_string()).await["cancellable"], true);
+    t.post(&format!("/api/v1/jobs/{}/cancel", ids[1]), json!({})).await;
+    let j = run_one(&t, ids[1]).await;
+    assert_eq!((j["state"].as_str(), j["cancellable"].as_bool()), (Some("cancelled"), Some(false)), "{j}");
+    assert!(j["started_at"].is_null() && j["steps"].as_array().unwrap().iter().all(|s| s["state"] == "pending"), "{j}");
+    // 等它的「线路机4」随后领到：一步不做，跟着取消
+    let j = run_one(&t, ids[2]).await;
+    assert_eq!(j["state"], "cancelled");
+    assert_eq!(j["error"], "「线路机3」的升级没有完成（已取消），后面的机器不再升级");
+}
+
+/// 「全部升级」记下发起时 dist 里 agent 的 sha256 与版本号：中途重新部署过中控（dist 换了），推送前核对出来就不推、失败，
+/// 没开始的都取消、写明原因，后面的机器不会装上金丝雀没验过的版本。dist 里没有 agent 时不发起
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bulk_upgrade_stops_when_dist_changes() {
+    let t = setup(false).await;
+    seed_relay(&t).await;
+    seed_relay_named(&t, "线路机3", "198.51.100.3").await;
+    seed_relay_named(&t, "线路机4", "198.51.100.4").await;
+    let (s, v) = t.req("POST", "/api/v1/agents/upgrade", Some(json!({})), None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().starts_with("中控上没有可推送的 agent 程序"), "{v}");
+    let n: i64 = sqlx::query_scalar("select count(*) from job").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(n, 0);
+
+    dist_agent(&t, "0.1.0+a");
+    let up = t.post("/api/v1/agents/upgrade", json!({})).await;
+    let ids: Vec<Uuid> = up["jobs"].as_array().unwrap().iter().map(|j| j["job_id"].as_str().unwrap().parse().unwrap()).collect();
+    // 金丝雀已经开始、还没推送时中控被重新部署（先换 dist、后重启），重启后接着做这一步：推送前核对出来，不推、失败
+    sqlx::query("update job_step set state = 'running', started_at = now() where job_id = $1 and idx = 0").bind(ids[0]).execute(&t.st.db).await.unwrap();
+    sqlx::query("update job set params = params || '{\"pushed\": false}' where id = $1").bind(ids[0]).execute(&t.st.db).await.unwrap();
+    dist_agent(&t, "0.1.0+b");
+    let why = "中控上的 agent 在升级过程中换了版本（发起时是 0.1.0+a），请重新发起全部升级";
+    let j = run_one(&t, ids[0]).await;
+    assert_eq!((j["state"].as_str(), j["error"].as_str()), (Some("failed"), Some(format!("推送并重启 agent：{why}").as_str())), "{j}");
+    // 没开始的：开始前核对出来，一步不做、取消
+    for id in &ids[1..] {
+        let j = run_one(&t, *id).await;
+        assert_eq!((j["state"].as_str(), j["error"].as_str()), (Some("cancelled"), Some(why)), "{j}");
+        assert!(j["started_at"].is_null(), "{j}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

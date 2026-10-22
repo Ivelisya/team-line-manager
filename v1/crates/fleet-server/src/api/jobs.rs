@@ -2,7 +2,7 @@ use super::{ok, paged};
 use crate::auth::Actor;
 use crate::db::{audit, Args};
 use crate::error::{ApiError, ApiPath, ApiQuery, ApiResult};
-use crate::jobs::{self, cancellable, cancellable_at, title_of};
+use crate::jobs::{self, cancel_blocker, title_of};
 use crate::state::{AppState, Event};
 use axum::extract::State;
 use axum::Json;
@@ -122,7 +122,7 @@ pub async fn get_one(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath
             });
         }
     }
-    v["cancellable"] = json!(cancellable_at(&j.kind, j.step) && matches!(j.state.as_str(), "queued" | "running" | "waiting" | "failed"));
+    v["cancellable"] = json!(cancel_blocker(&j.kind, j.step, &j.state).is_none());
     Ok(ok(v))
 }
 
@@ -216,19 +216,25 @@ pub async fn retry(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     }
     // 机器状态已经变了（比如上架一半的机器后来退役了）：旧作业不能复活
     jobs::check_target(&kind, lc.as_deref()).map_err(ApiError::conflict)?;
-    sqlx::query("update job_step set state = 'pending', started_at = null, finished_at = null, error = null, error_kind = null where job_id = $1 and idx = $2")
-        .bind(id)
-        .bind(step)
-        .execute(&mut *tx)
-        .await?;
+    // 从失败那一步重来；升级 agent 从推送重来：失败时多半已经换回了旧程序，只重跑「等待新版本上报」永远等不到
+    let from = if kind == "upgrade_agent" { 0 } else { step };
+    sqlx::query(
+        "update job_step set state = 'pending', started_at = null, finished_at = null, output = null, error = null, error_kind = null
+         where job_id = $1 and idx >= $2",
+    )
+    .bind(id)
+    .bind(from)
+    .execute(&mut *tx)
+    .await?;
     let login = password.as_deref().map(|pw| json!({"login": {"password_enc": base64::engine::general_purpose::STANDARD.encode(st.secrets.seal_str(pw))}}));
     sqlx::query(
-        "update job set state = 'queued', error = null, finished_at = null, run_after = now(), lease_until = null, lease_owner = null,
+        "update job set state = 'queued', step = $3, error = null, finished_at = null, run_after = now(), lease_until = null, lease_owner = null,
             params = params || coalesce($2, '{}'::jsonb)
          where id = $1",
     )
     .bind(id)
     .bind(login)
+    .bind(from)
     .execute(&mut *tx)
     .await?;
     audit(&mut tx, &a.name, "job.retry", "job", Some(id), json!({"step": step, "reset_host_key": reset, "password": password.is_some()})).await?;
@@ -248,15 +254,10 @@ pub async fn cancel(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<U
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| ApiError::not_found("没有这个作业"))?;
-    if !cancellable(&kind) {
-        return Err(ApiError::conflict("这类作业不能取消（可以重试到完成）"));
+    if let Some(why) = cancel_blocker(&kind, step, &state) {
+        return Err(ApiError::conflict(why));
     }
-    if !cancellable_at(&kind, step) {
-        return Err(ApiError::conflict("旧入口已经开始摘除，不能再取消（取消会让节点没有入口）：失败了点重试到完成"));
-    }
-    if !matches!(state.as_str(), "queued" | "running" | "waiting" | "failed") {
-        return Err(ApiError::conflict("作业已结束"));
-    }
+    // 排队中的升级作业：领到就收尾，编排里等它的随后跟着取消（jobs::claim、halted）
     sqlx::query("update job set state = 'cancelling', run_after = now(), lease_until = case when state = 'running' then lease_until else null end where id = $1")
         .bind(id)
         .execute(&mut *tx)

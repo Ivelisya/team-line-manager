@@ -18,7 +18,7 @@
    ```
    配置也可用环境变量 `FLEET_URL`、`FLEET_TOKEN`；文件位置：Linux/macOS `~/.config/fleetctl/config.toml`，Windows `%APPDATA%\fleetctl\config.toml`。
 
-约定：脚本和 AI 都加 `--json`（一行 JSON：`ls` / `entries` / `incidents` / `policy ls` / `silence` 是与表格同列的精简对象，单台完整视图用 `show`、`policy show`；其余是 API `data` 原样）；错误走 stderr、退出码非 0（没拿到中控响应时 code 为 `unreachable` 或 `timeout`，后者说明操作可能已执行，先查 `jobs` / `audit` 再决定重试）；人看的输出时间一律是北京时间；`<机器>` 可写 id、显示名（团队1-06）、线路机名、IP，歧义时命令会列出候选。
+约定：脚本和 AI 都加 `--json`（一行 JSON：`ls` / `entries` / `incidents` / `policy ls` / `silence` 是与表格同列的精简对象，单台完整视图用 `show`、`policy show`；`billing` 是订阅、流量额度与最近续费记录合成的对象；其余是 API `data` 原样）；错误走 stderr、退出码非 0（没拿到中控响应时 code 为 `unreachable` 或 `timeout`，后者说明操作可能已执行，先查 `jobs` / `audit` 再决定重试）；人看的输出时间一律是北京时间；`<机器>` 可写 id、显示名（团队1-06）、线路机名、IP，歧义时命令会列出候选。
 
 ## 2. 常见任务 → 命令
 
@@ -32,6 +32,7 @@
 | 入口的流量与探测 | `fleetctl series 团队1-06 --metric traffic` / `--metric probe` |
 | 告警列表、确认 | `fleetctl incidents`、`fleetctl ack <id>`；一台机器的告警历史 `fleetctl incidents --all --machine 团队1-06` |
 | 维护前开维护窗口（免得告警刷屏），或预约 | `fleetctl silence add 团队1-06 --for 2h --maintenance --comment 换内核`；预约加 `--start "2026-10-23 02:00"`（北京时间）；只静默一条规则 `--rule agent_offline`；`fleetctl silence ls`，做完 `fleetctl silence rm <id 前缀>`；全部机器 `--all --yes` |
+| 到期与续费：快到期的机器、看订阅、登记续费、改订阅 | `fleetctl ls --due 7`（7 天内到期、含已过期的在用机器）、`fleetctl billing 团队1-06`（订阅与续费记录）；确认已付款后 `fleetctl renew 团队1-06 --yes`（默认同网页：按订阅周期推一个周期、金额取订阅价格；一次付几期 `--cycles 3`，按面板 `--to 2027-01-15 --amount 39.46 --note …`）；改订阅 `fleetctl subscription set 团队1-06 --price 45 --yes`（只改给了的字段） |
 | 服务日志 | `fleetctl logs 团队1-06 --unit fleet-agent --lines 300`（unit：fleet-agent / fleet-xray / ssserver） |
 | 中控自己的日志 | `fleetctl server-logs --lines 300` |
 | 在一台机器上执行命令 | `fleetctl exec 团队1-06 -- systemctl status fleet-agent` |
@@ -46,7 +47,7 @@
 | 恢复已退役的机器 | `fleetctl restore 团队1-06 --relay 线路机3 --reason 客户续约 --yes --follow`（先预检再提交，见 §6） |
 | 改名 / 换团队 / 改编号 | `fleetctl rename 团队1-06 --team 团队2 --number 3` |
 | 编号压缩成连续 | `fleetctl renumber 团队1`（预览），`--yes` 执行 |
-| 升级 agent | `fleetctl upgrade-agent 团队1-06`、`fleetctl upgrade-agent --all --yes` |
+| 升级 agent | `fleetctl upgrade-agent 团队1-06`、`fleetctl upgrade-agent --all --yes`（先升一台金丝雀，线路机逐台、落地机并发；新版本起不来或没上报自动换回旧版本，见 §7） |
 | 入口启停、轮换凭据 | `fleetctl entries`、`fleetctl entry disable 线路机2:20001 --yes`、`fleetctl entry rotate … --yes` |
 | 线路机直出入口（从线路机自己的 IP 出去，旧系统的「节点00-默认」） | `fleetctl entry add-direct 线路机2 --yes --follow`（每台线路机至多一条；线路机 agent 要先升到新版本）；链接 `fleetctl share 线路机2-直出` |
 | 分享链接 | `fleetctl share 线路机2:20001`（需要 secrets，记审计） |
@@ -77,7 +78,7 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
    - `relay_apply_lag` / `relay_apply_error`：线路机没应用最新配置，到 4。
    - `relay_xray_down`：线路机上的 xray 停了，到 4。
    - `clock_skew`：agent 所在机器的时钟偏了超过 1 分钟（读数会缺失或停在旧值）；`fleetctl exec <机器> -- 'timedatectl'` 看 NTP 是否同步，没开就 `timedatectl set-ntp true`（修改状态，先确认）。
-   - `renewal_due` / `renewal_overdue`：续费提醒，不是故障。网页告警页这一行可直接「登记续费」，下一轮评估（≤30 秒）自动恢复。
+   - `renewal_due` / `renewal_overdue`：续费提醒，不是故障。网页告警页这一行可直接「登记续费」（或 `fleetctl billing <机器>` 看订阅、确认已付款后 `fleetctl renew <机器> --yes`），下一轮评估（≤30 秒）自动恢复。
    - `traffic_quota_high`：流量额度吃紧（本周期已用 ≥ 90% 警告，≥ 100% 严重：供应商可能限速或另收费），不是故障、不改健康状态。`fleetctl show <机器>` 看「流量额度」；找供应商加流量、调高订阅的流量上限或把流量分走。新周期开始、上限调高后下一轮评估自动恢复。
    - 告警恢复后 30 分钟内又出现会重开原告警（`reopen_count` +1，告警页显示「反复 N 次」），不会每抖一次发一对触发/恢复通知。
    - 去抖：原因连续出现满 60 秒才开告警、连续消失满 60 秒才恢复；探测类更长（`egress_fail` 150 秒、`tcp_fail` 90 秒），偶发一次探测失败不报。续费类、流量额度不去抖。
@@ -137,6 +138,20 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 ## 7. 版本升级顺序
 先升中控（`lab/deploy-server.sh` 就是先装 fleet-server、再把新 agent 放进 dist），再 `fleetctl upgrade-agent --all --yes` 升 agent：新 agent 的上报可能带旧中控不认的字段形状（如容器里 `load1` 为 null），旧中控会拒收整份上报。
 反过来，期望状态里的新东西旧 agent 也不认：直出入口（出站 `direct`）要等那台线路机的 agent 升级后再建，否则线路机报「agent 版本过旧」、整台的配置停在旧代数（这时升级 agent，或取消那个新增入口作业把直出入口摘掉，都能恢复）。
+
+### 升级 agent：金丝雀与回滚
+- **顺序**：`--all` 不是一起升。先升一台做金丝雀（有线路机先挑线路机，同类里在用入口少的先上），它成功了其余线路机一台接一台，线路机都成功后落地机并发（同时最多 `job_workers` 台）。命令输出第一行后面就是这次的顺序（金丝雀是哪台），作业按执行顺序列出；`--follow` 依次跟着看。排在后面的作业在前一台结束之前一直是「排队中」：排队中的可以取消（`fleetctl cancel <作业>` 或网页作业详情），「全部升级」里等它的跟着取消；已经开始的不能取消（推送、重启到一半中断更危险），等它结束。
+- **每台的回滚**：推送前旧程序留成同目录的 `/usr/local/bin/fleet-agent.prev`（成功后也留着，下次升级覆盖；退役清理一并删）。新版本重启后 3 秒内主进程就退出（起不来），或 2 分钟内没有以新版本号上报，作业自动把 .prev 换回去并重启 agent，然后失败，错误写「新版本 X …，已回滚到 <旧版本>」：这时机器已经回到旧版本、照常上报，不用动它。
+- **线路机还要查 Xray**：新版本自己报的 Xray 状态要做到——Xray 在跑、已应用的配置追上升级开始时的代数、没有应用错误（中控记的与 agent 自报的都算）；2 分钟做不到同样换回旧版本并失败，错误写「线路机检查没通过（Xray 没在跑；…）」逐项列出。只查升级前就做到的项（升级前 Xray 就没在跑、配置没应用到最新、有应用错误的，那一项不查），要查哪几项见推送那一步输出的「升级后检查」。换回旧版本后，旧 agent 启动时按原来的配置重新应用一遍；之后 Xray 仍不正常就按告警处理。所以新版本让 Xray 不在跑、配置应用不上或应用出错时，金丝雀就被换回、其余线路机不再升级，不会一台接一台弄坏；这几项查不出的问题（Xray 照常，但流量统计、探测出了错）仍可能逐台带到所有线路机，升级后看一眼告警与读数。
+- **停在半路**：金丝雀或任何一台线路机换上新版本后出问题（起不来、没上报、线路机检查没通过），没开始的作业全部取消（错误写明是哪台），已经升好的不动。推送之前就失败的（SSH 连不上、登录被拒、推送失败：机器上的程序没换过，与新版本无关）只算那一台，后面的照常继续；这样失败的金丝雀不算验证过，下一台线路机就是实际的金丝雀。先查原因：失败作业的错误、`fleetctl logs <机器> --unit fleet-agent`。修好（多半是换一个 agent 版本、重新部署中控）后再 `--all` 一次：已经是新版本的机器推送跳过，只轮换令牌、重启 agent。落地机之间互不等待，一台失败只影响它自己。
+- **中途重新部署了中控**：`--all` 发起时记下 dist 里 agent 的 sha256 与版本号，每台推送前核对。中途换了版本，没开始的都取消、正要推送的失败，错误写「中控上的 agent 在升级过程中换了版本（发起时是 X），请重新发起全部升级」：照做，新的 `--all` 按新版本从金丝雀重来。中控上没有 agent 程序（或读不出版本号）时 `--all` 直接报错，不建作业。
+- **重试**：失败的升级作业可以 `fleetctl retry <作业>`，从推送重来（不是只重等上报）；线路机检查沿用第一次换程序之前记下的升级前状态。
+- **回滚也失败**（错误里写「需要人工处理」：机器上没有 .prev，或换回去旧版本也没起来）：agent 可能没在运行，这台会报 agent 离线。看日志找原因后手动换回并重启（修改状态，先确认）：
+  ```
+  fleetctl exec <机器> -- 'ln -f /usr/local/bin/fleet-agent.prev /usr/local/bin/fleet-agent.r && mv -f /usr/local/bin/fleet-agent.r /usr/local/bin/fleet-agent && systemctl restart fleet-agent'
+  fleetctl show <机器>        # agent 版本与在线
+  ```
+  没有 .prev 时只能先让中控 dist 里是能用的 agent（修好后重新部署中控），再重试这个作业。
 
 ## 8. PostgreSQL 参数建议
 发行版默认值（`shared_buffers = 128MB`、`work_mem = 4MB`）对中控偏小，建议在中控机上调：

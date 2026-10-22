@@ -1,6 +1,6 @@
 ---
 name: fleet-ops
-description: 团队线路管理（fleet）的运维入口。查节点或线路机状态、排查告警、维护前开维护窗口或静默告警（可预约）、看服务日志、在节点上执行命令、上架新机器、退役或删除机器、改名与编号、升级 agent、取入口分享链接时使用；一律先用 fleetctl，不要直接 ssh、psql 或手拼 curl。
+description: 团队线路管理（fleet）的运维入口。查节点或线路机状态、排查告警、处理到期与续费提醒（看订阅、登记续费、改订阅）、维护前开维护窗口或静默告警（可预约）、看服务日志、在节点上执行命令、上架新机器、退役或删除机器、改名与编号、升级 agent、取入口分享链接时使用；一律先用 fleetctl，不要直接 ssh、psql 或手拼 curl。
 ---
 
 # fleet-ops
@@ -15,7 +15,7 @@ fleetctl --json <命令>      # AI 一律加 --json，输出一行 JSON
 ```
 
 - 配置：环境变量 `FLEET_URL`、`FLEET_TOKEN`，或 `fleetctl login --url <地址> --token <密钥>`。实验室中控是 `http://192.168.31.60:8080`。
-- `--json` 的 `ls` / `entries` / `incidents` / `policy ls` / `silence` 是与表格同列的精简对象（字段见文末速查），一台机器的完整视图用 `show`、一个团队或节点的完整策略用 `policy show`；其余命令是 API 的 data 原样。机器上百台时 `ls` 仍有几万字符，先用 `--team` / `--kind` / `--status` 缩小。
+- `--json` 的 `ls` / `entries` / `incidents` / `policy ls` / `silence` 是与表格同列的精简对象（字段见文末速查），一台机器的完整视图用 `show`、一个团队或节点的完整策略用 `policy show`；`billing` 是订阅、流量额度与最近续费记录合成的对象；其余命令是 API 的 data 原样。机器上百台时 `ls` 仍有几万字符，先用 `--team` / `--kind` / `--status` 缩小。
 - 成功退出码 0；失败退出码 1，错误 JSON 在 stderr（`{"error":{"code","message","status"}}`）。`exec` 单台时退出码等于远端命令的退出码。`job` / `job --follow`（以及各命令的 `--follow`）遇到作业失败或取消也退出 1，stderr 给 `{"error":{"code":"job_failed"|"job_cancelled","message",…}}`。
 - 没拿到中控响应时 `status` 为 null、`code` 是 `unreachable`（连不上，请求没发出去，可直接重试；`message` 带最底层原因）或 `timeout`（请求已发出、等响应超时）。`timeout` 时操作可能已在中控执行：先 `fleetctl --json jobs --active` / `fleetctl --json audit --limit 10` 核对，再决定是否重试，尤其是上架、退役、换线路机这类会建作业的命令。
 - `<机器>` 写机器 id、显示名（`团队1-06`）、线路机名（`线路机2`）或 IP。歧义时命令报错并列出候选，照候选里的 id 重试。
@@ -30,6 +30,7 @@ fleetctl --json <命令>      # AI 一律加 --json，输出一行 JSON
 | 指标曲线 | `fleetctl --json series <机器> --range 1h\|6h\|24h\|7d [--metric host\|traffic\|probe]` |
 | 近 N 天可用率：每天 TCP / 出口探测的成功率，看哪天断过 | `fleetctl --json uptime <机器> [--days 30]`（1–90 天，按机器的账单时区分天）：`{days, items:[{date,tcp_total,tcp_ok,egress_total,egress_ok}], tcp_pct, egress_pct}`，`items` 旧→新、最后一项是今天（还没过完），没有探测的天全为 0；`*_pct` 是整段成功率（0–100），没有探测为 null。线路机是挂在它上面所有入口的合计 |
 | 告警 / 确认告警 | `fleetctl --json incidents [--all] [--machine <机器>]`、`fleetctl ack <id>` |
+| 快到期的机器、一台机器的费用与续费记录 | `fleetctl --json ls --due 7`（7 天内到期、含已过期的在用机器，按到期排）、`fleetctl --json billing <机器>`（登记续费、改订阅见下文「到期与续费」） |
 | 静默与维护窗口（进行中 / 已预约） | `fleetctl --json silence ls`（开、删见下文「维护窗口与静默」） |
 | 入口列表 | `fleetctl --json entries [<机器>]` |
 | 作业 | `fleetctl --json jobs [--active]`、`fleetctl job <id>`、`fleetctl job <id> --follow` |
@@ -78,6 +79,26 @@ fleetctl silence rm <id 前缀>                                                 
 - 给单台机器开维护窗口是维护流程的一部分，不必另问；`--all`（全部机器）要加 `--yes`，先向用户确认。不要拿静默盖住没处理的故障：机器正在告警、又不打算马上修时，先问用户。
 - 时间都按北京时间：表格里的、`--start` 不带时区的写法都是（与 fleetctl 跑在哪台机器、本机什么时区无关）；用户说的是别的时区就写带时区的 `2026-10-23T02:00:00+09:00`。`--start` 早于现在会报错。`id` 列是前 13 位，`rm` 给能唯一确定的前缀即可。
 
+## 到期与续费
+
+告警 `renewal_due`（即将到期）/ `renewal_overdue`（已过期）是续费提醒，不是故障。中控只记账：登记续费 = 到期日顺延、留一条续费记录，不会向供应商付款。续不续、付没付款只有用户知道。
+
+1. 先看订阅：`fleetctl --json billing <机器>`（价格、周期、到期日与还剩几天、自动续费、最近的续费记录）；一次看所有快到期的：`fleetctl --json ls --due 7`（自动续费的也列出，`auto_renew` 为 true）。
+2. 把机器、到期日、价格告诉用户，问是否已在供应商那边续费付款。不要替用户决定续不续；用户没说付过款就不登记。
+3. 用户确认付过款后登记：
+   ```
+   fleetctl renew <机器> --yes                                                      # 到期日按订阅周期推一个周期，金额 = 订阅价格（同网页「登记续费」）
+   fleetctl renew <机器> --cycles 3 --yes                                           # 一次付了 3 期：推 3 个周期，金额默认 3 期的钱
+   fleetctl renew <机器> --to 2027-01-15 --amount 39.46 --note "账单 #2041" --yes    # 按供应商面板上的新到期日与实付金额
+   ```
+   推周期时目标月没有那一天按月末（1-31 推一个月是 2-28，闰年 2-29）。`--amount` 是订阅币种的金额，写 `39.46`（最多两位小数），实付和订阅价格不同就按实付填。登记后续费类告警下一轮评估（≤30 秒）自动恢复。
+4. 不续了：不登记；机器不再用就按用户的意思退役（`retire`）。不要拿静默盖住到期提醒。
+5. 用户要改订阅（调价、换周期、改提醒天数、自动续费、流量上限）：`fleetctl subscription set <机器> [--price 45] [--currency USD] [--cycle monthly|quarterly|semiannual|yearly] [--due YYYY-MM-DD] [--auto-renew true|false] [--remind-days 7] [--tz Asia/Shanghai] [--traffic-gb 2000|0|none] [--reset-day 15|none] --yes`。只改给了的字段（命令先读现有订阅再整份提交），确认语逐项列出「旧 → 新」，没有变化不提交；没有订阅时新建要给 `--price` 和 `--due`。
+   - 续费用 `renew`（留续费记录）；`subscription set --due` 只用来改正填错的到期日。
+   - `--auto-renew true` 只影响提醒（到期前不提醒，过期才告警），不会扣款，到期日也不会自己往后推：供应商自动扣款后照样要 `renew`。
+   - `--traffic-gb` 是订阅单独设的流量上限（GiB），`0` = 不限，`none` = 不单独设、按套餐；`--reset-day` 是流量每月几号重置，`none` = 按北京时间的自然月。
+   - 同机 IP 节点默认不单独记费用（记在宿主机），供应商对附加 IP 另收费时才给它设订阅。
+
 ## 会改变状态的操作：先向用户确认
 
 下面这些先把对象和后果告诉用户，得到明确同意后再执行，并加 `--yes`（非交互环境不加 `--yes` 会被拒绝）。
@@ -88,35 +109,41 @@ fleetctl purge <机器> --yes                                # 只对已退役�
 fleetctl entry rotate <入口> --yes                         # 旧分享链接立即失效
 fleetctl entry disable <入口> --yes
 fleetctl entry add-direct <线路机> --yes [--follow]          # 线路机直出入口：从线路机自己的 IP 出去（旧系统的「节点00-默认」），每台至多一条；链接 fleetctl share <线路机>-直出
-fleetctl upgrade-agent <机器> | --all --yes                # 重启 agent
+fleetctl upgrade-agent <机器> | --all --yes                # 重启 agent；--all 先升一台金丝雀，成功后线路机逐台、落地机并发；排队中的可 fleetctl cancel <作业>
 fleetctl renumber <团队> --yes                             # 不加 --yes 只预览
 fleetctl move <节点> --to <线路机> --yes [--from <线路机>] [--follow]   # 换线路机：新入口验收后才摘旧入口，不断网；分享链接会变，完成后 fleetctl share <节点> 取新链接
 fleetctl evacuate <线路机> --to <线路机> --yes [--follow]          # 搬空线路机（退役前）：每个在用节点一个换线路机作业
 fleetctl restore <已退役机器> --relay <线路机> [--team --number --label --upstream --ss-port --password-env VAR --reason --reset-host-key --no-probe] --yes [--follow]   # 恢复：先预检（IP 冲突、新名字、是否要 root 密码）再提交；预检试 SSH 登录和恢复一样要 write 权限，不想试登录就加 --no-probe
 fleetctl provision ...                                     # 先 check，再确认，再提交
 fleetctl retry <作业> [--reset-host-key] [--password-env VAR]   # 重试失败作业；报「主机指纹变化」且确认重装过才加 --reset-host-key；报「没有可用的 root 密码」时用 --password-env 补密码
+fleetctl renew <机器> [--cycles N | --to YYYY-MM-DD] [--amount 39.46] [--note …] --yes   # 登记续费：用户确认付过款之后（见「到期与续费」）
+fleetctl subscription set <机器> --price 45 … --yes          # 改订阅：只改给了的字段
 ```
 
 - 上架：`fleetctl --json provision --file batch.json --dry-run` 只校验；通过后让用户确认名单，再去掉 `--dry-run` 加 `--yes --follow`。单台参数：`--kind vps --ip 1.2.3.4 --team 团队1 --relay 线路机2 --provider ATTVPS --plan 基础版`。root 密码放环境变量，用 `--ssh-password-env VAR` 传名字。`--ss-port`（批量文件里 `ss_port`）是线路机连节点用的公网（NAT 映射）端口，节点上 ssserver 固定监听 8388；非 NAT 机不要填。
 - 同机 IP 节点（已有落地机上多出来的 IP 当一台独立节点，按 IP 计节点）：`fleetctl provision --kind vps --host <宿主机> --ip <新 IP> --team 团队1 --relay 线路机2 --yes --follow`（批量文件条目写 `"host": "<宿主机>"`）。宿主机要是在用的普通落地机；IP 要已直接配在宿主机网卡上。不填 SSH 端口 / 密码 / SS 端口（SSH 与 agent 用宿主机的，SS 端口中控从 8389 起分配），供应商取宿主机的、费用默认不记。作业 `provision_ip` 第一步「在宿主机上核对 IP」：报「不在宿主机网卡上」或「中控看到的来源是 …」时是机器网络配置问题，让用户去供应商面板 / 机器上配好再 `fleetctl retry`。
+- 升级 agent：新版本起不来、2 分钟内没上报，或线路机上新版本报的 Xray 不正常（没在跑、配置没应用到升级开始时的代数、有应用错误；升级前就这样的项不查），作业自动换回旧版本后失败（错误「…，已回滚到 <旧版本>」，线路机的写「线路机检查没通过（…）」：机器照常上报，把错误告诉用户即可）；错误里写「需要人工处理」时 agent 可能没在运行，按 `docs/OPS.md` §7 处理。`--all` 的金丝雀或任何一台线路机换上新版本后出问题，没开始的作业都取消（`error` 写明是哪台），不要逐台去重试或再 `--all`，先查失败的原因；推送之前就失败的（SSH 连不上、登录被拒）只算那一台，后面的照常继续，修好那台后 `retry` 它的作业。用户要停下 `--all`：排队中的作业 `fleetctl cancel <作业>`，等它的跟着取消；进行中的不能取消。错误是「中控上的 agent 在升级过程中换了版本…」时是中途重新部署过中控，问过用户后重新 `--all`。失败的升级作业 `retry` 从推送重来。
 - 改名：`fleetctl rename <机器> --team 团队2 --number 3`。
 - 分享链接 `fleetctl share <入口>` 需要 `secrets` scope，会记审计；链接是凭据，只给用户本人，不写进文件或日志。
 - 密钥管理（`fleetctl keys ...`）只认登录会话，AI 不做；需要新密钥时请用户在网页「设置 → API 密钥」创建。
 
 ## --json 字段速查
 
-- `ls`（每台一个精简对象）：`id name kind(relay|vps|proxy) lifecycle(active|provisioning|retiring|retired|failed) health(ok|degraded|down|unknown|maintenance|inactive) ip agent_online cpu_pct mem_pct disk_pct entries(入口数) open_incidents active_job{id,kind,state}`；百分比是整数，取不到为 null；家宽代理没有 agent，`agent_online` 为 null。
+- `ls`（每台一个精简对象）：`id name kind(relay|vps|proxy) lifecycle(active|provisioning|retiring|retired|failed) health(ok|degraded|down|unknown|maintenance|inactive) ip agent_online cpu_pct mem_pct disk_pct entries(入口数) open_incidents active_job{id,kind,state}`；百分比是整数，取不到为 null；家宽代理没有 agent，`agent_online` 为 null。`--due N` 时每项另有 `due_date due_days auto_renew`（`due_days` 按机器的账单时区算，负数是已过期几天）。
 - `show`（MachineView）：上面这些的完整版（`health.status`、`agent.online`、`host.{cpu_pct,mem_used,mem_total,disk_used,disk_total,load1}`、`entries[]` 完整入口视图），另有 `ssh_port revision`、`health.reasons[{key,rule_name,severity,text}]`（`rule_name` 是规则中文名，同通知）、`agent.health`（agent 自报：离线队列、访问日志解析不了 / 丢弃的行数等）、`failed_job`。
   同机关系：`host_machine{id,name}` 非 null 的是同机 IP 节点（它的 `agent`、`host` 都是宿主机的，agent 离线 / 高负载告警在宿主机名下；`logs --unit ssserver` 看它自己的实例 `fleet-ssserver@<端口>`，`exec` 在宿主机上执行；不能单独 `upgrade-agent`）；`ip_nodes[{id,name}]` 是宿主机上未退役的同机 IP 节点。
 - `entries`（每个入口一个精简对象）：`id relay port node lifecycle(active|pending|disabled|removing|removed) applied apply_error tcp_ok egress_ok today_down today_up`（今日业务流量，字节）；`tcp_ok` / `egress_ok` 为 null 表示还没探测过。`node` 是「线路机名-直出」的是线路机直出入口：没有节点，`tcp_ok` 恒为 null；它出口不通时告警对象是线路机（`egress_fail`）；搬空不搬它，退役线路机时自动摘除。
 - `incidents`（每条一个精简对象，`status` 里的 `incidents` 相同）：`id severity(warning|critical) rule rule_name subject_id subject_name summary reopen_count state(firing|resolved) opened_at resolved_at ack_by`（`ack_by` 非 null 即已确认；恢复后 30 分钟内复发会重开同一条并 +1，表格里显示「反复 N 次」；大于 0 说明在抖，查探测/网络而不是只看当前状态）。规则 key：agent_offline、clock_skew、no_entry、egress_fail、tcp_fail、renewal_due、renewal_overdue、traffic_quota_high（流量额度：本周期已用 ≥ 90% warning、≥ 100% critical，不改健康状态，新周期或调高上限后自动恢复）、relay_apply_lag、relay_apply_error、relay_xray_down、host_cpu_high、host_mem_high、host_disk_high、ipintel_new_isp（来源出现新运营商）、ipintel_new_city（来源出现新城市）、ipintel_datacenter_source（机房 / VPN 来源 IP），后三个是 warning、学习期 7 天后才有、最后一次出现 24 小时后自动恢复，不用手动处理。
 - `silence ls`（每条一个精简对象；`silence add` / `silence rm` 输出新建 / 删掉的那一条，同形）：`id subject_id subject_name rule rule_name starts_at ends_at state(active|scheduled) is_maintenance comment`；`subject_id` 为 null = 全部机器，`rule` 为 null = 全部规则；`state` 是 `active`（进行中）或 `scheduled`（已预约，还没开始）。只列没结束的。
+- `billing`：`id name host_machine subscription traffic_limit_gb quota{used,period_start} quota_pct renewals renewal_count`。`subscription` 为 null 是没有订阅，否则 `{price_cents currency cycle(monthly|quarterly|semiannual|yearly) due_date due_days billing_tz auto_renew remind_days traffic_gb traffic_reset_day}`；金额都是分（`price_cents` 3946 = 39.46，币种看 `currency`）。`traffic_gb` 是订阅单独设的上限（null = 按套餐，0 = 不限），`traffic_limit_gb` 是生效的上限（null = 不限，`host_machine` 非 null 的同机 IP 节点是与宿主机共用），`quota_pct` 是本周期已用（`quota.used`，字节）占它的百分比（向下取整，没有上限为 null）。`renewals` 是最近 10 条续费记录（新→旧）`{id old_due new_due amount_cents note actor created_at}`，`renewal_count` 是总条数。
+- `renew`：刚登记的这条续费记录（同 `billing` 的 `renewals[]`）。`subscription set`：改完的 `subscription`（同上，`due_days` 按新到期日算）；没有变化时不提交，输出现在的。
 - `policy ls`：`draft_count teams[{id name mode domains draft revision nodes[{id name mode domains source(node|team|default) draft revision}]}]`；`domains` 是域名个数，`draft` 为 null 或 `{mode,domains}`；节点的 `mode` / `domains` / `source` 是生效值，`draft` / `revision` 是节点自己的。
 - `status --json` 的 `overview.failed`：上架失败（lifecycle=failed）的机器数，算在「有问题」里。`show` 的 `failed_job{id,kind,state}`：上架失败或退役失败（退役中）的机器带最近失败的作业，拿它的 id 去 `fleetctl job` / `fleetctl retry`（`ls --status failed` / `ls --status retiring` 找出这些机器）。
 - 不加 `--json` 的 `status` / `show` / `entries` / `incidents` 是给人看的：种类、生命周期、健康、严重度、规则、入口状态、作业种类与状态都显示中文；所有命令表格里的时间都是北京时间（`--json` 里是 API 原样的 RFC 3339）；`ls` 的种类 / 生命周期 / 健康列保留原值（就是 `--kind`、`--status` 的取值）。脚本和 AI 只解析 `--json`。
 - `status --json` 的 `overview.online` / `offline`：按 agent 连通计（家宽代理没有 agent 算在线），与健康无关。
 - `job`：`state`（queued|running|waiting|cancelling|succeeded|failed|cancelled）、`error`、`steps[]`、`logs[]`。`kind` 里 `provision_ip` / `restore_ip` 是上架 / 恢复同机 IP 节点。
 - `retire --json`：`{job_id, ip_node_jobs:[{machine_id,name,job_id}]}`，后者是一并退役的同机 IP 节点各自的退役作业。
+- `upgrade-agent --all --json`：`{jobs:[{machine_id,name,kind,job_id,after}], skipped:[{machine_id,name,reason}], order}`；`jobs` 按执行顺序，第一个是金丝雀，`after` 是它要等的作业（等的那个换上新版本后失败、或被取消，它就被取消）；`order` 是顺序说明，原样转述给用户。中控上没有 agent 程序时报错（409），不建作业。
 - `exec`：`exit_code stdout stderr duration_ms truncated timed_out`；多台时是这些字段加 `machine` 的数组，某台没执行成（请求被拒、连不上）时那一项是 `{machine,id,exit_code:null,error:{code,message,status}}`。
 
 完整接口见仓库 `docs/API.md`，运维流程与何时才需要直接 ssh 见 `docs/OPS.md`。

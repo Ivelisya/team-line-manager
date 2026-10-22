@@ -44,8 +44,8 @@ const store = {
 };
 const RANK: Record<string, number> = { down: 0, degraded: 1, unknown: 2, maintenance: 3, ok: 4, inactive: 5 };
 
-/** 异常：故障、降级、上架失败（上架失败的健康是 inactive，单看健康会漏掉） */
-const isIssue = (m: MachineView) => m.lifecycle === 'failed' || m.health.status === 'down' || m.health.status === 'degraded';
+/** 异常：故障、上架失败（上架失败的健康是 inactive，单看健康会漏掉）。降级照常服务、只是有提醒，算正常（同总览的「正常」） */
+const isIssue = (m: MachineView) => m.lifecycle === 'failed' || m.health.status === 'down';
 /** 异常优先的名次：上架失败排在故障之后、降级之前 */
 const rank = (m: MachineView) => (m.lifecycle === 'failed' ? 0.5 : RANK[m.health.status]);
 

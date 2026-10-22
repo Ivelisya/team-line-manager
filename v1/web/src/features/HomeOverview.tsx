@@ -26,13 +26,19 @@ export function HomeSection({ icon, label, title, sub, actions, children, classN
   );
 }
 
-function statusLine(o: Overview | undefined, issues: number): string {
+type Counts = Overview['nodes'];
+/** 算正常的：只有故障算异常，降级（照常服务、只是有提醒）与维护都算正常；未知（还判断不了）两头都不算 */
+const normal = (c: Counts) => c.total - c.down - c.unknown;
+
+function statusLine(o: Overview | undefined, down: number, degraded: number): string {
   if (!o) return '正在汇总机器状态…';
   const due = o.due_7d ? `，${o.due_7d} 台 7 天内到期` : '';
   const fail = o.failed ? `，${o.failed} 台上架失败` : '';
-  if (issues) return `有 ${issues} 台机器故障或降级${fail}${due}，点「故障与降级」查看告警。`;
+  if (down) return `有 ${down} 台机器故障${fail}${due}，点「故障」查看告警。`;
   if (o.failed) return `${o.failed} 台机器上架失败${due}，可在作业页重试或在详情里退役。`;
-  return `全部 ${o.nodes.total + o.relays.total} 台机器运行良好${due}，监控数据持续采集中。`;
+  const unknown = o.nodes.unknown + o.relays.unknown;
+  const lead = unknown ? `${unknown} 台状态未知，其余运行正常` : `全部 ${o.nodes.total + o.relays.total} 台机器运行正常`;
+  return `${lead}${degraded ? `（其中 ${degraded} 台降级）` : ''}${due}，监控数据持续采集中。`;
 }
 
 /** memo：首页因机器列表推送、筛选、开关抽屉重渲染时，总览只在 overview 数据（metrics 推送单独更新）或额度吃紧的结果变了才重画 */
@@ -40,20 +46,22 @@ export const OverviewSection = React.memo(function OverviewSection({ o, loading 
   const me = useMe().data;
   const qt = useQuotaTight().data;
   const nodes = o?.nodes; const relays = o?.relays;
-  const issues = (nodes?.down ?? 0) + (nodes?.degraded ?? 0) + (relays?.down ?? 0) + (relays?.degraded ?? 0);
+  const down = (nodes?.down ?? 0) + (relays?.down ?? 0);
+  const degraded = (nodes?.degraded ?? 0) + (relays?.degraded ?? 0);
   const tr = o?.traffic_month;
   const trTotal = tr ? tr.up + tr.down : 0; const trScale = F.bytesScale(trTotal);
   const [cost0, ...costMore] = o?.monthly_cost ?? [];
   return (
     <HomeSection className="hsec-hero" icon={<LayoutDashboard />} label="监控总览"
-      title={<h1 className="hero-greet">{F.greeting()}，<span className="hero-name">{me?.username ?? ''}</span></h1>} sub={statusLine(o, issues)}>
+      title={<h1 className="hero-greet">{F.greeting()}，<span className="hero-name">{me?.username ?? ''}</span></h1>} sub={statusLine(o, down, degraded)}>
       <div className="hero-grid">
         <div className="stat-grid">
-          <Stat loading={loading} tone="ok" icon={<Server />} label="节点正常" value={<CountUp value={nodes?.ok} />} unit={nodes ? `/ ${nodes.total}` : undefined}
-            caption={nodes && <><DotCount tone="warn" n={nodes.degraded} label="降级" /><DotCount tone="bad" n={nodes.down} label="故障" /><DotCount tone="neutral" n={nodes.unknown} label="未知" /></>} />
-          <Stat loading={loading} tone="teal" icon={<Waypoints />} label="线路机正常" value={<CountUp value={relays?.ok} />} unit={relays ? `/ ${relays.total}` : undefined}
-            caption={relays && <><DotCount tone="warn" n={relays.degraded} label="降级" /><DotCount tone="bad" n={relays.down} label="故障" /></>} />
-          <Stat loading={loading} tone="bad" icon={<AlertTriangle />} label="故障与降级" value={<CountUp value={o ? issues : undefined} />} unit="台" to="/incidents" caption={o && <>{issues ? '点击查看告警' : !o.failed && '一切正常'}{o.failed > 0 && <DotCount tone="bad" n={o.failed} label="上架失败" />}</>} />
+          {/* 「正常」含降级与维护（照常服务），所以写「含降级」；故障、未知是不算在内的那几台 */}
+          <Stat loading={loading} tone="ok" icon={<Server />} label="节点正常" value={<CountUp value={nodes && normal(nodes)} />} unit={nodes ? `/ ${nodes.total}` : undefined}
+            caption={nodes && <><DotCount tone="warn" n={nodes.degraded} label="含降级" />{nodes.maintenance > 0 && <DotCount tone="neutral" n={nodes.maintenance} label="含维护" />}<DotCount tone="bad" n={nodes.down} label="故障" /><DotCount tone="neutral" n={nodes.unknown} label="未知" /></>} />
+          <Stat loading={loading} tone="teal" icon={<Waypoints />} label="线路机正常" value={<CountUp value={relays && normal(relays)} />} unit={relays ? `/ ${relays.total}` : undefined}
+            caption={relays && <><DotCount tone="warn" n={relays.degraded} label="含降级" />{relays.maintenance > 0 && <DotCount tone="neutral" n={relays.maintenance} label="含维护" />}<DotCount tone="bad" n={relays.down} label="故障" />{relays.unknown > 0 && <DotCount tone="neutral" n={relays.unknown} label="未知" />}</>} />
+          <Stat loading={loading} tone="bad" icon={<AlertTriangle />} label="故障" value={<CountUp value={o ? down : undefined} />} unit="台" to="/incidents" caption={o && <>{down ? '点击查看告警' : !o.failed && '一切正常'}{o.failed > 0 && <DotCount tone="bad" n={o.failed} label="上架失败" />}</>} />
           <Stat loading={loading} tone="amber" icon={<CalendarClock />} label="7 天内到期" value={<CountUp value={o?.due_7d} />} unit="台" to="/nodes?sort=due" caption="需要续费的机器" />
           <Stat loading={loading} tone="gold" icon={<CircleDollarSign />} label="每月费用" value={cost0 ? F.money(cost0.cents, cost0.currency) : '—'}
             caption={costMore.length ? `另有 ${costMore.map((c) => F.money(c.cents, c.currency)).join(' + ')}（不同币种分开计）` : '在用机器按月折算'} />
@@ -81,13 +89,13 @@ function ClusterPanel({ o }: { o: Overview | undefined }) {
     const bad = offline ? Math.max(1, Math.round((offline / total) * ONLINE_N)) : 0;
     return Array.from({ length: ONLINE_N }, (_, i) => (!total ? 'var(--neutral)' : i >= ONLINE_N - bad ? 'var(--bad)' : 'var(--ok)'));
   }, [offline, total]);
-  const healthy = o && !down && !degraded;
+  // 只有故障算异常：降级照常服务，胶囊仍是「状态健康」，降级台数写在下面的「在线 · 降级」里
   const now = o ? o.net_rx_bps + o.net_tx_bps : 0; const sc = F.rateScale(now);
   return (
     <section className="cluster" aria-label="集群状态">
       <header className="cluster-head">
         <div><h2 className="cluster-title"><Activity />集群状态</h2><p className="cluster-sub">机器在线率与网卡速率</p></div>
-        {o && <span className="cpill" data-tone={healthy ? 'ok' : down ? 'bad' : 'warn'}><i />{healthy ? '状态健康' : '有异常'}</span>}
+        {o && <span className="cpill" data-tone={down ? 'bad' : 'ok'}><i />{down ? '有故障' : '状态健康'}</span>}
       </header>
       <div className="cluster-box">
         <div className="cluster-row">

@@ -207,7 +207,13 @@ async fn ingest(st: &AppState, h: &HeaderMap, r: Report) -> Result<Json<ReportAc
         }
     }
     let info = r.info.as_ref().map(|i| serde_json::to_value(i).unwrap_or_default());
-    let xray = r.xray.as_ref().map(|x| serde_json::to_value(x).unwrap_or_default());
+    // Xray 状态记上报它的 agent 版本：升级 agent 时要认新版本自己报的（新进程最先补发的是旧进程退出时落盘的那份，
+    // 带的是旧进程的 Xray 状态；之后几份不带 Xray 状态，合并时旧值留着。见 jobs::steps::wait_report）
+    let xray = r.xray.as_ref().map(|x| {
+        let mut v = serde_json::to_value(x).unwrap_or_default();
+        v["agent_version"] = r.agent_version.clone().into();
+        v
+    });
     let agent_health = r.agent_health.as_ref().map(|h| serde_json::to_value(h).unwrap_or_default());
     // 时钟偏差 = 中控收到时刻 − sent_at_ms（正数 = agent 时钟慢）。sent_at_ms 是建报时刻，积压补发、失败重发的报告会偏大，
     // 只认新鲜的：建报时离线队列为空（之前的报告都已确认，建报一定晚于中控收到上一份）且上一份是 30 秒内收到的，误差不超过 30 秒

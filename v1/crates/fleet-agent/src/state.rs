@@ -139,13 +139,14 @@ impl SeqState {
         Ok(())
     }
     /// 服务端确认的序号比本地发出过的还大（时钟回拨 / 状态丢失后）：把本地推到它之后，
-    /// 否则后续报告会被服务端当重复丢弃。
+    /// 否则后续报告会被服务端当重复丢弃。先在内存里推进：落盘失败（磁盘满时重启过、序号退回落盘的上界）也不能停在原地，
+    /// 否则之后每份报告都被当重复「成功」丢掉；没落盘的这段同 `next_unreserved`
     pub fn advance_to(&mut self, n: u64) -> anyhow::Result<()> {
         if n > self.seq {
+            self.seq = n;
             if n > self.reserved {
                 self.reserve(n)?;
             }
-            self.seq = n;
         }
         Ok(())
     }
@@ -156,6 +157,13 @@ impl SeqState {
         }
         self.seq = n;
         Ok(n)
+    }
+    /// `next` 预留号段失败（state.json 写不进去，磁盘满等）时用：序号照样在内存里前进，报告从内存直接发出，
+    /// 下次分配再试着预留。这段序号没落盘，进程在此期间重启可能复用：中控把复用了序号的报告当重复丢掉，
+    /// 它回的已确认序号会把本地推过去（`advance_to`）
+    pub fn next_unreserved(&mut self) -> u64 {
+        self.seq += 1;
+        self.seq
     }
 }
 

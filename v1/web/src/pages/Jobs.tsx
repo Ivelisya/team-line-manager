@@ -160,10 +160,11 @@ function JobDetail({ id }: { id: string }) {
   );
 }
 
-/** 取消的后果：失败的上架 / 恢复作业取消后机器不再停在「上架失败」 */
+/** 取消的后果：失败的上架 / 恢复作业取消后机器不再停在「上架失败」；升级 agent 只有排队中的能取消 */
 function cancelDesc(j: Job) {
   if (j.state === 'failed' && j.kind.startsWith('provision_')) return '不再重试这次上架：已完成的步骤会被补偿（回滚），机器会被退役并清理，释放 IP 与编号。';
   if (j.state === 'failed' && j.kind.startsWith('restore_')) return '不再重试这次恢复：已完成的步骤会被补偿（回滚），机器退回「已退役」。';
+  if (j.kind === 'upgrade_agent') return '这台还没开始升级，取消后不升了；「全部升级」里排在它后面、等它的机器也会跟着取消。';
   return '已完成的步骤会被补偿（回滚），然后停下。';
 }
 

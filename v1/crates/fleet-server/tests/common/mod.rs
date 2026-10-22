@@ -28,7 +28,7 @@ pub struct T {
     pub app: axum::Router,
     pub st: AppState,
     pub cookie: String,
-    /// 本测试的临时目录：known_hosts、离线 IP 库（ipintel/）
+    /// 本测试的临时目录：known_hosts、离线 IP 库（ipintel/）、推给机器的程序（dist/，默认不存在）
     pub dir: tempfile::TempDir,
     _schema: Schema,
 }
@@ -186,7 +186,7 @@ pub async fn boot_in(dir: tempfile::TempDir, background: bool, extra: &str) -> T
            public_url = "http://fleet.test"
            ssh_key = "/nonexistent"
            known_hosts = "{d}/known_hosts"
-           dist_dir = "/nonexistent"
+           dist_dir = "{d}/dist"
            ipintel.db_dir = "{d}/ipintel"
            ipintel.overrides = "/nonexistent/ipintel-overrides.toml"
            {extra}"#
@@ -240,6 +240,18 @@ pub async fn seed_relay(t: &T) -> (Uuid, String) {
         .await
         .unwrap();
     (id, tok.to_string())
+}
+
+/// 中控 dist 里放一个假的 agent 程序（shell 脚本，`--version` 打印版本）：「全部升级」要记下它的 sha256 与版本号
+pub fn dist_agent(t: &T, version: &str) {
+    let p = t.dir.path().join("dist/fleet-agent");
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(&p, format!("#!/bin/sh\necho 'fleet-agent {version}'\n")).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
 }
 
 pub async fn seed_team(t: &T, name: &str) -> Uuid {

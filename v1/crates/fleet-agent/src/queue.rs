@@ -1,6 +1,6 @@
 //! 磁盘有界队列：每个待发送的 Report 一个文件 `<seq:020>.json`。
 //! 先落盘再发送；服务端确认后删除；超过字节/时间上限从最旧的开始丢并计数（其中的入口流量交还给上报器结转）。
-//! 永久拒绝（4xx）的报告移入 `dead/`，不静默删除。
+//! 永久拒绝（4xx）的报告移入 `dead/`，不静默删除；其中的入口流量同样交还结转（本身带着结转流量的除外）。
 
 use crate::util::{now_ms, write_atomic};
 use crate::xray::stats::{add_carry, Carry};
@@ -14,8 +14,9 @@ const DEAD_KEEP: usize = 50;
 
 pub struct Queue {
     dir: PathBuf,
-    /// seq → (字节数, 入队时间 ms)
-    items: BTreeMap<u64, (u64, i64)>,
+    /// seq → (字节数, 入队时间 ms, 是否带着结转补报的入口流量)。最后一项只在本进程内记得：重启前入队的一律当没带，
+    /// 被拒时最多多结转一次
+    items: BTreeMap<u64, (u64, i64, bool)>,
     bytes: u64,
     max_bytes: u64,
     max_age_ms: i64,
@@ -58,7 +59,7 @@ impl Queue {
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or_else(now_ms);
             q.bytes += md.len();
-            q.items.insert(seq, (md.len(), mt));
+            q.items.insert(seq, (md.len(), mt, false));
         }
         Ok(q)
     }
@@ -80,11 +81,11 @@ impl Queue {
         self.bytes as f32 / self.max_bytes as f32
     }
 
-    /// 入队；返回因此被淘汰的报告里的入口流量（见 `evict`）
-    pub fn push(&mut self, r: &Report) -> Result<Carry> {
+    /// 入队；返回因此被淘汰的报告里的入口流量（见 `evict`）。`carried`：这份带着结转补报的入口流量（见 `dead_letter`）
+    pub fn push(&mut self, r: &Report, carried: bool) -> Result<Carry> {
         let body = serde_json::to_vec(r)?;
         write_atomic(&path_of(&self.dir, r.seq), &body, true)?;
-        if let Some((old, _)) = self.items.insert(r.seq, (body.len() as u64, now_ms())) {
+        if let Some((old, _, _)) = self.items.insert(r.seq, (body.len() as u64, now_ms(), carried)) {
             self.bytes -= old;
         }
         self.bytes += body.len() as u64;
@@ -96,7 +97,7 @@ impl Queue {
     fn evict(&mut self) -> Carry {
         let now = now_ms();
         let mut carry = Carry::new();
-        while let Some((&seq, &(size, ts))) = self.items.iter().next() {
+        while let Some((&seq, &(size, ts, _))) = self.items.iter().next() {
             if self.items.len() > 1 && (self.bytes > self.max_bytes || now - ts > self.max_age_ms) {
                 let path = path_of(&self.dir, seq);
                 match read_entries(&path) {
@@ -130,23 +131,33 @@ impl Queue {
         let done: Vec<u64> = self.items.range(..=seq).map(|(k, _)| *k).collect();
         for k in &done {
             let _ = std::fs::remove_file(path_of(&self.dir, *k));
-            if let Some((sz, _)) = self.items.remove(k) {
+            if let Some((sz, _, _)) = self.items.remove(k) {
                 self.bytes -= sz;
             }
         }
         done.len()
     }
 
-    /// 被服务端永久拒绝：移入 dead/（保留最近 DEAD_KEEP 份供排查）
-    pub fn dead_letter(&mut self, seq: u64) {
+    /// 被服务端永久拒绝：移入 dead/（保留最近 DEAD_KEEP 份供排查）。返回其中的入口流量样本，由上报器结转到下一份报告
+    /// （同 `evict`）；这份本身带着结转补报的流量时返回空、不再结转：多半正是这些流量入不了库，再结转会一份接一份地被拒
+    pub fn dead_letter(&mut self, seq: u64) -> Vec<EntrySample> {
         self.dead += 1;
         let from = path_of(&self.dir, seq);
+        let entries = if self.items.get(&seq).is_some_and(|i| i.2) {
+            tracing::warn!(seq, "被拒收的报告带着结转补报的入口流量，不再结转，这份里的入口流量丢弃");
+            vec![]
+        } else {
+            read_entries(&from).unwrap_or_else(|e| {
+                tracing::warn!(seq, "读取被拒收的报告失败，其中的入口流量无法结转：{e:#}");
+                vec![]
+            })
+        };
         let to = self.dir.join("dead").join(format!("{seq:020}.json"));
         if let Err(e) = std::fs::rename(&from, &to) {
             tracing::error!("移入 dead/ 失败：{e}");
             let _ = std::fs::remove_file(&from);
         }
-        if let Some((sz, _)) = self.items.remove(&seq) {
+        if let Some((sz, _, _)) = self.items.remove(&seq) {
             self.bytes -= sz;
         }
         if let Ok(rd) = std::fs::read_dir(self.dir.join("dead")) {
@@ -156,6 +167,7 @@ impl Queue {
                 let _ = std::fs::remove_file(names.remove(0));
             }
         }
+        entries
     }
 }
 
@@ -190,7 +202,7 @@ mod tests {
         let d = tmpdir("a");
         let mut q = Queue::open(d.clone(), 1 << 20, i64::MAX / 2).unwrap();
         for s in 1..=3 {
-            q.push(&rep(s, 10)).unwrap();
+            q.push(&rep(s, 10), false).unwrap();
         }
         assert_eq!(q.oldest(), Some(1));
         let q2 = Queue::open(d.clone(), 1 << 20, i64::MAX / 2).unwrap();
@@ -215,7 +227,7 @@ mod tests {
         for s in 1..=10 {
             let mut r = rep(s, 300);
             r.entries = vec![EntrySample { entry_id: id, ts_ms: 0, up_bytes: s, down_bytes: 1, conns: 2 }];
-            for (k, (up, down)) in q.push(&r).unwrap() {
+            for (k, (up, down)) in q.push(&r, false).unwrap() {
                 let c = carried.entry(k).or_default();
                 (c.0, c.1) = (c.0 + up, c.1 + down);
             }
@@ -225,6 +237,30 @@ mod tests {
         assert_eq!(*q.items.keys().last().unwrap(), 10);
         let left: u64 = q.items.keys().sum();
         assert_eq!(carried, Carry::from([(id, ((1..=10).sum::<u64>() - left, q.dropped))]));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn dead_letter_hands_back_traffic_unless_already_carried() {
+        let d = tmpdir("c");
+        let mut q = Queue::open(d.clone(), 1 << 20, i64::MAX / 2).unwrap();
+        let id = uuid::Uuid::from_u128(1);
+        let mut r = rep(1, 10);
+        r.entries = vec![EntrySample { entry_id: id, ts_ms: 0, up_bytes: 5, down_bytes: 7, conns: 1 }];
+        q.push(&r, false).unwrap();
+        r.seq = 2;
+        q.push(&r, true).unwrap();
+        // 被拒的报告里的流量交回去结转；报告本身照样留在 dead/
+        assert_eq!(q.dead_letter(1).iter().map(|e| (e.entry_id, e.up_bytes, e.down_bytes)).collect::<Vec<_>>(), [(id, 5, 7)]);
+        assert!(d.join("dead").join(format!("{:020}.json", 1)).exists());
+        // 带着结转流量的那份再被拒：不再结转，免得一份接一份地被拒下去
+        assert!(q.dead_letter(2).is_empty());
+        assert_eq!((q.dead, q.len(), q.bytes), (2, 0, 0));
+        // 重启后不记得哪份带过结转：当没带，照常交回
+        r.seq = 3;
+        q.push(&r, true).unwrap();
+        let mut q = Queue::open(d.clone(), 1 << 20, i64::MAX / 2).unwrap();
+        assert_eq!(q.dead_letter(3).len(), 1);
         let _ = std::fs::remove_dir_all(&d);
     }
 }
