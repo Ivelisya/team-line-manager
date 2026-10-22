@@ -16,39 +16,14 @@ pub const STATIC_OUTBOUNDS: [&str; 3] = ["deny", "direct", "blocked"];
 /// mihomo 兼容：minClientVer 不得高于此值
 pub const MAX_MIN_CLIENT_VER: &str = "1.8.2";
 
-/// 本机 DNS 是链路本地地址时 Xray 改用的公共解析（见 `link_local_dns`）
-pub const PUBLIC_DNS: [&str; 2] = ["1.1.1.1", "8.8.8.8"];
-/// 内置 DNS 发出的查询带的入站 tag：查询也走路由，没有规则会落到默认出站（deny 黑洞）
-const DNS_TAG: &str = "dns";
-
 pub struct RenderCtx {
     pub access_log: String,
-    /// 本机 DNS 是链路本地地址：Xray 用内置 DNS 经公共解析（PUBLIC_DNS）解析域名
-    pub public_dns: bool,
 }
 
 impl RenderCtx {
-    /// 每次渲染时读 /etc/resolv.conf（小文件；apply 在阻塞线程里调）
     pub fn of(cfg: &Config) -> Self {
-        let public_dns = std::fs::read_to_string("/etc/resolv.conf").is_ok_and(|s| link_local_dns(&s));
-        Self { access_log: cfg.access_log.to_string_lossy().into(), public_dns }
+        Self { access_log: cfg.access_log.to_string_lossy().into() }
     }
-}
-
-/// resolv.conf 里有链路本地的 nameserver（169.254.0.0/16、fe80::/10：GCE、Oracle 等不经 systemd-resolved 的镜像，DNS 就是元数据服务）。
-/// fleet-xray 单元用 IPAddressDeny=link-local 拦着元数据服务，Xray 经系统解析就解析不了域名。判断同中控 jobs::scripts 的 LINKLOCAL_DNS
-pub fn link_local_dns(resolv: &str) -> bool {
-    resolv
-        .lines()
-        .filter_map(|l| {
-            let mut w = l.split_whitespace();
-            (w.next() == Some("nameserver")).then(|| w.next()).flatten()
-        })
-        .filter_map(|a| a.split('%').next().and_then(|a| a.parse::<std::net::IpAddr>().ok()))
-        .any(|ip| match ip {
-            std::net::IpAddr::V4(v) => v.is_link_local(),
-            std::net::IpAddr::V6(v) => v.segments()[0] & 0xffc0 == 0xfe80,
-        })
 }
 
 /// 渲染结果：整份配置 + 按类别切开的对象（用于按 tag 做差异）
@@ -93,7 +68,7 @@ impl Rendered {
         let outbounds = arr(&["outbounds"]);
         let rules = arr(&["routing", "rules"]);
         let mut sp = Map::new();
-        for k in ["log", "api", "stats", "policy", "dns"] {
+        for k in ["log", "api", "stats", "policy"] {
             if let Some(v) = full.get(k) {
                 sp.insert(k.into(), v.clone());
             }
@@ -133,8 +108,7 @@ pub fn probe_tag(id: Uuid) -> String {
     format!("probe-{}", id.simple())
 }
 
-/// `freedom_ds`：直出（freedom）的 domainStrategy。AsIs = 交给系统解析；本机 DNS 是链路本地地址时 UseIPv4 = 用内置 DNS（公共解析）
-fn outbound_json(id: Uuid, o: &Outbound, freedom_ds: &str) -> Value {
+fn outbound_json(id: Uuid, o: &Outbound) -> Value {
     let tag = tags::outbound(id);
     let server = |host: &str, port: u16, user: &Option<String>, pass: &Option<String>| {
         let mut s = json!({"address": host, "port": port});
@@ -158,7 +132,7 @@ fn outbound_json(id: Uuid, o: &Outbound, freedom_ds: &str) -> Value {
         }),
         // 直出也用入口自己的出站 tag（不用共享的 direct）：探测入站、访问策略的放行规则都指向 out-<入口>，
         // 增删、回滚、核对和节点入口走同一条路
-        Outbound::Direct => json!({"tag": tag, "protocol": "freedom", "settings": {"domainStrategy": freedom_ds}}),
+        Outbound::Direct => json!({"tag": tag, "protocol": "freedom", "settings": {"domainStrategy": "AsIs"}}),
     }
 }
 
@@ -355,15 +329,10 @@ pub fn render(d: &DesiredState, ctx: &RenderCtx) -> Result<Rendered> {
     ];
     // 探测入站（本机回环）的规则排在内网屏蔽之前：回显服务可能在内网（实验室），而客户流量仍然禁止访问内网
     let mut rules = vec![];
-    // 本机 DNS 是链路本地地址：内置 DNS 的查询（发往公共解析的 IP）走 direct
-    if ctx.public_dns {
-        rules.push(json!({"type": "field", "ruleTag": "dns-out", "inboundTag": [DNS_TAG], "outboundTag": "direct"}));
-    }
-    let freedom_ds = if ctx.public_dns { "UseIPv4" } else { "AsIs" };
     let mut entry_rules = vec![];
     for e in &enabled {
         inbounds.push(inbound_json(e, &d.relay, &min_ver));
-        outbounds.push(outbound_json(e.id, &e.outbound, freedom_ds));
+        outbounds.push(outbound_json(e.id, &e.outbound));
         if let Some(p) = probes.get(&e.id) {
             inbounds.push(probe_inbound_json(e.id, *p));
             if let Some(echo) = &echo {
@@ -379,14 +348,11 @@ pub fn render(d: &DesiredState, ctx: &RenderCtx) -> Result<Rendered> {
     rules.push(json!({"type": "field", "ruleTag": "block-private", "ip": ["geoip:private"], "outboundTag": "blocked"}));
     rules.push(json!({"type": "field", "ruleTag": "block-bittorrent", "protocol": ["bittorrent"], "outboundTag": "blocked"}));
     rules.extend(entry_rules);
-    let mut full = json!({
+    let full = json!({
         "log": log, "api": api, "stats": stats, "policy": policy,
         "inbounds": inbounds, "outbounds": outbounds,
         "routing": {"domainStrategy": "AsIs", "rules": rules}
     });
-    if ctx.public_dns {
-        full["dns"] = json!({"servers": PUBLIC_DNS, "tag": DNS_TAG});
-    }
     Ok(Rendered::from_full(full))
 }
 
@@ -413,7 +379,7 @@ pub mod tests {
     use std::net::IpAddr;
 
     pub fn ctx() -> RenderCtx {
-        RenderCtx { access_log: "/var/log/fleet-xray/access.log".into(), public_dns: false }
+        RenderCtx { access_log: "/var/log/fleet-xray/access.log".into() }
     }
 
     pub fn entry(n: u128, port: u16, enabled: bool) -> DesiredEntry {
@@ -720,41 +686,5 @@ x"]));
         assert_eq!(a.static_part, b.static_part);
         assert_eq!(Rendered::from_full(a.full.clone()), a);
         assert_eq!(skeleton(&ctx()).static_part, a.static_part);
-    }
-
-    #[test]
-    fn link_local_resolv_conf() {
-        for (conf, want) in [
-            ("search example.internal\nnameserver 169.254.169.254\n", true),
-            ("nameserver 10.0.0.2\nnameserver fe80::1%eth0\n", true),
-            ("  nameserver\t169.254.0.1  # GCE\n", true),
-            ("# nameserver 169.254.169.254\nnameserver 10.0.0.2\n", false),
-            ("nameserver 127.0.0.53\noptions edns0 trust-ad\n", false),
-            ("nameserver 2001:4860:4860::8888\n", false),
-            ("", false),
-        ] {
-            assert_eq!(link_local_dns(conf), want, "{conf}");
-        }
-    }
-
-    /// 本机 DNS 是链路本地地址：内置 DNS 用公共解析、它的查询走 direct，直出入口按内置 DNS 解析；其余不变。
-    /// DNS 属于骨架（static_part）：切换时重启 Xray
-    #[test]
-    fn public_dns_when_link_local() {
-        let d = desired(vec![entry(1, 20001, true), direct(2, 20002)]);
-        let plain = render(&d, &ctx()).unwrap();
-        assert!(plain.full.get("dns").is_none() && plain.static_part.get("dns").is_none());
-        let r = render(&d, &RenderCtx { public_dns: true, ..ctx() }).unwrap();
-        assert_eq!(r.full["dns"], json!({"servers": ["1.1.1.1", "8.8.8.8"], "tag": "dns"}));
-        assert_eq!(r.rules[0], json!({"type": "field", "ruleTag": "dns-out", "inboundTag": ["dns"], "outboundTag": "direct"}));
-        assert_eq!(r.rules[1..], plain.rules[..]);
-        let id2 = Uuid::from_u128(2).simple().to_string();
-        let o = r.outbounds.iter().find(|o| tag_of(o) == format!("out-{id2}")).unwrap();
-        assert_eq!(o["settings"]["domainStrategy"], "UseIPv4");
-        // 节点入口的出站、共享的 direct（只发往 IP）、入站、路由的 domainStrategy 都不变
-        assert_eq!((&r.inbounds, &r.outbounds[..4]), (&plain.inbounds, &plain.outbounds[..4]));
-        assert_eq!(r.full["routing"]["domainStrategy"], "AsIs");
-        assert_ne!(r.static_part, plain.static_part);
-        assert_eq!(Rendered::from_full(r.full.clone()), r);
     }
 }

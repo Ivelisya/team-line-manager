@@ -316,6 +316,10 @@ pub struct HostCollector {
     ifaces: Vec<String>,
     /// 本命名空间里能看到的线程数（判断 loadavg 是不是宿主机的）：遍历 /proc 较重，随网卡一起刷新
     threads: usize,
+    /// 在容器里才用：/proc/meminfo 的 MemTotal（memory.max 不限时的总量）与可用核数（cpu.max 不限时）。
+    /// 很少变，随网卡一起刷新（available_parallelism 每次调用都重读 cgroup 文件）
+    host_mem_total: u64,
+    parallelism: f64,
     ifaces_at: std::time::Instant,
     net: NetCounter,
 }
@@ -323,8 +327,17 @@ pub struct HostCollector {
 impl HostCollector {
     pub fn new() -> Self {
         let cg = Cgroup::detect(Path::new("/sys/fs/cgroup"));
-        let mut c = Self { prev_cpu: None, cg, ifaces: vec![], threads: 0, ifaces_at: std::time::Instant::now(), net: NetCounter::default() };
-        c.refresh_ifaces();
+        let mut c = Self {
+            prev_cpu: None,
+            cg,
+            ifaces: vec![],
+            threads: 0,
+            host_mem_total: 0,
+            parallelism: 1.0,
+            ifaces_at: std::time::Instant::now(),
+            net: NetCounter::default(),
+        };
+        c.refresh_slow();
         c.prev_cpu = parse_cpu(&read("/proc/stat"));
         // 先记下各网卡基线，第一个样本就有增量
         c.read_net();
@@ -336,25 +349,31 @@ impl HostCollector {
         self.net.update(parse_net_dev(&read("/proc/net/dev")).into_iter().filter(|(n, _, _)| ifaces.contains(n)));
     }
 
-    fn refresh_ifaces(&mut self) {
+    /// 每 300 s 刷新一次的：网卡集合、可见线程数，容器里还有 MemTotal 与可用核数
+    fn refresh_slow(&mut self) {
         let names: Vec<String> = parse_net_dev(&read("/proc/net/dev")).into_iter().map(|x| x.0).collect();
         self.ifaces = pick_ifaces(&names, |n| std::path::Path::new(&format!("/sys/class/net/{n}/device")).exists());
         self.threads = visible_threads(std::path::Path::new("/proc"));
+        if self.cg.is_some() {
+            self.host_mem_total = parse_meminfo(&read("/proc/meminfo")).0;
+            self.parallelism = std::thread::available_parallelism().map_or(1, |n| n.get()) as f64;
+        }
         self.ifaces_at = std::time::Instant::now();
     }
 
     pub fn sample(&mut self) -> HostSample {
         if self.ifaces_at.elapsed().as_secs() > 300 {
-            self.refresh_ifaces();
+            self.refresh_slow();
         }
-        let (host_total, avail) = parse_meminfo(&read("/proc/meminfo"));
         let (pct, mem_used, mem_total) = match &mut self.cg {
             Some(cg) => {
-                let par = std::thread::available_parallelism().map_or(1, |n| n.get()) as f64;
-                let (used, total) = cg.mem(host_total);
-                (cg.cpu_pct(par), used, total)
+                let (used, total) = cg.mem(self.host_mem_total);
+                (cg.cpu_pct(self.parallelism), used, total)
             }
-            None => (proc_cpu_pct(&mut self.prev_cpu), host_total.saturating_sub(avail), host_total),
+            None => {
+                let (total, avail) = parse_meminfo(&read("/proc/meminfo"));
+                (proc_cpu_pct(&mut self.prev_cpu), total.saturating_sub(avail), total)
+            }
         };
         let (disk_used, disk_total) = disk_root();
         self.read_net();

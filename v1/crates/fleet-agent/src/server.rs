@@ -58,8 +58,10 @@ pub fn plain_http_over_public(url: &str) -> bool {
 #[derive(Debug, PartialEq)]
 pub enum Outcome<T> {
     Ok(T),
-    /// 可重试（网络、全部 5xx、408、429、403、404），带建议等待；受队列的字节与时长上限约束
+    /// 可重试（网络、全部 5xx、408、403、404），带建议等待；受队列的字节与时长上限约束
     Retry { wait: Option<Duration>, why: String },
+    /// 429：中控那边这台机器的上一份还在处理，或超了按机器的限速。不是故障，不计失败，按 Retry-After（没有就 5 秒）再发
+    Busy { wait: Duration, why: String },
     /// 令牌无效/被撤销：停止发送，长睡
     Revoked,
     /// 永久拒绝（400/413/422 等其它 4xx）：只有这类移入 dead/。服务端把数据问题（坏字节、违反约束）回 422，
@@ -73,6 +75,7 @@ impl<T> Outcome<T> {
         match self {
             Outcome::Ok(v) => f(v),
             Outcome::Retry { wait, why } => Outcome::Retry { wait, why },
+            Outcome::Busy { wait, why } => Outcome::Busy { wait, why },
             Outcome::Revoked => Outcome::Revoked,
             Outcome::Rejected(s) => Outcome::Rejected(s),
         }
@@ -110,7 +113,7 @@ pub fn classify(status: u16, retry_after_s: Option<u64>, body: &str) -> Outcome<
     match status {
         200..=299 => Outcome::Ok(()),
         401 => Outcome::Revoked,
-        429 => Outcome::Retry { wait: Some(Duration::from_secs(retry_after_s.unwrap_or(5).clamp(1, 600))), why: short() },
+        429 => Outcome::Busy { wait: Duration::from_secs(retry_after_s.unwrap_or(5).clamp(1, 600)), why: short() },
         // 403：令牌与机器不匹配等，不丢数据，响亮地重试
         403 | 404 | 408 => Outcome::Retry { wait: None, why: short() },
         400..=499 => Outcome::Rejected(short()),
@@ -228,14 +231,21 @@ pub mod tests {
 
     /// 最小 HTTP 服务端：每个连接一个请求，一律回 200 和 `{"accepted_seq":9,"interval_s":10}`。
     pub async fn mock_server() -> (String, Seen) {
+        mock_server_busy(0).await
+    }
+
+    /// 同 `mock_server`，但前 `busy` 个请求回 429、Retry-After: 1（中控那边这台机器正忙）
+    pub async fn mock_server_busy(busy: usize) -> (String, Seen) {
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = l.local_addr().unwrap();
         let seen: Seen = Default::default();
         let seen2 = seen.clone();
+        let n = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         tokio::spawn(async move {
             loop {
                 let Ok((mut s, _)) = l.accept().await else { return };
                 let seen = seen2.clone();
+                let busy_now = n.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < busy;
                 tokio::spawn(async move {
                     let mut raw = Vec::new();
                     let mut buf = [0u8; 8192];
@@ -264,7 +274,11 @@ pub mod tests {
                     };
                     seen.lock().unwrap().push((gz, plain));
                     let ack = r#"{"accepted_seq":9,"interval_s":10}"#;
-                    let resp = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{ack}", ack.len());
+                    let resp = if busy_now {
+                        "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 1\r\nContent-Length: 4\r\nConnection: close\r\n\r\nbusy".to_string()
+                    } else {
+                        format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{ack}", ack.len())
+                    };
                     let _ = s.write_all(resp.as_bytes()).await;
                 });
             }
@@ -320,14 +334,15 @@ pub mod tests {
     fn status_classification() {
         assert_eq!(classify(200, None, ""), Outcome::Ok(()));
         assert_eq!(classify(401, None, ""), Outcome::Revoked);
-        assert!(matches!(classify(429, Some(7), ""), Outcome::Retry { wait: Some(d), .. } if d.as_secs() == 7));
-        assert!(matches!(classify(429, Some(9999), ""), Outcome::Retry { wait: Some(d), .. } if d.as_secs() == 600));
+        assert!(matches!(classify(429, Some(7), ""), Outcome::Busy { wait, .. } if wait.as_secs() == 7));
+        assert!(matches!(classify(429, Some(9999), ""), Outcome::Busy { wait, .. } if wait.as_secs() == 600));
+        assert!(matches!(classify(429, None, ""), Outcome::Busy { wait, .. } if wait.as_secs() == 5));
         assert!(matches!(classify(403, None, "x"), Outcome::Retry { .. }));
         // 5xx 一律重试，永不移入 dead/（数据问题服务端回 422）
         for s in [500, 502, 503, 504] {
             assert!(matches!(classify(s, None, "x"), Outcome::Retry { .. }), "{s}");
         }
-        for s in [408, 429, 403, 404] {
+        for s in [408, 403, 404] {
             assert!(matches!(classify(s, None, "x"), Outcome::Retry { .. }), "{s}");
         }
         for s in [400, 413, 422] {

@@ -127,7 +127,7 @@ pub fn restore(sh: &Shared) {
 /// 关停一律用 `wait_for(|v| *v)` 等：它看当前值；`changed()` 会把共享的接收端标成已读，之后别处的 select 就醒不来
 async fn report_applied(sh: &Shared, client: &ServerClient, rep: &ApplyReport, sd: &mut watch::Receiver<bool>) -> bool {
     for attempt in 0..3u32 {
-        match client.post_applied(rep).await {
+        let wait = match client.post_applied(rep).await {
             Outcome::Ok(()) => {
                 let _ = tokio::fs::remove_file(pending_ack_path(&sh.cfg)).await;
                 return true;
@@ -138,13 +138,18 @@ async fn report_applied(sh: &Shared, client: &ServerClient, rep: &ApplyReport, s
                 return true;
             }
             Outcome::Revoked => break,
-            Outcome::Retry { wait, why, .. } => {
-                tracing::warn!("应用回报失败（第 {} 次）：{why}", attempt + 1);
-                tokio::select! {
-                    _ = tokio::time::sleep(wait.unwrap_or_else(|| backoff(attempt, 2, 20))) => {}
-                    _ = sd.wait_for(|v| *v) => break,
-                }
+            Outcome::Busy { wait, why } => {
+                tracing::debug!("应用回报：中控正忙，{} 秒后再发：{why}", wait.as_secs());
+                wait
             }
+            Outcome::Retry { wait, why } => {
+                tracing::warn!("应用回报失败（第 {} 次）：{why}", attempt + 1);
+                wait.unwrap_or_else(|| backoff(attempt, 2, 20))
+            }
+        };
+        tokio::select! {
+            _ = tokio::time::sleep(wait) => {}
+            _ = sd.wait_for(|v| *v) => break,
         }
     }
     let (path, rep) = (pending_ack_path(&sh.cfg), rep.clone());
@@ -198,7 +203,8 @@ pub async fn desired_task(sh: Arc<Shared>, applier: Arc<Applier>, client: Arc<Se
                 None
             }
             Outcome::Ok(Desired::State(d)) if gate.blocks(d.generation) => {
-                // 正常不会走到（上面已带着这一代去轮询）；防御：别在闸门期内重试
+                // 平时带着闸门的这一代去轮询，拿不回它；但解析不了的那一代更大时带的是那一代（中控代数回退后），
+                // 中控按「不等于」立刻把闸门里的这一代发回来：别在闸门期内重试（重启路径会再断一次客户连接）
                 Some(Duration::from_secs(30))
             }
             Outcome::Ok(Desired::State(d)) => {
@@ -238,7 +244,9 @@ pub async fn desired_task(sh: Arc<Shared>, applier: Arc<Applier>, client: Arc<Se
                 tracing::error!("拉取期望状态收到 401：令牌无效。{} 秒后重试", REVOKED_SLEEP.as_secs());
                 Some(REVOKED_SLEEP)
             }
-            Outcome::Retry { wait, why, .. } => {
+            // 中控正忙（429）：不算失败
+            Outcome::Busy { wait, .. } => Some(wait),
+            Outcome::Retry { wait, why } => {
                 fails += 1;
                 if fails <= 3 || fails.is_multiple_of(10) {
                     tracing::warn!(fails, "拉取期望状态失败：{why}");

@@ -34,34 +34,87 @@ fn follow_if(ctx: &Ctx, follow: bool, job_id: &str) -> anyhow::Result<u8> {
 
 // ── 上架 ─────────────────────────────────────────────────────────────
 
+/// `fleetctl provision` 的参数（clap 直接解析成它，原样交给 provision）
+#[derive(clap::Args)]
 pub struct ProvisionOpts {
+    /// 批量文件（JSON 数组或 {"items":[…]}；条目里 team/relay/provider/plan/host 可直接写名字）
+    #[arg(long)]
     pub file: Option<std::path::PathBuf>,
+    /// vps | proxy | relay
+    #[arg(long)]
     pub kind: Option<String>,
+    #[arg(long)]
     pub ip: Option<String>,
+    /// 同机 IP 节点：加在这台已有的 VPS 节点（宿主机）上，用它的 SSH 与 agent；--ip 是新的出口 IP（要已配在宿主机网卡上），
+    /// 不用填 --ssh-port / --ssh-password-env / --ss-port（SS 端口由中控分配），供应商取宿主机的
+    #[arg(long)]
     pub host: Option<String>,
+    #[arg(long)]
     pub ssh_port: Option<u16>,
+    /// 团队名（节点）
+    #[arg(long)]
     pub team: Option<String>,
+    /// 团队内编号（不填取最小空号）
+    #[arg(long)]
     pub number: Option<i32>,
+    /// 线路机名（relay）
+    #[arg(long)]
     pub label: Option<String>,
+    /// 节点要挂的线路机
+    #[arg(long)]
     pub relay: Option<String>,
+    #[arg(long)]
     pub provider: Option<String>,
+    #[arg(long)]
     pub plan: Option<String>,
+    #[arg(long)]
     pub service_ref: Option<String>,
+    /// 国家（名字旁的国旗）：ISO 3166-1 两位代码，如 US、JP；不填按 IP 自动定
+    #[arg(long)]
     pub country: Option<String>,
+    #[arg(long)]
     pub note: Option<String>,
+    /// vps 的公网（NAT 映射）SS 端口；节点上 ssserver 固定监听 8388，非 NAT 机不要填
+    #[arg(long)]
     pub ss_port: Option<u16>,
+    /// 家宽代理（proxy）的上游：socks5://用户:密码@主机:端口
+    #[arg(long)]
     pub upstream: Option<String>,
+    /// 首次登录用的 root 密码放在哪个环境变量里（不填则用中控的密钥）
+    #[arg(long)]
     pub ssh_password_env: Option<String>,
+    /// 到期日 YYYY-MM-DD（给了 = 建订阅；选了 --plan 时必填）。订阅其余各项默认跟随套餐 / 供应商，下面几项给了 = 单独设置
+    #[arg(long)]
     pub due: Option<String>,
-    pub price_cents: Option<i64>,
+    /// 价格，如 39.46（没有套餐的机器必填）
+    #[arg(long)]
     pub price: Option<String>,
+    /// 价格（分）；同 --price，旧写法
+    #[arg(long, hide = true)]
+    pub price_cents: Option<i64>,
+    /// 币种代码，如 USD / CNY
+    #[arg(long)]
     pub currency: Option<String>,
+    /// 计费周期：monthly | quarterly | semiannual | yearly
+    #[arg(long)]
     pub cycle: Option<String>,
+    /// 账单时区（IANA 名）
+    #[arg(long)]
     pub tz: Option<String>,
+    /// 流量上限 GB（0 = 不限）
+    #[arg(long)]
     pub traffic_gb: Option<String>,
+    /// 流量每月几号重置（1–31）
+    #[arg(long)]
     pub reset_day: Option<String>,
+    /// 只校验，不提交
+    #[arg(long)]
     pub dry_run: bool,
+    /// 跳过确认
+    #[arg(long)]
     pub yes: bool,
+    /// 提交后跟随作业日志直到结束
+    #[arg(long)]
     pub follow: bool,
 }
 
@@ -430,26 +483,37 @@ pub fn add_direct(ctx: &Ctx, relay: &str, yes: bool, follow: bool) -> anyhow::Re
     follow_if(ctx, follow, &job)
 }
 
-pub fn entry_action(ctx: &Ctx, action: &str, entry: &str, yes: bool) -> anyhow::Result<u8> {
-    if !matches!(action, "enable" | "disable" | "rotate") {
-        bail!("动作只能是 enable / disable / rotate / add-direct");
-    }
+/// `fleetctl entry` 的动作
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub enum EntryAction {
+    Enable,
+    Disable,
+    /// 轮换凭据（旧分享链接立即失效）
+    Rotate,
+    /// 给线路机加直出入口（这时 <入口> 写线路机）
+    AddDirect,
+}
+
+pub fn entry_action(ctx: &Ctx, action: EntryAction, entry: &str, yes: bool, follow: bool) -> anyhow::Result<u8> {
+    let (api, done) = match action {
+        EntryAction::Enable => ("enable", "启用"),
+        EntryAction::Disable => ("disable", "停用"),
+        EntryAction::Rotate => ("rotate", "轮换凭据"),
+        EntryAction::AddDirect => return add_direct(ctx, entry, yes, follow),
+    };
     let es = cmds::all_entries(ctx)?;
     let e = resolve::entry(&es, entry).map_err(|e| anyhow!(e))?;
     let label = format!("{}:{}", st(e, "/relay/name"), st(e, "/port"));
-    let mut body = json!({"action": action});
-    if action == "rotate" {
-        confirm(&format!("确认轮换 {label}（→ {}）的凭据？旧分享链接会立即失效", st(e, "/node/name")), yes)?;
-        body["confirm"] = json!(label);
-    } else if action == "disable" {
-        confirm(&format!("确认停用入口 {label}（→ {}）？", st(e, "/node/name")), yes)?;
+    let mut body = json!({"action": api});
+    match action {
+        EntryAction::Rotate => {
+            confirm(&format!("确认轮换 {label}（→ {}）的凭据？旧分享链接会立即失效", st(e, "/node/name")), yes)?;
+            body["confirm"] = json!(label);
+        }
+        EntryAction::Disable => confirm(&format!("确认停用入口 {label}（→ {}）？", st(e, "/node/name")), yes)?,
+        _ => {}
     }
     let d = ctx.c.post(&format!("/entries/{}/actions", st(e, "/id")), &body)?;
-    let done = match action {
-        "enable" => "启用",
-        "disable" => "停用",
-        _ => "轮换凭据",
-    };
     ctx.emit(&d, || format!("已{done} {label}（期望状态代数 {}）", st(&d, "/generation")));
     Ok(0)
 }
@@ -505,10 +569,16 @@ fn team_targets(all: &[Value], team: &str) -> Vec<ExecTarget> {
 }
 
 fn run_one(ctx: &Ctx, t: &ExecTarget, command: &str, timeout: u64) -> ExecResult {
+    // 中控最坏要 timeout + 45 秒多才回：排队等执行名额最多 30 秒、SSH 本地兜底 timeout + 15 秒，再加写审计。多留 15 秒
     let data = ctx
         .c
-        .post_t(&format!("/machines/{}/exec", t.id), &json!({"command": command, "timeout_s": timeout}), Duration::from_secs(timeout + 40));
+        .post_t(&format!("/machines/{}/exec", t.id), &json!({"command": command, "timeout_s": timeout}), Duration::from_secs(timeout + 60));
     ExecResult { name: t.name.clone(), id: t.id.clone(), data }
+}
+
+/// 单台执行的退出码沿用远端的；远端不是 0..=255（被信号杀死时 ssh 报 -1，或没有退出码）一律算 1，不能当成功
+fn exit_code_of(d: &Value) -> u8 {
+    d["exit_code"].as_i64().and_then(|c| u8::try_from(c).ok()).unwrap_or(1)
 }
 
 pub fn exec(ctx: &Ctx, o: ExecOpts<'_>) -> anyhow::Result<u8> {
@@ -561,7 +631,7 @@ pub fn exec(ctx: &Ctx, o: ExecOpts<'_>) -> anyhow::Result<u8> {
                 eprintln!("[命令超时（{} 秒）被终止]", o.timeout);
             }
         }
-        return Ok(d["exit_code"].as_i64().unwrap_or(1).clamp(0, 255) as u8);
+        return Ok(exit_code_of(&d));
     }
 
     // 多台：并发 4，按给定顺序汇总
@@ -763,5 +833,12 @@ mod tests {
             m("z", "团队2", "vps", "active", None),
         ];
         assert_eq!(team_targets(&all, "团队1").iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["h", "y"]);
+    }
+
+    /// 远端退出码 0..=255 原样返回；-1（被信号杀死）、越界、缺失都算 1
+    #[test]
+    fn exec_exit_code() {
+        let codes: Vec<u8> = [json!(0), json!(3), json!(255), json!(-1), json!(256), json!(null)].into_iter().map(|c| exit_code_of(&json!({"exit_code": c}))).collect();
+        assert_eq!(codes, [0, 3, 255, 1, 1, 1]);
     }
 }

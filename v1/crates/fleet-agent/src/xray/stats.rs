@@ -3,7 +3,7 @@
 
 use fleet_proto::{tags, EntrySample};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -41,6 +41,20 @@ pub fn add_carry(carry: &mut Carry, samples: &[EntrySample]) {
 /// 连接数记 0（中控对连接数取 max，不受影响）
 pub fn carry_samples(carry: &Carry, ts_ms: i64) -> Vec<EntrySample> {
     carry.iter().map(|(&entry_id, &(up_bytes, down_bytes))| EntrySample { entry_id, ts_ms, up_bytes, down_bytes, conns: 0 }).collect()
+}
+
+/// 计数器名 `user>>>e-<入口>>>>traffic>>>uplink|downlink` 里的入口
+fn counter_entry(name: &str) -> Option<Uuid> {
+    let email = name.strip_prefix("user>>>")?.split(">>>").next()?;
+    Uuid::try_parse(email.strip_prefix("e-")?).ok()
+}
+
+/// 只留 `ids` 里入口的计数器，再交给 `compute`。stats_task 传「本轮启用 ∪ 上轮启用」：
+/// - 刚停用 / 删除的入口上轮还启用：这一轮照样求差、出样本，停用前最后一段流量不丢
+/// - 热添加的入口：Xray 里已有计数器、applied 还没换上时不建基线，等它进了启用列表，首批字节按「新出现的计数器」整个计入
+/// - 两轮都不启用的：不参与计算，基线原样留着（同纪元内加回来时按原基线求差）
+pub fn entry_counters(list: Vec<(String, u64)>, ids: &HashSet<Uuid>) -> HashMap<String, u64> {
+    list.into_iter().filter(|(k, _)| counter_entry(k).is_some_and(|id| ids.contains(&id))).collect()
 }
 
 /// 计算每个计数器的增量并更新状态。
@@ -90,7 +104,7 @@ pub fn compute_if_known(st: &mut StatsState, core_id: Option<&str>, cur: &HashMa
     Some(compute(st, core_id?, cur))
 }
 
-/// 把增量按入口汇总成 EntrySample（只为已知的启用入口输出，零增量也输出以保持连续性）
+/// 把增量按入口汇总成 EntrySample（只为给定的入口输出：本轮启用的与上轮启用、这轮停用的；零增量也输出以保持连续性）
 pub fn to_samples(deltas: &HashMap<String, u64>, entries: &[(Uuid, u32)], ts_ms: i64) -> Vec<EntrySample> {
     entries
         .iter()
@@ -210,5 +224,28 @@ mod tests {
         // 新纪元后旧计数器的基线被清掉
         compute(&mut st, "c2", &m(&[("other", 5)]));
         assert!(!st.prev.contains_key(&up));
+    }
+
+    /// 回归：入口刚停用时最后一段流量照样算出来；热添加的入口在 applied 换上之前不建基线，首批字节不被吞掉
+    #[test]
+    fn disabled_and_hot_added_entries_keep_bytes() {
+        let (a, b) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        let up = |id: Uuid| format!("user>>>{}>>>traffic>>>uplink", tags::email(id));
+        let list = |va: u64, vb: u64| vec![(up(a), va), (up(b), vb), ("user>>>probe>>>traffic>>>uplink".to_string(), 9)];
+        let ids = |v: &[Uuid]| v.iter().copied().collect::<HashSet<_>>();
+        let mut st = StatsState::default();
+        compute(&mut st, "c1", &entry_counters(list(100, 0), &ids(&[a])));
+        // b 已加进 Xray、有了 40 字节，但 applied 还没换上：不建基线
+        let d = compute(&mut st, "c1", &entry_counters(list(130, 40), &ids(&[a])));
+        assert_eq!((d.get(&up(a)), d.get(&up(b))), (Some(&30), None));
+        assert!(!st.prev.contains_key(&up(b)) && st.prev.len() == 1);
+        // 下一轮 b 启用、a 刚停用（上轮还启用）：b 的 40 + 10 整个计入，a 停用前的 5 字节照样算出来
+        let d = compute(&mut st, "c1", &entry_counters(list(135, 50), &ids(&[a, b])));
+        let s = to_samples(&d, &[(b, 1), (a, 0)], 1000);
+        assert_eq!(s.iter().map(|s| (s.entry_id, s.up_bytes)).collect::<Vec<_>>(), [(b, 50), (a, 5)]);
+        // 之后 a 两轮都不启用：不参与计算，基线留着，加回来时按原基线求差
+        compute(&mut st, "c1", &entry_counters(list(135, 60), &ids(&[b])));
+        let d = compute(&mut st, "c1", &entry_counters(list(137, 60), &ids(&[a, b])));
+        assert_eq!(d[&up(a)], 2);
     }
 }

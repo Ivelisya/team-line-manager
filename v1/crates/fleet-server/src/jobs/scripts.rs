@@ -102,7 +102,8 @@ pub fn node_ss(i: &SsInst) -> String {
 /// 条件：/etc/resolv.conf 的 nameserver 是链路本地地址（169.254.0.0/16、fe80::/10：GCE、Oracle 等不经 systemd-resolved 的镜像；
 /// GCE 上 DNS 和元数据服务是同一个 169.254.169.254）。单元里拦着 link-local，程序就解析不了域名。拦截不能去掉：去掉了，客户经域名
 /// （metadata.google.internal、169.254.169.254.nip.io）就能让程序连上元数据服务、读走实例的服务账号令牌。改用公共解析器：
-/// ssserver 在配置里加 "dns"（NODE_SS），Xray 由 agent 在它的配置里配。脚本输出 `linklocal_dns=1`，步骤记一条 warn
+/// ssserver 在配置里加 "dns"（NODE_SS），Xray 的单元把写着公共解析器的 /etc/fleet-xray/resolv.conf 挂到它看到的 /etc/resolv.conf 上
+/// （XRAY_UNIT_SH）。脚本输出 `linklocal_dns=1`，步骤记一条 warn
 const LINKLOCAL_DNS: &str = r#"grep -qiE '^[[:space:]]*nameserver[[:space:]]+(169\.254\.|fe[89ab][0-9a-f]:)' /etc/resolv.conf 2>/dev/null"#;
 /// 链路本地 DNS 时 ssserver 用的公共解析器（shadowsocks-rust 配置的 "dns"：逗号分隔，UDP / TCP 53；1.25 核对过）
 const PUBLIC_DNS: &str = "1.1.1.1,8.8.8.8";
@@ -218,13 +219,21 @@ fn xray_unit_sh() -> String { XRAY_UNIT_SH.replace("__LINKLOCAL_DNS__", LINKLOCA
 
 /// fleet-xray 单元：内容变了才换，只 daemon-reload，从不重启 Xray（重启会断开所有连接）。
 /// 写、换每一步都查结果：升级时这段包在 `( … ) || echo …` 里，set -e 不起作用，磁盘满时写出来的空文件会被当成新单元换上。
-/// DNS 是链路本地地址时输出 `linklocal_dns=1`（见 `LINKLOCAL_DNS`；元数据拦截照旧，Xray 的公共解析器由 agent 配）
+/// DNS 是链路本地地址时（见 `LINKLOCAL_DNS`；元数据拦截照旧）写 /etc/fleet-xray/resolv.conf（单元把它只读挂到 Xray 的 /etc/resolv.conf 上）、
+/// 输出 `linklocal_dns=1`；不是时删掉它。同样不重启：Xray 下次重启时才换解析器
 const XRAY_UNIT_SH: &str = r#"
 U=/etc/systemd/system/fleet-xray.service
 cat > $U.tmp <<'UNIT' || exit 1
 __UNIT__
 UNIT
-if __LINKLOCAL_DNS__; then echo linklocal_dns=1; fi
+# glibc 与 Go 的解析都只用前三条 nameserver：两条 IPv4、一条 IPv6（只有 IPv6 的机器也能解析）
+R=/etc/fleet-xray/resolv.conf
+if __LINKLOCAL_DNS__; then
+echo linklocal_dns=1
+install -d -m 755 /etc/fleet-xray || exit 1
+printf 'nameserver %s\n' 1.1.1.1 8.8.8.8 2606:4700:4700::1111 > $R.tmp && chmod 644 $R.tmp || exit 1
+cmp -s $R.tmp $R && rm -f $R.tmp || mv $R.tmp $R || exit 1
+else rm -f $R; fi
 cmp -s $U.tmp $U && rm -f $U.tmp || { mv $U.tmp $U || exit 1; systemctl daemon-reload; }
 "#;
 
@@ -378,7 +387,7 @@ set -u
 systemctl disable --now fleet-agent 2>/dev/null; systemctl disable --now fleet-xray 2>/dev/null; systemctl disable --now fleet-xray-logrotate.timer 2>/dev/null
 rm -f /etc/systemd/system/fleet-agent.service /etc/systemd/system/fleet-xray.service /etc/logrotate.d/fleet-xray
 rm -f /etc/systemd/system/fleet-xray-logrotate.service /etc/systemd/system/fleet-xray-logrotate.timer
-rm -rf /etc/fleet-agent /var/lib/fleet-agent /var/log/fleet-xray /var/log/private/fleet-xray /usr/local/bin/fleet-agent /usr/local/bin/fleet-agent.prev /usr/local/bin/xray /usr/local/share/xray
+rm -rf /etc/fleet-agent /etc/fleet-xray /var/lib/fleet-agent /var/log/fleet-xray /var/log/private/fleet-xray /usr/local/bin/fleet-agent /usr/local/bin/fleet-agent.prev /usr/local/bin/xray /usr/local/share/xray
 systemctl daemon-reload
 echo cleanup=done
 "#;
@@ -492,7 +501,7 @@ echo "nft_relays=$(nft list set inet ss_guard relays | tr -d '\n' | sed 's/.*ele
     }
 
     /// /etc/resolv.conf 的 nameserver 是链路本地地址时：ssserver 配置加公共解析器、报 linklocal_dns=1，单元里的元数据拦截一律不动；
-    /// 不是时配置和原来逐字相同。拿渲染出来的那两行在 bash 里真跑；线路机的 Xray 单元同样不动拦截、只报 linklocal_dns=1
+    /// 不是时配置和原来逐字相同。拿渲染出来的那两行在 bash 里真跑；线路机的 Xray 单元同样不动拦截
     #[cfg(unix)]
     #[test]
     fn linklocal_dns_keeps_ip_address_deny() {
@@ -521,7 +530,33 @@ echo "nft_relays=$(nft list set inet ss_guard relays | tr -d '\n' | sed 's/.*ele
         for s in [node_ss(&SsInst::host()), super::xray_unit_sh()] {
             assert!(s.contains("IPAddressDeny=link-local 100.100.100.200/32\n") && !s.contains("/^IPAddressDeny=/d"), "{s}");
         }
-        assert!(super::xray_unit_sh().contains(&format!("UNIT\nif {}; then echo linklocal_dns=1; fi\ncmp -s $U.tmp $U", super::LINKLOCAL_DNS)));
+    }
+
+    /// 线路机装 Xray 单元：DNS 是链路本地地址时写公共解析器的 resolv.conf（单元把它挂到 Xray 的 /etc/resolv.conf 上）、报 linklocal_dns=1；
+    /// 不再是时删掉。整段在 bash 里真跑（路径换到临时目录，systemctl 换成空函数）
+    #[cfg(unix)]
+    #[test]
+    fn linklocal_dns_xray_resolv_conf() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().display().to_string();
+        let sh = format!(
+            "systemctl() {{ :; }}\n{}",
+            super::xray_unit_sh()
+                .replace("/etc/systemd/system", &d)
+                .replace("/etc/fleet-xray", &format!("{d}/fx"))
+                .replace("/etc/resolv.conf", &format!("{d}/resolv.conf"))
+        );
+        assert!(super::XRAY_UNIT.contains("\nBindReadOnlyPaths=-/etc/fleet-xray/resolv.conf:/etc/resolv.conf\n"));
+        let ours = dir.path().join("fx/resolv.conf");
+        for (conf, linklocal) in [("nameserver 169.254.169.254\n", true), ("nameserver 169.254.169.254\n", true), ("nameserver 10.0.0.2\n", false)] {
+            std::fs::write(dir.path().join("resolv.conf"), conf).unwrap();
+            let out = std::process::Command::new("bash").arg("-c").arg(&sh).output().unwrap();
+            assert!(out.status.success(), "{out:?}");
+            assert_eq!(String::from_utf8_lossy(&out.stdout).contains("linklocal_dns=1"), linklocal);
+            let want = linklocal.then(|| "nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 2606:4700:4700::1111\n".to_string());
+            assert_eq!(std::fs::read_to_string(&ours).ok(), want, "{conf}");
+        }
+        assert!(!dir.path().join("fx/resolv.conf.tmp").exists() && dir.path().join("fleet-xray.service").exists());
     }
 
     /// 重跑系统基线时以运行中的 sshd 为准：比配置文件旧（换上之后没来得及重启）也重启，同一秒里的也算旧
