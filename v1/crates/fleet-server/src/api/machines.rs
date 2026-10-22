@@ -9,7 +9,8 @@ use crate::names::{compact_numbers, node_name};
 use crate::state::{AppState, Event};
 use crate::views::{self, Scope};
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{header, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -24,19 +25,20 @@ pub struct ListQ {
     view: Option<String>,
 }
 
-pub async fn list(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<ListQ>) -> ApiResult<Json<Value>> {
+pub async fn list(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<ListQ>) -> ApiResult<Response> {
     let scope = match q.scope.as_deref() {
         Some("retired") => Scope::Retired,
         Some("all") => Scope::All,
         _ => Scope::Live,
     };
     if q.view.as_deref() == Some("brief") {
-        return Ok(ok(views::brief(&st, scope).await?));
+        return Ok(ok(views::brief(&st, scope).await?).into_response());
     }
     if scope == Scope::Live {
-        return Ok(ok(&*views::live(&st).await?));
+        // 在用机器走缓存视图，响应体也随它缓存（同一份视图只序列化一次）
+        return Ok(([(header::CONTENT_TYPE, "application/json")], views::live_json(&st).await?).into_response());
     }
-    Ok(ok(views::load(&st, scope, None).await?))
+    Ok(ok(views::load(&st, scope, None).await?).into_response())
 }
 
 pub async fn get_one(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {

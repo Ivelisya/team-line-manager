@@ -1761,6 +1761,58 @@ async fn report_is_pushed_as_metrics() {
     assert!(!me.contains_key("health") && !me.contains_key("agent"), "{me:?}");
 }
 
+/// 两次完整加载之间只在上一份视图上补指标：补出来的与完整加载的一致（agent、主机读数、探测、Xray、进行中的作业、维护中、健康）；
+/// 不发事件的结构字段（这里直接改库里的线路机名）等资源事件才跟上
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn metrics_refresh_matches_full_load() {
+    use fleet_server::views::{self, Scope};
+    let t = setup().await;
+    let relay = seed_relay(&t, "线路机1", "203.0.113.10", "tok1").await;
+    let team = seed_team(&t, "团队1").await;
+    let (node, entry) = seed_node(&t, relay, team, 1, "203.0.113.5", 20000).await;
+    let now = now_ms();
+    let mut r = blank_report(1);
+    r.host = vec![host(now - 10_000, 10.0, 1_000, 2_000), host(now, 42.5, 11_000, 22_000)];
+    r.xray = Some(xray(true));
+    r.probes = vec![probe(entry, now, ProbeKind::Egress, true), probe(entry, now, ProbeKind::Tcp, true)];
+    assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
+    // 首份上报发 machine 事件：完整加载
+    views::live_fresh(&t.st).await.unwrap();
+
+    // 第二份上报：Xray 停了、出口探测失败；另有一个进行中的作业（只发 job 事件）和节点的维护静默（只发 incidents）
+    let mut r = blank_report(2);
+    r.host = vec![host(now + 10_000, 50.0, 21_000, 42_000)];
+    r.xray = Some(xray(false));
+    r.probes = vec![probe(entry, now + 10_000, ProbeKind::Egress, false), probe(entry, now + 10_000, ProbeKind::Tcp, true)];
+    assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
+    let job = Uuid::now_v7();
+    sqlx::query("insert into job (id, kind, target_id, state, created_by) values ($1, 'upgrade_agent', $2, 'running', 't')").bind(job).bind(relay).execute(&t.st.db).await.unwrap();
+    t.st.emit(Event::Job { id: job, target: Some(relay) });
+    let f = time::format_description::well_known::Rfc3339;
+    let at = OffsetDateTime::now_utc();
+    t.post("/api/v1/silences", json!({
+        "subject_id": node, "is_maintenance": true, "comment": "换机房",
+        "starts_at": (at - time::Duration::minutes(1)).format(&f).unwrap(), "ends_at": (at + time::Duration::hours(1)).format(&f).unwrap(),
+    }))
+    .await;
+    let fresh = views::live_fresh(&t.st).await.unwrap();
+    let full = views::load(&t.st, Scope::Live, None).await.unwrap();
+    assert_eq!(serde_json::to_value(&*fresh).unwrap(), serde_json::to_value(&full).unwrap());
+    let (rv, nv) = (fresh.iter().find(|m| m.id == relay).unwrap(), fresh.iter().find(|m| m.id == node).unwrap());
+    assert_eq!((rv.host.as_ref().and_then(|h| h.cpu_pct), rv.active_job.as_ref().map(|j| j.id)), (Some(50.0), Some(job)));
+    assert!(rv.health.reasons.iter().any(|r| r.key == "relay_xray_down") && rv.entries[0].egress.as_ref().is_some_and(|p| !p.ok), "{rv:?}");
+    assert!(nv.maintenance && nv.entries[0].relay_xray_down, "{nv:?}");
+
+    sqlx::query("update machine set label = '线路机甲' where id = $1").bind(relay).execute(&t.st.db).await.unwrap();
+    let name = |v: &[views::MachineView]| v.iter().find(|m| m.id == relay).unwrap().name.clone();
+    assert_eq!(name(&views::live_fresh(&t.st).await.unwrap()), "线路机1", "没有资源事件：只补指标");
+    // /machines 的响应体随缓存的那份视图缓存：视图换了，响应跟着换
+    assert_eq!(t.get("/api/v1/machines").await[0]["name"], "线路机1");
+    t.st.emit(Event::Machines);
+    assert_eq!(name(&views::live_fresh(&t.st).await.unwrap()), "线路机甲");
+    assert_eq!(t.get("/api/v1/machines").await[0]["name"], "线路机甲");
+}
+
 /// 新建 / 删除维护静默：只发 incidents（不发 machines，前端不整表重取），同时标记实时指标该比对，「维护中」经 metrics 送达
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn maintenance_silence_reaches_cards_via_metrics() {

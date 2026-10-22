@@ -6,7 +6,7 @@ use crate::error::{ApiError, ApiPath, ApiQuery, ApiResult};
 use crate::state::{AppState, Event};
 use crate::views;
 use crate::crypto::sha256;
-use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
@@ -631,7 +631,7 @@ async fn still_valid(db: &sqlx::PgPool, c: &Cred) -> sqlx::Result<bool> {
     }
 }
 
-/// 心跳：每隔这么久发一次 ping，到下一次 ping 还没收到 pong 就当连接已死
+/// 心跳：每隔这么久发一次 ping（另带一个文本心跳 `{"type":"hb"}`），到下一次 ping 还没收到 pong 就当连接已死
 const PING_EVERY: Duration = Duration::from_secs(15);
 const RECHECK_EVERY: Duration = Duration::from_secs(60);
 /// 会话/密钥失效时的关闭码（4000–4999 归应用自用）
@@ -696,7 +696,11 @@ async fn serve_ws(mut ws: WebSocket, mut rx: broadcast::Receiver<Event>, db: sql
                 Some(Ok(_)) => continue,
             },
             _ = ping.tick() => {
-                if pong_due || !send(&mut ws, Message::Ping(Default::default())).await {
+                // 协议层的 ping 浏览器脚本看不到：另发一个文本心跳，前端据此发现半开的连接（web/src/lib/stream.ts）
+                if pong_due
+                    || !send(&mut ws, Message::Ping(Default::default())).await
+                    || !send(&mut ws, Message::Text(Utf8Bytes::from_static(r#"{"type":"hb"}"#))).await
+                {
                     return;
                 }
                 pong_due = true;

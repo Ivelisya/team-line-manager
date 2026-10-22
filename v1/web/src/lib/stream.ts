@@ -7,6 +7,7 @@
 //   等待重连时网络恢复（online）或页面回到前台，立刻重连，不再等退避到点。首次连上让机器类查询失效一次：增量只带变了的字段，
 //   首屏快照若早于订阅，其间变过一次的状态（健康、维护、进行中的作业）不会再推，只能靠这次重取补上；
 //   断线重连后让全部查询失效：没连着时错过的事件和增量靠这次重取补上。
+//   连着 45 s 什么都没收到（服务端每 15 s 发心跳 hb）当作半开的连接，关掉重连；回到前台、网络恢复时也查一次。
 // - 页面在后台：失效只标记过期、不重取，metrics 也不写缓存只标记过期（回到前台由 refetchOnWindowFocus 补上）。
 import { useEffect } from 'react';
 import { useQueryClient, type Query } from '@tanstack/react-query';
@@ -18,6 +19,8 @@ const MERGE_MS = 300;
 const LIST_MS = 2000;
 const LISTS = new Set(['machines', 'relays', 'overview', 'jobs', 'audit']);
 const BACKOFF_MAX = 30_000;
+// 服务端每 15 s 发一个文本心跳 {type:"hb"}：连着这么久什么都没收到就当连接已死
+const STALE_MS = 45_000;
 // 重连、resync 的全部失效不带上这几类：恢复 / 退役预检会真的 SSH 探测机器（改选项或重开对话框才重查）；
 // 集群速率历史只用来垫在实时点前面（live.ts 的 seedFleet 只补现有最早点之前的），重取补不上断线的空档，白取
 const NO_RESYNC = new Set(['restore-preview', 'retire-preview', 'overview-series']);
@@ -34,6 +37,7 @@ export function useStream(enabled: boolean) {
     let connected = false;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let waiting = false; // 断开后在等退避到点
+    let lastAt = 0; // 最近一次收到消息（含心跳 hb）
     let mergeTimer: ReturnType<typeof setTimeout> | undefined;
     let listTimer: ReturnType<typeof setTimeout> | undefined;
     let lastList = 0;
@@ -86,6 +90,8 @@ export function useStream(enabled: boolean) {
     const onMetrics = (msg: MetricsMsg) => {
       if (document.hidden) LIVE_KEYS.forEach((k) => qc.invalidateQueries({ queryKey: k, refetchType: 'none' }));
       else applyMetrics(qc, msg);
+      // 进行中的作业变了（开始、等待 / 运行、结束）：这台的详情重取一次——失败的作业、生命周期原因等不在增量里（服务端不再逐步发事件）
+      for (const [id, d] of Object.entries(msg.machines)) if (d.active_job !== undefined) void inv(['machine', id]);
     };
 
     const open = () => {
@@ -95,35 +101,48 @@ export function useStream(enabled: boolean) {
       ws = s;
       // 正在取的不打断重发（首次连上时首屏请求多半还在路上）
       s.onopen = () => {
-        retry = 0; setStatus('open');
+        retry = 0; setStatus('open'); lastAt = Date.now();
         if (connected) inv(undefined, false); else LIVE_KEYS.forEach((k) => inv(k, false));
         connected = true;
       };
       s.onmessage = (m) => {
+        lastAt = Date.now();
         const ev = JSON.parse(m.data as string) as StreamEvent | MetricsMsg;
+        if (ev.type === 'hb') return;
         if (ev.type === 'metrics') onMetrics(ev as MetricsMsg);
         else queue(ev as StreamEvent);
       };
       // 出错之后一定会 close；会话失效（4401）也照常重连，握手会 401，登录态由各查询处理
-      s.onclose = () => {
-        if (stopped) return;
-        setStatus('error');
-        waiting = true;
-        retryTimer = setTimeout(open, Math.min(BACKOFF_MAX, 1000 * 2 ** retry++ * (0.8 + Math.random() * 0.4)));
-      };
+      s.onclose = closed;
+    };
+    const closed = () => {
+      if (stopped) return;
+      setStatus('error');
+      waiting = true;
+      retryTimer = setTimeout(open, Math.min(BACKOFF_MAX, 1000 * 2 ** retry++ * (0.8 + Math.random() * 0.4)));
+    };
+    // 连着 STALE_MS 什么都没收到（服务端每 15 s 发一次 hb）：多半是半开的连接（休眠唤醒、换了网络），浏览器自己要很久才发现。
+    // 关掉它直接走重连，不等 close 事件（半开的连接上关闭握手可能一直等不到）
+    const checkStale = () => {
+      const s = ws;
+      if (s?.readyState !== WebSocket.OPEN || Date.now() - lastAt < STALE_MS) return;
+      s.onmessage = null; s.onclose = null; s.close();
+      closed();
     };
     const reconnectNow = () => {
       if (!waiting || document.hidden) return;
       clearTimeout(retryTimer); retry = 0; open();
     };
-    window.addEventListener('online', reconnectNow);
-    document.addEventListener('visibilitychange', reconnectNow);
+    const wake = () => { checkStale(); reconnectNow(); };
+    const staleTimer = setInterval(checkStale, 15_000);
+    window.addEventListener('online', wake);
+    document.addEventListener('visibilitychange', wake);
     setStatus('connecting');
     // 推迟到下一轮再连：StrictMode 开发时挂载→卸载→再挂载，避免先建一个马上关掉的连接
     retryTimer = setTimeout(open, 0);
     return () => {
-      stopped = true; ws?.close(); unsub(); clearTimeout(retryTimer); clearTimeout(mergeTimer); clearTimeout(listTimer);
-      window.removeEventListener('online', reconnectNow); document.removeEventListener('visibilitychange', reconnectNow);
+      stopped = true; ws?.close(); unsub(); clearTimeout(retryTimer); clearTimeout(mergeTimer); clearTimeout(listTimer); clearInterval(staleTimer);
+      window.removeEventListener('online', wake); document.removeEventListener('visibilitychange', wake);
       setStatus('connecting');
     };
   }, [enabled, qc]);

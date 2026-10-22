@@ -14,11 +14,9 @@ use uuid::Uuid;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
     Machine { id: Uuid },
-    /// 作业推进带来的机器变化：前端只重取这台机器的详情；列表里的 active_job 由 metrics 推送
-    MachineJob { id: Uuid },
     Machines,
     Relay { id: Uuid },
-    /// 作业变化。`target` 不发给前端：emit 时顺带发目标机器的 MachineJob 事件。
+    /// 作业变化。`target` 不发给前端：目标机器的 active_job 由 metrics 推送（前端见它变了再重取这台的详情）。
     /// 改了机器生命周期的地方（上架、退役、恢复、取消补偿、作业结束）另发 Machines
     Job {
         id: Uuid,
@@ -99,7 +97,8 @@ impl std::ops::Deref for AppState {
 
 impl AppState {
     pub fn new(cfg: Config, db: PgPool, secrets: SecretBox) -> Self {
-        let (events, _) = broadcast::channel(256);
+        // 「全部升级」一次建上百个作业、每步都发 job 事件：缓冲小了慢一点的连接就落后，收到 resync 全量重取
+        let (events, _) = broadcast::channel(1024);
         let (relay_changed, _) = broadcast::channel(64);
         let ipintel = crate::ipintel::Service::new(&cfg.ipintel);
         let access_cache = crate::access::QueryCache::new(std::time::Duration::from_secs(cfg.access_cache_secs));
@@ -134,22 +133,20 @@ impl AppState {
     }
 
     pub fn emit(&self, e: Event) {
-        // 除密钥、软路由外的资源变更都可能改变机器视图
-        if !matches!(e, Event::ApiKeys | Event::Routers) {
-            self.live.invalidate();
+        match e {
+            // 密钥、软路由不在机器视图里
+            Event::ApiKeys | Event::Routers => {}
+            // 作业每一步都发（「全部升级」一次上百个作业），只改卡片上的 active_job / failed_job；静默增删、告警开关只改未恢复的告警数、
+            // 「维护中」与健康：视图在上一份上补（不整份重算），经实时指标（最多 3 s 一次）送达，前端不为它们整表重取
+            Event::Job { .. } | Event::Incidents => {
+                self.live.touched();
+                self.metrics_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            _ => self.live.invalidate(),
         }
         if matches!(e, Event::Machine { .. } | Event::Machines) {
             // 访问监控的结果里带机器名与团队：改名、重新编号后不等下一轮汇总
             self.access_cache.invalidate();
-        }
-        if let Event::Job { target: Some(t), .. } = e {
-            let _ = self.events.send(Event::MachineJob { id: t });
-            // 列表卡片的 active_job 走实时指标比对（最多 3 s 一次），不让每一步都整表重取
-            self.metrics_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
-        }
-        if matches!(e, Event::Incidents) {
-            // 静默增删、告警开关：卡片上的「维护中」、健康同样走实时指标比对，前端不为它整表重取
-            self.metrics_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         let _ = self.events.send(e);
     }

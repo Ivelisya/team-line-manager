@@ -125,7 +125,6 @@ export const useSilences = () => useQuery({ queryKey: ['silences'], queryFn: () 
 
 export interface StreamEvent { type: string; id?: string }
 /** 事件对应要失效的查询键（实时流用）。resync 由 stream.ts 处理成全部失效。
- *  machine_job：作业推进时服务端给目标机器发的，只重取详情（列表的 active_job 由 metrics 推送；改生命周期时服务端另发 machines）
  *  incidents：机器的健康与总览不看告警表，不重取整表；静默带来的「维护中」由服务端随后的 metrics 推送送达
  *  audit：抽屉里机器的操作记录，随改名、续费、退役等机器变更增加；['policies', 'list'] / ['policies', 'versions']：策略页的范围树列着各团队的节点、发布记录列着线路机名（名字、有没有入口），
  *  机器增减、改名换团队、团队改名都会改它（只有挂着的查询会重取，策略页没开时只是标成过期；不带发布确认框里的预览，免得框开着时内容在眼前变）；
@@ -134,7 +133,6 @@ export interface StreamEvent { type: string; id?: string }
 export function eventKeys(ev: StreamEvent): unknown[][] {
   switch (ev.type) {
     case 'machine': return [['machine', ev.id], ['machines'], ['overview'], ['audit'], ['policies', 'list'], ['policies', 'versions'], ['incidents'], ['jobs'], ['availability', ev.id]];
-    case 'machine_job': return [['machine', ev.id]];
     case 'machines': return [['machine'], ['machines'], ['relays'], ['overview'], ['audit'], ['policies', 'list'], ['policies', 'versions']];
     case 'relay': return [['relays'], ['machines']];
     case 'job': return [['jobs'], ['job', ev.id]];

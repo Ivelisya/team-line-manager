@@ -360,12 +360,8 @@ struct MRow {
     /// 模板时区里的「今天」（没有订阅时的流量周期）
     t_today: Date,
     p_rule: Option<String>,
-    a_version: Option<String>,
-    a_last: Option<OffsetDateTime>,
-    a_xray: Option<bool>,
-    a_cores: Option<i32>,
-    a_health: Option<sqlx::types::Json<fleet_proto::AgentHealth>>,
-    a_skew: Option<i64>,
+    #[sqlx(flatten)]
+    a: ACols,
     r_host: Option<String>,
     r_gen: Option<i64>,
     r_applied: Option<i64>,
@@ -374,6 +370,34 @@ struct MRow {
     r_err: Option<String>,
     r_pmin: Option<i32>,
     r_pmax: Option<i32>,
+}
+
+/// agent_state 里视图要的列（`A_COLS`，表别名 a）：完整加载与补指标共用
+#[derive(sqlx::FromRow, Clone)]
+struct ACols {
+    a_version: Option<String>,
+    a_last: Option<OffsetDateTime>,
+    a_xray: Option<bool>,
+    a_cores: Option<i32>,
+    a_health: Option<sqlx::types::Json<fleet_proto::AgentHealth>>,
+    a_skew: Option<i64>,
+}
+
+const A_COLS: &str = "a.agent_version a_version, a.last_report_at a_last, (a.info->'xray'->>'running')::bool a_xray, (a.info->>'cpu_cores')::int a_cores,
+                a.info->'agent_health' a_health, (a.info->>'clock_skew_ms')::bigint a_skew";
+
+impl ACols {
+    fn agent(self, st: &AppState, now: OffsetDateTime) -> Agent {
+        Agent {
+            version: self.a_version,
+            last_report_at: self.a_last,
+            online: self.a_last.is_some_and(|t| st.report_gaps.online(t, now)),
+            xray_running: self.a_xray,
+            cores: self.a_cores,
+            health: self.a_health.map(|h| h.0),
+            clock_skew_ms: self.a_skew,
+        }
+    }
 }
 
 /// agent 多久没上报算离线（中控收不到上报的时段不算，见 `ReportGaps`）
@@ -486,10 +510,22 @@ impl ReportGaps {
 }
 
 /// 在用机器全量视图的短缓存：/machines、/relays、/overview、告警评估、实时指标共用，并发请求合并成一次查询（单飞）。
-/// 资源变更事件（`AppState::emit`）让它立刻作废；agent 上报的指标不发事件，靠 TTL 过期。
-type Cached = (Instant, u64, Arc<Vec<MachineView>>);
+/// 资源变更事件（`AppState::emit`）让它作废、下次完整加载；agent 上报的指标不发事件，TTL 过了就在上一份上补指标（`refresh`），
+/// 每 `FULL_EVERY` 或小时汇总之后才再完整加载一次。
+struct Snap {
+    /// 最近一次加载或补指标的时刻（TTL 从这里算）
+    at: Instant,
+    /// 最近一次完整加载的时刻
+    full_at: Instant,
+    gen: u64,
+    rolled: u64,
+    touched: u64,
+    v: Arc<Vec<MachineView>>,
+}
 /// 指标（心跳、探测）最多旧这么久
 const LIVE_TTL: std::time::Duration = std::time::Duration::from_secs(3);
+/// 只补指标最多这么久，之后完整加载一次：跨天的到期天数与流量周期、国旗画像、作业步骤里改了机器却没发事件的，都在这时跟上
+const FULL_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 /// 入口 id → 今天 / 本月流量（组织时区，来自小时汇总表，含已移除的入口）
 type TrafficMap = Arc<HashMap<Uuid, Traffic>>;
 
@@ -497,7 +533,11 @@ type TrafficMap = Arc<HashMap<Uuid, Traffic>>;
 pub struct LiveCache {
     /// 每次作废 +1；加载开始时记下，加载期间发生过变更的结果不当作新鲜的
     gen: AtomicU64,
-    slot: tokio::sync::Mutex<Option<Cached>>,
+    /// 作业推进、告警或静默变化 +1（`touched`）：下次取视图时补指标并重查作业与告警数，不等 TTL、不整份重算
+    touched: AtomicU64,
+    slot: tokio::sync::Mutex<Option<Snap>>,
+    /// `GET /machines` 的响应体，与它序列化自的那一份视图（同一份视图只序列化一次）
+    json: std::sync::Mutex<Option<(Arc<Vec<MachineView>>, axum::body::Bytes)>>,
     /// 小时汇总每跑完一轮 +1
     rolled: AtomicU64,
     /// 流量只在小时汇总后（或跨天、跨月）才变：按汇总轮次缓存，到库里时钟的下一个组织时区零点过期
@@ -524,6 +564,11 @@ impl LiveCache {
         self.gen.fetch_add(1, Ordering::SeqCst);
     }
 
+    /// 作业推进、告警或静默变了：只影响进行中 / 失败的作业、未恢复的告警数、维护中，下次取视图时补上（见 `refresh`）
+    pub fn touched(&self) {
+        self.touched.fetch_add(1, Ordering::SeqCst);
+    }
+
     /// 小时流量变了（汇总跑完、彻底删除机器）：流量缓存作废
     pub fn rolled_up(&self) {
         self.rolled.fetch_add(1, Ordering::SeqCst);
@@ -532,17 +577,291 @@ impl LiveCache {
 
 /// 在用机器的完整视图，走 `LiveCache`
 pub async fn live(st: &AppState) -> sqlx::Result<Arc<Vec<MachineView>>> {
+    cached(st, LIVE_TTL).await
+}
+
+/// 同 `live`，但不复用短缓存：至少补一次指标（实时指标比对用，比对间隔与 TTL 同为 3 s，复用的话会隔一轮才拿到新数据）
+pub async fn live_fresh(st: &AppState) -> sqlx::Result<Arc<Vec<MachineView>>> {
+    cached(st, std::time::Duration::ZERO).await
+}
+
+async fn cached(st: &AppState, ttl: std::time::Duration) -> sqlx::Result<Arc<Vec<MachineView>>> {
     let c = &st.live;
     let mut slot = c.slot.lock().await;
-    let gen = c.gen.load(Ordering::SeqCst);
-    if let Some((at, g, v)) = &*slot {
-        if *g == gen && at.elapsed() < LIVE_TTL {
-            return Ok(v.clone());
+    // 先记下再查：查询期间又有变更的，下次照样重查
+    let (gen, rolled, touched) = (c.gen.load(Ordering::SeqCst), c.rolled.load(Ordering::SeqCst), c.touched.load(Ordering::SeqCst));
+    if let Some(s) = slot.as_mut().filter(|s| s.gen == gen && s.rolled == rolled) {
+        if s.touched == touched && s.at.elapsed() < ttl {
+            return Ok(s.v.clone());
+        }
+        if s.full_at.elapsed() < FULL_EVERY {
+            s.v = Arc::new(refresh(st, &s.v, s.touched != touched).await?);
+            (s.at, s.touched) = (Instant::now(), touched);
+            return Ok(s.v.clone());
         }
     }
     let v = Arc::new(load(st, Scope::Live, None).await?);
-    *slot = Some((Instant::now(), gen, v.clone()));
+    let at = Instant::now();
+    *slot = Some(Snap { at, full_at: at, gen, rolled, touched, v: v.clone() });
     Ok(v)
+}
+
+/// `GET /machines` 的响应体 `{"data": [...]}`：同一份缓存视图只序列化一次，接连、并发的请求直接回这份字节
+pub async fn live_json(st: &AppState) -> sqlx::Result<axum::body::Bytes> {
+    let v = live(st).await?;
+    if let Some((of, b)) = &*st.live.json.lock().unwrap() {
+        if Arc::ptr_eq(of, &v) {
+            return Ok(b.clone());
+        }
+    }
+    #[derive(Serialize)]
+    struct Data<'a> {
+        data: &'a [MachineView],
+    }
+    let b = axum::body::Bytes::from(serde_json::to_vec(&Data { data: &v }).expect("机器视图可序列化"));
+    *st.live.json.lock().unwrap() = Some((v, b.clone()));
+    Ok(b)
+}
+
+/// 在上一份视图上补随上报和时间变化的字段：agent 状态、主机读数与持续负载、探测——只查上次之后又上报过的那几台
+/// （探测由线路机上报，补它上面的入口）；维护中每次都查；`jobs`（作业、告警或静默变过）时再补进行中 / 失败的作业与未恢复的告警数。
+/// 最后按现在的时刻重判在线与健康。其余字段（名称、订阅、入口、流量、额度、策略、国旗）随完整加载更新
+async fn refresh(st: &AppState, prev: &[MachineView], jobs: bool) -> sqlx::Result<Vec<MachineView>> {
+    let db = &st.db;
+    let hid = |m: &MachineView| m.host_machine.as_ref().map_or(m.id, |h| h.id);
+    let mut last: HashMap<Uuid, Option<OffsetDateTime>> = HashMap::new();
+    for m in prev {
+        if let Some(a) = &m.agent {
+            last.insert(hid(m), a.last_report_at);
+        }
+    }
+    let (aids, lasts): (Vec<Uuid>, Vec<Option<OffsetDateTime>>) = last.into_iter().unzip();
+    // 比的是库里的值而不是时刻：查询之后才提交、上报时刻却更早的那份照样认得出来
+    #[derive(sqlx::FromRow)]
+    struct ARow {
+        machine_id: Uuid,
+        #[sqlx(flatten)]
+        a: ACols,
+    }
+    let changed: HashMap<Uuid, ACols> = sqlx::query_as::<_, ARow>(&format!(
+        "select a.machine_id, {A_COLS} from unnest($1::uuid[], $2::timestamptz[]) p(id, last) join agent_state a on a.machine_id = p.id
+         where a.last_report_at is distinct from p.last"
+    ))
+    .bind(&aids)
+    .bind(&lasts)
+    .fetch_all(db)
+    .await?
+    .into_iter()
+    .map(|r| (r.machine_id, r.a))
+    .collect();
+    let cids: Vec<Uuid> = changed.keys().copied().collect();
+    let eids: Vec<Uuid> =
+        prev.iter().flat_map(|m| &m.entries).filter(|e| changed.contains_key(&e.relay.id)).map(|e| e.id).collect::<HashSet<_>>().into_iter().collect();
+    let ids: Vec<Uuid> = prev.iter().map(|m| m.id).collect();
+    let jobs_q = async {
+        if !jobs {
+            return Ok(None);
+        }
+        let (j, i) = tokio::try_join!(jobs_of(db, &ids), incidents_of(db, &ids))?;
+        Ok::<_, sqlx::Error>(Some((j, i)))
+    };
+    let (host, sustained, probes, silences, jobs) =
+        tokio::try_join!(host_now(db, &cids), sustained_of(db, &cids), probes_of(db, &eids), crate::silence::Silences::load(db), jobs_q)?;
+
+    let now = OffsetDateTime::now_utc();
+    let mut out = prev.to_vec();
+    for m in &mut out {
+        let h = hid(m);
+        if let Some(a) = changed.get(&h) {
+            if m.agent.is_some() {
+                m.agent = Some(a.clone().agent(st, now));
+            }
+            m.host = host.get(&h).cloned();
+            m.sustained = sustained.get(&h).copied().unwrap_or_default();
+        } else if let Some(a) = &mut m.agent {
+            a.online = a.last_report_at.is_some_and(|t| st.report_gaps.online(t, now));
+        }
+        m.maintenance = silences.maintenance(m.id) || m.host_machine.as_ref().is_some_and(|x| silences.maintenance(x.id));
+        if let Some(((live_jobs, failed_jobs), inc)) = &jobs {
+            m.active_job = live_jobs.get(&m.id).cloned();
+            m.failed_job = failed_job(failed_jobs, m.id, &m.lifecycle);
+            m.open_incidents = inc.get(&m.id).copied().unwrap_or(0);
+        }
+    }
+    // 入口的 relay_xray_down 同完整加载：线路机报了 Xray 没在运行、且这份报告还新（不看中控收不到上报的时段）
+    let xray_down: HashMap<Uuid, bool> = out
+        .iter()
+        .filter(|m| m.kind == "relay")
+        .map(|m| {
+            let down = m.agent.as_ref().is_some_and(|a| a.xray_running == Some(false) && a.last_report_at.is_some_and(|t| (now - t).whole_seconds() < AGENT_OFFLINE_S));
+            (m.id, down)
+        })
+        .collect();
+    for m in &mut out {
+        for e in &mut m.entries {
+            if changed.contains_key(&e.relay.id) {
+                e.tcp = probes.get(&(e.id, "tcp".into())).cloned();
+                e.egress = probes.get(&(e.id, "egress".into())).cloned();
+            }
+            if let Some(d) = xray_down.get(&e.relay.id) {
+                e.relay_xray_down = *d;
+            }
+        }
+        m.health = health::evaluate(m, now);
+    }
+    Ok(out)
+}
+
+/// 每台机器 15 分钟内最近两条样本 → 当前值与网卡速率：逐台走 (machine_id, ts desc) 索引取两条（带上界，预建的未来空分区被剪掉；
+/// 上界与入库窗口一致放到 1 天，时钟偏快的 agent 的样本不丢）
+async fn host_now(db: &sqlx::PgPool, hids: &[Uuid]) -> sqlx::Result<HashMap<Uuid, HostNow>> {
+    #[derive(sqlx::FromRow)]
+    struct H {
+        machine_id: Uuid,
+        rn: i64,
+        ts: OffsetDateTime,
+        cpu_pct: Option<f32>,
+        load1: Option<f32>,
+        mem_used: Option<i64>,
+        mem_total: Option<i64>,
+        disk_used: Option<i64>,
+        disk_total: Option<i64>,
+        net_rx_bytes: Option<i64>,
+        net_tx_bytes: Option<i64>,
+        tcp_conns: Option<i32>,
+    }
+    let hs = sqlx::query_as::<_, H>(
+        "select x.* from unnest($1::uuid[]) mid cross join lateral (
+            select machine_id, row_number() over (order by ts desc) rn, ts, cpu_pct, load1,
+                   mem_used, mem_total, disk_used, disk_total, net_rx_bytes, net_tx_bytes, tcp_conns
+            from host_metric where machine_id = mid and ts > now() - interval '15 minutes' and ts <= now() + interval '1 day'
+            order by ts desc limit 2) x",
+    )
+    .bind(hids)
+    .fetch_all(db)
+    .await?;
+    let mut host: HashMap<Uuid, HostNow> = HashMap::new();
+    let mut prev: HashMap<Uuid, (OffsetDateTime, Option<i64>, Option<i64>)> = HashMap::new();
+    for h in &hs {
+        if h.rn == 2 {
+            prev.insert(h.machine_id, (h.ts, h.net_rx_bytes, h.net_tx_bytes));
+        }
+    }
+    for h in hs.into_iter().filter(|h| h.rn == 1) {
+        let rate = |cur: Option<i64>, old: Option<i64>, dt: f64| match (cur, old) {
+            (Some(c), Some(o)) if c >= o && dt > 0.0 => Some((c - o) as f64 * 8.0 / dt),
+            _ => None,
+        };
+        let (rx, tx) = prev
+            .get(&h.machine_id)
+            .map(|(t, r, x)| {
+                let dt = (h.ts - *t).as_seconds_f64();
+                (rate(h.net_rx_bytes, *r, dt), rate(h.net_tx_bytes, *x, dt))
+            })
+            .unwrap_or((None, None));
+        host.insert(
+            h.machine_id,
+            HostNow {
+                ts: h.ts,
+                cpu_pct: h.cpu_pct,
+                load1: h.load1,
+                mem_used: h.mem_used,
+                mem_total: h.mem_total,
+                disk_used: h.disk_used,
+                disk_total: h.disk_total,
+                net_rx_bps: rx,
+                net_tx_bps: tx,
+                tcp_conns: h.tcp_conns,
+            },
+        );
+    }
+    Ok(host)
+}
+
+/// 最近 5 分钟主机负载的最低值（持续高负载判定）
+async fn sustained_of(db: &sqlx::PgPool, hids: &[Uuid]) -> sqlx::Result<HashMap<Uuid, Sustained>> {
+    #[derive(sqlx::FromRow)]
+    struct S {
+        machine_id: Uuid,
+        span_s: Option<i64>,
+        cpu_min: Option<f32>,
+        mem_min: Option<f32>,
+        disk_min: Option<f32>,
+    }
+    let su = sqlx::query_as::<_, S>(
+        "select machine_id, extract(epoch from max(ts) - min(ts))::bigint span_s, min(cpu_pct) cpu_min,
+                (min(mem_used::float8 * 100 / nullif(mem_total, 0)))::real mem_min, (min(disk_used::float8 * 100 / nullif(disk_total, 0)))::real disk_min
+         from host_metric where machine_id = any($1) and ts > now() - interval '5 minutes' group by machine_id",
+    )
+    .bind(hids)
+    .fetch_all(db)
+    .await?;
+    Ok(su.into_iter().map(|r| (r.machine_id, Sustained { span_s: r.span_s.unwrap_or(0), cpu_min: r.cpu_min, mem_min: r.mem_min, disk_min: r.disk_min })).collect())
+}
+
+/// 每个入口 × (tcp, egress) 沿 (entry_id, kind, ts desc) 索引各取最新一条（不把 15 分钟内的探测全读出来排序）；
+/// 上界同主机样本，剪掉预建的未来分区
+async fn probes_of(db: &sqlx::PgPool, eids: &[Uuid]) -> sqlx::Result<HashMap<(Uuid, String), Probe>> {
+    #[derive(sqlx::FromRow)]
+    struct P {
+        entry_id: Uuid,
+        kind: String,
+        ok: bool,
+        latency_ms: Option<f32>,
+        detail: Option<String>,
+        ts: OffsetDateTime,
+    }
+    let ps = sqlx::query_as::<_, P>(
+        "select x.* from unnest($1::uuid[]) e(id) cross join (values ('tcp'), ('egress')) k(kind) cross join lateral (
+            select entry_id, kind, ok, latency_ms, detail, ts from probe_result
+            where entry_id = e.id and kind = k.kind and ts > now() - interval '15 minutes' and ts <= now() + interval '1 day'
+            order by ts desc limit 1) x",
+    )
+    .bind(eids)
+    .fetch_all(db)
+    .await?;
+    Ok(ps.into_iter().map(|p| ((p.entry_id, p.kind), Probe { ok: p.ok, latency_ms: p.latency_ms, detail: p.detail, ts: p.ts })).collect())
+}
+
+/// 进行中的作业与失败的上架 / 恢复 / 退役作业，各按机器取最后建的：(进行中, 失败)
+async fn jobs_of(db: &sqlx::PgPool, ids: &[Uuid]) -> sqlx::Result<(HashMap<Uuid, JobRef>, HashMap<Uuid, JobRef>)> {
+    let jobs = sqlx::query_as::<_, (Uuid, Uuid, String, String)>(
+        "select target_id, id, kind, state::text from job
+         where target_id = any($1) and (state in ('queued','running','waiting','cancelling')
+           or (state = 'failed' and kind ~ '^((provision|restore)_|retire$)'))
+         order by created_at",
+    )
+    .bind(ids)
+    .fetch_all(db)
+    .await?;
+    // 按创建先后：同一台机器后建的覆盖先建的
+    let (mut live_jobs, mut failed_jobs) = (HashMap::new(), HashMap::new());
+    for (t, id, kind, state) in jobs {
+        let m = if state == "failed" { &mut failed_jobs } else { &mut live_jobs };
+        m.insert(t, JobRef { id, kind, state });
+    }
+    Ok((live_jobs, failed_jobs))
+}
+
+/// 上架失败：最近失败的上架/恢复作业；退役中：失败的退役作业（等重试）
+fn failed_job(failed: &HashMap<Uuid, JobRef>, id: Uuid, lifecycle: &str) -> Option<JobRef> {
+    failed
+        .get(&id)
+        .filter(|j| match lifecycle {
+            "failed" => j.kind != "retire",
+            "retiring" => j.kind == "retire",
+            _ => false,
+        })
+        .cloned()
+}
+
+/// 各机器未恢复的告警数
+async fn incidents_of(db: &sqlx::PgPool, ids: &[Uuid]) -> sqlx::Result<HashMap<Uuid, i64>> {
+    let inc = sqlx::query_as::<_, (Uuid, i64)>("select subject_id, count(*) from incident where state = 'firing' and subject_id = any($1) group by 1")
+        .bind(ids)
+        .fetch_all(db)
+        .await?;
+    Ok(inc.into_iter().collect())
 }
 
 /// 所有入口今天 / 本月的流量，走 `LiveCache.traffic`
@@ -647,8 +966,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 local_date(s.billing_tz) s_today, s.auto_renew s_auto, s.remind_days s_remind, s.traffic_gb s_traffic, s.traffic_reset_day s_reset,
                 s.traffic_used_base s_base, s.traffic_used_base_at s_base_at, s.overrides s_overrides, sb.billing_day::int s_bday, p.traffic_rule p_rule,
                 tp.price_cents t_price, tp.currency t_currency, tp.cycle::text t_cycle, tp.billing_tz t_tz, tp.traffic_gb t_traffic, tp.traffic_reset t_reset, tp.remind_days t_remind, local_date(tp.billing_tz) t_today,
-                a.agent_version a_version, a.last_report_at a_last, (a.info->'xray'->>'running')::bool a_xray, (a.info->>'cpu_cores')::int a_cores,
-                a.info->'agent_health' a_health, (a.info->>'clock_skew_ms')::bigint a_skew, r.public_host r_host, r.generation r_gen, r.applied_generation r_applied, r.applied_at r_applied_at, r.generation_at r_gen_at,
+                {A_COLS}, r.public_host r_host, r.generation r_gen, r.applied_generation r_applied, r.applied_at r_applied_at, r.generation_at r_gen_at,
                 r.apply_error r_err, r.port_min r_pmin, r.port_max r_pmax
          from machine m
          left join team t on t.id = m.team_id
@@ -674,7 +992,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     let now = OffsetDateTime::now_utc();
     // 国旗：没手动指定国家的按机器地址取画像（先读画像缓存，没命中的现查并写回；尽力而为，查不到就是 null）
     let auto_ips: Vec<IpAddr> = rows.iter().filter(|r| r.country.is_none()).filter_map(|r| r.ip.parse().ok()).collect();
-    let intel = if auto_ips.is_empty() { HashMap::new() } else { st.ipintel.enrich(db, &auto_ips, true).await };
+    let intel_q = async { Ok::<_, sqlx::Error>(if auto_ips.is_empty() { HashMap::new() } else { st.ipintel.enrich(db, &auto_ips, true).await }) };
     // 流量额度周期：有订阅的按账单时区里的今天和生效的重置日（单独设置的，或供应商按账单日 / 自然月）算周期起点，
     // 没有订阅的是模板时区（供应商的，供应商没填为组织时区）的本月。
     // 有自己 agent 的机器按网卡计量（规则取供应商的），家宽代理、同机 IP 节点按业务流量
@@ -690,22 +1008,6 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
         })
         .collect();
 
-    // 最近两条主机样本 → 当前值与网卡速率
-    #[derive(sqlx::FromRow)]
-    struct H {
-        machine_id: Uuid,
-        rn: i64,
-        ts: OffsetDateTime,
-        cpu_pct: Option<f32>,
-        load1: Option<f32>,
-        mem_used: Option<i64>,
-        mem_total: Option<i64>,
-        disk_used: Option<i64>,
-        disk_total: Option<i64>,
-        net_rx_bytes: Option<i64>,
-        net_tx_bytes: Option<i64>,
-        tcp_conns: Option<i32>,
-    }
     // 入口（作为节点或线路机）
     #[derive(sqlx::FromRow)]
     struct E {
@@ -722,36 +1024,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
         apply_error: Option<String>,
         relay_xray_down: bool,
     }
-    #[derive(sqlx::FromRow)]
-    struct P {
-        entry_id: Uuid,
-        kind: String,
-        ok: bool,
-        latency_ms: Option<f32>,
-        detail: Option<String>,
-        ts: OffsetDateTime,
-    }
-    // 最近 5 分钟主机负载的最低值（持续高负载判定）
-    #[derive(sqlx::FromRow)]
-    struct S {
-        machine_id: Uuid,
-        span_s: Option<i64>,
-        cpu_min: Option<f32>,
-        mem_min: Option<f32>,
-        disk_min: Option<f32>,
-    }
     // 下面这些查询互不依赖（探测要等入口列表），并发跑
-    // 每台机器 15 分钟内最近两条样本：逐台走 (machine_id, ts desc) 索引取两条（带上界，预建的未来空分区被剪掉；
-    // 上界与入库窗口一致放到 1 天，时钟偏快的 agent 的样本不丢）
-    let hs_q = sqlx::query_as::<_, H>(
-        "select x.* from unnest($1::uuid[]) mid cross join lateral (
-            select machine_id, row_number() over (order by ts desc) rn, ts, cpu_pct, load1,
-                   mem_used, mem_total, disk_used, disk_total, net_rx_bytes, net_tx_bytes, tcp_conns
-            from host_metric where machine_id = mid and ts > now() - interval '15 minutes' and ts <= now() + interval '1 day'
-            order by ts desc limit 2) x",
-    )
-    .bind(&hids)
-    .fetch_all(db);
     let entries_q = async {
         let es: Vec<E> = sqlx::query_as(
             "select e.id, e.relay_id, rm.label relay_label, e.node_id, nm.label node_label, t.name node_team, nm.number node_number, e.port,
@@ -768,17 +1041,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
         .fetch_all(db)
         .await?;
         let eids: Vec<Uuid> = es.iter().map(|e| e.id).collect();
-        // 每个入口 × (tcp, egress) 沿 (entry_id, kind, ts desc) 索引各取最新一条（不把 15 分钟内的探测全读出来排序）；
-        // 上界同主机样本，剪掉预建的未来分区
-        let ps = sqlx::query_as::<_, P>(
-            "select x.* from unnest($1::uuid[]) e(id) cross join (values ('tcp'), ('egress')) k(kind) cross join lateral (
-                select entry_id, kind, ok, latency_ms, detail, ts from probe_result
-                where entry_id = e.id and kind = k.kind and ts > now() - interval '15 minutes' and ts <= now() + interval '1 day'
-                order by ts desc limit 1) x",
-        )
-        .bind(&eids)
-        .fetch_all(db)
-        .await?;
+        let ps = probes_of(db, &eids).await?;
         Ok::<_, sqlx::Error>((es, ps))
     };
     // 已移除入口本月的流量（换线路机后旧入口 removed，但本月它跑过的流量仍属于这个节点 / 线路机）：
@@ -795,26 +1058,8 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
         .await?;
         Ok::<_, sqlx::Error>((tr, removed))
     };
-    let jobs_q = sqlx::query_as::<_, (Uuid, Uuid, String, String)>(
-        "select target_id, id, kind, state::text from job
-         where target_id = any($1) and (state in ('queued','running','waiting','cancelling')
-           or (state = 'failed' and kind ~ '^((provision|restore)_|retire$)'))
-         order by created_at",
-    )
-    .bind(&ids)
-    .fetch_all(db);
-    let inc_q = sqlx::query_as::<_, (Uuid, i64)>("select subject_id, count(*) from incident where state = 'firing' and subject_id = any($1) group by 1")
-        .bind(&ids)
-        .fetch_all(db);
     // 维护中：同告警的静默共用一份查询与匹配
     let sil_q = crate::silence::Silences::load(db);
-    let su_q = sqlx::query_as::<_, S>(
-        "select machine_id, extract(epoch from max(ts) - min(ts))::bigint span_s, min(cpu_pct) cpu_min,
-                (min(mem_used::float8 * 100 / nullif(mem_total, 0)))::real mem_min, (min(disk_used::float8 * 100 / nullif(disk_total, 0)))::real disk_min
-         from host_metric where machine_id = any($1) and ts > now() - interval '5 minutes' group by machine_id",
-    )
-    .bind(&hids)
-    .fetch_all(db);
     // 宿主机上未退役的同机 IP 节点
     let ipn_q = sqlx::query_as::<_, (Uuid, Uuid, String)>(
         "select m.host_id, m.id, display_name(m.kind::text, m.label, t.name, m.number) from machine m left join team t on t.id = m.team_id
@@ -823,49 +1068,19 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     .bind(&ids)
     .fetch_all(db);
     let period_of: HashMap<Uuid, (Date, Option<&'static str>)> = periods.iter().map(|k| (k.0, (k.1, k.3))).collect();
-    let (hs, (es, ps), (traffic, removed), jobs, inc, silences, su, policies, period_used, ipn) =
-        tokio::try_join!(hs_q, entries_q, traffic_q, jobs_q, inc_q, sil_q, su_q, crate::policy::load_modes(db), quota_used(st, periods), ipn_q)?;
-
-    let mut host: HashMap<Uuid, HostNow> = HashMap::new();
-    let mut prev: HashMap<Uuid, (OffsetDateTime, Option<i64>, Option<i64>)> = HashMap::new();
-    for h in &hs {
-        if h.rn == 2 {
-            prev.insert(h.machine_id, (h.ts, h.net_rx_bytes, h.net_tx_bytes));
-        }
-    }
-    for h in hs.into_iter().filter(|h| h.rn == 1) {
-        let rate = |cur: Option<i64>, old: Option<i64>, dt: f64| match (cur, old) {
-            (Some(c), Some(o)) if c >= o && dt > 0.0 => Some((c - o) as f64 * 8.0 / dt),
-            _ => None,
-        };
-        let (rx, tx) = prev
-            .get(&h.machine_id)
-            .map(|(t, r, x)| {
-                let dt = (h.ts - *t).as_seconds_f64();
-                (rate(h.net_rx_bytes, *r, dt), rate(h.net_tx_bytes, *x, dt))
-            })
-            .unwrap_or((None, None));
-        host.insert(
-            h.machine_id,
-            HostNow {
-                ts: h.ts,
-                cpu_pct: h.cpu_pct,
-                load1: h.load1,
-                mem_used: h.mem_used,
-                mem_total: h.mem_total,
-                disk_used: h.disk_used,
-                disk_total: h.disk_total,
-                net_rx_bps: rx,
-                net_tx_bps: tx,
-                tcp_conns: h.tcp_conns,
-            },
-        );
-    }
-
-    let mut probes: HashMap<(Uuid, String), Probe> = HashMap::new();
-    for p in ps {
-        probes.insert((p.entry_id, p.kind), Probe { ok: p.ok, latency_ms: p.latency_ms, detail: p.detail, ts: p.ts });
-    }
+    let (intel, host, (es, probes), (traffic, removed), (live_jobs, failed_jobs), inc, silences, sustained, policies, period_used, ipn) = tokio::try_join!(
+        intel_q,
+        host_now(db, &hids),
+        entries_q,
+        traffic_q,
+        jobs_of(db, &ids),
+        incidents_of(db, &ids),
+        sil_q,
+        sustained_of(db, &hids),
+        crate::policy::load_modes(db),
+        quota_used(st, periods),
+        ipn_q
+    )?;
 
     // 每条已移除入口的流量同时记到它的节点和线路机上；直出入口两端是同一台，只记一次
     let mut removed_by: HashMap<Uuid, Traffic> = HashMap::new();
@@ -916,31 +1131,13 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
         entries_by.entry(e.relay_id).or_default().push(v);
     }
 
-    // 按创建先后：同一台机器后建的覆盖先建的
-    let (mut live_jobs, mut failed_jobs) = (HashMap::new(), HashMap::new());
-    for (t, id, kind, state) in jobs {
-        let m = if state == "failed" { &mut failed_jobs } else { &mut live_jobs };
-        m.insert(t, JobRef { id, kind, state });
-    }
-    let inc: HashMap<Uuid, i64> = inc.into_iter().collect();
-    let sustained: HashMap<Uuid, Sustained> =
-        su.into_iter().map(|r| (r.machine_id, Sustained { span_s: r.span_s.unwrap_or(0), cpu_min: r.cpu_min, mem_min: r.mem_min, disk_min: r.disk_min })).collect();
-
     let today = now.to_offset(meta::org_offset()).date();
     Ok(rows
         .into_iter()
         .map(|r| {
             let name = display_name(&r.kind, r.label.as_deref(), r.team_name.as_deref(), r.number);
             let hid = r.host_id.unwrap_or(r.id);
-            let agent = (r.kind != "proxy").then(|| Agent {
-                version: r.a_version.clone(),
-                last_report_at: r.a_last,
-                online: r.a_last.is_some_and(|t| st.report_gaps.online(t, now)),
-                xray_running: r.a_xray,
-                cores: r.a_cores,
-                health: r.a_health.map(|h| h.0),
-                clock_skew_ms: r.a_skew,
-            });
+            let agent = (r.kind != "proxy").then(|| r.a.agent(st, now));
             let subscription = r.s_price.map(|price| {
                 let due = r.s_due.unwrap_or(today);
                 // 按订阅自己的账单时区算「今天」（取不到时退回组织时区）
@@ -1016,15 +1213,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
             // 宿主机维护时它上面的同机 IP 节点一起维护（是同一台机器）
             let maintenance = silences.maintenance(r.id) || r.host_id.is_some_and(|h| silences.maintenance(h));
             let policy_blocked = r.kind != "relay" && policies.effective(r.id, r.team_id).0.mode == crate::policy::Mode::Blocked;
-            // 上架失败：最近失败的上架/恢复作业；退役中：失败的退役作业（等重试）
-            let failed_job = failed_jobs
-                .get(&r.id)
-                .filter(|j: &&JobRef| match r.lifecycle.as_str() {
-                    "failed" => j.kind != "retire",
-                    "retiring" => j.kind == "retire",
-                    _ => false,
-                })
-                .cloned();
+            let failed_job = failed_job(&failed_jobs, r.id, &r.lifecycle);
             let mut v = MachineView {
                 id: r.id,
                 kind: r.kind,
