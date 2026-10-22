@@ -23,9 +23,11 @@ const NONE: never[] = [];
 const NONE_RELAYS: { id: string; name: string }[] = [];
 const NONE_HOSTS: HostChoice[] = [];
 
-/** 离开上架页再回来不丢：表格（含登录密码，只在这个页面的内存里，刷新即无）、模式与检查结果留在模块里；上架成功后清掉 */
+/** 离开上架页再回来不丢：表格（含登录密码，只在这个标签页的内存里，刷新、退出登录即无）、模式与检查结果留在模块里；上架成功后清掉 */
 interface Draft { mode: 'single' | 'batch'; rows: Row[]; results: ProvisionCheckItem[] | null; localErrs: string[][] | null; checked: string[]; sig: string }
 let draft: Draft | null = null;
+// 草稿里有内容时，关标签页、刷新前浏览器先问一句——在任何页面都提醒（草稿在模块里，离开上架页后也还在）
+window.addEventListener('beforeunload', (e) => { if (draft?.rows.some((r) => !isBlank(r))) { e.preventDefault(); e.returnValue = ''; } });
 
 export function ProvisionPage() {
   const teams = useTeams().data ?? NONE;
@@ -56,21 +58,18 @@ export function ProvisionPage() {
   React.useEffect(() => {
     const h = hosts.find((x) => x.id === hostParam);
     if (!h) return;
-    setMode('single'); setResults(null); setLocalErrs(null); setCreated(null);
-    setRows([newRow({ kind: 'vps', add_ip: true, host_id: h.id, team_id: h.team_id, relay_id: h.relay_id })]);
+    const pre = newRow({ kind: 'vps', add_ip: true, host_id: h.id, team_id: h.team_id, relay_id: h.relay_id });
+    setResults(null); setLocalErrs(null); setCreated(null);
+    // 表里已有填好的（离开过又回来的草稿）：不覆盖，切到批量、把这台接在后面（顶掉末尾的空行）
+    if (rows.some((r) => !isBlank(r))) {
+      setMode('batch');
+      setRows((rs) => (isBlank(rs[rs.length - 1]) ? [...rs.slice(0, -1), pre] : [...rs, pre]));
+    } else { setMode('single'); setRows([pre]); }
     setSp((p) => { const n = new URLSearchParams(p); n.delete('host'); return n; }, { replace: true });
-  }, [hostParam, hosts, setSp]);
+  }, [hostParam, hosts, setSp]); // eslint-disable-line react-hooks/exhaustive-deps -- 只在宿主机参数到达时预填一次，rows 读当时的值
 
   // 草稿随改随存进模块；上架成功（created）后清掉，再进来是空表
   React.useEffect(() => { draft = created ? null : { mode, rows, results, localErrs, checked, sig }; }, [created, mode, rows, results, localErrs, checked, sig]);
-  // 表格里填了东西时，关标签页、刷新、在地址栏离开前浏览器先问一句（站内换页不丢，见上面的 draft）
-  const hasContent = !created && rows.some((r) => !isBlank(r));
-  React.useEffect(() => {
-    if (!hasContent) return;
-    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
-    window.addEventListener('beforeunload', warn);
-    return () => window.removeEventListener('beforeunload', warn);
-  }, [hasContent]);
 
   // 批量里没动过的空行（切到批量补的、「加 5 行」多出来的）不参与检查和上架；全是空行时留第一行，让它报「请填写 IP」
   const active = React.useMemo(() => {
@@ -99,6 +98,7 @@ export function ProvisionPage() {
   };
   const start = async () => {
     const r = await provision.mutateAsync(items);
+    draft = null; // 确认框转圈时就离开了页面（组件已卸载、effect 不再跑）也要清掉，回来不能再提交一遍
     setCreated(r.jobs);
   };
   const reset = () => { setRows([newRow()]); setResults(null); setLocalErrs(null); setCreated(null); };

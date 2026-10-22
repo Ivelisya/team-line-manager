@@ -39,15 +39,19 @@ const NO_TEAMS: PolicyTeam[] = [];
 /** 占比：有但不到 1% 写「<1%」（不写 0%、0.0%），10% 以下留一位小数 */
 const pctText = (n: number, total: number) => { const p = (n / total) * 100; return n > 0 && p < 1 ? '<1%' : `${p.toFixed(p < 10 ? 1 : 0)}%`; };
 
+/** 上次选中的范围（scope:id）：命令面板、视图切换回来时地址里没有 ?s= */
+let lastSel: string | null = null;
+
 export function PolicyPage() {
   const [sp, setSp] = useSearchParams();
   const q = usePolicies();
   const teams = q.data?.teams ?? NO_TEAMS;
   const draftCount = q.data?.draft_count ?? 0;
   // sel 按值缓存：每次渲染新建对象会让下面按它算的 target、展开分组的 effect 每次都重跑
-  const rawSel = sp.get('s');
+  const rawSel = sp.get('s') ?? lastSel; // 从别处回来（地址里没有 ?s=）时停在上次看的范围，留着的未保存改动一眼就在
   const firstTeam = teams[0]?.id;
   const sel = React.useMemo<Sel | null>(() => parseSel(rawSel) ?? (firstTeam ? { scope: 'team', id: firstTeam } : null), [rawSel, firstTeam]);
+  React.useEffect(() => { if (sel) lastSel = `${sel.scope}:${sel.id}`; }, [sel]);
   const apply = (s: Sel) => setSp((p) => { const n = new URLSearchParams(p); n.set('s', `${s.scope}:${s.id}`); return n; }, { replace: true });
   // 编辑器有未保存的改动时，切换范围会让它重新挂载并丢掉编辑：先拦下来，用页面内对话框确认
   const dirtyRef = React.useRef(false);
@@ -169,8 +173,9 @@ const curOf = (p: ScopePolicy): PolicyBody => ({ mode: p.mode, domains: p.domain
 const sameBody = (a: PolicyBody, b: PolicyBody) => a.mode === b.mode && a.note === b.note && a.domains.length === b.domains.length && a.domains.every((d, i) => d === b.domains[i]);
 
 /** 编辑器里还没保存成草稿的改动，按范围留在模块里：离开访问规则页（或切到别的范围后又切回来）再进来还在；保存或改回原样即清掉。
- *  只在内存里：刷新、关标签页前由 beforeunload 提醒 */
+ *  只在这个标签页的内存里：刷新、关标签页前提醒（在任何页面都提醒，离开访问规则页后缓存也还在） */
 const unsaved = new Map<string, { mode: PolicyMode; text: string; note: string; synced: { revision: number; body: PolicyBody } }>();
+window.addEventListener('beforeunload', (e) => { if (unsaved.size) { e.preventDefault(); e.returnValue = ''; } });
 
 function Editor({ scope, name, sp, team, node, onDirty }: { scope: 'team' | 'node'; name: string; sp: ScopePolicy; team: PolicyTeam; node: PolicyNode | null; onDirty: (d: boolean) => void }) {
   const save = useSavePolicy();
@@ -189,12 +194,6 @@ function Editor({ scope, name, sp, team, node, onDirty }: { scope: 'team' | 'nod
   const stale = sp.revision !== synced.revision;
   React.useEffect(() => { onDirty(dirty); return () => onDirty(false); }, [dirty, onDirty]);
   React.useEffect(() => { if (dirty) unsaved.set(key, { mode, text, note, synced }); else unsaved.delete(key); }, [key, dirty, mode, text, note, synced]);
-  React.useEffect(() => {
-    if (!dirty) return;
-    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
-    window.addEventListener('beforeunload', warn);
-    return () => window.removeEventListener('beforeunload', warn);
-  }, [dirty]);
 
   const load = (p: ScopePolicy) => {
     const b = bodyOf(p);
@@ -217,7 +216,8 @@ function Editor({ scope, name, sp, team, node, onDirty }: { scope: 'team' | 'nod
     setMode(b.mode); setText(domainsToText(b.domains)); setNote(b.note); setSynced({ revision: r.policy.revision, body: b });
     toast.ok(r.policy.draft ? '草稿已保存' : '草稿已清除（与生效值相同）');
   };
-  const submit = (body: PolicyBody) => save.mutate(req(body), { onSuccess: onSaved, onError: toast.err });
+  // 保存还在路上就离开了页面：单次回调不会再触发，用 Promise 保证清掉留着的改动（否则回来是旧 revision、显示假冲突）
+  const submit = (body: PolicyBody) => save.mutateAsync(req(body)).then((r) => { unsaved.delete(key); onSaved(r); }, toast.err);
   const [askDrop, setAskDrop] = React.useState(false);
 
   const cur = curOf(sp);
