@@ -2,8 +2,8 @@
 import * as React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Archive, ArchiveRestore, ArrowRight, ExternalLink, ListOrdered, Pencil, Plus } from 'lucide-react';
-import { fetchRenumber, useAddPlan, useAddProvider, useAddTeam, usePatchPlan, usePatchProvider, usePatchTeam, usePlans, useProviders, useRenumber, useTeams, useTeamsCompact } from '@/lib/queries';
+import { Archive, ArchiveRestore, ArrowRight, ExternalLink, ListOrdered, Pencil, Plus, Trash2 } from 'lucide-react';
+import { fetchRenumber, useAddPlan, useAddProvider, useAddTeam, useDelPlan, useDelProvider, useDelTeam, usePatchPlan, usePatchProvider, usePatchTeam, usePlans, useProviders, useRenumber, useTeams, useTeamsCompact } from '@/lib/queries';
 import type { Plan, Provider, Team, TrafficReset, TrafficRule } from '@/lib/types';
 import { currencyOptions, cycleLabel, cycleOptions, limitGb, meta, trafficResetLabel, trafficRuleLabel } from '@/lib/derive';
 import { collator } from '@/lib/sort';
@@ -60,6 +60,16 @@ function sortRows<T>(list: T[], sort: SortState | null, key: Record<string, (x: 
     return sort.desc ? -c : c;
   });
 }
+/** 删除确认（团队、供应商、套餐共用）：还有机器、套餐用着时中控回 409，说明留在通知里，对话框不关 */
+function DeleteDialog({ what, item, onClose, run }: { what: string; item: { id: string; name: string } | null; onClose: () => void; run: (id: string) => Promise<unknown> }) {
+  const held = useHeld(item?.id, item);
+  return (
+    <ConfirmDialog open={!!item} onOpenChange={(o) => !o && onClose()} danger confirmLabel="删除" title={`删除${what}「${held?.name ?? ''}」？`}
+      description={<>删了不能恢复 <InfoTip text={`还有机器${what === '供应商' ? '、套餐' : ''}用着（含已退役的）时删不掉，会提示还有哪些`} /></>}
+      onConfirm={async () => { await run(item!.id); toast.ok(`${what}「${item!.name}」已删除`); }} />
+  );
+}
+
 /** 机器数：点了去机器页看这些机器（筛选参数同机器页：team / q） */
 const CountLink = ({ n, to }: { n: number; to: string }) => (n > 0 ? <Link className="num-link" to={to}>{n}</Link> : <span className="t-muted">0</span>);
 
@@ -75,6 +85,8 @@ function TeamsTab() {
   const [sort, setSort] = useUrlSort();
   const [edit, setEdit] = React.useState<Team | 'new' | null>(null);
   const [renum, setRenum] = React.useState<Team | null>(null);
+  const [askDel, setAskDel] = React.useState<Team | null>(null);
+  const delTeam = useDelTeam();
   // 关闭动画期间沿用最近的对象，标题与内容不闪变
   const held = useHeld(edit === 'new' ? 'new' : edit?.id, edit);
   const renumHeld = useHeld(renum?.id, renum);
@@ -85,7 +97,7 @@ function TeamsTab() {
       <Panel title="团队" count={list.length} sub={<InfoTip text="首页与表格按「排序」从小到大排列" />} tools={<Button variant="primary" size="md" onClick={() => setEdit('new')}><Plus />新建团队</Button>} flush>
         <TableWrap>
           <table className="dt is-one" style={{ minWidth: 520 }}>
-            <colgroup><col /><col style={{ width: 90 }} /><col style={{ width: 100 }} /><col style={{ width: 220 }} /></colgroup>
+            <colgroup><col /><col style={{ width: 90 }} /><col style={{ width: 100 }} /><col style={{ width: 256 }} /></colgroup>
             <SortHead cols={TEAM_COLS} sort={sort} onSort={setSort} />
             <tbody>
               {list.map((t) => {
@@ -96,7 +108,8 @@ function TeamsTab() {
                     <td className="r"><span className="row" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
                       <Button size="sm" variant="quiet" onClick={() => setEdit(t)}><Pencil size={13} />改名 / 排序</Button>
                       {/* aria-disabled 而不是 disabled：禁用的按钮收不到悬停，看不到为什么不能点 */}
-                      <Button size="sm" aria-disabled={done || undefined} data-tip={done ? '编号已连续' : undefined} onClick={() => { if (!done) setRenum(t); }}><ListOrdered size={13} />重新编号</Button></span></td></tr>
+                      <Button size="sm" aria-disabled={done || undefined} data-tip={done ? '编号已连续' : undefined} onClick={() => { if (!done) setRenum(t); }}><ListOrdered size={13} />重新编号</Button>
+                      <IconButton size="sm" label="删除团队" onClick={() => setAskDel(t)}><Trash2 size={14} /></IconButton></span></td></tr>
                 );
               })}
             </tbody>
@@ -108,6 +121,7 @@ function TeamsTab() {
 
       {held && <TeamDialog team={held} open={edit != null} onClose={() => setEdit(null)} />}
       {renumHeld && <RenumberDialog team={renumHeld} open={!!renum} onClose={() => setRenum(null)} />}
+      <DeleteDialog what="团队" item={askDel} onClose={() => setAskDel(null)} run={(id) => delTeam.mutateAsync(id)} />
     </>
   );
 }
@@ -182,6 +196,8 @@ function ProvidersTab() {
   const q = useProviders();
   const [edit, setEdit] = React.useState<Provider | 'new' | null>(null);
   const held = useHeld(edit === 'new' ? 'new' : edit?.id, edit);
+  const [askDel, setAskDel] = React.useState<Provider | null>(null);
+  const delProvider = useDelProvider();
   const list = q.data ?? [];
   // 一个面板地址都没填时不占一列
   const panel = list.some((p) => p.panel_url);
@@ -191,7 +207,7 @@ function ProvidersTab() {
       <Panel title="供应商" count={list.length} sub={<InfoTip text="名下机器的账单时区、流量重置、到期提醒跟随这里" />} tools={<Button variant="primary" onClick={() => setEdit('new')}><Plus />新建供应商</Button>} flush>
         <TableWrap>
           <table className="dt is-one" style={{ minWidth: panel ? 1000 : 820 }}>
-            <colgroup><col style={{ width: 170 }} /><col style={{ width: 84 }} /><col style={{ width: 190 }} /><col style={{ width: 170 }} /><col style={{ width: 150 }} /><col style={{ width: 96 }} />{panel && <col />}<col style={{ width: 96 }} /></colgroup>
+            <colgroup><col style={{ width: 170 }} /><col style={{ width: 84 }} /><col style={{ width: 190 }} /><col style={{ width: 170 }} /><col style={{ width: 150 }} /><col style={{ width: 96 }} />{panel && <col />}<col style={{ width: 128 }} /></colgroup>
             <thead><tr><th>名称</th><th>代码</th><th>账单时区</th><th>流量计量</th><th>流量重置</th><th>到期提醒</th>{panel && <th>面板</th>}<th /></tr></thead>
             <tbody>{list.map((p) => (
               <tr key={p.id}><td className="strong">{p.name}</td><td><Chip>{p.code}</Chip></td>
@@ -200,7 +216,9 @@ function ProvidersTab() {
                 <td>{resetOptions().find((o) => o.value === (p.traffic_reset ?? meta().defaults.traffic_reset))?.label ?? trafficResetLabel(p.traffic_reset ?? meta().defaults.traffic_reset)}</td>
                 <td>提前 <span className="num">{p.remind_days ?? meta().defaults.remind_days}</span> 天</td>
                 {panel && <td>{p.panel_url && /^https?:\/\//i.test(p.panel_url) ? <a href={p.panel_url} target="_blank" rel="noreferrer noopener" className="btn-link btn" style={{ gap: 4, maxWidth: '100%' }}><span className="ellipsis">{p.panel_url.replace(/^https?:\/\//, '')}</span><ExternalLink size={12} /></a> : (p.panel_url || <span className="t-muted">—</span>)}</td>}
-                <td className="r"><Button size="sm" variant="quiet" onClick={() => setEdit(p)}><Pencil size={13} />编辑</Button></td></tr>
+                <td className="r"><span className="row" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
+                  <Button size="sm" variant="quiet" onClick={() => setEdit(p)}><Pencil size={13} />编辑</Button>
+                  <IconButton size="sm" label="删除供应商" onClick={() => setAskDel(p)}><Trash2 size={14} /></IconButton></span></td></tr>
             ))}</tbody>
           </table>
           {q.isLoading && <SkeletonRows rows={3} one />}
@@ -208,6 +226,7 @@ function ProvidersTab() {
         </TableWrap>
       </Panel>
       {held && <ProviderDialog provider={held} open={edit != null} onClose={() => setEdit(null)} />}
+      <DeleteDialog what="供应商" item={askDel} onClose={() => setAskDel(null)} run={(id) => delProvider.mutateAsync(id)} />
     </>
   );
 }
@@ -262,6 +281,8 @@ function PlansTab() {
   const [sort, setSort] = useUrlSort();
   const [edit, setEdit] = React.useState<Plan | 'new' | null>(null);
   const [askArchive, setAskArchive] = React.useState<Plan | null>(null);
+  const [askDel, setAskDel] = React.useState<Plan | null>(null);
+  const delPlan = useDelPlan();
   const archiveHeld = useHeld(askArchive?.id, askArchive);
   const [showArchived, setShowArchived] = React.useState(false);
   const held = useHeld(edit === 'new' ? 'new' : edit?.id, edit);
@@ -281,7 +302,7 @@ function PlansTab() {
       <Panel title="套餐" count={list.length} sub={<InfoTip text="同一套餐的机器共用这里的流量配额、价格、周期" />} tools={<><CheckRow className="is-label" checked={showArchived} onChange={setShowArchived}>显示已归档</CheckRow><Button variant="primary" onClick={() => setEdit('new')}><Plus />新建套餐</Button></>} flush>
         <TableWrap>
           <table className="dt" style={{ minWidth: 880 }}>
-            <colgroup><col /><col style={{ width: 130 }} /><col style={{ width: 120 }} /><col style={{ width: 96 }} /><col style={{ width: 96 }} /><col style={{ width: 110 }} /><col style={{ width: 76 }} /><col style={{ width: 160 }} /></colgroup>
+            <colgroup><col /><col style={{ width: 130 }} /><col style={{ width: 120 }} /><col style={{ width: 96 }} /><col style={{ width: 96 }} /><col style={{ width: 110 }} /><col style={{ width: 76 }} /><col style={{ width: 196 }} /></colgroup>
             <SortHead cols={PLAN_COLS} sort={sort} onSort={setSort} />
             <tbody>
               {list.map((p) => (
@@ -297,6 +318,7 @@ function PlansTab() {
                     {p.archived_at
                       ? <Button size="sm" variant="quiet" disabled={patch.isPending} onClick={() => void setArchived(p, false).catch(toast.err)}><ArchiveRestore size={13} />取消归档</Button>
                       : <IconButton size="sm" label="归档" disabled={patch.isPending} onClick={() => (p.machine_count > 0 ? setAskArchive(p) : void setArchived(p, true).catch(toast.err))}><Archive size={14} /></IconButton>}
+                    <IconButton size="sm" label="删除套餐" onClick={() => setAskDel(p)}><Trash2 size={14} /></IconButton>
                   </span></td>
                 </tr>
               ))}
@@ -310,6 +332,7 @@ function PlansTab() {
       <ConfirmDialog open={!!askArchive} onOpenChange={(o) => !o && setAskArchive(null)} title={`归档「${archiveHeld?.name ?? ''}」？`} confirmLabel="归档"
         description={<>有 {archiveHeld?.machine_count} 台机器在用 <InfoTip text="在用的机器不受影响，只是上架时不再列出这个套餐；可以随时取消归档。" /></>}
         onConfirm={() => setArchived(askArchive!, true)} />
+      <DeleteDialog what="套餐" item={askDel} onClose={() => setAskDel(null)} run={(id) => delPlan.mutateAsync(id)} />
     </>
   );
 }

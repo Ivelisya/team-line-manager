@@ -222,6 +222,10 @@ export const useAddProvider = () => useWrite((b: Partial<Provider>) => post('/pr
 export const usePatchProvider = () => useWrite(({ id, ...b }: { id: string } & Partial<Provider>) => patch(`/providers/${id}`, b), [['providers'], ...M]);
 export const useAddPlan = () => useWrite((b: PlanBody) => post('/plans', b), [['plans']]);
 export const usePatchPlan = () => useWrite(({ id, ...b }: { id: string; archived?: boolean } & Partial<PlanBody>) => patch(`/plans/${id}`, b), [['plans'], ...M]);
+/** 删团队 / 供应商 / 套餐：还有机器、套餐用着时中控回 409，写明还有什么 */
+export const useDelTeam = () => useWrite((id: string) => del(`/teams/${id}`), [['teams'], ['policies']]);
+export const useDelProvider = () => useWrite((id: string) => del(`/providers/${id}`), [['providers']]);
+export const useDelPlan = () => useWrite((id: string) => del(`/plans/${id}`), [['plans']]);
 export const fetchShare = (entryId: string) => get<{ url: string }>(`/entries/${entryId}/share`);
 const fetchLogs = (jobId: string, after: number, signal?: AbortSignal) => get<JobLog[]>(`/jobs/${jobId}/logs?after=${after}`, signal);
 const LOG_PAGE = 1000; // 服务端单次最多返回 1000 条
