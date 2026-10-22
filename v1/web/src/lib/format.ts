@@ -61,7 +61,8 @@ const currencySym = (c: string) => SYM[c] ?? `${c} `;
 export function money(cents: number | null | undefined, currency: string): string {
   if (cents == null) return '—';
   const v = cents / 100;
-  return `${currencySym(currency)}${Number.isInteger(v) ? v : v.toFixed(2)}`;
+  // 同一列里 $59 与 $28.88 并排时对不齐：一律两位小数（日元没有辅币单位）
+  return `${currencySym(currency)}${currency === 'JPY' ? Math.round(v) : v.toFixed(2)}`;
 }
 /** 币种下拉的一项：「USD $」 */
 export const currencyLabel = (c: string) => `${c} ${currencySym(c).trim()}`.trim();
