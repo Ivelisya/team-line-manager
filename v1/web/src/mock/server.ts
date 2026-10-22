@@ -6,6 +6,7 @@ import { addDays, displayName } from '@/lib/format';
 import { isQuiet, liveRate } from '@/lib/derive';
 import { LIFECYCLE_LABEL, makeDefaultCompare } from '@/lib/sort';
 import { buildDb, hashStr, IP_STEPS, quotaOf, rng, type Db } from './fixtures';
+import { calibration } from './fixtures';
 import { installAccessMock } from './access';
 import { installPolicyMock } from './policy';
 
@@ -346,7 +347,7 @@ function createMachine(it: ProvisionItem, c: ProvisionCheckItem): MachineView {
     plan: plan ? { id: plan.id, name: plan.name, bandwidth_mbps: plan.bandwidth_mbps, traffic_gb: plan.traffic_gb } : null, service_ref: it.service_ref ?? null,
     lifecycle: 'provisioning', lifecycle_reason: null, note: it.note ?? '', revision: 1, created_at: iso(), activated_at: null, retired_at: null,
     subscription: it.subscription?.due_date ? { price_cents: it.subscription.price_cents ?? plan?.price_cents ?? 0, currency: plan?.currency ?? 'USD', cycle: it.subscription.cycle ?? plan?.cycle ?? 'monthly', due_date: it.subscription.due_date, due_days: 0, billing_tz: it.subscription.billing_tz ?? pv?.timezone ?? 'Asia/Shanghai', auto_renew: false, remind_days: 7, traffic_gb: plan?.traffic_gb || null, traffic_reset_day: 1 } : null,
-    agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, quota: { used: 0, period_start: '' }, health: { status: 'unknown', reasons: [{ key: 'provisioning', severity: 'info', text: '上架作业进行中' }] }, active_job: null, failed_job: null, open_incidents: 0, maintenance: false,
+    agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, quota: { used: 0, period_start: '', rule: null, base: null, base_at: null }, health: { status: 'unknown', reasons: [{ key: 'provisioning', severity: 'info', text: '上架作业进行中' }] }, active_job: null, failed_job: null, open_incidents: 0, maintenance: false,
     relay: it.kind === 'relay' ? { public_host: it.ip, generation: 1, applied_generation: 0, applied_at: null, apply_error: null, port_min: 20001, port_max: 20999 } : null,
   };
   if (h) borrowHost(m, h);
@@ -406,7 +407,7 @@ R('POST', '/teams/([^/]+)/renumber', ({ params, body }) => {
 R('GET', '/providers', () => clone(db.providers));
 R('POST', '/providers', ({ body }) => {
   if (!body.name || !body.code) throw bad('名称与代码必填');
-  const p = { id: `p${db.seq++}`, name: body.name, code: String(body.code).toUpperCase(), panel_url: body.panel_url || null, timezone: body.timezone || 'UTC' };
+  const p = { id: `p${db.seq++}`, name: body.name, code: String(body.code).toUpperCase(), panel_url: body.panel_url || null, timezone: body.timezone || 'UTC', traffic_rule: body.traffic_rule ?? 'max' };
   db.providers.push(p); emit({ type: 'catalog' }); return p;
 });
 R('PATCH', '/providers/([^/]+)', ({ params, body }) => {
@@ -416,6 +417,7 @@ R('PATCH', '/providers/([^/]+)', ({ params, body }) => {
   if (body.code !== undefined) p.code = body.code;
   if (body.panel_url !== undefined) p.panel_url = body.panel_url || null;
   if (body.timezone !== undefined) p.timezone = body.timezone || 'UTC';
+  if (body.traffic_rule !== undefined) p.traffic_rule = body.traffic_rule;
   emit({ type: 'catalog' }); return { id: p.id };
 });
 R('GET', '/plans', () => clone(db.plans));
@@ -503,6 +505,8 @@ R('POST', '/machines/([^/]+)/purge', ({ params, body }) => {
 });
 R('PUT', '/machines/([^/]+)/subscription', ({ params, body }) => {
   const m = machine(params[0]);
+  // 按面板校准（traffic_used_gb，GB）：记下校准值与时间，不进订阅；null 清掉，没传不动
+  if (body.traffic_used_gb !== undefined) { if (body.traffic_used_gb == null) delete calibration[m.id]; else calibration[m.id] = { base: Math.round(body.traffic_used_gb * 1e9), at: iso() }; delete body.traffic_used_gb; }
   m.subscription = { traffic_gb: null, traffic_reset_day: null, ...(m.subscription ?? {} as any), ...body, due_days: 0 };
   recomputeDue(m); m.quota = quotaOf(m, db.machines); emit({ type: 'machine', id: m.id }); emit({ type: 'machines' }); return clone(m.subscription);
 });
