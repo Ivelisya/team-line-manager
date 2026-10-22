@@ -41,6 +41,8 @@ struct M {
     host_id: Option<Uuid>,
     /// 机器自己的 IP（同机 IP 节点的出口 IP；其它机器同 `ip`）
     own_ip: String,
+    /// 同机 IP 节点的公网 IP 是 1:1 NAT 映射的：映射到的宿主机本地地址（ssserver 监听并从它出站）；在网卡上的、其它机器为 None
+    bind_ip: Option<String>,
 }
 
 /// 等外部事件的步骤（首次上报、线路机回报应用 / 摘除）的兜底重查间隔。事件到了由 `jobs::wake_for` 把作业提前并唤醒引擎，
@@ -58,7 +60,7 @@ impl Ctx<'_> {
     async fn machine(&self) -> anyhow::Result<M> {
         Ok(sqlx::query_as(
             "select m.id, m.kind::text kind, host(coalesce(h.primary_ip, m.primary_ip)) ip, coalesce(h.ssh_port, m.ssh_port) ssh_port,
-                    m.lifecycle::text lifecycle, m.host_id, host(m.primary_ip) own_ip
+                    m.lifecycle::text lifecycle, m.host_id, host(m.primary_ip) own_ip, host(m.bind_ip) bind_ip
              from machine m left join machine h on h.id = m.host_id where m.id = $1",
         )
         .bind(self.target_id()?)
@@ -66,13 +68,14 @@ impl Ctx<'_> {
         .await?)
     }
 
-    /// 节点在机器上的 ssserver 实例：普通 VPS 节点（宿主机）固定 meta::SS_PORT；同机 IP 节点的端口是它出站参数里的 SS 端口
+    /// 节点在机器上的 ssserver 实例：普通 VPS 节点（宿主机）固定 meta::SS_PORT；同机 IP 节点的端口是它出站参数里的 SS 端口，
+    /// 监听与出站用 bind 地址（1:1 NAT 映射的用 bind_ip，否则就是它的公网 IP）。收敛、退役清理、恢复、换线路机的补偿都从这里取
     async fn ss_inst(&self, m: &M) -> anyhow::Result<SsInst> {
         if m.host_id.is_none() {
             return Ok(SsInst::host());
         }
         let port: i32 = sqlx::query_scalar("select port from node_outbound where machine_id = $1").bind(m.id).fetch_one(&self.st.db).await?;
-        Ok(SsInst { port: port as u16, ip: Some(m.own_ip.clone()) })
+        Ok(SsInst::ip_node(port as u16, &m.own_ip, m.bind_ip.as_deref()))
     }
 
     /// 退役 / 取消上架时清理机器的脚本。同机 IP 节点只删自己的实例（宿主机的 agent 与 ssserver 不动）
@@ -232,8 +235,8 @@ async fn preflight(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     })))
 }
 
-/// 同机 IP 节点上架（恢复）的第一步，在宿主机上执行：IP 要直接配在宿主机网卡上，经它访问中控回显的来源要正是它（出站路由对），
-/// 暂定的 SS 端口被别的程序占着时锁住宿主机行，改成最小的空闲端口
+/// 同机 IP 节点上架（恢复）的第一步，在宿主机上执行：IP 要直接配在宿主机网卡上、或 1:1 NAT 映射到网卡上的某个本地地址
+/// （记进 bind_ip），经它访问中控回显的来源要正是这个 IP（出站路由对），暂定的 SS 端口被别的程序占着时锁住宿主机行，改成最小的空闲端口
 async fn ip_check(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let m = c.machine().await?;
     let host = m.host_id.ok_or_else(|| anyhow!("这台机器不是同机 IP 节点"))?;
@@ -251,9 +254,8 @@ async fn ip_check(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         return Err(out.fail(&format!("在宿主机 {hname} 上核对 IP 失败")));
     }
     let local_ips = out.kv("local_ips").unwrap_or("");
-    if let Some(e) = scripts::ip_not_on_host(ip, &hname, local_ips) {
-        return Err(remote(e));
-    }
+    // 不在网卡上、经 NAT 映射的：找到的本地地址就是 bind 地址（脚本探测时它的回显已经是这个 IP）
+    let bind = scripts::bind_addr(ip, &hname, local_ips, out.kv("nat").unwrap_or("")).map_err(remote)?;
     let local = local_ips.replace(',', ", ");
     let got = out.kv("echo").unwrap_or("").trim();
     if got != ip {
@@ -261,6 +263,11 @@ async fn ip_check(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
             Ok(_) => format!("经 {ip} 出站时中控看到的来源是 {got}：宿主机没让这个 IP 的流量从它自己出去（检查策略路由 / NAT）"),
             Err(_) => format!("经 {ip} 访问中控 {echo} 失败：{got}"),
         }));
+    }
+    // 记下（或清掉）bind 地址：收敛时 ssserver 监听并从它出站。恢复时宿主机的网络可能改过，每次按这次核对的结果写
+    sqlx::query("update machine set bind_ip = $2::inet where id = $1").bind(m.id).bind(&bind).execute(&c.st.db).await?;
+    if let Some(b) = &bind {
+        c.log(format!("{ip} 不在宿主机网卡上，是 1:1 NAT 映射到本地地址 {b} 的：ssserver 监听并从 {b} 出站")).await;
     }
     // 正在监听的端口里去掉配置本来就绑着这个 IP 的（这台节点上次退役没清掉的旧实例）：收敛会用新配置覆盖并重启它，
     // 算作占用的话会改用别的端口，旧实例就成了没人清理的孤儿
@@ -278,7 +285,7 @@ async fn ip_check(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         c.warn(format!("SS 端口 {port} 在宿主机上已被占用，改用 {free}")).await;
         port = free;
     }
-    Ok(Outcome::Done(json!({"ss_port": port, "local_ips": local, "egress_ip": got})))
+    Ok(Outcome::Done(json!({"ss_port": port, "local_ips": local, "egress_ip": got, "bind_ip": bind})))
 }
 
 async fn bootstrap(c: &Ctx<'_>) -> anyhow::Result<Outcome> {

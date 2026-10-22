@@ -46,7 +46,7 @@ job ─< job_step ─< job_log      audit_log      user / session / api_key
 预检（连通、指纹、系统）→ 基线（sshd、nftables、sysctl/BBR）→ 装 ssserver → 装 fleet-agent 并签发令牌 → 等第一批上报 →
 创建入口（写期望状态）→ 等线路机回报已应用 → 端到端验收 → `active`。批量上架就是多行同时提交。
 
-**上架同机 IP 节点**（`provision_ip`，填宿主机 + 新 IP）：在宿主机上核对 IP（要直接配在宿主机网卡上；经它访问中控 `/echo` 回显的必须是它自己，否则是出站路由不对；暂定的 SS 端口被占用就改用最小空闲端口）→
+**上架同机 IP 节点**（`provision_ip`，填宿主机 + 新 IP）：在宿主机上核对 IP（要直接配在宿主机网卡上，或 1:1 NAT 映射到网卡上的某个本机地址——各本机地址访问一次 `/echo`，回显是它的那个记进 `machine.bind_ip`，ssserver 监听并从它出站；经它访问中控 `/echo` 回显的必须是它自己，否则是出站路由不对；暂定的 SS 端口被占用就改用最小空闲端口）→
 推 ssserver、装自己的实例和防火墙表（不做系统基线、不装 agent）→ 创建入口 → 等线路机应用 → 出口验收（期望它自己的 IP）→ `active`。恢复（`restore_ip`）同样的步骤，要求宿主机在用，SS 端口重新分配。
 
 **退役**：入口 → `removing`（期望状态去掉）→ 等线路机回报 → 撤销令牌 → （节点可达时）停掉节点上的 agent 和 ssserver → `retired`。

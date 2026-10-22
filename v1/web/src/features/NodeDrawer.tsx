@@ -186,6 +186,8 @@ function OverviewTab({ m }: { m: MachineView }) {
           {m.kind !== 'relay' && <LabelValue label="团队 / 编号">{m.team ? `${m.team.name} / ${m.number != null ? F.pad2(m.number) : '—'}` : '—'}</LabelValue>}
           <LabelValue label="IP"><span className="row" style={{ gap: 4, flexWrap: 'nowrap', minWidth: 0 }}><Trunc className="num">{m.ip}</Trunc><CopyButton text={m.ip} label=" IP" size={13} show /></span></LabelValue>
           {h && <LabelValue label="宿主机"><button type="button" className="btn btn-link" onClick={() => open(h.id)}>{h.name}</button></LabelValue>}
+          {/* 1:1 NAT 映射的附加 IP：公网 IP 不在网卡上，ssserver 监听并从这个本地地址出站；线路机连的仍是上面的 IP */}
+          {h && m.bind_ip && <LabelValue label="本地地址"><><span className="num">{m.bind_ip}</span> <InfoTip text={`公网 IP 是 1:1 NAT 映射到宿主机这个地址上的：ssserver 监听并从它出站，线路机连的仍是 ${m.ip}`} /></></LabelValue>}
           <LabelValue label="SSH 端口">{`${m.ssh_port}${ofHost}`}</LabelValue>
           <LabelValue label="供应商">{m.provider?.name}</LabelValue>
           <LabelValue label="套餐">{m.plan?.name ?? (h ? '不带套餐' : undefined)}</LabelValue>

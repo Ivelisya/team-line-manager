@@ -94,7 +94,7 @@ export function buildDb(): Db {
     };
   };
   const base = (o: Partial<MachineView> & Pick<MachineView, 'id' | 'kind' | 'name' | 'ip'>): MachineView => ({
-    team: null, number: null, label: null, ssh_port: 22, country: countryOf(o.ip), country_set: null, host_machine: null, ip_nodes: [], provider: null, provider_code: null, plan: null, service_ref: null,
+    team: null, number: null, label: null, ssh_port: 22, country: countryOf(o.ip), country_set: null, host_machine: null, bind_ip: null, ip_nodes: [], provider: null, provider_code: null, plan: null, service_ref: null,
     lifecycle: 'active', lifecycle_reason: null, note: '', revision: 1, created_at: iso(now() - 120 * DAY), activated_at: iso(now() - 100 * DAY), retired_at: null,
     subscription: null, agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, quota: { used: 0, period_start: '', rule: null, base: null, base_at: null }, health: { status: 'ok', reasons: [] },
     active_job: null, failed_job: null, open_incidents: 0, maintenance: false, relay: null, ...o,
@@ -281,7 +281,7 @@ export function buildDb(): Db {
   jobs.splice(3, 0, cj, uj);
   // 同机 IP 节点的上架：先在宿主机上核对 IP，收敛不做系统基线（bbr 为 null）
   const ij = mk('j-ip', 'provision_ip', { id: 'm-t1-14', name: '团队1-14' }, 'succeeded', IP_STEPS, 6, 60 * 24 * 9);
-  ij.steps[0].output = { ss_port: 8389, local_ips: '198.51.100.13, 198.51.100.66', egress_ip: '198.51.100.66' };
+  ij.steps[0].output = { ss_port: 8389, local_ips: '198.51.100.13, 198.51.100.66', egress_ip: '198.51.100.66', bind_ip: null };
   ij.steps[1].output = { bbr: null, nft_relays: '203.0.113.10', ssserver_updated: false };
   ij.steps[4].output = { latency_ms: 214.2, egress_ip: '198.51.100.66' };
   jobs.push(ij);
