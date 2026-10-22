@@ -20,8 +20,8 @@ import { AccessViewSwitch } from '@/components/app/AccessViewSwitch';
 import { HostCell, ResultPill, fmtN } from '@/features/AccessBits';
 import { CursorPager, Pagination } from '@/components/app/Pagination';
 import { scrollBackTo, usePage } from '@/lib/usePage';
-import { parseSort, useUrlState } from '@/lib/urlState';
-import { CONN_FILTER_OPTIONS, ConnCell, IpIntelHint, IpIntelStatusChip, IspPlace, connMatches } from '@/features/IpIntelBits';
+import { parseSort, useUrlSearch, useUrlState } from '@/lib/urlState';
+import { CONN_FILTER_OPTIONS, ConnCell, IpIntelHint, IpIntelStatusChip, IspPlace } from '@/features/IpIntelBits';
 
 type View = 'targets' | 'new' | 'sources' | 'nodes' | 'events';
 const VIEWS: { value: View; label: string }[] = [
@@ -66,10 +66,8 @@ export function AccessPage() {
   const sort = sp.get('sort') ?? '';
   const onSort = React.useCallback((v: string) => upd({ sort: v }), [upd]);
 
-  // 搜索框：输入即生效，停手 250ms 后写进 URL
-  const [text, setText] = React.useState(f.search);
-  // upd 身份稳定（useUrlState），别的筛选一动不会重跑这个 effect、把旧文本写回 URL
-  React.useEffect(() => { const t = setTimeout(() => upd({ q: text.trim() }), 250); return () => clearTimeout(t); }, [text, upd]);
+  // 搜索框与 ?q= 双向同步（后退 / 前进、带参链接时输入框跟上）
+  const [text, setText] = useUrlSearch(sp, upd);
 
   const teams = useTeams().data;
   const teamOpts = React.useMemo(() => (teams ?? []).map((t) => ({ value: t.id, label: t.name })), [teams]);
@@ -83,7 +81,9 @@ export function AccessPage() {
   const onWindow = React.useCallback((v: AccessWindow) => upd({ w: v === '24h' ? '' : v }), [upd]);
   const summary = useAccessSummary(f);
   const k = summary.data?.kpi;
-  const filtered = !!(f.team || f.node || f.search || f.kind || f.action);
+  // 接入方式（?conn=）只在「来源地址」页签有：换页签时清掉，生效时也给「清除筛选」
+  const conn = tab === 'sources' && CONN_FILTER_OPTIONS.some((o) => o.value === sp.get('conn')) ? sp.get('conn')! : '';
+  const filtered = !!(f.team || f.node || f.search || f.kind || f.action || conn);
   const clear = React.useCallback(() => { setText(''); upd({ team: '', node: '', q: '', kind: '', act: '', conn: '' }); }, [upd]);
   // 点目标名：搜索框直接换成它（不等防抖）。合并的「*.域名」搜「.域名」：原始记录里是真实的子域名，
   // 去掉「*」后各页签（汇总里的合并名、原始记录里的子域名）都按包含匹配到同一批
@@ -108,17 +108,17 @@ export function AccessPage() {
       <div className="stat-grid" data-stale={summary.isPlaceholderData}>
         <Stat tone="blue" icon={<Server />} label="有活动的节点" value={k ? fmtN(k.active_nodes) : '—'} loading={summary.isLoading} caption={`最近 ${winLabel(f.window)}`} />
         <Stat tone="teal" icon={<Activity />} label="连接记录" info="含已阻止的连接" value={k ? fmtN(k.conns) : '—'} loading={summary.isLoading} />
-        <Stat tone="violet" icon={<Target />} label="节点 × 目标" info={'每个节点访问过的目标数相加：两个节点访问同一个域名算 2 个。\n「域名与 IP」按目标去重，同一个域名只算 1 个'} value={k ? fmtN(k.targets) : '—'} loading={summary.isLoading} />
+        <Stat tone="violet" icon={<Target />} label="访问目标" info="访问过的不同域名与 IP 个数，多个节点访问同一个只算 1 个；同「域名与 IP」的总数" value={k ? fmtN(k.unique_targets) : '—'} loading={summary.isLoading} />
         <Stat tone="bad" icon={<ShieldX />} label="已阻止的连接" value={k ? fmtN(k.blocked) : '—'} loading={summary.isLoading} caption={k && k.conns > 0 ? blockedShare(k.blocked, k.conns) : undefined} />
       </div>
 
-      <Tabs value={tab} onValueChange={(v) => upd({ view: v === 'targets' ? '' : v, p: '', sort: '' })}>
+      <Tabs value={tab} onValueChange={(v) => upd({ view: v === 'targets' ? '' : v, p: '', sort: '', conn: '' })}>
         <TabsList>{VIEWS.map((x) => <TabsTrigger key={x.value} value={x.value} noPanel>{x.label}</TabsTrigger>)}</TabsList>
       </Tabs>
 
       {tab === 'targets' && <TargetsView open={open} f={f} sort={isTargetSort(sort) ? sort : 'conns'} onSort={onSort} filtered={filtered} onClear={clear} onPick={pick} />}
       {tab === 'new' && <NewView open={open} f={f} filtered={filtered} onClear={clear} onPick={pick} />}
-      {tab === 'sources' && <SourcesView open={open} f={f} filtered={filtered} onClear={clear} conn={sp.get('conn') ?? ''} upd={upd} />}
+      {tab === 'sources' && <SourcesView open={open} f={f} filtered={filtered} onClear={clear} conn={conn} upd={upd} />}
       {tab === 'nodes' && <NodesView open={open} f={f} filtered={filtered} onClear={clear} sort={sort} onSort={onSort} />}
       {tab === 'events' && <EventsView open={open} f={f} filtered={filtered} onClear={clear} />}
     </div>
@@ -190,13 +190,18 @@ const TargetsView = React.memo(function TargetsView({ open, f, sort, onSort, fil
   );
 });
 
+/** 展开一个目标时先列连接数最多的这么多个节点，其余点「显示全部」 */
+const NODES_SHOWN = 10;
+
 /** 展开的一个目标：同样的筛选下各节点一行（节点、来源数、连接数、结果、这个节点第一次 / 最近访问它） */
 function TargetNodes({ f, host, open }: { f: AccessFilter; host: string; open: Open }) {
   const q = useAccessTargetNodes(f, host);
+  const [all, setAll] = React.useState(false);
   if (!q.data) {
     return <tr className="acc-sub"><td /><td colSpan={5}>{q.isError ? <ErrNote q={q} /> : <span className="skel" style={{ width: '40%', height: 12 }} />}</td></tr>;
   }
-  return q.data.items.map((n) => (
+  const items = q.data.items;
+  return <>{(all ? items : items.slice(0, NODES_SHOWN)).map((n) => (
     <tr key={n.node_id} className="acc-sub">
       <td />
       <td><span className="acc-node"><NodeLink id={n.node_id} name={n.name} open={open} /><span className="sub">{fmtN(n.sources)} 个来源</span></span></td>
@@ -205,7 +210,10 @@ function TargetNodes({ f, host, open }: { f: AccessFilter; host: string; open: O
       <td data-tip={F.dtFull(n.first_seen)}>{F.dt(n.first_seen)}</td>
       <td data-tip={F.dtFull(n.last_seen)}>{F.ago(n.last_seen)}</td>
     </tr>
-  ));
+  ))}
+  {items.length > NODES_SHOWN && (
+    <tr className="acc-sub"><td /><td colSpan={5}><Button size="sm" variant="quiet" aria-expanded={all} onClick={(e) => { e.stopPropagation(); setAll((v) => !v); }}>{all ? '收起' : `显示全部 ${fmtN(items.length)} 个节点`}</Button></td></tr>
+  )}</>;
 }
 
 const NewView = React.memo(function NewView({ f, filtered, onClear, onPick, open }: { f: AccessFilter; filtered: boolean; onClear: () => void; onPick: (h: string) => void; open: Open }) {
@@ -217,7 +225,7 @@ const NewView = React.memo(function NewView({ f, filtered, onClear, onPick, open
   const rows = q.data?.items ?? [];
   return (
     <Panel ref={pg.anchor} title="新出现的目标" count={q.data ? `${fmtN(q.data.total)} 个` : undefined}
-      sub={<InfoTip text="该节点第一次访问到的域名 / IP；新目标不等于异常，只作参考" />} flush>
+      sub={<InfoTip text={'该节点第一次访问到的域名 / IP，按「节点 × 目标」计数：同一个目标被 3 个节点首次访问算 3 个\n新目标不等于异常，只作参考'} />} flush>
       {q.isError && <div style={{ padding: 12 }}><ErrNote q={q} /></div>}
       <TableWrap data-stale={q.isPlaceholderData}>
         <table className="dt" style={{ minWidth: 760 }}>
@@ -250,20 +258,17 @@ function blockedShare(blocked: number, conns: number) {
   return `占 ${p.toFixed(p < 10 && p % 1 ? 1 : 0)}%`;
 }
 
-/** conn：接入方式筛选（?conn=），在取回的来源里筛 */
-const SourcesView = React.memo(function SourcesView({ f, filtered, onClear, conn, upd, open }: { f: AccessFilter; filtered: boolean; onClear: () => void; conn: string; upd: (p: Record<string, string>) => void; open: Open }) {
-  const q = useAccessSources(f);
-  const ct = CONN_FILTER_OPTIONS.some((o) => o.value === conn) ? conn : '';
-  const all = q.data?.items ?? [];
-  const rows = all.filter((s) => connMatches(s.intel, ct));
+/** conn：接入方式筛选（?conn=，已校验），中控按它筛完再取前 N 个 */
+const SourcesView = React.memo(function SourcesView({ f, filtered, onClear, conn: ct, upd, open }: { f: AccessFilter; filtered: boolean; onClear: () => void; conn: string; upd: (p: Record<string, string>) => void; open: Open }) {
+  const q = useAccessSources(f, ct);
+  const rows = q.data?.items ?? [];
   const pg = usePage({ total: q.data ? rows.length : undefined, sizes: SIZES, size: SIZE, reset: [f, ct] });
   // 接口不回总数：取满上限时只知道是连接数最多的前 N 个
-  const capped = all.length >= SOURCES_LIMIT;
-  const allText = capped ? `前 ${fmtN(SOURCES_LIMIT)} 个` : `${fmtN(all.length)} 个`;
+  const capped = rows.length >= SOURCES_LIMIT;
   return (
     <>
       <IpIntelHint />
-      <Panel ref={pg.anchor} title="来源地址" count={q.data ? (ct ? `${fmtN(rows.length)} / ${allText}` : allText) : undefined}
+      <Panel ref={pg.anchor} title="来源地址" count={q.data ? (capped ? `前 ${fmtN(SOURCES_LIMIT)} 个` : `${fmtN(rows.length)} 个`) : undefined}
         sub={<InfoTip text={`连接到入口的客户端地址，按连接数排序${capped ? `，最多列 ${SOURCES_LIMIT} 个` : ''}；运营商 · 城市 · 接入方式查自中控的离线库，不外发 IP；搜索框在这里匹配来源 IP`} />} flush>
         {q.isError && <div style={{ padding: 12 }}><ErrNote q={q} /></div>}
         <TableWrap data-stale={q.isPlaceholderData}>
@@ -291,10 +296,9 @@ const SourcesView = React.memo(function SourcesView({ f, filtered, onClear, conn
           </table>
         </TableWrap>
         {q.isLoading && <Loading />}
-        {q.data && rows.length === 0 && (ct && all.length > 0
-          ? <Empty icon={<Radar size={22} />} text="没有这种接入方式的来源地址"><Button size="sm" variant="quiet" onClick={() => upd({ conn: '' })}>清除接入方式筛选</Button></Empty>
+        {q.data && rows.length === 0 && (
           // 来源按小时汇总时只记了来源 IP，不分目标：搜域名在这里搜不到
-          : f.search && !/^[\d.]+$|:/.test(f.search) ? <Empty icon={<Radar size={22} />} text="来源地址只能按 IP 搜索"><Button size="sm" variant="quiet" onClick={onClear}>清除筛选</Button></Empty>
+          f.search && !/^[\d.]+$|:/.test(f.search) ? <Empty icon={<Radar size={22} />} text="来源地址只能按 IP 搜索"><Button size="sm" variant="quiet" onClick={onClear}>清除筛选</Button></Empty>
             : <None f={f} filtered={filtered} onClear={onClear} what="来源地址" />)}
         <Pagination pg={pg} unit="个" />
       </Panel>

@@ -44,7 +44,15 @@ async fn check_reports_unreachable_ssh() {
     let chk = t.post("/api/v1/provision/check", json!({"items": [item(&me), item("127.0.0.1")]})).await;
     let errs = |i: usize| chk["items"][i]["errors"].to_string();
     assert!(chk["items"][0]["ok"] == false && errs(0).contains(&format!("SSH {me}:1 连不上（连接被拒绝")), "{chk}");
-    assert!(errs(1).contains("127.0.0.1 是回环地址") && !errs(1).contains("SSH"), "{chk}");
+    assert!(errs(1).starts_with("[\"IP 127.0.0.1 是回环地址") && !errs(1).contains("SSH"), "{chk}");
+    // 连得上 TCP 但不说 SSH（中控出网经透明代理时，不存在的地址也是这样）：不算通过
+    let silent = tokio::net::TcpListener::bind((me.as_str(), 0)).await.unwrap();
+    let port = silent.local_addr().unwrap().port();
+    let mut it = item(&me);
+    it["ssh_port"] = json!(port);
+    let chk = t.post("/api/v1/provision/check", json!({"items": [it]})).await;
+    assert!(chk["items"][0]["errors"].to_string().contains(&format!("SSH {me}:{port} 没有响应 SSH 握手")), "{chk}");
+    drop(silent);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

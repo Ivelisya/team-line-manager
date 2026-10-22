@@ -55,7 +55,7 @@ pub fn access(ctx: &Ctx, o: AccessOpts) -> anyhow::Result<u8> {
                     table::ts(&st(&d, "/window_start")),
                     num(k, "/active_nodes"),
                     num(k, "/conns"),
-                    num(k, "/targets"),
+                    num(k, "/unique_targets"),
                     num(k, "/blocked"),
                     table::render(&["节点", "团队", "连接", "域名", "来源", "阻止", "最近"], &rows)
                 )

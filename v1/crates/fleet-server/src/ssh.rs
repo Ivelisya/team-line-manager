@@ -113,11 +113,13 @@ impl Output {
 /// 单路输出最多保留 1 MiB（远程执行回给用户的上限是 256 KiB，作业脚本的输出只有几 KB）
 const OUT_CAP: usize = 1024 * 1024;
 
-/// 把子进程的一路输出读完：前 OUT_CAP 字节留下，之后继续读但丢掉，让子进程不会因为管道满而卡住
+/// 把子进程的一路输出读完：前 OUT_CAP 字节留下，之后继续读但丢掉，让子进程不会因为管道满而卡住。
+/// 读缓冲放在堆上：跨 await 的数组会整个算进 future，每个跑 ssh 的 future（作业步骤、远程执行…）都跟着大 32 KB，
+/// 调试构建里层层嵌套的轮询栈帧再各留一份，升级回滚这样深的路径会撑爆 2 MB 的线程栈
 async fn read_capped<R: tokio::io::AsyncRead + Unpin>(mut r: R) -> Vec<u8> {
     use tokio::io::AsyncReadExt;
     let mut kept = Vec::new();
-    let mut buf = [0u8; 16 * 1024];
+    let mut buf = vec![0u8; 16 * 1024];
     loop {
         match r.read(&mut buf).await {
             Ok(0) | Err(_) => return kept,
@@ -469,12 +471,49 @@ pub async fn forget_host(known_hosts: &Path, ip: &str, port: u16) -> anyhow::Res
 pub async fn tcp_ok(ip: &str, port: u16, timeout: Duration) -> bool { tcp_probe(ip, port, timeout).await.is_ok() }
 
 /// TCP 可达性，连不上时给原因（给人看）：连接被拒绝、`timeout` 内没有响应，或别的连接错误
-pub async fn tcp_probe(ip: &str, port: u16, timeout: Duration) -> Result<(), String> {
+pub async fn tcp_probe(ip: &str, port: u16, timeout: Duration) -> Result<(), String> { connect(ip, port, timeout).await.map(drop) }
+
+async fn connect(ip: &str, port: u16, timeout: Duration) -> Result<tokio::net::TcpStream, String> {
     match tokio::time::timeout(timeout, tokio::net::TcpStream::connect((ip, port))).await {
-        Ok(Ok(_)) => Ok(()),
+        Ok(Ok(s)) => Ok(s),
         Ok(Err(e)) if e.kind() == std::io::ErrorKind::ConnectionRefused => Err("连接被拒绝：端口没有在监听，或防火墙拒绝了".into()),
         Ok(Err(e)) => Err(e.to_string()),
         Err(_) => Err(format!("{} 秒没有响应", timeout.as_secs())),
+    }
+}
+
+/// 连上之后等 SSH 版本行的时长
+const SSH_BANNER_WAIT: Duration = Duration::from_secs(3);
+
+/// SSH 端口能用：TCP 连上（`timeout` 内），并且 3 秒内读到服务端的版本行（`SSH-` 开头；按 RFC 4253，之前可以有别的行）。
+/// 只看 TCP 不够：中控出网经透明代理时，任何地址的 TCP 都「连得上」（代理先接住），不存在的机器也会被判成通。
+/// 不通时给原因（给人看），接在「SSH ip:port」后面：「连不上（…）」「没有响应 SSH 握手」「回的不是 SSH 版本行」
+pub async fn ssh_probe(ip: &str, port: u16, timeout: Duration) -> Result<(), String> {
+    use tokio::io::AsyncReadExt;
+    let mut s = connect(ip, port, timeout).await.map_err(|why| format!("连不上（{why}）"))?;
+    let mut got = Vec::new();
+    let read = async {
+        let mut buf = [0u8; 256];
+        // 只看前 1 KB：版本行之前的杂行不会多到这里
+        while got.len() < 1024 {
+            let n = s.read(&mut buf).await.unwrap_or(0);
+            if n == 0 {
+                return false;
+            }
+            got.extend_from_slice(&buf[..n]);
+            if got.starts_with(b"SSH-") || got.windows(5).any(|w| w == b"\nSSH-") {
+                return true;
+            }
+        }
+        false
+    };
+    let r = tokio::time::timeout(SSH_BANNER_WAIT, read).await;
+    match r {
+        Ok(true) => Ok(()),
+        // 说了话但不是 SSH（读满、断开或超时都算）
+        _ if !got.is_empty() => Err("回的不是 SSH 版本行：端口上不是 SSH 服务".into()),
+        Ok(false) => Err("没有响应 SSH 握手（连上后被对方断开）".into()),
+        Err(_) => Err(format!("没有响应 SSH 握手（连上后 {} 秒没收到版本行）", SSH_BANNER_WAIT.as_secs())),
     }
 }
 
@@ -502,6 +541,35 @@ mod tests {
         assert_eq!(host_spec("1.2.3.4", 22), "1.2.3.4");
         assert_eq!(host_spec("1.2.3.4", 2222), "[1.2.3.4]:2222");
         assert!(fingerprint("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGWz").starts_with("SHA256:"));
+    }
+
+    /// SSH 探测：只接受连接不说话（透明代理接住了不存在的地址）判不通；先回杂行再回版本行判通；连接被拒、回的不是 SSH 判不通
+    #[tokio::test]
+    async fn ssh_probe_needs_banner() {
+        use tokio::io::AsyncWriteExt;
+        async fn serve(reply: &'static [u8]) -> u16 {
+            let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = l.local_addr().unwrap().port();
+            tokio::spawn(async move {
+                let (mut s, _) = l.accept().await.unwrap();
+                s.write_all(reply).await.unwrap();
+                // 连接留着，不主动断开
+                tokio::time::sleep(Duration::from_secs(10)).await;
+            });
+            port
+        }
+        let t = Duration::from_secs(2);
+        let silent = serve(b"").await;
+        let e = ssh_probe("127.0.0.1", silent, t).await.unwrap_err();
+        assert!(e.contains("没有响应 SSH 握手"), "{e}");
+        assert!(tcp_probe("127.0.0.1", silent, t).await.is_ok(), "TCP 本身是通的");
+        assert_eq!(ssh_probe("127.0.0.1", serve(b"SSH-2.0-OpenSSH_9.6\r\n").await, t).await, Ok(()));
+        assert_eq!(ssh_probe("127.0.0.1", serve(b"hello\r\nSSH-2.0-x\r\n").await, t).await, Ok(()));
+        let e = ssh_probe("127.0.0.1", serve(b"HTTP/1.1 400 Bad Request\r\n\r\n").await, t).await.unwrap_err();
+        assert!(e.contains("不是 SSH"), "{e}");
+        let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap().port();
+        let e = ssh_probe("127.0.0.1", closed, t).await.unwrap_err();
+        assert!(e.starts_with("连不上"), "{e}");
     }
 
     #[tokio::test]

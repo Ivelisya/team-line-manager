@@ -566,15 +566,21 @@ async fn bye(sink: &mut Sink, end: End) {
 }
 
 /// 写浏览器的任务：终端输出与控制帧都从这里发，主循环不会因为浏览器收得慢卡在发送上（踢人、空闲、最长时限照常及时生效）。
-/// 控制帧优先。一帧发不出去就经 `done` 告诉主循环后结束；发完 exit 与关闭帧也结束
+/// 控制帧优先。一帧发不出去就经 `done` 告诉主循环后结束；发完 exit 与关闭帧也结束。
+/// 控制通道关了不结束：远端自己退出时 exit 排在输出后面，`serve` 放进去之后就丢掉两个发送端，
+/// 这时输出可能还没发完——先看到控制通道关了就走，剩下的输出和 exit 都发不出去，浏览器只看到连接断了
 async fn write_ws(mut sink: Sink, mut out: mpsc::Receiver<Out>, mut ctl: mpsc::Receiver<Ctl>, done: oneshot::Sender<WriteEnd>) {
+    let mut ctl_open = true;
     let failed = loop {
         let m = tokio::select! {
             biased;
-            c = ctl.recv() => match c {
+            c = ctl.recv(), if ctl_open => match c {
                 Some(Ctl::Ping) => Message::Ping(Bytes::new()),
                 Some(Ctl::Exit(end)) => return bye(&mut sink, end).await,
-                None => return,
+                None => {
+                    ctl_open = false;
+                    continue;
+                }
             },
             o = out.recv() => match o {
                 Some(Out::Data(b)) => Message::Binary(b),

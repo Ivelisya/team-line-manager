@@ -287,8 +287,11 @@ pub fn versions(ctx: &Ctx) -> anyhow::Result<u8> {
                 let ok = rel.iter().filter(|r| matches!(st(r, "/status").as_str(), "applied" | "gone")).count();
                 let kind = if st(v, "/kind") == "rollback" { format!("回滚到 {}", st(v, "/rollback_of_seq")) } else { "发布".into() };
                 let mut status = status_cn(&st(v, "/status")).to_string();
-                if v["is_current"].as_bool() == Some(true) {
+                // 「当前」只标最新一版；更早的、内容与当前相同的标「与当前相同」（不能回滚到它）
+                if v["is_latest"].as_bool() == Some(true) {
                     status.push_str("（当前）");
+                } else if v["is_current"].as_bool() == Some(true) {
+                    status.push_str("（与当前相同）");
                 }
                 let changes: Vec<String> = v["changes"]
                     .as_array()

@@ -35,8 +35,10 @@ export const errorKindLabel = (k: string, error?: string | null) =>
   : k === 'remote' && error && /起不来|没有起来/.test(error) ? 'agent 没起来'
   : ERROR_KIND_LABEL[k] ?? k;
 
-/** 服务端作业文字（步骤输出、错误、日志）里的「代数」是内部说法，界面上统一叫「配置版本」（同线路页的配置条） */
-export const jobText = (s: string) => s.replace(/配置应用到代数 (\d+)/g, '配置版本 $1 已应用').replace(/(期望状态|配置)?代数/g, '配置版本');
+/** 服务端作业文字（步骤输出、错误、日志）里的「代数」是内部说法，界面上统一叫「配置版本」（同线路页的配置条）；
+ *  旧记录里防火墙名单写成「期望 [a, b]，实际 []」的原始数组：写成「期望 a、b；实际 无」（同现在的服务端） */
+export const jobText = (s: string) => s.replace(/配置应用到代数 (\d+)/g, '配置版本 $1 已应用').replace(/(期望状态|配置)?代数/g, '配置版本')
+  .replace(/(期望|实际) \[([^\]]*)\]/g, (_, k: string, v: string) => `${k} ${v.trim() ? v.split(/,\s*/).join('、') : '无'}`).replace(/(期望 [^，；]*)，实际/g, '$1；实际');
 
 // ── 步骤输出 ──
 // 服务端各步骤 Outcome::Done(json!{..}) 的全部 key（crates/fleet-server/src/jobs/steps.rs、steps/lifecycle.rs），

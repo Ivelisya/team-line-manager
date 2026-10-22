@@ -62,7 +62,13 @@ export function EntryMenus({ entries, children }: { entries: EntryView[]; childr
 
       {dlg?.k === 'rotate' && <TypedConfirmDialog open={dlg.open} onOpenChange={hide} title={`轮换入口 ${entryLabel(dlg.e)} 的凭据？`} expected={entryLabel(dlg.e)} confirmLabel="轮换凭据" danger
         description={<>旧分享链接会立即失效 <InfoTip text="会生成新的凭据，需要把新的分享链接重新发给使用者。" /></>}
-        onConfirm={async () => { await act.mutateAsync({ id: dlg.e.id, action: 'rotate', confirm: entryLabel(dlg.e) }); toast.ok('凭据已轮换'); }} />}
+        onConfirm={async () => {
+          const e = dlg.e;
+          await act.mutateAsync({ id: e.id, action: 'rotate', confirm: entryLabel(e) });
+          // 旧链接已失效：通知里直接给新链接，不用再去菜单里找
+          toast.show({ tone: 'ok', text: `入口 ${entryLabel(e)} 的凭据已轮换，旧链接已失效`, duration: 15000,
+            action: { label: '复制新链接', onClick: () => void fetchShare(e.id).then((r) => copyText(r.url, '新分享链接'), toast.err) } });
+        }} />}
 
       {dlg?.k === 'share' && <Dialog open={dlg.open} onOpenChange={hide}>
         <DialogContent size="md">

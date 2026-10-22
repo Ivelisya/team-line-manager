@@ -9,6 +9,7 @@ import { useDrawer } from '@/lib/drawer';
 import { copyText } from '@/lib/clipboard';
 import { kindLabel } from '@/lib/derive';
 import { setOverlay, useOverlay } from '@/lib/palette';
+import { matchTier, sv } from '@/lib/match';
 import { openEvacuate, openRenew } from '@/lib/nodeActions';
 import { openTerminal } from '@/lib/terminal';
 import type { ThemePref } from '@/lib/theme';
@@ -23,24 +24,6 @@ const POLICY: NavItem = { to: '/access/policy', label: '访问监控 › 访问�
 const PAGES = NAV.flatMap((n) => (n.to === '/access' ? [n, POLICY] : [n]));
 const LIMIT = 8; // 不输入时只列前几台，输入后在全部机器里搜
 
-/** 条目的可搜索文本：「名称 \t IP \t 其它（团队、类型、别名）」。名称就是界面上显示的那行字，页面、动作、团队没有 IP 一栏 */
-const sv = (name: string, ip: string, rest: string) => `${name}\t${ip}\t${rest}`;
-/** 编号去掉前导零：团队1-04 → 团队1-4，让「1-4」也能按名称命中它 */
-const unpad = (s: string) => s.replace(/\d+/g, (d) => d.replace(/^0+(?=\d)/, ''));
-const subseq = (s: string, q: string) => { const t = [...q]; let i = 0; for (const c of s) if (c === t[i]) i++; return i >= t.length; };
-const CJK = /[㐀-鿿]/;
-/** 匹配档位（大的在前）：名称相同 > 名称前缀 > IP 前缀 > 名称包含 > 去前导零后名称包含 > IP、团队、别名等包含 > 名称模糊。
- *  模糊（子序列）只对名称、且只在搜的不含中文时：中文按连续子串匹配（搜「团队1」不该命中「模拟团队B-17」）；IP、UUID 里数字多，短数字串做子序列几乎条条命中 */
-function matchTier(value: string, q: string): number {
-  const [name, ip = '', rest = ''] = value.toLowerCase().split('\t');
-  if (name === q) return 8;
-  if (name.startsWith(q)) return 7;
-  if (ip && ip.startsWith(q)) return 6;
-  if (name.includes(q)) return 5;
-  if (unpad(name).includes(unpad(q))) return 4;
-  if (ip.includes(q) || rest.includes(q)) return 3;
-  return !CJK.test(q) && subseq(name, q) ? 2 : 0;
-}
 
 type Theme = { pref: ThemePref; setPref: (p: ThemePref) => void };
 type Mode = 'root' | 'copy-ip' | 'evacuate' | 'renew' | 'terminal';
@@ -104,7 +87,7 @@ function PaletteBody({ theme, askUpgrade }: { theme: Theme; askUpgrade: () => vo
   React.useLayoutEffect(() => { listRef.current?.scrollTo({ top: 0 }); }, [search, mode]);
   const machineItems = list.map((m) => (
     <CommandItem key={m.id} value={value(m)} keywords={[m.id]}
-      onSelect={() => { close(); if (mode === 'copy-ip') void copyText(m.ip, ' IP'); else if (mode === 'evacuate') openEvacuate(m.id); else if (mode === 'renew') openRenew(m.id); else if (mode === 'terminal') openTerminal({ kind: 'machine', id: m.id, name: m.name }); else openDrawer(m.id); }}>
+      onSelect={() => { close(); if (mode === 'copy-ip') void copyText(m.ip, ' IP', true); else if (mode === 'evacuate') openEvacuate(m.id); else if (mode === 'renew') openRenew(m.id); else if (mode === 'terminal') openTerminal({ kind: 'machine', id: m.id, name: m.name }); else openDrawer(m.id); }}>
       <Flag country={m.country} manual={!!m.country_set} ip={m.ip} />
       <span className="cmd-main"><b className="ellipsis">{m.name}</b><HealthPill m={m} /></span>
       <span className="cmd-aside">{mode === 'copy-ip' ? <>复制 <span className="num">{m.ip}</span></> : mode === 'evacuate' ? <span>搬空…</span> : mode === 'renew' ? <span>登记续费…</span> : mode === 'terminal' ? <span>打开终端</span> : <span className="num">{m.ip}</span>}</span>

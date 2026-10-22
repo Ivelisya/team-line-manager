@@ -111,7 +111,7 @@ async fn provision_checks_host_and_allocates_ports() {
                              ip_item("203.0.113.22", xs[0], team, relay), proxy, ip_item("203.0.113.5", host, team, relay)]}),
         )
         .await;
-    for (i, want) in ["宿主机不存在", "不能当宿主机", "不能当宿主机", "只有 VPS 节点", "已经属于一台未退役的机器"].iter().enumerate() {
+    for (i, want) in ["宿主机不存在", "不能当宿主机", "不能当宿主机", "只有 VPS 节点", "已经属于 团队1-01"].iter().enumerate() {
         assert!(errors(&chk, i).contains(want), "{i}: {}", errors(&chk, i));
     }
     // 宿主机不在用
@@ -217,6 +217,9 @@ async fn unreachable_host_fails_ip_check_and_cancel_keeps_host() {
     let host = seed_vps(&t, team, 1, "127.0.0.1", 1, "active", None).await;
     let kh = t.dir.path().join("known_hosts");
     std::fs::write(&kh, "[127.0.0.1]:1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGWzfakefakefakefakefakefakefakefakefakefakefake\n").unwrap();
+    // 「检查」就登录宿主机核对 IP 在不在网卡上：宿主机的 SSH 连不上，报在宿主机上
+    let chk = t.post("/api/v1/provision/check", json!({"items": [ip_item("203.0.113.7", host, team, relay)]})).await;
+    assert!(errors(&chk, 0).starts_with("宿主机 团队1-01 的 SSH 127.0.0.1:1 连不上（连接被拒绝"), "{chk}");
     let created = t.post("/api/v1/provision", json!({"items": [ip_item("203.0.113.7", host, team, relay)]})).await;
     let (x, job): (Uuid, String) = (created["jobs"][0]["machine_id"].as_str().unwrap().parse().unwrap(), created["jobs"][0]["job_id"].as_str().unwrap().into());
 

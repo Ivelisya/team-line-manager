@@ -3,13 +3,8 @@
 /* ========== 作业页：列表 + 详情 ========== */
 .jobs-layout { display: grid; grid-template-columns: minmax(280px, 380px) minmax(0, 1fr); gap: var(--grid-gap); align-items: start; }
 .jobs-list { align-self: start; }
-/* 右侧详情（没选作业时是占位）吸顶：长列表滚到下面再点作业，详情仍停在视口里；比视口高时自己滚动。
-   滚动容器会裁掉面板投影：左右与底部各留一圈内边距（左右用负外边距抵消，面板位置不变） */
-.jobs-detail {
-  position: sticky; top: calc(var(--topbar-h) + var(--sp-16)); align-self: start;
-  max-height: var(--fit-h, calc(100dvh - var(--topbar-h) - 2 * var(--sp-16))); overflow-y: auto; /* --fit-h：按此刻的上沿算到视口底（Jobs.tsx useFitViewport） */
-  margin-inline: calc(-1 * var(--sp-8)); padding: 0 var(--sp-8) var(--sp-16);
-}
+/* 右侧详情（没选作业时是占位）跟着页面滚：自己不再是滚动容器，只有日志框一层内部滚动（换作业时 Jobs.tsx 把详情顶部滚进视口） */
+.jobs-detail { min-width: 0; }
 /* 没选作业时的占位：更高、居中 */
 .jobs-empty { min-height: min(360px, 60dvh); display: grid; align-content: center; }
 /* 列表为空、没打开作业：单栏，只留列表里那个空状态 */
@@ -17,7 +12,6 @@
 .jobs-layout[data-empty] .jobs-detail { display: none; }
 @container content (max-width: 720px) {
   .jobs-layout { grid-template-columns: minmax(0, 1fr); } .jobs-layout[data-detail="1"] .jobs-list { display: none; } .jobs-layout[data-detail="0"] .jobs-detail { display: none; }
-  .jobs-detail { position: static; max-height: none; overflow: visible; margin-inline: 0; padding: 0; } /* 单栏：详情就是整页，跟着页面滚 */
 }
 .job-item { display: grid; gap: 2px; width: 100%; padding: var(--sp-10) var(--card-pad); border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left; cursor: pointer; color: inherit; min-width: 0; transition: background-color var(--dur-1) var(--ease-std); }
 .job-item:last-child, .job-item:has(+ .pager) { border-bottom: 0; } /* 分页器自带顶线 */

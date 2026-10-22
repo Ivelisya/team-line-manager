@@ -3,10 +3,10 @@ import * as React from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowRight, PackageOpen, Plus, Repeat2, Trash2, Undo2, Wrench } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
-import { maintOwner, useAddEntry, useEndMaintenance, useMachine, usePatchMachine, usePurge, useRelayChoices, useSilences, useTeams, useUpgradeAgent } from '@/lib/queries';
-import { openMaint } from '@/lib/nodeActions';
+import { maintOwner, useAddEntry, useEndMaintenance, useMachine, usePatchMachine, usePurge, useRelayChoices, useSilences, useTeams } from '@/lib/queries';
+import { openMaint, openUpgrade } from '@/lib/nodeActions';
 import { useDrawer } from '@/lib/drawer';
-import { lifecycleLabel } from '@/lib/derive';
+import { errText, lifecycleLabel } from '@/lib/derive';
 import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
 import { Field, InfoTip, Input } from '@/components/ui/form';
@@ -70,7 +70,7 @@ function RenameSection({ m }: { m: MachineView }) {
   };
   return (
     <Section>
-      <SectionHeader title={isRelay ? '改名' : '改名 / 改编号'} />
+      <SectionHeader title={<>{isRelay ? '改名' : '改名 / 改编号'} <InfoTip text="不会断开现有连接：只改显示名与线路机上的备注，不换令牌。" /></>} />
       <form className="form-grid" onSubmit={(e) => { e.preventDefault(); if (changed && valid && !patch.isPending) save(); }}>
         {isRelay ? (
           <Field label="线路机名称" className="span-2"><Input value={label} onChange={(e) => setLabel(e.target.value)} /></Field>
@@ -90,7 +90,6 @@ function RenameSection({ m }: { m: MachineView }) {
           </span>
           <Button type="submit" variant="primary" disabled={!changed || !valid || patch.isPending} loading={patch.isPending}>保存</Button>
         </div>
-        <div className="hint span-2">不会断开现有连接 <InfoTip text="改名只改显示名与线路机上的备注，不换令牌。" /></div>
       </form>
     </Section>
   );
@@ -130,7 +129,7 @@ function EntrySection({ m }: { m: MachineView }) {
         {m.entries.length === 0 && <div className="hint">还没有入口{m.kind === 'relay' && <> <InfoTip text="节点的入口在节点上添加；也可以给这台线路机加一条直出入口。" /></>}</div>}
         {m.entries.map((e) => (
           <div key={e.id} className="manage-row" style={{ border: '1px solid var(--line)', borderRadius: 'var(--r-float)', padding: '8px 12px' }}>
-            <div><div className="t">{m.kind === 'relay' ? `${e.port} · ${e.node.name}` : entryLabel(e)}</div><div className="hint">{e.apply_error ?? (e.applied ? '已应用' : '应用中')}</div></div>
+            <div><div className="t">{m.kind === 'relay' ? `${e.port} · ${e.node.name}` : entryLabel(e)}</div><div className="hint">{e.apply_error ? errText(e.apply_error) : e.applied ? '已应用' : '应用中'}</div></div>
             <span className="row" style={{ gap: 8 }}>{entryState(e)}<EntryMenuButton entry={e} /></span>
           </div>
         ))}
@@ -140,13 +139,13 @@ function EntrySection({ m }: { m: MachineView }) {
         <div className="manage-group">
           {canMove && m.kind !== 'relay' && (
             <div className="manage-row">
-              <div><div className="t">换线路机</div><div className="hint">不断网，完成后分享链接会变 <InfoTip text="把入口换到另一台线路机：新入口验收通过后才摘旧入口。" /></div></div>
+              <div className="t">换线路机 <InfoTip text={'不断网，完成后分享链接会变。\n把入口换到另一台线路机：新入口验收通过后才摘旧入口。'} /></div>
               <Button variant="secondary" disabled={!!m.active_job} onClick={() => setDlg('move')}><Repeat2 />换线路机…</Button>
             </div>
           )}
           {canMove && m.kind === 'relay' && (
             <div className="manage-row">
-              <div><div className="t">搬空线路机</div><div className="hint">节点的分享链接会变 <InfoTip text="把上面所有节点换到另一台线路机，之后就能安全退役这台。" /></div></div>
+              <div className="t">搬空线路机 <InfoTip text={'把上面所有节点换到另一台线路机，之后就能安全退役这台。\n这些节点的分享链接会变。'} /></div>
               <Button variant="secondary" onClick={() => setDlg('evacuate')}><PackageOpen />搬空到…</Button>
             </div>
           )}
@@ -159,7 +158,7 @@ function EntrySection({ m }: { m: MachineView }) {
           )}
           {canAdd && (
             <div className="manage-row">
-              <div><div className="t">加入口</div><div className="hint">多一条入口和分享链接 <InfoTip text="再挂到另一台线路机；原有的入口不受影响。" /></div></div>
+              <div className="t">加入口 <InfoTip text="再挂到另一台线路机，多一条入口和分享链接；原有的入口不受影响。" /></div>
               <span className="row" style={{ gap: 8, flexWrap: 'nowrap' }}>
                 <div style={{ width: 160 }}><Select value={relay} onChange={setRelay} options={opts} placeholder="选择线路机" aria-label="要挂到的线路机" /></div>
                 <Button disabled={!relay || add.isPending} loading={add.isPending} onClick={() => add.mutate({ id: m.id, relay_id: relay }, { onSuccess: () => { toast.ok('已提交，新入口正在应用'); setRelay(''); }, onError: toast.err })}><Plus />添加入口</Button>
@@ -180,7 +179,7 @@ function IpNodesSection({ m }: { m: MachineView }) {
     <Section>
       <SectionHeader title="同机 IP 节点" meta={m.ip_nodes.length ? `${m.ip_nodes.length} 个` : undefined} />
       <div className="manage-row">
-        <div><div className="t">添加 IP 节点</div><div className="hint">每个附加 IP 一台节点 <InfoTip text="这台机器上另配了公网 IP 时，每个 IP 上架成一台独立节点（自己的团队编号、入口与分享链接）；SSH、agent 与主机读数都用这台的。" /></div></div>
+        <div className="t">添加 IP 节点 <InfoTip text="这台机器上另配了公网 IP 时，每个 IP 上架成一台独立节点（自己的团队编号、入口与分享链接）；SSH、agent 与主机读数都用这台的。" /></div>
         <Button asChild variant="secondary"><Link to={`/provision?host=${m.id}`}><Plus />添加 IP 节点…</Link></Button>
       </div>
     </Section>
@@ -189,7 +188,6 @@ function IpNodesSection({ m }: { m: MachineView }) {
 
 /** agent：版本、最近上报；升级 = 推送中控当前版本并重启（作业）。同机 IP 节点没有自己的 agent：不给升级，指向宿主机 */
 function AgentSection({ m }: { m: MachineView }) {
-  const up = useUpgradeAgent();
   const { open } = useDrawer();
   const a = m.agent!;
   const h = m.host_machine;
@@ -200,11 +198,10 @@ function AgentSection({ m }: { m: MachineView }) {
       <div className="manage-row">
         <div>
           <div className="t">版本 {a.version ?? '未知'}</div>
-          <div className="hint">{h ? `用宿主机「${h.name}」的 · ${seen}` : seen} <InfoTip text={h ? '这台同机 IP 节点没有自己的 agent；要升级就升级宿主机的。' : `升级会推送中控上的当前版本并重启 agent，不影响线路上的连接；新版本起不来、2 分钟内没有上报${m.kind === 'relay' ? '或 Xray 不正常' : ''}，会自动换回旧版本。`} /></div>
+          <div className="hint">{h ? `用宿主机「${h.name}」的 · ${seen}` : seen} {h && <InfoTip text="这台同机 IP 节点没有自己的 agent；要升级就升级宿主机的。" />}</div>
         </div>
         {h ? <Button variant="secondary" onClick={() => open(h.id, 'manage')}>打开宿主机</Button> : (
-          <Button variant="secondary" loading={up.isPending} disabled={!!m.active_job}
-            onClick={() => up.mutate(m.id, { onSuccess: () => toast.ok('已提交升级作业'), onError: toast.err })}>升级 agent</Button>
+          <Button variant="secondary" disabled={!!m.active_job} onClick={() => openUpgrade(m.id)}>升级 agent…</Button>
         )}
       </div>
     </Section>
@@ -221,7 +218,7 @@ function MaintSection({ m }: { m: MachineView }) {
     <Section>
       <SectionHeader title="维护" meta={m.maintenance ? '维护中' : undefined} />
       <div className="manage-row">
-        <div><div className="t">维护窗口</div><div className="hint">{onHost ? `宿主机「${m.host_machine!.name}」在维护中` : '期间不发告警'}</div></div>
+        <div><div className="t">维护窗口 <InfoTip text="期间不发告警，卡片显示「维护」" /></div>{onHost && <div className="hint">宿主机「{m.host_machine!.name}」在维护中</div>}</div>
         {m.maintenance
           ? <Button variant="secondary" loading={end.isPending} onClick={() => end.mutate(m, { onSuccess: (o) => toast.ok(`${o.name} 已结束维护`), onError: toast.err })}><Wrench />{onHost ? '结束宿主机维护' : '结束维护'}</Button>
           : <Button variant="secondary" onClick={() => openMaint(m.id)}><Wrench />维护窗口…</Button>}
@@ -271,7 +268,7 @@ function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }
             <div>
               <div className="t">退役</div>
               <div className="hint">
-                {m.host_machine ? `宿主机「${m.host_machine.name}」不受影响` : n > 0 ? `${n} 个同机 IP 节点会一起退役` : '停用入口、撤销令牌'}{' '}
+                {m.host_machine ? `宿主机「${m.host_machine.name}」不受影响 ` : n > 0 ? `${n} 个同机 IP 节点会一起退役 ` : ''}
                 <InfoTip text={[
                   m.host_machine ? '只退役这个 IP 的节点：摘除它的入口，宿主机上它自己的 SS 实例可在退役时选择清理。' : '停用入口、撤销令牌，机器进入「已退役」，不再出现在首页和统计里。',
                   m.kind !== 'relay' && '同团队后面的节点会自动前移补号。', n > 0 && `这台机器上有 ${n} 个同机 IP 节点，还没开始退役的会一起退役。`,

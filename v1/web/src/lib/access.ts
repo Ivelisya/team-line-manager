@@ -27,7 +27,8 @@ export interface AccessFilter {
 }
 export type TargetSort = 'conns' | 'last' | 'first';
 
-export interface AccessKpi { active_nodes: number; conns: number; targets: number; blocked: number }
+/** `targets` 是各节点分别去重后相加；`unique_targets` 按目标去重（同「域名与 IP」的总数） */
+export interface AccessKpi { active_nodes: number; conns: number; targets: number; unique_targets: number; blocked: number }
 export interface AccessNode { node_id: string; name: string; team: string | null; conns: number; targets: number; domains: number; sources: number | null; blocked: number; last_ts: string | null }
 export interface AccessSummary { kpi: AccessKpi; nodes: AccessNode[]; window_start: string }
 export interface AccessTarget {
@@ -88,12 +89,13 @@ export const useNewTargets = (f: AccessFilter, offset: number, limit: number, en
     queryFn: ({ signal }) => get<NewTargets>(`/access/new-targets?${accessQS(f, { limit, offset })}`, signal),
   });
 
-/** 来源地址一次最多取这么多（按连接数从多到少）；接口不回总数，取满了就是「前 200 个」 */
+/** 来源地址一次最多取这么多（按连接数从多到少）；接口不回总数，取满了就是「前 200 个」。
+ *  conn：接入方式（'' = 全部），中控先按它筛再取前 200 个 */
 export const SOURCES_LIMIT = 200;
-export const useAccessSources = (f: AccessFilter, enabled = true) =>
+export const useAccessSources = (f: AccessFilter, conn = '', enabled = true) =>
   useQuery({
-    queryKey: ['access', 'sources', f], enabled, refetchInterval: POLL, placeholderData: keepPreviousData,
-    queryFn: ({ signal }) => get<{ items: AccessSource[] }>(`/access/sources?${accessQS(f, { limit: SOURCES_LIMIT })}`, signal),
+    queryKey: ['access', 'sources', f, conn], enabled, refetchInterval: POLL, placeholderData: keepPreviousData,
+    queryFn: ({ signal }) => get<{ items: AccessSource[] }>(`/access/sources?${accessQS(f, { limit: SOURCES_LIMIT, conn })}`, signal),
   });
 
 /** 原始记录的一页：before 是上一页响应里的 next_before 游标，原样传回、不要自己拼（'' = 最新一页）。只有最新一页轮询，往前翻的页是固定的历史 */

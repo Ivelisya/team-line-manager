@@ -75,8 +75,6 @@ export function readMachines(qc: QueryClient): MachineView[] | undefined {
   sortedCache.set(raw, { teams, list });
   return list;
 }
-/** 用时才取一次的在用机器列表（不订阅）：缓存 30 秒内新鲜就直接用。上架页给「IP 已被占用」补上是哪台 */
-export const fetchMachines = (qc: QueryClient) => qc.fetchQuery({ ...machinesQuery('live'), staleTime: 30_000 });
 /** 机器列表缓存（在用 / 已退役都找）里的这台，和那份列表取回的时刻 */
 function fromLists(qc: QueryClient, id: string | null) {
   for (const q of qc.getQueryCache().findAll({ queryKey: ['machines'] })) {
@@ -139,10 +137,10 @@ export const useJobs = (state: 'active' | 'done' | 'all' = 'all', offset = 0, li
   useQuery({ queryKey: ['jobs', state, offset, limit, kind], queryFn: ({ signal }) => get<Paged<JobSummary>>(`/jobs?state=${state}&limit=${limit}&offset=${offset}${kind ? `&kind=${kind}` : ''}`, signal), placeholderData: keepPreviousData, staleTime: Infinity });
 /** 作业详情：靠实时流的 job 事件失效重取 */
 export const useJob = (id: string | null) => useQuery({ queryKey: ['job', id], queryFn: ({ signal }) => get<Job>(`/jobs/${id}`, signal), enabled: !!id, staleTime: Infinity });
-/** 告警列表一页（严重度优先）。默认参数与告警页第一页相同：顶栏徽标取 total，和告警页共用同一份缓存 */
+/** 告警列表一页（严重度优先）。默认参数与告警页第一页相同：顶栏徽标取 total，和告警页共用同一份缓存。acked：其中已确认的条数（total 含它们） */
 export const INCIDENT_PAGE = 50;
 export const useIncidents = (state: 'firing' | 'resolved' | 'all' = 'all', offset = 0, limit = INCIDENT_PAGE) =>
-  useQuery({ queryKey: ['incidents', state, offset, limit], queryFn: ({ signal }) => get<Paged<Incident>>(`/incidents?state=${state}&limit=${limit}&offset=${offset}`, signal), placeholderData: keepPreviousData, staleTime: Infinity });
+  useQuery({ queryKey: ['incidents', state, offset, limit], queryFn: ({ signal }) => get<Paged<Incident> & { acked: number }>(`/incidents?state=${state}&limit=${limit}&offset=${offset}`, signal), placeholderData: keepPreviousData, staleTime: Infinity });
 /** 抽屉「最近告警」：这台机器最近的 5 条（进行中、已恢复都要）。带 subject_id 时服务端按时间排：进行中在前、再按开始时间新的在前。
  *  键在 ['incidents'] 下：随 incidents 事件、确认与静默等写操作一起失效 */
 const items = (d: Paged<Incident>) => d.items;
@@ -243,8 +241,15 @@ export function maintOwner(list: Silence[], m: MaintSubject, now = Date.now()) {
   const host = live(m.host_machine.id);
   return host.length ? { owner: { ...m.host_machine, host_machine: null }, onHost: true, windows: host } : { owner: m, onHost: false, windows: own };
 }
+/** 维护结束后的健康（服务端维护中不给原因，这里只能按剩下的原因估）：严重的算故障、其余非提示的算降级，否则正常 */
+const healthAfterMaint = (h: MachineView['health']): MachineView['health'] => {
+  if (h.status !== 'maintenance') return h;
+  const rs = h.reasons.filter((r) => r.key !== 'maintenance');
+  return { status: rs.some((r) => r.severity === 'critical') ? 'down' : rs.some((r) => r.severity !== 'info') ? 'degraded' : 'ok', reasons: rs };
+};
 /** 结束一台机器的维护（卡片菜单、抽屉「管理」）：删掉 maintOwner 找到的维护窗口（同机 IP 节点因宿主机维护时结束的是宿主机的）；
- *  「全部机器」的那种不动，只有那种时报错。返回结束了谁的维护。机器上的「维护中」由服务端随后的 metrics 推送改回 */
+ *  「全部机器」的那种不动，只有那种时报错。返回结束了谁的维护。
+ *  删完先在缓存里把这台（宿主机连同它的同机 IP 节点）改成不在维护（同开始维护时提示一出、卡片就跟上），服务端随后的 metrics 推送再给准确的健康 */
 export const useEndMaintenance = () => {
   const qc = useQueryClient();
   return useWrite(async (m: MaintSubject) => {
@@ -252,6 +257,10 @@ export const useEndMaintenance = () => {
     const { owner, windows } = maintOwner(list, m);
     if (!windows.length) throw new Error('这台机器在「全部机器」的维护窗口里，请到告警页结束');
     for (const s of windows) await del(`/silences/${s.id}`);
+    const hit = (x: MachineView) => x.id === owner.id || x.host_machine?.id === owner.id;
+    const off = (x: MachineView) => (hit(x) && x.maintenance ? { ...x, maintenance: false, health: healthAfterMaint(x.health) } : x);
+    qc.setQueriesData<MachineView[]>({ queryKey: ['machines'] }, (d) => d?.map(off));
+    qc.setQueriesData<MachineView>({ queryKey: ['machine'] }, (d) => d && off(d));
     return owner;
   }, [['silences'], ['incidents']]);
 };

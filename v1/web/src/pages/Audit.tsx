@@ -5,7 +5,7 @@ import * as React from 'react';
 import { History, SearchX } from 'lucide-react';
 import { useAuditLog } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
-import { useUrlState } from '@/lib/urlState';
+import { useUrlSearch, useUrlState } from '@/lib/urlState';
 import type { AuditEntry } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { SearchInput } from '@/components/ui/form';
@@ -41,12 +41,7 @@ export function AuditPage() {
   const cat: Cat = CATS.find((c) => c.value === sp.get('cat'))?.value ?? 'all';
   const search = sp.get('q') ?? '';
   const setCat = (v: Cat) => upd({ cat: v === 'all' ? '' : v });
-  // 搜索框：停手 250ms 后写进 URL、交给服务端（不每敲一个字查一次）
-  const [text, setText] = React.useState(search);
-  React.useEffect(() => { const t = setTimeout(() => upd({ q: text.trim() }), 250); return () => clearTimeout(t); }, [text, upd]);
-  // 地址里的 q 不是自己写的那样变了（后退 / 前进、带参链接）：输入框跟上。自己写进去的是 text.trim()，打字时末尾的空格不被吃掉
-  const [seenQ, setSeenQ] = React.useState(search);
-  if (search !== seenQ) { setSeenQ(search); if (search !== text.trim()) setText(search); }
+  const [text, setText] = useUrlSearch(sp, upd);
   const q = useAuditLog(cat === 'all' ? '' : cat, search.trim());
   const rows = React.useMemo(() => q.data?.pages.flat() ?? EMPTY, [q.data]);
   const filtered = cat !== 'all' || !!search.trim();

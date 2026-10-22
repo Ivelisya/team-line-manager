@@ -132,6 +132,9 @@
 .prov-steps .s[data-on="1"] { color: var(--fg); font-weight: var(--fw-medium); }
 .prov-steps .s[data-on="1"] .n { background: var(--accent-solid); color: var(--on-accent); }
 .prov-steps .s[data-done="1"] .n { background: var(--ok-bg); color: var(--ok-text); }
+/* 单台上架：每个字段下面都留出一行提示 / 错误的位置（失焦报错时下面的字段不整体下移、点不偏），这一行代替表单的行距 */
+.prov-form .form-grid { row-gap: 0; }
+.prov-form .field { grid-template-rows: auto auto minmax(var(--lh-label), auto); }
 .sticky-bar { position: sticky; bottom: 0; z-index: var(--z-sticky); }
 /* 上架页底部操作条：与顶栏同一种毛玻璃，阴影朝上（顶边的线由面板自己的边框给）——表单从它下面滚过时隐约透出、分得清层次 */
 .panel.sticky-bar {

@@ -733,7 +733,8 @@ async fn restore_is_blocked_when_ip_is_taken() {
     let pv = t.get(&format!("/api/v1/machines/{old}/restore?probe=false")).await;
     assert_eq!(pv["restorable"], false);
     assert_eq!(pv["ip_conflict"]["machine_id"], squatter.to_string());
-    assert!(pv["blockers"][0].as_str().unwrap().contains("203.0.113.10"));
+    // 占用者与这台同名（编号回收后又上架了一台团队1-01）：写明是另一台
+    assert!(pv["blockers"][0].as_str().unwrap().contains("IP 203.0.113.10 已被另一台未退役的「团队1-01」（与这台同名）占用"), "{pv}");
     let (s, v) = t.req("POST", &format!("/api/v1/machines/{old}/restore"), Some(json!({"relay_id": ra, "upstream": upstream("p")})), None).await;
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
     assert_eq!(lifecycle_of(&t, old).await, "retired", "被拒绝后机器不变");
@@ -820,7 +821,7 @@ async fn restore_vps_precheck_and_job_creation() {
     assert_eq!(pv["needs"]["relay"], true);
     assert_eq!(pv["needs"]["password"], "optional", "连不上的机器没法判断中控密钥能不能登录：密码可选");
     assert_eq!(pv["ssh"]["key_login"], "unreachable");
-    assert!(!pv["warnings"].as_array().unwrap().is_empty());
+    assert!(pv["warnings"][0].as_str().unwrap().starts_with("SSH 127.0.0.1:1 连不上（连接被拒绝"), "带上连不上的原因：{pv}");
     assert_eq!(pv["retired_reason"], "到期不续");
     // 试登录记审计；和 POST 恢复一样要 write（不要 exec），只读密钥只能 probe=false
     let n: i64 = sqlx::query_scalar("select count(*) from audit_log where action = 'restore.probe' and target_id = $1").bind(vps).fetch_one(&t.st.db).await.unwrap();

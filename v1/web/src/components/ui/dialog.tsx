@@ -106,7 +106,7 @@ export const SheetContent = React.forwardRef<React.ElementRef<typeof DialogPrimi
           {children}
           {!hideClose && (
             <DialogPrimitive.Close asChild>
-              <IconButton label="关闭" className="" style={{ position: 'absolute', top: 12, right: 12 }}><X size={16} /></IconButton>
+              <IconButton label="关闭" className="" style={{ position: 'absolute', top: 12, right: 'calc(12px + var(--removed-body-scroll-bar-size, 0px))' }}><X size={16} /></IconButton>
             </DialogPrimitive.Close>
           )}
         </DialogPrimitive.Content>
