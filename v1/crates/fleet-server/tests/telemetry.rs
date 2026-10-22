@@ -154,7 +154,8 @@ async fn concurrent_reports_for_one_machine_get_429() {
         lock.commit().await.unwrap();
         r
     };
-    let ((s1, v1), (s2, v2)) = tokio::join!(t.report("tok1", &blank_report(2)), second);
+    let first = blank_report(2);
+    let ((s1, v1), (s2, v2)) = tokio::join!(t.report("tok1", &first), second);
     assert_eq!((s1, v1["accepted_seq"].as_u64()), (StatusCode::OK, Some(2)), "{v1}");
     assert_eq!((s2, v2["error"]["code"].as_str()), (StatusCode::TOO_MANY_REQUESTS, Some("rate_limited")), "{v2}");
     // 处理完就放开：接着发的照收
