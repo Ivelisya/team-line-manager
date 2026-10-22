@@ -288,6 +288,7 @@ pub fn ls(ctx: &Ctx, team: Option<&str>, kind: Option<&str>, status: Option<&str
                     st(i, "/health"),
                     st(i, "/ip"),
                     agent.into(),
+                    tune_cn(&i["tune"]),
                     pct_cell(i, "/cpu_pct"),
                     pct_cell(i, "/mem_pct"),
                     pct_cell(i, "/disk_pct"),
@@ -304,7 +305,7 @@ pub fn ls(ctx: &Ctx, team: Option<&str>, kind: Option<&str>, status: Option<&str
                 r
             })
             .collect();
-        let mut head = vec!["名称", "种类", "生命周期", "健康", "IP", "agent", "CPU", "内存", "磁盘", "入口", "告警", "作业"];
+        let mut head = vec!["名称", "种类", "生命周期", "健康", "IP", "agent", "调优", "CPU", "内存", "磁盘", "入口", "告警", "作业"];
         if due.is_some() {
             head.insert(1, "到期");
         }
@@ -323,6 +324,7 @@ fn ls_item(m: &Value, with_due: bool) -> Value {
     let mut i = json!({
         "id": m["id"], "name": m["name"], "kind": m["kind"], "lifecycle": m["lifecycle"], "health": m.pointer("/health/status"), "ip": m["ip"],
         "agent_online": m.pointer("/agent/online"),
+        "tune": m["tune"],
         "cpu_pct": num(m, "/host/cpu_pct").map(|x| x.round() as i64),
         "mem_pct": pct("/host/mem_used", "/host/mem_total"),
         "disk_pct": pct("/host/disk_used", "/host/disk_total"),
@@ -336,6 +338,16 @@ fn ls_item(m: &Value, with_due: bool) -> Value {
         }
     }
     i
+}
+
+/// 系统调优一栏（`MachineView.tune`）：当前档写档名，旧档、没调优过分别标出；家宽代理和同机 IP 节点没有（null）
+fn tune_cn(t: &Value) -> String {
+    match (t["profile"].as_str(), t["current"] == true) {
+        _ if t.is_null() => "-".into(),
+        (Some(p), true) => p.to_string(),
+        (Some(p), false) => format!("旧档 {p}"),
+        (None, _) => "未调优".into(),
+    }
 }
 
 /// 负载同网页：1 分钟平均负载 ÷ agent 报的核数，折成百分比；容器里不报负载（null）
@@ -408,6 +420,10 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
         }
         if let Some(h) = m.pointer("/agent/health").filter(|h| !h.is_null()) {
             rows.push(("agent 自报", agent_health_cn(h)));
+        }
+        if !m["tune"].is_null() {
+            let at = m["tune"]["at"].as_str().map(|a| format!("（{}）", table::ts(a))).unwrap_or_default();
+            rows.push(("调优", format!("{}{at}", tune_cn(&m["tune"]))));
         }
         if !m["host"].is_null() {
             rows.push((

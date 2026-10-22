@@ -1,6 +1,6 @@
 //! 升级 agent 的回滚：推送时旧程序留成 .prev，新版本起不来、或重启后 2 分钟没有上报，就换回去并让作业失败；
 //! 「全部升级」里哪种失败会让编排停下（要真的执行步骤）。需要 PostgreSQL（见 common）。编排的领取顺序在 tests/jobs.rs。
-//! 还有系统基线、节点 ssserver 脚本重跑时以运行中的 sshd / 实例为准（不建作业，脚本直接经假 ssh 跑）。
+//! 还有系统基线、节点 ssserver 脚本重跑时以运行中的 sshd / 实例为准，系统调优脚本逐键写入读回（不建作业，脚本直接经假 ssh 跑）。
 //!
 //! 机器是假的：PATH 最前面放一个假 ssh，远端命令在「机器根目录」`<临时目录>/<IP>/` 里真的执行（/run、/usr/local/bin、/etc、/var/lib
 //! 改到里面；根目录里有 refuse 时登录被拒），systemctl 换成桩：记下调用；装着的 agent 版本号里带 crash 的，每次查主进程号都不一样（起来就退出、被反复拉起）。
@@ -14,7 +14,7 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{seed_team, setup, T};
+use common::{seed_node, seed_team, setup, T};
 use fleet_server::jobs;
 use serde_json::{json, Value};
 use std::os::unix::fs::PermissionsExt;
@@ -30,7 +30,7 @@ for a; do last=$a; case $a in root@*) ip=${a#root@};; esac; done
 export R="$FAKE_ROOT/$ip"
 [ -e "$R/refuse" ] && { echo "root@$ip: Permission denied (publickey)." >&2; exit 255; }
 mkdir -p "$R/etc/systemd/system" "$R/run"
-fix() { sed "s#/run/#$R/run/#g; s#/usr/local/bin/#$R/usr/local/bin/#g; s#/etc/#$R/etc/#g; s#/var/lib/#$R/var/lib/#g"; }
+fix() { sed "s#/run/#$R/run/#g; s#/usr/local/bin/#$R/usr/local/bin/#g; s#/etc/#$R/etc/#g; s#/var/lib/#$R/var/lib/#g; s#^PS=/proc/sys\$#PS=$R/proc/sys#"; }
 if [ "$last" = "bash -s" ]; then fix | bash -s; else sh -c "$(printf '%s' "$last" | fix)"; fi
 "#;
 
@@ -44,6 +44,7 @@ case "$*" in
   *MainPID*fleet-agent) if grep -q crash "$R/usr/local/bin/fleet-agent"; then date +%N; else echo 4242; fi ;;
   *MainPID*) cat "$R/pid.$u" 2>/dev/null || echo 0 ;;
   *ExecMainStartTimestamp*) cat "$R/started.$u" 2>/dev/null || true ;;
+  *LimitNOFILE*) echo 65536 ;;
   *NeedDaemonReload*) [ -e "$R/need-reload.$u" ] && echo yes || echo no ;;
   daemon-reload) rm -f "$R"/need-reload.* ;;
   restart*) date -u '+%a %Y-%m-%d %H:%M:%S UTC' > "$R/started.$u" ;;
@@ -63,6 +64,9 @@ const STUBS: &[(&str, &str)] = &[
     ("chgrp", "#!/bin/sh\n"),
     ("sysctl", "#!/bin/sh\n"),
     ("modprobe", "#!/bin/sh\n"),
+    // 调优脚本：不是容器、时间已同步
+    ("systemd-detect-virt", "#!/bin/sh\nexit 1\n"),
+    ("timedatectl", "#!/bin/sh\necho yes\n"),
     ("apt-get", "#!/bin/sh\n"),
     ("sshd", "#!/bin/sh\n[ \"$1\" = -T ] && echo 'passwordauthentication no'\nexit 0\n"),
     ("ss", "#!/bin/sh\necho 'LISTEN 0 4096 0.0.0.0:8388 0.0.0.0:*'\n"),
@@ -507,4 +511,123 @@ async fn node_ss_restarts_an_instance_older_than_its_config() {
     assert!(read(&conf).contains(r#","dns":"1.1.1.1,8.8.8.8"}"#), "{}", read(&conf));
     assert!(read(&unit).contains("\nIPAddressDeny=link-local 100.100.100.200/32\n"), "{}", read(&unit));
     drop(ss);
+}
+
+// ── 系统调优 tune-v1：脚本逐键写入、读回（机器根目录里的 proc/sys/ 是普通文件），作业 tune ──────────────
+
+/// 假 /proc/sys 里的一个键：`dots` 是 sysctl 键名
+fn sysctl_file(root: &Path, key: &str) -> PathBuf { root.join("proc/sys").join(key.replace('.', "/")) }
+
+fn put_sysctl(root: &Path, key: &str, val: &str) {
+    let p = sysctl_file(root, key);
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(p, val).unwrap();
+}
+
+/// 脚本只把读回一致的键写进文件并记 applied / ok；现值不小于目标的 `>=` 键保持不动（kept）；写不进的（指向 /dev/null）记 readonly、
+/// 不进文件、退出码仍为 0；缺失的记 missing。重跑文件不变、journald 不再重启；线路机先保留入口端口池再放宽本地端口范围
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tune_script_writes_reads_back_and_skips() {
+    let (ip, rip) = ("192.0.2.45", "192.0.2.46");
+    let root = FAKE.path().join(ip);
+    put_sysctl(&root, "net.core.rmem_max", "212992\n");
+    put_sysctl(&root, "net.core.somaxconn", "65535\n");
+    put_sysctl(&root, "net.ipv4.tcp_slow_start_after_idle", "0\n");
+    put_sysctl(&root, "net.ipv4.tcp_rmem", "4096\t131072\t6291456\n");
+    let fin = sysctl_file(&root, "net.ipv4.tcp_fin_timeout");
+    std::fs::create_dir_all(fin.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink("/dev/null", &fin).unwrap();
+    std::fs::create_dir_all(root.join("etc/sysctl.d")).unwrap();
+    std::fs::write(root.join("etc/sysctl.d/90-fleet-bbr.conf"), "net.core.default_qdisc=fq\n").unwrap();
+    let run = |ip: &'static str, role| async move { target(ip).run(&jobs::tune::script(role), Duration::from_secs(60)).await.unwrap() };
+    let (conf, journald) = (root.join("etc/sysctl.d/99-zz-fleet-tune.conf"), root.join("etc/systemd/journald.conf.d/90-fleet.conf"));
+    let journald_restarts = || read(&root.join("systemctl.log")).lines().filter(|l| *l == "restart systemd-journald").count();
+
+    let o = run(ip, jobs::tune::Role::Node).await;
+    assert_eq!((o.code, o.kv("tune_profile"), o.kv("journald"), o.kv("ntp"), o.kv("nofile"), o.kv("container")), (0, Some("tune-v1"), Some("changed"), Some("synced"), Some("65536"), Some("0")), "{o:?}");
+    let kv: Vec<_> = ["net.core.rmem_max", "net.core.somaxconn", "net.ipv4.tcp_slow_start_after_idle", "net.ipv4.tcp_rmem", "net.ipv4.tcp_fin_timeout", "net.netfilter.nf_conntrack_max"]
+        .iter()
+        .map(|k| o.kv(&format!("tune.{k}")).unwrap_or("-"))
+        .collect();
+    assert_eq!(kv, ["applied", "kept:65535", "ok", "applied", "readonly:", "missing"], "{o:?}");
+    assert_eq!(read(&sysctl_file(&root, "net.core.rmem_max")), "16777216");
+    assert_eq!(read(&sysctl_file(&root, "net.core.somaxconn")), "65535\n", "现值更大：不动");
+    assert_eq!(read(&sysctl_file(&root, "net.ipv4.tcp_rmem")), "4096 131072 16777216");
+    // 只有读回一致的键进文件；旧的 BBR 文件并入后删掉；journald 体积上限写好并重启一次
+    assert_eq!(
+        read(&conf),
+        "# fleet tune-v1（中控生成，勿手改）\nnet.core.rmem_max = 16777216\nnet.ipv4.tcp_rmem = 4096 131072 16777216\nnet.ipv4.tcp_slow_start_after_idle = 0\n"
+    );
+    assert!(!root.join("etc/sysctl.d/90-fleet-bbr.conf").exists() && read(&journald).contains("SystemMaxUse=300M\n") && journald_restarts() == 1);
+    // 步骤结果：逐键凭据；非容器里写不进的键记警告
+    let r = jobs::tune::parse(&o.stdout);
+    assert_eq!((&r.result["applied"], &r.result["kept"]), (&json!(["net.core.rmem_max", "net.ipv4.tcp_rmem"]), &json!(["net.core.somaxconn"])));
+    assert!(r.result["skipped"].as_array().unwrap().contains(&json!({"key": "net.ipv4.tcp_fin_timeout", "why": "readonly", "got": ""})), "{}", r.result);
+    assert!(r.result["skipped"].as_array().unwrap().contains(&json!({"key": "net.netfilter.nf_conntrack_max", "why": "missing", "got": null})));
+    assert!(r.warns.iter().any(|w| w.contains("net.ipv4.tcp_fin_timeout")), "{:?}", r.warns);
+
+    // 重跑：文件不变，原来 applied 的现在是 ok，journald 不再重启
+    let before = std::fs::metadata(&conf).unwrap().modified().unwrap();
+    let o = run(ip, jobs::tune::Role::Node).await;
+    assert_eq!((o.code, o.kv("journald"), o.kv("tune.net.core.rmem_max"), journald_restarts()), (0, Some("same"), Some("ok"), 1), "{o:?}");
+    assert!(std::fs::metadata(&conf).unwrap().modified().unwrap() == before && read(&conf).lines().count() == 4);
+
+    // 线路机：入口端口池（该线路机自己的）要先保留，再放宽本地端口范围
+    let root = FAKE.path().join(rip);
+    put_sysctl(&root, "net.ipv4.ip_local_reserved_ports", "20001-20999\n");
+    put_sysctl(&root, "net.ipv4.ip_local_port_range", "32768\t60999\n");
+    put_sysctl(&root, "net.ipv4.tcp_tw_reuse", "2\n");
+    let o = run(rip, jobs::tune::Role::Relay { port_min: 20000, port_max: 29999 }).await;
+    assert_eq!(o.code, 0, "{o:?}");
+    assert_eq!(read(&sysctl_file(&root, "net.ipv4.ip_local_reserved_ports")), "20000-39999");
+    assert_eq!((read(&sysctl_file(&root, "net.ipv4.ip_local_port_range")), read(&sysctl_file(&root, "net.ipv4.tcp_tw_reuse"))), ("10240 65535".into(), "1".into()));
+    let c = read(&root.join("etc/sysctl.d/99-zz-fleet-tune.conf"));
+    assert!(c.find("ip_local_reserved_ports = 20000-39999").unwrap() < c.find("ip_local_port_range = 10240 65535").unwrap(), "{c}");
+    assert!(read(&root.join("systemctl.log")).contains("show -p LimitNOFILE --value fleet-xray"));
+}
+
+/// 作业 tune：成功后机器记下调优档，视图带 tune；同机 IP 节点、家宽代理 409；机器上有进行中的作业 409
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tune_job_records_the_profile() {
+    let t = setup(false).await;
+    let (m, root) = machine(&t, "192.0.2.47", "0.1.0+old", "0.1.0+new").await;
+    put_sysctl(&root, "net.core.rmem_max", "212992\n");
+    let v = t.get(&format!("/api/v1/machines/{m}")).await;
+    assert_eq!(v["tune"], json!({"profile": null, "at": null, "current": false}), "迁移前上线的机器：未调优");
+
+    let tr = &t;
+    let post = |id: Uuid| async move {
+        let path = format!("/api/v1/machines/{id}/tune");
+        tr.req("POST", &path, Some(json!({})), None).await
+    };
+    let (s, v) = post(m).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let job = v["data"]["job_id"].as_str().unwrap().to_string();
+    assert_eq!(post(m).await.0, StatusCode::CONFLICT, "已有进行中的作业");
+    let au = t.get("/api/v1/audit?cat=machine").await;
+    assert_eq!((&au[0]["title"], &au[0]["summary"]), (&json!("系统调优"), &json!("团队1-01 · tune-v1")), "{au}");
+    let j = run_round(&t, &job).await;
+    assert_eq!(j["state"], "succeeded", "{j}");
+    assert_eq!((j["steps"][0]["output"]["profile"].as_str(), &j["steps"][0]["output"]["applied"]), (Some("tune-v1"), &json!(["net.core.rmem_max"])), "{j}");
+    assert_eq!(read(&sysctl_file(&root, "net.core.rmem_max")), "16777216");
+    let v = t.get(&format!("/api/v1/machines/{m}")).await;
+    assert_eq!((v["tune"]["profile"].as_str(), v["tune"]["current"].as_bool()), (Some("tune-v1"), Some(true)), "{v}");
+    sqlx::query("update machine set tune_profile = 'tune-v0' where id = $1").bind(m).execute(&t.st.db).await.unwrap();
+    assert_eq!(t.get(&format!("/api/v1/machines/{m}")).await["tune"]["current"], false, "旧档");
+
+    // 同机 IP 节点：指向宿主机；家宽代理没有我们的机器
+    let ipn = Uuid::now_v7();
+    sqlx::query("insert into machine (id, kind, team_id, number, primary_ip, lifecycle, host_id, ssh_port) select $1, 'vps', team_id, 2, '192.0.2.99'::inet, 'active', id, null from machine where id = $2")
+        .bind(ipn)
+        .bind(m)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let (s, v) = post(ipn).await;
+    assert!(s == StatusCode::CONFLICT && v.to_string().contains("对宿主机「团队1-01」调优"), "{s} {v}");
+    assert_eq!(t.get(&format!("/api/v1/machines/{ipn}")).await["tune"], Value::Null);
+    let team: Uuid = sqlx::query_scalar("select team_id from machine where id = $1").bind(m).fetch_one(&t.st.db).await.unwrap();
+    let px = seed_node(&t, team, 3, "192.0.2.98", "active").await;
+    let (s, v) = post(px).await;
+    assert!(s == StatusCode::CONFLICT && v.to_string().contains("家宽代理没有我们的机器"), "{s} {v}");
 }

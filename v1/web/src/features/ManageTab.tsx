@@ -3,7 +3,7 @@ import * as React from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowRight, PackageOpen, Plus, Repeat2, Replace, Trash2, Undo2, Wrench } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
-import { maintOwner, useAddEntry, useEndMaintenance, useMachine, usePatchMachine, usePurge, useRelayChoices, useSilences, useTeams } from '@/lib/queries';
+import { maintOwner, useAddEntry, useEndMaintenance, useMachine, usePatchMachine, usePurge, useRelayChoices, useSilences, useTeams, useTune } from '@/lib/queries';
 import { openMaint, openUpgrade } from '@/lib/nodeActions';
 import { useDrawer } from '@/lib/drawer';
 import { errText, lifecycleLabel } from '@/lib/derive';
@@ -13,7 +13,7 @@ import { Field, InfoTip, Input } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
 import { entryState, Note, Section, SectionHeader } from '@/components/app/primitives';
-import { TypedConfirmDialog } from '@/components/app/dialogs';
+import { ConfirmDialog, TypedConfirmDialog } from '@/components/app/dialogs';
 import { RetireDialog } from '@/components/app/RetireDialog';
 import { EntryMenuButton, EntryMenus, entryLabel } from '@/components/app/EntryActions';
 import { EvacuateDialog, MoveDialog, RestoreDialog, movableEntries } from '@/components/app/LifecycleDialogs';
@@ -33,6 +33,7 @@ export function ManageTab({ m, onClosed }: { m: MachineView; onClosed: () => voi
       {canReplace(m) && <ReplaceSection m={m} />}
       {m.kind === 'vps' && !m.host_machine && m.lifecycle === 'active' && <IpNodesSection m={m} />}
       {m.agent && m.lifecycle === 'active' && <AgentSection m={m} />}
+      {m.tune && m.lifecycle === 'active' && <TuneSection m={m} />}
       {m.lifecycle === 'active' && <MaintSection m={m} />}
       <DangerSection m={m} onClosed={onClosed} />
     </>
@@ -221,6 +222,26 @@ function AgentSection({ m }: { m: MachineView }) {
           <Button variant="secondary" disabled={!!m.active_job} onClick={() => openUpgrade(m.id)}>升级 agent…</Button>
         )}
       </div>
+    </Section>
+  );
+}
+
+/** 系统调优：记录的调优档与时间（「调优：tune-v1 · 10-23」/「旧档 tune-v0 · 10-23」/「未调优」）；重新调优 = 作业 tune，只写内核网络参数等，不重启 ss/Xray */
+function TuneSection({ m }: { m: MachineView }) {
+  const tune = useTune();
+  const [ask, setAsk] = React.useState(false);
+  const t = m.tune!;
+  const state = t.profile ? `${t.current ? '' : '旧档 '}${t.profile}${t.at ? ` · ${F.dt(t.at).slice(0, 5)}` : ''}` : '未调优';
+  return (
+    <Section>
+      <SectionHeader title="系统调优" />
+      <div className="manage-row">
+        <div className="t">调优：{state} <InfoTip text="内核网络参数（缓冲区、拥塞控制、连接队列等）、日志体积上限、时间同步。逐键结果在作业详情里。" /></div>
+        <Button variant="secondary" disabled={!!m.active_job} onClick={() => setAsk(true)}>重新调优…</Button>
+      </div>
+      <ConfirmDialog open={ask} onOpenChange={setAsk} title={`重新调优 ${m.name}？`} confirmLabel="开始调优" confirmDisabled={!!m.active_job}
+        description="不重启 ss / Xray，不断开客户连接；只可能重启一次 journald。"
+        onConfirm={async () => { await tune.mutateAsync(m.id); toast.ok(`已提交 ${m.name} 的调优作业`); }} />
     </Section>
   );
 }

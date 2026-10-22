@@ -291,11 +291,23 @@ pub struct MachineView {
     pub maintenance: bool,
     /// 仅线路机
     pub relay: Option<RelayInfo>,
+    /// 系统调优记录（jobs/tune.rs）；家宽代理和同机 IP 节点（系统设置是宿主机的）为 null
+    pub tune: Option<TuneInfo>,
     #[serde(skip)]
     pub sustained: Sustained,
     /// 节点的有效访问策略是「暂停新连接」（健康判定里提示，不算故障）
     #[serde(skip)]
     pub policy_blocked: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TuneInfo {
+    /// 最近一次成功应用的调优档；null = 没调优过（迁移前上线的机器）
+    pub profile: Option<String>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub at: Option<OffsetDateTime>,
+    /// 机器上的档就是中控当前的档（`jobs::tune::PROFILE`）；false = 旧档或没调优过
+    pub current: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -378,6 +390,8 @@ struct MRow {
     r_err: Option<String>,
     r_pmin: Option<i32>,
     r_pmax: Option<i32>,
+    tune_profile: Option<String>,
+    tuned_at: Option<OffsetDateTime>,
 }
 
 /// agent_state 里视图要的列（`A_COLS`，表别名 a）：完整加载与补指标共用
@@ -983,7 +997,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 s.traffic_used_base s_base, s.traffic_used_base_at s_base_at, s.overrides s_overrides, sb.billing_day::int s_bday, p.traffic_rule p_rule,
                 tp.price_cents t_price, tp.currency t_currency, tp.cycle::text t_cycle, tp.billing_tz t_tz, tp.traffic_gb t_traffic, tp.traffic_reset t_reset, tp.remind_days t_remind, local_date(tp.billing_tz) t_today,
                 {A_COLS}, r.public_host r_host, r.generation r_gen, r.applied_generation r_applied, r.applied_at r_applied_at, r.generation_at r_gen_at,
-                r.apply_error r_err, r.port_min r_pmin, r.port_max r_pmax
+                r.apply_error r_err, r.port_min r_pmin, r.port_max r_pmax, m.tune_profile, m.tuned_at
          from machine m
          left join team t on t.id = m.team_id
          left join machine hm on hm.id = m.host_id
@@ -1200,6 +1214,11 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 port_min: r.r_pmin.unwrap_or(0),
                 port_max: r.r_pmax.unwrap_or(0),
             });
+            let tune = (r.kind != "proxy" && r.host_id.is_none()).then(|| TuneInfo {
+                current: r.tune_profile.as_deref() == Some(crate::jobs::tune::PROFILE),
+                profile: r.tune_profile.clone(),
+                at: r.tuned_at,
+            });
             let entries = entries_by.remove(&r.id).unwrap_or_default();
             let removed_traffic = removed_by.remove(&r.id).unwrap_or_default();
             let (start, rule) = period_of[&r.id];
@@ -1274,6 +1293,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 open_incidents: inc.get(&r.id).copied().unwrap_or(0),
                 maintenance,
                 relay,
+                tune,
                 sustained: sustained.get(&hid).copied().unwrap_or_default(),
                 policy_blocked,
             };

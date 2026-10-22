@@ -512,7 +512,7 @@ pub async fn audit(a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<A
 
 /// 所有写审计的动作（git grep 'audit(' 核对过）；新增动作时补这里和 audit_text。按标题搜索时在这里面找
 const AUDIT_ACTIONS: &[&str] = &[
-    "machine.provision", "machine.retire", "machine.purge", "machine.rename", "machine.update", "machine.restore", "machine.replace", "subscription.set", "renewal",
+    "machine.provision", "machine.retire", "machine.purge", "machine.rename", "machine.update", "machine.restore", "machine.replace", "machine.tune", "subscription.set", "renewal",
     "team.create", "team.update", "team.delete", "team.renumber", "provider.create", "provider.update", "provider.delete", "plan.create", "plan.update", "plan.delete", "entry.enable",
     "entry.disable", "entry.rotate", "entry.share", "entry.add", "entry.move", "relay.evacuate", "job.retry", "job.cancel", "silence.create",
     "silence.delete", "incident.ack", "restore.probe", "agent.upgrade", "notify.create", "notify.update", "notify.delete", "exec", "machine.logs", "server.logs", "apikey.create",
@@ -557,6 +557,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "relay.evacuate" => "搬空线路机",
         "machine.restore" => "恢复机器",
         "machine.replace" => "替换节点",
+        "machine.tune" => "系统调优",
         "job.retry" => "重试作业",
         "job.cancel" => "取消作业",
         // 标记为维护的叫维护窗口，否则叫静默（同界面）
@@ -610,6 +611,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         },
         "machine.purge" if d["auto"] == crate::spare::AUTO => format!("{}（备用到期自动删除）", s("name")),
         "machine.purge" => s("name"),
+        "machine.tune" => format!("{} · {}", s("name"), s("profile")),
         "renewal" => format!("到期 {} → {}", d["old_due"].as_str().unwrap_or("?"), d["new_due"].as_str().unwrap_or("?")),
         // 「团队1-03 · 价格 5.00 → 6.00 USD，到期 2026-11-01 → 2026-12-01」；这一版之前的记录没有改动前后，不写摘要
         "subscription.set" if d["after"].is_object() => {
@@ -1117,6 +1119,7 @@ mod tests {
         assert_eq!(t("agent.upgrade", json!({"count": 3, "skipped": 0, "names": three})).1, "3 台（团队1-03、团队1-04、线路机2）");
         assert_eq!(t("job.cancel", json!({"kind": "move_entry", "name": "模拟团队C-21"})), ("取消作业".to_string(), "换线路机 · 模拟团队C-21".to_string()));
         assert_eq!(t("job.retry", json!({"kind": "upgrade_agent", "name": null, "step": 0})).1, "升级 agent");
+        assert_eq!(t("machine.tune", json!({"name": "团队1-03", "profile": "tune-v1"})), ("系统调优".to_string(), "团队1-03 · tune-v1".to_string()));
         assert_eq!(t("job.cancel", json!({})).1, "");
     }
 

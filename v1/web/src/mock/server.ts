@@ -236,7 +236,7 @@ function startProvisionJob(m: MachineView) {
   m.active_job = { id: job.id, kind: job.kind, state: 'running' };
   drive(job, 2800, () => {
     m.lifecycle = 'active'; m.activated_at = iso(); m.active_job = null; m.health = { status: 'ok', reasons: [] };
-    if (!h && m.kind !== 'proxy') { m.agent = { version: '1.0.3', last_report_at: iso(), online: true, xray_running: null, cores: 2, health: null }; m.host = { ts: iso(), cpu_pct: 6, load1: 0.1, mem_used: 400 * 1024 ** 2, mem_total: 4 * GiB, disk_used: 4 * GiB, disk_total: 60 * GiB, net_rx_bps: 2e5, net_tx_bps: 1e5, tcp_conns: 12 }; }
+    if (!h && m.kind !== 'proxy') { m.tune = { profile: 'tune-v1', at: iso(), current: true }; m.agent = { version: '1.0.3', last_report_at: iso(), online: true, xray_running: null, cores: 2, health: null }; m.host = { ts: iso(), cpu_pct: 6, load1: 0.1, mem_used: 400 * 1024 ** 2, mem_total: 4 * GiB, disk_used: 4 * GiB, disk_total: 60 * GiB, net_rx_bps: 2e5, net_tx_bps: 1e5, tcp_conns: 12 }; }
     for (const e of m.entries) { e.lifecycle = 'active'; e.applied = true; e.tcp = { ok: true, latency_ms: 52, detail: null, ts: iso() }; e.egress = { ok: true, latency_ms: 190, detail: null, ts: iso() }; }
     refreshCounts();
   }, h ? ipOutputs(m, h) : []);
@@ -361,6 +361,7 @@ function createMachine(it: ProvisionItem, c: ProvisionCheckItem): MachineView {
     subscription: it.subscription?.due_date ? subCalc({ price_cents: it.subscription.price_cents ?? plan?.price_cents ?? 0, currency: plan?.currency ?? META.defaults.currency, cycle: it.subscription.cycle ?? plan?.cycle ?? META.defaults.cycle, due_date: it.subscription.due_date, due_days: 0, billing_tz: it.subscription.billing_tz ?? pv?.timezone ?? META.org_timezone, auto_renew: false, remind_days: pv?.remind_days ?? META.defaults.remind_days, traffic_gb: plan?.traffic_gb || null, traffic_reset_day: 1 } as NonNullable<MachineView['subscription']>) : null,
     agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, quota: { used: 0, period_start: '', rule: null, base: null, base_at: null }, health: { status: 'unknown', reasons: [{ key: 'provisioning', severity: 'info', text: '上架作业进行中' }] }, active_job: null, failed_job: null, open_incidents: 0, maintenance: false,
     relay: it.kind === 'relay' ? { public_host: it.ip, generation: 1, applied_generation: 0, applied_at: null, apply_error: null, port_min: 20001, port_max: 20999 } : null,
+    tune: it.kind === 'proxy' || h ? null : { profile: null, at: null, current: false },
   };
   if (h) borrowHost(m, h);
   if (m.kind !== 'relay') {
@@ -785,6 +786,23 @@ R('POST', '/machines/([^/]+)/upgrade-agent', ({ params }) => {
   if (m.active_job) throw bad('这台机器有进行中的作业，请等它结束', 409, 'conflict');
   const job = startUpgrade(m); emit({ type: 'machines' });
   return { machine_id: m.id, job_id: job.id };
+});
+// ---------- 系统调优 ----------
+R('POST', '/machines/([^/]+)/tune', ({ params }) => {
+  const m = machine(params[0]);
+  if (m.host_machine) throw bad(`同机 IP 节点和宿主机共用系统设置：对宿主机「${m.host_machine.name}」调优`, 409, 'conflict');
+  if (m.kind === 'proxy') throw bad('家宽代理没有我们的机器', 409, 'conflict');
+  if (m.lifecycle !== 'active') throw bad('只有在用的机器能调优', 409, 'conflict');
+  if (m.active_job) throw bad('这台机器有进行中的作业，请等它结束', 409, 'conflict');
+  const job = newJob('tune', { id: m.id, name: m.name }, [['tune', '系统调优']]);
+  job.cancellable = false;
+  m.active_job = { id: job.id, kind: 'tune', state: 'running' };
+  drive(job, 2500, () => { m.active_job = null; m.tune = { profile: 'tune-v1', at: iso(), current: true }; }, [{
+    profile: 'tune-v1', applied: ['net.core.rmem_max', 'net.core.wmem_max', 'net.ipv4.tcp_rmem', 'net.ipv4.tcp_wmem'], ok: ['net.ipv4.tcp_congestion_control'], kept: ['net.core.somaxconn'],
+    skipped: [{ key: 'net.netfilter.nf_conntrack_max', why: 'missing', got: null }], journald: 'changed', ntp: 'synced', nofile: '65536', container: false, mem_mb: 3911, swap_mb: 0, bbr: true,
+  }]);
+  emit({ type: 'machines' });
+  return { machine_id: m.id, name: m.name, job_id: job.id };
 });
 R('POST', '/agents/upgrade', () => {
   // 同中控：线路机在前，第一台做金丝雀；线路机一台等前一台，VPS 节点与家宽代理都等最后一台线路机（没有线路机时等金丝雀），之后并发

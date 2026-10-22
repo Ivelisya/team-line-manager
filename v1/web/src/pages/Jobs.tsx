@@ -37,7 +37,7 @@ type View = 'all' | 'running' | 'done';
 const VIEWS: { value: View; label: string }[] = [{ value: 'all', label: '全部' }, { value: 'running', label: '进行中' }, { value: 'done', label: '已结束' }];
 const STATE_OF: Record<View, 'all' | 'active' | 'done'> = { all: 'all', running: 'active', done: 'done' };
 /** 类型筛选（?kind=，与页签组合）：上架、恢复各含四类机器，按大类筛（同列表接口的 kind）；其余是作业类型原值，名字取 /meta */
-const KIND_VALUES = ['provision', 'restore', 'attach_entry', 'move_entry', 'replace', 'upgrade_agent', 'retire', 'purge'];
+const KIND_VALUES = ['provision', 'restore', 'attach_entry', 'move_entry', 'replace', 'upgrade_agent', 'tune', 'retire', 'purge'];
 const KIND_GROUP: Record<string, string> = { provision: '上架', restore: '恢复' };
 
 const JobPill = ({ state }: { state: string }) => { const s = STATE[state] ?? { tone: 'neutral' as Tone }; return <Pill tone={s.tone} dot={s.dot}>{jobStateLabel(state)}</Pill>; };
@@ -206,6 +206,7 @@ function cancelDesc(j: Job): React.ReactNode {
   if (j.state === 'failed' && j.kind.startsWith('provision_')) return <>机器会被退役并清理 <InfoTip text="不再重试这次上架：已完成的步骤会被补偿（回滚），机器会被退役并清理，释放 IP 与编号。" /></>;
   if (j.state === 'failed' && j.kind.startsWith('restore_')) return <>机器退回「已退役」 <InfoTip text="不再重试这次恢复：已完成的步骤会被补偿（回滚），机器退回「已退役」。" /></>;
   if (j.kind === 'upgrade_agent') return <>不升了，排在后面的也取消 <InfoTip text="这台还没开始升级，取消后不升了；「全部升级」里排在它后面、等它的机器也会跟着取消。" /></>;
+  if (j.kind === 'tune') return '不调优了';
   return '已完成的步骤会回滚';
 }
 
