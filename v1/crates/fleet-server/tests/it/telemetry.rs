@@ -1079,6 +1079,36 @@ async fn maintenance_does_not_resolve_open_alerts() {
     assert!(incidents(&t, "firing").await.is_empty());
 }
 
+/// 线路机维护中：经它探测的节点出口 / TCP 结果判不出——开着的不因此恢复，节点状态是「未知」
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn relay_maintenance_freezes_node_probe_alerts() {
+    let t = setup().await;
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let team = seed_team(&t, "团队1").await;
+    let (node, entry) = seed_node(&t, relay, team, 1, "203.0.113.5", 20000).await;
+    let mut r = blank_report(1);
+    r.xray = Some(xray(true));
+    r.probes = vec![probe(entry, now_ms() - 2_000, ProbeKind::Egress, true), probe(entry, now_ms() - 2_000, ProbeKind::Tcp, false)];
+    assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
+    let mut state = AlertState::default();
+    let base = OffsetDateTime::now_utc();
+    pass(&t, &mut state, base, 0).await;
+    pass(&t, &mut state, base, 91).await;
+    assert!(has_rule(&incidents(&t, "firing").await, "tcp_fail"));
+    let f = time::format_description::well_known::Rfc3339;
+    let now = OffsetDateTime::now_utc();
+    t.post("/api/v1/silences", json!({
+        "subject_id": relay, "is_maintenance": true, "comment": "换内核",
+        "starts_at": (now - time::Duration::minutes(1)).format(&f).unwrap(), "ends_at": (now + time::Duration::hours(1)).format(&f).unwrap(),
+    })).await;
+    for secs in [121, 181, 241] {
+        pass(&t, &mut state, base, secs).await;
+    }
+    assert!(has_rule(&incidents(&t, "firing").await, "tcp_fail"), "线路机维护中：节点的 TCP 告警不恢复");
+    assert!(incidents(&t, "resolved").await.is_empty());
+    assert_eq!(t.health(node).await.0, "unknown");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn retiring_machine_alerts_are_left_to_retire_flow() {
     let t = setup().await;

@@ -61,8 +61,17 @@ pub(crate) fn unreachable_sql(relay: &str) -> String {
     )
 }
 
+/// 线路机 `relay` 整台连不连得上判不出：有在用入口，5 分钟内的检查却不到 3 轮（中控刚重启、整轮作废）。
+/// 视图的 `RelayInfo::reach_unknown`：这时 relay_unreachable 的原因消失不算恢复（中控停机超过 5 分钟后，新记录攒满 3 轮之前）
+pub(crate) fn unknown_sql(relay: &str) -> String {
+    format!(
+        "(exists (select 1 from entry e where e.relay_id = {relay} and e.lifecycle = 'active')
+          and (select count(*) from relay_reach rr where rr.relay_id = {relay} and rr.ts > now() - interval '5 minutes') < 3)"
+    )
+}
+
 /// 一轮：每台线路机连它第 `turn`（对入口数取余）个在用入口端口，返回写入的行数（整轮作废为 0）。
-/// 写入后连不上的结论（`unreachable_sql`）变了的线路机发 `Event::Machine`：视图不用等完整重算
+/// 写入后连不上的结论（`unreachable_sql`）或判不判得出（`unknown_sql`）变了的线路机发 `Event::Machine`：视图不用等完整重算
 pub async fn round(st: &AppState, controls: &[&str], turn: usize) -> anyhow::Result<usize> {
     let db = &st.db;
     let targets: Vec<(Uuid, String, Vec<i32>)> = sqlx::query_as(
@@ -89,8 +98,8 @@ pub async fn round(st: &AppState, controls: &[&str], turn: usize) -> anyhow::Res
     // 失败原因带上端口：轮流连的，告警摘要里要看得出是哪个口
     let details: Vec<Option<String>> = res.iter().zip(&ports).map(|(r, port)| r.as_ref().err().map(|e| format!("端口 {port}：{e}"))).collect();
     let ids: Vec<Uuid> = targets.iter().map(|t| t.0).collect();
-    let unreach = format!("select {} from unnest($1::uuid[]) with ordinality u(id, i) order by i", unreachable_sql("u.id"));
-    let before: Vec<Option<String>> = sqlx::query_scalar(&unreach).bind(&ids).fetch_all(db).await?;
+    let unreach = format!("select {}, {} from unnest($1::uuid[]) with ordinality u(id, i) order by i", unreachable_sql("u.id"), unknown_sql("u.id"));
+    let before: Vec<(Option<String>, bool)> = sqlx::query_as(&unreach).bind(&ids).fetch_all(db).await?;
     sqlx::query(
         "insert into relay_reach (relay_id, ts, ok, detail, port) select u.id, $2, u.ok, u.detail, u.port from unnest($1::uuid[], $3::bool[], $4::text[], $5::int[]) u(id, ok, detail, port)",
     )
@@ -101,7 +110,7 @@ pub async fn round(st: &AppState, controls: &[&str], turn: usize) -> anyhow::Res
     .bind(ports.iter().map(|&p| i32::from(p)).collect::<Vec<_>>())
     .execute(db)
     .await?;
-    let after: Vec<Option<String>> = sqlx::query_scalar(&unreach).bind(&ids).fetch_all(db).await?;
+    let after: Vec<(Option<String>, bool)> = sqlx::query_as(&unreach).bind(&ids).fetch_all(db).await?;
     for ((id, b), a) in ids.iter().zip(&before).zip(&after) {
         if b != a {
             st.emit(Event::Machine { id: *id });

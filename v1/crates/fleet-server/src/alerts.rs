@@ -306,18 +306,19 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
     // 原因消失的告警恢复：只处理 active 的机器。其它生命周期 evaluate 不给原因，不能当成「恢复」——
     // 退役中的在发起退役时已经关掉（closed_by = retire，见 api/machines.rs retire）。
     // `open` 里剩下的就是这一轮没有对应原因的告警。
-    let active: HashMap<Uuid, (&str, bool, bool)> =
-        ms.iter().filter(|m| m.lifecycle == "active").map(|m| (m.id, (m.name.as_str(), m.health.probe_unknown, m.maintenance))).collect();
+    let active: HashMap<Uuid, &views::MachineView> = ms.iter().filter(|m| m.lifecycle == "active").map(|m| (m.id, m)).collect();
     for (_, inc) in open {
-        let Some(&(name, probe_unknown, maintenance)) = active.get(&inc.subject_id) else { continue };
+        let Some(m) = active.get(&inc.subject_id) else { continue };
+        let (name, maintenance) = (m.name.as_str(), m.maintenance);
         // 维护中 evaluate 不给原因：不是恢复，保持原状，维护结束后按那时的状态再判（同探测过期）
         if maintenance {
             state.clean_since.remove(&inc.id);
             continue;
         }
-        // 探测结果过期（线路机 agent 离线、探测停了）：出口 / TCP 的原因消失不等于恢复，保持原状，
-        // 等有新探测再判（去抖从那时重新算），否则线路机一离线这些告警就成批假恢复、补传后又重开
-        if probe_unknown && matches!(inc.rule.as_str(), "egress_fail" | "tcp_fail") {
+        // 这一轮判不出（health::Health::undecided）：原因消失不等于恢复，保持原状，等判得出再判（去抖从那时重新算）。
+        // 出口 / TCP：探测结果过期（线路机 agent 离线或维护中、探测停了）；持续高负载、时钟偏差：agent 离线（负载还要回来后攒够 5 分钟样本）；
+        // 客户入口连不上：中控重启后新的检查不到 3 轮。否则一离线、一重启这些告警就成批假恢复、之后又重开
+        if m.health.undecided(&inc.rule) {
             state.clean_since.remove(&inc.id);
             continue;
         }
