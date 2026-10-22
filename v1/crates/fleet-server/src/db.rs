@@ -277,13 +277,14 @@ async fn rollup_hour(db: &PgPool, hour: OffsetDateTime) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 保留期清理（每小时一次）：已恢复超 180 天的告警、过期会话、超 1 天的登录失败记录、
+/// 保留期清理（每小时一次）：已恢复超 180 天的告警、过期会话、超 1 天的登录失败记录、超 30 天没再登录成功的登录来源、
 /// 超 90 天的通知记录、结束超 90 天的静默、超 365 天的审计。
 pub async fn cleanup_retention(db: &PgPool) -> anyhow::Result<()> {
     let q = [
         ("告警", "delete from incident where state = 'resolved' and resolved_at < now() - interval '180 days'"),
         ("会话", "delete from session where expires_at < now()"),
         ("登录失败", "delete from login_failure where ts < now() - interval '1 day'"),
+        ("登录来源", "delete from login_source where last_ok_at < now() - interval '30 days'"),
         ("通知记录", "delete from notify_log where ts < now() - interval '90 days'"),
         ("静默", "delete from silence where ends_at < now() - interval '90 days'"),
         ("审计", "delete from audit_log where ts < now() - interval '365 days'"),

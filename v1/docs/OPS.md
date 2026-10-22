@@ -105,7 +105,10 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 
 - 密钥按最小 scope 发；`exec` 等于 root shell，只给确实需要的 AI 或人。
 - exec 的命令全文会写进审计，不要在命令里放密码、令牌。
-- 登录有限速（15 分钟窗口，来源 = IPv4 地址或 IPv6 /64）：同一用户名从同一来源错 5 次、同一来源错 20 次、同一用户名不分来源错 100 次会被 429 拒绝。别人在别处输错不会把你锁在外面；`fleet-server user-set` 重设密码时清掉该用户的失败记录。
+- 登录有限速（15 分钟窗口，来源 = IPv4 地址或 IPv6 /64）：同一用户名从同一来源错 5 次、同一来源错 20 次、同一用户名不分来源错 100 次会被 429 拒绝；最后这条不拦你 30 天内登录成功过的来源（攻击者换很多地址凑满 100 次也锁不住你常用的网络）。别人在别处输错不会把你锁在外面；`fleet-server user-set` 重设密码时清掉该用户的失败记录。
+- **开两步验证**（网页「设置 → 账户安全」）：这个账户能以 root 登录全部机器，密码之外再要手机认证器上的 6 位验证码。开启时会给 10 个恢复码，只显示一次：存进密码管理器或打印出来，和手机分开放；每个只能用一次（登录页的验证码框里直接输），快用完时在同一页重新生成一组（旧的全部作废）。改密码、看 / 撤销登录会话（不认识的设备立即撤销、「退出其它设备」）也在这一页；改密码后其它设备自动退出。
+- 手机和恢复码都丢了：在中控上以 root 执行 `fleet-server totp-reset -c /etc/fleet/fleet.toml <用户名>` 停用该用户的两步验证（恢复码一并作废，写审计 `auth.totp_disabled`，不输出任何秘密），然后用密码登录、立刻重新开启。忘了密码用 `fleet-server user-set`。
+- API 密钥（fleetctl、脚本）不经过两步验证，也不能调 `/account/*`：密钥本身就是凭据，按最小 scope 发、设有效期。
 - 有 `write` 权限就能上架线路机、把节点挂过去，那台线路机的 agent 会收到节点的 SS 密码与代理账号：`write` 实际上也能拿到凭据，按凭据级别发。
 - 通知渠道（webhook、企业微信、Telegram 的 `api_base`）不能指向内网、环回、链路本地（云元数据）地址，域名在发送时只解析公网地址；确实要用内网 webhook 时在 `fleet.toml` 写 `[notify] allow_private = true`。改 Telegram 的 `api_base` 要同时重新填 `bot_token`。
 - 中控：fleet-server 在 systemd 沙箱里运行（无任何特权、只写 `/var/lib/fleet`、系统调用白名单），`/etc/fleet` 归 root、fleet 只读；部署后 `journalctl -u fleet-server` 里出现 SIGSYS / Permission denied 先看沙箱。Caddy 管理接口在 `/run/caddy/admin.sock`（只有 caddy 能连），改配置后用 `systemctl reload caddy`，直接 `caddy reload` 不带 `--config` 会连不上。网页带 CSP（只许本站脚本），不能再加内联脚本或外部 CDN。

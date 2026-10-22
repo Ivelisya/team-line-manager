@@ -1,4 +1,5 @@
 pub mod access;
+pub mod account;
 pub mod catalog;
 pub mod exec;
 pub mod ipintel;
@@ -39,6 +40,16 @@ pub fn router() -> Router<AppState> {
         .route("/auth/login", post(auth::login))
         .route("/auth/logout", post(auth::logout))
         .route("/auth/me", get(auth::me))
+        // 账户安全（只给会话用户）
+        .route("/account/totp", get(account::totp_status))
+        .route("/account/totp/setup", post(account::totp_setup))
+        .route("/account/totp/enable", post(account::totp_enable))
+        .route("/account/totp/disable", post(account::totp_disable))
+        .route("/account/totp/recovery-codes", post(account::recovery_regenerate))
+        .route("/account/sessions", get(account::sessions))
+        .route("/account/sessions/revoke-others", post(account::revoke_other_sessions))
+        .route("/account/sessions/{id}", axum::routing::delete(account::revoke_session))
+        .route("/account/password", post(account::change_password))
         // 目录
         .route("/teams", get(catalog::list_teams).post(catalog::create_team))
         .route("/teams/{id}", patch(catalog::patch_team))

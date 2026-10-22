@@ -173,6 +173,24 @@ async fn login_rate_limit_per_source() {
     assert_eq!(t.login_from("admin", ADMIN_PW, "198.51.100.10").await.0, StatusCode::OK, "user-set 后马上能登");
 }
 
+/// 攻击者换 20 个 /64 各错 5 次凑满「同一用户名 100 次」：只拦没登录成功过的来源，本人 30 天内登录成功过的来源照常能登
+#[tokio::test]
+async fn login_global_cap_spares_known_sources() {
+    let t = common::boot(false, "trust_forwarded_for = true").await;
+    assert_eq!(t.login_from("admin", ADMIN_PW, "198.51.100.20").await.0, StatusCode::OK);
+    for n in 0..20 {
+        for i in 1..=5 {
+            let (s, v) = t.login_from("admin", "wrong-password", &format!("2001:db8:0:{n:x}::{i}")).await;
+            assert_eq!(s, StatusCode::UNAUTHORIZED, "{n}/{i}：{v}");
+        }
+    }
+    assert_eq!(t.login_from("admin", ADMIN_PW, "203.0.113.50").await.0, StatusCode::TOO_MANY_REQUESTS, "没登录成功过的来源被总上限拦住");
+    assert_eq!(t.login_from("admin", ADMIN_PW, "198.51.100.20").await.0, StatusCode::OK, "登录成功过的来源不受总上限");
+    // 超过 30 天没再登录成功：不再豁免
+    sqlx::query("update login_source set last_ok_at = now() - interval '31 days'").execute(&t.st.db).await.unwrap();
+    assert_eq!(t.login_from("admin", ADMIN_PW, "198.51.100.20").await.0, StatusCode::TOO_MANY_REQUESTS);
+}
+
 #[tokio::test]
 async fn exec_preconditions() {
     let t = setup().await;
