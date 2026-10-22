@@ -7,13 +7,15 @@ import type { MachineView } from '@/lib/types';
 import { maintOwner, useAddEntry, useEndMaintenance, usePatchMachine, useRelayChoices, useSilences, useTeams, useTune } from '@/lib/queries';
 import { openMaint, openUpgrade } from '@/lib/nodeActions';
 import { useDrawer } from '@/lib/drawer';
-import { errText, recycleOn } from '@/lib/derive';
+import { entryBad, errText, recycleOn } from '@/lib/derive';
 import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
 import { Field, InfoTip, Input } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
-import { entryState, Note, Section, SectionHeader } from '@/components/app/primitives';
+import { Note, Section, SectionHeader } from '@/components/app/primitives';
+import { ShowAll } from '@/components/app/Pagination';
+import { entryStatus } from './EntriesTable';
 import { ConfirmDialog } from '@/components/app/dialogs';
 import { RetireDialog } from '@/components/app/RetireDialog';
 import { EntryMenuButton, EntryMenus, entryLabel } from '@/components/app/EntryActions';
@@ -29,7 +31,6 @@ export function ManageTab({ m, onClosed }: { m: MachineView; onClosed: () => voi
   return (
     <>
       {!retired && <RenameSection m={m} />}
-      {!retired && <CountrySection m={m} />}
       {/* 在用的机器没有入口时也要能加：节点「添加入口」，线路机「添加直出入口」 */}
       {!retired && (m.lifecycle === 'active' || m.entries.length > 0) && <EntrySection m={m} />}
       {/* 在用的普通 VPS 节点都能当宿主机：上面另配的公网 IP 各上架成一台同机 IP 节点 */}
@@ -47,7 +48,8 @@ export function ManageTab({ m, onClosed }: { m: MachineView; onClosed: () => voi
   );
 }
 
-/** 改名 / 改编号：团队 + 编号（节点）或名称（线路机），实时预览新显示名 */
+/** 改名 / 改编号 / 国家：团队 + 编号（节点）或名称（线路机），实时预览新显示名；国家（名字前的国旗）选了不立即保存，和名字一起点「保存」。
+ *  当前显示名只在改了之后作为「旧名 → 新名」出现（没改时它就是上面的输入，不重复） */
 function RenameSection({ m }: { m: MachineView }) {
   const teams = useTeams().data;
   // 选项只随团队列表变：抽屉随实时推送重渲染时团队下拉（memo）不跟着重画
@@ -57,31 +59,36 @@ function RenameSection({ m }: { m: MachineView }) {
   const [team, setTeam] = React.useState(m.team?.id ?? '');
   const [num, setNum] = React.useState(m.number != null ? String(m.number) : '');
   const [label, setLabel] = React.useState(m.label ?? '');
+  const [country, setCountry] = React.useState(m.country_set ?? '');
   // 实时推送会改 revision 和编号（如同团队有机器退役后自动压缩编号）：只同步用户没动过的字段（输入仍等于上次的服务端值），
   // 正在编辑的不覆盖；换了机器则全部重置
-  const srv = { id: m.id, team: m.team?.id ?? '', num: m.number != null ? String(m.number) : '', label: m.label ?? '' };
+  const srv = { id: m.id, team: m.team?.id ?? '', num: m.number != null ? String(m.number) : '', label: m.label ?? '', country: m.country_set ?? '' };
   const last = React.useRef(srv);
   React.useEffect(() => {
     const prev = last.current; last.current = srv;
     const keep = (v: string, was: string, now: string) => (prev.id === srv.id && v !== was ? v : now);
-    setTeam((v) => keep(v, prev.team, srv.team)); setNum((v) => keep(v, prev.num, srv.num)); setLabel((v) => keep(v, prev.label, srv.label));
-  }, [srv.id, srv.team, srv.num, srv.label]); // eslint-disable-line react-hooks/exhaustive-deps
+    setTeam((v) => keep(v, prev.team, srv.team)); setNum((v) => keep(v, prev.num, srv.num)); setLabel((v) => keep(v, prev.label, srv.label)); setCountry((v) => keep(v, prev.country, srv.country));
+  }, [srv.id, srv.team, srv.num, srv.label, srv.country]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const teamName = teams?.find((t) => t.id === team)?.name;
   const n = Number(num);
   const numOk = Number.isInteger(n) && n >= 1 && n <= 999; // 与服务端一致：编号范围 1–999
   const preview = isRelay ? label.trim() : teamName && numOk ? F.displayName(teamName, n) : '';
-  const changed = isRelay ? label.trim() !== (m.label ?? '') : team !== (m.team?.id ?? '') || (numOk && n !== m.number);
+  const nameChanged = isRelay ? label.trim() !== (m.label ?? '') : team !== (m.team?.id ?? '') || (numOk && n !== m.number);
+  const countryChanged = country !== (m.country_set ?? '');
   const valid = isRelay ? label.trim().length > 0 : !!team && numOk;
+  const auto = m.country_set ? '自动（按 IP）' : `自动（按 IP：${m.country ? countryName(m.country) : '查不到'}）`;
 
   const save = () => {
-    const body = isRelay ? { label: label.trim() } : { team_id: team, number: n };
-    patch.mutate({ id: m.id, revision: m.revision, ...body }, { onSuccess: () => toast.ok(`已改名为 ${preview}`), onError: toast.err });
+    const body = { ...(nameChanged ? (isRelay ? { label: label.trim() } : { team_id: team, number: n }) : null), ...(countryChanged ? { country: country || null } : null) };
+    patch.mutate({ id: m.id, revision: m.revision, ...body }, {
+      onSuccess: () => toast.ok(nameChanged ? `已改名为 ${preview}${countryChanged ? '，国家已更新' : ''}` : country ? `国家已改为${countryName(country)}` : '国家已改回按 IP 自动'), onError: toast.err,
+    });
   };
   return (
     <Section>
-      <SectionHeader title={<>{isRelay ? '改名' : '改名 / 改编号'} <InfoTip text="不会断开现有连接：只改显示名与线路机上的备注，不换令牌。" /></>} />
-      <form className="form-grid" onSubmit={(e) => { e.preventDefault(); if (changed && valid && !patch.isPending) save(); }}>
+      <SectionHeader title={<>{isRelay ? '改名 / 国家' : '改名 / 改编号 / 国家'} <InfoTip text="不会断开现有连接：只改显示名与线路机上的备注，不换令牌。" /></>} />
+      <form className="form-grid" onSubmit={(e) => { e.preventDefault(); if ((nameChanged || countryChanged) && valid && !patch.isPending) save(); }}>
         {isRelay ? (
           <Field label="线路机名称" className="span-2"><Input value={label} onChange={(e) => setLabel(e.target.value)} /></Field>
         ) : (
@@ -92,33 +99,21 @@ function RenameSection({ m }: { m: MachineView }) {
             </Field>
           </>
         )}
+        <Field label="国家" className="span-2" info="名字前的国旗；默认按 IP 自动查，查不准时手动选。"><CountrySelect value={country} onChange={setCountry} autoLabel={auto} disabled={patch.isPending} aria-label="国家或地区" /></Field>
         <div className="span-2 row row-between">
-          {/* 没改动时只显示当前名，改了才出现「旧名 → 新名」 */}
+          {/* 改了名字才出现「旧名 → 新名」 */}
           <span className="row" style={{ gap: 8 }}>
-            <span className="t-sub">{changed ? '新显示名' : '当前显示名'}</span>
-            <span className="preview-name">{changed ? <>{m.name}<ArrowRight size={14} style={{ color: 'var(--fg-3)' }} />{preview || '—'}</> : m.name}</span>
+            {nameChanged && <><span className="t-sub">新显示名</span><span className="preview-name">{m.name}<ArrowRight size={14} style={{ color: 'var(--fg-3)' }} />{preview || '—'}</span></>}
           </span>
-          <Button type="submit" variant="primary" disabled={!changed || !valid || patch.isPending} loading={patch.isPending}>保存</Button>
+          <Button type="submit" variant="primary" disabled={!(nameChanged || countryChanged) || !valid || patch.isPending} loading={patch.isPending}>保存</Button>
         </div>
       </form>
     </Section>
   );
 }
 
-/** 国家（名字前的国旗）：选了就存；第一项改回按 IP 自动，没手动设时写出 IP 查到的国家 */
-function CountrySection({ m }: { m: MachineView }) {
-  const patch = usePatchMachine();
-  const auto = m.country_set ? '自动（按 IP）' : `自动（按 IP：${m.country ? countryName(m.country) : '查不到'}）`;
-  const save = (v: string) => patch.mutate({ id: m.id, revision: m.revision, country: v || null }, {
-    onSuccess: () => toast.ok(v ? `国家已改为${countryName(v)}` : '国家已改回按 IP 自动'), onError: toast.err,
-  });
-  return (
-    <Section>
-      <SectionHeader title="国家" />
-      <div className="form-grid"><CountrySelect value={m.country_set ?? ''} onChange={save} autoLabel={auto} disabled={patch.isPending} aria-label="国家或地区" /></div>
-    </Section>
-  );
-}
+/** 管理页签的入口列表先露的条数 */
+const MANAGE_CAP = 5;
 
 function EntrySection({ m }: { m: MachineView }) {
   const relays = useRelayChoices().data ?? [];
@@ -131,18 +126,24 @@ function EntrySection({ m }: { m: MachineView }) {
   const canAddDirect = m.kind === 'relay' && m.lifecycle === 'active' && !m.entries.some((e) => e.direct);
   const canMove = m.lifecycle === 'active' && movableEntries(m).length > 0; // 节点换线路机、线路机搬空
   const canAdd = m.kind !== 'relay' && opts.length > 0;
+  // 线路机的入口有几十条：异常的排前面，先露前 5 条（异常的全露），其余「显示全部」
+  const [all, setAll] = React.useState(false);
+  const sorted = React.useMemo(() => [...m.entries.filter(entryBad), ...m.entries.filter((e) => !entryBad(e))], [m.entries]);
+  const cap = Math.max(MANAGE_CAP, m.entries.filter(entryBad).length);
+  const shown = all ? sorted : sorted.slice(0, cap);
   return (
     <Section>
       <SectionHeader title="入口" />
       {/* 入口的“⋯”菜单与对话框整个入口列表共用一份 */}
       <EntryMenus entries={m.entries}><div className="stack-sm">
         {m.entries.length === 0 && <div className="hint">还没有入口{m.kind === 'relay' && <> <InfoTip text="节点的入口在节点上添加；也可以给这台线路机加一条直出入口。" /></>}</div>}
-        {m.entries.length > 0 && <div className="mgroup">{m.entries.map((e) => (
+        {/* 入口行的副标题是配置状态（是否已推到线路机），右边的胶囊只标不正常的（中控连不上、探测不通…），两者各说各的 */}
+        {m.entries.length > 0 && <div className="mgroup">{shown.map((e) => (
           <div key={e.id} className="manage-row">
-            <div><div className="t">{m.kind === 'relay' ? `${e.port} · ${e.node.name}` : entryLabel(e)}</div><div className="hint">{e.apply_error ? errText(e.apply_error) : e.applied ? '已应用' : '应用中'}</div></div>
-            <span className="row" style={{ gap: 8 }}>{entryState(e)}<EntryMenuButton entry={e} /></span>
+            <div><div className="t">{m.kind === 'relay' ? `${e.port} · ${e.node.name}` : entryLabel(e)}</div><div className="hint">{e.apply_error ? errText(e.apply_error) : e.applied ? '配置已应用' : '配置应用中'}</div></div>
+            <span className="row" style={{ gap: 8 }}>{entryStatus(e)}<EntryMenuButton entry={e} /></span>
           </div>
-        ))}</div>}
+        ))}<ShowAll total={m.entries.length} cap={cap} open={all} onToggle={() => setAll((v) => !v)} /></div>}
       </div></EntryMenus>
       {/* 列表下面的入口操作单成一组：每项一行 */}
       {(canMove || canAddDirect || canAdd) && (
@@ -295,7 +296,7 @@ function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }
                   '同团队后面的节点会自动前移补号。', n > 0 && `这台机器上有 ${n} 个同机 IP 节点，还没开始退役的会一起走。`,
                 ].filter(Boolean).join('\n')} /></>}</div>
               {/* 线路机不能进备用；节点默认移入备用，没有同机关系时也写一句短话，不留一个孤零零的 (i) */}
-              <div className="hint">{m.kind === 'relay' ? '线路机只能立即回收：先搬空节点，直出入口随之摘除' : m.host_machine ? `宿主机「${m.host_machine.name}」不受影响` : n > 0 ? `${n} 个同机 IP 节点会一起退役` : '默认移入备用，到期满 1 天后自动回收'}</div>
+              <div className="hint">{m.kind === 'relay' ? '线路机只能立即回收：先搬空节点，直出入口随之摘除' : m.host_machine ? `宿主机「${m.host_machine.name}」不受影响` : n > 0 ? `${n} 个同机 IP 节点会一起退役` : `移入备用${m.subscription ? ` · ${F.addDays(m.subscription.due_date, 2).slice(5)} 起自动回收` : ''}`}</div>
             </div>
           )}
           <Button variant="outline-danger" disabled={busyJob || m.lifecycle === 'retiring'} onClick={() => setOpen(true)}>{inSpare ? '立即回收…' : '退役…'}</Button>

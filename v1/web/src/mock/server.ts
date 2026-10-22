@@ -390,7 +390,7 @@ function createMachine(it: ProvisionItem, c: ProvisionCheckItem): MachineView {
   if (h) borrowHost(m, h);
   if (m.kind !== 'relay') {
     const relay = machine(it.relay_id!);
-    const e: EntryView = { id: `e${db.seq++}`, relay: { id: relay.id, name: relay.name }, node: { id, name: m.name }, direct: false, port: c.relay_port ?? 20999, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 } };
+    const e: EntryView = { id: `e${db.seq++}`, relay: { id: relay.id, name: relay.name }, node: { id, name: m.name }, direct: false, port: c.relay_port ?? 20999, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, reach: null, traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 } };
     m.entries = [e]; relay.entries.push(e);
   }
   recomputeDue(m); Object.assign(m, trafficOf(m, db.machines));
@@ -663,7 +663,7 @@ R('POST', '/machines/([^/]+)/entries', ({ params, body }) => {
   if (direct && relay.id !== m.id) throw bad('线路机上只能加它自己的直出入口（relay_id 填这台线路机自己）', 409, 'conflict');
   if (direct && m.entries.some((x) => x.direct)) throw bad('这台线路机已经有直出入口', 409, 'conflict');
   const port = Math.max(20000, ...relay.entries.map((x) => x.port)) + 1;
-  const e: EntryView = { id: `e${db.seq++}`, relay: { id: relay.id, name: relay.name }, node: { id: m.id, name: direct ? `${m.name}-直出` : m.name }, direct, port, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 } };
+  const e: EntryView = { id: `e${db.seq++}`, relay: { id: relay.id, name: relay.name }, node: { id: m.id, name: direct ? `${m.name}-直出` : m.name }, direct, port, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, reach: null, traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 } };
   if (!direct) m.entries.push(e);
   relay.entries.push(e);
   const job = newJob('attach_entry', { id: m.id, name: m.name }, [['apply', '等待线路机应用'], ['verify', '出口验收']]);
@@ -905,7 +905,7 @@ function planMove(m: MachineView, toId: string, fromId?: string): { old: EntryVi
 }
 function startMove(m: MachineView, plan: { old: EntryView; to: MachineView }) {
   const { old, to } = plan;
-  const ne: EntryView = { id: `e${db.seq++}`, relay: { id: to.id, name: to.name }, node: { id: m.id, name: m.name }, direct: false, port: Math.max(20000, ...to.entries.map((x) => x.port)) + 1, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, traffic: blankTraffic() };
+  const ne: EntryView = { id: `e${db.seq++}`, relay: { id: to.id, name: to.name }, node: { id: m.id, name: m.name }, direct: false, port: Math.max(20000, ...to.entries.map((x) => x.port)) + 1, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, reach: null, traffic: blankTraffic() };
   m.entries.push(ne); to.entries.push(ne);
   const job = newJob('move_entry', { id: m.id, name: m.name }, MOVE_STEPS);
   job.result = { new_entry_id: ne.id, old_entry_id: old.id, from_relay_id: old.relay.id, to_relay_id: to.id, share_changed: true, note: '客户端需要换成新的分享链接' };

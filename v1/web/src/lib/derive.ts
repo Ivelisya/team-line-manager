@@ -105,10 +105,24 @@ const ERR_ZH: [RegExp, string | ((m: string, ...g: string[]) => string)][] = [
   [/\bsocks5?\b[\w .:'/-]*/gi, '代理握手失败'],
 ];
 export const errText = (s: string) => ERR_ZH.reduce<string>((t, [re, to]) => t.replace(re, to as string), s).replace(/\s+$/, '');
+/** 入口探测失败的悬停：常见的连接错误先写成一句人话（端口拒绝连接 / 连接超时 / 网络不可达），原文放第二行；其它原样（英文换成中文） */
+const PROBE_ERR: [RegExp, string][] = [[/拒绝|refused|os error 111/i, '端口拒绝连接'], [/超时|time[d ]?-?out|os error 110/i, '连接超时'], [/不可达|unreachable|os error 11[13]/i, '网络不可达']];
+export function probeErr(detail: string | null | undefined) {
+  if (!detail) return undefined;
+  const raw = errText(detail); const hit = PROBE_ERR.find(([re]) => re.test(detail));
+  if (!hit) return raw;
+  const sec = hit[1] === '连接超时' ? detail.match(/(\d+(?:\.\d+)?)\s*(?:s\b|秒)/)?.[1] : undefined;
+  const text = sec ? `超时 ${sec} 秒` : hit[1];
+  return text === raw ? raw : `${text}\n${raw}`;
+}
 /** 运行中的入口探测失败（直出入口不做 TCP 探测）：返回失败的那次探测。抽屉入口表、线路机页的状态列写「不通」，悬停看 errText(detail) */
 export const probeFail = (e: EntryView) => (e.lifecycle !== 'active' || !e.applied ? null : !e.direct && e.tcp && !e.tcp.ok ? e.tcp : e.egress && !e.egress.ok ? e.egress : null);
 /** 入口状态列的「不通」写明是哪一段：TCP 连不上入口，还是连上了但出口验收失败（抽屉的「入口探测 N/M 连通」只算 TCP） */
 export const probeFailLabel = (e: EntryView) => (probeFail(e) === e.tcp ? 'TCP 不通' : '出口不通');
+/** 中控连不上这个入口的端口（中控 → 线路机最近一次 TCP 检查失败，与上面「线路机 → 节点」是两段）：返回那次检查；通的、没检查过、不在运行中的为 null */
+export const reachFail = (e: EntryView) => (e.lifecycle === 'active' && e.applied && e.reach?.ok === false ? e.reach : null);
+/** 入口表里的异常行（排在前面、折叠时也全露出、计入「N 条异常」）：中控连不上、线路机到节点探测不通、应用失败 */
+export const entryBad = (e: EntryView) => !!reachFail(e) || !!probeFail(e) || (e.lifecycle === 'active' && !!e.apply_error);
 /** 状态筛选、状态列排序用的值：在用的看健康，其余看生命周期（同机器页状态筛选下拉的 value） */
 export const statusOf = (m: MachineView) => (m.lifecycle === 'active' ? m.health.status : m.lifecycle);
 /** 状态列升序：有问题的在前（上架失败、故障、降级…），正常的在后。机器页、首页表格的状态列与首页的「异常优先」共用 */
@@ -206,10 +220,12 @@ export function inheritSummary(plan: Plan, pv: Provider | undefined) {
 /** 「跟随套餐：2000 GB」：没有模板（旧接口）为 null */
 export function inheritText(m: MachineView, k: SubField, due?: string) {
   const t = m.sub_template; if (!t) return null;
-  const v = inheritedValue(m, k, due);
-  if (k === 'price_cents' && v == null) return '没有套餐，需要单独填';
-  return `${inheritSource(m, k)}：${subValueText(k, v, t.currency, t.traffic_reset)}`;
+  if (k === 'price_cents' && inheritedValue(m, k, due) == null) return '没有套餐，需要单独填';
+  return `${inheritSource(m, k)}：${inheritValueText(m, k, due)}`;
 }
+/** 跟随的值写成文字（不带来源，订阅表单里跟随态直接显示它） */
+export const inheritValueText = (m: MachineView, k: SubField, due?: string) =>
+  m.sub_template ? subValueText(k, inheritedValue(m, k, due), m.sub_template.currency, m.sub_template.traffic_reset) : '';
 /** 额度用量的写法同供应商面板：十进制 GB，不换算成 TB（901.6 GB）。业务流量等其它字节数仍用 F.bytes */
 export const quotaGb = (bytes: number): F.Fmt => {
   const x = Math.max(0, bytes) / GB;
@@ -344,7 +360,7 @@ export function probeSummary(m: MachineView) {
     total: viaNode.length, tcpOk, tcp: lat.length ? Math.round(Math.min(...lat.map((x) => x.ms))) : null,
     tcpTip: `线路机 → 节点 TCP 握手，近 1 小时中位数${lat.length > 1 ? '，取最小的一条' : ''}；连接质量页签的曲线是每分钟平均${each}`,
     tcpFail: allFailed(viaNode.map((e) => e.tcp)), egressFail: allFailed(es.map((e) => e.egress)), egressOk: egOk > 0,
-    off: m.entries.filter((e) => e.lifecycle === 'disabled').length, all: es.length, usable: es.filter((e) => (e.direct || e.tcp?.ok) && e.egress?.ok).length, tcpBad: viaNode.length - tcpOk, egressBad: es.length - egOk,
+    off: m.entries.filter((e) => e.lifecycle === 'disabled').length, all: es.length, usable: es.filter((e) => (e.direct || e.tcp?.ok) && e.egress?.ok).length, tcpBad: viaNode.length - tcpOk, egressBad: es.length - egOk, reachBad: es.filter(reachFail).length,
   };
 }
 /** 备用团队里在用、有订阅的机器：从哪天起自动回收（MM-DD，到期旁标出来）；不在备用里、没有订阅为 null */

@@ -108,6 +108,7 @@ export function buildDb(): Db {
   const machines: MachineView[] = [];
   const entriesByRelay: Record<string, EntryView[]> = { r1: [], r2: [] };
   let eSeq = 1;
+  const REACH_OK = (): EntryView['reach'] => ({ ok: true, ts: iso(now() - 30_000), detail: null });
   const GiB = 1024 ** 3;
 
   const sub = (planId: string, dueDays: number, trafficGb: number | null): Subscription => {
@@ -178,7 +179,7 @@ export function buildDb(): Db {
     const lifecycle: Lifecycle = d.lifecycle ?? 'active';
     const entry: EntryView = {
       id: `e${eSeq++}`, relay: { id: relay.id, name: relay.name }, node: { id, name }, direct: false, port,
-      lifecycle: lifecycle === 'retiring' ? 'disabled' : 'active', applied: true, apply_error: null,
+      lifecycle: lifecycle === 'retiring' ? 'disabled' : 'active', applied: true, apply_error: null, reach: REACH_OK(),
       tcp: { ok: !offline, latency_ms: offline ? null : Math.round(18 + r() * 160), detail: offline ? '连接超时' : null, ts: iso(now() - 20_000) },
       egress: { ok: !down, latency_ms: down ? null : Math.round(120 + r() * 220), detail: down ? '出口探测失败' : null, ts: iso(now() - 40_000) },
       traffic: { today_up: Math.round((0.3 + r() * 6) * GiB), today_down: Math.round((0.5 + r() * 14) * GiB), month_up: Math.round((20 + r() * 220) * GiB), month_down: Math.round((60 + r() * 520) * GiB) },
@@ -209,7 +210,7 @@ export function buildDb(): Db {
   {
     const p = plan('pl1'); const team = teams[0];
     const id = 'm-t1-13p';
-    const e: EntryView = { id: `e${eSeq++}`, relay: { id: 'r1', name: '线路机1' }, node: { id, name: displayName(team.name, 13) }, direct: false, port: 20000 + entriesByRelay.r1.length + 1, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 } };
+    const e: EntryView = { id: `e${eSeq++}`, relay: { id: 'r1', name: '线路机1' }, node: { id, name: displayName(team.name, 13) }, direct: false, port: 20000 + entriesByRelay.r1.length + 1, lifecycle: 'pending', applied: false, apply_error: null, tcp: null, egress: null, reach: null, traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 } };
     entriesByRelay.r1.push(e);
     machines.push(base({
       id, kind: 'vps', name: displayName(team.name, 13), team: { id: team.id, name: team.name }, number: 13, ip: '198.51.100.77', lifecycle: 'provisioning', activated_at: null, created_at: iso(now() - 6 * 60_000),
@@ -232,7 +233,7 @@ export function buildDb(): Db {
     const team = teams.find((t) => t.id === tid)!; const spare = teams.find((t) => t.spare)!; const p = plan('pl2'); const rid = tid === 't1' ? 'r1' : 'r2'; const relay = machines.find((x) => x.id === rid)!;
     const id = `m-ts-${i + 1}`; const name = displayName(spare.name, i + 1); const sb = sub('pl2', due as number, p.traffic_gb || null);
     const e: EntryView = {
-      id: `e${eSeq++}`, relay: { id: relay.id, name: relay.name }, node: { id, name }, direct: false, port: 20000 + entriesByRelay[rid].length + 1, lifecycle: 'active', applied: true, apply_error: null,
+      id: `e${eSeq++}`, relay: { id: relay.id, name: relay.name }, node: { id, name }, direct: false, port: 20000 + entriesByRelay[rid].length + 1, lifecycle: 'active', applied: true, apply_error: null, reach: REACH_OK(),
       tcp: { ok: true, latency_ms: Math.round(30 + r() * 120), detail: null, ts: iso(now() - 20_000) }, egress: { ok: true, latency_ms: Math.round(120 + r() * 200), detail: null, ts: iso(now() - 40_000) },
       traffic: { today_up: Math.round(r() * GiB), today_down: Math.round(r() * 3 * GiB), month_up: Math.round(r() * 30 * GiB), month_down: Math.round(r() * 90 * GiB) },
     };
@@ -250,7 +251,7 @@ export function buildDb(): Db {
     const h = machines.find((m) => m.id === 'm-t1-03')!; const team = teams[0];
     const id = 'm-t1-14'; const name = displayName(team.name, 14);
     const e: EntryView = {
-      id: `e${eSeq++}`, relay: { id: 'r1', name: '线路机1' }, node: { id, name }, direct: false, port: 20000 + entriesByRelay.r1.length + 1, lifecycle: 'active', applied: true, apply_error: null,
+      id: `e${eSeq++}`, relay: { id: 'r1', name: '线路机1' }, node: { id, name }, direct: false, port: 20000 + entriesByRelay.r1.length + 1, lifecycle: 'active', applied: true, apply_error: null, reach: REACH_OK(),
       tcp: { ok: true, latency_ms: 47, detail: null, ts: iso(now() - 20_000) }, egress: { ok: true, latency_ms: 214, detail: null, ts: iso(now() - 40_000) },
       traffic: { today_up: Math.round(1.1 * GiB), today_down: Math.round(3.6 * GiB), month_up: Math.round(46 * GiB), month_down: Math.round(128 * GiB) },
     };
@@ -262,6 +263,7 @@ export function buildDb(): Db {
     h.ip_nodes = [{ id, name }];
   }
 
+  const m2Entries = entriesByRelay.r2;
   // 把入口挂到线路机上
   for (const rl of ['r1', 'r2'] as const) {
     const m = machines.find((x) => x.id === rl)!;
@@ -269,7 +271,9 @@ export function buildDb(): Db {
     if (rl === 'r2') { const last = m.entries[m.entries.length - 1]; last.applied = false; last.apply_error = null; }
   }
   // 线路机 2 的最后一个入口还没应用 → 降级提示
-  machines[1].health = { status: 'degraded', reasons: [{ key: 'relay_apply_lag', severity: 'warning', text: '配置未应用（配置代数 8 · 已应用 7）' }] };
+  // 线路机 2：中控连不上其中三个客户入口端口（中控 → 线路机最近一次 TCP 检查失败）
+  [2, 3, 4].forEach((i) => { m2Entries[i].reach = { ok: false, ts: iso(now() - 25_000), detail: 'connect: 连接被拒绝 (os error 111)' }; });
+  machines[1].health = { status: 'down', reasons: [{ key: 'relay_unreachable', severity: 'critical', text: `中控连续 3 次连不上客户入口（端口 ${[2, 3, 4].map((i) => m2Entries[i].port).join('、')}）` }, { key: 'relay_apply_lag', severity: 'warning', text: '配置未应用（配置代数 8 · 已应用 7）' }] };
   machines[1].host = hostOf('r2', 58);
   // 调优样本：线路机 2 是旧档，团队1 的 03 号还没调优过
   machines[1].tune = { profile: 'tune-v0', at: iso(now() - 40 * DAY), current: false };

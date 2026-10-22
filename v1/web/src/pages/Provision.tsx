@@ -174,7 +174,7 @@ export function ProvisionPage() {
     <div className="stack" ref={page}>
       <PageHead title="上架"
         tools={<Segmented label="模式" value={mode} onChange={switchMode} items={[{ value: 'single', label: '单台' }, { value: 'batch', label: '批量' }]} />} />
-      <div className="prov-steps">
+      <div className={mode === 'single' ? 'prov-steps is-form' : 'prov-steps'}>
         <span className="s" data-on={passed ? undefined : '1'} data-done={passed ? '1' : undefined}><span className="n">1</span>检查</span><span>→</span>
         <span className="s" data-on={passed ? '1' : undefined}><span className="n">2</span>开始</span>
         <InfoTip text="检查不会改动任何东西；开始时只需确认一次。" />

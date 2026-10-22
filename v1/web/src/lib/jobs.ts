@@ -72,7 +72,7 @@ const OUTPUT: Record<string, [string, OutFmt] | null> = {
   restored: null, reason: ['说明', text],
   // detach / cleanup / revoke / finalize / purge / wait_detached_old
   entries: ['入口', unit('个')], ss: ['ssserver', (v) => CLEANUP_SS[String(v)]], revoked: ['撤销令牌', unit('枚')], renumbered: ['重新编号', unit('台')],
-  rows_deleted: ['删除数据', unit('行')], already_gone: ['状态', () => '目标已不存在，无需处理'],
+  rows_deleted: ['删除数据', unit('行')], recycle_bin_id: ['回收站编号', (v) => `#${v}`], already_gone: ['状态', () => '目标已不存在，无需处理'],
 };
 
 /** 步骤输出（JSON 对象）→ 每行 “标签：值”；空值与内部 id 不显示 */

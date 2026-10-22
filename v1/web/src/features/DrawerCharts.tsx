@@ -5,6 +5,7 @@ import { Cpu, Gauge, Globe, HardDrive, MemoryStick, Network, Radar, ServerOff } 
 import type { MachineView } from '@/lib/types';
 import type { UseQueryResult } from '@tanstack/react-query';
 import { useAvailability, useSeries } from '@/lib/queries';
+import { useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
 import { AVAIL_LEGEND, availCells, availTitles, fromLabel, hasHost, monthFlowTip, monthTraffic, resourceMeters, successPct } from '@/lib/derive';
 import { Segmented } from '@/components/ui/overlays';
@@ -22,7 +23,7 @@ const poll = (range: string) => POLL[range] ?? 300_000;
 // 曲线的线条与格式化放模块常量：抽屉随实时推送重渲染时 TimeChart（memo）的 props 不变，不重画。
 // CPU / 内存用首页节点卡的指标色（CPU 蓝、内存紫），上下行与对照序列沿用 --chart-1 / --chart-2
 // 只画 TCP：出口验证的耗时是经节点去中控回显服务的完整 HTTPS 往返，不是线路延迟（出口只判通不通，见可用率与入口表）
-const L_PROBE = [{ key: 'tcp_ms', label: 'TCP 握手', color: 'var(--chart-1)' }];
+const L_PROBE = [{ key: 'tcp_ms', label: 'TCP 延迟', color: 'var(--chart-1)' }];
 const L_TRAFFIC = [{ key: 'down', label: '↓ 下载', color: 'var(--chart-1)' }, { key: 'up', label: '↑ 上传', color: 'var(--chart-2)' }];
 const L_CPU = [{ key: 'cpu_pct', label: 'CPU', color: 'var(--m-cpu)' }];
 // 按小时的点（7 天 / 30 天）是一小时的平均，短时冲高被摊平：同画每小时的峰值，色取 CPU 蓝的浅色
@@ -45,7 +46,7 @@ const vRate = (_: string, v: number) => { const r = F.rate(v); return `${r.v} ${
 export function RangeBar({ range, setRange }: { range: string; setRange: (r: string) => void }) {
   return <Segmented sm label="时间范围" value={range} onChange={setRange} items={RANGES} />;
 }
-/** 抽屉各曲线页签统一的时间范围条：放在页签顶部并吸顶（往下翻几张曲线时也能换），默认 24 小时 */
+/** 抽屉各曲线页签统一的时间范围条：放在页签顶部并吸顶（往下翻几张曲线时也能换），默认 24 小时；三个页签共用一个范围（?range=，见 lib/drawer） */
 export const RangeSticky = ({ range, setRange }: { range: string; setRange: (r: string) => void }) => (
   <div className="tab-sticky"><span>时间范围</span><RangeBar range={range} setRange={setRange} /></div>
 );
@@ -104,11 +105,8 @@ const AvailabilitySection = React.memo(function AvailabilitySection({ id, relay 
   );
 });
 
-/** 连接质量、流量、主机页签的默认范围（三个页签一致） */
-const DEFAULT_RANGE = '24h';
-
 export function QualityTab({ m }: { m: MachineView }) {
-  const [range, setRange] = React.useState(DEFAULT_RANGE);
+  const { range, setRange } = useDrawer();
   const s = useSeries(m.id, 'probe', range, true, poll(range));
   return (
     <>
@@ -132,7 +130,7 @@ export function QualityTab({ m }: { m: MachineView }) {
 }
 
 export function TrafficTab({ m }: { m: MachineView }) {
-  const [range, setRange] = React.useState(DEFAULT_RANGE);
+  const { range, setRange } = useDrawer();
   const s = useSeries(m.id, 'traffic', range, true, poll(range));
   const t = monthTraffic(m); const nic = m.nic; const from = m.month_counted_from;
   return (
@@ -177,7 +175,7 @@ export function TrafficTab({ m }: { m: MachineView }) {
 }
 
 export function HostTab({ m }: { m: MachineView }) {
-  const [range, setRange] = React.useState(DEFAULT_RANGE);
+  const { range, setRange } = useDrawer();
   // 家宽代理没有主机；其它机器即使现在没有读数（agent 离线、还没上报），历史曲线照样能看——排查掉线前发生了什么正要看它
   const agentful = m.kind !== 'proxy';
   const s = useSeries(m.id, 'host', range, agentful, poll(range));

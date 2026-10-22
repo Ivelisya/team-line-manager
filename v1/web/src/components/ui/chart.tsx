@@ -7,8 +7,17 @@ export type ChartConfig = Record<string, { label: string; color: string }>;
 
 export function ChartContainer({ config, className, height, children }: { config: ChartConfig; className?: string; height?: number; children: React.ReactElement }) {
   const style = { ...Object.fromEntries(Object.entries(config).map(([k, v]) => [`--color-${k}`, v.color])), ...(height ? { height } : {}) } as React.CSSProperties;
+  // 提示框跟着鼠标移动出现；页面 / 抽屉滚动时鼠标没动、图却被滚走了，提示框会留在原位：滚动时让 recharts 当作鼠标离开
+  const box = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    const el = box.current!; let inside = false;
+    const move = () => { inside = true; }; const leave = () => { inside = false; };
+    const hide = () => { if (inside) { inside = false; el.querySelector('.recharts-wrapper')?.dispatchEvent(new MouseEvent('mouseout', { bubbles: true })); } };
+    el.addEventListener('pointermove', move); el.addEventListener('pointerleave', leave); window.addEventListener('scroll', hide, { capture: true, passive: true });
+    return () => { el.removeEventListener('pointermove', move); el.removeEventListener('pointerleave', leave); window.removeEventListener('scroll', hide, { capture: true }); };
+  }, []);
   return (
-    <div className={cn('chart-box', className)} style={style}>
+    <div ref={box} className={cn('chart-box', className)} style={style}>
       <Recharts.ResponsiveContainer width="100%" height="100%">{children}</Recharts.ResponsiveContainer>
     </div>
   );

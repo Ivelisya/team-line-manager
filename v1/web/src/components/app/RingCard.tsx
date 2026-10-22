@@ -1,7 +1,7 @@
 // 环形视图的卡片：名称，CPU / 内存 / 磁盘三个圆环（点击打开抽屉“主机”页签，悬停看具体用量），底部状态胶囊（同卡片视图的位置）+ 上行 / 下行实时速率。
 // 家宽代理没有主机：圆环的位置换成本月业务流量与探测延迟两行（点击打开流量页签）。同机关系标在名称后面，卡窄只写「同机」，宿主机名在悬停说明里。
 import { memo } from 'react';
-import { ArrowDown, ArrowUp, Globe, Radar } from 'lucide-react';
+import { ArrowDown, ArrowUp, Radar } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
 import type { DrawerTab } from '@/lib/drawer';
 import type { CardShow } from './NodeCard';
@@ -45,7 +45,8 @@ function RingCardImpl({ m, current, onOpen, show }: { m: MachineView; current?: 
       </header>
       {proxy ? (
         <button type="button" className="rc-rings rc-pair" onClick={() => onOpen(m.id, 'traffic')}>
-          <span data-tip={monthFlowTip(m)}><Globe />本月业务<b>下载 <Num f={F.bytes(t!.down)} /> · 上传 <Num f={F.bytes(t!.up)} /></b></span>
+          <span data-tip={monthFlowTip(m)}><ArrowDown />本月下载<b><Num f={F.bytes(t!.down)} /></b></span>
+          <span data-tip={monthFlowTip(m)}><ArrowUp />本月上传<b><Num f={F.bytes(t!.up)} /></b></span>
           <span><Radar />TCP · 出口<b>{ms(ps!.tcp, ps!.tcpFail)} · {ps!.egressFail ? <span style={{ color: 'var(--bad-text)' }}>失败</span> : ps!.egressOk ? '正常' : '—'}</b></span>
           <span className="sr-only">（查看流量页签）</span>
         </button>
@@ -56,7 +57,7 @@ function RingCardImpl({ m, current, onOpen, show }: { m: MachineView; current?: 
       )}
       <footer className="rc-foot">
         <HealthPill m={m} />
-        {!proxy && <span className="rc-rates">{rate('up', lr?.tx)}{rate('down', lr?.rx)}</span>}
+        {!proxy && <span className="rc-rates">{rate('down', lr?.rx)}{rate('up', lr?.tx)}</span>}
       </footer>
     </article>
   );

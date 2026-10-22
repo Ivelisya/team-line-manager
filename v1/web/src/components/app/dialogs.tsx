@@ -66,9 +66,9 @@ export function FormDialog({ open, onOpenChange, title, desc, children, onSubmit
   );
 }
 
-/** 需要输入 expected 才能确认。expected 区分大小写，两端空格忽略。
+/** 需要输入 expected 才能确认。expected 区分大小写，两端空格忽略。blocked：现在做不了（内容里已经说明原因）：不要输入框和确认按钮，取消换成「关闭」。
  *  每次打开重新挂载（resetOnOpen）：输入与上次的失败原因清空，关闭动画期间内容保持原样 */
-export const TypedConfirmDialog = resetOnOpen(function TypedConfirmDialog({ expected, prompt, ...base }: Base & { expected: string; prompt?: string }) {
+export const TypedConfirmDialog = resetOnOpen(function TypedConfirmDialog({ expected, prompt, blocked, ...base }: Base & { expected: string; prompt?: string; blocked?: boolean }) {
   const [text, setText] = React.useState('');
   const [busy, setBusy] = React.useState(false);
   const [err, setErr] = React.useState<string | null>(null);
@@ -81,18 +81,20 @@ export const TypedConfirmDialog = resetOnOpen(function TypedConfirmDialog({ expe
   return (
     <Dialog open={base.open} onOpenChange={(o) => !busy && base.onOpenChange(o)}>
       {/* 焦点直接落在确认输入框（默认会落到前面的复选框等控件上） */}
-      <DialogContent size={base.size} onOpenAutoFocus={(e) => { e.preventDefault(); input.current?.focus(); }}>
+      <DialogContent size={base.size} onOpenAutoFocus={(e) => { if (input.current) { e.preventDefault(); input.current.focus(); } }}>
         <DialogHeader><DialogTitle>{base.title}</DialogTitle>{base.description && <DialogDescription>{base.description}</DialogDescription>}</DialogHeader>
         {base.children}
-        <div className="field">
-          <label className="label" htmlFor="typed-confirm">{prompt ?? '请输入'} <b className="mono" style={{ color: 'var(--fg)' }}>{expected}</b> 以确认</label>
-          <Input ref={input} id="typed-confirm" value={text} onChange={(e) => setText(e.target.value)} autoComplete="off" spellCheck={false} placeholder={expected}
-            onKeyDown={(e) => { if (e.key === 'Enter' && ok && !busy) void run(); }} />
-        </div>
+        {!blocked && (
+          <div className="field">
+            <label className="label" htmlFor="typed-confirm">{prompt ?? '请输入'} <b className="mono" style={{ color: 'var(--fg)' }}>{expected}</b> 以确认</label>
+            <Input ref={input} id="typed-confirm" value={text} onChange={(e) => setText(e.target.value)} autoComplete="off" spellCheck={false} placeholder={expected}
+              onKeyDown={(e) => { if (e.key === 'Enter' && ok && !busy) void run(); }} />
+          </div>
+        )}
         {err && <Note tone="bad">{err}</Note>}
         <DialogFooter>
-          <Button onClick={() => base.onOpenChange(false)} disabled={busy}>取消</Button>
-          <Button variant={base.danger ? 'danger' : 'primary'} disabled={!ok} loading={busy} onClick={run}>{base.confirmLabel}</Button>
+          <Button onClick={() => base.onOpenChange(false)} disabled={busy}>{base.cancelLabel ?? (blocked ? '关闭' : '取消')}</Button>
+          {!blocked && <Button variant={base.danger ? 'danger' : 'primary'} disabled={!ok} loading={busy} onClick={run}>{base.confirmLabel}</Button>}
         </DialogFooter>
       </DialogContent>
     </Dialog>

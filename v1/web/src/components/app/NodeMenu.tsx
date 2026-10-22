@@ -23,6 +23,11 @@ export type MenuEntry =
 /** 子菜单超过这么多项时顶上给一个筛选框（线路机的分享链接一台几十条） */
 const FILTER_MIN = 8;
 
+type MenuItem = Exclude<MenuEntry, { sep: true }>;
+/** 把几项收进一个子菜单（项数多了菜单太高）；只有一项（或没有）时不收，直接放出来（保留它自己的图标） */
+const group = (key: string, label: string, icon: React.ReactNode, list: MenuItem[]): MenuEntry[] =>
+  list.length < 2 ? list : [{ key, label, icon, children: list.map((c) => ({ ...c, icon: undefined })) }];
+
 function useNodeMenu(m: MachineView): MenuEntry[] {
   const { open } = useDrawer();
   const nav = useNavigate();
@@ -44,8 +49,10 @@ function useNodeMenu(m: MachineView): MenuEntry[] {
     : { key: 'share', label: '复制分享链接', icon: <Link2 />, disabled: shareable.length === 0 || retired, why: '没有可分享的入口', onSelect: () => void share(shareable[0].id) };
   const items: MenuEntry[] = [
     { key: 'open', label: '打开详情', icon: <PanelRightOpen />, onSelect: () => open(m.id) },
-    { key: 'ip', label: '复制 IP', icon: <Copy />, onSelect: () => void copyText(m.ip, ' IP', true) },
-    { key: 'name', label: '复制名称', icon: <Copy />, onSelect: () => void copyText(m.name, '名称', true) },
+    ...group('copy', '复制', <Copy />, [
+      { key: 'ip', label: 'IP', onSelect: () => void copyText(m.ip, ' IP', true) },
+      { key: 'name', label: '名称', onSelect: () => void copyText(m.name, '名称', true) },
+    ]),
   ];
   if (retired) return items; // 退役作业刚做完、还没移入回收站的一瞬间
   items.push(shareItem, { key: 'sep1', sep: true });
@@ -63,17 +70,22 @@ function useNodeMenu(m: MachineView): MenuEntry[] {
     m.subscription
       ? { key: 'renew', label: '登记续费…', icon: <CalendarPlus />, onSelect: () => openRenew(m.id) }
       : { key: 'renew', label: '设置费用…', icon: <CalendarPlus />, onSelect: () => open(m.id, 'billing') },
-    ...(m.kind !== 'relay' && m.lifecycle === 'active' && m.entries.some((e) => e.lifecycle === 'active')
-      ? [{ key: 'move', label: '换线路机…', icon: <Repeat2 />, disabled: !!m.active_job, why: '有作业正在进行，等它结束', onSelect: () => openMove(m.id) } as MenuEntry] : []),
-    // 替换：另一台在用节点接替它（软路由出口跟着换，编号交换，它进备用团队）
-    ...(m.kind !== 'relay' && m.lifecycle === 'active'
-      ? [{ key: 'replace', label: '替换为…', icon: <Replace />, disabled: !!m.active_job, why: '有作业正在进行，等它结束', onSelect: () => openReplace(m.id) } as MenuEntry] : []),
+    // 换线路机、替换：只有一项可用时直接放出来，两项都有时收进「更换」
+    ...group('swap', '更换', <Repeat2 />, [
+      ...(m.kind !== 'relay' && m.lifecycle === 'active' && m.entries.some((e) => e.lifecycle === 'active')
+        ? [{ key: 'move', label: '换线路机…', icon: <Repeat2 />, disabled: !!m.active_job, why: '有作业正在进行，等它结束', onSelect: () => openMove(m.id) } as MenuItem] : []),
+      // 替换：另一台在用节点接替它（软路由出口跟着换，编号交换，它进备用团队）
+      ...(m.kind !== 'relay' && m.lifecycle === 'active'
+        ? [{ key: 'replace', label: '替换为…', icon: <Replace />, disabled: !!m.active_job, why: '有作业正在进行，等它结束', onSelect: () => openReplace(m.id) } as MenuItem] : []),
+    ]),
     // 维护中的：结束这台自己的（同机 IP 节点可能是宿主机的）维护窗口；全部机器的那种要到告警页结束，mutation 会报错说明
-    m.maintenance
-      ? { key: 'maint', label: maintOnHost ? '结束宿主机维护' : '结束维护', icon: <Wrench />,
-          onSelect: () => { endMaint.mutateAsync(m).then((o) => toast.ok(`${o.name} 已结束维护`), (e) => toast.err(e)); } }
-      : { key: 'maint', label: '维护窗口…', icon: <Wrench />, onSelect: () => openMaint(m.id) },
-    { key: 'silence', label: '新建静默', icon: <BellOff />, onSelect: () => nav(`/incidents?silence=${m.id}`) },
+    ...group('upkeep', '维护与静默', <Wrench />, [
+      m.maintenance
+        ? { key: 'maint', label: maintOnHost ? '结束宿主机维护' : '结束维护', icon: <Wrench />,
+            onSelect: () => { endMaint.mutateAsync(m).then((o) => toast.ok(`${o.name} 已结束维护`), (e) => toast.err(e)); } }
+        : { key: 'maint', label: '维护窗口…', icon: <Wrench />, onSelect: () => openMaint(m.id) },
+      { key: 'silence', label: '新建静默', icon: <BellOff />, onSelect: () => nav(`/incidents?silence=${m.id}`) },
+    ]),
     { key: 'sep2', sep: true },
     { key: 'retire', label: m.spare && m.lifecycle === 'active' ? '立即回收…' : '退役…', icon: <Power />, danger: true, disabled: m.lifecycle === 'retiring' || (m.lifecycle === 'provisioning' && !!m.active_job), why: m.lifecycle === 'retiring' ? '正在退役' : '上架作业还在进行，等它结束', onSelect: () => openRetire(m.id) },
   );
@@ -132,7 +144,7 @@ function SubItems({ items, filter, Item }: { items: MenuEntry[]; filter?: string
   return (
     <>
       {filter && <div className="menu-filter"><input ref={input} value={q} onChange={(e) => setQ(e.target.value)} placeholder={filter} aria-label={filter} onKeyDown={onKey} /></div>}
-      {shown.map((c) => <Item key={c.key} onSelect={c.onSelect} disabled={c.disabled}>{c.label}</Item>)}
+      {shown.map((c) => <Item key={c.key} onSelect={c.onSelect} disabled={c.disabled} data-tip={c.disabled ? c.why : undefined}>{c.label}</Item>)}
       {filter && !shown.length && <div className="menu-label">没有匹配的</div>}
     </>
   );
