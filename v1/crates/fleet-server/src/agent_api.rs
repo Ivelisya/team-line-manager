@@ -15,7 +15,7 @@ use fleet_proto::{ApplyReport, Report, ReportAck};
 use serde::Deserialize;
 use std::collections::{BTreeSet, HashMap};
 use std::net::SocketAddr;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{LazyLock, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use time::{Date, OffsetDateTime};
 use tower_http::decompression::RequestDecompressionLayer;
@@ -118,6 +118,8 @@ fn warn_dropped(machine: Uuid, dropped: usize, seq: u64) {
 enum IngestErr {
     Api(ApiError),
     Db(sqlx::Error),
+    /// 超过上报频率：429，带 Retry-After（秒）
+    Limited(u64),
 }
 
 impl From<ApiError> for IngestErr {
@@ -138,15 +140,104 @@ fn ingest_error(e: sqlx::Error) -> ApiError {
     }
 }
 
-async fn report(State(st): State<AppState>, h: HeaderMap, ApiJson(r): ApiJson<Report>) -> ApiResult<Json<ReportAck>> {
-    ingest(&st, &h, r).await.map_err(|e| match e {
-        IngestErr::Api(e) => e,
-        IngestErr::Db(e) => ingest_error(e),
-    })
+/// 每台机器的上报令牌桶：正常 10 s 一份，但积压补传（一轮最多 200 份）、访问日志追赶（每份最多 2000 条）会连发。
+/// 容量够补完 6 小时离线队列（离线时 60 s 建一份）再加追赶，之后每秒补一份（每秒 2000 条访问记录，远超线路机的量）
+const REPORT_BURST: f64 = 600.0;
+const REPORT_REFILL_PER_S: f64 = 1.0;
+
+struct Bucket {
+    tokens: f64,
+    at: Instant,
+    /// 扣过令牌的最大 seq：同一份重发（网络错误、503 后重试）和重复的不再扣
+    seq: u64,
 }
 
-async fn ingest(st: &AppState, h: &HeaderMap, r: Report) -> Result<Json<ReportAck>, IngestErr> {
+static BUCKETS: LazyLock<Mutex<HashMap<Uuid, Bucket>>> = LazyLock::new(Default::default);
+
+/// 新的一份（seq 大于扣过的）扣一个令牌；扣不到返回还要等几秒
+fn take_token(m: &mut HashMap<Uuid, Bucket>, machine: Uuid, seq: u64, now: Instant) -> Result<(), u64> {
+    let b = m.entry(machine).or_insert(Bucket { tokens: REPORT_BURST, at: now, seq: 0 });
+    b.tokens = (b.tokens + now.saturating_duration_since(b.at).as_secs_f64() * REPORT_REFILL_PER_S).min(REPORT_BURST);
+    b.at = now;
+    if seq <= b.seq {
+        return Ok(());
+    }
+    if b.tokens < 1.0 {
+        return Err(((1.0 - b.tokens) / REPORT_REFILL_PER_S).ceil().max(1.0) as u64);
+    }
+    b.tokens -= 1.0;
+    b.seq = seq;
+    Ok(())
+}
+
+/// 每份报告的条数上限：agent 自己最多就发这么多（fleet-agent reporter.rs 的 MAX_*_PER_REPORT），多出来的不收
+const MAX_HOST: usize = 360;
+const MAX_ENTRIES: usize = 3000;
+const MAX_PROBES: usize = 1000;
+const MAX_ACCESS: usize = 2000;
+/// 自由文本（错误信息、系统信息）截到这么多字符
+const MAX_TEXT: usize = 512;
+
+fn clip(s: &mut String, n: usize) {
+    if let Some((i, _)) = s.char_indices().nth(n) {
+        s.truncate(i);
+    }
+}
+
+/// u64 计数器入 bigint / int：超出的夹到上限，不回绕成负数
+fn i64c(v: u64) -> i64 { v.min(i64::MAX as u64) as i64 }
+fn i32c(v: u32) -> i32 { v.min(i32::MAX as u32) as i32 }
+
+/// 入库前截断：条数、自由文本
+fn sanitize(r: &mut Report) {
+    r.host.truncate(MAX_HOST);
+    r.entries.truncate(MAX_ENTRIES);
+    r.probes.truncate(MAX_PROBES);
+    r.access.truncate(MAX_ACCESS);
+    clip(&mut r.boot_id, 64);
+    clip(&mut r.agent_version, 64);
+    for p in &mut r.probes {
+        if let Some(d) = &mut p.detail {
+            clip(d, MAX_TEXT);
+        }
+    }
+    for x in &mut r.access {
+        clip(&mut x.network, 8);
+    }
+    if let Some(i) = &mut r.info {
+        for s in [&mut i.hostname, &mut i.kernel, &mut i.os, &mut i.arch] {
+            clip(s, MAX_TEXT);
+        }
+        i.ipv4.truncate(64);
+        i.ipv6.truncate(64);
+    }
+    if let Some(v) = r.xray.as_mut().and_then(|x| x.version.as_mut()) {
+        clip(v, 64);
+    }
+    if let Some(h) = &mut r.agent_health {
+        for s in [&mut h.last_apply_error, &mut h.disk_write_error].into_iter().flatten() {
+            clip(s, MAX_TEXT);
+        }
+    }
+}
+
+async fn report(State(st): State<AppState>, h: HeaderMap, ApiJson(r): ApiJson<Report>) -> Result<Response, ApiError> {
+    match ingest(&st, &h, r).await {
+        Ok(ack) => Ok(ack.into_response()),
+        Err(IngestErr::Limited(wait)) => {
+            let mut resp = ApiError::new(StatusCode::TOO_MANY_REQUESTS, "rate_limited", format!("上报太频繁，{wait} 秒后再发")).into_response();
+            resp.headers_mut().insert(axum::http::header::RETRY_AFTER, wait.into());
+            Ok(resp)
+        }
+        Err(IngestErr::Api(e)) => Err(e),
+        Err(IngestErr::Db(e)) => Err(ingest_error(e)),
+    }
+}
+
+async fn ingest(st: &AppState, h: &HeaderMap, mut r: Report) -> Result<Json<ReportAck>, IngestErr> {
     let a = authenticate(st, h).await?;
+    take_token(&mut BUCKETS.lock().unwrap(), a.machine_id, r.seq, Instant::now()).map_err(IngestErr::Limited)?;
+    sanitize(&mut r);
     let now = OffsetDateTime::now_utc();
     let now_ms = (now.unix_timestamp_nanos() / 1_000_000) as i64;
     let hi = now_ms + DAY_MS;
@@ -167,7 +258,7 @@ async fn ingest(st: &AppState, h: &HeaderMap, r: Report) -> Result<Json<ReportAc
         es = with_partitions(st, "entry_traffic", es, today, &mut dropped).await;
         ps = windowed(r.probes.iter().filter(|p| mine.contains(&p.entry_id)), |p| p.ts_ms, raw_lo, hi, &mut dropped);
         ps = with_partitions(st, "probe_result", ps, today, &mut dropped).await;
-        ac = windowed(r.access.iter().filter(|x| mine.contains(&x.entry_id)).take(5000), |x| x.ts_ms, acc_lo, hi, &mut dropped);
+        ac = windowed(r.access.iter().filter(|x| mine.contains(&x.entry_id)), |x| x.ts_ms, acc_lo, hi, &mut dropped);
         ac = with_partitions(st, "access_event", ac, today, &mut dropped).await;
     }
     warn_dropped(a.machine_id, dropped, r.seq);
@@ -196,10 +287,10 @@ async fn ingest(st: &AppState, h: &HeaderMap, r: Report) -> Result<Json<ReportAc
     let last = prev.map(|p| p.0);
     // 去重：同一份数据重发（seq 不增）直接确认；但这仍说明 agent 活着，要刷新最近上报时间
     if let Some(seq) = &last {
-        if r.seq as i64 <= *seq {
+        if i64c(r.seq) <= *seq {
             sqlx::query("update agent_state set last_report_at = now(), last_seq = greatest(last_seq, $2) where machine_id = $1")
                 .bind(a.machine_id)
-                .bind(r.seq as i64)
+                .bind(i64c(r.seq))
                 .execute(&mut *tx)
                 .await?;
             tx.commit().await?;
@@ -218,7 +309,7 @@ async fn ingest(st: &AppState, h: &HeaderMap, r: Report) -> Result<Json<ReportAc
     // 时钟偏差 = 中控收到时刻 − sent_at_ms（正数 = agent 时钟慢）。sent_at_ms 是建报时刻，积压补发、失败重发的报告会偏大，
     // 只认新鲜的：建报时离线队列为空（之前的报告都已确认，建报一定晚于中控收到上一份）且上一份是 30 秒内收到的，误差不超过 30 秒
     let fresh = r.agent_health.as_ref().is_some_and(|h| h.queue_len == 0) && prev.is_some_and(|p| p.1);
-    let skew = fresh.then(|| now_ms - r.sent_at_ms);
+    let skew = fresh.then(|| now_ms.saturating_sub(r.sent_at_ms));
     // info 是合并而不是覆盖：只报系统信息时不能把之前记下的 xray / agent 健康状态 / 时钟偏差冲掉
     sqlx::query(
         "insert into agent_state (machine_id, agent_version, boot_id, last_seq, last_report_at, info)
@@ -230,7 +321,7 @@ async fn ingest(st: &AppState, h: &HeaderMap, r: Report) -> Result<Json<ReportAc
     .bind(a.machine_id)
     .bind(&r.agent_version)
     .bind(&r.boot_id)
-    .bind(r.seq as i64)
+    .bind(i64c(r.seq))
     .bind(info)
     .bind(xray)
     .bind(agent_health)
@@ -248,13 +339,13 @@ async fn ingest(st: &AppState, h: &HeaderMap, r: Report) -> Result<Json<ReportAc
             t.push(*at);
             cpu.push(s.cpu_pct);
             l1.push(s.load1);
-            mu.push(s.mem_used as i64);
-            mt.push(s.mem_total as i64);
-            du.push(s.disk_used as i64);
-            dt.push(s.disk_total as i64);
-            rx.push(s.net_rx_bytes as i64);
-            txb.push(s.net_tx_bytes as i64);
-            tc.push(s.tcp_conns as i32);
+            mu.push(i64c(s.mem_used));
+            mt.push(i64c(s.mem_total));
+            du.push(i64c(s.disk_used));
+            dt.push(i64c(s.disk_total));
+            rx.push(i64c(s.net_rx_bytes));
+            txb.push(i64c(s.net_tx_bytes));
+            tc.push(i32c(s.tcp_conns));
         }
         sqlx::query(
             "insert into host_metric (machine_id, ts, cpu_pct, load1, mem_used, mem_total, disk_used, disk_total, net_rx_bytes, net_tx_bytes, tcp_conns)
@@ -282,9 +373,9 @@ async fn ingest(st: &AppState, h: &HeaderMap, r: Report) -> Result<Json<ReportAc
         )
         .bind(es.iter().map(|(e, _)| e.entry_id).collect::<Vec<_>>())
         .bind(es.iter().map(|(_, t)| *t).collect::<Vec<_>>())
-        .bind(es.iter().map(|(e, _)| e.up_bytes as i64).collect::<Vec<_>>())
-        .bind(es.iter().map(|(e, _)| e.down_bytes as i64).collect::<Vec<_>>())
-        .bind(es.iter().map(|(e, _)| e.conns as i32).collect::<Vec<_>>())
+        .bind(es.iter().map(|(e, _)| i64c(e.up_bytes)).collect::<Vec<_>>())
+        .bind(es.iter().map(|(e, _)| i64c(e.down_bytes)).collect::<Vec<_>>())
+        .bind(es.iter().map(|(e, _)| i32c(e.conns)).collect::<Vec<_>>())
         .execute(&mut *tx)
         .await?;
     }
@@ -399,4 +490,46 @@ async fn applied(State(st): State<AppState>, h: HeaderMap, ApiJson(r): ApiJson<A
 /// 回显请求方 IP（出口探测用）；取法同登录限速（X-Forwarded-For 最后一项）
 pub async fn echo(State(st): State<AppState>, ConnectInfo(addr): ConnectInfo<SocketAddr>, h: HeaderMap) -> String {
     crate::auth::client_ip(&h, Some(addr.ip()), st.cfg.trust_forwarded_for).map(|ip| ip.to_string()).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bucket_allows_burst_then_paces_and_never_charges_resends() {
+        let (mut m, id, t0) = (HashMap::new(), Uuid::now_v7(), Instant::now());
+        for seq in 1..=REPORT_BURST as u64 {
+            assert!(take_token(&mut m, id, seq, t0).is_ok(), "{seq}");
+        }
+        let next = REPORT_BURST as u64 + 1;
+        assert_eq!(take_token(&mut m, id, next, t0), Err(1));
+        // 重发、重复的（seq 不大于扣过的）照收，不扣
+        assert!(take_token(&mut m, id, next - 1, t0).is_ok() && take_token(&mut m, id, 1, t0).is_ok());
+        // 过一秒补一个
+        assert!(take_token(&mut m, id, next, t0 + Duration::from_secs(1)).is_ok());
+        assert_eq!(take_token(&mut m, id, next + 1, t0 + Duration::from_secs(1)), Err(1));
+        // 别的机器不受影响；正常 10 秒一份永远扣得到
+        let other = Uuid::now_v7();
+        for k in 0..2000u64 {
+            assert!(take_token(&mut m, other, k + 1, t0 + Duration::from_secs(k * 10)).is_ok());
+        }
+    }
+
+    #[test]
+    fn sanitize_caps_rows_text_and_counters() {
+        let mut r: Report = serde_json::from_value(serde_json::json!({
+            "seq": 1, "boot_id": "b", "agent_version": "v", "sent_at_ms": 0,
+            "probes": [{"entry_id": Uuid::nil(), "ts_ms": 0, "kind": "tcp", "ok": false, "detail": "错".repeat(5000)}],
+            "agent_health": {"last_apply_error": "x".repeat(100_000)},
+        }))
+        .unwrap();
+        let ev = fleet_proto::AccessEvent { entry_id: Uuid::nil(), ts_ms: 0, src_ip: None, dest_host: "a".into(), dest_port: None, network: "tcp".into(), blocked: false };
+        r.access = vec![ev; 5000];
+        sanitize(&mut r);
+        assert_eq!(r.access.len(), MAX_ACCESS);
+        assert_eq!(r.probes[0].detail.as_ref().unwrap().chars().count(), MAX_TEXT);
+        assert_eq!(r.agent_health.unwrap().last_apply_error.unwrap().len(), MAX_TEXT);
+        assert_eq!((i64c(u64::MAX), i64c(5), i32c(u32::MAX)), (i64::MAX, 5, i32::MAX));
+    }
 }
