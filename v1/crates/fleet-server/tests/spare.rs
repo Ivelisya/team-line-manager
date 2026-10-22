@@ -403,6 +403,49 @@ async fn auto_retire_rechecks_spare_and_expiry_under_lock() {
     }
 }
 
+/// 迁移 0042：0041 之前进备用的机器按最近一条改进备用团队的改名审计回填 spare_since / spare_from（旧记录没有 old_name，按 before 拼）；
+/// 备用团队里改编号的不算；查不到的留空。没结束的 renewal_overdue 静默改成 renewal_due
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn migration_0042_backfills_spare_columns_from_audit() {
+    let t = setup(false).await;
+    let sp = spare_team(&t).await;
+    let team = seed_team(&t, "团队2").await;
+    let (a, b, c) = (
+        seed_node(&t, sp, 1, "203.0.113.31", "active").await,
+        seed_node(&t, sp, 2, "203.0.113.32", "active").await,
+        seed_node(&t, sp, 3, "203.0.113.33", "active").await,
+    );
+    let audit = |m: Uuid, ts: &'static str, detail: Value| {
+        sqlx::query("insert into audit_log (ts, actor, action, target_kind, target_id, detail) values ($1::timestamptz, 'u', 'machine.rename', 'machine', $2, $3)")
+            .bind(ts)
+            .bind(m)
+            .bind(detail)
+            .execute(&t.st.db)
+    };
+    audit(a, "2026-10-01T00:00:00Z", json!({"name": "团队2 备用-01", "old_name": "团队2-07", "before": {"team_id": team, "number": 7}, "after": {"team_id": sp, "number": 1}})).await.unwrap();
+    audit(a, "2026-10-05T00:00:00Z", json!({"name": "团队2 备用-01", "old_name": "团队2 备用-03", "before": {"team_id": sp, "number": 3}, "after": {"team_id": sp, "number": 1}})).await.unwrap();
+    audit(b, "2026-10-02T00:00:00Z", json!({"before": {"team_id": team, "number": 9, "label": null}, "after": {"team_id": sp, "number": 2}})).await.unwrap();
+    sqlx::query("insert into silence (id, rule, starts_at, ends_at, created_by) values ($1, 'renewal_overdue', now(), now() + interval '1 day', 'u'), ($2, 'renewal_overdue', now() - interval '2 days', now() - interval '1 day', 'u')")
+        .bind(Uuid::now_v7())
+        .bind(Uuid::now_v7())
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    sqlx::raw_sql(include_str!("../../../migrations/0042_reach_port_spare_backfill.sql")).execute(&t.st.db).await.unwrap();
+    let got: Vec<(Uuid, Option<String>, Option<String>)> =
+        sqlx::query_as("select id, spare_from, to_char(spare_since at time zone 'UTC', 'YYYY-MM-DD') from machine where id = any($1) order by number")
+            .bind(vec![a, b, c])
+            .fetch_all(&t.st.db)
+            .await
+            .unwrap();
+    assert_eq!(
+        got,
+        [(a, Some("团队2-07".into()), Some("2026-10-01".into())), (b, Some("团队2-09".into()), Some("2026-10-02".into())), (c, None, None)]
+    );
+    let rules: Vec<String> = sqlx::query_scalar("select rule from silence order by ends_at").fetch_all(&t.st.db).await.unwrap();
+    assert_eq!(rules, ["renewal_overdue", "renewal_due"], "结束了的不动");
+}
+
 /// 旧面板导入：默认只预演；同一个 source_id 导两次只有一行；IP 或（供应商, 供应商编号）对上面板里还没回收的机器的跳过并说明；格式不对 400
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn legacy_import_is_idempotent_and_skips_live_machines() {
