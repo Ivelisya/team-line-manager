@@ -16,11 +16,10 @@
 //!   对象是「中控」：subject_id 是全零 uuid（渠道连续失败是渠道 id），接口里这类告警的 subject / subject_id 为 null、subject_name 是「中控」。
 
 use crate::alerts;
-use crate::notify::{self, Kind, Notice};
-use crate::silence::Silences;
-use crate::state::{AppState, Event};
-use serde_json::json;
-use std::collections::{HashMap, HashSet};
+use crate::incident::{self, Close, Want};
+use crate::notify;
+use crate::state::AppState;
+use std::collections::HashSet;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
@@ -84,134 +83,44 @@ fn client() -> &'static reqwest::Client {
     })
 }
 
-/// 此刻成立的一个问题
-struct Problem {
-    rule: &'static str,
-    subject: Uuid,
-    severity: &'static str,
-    /// 不带「中控：」前缀
-    text: String,
-}
-
-#[derive(sqlx::FromRow)]
-struct Open {
-    id: Uuid,
-    rule: String,
-    subject_id: Uuid,
-    severity: String,
-    summary: String,
-    opened_at: OffsetDateTime,
-    notified_at: Option<OffsetDateTime>,
-}
-
-/// 检查一轮，把中控自身的告警对齐到 incident 表。`now` 由调用方给（测试可以快进）
+/// 检查一轮，把中控自身的告警对齐到 incident 表（incident.rs）。`now` 由调用方给（测试可以快进）
 pub async fn check_once(st: &AppState, now: OffsetDateTime) -> anyhow::Result<()> {
-    let open: Vec<Open> = sqlx::query_as(
-        "select id, rule, subject_id, severity::text severity, summary, opened_at, notified_at from incident
-         where state = 'firing' and rule like 'central!_%' escape '!'",
-    )
-    .fetch_all(&st.db)
-    .await?;
+    let open = incident::firing(&st.db, "central").await?;
     let channels: Vec<(Uuid, String, Option<OffsetDateTime>, Option<String>)> =
         sqlx::query_as("select id, name, failing_since, last_error from notify_channel where enabled").fetch_all(&st.db).await?;
-    let mut want: Vec<Problem> = channels
+    let problem = |rule: &'static str, subject: Uuid, severity: &'static str, text: String| Want { rule, subject, name: NAME, severity, text, detail: None, ready: true };
+    let mut want: Vec<Want> = channels
         .iter()
         .filter(|(_, _, since, _)| since.is_some_and(|s| (now - s).whole_seconds() >= CHANNEL_FAILING_S))
-        .map(|(id, name, _, err)| Problem {
-            rule: CHANNEL_FAILING,
-            subject: *id,
-            severity: "critical",
-            text: format!(
+        .map(|(id, name, _, err)| {
+            let text = format!(
                 "通知渠道「{name}」连续发送失败超过 5 分钟：{}（发往它的通知排队重试，入队满 30 分钟还发不出的放弃）",
                 err.as_deref().unwrap_or("-")
-            ),
+            );
+            problem(CHANNEL_FAILING, *id, "critical", text)
         })
         .collect();
     let dir = &st.cfg.selfmon.backup_dir;
     if let Some(text) = backup_problem(dir, SystemTime::now()) {
-        want.push(Problem { rule: BACKUP_STALE, subject: CENTRAL, severity: "warning", text });
+        want.push(problem(BACKUP_STALE, CENTRAL, "warning", text));
     }
     let pct = if open.iter().any(|o| o.rule == DISK_LOW) { DISK_OK_PCT } else { DISK_LOW_PCT };
     if let Some(text) = disk_problem(&disk_usage(dir), pct) {
-        want.push(Problem { rule: DISK_LOW, subject: CENTRAL, severity: "critical", text });
+        want.push(problem(DISK_LOW, CENTRAL, "critical", text));
     }
     if let Some((off, total)) = alerts::agents_unreachable(&crate::views::live(st).await?) {
-        want.push(Problem { rule: INGRESS, subject: CENTRAL, severity: "critical", text: format!("{off}/{total} 台 agent 同时失联：检查边缘机 / Caddy / DNS") });
+        want.push(problem(INGRESS, CENTRAL, "critical", format!("{off}/{total} 台 agent 同时失联：检查边缘机 / Caddy / DNS")));
     }
     let enabled: HashSet<Uuid> = channels.iter().map(|c| c.0).collect();
-    reconcile(st, open, want, &enabled, now).await
-}
-
-async fn reconcile(st: &AppState, open: Vec<Open>, want: Vec<Problem>, enabled: &HashSet<Uuid>, now: OffsetDateTime) -> anyhow::Result<()> {
-    let silences = Silences::load(&st.db).await?;
-    let mut open: HashMap<(String, Uuid), Open> = open.into_iter().map(|o| ((o.rule.clone(), o.subject_id), o)).collect();
-    let notice = |kind, id, rule: &str, severity: &str, text: &str, opened_at| Notice {
-        kind,
-        incident_id: Some(id),
-        rule: rule.into(),
-        severity: severity.into(),
-        machine: NAME.into(),
-        summary: text.into(),
-        at: now,
-        opened_at: Some(opened_at),
-    };
-    let mut changed = false;
-    for p in want {
-        let summary = format!("{NAME}：{}", p.text);
-        let silenced = silences.matches(p.rule, p.subject);
-        if let Some(inc) = open.remove(&(p.rule.to_string(), p.subject)) {
-            if !alerts::same_summary(&inc.summary, &summary) {
-                sqlx::query("update incident set summary = $2, last_seen_at = now() where id = $1").bind(inc.id).bind(&summary).execute(&st.db).await?;
-                changed = true;
-            }
-            // 开的时候没能写进发送队列的补发「触发」；严重的每 4 小时提醒一次（同机器的告警）
-            let kind = match inc.notified_at {
-                None => Some(Kind::Firing),
-                Some(n) => alerts::repeat_interval_s(p.rule, p.severity).filter(|every| (now - n).whole_seconds() >= *every).map(|_| Kind::Repeat),
-            };
-            if let Some(kind) = kind.filter(|_| !silenced) {
-                notify::enqueue(st, notice(kind, inc.id, p.rule, p.severity, &p.text, inc.opened_at)).await;
-            }
-            continue;
-        }
-        if silenced {
-            continue;
-        }
-        let id = crate::db::new_id();
-        let res = sqlx::query(
-            "insert into incident (id, rule, subject_id, severity, summary) values ($1, $2, $3, $4::severity, $5)
-             on conflict (rule, subject_id) where state = 'firing' do nothing",
-        )
-        .bind(id)
-        .bind(p.rule)
-        .bind(p.subject)
-        .bind(p.severity)
-        .bind(&summary)
-        .execute(&st.db)
-        .await?;
-        if res.rows_affected() > 0 {
-            changed = true;
-            notify::enqueue(st, notice(Kind::Firing, id, p.rule, p.severity, &p.text, now)).await;
-        }
-    }
     // 问题没了的恢复；渠道停用或删了不是恢复：关掉、不发通知
-    for (_, inc) in open {
-        let gone = inc.rule == CHANNEL_FAILING && !enabled.contains(&inc.subject_id);
-        let detail = if gone { json!({"closed_by": "channel_removed"}) } else { json!({}) };
-        sqlx::query("update incident set state = 'resolved', resolved_at = now(), detail = detail || $2 where id = $1")
-            .bind(inc.id)
-            .bind(detail)
-            .execute(&st.db)
-            .await?;
-        changed = true;
-        if !gone && inc.notified_at.is_some() && !silences.matches(&inc.rule, inc.subject_id) {
-            let text = notify::strip_machine(&inc.summary, NAME);
-            notify::enqueue(st, notice(Kind::Resolved, inc.id, &inc.rule, &inc.severity, text, inc.opened_at)).await;
+    incident::reconcile(st, open, want, "true", now, |inc| {
+        if inc.rule == CHANNEL_FAILING && !enabled.contains(&inc.subject_id) {
+            Close::Quiet("channel_removed")
+        } else {
+            Close::Resolve(NAME)
         }
-    }
-    if changed {
-        st.emit(Event::Incidents);
-    }
+    })
+    .await?;
     Ok(())
 }
 

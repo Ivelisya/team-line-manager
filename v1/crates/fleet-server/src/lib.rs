@@ -10,6 +10,7 @@ pub mod db;
 pub mod entries;
 pub mod error;
 pub mod health;
+pub mod incident;
 pub mod ipintel;
 pub mod jobs;
 pub mod live;

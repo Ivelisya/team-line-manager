@@ -44,7 +44,7 @@ const REPEAT_CRITICAL_S: i64 = 4 * 3600;
 const REPEAT_SLOW_S: i64 = 24 * 3600;
 
 /// 严重度的高低（同库里 severity 枚举的顺序）
-fn rank(severity: &str) -> u8 {
+pub(crate) fn rank(severity: &str) -> u8 {
     match severity {
         "critical" => 2,
         "warning" => 1,
