@@ -141,6 +141,7 @@ pub fn parse_default_route(route: &str, ipv6_route: &str) -> Vec<String> {
 /// 1. 默认路由所在的网卡 ∪ 有物理设备（/sys/class/net/<n>/device）且配有公网地址的网卡（附加公网 IP 配在第二块网卡上时）；
 ///    只有内网地址的 VPC 网卡不算，默认路由指向虚拟网卡（全局 WireGuard 的 wg0 等）时跳过它；
 /// 2. 以上为空：有物理设备的网卡，再没有（容器、OpenVZ）则取所有非虚拟网卡。
+///
 /// agent.toml 写了 nic_ifaces 时不走这里
 pub fn pick_ifaces(all: &[String], default_route: &[String], has_device: impl Fn(&str) -> bool, has_public: impl Fn(&str) -> bool) -> Vec<String> {
     let v: Vec<String> =
