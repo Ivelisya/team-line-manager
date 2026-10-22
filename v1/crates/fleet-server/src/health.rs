@@ -430,8 +430,10 @@ pub(crate) mod tests {
         m.router_exits = vec!["团队2 新办公室 · 节点20".into(), "办公室2 · 美国".into()];
         assert_eq!(text(&m).as_deref(), Some("今天到期，备用节点后天自动回收；软路由出口 团队2 新办公室 · 节点20、办公室2 · 美国 还指向它"));
         m.router_exits.clear();
-        m.subscription = Some(sub_with(-1, true));
+        m.subscription = Some(sub(-1));
         assert_eq!(text(&m).as_deref(), Some("已过期 1 天，备用节点明天自动回收"));
+        m.subscription = Some(sub_with(-1, true));
+        assert_eq!(text(&m), None, "自动续费的过期放宽 1 天");
         m.subscription = Some(sub_with(0, true));
         assert_eq!(text(&m), None);
         m.spare = false;

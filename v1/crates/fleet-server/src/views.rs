@@ -1645,8 +1645,10 @@ mod tests {
         // 即将到期按提前提醒天数（7）算、自动续费的不算；已过期另计
         let mut far = with(10, false);
         far.subscription.as_mut().unwrap().monthly_cents = 33;
-        let ov = overview_of(&[with(3, false), with(3, true), with(-1, true), with(7, false), far], &HashMap::new());
+        let ov = overview_of(&[with(3, false), with(3, true), with(-2, true), with(7, false), far], &HashMap::new());
         assert_eq!((ov["due_soon"].as_i64(), ov["overdue"].as_i64()), (Some(2), Some(1)));
+        let ov1 = overview_of(&[with(-1, true)], &HashMap::new());
+        assert_eq!(ov1["overdue"].as_i64(), Some(0), "自动续费的到期日次日还不算已过期");
         // 月费是各台 monthly_cents 之和
         assert_eq!(ov["monthly_cost"], json!([{"currency": "USD", "cents": 433}]));
     }

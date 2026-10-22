@@ -150,10 +150,11 @@ pub fn monthly_cents(price_cents: i32, cycle: &str) -> i64 {
 
 // ── 到期 ──────────────────────────────────────────────────────────────────
 
-/// 订阅的到期状态：overdue = 已过期；soon = 到期前 remind_days 天内（含今天）且不是自动续费；其余 ok。
+/// 订阅的到期状态：overdue = 已过期（自动续费的放宽 1 天：到期日的次日由每小时的维护任务顺延，不在这之前报一条「已过期」再恢复）；
+/// soon = 到期前 remind_days 天内（含今天）且不是自动续费；其余 ok。备用到期回收看的是到期日 + 1 之后，不按它。
 /// 续费告警（renewal_due：即将到期为警告、已过期为严重）、总览的「即将到期」、网页与 fleetctl 都按它
 pub fn due_state(due_days: i64, remind_days: i32, auto_renew: bool) -> &'static str {
-    if due_days < 0 {
+    if due_days < 0 && !(auto_renew && due_days == -1) {
         "overdue"
     } else if due_days <= i64::from(remind_days) && !auto_renew {
         "soon"
@@ -384,7 +385,7 @@ mod tests {
 
     #[test]
     fn due_state_follows_remind_days() {
-        assert_eq!(due_state(-1, 7, true), "overdue");
+        assert_eq!((due_state(-1, 7, true), due_state(-2, 7, true), due_state(-1, 7, false)), ("ok", "overdue", "overdue"), "自动续费的过期放宽 1 天");
         assert_eq!((due_state(0, 7, false), due_state(10, 10, false), due_state(11, 10, false)), ("soon", "soon", "ok"));
         assert_eq!(due_state(3, 7, true), "ok", "自动续费的到期前不算");
     }

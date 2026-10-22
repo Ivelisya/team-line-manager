@@ -44,7 +44,7 @@ export const cycleMonths = (c: string) => META.cycles.find((x) => x.key === c)?.
 /** 订阅里服务端算的几项（同 meta.rs 的 due_state / monthly_cents 与视图的 next_due / period_days），due_days 先算好 */
 export function subCalc(s: Subscription): Subscription {
   const n = cycleMonths(s.cycle);
-  s.due_state = s.due_days < 0 ? 'overdue' : s.due_days <= s.remind_days && !s.auto_renew ? 'soon' : 'ok';
+  s.due_state = s.due_days < 0 && !(s.auto_renew && s.due_days === -1) ? 'overdue' : s.due_days <= s.remind_days && !s.auto_renew ? 'soon' : 'ok';
   s.monthly_cents = Math.round((s.price_cents ?? 0) / n);
   s.next_due = addMonths(s.due_date, n);
   s.period_days = Math.round((Date.parse(s.due_date) - Date.parse(addMonths(s.due_date, -n))) / DAY);
