@@ -1,0 +1,13 @@
+#!/bin/sh /etc/rc.common
+# 实验室软路由的流量发生器（lab/router/lab-traffic.init → /etc/init.d/lab-traffic），说明见 /usr/share/lab-router/lab-traffic.sh。
+
+START=99
+STOP=10
+USE_PROCD=1
+
+start_service() {
+	procd_open_instance
+	procd_set_param command /bin/sh /usr/share/lab-router/lab-traffic.sh
+	procd_set_param respawn 3600 10 0
+	procd_close_instance
+}
