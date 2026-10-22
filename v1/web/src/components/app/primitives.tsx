@@ -42,7 +42,7 @@ export function HealthPill({ m }: { m: Pick<MachineView, 'health' | 'lifecycle' 
 /** 健康原因列表（带严重度圆点）：健康 pill 的悬停提示与抽屉“状态原因”共用 */
 export const ReasonList = ({ reasons, className }: { reasons: HealthReason[]; className: string }) => (
   <ul className={className}>
-    {reasons.map((r, i) => <li key={i}><span className="dot" data-tone={severityOf(r.severity).tone} />{r.text}</li>)}
+    {reasons.map((r, i) => <li key={i}><SeverityMark severity={r.severity} />{r.text}</li>)}
   </ul>
 );
 const reasonsTip = (reasons: HealthReason[]) => (reasons.length ? <ReasonList reasons={reasons} className="tip-list" /> : null);
@@ -63,7 +63,7 @@ export const SeverityDot = ({ severity }: { severity: string }) => {
 /** 告警级别图标（顶栏告警预览的列表）：严重同故障、警告同降级 */
 export const SeverityMark = ({ severity }: { severity: string }) => {
   const s = severityOf(severity);
-  return <span className="smark" data-tone={s.tone} role="img" aria-label={s.label} data-tip={s.label} />;
+  return <span className="smark" data-tone={s.tone} data-sev={s.tone === 'info' ? 'info' : undefined} role="img" aria-label={s.label} data-tip={s.label} />;
 };
 /** 到期读数：N 天后 / 今天 / 已过期 N 天，7 天内黄、过期红（卡片、表格、悬浮卡共用）。
  *  tail：没有“到期”标签的地方接上“到期”（3 天后到期 / 今天到期 / 已过期 3 天） */

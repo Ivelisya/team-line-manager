@@ -16,7 +16,7 @@
 .drawer-nav { flex: none; align-self: flex-start; display: flex; gap: var(--sp-2); }
 .reason-list { display: grid; gap: var(--sp-6); margin: 0; padding: 0; list-style: none; }
 .reason-list li { display: flex; align-items: flex-start; gap: var(--sp-8); font-size: var(--fs-body); }
-.reason-list .dot { margin-top: 7px; }
+.reason-list .smark { margin-top: 4px; }
 /* 抽屉「最近操作」：第一行动作 + 对象，右边谁 · 多久前（悬停看具体时间）；第二行命令 / 详情，等宽浅色单行省略（悬停看全文） */
 /* 时间线：圆点之间一条细竖线连到下一条（操作记录页、抽屉的最近操作 / 最近告警）——事件按时间往下走，而不是一格一格的列表。
    每行左右各伸出 --sp-8（可点的行悬停底色有地方铺），竖线从圆点下沿画到下一行圆点上沿，各留 3px */
