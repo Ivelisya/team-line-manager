@@ -2,7 +2,7 @@
 
 use crate::util::error_chain;
 use anyhow::Result;
-use fleet_proto::{ProbeKind, ProbeSample};
+use fleet_proto::{tags, ProbeKind, ProbeSample};
 use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
@@ -71,6 +71,15 @@ pub fn socks_client(port: u16) -> Result<reqwest::Client> {
     Ok(reqwest::Client::builder().proxy(reqwest::Proxy::all(format!("socks5h://{proxy}"))?).pool_max_idle_per_host(0).build()?)
 }
 
+/// 不走代理、从本机直连的客户端（不读环境变量里的代理）：出口探测失败时用它确认回显服务本身可达。
+/// 同样关掉连接池，每次核对都是一条新连接
+pub fn direct_client() -> Result<reqwest::Client> {
+    Ok(reqwest::Client::builder().no_proxy().pool_max_idle_per_host(0).build()?)
+}
+
+/// 直连回显服务的超时：线路机本来就直连中控上报，不必等出口探测那么久
+const ECHO_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// 回显正文最多读这么多字节：正常只有一个 IP，回显服务出错时可能回一整页，不整段读进内存
 const ECHO_BODY_MAX: usize = 1024;
 
@@ -124,6 +133,22 @@ pub async fn egress_probe(entry_id: Uuid, client: &reqwest::Client, echo_url: &s
         Err(why) => (false, Some(why)),
     };
     ProbeSample { entry_id, ts_ms, kind: ProbeKind::Egress, ok, latency_ms: ok.then(|| ms(t)), detail }
+}
+
+/// 出口探测；失败时再用 `direct`（`direct_client`）直连回显服务一次。直连也拿不到 IP，说明是回显服务本身
+/// （中控的 /echo：中控重启、部署时）不可达，不是这个入口的出口坏了：返回 None，这次不上报，只记 debug 日志
+pub async fn egress_probe_checked(entry_id: Uuid, client: &reqwest::Client, direct: &reqwest::Client, echo_url: &str, expect: IpAddr, timeout: Duration, ts_ms: i64) -> Option<ProbeSample> {
+    let s = egress_probe(entry_id, client, echo_url, expect, timeout, ts_ms).await;
+    if s.ok {
+        return Some(s);
+    }
+    let why = match http_get(direct, echo_url, ECHO_CHECK_TIMEOUT).await {
+        Ok(body) if body.trim().parse::<IpAddr>().is_ok() => return Some(s),
+        Ok(_) => "回显内容不是 IP".to_string(),
+        Err(why) => why,
+    };
+    tracing::debug!(entry = %tags::inbound(entry_id), "出口探测失败（{}），但直连回显服务也不通（{why}），这次不上报", s.detail.as_deref().unwrap_or(""));
+    None
 }
 
 #[cfg(test)]
@@ -198,6 +223,46 @@ mod tests {
         let s = egress_probe(Uuid::nil(), &socks_client(addr.port()).unwrap(), "http://echo.test/ip", "203.0.113.9".parse().unwrap(), Duration::from_secs(3), 1).await;
         assert!(!s.ok && s.latency_ms.is_none());
         assert_eq!(s.detail.as_deref(), Some("代理握手失败"), "{s:?}");
+    }
+
+    /// 测试用回显服务：每个连接回同一段正文（HTTP 200）
+    async fn fake_echo(body: &'static str) -> SocketAddr {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = l.accept().await {
+                let mut buf = vec![0u8; 1024];
+                let _ = s.read(&mut buf).await;
+                let resp = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                let _ = s.write_all(resp.as_bytes()).await;
+            }
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn egress_failure_counts_only_when_echo_reachable_directly() {
+        let direct = direct_client().unwrap();
+        let expect: IpAddr = "203.0.113.9".parse().unwrap();
+        let check = |url: String| {
+            let direct = direct.clone();
+            async move {
+                // 代理握手失败：经这个入口出不去
+                let (addr, _h) = fake_socks(false, "").await;
+                egress_probe_checked(Uuid::nil(), &socks_client(addr.port()).unwrap(), &direct, &url, expect, Duration::from_secs(3), 1).await
+            }
+        };
+        // 直连回显服务拿得到 IP：失败照常上报
+        let s = check(format!("http://{}/ip", fake_echo("198.51.100.7").await)).await.expect("要上报");
+        assert_eq!((s.ok, s.detail.as_deref()), (false, Some("代理握手失败")));
+        // 回显服务本身连不上（中控重启中）、或回的不是 IP（前面的反代回了错误页）：不上报
+        let closed = TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap();
+        assert!(check(format!("http://{closed}/ip")).await.is_none());
+        assert!(check(format!("http://{}/ip", fake_echo("<html>502</html>").await)).await.is_none());
+        // 成功不必核对（echo.test 直连解析不了，核对了就会被当成不上报）
+        let (addr, _h) = fake_socks(true, "203.0.113.9").await;
+        let s = egress_probe_checked(Uuid::nil(), &socks_client(addr.port()).unwrap(), &direct, "http://echo.test/ip", expect, Duration::from_secs(3), 1).await;
+        assert!(s.is_some_and(|s| s.ok));
     }
 
     #[tokio::test]

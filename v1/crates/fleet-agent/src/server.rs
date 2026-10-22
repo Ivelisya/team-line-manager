@@ -224,17 +224,17 @@ impl ServerClient {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
     use std::io::Read;
     use std::sync::{Arc, Mutex};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     /// 请求记录：(是否带 content-encoding: gzip, 解压后的正文)
-    type Seen = Arc<Mutex<Vec<(bool, Vec<u8>)>>>;
+    pub type Seen = Arc<Mutex<Vec<(bool, Vec<u8>)>>>;
 
-    /// 最小 HTTP 服务端：每个连接一个请求。
-    async fn mock_server() -> (String, Seen) {
+    /// 最小 HTTP 服务端：每个连接一个请求，一律回 200 和 `{"accepted_seq":9,"interval_s":10}`。
+    pub async fn mock_server() -> (String, Seen) {
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = l.local_addr().unwrap();
         let seen: Seen = Default::default();
@@ -280,7 +280,7 @@ mod tests {
     }
 
     /// 令牌文件放在临时目录里；目录一并返回，测试结束时删掉
-    fn client_for(base: &str, tag: &str) -> (ServerClient, PathBuf) {
+    pub fn client_for(base: &str, tag: &str) -> (ServerClient, PathBuf) {
         let d = std::env::temp_dir().join(format!("fa-srv-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let tok = d.join("token");

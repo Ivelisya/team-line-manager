@@ -188,8 +188,9 @@ fn entry_sig(e: &DesiredEntry) -> String {
 /// 入口 → (探测端口, 经该端口出去的客户端)
 type ProbeClients = HashMap<uuid::Uuid, (u16, reqwest::Client)>;
 
-/// 探测调度：TCP 每 probe_interval_s（默认 30 s），出口每 2 倍间隔（默认 60 s）
-pub async fn probe_task(sh: Arc<Shared>, mut sd: watch::Receiver<bool>) {
+/// 探测调度：TCP 每 probe_interval_s（默认 30 s），出口每 2 倍间隔（默认 60 s）。
+/// `direct`：不走代理的客户端，出口探测失败时直连回显服务核对（`probe::egress_probe_checked`）
+pub async fn probe_task(sh: Arc<Shared>, direct: reqwest::Client, mut sd: watch::Receiver<bool>) {
     let mut sched: HashMap<uuid::Uuid, Sched> = HashMap::new();
     let sem = Arc::new(Semaphore::new(4)); // 出口探测并发上限
     let tcp_sem = Arc::new(Semaphore::new(8)); // TCP 探测并发上限（单独一个，不排在 12 s 的出口探测后面）
@@ -266,12 +267,13 @@ pub async fn probe_task(sh: Arc<Shared>, mut sd: watch::Receiver<bool>) {
                         continue;
                     }
                     let busy = BusyGuard(s.egress_busy.clone());
-                    let (sh2, sem2, id, url, ip, client) = (sh.clone(), sem.clone(), e.id, d.relay.echo_url.clone(), e.expect_egress_ip, client.clone());
+                    let (sh2, sem2, id, url, ip, client, direct) = (sh.clone(), sem.clone(), e.id, d.relay.echo_url.clone(), e.expect_egress_ip, client.clone(), direct.clone());
                     let last_ok = s.egress_ok.clone();
                     tokio::spawn(async move {
                         let _busy = busy;
                         let Ok(_permit) = sem2.acquire().await else { return };
-                        let r = probe::egress_probe(id, &client, &url, ip, Duration::from_secs(12), now_ms()).await;
+                        // 回显服务本身不通（中控重启、部署）时不出样本：既不算这个入口出口失败，也不动成功/失败的切换日志
+                        let Some(r) = probe::egress_probe_checked(id, &client, &direct, &url, ip, Duration::from_secs(12), now_ms()).await else { return };
                         let detail = r.detail.as_deref().unwrap_or("");
                         // 只在成功/失败切换时 warn / info，持续失败降为 debug
                         if last_ok.swap(r.ok, Ordering::Relaxed) == r.ok {

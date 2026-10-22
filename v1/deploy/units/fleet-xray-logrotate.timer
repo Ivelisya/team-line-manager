@@ -1,0 +1,10 @@
+[Unit]
+Description=每小时检查一次 fleet-xray 访问日志（超过 maxsize 就提前轮转）
+
+[Timer]
+# 01:00–23:00 每个整点：系统的 logrotate.timer 每天 00:00 后一小时内跑一次（同样读这份配置，按天轮转、超过 maxsize 都由它做），
+# 错开这一小时，免得两个 logrotate 抢状态文件的锁
+OnCalendar=*-*-* 01..23:00:00
+
+[Install]
+WantedBy=timers.target

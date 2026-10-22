@@ -157,6 +157,13 @@ impl SeqState {
         self.seq = n;
         Ok(n)
     }
+    /// `next` 预留号段失败（state.json 写不进去，磁盘满等）时用：序号照样在内存里前进，报告从内存直接发出，
+    /// 下次分配再试着预留。这段序号没落盘，进程在此期间重启可能复用：中控把复用了序号的报告当重复丢掉，
+    /// 它回的已确认序号会把本地推过去（`advance_to`）
+    pub fn next_unreserved(&mut self) -> u64 {
+        self.seq += 1;
+        self.seq
+    }
 }
 
 #[derive(Serialize, Deserialize)]

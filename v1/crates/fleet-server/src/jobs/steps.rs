@@ -418,11 +418,15 @@ async fn agent(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         ("BIN_CHANGED", if pushed { "1" } else { "0" }),
     ]) + &scripts::agent();
     if m.kind == "relay" {
+        script += &scripts::relay_xray_unit();
         script += &scripts::relay_logrotate();
     }
     let out = t.run(&script, Duration::from_secs(120)).await?;
     if !out.ok() || out.kv("agent") != Some("active") {
         return Err(remote(format!("agent 没有起来：{} {}", out.stdout.trim(), out.stderr.trim())));
+    }
+    if out.kv("xray_unit") == Some("error") {
+        c.warn(format!("fleet-xray 单元没更新上：{}", out.stderr.trim())).await;
     }
     if out.kv("logrotate") == Some("error") {
         c.warn(format!("访问日志轮转配置没装上：{}", out.stderr.trim())).await;

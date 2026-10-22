@@ -117,13 +117,14 @@ export function NodeDrawer() {
   );
 }
 
-/** agent 自报的异常（自 agent 本次启动起累计）：有丢数据、积压或应用失败才显示。
+/** agent 自报的异常（自 agent 本次启动起累计）：有丢数据、积压、写不进磁盘或应用失败才显示。
  *  访问日志解析不了 / 被丢弃的行也列在这里：Xray 日志格式一变，访问监控会静默归零，这是唯一能看到的地方。
  *  线路机的应用失败已在「应用状态」里显示，相同的不重复 */
 function AgentHealthNote({ m }: { m: MachineView }) {
   const h = m.agent?.health;
   if (!h) return null;
   const items = [
+    h.disk_write_error && `报告写不进磁盘、正从内存直接上报（${h.disk_write_error}）`,
     h.queue_len > 3 && `${h.queue_len} 份报告积压待发`,
     h.queue_dropped > 0 && `${h.queue_dropped} 份报告因离线队列超限被丢弃`,
     h.queue_dead > 0 && `${h.queue_dead} 份报告被中控拒收`,

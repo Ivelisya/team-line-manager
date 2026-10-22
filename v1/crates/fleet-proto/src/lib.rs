@@ -47,7 +47,7 @@ pub struct Report {
     pub agent_health: Option<AgentHealth>,
 }
 
-/// Agent 自身的健康数据：离线队列、访问日志尾读、最近一次应用失败。服务端存进 agent_state.info。
+/// Agent 自身的健康数据：离线队列、访问日志尾读、最近一次应用失败、写盘失败。服务端存进 agent_state.info。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct AgentHealth {
     /// 离线队列里待发送的报告数
@@ -73,6 +73,9 @@ pub struct AgentHealth {
     /// 最近一次应用失败的错误（成功后清空）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_apply_error: Option<String>,
+    /// 这份报告写不进磁盘队列（磁盘满等）、是直接从内存发来的：写盘的错误。写得进时不带；旧 agent 不带，旧中控忽略
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_write_error: Option<String>,
 }
 
 /// 开机后上报一次、变化时再报。
@@ -313,6 +316,16 @@ mod tests {
         let v = serde_json::to_value(&e2).unwrap();
         assert_eq!(v["policy"]["mode"], "allowlist");
         assert_eq!(serde_json::from_value::<DesiredEntry>(v).unwrap(), e2);
+    }
+
+    #[test]
+    fn agent_health_disk_error_is_optional() {
+        // 旧 agent 不带 disk_write_error：照样解析；没有错误时也不序列化出这个字段（旧中控存进库的形状不变）
+        let h: AgentHealth = serde_json::from_value(serde_json::json!({"queue_len": 1, "queue_dropped": 0, "queue_dead": 0})).unwrap();
+        assert_eq!(h.disk_write_error, None);
+        assert!(serde_json::to_value(&h).unwrap().get("disk_write_error").is_none());
+        let h = AgentHealth { disk_write_error: Some("No space left on device (os error 28)".into()), ..h };
+        assert_eq!(serde_json::from_value::<AgentHealth>(serde_json::to_value(&h).unwrap()).unwrap(), h);
     }
 
     #[test]
