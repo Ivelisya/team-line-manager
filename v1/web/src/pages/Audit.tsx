@@ -26,6 +26,19 @@ function catOf(action: string): Exclude<Cat, 'all'> {
   return 'config';
 }
 const EMPTY: AuditEntry[] = [];
+const WEEK = '日一二三四五六';
+const dayKey = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+/** 按本地日期分段（记录本来就是新→旧），段标题：今天 / 昨天 / 10月20日 周一 */
+function byDay(rows: AuditEntry[]) {
+  const now = new Date(); const today = dayKey(now); const yday = dayKey(new Date(now.getTime() - 86400_000));
+  const out: { key: string; label: string; items: AuditEntry[] }[] = [];
+  for (const a of rows) {
+    const d = new Date(a.ts); const k = dayKey(d);
+    if (out[out.length - 1]?.key !== k) out.push({ key: k, label: k === today ? '今天' : k === yday ? '昨天' : `${d.getMonth() + 1}月${d.getDate()}日 周${WEEK[d.getDay()]}`, items: [] });
+    out[out.length - 1].items.push(a);
+  }
+  return out;
+}
 
 export function AuditPage() {
   const q = useAuditLog();
@@ -50,7 +63,7 @@ export function AuditPage() {
       <Panel title="记录" count={q.data ? (filtered ? `${rows.length} / 已加载 ${all.length}` : `已加载 ${all.length}`) : undefined}
         sub={filtered ? '分类与搜索只在已加载的记录里筛' : '新的在前；涉及机器的一行点开看这台机器'}>
         {q.isLoading ? <SkeletonRows rows={6} />
-          : rows.length ? <AuditList items={rows} onOpen={open} />
+          : rows.length ? byDay(rows).map((g) => <React.Fragment key={g.key}><div className="audit-day">{g.label}</div><AuditList items={g.items} onOpen={open} /></React.Fragment>)
           : !q.isError && <Empty icon={filtered ? <SearchX size={22} /> : <History size={22} />} text={filtered ? '已加载的记录里没有符合条件的' : '还没有操作记录'} hint={filtered && q.hasNextPage ? '可以加载更早的记录再找' : undefined} />}
         {q.hasNextPage && (
           <div className="audit-more"><Button variant="quiet" size="md" loading={q.isFetchingNextPage} onClick={() => void q.fetchNextPage()}>加载更早的记录</Button></div>
