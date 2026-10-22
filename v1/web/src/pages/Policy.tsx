@@ -118,7 +118,7 @@ export function PolicyPage() {
       <PreviewDialog open={preview} onOpenChange={setPreview} />
       <ConfirmDialog open={pending != null} onOpenChange={(o) => { if (!o) setPending(null); }} danger confirmLabel="放弃修改并切换" title="放弃未保存的修改？"
         description={`「${target?.name ?? '当前范围'}」有还没保存的修改，切换到别的范围后会丢失。`}
-        onConfirm={() => { if (pending) { dirtyRef.current = false; apply(pending); } }} />
+        onConfirm={() => { if (pending) { if (sel) unsaved.delete(`${sel.scope}:${sel.id}`); dirtyRef.current = false; apply(pending); } }} />
       <ConfirmDialog open={askDiscard} onOpenChange={setAskDiscard} danger confirmLabel="丢弃" title={`丢弃全部 ${draftCount} 份草稿？`}
         description="这些还没发布的改动会丢失。已经生效的规则不受影响。"
         onConfirm={async () => {
@@ -168,20 +168,33 @@ const bodyOf = (p: ScopePolicy): PolicyBody => p.draft ?? { mode: p.mode, domain
 const curOf = (p: ScopePolicy): PolicyBody => ({ mode: p.mode, domains: p.domains, note: p.note });
 const sameBody = (a: PolicyBody, b: PolicyBody) => a.mode === b.mode && a.note === b.note && a.domains.length === b.domains.length && a.domains.every((d, i) => d === b.domains[i]);
 
+/** 编辑器里还没保存成草稿的改动，按范围留在模块里：离开访问规则页（或切到别的范围后又切回来）再进来还在；保存或改回原样即清掉。
+ *  只在内存里：刷新、关标签页前由 beforeunload 提醒 */
+const unsaved = new Map<string, { mode: PolicyMode; text: string; note: string; synced: { revision: number; body: PolicyBody } }>();
+
 function Editor({ scope, name, sp, team, node, onDirty }: { scope: 'team' | 'node'; name: string; sp: ScopePolicy; team: PolicyTeam; node: PolicyNode | null; onDirty: (d: boolean) => void }) {
   const save = useSavePolicy();
   // 表单初值 = 草稿（没有草稿则生效值）；synced 记录它对应的服务端 revision 与内容，用来判断有没有本地改动、服务端有没有被别人改过
   const init = bodyOf(sp);
-  const [mode, setMode] = React.useState<PolicyMode>(init.mode);
-  const [text, setText] = React.useState(domainsToText(init.domains));
-  const [note, setNote] = React.useState(init.note);
-  const [synced, setSynced] = React.useState({ revision: sp.revision, body: init });
+  const key = `${scope}:${sp.id}`;
+  const [buf] = React.useState(() => unsaved.get(key));
+  const [mode, setMode] = React.useState<PolicyMode>(buf?.mode ?? init.mode);
+  const [text, setText] = React.useState(buf?.text ?? domainsToText(init.domains));
+  const [note, setNote] = React.useState(buf?.note ?? init.note);
+  const [synced, setSynced] = React.useState(buf?.synced ?? { revision: sp.revision, body: init });
 
   const parsed = React.useMemo(() => parseDomainText(text), [text]);
   const form: PolicyBody = { mode, domains: parsed.domains, note: note.trim() };
   const dirty = !sameBody(form, synced.body);
   const stale = sp.revision !== synced.revision;
   React.useEffect(() => { onDirty(dirty); return () => onDirty(false); }, [dirty, onDirty]);
+  React.useEffect(() => { if (dirty) unsaved.set(key, { mode, text, note, synced }); else unsaved.delete(key); }, [key, dirty, mode, text, note, synced]);
+  React.useEffect(() => {
+    if (!dirty) return;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [dirty]);
 
   const load = (p: ScopePolicy) => {
     const b = bodyOf(p);

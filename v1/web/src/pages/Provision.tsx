@@ -23,6 +23,10 @@ const NONE: never[] = [];
 const NONE_RELAYS: { id: string; name: string }[] = [];
 const NONE_HOSTS: HostChoice[] = [];
 
+/** 离开上架页再回来不丢：表格（含登录密码，只在这个页面的内存里，刷新即无）、模式与检查结果留在模块里；上架成功后清掉 */
+interface Draft { mode: 'single' | 'batch'; rows: Row[]; results: ProvisionCheckItem[] | null; localErrs: string[][] | null; checked: string[]; sig: string }
+let draft: Draft | null = null;
+
 export function ProvisionPage() {
   const teams = useTeams().data ?? NONE;
   const providers = useProviders().data ?? NONE;
@@ -30,13 +34,13 @@ export function ProvisionPage() {
   // 只能挂在已上线的线路机上。只取 id/名称，引用在内容不变时保持稳定，ctx 不随每次轮询变化（GridCell 的 memo 才有效）
   const relays = useRelayChoices().data ?? NONE_RELAYS;
 
-  const [mode, setMode] = React.useState<'single' | 'batch'>('single');
-  const [rows, setRows] = React.useState<Row[]>([newRow()]);
-  const [results, setResults] = React.useState<ProvisionCheckItem[] | null>(null);
-  const [localErrs, setLocalErrs] = React.useState<string[][] | null>(null);
+  const [mode, setMode] = React.useState<'single' | 'batch'>(() => draft?.mode ?? 'single');
+  const [rows, setRows] = React.useState<Row[]>(() => draft?.rows ?? [newRow()]);
+  const [results, setResults] = React.useState<ProvisionCheckItem[] | null>(() => draft?.results ?? null);
+  const [localErrs, setLocalErrs] = React.useState<string[][] | null>(() => draft?.localErrs ?? null);
   // 检查时参与的行（id，顺序同 results / localErrs）：结果按行 id 对回表格，删行、插行后不错位到别的行
-  const [checked, setChecked] = React.useState<string[]>([]);
-  const [sig, setSig] = React.useState('');
+  const [checked, setChecked] = React.useState<string[]>(() => draft?.checked ?? []);
+  const [sig, setSig] = React.useState(() => draft?.sig ?? '');
   const [confirm, setConfirm] = React.useState(false);
   const [created, setCreated] = React.useState<{ machine_id: string; job_id: string; name: string }[] | null>(null);
   const check = useProvisionCheck(); const provision = useProvision();
@@ -56,6 +60,17 @@ export function ProvisionPage() {
     setRows([newRow({ kind: 'vps', add_ip: true, host_id: h.id, team_id: h.team_id, relay_id: h.relay_id })]);
     setSp((p) => { const n = new URLSearchParams(p); n.delete('host'); return n; }, { replace: true });
   }, [hostParam, hosts, setSp]);
+
+  // 草稿随改随存进模块；上架成功（created）后清掉，再进来是空表
+  React.useEffect(() => { draft = created ? null : { mode, rows, results, localErrs, checked, sig }; }, [created, mode, rows, results, localErrs, checked, sig]);
+  // 表格里填了东西时，关标签页、刷新、在地址栏离开前浏览器先问一句（站内换页不丢，见上面的 draft）
+  const hasContent = !created && rows.some((r) => !isBlank(r));
+  React.useEffect(() => {
+    if (!hasContent) return;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [hasContent]);
 
   // 批量里没动过的空行（切到批量补的、「加 5 行」多出来的）不参与检查和上架；全是空行时留第一行，让它报「请填写 IP」
   const active = React.useMemo(() => {
