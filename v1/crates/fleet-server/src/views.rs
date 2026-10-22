@@ -359,7 +359,8 @@ pub struct RelayInfo {
     pub apply_error: Option<String>,
     pub port_min: i32,
     pub port_max: i32,
-    /// 中控 → 线路机最近 3 轮（5 分钟内，reach.rs）都连不上：这 3 次的失败原因（去重，带端口）；否则为 None。
+    /// 中控 → 线路机（reach.rs）最近 3 轮（5 分钟内）都连不上，或某个在用入口端口最近 3 次（30 分钟、至少 3 遍轮换内）都连不上：
+    /// 失败原因（去重，带端口；单个端口的取它最近一次）；否则为 None。
     /// 健康判定据此报 relay_unreachable；随完整加载更新（最多旧 `FULL_EVERY`），不对外输出
     #[serde(skip)]
     pub unreachable: Option<String>,
@@ -1102,10 +1103,15 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 tp.price_cents t_price, tp.currency t_currency, tp.cycle::text t_cycle, tp.billing_tz t_tz, tp.traffic_gb t_traffic, tp.traffic_reset t_reset, tp.remind_days t_remind, local_date(tp.billing_tz) t_today,
                 {A_COLS}, r.public_host r_host, r.generation r_gen, r.applied_generation r_applied, r.applied_at r_applied_at, r.generation_at r_gen_at,
                 r.apply_error r_err, r.port_min r_pmin, r.port_max r_pmax, m.tune_profile, m.tuned_at,
-                (select string_agg(distinct x.detail, '；' order by x.detail) from (
-                   select coalesce(rr.detail, '-') detail, rr.ok from relay_reach rr
-                   where rr.relay_id = m.id and rr.ts > now() - interval '5 minutes' order by rr.ts desc limit 3) x
-                 having count(*) = 3 and not bool_or(x.ok)) r_unreach
+                (with x as (select rr.port, rr.ok, coalesce(rr.detail, '-') detail, rr.ts > now() - interval '5 minutes' fresh,
+                                   row_number() over (order by rr.ts desc) n, row_number() over (partition by rr.port order by rr.ts desc) np
+                            from relay_reach rr where rr.relay_id = m.id and rr.ts > now() - greatest(interval '30 minutes',
+                              interval '90 seconds' * (select count(*) from entry e where e.relay_id = m.id and e.lifecycle = 'active'))),
+                      whole as (select count(*) = 3 and not bool_or(ok) down from x where n <= 3 and fresh),
+                      bad as (select port from x where np <= 3 and port in (select e.port from entry e where e.relay_id = m.id and e.lifecycle = 'active')
+                              group by port having count(*) = 3 and not bool_or(ok))
+                 select string_agg(distinct detail, '；' order by detail) from x
+                 where (n <= 3 and fresh and (select down from whole)) or (np = 1 and port in (select port from bad))) r_unreach
          from machine m
          left join team t on t.id = m.team_id
          left join machine hm on hm.id = m.host_id

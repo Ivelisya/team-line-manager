@@ -662,6 +662,14 @@ async fn relay_reach_rounds_feed_relay_beats() {
     let m = t.get(&format!("/api/v1/machines/{down}")).await;
     let text = m["health"]["reasons"].as_array().unwrap().iter().find(|r| r["key"] == "relay_unreachable").unwrap()["text"].clone();
     assert_eq!(text, format!("中控连续 3 次连不上客户入口（端口 {closed}：连接被拒绝）"));
+    // 再轮换两遍：线路机1 坏的那个口凑齐 3 次失败（中间隔着好口），按端口报，摘要只写这个口
+    for turn in 3..7 {
+        assert_eq!(round(&t.st.db, &[&ctl_ok], turn).await.unwrap(), 2);
+    }
+    let m = t.get(&format!("/api/v1/machines/{up}")).await;
+    let text = m["health"]["reasons"].as_array().unwrap().iter().find(|r| r["key"] == "relay_unreachable").map(|r| r["text"].clone());
+    assert_eq!(text, Some(json!(format!("中控连续 3 次连不上客户入口（端口 {closed2}：连接被拒绝）"))), "{m}");
+    assert_eq!(t.count("select count(*) from relay_reach where port is null").await, 0, "每行记下端口");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

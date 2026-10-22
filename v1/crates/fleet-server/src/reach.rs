@@ -3,7 +3,8 @@
 //! 每 30 秒对每台在用、有在用入口的线路机做一次 TCP 建连：目标是客户连的地址（relay.public_host）+ 它的在用入口端口，
 //! 每轮换下一个（N 条入口 N 轮连一遍）——线路机在不在线、客户连的每个口连不连得上（防火墙、供应商封口、单个入站没起来）。
 //! 只建连，不做 REALITY 握手。只记通不通，不记延迟：中控在德国，到美国线路机的往返时间不代表客户体验。
-//! 同一台线路机最近 3 轮都连不上，健康判定报 relay_unreachable（views 的 `RelayInfo::unreachable`）。
+//! 同一台线路机最近 3 轮都连不上（整台不通），或同一个端口最近 3 次都连不上（单个口坏了），健康判定报 relay_unreachable
+//! （views 的 `RelayInfo::unreachable`）。
 //! 不连 SSH 口：每 30 秒一次未认证就断开的连接会刷 sshd 日志，线路机上若有 fail2ban 还可能把中控封掉。
 //! Xray 的 REALITY 入站对只建连、不发数据的连接不记访问日志。
 //!
@@ -66,11 +67,14 @@ pub async fn round(db: &sqlx::PgPool, controls: &[&str], turn: usize) -> anyhow:
     }
     // 失败原因带上端口：轮流连的，告警摘要里要看得出是哪个口
     let details: Vec<Option<String>> = res.iter().zip(&ports).map(|(r, port)| r.as_ref().err().map(|e| format!("端口 {port}：{e}"))).collect();
-    sqlx::query("insert into relay_reach (relay_id, ts, ok, detail) select u.id, $2, u.ok, u.detail from unnest($1::uuid[], $3::bool[], $4::text[]) u(id, ok, detail)")
+    sqlx::query(
+        "insert into relay_reach (relay_id, ts, ok, detail, port) select u.id, $2, u.ok, u.detail, u.port from unnest($1::uuid[], $3::bool[], $4::text[], $5::int[]) u(id, ok, detail, port)",
+    )
         .bind(targets.iter().map(|t| t.0).collect::<Vec<_>>())
         .bind(ts)
         .bind(&oks)
         .bind(&details)
+        .bind(ports.iter().map(|&p| i32::from(p)).collect::<Vec<_>>())
         .execute(db)
         .await?;
     Ok(targets.len())
