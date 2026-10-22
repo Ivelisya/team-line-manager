@@ -56,7 +56,7 @@
 .pol-side + .pol-side { border-left: 1px solid var(--line); }
 .pol-side-head { display: flex; align-items: center; gap: var(--sp-8); flex-wrap: wrap; }
 .pol-chips { display: flex; flex-wrap: wrap; gap: var(--sp-4); max-height: 132px; overflow: auto; }
-.pol-tag { display: inline-flex; align-items: center; gap: var(--sp-4); max-width: 100%; padding: 0 var(--sp-8); height: 22px; border-radius: var(--r-pill); background: var(--neutral-bg); color: var(--fg); font: var(--fs-label) / 22px var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pol-tag { display: inline-flex; align-items: center; gap: var(--sp-4); max-width: 100%; padding: 0 var(--sp-8); height: var(--h-tag); border-radius: var(--r-pill); background: var(--neutral-bg); color: var(--fg); font: var(--fs-label) / 22px var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pol-tag small { font: var(--fw-medium) var(--fs-micro) / 22px var(--font-sans); color: var(--fg-2); }
 .pol-tag[data-mark="add"] { background: var(--ok-bg); color: var(--ok-text); }
 .pol-tag[data-mark="del"] { background: var(--bad-bg); color: var(--bad-text); text-decoration: line-through; }

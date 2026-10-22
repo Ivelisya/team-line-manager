@@ -81,9 +81,9 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 .cluster-title { display: flex; align-items: center; gap: 7px; margin: 0; font: 700 var(--fs-emph) / 1.2 var(--font-sans); color: var(--fg); }
 .cluster-title .lucide { width: 16px; height: 16px; stroke-width: 2; }
 .cpill {
-  --pc: var(--ok-text); display: inline-flex; align-items: center; gap: var(--sp-6); flex: none; height: 22px; box-sizing: border-box; padding: 0 9px;
+  --pc: var(--ok-text); display: inline-flex; align-items: center; gap: var(--sp-6); flex: none; height: var(--h-tag); box-sizing: border-box; padding: 0 9px;
   border: 1px solid color-mix(in srgb, var(--pc) 30%, transparent); border-radius: var(--r-pill); background: color-mix(in srgb, var(--pc) 13%, transparent);
-  font: 650 11px / 1 var(--font-sans); color: var(--pc); white-space: nowrap;
+  font: 650 var(--fs-micro) / 1 var(--font-sans); color: var(--pc); white-space: nowrap;
 }
 .cpill[data-tone="warn"] { --pc: var(--warn-text); }
 .cpill[data-tone="bad"] { --pc: var(--bad-text); }
@@ -94,12 +94,12 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 .cluster-big { display: inline-flex; align-items: baseline; gap: var(--sp-6); min-width: 0; white-space: nowrap; }
 .cluster-big > .num { font: 800 26px / 1 var(--font-num); letter-spacing: -0.03em; color: var(--fg); }
 /* 单位、读数的名称、在线 / 总计台数都是要读的信息：--fg-2（--fg-3 只给占位、缺测这类不承载信息的字，tokens.css） */
-.cluster-big small { font-size: 11px; font-weight: var(--fw-medium); color: var(--fg-2); }
+.cluster-big small { font-size: var(--fs-micro); font-weight: var(--fw-medium); color: var(--fg-2); }
 .cluster-kv { display: grid; justify-items: end; gap: 1px; }
 .cluster-kv small { font-size: var(--fs-micro); line-height: 1.2; color: var(--fg-2); }
 .cluster-kv b { font: 700 var(--fs-label) / 1.2 var(--font-sans); color: var(--fg); }
 .cluster-kv b[data-bad] { color: var(--bad-text); }
-.cluster-foot { display: flex; justify-content: space-between; gap: var(--sp-8); font-size: 11px; line-height: 16px; color: var(--fg-2); }
+.cluster-foot { display: flex; justify-content: space-between; gap: var(--sp-8); font-size: var(--fs-micro); line-height: var(--lh-micro); color: var(--fg-2); }
 .cluster-foot b { font-weight: var(--fw-semibold); color: var(--fg); }
 .cluster-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-8); min-width: 0; }
 @container (max-width: 340px) { .cluster-charts { grid-template-columns: minmax(0, 1fr); } }
@@ -110,7 +110,7 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 .cchart-head > span { display: inline-flex; align-items: center; gap: var(--sp-4); }
 .cchart-head .lucide { width: 13px; height: 13px; stroke-width: 2.2; color: var(--cc); }
 .cchart-head b { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: var(--fs-label); color: var(--cc); }
-.cchart-head b .unit { color: inherit; opacity: 0.8; font-size: 11px; }
+.cchart-head b .unit { color: inherit; opacity: 0.8; font-size: var(--fs-micro); }
 /* 浅色底上橙色的上行读数只有约 3:1：文字压暗一些（≥ 4.5:1），图标、折线仍用原色；深色主题不变 */
 [data-theme="light"] .cchart-head b { color: color-mix(in oklab, var(--cc) 72%, #000); }
 
@@ -133,7 +133,7 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 .spark-time { grid-column: 2; display: flex; justify-content: space-between; margin-top: var(--sp-4); font: var(--fs-micro) / 12px var(--font-num); color: var(--fg-3); }
 
 /* 置灰的分段控件（卡片密度在表格 / 环形视图下）：照常占位，工具栏不跳 */
-.seg-item[data-disabled] { opacity: 0.45; cursor: default; }
+.seg-item[data-disabled] { opacity: var(--o-disabled); cursor: default; }
 
 /* ---------- 分组：整行分段控件 + 仅看异常 ---------- */
 .hgroups { display: flex; align-items: center; gap: var(--sp-10); min-width: 0; }
@@ -173,7 +173,7 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 .cmeter-label { display: inline-flex; align-items: center; gap: 5px; font: var(--fw-semibold) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2); white-space: nowrap; }
 .cmeter-label .lucide { width: 13px; height: 13px; stroke-width: 2; color: var(--mc); }
 .cmeter-value { font: var(--fw-semibold) var(--fs-body) / var(--lh-body) var(--font-num); font-variant-numeric: var(--num-variant); color: var(--fg); white-space: nowrap; }
-.cmeter-value .unit { margin-left: 1px; font-size: 11px; color: var(--fg-3); }
+.cmeter-value .unit { margin-left: 1px; font-size: var(--fs-micro); color: var(--fg-3); }
 .cmeter[data-tone="warn"] .cmeter-value { color: var(--warn-text); }
 .cmeter[data-tone="bad"] .cmeter-value { color: var(--bad-text); }
 .cmeter.is-empty .cmeter-value, .cmeter.is-empty .cmeter-sub { color: var(--fg-3); }
@@ -203,9 +203,9 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 /* 块级、行高撑满：inline-flex 的文字落在匿名项里，text-overflow 不生效，放不下时字被切成半个 */
 .tag {
   --tag-bg: var(--tag-gray-bg); --tag-fg: var(--tag-gray-fg);
-  display: inline-block; flex: 0 1 auto; min-width: 0; max-width: 10rem; height: 22px; box-sizing: border-box; padding: 0 var(--sp-8);
+  display: inline-block; flex: 0 1 auto; min-width: 0; max-width: 10rem; height: var(--h-tag); box-sizing: border-box; padding: 0 var(--sp-8);
   border-radius: 7px; background: var(--tag-bg); color: var(--tag-fg);
-  font: var(--fw-semibold) var(--fs-micro) / 22px var(--font-sans); letter-spacing: 0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font: var(--fw-semibold) var(--fs-micro) / var(--h-tag) var(--font-sans); letter-spacing: 0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .tag[data-c="blue"] { --tag-bg: var(--tag-blue-bg); --tag-fg: var(--tag-blue-fg); }
 .tag[data-c="orange"] { --tag-bg: var(--tag-orange-bg); --tag-fg: var(--tag-orange-fg); }
@@ -236,6 +236,6 @@ button.tag { border: 0; cursor: pointer; transition: background-color var(--dur-
 .cal-day.is-off { color: var(--fg-3); }
 .cal-day.is-today { box-shadow: inset 0 0 0 1px var(--line-strong); }
 .cal-day[aria-selected="true"] { background: var(--accent-solid); color: var(--on-accent); }
-.cal-day:disabled { color: var(--fg-3); opacity: 0.45; cursor: default; }
+.cal-day:disabled { color: var(--fg-3); opacity: var(--o-disabled); cursor: default; }
 .cal-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); margin-top: var(--sp-8); padding-top: var(--sp-8); border-top: 1px solid var(--line); }
 .cal-cur { font-size: var(--fs-label); color: var(--fg-2); }

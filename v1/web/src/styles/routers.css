@@ -88,8 +88,8 @@
 .rt-topo-group { display: grid; grid-template-columns: minmax(0, 1fr) 28px minmax(96px, auto) 28px minmax(0, 1fr); grid-auto-rows: 28px; align-items: center; }
 .rt-topo-group[data-none] { grid-auto-rows: 28px; }
 .rt-topo-pill {
-  display: inline-flex; align-items: center; gap: var(--sp-6); min-width: 0; max-width: 100%; height: 24px; box-sizing: border-box; padding: 0 var(--sp-10);
-  border: 0; border-radius: 999px; background: var(--sunken); font: var(--fw-medium) var(--fs-label) / 24px var(--font-sans); color: var(--fg); white-space: nowrap;
+  display: inline-flex; align-items: center; gap: var(--sp-6); min-width: 0; max-width: 100%; height: var(--h-chip-lg); box-sizing: border-box; padding: 0 var(--sp-10);
+  border: 0; border-radius: var(--r-pill); background: var(--sunken); font: var(--fw-medium) var(--fs-label) / 24px var(--font-sans); color: var(--fg); white-space: nowrap;
 }
 .rt-topo-pill small { font-size: var(--fs-micro); font-weight: var(--fw-regular); color: var(--fg-3); }
 .rt-topo-pill .lucide { flex: none; width: 13px; height: 13px; }

@@ -29,7 +29,7 @@
 .ncard[data-health="degraded"] { border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
 .ncard.is-current { border-color: var(--accent); }
 .ncard.is-quiet .flow-rate, .ncard.is-quiet .nc-run-val { color: var(--fg-3); }
-.ncard.is-quiet .cells, .ncard.is-quiet .dots { opacity: 0.45; } /* 心跳条：卡片把 quiet 传成 Beat 的 stale（components.css .beat.is-stale） */
+.ncard.is-quiet .cells, .ncard.is-quiet .dots { opacity: var(--o-stale); } /* 心跳条：卡片把 quiet 传成 Beat 的 stale（components.css .beat.is-stale） */
 
 /* 槽位通用：左右留白 = 卡片内边距；分段线在内边距之内 */
 .ncard > * { margin-inline: var(--card-pad); min-width: 0; }
@@ -76,7 +76,7 @@
 /* 2 地址（小卡片：地址 + 入口/套餐/到期两行） */
 .nc-addr { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); min-height: 22px; margin-top: var(--sp-2); color: var(--fg-2); }
 .nc-marks { display: inline-flex; align-items: center; gap: var(--sp-4); flex: none; }
-.nc-marks .tag, .rc-head .tag, .dt button.tag { height: 18px; padding: 0 var(--sp-6); font-size: var(--fs-micro); line-height: 18px; border-radius: 6px; }
+.nc-marks .tag, .rc-head .tag, .dt button.tag { height: var(--h-chip-sm); padding: 0 var(--sp-6); font-size: var(--fs-micro); line-height: var(--h-chip-sm); border-radius: 6px; }
 .rc-head .tag, .dt button.tag { flex: none; } /* 名称后面的同机关系标（表格里只认它：可点的标签就是它）：放不下时先省略名称 */
 .nc-meta2 { display: grid; min-height: 44px; margin-top: var(--sp-2); font-size: var(--fs-label); line-height: 22px; color: var(--fg-2); }
 .nc-meta2 > div { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); min-width: 0; }
@@ -111,7 +111,7 @@
 .flow-col[data-dir="up"] { --dir-c: var(--chart-2); }
 .flow-col[data-dir="down"] { --dir-c: var(--chart-1); }
 .flow-rate { min-width: 0; overflow: hidden; white-space: nowrap; font: var(--fw-semibold) 20px / 24px var(--font-num); font-variant-numeric: var(--num-variant); letter-spacing: -0.03em; color: var(--spd, var(--fg)); }
-.flow-rate .unit { margin-left: 1px; font-size: 11px; font-weight: var(--fw-medium); letter-spacing: 0; color: var(--fg-3); }
+.flow-rate .unit { margin-left: 1px; font-size: var(--fs-micro); font-weight: var(--fw-medium); letter-spacing: 0; color: var(--fg-3); }
 .ncard[data-view="small"] .flow-rate, .ncard[data-view="compact"] .flow-rate { font-size: 17px; line-height: 22px; }
 [data-speed="idle"] { --spd: var(--speed-idle); }
 [data-speed="low"] { --spd: var(--speed-low); }
@@ -144,10 +144,10 @@
 /* 8 已上架 · 到期 · 剩余价值：彩色读数 */
 .nc-run { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-12); }
 .nc-run-item { display: grid; gap: var(--sp-2); min-width: 0; }
-.nc-run-label { display: inline-flex; align-items: center; gap: var(--sp-4); font: var(--fw-semibold) 11px / 16px var(--font-sans); color: var(--fg-2); white-space: nowrap; }
+.nc-run-label { display: inline-flex; align-items: center; gap: var(--sp-4); font: var(--fw-semibold) var(--fs-micro) / var(--lh-micro) var(--font-sans); color: var(--fg-2); white-space: nowrap; }
 .nc-run-label .lucide { width: 12px; height: 12px; }
 .nc-run-val { display: inline-flex; align-items: baseline; gap: var(--sp-4); font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-num); font-variant-numeric: var(--num-variant); letter-spacing: -0.02em; color: var(--fg); white-space: nowrap; min-width: 0; overflow: hidden; }
-.nc-run-val .unit { font-size: 11px; font-weight: var(--fw-medium); letter-spacing: 0; color: var(--fg-3); }
+.nc-run-val .unit { font-size: var(--fs-micro); font-weight: var(--fw-medium); letter-spacing: 0; color: var(--fg-3); }
 .nc-run-val[data-c="up"] { color: var(--m-cpu); }
 
 /* 9 标签行 */
@@ -202,7 +202,7 @@
 .rc-rings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-4); margin: 0 calc(-1 * var(--sp-6)); padding: var(--sp-6); border: 0; border-radius: var(--r-float); background: none; font: inherit; color: inherit; cursor: pointer; transition: background-color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out); }
 @media (hover: hover) { .rc-rings:hover:not(:disabled) { background: var(--hover); } }
 .rc-rings:disabled { cursor: default; }
-.rc-gauge { display: grid; justify-items: center; gap: var(--sp-4); font: var(--fw-semibold) 11px / 16px var(--font-sans); color: var(--fg-2); }
+.rc-gauge { display: grid; justify-items: center; gap: var(--sp-4); font: var(--fw-semibold) var(--fs-micro) / var(--lh-micro) var(--font-sans); color: var(--fg-2); }
 /* 底部：状态胶囊（同卡片视图的 footer 左侧）+ 上行 / 下行速率 */
 .rc-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); min-height: 22px; padding-top: var(--sp-10); border-top: 1px solid var(--line); font-size: var(--fs-label); }
 .rc-foot > .pill { flex: none; }
@@ -217,7 +217,7 @@
 .rc-pair b .unit { font-weight: var(--fw-regular); }
 .rc-rate { display: inline-flex; align-items: center; gap: var(--sp-4); font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-num); letter-spacing: -0.02em; color: var(--spd, var(--fg-3)); white-space: nowrap; }
 .rc-rate .lucide { width: 14px; height: 14px; stroke-width: 2.2; color: var(--fg-2); }
-.rc-rate .unit { font-size: 11px; letter-spacing: 0; color: var(--fg-3); }
+.rc-rate .unit { font-size: var(--fs-micro); letter-spacing: 0; color: var(--fg-3); }
 
 /* ========== 表格视图（外框是通用的 .panel） ========== */
 .mtable { --cell-px: 10px; }
@@ -231,4 +231,4 @@
 .tquota > .num, .tquota > .t-sub { flex: none; min-width: 52px; margin-left: auto; text-align: right; font-size: var(--fs-label); }
 .trate { font-weight: var(--fw-semibold); color: var(--spd, var(--fg-3)); }
 .dt tr.is-quiet td { color: var(--fg-2); }
-.dt tr.is-quiet .cells { opacity: 0.45; }
+.dt tr.is-quiet .cells { opacity: var(--o-stale); }

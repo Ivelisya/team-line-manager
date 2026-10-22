@@ -20,7 +20,7 @@
   --ui-accent: var(--hover);            /* = shadcn 的 --accent（见上） */
   --accent-foreground: var(--fg);
   --destructive: var(--bad-solid);
-  --destructive-foreground: #ffffff;    /* 同 .btn-danger */
+  --destructive-foreground: var(--on-solid); /* 同 .btn-danger */
   --input: var(--line-strong);
   --ring: var(--focus);
   --radius: var(--r-float);             /* lg 10 = 浮层，md 8 = 控件（--r-control），sm 6 */

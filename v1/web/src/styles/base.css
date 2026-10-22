@@ -44,7 +44,7 @@ a { color: inherit; }
 /* ---------- 外壳 ---------- */
 .app { min-height: 100vh; }
 .skip-link {
-  position: fixed; top: var(--sp-8); left: var(--sp-8); z-index: var(--z-tooltip);
+  position: fixed; top: var(--sp-8); left: var(--sp-8); z-index: var(--z-skip);
   height: var(--h-md); padding: 0 var(--sp-12); border: 0; border-radius: var(--r-control);
   background: var(--accent-solid); color: var(--on-accent); transform: translateY(-200%); cursor: pointer;
 }
@@ -55,8 +55,8 @@ a { color: inherit; }
   height: var(--topbar-h); box-sizing: border-box;
   display: flex; align-items: center; gap: var(--sp-4);
   padding: 0 calc(var(--sp-16) + var(--removed-body-scroll-bar-size, 0px)) 0 var(--sp-10); /* 锁滚动期间视口变宽，右侧按钮补回让出的槽位，位置不动 */
-  background: color-mix(in srgb, var(--surface) 78%, transparent); border-bottom: 1px solid var(--line);
-  -webkit-backdrop-filter: saturate(180%) blur(12px); backdrop-filter: saturate(180%) blur(12px); /* 毛玻璃：内容从顶栏下滚过时隐约透出（半径 12：滚动时每帧都要重做，20 的采样开销大、观感差别很小） */
+  background: var(--glass-bar); border-bottom: 1px solid var(--line);
+  -webkit-backdrop-filter: var(--glass-bar-blur); backdrop-filter: var(--glass-bar-blur); /* 毛玻璃：内容从顶栏下滚过时隐约透出（半径 12：滚动时每帧都要重做，20 的采样开销大、观感差别很小） */
 }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .topbar { background: var(--surface); } }
 .brand {
@@ -72,14 +72,14 @@ a { color: inherit; }
   background: var(--accent-soft); color: var(--accent-soft-fg);
   transition: background-color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out);
 }
-.top-btn[aria-expanded="true"] { background: color-mix(in srgb, var(--accent-soft) 82%, var(--accent)); }
-@media (hover: hover) { .top-btn:hover { background: color-mix(in srgb, var(--accent-soft) 82%, var(--accent)); } }
+.top-btn[aria-expanded="true"] { background: var(--accent-soft-strong); }
+@media (hover: hover) { .top-btn:hover { background: var(--accent-soft-strong); } }
 /* 顶栏告警胶囊（链到告警页）：悬停底色加深一级，按下同文字控件微缩（components.css「交互状态」）；行内的 a 不能缩放，改 inline-flex。
    悬停预览开着时（含键盘聚焦打开的）底色同悬停，同作业徽标开着弹层时 */
 .top-alert { display: inline-flex; flex: none; border-radius: var(--r-pill); text-decoration: none; transition: scale var(--dur-2) var(--ease-out); }
 .top-alert > .pill { transition: background-color var(--dur-1) var(--ease-std); }
-.top-alert[data-state="open"] > .pill { --pill-bg: color-mix(in srgb, var(--bad) calc(var(--tint) + 8%), transparent); }
-@media (hover: hover) { .top-alert:hover > .pill { --pill-bg: color-mix(in srgb, var(--bad) calc(var(--tint) + 8%), transparent); } }
+.top-alert[data-state="open"] > .pill { --pill-bg: var(--bad-bg-strong); }
+@media (hover: hover) { .top-alert:hover > .pill { --pill-bg: var(--bad-bg-strong); } }
 .nav-toggle { display: none; background: transparent; color: var(--fg-2); } /* 汉堡按钮不带软色底，悬停才给浅底 */
 @media (hover: hover) { .nav-toggle:hover { background: var(--hover); color: var(--fg); } }
 
@@ -103,7 +103,7 @@ a { color: inherit; }
 .nav-item[aria-current="page"] { background: var(--grad-soft); color: var(--accent-soft-fg); font-weight: var(--fw-semibold); }
 .nav-item[aria-current="page"] .lucide { color: var(--accent-soft-fg); }
 .nav-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.nav-badge { margin-left: auto; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--bad-solid); color: #fff; font-size: var(--fs-micro); line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; }
+.nav-badge { margin-left: auto; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--bad-solid); color: var(--on-solid); font-size: var(--fs-micro); line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; }
 /* 侧栏底部的「? 快捷键」：点开快捷键帮助；--fg-2（原来 --fg-3 太淡，看不出能点） */
 .nav-foot {
   display: inline-flex; align-items: center; gap: var(--sp-6); align-self: flex-start; margin: auto 0 0; padding: var(--sp-6) var(--sp-10);
@@ -125,11 +125,11 @@ a { color: inherit; }
    过渡写在目标状态上（打开取开态这条，关上取关态那条）；关上时 visibility 等滑出播完再隐藏，遮罩淡出期间已不拦点击 */
 @media (max-width: 760px) {
   .nav-toggle { display: inline-grid; }
-  .sidebar { width: 280px; z-index: var(--z-drawer); box-shadow: var(--shadow-modal); transition: transform var(--dur-3) var(--ease-out), visibility 0s; }
+  .sidebar { width: 280px; z-index: var(--z-nav); box-shadow: var(--shadow-modal); transition: transform var(--dur-3) var(--ease-out), visibility 0s; }
   .main { margin-left: 0; }
   .app:not([data-nav="open"]) .sidebar { transform: translateX(-100%); visibility: hidden; transition: transform var(--dur-2) var(--ease-std), visibility 0s var(--dur-2); }
   .nav-scrim {
-    display: block; position: fixed; inset: var(--topbar-h) 0 0 0; z-index: calc(var(--z-drawer) - 1);
+    display: block; position: fixed; inset: var(--topbar-h) 0 0 0; z-index: var(--z-drawer-scrim);
     background: var(--scrim); transition: opacity var(--dur-3) var(--ease-out), visibility 0s;
   }
   .app:not([data-nav="open"]) .nav-scrim { opacity: 0; visibility: hidden; pointer-events: none; transition: opacity var(--dur-2) var(--ease-std), visibility 0s var(--dur-2); }

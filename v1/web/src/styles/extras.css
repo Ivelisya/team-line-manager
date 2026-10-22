@@ -15,7 +15,7 @@
 .block { display: block; }
 
 /* ========== 复制按钮 ========== */
-.copy-btn { position: relative; display: inline-grid; place-items: center; flex: none; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--fg-2); cursor: pointer; transition: background-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out); }
+.copy-btn { position: relative; display: inline-grid; place-items: center; flex: none; width: var(--h-xs); height: var(--h-xs); padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--fg-2); cursor: pointer; transition: background-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out); }
 .copy-btn::after { content: ""; position: absolute; inset: -5px; } /* 可点范围扩到 32px，外观不变 */
 .copy-btn:hover { background: var(--hover); color: var(--fg); }
 .copy-btn.is-done { color: var(--ok); animation: copy-pop var(--dur-2) var(--ease-out); }
@@ -73,7 +73,7 @@
 .alerts-pop-sum { padding-left: calc(var(--dot) + var(--sp-6)); }
 
 /* ========== 命令面板 ========== */
-.overlay.cmd-overlay { z-index: calc(var(--z-palette) - 1); }
+.overlay.cmd-overlay { z-index: var(--z-palette-scrim); }
 /* 顶部锚定面板：进出场同对话框（components.css 的 panel-in / panel-out） */
 .cmd-dialog {
   position: fixed; z-index: var(--z-palette); left: 50%; top: min(14vh, 120px); translate: -50% 0; transform-origin: 50% 0;
@@ -124,7 +124,7 @@
 .empty-text { font-weight: var(--fw-medium); text-wrap: pretty; }
 .tab-pane { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-16); align-content: start; animation: tab-in var(--dur-2) var(--ease-out); }
 /* 访问记录「常访问的目标」条尾的次数 */
-.bar-count { fill: var(--fg-2); font-size: 11px; font-weight: var(--fw-semibold); font-variant-numeric: tabular-nums; }
+.bar-count { fill: var(--fg-2); font-size: var(--fs-micro); font-weight: var(--fw-semibold); font-variant-numeric: tabular-nums; }
 /* 页签里吸顶的一条（主机页签的时间范围）：贴在抽屉正文滚动区的顶边（抵掉正文的上内边距），毛玻璃底，滚过去的曲线从下面淡淡透出 */
 .tab-sticky {
   position: sticky; top: calc(-1 * var(--sp-16)); z-index: 3; display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8);
@@ -136,7 +136,7 @@
 /* 换时间范围、筛选或翻页时先留着上一份数据：取新数据期间调淡，到了再柔和地亮回来（抽屉曲线、访问监控的 KPI 与表格、抽屉「访问记录」）。
    元素上一直写着 data-stale（值是查询的 isPlaceholderData，"true" / "false"）：过渡留在元素上，亮回来才是渐变 */
 [data-stale] { transition: opacity var(--dur-2) var(--ease-std); }
-[data-stale="true"] { opacity: 0.45; }
+[data-stale="true"] { opacity: var(--o-stale); }
 /* 曲线第一次有数据时从左往右展开一次：.chart-frame 在数据到了才挂载（之前是骨架），之后的轮询刷新、换时间范围（上面的沿用旧曲线调淡）都不重新挂载，不会再播 */
 .chart-frame .chart-box { animation: chart-reveal var(--dur-data) var(--ease-out); }
 @keyframes chart-reveal { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0); } }
@@ -200,7 +200,7 @@
 .step-title .pill { align-self: center; }
 .step-err-box { display: flex; align-items: flex-start; gap: var(--sp-8); margin-top: var(--sp-4); }
 .step-err-box .step-err { margin: 0; min-width: 0; }
-.err-kind { flex: none; display: inline-flex; align-items: center; height: 18px; padding: 0 var(--sp-8); border-radius: var(--r-pill); background: var(--bad-bg); color: var(--bad-text); font: var(--fw-medium) var(--fs-micro) / var(--lh-micro) var(--font-sans); white-space: nowrap; }
+.err-kind { flex: none; display: inline-flex; align-items: center; height: var(--h-chip-sm); padding: 0 var(--sp-8); border-radius: var(--r-pill); background: var(--bad-bg); color: var(--bad-text); font: var(--fw-medium) var(--fs-micro) / var(--lh-micro) var(--font-sans); white-space: nowrap; }
 
 /* ========== 设置页 ========== */
 .set-tabs { margin-bottom: var(--section-gap); }

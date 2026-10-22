@@ -20,6 +20,10 @@
      不支持 backdrop-filter 时回退实底 --raised（components.css）。对话框、抽屉、提示框保持实底 */
   --glass: color-mix(in srgb, var(--raised) 84%, transparent);
   --glass-blur: saturate(180%) blur(20px);
+  /* 吸附条材质（顶栏、上架页底部操作条）：表面 78% + 模糊提饱和，不支持 backdrop-filter 时回退实底 --surface */
+  --glass-bar: color-mix(in srgb, var(--surface) 78%, transparent);
+  --glass-bar-blur: saturate(180%) blur(12px);
+  --scrim-stacked: rgb(0 0 0 / 0.12);   /* 抽屉上再叠对话框 / 命令面板时的第二层遮罩：抽屉的遮罩已压暗，这层只轻压（components.css） */
 
   /* ---------- 2. 线（2 级 + 浮层边线） ---------- */
   --line: rgba(17, 24, 39, 0.08);       /* H --line（O #e3e6ef、N rgba(57,65,90,.12) 统一到它） */
@@ -36,6 +40,7 @@
   --accent-strong: color-mix(in srgb, var(--accent) 86%, #000); /* 主按钮悬停/按下，≈ O 描边 #535bce */
   --accent-solid: #5b5bd6;              /* 主按钮底：亮暗同值，白字 5.4:1（修 O 暗色主按钮深色粗字，dna-ops A5） */
   --on-accent: #ffffff;
+  --accent-soft-strong: color-mix(in srgb, var(--accent-soft) 82%, var(--accent)); /* 软底加深一级：顶栏按钮悬停 / 展开 */
   --accent-soft: #e3e4fb;               /* N 侧栏选中胶囊底 --accent-4（用户喜欢的“软靛蓝胶囊”）；也用于顶栏图标按钮底、已选筛选 chip、命令面板当前项 */
   --accent-soft-fg: color-mix(in srgb, var(--accent) 86%, #000); /* N 选中字 #5961dc，加深到 ≥4.5:1 */
   --focus: color-mix(in srgb, var(--accent) 75%, transparent);   /* 焦点环 2px：强调色 75%，白底约 3.3:1（粉紫 3.7:1）、暗色卡片上 3.3:1 以上，过 3:1；原 55% 只有 2.3–2.5:1（H 3px 20% 光环太淡，dna-home I3） */
@@ -46,6 +51,8 @@
   --warn: #d97706;    --warn-text: #b45309;                     /* H/O --warn */
   --bad: #dc2626;     --bad-text: #b91c1c;                      /* H/O --bad */
   --bad-solid: #dc2626;                                         /* 危险按钮、告警计数徽标的实底：亮暗同值，白字 4.8:1（暗色 --bad 上白字只有 3.8:1） */
+  --bad-solid-strong: color-mix(in srgb, var(--bad-solid) 86%, black); /* 危险按钮悬停 */
+  --on-solid: #ffffff;                                          /* 实底（危险按钮、计数徽标）上的字、开关圆钮 */
   --info: #2563eb;    --info-text: #1d4ed8;                     /* H/O --info（维护中、进行中） */
   --neutral: #6b7280; --neutral-text: #4b5563;                  /* H --neutral（未知、跳过、排队、无主机） */
   --tint: 10%;                                                  /* H 状态底色 10%（暗 16%） */
@@ -54,6 +61,7 @@
   --bad-bg: color-mix(in srgb, var(--bad) var(--tint), transparent);
   --info-bg: color-mix(in srgb, var(--info) var(--tint), transparent);
   --neutral-bg: color-mix(in srgb, var(--neutral) var(--tint), transparent);
+  --bad-bg-strong: color-mix(in srgb, var(--bad) calc(var(--tint) + 8%), transparent); /* 故障底加深一级：顶栏告警胶囊悬停 / 预览开着 */
 
   /* ---------- 6. 图表（dataviz validate_palette.js：#ffffff / #161a21 上 all-pairs 全部通过） ---------- */
   --chart-1: #5b5bd6;                   /* ↓ 下行 / 接收、单序列默认（= 强调色；H 进度线与额度条同色） */
@@ -101,6 +109,10 @@
   --shadow-thumb: 0 1px 4px rgba(0, 0, 0, 0.12);    /* H --segment-shadow：分段选中项（O 用线色当阴影，看不见） */
   --shadow-btn: 0 1px 2px rgba(0, 0, 0, 0.08);      /* O 主按钮 */
 
+  /* 透明度：禁用的控件；换数据期间调淡的旧值（[data-stale]、安静卡片的格条与点阵） */
+  --o-disabled: 0.45;
+  --o-stale: 0.45;
+
   /* ---------- 10. 间距（偶数 px；首页节奏） ---------- */
   --sp-2: 2px; --sp-4: 4px; --sp-6: 6px; --sp-8: 8px; --sp-10: 10px;
   --sp-12: 12px; --sp-14: 14px; --sp-16: 16px; --sp-20: 20px; --sp-24: 24px;
@@ -113,7 +125,11 @@
   --control-gap: 8px;                   /* 控件之间 */
 
   /* ---------- 11. 控件尺寸（4 档高度 + chip） ---------- */
+  --h-chip-sm: 18px;                    /* 小号标记：IP 版本标、键帽、卡内彩色标签、错误类别 */
   --h-chip: 20px;                       /* H 标签/状态 chip */
+  --h-tag: 22px;                        /* 彩色标签、集群状态胶囊、规则里的域名标 */
+  --h-chip-lg: 24px;                    /* 图例胶囊、出口关系图的胶囊 */
+  --h-xs: 22px;                         /* 极小图标按钮：复制、通知关闭 */
   --h-sm: 28px;                         /* H 卡内文字按钮“访问记录/管理节点”；表格内按钮与图标按钮 */
   --h-md: 32px;                         /* H 卡头图标按钮、地区/套餐筛选 chip、菜单项、侧栏项内容区 */
   --h-lg: 36px;                         /* O 页头与工具条：按钮、输入、下拉、搜索、排序、分段轨道外框（H 分段轨道 40 收到 36） */
@@ -189,8 +205,11 @@
   --state-press: linear-gradient(var(--hover), var(--hover)); /* 行（菜单项、表格行、导航项、作业项…）按下不缩放：悬停底上再叠这一层 */
 
   /* ---------- 16. 层级 ---------- */
-  --z-sticky: 10; --z-topbar: 30; --z-drawer: 40;
-  --z-dialog: 50; --z-popover: 60; --z-palette: 65; --z-toast: 70; --z-tooltip: 80; /* 弹层（下拉、日期、菜单）在对话框之上，否则对话框里的下拉被盖住 */
+  /* 叠放顺序（从下到上）：吸顶表头 10 ＜ 顶栏、侧栏 30 ＜ 终端窗口 38 ＜ 抽屉遮罩 39 ＜ 节点抽屉 40 ＜ 窄屏侧栏 41 ＜ 对话框与遮罩 50
+     ＜ 弹层（下拉、日期、菜单）60 ＜ 命令面板遮罩 64 ＜ 命令面板 65 ＜ toast 70 ＜ 提示框 80 ＜ 跳到正文 90。
+     弹层在对话框之上，否则对话框里的下拉被盖住；终端在抽屉遮罩之下，临时打开的抽屉、对话框都盖在它上面 */
+  --z-sticky: 10; --z-topbar: 30; --z-term: 38; --z-drawer-scrim: 39; --z-drawer: 40; --z-nav: 41;
+  --z-dialog: 50; --z-popover: 60; --z-palette-scrim: 64; --z-palette: 65; --z-toast: 70; --z-tooltip: 80; --z-skip: 90;
 
   /* ---------- 17. 调色板：点缀渐变（靛蓝预设 = 原版，平涂；粉紫默认见文件末尾“调色板”） ---------- */
   --grad-soft: var(--accent-soft);      /* 侧栏当前项、已选胶囊的底 */
@@ -265,6 +284,7 @@
   --shadow-btn: none;
   --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.25);                 /* 暗色：近乎不可见，靠 1px 边线分层 */
   --shadow-card-hover: 0 12px 28px -6px rgba(0, 0, 0, 0.6);
+  --scrim-stacked: rgb(0 0 0 / 0.24);   /* 暗底上同样的压暗看不出来，加一档 */
 }
 
 :root:not([data-palette="indigo"]) {

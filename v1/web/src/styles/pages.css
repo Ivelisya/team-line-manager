@@ -68,7 +68,7 @@
 .chart-legend { display: flex; flex-wrap: wrap; gap: var(--sp-6); align-items: center; }
 /* 图例胶囊（--lc 是曲线色）：点掉后色块变空心、文字变淡；按下同其它文字控件微缩（components.css「交互状态」） */
 .chart-legend-item {
-  display: inline-flex; align-items: center; gap: var(--sp-6); height: 24px; padding: 0 var(--sp-8); cursor: pointer;
+  display: inline-flex; align-items: center; gap: var(--sp-6); height: var(--h-chip-lg); padding: 0 var(--sp-8); cursor: pointer;
   border: 1px solid color-mix(in srgb, var(--lc) 35%, var(--line)); border-radius: var(--r-pill); background: color-mix(in srgb, var(--lc) 8%, var(--surface));
   font: var(--fw-medium) var(--fs-label) / 1 var(--font-sans); color: var(--fg-2);
   transition: background-color var(--dur-1) var(--ease-std), border-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out);
@@ -188,8 +188,8 @@
 .sticky-bar { position: sticky; bottom: 0; z-index: var(--z-sticky); }
 /* 上架页底部操作条：与顶栏同一种毛玻璃，阴影朝上（顶边的线由面板自己的边框给）——表单从它下面滚过时隐约透出、分得清层次 */
 .panel.sticky-bar {
-  background: color-mix(in srgb, var(--surface) 78%, transparent); box-shadow: 0 -8px 24px -12px rgb(17 24 39 / 0.14);
-  -webkit-backdrop-filter: saturate(180%) blur(12px); backdrop-filter: saturate(180%) blur(12px);
+  background: var(--glass-bar); box-shadow: 0 -8px 24px -12px rgb(17 24 39 / 0.14);
+  -webkit-backdrop-filter: var(--glass-bar-blur); backdrop-filter: var(--glass-bar-blur);
 }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .panel.sticky-bar { background: var(--surface); } }
 /* 批量网格：「检查结果」与删除列吸附在右侧，二十几列横滑时也一直看得见；结果放不下省略，悬停看全文。左缘一道线 + 淡阴影，和滑到下面的格子分开 */
