@@ -46,6 +46,49 @@ function toAscii(d: string): string | null {
   try { return new URL(`http://${d}`).hostname; } catch { return null; }
 }
 
+/** xn-- 形式 → 原文（显示用，RFC 3492 解码）；不是 xn-- 的标签原样，解不开的整个原样返回 */
+export function toUnicode(d: string): string {
+  if (!d.includes('xn--')) return d;
+  try {
+    return d.split('.').map((l) => (l.startsWith('xn--') ? punyDecode(l.slice(4)) : l)).join('.');
+  } catch {
+    return d;
+  }
+}
+
+function punyDecode(s: string): string {
+  const base = 36, tMin = 1, tMax = 26, skew = 38, damp = 700;
+  const out: number[] = [];
+  const cut = s.lastIndexOf('-');
+  for (const c of cut > 0 ? s.slice(0, cut) : '') out.push(c.charCodeAt(0));
+  const adapt = (delta: number, n: number, first: boolean) => {
+    delta = first ? Math.floor(delta / damp) : delta >> 1;
+    delta += Math.floor(delta / n);
+    let k = 0;
+    for (; delta > ((base - tMin) * tMax) >> 1; k += base) delta = Math.floor(delta / (base - tMin));
+    return k + Math.floor(((base - tMin + 1) * delta) / (delta + skew));
+  };
+  const digit = (c: number) => (c - 48 < 10 ? c - 22 : c - 65 < 26 ? c - 65 : c - 97 < 26 ? c - 97 : base);
+  let n = 128, i = 0, bias = 72;
+  for (let p = cut > 0 ? cut + 1 : 0; p < s.length;) {
+    const old = i;
+    for (let w = 1, k = base; ; k += base) {
+      if (p >= s.length) throw new Error('bad punycode');
+      const dg = digit(s.charCodeAt(p++));
+      if (dg >= base) throw new Error('bad punycode');
+      i += dg * w;
+      const t = k <= bias ? tMin : k >= bias + tMax ? tMax : k - bias;
+      if (dg < t) break;
+      w *= base - t;
+    }
+    bias = adapt(i - old, out.length + 1, old === 0);
+    n += Math.floor(i / (out.length + 1));
+    i %= out.length + 1;
+    out.splice(i++, 0, n);
+  }
+  return String.fromCodePoint(...out);
+}
+
 /** IPv4 / IPv6 字面量（够用的粗判：IPv4 四段数字，或含冒号且只有十六进制与冒号点） */
 function isIp(s: string): boolean {
   if (/^\d{1,3}(\.\d{1,3}){3}$/.test(s)) return s.split('.').every((n) => Number(n) <= 255);
