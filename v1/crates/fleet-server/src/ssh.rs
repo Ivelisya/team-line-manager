@@ -145,7 +145,11 @@ impl Target {
             c.args(["-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-i"]).arg(&self.key);
             c
         };
-        c.args(["-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=10", "-o", "LogLevel=ERROR"]);
+        // 不读 /etc/ssh/ssh_config 与 ~/.ssh/config（ProxyCommand、ForwardAgent、SendEnv、ControlMaster…都不能带进来）：
+        // 要用的选项全部在这里给出
+        c.args(["-F", "/dev/null"]);
+        c.args(["-o", "StrictHostKeyChecking=yes", "-o", "UpdateHostKeys=no", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=3"]);
+        c.args(["-o", "LogLevel=ERROR"]);
         // 只认中控自己的 known_hosts，不读系统级的
         c.args(["-o", "GlobalKnownHostsFile=/dev/null"]);
         c.arg("-o").arg(format!("UserKnownHostsFile={}", self.known_hosts.display()));
