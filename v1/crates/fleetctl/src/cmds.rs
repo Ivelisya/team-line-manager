@@ -61,7 +61,7 @@ fn pct(a: Option<f64>, b: Option<f64>) -> String {
 }
 
 /// 计费周期：月 / 季 / 半年 / 年（同网页）
-fn cycle_cn(c: &str) -> &str {
+pub(crate) fn cycle_cn(c: &str) -> &str {
     match c {
         "monthly" => "月",
         "quarterly" => "季",
@@ -72,7 +72,7 @@ fn cycle_cn(c: &str) -> &str {
 }
 
 /// 到期：N 天后到期 / 今天到期 / 已过期 N 天（同网页与告警）
-fn due_cn(days: i64) -> String {
+pub(crate) fn due_cn(days: i64) -> String {
     match days {
         d if d < 0 => format!("已过期 {} 天", -d),
         0 => "今天到期".into(),

@@ -2,6 +2,7 @@
 //! 退出码：0 成功；1 失败（错误信息在 stderr）；2 命令行参数不对。exec 单台时沿用远端命令的退出码。
 
 mod access;
+mod billing;
 mod client;
 mod cmds;
 mod config;
@@ -24,7 +25,7 @@ use std::process::ExitCode;
     name = "fleetctl",
     version,
     about = "团队线路管理 运维命令行",
-    after_help = "连接配置：环境变量 FLEET_URL、FLEET_TOKEN，或 `fleetctl login` 写入的配置文件。\n<机器> 可以写 机器 id、显示名（团队1-06）、线路机名、IP。\n加 --json 输出一行 JSON：ls / entries / incidents / policy ls / silence 是与表格同列的精简对象（单台完整视图用 show、policy show），其余是 API 返回的 data 原样；错误一律走 stderr 且退出码非 0。"
+    after_help = "连接配置：环境变量 FLEET_URL、FLEET_TOKEN，或 `fleetctl login` 写入的配置文件。\n<机器> 可以写 机器 id、显示名（团队1-06）、线路机名、IP。\n加 --json 输出一行 JSON：ls / entries / incidents / policy ls / silence 是与表格同列的精简对象（单台完整视图用 show、policy show），billing 是订阅、流量额度与最近续费记录合成的对象，其余是 API 返回的 data 原样；错误一律走 stderr 且退出码非 0。"
 )]
 struct Cli {
     /// 输出 JSON（给脚本和 AI）
@@ -147,6 +148,43 @@ enum SilenceCmd {
     Rm { id: String },
 }
 
+#[derive(Subcommand)]
+enum SubscriptionCmd {
+    /// 改订阅：先读现有的，只改给了的字段再整份提交；还没有订阅时新建，要给 --price 和 --due
+    Set {
+        machine: String,
+        /// 价格，如 39.46（币种的主单位，最多两位小数）
+        #[arg(long)]
+        price: Option<String>,
+        /// 币种代码，如 USD / CNY（新建默认 USD）
+        #[arg(long)]
+        currency: Option<String>,
+        /// 计费周期：monthly | quarterly | semiannual | yearly（新建默认 monthly）
+        #[arg(long)]
+        cycle: Option<String>,
+        /// 到期日 YYYY-MM-DD（账单时区的日期）。续费请用 renew，会留续费记录
+        #[arg(long)]
+        due: Option<String>,
+        /// 到期自动续费：true | false（只影响提醒：自动续费的到期前不提醒，过期才告警；不会真的扣款）
+        #[arg(long)]
+        auto_renew: Option<bool>,
+        /// 到期前几天开始提醒（0–60，新建默认 7）
+        #[arg(long)]
+        remind_days: Option<i64>,
+        /// 账单时区（IANA 名，新建默认 Asia/Shanghai）：到期与流量周期按它的日期算
+        #[arg(long)]
+        tz: Option<String>,
+        /// 流量上限 GiB（0 = 不限）；none = 不单独设，按套餐（同机 IP 节点 = 与宿主机共用）
+        #[arg(long)]
+        traffic_gb: Option<String>,
+        /// 流量每月几号重置（1–31，小月没有这一天按月末；新建默认 1）；none = 不设，按北京时间的自然月
+        #[arg(long)]
+        reset_day: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
 fn keys_user(c: &KeysCmd) -> Option<&str> {
     match c {
         KeysCmd::Ls { auth } | KeysCmd::Create { auth, .. } | KeysCmd::Revoke { auth, .. } => auth.user.as_deref(),
@@ -259,6 +297,30 @@ enum Cmd {
         /// 天数（1-90）
         #[arg(long, default_value_t = 30)]
         days: i64,
+    },
+    /// 费用：订阅（价格、到期、自动续费、提醒、账单时区、流量上限与本周期已用）与最近的续费记录
+    Billing { machine: String },
+    /// 登记续费：到期日顺延（默认按订阅周期推一个周期）、金额默认取订阅价格；只记账，不会向供应商付款
+    Renew {
+        machine: String,
+        /// 新到期日 YYYY-MM-DD（不写则按订阅周期推 --cycles 个周期，目标月没有那一天时落到月末）
+        #[arg(long, conflicts_with = "cycles")]
+        to: Option<String>,
+        /// 按订阅的计费周期推几个周期（一次付了几期）
+        #[arg(long, default_value_t = 1)]
+        cycles: u32,
+        /// 实付金额，如 39.46（币种同订阅；不写 = 订阅价格 × 周期数，给 --to 时是一个周期的价格）
+        #[arg(long)]
+        amount: Option<String>,
+        #[arg(long)]
+        note: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// 订阅：费用、到期日、提醒、账单时区、流量上限（看用 billing）
+    Subscription {
+        #[command(subcommand)]
+        cmd: SubscriptionCmd,
     },
     /// 告警
     Incidents {
@@ -581,6 +643,26 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Show { machine } => cmds::show(x, &machine),
         Cmd::Series { machine, range, metric } => cmds::series(x, &machine, &range, &metric),
         Cmd::Uptime { machine, days } => cmds::uptime(x, &machine, days),
+        Cmd::Billing { machine } => billing::billing(x, &machine),
+        Cmd::Renew { machine, to, cycles, amount, note, yes } => {
+            billing::renew(x, billing::RenewOpts { machine: &machine, to: to.as_deref(), cycles, amount: amount.as_deref(), note: note.as_deref(), yes })
+        }
+        Cmd::Subscription { cmd: SubscriptionCmd::Set { machine, price, currency, cycle, due, auto_renew, remind_days, tz, traffic_gb, reset_day, yes } } => billing::subscription_set(
+            x,
+            billing::SubSetOpts {
+                machine: &machine,
+                price: price.as_deref(),
+                currency: currency.as_deref(),
+                cycle: cycle.as_deref(),
+                due: due.as_deref(),
+                auto_renew,
+                remind_days,
+                tz: tz.as_deref(),
+                traffic_gb: traffic_gb.as_deref(),
+                reset_day: reset_day.as_deref(),
+                yes,
+            },
+        ),
         Cmd::Incidents { all, machine } => cmds::incidents(x, all, machine.as_deref()),
         Cmd::Ack { id } => cmds::ack(x, &id),
         Cmd::Silence { cmd } => match cmd {
