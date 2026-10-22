@@ -145,12 +145,15 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
   open_incidents, maintenance,   // maintenance：同机 IP 节点在宿主机维护时也为 true
   relay: {public_host,generation,applied_generation,applied_at,apply_error,port_min,port_max}|null }
 EntryView = { id, relay:{id,name}, node:{id,name}, direct, port, lifecycle, applied, apply_error,
-  tcp:{ok,latency_ms,detail,ts,median_ms}|null, egress:{…}|null, traffic:{today_up,today_down,month_up,month_down} }
+  tcp:{ok,latency_ms,detail,ts,median_ms}|null, egress:{…}|null, reach:{ok,ts,detail}|null, traffic:{today_up,today_down,month_up,month_down} }
 // direct：线路机直出入口——节点就是线路机自己（node.id = relay.id，node.name =「线路机名-直出」），出口是线路机自己的 IP；
 //   只出现在线路机的 entries 里（一次）；没有 TCP 探测（tcp 恒为 null），出口不通时线路机自己报 egress_fail
 // tcp：线路机 → 节点出站地址的 TCP 建连，latency_ms 是最近一次（新 agent 报内核量的往返时间，不含 SYN 重发等待），
 //   median_ms 是近 1 小时成功样本的中位数（卡片读数）；egress：经入口访问 /echo 核对出口 IP，只判通不通、IP 对不对，
 //   latency_ms 是这次出口验证的耗时（经节点去中控），不是线路延迟，median_ms 恒为 null
+// reach：中控 → 线路机上这个入口端口的最近一次 TCP 建连（只建连，不握手），`detail` 是失败原因（带「端口 N：」前缀），通为 null；
+//   只有在用入口有，没检查过（新入口、停用入口、线路机没在探）为 null。中控轮流连各端口，每个口隔「入口数 × 30 秒」才更新一次；
+//   随完整加载更新（至多 5 分钟，连通结论变了立即），不在 metrics 推送里。连续 3 次连不上同时开 relay_unreachable 健康原因
 ```
 | 方法 | 路径 | 说明 |
 |---|---|---|

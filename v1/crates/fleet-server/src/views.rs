@@ -161,6 +161,15 @@ pub struct Probe {
     pub median_ms: Option<f32>,
 }
 
+/// 中控 → 线路机上这个入口端口的最近一次 TCP 建连（`reach::round`，轮流连各端口，所以每个口隔 N 轮才更新一次）
+#[derive(Debug, Clone, Serialize)]
+pub struct Reach {
+    pub ok: bool,
+    #[serde(with = "time::serde::rfc3339")]
+    pub ts: OffsetDateTime,
+    pub detail: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct Traffic {
     pub today_up: i64,
@@ -250,6 +259,8 @@ pub struct EntryView {
     pub relay_offline: bool,
     pub tcp: Option<Probe>,
     pub egress: Option<Probe>,
+    /// 中控 → 这个入口端口（线路机上）最近一次 TCP 检查；只有在用入口有，没检查过为 None。与 tcp / egress（线路机 → 节点）是两段
+    pub reach: Option<Reach>,
     pub traffic: Traffic,
 }
 
@@ -806,6 +817,22 @@ async fn probes_of(db: &sqlx::PgPool, eids: &[Uuid]) -> sqlx::Result<HashMap<(Uu
         .collect())
 }
 
+/// 在用入口各自端口上中控最近一次 TCP 检查，沿 (relay_id, port, ts desc) 索引逐个取最新一条；检查早于入口创建的（端口复用）不算
+async fn reach_of(db: &sqlx::PgPool, es: &[(Uuid, Uuid, i32)]) -> sqlx::Result<HashMap<Uuid, Reach>> {
+    let rs = sqlx::query_as::<_, (Uuid, bool, OffsetDateTime, Option<String>)>(
+        "select e.id, x.ok, x.ts, x.detail from unnest($1::uuid[], $2::uuid[], $3::int[]) e(id, relay, port)
+         join entry en on en.id = e.id cross join lateral (
+            select ok, ts, detail from relay_reach where relay_id = e.relay and port = e.port and ts >= en.created_at
+            order by ts desc limit 1) x",
+    )
+    .bind(es.iter().map(|e| e.0).collect::<Vec<_>>())
+    .bind(es.iter().map(|e| e.1).collect::<Vec<_>>())
+    .bind(es.iter().map(|e| e.2).collect::<Vec<_>>())
+    .fetch_all(db)
+    .await?;
+    Ok(rs.into_iter().map(|(id, ok, ts, detail)| (id, Reach { ok, ts, detail })).collect())
+}
+
 /// 进行中的作业与失败的上架 / 退役作业，各按机器取最后建的：(进行中, 失败)
 async fn jobs_of(db: &sqlx::PgPool, ids: &[Uuid]) -> sqlx::Result<(HashMap<Uuid, JobRef>, HashMap<Uuid, JobRef>)> {
     let jobs = sqlx::query_as::<_, (Uuid, Uuid, String, String)>(
@@ -1055,8 +1082,9 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
         .fetch_all(db)
         .await?;
         let eids: Vec<Uuid> = es.iter().map(|e| e.id).collect();
-        let ps = probes_of(db, &eids).await?;
-        Ok::<_, sqlx::Error>((es, ps))
+        let live: Vec<(Uuid, Uuid, i32)> = es.iter().filter(|e| e.lifecycle == "active").map(|e| (e.id, e.relay_id, e.port)).collect();
+        let (ps, rc) = tokio::try_join!(probes_of(db, &eids), reach_of(db, &live))?;
+        Ok::<_, sqlx::Error>((es, ps, rc))
     };
     // 已移除入口本月的流量（换线路机后旧入口 removed，但本月它跑过的流量仍属于这个节点 / 线路机）：
     // 只查本月有流量的那些入口是否已移除、属于谁
@@ -1085,7 +1113,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     let spare_ids: Vec<Uuid> = rows.iter().filter(|r| r.team_spare == Some(true) && r.lifecycle == "active").map(|r| r.id).collect();
     let exits_q = crate::routers::exits_using(db, &spare_ids);
     let period_of: HashMap<Uuid, (Date, Option<&'static str>)> = periods.iter().map(|k| (k.0, (k.1, k.3))).collect();
-    let (intel, host, (es, probes), (traffic, nic, removed), (live_jobs, failed_jobs), inc, silences, sustained, policies, period_used, ipn, mut exits) = tokio::try_join!(
+    let (intel, host, (es, probes, reach), (traffic, nic, removed), (live_jobs, failed_jobs), inc, silences, sustained, policies, period_used, ipn, mut exits) = tokio::try_join!(
         intel_q,
         host_now(db, &hids),
         entries_q,
@@ -1141,6 +1169,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
             relay_offline: !e.relay_last.is_some_and(|t| st.report_gaps.online(t, now)),
             tcp: probes.get(&(e.id, "tcp".into())).cloned(),
             egress: probes.get(&(e.id, "egress".into())).cloned(),
+            reach: reach.get(&e.id).cloned(),
             traffic: traffic.get(&e.id).cloned().unwrap_or_default(),
         };
         // 直出入口的节点和线路机是同一台：只列一次

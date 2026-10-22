@@ -402,6 +402,7 @@ pub(crate) mod tests {
             relay_offline: false,
             tcp: Some(Probe { ok: egress_ok, latency_ms: None, detail: None, ts, median_ms: None }),
             egress: Some(Probe { ok: egress_ok, latency_ms: None, detail: Some("timeout".into()), ts, median_ms: None }),
+            reach: None,
             traffic: Traffic::default(),
         }
     }
