@@ -1,6 +1,6 @@
 //! 回收站（只读）：退役的终点。面板里的机器到期回收或立即回收后在这里，旧面板的退役机器用 `recycle import` 导进来。
 
-use crate::cmds::{kind_cn, st, Ctx};
+use crate::cmds::{cycle_cn, kind_cn, st, Ctx};
 use crate::table;
 use anyhow::{bail, Context};
 use serde_json::{json, Value};
@@ -81,7 +81,7 @@ pub fn show(ctx: &Ctx, which: &str) -> anyhow::Result<u8> {
     let d = ctx.c.get(&format!("/recycle-bin/{id}"))?;
     ctx.emit(&d, || {
         let money = match (d["price_cents"].as_i64(), d["currency"].as_str()) {
-            (Some(c), Some(cur)) => format!("{:.2} {cur} / {}", c as f64 / 100.0, st(&d, "/cycle")),
+            (Some(c), Some(cur)) => format!("{:.2} {cur} / {}", c as f64 / 100.0, cycle_cn(&st(&d, "/cycle"))),
             _ => "-".into(),
         };
         let gb = |p: &str| d.pointer(p).and_then(Value::as_i64).map(|b| format!("{:.2} GB", b as f64 / 1e9)).unwrap_or("-".into());

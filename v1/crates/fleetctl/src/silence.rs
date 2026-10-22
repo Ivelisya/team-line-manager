@@ -210,8 +210,9 @@ pub fn rm(ctx: &Ctx, q: &str) -> anyhow::Result<u8> {
     ctx.c.delete(&format!("/silences/{}", st(s, "/id")))?;
     let it = item(s, now);
     ctx.emit(&it, || {
-        let done = if it["state"] == "scheduled" { format!("已取消预约的{}（还没开始，不影响现在的告警）", what(&it)) } else { format!("已删除{}，告警即刻恢复", what(&it)) };
-        format!("{done}：\n{}", table::render(&HEAD, &[row(&it, now)]))
+        let done = if it["state"] == "scheduled" { format!("已取消预约的{}（还没开始，不影响现在的告警）", what(&it)) } else { format!("已删除{}，从现在起照常告警和通知", what(&it)) };
+        // 表里是删除前的那一行（状态列还写着「进行中」），说明一句，别读成告警已恢复
+        format!("{done}。删除前的记录：\n{}", table::render(&HEAD, &[row(&it, now)]))
     });
     Ok(0)
 }
