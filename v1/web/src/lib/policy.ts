@@ -33,7 +33,11 @@ export interface PolicyNode {
 export interface PolicyTeam { id: string; name: string; policy: ScopePolicy; nodes: PolicyNode[] }
 export interface PolicyList { draft_hash: string | null; draft_count: number; teams: PolicyTeam[] }
 
-export interface PolicyChange { scope: 'team' | 'node'; id: string; name: string; from: { mode: PolicyMode; domains: number }; to: { mode: PolicyMode; domains: number } }
+/** domains_changed / note_changed：服务端判的「域名换了」「备注改了」；旧版本记录没有这两项 */
+export interface PolicyChange {
+  scope: 'team' | 'node'; id: string; name: string; from: { mode: PolicyMode; domains: number }; to: { mode: PolicyMode; domains: number };
+  domains_changed?: boolean; note_changed?: boolean;
+}
 export interface PreviewNode {
   node_id: string; name: string; team: string | null; mode: EffectiveMode; source: 'node' | 'team' | 'default'; changed: boolean;
   total_conns: number; would_block: number; current_blocked: number; domains: { host: string; conns: number }[];
@@ -52,9 +56,9 @@ export interface PolicyVersion {
   status: VersionStatus; changes: PolicyChange[]; relays: VersionRelay[];
   /** is_latest：最新一版（即当前生效的）；is_current：内容与当前相同（不可回滚） */
   is_latest: boolean; is_current: boolean; rollbackable: boolean;
-  /** 回滚到它会改什么（当前 → 这个版本）；is_current 时为空 */
-  rollback_changes: PolicyChange[];
 }
+/** 回滚预览：回滚到这个版本会改什么（当前 → 这个版本） */
+export interface RollbackPreview { seq: number; rollbackable: boolean; changes: PolicyChange[] }
 
 /** 草稿 / 发布由 policies 事件、范围树里的节点由机器与目录事件失效（见 queries.ts 的 eventKeys），不按时间过期 */
 export const usePolicies = () => useQuery({ queryKey: ['policies', 'list'], queryFn: () => get<PolicyList>('/policies'), staleTime: Infinity });
@@ -64,6 +68,10 @@ export const usePolicyVersions = () => useQuery({
   queryKey: ['policies', 'versions'], queryFn: () => get<PolicyVersion[]>('/policies/versions'), staleTime: Infinity,
   refetchInterval: (q) => (q.state.data?.some((v) => v.status === 'applying') ? 3000 : false),
 });
+
+/** 回滚确认框打开时取一次（版本列表不再逐份算差异） */
+export const useRollbackPreview = (id: string | null) =>
+  useQuery({ queryKey: ['policies', 'rollback', id], queryFn: () => get<RollbackPreview>(`/policies/versions/${id}/rollback`), enabled: !!id, staleTime: 0, gcTime: 0 });
 
 /** 预览是 POST 但没有副作用：对话框打开时取一次，每次打开都重新算 */
 export const usePolicyPreview = (open: boolean) =>

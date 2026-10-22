@@ -4,7 +4,7 @@ import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { ChevronRight, Eye, Save, ShieldCheck, Trash2, Undo2 } from 'lucide-react';
 import {
-  MODE_INFO, modeLabel, useDiscardPolicies, usePolicies, usePolicyPreview, usePolicyVersions, usePublishPolicies, useRollbackPolicy, useSavePolicy,
+  MODE_INFO, modeLabel, useDiscardPolicies, usePolicies, usePolicyPreview, usePolicyVersions, usePublishPolicies, useRollbackPolicy, useRollbackPreview, useSavePolicy,
   type PolicyBody, type PolicyChange, type PolicyMode, type PolicyNode, type PolicyTeam, type PolicyVersion, type ScopePolicy, type VersionRelay, type VersionStatus,
 } from '@/lib/policy';
 import { MAX_NOTE, diffDomains, domainsToText, parseDomainText, toUnicode } from '@/lib/policyDomains';
@@ -470,6 +470,7 @@ function VersionsPanel() {
   const rollback = useRollbackPolicy();
   const [ask, setAsk] = React.useState<PolicyVersion | null>(null);
   const askHeld = useHeld(ask?.id, ask ?? undefined); // 关闭动画期间标题里的版本号不变空
+  const pv = useRollbackPreview(ask?.id ?? null);
   const list = q.data ?? [];
   return (
     <>
@@ -502,7 +503,8 @@ function VersionsPanel() {
         description={<>作为新版本发布，草稿不受影响 <InfoTip text="会把当前生效的访问规则整体换成这个版本的内容，作为新版本发布并应用到线路机。" /></>}
         onConfirm={async () => { const v = await rollback.mutateAsync(ask!.id); toast.ok(`已回滚，新版本 v${v.seq}`); }}>
         {/* 回滚实际会改什么（当前 → 这个版本）：「模拟团队A：黑名单 → 仅观察」 */}
-        {askHeld && <ul className="pol-changes">{askHeld.rollback_changes.length ? askHeld.rollback_changes.map((c) => <li key={`${c.scope}:${c.id}`}>{changeText(c)}</li>) : <li className="t-sub">只改备注</li>}</ul>}
+        {pv.isError ? <ErrorNote error={pv.error} onRetry={() => void pv.refetch()} />
+          : <ul className="pol-changes">{pv.data ? pv.data.changes.map((c) => <li key={`${c.scope}:${c.id}`}>{changeText(c)}</li>) : <li className="t-sub">正在比较…</li>}</ul>}
       </ConfirmDialog>
     </>
   );
@@ -523,12 +525,15 @@ function VersionApply({ v }: { v: PolicyVersion }) {
   );
 }
 
-/** 一处变更的说明：模式没变时写域名数从几个变成几个；变了写模式（新模式用域名时带上个数） */
+/** 一处变更的说明（同服务端审计摘要）：模式没变时写域名怎么变、备注改没改；变了写模式（新模式用域名时带上个数）。
+ *  旧版本记录没有 domains_changed / note_changed：用域名的模式算换了域名，其余算改了备注 */
 function changeText(c: PolicyChange): string {
   const n = (k: number) => `${k} 个域名`;
   if (c.from.mode === c.to.mode) {
-    const what = !needsDomains(c.to.mode) ? '' : c.from.domains === c.to.domains ? ` · 换了域名（${n(c.to.domains)}）` : ` · 域名 ${c.from.domains} → ${c.to.domains} 个`;
-    return `${c.name}：${modeLabel(c.to.mode)}${what}`;
+    const dom = c.domains_changed ?? needsDomains(c.to.mode);
+    const note = c.note_changed ?? !needsDomains(c.to.mode);
+    const parts = [dom && (c.from.domains === c.to.domains ? `换了域名（${n(c.to.domains)}）` : `域名 ${c.from.domains} → ${c.to.domains} 个`), note && '改了备注'].filter(Boolean);
+    return `${c.name}：${modeLabel(c.to.mode)}${parts.length ? ` · ${parts.join('，')}` : ''}`;
   }
   return `${c.name}：${modeLabel(c.from.mode)} → ${modeLabel(c.to.mode)}${needsDomains(c.to.mode) ? `（${n(c.to.domains)}）` : ''}`;
 }

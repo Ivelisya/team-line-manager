@@ -218,7 +218,7 @@ export function installPolicyMock(R: Reg, env: Env) {
     return { discarded: ds.length };
   });
 
-  function versionView(v: Ver): PolicyVersion {
+  function versionView(v: Ver): PolicyVersion & { target: Map<string, Row> } {
     const now = Date.now();
     const rel = v.relays.map((r) => {
       const status: VersionStatus = r.fail ? 'failed' : now >= r.at ? 'applied' : 'applying';
@@ -230,11 +230,18 @@ export function installPolicyMock(R: Reg, env: Env) {
     const target = new Map(v.snapshot.map((r) => [key(r.scope, r.id), r]));
     return {
       id: v.id, seq: v.seq, kind: v.kind, rollback_of_seq: v.rollback_of, actor: v.actor, created_at: iso(v.created_at), status, changes: v.changes, relays: rel,
-      is_latest: versions[0] === v, is_current: isCur, rollbackable: !isCur, rollback_changes: isCur ? [] : diff(curMap(), target),
+      is_latest: versions[0] === v, is_current: isCur, rollbackable: !isCur, target,
     };
   }
 
-  R('GET', '/policies/versions', () => { seed(); return versions.slice(0, 30).map(versionView); });
+  R('GET', '/policies/versions', () => { seed(); return versions.slice(0, 30).map((v) => { const { target: _t, ...view } = versionView(v); return view; }); });
+
+  R('GET', '/policies/versions/([^/]+)/rollback', ({ params }) => {
+    seed();
+    const v = versions.find((x) => x.id === params[0]); if (!v) throw env.bad('没有这个版本', 404, 'not_found');
+    const { rollbackable, target } = versionView(v);
+    return { seq: v.seq, rollbackable, changes: rollbackable ? diff(curMap(), target) : [] };
+  });
 
   R('POST', '/policies/versions/([^/]+)/rollback', ({ params }) => {
     seed();

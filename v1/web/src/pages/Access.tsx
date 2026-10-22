@@ -265,10 +265,12 @@ const SourcesView = React.memo(function SourcesView({ f, filtered, onClear, conn
   const pg = usePage({ total: q.data ? rows.length : undefined, sizes: SIZES, size: SIZE, reset: [f, ct] });
   // 接口不回总数：取满上限时只知道是连接数最多的前 N 个
   const capped = rows.length >= SOURCES_LIMIT;
+  // 按接入方式筛时中控只扫连接数最多的 5000 个来源：没取满也可能不全
+  const scanCapped = !!q.data?.scan_capped;
   return (
     <>
       <IpIntelHint />
-      <Panel ref={pg.anchor} title="来源地址" count={q.data ? (capped ? `前 ${fmtN(SOURCES_LIMIT)} 个` : `${fmtN(rows.length)} 个`) : undefined}
+      <Panel ref={pg.anchor} title="来源地址" count={q.data ? (capped ? `前 ${fmtN(SOURCES_LIMIT)} 个` : scanCapped ? `${fmtN(rows.length)} 个（连接数前 5000 内）` : `${fmtN(rows.length)} 个`) : undefined}
         sub={<InfoTip text={`连接到入口的客户端地址，按连接数排序${capped ? `，最多列 ${SOURCES_LIMIT} 个` : ''}；运营商 · 城市 · 接入方式查自中控的离线库，不外发 IP；搜索框在这里匹配来源 IP`} />} flush>
         {q.isError && <div style={{ padding: 12 }}><ErrNote q={q} /></div>}
         <TableWrap data-stale={q.isPlaceholderData}>

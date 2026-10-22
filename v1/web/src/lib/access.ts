@@ -95,7 +95,7 @@ export const SOURCES_LIMIT = 200;
 export const useAccessSources = (f: AccessFilter, conn = '', enabled = true) =>
   useQuery({
     queryKey: ['access', 'sources', f, conn], enabled, refetchInterval: POLL, placeholderData: keepPreviousData,
-    queryFn: ({ signal }) => get<{ items: AccessSource[] }>(`/access/sources?${accessQS(f, { limit: SOURCES_LIMIT, conn })}`, signal),
+    queryFn: ({ signal }) => get<{ items: AccessSource[]; scan_capped?: boolean }>(`/access/sources?${accessQS(f, { limit: SOURCES_LIMIT, conn })}`, signal),
   });
 
 /** 原始记录的一页：before 是上一页响应里的 next_before 游标，原样传回、不要自己拼（'' = 最新一页）。只有最新一页轮询，往前翻的页是固定的历史 */
