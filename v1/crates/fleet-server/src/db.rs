@@ -248,14 +248,17 @@ pub async fn rollup_hours(db: &PgPool) -> anyhow::Result<()> { rollup_dirty(db, 
 /// 当前读数就是重启后的增量；整点前 15 分钟内的最后一个样本参与第一个增量的计算，不丢小时交界处的流量。
 /// 只回看 15 分钟（回看整小时要多读一倍样本、排序落盘）：整点前 15 分钟内没有样本（agent 离线超过 15 分钟）时，
 /// 本小时第一个样本没有前值、不计增量，缺口那段的流量不记到这一小时（agent 重启本来就按计数器重置处理，同样不计）。
+/// 每段增量不超过 10 Gbit/s（1.25e9 字节/秒 × 两个样本的间隔），入口流量每小时不超过 10 Gbit/s 跑满一小时（4.5e12 字节）：
+/// agent 报个离谱的计数器（0 → i64::MAX）不让汇总、用量求和溢出 bigint（这一小时所有机器的汇总都会失败）
 async fn rollup_hour(db: &PgPool, hour: OffsetDateTime) -> anyhow::Result<()> {
     let q = [
         "insert into host_metric_hourly (machine_id, hour, cpu_avg, cpu_max, mem_used_avg, mem_total_max, disk_used_max, disk_total_max, net_rx, net_tx)
          select machine_id, $1, avg(cpu_pct), max(cpu_pct), avg(mem_used)::bigint, max(mem_total), max(disk_used), max(disk_total),
-                coalesce(sum(case when rx is null or prev_rx is null then 0 when rx >= prev_rx then rx - prev_rx else rx end), 0)::bigint,
-                coalesce(sum(case when tx is null or prev_tx is null then 0 when tx >= prev_tx then tx - prev_tx else tx end), 0)::bigint
+                coalesce(sum(least(case when rx is null or prev_rx is null then 0 when rx >= prev_rx then rx - prev_rx else rx end, cap)), 0)::bigint,
+                coalesce(sum(least(case when tx is null or prev_tx is null then 0 when tx >= prev_tx then tx - prev_tx else tx end, cap)), 0)::bigint
          from (select machine_id, ts, cpu_pct, mem_used, mem_total, disk_used, disk_total,
-                      net_rx_bytes rx, lag(net_rx_bytes) over w prev_rx, net_tx_bytes tx, lag(net_tx_bytes) over w prev_tx
+                      net_rx_bytes rx, lag(net_rx_bytes) over w prev_rx, net_tx_bytes tx, lag(net_tx_bytes) over w prev_tx,
+                      1.25e9 * extract(epoch from ts - lag(ts) over w) cap
                from host_metric where ts >= $1 - interval '15 minutes' and ts < $1 + interval '1 hour'
                window w as (partition by machine_id order by ts)) x
          where ts >= $1 group by machine_id
@@ -263,7 +266,7 @@ async fn rollup_hour(db: &PgPool, hour: OffsetDateTime) -> anyhow::Result<()> {
            mem_used_avg = excluded.mem_used_avg, mem_total_max = excluded.mem_total_max, disk_used_max = excluded.disk_used_max,
            disk_total_max = excluded.disk_total_max, net_rx = excluded.net_rx, net_tx = excluded.net_tx",
         "insert into entry_traffic_hourly (entry_id, hour, up_bytes, down_bytes, conns_max)
-         select entry_id, $1, sum(up_bytes), sum(down_bytes), max(conns)
+         select entry_id, $1, least(sum(up_bytes), 4.5e12)::bigint, least(sum(down_bytes), 4.5e12)::bigint, max(conns)
          from entry_traffic where ts >= $1 and ts < $1 + interval '1 hour' group by entry_id
          on conflict (entry_id, hour) do update set up_bytes = excluded.up_bytes, down_bytes = excluded.down_bytes, conns_max = excluded.conns_max",
         "insert into probe_hourly (entry_id, hour, kind, total, ok, latency_avg)

@@ -33,16 +33,31 @@ async fn login_cookie(t: &T, ua: &str, ip: &str) -> String {
     res.headers().get("set-cookie").unwrap().to_str().unwrap().split(';').next().unwrap().to_string()
 }
 
+/// 带验证码、从某个来源登录
+async fn login_from(t: &T, pw: &str, totp: Option<&str>, ip: &str) -> (StatusCode, Value) {
+    let req = Request::post("/api/v1/auth/login")
+        .header("content-type", "application/json")
+        .header("x-forwarded-for", ip)
+        .body(Body::from(login_body(pw, totp).to_string()))
+        .unwrap();
+    let res = t.app.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+}
+
 /// 用指定 Cookie 调接口
 async fn call_as(t: &T, cookie: &str, method: &str, path: &str, body: Option<Value>) -> (StatusCode, Value) {
-    let req = Request::builder()
-        .method(method)
-        .uri(path)
-        .header("content-type", "application/json")
-        .header("x-fleet-request", "1")
-        .header("cookie", cookie)
-        .body(body.map(|v| Body::from(v.to_string())).unwrap_or_else(Body::empty))
-        .unwrap();
+    call_from(t, cookie, "", method, path, body).await
+}
+
+/// 用指定 Cookie、从某个来源（空 = 不带 X-Forwarded-For）调接口
+async fn call_from(t: &T, cookie: &str, ip: &str, method: &str, path: &str, body: Option<Value>) -> (StatusCode, Value) {
+    let mut b = Request::builder().method(method).uri(path).header("content-type", "application/json").header("x-fleet-request", "1").header("cookie", cookie);
+    if !ip.is_empty() {
+        b = b.header("x-forwarded-for", ip);
+    }
+    let req = b.body(body.map(|v| Body::from(v.to_string())).unwrap_or_else(Body::empty)).unwrap();
     let res = t.app.clone().oneshot(req).await.unwrap();
     let status = res.status();
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
@@ -59,7 +74,7 @@ async fn actions(t: &T) -> Vec<String> {
 
 /// 开启两步验证，返回 (密钥, 确认时用的时间步, 恢复码)
 async fn enable(t: &T) -> (Vec<u8>, i64, Vec<String>) {
-    let s = t.ok("POST", "/api/v1/account/totp/setup", None).await;
+    let s = t.ok("POST", "/api/v1/account/totp/setup", Some(json!({"password": ADMIN_PW}))).await;
     let secret = data_encoding::BASE32_NOPAD.decode(s["secret"].as_str().unwrap().as_bytes()).unwrap();
     let step = fleet_server::totp::now_step();
     let d = t.ok("POST", "/api/v1/account/totp/enable", Some(json!({"code": code(&secret, step)}))).await;
@@ -72,8 +87,13 @@ async fn totp_enable_login_recovery_disable() {
     let t = setup().await;
     assert_eq!(t.ok("GET", "/api/v1/account/totp", None).await["enabled"], false);
 
+    // 设置要当前密码（偷到 Cookie 的人不能绑自己的认证器）：不对 401，不生成密钥
+    let (st, v) = t.call("POST", "/api/v1/account/totp/setup", Some(json!({"password": "nope"})), Auth::Session).await;
+    assert_eq!((st, v["error"]["code"].as_str()), (StatusCode::UNAUTHORIZED, Some("bad_password")), "{v}");
+    let pending: Option<Vec<u8>> = sqlx::query_scalar("select totp_pending_enc from app_user where username = 'admin'").fetch_one(&t.st.db).await.unwrap();
+    assert!(pending.is_none());
     // 设置：二维码与 otpauth 链接；库里只有密文
-    let s = t.ok("POST", "/api/v1/account/totp/setup", None).await;
+    let s = t.ok("POST", "/api/v1/account/totp/setup", Some(json!({"password": ADMIN_PW}))).await;
     let b32 = s["secret"].as_str().unwrap();
     assert!(s["otpauth_url"].as_str().unwrap().contains(&format!("secret={b32}")), "{s}");
     assert!(s["qr_svg"].as_str().unwrap().contains("<svg"));
@@ -90,19 +110,20 @@ async fn totp_enable_login_recovery_disable() {
     assert_eq!(codes.len(), 10);
     let stt = t.ok("GET", "/api/v1/account/totp", None).await;
     assert_eq!((stt["enabled"].as_bool(), stt["recovery_codes_left"].as_i64()), (Some(true), Some(10)));
-    let (st, _) = t.call("POST", "/api/v1/account/totp/setup", None, Auth::Session).await;
+    let (st, _) = t.call("POST", "/api/v1/account/totp/setup", Some(json!({"password": ADMIN_PW})), Auth::Session).await;
     assert_eq!(st, StatusCode::CONFLICT, "已启用时不能再设置");
 
-    // 登录：没给码 → totp_required（只在密码对时才这么说，且不算失败）；密码错仍是 bad_credentials
+    // 登录：没给码 → totp_required（只在密码对时才这么说；照样计一次，免得知道密码的人不限次数地占用算哈希的名额）；
+    // 密码错仍是 bad_credentials
     let (st, v) = login(&t, ADMIN_PW, None).await;
     assert_eq!((st, v["error"]["code"].as_str()), (StatusCode::UNAUTHORIZED, Some("totp_required")), "{v}");
-    assert_eq!(failures(&t).await, 0);
+    assert_eq!(failures(&t).await, 1);
     let (st, v) = login(&t, "wrong-password", Some(&code(&secret, n + 1))).await;
     assert_eq!((st, v["error"]["code"].as_str()), (StatusCode::UNAUTHORIZED, Some("bad_credentials")));
     // 确认时用过的那一步不能再用（重放），算一次失败
     let (st, v) = login(&t, ADMIN_PW, Some(&code(&secret, n))).await;
     assert_eq!((st, v["error"]["code"].as_str()), (StatusCode::UNAUTHORIZED, Some("totp_invalid")), "{v}");
-    assert_eq!(failures(&t).await, 2);
+    assert_eq!(failures(&t).await, 3);
     let (st, v) = login(&t, ADMIN_PW, Some(&code(&secret, n + 1))).await;
     assert_eq!(st, StatusCode::OK, "{v}");
     assert_eq!(failures(&t).await, 0, "成功后清掉本来源的失败");
@@ -193,8 +214,11 @@ async fn sessions_list_and_revoke() {
     assert_eq!(t.call("DELETE", &format!("/api/v1/account/sessions/{id2}"), None, Auth::Session).await.0, StatusCode::NOT_FOUND);
     assert_eq!(t.call("DELETE", "/api/v1/account/sessions/zz", None, Auth::Session).await.0, StatusCode::NOT_FOUND);
 
-    // 退出其它设备
-    let d = t.ok("POST", "/api/v1/account/sessions/revoke-others", None).await;
+    // 退出其它设备：要当前密码，不对 401、谁都不退
+    let (st, v) = t.call("POST", "/api/v1/account/sessions/revoke-others", Some(json!({"password": "nope"})), Auth::Session).await;
+    assert_eq!((st, v["error"]["code"].as_str()), (StatusCode::UNAUTHORIZED, Some("bad_password")), "{v}");
+    assert_eq!(call_as(&t, &c3, "GET", "/api/v1/auth/me", None).await.0, StatusCode::OK);
+    let d = t.ok("POST", "/api/v1/account/sessions/revoke-others", Some(json!({"password": ADMIN_PW}))).await;
     assert_eq!(d["revoked"], 1);
     assert_eq!(call_as(&t, &c3, "GET", "/api/v1/auth/me", None).await.0, StatusCode::UNAUTHORIZED);
     assert_eq!(t.ok("GET", "/api/v1/account/sessions", None).await.as_array().unwrap().len(), 1);
@@ -238,4 +262,48 @@ async fn password_change() {
     assert_eq!(login(&t, ADMIN_PW, None).await.0, StatusCode::UNAUTHORIZED);
     assert_eq!(login(&t, new_pw, None).await.0, StatusCode::OK);
     assert!(actions(&t).await.iter().any(|a| a == "auth.password_changed"));
+}
+
+async fn sources(t: &T) -> Vec<String> {
+    sqlx::query_scalar("select host(ip) from login_source order by 1").fetch_all(&t.st.db).await.unwrap()
+}
+
+/// 新建 API 密钥要当前密码；改密码清掉本来源以外登录成功过的来源，勾了 revoke_api_keys 同时撤销全部密钥；totp-reset 清掉全部来源
+#[tokio::test]
+async fn password_change_clears_sources_and_keys() {
+    let t = common::boot(false, "trust_forwarded_for = true").await;
+    login_cookie(&t, "a", "203.0.113.7").await;
+    let mine = login_cookie(&t, "b", "198.51.100.3").await;
+    assert_eq!(sources(&t).await, ["198.51.100.3", "203.0.113.7"]);
+
+    let (st, v) = t.call("POST", "/api/v1/api-keys", Some(json!({"name": "k", "scopes": ["read"]})), Auth::Session).await;
+    assert_eq!((st, v["error"]["code"].as_str()), (StatusCode::UNAUTHORIZED, Some("bad_password")), "{v}");
+    let (_, key) = t.make_key("k", &["read"]).await;
+    assert_eq!(t.call("GET", "/api/v1/machines", None, Auth::Key(&key)).await.0, StatusCode::OK);
+
+    let body = json!({"current": ADMIN_PW, "new": "another correct horse", "revoke_api_keys": true});
+    let (st, v) = call_from(&t, &mine, "198.51.100.3", "POST", "/api/v1/account/password", Some(body)).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(v["data"]["revoked_api_keys"], 1);
+    assert_eq!(sources(&t).await, ["198.51.100.3"], "只留本来源");
+    assert_eq!(t.call("GET", "/api/v1/machines", None, Auth::Key(&key)).await.0, StatusCode::UNAUTHORIZED, "密钥已撤销");
+
+    fleet_server::auth::totp_reset(&t.st.db, "admin").await.unwrap();
+    assert!(sources(&t).await.is_empty());
+}
+
+/// 验证码输错按用户名另计：1 小时 10 次，不分来源（知道密码的人换 /64 猜码），本人登录成功过的来源也一样先等
+#[tokio::test]
+async fn wrong_codes_capped_per_user() {
+    let t = common::boot(false, "trust_forwarded_for = true").await;
+    assert_eq!(login_from(&t, ADMIN_PW, None, "198.51.100.20").await.0, StatusCode::OK);
+    let (secret, step, _) = enable(&t).await;
+    for i in 0..10 {
+        let (st, v) = login_from(&t, ADMIN_PW, Some(&code(&secret, step + 100)), &format!("2001:db8:{i:x}::1")).await;
+        assert_eq!((st, v["error"]["code"].as_str()), (StatusCode::UNAUTHORIZED, Some("totp_invalid")), "{i}: {v}");
+    }
+    let (st, v) = login_from(&t, ADMIN_PW, Some(&code(&secret, step + 1)), "198.51.100.20").await;
+    assert_eq!(st, StatusCode::TOO_MANY_REQUESTS, "{v}");
+    sqlx::query("update login_failure set ts = now() - interval '61 minutes'").execute(&t.st.db).await.unwrap();
+    assert_eq!(login_from(&t, ADMIN_PW, Some(&code(&secret, step + 1)), "198.51.100.20").await.0, StatusCode::OK);
 }

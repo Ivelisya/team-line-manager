@@ -1,8 +1,9 @@
 //! API 密钥管理。只有会话登录的用户能管理（API 密钥调用一律 403）。
 //! 库里只存 sha256 与前缀；明文 token 只在创建时返回一次。
 
+use super::account::Recheck;
 use super::ok;
-use crate::auth::{Actor, ALL_SCOPES};
+use crate::auth::{Actor, ClientIp, ALL_SCOPES};
 use crate::crypto::{random_token, sha256};
 use crate::db::{audit, new_id};
 use crate::error::{ApiError, ApiJson, ApiPath, ApiResult};
@@ -45,9 +46,15 @@ pub struct CreateIn {
     name: String,
     scopes: Vec<String>,
     expires_days: Option<i64>,
+    /// 当前密码（开了两步验证还要 totp：验证码或恢复码）
+    #[serde(default)]
+    password: String,
+    #[serde(default)]
+    totp: Option<String>,
 }
 
-pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<CreateIn>) -> ApiResult<Json<Value>> {
+/// 新建密钥要再输一次当前密码（开了两步验证还要验证码）：偷到 Cookie 的人不能借它铸一把全权限、改密码后也不失效的密钥
+pub async fn create(a: Actor, State(st): State<AppState>, ClientIp(ip): ClientIp, ApiJson(b): ApiJson<CreateIn>) -> ApiResult<Json<Value>> {
     a.require_session()?;
     let name = b.name.trim().to_string();
     if name.is_empty() || name.chars().count() > 64 {
@@ -70,6 +77,7 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Cr
         Some(d) if (1..=3650).contains(&d) => Some(OffsetDateTime::now_utc() + Duration::days(d)),
         Some(_) => return Err(ApiError::bad_request("expires_days 要在 1 到 3650 之间")),
     };
+    let (r, f) = Recheck::password_and_code(&st, &a, ip, "apikey_create", &b.password, b.totp.as_deref()).await?;
     // 前缀用十六进制（不含 _），便于在列表里认出是哪把
     let mut p = [0u8; 4];
     rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut p);
@@ -77,6 +85,7 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Cr
     let token = format!("flk_{prefix}_{}", random_token(32));
     let id = new_id();
     let mut tx = st.db.begin().await?;
+    r.done(&mut tx, f).await?;
     sqlx::query("insert into api_key (id, name, prefix, key_hash, scopes, expires_at) values ($1, $2, $3, $4, $5, $6)")
         .bind(id)
         .bind(&name)
@@ -107,5 +116,6 @@ pub async fn revoke(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<U
     }
     tx.commit().await?;
     st.emit(Event::ApiKeys);
+    st.revoked();
     Ok(ok(json!({"ok": true})))
 }

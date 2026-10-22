@@ -12,24 +12,24 @@
 ## 认证
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/auth/login` | `{username,password,totp?}` → 设 Cookie，`{data:{username}}`。限速（15 分钟窗口；来源 = IPv4 地址或 IPv6 /64）：同一用户名从同一来源失败 5 次、同一来源失败 20 次（不分用户名）、同一用户名失败 100 次（不分来源；该用户 30 天内登录成功过的来源不受这一条）→ 429；别处的失败不影响从自己的来源登录，成功登录只清本来源的失败记录（`error.code="rate_limited"`，`error.detail.retry_after_s`，message 含剩余等待时间）。成功、失败、登出都写审计。**两步验证**：用户开了 TOTP 时，密码对但没给 `totp` → 401 `totp_required`（不算失败；密码错时一律 `bad_credentials`，猜密码的人看不出开没开）；`totp` 是 6 位验证码（前后各容忍 30 秒，同一个时间步只收一次）或一个恢复码（用掉即作废，写审计 `auth.totp_recovery_used`），不对或重放 → 401 `totp_invalid`，算一次登录失败 |
-| POST | `/auth/logout` | |
+| POST | `/auth/login` | `{username,password,totp?}` → 设 Cookie，`{data:{username}}`。限速（15 分钟窗口；来源 = IPv4 地址或 IPv6 /64）：同一用户名从同一来源失败 5 次、同一来源失败 20 次（不分用户名）、同一用户名失败 100 次（不分来源；该用户 30 天内登录成功过的来源不受这一条）→ 429；别处的失败不影响从自己的来源登录，成功登录只清本来源的失败记录（`error.code="rate_limited"`，`error.detail.retry_after_s`，message 含剩余等待时间）。成功、失败、登出都写审计。**两步验证**：用户开了 TOTP 时，密码对但没给 `totp` → 401 `totp_required`（照样计一次失败、不写审计，成功登录后随本来源的记录清掉；不计的话知道密码的人能不限次数地占用算密码哈希的名额。密码错时一律 `bad_credentials`，猜密码的人看不出开没开）；`totp` 是 6 位验证码（前后各容忍 30 秒，同一个时间步只收一次）或一个恢复码（用掉即作废，写审计 `auth.totp_recovery_used`），不对或重放 → 401 `totp_invalid`，算一次登录失败。验证码输错另有上限：同一用户名 1 小时内 10 次（登录与下面的再次校验合计），不分来源、登录成功过的来源也不例外 → 429 |
+| POST | `/auth/logout` | 这个会话的实时流连接马上以 `4401` 关闭 |
 | GET | `/auth/me` | `{data:{username, kind:"session"\|"api_key", scopes:[...]}}`；未登录 401 |
 
 ## 账户安全（两步验证、登录会话、改密码）
-只允许会话用户，用 API 密钥调用一律 403（fleetctl 走 API 密钥，不受两步验证影响）。要再输一次密码 / 验证码的接口（停用两步验证、重新生成恢复码、改密码）与登录共用失败限速（同一用户名 + 来源），输错写审计 `auth.verify_failed`。输错当前密码回 401 `bad_password`、验证码不对回 401 `totp_invalid`、该给验证码没给回 401 `totp_required`——只有 `code="unauthorized"` 的 401 才表示会话失效。
+只允许会话用户，用 API 密钥调用一律 403（fleetctl 走 API 密钥，不受两步验证影响）。要再输一次密码 / 验证码的接口（开启与停用两步验证、重新生成恢复码、退出其它设备、改密码、新建 API 密钥）与登录共用失败限速（同一用户名 + 来源；验证码输错另计，见登录），输错写审计 `auth.verify_failed`：偷到会话 Cookie 的人不能借这些接口绑自己的认证器、把本人踢下线或铸一把密钥。撤销会话（登出、撤销、退出其它设备、改密码、`fleet-server user-set`）与撤销密钥后，实时流里对应的连接马上以 `4401` 关闭。输错当前密码回 401 `bad_password`、验证码不对回 401 `totp_invalid`、该给验证码没给回 401 `totp_required`——只有 `code="unauthorized"` 的 401 才表示会话失效。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/account/totp` | `{enabled, recovery_codes_left}` |
-| POST | `/account/totp/setup` | 生成待确认的密钥（20 字节，加密保存，10 分钟内有效；再调一次换一把）→ `{secret(base32), otpauth_url, qr_svg}`；已开启 409 |
+| POST | `/account/totp/setup` | `{password}`（当前密码）→ 生成待确认的密钥（20 字节，加密保存，10 分钟内有效；再调一次换一把）→ `{secret(base32), otpauth_url, qr_svg}`；已开启 409 |
 | POST | `/account/totp/enable` | `{code}`（6 位，核对待确认的密钥）→ 开启并返回 `{recovery_codes:[10 个 xxxx-xxxx-xxxx]}`，**只返回这一次**（库里只存 sha256）；码不对 400 `totp_invalid`；审计 `auth.totp_enabled` |
 | POST | `/account/totp/disable` | `{password, code}`（code 可以是恢复码）→ 停用，恢复码全部作废；审计 `auth.totp_disabled` |
 | POST | `/account/totp/recovery-codes` | `{code}`（验证码或恢复码）→ 新的一组 `{recovery_codes}`，旧的全部作废；审计 `auth.totp_recovery_regenerated` |
 | GET | `/account/sessions` | 当前用户未过期的会话 `[{id, created_at, last_seen_at, expires_at, ip, user_agent, current}]`，本设备排第一；`id` 是会话哈希前 8 字节的十六进制（推不出 Cookie），`user_agent` 最多 200 字符，`last_seen_at` 一分钟内不重复更新 |
 | DELETE | `/account/sessions/{id}` | 撤销一个会话（不存在 404）→ `{ok, current}`；审计 `auth.session_revoked` |
-| POST | `/account/sessions/revoke-others` | 撤销本设备以外的全部会话 → `{revoked}`；审计 `auth.session_revoked` |
-| POST | `/account/password` | `{current, new, totp?}`：新密码至少 12 个字符、不能等于用户名或当前密码；开了两步验证要 `totp`（或恢复码）。成功后撤销本设备以外的全部会话 → `{ok, revoked_sessions}`；审计 `auth.password_changed` |
+| POST | `/account/sessions/revoke-others` | `{password, totp?}`（开了两步验证要 `totp`，或恢复码）→ 撤销本设备以外的全部会话 → `{revoked}`；审计 `auth.session_revoked` |
+| POST | `/account/password` | `{current, new, totp?, revoke_api_keys?}`：新密码至少 12 个字符、不能等于用户名或当前密码；开了两步验证要 `totp`（或恢复码）。成功后撤销本设备以外的全部会话，清掉本来源以外「登录成功过的来源」（不再免于同一用户名 100 次的上限）；`revoke_api_keys: true` 同时撤销全部 API 密钥（默认不动：密钥不随改密码失效）→ `{ok, revoked_sessions, revoked_api_keys}`；审计 `auth.password_changed`。`fleet-server user-set` 清掉该用户全部会话与登录成功过的来源，`totp-reset` 也清掉登录成功过的来源 |
 
 ## API 密钥与 scope
 密钥是 `flk_<8位十六进制前缀>_<随机串>`，库里只存 sha256 与前缀。每个请求按「方法 + 路径」需要一个 scope，密钥没有就 403（会话用户拥有全部）：
@@ -46,8 +46,8 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api-keys` | `[{id,name,prefix,scopes,created_at,expires_at,last_used_at,revoked_at}]`（永不返回 token） |
-| POST | `/api-keys` | `{name, scopes:["read",…], expires_days?: 1-3650}` → `{data:{id, token}}`，**token 只返回这一次**；写审计，实时流发 `api_keys` |
-| DELETE | `/api-keys/{id}` | 撤销（幂等）；之后用它的请求 401 |
+| POST | `/api-keys` | `{name, scopes:["read",…], expires_days?: 1-3650, password, totp?}`（当前密码；开了两步验证还要 `totp`，或恢复码，失败同账户安全的再次校验）→ `{data:{id, token}}`，**token 只返回这一次**；写审计，实时流发 `api_keys`。`fleetctl keys create --user` 用登录的密码；命令行登录不支持两步验证，开了的账户到网页上建 |
+| DELETE | `/api-keys/{id}` | 撤销（幂等）；之后用它的请求 401，用它连着的实时流马上以 `4401` 关闭 |
 
 ## 目录
 | 方法 | 路径 | 说明 |
@@ -216,7 +216,7 @@ ProvisionItem = {
 ## 实时
 `GET /api/v1/stream`：WebSocket（`ws://` / `wss://`），鉴权同其它 GET（会话 Cookie 或 `Authorization: Bearer`，需要 `read`）；用会话 Cookie 连时 `Origin` 必须等于 `public_url` 的协议 + 主机 + 端口，否则 403（WebSocket 握手不受同源策略约束），握手失败返回普通 HTTP 错误（401/403）。服务端只发 JSON 文本帧，不读客户端消息。
 - **保活**：服务端每 15 s 发 ping，到下一次 ping 还没收到 pong 就断开（浏览器自动回 pong）。
-- **会话复核**：每 60 s 查一次会话/密钥是否仍有效，失效则以关闭码 `4401` 关闭（客户端应回登录页，`fleetctl watch` 报错退出）；复核查询本身失败以 `1011` 关闭，客户端照常退避重连、握手时重新鉴权。
+- **会话复核**：每 60 s 查一次会话/密钥是否仍有效，撤销会话或密钥时各连接马上再查一次（服务端内部通知，不推给前端；命令行 `user-set` 经 PostgreSQL `NOTIFY fleet_revoked` 转过来），失效则以关闭码 `4401` 关闭（客户端应回登录页，`fleetctl watch` 报错退出）；复核查询本身失败以 `1011` 关闭，客户端照常退避重连、握手时重新鉴权。
 - **滞后**：服务端广播缓冲 256 条，某个连接读得太慢丢了消息时补发 `{type:"resync"}`，客户端应让全部缓存失效重取。
 - **重连**：客户端断线后自己退避重连；连上后应重取一次机器类数据（断开期间错过的 `metrics` 增量不会补发）。
 
@@ -241,7 +241,7 @@ ProvisionItem = {
 
 `POST /agent/v1/report` 入库失败按类回：数据本身入不了库（SQLSTATE 22 类：坏字节、NUL、越界；23 类：违反约束）→ 422（`error.code="bad_report"`），agent 把这份报告移入 `dead/` 不再重发，其中的入口流量结转到下一份报告补报（同离线队列超限淘汰；这份本身带着结转补报的流量时不再结转，免得一份接一份地被拒）；其它（连接池超时、断连、磁盘满、只读…）→ 503，agent 退避重试（受本地队列的字节与时长上限约束）。agent 只把 4xx（401 撤销、403/404/408/429 除外）当永久拒绝，5xx 和网络错误一律重试。
 
-上报的限额（按机器，在内存里，中控重启归满）：新的一份（seq 变大）扣一个令牌，突发 600、之后每秒补 1，扣不到回 429 + `Retry-After`（重发的同一份不扣）。样本时间戳只收「保留期以内 ~ 中控时间往后 10 分钟」（agent 时钟快得更多时样本丢弃，健康原因 `clock_skew` 在偏差超过 60 秒时就已报出）。主机样本按 (机器, 时刻) 唯一，同一时刻重报的不再入库；另有主机样本余额：容量 8640 个（24 小时的量），每 5 秒补一个（两倍于 agent 10 秒一个的采样），超出的丢最早的——正常 agent 补传积压（最多 6 小时离线队列 + 12 小时内存缓冲）期间余额按两倍速回满，用不完；一台机器一天最多入库约 2.6 万条（正常 8640）。
+上报的限额（按机器，在内存里，中控重启归满）：新的一份（seq 大于入库提交过的）要有一个令牌，突发 600、之后每秒补 1，扣不到回 429 + `Retry-After`；入库提交之后才扣令牌与主机样本余额，入库失败的那份不扣、也不算「提交过的 seq」（重发的同一份不扣）。agent 给的字符串里的 NUL 入库前去掉（text / jsonb 不收）。主机网卡计数器的每段增量在小时汇总里按 10 Gbit/s × 两个样本的间隔封顶、入口流量每小时按 10 Gbit/s 跑满封顶，用量求和夹到 9e18：离谱的计数器不会让汇总或机器列表溢出。样本时间戳只收「保留期以内 ~ 中控时间往后 10 分钟」（agent 时钟快得更多时样本丢弃，健康原因 `clock_skew` 在偏差超过 60 秒时就已报出）。主机样本按 (机器, 时刻) 唯一，同一时刻重报的不再入库；另有主机样本余额：容量 8640 个（24 小时的量），每 5 秒补一个（两倍于 agent 10 秒一个的采样），超出的丢最早的——正常 agent 补传积压（最多 6 小时离线队列 + 12 小时内存缓冲）期间余额按两倍速回满，用不完；一台机器一天最多入库约 2.6 万条（正常 8640）。
 
 `POST /agent/v1/applied`：每台线路机突发 120 份、之后 2 秒一份，超出回 429 + `Retry-After`（agent 照 Retry-After 重试，三次不成落盘、下轮补发）。`error` 与 `entries[].error` 截到 512 字，`entries` 最多 3000 条（不属于这台线路机的入口 id 忽略）。回报没改变任何东西（重发的同一份、同样的错误）时不发 `relay` / `machines` 失效通知。
 

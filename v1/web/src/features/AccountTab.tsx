@@ -1,4 +1,5 @@
-// 设置 · 账户安全：两步验证（开启 / 停用 / 重新生成恢复码，恢复码只显示一次）、修改密码、登录会话（撤销、退出其它设备）。
+// 设置 · 账户安全：两步验证（开启 / 停用 / 重新生成恢复码，恢复码只显示一次）、修改密码（可同时撤销全部 API 密钥）、登录会话（撤销、退出其它设备）。
+// 开启两步验证、退出其它设备都要再输当前密码：拿到会话 Cookie 的人不能借它绑自己的认证器、把本人踢下线。
 // 输错当前密码 / 验证码时服务端回 401（code 不是 unauthorized，不会跳登录页），错误留在对话框或表单里显示。
 import * as React from 'react';
 import { Copy, LogOut, MonitorSmartphone, RefreshCw, ShieldAlert, ShieldCheck, ShieldOff } from 'lucide-react';
@@ -6,7 +7,7 @@ import { useChangePassword, useMe, useRegenRecovery, useRevokeOtherSessions, use
 import type { AccountSession } from '@/lib/types';
 import * as F from '@/lib/format';
 import { Button, IconButton } from '@/components/ui/button';
-import { Field, Input } from '@/components/ui/form';
+import { Checkbox, Field, Input } from '@/components/ui/form';
 import { Trunc } from '@/components/ui/overlays';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { SkeletonRows } from '@/components/ui/skeleton';
@@ -73,18 +74,19 @@ function TotpPanel() {
   );
 }
 
-/** 开启：打开时生成一把待确认的密钥（10 分钟内有效），扫码后输入验证码确认。每次打开重新挂载、重新生成 */
+/** 开启：先核对当前密码、生成一把待确认的密钥（10 分钟内有效），扫码后输入验证码确认。每次打开重新挂载、重新生成 */
 const EnableTotpDialog = resetOnOpen(function EnableTotpDialog({ open, onClose, onDone }: { open: boolean; onClose: () => void; onDone: (codes: string[]) => void }) {
-  const setup = useTotpSetup(); const enable = useTotpEnable();
+  const setup = useTotpSetup(); const enable = useTotpEnable(); const me = useMe();
+  const [pw, setPw] = React.useState('');
   const [code, setCode] = React.useState('');
   const [err, setErr] = React.useState<string | null>(null);
-  // 只生成一次（开发模式下 effect 会跑两遍：两次请求的密钥不同，界面和服务端可能对不上）
-  const started = React.useRef(false);
-  const { mutate: start } = setup;
-  React.useEffect(() => { if (open && !started.current) { started.current = true; start(); } }, [open, start]);
   const d = setup.data;
   const submit = () => {
     setErr(null);
+    if (!d) {
+      setup.mutate(pw, { onSuccess: () => setPw(''), onError: (e) => { setErr(msg(e)); setPw(''); } });
+      return;
+    }
     enable.mutate(code.replace(/\s/g, ''), {
       onSuccess: (r) => { onClose(); onDone(r.recovery_codes); toast.ok('两步验证已开启'); },
       onError: (e) => { setErr(msg(e)); setCode(''); },
@@ -92,20 +94,26 @@ const EnableTotpDialog = resetOnOpen(function EnableTotpDialog({ open, onClose, 
   };
   return (
     <FormDialog size="md" open={open} onOpenChange={(o) => !o && onClose()} title="开启两步验证" desc="开启后，登录时除了密码还要输入认证器上的验证码。"
-      submitLabel="验证并开启" onSubmit={submit} busy={enable.isPending} valid={!!d && isTotpCode(code)} dirty={!!setup.data || !!code}>
-      {setup.isError ? <ErrorNote error={setup.error} onRetry={() => setup.mutate()} /> : (
-        <div className="totp-setup">
-          {d ? <img className="totp-qr" src={`data:image/svg+xml;utf8,${encodeURIComponent(d.qr_svg)}`} alt="两步验证二维码" width={168} height={168} />
-            : <span className="totp-qr skel" role="status" aria-label="正在生成" />}
-          <div className="totp-steps">
-            <div><b>1. 扫码</b>：用认证器 App（Google Authenticator、Microsoft Authenticator、1Password 等）扫描左侧二维码。</div>
-            <div>扫不了时，在 App 里手动添加，密钥：</div>
-            <div className="token-box"><code>{d ? d.secret.replace(/(.{4})/g, '$1 ').trim() : '…'}</code>{d && <CopyButton text={d.secret} label="密钥" />}</div>
-            <div><b>2. 确认</b>：输入 App 上显示的 6 位验证码。</div>
+      submitLabel={d ? '验证并开启' : '下一步'} onSubmit={submit} busy={setup.isPending || enable.isPending} valid={d ? isTotpCode(code) : !!pw} dirty={!!d || !!pw || !!code}>
+      {!d ? (
+        <>
+          <input type="text" autoComplete="username" value={me.data?.username ?? ''} readOnly hidden />
+          <Field label="当前密码" hint="先确认是你本人在操作"><Input type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="current-password" autoFocus /></Field>
+        </>
+      ) : (
+        <>
+          <div className="totp-setup">
+            <img className="totp-qr" src={`data:image/svg+xml;utf8,${encodeURIComponent(d.qr_svg)}`} alt="两步验证二维码" width={168} height={168} />
+            <div className="totp-steps">
+              <div><b>1. 扫码</b>：用认证器 App（Google Authenticator、Microsoft Authenticator、1Password 等）扫描左侧二维码。</div>
+              <div>扫不了时，在 App 里手动添加，密钥：</div>
+              <div className="token-box"><code>{d.secret.replace(/(.{4})/g, '$1 ').trim()}</code><CopyButton text={d.secret} label="密钥" /></div>
+              <div><b>2. 确认</b>：输入 App 上显示的 6 位验证码。</div>
+            </div>
           </div>
-        </div>
+          <Field label="验证码"><CodeInput value={code} onChange={setCode} autoFocus /></Field>
+        </>
       )}
-      <Field label="验证码"><CodeInput value={code} onChange={setCode} autoFocus /></Field>
       {err && <Note tone="bad">{err}</Note>}
     </FormDialog>
   );
@@ -173,6 +181,7 @@ function PasswordPanel() {
   const me = useMe(); const totp = useTotpStatus().data?.enabled ?? false;
   const change = useChangePassword();
   const [cur, setCur] = React.useState(''); const [nw, setNw] = React.useState(''); const [nw2, setNw2] = React.useState(''); const [code, setCode] = React.useState('');
+  const [keys, setKeys] = React.useState(false);
   const [err, setErr] = React.useState<string | null>(null);
   const len = [...nw].length;
   const sameAsUser = !!me.data && nw.trim().toLowerCase() === me.data.username.trim().toLowerCase();
@@ -182,16 +191,17 @@ function PasswordPanel() {
     e.preventDefault();
     if (!valid || change.isPending) return;
     setErr(null);
-    change.mutate({ current: cur, new: nw, ...(totp ? { totp: code.trim() } : {}) }, {
+    change.mutate({ current: cur, new: nw, ...(totp ? { totp: code.trim() } : {}), ...(keys ? { revoke_api_keys: true } : {}) }, {
       onSuccess: (r) => {
-        setCur(''); setNw(''); setNw2(''); setCode('');
-        toast.ok(r.revoked_sessions ? `密码已修改，其它 ${r.revoked_sessions} 个设备已退出登录` : '密码已修改');
+        setCur(''); setNw(''); setNw2(''); setCode(''); setKeys(false);
+        const done = [r.revoked_sessions ? `其它 ${r.revoked_sessions} 个设备已退出登录` : '', r.revoked_api_keys ? `${r.revoked_api_keys} 个 API 密钥已撤销` : ''].filter(Boolean);
+        toast.ok(done.length ? `密码已修改，${done.join('，')}` : '密码已修改');
       },
       onError: (x) => { setErr(msg(x)); setCode(''); },
     });
   };
   return (
-    <Panel title="修改密码" sub="改完后，除本设备以外的登录会话全部退出">
+    <Panel title="修改密码" sub="改完后，除本设备以外的登录会话全部退出；API 密钥不受影响，除非勾选一并撤销">
       <form className="account-form" onSubmit={submit}>
         <input type="text" autoComplete="username" value={me.data?.username ?? ''} readOnly hidden />
         <div className="form-grid">
@@ -202,6 +212,7 @@ function PasswordPanel() {
           <Field label="新密码" error={newErr} hint={`至少 ${MIN_PASSWORD} 个字符，建议用密码管理器生成`}><Input type="password" value={nw} onChange={(e) => setNw(e.target.value)} autoComplete="new-password" /></Field>
           <Field label="再输一次新密码" error={nw2 && nw !== nw2 ? '两次输入的不一样' : undefined}><Input type="password" value={nw2} onChange={(e) => setNw2(e.target.value)} autoComplete="new-password" /></Field>
         </div>
+        <label className="check-row"><Checkbox checked={keys} onCheckedChange={(v) => setKeys(v === true)} /><span>同时撤销所有 API 密钥<span className="t-sub">：怀疑密码或登录会话泄露时勾上，拿到会话的人可能已经建了密钥</span></span></label>
         {err && <Note tone="bad">{err}</Note>}
         <div className="row"><Button type="submit" variant="primary" loading={change.isPending} disabled={!valid}>修改密码</Button></div>
       </form>
@@ -220,9 +231,10 @@ function uaLabel(ua: string | null): string {
 
 const SESSION_CAP = 8;
 function SessionsPanel() {
-  const q = useSessions(); const revoke = useRevokeSession(); const others = useRevokeOtherSessions();
-  const [ask, setAsk] = React.useState<AccountSession | 'others' | null>(null);
-  const askHeld = useHeld(ask === 'others' ? 'others' : ask?.id, ask);
+  const q = useSessions(); const revoke = useRevokeSession();
+  const [ask, setAsk] = React.useState<AccountSession | null>(null);
+  const [others, setOthers] = React.useState(false);
+  const askHeld = useHeld(ask?.id, ask);
   const list = q.data ?? [];
   const nOthers = list.filter((s) => !s.current).length;
   // 会话可能有一二十个（多是开启设备记录之前的「未知设备」）：先露前 SESSION_CAP 个（按服务端的顺序，最近活动的在前），表尾展开全部
@@ -231,7 +243,7 @@ function SessionsPanel() {
   return (
     <>
       <Panel title="登录会话" count={list.length} sub="正在登录着的设备；不认识的立即撤销" flush
-        tools={<Button disabled={nOthers === 0} onClick={() => setAsk('others')}><LogOut />退出其它设备</Button>}>
+        tools={<Button disabled={nOthers === 0} onClick={() => setOthers(true)}><LogOut />退出其它设备</Button>}>
         {q.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div>}
         {q.isLoading ? <SkeletonRows rows={2} head /> : q.isError && !q.data ? null : list.length === 0 ? <Empty icon={<MonitorSmartphone size={22} />} text="没有登录会话" /> : (
           <div className="table-wrap">
@@ -258,13 +270,34 @@ function SessionsPanel() {
           </div>
         )}
       </Panel>
-      <ConfirmDialog open={!!ask} onOpenChange={(o) => !o && setAsk(null)} confirmLabel={askHeld === 'others' ? '全部退出' : '撤销'} danger
-        title={askHeld === 'others' ? `退出其它 ${nOthers} 个设备？` : `撤销「${askHeld ? uaLabel(askHeld.user_agent) : ''}」的会话？`}
-        description={askHeld === 'others' ? '除本设备外的登录会话立即失效，那些设备要重新登录。' : `${askHeld?.ip ? `来自 ${askHeld.ip} 的` : '这个'}会话立即失效，那台设备要重新登录。`}
-        onConfirm={async () => {
-          if (ask === 'others') { const r = await others.mutateAsync(); toast.ok(`已退出 ${r.revoked} 个设备`); }
-          else if (ask) { await revoke.mutateAsync(ask.id); toast.ok('会话已撤销'); }
-        }} />
+      <ConfirmDialog open={!!ask} onOpenChange={(o) => !o && setAsk(null)} confirmLabel="撤销" danger
+        title={`撤销「${askHeld ? uaLabel(askHeld.user_agent) : ''}」的会话？`}
+        description={`${askHeld?.ip ? `来自 ${askHeld.ip} 的` : '这个'}会话立即失效，那台设备要重新登录。`}
+        onConfirm={async () => { if (ask) { await revoke.mutateAsync(ask.id); toast.ok('会话已撤销'); } }} />
+      <RevokeOthersDialog open={others} n={nOthers} onClose={() => setOthers(false)} />
     </>
   );
 }
+
+/** 退出其它设备：要当前密码（开了两步验证还要验证码），拿到会话的人不能借它把本人踢下线 */
+const RevokeOthersDialog = resetOnOpen(function RevokeOthersDialog({ open, n, onClose }: { open: boolean; n: number; onClose: () => void }) {
+  const others = useRevokeOtherSessions(); const me = useMe(); const totp = useTotpStatus().data?.enabled ?? false;
+  const [pw, setPw] = React.useState(''); const [code, setCode] = React.useState('');
+  const [err, setErr] = React.useState<string | null>(null);
+  const submit = () => {
+    setErr(null);
+    others.mutate({ password: pw, ...(totp ? { totp: code.trim() } : {}) }, {
+      onSuccess: (r) => { onClose(); toast.ok(`已退出 ${r.revoked} 个设备`); },
+      onError: (e) => { setErr(msg(e)); setCode(''); },
+    });
+  };
+  return (
+    <FormDialog size="sm" open={open} onOpenChange={(o) => !o && onClose()} title={`退出其它 ${n} 个设备？`} desc="除本设备外的登录会话立即失效，那些设备要重新登录。"
+      submitLabel="全部退出" onSubmit={submit} busy={others.isPending} valid={!!pw && (!totp || !!code.trim())} dirty={!!pw || !!code}>
+      <input type="text" autoComplete="username" value={me.data?.username ?? ''} readOnly hidden />
+      <Field label="当前密码"><Input type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="current-password" autoFocus /></Field>
+      {totp && <Field label="两步验证码" hint="或一个恢复码"><CodeInput value={code} onChange={setCode} recovery /></Field>}
+      {err && <Note tone="bad">{err}</Note>}
+    </FormDialog>
+  );
+});
