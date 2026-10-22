@@ -22,6 +22,19 @@ pub async fn connect(url: &str) -> anyhow::Result<PgPool> {
         .with_context(|| "连接 PostgreSQL")
 }
 
+/// 库暂时不可用：连接断了、连不上、等不到空闲连接，或库在重启、关停（SQLSTATE 08 类连接异常；57P01 admin_shutdown——
+/// 重启时正在跑的查询被断开，57P02 crash_shutdown，57P03 cannot_connect_now——库正在启动或关停）。等库恢复后重做就行，不是这件事本身的错
+pub fn unavailable(e: &sqlx::Error) -> bool {
+    match e {
+        sqlx::Error::Io(_) | sqlx::Error::PoolTimedOut | sqlx::Error::PoolClosed => true,
+        sqlx::Error::Database(d) => d.code().is_some_and(|c| c.starts_with("08") || matches!(&*c, "57P01" | "57P02" | "57P03")),
+        _ => false,
+    }
+}
+
+/// 同 `unavailable`，看 anyhow 错误链里有没有这样的库错误
+pub fn unavailable_in(e: &anyhow::Error) -> bool { e.chain().any(|c| c.downcast_ref::<sqlx::Error>().is_some_and(unavailable)) }
+
 pub fn new_id() -> Uuid { Uuid::now_v7() }
 
 /// 边拼 SQL 边绑定参数：`add` 绑定一个值并返回它的占位符 `$n`，SQL 里的序号和绑定顺序不会对不上。

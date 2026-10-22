@@ -78,6 +78,8 @@ pub struct Inner {
     pub notify_started: AtomicBool,
     /// 唤醒作业引擎去领取（`wake_jobs`）；引擎空闲时等它，兜底每 800 ms 重查
     pub jobs_wake: Notify,
+    /// 作业引擎在本进程里正在推进的作业（领取时排除）
+    pub jobs_running: crate::jobs::Running,
 }
 
 impl std::ops::Deref for AppState {
@@ -112,6 +114,7 @@ impl AppState {
             notify_wake: Notify::new(),
             notify_started: AtomicBool::new(false),
             jobs_wake: Notify::new(),
+            jobs_running: Default::default(),
         }))
     }
 
