@@ -754,6 +754,11 @@ pub async fn check_tz(db: &mut sqlx::PgConnection, tz: &str) -> ApiResult<()> {
     }
 }
 
+/// 改订阅审计里记的生效值（改动前后各一份）
+const SUB_AUDIT: &str = "select jsonb_build_object('due_date', due_date, 'price_cents', price_cents, 'currency', currency, 'cycle', cycle, 'billing_tz', billing_tz,
+    'remind_days', remind_days, 'traffic_gb', traffic_gb, 'traffic_reset_day', traffic_reset_day, 'auto_renew', auto_renew)
+    from subscription_eff where machine_id = $1";
+
 pub async fn put_subscription(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(mut b): ApiJson<SubIn>) -> ApiResult<Json<Value>> {
     // 校准值：GB → 字节（1 GB = 10⁹ 字节）
     let base = match b.traffic_used_gb {
@@ -772,6 +777,7 @@ pub async fn put_subscription(a: Actor, State(st): State<AppState>, ApiPath(id):
     if !b.ov.has_price() && template_price.is_none() {
         return Err(ApiError::bad_request("这台机器没有套餐，价格没有可跟随的：要填费用（免费填 0）"));
     }
+    let before: Option<Value> = sqlx::query_scalar(SUB_AUDIT).bind(id).fetch_optional(&mut *tx).await?;
     b.ov.write(&mut tx, id, b.due_date).await?;
     if let Some(auto) = b.auto_renew {
         sqlx::query("update subscription set auto_renew = $2 where machine_id = $1").bind(id).bind(auto).execute(&mut *tx).await?;
@@ -785,7 +791,17 @@ pub async fn put_subscription(a: Actor, State(st): State<AppState>, ApiPath(id):
         .execute(&mut *tx)
         .await?;
     }
-    audit(&mut tx, &a.name, "subscription.set", "machine", Some(id), serde_json::to_value(&b).unwrap_or_default()).await?;
+    // 审计详情：请求本身 + 机器名 + 改动前后的生效值（摘要写出改了哪几项，见 misc::audit_text）
+    let after: Option<Value> = sqlx::query_scalar(SUB_AUDIT).bind(id).fetch_optional(&mut *tx).await?;
+    let name: String = sqlx::query_scalar("select display_name(m.kind::text, m.label, t.name, m.number) from machine m left join team t on t.id = m.team_id where m.id = $1")
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+    let mut detail = serde_json::to_value(&b).unwrap_or_default();
+    detail["name"] = json!(name);
+    detail["before"] = json!(before);
+    detail["after"] = json!(after);
+    audit(&mut tx, &a.name, "subscription.set", "machine", Some(id), detail).await?;
     tx.commit().await?;
     st.emit(Event::Machine { id });
     Ok(ok(json!({"ok": true})))
