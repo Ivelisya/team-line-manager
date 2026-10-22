@@ -11,18 +11,25 @@ const ICON: Record<StepKind, React.ReactNode> = {
   done: <Check />, running: <Loader2 className="spin" />, failed: <X />, skipped: <Minus />, compensated: <Undo2 />, pending: <CircleDashed />,
 };
 
-function stepSub(s: JobStep, k: StepKind): string {
+/** ended：作业已结束（取消、失败），没走到的步骤不再「等待」，写「未执行」 */
+function stepSub(s: JobStep, k: StepKind, ended: boolean): string {
   if (k === 'running') return s.started_at ? `进行中 · ${F.duration(s.started_at, null)}` : '进行中';
   if (k === 'done') return s.started_at ? F.duration(s.started_at, s.finished_at) : stepLabel(k);
+  if (k === 'pending' && ended) return '未执行';
   return stepLabel(k);
 }
+/** 步骤多到每格放不下标签时（7 步起）收紧：只给当前（进行中 / 失败）那一步写标签，其余悬停节点看，不出横向滚动 */
+const COMPACT_AT = 7;
 
 /** 横向步骤条：完成 / 进行中（节点有呼吸光圈）/ 失败 / 跳过 / 已补偿 / 等待，各自不同的节点与连线。窄屏横向滚动 */
 export function StepBar({ job }: { job: Job }) {
   if (!job.steps.length) return null;
+  const ended = !jobLive(job.state);
+  const compact = job.steps.length >= COMPACT_AT;
+  const focus = job.steps.findIndex((s) => { const k = stepKind(s); return k === 'running' || k === 'failed'; });
   return (
     <div className="stepbar-wrap">
-      <ol className="stepbar" aria-label="作业步骤">
+      <ol className="stepbar" aria-label="作业步骤" data-compact={compact ? '' : undefined}>
         {job.steps.map((s, i) => {
           const k = stepKind(s);
           const prev = i > 0 ? stepKind(job.steps[i - 1]) : null;
@@ -30,10 +37,10 @@ export function StepBar({ job }: { job: Job }) {
             ? <div style={{ display: 'grid', gap: 2 }}><b>{s.title}</b>{s.error_kind && <span>{errorKindLabel(s.error_kind)}</span>}{s.error && <span>{s.error}</span>}</div>
             : s.title;
           return (
-            <li key={s.idx} className="stepbar-item" data-kind={k} data-link={prev === 'done' ? 'done' : prev === 'compensated' ? 'comp' : undefined} aria-current={k === 'running' ? 'step' : undefined}>
+            <li key={s.idx} className="stepbar-item" data-kind={k} data-link={prev === 'done' ? 'done' : prev === 'compensated' ? 'comp' : undefined} data-focus={i === focus ? '' : undefined} aria-current={k === 'running' ? 'step' : undefined}>
               <Tip text={tip}><span className="stepbar-node" tabIndex={0} aria-label={`${s.title}：${stepLabel(k)}`}>{ICON[k]}</span></Tip>
               <span className="stepbar-title">{s.title}</span>
-              <span className="stepbar-sub">{stepSub(s, k)}</span>
+              <span className="stepbar-sub">{stepSub(s, k, ended)}</span>
             </li>
           );
         })}
@@ -52,7 +59,8 @@ export function JobProgressBar({ job, now, showStep = true }: { job: JobSummary;
     <div className="job-prog">
       <div className="job-prog-head">
         <span className="num">{p.done} / {p.total} 步 · {Math.round(p.pct)}%</span>
-        <span className="t-sub ellipsis">{cur ? `${cur} · ` : ''}已用时 {F.duration(job.started_at ?? job.created_at, job.finished_at, now)}</span>
+        {/* 用时从开始执行算（同详情的「用时」）：排队时、排队中就被取消的没有用时 */}
+        <span className="t-sub ellipsis">{cur ? `${cur} · ` : ''}{job.started_at ? `已用时 ${F.duration(job.started_at, job.finished_at, now)}` : live ? '排队中' : '未执行'}</span>
       </div>
       <Progress value={p.pct} tone={tone} live={live} label="作业总进度" />
     </div>

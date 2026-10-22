@@ -114,7 +114,7 @@
    滚动容器会裁掉面板投影：左右与底部各留一圈内边距（左右用负外边距抵消，面板位置不变） */
 .jobs-detail {
   position: sticky; top: calc(var(--topbar-h) + var(--sp-16)); align-self: start;
-  max-height: calc(100dvh - var(--topbar-h) - 2 * var(--sp-16)); overflow-y: auto;
+  max-height: var(--fit-h, calc(100dvh - var(--topbar-h) - 2 * var(--sp-16))); overflow-y: auto; /* --fit-h：按此刻的上沿算到视口底（Jobs.tsx useFitViewport） */
   margin-inline: calc(-1 * var(--sp-8)); padding: 0 var(--sp-8) var(--sp-16);
 }
 /* 没选作业时的占位：更高、居中 */

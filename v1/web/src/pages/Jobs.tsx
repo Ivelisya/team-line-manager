@@ -1,10 +1,10 @@
 // 作业：列表 + 详情（总进度 + 横向步骤条 + 步骤时间线 + 实时日志，进行中每 1.5s 轮询 /jobs/{id}/logs?after=）。
 import * as React from 'react';
-import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, ArrowDownToLine, Check, CircleDashed, Copy, ListChecks, Loader2, Minus, Pause, Play, RotateCw, Square, Undo2, X } from 'lucide-react';
 import { fetchAllLogs, useCancelJob, useJob, useJobs, useMachine, useRetryJob } from '@/lib/queries';
 import type { Job, JobLog } from '@/lib/types';
-import { errorKindLabel, jobKindLabel, jobLive, jobProgress, outputLines, stepKind, type StepKind } from '@/lib/jobs';
+import { errorKindLabel, jobKindLabel, jobLive, jobProgress, jobText, outputLines, stepKind, type StepKind } from '@/lib/jobs';
 import { jobStateLabel } from '@/lib/derive';
 import { CheckRow, Field, InfoTip, Input } from '@/components/ui/form';
 import { useNow } from '@/lib/useNow';
@@ -31,14 +31,40 @@ const STATE: Record<string, { tone: Tone; dot?: 'pulse' }> = {
 };
 /** 作业列表每页条数：列表在窄栏里，固定一档，不给每页条数下拉 */
 const JOB_PAGE = [20];
+/** 页签记在 URL（?view=running / done，缺省全部；首页「上架中 · 退役中」链到 ?view=running），对应列表接口的 state */
+type View = 'all' | 'running' | 'done';
+const VIEWS: { value: View; label: string }[] = [{ value: 'all', label: '全部' }, { value: 'running', label: '进行中' }, { value: 'done', label: '已结束' }];
+const STATE_OF: Record<View, 'all' | 'active' | 'done'> = { all: 'all', running: 'active', done: 'done' };
+
+/** 宽屏时详情栏吸顶、自己滚动：最大高度按它此刻在视口里的上沿算（页面在顶部时它还没吸住，上面有页头），
+ *  不按吸住后的位置算——否则页面在顶部时底部超出视口、最后几行看不到。单栏时 CSS 不用这个变量 */
+function useFitViewport(ref: React.RefObject<HTMLElement | null>) {
+  React.useEffect(() => {
+    const el = ref.current; if (!el) return;
+    let raf = 0;
+    const fit = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(() => el.style.setProperty('--fit-h', `${Math.max(240, innerHeight - el.getBoundingClientRect().top - 16)}px`)); };
+    fit();
+    addEventListener('scroll', fit, { passive: true }); addEventListener('resize', fit);
+    return () => { cancelAnimationFrame(raf); removeEventListener('scroll', fit); removeEventListener('resize', fit); };
+  }, [ref]);
+}
 
 const JobPill = ({ state }: { state: string }) => { const s = STATE[state] ?? { tone: 'neutral' as Tone }; return <Pill tone={s.tone} dot={s.dot}>{jobStateLabel(state)}</Pill>; };
 
 export function JobsPage() {
   const { id } = useParams();
   const nav = useNavigate();
-  const { search } = useLocation(); // 列表 ↔ 详情切换时带着 ?p=，回到列表还在原来那页
-  const [filter, setFilter] = React.useState<'all' | 'active' | 'done'>('all');
+  const { search } = useLocation(); // 列表 ↔ 详情切换时带着 ?p=、?view=，回到列表还在原来那页
+  const [sp] = useSearchParams();
+  const view: View = VIEWS.some((v) => v.value === sp.get('view')) ? (sp.get('view') as View) : 'all';
+  const filter = STATE_OF[view];
+  // 换页签回到列表（不再停在上一个页签里选中的作业：进行中为 0 时右边还挂着之前的已结束作业）
+  const setView = (v: View) => {
+    const n = new URLSearchParams(search); n.delete('p');
+    if (v === 'all') n.delete('view'); else n.set('view', v);
+    const q = n.toString();
+    nav({ pathname: '/jobs', search: q ? `?${q}` : '' }, { replace: true });
+  };
   // 页码要先于查询算出来（偏移量进查询）；总数来自上一次的结果，用来夹页和显示分页器。渲染中直接跟上（不等 effect 提交一遍再重渲染）
   const [total, setTotal] = React.useState<number>();
   const pg = usePage({ total, sizes: JOB_PAGE, reset: [filter] });
@@ -50,30 +76,40 @@ export function JobsPage() {
   // 宽屏时详情栏吸顶、自己滚动（pages.css .jobs-detail）：换作业回到详情顶部
   const detail = React.useRef<HTMLDivElement>(null);
   React.useLayoutEffect(() => { if (detail.current) detail.current.scrollTop = 0; }, [selected]);
+  useFitViewport(detail);
+  // 按地址打开的作业：在列表里滚到看得见（每个作业只滚一次；点列表里的本来就看得见）
+  const scrolled = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (!selected || scrolled.current === selected) return;
+    const el = document.querySelector(`.job-item[data-id="${CSS.escape(selected)}"]`);
+    if (!el) return;
+    scrolled.current = selected;
+    el.scrollIntoView({ block: 'nearest' });
+  }, [selected, list]);
   return (
     <div className="stack">
       <PageHead title="作业" note={jobs.data ? `${jobs.data.total} 个` : undefined}
-        tools={<Segmented label="筛选" value={filter} onChange={setFilter} items={[{ value: 'all', label: '全部' }, { value: 'active', label: '进行中' }, { value: 'done', label: '已结束' }]} />} />
+        tools={<Segmented label="筛选" value={view} onChange={setView} items={VIEWS} />} />
       <div className="jobs-layout" data-detail={selected ? '1' : '0'}>
         <Panel ref={pg.anchor} className="jobs-list" flush>
           {jobs.isLoading && <SkeletonRows rows={5} list />}
           {jobs.isError && <div style={{ padding: 'var(--sp-12)' }}><ErrorNote error={jobs.error} onRetry={() => void jobs.refetch()} /></div>}
           {list.map((j) => (
-            <div key={j.id} className="job-item" role="button" tabIndex={0} aria-current={j.id === selected} onClick={() => go(j.id)}
+            <div key={j.id} data-id={j.id} className="job-item" role="button" tabIndex={0} aria-current={j.id === selected} onClick={() => go(j.id)}
               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(j.id); } }}>
               <span className="l1">
                 <b className="ellipsis" style={{ fontWeight: 600 }}>{jobKindLabel(j.kind)} · {j.target ? <NodeHover id={j.target.id} noFocus><span>{j.target.name}</span></NodeHover> : '—'}</b>
                 <span style={{ marginLeft: 'auto' }}><JobPill state={j.state} /></span>
               </span>
               {jobLive(j.state) && <span className="l-prog"><Progress value={jobProgress(j).pct} live label="总进度" /><span className="num">{jobProgress(j).done}/{jobProgress(j).total}</span></span>}
-              <span className="l2"><span>{F.dt(j.created_at)}</span><span>{F.actor(j.created_by)}</span>{j.error && <span className="ellipsis" style={{ color: j.state === 'cancelled' ? 'var(--fg-2)' : 'var(--bad-text)' }} data-tip={j.error}>{j.error}</span>}</span>
+              <span className="l2"><span>{F.dt(j.created_at)}</span><span>{F.actor(j.created_by)}</span>{j.error && <span className="ellipsis" style={{ color: j.state === 'cancelled' ? 'var(--fg-2)' : 'var(--bad-text)' }} data-tip={jobText(j.error)}>{jobText(j.error)}</span>}</span>
             </div>
           ))}
           {jobs.data && list.length === 0 && <Empty icon={<ListChecks size={22} />} text="没有作业" />}
           <Pagination pg={pg} unit="个" compact />
         </Panel>
         <div className="jobs-detail" ref={detail}>
-          {selected ? <JobDetail id={selected} /> : <Panel className="jobs-empty"><Empty icon={<ListChecks size={22} />} text="选择左侧的作业查看步骤与日志" /></Panel>}
+          {selected ? <JobDetail id={selected} /> : <Panel className="jobs-empty"><Empty icon={<ListChecks size={22} />} text="选择左侧作业" /></Panel>}
         </div>
       </div>
     </div>
@@ -114,17 +150,17 @@ function JobDetail({ id }: { id: string }) {
           <LabelValueGrid>
             <LabelValue label="创建人">{F.actor(j.created_by)}</LabelValue>
             <LabelValue label="创建时间">{F.dtFull(j.created_at)}</LabelValue>
-            <LabelValue label="用时"><Dur a={j.started_at} b={j.finished_at} live={live} /></LabelValue>
+            <LabelValue label="用时">{j.started_at ? <Dur a={j.started_at} b={j.finished_at} live={live} /> : live ? '排队中' : '未执行'}</LabelValue>
             <LabelValue label="作业 ID"><span className="mono">{j.id}</span></LabelValue>
           </LabelValueGrid>
         </div>
         {/* 取消（含「全部升级」里前一台失败后跟着取消的）不是出错：原因用中性色 */}
-        {j.error && <div style={{ marginTop: 12 }}><Note tone={j.state === 'cancelled' ? undefined : 'bad'}>{j.error}</Note></div>}
+        {j.error && <div style={{ marginTop: 12 }}><Note tone={j.state === 'cancelled' ? undefined : 'bad'}>{jobText(j.error)}</Note></div>}
         {j.kind === 'move_entry' && (j.result?.new_entry_id || j.state === 'succeeded') && (
           <div style={{ marginTop: 12 }}>
             <Note tone={j.state === 'succeeded' ? 'warn' : 'info'}>
               <span className="row row-between" style={{ gap: 12 }}>
-                <span>{j.result?.note ?? '客户端需要换成新的分享链接'}{j.state === 'succeeded' ? '：旧链接已失效' : <> <InfoTip text="新入口验收通过、旧入口摘除后，旧链接会失效。" /></>}</span>
+                <span>分享链接{j.state === 'succeeded' ? '已变' : '会变'} <InfoTip text={j.state === 'succeeded' ? '旧链接已失效，客户端要换成新的分享链接。' : '新入口验收通过、旧入口摘除后，旧链接会失效。'} /></span>
                 {j.result?.new_entry_id && <Button size="sm" onClick={() => void copyNewShareLink(j.id)}><Copy size={14} />复制新分享链接</Button>}
               </span>
             </Note>
@@ -140,12 +176,12 @@ function JobDetail({ id }: { id: string }) {
               <li key={s.idx} className="step" data-kind={k}>
                 <span className="step-ic">{STEP_ICON[k]}</span>
                 <div style={{ minWidth: 0 }}>
-                  <div className="step-title"><b>{s.title}</b><span className="step-time">{s.started_at ? <>{F.clock(s.started_at)} · <Dur a={s.started_at} b={s.finished_at ?? (k === 'failed' ? j.finished_at : null)} live={live && !s.finished_at && k !== 'failed'} /></> : k === 'skipped' || k === 'compensated' ? '未执行' : '等待'}</span>{k === 'compensated' && <Pill tone="warn" dot="none">已补偿</Pill>}</div>
+                  <div className="step-title"><b>{s.title}</b><span className="step-time">{s.started_at ? <>{F.clock(s.started_at)} · <Dur a={s.started_at} b={s.finished_at ?? (k === 'failed' ? j.finished_at : null)} live={live && !s.finished_at && k !== 'failed'} /></> : k === 'skipped' || k === 'compensated' || !live ? '未执行' : '等待'}</span>{k === 'compensated' && <Pill tone="warn" dot="none">已补偿</Pill>}</div>
                   {outputLines(s.output).length > 0 && <pre className="step-out">{outputLines(s.output).join('\n')}</pre>}
                   {(s.error || s.error_kind) && (
                     <div className="step-err-box">
-                      {s.error_kind && <span className="err-kind" data-tip={s.error_kind}>{errorKindLabel(s.error_kind)}</span>}
-                      {s.error && <p className="step-err">{s.error}</p>}
+                      {s.error_kind && <span className="err-kind">{errorKindLabel(s.error_kind, s.error)}</span>}
+                      {s.error && <p className="step-err">{jobText(s.error)}</p>}
                     </div>
                   )}
                 </div>
@@ -293,5 +329,5 @@ const LogPanel = React.memo(function LogPanel({ jobId, state }: { jobId: string;
 
 /** 一行日志：已拉到的行对象不变，memo 挡住增量拉取、滚动时的整表重比对 */
 const LogLine = React.memo(function LogLine({ l }: { l: JobLog }) {
-  return <div className="logline" data-level={l.level}><span className="ts">{F.clock(l.ts)}</span><span className={`lv-${l.level}`}>{LEVEL[l.level] ?? l.level}</span><span className="msg">{l.msg}</span></div>;
+  return <div className="logline" data-level={l.level}><span className="ts">{F.clock(l.ts)}</span><span className={`lv-${l.level}`}>{LEVEL[l.level] ?? l.level}</span><span className="msg">{jobText(l.msg)}</span></div>;
 });

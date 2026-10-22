@@ -733,7 +733,7 @@ R('POST', '/agents/upgrade', () => {
 });
 
 // ---------- 换线路机 / 搬空线路机 / 恢复已退役的机器 ----------
-const MOVE_STEPS: [string, string][] = [['attach_new', '在新线路机建入口'], ['firewall_widen', '放行新线路机（节点防火墙）'], ['wait_applied_new', '等待新线路机生效'], ['verify_new', '经新入口出口验收'], ['detach_old', '摘除旧入口'], ['wait_detached_old', '等待旧线路机摘除'], ['firewall_narrow', '收紧节点防火墙']];
+const MOVE_STEPS: [string, string][] = [['attach_new', '在新线路机建入口'], ['firewall_widen', '放行新线路机（节点防火墙）'], ['wait_applied_new', '等待新线路机应用'], ['verify_new', '经新入口出口验收'], ['detach_old', '摘除旧入口'], ['wait_detached_old', '等待旧线路机摘除'], ['firewall_narrow', '收紧节点防火墙']];
 const RESTORE_STEPS: [string, string][] = [['preflight', '预检与身份'], ['bootstrap', '引导密钥'], ['converge', '节点收敛（SSH 加固、SS、防火墙）'], ['agent', '安装 agent'], ['wait_report', '等待首次上报'], ['attach', '接入线路机'], ['wait_applied', '等待线路机生效'], ['verify', '出口验收'], ['activate', '上线']];
 const SHARE_NOTE = '换线路机后分享链接会变：客户端需要换成新的分享链接（作业完成后到节点的入口里复制）';
 const blankTraffic = () => ({ today_up: 0, today_down: 0, month_up: 0, month_down: 0 });

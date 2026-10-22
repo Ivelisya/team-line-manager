@@ -117,6 +117,7 @@ export function span(ms: number): string {
 export function duration(a: string | null, b: string | null, now = Date.now()): string {
   if (!a) return '—';
   const s = Math.max(0, ((b ? new Date(b).getTime() : now) - new Date(a).getTime()) / 1000);
+  if (s < 1) return '不到 1 秒';
   if (s < 60) return `${s.toFixed(s < 10 ? 1 : 0)} 秒`;
   return `${Math.floor(s / 60)} 分 ${Math.floor(s % 60)} 秒`;
 }
