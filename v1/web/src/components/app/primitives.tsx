@@ -25,13 +25,13 @@ export function FromTag({ from, tip }: { from: string | null | undefined; tip?: 
   return from ? <> <span className="unit" data-tip={tip}>{mmdd(from)} 起</span></> : null;
 }
 
-/** 表格「本月流量」格：主值 = 下行 + 上行（家宽代理、同机 IP 节点是下载 + 上传），副行「↓ X ↑ Y」/「业务 · 下载 X」，不完整时副行末尾灰字「10-22 起」。 */
+/** 表格「本月流量」格：主值 = 下行 + 上行（家宽代理、同机 IP 节点是下载 + 上传），副行「↓ X ↑ Y」（口径见悬停），不完整时副行末尾灰字「10-22 起」。 */
 export function MonthFlowCell({ m }: { m: MachineView }) {
   const f = monthFlow(m);
   return (
     <div data-tip={monthFlowTip(m)}>
       <Num f={bytes(f.total)} />
-      <span className="sub">{f.kind === 'nic' ? `↓ ${str(bytes(f.down))} ↑ ${str(bytes(f.up))}` : `业务 · 下载 ${str(bytes(f.down))}`}<FromTag from={f.from} /></span>
+      <span className="sub">{`↓ ${str(bytes(f.down))} ↑ ${str(bytes(f.up))}`}<FromTag from={f.from} /></span>
     </div>
   );
 }
@@ -90,8 +90,8 @@ export const LifecyclePill = ({ lc }: { lc: Lifecycle | string }) => (
   <Pill tone={lc === 'active' ? 'ok' : lc === 'provisioning' || lc === 'retiring' ? 'info' : lc === 'failed' ? 'bad' : 'neutral'}>{lifecycleLabel(lc)}</Pill>
 );
 
-// 入口状态：active 按是否已应用细分
-export const entryState = (e: EntryView) => (e.lifecycle === 'disabled' ? <Pill tone="neutral">{entryLabel('disabled')}</Pill> : e.lifecycle === 'active' ? (e.applied ? <Pill tone="ok">{entryLabel('active')}</Pill> : e.apply_error ? <Pill tone="bad" tip={errText(e.apply_error)}>应用失败</Pill> : <Pill tone="info" dot="pulse">{entryLabel('pending')}</Pill>) : <Pill tone="info" dot="pulse">{entryLabel(e.lifecycle)}</Pill>);
+// 入口状态：active 按是否已应用细分；quiet：运行中且已应用的不写（一整列都是同一个绿胶囊，只标不正常的）
+export const entryState = (e: EntryView, quiet = false) => (quiet && e.lifecycle === 'active' && e.applied ? null : e.lifecycle === 'disabled' ? <Pill tone="neutral">{entryLabel('disabled')}</Pill> : e.lifecycle === 'active' ? (e.applied ? <Pill tone="ok">{entryLabel('active')}</Pill> : e.apply_error ? <Pill tone="bad" tip={errText(e.apply_error)}>应用失败</Pill> : <Pill tone="info" dot="pulse">{entryLabel('pending')}</Pill>) : <Pill tone="info" dot="pulse">{entryLabel(e.lifecycle)}</Pill>);
 
 export function Chip({ children, variant, tip, className }: { children: React.ReactNode; variant?: 'neutral' | 'warn'; tip?: string; className?: string }) {
   return <span className={cn('chip', variant === 'neutral' && 'chip-neutral', variant === 'warn' && 'chip-warn', className)} data-tip={tip}>{children}</span>;

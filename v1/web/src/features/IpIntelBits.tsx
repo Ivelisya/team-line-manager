@@ -61,7 +61,8 @@ export function IpIntelStatusChip() {
   if (!s) return null;
   if (!s.enabled) return <Pill tone="neutral" tip="IP 情报已在中控配置里关闭">IP 库已关闭</Pill>;
   if (!s.installed) return <Pill tone="warn" tip={INSTALL_CMD}>IP 库未安装</Pill>;
-  return <Pill tone={s.loaded >= s.expected ? 'ok' : 'warn'} tip={s.files.map(dbLine).join('\n')}>IP 库 {s.loaded}/{s.expected}</Pill>;
+  const ready = s.loaded >= s.expected;
+  return <Pill tone={ready ? 'ok' : 'warn'} tip={s.files.map(dbLine).join('\n')}>{ready ? 'IP 库已就绪' : `IP 库不全 ${s.loaded}/${s.expected}`}</Pill>;
 }
 
 /** 库没装好时的提示条（来源地址页签用）：短字 + (i) 里的原因、怎么处理 */

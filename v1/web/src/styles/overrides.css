@@ -14,7 +14,7 @@ html[data-overlay] :is(.app, .drawer) .progress[data-live="1"] .progress-fill::a
 html[data-overlay] :is(.app, .drawer) .progress-fill { transition: none; }
 
 /* ========== 吸附条毛玻璃的回退（--glass-bar）：不支持 backdrop-filter 时用实底，免得半透明的条下面字叠字 ========== */
-@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .topbar, .panel.sticky-bar, .tab-sticky { background: var(--surface); } }
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .topbar, .panel.sticky-bar, .tab-sticky, .relay-jump { background: var(--surface); } }
 
 /* ========== 触屏（pointer: coarse）==========
    手指点的地方至少约 40px：控件高度令牌上调一档（按钮、输入、下拉、分段轨道 40；顶栏 / 卡头图标按钮、菜单项 36），分段项随轨道，小号分段项 28；

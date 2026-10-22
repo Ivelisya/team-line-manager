@@ -121,7 +121,20 @@
 .preview-name { display: inline-flex; align-items: center; gap: var(--sp-8); padding: var(--sp-6) var(--sp-12); border-radius: var(--r-control); background: var(--sunken); font-weight: var(--fw-semibold); font-size: var(--fs-emph); }
 
 /* 线路机卡 */
-.relay-card { display: grid; gap: 0; }
+/* 表格行尾的操作（改名 / 编辑 / 删除）：平时淡去，悬停或键盘聚焦到这一行才显出来；触屏没有悬停，一直显示 */
+@media (hover: hover) {
+  .dt tr .row-acts { opacity: 0; transition: opacity var(--dur-2) var(--ease-std); }
+  .dt tr:hover .row-acts, .dt tr:focus-within .row-acts { opacity: 1; }
+}
+.btn.btn-slot { transition: background-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std), border-color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out), opacity var(--dur-2) var(--ease-std), visibility 0s linear var(--dur-2); }
+.btn-slot[data-off] { opacity: 0; visibility: hidden; }
+.relay-card { display: grid; gap: 0; scroll-margin-top: calc(var(--h-md) + var(--sp-16)); } /* 跳转时让出上面吸顶的那一行 */
+.relay-jump {
+  position: sticky; top: var(--topbar-h); z-index: var(--z-sticky); display: flex; gap: var(--sp-8); padding-block: var(--sp-8);
+  overflow-x: auto; scrollbar-width: none; background: var(--glass-bar); -webkit-backdrop-filter: var(--glass-bar-blur); backdrop-filter: var(--glass-bar-blur);
+}
+.relay-jump::-webkit-scrollbar { display: none; }
+.relay-jump-bad { color: var(--bad-text); }
 .relay-head { display: flex; align-items: center; gap: var(--sp-12); flex-wrap: wrap; padding: var(--sp-12) var(--card-pad); }
 .relay-head .ttl { font: var(--fw-semibold) var(--fs-title) / var(--lh-title) var(--font-sans); letter-spacing: var(--tracking-title); }
 /* 线路机名可点（打开它的抽屉）：去掉按钮外观，后面一个淡箭头，悬停变主色、箭头右移一点，按下微缩 */
@@ -138,6 +151,7 @@
 .prov-steps .s[data-on="1"] .n { background: var(--accent-solid); color: var(--on-accent); }
 .prov-steps .s[data-done="1"] .n { background: var(--ok-bg); color: var(--ok-text); }
 /* 单台上架：每个字段下面都留出一行提示 / 错误的位置（失焦报错时下面的字段不整体下移、点不偏），这一行代替表单的行距 */
+.prov-form { width: 100%; max-width: 760px; margin-inline: auto; } /* 两列表单铺满 1100px 太散：收到 760 并居中 */
 .prov-form .form-grid { row-gap: 0; }
 .prov-form .field { grid-template-rows: auto auto minmax(var(--lh-label), auto); }
 .sticky-bar { position: sticky; bottom: 0; z-index: var(--z-sticky); }

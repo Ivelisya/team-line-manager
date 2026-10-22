@@ -330,11 +330,13 @@ function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; o
                 {k === 'vps' && (ip ? Fixed('SS 端口', '由中控在宿主机上分配空闲端口', '', `自动分配（${meta().defaults.ss_port + 1} 起）`) : T('ss_port', 'SS 端口', { ph: String(meta().defaults.ss_port), num: true, check: true, info: 'NAT 机填供应商映射后的公网端口' }))}
               </>
             )}
+            {/* 同机 IP 节点：中控用自己的密钥登录宿主机，没有要填的 */}
+            {k !== 'proxy' && !ip && <Field label="root 密码" info="首次登录用，只在上架作业中用一次，成功后丢弃，不保存"><Input type="password" autoComplete="new-password" placeholder="留空用中控密钥" value={row.login_pw} onChange={(e) => onChange({ login_pw: e.target.value })} /></Field>}
           </div>
         </div>
       </Panel>
 
-      {k === 'proxy' ? (
+      {k === 'proxy' && (
         <Panel title="上游代理">
           <div className="form-grid">
             <Field label="协议"><Select value={row.up_protocol} onChange={(v) => onChange({ up_protocol: v })} options={[{ value: 'socks5', label: 'SOCKS5' }, { value: 'http', label: 'HTTP' }]} /></Field>
@@ -342,12 +344,6 @@ function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; o
             {T('up_port', '端口', { num: true, ph: '1080', check: true })}
             {T('up_user', '用户名', { ph: '选填' })}
             <Field label="密码"><Input type="password" autoComplete="new-password" placeholder="选填" value={row.up_pw} onChange={(e) => onChange({ up_pw: e.target.value })} /></Field>
-          </div>
-        </Panel>
-      ) : ip ? null /* 同机 IP 节点：中控用自己的密钥登录宿主机，没有要填的 */ : (
-        <Panel title="首次登录" sub={<InfoTip text="密码只在上架作业中用一次，成功后丢弃，不保存" />}>
-          <div className="form-grid">
-            <Field label="root 密码"><Input type="password" autoComplete="new-password" placeholder="留空用中控密钥" value={row.login_pw} onChange={(e) => onChange({ login_pw: e.target.value })} /></Field>
           </div>
         </Panel>
       )}
@@ -358,7 +354,7 @@ function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; o
           {ip ? Fixed('套餐', '同机 IP 节点不带套餐，附加 IP 另收费时填到期日与费用', '', '不带套餐') : <Field label="套餐" error={fe.plan_id}><Select value={row.plan_id} onChange={(v) => onChange({ plan_id: v })} options={o.planFor(row.provider_id)} allowEmpty="不设置" /></Field>}
           {plan && (() => { const s = inheritSummary(plan, ctx.providers.find((p) => p.id === plan.provider_id)); return <div className="span-2 hint">{s.text} <InfoTip text={s.tip} /></div>; })()}
           {T('service_ref', '服务编号', { ph: 'SVC-1042' })}
-          <Field label={<>到期日<span className="field-tag">{plan ? '必填' : '选填'}</span></>} info={plan ? undefined : '填了就记费用、到期提醒'} error={fe.due_date}><DateField value={row.due_date} onChange={(v) => onChange({ due_date: v })} /></Field>
+          <Field label={<>到期日{plan && <span className="field-tag">必填</span>}</>} info={plan ? undefined : '填了就记费用、到期提醒'} error={fe.due_date}><DateField value={row.due_date} onChange={(v) => onChange({ due_date: v })} /></Field>
           {T('price', '费用', { ph: ip ? '附加 IP 的费用' : plan ? `跟随套餐（${F.money(plan.price_cents, plan.currency)}）` : '没有套餐时要填', info: plan ? '留空跟随套餐；填了 = 这台单独设置' : undefined })}
           <div className="span-2"><Field label="备注"><Input value={row.note} onChange={(e) => onChange({ note: e.target.value })} /></Field></div>
         </div>

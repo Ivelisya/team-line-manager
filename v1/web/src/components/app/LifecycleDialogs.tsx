@@ -104,7 +104,7 @@ export const EvacuateDialog = resetOnOpen(function EvacuateDialog({ relay, open,
           <ul className="reason-list" style={{ maxHeight: 220, overflow: 'auto' }}>
             {list.map((e) => (
               <li key={e.id}>
-                <span className="num">{e.node.name}</span> <span className="t-sub">端口 {e.port}</span> {entryState(e)}
+                <span className="num">{e.node.name}</span> <span className="t-sub">端口 {e.port}</span> {entryState(e, true)}
                 {e.lifecycle !== 'active' && <span className="t-sub" data-tip="入口不在运行中"> · 会跳过</span>}
               </li>
             ))}

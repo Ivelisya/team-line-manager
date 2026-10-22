@@ -107,10 +107,10 @@ export function AccessPage() {
       {summary.isError && <ErrNote q={summary} />}
       {/* 换时间范围、筛选后新数字未到时，沿用的旧数字调淡（components.css [data-stale]）；下面各视图的表格同样 */}
       <div className="stat-grid" data-stale={summary.isPlaceholderData}>
-        <Stat tone="blue" icon={<Server />} label="有活动的节点" value={k ? fmtN(k.active_nodes) : '—'} loading={summary.isLoading} caption={`最近 ${winLabel(f.window)}`} />
-        <Stat tone="teal" icon={<Activity />} label="连接记录" info="含已阻止的连接" value={k ? fmtN(k.conns) : '—'} loading={summary.isLoading} />
-        <Stat tone="violet" icon={<Target />} label="访问目标" info="访问过的不同域名与 IP 个数，多个节点访问同一个只算 1 个；同「域名与 IP」的总数" value={k ? fmtN(k.unique_targets) : '—'} loading={summary.isLoading} />
-        <Stat tone="bad" icon={<ShieldX />} label="已阻止的连接" value={k ? fmtN(k.blocked) : '—'} loading={summary.isLoading} caption={k && k.conns > 0 ? blockedShare(k.blocked, k.conns) : undefined} />
+        <Stat tone="blue" icon={<Server />} label="有活动的节点" value={k ? fmtN(k.active_nodes) : '—'} unit="台" loading={summary.isLoading} caption={`最近 ${winLabel(f.window)}`} />
+        <Stat tone="teal" icon={<Activity />} label="连接记录" info="含已阻止的连接" value={k ? fmtN(k.conns) : '—'} unit="次" loading={summary.isLoading} />
+        <Stat tone="violet" icon={<Target />} label="访问目标" info="访问过的不同域名与 IP 个数，多个节点访问同一个只算 1 个；同「域名与 IP」的总数" value={k ? fmtN(k.unique_targets) : '—'} unit="个" loading={summary.isLoading} />
+        <Stat tone="bad" icon={<ShieldX />} label="已阻止的连接" value={k ? fmtN(k.blocked) : '—'} unit="次" loading={summary.isLoading} caption={k && k.conns > 0 ? blockedShare(k.blocked, k.conns) : undefined} />
       </div>
 
       <Tabs value={tab} onValueChange={(v) => upd({ view: v === 'targets' ? '' : v, p: '', sort: '', conn: '' })}>
@@ -161,7 +161,7 @@ const TargetsView = React.memo(function TargetsView({ open, f, sort, onSort, fil
       {q.isError && <div style={{ padding: 12 }}><ErrNote q={q} /></div>}
       <TableWrap data-stale={q.isPlaceholderData}>
         <table className="dt" style={{ minWidth: 900 }}>
-          <colgroup><col /><col style={{ width: 170 }} /><col style={{ width: 96 }} /><col style={{ width: 210 }} /><col style={{ width: 120 }} /><col style={{ width: 104 }} /></colgroup>
+          <colgroup><col style={{ width: 380 }} /><col style={{ width: 170 }} /><col style={{ width: 96 }} /><col style={{ width: 150 }} /><col style={{ width: 120 }} /><col style={{ width: 104 }} /></colgroup>
           <thead><tr><th>目标</th><th>节点</th><th className="r">连接数</th><th>处理结果</th><th><span className="field-label">首次出现<InfoTip text={FIRST_SEEN_TIP} /></span></th><th>最近</th></tr></thead>
           <tbody>
             {rows.map((t) => {
@@ -225,12 +225,12 @@ const NewView = React.memo(function NewView({ f, filtered, onClear, onPick, open
   if (q.data && q.data.total !== total) setTotal(q.data.total);
   const rows = q.data?.items ?? [];
   return (
-    <Panel ref={pg.anchor} title="新出现的目标" count={q.data ? `${fmtN(q.data.total)} 个` : undefined}
+    <Panel ref={pg.anchor} title="新出现（节点 · 目标）" count={q.data ? `${fmtN(q.data.total)} 条` : undefined}
       sub={<InfoTip text={'该节点第一次访问到的域名 / IP，按「节点 × 目标」计数：同一个目标被 3 个节点首次访问算 3 个\n新目标不等于异常，只作参考'} />} flush>
       {q.isError && <div style={{ padding: 12 }}><ErrNote q={q} /></div>}
       <TableWrap data-stale={q.isPlaceholderData}>
         <table className="dt" style={{ minWidth: 760 }}>
-          <colgroup><col /><col style={{ width: 130 }} /><col style={{ width: 130 }} /><col style={{ width: 104 }} /><col style={{ width: 96 }} /></colgroup>
+          <colgroup><col style={{ width: 380 }} /><col style={{ width: 130 }} /><col style={{ width: 130 }} /><col style={{ width: 104 }} /><col style={{ width: 96 }} /></colgroup>
           <thead><tr><th>目标</th><th>节点</th><th>首次出现</th><th>最近</th><th className="r">累计连接</th></tr></thead>
           <tbody>
             {rows.map((t) => (
@@ -247,7 +247,7 @@ const NewView = React.memo(function NewView({ f, filtered, onClear, onPick, open
       </TableWrap>
       {q.isLoading && <Loading />}
       {q.data && rows.length === 0 && <None f={f} filtered={filtered} onClear={onClear} what="新出现的目标" />}
-      <Pagination pg={pg} unit="个" />
+      <Pagination pg={pg} unit="条" />
     </Panel>
   );
 });
