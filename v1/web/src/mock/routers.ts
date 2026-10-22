@@ -2,7 +2,7 @@
 // 团队2-路由B 离线 3 小时、团队1-路由A 一键部署失败停在等待接入。两种接入都走一遍：一键部署几秒内走完几步变在线（SSH 地址 10.0.0.99 连接超时失败），
 // 接入命令生成后 15 秒「路由执行了命令」变在线。每 15 秒「采集」一次，读数抖动、发 routers 事件。曲线按种子生成，刷新页面保持稳定。
 import type { Incident, MachineView, SeriesPoint, Team } from '@/lib/types';
-import type { RouterClient, RouterDeploy, RouterDetail, RouterExit, RouterSummary, RouterView } from '@/lib/routers';
+import { exitUsable, type RouterClient, type RouterDeploy, type RouterDetail, type RouterExit, type RouterSummary, type RouterView } from '@/lib/routers';
 import { hashStr, rng } from './fixtures';
 
 type Ctx = { params: string[]; query: URLSearchParams; body: any }; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -32,21 +32,23 @@ export function installRoutersMock(R: Reg, env: Env) {
     const ms = env.machines();
     const relayHost = (id: string) => ms.find((m) => m.id === id)?.relay?.public_host ?? '203.0.113.10';
     return ms.filter((m) => m.kind !== 'relay' && m.lifecycle === 'active').sort((a, b) => (a.team?.id === 't2' ? 0 : 1) - (b.team?.id === 't2' ? 0 : 1))
-      .flatMap((m) => m.entries.filter((e) => e.lifecycle === 'active').map((e) => ({ server: relayHost(e.relay.id), port: e.port, entry: { id: e.id, name: `${m.name} · ${e.relay.name}:${e.port}`, node_id: m.id, relay_id: e.relay.id } })));
+      .flatMap((m) => m.entries.filter((e) => e.lifecycle === 'active').map((e) => ({ server: relayHost(e.relay.id), port: e.port, entry: { id: e.id, name: `${m.name} · ${e.relay.name}:${e.port}`, node_id: m.id, relay_id: e.relay.id, lifecycle: e.lifecycle } })));
   }
-  function buildDetail(seed: number, n: number, opts: { drift?: number; dead?: number; clients: number; lanBypass?: boolean }): RouterDetail {
+  /** dead：连续两次测不通（不可用）；flaky：只测不通 1 次（还算可用） */
+  function buildDetail(seed: number, n: number, opts: { drift?: number; dead?: number; flaky?: number; clients: number; lanBypass?: boolean }): RouterDetail {
     const r = rng(seed); const now = Date.now();
     const fleet = fleetEntries();
     const exits: RouterExit[] = Array.from({ length: n }, (_, i) => {
       const f = fleet[i];
-      const dead = i + 1 === opts.dead;
+      const dead = i + 1 === opts.dead; const flaky = i + 1 === opts.flaky;
       return {
         name: `节点${String(i + 1).padStart(2, '0')}`, type: 'vless', server: f?.server ?? `198.51.100.${30 + i}`, port: f?.port ?? 443, entry: f?.entry ?? null,
-        sync: !f ? 'unmanaged' : i + 1 === opts.drift ? 'drift' : 'ok', alive: !dead, delay_ms: dead ? null : Math.round(60 + r() * 140), delay_at: iso(now - Math.floor(r() * 5) * MIN),
+        sync: !f ? 'unmanaged' : i + 1 === opts.drift ? 'drift' : 'ok', alive: !dead && !flaky, delay_ms: dead || flaky ? null : Math.round(60 + r() * 140), delay_at: iso(now - Math.floor(r() * 5) * MIN),
+        fail_streak: dead ? 3 : flaky ? 1 : 0,
         conns: dead ? 0 : Math.floor(r() * 60), up_bps: dead ? 0 : r() * 3e6, down_bps: dead ? 0 : r() * 2.4e7, clients: dead ? 0 : Math.floor(r() * 6),
       };
     });
-    exits.push({ name: '节点00-默认', type: 'vless', server: '198.51.100.7', port: 443, entry: null, sync: 'unmanaged', alive: true, delay_ms: 210, delay_at: iso(now - 2 * MIN), conns: 3, up_bps: 4e4, down_bps: 2e5, clients: 1 });
+    exits.push({ name: '节点00-默认', type: 'vless', server: '198.51.100.7', port: 443, entry: null, sync: 'unmanaged', alive: true, delay_ms: 210, delay_at: iso(now - 2 * MIN), fail_streak: 0, conns: 3, up_bps: 4e4, down_bps: 2e5, clients: 1 });
     const clients: RouterClient[] = Array.from({ length: opts.clients }, (_, i) => {
       const online = i < opts.clients - 3;
       const via = exits.filter((e) => e.alive && e.conns > 0).sort(() => r() - 0.5).slice(0, online ? 1 + Math.floor(r() * 3) : 0);
@@ -79,7 +81,7 @@ export function installRoutersMock(R: Reg, env: Env) {
       disk_used: 0.41 * 1.9 * GiB, disk_total: 1.9 * GiB, conntrack: 1500 + Math.floor(r() * 900), conntrack_max: 65535, temp_c: 38 + Math.round(r() * 8),
       wan: { up: wan.up, ip: wan.ip, rx_bps: wan.rx_bps, tx_bps: wan.tx_bps },
       openclash: { enabled: d.openclash.enabled, running: d.openclash.running, version: d.openclash.version, mode: d.openclash.mode, conns: d.exits.reduce((s, e) => s + e.conns, 0), up_bps: d.exits.reduce((s, e) => s + e.up_bps, 0), down_bps: d.exits.reduce((s, e) => s + e.down_bps, 0) },
-      exits: { total: d.exits.length, alive: d.exits.filter((e) => e.alive).length, managed: d.exits.filter((e) => e.entry).length, drift: d.exits.filter((e) => e.sync === 'drift').length },
+      exits: { total: d.exits.length, alive: d.exits.filter(exitUsable).length, managed: d.exits.filter((e) => e.entry).length, drift: d.exits.filter((e) => e.sync === 'drift').length },
       clients: d.clients.filter((c) => c.online).length,
     };
   }
@@ -97,7 +99,7 @@ export function installRoutersMock(R: Reg, env: Env) {
     const now = Date.now();
     const a: Rt = { v: base('rt-a', '团队2-路由A', 't2', 23001, 20 * DAY), d: null, seed: hashStr('rt-a') };
     a.v.note = '客户机房 2 楼弱电箱，主路由（发 DHCP）';
-    a.d = buildDetail(a.seed, 20, { drift: 7, dead: 12, clients: 22 });
+    a.d = buildDetail(a.seed, 20, { drift: 7, dead: 12, flaky: 15, clients: 22 });
     a.v.state = 'online'; a.v.last_seen_at = iso(now - 8000); a.v.summary = summarize(a.d, a.seed, 16862);
     a.v.deploy = { state: 'done', step: null, error: null, started_at: iso(now - 20 * DAY), finished_at: iso(now - 20 * DAY + 40_000) };
     const b: Rt = { v: base('rt-b', '团队2-路由B', 't2', 23002, 18 * DAY), d: null, seed: hashStr('rt-b') };

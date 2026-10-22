@@ -146,13 +146,13 @@ export const DotCount = ({ tone, n, label, to }: { tone: Tone; n: number; label:
 export interface SortState { id: string; desc: boolean }
 const nextSort = (s: SortState | null, id: string, first: 'asc' | 'desc'): SortState | null =>
   s?.id !== id ? { id, desc: first === 'desc' } : s.desc === (first === 'desc') ? { id, desc: !s.desc } : null;
-/** 表头一行（唯一实现）：first 为空的列不可排序 */
-export function SortHead({ cols, sort, onSort }: { cols: { id: string; header: string; r?: boolean; first?: 'asc' | 'desc' }[]; sort: SortState | null; onSort: (s: SortState | null) => void }) {
+/** 表头一行（唯一实现）：first 为空的列不可排序；tip 是表头的悬停说明 */
+export function SortHead({ cols, sort, onSort }: { cols: { id: string; header: string; r?: boolean; first?: 'asc' | 'desc'; tip?: string }[]; sort: SortState | null; onSort: (s: SortState | null) => void }) {
   return (
     <thead><tr>{cols.map((c) => {
       const dir = sort?.id === c.id ? (sort.desc ? 'desc' : 'asc') : undefined;
       return (
-        <th key={c.id} className={c.r ? 'r' : undefined} aria-sort={dir === 'asc' ? 'ascending' : dir === 'desc' ? 'descending' : undefined}>
+        <th key={c.id} className={c.r ? 'r' : undefined} data-tip={c.tip} aria-sort={dir === 'asc' ? 'ascending' : dir === 'desc' ? 'descending' : undefined}>
           {c.first ? <button type="button" className="th-sort" data-dir={dir} onClick={() => onSort(nextSort(sort, c.id, c.first!))}>{c.header}{dir === 'asc' ? <ChevronUp /> : dir === 'desc' ? <ChevronDown /> : <ArrowDownUp />}</button> : c.header}
         </th>
       );

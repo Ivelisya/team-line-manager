@@ -1331,7 +1331,8 @@ pub fn overview_of(ms: &[MachineView]) -> Value {
     let (mut provisioning, mut retiring, mut failed, mut up, mut down, mut rx, mut tx) = (0, 0, 0, 0i64, 0i64, 0f64, 0f64);
     // 到期：按订阅的 due_state（同续费告警）分别计即将到期、已过期
     let (mut due_soon, mut overdue) = (0, 0);
-    // 在线/离线按 agent 连通（同前端 isQuiet）：agent 没有近期上报为离线；家宽代理没有 agent，算在线。和健康无关
+    // 在线/离线按 agent 连通（同前端 isQuiet）：agent 没有近期上报为离线。只数有自己 agent 的机器：
+    // 家宽代理没有 agent、同机 IP 节点借宿主机的 agent，都不计。和健康无关
     let (mut online, mut offline) = (0, 0);
     // 月费按币种分别汇总（不做汇率折算）
     let mut cost: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
@@ -1382,10 +1383,12 @@ pub fn overview_of(ms: &[MachineView]) -> Value {
         // 实时速率只算数据没过期的：agent 离线的机器，最后一份上报的速率不算（同前端 liveRate）。
         // 告警（哪怕严重）不影响：机器照常每 10 秒上报。同机 IP 节点的读数就是宿主机的：在线离线照常按节点计，速率不再算一遍
         let stale = m.agent.as_ref().is_some_and(|a| !a.online);
-        if stale {
-            offline += 1;
-        } else {
-            online += 1;
+        if m.agent.is_some() && m.host_machine.is_none() {
+            if stale {
+                offline += 1;
+            } else {
+                online += 1;
+            }
         }
         if let Some(h) = m.host.as_ref().filter(|_| !stale && m.host_machine.is_none()) {
             rx += h.net_rx_bps.unwrap_or(0.0);
@@ -1492,14 +1495,14 @@ mod tests {
         assert_eq!(ov["net_tx_bps"], 500.0);
         assert_eq!(ov["nodes"]["down"], 2);
 
-        // 同机 IP 节点的主机读数就是宿主机的：速率只算一次，节点数、在线数照常各算一台
+        // 同机 IP 节点的主机读数就是宿主机的：速率只算一次，节点数照常各算一台；在线数只算宿主机（agent 是它的）
         let mut h = base("vps");
         h.host = Some(host(800.0));
         let mut x = base("vps");
         x.host = h.host.clone();
         x.host_machine = Some(Ref { id: h.id, name: "团队1-03".into() });
         let ov = overview_of(&[h, x]);
-        assert_eq!((ov["net_rx_bps"].as_f64(), ov["nodes"]["total"].as_i64(), ov["online"].as_i64()), (Some(800.0), Some(2), Some(2)));
+        assert_eq!((ov["net_rx_bps"].as_f64(), ov["nodes"]["total"].as_i64(), ov["online"].as_i64()), (Some(800.0), Some(2), Some(1)));
     }
 
     #[test]
@@ -1512,14 +1515,14 @@ mod tests {
         assert_eq!(crit.health.status, Status::Down);
         let mut off = base("relay");
         off.agent.as_mut().unwrap().online = false;
-        // 家宽代理没有 agent：在线
+        // 家宽代理没有 agent：不计
         let mut proxy = base("proxy");
         proxy.agent = None;
         let mut retired = base("vps");
         retired.lifecycle = "retired".into();
         retired.agent.as_mut().unwrap().online = false;
         let ov = overview_of(&[crit, off, proxy, retired]);
-        assert_eq!((ov["online"].as_i64(), ov["offline"].as_i64()), (Some(2), Some(1)));
+        assert_eq!((ov["online"].as_i64(), ov["offline"].as_i64()), (Some(1), Some(1)));
     }
 
     #[test]

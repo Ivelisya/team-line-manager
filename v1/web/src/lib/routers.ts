@@ -8,7 +8,7 @@ import { del, get, patch, post } from './api';
 import { useTeams, useWrite } from './queries';
 import { collator } from './sort';
 import { createStore } from './store';
-import type { SeriesPoint, Team } from './types';
+import type { EntryLifecycle, SeriesPoint, Team } from './types';
 import * as F from './format';
 
 /** pending = 建了记录、路由还没连上过；offline = 连上过、现在隧道不通或采集失败 */
@@ -34,10 +34,13 @@ export interface RouterIface { name: string; device: string; up: boolean; proto:
 export type ExitSync = 'ok' | 'drift' | 'unmanaged';
 export interface RouterExit {
   name: string; type: string; server: string; port: number;
-  entry: { id: string; name: string; node_id: string; relay_id: string } | null; sync: ExitSync;
-  /** alive / delay_ms 来自每 5 分钟一次的延迟测试（delay_at 是测试时刻）；还没测过为 null。conns 等是 mihomo 连接的汇总 */
-  alive: boolean | null; delay_ms: number | null; delay_at: string | null; conns: number; up_bps: number; down_bps: number; clients: number;
+  /** lifecycle：对上的面板入口现在的状态（已停用、已删除的对不上，sync 为 drift） */
+  entry: { id: string; name: string; node_id: string; relay_id: string; lifecycle: EntryLifecycle } | null; sync: ExitSync;
+  /** alive / delay_ms 来自每 5 分钟一次的延迟测试（delay_at 是测试时刻）；还没测过为 null。fail_streak：连续几次测不通。conns 等是 mihomo 连接的汇总 */
+  alive: boolean | null; delay_ms: number | null; delay_at: string | null; fail_streak: number; conns: number; up_bps: number; down_bps: number; clients: number;
 }
+/** 出口算不算可用（同服务端摘要的 alive 与告警）：连续两次测不通才不算，只不通 1 次的还算 */
+export const exitUsable = (e: RouterExit) => e.alive !== false || e.fail_streak < 2;
 export interface RouterClient { ip: string; mac: string | null; hostname: string | null; online: boolean; conns: number; exits: { name: string; conns: number }[] }
 export interface RouterDetail {
   system: { os: string; kernel: string; cpu_model: string; cores: number; load: [number, number, number]; procs: number; clock_skew_s: number | null; clash_rss: number | null };
@@ -165,5 +168,5 @@ export const tempTone = (t: number | null | undefined) => (t == null ? undefined
 export const routerIssues = (s: RouterSummary | null): string[] => (!s ? [] : [
   s.openclash.enabled && !s.openclash.running && 'OpenClash 已启用但核心没在运行',
   !s.wan.up && 'WAN 口断开',
-  s.exits.alive < s.exits.total && `${s.exits.total - s.exits.alive} 个出口延迟测试失败`,
+  s.exits.alive < s.exits.total && `${s.exits.total - s.exits.alive} 个出口连续两次延迟测试不通`,
 ].filter((x): x is string => !!x));
