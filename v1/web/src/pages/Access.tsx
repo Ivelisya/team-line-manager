@@ -263,7 +263,7 @@ const NodesView = React.memo(function NodesView({ f, filtered, open }: { f: Acce
       {q.isError && <div style={{ padding: 12 }}><ErrNote e={q.error} /></div>}
       <div className="table-wrap" data-stale={q.isPlaceholderData}>
         <table className="dt" style={{ minWidth: 760 }}>
-          <colgroup><col style={{ width: 170 }} /><col style={{ width: 100 }} /><col style={{ width: 100 }} /><col style={{ width: 90 }} /><col style={{ width: 100 }} /><col style={{ width: 110 }} /><col /></colgroup>
+          <colgroup><col /><col style={{ width: 100 }} /><col style={{ width: 100 }} /><col style={{ width: 90 }} /><col style={{ width: 100 }} /><col style={{ width: 110 }} /><col style={{ width: 130 }} /></colgroup>
           <thead><tr><th>节点</th><th className="r">连接数</th><th className="r">访问目标</th><th className="r">域名</th><th className="r">来源数</th><th className="r">已阻止</th><th>最近活动</th></tr></thead>
           <tbody>
             {rows.slice(pg.offset, pg.offset + pg.size).map((n) => (

@@ -64,7 +64,7 @@ export function JobsPage() {
                 <span style={{ marginLeft: 'auto' }}><JobPill state={j.state} /></span>
               </span>
               {jobLive(j.state) && <span className="l-prog"><Progress value={jobProgress(j).pct} live label="总进度" /><span className="num">{jobProgress(j).done}/{jobProgress(j).total}</span></span>}
-              <span className="l2"><span>{F.dt(j.created_at)}</span><span>{j.created_by}</span>{j.error && <span className="ellipsis" style={{ color: 'var(--bad-text)' }} data-tip={j.error}>{j.error}</span>}</span>
+              <span className="l2"><span>{F.dt(j.created_at)}</span><span>{j.created_by}</span>{j.error && <span className="ellipsis" style={{ color: j.state === 'cancelled' ? 'var(--fg-2)' : 'var(--bad-text)' }} data-tip={j.error}>{j.error}</span>}</span>
             </div>
           ))}
           {jobs.data && list.length === 0 && <Empty icon={<ListChecks size={22} />} text="没有作业" hint="上架、退役、升级 agent 都会在这里留下一条" />}
@@ -116,7 +116,8 @@ function JobDetail({ id }: { id: string }) {
             <LabelValue label="作业 ID"><span className="mono">{j.id}</span></LabelValue>
           </LabelValueGrid>
         </div>
-        {j.error && <div style={{ marginTop: 12 }}><Note tone="bad">{j.error}</Note></div>}
+        {/* 取消（含「全部升级」里前一台失败后跟着取消的）不是出错：原因用中性色 */}
+        {j.error && <div style={{ marginTop: 12 }}><Note tone={j.state === 'cancelled' ? undefined : 'bad'}>{j.error}</Note></div>}
         {j.kind === 'move_entry' && (j.result?.new_entry_id || j.state === 'succeeded') && (
           <div style={{ marginTop: 12 }}>
             <Note tone={j.state === 'succeeded' ? 'warn' : 'info'}>
