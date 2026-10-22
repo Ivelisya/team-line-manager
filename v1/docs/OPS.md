@@ -47,7 +47,7 @@
 | 恢复已退役的机器 | `fleetctl restore 团队1-06 --relay 线路机3 --reason 客户续约 --yes --follow`（先预检再提交，见 §6） |
 | 改名 / 换团队 / 改编号 | `fleetctl rename 团队1-06 --team 团队2 --number 3` |
 | 编号压缩成连续 | `fleetctl renumber 团队1`（预览），`--yes` 执行 |
-| 升级 agent | `fleetctl upgrade-agent 团队1-06`、`fleetctl upgrade-agent --all --yes` |
+| 升级 agent | `fleetctl upgrade-agent 团队1-06`、`fleetctl upgrade-agent --all --yes`（先升一台金丝雀，线路机逐台、落地机并发；新版本起不来或没上报自动换回旧版本，见 §7） |
 | 入口启停、轮换凭据 | `fleetctl entries`、`fleetctl entry disable 线路机2:20001 --yes`、`fleetctl entry rotate … --yes` |
 | 线路机直出入口（从线路机自己的 IP 出去，旧系统的「节点00-默认」） | `fleetctl entry add-direct 线路机2 --yes --follow`（每台线路机至多一条；线路机 agent 要先升到新版本）；链接 `fleetctl share 线路机2-直出` |
 | 分享链接 | `fleetctl share 线路机2:20001`（需要 secrets，记审计） |
@@ -138,6 +138,18 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 ## 7. 版本升级顺序
 先升中控（`lab/deploy-server.sh` 就是先装 fleet-server、再把新 agent 放进 dist），再 `fleetctl upgrade-agent --all --yes` 升 agent：新 agent 的上报可能带旧中控不认的字段形状（如容器里 `load1` 为 null），旧中控会拒收整份上报。
 反过来，期望状态里的新东西旧 agent 也不认：直出入口（出站 `direct`）要等那台线路机的 agent 升级后再建，否则线路机报「agent 版本过旧」、整台的配置停在旧代数（这时升级 agent，或取消那个新增入口作业把直出入口摘掉，都能恢复）。
+
+### 升级 agent：金丝雀与回滚
+- **顺序**：`--all` 不是一起升。先升一台做金丝雀（有线路机先挑线路机，同类里在用入口少的先上），它成功了其余线路机一台接一台，线路机都成功后落地机并发（同时最多 `job_workers` 台）。命令输出第一行后面就是这次的顺序（金丝雀是哪台），作业按执行顺序列出；`--follow` 依次跟着看。排在后面的作业在前一台结束之前一直是「排队中」。线路机一台一台来：一个坏版本最多弄坏一台线路机，线路机之间的冗余还在。
+- **每台的回滚**：推送前旧程序留成同目录的 `/usr/local/bin/fleet-agent.prev`（成功后也留着，下次升级覆盖；退役清理一并删）。新版本重启后 3 秒内主进程就退出（起不来），或 2 分钟内没有以新版本号上报，作业自动把 .prev 换回去并重启 agent，然后失败，错误写「新版本 X …，已回滚到 <旧版本>」：这时机器已经回到旧版本、照常上报，不用动它。
+- **停在半路**：金丝雀或任何一台线路机失败，没开始的作业全部取消（错误写明是哪台失败），已经升好的不动。先查原因：失败作业的错误、`fleetctl logs <机器> --unit fleet-agent`。修好（多半是换一个 agent 版本、重新部署中控）后再 `--all` 一次：已经是新版本的机器推送跳过，只轮换令牌、重启 agent。落地机之间互不等待，一台失败只影响它自己。
+- **重试**：失败的升级作业可以 `fleetctl retry <作业>`，从推送重来（不是只重等上报）。
+- **回滚也失败**（错误里写「需要人工处理」：机器上没有 .prev，或换回去旧版本也没起来）：agent 可能没在运行，这台会报 agent 离线。看日志找原因后手动换回并重启（修改状态，先确认）：
+  ```
+  fleetctl exec <机器> -- 'ln -f /usr/local/bin/fleet-agent.prev /usr/local/bin/fleet-agent.r && mv -f /usr/local/bin/fleet-agent.r /usr/local/bin/fleet-agent && systemctl restart fleet-agent'
+  fleetctl show <机器>        # agent 版本与在线
+  ```
+  没有 .prev 时只能先让中控 dist 里是能用的 agent（修好后重新部署中控），再重试这个作业。
 
 ## 8. PostgreSQL 参数建议
 发行版默认值（`shared_buffers = 128MB`、`work_mem = 4MB`）对中控偏小，建议在中控机上调：

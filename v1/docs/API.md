@@ -93,8 +93,8 @@ EntryView = { id, relay:{id,name}, node:{id,name}, direct, port, lifecycle, appl
 | GET | `/machines/{id}/retire` | 退役预览：`{data:{name, renames:[{machine_id,old_name,new_name}], ip_nodes:[{id,name}]}}`——编号保持连续，退役后同团队后面的节点依次前移；`ip_nodes` 是会一并退役的同机 IP 节点（宿主机才有，还没开始退役的），`renames` 按所有受影响的团队算 |
 | POST | `/machines/{id}/retire` | `{confirm: <显示名>, reason?, cleanup?: true}` → `{data:{job_id, ip_node_jobs:[{machine_id,name,job_id}]}}`。退役完成时同团队编号自动压缩成 01..N（写审计）。线路机上还有节点入口时 409（提示先搬空）；它自己的直出入口不算，由退役作业的「摘除入口」一并摘掉。**宿主机**：它上面还没开始退役的同机 IP 节点在同一事务里一并置为退役中（`lifecycle_reason`「随宿主机「名字」退役」），作废它们进行中 / 失败的作业、关掉它们的告警，各建一个退役作业（`cleanup: false`：只摘入口，不登录清理——宿主机的清理连同所有实例一起删），列在 `ip_node_jobs`（没有为 []），各写一条审计 `machine.retire`。单独退役同机 IP 节点只删它自己的实例 |
 | POST | `/machines/{id}/purge` | 仅已退役。`{confirm: <显示名>}` → 作业；彻底删除机器与遥测，保留审计。宿主机上还有同机 IP 节点（含已退役的）没删时 409：「这台机器上还有同机 IP 节点没有彻底删除（含已退役的）：…；先删它们」。它的入口近 35 天有小时流量、且入口另一端的机器未退役时 409：「这台机器的入口在 YYYY-MM-DD 前仍计入其他机器的流量统计，届时再彻底删除」（作业执行时再查一次） |
-| POST | `/machines/{id}/upgrade-agent` | 推送中控当前版本的 agent 并重启（作业 `upgrade_agent`；令牌顺带轮换）。线路机顺带收敛 fleet-xray 单元（变了只 daemon-reload，不重启 Xray，等它下次重启才生效）与访问日志轮转（配置 + 每小时的 fleet-xray-logrotate.timer），这两样没装上只记警告。同机 IP 节点 409（agent 是宿主机的，升级宿主机） |
-| POST | `/agents/upgrade` | 所有在用线路机与落地机（不含同机 IP 节点）各建一个 `upgrade_agent` 作业（有进行中作业的跳过；每台单独提交，一台冲突不影响其他台） → `{data:{jobs:[{machine_id,job_id}], skipped:[{machine_id,reason}]}}` |
+| POST | `/machines/{id}/upgrade-agent` | 推送中控当前版本的 agent 并重启（作业 `upgrade_agent`；令牌顺带轮换） → `{data:{machine_id,name,kind,job_id,after:null}}`。线路机顺带收敛 fleet-xray 单元（变了只 daemon-reload，不重启 Xray，等它下次重启才生效）与访问日志轮转（配置 + 每小时的 fleet-xray-logrotate.timer），这两样没装上只记警告。**回滚**：推送时机器上的旧程序留成同目录的 `/usr/local/bin/fleet-agent.prev`（硬链接，新程序原子替换；上一次留的被覆盖，成功后也留着）；重启后新版本起不来（隔 3 秒主进程换了，或不是 active），或 2 分钟内没有用新令牌、以新版本号上报，就把 .prev 换回去并重启，作业失败，错误写明「新版本 X 起不来（…）/ 重启后 120 秒没有上报，已回滚到 <旧版本>」；机器上没有 .prev 或换回去也没起来时写明需要人工处理。程序和 dist 里的相同（推送跳过）时不回滚。同机 IP 节点 409（agent 是宿主机的，升级宿主机） |
+| POST | `/agents/upgrade` | 所有在用线路机与落地机（不含同机 IP 节点）各建一个 `upgrade_agent` 作业（有进行中作业的跳过；每台单独提交，一台冲突不影响其他台），但不一起跑：先升一台做**金丝雀**（有线路机先挑线路机；同类里在用入口少的在前，一样少按名字），它成功后其余线路机**一台接一台**，线路机都成功后落地机**并发**（作业引擎的并发上限 `job_workers`）。编排记在作业参数 `after`（要等的作业 id）：那个作业结束之前这个作业领取不到（一直是 queued）；它没有成功，这个作业一步都不做、直接取消，`error` 写明原因（如「金丝雀「线路机2」升级失败，其余机器不再升级」「「线路机3」升级失败，后面的机器不再升级」，再往后的沿用同一个原因），日志一条「没有开始：…」。落地机之间互不等待，一台失败不影响别的 → `{data:{jobs:[{machine_id,name,kind,job_id,after}], skipped:[{machine_id,name,reason}], order}}`：`jobs` 按执行顺序（第一个是金丝雀，`after` 为 null）；`order` 是给人看的顺序说明，如「先升「线路机3」做金丝雀，成功后其余 2 台线路机逐台升级，线路机都成功后 40 台落地机并发升级；任何一台线路机失败，没开始的都会取消」（只有一台时「只有「X」一台」，一台都没建时「没有要升级的机器」） |
 | PUT | `/machines/{id}/subscription` | `{price_cents,currency,cycle,due_date,billing_tz,auto_renew,remind_days,traffic_gb?,traffic_reset_day?}` |
 | POST | `/machines/{id}/renewals` | `{new_due,amount_cents?,note?}` |
 | GET | `/machines/{id}/renewals` | |
@@ -146,7 +146,7 @@ ProvisionItem = {
 | GET | `/jobs?state=active\|done\|all\|failed&target_id=&limit=100&offset=0` | 分页：`{items:[Job（不含 steps、cancellable、result，另有 step_title）], total, next_offset}`，按创建先后倒序（`id desc`） |
 | GET | `/jobs/{id}` | 含 steps |
 | GET | `/jobs/{id}/logs?after=<log id>` | `[{id,ts,level,msg}]` |
-| POST | `/jobs/{id}/retry` | 失败的作业从失败那一步重来。可选请求体 `{reset_host_key?: bool, ssh_password?: string}`（不带请求体 = 都不要）：`reset_host_key` 先清掉 known_hosts 里这台机器的记录、按现在的主机公钥重新记录（报「主机指纹变化」且确认机器重装过才用；拿不到公钥 409）；`ssh_password` 是 root 密码，和上架时一样加密存进作业参数，供重试的作业在中控密钥登录不了时用（用过即丢；失败作业留存的密码 3 天后清除，之后重试要重新给）。只有 failed 的作业能重试（否则 409）；上架/恢复失败的机器重试时回到 provisioning。审计 `job.retry` 记 `reset_host_key` 与是否给了密码（不记密码） |
+| POST | `/jobs/{id}/retry` | 失败的作业从失败那一步重来（`upgrade_agent` 从推送重来：失败时多半已经换回了旧程序）。可选请求体 `{reset_host_key?: bool, ssh_password?: string}`（不带请求体 = 都不要）：`reset_host_key` 先清掉 known_hosts 里这台机器的记录、按现在的主机公钥重新记录（报「主机指纹变化」且确认机器重装过才用；拿不到公钥 409）；`ssh_password` 是 root 密码，和上架时一样加密存进作业参数，供重试的作业在中控密钥登录不了时用（用过即丢；失败作业留存的密码 3 天后清除，之后重试要重新给）。只有 failed 的作业能重试（否则 409）；上架/恢复失败的机器重试时回到 provisioning。审计 `job.retry` 记 `reset_host_key` 与是否给了密码（不记密码） |
 | POST | `/jobs/{id}/cancel` | 进行中的作业：补偿已完成的步骤后停下 |
 
 ## 运维：远程执行与日志
@@ -186,6 +186,7 @@ ProvisionItem = {
   `provision_ip`（上架同机 IP 节点）/ `restore_ip`（恢复同机 IP 节点）的步骤：`ip_check`（在宿主机上核对 IP，输出 `{ss_port, local_ips, egress_ip}`：最终的 SS 端口、宿主机本机的 IPv4（逗号加空格分隔的字符串）、经这个 IP 访问中控 /echo 回显的地址）→ `converge`（推 ssserver、装它自己的实例与防火墙，输出同落地机，`bbr` 为 null——不做系统基线）→ `attach` → `wait_applied` → `verify` → `activate`。
   `ip_check` 失败：宿主机 SSH 连不上（network）；IP 不在宿主机网卡上（「IP x 不在宿主机 H 的网卡上（本机：…）」，remote）；回显的来源不是这个 IP（出站路由不对，remote）。暂定的 SS 端口在宿主机上被占用时自动换成最小空闲端口，日志里有一条警告。
   同机 IP 节点的退役作业 `cleanup` 一步只删它自己的实例（输出 `ss` 是 gone / still_listening，指它自己的端口）。
+  `upgrade_agent`（升级 agent）的步骤：`agent`「推送并重启 agent」（输出 `{binary_updated, agent_version, prev_version}`：`agent_version` 是装上的版本，`prev_version` 是这次换下来、留作回滚的旧版本，程序没变时为 null；上架的 `agent` 步骤输出同形）→ `wait_report`「等待新版本上报」（等装上的版本用新令牌上报，输出 `{first_report_at, agent_version, old_tokens_revoked}`）。回滚见 `POST /machines/{id}/upgrade-agent`；被编排取消的（见 `POST /agents/upgrade`）`started_at` 为 null、步骤全是 pending。
 - 告警 `Incident`：`{id, rule, rule_name（规则中文名，同通知）, subject: {id,name}, subject_id, subject_name, severity, state: "firing"|"resolved", summary, opened_at, last_seen_at, resolved_at, ack_at, ack_by, reopen_count}`（`subject_name` 机器已删除时为 null）。
 - 静默 `Silence`：`{id, subject_id, subject_name, rule, rule_name, starts_at, ends_at, is_maintenance, comment}`（`subject_id` / `subject_name` 为 null = 全部机器；`rule_name` 是规则中文名，同告警，`rule` 为 null（全部规则）时也为 null）。
 - 续费 `Renewal`：`{id, old_due, new_due, amount_cents, note, actor, created_at}`。

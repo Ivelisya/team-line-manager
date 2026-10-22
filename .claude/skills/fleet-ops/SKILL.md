@@ -109,7 +109,7 @@ fleetctl purge <机器> --yes                                # 只对已退役�
 fleetctl entry rotate <入口> --yes                         # 旧分享链接立即失效
 fleetctl entry disable <入口> --yes
 fleetctl entry add-direct <线路机> --yes [--follow]          # 线路机直出入口：从线路机自己的 IP 出去（旧系统的「节点00-默认」），每台至多一条；链接 fleetctl share <线路机>-直出
-fleetctl upgrade-agent <机器> | --all --yes                # 重启 agent
+fleetctl upgrade-agent <机器> | --all --yes                # 重启 agent；--all 先升一台金丝雀，成功后线路机逐台、落地机并发
 fleetctl renumber <团队> --yes                             # 不加 --yes 只预览
 fleetctl move <节点> --to <线路机> --yes [--from <线路机>] [--follow]   # 换线路机：新入口验收后才摘旧入口，不断网；分享链接会变，完成后 fleetctl share <节点> 取新链接
 fleetctl evacuate <线路机> --to <线路机> --yes [--follow]          # 搬空线路机（退役前）：每个在用节点一个换线路机作业
@@ -122,6 +122,7 @@ fleetctl subscription set <机器> --price 45 … --yes          # 改订阅：�
 
 - 上架：`fleetctl --json provision --file batch.json --dry-run` 只校验；通过后让用户确认名单，再去掉 `--dry-run` 加 `--yes --follow`。单台参数：`--kind vps --ip 1.2.3.4 --team 团队1 --relay 线路机2 --provider ATTVPS --plan 基础版`。root 密码放环境变量，用 `--ssh-password-env VAR` 传名字。`--ss-port`（批量文件里 `ss_port`）是线路机连节点用的公网（NAT 映射）端口，节点上 ssserver 固定监听 8388；非 NAT 机不要填。
 - 同机 IP 节点（已有落地机上多出来的 IP 当一台独立节点，按 IP 计节点）：`fleetctl provision --kind vps --host <宿主机> --ip <新 IP> --team 团队1 --relay 线路机2 --yes --follow`（批量文件条目写 `"host": "<宿主机>"`）。宿主机要是在用的普通落地机；IP 要已直接配在宿主机网卡上。不填 SSH 端口 / 密码 / SS 端口（SSH 与 agent 用宿主机的，SS 端口中控从 8389 起分配），供应商取宿主机的、费用默认不记。作业 `provision_ip` 第一步「在宿主机上核对 IP」：报「不在宿主机网卡上」或「中控看到的来源是 …」时是机器网络配置问题，让用户去供应商面板 / 机器上配好再 `fleetctl retry`。
+- 升级 agent：新版本起不来或 2 分钟内没上报，作业自动换回旧版本后失败（错误「…，已回滚到 <旧版本>」：机器照常上报，把错误告诉用户即可）；错误里写「需要人工处理」时 agent 可能没在运行，按 `docs/OPS.md` §7 处理。`--all` 的金丝雀或任何一台线路机失败，没开始的作业都取消（`error` 写明是哪台），不要逐台去重试或再 `--all`，先查失败的原因。失败的升级作业 `retry` 从推送重来。
 - 改名：`fleetctl rename <机器> --team 团队2 --number 3`。
 - 分享链接 `fleetctl share <入口>` 需要 `secrets` scope，会记审计；链接是凭据，只给用户本人，不写进文件或日志。
 - 密钥管理（`fleetctl keys ...`）只认登录会话，AI 不做；需要新密钥时请用户在网页「设置 → API 密钥」创建。
@@ -142,6 +143,7 @@ fleetctl subscription set <机器> --price 45 … --yes          # 改订阅：�
 - `status --json` 的 `overview.online` / `offline`：按 agent 连通计（家宽代理没有 agent 算在线），与健康无关。
 - `job`：`state`（queued|running|waiting|cancelling|succeeded|failed|cancelled）、`error`、`steps[]`、`logs[]`。`kind` 里 `provision_ip` / `restore_ip` 是上架 / 恢复同机 IP 节点。
 - `retire --json`：`{job_id, ip_node_jobs:[{machine_id,name,job_id}]}`，后者是一并退役的同机 IP 节点各自的退役作业。
+- `upgrade-agent --all --json`：`{jobs:[{machine_id,name,kind,job_id,after}], skipped:[{machine_id,name,reason}], order}`；`jobs` 按执行顺序，第一个是金丝雀，`after` 是它要等的作业（等的那个没成功它就被取消）；`order` 是顺序说明，原样转述给用户。
 - `exec`：`exit_code stdout stderr duration_ms truncated timed_out`；多台时是这些字段加 `machine` 的数组，某台没执行成（请求被拒、连不上）时那一项是 `{machine,id,exit_code:null,error:{code,message,status}}`。
 
 完整接口见仓库 `docs/API.md`，运维流程与何时才需要直接 ssh 见 `docs/OPS.md`。
