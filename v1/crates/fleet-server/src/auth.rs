@@ -7,7 +7,7 @@
 //! - `read`：所有 GET，但不含凭据类（`/entries/{id}/share`）与远程执行类（日志）
 //! - `write`：非 GET 的业务写操作
 //! - `secrets`：凭据类 GET（分享链接）
-//! - `exec`：远程执行（`/machines/{id}/exec`、各类日志）
+//! - `exec`：远程执行（`/machines/{id}/exec`、各类日志、`fleetctl ssh` 登录前报的审计 `POST /audit/ssh`）
 //! - 密钥管理（`/api-keys`）与账户安全（`/account/...`：两步验证、会话、改密码）只允许会话用户，API 密钥一律 403
 
 use crate::crypto::{random_token, sha256};
@@ -123,6 +123,8 @@ pub fn needed(method: &Method, path: &str) -> Need {
         ["entries", _, "share"] if get => Need::Scope("secrets"),
         ["machines", _, "exec"] if !get => Need::Scope("exec"),
         ["machines", _, "logs"] | ["server", "logs"] if get => Need::Scope("exec"),
+        // fleetctl ssh 登录前报的审计：只有能执行命令的密钥能写，别的密钥伪造不了登录记录
+        ["audit", "ssh"] if !get => Need::Scope("exec"),
         _ if get => Need::Scope("read"),
         _ => Need::Scope("write"),
     }
@@ -529,6 +531,8 @@ mod tests {
         assert_eq!(needed(&g, "/api/v1/account/sessions"), Need::Session);
         assert_eq!(needed(&p, "/api/v1/account/totp/setup"), Need::Session);
         assert_eq!(needed(&g, "/api/v1/jobs/x/logs"), Need::Scope("read"));
+        assert_eq!(needed(&p, "/api/v1/audit/ssh"), Need::Scope("exec"));
+        assert_eq!(needed(&g, "/api/v1/audit"), Need::Scope("read"));
     }
 
     #[test]

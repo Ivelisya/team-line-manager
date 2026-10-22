@@ -457,6 +457,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "notify.update" => "修改通知渠道",
         "notify.delete" => "删除通知渠道",
         "exec" => "执行命令",
+        "ssh.login" => "SSH 登录",
         "machine.logs" => "查看机器日志",
         "server.logs" => "查看中控日志",
         "apikey.create" => "新建 API 密钥",
@@ -522,6 +523,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
             format!("{} · {c} · {res}", s("name"))
         }
         "machine.logs" | "restore.probe" => s("name"),
+        "ssh.login" => format!("{} · {}", s("name"), if d["command"] == true { "带命令（内容不记录）" } else { "交互式" }),
         "incident.ack" => format!("{} · {}", crate::notify::rule_name(d["rule"].as_str().unwrap_or("")), s("summary")),
         "server.logs" => format!("{} 行", d["lines"]),
         "apikey.create" | "apikey.revoke" if d["via"] == "local-admin" => format!("{}（{}）· 中控命令行 local-admin", s("name"), s("prefix")),
