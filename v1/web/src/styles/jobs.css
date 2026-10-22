@@ -21,7 +21,7 @@
 }
 .job-item { display: grid; gap: 2px; width: 100%; padding: var(--sp-10) var(--card-pad); border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left; cursor: pointer; color: inherit; min-width: 0; transition: background-color var(--dur-1) var(--ease-std); }
 .job-item:last-child, .job-item:has(+ .pager) { border-bottom: 0; } /* 分页器自带顶线 */
-.job-item:hover { background-color: var(--hover); }
+@media (hover: hover) { .job-item:hover { background-color: var(--hover); } }
 .job-item[aria-current="true"] { background-color: var(--selected); box-shadow: inset 2px 0 0 var(--accent); }
 .job-item .l1 { display: flex; align-items: center; gap: var(--sp-8); min-width: 0; }
 .job-item .l1 > b { font-weight: var(--fw-semibold); }
@@ -50,7 +50,7 @@
 .stepbar-item[data-link="comp"]::before { background: var(--warn); opacity: 0.6; }
 .stepbar-node {
   position: relative; z-index: 1; display: grid; place-items: center; width: 24px; height: 24px; box-sizing: border-box; border-radius: 50%;
-  background: var(--surface); border: 2px solid var(--line-strong); color: var(--fg-3); transition: background-color var(--dur-2) var(--ease-std), border-color var(--dur-2) var(--ease-std), color var(--dur-2) var(--ease-std);
+  background: var(--surface); border: 2px solid var(--line-strong); color: var(--fg-3); transition: background-color var(--dur-1) var(--ease-std), border-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std);
 }
 .stepbar-node .lucide { width: 12px; height: 12px; stroke-width: 2.4; }
 .stepbar-item[data-kind="done"] .stepbar-node { background: color-mix(in srgb, var(--ok) 16%, var(--surface)); border-color: var(--ok); color: var(--ok-text); }

@@ -10,8 +10,8 @@
   white-space: nowrap; cursor: pointer; text-decoration: none; user-select: none;
   transition: background-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std), border-color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out);
 }
-/* 禁用：半透明之外再去饱和——只调透明度的话，暗底上的危险 / 主按钮看着像一个能点的暗色按钮 */
-.btn:disabled, .btn[aria-disabled="true"] { opacity: var(--o-disabled); filter: saturate(0.4); cursor: default; }
+/* 禁用（全站一条）：半透明之外再去饱和——只调透明度的话，暗底上的危险 / 主按钮看着像一个能点的暗色按钮。悬停规则都带 :not(:disabled) */
+:is(.btn, .icon-btn, .top-btn, .copy-btn, .toast-x, .fchip, .seg-item, .checkbox, .switch, .cal-day):is(:disabled, [aria-disabled="true"]), .seg-item[data-disabled] { opacity: var(--o-disabled); filter: saturate(0.4); cursor: default; }
 /* 加载中不显示成禁用的样子；转圈替换原图标，按钮宽度不变 */
 .btn[aria-busy="true"]:disabled { opacity: 1; filter: none; cursor: progress; }
 .btn[aria-busy="true"] > .lucide:not(.spin) { display: none; }
@@ -48,14 +48,13 @@
 }
 .icon-btn[aria-expanded="true"], .icon-btn[aria-pressed="true"] { background: var(--hover); color: var(--fg); }
 @media (hover: hover) { .icon-btn:hover:not(:disabled) { background: var(--hover); color: var(--fg); } }
-.icon-btn:disabled { opacity: var(--o-disabled); cursor: default; }
 .icon-btn-sm { width: var(--h-sm); height: var(--h-sm); }
 .icon-btn-lg { width: var(--h-lg); height: var(--h-lg); }
 
 /* 复制按钮 */
 .copy-btn { position: relative; display: inline-grid; place-items: center; flex: none; width: var(--h-xs); height: var(--h-xs); padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--fg-2); cursor: pointer; transition: background-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out); }
 .copy-btn::after { content: ""; position: absolute; inset: -5px; } /* 可点范围扩到 32px，外观不变 */
-.copy-btn:hover { background: var(--hover); color: var(--fg); }
+@media (hover: hover) { .copy-btn:hover:not(:disabled) { background: var(--hover); color: var(--fg); } }
 .copy-btn.is-done { color: var(--ok); animation: copy-pop var(--dur-2) var(--ease-out); }
 @keyframes copy-pop { 0% { transform: scale(.8); } 60% { transform: scale(1.15); } }
 
@@ -74,7 +73,7 @@
   font: var(--fw-medium) var(--fs-body) / var(--lh-body) var(--font-sans); color: var(--fg-2);
   transition: color var(--dur-1) var(--ease-std), background-color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out);
 }
-@media (hover: hover) { .seg-item:hover:not([data-state="on"]) { color: var(--fg); background: var(--hover); } }
+@media (hover: hover) { .seg-item:hover:not([data-state="on"], :disabled, [data-disabled]) { color: var(--fg); background: var(--hover); } }
 .seg-item[data-state="on"] { color: var(--fg); }
 /* 选中胶囊：Segmented 在当前项里放一个共享 layoutId 的元素，motion 让它在项之间滑动；z-index:-1 配 isolation 让它垫在文字下面。
    按下时胶囊在项里面，跟着一起缩 */
@@ -82,8 +81,7 @@
 .seg-count { font-weight: var(--fw-regular); color: var(--fg-2); font-variant-numeric: tabular-nums; }
 .seg-sm { height: var(--h-sm); }
 .seg-sm .seg-item { height: var(--seg-item-sm); padding: 0 var(--sp-10); font-size: var(--fs-label); line-height: var(--lh-label); }
-/* 置灰的分段项（首页卡片密度在表格 / 环形视图下）：照常占位，工具栏不跳 */
-.seg-item[data-disabled] { opacity: var(--o-disabled); cursor: default; }
+/* 置灰的分段项（首页卡片密度在表格 / 环形视图下）：照常占位，工具栏不跳；样式同其它禁用控件（上面「按钮」） */
 
 /* ========== 下划线页签 ========== */
 .tabs-list { display: flex; align-items: stretch; gap: var(--sp-20); border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
@@ -124,7 +122,7 @@
 .pill::before { content: none; flex: none; width: 11px; height: 11px; background: currentColor; -webkit-mask: var(--pill-ic) center / contain no-repeat; mask: var(--pill-ic) center / contain no-repeat; }
 .pill[data-tone="bad"]:not([data-dot])::before { content: ""; --pill-ic: var(--ic-bad); }
 .pill[data-tone="warn"]:not([data-dot])::before { content: ""; --pill-ic: var(--ic-warn); }
-.pill[data-dot="pulse"]::before { content: ""; width: 9px; height: 9px; box-sizing: border-box; border: 1.5px solid currentColor; border-top-color: transparent; border-radius: 50%; background: none; -webkit-mask: none; mask: none; animation: spin 0.9s linear infinite; }
+.pill[data-dot="pulse"]::before { content: ""; width: 9px; height: 9px; box-sizing: border-box; border: 1.5px solid currentColor; border-top-color: transparent; border-radius: 50%; background: none; -webkit-mask: none; mask: none; animation: spin var(--dur-spin) linear infinite; }
 .pill[data-tone="ok"] { --pill-bg: var(--ok-bg); --pill-fg: color-mix(in srgb, var(--ok-text) 90%, var(--fg)); }
 .pill[data-tone="warn"] { --pill-bg: var(--warn-bg); --pill-fg: var(--warn-text); }
 .pill[data-tone="bad"] { --pill-bg: var(--bad-bg); --pill-fg: var(--bad-text); }
@@ -137,7 +135,7 @@
 /* 告警级别「提示」：圆圈里一个 i（维护中的扳手只给机器状态用） */
 .smark[data-sev="info"] { --smark-ic: var(--ic-tip); }
 .smark[data-tone="neutral"] { --smark-c: var(--fg-3); --smark-ic: var(--ic-neutral); }
-.smark[data-spin] { width: 10px; height: 10px; box-sizing: border-box; border: 1.5px solid var(--info); border-top-color: transparent; border-radius: 50%; background: none; -webkit-mask: none; mask: none; animation: spin 0.9s linear infinite; }
+.smark[data-spin] { width: 10px; height: 10px; box-sizing: border-box; border: 1.5px solid var(--info); border-top-color: transparent; border-radius: 50%; background: none; -webkit-mask: none; mask: none; animation: spin var(--dur-spin) linear infinite; }
 
 .chip {
   display: inline-flex; align-items: center; gap: var(--sp-4); flex: none;
@@ -175,7 +173,7 @@
   cursor: pointer; white-space: nowrap;
   transition: background-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std), border-color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out);
 }
-@media (hover: hover) { .fchip:hover { border-color: var(--line-strong); color: var(--fg); } } /* 触屏点一下不留悬停态 */
+@media (hover: hover) { .fchip:hover:not(:disabled) { border-color: var(--line-strong); color: var(--fg); } } /* 触屏点一下不留悬停态 */
 .fchip[aria-pressed="true"] { background: var(--accent-soft); border-color: transparent; color: var(--accent-soft-fg); }
 .fchip-count { font-weight: var(--fw-regular); color: var(--fg-2); }
 .fchip[aria-pressed="true"] .fchip-count { color: var(--accent-soft-fg); }
@@ -206,7 +204,7 @@
 .progress[data-live="1"] .progress-fill::after {
   content: ""; position: absolute; inset: 0 0 0 -14px;
   background-image: linear-gradient(115deg, rgba(255, 255, 255, 0.28) 25%, transparent 25%, transparent 50%, rgba(255, 255, 255, 0.28) 50%, rgba(255, 255, 255, 0.28) 75%, transparent 75%);
-  background-size: 14px 14px; animation: progress-flow 1s linear infinite;
+  background-size: 14px 14px; animation: progress-flow var(--dur-spin) linear infinite;
 }
 @keyframes progress-flow { to { transform: translateX(14px); } }
 
@@ -278,7 +276,8 @@
 .info-tip { display: inline-grid; place-items: center; flex: none; width: 16px; height: 16px; margin-inline-start: var(--sp-4); vertical-align: -3px; border-radius: 50%; color: var(--fg-3); cursor: help; transition: color var(--dur-1) var(--ease-std); }
 .field-label > .info-tip { margin: 0; } /* 标签行是 flex，间距由 gap 给 */
 .info-tip .lucide { width: 13px; height: 13px; }
-.info-tip:hover, .info-tip:focus-visible { color: var(--fg-2); }
+.info-tip:focus-visible { color: var(--fg-2); }
+@media (hover: hover) { .info-tip:hover { color: var(--fg-2); } }
 .input, .textarea, .select-trigger {
   width: 100%; min-width: 0; box-sizing: border-box; height: var(--h-lg); padding: 0 var(--sp-10);
   border: 1px solid var(--line-strong); border-radius: var(--r-control); background: var(--surface); color: var(--fg);
@@ -313,7 +312,6 @@
 .switch > span { display: block; width: 16px; height: 16px; border-radius: var(--r-pill); background: var(--on-solid); box-shadow: var(--shadow-btn); transition: transform var(--dur-2) var(--ease-out), width var(--dur-2) var(--ease-out); } /* 圆钮是移动到位：进场曲线；按住拉长见文末「交互状态」 */
 .switch[data-state="checked"] > span { transform: translateX(14px); }
 /* 禁用（如保存中的开关）：同图标按钮半透明、不再像能点；在 .check-row 里时后面的说明文字一起调淡 */
-.checkbox:disabled, .switch:disabled { opacity: var(--o-disabled); cursor: default; }
 .check-row > :disabled ~ span { opacity: var(--o-disabled); }
 .check-row:has(> :disabled) { cursor: default; }
 
@@ -492,7 +490,7 @@
 .toast-count { flex: none; align-self: center; padding: 0 var(--sp-6); border-radius: var(--r-pill); background: var(--sunken); color: var(--fg-2); font-size: var(--fs-micro); line-height: 18px; }
 .toast-x { position: relative; flex: none; width: var(--h-xs); height: var(--h-xs); margin: -2px -4px 0 0; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--fg-3); cursor: pointer; transition: background-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out); }
 .toast-x::after { content: ""; position: absolute; inset: -6px; } /* 可点范围扩到 34px，外观不变（仍在通知的内边距里，不被裁） */
-@media (hover: hover) { .toast-x:hover { background: var(--hover); color: var(--fg); } }
+@media (hover: hover) { .toast-x:hover:not(:disabled) { background: var(--hover); color: var(--fg); } }
 .toast-timer { position: absolute; left: 0; bottom: 0; height: 2px; width: 100%; background: var(--fg-3); opacity: 0.45; transform-origin: left; animation: toast-timer linear forwards; }
 .toast[data-tone="ok"] .toast-timer { background: var(--ok); }
 .toast[data-tone="bad"] .toast-timer { background: var(--bad); }
@@ -525,14 +523,14 @@
    按下「快按慢回」：各元素自己的 transition 里带 scale var(--dur-2) var(--ease-out)，按下时这里把时长换成 --dur-press，立刻跟手缩小；
    松开按 --dur-2 弹回。缩放用独立的 scale 属性，不碰 motion 写的 transform（卡片重排、滑块、下划线）。三档：
    控件 --press-sm .94｜文字控件 --press-md .97｜块 --press-lg .98。
-   行（菜单项、下拉项、命令项、表格行、导航项、作业项、树节点、权限行）不缩放：悬停底上叠一层 --state-press。
+   行（菜单项、下拉项、命令项、表格行、导航项、作业项、树节点、权限行、操作记录行、表头排序、侧栏底部快捷键）不缩放：悬停底上叠一层 --state-press。
    禁用的按钮不响应（:not(:disabled)）；禁用的菜单项是 pointer-events: none，不会按下。导航当前项的底是渐变（粉紫），不叠 */
 :is(.icon-btn, .top-btn, .copy-btn, .toast-x, .pol-chev, .cal-day):active:not(:disabled) { scale: var(--press-sm); transition-duration: var(--dur-press); }
-:is(.btn, .fchip, .seg-item, .tab, .chart-legend-item, .cmd-trigger, .top-alert, .nc-name):active:not(:disabled) { scale: var(--press-md); transition-duration: var(--dur-press); }
+:is(.btn, .fchip, .seg-item, .tab, .chart-legend-item, .cmd-trigger, .top-alert, .nc-name, .relay-name, button.rt-topo-pill):active:not(:disabled) { scale: var(--press-md); transition-duration: var(--dur-press); }
 button.tag:active { scale: var(--press-md); transition-duration: var(--dur-press); } /* 可点的标签（同机关系标）；只认按钮，纯展示的 span 标签按下不缩 */
 .tab:active:not(:disabled) .tab-ind { scale: calc(1 / var(--press-md)) 1; transition-duration: var(--dur-press); }
 :is(.flow-trend, .flow-foot, .nc-quota, .nc-click, .rc-rings, .stat.is-link):active:not(:disabled) { scale: var(--press-lg); transition-duration: var(--dur-press); }
-:is(.menu-item, .select-item, .cmd-item, .job-item, .pop-item, .pol-item, .scope-row):active, .nav-item:active:not([aria-current="page"]), .dt tr.is-link:active { background-image: var(--state-press); }
+:is(.menu-item, .select-item, .cmd-item, .job-item, .pop-item, .pol-item, .scope-row, .th-sort, .nav-foot):active, .nav-item:active:not([aria-current="page"]), :is(.dt tr, .audit-list li).is-link:active { background-image: var(--state-press); }
 /* 开关（iOS）：按住时圆钮拉长 4px；选中态同时少移 4px，右缘不动 */
 .switch:active:not(:disabled) > span { width: 20px; transition-duration: var(--dur-press); }
 .switch[data-state="checked"]:active:not(:disabled) > span { transform: translateX(10px); }
@@ -543,6 +541,10 @@ button.tag:active { scale: var(--press-md); transition-duration: var(--dur-press
   :is(.ncard, .rcard):hover, .stat.is-link:hover { border-color: var(--line-strong); box-shadow: var(--shadow-card-hover); translate: 0 -2px; }
 }
 .stat.is-link:active { translate: none; } /* 按下落回原位并微缩；阴影不去掉：比静止还平会“塌”一下 */
+
+/* 展开箭头（操作记录、访问规则的范围树、访问监控按目标合并的行）：展开时转到朝下，同一条进场曲线 */
+:is(.audit-chev, .pol-chev, .acc-nodes) .lucide { transition: transform var(--dur-2) var(--ease-out); }
+:is(.audit-list li[data-open] .audit-chev, .pol-chev[data-open="1"], .dt tr[data-open] .acc-nodes) .lucide { transform: rotate(90deg); }
 
 /* 焦点环：全站 2px 环、2px 间隙（base.css :focus-visible）。会被滚动容器或单元格裁掉的收进元素里面；日历格之间只有 2px 缝，贴边画 */
 :is(.seg-item, .tab, .th-sort, .pol-chev, .pol-item, .job-item, .pop-item, .logbox):focus-visible, .dt tr.is-link:focus-visible { outline-offset: -2px; }

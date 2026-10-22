@@ -233,6 +233,5 @@ button.tag { border: 0; cursor: pointer; transition: background-color var(--dur-
 .cal-day.is-off { color: var(--fg-3); }
 .cal-day.is-today { box-shadow: inset 0 0 0 1px var(--line-strong); }
 .cal-day[aria-selected="true"] { background: var(--accent-solid); color: var(--on-accent); }
-.cal-day:disabled { color: var(--fg-3); opacity: var(--o-disabled); cursor: default; }
 .cal-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); margin-top: var(--sp-8); padding-top: var(--sp-8); border-top: 1px solid var(--line); }
 .cal-cur { font-size: var(--fs-label); color: var(--fg-2); }

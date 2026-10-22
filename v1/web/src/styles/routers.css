@@ -93,7 +93,7 @@
 }
 .rt-topo-pill small { font-size: var(--fs-micro); font-weight: var(--fw-regular); color: var(--fg-3); }
 .rt-topo-pill .lucide { flex: none; width: 13px; height: 13px; }
-button.rt-topo-pill { cursor: pointer; transition: background-color var(--dur-1) var(--ease-std); }
+button.rt-topo-pill { cursor: pointer; transition: background-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out); }
 @media (hover: hover) { button.rt-topo-pill:hover { background: var(--hover); color: var(--accent); } }
 .rt-topo-exit { justify-self: end; }
 .rt-topo-exit[data-tone="bad"] { background: var(--bad-bg); color: var(--bad-text); }

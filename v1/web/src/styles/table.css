@@ -40,7 +40,7 @@
   display: inline-flex; align-items: center; gap: var(--sp-4); box-sizing: border-box;
   width: calc(100% + 2 * var(--sp-6)); min-height: calc(var(--thead-h) - 1px); margin-inline: calc(-1 * var(--sp-6)); padding: 0 var(--sp-6);
   border: 0; border-radius: var(--r-control); background: none; cursor: pointer; font: inherit; color: inherit;
-  transition: color var(--dur-1) var(--ease-std);
+  transition: color var(--dur-1) var(--ease-std), background-color var(--dur-1) var(--ease-std);
 }
 .dt th.r .th-sort { justify-content: flex-end; }
 @media (hover: hover) { .th-sort:hover { color: var(--fg); } }

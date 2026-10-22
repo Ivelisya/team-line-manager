@@ -6,7 +6,7 @@
 .scope-name { display: inline-flex; align-items: center; gap: var(--sp-4); min-width: 0; }
 .scope-name .chip { margin-left: var(--sp-4); }
 .scope-row { display: flex; align-items: center; gap: var(--sp-10); padding: var(--sp-8) var(--sp-12); border: 1px solid var(--line); border-radius: var(--r-float); cursor: pointer; transition: background-color var(--dur-1) var(--ease-std), border-color var(--dur-1) var(--ease-std); }
-.scope-row:hover { background-color: var(--hover); }
+@media (hover: hover) { .scope-row:hover { background-color: var(--hover); } }
 .scope-row[data-on="1"] { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); background-color: var(--selected); }
 .scope-row b { font-weight: var(--fw-medium); }
 .scope-row .hint { margin-top: 0; }

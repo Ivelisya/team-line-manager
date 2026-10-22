@@ -17,7 +17,6 @@
 @media (hover: hover) { .host-pick:hover { color: var(--accent); text-decoration: underline; } }
 /* 「域名与 IP」按目标合并：「N 个节点」前的箭头展开时转下；展开的各节点行底色下沉、节点名缩进到箭头后面，和合并行分得开 */
 .acc-nodes { display: inline-flex; align-items: center; gap: var(--sp-4); color: var(--fg-2); }
-.acc-nodes .lucide { width: var(--icon-xs); height: var(--icon-xs); flex: none; color: var(--fg-3); transition: transform var(--dur-2) var(--ease-std); }
-.dt tr[data-open] .acc-nodes .lucide { transform: rotate(90deg); }
+.acc-nodes .lucide { width: var(--icon-xs); height: var(--icon-xs); flex: none; color: var(--fg-3); } /* 转动见 components.css「展开箭头」 */
 .dt tr.acc-sub td { background: var(--sunken); }
 .dt tr.acc-sub .acc-node { display: block; padding-left: calc(var(--icon-xs) + var(--sp-4)); }

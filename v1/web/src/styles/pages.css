@@ -48,8 +48,7 @@
 /* 操作记录（AuditList）：不画圆点和竖线；有明细的行前面一个展开箭头，点开在下面列出命令与结果、改动前后 */
 .audit-list.is-bare li::before { content: none; }
 .audit-chev { display: inline-flex; width: 14px; height: 1em; vertical-align: -2px; color: var(--fg-3); }
-.audit-chev .lucide { width: 12px; height: 12px; transition: transform var(--dur-2) var(--ease-out); }
-.audit-list li[data-open] .audit-chev .lucide { transform: rotate(90deg); }
+.audit-chev .lucide { width: 12px; height: 12px; } /* 转动见 components.css「展开箭头」 */
 .audit-list.is-bare .audit-detail { padding-left: 14px; }
 .audit-what[data-tone="bad"] b { color: var(--bad-text); }
 .audit-target.btn { display: inline; height: auto; font: inherit; vertical-align: baseline; }
@@ -76,7 +75,7 @@
   font: var(--fw-medium) var(--fs-label) / 1 var(--font-sans); color: var(--fg-2);
   transition: background-color var(--dur-1) var(--ease-std), border-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out);
 }
-.chart-legend-item:hover { color: var(--fg); border-color: color-mix(in srgb, var(--lc) 60%, var(--line)); }
+@media (hover: hover) { .chart-legend-item:hover { color: var(--fg); border-color: color-mix(in srgb, var(--lc) 60%, var(--line)); } }
 .chart-legend-item i { width: 8px; height: 8px; border-radius: 2px; background: var(--lc); box-shadow: inset 0 0 0 1.5px var(--lc); transition: background-color var(--dur-1) var(--ease-std); }
 .chart-legend-item[aria-pressed="false"] { background: transparent; border-color: var(--line); color: var(--fg-3); }
 .chart-legend-item[aria-pressed="false"] i { background: transparent; }
@@ -124,7 +123,6 @@
 .relay-name { display: inline-flex; align-items: center; gap: 2px; padding: 0; border: 0; background: none; color: var(--fg); cursor: pointer; border-radius: var(--r-xs); transition: color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out); }
 .relay-name .lucide { color: var(--fg-3); transition: translate var(--dur-2) var(--ease-out), color var(--dur-1) var(--ease-std); }
 @media (hover: hover) { .relay-name:hover, .relay-name:hover .lucide { color: var(--accent); } .relay-name:hover .lucide { translate: 2px 0; } }
-.relay-name:active { scale: 0.98; }
 .apply-box { display: flex; align-items: center; gap: var(--sp-8); flex-wrap: wrap; padding: var(--sp-8) var(--card-pad); border-top: 1px solid var(--line); background: var(--sunken); font-size: var(--fs-label); color: var(--fg-2); }
 
 /* 上架 */

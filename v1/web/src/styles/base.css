@@ -40,7 +40,7 @@ a { color: inherit; }
 @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes fade-out { from { opacity: 1; } to { opacity: 0; } }
 @keyframes skel-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-.spin { animation: spin 1s linear infinite; }
+.spin { animation: spin var(--dur-spin) linear infinite; }
 
 /* ---------- 外壳 ---------- */
 .app { min-height: 100vh; }
@@ -74,7 +74,7 @@ a { color: inherit; }
   transition: background-color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out);
 }
 .top-btn[aria-expanded="true"] { background: var(--accent-soft-strong); }
-@media (hover: hover) { .top-btn:hover { background: var(--accent-soft-strong); } }
+@media (hover: hover) { .top-btn:hover:not(:disabled) { background: var(--accent-soft-strong); } }
 /* 顶栏告警胶囊（链到告警页）：悬停底色加深一级，按下同文字控件微缩（components.css「交互状态」）；行内的 a 不能缩放，改 inline-flex。
    悬停预览开着时（含键盘聚焦打开的）底色同悬停，同作业徽标开着弹层时 */
 .top-alert { display: inline-flex; flex: none; border-radius: var(--r-pill); text-decoration: none; transition: scale var(--dur-2) var(--ease-out); }
@@ -92,7 +92,7 @@ a { color: inherit; }
   font: var(--fw-regular) var(--fs-body) / var(--lh-body) var(--font-sans);
   transition: border-color var(--dur-1) var(--ease-std), background-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out);
 }
-.cmd-trigger:hover { border-color: var(--line-strong); color: var(--fg); }
+@media (hover: hover) { .cmd-trigger:hover { border-color: var(--line-strong); color: var(--fg); } }
 .cmd-trigger-t { flex: 1; min-width: 0; text-align: left; white-space: nowrap; }
 .cmd-trigger-k { display: inline-flex; gap: var(--sp-2); }
 @media (max-width: 760px) {
@@ -111,10 +111,10 @@ a { color: inherit; }
   display: grid; gap: var(--sp-4); width: 100%; box-sizing: border-box; padding: var(--sp-8); border: 0; border-radius: var(--r-control);
   background-color: transparent; color: inherit; font: inherit; text-align: left; text-decoration: none; cursor: pointer; transition: background-color var(--dur-1) var(--ease-std);
 }
-.pop-item:hover { background-color: var(--hover); }
+@media (hover: hover) { .pop-item:hover { background-color: var(--hover); } }
 .pop-t { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-8); min-width: 0; }
 .pop-all { display: block; padding: var(--sp-8) var(--sp-12); border-top: 1px solid var(--line); font-size: var(--fs-label); color: var(--accent); text-decoration: none; }
-.pop-all:hover { text-decoration: underline; text-underline-offset: 3px; }
+@media (hover: hover) { .pop-all:hover { text-decoration: underline; text-underline-offset: 3px; } }
 /* 告警预览一行：级别点 + 对象名 + 规则名（放不下先省略规则），右边已持续多久；下一行摘要，和名称左对齐 */
 .alerts-pop-row { display: flex; align-items: center; gap: var(--sp-6); min-width: 0; }
 .alerts-pop-row > b { flex: none; max-width: 60%; font-weight: var(--fw-medium); }

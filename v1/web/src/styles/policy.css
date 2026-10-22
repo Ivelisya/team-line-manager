@@ -15,11 +15,9 @@
 .pol-row { display: flex; align-items: stretch; min-width: 0; }
 /* 展开箭头与节点行：按下反馈、焦点环内收（树的滚动容器会裁外圈）写在 components.css「交互状态」 */
 .pol-chev { flex: none; width: 28px; display: grid; place-items: center; border: 0; background: transparent; color: var(--fg-2); cursor: pointer; border-radius: var(--r-control); transition: background-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out); }
-.pol-chev:hover { background: var(--hover); color: var(--fg); }
-.pol-chev .lucide { transition: transform var(--dur-2) var(--ease-out); }
-.pol-chev[data-open="1"] .lucide { transform: rotate(90deg); }
+@media (hover: hover) { .pol-chev:hover { background: var(--hover); color: var(--fg); } } /* 箭头转动见 components.css「展开箭头」 */
 .pol-item { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: var(--sp-8); padding: var(--sp-8) var(--sp-12) var(--sp-8) var(--sp-6); border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; border-radius: var(--r-control); transition: background-color var(--dur-1) var(--ease-std); }
-.pol-item:hover { background-color: var(--hover); }
+@media (hover: hover) { .pol-item:hover { background-color: var(--hover); } }
 .pol-item[aria-current="true"] { background-color: var(--selected); box-shadow: inset 2px 0 0 var(--accent); }
 .pol-row-node { padding-left: 28px; }
 .pol-row-node .pol-item { padding-left: var(--sp-12); }
