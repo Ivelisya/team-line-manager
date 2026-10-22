@@ -148,8 +148,14 @@ async fn validate(tx: &mut Tx<'_>, items: &[Item]) -> ApiResult<Vec<Checked>> {
     for (t, n) in taken_rows {
         taken.entry(t).or_default().insert(n);
     }
-    let live_ips: Vec<(String,)> = sqlx::query_as("select host(primary_ip) from machine where lifecycle <> 'retired'").fetch_all(&mut **tx).await?;
-    let live_ips: HashSet<String> = live_ips.into_iter().map(|(s,)| s).collect();
+    // 未退役机器的 IP → 机器显示名（被占用时告诉用户是哪台）
+    let live_ips: Vec<(String, String)> = sqlx::query_as(
+        "select host(m.primary_ip), display_name(m.kind::text, m.label, t.name, m.number)
+         from machine m left join team t on t.id = m.team_id where m.lifecycle <> 'retired'",
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+    let live_ips: HashMap<String, String> = live_ips.into_iter().collect();
     let relays: Vec<(Uuid,)> = sqlx::query_as("select id from machine where kind = 'relay' and lifecycle = 'active'").fetch_all(&mut **tx).await?;
     let relays: HashSet<Uuid> = relays.into_iter().map(|(r,)| r).collect();
     let labels: Vec<(String,)> =
@@ -173,8 +179,8 @@ async fn validate(tx: &mut Tx<'_>, items: &[Item]) -> ApiResult<Vec<Checked>> {
                 IpAddr::from([0, 0, 0, 0])
             }
         };
-        if live_ips.contains(&ip.to_string()) {
-            errors.push("这个 IP 已经属于一台未退役的机器".into());
+        if let Some(owner) = live_ips.get(&ip.to_string()) {
+            errors.push(format!("这个 IP 已经属于 {owner}"));
         }
         if !batch_ips.insert(ip) {
             errors.push("这一批里 IP 重复".into());
