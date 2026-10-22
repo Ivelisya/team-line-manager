@@ -74,7 +74,6 @@ pub async fn maintain_partitions(db: &PgPool, raw_days: u32, access_days: u32, a
 /// 同 `maintain_partitions`，本机的「现在」由调用方给（测试模拟本机时钟大幅超前）
 pub async fn maintain_partitions_at(db: &PgPool, now: OffsetDateTime, raw_days: u32, access_days: u32, ahead: i64) -> anyhow::Result<()> {
     let today = now.date();
-    let mut newest: Vec<(&str, Option<OffsetDateTime>)> = Vec::with_capacity(PARTITIONED.len());
     for t in PARTITIONED {
         // 只补建缺的分区；建分区要父表的重锁，排在长查询后面会堵住所有上报的 insert，
         // 所以限 2 秒，拿不到就记 warn、下次维护再试（上报时缺分区还会按需补建）
@@ -99,14 +98,28 @@ pub async fn maintain_partitions_at(db: &PgPool, now: OffsetDateTime, raw_days: 
                 tracing::warn!("建分区 {n} 失败（可能被长查询挡住），下次维护再试：{e:#}");
             }
         }
+    }
+    // 本机时钟核对：任何一张分区表最近一天里有数据（agent 每 30 秒报一次主机读数，正常时总有）就说明时钟可信。
+    // 核对得上时删分区的界只看本机时钟，不用各表最新的数据
+    let clock_ok = match recent_data(db, now).await {
+        Ok(ok) => ok,
+        Err(e) => {
+            tracing::warn!("核对本机时钟（查分区表最近一天的数据）失败，这次不删过期分区：{e:#}");
+            return Ok(());
+        }
+    };
+    let mut newest: Vec<(&str, Option<OffsetDateTime>)> = Vec::with_capacity(PARTITIONED.len());
+    for t in PARTITIONED {
+        if clock_ok {
+            newest.push((t, None));
+            continue;
+        }
         match newest_ts(db, t).await {
             Ok(n) => newest.push((t, n)),
             Err(e) => tracing::warn!("查 {t} 最新数据失败，这次不删过期分区：{e:#}"),
         }
     }
-    // 本机时钟核对：任何一张分区表最近一天里有数据（agent 每 30 秒报一次主机读数，正常时总有）就说明时钟可信
     let freshest = newest.iter().filter_map(|(_, n)| *n).max();
-    let clock_ok = freshest.is_some_and(|f| now - f < Duration::days(1));
     if !clock_ok && freshest.is_some() {
         tracing::warn!(
             "分区表最近一天都没有新数据（最新在 {}；本机时钟可能大幅超前，或很久没收到上报）：过期分区按各表最新的数据减保留期删",
@@ -135,7 +148,30 @@ fn drop_before(now: OffsetDateTime, keep: i64, newest: Option<OffsetDateTime>, c
     newest.map(|n| (n - Duration::days(keep)).date())
 }
 
-/// 表里最新一条数据的时间（没有数据为 None）：从日期最新的分区往前找第一个有数据的（预建的未来分区是空的），只在它里面取 max(ts)
+/// 有没有哪张分区表在 `now` 前一天以内（或之后）有数据。ts 只有 BRIN 索引，max(ts) 要顺序扫当天整个分区（探测结果一天约 500 万行），
+/// 这里只看日期不早于前一天的分区、从日期最新的往前逐个查 exists：预建的未来分区是空的，当天分区读到第一行就满足
+async fn recent_data(db: &PgPool, now: OffsetDateTime) -> anyhow::Result<bool> {
+    let since = now - Duration::days(1);
+    for t in PARTITIONED {
+        let parts: Vec<(String,)> = sqlx::query_as(&format!(
+            "select c.relname::text from pg_inherits i join pg_class c on c.oid = i.inhrelid
+             join pg_class p on p.oid = i.inhparent where p.relname = $1 and c.relname >= $2 and p.relnamespace = {OWN_SCHEMA} order by 1 desc"
+        ))
+        .bind(t)
+        .bind(part_name(t, since.date()))
+        .fetch_all(db)
+        .await?;
+        for (n,) in parts {
+            if sqlx::query_scalar(&format!("select exists (select 1 from {n} where ts > $1)")).bind(since).fetch_one(db).await? {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// 表里最新一条数据的时间（没有数据为 None）：从日期最新的分区往前找第一个有数据的（预建的未来分区是空的），只在它里面取 max(ts)。
+/// 只在本机时钟核对不上时用（见 `recent_data`）
 async fn newest_ts(db: &PgPool, t: &str) -> anyhow::Result<Option<OffsetDateTime>> {
     let parts: Vec<(String,)> = sqlx::query_as(&format!(
         "select c.relname::text from pg_inherits i join pg_class c on c.oid = i.inhrelid

@@ -227,6 +227,9 @@ export async function fetchAllLogs(jobId: string, after: number, signal?: AbortS
   }
   return all;
 }
+/** 只取最后 n 行（打开日志很长的作业时用）：skipped 是前面没给的行数，after 是之后续拉的游标 */
+export const fetchTailLogs = (jobId: string, n: number, signal?: AbortSignal) =>
+  get<{ logs: JobLog[]; skipped: number; after: number }>(`/jobs/${jobId}/logs?tail=${n}`, signal);
 
 // ---- 设置页：API 密钥与告警通知渠道 ----
 /** 最近使用时间（last_used_at）随调用更新、不发事件，仍按时间过期 */
