@@ -609,7 +609,7 @@ async fn seed_failed_job(t: &common::T, kind: &str, target: Uuid, step: i32, ek:
     id
 }
 
-/// 重试时重置主机指纹：只给因指纹不符失败的上架类作业；其它情形 409，且不碰 known_hosts、不改作业与机器
+/// 重试时重置主机指纹：只给因指纹不符失败的作业（不限种类）、目标不是同机 IP 节点；其它情形 409，且不碰 known_hosts、不改作业与机器
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn retry_reset_host_key_is_narrow() {
     let t = setup(false).await;
@@ -657,12 +657,18 @@ async fn retry_reset_host_key_is_narrow() {
     unchanged(j).await;
     sqlx::query("update job set state = 'cancelled' where id = $1").bind(j).execute(&t.st.db).await.unwrap();
 
-    // 不是上架类的作业（升级 agent）
-    let host = seed_vps(&t, team, 2, "198.51.100.9").await;
-    let u = seed_failed_job(&t, "upgrade_agent", host, 0, "host_key").await;
+    // 不限作业种类（升级 agent，在用的机器）：不是指纹失败的拒绝；指纹失败的放行到 keyscan（127.0.0.2:1 连不上 → 重置失败、重试作废）
+    let host = seed_vps(&t, team, 2, "127.0.0.2").await;
+    sqlx::query("update machine set ssh_port = 1 where id = $1").bind(host).execute(&t.st.db).await.unwrap();
+    let u = seed_failed_job(&t, "upgrade_agent", host, 0, "remote").await;
     let (s, v) = retry(u).await;
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
-    assert!(v["error"]["message"].as_str().unwrap().contains("只有上架、恢复作业"), "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("不是因为主机指纹不符"), "{v}");
+    unchanged(u).await;
+    sqlx::query("update job_step set error_kind = 'host_key' where job_id = $1").bind(u).execute(&t.st.db).await.unwrap();
+    let (s, v) = retry(u).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("重置主机指纹失败"), "{v}");
     unchanged(u).await;
     sqlx::query("update job set state = 'cancelled' where id = $1").bind(u).execute(&t.st.db).await.unwrap();
 

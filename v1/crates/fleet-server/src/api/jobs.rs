@@ -159,10 +159,8 @@ pub struct RetryIn {
 }
 
 /// 这次重试能不能重置主机指纹，能就返回要重新记录的 (IP, SSH 端口)。在步骤被重置之前调（要读失败那一步的类别）
-async fn reset_target(tx: &mut crate::db::Tx<'_>, job: Uuid, step: i32, kind: &str, target: Option<Uuid>) -> ApiResult<(String, u16)> {
-    if !jobs::provisions(kind) {
-        return Err(ApiError::conflict("只有上架、恢复作业能在重试时重置主机指纹：其它作业遇到指纹变化，先确认机器是否重装过，再退役后恢复"));
-    }
+/// 不限作业种类：中控确实看到了指纹不符，重置是操作者对已知变化（比如服务商重装了在用节点的系统）的确认
+async fn reset_target(tx: &mut crate::db::Tx<'_>, job: Uuid, step: i32, target: Option<Uuid>) -> ApiResult<(String, u16)> {
     let Some(t) = target else { return Err(ApiError::bad_request("这个作业没有目标机器，没有主机指纹可重置")) };
     let ek: Option<String> = sqlx::query_scalar("select error_kind from job_step where job_id = $1 and idx = $2").bind(job).bind(step).fetch_optional(&mut **tx).await?.flatten();
     if ek.as_deref() != Some("host_key") {
@@ -222,8 +220,8 @@ pub async fn retry(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     }
     // 机器状态已经变了（比如上架一半的机器后来退役了）：旧作业不能复活
     jobs::check_target(&kind, lc.as_deref()).map_err(ApiError::conflict)?;
-    // 重置主机指纹：只给上架（恢复）作业、且正是因为指纹不符失败的；同机 IP 节点登录的是宿主机，不能借它重置宿主机的指纹
-    let pin = if reset { Some(reset_target(&mut tx, id, step, &kind, target).await?) } else { None };
+    // 重置主机指纹：只给正是因为指纹不符失败的作业；同机 IP 节点登录的是宿主机，不能借它重置宿主机的指纹
+    let pin = if reset { Some(reset_target(&mut tx, id, step, target).await?) } else { None };
     // 从失败那一步重来；升级 agent 从推送重来：失败时多半已经换回了旧程序，只重跑「等待新版本上报」永远等不到
     let from = if kind == "upgrade_agent" { 0 } else { step };
     sqlx::query(
