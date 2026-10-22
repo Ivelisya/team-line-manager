@@ -124,9 +124,9 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 .spark-dot { position: absolute; width: 6px; height: 6px; margin: -3px 0 0 -3px; border-radius: 50%; background: var(--cc); box-shadow: 0 0 0 3px color-mix(in srgb, var(--cc) 22%, transparent); } /* 不给 top 过渡：折线是瞬间换形的，圆点慢慢滑会悬在线外 */
 .spark-plot { cursor: crosshair; }
 .spark-cursor { stroke: var(--cc); stroke-opacity: 0.45; stroke-dasharray: 2 2; }
-/* 悬停读数：贴在折线上方，靠两端时不出框（translate 由组件按位置给） */
+/* 悬停读数：贴在折线下方（上方是当前值，不盖住它），靠两端时不出框（translate 由组件按位置给） */
 .spark-tip {
-  position: absolute; bottom: calc(100% + 4px); z-index: 1; pointer-events: none; white-space: nowrap;
+  position: absolute; top: calc(100% + 4px); z-index: 1; pointer-events: none; white-space: nowrap;
   padding: 2px 6px; border-radius: 6px; background: var(--fg); color: var(--surface);
   font: var(--fw-semibold) var(--fs-micro) / 16px var(--font-num); font-variant-numeric: var(--num-variant); box-shadow: var(--shadow-card);
 }
@@ -185,6 +185,8 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 .gauge[data-metric="cpu"] { --mc: var(--m-cpu); }
 .gauge[data-metric="mem"] { --mc: var(--m-mem); }
 .gauge[data-metric="disk"] { --mc: var(--m-disk); }
+.gauge[data-tone="warn"] { --mc: var(--warn); } /* 过阈值时环与中间的数字同色（usageTone） */
+.gauge[data-tone="bad"] { --mc: var(--bad); }
 .gauge-track { fill: none; stroke: var(--cell-off); }
 /* 第一次出现从 0 转到位（挂载时的 @keyframes）；之后读数变化直接到位、不过渡（同格条：描边过渡每帧都要主线程重画） */
 .gauge-val { fill: none; stroke: var(--mc); stroke-linecap: round; stroke-dashoffset: var(--ring-off); animation: ring-in var(--dur-data) var(--ease-out); }

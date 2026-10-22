@@ -1,7 +1,7 @@
 // 首页：两个分区。「监控总览」= 问候 + KPI + 集群状态（features/HomeOverview）；
 // 「服务器集群」= 分组分段控件 + 三种视图：卡片（详细 / 标准 / 紧凑三种密度）、表格、环形；都在同一份筛选 + 排序之后分页。
 // 排序只有一份：工具栏的下拉与表格表头改的是同一个状态（下拉列常用的几种，表头点出来的其它排序在下拉里显示「自定义」），卡片 / 环形视图同样按它排。
-// 默认排序：线路机 → 团队 → 编号；故障/离线不下沉。分组、排序、仅看异常、视图、密度都写在地址里（刷新、分享后不变），没写时用上次的选择（本地偏好）。
+// 默认排序：线路机 → 团队 → 编号；故障/离线不下沉。分组、排序、仅看异常、视图、密度都写在地址里（刷新、分享后不变），没写时用上次的选择（本地偏好），视图、密度、排序随即补进地址。
 import * as React from 'react';
 import { Link } from 'react-router-dom';
 import { AlertTriangle, CircleGauge, CloudUpload, Inbox, LayoutGrid, Server, Table2 } from 'lucide-react';
@@ -73,6 +73,9 @@ export function HomePage() {
   const setV = React.useCallback((v: CardView) => { prefs.set(P_VIEW, v); saved.view = v; upd({ density: v }); }, [upd, saved]);
   const setSort = React.useCallback((s: SortState | null) => { const v = sortStr(s); prefs.set(P_SORT, v); saved.sort = v; upd({ sort: v }); }, [upd, saved]);
   const pickSort = React.useCallback((v: string) => { if (v !== 'custom') setSort(homeSort(v)); }, [setSort]);
+  // 地址里缺的（首次打开、点侧栏回到首页）补上当前生效的视图、密度、排序（替换当前记录）：复制地址分享出去，对方看到的和这里一样
+  const missing = !sp.has('view') || !sp.has('density') || !sp.has('sort');
+  React.useEffect(() => { if (missing) upd({ view: layout, density: view, sort: rawSort }); }, [missing, layout, view, rawSort, upd]);
   useProbeBeatsPoll(layout === 'cards'); // 卡片心跳条每 2 分钟刷新：全页一个轮询
 
   // 实时推送每条都换一份机器列表：按可打断的优先级重渲染（用户的点击、输入先处理，推送晚一点跟上）

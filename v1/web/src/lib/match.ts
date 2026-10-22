@@ -6,10 +6,13 @@ export const sv = (name: string, ip: string, rest: string) => `${name}\t${ip}\t$
 const unpad = (s: string) => s.replace(/\d+/g, (d) => d.replace(/^0+(?=\d)/, ''));
 const subseq = (s: string, q: string) => { const t = [...q]; let i = 0; for (const c of s) if (c === t[i]) i++; return i >= t.length; };
 const CJK = /[㐀-鿿]/;
-/** s 里有没有 q，且 q 以数字结尾时后面不紧跟数字：去前导零后「c-1」命中「C-01」，不命中「C-10」 */
+/** s 里有没有 q，且编号段按整段比：q 以数字结尾时后面不紧跟数字、以数字开头时前面不紧挨数字——
+ *  去前导零后「c-1」命中「C-01」，不命中「C-10」；「1-4」命中「团队1-04」，不命中「团队11-04」 */
 function hasWhole(s: string, q: string): boolean {
-  const tail = /\d$/.test(q);
-  for (let i = s.indexOf(q); i >= 0; i = s.indexOf(q, i + 1)) if (!tail || !/\d/.test(s[i + q.length] ?? '')) return true;
+  const tail = /\d$/.test(q); const head = /^\d/.test(q);
+  for (let i = s.indexOf(q); i >= 0; i = s.indexOf(q, i + 1)) {
+    if ((!tail || !/\d/.test(s[i + q.length] ?? '')) && (!head || !/\d/.test(s[i - 1] ?? ''))) return true;
+  }
   return false;
 }
 /** 匹配档位（大的在前，0 = 不匹配）：名称相同 > 名称前缀 > IP 前缀 > 名称包含 > 去前导零后名称包含（编号整段） > IP、团队、别名等包含 > 名称模糊。

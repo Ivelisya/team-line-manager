@@ -28,7 +28,7 @@ function MiniCard({ m }: { m: MachineView }) {
       {reasons.length > 0 && <ReasonList reasons={reasons.slice(0, REASONS_MAX)} className="reason-list" />}
       {reasons.length > REASONS_MAX && <div className="hint">另有 {reasons.length - REASONS_MAX} 条，见详情</div>}
       <dl className="hc-rows">
-        <div><dt>IP</dt><dd><span className="hc-ip">{m.ip}</span><CopyButton text={m.ip} label=" IP" size={13} /></dd></div>
+        <div><dt>IP</dt><dd><span className="hc-ip">{m.ip}</span><CopyButton text={m.ip} label=" IP" size={13} show /></dd></div>
         <div><dt>团队 / 编号</dt><dd>{team}</dd></div>
         {/* 同机 IP 节点：下面的 CPU / 内存是宿主机的 */}
         {m.host_machine && <div><dt>宿主机</dt><dd className="ellipsis">{m.host_machine.name}（读数共用）</dd></div>}

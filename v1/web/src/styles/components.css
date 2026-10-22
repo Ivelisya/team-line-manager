@@ -203,6 +203,7 @@
 .sec-head > .sec-meta { font-weight: var(--fw-regular); }
 .sec { padding-top: var(--card-seg); margin-top: var(--card-seg); border-top: 1px solid var(--line); }
 .sec:first-child { padding-top: 0; margin-top: 0; border-top: 0; }
+.tab-sticky + .sec { border-top: 0; } /* 吸顶条自带下边线，紧跟的一段不再画一道 */
 
 /* 标签/值（LabelValue 唯一实现）：dt 12 灰、dd 13 */
 .lv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: var(--sp-12) var(--sp-16); margin: 0; }
@@ -318,7 +319,9 @@
    位移只动 transform、阴影放在 ::before 上只动 opacity：两者都能交给合成器，滑入这段正是抽屉挂载、下载懒块的时候，不能回落主线程逐帧重绘阴影。
    遮罩只压暗、不模糊：抽屉开着时用户常对照下面的卡片看，模糊还要 GPU 每帧重做（对话框、命令面板的遮罩才模糊） */
 .drawer {
-  position: fixed; z-index: var(--z-drawer); top: 0; right: 0; bottom: 0; width: var(--drawer-w);
+  position: fixed; z-index: var(--z-drawer); top: 0; right: 0; bottom: 0;
+  /* 抽屉里打开下拉 / 对话框时 Radix 锁滚动、视口让出页面滚动条变宽：抽屉同宽加宽、右侧垫上，内容原地不动（同顶栏） */
+  width: calc(var(--drawer-w) + var(--removed-body-scroll-bar-size, 0px)); padding-right: var(--removed-body-scroll-bar-size, 0px);
   display: flex; flex-direction: column; max-width: 100vw; background: var(--surface); border-left: 1px solid var(--line-float);
   animation: drawer-in var(--dur-3) var(--ease-out);
 }

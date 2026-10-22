@@ -241,8 +241,15 @@ export function maintOwner(list: Silence[], m: MaintSubject, now = Date.now()) {
   const host = live(m.host_machine.id);
   return host.length ? { owner: { ...m.host_machine, host_machine: null }, onHost: true, windows: host } : { owner: m, onHost: false, windows: own };
 }
+/** 维护结束后的健康（服务端维护中不给原因，这里只能按剩下的原因估）：严重的算故障、其余非提示的算降级，否则正常 */
+const healthAfterMaint = (h: MachineView['health']): MachineView['health'] => {
+  if (h.status !== 'maintenance') return h;
+  const rs = h.reasons.filter((r) => r.key !== 'maintenance');
+  return { status: rs.some((r) => r.severity === 'critical') ? 'down' : rs.some((r) => r.severity !== 'info') ? 'degraded' : 'ok', reasons: rs };
+};
 /** 结束一台机器的维护（卡片菜单、抽屉「管理」）：删掉 maintOwner 找到的维护窗口（同机 IP 节点因宿主机维护时结束的是宿主机的）；
- *  「全部机器」的那种不动，只有那种时报错。返回结束了谁的维护。机器上的「维护中」由服务端随后的 metrics 推送改回 */
+ *  「全部机器」的那种不动，只有那种时报错。返回结束了谁的维护。
+ *  删完先在缓存里把这台（宿主机连同它的同机 IP 节点）改成不在维护（同开始维护时提示一出、卡片就跟上），服务端随后的 metrics 推送再给准确的健康 */
 export const useEndMaintenance = () => {
   const qc = useQueryClient();
   return useWrite(async (m: MaintSubject) => {
@@ -250,6 +257,10 @@ export const useEndMaintenance = () => {
     const { owner, windows } = maintOwner(list, m);
     if (!windows.length) throw new Error('这台机器在「全部机器」的维护窗口里，请到告警页结束');
     for (const s of windows) await del(`/silences/${s.id}`);
+    const hit = (x: MachineView) => x.id === owner.id || x.host_machine?.id === owner.id;
+    const off = (x: MachineView) => (hit(x) && x.maintenance ? { ...x, maintenance: false, health: healthAfterMaint(x.health) } : x);
+    qc.setQueriesData<MachineView[]>({ queryKey: ['machines'] }, (d) => d?.map(off));
+    qc.setQueriesData<MachineView>({ queryKey: ['machine'] }, (d) => d && off(d));
     return owner;
   }, [['silences'], ['incidents']]);
 };
