@@ -419,6 +419,19 @@ async fn legacy_import_is_idempotent_and_skips_live_machines() {
     let au = t.get("/api/v1/audit?cat=machine").await;
     assert!(au.as_array().unwrap().iter().any(|a| a["action"] == "recycle.import" && a["summary"] == "导入 1 台，跳过 2 台"), "{au}");
 
+    // 同一台已经以面板机器的身份进了回收站（同 IP，或同供应商 + 服务编号）：跳过，写出是哪一行
+    let fleet_bin: Vec<i64> = sqlx::query_scalar(
+        "insert into recycle_bin (source, source_id, kind, name, ip, provider, service_ref, actor, snapshot)
+         values ('fleet', 'm1', 'vps', '团队2-07', '75.37.237.50', null, null, '系统', '{}'), ('fleet', 'm2', 'vps', '团队2-08', null, 'ATTVPS', '61000', '系统', '{}')
+         returning id",
+    )
+    .fetch_all(&t.st.db)
+    .await
+    .unwrap();
+    let r = t.post("/api/v1/recycle-bin/import", json!({"items": [item("04", "75.37.237.50", "1"), item("05", "75.37.237.51", "61000")]})).await;
+    let why: Vec<&str> = r["skipped"].as_array().unwrap().iter().map(|s| s["why"].as_str().unwrap()).collect();
+    assert_eq!(why, [format!("已经在回收站（#{}）", fleet_bin[0]), format!("已经在回收站（#{}）", fleet_bin[1])], "{r}");
+
     let (s, _) = t.req("POST", "/api/v1/recycle-bin/import", Some(json!({"items": [{"source_id": "x", "kind": "router", "name": "x"}]})), None).await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
 }

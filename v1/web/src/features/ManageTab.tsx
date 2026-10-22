@@ -285,7 +285,7 @@ function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }
             <div>
               <div className="t">立即回收</div>
               <div className="hint">
-                已于 {F.md(m.spare_since)} 退役{m.spare_from && `（原 ${m.spare_from}）`}，{on ? `${on} 起自动回收` : '没有订阅，不会自动回收'}
+                {m.spare_since ? `已于 ${F.md(m.spare_since)} 退役` : '在备用团队'}{m.spare_from && `（原 ${m.spare_from}）`}，{on ? `${on} 起自动回收` : '没有订阅，不会自动回收'}
                 {' '}<InfoTip text={'清理节点上的服务并移入回收站，不等到期。\n要留下它，在上面「改名」里改回别的团队。'} />
               </div>
             </div>
