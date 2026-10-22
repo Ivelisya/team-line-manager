@@ -81,7 +81,7 @@ function stats(machines: MachineView[], q: URLSearchParams) {
 
 export function installAccessMock(R: Reg, machines: () => MachineView[]) {
   // 访问记录保留期（设置「数据保留」）
-  const retention = { raw_days: 7, hourly_days: 31, min: 1, max: 90 };
+  const retention = { raw_days: 7, hourly_days: 31, min: 1, max: 90, profile_days: 60 };
   R('GET', '/settings/access-retention', () => ({ ...retention }));
   R('PUT', '/settings/access-retention', ({ body }) => {
     const b = body as { raw_days: number; hourly_days: number };

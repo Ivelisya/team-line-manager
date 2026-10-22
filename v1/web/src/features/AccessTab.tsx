@@ -2,7 +2,7 @@
 // 线路机的抽屉汇总它名下所有节点。数据来自 GET /machines/{id}/access，30 秒轮询。
 import * as React from 'react';
 import { Radar } from 'lucide-react';
-import { ACCESS_WINDOWS, useMachineAccess, type AccessEvent, type AccessWindow, type MachineAccess } from '@/lib/access';
+import { ACCESS_WINDOWS, WINDOW_DAYS, useAccessRetention, useMachineAccess, type AccessEvent, type AccessWindow, type MachineAccess } from '@/lib/access';
 import * as F from '@/lib/format';
 import { Segmented } from '@/components/ui/overlays';
 import { Button } from '@/components/ui/button';
@@ -84,14 +84,18 @@ function RecentTable({ items }: { items: AccessEvent[] }) {
 
 // 只收 id 和是否线路机：抽屉的机器详情几乎每条实时推送都在变，传整台机器的话这里（连同图表）每 3 秒重画一次
 export const AccessTab = React.memo(function AccessTab({ id, relay }: { id: string; relay: boolean }) {
-  const [w, setW] = React.useState<AccessWindow>('24h');
+  const [picked, setW] = React.useState<AccessWindow>('24h');
+  // 时间范围不超过小时汇总的保留期（服务端会 400）；保留期调短后选着的退回 24 小时
+  const maxDays = useAccessRetention().data?.hourly_days ?? 90;
+  const items = React.useMemo(() => ACCESS_WINDOWS.filter((x) => x.value !== '30d' && WINDOW_DAYS[x.value] <= maxDays).map((x) => ({ value: x.value, label: x.label })), [maxDays]);
+  const w = WINDOW_DAYS[picked] <= maxDays ? picked : '24h';
   const [all, setAll] = React.useState(false);
   const q = useMachineAccess(id, w);
   const d = q.data;
   const long = ACCESS_WINDOWS.find((x) => x.value === w)!.long;
   const head = (
     <SectionHeader title="常访问的目标" meta={relay ? `汇总名下所有节点 · 最近 ${long}` : `最近 ${long}`}>
-      <Segmented sm label="时间范围" value={w} onChange={setW} items={ACCESS_WINDOWS.filter((x) => x.value !== '30d').map((x) => ({ value: x.value, label: x.label }))} />
+      <Segmented sm label="时间范围" value={w} onChange={setW} items={items} />
     </SectionHeader>
   );
   // 出错时留着时间范围控件：可以重试，也可以换一段时间

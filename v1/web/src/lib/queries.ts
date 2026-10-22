@@ -137,7 +137,7 @@ export function eventKeys(ev: StreamEvent): unknown[][] {
     case 'incidents': return [['incidents'], ['silences']];
     case 'catalog': return [['teams'], ['providers'], ['plans'], ['machines'], ['machine'], ['notify-channels'], ['policies', 'list'], ['policies', 'versions']];
     case 'api_keys': return [['api-keys']];
-    case 'settings': return [['access-retention']];
+    case 'settings': return [['access-retention'], ['access'], ['audit']];
     case 'policies': return [['policies'], ['machines'], ['relays']];
     default: return [];
   }

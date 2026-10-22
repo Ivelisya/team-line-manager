@@ -30,7 +30,6 @@ const VIEWS: { value: View; label: string }[] = [
 const isView = (v: string | null): v is View => VIEWS.some((x) => x.value === v);
 const winLabel = (w: AccessWindow) => ACCESS_WINDOWS.find((x) => x.value === w)!.long;
 // 选项、每页条数用模块常量：搜索框每敲一个字整页重渲，memo 的下拉 / 分段控件 / 分页器不被新数组击穿
-
 const KIND_OPTS = [{ value: 'domain', label: '域名' }, { value: 'ip', label: 'IP' }];
 const ACT_OPTS = [{ value: 'routed', label: '已转发' }, { value: 'blocked', label: '已阻止' }];
 const SORT_ITEMS: { value: TargetSort; label: string }[] = [{ value: 'conns', label: '连接数' }, { value: 'last', label: '最近' }, { value: 'first', label: '首次' }];
@@ -47,7 +46,7 @@ export function AccessPage() {
 
   // 先取出各个字符串再进依赖：整份 URL 参数（sp）一变就重建 f 的话，打开抽屉（?m=）也会让下面五个 memo 的视图全部重渲染
   const w = sp.get('w');
-  // 时间范围跟着保留期走：小时汇总只留 N 天时，超过 N 天的范围不给选（地址里带着的退回 24 小时）
+  // 时间范围跟着保留期走：小时汇总只留 N 天时，超过 N 天的范围不给选（服务端会 400）；地址里带着的退到能选的最长那个
   const retention = useAccessRetention().data;
   const maxDays = retention?.hourly_days ?? 90;
   const windowItems = React.useMemo(() => ACCESS_WINDOWS.filter((x) => WINDOW_DAYS[x.value] <= maxDays).map((x) => ({ value: x.value, label: x.label })), [maxDays]);
@@ -58,9 +57,9 @@ export function AccessPage() {
   const node = sp.get('node') ?? '';
   const search = sp.get('q') ?? '';
   const f = React.useMemo<AccessFilter>(() => ({
-    window: isAccessWindow(w) && WINDOW_DAYS[w] <= maxDays ? w : '24h', team, node, search,
+    window: isAccessWindow(w) ? (WINDOW_DAYS[w] <= maxDays ? w : windowItems[windowItems.length - 1].value) : '24h', team, node, search,
     kind: kind === 'domain' || kind === 'ip' ? kind : '', action: act === 'routed' || act === 'blocked' ? act : '',
-  }), [w, team, node, search, kind, act, maxDays]);
+  }), [w, team, node, search, kind, act, maxDays, windowItems]);
   const tab: View = isView(view) ? view : 'targets';
   const { open } = useDrawer(); // 一次：各视图的行里不再各自订阅 URL
   const [sort, setSort] = React.useState<TargetSort>('conns');
@@ -305,7 +304,7 @@ const EventsView = React.memo(function EventsView({ f, filtered, open }: { f: Ac
   const top = React.useRef<HTMLElement>(null);
   const go = (next: string[]) => { setSt({ fk, cur: next }); scrollBackTo(top.current); };
   return (
-    <Panel ref={top} title={<>原始记录<InfoTip className="ml-1 align-[-3px]" text="最新在前；目标不做合并" /></>} sub={`保留 ${rawDays} 天`} flush>
+    <Panel ref={top} title={<>原始记录<InfoTip text="最新在前；目标不做合并" /></>} sub={`保留 ${rawDays} 天`} flush>
       {q.isError && <div style={{ padding: 12 }}><ErrNote q={q} /></div>}
       <div className="table-wrap" data-stale={q.isPlaceholderData}>
         <table className="dt is-one" style={{ minWidth: 820 }}>

@@ -13,7 +13,8 @@ export const isAccessWindow = (v: string | null): v is AccessWindow => ACCESS_WI
 export const WINDOW_DAYS: Record<AccessWindow, number> = { '1h': 1, '24h': 1, '7d': 7, '30d': 30 };
 
 /** 访问记录保留期（设置「数据保留」）：原始记录与小时汇总各保留多少天。改动由实时流的 settings 事件失效 */
-export interface AccessRetention { raw_days: number; hourly_days: number; min: number; max: number }
+/** profile_days：来源画像实际留的天数（汇总天数与 IP 画像学习期取长的），只读 */
+export interface AccessRetention { raw_days: number; hourly_days: number; min: number; max: number; profile_days: number }
 export const useAccessRetention = () => useQuery({ queryKey: ['access-retention'], queryFn: ({ signal }) => get<AccessRetention>('/settings/access-retention', signal), staleTime: Infinity });
 export function useSaveRetention() {
   const qc = useQueryClient();
