@@ -159,7 +159,7 @@ const TargetsView = React.memo(function TargetsView({ open, f, sort, onSort, fil
       tools={<Segmented sm label="排序" value={sort} onChange={(v) => onSort(v === 'conns' ? '' : v)} items={SORT_ITEMS} />} flush>
       {q.isError && <div style={{ padding: 12 }}><ErrNote q={q} /></div>}
       <TableWrap data-stale={q.isPlaceholderData}>
-        <table className="dt" style={{ minWidth: 820 }}>
+        <table className="dt" style={{ minWidth: 900 }}>
           <colgroup><col /><col style={{ width: 170 }} /><col style={{ width: 96 }} /><col style={{ width: 210 }} /><col style={{ width: 120 }} /><col style={{ width: 104 }} /></colgroup>
           <thead><tr><th>目标</th><th>节点</th><th className="r">连接数</th><th>处理结果</th><th><span className="field-label">首次出现<InfoTip text={FIRST_SEEN_TIP} /></span></th><th>最近</th></tr></thead>
           <tbody>
@@ -372,7 +372,7 @@ const EventsView = React.memo(function EventsView({ f, filtered, onClear, open }
     <Panel ref={top} title="原始记录" sub={<>保留 {rawDays} 天<InfoTip text="最新在前；目标不做合并" /></>} flush>
       {q.isError && <div style={{ padding: 12 }}><ErrNote q={q} /></div>}
       <TableWrap data-stale={q.isPlaceholderData}>
-        <table className="dt is-one" style={{ minWidth: 820 }}>
+        <table className="dt is-one" style={{ minWidth: 960 }}>
           <colgroup><col style={{ width: 150 }} /><col style={{ width: 130 }} /><col style={{ width: 140 }} /><col /><col style={{ width: 70 }} /><col style={{ width: 108 }} /></colgroup>
           <thead><tr><th>时间</th><th>节点</th><th>来源 IP</th><th>目标</th><th>协议</th><th>结果</th></tr></thead>
           <tbody>
