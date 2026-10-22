@@ -2,7 +2,7 @@
 //! 「全部升级」里哪种失败会让编排停下（要真的执行步骤）。需要 PostgreSQL（见 common）。编排的领取顺序在 tests/jobs.rs。
 //! 还有系统基线、节点 ssserver 脚本重跑时以运行中的 sshd / 实例为准（不建作业，脚本直接经假 ssh 跑）。
 //!
-//! 机器是假的：PATH 最前面放一个假 ssh，远端命令在「机器根目录」`<临时目录>/<IP>/` 里真的执行（/usr/local/bin、/etc、/var/lib
+//! 机器是假的：PATH 最前面放一个假 ssh，远端命令在「机器根目录」`<临时目录>/<IP>/` 里真的执行（/run、/usr/local/bin、/etc、/var/lib
 //! 改到里面；根目录里有 refuse 时登录被拒），systemctl 换成桩：记下调用；装着的 agent 版本号里带 crash 的，每次查主进程号都不一样（起来就退出、被反复拉起）。
 //! 会改测试机本身的命令（建用户、nft、sysctl、apt-get…）也换成桩（见 STUBS）。
 //! agent 程序是 shell 脚本，`--version` 打印版本。上报由测试直接写库模拟；线路机的用作业装到机器上的令牌走真的上报接口
@@ -29,8 +29,8 @@ const SSH: &str = r#"#!/bin/sh
 for a; do last=$a; case $a in root@*) ip=${a#root@};; esac; done
 export R="$FAKE_ROOT/$ip"
 [ -e "$R/refuse" ] && { echo "root@$ip: Permission denied (publickey)." >&2; exit 255; }
-mkdir -p "$R/etc/systemd/system"
-fix() { sed "s#/usr/local/bin/#$R/usr/local/bin/#g; s#/etc/#$R/etc/#g; s#/var/lib/#$R/var/lib/#g"; }
+mkdir -p "$R/etc/systemd/system" "$R/run"
+fix() { sed "s#/run/#$R/run/#g; s#/usr/local/bin/#$R/usr/local/bin/#g; s#/etc/#$R/etc/#g; s#/var/lib/#$R/var/lib/#g"; }
 if [ "$last" = "bash -s" ]; then fix | bash -s; else sh -c "$(printf '%s' "$last" | fix)"; fi
 "#;
 
@@ -446,10 +446,11 @@ async fn baseline_restarts_sshd_older_than_its_config() {
 async fn node_ss_restarts_an_instance_older_than_its_config() {
     let ip = "192.0.2.42";
     let root = FAKE.path().join(ip);
-    // 在跑的 ssserver：磁盘上的程序是 sleep 的副本，由它起的进程当主进程（「进程跑的是磁盘上的程序」成立）
+    // 在跑的 ssserver：磁盘上的程序是指向 sleep 的符号链接，由它起的进程当主进程（「进程跑的是磁盘上的程序」成立）。
+    // 不复制：刚写完就执行，别的测试线程同时 fork 出的子进程还拿着写句柄时会 ETXTBSY
     let bin = root.join("usr/local/bin/ssserver");
     std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
-    std::fs::copy("/bin/sleep", &bin).unwrap();
+    std::os::unix::fs::symlink("/bin/sleep", &bin).unwrap();
     let ss = tokio::process::Command::new(&bin).arg("600").kill_on_drop(true).spawn().unwrap();
     std::fs::write(root.join("pid.fleet-ssserver"), ss.id().unwrap().to_string()).unwrap();
     let script = |pw: &str| {
