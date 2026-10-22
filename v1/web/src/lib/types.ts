@@ -46,6 +46,8 @@ export interface MachineView {
   ip: string; ssh_port: number;
   /** 同机 IP 节点（kind 仍是 vps）：它所在的宿主机。它没有自己的 agent 和 SSH——agent、host（主机读数）、ssh_port 都是宿主机的，
    *  plan 为 null，宿主机维护时 maintenance 也为 true；其它机器为 null */
+  /** IP 所在国家（ISO 3166-1 两位大写，如 US）：中控离线 IP 库按机器自己的 IP 查；内网、家宽代理填的域名、库没装时为 null */
+  country: string | null;
   host_machine: { id: string; name: string } | null;
   /** 宿主机：它上面未退役的同机 IP 节点（按团队、编号）；其它机器为 []。宿主机的 quota.used 按网卡算，含它们的流量 */
   ip_nodes: { id: string; name: string }[];

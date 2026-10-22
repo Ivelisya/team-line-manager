@@ -16,7 +16,7 @@ import { SearchInput } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { Segmented, Trunc } from '@/components/ui/overlays';
 import { SkeletonRows } from '@/components/ui/skeleton';
-import { Due, Empty, ErrorNote, HealthPill, HostTag, KindIcon, Num, PageHead, Panel, Pill, type SortState } from '@/components/app/primitives';
+import { Due, Empty, ErrorNote, Flag, HealthPill, HostTag, Num, PageHead, Panel, Pill, type SortState } from '@/components/app/primitives';
 import { NodeHover } from '@/components/app/NodeHover';
 import { MachineGrid, byNum, byStr, sortByCol, type Col } from '@/components/app/MachineGrid';
 import { Pagination } from '@/components/app/Pagination';
@@ -83,7 +83,7 @@ export function NodesPage() {
     const c: Col[] = [
       // 同机关系标跟在名称后面（在悬浮卡的触发区外），只写「同机」/「+N IP」，宿主机名在悬停说明里
       { id: 'name', header: '名称', size: retired ? 250 : 180, ...byStr((m) => m.name),
-        cell: (m) => <div className="row" style={{ flexWrap: 'nowrap', gap: 8 }}><KindIcon kind={m.kind} /><div style={{ minWidth: 0 }}>
+        cell: (m) => <div className="row" style={{ flexWrap: 'nowrap', gap: 8 }}><Flag country={m.country} ip={m.ip} /><div style={{ minWidth: 0 }}>
           <div className="row" style={{ flexWrap: 'nowrap', gap: 6 }}><NodeHover id={m.id} noFocus><span className="cell-main strong">{m.name}{m.lifecycle === 'retired' && <> <Pill tone="neutral">已退役</Pill></>}</span></NodeHover><HostTag id={m.id} host={m.host_machine} nodes={m.ip_nodes} short /></div>
           <span className="sub">{m.ip}</span>
         </div></div> },

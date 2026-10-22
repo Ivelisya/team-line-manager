@@ -8,7 +8,7 @@ import * as F from '@/lib/format';
 import type { EntryView, MachineView } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { Tip } from '@/components/ui/overlays';
-import { Chip, Due, Empty, ErrorNote, HealthPill, KindIcon, Num, PageHead, Pill } from '@/components/app/primitives';
+import { Chip, Due, Empty, ErrorNote, Flag, HealthPill, Num, PageHead, Pill } from '@/components/app/primitives';
 import { NodeHover } from '@/components/app/NodeHover';
 import { Waypoints } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -64,7 +64,7 @@ function RelayCard({ m, open }: { m: MachineView; open: Open }) {
   return (
     <section className="panel relay-card">
       <header className="relay-head">
-        <KindIcon kind="relay" />
+        <Flag country={m.country} ip={m.ip} />
         <span className="ttl">{m.name}</span>
         <HealthPill m={m} />
         <span className="t-sub">{r?.public_host && r.public_host !== m.ip ? `${r.public_host} · ${m.ip}` : m.ip}</span>

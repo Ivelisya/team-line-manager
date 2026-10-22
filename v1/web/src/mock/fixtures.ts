@@ -6,6 +6,9 @@ import type { ApiKey, Incident, Job, NotifyChannel, NotifyLogEntry, JobLog, Mach
 import { addMonths, displayName, str } from '@/lib/format';
 import { quota, quotaGb } from '@/lib/derive';
 
+/** mock 的国家：内网地址查不到（同中控的离线 IP 库），其余按地址末段分到几个国家 */
+export const countryOf = (ip: string) => (/^(10|192\.168|127)\./.test(ip) || ip.includes(':') ? null : ['US', 'US', 'US', 'JP', 'HK', 'SG', 'DE'][Number(ip.split('.').pop()) % 7]);
+
 export function rng(seed: number) {
   let a = seed >>> 0;
   return () => { a = (a + 0x6d2b79f5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
@@ -90,7 +93,7 @@ export function buildDb(): Db {
     };
   };
   const base = (o: Partial<MachineView> & Pick<MachineView, 'id' | 'kind' | 'name' | 'ip'>): MachineView => ({
-    team: null, number: null, label: null, ssh_port: 22, host_machine: null, ip_nodes: [], provider: null, provider_code: null, plan: null, service_ref: null,
+    team: null, number: null, label: null, ssh_port: 22, country: countryOf(o.ip), host_machine: null, ip_nodes: [], provider: null, provider_code: null, plan: null, service_ref: null,
     lifecycle: 'active', lifecycle_reason: null, note: '', revision: 1, created_at: iso(now() - 120 * DAY), activated_at: iso(now() - 100 * DAY), retired_at: null,
     subscription: null, agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, quota: { used: 0, period_start: '', rule: null, base: null, base_at: null }, health: { status: 'ok', reasons: [] },
     active_job: null, failed_job: null, open_incidents: 0, maintenance: false, relay: null, ...o,

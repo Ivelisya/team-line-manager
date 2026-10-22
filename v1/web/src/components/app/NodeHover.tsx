@@ -7,7 +7,7 @@ import { useMachine } from '@/lib/queries';
 import * as F from '@/lib/format';
 import { entryText, isQuiet, resourceMeters } from '@/lib/derive';
 import { KIND_LABEL } from '@/lib/sort';
-import { CopyButton, Due, HealthPill, KindIcon, ReasonList } from './primitives';
+import { CopyButton, Due, Flag, HealthPill, ReasonList } from './primitives';
 import { MiniMeter } from './viz';
 
 const REASONS_MAX = 3;
@@ -22,7 +22,7 @@ function MiniCard({ m }: { m: MachineView }) {
   return (
     <div className="hc">
       <div className="hc-head">
-        <KindIcon kind={m.kind} />
+        <Flag country={m.country} ip={m.ip} />
         <b className="hc-name ellipsis">{m.name}</b>
         <HealthPill m={m} />
       </div>

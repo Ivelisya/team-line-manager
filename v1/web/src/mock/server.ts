@@ -5,7 +5,7 @@ import type { Availability, AvailabilityDay, EntryView, Incident, Job, JobLog, J
 import { addDays, displayName } from '@/lib/format';
 import { isQuiet, liveRate } from '@/lib/derive';
 import { LIFECYCLE_LABEL, makeDefaultCompare } from '@/lib/sort';
-import { buildDb, hashStr, IP_STEPS, quotaOf, rng, type Db } from './fixtures';
+import { buildDb, countryOf, hashStr, IP_STEPS, quotaOf, rng, type Db } from './fixtures';
 import { calibration } from './fixtures';
 import { installAccessMock } from './access';
 import { installPolicyMock } from './policy';
@@ -343,7 +343,7 @@ function createMachine(it: ProvisionItem, c: ProvisionCheckItem): MachineView {
   if (h) db.ssPorts[id] = c.ss_port!;
   const m: MachineView = {
     id, kind: it.kind, name: c.name, team: team ? { id: team.id, name: team.name } : null, number: it.kind === 'relay' ? null : c.number, label: it.kind === 'relay' ? it.label ?? null : null,
-    ip: it.ip, ssh_port: h?.ssh_port ?? it.ssh_port ?? 22, host_machine: h && { id: h.id, name: h.name }, ip_nodes: [], provider: pv ? { id: pv.id, name: pv.name } : null, provider_code: pv?.code ?? null,
+    ip: it.ip, ssh_port: h?.ssh_port ?? it.ssh_port ?? 22, country: countryOf(it.ip), host_machine: h && { id: h.id, name: h.name }, ip_nodes: [], provider: pv ? { id: pv.id, name: pv.name } : null, provider_code: pv?.code ?? null,
     plan: plan ? { id: plan.id, name: plan.name, bandwidth_mbps: plan.bandwidth_mbps, traffic_gb: plan.traffic_gb } : null, service_ref: it.service_ref ?? null,
     lifecycle: 'provisioning', lifecycle_reason: null, note: it.note ?? '', revision: 1, created_at: iso(), activated_at: null, retired_at: null,
     subscription: it.subscription?.due_date ? { price_cents: it.subscription.price_cents ?? plan?.price_cents ?? 0, currency: plan?.currency ?? 'USD', cycle: it.subscription.cycle ?? plan?.cycle ?? 'monthly', due_date: it.subscription.due_date, due_days: 0, billing_tz: it.subscription.billing_tz ?? pv?.timezone ?? 'Asia/Shanghai', auto_renew: false, remind_days: 7, traffic_gb: plan?.traffic_gb || null, traffic_reset_day: 1 } : null,
