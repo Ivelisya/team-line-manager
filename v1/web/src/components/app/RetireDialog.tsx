@@ -13,6 +13,7 @@ import { ErrorNote, Note } from './primitives';
 import { resetOnOpen } from '@/lib/useHeld';
 import { TypedConfirmDialog } from './dialogs';
 import { canReplace } from './ReplaceDialog';
+import { movableEntries } from './LifecycleDialogs';
 
 type Mode = 'spare' | 'now';
 
@@ -39,8 +40,9 @@ export const RetireDialog = resetOnOpen(function RetireDialog({ m, open, onOpenC
   const p = done && pv.isSuccess ? pv.data : undefined;
   const inSpare = m.spare && m.lifecycle === 'active';
   const canSpare = !!p?.spare.ok;
-  const blocked = !!p?.blockers?.length;
   const mode: Mode = canSpare ? pick : 'now';
+  // 阻断原因是「立即回收」会被拒绝的原因（线路机还挂着节点入口、有作业正在执行一步…）：走「立即回收」时先说清、禁用确认
+  const blocked = mode === 'now' && !!p?.blockers?.length;
   const h = m.host_machine;
   const xs: { id: string; name: string; to?: string }[] = (mode === 'spare' ? p?.spare.ip_nodes.map((x) => ({ id: x.id, name: x.name, to: x.to_name })) : p?.ip_nodes) ?? [];
   const due = m.subscription?.due_date.slice(5);
@@ -61,9 +63,9 @@ export const RetireDialog = resetOnOpen(function RetireDialog({ m, open, onOpenC
       {done && pv.isError && <ErrorNote error={pv.error} onRetry={() => void pv.refetch()}>无法检查影响：</ErrorNote>}
       {blocked && (
         <Note tone="bad">
-          <div className="row row-between" style={{ gap: 8 }}>
-            <span>{p!.blockers!.join('；')}，先搬空</span>
-            {m.kind === 'relay' && <Button size="sm" onClick={() => { onOpenChange(false); openEvacuate(m.id); }}>搬空到…</Button>}
+          <div className="row row-between" style={{ gap: 8, flexWrap: 'nowrap' }}>
+            <span style={{ minWidth: 0 }}>{p!.blockers!.map((b) => <div key={b}>{b}</div>)}</span>
+            {m.kind === 'relay' && movableEntries(m).length > 0 && <Button size="sm" style={{ flex: 'none' }} onClick={() => { onOpenChange(false); openEvacuate(m.id); }}>搬空到…</Button>}
           </div>
         </Note>
       )}

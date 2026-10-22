@@ -572,7 +572,7 @@ R('GET', '/machines/([^/]+)/retire', ({ params }) => {
   const spareIps = xs.map((x, i) => ({ id: x.id, name: x.name, to_name: displayName(sp.name, nums[i + 1]) }));
   return {
     name: m.name, renames, ip_nodes: ips, routers: exitsUsing(m),
-    blockers: m.kind === 'relay' && m.entries.some((e) => !e.direct) ? [`还有 ${m.entries.filter((e) => !e.direct).length} 个节点入口`] : [],
+    blockers: m.kind === 'relay' && m.entries.some((e) => !e.direct) ? [`这台线路机上还有 ${m.entries.filter((e) => !e.direct).length} 个节点入口：先把节点迁走或退役。可先用「搬空线路机」把节点换到其他线路机`] : [],
     spare: { ok: !why, why, team: { id: sp.id, name: sp.name }, to_name: displayName(sp.name, nums[0]), recycle_on: m.subscription ? addDays(m.subscription.due_date, 2) : null, ip_nodes: spareIps },
   };
 });
