@@ -233,6 +233,11 @@
 .hint { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); text-wrap: pretty; }
 .hint.ellipsis { white-space: nowrap; } /* text-wrap 是简写，上一条的 pretty 会把 .ellipsis（base.css）的不折行重置成折行 */
 .hint.is-error { color: var(--bad-text); }
+.field-label { display: inline-flex; align-items: center; gap: var(--sp-4); min-width: 0; }
+/* 「(i)」补充说明：一个淡灰的小圆 i，悬停 / 聚焦变深，说明走全站的 data-tip 气泡 */
+.info-tip { display: inline-grid; place-items: center; flex: none; width: 16px; height: 16px; border-radius: 50%; color: var(--fg-3); cursor: help; transition: color var(--dur-1) var(--ease-std); }
+.info-tip .lucide { width: 13px; height: 13px; }
+.info-tip:hover, .info-tip:focus-visible { color: var(--fg-2); }
 .input, .textarea, .select-trigger {
   width: 100%; min-width: 0; box-sizing: border-box; height: var(--h-lg); padding: 0 var(--sp-10);
   border: 1px solid var(--line-strong); border-radius: var(--r-control); background: var(--surface); color: var(--fg);
