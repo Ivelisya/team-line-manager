@@ -180,13 +180,35 @@ pub fn policy_tag(id: Uuid, part: &str) -> String {
     format!("policy-{}-{part}", id.simple())
 }
 
-/// 直出入口的守卫规则：目标端口是本机 Xray API 的连接一律 blocked，排在该入口其它规则之前。
+/// 直出入口的守卫规则：目标端口是本机 Xray API 或任一入口的探测入站（`ports`）的连接一律 blocked，排在该入口其它规则之前。
 /// 路由是 AsIs，block-private 只拦 IP 目标；客户写一个解析到回环的域名（localhost、127.0.0.1.nip.io），
-/// freedom 会在线路机本机替他解析并连上 API（可增删入站出站）。按端口拦和怎么解析无关。
+/// freedom 会在线路机本机替他解析并连上 API（可增删入站出站）或探测入站。按端口拦和怎么解析无关。
 /// 不改成 IPIfNonMatch 让域名先解析再过 block-private：解析结果落在 198.18.0.0/15 的 fake-ip DNS 环境（实验室）里，
 /// 所有域名都会被当成内网拦掉
-fn guard_rule(e: &DesiredEntry) -> Value {
-    json!({"type": "field", "ruleTag": format!("guard-{}-api", e.id.simple()), "inboundTag": [tags::inbound(e.id)], "port": API_PORT.to_string(), "outboundTag": "blocked"})
+fn guard_rule(e: &DesiredEntry, ports: &str) -> Value {
+    json!({"type": "field", "ruleTag": format!("guard-{}-api", e.id.simple()), "inboundTag": [tags::inbound(e.id)], "port": ports, "outboundTag": "blocked"})
+}
+
+/// 探测入站只放行到回显服务（echo_url 的主机与端口）：探测入站是回环上不要密码的 SOCKS，守卫规则之外它也不该是跳板——
+/// 不限目标的话，连上它就能经它连本机 Xray API（增删全部入口）、借别的入口的出站出去。别的目标不匹配任何规则，
+/// 落到默认出站（第一个，deny 黑洞）。探测走 socks5h，SOCKS 请求里就是 URL 里的主机名（或 IP）与端口
+fn echo_target(url: &str) -> Option<Value> {
+    let u = reqwest::Url::parse(url).ok()?;
+    let host = u.host_str()?;
+    let port = u.port_or_known_default()?.to_string();
+    Some(match host.trim_start_matches('[').trim_end_matches(']').parse::<std::net::IpAddr>() {
+        Ok(ip) => json!({"ip": [ip.to_string()], "port": port}),
+        Err(_) => json!({"domain": [format!("full:{host}")], "port": port}),
+    })
+}
+
+fn probe_rule(id: Uuid, echo: &Value) -> Value {
+    let mut r = echo.clone();
+    r["type"] = json!("field");
+    r["ruleTag"] = json!(probe_tag(id));
+    r["inboundTag"] = json!([probe_tag(id)]);
+    r["outboundTag"] = json!(tags::outbound(id));
+    r
 }
 
 /// 访问策略规则：排在该入口默认路由规则之前，只匹配该入口自己的入站（探测入站有独立规则，不受影响）。
@@ -293,6 +315,11 @@ pub fn render(d: &DesiredState, ctx: &RenderCtx) -> Result<Rendered> {
     let (log, api, stats, policy) = skeleton_parts(ctx);
     let probes = probe_ports(&d.entries);
     let enabled: Vec<&DesiredEntry> = d.entries.iter().filter(|e| e.enabled).collect();
+    let echo = echo_target(&d.relay.echo_url);
+    // 守卫规则拦的端口：本机 Xray API 与全部探测入站（升序：同样的入口渲染出同样的规则，不会白白整表替换）
+    let mut guard: Vec<u16> = probes.values().copied().chain([API_PORT]).collect();
+    guard.sort_unstable();
+    let guard = guard.iter().map(u16::to_string).collect::<Vec<_>>().join(",");
 
     let mut inbounds = vec![];
     let mut outbounds = vec![
@@ -308,10 +335,12 @@ pub fn render(d: &DesiredState, ctx: &RenderCtx) -> Result<Rendered> {
         outbounds.push(outbound_json(e.id, &e.outbound));
         if let Some(p) = probes.get(&e.id) {
             inbounds.push(probe_inbound_json(e.id, *p));
-            rules.push(json!({"type": "field", "ruleTag": probe_tag(e.id), "inboundTag": [probe_tag(e.id)], "outboundTag": tags::outbound(e.id)}));
+            if let Some(echo) = &echo {
+                rules.push(probe_rule(e.id, echo));
+            }
         }
         if e.outbound == Outbound::Direct {
-            entry_rules.push(guard_rule(e));
+            entry_rules.push(guard_rule(e, &guard));
         }
         entry_rules.extend(policy_rules(e));
         entry_rules.push(json!({"type": "field", "ruleTag": tags::rule(e.id), "inboundTag": [tags::inbound(e.id)], "outboundTag": tags::outbound(e.id)}));
@@ -422,7 +451,7 @@ pub mod tests {
                  "settings": {"servers": [{"address": "10.0.0.9", "port": 8388, "method": "aes-256-gcm", "password": "pw"}]}}
             ],
             "routing": {"domainStrategy": "AsIs", "rules": [
-                {"type": "field", "ruleTag": format!("probe-{id}"), "inboundTag": [format!("probe-{id}")], "outboundTag": format!("out-{id}")},
+                {"type": "field", "ruleTag": format!("probe-{id}"), "inboundTag": [format!("probe-{id}")], "domain": ["full:echo.example"], "port": "80", "outboundTag": format!("out-{id}")},
                 {"type": "field", "ruleTag": "block-private", "ip": ["geoip:private"], "outboundTag": "blocked"},
                 {"type": "field", "ruleTag": "block-bittorrent", "protocol": ["bittorrent"], "outboundTag": "blocked"},
                 {"type": "field", "ruleTag": format!("rule-{id}"), "inboundTag": [format!("in-{id}")], "outboundTag": format!("out-{id}")}
@@ -603,9 +632,10 @@ x"]));
                 format!("rule-{id1}"), format!("guard-{id2}-api"), format!("rule-{id2}")
             ]
         );
+        // 守卫拦本机 API 与全部探测入站（含节点入口的）
         assert_eq!(
             r.rules[5],
-            json!({"type": "field", "ruleTag": format!("guard-{id2}-api"), "inboundTag": [format!("in-{id2}")], "port": "62789", "outboundTag": "blocked"})
+            json!({"type": "field", "ruleTag": format!("guard-{id2}-api"), "inboundTag": [format!("in-{id2}")], "port": "30001,30002,62789", "outboundTag": "blocked"})
         );
         assert_eq!(r.rules[6], json!({"type": "field", "ruleTag": format!("rule-{id2}"), "inboundTag": [format!("in-{id2}")], "outboundTag": format!("out-{id2}")}));
         assert!(!rule_tags(&r).contains(&format!("guard-{id1}-api").as_str()), "节点入口没有守卫规则（出口在节点上）");
@@ -613,6 +643,27 @@ x"]));
         // 守卫规则属于入口规则：增删直出入口只走热增删，不重启 Xray
         assert_eq!(r.static_part, render(&desired(vec![entry(1, 20001, true)]), &ctx()).unwrap().static_part);
         assert_eq!(Rendered::from_full(r.full.clone()), r);
+    }
+
+    #[test]
+    fn probe_rules_only_reach_the_echo_service() {
+        // 回显服务的主机按 SOCKS 里的写法匹配：域名用 full:，IP（含 IPv6）用 ip；端口缺省按协议
+        assert_eq!(echo_target("https://fleet.example.com/echo"), Some(json!({"domain": ["full:fleet.example.com"], "port": "443"})));
+        assert_eq!(echo_target("http://192.168.31.60:8080/echo"), Some(json!({"ip": ["192.168.31.60"], "port": "8080"})));
+        assert_eq!(echo_target("http://[2001:db8::1]:8080/echo"), Some(json!({"ip": ["2001:db8::1"], "port": "8080"})));
+        assert_eq!(echo_target(""), None);
+        // 内网的回显服务（实验室）照样放行：探测规则排在 block-private 之前；别的目标不匹配任何规则，落到默认的 deny
+        let mut d = desired(vec![entry(1, 20001, true), direct(2, 20002)]);
+        d.relay.echo_url = "http://192.168.31.60:8080/echo".into();
+        let r = render(&d, &ctx()).unwrap();
+        for (n, rule) in r.rules.iter().filter(|x| rule_tag_of(x).starts_with("probe-")).enumerate() {
+            assert_eq!((&rule["ip"], &rule["port"]), (&json!(["192.168.31.60"]), &json!("8080")), "{n}: {rule}");
+        }
+        assert_eq!(tag_of(&r.outbounds[0]), "deny");
+        // 没有回显地址：探测入站没有放行规则，全落到 deny
+        d.relay.echo_url = String::new();
+        let r = render(&d, &ctx()).unwrap();
+        assert!(!rule_tags(&r).iter().any(|t| t.starts_with("probe-")));
     }
 
     #[test]
