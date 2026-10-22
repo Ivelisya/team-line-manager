@@ -12,7 +12,7 @@ DOMAIN=${2:?用法：deploy.sh <中控 ssh 主机> <域名>}
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 # 进包的都要已提交：deploy/ 下的单元与 logrotate 由 scripts.rs 编进 fleet-server，web 下 src 以外的文件也影响前端构建；
-# fleet-ops 技能装到中控 /root/.claude/skills（docs/OPS.md §13）
+# fleet-ops 技能装到中控 /root/.claude/skills（docs/OPS.md §14）
 SKILL="$ROOT/../.claude/skills/fleet-ops/SKILL.md"
 [ -z "$(git -C "$ROOT" status --porcelain -- Cargo.toml Cargo.lock crates migrations deploy web ../.claude/skills/fleet-ops)" ] \
   || { echo "Cargo.toml / Cargo.lock / crates / migrations / deploy / web / fleet-ops 技能有未提交的改动，先提交再部署"; exit 1; }

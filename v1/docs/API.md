@@ -46,7 +46,7 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api-keys` | `[{id,name,prefix,scopes,created_at,expires_at,last_used_at,revoked_at}]`（永不返回 token） |
-| POST | `/api-keys` | `{name, scopes:["read",…], expires_days?: 1-3650, password, totp?}`（当前密码；开了两步验证还要 `totp`，或恢复码，失败同账户安全的再次校验）→ `{data:{id, token}}`，**token 只返回这一次**；写审计，实时流发 `api_keys`。`fleetctl keys create --user` 用登录的密码；命令行登录不支持两步验证，开了的账户到网页上建。名称 `central-local` 留给中控本机的 fleetctl（`fleet-server local-admin` 建，见 OPS.md §13），用它 400 |
+| POST | `/api-keys` | `{name, scopes:["read",…], expires_days?: 1-3650, password, totp?}`（当前密码；开了两步验证还要 `totp`，或恢复码，失败同账户安全的再次校验）→ `{data:{id, token}}`，**token 只返回这一次**；写审计，实时流发 `api_keys`。`fleetctl keys create --user` 用登录的密码；命令行登录不支持两步验证，开了的账户到网页上建。名称 `central-local` 留给中控本机的 fleetctl（`fleet-server local-admin` 建，见 OPS.md §14），用它 400 |
 | DELETE | `/api-keys/{id}` | 撤销（幂等）；之后用它的请求 401，用它连着的实时流马上以 `4401` 关闭 |
 
 ## 目录

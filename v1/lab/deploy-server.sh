@@ -2,7 +2,7 @@
 # 在 fleet-dev 上编译并（重新）部署 fleet-server。幂等：首次运行会建用户、目录、密钥、配置、管理员账号。
 # 管理员初始密码写在 fleet-dev:/root/fleet-admin-password（0600），不打印。
 # 同生产：装 /usr/local/bin/fleetctl，建或修复它的全权密钥 central-local（仍有效不换），写给 agent 的 /root/AGENTS.md、/root/CLAUDE.md
-# 与 fleet-ops 技能（docs/OPS.md §13）。
+# 与 fleet-ops 技能（docs/OPS.md §14）。
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 bash "$HERE/sync-server.sh"
@@ -19,7 +19,7 @@ build() { local out; out=$(cargo build "$@" 2>&1) || { printf '%s\n' "$out"; ret
 build -p fleet-server --release
 build -p fleet-agent --release --target x86_64-unknown-linux-musl
 build -p fleetctl --release --target x86_64-unknown-linux-musl
-# 中控本机的 fleetctl（同生产，docs/OPS.md §13）：配置与全权密钥由最后的 local-admin 写
+# 中控本机的 fleetctl（同生产，docs/OPS.md §14）：配置与全权密钥由最后的 local-admin 写
 install -m 755 target/x86_64-unknown-linux-musl/release/fleetctl /usr/local/bin/fleetctl.new && mv -f /usr/local/bin/fleetctl.new /usr/local/bin/fleetctl
 install -d -m 755 /opt/fleet/dist
 install -m 755 target/x86_64-unknown-linux-musl/release/fleet-agent /opt/fleet/dist/fleet-agent

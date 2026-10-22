@@ -4,7 +4,7 @@
 
 ## 1. 准备
 
-在中控上（ssh 进去，root）什么都不用准备：fleetctl 和它的全权密钥由部署装好，见 §13。下面是在别的机器上用 fleetctl 的做法。
+在中控上（ssh 进去，root）什么都不用准备：fleetctl 和它的全权密钥由部署装好，见 §14。下面是在别的机器上用 fleetctl 的做法。
 
 1. 在网页「设置 → API 密钥」创建密钥，按用途选 scope（见 `docs/API.md`「API 密钥与 scope」）：
    - 只看：`read`
@@ -39,7 +39,7 @@
 | 中控自己的日志 | `fleetctl server-logs --lines 300` |
 | 在一台机器上执行命令 | `fleetctl exec 团队1-06 -- systemctl status fleet-agent` |
 | 对一个团队的全部节点执行 | `fleetctl exec --team 团队1 -- uptime`（并发 4，汇总退出码） |
-| 登录机器或软路由（在中控上，见 §13） | `fleetctl ssh 团队1-06`（交互式）、`fleetctl ssh 团队1-06 -- 'df -h'`（退出码同远端）、`fleetctl ssh router <名称>` |
+| 登录机器或软路由（在中控上，见 §14） | `fleetctl ssh 团队1-06`（交互式）、`fleetctl ssh 团队1-06 -- 'df -h'`（退出码同远端）、`fleetctl ssh router <名称>` |
 | 上架 | `fleetctl provision --file batch.json --dry-run`，确认后 `fleetctl provision --file batch.json --yes --follow` |
 | 已有落地机上多了一个 IP，加成一台节点（同机 IP 节点，见 §6） | `fleetctl provision --kind vps --host 团队1-03 --ip 203.0.113.7 --team 团队1 --relay 线路机2 --yes --follow` |
 | 看作业进度、失败原因 | `fleetctl jobs --active`、`fleetctl job <id> --follow`；失败后 `fleetctl retry <id>` |
@@ -110,7 +110,7 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 - 要交互式操作（编辑文件、长时间抓包）或持续数分钟的任务，超出 exec 的 10 分钟上限与 256 KiB 输出上限。
 - 给机器装中控没管理的东西。
 
-后两种在中控上用 `fleetctl ssh <机器>`（软路由 `fleetctl ssh router <名称>`，§13）：用中控的密钥、只认中控记下的主机指纹，登录记审计。ssh 会话里做的事只记了登录、不记命令：做了改动事后在备注（`fleetctl rename <机器> --note …`）里记一笔。
+后两种在中控上用 `fleetctl ssh <机器>`（软路由 `fleetctl ssh router <名称>`，§14）：用中控的密钥、只认中控记下的主机指纹，登录记审计。ssh 会话里做的事只记了登录、不记命令：做了改动事后在备注（`fleetctl rename <机器> --note …`）里记一笔。
 
 ## 5. 安全要点
 
@@ -193,7 +193,7 @@ WAL 三项由 `deploy/central/install.sh` 写进 `/etc/postgresql/<版本>/main/
 部署 / 升级：本机在 `v1/` 下运行 `deploy/central/deploy.sh debian13 fleet.kismet613.com`（幂等，首次安装也用它）。
 
 - `Cargo.toml`、`Cargo.lock`、`crates`、`migrations`、`deploy`、`web`、fleet-ops 技能（仓库 `.claude/skills/fleet-ops`）有未提交的改动时拒绝部署。
-- 每次还装中控本机的 `/usr/local/bin/fleetctl`，健康检查通过后跑 `fleet-server local-admin`（建或修复全权密钥 central-local，仍有效不换），写 `/root/AGENTS.md`、`/root/CLAUDE.md` 与 `/root/.claude/skills/fleet-ops/SKILL.md`（§13）。部署最后一行写「本机 fleetctl apikey:central-local」说明能用。
+- 每次还装中控本机的 `/usr/local/bin/fleetctl`，健康检查通过后跑 `fleet-server local-admin`（建或修复全权密钥 central-local，仍有效不换），写 `/root/AGENTS.md`、`/root/CLAUDE.md` 与 `/root/.claude/skills/fleet-ops/SKILL.md`（§14）。部署最后一行写「本机 fleetctl apikey:central-local」说明能用。
 - 版本号 `0.1.0+<哈希>` 里的哈希是最后一次改动 `Cargo.toml`、`Cargo.lock`、`crates`、`migrations`、`deploy` 的提交：只改前端或文档的提交不换哈希，fleet-dev 上不重编 server 和 agent。
 - xray、ssserver、geoip.dat 先和中控 `/opt/fleet/dist` 比 sha256，相同的不上传，中控上的保持原样。
 - 编译失败、或 install.sh 重启后等 60 秒未登录访问 `/api/v1/auth/me` 仍不是 401，部署以非 0 退出，后者会打出 fleet-server 最近 60 行日志。中控上的安装包无论成败都删掉。
@@ -278,7 +278,7 @@ WAL 三项由 `deploy/central/install.sh` 写进 `/etc/postgresql/<版本>/main/
    install -m 640 -o fleet -g fleet /root/restore/var/lib/fleet/known_hosts /var/lib/fleet/known_hosts
    diff /root/restore/etc/fleet/fleet.toml /etc/fleet/fleet.toml
    ```
-5. 启动并确认：`systemctl start fleet-server`（启动时跑迁移：备份来自旧版本时补上新迁移）；`curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/api/v1/auth/me` 应为 401。恢复的库里是备份时的 central-local，和第 1 步写进 `/root/.config/fleetctl/config.toml` 的令牌对不上：`/opt/fleet/fleet-server local-admin -c /etc/fleet/fleet.toml` 重建一把（§13），再 `fleetctl status` 看机器。
+5. 启动并确认：`systemctl start fleet-server`（启动时跑迁移：备份来自旧版本时补上新迁移）；`curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/api/v1/auth/me` 应为 401。恢复的库里是备份时的 central-local，和第 1 步写进 `/root/.config/fleetctl/config.toml` 的令牌对不上：`/opt/fleet/fleet-server local-admin -c /etc/fleet/fleet.toml` 重建一把（§14），再 `fleetctl status` 看机器。
 6. 中控 IP 变了：把域名解析改到新机器。agent 按域名上报，解析生效后自动恢复；Caddy 自动签证书。
 7. 放回了 `etc/fleet/backup.pub` 的，再跑一次第 1 步的 deploy.sh：install.sh 看到这个文件才写拉取用户的 authorized_keys，不重跑 PVE 就一直拉不到。
 8. agent 令牌：每次装 / 升级 agent 都会换令牌、撤销旧的。备份之后升级过 agent 的机器，机器上的令牌在恢复的库里不存在，上报一律 401（线路照常通，但上报、配置下发都停了）。解析生效几分钟后 `fleetctl ls` 里 agent 一直离线的那些，逐台 `fleetctl upgrade-agent <机器> --yes` 重发令牌（中控用恢复的 SSH 密钥登录）；不确定就 `fleetctl upgrade-agent --all --yes`。

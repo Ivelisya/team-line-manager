@@ -3,7 +3,7 @@
 # 第一次：装系统包，建 PostgreSQL 库与角色、fleet 用户、密钥（secret.key、中控 SSH 密钥）、fleet.toml、Caddy。
 # 之后每次：只替换 fleet-server、dist、前端、ipintel 与备份脚本并重启 fleet-server；已有的配置和密钥不动。
 # 每次还装 /usr/local/bin/fleetctl，健康检查过后建或修复它的全权密钥 central-local（仍有效不换），写给 agent 的 /root/AGENTS.md、
-# /root/CLAUDE.md 与 fleet-ops 技能（docs/OPS.md §13：用 agent 从中控全量运维）。
+# /root/CLAUDE.md 与 fleet-ops 技能（docs/OPS.md §14：用 agent 从中控全量运维）。
 # 换下来的旧 fleet-server 留在 /opt/fleet/fleet-server.prev（回滚见 docs/OPS.md §9）；重启后未登录访问 /api/v1/auth/me 不是 401
 # 就打出最近日志、退出码 1。
 # /etc/fleet/secret.key 丢了，库里所有 SS 密码、REALITY 私钥、通知渠道配置都解不开：每天的备份连它一起打包（/var/backups/fleet），
@@ -102,7 +102,7 @@ if [ -f /opt/fleet/fleet-server ] && ! cmp -s "$PKG/bin/fleet-server" /opt/fleet
   cp -p /opt/fleet/fleet-server /opt/fleet/fleet-server.prev
 fi
 install -m 755 "$PKG/bin/fleet-server" /opt/fleet/fleet-server.new && mv -f /opt/fleet/fleet-server.new /opt/fleet/fleet-server
-# 中控本机的 fleetctl（docs/OPS.md §13）：ssh 进中控的 agent 直接用，配置与全权密钥由下面健康检查之后的 local-admin 写
+# 中控本机的 fleetctl（docs/OPS.md §14）：ssh 进中控的 agent 直接用，配置与全权密钥由下面健康检查之后的 local-admin 写
 install -m 755 "$PKG/bin/fleetctl" /usr/local/bin/fleetctl.new && mv -f /usr/local/bin/fleetctl.new /usr/local/bin/fleetctl
 rm -rf /opt/fleet/web.new /opt/fleet/web.old
 cp -r "$PKG/web" /opt/fleet/web.new
@@ -229,7 +229,7 @@ if [ "$code" != 401 ]; then
 fi
 ls /var/backups/fleet/fleet-*.tar* >/dev/null 2>&1 || systemctl start --no-block fleet-backup.service   # 第一次装上备份：先做一份
 
-# 用 agent 从中控全量运维（docs/OPS.md §13）：建或修复 root 的 fleetctl 用的全权密钥 central-local（仍有效就不换，
+# 用 agent 从中控全量运维（docs/OPS.md §14）：建或修复 root 的 fleetctl 用的全权密钥 central-local（仍有效就不换，
 # 正在干活的 agent 不会因部署失效），写 /root/.config/fleetctl/config.toml；给 agent 的说明 /root/AGENTS.md 与 /root/CLAUDE.md
 # （同一份）、Claude Code 的 fleet-ops 技能。说明与技能每次部署覆盖，改仓库里的模板
 /opt/fleet/fleet-server local-admin -c /etc/fleet/fleet.toml
