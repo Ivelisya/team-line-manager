@@ -34,6 +34,10 @@ RestrictSUIDSGID=yes
 LockPersonality=yes
 SystemCallArchitectures=native
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+# 仍以 uid 0 运行：属主是 root 的文件照样读得到。把用不着的敏感路径整个藏起来——SSH 主机私钥、agent 的令牌与数据目录、
+# 密码散列。Xray 只读写配置 /etc/fleet-agent/xray.json、资源 /usr/local/share/xray、访问日志 /var/log/fleet-xray，都不在其中
+# （xray api / run -test 是 agent 自己起的子进程，不在本单元里）；不存在的路径由「-」跳过。改了要等 Xray 下次重启才生效
+InaccessiblePaths=-/etc/ssh -/etc/fleet-agent/token -/var/lib/fleet-agent -/etc/shadow -/etc/shadow- -/etc/gshadow -/etc/gshadow-
 # 不加 SystemCallFilter / MemoryDenyWriteExecute：Xray 是 Go 程序，升级 Xray 时运行时用到的系统调用会变，兼容风险大于收益。
 # 不加 ProcSubset=pid：它藏掉 /proc/sys，Go 读不到 somaxconn，入口的监听队列从 4096 掉到 128（安全评分不变）
 

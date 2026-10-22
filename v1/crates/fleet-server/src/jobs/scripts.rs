@@ -181,7 +181,23 @@ echo "own=$(grep -lF "\"server\":\"$IP\"" /etc/shadowsocks-rust/[0-9]*.json 2>/d
 "#;
 
 /// 线路机：fleet-xray 单元与访问日志轮转（配置由 agent 生成）。xray 二进制与 geoip.dat 已推到 /usr/local/bin、/usr/local/share/xray。
-pub fn relay_xray() -> String { RELAY_XRAY.replace("__UNIT__", XRAY_UNIT.trim_end()).replace("__LOGROTATE_SH__", logrotate_sh().trim()) }
+pub fn relay_xray() -> String { RELAY_XRAY.replace("__XRAY_UNIT_SH__", xray_unit_sh().trim()).replace("__LOGROTATE_SH__", logrotate_sh().trim()) }
+
+/// 升级 agent 时也收敛一遍 fleet-xray 单元（加固项随版本变，较早上架的线路机升级一次就换上）。单元变了只 daemon-reload、
+/// 不重启 Xray：新单元等它下次重启（应用时骨架变了、进程退出被拉起、重启机器）才生效。
+/// 只是补装：包在子 shell 里，失败只输出 `xray_unit=error`，不让 agent 步骤失败
+pub fn relay_xray_unit() -> String { format!("(\n{}\n) || echo xray_unit=error\n", xray_unit_sh().trim()) }
+
+fn xray_unit_sh() -> String { XRAY_UNIT_SH.replace("__UNIT__", XRAY_UNIT.trim_end()) }
+
+/// fleet-xray 单元：内容变了才换，只 daemon-reload，从不重启 Xray（重启会断开所有连接）
+const XRAY_UNIT_SH: &str = r#"
+U=/etc/systemd/system/fleet-xray.service
+cat > $U.tmp <<'UNIT'
+__UNIT__
+UNIT
+cmp -s $U.tmp $U && rm -f $U.tmp || { mv $U.tmp $U; systemctl daemon-reload; }
+"#;
 
 /// 升级 agent 时也装一遍访问日志轮转（较早上架、还没有这份配置或每小时定时器的线路机升级一次就补上）。
 /// 只是补装：包在子 shell 里，失败只输出 `logrotate=error`，不让 agent 步骤失败
@@ -228,11 +244,7 @@ pub const XRAY_LOGROTATE_TIMER: &str = include_str!("../../../../deploy/units/fl
 const RELAY_XRAY: &str = r#"
 set -eu
 install -d -m 755 /usr/local/share/xray /etc/fleet-agent
-U=/etc/systemd/system/fleet-xray.service
-cat > $U.tmp <<'UNIT'
-__UNIT__
-UNIT
-cmp -s $U.tmp $U && rm -f $U.tmp || { mv $U.tmp $U; systemctl daemon-reload; }
+__XRAY_UNIT_SH__
 __LOGROTATE_SH__
 systemctl enable -q fleet-xray
 echo "xray_version=$(/usr/local/bin/xray version 2>/dev/null | head -1 | awk '{print $2}')"
@@ -471,5 +483,19 @@ echo "nft_relays=$(nft list set inet ss_guard relays | tr -d '\n' | sed 's/.*ele
         assert!(s.starts_with("(\ninstall -d -m 755 /etc/logrotate.d\n"), "{s}");
         assert!(s.ends_with("\n) || echo logrotate=error\n"), "{s}");
         assert!(!s.contains("__"));
+    }
+
+    /// 升级 agent 时收敛 fleet-xray 单元：与上架装的同一段，单元变了只 daemon-reload，绝不重启 Xray；失败不让步骤失败
+    #[test]
+    fn agent_upgrade_converges_xray_unit_without_restart() {
+        let s = super::relay_xray_unit();
+        let body = super::xray_unit_sh();
+        assert_eq!(s, format!("(\n{}\n) || echo xray_unit=error\n", body.trim()));
+        assert!(body.contains("InaccessiblePaths=-/etc/ssh -/etc/fleet-agent/token -/var/lib/fleet-agent "), "{body}");
+        assert!(body.contains("cmp -s $U.tmp $U && rm -f $U.tmp || { mv $U.tmp $U; systemctl daemon-reload; }\n"));
+        assert!(super::relay_xray().contains(body.trim()));
+        for s in [s, super::relay_xray()] {
+            assert!(!s.contains("systemctl restart") && !s.contains("__"), "{s}");
+        }
     }
 }
