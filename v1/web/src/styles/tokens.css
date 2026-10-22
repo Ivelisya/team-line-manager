@@ -129,12 +129,11 @@
 
   /* ---------- 12. 数据图形 ---------- */
   --quota-h: 6px;                       /* H 流量额度胶囊轨道 */
-  --beat-w-max: 24px; --beat-h: 12px; --beat-gap: 3px; /* H 心跳格 20 格均分整行（单格最宽 24）、高 12、间距 3、2px 圆角 */
   --latency-ok: var(--ok);              /* 心跳格正常 = 绿（H 原样，“绿色心跳条”是辨识度） */
-  /* 首页（参照 CFSM-SAO）：分区底、分段格条、每个资源指标一个颜色、实时速率按量级着色、彩色标签 */
+  /* 首页（参照 CFSM-SAO）：分区底、细进度条、每个资源指标一个颜色、实时速率按量级着色、彩色标签 */
   --section: #eceef1;                   /* 首页大圆角分区底：比画布深一级，白卡浮在上面 */
   --section-line: rgba(17, 24, 39, 0.06);
-  --cell-off: rgba(24, 24, 27, 0.09);   /* 格条 / 圆环 / 点阵的未点亮色 */
+  --cell-off: rgba(24, 24, 27, 0.09);   /* 进度条 / 圆环的底色 */
   --m-cpu: #3b82f6; --m-mem: #8b5cf6; --m-disk: #e97b35; --m-load: #ec4899;
   --speed-idle: #2f9e65; --speed-low: #d9992b; --speed-high: #e07a35; --speed-max: #d6463d;
   --tag-blue-bg: rgba(37, 99, 235, 0.12);   --tag-blue-fg: #1d4ed8;
@@ -147,7 +146,6 @@
   --tag-green-bg: rgba(34, 197, 94, 0.14);   --tag-green-fg: #15803d;
   --tag-gold-fg: #ca8a04; --tag-sky-fg: #0284c7;
   --tag-gray-bg: rgba(107, 114, 128, 0.14);  --tag-gray-fg: #4b5563;
-  --cell-stagger: 14ms;                 /* 格条首次扫亮：每格多给的时长（home.css .cells 用 12 格的量加在 --dur-data 上） */
 
   /* ---------- 13. 表格与密度（O 原有 宽松/紧凑 两档，保留；只定义这一次） ---------- */
   --thead-h: 36px;                      /* O 38 */
@@ -178,7 +176,7 @@
   --dur-1: 140ms;                       /* 悬停与颜色等原地变化；锚定弹层、顶部面板的退场 */
   --dur-2: 220ms;                       /* 浮层与面板进场、松开回弹、悬停上浮、页签内容；抽屉与 toast 的退场 */
   --dur-3: 340ms;                       /* 边缘抽屉滑入（节点抽屉、窄屏侧栏） */
-  --dur-data: 450ms;                    /* 数据图形：格条首次扫亮、圆环进场、进度线、曲线展开、KPI 滚数（lib/useCountUp 读它）。格条、圆环、心跳格之后的读数变化不过渡 */
+  --dur-data: 450ms;                    /* 数据图形：进度条首次长出、圆环进场、进度线、曲线展开、KPI 滚数（lib/useCountUp 读它）。进度条、圆环、连通细条之后的读数变化不过渡 */
   --dur-loop: 2s;                       /* 循环的统一节拍：呼吸点、作业徽标、状态胶囊脉冲、骨架、步骤环。改这里要同步 NodeCard.tsx LiveDot 的 2000（按它对齐呼吸相位） */
   --ease-out: cubic-bezier(0.32, 0.72, 0, 1); /* 苹果式先快后缓：所有进场、移动到位、回弹 */
   --ease-std: cubic-bezier(0.4, 0, 0.2, 1);   /* 原地状态变化（颜色、透明度）、退场 */
@@ -305,5 +303,5 @@
 
 @media (prefers-reduced-motion: reduce) {
   /* 循环动画（--dur-loop）不靠归零，各处显式 animation: none（extras.css 末尾、cards.css） */
-  :root { --dur-press: 0ms; --dur-1: 0ms; --dur-2: 0ms; --dur-3: 0ms; --dur-data: 0ms; --cell-stagger: 0ms; }
+  :root { --dur-press: 0ms; --dur-1: 0ms; --dur-2: 0ms; --dur-3: 0ms; --dur-data: 0ms; }
 }

@@ -1,5 +1,5 @@
 // 实时指标：实时流的 metrics 消息（服务端最多每 3 s 一条，只带变了的字段）直接写进机器类查询缓存，不重取；
-// 同时攒实时迹线（每台机器、全站各最近 30 个速率点），卡片点阵与集群状态折线用 useLiveSeries。
+// 同时攒实时迹线（每台机器、全站各最近 30 个速率点），卡片走势与集群状态折线用 useLiveSeries。
 // 消息形状见 docs/API.md「实时流」：host、tcp/egress 是定长数组（时间为 Unix 秒），其余字段与 REST 同形。
 import { useSyncExternalStore } from 'react';
 import { notifyManager, useQuery, type QueryClient } from '@tanstack/react-query';

@@ -166,18 +166,23 @@
 .fchip[aria-pressed="true"] .fchip-count { color: var(--accent-soft-fg); }
 .fchip.is-zero, .fchip.is-zero .fchip-count { color: var(--fg-3); }
 
-/* ========== 心跳条 Beat（资源格条、额度格条在 home.css 的 .cells） ========== */
+/* ========== 连通细条 Beat（资源条、额度条在 home.css 的 .bar） ========== */
 .beat { display: grid; gap: var(--sp-6); min-width: 0; }
 .beat-cap { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-8); font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); white-space: nowrap; min-width: 0; }
 .beat-cap b { font: var(--fw-semibold) var(--fs-label) / var(--lh-label) var(--font-sans); font-variant-numeric: var(--num-variant); color: var(--fg); }
 .beat-main { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .beat-win { flex: none; font-size: var(--fs-micro); line-height: var(--lh-micro); }
-.beat-cells { display: flex; gap: var(--beat-gap); width: 100%; overflow: hidden; height: var(--beat-h); }
-.beat-cells > i { display: block; flex: 1 1 0; min-width: 2px; max-width: var(--beat-w-max); height: var(--beat-h); background: var(--line); border-radius: 2px; } /* 换色不过渡（同 .cells） */
+/* 一条连续的细条（用户：不要一格一格的方块）：每个时段仍是一个元素，按时间位置铺开、无缝相接，异常时段着色；
+   每段上下各伸出 5px 的透明命中区，细条也好悬停看这一段的说明 */
+.beat-cells { display: flex; width: 100%; height: 6px; border-radius: 3px; background: var(--cell-off); }
+.beat-cells > i { position: relative; display: block; flex: 1 1 0; min-width: 0; height: 100%; } /* 换色不过渡 */
+.beat-cells > i::after { content: ""; position: absolute; inset: -5px 0; }
+.beat-cells > i:first-child { border-radius: 3px 0 0 3px; }
+.beat-cells > i:last-child { border-radius: 0 3px 3px 0; }
 .beat-cells > i[data-t="ok"] { background: var(--latency-ok); }
 .beat-cells > i[data-t="warn"] { background: var(--warn); }
 .beat-cells > i[data-t="bad"] { background: var(--bad); }
-.beat.is-stale .beat-cells > i { background: transparent; box-shadow: inset 0 0 0 1px var(--line-strong); }
+.beat.is-stale .beat-cells > i { background: none; }
 
 /* ========== 面板 / 分段 / 标签-值 / 提示条 ========== */
 .panel { min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); overflow: clip; box-shadow: var(--shadow-card); }
@@ -446,17 +451,18 @@
 :is(.btn, .fchip, .seg-item, .tab, .chart-legend-item, .cmd-trigger, .top-alert, .nc-name):active:not(:disabled) { scale: var(--press-md); transition-duration: var(--dur-press); }
 button.tag:active { scale: var(--press-md); transition-duration: var(--dur-press); } /* 可点的标签（同机关系标）；只认按钮，纯展示的 span 标签按下不缩 */
 .tab:active:not(:disabled) .tab-ind { scale: calc(1 / var(--press-md)) 1; transition-duration: var(--dur-press); }
-:is(.flow-trend, .flow-foot, .nc-quota, .rc-rings):active:not(:disabled) { scale: var(--press-lg); transition-duration: var(--dur-press); }
+:is(.flow-trend, .flow-foot, .nc-quota, .rc-rings, a.stat):active:not(:disabled) { scale: var(--press-lg); transition-duration: var(--dur-press); }
 :is(.menu-item, .select-item, .cmd-item, .job-item, .pop-item, .pol-item, .scope-row):active, .nav-item:active:not([aria-current="page"]), .dt tr.is-link:active { background-image: var(--state-press); }
 /* 开关（iOS）：按住时圆钮拉长 4px；选中态同时少移 4px，右缘不动 */
 .switch:active:not(:disabled) > span { width: 20px; transition-duration: var(--dur-press); }
 .switch[data-state="checked"]:active:not(:disabled) > span { transform: translateX(10px); }
 
 /* 悬停上浮 2px + 加深阴影：只给卡片类（节点卡、环形卡、可点的 KPI 卡），只在真有悬停的设备上（触屏点一下不会卡在上浮态）。
-   位移用独立的 translate 属性：卡片的 transform 归 motion 的布局动画管（KPI 读数在同一块面板里，只变底色，见 home.css） */
+   位移用独立的 translate 属性：卡片的 transform 归 motion 的布局动画管。:is() 不带 a.stat，保持 (0,2,0)，卡片的健康色边框、当前卡边框照样盖过悬停边 */
 @media (hover: hover) {
-  :is(.ncard, .rcard):hover { border-color: var(--line-strong); box-shadow: var(--shadow-card-hover); translate: 0 -2px; }
+  :is(.ncard, .rcard):hover, a.stat:hover { border-color: var(--line-strong); box-shadow: var(--shadow-card-hover); translate: 0 -2px; }
 }
+a.stat:active { translate: none; } /* 按下落回原位并微缩；阴影不去掉：比静止还平会“塌”一下 */
 
 /* 焦点环：全站 2px 环、2px 间隙（base.css :focus-visible）。会被滚动容器或单元格裁掉的收进元素里面；日历格之间只有 2px 缝，贴边画 */
 :is(.seg-item, .tab, .th-sort, .pol-chev, .pol-item, .job-item, .pop-item, .logbox):focus-visible, .dt tr.is-link:focus-visible { outline-offset: -2px; }

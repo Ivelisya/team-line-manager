@@ -1,5 +1,5 @@
 // 首页上半部分：大圆角浅灰分区（HomeSection）+「监控总览」——问候与一句话状态、8 张 KPI 卡、集群状态面板。
-// 集群状态：在线率大读数 + 格条、在线/离线/总计、状态胶囊；网卡速率（实时）+ 上行 / 下行两张小折线（全站速率环形缓冲：开场垫近 30 分钟历史，之后实时流喂，见 lib/live）。
+// 集群状态：在线率大读数 + 细条、在线/离线/总计、状态胶囊；网卡速率（实时）+ 上行 / 下行两张小折线（全站速率环形缓冲：开场垫近 30 分钟历史，之后实时流喂，见 lib/live）。
 // 网卡速率只在集群状态里出现（KPI 原先也有一张，与它重复），KPI 那一格换成流量额度
 import * as React from 'react';
 import { Activity, AlertTriangle, ArrowDown, ArrowUp, CalendarClock, CircleDollarSign, CloudUpload, Database, LayoutDashboard, Server, TrendingUp, Waypoints } from 'lucide-react';
@@ -9,7 +9,7 @@ import { useMe, useQuotaTight } from '@/lib/queries';
 import { useFleetSeries } from '@/lib/live';
 import { cn } from '@/lib/utils';
 import { CountUp, DotCount, Num, Stat } from '@/components/app/primitives';
-import { AreaSpark, Cells } from '@/components/app/viz';
+import { AreaSpark, Bar } from '@/components/app/viz';
 
 /** 分区：浅灰大圆角容器，左上小胶囊标签（图标 + 文字）、标题、一行说明，右上放操作 */
 export function HomeSection({ icon, label, title, sub, actions, children, className, headRef }: {
@@ -78,18 +78,16 @@ export const OverviewSection = React.memo(function OverviewSection({ o, loading 
   );
 });
 
-const ONLINE_N = 24;
 function ClusterPanel({ o }: { o: Overview | undefined }) {
   const trace = useFleetSeries();
   // 在线/离线按 agent 连通（服务端算，同 isQuiet）：有告警但照常上报的机器算在线；降级 / 故障只决定状态胶囊
   const online = o?.online ?? 0; const offline = o?.offline ?? 0; const total = online + offline;
   const down = o ? o.nodes.down + o.relays.down : 0; const degraded = o ? o.nodes.degraded + o.relays.degraded : 0;
   const rate = total ? (online / total) * 100 : 0;
-  // 格条按比例分段着色：在线绿、离线红（末尾几格）；有离线至少 1 格红，不会因为离线占比不到一格就全绿；没有机器全灰
-  const colors = React.useMemo(() => {
-    const bad = offline ? Math.max(1, Math.round((offline / total) * ONLINE_N)) : 0;
-    return Array.from({ length: ONLINE_N }, (_, i) => (!total ? 'var(--neutral)' : i >= ONLINE_N - bad ? 'var(--bad)' : 'var(--ok)'));
-  }, [offline, total]);
+  // 在线率条：在线绿、离线红（末尾一段，中间留一道缝）；有离线至少占 3%，不会因为占比太小看不出来；没有机器全灰
+  const split = offline ? Math.min(97, (online / total) * 100) : 100;
+  const fill = !total ? 'linear-gradient(var(--neutral), var(--neutral))'
+    : `linear-gradient(to right, var(--ok) calc(${split.toFixed(2)}% - 1.5px), transparent 0 calc(${split.toFixed(2)}% + 1.5px), var(--bad) 0)`;
   // 只有故障算异常：降级照常服务，胶囊仍是「状态健康」，降级台数写在下面的「在线 · 降级」里
   const now = o ? o.net_rx_bps + o.net_tx_bps : 0; const sc = F.rateScale(now);
   return (
@@ -103,7 +101,7 @@ function ClusterPanel({ o }: { o: Overview | undefined }) {
           <span className="cluster-big"><span className="num">{o ? <><CountUp value={rate} format={(n) => n.toFixed(rate % 1 ? 1 : 0)} />%</> : '—'}</span><small>在线率</small></span>
           <span className="cluster-kv"><small>离线机器</small><b className="num" data-bad={offline ? '' : undefined}>{o ? `${offline} 台` : '—'}</b></span>
         </div>
-        <Cells pct={o ? 100 : null} n={ONLINE_N} colors={colors} className="cells-lg" />
+        <Bar pct={o ? 100 : null} gradient={fill} className="bar-lg" />
         <div className="cluster-foot"><span>在线 <b className="num">{o ? online : '—'}</b>{o && ' 台'}{degraded > 0 && <> · 降级 <b className="num">{degraded}</b></>}</span><span>总计 <b className="num">{o ? total : '—'}</b>{o && ' 台'}</span></div>
       </div>
       <div className="cluster-box">
