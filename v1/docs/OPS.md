@@ -196,13 +196,25 @@ WAL 三项由 `deploy/central/install.sh` 写进 `/etc/postgresql/<版本>/main/
 
 ## 10. 备份与恢复
 
-中控每天北京时间 03:30 做一份备份（`fleet-backup.timer` → `/opt/fleet/backup/fleet-backup.sh`），放在中控 `/var/backups/fleet/fleet-<北京时间>.tar`，留 14 份；第一次装上时 install.sh 立即做一份。手动做一份：`systemctl start fleet-backup`，`journalctl -u fleet-backup -n 5` 看结果。一份 tar 里有：
+中控每天北京时间 03:30 做一份备份（`fleet-backup.timer` → `/opt/fleet/backup/fleet-backup.sh`），放在中控 `/var/backups/fleet/fleet-<北京时间>.tar`（开了加密是 `.tar.age`，见下文「加密备份」），留 14 份；第一次装上时 install.sh 立即做一份。手动做一份：`systemctl start fleet-backup`，`journalctl -u fleet-backup -n 5` 看结果。一份 tar 里有：
 
 - `fleet.dump`：`pg_dump -Fc` 整库。`host_metric`、`entry_traffic`、`probe_result`、`access_event` 四张原始时序表（按天分区，只保留几天，量最大）只备结构不备数据，其余表（机器、入口、订阅、作业、审计、告警、小时汇总等）全量。恢复后最近几天的 10 秒粒度曲线和访问明细是空的，小时汇总都在。
 - `etc/fleet/`：`secret.key`（库里 SS 密码、REALITY 私钥、通知渠道配置的加密密钥，丢了这些就解不开）、`fleet.toml`、`ssh/id_ed25519`（中控登录所有机器的密钥）。
 - `var/lib/fleet/known_hosts`：各机器的主机指纹。
 
 整个包都是敏感数据：中控上 0640 root:fleet-backup（只有拉取用户能读），PVE 上 0600 root。
+
+### 加密备份（可选，推荐）
+
+不加密时中控 14 份、PVE 30 份，每一份都是库 + `secret.key` + 中控 SSH 私钥的明文：任一边被拿到就等于拿到全部。用 [age](https://age-encryption.org) 加密后，两边存的都是密文，私钥只在离线的地方：
+
+1. 在**离线**的电脑上（不是中控、也不是 PVE）生成身份：`age-keygen -o fleet-backup-key.txt`，屏幕上打印的 `Public key: age1…` 是公钥。`fleet-backup-key.txt` 是唯一能解开备份的东西：存进密码管理器 / 打印出来放好，再备一份到别的地方；丢了备份就废了。
+2. 把公钥写进中控 `/etc/fleet/backup-age.recipients`（一行一个，可以写多个，如再加一个备用身份；`#` 开头是注释）：`echo 'age1…' > /etc/fleet/backup-age.recipients`。
+3. 中控要有 `age` 包：install.sh 已经装（没有才装），老中控跑一次 deploy.sh 或 `apt-get install age`。之后的备份（下次定时或 `systemctl start fleet-backup`）就是 `/var/backups/fleet/fleet-<时间>.tar.age`：tar 经管道直接加密，明文不落盘。PVE 的拉取认得两种格式，加密的存成 `fleet-prod-<时间>.tar.age`（只查 age 文件头和大小，PVE 上没有私钥、解不开）。
+4. 确认能解开：把一份 `.tar.age` 拷到离线电脑，`age -d -i fleet-backup-key.txt fleet-<时间>.tar.age | tar -tv` 能列出 `fleet.dump`、`etc/fleet/secret.key`。
+5. 开启之前的明文备份不会自动消失：中控上按 14 份轮换，PVE 按 30 份；想马上清掉就手动删两边的旧 `.tar`。
+
+关掉加密：删掉 `/etc/fleet/backup-age.recipients`，之后又是明文 `.tar`。换身份：改这个文件即可，旧备份仍要用旧私钥解。
 
 ### 家里 PVE 每天取一份
 
@@ -225,14 +237,14 @@ WAL 三项由 `deploy/central/install.sh` 写进 `/etc/postgresql/<版本>/main/
 在新装（或重装）的中控机上按顺序做：
 
 1. 正常部署一次：`deploy/central/deploy.sh <主机> <域名>`。装好 PostgreSQL、Caddy、fleet 用户、服务与定时器；这时库是空的，密钥是新生成的。
-2. 把备份 tar 拷到中控并解开：`mkdir -p /root/restore && tar -xf fleet-<时间>.tar -C /root/restore`
+2. 把备份拷到中控并解开：`mkdir -p /root/restore && tar -xf fleet-<时间>.tar -C /root/restore`。加密的 `.tar.age` 在离线电脑上先解成 tar（`age -d -i fleet-backup-key.txt -o fleet-<时间>.tar fleet-<时间>.tar.age`）再拷过去，或把私钥临时拷到中控 `age -d -i /root/key.txt fleet-<时间>.tar.age | tar -xf - -C /root/restore`，用完立刻删掉私钥（`shred -u /root/key.txt`）
 3. 停服务、换库（`pg_restore` 以 postgres 执行，从标准输入读，对象属主恢复为 fleet）：
    ```
    systemctl stop fleet-server
    runuser -u postgres -- psql -c 'drop database fleet' -c 'create database fleet owner fleet'
    runuser -u postgres -- pg_restore -d fleet --exit-on-error < /root/restore/fleet.dump
    ```
-4. 放回密钥与主机指纹。fleet.toml 用新装的那份（里面的库密码是第 1 步新生成的），备份里 fleet.toml 改过的其它设置（retention、numbering 等）对照着抄过来；备份里有 `etc/fleet/ipintel-overrides.toml`、`etc/fleet/backup.pub` 也照样放回：
+4. 放回密钥与主机指纹。fleet.toml 用新装的那份（里面的库密码是第 1 步新生成的），备份里 fleet.toml 改过的其它设置（retention、numbering 等）对照着抄过来；备份里有 `etc/fleet/ipintel-overrides.toml`、`etc/fleet/backup.pub`、`etc/fleet/backup-age.recipients` 也照样放回：
    ```
    install -m 600 -o fleet -g fleet /root/restore/etc/fleet/secret.key /etc/fleet/secret.key
    install -m 600 -o fleet -g fleet /root/restore/etc/fleet/ssh/id_ed25519 /etc/fleet/ssh/id_ed25519

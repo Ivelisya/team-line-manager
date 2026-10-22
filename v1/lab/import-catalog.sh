@@ -5,7 +5,8 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 scp -q -F "$HOME/.ssh/fleetlab_config" "$HERE/seed/catalog.json" fleet-dev:/root/catalog.json
 ssh -F "$HOME/.ssh/fleetlab_config" fleet-dev 'bash -s' <<'REMOTE'
 set -euo pipefail
-B=http://127.0.0.1:8080/api/v1; J=/tmp/fleet-import.cookies; S=/root/catalog.json
+B=http://127.0.0.1:8080/api/v1; S=/root/catalog.json
+J=$(mktemp /tmp/fleet-import.cookies.XXXXXX)   # admin 的会话 cookie：随机名、0600
 trap 'rm -f "$J" "$S"' EXIT   # 登录 cookie 与传上来的清单，失败也删
 jq -n --rawfile p /root/fleet-admin-password '{username:"admin",password:($p|rtrimstr("\n"))}' \
   | curl -fsS -c $J -H 'content-type: application/json' -d @- $B/auth/login >/dev/null
