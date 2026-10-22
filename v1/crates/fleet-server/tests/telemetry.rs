@@ -1801,7 +1801,7 @@ async fn expired_partitions_are_dropped_and_leftovers_cleaned() {
 }
 
 /// 删分区前的时钟健全检查：本机时钟大幅超前（开机校时之前）时保留期内的分区不能被当成过期删掉；
-/// 表里只有很久以前的数据（核对不了时钟）时过期分区也先不删
+/// 所有表都没有最近一天的数据（核对不了时钟）时按各表最新的数据减保留期删；任何一张表有新数据就按本机时钟删
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn partitions_survive_a_clock_far_ahead() {
     let t = setup().await;
@@ -1813,12 +1813,16 @@ async fn partitions_survive_a_clock_far_ahead() {
     assert!(exists(today.clone()).await, "本机时钟快了 400 天，今天的分区不算过期");
     assert_eq!(t.count("select count(*) from host_metric").await, 1);
 
+    // 全部表都只有很久以前的数据：核对不了时钟，按这张表最新的数据减保留期切——2020-01-01 的数据在它自己的保留期里，不删
+    for tbl in ["host_metric", "entry_traffic", "probe_result", "access_event"] {
+        sqlx::query(&format!("delete from {tbl}")).execute(db).await.unwrap();
+    }
     sqlx::query("create table probe_result_20200101 partition of probe_result for values from ('2020-01-01') to ('2020-01-02')").execute(db).await.unwrap();
     sqlx::query("insert into probe_result (entry_id, ts, kind, ok) values ($1, '2020-01-01 03:00:00+00', 'tcp', true)").bind(Uuid::now_v7()).execute(db).await.unwrap();
     db::maintain_partitions(db, 14, 7, 2).await.unwrap();
-    assert!(exists("probe_result_20200101".into()).await, "最新数据是 2020 年的：核对不了本机时钟，先不删");
-    // 有了新数据：时钟核对得上，照常删
-    sqlx::query("insert into probe_result (entry_id, ts, kind, ok) values ($1, now(), 'tcp', true)").bind(Uuid::now_v7()).execute(db).await.unwrap();
+    assert!(exists("probe_result_20200101".into()).await, "核对不了本机时钟：以数据为锚，不删");
+    // 别的表有了新数据（agent 在报主机读数）：时钟核对得上，这张表空闲多久都按本机时钟删
+    sqlx::query("insert into host_metric (machine_id, ts) values ($1, now())").bind(Uuid::now_v7()).execute(db).await.unwrap();
     db::maintain_partitions(db, 14, 7, 2).await.unwrap();
     assert!(!exists("probe_result_20200101".into()).await && exists(today).await);
 }

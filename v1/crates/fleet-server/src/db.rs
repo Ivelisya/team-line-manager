@@ -35,6 +35,10 @@ pub fn unavailable(e: &sqlx::Error) -> bool {
 /// 同 `unavailable`，看 anyhow 错误链里有没有这样的库错误
 pub fn unavailable_in(e: &anyhow::Error) -> bool { e.chain().any(|c| c.downcast_ref::<sqlx::Error>().is_some_and(unavailable)) }
 
+/// 和库的连接断了、连不上，或库在重启、关停（`unavailable` 去掉等不到空闲连接、连接池已关）：中控收不到上报的时段
+/// （views::ReportGaps）只认这些。等不到连接是池子被挤满了——一大批（哪怕没鉴权的）请求就能做到，不能因此把 agent 的离线判定往后推
+pub fn connection_lost(e: &sqlx::Error) -> bool { !matches!(e, sqlx::Error::PoolTimedOut | sqlx::Error::PoolClosed) && unavailable(e) }
+
 pub fn new_id() -> Uuid { Uuid::now_v7() }
 
 /// 边拼 SQL 边绑定参数：`add` 绑定一个值并返回它的占位符 `$n`，SQL 里的序号和绑定顺序不会对不上。
@@ -70,6 +74,7 @@ pub async fn maintain_partitions(db: &PgPool, raw_days: u32, access_days: u32, a
 /// 同 `maintain_partitions`，本机的「现在」由调用方给（测试模拟本机时钟大幅超前）
 pub async fn maintain_partitions_at(db: &PgPool, now: OffsetDateTime, raw_days: u32, access_days: u32, ahead: i64) -> anyhow::Result<()> {
     let today = now.date();
+    let mut newest: Vec<(&str, Option<OffsetDateTime>)> = Vec::with_capacity(PARTITIONED.len());
     for t in PARTITIONED {
         // 只补建缺的分区；建分区要父表的重锁，排在长查询后面会堵住所有上报的 insert，
         // 所以限 2 秒，拿不到就记 warn、下次维护再试（上报时缺分区还会按需补建）
@@ -94,24 +99,23 @@ pub async fn maintain_partitions_at(db: &PgPool, now: OffsetDateTime, raw_days: 
                 tracing::warn!("建分区 {n} 失败（可能被长查询挡住），下次维护再试：{e:#}");
             }
         }
-        let keep = if *t == "access_event" { access_days } else { raw_days } as i64;
-        let newest = match newest_ts(db, t).await {
-            Ok(n) => n,
-            Err(e) => {
-                tracing::warn!("查 {t} 最新数据失败，这次不删过期分区：{e:#}");
-                continue;
-            }
-        };
-        let Some(before) = drop_before(now, keep, newest) else {
-            match newest {
-                Some(n) => tracing::warn!(
-                    "{t} 最新的数据在 {}，比本机时间早一天以上（本机时钟可能大幅超前，或这张表很久没有新数据）：这次不删过期分区",
-                    crate::access::fmt_ts(n)
-                ),
-                None => tracing::warn!("{t} 里没有数据，核对不了本机时钟：这次不删过期分区"),
-            }
-            continue;
-        };
+        match newest_ts(db, t).await {
+            Ok(n) => newest.push((t, n)),
+            Err(e) => tracing::warn!("查 {t} 最新数据失败，这次不删过期分区：{e:#}"),
+        }
+    }
+    // 本机时钟核对：任何一张分区表最近一天里有数据（agent 每 30 秒报一次主机读数，正常时总有）就说明时钟可信
+    let freshest = newest.iter().filter_map(|(_, n)| *n).max();
+    let clock_ok = freshest.is_some_and(|f| now - f < Duration::days(1));
+    if !clock_ok && freshest.is_some() {
+        tracing::warn!(
+            "分区表最近一天都没有新数据（最新在 {}；本机时钟可能大幅超前，或很久没收到上报）：过期分区按各表最新的数据减保留期删",
+            crate::access::fmt_ts(freshest.unwrap_or(now))
+        );
+    }
+    for (t, n) in newest {
+        let keep = if t == "access_event" { access_days } else { raw_days } as i64;
+        let Some(before) = drop_before(now, keep, n, clock_ok) else { continue };
         if let Err(e) = drop_expired(db, t, &part_name(t, before)).await {
             tracing::warn!("清理 {t} 过期分区失败，下次再试：{e:#}");
         }
@@ -119,13 +123,16 @@ pub async fn maintain_partitions_at(db: &PgPool, now: OffsetDateTime, raw_days: 
     Ok(())
 }
 
-/// 删分区的界：日期早于这天的分区算过期。按本机时钟是「今天 − 保留期」；时钟健全检查：要删的分区的上界（次日零点）
-/// 不能晚于表里最新一条数据的时间减保留期——数据的时间戳来自各 agent 自己的时钟（中控只收比自己快 10 分钟以内的），
-/// 开机时钟大幅超前（校时之前、虚拟机恢复）时它仍是真实时间，保留期内的分区不会被当成过期整批删掉。
-/// 表里没有数据、或最新数据比现在早一天以上（时钟超前，或这张表很久没有新数据）时核对不了，返回 None：这次不删
-fn drop_before(now: OffsetDateTime, keep: i64, newest: Option<OffsetDateTime>) -> Option<Date> {
-    let newest = newest.filter(|n| now - *n < Duration::days(1))?;
-    Some((now.date() - Duration::days(keep)).min((newest - Duration::days(keep)).date()))
+/// 删分区的界：日期早于这天的分区算过期。
+/// - 本机时钟核对得上（`clock_ok`：任何一张分区表最近一天里有数据——数据的时间戳来自各 agent 自己的时钟，中控只收比自己快
+///   10 分钟以内的）：按本机时钟「今天 − 保留期」，某张表（如访问记录）空闲多久都照期限删；
+/// - 核对不了（开机时钟大幅超前——校时之前、虚拟机恢复，或整个中控很久没收到上报）：按这张表最新一条数据减保留期，以数据为锚，
+///   保留期内的数据不会因为时钟超前被整批当成过期删掉；表里没有数据时返回 None，这次不删
+fn drop_before(now: OffsetDateTime, keep: i64, newest: Option<OffsetDateTime>, clock_ok: bool) -> Option<Date> {
+    if clock_ok {
+        return Some(now.date() - Duration::days(keep));
+    }
+    newest.map(|n| (n - Duration::days(keep)).date())
 }
 
 /// 表里最新一条数据的时间（没有数据为 None）：从日期最新的分区往前找第一个有数据的（预建的未来分区是空的），只在它里面取 max(ts)
@@ -482,13 +489,13 @@ mod tests {
     #[test]
     fn drop_before_checks_the_clock_against_the_data() {
         let now = datetime!(2026-10-22 10:00 UTC);
-        // 时钟正常：数据几秒前还在进来
-        assert_eq!(drop_before(now, 3, Some(now - Duration::seconds(5))), Some(date!(2026 - 10 - 19)));
-        // 最新数据在 20 小时前（10-21 14:00）：10-18 的分区上界（10-19 零点）晚于 10-18 14:00，不删
-        assert_eq!(drop_before(now, 3, Some(now - Duration::hours(20))), Some(date!(2026 - 10 - 18)));
-        // 最新数据早一天以上（本机时钟超前，或很久没有新数据）、表里没有数据：核对不了，不删
-        assert_eq!(drop_before(now, 3, Some(now - Duration::hours(25))), None);
-        assert_eq!(drop_before(now + Duration::days(400), 3, Some(now)), None);
-        assert_eq!(drop_before(now, 3, None), None);
+        // 时钟核对得上（别的表最近一天里有数据）：按本机时钟切，这张表空闲多久、甚至是空的都照期限删
+        assert_eq!(drop_before(now, 3, Some(now - Duration::seconds(5)), true), Some(date!(2026 - 10 - 19)));
+        assert_eq!(drop_before(now, 3, Some(now - Duration::days(80)), true), Some(date!(2026 - 10 - 19)));
+        assert_eq!(drop_before(now, 3, None, true), Some(date!(2026 - 10 - 19)));
+        // 核对不了（本机时钟大幅超前，或整个中控很久没收到上报）：按这张表最新的数据减保留期切，表空不删
+        assert_eq!(drop_before(now + Duration::days(400), 3, Some(now), false), Some(date!(2026 - 10 - 19)));
+        assert_eq!(drop_before(now, 3, Some(now - Duration::days(80)), false), Some(date!(2026 - 07 - 31)));
+        assert_eq!(drop_before(now, 3, None, false), None);
     }
 }
