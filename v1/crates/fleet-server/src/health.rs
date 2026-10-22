@@ -314,6 +314,7 @@ pub(crate) mod tests {
             currency: "USD".into(),
             cycle: "monthly".into(),
             due_date: time::macros::date!(2030 - 01 - 01),
+            billing_day: 1,
             due_days,
             due_state: crate::meta::due_state(due_days, 7, auto_renew),
             billing_tz: crate::meta::DEFAULT_ORG_TZ.into(),

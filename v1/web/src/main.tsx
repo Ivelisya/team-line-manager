@@ -12,6 +12,7 @@ import './styles/cards.css';
 import './styles/table.css';
 import './styles/pages.css';
 import './styles/extras.css';
+import './styles/routers.css';
 import './styles/tw-utilities.css';
 import { App } from './App';
 import { ApiError } from './lib/api';

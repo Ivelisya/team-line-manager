@@ -74,10 +74,16 @@ export const SUB_FROM: Record<SubField, 'plan' | 'provider'> = {
 };
 /** 这一项单独设置了 */
 export const isOverridden = (s: Subscription | null | undefined, k: SubField) => !!s?.overrides?.includes(k);
-/** 跟随时的值（同服务端 subscription_eff）：重置日按供应商的方式——账单日 = 到期日（YYYY-MM-DD）是几号，自然月 = 1 号。没有模板为 null */
+/** 跟随时的值（同服务端 subscription_eff）：重置日按供应商的方式——账单日 = 订阅的账单日，自然月 = 1 号。没有模板为 null。
+ *  账单日同服务端 meta::billing_day：到期日（YYYY-MM-DD）落在现有 billing_day 上的（小月按月末，如 31 号的 2-28）沿用，否则是它几号 */
 export function inheritedValue(m: MachineView, k: SubField, due?: string): string | number | null {
   const t = m.sub_template; if (!t) return null;
-  if (k === 'traffic_reset_day') return t.traffic_reset === 'billing' && /^\d{4}-\d{2}-\d{2}$/.test(due ?? '') ? Number(due!.slice(8, 10)) : 1;
+  if (k === 'traffic_reset_day') {
+    if (t.traffic_reset !== 'billing' || !/^\d{4}-\d{2}-\d{2}$/.test(due ?? '')) return 1;
+    const [y, mo, d] = due!.split('-').map(Number);
+    const cur = m.subscription?.billing_day;
+    return cur && d === Math.min(cur, new Date(Date.UTC(y, mo, 0)).getUTCDate()) ? cur : d;
+  }
   return t[k];
 }
 /** 跟随的来源：「跟随套餐」「跟随供应商」，机器没有套餐 / 供应商时是「默认」 */

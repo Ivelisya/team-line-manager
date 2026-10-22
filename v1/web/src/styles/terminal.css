@@ -1,0 +1,35 @@
+/* 网页终端窗口（features/Terminal.tsx，随它按需加载）。
+   右侧浮起的宽面板，不带遮罩、不拦页面：开着终端也能照常点侧栏、翻页面。顶栏露在外面（命令面板、告警照常用）。
+   层级在顶栏之上、节点抽屉的遮罩之下：临时打开的抽屉、对话框、菜单都盖在它上面，关掉后终端还在原处 */
+.term {
+  position: fixed; z-index: calc(var(--z-drawer) - 2); top: calc(var(--topbar-h) + var(--sp-8)); right: var(--sp-8); bottom: var(--sp-8);
+  width: min(880px, calc(100vw - 2 * var(--sp-8)));
+  display: flex; flex-direction: column; overflow: hidden;
+  background: var(--surface); border: 1px solid var(--line-float); border-radius: var(--r-card); box-shadow: var(--shadow-modal);
+  animation: term-in var(--dur-3) var(--ease-out);
+}
+@keyframes term-in { from { opacity: 0; transform: translateX(24px); } }
+.term-head { flex: none; display: flex; align-items: center; gap: var(--sp-8); padding: var(--sp-10) var(--sp-12) var(--sp-10) var(--sp-16); min-width: 0; }
+.term-ic { flex: none; color: var(--fg-2); }
+.term-title { margin: 0; min-width: 0; flex: 0 1 auto; font: var(--fw-semibold) var(--fs-title) / var(--lh-title) var(--font-sans); letter-spacing: var(--tracking-title); }
+/* 断开原因可能很长：pill 只占剩下的宽度，放不下省略，悬停看全文 */
+.term-head .pill { min-width: 0; max-width: 100%; flex: 0 1 auto; }
+.term-tools { margin-left: auto; flex: none; display: flex; align-items: center; gap: var(--sp-6); }
+.term-sub { flex: none; padding: 0 var(--sp-16) var(--sp-8); }
+.term-screen { position: relative; flex: 1 1 auto; min-height: 0; margin: 0 var(--sp-12); background: var(--sunken); border-radius: var(--r-float); overflow: hidden; }
+/* FitAddon 按 xterm 父元素的尺寸算行列：父元素本身不带内边距，留白放在定位上 */
+.term-xterm { position: absolute; inset: var(--sp-8) var(--sp-4) var(--sp-8) var(--sp-12); }
+.term-xterm .xterm-viewport { overscroll-behavior: contain; }
+.term-foot { flex: none; padding: var(--sp-8) var(--sp-16) var(--sp-12); }
+
+/* 验证身份的表单盖在终端区上 */
+.term-cover { position: absolute; inset: 0; display: grid; place-items: center; padding: var(--sp-16); background: color-mix(in srgb, var(--sunken) 82%, transparent); animation: fade-in var(--dur-2) var(--ease-out); }
+.term-card {
+  width: min(400px, 100%); display: grid; gap: var(--sp-14); padding: var(--sp-20);
+  background: var(--raised); border: 1px solid var(--line-float); border-radius: var(--r-card); box-shadow: var(--shadow-pop);
+}
+.term-card-title { font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-sans); }
+
+@media (max-width: 600px) {
+  .term { top: var(--topbar-h); right: 0; bottom: 0; width: 100vw; border-radius: var(--r-card) var(--r-card) 0 0; border-width: 1px 0 0; }
+}

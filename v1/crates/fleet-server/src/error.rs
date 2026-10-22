@@ -71,6 +71,7 @@ impl From<sqlx::Error> for ApiError {
                         Some("team_name_key") => "已有同名团队",
                         Some("provider_name_key") => "已有同名供应商",
                         Some("provider_code_key") => "已有同缩写的供应商",
+                        Some("router_name_key") => "已经有同名的软路由",
                         _ => "数据冲突",
                     };
                     return Self::conflict(m);

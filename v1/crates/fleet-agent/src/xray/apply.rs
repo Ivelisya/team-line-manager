@@ -64,10 +64,10 @@ impl Applier {
         Self { cfg, cli, lock: tokio::sync::Mutex::new(()) }
     }
 
-    /// 渲染候选配置并读出磁盘上的现有配置：构造、解析整份 xray.json 与读文件都放阻塞线程
+    /// 渲染候选配置并读出磁盘上的现有配置：构造、解析整份 xray.json 与读文件（含渲染时读的 /etc/resolv.conf）都放阻塞线程
     async fn render_with_prev(&self, d: &DesiredState) -> Result<(Rendered, Option<Rendered>), String> {
-        let (d, ctx, path) = (d.clone(), RenderCtx::of(&self.cfg), self.cfg.xray_config.clone());
-        let r = tokio::task::spawn_blocking(move || render(&d, &ctx).map(|c| (c, read_prev(&path))))
+        let (d, cfg) = (d.clone(), self.cfg.clone());
+        let r = tokio::task::spawn_blocking(move || render(&d, &RenderCtx::of(&cfg)).map(|c| (c, read_prev(&cfg.xray_config))))
             .await
             .map_err(|e| format!("渲染任务异常终止：{e}"))?;
         r.map_err(|e| format!("渲染失败：{e:#}"))

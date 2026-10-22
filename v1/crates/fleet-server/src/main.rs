@@ -135,6 +135,8 @@ async fn main() -> anyhow::Result<()> {
             }
             // 优雅退出：先不领新作业、等进行中的步骤做完（最多 60 秒），这期间接口照常；再停止接新连接，进行中的请求最多再等 10 秒
             tracing::info!("收到退出信号：不再领新作业，等进行中的步骤做完（最多 60 秒）");
+            // 网页终端先断（浏览器收到「中控正在重启」、写完「关闭」审计，最多等 2 秒），之后不再开新的：WS 任务在进程退出时会被直接丢掉
+            fleet_server::terminal::shutdown(&st, Duration::from_secs(2)).await;
             let left = jobs::drain(&st, Duration::from_secs(60)).await;
             if left > 0 {
                 tracing::warn!("{left} 个作业的这一步没做完：重启后从这一步重做");

@@ -41,7 +41,7 @@
 | `secrets` | `GET /entries/{id}/share` 这类凭据 |
 | `exec` | `POST /machines/{id}/exec`、`GET /machines/{id}/logs`、`GET /server/logs`（都是通过 SSH 或本机读取）；`POST /audit/ssh`（`fleetctl ssh` 登录前报的审计） |
 
-scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` 的管理只允许会话用户，用密钥调用一律 403。
+scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` 的管理与网页终端（`/terminal/...`）只允许会话用户，用密钥调用一律 403。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -52,7 +52,7 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
 ## 共用的枚举与常量
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/meta` | 只在中控定义一次的枚举中文名、阈值、默认值与组织时区（服务端 `src/meta.rs`；一个会话里不变，网页启动时取一次，fleetctl 每条命令要打印中文名或时间时取一次）。`{org_timezone（fleet.toml 的 org_timezone，默认 Asia/Shanghai）, org_timezone_label（「北京时间」或 IANA 名，通知、审计、fleetctl 时间的括注）, org_utc_offset_s（组织时区现在的 UTC 偏移秒数，每小时刷新）, timezones:[…]（时区下拉的常用项；不在里面的照样能填，中控按 PG 时区库校验）, currencies:[…]（币种下拉的常用项；校验只要求 3 个字母）, cycles:[{key,label,months}], kinds, ip_node_label, lifecycles, healths, job_kinds, job_states, step_states, entry_states, traffic_rules, traffic_resets, due_states, policy_modes, rules（告警规则）: {key: 中文名}, severities:{key:{label,tone}}, thresholds:{traffic_quota_warn_pct, traffic_quota_over_pct, usage:{cpu,mem,disk,load:{warn,bad}}}（bad 与持续高负载告警同值；负载不告警）, defaults:{currency,cycle,remind_days,traffic_rule,traffic_reset,ss_method,ss_port}}`。叫法：`vps` =「VPS 节点」、`proxy` =「家宽代理」、`relay` =「线路机」，加在宿主机上的 vps 是「同机 IP 节点」；健康只用 正常 / 降级 / 故障 / 未知 / 维护。读权限 |
+| GET | `/meta` | 只在中控定义一次的枚举中文名、阈值、默认值与组织时区（服务端 `src/meta.rs`；一个会话里不变，网页启动时取一次，fleetctl 每条命令要打印中文名或时间时取一次）。`{org_timezone（fleet.toml 的 org_timezone，默认 Asia/Shanghai）, org_timezone_label（「北京时间」或 IANA 名，通知、审计、fleetctl 时间的括注）, org_utc_offset_s（组织时区现在的 UTC 偏移秒数，每小时刷新）, timezones:[…]（时区下拉的常用项；不在里面的照样能填，中控按 PG 时区库校验）, currencies:[…]（币种下拉的常用项；校验只要求 3 个字母）, cycles:[{key,label,months}], kinds, ip_node_label, lifecycles, healths, job_kinds, job_states, step_states, entry_states, traffic_rules, traffic_resets, due_states, policy_modes, rules（告警规则）: {key: 中文名}, severities:{key:{label,tone}}, thresholds:{traffic_quota_warn_pct, traffic_quota_over_pct, usage:{cpu,mem,disk,load:{warn,bad}}}（bad 与持续高负载告警同值；负载不告警）, defaults:{currency,cycle,remind_days,traffic_rule,traffic_reset,ss_method,ss_port}, terminal:{per_user, global, idle_s, max_age_s, max_message, max_dim, ticket_ttl_s, verify_ttl_s}（网页终端的上限，见「网页终端」）}`。叫法：`vps` =「VPS 节点」、`proxy` =「家宽代理」、`relay` =「线路机」，加在宿主机上的 vps 是「同机 IP 节点」；健康只用 正常 / 降级 / 故障 / 未知 / 维护。读权限 |
 
 ## 目录
 | 方法 | 路径 | 说明 |
@@ -80,14 +80,14 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
                                 // provider：有套餐时是套餐的供应商（机器上存的那份在上架、改套餐时按套餐写），没有套餐取机器的
   lifecycle: "draft"|"provisioning"|"active"|"retiring"|"retired"|"failed", lifecycle_reason|null, note, revision,
   created_at, activated_at|null, retired_at|null,
-  subscription: {price_cents,currency,cycle,due_date,due_days,due_state,billing_tz,auto_renew,remind_days,traffic_gb,traffic_reset_day,overrides,monthly_cents,next_due,period_days}|null,
+  subscription: {price_cents,currency,cycle,due_date,billing_day,due_days,due_state,billing_tz,auto_renew,remind_days,traffic_gb,traffic_reset_day,overrides,monthly_cents,next_due,period_days}|null,
                                 // due_state：ok / soon（到期前 remind_days 天内、不是自动续费）/ overdue（已过期），续费告警、总览、网页、fleetctl 都按它；
-                                // monthly_cents：折成每月的费用（分，四舍五入）；next_due：到期日再推一个周期（登记续费的默认新到期日，小月按月末）；
+                                // monthly_cents：折成每月的费用（分，四舍五入）；next_due：到期日再推一个周期（登记续费的默认新到期日，落在账单日，小月按月末）；billing_day：账单日（每月几号，见续费）；
                                 // period_days：当前这一期的天数（到期日往前推一个周期到到期日），网页算剩余价值
                                 // 全是生效值（字段名同以前，旧调用方照用）：订阅只存到期日、自动续费和「单独设置」的项，其余跟随 sub_template——
                                 // price_cents / currency / cycle / traffic_gb 跟随套餐，billing_tz / remind_days / traffic_reset_day 跟随供应商。
                                 // overrides：单独设置了的字段名（如 ["price_cents"]），不在里面的就是跟随的。traffic_gb：0 / null = 不限。
-                                // traffic_reset_day 总有值：单独设置的，或供应商 traffic_reset = billing 时到期日是几号、month 时 1
+                                // traffic_reset_day 总有值：单独设置的，或供应商 traffic_reset = billing 时是账单日（billing_day）、month 时 1
   sub_template: {price_cents|null, currency, cycle, billing_tz, remind_days, traffic_gb|null, traffic_reset},
                                 // 订阅模板（没有订阅也给）：套餐的价格 / 币种 / 周期 / 流量（没有套餐时 price_cents、traffic_gb 为 null，币种周期 USD / monthly），
                                 // 供应商的时区 / 提醒天数 / 重置方式（供应商没填时区或没有供应商时是组织时区，没有供应商时 7 / month）。网页「跟随套餐：2000 GB」就是它
@@ -138,8 +138,8 @@ EntryView = { id, relay:{id,name}, node:{id,name}, direct, port, lifecycle, appl
 | POST | `/machines/{id}/purge` | 仅已退役。`{confirm: <显示名>}` → 作业；彻底删除机器与遥测，保留审计。宿主机上还有同机 IP 节点（含已退役的）没删时 409：「这台机器上还有同机 IP 节点没有彻底删除（含已退役的）：…；先删它们」。它的入口近 35 天有小时流量、且入口另一端的机器未退役时 409：「这台机器的入口在 YYYY-MM-DD 前仍计入其他机器的流量统计，届时再彻底删除」（作业执行时再查一次） |
 | POST | `/machines/{id}/upgrade-agent` | 推送中控当前版本的 agent 并重启（作业 `upgrade_agent`；令牌顺带轮换） → `{data:{machine_id,name,kind,job_id,after:null}}`。线路机顺带收敛 fleet-xray 单元（变了只 daemon-reload，不重启 Xray，等它下次重启才生效）与访问日志轮转（配置 + 每小时的 fleet-xray-logrotate.timer），这两样没装上只记警告。**回滚**：推送时机器上的旧程序留成同目录的 `/usr/local/bin/fleet-agent.prev`（硬链接，新程序原子替换；上一次留的被覆盖，成功后也留着）；重启后新版本起不来（隔 3 秒主进程换了，或不是 active），或 2 分钟内没有用新令牌、以新版本号上报，就把 .prev 换回去并重启，作业失败，错误写明「新版本 X 起不来（…）/ 重启后 120 秒没有上报，已回滚到 <旧版本>」；机器上没有 .prev 或换回去也没起来时写明需要人工处理。程序和 dist 里的相同（推送跳过）时不回滚。**线路机**另要新版本自己报的 Xray 状态做到：Xray 在跑、已应用的配置追上升级开始时的期望代数、没有应用错误（`relay.apply_error` 与 agent 自报的 `last_apply_error` 都算）；只查升级前（推送之前读的 agent 最近状态）就做到的项，记在作业参数 `xray_checks`、推送那一步输出 `xray_checks`。2 分钟做不到同样换回并失败，错误「新版本 X 重启后 120 秒线路机检查没通过（Xray 没在跑；已应用的配置代数 2，没到 3；应用配置出错：…），已回滚到 <旧版本>」（`error_kind` remote）。「新版本自己报的」：中控入库时给 `agent_state.info.xray` 记上报它的 agent 版本（`agent_version`）——重启后新进程最先补发旧进程退出时落盘的报告，之后几份不带 Xray 状态，按上报时间分不出来。同机 IP 节点 409（agent 是宿主机的，升级宿主机） |
 | POST | `/agents/upgrade` | 所有在用线路机与 VPS 节点（不含同机 IP 节点）各建一个 `upgrade_agent` 作业（有进行中作业的跳过；每台单独提交，一台冲突不影响其他台），但不一起跑：先升一台做**金丝雀**（有线路机先挑线路机；同类里在用入口少的在前，一样少按名字），它成功后其余线路机**一台接一台**，线路机都成功后 VPS 节点**并发**（作业引擎的并发上限 `job_workers`）。编排记在作业参数 `after`（要等的作业 id）：那个作业结束之前这个作业领取不到（一直是 queued）；它在推送之后失败了（新版本起不来、没上报、线路机检查没通过）或被取消，这个作业一步都不做、直接取消，`error` 写明原因（如「金丝雀「线路机2」升级失败，其余机器不再升级」「「线路机3」升级失败，后面的机器不再升级」「「线路机3」的升级没有完成（已取消），后面的机器不再升级」，再往后的沿用同一个原因），日志一条「没有开始：…」。它在推送之前就失败的（SSH 连不上、登录被拒、推送失败：机器上的程序没换过，与新版本无关）不算，这个作业照常开始——agent 步骤每次尝试先记作业参数 `pushed=false`，要用 dist 里的程序重启 agent 之前置 true，编排据此判断（没有记的按推送之后算）。排队中的作业可以取消（`POST /jobs/{id}/cancel`），等它的跟着取消。VPS 节点之间互不等待，一台失败不影响别的。发起时把 dist 里 agent 的 sha256 与版本号记进各作业参数 `rollout:{sha256,version}`，每个作业开始前、推送时各核对一次：中途重新部署过中控（dist 换了）就不推，正要推送的失败、没开始的直接取消，`error` 都是「中控上的 agent 在升级过程中换了版本（发起时是 X），请重新发起全部升级」。dist 里没有 agent 程序或读不出版本号（`--version`）时 409、不建作业 → `{data:{jobs:[{machine_id,name,kind,job_id,after}], skipped:[{machine_id,name,reason}], order}}`：`jobs` 按执行顺序（第一个是金丝雀，`after` 为 null）；`order` 是给人看的顺序说明，如「先升「线路机3」做金丝雀，成功后其余 2 台线路机逐台升级，线路机都成功后 40 台 VPS 节点并发升级；新版本在任何一台线路机上出问题，没开始的都会取消」（只有一台时「只有「X」一台」，一台都没建时「没有要升级的机器」） |
-| PUT | `/machines/{id}/subscription` | `{due_date, price_cents?,currency?,cycle?,billing_tz?,remind_days?,traffic_gb?,traffic_reset_day?, auto_renew?, traffic_used_gb?}`。只有 `due_date` 必填。`price_cents` … `traffic_reset_day` 是**单独设置**，整份替换：没传或 null = 跟随模板（见 `sub_template`），给了值 = 这台单独设置；和模板相同的值也按跟随存（旧客户端整份带上生效值不会把套餐的值抄进来）。没有套餐的机器价格没有可跟随的，必须给 `price_cents`（400）。校验：`price_cents` / `traffic_gb` ≥ 0、`cycle` 四选一、`currency` 3 个字母（存成大写）、`remind_days` 0–60、`traffic_reset_day` 1–31、`billing_tz` 须是 `at time zone` 认的时区，否则 400。`auto_renew` 没传 = 不改（新建为否）。`traffic_gb` 是供应商的十进制 GB（10⁹ 字节，0 = 不限）。`traffic_used_gb`：按供应商面板校准本周期已用（GB，可带小数，如 901.6；负数 400），记成字节与当前时间（`quota.base` / `base_at`）；不传 = 不动原有校准（整份替换只针对其余字段），null = 清掉。写审计 `subscription.set` |
-| POST | `/machines/{id}/renewals` | `{new_due?, cycles?, amount_cents?, note?}`，`new_due` 与 `cycles` 给一个（都给、都不给、`cycles` 不在 1–120 时 400）：`cycles` = 中控按订阅生效的 `cycle` 从当前到期日推几个周期（一次加够，小月按月末，fleetctl `renew --cycles`）；`new_due` 直接给新到期日（网页对话框默认填 `subscription.next_due`）。新到期日要晚于当前的。只顺延到期日，单独设置照旧 → `{id, old_due, new_due}` |
+| PUT | `/machines/{id}/subscription` | `{due_date, price_cents?,currency?,cycle?,billing_tz?,remind_days?,traffic_gb?,traffic_reset_day?, auto_renew?, traffic_used_gb?}`。只有 `due_date` 必填。`price_cents` … `traffic_reset_day` 是**单独设置**，整份替换：没传或 null = 跟随模板（见 `sub_template`），给了值 = 这台单独设置；和模板相同的值也按跟随存（旧客户端整份带上生效值不会把套餐的值抄进来）。没有套餐的机器价格没有可跟随的，必须给 `price_cents`（400）。校验：`price_cents` / `traffic_gb` ≥ 0、`cycle` 四选一、`currency` 3 个字母（存成大写）、`remind_days` 0–60、`traffic_reset_day` 1–31、`billing_tz` 须是 `at time zone` 认的时区，否则 400。`auto_renew` 没传 = 不改（新建为否）。账单日（`billing_day`）：`due_date` 落在现有账单日上的（原样带回的到期日、小月的月末，如 31 号账单日的 2-28）不动，否则（或新建）记成 `due_date` 是几号。`traffic_gb` 是供应商的十进制 GB（10⁹ 字节，0 = 不限）。`traffic_used_gb`：按供应商面板校准本周期已用（GB，可带小数，如 901.6；负数 400），记成字节与当前时间（`quota.base` / `base_at`）；不传 = 不动原有校准（整份替换只针对其余字段），null = 清掉。写审计 `subscription.set` |
+| POST | `/machines/{id}/renewals` | `{new_due?, cycles?, amount_cents?, note?}`，`new_due` 与 `cycles` 给一个（都给、都不给、`cycles` 不在 1–120 时 400）：`cycles` = 中控按订阅生效的 `cycle` 从当前到期日推几个周期，落在账单日（`billing_day`，目标月没有这一天时落到月末；账单日不变，所以 31 号的 1-31 → 2-28 → 3-31，不会漂成 3-28；fleetctl `renew --cycles`）；`new_due` 直接给新到期日（网页对话框默认填 `subscription.next_due`），账单日同改订阅：落在现有账单日上的不动，否则改成它是几号。新到期日要晚于当前的。只顺延到期日，单独设置照旧 → `{id, old_due, new_due}` |
 | GET | `/machines/{id}/renewals` | |
 | GET | `/teams/{id}/renumber` | 预览：`{data:{changes:[{machine_id,old_name,new_name}],token}}` |
 | POST | `/teams/{id}/renumber` | `{token}`（预览返回的，防止预览后数据变了）→ 一次生效 |
@@ -202,6 +202,27 @@ ProvisionItem = {
 | GET | `/machines/{id}/logs?unit=fleet-agent\|fleet-xray\|ssserver&lines=200` | 白名单 unit（`ssserver` 对应 `fleet-ssserver`；同机 IP 节点对应宿主机上它自己的实例 `fleet-ssserver@<SS 端口>`，`fleet-agent` 是宿主机的），lines 1-2000；内部走同一 exec 通道跑 `journalctl`，返回形状同 exec，另有 `unit`（实际查的单元）、`lines`。审计动作 `machine.logs` |
 | GET | `/server/logs?lines=200` | 中控自己的 `journalctl -u fleet-server`。fleet 用户通常没权限读 journal：journalctl 报错时 424（`error.code="journal_denied"`，message 说明如何授权：`usermod -aG systemd-journal fleet`）；journalctl 无法运行或 20 秒没返回时 500 |
 | POST | `/audit/ssh` | `fleetctl ssh` 在中控本机用中控的密钥直接 ssh（不经中控执行），登录前报一声：`{kind: "machine"\|"router", id, command?: bool}` → `{ok:true}`，写审计 `ssh.login`（`target_kind` 是 kind，`detail = {name, command}`：对象名按库里的写，`command` 只记带没带命令，命令内容不记）。机器不存在 404，已退役、家宽代理 409；软路由按 `router` 表核对，不存在 404；kind 不对 400。fleetctl 没记上就不登录 |
+
+## 网页终端
+在浏览器里打开机器的 shell：中控本地开一个 PTY 跑 `ssh -tt`（中控自己的 SSH 密钥与 known_hosts，`StrictHostKeyChecking=yes`，同远程执行），WebSocket 双向搬终端字节。**只给会话用户**（API 密钥一律 403；命令行在中控上用 `fleetctl ssh`，不走这个接口）。机器要在用（`active`，或退役中的 `retiring`）：已退役、还没上架完成（`draft` / `provisioning` / `failed`）、家宽代理（没有 SSH）409；同机 IP 节点登录它的宿主机（宿主机同样要在用：已退役、还没上架完成也是 409）。软路由（`kind: "router"`）暂时 400「软路由终端稍后开放」。
+
+**终端里输入的命令不进审计**：只记谁、哪台、何时开 / 关、时长、上下行字节数、为什么断（前端在打开前提示）。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/terminal/tickets` | `{kind: "machine", id, code?, password?}` → `{ticket, expires_at}`。先看目标（不存在 404、不能开 409、`kind` 不认识或软路由 400）与名额（429 `terminal_limit`），再**再验证一次**：用户开了两步验证要 `code`（6 位验证码或一个恢复码，密码不顶用），没开要 `password`（当前密码）；同一个登录会话 5 分钟内验证过的免输（记在中控内存里，中控重启后重来）。缺了 401 `totp_required` / `password_required`（不算失败），错了 401 `totp_invalid` / `password_invalid`：与登录共用失败计数和限速（429 `rate_limited`），写审计 `auth.verify_failed`（`detail.op = "terminal"`），用了恢复码写 `auth.totp_recovery_used`。票据是随机 32 字节（base64url，43 个字符），60 秒内在 WebSocket 上用一次：只能用一次（不管成没成都作废）、只能由开票的这个登录会话用、绑定这台机器；中控只存它的 sha256。每人手里没用掉的票据最多 10 张（再开 429 `rate_limited`）。中控正在重启时 503 `unavailable` |
+| GET | `/terminal/ws` | WebSocket，见下 |
+
+`GET /api/v1/terminal/ws`（`ws://` / `wss://`）：
+- **握手**：要会话 Cookie（401）、`Origin` 等于 `public_url` 的协议 + 主机 + 端口（403；`public_url` 不是 http(s) 地址时一律 403，`Origin: null` 永远对不上），API 密钥 403；同一个登录会话握手之后还没送票据的连接最多 5 个，再握手 429。失败是普通 HTTP 错误（浏览器的 WebSocket 拿不到状态码，只看到连接失败）。
+- **第一条消息**（10 秒内，文本帧）送票据：`{"type":"auth","ticket":"…","cols":120,"rows":40}`，`cols` / `rows` 是初始窗口大小（可省，默认 80 × 24）。票据不放在地址里：反代、中控的请求日志都记不到它。票据不对、过期、用过、不是这个会话开的、机器在开票后不能开了、名额满了：服务端发 `exit` 说明原因后关闭。
+- **之后**：二进制帧 = 终端字节（双向：浏览器发键盘输入，原样写进终端；服务端发终端输出，原样交给 xterm.js）；文本帧 = JSON 控制消息：浏览器发 `{"type":"resize","cols":120,"rows":40}`（整数，夹到 1–500；不认识的控制消息不理），服务端结束前发 `{"type":"exit","reason":"…"}`（中文原因，直接显示）再关闭。
+- 浏览器发来的一条消息最多 **64 KiB**（粘贴大段文字请切开发），超了断开（关闭码 1009）。这一节的各个上限都在 `GET /meta` 的 `terminal` 里，前端取那里的数，不要自己写死。
+- **关闭码**：一般 1000；登录会话失效 4401（同实时流，前端回登录页）；中控重启 1012；中控内部错误 1011。
+- **什么时候断**：远端 shell 退出（`exit`、Ctrl-D）；ssh 连不上、被拒、主机指纹不对（退出码 255，ssh 的报错已经显示在终端里）；浏览器关掉或断线（心跳每 15 秒；往不读输入的程序里粘贴、输入积着的时候不读浏览器、也不查心跳）；**15 分钟没有输入**（按键、粘贴；改窗口大小、光有输出都不算）；**连续开满 2 小时**；登录会话失效（退出登录、在「账户安全」撤销这个会话、退出其它设备、改密码、会话过期、账户被停用：收到撤销立刻断，另外每 60 秒复核一次兜底）；浏览器 15 秒收不走输出（页面卡死）；中控重启（收到退出信号后先以「中控正在重启」断开全部终端、写完「关闭」审计，关闭码 1012；重新起来之前开票 503）。
+- **上限**：每人同时 3 个、全中控同时 8 个（开票时先查，连上时为准）。
+- 断开时中控结束本地的 ssh（整个进程组，先 TERM、3 秒后 KILL），远端的 shell 随连接断开收到 SIGHUP 退出（`nohup`、`setsid` 起的后台进程照常留着）。ssh 关掉了转义字符（`~.`、`~C` 都不起作用）、不做端口转发、不转发中控的环境变量，远端的 `TERM` 是 `xterm-256color`。
+- **审计**：`terminal.open`（`detail`：`name`、`ip` / `port`（实际登录的地址：同机 IP 节点是宿主机的）、`host`（同机 IP 节点的宿主机 `{id, name}`，否则 null）、`client_ip`、`session`（登录会话的 id，同 `/account/sessions` 的 `id`））；`terminal.close`（同上，另有 `open_id`（对应的打开记录）、`duration_s`、`bytes_in`（上行：浏览器 → 机器）、`bytes_out`（下行：机器 → 浏览器）、`why`（`remote_exit` / `client_closed` / `client_gone` / `idle` / `max_age` / `session_invalid` / `shutdown` / `stalled` / `too_large` / `recheck_failed` / `error` / `spawn_failed`）、`reason`（同 `exit` 的原因）、`exit_code`（ssh 的退出码，没有为 null））。`terminal.open` 在起 ssh 之前写：中控异常退出（崩溃、被强杀）的话只有打开、没有关闭。
 
 ## 总览与告警
 | 方法 | 路径 | 说明 |

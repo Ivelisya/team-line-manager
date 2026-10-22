@@ -203,8 +203,15 @@ struct LogOut {
     error: Option<String>,
     /// firing / repeat / resolved / test / silence（有人新建、删除了静默或维护窗口）
     kind: String,
-    /// 告警对象的显示名（中控自身的告警是「中控」）；静默 / 维护变更是「静默 / 维护变更」；测试消息、机器已删除时为 null
+    /// 告警对象的显示名（中控自身的告警是「中控」，软路由的是路由名）；静默 / 维护变更是「静默 / 维护变更」；测试消息、机器或路由已删除时为 null
     subject_name: Option<String>,
+    /// 告警对象：机器 `{id, name}`，软路由 `{id, name, kind: "router"}`；中控自身、静默 / 维护变更、测试消息、对象已删除时为 null
+    #[sqlx(skip)]
+    subject: Option<Value>,
+    #[serde(skip)]
+    subject_id: Option<Uuid>,
+    #[serde(skip)]
+    subject_kind: Option<String>,
     #[serde(skip)]
     rule: Option<String>,
     /// 告警规则中文名（同通知正文）；测试消息、告警已删除时为 null
@@ -216,10 +223,12 @@ pub async fn log(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Lo
     let mut v: Vec<LogOut> = sqlx::query_as(
         "select l.id, l.channel_id, c.name channel_name, l.incident_id, l.ts, l.ok, l.error, l.kind,
                 case when l.kind = 'silence' then '静默 / 维护变更' when i.rule like 'central!_%' escape '!' then '中控'
+                     when i.rule like 'router!_%' escape '!' then r.name
                      else display_name(m.kind::text, m.label, t.name, m.number) || case when m.lifecycle = 'retired' then '（已退役）' else '' end end subject_name,
-                i.rule
+                i.subject_id, case when r.id is not null then 'router' when m.id is not null then 'machine' end subject_kind, i.rule
          from notify_log l left join notify_channel c on c.id = l.channel_id
          left join incident i on i.id = l.incident_id left join machine m on m.id = i.subject_id left join team t on t.id = m.team_id
+         left join router r on r.id = i.subject_id and i.rule like 'router!_%' escape '!'
          order by l.id desc limit $1",
     )
     .bind(q.limit.unwrap_or(100).clamp(1, 1000))
@@ -227,6 +236,11 @@ pub async fn log(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Lo
     .await?;
     for l in &mut v {
         l.rule_name = l.rule.as_deref().map(|r| notify::rule_name(r).to_string());
+        l.subject = match (l.subject_kind.as_deref(), l.subject_id) {
+            (Some("router"), Some(id)) => Some(crate::routers::alerts::subject(id, l.subject_name.as_deref())),
+            (Some("machine"), Some(id)) => Some(json!({"id": id, "name": l.subject_name})),
+            _ => None,
+        };
     }
     Ok(ok(v))
 }

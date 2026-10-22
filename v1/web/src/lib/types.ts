@@ -13,6 +13,8 @@ export interface Subscription {
   price_cents: number; currency: string; cycle: Cycle; due_date: string; due_days: number;
   billing_tz: string; auto_renew: boolean; remind_days: number; traffic_gb: number | null; traffic_reset_day: number | null;
   overrides?: SubField[];
+  /** 账单日（每月几号）：直接设到期日时记下，按周期续费不变（31 号的在 2-28 时仍是 31）；按账单日重置的流量重置日跟它。旧接口没有 */
+  billing_day?: number;
   /** 服务端算好的：due_state 到期状态（同续费告警）、monthly_cents 折成每月的价格（分）、next_due 续一个周期后的到期日（续费的默认值）、
    *  period_days 当前这期的天数（到期日往前推一个周期 → 到期日） */
   due_state: DueState; monthly_cents: number; next_due: string; period_days: number;
@@ -128,6 +130,8 @@ export interface Meta {
   severities: Record<string, { label: string; tone: 'bad' | 'warn' | 'info' }>;
   thresholds: { traffic_quota_warn_pct: number; traffic_quota_over_pct: number; usage: Record<UsageMetric, { warn: number; bad: number }> };
   defaults: { currency: string; cycle: string; remind_days: number; traffic_rule: TrafficRule; traffic_reset: TrafficReset; ss_method: string; ss_port: number };
+  /** 网页终端的上限（服务端 terminal.rs）：每人 / 全中控同时几个、空闲与最长秒数、一条消息最多几字节、行列上限、票据与免验证的有效秒数 */
+  terminal: { per_user: number; global: number; idle_s: number; max_age_s: number; max_message: number; max_dim: number; ticket_ttl_s: number; verify_ttl_s: number };
 }
 export type UsageMetric = 'cpu' | 'mem' | 'disk' | 'load';
 
@@ -183,7 +187,8 @@ export interface SeriesResp { metric: string; range: string; resolution: '1m' | 
 export interface AvailabilityDay { date: string; tcp_total: number; tcp_ok: number; egress_total: number; egress_ok: number }
 export interface Availability { days: number; items: AvailabilityDay[]; tcp_pct: number | null; egress_pct: number | null }
 export interface Incident {
-  id: string; rule: string; rule_name: string; subject: { id: string; name: string } | null; subject_id: string | null; subject_name: string | null;
+  /** subject.kind：规则以 router_ 开头的告警对象是软路由，为 "router"（机器的没有这个字段） */
+  id: string; rule: string; rule_name: string; subject: { id: string; name: string; kind?: 'router' } | null; subject_id: string | null; subject_name: string | null;
   severity: 'info' | 'warning' | 'critical' | string; state: 'firing' | 'resolved'; summary: string;
   opened_at: string; last_seen_at: string | null; resolved_at: string | null; ack_at: string | null; ack_by: string | null;
   /** 恢复后 30 分钟内复发、合并进这条的次数 */

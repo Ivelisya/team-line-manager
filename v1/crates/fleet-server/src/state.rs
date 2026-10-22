@@ -34,6 +34,8 @@ pub enum Event {
     Policies,
     /// 面板设置变了（目前只有访问记录保留期，见 settings.rs）
     Settings,
+    /// 软路由：增删改、接入 / 部署进度、状态与摘要变化（采集每轮最多一次）
+    Routers,
     /// 实时指标（`live.rs` 拼好的整条 JSON，前端直接写进缓存；各连接共用同一份字节）；只经 `events.send` 发，不走 `emit`
     #[serde(skip)]
     Metrics(Utf8Bytes),
@@ -86,6 +88,8 @@ pub struct Inner {
     pub report_gaps: crate::views::ReportGaps,
     /// 访问记录保留期（面板里改的）：读写经 `access_retention()` 等，见 settings.rs
     pub(crate) access_ret: std::sync::RwLock<crate::settings::AccessRetention>,
+    /// 网页终端：票据、再验证时间、在开的终端（`terminal.rs`）
+    pub terminals: crate::terminal::Hub,
 }
 
 impl std::ops::Deref for AppState {
@@ -125,12 +129,13 @@ impl AppState {
             jobs_running: Default::default(),
             report_gaps: Default::default(),
             access_ret,
+            terminals: Default::default(),
         }))
     }
 
     pub fn emit(&self, e: Event) {
-        // 除密钥外的资源变更都可能改变机器视图
-        if !matches!(e, Event::ApiKeys) {
+        // 除密钥、软路由外的资源变更都可能改变机器视图
+        if !matches!(e, Event::ApiKeys | Event::Routers) {
             self.live.invalidate();
         }
         if matches!(e, Event::Machine { .. } | Event::Machines) {

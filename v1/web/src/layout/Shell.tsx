@@ -10,11 +10,13 @@ import { useStream } from '@/lib/stream';
 import { useTheme, type Palette, type ThemePref } from '@/lib/theme';
 import { useTitleAlerts } from '@/lib/title';
 import { closeEvacuate, closeMove, closeRenew, closeRestore, closeRetire, useEvacuateTarget, useMoveTarget, useRenewTarget, useRestoreTarget, useRetireTarget } from '@/lib/nodeActions';
+import { resetTerminal, useTerminalTarget } from '@/lib/terminal';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger, Tip, TipHost } from '@/components/ui/overlays';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Toaster } from '@/components/ui/toast';
 import { useDrawer } from '@/lib/drawer';
+import { useBootTarget, useDeployTarget, useRemoved, useRouterDrawer } from '@/lib/routers';
 import { Hotkeys, PaletteTrigger } from '@/features/Hotkeys';
 import { AlertsIndicator } from '@/features/AlertsIndicator';
 import { JobsIndicator } from '@/features/JobsIndicator';
@@ -26,6 +28,11 @@ import { MotionProvider } from '@/lib/motion';
 // 加载失败（发版后旧块 404）由外面的 silent ErrorBoundary 接住并提示刷新。
 const NodeDrawer = React.lazy(() => import('@/features/NodeDrawer').then((m) => ({ default: m.NodeDrawer })));
 const LifecycleDialogsHost = React.lazy(() => import('@/components/app/LifecycleDialogs').then((m) => ({ default: m.LifecycleDialogsHost })));
+// 软路由抽屉（?r=）与它的对话框（接入命令、重新部署、删除后的说明）：同样第一次用到时才下载
+const RouterDrawer = React.lazy(() => import('@/features/RouterDrawer').then((m) => ({ default: m.RouterDrawer })));
+const RouterDialogsHost = React.lazy(() => import('@/features/RouterDialogs').then((m) => ({ default: m.RouterDialogsHost })));
+// 网页终端连同 xterm（约 290KB）同理：第一次打开终端时才下载
+const TerminalHost = React.lazy(() => import('@/features/Terminal').then((m) => ({ default: m.TerminalHost })));
 
 /** 一旦为真就一直为真：懒加载的浮层第一次需要时挂载，之后保持挂载（关闭动画、再次打开都不用重来） */
 function useEver(v: boolean) {
@@ -50,11 +57,24 @@ function DrawerHost() {
   return ever ? <React.Suspense fallback={null}><NodeDrawer /></React.Suspense> : null;
 }
 
+function RouterHost() {
+  const { id } = useRouterDrawer();
+  const boot = useBootTarget(), deploy = useDeployTarget(), removed = useRemoved();
+  const drawer = useEver(!!id);
+  const dialogs = useEver(!!(boot || deploy || removed));
+  return <>{drawer && <React.Suspense fallback={null}><RouterDrawer /></React.Suspense>}{dialogs && <React.Suspense fallback={null}><RouterDialogsHost /></React.Suspense>}</>;
+}
+
 function LifecycleHost() {
   // 四个 hook 都要无条件调用：写成 a() || b() 会短路，hook 数量随渲染变化，React 报错
   const move = useMoveTarget(), evacuate = useEvacuateTarget(), restore = useRestoreTarget(), retire = useRetireTarget(), renew = useRenewTarget();
   const ever = useEver(!!(move || evacuate || restore || retire || renew));
   return ever ? <React.Suspense fallback={null}><LifecycleDialogsHost /></React.Suspense> : null;
+}
+
+function TermHost() {
+  const ever = useEver(!!useTerminalTarget());
+  return ever ? <React.Suspense fallback={null}><TerminalHost /></React.Suspense> : null;
 }
 
 export function Shell() {
@@ -185,8 +205,11 @@ export function Shell() {
           <div className="content"><ErrorBoundary resetKey={loc.pathname}><React.Suspense fallback={<PageFallback />}><div key={section} className="page-in"><Outlet /></div></React.Suspense></ErrorBoundary></div>
         </main>
         {/* 浮层宿主各包一层边界：它们出错（图表、懒加载块失败等）只收起自己，不拖垮整页 */}
+        {/* 路由抽屉排在机器抽屉前面：从路由的出口换到机器抽屉时，标签页标题由后提交的机器抽屉写（lib/title 只有一格） */}
+        <ErrorBoundary silent resetKey={loc.search}><RouterHost /></ErrorBoundary>
         <ErrorBoundary silent resetKey={loc.search}><DrawerHost /></ErrorBoundary>
         <ErrorBoundary silent resetKey={loc.pathname} onError={closeLifecycle}><LifecycleHost /></ErrorBoundary>
+        <ErrorBoundary silent resetKey={loc.pathname} onError={resetTerminal}><TermHost /></ErrorBoundary>
         <Hotkeys theme={theme} />
         <TipHost />
         <Toaster />

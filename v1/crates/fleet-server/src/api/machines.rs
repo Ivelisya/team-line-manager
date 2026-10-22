@@ -687,14 +687,17 @@ impl SubOverrides {
         Ok(())
     }
 
-    /// 写订阅：到期日 + 这些单独设置（整份替换；自动续费、按面板校准不动），再把和模板相同的改回跟随
+    /// 写订阅：到期日 + 这些单独设置（整份替换；自动续费、按面板校准不动），再把和模板相同的改回跟随。
+    /// 账单日（billing_day）按 meta::billing_day：到期日落在现有账单日上（含原样带回的到期日、31 号账单日的 2-28）不动，否则改成新到期日几号
     pub async fn write(&self, db: &mut sqlx::PgConnection, id: Uuid, due: Date) -> ApiResult<()> {
+        let cur: Option<i16> = sqlx::query_scalar("select billing_day from subscription where machine_id = $1").bind(id).fetch_optional(&mut *db).await?.flatten();
+        let bday = meta::billing_day(due, cur.and_then(|d| u8::try_from(d).ok()));
         sqlx::query(
-            "insert into subscription (machine_id, due_date, price_cents, currency, cycle, billing_tz, remind_days, traffic_gb, traffic_reset_day)
-             values ($1, $2, $3, $4, $5::billing_cycle, $6, $7, $8, $9)
+            "insert into subscription (machine_id, due_date, price_cents, currency, cycle, billing_tz, remind_days, traffic_gb, traffic_reset_day, billing_day)
+             values ($1, $2, $3, $4, $5::billing_cycle, $6, $7, $8, $9, $10)
              on conflict (machine_id) do update set due_date = excluded.due_date, price_cents = excluded.price_cents, currency = excluded.currency,
                cycle = excluded.cycle, billing_tz = excluded.billing_tz, remind_days = excluded.remind_days, traffic_gb = excluded.traffic_gb,
-               traffic_reset_day = excluded.traffic_reset_day, updated_at = now()",
+               traffic_reset_day = excluded.traffic_reset_day, billing_day = excluded.billing_day, updated_at = now()",
         )
         .bind(id)
         .bind(due)
@@ -705,6 +708,7 @@ impl SubOverrides {
         .bind(self.remind_days)
         .bind(self.traffic_gb)
         .bind(self.traffic_reset_day)
+        .bind(i16::from(bday))
         .execute(&mut *db)
         .await?;
         sqlx::query("select subscription_normalize($1)").bind(id).execute(&mut *db).await?;
@@ -798,7 +802,8 @@ pub async fn list_renewals(_a: Actor, State(st): State<AppState>, ApiPath(id): A
     Ok(ok(v))
 }
 
-/// 登记续费：`new_due`（直接给新到期日）与 `cycles`（从当前到期日按订阅周期推几个周期，中控算新到期日，小月按月末）二选一
+/// 登记续费：`new_due`（直接给新到期日；不落在账单日上的，账单日改成它几号，见 meta::billing_day）与 `cycles`（从当前到期日按订阅周期推几个周期，中控算新到期日：
+/// 落在账单日，小月按月末；账单日不变，所以 31 号的 1-31 → 2-28 → 3-31）二选一
 #[derive(Deserialize)]
 pub struct RenewIn {
     new_due: Option<Date>,
@@ -810,19 +815,20 @@ pub struct RenewIn {
 pub async fn add_renewal(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<RenewIn>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
     // 币种记登记时生效的（subscription_eff：订阅没单独设置的跟随套餐）；按周期推时也用生效的周期
-    let (old, currency, cycle): (Date, String, String) = sqlx::query_as(
-        "select s.due_date, e.currency, e.cycle::text from subscription s join subscription_eff e on e.machine_id = s.machine_id
+    let (old, currency, cycle, bday): (Date, String, String, i32) = sqlx::query_as(
+        "select s.due_date, e.currency, e.cycle::text, coalesce(s.billing_day::int, extract(day from s.due_date)::int) from subscription s join subscription_eff e on e.machine_id = s.machine_id
          where s.machine_id = $1 for update of s",
     )
     .bind(id)
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| ApiError::conflict("这台机器还没有账单信息，先填写费用"))?;
-    let new_due = match (b.new_due, b.cycles) {
-        (Some(d), None) => d,
+    let (new_due, bday) = match (b.new_due, b.cycles) {
+        (Some(d), None) => (d, i32::from(meta::billing_day(d, Some(bday as u8)))),
         (None, Some(n @ 1..=120)) => {
             let months = meta::cycle_months(&cycle).ok_or_else(|| ApiError::conflict(format!("不认识订阅的计费周期「{cycle}」：直接给 new_due")))?;
-            meta::add_months(old, i64::from(months) * i64::from(n)).ok_or_else(|| ApiError::bad_request("新到期日超出范围"))?
+            let d = meta::add_months_on(old, i64::from(months) * i64::from(n), bday as u8).ok_or_else(|| ApiError::bad_request("新到期日超出范围"))?;
+            (d, bday)
         }
         (None, Some(_)) => return Err(ApiError::bad_request("cycles 要在 1–120 之间")),
         _ => return Err(ApiError::bad_request("new_due（新到期日）与 cycles（推几个周期）给一个")),
@@ -842,9 +848,10 @@ pub async fn add_renewal(a: Actor, State(st): State<AppState>, ApiPath(id): ApiP
         .bind(&a.name)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("update subscription set due_date = $2, updated_at = now() where machine_id = $1")
+    sqlx::query("update subscription set due_date = $2, billing_day = $3, updated_at = now() where machine_id = $1")
         .bind(id)
         .bind(new_due)
+        .bind(bday as i16)
         .execute(&mut *tx)
         .await?;
     audit(&mut tx, &a.name, "renewal", "machine", Some(id), json!({"old_due": old, "new_due": new_due, "amount_cents": b.amount_cents, "currency": currency, "cycles": b.cycles})).await?;

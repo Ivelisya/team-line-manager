@@ -138,6 +138,30 @@ async fn report_gets_503_when_pool_exhausted() {
     assert_eq!(t.report("tok1", &blank_report(1)).await.0, StatusCode::OK);
 }
 
+/// 同一台机器同时只处理一份上报：令牌入库提交后才扣，并发的几份（seq 各不相同）会一起看到余额、都放进来。
+/// 一份还在处理时来的第二份回 429（agent 按 Retry-After 1 秒后重发），前一份照常入库
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_reports_for_one_machine_get_429() {
+    let t = setup().await;
+    let id = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    assert_eq!(t.report("tok1", &blank_report(1)).await.0, StatusCode::OK);
+    // 第一份卡在 agent_state 的行锁上（占着处理位置），这时来第二份
+    let mut lock = t.st.db.begin().await.unwrap();
+    sqlx::query("select 1 from agent_state where machine_id = $1 for update").bind(id).execute(&mut *lock).await.unwrap();
+    let second = async {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let r = t.report("tok1", &blank_report(3)).await;
+        lock.commit().await.unwrap();
+        r
+    };
+    let first = blank_report(2);
+    let ((s1, v1), (s2, v2)) = tokio::join!(t.report("tok1", &first), second);
+    assert_eq!((s1, v1["accepted_seq"].as_u64()), (StatusCode::OK, Some(2)), "{v1}");
+    assert_eq!((s2, v2["error"]["code"].as_str()), (StatusCode::TOO_MANY_REQUESTS, Some("rate_limited")), "{v2}");
+    // 处理完就放开：接着发的照收
+    assert_eq!(t.report("tok1", &blank_report(3)).await.0, StatusCode::OK);
+}
+
 /// 主机样本：同一时刻只收一条（重报不多占）；最多超前 10 分钟；每台机器按余额收（24 小时的量，之后 5 秒补一个）
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn host_samples_dedup_future_window_and_budget() {

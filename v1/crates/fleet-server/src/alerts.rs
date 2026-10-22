@@ -147,9 +147,10 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
     let ms = views::live(st).await?;
     let silences = Silences::load(&st.db).await?;
     // ipintel_ 开头的规则由 ipintel.rs 自己开和关（一次性异常，24 小时后恢复），central_ 开头的（中控自身）由 selfmon.rs 开和关，
-    // 这里都不碰，否则会被当成「原因消失」恢复掉
+    // router_ 开头的（软路由）由 routers/alerts.rs 开和关，这里都不碰，否则会被当成「原因消失」恢复掉
     let mut open: HashMap<(String, Uuid), Open> = sqlx::query_as::<_, Open>(&format!(
-        "select {OPEN_COLS} from incident where state = 'firing' and rule not like 'ipintel!_%' escape '!' and rule not like 'central!_%' escape '!'"
+        "select {OPEN_COLS} from incident where state = 'firing' and rule not like 'ipintel!_%' escape '!' and rule not like 'central!_%' escape '!'
+           and rule not like 'router!_%' escape '!'"
     ))
     .fetch_all(&st.db)
     .await?
