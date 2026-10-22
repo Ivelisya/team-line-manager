@@ -901,7 +901,8 @@ pub fn watch(ctx: &Ctx, count: Option<usize>, metrics: bool) -> anyhow::Result<u
                         Err(_) => break,
                     };
                     let Ok(ev) = serde_json::from_str::<Value>(&text) else { continue };
-                    if ev["type"] == "metrics" && !metrics {
+                    // hb：中控每 15 秒的文本心跳（浏览器据此发现半开的连接），不打印、不计数
+                    if ev["type"] == "hb" || (ev["type"] == "metrics" && !metrics) {
                         continue;
                     }
                     if ctx.json {

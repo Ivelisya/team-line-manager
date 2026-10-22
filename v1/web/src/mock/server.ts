@@ -32,12 +32,14 @@ const emit = (e: Ev) => listeners.forEach((l) => l(e));
 class MockStream {
   readyState = 0; onmessage: ((e: MessageEvent) => void) | null = null; onopen: (() => void) | null = null; onclose: (() => void) | null = null; onerror: (() => void) | null = null;
   private fn = (e: Ev) => this.onmessage?.(new MessageEvent('message', { data: JSON.stringify(e) }));
+  // 同中控：每 15 s 一个文本心跳，前端 45 s 收不到任何消息就当连接已死
+  private hb = setInterval(() => this.fn({ type: 'hb' }), 15_000);
   constructor() {
     listeners.add(this.fn);
     setTimeout(() => { if (this.readyState === 0) { this.readyState = 1; this.onopen?.(); } }, 50);
   }
   send() {}
-  close() { this.readyState = 3; listeners.delete(this.fn); }
+  close() { this.readyState = 3; listeners.delete(this.fn); clearInterval(this.hb); }
 }
 
 // ---------- 工具 ----------
