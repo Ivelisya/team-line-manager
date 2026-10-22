@@ -1,4 +1,5 @@
 //! 远程执行与日志：中控用自己的 SSH 密钥和 known_hosts 登录机器跑命令，全程写审计。
+//! 另有 `fleetctl ssh`（在中控本机直接 ssh）登录前报的审计。
 //!
 //! 命令原样当作 bash 脚本执行（经 base64 包一层，再用 `timeout` 兜底并把 stdin 接到 /dev/null，
 //! 避免命令读 stdin 时吃掉脚本本身）。
@@ -152,6 +153,45 @@ pub async fn exec(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uui
     }
     let r = run_on(&st, &a, id, &b.command, t, "exec").await?;
     Ok(ran_json(&r, json!({})))
+}
+
+#[derive(Deserialize)]
+pub struct SshLoginIn {
+    /// machine | router
+    kind: String,
+    id: Uuid,
+    /// 带了远端命令（命令本身不记）
+    #[serde(default)]
+    command: bool,
+}
+
+/// `fleetctl ssh` 登录前记一条审计 `ssh.login`：它在中控本机用中控的密钥直接 ssh，不经这里执行，只能事先报一声。
+/// 记谁（哪把密钥 / 哪个用户）、哪台、带没带命令；命令内容不记（交互式会话本来也记不下，要留命令全文的用 exec）。
+/// 对象名按库里的写，不信客户端；已退役、家宽代理同 exec 拒绝
+pub async fn audit_ssh(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<SshLoginIn>) -> ApiResult<Json<Value>> {
+    a.require_scope("exec")?;
+    let name = match b.kind.as_str() {
+        "machine" => {
+            let (name, kind, lifecycle) = display_name_of(&st.db, b.id).await?;
+            if lifecycle == "retired" {
+                return Err(ApiError::conflict(format!("{name} 已退役，不能再登录")));
+            }
+            if kind == "proxy" {
+                return Err(ApiError::conflict(format!("{name} 是家宽代理，没有 SSH")));
+            }
+            name
+        }
+        "router" => sqlx::query_scalar::<_, String>("select name from router where id = $1")
+            .bind(b.id)
+            .fetch_optional(&st.db)
+            .await?
+            .ok_or_else(|| ApiError::not_found("没有这台软路由"))?,
+        _ => return Err(ApiError::bad_request("kind 只能是 machine / router")),
+    };
+    let mut tx = st.db.begin().await?;
+    audit(&mut tx, &a.name, "ssh.login", &b.kind, Some(b.id), json!({"name": name, "command": b.command})).await?;
+    tx.commit().await?;
+    Ok(ok(json!({"ok": true})))
 }
 
 #[derive(Deserialize)]

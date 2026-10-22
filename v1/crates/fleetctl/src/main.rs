@@ -14,6 +14,7 @@ mod policy;
 mod resolve;
 mod settings;
 mod silence;
+mod ssh;
 mod table;
 
 use clap::{Args, Parser, Subcommand};
@@ -502,6 +503,16 @@ enum Cmd {
         #[arg(last = true)]
         command: Vec<String>,
     },
+    /// 在中控上直接登录机器（同机 IP 节点登录宿主机）或软路由：不带命令是交互式，`--` 后带命令则执行完退出、退出码同远端。
+    /// 只在中控上能用（用中控的 SSH 密钥，要 root）；主机指纹只认中控记下的；每次登录记审计（不记命令内容，要留命令全文用 exec）
+    Ssh {
+        /// <机器>（id / 显示名 / 线路机名 / IP），或 `router <软路由名称>`
+        #[arg(required = true, num_args = 1..=2, value_name = "机器 | router 名称")]
+        target: Vec<String>,
+        /// `--` 之后是要在远端执行的命令（单个参数原样当脚本，可含管道）
+        #[arg(last = true)]
+        command: Vec<String>,
+    },
     /// 机器上的服务日志（journalctl）
     Logs {
         machine: String,
@@ -725,11 +736,16 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
     if let Cmd::Login { url, token } = &cli.cmd {
         return login(url, token.as_deref(), json);
     }
+    if let Cmd::Ssh { target, command } = &cli.cmd {
+        // 不在中控上时先说这个，而不是「缺少配置」：中控上的 fleetctl 由部署配好
+        ssh::check_key(std::path::Path::new(ssh::KEY))?;
+        return ssh::run(&make_ctx(json, false)?, target, command);
+    }
     let session_login = matches!(&cli.cmd, Cmd::Keys { cmd } if keys_user(cmd).is_some());
     let ctx = make_ctx(json, session_login)?;
     let x = &ctx;
     match cli.cmd {
-        Cmd::Login { .. } => unreachable!(),
+        Cmd::Login { .. } | Cmd::Ssh { .. } => unreachable!(),
         Cmd::Whoami => cmds::whoami(x),
         Cmd::Status => cmds::status(x),
         Cmd::Ls { team, kind, status, retired, due } => cmds::ls(x, team.as_deref(), kind.as_deref(), status.as_deref(), retired, due),
@@ -889,7 +905,23 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::insecure_http;
+    use super::{insecure_http, Cli, Cmd};
+    use clap::Parser;
+
+    /// `ssh` 的命令行：目标 1–2 个参数（`router <名称>`），`--` 之后原样是远端命令
+    #[test]
+    fn ssh_command_line() {
+        let parse = |a: &[&str]| match Cli::try_parse_from(["fleetctl"].iter().chain(a)).map(|c| c.cmd) {
+            Ok(Cmd::Ssh { target, command }) => Ok((target, command)),
+            Ok(_) => panic!("不是 ssh"),
+            Err(e) => Err(e.kind()),
+        };
+        assert_eq!(parse(&["ssh", "团队1-03"]), Ok((vec!["团队1-03".into()], vec![])));
+        assert_eq!(parse(&["--json", "ssh", "团队1-03", "--", "df", "-h"]), Ok((vec!["团队1-03".into()], vec!["df".into(), "-h".into()])));
+        assert_eq!(parse(&["ssh", "router", "团队2-路由A", "--", "logread | tail"]), Ok((vec!["router".into(), "团队2-路由A".into()], vec!["logread | tail".into()])));
+        assert!(parse(&["ssh"]).is_err());
+        assert!(parse(&["ssh", "router", "a", "b"]).is_err(), "目标最多两个参数");
+    }
 
     #[test]
     fn plain_http_warns_only_for_public_hosts() {

@@ -4,6 +4,8 @@
 
 ## 1. 准备
 
+在中控上（ssh 进去，root）什么都不用准备：fleetctl 和它的全权密钥由部署装好，见 §14。下面是在别的机器上用 fleetctl 的做法。
+
 1. 在网页「设置 → API 密钥」创建密钥，按用途选 scope（见 `docs/API.md`「API 密钥与 scope」）：
    - 只看：`read`
    - AI 日常运维：`read,write,exec`（给 `secrets` 才能取分享链接，按需再加）
@@ -37,6 +39,7 @@
 | 中控自己的日志 | `fleetctl server-logs --lines 300` |
 | 在一台机器上执行命令 | `fleetctl exec 团队1-06 -- systemctl status fleet-agent` |
 | 对一个团队的全部节点执行 | `fleetctl exec --team 团队1 -- uptime`（并发 4，汇总退出码） |
+| 登录机器或软路由（在中控上，见 §14） | `fleetctl ssh 团队1-06`（交互式）、`fleetctl ssh 团队1-06 -- 'df -h'`（退出码同远端）、`fleetctl ssh router <名称>` |
 | 上架 | `fleetctl provision --file batch.json --dry-run`，确认后 `fleetctl provision --file batch.json --yes --follow` |
 | 已有 VPS 节点上多了一个 IP，加成一台节点（同机 IP 节点，见 §6） | `fleetctl provision --kind vps --host 团队1-03 --ip 203.0.113.7 --team 团队1 --relay 线路机2 --yes --follow` |
 | 看作业进度、失败原因 | `fleetctl jobs --active`、`fleetctl job <id> --follow`；失败后 `fleetctl retry <id>` |
@@ -107,7 +110,7 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 - 要交互式操作（编辑文件、长时间抓包）或持续数分钟的任务，超出 exec 的 10 分钟上限与 256 KiB 输出上限。
 - 给机器装中控没管理的东西。
 
-直接 ssh 做的改动不进中控审计，事后在备注（`fleetctl rename <机器> --note …`）里记一笔。
+后两种在中控上用 `fleetctl ssh <机器>`（软路由 `fleetctl ssh router <名称>`，§14）：用中控的密钥、只认中控记下的主机指纹，登录记审计。ssh 会话里做的事只记了登录、不记命令：做了改动事后在备注（`fleetctl rename <机器> --note …`）里记一笔。
 
 ## 5. 安全要点
 
@@ -189,7 +192,8 @@ WAL 三项由 `deploy/central/install.sh` 写进 `/etc/postgresql/<版本>/main/
 
 部署 / 升级：本机在 `v1/` 下运行 `deploy/central/deploy.sh debian13 fleet.kismet613.com`（幂等，首次安装也用它）。
 
-- `Cargo.toml`、`Cargo.lock`、`crates`、`migrations`、`deploy`、`web` 有未提交的改动时拒绝部署。
+- `Cargo.toml`、`Cargo.lock`、`crates`、`migrations`、`deploy`、`web`、fleet-ops 技能（仓库 `.claude/skills/fleet-ops`）有未提交的改动时拒绝部署。
+- 每次还装中控本机的 `/usr/local/bin/fleetctl`，健康检查通过后跑 `fleet-server local-admin`（建或修复全权密钥 central-local，仍有效不换），写 `/root/AGENTS.md`、`/root/CLAUDE.md` 与 `/root/.claude/skills/fleet-ops/SKILL.md`（§14）。部署最后一行写「本机 fleetctl apikey:central-local」说明能用。
 - 版本号 `0.1.0+<哈希>` 里的哈希是最后一次改动 `Cargo.toml`、`Cargo.lock`、`crates`、`migrations`、`deploy` 的提交：只改前端或文档的提交不换哈希，fleet-dev 上不重编 server 和 agent。
 - xray、ssserver、geoip.dat 先和中控 `/opt/fleet/dist` 比 sha256，相同的不上传，中控上的保持原样。
 - 编译失败、或 install.sh 重启后等 60 秒未登录访问 `/api/v1/auth/me` 仍不是 401，部署以非 0 退出，后者会打出 fleet-server 最近 60 行日志。中控上的安装包无论成败都删掉。
@@ -274,7 +278,7 @@ WAL 三项由 `deploy/central/install.sh` 写进 `/etc/postgresql/<版本>/main/
    install -m 640 -o fleet -g fleet /root/restore/var/lib/fleet/known_hosts /var/lib/fleet/known_hosts
    diff /root/restore/etc/fleet/fleet.toml /etc/fleet/fleet.toml
    ```
-5. 启动并确认：`systemctl start fleet-server`（启动时跑迁移：备份来自旧版本时补上新迁移）；`curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/api/v1/auth/me` 应为 401；`fleetctl status` 看机器。
+5. 启动并确认：`systemctl start fleet-server`（启动时跑迁移：备份来自旧版本时补上新迁移）；`curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/api/v1/auth/me` 应为 401。恢复的库里是备份时的 central-local，和第 1 步写进 `/root/.config/fleetctl/config.toml` 的令牌对不上：`/opt/fleet/fleet-server local-admin -c /etc/fleet/fleet.toml` 重建一把（§14），再 `fleetctl status` 看机器。
 6. 中控 IP 变了：把域名解析改到新机器。agent 按域名上报，解析生效后自动恢复；Caddy 自动签证书。
 7. 放回了 `etc/fleet/backup.pub` 的，再跑一次第 1 步的 deploy.sh：install.sh 看到这个文件才写拉取用户的 authorized_keys，不重跑 PVE 就一直拉不到。
 8. agent 令牌：每次装 / 升级 agent 都会换令牌、撤销旧的。备份之后升级过 agent 的机器，机器上的令牌在恢复的库里不存在，上报一律 401（线路照常通，但上报、配置下发都停了）。解析生效几分钟后 `fleetctl ls` 里 agent 一直离线的那些，逐台 `fleetctl upgrade-agent <机器> --yes` 重发令牌（中控用恢复的 SSH 密钥登录）；不确定就 `fleetctl upgrade-agent --all --yes`。
@@ -327,3 +331,41 @@ heartbeat_url = "https://hc-ping.com/<检查的 uuid>"
 - **「新」的含义**：「新目标」「来源出现新运营商 / 新城市」「机房 / VPN 来源」都是「保留期内没见过」：一个值超过期限没再出现、记录删了，之后再出现就算新的（画像异常会再告警一次）。来源画像一直保留到学习期结束，学完不会因为学习期里见过的值被删掉而误报；一个节点闲置超过来源画像的保留期，画像全删光，之后再有流量学习期从头算。
 - **备份**：每日备份（§10）不含原始记录，但含小时汇总和来源画像，删掉的这些在备份里留到备份轮换掉（中控 14 份、PVE 30 份）。要立刻不留，删掉旧备份。
 - 直接改库里的 `app_setting` 要重启 fleet-server 才生效（进程里缓存了一份），请只用网页或 fleetctl 改。
+
+## 14. 用 agent 从中控全量运维
+
+密钥都放在中控上：登录全部机器与软路由的 SSH 私钥、数据库与 `secret.key`，以及本机 fleetctl 用的全权 API 密钥 central-local。用户换哪台设备都只要能 ssh 进中控（root），在那里起 agent（Claude Code 等），就能做网页面板能做的一切，并直接登录任意机器 / 软路由；笔记本上不放任何令牌或机器密钥。
+
+### 怎么开始
+
+1. `ssh root@<中控>`（生产：本机别名 `debian13`）。
+2. agent 两种跑法，令牌都不出中控：在中控的 `/root` 下起 agent（如 `claude`，Claude Code 要自己在中控上装好、登录）；或者 agent 留在手边的设备上，每条命令经 ssh 在中控上执行（`ssh debian13 'fleetctl --json status'`），这时先让它 `ssh debian13 cat /root/AGENTS.md` 读一遍中控上的说明。部署已经放好：
+   - `/root/AGENTS.md` 与 `/root/CLAUDE.md`（同一份，模板 `deploy/central/central-agents.md`，每次部署覆盖）：这台机器是什么、规矩（改动前想清楚影响；删除、退役、全局维护、全部升级等先向用户确认）、常用命令、日志与备份在哪、出问题先看什么。
+   - `/root/.claude/skills/fleet-ops/SKILL.md`：fleet-ops 技能（Claude Code 自动加载，别的 agent 按 AGENTS.md 的指引去读）。
+   - `/usr/local/bin/fleetctl` 与它的配置 `/root/.config/fleetctl/config.toml`（0600，地址是本机回环 + `fleet.toml` 的 listen 端口）。`fleetctl whoami` 应显示 `apikey:central-local` 与四个权限。
+3. 登录机器：`fleetctl ssh 团队1-03`（交互式）、`fleetctl ssh 团队1-03 -- 'df -h'`（执行完退出，退出码同远端）；软路由 `fleetctl ssh router <名称>`。用中控的密钥、只认中控记下的主机指纹（机器 `/var/lib/fleet/known_hosts`；软路由 `/var/lib/fleet/router_known_hosts`，按别名 `router-<id>`，经它的反向隧道 `127.0.0.1:<隧道端口>`）；同机 IP 节点登录的是宿主机。只在中控上能用：读不到 `/etc/fleet/ssh/id_ed25519` 时报「先 ssh 进中控」。带命令时标准输入照样转给远端（同 ssh），在脚本循环里调用要加 `</dev/null`。
+
+### central-local 密钥
+
+- 由 `fleet-server local-admin -c /etc/fleet/fleet.toml` 建（只许 root），部署每次跑一次：配置里的令牌还对得上一把有效、权限齐全的 central-local 就不换（正在干活的 agent 不会因部署失效）；没有、配置丢了、在网页上被撤销、权限不全（以后加了新 scope）时新建，并撤销其它有效的 central-local。和别的密钥一样库里只存 sha256 与前缀，令牌只在那个 0600 的文件里，不打印。
+- 轮换：`/opt/fleet/fleet-server local-admin -c /etc/fleet/fleet.toml --rotate`，旧的立即失效（连着的 `fleetctl watch` 马上断开），下一条 fleetctl 命令自动用新的。
+- 在网页「设置 → API 密钥」撤销它同样立即生效；下次部署（或手动跑 local-admin）会建一把新的。名称 central-local 留给它，网页上建不了同名密钥。
+- 从备份恢复后要跑一次 local-admin（§10 第 5 步）：恢复的库里是备份时的那把，对不上配置里的令牌。
+
+### 审计里怎么区分是谁做的
+
+操作记录（`fleetctl audit`、网页侧栏「操作记录」）的「操作者」：
+
+- `apikey:central-local`：中控上的 fleetctl——用户 ssh 进中控后，agent 或人做的。
+- 用户名（如 `kismet`）：在网页上登录的人。
+- `apikey:<其它名称>`：别的 API 密钥（脚本、别处的 fleetctl）。
+- `cli`：中控命令行（`user-set`、`totp-reset`，以及 local-admin 新建 / 撤销 central-local，摘要写「中控命令行 local-admin」）。
+
+`fleetctl ssh` 每次登录记一条「SSH 登录」（`ssh.login`：对象、交互式还是带命令；命令内容不记）；要留命令全文的单条命令用 `fleetctl exec`。在中控上绕开 fleetctl 直接 ssh、psql 做的事不进审计。
+
+### 为什么笔记本上不再需要令牌
+
+- 令牌和机器密钥原本是让笔记本上的 fleetctl / agent 代表你去中控做事；现在 agent 直接跑在中控上，用本机的 central-local，令牌不出中控。
+- 换设备只要能 ssh 进中控（把新设备的公钥加进中控 root 的 `authorized_keys`）；设备丢了，删掉它在中控上的公钥即可，不用逐个轮换 API 密钥。
+- 笔记本上已有的 API 密钥用不着了：在网页「设置 → API 密钥」撤销，删掉本机的 fleetctl 配置与令牌文件。
+- 代价是中控的 root 登录就是一切的钥匙（本来也是：中控上有全部机器的私钥与库）。中控的 sshd 只开公钥登录（`PasswordAuthentication no`），root 的 `authorized_keys` 只留在用的设备。怀疑中控 root 被别人用过：轮换 central-local 不够，中控上的 SSH 私钥、`secret.key`、库都当作泄露处理。

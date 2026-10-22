@@ -41,6 +41,15 @@ pub async fn list(a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>
     Ok(ok(v))
 }
 
+/// 新密钥的（前缀，令牌）：`flk_<前缀>_<随机串>`。前缀用十六进制（不含 _），便于在列表里认出是哪把。local-admin 共用
+pub(crate) fn new_token() -> (String, String) {
+    let mut p = [0u8; 4];
+    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut p);
+    let prefix = hex::encode(p);
+    let token = format!("flk_{prefix}_{}", random_token(32));
+    (prefix, token)
+}
+
 #[derive(Deserialize)]
 pub struct CreateIn {
     name: String,
@@ -60,6 +69,9 @@ pub async fn create(a: Actor, State(st): State<AppState>, ClientIp(ip): ClientIp
     if name.is_empty() || name.chars().count() > 64 {
         return Err(ApiError::bad_request("密钥名称要 1 到 64 个字符"));
     }
+    if name == crate::local_admin::KEY_NAME {
+        return Err(ApiError::bad_request(format!("「{name}」留给中控本机的 fleetctl（部署时由 fleet-server local-admin 建），请换个名字")));
+    }
     let mut scopes: Vec<String> = vec![];
     for s in &b.scopes {
         if !ALL_SCOPES.contains(&s.as_str()) {
@@ -78,11 +90,7 @@ pub async fn create(a: Actor, State(st): State<AppState>, ClientIp(ip): ClientIp
         Some(_) => return Err(ApiError::bad_request("expires_days 要在 1 到 3650 之间")),
     };
     let (r, f) = Recheck::password_and_code(&st, &a, ip, "apikey_create", &b.password, b.totp.as_deref()).await?;
-    // 前缀用十六进制（不含 _），便于在列表里认出是哪把
-    let mut p = [0u8; 4];
-    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut p);
-    let prefix = hex::encode(p);
-    let token = format!("flk_{prefix}_{}", random_token(32));
+    let (prefix, token) = new_token();
     let id = new_id();
     let mut tx = st.db.begin().await?;
     r.done(&mut tx, f).await?;

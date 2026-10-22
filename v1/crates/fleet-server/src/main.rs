@@ -1,5 +1,5 @@
 use anyhow::{bail, Context};
-use fleet_server::{auth, config::Config, crypto::SecretBox, db, jobs, state::AppState};
+use fleet_server::{auth, config::Config, crypto::SecretBox, db, jobs, local_admin, state::AppState};
 use std::future::IntoFuture;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -10,6 +10,10 @@ const USAGE: &str = "用法：
   fleet-server migrate  -c <配置>        只执行数据库迁移
   fleet-server user-set -c <配置> <用户名>  新建用户或重设密码（密码从标准输入读一行）
   fleet-server totp-reset -c <配置> <用户名>  停用该用户的两步验证（手机与恢复码都丢了时用）
+  fleet-server local-admin -c <配置> [--rotate] [--fleetctl-config <路径>]
+                                         root 在中控上执行：建或修复中控本机 fleetctl 的全权密钥 central-local，
+                                         写进 root 的 fleetctl 配置（默认 /root/.config/fleetctl/config.toml）；
+                                         仍有效就不换，--rotate 才换（旧的立即失效）
   fleet-server gen-key  <路径>            生成 32 字节密钥文件（0600）";
 
 #[tokio::main]
@@ -70,6 +74,28 @@ async fn main() -> anyhow::Result<()> {
             let pool = db::connect(&cfg.database_url).await?;
             auth::totp_reset(&pool, name).await?;
             println!("已停用用户 {name} 的两步验证（恢复码已作废；登录后可在「设置 → 账户安全」重新开启）");
+        }
+        "local-admin" => {
+            // 全权令牌写进 root 的家目录：只给中控上的 root（fleet 用户跑 fleet-server 时也写不了 /root）
+            #[cfg(unix)]
+            {
+                if unsafe { libc::geteuid() } != 0 {
+                    bail!("local-admin 只能由 root 在中控上执行：它把全权 API 密钥写进 root 的 fleetctl 配置");
+                }
+            }
+            let (mut rotate, mut out) = (false, PathBuf::from(local_admin::DEFAULT_CONFIG));
+            let mut it = rest.into_iter();
+            while let Some(a) = it.next() {
+                match a.as_str() {
+                    "--rotate" => rotate = true,
+                    "--fleetctl-config" => out = it.next().map(PathBuf::from).context("--fleetctl-config 后面要跟路径")?,
+                    _ => bail!("{USAGE}"),
+                }
+            }
+            let cfg = Config::load(&cfg_path)?;
+            let url = local_admin::local_url(&cfg.listen)?;
+            let pool = db::connect(&cfg.database_url).await?;
+            println!("{}", local_admin::ensure(&pool, &url, &out, rotate).await?.summary());
         }
         "serve" => {
             let cfg = Config::load(&cfg_path)?;

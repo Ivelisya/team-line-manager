@@ -1,6 +1,8 @@
 #!/bin/bash
 # 在 fleet-dev 上编译并（重新）部署 fleet-server。幂等：首次运行会建用户、目录、密钥、配置、管理员账号。
 # 管理员初始密码写在 fleet-dev:/root/fleet-admin-password（0600），不打印。
+# 同生产：装 /usr/local/bin/fleetctl，建或修复它的全权密钥 central-local（仍有效不换），写给 agent 的 /root/AGENTS.md、/root/CLAUDE.md
+# 与 fleet-ops 技能（docs/OPS.md §14）。
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 bash "$HERE/sync-server.sh"
@@ -16,6 +18,9 @@ cd /root/src
 build() { local out; out=$(cargo build "$@" 2>&1) || { printf '%s\n' "$out"; return 1; }; printf '%s\n' "$out" | tail -1; }
 build -p fleet-server --release
 build -p fleet-agent --release --target x86_64-unknown-linux-musl
+build -p fleetctl --release --target x86_64-unknown-linux-musl
+# 中控本机的 fleetctl（同生产，docs/OPS.md §14）：配置与全权密钥由最后的 local-admin 写
+install -m 755 target/x86_64-unknown-linux-musl/release/fleetctl /usr/local/bin/fleetctl.new && mv -f /usr/local/bin/fleetctl.new /usr/local/bin/fleetctl
 install -d -m 755 /opt/fleet/dist
 install -m 755 target/x86_64-unknown-linux-musl/release/fleet-agent /opt/fleet/dist/fleet-agent
 echo "fleet-agent $(/opt/fleet/dist/fleet-agent version 2>/dev/null | head -1)"
@@ -98,4 +103,15 @@ if [ ! -f /root/fleet-admin-password ]; then
 fi
 systemctl is-active fleet-server
 curl -s -o /dev/null -w 'api=%{http_code}\n' http://127.0.0.1:8080/api/v1/auth/me
+# 实验室中控也能 ssh 进来让 agent 全量运维（同 deploy/central/install.sh）：全权密钥 central-local（仍有效不换）、给 agent 的说明
+/opt/fleet/fleet-server local-admin -c /etc/fleet/fleet.toml
+t=$(mktemp)
+sed -e "s|__SITE__|实验室中控 fleet-dev|" \
+    -e "s|__NOTE__|这是实验室中控（fleet-dev，192.168.31.60）：机器都是实验室的（含模拟机）；没有 Caddy 与每日备份，下文这两项不适用；别的会话也在用这台机器，重新部署、重启 fleet-server 前先问用户。|" \
+    /root/src/deploy/central/central-agents.md > "$t"
+for f in AGENTS.md CLAUDE.md; do install -m 644 "$t" "/root/$f"; done
+rm -f "$t"
 REMOTE
+# fleet-ops 技能不在 v1 里（sync-server.sh 不带），单独传
+ssh -F "$HOME/.ssh/fleetlab_config" fleet-dev 'install -d -m 755 /root/.claude/skills/fleet-ops && cat > /root/.claude/skills/fleet-ops/SKILL.md && chmod 644 /root/.claude/skills/fleet-ops/SKILL.md' \
+  < "$HERE/../../.claude/skills/fleet-ops/SKILL.md"
