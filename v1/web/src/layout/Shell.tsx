@@ -10,6 +10,7 @@ import { useStream } from '@/lib/stream';
 import { useTheme, type Palette, type ThemePref } from '@/lib/theme';
 import { useTitleAlerts } from '@/lib/title';
 import { closeEvacuate, closeMove, closeRenew, closeRestore, closeRetire, useEvacuateTarget, useMoveTarget, useRenewTarget, useRestoreTarget, useRetireTarget } from '@/lib/nodeActions';
+import { resetTerminal, useTerminalTarget } from '@/lib/terminal';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger, Tip, TipHost } from '@/components/ui/overlays';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -30,6 +31,8 @@ const LifecycleDialogsHost = React.lazy(() => import('@/components/app/Lifecycle
 // 软路由抽屉（?r=）与它的对话框（接入命令、重新部署、删除后的说明）：同样第一次用到时才下载
 const RouterDrawer = React.lazy(() => import('@/features/RouterDrawer').then((m) => ({ default: m.RouterDrawer })));
 const RouterDialogsHost = React.lazy(() => import('@/features/RouterDialogs').then((m) => ({ default: m.RouterDialogsHost })));
+// 网页终端连同 xterm（约 290KB）同理：第一次打开终端时才下载
+const TerminalHost = React.lazy(() => import('@/features/Terminal').then((m) => ({ default: m.TerminalHost })));
 
 /** 一旦为真就一直为真：懒加载的浮层第一次需要时挂载，之后保持挂载（关闭动画、再次打开都不用重来） */
 function useEver(v: boolean) {
@@ -67,6 +70,11 @@ function LifecycleHost() {
   const move = useMoveTarget(), evacuate = useEvacuateTarget(), restore = useRestoreTarget(), retire = useRetireTarget(), renew = useRenewTarget();
   const ever = useEver(!!(move || evacuate || restore || retire || renew));
   return ever ? <React.Suspense fallback={null}><LifecycleDialogsHost /></React.Suspense> : null;
+}
+
+function TermHost() {
+  const ever = useEver(!!useTerminalTarget());
+  return ever ? <React.Suspense fallback={null}><TerminalHost /></React.Suspense> : null;
 }
 
 export function Shell() {
@@ -201,6 +209,7 @@ export function Shell() {
         <ErrorBoundary silent resetKey={loc.search}><RouterHost /></ErrorBoundary>
         <ErrorBoundary silent resetKey={loc.search}><DrawerHost /></ErrorBoundary>
         <ErrorBoundary silent resetKey={loc.pathname} onError={closeLifecycle}><LifecycleHost /></ErrorBoundary>
+        <ErrorBoundary silent resetKey={loc.pathname} onError={resetTerminal}><TermHost /></ErrorBoundary>
         <Hotkeys theme={theme} />
         <TipHost />
         <Toaster />

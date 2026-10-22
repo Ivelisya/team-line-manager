@@ -3,11 +3,12 @@
 // 菜单本身由 NodeMenus 按网格 / 表格挂一份，卡片和行里不放 Radix 根。
 import * as React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowUpCircle, BellOff, CalendarPlus, Copy, Link2, PanelRightOpen, PencilLine, Power, Repeat2, Undo2 } from 'lucide-react';
+import { ArrowUpCircle, BellOff, CalendarPlus, Copy, Link2, PanelRightOpen, PencilLine, Power, Repeat2, SquareTerminal, Undo2 } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
 import { fetchShare, useUpgradeAgent } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import { openMove, openRenew, openRestore, openRetire } from '@/lib/nodeActions';
+import { openTerminal } from '@/lib/terminal';
 import { copyShareLink, copyText } from '@/lib/clipboard';
 import { useHeld } from '@/lib/useHeld';
 import { toast } from '@/components/ui/toast';
@@ -43,6 +44,9 @@ function useNodeMenu(m: MachineView): MenuEntry[] {
   }
   items.push(shareItem, { key: 'sep1', sep: true });
   items.push(
+    // 家宽代理没有主机可登录；同机 IP 节点没有自己的 SSH，中控连到它的宿主机
+    ...(m.kind !== 'proxy' && m.lifecycle === 'active'
+      ? [{ key: 'term', label: m.host_machine ? '打开终端（宿主机）' : '打开终端', icon: <SquareTerminal />, onSelect: () => openTerminal({ kind: 'machine', id: m.id, name: m.name }) } as MenuEntry] : []),
     // 同机 IP 节点没有自己的 agent（用宿主机的），不给升级
     ...(m.host_machine ? [] : [{ key: 'upgrade', label: '升级 agent', icon: <ArrowUpCircle />, disabled: !m.agent || m.lifecycle !== 'active' || !!m.active_job || upgrade.isPending,
       // 菜单选中后内容会卸载，mutate 的回调届时不再触发；用 Promise 才能保证提示一定出现

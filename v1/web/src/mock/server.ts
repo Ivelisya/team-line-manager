@@ -13,6 +13,7 @@ import { calibration } from './fixtures';
 import { installAccessMock } from './access';
 import { installPolicyMock } from './policy';
 import { installRoutersMock } from './routers';
+import { installTerminalMock } from './terminal';
 
 const db: Db = buildDb();
 const DAY = 86400_000;
@@ -663,6 +664,7 @@ R('GET', '/audit', ({ query }) => {
 installAccessMock(R, () => db.machines);
 installPolicyMock(R, { teams: () => db.teams, machines: () => db.machines, emit, user: () => db.user, bad });
 installRoutersMock(R, { teams: () => db.teams, machines: () => db.machines, incidents: () => db.incidents, emit, bad });
+installTerminalMock(R, { machines: () => db.machines, bad });
 // ---------- 升级 agent ----------
 const UPSTEPS: [string, string][] = [['push', '推送 agent'], ['restart', '重启 agent'], ['verify', '确认上报']];
 /** 「全部升级」的编排（同中控作业参数 after）：排队中的作业 → 它要等的作业；halted：因为要等的没成功而取消的 */
