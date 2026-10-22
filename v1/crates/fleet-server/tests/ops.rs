@@ -375,11 +375,14 @@ async fn audit_filter_by_cat_and_search() {
     sqlx::query("delete from audit_log").execute(&t.st.db).await.unwrap();
     for (actor, action, detail) in [
         ("admin", "exec", json!({"name": "线路机2", "command": "echo hunter2_x", "exit_code": 0})),
-        ("admin", "auth.login", json!({"ip": "203.0.113.7"})),
+        // ua 不在摘要里：搜它不该命中这一条
+        ("admin", "auth.login", json!({"ip": "203.0.113.7", "ua": "团队1 的浏览器"})),
         ("apikey:ci-bot", "agent.upgrade", json!({"count": 3})),
     ] {
         sqlx::query("insert into audit_log (actor, action, detail) values ($1, $2, $3)").bind(actor).bind(action).bind(detail).execute(&t.st.db).await.unwrap();
     }
+    // 直接插的（同 0034 之前的旧记录）没有搜索文本：回填
+    assert_eq!(fleet_server::db::backfill_audit_search(&t.st.db).await.unwrap(), 3);
     for i in 0..3 {
         t.ok("POST", "/api/v1/teams", Some(json!({"name": format!("团队{i}")}))).await;
     }
@@ -394,9 +397,10 @@ async fn audit_filter_by_cat_and_search() {
     assert_eq!(get("cat=machine").await, ["agent.upgrade"]);
     assert_eq!(get("cat=config").await, ["team.create"; 3]);
     assert_eq!(get("cat=all&q=").await.len(), 6, "all 与空搜索等于没筛");
-    // 标题、摘要（detail 里的值）、操作人（界面写法）
+    // 标题、摘要（只搜摘要里看得到的，detail 里不展示的值不算）、操作人（界面写法）
     assert_eq!(get("q=新建团队").await.len(), 3);
     assert_eq!(get("q=团队1").await, ["team.create"]);
+    assert_eq!(get("q=浏览器").await, Vec::<String>::new());
     assert_eq!(get("q=203.0.113").await, ["auth.login"]);
     assert_eq!(get("q=API%20密钥").await, ["agent.upgrade"]);
     assert_eq!(get("cat=config&q=hunter2").await, Vec::<String>::new());

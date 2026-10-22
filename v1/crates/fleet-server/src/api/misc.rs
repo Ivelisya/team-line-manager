@@ -403,21 +403,38 @@ fn audit_cat(args: &mut Args, cat: &str) -> ApiResult<String> {
     })
 }
 
-/// 搜索条件：操作人（按界面上的写法：中控命令行、「名称（API 密钥）」）、标题（标题含关键字的动作）、
-/// 摘要（摘要由 detail 里的值拼成：搜 detail 里各层的字符串与数字值，不搜键名）。
-/// 没有 exec 权限时命令是隐藏的，不搜命令（否则能靠搜索试出命令内容）
+/// 搜索条件：只搜界面上看得到的——操作人（按界面上的写法：中控命令行、「名称（API 密钥）」）、标题（标题含关键字的动作）、
+/// 写审计时存下的标题与摘要（search 列，见 `audit_search_text`），不翻 detail 里界面不展示的值。
+/// search 里的命令是隐藏的（没有 exec 权限的人看到的那份，免得靠搜索试出命令内容）；有 exec 权限的另搜命令原文
 fn audit_search(args: &mut Args, q: &str, can_exec: bool) -> Option<String> {
     let like = crate::access::like_pattern(q)?;
     let lower = q.trim().to_lowercase();
     let titles: Vec<&str> = AUDIT_ACTIONS.iter().copied().filter(|a| audit_text(a, &json!({})).0.to_lowercase().contains(&lower)).collect();
     let (l, t) = (args.add(like), args.add(titles));
-    let detail = if can_exec { "detail" } else { "(detail - 'command')" };
+    let command = if can_exec { format!(" or case when jsonb_typeof(detail->'command') = 'string' then detail->>'command' end ilike {l}") } else { String::new() };
     Some(format!(
         " and (case when actor = 'cli' then '中控命令行' when actor like 'apikey:%' then substr(actor, 8) || '（API 密钥）' else actor end ilike {l}
-           or action = any({t})
-           or exists (select 1 from jsonb_path_query({detail}, 'strict $.**') v where jsonb_typeof(v) in ('string', 'number') and v #>> '{{}}' ilike {l}))"
+           or action = any({t}) or search ilike {l}{command})"
     ))
 }
+
+/// 没有 exec 权限的人看到的命令：只给字数（第一行也可能带口令），摘要随之隐藏
+fn hide_command(d: &mut Value) {
+    if let Some(c) = d.get("command").and_then(Value::as_str) {
+        d["command"] = json!(format!("命令已隐藏（{} 字）", c.chars().count()));
+    }
+}
+
+/// 存进 search 列的搜索文本：标题与摘要（命令隐藏后的，同没有 exec 权限的人看到的）
+pub fn audit_search_text(action: &str, d: &Value) -> String {
+    let mut d = d.clone();
+    hide_command(&mut d);
+    let (title, summary) = audit_text(action, &d);
+    format!("{title}\n{summary}")
+}
+
+/// 操作记录查询的语句超时：关键词搜索沿主键倒序边扫边筛，命中少的词可能扫很多行
+const AUDIT_TIMEOUT_S: u32 = 5;
 
 #[derive(Serialize, sqlx::FromRow)]
 struct AuditOut {
@@ -454,14 +471,22 @@ pub async fn audit(a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<A
         "select id, ts, actor, action, target_kind, target_id, detail from audit_log where {w} order by id desc limit {}",
         args.add(q.limit.unwrap_or(100).clamp(1, 1000))
     );
-    let v: Vec<AuditOut> = sqlx::query_as_with(&sql, args.0).fetch_all(&st.db).await?;
+    let mut tx = st.db.begin().await?;
+    sqlx::query(&format!("set local statement_timeout = '{AUDIT_TIMEOUT_S}s'")).execute(&mut *tx).await?;
+    let v: Vec<AuditOut> = sqlx::query_as_with(&sql, args.0).fetch_all(&mut *tx).await.map_err(|e| match &e {
+        sqlx::Error::Database(d) if d.code().as_deref() == Some("57014") => ApiError::new(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            format!("搜索超过 {AUDIT_TIMEOUT_S} 秒还没查完，已中止：换个更具体的关键词，或先按分类、对象筛选"),
+        ),
+        _ => e.into(),
+    })?;
+    tx.commit().await?;
     let out: Vec<Value> = v
         .into_iter()
         .map(|mut a| {
             if !can_exec {
-                if let Some(c) = a.detail.get("command").and_then(Value::as_str) {
-                    a.detail["command"] = json!(format!("命令已隐藏（{} 字）", c.chars().count()));
-                }
+                hide_command(&mut a.detail);
             }
             let (title, summary) = audit_text(&a.action, &a.detail);
             let mut j = serde_json::to_value(&a).unwrap_or_default();

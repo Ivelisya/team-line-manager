@@ -454,15 +454,60 @@ pub async fn ip_node_ports(conn: &mut sqlx::PgConnection, host: Uuid, except: Op
 pub fn free_ss_port(taken: &HashSet<u16>) -> Option<u16> { (IP_NODE_PORT_MIN..=u16::MAX).find(|p| !taken.contains(p)) }
 
 pub async fn audit(tx: &mut Tx<'_>, actor: &str, action: &str, target_kind: &str, target_id: Option<Uuid>, detail: serde_json::Value) -> sqlx::Result<()> {
-    sqlx::query("insert into audit_log (actor, action, target_kind, target_id, detail) values ($1, $2, $3, $4, $5)")
+    audit_insert(&mut **tx, actor, action, target_kind, target_id, detail).await.map(|_| ())
+}
+
+/// 写一条审计，返回 id。search 列一并写上（界面上看得到的标题与摘要，见 api::misc::audit_search_text）：操作记录的关键词搜索只搜它
+pub async fn audit_insert<'e, E: sqlx::PgExecutor<'e>>(
+    ex: E,
+    actor: &str,
+    action: &str,
+    target_kind: &str,
+    target_id: Option<Uuid>,
+    detail: serde_json::Value,
+) -> sqlx::Result<i64> {
+    let search = crate::api::misc::audit_search_text(action, &detail);
+    sqlx::query_scalar("insert into audit_log (actor, action, target_kind, target_id, detail, search) values ($1, $2, $3, $4, $5, $6) returning id")
         .bind(actor)
         .bind(action)
         .bind(target_kind)
         .bind(target_id)
         .bind(detail)
-        .execute(&mut **tx)
-        .await?;
-    Ok(())
+        .bind(search)
+        .fetch_one(ex)
+        .await
+}
+
+/// 给先记下「已开始」的审计补写结果（执行命令、一键部署软路由）：去掉 started、并进 `patch`，搜索文本按新内容重算
+pub async fn audit_finish(db: &PgPool, id: i64, patch: serde_json::Value) -> sqlx::Result<()> {
+    let mut tx = db.begin().await?;
+    let (action, detail): (String, serde_json::Value) =
+        sqlx::query_as("update audit_log set detail = (detail - 'started'::text) || $2 where id = $1 returning action, detail")
+            .bind(id)
+            .bind(patch)
+            .fetch_one(&mut *tx)
+            .await?;
+    sqlx::query("update audit_log set search = $2 where id = $1").bind(id).bind(crate::api::misc::audit_search_text(&action, &detail)).execute(&mut *tx).await?;
+    tx.commit().await
+}
+
+/// 回填 search 列（0034 之前的记录，启动时跑）：每批 2000 条，直到没有空的
+pub async fn backfill_audit_search(db: &PgPool) -> sqlx::Result<u64> {
+    let mut n = 0;
+    loop {
+        let rows: Vec<(i64, String, serde_json::Value)> =
+            sqlx::query_as("select id, action, detail from audit_log where search is null order by id limit 2000").fetch_all(db).await?;
+        if rows.is_empty() {
+            return Ok(n);
+        }
+        let (ids, texts): (Vec<i64>, Vec<String>) = rows.iter().map(|(id, a, d)| (*id, crate::api::misc::audit_search_text(a, d))).unzip();
+        sqlx::query("update audit_log a set search = v.s from unnest($1::bigint[], $2::text[]) v(id, s) where a.id = v.id")
+            .bind(&ids)
+            .bind(&texts)
+            .execute(db)
+            .await?;
+        n += ids.len() as u64;
+    }
 }
 
 /// 线路机期望状态 +1，返回新代数。调用方在提交后调用 `AppState::relay_bumped`。

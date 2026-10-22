@@ -69,13 +69,14 @@ pub async fn start(st: &AppState, id: Uuid, l: Login, actor: &str) -> ApiResult<
     .bind(&l.user)
     .execute(&mut *tx)
     .await?;
-    let audit: i64 = sqlx::query_scalar(
-        "insert into audit_log (actor, action, target_kind, target_id, detail) values ($1, 'router.deploy', 'router', $2, $3) returning id",
+    let audit = crate::db::audit_insert(
+        &mut *tx,
+        actor,
+        "router.deploy",
+        "router",
+        Some(id),
+        json!({"name": name, "host": l.host, "port": l.port, "user": l.user, "password": l.password.is_some(), "started": true}),
     )
-    .bind(actor)
-    .bind(id)
-    .bind(json!({"name": name, "host": l.host, "port": l.port, "user": l.user, "password": l.password.is_some(), "started": true}))
-    .fetch_one(&mut *tx)
     .await?;
     tx.commit().await?;
     st.emit(Event::Routers);
@@ -109,8 +110,7 @@ async fn finish(st: &AppState, id: Uuid, audit: i64, err: Option<&str>) -> sqlx:
         None => json!({"result": "ok"}),
         Some(e) => json!({"result": "failed", "error": e}),
     };
-    sqlx::query("update audit_log set detail = (detail - 'started'::text) || $2 where id = $1").bind(audit).bind(result).execute(&st.db).await?;
-    Ok(())
+    crate::db::audit_finish(&st.db, audit, result).await
 }
 
 /// 中控重启时还在「部署中」的：任务已经没了，标为失败（每个进程启动时一次）
