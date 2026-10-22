@@ -52,7 +52,7 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
 ## 共用的枚举与常量
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/meta` | 只在中控定义一次的枚举中文名、阈值、默认值与组织时区（服务端 `src/meta.rs`；一个会话里不变，网页启动时取一次，fleetctl 每条命令要打印中文名或时间时取一次）。`{org_timezone（fleet.toml 的 org_timezone，默认 Asia/Shanghai）, org_timezone_label（「北京时间」或 IANA 名，通知、审计、fleetctl 时间的括注）, org_utc_offset_s（组织时区现在的 UTC 偏移秒数，每小时刷新）, timezones:[…]（时区下拉的常用项；不在里面的照样能填，中控按 PG 时区库校验）, currencies:[…]（币种下拉的常用项；校验只要求 3 个字母）, cycles:[{key,label,months}], kinds, ip_node_label, lifecycles, healths, job_kinds, job_states, step_states, entry_states, traffic_rules, traffic_resets, due_states, policy_modes, rules（告警规则）: {key: 中文名}, severities:{key:{label,tone}}, thresholds:{traffic_quota_warn_pct, traffic_quota_over_pct, usage:{cpu,mem,disk,load:{warn,bad}}}（bad 与持续高负载告警同值；负载不告警）, defaults:{currency,cycle,remind_days,traffic_rule,traffic_reset,ss_method,ss_port}}`。叫法：`vps` =「VPS 节点」、`proxy` =「家宽代理」、`relay` =「线路机」，加在宿主机上的 vps 是「同机 IP 节点」；健康只用 正常 / 降级 / 故障 / 未知 / 维护。读权限 |
+| GET | `/meta` | 只在中控定义一次的枚举中文名、阈值、默认值与组织时区（服务端 `src/meta.rs`；一个会话里不变，网页启动时取一次，fleetctl 每条命令要打印中文名或时间时取一次）。`{org_timezone（fleet.toml 的 org_timezone，默认 Asia/Shanghai）, org_timezone_label（「北京时间」或 IANA 名，通知、审计、fleetctl 时间的括注）, org_utc_offset_s（组织时区现在的 UTC 偏移秒数，每小时刷新）, timezones:[…]（时区下拉的常用项；不在里面的照样能填，中控按 PG 时区库校验）, currencies:[…]（币种下拉的常用项；校验只要求 3 个字母）, cycles:[{key,label,months}], kinds, ip_node_label, lifecycles, healths, job_kinds, job_states, step_states, entry_states, traffic_rules, traffic_resets, due_states, policy_modes, rules（告警规则）: {key: 中文名}, severities:{key:{label,tone}}, thresholds:{traffic_quota_warn_pct, traffic_quota_over_pct, usage:{cpu,mem,disk,load:{warn,bad}}}（bad 与持续高负载告警同值；负载不告警）, defaults:{currency,cycle,remind_days,traffic_rule,traffic_reset,ss_method,ss_port}, terminal:{per_user, global, idle_s, max_age_s, max_message, max_dim, ticket_ttl_s, verify_ttl_s}（网页终端的上限，见「网页终端」）}`。叫法：`vps` =「VPS 节点」、`proxy` =「家宽代理」、`relay` =「线路机」，加在宿主机上的 vps 是「同机 IP 节点」；健康只用 正常 / 降级 / 故障 / 未知 / 维护。读权限 |
 
 ## 目录
 | 方法 | 路径 | 说明 |
@@ -217,7 +217,7 @@ ProvisionItem = {
 - **握手**：要会话 Cookie（401）、`Origin` 等于 `public_url` 的协议 + 主机 + 端口（403），API 密钥 403。失败是普通 HTTP 错误（浏览器的 WebSocket 拿不到状态码，只看到连接失败）。
 - **第一条消息**（10 秒内，文本帧）送票据：`{"type":"auth","ticket":"…","cols":120,"rows":40}`，`cols` / `rows` 是初始窗口大小（可省，默认 80 × 24）。票据不放在地址里：反代、中控的请求日志都记不到它。票据不对、过期、用过、不是这个会话开的、机器在开票后不能开了、名额满了：服务端发 `exit` 说明原因后关闭。
 - **之后**：二进制帧 = 终端字节（双向：浏览器发键盘输入，原样写进终端；服务端发终端输出，原样交给 xterm.js）；文本帧 = JSON 控制消息：浏览器发 `{"type":"resize","cols":120,"rows":40}`（整数，夹到 1–500；不认识的控制消息不理），服务端结束前发 `{"type":"exit","reason":"…"}`（中文原因，直接显示）再关闭。
-- 浏览器发来的一条消息最多 **64 KiB**（粘贴大段文字请切开发），超了断开（关闭码 1009）。
+- 浏览器发来的一条消息最多 **64 KiB**（粘贴大段文字请切开发），超了断开（关闭码 1009）。这一节的各个上限都在 `GET /meta` 的 `terminal` 里，前端取那里的数，不要自己写死。
 - **关闭码**：一般 1000；登录会话失效 4401（同实时流，前端回登录页）；中控内部错误 1011。
 - **什么时候断**：远端 shell 退出（`exit`、Ctrl-D）；ssh 连不上、被拒、主机指纹不对（退出码 255，ssh 的报错已经显示在终端里）；浏览器关掉或断线（心跳每 15 秒）；**15 分钟没有输入**（按键、粘贴；改窗口大小、光有输出都不算）；**连续开满 2 小时**；登录会话失效（退出登录、在「账户安全」撤销这个会话、退出其它设备、改密码、会话过期、账户被停用：收到撤销立刻断，另外每 60 秒复核一次兜底）；浏览器 15 秒收不走输出（页面卡死）；中控重启（systemd 停服务时连同 ssh 一起结束，原因同样写退出码 255）。
 - **上限**：每人同时 3 个、全中控同时 8 个（开票时先查，连上时为准）。

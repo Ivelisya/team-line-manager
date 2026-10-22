@@ -311,6 +311,7 @@ pub fn to_json() -> Value {
             "currency": DEFAULT_CURRENCY, "cycle": DEFAULT_CYCLE, "remind_days": DEFAULT_REMIND_DAYS,
             "traffic_rule": DEFAULT_TRAFFIC_RULE, "traffic_reset": DEFAULT_TRAFFIC_RESET, "ss_method": SS_METHOD, "ss_port": SS_PORT,
         },
+        "terminal": crate::terminal::meta(),
     })
 }
 

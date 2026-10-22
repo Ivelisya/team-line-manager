@@ -63,6 +63,12 @@ const KILL_GRACE: Duration = Duration::from_secs(3);
 /// 窗口行、列数夹在 1..=DIM_MAX
 const DIM_MAX: i64 = 500;
 
+/// 网页要知道的上限（`GET /meta` 的 terminal）：粘贴按 max_message 切开发，提示文案里的数字也取这里
+pub fn meta() -> Value {
+    json!({"per_user": PER_USER, "global": GLOBAL, "idle_s": IDLE.as_secs(), "max_age_s": MAX_AGE.as_secs(),
+           "max_message": MAX_MESSAGE, "max_dim": DIM_MAX, "ticket_ttl_s": TICKET_TTL.as_secs(), "verify_ttl_s": VERIFY_TTL.as_secs()})
+}
+
 /// 终端连的是什么
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {

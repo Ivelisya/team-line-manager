@@ -206,6 +206,9 @@ async fn audits(t: &T, action: &str) -> Vec<Value> {
 #[tokio::test]
 async fn ticket_needs_session_and_reverification() {
     let t = common_ops::setup().await;
+    // 网页取上限的地方
+    let lim = t.get("/api/v1/meta").await["terminal"].clone();
+    assert_eq!((lim["per_user"].as_u64(), lim["global"].as_u64(), lim["max_message"].as_u64(), lim["max_dim"].as_u64()), (Some(3), Some(8), Some(65536), Some(500)), "{lim}");
     let team = seed_team(&t).await;
     let m = seed_machine(&t, team, 1, "vps", "active", ("127.0.0.1", 22), None).await;
     let body = |extra: Value| {
