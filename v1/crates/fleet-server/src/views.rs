@@ -71,6 +71,8 @@ pub struct Subscription {
     pub currency: String,
     pub cycle: String,
     pub due_date: Date,
+    /// 账单日（每月几号，1–31）：直接设到期日时记下，按周期续费不变；续费的新到期日、按账单日重置的流量重置日都落在这一天（小月按月末）
+    pub billing_day: i32,
     pub due_days: i64,
     /// ok / soon / overdue（meta::due_state，按生效的提前提醒天数）：续费告警、总览「即将到期」、网页与 fleetctl 都按它
     pub due_state: &'static str,
@@ -85,7 +87,7 @@ pub struct Subscription {
     pub overrides: Vec<String>,
     /// 折成每月的费用（分，四舍五入，meta::monthly_cents）：总览的月费合计、网页的月费列
     pub monthly_cents: i64,
-    /// 到期日再推一个周期（小月按月末）：登记续费的默认新到期日
+    /// 到期日再推一个周期（落在账单日，小月按月末）：登记续费的默认新到期日
     pub next_due: Date,
     /// 当前这一期的天数（到期日往前推一个周期到到期日）：网页算剩余价值
     pub period_days: i64,
@@ -347,6 +349,7 @@ struct MRow {
     s_base: Option<i64>,
     s_base_at: Option<OffsetDateTime>,
     s_overrides: Option<Vec<String>>,
+    s_bday: Option<i32>,
     t_price: Option<i32>,
     t_currency: String,
     t_cycle: String,
@@ -642,7 +645,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 m.lifecycle_reason, m.note, m.revision, m.created_at, m.activated_at, m.retired_at,
                 s.price_cents s_price, s.currency s_currency, s.cycle::text s_cycle, s.due_date s_due, s.billing_tz s_tz,
                 local_date(s.billing_tz) s_today, s.auto_renew s_auto, s.remind_days s_remind, s.traffic_gb s_traffic, s.traffic_reset_day s_reset,
-                s.traffic_used_base s_base, s.traffic_used_base_at s_base_at, s.overrides s_overrides, p.traffic_rule p_rule,
+                s.traffic_used_base s_base, s.traffic_used_base_at s_base_at, s.overrides s_overrides, sb.billing_day::int s_bday, p.traffic_rule p_rule,
                 tp.price_cents t_price, tp.currency t_currency, tp.cycle::text t_cycle, tp.billing_tz t_tz, tp.traffic_gb t_traffic, tp.traffic_reset t_reset, tp.remind_days t_remind, local_date(tp.billing_tz) t_today,
                 a.agent_version a_version, a.last_report_at a_last, (a.info->'xray'->>'running')::bool a_xray, (a.info->>'cpu_cores')::int a_cores,
                 a.info->'agent_health' a_health, (a.info->>'clock_skew_ms')::bigint a_skew, r.public_host r_host, r.generation r_gen, r.applied_generation r_applied, r.applied_at r_applied_at, r.generation_at r_gen_at,
@@ -654,6 +657,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
          left join plan pl on pl.id = m.plan_id
          left join provider p on p.id = coalesce(pl.provider_id, m.provider_id)
          left join subscription_eff s on s.machine_id = m.id
+         left join subscription sb on sb.machine_id = m.id
          join sub_template tp on tp.machine_id = m.id
          left join agent_state a on a.machine_id = coalesce(m.host_id, m.id)
          left join relay r on r.machine_id = m.id
@@ -944,14 +948,16 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 let cycle = r.s_cycle.clone().unwrap_or_default();
                 let months = i64::from(meta::cycle_months(&cycle).unwrap_or(1));
                 let (auto_renew, remind_days) = (r.s_auto.unwrap_or(false), r.s_remind.unwrap_or(r.t_remind));
+                let bday = r.s_bday.map_or(due.day(), |d| d.clamp(1, 31) as u8);
                 Subscription {
                     price_cents: price,
                     currency: r.s_currency.clone().unwrap_or_default(),
                     monthly_cents: meta::monthly_cents(price, &cycle),
-                    next_due: meta::add_months(due, months).unwrap_or(due),
-                    period_days: meta::add_months(due, -months).map_or(1, |p| (due - p).whole_days().max(1)),
+                    next_due: meta::add_months_on(due, months, bday).unwrap_or(due),
+                    period_days: meta::add_months_on(due, -months, bday).map_or(1, |p| (due - p).whole_days().max(1)),
                     cycle,
                     due_date: due,
+                    billing_day: i32::from(bday),
                     due_days,
                     due_state: meta::due_state(due_days, remind_days, auto_renew),
                     billing_tz: r.s_tz.clone().unwrap_or_default(),

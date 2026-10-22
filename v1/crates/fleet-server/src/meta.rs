@@ -116,11 +116,24 @@ pub fn check_cycle(key: &str) -> Result<(), String> {
 
 /// 加 n 个月（可为负），目标月没有那一天时落到月末（1-31 加一个月是 2-28，闰年 2-29）。
 /// 从原日期一次加够，不逐月累加：1-31 加两个月是 3-31。超出日期范围为 None
-pub fn add_months(d: Date, n: i64) -> Option<Date> {
+pub fn add_months(d: Date, n: i64) -> Option<Date> { add_months_on(d, n, d.day()) }
+
+/// 按账单日（订阅的 billing_day，1–31）加 n 个月：落在目标月的那一天，没有那一天时落到月末。
+/// 从已落到月末的到期日接着推也不漂：账单日 31 号，2-28 再推一个月是 3-31（add_months 是 3-28）
+pub fn add_months_on(d: Date, n: i64, day: u8) -> Option<Date> {
     let m = i64::from(d.year()) * 12 + i64::from(u8::from(d.month())) - 1 + n;
     let month = Month::try_from((m.rem_euclid(12) + 1) as u8).ok()?;
     let year = i32::try_from(m.div_euclid(12)).ok()?;
-    Date::from_calendar_date(year, month, d.day().min(month.length(year))).ok()
+    Date::from_calendar_date(year, month, day.clamp(1, 31).min(month.length(year))).ok()
+}
+
+/// 直接设定到期日（改订阅、上架、续费给新到期日）后的账单日：落在现有账单日上的（小月按月末算，如账单日 31 号的 2-28、4-30）
+/// 沿用现有的——网页续费默认填的就是 next_due、改订阅时到期日原样带回来；否则改成新到期日几号
+pub fn billing_day(due: Date, cur: Option<u8>) -> u8 {
+    match cur {
+        Some(c) if due.day() == c.clamp(1, 31).min(due.month().length(due.year())) => c,
+        _ => due.day(),
+    }
 }
 
 /// 月费（分）：按周期折成每月，四舍五入。总览的费用合计、网页的月费列都用它
@@ -341,6 +354,16 @@ mod tests {
         assert_eq!(add_months(date!(2026 - 11 - 30), 3), Some(date!(2027 - 02 - 28)));
         assert_eq!(add_months(date!(2026 - 03 - 31), -1), Some(date!(2026 - 02 - 28)));
         assert_eq!(add_months(date!(2026 - 10 - 25), i64::MAX / 2), None);
+        // 按账单日逐期推不漂：31 号 1-31 → 2-28 → 3-31；30 号 2-28 → 3-30 → 4-30
+        assert_eq!(add_months_on(date!(2026 - 01 - 31), 1, 31), Some(date!(2026 - 02 - 28)));
+        assert_eq!(add_months_on(date!(2026 - 02 - 28), 1, 31), Some(date!(2026 - 03 - 31)));
+        assert_eq!(add_months(date!(2026 - 02 - 28), 1), Some(date!(2026 - 03 - 28)), "不按账单日的会漂");
+        assert_eq!(add_months_on(date!(2026 - 02 - 28), 1, 30), Some(date!(2026 - 03 - 30)));
+        assert_eq!(add_months_on(date!(2026 - 03 - 30), 1, 30), Some(date!(2026 - 04 - 30)));
+        assert_eq!(add_months_on(date!(2026 - 03 - 31), -1, 31), Some(date!(2026 - 02 - 28)));
+        // 直接设定的到期日：落在账单日上（含小月的月末）沿用，否则改成它几号；没有账单日的取它几号
+        assert_eq!((billing_day(date!(2026 - 02 - 28), Some(31)), billing_day(date!(2026 - 04 - 30), Some(31)), billing_day(date!(2026 - 03 - 31), Some(31))), (31, 31, 31));
+        assert_eq!((billing_day(date!(2026 - 03 - 30), Some(31)), billing_day(date!(2026 - 02 - 27), Some(31)), billing_day(date!(2026 - 04 - 15), None)), (30, 27, 15));
         // 四舍五入：100 / 3 = 33.33 → 33，200 / 3 = 66.67 → 67
         assert_eq!((monthly_cents(100, "quarterly"), monthly_cents(200, "quarterly"), monthly_cents(1200, "yearly"), monthly_cents(999, "monthly")), (33, 67, 100, 999));
         assert!(check_cycle("weekly").is_err() && check_cycle("semiannual").is_ok());

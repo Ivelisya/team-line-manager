@@ -24,21 +24,26 @@ const OVR: [&str; 7] = ["price_cents", "currency", "cycle", "billing_tz", "remin
 /// 这一项单独设置了（订阅的 overrides 里有它）
 fn overridden(s: &Value, k: &str) -> bool { s["overrides"].as_array().is_some_and(|a| a.iter().any(|x| x == k)) }
 
-/// 跟随时的值（同中控 sub_template / subscription_eff）：重置日按供应商的方式，账单日 = 到期日几号、自然月 = 1 号
-fn inherited(tpl: &Value, k: &str, due: &str) -> Value {
+/// 跟随时的值（同中控 sub_template / subscription_eff）：重置日按供应商的方式，账单日 = 订阅的账单日（billing_day）、自然月 = 1 号。
+/// 账单日（同中控 meta::billing_day）：到期日落在现有账单日上的（含原样带回、31 号账单日的 2-28）沿用，否则（或新建）是新到期日几号
+fn inherited(tpl: &Value, k: &str, due: &str, cur: &Value) -> Value {
+    let bday = || match (date(due), cur["billing_day"].as_u64()) {
+        (Some(d), Some(c)) if u64::from(d.day()) == c.min(u64::from(d.month().length(d.year()))) => c,
+        (d, _) => d.map_or(1, |d| u64::from(d.day())),
+    };
     match k {
-        "traffic_reset_day" => json!(if tpl["traffic_reset"] == "billing" { date(due).map_or(1, |d| d.day()) } else { 1 }),
+        "traffic_reset_day" => json!(if tpl["traffic_reset"] == "billing" { bday() } else { 1 }),
         _ => tpl[k].clone(),
     }
 }
 
 /// 要提交的订阅的生效值与 overrides：null 或和模板相同的按跟随（同中控 subscription_normalize；流量上限 0 与套餐的 null 都是不限）。
-/// 改订阅的确认语按它逐项对比
-fn effective(body: &Value, tpl: &Value) -> Value {
+/// 改订阅的确认语按它逐项对比；`cur` 是现有订阅（新建为 null）
+fn effective(body: &Value, tpl: &Value, cur: &Value) -> Value {
     let mut e = body.clone();
     let mut ov = vec![];
     for k in OVR {
-        let inh = inherited(tpl, k, &st(body, "/due_date"));
+        let inh = inherited(tpl, k, &st(body, "/due_date"), cur);
         let same = body[k] == inh || (k == "traffic_gb" && body[k] == 0 && inh.is_null());
         if body[k].is_null() || same {
             e[k] = inh;
@@ -363,7 +368,7 @@ fn merge_sub(cur: &Value, patch: Map<String, Value>) -> anyhow::Result<Value> {
 /// 新值按 `effective` 算生效值（和模板相同的按跟随，同中控）
 fn sub_changes(m: &Value, new: &Value) -> Vec<String> {
     let cur = &m["subscription"];
-    let mut eff = effective(new, &m["sub_template"]);
+    let mut eff = effective(new, &m["sub_template"], cur);
     if eff["auto_renew"].is_null() {
         eff["auto_renew"] = json!(false);
     }

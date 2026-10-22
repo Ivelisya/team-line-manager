@@ -13,6 +13,8 @@ export interface Subscription {
   price_cents: number; currency: string; cycle: Cycle; due_date: string; due_days: number;
   billing_tz: string; auto_renew: boolean; remind_days: number; traffic_gb: number | null; traffic_reset_day: number | null;
   overrides?: SubField[];
+  /** 账单日（每月几号）：直接设到期日时记下，按周期续费不变（31 号的在 2-28 时仍是 31）；按账单日重置的流量重置日跟它。旧接口没有 */
+  billing_day?: number;
   /** 服务端算好的：due_state 到期状态（同续费告警）、monthly_cents 折成每月的价格（分）、next_due 续一个周期后的到期日（续费的默认值）、
    *  period_days 当前这期的天数（到期日往前推一个周期 → 到期日） */
   due_state: DueState; monthly_cents: number; next_due: string; period_days: number;
