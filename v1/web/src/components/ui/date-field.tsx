@@ -69,6 +69,8 @@ export function DateField({ value, onChange, min, id, placeholder = '选择日�
               return (
                 <button key={d} type="button" role="gridcell" data-day={d} tabIndex={d === focus ? 0 : -1} disabled={dis}
                   className={cn('cal-day', off && 'is-off', d === t && 'is-today')} aria-selected={d === value} aria-label={d}
+                  // 灰色的上 / 下月日期：按下时不先取焦点——取焦点会立刻翻月、格子挪了位置，松开时点不到它，只翻月没选中
+                  onMouseDown={off ? (e) => e.preventDefault() : undefined}
                   onClick={() => pick(d)} onFocus={() => { if (d !== focus) setFocus(d); }}>
                   {Number(d.slice(8))}
                 </button>

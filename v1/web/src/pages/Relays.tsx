@@ -40,7 +40,8 @@ const EntryRow = React.memo(function EntryRow({ e, open }: { e: EntryView; open:
       <td>{e.direct ? <span className="ellipsis block" data-tip="从线路机自己的 IP 出去，不经节点">{e.node.name}</span>
         : <NodeHover id={e.node.id} noFocus><span className="ellipsis block">{e.node.name}</span></NodeHover>}</td>
       <td>{fail ? <Pill tone="bad" tip={fail.detail ?? undefined}>不通</Pill> : entryState(e)}</td>
-      <td className="r">{tcpCell(e)}</td><td className="r">{probeCell(e.egress)}</td>
+      {/* 停用的入口不再探测：留着的是停用前的旧读数，不显示 */}
+      {e.lifecycle === 'disabled' ? <><td className="r t-muted">—</td><td className="r t-muted">—</td></> : <><td className="r">{tcpCell(e)}</td><td className="r">{probeCell(e.egress)}</td></>}
       <td className="r"><Num f={F.bytes(e.traffic.month_up + e.traffic.month_down)} /></td>
       <td className="c"><EntryMenuButton entry={e} /></td>
     </tr>

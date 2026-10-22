@@ -156,11 +156,12 @@ function JobDetail({ id }: { id: string }) {
         </div>
         {/* 取消（含「全部升级」里前一台失败后跟着取消的）不是出错：原因用中性色 */}
         {j.error && <div style={{ marginTop: 12 }}><Note tone={j.state === 'cancelled' ? undefined : 'bad'}>{jobText(j.error)}</Note></div>}
-        {j.kind === 'move_entry' && (j.result?.new_entry_id || j.state === 'succeeded') && (
+        {/* 只有换成功了链接才变：失败、取消的回滚到旧入口，旧链接照常可用 */}
+        {j.kind === 'move_entry' && j.state === 'succeeded' && (
           <div style={{ marginTop: 12 }}>
-            <Note tone={j.state === 'succeeded' ? 'warn' : 'info'}>
+            <Note tone="warn">
               <span className="row row-between" style={{ gap: 12 }}>
-                <span>分享链接{j.state === 'succeeded' ? '已变' : '会变'} <InfoTip text={j.state === 'succeeded' ? '旧链接已失效，客户端要换成新的分享链接。' : '新入口验收通过、旧入口摘除后，旧链接会失效。'} /></span>
+                <span>分享链接已变 <InfoTip text="旧链接已失效，客户端要换成新的分享链接。" /></span>
                 {j.result?.new_entry_id && <Button size="sm" onClick={() => void copyNewShareLink(j.id)}><Copy size={14} />复制新分享链接</Button>}
               </span>
             </Note>
@@ -194,7 +195,7 @@ function JobDetail({ id }: { id: string }) {
       {/* key：换作业时整个日志面板重新挂载，日志、暂停状态从空开始，不先闪一帧上一个作业的日志 */}
       <LogPanel key={j.id} jobId={j.id} state={j.state} />
       <ConfirmDialog open={cancelAsk} onOpenChange={setCancelAsk} title="取消这个作业？" confirmLabel="取消作业" danger description={cancelDesc(j)}
-        onConfirm={async () => { await cancel.mutateAsync(j.id); toast.ok('作业已取消'); }} />
+        onConfirm={async () => { await cancel.mutateAsync(j.id); toast.info('正在取消…'); }} /> {/* 要等回滚做完才结束，结束时状态胶囊变成「已取消」 */}
     </div>
   );
 }

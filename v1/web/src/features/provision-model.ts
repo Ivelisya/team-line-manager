@@ -150,9 +150,10 @@ export function ipIssue(r: Pick<Row, 'kind' | 'ip'>): string | null {
   return `IP「${v}」格式不对`;
 }
 
-/** 服务端「检查」返回的错误（纯文本）对回表单字段：单台表单标在字段旁，对不上的只在检查结果里列出。先判断更具体的词（「宿主机上没有空闲的 SS 端口」归宿主机，「选了套餐要填到期日」归到期日） */
+/** 服务端「检查」返回的错误（纯文本）对回表单字段：单台表单标在字段旁，对不上的只在检查结果里列出。先判断更具体的词（IP 的几句先判，补上的机器名「团队1-03」里有「团队」；
+ *  「宿主机上没有空闲的 SS 端口」归宿主机，「选了套餐要填到期日」归到期日） */
 const SERVER_FIELDS: [RegExp, keyof Row][] = [
-  [/IPv6/, 'ip'], [/宿主机/, 'host_id'], [/到期日/, 'due_date'], [/费用/, 'price'], [/套餐/, 'plan_id'], [/供应商/, 'provider_id'],
+  [/IPv6|这个 IP|IP 重复|^IP「/, 'ip'], [/宿主机/, 'host_id'], [/到期日/, 'due_date'], [/费用/, 'price'], [/套餐/, 'plan_id'], [/供应商/, 'provider_id'],
   [/线路机.*名称|名称.*重复/, 'label'], [/线路机/, 'relay_id'], [/团队/, 'team_id'], [/编号/, 'number'], [/上游/, 'up_host'], [/IP/, 'ip'],
 ];
 export const serverField = (msg: string): keyof Row | undefined => SERVER_FIELDS.find(([re]) => re.test(msg))?.[1];

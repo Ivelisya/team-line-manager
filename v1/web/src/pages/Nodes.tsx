@@ -49,7 +49,7 @@ const notMonthly = (cycle: string) => meta().cycles.find((c) => c.key === cycle)
  *  列里显示的东西都要在这里——每加一列、列里多显示一个字段，都要同步改这里；悬浮卡不传 m，打开时自己取这台的最新数据 */
 const rowSig = (m: MachineView) => {
   const t = monthTraffic(m); const s = m.subscription;
-  return [m.name, m.ip, m.kind, m.lifecycle, m.maintenance, m.health.status, m.health.reasons.map((r) => `${r.severity}${r.text}`).join(),
+  return [m.name, m.ip, m.country, m.country_set, m.kind, m.lifecycle, m.maintenance, m.health.status, m.health.reasons.map((r) => `${r.severity}${r.text}`).join(),
     m.host_machine?.id, m.host_machine?.name, m.ip_nodes.map((x) => `${x.id}:${x.name}`).join(), m.entries.map(entryOf).join(), m.plan?.name, m.provider?.name, F.str(F.bytes(t.up + t.down)), F.str(F.bytes(t.down)),
     s?.due_days, s?.due_state, s?.due_date, s?.price_cents, s?.monthly_cents, s?.currency, s?.cycle, m.retired_at, m.lifecycle_reason].join('\u0001');
 };

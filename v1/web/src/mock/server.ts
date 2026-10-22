@@ -283,7 +283,8 @@ function checkProvision(items: ProvisionItem[]): ProvisionCheckItem[] {
   for (const it of items) {
     const errors: string[] = [];
     if (!IP_RE.test(it.ip ?? '') || it.ip.split('.').some((x) => +x > 255)) errors.push('IP 格式不正确');
-    else if (ips.has(it.ip) || seenIp.has(it.ip)) errors.push(`IP ${it.ip} 已存在`);
+    else if (ips.has(it.ip)) errors.push('这个 IP 已经属于一台未退役的机器'); // 同服务端原话
+    else if (seenIp.has(it.ip)) errors.push('这一批里 IP 重复');
     seenIp.add(it.ip);
     if (it.ssh_port != null && (it.ssh_port < 1 || it.ssh_port > 65535)) errors.push('SSH 端口应在 1–65535');
     let name = ''; let number: number | null = null; let relayPort: number | undefined;
