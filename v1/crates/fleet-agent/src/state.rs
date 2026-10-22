@@ -139,13 +139,14 @@ impl SeqState {
         Ok(())
     }
     /// 服务端确认的序号比本地发出过的还大（时钟回拨 / 状态丢失后）：把本地推到它之后，
-    /// 否则后续报告会被服务端当重复丢弃。
+    /// 否则后续报告会被服务端当重复丢弃。先在内存里推进：落盘失败（磁盘满时重启过、序号退回落盘的上界）也不能停在原地，
+    /// 否则之后每份报告都被当重复「成功」丢掉；没落盘的这段同 `next_unreserved`
     pub fn advance_to(&mut self, n: u64) -> anyhow::Result<()> {
         if n > self.seq {
+            self.seq = n;
             if n > self.reserved {
                 self.reserve(n)?;
             }
-            self.seq = n;
         }
         Ok(())
     }

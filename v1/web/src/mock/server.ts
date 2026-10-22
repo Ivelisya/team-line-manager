@@ -660,10 +660,13 @@ R('POST', '/agents/upgrade', () => {
   const ms = db.machines.filter((m) => m.lifecycle === 'active' && m.agent && !m.host_machine && !m.active_job)
     .sort((a, b) => Number(b.kind === 'relay') - Number(a.kind === 'relay'));
   const jobs = ms.map((m) => ({ machine_id: m.id, name: m.name, job_id: startUpgrade(m).id }));
-  const relays = ms.filter((m) => m.kind === 'relay').length;
-  const order = ms.length === 0 ? '没有要升级的机器' : relays === 0
-    ? `先升「${ms[0].name}」做金丝雀，成功后其余 ${ms.length - 1} 台落地机并发升级；金丝雀失败的话其余的都会取消`
-    : `先升「${ms[0].name}」做金丝雀，成功后其余 ${relays - 1} 台线路机逐台升级，线路机都成功后 ${ms.length - relays} 台落地机并发升级；任何一台线路机失败，没开始的都会取消`;
+  // 说法同中控 upgrade_order 的几种情形
+  const relays = ms.filter((m) => m.kind === 'relay').length; const nodes = ms.length - relays; const c = ms[0]?.name;
+  const order = ms.length === 0 ? '没有要升级的机器' : ms.length === 1 ? `只有「${c}」一台`
+    : relays === 0 ? `先升「${c}」做金丝雀，成功后其余 ${nodes - 1} 台落地机并发升级；金丝雀失败的话其余的都会取消`
+    : relays === 1 ? `先升「${c}」做金丝雀，成功后 ${nodes} 台落地机并发升级；金丝雀失败的话其余的都会取消`
+    : nodes === 0 ? `先升「${c}」做金丝雀，成功后其余 ${relays - 1} 台线路机逐台升级；任何一台失败，没开始的都会取消`
+    : `先升「${c}」做金丝雀，成功后其余 ${relays - 1} 台线路机逐台升级，线路机都成功后 ${nodes} 台落地机并发升级；任何一台线路机失败，没开始的都会取消`;
   emit({ type: 'machines' }); return { jobs, order };
 });
 

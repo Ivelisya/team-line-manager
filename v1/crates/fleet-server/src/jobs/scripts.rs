@@ -190,13 +190,14 @@ pub fn relay_xray_unit() -> String { format!("(\n{}\n) || echo xray_unit=error\n
 
 fn xray_unit_sh() -> String { XRAY_UNIT_SH.replace("__UNIT__", XRAY_UNIT.trim_end()) }
 
-/// fleet-xray 单元：内容变了才换，只 daemon-reload，从不重启 Xray（重启会断开所有连接）
+/// fleet-xray 单元：内容变了才换，只 daemon-reload，从不重启 Xray（重启会断开所有连接）。
+/// 写、换每一步都查结果：升级时这段包在 `( … ) || echo …` 里，set -e 不起作用，磁盘满时写出来的空文件会被当成新单元换上
 const XRAY_UNIT_SH: &str = r#"
 U=/etc/systemd/system/fleet-xray.service
-cat > $U.tmp <<'UNIT'
+cat > $U.tmp <<'UNIT' || exit 1
 __UNIT__
 UNIT
-cmp -s $U.tmp $U && rm -f $U.tmp || { mv $U.tmp $U; systemctl daemon-reload; }
+cmp -s $U.tmp $U && rm -f $U.tmp || { mv $U.tmp $U || exit 1; systemctl daemon-reload; }
 "#;
 
 /// 升级 agent 时也装一遍访问日志轮转（较早上架、还没有这份配置或每小时定时器的线路机升级一次就补上）。
@@ -211,25 +212,26 @@ fn logrotate_sh() -> String {
 }
 
 /// 线路机访问日志轮转配置（上架时随 fleet-xray 一起装，失败则该步骤失败）。
-/// 系统 logrotate 每天只跑一次：另装一个每小时只跑这一份配置的定时器，maxsize 才起作用
+/// 系统 logrotate 每天只跑一次：另装一个每小时只跑这一份配置的定时器，maxsize 才起作用。
+/// 写、换每一步都查结果（同 XRAY_UNIT_SH：升级时包在 `( … ) || echo …` 里，set -e 不起作用）
 const LOGROTATE_SH: &str = r#"
-install -d -m 755 /etc/logrotate.d
+install -d -m 755 /etc/logrotate.d || exit 1
 L=/etc/logrotate.d/fleet-xray
-cat > $L.tmp <<'LOGROTATE'
+cat > $L.tmp <<'LOGROTATE' || exit 1
 __LOGROTATE__
 LOGROTATE
-cmp -s $L.tmp $L && rm -f $L.tmp || mv $L.tmp $L
+cmp -s $L.tmp $L && rm -f $L.tmp || mv $L.tmp $L || exit 1
 LR=0
 T=/etc/systemd/system/fleet-xray-logrotate.service
-cat > $T.tmp <<'UNIT'
+cat > $T.tmp <<'UNIT' || exit 1
 __LR_SERVICE__
 UNIT
-cmp -s $T.tmp $T && rm -f $T.tmp || { mv $T.tmp $T; LR=1; }
+cmp -s $T.tmp $T && rm -f $T.tmp || { mv $T.tmp $T || exit 1; LR=1; }
 T=/etc/systemd/system/fleet-xray-logrotate.timer
-cat > $T.tmp <<'UNIT'
+cat > $T.tmp <<'UNIT' || exit 1
 __LR_TIMER__
 UNIT
-cmp -s $T.tmp $T && rm -f $T.tmp || { mv $T.tmp $T; LR=1; }
+cmp -s $T.tmp $T && rm -f $T.tmp || { mv $T.tmp $T || exit 1; LR=1; }
 [ $LR = 0 ] || systemctl daemon-reload
 systemctl enable -q --now fleet-xray-logrotate.timer
 "#;
@@ -492,7 +494,9 @@ echo "nft_relays=$(nft list set inet ss_guard relays | tr -d '\n' | sed 's/.*ele
         let s = super::relay_xray();
         assert!(!s.contains("__"), "占位符都已替换");
         assert!(s.contains("/var/log/fleet-xray/access.log {") && s.contains("copytruncate") && s.contains("    maxsize 200M\n"));
-        assert!(s.contains("install -d -m 755 /etc/logrotate.d\n") && s.contains("mv $L.tmp $L"));
+        // 写、换都查结果：升级时这段包在 `( … ) || echo` 里，set -e 不起作用
+        assert!(s.contains("install -d -m 755 /etc/logrotate.d || exit 1\n") && s.contains("cat > $L.tmp <<'LOGROTATE' || exit 1\n"));
+        assert!(s.contains("cmp -s $L.tmp $L && rm -f $L.tmp || mv $L.tmp $L || exit 1\n") && s.contains("{ mv $T.tmp $T || exit 1; LR=1; }"));
         // 每小时只跑这一份配置的定时器：单元变了才 daemon-reload
         assert!(s.contains("ExecStart=/usr/sbin/logrotate /etc/logrotate.d/fleet-xray\n") && s.contains("OnCalendar=*-*-* 01..23:00:00\n"));
         assert!(s.contains("[ $LR = 0 ] || systemctl daemon-reload\nsystemctl enable -q --now fleet-xray-logrotate.timer\n"));
@@ -517,7 +521,7 @@ echo "nft_relays=$(nft list set inet ss_guard relays | tr -d '\n' | sed 's/.*ele
     #[test]
     fn agent_logrotate_failure_does_not_fail_step() {
         let s = super::relay_logrotate();
-        assert!(s.starts_with("(\ninstall -d -m 755 /etc/logrotate.d\n"), "{s}");
+        assert!(s.starts_with("(\ninstall -d -m 755 /etc/logrotate.d || exit 1\n"), "{s}");
         assert!(s.ends_with("\n) || echo logrotate=error\n"), "{s}");
         assert!(!s.contains("__"));
     }
@@ -528,8 +532,11 @@ echo "nft_relays=$(nft list set inet ss_guard relays | tr -d '\n' | sed 's/.*ele
         let s = super::relay_xray_unit();
         let body = super::xray_unit_sh();
         assert_eq!(s, format!("(\n{}\n) || echo xray_unit=error\n", body.trim()));
-        assert!(body.contains("InaccessiblePaths=-/etc/ssh -/etc/fleet-agent/token -/var/lib/fleet-agent "), "{body}");
-        assert!(body.contains("cmp -s $U.tmp $U && rm -f $U.tmp || { mv $U.tmp $U; systemctl daemon-reload; }\n"));
+        assert!(body.contains("TemporaryFileSystem=/etc/fleet-agent:ro\nBindReadOnlyPaths=/etc/fleet-agent/xray.json\n"), "{body}");
+        assert!(body.contains("InaccessiblePaths=-/etc/ssh -/var/lib/fleet-agent "), "{body}");
+        // 写、换都查结果：包在 `( … ) || echo` 里 set -e 不起作用，写失败的空文件不能被当成新单元换上
+        assert!(body.contains("cat > $U.tmp <<'UNIT' || exit 1\n"));
+        assert!(body.contains("cmp -s $U.tmp $U && rm -f $U.tmp || { mv $U.tmp $U || exit 1; systemctl daemon-reload; }\n"));
         assert!(super::relay_xray().contains(body.trim()));
         for s in [s, super::relay_xray()] {
             assert!(!s.contains("systemctl restart") && !s.contains("__"), "{s}");
