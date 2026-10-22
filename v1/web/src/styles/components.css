@@ -235,7 +235,8 @@
 .hint.is-error { color: var(--bad-text); }
 .field-label { display: inline-flex; align-items: center; gap: var(--sp-4); min-width: 0; }
 /* 「(i)」补充说明：一个淡灰的小圆 i，悬停 / 聚焦变深，说明走全站的 data-tip 气泡 */
-.info-tip { display: inline-grid; place-items: center; flex: none; width: 16px; height: 16px; border-radius: 50%; color: var(--fg-3); cursor: help; transition: color var(--dur-1) var(--ease-std); }
+.info-tip { display: inline-grid; place-items: center; flex: none; width: 16px; height: 16px; margin-inline-start: var(--sp-4); vertical-align: -3px; border-radius: 50%; color: var(--fg-3); cursor: help; transition: color var(--dur-1) var(--ease-std); }
+.field-label > .info-tip { margin: 0; } /* 标签行是 flex，间距由 gap 给 */
 .info-tip .lucide { width: 13px; height: 13px; }
 .info-tip:hover, .info-tip:focus-visible { color: var(--fg-2); }
 .input, .textarea, .select-trigger {
