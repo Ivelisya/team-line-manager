@@ -642,8 +642,8 @@ async fn job_list_pages_with_total() {
     let active = t.get("/api/v1/jobs?state=active").await;
     assert_eq!((active["total"].as_i64(), active["next_offset"].is_null()), (Some(1), true));
 
-    // 按类型：provision / restore 是大类，其余按原值；和 state 一起用
-    for (kind, state) in [("provision_vps", "succeeded"), ("provision_relay", "running"), ("restore_ip", "failed"), ("upgrade_agent", "succeeded")] {
+    // 按类型：provision 是大类，其余按原值；和 state 一起用
+    for (kind, state) in [("provision_vps", "succeeded"), ("provision_relay", "running"), ("move_entry", "failed"), ("upgrade_agent", "succeeded")] {
         sqlx::query("insert into job (id, kind, params, state, created_by) values ($1, $2, '{}', $3::job_state, 'test')")
             .bind(Uuid::now_v7())
             .bind(kind)
@@ -656,7 +656,7 @@ async fn job_list_pages_with_total() {
     let p = t.get("/api/v1/jobs?kind=provision").await;
     assert_eq!((p["total"].as_i64(), kinds(&p)), (Some(2), vec!["provision_relay".to_string(), "provision_vps".into()]));
     assert_eq!(kinds(&t.get("/api/v1/jobs?kind=provision&state=done").await), ["provision_vps"]);
-    assert_eq!(kinds(&t.get("/api/v1/jobs?kind=restore").await), ["restore_ip"]);
+    assert_eq!(kinds(&t.get("/api/v1/jobs?kind=move_entry").await), ["move_entry"]);
     assert_eq!(t.get("/api/v1/jobs?kind=purge").await["total"], 5);
     assert_eq!(t.get("/api/v1/jobs?kind=all").await["total"], 9);
     let (s, _) = t.req("GET", "/api/v1/jobs?kind=nope", None, None).await;

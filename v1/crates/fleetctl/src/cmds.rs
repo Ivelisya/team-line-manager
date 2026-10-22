@@ -14,7 +14,7 @@ pub struct Ctx {
     pub c: Client,
     pub base: String,
     pub json: bool,
-    /// 一次命令内只拉一次的列表（`mv` 要解析 3 台机器、`restore` 要解析 2 次团队，不必每次都 GET）。
+    /// 一次命令内只拉一次的列表（`mv` 要解析 3 台机器，不必每次都 GET）。
     /// 命令是一次性进程，缓存不会跨命令过期；写操作之后需要新数据的地方不要走缓存。
     machines_cache: Mutex<Option<Vec<Value>>>,
     teams_cache: Mutex<Option<Value>>,

@@ -398,7 +398,7 @@ pub struct AuditQ {
     q: Option<String>,
 }
 
-/// 远程执行类的动作：在机器上跑命令、SSH 登录、网页终端、取日志、恢复预检登录机器
+/// 远程执行类的动作：在机器上跑命令、SSH 登录、网页终端、取日志（restore.probe 是已删掉的恢复预检留下的旧记录）
 const EXEC_ACTIONS: &[&str] = &["exec", "ssh.login", "terminal.open", "terminal.close", "machine.logs", "server.logs", "restore.probe"];
 
 /// 分类条件（操作记录页的分段）：登录与账户（auth.*）、远程执行（`EXEC_ACTIONS`）、
@@ -510,7 +510,8 @@ pub async fn audit(a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<A
     Ok(ok(out))
 }
 
-/// 所有写审计的动作（git grep 'audit(' 核对过）；新增动作时补这里和 audit_text。按标题搜索时在这里面找
+/// 所有写审计的动作（git grep 'audit(' 核对过）；新增动作时补这里和 audit_text。按标题搜索时在这里面找。
+/// machine.restore、restore.probe 是已删掉的「恢复已退役机器」留下的旧记录，标题照样显示
 const AUDIT_ACTIONS: &[&str] = &[
     "machine.provision", "machine.retire", "machine.purge", "machine.rename", "machine.update", "machine.restore", "machine.replace", "subscription.set", "renewal",
     "team.create", "team.update", "team.delete", "team.renumber", "provider.create", "provider.update", "provider.delete", "plan.create", "plan.update", "plan.delete", "entry.enable",

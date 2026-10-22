@@ -74,10 +74,9 @@ pub fn router() -> Router<AppState> {
         .route("/machines/{id}/subscription", axum::routing::put(machines::put_subscription))
         .route("/machines/{id}/renewals", get(machines::list_renewals).post(machines::add_renewal))
         .route("/machines/{id}/entries", post(relays::add_entry))
-        // 换线路机、搬空线路机、恢复已退役的机器
+        // 换线路机、搬空线路机
         .route("/machines/{id}/move", post(lifecycle::move_node))
         .route("/relays/{id}/evacuate", post(lifecycle::evacuate))
-        .route("/machines/{id}/restore", get(lifecycle::restore_preview).post(lifecycle::restore))
         // 替换节点：GET 预览，POST 建作业（改软路由出口 → 交换编号）
         .route("/machines/{id}/replace", get(replace::preview).post(replace::replace))
         // 上架

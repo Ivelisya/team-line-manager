@@ -208,6 +208,7 @@ pub const JOB_KINDS: Labels = &[
     ("provision_ip", "上架同机 IP 节点"),
     ("attach_entry", "新增入口"),
     ("move_entry", "换线路机"),
+    // 恢复已退役机器已删掉：留着名字，旧作业记录照样显示
     ("restore_vps", "恢复 VPS 节点"),
     ("restore_proxy", "恢复家宽代理"),
     ("restore_relay", "恢复线路机"),

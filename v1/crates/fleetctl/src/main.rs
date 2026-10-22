@@ -324,7 +324,7 @@ enum Cmd {
     Jobs {
         #[arg(long)]
         active: bool,
-        /// 只看这类作业：provision（各类上架）| restore（各类恢复）| attach_entry | move_entry | replace | upgrade_agent | retire | purge
+        /// 只看这类作业：provision（各类上架）| attach_entry | move_entry | replace | upgrade_agent | retire | purge
         #[arg(long)]
         kind: Option<String>,
         #[arg(long, default_value_t = 30)]
@@ -599,44 +599,6 @@ enum Cmd {
         #[arg(long)]
         follow: bool,
     },
-    /// 恢复已退役的机器（保持原 id；先预检再提交，重新走上架收敛）
-    Restore {
-        /// 已退役的机器（id / 显示名 / IP）
-        machine: String,
-        /// 改到别的团队（默认原团队）
-        #[arg(long)]
-        team: Option<String>,
-        /// 指定团队内编号（默认接在末尾）
-        #[arg(long)]
-        number: Option<i32>,
-        /// 节点要接入的线路机
-        #[arg(long)]
-        relay: Option<String>,
-        /// 线路机恢复时改名（原名被占用时）
-        #[arg(long)]
-        label: Option<String>,
-        /// 家宽代理：socks5://用户:密码@主机:端口。不给沿用退役前的上游；上游有用户名时要给（密码退役时已清掉）
-        #[arg(long)]
-        upstream: Option<String>,
-        /// VPS 节点的公网（NAT 映射）SS 端口：不给沿用退役前的（预检里能看到），都没有为 8388
-        #[arg(long)]
-        ss_port: Option<u16>,
-        /// root 密码放在哪个环境变量里（预检说中控密钥登录不了时必填）
-        #[arg(long)]
-        password_env: Option<String>,
-        #[arg(long)]
-        reason: Option<String>,
-        /// 机器重装过、主机指纹变了：允许覆盖已记录的指纹
-        #[arg(long)]
-        reset_host_key: bool,
-        /// 预检不试 SSH 登录（只做库内检查）
-        #[arg(long)]
-        no_probe: bool,
-        #[arg(long)]
-        yes: bool,
-        #[arg(long)]
-        follow: bool,
-    },
     /// 软路由列表：状态、出口通 / 总、客户端、CPU、内存、WAN 速率
     Routers {
         /// 只看这个团队的
@@ -900,24 +862,6 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Replace { old, new, to, number, no_routers, yes, follow } => {
             lifecycle::replace(x, lifecycle::ReplaceOpts { old: &old, new: &new, to: to.as_deref(), number, no_routers, yes, follow })
         }
-        Cmd::Restore { machine, team, number, relay, label, upstream, ss_port, password_env, reason, reset_host_key, no_probe, yes, follow } => lifecycle::restore(
-            x,
-            lifecycle::RestoreOpts {
-                machine: &machine,
-                team: team.as_deref(),
-                number,
-                relay: relay.as_deref(),
-                label: label.as_deref(),
-                upstream: upstream.as_deref(),
-                ss_port,
-                password_env: password_env.as_deref(),
-                reason: reason.as_deref(),
-                reset_host_key,
-                no_probe,
-                yes,
-                follow,
-            },
-        ),
         Cmd::Routers { team } => routers::ls(x, team.as_deref()),
         Cmd::Router { cmd } => match cmd {
             RouterCmd::Show { router } => routers::show(x, &router),

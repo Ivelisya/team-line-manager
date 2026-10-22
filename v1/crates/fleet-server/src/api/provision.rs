@@ -359,7 +359,7 @@ pub async fn check(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Bat
     let mut tx = st.db.begin().await?;
     let mut v = validate(&mut tx, &b.items).await?;
     tx.rollback().await?;
-    // 只查库的校验之外再看一眼 SSH 端口通不通（同恢复的预检；要读到 SSH 版本行，只连上 TCP 不算）：地址填错、防火墙没放行在这里就能看出来，不用等上架作业失败。
+    // 只查库的校验之外再看一眼 SSH 端口通不通（要读到 SSH 版本行，只连上 TCP 不算）：地址填错、防火墙没放行在这里就能看出来，不用等上架作业失败。
     // 家宽代理不 SSH；同机 IP 节点登录的是宿主机（在用的，不用再看）；不是一台机器的地址直接报错，不去连
     let mut probe = vec![];
     for (i, c) in v.iter_mut().enumerate() {

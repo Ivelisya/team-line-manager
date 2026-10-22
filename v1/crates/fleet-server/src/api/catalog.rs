@@ -113,7 +113,7 @@ fn in_use(parts: &[(i64, &str)]) -> Option<String> {
     (!v.is_empty()).then(|| v.join("、"))
 }
 
-/// 删团队：还有机器（含已退役的——可能恢复，外键也拦着）或软路由时拒绝。它的访问规则不是默认（仅观察、没有域名和备注）或有草稿时也拒绝：
+/// 删团队：还有机器（含已退役的，外键也拦着）或软路由时拒绝。它的访问规则不是默认（仅观察、没有域名和备注）或有草稿时也拒绝：
 /// 生效的规则在发布版本的快照里，悄悄删掉就绕开了版本（回滚、核对都对不上）；规则是默认、没有草稿的那一行等于没有，一起删。
 /// 先拿访问规则的锁（同改草稿、发布、回滚），看过规则之后不会有并发的保存草稿插进来
 pub async fn delete_team(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
@@ -453,7 +453,7 @@ pub async fn patch_plan(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPa
         let n = clean_name(n, "套餐名")?;
         set!("name", Some(n));
     }
-    // 机器的供应商就是套餐的：有机器（含已退役，可能恢复）用着的套餐不能换供应商
+    // 机器的供应商就是套餐的：有机器（含已退役的）用着的套餐不能换供应商
     if let Some(pv) = b.provider_id {
         let n: i64 = sqlx::query_scalar("select count(*) from machine m join plan p on p.id = m.plan_id where p.id = $1 and p.provider_id <> $2")
             .bind(id)
@@ -499,7 +499,7 @@ pub async fn patch_plan(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPa
     Ok(ok(json!({"id": id})))
 }
 
-/// 删套餐：还有机器（含已退役的，可能恢复）用着时拒绝，用不着的套餐建议归档
+/// 删套餐：还有机器（含已退役的）用着时拒绝，用不着的套餐建议归档
 pub async fn delete_plan(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
     let name: String = sqlx::query_scalar("select name from plan where id = $1 for update")

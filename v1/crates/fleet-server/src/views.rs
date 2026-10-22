@@ -285,7 +285,7 @@ pub struct MachineView {
     pub quota: Quota,
     pub health: Health,
     pub active_job: Option<JobRef>,
-    /// 上架失败（lifecycle = failed）：最近一次失败的上架/恢复作业；退役中（retiring）：失败的退役作业。网页据此给出「查看作业」
+    /// 上架失败（lifecycle = failed）：最近一次失败的上架作业；退役中（retiring）：失败的退役作业。网页据此给出「查看作业」
     pub failed_job: Option<JobRef>,
     pub open_incidents: i64,
     pub maintenance: bool,
@@ -839,12 +839,12 @@ async fn probes_of(db: &sqlx::PgPool, eids: &[Uuid]) -> sqlx::Result<HashMap<(Uu
         .collect())
 }
 
-/// 进行中的作业与失败的上架 / 恢复 / 退役作业，各按机器取最后建的：(进行中, 失败)
+/// 进行中的作业与失败的上架 / 退役作业，各按机器取最后建的：(进行中, 失败)
 async fn jobs_of(db: &sqlx::PgPool, ids: &[Uuid]) -> sqlx::Result<(HashMap<Uuid, JobRef>, HashMap<Uuid, JobRef>)> {
     let jobs = sqlx::query_as::<_, (Uuid, Uuid, String, String)>(
         "select target_id, id, kind, state::text from job
          where target_id = any($1) and (state in ('queued','running','waiting','cancelling')
-           or (state = 'failed' and kind ~ '^((provision|restore)_|retire$)'))
+           or (state = 'failed' and kind ~ '^(provision_|retire$)'))
          order by created_at",
     )
     .bind(ids)
@@ -859,7 +859,7 @@ async fn jobs_of(db: &sqlx::PgPool, ids: &[Uuid]) -> sqlx::Result<(HashMap<Uuid,
     Ok((live_jobs, failed_jobs))
 }
 
-/// 上架失败：最近失败的上架/恢复作业；退役中：失败的退役作业（等重试）
+/// 上架失败：最近失败的上架作业；退役中：失败的退役作业（等重试）
 fn failed_job(failed: &HashMap<Uuid, JobRef>, id: Uuid, lifecycle: &str) -> Option<JobRef> {
     failed
         .get(&id)
