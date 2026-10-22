@@ -499,3 +499,24 @@ async fn access_queries_run_on_a_small_pool_with_a_statement_timeout() {
     let e = fleet_server::error::ApiError::from(e);
     assert_eq!((e.status, e.message.as_str()), (StatusCode::SERVICE_UNAVAILABLE, "查询太慢，已中止：缩小时间范围或换更具体的搜索"));
 }
+
+/// 已回收的机器用回收站里的原名加「（已回收）」（它在备用里的名字之后会给别的机器用）；退役了还没回收的照旧「（已退役）」
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn recycled_nodes_show_their_original_name() {
+    let t = setup().await;
+    let fx = fixture(&t).await;
+    let (n1, n2) = (fx.n[0], fx.n[1]);
+    sqlx::query("update machine set lifecycle = 'retired', recycled_at = now() where id = $1").bind(n1).execute(&t.st.db).await.unwrap();
+    sqlx::query("insert into recycle_bin (source, source_id, machine_id, kind, name, last_name, actor, snapshot) values ('fleet', $2, $1, 'vps', '团队1-07', '备用-01', '系统', '{}')")
+        .bind(n1)
+        .bind(n1.to_string())
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    sqlx::query("update machine set lifecycle = 'retired' where id = $1").bind(n2).execute(&t.st.db).await.unwrap();
+    for w in ["24h", "1h"] {
+        let d = t.get(&format!("/api/v1/access/summary?window={w}")).await;
+        assert!(row(&d, "nodes", "name", "团队1-07（已回收）")["conns"].as_i64().is_some(), "{w}");
+        assert!(row(&d, "nodes", "name", "团队1-02（已退役）")["conns"].as_i64().is_some(), "{w}");
+    }
+}

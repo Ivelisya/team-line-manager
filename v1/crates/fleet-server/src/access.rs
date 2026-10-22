@@ -316,10 +316,13 @@ pub fn like_pattern(s: &str) -> Option<String> {
 }
 
 /// 机器显示名（SQL 函数 display_name，与 names::display_name 一致）。退役机器的编号已被回收给别的机器，
-/// 历史记录里不加标注会和现在同名的机器混在一起，所以带上「（已退役）」。
+/// 历史记录里不加标注会和现在同名的机器混在一起，所以带上「（已退役）」；已进回收站的用回收站里的原名（进备用前的名字，
+/// 「备用-01」之后会给下一台备用机器用）加「（已回收）」。
 /// 这里的 m 都是入口的节点端：节点是线路机的只有直出入口，名字同入口列表「线路机名-直出」
-const NAME: &str = "display_name(m.kind::text, m.label, t.name, m.number) || case when m.kind = 'relay' then '-直出' else '' end
-    || case when m.lifecycle = 'retired' then '（已退役）' else '' end";
+const NAME: &str = "coalesce((select rb.name from recycle_bin rb where m.recycled_at is not null and rb.source = 'fleet' and rb.source_id = m.id::text),
+        display_name(m.kind::text, m.label, t.name, m.number))
+    || case when m.kind = 'relay' then '-直出' else '' end
+    || case when m.recycled_at is not null then '（已回收）' when m.lifecycle = 'retired' then '（已退役）' else '' end";
 
 /// 原始记录（access_event e）的公共条件：窗口起点、节点、团队、线路机（都换成入口 id 列表，走 (entry_id, ts) 索引）、搜索。
 /// `search_src_only`：搜索只匹配来源 IP（来源排行）；否则目标或来源 IP 匹配都算
@@ -456,7 +459,7 @@ pub async fn summary(db: &PgPool, f: &Filter) -> sqlx::Result<(Kpi, Vec<NodeRow>
                 (select count(distinct u.dest_host) from f u join machine mu on mu.id = u.node_id)::bigint unique_targets
          from f join machine m on m.id = f.node_id left join team t on t.id = m.team_id
               left join access_target_seen s on s.node_id = f.node_id and s.dest_host = f.dest_host
-         group by f.node_id, m.kind, m.label, m.number, m.lifecycle, t.name
+         group by f.node_id, m.id, t.name
          order by conns desc, name",
         cte(f, &mut a)
     );
@@ -622,7 +625,7 @@ pub async fn sources(db: &PgPool, f: &Filter, conn: Option<(&str, &str)>, limit:
             "select en.node_id, {NAME} name, host(e.src_ip) src_ip, count(*)::bigint conns, max(e.ts) last_ts
              from access_event e join entry en on en.id = e.entry_id join machine m on m.id = en.node_id left join team t on t.id = m.team_id
              where {} and e.src_ip is not null
-             group by en.node_id, m.kind, m.label, m.number, m.lifecycle, t.name, e.src_ip{having}
+             group by en.node_id, m.id, t.name, e.src_ip{having}
              order by conns desc, src_ip limit {}",
             event_where(f, &mut a, true),
             a.add(limit)
@@ -632,7 +635,7 @@ pub async fn sources(db: &PgPool, f: &Filter, conn: Option<(&str, &str)>, limit:
             "select s.node_id, {NAME} name, host(s.src_ip) src_ip, sum(s.conns)::bigint conns, max(s.hour) last_ts
              from access_source_hourly s join machine m on m.id = s.node_id left join team t on t.id = m.team_id
              where {}
-             group by s.node_id, m.kind, m.label, m.number, m.lifecycle, t.name, s.src_ip{having}
+             group by s.node_id, m.id, t.name, s.src_ip{having}
              order by conns desc, src_ip limit {}",
             hourly_where(f, &mut a, "s", "host(s.src_ip)"),
             a.add(limit)

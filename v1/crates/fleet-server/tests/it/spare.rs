@@ -500,6 +500,8 @@ async fn legacy_import_is_idempotent_and_skips_live_machines() {
     assert_eq!((list["total"].as_i64(), list["items"][0]["id"].as_i64(), list["items"][0]["ip"].as_str()), (Some(1), Some(id), Some("75.37.237.38")), "{list}");
     let one = t.get(&format!("/api/v1/recycle-bin/{id}")).await;
     assert_eq!((one["source"].as_str(), one["snapshot"].clone(), one["traffic_down"].clone(), one["due_date"].as_str()), (Some("legacy"), json!({"uuid": "01"}), Value::Null, Some("2026-10-01")), "{one}");
+    // 旧面板没有「回收」这一步：回收时刻取退役时刻（不是导入时刻），按回收时间排序时不会全排在最前
+    assert_eq!(one["recycled_at"], one["retired_at"], "{one}");
     let au = t.get("/api/v1/audit?cat=machine").await;
     assert!(au.as_array().unwrap().iter().any(|a| a["action"] == "recycle.import" && a["summary"] == "导入 1 台，跳过 2 台"), "{au}");
 
