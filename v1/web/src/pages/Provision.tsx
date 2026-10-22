@@ -143,7 +143,7 @@ export function ProvisionPage() {
 
   return (
     <div className="stack">
-      <PageHead title="上架" note="添加线路机、落地机或家宽代理"
+      <PageHead title="上架" note="添加线路机、VPS 节点或家宽代理"
         tools={<Segmented label="模式" value={mode} onChange={switchMode} items={[{ value: 'single', label: '单台' }, { value: 'batch', label: '批量' }]} />} />
       <div className="prov-steps">
         <span className="s" data-on={passed ? undefined : '1'} data-done={passed ? '1' : undefined}><span className="n">1</span>检查</span><span>→</span>
@@ -228,11 +228,11 @@ function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; o
           {k === 'vps' && (
             <label className="check-row" style={{ gap: 10 }}>
               <Switch checked={row.add_ip} onCheckedChange={(v) => onChange(v ? { add_ip: true } : { add_ip: false, host_id: '' })} />
-              <span>在已有机器上添加 IP<span className="t-sub">：落地机上另配的公网 IP，每个 IP 上架成一台独立节点</span></span>
+              <span>在已有机器上添加 IP<span className="t-sub">：VPS 节点上另配的公网 IP，每个 IP 上架成一台独立节点</span></span>
             </label>
           )}
           <div className="form-grid">
-            {ip && <div className="span-2"><Field label="宿主机" hint="这个 IP 所在的落地机；SSH、agent 与供应商都用它的" error={fe.host_id}><Select value={row.host_id} onChange={pickHost} options={o.host} placeholder="选择在用的落地机" /></Field></div>}
+            {ip && <div className="span-2"><Field label="宿主机" hint="这个 IP 所在的 VPS 节点；SSH、agent 与供应商都用它的" error={fe.host_id}><Select value={row.host_id} onChange={pickHost} options={o.host} placeholder="选择在用的落地机" /></Field></div>}
             {T('ip', k === 'proxy' ? '出口 IP' : 'IP', { ph: '198.51.100.20', hint: ip ? '要已直接配在宿主机网卡上（EIP / NAT 映射的不行）' : undefined })}
             {k !== 'proxy' && (ip ? Fixed('SSH 端口', '沿用宿主机', host ? String(host.ssh_port) : '') : T('ssh_port', 'SSH 端口', { ph: '22', num: true }))}
             {k === 'relay' ? <div className="span-2">{T('label', '线路机名', { ph: '线路机3', hint: '显示名与线路机备注都用它' })}</div> : (
@@ -362,7 +362,7 @@ function BatchGrid({ rows, setRows, ctx, resOf, errOf, checkedAny, stale }: { ro
           </table>
         </div>
       </Panel>
-      <Note icon={<ClipboardPaste size={14} />}>编号留空 = 自动编号（接在末尾）。灰色格子对当前类型不适用，粘贴时会自动跳过。选择列可直接粘贴名称（如「团队1」「线路机1」）。最后一列填了「宿主机」的落地机行是同机 IP 节点（宿主机上另配的 IP）：SSH 端口、登录与供应商沿用宿主机的，SS 端口由中控在宿主机上分配，不带套餐，这几格变灰。</Note>
+      <Note icon={<ClipboardPaste size={14} />}>编号留空 = 自动编号（接在末尾）。灰色格子对当前类型不适用，粘贴时会自动跳过。选择列可直接粘贴名称（如「团队1」「线路机1」）。最后一列填了「宿主机」的 VPS 节点行是同机 IP 节点（宿主机上另配的 IP）：SSH 端口、登录与供应商沿用宿主机的，SS 端口由中控在宿主机上分配，不带套餐，这几格变灰。</Note>
       {checkedAny && <CheckOutput rows={rows} resOf={resOf} errOf={errOf} stale={stale} />}
       <ConfirmDialog open={askClear} onOpenChange={setAskClear} title="清空批量表格？" confirmLabel="清空" danger
         description="表格里所有行已填写的内容（含登录密码）都会丢失，无法撤销。" onConfirm={() => setRows([newRow()])} />

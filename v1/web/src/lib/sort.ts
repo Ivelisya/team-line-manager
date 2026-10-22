@@ -53,6 +53,6 @@ export const HEALTH_TONE: Record<string, 'ok' | 'warn' | 'bad' | 'info' | 'neutr
 export const LIFECYCLE_LABEL: Record<string, string> = {
   draft: '草稿', provisioning: '上架中', active: '运行中', retiring: '退役中', retired: '已退役', failed: '上架失败',
 };
-export const KIND_LABEL: Record<string, string> = { relay: '线路机', vps: '落地机', proxy: '家宽代理' };
+export const KIND_LABEL: Record<string, string> = { relay: '线路机', vps: 'VPS 节点', proxy: '家宽代理' };
 // 入口状态：pending / removing 是等线路机应用
 export const ENTRY_LABEL: Record<EntryLifecycle, string> = { pending: '应用中', active: '运行中', disabled: '已停用', removing: '移除中', removed: '已移除' };

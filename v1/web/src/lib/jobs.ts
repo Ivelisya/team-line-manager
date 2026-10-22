@@ -4,8 +4,8 @@ import { ENTRY_LABEL } from './sort';
 import { dtFull } from './format';
 
 const JOB_KIND: Record<string, string> = {
-  provision_vps: '上架落地机', provision_proxy: '上架家宽代理', provision_relay: '上架线路机', provision_ip: '上架同机 IP 节点',
-  attach_entry: '新增入口', move_entry: '换线路机', restore_vps: '恢复落地机', restore_proxy: '恢复家宽代理', restore_relay: '恢复线路机', restore_ip: '恢复同机 IP 节点',
+  provision_vps: '上架 VPS 节点', provision_proxy: '上架家宽代理', provision_relay: '上架线路机', provision_ip: '上架同机 IP 节点',
+  attach_entry: '新增入口', move_entry: '换线路机', restore_vps: '恢复 VPS 节点', restore_proxy: '恢复家宽代理', restore_relay: '恢复线路机', restore_ip: '恢复同机 IP 节点',
   retire: '退役', purge: '彻底删除', upgrade_agent: '升级 agent',
 };
 export const jobKindLabel = (k: string) => JOB_KIND[k] ?? k;

@@ -52,7 +52,7 @@ export default function CommandPalette({ theme }: { theme: Theme }) {
       </CommandDialog>
 
       <ConfirmDialog open={askUpgrade} onOpenChange={setAskUpgrade} title="升级全部 agent？" confirmLabel="全部升级"
-        description="先升一台做金丝雀（有线路机先挑线路机），它成功后线路机逐台升级，线路机都成功后落地机并发。新版本起不来、2 分钟内没有上报，或线路机上 Xray 不正常，会自动换回旧版本；出在金丝雀或线路机上时，没开始的都会取消（连不上、推送之前就失败的只算那一台）。排队中的可以在作业详情里取消。已有进行中作业的机器会跳过；升级时 agent 会重启，不影响线路上的连接。"
+        description="先升一台做金丝雀（有线路机先挑线路机），它成功后线路机逐台升级，线路机都成功后 VPS 节点并发。新版本起不来、2 分钟内没有上报，或线路机上 Xray 不正常，会自动换回旧版本；出在金丝雀或线路机上时，没开始的都会取消（连不上、推送之前就失败的只算那一台）。排队中的可以在作业详情里取消。已有进行中作业的机器会跳过；升级时 agent 会重启，不影响线路上的连接。"
         onConfirm={async () => { const r = await upgradeAll.mutateAsync(); toast.ok(`已提交 ${r.jobs.length} 个升级作业：${r.order}`); }} />
     </>
   );
@@ -101,7 +101,7 @@ function PaletteBody({ theme, askUpgrade }: { theme: Theme; askUpgrade: () => vo
               ))}
             </CommandGroup>
             <CommandGroup heading="动作">
-              <CommandItem value="上架机器 provision 添加机器 落地机 家宽代理 线路机" onSelect={() => go('/provision')}><CloudUpload /><span className="cmd-main">上架机器</span></CommandItem>
+              <CommandItem value="上架机器 provision 添加机器 VPS 节点 落地机 家宽代理 线路机" onSelect={() => go('/provision')}><CloudUpload /><span className="cmd-main">上架机器</span></CommandItem>
               <CommandItem value="新建静默 silence 维护窗口" onSelect={() => go('/incidents?silence=new')}><BellOff /><span className="cmd-main">新建静默</span></CommandItem>
               <CommandItem value="复制某机器 IP copy ip" onSelect={() => { setSearch(''); setMode('copy-ip'); }}><Clipboard /><span className="cmd-main">复制某台机器的 IP…</span></CommandItem>
               <CommandItem value="登记续费 renew 续费 续期 到期" onSelect={() => { setSearch(''); setMode('renew'); }}><CalendarPlus /><span className="cmd-main">登记续费…</span></CommandItem>

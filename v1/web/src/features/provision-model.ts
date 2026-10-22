@@ -57,7 +57,7 @@ export const isIpNode = (r: Pick<Row, 'kind' | 'add_ip'>) => r.kind === 'vps' &&
 const HOST_NA = new Set<Col['key']>(['ssh_port', 'login_user', 'login_pw', 'ss_port', 'provider_id', 'plan_id']);
 export const applies = (c: Col, r: Pick<Row, 'kind' | 'add_ip'>) => c.kinds.includes(r.kind) && !(isIpNode(r) && HOST_NA.has(c.key));
 
-const KIND_ALIAS: Record<string, Kind> = { relay: 'relay', 线路机: 'relay', 中转: 'relay', vps: 'vps', 落地机: 'vps', 节点: 'vps', 落地: 'vps', proxy: 'proxy', 家宽: 'proxy', 家宽代理: 'proxy' };
+const KIND_ALIAS: Record<string, Kind> = { relay: 'relay', 线路机: 'relay', 中转: 'relay', vps: 'vps', 'vps 节点': 'vps', 落地机: 'vps', 节点: 'vps', 落地: 'vps', proxy: 'proxy', 家宽: 'proxy', 家宽代理: 'proxy' };
 
 export interface Ctx { teams: Team[]; relays: { id: string; name: string }[]; hosts: HostChoice[]; providers: Provider[]; plans: Plan[] }
 
