@@ -138,6 +138,5 @@
   background: var(--glass-bar); box-shadow: var(--shadow-bar-up);
   -webkit-backdrop-filter: var(--glass-bar-blur); backdrop-filter: var(--glass-bar-blur);
 }
-@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .panel.sticky-bar { background: var(--surface); } }
 .lv.span-2 { grid-column: 1 / -1; }
 .check-row.span-2 { grid-column: 1 / -1; }

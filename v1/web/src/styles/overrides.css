@@ -13,6 +13,9 @@ html[data-overlay] :is(.app, .drawer) .progress[data-live="1"] .progress-fill::a
 /* 读数的过渡不播，推送来了直接跳到新值（进度线；格条、圆环、心跳格本来就不过渡，KPI 数字见 useCountUp） */
 html[data-overlay] :is(.app, .drawer) .progress-fill { transition: none; }
 
+/* ========== 吸附条毛玻璃的回退（--glass-bar）：不支持 backdrop-filter 时用实底，免得半透明的条下面字叠字 ========== */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .topbar, .panel.sticky-bar, .tab-sticky { background: var(--surface); } }
+
 /* ========== 减弱动效 ========== */
 @media (prefers-reduced-motion: reduce) {
   /* 一次性的过渡与进场时长归零（tokens.css 的动效令牌）；循环动画（--dur-loop）不靠归零，下面显式 animation: none */

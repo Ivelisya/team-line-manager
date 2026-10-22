@@ -21,7 +21,7 @@
      不支持 backdrop-filter 时回退实底 --raised（components.css）。对话框、抽屉、提示框保持实底 */
   --glass: color-mix(in srgb, var(--raised) 84%, transparent);
   --glass-blur: saturate(180%) blur(20px);
-  /* 吸附条材质（顶栏、上架页底部操作条）：表面 78% + 模糊提饱和，不支持 backdrop-filter 时回退实底 --surface */
+  /* 吸附条材质（顶栏、上架页底部操作条、抽屉页签里的吸顶条）：表面 78% + 模糊提饱和，不支持 backdrop-filter 时回退实底 --surface（overrides.css） */
   --glass-bar: color-mix(in srgb, var(--surface) 78%, transparent);
   --glass-bar-blur: saturate(180%) blur(12px);
   --scrim-stacked: rgb(0 0 0 / 0.12);   /* 抽屉上再叠对话框 / 命令面板时的第二层遮罩：抽屉的遮罩已压暗，这层只轻压（components.css） */

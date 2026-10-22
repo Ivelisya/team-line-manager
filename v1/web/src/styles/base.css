@@ -59,7 +59,6 @@ a { color: inherit; }
   background: var(--glass-bar); border-bottom: 1px solid var(--line);
   -webkit-backdrop-filter: var(--glass-bar-blur); backdrop-filter: var(--glass-bar-blur); /* 毛玻璃：内容从顶栏下滚过时隐约透出（半径 12：滚动时每帧都要重做，20 的采样开销大、观感差别很小） */
 }
-@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .topbar { background: var(--surface); } }
 .brand {
   display: inline-flex; align-items: center; gap: var(--sp-8);
   font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-sans);
