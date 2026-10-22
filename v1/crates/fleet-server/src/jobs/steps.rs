@@ -338,11 +338,8 @@ fn check_nft(out: &Output, allow: &str, table: &str) -> anyhow::Result<()> {
     }
     let (want, got) = (ip_set(allow), ip_set(out.kv("nft_relays").unwrap_or("")));
     if want != got {
-        return Err(remote(format!(
-            "节点防火墙放行名单和期望不一致：期望 [{}]，实际 [{}]",
-            want.iter().cloned().collect::<Vec<_>>().join(", "),
-            got.iter().cloned().collect::<Vec<_>>().join(", ")
-        )));
+        let list = |s: &BTreeSet<String>| if s.is_empty() { "无".to_string() } else { s.iter().cloned().collect::<Vec<_>>().join("、") };
+        return Err(remote(format!("节点防火墙放行名单和期望不一致：期望 {}；实际 {}", list(&want), list(&got))));
     }
     Ok(())
 }
