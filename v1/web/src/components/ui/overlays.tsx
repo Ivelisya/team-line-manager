@@ -96,6 +96,7 @@ export function TipHost() {
   const hide = React.useRef(() => {});
   React.useEffect(() => {
     let cur: Element | null = null; let timer = 0; let shown = false; let closedAt = 0; let seq = 0;
+    let tapClosed: Element | null = null; // 按下时收起的是哪个（再点同一个「(i)」= 收起，不再打开）
     const show = (el: HTMLElement) => { shown = true; setTip({ id: ++seq, text: el.dataset.tip ?? '', r: el.getBoundingClientRect() }); setOpen(true); };
     const close = () => {
       clearTimeout(timer); cur = null;
@@ -114,8 +115,16 @@ export function TipHost() {
     // 键盘聚焦才弹；鼠标按下得到的焦点不算（同 Radix）
     const focus = (e: FocusEvent) => { const el = (e.target as Element).closest<HTMLElement>(TIP_SEL); if (el?.matches(':focus-visible')) { close(); cur = el; show(el); } };
     const leave = (e: PointerEvent) => { if (!e.relatedTarget) close(); }; // 指针离开窗口
+    // 轻触同一个「(i)」第二下 = 收起；鼠标点开着的「(i)」不收（悬停已经打开了，点它是想看）
+    const down = (e: PointerEvent) => { tapClosed = shown && e.pointerType === 'touch' ? cur : null; close(); };
+    // 「(i)」点一下 / 轻触也能打开：触屏没有悬停，鼠标点下去得到的焦点也不弹（只认键盘聚焦）
+    const click = (e: MouseEvent) => {
+      const el = (e.target as Element).closest<HTMLElement>('.info-tip');
+      if (!el?.dataset.tip || tapClosed === el) { tapClosed = null; return; }
+      cur = el; show(el);
+    };
     const on: [EventTarget, string, EventListener, boolean][] = [
-      [document, 'pointerover', over as EventListener, false], [document, 'pointerout', leave as EventListener, false], [document, 'pointerdown', close, true],
+      [document, 'pointerover', over as EventListener, false], [document, 'pointerout', leave as EventListener, false], [document, 'pointerdown', down as EventListener, true], [document, 'click', click as EventListener, false],
       [document, 'focusin', focus as EventListener, false], [document, 'focusout', close, false], [window, 'scroll', close, true],
     ];
     on.forEach(([t, n, f, c]) => t.addEventListener(n, f, c));
