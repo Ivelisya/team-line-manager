@@ -15,6 +15,7 @@ pub mod live;
 pub mod names;
 pub mod notify;
 pub mod policy;
+pub mod routers;
 pub mod selfmon;
 pub mod silence;
 pub mod ssh;
@@ -94,7 +95,7 @@ async fn response_headers(State(https): State<bool>, req: axum::extract::Request
     res
 }
 
-/// 后台任务：作业、告警、实时指标、访问汇总、来源画像、通知发送、分区维护、小时汇总。
+/// 后台任务：作业、告警、实时指标、访问汇总、来源画像、通知发送、分区维护、小时汇总、软路由采集（含它的告警）。
 /// 都在 `supervise` 下跑：panic 或意外返回时记 error、10 秒后原地重启（这些循环的状态在库里，内存里的去抖计数、缓存重启后重新累计）。
 /// 作业引擎例外：它启动时释放全部作业租约（认定之前的执行者已经不在了），原地重启会让还在跑的作业被再领一次、两个执行者同时推进，
 /// 所以它一退出就结束整个进程，交给 systemd 重启（单元里 Restart=always）
@@ -113,6 +114,7 @@ pub fn spawn_background(st: &AppState) {
     supervise(st, "分区与保留期维护", false, housekeeping);
     supervise(st, "小时汇总", false, rollup_loop);
     supervise(st, "会话撤销通知", false, revoked_listener);
+    supervise(st, "软路由采集", false, routers::collect::run_forever);
 }
 
 /// 命令行（user-set 重设密码）在别的进程里删会话：经 NOTIFY 转来，实时流的连接马上复核。
@@ -176,6 +178,9 @@ async fn housekeeping(s: AppState) {
         if let Err(e) = db::cleanup_retention(&s.db, source_ip_days).await {
             tracing::error!("保留期清理失败：{e:#}");
         }
+        if let Err(e) = routers::collect::cleanup(&s.db, s.cfg.retention.raw_days).await {
+            tracing::error!("软路由指标保留期清理失败：{e:#}");
+        }
     }
 }
 
@@ -191,5 +196,8 @@ async fn rollup_loop(s: AppState) {
         }
         // 失败也可能已写进一部分小时：照样作废流量缓存
         s.live.rolled_up();
+        if let Err(e) = routers::collect::rollup(&s.db).await {
+            tracing::error!("软路由小时汇总失败：{e:#}");
+        }
     }
 }

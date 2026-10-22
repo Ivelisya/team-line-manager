@@ -28,7 +28,8 @@ pub struct T {
     pub app: axum::Router,
     pub st: AppState,
     pub cookie: String,
-    /// 本测试的临时目录：known_hosts、离线 IP 库（ipintel/）、推给机器的程序（dist/，默认不存在）
+    /// 本测试的临时目录：known_hosts、离线 IP 库（ipintel/）、推给机器的程序（dist/，默认不存在）、中控 SSH 密钥（ssh/，默认不存在）、
+    /// 软路由的隧道公钥清单与 router_known_hosts（不碰本机 /var/lib/fleet 下真的那几个）
     pub dir: tempfile::TempDir,
     _schema: Schema,
 }
@@ -184,11 +185,15 @@ pub async fn boot_in(dir: tempfile::TempDir, background: bool, extra: &str) -> T
         r#"database_url = "{url}"
            secret_key_file = "/dev/null"
            public_url = "http://fleet.test"
-           ssh_key = "/nonexistent"
+           ssh_key = "{d}/ssh/id_ed25519"
            known_hosts = "{d}/known_hosts"
            dist_dir = "{d}/dist"
            ipintel.db_dir = "{d}/ipintel"
            ipintel.overrides = "/nonexistent/ipintel-overrides.toml"
+           routers.tunnel_keys_file = "{d}/tunnel-keys"
+           routers.known_hosts = "{d}/router_known_hosts"
+           routers.control_dir = "{d}/ssh-ctl"
+           routers.sshd_host_key = "{d}/ssh_host_ed25519_key.pub"
            {extra}"#
     ))
     .unwrap();
