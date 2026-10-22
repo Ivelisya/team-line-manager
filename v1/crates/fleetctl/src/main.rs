@@ -364,7 +364,7 @@ enum Cmd {
         #[arg(long)]
         password_env: Option<String>,
     },
-    /// 取消进行中的作业
+    /// 取消进行中的作业（升级 agent 只能在排队时取消，「全部升级」里等它的跟着取消）
     Cancel { id: String },
     /// 上架：先 check 再提交（单台参数或 --file 批量）
     Provision(ProvisionArgs),
@@ -407,7 +407,7 @@ enum Cmd {
         #[arg(long)]
         yes: bool,
     },
-    /// 升级 agent（单台，或 --all：先升一台做金丝雀，成功后线路机逐台、落地机并发）；新版本起不来或没上报自动换回旧版本
+    /// 升级 agent（单台，或 --all：先升一台做金丝雀，成功后线路机逐台、落地机并发）；新版本起不来、没上报或线路机 Xray 不正常自动换回旧版本
     UpgradeAgent {
         machine: Option<String>,
         #[arg(long)]
