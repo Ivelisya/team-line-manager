@@ -8,10 +8,12 @@ import type { DueState, EntryView, HealthReason, Lifecycle, MachineView } from '
 import { HEALTH_TONE } from '@/lib/sort';
 import { countryName, flagUrl } from '@/lib/flags';
 import { Tip, Trunc } from '@/components/ui/overlays';
+import { InfoTip } from '@/components/ui/form';
 import { useCountUp } from '@/lib/useCountUp';
-import { dueTone, entryLabel, healthLabel, hostRel, lifecycleLabel, severityOf, type BeatCell } from '@/lib/derive';
-import { useDrawer } from '@/lib/drawer';
+import { dueTone, entryLabel, errText, healthLabel, hostRel, lifecycleLabel, severityOf, type BeatCell } from '@/lib/derive';
+import { openDrawer } from '@/lib/drawer';
 import { copyText } from '@/lib/clipboard';
+import { watchSize } from '@/lib/sharedObserver';
 
 /** 数值 + 灰色小单位 */
 export function Num({ f }: { f: Fmt }) {
@@ -35,26 +37,16 @@ export function HealthPill({ m }: { m: Pick<MachineView, 'health' | 'lifecycle' 
   if (lc === 'retiring') return <Pill tone="info" dot="pulse">{lifecycleLabel(lc)}</Pill>;
   if (lc === 'retired') return <Pill tone="neutral">{lifecycleLabel(lc)}</Pill>;
   if (lc === 'failed') return <Pill tone="bad">{lifecycleLabel(lc)}</Pill>;
-  const s = m.health.status;
-  const pill = <Pill tone={HEALTH_TONE[s]} tabIndex={m.health.reasons.length ? 0 : undefined}>{healthLabel(s)}</Pill>;
-  return <Tip text={reasonsTip(m.health.reasons)}>{pill}</Tip>;
+  // 原因写成 data-tip（一条一行）交给全站一份 TipHost：卡片、表格里成批的胶囊不各挂一个 Radix Tooltip 根
+  const s = m.health.status; const rs = m.health.reasons;
+  return <Pill tone={HEALTH_TONE[s]} tabIndex={rs.length ? 0 : undefined} tip={rs.map((r) => errText(r.text)).join('\n')}>{healthLabel(s)}</Pill>;
 }
-/** 健康原因列表（带严重度圆点）：健康 pill 的悬停提示与抽屉“状态原因”共用 */
+/** 健康原因列表（带严重度图标）：抽屉“状态原因”。英文原始错误换成中文（errText，同卡片与胶囊悬停） */
 export const ReasonList = ({ reasons, className }: { reasons: HealthReason[]; className: string }) => (
   <ul className={className}>
-    {reasons.map((r, i) => <li key={i}><SeverityMark severity={r.severity} />{r.text}</li>)}
+    {reasons.map((r, i) => <li key={i}><SeverityMark severity={r.severity} />{errText(r.text)}</li>)}
   </ul>
 );
-const reasonsTip = (reasons: HealthReason[]) => (reasons.length ? <ReasonList reasons={reasons} className="tip-list" /> : null);
-/** 名字后面的状态标（卡片头、表格名称列）：正常不标；故障、降级、维护中、未知各一个小图标，上架中 / 退役中转圈，上架失败同故障。
- *  颜色之外给读屏与悬停一份文字（不用小圆点：用户嫌不好看） */
-export const StatusMark = ({ status, lifecycle }: { status: string; lifecycle: Lifecycle }) => {
-  const busy = lifecycle === 'provisioning' || lifecycle === 'retiring';
-  const tone = lifecycle === 'failed' ? 'bad' : busy ? 'info' : HEALTH_TONE[status];
-  if (tone === 'ok') return null;
-  const text = busy || lifecycle === 'failed' ? lifecycleLabel(lifecycle) : healthLabel(status);
-  return <span className="smark" data-tone={tone} data-spin={busy ? '' : undefined} role="img" aria-label={text} data-tip={text} />;
-};
 /** 告警级别圆点（抽屉「最近告警」时间线的节点）：颜色之外给读屏与悬停一份文字 */
 export const SeverityDot = ({ severity }: { severity: string }) => {
   const s = severityOf(severity);
@@ -77,7 +69,7 @@ export const LifecyclePill = ({ lc }: { lc: Lifecycle | string }) => (
 );
 
 // 入口状态：active 按是否已应用细分
-export const entryState = (e: EntryView) => (e.lifecycle === 'disabled' ? <Pill tone="neutral">{entryLabel('disabled')}</Pill> : e.lifecycle === 'active' ? (e.applied ? <Pill tone="ok">{entryLabel('active')}</Pill> : e.apply_error ? <Pill tone="bad" tip={e.apply_error}>应用失败</Pill> : <Pill tone="info" dot="pulse">{entryLabel('pending')}</Pill>) : <Pill tone="info" dot="pulse">{entryLabel(e.lifecycle)}</Pill>);
+export const entryState = (e: EntryView) => (e.lifecycle === 'disabled' ? <Pill tone="neutral">{entryLabel('disabled')}</Pill> : e.lifecycle === 'active' ? (e.applied ? <Pill tone="ok">{entryLabel('active')}</Pill> : e.apply_error ? <Pill tone="bad" tip={errText(e.apply_error)}>应用失败</Pill> : <Pill tone="info" dot="pulse">{entryLabel('pending')}</Pill>) : <Pill tone="info" dot="pulse">{entryLabel(e.lifecycle)}</Pill>);
 
 export function Chip({ children, variant, tip, className }: { children: React.ReactNode; variant?: 'neutral' | 'warn'; tip?: string; className?: string }) {
   return <span className={cn('chip', variant === 'neutral' && 'chip-neutral', variant === 'warn' && 'chip-warn', className)} data-tip={tip}>{children}</span>;
@@ -85,15 +77,15 @@ export function Chip({ children, variant, tip, className }: { children: React.Re
 export const Mark = ({ children, tip }: { children: React.ReactNode; tip?: string }) => <span className="mark" data-tip={tip}>{children}</span>;
 
 /** 同机关系标（卡片、环形卡、机器表共用）：同机 IP 节点「同机 · 宿主机名」、宿主机「+N IP」，点击打开对应机器的抽屉——
- *  宿主机上有几个同机节点时打开宿主机自己（概览里逐个列着）。在表格行里点它不触发行的点击。没有同机关系的机器不渲染（也不订阅地址） */
+ *  宿主机上有几个同机节点时打开宿主机自己（概览里逐个列着）。在表格行里点它不触发行的点击。没有同机关系的机器不渲染。
+ *  用模块级的 openDrawer：成批的标签不各自订阅地址参数（订阅了任何地址变化都会让它们全部重渲染） */
 type HostTagProps = { id: string; host: MachineView['host_machine']; nodes: MachineView['ip_nodes']; short?: boolean; tabIndex?: number };
 export const HostTag = (p: HostTagProps) => (p.host || p.nodes.length ? <HostTagButton {...p} /> : null);
 function HostTagButton({ id, host, nodes, short, tabIndex }: HostTagProps) {
-  const { open } = useDrawer();
   const r = hostRel(host, nodes, short)!;
   const to = host ? host.id : nodes.length === 1 ? nodes[0].id : id;
   const act = host ? '点击打开宿主机' : nodes.length === 1 ? '点击打开它' : '点击在这台机器的详情里查看';
-  return <button type="button" className="tag" data-c="violet" data-tip={`${r.tip}。${act}`} tabIndex={tabIndex} onClick={(e) => { e.stopPropagation(); open(to); }}>{r.text}</button>;
+  return <button type="button" className="tag" data-c="violet" data-tip={`${r.tip}。${act}`} tabIndex={tabIndex} onClick={(e) => { e.stopPropagation(); openDrawer(to); }}>{r.text}</button>;
 }
 
 /** 名字前的国旗（原版国旗位）：机器自己 IP 所在的国家（中控离线 IP 库按 IP 查）；查不到（内网地址、家宽代理填的是域名、库没装）
@@ -117,16 +109,19 @@ export function FilterChip({ pressed, onClick, children, count }: { pressed: boo
 }
 
 type StatTone = 'ok' | 'teal' | 'bad' | 'amber' | 'gold' | 'sky' | 'violet' | 'blue';
-/** KPI 卡（唯一实现）：彩色图标 + 标签，大号读数 + 小单位，一行灰色说明；三行固定，同一排等高。可点的（to）标题行最右多一个小箭头 */
-export function Stat({ icon, tone, label, value, unit, caption, to, loading }: { icon: React.ReactNode; tone: StatTone; label: string; value: React.ReactNode; unit?: string; caption?: React.ReactNode; to?: string; loading?: boolean }) {
+/** KPI 卡（唯一实现）：彩色图标 + 标签，大号读数 + 小单位，一行灰色说明；三行固定，同一排等高。
+ *  可点的（to 跳页面，onClick 做别的，如打开抽屉）标题行最右多一个小箭头。info：口径说明，标签旁的「(i)」悬停看 */
+export function Stat({ icon, tone, label, info, value, unit, caption, to, onClick, loading }: { icon: React.ReactNode; tone: StatTone; label: string; info?: string; value: React.ReactNode; unit?: string; caption?: React.ReactNode; to?: string; onClick?: () => void; loading?: boolean }) {
   const inner = (
     <>
-      <span className="stat-label"><span className="stat-ic" data-tone={tone}>{icon}</span>{label}{to && <ChevronRight className="stat-go" aria-hidden />}</span>
+      <span className="stat-label"><span className="stat-ic" data-tone={tone}>{icon}</span>{label}{info && <InfoTip text={info} />}{(to || onClick) && <ChevronRight className="stat-go" aria-hidden />}</span>
       <span className="stat-value">{loading ? <span className="skel" style={{ width: 64, height: 20 }} /> : <>{value}{unit && <small>{unit}</small>}</>}</span>
       <span className="stat-cap">{loading ? '' : caption ?? ' '}</span>
     </>
   );
-  return to ? <Link className="stat" to={to}>{inner}</Link> : <div className="stat">{inner}</div>;
+  if (to) return <Link className="stat is-link" to={to}>{inner}</Link>;
+  if (onClick) return <button type="button" className="stat is-link" onClick={onClick}>{inner}</button>;
+  return <div className="stat">{inner}</div>;
 }
 /** 数字平滑过渡：值变了从旧值滚到新值。format 决定怎么显示（默认取整） */
 export function CountUp({ value, format }: { value: number | null | undefined; format?: (n: number) => string }) {
@@ -134,11 +129,11 @@ export function CountUp({ value, format }: { value: number | null | undefined; f
   if (value == null) return <>—</>;
   return <>{format ? format(v) : Math.round(v)}</>;
 }
-/** KPI 说明行里的「● 降级 3」：数字的字重、颜色同说明行里的其它数字（home.css .stat-cap .num） */
-/** 说明行里的分项计数（降级 4 · 故障 2，状态名同全站）：不配小圆点，有数时数字按级别着色 */
-export const DotCount = ({ tone, n, label }: { tone: Tone; n: number; label: string }) => (
-  <span className="dotline" data-tone={n > 0 ? tone : undefined}>{label} <b className="num">{n}</b></span>
-);
+/** 说明行里的分项计数（降级 4 · 故障 2，状态名同全站）：不配小圆点，有数时数字按级别着色；to：有数时可点（如故障 → 机器页的故障筛选） */
+export const DotCount = ({ tone, n, label, to }: { tone: Tone; n: number; label: string; to?: string }) => {
+  const body = <>{label} <b className="num">{n}</b></>;
+  return n > 0 && to ? <Link className="dotline is-link" data-tone={tone} to={to}>{body}</Link> : <span className="dotline" data-tone={n > 0 ? tone : undefined}>{body}</span>;
+};
 
 /** 表头排序：首次点击按 first 的方向（数值列多为先降序，名称、到期先升序），再点反向，第三次回到默认顺序（null） */
 export interface SortState { id: string; desc: boolean }
@@ -158,10 +153,12 @@ export function SortHead({ cols, sort, onSort }: { cols: { id: string; header: s
   );
 }
 
-/** 标签/值（唯一实现）：值单行显示；字符串值放不下时省略、悬停看全文（IPv6、公网地址），wrap 的折行显示 */
-export function LabelValue({ label, children, wrap, className }: { label: string; children: React.ReactNode; wrap?: boolean; className?: string }) {
+/** 标签/值（唯一实现）：值单行显示；字符串值放不下时省略、悬停看全文（IPv6、公网地址），wrap 的折行显示。
+ *  plain：字符串值直接省略 + data-tip（卡片里成批出现，不各挂一个 Trunc 的 Radix 根） */
+export function LabelValue({ label, children, wrap, plain, className }: { label: string; children: React.ReactNode; wrap?: boolean; plain?: boolean; className?: string }) {
   const v = children ?? '—';
-  return <div className={cn('lv', className)}><dt>{label}</dt><dd className={cn(wrap && 'wrap')}>{typeof v === 'string' && !wrap ? <Trunc>{v}</Trunc> : v}</dd></div>;
+  const str = typeof v === 'string' && !wrap;
+  return <div className={cn('lv', className)}><dt>{label}</dt><dd className={cn(wrap && 'wrap')} data-tip={str && plain ? v : undefined}>{str && !plain ? <Trunc>{v}</Trunc> : v}</dd></div>;
 }
 export const LabelValueGrid = ({ children, cols2 }: { children: React.ReactNode; cols2?: boolean }) => <dl className={cn('lv-grid', cols2 && 'cols-2')}>{children}</dl>;
 
@@ -187,6 +184,28 @@ export const Panel = React.forwardRef<HTMLElement, { title?: React.ReactNode; co
     </section>
   );
 });
+
+/** 页面里的表格容器：表放得下（不用横滑）时写上 data-fit，表头吸顶在顶栏下方（table.css）；放不下时照常横滑、不吸顶。
+ *  抽屉、对话框里的表不用它：那里的滚动容器不是页面，吸顶的位置不对 */
+export function TableWrap({ className, children, ...p }: React.HTMLAttributes<HTMLDivElement> & { 'data-stale'?: boolean }) {
+  const ref = React.useRef<HTMLDivElement>(null);
+  const bound = React.useRef<{ t: HTMLTableElement; off: () => void } | null>(null);
+  // 每次渲染后看里面的表换没换（空状态 ↔ 表格、加载完才出表、换了一张），换了就重新绑定尺寸监听
+  React.useLayoutEffect(() => {
+    const el = ref.current!;
+    const t = el.querySelector('table');
+    if (t === (bound.current?.t ?? null)) return;
+    bound.current?.off();
+    bound.current = null;
+    if (!t) { el.removeAttribute('data-fit'); return; }
+    const apply = () => el.toggleAttribute('data-fit', t.offsetWidth <= el.clientWidth + 1);
+    apply();
+    const a = watchSize(el, apply); const b = watchSize(t, apply);
+    bound.current = { t, off: () => { a(); b(); } };
+  });
+  React.useLayoutEffect(() => () => { bound.current?.off(); bound.current = null; }, []);
+  return <div ref={ref} className={cn('table-wrap', className)} {...p}>{children}</div>;
+}
 
 /** 页头：全站同一个 */
 export function PageHead({ title, note, tools }: { title: string; note?: React.ReactNode; tools?: React.ReactNode }) {
@@ -233,13 +252,14 @@ export function CopyButton({ text, label = '内容', className, size = 14 }: { t
   );
 }
 
-/** 心跳条：n 格（默认 20 格 = 卡片上的近 1 小时），ok/warn/bad/空；titles 与 cells 一一对应，作每格的悬停说明 */
-export function Beat({ cells, titles, caption, win, stale, n = 20 }: { cells: BeatCell[]; titles?: string[]; caption: React.ReactNode; win?: string; stale?: boolean; n?: number }) {
+/** 心跳条：n 格（默认 20 格 = 卡片上的近 1 小时），ok/warn/bad/空；titles 与 cells 一一对应，作每格的悬停说明（只给数据）；
+ *  颜色含义（legend）放在右上角时间窗的悬停里 */
+export function Beat({ cells, titles, caption, win, legend, stale, n = 20 }: { cells: BeatCell[]; titles?: string[]; caption: React.ReactNode; win?: string; legend?: string; stale?: boolean; n?: number }) {
   const pad = Math.max(0, n - cells.length);
   const shown = cells.slice(-n); const tips = titles?.slice(-n);
   return (
     <div className={cn('beat', stale && 'is-stale')}>
-      <div className="beat-cap"><span className="beat-main ellipsis">{caption}</span>{win && <span className="beat-win">{win}</span>}</div>
+      <div className="beat-cap"><span className="beat-main ellipsis">{caption}</span>{win && <span className="beat-win" data-tip={legend}>{win}</span>}</div>
       <div className="beat-cells">{Array.from({ length: pad + shown.length }, (_, i) => i < pad ? <i key={i} /> : <i key={i} data-t={shown[i - pad] ?? undefined} data-tip={tips?.[i - pad]} />)}</div>
     </div>
   );

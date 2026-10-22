@@ -15,9 +15,14 @@ function normalizeOne(tok: string): { ok: true; value: string } | { ok: false; e
   let d = (exact ? tok.slice(1) : tok).toLowerCase();
   d = d.replace(/\.+$/, '');
   if (!d) return bad(`「${shown}」后面没有域名`);
-  // eslint-disable-next-line no-control-regex
-  if (/[^\x00-\x7f]/.test(d)) return bad(`「${shown}」含非 ASCII 字符，请填 xn-- 形式`);
   if (d.includes('://') || /[/?#@]/.test(d)) return bad(`「${shown}」是网址，请只填域名`);
+  // 中文等国际化域名自动转成 xn-- 形式（服务端只收 ASCII）
+  // eslint-disable-next-line no-control-regex
+  if (/[^\x00-\x7f]/.test(d)) {
+    const a = toAscii(d);
+    if (!a) return bad(`「${shown}」不是有效的域名`);
+    d = a;
+  }
   const pre = PREFIXES.find((p) => d.startsWith(p));
   if (pre) return bad(`「${shown}」不要带 ${pre} 前缀`);
   const ipLike = isIp(d) || isIp(d.replace(/^\[|\]$/g, '')) || d.split('.').every((l) => l !== '' && /^[0-9]+$/.test(l));
@@ -34,6 +39,11 @@ function normalizeOne(tok: string): { ok: true; value: string } | { ok: false; e
     if (label.startsWith('-') || label.endsWith('-')) return bad(`「${shown}」的标签「${label}」不能以连字符开头或结尾`);
   }
   return { ok: true, value: exact ? `=${d}` : d };
+}
+
+/** 国际化域名 → xn-- 形式：交给浏览器的 URL 解析（IDNA）；解析不了的为 null */
+function toAscii(d: string): string | null {
+  try { return new URL(`http://${d}`).hostname; } catch { return null; }
 }
 
 /** IPv4 / IPv6 字面量（够用的粗判：IPv4 四段数字，或含冒号且只有十六进制与冒号点） */

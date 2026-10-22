@@ -16,7 +16,8 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, Di
 import { SkeletonRows } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
 import { ConfirmDialog, FormDialog } from '@/components/app/dialogs';
-import { Chip, CopyButton, Empty, ErrorNote, Note, PageHead, Panel, Pill } from '@/components/app/primitives';
+import { Chip, CopyButton, Empty, ErrorNote, Note, PageHead, Panel, Pill, TableWrap } from '@/components/app/primitives';
+import { ShowAll } from '@/components/app/Pagination';
 import { copyText } from '@/lib/clipboard';
 import { resetOnOpen, useHeld } from '@/lib/useHeld';
 
@@ -44,11 +45,12 @@ export function SettingsPage() {
 const SCOPES: { value: string; label: string; desc: string; sensitive?: boolean }[] = [
   { value: 'read', label: '读取', desc: '所有查询（不含凭据）' },
   { value: 'write', label: '写入', desc: '上架、改名、续费等改动' },
-  { value: 'secrets', label: '凭据', desc: '读取分享链接，记入审计', sensitive: true },
-  { value: 'exec', label: '远程执行', desc: '在机器上执行命令，记入审计', sensitive: true },
+  { value: 'secrets', label: '凭据', desc: '读取分享链接等凭据，记入操作记录', sensitive: true },
+  { value: 'exec', label: '远程执行', desc: '在机器上执行命令，记入操作记录', sensitive: true },
 ];
+const NEVER = '永不过期';
 const SCOPE_LABEL = Object.fromEntries(SCOPES.map((s) => [s.value, s.label]));
-const EXPIRES = [{ value: '30', label: '30 天' }, { value: '90', label: '90 天' }, { value: '365', label: '1 年' }, { value: 'never', label: '永不过期' }];
+const EXPIRES = [{ value: '30', label: '30 天' }, { value: '90', label: '90 天' }, { value: '365', label: '1 年' }, { value: 'never', label: NEVER }];
 
 function keyStatus(k: ApiKey) {
   if (k.revoked_at) return <Pill tone="neutral">已撤销</Pill>;
@@ -91,7 +93,7 @@ function ApiKeysSection() {
         {q.isLoading ? <SkeletonRows rows={3} head /> : list.length === 0 && !q.isError ? (
           <Empty icon={<KeyRound size={22} />} text="还没有 API 密钥"><Button variant="primary" onClick={openNew}><Plus />新建密钥</Button></Empty>
         ) : (
-          <div className="table-wrap">
+          <TableWrap>
             <table className="dt" style={{ minWidth: 860 }}>
               <colgroup><col style={{ width: 200 }} /><col style={{ width: 230 }} /><col style={{ width: 112 }} /><col style={{ width: 112 }} /><col style={{ width: 112 }} /><col style={{ width: 88 }} /><col style={{ width: 52 }} /></colgroup>
               <thead><tr><th>名称</th><th>权限</th><th>创建</th><th>最近使用</th><th>到期</th><th>状态</th><th /></tr></thead>
@@ -102,20 +104,20 @@ function ApiKeysSection() {
                     <td><span className="scope-tags">{k.scopes.map((s) => <Chip key={s} variant={s === 'exec' || s === 'secrets' ? 'warn' : 'neutral'}>{SCOPE_LABEL[s] ?? s}</Chip>)}</span></td>
                     <td>{F.dt(k.created_at)}</td>
                     <td>{k.last_used_at ? <>{F.dt(k.last_used_at)}<span className="sub">{F.ago(k.last_used_at)}</span></> : <span className="t-sub">从未使用</span>}</td>
-                    <td>{k.expires_at ? F.dt(k.expires_at) : <span className="t-sub">永不</span>}</td>
+                    <td>{k.expires_at ? F.dt(k.expires_at) : <span className="t-sub">{NEVER}</span>}</td>
                     <td>{keyStatus(k)}</td>
                     <td className="c">{!k.revoked_at && <IconButton label="撤销密钥" size="sm" onClick={() => setAsk(k)}><Ban size={14} /></IconButton>}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          </div>
+          </TableWrap>
         )}
       </Panel>
 
       <FormDialog size="md" dirty={!!name.trim() || scopes.join() !== 'read' || exp !== '90' || !!pw} open={open} onOpenChange={setOpen} title="新建 API 密钥" desc="创建后密钥只显示一次" submitLabel="创建密钥" busy={create.isPending} valid={valid} onSubmit={submit}>
         <div className="form-grid">
-          <Field label="名称"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：备份脚本" autoFocus autoComplete="off" data-1p-ignore data-lpignore="true" /></Field>
+          <Field label="名称"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：备份脚本" autoFocus autoComplete="off" /></Field>
           <Field label="有效期"><Select value={exp} onChange={setExp} options={EXPIRES} /></Field>
         </div>
         <div className="field">
@@ -124,13 +126,13 @@ function ApiKeysSection() {
             {SCOPES.map((s) => (
               <label key={s.value} className="scope-row" data-on={scopes.includes(s.value) ? '1' : undefined}>
                 <Checkbox checked={scopes.includes(s.value)} onCheckedChange={(v) => toggle(s.value, v === true)} aria-label={s.label} />
-                <span><b>{s.label}</b>{s.sensitive && <> <Chip variant="warn">敏感</Chip></>}<div className="hint">{s.desc}</div></span>
+                <span className="scope-name"><b>{s.label}</b><InfoTip text={s.desc} />{s.sensitive && <Chip variant="warn">敏感</Chip>}</span>
               </label>
             ))}
           </div>
           {scopes.length === 0 && <div className="hint is-error">至少选择一项权限</div>}
         </div>
-        {(scopes.includes('exec') || scopes.includes('secrets')) && <Note tone="warn" icon={<ShieldAlert size={14} />}>这个密钥可以{scopes.includes('exec') ? '在机器上执行命令' : ''}{scopes.includes('exec') && scopes.includes('secrets') ? '、' : ''}{scopes.includes('secrets') ? '读取分享链接等凭据' : ''}，请设有效期 <InfoTip text="泄露后风险很高：只放在可信的环境里。" /></Note>}
+        {(scopes.includes('exec') || scopes.includes('secrets')) && <Note tone="warn" icon={<ShieldAlert size={14} />}>高权限密钥，请设有效期 <InfoTip text={`这个密钥可以${[scopes.includes('exec') && '在机器上执行命令', scopes.includes('secrets') && '读取分享链接等凭据'].filter(Boolean).join('、')}。泄露后风险很高：只放在可信的环境里。`} /></Note>}
         <input type="text" autoComplete="username" value={me.data?.username ?? ''} readOnly hidden />
         <div className="form-grid">
           <Field label="当前密码"><Input type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="current-password" /></Field>
@@ -141,8 +143,8 @@ function ApiKeysSection() {
 
       <Dialog open={token != null} onOpenChange={(o) => !o && setToken(null)}>
         <DialogContent size="md" onInteractOutside={(e) => e.preventDefault()} onEscapeKeyDown={(e) => e.preventDefault()} onOpenAutoFocus={(e) => { e.preventDefault(); copyRef.current?.focus(); }}>
-          <DialogHeader><DialogTitle>密钥已创建</DialogTitle><DialogDescription>请现在复制并保存。</DialogDescription></DialogHeader>
-          <Note tone="warn" icon={<ShieldAlert size={14} />}><b>只显示这一次。</b>丢了只能撤销重建</Note>
+          <DialogHeader><DialogTitle>密钥已创建</DialogTitle><DialogDescription className="sr-only">复制并保存这个密钥</DialogDescription></DialogHeader>
+          <Note tone="warn" icon={<ShieldAlert size={14} />}><b>只显示这一次</b> <InfoTip text="关掉后再也看不到；丢了只能撤销后重建一个。" /></Note>
           <div className="token-box"><code>{tokenHeld}</code><CopyButton text={tokenHeld ?? ''} label="密钥" size={15} /></div>
           <DialogFooter>
             <Button ref={copyRef} onClick={() => void copyText(token ?? '', '密钥')}>复制密钥</Button>
@@ -170,6 +172,7 @@ const NOTIFY_KIND: Record<NotifyLogEntry['kind'], string> = { firing: '触发', 
 const sevPill = (s: string) => (s === 'critical' ? <Pill tone="bad" dot="none">严重</Pill> : s === 'warning' ? <Pill tone="warn" dot="none">警告及以上</Pill> : <Pill tone="info" dot="none">全部</Pill>);
 
 interface TestResult { ok: boolean; error: string | null }
+const LOG_CAP = 20;
 
 function NotifySection() {
   const q = useNotifyChannels(); const log = useNotifyLog();
@@ -181,6 +184,8 @@ function NotifySection() {
   const askHeld = useHeld(ask?.id, ask);
   const [results, setResults] = React.useState<Record<string, TestResult>>({});
   const list = q.data ?? [];
+  // 发送记录先露前 LOG_CAP 条，表尾展开全部（不在面板里再套一层滚动）
+  const [allLog, setAllLog] = React.useState(false);
   const runTest = (c: NotifyChannel) => {
     test.mutate(c.id, {
       onSuccess: (r) => { setResults((m) => ({ ...m, [c.id]: r })); if (r.ok) toast.ok(`已向「${c.name}」发送测试消息`); else toast.err(`「${c.name}」发送失败：${r.error ?? '未知错误'}`); },
@@ -193,9 +198,9 @@ function NotifySection() {
         tools={<Button variant="primary" onClick={() => setEdit('new')}><Plus />新建渠道</Button>}>
         {q.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div>}
         {q.isLoading ? <SkeletonRows rows={3} head /> : list.length === 0 && !q.isError ? (
-          <Empty icon={<Bell size={22} />} text="还没有通知渠道" hint="告警现在只显示在页面里"><Button variant="primary" onClick={() => setEdit('new')}><Plus />新建渠道</Button></Empty>
+          <Empty icon={<Bell size={22} />} text="还没有通知渠道" />
         ) : (
-          <div className="table-wrap">
+          <TableWrap>
             <table className="dt" style={{ minWidth: 860 }}>
               <colgroup><col style={{ width: 250 }} /><col style={{ width: 150 }} /><col style={{ width: 70 }} /><col style={{ width: 200 }} /><col style={{ width: 130 }} /></colgroup>
               <thead><tr><th>渠道</th><th>最低级别</th><th>启用</th><th>测试</th><th /></tr></thead>
@@ -225,21 +230,22 @@ function NotifySection() {
                 })}
               </tbody>
             </table>
-          </div>
+          </TableWrap>
         )}
       </Panel>
 
-      <Panel title="最近发送记录" count={log.data?.length} sub="最近 100 条" flush>
+      <Panel title="最近发送记录" count={log.data?.length} sub={<InfoTip text="最近 100 条" />} flush>
         {log.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={log.error} onRetry={() => void log.refetch()} /></div>}
         {log.isLoading ? <SkeletonRows rows={3} one head /> : !log.data?.length && !log.isError ? <Empty icon={<Send size={22} />} text="还没有发送记录" /> : (
-          <div className="table-wrap" style={{ maxHeight: 420, overflowY: 'auto' }}>
+          <TableWrap>
             <table className="dt is-one" style={{ minWidth: 640 }}>
-              <colgroup><col style={{ width: 156 }} /><col style={{ width: 170 }} /><col style={{ width: 90 }} /><col style={{ width: 240 }} /><col /></colgroup>
+              <colgroup><col style={{ width: 120 }} /><col style={{ width: 200 }} /><col style={{ width: 90 }} /><col style={{ width: 240 }} /><col /></colgroup>
               <thead><tr><th>时间</th><th>渠道</th><th>结果</th><th>来源</th><th>错误</th></tr></thead>
               <tbody>
-                {(log.data ?? []).map((l) => (
+                {(allLog ? log.data ?? [] : (log.data ?? []).slice(0, LOG_CAP)).map((l) => (
                   <tr key={l.id}>
-                    <td>{F.dtFull(l.ts)}</td><td className="strong"><Trunc className="cell-main">{l.channel_name}</Trunc></td>
+                    {/* 渠道删了记录还在（名字随渠道一起没了）：写明是已删除的渠道 */}
+                    <td data-tip={F.dtFull(l.ts)}>{F.dt(l.ts)}</td><td>{l.channel_name ? <Trunc className="cell-main strong">{l.channel_name}</Trunc> : <span className="cell-main t-muted">已删除的渠道</span>}</td>
                     <td>{l.ok ? <Pill tone="ok">成功</Pill> : <Pill tone="bad">失败</Pill>}</td>
                     <td>{l.kind === 'test' ? <span className="t-sub">测试消息</span> : <Trunc className="cell-main">{[NOTIFY_KIND[l.kind], l.subject_name ?? '（机器已删除）', l.rule_name].filter(Boolean).join(' · ')}</Trunc>}</td>
                     <td><Trunc className="cell-main" text={l.error ?? ''}>{l.error ? <span style={{ color: 'var(--bad-text)' }}>{l.error}</span> : <span className="t-muted">—</span>}</Trunc></td>
@@ -247,7 +253,8 @@ function NotifySection() {
                 ))}
               </tbody>
             </table>
-          </div>
+            <ShowAll total={log.data?.length ?? 0} cap={LOG_CAP} open={allLog} onToggle={() => setAllLog((v) => !v)} />
+          </TableWrap>
         )}
       </Panel>
 
@@ -283,7 +290,7 @@ const ChannelDialog = resetOnOpen(function ChannelDialog({ target, open, onClose
     <FormDialog size="md" dirty={dirty} open={open} onOpenChange={(o) => !o && onClose()} title={ch ? `编辑渠道 · ${ch.name}` : '新建通知渠道'} desc={<>配置加密保存 <InfoTip text="保存后页面不再显示明文。" /></>}
       submitLabel={ch ? '保存' : '创建'} busy={busy} valid={valid} onSubmit={submit}>
       <div className="form-grid">
-        <Field label="名称"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：运维群" autoFocus autoComplete="off" data-1p-ignore data-lpignore="true" /></Field>
+        <Field label="名称"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：运维群" autoFocus autoComplete="off" /></Field>
         <Field label="类型" hint={ch ? '类型创建后不能改' : undefined}><Select value={kind} onChange={(v) => { setKind(v); setCfg({}); }} disabled={!!ch} options={Object.entries(KINDS).map(([value, x]) => ({ value, label: x.label }))} /></Field>
       </div>
       <div className="form-grid">

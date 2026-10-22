@@ -119,12 +119,13 @@ impl Client {
         Self::check(res)
     }
 
-    /// 调用并取出 `data`
+    /// 调用并取出 `data`（中控成功的响应一律是 `{"data": …}`；没有 data 多半是地址指到了别的服务上，报错而不是当成 null）
     pub fn call(&self, method: Method, path: &str, query: &[(&str, String)], body: Option<&Value>, timeout: Duration) -> anyhow::Result<Value> {
         let res = self.send(method, path, query, body, timeout)?;
         let text = res.text().context("读取响应")?;
-        let mut v: Value = serde_json::from_str(&text).with_context(|| format!("中控返回的不是 JSON：{}", text.chars().take(200).collect::<String>()))?;
-        Ok(v.get_mut("data").map(Value::take).unwrap_or(Value::Null))
+        let snippet = || text.chars().take(200).collect::<String>();
+        let mut v: Value = serde_json::from_str(&text).with_context(|| format!("中控返回的不是 JSON：{}", snippet()))?;
+        v.get_mut("data").map(Value::take).ok_or_else(|| anyhow!("中控返回的 JSON 里没有 data：{}", snippet()))
     }
 
     pub fn get(&self, path: &str) -> anyhow::Result<Value> { self.call(Method::GET, path, &[], None, DEFAULT_TIMEOUT) }

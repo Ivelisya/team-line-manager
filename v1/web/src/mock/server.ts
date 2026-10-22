@@ -32,12 +32,14 @@ const emit = (e: Ev) => listeners.forEach((l) => l(e));
 class MockStream {
   readyState = 0; onmessage: ((e: MessageEvent) => void) | null = null; onopen: (() => void) | null = null; onclose: (() => void) | null = null; onerror: (() => void) | null = null;
   private fn = (e: Ev) => this.onmessage?.(new MessageEvent('message', { data: JSON.stringify(e) }));
+  // 同中控：每 15 s 一个文本心跳，前端 45 s 收不到任何消息就当连接已死
+  private hb = setInterval(() => this.fn({ type: 'hb' }), 15_000);
   constructor() {
     listeners.add(this.fn);
     setTimeout(() => { if (this.readyState === 0) { this.readyState = 1; this.onopen?.(); } }, 50);
   }
   send() {}
-  close() { this.readyState = 3; listeners.delete(this.fn); }
+  close() { this.readyState = 3; listeners.delete(this.fn); clearInterval(this.hb); }
 }
 
 // ---------- 工具 ----------
@@ -283,7 +285,8 @@ function checkProvision(items: ProvisionItem[]): ProvisionCheckItem[] {
   for (const it of items) {
     const errors: string[] = [];
     if (!IP_RE.test(it.ip ?? '') || it.ip.split('.').some((x) => +x > 255)) errors.push('IP 格式不正确');
-    else if (ips.has(it.ip) || seenIp.has(it.ip)) errors.push(`IP ${it.ip} 已存在`);
+    else if (ips.has(it.ip)) errors.push('这个 IP 已经属于一台未退役的机器'); // 同服务端原话
+    else if (seenIp.has(it.ip)) errors.push('这一批里 IP 重复');
     seenIp.add(it.ip);
     if (it.ssh_port != null && (it.ssh_port < 1 || it.ssh_port > 65535)) errors.push('SSH 端口应在 1–65535');
     let name = ''; let number: number | null = null; let relayPort: number | undefined;
@@ -333,6 +336,8 @@ function checkProvision(items: ProvisionItem[]): ProvisionCheckItem[] {
         ssBatch.set(h.id, [...batch, ssPort]);
       }
     }
+    // 同服务端 provision::check：库里的校验都过了再看 SSH 通不通；模拟里 192.0.2.x（文档用地址段）当作连不上
+    if (!errors.length && it.kind !== 'proxy' && !it.host_id && it.ip.startsWith('192.0.2.')) errors.push(`SSH ${it.ip}:${it.ssh_port ?? 22} 连不上（3 秒没有响应）`);
     out.push({ ok: errors.length === 0, errors, name, number, relay_port: relayPort, ss_port: ssPort });
   }
   return out;
@@ -425,6 +430,31 @@ R('PATCH', '/providers/([^/]+)', ({ params, body }) => {
   if (body.traffic_rule !== undefined) p.traffic_rule = body.traffic_rule;
   emit({ type: 'catalog' }); return { id: p.id };
 });
+// 删目录项：同中控，还有机器（含已退役的）、套餐用着时 409 写明还有什么
+const inUse = (parts: [number, string][]) => parts.filter(([n]) => n > 0).map(([n, w]) => `${n} ${w}`).join('、');
+const delAudit = (action: string, title: string, kind: string, id: string, name: string) => db.audit.unshift({ id: `a${db.seq++}`, ts: iso(), actor: db.user, action, title, summary: name, target_kind: kind, target_id: id, detail: { name } });
+R('DELETE', '/teams/([^/]+)', ({ params }) => {
+  const t = teamOf(params[0]);
+  const ms = db.machines.filter((m) => m.team?.id === t.id);
+  const u = inUse([[ms.filter((m) => m.lifecycle !== 'retired').length, '台机器'], [ms.filter((m) => m.lifecycle === 'retired').length, '台已退役的机器']]);
+  if (u) throw bad(`「${t.name}」还有 ${u}：先把它们移到别的团队（已退役的先彻底删除）再删`, 409, 'conflict');
+  db.teams = db.teams.filter((x) => x.id !== t.id); delAudit('team.delete', '删除团队', 'team', t.id, t.name);
+  emit({ type: 'catalog' }); return { id: t.id };
+});
+R('DELETE', '/providers/([^/]+)', ({ params }) => {
+  const p = db.providers.find((x) => x.id === params[0]); if (!p) throw bad('没有这个供应商', 404, 'not_found');
+  const u = inUse([[db.plans.filter((x) => x.provider_id === p.id).length, '个套餐'], [db.machines.filter((m) => m.provider?.id === p.id).length, '台机器']]);
+  if (u) throw bad(`「${p.name}」还有 ${u}（含已归档、已退役的）：先删掉或改到别的供应商再删`, 409, 'conflict');
+  db.providers = db.providers.filter((x) => x.id !== p.id); delAudit('provider.delete', '删除供应商', 'provider', p.id, p.name);
+  emit({ type: 'catalog' }); return { id: p.id };
+});
+R('DELETE', '/plans/([^/]+)', ({ params }) => {
+  const p = db.plans.find((x) => x.id === params[0]); if (!p) throw bad('没有这个套餐', 404, 'not_found');
+  const u = inUse([[db.machines.filter((m) => m.plan?.id === p.id).length, '台机器']]);
+  if (u) throw bad(`「${p.name}」还有 ${u}用着：不再上架的可以归档`, 409, 'conflict');
+  db.plans = db.plans.filter((x) => x.id !== p.id); delAudit('plan.delete', '删除套餐', 'plan', p.id, p.name);
+  emit({ type: 'catalog' }); return { id: p.id };
+});
 R('GET', '/plans', () => clone(db.plans));
 R('POST', '/plans', ({ body }) => {
   if (!body.name || !body.provider_id) throw bad('套餐名与供应商必填');
@@ -433,8 +463,14 @@ R('POST', '/plans', ({ body }) => {
 });
 R('PATCH', '/plans/([^/]+)', ({ params, body }) => {
   const p = db.plans.find((x) => x.id === params[0]); if (!p) throw bad('套餐不存在', 404, 'not_found');
+  const before = { ...p } as Record<string, unknown>;
   const { archived, ...rest } = body; Object.assign(p, rest);
   if (archived === true) p.archived_at = iso(); if (archived === false) p.archived_at = null;
+  // 同中控：审计记套餐名与改了的字段（before / after）；只改了归档的标题写归档 / 取消归档（摘要的改动明细这里从简）
+  const after = p as unknown as Record<string, unknown>;
+  const keys = Object.keys(after).filter((k) => JSON.stringify(after[k]) !== JSON.stringify(before[k]));
+  const title = keys.length === 1 && keys[0] === 'archived_at' ? (p.archived_at ? '归档套餐' : '取消归档套餐') : '修改套餐';
+  db.audit.unshift({ id: `a${db.seq++}`, ts: iso(), actor: db.user, action: 'plan.update', title, summary: p.name, target_kind: 'plan', target_id: p.id, detail: { name: p.name, currency: p.currency, before: Object.fromEntries(keys.map((k) => [k, before[k]])), after: Object.fromEntries(keys.map((k) => [k, after[k]])) } });
   emit({ type: 'catalog' }); return p;
 });
 
@@ -585,11 +621,21 @@ const jobSummary = ({ steps, cancellable: _c, result: _r, ...j }: Job): JobSumma
 };
 R('GET', '/jobs', ({ query }) => {
   const s = query.get('state') ?? 'all';
-  return paged(db.jobs.filter((j) => s === 'all' || (s === 'active' ? j.state === 'running' || j.state === 'queued' : j.state !== 'running' && j.state !== 'queued')).map(jobSummary), query);
+  // 同中控：provision / restore 是大类，其余按作业类型原值
+  const k = query.get('kind') ?? '';
+  const kindOk = (kind: string) => !k || (k === 'provision' || k === 'restore' ? kind.startsWith(`${k}_`) : kind === k);
+  return paged(db.jobs.filter((j) => kindOk(j.kind) && (s === 'all' || (s === 'active' ? j.state === 'running' || j.state === 'queued' : j.state !== 'running' && j.state !== 'queued'))).map(jobSummary), query);
 });
 const jobOf = (id: string) => { const j = db.jobs.find((x) => x.id === id); if (!j) throw bad('作业不存在', 404, 'not_found'); return j; };
 R('GET', '/jobs/([^/]+)', ({ params }) => { const j = clone(jobOf(params[0])); const s = jobSummary(j); return { ...j, step: s.step, step_title: s.step_title }; });
-R('GET', '/jobs/([^/]+)/logs', ({ params, query }) => { const after = +(query.get('after') ?? 0); return clone((db.logs[params[0]] ?? []).filter((l) => l.id > after)); });
+R('GET', '/jobs/([^/]+)/logs', ({ params, query }) => {
+  const after = +(query.get('after') ?? 0);
+  const rest = (db.logs[params[0]] ?? []).filter((l) => l.id > after);
+  const tail = query.get('tail');
+  if (tail == null) return clone(rest);
+  const logs = rest.slice(-Math.min(Math.max(+tail, 1), 5000));
+  return clone({ logs, skipped: rest.length - logs.length, after: logs.length ? logs[logs.length - 1].id : after });
+});
 /** 重试：body { reset_host_key?, ssh_password? }（C1）。指纹不符不重置、认证失败不给密码时 mock 照样失败 */
 R('POST', '/jobs/([^/]+)/retry', ({ params, body }) => {
   const j = jobOf(params[0]); if (j.state !== 'failed') throw bad('只有失败的作业才能重试', 409, 'conflict');
@@ -655,8 +701,13 @@ R('DELETE', '/silences/([^/]+)', ({ params }) => {
   if (!db.silences.some((s) => s.id === params[0])) throw bad('没有这条静默', 404, 'not_found');
   db.silences = db.silences.filter((s) => s.id !== params[0]); emit({ type: 'incidents' }); return { ok: true };
 });
+/** 同中控 api/misc.rs audit_cat：操作记录的分类 */
+const AUDIT_EXEC = new Set(['exec', 'ssh.login', 'terminal.open', 'terminal.close', 'machine.logs', 'server.logs', 'restore.probe']);
+const auditCat = (action: string) => (action.startsWith('auth.') ? 'auth' : AUDIT_EXEC.has(action) ? 'exec' : /^(machine|entry|relay|subscription|agent|job|renewal)(\.|$)/.test(action) ? 'machine' : 'config');
 R('GET', '/audit', ({ query }) => {
-  const list = db.audit.filter((a) => !query.get('target_id') || a.target_id === query.get('target_id'));
+  const cat = query.get('cat') ?? ''; const q = (query.get('q') ?? '').trim().toLowerCase();
+  const list = db.audit.filter((a) => (!query.get('target_id') || a.target_id === query.get('target_id')) && (!cat || cat === 'all' || auditCat(a.action) === cat)
+    && (!q || `${a.title} ${a.summary} ${a.actor}`.toLowerCase().includes(q)));
   const before = query.get('before_id'); const from = before ? list.findIndex((a) => a.id === before) + 1 : 0;
   return clone(list.slice(from, from + +(query.get('limit') ?? 50)));
 });
@@ -733,7 +784,7 @@ R('POST', '/agents/upgrade', () => {
 });
 
 // ---------- 换线路机 / 搬空线路机 / 恢复已退役的机器 ----------
-const MOVE_STEPS: [string, string][] = [['attach_new', '在新线路机建入口'], ['firewall_widen', '放行新线路机（节点防火墙）'], ['wait_applied_new', '等待新线路机生效'], ['verify_new', '经新入口出口验收'], ['detach_old', '摘除旧入口'], ['wait_detached_old', '等待旧线路机摘除'], ['firewall_narrow', '收紧节点防火墙']];
+const MOVE_STEPS: [string, string][] = [['attach_new', '在新线路机建入口'], ['firewall_widen', '放行新线路机（节点防火墙）'], ['wait_applied_new', '等待新线路机应用'], ['verify_new', '经新入口出口验收'], ['detach_old', '摘除旧入口'], ['wait_detached_old', '等待旧线路机摘除'], ['firewall_narrow', '收紧节点防火墙']];
 const RESTORE_STEPS: [string, string][] = [['preflight', '预检与身份'], ['bootstrap', '引导密钥'], ['converge', '节点收敛（SSH 加固、SS、防火墙）'], ['agent', '安装 agent'], ['wait_report', '等待首次上报'], ['attach', '接入线路机'], ['wait_applied', '等待线路机生效'], ['verify', '出口验收'], ['activate', '上线']];
 const SHARE_NOTE = '换线路机后分享链接会变：客户端需要换成新的分享链接（作业完成后到节点的入口里复制）';
 const blankTraffic = () => ({ today_up: 0, today_down: 0, month_up: 0, month_down: 0 });

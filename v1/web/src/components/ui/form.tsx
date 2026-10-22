@@ -5,10 +5,18 @@ import * as SwitchPrimitive from '@radix-ui/react-switch';
 import { Check, Info, Search } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
+/** 登录用的输入：密码框，或 autoComplete 写明是用户名 / 密码 / 验证码的。其余文本框（团队名、套餐名、搜索…）不让密码管理器挂图标 */
+const CREDENTIAL = new Set(['username', 'current-password', 'new-password', 'one-time-code']);
 export const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement> & { sm?: boolean }>(({ className, sm, ...p }, ref) => (
-  <input ref={ref} className={cn('input', sm && 'input-sm', className)} {...p} />
+  <input ref={ref} className={cn('input', sm && 'input-sm', className)} {...(p.type !== 'password' && !CREDENTIAL.has(p.autoComplete ?? '') ? { 'data-1p-ignore': '', 'data-lpignore': 'true' } : null)} {...p} />
 ));
 Input.displayName = 'Input';
+
+/** 带单位后缀的短输入框（「7 天」「4 小时」）：width 是整个框的宽度，只填一两位数的不用撑满一行。id 等属性落在里面的 input 上（Field 的标签对得上） */
+export const UnitInput = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement> & { unit: string; width?: number }>(({ unit, width, ...p }, ref) => (
+  <span className="input-unit" style={width ? { width } : undefined}><Input ref={ref} {...p} /><span className="input-unit-u" aria-hidden>{unit}</span></span>
+));
+UnitInput.displayName = 'UnitInput';
 
 export const Textarea = React.forwardRef<HTMLTextAreaElement, React.TextareaHTMLAttributes<HTMLTextAreaElement>>(({ className, ...p }, ref) => (
   <textarea ref={ref} className={cn('textarea', className)} {...p} />

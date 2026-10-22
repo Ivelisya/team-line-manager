@@ -215,89 +215,6 @@ fn keys_user(c: &KeysCmd) -> Option<&str> {
     }
 }
 
-#[derive(Args)]
-struct ProvisionArgs {
-    /// 批量文件（JSON 数组或 {"items":[…]}；条目里 team/relay/provider/plan/host 可直接写名字）
-    #[arg(long)]
-    file: Option<PathBuf>,
-    /// vps | proxy | relay
-    #[arg(long)]
-    kind: Option<String>,
-    #[arg(long)]
-    ip: Option<String>,
-    /// 同机 IP 节点：加在这台已有的 VPS 节点（宿主机）上，用它的 SSH 与 agent；--ip 是新的出口 IP（要已配在宿主机网卡上），
-    /// 不用填 --ssh-port / --ssh-password-env / --ss-port（SS 端口由中控分配），供应商取宿主机的
-    #[arg(long)]
-    host: Option<String>,
-    #[arg(long)]
-    ssh_port: Option<u16>,
-    /// 团队名（节点）
-    #[arg(long)]
-    team: Option<String>,
-    /// 团队内编号（不填取最小空号）
-    #[arg(long)]
-    number: Option<i32>,
-    /// 线路机名（relay）
-    #[arg(long)]
-    label: Option<String>,
-    /// 节点要挂的线路机
-    #[arg(long)]
-    relay: Option<String>,
-    #[arg(long)]
-    provider: Option<String>,
-    #[arg(long)]
-    plan: Option<String>,
-    #[arg(long)]
-    service_ref: Option<String>,
-    /// 国家（名字旁的国旗）：ISO 3166-1 两位代码，如 US、JP；不填按 IP 自动定
-    #[arg(long)]
-    country: Option<String>,
-    #[arg(long)]
-    note: Option<String>,
-    /// vps 的公网（NAT 映射）SS 端口；节点上 ssserver 固定监听 8388，非 NAT 机不要填
-    #[arg(long)]
-    ss_port: Option<u16>,
-    /// 家宽代理（proxy）的上游：socks5://用户:密码@主机:端口
-    #[arg(long)]
-    upstream: Option<String>,
-    /// 首次登录用的 root 密码放在哪个环境变量里（不填则用中控的密钥）
-    #[arg(long)]
-    ssh_password_env: Option<String>,
-    /// 到期日 YYYY-MM-DD（给了 = 建订阅；选了 --plan 时必填）。订阅其余各项默认跟随套餐 / 供应商，下面几项给了 = 单独设置
-    #[arg(long)]
-    due: Option<String>,
-    /// 价格，如 39.46（没有套餐的机器必填）
-    #[arg(long)]
-    price: Option<String>,
-    /// 价格（分）；同 --price，旧写法
-    #[arg(long, hide = true)]
-    price_cents: Option<i64>,
-    /// 币种代码，如 USD / CNY
-    #[arg(long)]
-    currency: Option<String>,
-    /// 计费周期：monthly | quarterly | semiannual | yearly
-    #[arg(long)]
-    cycle: Option<String>,
-    /// 账单时区（IANA 名）
-    #[arg(long)]
-    tz: Option<String>,
-    /// 流量上限 GB（0 = 不限）
-    #[arg(long)]
-    traffic_gb: Option<String>,
-    /// 流量每月几号重置（1–31）
-    #[arg(long)]
-    reset_day: Option<String>,
-    /// 只校验，不提交
-    #[arg(long)]
-    dry_run: bool,
-    /// 跳过确认
-    #[arg(long)]
-    yes: bool,
-    /// 提交后跟随作业日志直到结束
-    #[arg(long)]
-    follow: bool,
-}
-
 #[derive(Subcommand)]
 enum Cmd {
     /// 保存中控地址与 API 密钥到配置文件（密钥从标准输入读一行：`fleetctl login --url <地址> < 密钥文件`）
@@ -392,6 +309,9 @@ enum Cmd {
     Jobs {
         #[arg(long)]
         active: bool,
+        /// 只看这类作业：provision（各类上架）| restore（各类恢复）| attach_entry | move_entry | upgrade_agent | retire | purge
+        #[arg(long)]
+        kind: Option<String>,
         #[arg(long, default_value_t = 30)]
         limit: i64,
     },
@@ -415,7 +335,7 @@ enum Cmd {
     Cancel { id: String },
     /// 上架：先 check 再提交（单台参数或 --file 批量）
     // 装箱：上架参数最多，免得整个 Cmd 跟着它变大（clippy large_enum_variant）
-    Provision(Box<ProvisionArgs>),
+    Provision(Box<ops::ProvisionOpts>),
     /// 退役一台机器（危险）
     Retire {
         machine: String,
@@ -477,8 +397,8 @@ enum Cmd {
     },
     /// 入口启用/停用/轮换凭据；add-direct 给线路机加直出入口（从线路机自己的 IP 出去，每台至多一条）
     Entry {
-        /// enable | disable | rotate | add-direct
-        action: String,
+        #[arg(value_enum)]
+        action: ops::EntryAction,
         /// 入口（id、`线路机名:端口`、节点显示名）；add-direct 时是线路机
         entry: String,
         #[arg(long)]
@@ -543,6 +463,12 @@ enum Cmd {
         /// 翻页：只看编号小于它的记录（上一页末尾提示的编号）
         #[arg(long)]
         before: Option<i64>,
+        /// 分类：auth（登录与账户）| exec（远程执行）| machine（机器与入口）| config（设置与告警）
+        #[arg(long)]
+        cat: Option<String>,
+        /// 搜索标题、摘要、操作人
+        #[arg(short, long)]
+        q: Option<String>,
     },
     /// 访问监控：哪个节点访问了哪些域名/IP
     Access {
@@ -877,43 +803,11 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             ),
             SilenceCmd::Rm { id } => silence::rm(x, &id),
         },
-        Cmd::Jobs { active, limit } => cmds::jobs(x, active, limit),
+        Cmd::Jobs { active, kind, limit } => cmds::jobs(x, active, kind.as_deref(), limit),
         Cmd::Job { id, follow } => cmds::job(x, &id, follow),
         Cmd::Retry { id, reset_host_key, password_env } => cmds::job_retry(x, &id, reset_host_key, password_env.as_deref()),
         Cmd::Cancel { id } => cmds::job_cancel(x, &id),
-        Cmd::Provision(a) => ops::provision(
-            x,
-            ops::ProvisionOpts {
-                file: a.file,
-                kind: a.kind,
-                ip: a.ip,
-                host: a.host,
-                ssh_port: a.ssh_port,
-                team: a.team,
-                number: a.number,
-                label: a.label,
-                relay: a.relay,
-                provider: a.provider,
-                plan: a.plan,
-                service_ref: a.service_ref,
-                country: a.country,
-                note: a.note,
-                ss_port: a.ss_port,
-                upstream: a.upstream,
-                ssh_password_env: a.ssh_password_env,
-                due: a.due,
-                price_cents: a.price_cents,
-                price: a.price,
-                currency: a.currency,
-                cycle: a.cycle,
-                tz: a.tz,
-                traffic_gb: a.traffic_gb,
-                reset_day: a.reset_day,
-                dry_run: a.dry_run,
-                yes: a.yes,
-                follow: a.follow,
-            },
-        ),
+        Cmd::Provision(a) => ops::provision(x, *a),
         Cmd::Retire { machine, reason, no_cleanup, yes, follow } => ops::retire(x, &machine, reason.as_deref(), no_cleanup, yes, follow),
         Cmd::Purge { machine, yes, follow } => ops::purge(x, &machine, yes, follow),
         Cmd::Rename { machine, team, number, label, note, country } => {
@@ -923,8 +817,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::UpgradeAgent { machine, all, yes, follow } => ops::upgrade_agent(x, machine.as_deref(), all, yes, follow),
         Cmd::Entries { machine } => cmds::entries(x, machine.as_deref()),
         Cmd::Share { entry } => ops::share(x, &entry),
-        Cmd::Entry { action, entry, yes, follow } if action == "add-direct" => ops::add_direct(x, &entry, yes, follow),
-        Cmd::Entry { action, entry, yes, .. } => ops::entry_action(x, &action, &entry, yes),
+        Cmd::Entry { action, entry, yes, follow } => ops::entry_action(x, action, &entry, yes, follow),
         Cmd::Exec { machine, team, timeout, script, command } => ops::exec(x, ops::ExecOpts { machine: machine.as_deref(), team: team.as_deref(), timeout, script: script.as_deref(), command: &command }),
         Cmd::Logs { machine, unit, lines } => cmds::logs(x, &machine, &unit, lines),
         Cmd::ServerLogs { lines } => cmds::server_logs(x, lines),
@@ -936,7 +829,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
                 KeysCmd::Revoke { which, auth } => ops::keys_revoke(x, &ka(auth), &which),
             }
         }
-        Cmd::Audit { target, limit, before } => cmds::audit(x, target.as_deref(), limit, before),
+        Cmd::Audit { target, limit, before, cat, q } => cmds::audit(x, cmds::AuditOpts { target: target.as_deref(), limit, before, cat: cat.as_deref(), q: q.as_deref() }),
         Cmd::Access { view, node, team, window, search, blocked, kind, limit } => access::access(
             x,
             access::AccessOpts { view: &view, node: node.as_deref(), team: team.as_deref(), window: &window, search: search.as_deref(), blocked, kind: kind.as_deref(), limit },
@@ -1024,6 +917,16 @@ mod tests {
         assert_eq!(parse(&["ssh", "router", "团队2-路由A", "--", "logread | tail"]), Ok((vec!["router".into(), "团队2-路由A".into()], vec!["logread | tail".into()])));
         assert!(parse(&["ssh"]).is_err());
         assert!(parse(&["ssh", "router", "a", "b"]).is_err(), "目标最多两个参数");
+    }
+
+    /// `entry` 的动作由 clap 校验：写错是参数错误（退出码 2），不发请求
+    #[test]
+    fn entry_action_is_value_enum() {
+        let parse = |a: &[&str]| Cli::try_parse_from(["fleetctl", "entry"].iter().chain(a)).map(|c| matches!(c.cmd, Cmd::Entry { action: crate::ops::EntryAction::AddDirect, .. }));
+        assert_eq!(parse(&["add-direct", "线路机2"]).ok(), Some(true));
+        assert_eq!(parse(&["rotate", "线路机2:20001", "--yes"]).ok(), Some(false));
+        let e = parse(&["enabel", "线路机2:20001"]).unwrap_err();
+        assert_eq!((e.kind(), e.exit_code()), (clap::error::ErrorKind::InvalidValue, 2));
     }
 
     #[test]

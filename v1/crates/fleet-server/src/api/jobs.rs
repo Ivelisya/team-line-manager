@@ -43,6 +43,8 @@ pub struct ListQ {
     limit: Option<i64>,
     offset: Option<i64>,
     target_id: Option<Uuid>,
+    /// 作业类型：provision（各类上架）、restore（各类恢复），或 job.kind 本身（attach_entry、move_entry、retire、purge、upgrade_agent…）
+    kind: Option<String>,
 }
 
 /// 作业 JSON：目标机器以 `target{id,name}` 给出；`step_title` = 当前（或失败的）步骤标题，做完为 null。列表不带 steps
@@ -67,10 +69,25 @@ pub async fn list(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<L
         _ => "true",
     };
     let (limit, offset) = (q.limit.unwrap_or(100).clamp(1, 500), q.offset.unwrap_or(0).max(0));
-    // 按机器筛选的条件只在给了 target_id 时才拼上（列表与总数各拼一份）
-    let cond = |a: &mut Args| match q.target_id {
-        Some(t) => format!("{filter} and j.target_id = {}", a.add(t)),
-        None => filter.to_string(),
+    // 上架、恢复各有四类机器，按大类筛；其余按 job.kind 原值
+    let kind = match q.kind.as_deref().map(str::trim) {
+        None | Some("" | "all") => None,
+        Some(k @ ("provision" | "restore")) => Some((format!("{k}\\_%"), true)),
+        Some(k) if !jobs::defs(k).is_empty() => Some((k.to_string(), false)),
+        Some(_) => return Err(ApiError::bad_request("kind 只能是 provision、restore 或作业类型（attach_entry、move_entry、retire、purge、upgrade_agent、provision_vps…）")),
+    };
+    // 按机器、类型筛选的条件只在给了时才拼上（列表与总数各拼一份）
+    let cond = |a: &mut Args| {
+        let mut w = filter.to_string();
+        if let Some(t) = q.target_id {
+            w += &format!(" and j.target_id = {}", a.add(t));
+        }
+        match &kind {
+            Some((p, true)) => w += &format!(" and j.kind like {}", a.add(p)),
+            Some((k, false)) => w += &format!(" and j.kind = {}", a.add(k)),
+            None => {}
+        }
+        w
     };
     let mut a = Args::default();
     let sql = format!("{SELECT} where {} order by j.id desc limit {} offset {}", cond(&mut a), a.add(limit), a.add(offset));
@@ -129,7 +146,12 @@ pub async fn get_one(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath
 #[derive(Deserialize)]
 pub struct LogQ {
     after: Option<i64>,
+    /// 只要（after 之后的）最后 N 行：网页打开日志很长的作业时不用从头一页页拉完再丢掉前面的
+    tail: Option<i64>,
 }
+
+/// tail 最多这么多行（网页内存里最多留 5000 行）
+const TAIL_MAX: i64 = 5000;
 
 #[derive(Serialize, sqlx::FromRow)]
 struct LogOut {
@@ -140,13 +162,32 @@ struct LogOut {
     msg: String,
 }
 
+/// 按 id 升序。不带 tail：after 之后的最多 1000 行（满页接着按最后一行的 id 拉）。
+/// 带 tail：`{logs, skipped, after}`——最后 N 行（N 夹到 1..=5000）、前面没给的行数、续拉用的 after（最后一行的 id）
 pub async fn logs(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<LogQ>) -> ApiResult<Json<Value>> {
-    let v: Vec<LogOut> = sqlx::query_as("select id, ts, level, msg from job_log where job_id = $1 and id > $2 order by id limit 1000")
-        .bind(id)
-        .bind(q.after.unwrap_or(0))
-        .fetch_all(&st.db)
-        .await?;
-    Ok(ok(v))
+    let after = q.after.unwrap_or(0);
+    let Some(tail) = q.tail else {
+        let v: Vec<LogOut> = sqlx::query_as("select id, ts, level, msg from job_log where job_id = $1 and id > $2 order by id limit 1000")
+            .bind(id)
+            .bind(after)
+            .fetch_all(&st.db)
+            .await?;
+        return Ok(ok(v));
+    };
+    let v: Vec<LogOut> = sqlx::query_as(
+        "select * from (select id, ts, level, msg from job_log where job_id = $1 and id > $2 order by id desc limit $3) x order by id",
+    )
+    .bind(id)
+    .bind(after)
+    .bind(tail.clamp(1, TAIL_MAX))
+    .fetch_all(&st.db)
+    .await?;
+    let skipped: i64 = match v.first() {
+        Some(f) => sqlx::query_scalar("select count(*) from job_log where job_id = $1 and id > $2 and id < $3").bind(id).bind(after).bind(f.id).fetch_one(&st.db).await?,
+        None => 0,
+    };
+    let after = v.last().map_or(after, |l| l.id);
+    Ok(ok(json!({"logs": v, "skipped": skipped, "after": after})))
 }
 
 /// 重试的可选请求体（不带请求体 = 两项都不要）
@@ -175,6 +216,19 @@ async fn reset_target(tx: &mut crate::db::Tx<'_>, job: Uuid, step: i32, target: 
     }
     // 不是同机 IP 节点就有自己的 SSH 端口（库里约束保证）
     Ok((ip, port.unwrap_or(22) as u16))
+}
+
+/// 审计里写是哪个作业：作业类型与目标机器的显示名（摘要「换线路机 · 团队1-03」）；没有目标、目标已删除的不写 name
+async fn job_ref(tx: &mut crate::db::Tx<'_>, kind: &str, target: Option<Uuid>) -> sqlx::Result<Value> {
+    let name: Option<String> = match target {
+        Some(t) => sqlx::query_scalar("select display_name(m.kind::text, m.label, t.name, m.number) from machine m left join team t on t.id = m.team_id where m.id = $1")
+            .bind(t)
+            .fetch_optional(&mut **tx)
+            .await?
+            .flatten(),
+        None => None,
+    };
+    Ok(json!({"kind": kind, "name": name}))
 }
 
 pub async fn retry(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, body: axum::body::Bytes) -> ApiResult<Json<Value>> {
@@ -244,7 +298,11 @@ pub async fn retry(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     .bind(from)
     .execute(&mut *tx)
     .await?;
-    audit(&mut tx, &a.name, "job.retry", "job", Some(id), json!({"step": step, "reset_host_key": reset, "password": password.is_some()})).await?;
+    let mut detail = job_ref(&mut tx, &kind, target).await?;
+    detail["step"] = json!(step);
+    detail["reset_host_key"] = json!(reset);
+    detail["password"] = json!(password.is_some());
+    audit(&mut tx, &a.name, "job.retry", "job", Some(id), detail).await?;
     // 所有检查（含「同一台机器只能有一个进行中的作业」）都过了才动 known_hosts。在事务里做：作业此刻还不会被领走，
     // 重置失败则整个重试作废；keyscan 最多十来秒，其间机器行与作业行一直锁着
     if let Some((ip, port)) = pin {
@@ -276,7 +334,8 @@ pub async fn cancel(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<U
         .bind(id)
         .execute(&mut *tx)
         .await?;
-    audit(&mut tx, &a.name, "job.cancel", "job", Some(id), json!({})).await?;
+    let detail = job_ref(&mut tx, &kind, target).await?;
+    audit(&mut tx, &a.name, "job.cancel", "job", Some(id), detail).await?;
     tx.commit().await?;
     st.wake_jobs();
     st.emit(Event::Job { id, target });

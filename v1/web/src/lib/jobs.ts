@@ -1,7 +1,7 @@
 // 作业的展示辅助：state 分类、步骤输出摘要。作业类型、步骤状态的中文名在 /meta（derive.jobKindLabel / stepLabel）。
 import type { JobStep, JobSummary } from './types';
 import { entryLabel } from './derive';
-import { dtFull } from './format';
+import { dtFull, mem, str } from './format';
 
 export { jobKindLabel } from './derive';
 
@@ -29,7 +29,14 @@ export function currentStepTitle(j: JobSummary): string | null {
 const ERROR_KIND_LABEL: Record<string, string> = {
   network: '网络错误', auth: 'SSH 认证失败', host_key: '主机指纹不符', remote: '远端命令失败', timeout: '超时', internal: '中控内部错误',
 };
-export const errorKindLabel = (k: string) => ERROR_KIND_LABEL[k] ?? k;
+/** 同是 remote：升级 agent 换上新版本后的回滚检查（起不来、线路机检查没过）不是远端命令出错，按错误文字区分开 */
+export const errorKindLabel = (k: string, error?: string | null) =>
+  k === 'remote' && error && /检查没通过/.test(error) ? '升级后检查未通过'
+  : k === 'remote' && error && /起不来|没有起来/.test(error) ? 'agent 没起来'
+  : ERROR_KIND_LABEL[k] ?? k;
+
+/** 服务端作业文字（步骤输出、错误、日志）里的「代数」是内部说法，界面上统一叫「配置版本」（同线路页的配置条） */
+export const jobText = (s: string) => s.replace(/配置应用到代数 (\d+)/g, '配置版本 $1 已应用').replace(/(期望状态|配置)?代数/g, '配置版本');
 
 // ── 步骤输出 ──
 // 服务端各步骤 Outcome::Done(json!{..}) 的全部 key（crates/fleet-server/src/jobs/steps.rs、steps/lifecycle.rs），
@@ -43,7 +50,7 @@ const CLEANUP_SS: Record<string, string> = { gone: '已停止', still_listening:
 /** [中文标签, 取值格式]；null = 内部 id，不显示 */
 const OUTPUT: Record<string, [string, OutFmt] | null> = {
   // preflight
-  host_key: ['主机指纹', text], arch: ['架构', text], os: ['系统', text], kernel: ['内核', text], mem_mb: ['内存', unit('MB')],
+  host_key: ['主机指纹', text], arch: ['架构', text], os: ['系统', text], kernel: ['内核', text], mem_mb: ['内存', (v) => str(mem(Number(v) * 1024 * 1024))],
   // ip_check（同机 IP 节点，在宿主机上执行；egress_ip 同出口验收）：local_ips 是逗号加空格分隔的字符串
   ss_port: ['SS 端口', text], local_ips: ['宿主机本机 IP', text],
   // bootstrap
@@ -51,8 +58,8 @@ const OUTPUT: Record<string, [string, OutFmt] | null> = {
   // converge / converge_relay（同机 IP 节点不做系统基线，bbr 为 null、不显示）
   bbr: ['BBR', yesNo('已启用', '未启用')], nft_relays: ['防火墙放行', text], ssserver_updated: ['ssserver', yesNo('已更新', '已是最新')], xray: ['Xray 版本', text],
   // agent / wait_report（prev_version：这次换下来、留作回滚的旧程序的版本；xray_checks：升级线路机时新版本还要做到的几项）
-  binary_updated: ['agent 程序', yesNo('已更新', '已是最新')], token_id: null, prev_version: ['换下的版本', text], xray_checks: ['升级后检查', text],
-  first_report_at: ['首次上报', (v) => dtFull(String(v))], agent_version: ['agent 版本', text], old_tokens_revoked: ['撤销旧令牌', unit('枚')],
+  binary_updated: ['agent 程序', yesNo('已更新', '已是最新')], token_id: null, prev_version: ['换下的版本', text], xray_checks: ['升级后检查', (v) => jobText(String(v))],
+  first_report_at: ['首次上报', (v) => dtFull(String(v).replace(/^(\S+) (\S+) \+00:00(:00)?$/, '$1T$2Z'))], agent_version: ['agent 版本', text], old_tokens_revoked: ['撤销旧令牌', unit('枚')],
   // attach / attach_new / detach_old / wait_applied
   entry_id: null, relay_id: null, old_entry_id: null, relay: ['线路机', text], port: ['入口端口', text], generation: ['配置版本', text],
   entry: ['入口状态', (v) => entryLabel(String(v))],

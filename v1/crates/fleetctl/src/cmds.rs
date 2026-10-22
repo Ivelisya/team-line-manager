@@ -644,8 +644,12 @@ fn job_row(j: &Value) -> Vec<String> {
     ]
 }
 
-pub fn jobs(ctx: &Ctx, active: bool, limit: i64) -> anyhow::Result<u8> {
-    let d = items(ctx.c.get_q("/jobs", &[("state", if active { "active" } else { "all" }.to_string()), ("limit", limit.to_string())])?)?;
+pub fn jobs(ctx: &Ctx, active: bool, kind: Option<&str>, limit: i64) -> anyhow::Result<u8> {
+    let mut q = vec![("state", if active { "active" } else { "all" }.to_string()), ("limit", limit.to_string())];
+    if let Some(k) = kind {
+        q.push(("kind", k.to_string()));
+    }
+    let d = items(ctx.c.get_q("/jobs", &q)?)?;
     ctx.emit(&d, || {
         let list = d.as_array().cloned().unwrap_or_default();
         if list.is_empty() {
@@ -808,12 +812,27 @@ pub fn job_retry(ctx: &Ctx, id: &str, reset_host_key: bool, password_env: Option
     Ok(0)
 }
 
-pub fn audit(ctx: &Ctx, target: Option<&str>, limit: i64, before: Option<i64>) -> anyhow::Result<u8> {
+pub struct AuditOpts<'a> {
+    pub target: Option<&'a str>,
+    pub limit: i64,
+    pub before: Option<i64>,
+    pub cat: Option<&'a str>,
+    pub q: Option<&'a str>,
+}
+
+pub fn audit(ctx: &Ctx, o: AuditOpts) -> anyhow::Result<u8> {
+    let limit = o.limit;
     let mut q = vec![("limit", limit.to_string())];
-    if let Some(b) = before {
+    if let Some(b) = o.before {
         q.push(("before_id", b.to_string()));
     }
-    if let Some(t) = target {
+    // 分类、搜索由中控筛（与 --before 翻页一起用）
+    for (k, v) in [("cat", o.cat), ("q", o.q)] {
+        if let Some(v) = v {
+            q.push((k, v.to_string()));
+        }
+    }
+    if let Some(t) = o.target {
         let (id, _) = ctx.find_id(t, Want::Any)?;
         q.push(("target_id", id));
     }
@@ -901,7 +920,8 @@ pub fn watch(ctx: &Ctx, count: Option<usize>, metrics: bool) -> anyhow::Result<u
                         Err(_) => break,
                     };
                     let Ok(ev) = serde_json::from_str::<Value>(&text) else { continue };
-                    if ev["type"] == "metrics" && !metrics {
+                    // hb：中控每 15 秒的文本心跳（浏览器据此发现半开的连接），不打印、不计数
+                    if ev["type"] == "hb" || (ev["type"] == "metrics" && !metrics) {
                         continue;
                     }
                     if ctx.json {

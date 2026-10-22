@@ -35,6 +35,9 @@ export interface AccessTarget {
   first_seen: string | null; last_seen: string | null;
 }
 export interface AccessTargets { items: AccessTarget[]; next_offset: number | null; window_start: string }
+/** 按目标合并各节点的一行（/access/targets?group=target）：nodes 是访问过它的节点数，首次 / 最近取各节点里最早 / 最近的；不带来源数 */
+export interface AccessTargetGroup { dest_host: string; kind: 'domain' | 'ip'; nodes: number; conns: number; blocked: number; first_seen: string | null; last_seen: string | null }
+export interface AccessTargetGroups { items: AccessTargetGroup[]; total: number; next_offset: number | null; window_start: string }
 /** intel：来源画像（运营商 / 城市 / 接入方式…），IP 库没装或查不到时为 null */
 export interface AccessSource { node_id: string; name: string; src_ip: string; conns: number; last_ts: string | null; intel?: IpIntel | null }
 export interface AccessEvent { ts: string; node_id: string; name: string; src_ip: string | null; dest_host: string; dest_port: number | null; network: string | null; blocked: boolean }
@@ -65,11 +68,18 @@ function accessQS(f: AccessFilter, extra: Record<string, string | number | undef
 export const useAccessSummary = (f: AccessFilter) =>
   useQuery({ queryKey: ['access', 'summary', f], queryFn: ({ signal }) => get<AccessSummary>(`/access/summary?${accessQS(f)}`, signal), refetchInterval: POLL, placeholderData: keepPreviousData });
 
-/** 一页目标（offset 分页）。接口不回总数：总数就是同一筛选下 /access/summary 的 kpi.targets（同一个聚合，各节点去重后相加） */
-export const useAccessTargets = (f: AccessFilter, sort: TargetSort, offset: number, limit: number, enabled = true) =>
+/** 「域名与 IP」的一页（按目标合并各节点，offset 分页，带总数） */
+export const useAccessTargetGroups = (f: AccessFilter, sort: TargetSort, offset: number, limit: number) =>
   useQuery({
-    queryKey: ['access', 'targets', f, sort, offset, limit], enabled, refetchInterval: POLL, placeholderData: keepPreviousData,
-    queryFn: ({ signal }) => get<AccessTargets>(`/access/targets?${accessQS(f, { sort, limit, offset })}`, signal),
+    queryKey: ['access', 'targets', 'group', f, sort, offset, limit], refetchInterval: POLL, placeholderData: keepPreviousData,
+    queryFn: ({ signal }) => get<AccessTargetGroups>(`/access/targets?${accessQS(f, { group: 'target', sort, limit, offset })}`, signal),
+  });
+
+/** 展开一个合并的目标：同样的筛选下只看它，各节点一行（按连接数）。一个目标的节点数不会超过一页上限 */
+export const useAccessTargetNodes = (f: AccessFilter, host: string) =>
+  useQuery({
+    queryKey: ['access', 'targets', 'nodes', f, host], refetchInterval: POLL,
+    queryFn: ({ signal }) => get<AccessTargets>(`/access/targets?${accessQS(f, { target: host, limit: 500 })}`, signal),
   });
 
 export const useNewTargets = (f: AccessFilter, offset: number, limit: number, enabled = true) =>
@@ -78,10 +88,12 @@ export const useNewTargets = (f: AccessFilter, offset: number, limit: number, en
     queryFn: ({ signal }) => get<NewTargets>(`/access/new-targets?${accessQS(f, { limit, offset })}`, signal),
   });
 
+/** 来源地址一次最多取这么多（按连接数从多到少）；接口不回总数，取满了就是「前 200 个」 */
+export const SOURCES_LIMIT = 200;
 export const useAccessSources = (f: AccessFilter, enabled = true) =>
   useQuery({
     queryKey: ['access', 'sources', f], enabled, refetchInterval: POLL, placeholderData: keepPreviousData,
-    queryFn: ({ signal }) => get<{ items: AccessSource[] }>(`/access/sources?${accessQS(f, { limit: 200 })}`, signal),
+    queryFn: ({ signal }) => get<{ items: AccessSource[] }>(`/access/sources?${accessQS(f, { limit: SOURCES_LIMIT })}`, signal),
   });
 
 /** 原始记录的一页：before 是上一页响应里的 next_before 游标，原样传回、不要自己拼（'' = 最新一页）。只有最新一页轮询，往前翻的页是固定的历史 */

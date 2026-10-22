@@ -109,10 +109,10 @@ function Head({ r, detail, onClosed }: { r: RouterView; detail: RouterDetail | n
       </div>
       <EditDialog open={edit} onOpenChange={setEdit} r={r} />
       <ConfirmDialog open={askRegen} onOpenChange={setAskRegen} title={`重新生成「${r.name}」的接入命令？`} confirmLabel="重新生成" danger
-        description={<>路由会立刻断开，执行新命令后恢复<InfoTip text="会换一把隧道密钥：路由上现在的 fleet-tunnel 立刻连不上中控，直到在路由上执行新命令。不影响 OpenClash 和客户端上网，只是这段时间看不到它的状态" /></>}
+        description={<>隧道会立即断开<InfoTip text="会换一把隧道密钥：路由上现在的 fleet-tunnel 立刻连不上中控，直到在路由上执行新命令。不影响 OpenClash 和客户端上网，只是这段时间看不到它的状态" /></>}
         onConfirm={() => boot.run(r)} />
       <TypedConfirmDialog open={askDel} onOpenChange={setAskDel} title={`删除软路由「${r.name}」？`} confirmLabel="删除" danger expected={r.name} prompt="请输入名称"
-        description={<>删掉采集历史，路由本身不受影响<InfoTip text="撤销它的隧道公钥、删掉采集的历史；OpenClash、原来的 router-tunnel 照常。删除后会给出在路由上停掉 fleet-tunnel 的命令" /></>}
+        description={<>只删采集历史<InfoTip text="撤销它的隧道公钥、删掉采集的历史；OpenClash、原来的 router-tunnel 照常。删除后会给出在路由上停掉 fleet-tunnel 的命令" /></>}
         onConfirm={async () => { await del.mutateAsync(r.id); onClosed(); showRemoved(r.name); }} />
     </header>
   );
@@ -162,7 +162,7 @@ function OverviewTab({ r, detail }: { r: RouterView; detail: RouterDetail | null
           <div className="rt-hero-main"><b className="rt-hero-num num">{s.exits.alive}<small>/{s.exits.total}</small></b><span className="rt-hero-unit">个出口可用</span></div>
           <p className="rt-hero-sum">
             {s.clients} 台客户端在线 · OpenClash {s.openclash.conns.toLocaleString()} 条连接 · WAN ↓ {F.str(F.rate(s.wan.rx_bps))} ↑ {F.str(F.rate(s.wan.tx_bps))} · 已运行 {F.str(uptimeFmt(s.uptime_s))}
-            {s.exits.drift > 0 && <> · <span className="rt-warn">{s.exits.drift} 个出口参数与 fleet 入口不一致</span></>}
+            {s.exits.drift > 0 && <> · <span className="rt-warn">{s.exits.drift} 个出口参数与面板入口不一致</span></>}
           </p>
           {issues.length > 0 && <ReasonList reasons={issues.map((text, i) => ({ key: String(i), severity: 'warning', text }))} className="reason-list" />}
         </div>
@@ -209,7 +209,7 @@ function OverviewTab({ r, detail }: { r: RouterView; detail: RouterDetail | null
           <Row label="模式">{oc.mode}</Row>
           <Row label="配置文件"><Trunc className="mono">{oc.config_path ?? '—'}</Trunc></Row>
           <Row label="配置修改于">{F.dtFull(oc.config_mtime)}</Row>
-          <Row label="核心内存" tip="clash 进程的常驻内存（VmRSS）"><Num f={F.bytes(sys?.clash_rss)} /></Row>
+          <Row label="核心内存" tip="clash 进程的常驻内存（VmRSS）"><Num f={F.mem(sys?.clash_rss)} /></Row>
           <Row label="代理速率" tip="经 OpenClash 的流量；↓ 是到客户端的方向">↓ <Num f={F.rate(s.openclash.down_bps)} /> ↑ <Num f={F.rate(s.openclash.up_bps)} /></Row>
           <Row label="连接">{s.openclash.conns.toLocaleString()} 条</Row>
         </Group>
@@ -221,9 +221,9 @@ function OverviewTab({ r, detail }: { r: RouterView; detail: RouterDetail | null
 
 // ---- 出口 ----
 const SYNC: Record<RouterExit['sync'], { tone: 'ok' | 'warn' | 'neutral'; label: string; tip: string }> = {
-  ok: { tone: 'ok', label: '一致', tip: '参数（uuid、reality 公钥等）与 fleet 入口现在的一致' },
-  drift: { tone: 'warn', label: '不一致', tip: 'server:port 对上了 fleet 入口，但 uuid / reality 参数和入口现在的不一致：入口轮换过凭据或换过线路机，路由上的这个出口可能已连不上' },
-  unmanaged: { tone: 'neutral', label: '不受管', tip: '没对上任何 fleet 入口（server:port 不是线路机的入口端口）：是路由上自己加的，中控不管它' },
+  ok: { tone: 'ok', label: '一致', tip: '参数（uuid、reality 公钥等）与面板入口现在的一致' },
+  drift: { tone: 'warn', label: '不一致', tip: 'server:port 对上了面板入口，但 uuid / reality 参数和入口现在的不一致：入口轮换过凭据或换过线路机，路由上的这个出口可能已连不上' },
+  unmanaged: { tone: 'neutral', label: '不受管', tip: '没对上任何面板入口（server:port 不是线路机的入口端口）：是路由上自己加的，中控不管它' },
 };
 const exitTone = (e: RouterExit) => (e.alive === false ? 'bad' : e.sync === 'drift' ? 'warn' : e.sync === 'unmanaged' ? 'neutral' : 'ok');
 const exitTip = (e: RouterExit) => [`${e.name}（${e.type}）→ ${e.server}:${e.port}`, e.alive === false ? '最近一次延迟测试失败' : e.delay_ms != null ? `延迟 ${e.delay_ms} ms` : '还没测过延迟', e.sync !== 'ok' && SYNC[e.sync].tip].filter(Boolean).join('\n');
@@ -236,7 +236,7 @@ function ExitsTab({ id, d }: { id: string; d: RouterDetail }) {
   const drift = d.exits.filter((e) => e.sync === 'drift').length;
   return (
     <>
-      <p className="rt-lead">{d.exits.length} 个出口 · <b>{alive}</b> 个可用 · {managed} 个对应 fleet 入口{drift > 0 && <> · <span className="rt-warn">{drift} 个参数不一致</span></>}<InfoTip text="延迟每 5 分钟测一次（经出口访问 generate_204）" /></p>
+      <p className="rt-lead">{d.exits.length} 个出口 · <b>{alive}</b> 个可用 · {managed} 个对应面板入口{drift > 0 && <> · <span className="rt-warn">{drift} 个参数不一致</span></>}<InfoTip text="延迟每 5 分钟测一次（经出口访问 generate_204）" /></p>
       <Section>
         <SectionHeader title="出口 → 线路机 → 节点" />
         <Topology exits={d.exits} onOpen={openMachine} />
@@ -246,7 +246,7 @@ function ExitsTab({ id, d }: { id: string; d: RouterDetail }) {
         <div className="table-wrap">
           <table className="dt" style={{ minWidth: 960 }}>
             <colgroup><col style={{ width: 120 }} /><col style={{ width: 150 }} /><col style={{ width: 170 }} /><col style={{ width: 80 }} /><col style={{ width: 90 }} /><col style={{ width: 96 }} /><col style={{ width: 60 }} /><col style={{ width: 130 }} /><col style={{ width: 64 }} /></colgroup>
-            <thead><tr><th>出口</th><th>服务器</th><th>对应 fleet 入口</th><th>参数<InfoTip text={(['drift', 'unmanaged'] as const).map((k) => `${SYNC[k].label}：${SYNC[k].tip}`).join('\n')} /></th><th className="r">延迟</th><th>近 6 小时</th><th className="r">连接</th><th className="r">↓ / ↑ 速率</th><th className="r">客户端</th></tr></thead>
+            <thead><tr><th>出口</th><th>服务器</th><th>对应面板入口</th><th>参数<InfoTip text={(['drift', 'unmanaged'] as const).map((k) => `${SYNC[k].label}：${SYNC[k].tip}`).join('\n')} /></th><th className="r">延迟</th><th>近 6 小时</th><th className="r">连接</th><th className="r">↓ / ↑ 速率</th><th className="r">客户端</th></tr></thead>
             <tbody>{d.exits.map((e) => <ExitRow key={e.name} e={e} delays={m.get(e.name)} onOpen={openMachine} />)}</tbody>
           </table>
         </div>
@@ -284,7 +284,7 @@ const ExitRow = React.memo(function ExitRow({ e, delays, onOpen }: { e: RouterEx
   );
 });
 
-/** 出口 → 线路机 → 节点：按线路机分组，一个出口一行，中间是这组共用的线路机；没对上 fleet 入口的单列一组。
+/** 出口 → 线路机 → 节点：按线路机分组，一个出口一行，中间是这组共用的线路机；没对上面板入口的单列一组。
  *  测试失败的出口红、参数不一致的黄，连线跟着变成虚线。线路机、节点名取机器列表缓存（没取过时用入口名） */
 function Topology({ exits, onOpen }: { exits: RouterExit[]; onOpen: (id: string) => void }) {
   const machines = useMachineBriefs().data;

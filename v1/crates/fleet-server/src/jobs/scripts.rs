@@ -102,7 +102,8 @@ pub fn node_ss(i: &SsInst) -> String {
 /// 条件：/etc/resolv.conf 的 nameserver 是链路本地地址（169.254.0.0/16、fe80::/10：GCE、Oracle 等不经 systemd-resolved 的镜像；
 /// GCE 上 DNS 和元数据服务是同一个 169.254.169.254）。单元里拦着 link-local，程序就解析不了域名。拦截不能去掉：去掉了，客户经域名
 /// （metadata.google.internal、169.254.169.254.nip.io）就能让程序连上元数据服务、读走实例的服务账号令牌。改用公共解析器：
-/// ssserver 在配置里加 "dns"（NODE_SS），Xray 由 agent 在它的配置里配。脚本输出 `linklocal_dns=1`，步骤记一条 warn
+/// ssserver 在配置里加 "dns"（NODE_SS），Xray 的单元把写着公共解析器的 /etc/fleet-xray/resolv.conf 挂到它看到的 /etc/resolv.conf 上
+/// （XRAY_UNIT_SH）。脚本输出 `linklocal_dns=1`，步骤记一条 warn
 const LINKLOCAL_DNS: &str = r#"grep -qiE '^[[:space:]]*nameserver[[:space:]]+(169\.254\.|fe[89ab][0-9a-f]:)' /etc/resolv.conf 2>/dev/null"#;
 /// 链路本地 DNS 时 ssserver 用的公共解析器（shadowsocks-rust 配置的 "dns"：逗号分隔，UDP / TCP 53；1.25 核对过）
 const PUBLIC_DNS: &str = "1.1.1.1,8.8.8.8";
@@ -209,22 +210,46 @@ echo "own=$(grep -lF "\"server\":\"$IP\"" /etc/shadowsocks-rust/[0-9]*.json 2>/d
 /// 线路机：fleet-xray 单元与访问日志轮转（配置由 agent 生成）。xray 二进制与 geoip.dat 已推到 /usr/local/bin、/usr/local/share/xray。
 pub fn relay_xray() -> String { RELAY_XRAY.replace("__XRAY_UNIT_SH__", xray_unit_sh().trim()).replace("__LOGROTATE_SH__", logrotate_sh().trim()) }
 
-/// 升级 agent 时也收敛一遍 fleet-xray 单元（加固项随版本变，较早上架的线路机升级一次就换上）。单元变了只 daemon-reload、
-/// 不重启 Xray：新单元等它下次重启（应用时骨架变了、进程退出被拉起、重启机器）才生效。
+/// 装 agent（上架、升级）时也收敛一遍 fleet-xray 单元（加固项随版本变，较早上架的线路机升级一次就换上）。单元变了只 daemon-reload、
+/// 一般不重启 Xray：新单元等它下次重启（应用时骨架变了、进程退出被拉起、重启机器）才生效。唯一的例外见 `XRAY_RESOLV_SH`。
 /// 只是补装：包在子 shell 里，失败只输出 `xray_unit=error`，不让 agent 步骤失败
-pub fn relay_xray_unit() -> String { format!("(\n{}\n) || echo xray_unit=error\n", xray_unit_sh().trim()) }
+pub fn relay_xray_unit() -> String { format!("(\n{}\n) && (\n{}\n) || echo xray_unit=error\n", xray_unit_sh().trim(), XRAY_RESOLV_SH.trim()) }
+
+/// 线路机装 agent：先收敛 Xray 单元（需要时重启 Xray，见 `XRAY_RESOLV_SH`）和日志轮转，再换 agent——
+/// 新 agent 起来时 Xray 已经用上公共解析器，它的第一次应用（骨架没变，只热更新、不重启 Xray）解析得了域名
+pub fn relay_agent() -> String { format!("umask 022\n{}{}{}", relay_xray_unit(), relay_logrotate(), agent()) }
+
+/// DNS 是链路本地地址（装单元时写了 /etc/fleet-xray/resolv.conf）、正在跑的 Xray 看到的 /etc/resolv.conf 却不是它（单元刚换上这个挂载，
+/// 或换上之后 Xray 还没重启过）：重启一次 Xray，挂载才生效——不然 Xray 还用着被 IPAddressDeny=link-local 拦掉的解析器，解析不了域名，
+/// 而新 agent 的配置与旧的骨架相同，应用时不会替它重启。重启会断开这台线路机上所有客户的连接，只在这种情况下做，输出 `xray_restart=resolv`
+/// （重启失败为 `error`）。经 /proc/<主进程>/root 看的是 Xray 自己挂载命名空间里的文件，重启过就一致了，重跑不再重启；
+/// Xray 没在跑时不动（agent 拉起它时挂载就生效）。只在单元装好之后跑，自身不会失败
+const XRAY_RESOLV_SH: &str = r#"
+pid=$(systemctl show -p MainPID --value fleet-xray)
+if [ -f /etc/fleet-xray/resolv.conf ] && [ "${pid:-0}" != 0 ] && ! cmp -s /etc/fleet-xray/resolv.conf /proc/$pid/root/etc/resolv.conf; then
+if systemctl restart fleet-xray; then echo xray_restart=resolv; else echo xray_restart=error; fi
+fi
+"#;
 
 fn xray_unit_sh() -> String { XRAY_UNIT_SH.replace("__LINKLOCAL_DNS__", LINKLOCAL_DNS).replace("__UNIT__", XRAY_UNIT.trim_end()) }
 
 /// fleet-xray 单元：内容变了才换，只 daemon-reload，从不重启 Xray（重启会断开所有连接）。
 /// 写、换每一步都查结果：升级时这段包在 `( … ) || echo …` 里，set -e 不起作用，磁盘满时写出来的空文件会被当成新单元换上。
-/// DNS 是链路本地地址时输出 `linklocal_dns=1`（见 `LINKLOCAL_DNS`；元数据拦截照旧，Xray 的公共解析器由 agent 配）
+/// DNS 是链路本地地址时（见 `LINKLOCAL_DNS`；元数据拦截照旧）写 /etc/fleet-xray/resolv.conf（单元把它只读挂到 Xray 的 /etc/resolv.conf 上）、
+/// 输出 `linklocal_dns=1`；不是时删掉它。同样不重启：Xray 下次重启时才换解析器
 const XRAY_UNIT_SH: &str = r#"
 U=/etc/systemd/system/fleet-xray.service
 cat > $U.tmp <<'UNIT' || exit 1
 __UNIT__
 UNIT
-if __LINKLOCAL_DNS__; then echo linklocal_dns=1; fi
+# glibc 与 Go 的解析都只用前三条 nameserver：两条 IPv4、一条 IPv6（只有 IPv6 的机器也能解析）
+R=/etc/fleet-xray/resolv.conf
+if __LINKLOCAL_DNS__; then
+echo linklocal_dns=1
+install -d -m 755 /etc/fleet-xray || exit 1
+printf 'nameserver %s\n' 1.1.1.1 8.8.8.8 2606:4700:4700::1111 > $R.tmp && chmod 644 $R.tmp || exit 1
+cmp -s $R.tmp $R && rm -f $R.tmp || mv $R.tmp $R || exit 1
+else rm -f $R; fi
 cmp -s $U.tmp $U && rm -f $U.tmp || { mv $U.tmp $U || exit 1; systemctl daemon-reload; }
 "#;
 
@@ -378,7 +403,7 @@ set -u
 systemctl disable --now fleet-agent 2>/dev/null; systemctl disable --now fleet-xray 2>/dev/null; systemctl disable --now fleet-xray-logrotate.timer 2>/dev/null
 rm -f /etc/systemd/system/fleet-agent.service /etc/systemd/system/fleet-xray.service /etc/logrotate.d/fleet-xray
 rm -f /etc/systemd/system/fleet-xray-logrotate.service /etc/systemd/system/fleet-xray-logrotate.timer
-rm -rf /etc/fleet-agent /var/lib/fleet-agent /var/log/fleet-xray /var/log/private/fleet-xray /usr/local/bin/fleet-agent /usr/local/bin/fleet-agent.prev /usr/local/bin/xray /usr/local/share/xray
+rm -rf /etc/fleet-agent /etc/fleet-xray /var/lib/fleet-agent /var/log/fleet-xray /var/log/private/fleet-xray /usr/local/bin/fleet-agent /usr/local/bin/fleet-agent.prev /usr/local/bin/xray /usr/local/share/xray
 systemctl daemon-reload
 echo cleanup=done
 "#;
@@ -492,7 +517,7 @@ echo "nft_relays=$(nft list set inet ss_guard relays | tr -d '\n' | sed 's/.*ele
     }
 
     /// /etc/resolv.conf 的 nameserver 是链路本地地址时：ssserver 配置加公共解析器、报 linklocal_dns=1，单元里的元数据拦截一律不动；
-    /// 不是时配置和原来逐字相同。拿渲染出来的那两行在 bash 里真跑；线路机的 Xray 单元同样不动拦截、只报 linklocal_dns=1
+    /// 不是时配置和原来逐字相同。拿渲染出来的那两行在 bash 里真跑；线路机的 Xray 单元同样不动拦截
     #[cfg(unix)]
     #[test]
     fn linklocal_dns_keeps_ip_address_deny() {
@@ -521,7 +546,33 @@ echo "nft_relays=$(nft list set inet ss_guard relays | tr -d '\n' | sed 's/.*ele
         for s in [node_ss(&SsInst::host()), super::xray_unit_sh()] {
             assert!(s.contains("IPAddressDeny=link-local 100.100.100.200/32\n") && !s.contains("/^IPAddressDeny=/d"), "{s}");
         }
-        assert!(super::xray_unit_sh().contains(&format!("UNIT\nif {}; then echo linklocal_dns=1; fi\ncmp -s $U.tmp $U", super::LINKLOCAL_DNS)));
+    }
+
+    /// 线路机装 Xray 单元：DNS 是链路本地地址时写公共解析器的 resolv.conf（单元把它挂到 Xray 的 /etc/resolv.conf 上）、报 linklocal_dns=1；
+    /// 不再是时删掉。整段在 bash 里真跑（路径换到临时目录，systemctl 换成空函数）
+    #[cfg(unix)]
+    #[test]
+    fn linklocal_dns_xray_resolv_conf() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().display().to_string();
+        let sh = format!(
+            "systemctl() {{ :; }}\n{}",
+            super::xray_unit_sh()
+                .replace("/etc/systemd/system", &d)
+                .replace("/etc/fleet-xray", &format!("{d}/fx"))
+                .replace("/etc/resolv.conf", &format!("{d}/resolv.conf"))
+        );
+        assert!(super::XRAY_UNIT.contains("\nBindReadOnlyPaths=-/etc/fleet-xray/resolv.conf:/etc/resolv.conf\n"));
+        let ours = dir.path().join("fx/resolv.conf");
+        for (conf, linklocal) in [("nameserver 169.254.169.254\n", true), ("nameserver 169.254.169.254\n", true), ("nameserver 10.0.0.2\n", false)] {
+            std::fs::write(dir.path().join("resolv.conf"), conf).unwrap();
+            let out = std::process::Command::new("bash").arg("-c").arg(&sh).output().unwrap();
+            assert!(out.status.success(), "{out:?}");
+            assert_eq!(String::from_utf8_lossy(&out.stdout).contains("linklocal_dns=1"), linklocal);
+            let want = linklocal.then(|| "nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 2606:4700:4700::1111\n".to_string());
+            assert_eq!(std::fs::read_to_string(&ours).ok(), want, "{conf}");
+        }
+        assert!(!dir.path().join("fx/resolv.conf.tmp").exists() && dir.path().join("fleet-xray.service").exists());
     }
 
     /// 重跑系统基线时以运行中的 sshd 为准：比配置文件旧（换上之后没来得及重启）也重启，同一秒里的也算旧
@@ -619,12 +670,14 @@ echo "nft_relays=$(nft list set inet ss_guard relays | tr -d '\n' | sed 's/.*ele
         assert!(!s.contains("__"));
     }
 
-    /// 升级 agent 时收敛 fleet-xray 单元：与上架装的同一段，单元变了只 daemon-reload，绝不重启 Xray；失败不让步骤失败
+    /// 升级 agent 时收敛 fleet-xray 单元：与上架装的同一段，单元变了只 daemon-reload；只有链路本地 DNS 的挂载没生效时重启 Xray
+    /// （见 linklocal_dns_restarts_xray_once）；失败不让步骤失败
     #[test]
     fn agent_upgrade_converges_xray_unit_without_restart() {
         let s = super::relay_xray_unit();
         let body = super::xray_unit_sh();
-        assert_eq!(s, format!("(\n{}\n) || echo xray_unit=error\n", body.trim()));
+        assert_eq!(s, format!("(\n{}\n) && (\n{}\n) || echo xray_unit=error\n", body.trim(), super::XRAY_RESOLV_SH.trim()));
+        assert_eq!(s.matches("systemctl restart").count(), 1);
         // Xray 以动态用户运行、配置经标准输入交给它，连不上本地套接字、到不了元数据服务
         assert!(body.contains("DynamicUser=yes\nStandardInput=file:/etc/fleet-agent/xray.json\nExecStart=/usr/local/bin/xray run -c stdin:\n"), "{body}");
         assert!(body.contains("\nRestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK\n") && body.contains("\nIPAddressDeny=link-local 100.100.100.200/32\n"));
@@ -635,9 +688,51 @@ echo "nft_relays=$(nft list set inet ss_guard relays | tr -d '\n' | sed 's/.*ele
         // 写、换都查结果：包在 `( … ) || echo` 里 set -e 不起作用，写失败的空文件不能被当成新单元换上
         assert!(body.contains("cat > $U.tmp <<'UNIT' || exit 1\n"));
         assert!(body.contains("cmp -s $U.tmp $U && rm -f $U.tmp || { mv $U.tmp $U || exit 1; systemctl daemon-reload; }\n"));
-        assert!(super::relay_xray().contains(body.trim()));
-        for s in [s, super::relay_xray()] {
-            assert!(!s.contains("systemctl restart") && !s.contains("__"), "{s}");
+        assert!(super::relay_xray().contains(body.trim()) && !s.contains("__"), "{s}");
+        let s = super::relay_xray();
+        assert!(!s.contains("systemctl restart") && !s.contains("__"), "{s}");
+    }
+
+    /// 线路机装 agent：先装 Xray 单元、日志轮转，后换 agent（新 agent 起来时 Xray 已经用上公共解析器）
+    #[test]
+    fn relay_agent_installs_xray_unit_before_agent() {
+        let s = super::relay_agent();
+        let (unit, lr, agent) = (s.find(&super::relay_xray_unit()).unwrap(), s.find(&super::relay_logrotate()).unwrap(), s.find(&super::agent()).unwrap());
+        assert!(unit < lr && lr < agent && s.contains("systemctl restart fleet-agent"), "{s}");
+    }
+
+    /// 链路本地 DNS：运行中的 Xray 看到的 /etc/resolv.conf 不是公共解析器那份时重启一次 Xray；重启过（看到的一致了）、
+    /// 不是链路本地 DNS、Xray 没在跑、单元没装上时都不重启。整段在 bash 里真跑（路径换到临时目录，Xray 看到的那份换成临时文件，systemctl 换成函数）
+    #[cfg(unix)]
+    #[test]
+    fn linklocal_dns_restarts_xray_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().display().to_string();
+        let run = |resolv: &str, pid: &str, sees: &str, unit_ok: bool| {
+            std::fs::write(dir.path().join("resolv.conf"), resolv).unwrap();
+            std::fs::write(dir.path().join("sees.conf"), sees).unwrap();
+            let sh = format!(
+                "systemctl() {{ case $1 in show) echo {pid};; restart) echo \"restart $2\" >> {d}/log;; esac; }}\n{}{}",
+                if unit_ok { "" } else { "cat() { return 1; }\n" },
+                super::relay_xray_unit()
+                    .replace("/proc/$pid/root/etc/resolv.conf", &format!("{d}/sees.conf"))
+                    .replace("/etc/systemd/system", &d)
+                    .replace("/etc/fleet-xray", &format!("{d}/fx"))
+                    .replace("/etc/resolv.conf", &format!("{d}/resolv.conf"))
+            );
+            let _ = std::fs::remove_file(dir.path().join("log"));
+            let out = std::process::Command::new("bash").arg("-c").arg(&sh).output().unwrap();
+            assert!(out.status.success(), "{out:?}");
+            (String::from_utf8_lossy(&out.stdout).into_owned(), std::fs::read_to_string(dir.path().join("log")).unwrap_or_default())
+        };
+        let (ll, public) = ("nameserver 169.254.169.254\n", "nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 2606:4700:4700::1111\n");
+        // Xray 还看着链路本地的那份：重启一次
+        let (out, log) = run(ll, "42", ll, true);
+        assert!(out.contains("linklocal_dns=1\n") && out.contains("xray_restart=resolv\n") && log == "restart fleet-xray\n", "{out}{log}");
+        // 重启过（看到的就是公共解析器那份）、不是链路本地、Xray 没在跑、单元没装上：都不重启
+        for (resolv, pid, sees, unit_ok) in [(ll, "42", public, true), ("nameserver 10.0.0.2\n", "42", "nameserver 10.0.0.2\n", true), (ll, "0", ll, true), (ll, "42", ll, false)] {
+            let (out, log) = run(resolv, pid, sees, unit_ok);
+            assert!(!out.contains("xray_restart") && log.is_empty(), "{resolv} {pid} {unit_ok}: {out}{log}");
         }
     }
 }

@@ -42,7 +42,7 @@
 | 登录机器或软路由（在中控上，见 §14） | `fleetctl ssh 团队1-06`（交互式）、`fleetctl ssh 团队1-06 -- 'df -h'`（退出码同远端）、`fleetctl ssh router <名称>` |
 | 上架 | `fleetctl provision --file batch.json --dry-run`，确认后 `fleetctl provision --file batch.json --yes --follow` |
 | 已有 VPS 节点上多了一个 IP，加成一台节点（同机 IP 节点，见 §6） | `fleetctl provision --kind vps --host 团队1-03 --ip 203.0.113.7 --team 团队1 --relay 线路机2 --yes --follow` |
-| 看作业进度、失败原因 | `fleetctl jobs --active`、`fleetctl job <id> --follow`；失败后 `fleetctl retry <id>` |
+| 看作业进度、失败原因 | `fleetctl jobs --active`（`--kind upgrade_agent` 等只看一类）、`fleetctl job <id> --follow`；失败后 `fleetctl retry <id>` |
 | 退役 | `fleetctl retire 团队1-06 --reason 到期不续 --yes --follow`（宿主机上的同机 IP 节点会一并退役，命令先列出来） |
 | 彻底删除已退役机器 | `fleetctl purge 团队1-06 --yes`（它的入口近 35 天的流量还计入另一端未退役的机器时会被拒，报错里给出可删日期；另一端已退役的不受限） |
 | 把节点换到另一台线路机 | `fleetctl move 团队1-06 --to 线路机3 --yes --follow`（分享链接会变，见 §6） |
@@ -54,7 +54,7 @@
 | 入口启停、轮换凭据 | `fleetctl entries`、`fleetctl entry disable 线路机2:20001 --yes`、`fleetctl entry rotate … --yes` |
 | 线路机直出入口（从线路机自己的 IP 出去，旧系统的「节点00-默认」） | `fleetctl entry add-direct 线路机2 --yes --follow`（每台线路机至多一条；线路机 agent 要先升到新版本）；链接 `fleetctl share 线路机2-直出` |
 | 分享链接 | `fleetctl share 线路机2:20001`（需要 secrets，记审计） |
-| 谁做过什么 | `fleetctl audit --target 团队1-06` |
+| 谁做过什么 | `fleetctl audit --target 团队1-06`；按分类、搜索：`fleetctl audit --cat exec -q reboot` |
 | 盯实时变化 | `fleetctl watch` |
 | 访问记录留几天、改保留期（见 §13） | `fleetctl settings retention`；`fleetctl settings retention --raw 3 --hourly 14 --yes`（调短会删数据） |
 | 密钥管理 | 网页，或 `FLEET_PASSWORD=… fleetctl keys ls --user admin`（密钥管理只认登录会话） |
@@ -85,7 +85,7 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
    - `renewal_due` / `renewal_overdue`：续费提醒，不是故障。网页告警页这一行可直接「登记续费」（或 `fleetctl billing <机器>` 看订阅、确认已付款后 `fleetctl renew <机器> --yes`），下一轮评估（≤30 秒）自动恢复。
    - `traffic_quota_high`：流量额度吃紧（本周期已用 ≥ 90% 警告，≥ 100% 严重：供应商可能限速或另收费），不是故障、不改健康状态。`fleetctl billing <机器>` 看本周期已用与上限（注明跟随套餐还是单独设置）；找供应商加流量、调高上限（整个套餐都加了改套餐，只这台加了 `subscription set --traffic-gb`）或把流量分走。新周期开始、上限调高后下一轮评估自动恢复。
      流量周期按供应商的「流量重置」：自然月 = 账单时区每月 1 号起，账单日 = 每台机器到期日是几号就几号起（如 GOMAMI；月份没有这一天按月末）；单台不同的用 `--reset-day` 单独设置。
-     已用按网卡计量，规则跟供应商（目录 → 供应商的「流量计量」：网卡入出取小 / 取大 / 相加 / 只算出站，GOMAMI 是取小；不知道的默认取大）；家宽代理和同机 IP 节点没有网卡读数，按业务流量。上限是十进制 GB（同供应商面板）。
+     已用按网卡计量，规则跟供应商（目录 → 供应商的「流量计量」：入站和出站取较小值 / 取较大值 / 入站加出站 / 只算出站，GOMAMI 是取较小值；不知道的默认取较大值）；家宽代理和同机 IP 节点没有网卡读数，按业务流量。上限是十进制 GB（同供应商面板）。
      周期中途上架（之前的用量量不到）或和面板对不上时，按面板校准一次：`fleetctl subscription set <机器> --used 901.6 --yes`（面板上本周期已用的 GB 数；之后按网卡累加，至多差 1 小时），网页「费用」页签同样能填；进入下个周期自动失效。
    - 告警恢复后 30 分钟内又出现会重开原告警（`reopen_count` +1，告警页显示「反复 N 次」），不会每抖一次发一对触发/恢复通知。
    - 去抖：原因连续出现满 60 秒才开告警、连续消失满 60 秒才恢复；探测类更长（`egress_fail` 150 秒、`tcp_fail` 90 秒），偶发一次探测失败不报。续费类、流量额度不去抖。
@@ -125,8 +125,8 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 - 通知渠道（webhook、企业微信、Telegram 的 `api_base`）不能指向内网、环回、链路本地（云元数据）地址，也不能是内嵌 IPv4 的转换地址（NAT64 `64:ff9b::/32`、6to4 `2002::/16`、Teredo `2001::/32`）；域名在发送时只解析公网地址，发送不走环境变量里的 HTTP 代理（代理会替它解析域名）。确实要用内网 webhook 时在 `fleet.toml` 写 `[notify] allow_private = true`。改 Telegram 的 `api_base` 要同时重新填 `bot_token`。
 - 全部机器的静默 / 维护等于把监控关掉：API 密钥建的最长 24 小时（账号登录的 30 天）；新建、删除静默 / 维护都会通知所有启用的渠道（不受静默影响），悄悄关监控会被看到。
 - 中控：fleet-server 在 systemd 沙箱里运行（无任何特权、只写 `/var/lib/fleet`、系统调用白名单），`/etc/fleet` 归 root、fleet 只读；部署后 `journalctl -u fleet-server` 里出现 SIGSYS / Permission denied 先看沙箱。Caddy 管理接口在 `/run/caddy/admin.sock`（只有 caddy 能连），改配置后用 `systemctl reload caddy`，直接 `caddy reload` 不带 `--config` 会连不上。网页带 CSP（只许本站脚本），不能再加内联脚本或外部 CDN。
-- 线路机：Xray 以 systemd 动态用户运行（不是 root），配置由 systemd 经标准输入交给它，读不到 `/etc/fleet-agent`、`/etc/ssh`，连不上本机的 systemd / D-Bus；访问日志实际在 `/var/log/private/fleet-xray`（`/var/log/fleet-xray` 是符号链接），agent 靠 `CAP_DAC_READ_SEARCH` 读。Xray 与 VPS 节点的 ssserver 都拦了链路本地网段与 100.100.100.200（客户经域名也到不了云元数据服务）；机器的 `/etc/resolv.conf` 用链路本地地址的 DNS（169.254.x、fe80::，GCE、Oracle 等不经 systemd-resolved 的镜像）时拦了就解析不了域名，这样的机器上装单元时不加这条拦截，作业日志记一条 warn。这些单元改动在升级 agent / 收敛时写入，Xray 下次重启、ssserver 下次收敛时生效。agent 上报按机器限速（突发 600 份、每秒补 1 份，超了回 429），agent 拒绝连公网的明文 http 中控。
-- 线路机 DNS 是链路本地地址时：agent 每次渲染 Xray 配置都读 `/etc/resolv.conf`，有链路本地的 nameserver 就给 Xray 加内置 DNS（`dns.servers` = 1.1.1.1、8.8.8.8，查询经 `direct` 出站），直出入口（freedom）改用 `UseIPv4` 按它解析；没有的机器配置不变。DNS 属于骨架，第一次切换时 Xray 重启一次。只管 Xray 内置 DNS 解析的部分：REALITY 伪装目标（`reality_dest`，默认 `www.cloudflare.com:443`）、家宽代理上游、节点地址若写成域名，Xray 仍经系统解析，单元拦着链路本地时解析不了，这样的机器上写成 IP。同一台机器同时只处理一份上报、一份应用回报，另一份回 429（Retry-After 1 秒）；agent 本来就逐份发送，正常碰不到。
+- 线路机：Xray 以 systemd 动态用户运行（不是 root），配置由 systemd 经标准输入交给它，读不到 `/etc/fleet-agent`、`/etc/ssh`，连不上本机的 systemd / D-Bus；访问日志实际在 `/var/log/private/fleet-xray`（`/var/log/fleet-xray` 是符号链接），agent 靠 `CAP_DAC_READ_SEARCH` 读。Xray 与 VPS 节点的 ssserver 都拦了链路本地网段与 100.100.100.200（客户经域名也到不了云元数据服务）；机器的 `/etc/resolv.conf` 用链路本地地址的 DNS（169.254.x、fe80::，GCE、Oracle 等不经 systemd-resolved 的镜像）时拦了就解析不了域名，这样的机器上拦截照旧，改用公共解析器（见下一条），作业日志记一条 warn。这些单元改动在升级 agent / 收敛时写入，Xray 下次重启、ssserver 下次收敛时生效。agent 上报按机器限速（突发 600 份、每秒补 1 份，超了回 429），agent 拒绝连公网的明文 http 中控。
+- 线路机 DNS 是链路本地地址时：装 Xray 单元时（上架、升级 agent）写 `/etc/fleet-xray/resolv.conf`（1.1.1.1、8.8.8.8、2606:4700:4700::1111），单元用 `BindReadOnlyPaths=-/etc/fleet-xray/resolv.conf:/etc/resolv.conf` 把它挂到 Xray 看到的 `/etc/resolv.conf` 上：REALITY 伪装目标、写成域名的家宽代理上游与节点地址、直出都经公共解析器解析，Xray 的配置不变。不是链路本地 DNS 的机器上没有这个文件，Xray 用系统的。上架时装单元不重启 Xray（agent 随后才拉起它）；装 agent（上架、升级）时先装 Xray 单元、后换 agent，正在跑的 Xray 看到的还不是这份文件（单元刚换上挂载）就重启一次 Xray（会断开这台线路机上客户的连接，作业日志记一条说明），重启过的不再重启。同一台机器同时只处理一份上报、一份应用回报，另一份回 429（Retry-After 1 秒）；agent 本来就逐份发送，正常碰不到。
 - 危险操作（退役、删除、轮换、批量升级、会改状态的 exec）先向负责人确认，再加 `--yes`。
 
 ## 6. 换线路机 / 搬空线路机 / 恢复已退役的机器 / 同机 IP 节点

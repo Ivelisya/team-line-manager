@@ -10,14 +10,17 @@ const num = (n: number, digits = 1) => {
   return s.includes('.') ? s.replace(/\.?0+$/, '') : s;
 };
 
-/** 量级：除数 + 单位。数字滚动动画要“按目标值的量级”格式化中间值，否则会出现数值是 MiB 级、单位却是 GiB 的错配 */
+/** 量级：除数 + 单位。数字滚动动画要“按目标值的量级”格式化中间值，否则会出现数值是 MB 级、单位却是 GB 的错配 */
 export interface Scale { div: number; u: string }
-const BYTE_U = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
-export function bytesScale(n: number): Scale {
+// 流量用十进制（同供应商的流量额度 GB）；内存、磁盘用二进制（GiB，同系统报的容量）
+const BYTE_U = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+const BIN_U = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
+function scaleOf(n: number, base: number, units: string[]): Scale {
   let i = 0; let x = Math.abs(n);
-  while (x >= 1024 && i < BYTE_U.length - 1) { x /= 1024; i++; }
-  return { div: 1024 ** i, u: BYTE_U[i] };
+  while (x >= base && i < units.length - 1) { x /= base; i++; }
+  return { div: base ** i, u: units[i] };
 }
+export const bytesScale = (n: number): Scale => scaleOf(n, 1000, BYTE_U);
 export function rateScale(bps: number): Scale {
   const a = Math.abs(bps);
   if (a < 1e3) return { div: 1, u: 'bps' };
@@ -28,12 +31,20 @@ export function rateScale(bps: number): Scale {
 /** 用给定量级格式化数值部分（单位由 Scale.u 另行显示） */
 export const inScale = (n: number, s: Scale): string => (s.div === 1 ? String(Math.round(Math.abs(n))) : num(Math.abs(n) / s.div));
 
-/** 字节 → B/KiB/MiB/GiB/TiB */
+/** 流量字节 → B/KB/MB/GB/TB（十进制） */
 export function bytes(n: number | null | undefined): Fmt {
   if (n == null || !isFinite(n)) return NA;
   const s = bytesScale(n);
   return { v: inScale(n, s), u: s.u };
 }
+/** 内存、磁盘字节 → B/KiB/MiB/GiB/TiB（二进制） */
+export function mem(n: number | null | undefined): Fmt {
+  if (n == null || !isFinite(n)) return NA;
+  const s = scaleOf(n, 1024, BIN_U);
+  return { v: inScale(n, s), u: s.u };
+}
+/** 操作人：用户名原样；API 密钥「名称（API 密钥）」；cli 是中控上的命令行 */
+export const actor = (a: string) => (a === 'cli' ? '中控命令行' : a.startsWith('apikey:') ? `${a.slice(7)}（API 密钥）` : a);
 /** bit/s → Kbps/Mbps/Gbps */
 export function rate(bps: number | null | undefined): Fmt {
   if (bps == null || !isFinite(bps)) return NA;
@@ -41,7 +52,8 @@ export function rate(bps: number | null | undefined): Fmt {
   return { v: inScale(bps, s), u: s.u };
 }
 export const pct = (n: number | null | undefined, d = 0): Fmt => (n == null ? NA : { v: n.toFixed(d), u: '%' });
-export const ms = (n: number | null | undefined): Fmt => (n == null ? NA : { v: String(Math.round(n)), u: 'ms' });
+/** 延迟：不到 0.5 ms（同机房、本机）四舍五入成 0，写「<1 ms」，不像是没测到 */
+export const ms = (n: number | null | undefined): Fmt => (n == null ? NA : { v: Math.round(n) < 1 ? '<1' : String(Math.round(n)), u: 'ms' });
 export const mbps = (n: number | null | undefined): Fmt => (n == null ? NA : n >= 1000 ? { v: num(n / 1000), u: 'Gbps' } : { v: String(n), u: 'Mbps' });
 
 // 币种符号只是显示用（币种列表、默认币种在 /meta）；没收录的写代码
@@ -50,7 +62,8 @@ const currencySym = (c: string) => SYM[c] ?? `${c} `;
 export function money(cents: number | null | undefined, currency: string): string {
   if (cents == null) return '—';
   const v = cents / 100;
-  return `${currencySym(currency)}${Number.isInteger(v) ? v : v.toFixed(2)}`;
+  // 同一列里 $59 与 $28.88 并排时对不齐：一律两位小数（日元没有辅币单位）
+  return `${currencySym(currency)}${currency === 'JPY' ? Math.round(v) : v.toFixed(2)}`;
 }
 /** 币种下拉的一项：「USD $」 */
 export const currencyLabel = (c: string) => `${c} ${currencySym(c).trim()}`.trim();
@@ -105,6 +118,7 @@ export function span(ms: number): string {
 export function duration(a: string | null, b: string | null, now = Date.now()): string {
   if (!a) return '—';
   const s = Math.max(0, ((b ? new Date(b).getTime() : now) - new Date(a).getTime()) / 1000);
+  if (s < 1) return '不到 1 秒';
   if (s < 60) return `${s.toFixed(s < 10 ? 1 : 0)} 秒`;
   return `${Math.floor(s / 60)} 分 ${Math.floor(s % 60)} 秒`;
 }

@@ -85,18 +85,10 @@ async fn run_on(st: &AppState, a: &Actor, id: Uuid, command: &str, timeout_s: u6
         Err(_) => return Err(ApiError::new(StatusCode::TOO_MANY_REQUESTS, "busy", "同时执行的命令太多，稍后再试")),
     };
     // 先提交一条「已开始」的审计再执行：客户端断开或中控重启时，已执行的命令也有记录；执行完再把结果补进这一条
-    let audit_id: i64 = sqlx::query_scalar(
-        "insert into audit_log (actor, action, target_kind, target_id, detail) values ($1, $2, 'machine', $3, $4) returning id",
-    )
-    .bind(&a.name)
-    .bind(action)
-    .bind(id)
-    .bind(json!({"name": name, "command": command, "started": true}))
-    .fetch_one(&st.db)
-    .await?;
+    let audit_id = crate::db::audit_insert(&st.db, &a.name, action, "machine", Some(id), json!({"name": name, "command": command, "started": true})).await?;
     // 命令已经执行过了：补写结果失败只记日志，照样把结果返回（「已开始」那一条审计还在）
     let finish = |extra: Value| async move {
-        if let Err(e) = sqlx::query("update audit_log set detail = (detail - 'started'::text) || $2 where id = $1").bind(audit_id).bind(extra).execute(&st.db).await {
+        if let Err(e) = crate::db::audit_finish(&st.db, audit_id, extra).await {
             tracing::error!(audit_id, "补写执行结果到审计失败：{e:#}");
         }
     };

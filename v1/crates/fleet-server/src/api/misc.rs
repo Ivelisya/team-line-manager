@@ -6,7 +6,7 @@ use crate::error::{ApiError, ApiPath, ApiQuery, ApiResult};
 use crate::state::{AppState, Event};
 use crate::views;
 use crate::crypto::sha256;
-use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
@@ -380,7 +380,61 @@ pub struct AuditQ {
     limit: Option<i64>,
     /// 翻页：只要 id 小于它的（上一页最后一条的 id）
     before_id: Option<i64>,
+    /// 分类：all | auth | exec | machine | config（见 `audit_cat`）
+    cat: Option<String>,
+    /// 搜索标题、摘要、操作人（见 `audit_search`）
+    q: Option<String>,
 }
+
+/// 远程执行类的动作：在机器上跑命令、SSH 登录、网页终端、取日志、恢复预检登录机器
+const EXEC_ACTIONS: &[&str] = &["exec", "ssh.login", "terminal.open", "terminal.close", "machine.logs", "server.logs", "restore.probe"];
+
+/// 分类条件（操作记录页的分段）：登录与账户（auth.*）、远程执行（`EXEC_ACTIONS`）、
+/// 机器与入口（生命周期、改名、费用续费、入口、作业、升级 agent），其余是设置与告警（目录、密钥、通知、静默、告警、访问规则）
+fn audit_cat(args: &mut Args, cat: &str) -> ApiResult<String> {
+    const MACHINE: &str = "action ~ '^(machine|entry|relay|subscription|agent|job|renewal)(\\.|$)'";
+    let exec = args.add(EXEC_ACTIONS);
+    Ok(match cat {
+        "auth" => " and action like 'auth.%'".into(),
+        "exec" => format!(" and action = any({exec})"),
+        "machine" => format!(" and {MACHINE} and action <> all({exec})"),
+        "config" => format!(" and action not like 'auth.%' and action <> all({exec}) and not {MACHINE}"),
+        _ => return Err(ApiError::bad_request("cat 只能是 all、auth、exec、machine、config")),
+    })
+}
+
+/// 搜索条件：只搜界面上看得到的——操作人（按界面上的写法：中控命令行、「名称（API 密钥）」）、标题（标题含关键字的动作）、
+/// 写审计时存下的标题与摘要（search 列，见 `audit_search_text`），不翻 detail 里界面不展示的值。
+/// search 里的命令是隐藏的（没有 exec 权限的人看到的那份，免得靠搜索试出命令内容）；有 exec 权限的另搜命令原文
+fn audit_search(args: &mut Args, q: &str, can_exec: bool) -> Option<String> {
+    let like = crate::access::like_pattern(q)?;
+    let lower = q.trim().to_lowercase();
+    let titles: Vec<&str> = AUDIT_ACTIONS.iter().copied().filter(|a| audit_text(a, &json!({})).0.to_lowercase().contains(&lower)).collect();
+    let (l, t) = (args.add(like), args.add(titles));
+    let command = if can_exec { format!(" or case when jsonb_typeof(detail->'command') = 'string' then detail->>'command' end ilike {l}") } else { String::new() };
+    Some(format!(
+        " and (case when actor = 'cli' then '中控命令行' when actor like 'apikey:%' then substr(actor, 8) || '（API 密钥）' else actor end ilike {l}
+           or action = any({t}) or search ilike {l}{command})"
+    ))
+}
+
+/// 没有 exec 权限的人看到的命令：只给字数（第一行也可能带口令），摘要随之隐藏
+fn hide_command(d: &mut Value) {
+    if let Some(c) = d.get("command").and_then(Value::as_str) {
+        d["command"] = json!(format!("命令已隐藏（{} 字）", c.chars().count()));
+    }
+}
+
+/// 存进 search 列的搜索文本：标题与摘要（命令隐藏后的，同没有 exec 权限的人看到的）
+pub fn audit_search_text(action: &str, d: &Value) -> String {
+    let mut d = d.clone();
+    hide_command(&mut d);
+    let (title, summary) = audit_text(action, &d);
+    format!("{title}\n{summary}")
+}
+
+/// 操作记录查询的语句超时：关键词搜索沿主键倒序边扫边筛，命中少的词可能扫很多行
+const AUDIT_TIMEOUT_S: u32 = 5;
 
 #[derive(Serialize, sqlx::FromRow)]
 struct AuditOut {
@@ -395,8 +449,10 @@ struct AuditOut {
 }
 
 pub async fn audit(a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<AuditQ>) -> ApiResult<Json<Value>> {
-    // 只拼给了的条件：按对象查时才走得上 (target_id, id desc) 索引
-    let mut args = crate::db::Args::default();
+    // 没有 exec 权限的密钥看不到命令（第一行也可能带口令）：只给字数，摘要随之隐藏
+    let can_exec = a.require_scope("exec").is_ok();
+    // 只拼给了的条件：按对象查时才走得上 (target_id, id desc) 索引；分类、搜索沿主键倒序边扫边筛，同样按 before_id 往前翻
+    let mut args = Args::default();
     let mut w = String::from("true");
     if let Some(t) = q.target_id {
         w += &format!(" and target_id = {}", args.add(t));
@@ -404,20 +460,33 @@ pub async fn audit(a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<A
     if let Some(b) = q.before_id {
         w += &format!(" and id < {}", args.add(b));
     }
+    match q.cat.as_deref().map(str::trim) {
+        None | Some("" | "all") => {}
+        Some(c) => w += &audit_cat(&mut args, c)?,
+    }
+    if let Some(s) = q.q.as_deref().and_then(|s| audit_search(&mut args, s, can_exec)) {
+        w += &s;
+    }
     let sql = format!(
         "select id, ts, actor, action, target_kind, target_id, detail from audit_log where {w} order by id desc limit {}",
         args.add(q.limit.unwrap_or(100).clamp(1, 1000))
     );
-    let v: Vec<AuditOut> = sqlx::query_as_with(&sql, args.0).fetch_all(&st.db).await?;
-    // 没有 exec 权限的密钥看不到命令（第一行也可能带口令）：只给字数，摘要随之隐藏
-    let can_exec = a.require_scope("exec").is_ok();
+    let mut tx = st.db.begin().await?;
+    sqlx::query(&format!("set local statement_timeout = '{AUDIT_TIMEOUT_S}s'")).execute(&mut *tx).await?;
+    let v: Vec<AuditOut> = sqlx::query_as_with(&sql, args.0).fetch_all(&mut *tx).await.map_err(|e| match &e {
+        sqlx::Error::Database(d) if d.code().as_deref() == Some("57014") => ApiError::new(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            format!("搜索超过 {AUDIT_TIMEOUT_S} 秒还没查完，已中止：换个更具体的关键词，或先按分类、对象筛选"),
+        ),
+        _ => e.into(),
+    })?;
+    tx.commit().await?;
     let out: Vec<Value> = v
         .into_iter()
         .map(|mut a| {
             if !can_exec {
-                if let Some(c) = a.detail.get("command").and_then(Value::as_str) {
-                    a.detail["command"] = json!(format!("命令已隐藏（{} 字）", c.chars().count()));
-                }
+                hide_command(&mut a.detail);
             }
             let (title, summary) = audit_text(&a.action, &a.detail);
             let mut j = serde_json::to_value(&a).unwrap_or_default();
@@ -428,6 +497,18 @@ pub async fn audit(a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<A
         .collect();
     Ok(ok(out))
 }
+
+/// 所有写审计的动作（git grep 'audit(' 核对过）；新增动作时补这里和 audit_text。按标题搜索时在这里面找
+const AUDIT_ACTIONS: &[&str] = &[
+    "machine.provision", "machine.retire", "machine.purge", "machine.rename", "machine.update", "machine.restore", "subscription.set", "renewal",
+    "team.create", "team.update", "team.delete", "team.renumber", "provider.create", "provider.update", "provider.delete", "plan.create", "plan.update", "plan.delete", "entry.enable",
+    "entry.disable", "entry.rotate", "entry.share", "entry.add", "entry.move", "relay.evacuate", "job.retry", "job.cancel", "silence.create",
+    "silence.delete", "incident.ack", "restore.probe", "agent.upgrade", "notify.create", "notify.update", "notify.delete", "exec", "machine.logs", "server.logs", "apikey.create",
+    "apikey.revoke", "auth.login", "auth.login_failed", "auth.logout", "auth.totp_enabled", "auth.totp_disabled", "auth.totp_recovery_used",
+    "auth.totp_recovery_regenerated", "auth.password_changed", "auth.session_revoked", "auth.verify_failed", "policy.draft", "policy.discard", "policy.publish", "policy.rollback",
+    "settings.access_retention", "terminal.open", "terminal.close", "ssh.login",
+    "router.create", "router.update", "router.delete", "router.bootstrap", "router.bootstrap_used", "router.deploy",
+];
 
 /// 审计记录的中文标题与一句话摘要（界面直接显示）
 pub fn audit_text(action: &str, d: &Value) -> (String, String) {
@@ -442,11 +523,19 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "renewal" => "登记续费",
         "team.create" => "新建团队",
         "team.update" => "修改团队",
+        "team.delete" => "删除团队",
         "team.renumber" => "重新编号",
         "provider.create" => "新建供应商",
         "provider.update" => "修改供应商",
+        "provider.delete" => "删除供应商",
         "plan.create" => "新建套餐",
-        "plan.update" => "修改套餐",
+        // 只改了归档的写成归档 / 取消归档
+        "plan.update" => match plan_archive(d) {
+            Some(true) => "归档套餐",
+            Some(false) => "取消归档套餐",
+            None => "修改套餐",
+        },
+        "plan.delete" => "删除套餐",
         "entry.enable" => "启用入口",
         "entry.disable" => "停用入口",
         "entry.rotate" => "轮换凭据",
@@ -523,7 +612,53 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         a if a.starts_with("entry.") && d["relay"].is_string() => format!("{}:{}", s("relay"), d["port"]),
         "entry.add" if d["direct"] == true => "线路机直出入口".into(),
         "provider.update" => d["after"]["name"].as_str().unwrap_or("").to_string(),
-        "team.create" | "provider.create" | "plan.create" | "notify.create" | "notify.update" | "notify.delete" => s("name"),
+        "team.create" | "team.delete" | "provider.create" | "provider.delete" | "plan.create" | "plan.delete" | "notify.create" | "notify.update" | "notify.delete" => s("name"),
+        // 「测试团队 → 测试团队改，排序 200 → 50」：改了名写从什么改成什么，没改名只写名字
+        "team.update" => {
+            let (b, a) = (&d["before"], &d["after"]);
+            let name = if b["name"] == a["name"] { val(&a["name"]) } else { format!("{} → {}", val(&b["name"]), val(&a["name"])) };
+            match (b["sort_order"].as_i64(), a["sort_order"].as_i64()) {
+                (Some(x), Some(y)) if x != y => format!("{name}，排序 {x} → {y}"),
+                _ => name,
+            }
+        }
+        // 「ATTVPS 基础版 · 价格 59.00 → 69.00 USD，流量 800 → 1000 GB」；只改了归档的只写名字（标题已经说了归档）。这一版之前的记录没有名字
+        "plan.update" => {
+            let changes = plan_changes(d);
+            match (s("name"), changes.is_empty() || plan_archive(d).is_some()) {
+                (n, true) => n,
+                (n, false) if n.is_empty() => changes,
+                (n, false) => format!("{n} · {changes}"),
+            }
+        }
+        // 「团队1-07 → 团队1-03」；修改资料写名字和改了的国家（团队、编号变了算改名）
+        "machine.rename" if d["old_name"].is_string() => format!("{} → {}", s("old_name"), s("name")),
+        "machine.update" if d["name"].is_string() => match (d["before"]["country"].as_str(), d["after"]["country"].as_str()) {
+            (b, a) if b != a => format!("{} · 国家 {} → {}", s("name"), b.unwrap_or("自动"), a.unwrap_or("自动")),
+            _ => s("name"),
+        },
+        // 「团队1-03」「5 台（团队1-03、团队1-04、团队1-05、…），跳过 1 台」；这一版之前的记录没有台名，只写台数
+        "agent.upgrade" => {
+            let n = d["count"].as_u64().unwrap_or(0);
+            let names: Vec<&str> = d["names"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+            let mut s = match names.as_slice() {
+                [one] if n == 1 => one.to_string(),
+                [] => format!("{n} 台"),
+                l => format!("{n} 台（{}{}）", l.join("、"), if n as usize > l.len() { "、…" } else { "" }),
+            };
+            if let Some(k) = d["skipped"].as_u64().filter(|k| *k > 0) {
+                s += &format!("，跳过 {k} 台");
+            }
+            s
+        }
+        // 「换线路机 · 团队1-03」：这一版之前的记录没有作业类型，不写摘要
+        "job.cancel" | "job.retry" if d["kind"].is_string() => {
+            let k = crate::meta::job_kind_label(d["kind"].as_str().unwrap_or(""));
+            match d["name"].as_str() {
+                Some(n) => format!("{k} · {n}"),
+                None => k.to_string(),
+            }
+        }
         "exec" => {
             // 命令只取第一行、最多 60 字
             let cmd = s("command");
@@ -557,10 +692,18 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "auth.password_changed" => format!("{} · 撤销其它 {} 个会话", s("ip"), d["revoked_sessions"]),
         "auth.session_revoked" if d["others"].is_number() => format!("退出其它设备（{} 个）", d["others"]),
         "auth.session_revoked" => s("ip"),
-        "policy.draft" if d["cleared"] == true => "撤销草稿".into(),
+        // 「团队1 · 黑名单 · 2 个域名」：这一版之前的记录没有范围名
         "policy.draft" => {
-            let mode = crate::meta::label(crate::meta::POLICY_MODES, d["mode"].as_str().unwrap_or(""));
-            format!("{mode} · {} 个域名", d["domains"])
+            let what = if d["cleared"] == true {
+                "撤销草稿".to_string()
+            } else {
+                let mode = crate::meta::label(crate::meta::POLICY_MODES, d["mode"].as_str().unwrap_or(""));
+                format!("{mode} · {} 个域名", d["domains"])
+            };
+            match d["name"].as_str() {
+                Some(n) => format!("{n} · {what}"),
+                None => what,
+            }
         }
         // 这一版之前的只记了对象 id 与是否维护，不写摘要
         "silence.create" | "silence.delete" if d["starts_at"].is_string() => {
@@ -603,6 +746,52 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
     (title, summary)
 }
 
+/// JSON 值的显示：字符串原样，null 写「—」，其余（数字）照写
+fn val(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Null => "—".into(),
+        v => v.to_string(),
+    }
+}
+
+/// plan.update 是不是只改了归档：Some(true) 归档、Some(false) 取消归档、None 还改了别的
+fn plan_archive(d: &Value) -> Option<bool> {
+    let a = d["after"].as_object()?;
+    (a.len() == 1).then(|| a.get("archived_at").map(|v| !v.is_null())).flatten()
+}
+
+/// plan.update 改了的字段：「价格 59.00 → 69.00 USD，流量 800 → 1000 GB」
+fn plan_changes(d: &Value) -> String {
+    let (b, a) = (&d["before"], &d["after"]);
+    let Some(keys) = a.as_object() else { return String::new() };
+    let cur = d["currency"].as_str().unwrap_or("");
+    let money = |v: &Value| v.as_i64().map_or("—".into(), |c| format!("{:.2}", c as f64 / 100.0));
+    let gb = |v: &Value| v.as_i64().filter(|g| *g > 0).map_or("不限".into(), |g| format!("{g}"));
+    let cycle = |v: &Value| v.as_str().and_then(|k| crate::meta::CYCLES.iter().find(|c| c.key == k)).map_or_else(|| val(v), |c| c.label.to_string());
+    keys.keys()
+        .filter_map(|k| {
+            let (x, y) = (&b[k.as_str()], &a[k.as_str()]);
+            Some(match k.as_str() {
+                "name" => format!("改名 {} → {}", val(x), val(y)),
+                "price_cents" => format!("价格 {} → {} {cur}", money(x), money(y)),
+                "currency" => format!("币种 {} → {}", val(x), val(y)),
+                "cycle" => format!("周期 {} → {}", cycle(x), cycle(y)),
+                "traffic_gb" => format!("流量 {} → {} GB", gb(x), gb(y)),
+                "bandwidth_mbps" => format!("带宽 {} → {} Mbps", val(x), val(y)),
+                "cpu_cores" => format!("CPU {} → {} 核", val(x), val(y)),
+                "mem_mb" => format!("内存 {} → {} MiB", val(x), val(y)),
+                "disk_gb" => format!("磁盘 {} → {} GiB", val(x), val(y)),
+                "provider_id" => "换了供应商".into(),
+                "notes" => "改了备注".into(),
+                "archived_at" => if y.is_null() { "取消归档" } else { "归档" }.into(),
+                _ => return None,
+            })
+        })
+        .collect::<Vec<_>>()
+        .join("，")
+}
+
 /// 实时流连接用的凭据，用来定期复核「会话/密钥还有效吗」
 enum Cred {
     Session(Vec<u8>),
@@ -631,7 +820,7 @@ async fn still_valid(db: &sqlx::PgPool, c: &Cred) -> sqlx::Result<bool> {
     }
 }
 
-/// 心跳：每隔这么久发一次 ping，到下一次 ping 还没收到 pong 就当连接已死
+/// 心跳：每隔这么久发一次 ping（另带一个文本心跳 `{"type":"hb"}`），到下一次 ping 还没收到 pong 就当连接已死
 const PING_EVERY: Duration = Duration::from_secs(15);
 const RECHECK_EVERY: Duration = Duration::from_secs(60);
 /// 会话/密钥失效时的关闭码（4000–4999 归应用自用）
@@ -696,7 +885,11 @@ async fn serve_ws(mut ws: WebSocket, mut rx: broadcast::Receiver<Event>, db: sql
                 Some(Ok(_)) => continue,
             },
             _ = ping.tick() => {
-                if pong_due || !send(&mut ws, Message::Ping(Default::default())).await {
+                // 协议层的 ping 浏览器脚本看不到：另发一个文本心跳，前端据此发现半开的连接（web/src/lib/stream.ts）
+                if pong_due
+                    || !send(&mut ws, Message::Ping(Default::default())).await
+                    || !send(&mut ws, Message::Text(Utf8Bytes::from_static(r#"{"type":"hb"}"#))).await
+                {
                     return;
                 }
                 pong_due = true;
@@ -741,17 +934,7 @@ mod tests {
 
     #[test]
     fn every_audit_action_has_title() {
-        // 所有写审计的动作（git grep 'audit(' 核对过）；新增动作时补这里和 audit_text
-        for a in [
-            "machine.provision", "machine.retire", "machine.purge", "machine.rename", "machine.update", "machine.restore", "subscription.set", "renewal",
-            "team.create", "team.update", "team.renumber", "provider.create", "provider.update", "plan.create", "plan.update", "entry.enable",
-            "entry.disable", "entry.rotate", "entry.share", "entry.add", "entry.move", "relay.evacuate", "job.retry", "job.cancel", "silence.create",
-            "silence.delete", "agent.upgrade", "notify.create", "notify.update", "notify.delete", "exec", "machine.logs", "server.logs", "apikey.create",
-            "apikey.revoke", "auth.login", "auth.login_failed", "auth.logout", "auth.totp_enabled", "auth.totp_disabled", "auth.totp_recovery_used",
-            "auth.totp_recovery_regenerated", "auth.password_changed", "auth.session_revoked", "auth.verify_failed", "policy.draft", "policy.discard", "policy.publish", "policy.rollback",
-            "settings.access_retention", "terminal.open", "terminal.close",
-            "router.create", "router.update", "router.delete", "router.bootstrap", "router.bootstrap_used", "router.deploy",
-        ] {
+        for &a in AUDIT_ACTIONS {
             assert_ne!(audit_text(a, &json!({})).0, a, "{a} 没有中文标题");
         }
     }
@@ -762,6 +945,27 @@ mod tests {
         assert_eq!(s(json!({"raw_days": 7, "hourly_days": 31}), json!({"raw_days": 3, "hourly_days": 31})), "原始记录 7 → 3 天，汇总 31 天");
         assert_eq!(s(json!({"raw_days": 7, "hourly_days": 31}), json!({"raw_days": 7, "hourly_days": 60})), "原始记录 7 天，汇总 31 → 60 天");
         assert_eq!(s(json!({"raw_days": 7, "hourly_days": 31}), json!({"raw_days": 1, "hourly_days": 14})), "原始记录 7 → 1 天，汇总 31 → 14 天");
+    }
+
+    #[test]
+    fn catalog_and_machine_summaries_name_the_object() {
+        let t = |a: &str, d: Value| audit_text(a, &d);
+        assert_eq!(t("team.update", json!({"before": {"name": "甲", "sort_order": 200}, "after": {"name": "甲改", "sort_order": 50}})).1, "甲 → 甲改，排序 200 → 50");
+        assert_eq!(t("team.update", json!({"before": {"name": "甲", "sort_order": 1}, "after": {"name": "甲", "sort_order": 2}})).1, "甲，排序 1 → 2");
+        let arch = json!({"name": "ATTVPS 基础版", "currency": "USD", "before": {"archived_at": null}, "after": {"archived_at": "2026-10-22T00:00:00Z"}});
+        assert_eq!(t("plan.update", arch), ("归档套餐".to_string(), "ATTVPS 基础版".to_string()));
+        let (title, s) = t("plan.update", json!({"name": "季付", "currency": "USD", "before": {"price_cents": 5900, "traffic_gb": 800}, "after": {"price_cents": 6900, "traffic_gb": 1000}}));
+        assert_eq!((title.as_str(), s.as_str()), ("修改套餐", "季付 · 价格 59.00 → 69.00 USD，流量 800 → 1000 GB"));
+        assert_eq!(t("machine.rename", json!({"name": "团队1-03", "old_name": "团队1-07"})).1, "团队1-07 → 团队1-03");
+        assert_eq!(t("policy.draft", json!({"name": "团队1", "mode": "denylist", "domains": 2, "cleared": false})).1, "团队1 · 黑名单 · 2 个域名");
+        assert_eq!(t("agent.upgrade", json!({"count": 12, "skipped": 1})).1, "12 台，跳过 1 台");
+        assert_eq!(t("agent.upgrade", json!({"count": 1, "skipped": 0, "names": ["团队1-03"]})).1, "团队1-03");
+        let three = json!(["团队1-03", "团队1-04", "线路机2"]);
+        assert_eq!(t("agent.upgrade", json!({"count": 5, "skipped": 1, "names": three})).1, "5 台（团队1-03、团队1-04、线路机2、…），跳过 1 台");
+        assert_eq!(t("agent.upgrade", json!({"count": 3, "skipped": 0, "names": three})).1, "3 台（团队1-03、团队1-04、线路机2）");
+        assert_eq!(t("job.cancel", json!({"kind": "move_entry", "name": "模拟团队C-21"})), ("取消作业".to_string(), "换线路机 · 模拟团队C-21".to_string()));
+        assert_eq!(t("job.retry", json!({"kind": "upgrade_agent", "name": null, "step": 0})).1, "升级 agent");
+        assert_eq!(t("job.cancel", json!({})).1, "");
     }
 
     #[test]

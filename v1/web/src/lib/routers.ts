@@ -126,13 +126,13 @@ const deploy = createStore<DeployTarget | null>(null);
 export const showDeploy = deploy.set;
 export const closeDeploy = () => deploy.set(null);
 export const useDeployTarget = deploy.use;
-/** 部署时间线：服务端只给当前步骤，走过的步骤由前端在推送里看到时记下（按这次部署的开始时刻区分；刷新页面后只剩当前这一步）。
- *  渲染时调用，同一步重复看到不重复记 */
-const seenSteps = new Map<string, { step: string; at: number }[]>();
+/** 部署时间线：服务端只给当前步骤，走过的步骤由前端在推送里看到时记下（刷新页面后只剩当前这一步）。
+ *  每台路由只留最近一次部署（按开始时刻认），换了一次部署就丢掉上一次的，不越攒越多。渲染时调用，同一步重复看到不重复记 */
+const seenSteps = new Map<string, { started: string; steps: { step: string; at: number }[] }>();
 export function deploySteps(id: string, d: RouterDeploy) {
-  const k = `${id}:${d.started_at}`;
-  let l = seenSteps.get(k);
-  if (!l) seenSteps.set(k, (l = []));
+  let e = seenSteps.get(id);
+  if (e?.started !== d.started_at) seenSteps.set(id, (e = { started: d.started_at, steps: [] }));
+  const l = e.steps;
   // 不在跑了才第一次看到（刷新页面后）：时刻记成结束的时刻
   if (d.step && l[l.length - 1]?.step !== d.step) l.push({ step: d.step, at: d.state === 'running' ? Date.now() : Date.parse(d.finished_at ?? d.started_at) });
   return l;
@@ -153,8 +153,8 @@ export function routerMeters(s: RouterSummary) {
   const loadPct = s.cores ? (s.load1 / s.cores) * 100 : null;
   return {
     cpu: { value: F.pct(s.cpu_pct), pct: s.cpu_pct, sub: `负载 ${F.str(F.pct(loadPct))} · ${s.cores} 核`, tip: `负载 = 1 分钟平均负载 ${s.load1.toFixed(2)} ÷ ${s.cores} 核；超过 100% 表示有进程在排队` },
-    mem: { value: F.pct(memPct), pct: memPct, sub: `${F.str(F.bytes(s.mem_used))} / ${F.str(F.bytes(s.mem_total))}` },
-    disk: { value: F.pct(diskPct), pct: diskPct, sub: `${F.str(F.bytes(s.disk_used))} / ${F.str(F.bytes(s.disk_total))}`, tip: '/overlay（装的软件与配置）的已用 / 总量' },
+    mem: { value: F.pct(memPct), pct: memPct, sub: `${F.str(F.mem(s.mem_used))} / ${F.str(F.mem(s.mem_total))}` },
+    disk: { value: F.pct(diskPct), pct: diskPct, sub: `${F.str(F.mem(s.disk_used))} / ${F.str(F.mem(s.disk_total))}`, tip: '/overlay（装的软件与配置）的已用 / 总量' },
     ct: { value: F.pct(ctPct), pct: ctPct, sub: `${s.conntrack.toLocaleString()} / ${s.conntrack_max.toLocaleString()}`, tip: '连接跟踪表（conntrack）当前条目 / 上限：满了新连接会被丢弃' },
   };
 }

@@ -105,10 +105,8 @@ const EnableTotpDialog = resetOnOpen(function EnableTotpDialog({ open, onClose, 
           <div className="totp-setup">
             <img className="totp-qr" src={`data:image/svg+xml;utf8,${encodeURIComponent(d.qr_svg)}`} alt="两步验证二维码" width={168} height={168} />
             <div className="totp-steps">
-              <div><b>1. 扫码</b>：用认证器 App 扫左侧二维码 <InfoTip text="如 Google Authenticator、Microsoft Authenticator、1Password" /></div>
-              <div>或手动输入密钥：</div>
+              <div><b>扫码或输入密钥</b> <InfoTip text="用认证器 App（如 Google Authenticator、Microsoft Authenticator、1Password）扫左侧二维码，或手动输入下面的密钥；再在下面填它显示的 6 位验证码" /></div>
               <div className="token-box"><code>{d.secret.replace(/(.{4})/g, '$1 ').trim()}</code><CopyButton text={d.secret} label="密钥" /></div>
-              <div><b>2. 确认</b>：输入 6 位验证码</div>
             </div>
           </div>
           <Field label="验证码"><CodeInput value={code} onChange={setCode} autoFocus /></Field>
@@ -221,12 +219,12 @@ function PasswordPanel() {
 }
 
 /* ================================================================ 登录会话 */
-/** User-Agent 的简短说法：浏览器 · 系统；认不出的显示原文第一段 */
+/** User-Agent 的简短说法：浏览器 · 系统（Chrome · Windows）；认不出浏览器的写「其它浏览器」，原文在悬停里 */
 function uaLabel(ua: string | null): string {
   if (!ua) return '未知设备';
   const b = /Edg\//.test(ua) ? 'Edge' : /Firefox\//.test(ua) ? 'Firefox' : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : null;
   const os = /iPhone|iPad/.test(ua) ? 'iOS' : /Android/.test(ua) ? 'Android' : /Windows/.test(ua) ? 'Windows' : /Mac OS X|Macintosh/.test(ua) ? 'macOS' : /Linux/.test(ua) ? 'Linux' : null;
-  return b ? [b, os].filter(Boolean).join(' · ') : ua.split(' ')[0];
+  return [b ?? (/curl|python|Go-http|okhttp/i.test(ua) ? '脚本' : '其它浏览器'), os].filter(Boolean).join(' · ');
 }
 
 const SESSION_CAP = 8;
@@ -247,15 +245,15 @@ function SessionsPanel() {
         {q.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div>}
         {q.isLoading ? <SkeletonRows rows={2} head /> : q.isError && !q.data ? null : list.length === 0 ? <Empty icon={<MonitorSmartphone size={22} />} text="没有登录会话" /> : (
           <div className="table-wrap">
-            <table className="dt" style={{ minWidth: 780 }}>
+            <table className="dt is-one" style={{ minWidth: 780 }}>
               <colgroup><col style={{ width: 260 }} /><col style={{ width: 170 }} /><col style={{ width: 112 }} /><col style={{ width: 128 }} /><col style={{ width: 112 }} /><col style={{ width: 52 }} /></colgroup>
               <thead><tr><th>设备</th><th>IP</th><th>登录</th><th>最近活动</th><th>到期</th><th /></tr></thead>
               <tbody>
                 {shown.map((s) => (
                   <tr key={s.id}>
                     <td>
-                      <div className="row" style={{ flexWrap: 'nowrap', gap: 8 }}><Trunc className="cell-main strong">{uaLabel(s.user_agent)}</Trunc>{s.current && <Chip>本设备</Chip>}</div>
-                      <span className="sub"><Trunc text={s.user_agent ?? ''}>{s.user_agent ?? '没有记录 User-Agent'}</Trunc></span>
+                      {/* 原始 User-Agent 只在悬停里 */}
+                      <div className="row" style={{ flexWrap: 'nowrap', gap: 8 }}><span className="cell-main strong" data-tip={s.user_agent ?? '没有记录浏览器信息'}>{uaLabel(s.user_agent)}</span>{s.current && <Chip>本设备</Chip>}</div>
                     </td>
                     <td>{s.ip ? <Trunc className="mono">{s.ip}</Trunc> : <span className="t-sub">未知</span>}</td>
                     <td>{F.dt(s.created_at)}</td>

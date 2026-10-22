@@ -10,12 +10,16 @@ use crate::jobs;
 use crate::names::node_name;
 use crate::state::{AppState, Event};
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::Json;
 use base64::Engine;
+use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
 use time::Date;
 use uuid::Uuid;
 
@@ -310,10 +314,76 @@ fn report(v: &[Checked]) -> Value {
     json!({"items": v.iter().map(|c| json!({"ok": c.errors.is_empty(), "errors": c.errors, "name": c.name, "number": c.number, "ss_port": c.ss_port})).collect::<Vec<_>>()})
 }
 
-pub async fn check(_a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Batch>) -> ApiResult<Json<Value>> {
+/// 「检查」里探测 SSH 端口的限速，按操作人：一批最多 100 台，连着查三批没问题，之后每秒补 1 次。
+/// 挡的是拿「检查」当端口扫描器扫中控所在内网（一次 100 个地址、不落库不留审计）；真正上架要落库、记审计，不在此列
+const PROBE_BURST: f64 = 300.0;
+const PROBE_REFILL_PER_S: f64 = 1.0;
+/// 同一批里同时探测的个数
+const PROBE_CONCURRENCY: usize = 8;
+static PROBE_BUDGET: LazyLock<Mutex<HashMap<String, (f64, Instant)>>> = LazyLock::new(Default::default);
+
+/// 扣 `n` 次探测；不够时整批不扣，返回还要等几秒
+fn take_probes(m: &mut HashMap<String, (f64, Instant)>, who: &str, n: usize, now: Instant) -> Result<(), u64> {
+    let (tokens, at) = m.entry(who.to_string()).or_insert((PROBE_BURST, now));
+    *tokens = (*tokens + now.saturating_duration_since(*at).as_secs_f64() * PROBE_REFILL_PER_S).min(PROBE_BURST);
+    *at = now;
+    if *tokens < n as f64 {
+        return Err(((n as f64 - *tokens) / PROBE_REFILL_PER_S).ceil().max(1.0) as u64);
+    }
+    *tokens -= n as f64;
+    Ok(())
+}
+
+/// 不是一台机器的地址：回环、链路本地（含云元数据 169.254.169.254）、未指定（0.0.0.0、::）、组播。私网照常（实验室节点就在私网里）
+fn not_a_host(ip: IpAddr) -> Option<&'static str> {
+    match ip.to_canonical() {
+        IpAddr::V4(a) if a.is_loopback() => Some("回环"),
+        IpAddr::V4(a) if a.is_link_local() => Some("链路本地"),
+        IpAddr::V4(a) if a.is_unspecified() => Some("未指定"),
+        IpAddr::V4(a) if a.is_multicast() => Some("组播"),
+        IpAddr::V6(a) if a.is_loopback() => Some("回环"),
+        IpAddr::V6(a) if a.segments()[0] & 0xffc0 == 0xfe80 => Some("链路本地"),
+        IpAddr::V6(a) if a.is_unspecified() => Some("未指定"),
+        IpAddr::V6(a) if a.is_multicast() => Some("组播"),
+        _ => None,
+    }
+}
+
+pub async fn check(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Batch>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
-    let v = validate(&mut tx, &b.items).await?;
+    let mut v = validate(&mut tx, &b.items).await?;
     tx.rollback().await?;
+    // 只查库的校验之外再看一眼 SSH 端口通不通（同恢复的预检）：地址填错、防火墙没放行在这里就能看出来，不用等上架作业失败。
+    // 家宽代理不 SSH；同机 IP 节点登录的是宿主机（在用的，不用再看）；不是一台机器的地址直接报错，不去连
+    let mut probe = vec![];
+    for (i, c) in v.iter_mut().enumerate() {
+        if !c.errors.is_empty() || c.item.kind == "proxy" || c.host.is_some() {
+            continue;
+        }
+        match not_a_host(c.ip) {
+            Some(what) => c.errors.push(format!("{} 是{what}地址，不是一台可以上架的机器", c.ip)),
+            None => probe.push(i),
+        }
+    }
+    if let Err(wait) = take_probes(&mut PROBE_BUDGET.lock().unwrap_or_else(|e| e.into_inner()), &a.name, probe.len(), Instant::now()) {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limited",
+            format!("检查太频繁（每次检查都要探测各台机器的 SSH 端口），{wait} 秒后再试"),
+        ));
+    }
+    let targets: Vec<(String, u16)> = probe.iter().map(|&i| (v[i].ip.to_string(), v[i].item.ssh_port.unwrap_or(22))).collect();
+    // 每个探测拿自己的一份地址（借用 targets 的闭包过不了 axum 处理函数的生命周期检查）
+    let results: Vec<_> = futures::stream::iter(targets.clone())
+        .map(|(ip, port)| async move { crate::ssh::tcp_probe(&ip, port, Duration::from_secs(3)).await })
+        .buffered(PROBE_CONCURRENCY)
+        .collect()
+        .await;
+    for ((&i, (ip, port)), r) in probe.iter().zip(&targets).zip(results) {
+        if let Err(why) = r {
+            v[i].errors.push(format!("SSH {ip}:{port} 连不上（{why}）"));
+        }
+    }
     Ok(ok(report(&v)))
 }
 
@@ -429,4 +499,42 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Ba
     st.wake_jobs();
     st.emit(Event::Machines);
     Ok(ok(json!({"jobs": created})))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 探测限速：一次扣一批，不够时整批不扣、给要等的秒数；按秒补充
+    #[test]
+    fn probe_budget() {
+        let (mut m, t0) = (HashMap::new(), Instant::now());
+        assert_eq!(take_probes(&mut m, "admin", 100, t0), Ok(()));
+        assert_eq!(take_probes(&mut m, "admin", 200, t0), Ok(()));
+        assert_eq!(take_probes(&mut m, "admin", 8, t0), Err(8));
+        assert_eq!(take_probes(&mut m, "apikey:ops", 100, t0), Ok(()), "按操作人分开记");
+        assert_eq!(take_probes(&mut m, "admin", 8, t0 + Duration::from_secs(8)), Ok(()));
+        assert_eq!(take_probes(&mut m, "admin", 0, t0 + Duration::from_secs(8)), Ok(()), "不用探测的批次不受限");
+    }
+
+    /// 回环、链路本地、未指定、组播不去连；私网、公网照常
+    #[test]
+    fn not_a_host_addresses() {
+        for (ip, want) in [
+            ("127.0.0.1", Some("回环")),
+            ("::1", Some("回环")),
+            ("::ffff:127.0.0.1", Some("回环")),
+            ("169.254.169.254", Some("链路本地")),
+            ("fe80::1", Some("链路本地")),
+            ("0.0.0.0", Some("未指定")),
+            ("::", Some("未指定")),
+            ("224.0.0.1", Some("组播")),
+            ("ff02::1", Some("组播")),
+            ("192.168.31.66", None),
+            ("10.0.0.2", None),
+            ("203.0.113.7", None),
+        ] {
+            assert_eq!(not_a_host(ip.parse().unwrap()), want, "{ip}");
+        }
+    }
 }

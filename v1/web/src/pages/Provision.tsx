@@ -2,8 +2,9 @@
 // VPS 节点可以「在已有机器上添加 IP」：同机 IP 节点（host_id），SSH、agent、供应商沿用宿主机的；抽屉里宿主机的「添加 IP 节点」跳来时带 ?host=<id> 预填。
 import * as React from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { CheckCircle2, ClipboardPaste, ListChecks, Plus, Trash2, TriangleAlert } from 'lucide-react';
-import { useHostChoices, usePlans, useProviders, useProvision, useProvisionCheck, useRelayChoices, useTeams, type HostChoice } from '@/lib/queries';
+import { Check, CheckCircle2, ChevronDown, ClipboardPaste, ListChecks, Plus, Trash2, TriangleAlert } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
+import { fetchMachines, useHostChoices, usePlans, useProviders, useProvision, useProvisionCheck, useRelayChoices, useTeams, type HostChoice } from '@/lib/queries';
 import type { Kind, ProvisionCheckItem } from '@/lib/types';
 import { KIND_ORDER } from '@/lib/sort';
 import { inheritSummary, kindLabel, meta } from '@/lib/derive';
@@ -12,12 +13,13 @@ import { Button, IconButton } from '@/components/ui/button';
 import { Field, InfoTip, Input, Switch } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { DateField } from '@/components/ui/date-field';
-import { Segmented } from '@/components/ui/overlays';
+import { Popover, PopoverContent, PopoverTrigger, Segmented } from '@/components/ui/overlays';
+import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { ConfirmDialog } from '@/components/app/dialogs';
-import { toast } from '@/components/ui/toast';
+import { errMessage, toast, useToastLift, type ToastTone } from '@/components/ui/toast';
 import { copyText } from '@/lib/clipboard';
 import { PageHead, Panel, Pill } from '@/components/app/primitives';
-import { COLS, PASTE_COLS, UNUSED_LABEL, applies, headerCols, isBlank, isIpNode, localErrors, localIssues, newRow, parseTsv, pasteLine, toItem, type Col, type Ctx, type Row } from '@/features/provision-model';
+import { COLS, PASTE_COLS, UNUSED_LABEL, applies, headerCols, ipIssue, isBlank, isIpNode, localErrors, localIssues, newRow, parseTsv, pasteLine, serverField, toItem, type Col, type Ctx, type Row } from '@/features/provision-model';
 import { CountrySelect } from '@/components/app/CountrySelect';
 
 // 上架页懒加载、在外壳等到 /meta 之后才求值，类型名、默认端口可以在模块里取
@@ -25,7 +27,12 @@ const KIND_OPTS = KIND_ORDER.map((value) => ({ value, label: kindLabel(value) })
 
 const NONE: never[] = [];
 /** 批量表格的粘贴与填写说明（面板标题旁的「(i)」） */
-const BATCH_TIP = '可从表格软件整块粘贴（Tab 分隔）：带表头时按列名对上，不带时列顺序同表头。\n编号留空 = 自动编号（接在末尾）。灰色格子对当前类型不适用，粘贴时会自动跳过。\n选择列可直接粘贴名称（如「团队1」「线路机1」），国家粘两位代码或中文名（如「JP」「日本」），留空按 IP 自动。\n填了「宿主机」的 VPS 节点行是同机 IP 节点（宿主机上另配的 IP）：SSH 端口、登录与供应商沿用宿主机的，SS 端口由中控在宿主机上分配，不带套餐，这几格变灰。';
+const BATCH_TIP = '· 可从表格软件整块粘贴，带表头按列名对上\n· 编号留空自动接在末尾\n· 灰格不适用，粘贴时跳过\n· 选择列粘名称；国家粘代码或中文名，空 = 按 IP\n· 填宿主机 = 同机 IP 节点，登录、供应商沿用宿主机';
+/** 检查结果的通知只留最新一条，内容一改就收起 */
+const CHECK_TOAST = 'provision-check';
+/** 服务端检查的「IP 已被占用」（api/provision.rs）只说被占用、不说被谁：按意思宽松地认（「属于一台…」），原话改了几个字也认得；补上名字后不再命中 */
+const IP_TAKEN = /IP.*属于一台/;
+const checkToast = (tone: ToastTone, text: string) => toast.show({ tone, text, key: CHECK_TOAST });
 const NONE_RELAYS: { id: string; name: string }[] = [];
 const NONE_HOSTS: HostChoice[] = [];
 
@@ -42,7 +49,10 @@ export function ProvisionPage() {
   // 只能挂在已上线的线路机上。只取 id/名称，引用在内容不变时保持稳定，ctx 不随每次轮询变化（GridCell 的 memo 才有效）
   const relays = useRelayChoices().data ?? NONE_RELAYS;
 
-  const [mode, setMode] = React.useState<'single' | 'batch'>(() => draft?.mode ?? 'single');
+  const [sp, setSp] = useSearchParams();
+  // 单台 / 批量记在 URL（?mode=batch），刷新、分享都停在原来的模式；不带参数时沿用草稿里的
+  const mode: 'single' | 'batch' = sp.get('mode') === 'batch' || (!sp.has('mode') && draft?.mode === 'batch') ? 'batch' : 'single';
+  const setMode = (m: 'single' | 'batch') => setSp((p) => { const n = new URLSearchParams(p); n.set('mode', m); return n; }, { replace: true });
   const [rows, setRows] = React.useState<Row[]>(() => draft?.rows ?? [newRow()]);
   const [results, setResults] = React.useState<ProvisionCheckItem[] | null>(() => draft?.results ?? null);
   const [localErrs, setLocalErrs] = React.useState<string[][] | null>(() => draft?.localErrs ?? null);
@@ -52,7 +62,7 @@ export function ProvisionPage() {
   const [confirm, setConfirm] = React.useState(false);
   const [created, setCreated] = React.useState<{ machine_id: string; job_id: string; name: string }[] | null>(null);
   const check = useProvisionCheck(); const provision = useProvision();
-  const [sp, setSp] = useSearchParams();
+  const qc = useQueryClient();
   const hostParam = sp.get('host');
   // 宿主机候选取自整份机器列表，订阅着时列表随实时推送最多每 2 秒整表重取（批量上架期间一直在推）：只在用得到时订阅——
   // 单台开了「在已有机器上添加 IP」、批量（哪一行都能填宿主机）；带着 ?host= 等预填时总要取（停在「已开始上架」面板时从抽屉点「添加 IP 节点…」也要能预填）
@@ -67,11 +77,9 @@ export function ProvisionPage() {
     const pre = newRow({ kind: 'vps', add_ip: true, host_id: h.id, team_id: h.team_id, relay_id: h.relay_id });
     setResults(null); setLocalErrs(null); setCreated(null);
     // 表里已有填好的（离开过又回来的草稿）：不覆盖，切到批量、把这台接在后面（顶掉末尾的空行）
-    if (rows.some((r) => !isBlank(r))) {
-      setMode('batch');
-      setRows((rs) => (isBlank(rs[rs.length - 1]) ? [...rs.slice(0, -1), pre] : [...rs, pre]));
-    } else { setMode('single'); setRows([pre]); }
-    setSp((p) => { const n = new URLSearchParams(p); n.delete('host'); return n; }, { replace: true });
+    if (rows.some((r) => !isBlank(r))) setRows((rs) => (isBlank(rs[rs.length - 1]) ? [...rs.slice(0, -1), pre] : [...rs, pre]));
+    else setRows([pre]);
+    setSp((p) => { const n = new URLSearchParams(p); n.delete('host'); n.set('mode', rows.some((r) => !isBlank(r)) ? 'batch' : 'single'); return n; }, { replace: true });
   }, [hostParam, hosts, setSp]); // eslint-disable-line react-hooks/exhaustive-deps -- 只在宿主机参数到达时预填一次，rows 读当时的值
 
   // 草稿随改随存进模块；上架成功（created）后清掉，再进来是空表
@@ -91,16 +99,36 @@ export function ProvisionPage() {
   const errOf = (id: string) => { const i = checked.indexOf(id); return i < 0 ? undefined : localErrs?.[i]; };
   const setRow = (i: number, p: Partial<Row>) => setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...p } : r)));
 
+  // 检查出错后滚到第一个错误并聚焦（错误常在折叠线以下，点了「检查」页面却像没反应）：渲染出错误之后再找
+  const page = React.useRef<HTMLDivElement>(null);
+  const [jump, setJump] = React.useState(0);
+  React.useEffect(() => {
+    if (!jump) return;
+    const el = page.current?.querySelector<HTMLElement>('.field:has(.hint.is-error), tr.is-row-bad');
+    if (!el) return;
+    el.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+    el.querySelector<HTMLElement>('td.is-bad .gcell, input:not(:disabled), button:not(:disabled), .gcell:not(:disabled)')?.focus({ preventScroll: true });
+  }, [jump]);
+  // 内容一改，上一次检查的通知就作废
+  React.useEffect(() => { toast.dismiss(CHECK_TOAST); }, [curSig]);
+
   const runCheck = async () => {
     const errs = active.map(localErrors);
     setLocalErrs(errs); setChecked(active.map((r) => r.id));
     const bad = errs.filter((e) => e.length).length;
-    if (bad) { setResults(null); toast.err(mode === 'single' ? '信息不完整，请按字段旁标红的提示修改' : `${bad} 行信息不完整，见表格的「检查结果」列`); return; }
+    if (bad) { setResults(null); setJump((n) => n + 1); checkToast('bad', mode === 'single' ? '信息不完整，见标红的字段' : `${bad} 行信息不完整，见「检查结果」列`); return; }
     try {
       const r = await check.mutateAsync(items);
+      // 「IP 已被占用」服务端不说是哪台：按 IP 在机器列表里找到就补上名字（取不到列表就保持原话）
+      if (r.items.some((x) => x.errors.some((e) => IP_TAKEN.test(e)))) {
+        const owners = new Map((await fetchMachines(qc).catch(() => [])).map((m) => [m.ip, m.name]));
+        r.items = r.items.map((x, i) => ({ ...x, errors: x.errors.map((e) => (IP_TAKEN.test(e) && owners.has(items[i].ip) ? `这个 IP 已经属于 ${owners.get(items[i].ip)}` : e)) }));
+      }
       setResults(r.items); setSig(curSig);
-      if (r.items.every((x) => x.ok)) toast.ok(`检查通过：${r.items.length} 台`);
-    } catch (e) { toast.err(e); }
+      const failed = r.items.filter((x) => !x.ok).length;
+      if (!failed) checkToast('ok', `检查通过：${r.items.length} 台`);
+      else { setJump((n) => n + 1); checkToast('bad', mode === 'single' ? '检查未通过，见标红的字段' : `${failed} 行未通过，见「检查结果」列`); }
+    } catch (e) { checkToast('bad', errMessage(e)); }
   };
   const start = async () => {
     const r = await provision.mutateAsync(items);
@@ -109,7 +137,7 @@ export function ProvisionPage() {
   };
   const reset = () => { setRows([newRow()]); setResults(null); setLocalErrs(null); setCreated(null); };
   const switchMode = (m: 'single' | 'batch') => {
-    setMode(m); setResults(null); setLocalErrs(null);
+    setMode(m); setResults(null); setLocalErrs(null); toast.dismiss(CHECK_TOAST);
     // 批量里是不是同机 IP 节点只看宿主机格：单台开了开关却没选宿主机的，切过去不再按同机 IP 节点置灰（宿主机格是「—」）
     if (m === 'batch') setRows((rs) => {
       const xs = rs.map((r) => (r.add_ip && !(r.host_id || r.unresolved.host_id) ? { ...r, add_ip: false } : r));
@@ -136,7 +164,7 @@ export function ProvisionPage() {
     );
   }
 
-  const summary = results == null ? (localErrs?.some((e) => e.length) ? <Pill tone="bad">有行信息不完整</Pill> : <span className="t-sub">填好后先点「检查」</span>)
+  const summary = results == null ? (localErrs?.some((e) => e.length) ? <Pill tone="bad">有行信息不完整</Pill> : null)
     : stale ? <Pill tone="warn">内容已修改，需要重新检查</Pill>
     : passed ? <Pill tone="ok">检查通过，可以开始</Pill> : <Pill tone="bad">{results.filter((r) => !r.ok).length} 行未通过</Pill>;
   // 确认说明：同机 IP 节点不收登录信息、不装 agent，只在宿主机上装它自己的 SS 实例
@@ -149,7 +177,7 @@ export function ProvisionPage() {
   const hostName = (id: string) => hosts.find((h) => h.id === id)?.name ?? '';
 
   return (
-    <div className="stack">
+    <div className="stack" ref={page}>
       <PageHead title="上架"
         tools={<Segmented label="模式" value={mode} onChange={switchMode} items={[{ value: 'single', label: '单台' }, { value: 'batch', label: '批量' }]} />} />
       <div className="prov-steps">
@@ -162,7 +190,7 @@ export function ProvisionPage() {
         ? <SingleForm row={rows[0]} onChange={(p) => setRow(0, p)} ctx={ctx} result={resOf(rows[0].id)} errors={errOf(rows[0].id)} stale={stale} />
         : <BatchGrid rows={rows} setRows={setRows} ctx={ctx} resOf={resOf} errOf={errOf} checkedAny={results != null} stale={stale} />}
 
-      <div className="panel sticky-bar" style={{ padding: '10px 16px' }}>
+      <StickyBar>
         <div className="row row-between">
           <div className="row">{summary}<span className="t-sub">共 {active.length} 台</span></div>
           <div className="row">
@@ -170,7 +198,7 @@ export function ProvisionPage() {
             <Button variant="primary" disabled={!passed} onClick={() => setConfirm(true)}>开始上架</Button>
           </div>
         </div>
-      </div>
+      </StickyBar>
 
       <ConfirmDialog open={confirm} onOpenChange={setConfirm} size="md" title={`确认上架 ${active.length} 台机器？`} confirmLabel="确认上架"
         description={confirmDesc}
@@ -187,6 +215,44 @@ export function ProvisionPage() {
   );
 }
 
+/** 底部吸附条（检查 / 开始上架）：挂着时通知抬高让开它 */
+function StickyBar({ children }: { children: React.ReactNode }) {
+  const ref = React.useRef<HTMLDivElement>(null);
+  useToastLift(ref);
+  return <div ref={ref} className="panel sticky-bar" style={{ padding: '10px 16px' }}>{children}</div>;
+}
+
+/** 宿主机选择：在用的 VPS 节点可能上百台，弹出可搜索的列表（名称、IP 都能搜），每项写名称与 IP */
+function HostSelect({ id, value, onChange, hosts }: { id?: string; value: string; onChange: (v: string) => void; hosts: HostChoice[] }) {
+  const [open, setOpen] = React.useState(false);
+  const cur = hosts.find((h) => h.id === value);
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button type="button" id={id} className="select-trigger cs-trigger">
+          <span className={cur ? undefined : 't-muted'}>{cur ? <>{cur.name} <span className="t-sub">{cur.ip}</span></> : '选择 VPS 节点'}</span>
+          <ChevronDown />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="cs-pop hs-pop" align="start">
+        {open && (
+          <Command loop>
+            <CommandInput placeholder="搜索名称或 IP" />
+            <CommandList>
+              <CommandEmpty>没有匹配的 VPS 节点</CommandEmpty>
+              {hosts.map((h) => (
+                <CommandItem key={h.id} value={h.id} keywords={[h.name, h.ip]} onSelect={(v) => { setOpen(false); if (v !== value) onChange(v); }}>
+                  <span className="cmd-main">{h.name}</span><span className="cmd-aside num">{h.ip}</span>{h.id === value && <Check className="cs-check" />}
+                </CommandItem>
+              ))}
+            </CommandList>
+          </Command>
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 /* ------------------------------------------------------------------ 公共：下拉选项 */
 type Opts = { value: string; label: string }[];
 /** 下拉选项按 ctx 缓存：ctx 不变就是同一个数组引用（批量网格里几百个单元格共用，memo 才生效） */
@@ -194,7 +260,7 @@ function useOpts(ctx: Ctx) {
   const base = React.useMemo(() => ({
     team: ctx.teams.map((t) => ({ value: t.id, label: t.name })),
     relay: ctx.relays.map((r) => ({ value: r.id, label: r.name })),
-    host: ctx.hosts.map((h) => ({ value: h.id, label: h.name })),
+    host: ctx.hosts.map((h) => ({ value: h.id, label: `${h.name} · ${h.ip}` })), // 批量格是原生下拉，名称后带 IP 好认
     provider: ctx.providers.map((p) => ({ value: p.id, label: p.name })),
   }), [ctx.teams, ctx.relays, ctx.hosts, ctx.providers]);
   // 套餐选项依赖所选供应商：按供应商缓存
@@ -218,12 +284,17 @@ function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; o
   const host = ip ? ctx.hosts.find((h) => h.id === row.host_id) : undefined;
   // 选了宿主机：团队与线路机带出宿主机的（之后可改）
   const pickHost = (v: string) => { const h = ctx.hosts.find((x) => x.id === v); onChange(h ? { host_id: v, team_id: h.team_id, relay_id: h.relay_id } : { host_id: v }); };
-  // 上次检查有本地错误时，把错误按字段标在字段旁（按当前内容重算，改对了就消失）
+  // 上次检查有本地错误时，把错误按字段标在字段旁（按当前内容重算，改对了就消失）；服务端检查没通过的，按错误文字对回字段（结果过期就不标）。
+  // IP 失焦即查格式，不等点「检查」
+  const [ipBlurred, setIpBlurred] = React.useState(false);
   const fe: Partial<Record<keyof Row, string>> = {};
   if (errors?.length) for (const x of localIssues(row)) fe[x.key] ??= x.msg;
-  const T = (key: keyof Row, label: string, p?: { hint?: string; info?: string; ph?: string; num?: boolean }) => (
+  if (result && !result.ok && !stale) for (const msg of result.errors) { const k = serverField(msg); if (k) fe[k] ??= msg; }
+  if (ipBlurred && row.ip.trim()) fe.ip ??= ipIssue(row) ?? undefined;
+  const T = (key: keyof Row, label: React.ReactNode, p?: { hint?: string; info?: string; ph?: string; num?: boolean; onBlur?: () => void }) => (
     <Field label={label} hint={p?.hint} info={p?.info} error={fe[key]}>
-      <Input inputMode={p?.num ? 'numeric' : undefined} placeholder={p?.ph} value={row[key] as string} onChange={(e) => onChange({ [key]: p?.num ? e.target.value.replace(/\D/g, '') : e.target.value })} />
+      <Input inputMode={p?.num ? 'numeric' : undefined} placeholder={p?.ph} value={row[key] as string} aria-invalid={fe[key] ? true : undefined} onBlur={p?.onBlur}
+        onChange={(e) => onChange({ [key]: p?.num ? e.target.value.replace(/\D/g, '') : e.target.value })} />
     </Field>
   );
   const Fixed = (label: string, hint: string, value: string, ph = '') => <Field label={label} hint={hint}><Input disabled value={value} placeholder={ph} /></Field>;
@@ -243,8 +314,8 @@ function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; o
             </div>
           )}
           <div className="form-grid">
-            {ip && <div className="span-2"><Field label="宿主机" info="这个 IP 所在的 VPS 节点；SSH、agent 与供应商都用它的" error={fe.host_id}><Select value={row.host_id} onChange={pickHost} options={o.host} placeholder="选择在用的落地机" /></Field></div>}
-            {T('ip', k === 'proxy' ? '出口 IP' : 'IP', { ph: '198.51.100.20', hint: ip ? '须配在宿主机网卡上' : undefined, info: ip ? 'EIP / NAT 映射的不行' : undefined })}
+            {ip && <div className="span-2"><Field label="宿主机" info="这个 IP 所在的 VPS 节点；SSH、agent 与供应商都用它的" error={fe.host_id}><HostSelect value={row.host_id} onChange={pickHost} hosts={ctx.hosts} /></Field></div>}
+            {T('ip', k === 'proxy' ? '出口 IP' : 'IP', { ph: '198.51.100.20', hint: ip ? '须配在宿主机网卡上' : undefined, info: ip ? 'EIP / NAT 映射的不行' : undefined, onBlur: () => setIpBlurred(true) })}
             <Field label="国家" error={fe.country}>
               <CountrySelect value={row.country} onChange={(v) => onChange({ country: v })} autoLabel="自动（按 IP）" aria-label="国家" />
             </Field>
@@ -266,9 +337,9 @@ function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; o
           <div className="form-grid">
             <Field label="协议"><Select value={row.up_protocol} onChange={(v) => onChange({ up_protocol: v })} options={[{ value: 'socks5', label: 'SOCKS5' }, { value: 'http', label: 'HTTP' }]} /></Field>
             {T('up_host', '主机', { ph: 'proxy.example.net' })}
-            {T('up_port', '端口', { num: true })}
-            {T('up_user', '用户名')}
-            <Field label="密码"><Input type="password" autoComplete="new-password" value={row.up_pw} onChange={(e) => onChange({ up_pw: e.target.value })} /></Field>
+            {T('up_port', '端口', { num: true, ph: '1080' })}
+            {T('up_user', '用户名', { ph: '选填' })}
+            <Field label="密码"><Input type="password" autoComplete="new-password" placeholder="选填" value={row.up_pw} onChange={(e) => onChange({ up_pw: e.target.value })} /></Field>
           </div>
         </Panel>
       ) : ip ? (
@@ -283,11 +354,11 @@ function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; o
 
       <Panel title="来源与订阅" sub={<InfoTip text={ip ? '默认不单独记费用：供应商对附加 IP 另收费时再填到期日与费用' : '选了套餐只需填到期日，其余跟随套餐与供应商'} />}>
         <div className="form-grid">
-          {ip ? Fixed('供应商', '沿用宿主机', host?.provider ?? '', '—') : <Field label="供应商"><Select value={row.provider_id} onChange={(v) => onChange({ provider_id: v, plan_id: '' })} options={o.provider} allowEmpty="不设置" /></Field>}
-          {ip ? Fixed('套餐', '同机 IP 节点不带套餐', '', '不带套餐') : <Field label="套餐"><Select value={row.plan_id} onChange={(v) => onChange({ plan_id: v })} options={o.planFor(row.provider_id)} allowEmpty="不设置" /></Field>}
-          {plan && <div className="span-2 hint">{inheritSummary(plan, ctx.providers.find((p) => p.id === plan.provider_id))}</div>}
+          {ip ? Fixed('供应商', '沿用宿主机', host?.provider ?? '', '—') : <Field label="供应商" error={fe.provider_id}><Select value={row.provider_id} onChange={(v) => onChange({ provider_id: v, plan_id: '' })} options={o.provider} allowEmpty="不设置" /></Field>}
+          {ip ? Fixed('套餐', '同机 IP 节点不带套餐', '', '不带套餐') : <Field label="套餐" error={fe.plan_id}><Select value={row.plan_id} onChange={(v) => onChange({ plan_id: v })} options={o.planFor(row.provider_id)} allowEmpty="不设置" /></Field>}
+          {plan && (() => { const s = inheritSummary(plan, ctx.providers.find((p) => p.id === plan.provider_id)); return <div className="span-2 hint">{s.text} <InfoTip text={s.tip} /></div>; })()}
           {T('service_ref', '服务编号', { ph: 'SVC-1042' })}
-          <Field label="到期日" hint={plan ? '必填' : '选填'} info={plan ? undefined : '填了就记费用、到期提醒'} error={fe.due_date}><DateField value={row.due_date} onChange={(v) => onChange({ due_date: v })} /></Field>
+          <Field label={<>到期日<span className="field-tag">{plan ? '必填' : '选填'}</span></>} info={plan ? undefined : '填了就记费用、到期提醒'} error={fe.due_date}><DateField value={row.due_date} onChange={(v) => onChange({ due_date: v })} /></Field>
           {T('price', '费用', { ph: ip ? '附加 IP 的费用' : plan ? `跟随套餐（${F.money(plan.price_cents, plan.currency)}）` : '没有套餐时要填', info: plan ? '留空跟随套餐；填了 = 这台单独设置' : undefined })}
           <div className="span-2"><Field label="备注"><Input value={row.note} onChange={(e) => onChange({ note: e.target.value })} /></Field></div>
         </div>
@@ -354,7 +425,7 @@ function BatchGrid({ rows, setRows, ctx, resOf, errOf, checkedAny, stale }: { ro
         <div className="table-wrap">
           <table className="dt dt-grid" style={{ minWidth: total }}>
             <colgroup><col style={{ width: 40 }} />{COLS.map((c) => <col key={c.key} style={{ width: c.w }} />)}<col style={{ width: 220 }} /><col style={{ width: 56 }} /></colgroup>
-            <thead><tr><th className="c">#</th>{COLS.map((c) => <th key={c.key} style={{ paddingLeft: 8 }}>{c.label}</th>)}<th style={{ paddingLeft: 8 }}>检查结果</th><th /></tr></thead>
+            <thead><tr><th className="c">#</th>{COLS.map((c) => <th key={c.key} style={{ paddingLeft: 8 }}>{c.label}</th>)}<th className="gc-res">检查结果</th><th className="gc-del" /></tr></thead>
             <tbody>
               {rows.map((r, ri) => {
                 const le = errOf(r.id) ?? []; const res = resOf(r.id);
@@ -367,12 +438,12 @@ function BatchGrid({ rows, setRows, ctx, resOf, errOf, checkedAny, stale }: { ro
                         <GridCell col={c} ci={ci} row={r} opts={c.type === 'team' ? opts.team : c.type === 'relay' ? opts.relay : c.type === 'host' ? opts.host : c.type === 'provider' ? opts.provider : c.type === 'plan' ? opts.planFor(r.provider_id) : undefined} onChange={change} onPaste={onPaste} />
                       </td>
                     ))}
-                    <td style={{ padding: '0 8px' }} data-tip={le.concat(res?.errors ?? []).join('；')}>
+                    <td className="gc-res" data-tip={le.length || (res && !res.ok) ? le.concat(res?.errors ?? []).join('\n') : undefined}>
                       {le.length ? <span style={{ color: 'var(--bad-text)' }}>{le.join('；')}</span>
                         : res ? (res.ok ? <span style={{ color: stale ? 'var(--fg-3)' : 'var(--ok-text)' }}>✓ {res.name}{res.relay_port ? ` · :${res.relay_port}` : ''}{res.ss_port ? ` · SS ${res.ss_port}` : ''}</span> : <span style={{ color: 'var(--bad-text)' }}>{res.errors.join('；')}</span>)
                         : <span className="t-muted">—</span>}
                     </td>
-                    <td className="c"><IconButton label={`删除第 ${ri + 1} 行`} size="sm" disabled={rows.length === 1} onClick={() => setRows((rs) => rs.filter((x) => x.id !== r.id))}><Trash2 size={14} /></IconButton></td>
+                    <td className="c gc-del"><IconButton label={`删除第 ${ri + 1} 行`} size="sm" disabled={rows.length === 1} onClick={() => setRows((rs) => rs.filter((x) => x.id !== r.id))}><Trash2 size={14} /></IconButton></td>
                   </tr>
                 );
               })}

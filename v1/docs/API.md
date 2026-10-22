@@ -60,12 +60,15 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
 | GET | `/teams` | `[{id,name,sort_order,node_count}]` |
 | POST | `/teams` | `{name,sort_order?}` |
 | PATCH | `/teams/{id}` | `{name?,sort_order?}`（改团队名 = 该团队所有节点显示名一起变） |
+| DELETE | `/teams/{id}` | 还有机器（含已退役的）或软路由时 409（写明还有几台）；没有才删，团队自己的访问规则一起删。审计 `team.delete` |
 | GET | `/providers` | `[{id,name,code,panel_url,timezone,traffic_rule,traffic_reset,remind_days}]`；`traffic_rule` 是这家怎么计量流量额度（网卡本周期入、出总量）：`min` 取小（如 GOMAMI）/ `max` 取大 / `sum` 相加 / `out` 只算出站。供应商同时是名下机器订阅的**模板**：`timezone`（账单时区）、`traffic_reset`（流量周期：`month` 账单时区的自然月、每月 1 号起；`billing` 账单日，即每台机器到期日是几号就几号起，月份没有这一天按月末）、`remind_days`（到期前几天提醒，0–60）——订阅没单独设置这几项的跟随它，改了立即生效 |
 | POST | `/providers` | `{name,code,panel_url?,timezone?,traffic_rule?,traffic_reset?,remind_days?}`；`traffic_rule` 不传 = `max`（不知道的供应商按取大，不会少算），`traffic_reset` 不传 = `month`，`remind_days` 不传 = 7，别的值 400；`panel_url` 须是 http(s) 地址（400）；`timezone` 不传 / null / 空串 = 存 null、跟随组织时区（`/meta` 的 org_timezone），否则须是 `at time zone` 认的时区（400）；名称或缩写重复 409 |
 | PATCH | `/providers/{id}` | `{name?,code?,panel_url?,timezone?,traffic_rule?,traffic_reset?,remind_days?}`：没传的不改（`traffic_rule` 改了立即影响这家机器的 `quota.used`；`timezone` / `traffic_reset` / `remind_days` 改了立即影响没单独设置这几项的订阅）；`panel_url` null / 空串 = 清空；`timezone` null / 空串 = 改回跟随组织时区（null）。校验同 POST（`panel_url` 和库里现有的一样时不校验：加 http(s) 校验之前存下的旧值不挡改别的字段）。写审计 `provider.update` |
+| DELETE | `/providers/{id}` | 还有套餐（含已归档的）或机器（含已退役的）时 409；没有才删。审计 `provider.delete` |
 | GET | `/plans` | `[{id,provider_id,name,cpu_cores,mem_mb,disk_gb,bandwidth_mbps,traffic_gb,price_cents,currency,cycle,notes,archived_at,machine_count}]`。套餐是机器订阅的**模板**：`price_cents` / `currency` / `cycle`（每个计费周期的价格）与 `traffic_gb`（每个流量周期的额度，十进制 GB，null 或 0 = 不限）——用这个套餐的机器没单独设置的跟随它，改了立即生效。`machine_count`：在用（未退役）的机器数 |
 | POST | `/plans` | 同上字段（不含 id/统计）。校验（PATCH 同，只看传了的）：`name` 1–32 字，`price_cents` ≥ 0，`currency` 3 个字母（存成大写，套餐、订阅、上架同一个校验），`cycle` 只能是 `/meta` 的 cycles，`notes` ≤ 2000 字，否则 400 |
-| PATCH | `/plans/{id}` | 任意字段（没传的不改；规格类字段传 null = 清空）；`archived:true` 归档。机器的供应商就是套餐的：有机器（含已退役的）用着时改 `provider_id` 409（给新供应商另建套餐）。审计 `plan.update` 记改了的字段 `{before:{…}, after:{…}}` |
+| PATCH | `/plans/{id}` | 任意字段（没传的不改；规格类字段传 null = 清空）；`archived:true` 归档。机器的供应商就是套餐的：有机器（含已退役的）用着时改 `provider_id` 409（给新供应商另建套餐）。审计 `plan.update` 记套餐名、币种与改了的字段 `{name, currency, before:{…}, after:{…}}` |
+| DELETE | `/plans/{id}` | 还有机器（含已退役的）用着时 409（不再上架的可以归档）；没有才删。审计 `plan.delete` |
 
 ## 机器
 `MachineView`（列表与详情同形）：
@@ -147,7 +150,7 @@ EntryView = { id, relay:{id,name}, node:{id,name}, direct, port, lifecycle, appl
 ## 上架
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/provision/check` | 校验（不落库）：`{items:[ProvisionItem]}` → `{data:{items:[{ok,errors:[...],name,number,ss_port}]}}`（`ss_port`：同机 IP 节点暂定的 SS 端口，其它为 null） |
+| POST | `/provision/check` | 校验（不落库）：`{items:[ProvisionItem]}` → `{data:{items:[{ok,errors:[...],name,number,ss_port}]}}`（`ss_port`：同机 IP 节点暂定的 SS 端口，其它为 null）。还会探测 SSH 端口（同一批最多同时 8 个，连不上时写明「连接被拒绝」还是「3 秒没有响应」）；回环、链路本地、未指定、组播地址直接报错不探测；按操作人限速（突发 300 次探测、每秒补 1 次，超了回 429 `rate_limited`） |
 | POST | `/provision` | 同样的 body，全部通过才创建：每台建机器（provisioning）+ 一个作业 → `{data:{jobs:[{machine_id,job_id,name}]}}` |
 
 ```
@@ -188,9 +191,10 @@ ProvisionItem = {
 `Job = {id,kind,target:{id,name}|null,state,step,step_count,step_title,error,created_by,created_at,started_at,finished_at,steps:[{idx,key,title,state,started_at,finished_at,output,error}]}`（`step_count` = 该种作业的步骤数，`step_title` = 第 `step` 步的标题，做完为 null）
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/jobs?state=active\|done\|all\|failed&target_id=&limit=100&offset=0` | 分页：`{items:[Job（不含 steps、cancellable、result，另有 step_title）], total, next_offset}`，按创建先后倒序（`id desc`） |
+| GET | `/jobs?state=active\|done\|all\|failed&target_id=&kind=&limit=100&offset=0` | `kind`：`provision`（各类上架）、`restore`（各类恢复）或作业类型原值（`attach_entry`、`move_entry`、`retire`、`purge`、`upgrade_agent`、`provision_vps`…），别的值 400，与 `state` 等一起生效。分页：`{items:[Job（不含 steps、cancellable、result，另有 step_title）], total, next_offset}`，按创建先后倒序（`id desc`） |
 | GET | `/jobs/{id}` | 含 steps |
-| GET | `/jobs/{id}/logs?after=<log id>` | `[{id,ts,level,msg}]` |
+| GET | `/jobs/{id}/logs?after=<log id>` | `[{id,ts,level,msg}]`，按 id 升序，一次最多 1000 行（满页按最后一行的 id 接着拉） |
+| GET | `/jobs/{id}/logs?tail=<N>[&after=<log id>]` | （after 之后的）最后 N 行（1-5000）：`{logs:[{id,ts,level,msg}], skipped, after}`，`skipped` 是前面没给的行数，`after` 是续拉用的游标（最后一行的 id，没有日志时原样返回） |
 | POST | `/jobs/{id}/retry` | 失败的作业从失败那一步重来（`upgrade_agent` 从推送重来：失败时多半已经换回了旧程序）。可选请求体 `{reset_host_key?: bool, ssh_password?: string}`（不带请求体 = 都不要）：`reset_host_key` 清掉 known_hosts 里这台机器的记录、按现在的主机公钥重新记录：只允许失败那一步的类别是 `host_key`（中控确实看到了指纹不符）、目标不是同机 IP 节点（它登录的是宿主机：对宿主机的作业重试）的作业，否则 409；在其它检查都通过之后才做（拿不到公钥 409，整个重试作废）。确认机器重装过才用；`ssh_password` 是 root 密码，和上架时一样加密存进作业参数，供重试的作业在中控密钥登录不了时用（用过即丢；失败作业留存的密码 3 天后清除，之后重试要重新给）。只有 failed 的作业能重试（否则 409）；上架/恢复失败的机器重试时回到 provisioning。审计 `job.retry` 记 `reset_host_key` 与是否给了密码（不记密码） |
 | POST | `/jobs/{id}/cancel` | 进行中的作业：补偿已完成的步骤后停下。`upgrade_agent` 只能在排队（queued）时取消：领到就收尾（没开始过，`started_at` 为 null、步骤原样），「全部升级」里等它的随后跟着取消；进行中、失败的 409（推送、重启到一半中断更危险）。详情的 `cancellable` 与这里同一套规则 |
 
@@ -233,7 +237,7 @@ ProvisionItem = {
 | GET | `/incidents?state=firing\|resolved\|all&subject_id=&limit=100&offset=0` | 分页：`{items:[{id,rule,rule_name,subject:{id,name},subject_id,subject_name,severity,state,summary,opened_at,last_seen_at,resolved_at,ack_at,ack_by,reopen_count}], total, next_offset}`；`state` 默认 firing；`subject_id`（可选，机器 id）只看这台机器的告警，与 `state`、分页组合，`total` 同样只数它的（如抽屉的最近告警：`?subject_id=<id>&state=all&limit=5`；不是 uuid 时 400）；`reopen_count`：恢复后 30 分钟内同一（规则, 对象）复发会重开原告警而不是新建，每次 +1；顺序：进行中在前 → 严重度高在前 → 开始时间新在前（同时刻按 id，翻页不重不漏）；带 `subject_id` 时不看严重度：进行中在前 → 开始时间新在前（一台机器的「最近告警」按时间读）。中控自身的告警（规则 `central_` 开头，见下表）对象不是机器：`subject`、`subject_id` 为 null，`subject_name` 为「中控」 |
 | POST | `/incidents/{id}/ack` | 确认告警：不存在 404，已确认过 409；写审计 `incident.ack` |
 | GET/POST | `/silences`、DELETE `/silences/{id}` | GET：还没结束的（`ends_at` 晚于现在，含还没开始的预约）`[Silence]`，按 `starts_at` 排——进行中的在前，已预约的随后；只有此刻在窗口内的才起作用（不开告警、不发通知，维护还暂停健康判定）。POST `{subject_id?,rule?,starts_at,ends_at,is_maintenance,comment（最多 2000 字）}` → `{id}`（`subject_id` 空 = 全部机器，`rule` 空 = 全部规则）：`ends_at` 要晚于 `starts_at`、时长最多 30 天、`ends_at` 不能已经过去（`starts_at` 可以，「从现在开始」由客户端按自己的时钟填）、`starts_at` 最多在 90 天后，`rule` 必须是已知规则 key（且不能与 `is_maintenance` 同时给：维护针对整台机器）、`subject_id` 必须是存在的机器，否则 400（中文原因）；全部机器（`subject_id` 空）的用 API 密钥建时最长 24 小时（超了 400：全部机器的静默等于关掉监控），账号登录的会话仍是 30 天。DELETE 不存在或已删 404。新建、删除都写审计（详情是这条静默本身：对象名、规则、起止、维护、备注），并给所有启用的通知渠道发一条 `silence` 通知（谁、新建还是删除、对象、维护还是静默、起止、备注；不看渠道的 `min_severity`，也不受任何静默影响）：全部机器的一律发（含预约的），单台的只在此刻生效（`starts_at` ≤ 现在 < `ends_at`）时发 |
-| GET | `/audit?target_id=&limit=&before_id=` | 按 id 倒序；`before_id` 翻页（只要 id 小于它的，传上一页最后一条的 id）。没有 `exec` scope 的密钥看不到命令：`detail.command` 换成「命令已隐藏（N 字）」，`summary` 里的命令同样隐藏。`exec` / `machine.logs` 在执行前就写一条 `detail.started=true` 的记录，执行完补上结果并去掉 `started`；`started` 还在说明在执行中或中控中途重启 |
+| GET | `/audit?target_id=&cat=&q=&limit=&before_id=` | 按 id 倒序；`before_id` 翻页（只要 id 小于它的，传上一页最后一条的 id），与筛选一起用。`cat`：`all`、`auth`（auth.*）、`exec`（exec、ssh.login、terminal.open/close、machine.logs、server.logs、restore.probe）、`machine`（machine / entry / relay / subscription / agent / job / renewal 开头的，除去 exec 类）、`config`（其余），别的值 400。`q`：不分大小写的包含匹配，`%` `_` 按字面；匹配操作人（按界面写法：`cli` 是「中控命令行」，`apikey:名称` 是「名称（API 密钥）」）、标题（`title` 含它的动作）、摘要（`summary`，写审计时存下；`detail` 里摘要不展示的值不算），有 `exec` scope 时另搜命令原文；查询超过 5 秒中止，回 503 `unavailable`（换更具体的关键词或先按分类筛选）。没有 `exec` scope 的密钥看不到命令：`detail.command` 换成「命令已隐藏（N 字）」，`summary` 里的命令同样隐藏。`exec` / `machine.logs` 在执行前就写一条 `detail.started=true` 的记录，执行完补上结果并去掉 `started`；`started` 还在说明在执行中或中控中途重启 |
 | GET | `/notify-log?limit=100` | 通知发送记录（新→旧，`limit` 1–1000）：`[{id, channel_id, channel_name, incident_id, ts, ok, error, kind: "firing"\|"repeat"\|"resolved"\|"test"\|"silence", subject_name, rule_name}]`；一次投递一条，在送达或放弃时写：失败重试中的不记（还在发送队列里），入队满 30 分钟还没发出的放弃，记一条 `ok:false`、`error` 为「入队 30 分钟还没发出，放弃（最近一次失败：…）」；渠道拒绝（不值得重试）的当场记失败。`error` 只有 HTTP 状态与渠道 JSON 里的说明（Telegram `description`、企业微信 `errmsg`，截到 200 字），不存原始响应体；`subject_name` 是告警对象的显示名（中控自身的告警是「中控」，`silence`（静默 / 维护变更）是「静默 / 维护变更」），`rule_name` 是规则中文名（与通知正文一致）；测试消息两者为 null，机器或告警已删除时对应字段为 null。没收到某条告警「触发」的渠道不发它的「恢复」，也不记 |
 
 **中控自身的告警**（selfmon.rs，规则 `central_` 开头）：对象是「中控」而不是机器，每 30 秒随告警评估检查一次；不去抖，恢复后再出现新开一条；被静默的不开、不发（只能用全部机器 + 规则 key 静默）；critical 每 4 小时提醒一次。通知里「机器」一行写「中控」。
@@ -263,7 +267,7 @@ ProvisionItem = {
   `provision_ip`（上架同机 IP 节点）/ `restore_ip`（恢复同机 IP 节点）的步骤：`ip_check`（在宿主机上核对 IP，输出 `{ss_port, local_ips, egress_ip}`：最终的 SS 端口、宿主机本机的 IPv4（逗号加空格分隔的字符串）、经这个 IP 访问中控 /echo 回显的地址）→ `converge`（推 ssserver、装它自己的实例与防火墙，输出同 VPS 节点，`bbr` 为 null——不做系统基线）→ `attach` → `wait_applied` → `verify` → `activate`。
   `ip_check` 失败：宿主机 SSH 连不上（network）；IP 不在宿主机网卡上（「IP x 不在宿主机 H 的网卡上（本机：…）」，remote）；回显的来源不是这个 IP（出站路由不对，remote）。暂定的 SS 端口在宿主机上被占用时自动换成最小空闲端口，日志里有一条警告。
   同机 IP 节点的退役作业 `cleanup` 一步只删它自己的实例（输出 `ss` 是 gone / still_listening，指它自己的端口）。
-  `upgrade_agent`（升级 agent）的步骤：`agent`「推送并重启 agent」（输出 `{binary_updated, agent_version, prev_version, xray_checks}`：`agent_version` 是装上的版本，`prev_version` 是这次换下来、留作回滚的旧版本，程序没变时为 null；`xray_checks` 是升级线路机、程序换过时等上报还要做到的几项，如「Xray 在跑、配置应用到代数 3、没有应用错误」，升级前都没做到时「不查（升级前 Xray 就不正常）」，其余为 null；上架的 `agent` 步骤输出同形）→ `wait_report`「等待新版本上报」（等装上的版本用新令牌上报，线路机还要过 `xray_checks`，输出 `{first_report_at, agent_version, old_tokens_revoked}`）。回滚见 `POST /machines/{id}/upgrade-agent`；被编排取消的、排队时被取消的（见 `POST /agents/upgrade`、`POST /jobs/{id}/cancel`）`started_at` 为 null、步骤全是 pending。
+  `upgrade_agent`（升级 agent）的步骤：`agent`「推送并重启 agent」（输出 `{binary_updated, agent_version, prev_version, xray_checks, xray_restarted}`：`xray_restarted` 为 true 表示线路机 DNS 是链路本地地址、为换上公共解析器重启了一次 Xray（其余为 null）；`agent_version` 是装上的版本，`prev_version` 是这次换下来、留作回滚的旧版本，程序没变时为 null；`xray_checks` 是升级线路机、程序换过时等上报还要做到的几项，如「Xray 在跑、配置应用到代数 3、没有应用错误」，升级前都没做到时「不查（升级前 Xray 就不正常）」，其余为 null；上架的 `agent` 步骤输出同形）→ `wait_report`「等待新版本上报」（等装上的版本用新令牌上报，线路机还要过 `xray_checks`，输出 `{first_report_at, agent_version, old_tokens_revoked}`）。回滚见 `POST /machines/{id}/upgrade-agent`；被编排取消的、排队时被取消的（见 `POST /agents/upgrade`、`POST /jobs/{id}/cancel`）`started_at` 为 null、步骤全是 pending。
 - 告警 `Incident`：`{id, rule, rule_name（规则中文名，同通知）, subject: {id,name}, subject_id, subject_name, severity, state: "firing"|"resolved", summary, opened_at, last_seen_at, resolved_at, ack_at, ack_by, reopen_count}`（`subject_name` 机器已删除时为 null；中控自身的告警 `subject`、`subject_id` 为 null、`subject_name` 为「中控」）。
 - 静默 `Silence`：`{id, subject_id, subject_name, rule, rule_name, starts_at, ends_at, is_maintenance, comment}`（`subject_id` / `subject_name` 为 null = 全部机器；`rule_name` 是规则中文名，同告警，`rule` 为 null（全部规则）时也为 null）。
 - 续费 `Renewal`：`{id, old_due, new_due, amount_cents, currency, note, actor, created_at}`。`currency` 是登记时订阅的币种（迁移 0029 起记；之前的按迁移时订阅的币种补上），之后改订阅币种，历史金额不跟着变。币种一律 3 个大写字母（套餐、订阅、续费记录库里都有约束；套餐接口会去空白转大写，其它不合规的回 400）。
@@ -271,12 +275,12 @@ ProvisionItem = {
 
 ## 实时
 `GET /api/v1/stream`：WebSocket（`ws://` / `wss://`），鉴权同其它 GET（会话 Cookie 或 `Authorization: Bearer`，需要 `read`）；用会话 Cookie 连时 `Origin` 必须等于 `public_url` 的协议 + 主机 + 端口，否则 403（WebSocket 握手不受同源策略约束），握手失败返回普通 HTTP 错误（401/403）。服务端只发 JSON 文本帧，不读客户端消息。
-- **保活**：服务端每 15 s 发 ping，到下一次 ping 还没收到 pong 就断开（浏览器自动回 pong）。
+- **保活**：服务端每 15 s 发 ping，到下一次 ping 还没收到 pong 就断开（浏览器自动回 pong）；同时发一个文本心跳 `{type:"hb"}`（浏览器脚本看不到协议层的 ping），客户端连着 45 s 什么都没收到就当连接已死、自己重连，`hb` 本身直接丢弃。
 - **会话复核**：每 60 s 查一次会话/密钥是否仍有效，撤销会话或密钥时各连接马上再查一次（服务端内部通知，不推给前端；命令行 `user-set` 经 PostgreSQL `NOTIFY fleet_revoked` 转过来），失效则以关闭码 `4401` 关闭（客户端应回登录页，`fleetctl watch` 报错退出）；复核查询本身失败以 `1011` 关闭，客户端照常退避重连、握手时重新鉴权。
-- **滞后**：服务端广播缓冲 256 条，某个连接读得太慢丢了消息时补发 `{type:"resync"}`，客户端应让全部缓存失效重取。
+- **滞后**：服务端广播缓冲 1024 条，某个连接读得太慢丢了消息时补发 `{type:"resync"}`，客户端应让全部缓存失效重取。
 - **重连**：客户端断线后自己退避重连；连上后应重取一次机器类数据（断开期间错过的 `metrics` 增量不会补发）。
 
-**资源变更通知**（收到后让对应查询失效重取）：`{type:"machine",id}`、`{type:"machine_job",id}`（作业推进到这台机器：只需重取它的详情；列表里的 `active_job` 走 `metrics`，改生命周期时另发 `machines`）、`{type:"machines"}`、`{type:"relay",id}`、`{type:"job",id}`、`{type:"incidents"}`、`{type:"catalog"}`、`{type:"api_keys"}`（密钥增删撤销）、`{type:"policies"}`、`{type:"settings"}`（面板设置变了：访问记录保留期）、`{type:"resync"}`。
+**资源变更通知**（收到后让对应查询失效重取）：`{type:"machine",id}`、`{type:"machines"}`、`{type:"relay",id}`、`{type:"job",id}`（作业推进；目标机器的 `active_job` 走 `metrics`，它变了时客户端可重取这台机器的详情；改生命周期时另发 `machines`）、`{type:"incidents"}`、`{type:"catalog"}`、`{type:"api_keys"}`（密钥增删撤销）、`{type:"policies"}`、`{type:"settings"}`（面板设置变了：访问记录保留期）、`{type:"resync"}`。
 
 **实时指标** `{type:"metrics", machines:{<机器id>:{…}}, entries:{<入口id>:{…}}, overview?}`：在用机器视图（`GET /machines` 的 `MachineView`）里随上报与时间变化的字段，和上一条相比**只带变了的字段**（没变的键不出现），客户端把它们写进本地缓存，不必重取。有新上报或作业推进时最多每 3 s 一条，没有也每 30 s 比对一次（离线、到期天数、维护窗口随时间变）；没有变化不发。
 - `machines[id]` 的键：
@@ -315,7 +319,8 @@ ProvisionItem = {
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/access/summary?…` | `{kpi:{active_nodes,conns,targets,blocked}, nodes:[{node_id,name,team,conns,targets,domains,sources,blocked,last_ts}], window_start}`。`targets` 是各节点分别去重后相加；节点按连接数降序。节点的 `sources` 是去重来源 IP 数，跟随全部筛选（和同行的 `conns` 同一批连接）：`1h` 在原始记录上逐条带上 `search`（目标或来源 IP）、`kind`、`action`；`24h` 及以上来自来源小时表，没有目标维度，带了 `search`、`kind`、`action`（非 all）任一筛选时为 `null`（界面显示「—」） |
-| GET | `/access/targets?…&sort=conns\|last\|first&limit=100&offset=0` | `{items:[{node_id,name,dest_host,kind,conns,sources,blocked,first_seen,last_seen}], next_offset, window_start}`；`limit` 1–500，`offset` ≤ 100000，满页才给 `next_offset`；`first_seen` 是该节点历史上第一次出现（不限窗口）。不单独回总数：同一筛选下 `/access/summary` 的 `kpi.targets` 就是这张表的总行数（同一个聚合） |
+| GET | `/access/targets?…&group=target&sort=conns\|last\|first&limit=100&offset=0` | 按目标合并各节点（`group=target`，「域名与 IP」页用）：`{items:[{dest_host,kind,nodes,conns,blocked,first_seen,last_seen}], total, next_offset, window_start}`，`nodes` 是访问过它的节点数，`conns` / `blocked` 各节点相加，`first_seen` / `last_seen` 取各节点里最早 / 最近的；不给来源数（各节点分别去重，相加没有意义）；`total` 是符合条件的目标总数 |
+| GET | `/access/targets?…&group=node&target=&sort=conns\|last\|first&limit=100&offset=0` | 缺省（`group=node`）是「目标 × 节点」行；`target=` 只看这一个目标（合并后的名字，精确匹配；展开合并行看各节点）。`{items:[{node_id,name,dest_host,kind,conns,sources,blocked,first_seen,last_seen}], next_offset, window_start}`；`limit` 1–500，`offset` ≤ 100000，满页才给 `next_offset`；`first_seen` 是该节点历史上第一次出现（不限窗口）。不单独回总数：同一筛选下 `/access/summary` 的 `kpi.targets` 就是这张表的总行数（同一个聚合） |
 | GET | `/access/sources?…&limit=100` | `{items:[{node_id,name,src_ip,conns,last_ts}], window_start}`，按 (节点, 来源 IP) 连接数降序；`search` 在这里匹配来源 IP；`limit` ≤ 500 |
 | GET | `/access/events?node=&team=&search=&action=&kind=&window=&limit=100&before=<游标>` | `{items:[{ts,node_id,name,src_ip,dest_host,dest_port,network,blocked}], next_before}`，按 (时间, 记录 id) 倒序；`next_before` 是不透明游标（满页才给），下一页把它原样放进 `before`（要 URL 编码）；同一时刻的多条记录不会被跳过；格式不对 400。`search` 同时匹配目标和来源 IP；回看所选窗口，只有原始记录保留期（`raw_days`）以内的，窗口比它长不报错 |
 | GET | `/access/new-targets?window=24h&node=…&limit=200&offset=0` | `{items:[{node_id,name,dest_host,kind,first_seen,last_seen,total}], total, next_offset, window_start}`：顶层 `total` 是符合筛选的目标总数，`next_offset` 只在后面还有时给出；窗口内第一次出现的目标（之前在汇总的保留期内没见过），按首次出现倒序；`total` 为累计连接数（汇总保留期内）。这是旧系统「新域名」的替代，**不产生告警** |

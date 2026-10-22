@@ -12,7 +12,13 @@ export function ResultPill({ conns, blocked }: { conns: number; blocked: number 
   return <span className="row" style={{ gap: 4, flexWrap: 'nowrap' }}><Pill tone="ok">已转发 {fmtN(routed)}</Pill><Pill tone="bad">已阻止 {fmtN(blocked)}</Pill></span>;
 }
 
-/** 目标名：IP 目标带一个小标 */
-export const HostCell = ({ host, kind }: { host: string; kind: 'domain' | 'ip' }) => (
-  <span className="row" style={{ gap: 6, flexWrap: 'nowrap' }}><span className="ellipsis strong" data-tip={host}>{host}</span>{kind === 'ip' && <Chip variant="neutral">IP</Chip>}</span>
+/** 目标名：IP 目标带一个小标。onPick：可点（访问监控页点了把搜索设成它） */
+export const HostCell = ({ host, kind, onPick }: { host: string; kind: 'domain' | 'ip'; onPick?: (host: string) => void }) => (
+  <span className="row" style={{ gap: 6, flexWrap: 'nowrap' }}>
+    {onPick
+      ? <button type="button" className="host-pick ellipsis strong" data-tip={`${host}
+点击只看它`} onClick={(e) => { e.stopPropagation(); onPick(host); }}>{host}</button>
+      : <span className="ellipsis strong" data-tip={host}>{host}</span>}
+    {kind === 'ip' && <Chip variant="neutral">IP</Chip>}
+  </span>
 );

@@ -30,6 +30,23 @@ async fn job_login_is_null(t: &common::T, job: &str) -> bool {
     sqlx::query_scalar("select (params->'login') is null from job where id = $1::uuid").bind(job).fetch_one(&t.st.db).await.unwrap()
 }
 
+/// 上架前的「检查」看 SSH 端口通不通：连不上的不算通过（不用等上架作业失败），写明是被拒绝还是没有响应。
+/// 私网地址照常去连（这里用本机出网卡的地址，端口 1 必定被拒绝）；回环地址直接报错、不去连
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn check_reports_unreachable_ssh() {
+    let t = setup(false).await;
+    let (relay, _) = seed_relay(&t).await;
+    let team = seed_team(&t, "团队1").await;
+    let udp = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    udp.connect("192.0.2.1:9").unwrap();
+    let me = udp.local_addr().unwrap().ip().to_string();
+    let item = |ip: &str| json!({"kind": "vps", "ip": ip, "ssh_port": 1, "team_id": team, "relay_id": relay, "login": {"password": "s3cret-root-password"}});
+    let chk = t.post("/api/v1/provision/check", json!({"items": [item(&me), item("127.0.0.1")]})).await;
+    let errs = |i: usize| chk["items"][i]["errors"].to_string();
+    assert!(chk["items"][0]["ok"] == false && errs(0).contains(&format!("SSH {me}:1 连不上（连接被拒绝")), "{chk}");
+    assert!(errs(1).contains("127.0.0.1 是回环地址") && !errs(1).contains("SSH"), "{chk}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancel_while_running_ends_cancelled_and_compensates() {
     let t = setup(true).await;
@@ -50,6 +67,8 @@ async fn cancel_while_running_ends_cancelled_and_compensates() {
     }
     assert!(running, "作业应当进入运行中");
     t.post(&format!("/api/v1/jobs/{job}/cancel"), json!({})).await;
+    let au = t.get(&format!("/api/v1/audit?target_id={job}")).await;
+    assert_eq!((&au[0]["title"], &au[0]["summary"]), (&json!("取消作业"), &json!("上架 VPS 节点 · 团队1-01")), "审计写明取消的是哪个作业：{au}");
 
     // 步骤随后失败，但作业不能被覆盖成 failed：最终是 cancelled，并执行了补偿
     let j = t.wait_job(&job, "cancelled").await;
@@ -63,6 +82,13 @@ async fn cancel_while_running_ends_cancelled_and_compensates() {
     let msgs: Vec<&str> = logs.as_array().unwrap().iter().map(|l| l["msg"].as_str().unwrap()).collect();
     assert!(msgs.iter().any(|m| m.contains("将执行补偿")), "{msgs:?}");
     assert!(msgs.iter().any(|m| m.contains("上架已取消")), "{msgs:?}");
+    // 只要最后几行：给出前面没给的行数和续拉的游标
+    let all = logs.as_array().unwrap();
+    let tail = t.get(&format!("/api/v1/jobs/{job}/logs?tail=2")).await;
+    assert_eq!(tail["logs"].as_array().unwrap()[..], all[all.len() - 2..], "{tail}");
+    assert_eq!((tail["skipped"].as_u64(), &tail["after"]), (Some(all.len() as u64 - 2), &all[all.len() - 1]["id"]), "{tail}");
+    let rest = t.get(&format!("/api/v1/jobs/{job}/logs?tail=5000&after={}", tail["after"])).await;
+    assert_eq!((rest["logs"].as_array().map(Vec::len), rest["skipped"].as_u64(), &rest["after"]), (Some(0), Some(0), &tail["after"]), "{rest}");
     let lease: Option<String> = sqlx::query_scalar("select lease_owner from job where id = $1::uuid").bind(&job).fetch_one(&t.st.db).await.unwrap();
     assert!(lease.is_none(), "结束后不留租约");
 }
@@ -592,6 +618,26 @@ async fn job_list_pages_with_total() {
     assert_eq!((done["total"].as_i64(), ids(&done)), (Some(4), vec![done_ids[1].clone()]), "筛选后的总数与偏移");
     let active = t.get("/api/v1/jobs?state=active").await;
     assert_eq!((active["total"].as_i64(), active["next_offset"].is_null()), (Some(1), true));
+
+    // 按类型：provision / restore 是大类，其余按原值；和 state 一起用
+    for (kind, state) in [("provision_vps", "succeeded"), ("provision_relay", "running"), ("restore_ip", "failed"), ("upgrade_agent", "succeeded")] {
+        sqlx::query("insert into job (id, kind, params, state, created_by) values ($1, $2, '{}', $3::job_state, 'test')")
+            .bind(Uuid::now_v7())
+            .bind(kind)
+            .bind(state)
+            .execute(&t.st.db)
+            .await
+            .unwrap();
+    }
+    let kinds = |v: &Value| v["items"].as_array().unwrap().iter().map(|j| j["kind"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    let p = t.get("/api/v1/jobs?kind=provision").await;
+    assert_eq!((p["total"].as_i64(), kinds(&p)), (Some(2), vec!["provision_relay".to_string(), "provision_vps".into()]));
+    assert_eq!(kinds(&t.get("/api/v1/jobs?kind=provision&state=done").await), ["provision_vps"]);
+    assert_eq!(kinds(&t.get("/api/v1/jobs?kind=restore").await), ["restore_ip"]);
+    assert_eq!(t.get("/api/v1/jobs?kind=purge").await["total"], 5);
+    assert_eq!(t.get("/api/v1/jobs?kind=all").await["total"], 9);
+    let (s, _) = t.req("GET", "/api/v1/jobs?kind=nope", None, None).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
 }
 
 /// 直接在库里放一个失败在第 `step` 步、类别为 `ek` 的作业

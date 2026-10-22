@@ -1,5 +1,5 @@
 // 访问监控的 mock：几个节点、几十个域名 / IP，按窗口缩放连接数。数据在模块加载时按种子生成，刷新页面保持稳定。
-import type { AccessEvent, AccessNode, AccessSource, AccessTarget, MachineAccess, NewTarget } from '@/lib/access';
+import type { AccessEvent, AccessNode, AccessSource, AccessTarget, AccessTargetGroup, MachineAccess, NewTarget } from '@/lib/access';
 import type { MachineView } from '@/lib/types';
 import type { DistItem, IpIntel, IpIntelStatus, KnownItem, SourcesProfile } from '@/lib/ipintel';
 import { hashStr, rng } from './fixtures';
@@ -103,10 +103,27 @@ export function installAccessMock(R: Reg, machines: () => MachineView[]) {
   });
 
   R('GET', '/access/targets', ({ query }) => {
-    const all = stats(machines(), query).flatMap((x) => x.targets);
+    const target = query.get('target') ?? '';
+    const all = stats(machines(), query).flatMap((x) => x.targets).filter((t) => !target || t.dest_host === target);
     const sort = query.get('sort') ?? 'conns';
-    all.sort((a, b) => (sort === 'last' ? b.last_seen!.localeCompare(a.last_seen!) : sort === 'first' ? b.first_seen!.localeCompare(a.first_seen!) : b.conns - a.conns));
+    const bySort = <T extends { conns: number; first_seen: string | null; last_seen: string | null }>(a: T, b: T) =>
+      (sort === 'last' ? b.last_seen!.localeCompare(a.last_seen!) : sort === 'first' ? b.first_seen!.localeCompare(a.first_seen!) : b.conns - a.conns);
     const limit = Math.min(500, +(query.get('limit') ?? 100)); const offset = +(query.get('offset') ?? 0);
+    if (query.get('group') === 'target') {
+      // 同中控：按目标合并各节点，带总数
+      const m = new Map<string, AccessTargetGroup>();
+      for (const t of all) {
+        const g = m.get(t.dest_host);
+        if (!g) { m.set(t.dest_host, { dest_host: t.dest_host, kind: t.kind, nodes: 1, conns: t.conns, blocked: t.blocked, first_seen: t.first_seen, last_seen: t.last_seen }); continue; }
+        g.nodes += 1; g.conns += t.conns; g.blocked += t.blocked;
+        if (t.first_seen! < g.first_seen!) g.first_seen = t.first_seen;
+        if (t.last_seen! > g.last_seen!) g.last_seen = t.last_seen;
+      }
+      const groups = [...m.values()].sort(bySort);
+      const end = Math.min(groups.length, offset + limit);
+      return { items: groups.slice(offset, end), total: groups.length, next_offset: end < groups.length ? end : null, window_start: win(query) };
+    }
+    all.sort(bySort);
     const items = all.slice(offset, offset + limit).map(({ ...t }) => { delete (t as { base?: number }).base; return t; });
     return { items, next_offset: offset + limit < all.length ? offset + limit : null, window_start: win(query) };
   });
@@ -231,7 +248,7 @@ function bump(m: Map<string, Acc>, key: string, label: string, conns: number) {
   const x = m.get(key) ?? { label, conns: 0, sources: 0 };
   x.conns += conns; x.sources += 1; m.set(key, x);
 }
-const CONN_LABEL = { residential: '住宅宽带', mobile: '移动网络', datacenter: '机房', vpn: 'VPN·代理', unknown: '未知' } as const;
+const CONN_LABEL = { residential: '住宅宽带', mobile: '移动网络', datacenter: '机房', vpn: 'VPN / 代理', unknown: '未知' } as const;
 function prof(isp: string, country: string, province: string | null, city: string | null, type: IpIntel['conn_type'], asn: number, org: string, confidence: IpIntel['confidence'], reason: string): IpIntel {
   const place = country === 'CN' ? (province === city ? (city ?? '') : `${province ?? ''}${city ?? ''}`) : `${country} · ${city ?? province ?? ''}`;
   return { isp, asn, as_org: org, country, province, city, place, conn_type: type, conn_label: CONN_LABEL[type], confidence, reason, internal: null, private: false };
@@ -258,9 +275,10 @@ const intelOf = (ip: string): IpIntel | null => {
 const IP_STATUS: IpIntelStatus = {
   enabled: true, installed: true, loaded: 5, expected: 5, db_dir: '/var/lib/fleet/ipintel', version: 'mock', cache_rows: 1284, hint: null, errors: [],
   files: [
-    { id: 'ip2region_v4', loaded: true, bytes: 11_000_000, build: '2026-09-30' }, { id: 'ip2region_v6', loaded: true, bytes: 38_000_000, build: '2026-09-30' },
-    { id: 'dbip_city', loaded: true, bytes: 127_000_000, build: '2026-10' }, { id: 'dbip_asn', loaded: true, bytes: 9_500_000, build: '2026-10' },
-    { id: 'iptoasn', loaded: true, bytes: 46_000_000, build: '620000 行', entries: 620_000 },
+    // 同中控：xdb、DB-IP 的 build 是构建时刻（Unix 秒），iptoasn 的 build 是行数；mtime 是文件修改时间（Unix 秒）
+    { id: 'ip2region_v4', loaded: true, bytes: 11_000_000, mtime: 1791943867, build: '1791943867' }, { id: 'ip2region_v6', loaded: true, bytes: 38_000_000, mtime: 1791943867, build: '1791943867' },
+    { id: 'dbip_city', loaded: true, bytes: 127_000_000, mtime: 1792500000, build: '1792454400' }, { id: 'dbip_asn', loaded: true, bytes: 9_500_000, mtime: 1792500000, build: '1792454400' },
+    { id: 'iptoasn', loaded: true, bytes: 46_000_000, mtime: 1792520000, build: '620000 行', entries: 620_000 },
   ],
 };
 

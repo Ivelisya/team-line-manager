@@ -44,8 +44,11 @@ SystemCallArchitectures=native
 RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK
 # 客户经域名（169.254.169.254.nip.io、metadata.google.internal）也到不了云厂商的元数据服务：路由里的私网拦截只认 IP 目标。
 # 不拦回环（API、探测入站在 127.0.0.1）和内网段（实验室线路机、节点在 192.168.31.0/24）。
-# /etc/resolv.conf 的 nameserver 是链路本地地址时（GCE、Oracle 等不经 systemd-resolved 的镜像）这一行照样留着，Xray 改用公共解析器（agent 配，见 jobs/scripts.rs 的 LINKLOCAL_DNS）
+# /etc/resolv.conf 的 nameserver 是链路本地地址时（GCE、Oracle 等不经 systemd-resolved 的镜像）这一行照样留着，Xray 改用公共解析器（见下一条）
 IPAddressDeny=link-local 100.100.100.200/32
+# 只在 DNS 是链路本地地址的机器上有这个文件（装单元时写，内容是公共解析器，见 jobs/scripts.rs 的 LINKLOCAL_DNS）：只读挂到 Xray 看到的
+# /etc/resolv.conf 上，REALITY 伪装目标、写成域名的代理上游、直出都经它解析。其它机器上没有这个文件，「-」跳过，Xray 用系统的
+BindReadOnlyPaths=-/etc/fleet-xray/resolv.conf:/etc/resolv.conf
 # 再把用不着的敏感目录整个藏起来（动态用户本来也读不到 0600 的令牌、主机私钥，多一层）。不存在的路径由「-」跳过
 InaccessiblePaths=-/etc/fleet-agent -/var/lib/fleet-agent -/etc/ssh
 # 不加 SystemCallFilter / MemoryDenyWriteExecute：Xray 是 Go 程序，升级 Xray 时运行时用到的系统调用会变，兼容风险大于收益。

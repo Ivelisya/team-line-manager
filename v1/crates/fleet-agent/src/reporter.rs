@@ -278,6 +278,13 @@ impl Reporter {
                     self.rejects = 0;
                     sent += 1;
                 }
+                // 中控那边这台机器的上一份还在处理（或超了限速）：不算失败——不放长建报间隔、不停追赶访问日志、不记「上报失败」，
+                // 按 Retry-After 再发这一份
+                Outcome::Busy { wait, why } => {
+                    tracing::debug!(seq, "中控正忙，{} 秒后再发：{why}", wait.as_secs());
+                    self.next_send = Instant::now() + wait;
+                    return;
+                }
                 Outcome::Retry { wait, why } => {
                     self.note_failure(&why);
                     self.next_send = Instant::now() + wait.unwrap_or_else(|| backoff(self.fails, 5, 60));
@@ -624,6 +631,26 @@ mod tests {
         assert_eq!(errs, [false, true]);
         assert!(r.unsaved.is_none() && lock(&r.core).queue.is_empty());
         assert!(lock(&r.core).stats.base.initialized, "入库后才提交流量基线");
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&tok_dir);
+    }
+
+    /// 429（中控那边这台机器的上一份还在处理）不算失败：fails 不变、按 Retry-After 再发同一份
+    #[tokio::test]
+    async fn busy_is_not_a_failure() {
+        let d = tmp("busy");
+        let sh = shared(&d);
+        let (base, seen) = crate::server::tests::mock_server_busy(1).await;
+        let (client, tok_dir) = crate::server::tests::client_for(&base, "busy");
+        let mut r = Reporter::new(sh.clone(), Arc::new(client)).unwrap();
+        sh.buf.lock().unwrap().info = Some(Default::default());
+        r.build_and_push(true).await;
+        let (_tx, mut sd) = watch::channel(false);
+        r.flush(&mut sd).await;
+        assert_eq!((r.fails, lock(&r.core).queue.len()), (0, 1));
+        assert!(r.next_send > Instant::now() + Duration::from_millis(500) && r.next_send <= Instant::now() + Duration::from_secs(1));
+        r.flush(&mut sd).await;
+        assert_eq!((r.fails, lock(&r.core).queue.len(), seen.lock().unwrap().len()), (0, 0, 2));
         let _ = std::fs::remove_dir_all(&d);
         let _ = std::fs::remove_dir_all(&tok_dir);
     }

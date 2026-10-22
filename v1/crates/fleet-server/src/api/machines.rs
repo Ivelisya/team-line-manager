@@ -9,7 +9,8 @@ use crate::names::{compact_numbers, node_name};
 use crate::state::{AppState, Event};
 use crate::views::{self, Scope};
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{header, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -24,19 +25,20 @@ pub struct ListQ {
     view: Option<String>,
 }
 
-pub async fn list(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<ListQ>) -> ApiResult<Json<Value>> {
+pub async fn list(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<ListQ>) -> ApiResult<Response> {
     let scope = match q.scope.as_deref() {
         Some("retired") => Scope::Retired,
         Some("all") => Scope::All,
         _ => Scope::Live,
     };
     if q.view.as_deref() == Some("brief") {
-        return Ok(ok(views::brief(&st, scope).await?));
+        return Ok(ok(views::brief(&st, scope).await?).into_response());
     }
     if scope == Scope::Live {
-        return Ok(ok(&*views::live(&st).await?));
+        // 在用机器走缓存视图，响应体也随它缓存（同一份视图只序列化一次）
+        return Ok(([(header::CONTENT_TYPE, "application/json")], views::live_json(&st).await?).into_response());
     }
-    Ok(ok(views::load(&st, scope, None).await?))
+    Ok(ok(views::load(&st, scope, None).await?).into_response())
 }
 
 pub async fn get_one(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
@@ -169,13 +171,22 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     }
     // 入口备注随节点名变：节点改名刷新它挂的线路机；线路机改名只影响它自己的直出入口（「线路机名-直出」），没有就不动
     let relays = if renamed { bump_relays_of_nodes(&mut tx, &[id]).await? } else { vec![] };
+    // 审计写上改前改后的显示名（「团队1-07 → 团队1-03」）：记录保持当时的样子，之后再改名也不跟着变
+    let (old_team, new_team): (Option<String>, Option<String>) = sqlx::query_as("select (select name from team where id = $1), (select name from team where id = $2)")
+        .bind(cur.2)
+        .bind(team_id)
+        .fetch_one(&mut *tx)
+        .await?;
+    let old_name = crate::names::display_name(&cur.1, cur.4.as_deref(), old_team.as_deref(), cur.3);
+    let name = crate::names::display_name(&cur.1, label.as_deref(), new_team.as_deref(), number);
     audit(
         &mut tx,
         &a.name,
         if renamed { "machine.rename" } else { "machine.update" },
         "machine",
         Some(id),
-        json!({"before": {"team_id": cur.2, "number": cur.3, "label": cur.4, "country": cur.6},
+        json!({"name": name, "old_name": old_name,
+               "before": {"team_id": cur.2, "number": cur.3, "label": cur.4, "country": cur.6},
                "after": {"team_id": team_id, "number": number, "label": label, "country": country.clone().unwrap_or(cur.6.clone())}}),
     )
     .await?;
@@ -561,7 +572,9 @@ async fn enqueue_upgrade(st: &AppState, actor: &str, ms: &[(Uuid, String, String
             Err(e) => return Err(e),
         }
     }
-    audit(&mut tx, actor, "agent.upgrade", "machine", None, json!({"count": out.len(), "skipped": skipped.len()})).await?;
+    // 摘要写出升级了哪几台（最多列 3 台）
+    let names: Vec<&Value> = out.iter().take(3).map(|j| &j["name"]).collect();
+    audit(&mut tx, actor, "agent.upgrade", "machine", None, json!({"count": out.len(), "skipped": skipped.len(), "names": names})).await?;
     tx.commit().await?;
     st.wake_jobs();
     for j in &out {

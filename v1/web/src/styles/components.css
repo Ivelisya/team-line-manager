@@ -24,11 +24,14 @@
 .btn-quiet { color: var(--fg-2); }
 .btn-text { height: var(--h-sm); padding: 0 var(--sp-6); color: var(--fg-2); font-size: var(--fs-label); line-height: var(--lh-label); }
 .btn-link { height: auto; padding: 0; border: 0; color: var(--accent); }
+/* 表格里可点的数字（团队的在用节点数 → 机器页）：紫色、等宽数字，悬停下划线 */
+.num-link { color: var(--accent); font-weight: var(--fw-medium); font-variant-numeric: var(--num-variant); text-decoration: none; text-underline-offset: 3px; }
+@media (hover: hover) { .num-link:hover { text-decoration: underline; } }
 .btn-danger { background: var(--bad-solid); color: #fff; }
 .btn-outline-danger { background: var(--surface); color: var(--bad-text); border-color: color-mix(in srgb, var(--bad) 35%, var(--line)); }
 @media (hover: hover) {
   .btn-primary:hover:not(:disabled) { background: var(--accent-strong); }
-  .btn-secondary:hover:not(:disabled) { background: linear-gradient(var(--hover), var(--hover)), var(--surface); }
+  .btn-secondary:hover:not(:disabled, [aria-disabled="true"]) { background: linear-gradient(var(--hover), var(--hover)), var(--surface); }
   .btn-quiet:hover:not(:disabled) { background: var(--hover); color: var(--fg); }
   .btn-text:hover:not(:disabled) { color: var(--fg); text-decoration: underline; text-underline-offset: 3px; }
   .btn-link:hover { text-decoration: underline; text-underline-offset: 3px; }
@@ -220,7 +223,6 @@
 .note[data-tone="bad"] { --note-bg: var(--bad-bg); --note-ic: var(--bad); }
 
 .empty { display: grid; justify-items: center; gap: var(--sp-8); padding: var(--sp-24) var(--sp-16); color: var(--fg-2); text-align: center; }
-.empty .lucide { color: var(--fg-3); }
 .skel { display: block; border-radius: var(--r-xs); background: var(--cell-off); animation: skel-pulse var(--dur-loop) var(--ease-std) infinite; } /* 同格条未点亮色：暗色下 --sunken 比卡片还暗，骨架几乎看不见 */
 .skel-row { display: flex; align-items: center; height: var(--row-2); box-sizing: border-box; padding: 0 var(--cell-edge); border-bottom: 1px solid var(--line); }
 .skel-row.is-one { height: var(--row-1); }
@@ -234,6 +236,8 @@
 .hint.ellipsis { white-space: nowrap; } /* text-wrap 是简写，上一条的 pretty 会把 .ellipsis（base.css）的不折行重置成折行 */
 .hint.is-error { color: var(--bad-text); }
 .field-label { display: inline-flex; align-items: center; gap: var(--sp-4); min-width: 0; }
+/* 标签后的「必填 / 选填」：淡色小字跟在标签旁，不另占一行（放在控件下面会让同排的字段高低不齐） */
+.field-tag { margin-inline-start: var(--sp-6); font-weight: var(--fw-regular); font-size: var(--fs-micro); color: var(--fg-3); }
 /* 「(i)」补充说明：一个淡灰的小圆 i，悬停 / 聚焦变深，说明走全站的 data-tip 气泡；跟在文字后面时自带左边距、和文字基线对齐 */
 .info-tip { display: inline-grid; place-items: center; flex: none; width: 16px; height: 16px; margin-inline-start: var(--sp-4); vertical-align: -3px; border-radius: 50%; color: var(--fg-3); cursor: help; transition: color var(--dur-1) var(--ease-std); }
 .field-label > .info-tip { margin: 0; } /* 标签行是 flex，间距由 gap 给 */
@@ -259,6 +263,9 @@
 .search { position: relative; display: inline-flex; align-items: center; min-width: 0; }
 .search > .lucide { position: absolute; left: var(--sp-10); color: var(--fg-3); pointer-events: none; width: 14px; height: 14px; }
 .search > .input { padding-left: 30px; }
+.input-unit { position: relative; display: inline-flex; align-items: center; min-width: 0; max-width: 100%; }
+.input-unit > .input { padding-right: calc(var(--sp-10) + 2.5em); font-variant-numeric: tabular-nums; }
+.input-unit-u { position: absolute; right: var(--sp-10); color: var(--fg-2); font-size: var(--fs-body); pointer-events: none; }
 
 .checkbox { width: 16px; height: 16px; flex: none; border: 1px solid var(--line-strong); border-radius: var(--r-xs); background: var(--surface); display: inline-grid; place-items: center; cursor: pointer; color: var(--on-accent); transition: background-color var(--dur-1) var(--ease-std), border-color var(--dur-1) var(--ease-std); }
 .checkbox[data-state="checked"] { background: var(--accent-solid); border-color: var(--accent-solid); }
@@ -369,6 +376,10 @@
 .menu-sep { height: 1px; margin: var(--sp-4) 0; background: var(--line); }
 .menu-label { padding: var(--sp-6) var(--sp-10) var(--sp-2); font: var(--fw-medium) var(--fs-micro) / var(--lh-micro) var(--font-sans); color: var(--fg-3); }
 .menu-check { display: inline-flex; margin-left: auto; }
+/* 子菜单顶上的筛选框（线路机的分享链接）：吸顶，滚长列表时一直在；底色不透明，滚过去的项不从下面透出来 */
+.menu-filter { position: sticky; top: calc(-1 * var(--sp-4)); z-index: 1; margin: calc(-1 * var(--sp-4)) calc(-1 * var(--sp-4)) var(--sp-4); padding: var(--sp-6); background: var(--raised); border-bottom: 1px solid var(--line); border-radius: var(--r-float) var(--r-float) 0 0; }
+.menu-filter input { width: 100%; box-sizing: border-box; height: 28px; padding: 0 var(--sp-8); border: 1px solid var(--line-strong); border-radius: var(--r-xs); background: var(--surface); color: var(--fg); font: var(--fs-label) / 1 var(--font-sans); outline: none; }
+.menu-filter input:focus-visible { border-color: var(--accent); }
 .menu-item .menu-check .lucide { color: var(--accent); }
 .menu-appearance { min-width: 168px; }
 /* 配色色块：各配色亮色下的强调色（与当前深浅色无关，一眼认出是哪套） */
@@ -388,7 +399,7 @@
 
 /* 堆叠式通知：新的在最下面，旧的往上排；相同消息合并计数；底部细线是剩余时间，鼠标停上去暂停。
    从下方升起（--dur-2 / --ease-out），关闭、超时、超过上限被挤掉都向右滑出淡去（--dur-2 / --ease-std，toast.tsx 按 --dur-2 等它播完再卸载） */
-.toasts { position: fixed; z-index: var(--z-toast); right: calc(var(--sp-16) + var(--removed-body-scroll-bar-size, 0px)); bottom: var(--sp-16); display: flex; flex-direction: column; gap: var(--sp-8); width: min(380px, calc(100vw - 32px)); pointer-events: none; } /* right 同顶栏：锁滚动时补回让出的槽位 */
+.toasts { position: fixed; z-index: var(--z-toast); right: calc(var(--sp-16) + var(--removed-body-scroll-bar-size, 0px)); bottom: calc(var(--sp-16) + var(--toast-lift, 0px)); display: flex; flex-direction: column; gap: var(--sp-8); width: min(380px, calc(100vw - 32px)); pointer-events: none; transition: bottom var(--dur-2) var(--ease-out); } /* right 同顶栏：锁滚动时补回让出的槽位；bottom 让开页面底部的吸附条（--toast-lift，见 toast.tsx） */
 .toast {
   position: relative; display: flex; gap: var(--sp-10); align-items: flex-start; padding: var(--sp-10) var(--sp-12); overflow: hidden; pointer-events: auto;
   border-radius: var(--r-float); /* 材质、边线、投影同锚定弹层（上面） */
@@ -447,18 +458,18 @@
 :is(.btn, .fchip, .seg-item, .tab, .chart-legend-item, .cmd-trigger, .top-alert, .nc-name):active:not(:disabled) { scale: var(--press-md); transition-duration: var(--dur-press); }
 button.tag:active { scale: var(--press-md); transition-duration: var(--dur-press); } /* 可点的标签（同机关系标）；只认按钮，纯展示的 span 标签按下不缩 */
 .tab:active:not(:disabled) .tab-ind { scale: calc(1 / var(--press-md)) 1; transition-duration: var(--dur-press); }
-:is(.flow-trend, .flow-foot, .nc-quota, .rc-rings, a.stat):active:not(:disabled) { scale: var(--press-lg); transition-duration: var(--dur-press); }
+:is(.flow-trend, .flow-foot, .nc-quota, .nc-click, .rc-rings, .stat.is-link):active:not(:disabled) { scale: var(--press-lg); transition-duration: var(--dur-press); }
 :is(.menu-item, .select-item, .cmd-item, .job-item, .pop-item, .pol-item, .scope-row):active, .nav-item:active:not([aria-current="page"]), .dt tr.is-link:active { background-image: var(--state-press); }
 /* 开关（iOS）：按住时圆钮拉长 4px；选中态同时少移 4px，右缘不动 */
 .switch:active:not(:disabled) > span { width: 20px; transition-duration: var(--dur-press); }
 .switch[data-state="checked"]:active:not(:disabled) > span { transform: translateX(10px); }
 
 /* 悬停上浮 2px + 加深阴影：只给卡片类（节点卡、环形卡、可点的 KPI 卡），只在真有悬停的设备上（触屏点一下不会卡在上浮态）。
-   位移用独立的 translate 属性：卡片的 transform 归 motion 的布局动画管。:is() 不带 a.stat，保持 (0,2,0)，卡片的健康色边框、当前卡边框照样盖过悬停边 */
+   位移用独立的 translate 属性：卡片的 transform 归 motion 的布局动画管。:is() 不带 .stat.is-link，保持 (0,2,0)，卡片的健康色边框、当前卡边框照样盖过悬停边 */
 @media (hover: hover) {
-  :is(.ncard, .rcard):hover, a.stat:hover { border-color: var(--line-strong); box-shadow: var(--shadow-card-hover); translate: 0 -2px; }
+  :is(.ncard, .rcard):hover, .stat.is-link:hover { border-color: var(--line-strong); box-shadow: var(--shadow-card-hover); translate: 0 -2px; }
 }
-a.stat:active { translate: none; } /* 按下落回原位并微缩；阴影不去掉：比静止还平会“塌”一下 */
+.stat.is-link:active { translate: none; } /* 按下落回原位并微缩；阴影不去掉：比静止还平会“塌”一下 */
 
 /* 焦点环：全站 2px 环、2px 间隙（base.css :focus-visible）。会被滚动容器或单元格裁掉的收进元素里面；日历格之间只有 2px 缝，贴边画 */
 :is(.seg-item, .tab, .th-sort, .pol-chev, .pol-item, .job-item, .pop-item, .logbox):focus-visible, .dt tr.is-link:focus-visible { outline-offset: -2px; }

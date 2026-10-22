@@ -55,12 +55,12 @@ pub fn router() -> Router<AppState> {
         .route("/account/password", post(account::change_password))
         // 目录
         .route("/teams", get(catalog::list_teams).post(catalog::create_team))
-        .route("/teams/{id}", patch(catalog::patch_team))
+        .route("/teams/{id}", patch(catalog::patch_team).delete(catalog::delete_team))
         .route("/teams/{id}/renumber", get(machines::renumber_preview).post(machines::renumber_apply))
         .route("/providers", get(catalog::list_providers).post(catalog::create_provider))
-        .route("/providers/{id}", patch(catalog::patch_provider))
+        .route("/providers/{id}", patch(catalog::patch_provider).delete(catalog::delete_provider))
         .route("/plans", get(catalog::list_plans).post(catalog::create_plan))
-        .route("/plans/{id}", patch(catalog::patch_plan))
+        .route("/plans/{id}", patch(catalog::patch_plan).delete(catalog::delete_plan))
         // 机器
         .route("/machines", get(machines::list))
         .route("/machines/{id}", get(machines::get_one).patch(machines::patch))

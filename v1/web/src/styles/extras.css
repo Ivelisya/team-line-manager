@@ -12,10 +12,6 @@
 .menu-anchor { position: absolute; inset: 0; visibility: hidden; pointer-events: none; }
 .float-anchor { position: fixed; visibility: hidden; pointer-events: none; }
 
-/* ========== Tooltip 里的原因列表（健康 pill） ========== */
-.tip-list { display: grid; gap: var(--sp-4); margin: 0; padding: 0; list-style: none; text-align: left; }
-.tip-list li { display: flex; align-items: flex-start; gap: var(--sp-6); }
-.tip-list .smark { width: 12px; height: 12px; margin-top: 2px; }
 .block { display: block; }
 
 /* ========== 复制按钮 ========== */
@@ -115,6 +111,7 @@
 .cmd-foot .kbd { margin-right: var(--sp-4); }
 
 /* ========== 快捷键帮助 / 错误卡 ========== */
+.dialog-head.hk-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); margin: calc(-1 * var(--sp-6)) calc(-1 * var(--sp-8)) 0 0; } /* 标题右边的关闭按钮 */
 .hk-list { margin: 0; padding: 0; list-style: none; }
 .hk-list li { display: flex; align-items: center; gap: var(--sp-16); padding: var(--sp-8) 0; border-top: 1px solid var(--line); font-size: var(--fs-body); }
 .hk-list li:first-child { border-top: 0; }
@@ -126,6 +123,15 @@
 .empty-ic { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; background: var(--sunken); box-shadow: inset 0 0 0 1px var(--line); color: var(--fg-3); }
 .empty-text { font-weight: var(--fw-medium); text-wrap: pretty; }
 .tab-pane { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-16); align-content: start; animation: tab-in var(--dur-2) var(--ease-out); }
+/* 访问记录「常访问的目标」条尾的次数 */
+.bar-count { fill: var(--fg-2); font-size: 11px; font-weight: var(--fw-semibold); font-variant-numeric: tabular-nums; }
+/* 页签里吸顶的一条（主机页签的时间范围）：贴在抽屉正文滚动区的顶边（抵掉正文的上内边距），毛玻璃底，滚过去的曲线从下面淡淡透出 */
+.tab-sticky {
+  position: sticky; top: calc(-1 * var(--sp-16)); z-index: 3; display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8);
+  margin: calc(-1 * var(--sp-16)) calc(-1 * var(--sp-16)) calc(-1 * var(--sp-8)); padding: var(--sp-10) var(--sp-16);
+  background: color-mix(in srgb, var(--surface) 82%, transparent); -webkit-backdrop-filter: blur(12px) saturate(1.4); backdrop-filter: blur(12px) saturate(1.4);
+  border-bottom: 1px solid var(--line); font-size: var(--fs-label); color: var(--fg-2);
+}
 @keyframes tab-in { from { opacity: 0; transform: translateY(4px); } }
 /* 换时间范围、筛选或翻页时先留着上一份数据：取新数据期间调淡，到了再柔和地亮回来（抽屉曲线、访问监控的 KPI 与表格、抽屉「访问记录」）。
    元素上一直写着 data-stale（值是查询的 isPlaceholderData，"true" / "false"）：过渡留在元素上，亮回来才是渐变 */
@@ -180,6 +186,10 @@
 .stepbar-sub { font-size: var(--fs-micro); line-height: var(--lh-micro); color: var(--fg-2); font-variant-numeric: var(--num-variant); }
 .stepbar-item[data-kind="failed"] .stepbar-sub { color: var(--bad-text); }
 .stepbar-item[data-kind="compensated"] .stepbar-sub { color: var(--warn-text); }
+/* 步骤多（7 步起，JobProgress.tsx）：格子不再有最小宽度、整条放得下；只有当前那一步（进行中 / 失败）写标签、占得宽一些，其余悬停节点看 */
+.stepbar[data-compact] .stepbar-item { min-width: 0; }
+.stepbar[data-compact] .stepbar-item[data-focus] { flex-grow: 3; }
+.stepbar[data-compact] .stepbar-item:not([data-focus]) :is(.stepbar-title, .stepbar-sub) { display: none; }
 
 /* 步骤时间线：按展示类别着色（后端的 state 有 done / succeeded 等不同写法，不再依赖原始值） */
 .step[data-kind="done"] .step-ic { background: var(--ok-bg); color: var(--ok-text); }
@@ -194,11 +204,13 @@
 
 /* ========== 设置页 ========== */
 .set-tabs { margin-bottom: var(--section-gap); }
-.scope-list { display: grid; gap: var(--sp-8); }
-.scope-row { display: flex; align-items: flex-start; gap: var(--sp-10); padding: var(--sp-8) var(--sp-12); border: 1px solid var(--line); border-radius: var(--r-float); cursor: pointer; transition: background-color var(--dur-1) var(--ease-std), border-color var(--dur-1) var(--ease-std); }
+/* 权限：每项一行（名称 + (i) 说明 + 敏感标），两列排 */
+.scope-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--sp-8); }
+.scope-name { display: inline-flex; align-items: center; gap: var(--sp-4); min-width: 0; }
+.scope-name .chip { margin-left: var(--sp-4); }
+.scope-row { display: flex; align-items: center; gap: var(--sp-10); padding: var(--sp-8) var(--sp-12); border: 1px solid var(--line); border-radius: var(--r-float); cursor: pointer; transition: background-color var(--dur-1) var(--ease-std), border-color var(--dur-1) var(--ease-std); }
 .scope-row:hover { background-color: var(--hover); }
 .scope-row[data-on="1"] { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); background-color: var(--selected); }
-.scope-row .checkbox { margin-top: 2px; }
 .scope-row b { font-weight: var(--fw-medium); }
 .scope-row .hint { margin-top: 0; }
 .scope-tags { display: flex; flex-wrap: wrap; gap: var(--sp-4); }
@@ -225,8 +237,9 @@
    开关是 <html data-overlay>（dialog.tsx 的 Scrim 挂着时写上）。节点抽屉的遮罩只压暗不模糊，自己不挂开关；它开着时上面再叠对话框，抽屉也算下面一层。
    浮层都 Portal 到 body、不在 .app 里，自己的动画照常。骨架屏不管。
    无限循环的动画暂停： */
-html[data-overlay] :is(.app, .drawer) :is(.spin, .flow-dot, .top-btn.jobs-ind > .lucide, .stepbar-item[data-kind="running"] .stepbar-node),
-html[data-overlay] :is(.app, .drawer) .pill[data-dot="pulse"]::before, .smark[data-spin],
+html[data-overlay] :is(.app, .drawer) :is(.spin, .top-btn.jobs-ind > .lucide, .stepbar-item[data-kind="running"] .stepbar-node),
+html[data-overlay] :is(.app, .drawer) .pill[data-dot="pulse"]::before,
+html[data-overlay] :is(.app, .drawer) .smark[data-spin],
 html[data-overlay] :is(.app, .drawer) .progress[data-live="1"] .progress-fill::after { animation-play-state: paused; }
 /* 读数的过渡不播，推送来了直接跳到新值（进度线；格条、圆环、心跳格本来就不过渡，KPI 数字见 useCountUp） */
 html[data-overlay] :is(.app, .drawer) .progress-fill { transition: none; }
@@ -251,6 +264,16 @@ html[data-overlay] :is(.app, .drawer) .progress-fill { transition: none; }
 .dist-fill { display: block; height: 100%; border-radius: var(--r-pill); background: var(--chart-1); }
 .dist-pct { text-align: right; color: var(--fg-2); font-variant-numeric: tabular-nums; }
 
+/* 访问监控「域名与 IP」「新出现的目标」：目标名可点（把搜索设成它），平时同正文，悬停变紫加下划线 */
+.host-pick { min-width: 0; padding: 0; border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; text-underline-offset: 3px; transition: color var(--dur-1) var(--ease-std); }
+@media (hover: hover) { .host-pick:hover { color: var(--accent); text-decoration: underline; } }
+/* 「域名与 IP」按目标合并：「N 个节点」前的箭头展开时转下；展开的各节点行底色下沉、节点名缩进到箭头后面，和合并行分得开 */
+.acc-nodes { display: inline-flex; align-items: center; gap: var(--sp-4); color: var(--fg-2); }
+.acc-nodes .lucide { width: var(--icon-xs); height: var(--icon-xs); flex: none; color: var(--fg-3); transition: transform var(--dur-2) var(--ease-std); }
+.dt tr[data-open] .acc-nodes .lucide { transform: rotate(90deg); }
+.dt tr.acc-sub td { background: var(--sunken); }
+.dt tr.acc-sub .acc-node { display: block; padding-left: calc(var(--icon-xs) + var(--sp-4)); }
+
 /* ========== 数字等宽恢复 ==========
    `font:` 简写会把 font-variant-numeric 重置成 normal，body 上设的 tabular-nums 在这些控件里就丢了（数字跳动时会左右抖）。
    这条放在所有样式表之后的最后一份普通样式里，统一补回。 */
@@ -262,7 +285,9 @@ html[data-overlay] :is(.app, .drawer) .progress-fill { transition: none; }
 /* 国家选择器（CountrySelect）：触发器里国旗 + 名称；弹层是一个可搜索的短列表 */
 .cs-value { display: inline-flex; align-items: center; gap: var(--sp-8); min-width: 0; }
 .cs-trigger .nc-flag .lucide { width: 11px; height: 11px; }
-.cs-pop { width: 280px; padding: 0; }
+/* 可搜索的下拉（国家、时区、静默对象、上架页的宿主机）同下拉选择用实底：常开在对话框里，玻璃会透出底下的表单字 */
+.popover.cs-pop { width: 280px; padding: 0; background: var(--raised); -webkit-backdrop-filter: none; backdrop-filter: none; }
+.popover.cs-pop:is(.is-wide, .hs-pop) { width: max(280px, var(--radix-popover-trigger-width)); } /* 时区、静默对象、宿主机：和输入框一样宽 */
 .cs-pop .cmd-input-wrap { height: 40px; padding: 0 var(--sp-12); gap: var(--sp-8); }
 .cs-pop .cmd-input { font-size: var(--fs-body); }
 .cs-pop .cmd-list { max-height: 300px; }

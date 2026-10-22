@@ -41,7 +41,7 @@
 /* 可点的 KPI 卡（悬停上浮、按下微缩见 components.css「交互状态」）：标题行最右一个小箭头，悬停时往右挪 2px、变深一级，提示“点进去看明细” */
 .stat-label { display: flex; align-items: center; gap: 7px; min-width: 0; font: var(--fw-semibold) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2); white-space: nowrap; }
 .stat-go { flex: none; margin-left: auto; width: 12px; height: 12px; color: var(--fg-3); transition: translate var(--dur-2) var(--ease-out), color var(--dur-1) var(--ease-std); }
-@media (hover: hover) { a.stat:hover .stat-go { translate: 2px 0; color: var(--fg-2); } }
+@media (hover: hover) { .stat.is-link:hover .stat-go { translate: 2px 0; color: var(--fg-2); } }
 .stat-ic { display: inline-flex; color: var(--tc); }
 .stat-ic .lucide { width: 15px; height: 15px; stroke-width: 2; }
 .stat-ic[data-tone="ok"] { --tc: var(--ok); }
@@ -66,6 +66,9 @@
 .stat-cap .dotline { display: inline-flex; align-items: center; gap: var(--sp-4); }
 .dotline[data-tone="warn"] b { color: var(--warn-text); }
 .dotline[data-tone="bad"] b { color: var(--bad-text); }
+/* 可点的分项（故障 N → 机器页的故障筛选）：同说明行的字，悬停下划线 */
+a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
+@media (hover: hover) { a.dotline:hover { text-decoration: underline; text-underline-offset: 2px; } }
 .stat-cap .stat-who { display: inline-flex; align-items: center; gap: var(--sp-4); min-width: 0; } /* 流量额度「最紧 某台 已用 93%」：名称放不下时省略，百分比留着 */
 @media (max-width: 760px) { .stat { padding: var(--sp-12); min-height: 92px; } .stat-value { font-size: 19px; } }
 
@@ -77,7 +80,6 @@
 .cluster-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-10); }
 .cluster-title { display: flex; align-items: center; gap: 7px; margin: 0; font: 700 var(--fs-emph) / 1.2 var(--font-sans); color: var(--fg); }
 .cluster-title .lucide { width: 16px; height: 16px; stroke-width: 2; }
-.cluster-sub { margin: 3px 0 0; font-size: 11.5px; line-height: 1.3; color: var(--fg-3); }
 .cpill {
   --pc: var(--ok-text); display: inline-flex; align-items: center; gap: var(--sp-6); flex: none; height: 22px; box-sizing: border-box; padding: 0 9px;
   border: 1px solid color-mix(in srgb, var(--pc) 30%, transparent); border-radius: var(--r-pill); background: color-mix(in srgb, var(--pc) 13%, transparent);
@@ -109,6 +111,8 @@
 .cchart-head .lucide { width: 13px; height: 13px; stroke-width: 2.2; color: var(--cc); }
 .cchart-head b { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: var(--fs-label); color: var(--cc); }
 .cchart-head b .unit { color: inherit; opacity: 0.8; font-size: 11px; }
+/* 浅色底上橙色的上行读数只有约 3:1：文字压暗一些（≥ 4.5:1），图标、折线仍用原色；深色主题不变 */
+[data-theme="light"] .cchart-head b { color: color-mix(in oklab, var(--cc) 72%, #000); }
 
 .spark { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: 56px auto; column-gap: var(--sp-6); min-width: 0; }
 .spark-axis { display: flex; flex-direction: column; justify-content: space-between; margin-block: -6px; font: var(--fs-micro) / 12px var(--font-num); color: var(--fg-3); text-align: right; white-space: nowrap; }
@@ -118,7 +122,18 @@
 .spark-line { fill: none; stroke: var(--cc); stroke-width: 1.75; stroke-linejoin: round; stroke-linecap: round; }
 .spark-area { fill: var(--cc); opacity: 0.12; }
 .spark-dot { position: absolute; width: 6px; height: 6px; margin: -3px 0 0 -3px; border-radius: 50%; background: var(--cc); box-shadow: 0 0 0 3px color-mix(in srgb, var(--cc) 22%, transparent); } /* 不给 top 过渡：折线是瞬间换形的，圆点慢慢滑会悬在线外 */
+.spark-plot { cursor: crosshair; }
+.spark-cursor { stroke: var(--cc); stroke-opacity: 0.45; stroke-dasharray: 2 2; }
+/* 悬停读数：贴在折线上方，靠两端时不出框（translate 由组件按位置给） */
+.spark-tip {
+  position: absolute; bottom: calc(100% + 4px); z-index: 1; pointer-events: none; white-space: nowrap;
+  padding: 2px 6px; border-radius: 6px; background: var(--fg); color: var(--surface);
+  font: var(--fw-semibold) var(--fs-micro) / 16px var(--font-num); font-variant-numeric: var(--num-variant); box-shadow: var(--shadow-card);
+}
 .spark-time { grid-column: 2; display: flex; justify-content: space-between; margin-top: var(--sp-4); font: var(--fs-micro) / 12px var(--font-num); color: var(--fg-3); }
+
+/* 置灰的分段控件（卡片密度在表格 / 环形视图下）：照常占位，工具栏不跳 */
+.seg-item[data-disabled] { opacity: 0.45; cursor: default; }
 
 /* ---------- 分组：整行分段控件 + 仅看异常 ---------- */
 .hgroups { display: flex; align-items: center; gap: var(--sp-10); min-width: 0; }

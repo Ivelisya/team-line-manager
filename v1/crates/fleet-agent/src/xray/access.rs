@@ -10,7 +10,6 @@ use std::io::{Read, Seek, SeekFrom};
 use std::net::IpAddr;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use uuid::Uuid;
 
 const MAX_LINE: usize = 32 * 1024;
 const MAX_WINDOW: u64 = 2 * 1024 * 1024;
@@ -367,6 +366,7 @@ impl Tailer {
 mod tests {
     use super::*;
     use std::io::Write;
+    use uuid::Uuid;
 
     #[test]
     fn timestamps() {

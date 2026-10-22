@@ -5,7 +5,7 @@ import { useCallback } from 'react';
 import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { del, get, patch, post, put } from './api';
 import { collator, makeDefaultCompare } from './sort';
-import { quotaTight, setMeta } from './derive';
+import { offlineNames, quotaTight, setMeta } from './derive';
 import type { ApiKey, Availability, Incident, Job, JobSummary, Paged, JobLog, MachineView, Meta, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RetireResult, RestoreBody, RestorePreview, MoveResult, EvacuateResult, ProbeBeats, SeriesResp, Silence, SubField, Team, AuditEntry, NotifyChannel, NotifyLogEntry, AccountSession, TotpSetup, TotpStatus } from './types';
 
 export const useMe = () => useQuery({ queryKey: ['me'], queryFn: () => get<{ username: string }>('/auth/me'), retry: false, staleTime: 5 * 60_000 });
@@ -20,11 +20,13 @@ export const usePlans = () => useQuery({ queryKey: ['plans'], queryFn: () => get
 export const useOverview = () => useQuery({ queryKey: ['overview'], queryFn: ({ signal }) => get<Overview>('/overview', signal) });
 
 const machinesQuery = (scope: 'live' | 'retired') => ({ queryKey: ['machines', scope], queryFn: ({ signal }: { signal: AbortSignal }) => get<MachineView[]>(`/machines?scope=${scope}`, signal) });
-/** 机器列表，已按默认顺序排好：线路机 → 团队 → 编号（故障/离线不下沉） */
+/** 按默认顺序排好的副本（线路机 → 团队 → 编号，故障/离线不下沉）：机器列表的几个 select 与 readMachines 共用 */
+const sortDefault = (d: MachineView[], teams: Team[] | undefined) => [...d].sort(makeDefaultCompare(teams ?? []));
+/** 机器列表，已按默认顺序排好 */
 export function useMachines(scope: 'live' | 'retired' = 'live') {
   const teams = useTeams().data;
   // select 排序：只在列表或团队变化时重算；返回的是查询结果本身，调用方按属性追踪
-  const select = useCallback((d: MachineView[]) => [...d].sort(makeDefaultCompare(teams ?? [])), [teams]);
+  const select = useCallback((d: MachineView[]) => sortDefault(d, teams), [teams]);
   return useQuery({ ...machinesQuery(scope), select });
 }
 /** 只用名称等少量字段的页面（访问监控的节点下拉、告警页的对象与续费）：读数不进来 */
@@ -37,25 +39,44 @@ const label = (m: MachineView): MachineLabel => ({ id: m.id, name: m.name, ip: m
  *  select 的结果做结构共享：实时推送只改读数时这些字段不变，引用不变，页面不重渲染 */
 function useMachinesPicked<T>(pick: (m: MachineView) => T) {
   const teams = useTeams().data;
-  const select = useCallback((d: MachineView[]) => [...d].sort(makeDefaultCompare(teams ?? [])).map(pick), [teams, pick]);
+  const select = useCallback((d: MachineView[]) => sortDefault(d, teams).map(pick), [teams, pick]);
   return useQuery({ ...machinesQuery('live'), select });
 }
 export const useMachineBriefs = () => useMachinesPicked(brief);
 export const useMachineLabels = () => useMachinesPicked(label);
 /** 上架页「在已有机器上添加 IP」的宿主机候选：在用、自身不是同机 IP 节点的 VPS 节点，带出它的团队、线路机（第一个入口的）、SSH 端口与供应商。
  *  同一份机器列表缓存，结果做结构共享：推送只改读数时引用不变（批量网格的 memo 不被击穿） */
-export interface HostChoice { id: string; name: string; team_id: string; relay_id: string; ssh_port: number; provider: string | null }
+export interface HostChoice { id: string; name: string; ip: string; team_id: string; relay_id: string; ssh_port: number; provider: string | null }
 const hostChoices = (d: MachineView[]) => d.filter((m) => m.kind === 'vps' && m.lifecycle === 'active' && !m.host_machine)
-  .map((m): HostChoice => ({ id: m.id, name: m.name, team_id: m.team?.id ?? '', relay_id: m.entries[0]?.relay.id ?? '', ssh_port: m.ssh_port, provider: m.provider?.name ?? null }))
+  .map((m): HostChoice => ({ id: m.id, name: m.name, ip: m.ip, team_id: m.team?.id ?? '', relay_id: m.entries[0]?.relay.id ?? '', ssh_port: m.ssh_port, provider: m.provider?.name ?? null }))
   .sort((a, b) => collator.compare(a.name, b.name));
 export const useHostChoices = (enabled: boolean) => useQuery({ ...machinesQuery('live'), select: hostChoices, enabled });
+/** 团队与套餐页：各团队的编号是否已经连续（01..N），已连续时「重新编号」不可点。范围同服务端重新编号：团队里未退役的非线路机 */
+const numbersCompact = (d: MachineView[]) => {
+  const by: Record<string, number[]> = {};
+  for (const m of d) if (m.team && m.kind !== 'relay' && m.lifecycle !== 'retired' && m.number != null) (by[m.team.id] ??= []).push(m.number);
+  return Object.fromEntries(Object.entries(by).map(([t, ns]) => [t, ns.sort((a, b) => a - b).every((n, i) => n === i + 1)]));
+};
+export const useTeamsCompact = () => useQuery({ ...machinesQuery('live'), select: numbersCompact });
 /** 首页 KPI「流量额度」：同一份机器列表缓存，只取吃紧的台数与最紧的一台；结果做结构共享，没变时首页总览不跟着推送重渲染 */
 export const useQuotaTight = () => useQuery({ ...machinesQuery('live'), select: quotaTight });
+/** 集群状态在线率格条的悬停：离线机器的名字。同一份缓存，结构共享：没人上下线时引用不变 */
+export const useOfflineNames = () => useQuery({ ...machinesQuery('live'), select: offlineNames });
+/** readMachines 的排序结果按原数组引用缓存：抽屉每次渲染都要算上一台 / 下一台，列表没换（推送间隙）就不再复制、排序整表 */
+const sortedCache = new WeakMap<MachineView[], { teams: Team[] | undefined; list: MachineView[] }>();
 /** 按键等“用时才读”的场景：直接读缓存里的机器列表（同样的默认顺序），不订阅、不触发请求 */
 export function readMachines(qc: QueryClient): MachineView[] | undefined {
   const raw = qc.getQueryData<MachineView[]>(['machines', 'live']);
-  return raw && [...raw].sort(makeDefaultCompare(qc.getQueryData<Team[]>(['teams']) ?? []));
+  if (!raw) return undefined;
+  const teams = qc.getQueryData<Team[]>(['teams']);
+  const hit = sortedCache.get(raw);
+  if (hit && hit.teams === teams) return hit.list;
+  const list = sortDefault(raw, teams);
+  sortedCache.set(raw, { teams, list });
+  return list;
 }
+/** 用时才取一次的在用机器列表（不订阅）：缓存 30 秒内新鲜就直接用。上架页给「IP 已被占用」补上是哪台 */
+export const fetchMachines = (qc: QueryClient) => qc.fetchQuery({ ...machinesQuery('live'), staleTime: 30_000 });
 /** 机器列表缓存（在用 / 已退役都找）里的这台，和那份列表取回的时刻 */
 function fromLists(qc: QueryClient, id: string | null) {
   for (const q of qc.getQueryCache().findAll({ queryKey: ['machines'] })) {
@@ -98,17 +119,24 @@ export const useAvailability = (id: string, days: number) =>
   useQuery({ queryKey: ['availability', id, days], queryFn: ({ signal }) => get<Availability>(`/machines/${id}/availability?days=${days}`, signal), staleTime: 600_000, refetchInterval: 600_000, refetchOnWindowFocus: false });
 export const useRenewals = (id: string | null) => useQuery({ queryKey: ['renewals', id], queryFn: ({ signal }) => get<Renewal[]>(`/machines/${id}/renewals`, signal), enabled: !!id });
 export const useAudit = (id: string | null) => useQuery({ queryKey: ['audit', id], queryFn: ({ signal }) => get<AuditEntry[]>(`/audit?target_id=${id}&limit=10`, signal), enabled: !!id });
-/** 「操作记录」页：全站审计，一页 100 条、按 before_id 往前翻（不满一页就到头了）。键在 ['audit'] 下，随机器类事件与写操作一起失效
- *  （实时流把 audit 当整表合并：失效会把已加载的每一页依次重取，批量上架时不能每 300ms 来一轮）；登录等不发事件的，过 30 秒后切回页面时重取 */
+/** 「操作记录」页：全站审计，一页 100 条、按 before_id 往前翻（不满一页就到头了）；分类（cat）与搜索（q）由服务端筛。键在 ['audit'] 下，随机器类事件与写操作一起失效
+ *  （实时流把 audit 当整表合并：失效会把已加载的每一页依次重取，批量上架时不能每 300ms 来一轮）；登录等不发事件的，过 30 秒后切回页面时重取。
+ *  换筛选时先留着上一份结果，不闪骨架 */
 const AUDIT_PAGE = 100;
-export const useAuditLog = () => useInfiniteQuery({
-  queryKey: ['audit', 'all'], initialPageParam: '', staleTime: 30_000,
-  queryFn: ({ pageParam, signal }) => get<AuditEntry[]>(`/audit?limit=${AUDIT_PAGE}${pageParam ? `&before_id=${pageParam}` : ''}`, signal),
+export const useAuditLog = (cat: string, q: string) => useInfiniteQuery({
+  queryKey: ['audit', 'all', cat, q], initialPageParam: '', staleTime: 30_000, placeholderData: keepPreviousData,
+  queryFn: ({ pageParam, signal }) => {
+    const p = new URLSearchParams({ limit: String(AUDIT_PAGE) });
+    if (pageParam) p.set('before_id', pageParam);
+    if (cat) p.set('cat', cat);
+    if (q) p.set('q', q);
+    return get<AuditEntry[]>(`/audit?${p}`, signal);
+  },
   getNextPageParam: (last) => (last.length < AUDIT_PAGE ? undefined : String(last[last.length - 1].id)),
 });
-/** 作业列表一页（按创建先后倒序）；换页时先留着上一页，不闪骨架 */
-export const useJobs = (state: 'active' | 'done' | 'all' = 'all', offset = 0, limit = 100) =>
-  useQuery({ queryKey: ['jobs', state, offset, limit], queryFn: ({ signal }) => get<Paged<JobSummary>>(`/jobs?state=${state}&limit=${limit}&offset=${offset}`, signal), placeholderData: keepPreviousData, staleTime: Infinity });
+/** 作业列表一页（按创建先后倒序）；kind：作业类型（provision / restore 是大类，其余是作业类型原值，'' = 全部）。换页时先留着上一页，不闪骨架 */
+export const useJobs = (state: 'active' | 'done' | 'all' = 'all', offset = 0, limit = 100, kind = '') =>
+  useQuery({ queryKey: ['jobs', state, offset, limit, kind], queryFn: ({ signal }) => get<Paged<JobSummary>>(`/jobs?state=${state}&limit=${limit}&offset=${offset}${kind ? `&kind=${kind}` : ''}`, signal), placeholderData: keepPreviousData, staleTime: Infinity });
 /** 作业详情：靠实时流的 job 事件失效重取 */
 export const useJob = (id: string | null) => useQuery({ queryKey: ['job', id], queryFn: ({ signal }) => get<Job>(`/jobs/${id}`, signal), enabled: !!id, staleTime: Infinity });
 /** 告警列表一页（严重度优先）。默认参数与告警页第一页相同：顶栏徽标取 total，和告警页共用同一份缓存 */
@@ -125,7 +153,6 @@ export const useSilences = () => useQuery({ queryKey: ['silences'], queryFn: () 
 
 export interface StreamEvent { type: string; id?: string }
 /** 事件对应要失效的查询键（实时流用）。resync 由 stream.ts 处理成全部失效。
- *  machine_job：作业推进时服务端给目标机器发的，只重取详情（列表的 active_job 由 metrics 推送；改生命周期时服务端另发 machines）
  *  incidents：机器的健康与总览不看告警表，不重取整表；静默带来的「维护中」由服务端随后的 metrics 推送送达
  *  audit：抽屉里机器的操作记录，随改名、续费、退役等机器变更增加；['policies', 'list'] / ['policies', 'versions']：策略页的范围树列着各团队的节点、发布记录列着线路机名（名字、有没有入口），
  *  机器增减、改名换团队、团队改名都会改它（只有挂着的查询会重取，策略页没开时只是标成过期；不带发布确认框里的预览，免得框开着时内容在眼前变）；
@@ -134,7 +161,6 @@ export interface StreamEvent { type: string; id?: string }
 export function eventKeys(ev: StreamEvent): unknown[][] {
   switch (ev.type) {
     case 'machine': return [['machine', ev.id], ['machines'], ['overview'], ['audit'], ['policies', 'list'], ['policies', 'versions'], ['incidents'], ['jobs'], ['availability', ev.id]];
-    case 'machine_job': return [['machine', ev.id]];
     case 'machines': return [['machine'], ['machines'], ['relays'], ['overview'], ['audit'], ['policies', 'list'], ['policies', 'versions']];
     case 'relay': return [['relays'], ['machines']];
     case 'job': return [['jobs'], ['job', ev.id]];
@@ -207,6 +233,28 @@ export const useCancelJob = () => useWrite((id: string) => post(`/jobs/${id}/can
 export const useAck = () => useWrite((id: string) => post(`/incidents/${id}/ack`), [['incidents']]);
 export const useAddSilence = () => useWrite((b: Partial<Silence>) => post('/silences', b), [['silences'], ['incidents']]);
 export const useDelSilence = () => useWrite((id: string) => del(`/silences/${id}`), [['silences'], ['incidents']]);
+type MaintSubject = Pick<MachineView, 'id' | 'name' | 'host_machine'>;
+/** 让这台机器「维护中」的、正在生效的维护窗口归谁：自己的优先；同机 IP 节点自己没有、宿主机有时是宿主机的（宿主机维护时它也算维护中）。
+ *  windows 为空 = 只在「全部机器」的维护窗口里 */
+export function maintOwner(list: Silence[], m: MaintSubject, now = Date.now()) {
+  const live = (id: string) => list.filter((s) => s.subject_id === id && s.is_maintenance && Date.parse(s.starts_at) <= now && Date.parse(s.ends_at) > now);
+  const own = live(m.id);
+  if (own.length || !m.host_machine) return { owner: m, onHost: false, windows: own };
+  const host = live(m.host_machine.id);
+  return host.length ? { owner: { ...m.host_machine, host_machine: null }, onHost: true, windows: host } : { owner: m, onHost: false, windows: own };
+}
+/** 结束一台机器的维护（卡片菜单、抽屉「管理」）：删掉 maintOwner 找到的维护窗口（同机 IP 节点因宿主机维护时结束的是宿主机的）；
+ *  「全部机器」的那种不动，只有那种时报错。返回结束了谁的维护。机器上的「维护中」由服务端随后的 metrics 推送改回 */
+export const useEndMaintenance = () => {
+  const qc = useQueryClient();
+  return useWrite(async (m: MaintSubject) => {
+    const list = await qc.fetchQuery({ queryKey: ['silences'], queryFn: () => get<Silence[]>('/silences'), staleTime: 0 });
+    const { owner, windows } = maintOwner(list, m);
+    if (!windows.length) throw new Error('这台机器在「全部机器」的维护窗口里，请到告警页结束');
+    for (const s of windows) await del(`/silences/${s.id}`);
+    return owner;
+  }, [['silences'], ['incidents']]);
+};
 export const useAddTeam = () => useWrite((b: { name: string; sort_order?: number }) => post('/teams', b), [['teams']]);
 export const usePatchTeam = () => useWrite(({ id, ...b }: { id: string; name?: string; sort_order?: number }) => patch(`/teams/${id}`, b), [['teams'], ...M]);
 export const useRenumber = () => useWrite(({ id, token }: { id: string; token: string }) => post(`/teams/${id}/renumber`, { token }), [['teams'], ...M]);
@@ -215,6 +263,10 @@ export const useAddProvider = () => useWrite((b: Partial<Provider>) => post('/pr
 export const usePatchProvider = () => useWrite(({ id, ...b }: { id: string } & Partial<Provider>) => patch(`/providers/${id}`, b), [['providers'], ...M]);
 export const useAddPlan = () => useWrite((b: PlanBody) => post('/plans', b), [['plans']]);
 export const usePatchPlan = () => useWrite(({ id, ...b }: { id: string; archived?: boolean } & Partial<PlanBody>) => patch(`/plans/${id}`, b), [['plans'], ...M]);
+/** 删团队 / 供应商 / 套餐：还有机器、套餐用着时中控回 409，写明还有什么 */
+export const useDelTeam = () => useWrite((id: string) => del(`/teams/${id}`), [['teams'], ['policies']]);
+export const useDelProvider = () => useWrite((id: string) => del(`/providers/${id}`), [['providers']]);
+export const useDelPlan = () => useWrite((id: string) => del(`/plans/${id}`), [['plans']]);
 export const fetchShare = (entryId: string) => get<{ url: string }>(`/entries/${entryId}/share`);
 const fetchLogs = (jobId: string, after: number, signal?: AbortSignal) => get<JobLog[]>(`/jobs/${jobId}/logs?after=${after}`, signal);
 const LOG_PAGE = 1000; // 服务端单次最多返回 1000 条
@@ -229,6 +281,9 @@ export async function fetchAllLogs(jobId: string, after: number, signal?: AbortS
   }
   return all;
 }
+/** 只取最后 n 行（打开日志很长的作业时用）：skipped 是前面没给的行数，after 是之后续拉的游标 */
+export const fetchTailLogs = (jobId: string, n: number, signal?: AbortSignal) =>
+  get<{ logs: JobLog[]; skipped: number; after: number }>(`/jobs/${jobId}/logs?tail=${n}`, signal);
 
 // ---- 设置页：API 密钥与告警通知渠道 ----
 /** 最近使用时间（last_used_at）随调用更新、不发事件，仍按时间过期 */

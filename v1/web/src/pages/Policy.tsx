@@ -4,14 +4,14 @@ import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { ChevronRight, Eye, Save, ShieldCheck, Trash2, Undo2 } from 'lucide-react';
 import {
-  MODE_HINT, modeLabel, useDiscardPolicies, usePolicies, usePolicyPreview, usePolicyVersions, usePublishPolicies, useRollbackPolicy, useSavePolicy,
-  type PolicyBody, type PolicyChange, type PolicyMode, type PolicyNode, type PolicyTeam, type PolicyVersion, type ScopePolicy, type VersionStatus,
+  MODE_HINT, MODE_INFO, modeLabel, useDiscardPolicies, usePolicies, usePolicyPreview, usePolicyVersions, usePublishPolicies, useRollbackPolicy, useSavePolicy,
+  type PolicyBody, type PolicyChange, type PolicyMode, type PolicyNode, type PolicyTeam, type PolicyVersion, type ScopePolicy, type VersionRelay, type VersionStatus,
 } from '@/lib/policy';
 import { MAX_NOTE, diffDomains, domainsToText, parseDomainText } from '@/lib/policyDomains';
 import * as F from '@/lib/format';
 import { meta } from '@/lib/derive';
 import { Button } from '@/components/ui/button';
-import { Field, InfoTip, Input, Textarea } from '@/components/ui/form';
+import { Field, InfoTip, Input, SearchInput, Textarea } from '@/components/ui/form';
 import { Segmented, Tip, Trunc } from '@/components/ui/overlays';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogHeader } from '@/components/ui/dialog';
 import { SkeletonRows } from '@/components/ui/skeleton';
@@ -21,6 +21,7 @@ import { resetOnOpen, useHeld } from '@/lib/useHeld';
 import { AccessViewSwitch } from '@/components/app/AccessViewSwitch';
 import { Chip, Empty, ErrorNote, Note, PageHead, Panel, Pill, type Tone } from '@/components/app/primitives';
 import { fmtN } from '@/features/AccessBits';
+import { ShowAll } from '@/components/app/Pagination';
 import '@/styles/policy.css';
 
 const MODE_TONE: Record<PolicyMode, Tone> = { observe: 'neutral', allowlist: 'info', denylist: 'warn', blocked: 'bad', inherit: 'neutral' };
@@ -64,6 +65,16 @@ export function PolicyPage() {
   };
 
   const [openTeams, setOpenTeams] = React.useState<Set<string>>(new Set());
+  // 节点多时范围树上方给一个搜索框：按团队名或节点名筛，命中节点的团队自动展开
+  const [find, setFind] = React.useState('');
+  const nodeCount = teams.reduce((s, t) => s + t.nodes.length, 0);
+  const needle = find.trim().toLowerCase();
+  const shown = React.useMemo(() => (!needle ? teams.map((t) => ({ t, nodes: t.nodes }))
+    : teams.flatMap((t) => {
+      const hit = t.name.toLowerCase().includes(needle);
+      const nodes = hit ? t.nodes : t.nodes.filter((n) => n.name.toLowerCase().includes(needle));
+      return hit || nodes.length ? [{ t, nodes }] : [];
+    })), [teams, needle]);
   const [initOpen, setInitOpen] = React.useState(false);
   React.useEffect(() => {
     if (initOpen || !teams.length) return;
@@ -105,9 +116,11 @@ export function PolicyPage() {
         <Panel title="范围" count={q.data ? `${teams.length} 个团队` : undefined} className="pol-scope" flush>
           {q.isLoading && <SkeletonRows rows={6} list />}
           {q.data && teams.length === 0 && <Empty text="还没有团队" hint="先去「团队与套餐」添加" />}
+          {nodeCount > 20 && <div className="pol-find"><SearchInput value={find} onChange={(e) => setFind(e.target.value)} placeholder="搜索团队或节点…" aria-label="搜索团队或节点" /></div>}
+          {needle && shown.length === 0 && <div className="pol-none t-muted" style={{ padding: 'var(--sp-8) var(--card-pad)' }}>没有符合的团队或节点</div>}
           <div className="pol-tree" role="tree" aria-label="团队与节点">
-            {teams.map((t) => (
-              <TeamRows key={t.id} t={t} sel={sel} open={openTeams.has(t.id)}
+            {shown.map(({ t, nodes }) => (
+              <TeamRows key={t.id} t={t} nodes={nodes} sel={sel} open={!!needle || openTeams.has(t.id)}
                 toggle={() => setOpenTeams((s) => { const n = new Set(s); if (n.has(t.id)) n.delete(t.id); else n.add(t.id); return n; })}
                 pick={(s) => { select(s); if (s.scope === 'team') setOpenTeams((o) => new Set(o).add(t.id)); }} />
             ))}
@@ -137,20 +150,22 @@ export function PolicyPage() {
 }
 
 /* ================================================================ 左栏 */
-function TeamRows({ t, sel, open, toggle, pick }: { t: PolicyTeam; sel: Sel | null; open: boolean; toggle: () => void; pick: (s: Sel) => void }) {
+/** nodes：要列出的节点（搜索时只列命中的）。折叠时写出有几个节点不跟随团队（例外） */
+function TeamRows({ t, nodes, sel, open, toggle, pick }: { t: PolicyTeam; nodes: PolicyNode[]; sel: Sel | null; open: boolean; toggle: () => void; pick: (s: Sel) => void }) {
   const here = sel?.scope === 'team' && sel.id === t.id;
   const drafts = (t.policy.draft ? 1 : 0) + t.nodes.filter((n) => n.policy.draft).length;
+  const own = t.nodes.filter((n) => n.effective.source === 'node').length;
   return (
     <>
       <div className="pol-row" role="treeitem" aria-expanded={open} aria-selected={here}>
         <button type="button" className="pol-chev" aria-label={`${open ? '收起' : '展开'}${t.name}`} data-open={open ? '1' : undefined} onClick={toggle}><ChevronRight size={14} /></button>
         <button type="button" className="pol-item" aria-current={here} onClick={() => pick({ scope: 'team', id: t.id })}>
-          <span className="pol-name"><Trunc className="strong">{t.name}</Trunc><span className="pol-sub">{t.nodes.length} 个节点{drafts > 0 && !t.policy.draft ? ` · ${drafts} 份草稿` : ''}</span></span>
+          <span className="pol-name"><Trunc className="strong">{t.name}</Trunc><span className="pol-sub">{t.nodes.length} 个节点{!open && own > 0 ? ` · ${own} 个例外` : ''}{drafts > 0 && !t.policy.draft ? ` · ${drafts} 份草稿` : ''}</span></span>
           {t.policy.draft && <Tip text={`草稿：${modeLabel(t.policy.draft.mode)}`}><span><Chip variant="warn">草稿</Chip></span></Tip>}
           <ModePill mode={t.policy.mode} />
         </button>
       </div>
-      {open && t.nodes.map((n) => <NodeRow key={n.id} n={n} here={sel?.scope === 'node' && sel.id === n.id} pick={pick} />)}
+      {open && nodes.map((n) => <NodeRow key={n.id} n={n} here={sel?.scope === 'node' && sel.id === n.id} pick={pick} />)}
     </>
   );
 }
@@ -190,6 +205,8 @@ function Editor({ scope, name, sp, team, node, onDirty }: { scope: 'team' | 'nod
   const [synced, setSynced] = React.useState(buf?.synced ?? { revision: sp.revision, body: init });
 
   const parsed = React.useMemo(() => parseDomainText(text), [text]);
+  // 「请填写域名」等到域名框失焦或点了保存再提示：刚切到白名单时还没来得及填
+  const [touched, setTouched] = React.useState(false);
   const form: PolicyBody = { mode, domains: parsed.domains, note: note.trim() };
   const dirty = !sameBody(form, synced.body);
   const stale = sp.revision !== synced.revision;
@@ -209,7 +226,8 @@ function Editor({ scope, name, sp, team, node, onDirty }: { scope: 'team' | 'nod
   const uses = needsDomains(mode);
   const noDomains = uses && parsed.domains.length === 0;
   const invalid = (uses && (parsed.issues.length > 0 || !!parsed.overall)) || note.length > MAX_NOTE;
-  const canSave = dirty && !invalid && !noDomains;
+  // 没填域名时保存按钮仍可点：点了才提示「请填写域名」
+  const canSave = dirty && !invalid;
 
   const req = (body: PolicyBody) => ({ scope, id: sp.id, ...body, expected_revision: synced.revision });
   const onSaved = (r: Awaited<ReturnType<typeof save.mutateAsync>>) => {
@@ -242,27 +260,27 @@ function Editor({ scope, name, sp, team, node, onDirty }: { scope: 'team' | 'nod
         <div className="field">
           <span className="label">模式</span>
           <Segmented label="模式" value={mode} onChange={setMode} items={modes.map((m) => ({ value: m, label: modeLabel(m) }))} />
-          <div className="hint">{MODE_HINT[mode]}{mode === 'inherit' && <>，团队现在是「{modeLabel(teamCur.mode)}」{needsDomains(teamCur.mode) ? `（${teamCur.domains.length} 个域名）` : ''}</>}</div>
+          <div className="hint">{MODE_HINT[mode]}{mode === 'inherit' && <>，团队现在是「{modeLabel(teamCur.mode)}」{needsDomains(teamCur.mode) ? `（${teamCur.domains.length} 个域名）` : ''}</>}{MODE_INFO[mode] && <> <InfoTip text={MODE_INFO[mode]!} /></>}</div>
         </div>
 
-        <div className="field">
-          <span className="field-label"><span className="label">域名{uses && <span className="pol-count"> · {fmtN(parsed.domains.length)} 个有效</span>}</span><InfoTip text="逗号、中文逗号、空格、换行都可以分隔；填 example.com 会同时匹配它的所有子域名，=example.com 只匹配它本身。" /></span>
-          <div className="pol-ed" data-bad={uses && (parsed.issues.length > 0 || noDomains) ? '1' : undefined} data-off={uses ? undefined : '1'}>
-            <Gutter lines={lines.length} bad={uses ? parsed.badLines : new Set()} />
-            <Textarea className="pol-ta" value={text} disabled={!uses} wrap="off" spellCheck={false} autoComplete="off" aria-label="域名列表" aria-invalid={uses && parsed.issues.length > 0 ? true : undefined}
-              placeholder={'每行一个，也可以用逗号分隔：\nexample.com\n=exact.example.org   （等号开头 = 只匹配这个域名本身）'}
+        {/* 只有白名单 / 黑名单用域名列表：别的模式不显示（已填的内容留着，切回来仍在） */}
+        {uses && <div className="field">
+          <span className="field-label"><span className="label">域名<span className="pol-count"> · {fmtN(parsed.domains.length)} 个有效</span></span><InfoTip text="逗号、中文逗号、空格、换行都可以分隔；填 example.com 会同时匹配它的所有子域名，=example.com 只匹配它本身。" /></span>
+          <div className="pol-ed" data-bad={parsed.issues.length > 0 || (noDomains && touched) ? '1' : undefined}>
+            <Gutter lines={lines.length} bad={parsed.badLines} />
+            <Textarea className="pol-ta" value={text} wrap="off" spellCheck={false} autoComplete="off" aria-label="域名列表" aria-invalid={parsed.issues.length > 0 ? true : undefined}
+              placeholder={'example.com\n=exact.example.org'} onBlur={() => setTouched(true)}
               onChange={(e) => setText(e.target.value)} onScroll={(e) => { const g = e.currentTarget.previousElementSibling as HTMLElement | null; if (g) g.scrollTop = e.currentTarget.scrollTop; }} />
           </div>
-          {!uses && <div className="hint">这个模式不用域名列表 <InfoTip text="已填的内容会保留，切回白名单 / 黑名单后仍在。" /></div>}
-          {uses && noDomains && parsed.issues.length === 0 && <div className="hint is-error">请填写域名</div>}
-          {uses && parsed.overall && <div className="hint is-error">{parsed.overall}</div>}
+          {noDomains && touched && parsed.issues.length === 0 && <div className="hint is-error">请填写域名</div>}
+          {parsed.overall && <div className="hint is-error">{parsed.overall}</div>}
           {showIssues.length > 0 && (
             <ul className="pol-issues" role="alert">
               {showIssues.slice(0, 6).map((i, k) => <li key={k}><b>第 {i.line} 行</b>{i.error}</li>)}
               {showIssues.length > 6 && <li className="t-sub">还有 {showIssues.length - 6} 处问题</li>}
             </ul>
           )}
-        </div>
+        </div>}
 
         <Field label="备注" hint={`${note.length}/${MAX_NOTE}`} error={note.length > MAX_NOTE ? `备注最多 ${MAX_NOTE} 个字符` : undefined}>
           <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="为什么这样设置（选填）" autoComplete="off" />
@@ -271,10 +289,10 @@ function Editor({ scope, name, sp, team, node, onDirty }: { scope: 'team' | 'nod
         <Compare cur={cur} next={form} scope={scope} teamCur={teamCur} teamName={team.name} />
 
         <div className="pol-actions">
-          <Button variant="primary" disabled={!canSave} loading={save.isPending} onClick={() => submit(form)}><Save />保存草稿</Button>
+          <Button variant="primary" disabled={!canSave} loading={save.isPending} onClick={() => { if (noDomains) setTouched(true); else void submit(form); }}><Save />保存草稿</Button>
           <Button variant="quiet" disabled={!dirty || save.isPending} onClick={() => load(sp)}><Undo2 />还原编辑</Button>
           {sp.draft && <Button variant="outline-danger" disabled={save.isPending} onClick={() => setAskDrop(true)}><Trash2 />放弃这份草稿</Button>}
-          <span className="pol-meta t-sub">{sp.updated_at ? `最近修改 ${F.dtFull(sp.updated_at)}${sp.updated_by ? ` · ${sp.updated_by}` : ''}` : '还没有修改过'}</span>
+          <span className="pol-meta t-sub">{dirty ? <span className="pol-dirty">有未保存的修改</span> : sp.updated_at ? `最近修改 ${F.dtFull(sp.updated_at)}${sp.updated_by ? ` · ${F.actor(sp.updated_by)}` : ''}` : '还没有修改过'}</span>
         </div>
       </div>
       <ConfirmDialog open={askDrop} onOpenChange={setAskDrop} title={`放弃「${name}」的草稿？`} confirmLabel="放弃草稿" danger
@@ -339,6 +357,10 @@ const PreviewDialog = resetOnOpen(function PreviewDialog({ open, onOpenChange }:
   const publish = usePublishPolicies();
   const [ask, setAsk] = React.useState(false);
   const d = q.isFetchedAfterMount && q.isSuccess ? q.data : undefined;
+  // 这次发布没改到的节点（比如节点自己的规则）先收起来，排在改到的后面
+  const [showSame, setShowSame] = React.useState(false);
+  const changed = d?.nodes.filter((n) => n.changed) ?? [];
+  const same = d?.nodes.filter((n) => !n.changed) ?? [];
   const totalBlock = d?.nodes.reduce((s, n) => s + n.would_block, 0) ?? 0;
   const total = d?.nodes.reduce((s, n) => s + n.total_conns, 0) ?? 0;
   const empty = !!d && d.draft_count === 0;
@@ -362,16 +384,16 @@ const PreviewDialog = resetOnOpen(function PreviewDialog({ open, onOpenChange }:
               </div>
               <ChangeList changes={d.changes} />
               {d.nodes.length === 0
-                ? <Note tone="info">不会多阻止任何连接{d.affected_relays === 0 && '，也不改线路机规则'}</Note>
+                ? <Note tone="info">不会多阻止连接{d.affected_relays === 0 && <> <InfoTip text="也不需要改线路机上的规则" /></>}</Note>
                 : (
                   <div className="table-wrap pol-pv-table">
                     <table className="dt" style={{ minWidth: 620 }}>
                       <colgroup><col style={{ width: 120 }} /><col style={{ width: 96 }} /><col style={{ width: 84 }} /><col style={{ width: 96 }} /><col /></colgroup>
                       <thead><tr><th>节点</th><th>模式</th><th className="r">24h 连接</th><th className="r">将阻止</th><th>被阻止最多的域名</th></tr></thead>
                       <tbody>
-                        {d.nodes.map((n) => (
-                          <tr key={n.node_id}>
-                            <td><Trunc className="cell-main strong">{n.name}</Trunc><span className="sub">{n.source === 'team' ? '跟随团队' : n.source === 'node' ? '节点自己的' : ''}</span></td>
+                        {[...changed, ...(showSame ? same : [])].map((n) => (
+                          <tr key={n.node_id} className={n.changed ? undefined : 'is-retired'}>
+                            <td><Trunc className="cell-main strong">{n.name}</Trunc><span className="sub">{!n.changed ? '这次没变' : n.source === 'team' ? '跟随团队' : n.source === 'node' ? '节点自己的' : ''}</span></td>
                             <td><ModePill mode={n.mode} /></td>
                             <td className="r">{fmtN(n.total_conns)}</td>
                             <td className="r">{n.would_block > 0 ? <><b className="strong">{fmtN(n.would_block)}</b><span className="sub">{n.total_conns > 0 ? pctText(n.would_block, n.total_conns) : ''}</span></> : <span className="t-muted">0</span>}</td>
@@ -389,6 +411,7 @@ const PreviewDialog = resetOnOpen(function PreviewDialog({ open, onOpenChange }:
                         ))}
                       </tbody>
                     </table>
+                    {same.length > 0 && <ShowAll total={changed.length + same.length} cap={changed.length} open={showSame} onToggle={() => setShowSame((v) => !v)} unit="个节点（含这次没变的）" />}
                   </div>
                 )}
             </div>
@@ -443,26 +466,15 @@ function VersionsPanel() {
         ) : (
           <div className="table-wrap">
             <table className="dt" style={{ minWidth: 900 }}>
-              <colgroup><col style={{ width: 96 }} /><col style={{ width: 120 }} /><col /><col style={{ width: 220 }} /><col style={{ width: 88 }} /><col style={{ width: 150 }} /></colgroup>
-              <thead><tr><th>版本</th><th>时间</th><th>变更</th><th>线路机应用</th><th>状态</th><th /></tr></thead>
+              <colgroup><col style={{ width: 96 }} /><col style={{ width: 120 }} /><col /><col style={{ width: 240 }} /><col style={{ width: 150 }} /></colgroup>
+              <thead><tr><th>版本</th><th>时间</th><th>变更</th><th>状态</th><th /></tr></thead>
               <tbody>
                 {list.map((v) => (
                   <tr key={v.id}>
                     <td><b className="strong">v{v.seq}</b>{v.is_current && <span className="pol-cur" data-tip="当前生效的就是这个版本的内容">当前</span>}<span className="sub">{v.kind === 'rollback' ? `回滚到 v${v.rollback_of_seq ?? '?'}` : '发布'}</span></td>
-                    <td data-tip={F.dtFull(v.created_at)}>{F.dt(v.created_at)}<span className="sub">{v.actor}</span></td>
+                    <td data-tip={F.dtFull(v.created_at)}>{F.dt(v.created_at)}<span className="sub">{F.actor(v.actor)}</span></td>
                     <td><VersionChanges changes={v.changes} /></td>
-                    <td>
-                      {v.relays.length === 0 ? <span className="t-sub">无需应用</span> : (
-                        <span className="pol-relays">
-                          {v.relays.map((r) => (
-                            <Tip key={r.relay_id} text={r.error ? `${r.name ?? '线路机'}：${r.error}` : `${r.name ?? '线路机'}：配置版本 ${r.generation} · 已生效 ${r.applied_generation ?? '—'}（两个数相等表示线路机已同步）`}>
-                              <span className="pol-relay" tabIndex={0}>{r.name ?? '线路机'}<small>{meta().policy_sync_states[r.status] ?? r.status}</small>{(r.status === 'failed' || r.status === 'applying') && <i className="smark" data-tone={STATUS[r.status].tone} data-spin={r.status === 'applying' ? '' : undefined} aria-hidden />}</span>
-                            </Tip>
-                          ))}
-                        </span>
-                      )}
-                    </td>
-                    <td><StatusPill s={v.status} /></td>
+                    <td><VersionApply v={v} /></td>
                     <td className="r">{v.status === 'applied' && v.rollbackable && <Button size="sm" onClick={() => setAsk(v)}><Undo2 size={13} />回滚到此版本</Button>}</td>
                   </tr>
                 ))}
@@ -473,14 +485,42 @@ function VersionsPanel() {
       </Panel>
       <ConfirmDialog open={!!ask} onOpenChange={(o) => !o && setAsk(null)} confirmLabel="回滚" title={`回滚到版本 v${askHeld?.seq ?? ''}？`}
         description={<>作为新版本发布，草稿不受影响 <InfoTip text="会把当前生效的访问规则整体换成这个版本的内容，作为新版本发布并应用到线路机。" /></>}
-        onConfirm={async () => { const v = await rollback.mutateAsync(ask!.id); toast.ok(`已回滚，新版本 v${v.seq}`); }} />
+        onConfirm={async () => { const v = await rollback.mutateAsync(ask!.id); toast.ok(`已回滚，新版本 v${v.seq}`); }}>
+        {/* 回滚后这个版本改过的范围是什么样：「团队1：黑名单 · 2 个域名」 */}
+        {askHeld && <ul className="pol-changes">{askHeld.changes.length ? askHeld.changes.map((c) => <li key={`${c.scope}:${c.id}`}><b>{c.name}</b><span>{modeLabel(c.to.mode)}{needsDomains(c.to.mode) ? ` · ${c.to.domains} 个域名` : ''}</span></li>) : <li className="t-sub">这个版本只改了备注</li>}</ul>}
+      </ConfirmDialog>
     </>
   );
 }
 
+/** 状态：整体状态 + 线路机（全部已应用只写台数，悬停看各台；有没应用上的列出那几台） */
+function VersionApply({ v }: { v: PolicyVersion }) {
+  if (v.relays.length === 0) return <span className="t-sub">无需应用</span>;
+  const tip = (r: VersionRelay) => (r.error ? `${r.name ?? '线路机'}：${r.error}` : `${r.name ?? '线路机'}：${meta().policy_sync_states[r.status] ?? r.status}`);
+  const pending = v.relays.filter((r) => r.status !== 'applied');
+  return (
+    <span className="pol-apply">
+      <StatusPill s={v.status} />
+      {pending.length === 0
+        ? <span className="t-sub" data-tip={v.relays.map(tip).join('\n')}>{v.relays.length} 台线路机</span>
+        : <span className="pol-relays">{pending.map((r) => <span key={r.relay_id} className="pol-relay" tabIndex={0} data-tip={tip(r)}>{r.name ?? '线路机'}<small>{meta().policy_sync_states[r.status] ?? r.status}</small></span>)}</span>}
+    </span>
+  );
+}
+
+/** 一处变更的说明：模式没变时写域名数从几个变成几个；变了写模式（新模式用域名时带上个数） */
+function changeText(c: PolicyChange): string {
+  const n = (k: number) => `${k} 个域名`;
+  if (c.from.mode === c.to.mode) {
+    const what = !needsDomains(c.to.mode) ? '' : c.from.domains === c.to.domains ? ` · 换了域名（${n(c.to.domains)}）` : ` · 域名 ${c.from.domains} → ${c.to.domains} 个`;
+    return `${c.name}：${modeLabel(c.to.mode)}${what}`;
+  }
+  return `${c.name}：${modeLabel(c.from.mode)} → ${modeLabel(c.to.mode)}${needsDomains(c.to.mode) ? `（${n(c.to.domains)}）` : ''}`;
+}
+
 function VersionChanges({ changes }: { changes: PolicyChange[] }) {
   if (!changes.length) return <span className="t-sub">只改了备注</span>;
-  const one = (c: PolicyChange) => `${c.name}：${modeLabel(c.from.mode)} → ${modeLabel(c.to.mode)}${needsDomains(c.to.mode) ? `（${c.to.domains} 个域名）` : ''}`;
+  const one = changeText;
   const full = changes.map(one).join('\n');
   return (
     <Tip text={changes.length > 2 ? <div className="pol-tip">{changes.map((c) => <div key={`${c.scope}:${c.id}`}>{one(c)}</div>)}</div> : null}>

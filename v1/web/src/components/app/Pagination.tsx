@@ -9,6 +9,8 @@ import { Select } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
+const n = (x: number) => x.toLocaleString('zh-CN');
+
 /** compact：窄栏里用（作业列表），只留范围和上一页 / 下一页。
  *  memo：pg 由 usePage 按值缓存，页面随推送重渲染时分页器和里面两个下拉（Select 也是 memo，选项、回调都稳定）不跟着重画 */
 export const Pagination = memo(function Pagination({ pg, unit = '项', compact, className }: { pg: PageState; unit?: string; compact?: boolean; className?: string }) {
@@ -21,7 +23,7 @@ export const Pagination = memo(function Pagination({ pg, unit = '项', compact, 
   return (
     <nav className={cn('pager', className)} aria-label="分页">
       <span className="pager-range" aria-live="polite">
-        <span className="num">{total ? `${offset + 1}–${Math.min(offset + size, total)}` : '0'}</span><span className="pager-of">/</span><span className="num">{total}</span> {unit}
+        <span className="num">{total ? `${n(offset + 1)}–${n(Math.min(offset + size, total))}` : '0'}</span><span className="pager-of">/</span><span className="num">{n(total)}</span> {unit}
       </span>
       {!compact && sizes.length > 1 && (
         <span className="pager-field">每页
@@ -32,7 +34,7 @@ export const Pagination = memo(function Pagination({ pg, unit = '项', compact, 
         {!compact && pageCount > 1 && (
           <span className="pager-field">第
             <Select sm value={String(page)} onChange={onPage} options={pages} aria-label="页码" className="pager-select" />
-            / <span className="num">{pageCount}</span> 页
+            / <span className="num">{n(pageCount)}</span> 页
           </span>
         )}
         <Button size="sm" className="pager-btn" disabled={page <= 1} onClick={() => setPage(page - 1)}><ChevronLeft />上一页</Button>
@@ -42,15 +44,15 @@ export const Pagination = memo(function Pagination({ pg, unit = '项', compact, 
   );
 });
 
-/** 时间游标翻页：没有总数，只能往较新 / 较早走 */
-export function CursorPager({ page, size, onNewer, onOlder }: { page: number; size: number; onNewer?: () => void; onOlder?: () => void }) {
+/** 时间游标翻页：没有总数，只能往前（较新）/ 往后（较早）走；按钮写法同分页器（上一页 = 较新） */
+export function CursorPager({ page, size, unit = '条', onNewer, onOlder }: { page: number; size: number; unit?: string; onNewer?: () => void; onOlder?: () => void }) {
   if (!onNewer && !onOlder) return null;
   return (
     <nav className="pager" aria-label="分页">
-      <span className="pager-range">第 <span className="num">{page}</span> 页<small>每页 {size}</small></span>
+      <span className="pager-range">第 <span className="num">{n(page)}</span> 页 · 每页 <span className="num">{size}</span> {unit}</span>
       <span className="pager-nav">
-        <Button size="sm" className="pager-btn" disabled={!onNewer} onClick={onNewer}><ChevronLeft />较新</Button>
-        <Button size="sm" className="pager-btn" disabled={!onOlder} onClick={onOlder}>较早<ChevronRight /></Button>
+        <Button size="sm" className="pager-btn" disabled={!onNewer} onClick={onNewer}><ChevronLeft />上一页</Button>
+        <Button size="sm" className="pager-btn" disabled={!onOlder} onClick={onOlder}>下一页<ChevronRight /></Button>
       </span>
     </nav>
   );

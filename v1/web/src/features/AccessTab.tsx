@@ -13,31 +13,36 @@ import { fmtN } from '@/features/AccessBits';
 import { ConnCell, IspPlace, SourceProfile } from '@/features/IpIntelBits';
 import type { ProfileWindow } from '@/lib/ipintel';
 
-const { BarChart, Bar, XAxis, YAxis, CartesianGrid } = Recharts;
+const { BarChart, Bar, XAxis, YAxis, CartesianGrid, LabelList } = Recharts;
 
 const cut = (s: string, n = 24) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
-// 与最近记录里「已转发 / 已阻止」标签同色：绿 / 红
-const BAR_CFG: ChartConfig = { routed: { label: '已转发', color: 'var(--ok)' }, blocked: { label: '已阻止', color: 'var(--bad)' } };
+// 已转发用主色（条形是「访问了多少次」，不是「成功」的意思），已阻止红
+const BAR_CFG: ChartConfig = { routed: { label: '已转发', color: 'var(--chart-1)' }, blocked: { label: '已阻止', color: 'var(--bad)' } };
 // 柱状图悬停时整列铺一层浅底（recharts 默认是 #ccc 实心块，暗色下刺眼；--hover 在浅色下太淡看不见）
 const BAR_CURSOR = { fill: 'var(--line)' };
 /** 提示框里的连接数带单位 */
 const times = (_: string, v: number) => `${fmtN(v)} 次`;
 
-/** 横向条形图：每行一个目标，已转发 + 已阻止叠在一起。limit：只画前几个（截取放在这里，轮询数据没变时 data 引用不变） */
+/** 横向条形图：每行一个目标，已转发 + 已阻止叠在一起，条尾直接标总次数。limit：只画前几个（截取放在这里，轮询数据没变时 data 引用不变） */
 function HostBars({ items, limit }: { items: MachineAccess['top_domains']; limit?: number }) {
-  const data = React.useMemo(() => items.slice(0, limit).map((d) => ({ host: d.dest_host, routed: Math.max(0, d.conns - d.blocked), blocked: d.blocked })), [items, limit]);
+  const data = React.useMemo(() => items.slice(0, limit).map((d) => ({ host: d.dest_host, routed: Math.max(0, d.conns - d.blocked), blocked: d.blocked, total: d.conns })), [items, limit]);
   return (
     <ChartContainer config={BAR_CFG} height={Math.max(64, data.length * 26 + 8)}>
-      <BarChart data={data} layout="vertical" margin={{ top: 0, right: 8, bottom: 0, left: 0 }} barCategoryGap={5}>
+      <BarChart data={data} layout="vertical" margin={{ top: 0, right: 56, bottom: 0, left: 0 }} barCategoryGap={5}>
         <XAxis type="number" hide />
         <YAxis type="category" dataKey="host" width={176} tickFormatter={(v: string) => cut(v, 26)} interval={0} {...axisProps} />
         {chartTooltip(BAR_CFG, String, times, BAR_CURSOR)}
         <Bar dataKey="routed" stackId="a" fill="var(--color-routed)" isAnimationActive={false} />
-        <Bar dataKey="blocked" stackId="a" fill="var(--color-blocked)" radius={[0, 3, 3, 0]} isAnimationActive={false} />
+        <Bar dataKey="blocked" stackId="a" fill="var(--color-blocked)" radius={[0, 3, 3, 0]} isAnimationActive={false}>
+          <LabelList dataKey="total" position="right" offset={6} formatter={(v: number) => fmtN(v)} className="bar-count" />
+        </Bar>
       </BarChart>
     </ChartContainer>
   );
 }
+/** IPv4 按数值比（10.0.0.9 在 10.0.0.10 前面），其余（IPv6）按字面 */
+const ipKey = (ip: string) => (/^\d+(\.\d+){3}$/.test(ip) ? ip.split('.').reduce((n, x) => n * 256 + Number(x), 0) : null);
+const byIp = (a: string, b: string) => { const x = ipKey(a); const y = ipKey(b); return x != null && y != null ? x - y : a.localeCompare(b); };
 
 const p2 = F.pad2;
 /** 提示框标题：这一小时的时段，如 10-21 01:00–02:00 */
@@ -66,7 +71,7 @@ function RecentTable({ items }: { items: AccessEvent[] }) {
   return (
     <div className="table-wrap" style={{ border: '1px solid var(--line)', borderRadius: 'var(--r-float)' }}>
       <table className="dt is-one" style={{ minWidth: 520 }}>
-        <colgroup><col style={{ width: 140 }} /><col style={{ width: 136 }} /><col /><col style={{ width: 76 }} /></colgroup>
+        <colgroup><col style={{ width: 140 }} /><col style={{ width: 136 }} /><col /><col style={{ width: 96 }} /></colgroup>
         <thead><tr><th>时间</th><th>来源</th><th>目标</th><th>结果</th></tr></thead>
         <tbody>
           {items.map((e, i) => (
@@ -74,7 +79,8 @@ function RecentTable({ items }: { items: AccessEvent[] }) {
               <td data-tip={F.dtFull(e.ts)}>{F.dt(e.ts)}:{p2(new Date(e.ts).getSeconds())}</td>
               <td>{e.src_ip ?? '—'}</td>
               <td data-tip={e.dest_host}><span className="strong">{e.dest_host}</span>{e.dest_port != null && <span className="t-sub">:{e.dest_port}</span>}</td>
-              <td>{e.blocked ? <Pill tone="bad">已阻止</Pill> : <Pill tone="ok">已转发</Pill>}</td>
+              {/* 胶囊比单元格宽一点点时 .dt 的省略号会接在后面：这一格不省略 */}
+              <td style={{ textOverflow: 'clip' }}>{e.blocked ? <Pill tone="bad">已阻止</Pill> : <Pill tone="ok">已转发</Pill>}</td>
             </tr>
           ))}
         </tbody>
@@ -104,6 +110,8 @@ export const AccessTab = React.memo(function AccessTab({ id, relay }: { id: stri
   if (q.isError && !d) return <Section>{head}<ErrorNote error={q.error} onRetry={() => void q.refetch()} /></Section>;
   if (!d) return <div className="skel" style={{ height: 160 }} />;
   const total = d.top_domains.reduce((s, x) => s + x.conns, 0);
+  // 来源按连接数，同次数按 IP 数值
+  const sources = [...d.top_sources].sort((a, b) => b.conns - a.conns || byIp(a.src_ip, b.src_ip));
   const none = d.top_domains.length === 0 && d.recent.length === 0;
   // 换时间范围、新数据未到时沿用的旧数据调淡（extras.css [data-stale]）；段标题和时间范围控件不调淡
   const stale = q.isPlaceholderData;
@@ -141,12 +149,12 @@ export const AccessTab = React.memo(function AccessTab({ id, relay }: { id: stri
               {d.top_sources.length ? (
                 <div className="table-wrap" style={{ border: '1px solid var(--line)', borderRadius: 'var(--r-float)' }}>
                   <table className="dt is-one" style={{ minWidth: 520 }}>
-                    <colgroup><col style={{ width: 150 }} /><col /><col style={{ width: 110 }} /><col style={{ width: 70 }} /><col style={{ width: 110 }} /></colgroup>
+                    <colgroup><col style={{ width: 160 }} /><col /><col style={{ width: 120 }} /><col style={{ width: 70 }} /><col style={{ width: 110 }} /></colgroup>
                     <thead><tr><th>来源 IP</th><th>运营商 · 城市</th><th>接入方式</th><th className="r">连接数</th><th>最近</th></tr></thead>
                     <tbody>
-                      {d.top_sources.map((s) => (
+                      {sources.map((s) => (
                         <tr key={`${s.node_id}-${s.src_ip}`}>
-                          <td>{s.src_ip}{relay && <span className="t-sub"> · {s.name}</span>}</td>
+                          <td data-tip={relay ? `${s.src_ip} · ${s.name}` : undefined}>{s.src_ip}{relay && <span className="t-sub"> · {s.name}</span>}</td>
                           <td><IspPlace intel={s.intel} /></td><td><ConnCell intel={s.intel} /></td>
                           <td className="r">{fmtN(s.conns)}</td><td>{F.dt(s.last_ts)}</td>
                         </tr>

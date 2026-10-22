@@ -958,13 +958,7 @@ async fn audit_open(st: &AppState, who: &Who, t: &Target) -> sqlx::Result<i64> {
     let mut d = t.audit_detail();
     d["client_ip"] = json!(who.ip.map(|i| i.to_string()));
     d["session"] = json!(session_id(&who.session));
-    sqlx::query_scalar("insert into audit_log (actor, action, target_kind, target_id, detail) values ($1, 'terminal.open', $2, $3, $4) returning id")
-        .bind(&who.user)
-        .bind(t.kind.as_str())
-        .bind(t.id)
-        .bind(d)
-        .fetch_one(&st.db)
-        .await
+    crate::db::audit_insert(&st.db, &who.user, "terminal.open", t.kind.as_str(), Some(t.id), d).await
 }
 
 struct Closed<'a> {
@@ -988,14 +982,7 @@ async fn audit_close(st: &AppState, who: &Who, t: &Target, open_id: i64, c: &Clo
     d["why"] = json!(c.why);
     d["reason"] = json!(c.reason);
     d["exit_code"] = json!(c.exit_code);
-    let r = sqlx::query("insert into audit_log (actor, action, target_kind, target_id, detail) values ($1, 'terminal.close', $2, $3, $4)")
-        .bind(&who.user)
-        .bind(t.kind.as_str())
-        .bind(t.id)
-        .bind(d)
-        .execute(&st.db)
-        .await;
-    if let Err(e) = r {
+    if let Err(e) = crate::db::audit_insert(&st.db, &who.user, "terminal.close", t.kind.as_str(), Some(t.id), d).await {
         tracing::error!(open_id, "网页终端：写「关闭」审计失败：{e}");
     }
 }

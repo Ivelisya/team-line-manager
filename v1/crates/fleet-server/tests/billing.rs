@@ -279,3 +279,34 @@ async fn meta_and_due_state() {
         assert_eq!(put_sub(&t, &rid, json!({"due_date": "2027-01-01", "price_cents": 1, "currency": bad})).await.0, StatusCode::BAD_REQUEST, "{bad}");
     }
 }
+
+async fn del(t: &T, p: &str) -> (StatusCode, Value) { t.req("DELETE", p, None, None).await }
+
+/// 删团队 / 供应商 / 套餐：还有机器（含已退役的）、套餐用着时 409 说清楚还有什么；没人用了才删，记审计
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn catalog_delete_refuses_while_in_use() {
+    let t = setup(false).await;
+    let pv = t.post("/api/v1/providers", json!({"name": "甲", "code": "A"})).await["id"].as_str().unwrap().to_string();
+    let plan = t.post("/api/v1/plans", json!({"provider_id": pv, "name": "季付", "price_cents": 3000})).await["id"].as_str().unwrap().to_string();
+    let team = seed_team(&t, "团队1").await;
+    let node = common::seed_node(&t, team, 1, "203.0.113.20", "retired").await;
+    sqlx::query("update machine set plan_id = $2::uuid, provider_id = $3::uuid where id = $1").bind(node).bind(&plan).bind(&pv).execute(&t.st.db).await.unwrap();
+
+    let (s, v) = del(&t, &format!("/api/v1/teams/{team}")).await;
+    assert!(s == StatusCode::CONFLICT && v.to_string().contains("1 台已退役的机器"), "{s} {v}");
+    let (s, v) = del(&t, &format!("/api/v1/providers/{pv}")).await;
+    assert!(s == StatusCode::CONFLICT && v.to_string().contains("1 个套餐") && v.to_string().contains("1 台机器"), "{s} {v}");
+    let (s, v) = del(&t, &format!("/api/v1/plans/{plan}")).await;
+    assert!(s == StatusCode::CONFLICT && v.to_string().contains("归档"), "{s} {v}");
+
+    // 机器没了（彻底删除）之后依次都能删
+    sqlx::query("delete from machine where id = $1").bind(node).execute(&t.st.db).await.unwrap();
+    for p in [format!("/api/v1/plans/{plan}"), format!("/api/v1/providers/{pv}"), format!("/api/v1/teams/{team}")] {
+        let (s, v) = del(&t, &p).await;
+        assert_eq!(s, StatusCode::OK, "{p}: {v}");
+    }
+    assert!(t.get("/api/v1/teams").await.as_array().unwrap().is_empty());
+    let audit = t.get("/api/v1/audit").await;
+    let titles: Vec<&str> = audit.as_array().unwrap().iter().filter_map(|a| a["title"].as_str()).collect();
+    assert!(titles.starts_with(&["删除团队", "删除供应商", "删除套餐"]), "{titles:?}");
+}

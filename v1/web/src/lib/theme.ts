@@ -1,9 +1,10 @@
 // 主题（light/dark/system）与配色（plum 粉紫默认 / indigo 原版靛蓝）。落在 <html data-theme data-palette>，存 localStorage。
 import { useCallback, useEffect, useState } from 'react';
+import { prefs } from './prefs';
 
 export type ThemePref = 'light' | 'dark' | 'system';
 export type Palette = 'plum' | 'indigo';
-const read = (k: string, d: string) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
+const read = (k: string, d: string) => prefs.get(k) ?? d;
 const mq = matchMedia('(prefers-color-scheme: dark)');
 /** 手机浏览器的地址栏 / 状态栏跟顶栏同色（<meta name="theme-color">），深浅色一换就跟着换 */
 function syncThemeColor() {
@@ -41,12 +42,12 @@ export function useTheme() {
   const setPref = useCallback((p: ThemePref) => {
     swap(() => applyTheme(p));
     setPrefState(p);
-    try { localStorage.setItem('fleet:theme', p); } catch { /* 隐私模式 */ }
+    prefs.set('fleet:theme', p);
   }, []);
   const setPalette = useCallback((p: Palette) => {
     swap(() => applyPalette(p));
     setPaletteState(p);
-    try { localStorage.setItem('fleet:palette', p); } catch { /* 隐私模式 */ }
+    prefs.set('fleet:palette', p);
   }, []);
   return { pref, setPref, palette, setPalette };
 }

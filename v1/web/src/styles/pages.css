@@ -45,6 +45,23 @@
 .audit-meta[data-tone="warn"] { color: var(--warn-text); }
 .audit-meta[data-tone="info"] { color: var(--info-text); }
 .audit-list li[data-resolved] > .dot { opacity: 0.4; }
+/* 操作记录（AuditList）：不画圆点和竖线；有明细的行前面一个展开箭头，点开在下面列出命令与结果、改动前后 */
+.audit-list.is-bare li::before { content: none; }
+.audit-chev { display: inline-flex; width: 14px; height: 1em; vertical-align: -2px; color: var(--fg-3); }
+.audit-chev .lucide { width: 12px; height: 12px; transition: transform var(--dur-2) var(--ease-out); }
+.audit-list li[data-open] .audit-chev .lucide { transform: rotate(90deg); }
+.audit-list.is-bare .audit-detail { padding-left: 14px; }
+.audit-what[data-tone="bad"] b { color: var(--bad-text); }
+.audit-target.btn { display: inline; height: auto; font: inherit; vertical-align: baseline; }
+.audit-res { margin-left: var(--sp-8); font-size: var(--fs-label); color: var(--fg-2); }
+.audit-res[data-tone="warn"] { color: var(--warn-text); font-weight: var(--fw-medium); }
+.audit-res[data-tone="bad"] { color: var(--bad-text); font-weight: var(--fw-medium); }
+.audit-ex { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--sp-4) var(--sp-12); margin: var(--sp-4) 0 var(--sp-2) 14px; padding: var(--sp-8) var(--sp-12);
+  border-radius: var(--r-control); background: var(--sunken); font-size: var(--fs-label); line-height: var(--lh-label); cursor: auto; }
+.audit-ex dt { color: var(--fg-2); }
+.audit-ex dd { margin: 0; min-width: 0; color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; }
+/* 告警页：已恢复的仍按原级别着色，调淡一些，眼睛先落在进行中的上面 */
+.pill.is-past { opacity: 0.6; }
 .chart-box { height: 180px; min-width: 0; }
 /* 曲线全为 0 时的空状态：占住图的高度（换时间范围时卡片不跳），一句浅色说明居中 */
 .chart-empty { display: grid; place-items: center; min-width: 0; font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); text-align: center; }
@@ -100,6 +117,11 @@
 .relay-card { display: grid; gap: 0; }
 .relay-head { display: flex; align-items: center; gap: var(--sp-12); flex-wrap: wrap; padding: var(--sp-12) var(--card-pad); }
 .relay-head .ttl { font: var(--fw-semibold) var(--fs-title) / var(--lh-title) var(--font-sans); letter-spacing: var(--tracking-title); }
+/* 线路机名可点（打开它的抽屉）：去掉按钮外观，后面一个淡箭头，悬停变主色、箭头右移一点，按下微缩 */
+.relay-name { display: inline-flex; align-items: center; gap: 2px; padding: 0; border: 0; background: none; color: var(--fg); cursor: pointer; border-radius: var(--r-xs); transition: color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out); }
+.relay-name .lucide { color: var(--fg-3); transition: translate var(--dur-2) var(--ease-out), color var(--dur-1) var(--ease-std); }
+@media (hover: hover) { .relay-name:hover, .relay-name:hover .lucide { color: var(--accent); } .relay-name:hover .lucide { translate: 2px 0; } }
+.relay-name:active { scale: 0.98; }
 .apply-box { display: flex; align-items: center; gap: var(--sp-8); flex-wrap: wrap; padding: var(--sp-8) var(--card-pad); border-top: 1px solid var(--line); background: var(--sunken); font-size: var(--fs-label); color: var(--fg-2); }
 
 /* 作业：列表 + 详情 */
@@ -109,11 +131,14 @@
    滚动容器会裁掉面板投影：左右与底部各留一圈内边距（左右用负外边距抵消，面板位置不变） */
 .jobs-detail {
   position: sticky; top: calc(var(--topbar-h) + var(--sp-16)); align-self: start;
-  max-height: calc(100dvh - var(--topbar-h) - 2 * var(--sp-16)); overflow-y: auto;
+  max-height: var(--fit-h, calc(100dvh - var(--topbar-h) - 2 * var(--sp-16))); overflow-y: auto; /* --fit-h：按此刻的上沿算到视口底（Jobs.tsx useFitViewport） */
   margin-inline: calc(-1 * var(--sp-8)); padding: 0 var(--sp-8) var(--sp-16);
 }
 /* 没选作业时的占位：更高、居中 */
 .jobs-empty { min-height: min(360px, 60dvh); display: grid; align-content: center; }
+/* 列表为空、没打开作业：单栏，只留列表里那个空状态 */
+.jobs-layout[data-empty] { grid-template-columns: minmax(0, 1fr); }
+.jobs-layout[data-empty] .jobs-detail { display: none; }
 @container content (max-width: 720px) {
   .jobs-layout { grid-template-columns: minmax(0, 1fr); } .jobs-layout[data-detail="1"] .jobs-list { display: none; } .jobs-layout[data-detail="0"] .jobs-detail { display: none; }
   .jobs-detail { position: static; max-height: none; overflow: visible; margin-inline: 0; padding: 0; } /* 单栏：详情就是整页，跟着页面滚 */
@@ -167,6 +192,11 @@
   -webkit-backdrop-filter: saturate(180%) blur(12px); backdrop-filter: saturate(180%) blur(12px);
 }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .panel.sticky-bar { background: var(--surface); } }
+/* 批量网格：「检查结果」与删除列吸附在右侧，二十几列横滑时也一直看得见；结果放不下省略，悬停看全文。左缘一道线 + 淡阴影，和滑到下面的格子分开 */
+.dt-grid .gc-res, .dt-grid .gc-del { position: sticky; z-index: 1; background: var(--surface); }
+.dt-grid thead :is(.gc-res, .gc-del) { background: var(--sunken); }
+.dt-grid .gc-res { right: 56px; padding: 0 var(--sp-8); box-shadow: -1px 0 0 var(--line), -8px 0 12px -10px rgb(17 24 39 / 0.25); }
+.dt-grid .gc-del { right: 0; border-right: 0; }
 .lv.span-2 { grid-column: 1 / -1; }
 .check-row.span-2 { grid-column: 1 / -1; }
 .job-back { display: none; }

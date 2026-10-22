@@ -233,7 +233,8 @@ export interface ApiKey { id: string; name: string; prefix: string; scopes: ApiS
 export type NotifyKind = 'telegram' | 'wecom' | 'webhook';
 export type NotifySeverity = 'info' | 'warning' | 'critical';
 export interface NotifyChannel { id: string; name: string; kind: NotifyKind | string; min_severity: NotifySeverity | string; enabled: boolean; created_at: string; config_hint: string }
-export interface NotifyLogEntry { id: string; channel_id: string; channel_name: string; incident_id: string | null; ts: string; ok: boolean; error: string | null;
+/** channel_name：渠道删了之后为 null（发送记录还留着） */
+export interface NotifyLogEntry { id: string; channel_id: string; channel_name: string | null; incident_id: string | null; ts: string; ok: boolean; error: string | null;
   /** firing / repeat / resolved / test */
   kind: 'firing' | 'repeat' | 'resolved' | 'test'; subject_name: string | null; rule_name: string | null }
 
