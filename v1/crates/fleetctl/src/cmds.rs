@@ -286,11 +286,11 @@ fn incident_items(ctx: &Ctx, state: &str, subject: Option<&str>) -> anyhow::Resu
 }
 
 /// `incidents` / `status` 的一条告警：与表格同列（另带规则 key、对象 id、状态与恢复时间），`--json` 输出这些而不是完整的告警对象。
-/// 对象名取 subject.name：机器已删除时是「（已删除）」
+/// 对象名取 subject.name：机器已删除时是「（已删除）」；中控自身的告警（central_ 开头）没有 subject、subject_id，对象名是 subject_name「中控」
 fn incident_item(i: &Value) -> Value {
     json!({
         "id": i["id"], "severity": i["severity"], "rule": i["rule"], "rule_name": i["rule_name"],
-        "subject_id": i["subject_id"], "subject_name": i.pointer("/subject/name"),
+        "subject_id": i["subject_id"], "subject_name": i.pointer("/subject/name").or(i.get("subject_name")),
         "summary": i["summary"], "reopen_count": i["reopen_count"], "state": i["state"],
         "opened_at": i["opened_at"], "resolved_at": i["resolved_at"], "ack_by": i["ack_by"],
     })

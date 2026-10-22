@@ -58,7 +58,8 @@ export function IncidentsPage() {
                 return (
                   <tr key={i.id}>
                     <td>{SEV(i)}</td>
-                    <td>{sid ? <NodeHover id={sid}><button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => open(sid)}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button></NodeHover> : '—'}</td>
+                    {/* 中控自身的告警（central_ 开头）没有机器可点开：只写对象名「中控」 */}
+                    <td>{sid ? <NodeHover id={sid}><button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => open(sid)}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button></NodeHover> : (i.subject_name ?? '—')}</td>
                     <td>{i.rule_name}{i.reopen_count > 0 && <span className="sub" data-tip={`恢复后 30 分钟内又复发 ${i.reopen_count} 次，合并为这一条`}>反复 {i.reopen_count + 1} 次</span>}</td>
                     <td><Trunc className="cell-main">{i.summary}</Trunc><span className="sub">{i.resolved_at ? `恢复于 ${F.dt(i.resolved_at)}` : i.ack_at ? `${i.ack_by ?? ''} 已确认 · ${F.ago(i.ack_at)}` : '未确认'}</span></td>
                     <td>{F.dt(i.opened_at)}<span className="sub">{F.ago(i.opened_at)}</span></td>

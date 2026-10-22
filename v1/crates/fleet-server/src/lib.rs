@@ -15,6 +15,7 @@ pub mod live;
 pub mod names;
 pub mod notify;
 pub mod policy;
+pub mod selfmon;
 pub mod silence;
 pub mod ssh;
 pub mod state;

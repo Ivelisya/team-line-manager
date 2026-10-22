@@ -96,6 +96,9 @@ pub fn rule_name(key: &str) -> &str {
         "ipintel_new_city" => "来源出现新城市",
         "ipintel_datacenter_source" => "机房 / VPN 来源",
         "policy_blocked" => "访问策略暂停",
+        "central_channel_failing" => "通知渠道发送失败",
+        "central_backup_stale" => "备份过期",
+        "central_disk_low" => "中控磁盘空间不足",
         other => other,
     }
 }

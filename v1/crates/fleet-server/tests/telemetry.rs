@@ -11,10 +11,10 @@ use fleet_proto::ProbeKind;
 use fleet_server::alerts::{self, AlertState};
 use fleet_server::crypto::SecretBox;
 use fleet_server::state::{AppState, Event};
-use fleet_server::{db, live};
+use fleet_server::{db, live, selfmon};
 use serde_json::{json, Value};
 use std::sync::atomic::Ordering;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -1350,6 +1350,93 @@ async fn silence_changes_are_announced() {
     mock.wait("/hook/a", 4).await;
     let log = t.get("/api/v1/notify-log?limit=10").await;
     assert!(log.as_array().unwrap().iter().all(|l| l["kind"] == "silence" && l["ok"] == true && l["subject_name"] == "静默 / 维护变更"), "{log}");
+}
+
+// ── 中控自监控 ──────────────────────────────────────────────────────────────
+
+/// 通知渠道连续发送失败满 5 分钟：开中控自身的告警（对象「中控」，经别的渠道发、不发给它自己）；渠道发成功一次（这里是渠道测试）就恢复
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn failing_channel_opens_central_alert() {
+    let t = setup().await;
+    let mock = Mock::start().await;
+    let broken = t.post("/api/v1/notify-channels", json!({"name": "坏渠道", "kind": "webhook", "config": {"url": mock.url("/fail/x")}, "min_severity": "info", "enabled": true})).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "webhook", "config": {"url": mock.url("/hook/a")}, "min_severity": "info", "enabled": true})).await;
+    seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let mut state = AlertState::default();
+    let base = OffsetDateTime::now_utc();
+    xray_report(&t, 1, false).await;
+    pass(&t, &mut state, base, 0).await;
+    pass(&t, &mut state, base, 61).await;
+    mock.wait("/fail/x", 2).await;
+    mock.wait("/hook/a", 1).await;
+    let central = || async { incidents(&t, "firing").await.into_iter().filter(|i| i["rule"] == "central_channel_failing").collect::<Vec<_>>() };
+    // 失败还不满 5 分钟：不开
+    selfmon::check_once(&t.st, OffsetDateTime::now_utc()).await.unwrap();
+    assert!(central().await.is_empty());
+    selfmon::check_once(&t.st, OffsetDateTime::now_utc() + time::Duration::minutes(6)).await.unwrap();
+    let inc = central().await;
+    assert_eq!(inc.len(), 1, "{inc:?}");
+    assert_eq!(
+        (inc[0]["severity"].as_str(), inc[0]["subject"].is_null(), inc[0]["subject_id"].is_null(), inc[0]["subject_name"].as_str(), inc[0]["rule_name"].as_str()),
+        (Some("critical"), true, true, Some("中控"), Some("通知渠道发送失败"))
+    );
+    let summary = inc[0]["summary"].as_str().unwrap();
+    assert!(summary.starts_with("中控：通知渠道「坏渠道」连续发送失败超过 5 分钟：webhook 返回 HTTP 500"), "{summary}");
+    mock.wait("/hook/a", 2).await;
+    let b = mock.bodies("/hook/a").pop().unwrap();
+    assert_eq!((b["event"].as_str(), b["rule"].as_str(), b["machine"].as_str()), (Some("firing"), Some("central_channel_failing"), Some("中控")));
+    let to_itself = format!("select count(*) from notify_outbox o join incident i on i.id = o.incident_id where o.channel_id = '{broken}' and i.rule = 'central_channel_failing'");
+    assert_eq!(t.count(&to_itself).await, 0, "不发给失败的渠道自己");
+    // 渠道修好、测试发成功：下一轮恢复，「恢复」发给收到过触发的渠道
+    let (s, v) = t.req("PATCH", &format!("/api/v1/notify-channels/{broken}"), Some(json!({"config": {"url": mock.url("/hook/fixed")}})), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(t.post(&format!("/api/v1/notify-channels/{broken}/test"), json!({})).await["ok"], true);
+    selfmon::check_once(&t.st, OffsetDateTime::now_utc() + time::Duration::minutes(7)).await.unwrap();
+    assert!(central().await.is_empty());
+    mock.wait("/hook/a", 3).await;
+    let b = mock.bodies("/hook/a").pop().unwrap();
+    assert_eq!((b["event"].as_str(), b["rule"].as_str()), (Some("resolved"), Some("central_channel_failing")));
+    assert_eq!(t.count(&to_itself).await, 0);
+}
+
+/// 备份目录里最新一份超过 26 小时（或一份都没有）：开中控自身的告警，有了新的一份就恢复；目录不存在（没装备份）不检查
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stale_backup_opens_central_alert() {
+    let dir = tempfile::tempdir().unwrap();
+    let bk = dir.path().join("backups");
+    let t = common::boot_in(dir, false, &format!("notify.allow_private = true\nselfmon.backup_dir = \"{}\"", bk.display())).await;
+    let backup = |state: &'static str| {
+        let t = &t;
+        async move { incidents(t, state).await.into_iter().filter(|i| i["rule"] == "central_backup_stale").collect::<Vec<_>>() }
+    };
+    let check = || selfmon::check_once(&t.st, OffsetDateTime::now_utc());
+    check().await.unwrap();
+    assert!(backup("all").await.is_empty(), "没装备份：不检查");
+    std::fs::create_dir(&bk).unwrap();
+    check().await.unwrap();
+    let inc = backup("firing").await;
+    assert_eq!(inc.len(), 1);
+    assert_eq!(
+        (inc[0]["severity"].as_str(), inc[0]["subject"].is_null(), inc[0]["subject_id"].is_null(), inc[0]["subject_name"].as_str(), inc[0]["rule_name"].as_str()),
+        (Some("warning"), true, true, Some("中控"), Some("备份过期"))
+    );
+    assert!(inc[0]["summary"].as_str().unwrap().contains("里没有备份"), "{}", inc[0]["summary"]);
+    // 只有一份 30 小时前的：还在告警，摘要换成最新一份
+    let old = bk.join("fleet-20261021-033000.tar");
+    std::fs::write(&old, b"x").unwrap();
+    std::fs::File::options().write(true).open(&old).unwrap().set_modified(SystemTime::now() - Duration::from_secs(30 * 3600)).unwrap();
+    check().await.unwrap();
+    let inc = backup("firing").await;
+    let s = inc[0]["summary"].as_str().unwrap();
+    assert!(inc.len() == 1 && s.contains("fleet-20261021-033000.tar") && s.contains("超过 26 小时没有新的"), "{inc:?}");
+    // 做了新的一份（age 加密的）：恢复
+    std::fs::write(bk.join("fleet-20261022-033000.tar.age"), b"x").unwrap();
+    check().await.unwrap();
+    assert!(backup("firing").await.is_empty());
+    assert_eq!(backup("resolved").await.len(), 1);
 }
 
 async fn xray_report(t: &T, seq: u64, up: bool) {

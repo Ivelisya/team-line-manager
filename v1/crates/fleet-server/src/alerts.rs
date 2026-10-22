@@ -15,6 +15,7 @@
 //! 「发过」= 写进了库里的发送队列（notify_outbox，`notified_at` 同一事务刷新）：之后由发送循环重试到送达或放弃，中控重启也不丢。
 
 use crate::notify::{self, Kind, Notice};
+use crate::selfmon;
 use crate::silence::Silences;
 use crate::state::{AppState, Event};
 use crate::views;
@@ -64,14 +65,21 @@ pub struct AlertState {
     clean_since: HashMap<Uuid, OffsetDateTime>,
 }
 
+/// 每 30 秒：评估机器的告警，成功了 ping 死人开关；再检查中控自身（selfmon.rs）
 pub async fn run_forever(st: AppState) {
     let mut state = AlertState::default();
+    let mut heartbeat = selfmon::Heartbeat::default();
     let mut tick = tokio::time::interval(Duration::from_secs(30));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tick.tick().await;
-        if let Err(e) = evaluate_once(&st, &mut state, OffsetDateTime::now_utc()).await {
-            tracing::error!("告警评估失败：{e:#}");
+        let now = OffsetDateTime::now_utc();
+        match evaluate_once(&st, &mut state, now).await {
+            Ok(()) => heartbeat.beat(&st),
+            Err(e) => tracing::error!("告警评估失败：{e:#}"),
+        }
+        if let Err(e) = selfmon::check_once(&st, now).await {
+            tracing::error!("中控自检失败：{e:#}");
         }
     }
 }
@@ -117,13 +125,13 @@ fn told_firing(inc: &Open) -> bool {
 }
 
 /// 摘要里的数字（分钟数、代数）每次都在变，不算「摘要变了」
-fn same_summary(a: &str, b: &str) -> bool {
+pub(crate) fn same_summary(a: &str, b: &str) -> bool {
     let norm = |s: &str| s.chars().filter(|c| !c.is_ascii_digit()).collect::<String>();
     a == b || norm(a) == norm(b)
 }
 
 /// 持续提醒的间隔：续费类与流量额度每天一次，其它只有严重告警每 4 小时一次
-fn repeat_interval_s(rule: &str, severity: &str) -> Option<i64> {
+pub(crate) fn repeat_interval_s(rule: &str, severity: &str) -> Option<i64> {
     if slow(rule) {
         Some(REPEAT_SLOW_S)
     } else if severity == "critical" {
@@ -138,9 +146,10 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
     // 与列表、实时指标共用在用机器视图（最多旧 3 s）
     let ms = views::live(st).await?;
     let silences = Silences::load(&st.db).await?;
-    // ipintel_ 开头的规则由 ipintel.rs 自己开和关（一次性异常，24 小时后恢复），这里不碰，否则会被当成「原因消失」恢复掉
+    // ipintel_ 开头的规则由 ipintel.rs 自己开和关（一次性异常，24 小时后恢复），central_ 开头的（中控自身）由 selfmon.rs 开和关，
+    // 这里都不碰，否则会被当成「原因消失」恢复掉
     let mut open: HashMap<(String, Uuid), Open> = sqlx::query_as::<_, Open>(&format!(
-        "select {OPEN_COLS} from incident where state = 'firing' and rule not like 'ipintel!_%' escape '!'"
+        "select {OPEN_COLS} from incident where state = 'firing' and rule not like 'ipintel!_%' escape '!' and rule not like 'central!_%' escape '!'"
     ))
     .fetch_all(&st.db)
     .await?

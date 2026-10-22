@@ -145,7 +145,7 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
     let mut a = Args::default();
     let sql = format!(
         "select i.id, i.rule, i.subject_id,
-            display_name(m.kind::text, m.label, t.name, m.number) subject_name,
+            case when i.rule like 'central!_%' escape '!' then '中控' else display_name(m.kind::text, m.label, t.name, m.number) end subject_name,
             i.severity::text severity, i.state::text state, i.summary, i.opened_at, i.last_seen_at, i.resolved_at, i.ack_at, i.ack_by, i.reopen_count
          from incident i left join machine m on m.id = i.subject_id left join team t on t.id = m.team_id
          where {} order by {order} limit {} offset {}",
@@ -161,7 +161,13 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
         .iter()
         .map(|i| {
             let mut j = serde_json::to_value(i).unwrap_or_default();
-            j["subject"] = json!({"id": i.subject_id, "name": i.subject_name.clone().unwrap_or_else(|| "（已删除）".into())});
+            if crate::selfmon::is_central(&i.rule) {
+                // 中控自身的告警：对象不是机器，没有可点开的机器
+                j["subject"] = Value::Null;
+                j["subject_id"] = Value::Null;
+            } else {
+                j["subject"] = json!({"id": i.subject_id, "name": i.subject_name.clone().unwrap_or_else(|| "（已删除）".into())});
+            }
             j["rule_name"] = json!(crate::notify::rule_name(&i.rule));
             j
         })
