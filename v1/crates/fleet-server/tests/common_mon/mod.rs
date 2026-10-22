@@ -1,4 +1,5 @@
 //! 访问监控测试的公共部分：造机器和入口、塞访问记录（建库与登录见 common）。
+#![allow(dead_code)]
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
