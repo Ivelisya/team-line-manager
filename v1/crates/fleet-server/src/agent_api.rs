@@ -226,7 +226,8 @@ static INFLIGHT: LazyLock<Mutex<HashSet<Uuid>>> = LazyLock::new(Default::default
 struct InFlight(Uuid);
 
 impl InFlight {
-    fn begin(machine: Uuid) -> Option<Self> { lock(&INFLIGHT).insert(machine).then_some(Self(machine)) }
+    /// 占不到时不能先造出 Self 再丢掉（then_some 是先求值的）：丢掉时的 drop 会在还持有锁时再锁一次（死锁），还会把别人占着的位置删掉
+    fn begin(machine: Uuid) -> Option<Self> { lock(&INFLIGHT).insert(machine).then(|| Self(machine)) }
 }
 
 impl Drop for InFlight {
