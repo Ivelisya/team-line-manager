@@ -341,9 +341,10 @@ async fn quota_period_in_half_hour_tz_counts_start_bucket() {
 }
 
 /// 有 agent 的机器按网卡计量：本周期入、出总量按供应商的规则取小 / 取大 / 相加 / 只算出站（没有供应商取大）；
-/// 按面板校准后 = 校准值 + 校准时刻所在整点之后的网卡用量，校准在周期之前的不算；上限按十进制 GB 告警
+/// 接口不再收面板校准值；已录的接入前读数 = 读数 + 录入时刻所在整点之后的网卡用量，录在周期之前的不算；上限按十进制 GB 告警；
+/// 周期中途上架的标 counted_from；滚动 30 天的起点是今天往前 29 天、没有重置日；总览本月业务流量含已退役机器的入口
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn quota_by_nic_rule_and_panel_calibration() {
+async fn quota_by_nic_rule_periods_and_opening_reading() {
     let t = setup(false).await;
     let (relay, _) = seed_relay(&t).await;
     // 洛杉矶的今天是重置日 → 周期从洛杉矶今天零点起
@@ -388,43 +389,93 @@ async fn quota_by_nic_rule_and_panel_calibration() {
     assert_eq!(t.req("PATCH", &pv_path, Some(json!({"traffic_rule": "MIN"})), None).await.0, StatusCode::BAD_REQUEST);
     assert_eq!(t.get("/api/v1/providers").await[0]["traffic_rule"], "min", "坏规则不改");
 
-    // 按面板校准：负数 400；901.6 GB 记成字节与当前时间；之后整份 PUT 不带这个字段不动它
-    let with = |g: Value| {
+    // 不再按面板校准：带 traffic_used_gb（数值或 null）一律 400，旧 fleetctl 的 --used 明确报错
+    for g in [json!(901.6), Value::Null] {
         let mut b = sub.clone();
         b["traffic_used_gb"] = g;
-        b
-    };
-    assert_eq!(t.req("PUT", &sub_path, Some(with(json!(-1))), None).await.0, StatusCode::BAD_REQUEST);
-    let (s, v) = t.req("PUT", &sub_path, Some(with(json!(901.6))), None).await;
-    assert_eq!(s, StatusCode::OK, "{v}");
-    let (s, v) = t.req("PUT", &sub_path, Some(sub.clone()), None).await;
-    assert_eq!(s, StatusCode::OK, "{v}");
-    let (base, fresh): (Option<i64>, bool) =
-        sqlx::query_as("select traffic_used_base, traffic_used_base_at > now() - interval '1 minute' from subscription where machine_id = $1").bind(relay).fetch_one(&t.st.db).await.unwrap();
-    assert_eq!((base, fresh), (Some(901_600_000_000), true));
-    // 校准时刻挪到起点后半小时：只加之后整点起的那桶（入 50 出 300 取小 = 50）；上限 1000 GB 已用 90%（按 GiB 算只有 84%）
+        let (s, v) = t.req("PUT", &sub_path, Some(b), None).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+        assert!(v.to_string().contains("不再按面板校准"), "{v}");
+    }
+    // 割接时录的接入前读数（SQL 预置）只读保留：录入时刻在起点后半小时，只加之后整点起的那桶（入 50 出 300 取小 = 50）；
+    // 上限 1000 GB 已用 90%（按 GiB 算只有 84%）；有接入前读数的不标 counted_from
     let db = &t.st.db;
-    let set_at = |at: time::OffsetDateTime| async move {
-        sqlx::query("update subscription set traffic_used_base_at = $2 where machine_id = $1").bind(relay).bind(at).execute(db).await.unwrap();
+    let set_base = |at: Option<time::OffsetDateTime>| async move {
+        sqlx::query("update subscription set traffic_used_base = case when $2::timestamptz is null then null else 901600000000 end, traffic_used_base_at = $2 where machine_id = $1")
+            .bind(relay)
+            .bind(at)
+            .execute(db)
+            .await
+            .unwrap();
     };
-    set_at(start + time::Duration::minutes(30)).await;
+    set_base(Some(start + time::Duration::minutes(30))).await;
     let m = t.get(&format!("/api/v1/machines/{relay}")).await;
     assert_eq!((m["quota"]["used"].as_i64(), m["quota"]["base"].as_i64()), (Some(901_600_000_050), Some(901_600_000_000)), "{}", m["quota"]);
-    assert!(!m["quota"]["base_at"].is_null());
+    assert!(!m["quota"]["base_at"].is_null() && m["quota"]["counted_from"].is_null(), "{}", m["quota"]);
     let r = m["health"]["reasons"].as_array().unwrap().iter().find(|r| r["key"] == "traffic_quota_high").cloned().unwrap_or_default();
-    assert!(r["text"].as_str().unwrap_or("").contains("已用 90%（901.6 GB / 1000 GB）"), "{}", m["health"]);
-    // 校准在周期起点之前（上个周期）：不算
-    set_at(start - time::Duration::days(1)).await;
+    assert!(r["text"].as_str().unwrap_or("").contains("本周期流量已用 90%（901.6 GB / 1000 GB）"), "{}", m["health"]);
+    // 录在周期起点之前（上个周期）：不算
+    set_base(Some(start - time::Duration::days(1))).await;
     let q = quota().await;
     assert_eq!((q["used"].as_i64(), q["base"].clone(), q["base_at"].clone()), (Some(350), Value::Null, Value::Null), "{q}");
-    // null 清掉
-    let (s, v) = t.req("PUT", &sub_path, Some(with(Value::Null)), None).await;
+
+    // 周期中途才上架：counted_from = 首次上架时刻；下次重置日 = 下个月的这一天（PG 的 + 1 month 同样按月末截断）
+    let rfc = &time::format_description::well_known::Rfc3339;
+    let act = start + time::Duration::hours(2);
+    sqlx::query("update machine set activated_at = $2 where id = $1").bind(relay).bind(act).execute(db).await.unwrap();
+    let (today, next): (time::Date, time::Date) =
+        sqlx::query_as("select (now() at time zone 'America/Los_Angeles')::date, ((now() at time zone 'America/Los_Angeles')::date + interval '1 month')::date")
+            .fetch_one(db)
+            .await
+            .unwrap();
+    let q = quota().await;
+    assert_eq!((q["mode"].as_str(), q["period_end"].as_str()), (Some("monthly"), Some(next.to_string().as_str())), "{q}");
+    assert_eq!(q["counted_from"].as_str().map(|s| time::OffsetDateTime::parse(s, rfc).unwrap()), Some(act), "{q}");
+
+    // 供应商按滚动 30 天、订阅跟随供应商（不单独设重置日）：起点 = 今天往前 29 天，再前一天的那桶不算，没有重置日。
+    // 窗口里还有前面放的三桶（起点前一桶 5000 / 5000 这时也在窗口里）：入 5357、出 5409，取小
+    set_base(None).await;
+    let (s, v) = t.req("PATCH", &pv_path, Some(json!({"traffic_reset": "rolling30"})), None).await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    let cleared: (Option<i64>, Option<time::OffsetDateTime>) =
-        sqlx::query_as("select traffic_used_base, traffic_used_base_at from subscription where machine_id = $1").bind(relay).fetch_one(&t.st.db).await.unwrap();
-    assert_eq!(cleared, (None, None));
-    let audit = t.get("/api/v1/audit?limit=50").await;
-    assert!(audit.as_array().unwrap().iter().any(|e| e["action"] == "subscription.set" && e["detail"]["traffic_used_gb"] == 901.6), "{audit}");
+    let mut follow = sub.clone();
+    follow.as_object_mut().unwrap().remove("traffic_reset_day");
+    let (s, v) = t.req("PUT", &sub_path, Some(follow), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    for (d, rx, tx) in [(30, 90_000i64, 90_000i64), (29, 7, 9)] {
+        sqlx::query(
+            "insert into host_metric_hourly (machine_id, hour, net_rx, net_tx)
+             values ($1, ((now() at time zone 'America/Los_Angeles')::date - $2)::timestamp at time zone 'America/Los_Angeles', $3, $4)",
+        )
+        .bind(relay)
+        .bind(d)
+        .bind(rx)
+        .bind(tx)
+        .execute(db)
+        .await
+        .unwrap();
+    }
+    t.st.live.rolled_up();
+    let m = t.get(&format!("/api/v1/machines/{relay}")).await;
+    let q = &m["quota"];
+    assert_eq!((q["mode"].as_str(), q["period_start"].as_str(), q["period_end"].clone()), (Some("rolling30"), Some((today - time::Duration::days(29)).to_string().as_str()), Value::Null), "{q}");
+    assert_eq!((q["used"].as_i64(), m["subscription"]["traffic_reset_day"].clone()), (Some(5357), Value::Null), "{m}");
+
+    // 总览本月业务流量 = 全部入口本月合计：含已退役节点的已移除入口
+    let team = seed_team(&t, "团队1").await;
+    let gone = seed_node(&t, team, 9, "203.0.113.99", "retired").await;
+    let eid = Uuid::now_v7();
+    sqlx::query("insert into entry (id, relay_id, node_id, port, client_uuid, short_id, lifecycle) values ($1, $2, $3, 20009, $4, 'ab', 'removed')")
+        .bind(eid)
+        .bind(relay)
+        .bind(gone)
+        .bind(Uuid::now_v7())
+        .execute(db)
+        .await
+        .unwrap();
+    sqlx::query("insert into entry_traffic_hourly (entry_id, hour, up_bytes, down_bytes) values ($1, date_trunc('hour', now()), 11, 22)").bind(eid).execute(db).await.unwrap();
+    t.st.live.rolled_up();
+    let ov = t.get("/api/v1/overview").await;
+    assert_eq!(ov["traffic_month"], json!({"up": 11, "down": 22}), "{ov}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -771,7 +771,7 @@ impl SubOverrides {
         Ok(())
     }
 
-    /// 写订阅：到期日 + 这些单独设置（整份替换；自动续费、按面板校准不动），再把和模板相同的改回跟随。
+    /// 写订阅：到期日 + 这些单独设置（整份替换；自动续费、接入前读数不动），再把和模板相同的改回跟随。
     /// 账单日（billing_day）按 meta::billing_day：到期日落在现有账单日上（含原样带回的到期日、31 号账单日的 2-28）不动，否则改成新到期日几号
     pub async fn write(&self, db: &mut sqlx::PgConnection, id: Uuid, due: Date) -> ApiResult<()> {
         let cur: Option<i16> = sqlx::query_scalar("select billing_day from subscription where machine_id = $1").bind(id).fetch_optional(&mut *db).await?.flatten();
@@ -809,8 +809,9 @@ pub struct SubIn {
     /// 没传 = 不改（新建为否）
     #[serde(skip_serializing_if = "Option::is_none")]
     auto_renew: Option<bool>,
-    /// 按供应商面板校准本周期已用（十进制 GB，可带小数）：记下这个数和现在的时间。没传 = 不改，null = 清掉
-    #[serde(default, deserialize_with = "super::some", skip_serializing_if = "Option::is_none")]
+    /// 已不支持（流量已用改由 agent 按网卡统计）：带了就 400，旧 fleetctl 的 --used 明确报错而不是静默忽略。
+    /// 割接时录的接入前读数只读保留，进入下一个周期自动失效（views::Quota.base）
+    #[serde(default, deserialize_with = "super::some", skip_serializing)]
     traffic_used_gb: Option<Option<f64>>,
 }
 
@@ -831,13 +832,9 @@ const SUB_AUDIT: &str = "select jsonb_build_object('due_date', due_date, 'price_
     from subscription_eff where machine_id = $1";
 
 pub async fn put_subscription(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(mut b): ApiJson<SubIn>) -> ApiResult<Json<Value>> {
-    // 校准值：GB → 字节（1 GB = 10⁹ 字节）
-    let base = match b.traffic_used_gb {
-        Some(Some(g)) if !(g.is_finite() && (0.0..1e9).contains(&g)) => return Err(ApiError::bad_request("本周期已用要填 0 或正数（GB）")),
-        Some(Some(g)) => Some(Some((g * 1e9).round() as i64)),
-        Some(None) => Some(None),
-        None => None,
-    };
+    if b.traffic_used_gb.is_some() {
+        return Err(ApiError::bad_request("流量已用改为由 agent 按网卡统计，不再按面板校准"));
+    }
     let mut tx = st.db.begin().await?;
     b.ov.check(&mut tx).await?;
     let (template_price,): (Option<i32>,) = sqlx::query_as("select price_cents from sub_template where machine_id = $1")
@@ -852,15 +849,6 @@ pub async fn put_subscription(a: Actor, State(st): State<AppState>, ApiPath(id):
     b.ov.write(&mut tx, id, b.due_date).await?;
     if let Some(auto) = b.auto_renew {
         sqlx::query("update subscription set auto_renew = $2 where machine_id = $1").bind(id).bind(auto).execute(&mut *tx).await?;
-    }
-    if let Some(base) = base {
-        sqlx::query(
-            "update subscription set traffic_used_base = $2, traffic_used_base_at = case when $2::bigint is null then null else now() end where machine_id = $1",
-        )
-        .bind(id)
-        .bind(base)
-        .execute(&mut *tx)
-        .await?;
     }
     // 审计详情：请求本身 + 机器名 + 改动前后的生效值（摘要写出改了哪几项，见 misc::audit_text）
     let after: Option<Value> = sqlx::query_scalar(SUB_AUDIT).bind(id).fetch_optional(&mut *tx).await?;

@@ -79,12 +79,15 @@ fn quota_reason(m: &MachineView) -> Option<Reason> {
     }
     let amount = format!("{} / {}", fmt_gb(m.quota.used as f64), fmt_gb(limit));
     let reset = m.quota.reset_in_days.map(|d| format!("，{d} 天后重置")).unwrap_or_default();
+    // 数据不完整（周期中途上架）：已用只是那之后的，实际更多
+    let partial = m.quota.counted_from.map(|t| format!("（{} 起统计，之前的量不到）", crate::meta::org_md(t))).unwrap_or_default();
+    let period = if m.quota.mode == "rolling30" { "近 30 天" } else { "本周期" };
     // 向下取整：还没超限时不会写成 100%
     let p = pct.floor();
     Some(if pct >= QUOTA_OVER_PCT {
-        Reason { key: "traffic_quota_high", severity: "critical", text: format!("本周期流量已超出额度（已用 {p:.0}%，{amount}）{reset}") }
+        Reason { key: "traffic_quota_high", severity: "critical", text: format!("{period}流量已超出额度（已用 {p:.0}%，{amount}）{reset}{partial}") }
     } else {
-        Reason { key: "traffic_quota_high", severity: "warning", text: format!("本周期流量已用 {p:.0}%（{amount}）{reset}") }
+        Reason { key: "traffic_quota_high", severity: "warning", text: format!("{period}流量已用 {p:.0}%（{amount}）{reset}{partial}") }
     })
 }
 
@@ -293,11 +296,34 @@ pub(crate) mod tests {
                 traffic_reset: "month".into(),
                 remind_days: 7,
             },
-            agent: Some(Agent { version: None, last_report_at: Some(now), online: true, xray_running: Some(true), cores: None, health: None, clock_skew_ms: None }),
+            agent: Some(Agent {
+                version: None,
+                last_report_at: Some(now),
+                online: true,
+                xray_running: Some(true),
+                cores: None,
+                health: None,
+                clock_skew_ms: None,
+                nic_ifaces: vec![],
+            }),
             host: None,
             entries: vec![],
             removed_traffic: Default::default(),
-            quota: Quota { limit_gb: None, limit_source: "none", used: 0, period_start: now.date(), rule: Some("max"), base: None, base_at: None, reset_in_days: None },
+            nic: Some(Default::default()),
+            month_counted_from: None,
+            quota: Quota {
+                limit_gb: None,
+                limit_source: "none",
+                used: 0,
+                period_start: now.date(),
+                period_end: None,
+                mode: "monthly",
+                counted_from: None,
+                rule: Some("max"),
+                base: None,
+                base_at: None,
+                reset_in_days: None,
+            },
             health: Health::default(),
             active_job: None,
             failed_job: None,

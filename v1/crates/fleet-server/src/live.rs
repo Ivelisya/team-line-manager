@@ -20,7 +20,8 @@ const EVERY: Duration = Duration::from_secs(3);
 const SWEEP: Duration = Duration::from_secs(30);
 
 /// 机器级字段（消息里的键名）。host、tcp/egress 用定长数组（每条上报都变，省字节），其余与 REST 同形
-const M_FIELDS: [&str; 10] = ["host", "seen", "agent", "health", "maintenance", "due_days", "due_state", "removed_traffic", "quota", "active_job"];
+const M_FIELDS: [&str; 12] =
+    ["host", "seen", "agent", "health", "maintenance", "due_days", "due_state", "removed_traffic", "nic", "month_counted_from", "quota", "active_job"];
 const E_FIELDS: [&str; 3] = ["tcp", "egress", "traffic"];
 
 type Fields = Vec<Box<RawValue>>;
@@ -85,7 +86,7 @@ pub async fn publish(st: &AppState, p: &mut Published) -> sqlx::Result<bool> {
     let ids: HashSet<Uuid> = ms.iter().map(|m| m.id).collect();
     p.machines.retain(|id, _| ids.contains(id));
     p.entries.retain(|id, _| seen_e.contains(id));
-    let ov = views::overview_of(&ms);
+    let ov = views::overview_of(&ms, &*views::traffic(st).await?);
     let ov_changed = p.overview.as_ref() != Some(&ov);
     p.overview = Some(ov);
     if ov_changed {
@@ -144,6 +145,8 @@ fn machine_fields(m: &MachineView) -> Fields {
         raw(&m.subscription.as_ref().map(|s| s.due_days)),
         raw(&m.subscription.as_ref().map(|s| s.due_state)),
         raw(&m.removed_traffic),
+        raw(&m.nic),
+        raw(&m.month_counted_from.map(|t| t.format(&time::format_description::well_known::Rfc3339).unwrap_or_default())),
         raw(&m.quota),
         raw(&m.active_job),
     ]

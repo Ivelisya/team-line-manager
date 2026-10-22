@@ -409,7 +409,7 @@ async fn rollup_covers_backfilled_hours_and_counter_resets() {
     r2.entries = vec![entry_sample(entry, h0 + 25_000, 10, 0)];
     assert_eq!(t.report("tok1", &r2).await.0, StatusCode::OK);
     assert_eq!(t.count(&format!("select count(*) from rollup_dirty where extract(epoch from hour)::bigint * 1000 = {h0}")).await, 1);
-    assert_eq!(t.count("select count(*) from rollup_dirty").await, 2, "另一个是当前小时的标记，下个小时第一轮收尾");
+    assert_eq!(t.count("select count(*) from rollup_dirty").await, 3, "还有下一小时（它第一个网卡增量的前值可能是这个样本）和当前小时的标记");
     db::rollup_hours(&t.st.db).await.unwrap();
     let rx: i64 = sqlx::query_scalar("select net_rx from host_metric_hourly where machine_id = $1 and extract(epoch from hour)::bigint * 1000 = $2")
         .bind(relay)
@@ -426,19 +426,45 @@ async fn rollup_covers_backfilled_hours_and_counter_resets() {
         .unwrap();
     assert_eq!(up, 160);
 
-    // 整点前 15 分钟内没有样本（agent 离线跨过整点）：本小时第一个样本没有前值，缺口那段的增量不记进这一小时
+    // 整点前 20 分钟的样本（agent 离线跨过整点）：照样是本小时第一个增量的前值，缺口那段记进这一小时
     let hb = h0 - 2 * H;
     let mut r3 = blank_report(3);
     r3.host = vec![host(hb - 20 * 60_000, 20.0, 100, 200), host(hb + 10_000, 20.0, 300, 600), host(hb + 20_000, 20.0, 400, 800)];
     assert_eq!(t.report("tok1", &r3).await.0, StatusCode::OK);
     db::rollup_hours(&t.st.db).await.unwrap();
-    let rx: i64 = sqlx::query_scalar("select net_rx from host_metric_hourly where machine_id = $1 and extract(epoch from hour)::bigint * 1000 = $2")
-        .bind(relay)
-        .bind(hb)
-        .fetch_one(&t.st.db)
-        .await
-        .unwrap();
-    assert_eq!(rx, 400 - 300, "20 分钟前的样本不参与本小时第一个增量");
+    let nic_at = |h: i64| {
+        sqlx::query_as::<_, (i64, i64)>("select net_rx, net_tx from host_metric_hourly where machine_id = $1 and extract(epoch from hour)::bigint * 1000 = $2")
+            .bind(relay)
+            .bind(h)
+            .fetch_optional(&t.st.db)
+    };
+    assert_eq!(nic_at(hb).await.unwrap(), Some((400 - 100, 800 - 200)), "20 分钟前的样本参与本小时第一个增量");
+
+    // 7 小时缺口（离线队列淘汰了中间的报告）：恢复后那一小时记下整段增量，中间的小时没有行；读数变小仍按读数即增量
+    let (ha, hg) = (h0 + 2 * H, h0 + 9 * H);
+    let mut r4 = blank_report(4);
+    r4.host = vec![host(ha + 10_000, 20.0, 2000, 4000), host(hg + 10_000, 20.0, 6000, 12000), host(hg + 20_000, 20.0, 50, 100)];
+    assert_eq!(t.report("tok1", &r4).await.0, StatusCode::OK);
+    db::rollup_hours(&t.st.db).await.unwrap();
+    assert_eq!(nic_at(ha).await.unwrap(), Some((2000 - 600, 4000 - 1200)));
+    assert_eq!(nic_at(hg).await.unwrap(), Some((4000 + 50, 8000 + 100)));
+    assert_eq!(nic_at(ha + 3 * H).await.unwrap(), None);
+
+    // 机器的本月 / 今天网卡流量 = 组织时区本月 / 今天起的小时表之和（当前小时补一行，保证今天有数）
+    sqlx::query("insert into host_metric_hourly (machine_id, hour, net_rx, net_tx) values ($1, date_trunc('hour', now()), 7, 9)").bind(relay).execute(&t.st.db).await.unwrap();
+    t.st.live.rolled_up();
+    let want: (i64, i64, i64, i64) = sqlx::query_as(
+        "select sum(net_rx)::bigint, sum(net_tx)::bigint, (sum(net_rx) filter (where hour >= date_trunc('day', now() at time zone org_tz()) at time zone org_tz()))::bigint,
+                (sum(net_tx) filter (where hour >= date_trunc('day', now() at time zone org_tz()) at time zone org_tz()))::bigint
+         from host_metric_hourly where machine_id = $1 and hour >= date_trunc('month', now() at time zone org_tz()) at time zone org_tz()",
+    )
+    .bind(relay)
+    .fetch_one(&t.st.db)
+    .await
+    .unwrap();
+    let nic = t.get(&format!("/api/v1/machines/{relay}")).await["nic"].clone();
+    assert_eq!((nic["month_rx"].as_i64(), nic["month_tx"].as_i64(), nic["today_rx"].as_i64(), nic["today_tx"].as_i64()), (Some(want.0), Some(want.1), Some(want.2), Some(want.3)), "{nic}");
+    assert!(want.2 >= 7, "{want:?}");
 }
 
 /// agent 报离谱的计数器（0 → u64::MAX，一小时里跳两次）：汇总不溢出（每段增量按 10 Gbit/s 封顶），
@@ -1056,6 +1082,8 @@ async fn traffic_quota_alert_lifecycle() {
     let team = seed_team(&t, "团队1").await;
     let (node, _) = seed_node(&t, relay, team, 1, "203.0.113.5", 20000).await;
     xray_report(&t, 1, true).await;
+    // 上个月就上架了：本周期数据完整，摘要不带「X 起统计」
+    sqlx::query("update machine set activated_at = now() - interval '40 days' where id = $1").bind(relay).execute(&t.st.db).await.unwrap();
     // 线路机额度 1 GB、每月 1 号重置（账单时区北京）；节点没有订阅也没有套餐：不限
     sqlx::query("insert into subscription (machine_id, price_cents, due_date, traffic_gb, traffic_reset_day) values ($1, 500, current_date + 60, 1, 1)")
         .bind(relay)

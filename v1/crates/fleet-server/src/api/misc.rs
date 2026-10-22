@@ -20,7 +20,7 @@ use tokio::sync::broadcast::{self, error::RecvError};
 use uuid::Uuid;
 
 pub async fn overview(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
-    Ok(ok(views::overview_of(&views::live(&st).await?)))
+    Ok(ok(views::overview(&st).await?))
 }
 
 /// 共用的枚举中文名、常量、阈值、默认值与组织时区（见 meta.rs）：网页启动时取一次，fleetctl 每次命令需要时取一次
@@ -800,7 +800,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
     (title, summary)
 }
 
-/// subscription.set 改了的生效值（before / after）；另写按面板校准的已用流量
+/// subscription.set 改了的生效值（before / after）；旧记录另写按面板校准的已用流量（接口已不收，0040 之前的审计里还有）
 fn sub_changes(d: &Value) -> String {
     let (b, a) = (&d["before"], &d["after"]);
     if b.is_null() {

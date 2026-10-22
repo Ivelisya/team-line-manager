@@ -16,7 +16,7 @@ use time::Date;
 const RECENT: usize = 10;
 /// 流量上限是供应商的十进制 GB
 const GB: f64 = 1e9;
-/// `PUT /machines/{id}/subscription` 的字段：整份替换（另有 traffic_used_gb：没传 = 不改）
+/// `PUT /machines/{id}/subscription` 的字段：整份替换
 const SUB_KEYS: [&str; 9] = ["price_cents", "currency", "cycle", "due_date", "billing_tz", "auto_renew", "remind_days", "traffic_gb", "traffic_reset_day"];
 /// 其中可以「单独设置」的：null = 跟随模板（价格、币种、周期、流量上限跟随套餐，账单时区、提前提醒、流量重置日跟随供应商）
 const OVR: [&str; 7] = ["price_cents", "currency", "cycle", "billing_tz", "remind_days", "traffic_gb", "traffic_reset_day"];
@@ -24,7 +24,8 @@ const OVR: [&str; 7] = ["price_cents", "currency", "cycle", "billing_tz", "remin
 /// 这一项单独设置了（订阅的 overrides 里有它）
 fn overridden(s: &Value, k: &str) -> bool { s["overrides"].as_array().is_some_and(|a| a.iter().any(|x| x == k)) }
 
-/// 跟随时的值（同中控 sub_template / subscription_eff）：重置日按供应商的方式，账单日 = 订阅的账单日（billing_day）、自然月 = 1 号。
+/// 跟随时的值（同中控 sub_template / subscription_eff）：重置日按供应商的方式，账单日 = 订阅的账单日（billing_day）、自然月 = 1 号、
+/// 滚动 30 天没有重置日（null）。
 /// 账单日（同中控 meta::billing_day）：到期日落在现有账单日上的（含原样带回、31 号账单日的 2-28）沿用，否则（或新建）是新到期日几号
 fn inherited(tpl: &Value, k: &str, due: &str, cur: &Value) -> Value {
     let bday = || match (date(due), cur["billing_day"].as_u64()) {
@@ -32,7 +33,11 @@ fn inherited(tpl: &Value, k: &str, due: &str, cur: &Value) -> Value {
         (d, _) => d.map_or(1, |d| u64::from(d.day())),
     };
     match k {
-        "traffic_reset_day" => json!(if tpl["traffic_reset"] == "billing" { bday() } else { 1 }),
+        "traffic_reset_day" => match tpl["traffic_reset"].as_str() {
+            Some("billing") => json!(bday()),
+            Some("rolling30") => Value::Null,
+            _ => json!(1),
+        },
         _ => tpl[k].clone(),
     }
 }
@@ -105,11 +110,12 @@ fn src(s: &Value, m: &Value, keys: &[&str]) -> &'static str {
 /// 额度怎么量（中控 /meta 的 traffic_rules）：有 agent 的机器按网卡、照供应商的规则；家宽代理与同机 IP 节点是业务流量
 fn rule_cn(v: &Value) -> &str { v.as_str().map_or("业务流量", |r| meta::label("traffic_rules", r)) }
 
-/// 流量重置日（生效值）：跟随供应商时注明按账单日还是自然月
+/// 流量重置日（生效值）：跟随供应商时注明按账单日还是自然月；供应商按滚动 30 天的没有重置日
 fn reset_day_cn(s: &Value, m: &Value) -> String {
     let d = s["traffic_reset_day"].as_i64().unwrap_or(1);
     match m.pointer("/sub_template/traffic_reset").and_then(Value::as_str) {
         _ if overridden(s, "traffic_reset_day") => format!("每月 {d} 号（单独设置）"),
+        Some("rolling30") => "不按月重置：滚动 30 天（跟随供应商）".into(),
         Some(r) if !m["provider"].is_null() => format!("每月 {d} 号（跟随供应商：按{}）", meta::label("traffic_resets", r)),
         _ => format!("每月 {d} 号（默认）"),
     }
@@ -141,13 +147,46 @@ fn limit_cn(m: &Value, limit: Option<i64>) -> String {
     }
 }
 
-/// `901.6 GB / 2000 GB（45%），2026-10-13 起，入站和出站取较小值；已按面板校准（2026-10-22 15:30:00）`
+/// 时间戳的日期部分（组织时区）：「2026-10-22 起统计」
+fn day_of(t: &str) -> String { table::ts(t).chars().take(10).collect() }
+
+/// 按哪几块网卡计（agent 报的；旧 agent 没报为空）：`，按 ens3 计`。按业务流量算的不写（billing、show 共用）
+pub(crate) fn nic_cn(m: &Value) -> String {
+    let names: Vec<&str> = m.pointer("/agent/nic_ifaces").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+    if m["quota"]["rule"].is_null() || names.is_empty() { String::new() } else { format!("，按 {} 计", names.join(" + ")) }
+}
+
+/// 有额度时的已用：`967.4 GB / 2000 GB（48%），2026-10-13 → 2026-11-13，入站和出站取较小值，按 ens3 计；含接入前读数 964.1 GB（供应商面板读数，2026-11-13 起不再计入）`。
+/// 周期中途上架、没有接入前读数的写「2026-10-22 起统计，之前的用量不在内」；滚动 30 天写起点
 fn used_cn(m: &Value, limit: Option<i64>, pct: Option<i64>, incl: &str) -> String {
+    let q = &m["quota"];
     let lim = limit.map(|g| format!(" / {g} GB")).unwrap_or_default();
     let p = pct.map(|p| format!("（{p}%）")).unwrap_or_default();
-    let cal = m.pointer("/quota/base_at").and_then(Value::as_str).map(|t| format!("；已按面板校准（{}）", table::ts(t))).unwrap_or_default();
-    let used = gb(num(m, "/quota/used").unwrap_or(0.0));
-    format!("{used}{lim}{p}，{} 起，{}{incl}{cal}", st(m, "/quota/period_start"), rule_cn(&m["quota"]["rule"]))
+    let span = match q["period_end"].as_str() {
+        Some(e) => format!("{} → {e}", st(q, "/period_start")),
+        None => format!("{} 起", st(q, "/period_start")),
+    };
+    let note = match (num(q, "/base"), q["counted_from"].as_str()) {
+        (Some(b), _) => format!("；含接入前读数 {}（供应商面板读数{}）", gb(b), q["period_end"].as_str().map(|e| format!("，{e} 起不再计入")).unwrap_or_default()),
+        (None, Some(t)) => format!("；{} 起统计，之前的用量不在内", day_of(t)),
+        _ => String::new(),
+    };
+    format!("{}{lim}{p}，{span}，{}{}{incl}{note}", gb(num(q, "/used").unwrap_or(0.0)), rule_cn(&q["rule"]), nic_cn(m))
+}
+
+/// 本月流量（组织时区）：有 agent 的按网卡 `网卡 ↓ 110 GB / ↑ 108 GB`，家宽代理、同机 IP 节点按业务（下载 / 上传，含已移除入口）；
+/// 本月中途上架的带「（2026-10-22 起）」。billing 的不限流量行、show 共用
+pub(crate) fn month_cn(m: &Value) -> String {
+    let n = |p: &str| num(m, p).unwrap_or(0.0);
+    let v = if m["nic"].is_object() {
+        format!("网卡 ↓ {} / ↑ {}", gb(n("/nic/month_rx")), gb(n("/nic/month_tx")))
+    } else {
+        let es = m["entries"].as_array().map(Vec::as_slice).unwrap_or_default();
+        let sum = |k: &str| es.iter().filter_map(|e| e["traffic"][k].as_f64()).sum::<f64>() + n(&format!("/removed_traffic/{k}"));
+        format!("业务 下载 {} / 上传 {}", gb(sum("month_down")), gb(sum("month_up")))
+    };
+    let from = m["month_counted_from"].as_str().map(|t| format!("（{} 起）", day_of(t))).unwrap_or_default();
+    format!("{v}{from}")
 }
 
 /// 备用团队里在用的机器（`spare`）：到期后再留 1 天，由中控自动退役并彻底删除。不是备用、不在用时为 None（billing、show 共用）
@@ -176,7 +215,12 @@ fn billing_text(name: &str, m: &Value, limit: Option<i64>, pct: Option<i64>, ren
         rows.push(("流量上限", limit_cn(m, limit)));
     }
     let incl = if m["ip_nodes"].as_array().is_some_and(|a| !a.is_empty()) { "，含同机 IP 节点" } else { "" };
-    rows.push(("本周期已用", used_cn(m, limit, pct, incl)));
+    // 有额度的才有「本周期」；不限流量的只写本月；同机 IP 节点没设上限的与宿主机共用（流量上限那一行已写明）
+    match limit {
+        Some(_) => rows.push((if m["quota"]["mode"] == "rolling30" { "近 30 天已用" } else { "本周期已用" }, used_cn(m, limit, pct, incl))),
+        None if m["host_machine"].is_null() => rows.push(("本月流量", format!("流量不限 · 本月 {}", month_cn(m)))),
+        None => {}
+    }
     let out = table::kv(&rows);
     if s.is_null() {
         let price = if m["plan"].is_null() { " --price <金额>" } else { "" };
@@ -287,7 +331,6 @@ pub struct SubSetOpts<'a> {
     pub tz: Option<&'a str>,
     pub traffic_gb: Option<&'a str>,
     pub reset_day: Option<&'a str>,
-    pub used: Option<&'a str>,
     pub yes: bool,
 }
 
@@ -349,14 +392,6 @@ pub(crate) fn sub_patch(o: &SubSetOpts<'_>) -> anyhow::Result<Map<String, Value>
     if let Some(v) = o.reset_day {
         p.insert("traffic_reset_day".into(), int_or_none(v, 1..=31, "--reset-day 写 1–31（每月几号），或 none（跟随供应商：按账单日或自然月）")?);
     }
-    if let Some(v) = o.used {
-        let g = if is_none(v) {
-            Value::Null
-        } else {
-            v.trim().parse::<f64>().ok().filter(|g| g.is_finite() && *g >= 0.0).map(|g| json!(g)).ok_or_else(|| anyhow!("--used 写供应商面板上本周期已用的 GB 数（如 901.6），或 none（清掉校准）"))?
-        };
-        p.insert("traffic_used_gb".into(), g);
-    }
     Ok(p)
 }
 
@@ -379,7 +414,7 @@ fn merge_sub(cur: &Value, patch: Map<String, Value>) -> anyhow::Result<Value> {
     Ok(b)
 }
 
-/// 改了哪些（`费用 39.46 USD / 月（跟随套餐） → 45.00 USD / 月（单独设置）`）；新建时列出全部。按面板校准不在现有订阅里，给了就列。
+/// 改了哪些（`费用 39.46 USD / 月（跟随套餐） → 45.00 USD / 月（单独设置）`）；新建时列出全部。
 /// 新值按 `effective` 算生效值（和模板相同的按跟随，同中控）
 fn sub_changes(m: &Value, new: &Value) -> Vec<String> {
     let cur = &m["subscription"];
@@ -387,17 +422,11 @@ fn sub_changes(m: &Value, new: &Value) -> Vec<String> {
     if eff["auto_renew"].is_null() {
         eff["auto_renew"] = json!(false);
     }
-    let mut v: Vec<String> = if cur.is_null() {
+    if cur.is_null() {
         sub_fields(&eff, m).into_iter().map(|(k, v)| format!("{k} {v}")).collect()
     } else {
         sub_fields(cur, m).into_iter().zip(sub_fields(&eff, m)).filter(|(a, b)| a.1 != b.1).map(|((k, a), (_, b))| format!("{k} {a} → {b}")).collect()
-    };
-    match new.get("traffic_used_gb") {
-        Some(Value::Null) => v.push("清掉按面板的校准".into()),
-        Some(g) => v.push(format!("按面板校准本周期已用为 {}（之后按网卡流量累加）", gb(g.as_f64().unwrap_or(0.0) * GB))),
-        None => {}
     }
-    v
 }
 
 /// `subscription set <机器>`：先读现有订阅、只改给了的字段再整份提交；可单独设置的字段给 none 改回跟随。
@@ -405,7 +434,7 @@ fn sub_changes(m: &Value, new: &Value) -> Vec<String> {
 pub fn subscription_set(ctx: &Ctx, o: SubSetOpts<'_>) -> anyhow::Result<u8> {
     let patch = sub_patch(&o)?;
     if patch.is_empty() {
-        bail!("没有要改的内容：给 --price / --currency / --cycle / --due / --auto-renew / --remind-days / --tz / --traffic-gb / --reset-day / --used 之一");
+        bail!("没有要改的内容：给 --price / --currency / --cycle / --due / --auto-renew / --remind-days / --tz / --traffic-gb / --reset-day 之一");
     }
     let (id, name) = ctx.find_id(o.machine, Want::Live)?;
     let m = ctx.c.get(&format!("/machines/{id}"))?;
@@ -487,12 +516,6 @@ mod tests {
         // 按账单日重置的跟随值随到期日变（小月按月末的事中控按周期算）
         let b = merge_sub(cur, sub_patch(&SubSetOpts { due: Some("2026-11-30"), ..Default::default() }).unwrap()).unwrap();
         assert_eq!(sub_changes(&m, &b), ["到期日 2026-10-25 → 2026-11-30", "流量重置日 每月 25 号（跟随供应商：按账单日） → 每月 30 号（跟随供应商：按账单日）"]);
-        // 按面板校准：不在现有订阅里，给了就提交（GB，可带小数），none = 清掉
-        let b = merge_sub(cur, sub_patch(&SubSetOpts { used: Some("901.6"), ..Default::default() }).unwrap()).unwrap();
-        assert_eq!((b["traffic_used_gb"].as_f64(), b["price_cents"].as_i64()), (Some(901.6), Some(4200)));
-        assert_eq!(sub_changes(&m, &b), ["按面板校准本周期已用为 901.6 GB（之后按网卡流量累加）"]);
-        let b = merge_sub(cur, sub_patch(&SubSetOpts { used: Some("none"), ..Default::default() }).unwrap()).unwrap();
-        assert_eq!(sub_changes(&m, &b), ["清掉按面板的校准"]);
         // 没有订阅：新建只要到期日，其余跟随（不写默认值）
         let mut fresh = machine();
         fresh["subscription"] = Value::Null;
@@ -512,8 +535,6 @@ mod tests {
             SubSetOpts { due: Some("2026-11-31"), ..Default::default() },
             SubSetOpts { currency: Some("US"), ..Default::default() },
             SubSetOpts { price: Some("1.999"), ..Default::default() },
-            SubSetOpts { used: Some("-1"), ..Default::default() },
-            SubSetOpts { used: Some("901.6GB"), ..Default::default() },
         ];
         for o in &bad {
             assert!(sub_patch(o).is_err());
@@ -544,10 +565,20 @@ mod tests {
         assert_eq!(limit_cn(&m, traffic_limit(&m)), "与宿主机「团队1-03」共用");
         let m = q(Value::Null, "none");
         assert_eq!(limit_cn(&m, traffic_limit(&m)), "不限");
-        // 已用同供应商面板：十进制 GB；校准过的注明
-        let q = json!({"ip_nodes": [], "quota": {"used": 901_600_000_000i64, "period_start": "2026-10-13", "rule": "min", "base": 869_700_000_000i64, "base_at": "2026-10-22T07:30:00Z"}});
-        assert_eq!(used_cn(&q, Some(2000), Some(45), ""), "901.6 GB / 2000 GB（45%），2026-10-13 起，入站和出站取较小值；已按面板校准（2026-10-22 15:30:00）");
-        let q = json!({"quota": {"used": 31_900_000, "period_start": "2026-10-01", "rule": null, "base_at": null}});
-        assert_eq!(used_cn(&q, None, None, ""), "0.03 GB，2026-10-01 起，业务流量");
+        // 已用同供应商面板：十进制 GB；写起止、规则、按哪块网卡；有接入前读数的注明到哪天为止
+        let q = json!({"agent": {"nic_ifaces": ["ens3"]}, "quota": {"used": 901_600_000_000i64, "period_start": "2026-10-13", "period_end": "2026-11-13", "rule": "min",
+            "base": 869_700_000_000i64, "base_at": "2026-10-22T07:30:00Z", "counted_from": null}});
+        assert_eq!(
+            used_cn(&q, Some(2000), Some(45), ""),
+            "901.6 GB / 2000 GB（45%），2026-10-13 → 2026-11-13，入站和出站取较小值，按 ens3 计；含接入前读数 869.7 GB（供应商面板读数，2026-11-13 起不再计入）"
+        );
+        // 滚动 30 天、周期中途上架（日期按组织时区）；业务流量不写网卡
+        let q = json!({"agent": {"nic_ifaces": ["eth0"]}, "quota": {"used": 31_900_000, "period_start": "2026-09-24", "period_end": null, "rule": null, "base": null, "counted_from": "2026-10-21T17:10:00Z"}});
+        assert_eq!(used_cn(&q, Some(1000), Some(0), ""), "0.03 GB / 1000 GB（0%），2026-09-24 起，业务流量；2026-10-22 起统计，之前的用量不在内");
+        // 不限流量只写本月：有 agent 按网卡，家宽代理按业务（含已移除入口）
+        let m = json!({"nic": {"month_rx": 110_000_000_000i64, "month_tx": 108_000_000_000i64}, "month_counted_from": "2026-10-21T17:10:00Z"});
+        assert_eq!(month_cn(&m), "网卡 ↓ 110 GB / ↑ 108 GB（2026-10-22 起）");
+        let m = json!({"nic": null, "entries": [{"traffic": {"month_down": 3_000_000_000i64, "month_up": 1_000_000_000i64}}], "removed_traffic": {"month_down": 500_000_000, "month_up": 0}});
+        assert_eq!(month_cn(&m), "业务 下载 3.5 GB / 上传 1 GB");
     }
 }

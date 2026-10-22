@@ -361,13 +361,13 @@ async fn ingest(st: &AppState, h: &HeaderMap, mut r: Report) -> Result<Json<Repo
     warn_dropped(a.machine_id, dropped, r.seq);
 
     // 有新原始数据的整点小时：标脏，小时汇总补算。当前小时的汇总循环每轮都会算，不用标。
+    // 主机样本连下一小时一起标：下一小时第一个网卡增量的前值可能就是它（多算一次是幂等的）
     let cur_hour = floor_hour(now);
     let dirty: Vec<OffsetDateTime> = host
         .iter()
-        .map(|(_, t)| *t)
-        .chain(es.iter().map(|(_, t)| *t))
-        .chain(ps.iter().map(|(_, t)| *t))
-        .map(floor_hour)
+        .flat_map(|(_, t)| [floor_hour(*t), floor_hour(*t) + time::Duration::hours(1)])
+        .chain(es.iter().map(|(_, t)| floor_hour(*t)))
+        .chain(ps.iter().map(|(_, t)| floor_hour(*t)))
         .filter(|h| *h < cur_hour)
         .collect::<BTreeSet<_>>()
         .into_iter()

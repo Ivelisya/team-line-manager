@@ -61,7 +61,7 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
 | POST | `/teams` | `{name,sort_order?,spare?}` |
 | PATCH | `/teams/{id}` | `{name?,sort_order?,spare?}`（改团队名 = 该团队所有节点显示名一起变） |
 | DELETE | `/teams/{id}` | 还有机器（含已退役的）或软路由时 409（写明还有几台）；没有才删，团队自己的访问规则一起删。审计 `team.delete` |
-| GET | `/providers` | `[{id,name,code,panel_url,timezone,traffic_rule,traffic_reset,remind_days}]`；`traffic_rule` 是这家怎么计量流量额度（网卡本周期入、出总量）：`min` 取小（如 GOMAMI）/ `max` 取大 / `sum` 相加 / `out` 只算出站。供应商同时是名下机器订阅的**模板**：`timezone`（账单时区）、`traffic_reset`（流量周期：`month` 账单时区的自然月、每月 1 号起；`billing` 账单日，即每台机器到期日是几号就几号起，月份没有这一天按月末）、`remind_days`（到期前几天提醒，0–60）——订阅没单独设置这几项的跟随它，改了立即生效 |
+| GET | `/providers` | `[{id,name,code,panel_url,timezone,traffic_rule,traffic_reset,remind_days}]`；`traffic_rule` 是这家怎么计量流量额度（网卡本周期入、出总量）：`min` 取小（如 GOMAMI）/ `max` 取大 / `sum` 相加 / `out` 只算出站。供应商同时是名下机器订阅的**模板**：`timezone`（账单时区）、`traffic_reset`（流量周期：`month` 账单时区的自然月、每月 1 号起；`billing` 账单日，即每台机器到期日是几号就几号起，月份没有这一天按月末；`rolling30` 滚动 30 天，账单时区的今天往前 29 天起、没有重置日，如 Blossom）、`remind_days`（到期前几天提醒，0–60）——订阅没单独设置这几项的跟随它，改了立即生效 |
 | POST | `/providers` | `{name,code,panel_url?,timezone?,traffic_rule?,traffic_reset?,remind_days?}`；`traffic_rule` 不传 = `max`（不知道的供应商按取大，不会少算），`traffic_reset` 不传 = `month`，`remind_days` 不传 = 7，别的值 400；`panel_url` 须是 http(s) 地址（400）；`timezone` 不传 / null / 空串 = 存 null、跟随组织时区（`/meta` 的 org_timezone），否则须是 `at time zone` 认的时区（400）；名称或缩写重复 409 |
 | PATCH | `/providers/{id}` | `{name?,code?,panel_url?,timezone?,traffic_rule?,traffic_reset?,remind_days?}`：没传的不改（`traffic_rule` 改了立即影响这家机器的 `quota.used`；`timezone` / `traffic_reset` / `remind_days` 改了立即影响没单独设置这几项的订阅）；`panel_url` null / 空串 = 清空；`timezone` null / 空串 = 改回跟随组织时区（null）。校验同 POST（`panel_url` 和库里现有的一样时不校验：加 http(s) 校验之前存下的旧值不挡改别的字段）。写审计 `provider.update` |
 | DELETE | `/providers/{id}` | 还有套餐（含已归档的）或机器（含已退役的）时 409；没有才删。审计 `provider.delete` |
@@ -92,11 +92,13 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
                                 // 全是生效值（字段名同以前，旧调用方照用）：订阅只存到期日、自动续费和「单独设置」的项，其余跟随 sub_template——
                                 // price_cents / currency / cycle / traffic_gb 跟随套餐，billing_tz / remind_days / traffic_reset_day 跟随供应商。
                                 // overrides：单独设置了的字段名（如 ["price_cents"]），不在里面的就是跟随的。traffic_gb：0 / null = 不限。
-                                // traffic_reset_day 总有值：单独设置的，或供应商 traffic_reset = billing 时是账单日（billing_day）、month 时 1
+                                // traffic_reset_day：单独设置的，或供应商 traffic_reset = billing 时是账单日（billing_day）、month 时 1、rolling30（滚动 30 天）时 null
   sub_template: {price_cents|null, currency, cycle, billing_tz, remind_days, traffic_gb|null, traffic_reset},
                                 // 订阅模板（没有订阅也给）：套餐的价格 / 币种 / 周期 / 流量（没有套餐时 price_cents、traffic_gb 为 null，币种周期 USD / monthly），
                                 // 供应商的时区 / 提醒天数 / 重置方式（供应商没填时区或没有供应商时是组织时区，没有供应商时 7 / month）。网页「跟随套餐：2000 GB」就是它
-  agent: {version,last_report_at,online,xray_running,cores,health,clock_skew_ms}|null,  // proxy 没有；cores 为 agent 报的可用核数（容器里是限额），没报过为 null
+  agent: {version,last_report_at,online,xray_running,cores,health,clock_skew_ms,nic_ifaces}|null,  // proxy 没有；cores 为 agent 报的可用核数（容器里是限额），没报过为 null
+                                // nic_ifaces：agent 计量流量用的网卡（如 ["ens3"]：默认路由所在网卡 ∪ 配有公网地址的物理网卡，
+                                // 或 agent.toml 的 nic_ifaces），旧 agent 没报过为 []；不随实时推送更新
                                 // online：120 秒内报过；中控收不到上报的时段（中控停机、库连不上）不算 agent 的沉默，恢复后重发还没到的头一两分钟不判离线
                                 // clock_skew_ms：agent 时钟偏差（毫秒）= 中控收到时刻 − 报告的 sent_at_ms，正数 = agent 时钟慢；只按新鲜的报告
                                 // （建报时离线队列为空、上一份 30 秒内收到）更新，误差 < 30 秒，没算过为 null。|偏差| > 60 秒时健康原因有 clock_skew
@@ -108,18 +110,30 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
   host: {ts,cpu_pct,load1,mem_used,mem_total,disk_used,disk_total,net_rx_bps,net_tx_bps,tcp_conns}|null,  // load1 在容器里为 null（/proc/loadavg 是宿主机的）
   entries: [EntryView],                                // 节点：自己的入口；线路机：挂在上面的入口
   removed_traffic: {today_up,today_down,month_up,month_down},  // 已移除入口（如换线路机后的旧入口）本月/今天的流量，不在 entries 里
-  quota: {limit_gb, limit_source, used, period_start, rule, base, base_at},  // 流量额度：生效的上限、周期已用（字节）与周期起点（日期）。
+  nic: {today_rx,today_tx,month_rx,month_tx}|null,     // 按网卡计的今天 / 本月流量（字节，组织时区的今天 / 本月，同入口的 traffic）：rx = 下行（本机收），
+                                // tx = 上行（本机发），只算 agent.nic_ifaces 那几块网卡。有自己 agent 的机器（线路机、VPS 节点、宿主机）才有，
+                                // 家宽代理、同机 IP 节点为 null（看业务流量：entries[].traffic + removed_traffic）。来自小时汇总表，每次汇总后更新。
+                                // 不做全站合计：同一个字节在线路机和节点的网卡上各算一次
+  month_counted_from: "RFC 3339"|null,  // 本月（组织时区）的数据从这一刻才有：首次上架完成（activated_at）晚于本月 1 号 0 点时为它，否则 null。
+                                // 网卡与业务的本月数都适用；之前的用量不在内（供应商控制台的数会更大），下个月自动为 null
+  quota: {limit_gb, limit_source, used, period_start, period_end, mode, counted_from, rule, base, base_at},  // 流量额度：生效的上限、周期已用（字节）与周期起止（日期）。
                                 // limit_gb：生效的上限（十进制 GB），没有上限为 null；告警、网页、fleetctl 都按它，不各自再算。
                                 // limit_source：subscription（订阅单独设置）/ plan（跟随套餐，没有订阅时也是套餐的）/
                                 // host（同机 IP 节点没有自己的上限，与宿主机共用：宿主机的已用含它的流量）/ none（不限）。
                                 // 有自己 agent 的机器（线路机、VPS 节点、宿主机）按网卡：本周期物理网卡入、出总量按供应商的 traffic_rule
                                 // 取小 / 取大 / 相加 / 只取出站（没有供应商按 max），rule 即所用规则；宿主机的网卡也走了它的同机 IP 节点的流量。
                                 // 家宽代理和同机 IP 节点没有自己的网卡读数：rule 为 null，used 是业务流量（下载+上传，含已移除入口）。
-                                // base / base_at：本周期按供应商面板校准过（见 PUT subscription 的 traffic_used_gb）时的面板读数（字节）与校准时间，
-                                // used = base + 校准时刻所在整点之后的用量（那一小时里校准之后的部分不计，至多差 1 小时；取小 / 取大按校准之后的入、出总量算）；
-                                // 校准时间早于周期起点（已进入新周期）时不算，二者为 null。
-                                // 有订阅：账单时区里今天或之前最近一次（生效的）重置日起（月份没有这一天按月末，如 31 号在 9 月是 30 号、2 月是 28 / 29 号），
-                                // 从该日账单时区零点累计；没有订阅：sub_template.billing_tz 的本月。来自小时汇总表，每次汇总后更新。
+                                // base / base_at：接入前读数——割接时按供应商面板录的本周期已用（字节）与录入时间，只读（PUT subscription 已不收新值），
+                                // used = base + 录入时刻所在整点之后的用量（那一小时里录入之后的部分不计，至多差 1 小时）；
+                                // 录入时间早于周期起点（已进入新周期）时自动失效，二者为 null。之后的版本删掉这两个字段。
+                                // mode：monthly = 按月重置：有订阅时是账单时区里今天或之前最近一次（生效的）重置日起（月份没有这一天按月末，
+                                // 如 31 号在 9 月是 30 号、2 月是 28 / 29 号），从该日账单时区零点累计；没有订阅：sub_template.billing_tz 的本月。
+                                // rolling30 = 滚动 30 天（供应商 traffic_reset = rolling30 且订阅没单独设置重置日）：period_start = 账单时区的今天往前 29 天
+                                // （含今天共 30 个日历天），每天往前挪一天，界面写「近 30 天已用」。
+                                // period_end：下次重置日（这一天账单时区零点起是新周期）；rolling30 为 null。
+                                // counted_from：本周期的数据从这一刻才有——首次上架完成（activated_at）晚于周期起点、且没有接入前读数时为它，否则 null；
+                                // 之前的用量不在 used 里，实际剩余可能更少（rolling30 的新机器头 30 天都带）。来自小时汇总表，每次汇总后更新。
+                                // 不限流量（limit_gb 为 null）的机器 used 照算，界面只显示本月（nic 或业务流量），不显示本周期
   health: {status: "ok"|"degraded"|"down"|"unknown"|"maintenance"|"inactive", reasons:[{key,severity,text}]},
   active_job: {id,kind,state}|null,                    // 进行中的作业（queued/running/waiting/cancelling）
   failed_job: {id,kind,state}|null,                    // lifecycle = failed（上架失败）时：失败的上架/恢复作业，重试回到 provisioning，取消则补偿退役；
@@ -147,7 +161,7 @@ EntryView = { id, relay:{id,name}, node:{id,name}, direct, port, lifecycle, appl
 | POST | `/machines/{id}/upgrade-agent` | 推送中控当前版本的 agent 并重启（作业 `upgrade_agent`；令牌顺带轮换） → `{data:{machine_id,name,kind,job_id,after:null}}`。线路机顺带收敛 fleet-xray 单元（变了只 daemon-reload，不重启 Xray，等它下次重启才生效）与访问日志轮转（配置 + 每小时的 fleet-xray-logrotate.timer），这两样没装上只记警告。**回滚**：推送时机器上的旧程序留成同目录的 `/usr/local/bin/fleet-agent.prev`（硬链接，新程序原子替换；上一次留的被覆盖，成功后也留着）；重启后新版本起不来（隔 3 秒主进程换了，或不是 active），或 2 分钟内没有用新令牌、以新版本号上报，就把 .prev 换回去并重启，作业失败，错误写明「新版本 X 起不来（…）/ 重启后 120 秒没有上报，已回滚到 <旧版本>」；机器上没有 .prev 或换回去也没起来时写明需要人工处理。程序和 dist 里的相同（推送跳过）时不回滚。**线路机**另要新版本自己报的 Xray 状态做到：Xray 在跑、已应用的配置追上升级开始时的期望代数、没有应用错误（`relay.apply_error` 与 agent 自报的 `last_apply_error` 都算）；只查升级前（推送之前读的 agent 最近状态）就做到的项，记在作业参数 `xray_checks`、推送那一步输出 `xray_checks`。2 分钟做不到同样换回并失败，错误「新版本 X 重启后 120 秒线路机检查没通过（Xray 没在跑；已应用的配置代数 2，没到 3；应用配置出错：…），已回滚到 <旧版本>」（`error_kind` remote）。「新版本自己报的」：中控入库时给 `agent_state.info.xray` 记上报它的 agent 版本（`agent_version`）——重启后新进程最先补发旧进程退出时落盘的报告，之后几份不带 Xray 状态，按上报时间分不出来。同机 IP 节点 409（agent 是宿主机的，升级宿主机） |
 | POST | `/machines/{id}/tune` | 重做系统调优（作业 `tune`，当前调优档 `tune-v1`，内容见 DESIGN.md §3）：写内核网络参数、journald 体积上限、补时间同步，逐键直接写 `/proc/sys` 再读回，只有读回一致的键进 `/etc/sysctl.d/99-zz-fleet-tune.conf`；不重启 ssserver / Xray、不断连接。无请求体 → `{data:{machine_id,name,job_id}}`。同机 IP 节点 409「同机 IP 节点和宿主机共用系统设置：对宿主机「X」调优」，家宽代理 409「家宽代理没有我们的机器」，非在用 409，机器上有进行中的作业 409。作业只能在排队时取消。审计 `machine.tune`（`{name, profile, job_id}`）。成功后机器的 `tune` = `{profile, at, current:true}`，不动 `revision` |
 | POST | `/agents/upgrade` | 所有在用线路机与 VPS 节点（不含同机 IP 节点）各建一个 `upgrade_agent` 作业（有进行中作业的跳过；每台单独提交，一台冲突不影响其他台），但不一起跑：先升一台做**金丝雀**（有线路机先挑线路机；同类里在用入口少的在前，一样少按名字），它成功后其余线路机**一台接一台**，线路机都成功后 VPS 节点**并发**（作业引擎的并发上限 `job_workers`）。编排记在作业参数 `after`（要等的作业 id）：那个作业结束之前这个作业领取不到（一直是 queued）；它在推送之后失败了（新版本起不来、没上报、线路机检查没通过）或被取消，这个作业一步都不做、直接取消，`error` 写明原因（如「金丝雀「线路机2」升级失败，其余机器不再升级」「「线路机3」升级失败，后面的机器不再升级」「「线路机3」的升级没有完成（已取消），后面的机器不再升级」，再往后的沿用同一个原因），日志一条「没有开始：…」。它在推送之前就失败的（SSH 连不上、登录被拒、推送失败：机器上的程序没换过，与新版本无关）不算，这个作业照常开始——agent 步骤每次尝试先记作业参数 `pushed=false`，要用 dist 里的程序重启 agent 之前置 true，编排据此判断（没有记的按推送之后算）。排队中的作业可以取消（`POST /jobs/{id}/cancel`），等它的跟着取消。VPS 节点之间互不等待，一台失败不影响别的。发起时把 dist 里 agent 的 sha256 与版本号记进各作业参数 `rollout:{sha256,version}`，每个作业开始前、推送时各核对一次：中途重新部署过中控（dist 换了）就不推，正要推送的失败、没开始的直接取消，`error` 都是「中控上的 agent 在升级过程中换了版本（发起时是 X），请重新发起全部升级」。dist 里没有 agent 程序或读不出版本号（`--version`）时 409、不建作业 → `{data:{jobs:[{machine_id,name,kind,job_id,after}], skipped:[{machine_id,name,reason}], order}}`：`jobs` 按执行顺序（第一个是金丝雀，`after` 为 null）；`order` 是给人看的顺序说明，如「先升「线路机3」做金丝雀，成功后其余 2 台线路机逐台升级，线路机都成功后 40 台 VPS 节点并发升级；新版本在任何一台线路机上出问题，没开始的都会取消」（只有一台时「只有「X」一台」，一台都没建时「没有要升级的机器」） |
-| PUT | `/machines/{id}/subscription` | `{due_date, price_cents?,currency?,cycle?,billing_tz?,remind_days?,traffic_gb?,traffic_reset_day?, auto_renew?, traffic_used_gb?}`。只有 `due_date` 必填。`price_cents` … `traffic_reset_day` 是**单独设置**，整份替换：没传或 null = 跟随模板（见 `sub_template`），给了值 = 这台单独设置；和模板相同的值也按跟随存（旧客户端整份带上生效值不会把套餐的值抄进来）。没有套餐的机器价格没有可跟随的，必须给 `price_cents`（400）。校验：`price_cents` / `traffic_gb` ≥ 0、`cycle` 四选一、`currency` 3 个字母（存成大写）、`remind_days` 0–60、`traffic_reset_day` 1–31、`billing_tz` 须是 `at time zone` 认的时区，否则 400。`auto_renew` 没传 = 不改（新建为否）。账单日（`billing_day`）：`due_date` 落在现有账单日上的（原样带回的到期日、小月的月末，如 31 号账单日的 2-28）不动，否则（或新建）记成 `due_date` 是几号。`traffic_gb` 是供应商的十进制 GB（10⁹ 字节，0 = 不限）。`traffic_used_gb`：按供应商面板校准本周期已用（GB，可带小数，如 901.6；负数 400），记成字节与当前时间（`quota.base` / `base_at`）；不传 = 不动原有校准（整份替换只针对其余字段），null = 清掉。写审计 `subscription.set` |
+| PUT | `/machines/{id}/subscription` | `{due_date, price_cents?,currency?,cycle?,billing_tz?,remind_days?,traffic_gb?,traffic_reset_day?, auto_renew?}`。只有 `due_date` 必填。`price_cents` … `traffic_reset_day` 是**单独设置**，整份替换：没传或 null = 跟随模板（见 `sub_template`），给了值 = 这台单独设置；和模板相同的值也按跟随存（旧客户端整份带上生效值不会把套餐的值抄进来）。没有套餐的机器价格没有可跟随的，必须给 `price_cents`（400）。校验：`price_cents` / `traffic_gb` ≥ 0、`cycle` 四选一、`currency` 3 个字母（存成大写）、`remind_days` 0–60、`traffic_reset_day` 1–31、`billing_tz` 须是 `at time zone` 认的时区，否则 400。`auto_renew` 没传 = 不改（新建为否）。账单日（`billing_day`）：`due_date` 落在现有账单日上的（原样带回的到期日、小月的月末，如 31 号账单日的 2-28）不动，否则（或新建）记成 `due_date` 是几号。`traffic_gb` 是供应商的十进制 GB（10⁹ 字节，0 = 不限）。不再按面板校准：带 `traffic_used_gb`（数值或 null）400「流量已用改为由 agent 按网卡统计，不再按面板校准」；已录的接入前读数不受 PUT 影响，进入下一个周期自动失效（见 `quota.base`）。写审计 `subscription.set` |
 | POST | `/machines/{id}/renewals` | `{new_due?, cycles?, amount_cents?, note?}`，`new_due` 与 `cycles` 给一个（都给、都不给、`cycles` 不在 1–120 时 400）：`cycles` = 中控按订阅生效的 `cycle` 从当前到期日推几个周期，落在账单日（`billing_day`，目标月没有这一天时落到月末；账单日不变，所以 31 号的 1-31 → 2-28 → 3-31，不会漂成 3-28；fleetctl `renew --cycles`）；`new_due` 直接给新到期日（网页对话框默认填 `subscription.next_due`），账单日同改订阅：落在现有账单日上的不动，否则改成它是几号。新到期日要晚于当前的。只顺延到期日，单独设置照旧 → `{id, old_due, new_due}` |
 | GET | `/machines/{id}/renewals` | |
 | GET | `/teams/{id}/renumber` | 预览：`{data:{changes:[{machine_id,old_name,new_name}],token}}` |
@@ -237,7 +251,7 @@ ProvisionItem = {
 ## 总览与告警
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/overview` | `{nodes:{total,ok,degraded,down,unknown,maintenance}, relays:{…}, provisioning, retiring, failed（上架失败的机器数，网页「有问题」里也算它们）, due_soon（`subscription.due_state = soon` 的台数：到期前提前提醒天数内、不是自动续费，网页「即将到期」）, overdue（已过期的台数）, online, offline（按 agent 连通：agent 没有近期上报为离线，家宽代理没有 agent 算在线；与健康无关，有严重告警但照常上报的算在线）, monthly_cost:[{currency,cents}]（各台 `subscription.monthly_cents` 按币种分别相加，不做汇率折算）, traffic_month:{up,down}, net_rx_bps, net_tx_bps}`（只统计 active；速率不含 agent 离线的机器——告警不影响，照常上报的机器照算；同机 IP 节点的读数就是宿主机的，速率不重复算，节点数与在线 / 离线照常按节点计） |
+| GET | `/overview` | `{nodes:{total,ok,degraded,down,unknown,maintenance}, relays:{…}, provisioning, retiring, failed（上架失败的机器数，网页「有问题」里也算它们）, due_soon（`subscription.due_state = soon` 的台数：到期前提前提醒天数内、不是自动续费，网页「即将到期」）, overdue（已过期的台数）, online, offline（按 agent 连通：agent 没有近期上报为离线，家宽代理没有 agent 算在线；与健康无关，有严重告警但照常上报的算在线）, monthly_cost:[{currency,cents}]（各台 `subscription.monthly_cents` 按币种分别相加，不做汇率折算）, traffic_month:{up,down}, net_rx_bps, net_tx_bps}`（traffic_month 是本月（组织时区）全部入口的业务流量合计：每条入口的字节只在它的线路机上统计一次，含已移除的入口和月中退役、替换掉的机器；网卡流量不做合计。其余只统计 active；速率不含 agent 离线的机器——告警不影响，照常上报的机器照算；同机 IP 节点的读数就是宿主机的，速率不重复算，节点数与在线 / 离线照常按节点计） |
 | GET | `/overview/series?minutes=30` | 总览网速曲线：`{points:[{ts, net_rx_bps, net_tx_bps}]}`，`minutes` 1–60（默认 30，越界 400）；最近 N 个**结束满 20 s** 的分钟（agent 每 10 s 上报，刚结束的那一分钟还缺最后的上报，不给）每分钟一个点、旧→新，`ts` 为该分钟起点（RFC3339）。每个点 = 该分钟有主机指标的 active 机器速率之和，单台算法同 `/machines/{id}/series?metric=host`（每分钟计数器最大值与上一个有数据的分钟相减 ×8 / 秒数；计数器回绕的那一段不计）；没有数据的分钟为 0 |
 | GET | `/probe-beats` | 探测心跳条：`{<机器id>: [[n, ok, ms], …20 格]}`。每格 3 分钟、按墙钟对齐（`date_bin('3 minutes', ts, 'epoch')`，即每小时的 :00 / :03 / … ），旧→新，最后一格是当前这格（还没走完）；第 i 格 = `[cb-57m+3i 分, cb-57m+3(i+1) 分)`，cb = 当前这格的起点；每格 `[n, ok, ms, retrans]`：`n` = 次数，`ok` = 成功次数，`ms` = 成功的延迟中位数（没有成功的为 null），`retrans` = 建连时 SYN 重发过的次数（丢包，不算进 ms；旧 agent 不报，为 0）；没有数据的格为 `[0,0,null,0]`。节点：线路机 → 节点的 TCP 探测，汇总它的入口；线路机：中控 → 线路机的连通性（`relay_reach`，中控每 30 秒连一次它的客户入口——public_host + 最小的在用入口端口——只判通不通，ms 为 null；中控自己的网络不通时那一轮不记），不再汇总它上面的入口；只含这 20 格里有数据的在用机器 |
 | GET | `/incidents?state=firing\|resolved\|all&subject_id=&limit=100&offset=0` | 分页：`{items:[{id,rule,rule_name,subject:{id,name},subject_id,subject_name,severity,state,summary,opened_at,last_seen_at,resolved_at,ack_at,ack_by,reopen_count}], total, acked, next_offset}`；`acked` = 同一筛选下已确认的条数（确认不关闭告警，`total` 含它们）；`state` 默认 firing；`subject_id`（可选，机器 id）只看这台机器的告警，与 `state`、分页组合，`total` 同样只数它的（如抽屉的最近告警：`?subject_id=<id>&state=all&limit=5`；不是 uuid 时 400）；`reopen_count`：恢复后 30 分钟内同一（规则, 对象）复发会重开原告警而不是新建，每次 +1；顺序：进行中在前 → 严重度高在前 → 开始时间新在前（同时刻按 id，翻页不重不漏）；带 `subject_id` 时不看严重度：进行中在前 → 开始时间新在前（一台机器的「最近告警」按时间读）。中控自身的告警（规则 `central_` 开头，见下表）对象不是机器：`subject`、`subject_id` 为 null，`subject_name` 为「中控」 |
@@ -259,7 +273,7 @@ ProvisionItem = {
 ## 返回形状补充（前端以此为准）
 
 - `health.reasons[]`：`{key, rule_name, severity, text}`；`rule_name` 是规则中文名（同通知）；`severity`：`"info"` | `"warning"` | `"critical"`（info 只有 `policy_blocked`，不影响健康）。
-  `traffic_quota_high`（「流量额度吃紧」）：本周期已用（`quota.used`）到上限（订阅的 `traffic_gb`，没填按套餐的；0 / 空 = 不限，不评估）的 90% 为 warning，到 100% 为 critical；上限按十进制 GB（1 GB = 10⁹ 字节，同供应商），文案也写 GB、不换算成 TB，如「本周期流量已用 92%（1840 GB / 2000 GB），9 天后重置」「本周期流量已超出额度（已用 102%，2050 GB / 2000 GB）」（有流量重置日才写几天后重置）。
+  `traffic_quota_high`（「流量额度吃紧」）：本周期已用（`quota.used`）到上限（订阅的 `traffic_gb`，没填按套餐的；0 / 空 = 不限，不评估）的 90% 为 warning，到 100% 为 critical；上限按十进制 GB（1 GB = 10⁹ 字节，同供应商），文案也写 GB、不换算成 TB，如「本周期流量已用 92%（1840 GB / 2000 GB），9 天后重置」「本周期流量已超出额度（已用 102%，2050 GB / 2000 GB）」（有流量重置日才写几天后重置）；滚动 30 天（`quota.mode = rolling30`）写「近 30 天流量已用 …」、不写几天后重置；周期中途上架（`quota.counted_from` 非 null）末尾加「（10-22 起统计，之前的量不到）」（日期按组织时区）。
   它和 info 一样**不影响** `health.status`，只开告警：不去抖，回落到 90% 以下（如新周期开始）下一轮评估即恢复；升为 critical 时马上再通知一次，持续提醒每天最多一次（同续费类）。同机 IP 节点自己没设上限时不评估（额度算在宿主机上）。
   `clock_skew`（warning，「agent 时钟不准」）：agent 在线且 `|agent.clock_skew_ms|` > 60 秒，文案如「agent 时钟慢 17 分钟：读数可能缺失或冻结，请校时」——样本按 agent 的时间入库，当前读数只看最近 15 分钟、持续负载只看最近 5 分钟；比中控超前 10 分钟以上的样本（含入口流量、探测）直接丢弃。和其它 warning 原因一样满 60 秒去抖后开告警。
   同机 IP 节点不报 `agent_offline`、`clock_skew`、`host_cpu_high` / `host_mem_high` / `host_disk_high`（agent 与主机是宿主机的，由宿主机报）；`egress_fail`、`tcp_fail`、`no_entry`、续费照常自己报（宿主机整台宕机时宿主机和它的每个同机节点各报各的探测告警，不抑制）。
@@ -293,7 +307,7 @@ ProvisionItem = {
 - `machines[id]` 的键：
   - `host`：`[ts, cpu_pct, load1, mem_used, mem_total, disk_used, disk_total, net_rx_bps, net_tx_bps, tcp_conns] | null`（`ts` 为 Unix 秒，速率取整；各项可为 null，与 `MachineView.host` 同义）；
   - `seen`：`agent.last_report_at` 的 Unix 秒 | null；`agent`：`{version, online, xray_running, cores} | null`（不含 `last_report_at`、`health` 和 `clock_skew_ms`——agent 自报的累计计数、时钟偏差每次上报都变，只随 REST 重取更新；前端合并进原对象）；
-  - `health`、`maintenance`、`removed_traffic`、`quota`、`active_job`：与 `MachineView` 同形；`due_days` / `due_state`：`subscription.due_days` / `due_state`（无订阅为 null；跨天时一起变）。
+  - `health`、`maintenance`、`removed_traffic`、`nic`、`month_counted_from`、`quota`、`active_job`：与 `MachineView` 同形（`nic`、`month_counted_from`、`quota` 每次汇总后、跨天时变）；`due_days` / `due_state`：`subscription.due_days` / `due_state`（无订阅为 null；跨天时一起变）。
 - `entries[id]` 的键：`tcp` / `egress`：`[ok, latency_ms, ts, detail, median_ms] | null`（`ts` 为 Unix 秒；`median_ms` 见 EntryView）；`traffic`：与 `EntryView.traffic` 同形。一条入口同时出现在节点和线路机的 `entries` 里，两边都要更新。
 - `overview`：与 `GET /overview` 同形，变了才带。
 - 机器的新建、改名、换团队、退役、告警等结构变化不走 `metrics`，仍发上面的失效通知。

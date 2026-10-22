@@ -29,7 +29,7 @@ pub fn test_init() {
                    {"key": "semiannual", "label": "半年", "months": 6}, {"key": "yearly", "label": "年", "months": 12}],
         "kinds": {"vps": "VPS 节点", "proxy": "家宽代理", "relay": "线路机"},
         "traffic_rules": {"min": "入站和出站取较小值", "max": "入站和出站取较大值", "sum": "入站加出站", "out": "只算出站"},
-        "traffic_resets": {"month": "自然月", "billing": "账单日"},
+        "traffic_resets": {"month": "自然月", "billing": "账单日", "rolling30": "滚动 30 天"},
         "entry_states": {"pending": "应用中", "active": "运行中", "disabled": "已停用", "removing": "移除中", "removed": "已移除"},
         "severities": {"critical": {"label": "严重"}, "warning": {"label": "警告"}, "info": {"label": "提示"}},
         "policy_sync_states": {"applied": "已应用", "applying": "进行中", "failed": "失败", "gone": "已退役"},

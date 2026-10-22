@@ -200,10 +200,6 @@ enum SubscriptionCmd {
         /// 流量每月几号重置（1–31，小月没有这一天按月末）；none = 跟随供应商（按账单日 = 到期日几号，或按自然月 = 1 号）
         #[arg(long)]
         reset_day: Option<String>,
-        /// 按供应商面板校准本周期已用：填面板上的 GB 数（如 901.6），之后的用量按网卡流量累加；none = 清掉校准。
-        /// 周期中途接入或和面板差得多时用；进入下个周期自动失效
-        #[arg(long)]
-        used: Option<String>,
         #[arg(long)]
         yes: bool,
     },
@@ -830,7 +826,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             billing::renew(x, billing::RenewOpts { machine: &machine, to: to.as_deref(), cycles, amount: amount.as_deref(), note: note.as_deref(), yes })
         }
         Cmd::Subscription { cmd } => match cmd {
-            SubscriptionCmd::Set { machine, price, currency, cycle, due, auto_renew, remind_days, tz, traffic_gb, reset_day, used, yes } => billing::subscription_set(
+            SubscriptionCmd::Set { machine, price, currency, cycle, due, auto_renew, remind_days, tz, traffic_gb, reset_day, yes } => billing::subscription_set(
                 x,
                 billing::SubSetOpts {
                     machine: &machine,
@@ -843,7 +839,6 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
                     tz: tz.as_deref(),
                     traffic_gb: traffic_gb.as_deref(),
                     reset_day: reset_day.as_deref(),
-                    used: used.as_deref(),
                     yes,
                 },
             ),

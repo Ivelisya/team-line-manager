@@ -168,7 +168,7 @@ async fn real_main() -> Result<()> {
 
 /// 采集两个主机样本（间隔 1 s），打印一份报告 JSON，不写状态、不上报
 async fn once(cfg: Config) -> Result<()> {
-    let mut hc = host::HostCollector::new();
+    let mut hc = host::HostCollector::new(None, cfg.nic_ifaces.clone());
     tokio::time::sleep(Duration::from_secs(1)).await;
     let mut hs = vec![hc.sample()];
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -184,7 +184,7 @@ async fn once(cfg: Config) -> Result<()> {
         boot_id: host::boot_id(),
         agent_version: fleet_proto::build_version().into(),
         sent_at_ms: util::now_ms(),
-        info: Some(host::collect_info()),
+        info: Some(host::collect_info(hc.ifaces())),
         host: hs,
         entries: vec![],
         probes: vec![],

@@ -45,6 +45,12 @@ pub fn org_time(t: OffsetDateTime) -> String {
     t.to_offset(org_offset()).format(&f).unwrap_or_default()
 }
 
+/// 组织时区的 `10-22`（「10-22 起统计」这类短写）
+pub fn org_md(t: OffsetDateTime) -> String {
+    let f = time::macros::format_description!("[month]-[day]");
+    t.to_offset(org_offset()).format(&f).unwrap_or_default()
+}
+
 /// 校验组织时区（PG 要认识）、写进库（app_setting 的 org_timezone）、算出当前偏移。启动时（失败则不启动）与每小时调用
 pub async fn sync_org_tz(db: &PgPool, tz: &str) -> anyhow::Result<()> {
     let off: i32 = sqlx::query_scalar("select extract(epoch from (now() at time zone $1) - (now() at time zone 'UTC'))::int")
@@ -238,8 +244,9 @@ pub const ENTRY_STATES: Labels = &[("pending", "应用中"), ("active", "运行�
 /// 供应商的网卡计量规则（流量额度怎么量）；没有网卡读数的（家宽代理、同机 IP 节点）按业务流量
 pub const TRAFFIC_RULES: Labels = &[("min", "入站和出站取较小值"), ("max", "入站和出站取较大值"), ("sum", "入站加出站"), ("out", "只算出站")];
 pub const DEFAULT_TRAFFIC_RULE: &str = "max";
-/// 供应商的流量重置方式：month = 账单时区的自然月（每月 1 号），billing = 每个账单日（到期日几号）
-pub const TRAFFIC_RESETS: Labels = &[("month", "自然月"), ("billing", "账单日")];
+/// 供应商的流量重置方式：month = 账单时区的自然月（每月 1 号），billing = 每个账单日（到期日几号），
+/// rolling30 = 滚动 30 天（账单时区的今天往前 29 天起，没有重置日）
+pub const TRAFFIC_RESETS: Labels = &[("month", "自然月"), ("billing", "账单日"), ("rolling30", "滚动 30 天")];
 pub const DEFAULT_TRAFFIC_RESET: &str = "month";
 
 /// 访问策略的模式（团队 / 节点）；inherit 只用于节点：跟随团队
