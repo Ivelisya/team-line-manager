@@ -276,8 +276,11 @@ async fn purge_refused_while_peer_still_counts_traffic() {
         .execute(&t.st.db)
         .await
         .unwrap();
-    // 10 天前还经这条入口走过流量：线路机的本月 / 周期统计还算着它
-    sqlx::query("insert into entry_traffic_hourly (entry_id, hour, up_bytes, down_bytes) values ($1, date_trunc('hour', now()) - interval '10 days', 100, 0)")
+    // 10 天前还经这条入口走过流量：线路机的本月 / 周期统计还算着它。5 天前那行是 0 字节：不改任何统计，不往后推
+    sqlx::query(
+        "insert into entry_traffic_hourly (entry_id, hour, up_bytes, down_bytes) values
+           ($1, date_trunc('hour', now()) - interval '10 days', 100, 0), ($1, date_trunc('hour', now()) - interval '5 days', 0, 0)",
+    )
         .bind(eid)
         .execute(&t.st.db)
         .await
@@ -298,7 +301,10 @@ async fn purge_refused_while_peer_still_counts_traffic() {
     assert!(j["error"].as_str().unwrap().contains("前仍计入其他机器的流量统计"), "{j}");
     assert_eq!(t.machine_lifecycle(node).await, "retired");
     let n: i64 = sqlx::query_scalar("select count(*) from entry_traffic_hourly where entry_id = $1").bind(eid).fetch_one(&t.st.db).await.unwrap();
-    assert_eq!(n, 1);
+    assert_eq!(n, 2);
+    // 只剩 0 字节的行：不拦
+    sqlx::query("delete from entry_traffic_hourly where entry_id = $1 and up_bytes > 0").bind(eid).execute(&t.st.db).await.unwrap();
+    assert_eq!(fleet_server::db::purge_blocker(&t.st.db, node).await.unwrap(), None);
 
     // 线路机也退役了：统计不再用这些流量，两台按任意顺序都能删
     sqlx::query("update machine set lifecycle = 'retired' where id = $1").bind(relay).execute(&t.st.db).await.unwrap();

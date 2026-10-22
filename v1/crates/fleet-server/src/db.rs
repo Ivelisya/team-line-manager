@@ -415,7 +415,7 @@ pub async fn cleanup_retention(db: &PgPool) -> anyhow::Result<()> {
 }
 
 /// 彻底删除会连带删掉这台机器入口的流量，而入口另一端未退役的机器拿这些流量算今日/本月/周期已用：
-/// 近 35 天里还有这类流量时不能删。另一端已退役（统计不再用、也在等删）的不拦，否则两台互为对端的退役机器谁都删不掉。
+/// 近 35 天里还有这类流量时不能删（只看有流量的小时行：0 字节的行删了也不改任何统计）。另一端已退役（统计不再用、也在等删）的不拦，否则两台互为对端的退役机器谁都删不掉。
 /// 宿主机上还有同机 IP 节点（含已退役的，它们的 host_id 指着它）时也不能删，先删它们。
 /// 返回给用户看的原因；None = 可以删。
 pub async fn purge_blocker(db: &PgPool, machine: Uuid) -> sqlx::Result<Option<String>> {
@@ -433,7 +433,8 @@ pub async fn purge_blocker(db: &PgPool, machine: Uuid) -> sqlx::Result<Option<St
         "select ((max(h.hour) + interval '35 days 1 hour') at time zone org_tz())::date + 1
          from entry e join entry_traffic_hourly h on h.entry_id = e.id
               join machine o on o.id = case when e.node_id = $1 then e.relay_id else e.node_id end
-         where (e.node_id = $1 or e.relay_id = $1) and h.hour >= now() - interval '35 days' and o.lifecycle <> 'retired'",
+         where (e.node_id = $1 or e.relay_id = $1) and h.hour >= now() - interval '35 days' and o.lifecycle <> 'retired'
+           and h.up_bytes + h.down_bytes > 0",
     )
     .bind(machine)
     .fetch_one(db)
