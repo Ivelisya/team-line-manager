@@ -44,7 +44,7 @@ SystemCallArchitectures=native
 RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK
 # 客户经域名（169.254.169.254.nip.io、metadata.google.internal）也到不了云厂商的元数据服务：路由里的私网拦截只认 IP 目标。
 # 不拦回环（API、探测入站在 127.0.0.1）和内网段（实验室线路机、节点在 192.168.31.0/24）。
-# /etc/resolv.conf 的 nameserver 若是 169.254.x（GCP、AWS 不经 systemd-resolved 时），Xray 就解析不了域名
+# /etc/resolv.conf 的 nameserver 是链路本地地址时（GCE、Oracle 等不经 systemd-resolved 的镜像）拦了就解析不了域名：中控装单元时去掉这一行（jobs/scripts.rs 的 LINKLOCAL_DNS）
 IPAddressDeny=link-local 100.100.100.200/32
 # 再把用不着的敏感目录整个藏起来（动态用户本来也读不到 0600 的令牌、主机私钥，多一层）。不存在的路径由「-」跳过
 InaccessiblePaths=-/etc/fleet-agent -/var/lib/fleet-agent -/etc/ssh
