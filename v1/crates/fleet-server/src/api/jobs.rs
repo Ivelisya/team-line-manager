@@ -43,6 +43,8 @@ pub struct ListQ {
     limit: Option<i64>,
     offset: Option<i64>,
     target_id: Option<Uuid>,
+    /// 作业类型：provision（各类上架）、restore（各类恢复），或 job.kind 本身（attach_entry、move_entry、retire、purge、upgrade_agent…）
+    kind: Option<String>,
 }
 
 /// 作业 JSON：目标机器以 `target{id,name}` 给出；`step_title` = 当前（或失败的）步骤标题，做完为 null。列表不带 steps
@@ -67,10 +69,25 @@ pub async fn list(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<L
         _ => "true",
     };
     let (limit, offset) = (q.limit.unwrap_or(100).clamp(1, 500), q.offset.unwrap_or(0).max(0));
-    // 按机器筛选的条件只在给了 target_id 时才拼上（列表与总数各拼一份）
-    let cond = |a: &mut Args| match q.target_id {
-        Some(t) => format!("{filter} and j.target_id = {}", a.add(t)),
-        None => filter.to_string(),
+    // 上架、恢复各有四类机器，按大类筛；其余按 job.kind 原值
+    let kind = match q.kind.as_deref().map(str::trim) {
+        None | Some("" | "all") => None,
+        Some(k @ ("provision" | "restore")) => Some((format!("{k}\\_%"), true)),
+        Some(k) if !jobs::defs(k).is_empty() => Some((k.to_string(), false)),
+        Some(_) => return Err(ApiError::bad_request("kind 只能是 provision、restore 或作业类型（attach_entry、move_entry、retire、purge、upgrade_agent、provision_vps…）")),
+    };
+    // 按机器、类型筛选的条件只在给了时才拼上（列表与总数各拼一份）
+    let cond = |a: &mut Args| {
+        let mut w = filter.to_string();
+        if let Some(t) = q.target_id {
+            w += &format!(" and j.target_id = {}", a.add(t));
+        }
+        match &kind {
+            Some((p, true)) => w += &format!(" and j.kind like {}", a.add(p)),
+            Some((k, false)) => w += &format!(" and j.kind = {}", a.add(k)),
+            None => {}
+        }
+        w
     };
     let mut a = Args::default();
     let sql = format!("{SELECT} where {} order by j.id desc limit {} offset {}", cond(&mut a), a.add(limit), a.add(offset));
