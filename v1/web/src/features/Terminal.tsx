@@ -155,12 +155,12 @@ export function Terminal({ kind, id, name }: TermTarget) {
           <IconButton label="关闭" onClick={closeTerminal}><X size={16} /></IconButton>
         </div>
       </header>
-      {host && <div className="term-sub hint">连的是宿主机「{host.name}」<InfoTip className="term-info" text="同机 IP 节点没有自己的 SSH，连接的是它的宿主机" /></div>}
+      {host && <div className="term-sub hint">连的是宿主机「{host.name}」<InfoTip text="同机 IP 节点没有自己的 SSH，连接的是它的宿主机" /></div>}
       <div className="term-screen">
         <div ref={box} className="term-xterm" />
         {need && <CredForm key={need} need={need} err={phase.s === 'cred' ? phase.err : undefined} busy={phase.s === 'auth'} onSubmit={(c) => void connect(c)} />}
       </div>
-      <footer className="term-foot hint">输入的命令不进审计<InfoTip className="term-info" text="终端里输入的命令不进审计，只记谁、哪台、多久、多少字节" /></footer>
+      <footer className="term-foot hint">输入的命令不进审计<InfoTip text="终端里输入的命令不进审计，只记谁、哪台、多久、多少字节" /></footer>
     </section>
   );
 }
@@ -203,7 +203,7 @@ export function TerminalHost() {
       {t && <Terminal key={`${t.kind}:${t.id}`} {...t} />}
       <ConfirmDialog open={!!ask} onOpenChange={(o) => { if (!o) cancelTerminalAsk(); }} danger
         title={a === 'close' || !a ? `断开 ${cur?.name ?? ''} 的终端？` : `断开 ${cur?.name ?? ''}，打开 ${a.name} 的终端？`}
-        description={<>还在跑的命令会随之结束<InfoTip className="term-info" text="会话会立即断开；放在 tmux、screen 或 nohup 里的命令除外" /></>}
+        description={<>还在跑的命令会随之结束<InfoTip text="会话会立即断开；放在 tmux、screen 或 nohup 里的命令除外" /></>}
         confirmLabel={a === 'close' || !a ? '断开并关闭' : '断开并切换'} onConfirm={() => { if (ask) confirmTerminalAsk(ask); }} />
     </>
   );
