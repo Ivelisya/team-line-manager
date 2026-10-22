@@ -153,8 +153,8 @@ export function routerMeters(s: RouterSummary) {
   const loadPct = s.cores ? (s.load1 / s.cores) * 100 : null;
   return {
     cpu: { value: F.pct(s.cpu_pct), pct: s.cpu_pct, sub: `负载 ${F.str(F.pct(loadPct))} · ${s.cores} 核`, tip: `负载 = 1 分钟平均负载 ${s.load1.toFixed(2)} ÷ ${s.cores} 核；超过 100% 表示有进程在排队` },
-    mem: { value: F.pct(memPct), pct: memPct, sub: `${F.str(F.bytes(s.mem_used))} / ${F.str(F.bytes(s.mem_total))}` },
-    disk: { value: F.pct(diskPct), pct: diskPct, sub: `${F.str(F.bytes(s.disk_used))} / ${F.str(F.bytes(s.disk_total))}`, tip: '/overlay（装的软件与配置）的已用 / 总量' },
+    mem: { value: F.pct(memPct), pct: memPct, sub: `${F.str(F.mem(s.mem_used))} / ${F.str(F.mem(s.mem_total))}` },
+    disk: { value: F.pct(diskPct), pct: diskPct, sub: `${F.str(F.mem(s.disk_used))} / ${F.str(F.mem(s.disk_total))}`, tip: '/overlay（装的软件与配置）的已用 / 总量' },
     ct: { value: F.pct(ctPct), pct: ctPct, sub: `${s.conntrack.toLocaleString()} / ${s.conntrack_max.toLocaleString()}`, tip: '连接跟踪表（conntrack）当前条目 / 上限：满了新连接会被丢弃' },
   };
 }

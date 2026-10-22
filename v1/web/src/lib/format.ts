@@ -10,14 +10,17 @@ const num = (n: number, digits = 1) => {
   return s.includes('.') ? s.replace(/\.?0+$/, '') : s;
 };
 
-/** 量级：除数 + 单位。数字滚动动画要“按目标值的量级”格式化中间值，否则会出现数值是 MiB 级、单位却是 GiB 的错配 */
+/** 量级：除数 + 单位。数字滚动动画要“按目标值的量级”格式化中间值，否则会出现数值是 MB 级、单位却是 GB 的错配 */
 export interface Scale { div: number; u: string }
-const BYTE_U = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
-export function bytesScale(n: number): Scale {
+// 流量用十进制（同供应商的流量额度 GB）；内存、磁盘用二进制（GiB，同系统报的容量）
+const BYTE_U = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+const BIN_U = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
+function scaleOf(n: number, base: number, units: string[]): Scale {
   let i = 0; let x = Math.abs(n);
-  while (x >= 1024 && i < BYTE_U.length - 1) { x /= 1024; i++; }
-  return { div: 1024 ** i, u: BYTE_U[i] };
+  while (x >= base && i < units.length - 1) { x /= base; i++; }
+  return { div: base ** i, u: units[i] };
 }
+export const bytesScale = (n: number): Scale => scaleOf(n, 1000, BYTE_U);
 export function rateScale(bps: number): Scale {
   const a = Math.abs(bps);
   if (a < 1e3) return { div: 1, u: 'bps' };
@@ -28,12 +31,20 @@ export function rateScale(bps: number): Scale {
 /** 用给定量级格式化数值部分（单位由 Scale.u 另行显示） */
 export const inScale = (n: number, s: Scale): string => (s.div === 1 ? String(Math.round(Math.abs(n))) : num(Math.abs(n) / s.div));
 
-/** 字节 → B/KiB/MiB/GiB/TiB */
+/** 流量字节 → B/KB/MB/GB/TB（十进制） */
 export function bytes(n: number | null | undefined): Fmt {
   if (n == null || !isFinite(n)) return NA;
   const s = bytesScale(n);
   return { v: inScale(n, s), u: s.u };
 }
+/** 内存、磁盘字节 → B/KiB/MiB/GiB/TiB（二进制） */
+export function mem(n: number | null | undefined): Fmt {
+  if (n == null || !isFinite(n)) return NA;
+  const s = scaleOf(n, 1024, BIN_U);
+  return { v: inScale(n, s), u: s.u };
+}
+/** 操作人：用户名原样；API 密钥「名称（API 密钥）」；cli 是中控上的命令行 */
+export const actor = (a: string) => (a === 'cli' ? '中控命令行' : a.startsWith('apikey:') ? `${a.slice(7)}（API 密钥）` : a);
 /** bit/s → Kbps/Mbps/Gbps */
 export function rate(bps: number | null | undefined): Fmt {
   if (bps == null || !isFinite(bps)) return NA;

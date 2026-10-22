@@ -449,7 +449,7 @@ function VersionsPanel() {
                 {list.map((v) => (
                   <tr key={v.id}>
                     <td><b className="strong">v{v.seq}</b>{v.is_current && <span className="pol-cur" data-tip="当前生效的就是这个版本的内容">当前</span>}<span className="sub">{v.kind === 'rollback' ? `回滚到 v${v.rollback_of_seq ?? '?'}` : '发布'}</span></td>
-                    <td data-tip={F.dtFull(v.created_at)}>{F.dt(v.created_at)}<span className="sub">{v.actor}</span></td>
+                    <td data-tip={F.dtFull(v.created_at)}>{F.dt(v.created_at)}<span className="sub">{F.actor(v.actor)}</span></td>
                     <td><VersionChanges changes={v.changes} /></td>
                     <td>
                       {v.relays.length === 0 ? <span className="t-sub">无需应用</span> : (

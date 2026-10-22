@@ -209,7 +209,7 @@ function OverviewTab({ r, detail }: { r: RouterView; detail: RouterDetail | null
           <Row label="模式">{oc.mode}</Row>
           <Row label="配置文件"><Trunc className="mono">{oc.config_path ?? '—'}</Trunc></Row>
           <Row label="配置修改于">{F.dtFull(oc.config_mtime)}</Row>
-          <Row label="核心内存" tip="clash 进程的常驻内存（VmRSS）"><Num f={F.bytes(sys?.clash_rss)} /></Row>
+          <Row label="核心内存" tip="clash 进程的常驻内存（VmRSS）"><Num f={F.mem(sys?.clash_rss)} /></Row>
           <Row label="代理速率" tip="经 OpenClash 的流量；↓ 是到客户端的方向">↓ <Num f={F.rate(s.openclash.down_bps)} /> ↑ <Num f={F.rate(s.openclash.up_bps)} /></Row>
           <Row label="连接">{s.openclash.conns.toLocaleString()} 条</Row>
         </Group>

@@ -11,6 +11,7 @@ import { Segmented } from '@/components/ui/overlays';
 import { SkeletonRows } from '@/components/ui/skeleton';
 import { Empty, ErrorNote, PageHead, Panel } from '@/components/app/primitives';
 import { AuditList } from '@/components/app/AuditList';
+import * as F from '@/lib/format';
 
 type Cat = 'all' | 'auth' | 'exec' | 'machine' | 'config';
 const CATS: { value: Cat; label: string }[] = [
@@ -48,7 +49,7 @@ export function AuditPage() {
   const all = React.useMemo(() => q.data?.pages.flat() ?? EMPTY, [q.data]);
   const rows = React.useMemo(() => {
     const t = text.trim().toLowerCase();
-    return all.filter((a) => (cat === 'all' || catOf(a.action) === cat) && (!t || `${a.title} ${a.summary} ${a.actor}`.toLowerCase().includes(t)));
+    return all.filter((a) => (cat === 'all' || catOf(a.action) === cat) && (!t || `${a.title} ${a.summary} ${F.actor(a.actor)}`.toLowerCase().includes(t)));
   }, [all, cat, text]);
   const filtered = cat !== 'all' || !!text.trim();
 

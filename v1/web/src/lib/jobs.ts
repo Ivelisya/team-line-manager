@@ -52,7 +52,7 @@ const OUTPUT: Record<string, [string, OutFmt] | null> = {
   bbr: ['BBR', yesNo('已启用', '未启用')], nft_relays: ['防火墙放行', text], ssserver_updated: ['ssserver', yesNo('已更新', '已是最新')], xray: ['Xray 版本', text],
   // agent / wait_report（prev_version：这次换下来、留作回滚的旧程序的版本；xray_checks：升级线路机时新版本还要做到的几项）
   binary_updated: ['agent 程序', yesNo('已更新', '已是最新')], token_id: null, prev_version: ['换下的版本', text], xray_checks: ['升级后检查', text],
-  first_report_at: ['首次上报', (v) => dtFull(String(v))], agent_version: ['agent 版本', text], old_tokens_revoked: ['撤销旧令牌', unit('枚')],
+  first_report_at: ['首次上报', (v) => dtFull(String(v).replace(/^(\S+) (\S+) \+00:00(:00)?$/, '$1T$2Z'))], agent_version: ['agent 版本', text], old_tokens_revoked: ['撤销旧令牌', unit('枚')],
   // attach / attach_new / detach_old / wait_applied
   entry_id: null, relay_id: null, old_entry_id: null, relay: ['线路机', text], port: ['入口端口', text], generation: ['配置版本', text],
   entry: ['入口状态', (v) => entryLabel(String(v))],

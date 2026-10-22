@@ -66,7 +66,7 @@ export function JobsPage() {
                 <span style={{ marginLeft: 'auto' }}><JobPill state={j.state} /></span>
               </span>
               {jobLive(j.state) && <span className="l-prog"><Progress value={jobProgress(j).pct} live label="总进度" /><span className="num">{jobProgress(j).done}/{jobProgress(j).total}</span></span>}
-              <span className="l2"><span>{F.dt(j.created_at)}</span><span>{j.created_by}</span>{j.error && <span className="ellipsis" style={{ color: j.state === 'cancelled' ? 'var(--fg-2)' : 'var(--bad-text)' }} data-tip={j.error}>{j.error}</span>}</span>
+              <span className="l2"><span>{F.dt(j.created_at)}</span><span>{F.actor(j.created_by)}</span>{j.error && <span className="ellipsis" style={{ color: j.state === 'cancelled' ? 'var(--fg-2)' : 'var(--bad-text)' }} data-tip={j.error}>{j.error}</span>}</span>
             </div>
           ))}
           {jobs.data && list.length === 0 && <Empty icon={<ListChecks size={22} />} text="没有作业" />}
@@ -112,7 +112,7 @@ function JobDetail({ id }: { id: string }) {
           <LiveProgressBar job={j} live={live} />
           <StepBar job={j} />
           <LabelValueGrid>
-            <LabelValue label="创建人">{j.created_by}</LabelValue>
+            <LabelValue label="创建人">{F.actor(j.created_by)}</LabelValue>
             <LabelValue label="创建时间">{F.dtFull(j.created_at)}</LabelValue>
             <LabelValue label="用时"><Dur a={j.started_at} b={j.finished_at} live={live} /></LabelValue>
             <LabelValue label="作业 ID"><span className="mono">{j.id}</span></LabelValue>

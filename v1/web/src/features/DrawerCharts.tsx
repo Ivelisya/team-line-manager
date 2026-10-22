@@ -134,7 +134,7 @@ export function TrafficTab({ m }: { m: MachineView }) {
       <Section>
         <ChartCard c="var(--chart-1)" icon={<Globe />} title="业务流量" meta={s.data?.resolution === '1h' ? '每小时的流量' : '每分钟的流量'} tools={<RangeBar range={range} setRange={setRange} />}>
           <ChartFrame q={s} few={fewText(m, range)}>
-            <TimeChart points={s.data?.points} range={s.data?.range ?? range} lines={L_TRAFFIC} yFmt={yBytes} valueFmt={vBytes} yBase={1024} empty="这段时间没有业务流量" />
+            <TimeChart points={s.data?.points} range={s.data?.range ?? range} lines={L_TRAFFIC} yFmt={yBytes} valueFmt={vBytes} yBase={1000} empty="这段时间没有业务流量" />
           </ChartFrame>
         </ChartCard>
       </Section>
@@ -162,8 +162,8 @@ export function HostTab({ m }: { m: MachineView }) {
         <SectionHeader title="当前" meta={h ? `更新于 ${F.ago(h.ts)}` : m.agent?.last_report_at ? `最后上报于 ${F.ago(m.agent.last_report_at)}` : '还没上报过'}><RangeBar range={range} setRange={setRange} /></SectionHeader>
         {h && r ? (
           <LabelValueGrid>
-            <LabelValue label="内存"><Num f={F.bytes(h.mem_used)} /> <span className="t-sub">/ <Num f={F.bytes(h.mem_total)} /></span></LabelValue>
-            <LabelValue label="磁盘"><Num f={F.bytes(h.disk_used)} /> <span className="t-sub">/ <Num f={F.bytes(h.disk_total)} /></span></LabelValue>
+            <LabelValue label="内存"><Num f={F.mem(h.mem_used)} /> <span className="t-sub">/ <Num f={F.mem(h.mem_total)} /></span></LabelValue>
+            <LabelValue label="磁盘"><Num f={F.mem(h.disk_used)} /> <span className="t-sub">/ <Num f={F.mem(h.disk_total)} /></span></LabelValue>
             <LabelValue label="负载"><Num f={r.load.value} /> <span className="t-sub">{r.load.sub}</span></LabelValue>
             <LabelValue label="TCP 连接数"><span className="num">{h.tcp_conns ?? '—'}</span></LabelValue>
           </LabelValueGrid>

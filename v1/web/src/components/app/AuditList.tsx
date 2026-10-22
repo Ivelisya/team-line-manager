@@ -30,7 +30,7 @@ export function AuditList({ items, onOpen }: { items: AuditEntry[]; onOpen?: (id
             <div className="audit-body">
               <div className="audit-head">
                 <span className="audit-what"><b>{a.title}</b>{p.target && <> {p.target}</>}{started(a) && <> <Pill tone="info" dot="pulse">执行中</Pill></>}</span>
-                <span className="audit-meta">{a.actor} · <span data-tip={F.dtFull(a.ts)}>{F.ago(a.ts)}</span></span>
+                <span className="audit-meta">{F.actor(a.actor)} · <span data-tip={F.dtFull(a.ts)}>{F.ago(a.ts)}</span></span>
               </div>
               {p.rest && <div className="audit-detail mono" data-tip={p.rest}>{p.rest}</div>}
             </div>

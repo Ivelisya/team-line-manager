@@ -149,7 +149,7 @@ export const usageTone = (pct: number | null | undefined, metric: UsageMetric) =
   return pct >= t.bad ? 'bad' : pct >= t.warn ? 'warn' : undefined;
 };
 const ratio = (used: number | null, total: number | null) => (used == null || total == null || !(total > 0) ? null : (used / total) * 100);
-const usedTotal = (u: number | null, t: number | null) => (u == null || t == null ? '—' : `${F.str(F.bytes(u))} / ${F.str(F.bytes(t))}`);
+const usedTotal = (u: number | null, t: number | null) => (u == null || t == null ? '—' : `${F.str(F.mem(u))} / ${F.str(F.mem(t))}`);
 /** 资源读数；指标缺测（null）时对应项显示 “—”，进度为 null（不会出现 NaN） */
 export function resourceMeters(m: MachineView) {
   const h = m.host; if (!h) return null;

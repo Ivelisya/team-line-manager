@@ -206,7 +206,7 @@ const ProviderDialog = resetOnOpen(function ProviderDialog({ provider, open, onC
 /* ---------------------------------------------------------------- 套餐 */
 /** 规格：核数 / 内存，没填的部分显示 “—”；都没填只显示 “—” */
 // 与全站一致用 1024 进位的 GiB / MiB（256 MB 内存写 256 MiB，不写 0.3 GB）
-const planSpec = (p: Plan) => (!p.cpu_cores && !p.mem_mb ? '—' : `${p.cpu_cores || '—'} 核 / ${p.mem_mb ? F.str(F.bytes(p.mem_mb * 1024 * 1024)) : '—'}`);
+const planSpec = (p: Plan) => (!p.cpu_cores && !p.mem_mb ? '—' : `${p.cpu_cores || '—'} 核 / ${p.mem_mb ? F.str(F.mem(p.mem_mb * 1024 * 1024)) : '—'}`);
 const emptyPlan = () => ({ name: '', provider_id: '', cpu_cores: '', mem_gb: '', disk_gb: '', bandwidth_mbps: '', traffic_gb: '', price: '', currency: meta().defaults.currency, cycle: meta().defaults.cycle, notes: '' });
 type PlanForm = ReturnType<typeof emptyPlan>;
 function PlansTab() {
