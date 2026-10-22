@@ -455,8 +455,11 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
         if let Some(sp) = crate::billing::spare_cn(&m) {
             rows.push(("备用", sp));
         }
-        let period = if m["quota"]["mode"] == "rolling30" { "近 30 天已用" } else { "本周期已用" };
-        rows.push(("流量额度", format!("{period} {}（{} 起）", table::gb(num(&m, "/quota/used").unwrap_or(0.0)), st(&m, "/quota/period_start"))));
+        // 有额度的才有「本周期」；不限流量的只看下面的本月流量（同网页、billing）
+        if !m["quota"]["limit_gb"].is_null() {
+            let period = if m["quota"]["mode"] == "rolling30" { "近 30 天已用" } else { "本周期已用" };
+            rows.push(("流量额度", format!("{period} {}（{} 起）", table::gb(num(&m, "/quota/used").unwrap_or(0.0)), st(&m, "/quota/period_start"))));
+        }
         rows.push(("本月流量", format!("{}{}", crate::billing::month_cn(&m), crate::billing::nic_cn(&m))));
         if !m["relay"].is_null() {
             rows.push(("线路机", format!("{}  配置代数 {} · 已应用 {}  {}", st(&m, "/relay/public_host"), st(&m, "/relay/generation"), st(&m, "/relay/applied_generation"), m["relay"]["apply_error"].as_str().unwrap_or(""))));

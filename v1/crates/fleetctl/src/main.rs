@@ -186,7 +186,7 @@ enum SubscriptionCmd {
         /// 到期日 YYYY-MM-DD（账单时区的日期）。续费请用 renew，会留续费记录
         #[arg(long)]
         due: Option<String>,
-        /// 到期自动续费：true | false（只影响提醒：自动续费的到期前不提醒，过期才告警；不会真的扣款）
+        /// 到期自动续费：true | false（到期后中控按周期自动顺延到期日、记一条续费记录，到期前不提醒；不会真的扣款）
         #[arg(long)]
         auto_renew: Option<bool>,
         /// 到期前几天开始提醒（0–60）；none = 跟随供应商
