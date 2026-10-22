@@ -78,7 +78,11 @@ async fn run_on(st: &AppState, a: &Actor, id: Uuid, command: &str, timeout_s: u6
     .fetch_one(&st.db)
     .await?;
     let target = Target { ip, port: port as u16, key: st.cfg.ssh_key.clone(), known_hosts: st.cfg.known_hosts.clone(), password: None };
-    let _permit = EXEC_SEM.acquire().await.map_err(|_| ApiError::internal("执行通道已关闭"))?;
+    // 排队最多 30 秒：等不到就让调用方稍后再试，不让请求无限挂着
+    let _permit = match tokio::time::timeout(Duration::from_secs(30), EXEC_SEM.acquire()).await {
+        Ok(p) => p.map_err(|_| ApiError::internal("执行通道已关闭"))?,
+        Err(_) => return Err(ApiError::new(StatusCode::TOO_MANY_REQUESTS, "busy", "同时执行的命令太多，稍后再试")),
+    };
     // 先提交一条「已开始」的审计再执行：客户端断开或中控重启时，已执行的命令也有记录；执行完再把结果补进这一条
     let audit_id: i64 = sqlx::query_scalar(
         "insert into audit_log (actor, action, target_kind, target_id, detail) values ($1, $2, 'machine', $3, $4) returning id",
@@ -89,8 +93,11 @@ async fn run_on(st: &AppState, a: &Actor, id: Uuid, command: &str, timeout_s: u6
     .bind(json!({"name": name, "command": command, "started": true}))
     .fetch_one(&st.db)
     .await?;
-    let finish = |extra: Value| {
-        sqlx::query("update audit_log set detail = (detail - 'started'::text) || $2 where id = $1").bind(audit_id).bind(extra).execute(&st.db)
+    // 命令已经执行过了：补写结果失败只记日志，照样把结果返回（「已开始」那一条审计还在）
+    let finish = |extra: Value| async move {
+        if let Err(e) = sqlx::query("update audit_log set detail = (detail - 'started'::text) || $2 where id = $1").bind(audit_id).bind(extra).execute(&st.db).await {
+            tracing::error!(audit_id, "补写执行结果到审计失败：{e:#}");
+        }
     };
     let t0 = Instant::now();
     // 远端 timeout 负责杀命令；本地多给 15 秒留给建连与收尾。只跑一次：255 也可能是命令已经执行过，不能重试
@@ -101,12 +108,12 @@ async fn run_on(st: &AppState, a: &Actor, id: Uuid, command: &str, timeout_s: u6
             let timed_out = remote_timed_out(o.code, duration_ms, timeout_s);
             let (stdout, t1) = truncate(o.stdout, MAX_OUT);
             let (stderr, t2) = truncate(o.stderr, MAX_OUT);
-            finish(json!({"exit_code": o.code, "duration_ms": duration_ms, "timed_out": timed_out})).await?;
+            finish(json!({"exit_code": o.code, "duration_ms": duration_ms, "timed_out": timed_out})).await;
             Ok(Ran { exit_code: o.code, stdout, stderr, duration_ms, truncated: t1 || t2, timed_out })
         }
         Err(e) => {
             let msg = format!("{e:#}");
-            finish(json!({"error": msg, "duration_ms": duration_ms})).await?;
+            finish(json!({"error": msg, "duration_ms": duration_ms})).await;
             // 本地兜底的超时（远端 timeout 没能结束会话）：同样按超时返回
             if kind_of(&e) == ErrKind::Timeout {
                 Ok(Ran { exit_code: 124, stdout: String::new(), stderr: format!("登录或执行超过 {timeout_s} 秒，已终止"), duration_ms, truncated: false, timed_out: true })

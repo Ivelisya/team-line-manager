@@ -211,6 +211,9 @@ async fn validate(tx: &mut Tx<'_>, items: &[Item]) -> ApiResult<Vec<Checked>> {
             }
             k => errors.push(format!("类型「{k}」不对（vps / proxy / relay）")),
         }
+        if let Err(e) = super::machines::check_text(it.label.as_deref().map(str::trim), it.note.as_deref()) {
+            errors.push(e);
+        }
         if let Some(p) = it.plan_id {
             if !plans.contains(&p) {
                 errors.push("套餐不存在或已归档".into());

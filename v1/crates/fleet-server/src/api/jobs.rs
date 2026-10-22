@@ -158,6 +158,24 @@ pub struct RetryIn {
     ssh_password: Option<String>,
 }
 
+/// 这次重试能不能重置主机指纹，能就返回要重新记录的 (IP, SSH 端口)。在步骤被重置之前调（要读失败那一步的类别）
+/// 不限作业种类：中控确实看到了指纹不符，重置是操作者对已知变化（比如服务商重装了在用节点的系统）的确认
+async fn reset_target(tx: &mut crate::db::Tx<'_>, job: Uuid, step: i32, target: Option<Uuid>) -> ApiResult<(String, u16)> {
+    let Some(t) = target else { return Err(ApiError::bad_request("这个作业没有目标机器，没有主机指纹可重置")) };
+    let ek: Option<String> = sqlx::query_scalar("select error_kind from job_step where job_id = $1 and idx = $2").bind(job).bind(step).fetch_optional(&mut **tx).await?.flatten();
+    if ek.as_deref() != Some("host_key") {
+        return Err(ApiError::conflict("这个作业不是因为主机指纹不符失败的，不需要重置主机指纹：去掉「重置主机指纹」再重试"));
+    }
+    let (ip, port, host): (String, i32, Option<Uuid>) = sqlx::query_as("select host(primary_ip), ssh_port, host_id from machine where id = $1")
+        .bind(t)
+        .fetch_one(&mut **tx)
+        .await?;
+    if host.is_some() {
+        return Err(ApiError::conflict("同机 IP 节点登录的是宿主机，不能在这里重置宿主机的主机指纹"));
+    }
+    Ok((ip, port as u16))
+}
+
 pub async fn retry(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, body: axum::body::Bytes) -> ApiResult<Json<Value>> {
     let b: RetryIn = if body.iter().all(u8::is_ascii_whitespace) {
         RetryIn::default()
@@ -173,20 +191,6 @@ pub async fn retry(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
         .ok_or_else(|| ApiError::not_found("没有这个作业"))?;
     if state0 != "failed" {
         return Err(ApiError::conflict("只有失败的作业能重试"));
-    }
-    if reset {
-        let Some(t) = target else { return Err(ApiError::bad_request("这个作业没有目标机器，没有主机指纹可重置")) };
-        // 同机 IP 节点登录的是宿主机：重置的是宿主机的指纹
-        let (ip, port): (String, i32) = sqlx::query_as(
-            "select host(coalesce(h.primary_ip, m.primary_ip)), coalesce(h.ssh_port, m.ssh_port) from machine m left join machine h on h.id = m.host_id where m.id = $1",
-        )
-        .bind(t)
-        .fetch_one(&st.db)
-        .await?;
-        // 清掉旧记录并按现在的公钥重新记录（之后的步骤仍严格校验）；锁外做，keyscan 要几秒
-        crate::ssh::pin_host_key(&st.cfg.known_hosts, &ip, port as u16, true)
-            .await
-            .map_err(|e| ApiError::conflict(format!("重置主机指纹失败：{e:#}")))?;
     }
     let mut tx = st.db.begin().await?;
     // 先锁机器行再锁作业行：和退役（锁机器 → 作废其作业）同一顺序，避免死锁
@@ -216,6 +220,8 @@ pub async fn retry(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     }
     // 机器状态已经变了（比如上架一半的机器后来退役了）：旧作业不能复活
     jobs::check_target(&kind, lc.as_deref()).map_err(ApiError::conflict)?;
+    // 重置主机指纹：只给正是因为指纹不符失败的作业；同机 IP 节点登录的是宿主机，不能借它重置宿主机的指纹
+    let pin = if reset { Some(reset_target(&mut tx, id, step, target).await?) } else { None };
     // 从失败那一步重来；升级 agent 从推送重来：失败时多半已经换回了旧程序，只重跑「等待新版本上报」永远等不到
     let from = if kind == "upgrade_agent" { 0 } else { step };
     sqlx::query(
@@ -238,6 +244,13 @@ pub async fn retry(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     .execute(&mut *tx)
     .await?;
     audit(&mut tx, &a.name, "job.retry", "job", Some(id), json!({"step": step, "reset_host_key": reset, "password": password.is_some()})).await?;
+    // 所有检查（含「同一台机器只能有一个进行中的作业」）都过了才动 known_hosts。在事务里做：作业此刻还不会被领走，
+    // 重置失败则整个重试作废；keyscan 最多十来秒，其间机器行与作业行一直锁着
+    if let Some((ip, port)) = pin {
+        crate::ssh::pin_host_key(&st.cfg.known_hosts, &ip, port, true)
+            .await
+            .map_err(|e| ApiError::conflict(format!("重置主机指纹失败：{e:#}")))?;
+    }
     tx.commit().await?;
     st.wake_jobs();
     st.emit(Event::Job { id, target });

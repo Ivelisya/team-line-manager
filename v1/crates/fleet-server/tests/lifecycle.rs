@@ -930,6 +930,15 @@ async fn direct_entry_create_desired_view_and_one_per_relay() {
     let ds = sim.round(&t).await;
     assert!(ds.generation as i64 > gen0);
     assert_eq!(ds.entries[0].remark, "线路机9-直出");
+
+    // 名字、备注有长度上限
+    let rev = t.get(&format!("/api/v1/machines/{ra}")).await["revision"].clone();
+    let (s, v) = t.req("PATCH", &format!("/api/v1/machines/{ra}"), Some(json!({"revision": rev, "label": "长".repeat(201)})), None).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    let (s, v) = t.req("PATCH", &format!("/api/v1/machines/{ra}"), Some(json!({"revision": rev, "note": "x".repeat(2001)})), None).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    let (s, v) = t.req("PATCH", &format!("/api/v1/machines/{ra}"), Some(json!({"revision": rev, "note": "备".repeat(2000)})), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
 }
 
 /// 搬空：只给节点建换线路机作业，直出入口不搬、也不算「跳过」；线路机本身不能换线路机

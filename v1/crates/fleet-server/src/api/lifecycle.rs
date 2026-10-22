@@ -291,6 +291,9 @@ async fn restore_plan(conn: &mut PgConnection, id: Uuid, m: &RM, team_ov: Option
         if dup.is_some() {
             blockers.push(format!("已经有同名线路机「{l}」：恢复时换一个名字"));
         }
+        if let Err(e) = super::machines::check_text(Some(&l), None) {
+            invalid.push(e);
+        }
         new_name = l.clone();
         label = Some(l);
     } else {
