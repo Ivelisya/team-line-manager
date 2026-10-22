@@ -9,9 +9,11 @@ use axum::http::StatusCode;
 use common_tele::*;
 use fleet_proto::ProbeKind;
 use fleet_server::alerts::{self, AlertState};
-use fleet_server::state::Event;
+use fleet_server::crypto::SecretBox;
+use fleet_server::state::{AppState, Event};
 use fleet_server::{db, live};
 use serde_json::{json, Value};
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -1069,14 +1071,8 @@ async fn alert_notifications_firing_repeat_silence_and_resolved() {
     mock.wait("/wecom/send", 1).await;
     mock.wait("/hook/a", 2).await;
     mock.wait("/fail/x", 2).await;
-    // 坏渠道每条按 0.5 s、2 s 退避重试两次，两条排队发完约 5 秒
-    for _ in 0..200 {
-        if t.count("select count(*) from notify_log").await == 7 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert_eq!(t.count("select count(*) from notify_log").await, 7);
+    // 坏渠道一直 500：第一条按 0.5 s、2 s、10 s… 退避重发（入队满 30 分钟才放弃），第二条排在它后面；别的渠道照常发完
+    log_settles(&t, 5).await;
     assert_eq!((mock.count("/bot123:ABC"), mock.count("/wecom/send"), mock.count("/hook/a"), mock.count("/disabled")), (2, 1, 2, 0));
     let tg: Vec<String> = mock.bodies("/bot123:ABC").iter().map(|b| b["text"].as_str().unwrap().to_string()).collect();
     let crit = tg.iter().find(|x| x.contains("Xray 未运行")).expect("严重告警的 Telegram 消息");
@@ -1089,11 +1085,13 @@ async fn alert_notifications_firing_repeat_silence_and_resolved() {
     let wh_crit = wh.iter().find(|b| b["rule"] == "relay_xray_down").unwrap();
     assert_eq!((wh_crit["event"].as_str(), wh_crit["severity"].as_str(), wh_crit["machine"].as_str(), wh_crit["rule_name"].as_str()), (Some("firing"), Some("critical"), Some("线路机1"), Some("Xray 未运行")));
     assert!(wh.iter().any(|b| b["rule"] == "relay_apply_lag" && b["rule_name"] == "配置未应用"));
-    // 记录：坏渠道记失败，其余成功；一个渠道失败不影响别的
+    // 记录：发出去的都记成功；坏渠道的两条还在库里排着重试（不记），渠道记着连续失败与原因。一个渠道失败不影响别的
     let log = t.get("/api/v1/notify-log?limit=100").await;
     let log = log.as_array().unwrap();
-    assert_eq!(log.iter().filter(|l| l["ok"] == false).count(), 2);
-    assert!(log.iter().filter(|l| l["ok"] == false).all(|l| l["channel_name"] == "broken" && l["error"].as_str().is_some_and(|e| e.contains("500"))));
+    assert!(log.iter().all(|l| l["ok"] == true && l["channel_name"] != "broken"), "{log:?}");
+    let pending = t.count("select count(*) from notify_outbox o join notify_channel c on c.id = o.channel_id where c.name = 'broken'").await;
+    let (fails, err): (i32, String) = sqlx::query_as("select fail_count, last_error from notify_channel where name = 'broken'").fetch_one(&t.st.db).await.unwrap();
+    assert!(pending == 2 && fails >= 2 && err.contains("500"), "{pending} {fails} {err}");
     assert!(log.iter().all(|l| l["incident_id"].is_string() && l["kind"] == "firing" && l["subject_name"] == "线路机1"));
     assert!(log.iter().any(|l| l["rule_name"] == "Xray 未运行") && log.iter().any(|l| l["rule_name"] == "配置未应用"), "{log:?}");
     assert!(log.iter().all(|l| l.get("rule").is_none()));
@@ -1210,6 +1208,95 @@ async fn resolved_sent_while_firing_still_queued() {
     log_settles(&t, 2).await;
     let events: Vec<Value> = mock.bodies("/slow/a").iter().map(|b| b["event"].clone()).collect();
     assert_eq!(events, [json!("firing"), json!("resolved")]);
+}
+
+/// 渠道一时发不出去：同一条按 0.5 秒、2 秒…退避重发到送达，只记一条成功；渠道的连续失败随之清零
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn failed_notice_is_retried_until_delivered() {
+    let t = setup().await;
+    let mock = Mock::start().await;
+    t.post("/api/v1/notify-channels", json!({"name": "flaky", "kind": "webhook", "config": {"url": mock.url("/flaky/a")}, "min_severity": "info", "enabled": true})).await;
+    seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let mut state = AlertState::default();
+    let base = OffsetDateTime::now_utc();
+    xray_report(&t, 1, false).await;
+    pass(&t, &mut state, base, 0).await;
+    pass(&t, &mut state, base, 61).await;
+    // 前两次 500，第三次（约 2.5 秒后）送达
+    mock.wait("/flaky/a", 3).await;
+    log_settles(&t, 1).await;
+    assert_eq!(t.count("select count(*) from notify_log where ok and kind = 'firing'").await, 1);
+    assert_eq!(t.count("select count(*) from notify_outbox").await, 0);
+    let (fails, since): (i32, Option<OffsetDateTime>) = sqlx::query_as("select fail_count, failing_since from notify_channel").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!((fails, since), (0, None));
+}
+
+/// 中控重启 / 部署：排着没发的通知在库里，新进程起来接着发；入队满 30 分钟还没发出的放弃，记一条失败
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn queued_notices_survive_restart() {
+    let t = setup().await;
+    let mock = Mock::start().await;
+    for (name, path) in [("a", "/hook/a"), ("b", "/hook/b")] {
+        t.post("/api/v1/notify-channels", json!({"name": name, "kind": "webhook", "config": {"url": mock.url(path)}, "min_severity": "info", "enabled": true})).await;
+    }
+    seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    // 「旧进程」入队后还没来得及发就退出了：不起发送循环，通知只在库里
+    t.st.notify_started.store(true, Ordering::Relaxed);
+    let mut state = AlertState::default();
+    let base = OffsetDateTime::now_utc();
+    xray_report(&t, 1, false).await;
+    pass(&t, &mut state, base, 0).await;
+    pass(&t, &mut state, base, 61).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!((mock.count("/hook"), t.count("select count(*) from notify_outbox").await), (0, 2));
+    // 发给 b 的那条已经排了 31 分钟
+    sqlx::query("update notify_outbox set created_at = now() - interval '31 minutes' where channel_id = (select id from notify_channel where name = 'b')")
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    // 「新进程」：同一个库、新的内存状态，起发送循环
+    let st2 = AppState::new(t.st.cfg.clone(), t.st.db.clone(), SecretBox::from_key(&[9u8; 32]).unwrap());
+    fleet_server::notify::start(&st2);
+    mock.wait("/hook/a", 1).await;
+    log_settles(&t, 2).await;
+    assert_eq!((mock.bodies("/hook/a")[0]["event"].as_str(), mock.count("/hook/b")), (Some("firing"), 0));
+    let (ok, err): (bool, Option<String>) =
+        sqlx::query_as("select ok, error from notify_log where channel_id = (select id from notify_channel where name = 'b')").fetch_one(&t.st.db).await.unwrap();
+    assert!(!ok && err.as_deref().is_some_and(|e| e.contains("30 分钟还没发出，放弃")), "{err:?}");
+    assert_eq!(t.count("select count(*) from notify_outbox").await, 0);
+}
+
+/// 某个渠道没收到这条告警的「触发」（被拒了），恢复时也不给它发「恢复」——哪怕渠道这时已经修好；收到过触发的照发
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn resolved_only_to_channels_that_got_firing() {
+    let t = setup().await;
+    let mock = Mock::start().await;
+    let wc = t.post("/api/v1/notify-channels", json!({"name": "企微", "kind": "wecom", "config": {"url": mock.url("/wecom/bad")}, "min_severity": "info", "enabled": true})).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "webhook", "config": {"url": mock.url("/hook/a")}, "min_severity": "info", "enabled": true})).await;
+    seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let mut state = AlertState::default();
+    let base = OffsetDateTime::now_utc();
+    xray_report(&t, 1, false).await;
+    pass(&t, &mut state, base, 0).await;
+    pass(&t, &mut state, base, 61).await;
+    // 企业微信拒绝（errcode，重试也没用）：记一条失败；webhook 收到触发
+    log_settles(&t, 2).await;
+    assert_eq!(t.count("select count(*) from notify_log where not ok").await, 1);
+    // 企业微信改好了地址，之后告警恢复
+    let (s, v) = t.req("PATCH", &format!("/api/v1/notify-channels/{wc}"), Some(json!({"config": {"url": mock.url("/wecom/ok")}})), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    xray_report(&t, 2, true).await;
+    pass(&t, &mut state, base, 91).await;
+    pass(&t, &mut state, base, 151).await;
+    assert!(incidents(&t, "firing").await.is_empty());
+    log_settles(&t, 3).await;
+    assert_eq!(mock.count("/wecom/ok"), 0, "没收到触发的渠道不发恢复");
+    let events: Vec<Value> = mock.bodies("/hook/a").iter().map(|b| b["event"].clone()).collect();
+    assert_eq!(events, [json!("firing"), json!("resolved")]);
+    assert_eq!(t.count("select count(*) from notify_outbox").await, 0);
 }
 
 async fn xray_report(t: &T, seq: u64, up: bool) {

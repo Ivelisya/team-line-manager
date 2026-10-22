@@ -8,9 +8,11 @@
 //!
 //! 通知（见 notify.rs）：新告警发「触发」；严重度升到严重（流量额度从吃紧到超限）马上再发一次「触发」；
 //! 仍在触发的严重告警每 4 小时提醒一次，续费类与流量额度每天一次；
-//! 原因消失恢复发「恢复」，只在上次恢复通知之后发过触发/提醒时才发（复发后没再通知过的不重复报恢复）。
+//! 原因消失恢复发「恢复」，只在上次恢复通知之后发过触发/提醒时才发（复发后没再通知过的不重复报恢复）；
+//! 某个渠道没收到这条的触发（发送放弃了、渠道是后来加的），发送时不给它发恢复（notify.rs `got_firing`）。
 //! 复发重开：已报过恢复的，距那条恢复通知满 5 分钟就立即发「触发」，不满则等满 5 分钟仍在触发再发，
 //! 所以反复抖动的告警每 5 分钟最多一对触发/恢复，真故障最多晚 5 分钟报。被静默（含维护）的不发任何通知。
+//! 「发过」= 写进了库里的发送队列（notify_outbox，`notified_at` 同一事务刷新）：之后由发送循环重试到送达或放弃，中控重启也不丢。
 
 use crate::notify::{self, Kind, Notice};
 use crate::silence::Silences;
@@ -82,31 +84,34 @@ struct Open {
     severity: String,
     summary: String,
     opened_at: OffsetDateTime,
+    /// 最近一次把触发 / 提醒写进发送队列的时间（notify.rs `enqueue`）；null = 还没写进去过（开告警时入队失败）
     notified_at: Option<OffsetDateTime>,
-    /// 最近一条通知是「恢复」时它的发送时间（复发重开后还没再通知过）
+    /// 最近一条送达的通知是「恢复」时它的发送时间（复发重开后还没再通知过）。只看送达的：恢复没发出去，渠道那边这条告警还没结束
     told_resolved_at: Option<OffsetDateTime>,
 }
 
 /// `Open` 的列（查询和重开的 returning 共用）
 const OPEN_COLS: &str = "id, rule, subject_id, severity::text severity, summary, opened_at, notified_at,
-    (select case when l.kind = 'resolved' then l.ts end from notify_log l where l.incident_id = incident.id and l.kind in ('firing', 'repeat', 'resolved')
+    (select case when l.kind = 'resolved' then l.ts end from notify_log l where l.incident_id = incident.id and l.ok and l.kind in ('firing', 'repeat', 'resolved')
      order by l.ts desc, l.id desc limit 1) told_resolved_at";
 
-/// 仍在触发的告警这一轮该发的通知：报过恢复的，距那条恢复通知满 REOPEN_QUIET_S 发「触发」；否则按持续提醒间隔发「提醒」。
-/// notify_log 在送达后才写（发送队列积压时更晚），`notified_at` 在入队时就更新：比那条恢复通知新，说明「触发」已经在发了，按提醒间隔算
+/// 仍在触发的告警这一轮该发的通知：报过恢复的，距那条恢复通知满 REOPEN_QUIET_S 发「触发」；还没入队过（开告警时入队失败）的补发「触发」；
+/// 否则按持续提醒间隔发「提醒」。notify_log 在送达后才写（渠道失败重试时更晚），`notified_at` 在入队时就更新：
+/// 比那条恢复通知新，说明「触发」已经在发了，按提醒间隔算
 fn due(inc: &Open, severity: &str, now: OffsetDateTime) -> Option<Kind> {
-    match inc.told_resolved_at.filter(|t| inc.notified_at.is_none_or(|n| n < *t)) {
-        Some(t) => ((now - t).whole_seconds() >= REOPEN_QUIET_S).then_some(Kind::Firing),
-        None => {
+    match (inc.told_resolved_at.filter(|t| inc.notified_at.is_none_or(|n| n < *t)), inc.notified_at) {
+        (Some(t), _) => ((now - t).whole_seconds() >= REOPEN_QUIET_S).then_some(Kind::Firing),
+        (None, None) => Some(Kind::Firing),
+        (None, Some(n)) => {
             let every = repeat_interval_s(&inc.rule, severity)?;
-            ((now - inc.notified_at.unwrap_or(inc.opened_at)).whole_seconds() >= every).then_some(Kind::Repeat)
+            ((now - n).whole_seconds() >= every).then_some(Kind::Repeat)
         }
     }
 }
 
 /// 恢复时要不要报「恢复」：上次恢复通知之后发过（入队过）触发/提醒才报。
 /// 看入队时就刷新的 `notified_at`，不看 notify_log（送达后才写，触发还在队列里时查不到，恢复通知就被吞了）；
-/// 同一渠道的队列先进先出，恢复排在触发之后
+/// 同一渠道的队列先进先出，恢复排在触发之后，没收到触发的渠道发送时跳过
 fn told_firing(inc: &Open) -> bool {
     inc.notified_at.is_some_and(|n| inc.told_resolved_at.is_none_or(|t| n > t))
 }
@@ -333,6 +338,12 @@ mod tests {
         assert!(matches!(due(&inc(Some(ago(900)), ago(600)), "critical", now), Some(Kind::Firing)));
         // 「触发」30 s 前已开始发送、还没写进 notify_log（最近一条仍是恢复）：不重发
         assert!(due(&inc(Some(ago(30)), ago(600)), "critical", now).is_none());
+        // 开告警时没能写进发送队列（库出错）：下一轮补发「触发」，警告也补
+        let never = Open { told_resolved_at: None, ..inc(None, ago(600)) };
+        assert!(matches!(due(&never, "warning", now), Some(Kind::Firing)));
+        // 入队过、没到提醒间隔：不发
+        let queued = Open { told_resolved_at: None, ..inc(Some(ago(60)), ago(600)) };
+        assert!(due(&queued, "critical", now).is_none());
     }
 
     #[test]

@@ -171,8 +171,7 @@ pub async fn delete(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<U
     let (name,) = name.ok_or_else(|| ApiError::not_found("没有这个通知渠道"))?;
     audit(&mut tx, &a.name, "notify.delete", "notify_channel", Some(id), json!({"name": name})).await?;
     tx.commit().await?;
-    // 丢掉它的发送队列：队列空着时发送任务立刻退出，不留一个空等的任务；还有排着的，取下一条时发现渠道已不在，连同其余的一起丢掉退出
-    st.notify_queues.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+    // 它排着的待发随外键一起删掉；正在发的那条发完，发送任务取下一条时发现没有了就退出
     st.emit(Event::Catalog);
     Ok(ok(json!({"ok": true})))
 }
