@@ -731,7 +731,7 @@ pub struct SubIn {
 pub async fn check_tz(db: &mut sqlx::PgConnection, tz: &str) -> ApiResult<()> {
     match sqlx::query("select now() at time zone $1").bind(tz).execute(db).await {
         Err(e) if e.as_database_error().and_then(|d| d.code()).as_deref() == Some("22023") => {
-            Err(ApiError::bad_request(format!("时区「{tz}」不存在：请填 IANA 时区名，如 {}", meta::org_tz())))
+            Err(ApiError::bad_request(format!("账单时区「{tz}」不存在：请填 IANA 时区名，如 {}", meta::org_tz())))
         }
         r => r.map(drop).map_err(Into::into),
     }

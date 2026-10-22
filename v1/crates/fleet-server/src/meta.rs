@@ -254,7 +254,7 @@ pub const RULES: Labels = &[
 ];
 
 /// 查中文名；没收录的原样返回
-pub fn label<'a>(table: Labels, key: &'a str) -> &'a str { table.iter().find(|(k, _)| *k == key).map_or(key, |(_, v)| v) }
+pub fn label(table: Labels, key: &str) -> &str { table.iter().find(|(k, _)| *k == key).map_or(key, |(_, v)| v) }
 
 pub fn kind_label(k: &str) -> &str { label(KINDS, k) }
 pub fn lifecycle_label(l: &str) -> &str { label(LIFECYCLES, l) }

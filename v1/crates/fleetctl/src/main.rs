@@ -351,9 +351,8 @@ enum Cmd {
     },
     /// 订阅：费用、到期日、提醒、账单时区、流量上限（看用 billing）
     Subscription {
-        // 装箱：参数多，免得整个 Cmd 跟着变大（clippy large_enum_variant）
         #[command(subcommand)]
-        cmd: Box<SubscriptionCmd>,
+        cmd: SubscriptionCmd,
     },
     /// 告警
     Incidents {
@@ -397,7 +396,8 @@ enum Cmd {
     /// 取消进行中的作业（升级 agent 只能在排队时取消，「全部升级」里等它的跟着取消）
     Cancel { id: String },
     /// 上架：先 check 再提交（单台参数或 --file 批量）
-    Provision(ProvisionArgs),
+    // 装箱：上架参数最多，免得整个 Cmd 跟着它变大（clippy large_enum_variant）
+    Provision(Box<ProvisionArgs>),
     /// 退役一台机器（危险）
     Retire {
         machine: String,
@@ -719,7 +719,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Renew { machine, to, cycles, amount, note, yes } => {
             billing::renew(x, billing::RenewOpts { machine: &machine, to: to.as_deref(), cycles, amount: amount.as_deref(), note: note.as_deref(), yes })
         }
-        Cmd::Subscription { cmd } => match *cmd {
+        Cmd::Subscription { cmd } => match cmd {
             SubscriptionCmd::Set { machine, price, currency, cycle, due, auto_renew, remind_days, tz, traffic_gb, reset_day, used, yes } => billing::subscription_set(
                 x,
                 billing::SubSetOpts {
