@@ -64,3 +64,7 @@ create table if not exists recycle_bin (
     unique (source, source_id)
 );
 create index if not exists recycle_bin_at on recycle_bin (recycled_at desc);
+
+-- 4. 续费告警合成一条规则：即将到期与已过期都是 renewal_due（到期后从警告升到严重，不再先发一条「已恢复」）。
+--    还开着的 renewal_overdue 改名接上（同一台不会同时开着两条：即将到期与已过期互斥），已恢复的旧记录不动
+update incident set rule = 'renewal_due' where rule = 'renewal_overdue' and state = 'firing';

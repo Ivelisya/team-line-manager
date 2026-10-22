@@ -627,7 +627,10 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "recycle.import" => format!("导入 {} 台，跳过 {} 台", d["inserted"].as_u64().unwrap_or(0), d["skipped"].as_u64().unwrap_or(0)),
         "machine.purge" if d["auto"] == crate::spare::AUTO => format!("{}（回收站自动清除）", s("name")),
         "machine.purge" => s("name"),
-        "renewal" => format!("到期 {} → {}", d["old_due"].as_str().unwrap_or("?"), d["new_due"].as_str().unwrap_or("?")),
+        "renewal" => {
+            let auto = if d["auto"] == true { "（自动续费）" } else { "" };
+            format!("到期 {} → {}{auto}", d["old_due"].as_str().unwrap_or("?"), d["new_due"].as_str().unwrap_or("?"))
+        }
         // 「团队1-03 · 价格 5.00 → 6.00 USD，到期 2026-11-01 → 2026-12-01」；这一版之前的记录没有改动前后，不写摘要
         "subscription.set" if d["after"].is_object() => {
             let changes = sub_changes(d);

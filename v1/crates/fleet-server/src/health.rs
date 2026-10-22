@@ -88,6 +88,27 @@ fn quota_reason(m: &MachineView) -> Option<Reason> {
     })
 }
 
+/// 续费提醒（renewal_due）：线路机和节点都有账单。到期状态由视图按生效的提前提醒天数算（meta::due_state），总览、网页、fleetctl 同一口径。
+/// 即将到期与已过期是同一条规则：到期后严重度从警告升到严重（告警引擎「只升不降、升级马上再发一次触发」），不先发一条「已恢复」。
+/// 备用团队的机器过期满 1 天自动回收（spare.rs）：提醒后面写明哪天回收、还有哪些软路由出口指向它（要换掉就先「替换」），
+/// 过期第 1 天的「已过期」告警就是「明天自动回收」的通知
+fn renewal_reason(m: &MachineView) -> Option<Reason> {
+    let s = m.subscription.as_ref()?;
+    let note = match (m.spare, m.router_exits.as_slice()) {
+        (false, _) => String::new(),
+        (true, []) => crate::spare::due_note(s.due_days).to_string(),
+        (true, x) => format!("{}；软路由出口 {} 还指向它", crate::spare::due_note(s.due_days), x.join("、")),
+    };
+    match s.due_state {
+        "overdue" => Some(Reason { key: "renewal_due", severity: "critical", text: format!("已过期 {} 天{note}", -s.due_days) }),
+        "soon" => {
+            let text = if s.due_days == 0 { format!("今天到期{note}") } else { format!("{} 天后到期{note}", s.due_days) };
+            Some(Reason { key: "renewal_due", severity: "warning", text })
+        }
+        _ => None,
+    }
+}
+
 const DETAIL_MAX: usize = 120;
 
 /// 在用入口的探测结果 → egress_fail / tcp_fail。
@@ -220,25 +241,6 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
         rs.push(Reason { key: "policy_blocked", severity: "info", text: "访问策略：已暂停新连接".into() });
     }
 
-    // 续费提醒：线路机和节点都有账单。到期状态由视图按生效的提前提醒天数算（meta::due_state），总览、网页、fleetctl 同一口径
-    // 备用团队的机器过期满 1 天自动回收（spare.rs）：提醒后面写明哪天回收、还有哪些软路由出口指向它（要换掉就先「替换」），
-    // 过期第 1 天的「已过期」告警就是「明天自动回收」的通知
-    if let Some(s) = &m.subscription {
-        let note = match (m.spare, m.router_exits.as_slice()) {
-            (false, _) => String::new(),
-            (true, []) => crate::spare::due_note(s.due_days).to_string(),
-            (true, x) => format!("{}；软路由出口 {} 还指向它", crate::spare::due_note(s.due_days), x.join("、")),
-        };
-        match s.due_state {
-            "overdue" => rs.push(Reason { key: "renewal_overdue", severity: "critical", text: format!("已过期 {} 天{note}", -s.due_days) }),
-            "soon" => {
-                let text = if s.due_days == 0 { format!("今天到期{note}") } else { format!("{} 天后到期{note}", s.due_days) };
-                rs.push(Reason { key: "renewal_due", severity: "warning", text });
-            }
-            _ => {}
-        }
-    }
-
     let status = if rs.iter().any(|r| r.severity == "critical") {
         Status::Down
     } else if rs.iter().any(|r| r.severity != "info") {
@@ -248,7 +250,8 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
     } else {
         Status::Ok
     };
-    // 流量额度在状态定下之后才加：只开告警，不让机器变「降级」/「故障」（额度快用完不是机器出了问题）
+    // 续费与流量额度在状态定下之后才加：只开告警，不让机器变「降级」/「故障」（账单快到期、额度快用完都不是机器出了问题）
+    rs.extend(renewal_reason(m));
     rs.extend(quota_reason(m));
     Health { status, reasons: rs, probe_unknown }
 }
@@ -347,7 +350,7 @@ pub(crate) mod tests {
         RelayInfo { public_host: "h".into(), generation, applied_generation: applied, applied_at, generation_at, apply_error: None, port_min: 20000, port_max: 29999 }
     }
 
-    fn entry(relay_xray_down: bool, egress_ok: bool) -> EntryView {
+    pub(crate) fn entry(relay_xray_down: bool, egress_ok: bool) -> EntryView {
         let ts = OffsetDateTime::now_utc();
         EntryView {
             id: Uuid::now_v7(),
@@ -373,10 +376,12 @@ pub(crate) mod tests {
         assert_eq!(evaluate(&m, OffsetDateTime::now_utc()).reasons[0].text, "3 天后到期");
         m.subscription = Some(sub(0));
         assert_eq!(evaluate(&m, OffsetDateTime::now_utc()).reasons[0].text, "今天到期", "和前端的“今天”一致");
+        // 到期后同一条规则升成严重；续费不影响健康状态（不算降级、故障）
+        assert_eq!(evaluate(&m, OffsetDateTime::now_utc()).status, Status::Ok);
         m.subscription = Some(sub(-2));
         let h = evaluate(&m, OffsetDateTime::now_utc());
-        assert_eq!(keys(&h), ["renewal_overdue"]);
-        assert_eq!(h.status, Status::Down);
+        assert_eq!((keys(&h), h.reasons[0].severity, h.reasons[0].text.as_str()), (vec!["renewal_due"], "critical", "已过期 2 天"));
+        assert_eq!(h.status, Status::Ok);
     }
 
     /// 备用团队的机器：续费提醒写明哪天自动回收（过期第 1 天的「已过期」告警就是「明天回收」的通知）、还指向它的软路由出口；

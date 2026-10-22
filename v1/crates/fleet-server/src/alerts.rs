@@ -399,7 +399,7 @@ mod tests {
         assert_eq!(repeat_interval_s("egress_fail", "critical"), Some(4 * 3600));
         assert_eq!(repeat_interval_s("relay_apply_lag", "warning"), None);
         assert_eq!(repeat_interval_s("renewal_due", "warning"), Some(24 * 3600));
-        assert_eq!(repeat_interval_s("renewal_overdue", "critical"), Some(24 * 3600));
+        assert_eq!(repeat_interval_s("renewal_due", "critical"), Some(24 * 3600));
         assert_eq!(repeat_interval_s("traffic_quota_high", "warning"), Some(24 * 3600));
         assert_eq!(repeat_interval_s("traffic_quota_high", "critical"), Some(24 * 3600));
     }

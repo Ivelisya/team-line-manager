@@ -93,7 +93,7 @@ async fn spare_team_is_system_managed() {
     let v = t.get(&format!("/api/v1/machines/{m}")).await;
     assert_eq!((v["spare"].clone(), v["recycle_on"].is_string()), (json!(true), true), "{v}");
     assert_eq!(t.get(&format!("/api/v1/machines/{n}")).await["recycle_on"], Value::Null);
-    let renewal = |v: Value| v["health"]["reasons"].as_array().unwrap().iter().find(|r| r["key"] == "renewal_overdue").map(|r| r["text"].clone());
+    let renewal = |v: Value| v["health"]["reasons"].as_array().unwrap().iter().find(|r| r["key"] == "renewal_due").map(|r| r["text"].clone());
     assert_eq!(renewal(v), Some(json!("已过期 1 天，备用节点明天自动回收")));
     assert_eq!(renewal(t.get(&format!("/api/v1/machines/{n}")).await), Some(json!("已过期 1 天")));
     // 改名照旧：显示名跟着变
@@ -421,4 +421,34 @@ async fn legacy_import_is_idempotent_and_skips_live_machines() {
 
     let (s, _) = t.req("POST", "/api/v1/recycle-bin/import", Some(json!({"items": [{"source_id": "x", "kind": "router", "name": "x"}]})), None).await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
+}
+
+/// 自动续费：过了到期日按周期顺延到不早于今天（账单日不变，每期一条续费记录与审计），所以开了自动续费的备用机器不会被回收；
+/// 没开的照常到期回收，不在用的不续
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn auto_renew_extends_due_date_before_spare_expiry() {
+    let t = setup(false).await;
+    let sp = spare_team(&t).await;
+    let a = seed_node(&t, sp, 1, "203.0.113.41", "active").await;
+    let off = seed_node(&t, sp, 2, "203.0.113.42", "active").await;
+    let retired = seed_node(&t, sp, 3, "203.0.113.43", "retired").await;
+    for m in [a, off, retired] {
+        sub(&t, m, "2030-01-31", "UTC").await;
+    }
+    sqlx::query("update subscription set auto_renew = true, cycle = 'monthly' where machine_id = any($1)").bind(vec![a, retired]).execute(&t.st.db).await.unwrap();
+
+    let now = datetime!(2030-03-15 00:00 UTC);
+    assert_eq!(fleet_server::renew::run_once(&t.st, now).await.unwrap(), [a]);
+    let due: String = sqlx::query_scalar("select due_date::text from subscription where machine_id = $1").bind(a).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(due, "2030-03-31", "01-31 → 02-28 → 03-31：账单日 31 号不变");
+    let rs: Vec<(String, String, Option<i32>, String, String)> =
+        sqlx::query_as("select old_due::text, new_due::text, amount_cents, note, actor from renewal where machine_id = $1 order by old_due").bind(a).fetch_all(&t.st.db).await.unwrap();
+    let want = |o: &str, n: &str| (o.to_string(), n.to_string(), Some(500), "自动续费".to_string(), "系统".to_string());
+    assert_eq!(rs, [want("2030-01-31", "2030-02-28"), want("2030-02-28", "2030-03-31")]);
+    let au = t.get("/api/v1/audit?cat=machine").await;
+    assert!(au.as_array().unwrap().iter().any(|x| x["action"] == "renewal" && x["summary"] == "到期 2030-02-28 → 2030-03-31（自动续费）"), "{au}");
+    assert!(fleet_server::renew::run_once(&t.st, now).await.unwrap().is_empty(), "已经顺延过的不再续");
+
+    let r = spare::run_once(&t.st, now).await.unwrap();
+    assert_eq!(r.retired, [off], "没开自动续费的照常回收：{r:?}");
 }

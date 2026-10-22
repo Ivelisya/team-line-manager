@@ -1456,12 +1456,12 @@ mod tests {
             net_tx_bps: Some(rx / 2.0),
             tcp_conns: None,
         };
-        // 已过期（严重告警，健康为故障）但照常上报：速率照算
+        // 已过期（严重告警，但续费不算故障；没有入口是降级）、照常上报：速率照算
         let mut down = base("vps");
         down.subscription = Some(sub(-3));
         down.host = Some(host(1000.0));
         down.health = health::evaluate(&down, now);
-        assert_eq!(down.health.status, Status::Down);
+        assert_eq!(down.health.status, Status::Degraded);
         // agent 离线：最后一份速率不算
         let mut off = base("vps");
         off.agent.as_mut().unwrap().online = false;
@@ -1470,7 +1470,7 @@ mod tests {
         let ov = overview_of(&[down, off]);
         assert_eq!(ov["net_rx_bps"], 1000.0);
         assert_eq!(ov["net_tx_bps"], 500.0);
-        assert_eq!(ov["nodes"]["down"], 2);
+        assert_eq!(ov["nodes"]["down"], 1, "只有 agent 离线的那台算故障");
 
         // 同机 IP 节点的主机读数就是宿主机的：速率只算一次，节点数、在线数照常各算一台
         let mut h = base("vps");
@@ -1485,9 +1485,9 @@ mod tests {
     #[test]
     fn overview_online_by_agent_not_health() {
         let now = OffsetDateTime::now_utc();
-        // 严重告警（已过期）但 agent 在线：在线
+        // 严重告警（出口不通）但 agent 在线：在线
         let mut crit = base("vps");
-        crit.subscription = Some(sub(-3));
+        crit.entries = vec![crate::health::tests::entry(false, false)];
         crit.health = health::evaluate(&crit, now);
         assert_eq!(crit.health.status, Status::Down);
         let mut off = base("relay");
