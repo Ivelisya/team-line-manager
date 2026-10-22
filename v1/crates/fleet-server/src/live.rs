@@ -149,9 +149,9 @@ fn machine_fields(m: &MachineView) -> Fields {
     ]
 }
 
-/// [ok, latency_ms, ts, detail]，ts 为 Unix 秒
+/// [ok, latency_ms, ts, detail, median_ms]，ts 为 Unix 秒；median_ms 是 TCP 近 1 小时的延迟中位数（出口探测为 null）
 fn probe(p: &Option<Probe>) -> Box<RawValue> {
-    raw(&p.as_ref().map(|p| (p.ok, p.latency_ms, secs(p.ts), &p.detail)))
+    raw(&p.as_ref().map(|p| (p.ok, p.latency_ms, secs(p.ts), &p.detail, p.median_ms)))
 }
 
 fn entry_fields(e: &EntryView) -> Fields {

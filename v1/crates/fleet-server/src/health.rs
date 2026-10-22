@@ -350,8 +350,8 @@ pub(crate) mod tests {
             applied: true,
             apply_error: None,
             relay_xray_down,
-            tcp: Some(Probe { ok: egress_ok, latency_ms: None, detail: None, ts }),
-            egress: Some(Probe { ok: egress_ok, latency_ms: None, detail: Some("timeout".into()), ts }),
+            tcp: Some(Probe { ok: egress_ok, latency_ms: None, detail: None, ts, median_ms: None }),
+            egress: Some(Probe { ok: egress_ok, latency_ms: None, detail: Some("timeout".into()), ts, median_ms: None }),
             traffic: Traffic::default(),
         }
     }

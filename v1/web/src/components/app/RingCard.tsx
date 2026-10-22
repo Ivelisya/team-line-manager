@@ -46,7 +46,7 @@ function RingCardImpl({ m, current, onOpen, show }: { m: MachineView; current?: 
       {proxy ? (
         <button type="button" className="rc-rings rc-pair" onClick={() => onOpen(m.id, 'traffic')}>
           <span><Globe />本月业务<b>↓ <Num f={F.bytes(t!.down)} /> · ↑ <Num f={F.bytes(t!.up)} /></b></span>
-          <span><Radar />TCP · 出口<b>{ms(ps!.tcp, ps!.tcpFail)} · {ms(ps!.egress, ps!.egressFail)}</b></span>
+          <span><Radar />TCP · 出口<b>{ms(ps!.tcp, ps!.tcpFail)} · {ps!.egressFail ? <span style={{ color: 'var(--bad-text)' }}>失败</span> : ps!.egressOk ? '正常' : '—'}</b></span>
           <span className="sr-only">（查看流量页签）</span>
         </button>
       ) : (

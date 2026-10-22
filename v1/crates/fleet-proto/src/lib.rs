@@ -140,6 +140,10 @@ pub struct ProbeSample {
     /// 失败原因，或 egress 探测看到的出口 IP
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// TCP 探测建连时 SYN 重发了几次（内核 TCP_INFO 的 total_retrans）。重发过的建连，`latency_ms` 仍是内核量的往返时间，
+    /// 不含 1 s / 3 s 的重发等待；丢包另记在这里。旧 agent 不报（None），旧中控收到不认识的字段照常忽略
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retrans: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

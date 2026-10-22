@@ -10,8 +10,8 @@ import { isQuiet } from './derive';
 type N = number | null;
 /** [ts, cpu_pct, load1, mem_used, mem_total, disk_used, disk_total, net_rx_bps, net_tx_bps, tcp_conns] */
 type HostTuple = [number, N, N, N, N, N, N, N, N, N];
-/** [ok, latency_ms, ts, detail] */
-type ProbeTuple = [boolean, N, number, string | null];
+/** [ok, latency_ms, ts, detail, median_ms]（median_ms：TCP 近 1 小时中位数，旧中控不带） */
+type ProbeTuple = [boolean, N, number, string | null, N?];
 interface MachinePatch {
   host?: HostTuple | null; seen?: N; agent?: { version: string | null; online: boolean; xray_running: boolean | null; cores: number | null } | null;
   health?: MachineView['health']; maintenance?: boolean; due_days?: N; due_state?: string | null; removed_traffic?: MachineView['removed_traffic']; quota?: MachineView['quota'];
@@ -24,7 +24,7 @@ const iso = (s: number) => new Date(s * 1000).toISOString();
 const host = (h: HostTuple): HostMetrics => ({
   ts: iso(h[0]), cpu_pct: h[1], load1: h[2], mem_used: h[3], mem_total: h[4], disk_used: h[5], disk_total: h[6], net_rx_bps: h[7], net_tx_bps: h[8], tcp_conns: h[9],
 });
-const probe = (p: ProbeTuple | null): ProbeResult | null => p && { ok: p[0], latency_ms: p[1], ts: iso(p[2]), detail: p[3] };
+const probe = (p: ProbeTuple | null): ProbeResult | null => p && { ok: p[0], latency_ms: p[1], ts: iso(p[2]), detail: p[3], median_ms: p[4] ?? null };
 
 function patchEntry(e: EntryView, d: EntryPatch | undefined): EntryView {
   if (!d) return e;

@@ -161,6 +161,7 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 
 ## 7. 版本升级顺序
 先升中控（`lab/deploy-server.sh` 就是先装 fleet-server、再把新 agent 放进 dist），再 `fleetctl upgrade-agent --all --yes` 升 agent：新 agent 的上报可能带旧中控不认的字段形状（如容器里 `load1` 为 null），旧中控会拒收整份上报。
+探测口径修正（迁移 0038）两边都兼容，仍按这个顺序：新中控收旧 agent 的上报照常（没有 `retrans`，卡片读数已改成近 1 小时中位数，SYN 重发尖刺不再左右它）；新 agent 报的 `retrans` 旧中控忽略。线路机的心跳格改由中控探（`relay_reach`），只要中控升级就生效。
 反过来，期望状态里的新东西旧 agent 也不认：直出入口（出站 `direct`）要等那台线路机的 agent 升级后再建，否则线路机报「agent 版本过旧」、整台的配置停在旧代数（这时升级 agent，或取消那个新增入口作业把直出入口摘掉，都能恢复）。
 
 ### 升级 agent：金丝雀与回滚

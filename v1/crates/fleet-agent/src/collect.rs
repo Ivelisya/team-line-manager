@@ -202,6 +202,24 @@ fn stagger(id: uuid::Uuid, period: Duration) -> Duration {
     Duration::from_millis((id.as_u128() % (period.as_millis().max(1))) as u64)
 }
 
+/// 入口在周期里的固定时刻：`t0 + stagger(id) + k·period` 里第一个不早于 `after` 的。每次派完都按它排下一次，
+/// 各入口始终落在周期里各自的那一秒，不会因为一起被重探（新入口、出站变了）或调度漂移而挤到同一秒一齐发——
+/// 原来下一次 = 派发时刻 + 周期，线路机2 的 19 个入口挤成每 30 秒 4 + 7 + 8 个同一秒发出
+fn next_slot(t0: Instant, after: Instant, period: Duration, id: uuid::Uuid) -> Instant {
+    let first = t0 + stagger(id, period);
+    if after <= first {
+        return first;
+    }
+    let p = period.as_millis().max(1);
+    let k = (after - first).as_millis().div_ceil(p);
+    first + Duration::from_millis((k * p) as u64)
+}
+
+/// 运行中尽快重探（新入口、出站变了）：基础等待加按 id 散开的 0–3 秒，一批入口同时变也不在同一秒发
+fn soon(now: Instant, base_s: u64, id: uuid::Uuid) -> Instant {
+    now + Duration::from_secs(base_s) + stagger(id, Duration::from_secs(3))
+}
+
 fn entry_sig(e: &DesiredEntry) -> String {
     format!("{}|{:?}", e.port, e.outbound)
 }
@@ -209,10 +227,11 @@ fn entry_sig(e: &DesiredEntry) -> String {
 /// 入口 → (探测端口, 经该端口出去的客户端)
 type ProbeClients = HashMap<uuid::Uuid, (u16, reqwest::Client)>;
 
-/// 探测调度：TCP 每 probe_interval_s（默认 30 s），出口每 2 倍间隔（默认 60 s）。
+/// 探测调度：TCP 每 probe_interval_s（默认 30 s），出口每 2 倍间隔（默认 60 s）；各入口落在周期里各自的时刻（next_slot）。
 /// `direct`：不走代理的客户端，出口探测失败时直连回显服务核对（`probe::egress_probe_checked`）
 pub async fn probe_task(sh: Arc<Shared>, direct: reqwest::Client, mut sd: watch::Receiver<bool>) {
     let mut sched: HashMap<uuid::Uuid, Sched> = HashMap::new();
+    let t0 = Instant::now(); // 各入口探测时刻的基准（next_slot）
     let sem = Arc::new(Semaphore::new(4)); // 出口探测并发上限
     let tcp_sem = Arc::new(Semaphore::new(8)); // TCP 探测并发上限（单独一个，不排在 12 s 的出口探测后面）
     let mut tick = interval_at(Instant::now() + Duration::from_secs(2), Duration::from_secs(1));
@@ -249,8 +268,8 @@ pub async fn probe_task(sh: Arc<Shared>, direct: reqwest::Client, mut sd: watch:
                     let sig = entry_sig(e);
                     if s.sig != sig {
                         s.sig = sig;
-                        s.next_tcp = now + Duration::from_secs(1);
-                        s.next_egress = now + Duration::from_secs(4);
+                        s.next_tcp = soon(now, 1, e.id);
+                        s.next_egress = soon(now, 4, e.id);
                     }
                 }
             }
@@ -260,25 +279,30 @@ pub async fn probe_task(sh: Arc<Shared>, direct: reqwest::Client, mut sd: watch:
         sched.retain(|id, _| live.contains(id));
         for e in d.entries.iter().filter(|e| e.enabled) {
             let s = sched.entry(e.id).or_insert_with(|| {
-                // 启动时错峰；运行中新增的入口尽快探一次，让界面马上有结果
-                let (a, b) = if first_pass { (stagger(e.id, tcp_every), Duration::from_secs(5) + stagger(e.id, egress_every)) } else { (Duration::from_secs(1), Duration::from_secs(4)) };
-                Sched { sig: entry_sig(e), next_tcp: now + a, next_egress: now + b, tcp_busy: Arc::new(AtomicBool::new(false)), egress_busy: Arc::new(AtomicBool::new(false)), egress_ok: Arc::new(AtomicBool::new(true)) }
+                // 启动时按各自的时刻错峰（出口探测至少等 5 秒）；运行中新增的入口尽快探一次，让界面马上有结果
+                let (a, b) = if first_pass {
+                    (next_slot(t0, now, tcp_every, e.id), next_slot(t0, now + Duration::from_secs(5), egress_every, e.id))
+                } else {
+                    (soon(now, 1, e.id), soon(now, 4, e.id))
+                };
+                Sched { sig: entry_sig(e), next_tcp: a, next_egress: b, tcp_busy: Arc::new(AtomicBool::new(false)), egress_busy: Arc::new(AtomicBool::new(false)), egress_ok: Arc::new(AtomicBool::new(true)) }
             });
             // 直出入口没有节点（addr 为 None）：不做 TCP 探测，只靠出口探测
             if let Some((host, port)) = e.outbound.addr().filter(|_| now >= s.next_tcp && !s.tcp_busy.swap(true, Ordering::AcqRel)) {
-                s.next_tcp = now + tcp_every;
+                // 下一次回到这个入口自己的时刻；至少隔半个周期（刚重探过的不会紧接着又探）
+                s.next_tcp = next_slot(t0, now + tcp_every / 2, tcp_every, e.id);
                 let busy = BusyGuard(s.tcp_busy.clone());
                 let (sh2, id, host) = (sh.clone(), e.id, host.to_string());
                 let tcp_sem2 = tcp_sem.clone();
                 tokio::spawn(async move {
                     let _busy = busy;
                     let Ok(_permit) = tcp_sem2.acquire().await else { return };
-                    let r = probe::tcp_probe(id, &host, port, Duration::from_secs(5), now_ms()).await;
+                    let r = probe::tcp_probe(id, &host, port, probe::TCP_TIMEOUT, now_ms()).await;
                     sh2.buf.lock().unwrap().push_probe(r);
                 });
             }
             if now >= s.next_egress {
-                s.next_egress = now + egress_every;
+                s.next_egress = next_slot(t0, now + egress_every / 2, egress_every, e.id);
                 if let Some((_, client)) = probes.get(&e.id) {
                     if s.egress_busy.swap(true, Ordering::AcqRel) {
                         skipped += 1;
@@ -294,7 +318,7 @@ pub async fn probe_task(sh: Arc<Shared>, direct: reqwest::Client, mut sd: watch:
                         let _busy = busy;
                         let Ok(_permit) = sem2.acquire().await else { return };
                         // 回显服务本身不通（中控重启、部署）时不出样本：既不算这个入口出口失败，也不动成功/失败的切换日志
-                        let Some(r) = probe::egress_probe_checked(id, &client, &direct, &url, ip, Duration::from_secs(12), now_ms()).await else { return };
+                        let Some(r) = probe::egress_probe_checked(id, &client, &direct, &url, probe::EGRESS_ALT_URL, ip, Duration::from_secs(12), now_ms()).await else { return };
                         let detail = r.detail.as_deref().unwrap_or("");
                         // 只在成功/失败切换时 warn / info，持续失败降为 debug
                         if last_ok.swap(r.ok, Ordering::Relaxed) == r.ok {
@@ -312,5 +336,31 @@ pub async fn probe_task(sh: Arc<Shared>, direct: reqwest::Client, mut sd: watch:
             }
         }
         first_pass = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn probe_slots_keep_each_entry_on_its_own_second() {
+        let t0 = Instant::now();
+        let p = Duration::from_secs(30);
+        let id = uuid::Uuid::from_u128(12_345); // 相位 12.345 s
+        let ph = Duration::from_millis(12_345);
+        assert_eq!(next_slot(t0, t0, p, id), t0 + ph);
+        assert_eq!(next_slot(t0, t0 + ph, p, id), t0 + ph, "正好在时刻上：就是它");
+        assert_eq!(next_slot(t0, t0 + ph + Duration::from_millis(1), p, id), t0 + ph + p);
+        // 派发时刻晚了几秒（排队、重探），下一次仍回到自己的相位，不顺延
+        let fired = t0 + ph + p * 3 + Duration::from_secs(4);
+        assert_eq!(next_slot(t0, fired + p / 2, p, id), t0 + ph + p * 4);
+        // 不同入口落在不同的时刻
+        let other = uuid::Uuid::from_u128(12_345 + 7_000);
+        assert_ne!(next_slot(t0, fired, p, id), next_slot(t0, fired, p, other));
+        // 一批入口同时重探：散在 base..base+3 秒
+        let now = t0 + Duration::from_secs(100);
+        assert_eq!(soon(now, 1, uuid::Uuid::from_u128(2_500)), now + Duration::from_millis(3_500));
+        assert!((0..50u128).map(|n| soon(now, 1, uuid::Uuid::from_u128(n * 977))).all(|s| s >= now + Duration::from_secs(1) && s < now + Duration::from_secs(4)));
     }
 }

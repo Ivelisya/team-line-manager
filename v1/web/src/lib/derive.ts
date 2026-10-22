@@ -207,27 +207,24 @@ export type BeatCell = 'ok' | 'warn' | 'bad' | null;
  *  整数比较：正好落在边界上不受浮点误差影响 */
 const probeTone = (ok: number, total: number): BeatCell => (!total ? null : ok * 100 >= total * 99 ? 'ok' : ok * 100 >= total * 80 ? 'warn' : 'bad');
 /** 颜色含义：只放在心跳条「近 1 小时」/「近 30 天」的悬停里，每格的悬停只给数据 */
-// 只按成功率着色：跨境线路 150–250 ms 的延迟是常态，按延迟标黄会让正常线路一片警告色（延迟在每格的悬停里）
-export const BEAT_LEGEND = '绿：成功 ≥ 99% · 黄：成功 80%–99% · 红：成功不到 80% · 灰：没有探测';
+// 只按成功率着色：跨境线路 150–250 ms 的延迟是常态，按延迟标黄会让正常线路一片警告色（延迟在每格的悬停里）。
+// 一格 3 分钟、每 30 秒一次约 6 次：断 1 次（83%）黄，断 2 次（67%）红
+export const BEAT_LEGEND = '线路机每 30 秒连一次节点\n绿：成功 ≥ 99% · 黄：成功 80%–99% · 红：成功不到 80% · 灰：没有探测';
 export const AVAIL_LEGEND = '绿：成功 ≥ 99% · 黄：成功 80%–99% · 红：成功不到 80%\n灰：没有探测；TCP 与出口取较差的一种';
-/** 线路机的桶是它名下所有入口的合计：几条入口不通多半是那几台节点的事，线路机照常（状态仍「正常」）。
- *  所以线路机只有一条都不通时才红，部分不通黄（按 80% 划线的话，30 条入口里 7 条不通就整格红了） */
-export const BEAT_LEGEND_RELAY = '绿：成功 ≥ 99% · 黄：部分入口不通 · 红：全部不通 · 灰：没有探测';
-const relayTone = (ok: number, total: number): BeatCell => (!total ? null : ok * 100 >= total * 99 ? 'ok' : ok > 0 ? 'warn' : 'bad');
-/** 探测桶 → 心跳格（20 格 = 近 1 小时，旧→新）。按桶内成功比例定色；relay：线路机的定色见 relayTone */
-export const beatCells = (buckets: ProbeBucket[] | undefined, relay?: boolean): BeatCell[] => (buckets ?? []).map(([n, ok]) => (relay ? relayTone : probeTone)(ok, n));
+/** 线路机的格子是中控 → 线路机的连通性（中控每 30 秒连一次它的入口端口），不是它名下入口的合计：入口通不通是各节点的事 */
+export const BEAT_LEGEND_RELAY = '中控每 30 秒连一次线路机，只看通不通\n绿：都连上 · 黄：断过 1 次 · 红：断 2 次以上 · 灰：没有数据';
+/** 探测桶 → 心跳格（20 格 = 近 1 小时，旧→新）。按桶内成功比例定色（节点与线路机同一套，线路机的桶来源见 BEAT_LEGEND_RELAY） */
+export const beatCells = (buckets: ProbeBucket[] | undefined): BeatCell[] => (buckets ?? []).map(([n, ok]) => probeTone(ok, n));
 const BEAT_MS = 3 * 60_000;
-/** 心跳格的悬停（与 beatCells 一一对应）：这 3 分钟的时段、成功率（次数）、平均延迟。
- *  桶按墙钟 3 分钟对齐，最后一格是当前这格（见 API.md /probe-beats）。
- *  entries：线路机经节点的入口数——桶是各入口的合计，每条入口探测次数相同，按成功比例折成「约 28/29 入口通」：
- *  一条入口长期不通时整条是黄的（成功 96%），悬停写明是几条入口的事 */
-export function beatTitles(buckets: ProbeBucket[] | undefined, now = Date.now(), entries?: number): string[] {
+/** 心跳格的悬停（与 beatCells 一一对应）：这 3 分钟的时段、成功率（次数）、延迟中位数、SYN 重发过几次（丢包，不算进延迟）。
+ *  桶按墙钟 3 分钟对齐，最后一格是当前这格（见 API.md /probe-beats） */
+export function beatTitles(buckets: ProbeBucket[] | undefined, now = Date.now()): string[] {
   const bs = buckets ?? [];
   const cur = Math.floor(now / BEAT_MS) * BEAT_MS;
   const hm = (t: number) => { const d = new Date(t); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
-  return bs.map(([n, ok, ms], i) => {
+  return bs.map(([n, ok, ms, re], i) => {
     const t0 = cur - (bs.length - 1 - i) * BEAT_MS;
-    const what = !n ? '没有探测' : `${entries ? `约 ${Math.round((ok / n) * entries)}/${entries} 入口通 · ` : ''}成功 ${Math.round((ok / n) * 100)}%（${ok}/${n}）${ms != null ? ` · 平均 ${Math.round(ms)} ms` : ''}`;
+    const what = !n ? '没有探测' : `成功 ${Math.round((ok / n) * 100)}%（${ok}/${n}）${ms != null ? ` · 中位 ${Math.round(ms)} ms` : ''}${re ? ` · 重发 ${re} 次` : ''}`;
     return `${hm(t0)}–${hm(t0 + BEAT_MS)}${i === bs.length - 1 ? '（进行中）' : ''} · ${what}`;
   });
 }
@@ -254,17 +251,20 @@ export function availTitles(days: AvailabilityDay[]): string[] {
 }
 /** 有探测、却一个都没成功（延迟为 null）：显示「失败」，和「—」（还没有探测）区分开 */
 const allFailed = (ps: (ProbeResult | null)[]) => ps.some((p) => p && !p.ok) && !ps.some((p) => p?.ok);
-/** 入口探测摘要：平均 TCP 延迟与出口延迟，tcpFail / egressFail = 全部失败。只算 active 的入口（同服务端健康规则）：应用中的还没有探测。
+/** TCP 延迟读数：近 1 小时的中位数（中控给的 median_ms），没有时用最近一次 */
+export const tcpMs = (p: ProbeResult | null) => p?.median_ms ?? p?.latency_ms ?? null;
+/** 入口探测摘要：TCP 延迟（线路机 → 节点，各入口近 1 小时中位数的平均）与出口通不通，tcpFail / egressFail = 全部失败。
+ *  出口探测只判通不通、IP 对不对：它的耗时是经节点去中控回显服务（在德国）的，不是线路延迟，不当读数。
+ *  只算 active 的入口（同服务端健康规则）：应用中的还没有探测。
  *  直出入口没有节点、不做 TCP 探测：TCP 的连通数（total / tcpOk）与延迟只算经节点的入口，出口照算 */
 export function probeSummary(m: MachineView) {
   const es = m.entries.filter((e) => e.lifecycle === 'active');
   const viaNode = es.filter((e) => !e.direct);
   const tcpOk = viaNode.filter((e) => e.tcp?.ok).length;
-  const lat = viaNode.map((e) => e.tcp?.latency_ms).filter((x): x is number => x != null);
-  const eg = es.map((e) => e.egress?.latency_ms).filter((x): x is number => x != null);
+  const lat = viaNode.map((e) => tcpMs(e.tcp)).filter((x): x is number => x != null);
   return {
-    total: viaNode.length, tcpOk, tcp: lat.length ? Math.round(lat.reduce((a, b) => a + b, 0) / lat.length) : null, egress: eg.length ? Math.round(eg.reduce((a, b) => a + b, 0) / eg.length) : null,
-    tcpFail: allFailed(viaNode.map((e) => e.tcp)), egressFail: allFailed(es.map((e) => e.egress)),
+    total: viaNode.length, tcpOk, tcp: lat.length ? Math.round(lat.reduce((a, b) => a + b, 0) / lat.length) : null,
+    tcpFail: allFailed(viaNode.map((e) => e.tcp)), egressFail: allFailed(es.map((e) => e.egress)), egressOk: es.some((e) => e.egress?.ok),
   };
 }
 /** 备用团队里在用、有订阅的机器：到期 +1 天由中控自动删除（到期旁标出来）。旧接口没有 spare 时按否 */

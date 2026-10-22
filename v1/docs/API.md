@@ -125,9 +125,12 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
   open_incidents, maintenance,   // maintenance：同机 IP 节点在宿主机维护时也为 true
   relay: {public_host,generation,applied_generation,applied_at,apply_error,port_min,port_max}|null }
 EntryView = { id, relay:{id,name}, node:{id,name}, direct, port, lifecycle, applied, apply_error,
-  tcp:{ok,latency_ms,detail,ts}|null, egress:{…}|null, traffic:{today_up,today_down,month_up,month_down} }
+  tcp:{ok,latency_ms,detail,ts,median_ms}|null, egress:{…}|null, traffic:{today_up,today_down,month_up,month_down} }
 // direct：线路机直出入口——节点就是线路机自己（node.id = relay.id，node.name =「线路机名-直出」），出口是线路机自己的 IP；
 //   只出现在线路机的 entries 里（一次）；没有 TCP 探测（tcp 恒为 null），出口不通时线路机自己报 egress_fail
+// tcp：线路机 → 节点出站地址的 TCP 建连，latency_ms 是最近一次（新 agent 报内核量的往返时间，不含 SYN 重发等待），
+//   median_ms 是近 1 小时成功样本的中位数（卡片读数）；egress：经入口访问 /echo 核对出口 IP，只判通不通、IP 对不对，
+//   latency_ms 是这次出口验证的耗时（经节点去中控），不是线路延迟，median_ms 恒为 null
 ```
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -233,7 +236,7 @@ ProvisionItem = {
 |---|---|---|
 | GET | `/overview` | `{nodes:{total,ok,degraded,down,unknown,maintenance}, relays:{…}, provisioning, retiring, failed（上架失败的机器数，网页「有问题」里也算它们）, due_soon（`subscription.due_state = soon` 的台数：到期前提前提醒天数内、不是自动续费，网页「即将到期」）, overdue（已过期的台数）, online, offline（按 agent 连通：agent 没有近期上报为离线，家宽代理没有 agent 算在线；与健康无关，有严重告警但照常上报的算在线）, monthly_cost:[{currency,cents}]（各台 `subscription.monthly_cents` 按币种分别相加，不做汇率折算）, traffic_month:{up,down}, net_rx_bps, net_tx_bps}`（只统计 active；速率不含 agent 离线的机器——告警不影响，照常上报的机器照算；同机 IP 节点的读数就是宿主机的，速率不重复算，节点数与在线 / 离线照常按节点计） |
 | GET | `/overview/series?minutes=30` | 总览网速曲线：`{points:[{ts, net_rx_bps, net_tx_bps}]}`，`minutes` 1–60（默认 30，越界 400）；最近 N 个**结束满 20 s** 的分钟（agent 每 10 s 上报，刚结束的那一分钟还缺最后的上报，不给）每分钟一个点、旧→新，`ts` 为该分钟起点（RFC3339）。每个点 = 该分钟有主机指标的 active 机器速率之和，单台算法同 `/machines/{id}/series?metric=host`（每分钟计数器最大值与上一个有数据的分钟相减 ×8 / 秒数；计数器回绕的那一段不计）；没有数据的分钟为 0 |
-| GET | `/probe-beats` | 探测心跳条：`{<机器id>: [[n, ok, ms], …20 格]}`。每格 3 分钟、按墙钟对齐（`date_bin('3 minutes', ts, 'epoch')`，即每小时的 :00 / :03 / … ），旧→新，最后一格是当前这格（还没走完）；第 i 格 = `[cb-57m+3i 分, cb-57m+3(i+1) 分)`，cb = 当前这格的起点；`n` = TCP 探测次数，`ok` = 成功次数，`ms` = 成功探测的平均延迟（没有成功的为 null）；没有探测的格为 `[0,0,null]`。节点汇总它的入口、线路机汇总挂在它上面的所有入口；只含这 20 格里有探测数据的在用机器 |
+| GET | `/probe-beats` | 探测心跳条：`{<机器id>: [[n, ok, ms], …20 格]}`。每格 3 分钟、按墙钟对齐（`date_bin('3 minutes', ts, 'epoch')`，即每小时的 :00 / :03 / … ），旧→新，最后一格是当前这格（还没走完）；第 i 格 = `[cb-57m+3i 分, cb-57m+3(i+1) 分)`，cb = 当前这格的起点；每格 `[n, ok, ms, retrans]`：`n` = 次数，`ok` = 成功次数，`ms` = 成功的延迟中位数（没有成功的为 null），`retrans` = 建连时 SYN 重发过的次数（丢包，不算进 ms；旧 agent 不报，为 0）；没有数据的格为 `[0,0,null,0]`。节点：线路机 → 节点的 TCP 探测，汇总它的入口；线路机：中控 → 线路机的连通性（`relay_reach`，中控每 30 秒连一次它的客户入口——public_host + 最小的在用入口端口——只判通不通，ms 为 null；中控自己的网络不通时那一轮不记），不再汇总它上面的入口；只含这 20 格里有数据的在用机器 |
 | GET | `/incidents?state=firing\|resolved\|all&subject_id=&limit=100&offset=0` | 分页：`{items:[{id,rule,rule_name,subject:{id,name},subject_id,subject_name,severity,state,summary,opened_at,last_seen_at,resolved_at,ack_at,ack_by,reopen_count}], total, acked, next_offset}`；`acked` = 同一筛选下已确认的条数（确认不关闭告警，`total` 含它们）；`state` 默认 firing；`subject_id`（可选，机器 id）只看这台机器的告警，与 `state`、分页组合，`total` 同样只数它的（如抽屉的最近告警：`?subject_id=<id>&state=all&limit=5`；不是 uuid 时 400）；`reopen_count`：恢复后 30 分钟内同一（规则, 对象）复发会重开原告警而不是新建，每次 +1；顺序：进行中在前 → 严重度高在前 → 开始时间新在前（同时刻按 id，翻页不重不漏）；带 `subject_id` 时不看严重度：进行中在前 → 开始时间新在前（一台机器的「最近告警」按时间读）。中控自身的告警（规则 `central_` 开头，见下表）对象不是机器：`subject`、`subject_id` 为 null，`subject_name` 为「中控」 |
 | POST | `/incidents/{id}/ack` | 确认告警：不存在 404，已确认过 409；写审计 `incident.ack` |
 | GET/POST | `/silences`、DELETE `/silences/{id}` | GET：还没结束的（`ends_at` 晚于现在，含还没开始的预约）`[Silence]`，按 `starts_at` 排——进行中的在前，已预约的随后；只有此刻在窗口内的才起作用（不开告警、不发通知，维护还暂停健康判定）。POST `{subject_id?,rule?,starts_at,ends_at,is_maintenance,comment（最多 2000 字）}` → `{id}`（`subject_id` 空 = 全部机器，`rule` 空 = 全部规则）：`ends_at` 要晚于 `starts_at`、时长最多 30 天、`ends_at` 不能已经过去（`starts_at` 可以，「从现在开始」由客户端按自己的时钟填）、`starts_at` 最多在 90 天后，`rule` 必须是已知规则 key（且不能与 `is_maintenance` 同时给：维护针对整台机器）、`subject_id` 必须是存在的机器，否则 400（中文原因）；全部机器（`subject_id` 空）的用 API 密钥建时最长 24 小时（超了 400：全部机器的静默等于关掉监控），账号登录的会话仍是 30 天。DELETE 不存在或已删 404。新建、删除都写审计（详情是这条静默本身：对象名、规则、起止、维护、备注），并给所有启用的通知渠道发一条 `silence` 通知（谁、新建还是删除、对象、维护还是静默、起止、备注；不看渠道的 `min_severity`，也不受任何静默影响）：全部机器的一律发（含预约的），单台的只在此刻生效（`starts_at` ≤ 现在 < `ends_at`）时发 |
@@ -287,7 +290,7 @@ ProvisionItem = {
   - `host`：`[ts, cpu_pct, load1, mem_used, mem_total, disk_used, disk_total, net_rx_bps, net_tx_bps, tcp_conns] | null`（`ts` 为 Unix 秒，速率取整；各项可为 null，与 `MachineView.host` 同义）；
   - `seen`：`agent.last_report_at` 的 Unix 秒 | null；`agent`：`{version, online, xray_running, cores} | null`（不含 `last_report_at`、`health` 和 `clock_skew_ms`——agent 自报的累计计数、时钟偏差每次上报都变，只随 REST 重取更新；前端合并进原对象）；
   - `health`、`maintenance`、`removed_traffic`、`quota`、`active_job`：与 `MachineView` 同形；`due_days` / `due_state`：`subscription.due_days` / `due_state`（无订阅为 null；跨天时一起变）。
-- `entries[id]` 的键：`tcp` / `egress`：`[ok, latency_ms, ts, detail] | null`（`ts` 为 Unix 秒）；`traffic`：与 `EntryView.traffic` 同形。一条入口同时出现在节点和线路机的 `entries` 里，两边都要更新。
+- `entries[id]` 的键：`tcp` / `egress`：`[ok, latency_ms, ts, detail, median_ms] | null`（`ts` 为 Unix 秒；`median_ms` 见 EntryView）；`traffic`：与 `EntryView.traffic` 同形。一条入口同时出现在节点和线路机的 `entries` 里，两边都要更新。
 - `overview`：与 `GET /overview` 同形，变了才带。
 - 机器的新建、改名、换团队、退役、告警等结构变化不走 `metrics`，仍发上面的失效通知。
 - 静默的新建 / 删除只发 `incidents`（不发 `machines`）：卡片上的 `maintenance`、`health`、总览的维护中计数随后（最多 3 s）经 `metrics` 送达，不必为它重取机器列表。
@@ -295,9 +298,10 @@ ProvisionItem = {
 `fleetctl watch [--count N] [--metrics] [--json]` 订阅这个流（默认不显示 `metrics`）。
 
 ## agent（`/agent/v1`，Bearer 令牌）
-见 `crates/fleet-proto/src/lib.rs`。另：`GET /echo` 返回请求方 IP（纯文本），供出口探测用，无需鉴权。线路机经入口访问它失败时，agent 再不走代理直连它一次：直连也拿不到 IP（中控重启、部署中）就不记这次出口探测，不算节点出口失败。
+见 `crates/fleet-proto/src/lib.rs`。另：`GET /echo` 返回请求方 IP（纯文本），供出口探测用，无需鉴权。线路机经入口访问它没拿到 IP 时，agent 核对两次：不走代理直连它一次，直连也拿不到 IP（中控重启、部署中）就不记这次出口探测；直连拿得到，再经入口访问备用目标 `https://www.gstatic.com/generate_204`，通的话说明出口好好的、只是节点去 /echo 的那条路不通（如边缘机反代配置坏了），同样不记，都不算节点出口失败。经入口回了 IP 但不是期望的照常记失败。探测入站的放行规则 `probe-<入口>` 因此也放行备用目标（与回显服务都是域名时合成一条，回显服务是 IP 时另加 `probe-<入口>-1`）。
+TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建连，超时 10 秒（盖住 SYN 第 1、3、7 秒的三次重发），域名先解析、不计时；`latency_ms` 是内核 TCP_INFO 的往返时间，`retrans` 是建连时 SYN 重发次数（新字段，旧 agent 不报、旧中控忽略）。各入口的探测落在周期里按 id 错开的固定时刻，不在同一秒一齐发。
 
-直出入口在期望状态里是 `"outbound": {"protocol": "direct"}`（`expect_egress_ip` 为线路机自己的 IP）。不认识它的旧 agent 整份期望状态解析失败、回报「agent 版本过旧」（线路机 apply_error），所以**先升级线路机 agent，再建直出入口**。agent 为它渲染入口自己的 freedom 出站（`out-<入口>`，不复用共享的 `direct`），不做 TCP 探测；路由和节点入口相同（AsIs，`block-private` / `block-bittorrent` 在前），另在该入口规则最前面加 `guard-<入口>-api`：目标端口是本机 Xray API（62789）或任一入口的回环探测入站（入口端口 + 10000）的连接一律 blocked（各入口的探测规则 `probe-<入口>` 本身也只放行到回显服务，即 echo_url 的主机与端口，别的目标落到默认的 `deny`：探测入站是不要密码的 SOCKS，不能当跳板）——`block-private` 只拦 IP 目标，客户写解析到回环的域名（`localhost`、`127.0.0.1.nip.io`）时 freedom 会在线路机本机解析并连上 API。解析到内网其它地址的域名仍能连（与旧系统的主入口相同）；没有改成 IPIfNonMatch 先解析再过 `block-private`，是因为 fake-ip DNS 环境（实验室，域名都解析到 198.18.0.0/15）里那样会把所有域名都拦掉。
+直出入口在期望状态里是 `"outbound": {"protocol": "direct"}`（`expect_egress_ip` 为线路机自己的 IP）。不认识它的旧 agent 整份期望状态解析失败、回报「agent 版本过旧」（线路机 apply_error），所以**先升级线路机 agent，再建直出入口**。agent 为它渲染入口自己的 freedom 出站（`out-<入口>`，不复用共享的 `direct`），不做 TCP 探测；路由和节点入口相同（AsIs，`block-private` / `block-bittorrent` 在前），另在该入口规则最前面加 `guard-<入口>-api`：目标端口是本机 Xray API（62789）或任一入口的回环探测入站（入口端口 + 10000）的连接一律 blocked（各入口的探测规则 `probe-<入口>` 本身也只放行到回显服务，即 echo_url 的主机与端口，和出口探测的备用目标，别的目标落到默认的 `deny`：探测入站是不要密码的 SOCKS，不能当跳板）——`block-private` 只拦 IP 目标，客户写解析到回环的域名（`localhost`、`127.0.0.1.nip.io`）时 freedom 会在线路机本机解析并连上 API。解析到内网其它地址的域名仍能连（与旧系统的主入口相同）；没有改成 IPIfNonMatch 先解析再过 `block-private`，是因为 fake-ip DNS 环境（实验室，域名都解析到 198.18.0.0/15）里那样会把所有域名都拦掉。
 
 `POST /agent/v1/report` 入库失败按类回：数据本身入不了库（SQLSTATE 22 类：坏字节、NUL、越界；23 类：违反约束）→ 422（`error.code="bad_report"`），agent 把这份报告移入 `dead/` 不再重发，其中的入口流量结转到下一份报告补报（同离线队列超限淘汰；这份本身带着结转补报的流量时不再结转，免得一份接一份地被拒）；其它（连接池超时、断连、磁盘满、只读…）→ 503，agent 退避重试（受本地队列的字节与时长上限约束）。agent 只把 4xx（401 撤销、403/404/408/429 除外）当永久拒绝，5xx 和网络错误一律重试。
 

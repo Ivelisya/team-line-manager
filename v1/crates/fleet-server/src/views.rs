@@ -156,6 +156,8 @@ pub struct Probe {
     pub detail: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub ts: OffsetDateTime,
+    /// TCP 探测：近 1 小时成功样本延迟的中位数（卡片读数；单次的 SYN 重发尖刺不左右它）。出口探测为 None
+    pub median_ms: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -806,7 +808,7 @@ async fn sustained_of(db: &sqlx::PgPool, hids: &[Uuid]) -> sqlx::Result<HashMap<
 }
 
 /// 每个入口 × (tcp, egress) 沿 (entry_id, kind, ts desc) 索引各取最新一条（不把 15 分钟内的探测全读出来排序）；
-/// 上界同主机样本，剪掉预建的未来分区
+/// 上界同主机样本，剪掉预建的未来分区。TCP 另带近 1 小时成功样本的延迟中位数（每入口约 120 行，同一索引）
 async fn probes_of(db: &sqlx::PgPool, eids: &[Uuid]) -> sqlx::Result<HashMap<(Uuid, String), Probe>> {
     #[derive(sqlx::FromRow)]
     struct P {
@@ -816,17 +818,25 @@ async fn probes_of(db: &sqlx::PgPool, eids: &[Uuid]) -> sqlx::Result<HashMap<(Uu
         latency_ms: Option<f32>,
         detail: Option<String>,
         ts: OffsetDateTime,
+        median_ms: Option<f64>,
     }
     let ps = sqlx::query_as::<_, P>(
-        "select x.* from unnest($1::uuid[]) e(id) cross join (values ('tcp'), ('egress')) k(kind) cross join lateral (
+        "select x.*, m.median_ms from unnest($1::uuid[]) e(id) cross join (values ('tcp'), ('egress')) k(kind) cross join lateral (
             select entry_id, kind, ok, latency_ms, detail, ts from probe_result
             where entry_id = e.id and kind = k.kind and ts > now() - interval '15 minutes' and ts <= now() + interval '1 day'
-            order by ts desc limit 1) x",
+            order by ts desc limit 1) x
+         left join lateral (
+            select percentile_cont(0.5) within group (order by latency_ms) median_ms from probe_result
+            where entry_id = e.id and kind = 'tcp' and ok and latency_ms is not null
+              and ts > now() - interval '1 hour' and ts <= now() + interval '1 day') m on k.kind = 'tcp'",
     )
     .bind(eids)
     .fetch_all(db)
     .await?;
-    Ok(ps.into_iter().map(|p| ((p.entry_id, p.kind), Probe { ok: p.ok, latency_ms: p.latency_ms, detail: p.detail, ts: p.ts })).collect())
+    Ok(ps
+        .into_iter()
+        .map(|p| ((p.entry_id, p.kind), Probe { ok: p.ok, latency_ms: p.latency_ms, detail: p.detail, ts: p.ts, median_ms: p.median_ms.map(|m| m as f32) }))
+        .collect())
 }
 
 /// 进行中的作业与失败的上架 / 恢复 / 退役作业，各按机器取最后建的：(进行中, 失败)

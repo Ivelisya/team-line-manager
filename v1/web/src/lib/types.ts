@@ -31,7 +31,8 @@ export interface HostMetrics {
   ts: string; cpu_pct: number | null; load1: number | null; mem_used: number | null; mem_total: number | null;
   disk_used: number | null; disk_total: number | null; net_rx_bps: number | null; net_tx_bps: number | null; tcp_conns: number | null;
 }
-export interface ProbeResult { ok: boolean; latency_ms: number | null; detail: string | null; ts: string }
+/** median_ms：TCP 探测近 1 小时成功样本的延迟中位数（卡片读数）；出口探测为 null */
+export interface ProbeResult { ok: boolean; latency_ms: number | null; detail: string | null; ts: string; median_ms?: number | null }
 export interface EntryTraffic { today_up: number; today_down: number; month_up: number; month_down: number }
 export interface EntryView {
   id: string; relay: { id: string; name: string }; node: { id: string; name: string };
@@ -182,8 +183,9 @@ export interface ProvisionCheckItem { ok: boolean; errors: string[]; name: strin
  *  host: cpu_pct mem_pct disk_pct load1 net_rx_bps net_tx_bps（1h 分辨率另有 cpu_max，无 load1）；traffic: up down conns；
  *  probe: tcp_ok tcp_ms egress_ok egress_ms（失败时 *_ms 为 null） */
 export interface SeriesPoint { ts: string; [k: string]: number | boolean | string | null }
-/** 心跳格：每台机器近 60 分钟、20 个 3 分钟桶（旧→新），每桶 [探测次数, 成功次数, 平均 TCP 延迟 ms]；[0,0,null] = 这段没有探测。线路机是它所有入口的合计 */
-export type ProbeBucket = [number, number, number | null];
+/** 心跳格：每台机器近 60 分钟、20 个 3 分钟桶（旧→新），每桶 [次数, 成功次数, 成功的延迟中位数 ms, SYN 重发过的次数]；[0,0,null,0] = 这段没有数据。
+ *  节点是线路机 → 节点的 TCP 探测；线路机是中控 → 线路机的连通性（只判通不通，延迟为 null） */
+export type ProbeBucket = [number, number, number | null, number?];
 export type ProbeBeats = Record<string, ProbeBucket[]>;
 /** 全站网卡速率的历史：每分钟一个点（旧→新），首页集群状态折线开场用 */
 export interface OverviewSeries { points: { ts: string; net_rx_bps: number; net_tx_bps: number }[] }
