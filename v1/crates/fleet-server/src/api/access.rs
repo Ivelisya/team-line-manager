@@ -146,10 +146,11 @@ pub async fn targets(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuer
     .await
 }
 
-/// 按接入方式筛来源时先取连接数最多的这么多个，查完画像再筛、再取前 limit 个
+/// 按接入方式筛来源时最多取回这么多个，查完画像再筛、再取前 limit 个
 const CONN_SCAN: i64 = 5000;
 
-/// `conn=`：只要这种接入方式的来源（unknown 含查不到画像的）。画像是离线库现查的、不在库表里，所以在取回之后筛
+/// `conn=`：只要这种接入方式的来源（unknown 含查不到画像的）。画像缓存里已经查过的在库里就筛掉；
+/// 缓存里还没有的（刚出现、库换了版本）要现查，取回后再筛。取回的到了 CONN_SCAN 个、筛完又不够 limit 个时，后面可能还有没看到的：`scan_capped` 为 true
 pub async fn sources(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Q>) -> ApiResult<Response> {
     let f = filter_of(&q, agg_window(&st, &q)?)?;
     let (limit, _) = page_of(&q, 100)?;
@@ -160,13 +161,17 @@ pub async fn sources(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuer
     };
     let key = (!f.events).then(|| format!("sources|{f:?}|{limit}|{conn:?}"));
     cached(&st, key, false, async {
-        let mut items = access::sources(&st.access_db, &f, if conn.is_some() { CONN_SCAN } else { limit }).await?;
+        let ver = st.ipintel.version();
+        let scan = if conn.is_some() { CONN_SCAN } else { limit };
+        let mut items = access::sources(&st.access_db, &f, conn.as_deref().map(|c| (c, ver.as_str())), scan).await?;
+        let full = conn.is_some() && items.len() as i64 == CONN_SCAN;
         crate::ipintel::attach(&st, &mut items).await;
         if let Some(c) = &conn {
             items.retain(|s| s.intel.as_ref().map_or(c == "unknown", |i| i.conn_type == *c));
             items.truncate(limit as usize);
         }
-        Ok(ok(json!({"items": items, "window_start": access::fmt_ts(f.from)})).0)
+        let scan_capped = full && (items.len() as i64) < limit;
+        Ok(ok(json!({"items": items, "scan_capped": scan_capped, "window_start": access::fmt_ts(f.from)})).0)
     })
     .await
 }
