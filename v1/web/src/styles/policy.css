@@ -6,6 +6,11 @@
 
 .pol-layout { display: grid; grid-template-columns: minmax(280px, 340px) minmax(0, 1fr); gap: var(--grid-gap); align-items: start; }
 @container content (max-width: 900px) { .pol-layout { grid-template-columns: minmax(0, 1fr); } }
+/* 右栏（编辑区）吸在顶栏下面：范围树很长时往下滚也看得见；比视口高就在栏内滚（单栏时跟着页面走） */
+.pol-col { min-width: 0; }
+@container content (min-width: 901px) {
+  .pol-col { position: sticky; top: calc(var(--topbar-h) + var(--sp-16)); max-height: calc(100dvh - var(--topbar-h) - 2 * var(--sp-16)); overflow-y: auto; overscroll-behavior: contain; }
+}
 /* 模式四段在手机上放不下（「暂停新连接」被截）：排成 2×2，撑满整行 */
 @container content (max-width: 520px) {
   .pol-form .seg { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); justify-self: stretch; height: auto; border-radius: var(--r-float); }

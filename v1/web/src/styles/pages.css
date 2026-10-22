@@ -60,8 +60,12 @@
   border-radius: var(--r-control); background: var(--sunken); font-size: var(--fs-label); line-height: var(--lh-label); cursor: auto; }
 .audit-ex dt { color: var(--fg-2); }
 .audit-ex dd { margin: 0; min-width: 0; color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; }
-/* 告警页：已恢复的仍按原级别着色，调淡一些，眼睛先落在进行中的上面 */
-.pill.is-past { opacity: 0.6; }
+/* 已恢复的仍按原级别着色，但去掉底色、改描边，不再整页一片红 */
+.pill.is-past { --pill-bg: transparent; border: 1px solid color-mix(in srgb, var(--pill-fg) 35%, transparent); opacity: 0.75; }
+/* 折叠的一批：规则名 × 台数，点开列出每一台；箭头同其它展开行，展开时转向下 */
+.inc-fold { gap: var(--sp-4); }
+.inc-fold .lucide { width: var(--icon-xs); height: var(--icon-xs); flex: none; transition: transform var(--dur-2) var(--ease-out); }
+.dt tr[data-open] .inc-fold .lucide { transform: rotate(90deg); }
 .chart-box { height: 180px; min-width: 0; }
 /* 曲线第一次有数据时从左往右展开一次：.chart-frame 在数据到了才挂载（之前是骨架），之后的轮询刷新、换时间范围（沿用旧曲线调淡）都不重新挂载，不会再播 */
 .chart-frame .chart-box { animation: chart-reveal var(--dur-data) var(--ease-out); }

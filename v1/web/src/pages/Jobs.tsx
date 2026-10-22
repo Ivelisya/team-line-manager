@@ -67,13 +67,12 @@ export function JobsPage() {
   if (jobs.data && jobs.data.total !== total) setTotal(jobs.data.total);
   const list = jobs.data?.items ?? [];
   const selected = id ?? null;
+  // 地址里没有作业时，右栏默认显示第一条失败的（没有就第一条）；窄屏（单栏）仍先看列表，所以 data-detail 只认地址
+  const shown = selected ?? (list.find((j) => j.state === 'failed') ?? list[0])?.id ?? null;
   // 列表为空、也没打开作业：整页只留一个与筛选相符的空状态（右栏不再同时写「选择左侧作业」）
   const none = !!jobs.data && list.length === 0 && !selected;
   const noneText = `没有${view === 'all' ? '' : `${VIEWS.find((v) => v.value === view)!.label}的`}${kind ? `「${kindOpts.find((o) => o.value === kind)!.label}」` : ''}作业`;
   const go = (jid: string) => nav({ pathname: `/jobs/${jid}`, search });
-  // 详情跟着页面滚（只有日志框自己滚）：在列表下面点了作业、详情顶部已滚出视口时，滚回详情顶部
-  const detail = React.useRef<HTMLDivElement>(null);
-  React.useLayoutEffect(() => { const el = detail.current; if (el && selected && el.getBoundingClientRect().top < 0) el.scrollIntoView({ block: 'start' }); }, [selected]);
   // 按地址打开的作业：在列表里滚到看得见（每个作业只滚一次；点列表里的本来就看得见）
   const scrolled = React.useRef<string | null>(null);
   React.useEffect(() => {
@@ -95,7 +94,7 @@ export function JobsPage() {
           {jobs.isLoading && <SkeletonRows rows={5} list />}
           {jobs.isError && <div style={{ padding: 'var(--sp-12)' }}><ErrorNote error={jobs.error} onRetry={() => void jobs.refetch()} /></div>}
           {list.map((j) => (
-            <div key={j.id} data-id={j.id} className="job-item" role="button" tabIndex={0} aria-current={j.id === selected} onClick={() => go(j.id)}
+            <div key={j.id} data-id={j.id} className="job-item" role="button" tabIndex={0} aria-current={j.id === shown} onClick={() => go(j.id)}
               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(j.id); } }}>
               <span className="l1">
                 <b className="ellipsis">{jobKindLabel(j.kind)} · {j.target ? <NodeHover id={j.target.id} noFocus><span>{j.target.name}</span></NodeHover> : '—'}</b>
@@ -110,8 +109,8 @@ export function JobsPage() {
           </Empty></div>}
           <Pagination pg={pg} unit="个" compact />
         </Panel>
-        <div className="jobs-detail" ref={detail}>
-          {selected ? <JobDetail id={selected} /> : !none && <Panel className="jobs-empty"><Empty icon={<ListChecks size={22} />} text="选择左侧作业" /></Panel>}
+        <div className="jobs-detail">
+          {shown ? <JobDetail id={shown} /> : !none && <Panel className="jobs-empty"><Empty icon={<ListChecks size={22} />} text="选择左侧作业" /></Panel>}
         </div>
       </div>
     </div>
@@ -138,6 +137,8 @@ function JobDetail({ id }: { id: string }) {
   const [cancelAsk, setCancelAsk] = React.useState(false);
   const j = q.data;
   const live = !!j && jobLive(j.state);
+  // 失败原因下面的步骤里已经写了：顶部只指一下是哪一步
+  const failedStep = j?.state === 'failed' ? j.steps.find((s) => stepKind(s) === 'failed' && s.error) : undefined;
   if (q.isError && !j) return <Panel><div style={{ padding: 'var(--sp-12)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div></Panel>;
   if (!j) return <Panel><div className="skel" style={{ height: 160, margin: 16 }} /></Panel>;
   return (
@@ -157,7 +158,11 @@ function JobDetail({ id }: { id: string }) {
           </LabelValueGrid>
         </div>
         {/* 取消（含「全部升级」里前一台失败后跟着取消的）不是出错：原因用中性色 */}
-        {j.error && <div style={{ marginTop: 12 }}><Note tone={j.state === 'cancelled' ? undefined : 'bad'}>{jobText(j.error)}</Note></div>}
+        {j.error && <div style={{ marginTop: 12 }}><Note tone={j.state === 'cancelled' ? undefined : 'bad'}>
+          {failedStep
+            ? <>失败于：<Button variant="link" onClick={() => document.getElementById(`step-${failedStep.idx}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' })}>{failedStep.title}</Button></>
+            : jobText(j.error)}
+        </Note></div>}
         {/* 只有换成功了链接才变：失败、取消的回滚到旧入口，旧链接照常可用 */}
         {j.kind === 'move_entry' && j.state === 'succeeded' && (
           <div style={{ marginTop: 12 }}>
@@ -176,7 +181,7 @@ function JobDetail({ id }: { id: string }) {
           {j.steps.map((s) => {
             const k = stepKind(s);
             return (
-              <li key={s.idx} className="step" data-kind={k}>
+              <li key={s.idx} id={`step-${s.idx}`} className="step" data-kind={k}>
                 <span className="step-ic">{STEP_ICON[k]}</span>
                 <div style={{ minWidth: 0 }}>
                   <div className="step-title"><b>{s.title}</b><span className="step-time">{s.started_at ? <>{F.clock(s.started_at)} · <Dur a={s.started_at} b={s.finished_at ?? (k === 'failed' ? j.finished_at : null)} live={live && !s.finished_at && k !== 'failed'} /></> : k === 'skipped' || k === 'compensated' || !live ? '未执行' : '等待'}</span>{k === 'compensated' && <Pill tone="warn" dot="none">已补偿</Pill>}</div>

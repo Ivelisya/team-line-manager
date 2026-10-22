@@ -3,8 +3,11 @@
 /* ========== 作业页：列表 + 详情 ========== */
 .jobs-layout { display: grid; grid-template-columns: minmax(280px, 380px) minmax(0, 1fr); gap: var(--grid-gap); align-items: start; }
 .jobs-list { align-self: start; }
-/* 右侧详情（没选作业时是占位）跟着页面滚：自己不再是滚动容器，只有日志框一层内部滚动（换作业时 Jobs.tsx 把详情顶部滚进视口） */
+/* 右侧详情吸在顶栏下面：列表翻到下面再选，详情也在视野里；比视口高就在栏内滚（单栏时跟着页面走） */
 .jobs-detail { min-width: 0; }
+@container content (min-width: 721px) {
+  .jobs-detail { position: sticky; top: calc(var(--topbar-h) + var(--sp-16)); max-height: calc(100dvh - var(--topbar-h) - 2 * var(--sp-16)); overflow-y: auto; overscroll-behavior: contain; }
+}
 /* 没选作业时的占位：更高、居中 */
 .jobs-empty { min-height: min(360px, 60dvh); display: grid; align-content: center; }
 /* 列表为空、没打开作业：单栏，只留列表里那个空状态 */

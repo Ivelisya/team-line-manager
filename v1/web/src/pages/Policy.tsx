@@ -126,9 +126,11 @@ export function PolicyPage() {
             ))}
           </div>
         </Panel>
-        {target
-          ? <Editor key={`${sel!.scope}:${sel!.id}`} scope={sel!.scope} name={target.name} sp={target.sp} team={target.team} node={target.node} onDirty={onDirty} />
-          : <Panel title="编辑"><Empty icon={<ShieldCheck size={22} />} text="在左侧选择团队或节点" /></Panel>}
+        <div className="pol-col">
+          {target
+            ? <Editor key={`${sel!.scope}:${sel!.id}`} scope={sel!.scope} name={target.name} sp={target.sp} team={target.team} node={target.node} onDirty={onDirty} />
+            : <Panel title="编辑"><Empty icon={<ShieldCheck size={22} />} text="在左侧选择团队或节点" /></Panel>}
+        </div>
       </div>
 
       <VersionsPanel />
