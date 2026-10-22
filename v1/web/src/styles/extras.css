@@ -15,8 +15,7 @@
 /* ========== Tooltip 里的原因列表（健康 pill） ========== */
 .tip-list { display: grid; gap: var(--sp-4); margin: 0; padding: 0; list-style: none; text-align: left; }
 .tip-list li { display: flex; align-items: flex-start; gap: var(--sp-6); }
-.tip-list .dot { margin-top: 6px; box-shadow: none; }
-.tip-list .dot[data-tone="neutral"] { background: transparent; box-shadow: inset 0 0 0 1.5px var(--fg-2); }
+.tip-list .smark { width: 12px; height: 12px; margin-top: 2px; }
 .block { display: block; }
 
 /* ========== 复制按钮 ========== */

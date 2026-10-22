@@ -455,7 +455,7 @@ function VersionsPanel() {
                         <span className="pol-relays">
                           {v.relays.map((r) => (
                             <Tip key={r.relay_id} text={r.error ? `${r.name ?? '线路机'}：${r.error}` : `${r.name ?? '线路机'}：配置版本 ${r.generation} · 已生效 ${r.applied_generation ?? '—'}（两个数相等表示线路机已同步）`}>
-                              <span className="pol-relay" tabIndex={0}><i className="dot" data-tone={STATUS[r.status].tone === 'neutral' ? undefined : STATUS[r.status].tone} />{r.name ?? '线路机'}<small>{STATUS[r.status].label}</small></span>
+                              <span className="pol-relay" tabIndex={0}>{r.name ?? '线路机'}<small>{STATUS[r.status].label}</small>{(r.status === 'failed' || r.status === 'applying') && <i className="smark" data-tone={STATUS[r.status].tone} data-spin={r.status === 'applying' ? '' : undefined} aria-hidden />}</span>
                             </Tip>
                           ))}
                         </span>
