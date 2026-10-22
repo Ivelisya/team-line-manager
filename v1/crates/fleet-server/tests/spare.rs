@@ -230,7 +230,8 @@ async fn auto_purge_after_retire_when_allowed() {
     assert_eq!(t.machine_lifecycle(manual).await, "retired", "手动退役的备用机器不自动删");
 }
 
-/// 宿主机到期：同机 IP 节点按现有退役规则一并退役（不清理、作业也带 auto），删除时先删同机 IP 节点，宿主机下一轮再删
+/// 宿主机到期：上面有不在备用团队的同机 IP 节点时不删（退役会连带它们）；同机 IP 节点也在备用团队时按现有退役规则一并退役
+/// （不清理、作业也带 auto），删除时先删同机 IP 节点，宿主机下一轮再删
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn host_cascades_to_ip_nodes() {
     let t = setup(true).await;
@@ -242,6 +243,11 @@ async fn host_cascades_to_ip_nodes() {
     let x = seed_vps(&t, normal, 1, "203.0.113.31", Some(host)).await;
 
     let now = datetime!(2030-01-05 00:00 UTC);
+    let r = spare::run_once(&t.st, now).await.unwrap();
+    assert!(r.retired.is_empty() && r.kept == [host], "同机 IP 节点还在正常团队：宿主机不删 {r:?}");
+    assert!(last_job(&t, host, "retire").await.is_none() && last_job(&t, x, "retire").await.is_none());
+
+    sqlx::query("update machine set team_id = $2, number = 2 where id = $1").bind(x).bind(sp).execute(&t.st.db).await.unwrap();
     let r = spare::run_once(&t.st, now).await.unwrap();
     assert_eq!(r.retired, [host], "{r:?}");
     let (hj, hp, _) = last_job(&t, host, "retire").await.unwrap();

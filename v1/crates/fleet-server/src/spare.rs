@@ -41,6 +41,8 @@ pub struct Ran {
     pub purged: Vec<Uuid>,
     /// 已经过期满 1 天、但有进行中的作业，这一轮跳过的
     pub busy: Vec<Uuid>,
+    /// 已经过期满 1 天、但它上面有不在备用团队的同机 IP 节点（退役会连带它们），不自动删的
+    pub kept: Vec<Uuid>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -51,6 +53,7 @@ struct Due {
     due_date: Date,
     today: Date,
     busy: bool,
+    keeps_live: bool,
 }
 
 /// `now`：按这一刻算各订阅账单时区里的「今天」（测试传固定时刻）
@@ -61,7 +64,9 @@ pub async fn run_once(st: &AppState, now: OffsetDateTime) -> anyhow::Result<Ran>
     let rows: Vec<Due> = sqlx::query_as(
         "select m.id, m.kind::text kind, display_name(m.kind::text, m.label, t.name, m.number) name, s.due_date, ($1::timestamptz at time zone s.billing_tz)::date today,
                 exists (select 1 from job j where j.state in ('queued', 'running', 'waiting', 'cancelling')
-                        and (j.target_id = m.id or j.target_id in (select x.id from machine x where x.host_id = m.id))) busy
+                        and (j.target_id = m.id or j.target_id in (select x.id from machine x where x.host_id = m.id))) busy,
+                exists (select 1 from machine x left join team tx on tx.id = x.team_id
+                        where x.host_id = m.id and x.lifecycle <> 'retired' and not coalesce(tx.spare, false)) keeps_live
          from machine m join team t on t.id = m.team_id join subscription_eff s on s.machine_id = m.id
          where t.spare and m.lifecycle = 'active'
          order by t.sort_order, t.name, m.number, m.id",
@@ -70,6 +75,12 @@ pub async fn run_once(st: &AppState, now: OffsetDateTime) -> anyhow::Result<Ran>
     .fetch_all(&st.db)
     .await?;
     for r in rows.into_iter().filter(|r| expired(r.today, r.due_date)) {
+        // 宿主机退役会连带它上面的同机 IP 节点：有不在备用团队里的（还在正常用）就不自动删，留给人处理
+        if r.keeps_live {
+            tracing::warn!(machine = %r.id, "备用节点 {} 已过期满 1 天，但它上面有不在备用团队的同机 IP 节点：不自动删除", r.name);
+            ran.kept.push(r.id);
+            continue;
+        }
         if r.busy {
             tracing::info!(machine = %r.id, "备用节点 {} 已过期满 1 天，但有进行中的作业：这一轮先不删", r.name);
             ran.busy.push(r.id);
