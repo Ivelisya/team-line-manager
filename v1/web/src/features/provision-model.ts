@@ -2,6 +2,7 @@
 import type { Kind, Plan, Provider, ProvisionItem, Team } from '@/lib/types';
 import type { HostChoice } from '@/lib/queries';
 import { parseCountry } from '@/lib/flags';
+import { meta } from '@/lib/derive';
 
 export interface Row {
   /** 稳定的行 id（React key、单元格回调用），不进入提交内容 */
@@ -42,7 +43,7 @@ export const COLS: Col[] = [
   { key: 'provider_id', label: '供应商', w: 112, type: 'provider', kinds: ALL },
   { key: 'plan_id', label: '套餐', w: 150, type: 'plan', kinds: ALL },
   { key: 'service_ref', label: '服务编号', w: 104, type: 'text', kinds: ALL },
-  { key: 'ss_port', label: 'SS 端口', w: 84, type: 'num', kinds: ['vps'], ph: '8388' },
+  { key: 'ss_port', label: 'SS 端口', w: 84, type: 'num', kinds: ['vps'], ph: String(meta().defaults.ss_port) }, // 只被懒加载的上架页引用，求值时 /meta 已到
   { key: 'login_pw', label: 'root 密码', w: 108, type: 'secret', kinds: ['relay', 'vps'], ph: '留空用密钥' },
   { key: 'up_protocol', label: '上游协议', w: 92, type: 'proto', kinds: ['proxy'] },
   { key: 'up_host', label: '上游主机', w: 124, type: 'text', kinds: ['proxy'] },
@@ -55,7 +56,7 @@ export const COLS: Col[] = [
   { key: 'host_id', label: '宿主机', w: 116, type: 'host', kinds: ['vps'] },
   { key: 'country', label: '国家', w: 132, type: 'country', kinds: ALL },
 ];
-/** 同机 IP 节点：落地机行打开了「在已有机器上添加 IP」（批量里是填了宿主机） */
+/** 同机 IP 节点：VPS 节点行打开了「在已有机器上添加 IP」（批量里是填了宿主机） */
 export const isIpNode = (r: Pick<Row, 'kind' | 'add_ip'>) => r.kind === 'vps' && r.add_ip;
 /** 同机 IP 节点不适用的列：SSH 端口、首次登录与供应商取宿主机的，SS 端口由中控在宿主机上分配，不带套餐 */
 const HOST_NA = new Set<Col['key']>(['ssh_port', 'login_pw', 'ss_port', 'provider_id', 'plan_id']);

@@ -1,6 +1,5 @@
 import { useMemo, useRef } from 'react';
 import type { Kind, MachineView, Team } from './types';
-import { kindLabel } from './derive';
 
 /** 中文名称比较（编号按数值：团队1-2 排在 团队1-10 前面）；全站共用一个 */
 export const collator = new Intl.Collator('zh-Hans-CN', { numeric: true });
@@ -47,13 +46,6 @@ export function useStableOrder<T extends { id: string }>(list: T[], key: string 
 
 /** 类型在下拉、分段里的先后（同默认排序：线路机在前）；中文名在 /meta（derive.kindLabel） */
 export const KIND_ORDER: Kind[] = ['relay', 'vps', 'proxy'];
-/** 兼容：上架页（pages/Provision.tsx，另一会话在改）还按表读类型名。不是第二份表：读的是 /meta（按 KIND_ORDER 列键），
- *  上架页是懒加载的、在外壳等到 /meta 之后才求值。那边改用 kindLabel 后删掉 */
-export const KIND_LABEL: Record<string, string> = new Proxy({}, {
-  get: (_, k) => (typeof k === 'string' ? kindLabel(k) : undefined),
-  ownKeys: () => [...KIND_ORDER],
-  getOwnPropertyDescriptor: (_, k) => ({ value: kindLabel(String(k)), enumerable: true, configurable: true, writable: false }),
-});
 /** 健康状态的色调（界面样式），键的先后也是筛选下拉里的先后；中文名在 /meta（derive.healthLabel） */
 export const HEALTH_TONE: Record<string, 'ok' | 'warn' | 'bad' | 'info' | 'neutral'> = {
   ok: 'ok', degraded: 'warn', down: 'bad', unknown: 'neutral', maintenance: 'info', inactive: 'neutral',
