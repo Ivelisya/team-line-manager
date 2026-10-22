@@ -383,6 +383,25 @@ async fn host_cascades_to_ip_nodes() {
     assert!(gone(&t, host).await && gone(&t, x).await);
 }
 
+/// 备用到期自动退役在锁住机器后再核对一次：查出过期列表之后续了费（到期日改了）或移出了备用团队的，不退役
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn auto_retire_rechecks_spare_and_expiry_under_lock() {
+    let t = setup(true).await;
+    let sp = spare_team(&t).await;
+    let team = seed_team(&t, "团队2").await;
+    let renewed = seed_node(&t, sp, 1, "203.0.113.21", "active").await;
+    sub(&t, renewed, "2030-03-01", "UTC").await;
+    let moved_out = seed_node(&t, team, 1, "203.0.113.22", "active").await;
+    sub(&t, moved_out, "2030-01-01", "UTC").await;
+    let now = datetime!(2030-01-05 00:00 UTC);
+    for m in [renewed, moved_out] {
+        let r = fleet_server::api::machines::start_retire(&t.st, spare::ACTOR, m, "x", "proxy", None, true, Some((spare::AUTO, now))).await;
+        assert!(r.is_err(), "{m}");
+        let lc: String = sqlx::query_scalar("select lifecycle::text from machine where id = $1").bind(m).fetch_one(&t.st.db).await.unwrap();
+        assert_eq!(lc, "active");
+    }
+}
+
 /// 旧面板导入：默认只预演；同一个 source_id 导两次只有一行；IP 或（供应商, 供应商编号）对上面板里还没回收的机器的跳过并说明；格式不对 400
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn legacy_import_is_idempotent_and_skips_live_machines() {

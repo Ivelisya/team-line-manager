@@ -127,7 +127,7 @@ pub async fn run_once(st: &AppState, now: OffsetDateTime) -> anyhow::Result<Ran>
             Some(prev) => format!("{prev}；{why}"),
             None => why,
         };
-        match start_retire(st, ACTOR, r.id, &r.name, &r.kind, Some(&reason), true, Some(AUTO)).await {
+        match start_retire(st, ACTOR, r.id, &r.name, &r.kind, Some(&reason), true, Some((AUTO, now))).await {
             Ok(v) => {
                 tracing::info!(machine = %r.id, "备用节点 {} 已过期满 1 天（到期日 {}）：已自动发起退役", r.name, r.due_date);
                 let ip: Vec<&str> = v["ip_node_jobs"].as_array().into_iter().flatten().filter_map(|j| j["name"].as_str()).collect();

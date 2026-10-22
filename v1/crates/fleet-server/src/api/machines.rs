@@ -486,7 +486,8 @@ pub async fn move_to_spare(st: &AppState, actor: &str, id: Uuid, reason: Option<
 
 /// 立即回收：建退役作业（摘入口 → 等线路机 → 清理 → 撤令牌 → 收尾时移进回收站）。手动「立即回收」与备用团队到期自动回收（spare.rs）
 /// 走这同一条路径。`name`、`kind` 是调用方刚读出的显示名与种类；
-/// `auto`：中控自动发起时的标记（记进作业参数与审计的 auto，同机 IP 节点的作业也带上），手动退役为 None。
+/// `auto`：中控自动发起时的标记（记进作业参数与审计的 auto，同机 IP 节点的作业也带上）与发起这一轮的时刻，手动退役为 None。
+/// 备用到期（spare::AUTO）的锁住机器后按这一刻再核对一次还在备用团队、还过期满 1 天，不成立就 409（spare.rs 记 warn，下一轮再看）。
 /// 返回 `{job_id, ip_node_jobs}`
 #[allow(clippy::too_many_arguments)]
 pub async fn start_retire(
@@ -497,7 +498,7 @@ pub async fn start_retire(
     kind: &str,
     reason: Option<&str>,
     cleanup: bool,
-    auto: Option<&str>,
+    auto: Option<(&str, OffsetDateTime)>,
 ) -> ApiResult<Value> {
     let mut tx = st.db.begin().await?;
     // 先锁机器行再判断、再计数：和「给线路机加入口」（对同一行 for share）互斥，守卫不会被并发挤穿
@@ -511,6 +512,20 @@ pub async fn start_retire(
     }
     if lifecycle == "retiring" {
         return Err(ApiError::conflict("这台机器已经在退役中：到作业页看进度，失败了点重试"));
+    }
+    // 查出过期列表到这里之间，可能有人登记了续费、改了到期日，或者把它改回了原团队
+    if let Some((crate::spare::AUTO, now)) = auto {
+        let still: bool = sqlx::query_scalar(
+            "select exists (select 1 from machine m join team t on t.id = m.team_id join subscription_eff s on s.machine_id = m.id
+                            where m.id = $1 and t.spare and ($2::timestamptz at time zone s.billing_tz)::date > s.due_date + 1)",
+        )
+        .bind(id)
+        .bind(now)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !still {
+            return Err(ApiError::conflict("已经不在备用团队，或已续费：不自动回收"));
+        }
     }
     if kind == "relay" {
         let (n,): (i64,) = sqlx::query_as(
@@ -585,7 +600,7 @@ pub async fn start_retire(
     .rows_affected();
     // 自动发起的：作业参数与审计带上 auto（审计里和手动退役分得开；收尾时记进回收站的审计）
     let tag = |mut v: Value| {
-        if let Some(x) = auto {
+        if let Some((x, _)) = auto {
             v["auto"] = json!(x);
         }
         v
