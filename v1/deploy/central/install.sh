@@ -186,10 +186,16 @@ systemctl restart fleet-server
 # 管理接口默认是 localhost:2019、不鉴权，本机任何用户（包括 fleet）都能改写 Caddy 配置：改成 /run/caddy 下的 unix socket，
 # 目录 0700 只有 caddy（与 root）进得去。官方源的 caddy.service 没有 RuntimeDirectory，由 drop-in 补上；
 # systemctl reload caddy 以 caddy 用户执行 caddy reload，从 Caddyfile 读到这个地址
+# Caddyfile 归本脚本，每次部署按下面重写：本机自己的配置不要改它，放进两个目录（docs/OPS.md §11）——
+# global.d/*.caddy 并进全局选项（如前置边缘机的 servers / proxy_protocol），sites.d/*.caddy 是别的站点块（如 http:// 跳转、本机别的域名）。
+# 目录空着只有一条 warn。重写前旧文件留成 Caddyfile.bak-<时间>。
 CADDY_ADMIN=unix//run/caddy/admin.sock
 CADDY="{
 	admin $CADDY_ADMIN
+	import /etc/caddy/global.d/*.caddy
 }
+
+import /etc/caddy/sites.d/*.caddy
 
 $DOMAIN {
 	reverse_proxy 127.0.0.1:8080
@@ -204,8 +210,10 @@ if [ "$(cat /etc/systemd/system/caddy.service.d/fleet.conf 2>/dev/null)" != "$CA
   systemctl daemon-reload
   caddy_restart=1   # /run/caddy 要在启动时建
 fi
+install -d -m 755 /etc/caddy/global.d /etc/caddy/sites.d
 if [ "$(cat /etc/caddy/Caddyfile 2>/dev/null)" != "$CADDY" ]; then
   [ -f /etc/caddy/Caddyfile.dist ] || cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.dist
+  [ ! -f /etc/caddy/Caddyfile ] || cp -p /etc/caddy/Caddyfile "/etc/caddy/Caddyfile.bak-$(date +%Y%m%d-%H%M%S)"
   printf '%s\n' "$CADDY" > /etc/caddy/Caddyfile.new
   if caddy validate --config /etc/caddy/Caddyfile.new --adapter caddyfile >/dev/null 2>&1; then
     # caddy reload 按新 Caddyfile 里的管理地址去连：正在跑的 Caddy 还在旧地址上（第一次从 2019 换过来）就连不上，只能重启

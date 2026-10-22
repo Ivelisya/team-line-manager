@@ -289,7 +289,12 @@ WAL 三项由 `deploy/central/install.sh` 写进 `/etc/postgresql/<版本>/main/
 
 ## 11. 访问入口
 
-只有一个入口：`https://fleet.kismet613.com`，灰云直连法兰克福源站（185.13.159.131）。人用面板、fleetctl、agent 回连与上架出口校验（`/echo`）都走它；Caddy（官方源，`install.sh` 负责安装与生成 Caddyfile）终止 TLS 并反代到本机 fleet-server。
+只有一个入口：`https://fleet.kismet613.com`，人用面板、fleetctl、agent 回连与上架出口校验（`/echo`）都走它；Caddy（官方源，`install.sh` 负责安装与生成 Caddyfile）终止 TLS 并反代到本机 fleet-server。
+
+2026-10-22 晚起前面加了两台德国边缘机：DE 9929（189.24.84.181）与 Zouter（78.31.249.198）用 HAProxy 把 80/443 四层原样转发到源站（185.13.159.131），带 PROXY v2 头。`fleet` 在 CF 是灰云 CNAME 到 AxisNow 托管的调度域 `9f5f5f43.alidns-3.com`：大陆走 9929、境外走 Zouter，互为备份（TTL 60 秒，拨测三次失败切换）。源站的 Caddy 要认这两台的 PROXY 头，否则经边缘来的连接握手全断（agent 上报失败、面板打不开）：
+- 这段配置放在 `/etc/caddy/global.d/edge-proxy.caddy`（全局选项里的 `servers :443` / `servers :80`：`proxy_protocol` 只 allow 两台边缘、`fallback_policy reject`，不带头的直连照常；`protocols h1 h2` 关 h3，四层转发下 UDP 拿不到真实 IP），`http://` 跳转 HTTPS 放在 `/etc/caddy/sites.d/http-redirect.caddy`（自动生成的 :80 服务套不上 PROXY 包装，要显式建）。fleet.toml 要 `trust_forwarded_for = true`，`/echo` 与访问来源才是真实 IP。
+- **不要直接改 `/etc/caddy/Caddyfile`**：每次部署由 install.sh 重写（旧文件留 `Caddyfile.bak-<时间>`），只 import 上面两个目录。本机再绑别的域名：站点块放进 `sites.d/<名字>.caddy`，`systemctl reload caddy`；DNS 同样灰云 CNAME 到调度域（根域名不行，CF 拉平会丢地理信息）。
+- 边缘机换 IP：改 `global.d/edge-proxy.caddy` 里的两处 allow。
 
 2026-10-22 试过给人用入口挂 Cloudflare（普通橙云，以及「优选 IP + Worker」），实测后撤掉，只留直连：
 - 大陆三网到源站的 TCP 延迟（itdog 全国约 290 节点）：电信 291 / 联通 273 / 移动 215 ms；CF 默认 anycast 234 / 300 / 192；优选 IP 能把电信或移动压到 80 ms 左右，但动态请求还要再走 CF → 法兰克福，日常（静态资源一年 immutable、首次之后只剩小接口）差别不大。
