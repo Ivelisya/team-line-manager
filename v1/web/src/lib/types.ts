@@ -122,6 +122,10 @@ export type ProbeBeats = Record<string, ProbeBucket[]>;
 /** 全站网卡速率的历史：每分钟一个点（旧→新），首页集群状态折线开场用 */
 export interface OverviewSeries { points: { ts: string; net_rx_bps: number; net_tx_bps: number }[] }
 export interface SeriesResp { metric: string; range: string; resolution: '1m' | '1h' | string; points: SeriesPoint[] }
+/** 近 N 天可用率（GET /machines/{id}/availability）：每天一项，旧→新共 days 项，最后一项是今天（还没过完）；按这台机器的账单时区分天，
+ *  没有探测的天各项为 0。tcp_pct / egress_pct 是整段的成功率（0–100），没有探测为 null */
+export interface AvailabilityDay { date: string; tcp_total: number; tcp_ok: number; egress_total: number; egress_ok: number }
+export interface Availability { days: number; items: AvailabilityDay[]; tcp_pct: number | null; egress_pct: number | null }
 export interface Incident {
   id: string; rule: string; rule_name: string; subject: { id: string; name: string } | null; subject_id: string | null; subject_name: string | null;
   severity: 'info' | 'warning' | 'critical' | string; state: 'firing' | 'resolved'; summary: string;
@@ -129,7 +133,8 @@ export interface Incident {
   /** 恢复后 30 分钟内复发、合并进这条的次数 */
   reopen_count: number;
 }
-export interface Silence { id: string; subject_id: string | null; subject_name: string | null; rule: string | null; starts_at: string; ends_at: string; is_maintenance: boolean; comment: string }
+/** 静默：subject_id 为 null = 全部机器，rule 为 null = 全部规则（rule_name 是规则中文名，同告警）。列表只有没结束的：进行中的与已预约的（starts_at 还没到） */
+export interface Silence { id: string; subject_id: string | null; subject_name: string | null; rule: string | null; rule_name: string | null; starts_at: string; ends_at: string; is_maintenance: boolean; comment: string }
 export interface Renewal { id: string; old_due: string | null; new_due: string; amount_cents: number | null; note: string | null; actor: string; created_at: string }
 /** 审计：界面只显示 title 与 summary（服务端生成的中文）；detail 是原始 JSON，不要直接渲染 */
 export interface AuditEntry { id: string; ts: string; actor: string; action: string; title: string; summary: string; target_kind: string | null; target_id: string | null; detail: unknown }

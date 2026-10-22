@@ -1,8 +1,8 @@
 // 浏览器内 mock：拦截 /api/v1/* 的 fetch 和实时流 WebSocket。VITE_MOCK=1 时由 main.tsx 安装。
 // 有状态：改名、退役、上架、续费等操作都会改内存里的数据，并通过 mock 实时流通知前端刷新。
 
-import type { EntryView, Incident, Job, JobLog, JobSummary, MachineView, ProbeBucket, ProvisionCheckItem, ProvisionItem, SeriesPoint } from '@/lib/types';
-import { displayName } from '@/lib/format';
+import type { Availability, AvailabilityDay, EntryView, Incident, Job, JobLog, JobSummary, MachineView, ProbeBucket, ProvisionCheckItem, ProvisionItem, SeriesPoint } from '@/lib/types';
+import { addDays, displayName } from '@/lib/format';
 import { isQuiet, liveRate } from '@/lib/derive';
 import { LIFECYCLE_LABEL, makeDefaultCompare } from '@/lib/sort';
 import { buildDb, hashStr, IP_STEPS, quotaOf, rng, type Db } from './fixtures';
@@ -105,6 +105,7 @@ function overview() {
 function series(m: MachineView, metric: string, range: string): { metric: string; range: string; resolution: string; points: SeriesPoint[] } {
   const spec: Record<string, [number, number]> = { '1h': [60, 60_000], '6h': [72, 300_000], '24h': [96, 900_000], '7d': [84, 7200_000], '30d': [90, 28800_000] };
   const [n, step] = spec[range] ?? spec['1h'];
+  const hourly = range === '7d' || range === '30d';
   const r = rng(hashStr(m.id + metric));
   const end = Date.now(); const pts: SeriesPoint[] = [];
   const h = m.host; const isDown = m.health.status === 'down';
@@ -117,7 +118,9 @@ function series(m: MachineView, metric: string, range: string): { metric: string
     if (t < from || t > to) continue;
     const tail = isDown && i > n - 6;
     if (metric === 'host') {
-      pts.push({ ts, cpu_pct: tail ? null : walk, mem_pct: tail ? null : (h?.mem_used != null && h.mem_total ? (h.mem_used / h.mem_total) * 100 : 40) + Math.sin(i / 9) * 4, disk_pct: h?.disk_used != null && h.disk_total ? (h.disk_used / h.disk_total) * 100 + i * 0.01 : 30, load1: tail ? null : +(walk / 40).toFixed(2), net_rx_bps: tail ? null : (h?.net_rx_bps ?? 1e7) * (0.5 + r()), net_tx_bps: tail ? null : (h?.net_tx_bps ?? 1e7) * (0.4 + r()) });
+      // 按小时的（同服务端 HOST_HOURLY）另有每小时峰值 cpu_max、没有 load1
+      const cpu: Record<string, number | null> = tail ? { cpu_pct: null } : hourly ? { cpu_pct: walk, cpu_max: Math.min(100, walk + 5 + r() * 25) } : { cpu_pct: walk, load1: +(walk / 40).toFixed(2) };
+      pts.push({ ts, ...cpu, mem_pct: tail ? null : (h?.mem_used != null && h.mem_total ? (h.mem_used / h.mem_total) * 100 : 40) + Math.sin(i / 9) * 4, disk_pct: h?.disk_used != null && h.disk_total ? (h.disk_used / h.disk_total) * 100 + i * 0.01 : 30, net_rx_bps: tail ? null : (h?.net_rx_bps ?? 1e7) * (0.5 + r()), net_tx_bps: tail ? null : (h?.net_tx_bps ?? 1e7) * (0.4 + r()) });
     } else if (metric === 'traffic') {
       const k = step / 60_000;
       pts.push({ ts, up: Math.round(r() * 8e6 * k * (1 + Math.sin(i / 7))), down: Math.round(r() * 3e7 * k * (1 + Math.cos(i / 8))), conns: Math.round(20 + r() * 80) });
@@ -126,7 +129,7 @@ function series(m: MachineView, metric: string, range: string): { metric: string
       pts.push({ ts, tcp_ok: !tcpFail, tcp_ms: tcpFail ? null : Math.round(40 + r() * 70 + (i % 23 === 0 ? 120 : 0)), egress_ok: !egFail, egress_ms: egFail ? null : Math.round(160 + r() * 90), tcp_n: 2, tcp_ok_n: tcpFail ? 0 : 2 });
     }
   }
-  return { metric, range, resolution: range === '7d' || range === '30d' ? '1h' : '1m', points: pts };
+  return { metric, range, resolution: hourly ? '1h' : '1m', points: pts };
 }
 
 /** 心跳格：在用机器 20 个墙钟对齐的 3 分钟桶（旧→新，同服务端 date_bin），最后一桶是当前这格（只走了一部分），
@@ -147,6 +150,33 @@ function probeBeats() {
     });
   }
   return out;
+}
+/** 近 N 天可用率（同服务端 /availability）：按账单时区分天，上架之前、退役之后的天没有探测；每条入口每天 TCP 2880 次（30 秒一次）、
+ *  出口 1440 次，今天按已过去的部分算。大多数天全成功，个别天有零星失败，故障机最近两天大面积失败 */
+function availability(m: MachineView, days: number): Availability {
+  if (!Number.isInteger(days) || days < 1 || days > 90) throw bad('days 只能是 1–90');
+  const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: m.subscription?.billing_tz ?? 'Asia/Shanghai' }); // 账单时区里的 YYYY-MM-DD
+  const today = fmt.format(Date.now());
+  const from = m.activated_at && fmt.format(Date.parse(m.activated_at));
+  const to = m.retired_at ? fmt.format(Date.parse(m.retired_at)) : today;
+  // 有探测的入口数：应用中的还没有探测；节点至少算一条（已退役机器的入口已摘掉、fixtures 里是空的，退役前照样有探测）
+  const live = m.entries.filter((e) => e.lifecycle !== 'pending').length;
+  const n = m.kind === 'relay' ? live : Math.max(1, live);
+  const elapsed = (Date.now() - new Date().setHours(0, 0, 0, 0)) / DAY;
+  const items = Array.from({ length: days }, (_, i): AvailabilityDay => {
+    const date = addDays(today, i - days + 1);
+    if (!n || !from || date < from || date > to) return { date, tcp_total: 0, tcp_ok: 0, egress_total: 0, egress_ok: 0 };
+    const r = rng(hashStr(`${m.id}:${date}`));
+    const share = date === today ? elapsed : 1;
+    const tcp = Math.round(2880 * n * share); const egress = Math.round(1440 * n * share);
+    const down = m.health.status === 'down' && date >= addDays(today, -1);
+    const lossy = r() < 0.12;
+    const fail = (total: number) => Math.round(total * (down ? 0.2 + r() * 0.5 : lossy ? r() * 0.03 : 0));
+    return { date, tcp_total: tcp, tcp_ok: tcp - fail(tcp), egress_total: egress, egress_ok: egress - fail(egress) };
+  });
+  const sum = (k: keyof Omit<AvailabilityDay, 'date'>) => items.reduce((s, d) => s + d[k], 0);
+  const pct = (ok: number, total: number) => (total ? (ok / total) * 100 : null);
+  return { days, items, tcp_pct: pct(sum('tcp_ok'), sum('tcp_total')), egress_pct: pct(sum('egress_ok'), sum('egress_total')) };
 }
 /** 全站网卡速率的每分钟历史（旧→新），围着当前总速率随机波动；同服务端只给结束满 20 s 的分钟（end 为其后第一个分钟起点） */
 function overviewSeries(minutes: number) {
@@ -429,6 +459,7 @@ R('GET', '/machines/([^/]+)/series', ({ params, query }) => {
   const m = machine(params[0]); const metric = query.get('metric') ?? 'host';
   return series(metric === 'host' && m.host_machine ? machine(m.host_machine.id) : m, metric, query.get('range') ?? '1h');
 });
+R('GET', '/machines/([^/]+)/availability', ({ params, query }) => availability(machine(params[0]), Number(query.get('days') ?? 30)));
 /** 宿主机上还没开始退役的同机 IP 节点：退役宿主机时一并退役 */
 const ipNodesLeaving = (m: MachineView) => db.machines.filter((x) => x.host_machine?.id === m.id && x.lifecycle !== 'retiring' && x.lifecycle !== 'retired');
 R('GET', '/machines/([^/]+)/retire', ({ params }) => {
@@ -579,9 +610,31 @@ R('GET', '/incidents', ({ query }) => {
   return paged(db.incidents.filter((i) => (s === 'all' || i.state === s) && (!sid || i.subject_id === sid)).sort(order), query);
 });
 R('POST', '/incidents/([^/]+)/ack', ({ params }) => { const i = db.incidents.find((x) => x.id === params[0]); if (!i) throw bad('告警不存在', 404, 'not_found'); i.ack_at = iso(); i.ack_by = db.user; emit({ type: 'incidents' }); return {}; });
-R('GET', '/silences', () => clone(db.silences));
-R('POST', '/silences', ({ body }) => { const m = body.subject_id ? machine(body.subject_id) : null; const s = { id: `s${db.seq++}`, subject_name: m?.name ?? null, rule: null, subject_id: null, ...body }; db.silences.push(s); emit({ type: 'incidents' }); return s; });
-R('DELETE', '/silences/([^/]+)', ({ params }) => { db.silences = db.silences.filter((s) => s.id !== params[0]); emit({ type: 'incidents' }); return {}; });
+/** 静默同服务端：只列没结束的（含还没开始的预约），按开始时间排；新建的校验顺序与中文原因同服务端 */
+const RULE_NAMES: Record<string, string> = {
+  agent_offline: 'agent 离线', clock_skew: 'agent 时钟不准', no_entry: '没有在用入口', egress_fail: '出口不通', tcp_fail: '线路到节点不通', renewal_due: '即将到期', renewal_overdue: '已过期',
+  relay_apply_lag: '配置未应用', relay_apply_error: '配置应用失败', relay_xray_down: 'Xray 未运行', host_cpu_high: 'CPU 持续偏高', host_mem_high: '内存持续偏高', host_disk_high: '磁盘空间不足',
+  traffic_quota_high: '流量额度吃紧', ipintel_new_isp: '来源出现新运营商', ipintel_new_city: '来源出现新城市', ipintel_datacenter_source: '机房 / VPN 来源', policy_blocked: '访问策略暂停',
+};
+R('GET', '/silences', () => clone(db.silences.filter((s) => Date.parse(s.ends_at) > Date.now()).sort((a, b) => Date.parse(a.starts_at) - Date.parse(b.starts_at))));
+R('POST', '/silences', ({ body }) => {
+  const s = Date.parse(body.starts_at); const e = Date.parse(body.ends_at); const now = Date.now();
+  if (!(e > s)) throw bad('结束时间要晚于开始时间');
+  if (e - s > 30 * DAY) throw bad('最长 30 天；更久的请直接把机器退役');
+  if (e <= now) throw bad('结束时间已经过去了');
+  if (s > now + 90 * DAY) throw bad('最多提前 90 天预约');
+  if (body.rule && !RULE_NAMES[body.rule]) throw bad(`没有「${body.rule}」这条告警规则`);
+  if (body.rule && body.is_maintenance) throw bad('维护窗口针对整台机器，不能只选一条规则；只想静默这条告警就不要标记为维护');
+  const m = body.subject_id ? db.machines.find((x) => x.id === body.subject_id) : null;
+  if (body.subject_id && !m) throw bad('subject_id 指向的机器不存在');
+  const id = `s${db.seq++}`;
+  db.silences.push({ id, subject_id: m?.id ?? null, subject_name: m?.name ?? null, rule: body.rule ?? null, rule_name: body.rule ? RULE_NAMES[body.rule] : null, starts_at: body.starts_at, ends_at: body.ends_at, is_maintenance: !!body.is_maintenance, comment: body.comment ?? '' });
+  emit({ type: 'incidents' }); return { id };
+});
+R('DELETE', '/silences/([^/]+)', ({ params }) => {
+  if (!db.silences.some((s) => s.id === params[0])) throw bad('没有这条静默', 404, 'not_found');
+  db.silences = db.silences.filter((s) => s.id !== params[0]); emit({ type: 'incidents' }); return { ok: true };
+});
 R('GET', '/audit', ({ query }) => clone(db.audit.filter((a) => !query.get('target_id') || a.target_id === query.get('target_id')).slice(0, +(query.get('limit') ?? 50))));
 
 installAccessMock(R, () => db.machines);

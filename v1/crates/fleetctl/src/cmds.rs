@@ -1,4 +1,4 @@
-//! 只读与作业类命令：status / ls / show / series / incidents / jobs / entries / audit / logs / watch …
+//! 只读与作业类命令：status / ls / show / series / uptime / incidents / jobs / entries / audit / logs / watch …
 
 use crate::client::{ApiError, Client, NetError};
 use crate::resolve::{self, Want};
@@ -622,6 +622,47 @@ pub fn series(ctx: &Ctx, machine: &str, range: &str, metric: &str) -> anyhow::Re
     Ok(0)
 }
 
+/// 成功率：全部成功才写 100%，否则最多写到 99.99%（1439/1440 不会四舍五入成 100%）；没有探测为 -（同网页）
+fn success_pct(p: Option<f64>) -> String {
+    match p {
+        None => "-".into(),
+        Some(p) if p >= 100.0 => "100%".into(),
+        Some(p) => format!("{:.2}%", p.min(99.99)),
+    }
+}
+
+/// `uptime` 的文字：第一行整段的成功率，下面每天一行（旧→新，最后一天是今天、还没过完）
+fn uptime_text(name: &str, d: &Value) -> String {
+    let n = |x: &Value, k: &str| x[k].as_i64().unwrap_or(0);
+    let rate = |ok: i64, total: i64| (total > 0).then(|| 100.0 * ok as f64 / total as f64);
+    let count = |ok: i64, total: i64| if total > 0 { format!("{ok}/{total}") } else { "-".into() };
+    let items = d["items"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let rows: Vec<Vec<String>> = items
+        .iter()
+        .enumerate()
+        .map(|(i, x)| {
+            let (t, t_ok, e, e_ok) = (n(x, "tcp_total"), n(x, "tcp_ok"), n(x, "egress_total"), n(x, "egress_ok"));
+            let date = if i + 1 == items.len() { format!("{}（今天）", st(x, "/date")) } else { st(x, "/date") };
+            vec![date, success_pct(rate(t_ok, t)), count(t_ok, t), success_pct(rate(e_ok, e)), count(e_ok, e)]
+        })
+        .collect();
+    format!(
+        "{name} 近 {} 天：TCP {} · 出口 {}\n{}",
+        st(d, "/days"),
+        success_pct(num(d, "/tcp_pct")),
+        success_pct(num(d, "/egress_pct")),
+        table::render(&["日期", "TCP", "TCP 成功/次数", "出口", "出口成功/次数"], &rows)
+    )
+}
+
+pub fn uptime(ctx: &Ctx, machine: &str, days: i64) -> anyhow::Result<u8> {
+    // 已退役的机器也能看退役前的
+    let (id, name) = ctx.find_id(machine, Want::Any)?;
+    let d = ctx.c.get_q(&format!("/machines/{id}/availability"), &[("days", days.to_string())])?;
+    ctx.emit(&d, || uptime_text(&name, &d));
+    Ok(0)
+}
+
 pub fn incidents(ctx: &Ctx, all: bool, machine: Option<&str>) -> anyhow::Result<u8> {
     // 告警历史也要看已退役的机器
     let id = machine.map(|m| ctx.find_id(m, Want::Any)).transpose()?.map(|(id, _)| id);
@@ -981,6 +1022,19 @@ mod tests {
         h["access_unparsed"] = json!(4);
         h["last_apply_error"] = json!("xray 配置校验失败");
         assert!(agent_health_cn(&h).ends_with("被截断 0 次、4 行解析不了；最近一次应用配置失败：xray 配置校验失败"));
+    }
+
+    #[test]
+    fn uptime_wording() {
+        assert_eq!([success_pct(Some(100.0)), success_pct(Some(99.9993)), success_pct(Some(99.861)), success_pct(None)], ["100%", "99.99%", "99.86%", "-"]);
+        let d = json!({"days": 2, "tcp_pct": 99.930_555, "egress_pct": null, "items": [
+            {"date": "2026-10-21", "tcp_total": 0, "tcp_ok": 0, "egress_total": 0, "egress_ok": 0},
+            {"date": "2026-10-22", "tcp_total": 1440, "tcp_ok": 1439, "egress_total": 0, "egress_ok": 0}]});
+        let t = uptime_text("团队1-06", &d);
+        let lines: Vec<&str> = t.lines().collect();
+        assert_eq!(lines[0], "团队1-06 近 2 天：TCP 99.93% · 出口 -");
+        assert_eq!(lines[2].split_whitespace().collect::<Vec<_>>(), ["2026-10-21", "-", "-", "-", "-"]);
+        assert_eq!(lines[3].split_whitespace().collect::<Vec<_>>(), ["2026-10-22（今天）", "99.93%", "1439/1440", "-", "-"]);
     }
 
     #[test]

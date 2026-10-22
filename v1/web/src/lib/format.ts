@@ -98,6 +98,14 @@ export function ago(iso: string | null | undefined, now = Date.now()): string {
   if (s < 86400) return `${Math.floor(s / 3600)} 小时前`;
   return `${Math.floor(s / 86400)} 天前`;
 }
+/** 倒数的时长（还剩多久、多久后开始）：按分钟向上取整，2 天 4 小时 / 3 小时 20 分钟 / 15 分钟（同 fleetctl） */
+export function span(ms: number): string {
+  const m = Math.max(1, Math.ceil(ms / 60_000));
+  const d = Math.floor(m / 1440); const h = Math.floor((m % 1440) / 60); const r = m % 60;
+  if (d) return h ? `${d} 天 ${h} 小时` : `${d} 天`;
+  if (h) return r ? `${h} 小时 ${r} 分钟` : `${h} 小时`;
+  return `${r} 分钟`;
+}
 export function duration(a: string | null, b: string | null, now = Date.now()): string {
   if (!a) return '—';
   const s = Math.max(0, ((b ? new Date(b).getTime() : now) - new Date(a).getTime()) / 1000);
