@@ -80,7 +80,7 @@ pub struct AlertState {
     clean_since: HashMap<Uuid, OffsetDateTime>,
 }
 
-/// 每 30 秒：记下中控还在跑（views::ReportGaps::alive），评估机器的告警，成功了 ping 死人开关；再检查中控自身（selfmon.rs）
+/// 每 30 秒：记下中控还在跑（report_gaps::ReportGaps::alive），评估机器的告警，成功了 ping 死人开关；再检查中控自身（selfmon.rs）
 pub async fn run_forever(st: AppState) {
     let mut state = AlertState::default();
     let mut heartbeat = selfmon::Heartbeat::default();

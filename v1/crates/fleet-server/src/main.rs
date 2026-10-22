@@ -115,7 +115,7 @@ async fn main() -> anyhow::Result<()> {
             // 面板里设的访问记录保留期：分区维护、访问汇总的启动补算、上报的接收窗口都按它
             fleet_server::settings::load(&st).await.context("读取访问记录保留期")?;
             db::maintain_partitions(&st.db, st.cfg.retention.raw_days, st.access_retention().raw_days, 3).await?;
-            // 停机这段收不到上报：恢复后头两分钟里 agent 的重发还没到，不算它们离线（views::ReportGaps）
+            // 停机这段收不到上报：恢复后头两分钟里 agent 的重发还没到，不算它们离线（report_gaps::ReportGaps）
             st.report_gaps.started(&st.db).await.context("读最近的上报时间")?;
             jobs::release_stale_leases(&st).await;
             fleet_server::spawn_background(&st);

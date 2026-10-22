@@ -938,13 +938,13 @@ async fn central_outage_is_not_agent_silence() {
     // 恢复后不久又重启了一次（连着两次部署、崩溃重启）：c 在两次启动之间报过，库里最新的上报已是恢复之后的；
     // 前一段停机从库里接着算，a 的重发还没到照样不算离线，b 照样离线
     sqlx::query("update agent_state set last_report_at = now() where machine_id = $1").bind(c).execute(&t.st.db).await.unwrap();
-    let again = fleet_server::views::ReportGaps::default();
+    let again = fleet_server::report_gaps::ReportGaps::default();
     again.started(&t.st.db).await.unwrap();
     let now = OffsetDateTime::now_utc();
     assert!(again.online(now - time::Duration::seconds(330), now), "前一段停机仍不算 a 的沉默");
     assert!(!again.online(now - time::Duration::seconds(3900), now));
     // 一直没收到上报时连着重启：每次补记的起点相同，并成一段，不重复扣（否则 b 这种早就不报的也会被扣成在线）
-    let third = fleet_server::views::ReportGaps::default();
+    let third = fleet_server::report_gaps::ReportGaps::default();
     third.started(&t.st.db).await.unwrap();
     third.started(&t.st.db).await.unwrap();
     assert!(!third.online(now - time::Duration::seconds(3900), OffsetDateTime::now_utc()));
@@ -960,7 +960,7 @@ async fn restart_gap_starts_at_central_alive_time() {
     sqlx::query("insert into agent_state (machine_id, agent_version, last_report_at) values ($1, 'v', now() - interval '3 hours')").bind(a).execute(&t.st.db).await.unwrap();
     // 上一个进程 20 秒前还记了一次存活；之后 10 秒内再记不重写
     let alive = OffsetDateTime::now_utc() - time::Duration::seconds(20);
-    let prev = fleet_server::views::ReportGaps::default();
+    let prev = fleet_server::report_gaps::ReportGaps::default();
     prev.alive(&t.st.db, alive).await.unwrap();
     prev.alive(&t.st.db, alive + time::Duration::seconds(10)).await.unwrap();
     let saved: String = sqlx::query_scalar("select value #>> '{}' from app_setting where key = 'central_alive_at'").fetch_one(&t.st.db).await.unwrap();
@@ -971,7 +971,7 @@ async fn restart_gap_starts_at_central_alive_time() {
     assert!(t.health(a).await.1.contains(&"agent_offline".to_string()), "3 小时没报：重启后照样离线");
     let now = OffsetDateTime::now_utc();
     assert!(t.st.report_gaps.online(now - time::Duration::seconds(130), now), "停机的约 20 秒不算沉默");
-    assert!(!fleet_server::views::ReportGaps::default().online(now - time::Duration::seconds(130), now));
+    assert!(!fleet_server::report_gaps::ReportGaps::default().online(now - time::Duration::seconds(130), now));
 }
 
 /// 有 agent 的在用机器同时离线超过一半且至少 3 台：不开单机的 agent 离线，开一条中控侧的「agent 同时失联」；

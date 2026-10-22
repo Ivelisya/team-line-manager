@@ -83,7 +83,7 @@ pub struct Inner {
     /// 作业引擎在本进程里正在推进的作业（领取时排除）
     pub jobs_running: crate::jobs::Running,
     /// 中控收不到上报的时段：判 agent 离线时不算（视图、告警、作业判线路机在线都用它）
-    pub report_gaps: crate::views::ReportGaps,
+    pub report_gaps: crate::report_gaps::ReportGaps,
     /// 访问记录保留期（面板里改的）：读写经 `access_retention()` 等，见 settings.rs
     pub(crate) access_ret: std::sync::RwLock<crate::settings::AccessRetention>,
     /// 网页终端：票据、再验证时间、在开的终端（`terminal.rs`）

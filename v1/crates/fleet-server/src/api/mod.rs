@@ -1,7 +1,9 @@
 pub mod access;
 pub mod account;
+pub mod audit;
 pub mod catalog;
 pub mod exec;
+pub mod incidents;
 pub mod ipintel;
 pub mod jobs;
 pub mod keys;
@@ -16,6 +18,7 @@ pub mod relays;
 pub mod replace;
 pub mod routers;
 pub mod settings;
+pub mod stream;
 pub mod terminal;
 
 use crate::state::AppState;
@@ -125,13 +128,13 @@ pub fn router() -> Router<AppState> {
         .route("/overview", get(misc::overview))
         .route("/overview/series", get(misc::overview_series))
         .route("/probe-beats", get(misc::probe_beats))
-        .route("/incidents", get(misc::incidents))
-        .route("/incidents/{id}/ack", post(misc::ack_incident))
-        .route("/silences", get(misc::list_silences).post(misc::create_silence))
-        .route("/silences/{id}", axum::routing::delete(misc::delete_silence))
-        .route("/audit", get(misc::audit))
+        .route("/incidents", get(incidents::incidents))
+        .route("/incidents/{id}/ack", post(incidents::ack_incident))
+        .route("/silences", get(incidents::list_silences).post(incidents::create_silence))
+        .route("/silences/{id}", axum::routing::delete(incidents::delete_silence))
+        .route("/audit", get(audit::audit))
         .route("/audit/ssh", post(exec::audit_ssh))
-        .route("/stream", get(misc::stream))
+        .route("/stream", get(stream::stream))
         // 告警通知渠道
         .route("/notify-channels", get(notify::list).post(notify::create))
         .route("/notify-channels/{id}", patch(notify::patch).delete(notify::delete))

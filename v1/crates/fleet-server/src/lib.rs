@@ -20,6 +20,7 @@ pub mod names;
 pub mod notify;
 pub mod policy;
 pub mod reach;
+pub mod report_gaps;
 pub mod pty;
 pub mod recycle;
 pub mod renew;

@@ -986,7 +986,7 @@ pub async fn put_subscription(a: Actor, State(st): State<AppState>, ApiPath(id):
     if let Some(auto) = b.auto_renew {
         sqlx::query("update subscription set auto_renew = $2 where machine_id = $1").bind(id).bind(auto).execute(&mut *tx).await?;
     }
-    // 审计详情：请求本身 + 机器名 + 改动前后的生效值（摘要写出改了哪几项，见 misc::audit_text）
+    // 审计详情：请求本身 + 机器名 + 改动前后的生效值（摘要写出改了哪几项，见 audit::audit_text）
     let after: Option<Value> = sqlx::query_scalar(SUB_AUDIT).bind(id).fetch_optional(&mut *tx).await?;
     let name: String = sqlx::query_scalar("select display_name(m.kind::text, m.label, t.name, m.number) from machine m left join team t on t.id = m.team_id where m.id = $1")
         .bind(id)
