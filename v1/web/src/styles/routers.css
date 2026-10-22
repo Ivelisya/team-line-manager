@@ -26,6 +26,8 @@
 .rt-hold-err { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--fs-micro) / 16px var(--font-mono); color: var(--fg-2); }
 .rt-hold .hint { color: var(--fg-3); }
 .nc-res.rt-hold-tl { display: block; min-height: 112px; }
+/* 没有读数的卡：占位占掉资源、流量、出口、运行四个槽位，内容竖直居中 */
+.ncard > .rt-span { grid-row: span 4; align-content: center; }
 /* 出口槽位：可用数不足黄、参数不一致的提醒黄 */
 .rt-exits b.is-warn { color: var(--warn-text); }
 .nc-quse.rt-drift { color: var(--warn-text); font-weight: var(--fw-medium); }
@@ -75,7 +77,6 @@
 /* ---- 表格里的读数 ---- */
 .rt-alive { display: inline-flex; align-items: center; gap: var(--sp-4); }
 .rt-alive .lucide { width: 14px; height: 14px; }
-.rt-alive[data-tone="ok"] .lucide { color: var(--ok); }
 .rt-alive[data-tone="bad"] { color: var(--bad-text); }
 .rt-legend { display: grid; gap: var(--sp-4); margin: var(--sp-8) 0 0; padding: 0; list-style: none; }
 .rt-legend li { display: flex; align-items: baseline; gap: var(--sp-8); }

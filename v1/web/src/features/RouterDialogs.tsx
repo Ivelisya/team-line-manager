@@ -35,9 +35,9 @@ function SshFields({ d, set, autoFocus }: { d: SshDraft; set: (p: Partial<SshDra
   const portErr = d.port !== '' && !(/^\d+$/.test(d.port) && +d.port >= 1 && +d.port <= 65535) ? '端口应在 1–65535 之间' : undefined;
   return (
     <div className="form-grid">
-      <Field label="SSH 地址" hint="中控连得到的地址：公网 IP、域名，或经 VPN 能到的内网地址"><Input value={d.host} onChange={(e) => set({ host: e.target.value })} placeholder="例如 203.0.113.20" autoFocus={autoFocus} autoComplete="off" spellCheck={false} /></Field>
+      <Field label="SSH 地址" hint="中控连得到的地址：公网 IP、域名，或经 VPN 能到的内网地址"><Input value={d.host} onChange={(e) => set({ host: e.target.value })} placeholder="例如 203.0.113.20" autoFocus={autoFocus} autoComplete="off" data-1p-ignore data-lpignore="true" spellCheck={false} /></Field>
       <Field label="端口" error={portErr}><Input inputMode="numeric" value={d.port} onChange={(e) => set({ port: e.target.value.replace(/\D/g, '') })} aria-invalid={!!portErr} /></Field>
-      <Field label="用户"><Input value={d.user} onChange={(e) => set({ user: e.target.value })} autoComplete="off" spellCheck={false} /></Field>
+      <Field label="用户"><Input value={d.user} onChange={(e) => set({ user: e.target.value })} autoComplete="off" data-1p-ignore data-lpignore="true" spellCheck={false} /></Field>
       <Field label="密码" hint="可不填：不填就用中控现有的密钥登录"><Input type="password" value={d.password} onChange={(e) => set({ password: e.target.value })} autoComplete="off" data-1p-ignore data-lpignore="true" /></Field>
     </div>
   );
@@ -75,7 +75,7 @@ export const AddRouterDialog = resetOnOpen(function AddRouterDialog({ open, onOp
     <FormDialog size="md" open={open} onOpenChange={onOpenChange} title="接入软路由" desc={ONLY_ADDS} submitLabel={method === 'ssh' ? '开始部署' : '生成接入命令'} busy={add.isPending} valid={valid} onSubmit={submit}
       dirty={!!name.trim() || !!note.trim() || !!ssh.host.trim() || !!ssh.password}>
       <div className="form-grid">
-        <Field label="名称" hint="例如：团队2-路由A" error={dup ? '已有同名的软路由' : undefined}><Input value={name} onChange={(e) => setName(e.target.value)} autoFocus autoComplete="off" aria-invalid={dup} /></Field>
+        <Field label="名称" hint="例如：团队2-路由A" error={dup ? '已有同名的软路由' : undefined}><Input value={name} onChange={(e) => setName(e.target.value)} autoFocus autoComplete="off" data-1p-ignore data-lpignore="true" aria-invalid={dup} /></Field>
         <Field label="团队"><Select value={team} onChange={setTeam} options={teamOpts} allowEmpty="不分团队" placeholder="不分团队" /></Field>
         <Field label="备注" className="span-2"><Textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="例如：客户机房 2 楼弱电箱，旁路由" /></Field>
       </div>

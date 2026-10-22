@@ -2,7 +2,7 @@
 // 同一排的卡片分段对齐。还有路由状态 pill、资源格条、部署时间线、行内迷你折线与「查看接入命令」，抽屉也用。
 // 卡片随 routers 事件（每轮采集最多一次）重渲染：列表做结构共享，没变的路由引用不变，memo 挡住。
 import { memo, useCallback, useMemo, type CSSProperties, type ReactNode } from 'react';
-import { ArrowDown, ArrowUp, Cable, CircleX, Clock, Cpu, Gauge, HardDrive, Loader2, MemoryStick, PanelRightOpen, RefreshCw, Router as RouterIcon, Shuffle, Terminal, Thermometer, TriangleAlert, Unplug, Users, Waypoints } from 'lucide-react';
+import { ArrowDown, ArrowUp, Cable, Clock, Cpu, Gauge, HardDrive, Loader2, MemoryStick, PanelRightOpen, RefreshCw, Router as RouterIcon, Shuffle, Terminal, Thermometer, Unplug, Users, Waypoints } from 'lucide-react';
 import * as F from '@/lib/format';
 import { tagColor } from '@/lib/derive';
 import { useNow } from '@/lib/useNow';
@@ -18,11 +18,17 @@ type Open = (tab?: RouterTab) => void;
 /** 状态 pill（只靠底色与文字，不带圆点；要醒目的配一个图标）：部署中（转圈）/ 等待接入 / 在线 /
  *  部分异常（在线但有毛病，悬停列出）/ 离线（悬停看连不上的原因） */
 export function RouterStatePill({ r }: { r: Pick<RouterView, 'state' | 'error' | 'summary' | 'deploy'> }) {
-  if (r.deploy?.state === 'running') return <Pill tone="info" dot="none"><Loader2 size={12} className="spin" />部署中</Pill>;
-  if (r.state === 'pending') return <Pill tone="info" dot="none" tip={r.deploy?.state === 'failed' ? `一键部署失败：${r.deploy.error ?? ''}` : '路由还没连上过中控'}>等待接入</Pill>;
-  if (r.state === 'offline') return <Pill tone="bad" dot="none" tip={r.error ?? undefined} tabIndex={r.error ? 0 : undefined}><CircleX size={12} />离线</Pill>;
+  if (r.deploy?.state === 'running') return <Pill tone="info" dot="pulse">部署中</Pill>;
+  if (r.state === 'pending') return <Pill tone="info" tip={r.deploy?.state === 'failed' ? `一键部署失败：${r.deploy.error ?? ''}` : '路由还没连上过中控'}>等待接入</Pill>;
+  if (r.state === 'offline') return <Pill tone="bad" tip={r.error ?? undefined} tabIndex={r.error ? 0 : undefined}>离线</Pill>;
   const issues = routerIssues(r.summary);
-  return issues.length ? <Pill tone="warn" dot="none" tip={issues.join('\n')} tabIndex={0}><TriangleAlert size={12} />部分异常</Pill> : <Pill tone="ok" dot="none">在线</Pill>;
+  return issues.length ? <Pill tone="warn" tip={issues.join('\n')} tabIndex={0}>部分异常</Pill> : <Pill tone="ok">在线</Pill>;
+}
+/** 名字后面的状态标（同机器卡）：在线且没毛病不标；部署中转圈、离线三角、部分异常半圆、等待接入虚线圆 */
+function RouterMark({ r }: { r: RouterView }) {
+  const [tone, text] = r.deploy?.state === 'running' ? ['info', '部署中'] : r.state === 'offline' ? ['bad', '离线']
+    : r.state === 'pending' ? ['neutral', '等待接入'] : routerIssues(r.summary).length ? ['warn', '部分异常'] : [];
+  return tone ? <span className="smark" data-tone={tone} data-spin={tone === 'info' ? '' : undefined} role="img" aria-label={text} data-tip={text} /> : null;
 }
 /** 卡片描边：离线红、在线但有毛病黄（同机器卡的故障 / 降级） */
 export const routerHealth = (r: RouterView) => (r.state === 'offline' ? 'down' : r.state === 'online' && routerIssues(r.summary).length ? 'degraded' : 'ok');
@@ -97,21 +103,21 @@ export const MiniSpark = memo(function MiniSpark({ values, tip }: { values: (num
   return <svg className="rt-spark" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" data-tip={tip} aria-hidden><path d={d} vectorEffect="non-scaling-stroke" /></svg>;
 });
 
-/** 资源槽位的占位：一键部署的时间线（部署中；还没接入的；离线后重新部署失败的）、等路由执行接入命令、离线多久了。不画框（用户：不要每块都是格子） */
+/** 没有读数时（部署中 / 等待接入 / 离线）占掉资源、流量、出口、运行四个槽位（一排里仍与在线的卡对齐），不再排一列「—」：一键部署的时间线（部署中；还没接入的；离线后重新部署失败的）、等路由执行接入命令、离线多久了。不画框（用户：不要每块都是格子） */
 function Hold({ r }: { r: RouterView }) {
   const boot = useShowBootstrap();
   const d = r.deploy;
-  if (d && (d.state === 'running' || r.state === 'pending' || (d.state === 'failed' && r.state === 'offline'))) return <div className="nc-res rt-hold-tl"><DeployTimeline r={r} max={3} /></div>;
+  if (d && (d.state === 'running' || r.state === 'pending' || (d.state === 'failed' && r.state === 'offline'))) return <div className="nc-res rt-span rt-hold-tl"><DeployTimeline r={r} max={3} /></div>;
   if (r.state === 'pending') {
     return (
-      <div className="nc-res"><div className="nc-hold rt-hold">
+      <div className="nc-res rt-span"><div className="nc-hold rt-hold">
         <span className="rt-hold-main"><Clock />等路由执行接入命令</span>
         <span className="hint">在路由的 SSH 里执行接入命令后，约 30 秒内变为在线</span>
         <Button size="sm" loading={boot.pending} onClick={() => void boot.run(r)} data-tip="原来的命令只显示一次：这里会重新生成一条，旧的作废"><Terminal size={13} />查看接入命令</Button>
       </div></div>
     );
   }
-  return <div className="nc-res"><div className="nc-hold rt-hold is-bad"><span className="rt-hold-main"><Unplug />连不上路由 · 最后在线 <Seen at={r.last_seen_at} /></span>{r.error && <span className="rt-hold-err" data-tip={r.error}>{r.error}</span>}</div></div>;
+  return <div className="nc-res rt-span"><div className="nc-hold rt-hold is-bad"><span className="rt-hold-main"><Unplug />连不上路由 · 最后在线 <Seen at={r.last_seen_at} /></span>{r.error && <span className="rt-hold-err" data-tip={r.error}>{r.error}</span>}</div></div>;
 }
 
 /** 「N 秒前」随时间走（卡片 memo 挡住了推送之外的重渲染，自己每 10 秒重画） */
@@ -139,10 +145,6 @@ function WanFlow({ id, s, onOpen }: { id: string; s: RouterSummary; onOpen: Open
   const tx = useMemo(() => (pts ?? []).map((p) => Number(p.wan_tx_bps) || 0), [pts]);
   return <><WanCol dir="down" bps={s.wan.rx_bps} values={rx} onOpen={onOpen} /><WanCol dir="up" bps={s.wan.tx_bps} values={tx} onOpen={onOpen} /></>;
 }
-const NoWan = ({ dir }: { dir: 'up' | 'down' }) => (
-  <div className="flow-col" data-dir={dir}><div className="flow-head"><span className="flow-label">{dir === 'up' ? <ArrowUp /> : <ArrowDown />}WAN {dir === 'up' ? '上行' : '下行'}</span><span className="flow-rate"><Num f={F.NA} /></span></div><DotTrace values={[]} /></div>
-);
-
 function RouterCardImpl({ r, current, onOpen: open }: { r: RouterView; current?: boolean; onOpen: (id: string, tab?: RouterTab) => void }) {
   const onOpen = useCallback<Open>((tab) => open(r.id, tab), [open, r.id]);
   // 读数只给在线、且采集成功过的；部署中的那台（重新部署时隧道在重启）也先不显示
@@ -154,7 +156,7 @@ function RouterCardImpl({ r, current, onOpen: open }: { r: RouterView; current?:
     <article className={cn('ncard', current && 'is-current', !s && 'is-quiet')} data-view="large" data-health={routerHealth(r)} style={{ '--rows': 8 } as CSSProperties}>
       <header className="nc-head">
         <span className="nc-kind" role="img" aria-label="软路由" data-tip="软路由（OpenWrt + OpenClash）"><RouterIcon /></span>
-        <button type="button" className="nc-name" data-tip={`打开 ${r.name} 的详情`} onClick={() => onOpen()}>{r.name}</button>
+        <span className="nc-named"><button type="button" className="nc-name" data-tip={`打开 ${r.name} 的详情`} onClick={() => onOpen()}>{r.name}</button><RouterMark r={r} /></span>
         <div className="nc-actions"><IconButton label="打开详情" tip={false} data-tip="打开详情" onClick={() => onOpen()}><PanelRightOpen size={16} /></IconButton></div>
       </header>
 
@@ -169,15 +171,16 @@ function RouterCardImpl({ r, current, onOpen: open }: { r: RouterView; current?:
         </span>}
       </div>
 
-      {s ? <RouterMeters s={s} /> : <Hold r={r} />}
+      {!s ? <Hold r={r} /> : <>
+      <RouterMeters s={s} />
 
       {/* WAN 口速率 + 经 OpenClash 代理的速率（↓ 是到客户端的方向）；点击看曲线 */}
       <section className="slot-seg">
         <div className="flow">
-          {s ? <WanFlow id={r.id} s={s} onOpen={onOpen} /> : <><NoWan dir="down" /><NoWan dir="up" /></>}
+          <WanFlow id={r.id} s={s} onOpen={onOpen} />
           <button type="button" className="flow-foot flow-biz" onClick={() => onOpen('charts')}>
             <span className="flow-foot-label"><Shuffle />OpenClash 代理</span>
-            <span>{s ? <>↓ <Num f={F.rate(oc!.down_bps)} /> · ↑ <Num f={F.rate(oc!.up_bps)} /></> : '—'}</span><span className="sr-only">（查看曲线页签）</span>
+            <span>↓ <Num f={F.rate(oc!.down_bps)} /> · ↑ <Num f={F.rate(oc!.up_bps)} /></span><span className="sr-only">（查看曲线页签）</span>
           </button>
         </div>
       </section>
@@ -187,22 +190,24 @@ function RouterCardImpl({ r, current, onOpen: open }: { r: RouterView; current?:
         <button type="button" className="nc-quota" onClick={() => onOpen('exits')}>
           <span className="nc-qhead">
             <span className="nc-qlabel rt-exits"><Waypoints />出口可用
-              <b className={cn('num', ex && ex.alive < ex.total && 'is-warn')}>{ex ? `${ex.alive}/${ex.total}` : '—'}</b>
+              <b className={cn('num', ex!.alive < ex!.total && 'is-warn')}>{ex!.alive}/{ex!.total}</b>
             </span>
-            {ex && (ex.drift > 0
-              ? <span className="nc-quse rt-drift" data-tip="这些出口的 server:port 对上了 fleet 入口，但 uuid / reality 参数和入口现在的不一致（入口轮换过凭据或换过线路机），可能已连不上">{ex.drift} 个参数与入口不一致</span>
-              : <span className="nc-quse" data-tip="server:port 对上了 fleet 入口的出口个数（其余是路由上自己加的，中控不管）">{ex.managed} 个对应 fleet 入口</span>)}
+            {ex!.drift > 0
+              ? <span className="nc-quse rt-drift" data-tip="这些出口的 server:port 对上了 fleet 入口，但 uuid / reality 参数和入口现在的不一致（入口轮换过凭据或换过线路机），可能已连不上">{ex!.drift} 个参数与入口不一致</span>
+              : <span className="nc-quse" data-tip="server:port 对上了 fleet 入口的出口个数（其余是路由上自己加的，中控不管）">{ex!.managed} 个对应 fleet 入口</span>}
           </span>
-          <Cells pct={ex && ex.total ? (ex.alive / ex.total) * 100 : null} n={ex?.total || 18} color="var(--ok)" />
+          <Cells pct={ex!.total ? (ex!.alive / ex!.total) * 100 : null} n={ex!.total || 18} color="var(--ok)" />
           <span className="sr-only">（查看出口页签）</span>
         </button>
       </section>
 
       <section className="slot-seg nc-run">
-        <div className="nc-run-item"><span className="nc-run-label"><Users />客户端</span><span className="nc-run-val" data-tip="在线的局域网设备（DHCP 租约、邻居表与经过 OpenClash 的来源 IP）">{s ? <Num f={{ v: String(s.clients), u: '台' }} /> : <span className="t-muted">—</span>}</span></div>
-        <div className="nc-run-item"><span className="nc-run-label"><Cable />代理连接</span><span className="nc-run-val" data-tip="OpenClash 当前的连接数">{s ? <span className="num">{oc!.conns.toLocaleString()}</span> : <span className="t-muted">—</span>}</span></div>
-        <div className="nc-run-item"><span className="nc-run-label"><Thermometer />温度</span><span className="nc-run-val" data-tone={tt} data-tip="CPU / 主板传感器里最高的读数">{s?.temp_c != null ? <Num f={{ v: s.temp_c.toFixed(0), u: '°C' }} /> : <span className="t-muted">—</span>}</span></div>
+        <div className="nc-run-item"><span className="nc-run-label"><Users />客户端</span><span className="nc-run-val" data-tip="在线的局域网设备（DHCP 租约、邻居表与经过 OpenClash 的来源 IP）"><Num f={{ v: String(s.clients), u: '台' }} /></span></div>
+        <div className="nc-run-item"><span className="nc-run-label"><Cable />代理连接</span><span className="nc-run-val" data-tip="OpenClash 当前的连接数"><span className="num">{oc!.conns.toLocaleString()}</span></span></div>
+        <div className="nc-run-item"><span className="nc-run-label"><Thermometer />温度</span><span className="nc-run-val" data-tone={tt} data-tip="CPU / 主板传感器里最高的读数">{s.temp_c != null ? <Num f={{ v: s.temp_c.toFixed(0), u: '°C' }} /> : <span className="t-muted">—</span>}</span></div>
       </section>
+
+      </>}
 
       <div className="nc-tags">
         <div className="nc-tags-list">

@@ -1,7 +1,7 @@
 // 软路由详情抽屉：概览 / 出口 / 客户端 / 曲线。开关由 URL 的 ?r=（页签 rtab）控制，与机器抽屉（?m=）分开；出口对应的入口点开时换成机器抽屉，后退回来。
 // 容器按信息的性质选（用户：不要每块都是格子）：总览数字不带框、设置类信息用分组列表（行间细线）、出口关系画成「出口 → 线路机 → 节点」、部署进度是时间线。
 import * as React from 'react';
-import { CheckCircle2, CircleX, MoreHorizontal, PencilLine, RefreshCw, Router as RouterIcon, Terminal, Trash2, TriangleAlert, XCircle } from 'lucide-react';
+import { CircleX, MoreHorizontal, PencilLine, RefreshCw, Router as RouterIcon, Terminal, Trash2, TriangleAlert, XCircle } from 'lucide-react';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, Tabs, TabsList, TabsTrigger, Trunc } from '@/components/ui/overlays';
 import { IconButton } from '@/components/ui/button';
@@ -204,7 +204,7 @@ function OverviewTab({ r, detail }: { r: RouterView; detail: RouterDetail | null
       )}
       {oc && s && (
         <Group title="OpenClash">
-          <Row label="状态">{!oc.enabled ? <Pill dot="none">未启用</Pill> : oc.running ? <Pill tone="ok" dot="none">运行中</Pill> : <Pill tone="bad" dot="none" tip="已启用但核心进程（clash）没在运行：客户端此时上不了外网"><CircleX size={12} />核心没在运行</Pill>}</Row>
+          <Row label="状态">{!oc.enabled ? <Pill>未启用</Pill> : oc.running ? <Pill tone="ok">运行中</Pill> : <Pill tone="bad" tip="已启用但核心进程（clash）没在运行：客户端此时上不了外网"><CircleX size={12} />核心没在运行</Pill>}</Row>
           <Row label="核心版本"><span className="mono">{oc.version ?? '—'}</span></Row>
           <Row label="模式">{oc.mode}</Row>
           <Row label="配置文件"><Trunc className="mono">{oc.config_path ?? '—'}</Trunc></Row>
@@ -250,7 +250,7 @@ function ExitsTab({ id, d }: { id: string; d: RouterDetail }) {
             <tbody>{d.exits.map((e) => <ExitRow key={e.name} e={e} delays={m.get(e.name)} onOpen={openMachine} />)}</tbody>
           </table>
         </div>
-        <ul className="rt-legend hint">{(['ok', 'drift', 'unmanaged'] as const).map((k) => <li key={k}><Pill tone={SYNC[k].tone} dot="none">{SYNC[k].label}</Pill>{SYNC[k].tip}</li>)}</ul>
+        <ul className="rt-legend hint">{(['ok', 'drift', 'unmanaged'] as const).map((k) => <li key={k}><Pill tone={SYNC[k].tone}>{SYNC[k].label}</Pill>{SYNC[k].tip}</li>)}</ul>
       </Section>
     </>
   );
@@ -270,10 +270,11 @@ const ExitRow = React.memo(function ExitRow({ e, delays, onOpen }: { e: RouterEx
       <td><span className="cell-main strong">{e.name}</span><span className="sub">{e.type}</span></td>
       <td><Trunc className="mono">{`${e.server}:${e.port}`}</Trunc></td>
       <td>{e.entry ? <button type="button" className="btn btn-link" style={{ height: 'auto', padding: 0, maxWidth: '100%' }} data-tip="打开这个节点的详情" onClick={() => onOpen(e.entry!.node_id)}><span className="ellipsis">{e.entry.name}</span></button> : <span className="t-muted">—</span>}</td>
-      <td><Pill tone={s.tone} dot="none" tip={s.tip}>{s.label}</Pill></td>
+      {/* 一致的不标（一列「一致」只是噪音），只标不一致 / 不受管 */}
+      <td>{e.sync !== 'ok' && <Pill tone={s.tone} tip={s.tip}>{s.label}</Pill>}</td>
       <td className="r">
         {e.alive === false ? <span className="rt-alive" data-tone="bad"><XCircle />失败</span>
-          : e.alive ? <span className="rt-alive" data-tone="ok"><CheckCircle2 /><Num f={F.ms(e.delay_ms)} /></span> : <span className="t-muted" data-tip="还没测过">—</span>}
+          : e.alive ? <Num f={F.ms(e.delay_ms)} /> : <span className="t-muted" data-tip="还没测过">—</span>}
         {e.delay_at && <span className="sub">{F.ago(e.delay_at)}</span>}
       </td>
       <td>{delays ? <MiniSpark values={delays} tip="近 6 小时的延迟（缺口是测试失败）" /> : <span className="t-muted">—</span>}</td>
@@ -347,9 +348,9 @@ function ClientsTab({ d }: { d: RouterDetail }) {
 const ClientRow = React.memo(function ClientRow({ c }: { c: RouterClient }) {
   const via = [...c.exits].sort((a, b) => b.conns - a.conns).map((x) => `${x.name} ${x.conns}`).join(' · ');
   return (
-    <tr>
+    <tr className={c.online ? undefined : 'is-quiet'}>
       <td><span className="cell-main strong">{c.hostname ?? <span className="t-muted">未知设备</span>}</span><span className="sub mono">{c.ip}{c.mac && ` · ${c.mac}`}</span></td>
-      <td>{c.online ? <Pill tone="ok" dot="none">在线</Pill> : <Pill dot="none">离线</Pill>}</td>
+      <td>{!c.online && <Pill>离线</Pill>}</td>
       <td className="r num">{c.conns}</td>
       <td>{via ? <Trunc className="cell-main">{via}</Trunc> : <span className="t-muted">没有经过 OpenClash 的连接</span>}</td>
     </tr>
