@@ -10,6 +10,7 @@ use crate::ssh::{self, kind_of, ErrKind, Output, StepError, Target};
 use crate::state::AppState;
 use anyhow::{anyhow, bail, Context};
 use base64::Engine;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::net::IpAddr;
@@ -400,16 +401,100 @@ const AGENT_BIN: &str = "/usr/local/bin/fleet-agent";
 /// 升级 agent：重启后等新版本上报的时长，过了还没等到就换回旧版本
 const ROLLBACK_AFTER_S: i64 = 120;
 
+/// 线路机现在的 Xray 状态：agent 最近报的（`reported_by` 是报它的 agent 版本）与应用错误（中控记的、agent 自报的都算）
+#[derive(sqlx::FromRow)]
+struct XrayNow {
+    generation: i64,
+    reported_by: Option<String>,
+    running: Option<bool>,
+    applied: Option<i64>,
+    error: Option<String>,
+}
+
+async fn xray_now(c: &Ctx<'_>, relay: Uuid) -> anyhow::Result<XrayNow> {
+    Ok(sqlx::query_as(
+        "select r.generation, a.info->'xray'->>'agent_version' reported_by, (a.info->'xray'->>'running')::bool running,
+                (a.info->'xray'->>'applied_generation')::bigint applied, coalesce(r.apply_error, a.info->'agent_health'->>'last_apply_error') error
+         from relay r left join agent_state a on a.machine_id = r.machine_id where r.machine_id = $1",
+    )
+    .bind(relay)
+    .fetch_one(&c.st.db)
+    .await?)
+}
+
+/// 升级线路机的 agent 之后新版本要做到的几项（wait_report 查）。只查升级前就做到的：升级前 Xray 就没在跑、
+/// 配置没应用到当时的代数、有应用错误的，不能因此永远升级不了
+#[derive(Serialize, Deserialize)]
+struct XrayChecks {
+    /// Xray 在跑
+    running: bool,
+    /// 已应用的配置要追上这一代（升级开始时的期望代数）
+    generation: Option<i64>,
+    /// 没有应用错误
+    no_error: bool,
+}
+
+impl XrayChecks {
+    fn before(x: &XrayNow) -> Self {
+        Self {
+            running: x.running == Some(true),
+            generation: x.applied.is_some_and(|a| a >= x.generation).then_some(x.generation),
+            no_error: x.error.is_none(),
+        }
+    }
+
+    fn any(&self) -> bool { self.running || self.generation.is_some() || self.no_error }
+
+    fn describe(&self) -> String {
+        let mut v = vec![];
+        if self.running {
+            v.push("Xray 在跑".to_string());
+        }
+        if let Some(g) = self.generation {
+            v.push(format!("配置应用到代数 {g}"));
+        }
+        if self.no_error {
+            v.push("没有应用错误".into());
+        }
+        if v.is_empty() { "不查（升级前 Xray 就不正常）".into() } else { v.join("、") }
+    }
+
+    /// 新版本自己报的状态里没做到的项；都做到了返回 None
+    fn unmet(&self, x: &XrayNow, version: &str) -> Option<String> {
+        if x.reported_by.as_deref() != Some(version) {
+            return Some("没有报 Xray 状态".into());
+        }
+        let mut v = vec![];
+        if self.running && x.running != Some(true) {
+            v.push("Xray 没在跑".to_string());
+        }
+        if let Some(g) = self.generation.filter(|g| x.applied.is_none_or(|a| a < *g)) {
+            v.push(format!("已应用的配置代数 {}，没到 {g}", x.applied.unwrap_or(0)));
+        }
+        if let Some(e) = x.error.as_deref().filter(|_| self.no_error) {
+            v.push(format!("应用配置出错：{e}"));
+        }
+        (!v.is_empty()).then(|| v.join("；"))
+    }
+}
+
 /// 装 agent：先签发新令牌装上，**不**撤销旧令牌；等 wait_report 看到新令牌真的上报了，才撤销这台机器的其它令牌。
 /// 这样安装中途失败时旧 agent 还能继续上报。
-/// 升级时程序换成了新版本（`agent_replaced`），之后装不上、起不来（或 wait_report 等不到新版本上报）就换回 .prev
+/// 升级时程序换成了新版本（`agent_replaced`），之后装不上、起不来（或 wait_report 等不到新版本上报、线路机检查没通过）就换回 .prev
 async fn agent(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
+    let upgrading = c.job.kind == "upgrade_agent";
     let m = c.machine().await?;
+    // 升级线路机：记下升级前的 Xray 状态。本作业已经换过程序的（重试）沿用第一次记的：之后机器被新版本动过
+    let mut checks = serde_json::from_value::<XrayChecks>(c.job.params["xray_checks"].clone()).ok();
+    if upgrading && m.kind == "relay" && c.job.params["agent_replaced"] != true {
+        checks = Some(XrayChecks::before(&xray_now(c, m.id).await?));
+        c.set_params(json!({"xray_checks": checks})).await?;
+    }
     let t = c.ssh(&m, None);
     let pushed = t.push_keep_prev(&c.dist("fleet-agent"), AGENT_BIN, "0755", Duration::from_secs(180)).await?;
     // 重试时推送发现已经是新程序会返回 false：以本作业第一次换上的为准
     let replaced = pushed || c.job.params["agent_replaced"] == true;
-    let can_rollback = c.job.kind == "upgrade_agent" && replaced;
+    let can_rollback = upgrading && replaced;
     let token = format!("fa1_{}", random_token(32));
     let token_id = crate::db::new_id();
     sqlx::query("insert into agent_token (id, machine_id, token_hash) values ($1, $2, $3)")
@@ -459,8 +544,10 @@ async fn agent(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     if out.kv("logrotate") == Some("error") {
         c.warn(format!("访问日志轮转配置没装上：{}", out.stderr.trim())).await;
     }
+    // xray_checks：等新版本上报时线路机还要做到的几项（程序换过才查，见 wait_report）
     Ok(Outcome::Done(json!({
         "binary_updated": pushed, "token_id": token_id, "agent_version": version, "prev_version": out.kv("prev_version").filter(|_| replaced),
+        "xray_checks": checks.filter(|_| can_rollback).map(|k| k.describe()),
     })))
 }
 
@@ -505,31 +592,42 @@ async fn wait_report(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     .fetch_optional(&c.st.db)
     .await?
     .and_then(|(t, v): (Option<OffsetDateTime>, Option<String>)| t.map(|t| (t, v)));
-    match row {
-        Some((t, v)) => {
-            let mut revoked = 0;
-            if let Some(tid) = tid {
-                revoked = sqlx::query("update agent_token set revoked_at = now() where machine_id = $1 and id <> $2 and revoked_at is null")
-                    .bind(id)
-                    .bind(tid)
-                    .execute(&c.st.db)
-                    .await?
-                    .rows_affected();
-                if revoked > 0 {
-                    c.log(format!("新令牌已上报，撤销了 {revoked} 枚旧令牌")).await;
-                }
-            }
-            Ok(Outcome::Done(json!({"first_report_at": crate::access::fmt_ts(t), "agent_version": v, "old_tokens_revoked": revoked})))
+    // 升级时程序换过的：重启后这么久还没做到就换回旧版本（程序没换的没有可换回的，等到步骤超时）
+    let replaced = c.job.kind == "upgrade_agent" && c.job.params["agent_replaced"] == true;
+    let give_up = replaced && (OffsetDateTime::now_utc() - c.started).whole_seconds() >= ROLLBACK_AFTER_S;
+    let new = want.unwrap_or("?");
+    let Some((t, v)) = row else {
+        if !give_up {
+            return Ok(Outcome::Wait(EVENT_POLL_S));
         }
-        None if c.job.kind == "upgrade_agent"
-            && c.job.params["agent_replaced"] == true
-            && (OffsetDateTime::now_utc() - c.started).whole_seconds() >= ROLLBACK_AFTER_S =>
-        {
-            let m = c.machine().await?;
-            Err(rollback(c, &m, ErrKind::Timeout, &format!("新版本 {} 重启后 {ROLLBACK_AFTER_S} 秒没有上报", want.unwrap_or("?"))).await)
+        let m = c.machine().await?;
+        return Err(rollback(c, &m, ErrKind::Timeout, &format!("新版本 {new} 重启后 {ROLLBACK_AFTER_S} 秒没有上报")).await);
+    };
+    // 线路机：新版本自己报的 Xray 状态还要做到升级前做到的几项（新版本把 Xray 弄坏、agent 却照常上报时，不能当成功）
+    let miss = match serde_json::from_value::<XrayChecks>(c.job.params["xray_checks"].clone()) {
+        Ok(k) if replaced && k.any() => k.unmet(&xray_now(c, id).await?, new),
+        _ => None,
+    };
+    if let Some(miss) = miss {
+        if !give_up {
+            return Ok(Outcome::Wait(EVENT_POLL_S));
         }
-        None => Ok(Outcome::Wait(EVENT_POLL_S)),
+        let m = c.machine().await?;
+        return Err(rollback(c, &m, ErrKind::Remote, &format!("新版本 {new} 重启后 {ROLLBACK_AFTER_S} 秒线路机检查没通过（{miss}）")).await);
     }
+    let mut revoked = 0;
+    if let Some(tid) = tid {
+        revoked = sqlx::query("update agent_token set revoked_at = now() where machine_id = $1 and id <> $2 and revoked_at is null")
+            .bind(id)
+            .bind(tid)
+            .execute(&c.st.db)
+            .await?
+            .rows_affected();
+        if revoked > 0 {
+            c.log(format!("新令牌已上报，撤销了 {revoked} 枚旧令牌")).await;
+        }
+    }
+    Ok(Outcome::Done(json!({"first_report_at": crate::access::fmt_ts(t), "agent_version": v, "old_tokens_revoked": revoked})))
 }
 
 async fn attach(c: &Ctx<'_>) -> anyhow::Result<Outcome> {

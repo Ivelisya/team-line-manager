@@ -3,13 +3,15 @@
 //!
 //! 机器是假的：PATH 最前面放一个假 ssh，远端命令在「机器根目录」`<临时目录>/<IP>/` 里真的执行（/usr/local/bin、/etc、/var/lib
 //! 改到里面），systemctl 换成桩：记下调用；装着的 agent 版本号里带 crash 的，每次查主进程号都不一样（起来就退出、被反复拉起）。
-//! agent 程序是 shell 脚本，`--version` 打印版本。上报由测试直接写库模拟。
+//! agent 程序是 shell 脚本，`--version` 打印版本。上报由测试直接写库模拟；线路机的用作业装到机器上的令牌走真的上报接口
+//! （Xray 状态要记上报它的版本）。
 //! PATH 是整个测试进程共用的，所以单独一个测试文件；各测试的机器 IP 不同，根目录互不相干。
 
 #![cfg(unix)]
 
 mod common;
 
+use axum::http::StatusCode;
 use common::{seed_team, setup, T};
 use fleet_server::jobs;
 use serde_json::{json, Value};
@@ -109,6 +111,52 @@ async fn report(t: &T, machine: Uuid, job: &str, version: &str) {
     .unwrap();
 }
 
+/// 一台在用的线路机「线路机2」：配置代数 3，机器上装着 `old` 版本的 agent，中控 dist 里是 `new`。
+/// 升级前旧 agent 最近报的 Xray 状态是 `xray`，中控记的应用错误是 `apply_error`。返回 (机器 id, 机器根目录)
+async fn relay(t: &T, ip: &str, old: &str, new: &str, xray: Value, apply_error: Option<&str>) -> (Uuid, PathBuf) {
+    let root = FAKE.path().join(ip);
+    agent_bin(&root.join("usr/local/bin/fleet-agent"), old);
+    agent_bin(&t.dir.path().join("dist/fleet-agent"), new);
+    let id = Uuid::now_v7();
+    let (sk, pk) = fleet_server::crypto::reality_keypair();
+    sqlx::query("insert into machine (id, kind, label, primary_ip, lifecycle) values ($1, 'relay', '线路机2', $2::inet, 'active')")
+        .bind(id)
+        .bind(ip)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    sqlx::query(
+        "insert into relay (machine_id, public_host, reality_private_enc, reality_public_key, generation, applied_generation, apply_error)
+         values ($1, 'relay.test', $2, $3, 3, 3, $4)",
+    )
+    .bind(id)
+    .bind(t.st.secrets.seal_str(&sk))
+    .bind(pk)
+    .bind(apply_error)
+    .execute(&t.st.db)
+    .await
+    .unwrap();
+    sqlx::query("insert into agent_state (machine_id, agent_version, last_report_at, info) values ($1, $2, now(), $3)")
+        .bind(id)
+        .bind(old)
+        .bind(json!({"xray": xray}))
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    (id, root)
+}
+
+/// 机器上的 agent 用作业装上的令牌经上报接口报一份：版本 `version`，`xray` 为 null 时不带 Xray 状态
+async fn agent_report(t: &T, root: &Path, seq: u64, version: &str, xray: Value, apply_error: Option<&str>) {
+    let tok = read(&root.join("etc/fleet-agent/token"));
+    let mut r = json!({"seq": seq, "boot_id": "b1", "agent_version": version, "sent_at_ms": 0, "agent_health": {"last_apply_error": apply_error}});
+    if !xray.is_null() {
+        r["xray"] = xray;
+    }
+    let (s, v) = t.req("POST", "/agent/v1/report", Some(r), Some(tok.trim())).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+}
+
 /// systemctl 桩记下的 agent 重启次数
 fn restarts(root: &Path) -> usize { read(&root.join("systemctl.log")).lines().filter(|l| *l == "restart fleet-agent").count() }
 
@@ -200,4 +248,60 @@ async fn crashing_new_version_is_rolled_back_at_once() {
     let o = ssh.run(&jobs::scripts::agent_rollback(), std::time::Duration::from_secs(30)).await.unwrap();
     assert_eq!((o.code, o.kv("agent"), o.kv("version")), (0, Some("active"), Some("0.1.0+old")), "{o:?}");
     assert!(read(&root.join("usr/local/bin/fleet-agent")).contains("0.1.0+old") && read(&root.join("usr/local/bin/fleet-agent.prev")).contains("0.1.0+old"));
+}
+
+/// `by` 版本的 agent 报的正常的 Xray 状态（在跑、已应用到代数 3）
+fn xray_ok(by: &str) -> Value { json!({"running": true, "applied_generation": 3, "agent_version": by}) }
+
+/// 线路机：新版本上报了还不算，要它自己报的 Xray 状态做到升级前做到的几项。重启后新进程最先补发的是旧进程退出时落盘的报告
+/// （旧版本号、旧进程的 Xray 状态），之后几份不带 Xray 状态：这些都不能算数
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn relay_upgrade_waits_for_xray_from_the_new_version() {
+    let t = setup(false).await;
+    let (m, root) = relay(&t, "192.0.2.21", "0.1.0+old", "0.1.0+new", xray_ok("0.1.0+old"), None).await;
+    let job = upgrade(&t, m).await;
+    let j = run_round(&t, &job).await;
+    assert_eq!((j["state"].as_str(), j["step"].as_i64()), (Some("waiting"), Some(1)), "{j}");
+    assert_eq!(j["steps"][0]["output"]["xray_checks"], "Xray 在跑、配置应用到代数 3、没有应用错误", "{j}");
+
+    agent_report(&t, &root, 1, "0.1.0+old", json!({"running": true, "applied_generation": 3}), None).await;
+    assert_eq!(run_round(&t, &job).await["state"], "waiting", "旧进程落盘的报告");
+    agent_report(&t, &root, 2, "0.1.0+new", Value::Null, None).await;
+    assert_eq!(run_round(&t, &job).await["state"], "waiting", "新版本还没报 Xray 状态：库里的是旧进程报的");
+    agent_report(&t, &root, 3, "0.1.0+new", json!({"running": true, "applied_generation": 3}), None).await;
+    let j = run_round(&t, &job).await;
+    assert_eq!(j["state"], "succeeded", "{j}");
+    assert_eq!(restarts(&root), 1, "没有回滚");
+}
+
+/// 新版本照常上报、Xray 却不正常（没在跑、配置没应用上、应用出错）：2 分钟后换回旧版本，错误逐项写明；
+/// 升级前就不正常的项不查（升级前 Xray 就坏着，不能因此永远升级不了）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn relay_upgrade_rolls_back_when_xray_breaks() {
+    let t = setup(false).await;
+    let (m, root) = relay(&t, "192.0.2.22", "0.1.0+old", "0.1.0+new", xray_ok("0.1.0+old"), None).await;
+    let job = upgrade(&t, m).await;
+    assert_eq!(run_round(&t, &job).await["state"], "waiting");
+    agent_report(&t, &root, 1, "0.1.0+new", json!({"running": false, "applied_generation": 2}), Some("xray -test 失败")).await;
+    assert_eq!(run_round(&t, &job).await["state"], "waiting", "还没到 2 分钟");
+    wait_out(&t, &job).await;
+    let j = run_round(&t, &job).await;
+    assert_eq!(j["state"], "failed", "{j}");
+    assert_eq!(
+        j["error"],
+        "等待新版本上报：新版本 0.1.0+new 重启后 120 秒线路机检查没通过（Xray 没在跑；已应用的配置代数 2，没到 3；应用配置出错：xray -test 失败），已回滚到 0.1.0+old"
+    );
+    assert_eq!(j["steps"][1]["error_kind"], "remote");
+    assert!(read(&root.join("usr/local/bin/fleet-agent")).contains("0.1.0+old"));
+    assert_eq!(restarts(&root), 2);
+
+    // 升级前 Xray 就没在跑、配置停在旧代数、有应用错误：这几项都不查，新版本上报了就算成功
+    let t = setup(false).await;
+    let before = json!({"running": false, "applied_generation": 2, "agent_version": "0.1.0+old"});
+    let (m, root) = relay(&t, "192.0.2.23", "0.1.0+old", "0.1.0+new", before, Some("xray -test 失败")).await;
+    let job = upgrade(&t, m).await;
+    let j = run_round(&t, &job).await;
+    assert_eq!(j["steps"][0]["output"]["xray_checks"], "不查（升级前 Xray 就不正常）", "{j}");
+    agent_report(&t, &root, 1, "0.1.0+new", Value::Null, Some("xray -test 失败")).await;
+    assert_eq!(run_round(&t, &job).await["state"], "succeeded");
 }
