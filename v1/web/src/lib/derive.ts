@@ -1,5 +1,5 @@
 // 从 MachineView 推导卡片/表格要显示的数据（纯函数，便于复用）
-import type { AvailabilityDay, MachineView, ProbeBucket, ProbeResult, Subscription } from './types';
+import type { AvailabilityDay, MachineView, Plan, ProbeBucket, ProbeResult, Provider, SubField, Subscription, TrafficReset } from './types';
 import * as F from './format';
 
 export const hasHost = (m: MachineView) => m.kind !== 'proxy' && m.host != null;
@@ -24,12 +24,55 @@ export function monthTraffic(m: MachineView) {
 }
 /** 流量额度按供应商的十进制 GB（1 GB = 10⁹ 字节） */
 const GB = 1e9;
-/** 流量额度：上限（GB，订阅没填按套餐，0/null = 不限）与本周期已用（服务端按网卡 / 业务流量、流量重置日算，见 MachineView.quota）。
- *  shared：同机 IP 节点自己没设上限——额度与宿主机共用（宿主机的网卡含它的流量），不是「不限」 */
+/** 流量额度：上限（GB，服务端算好的 quota.limit_gb，0 = 不限）与本周期已用（服务端按网卡 / 业务流量、流量周期算，见 MachineView.quota）。
+ *  shared：同机 IP 节点自己没设上限——额度与宿主机共用（宿主机的网卡含它的流量），不是「不限」。source 见 limit_source */
 export function quota(m: MachineView) {
-  const limit = m.subscription?.traffic_gb ?? m.plan?.traffic_gb ?? 0;
+  // 旧接口（模拟数据）没有 limit_gb 时退回订阅 / 套餐的
+  const limit = m.quota.limit_gb !== undefined ? m.quota.limit_gb ?? 0 : m.subscription?.traffic_gb ?? m.plan?.traffic_gb ?? 0;
   const { used, period_start: start, rule, base_at: baseAt } = m.quota;
-  return { limit, used, start, rule, baseAt, pct: limit > 0 ? (used / (limit * GB)) * 100 : null, rem: limit > 0 ? Math.max(0, limit * GB - used) : null, shared: !!m.host_machine && !(limit > 0) };
+  const shared = m.quota.limit_source ? m.quota.limit_source === 'host' : !!m.host_machine && !(limit > 0);
+  return { limit, used, start, rule, baseAt, pct: limit > 0 ? (used / (limit * GB)) * 100 : null, rem: limit > 0 ? Math.max(0, limit * GB - used) : null, shared, source: m.quota.limit_source };
+}
+
+/** 订阅各项跟随谁：价格、币种、周期、流量上限跟随套餐，账单时区、提前提醒、流量重置日跟随供应商（同服务端 sub_template） */
+export const SUB_FROM: Record<SubField, 'plan' | 'provider'> = {
+  price_cents: 'plan', currency: 'plan', cycle: 'plan', traffic_gb: 'plan', billing_tz: 'provider', remind_days: 'provider', traffic_reset_day: 'provider',
+};
+/** 这一项单独设置了 */
+export const isOverridden = (s: Subscription | null | undefined, k: SubField) => !!s?.overrides?.includes(k);
+/** 跟随时的值（同服务端 subscription_eff）：重置日按供应商的方式——账单日 = 到期日（YYYY-MM-DD）是几号，自然月 = 1 号。没有模板为 null */
+export function inheritedValue(m: MachineView, k: SubField, due?: string): string | number | null {
+  const t = m.sub_template; if (!t) return null;
+  if (k === 'traffic_reset_day') return t.traffic_reset === 'billing' && /^\d{4}-\d{2}-\d{2}$/.test(due ?? '') ? Number(due!.slice(8, 10)) : 1;
+  return t[k];
+}
+/** 跟随的来源：「跟随套餐」「跟随供应商」，机器没有套餐 / 供应商时是「默认」 */
+export const inheritSource = (m: MachineView, k: SubField) => (SUB_FROM[k] === 'plan' ? (m.plan ? '跟随套餐' : '默认') : (m.provider ? '跟随供应商' : '默认'));
+/** 一项的值写成文字（订阅表单「跟随套餐：2000 GB」、上架页的跟随摘要共用）；currency 给价格配币种 */
+export function subValueText(k: SubField, v: string | number | null, currency = 'USD', reset?: TrafficReset): string {
+  if (v == null) return k === 'traffic_gb' ? '不限' : '—';
+  switch (k) {
+    case 'price_cents': return F.money(Number(v), currency);
+    case 'cycle': return `每${F.cycleLabel(String(v))}`;
+    case 'remind_days': return `提前 ${v} 天`;
+    case 'traffic_gb': return Number(v) > 0 ? `${v} GB` : '不限';
+    case 'traffic_reset_day': return reset === 'billing' ? `每月 ${v} 号（账单日）` : reset === 'month' ? `每月 ${v} 号（自然月）` : `每月 ${v} 号`;
+    default: return String(v);
+  }
+}
+/** 上架页选了套餐后的一行：订阅会跟随的值（同服务端 sub_template；供应商没有时是默认值） */
+export function inheritSummary(plan: Plan, pv: Provider | undefined) {
+  const fee = `${subValueText('price_cents', plan.price_cents, plan.currency)} / ${subValueText('cycle', plan.cycle)}`;
+  const reset = pv?.traffic_reset === 'billing' ? '按账单日重置' : '按自然月重置';
+  return `跟随套餐「${plan.name}」：${fee} · 流量 ${subValueText('traffic_gb', plan.traffic_gb)}；`
+    + `跟随${pv ? `供应商「${pv.name}」` : '默认'}：账单时区 ${pv?.timezone ?? 'Asia/Shanghai'} · 流量${reset} · ${subValueText('remind_days', pv?.remind_days ?? 7)}提醒`;
+}
+/** 「跟随套餐：2000 GB」：没有模板（旧接口）为 null */
+export function inheritText(m: MachineView, k: SubField, due?: string) {
+  const t = m.sub_template; if (!t) return null;
+  const v = inheritedValue(m, k, due);
+  if (k === 'price_cents' && v == null) return '没有套餐，需要单独填';
+  return `${inheritSource(m, k)}：${subValueText(k, v, t.currency, t.traffic_reset)}`;
 }
 /** 额度用量的写法同供应商面板：十进制 GB，不换算成 TB（901.6 GB）。业务流量等其它字节数仍用 F.bytes */
 export const quotaGb = (bytes: number): F.Fmt => {

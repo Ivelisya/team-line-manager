@@ -109,10 +109,14 @@ pub struct Provider {
     timezone: String,
     /// 流量额度的网卡计量：min / max / sum / out = 本周期入出取小 / 取大 / 相加 / 只算出站
     traffic_rule: String,
+    /// 流量额度周期：month = 账单时区的自然月（1 号起），billing = 账单日（到期日几号）起。名下机器没单独设置重置日的跟随它
+    traffic_reset: String,
+    /// 到期前几天提醒（0–60）：名下机器没单独设置的跟随它
+    remind_days: i32,
 }
 
 pub async fn list_providers(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
-    let v: Vec<Provider> = sqlx::query_as("select id, name, code, panel_url, timezone, traffic_rule from provider order by name")
+    let v: Vec<Provider> = sqlx::query_as("select id, name, code, panel_url, timezone, traffic_rule, traffic_reset, remind_days from provider order by name")
         .fetch_all(&st.db)
         .await?;
     Ok(ok(v))
@@ -129,6 +133,26 @@ pub struct ProviderIn {
     timezone: Option<Option<String>>,
     /// 没传 = 不改（新建为 max）
     traffic_rule: Option<String>,
+    /// month / billing；没传 = 不改（新建为 month）
+    traffic_reset: Option<String>,
+    /// 0–60；没传 = 不改（新建为列默认值 7）
+    remind_days: Option<i32>,
+}
+
+fn remind_days(v: Option<i32>) -> ApiResult<Option<i32>> {
+    match v {
+        Some(d) if !(0..=60).contains(&d) => Err(ApiError::bad_request("提醒天数要在 0–60 之间")),
+        v => Ok(v),
+    }
+}
+
+/// 流量重置方式只认这两种
+fn traffic_reset(v: &Option<String>) -> ApiResult<Option<&str>> {
+    match v.as_deref() {
+        None => Ok(None),
+        Some(r @ ("month" | "billing")) => Ok(Some(r)),
+        Some(r) => Err(ApiError::bad_request(format!("流量重置方式「{r}」不认识：只能是 month（自然月）/ billing（账单日）"))),
+    }
 }
 
 /// 流量计量规则只认这四种
@@ -155,23 +179,29 @@ pub async fn create_provider(a: Actor, State(st): State<AppState>, ApiJson(b): A
     let panel = b.panel_url.as_ref().map(panel_url).transpose()?.flatten();
     let tz = b.timezone.as_ref().and_then(blank);
     let rule = traffic_rule(&b.traffic_rule)?.unwrap_or("max");
+    let reset = traffic_reset(&b.traffic_reset)?.unwrap_or("month");
+    let remind = remind_days(b.remind_days)?;
     let mut tx = st.db.begin().await?;
-    // 上架时供应商时区会被抄进账单时区，按同一标准校验
+    // 名下机器的账单时区跟随它，按同一标准校验
     if let Some(tz) = tz {
         super::machines::check_tz(&mut tx, tz).await?;
     }
-    sqlx::query("insert into provider (id, name, code, panel_url, traffic_rule) values ($1, $2, $3, $4, $5)")
+    sqlx::query("insert into provider (id, name, code, panel_url, traffic_rule, traffic_reset) values ($1, $2, $3, $4, $5, $6)")
         .bind(id)
         .bind(&name)
         .bind(&code)
         .bind(panel)
         .bind(rule)
+        .bind(reset)
         .execute(&mut *tx)
         .await?;
     if let Some(tz) = tz {
         sqlx::query("update provider set timezone = $2 where id = $1").bind(id).bind(tz).execute(&mut *tx).await?;
     }
-    audit(&mut tx, &a.name, "provider.create", "provider", Some(id), json!({"name": name, "code": code, "traffic_rule": rule})).await?;
+    if let Some(d) = remind {
+        sqlx::query("update provider set remind_days = $2 where id = $1").bind(id).bind(d).execute(&mut *tx).await?;
+    }
+    audit(&mut tx, &a.name, "provider.create", "provider", Some(id), json!({"name": name, "code": code, "traffic_rule": rule, "traffic_reset": reset})).await?;
     tx.commit().await?;
     st.emit(Event::Catalog);
     Ok(ok(json!({"id": id})))
@@ -179,7 +209,7 @@ pub async fn create_provider(a: Actor, State(st): State<AppState>, ApiJson(b): A
 
 pub async fn patch_provider(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<ProviderIn>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
-    let old: Provider = sqlx::query_as("select id, name, code, panel_url, timezone, traffic_rule from provider where id = $1 for update")
+    let old: Provider = sqlx::query_as("select id, name, code, panel_url, timezone, traffic_rule, traffic_reset, remind_days from provider where id = $1 for update")
         .bind(id)
         .fetch_optional(&mut *tx)
         .await?
@@ -203,18 +233,22 @@ pub async fn patch_provider(a: Actor, State(st): State<AppState>, ApiPath(id): A
         None => Some(old.timezone.clone()),
     };
     let rule = traffic_rule(&b.traffic_rule)?.unwrap_or(old.traffic_rule.as_str()).to_string();
+    let reset = traffic_reset(&b.traffic_reset)?.unwrap_or(old.traffic_reset.as_str()).to_string();
+    let remind = remind_days(b.remind_days)?.unwrap_or(old.remind_days);
     if let Some(tz) = &tz {
         super::machines::check_tz(&mut tx, tz).await?;
     }
-    sqlx::query("update provider set name = $2, code = $3, panel_url = $4, traffic_rule = $5 where id = $1")
+    sqlx::query("update provider set name = $2, code = $3, panel_url = $4, traffic_rule = $5, traffic_reset = $6, remind_days = $7 where id = $1")
         .bind(id)
         .bind(&name)
         .bind(&code)
         .bind(&panel_url)
         .bind(&rule)
+        .bind(&reset)
+        .bind(remind)
         .execute(&mut *tx)
         .await?;
-    // 时区清空 = 回到列默认值；已上架机器的账单时区是当时抄过去的，这里不跟着改
+    // 时区清空 = 回到列默认值。名下机器没单独设置账单时区 / 重置日的立即跟着变（订阅里不存模板的值）
     let (tz,): (String,) = match &tz {
         Some(tz) => sqlx::query_as("update provider set timezone = $2 where id = $1 returning timezone").bind(id).bind(tz),
         None => sqlx::query_as("update provider set timezone = default where id = $1 returning timezone").bind(id),
@@ -222,8 +256,8 @@ pub async fn patch_provider(a: Actor, State(st): State<AppState>, ApiPath(id): A
     .fetch_one(&mut *tx)
     .await?;
     audit(&mut tx, &a.name, "provider.update", "provider", Some(id),
-        json!({"before": {"name": old.name, "code": old.code, "panel_url": old.panel_url, "timezone": old.timezone, "traffic_rule": old.traffic_rule},
-               "after": {"name": name, "code": code, "panel_url": panel_url, "timezone": tz, "traffic_rule": rule}})).await?;
+        json!({"before": {"name": old.name, "code": old.code, "panel_url": old.panel_url, "timezone": old.timezone, "traffic_rule": old.traffic_rule, "traffic_reset": old.traffic_reset, "remind_days": old.remind_days},
+               "after": {"name": name, "code": code, "panel_url": panel_url, "timezone": tz, "traffic_rule": rule, "traffic_reset": reset, "remind_days": remind}})).await?;
     tx.commit().await?;
     // 机器视图里的供应商名 / 缩写：Catalog 事件已让视图缓存和前端机器列表作废
     st.emit(Event::Catalog);
@@ -349,6 +383,17 @@ pub async fn patch_plan(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPa
     if let Some(n) = &b.name {
         let n = clean_name(n, "套餐名")?;
         set!("name", Some(n));
+    }
+    // 机器的供应商就是套餐的：有机器（含已退役，可能恢复）用着的套餐不能换供应商
+    if let Some(pv) = b.provider_id {
+        let n: i64 = sqlx::query_scalar("select count(*) from machine m join plan p on p.id = m.plan_id where p.id = $1 and p.provider_id <> $2")
+            .bind(id)
+            .bind(pv)
+            .fetch_one(&mut *tx)
+            .await?;
+        if n > 0 {
+            return Err(ApiError::conflict(format!("有 {n} 台机器用着这个套餐，不能改它的供应商：给新供应商另建套餐")));
+        }
     }
     set!("provider_id", b.provider_id);
     set!("cpu_cores", b.cpu_cores);

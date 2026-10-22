@@ -6,6 +6,8 @@ import { CheckCircle2, ClipboardPaste, ListChecks, Plus, Trash2, TriangleAlert }
 import { useHostChoices, usePlans, useProviders, useProvision, useProvisionCheck, useRelayChoices, useTeams, type HostChoice } from '@/lib/queries';
 import type { Kind, ProvisionCheckItem } from '@/lib/types';
 import { KIND_LABEL } from '@/lib/sort';
+import { inheritSummary } from '@/lib/derive';
+import * as F from '@/lib/format';
 import { Button, IconButton } from '@/components/ui/button';
 import { Field, Input, Switch } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
@@ -220,6 +222,7 @@ function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; o
     </Field>
   );
   const Fixed = (label: string, hint: string, value: string, ph = '') => <Field label={label} hint={hint}><Input disabled value={value} placeholder={ph} /></Field>;
+  const plan = ip ? undefined : ctx.plans.find((p) => p.id === row.plan_id);
   return (
     <div className="stack">
       <Panel title="机器">
@@ -268,13 +271,14 @@ function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; o
         </Panel>
       )}
 
-      <Panel title="来源与订阅（选填）" sub={ip ? '默认不单独记费用：供应商对附加 IP 另收费时再填到期日与费用' : undefined}>
+      <Panel title="来源与订阅" sub={ip ? '默认不单独记费用：供应商对附加 IP 另收费时再填到期日与费用' : '选了套餐只需填到期日，其余跟随套餐与供应商'}>
         <div className="form-grid">
           {ip ? Fixed('供应商', '沿用宿主机', host?.provider ?? '', '—') : <Field label="供应商"><Select value={row.provider_id} onChange={(v) => onChange({ provider_id: v, plan_id: '' })} options={o.provider} allowEmpty="不设置" /></Field>}
           {ip ? Fixed('套餐', '同机 IP 节点不带套餐', '', '不带套餐') : <Field label="套餐"><Select value={row.plan_id} onChange={(v) => onChange({ plan_id: v })} options={o.planFor(row.provider_id)} allowEmpty="不设置" /></Field>}
+          {plan && <div className="span-2 hint">{inheritSummary(plan, ctx.providers.find((p) => p.id === plan.provider_id))}</div>}
           {T('service_ref', '服务编号', { ph: 'SVC-1042' })}
-          <Field label="到期日" error={fe.due_date}><DateField value={row.due_date} onChange={(v) => onChange({ due_date: v })} /></Field>
-          {T('price', '费用', { ph: ip ? '附加 IP 的费用' : '默认取套餐价格' })}
+          <Field label="到期日" hint={plan ? '必填' : '选填：填了就记费用、到期提醒'} error={fe.due_date}><DateField value={row.due_date} onChange={(v) => onChange({ due_date: v })} /></Field>
+          {T('price', '费用', { ph: ip ? '附加 IP 的费用' : plan ? `跟随套餐（${F.money(plan.price_cents, plan.currency)}）` : '没有套餐时要填', hint: plan ? '留空跟随套餐；填了 = 这台单独设置' : undefined })}
           <div className="span-2"><Field label="备注"><Input value={row.note} onChange={(e) => onChange({ note: e.target.value })} /></Field></div>
         </div>
       </Panel>
