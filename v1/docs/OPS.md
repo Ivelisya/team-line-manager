@@ -339,7 +339,7 @@ heartbeat_url = "https://hc-ping.com/<检查的 uuid>"
 ### 怎么开始
 
 1. `ssh root@<中控>`（生产：本机别名 `debian13`）。
-2. 在 `/root` 下起 agent（如 `claude`）。部署已经放好：
+2. agent 两种跑法，令牌都不出中控：在中控的 `/root` 下起 agent（如 `claude`，Claude Code 要自己在中控上装好、登录）；或者 agent 留在手边的设备上，每条命令经 ssh 在中控上执行（`ssh debian13 'fleetctl --json status'`），这时先让它 `ssh debian13 cat /root/AGENTS.md` 读一遍中控上的说明。部署已经放好：
    - `/root/AGENTS.md` 与 `/root/CLAUDE.md`（同一份，模板 `deploy/central/central-agents.md`，每次部署覆盖）：这台机器是什么、规矩（改动前想清楚影响；删除、退役、全局维护、全部升级等先向用户确认）、常用命令、日志与备份在哪、出问题先看什么。
    - `/root/.claude/skills/fleet-ops/SKILL.md`：fleet-ops 技能（Claude Code 自动加载，别的 agent 按 AGENTS.md 的指引去读）。
    - `/usr/local/bin/fleetctl` 与它的配置 `/root/.config/fleetctl/config.toml`（0600，地址是本机回环 + `fleet.toml` 的 listen 端口）。`fleetctl whoami` 应显示 `apikey:central-local` 与四个权限。
