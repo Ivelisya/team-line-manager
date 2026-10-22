@@ -647,7 +647,8 @@ fn login(url: &str, token: Option<&str>, json: bool) -> anyhow::Result<u8> {
             }
             let mut l = String::new();
             std::io::stdin().lock().read_line(&mut l)?;
-            l.trim().to_string()
+            // Windows PowerShell 5 写的 UTF-8 文件开头带 BOM
+            l.trim().trim_start_matches('\u{feff}').to_string()
         }
     };
     if token.is_empty() {

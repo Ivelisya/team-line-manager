@@ -13,7 +13,7 @@
    - Linux x86_64：在 fleet-dev 上跑 `lab/install-fleetctl.sh`，从 `/opt/fleet/dist/fleetctl` 取。
 3. 写配置并自检：
    ```
-   fleetctl login --url http://192.168.31.60:8080 < 密钥文件     # 或直接运行、按提示粘贴；--token 也能用，但会留在 shell 历史与进程列表里
+   fleetctl login --url http://192.168.31.60:8080 < 密钥文件     # PowerShell：Get-Content 密钥文件 | fleetctl login --url …；或直接运行、按提示粘贴（会回显）；--token 也能用，但会留在 shell 历史与进程列表里
    fleetctl whoami
    ```
    公网地址用明文 `http://` 时会警告（密钥明文传输）。配置也可用环境变量 `FLEET_URL`、`FLEET_TOKEN`；文件位置（unix 上 0600）：Linux/macOS `~/.config/fleetctl/config.toml`，Windows `%APPDATA%\fleetctl\config.toml`。
