@@ -1,7 +1,7 @@
 // 实时指标：实时流的 metrics 消息（服务端最多每 3 s 一条，只带变了的字段）直接写进机器类查询缓存，不重取；
 // 同时攒实时迹线（每台机器、全站各最近 30 个速率点），卡片点阵与集群状态折线用 useLiveSeries。
 // 消息形状见 docs/API.md「实时流」：host、tcp/egress 是定长数组（时间为 Unix 秒），其余字段与 REST 同形。
-import { useSyncExternalStore } from 'react';
+import { useRef, useSyncExternalStore } from 'react';
 import { notifyManager, useQuery, type QueryClient } from '@tanstack/react-query';
 import { get } from './api';
 import type { EntryView, HostMetrics, MachineView, Overview, OverviewSeries, ProbeResult } from './types';
@@ -133,10 +133,14 @@ const subs = new Set<() => void>();
 const subscribe = (f: () => void) => { subs.add(f); return () => { subs.delete(f); }; };
 let dirty = false;
 
+/** agent 每 10 s 上报一次：与上一个点隔了 3 倍以上（页面在后台、断线、agent 掉线过），断档前的点作废，迹线从这个点重新攒——
+ *  不然断档前后的点会挨着画成一排，看着像一直在跑 */
+const GAP_MS = 30_000;
 function record(key: string, p: LivePoint) {
   const buf = series.get(key) ?? EMPTY;
-  if (buf.length && buf[buf.length - 1].t >= p.t) return;
-  series.set(key, [...buf.slice(-(SERIES_N - 1)), p]); // 新数组：订阅者按引用判断变化
+  const last = buf[buf.length - 1];
+  if (last && last.t >= p.t) return;
+  series.set(key, last && p.t - last.t > GAP_MS ? [p] : [...buf.slice(-(SERIES_N - 1)), p]); // 新数组：订阅者按引用判断变化
   dirty = true;
 }
 
@@ -149,9 +153,11 @@ function recordFleet(p: LivePoint) {
   dirty = true;
 }
 
-/** 某台机器（或 FLEET）最近的速率点（时间升序，t 为毫秒） */
-export function useLiveSeries(key: string): readonly LivePoint[] {
-  return useSyncExternalStore(subscribe, () => series.get(key) ?? EMPTY, () => EMPTY);
+/** 某台机器（或 FLEET）最近的速率点（时间升序，t 为毫秒）。paused 为真时停在上一次读到的那份、新点不再引起重渲染
+ *  （视口外冻结的卡片）；它是 ref（读的时候才看），切换冻结不必为了它重渲染，下一次重渲染读到最新的 */
+export function useLiveSeries(key: string, paused?: { readonly current: boolean }): readonly LivePoint[] {
+  const last = useRef<readonly LivePoint[] | null>(null);
+  return useSyncExternalStore(subscribe, () => (paused?.current && last.current ? last.current : (last.current = series.get(key) ?? EMPTY)), () => EMPTY);
 }
 
 /** 全站总速率：第一次用时取近 30 分钟的每分钟历史（t 为分钟起点）垫在实时点前面（只取一次），之后由实时推送接着记 */

@@ -23,6 +23,9 @@ export const stepLabel = (k: string) => lbl(meta().step_states, k);
 export const ruleLabel = (k: string) => lbl(meta().rules, k);
 /** 网卡计量规则（供应商的「流量计量」） */
 export const trafficRuleLabel = (k: string) => lbl(meta().traffic_rules, k);
+/** 网卡计量规则的直白写法（费用页签「本周期已用」下面一行，同供应商对话框的选项说明）；没收录的退回 meta 的名字 */
+const RULE_PLAIN: Record<string, string> = { min: '按网卡流量：入站和出站取较小值', max: '按网卡流量：入站和出站取较大值', sum: '按网卡流量：入站加出站', out: '按网卡流量：只算出站' };
+export const trafficRulePlain = (k: string) => RULE_PLAIN[k] ?? trafficRuleLabel(k);
 /** 流量重置方式：自然月 / 账单日 */
 export const trafficResetLabel = (k: string) => lbl(meta().traffic_resets, k);
 /** 计费周期的那个字：月 / 季 / 半年 / 年 */
@@ -56,6 +59,20 @@ export function monthTraffic(m: MachineView) {
   for (const e of m.entries) { up += e.traffic.month_up; down += e.traffic.month_down; tu += e.traffic.today_up; td += e.traffic.today_down; }
   return { up, down, today_up: tu, today_down: td };
 }
+/** 本月业务流量合计（下载 + 上传）：卡片、表格、机器页按「本月业务流量」排序共用 */
+export const trafficTotal = (m: MachineView) => { const t = monthTraffic(m); return t.up + t.down; };
+
+/** 探测 / 应用的英文原始错误 → 中文（抽屉、卡片的健康原因、告警悬停卡片共用）。只换认得的片段，前面的中文（「出口不通：」）
+ *  和认不出的原样留着。片段只吃 ASCII 字符，不会把前缀一起吞掉 */
+const ERR_ZH: [RegExp, string | ((m: string, ...g: string[]) => string)][] = [
+  [/\b(?:timed out|timeout)(?: after)? (\d+(?:\.\d+)?) ?s\b/gi, (_, n) => `超时 ${n} 秒`],
+  [/\b(?:i\/o )?(?:timed out|timeout)\b/gi, '超时'],
+  [/\bconnection refused\b/gi, '连接被拒绝'],
+  [/\bconnection reset(?: by peer)?\b/gi, '连接被重置'],
+  [/\b(?:no route to host|network (?:is )?unreachable)\b/gi, '网络不可达'],
+  [/\bdns\b[\w .:'/-]*|[\w '/-]*\bname resolution\b[\w .:'/-]*|\bno such host\b/gi, '域名解析失败'],
+];
+export const errText = (s: string) => ERR_ZH.reduce<string>((t, [re, to]) => t.replace(re, to as string), s).replace(/\s+$/, '');
 /** 流量额度按供应商的十进制 GB（1 GB = 10⁹ 字节） */
 const GB = 1e9;
 /** 流量额度：上限（GB，服务端算好的 quota.limit_gb，0 = 不限）与本周期已用（服务端按网卡 / 业务流量、流量周期算，见 MachineView.quota）。
@@ -130,18 +147,20 @@ export function hostRel(host: MachineView['host_machine'], nodes: MachineView['i
   return null;
 }
 /** 流量额度吃紧（首页 KPI）：本周期已用 ≥ meta 的 traffic_quota_warn_pct（同额度告警）的台数（没设额度的不计），
- *  和用得最多的那台（已用百分比向下取整）；没有吃紧的 top 为 null */
+ *  和用得最多的那台（已用百分比向下取整；点它打开那台的流量页签）；没有吃紧的 top 为 null */
 export function quotaTight(list: MachineView[]) {
   const warn = meta().thresholds.traffic_quota_warn_pct;
-  let n = 0; let top: { name: string; pct: number } | null = null;
+  let n = 0; let top: { id: string; name: string; pct: number } | null = null;
   for (const m of list) {
     const { pct } = quota(m);
     if (pct == null || pct < warn) continue;
     n++;
-    if (!top || pct > top.pct) top = { name: m.name, pct };
+    if (!top || pct > top.pct) top = { id: m.id, name: m.name, pct };
   }
-  return { n, top: top && { name: top.name, pct: Math.floor(top.pct) } };
+  return { n, top: top && { ...top, pct: Math.floor(top.pct) } };
 }
+/** 集群状态在线率格条的悬停：离线（agent 不再上报）的机器名，同 overview.offline 的口径 */
+export const offlineNames = (list: MachineView[]) => list.filter((m) => m.agent && !m.agent.online).map((m) => m.name);
 /** 资源占用的告警色（CPU / 内存 / 磁盘 / 负载的格条、圆环、迷你条共用）：阈值按指标取 meta.thresholds.usage（bad 红、warn 黄） */
 export const usageTone = (pct: number | null | undefined, metric: UsageMetric) => {
   if (pct == null) return undefined;
@@ -166,15 +185,19 @@ export function resourceMeters(m: MachineView) {
   };
 }
 export type BeatCell = 'ok' | 'warn' | 'bad' | null;
-/**
- * 探测桶 → 心跳格（20 格 = 近 1 小时，旧→新）。按桶内成功比例定色（线路机是它所有入口的合计，个别节点抖动只会变黄）：
- * 没有探测为空格（灰）；< 50% 红；< 95% 或平均延迟 ≥ 150 ms 黄；其余绿。
- */
+/** 探测成功率的档位：卡片心跳格（3 分钟一格）与抽屉可用率（一天一格）共用这一套——≥ 99% 绿、≥ 80% 黄、更低红，没有探测为 null。
+ *  整数比较：正好落在边界上不受浮点误差影响 */
+const probeTone = (ok: number, total: number): BeatCell => (!total ? null : ok * 100 >= total * 99 ? 'ok' : ok * 100 >= total * 80 ? 'warn' : 'bad');
+/** 心跳格里平均延迟到这么高也算黄（每日格没有延迟） */
+const BEAT_SLOW_MS = 150;
+/** 颜色含义：只放在心跳条「近 1 小时」/「近 30 天」的悬停里，每格的悬停只给数据 */
+export const BEAT_LEGEND = `绿：成功 ≥ 99% 且平均 < ${BEAT_SLOW_MS} ms · 黄：成功 80%–99% 或平均 ≥ ${BEAT_SLOW_MS} ms\n红：成功不到 80% · 灰：没有探测`;
+export const AVAIL_LEGEND = '绿：成功 ≥ 99% · 黄：成功 80%–99% · 红：成功不到 80%\n灰：没有探测；TCP 与出口取较差的一种';
+/** 探测桶 → 心跳格（20 格 = 近 1 小时，旧→新）。按桶内成功比例定色（线路机是它所有入口的合计） */
 export const beatCells = (buckets: ProbeBucket[] | undefined): BeatCell[] =>
-  (buckets ?? []).map(([n, ok, ms]) => { if (!n) return null; const r = ok / n; return r < 0.5 ? 'bad' : r < 0.95 || (ms ?? 0) >= 150 ? 'warn' : 'ok'; });
+  (buckets ?? []).map(([n, ok, ms]) => { const t = probeTone(ok, n); return t === 'ok' && (ms ?? 0) >= BEAT_SLOW_MS ? 'warn' : t; });
 const BEAT_MS = 3 * 60_000;
-const BEAT_LEGEND = '绿：成功 ≥ 95% 且平均 < 150 ms · 黄：成功 50%–95% 或平均 ≥ 150 ms\n红：成功不到一半 · 灰：没有探测';
-/** 心跳格的悬停说明（与 beatCells 一一对应）：这 3 分钟的时段、探测次数与成功率、平均延迟，后两行是颜色含义（阈值同 beatCells）。
+/** 心跳格的悬停（与 beatCells 一一对应）：这 3 分钟的时段、成功率（次数）、平均延迟。
  *  桶按墙钟 3 分钟对齐，最后一格是当前这格（见 API.md /probe-beats） */
 export function beatTitles(buckets: ProbeBucket[] | undefined, now = Date.now()): string[] {
   const bs = buckets ?? [];
@@ -182,26 +205,29 @@ export function beatTitles(buckets: ProbeBucket[] | undefined, now = Date.now())
   const hm = (t: number) => { const d = new Date(t); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
   return bs.map(([n, ok, ms], i) => {
     const t0 = cur - (bs.length - 1 - i) * BEAT_MS;
-    const what = !n ? '没有探测' : `探测 ${n} 次，成功 ${ok} 次（${Math.round((ok / n) * 100)}%）${ms != null ? ` · 平均 ${Math.round(ms)} ms` : ''}`;
-    return `${hm(t0)}–${hm(t0 + BEAT_MS)}${i === bs.length - 1 ? '（进行中）' : ''} · ${what}\n${BEAT_LEGEND}`;
+    const what = !n ? '没有探测' : `成功 ${Math.round((ok / n) * 100)}%（${ok}/${n}）${ms != null ? ` · 平均 ${Math.round(ms)} ms` : ''}`;
+    return `${hm(t0)}–${hm(t0 + BEAT_MS)}${i === bs.length - 1 ? '（进行中）' : ''} · ${what}`;
   });
+}
+/** 近 1 小时的总成功率（家宽代理卡的心跳条标题：延迟已在上面的读数里）；没有探测为 null */
+export function beatRate(buckets: ProbeBucket[] | undefined): number | null {
+  let n = 0; let ok = 0;
+  for (const b of buckets ?? []) { n += b[0]; ok += b[1]; }
+  return n ? (ok / n) * 100 : null;
 }
 /** 成功率的写法（近 30 天可用率）：全部成功才写 100%，否则最多写到 99.99%（1439/1440 不会四舍五入成 100%）；没有探测为「—」 */
 export const successPct = (p: number | null) => (p == null ? '—' : p >= 100 ? '100%' : `${Math.min(p, 99.99).toFixed(2)}%`);
-/** 一天里一种探测的档位：成功 ≥ 99.5% 绿、≥ 95% 黄、更低红（整数比较，正好落在边界上不受浮点误差影响）；没有探测为 null */
-const dayTone = (ok: number, total: number): BeatCell => (!total ? null : ok * 1000 >= total * 995 ? 'ok' : ok * 100 >= total * 95 ? 'warn' : 'bad');
 const WORST_FIRST = ['bad', 'warn', 'ok'] as const;
-/** 近 30 天可用率的每日格（旧→新）：取 TCP 与出口两种探测里较差的一档，当天没有探测为空格 */
+/** 近 30 天可用率的每日格（旧→新）：取 TCP 与出口两种探测里较差的一档（阈值同心跳格），当天没有探测为空格 */
 export const availCells = (days: AvailabilityDay[]): BeatCell[] =>
-  days.map((d) => { const a = dayTone(d.tcp_ok, d.tcp_total); const b = dayTone(d.egress_ok, d.egress_total); return WORST_FIRST.find((t) => t === a || t === b) ?? null; });
-const AVAIL_LEGEND = '绿：成功 ≥ 99.5% · 黄：成功 95%–99.5%\n红：成功不到 95% · 灰：没有探测（TCP 与出口取较差的一种）';
-/** 每日格的悬停说明（与 availCells 一一对应）：「10-21 · TCP 99.93%（1438/1440） · 出口 100%（288/288）」，没有探测写「没有探测」；
- *  最后一格是今天（还没过完）；后两行是颜色含义（阈值同 availCells） */
+  days.map((d) => { const a = probeTone(d.tcp_ok, d.tcp_total); const b = probeTone(d.egress_ok, d.egress_total); return WORST_FIRST.find((t) => t === a || t === b) ?? null; });
+/** 每日格的悬停（与 availCells 一一对应）：「10-21 · TCP 99.93%（1438/1440） · 出口 100%（288/288）」，没有探测写「没有探测」；
+ *  最后一格是今天（还没过完） */
 export function availTitles(days: AvailabilityDay[]): string[] {
   const part = (label: string, ok: number, total: number) => (total ? `${label} ${successPct((ok / total) * 100)}（${ok}/${total}）` : '');
   return days.map((d, i) => {
     const what = [part('TCP', d.tcp_ok, d.tcp_total), part('出口', d.egress_ok, d.egress_total)].filter(Boolean).join(' · ') || '没有探测';
-    return `${d.date.slice(5)}${i === days.length - 1 ? '（今天，还没过完）' : ''} · ${what}\n${AVAIL_LEGEND}`;
+    return `${d.date.slice(5)}${i === days.length - 1 ? '（今天，还没过完）' : ''} · ${what}`;
   });
 }
 /** 有探测、却一个都没成功（延迟为 null）：显示「失败」，和「—」（还没有探测）区分开 */
@@ -244,3 +270,6 @@ export const subLabel = (m: MachineView) => {
   const s = m.subscription; if (!s) return null;
   return `${F.money(s.price_cents, s.currency)}/${cycleLabel(s.cycle)}`;
 };
+/** 不是按月付的费用旁边给的月均（服务端折好的 monthly_cents）：「≈ $26.60/月」；按月付的为 null */
+export const monthlyHint = (s: Subscription | null | undefined) =>
+  (s && meta().cycles.find((c) => c.key === s.cycle)?.months !== 1 ? `≈ ${F.money(s.monthly_cents, s.currency)}/月` : null);
