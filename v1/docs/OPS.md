@@ -238,21 +238,12 @@ WAL 三项由 `deploy/central/install.sh` 写进 `/etc/postgresql/<版本>/main/
 6. 中控 IP 变了：把域名解析改到新机器。agent 按域名上报，解析生效后自动恢复；Caddy 自动签证书。
 7. 删掉 `/root/restore`（里面有密钥）。
 
-## 11. 访问入口与 Cloudflare
+## 11. 访问入口
 
-中控源站在法兰克福（185.13.159.131），三个入口都指向同一个 fleet-server，只是路径不同：
+只有一个入口：`https://fleet.kismet613.com`，灰云直连法兰克福源站（185.13.159.131）。人用面板、fleetctl、agent 回连与上架出口校验（`/echo`）都走它；Caddy（官方源，`install.sh` 负责安装与生成 Caddyfile）终止 TLS 并反代到本机 fleet-server。
 
-| 入口 | DNS | 用途 |
-|---|---|---|
-| `fleet.kismet613.com` | 灰云直连 | **只给 agent 与上架出口校验**（`public_url`）。不能开橙云：`/echo` 要拿到节点真实 IP，agent 的长轮询与上报也不该经过 CF 的机器人防护 |
-| `panel.kismet613.com` | 橙云 | 人用入口（浏览器、fleetctl 都行）。Caddy 只接受 CF 网段的连接（直连回 403），客户端 IP 取 `CF-Connecting-IP`，登录限速与审计记的是真实 IP |
-| `cn.kismet613.com` | 灰云 A 记录指向优选的 CF IP | 大陆优化入口：请求落到离大陆更近的 CF 机房，由 Worker `fleet-panel-cn` 原样转给 `panel.kismet613.com`（同区，真实 IP 不丢；WebSocket 透传） |
-
-要点：
-- Caddy 用官方源（`dl.cloudsmith.io/public/caddy/stable`，≥ 2.7 才有 `trusted_proxies` / `client_ip_headers`）。人用入口域名部署时作为第三个参数传给 `deploy.sh`，记在中控 `/etc/fleet/panel_host`，之后的部署沿用；Caddyfile 由 `install.sh` 生成，不要手改。
-- CF 网段（`install.sh` 里的 `CF_NETS`）对照 cloudflare.com/ips-v4、ips-v6，变了要同步，否则新网段来的请求会被当成直连回 403。
-- zone（kismet613.com）设置：SSL 完全（严格）；HTTP/3 关（大陆晚高峰 UDP 被限速）；0-RTT、Early Hints、Rocket Loader、Email 混淆关；Always Use HTTPS 开；最低 TLS 1.2；浏览器缓存 TTL「遵从源站」（否则 `index.html` 的 no-cache 会被改成缓存，发版后白屏）；安全级别低、Bot Fight Mode 关（质询会让 XHR / WebSocket 直接失败）；Smart Tiered Cache 开。源站已给 `/assets/*` 一年 immutable、页面 no-cache，CF 缓存不用另加规则。
-- `panel.kismet613.com` 的 Let's Encrypt 证书在灰云时签下，之后经 CF 走 HTTP-01 自动续期；不要给 `/.well-known/acme-challenge/` 加 WAF 或缓存规则。
-- Worker 路由 `cn.kismet613.com/*` 配灰云记录是 CF 文档没写的用法，可能失效，Workers 免费额度每天 10 万次请求；出问题就用 `panel.kismet613.com`。
-- `cn.kismet613.com` 的优选 IP 由中控的 `fleet-cf-yx.timer` 每 6 小时自动更新（`deploy/cf/cf-yx-update.sh`）：从社区按运营商在国内实测维护的优选域名取 IP（电信 `ct.090227.xyz`、移动 `cmcc.090227.xyz`，各查 20 次取并集当名单），只接受 Cloudflare 官方网段内、且经它访问 `https://cn.kismet613.com/cdn-cgi/trace` 真能拿到本区响应的，电信、移动各取一个写成灰云 A 记录；现有记录还在名单里就不换，一个合格的都没有就不动。解析权在自己手里（不 CNAME 到第三方，对方无法把入口改到自己的服务器签证书做中间人）。令牌 `/etc/fleet/cf-dns.token`（root 0600）只能改 kismet613.com 的 DNS、只允许中控 IPv4 调用；没有它服务按 Condition 跳过。手动跑：`systemctl start fleet-cf-yx`，看结果：`journalctl -u fleet-cf-yx -n 20`。
-- 联通走 CF 免费版普遍不如直连（2026-10-22 武汉联通实测：所有 CF IP 都落美西，接口首字节 1.6–2.9 s、首屏 JS 一半超时；直连法兰克福 1.2 s / 2.4 s），**联通用户用 `fleet.kismet613.com`**。CF 的 DNS 做不了按运营商分线路，想一个域名三网各走最佳，要把 `cn` 用 NS 委派到支持运营商线路的 DNS（华为云、DNSPod），联通线路直接解析到源站。
+2026-10-22 试过给人用入口挂 Cloudflare（普通橙云，以及「优选 IP + Worker」），实测后撤掉，只留直连：
+- 大陆三网到源站的 TCP 延迟（itdog 全国约 290 节点）：电信 291 / 联通 273 / 移动 215 ms；CF 默认 anycast 234 / 300 / 192；优选 IP 能把电信或移动压到 80 ms 左右，但动态请求还要再走 CF → 法兰克福，日常（静态资源一年 immutable、首次之后只剩小接口）差别不大。
+- 联通走 CF 免费版普遍更差：武汉联通实测所有 CF IP 都落美西，接口首字节 1.6–2.9 s、首屏 JS 一半超时；直连 1.2 s / 2.4 s。
+- 同一个域名做不到「agent 直连、大陆走优选」：CF 的 DNS 不分线路，agent 经 Worker 会超免费额度（每天 10 万次）。真要三网最优，只能把 `fleet` 子域 NS 委派到支持运营商 / 境内外分线路的 DNS（华为云、DNSPod）。
+- 不要把 `fleet.kismet613.com` 改成橙云：`/echo` 会拿到 CF 的 IP、上架出口校验全部失败，agent 的上报与长轮询还要过 CF 的机器人防护。
