@@ -14,14 +14,15 @@ import { AuditList } from '@/components/app/AuditList';
 
 type Cat = 'all' | 'auth' | 'exec' | 'machine' | 'config';
 const CATS: { value: Cat; label: string }[] = [
-  { value: 'all', label: '全部' }, { value: 'auth', label: '登录' }, { value: 'exec', label: '远程执行' },
+  { value: 'all', label: '全部' }, { value: 'auth', label: '登录与账户' }, { value: 'exec', label: '远程执行' },
   { value: 'machine', label: '机器与入口' }, { value: 'config', label: '设置与告警' },
 ];
-/** 动作名归类：登录（auth.*）、远程执行（在机器上跑命令、取日志、恢复预检登录机器）、机器与入口（生命周期、改名、费用续费、入口、作业、升级 agent），其余是目录、密钥、通知、静默、告警、访问规则 */
+/** 动作名归类：登录与账户（auth.*：登录、退出、两步验证、改密码、撤销会话）、远程执行（在机器上跑命令、取日志、恢复预检登录机器）、
+ *  机器与入口（生命周期、改名、费用续费、入口、作业、升级 agent），其余是目录、密钥、通知、静默、告警、访问规则 */
 function catOf(action: string): Exclude<Cat, 'all'> {
   if (action.startsWith('auth.')) return 'auth';
   if (action === 'exec' || action === 'machine.logs' || action === 'restore.probe') return 'exec';
-  if (/^(machine|entry|relay|subscription|agent|job)\./.test(action) || action === 'renewal') return 'machine';
+  if (/^(machine|entry|relay|subscription|agent|job|renewal)(\.|$)/.test(action)) return 'machine';
   return 'config';
 }
 const EMPTY: AuditEntry[] = [];
@@ -44,12 +45,13 @@ export function AuditPage() {
       <div className="row" role="search">
         <SearchInput value={text} onChange={(e) => setText(e.target.value)} placeholder="搜索动作、对象、操作人…" aria-label="搜索" className="w-full sm:w-[300px]" />
       </div>
-      {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
+      {/* 第一页取不到：整页重取；往前翻的那一页取不到：只重试那一页 */}
+      {q.isError && <ErrorNote error={q.error} onRetry={() => void (q.isFetchNextPageError ? q.fetchNextPage() : q.refetch())} />}
       <Panel title="记录" count={q.data ? (filtered ? `${rows.length} / 已加载 ${all.length}` : `已加载 ${all.length}`) : undefined}
         sub={filtered ? '分类与搜索只在已加载的记录里筛' : '新的在前；涉及机器的一行点开看这台机器'}>
         {q.isLoading ? <SkeletonRows rows={6} />
           : rows.length ? <AuditList items={rows} onOpen={open} />
-          : <Empty icon={filtered ? <SearchX size={22} /> : <History size={22} />} text={filtered ? '已加载的记录里没有符合条件的' : '还没有操作记录'} hint={filtered && q.hasNextPage ? '可以加载更早的记录再找' : undefined} />}
+          : !q.isError && <Empty icon={filtered ? <SearchX size={22} /> : <History size={22} />} text={filtered ? '已加载的记录里没有符合条件的' : '还没有操作记录'} hint={filtered && q.hasNextPage ? '可以加载更早的记录再找' : undefined} />}
         {q.hasNextPage && (
           <div className="audit-more"><Button variant="quiet" size="md" loading={q.isFetchingNextPage} onClick={() => void q.fetchNextPage()}>加载更早的记录</Button></div>
         )}

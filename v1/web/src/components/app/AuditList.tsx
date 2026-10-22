@@ -25,7 +25,7 @@ export function AuditList({ items, onOpen }: { items: AuditEntry[]; onOpen?: (id
         const open = onOpen && a.target_kind === 'machine' && a.target_id ? () => onOpen(a.target_id!) : undefined;
         return (
           <li key={a.id} className={cn(open && 'is-link')} role={open ? 'button' : undefined} tabIndex={open ? 0 : undefined}
-            onClick={open} onKeyDown={open && ((e) => { if (e.key === 'Enter') open(); })}>
+            onClick={open} onKeyDown={open && ((e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } })}>
             <span className="dot" data-tone={a.action === 'auth.login_failed' ? 'bad' : 'neutral'} />
             <div className="audit-body">
               <div className="audit-head">

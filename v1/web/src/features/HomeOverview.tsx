@@ -58,7 +58,7 @@ export const OverviewSection = React.memo(function OverviewSection({ o, loading 
         <div className="stat-grid">
           {/* 「正常」含降级与维护（照常服务），所以写「含降级」；故障、未知是不算在内的那几台 */}
           <Stat loading={loading} tone="ok" icon={<Server />} label="节点正常" value={<CountUp value={nodes && normal(nodes)} />} unit={nodes ? `/ ${nodes.total}` : undefined}
-            caption={nodes && <><DotCount tone="warn" n={nodes.degraded} label="含降级" />{nodes.maintenance > 0 && <DotCount tone="neutral" n={nodes.maintenance} label="含维护" />}<DotCount tone="bad" n={nodes.down} label="故障" /><DotCount tone="neutral" n={nodes.unknown} label="未知" /></>} />
+            caption={nodes && <><DotCount tone="warn" n={nodes.degraded} label="含降级" />{nodes.maintenance > 0 && <DotCount tone="neutral" n={nodes.maintenance} label="含维护" />}<DotCount tone="bad" n={nodes.down} label="故障" />{nodes.unknown > 0 && <DotCount tone="neutral" n={nodes.unknown} label="未知" />}</>} />
           <Stat loading={loading} tone="teal" icon={<Waypoints />} label="线路机正常" value={<CountUp value={relays && normal(relays)} />} unit={relays ? `/ ${relays.total}` : undefined}
             caption={relays && <><DotCount tone="warn" n={relays.degraded} label="含降级" />{relays.maintenance > 0 && <DotCount tone="neutral" n={relays.maintenance} label="含维护" />}<DotCount tone="bad" n={relays.down} label="故障" />{relays.unknown > 0 && <DotCount tone="neutral" n={relays.unknown} label="未知" />}</>} />
           <Stat loading={loading} tone="bad" icon={<AlertTriangle />} label="故障" value={<CountUp value={o ? down : undefined} />} unit="台" to="/incidents" caption={o && <>{down ? '点击查看告警' : !o.failed && '一切正常'}{o.failed > 0 && <DotCount tone="bad" n={o.failed} label="上架失败" />}</>} />

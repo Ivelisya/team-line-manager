@@ -3,7 +3,6 @@
 import type { MachineView } from '@/lib/types';
 import * as F from '@/lib/format';
 import { isQuiet, liveRate, monthTraffic, quota, quotaGb, remainingValue, resourceMeters } from '@/lib/derive';
-import { KIND_LABEL } from '@/lib/sort';
 import { Due, HostTag, KindIcon, Num, StatusDot, type SortState } from '@/components/app/primitives';
 import { MachineGrid, byNum, byStr, sortByCol, type Col } from '@/components/app/MachineGrid';
 import { Cells, MiniMeter, quotaColors } from '@/components/app/viz';
@@ -25,7 +24,7 @@ const monthly = (m: MachineView) => {
 const cols: Col[] = [
   { id: 'name', header: '名称', size: 172, ...byStr((m) => m.name),
     cell: (m) => <div className="tname"><StatusDot status={m.health.status} lifecycle={m.lifecycle} /><KindIcon kind={m.kind} /><div>
-      <div className="row" style={{ flexWrap: 'nowrap', gap: 6 }}><span className="cell-main strong" data-tip={KIND_LABEL[m.kind]}>{m.name}</span><HostTag id={m.id} host={m.host_machine} nodes={m.ip_nodes} short /></div>
+      <div className="row" style={{ flexWrap: 'nowrap', gap: 6 }}><span className="cell-main strong">{m.name}</span><HostTag id={m.id} host={m.host_machine} nodes={m.ip_nodes} short /></div>
       <span className="sub">{m.ip}</span>
     </div></div> },
   ...(['cpu', 'mem', 'disk'] as const).map((k): Col => ({ id: k, header: k === 'cpu' ? 'CPU' : k === 'mem' ? '内存' : '磁盘', size: 82, ...byNum(PCT[k]),

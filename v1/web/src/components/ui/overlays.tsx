@@ -4,7 +4,7 @@ import * as DropdownPrimitive from '@radix-ui/react-dropdown-menu';
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import * as PopoverPrimitive from '@radix-ui/react-popover';
 import * as ToggleGroup from '@radix-ui/react-toggle-group';
-import { ChevronRight } from 'lucide-react';
+import { Check, ChevronRight } from 'lucide-react';
 import { m } from 'motion/react';
 import { cn } from '@/lib/utils';
 import { SPRING } from '@/lib/motion';
@@ -56,6 +56,12 @@ export const DropdownMenuItem = React.forwardRef<React.ElementRef<typeof Dropdow
 ));
 DropdownMenuItem.displayName = 'DropdownMenuItem';
 export const DropdownMenuSeparator = () => <DropdownPrimitive.Separator className="menu-sep" />;
+/** 单选菜单项（外观的深浅色、配色）：读屏读得到选中了哪一项（aria-checked），选中的打勾 */
+export const DropdownMenuRadioGroup = DropdownPrimitive.RadioGroup;
+export const DropdownMenuRadioItem = React.forwardRef<React.ElementRef<typeof DropdownPrimitive.RadioItem>, React.ComponentPropsWithoutRef<typeof DropdownPrimitive.RadioItem>>(({ className, children, ...p }, ref) => (
+  <DropdownPrimitive.RadioItem ref={ref} className={cn('menu-item', className)} {...p}>{children}<DropdownPrimitive.ItemIndicator className="menu-check"><Check /></DropdownPrimitive.ItemIndicator></DropdownPrimitive.RadioItem>
+));
+DropdownMenuRadioItem.displayName = 'DropdownMenuRadioItem';
 export const DropdownMenuLabel = ({ children }: { children: React.ReactNode }) => <DropdownPrimitive.Label className="menu-label">{children}</DropdownPrimitive.Label>;
 export const DropdownMenuSub = DropdownPrimitive.Sub;
 export const DropdownMenuSubTrigger = React.forwardRef<React.ElementRef<typeof DropdownPrimitive.SubTrigger>, React.ComponentPropsWithoutRef<typeof DropdownPrimitive.SubTrigger>>(({ className, children, ...p }, ref) => (

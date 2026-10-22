@@ -84,7 +84,7 @@ export function NodesPage() {
       // 同机关系标跟在名称后面（在悬浮卡的触发区外），只写「同机」/「+N IP」，宿主机名在悬停说明里
       { id: 'name', header: '名称', size: retired ? 250 : 180, ...byStr((m) => m.name),
         cell: (m) => <div className="row" style={{ flexWrap: 'nowrap', gap: 8 }}><KindIcon kind={m.kind} /><div style={{ minWidth: 0 }}>
-          <div className="row" style={{ flexWrap: 'nowrap', gap: 6 }}><NodeHover id={m.id}><span className="cell-main strong">{m.name}{m.lifecycle === 'retired' && <> <Pill tone="neutral" dot="ring">已退役</Pill></>}</span></NodeHover><HostTag id={m.id} host={m.host_machine} nodes={m.ip_nodes} short /></div>
+          <div className="row" style={{ flexWrap: 'nowrap', gap: 6 }}><NodeHover id={m.id} noFocus><span className="cell-main strong">{m.name}{m.lifecycle === 'retired' && <> <Pill tone="neutral" dot="ring">已退役</Pill></>}</span></NodeHover><HostTag id={m.id} host={m.host_machine} nodes={m.ip_nodes} short /></div>
           <span className="sub">{m.ip}</span>
         </div></div> },
       { id: 'kind', header: '类型', size: 84, drop: 1, ...byStr((m) => KIND_LABEL[m.kind]), cell: (m) => KIND_LABEL[m.kind] },
@@ -130,7 +130,7 @@ export function NodesPage() {
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       <Panel flush>
         <MachineGrid cols={columns} rows={pageRows} sort={sort} onSort={setSort} openId={openId} onOpen={open} dim={isRetired} sig={rowSig} />
-        {!q.isLoading && !q.isError && rows.length === 0 && <Empty icon={<SearchX size={22} />} text={scope === 'retired' ? '还没有已退役的机器' : '没有符合条件的机器'} hint={all.length && scope === 'live' ? '换个筛选条件试试' : undefined} />}
+        {!q.isLoading && !q.isError && rows.length === 0 && <Empty icon={<SearchX size={22} />} text={scope === 'retired' && !all.length ? '还没有已退役的机器' : '没有符合条件的机器'} hint={all.length ? '换个筛选条件试试' : undefined} />}
         {q.isLoading && <SkeletonRows rows={6} />}
         <Pagination pg={pg} unit="台" />
       </Panel>
