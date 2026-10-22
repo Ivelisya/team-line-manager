@@ -24,6 +24,7 @@ pub mod settings;
 pub mod silence;
 pub mod ssh;
 pub mod state;
+pub mod terminal;
 pub mod totp;
 pub mod views;
 

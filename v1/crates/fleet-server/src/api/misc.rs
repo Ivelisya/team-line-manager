@@ -464,6 +464,8 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "ssh.login" => "SSH 登录",
         "machine.logs" => "查看机器日志",
         "server.logs" => "查看中控日志",
+        "terminal.open" => "打开网页终端",
+        "terminal.close" => "关闭网页终端",
         "apikey.create" => "新建 API 密钥",
         "apikey.revoke" => "撤销 API 密钥",
         "auth.login" => "登录",
@@ -532,6 +534,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "incident.ack" => format!("{} · {}", crate::notify::rule_name(d["rule"].as_str().unwrap_or("")), s("summary")),
         "server.logs" => format!("{} 行", d["lines"]),
         "apikey.create" | "apikey.revoke" if d["via"] == "local-admin" => format!("{}（{}）· 中控命令行 local-admin", s("name"), s("prefix")),
+        "terminal.open" | "terminal.close" => crate::terminal::audit_summary(action, d),
         "apikey.create" | "apikey.revoke" => format!("{}（{}）", s("name"), s("prefix")),
         "auth.login" | "auth.login_failed" | "auth.totp_recovery_regenerated" | "auth.verify_failed" => s("ip"),
         "auth.totp_disabled" if d["via"] == "totp-reset" => "中控命令行 totp-reset".into(),
@@ -723,7 +726,7 @@ mod tests {
             "silence.delete", "agent.upgrade", "notify.create", "notify.update", "notify.delete", "exec", "machine.logs", "server.logs", "apikey.create",
             "apikey.revoke", "auth.login", "auth.login_failed", "auth.logout", "auth.totp_enabled", "auth.totp_disabled", "auth.totp_recovery_used",
             "auth.totp_recovery_regenerated", "auth.password_changed", "auth.session_revoked", "auth.verify_failed", "policy.draft", "policy.discard", "policy.publish", "policy.rollback",
-            "settings.access_retention",
+            "settings.access_retention", "terminal.open", "terminal.close",
         ] {
             assert_ne!(audit_text(a, &json!({})).0, a, "{a} 没有中文标题");
         }

@@ -13,6 +13,7 @@ pub mod policy;
 pub mod provision;
 pub mod relays;
 pub mod settings;
+pub mod terminal;
 
 use crate::state::AppState;
 use axum::routing::{get, patch, post};
@@ -94,6 +95,9 @@ pub fn router() -> Router<AppState> {
         .route("/machines/{id}/exec", post(exec::exec))
         .route("/machines/{id}/logs", get(exec::machine_logs))
         .route("/server/logs", get(exec::server_logs))
+        // 网页终端（只给会话用户）
+        .route("/terminal/tickets", post(terminal::create_ticket))
+        .route("/terminal/ws", get(terminal::ws))
         // 总览、告警、审计、实时
         // 访问监控
         .route("/access/summary", get(access::summary))
