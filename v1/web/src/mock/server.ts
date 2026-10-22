@@ -589,7 +589,14 @@ R('GET', '/jobs', ({ query }) => {
 });
 const jobOf = (id: string) => { const j = db.jobs.find((x) => x.id === id); if (!j) throw bad('作业不存在', 404, 'not_found'); return j; };
 R('GET', '/jobs/([^/]+)', ({ params }) => { const j = clone(jobOf(params[0])); const s = jobSummary(j); return { ...j, step: s.step, step_title: s.step_title }; });
-R('GET', '/jobs/([^/]+)/logs', ({ params, query }) => { const after = +(query.get('after') ?? 0); return clone((db.logs[params[0]] ?? []).filter((l) => l.id > after)); });
+R('GET', '/jobs/([^/]+)/logs', ({ params, query }) => {
+  const after = +(query.get('after') ?? 0);
+  const rest = (db.logs[params[0]] ?? []).filter((l) => l.id > after);
+  const tail = query.get('tail');
+  if (tail == null) return clone(rest);
+  const logs = rest.slice(-Math.min(Math.max(+tail, 1), 5000));
+  return clone({ logs, skipped: rest.length - logs.length, after: logs.length ? logs[logs.length - 1].id : after });
+});
 /** 重试：body { reset_host_key?, ssh_password? }（C1）。指纹不符不重置、认证失败不给密码时 mock 照样失败 */
 R('POST', '/jobs/([^/]+)/retry', ({ params, body }) => {
   const j = jobOf(params[0]); if (j.state !== 'failed') throw bad('只有失败的作业才能重试', 409, 'conflict');

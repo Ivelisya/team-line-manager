@@ -63,6 +63,13 @@ async fn cancel_while_running_ends_cancelled_and_compensates() {
     let msgs: Vec<&str> = logs.as_array().unwrap().iter().map(|l| l["msg"].as_str().unwrap()).collect();
     assert!(msgs.iter().any(|m| m.contains("将执行补偿")), "{msgs:?}");
     assert!(msgs.iter().any(|m| m.contains("上架已取消")), "{msgs:?}");
+    // 只要最后几行：给出前面没给的行数和续拉的游标
+    let all = logs.as_array().unwrap();
+    let tail = t.get(&format!("/api/v1/jobs/{job}/logs?tail=2")).await;
+    assert_eq!(tail["logs"].as_array().unwrap()[..], all[all.len() - 2..], "{tail}");
+    assert_eq!((tail["skipped"].as_u64(), &tail["after"]), (Some(all.len() as u64 - 2), &all[all.len() - 1]["id"]), "{tail}");
+    let rest = t.get(&format!("/api/v1/jobs/{job}/logs?tail=5000&after={}", tail["after"])).await;
+    assert_eq!((rest["logs"].as_array().map(Vec::len), rest["skipped"].as_u64(), &rest["after"]), (Some(0), Some(0), &tail["after"]), "{rest}");
     let lease: Option<String> = sqlx::query_scalar("select lease_owner from job where id = $1::uuid").bind(&job).fetch_one(&t.st.db).await.unwrap();
     assert!(lease.is_none(), "结束后不留租约");
 }

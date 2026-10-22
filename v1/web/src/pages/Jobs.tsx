@@ -2,7 +2,7 @@
 import * as React from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, ArrowDownToLine, Check, CircleDashed, Copy, ListChecks, Loader2, Minus, Pause, Play, RotateCw, Square, Undo2, X } from 'lucide-react';
-import { fetchAllLogs, useCancelJob, useJob, useJobs, useMachine, useRetryJob } from '@/lib/queries';
+import { fetchAllLogs, fetchTailLogs, useCancelJob, useJob, useJobs, useMachine, useRetryJob } from '@/lib/queries';
 import type { Job, JobLog } from '@/lib/types';
 import { errorKindLabel, jobKindLabel, jobLive, jobProgress, outputLines, stepKind, type StepKind } from '@/lib/jobs';
 import { jobStateLabel } from '@/lib/derive';
@@ -221,7 +221,7 @@ const SHOW_MAX = 2000; // 页面里最多渲染的行数（更早的行仍在服
 const KEEP_MAX = 5000; // 内存里最多保留的行数：超出的从头部丢弃，并在日志顶部提示
 const LEVEL: Record<string, string> = { error: '错误', warn: '警告', info: '信息', debug: '调试' };
 
-/** 实时日志：进行中每 1.5 秒按 after=<最后一条 id> 增量拉取（满 1000 条就接着拉）；结束后再补拉一次。可暂停、自动滚到底、按级别着色 */
+/** 实时日志：首屏只取最后 KEEP_MAX 行；进行中每 1.5 秒按 after=<最后一条 id> 增量拉取（满 1000 条就接着拉）；结束后再补拉一次。可暂停、自动滚到底、按级别着色 */
 const LogPanel = React.memo(function LogPanel({ jobId, state }: { jobId: string; state: string }) {
   const [logs, setLogs] = React.useState<JobLog[]>([]);
   const [dropped, setDropped] = React.useState(0); // 因超过 KEEP_MAX 丢掉的行数
@@ -240,7 +240,10 @@ const LogPanel = React.memo(function LogPanel({ jobId, state }: { jobId: string;
     const pull = async () => {
       // 进行中且页面在后台：跳过这一轮（下一轮再拉）；已结束的最后一次补拉不跳过
       if (!live || !document.hidden) try {
-        const more = await fetchAllLogs(jobId, last.current, ac.signal);
+        // 首屏只取最后 KEEP_MAX 行，更早的直接计入丢弃数（不从头一页页拉完再丢掉）；之后按 after 增量拉
+        const { logs: more, skipped } = last.current === 0
+          ? await fetchTailLogs(jobId, KEEP_MAX, ac.signal)
+          : { logs: await fetchAllLogs(jobId, last.current, ac.signal), skipped: 0 };
         if (stop) return;
         setErr(null);
         if (more.length) {
@@ -248,7 +251,7 @@ const LogPanel = React.memo(function LogPanel({ jobId, state }: { jobId: string;
           const merged = all.current.concat(more);
           const over = Math.max(0, merged.length - KEEP_MAX);
           all.current = over ? merged.slice(over) : merged;
-          if (over) setDropped((d) => d + over);
+          if (over + skipped) setDropped((d) => d + over + skipped);
           setLogs(all.current);
         }
       } catch (e) { if (!stop) setErr(e); /* 下一轮重试 */ }

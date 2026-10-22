@@ -129,7 +129,12 @@ pub async fn get_one(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath
 #[derive(Deserialize)]
 pub struct LogQ {
     after: Option<i64>,
+    /// 只要（after 之后的）最后 N 行：网页打开日志很长的作业时不用从头一页页拉完再丢掉前面的
+    tail: Option<i64>,
 }
+
+/// tail 最多这么多行（网页内存里最多留 5000 行）
+const TAIL_MAX: i64 = 5000;
 
 #[derive(Serialize, sqlx::FromRow)]
 struct LogOut {
@@ -140,13 +145,32 @@ struct LogOut {
     msg: String,
 }
 
+/// 按 id 升序。不带 tail：after 之后的最多 1000 行（满页接着按最后一行的 id 拉）。
+/// 带 tail：`{logs, skipped, after}`——最后 N 行（N 夹到 1..=5000）、前面没给的行数、续拉用的 after（最后一行的 id）
 pub async fn logs(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<LogQ>) -> ApiResult<Json<Value>> {
-    let v: Vec<LogOut> = sqlx::query_as("select id, ts, level, msg from job_log where job_id = $1 and id > $2 order by id limit 1000")
-        .bind(id)
-        .bind(q.after.unwrap_or(0))
-        .fetch_all(&st.db)
-        .await?;
-    Ok(ok(v))
+    let after = q.after.unwrap_or(0);
+    let Some(tail) = q.tail else {
+        let v: Vec<LogOut> = sqlx::query_as("select id, ts, level, msg from job_log where job_id = $1 and id > $2 order by id limit 1000")
+            .bind(id)
+            .bind(after)
+            .fetch_all(&st.db)
+            .await?;
+        return Ok(ok(v));
+    };
+    let v: Vec<LogOut> = sqlx::query_as(
+        "select * from (select id, ts, level, msg from job_log where job_id = $1 and id > $2 order by id desc limit $3) x order by id",
+    )
+    .bind(id)
+    .bind(after)
+    .bind(tail.clamp(1, TAIL_MAX))
+    .fetch_all(&st.db)
+    .await?;
+    let skipped: i64 = match v.first() {
+        Some(f) => sqlx::query_scalar("select count(*) from job_log where job_id = $1 and id > $2 and id < $3").bind(id).bind(after).bind(f.id).fetch_one(&st.db).await?,
+        None => 0,
+    };
+    let after = v.last().map_or(after, |l| l.id);
+    Ok(ok(json!({"logs": v, "skipped": skipped, "after": after})))
 }
 
 /// 重试的可选请求体（不带请求体 = 两项都不要）
