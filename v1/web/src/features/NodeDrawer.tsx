@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/dialog';
-import { Tabs, TabsList, TabsTrigger, Tip, Trunc } from '@/components/ui/overlays';
+import { Tabs, TabsList, TabsTrigger, Trunc } from '@/components/ui/overlays';
 import { InfoTip } from '@/components/ui/form';
 import { IconButton } from '@/components/ui/button';
 import { ErrorBoundary } from '@/components/app/ErrorBoundary';
@@ -17,7 +17,7 @@ import { useHeld } from '@/lib/useHeld';
 import { useTitleName } from '@/lib/title';
 import * as F from '@/lib/format';
 import { jobKindLabel } from '@/lib/jobs';
-import { kindLabel, meta, probeSummary, severityOf } from '@/lib/derive';
+import { errText, kindLabel, meta, probeSummary, severityOf } from '@/lib/derive';
 import { CopyButton, ErrorNote, ReasonList, HealthPill, Flag, LabelValue, LabelValueGrid, LifecyclePill, Note, Section, SectionHeader, SeverityDot } from '@/components/app/primitives';
 import { MachineTags } from '@/components/app/MachineTags';
 import { ManageTab } from './ManageTab';
@@ -119,7 +119,7 @@ export function NodeDrawer() {
   );
 }
 
-/** agent 自报的异常（自 agent 本次启动起累计）：有丢数据、积压、写不进磁盘或应用失败才显示。
+/** agent 自报的异常（自 agent 本次启动起累计）：有丢数据、积压、写不进磁盘或应用失败才显示，一行「agent 自报 N 项异常」，明细在 (i) 里。
  *  访问日志解析不了 / 被丢弃的行也列在这里：Xray 日志格式一变，访问监控会静默归零，这是唯一能看到的地方。
  *  线路机的应用失败已在「应用状态」里显示，相同的不重复 */
 function AgentHealthNote({ m }: { m: MachineView }) {
@@ -135,10 +135,11 @@ function AgentHealthNote({ m }: { m: MachineView }) {
     h.access_rotation_gaps + h.access_truncations > 0 && `访问日志有 ${h.access_rotation_gaps + h.access_truncations} 段漏读`,
   ].filter(Boolean);
   const applyErr = h.last_apply_error && h.last_apply_error !== m.relay?.apply_error ? h.last_apply_error : null;
-  if (!items.length && !applyErr) return null;
+  const all = [...items, ...(applyErr ? [`最近一次应用配置失败：${errText(applyErr)}`] : [])];
+  if (!all.length) return null;
   return (
     <div style={{ marginTop: 8 }}>
-      <Note tone="warn">agent 自报（本次启动以来）：{items.join('，')}{items.length > 0 && applyErr && '；'}{applyErr && <>最近一次应用配置失败：{applyErr}</>}</Note>
+      <Note tone="warn">agent 自报 {all.length} 项异常 <InfoTip text={`本次启动以来：\n${all.join('\n')}`} /></Note>
     </div>
   );
 }
@@ -173,8 +174,8 @@ function OverviewTab({ m }: { m: MachineView }) {
         <SectionHeader title="基本信息" />
         <LabelValueGrid>
           <LabelValue label="类型">{`${kindLabel(m.kind)}${h ? ` · ${meta().ip_node_label}` : ''}`}</LabelValue>
-          <LabelValue label="团队 / 编号">{m.team ? `${m.team.name} / ${m.number != null ? F.pad2(m.number) : '—'}` : '—'}</LabelValue>
-          <LabelValue label="IP">{m.ip}</LabelValue>
+          {m.kind !== 'relay' && <LabelValue label="团队 / 编号">{m.team ? `${m.team.name} / ${m.number != null ? F.pad2(m.number) : '—'}` : '—'}</LabelValue>}
+          <LabelValue label="IP"><span className="row" style={{ gap: 4, flexWrap: 'nowrap', minWidth: 0 }}><Trunc className="num">{m.ip}</Trunc><CopyButton text={m.ip} label=" IP" size={13} /></span></LabelValue>
           {h && <LabelValue label="宿主机"><button type="button" className="btn btn-link" onClick={() => open(h.id)}>{h.name}</button></LabelValue>}
           <LabelValue label="SSH 端口">{`${m.ssh_port}${ofHost}`}</LabelValue>
           <LabelValue label="供应商">{m.provider?.name}</LabelValue>
@@ -184,7 +185,10 @@ function OverviewTab({ m }: { m: MachineView }) {
           <LabelValue label="生命周期"><LifecyclePill lc={m.lifecycle} />{m.lifecycle_reason && <span className="t-sub"> {m.lifecycle_reason}</span>}</LabelValue>
           <LabelValue label="上架时间">{F.dtFull(m.activated_at)}</LabelValue>
           {m.retired_at && <LabelValue label="退役时间">{F.dtFull(m.retired_at)}</LabelValue>}
-          <LabelValue label="agent">{m.agent ? `${m.agent.version ?? '版本未知'} · ${m.agent.last_report_at ? F.ago(m.agent.last_report_at) : '尚未上报'}${ofHost}` : '无（家宽代理不装 agent）'}</LabelValue>
+          {m.agent ? <>
+            <LabelValue label="agent 版本">{`${m.agent.version ?? '未知'}${ofHost}`}</LabelValue>
+            <LabelValue label="最近上报">{m.agent.last_report_at ? F.ago(m.agent.last_report_at) : '尚未上报'}</LabelValue>
+          </> : <LabelValue label="agent"><>无 <InfoTip text="家宽代理不装 agent：没有主机读数，连通性靠中控的探测" /></></LabelValue>}
           {/* 只数经节点的入口：直出入口没有 TCP 探测 */}
           <LabelValue label="入口探测">{ps.total ? `${ps.tcpOk}/${ps.total} 连通` : '—'}</LabelValue>
           {m.ip_nodes.length > 0 && (
@@ -202,10 +206,12 @@ function OverviewTab({ m }: { m: MachineView }) {
           <LabelValueGrid>
             <LabelValue label="公网地址">{m.relay.public_host}</LabelValue>
             <LabelValue label="端口范围">{m.relay.port_min}–{m.relay.port_max}</LabelValue>
-            <LabelValue label="配置版本"><Tip text="两个数相等表示线路机已同步"><span tabIndex={0}>{m.relay.generation} · 已生效 {m.relay.applied_generation}</span></Tip></LabelValue>
+            {/* 中控上的配置版本与线路机已生效的版本：相等即已同步，不等时写出从哪一版到哪一版 */}
+            <LabelValue label="配置">{m.relay.generation === m.relay.applied_generation ? '已同步'
+              : <span style={{ color: 'var(--warn-text)' }}>待同步（{m.relay.applied_generation} → {m.relay.generation}）</span>}</LabelValue>
             <LabelValue label="上次应用">{F.dtFull(m.relay.applied_at)}</LabelValue>
           </LabelValueGrid>
-          {m.relay.apply_error && <div style={{ marginTop: 8 }}><Note tone="bad">{m.relay.apply_error}</Note></div>}
+          {m.relay.apply_error && <div style={{ marginTop: 8 }}><Note tone="bad">{errText(m.relay.apply_error)}</Note></div>}
         </Section>
       )}
       <Section>
@@ -239,7 +245,7 @@ function RecentIncidents({ id }: { id: string }) {
                 <SeverityDot severity={i.severity} />
                 <div className="audit-body">
                   <div className="audit-head">
-                    <span className="audit-what" data-tip={i.summary}><b>{i.rule_name}</b></span>
+                    <span className="audit-what" data-tip={errText(i.summary)}><b>{i.rule_name}</b></span>
                     <span className="audit-meta" data-tone={firing ? severityOf(i.severity).tone : undefined}>{firing ? '进行中' : '已恢复'}</span>
                   </div>
                   <div className="audit-detail hint">

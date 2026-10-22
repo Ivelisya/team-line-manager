@@ -1,9 +1,10 @@
 // 抽屉“管理”页：改名/改编号（带实时预览）、入口操作、同机 IP 节点、agent、退役、彻底删除（仅已退役）。
 import * as React from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, PackageOpen, Plus, Repeat2, Trash2, Undo2 } from 'lucide-react';
+import { ArrowRight, PackageOpen, Plus, Repeat2, Trash2, Undo2, Wrench } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
-import { useAddEntry, useMachine, usePatchMachine, usePurge, useRelayChoices, useTeams, useUpgradeAgent } from '@/lib/queries';
+import { useAddEntry, useEndMaintenance, useMachine, usePatchMachine, usePurge, useRelayChoices, useTeams, useUpgradeAgent } from '@/lib/queries';
+import { openMaint } from '@/lib/nodeActions';
 import { useDrawer } from '@/lib/drawer';
 import { lifecycleLabel } from '@/lib/derive';
 import * as F from '@/lib/format';
@@ -30,6 +31,7 @@ export function ManageTab({ m, onClosed }: { m: MachineView; onClosed: () => voi
       {/* 在用的普通 VPS 节点都能当宿主机：上面另配的公网 IP 各上架成一台同机 IP 节点 */}
       {m.kind === 'vps' && !m.host_machine && m.lifecycle === 'active' && <IpNodesSection m={m} />}
       {m.agent && m.lifecycle === 'active' && <AgentSection m={m} />}
+      {m.lifecycle === 'active' && <MaintSection m={m} />}
       <DangerSection m={m} onClosed={onClosed} />
     </>
   );
@@ -209,6 +211,22 @@ function AgentSection({ m }: { m: MachineView }) {
   );
 }
 
+/** 维护：开一个只针对这台的维护窗口（期间不发告警，卡片显示「维护」）；维护中可以提前结束 */
+function MaintSection({ m }: { m: MachineView }) {
+  const end = useEndMaintenance();
+  return (
+    <Section>
+      <SectionHeader title="维护" meta={m.maintenance ? '维护中' : undefined} />
+      <div className="manage-row">
+        <div><div className="t">维护窗口</div><div className="hint">期间不发告警</div></div>
+        {m.maintenance
+          ? <Button variant="secondary" loading={end.isPending} onClick={() => end.mutate(m.id, { onSuccess: () => toast.ok('已结束维护'), onError: toast.err })}><Wrench />结束维护</Button>
+          : <Button variant="secondary" onClick={() => openMaint(m.id)}><Wrench />维护窗口…</Button>}
+      </div>
+    </Section>
+  );
+}
+
 function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }) {
   const [dlg, setDlg] = React.useState<null | 'retire' | 'purge' | 'restore'>(null);
   const purge = usePurge();
@@ -230,7 +248,10 @@ function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }
             <div className="manage-row">
               <div>
                 <div className="t">恢复</div>
-                <div className="hint">已于 {F.dtFull(m.retired_at)} 退役{hostDown && `；宿主机「${host.name}」${lifecycleLabel(host.lifecycle)}，暂不能恢复`} <InfoTip text={`恢复会保持原来的机器 ID（历史、账单、审计接上），重新走一遍上架，编号接在团队末尾。${hostDown ? '\n同机 IP 节点要等宿主机在用才能恢复。' : ''}`} /></div>
+                {/* 宿主机不在用：只说为什么不能恢复，退役时间与宿主机的状态放进 (i) */}
+                <div className="hint">{hostDown ? '宿主机不在用，暂不能恢复' : `已于 ${F.dtFull(m.retired_at)} 退役`} <InfoTip text={hostDown
+                  ? `已于 ${F.dtFull(m.retired_at)} 退役；宿主机「${host.name}」${lifecycleLabel(host.lifecycle)}。\n同机 IP 节点要等宿主机在用才能恢复。`
+                  : '恢复会保持原来的机器 ID（历史、账单、审计接上），重新走一遍上架，编号接在团队末尾。'} /></div>
               </div>
               <Button variant="primary" disabled={hostDown} onClick={() => setDlg('restore')}><Undo2 />恢复…</Button>
             </div>

@@ -3,6 +3,7 @@
 import { ShieldQuestion } from 'lucide-react';
 import { useIpIntelStatus, useSourcesProfile, type ConnType, type DistItem, type IpIntel, type ProfileWindow, type SourcesProfile } from '@/lib/ipintel';
 import * as F from '@/lib/format';
+import { countryName } from '@/lib/flags';
 import { InfoTip } from '@/components/ui/form';
 import { Chip, ErrorNote, Note, Pill, Section, SectionHeader, type Tone } from '@/components/app/primitives';
 
@@ -15,12 +16,16 @@ function ConnPill({ intel }: { intel: Pick<IpIntel, 'conn_type' | 'conn_label' |
   return <Pill tone={TONE[intel.conn_type] ?? 'neutral'} tip={`${intel.reason}（置信度${CONF[intel.confidence] ?? intel.confidence}）`}>{intel.conn_label}</Pill>;
 }
 
-/** 来源行的「运营商 · 城市」；查不到给一个破折号 */
+/** 服务端的境外地点写成「US · Dallas」：国家代码换成中文国名（美国 · Dallas）；国内的「河南省郑州市」原样 */
+export const placeText = (place: string) => place.replace(/^([A-Z]{2})(?= · |$)/, (cc) => countryName(cc));
+
+/** 来源行的「运营商 · 城市」：放不下时省略，悬停看全文（含 ASN）；查不到给一个破折号 */
 export function IspPlace({ intel }: { intel: IpIntel | null | undefined }) {
   if (!intel) return <span className="t-muted">—</span>;
+  const place = placeText(intel.place);
   return (
-    <span className="ellipsis" data-tip={[intel.isp, intel.place, intel.asn ? `AS${intel.asn} ${intel.as_org ?? ''}` : ''].filter(Boolean).join(' · ')}>
-      <span className="strong">{intel.isp}</span>{intel.place && <span className="t-sub"> · {intel.place}</span>}
+    <span className="ellipsis block" data-tip={[intel.isp, place, intel.asn ? `AS${intel.asn} ${intel.as_org ?? ''}` : ''].filter(Boolean).join(' · ')}>
+      <span className="strong">{intel.isp}</span>{place && <span className="t-sub"> · {place}</span>}
     </span>
   );
 }
@@ -68,8 +73,8 @@ function Dist({ title, items, empty = '没有数据' }: { title: string; items: 
       {top.length === 0 ? <div className="hint">{empty}</div> : (
         <div className="dist">
           {top.map((x) => (
-            <div key={x.value} className="dist-row" data-tip={`${x.label}：${x.conns.toLocaleString('zh-CN')} 次连接，${x.sources} 个来源`}>
-              <span className="dist-name">{x.label}</span>
+            <div key={x.value} className="dist-row" data-tip={`${placeText(x.label)}：${x.conns.toLocaleString('zh-CN')} 次连接，${x.sources} 个来源`}>
+              <span className="dist-name">{placeText(x.label)}</span>
               <span className="dist-track"><span className="dist-fill" style={{ width: `${Math.max(2, Math.min(100, x.pct))}%` }} /></span>
               <span className="dist-pct">{x.pct.toFixed(x.pct < 10 ? 1 : 0)}%</span>
             </div>

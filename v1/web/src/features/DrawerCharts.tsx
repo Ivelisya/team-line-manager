@@ -6,7 +6,7 @@ import type { MachineView } from '@/lib/types';
 import type { UseQueryResult } from '@tanstack/react-query';
 import { useAvailability, useSeries } from '@/lib/queries';
 import * as F from '@/lib/format';
-import { availCells, availTitles, hasHost, monthTraffic, resourceMeters, successPct } from '@/lib/derive';
+import { AVAIL_LEGEND, availCells, availTitles, hasHost, monthTraffic, resourceMeters, successPct } from '@/lib/derive';
 import { Segmented } from '@/components/ui/overlays';
 import { Skeleton } from '@/components/ui/skeleton';
 import { InfoTip } from '@/components/ui/form';
@@ -90,13 +90,16 @@ const AvailabilitySection = React.memo(function AvailabilitySection({ id, relay 
     <Section>
       <SectionHeader title="可用率" />
       {q.isError && !q.data ? <ErrorNote error={q.error} onRetry={() => void q.refetch()}>可用率加载失败：</ErrorNote>
-        : <Beat n={AVAIL_DAYS} cells={d ? availCells(d.items) : []} titles={d && availTitles(d.items)} caption={caption} win={`近 ${AVAIL_DAYS} 天 · 每天一格`} stale={!d} />}
+        : <Beat n={AVAIL_DAYS} cells={d ? availCells(d.items) : []} titles={d && availTitles(d.items)} caption={caption} win={`近 ${AVAIL_DAYS} 天 · 每天一格`} legend={AVAIL_LEGEND} stale={!d} />}
     </Section>
   );
 });
 
+/** 连接质量与流量页签的默认范围（两个页签一致） */
+const DEFAULT_RANGE = '24h';
+
 export function QualityTab({ m }: { m: MachineView }) {
-  const [range, setRange] = React.useState('6h');
+  const [range, setRange] = React.useState(DEFAULT_RANGE);
   const s = useSeries(m.id, 'probe', range, true, poll(range));
   return (
     <>
@@ -104,7 +107,7 @@ export function QualityTab({ m }: { m: MachineView }) {
       <Section>
         <ChartCard c="var(--chart-1)" icon={<Radar />} title="延迟" meta="线路机 → 节点" tools={<RangeBar range={range} setRange={setRange} />}>
           <ChartFrame q={s} few={fewText(m, range)}>
-            <TimeChart points={s.data?.points} range={s.data?.range ?? range} kind="line" lines={L_PROBE} yFmt={yMs} valueFmt={vMs} />
+            <TimeChart full points={s.data?.points} range={s.data?.range ?? range} kind="line" lines={L_PROBE} yFmt={yMs} valueFmt={vMs} />
           </ChartFrame>
         </ChartCard>
       </Section>
@@ -117,7 +120,7 @@ export function QualityTab({ m }: { m: MachineView }) {
 }
 
 export function TrafficTab({ m }: { m: MachineView }) {
-  const [range, setRange] = React.useState('24h');
+  const [range, setRange] = React.useState(DEFAULT_RANGE);
   const s = useSeries(m.id, 'traffic', range, true, poll(range));
   const t = monthTraffic(m);
   return (
@@ -134,7 +137,7 @@ export function TrafficTab({ m }: { m: MachineView }) {
       <Section>
         <ChartCard c="var(--chart-1)" icon={<Globe />} title="业务流量" meta={s.data?.resolution === '1h' ? '每小时的流量' : '每分钟的流量'} tools={<RangeBar range={range} setRange={setRange} />}>
           <ChartFrame q={s} few={fewText(m, range)}>
-            <TimeChart points={s.data?.points} range={s.data?.range ?? range} lines={L_TRAFFIC} yFmt={yBytes} valueFmt={vBytes} yBase={1000} empty="这段时间没有业务流量" />
+            <TimeChart full points={s.data?.points} range={s.data?.range ?? range} lines={L_TRAFFIC} yFmt={yBytes} valueFmt={vBytes} yBase={1000} empty="这段时间没有业务流量" />
           </ChartFrame>
         </ChartCard>
       </Section>
@@ -158,13 +161,16 @@ export function HostTab({ m }: { m: MachineView }) {
   const hourly = s.data?.resolution === '1h';
   return (
     <>
+      {/* 时间范围在页签里吸顶：往下翻三张曲线时也能换 */}
+      <div className="tab-sticky"><span>时间范围</span><RangeBar range={range} setRange={setRange} /></div>
       <Section>
-        <SectionHeader title="当前" meta={h ? `更新于 ${F.ago(h.ts)}` : m.agent?.last_report_at ? `最后上报于 ${F.ago(m.agent.last_report_at)}` : '还没上报过'}><RangeBar range={range} setRange={setRange} /></SectionHeader>
+        <SectionHeader title="当前" meta={h ? `更新于 ${F.ago(h.ts)}` : m.agent?.last_report_at ? `最后上报于 ${F.ago(m.agent.last_report_at)}` : '还没上报过'} />
         {h && r ? (
           <LabelValueGrid>
             <LabelValue label="内存"><Num f={F.mem(h.mem_used)} /> <span className="t-sub">/ <Num f={F.mem(h.mem_total)} /></span></LabelValue>
             <LabelValue label="磁盘"><Num f={F.mem(h.disk_used)} /> <span className="t-sub">/ <Num f={F.mem(h.disk_total)} /></span></LabelValue>
-            <LabelValue label="负载"><Num f={r.load.value} /> <span className="t-sub">{r.load.sub}</span></LabelValue>
+            <LabelValue label="负载">{h.load1 == null ? <span className="t-sub">{r.load.sub}</span>
+              : <><Num f={r.load.value} /> <span className="t-sub">（1 分钟均值 {h.load1.toFixed(2)}{m.agent?.cores ? ` / ${m.agent.cores} 核` : ''}）</span></>}</LabelValue>
             <LabelValue label="TCP 连接数"><span className="num">{h.tcp_conns ?? '—'}</span></LabelValue>
           </LabelValueGrid>
         ) : <div className="hint">agent 离线，没有当前读数</div>}
@@ -172,9 +178,9 @@ export function HostTab({ m }: { m: MachineView }) {
       </Section>
       {/* 三张图表卡同属一段，之间不再画分隔线 */}
       <Section className="chart-stack">
-        <ChartCard c="var(--m-cpu)" icon={<Cpu />} title="CPU" meta={hourly ? '每小时平均与峰值' : undefined} value={h ? <Num f={F.pct(h.cpu_pct, 1)} /> : '—'} caption="使用率"><ChartFrame q={s} few={few} height={140}><TimeChart points={s.data?.points} range={s.data?.range ?? range} lines={hourly ? L_CPU_HOURLY : L_CPU} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></ChartCard>
-        <ChartCard c="var(--m-mem)" icon={<MemoryStick />} title="内存" value={r ? <Num f={F.pct(r.mem.pct, 1)} /> : '—'} caption="使用率"><ChartFrame q={s} few={few} height={140}><TimeChart points={s.data?.points} range={s.data?.range ?? range} lines={L_MEM} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></ChartCard>
-        <ChartCard c="var(--chart-1)" icon={<Network />} title="网卡速率" value={h ? <>↓ <Num f={F.rate(h.net_rx_bps)} /> <span className="t-sub">·</span> ↑ <Num f={F.rate(h.net_tx_bps)} /></> : '—'} caption="当前速率"><ChartFrame q={s} few={few} height={160}><TimeChart points={s.data?.points} range={s.data?.range ?? range} lines={L_NET} yFmt={yRate} valueFmt={vRate} yBase={1000} height={160} /></ChartFrame></ChartCard>
+        <ChartCard c="var(--m-cpu)" icon={<Cpu />} title="CPU" meta={hourly ? '每小时平均与峰值' : undefined} value={h ? <Num f={F.pct(h.cpu_pct, 1)} /> : '—'} caption="使用率"><ChartFrame q={s} few={few} height={140}><TimeChart full points={s.data?.points} range={s.data?.range ?? range} lines={hourly ? L_CPU_HOURLY : L_CPU} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></ChartCard>
+        <ChartCard c="var(--m-mem)" icon={<MemoryStick />} title="内存" value={r ? <Num f={F.pct(r.mem.pct, 1)} /> : '—'} caption="使用率"><ChartFrame q={s} few={few} height={140}><TimeChart full points={s.data?.points} range={s.data?.range ?? range} lines={L_MEM} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></ChartCard>
+        <ChartCard c="var(--chart-1)" icon={<Network />} title="网卡速率" value={h ? <>↓ <Num f={F.rate(h.net_rx_bps)} /> <span className="t-sub">·</span> ↑ <Num f={F.rate(h.net_tx_bps)} /></> : '—'} caption="当前速率"><ChartFrame q={s} few={few} height={160}><TimeChart full points={s.data?.points} range={s.data?.range ?? range} lines={L_NET} yFmt={yRate} valueFmt={vRate} yBase={1000} height={160} /></ChartFrame></ChartCard>
       </Section>
     </>
   );
