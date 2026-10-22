@@ -204,7 +204,8 @@
   --dialog-md: 660px;                   /* O */
   --dialog-lg: 760px;                   /* O wide */
   --palette-w: 640px;
-  --popover-w: 248px;                   /* H 今日流量弹层 */
+  /* 弹层宽度 3 档：菜单最小宽 / 日历、悬浮卡、可搜下拉、提示框最大宽 / 顶栏的作业与告警列表 */
+  --pop-w-sm: 168px; --pop-w-md: 280px; --pop-w-lg: 320px;
   --card-min-large: 360px;              /* H 大卡片 */
   --card-min-small: 340px;              /* H 小卡片 */
   --card-min-compact: 260px;            /* H 紧凑（组件原意 260）：视口约 ≥1420（侧栏展开）排 4 列；再窄卡内放不下，不要再压 */

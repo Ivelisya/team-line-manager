@@ -416,11 +416,11 @@
 .menu, .popover, .select-content, .toast, .chart-tip { border: 1px solid var(--line-float); box-shadow: var(--shadow-pop); }
 .menu, .popover, .toast, .chart-tip { background: var(--glass); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .menu, .popover, .toast, .chart-tip { background: var(--raised); } }
-.menu, .popover, .select-content { z-index: var(--z-popover); border-radius: var(--r-float); padding: var(--sp-4); min-width: 160px; }
+.menu, .popover, .select-content { z-index: var(--z-popover); border-radius: var(--r-float); padding: var(--sp-4); min-width: var(--pop-w-sm); }
 /* 菜单不超出视口：最高到 Radix 量出的可用高度（已扣掉 collisionPadding 8px 的留白），超出的在菜单里滚动（线路机「复制分享链接」子菜单可有几十条入口） */
 .menu { max-height: min(var(--radix-popper-available-height, 100vh), 420px); overflow-y: auto; }
 .select-content { min-width: var(--radix-select-trigger-width); max-height: 320px; overflow: hidden; background: var(--raised); }
-.popover { padding: var(--sp-12); min-width: var(--popover-w); }
+.popover { padding: var(--sp-12); width: var(--pop-w-md); max-width: calc(100vw - 24px); }
 .menu-item, .select-item {
   display: flex; align-items: center; gap: var(--sp-8); width: 100%; min-height: var(--h-md); box-sizing: border-box; padding: 0 var(--sp-10);
   border: 0; border-radius: calc(var(--r-float) - var(--sp-4)); /* 同心圆角：外圈 --r-float 减去菜单内边距 */ background: transparent; cursor: pointer; text-align: left;
@@ -442,7 +442,6 @@
 .menu-filter input { width: 100%; box-sizing: border-box; height: 28px; padding: 0 var(--sp-8); border: 1px solid var(--line-strong); border-radius: var(--r-xs); background: var(--surface); color: var(--fg); font: var(--fs-label) / 1 var(--font-sans); outline: none; }
 .menu-filter input:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-halo); } /* 同输入框的聚焦光环 */
 .menu-item .menu-check .lucide { color: var(--accent); }
-.menu-appearance { min-width: 168px; }
 /* 配色色块：各配色亮色下的强调色（与当前深浅色无关，一眼认出是哪套） */
 .swatch { flex: none; width: 14px; height: 14px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.1); }
 .swatch[data-palette="plum"] { background: linear-gradient(135deg, #f7c6ea, #8e3bb0); }
@@ -454,8 +453,7 @@
 .menu-anchor { position: absolute; inset: 0; visibility: hidden; pointer-events: none; }
 .float-anchor { position: fixed; visibility: hidden; pointer-events: none; }
 
-/* 悬浮卡片（进出场同其它锚定弹层：按 data-side 朝外） */
-.hover-card { width: 288px; max-width: calc(100vw - 24px); padding: var(--sp-12); }
+/* 悬浮卡片（.popover.hover-card，宽度、内边距、进出场同其它弹层） */
 .hc { display: grid; gap: var(--sp-10); min-width: 0; }
 .hc-head { display: flex; align-items: center; gap: var(--sp-8); min-width: 0; }
 .hc-name { flex: 1; font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-sans); letter-spacing: var(--tracking-title); }
@@ -470,7 +468,7 @@
 
 /* 提示框：反色实底（--tip-*，暗色见 tokens.css）；pre-line 让 data-tip 里的换行生效（心跳格说明分行） */
 .tooltip {
-  z-index: var(--z-tooltip); max-width: 280px; padding: var(--sp-4) var(--sp-8); border-radius: var(--r-control);
+  z-index: var(--z-tooltip); max-width: var(--pop-w-md); padding: var(--sp-4) var(--sp-8); border-radius: var(--r-control);
   background: var(--tip-bg); color: var(--tip-fg); box-shadow: var(--shadow-pop), inset 0 0 0 0.5px var(--tip-ring);
   font-size: var(--fs-label); line-height: var(--lh-label); white-space: pre-line;
 }

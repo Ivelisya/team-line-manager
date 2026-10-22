@@ -210,7 +210,7 @@ button.tag { border: 0; cursor: pointer; transition: background-color var(--dur-
 /* ---------- 日期选择（components/ui/date-field） ---------- */
 .datefield { width: 100%; }
 .datefield.is-empty > span { color: var(--fg-3); }
-.popover.cal { width: 268px; min-width: 0; padding: var(--sp-10); }
+.popover.cal { padding: var(--sp-10); }
 .cal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--sp-6); }
 .cal-title { font: var(--fw-semibold) var(--fs-body) / var(--lh-body) var(--font-sans); font-variant-numeric: var(--num-variant); }
 .cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 2px; }

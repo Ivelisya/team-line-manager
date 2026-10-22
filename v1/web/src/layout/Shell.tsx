@@ -175,7 +175,7 @@ export function Shell() {
             {/* 深浅色与配色在同一个菜单里（原来配色是单独一个盲切的按钮，窄屏还被藏起来）；色块就是该配色的强调色 */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild><button className="top-btn" aria-label="外观：深浅色与配色" data-tip="外观"><ThemeIcon size={16} /></button></DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="menu-appearance">
+              <DropdownMenuContent align="end">
                 <DropdownMenuLabel>外观</DropdownMenuLabel>
                 <DropdownMenuRadioGroup value={theme.pref} onValueChange={(v) => theme.setPref(v as ThemePref)}>
                   {THEMES.map(([v, l, I]) => <DropdownMenuRadioItem key={v} value={v}><I />{l}</DropdownMenuRadioItem>)}
