@@ -59,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
             }
             let pool = db::connect(&cfg.database_url).await?;
             auth::upsert_user(&pool, name, pw).await?;
-            println!("已设置用户 {name}（该用户的旧会话已失效）");
+            println!("已设置用户 {name}（该用户的旧会话已失效，登录失败记录已清空）");
         }
         "serve" => {
             let cfg = Config::load(&cfg_path)?;

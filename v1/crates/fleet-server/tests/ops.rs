@@ -95,8 +95,8 @@ async fn login_rate_limit_holds_under_concurrency() {
     let res = futures::future::join_all((0..12).map(|_| t.login("admin", "wrong-password"))).await;
     let n401 = res.iter().filter(|(s, _)| *s == StatusCode::UNAUTHORIZED).count();
     let n429 = res.iter().filter(|(s, _)| *s == StatusCode::TOO_MANY_REQUESTS).count();
-    // 同时在判断的两条互相看得见，可能多拦一次（只会更严，不会放过第 6 次）
-    assert!((4..=5).contains(&n401) && n401 + n429 == 12, "{res:?}");
+    // 同时在判断的几条（最多 4 条）互相看得见，可能多拦几次（只会更严，不会放过第 6 次）
+    assert!((1..=5).contains(&n401) && n401 + n429 == 12, "{res:?}");
     let (n,): (i64,) = sqlx::query_as("select count(*) from login_failure where username = 'admin'").fetch_one(&t.st.db).await.unwrap();
     assert_eq!(n, n401 as i64, "被限速的尝试不留记录");
 }
@@ -132,6 +132,45 @@ async fn login_rate_limit_and_audit() {
     let acts: Vec<String> = acts.into_iter().map(|a| a.0).collect();
     assert_eq!(acts.iter().filter(|a| *a == "auth.login_failed").count(), 6, "{acts:?}");
     assert!(acts.contains(&"auth.login".to_string()) && acts.contains(&"auth.logout".to_string()), "{acts:?}");
+}
+
+/// 限速按来源分开：别人用错误密码锁不住这个用户从自己那里登录；IPv6 同一 /64 算一个来源；
+/// 同一来源 20 次（不分用户名）、同一用户名 100 次（不分来源）另有上限；user-set 清掉失败记录
+#[tokio::test]
+async fn login_rate_limit_per_source() {
+    let t = common::boot(false, "trust_forwarded_for = true").await;
+    for i in 0..5 {
+        let (s, v) = t.login_from("admin", "wrong-password", "203.0.113.7").await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "第 {i} 次：{v}");
+    }
+    assert_eq!(t.login_from("admin", ADMIN_PW, "203.0.113.7").await.0, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(t.login_from("admin", ADMIN_PW, "198.51.100.9").await.0, StatusCode::OK, "别的来源照常登录");
+    // 登录成功只清本来源的失败：那边照样封着
+    assert_eq!(t.login_from("admin", ADMIN_PW, "203.0.113.7").await.0, StatusCode::TOO_MANY_REQUESTS);
+
+    // IPv6：同一 /64 里换地址也算同一来源；库里存 /64 前缀，审计记完整地址
+    for i in 1..=5 {
+        assert_eq!(t.login_from("admin", "wrong-password", &format!("2001:db8:1:2::{i}")).await.0, StatusCode::UNAUTHORIZED);
+    }
+    assert_eq!(t.login_from("admin", ADMIN_PW, "2001:db8:1:2:ffff::9").await.0, StatusCode::TOO_MANY_REQUESTS);
+    let n: i64 = sqlx::query_scalar("select count(*) from login_failure where ip = '2001:db8:1:2::'").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(n, 5);
+    let last: String = sqlx::query_scalar("select detail->>'ip' from audit_log where action = 'auth.login_failed' order by id desc limit 1").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(last, "2001:db8:1:2::5");
+    assert_eq!(t.login_from("admin", ADMIN_PW, "2001:db8:1:3::1").await.0, StatusCode::OK);
+
+    // 同一来源 20 次（别的用户名）
+    sqlx::query("insert into login_failure (username, ip) select 'u' || g, '192.0.2.1' from generate_series(1, 20) g").execute(&t.st.db).await.unwrap();
+    assert_eq!(t.login_from("admin", ADMIN_PW, "192.0.2.1").await.0, StatusCode::TOO_MANY_REQUESTS);
+    // 同一用户名 100 次（各自不同的来源）
+    sqlx::query("insert into login_failure (username, ip) select 'admin', ('10.9.' || g / 256 || '.' || g % 256)::inet from generate_series(1, 100) g")
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let (s, v) = t.login_from("admin", ADMIN_PW, "198.51.100.10").await;
+    assert_eq!(s, StatusCode::TOO_MANY_REQUESTS, "{v}");
+    fleet_server::auth::upsert_user(&t.st.db, "admin", ADMIN_PW).await.unwrap();
+    assert_eq!(t.login_from("admin", ADMIN_PW, "198.51.100.10").await.0, StatusCode::OK, "user-set 后马上能登");
 }
 
 #[tokio::test]
@@ -304,6 +343,7 @@ async fn ack_incident_and_silence_validation() {
         (json!({"starts_at": at(-h(2)), "ends_at": at(-h(1))}), "结束时间已经过去了"),
         (json!({"starts_at": at(d(91)), "ends_at": at(d(91) + h(1))}), "最多提前 90 天预约"),
         (json!({"rule": "agent_offline", "is_maintenance": true}), "维护窗口针对整台机器，不能只选一条规则；只想静默这条告警就不要标记为维护"),
+        (json!({"comment": "长".repeat(2001)}), "备注最长 2000 个字"),
     ] {
         let (s, v) = t.call("POST", "/api/v1/silences", Some(win(extra.clone())), Auth::Session).await;
         assert_eq!((s, v["error"]["message"].as_str()), (StatusCode::BAD_REQUEST, Some(want)), "{extra}");
@@ -401,17 +441,45 @@ async fn missing_assets_are_404() {
     std::fs::create_dir_all(web.join("assets")).unwrap();
     std::fs::write(web.join("index.html"), "<!doctype html>").unwrap();
     std::fs::write(web.join("assets/index-new.js"), "export {}").unwrap();
+    std::fs::write(web.join("theme-init.js"), "try {} catch (e) {}").unwrap();
     let web = web.display().to_string().replace('\\', "/");
     let t = common::boot_in(dir, false, &format!("web_dir = \"{web}\"")).await;
     for (path, status, cache, body) in [
         ("/assets/index-new.js", StatusCode::OK, Some("public, max-age=31536000, immutable"), "export {}"),
         ("/assets/index-old.js", StatusCode::NOT_FOUND, None, ""),
         ("/machines/x", StatusCode::OK, Some("no-cache"), "<!doctype html>"),
+        // public/ 下的主题脚本（index.html 同步加载）：按文件给出，不是 index.html
+        ("/theme-init.js", StatusCode::OK, Some("no-cache"), "try {} catch (e) {}"),
     ] {
         let res = t.app.clone().oneshot(Request::get(path).body(Body::empty()).unwrap()).await.unwrap();
         let cc = res.headers().get("cache-control").map(|v| v.to_str().unwrap().to_string());
         assert_eq!((res.status(), cc.as_deref()), (status, cache), "{path}");
         let bytes = res.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(String::from_utf8_lossy(&bytes), body, "{path}");
+    }
+}
+
+/// 安全头：所有响应 nosniff / same-origin / DENY；前端页面带 CSP，接口不带；接口默认 no-store；http 部署不带 HSTS
+#[tokio::test]
+async fn security_headers() {
+    let dir = tempfile::tempdir().unwrap();
+    let web = dir.path().join("web");
+    std::fs::create_dir_all(&web).unwrap();
+    std::fs::write(web.join("index.html"), "<!doctype html>").unwrap();
+    let web = web.display().to_string().replace('\\', "/");
+    let t = common::boot_in(dir, false, &format!("web_dir = \"{web}\"")).await;
+    for (path, page) in [("/machines/x", true), ("/api/v1/machines", false), ("/api/v1/nope", false), ("/agent/v1/report", false)] {
+        let mut req = Request::get(path);
+        if path.starts_with("/api/") {
+            req = req.header("cookie", &t.cookie);
+        }
+        let res = t.app.clone().oneshot(req.body(Body::empty()).unwrap()).await.unwrap();
+        let h = |k: &str| res.headers().get(k).map(|v| v.to_str().unwrap().to_string());
+        assert_eq!((h("x-content-type-options"), h("referrer-policy"), h("x-frame-options")), (Some("nosniff".into()), Some("same-origin".into()), Some("DENY".into())), "{path}");
+        assert_eq!(h("content-security-policy").is_some_and(|c| c.contains("script-src 'self';") && c.contains("frame-ancestors 'none'")), page, "{path}");
+        assert_eq!(h("strict-transport-security"), None);
+        if path.starts_with("/api/") {
+            assert_eq!(h("cache-control").as_deref(), Some("no-store"), "{path}");
+        }
     }
 }

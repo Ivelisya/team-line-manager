@@ -129,10 +129,16 @@ pub struct ProviderIn {
 /// 空白当没填
 fn blank(v: &Option<String>) -> Option<&str> { v.as_deref().map(str::trim).filter(|s| !s.is_empty()) }
 
+/// 控制台地址：空白 = 不填；填了必须是 http(s) 地址（网页上做成链接，不能是 javascript: 之类）
+fn panel_url(v: &Option<String>) -> ApiResult<Option<String>> {
+    blank(v).map(|u| crate::notify::http_url(u, "控制台地址")).transpose().map_err(ApiError::bad_request)
+}
+
 pub async fn create_provider(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<ProviderIn>) -> ApiResult<Json<Value>> {
     let id = new_id();
     let name = clean_name(b.name.as_deref().unwrap_or(""), "供应商名")?;
     let code = clean_name(b.code.as_deref().unwrap_or(""), "供应商缩写")?;
+    let panel = b.panel_url.as_ref().map(panel_url).transpose()?.flatten();
     let tz = b.timezone.as_ref().and_then(blank);
     let mut tx = st.db.begin().await?;
     // 上架时供应商时区会被抄进账单时区，按同一标准校验
@@ -143,7 +149,7 @@ pub async fn create_provider(a: Actor, State(st): State<AppState>, ApiJson(b): A
         .bind(id)
         .bind(&name)
         .bind(&code)
-        .bind(b.panel_url.as_ref().and_then(blank))
+        .bind(panel)
         .execute(&mut *tx)
         .await?;
     if let Some(tz) = tz {
@@ -171,7 +177,7 @@ pub async fn patch_provider(a: Actor, State(st): State<AppState>, ApiPath(id): A
         None => old.code.clone(),
     };
     let panel_url = match &b.panel_url {
-        Some(u) => blank(u).map(String::from),
+        Some(u) => panel_url(u)?,
         None => old.panel_url.clone(),
     };
     let tz = match &b.timezone {

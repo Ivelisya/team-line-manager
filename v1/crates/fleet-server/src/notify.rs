@@ -10,7 +10,8 @@
 use crate::state::AppState;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::OnceLock;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use time::OffsetDateTime;
 use tokio::sync::mpsc::error::TrySendError;
@@ -168,6 +169,29 @@ pub fn format_text(n: &Notice) -> String {
     )
 }
 
+/// 插进企业微信 markdown 的文本（机器名、摘要里有 agent 上报的内容）：markdown 控制字符换成全角、换行换成空格，截到 `max` 个字，
+/// 免得拼出链接、标题、字体标签
+fn md(s: &str, max: usize) -> String {
+    s.chars()
+        .take(max)
+        .map(|c| match c {
+            '[' => '［',
+            ']' => '］',
+            '(' => '（',
+            ')' => '）',
+            '<' => '＜',
+            '>' => '＞',
+            '*' => '＊',
+            '_' => '＿',
+            '`' => '｀',
+            '#' => '＃',
+            '\\' => '＼',
+            c if c.is_control() => ' ',
+            c => c,
+        })
+        .collect()
+}
+
 /// 企业微信 markdown（颜色：warning 橙红、comment 灰、info 绿）
 pub fn format_wecom(n: &Notice) -> String {
     if n.kind == Kind::Test {
@@ -182,9 +206,9 @@ pub fn format_wecom(n: &Notice) -> String {
         "### <font color=\"{color}\">【{}】{}</font>\n> 机器：**{}**\n> 规则：{}\n> 摘要：{}\n> 时间：{}（北京时间）",
         severity_name(&n.severity),
         title(n),
-        n.machine,
-        rule_name(&n.rule),
-        n.summary,
+        md(&n.machine, 64),
+        md(rule_name(&n.rule), 64),
+        md(&n.summary, 500),
         beijing(n.at)
     )
 }
@@ -209,8 +233,9 @@ pub fn webhook_body(n: &Notice) -> Value {
 
 pub const KINDS: [&str; 3] = ["telegram", "wecom", "webhook"];
 
-fn http_url(v: &Value, what: &str) -> Result<String, String> {
-    let s = v.as_str().map(str::trim).unwrap_or("");
+/// 校验 http(s) 地址（供应商控制台地址也用它）
+pub fn http_url(s: &str, what: &str) -> Result<String, String> {
+    let s = s.trim();
     if s.is_empty() {
         return Err(format!("{what} 不能为空"));
     }
@@ -218,6 +243,49 @@ fn http_url(v: &Value, what: &str) -> Result<String, String> {
         Ok(u) if matches!(u.scheme(), "http" | "https") && u.host_str().is_some() => Ok(s.to_string()),
         _ => Err(format!("{what} 必须是 http(s) 地址")),
     }
+}
+
+fn http_url_v(v: &Value, what: &str) -> Result<String, String> { http_url(v.as_str().unwrap_or(""), what) }
+
+/// 不是公网地址：环回、未指定、私网、CGNAT、链路本地（含云元数据 169.254.169.254）、ULA、组播、广播与保留、文档、基准测试网段；
+/// IPv4 映射的 IPv6 按其中的 IPv4 判断
+pub fn non_global(ip: IpAddr) -> bool {
+    match ip.to_canonical() {
+        IpAddr::V4(a) => {
+            let o = a.octets();
+            a.is_loopback()
+                || a.is_unspecified()
+                || a.is_private()
+                || a.is_link_local()
+                || a.is_multicast()
+                || a.is_broadcast()
+                || a.is_documentation()
+                || o[0] == 0
+                || o[0] >= 240
+                || (o[0] == 100 && o[1] & 0xc0 == 64)
+                || (o[0] == 198 && o[1] & 0xfe == 18)
+        }
+        IpAddr::V6(a) => {
+            let s = a.segments();
+            a.is_loopback() || a.is_unspecified() || a.is_multicast() || s[0] & 0xfe00 == 0xfc00 || s[0] & 0xffc0 == 0xfe80 || (s[0] == 0x2001 && s[1] == 0x0db8)
+        }
+    }
+}
+
+/// 渠道地址（webhook / 企业微信的 url、Telegram 的 api_base）的主机是字面 IP 且不是公网地址时拒绝。
+/// 域名在发送时由 [`PublicOnly`] 解析时过滤；字面 IP 不经过解析，在这里拦
+pub fn check_destination(c: &Value, allow_private: bool) -> Result<(), String> {
+    if allow_private {
+        return Ok(());
+    }
+    for k in ["url", "api_base"] {
+        let Some(u) = c[k].as_str().and_then(|s| reqwest::Url::parse(s).ok()) else { continue };
+        let host = u.host_str().unwrap_or("").trim_start_matches('[').trim_end_matches(']');
+        if host.parse::<IpAddr>().is_ok_and(non_global) {
+            return Err(format!("{k} 指向内网 / 保留地址（{host}），不能用作通知渠道"));
+        }
+    }
+    Ok(())
 }
 
 /// 校验并规范化渠道配置（只保留该类型用得到的字段；chat_id 数字统一成字符串）
@@ -238,11 +306,11 @@ pub fn normalize_config(kind: &str, c: &Value) -> Result<Value, String> {
             }
             let mut out = json!({"bot_token": token, "chat_id": chat});
             if c["api_base"].as_str().is_some_and(|s| !s.trim().is_empty()) {
-                out["api_base"] = json!(http_url(&c["api_base"], "api_base")?.trim_end_matches('/'));
+                out["api_base"] = json!(http_url_v(&c["api_base"], "api_base")?.trim_end_matches('/'));
             }
             Ok(out)
         }
-        "wecom" | "webhook" => Ok(json!({"url": http_url(&c["url"], "url")?})),
+        "wecom" | "webhook" => Ok(json!({"url": http_url_v(&c["url"], "url")?})),
         _ => Err("不支持的渠道类型（telegram / wecom / webhook）".into()),
     }
 }
@@ -257,19 +325,51 @@ pub fn config_hint(kind: &str, c: &Value) -> String {
 
 // ── 发送 ────────────────────────────────────────────────────────────────────
 
-fn client() -> &'static reqwest::Client {
-    static C: OnceLock<reqwest::Client> = OnceLock::new();
-    C.get_or_init(|| {
-        reqwest::Client::builder()
+/// 只给出公网地址的 DNS 解析：渠道地址由有 write 权限的人填，不能借它打到中控所在的内网、环回、云元数据
+struct PublicOnly;
+
+impl reqwest::dns::Resolve for PublicOnly {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        Box::pin(async move {
+            let addrs: Vec<SocketAddr> = tokio::net::lookup_host((name.as_str(), 0)).await?.filter(|a| !non_global(a.ip())).collect();
+            if addrs.is_empty() {
+                return Err(format!("{} 只解析到内网 / 保留地址，不发", name.as_str()).into());
+            }
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
+/// `allow_private`（配置 `[notify] allow_private`）为假时用只解析公网地址的客户端
+fn client(allow_private: bool) -> &'static reqwest::Client {
+    static OPEN: OnceLock<reqwest::Client> = OnceLock::new();
+    static PUBLIC: OnceLock<reqwest::Client> = OnceLock::new();
+    let build = |public: bool| {
+        let b = reqwest::Client::builder()
             .timeout(SEND_TIMEOUT)
             .redirect(reqwest::redirect::Policy::none())
-            .user_agent(concat!("fleet-server/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .expect("构建 HTTP 客户端")
-    })
+            .user_agent(concat!("fleet-server/", env!("CARGO_PKG_VERSION")));
+        let b = if public { b.dns_resolver(Arc::new(PublicOnly)) } else { b };
+        b.build().expect("构建 HTTP 客户端")
+    };
+    if allow_private { OPEN.get_or_init(|| build(false)) } else { PUBLIC.get_or_init(|| build(true)) }
 }
 
 fn short(s: &str) -> String { s.chars().take(300).collect() }
+
+/// 响应体最多读这么多（只为取出错误说明），多的不读
+const MAX_BODY: usize = 64 * 1024;
+
+async fn read_capped(mut res: reqwest::Response) -> Vec<u8> {
+    let mut buf = Vec::new();
+    while let Ok(Some(chunk)) = res.chunk().await {
+        buf.extend_from_slice(&chunk[..chunk.len().min(MAX_BODY - buf.len())]);
+        if buf.len() >= MAX_BODY {
+            break;
+        }
+    }
+    buf
+}
 
 /// 发送失败：`retry` 表示值得再试（网络错误 / 5xx / 429）；渠道拒绝、配置有误之类重试也没用。
 /// `wait`：429 时渠道要求等多久再发
@@ -297,18 +397,18 @@ fn retry_after(header: Option<&str>, body: &Value) -> Option<Duration> {
 }
 
 /// 发一条通知到一个渠道（只发一次，渠道测试用）。错误文本里不带令牌（reqwest 错误会带 URL，这里去掉）。
-pub async fn send(kind: &str, config: &Value, n: &Notice) -> Result<(), String> {
-    send_once(kind, config, n).await.map_err(|e| e.msg)
+pub async fn send(kind: &str, config: &Value, n: &Notice, allow_private: bool) -> Result<(), String> {
+    send_once(kind, config, n, allow_private).await.map_err(|e| e.msg)
 }
 
 /// 发送，网络错误 / 5xx 时退避重试；429 按渠道给的等待时长再试
-async fn send_retry(kind: &str, config: &Value, n: &Notice) -> Result<(), String> {
-    let mut res = send_once(kind, config, n).await;
+async fn send_retry(kind: &str, config: &Value, n: &Notice, allow_private: bool) -> Result<(), String> {
+    let mut res = send_once(kind, config, n, allow_private).await;
     for wait in RETRY_BACKOFF {
         match &res {
             Err(e) if e.retry => {
                 tokio::time::sleep(e.wait.unwrap_or(wait)).await;
-                res = send_once(kind, config, n).await;
+                res = send_once(kind, config, n, allow_private).await;
             }
             _ => break,
         }
@@ -316,9 +416,11 @@ async fn send_retry(kind: &str, config: &Value, n: &Notice) -> Result<(), String
     res.map_err(|e| e.msg)
 }
 
-async fn send_once(kind: &str, config: &Value, n: &Notice) -> Result<(), SendErr> {
+/// 渠道的回复只取 HTTP 状态和它 JSON 里的错误说明（截短），不记原始响应体：发送记录 read 密钥也能看
+async fn send_once(kind: &str, config: &Value, n: &Notice, allow_private: bool) -> Result<(), SendErr> {
     let cfg = normalize_config(kind, config).map_err(SendErr::fatal)?;
-    let c = client();
+    check_destination(&cfg, allow_private).map_err(SendErr::fatal)?;
+    let c = client(allow_private);
     let (req, expect_json_code) = match kind {
         "telegram" => {
             let base = cfg["api_base"].as_str().unwrap_or(TELEGRAM_BASE);
@@ -331,23 +433,25 @@ async fn send_once(kind: &str, config: &Value, n: &Notice) -> Result<(), SendErr
         }
         _ => (c.post(cfg["url"].as_str().unwrap_or_default()).json(&webhook_body(n)), "webhook"),
     };
-    let res = req.send().await.map_err(|e| SendErr { msg: short(&format!("发送失败：{}", e.without_url())), retry: true, wait: None })?;
+    let res = req.send().await.map_err(|e| {
+        // 最里层的原因（连接被拒、只解析到内网地址…），reqwest 自己的文字只有「error sending request」
+        let cause = std::iter::successors(std::error::Error::source(&e), |s| s.source()).last().map(|s| format!("（{s}）")).unwrap_or_default();
+        SendErr { msg: short(&format!("发送失败：{}{cause}", e.without_url())), retry: true, wait: None }
+    })?;
     let status = res.status();
     let limited = status == reqwest::StatusCode::TOO_MANY_REQUESTS;
     let retry = status.is_server_error() || limited;
     let header = res.headers().get(reqwest::header::RETRY_AFTER).and_then(|v| v.to_str().ok()).map(String::from);
-    let body = res.text().await.unwrap_or_default();
-    let j: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+    let j: Value = serde_json::from_slice(&read_capped(res).await).unwrap_or(Value::Null);
     let wait = if limited { retry_after(header.as_deref(), &j) } else { None };
     let fail = |msg: String| Err(SendErr { msg: short(&msg), retry, wait });
+    let why = |k: &str| j[k].as_str().map(|s| s.chars().take(200).collect::<String>()).unwrap_or_else(|| "（没有说明）".into());
     match expect_json_code {
         // Telegram：HTTP 非 2xx 或 ok=false，说明在 description
-        "telegram" if !status.is_success() || j["ok"] == json!(false) => {
-            fail(format!("Telegram 拒绝（HTTP {}）：{}", status.as_u16(), j["description"].as_str().unwrap_or(&body)))
-        }
+        "telegram" if !status.is_success() || j["ok"] == json!(false) => fail(format!("Telegram 拒绝（HTTP {}）：{}", status.as_u16(), why("description"))),
         // 企业微信：HTTP 200 但 errcode != 0 也是失败
         "wecom" if !status.is_success() || j["errcode"].as_i64().is_some_and(|c| c != 0) => {
-            fail(format!("企业微信拒绝（HTTP {}）：{}", status.as_u16(), j["errmsg"].as_str().unwrap_or(&body)))
+            fail(format!("企业微信拒绝（HTTP {}）：{}", status.as_u16(), why("errmsg")))
         }
         "webhook" if !status.is_success() => fail(format!("webhook 返回 HTTP {}", status.as_u16())),
         _ => Ok(()),
@@ -364,8 +468,8 @@ struct Channel {
 /// 发送并记 `notify_log`（一次投递记一条，重试不重复记）。渠道测试不重试，让用户马上看到结果。
 async fn deliver(st: &AppState, ch: &Channel, n: &Notice) -> Result<(), String> {
     let res = match st.secrets.open_str(&ch.config_enc).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()) {
-        Some(cfg) if n.kind == Kind::Test => send(&ch.kind, &cfg, n).await,
-        Some(cfg) => send_retry(&ch.kind, &cfg, n).await,
+        Some(cfg) if n.kind == Kind::Test => send(&ch.kind, &cfg, n, st.cfg.notify.allow_private).await,
+        Some(cfg) => send_retry(&ch.kind, &cfg, n, st.cfg.notify.allow_private).await,
         None => Err("渠道配置无法解密（密钥变了？）".into()),
     };
     let logged = sqlx::query("insert into notify_log (channel_id, incident_id, ok, error, kind) values ($1, $2, $3, $4, $5)")
@@ -510,6 +614,30 @@ mod tests {
         assert_eq!(b["time_beijing"], "2026-10-20 15:04:05");
         assert_eq!(b["time"], "2026-10-20T07:04:05Z");
         assert!(b["text"].as_str().unwrap().contains("团队1-02"));
+    }
+
+    #[test]
+    fn wecom_escapes_reported_text() {
+        let n = Notice { machine: "a](http://x)".into(), summary: "**粗** <font>\n### 标题 `x` _y_ #z \\".into(), ..notice(Kind::Firing) };
+        let w = format_wecom(&n);
+        assert!(w.contains("> 机器：**a］（http://x）**"), "{w}");
+        assert!(w.contains("> 摘要：＊＊粗＊＊ ＜font＞ ＃＃＃ 标题 ｀x｀ ＿y＿ ＃z ＼\n"), "{w}");
+        let long = Notice { summary: "x".repeat(2000), ..notice(Kind::Firing) };
+        assert!(format_wecom(&long).chars().count() < 700);
+    }
+
+    #[test]
+    fn private_destinations() {
+        for ip in ["127.0.0.1", "10.0.0.1", "172.16.5.1", "192.168.1.1", "100.64.0.1", "169.254.169.254", "0.0.0.0", "255.255.255.255", "224.0.0.1", "192.0.2.1", "198.18.0.1", "::1", "::", "fe80::1", "fd00::1", "ff02::1", "2001:db8::1", "::ffff:10.0.0.1"] {
+            assert!(non_global(ip.parse().unwrap()), "{ip}");
+        }
+        for ip in ["1.1.1.1", "149.154.167.220", "100.128.0.1", "2001:4860:4860::8888"] {
+            assert!(!non_global(ip.parse().unwrap()), "{ip}");
+        }
+        assert!(check_destination(&json!({"url": "http://[::ffff:127.0.0.1]:8080/x"}), false).is_err());
+        assert!(check_destination(&json!({"api_base": "http://2130706433"}), false).is_err());
+        assert!(check_destination(&json!({"url": "https://qyapi.weixin.qq.com/x"}), false).is_ok());
+        assert!(check_destination(&json!({"url": "http://127.0.0.1/x"}), true).is_ok());
     }
 
     #[test]

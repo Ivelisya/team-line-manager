@@ -365,6 +365,9 @@ async fn provider_create_defaults_and_patch() {
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
     assert!(v.to_string().contains("已有同缩写的供应商"), "{v}");
     assert_eq!(t.req("PATCH", &path, Some(json!({"name": "  "})), None).await.0, StatusCode::BAD_REQUEST);
+    // 控制台地址只能是 http(s)（网页上是链接）
+    assert_eq!(t.req("PATCH", &path, Some(json!({"panel_url": "javascript:alert(1)"})), None).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(t.req("POST", "/api/v1/providers", Some(json!({"name": "丙", "code": "D", "panel_url": "panel.example"})), None).await.0, StatusCode::BAD_REQUEST);
     assert_eq!(t.req("PATCH", &format!("/api/v1/providers/{}", Uuid::now_v7()), Some(json!({"name": "x"})), None).await.0, StatusCode::NOT_FOUND);
     assert_eq!(get().await["name"], "甲改");
     // 清空：panel_url null、时区空串 = 回到 UTC；没传的字段不动

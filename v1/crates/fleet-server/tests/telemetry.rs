@@ -919,6 +919,43 @@ async fn notify_channel_crud_and_test_endpoint() {
     assert!(!audit.to_string().contains("SECRET-TOKEN"));
 }
 
+/// Telegram 改 api_base 必须同时重填 bot_token（不然 write 密钥能把沿用的令牌发到自己的地址）
+#[tokio::test]
+async fn notify_telegram_api_base_change_needs_token() {
+    let t = setup().await;
+    let id = t.post("/api/v1/notify-channels", json!({"name": "tg", "kind": "telegram", "config": {"bot_token": "123:SECRET", "chat_id": 1}})).await["id"].as_str().unwrap().to_string();
+    let path = format!("/api/v1/notify-channels/{id}");
+    let patch = |config: Value| t.req("PATCH", &path, Some(json!({"config": config})), None);
+    let (s, v) = patch(json!({"api_base": "https://evil.example.com"})).await;
+    assert_eq!((s, v["error"]["message"].as_str()), (StatusCode::BAD_REQUEST, Some("改 api_base 时要同时重新填写 bot_token")));
+    let (s, v) = patch(json!({"api_base": "https://tg.example.com/", "bot_token": "123:NEW"})).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    // api_base 不变（写法略有不同）、清空回官方地址：不用重填
+    assert_eq!(patch(json!({"api_base": "https://tg.example.com", "chat_id": 2})).await.0, StatusCode::OK);
+    assert_eq!(patch(json!({"api_base": ""})).await.0, StatusCode::OK);
+    let enc: Vec<u8> = sqlx::query_scalar("select config_enc from notify_channel").fetch_one(&t.st.db).await.unwrap();
+    let cfg: Value = serde_json::from_str(&t.st.secrets.open_str(&enc).unwrap()).unwrap();
+    assert_eq!(cfg, json!({"bot_token": "123:NEW", "chat_id": "2"}));
+}
+
+/// 默认（不允许内网）：字面内网 IP 建渠道时就拒；域名解析到内网的发送时拒，发送记录里只有原因
+#[tokio::test]
+async fn notify_refuses_private_destinations() {
+    let t = common::boot(false, "").await;
+    for url in ["http://127.0.0.1:9/hook", "http://10.1.2.3/x", "http://169.254.169.254/latest", "http://[::1]:8080/", "http://[::ffff:192.168.1.1]/", "http://100.64.0.1/", "http://0x7f.1/"] {
+        let (s, v) = t.req("POST", "/api/v1/notify-channels", Some(json!({"name": "x", "kind": "webhook", "config": {"url": url}})), None).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{url} → {v}");
+    }
+    let (s, _) = t.req("POST", "/api/v1/notify-channels", Some(json!({"name": "x", "kind": "telegram", "config": {"bot_token": "1:a", "chat_id": 1, "api_base": "http://192.168.0.1"}})), None).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let id = t.post("/api/v1/notify-channels", json!({"name": "本机", "kind": "webhook", "config": {"url": "http://localhost:9/hook"}})).await["id"].as_str().unwrap().to_string();
+    let r = t.post(&format!("/api/v1/notify-channels/{id}/test"), json!({})).await;
+    assert_eq!(r["ok"], false);
+    assert!(r["error"].as_str().unwrap().contains("内网"), "{r}");
+    let (s, _) = t.req("PATCH", &format!("/api/v1/notify-channels/{id}"), Some(json!({"config": {"url": "http://127.0.0.1/x"}})), None).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn alert_notifications_firing_repeat_silence_and_resolved() {
     let t = setup().await;
@@ -1201,6 +1238,13 @@ async fn ws_requires_auth_and_resyncs_when_subscriber_lags() {
     match t.ws(false).await {
         Err(tokio_tungstenite::tungstenite::Error::Http(r)) => assert_eq!(r.status(), StatusCode::UNAUTHORIZED),
         other => panic!("未登录应 401：{:?}", other.map(|_| ())),
+    }
+    // 会话连接要求 Origin 是本站（public_url）：别的站点、没有 Origin 都 403
+    for origin in [Some("https://evil.example"), Some("http://fleet.test:8080"), None] {
+        match t.ws_from(true, origin).await {
+            Err(tokio_tungstenite::tungstenite::Error::Http(r)) => assert_eq!(r.status(), StatusCode::FORBIDDEN, "{origin:?}"),
+            other => panic!("{origin:?} 应 403：{:?}", other.map(|_| ())),
+        }
     }
     let mut ws = t.ws(true).await.unwrap();
     // 一口气广播远超缓冲（256）的事件，服务端逐帧往外写跟不上 → 落后
