@@ -10,8 +10,8 @@ let fs = require('fs');
 const D = '/tmp/fleet-collect';
 const DELAY = getenv('FLEET_DELAY') == '1';
 const DELAY_URL = getenv('FLEET_DELAY_URL');
-// mihomo /proxies 里不是出口的：内置的与各种组
-const SKIP = { Direct: true, Reject: true, RejectDrop: true, Pass: true, Compatible: true, Dns: true,
+// mihomo /proxies 里不是出口的：内置的与各种组（PassRule 是较新 alpha 内核才有的内置 PASS-RULE）
+const SKIP = { Direct: true, Reject: true, RejectDrop: true, Pass: true, PassRule: true, Compatible: true, Dns: true,
 	Selector: true, URLTest: true, Fallback: true, LoadBalance: true, Relay: true, Smart: true };
 
 let out = { v: 1, now: time() };
