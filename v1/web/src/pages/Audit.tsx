@@ -12,7 +12,7 @@ import { InfoTip, SearchInput } from '@/components/ui/form';
 import { Segmented } from '@/components/ui/overlays';
 import { SkeletonRows } from '@/components/ui/skeleton';
 import { Empty, ErrorNote, PageHead, Panel } from '@/components/app/primitives';
-import { AuditList, useAuditText } from '@/components/app/AuditList';
+import { AuditList, auditText } from '@/components/app/AuditList';
 
 type Cat = 'all' | 'auth' | 'exec' | 'machine' | 'config';
 const CATS: { value: Cat; label: string }[] = [
@@ -53,11 +53,10 @@ export function AuditPage() {
   const set = (k: string, v: string) => setSp((p) => { const n = new URLSearchParams(p); if (v) n.set(k, v); else n.delete(k); return n; }, { replace: true });
   const setCat = (v: Cat) => set('cat', v === 'all' ? '' : v);
   const all = React.useMemo(() => q.data?.pages.flat() ?? EMPTY, [q.data]);
-  const textOf = useAuditText();
   const rows = React.useMemo(() => {
     const t = text.trim().toLowerCase();
-    return all.filter((a) => (cat === 'all' || catOf(a.action) === cat) && (!t || textOf(a).toLowerCase().includes(t)));
-  }, [all, cat, text, textOf]);
+    return all.filter((a) => (cat === 'all' || catOf(a.action) === cat) && (!t || auditText(a).toLowerCase().includes(t)));
+  }, [all, cat, text]);
   const filtered = cat !== 'all' || !!text.trim();
 
   return (
