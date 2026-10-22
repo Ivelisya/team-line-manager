@@ -13,7 +13,7 @@ use axum::extract::State;
 use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -162,6 +162,10 @@ pub async fn put_one(a: Actor, State(st): State<AppState>, ApiPath((scope, id)):
 
     let mut tx = st.db.begin().await?;
     lock(&mut tx).await?;
+    // 等锁的时候团队可能刚被删掉（删团队拿同一把锁）：不能给它留下一行草稿
+    if scope == Scope::Team && sqlx::query_scalar::<_, i32>("select 1 from team where id = $1").bind(id).fetch_optional(&mut *tx).await?.is_none() {
+        return Err(ApiError::not_found("没有这个团队"));
+    }
     let cur: Option<(i32, String, Vec<String>, String)> =
         sqlx::query_as("select revision, mode, domains, note from policy where scope = $1 and scope_id = $2 for update")
             .bind(scope.as_str())
@@ -222,7 +226,8 @@ pub async fn put_one(a: Actor, State(st): State<AppState>, ApiPath((scope, id)):
     Ok(ok(json!({"policy": policy_json(scope, id, one), "draft_hash": policy::draft_hash(&rows, ver), "draft_count": rows.iter().filter(|r| r.draft.is_some()).count()})))
 }
 
-async fn lock(tx: &mut Tx<'_>) -> ApiResult<()> {
+/// 访问规则的锁（见 policy::LOCK_KEY）；删团队也拿它
+pub(super) async fn lock(tx: &mut Tx<'_>) -> ApiResult<()> {
     sqlx::query("select pg_advisory_xact_lock($1)").bind(policy::LOCK_KEY).execute(&mut **tx).await?;
     Ok(())
 }
@@ -546,7 +551,14 @@ pub async fn rollback(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath
         .await?
         .ok_or_else(|| ApiError::not_found("没有这个版本"))?;
     let rows = policy::load_rows(&mut *tx, true).await?;
-    let target = policy::parse_snapshot(&snap);
+    // 快照之后被删掉的团队、彻底删除的节点跳过：不给它们建出没有主人的规则行
+    let exists: HashSet<Uuid> = sqlx::query_scalar("select id from team union all select id from machine where kind <> 'relay'")
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .collect();
+    let mut target = policy::parse_snapshot(&snap);
+    target.retain(|(_, sid), _| exists.contains(sid));
     let current = policy::parse_snapshot(&Value::Array(policy::snapshot_of(&rows)));
     if target == current {
         return Err(ApiError::conflict(format!("版本 {seq} 和当前生效的规则一致，不需要回滚")));
