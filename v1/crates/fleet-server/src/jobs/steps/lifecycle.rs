@@ -179,7 +179,7 @@ pub(super) async fn compensate_move(c: &Ctx<'_>) {
             .flatten();
     if widened.as_deref().is_some_and(|s| s != "pending") {
         if let Some(m) = note(st, job.id, "读取节点", c.machine().await).await {
-            if m.kind == "vps" && ssh::tcp_ok(&m.ip, m.ssh_port as u16, Duration::from_secs(5)).await {
+            if m.kind == "vps" && ssh::ssh_probe(&m.ip, m.ssh_port as u16, Duration::from_secs(5)).await.is_ok() {
                 let allow = note(st, job.id, "计算放行名单", live_relay_ips(c, node).await).await;
                 let inst = note(st, job.id, "读取 SS 端口", c.ss_inst(&m).await).await;
                 if let (Some(allow), Some(inst)) = (allow, inst) {
