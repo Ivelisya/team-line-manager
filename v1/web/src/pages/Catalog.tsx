@@ -305,7 +305,7 @@ function PlansTab() {
                   <td>{planSpec(p)}<span className="sub">{p.disk_gb ? `磁盘 ${p.disk_gb} GiB` : ''}</span></td>
                   <td className="r"><Num f={F.mbps(p.bandwidth_mbps)} /></td><td className="r"><Num f={limitGb(p.traffic_gb)} /></td>
                   <td className="r"><span className="num">{F.money(p.price_cents, p.currency)}</span><span className="sub">/ {cycleLabel(p.cycle)}</span></td>
-                  <td className="r num"><CountLink n={p.machine_count} to={`/nodes?q=${encodeURIComponent(p.name)}`} /></td>
+                  <td className="r num"><CountLink n={p.machine_count} to={`/nodes?plan=${p.id}`} /></td>
                   <td className="r"><span className="row" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
                     <Button size="sm" variant="quiet" onClick={() => setEdit(p)}><Pencil size={13} />编辑</Button>
                     {p.archived_at
