@@ -946,7 +946,8 @@ async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<
         // 接入前读数的录入时刻在周期内的从录入时刻所在整点的下一桶算起：那一小时里录入之后的流量不计（至多差 1 小时）。
         // 网卡：逐台按 host_metric_hourly 主键区间求本周期入、出总量，再按规则取小 / 取大 / 相加 / 只取出站。
         // 业务流量（家宽代理、同机 IP 节点）：先展开「机器 → 入口」，再逐个入口按小时表主键求和
-        // （子查询放在 OR 连接条件里时规划器会先连出全部小时行，实验室 64 台要 11 s）。
+        // （子查询放在 OR 连接条件里时规划器会先连出全部小时行，实验室 64 台要 11 s；入口连接本身也不写 OR：
+        // 分成 node_id / relay_id 两支各走自己的索引再 union，否则是 机器 × 入口 的嵌套循环）。
         // 按 numeric 求和、夹到 9e18 再转 bigint：一台机器的离谱读数不让 bigint 溢出、拖垮所有人的机器列表。
         // 周期起点时刻 s0 一并带回：首次上架晚于它的，视图标「X 起统计」（counted_from）
         let rows: Vec<(Uuid, i64, bool, OffsetDateTime)> = sqlx::query_as(
@@ -954,7 +955,9 @@ async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<
                                case when q.base_at >= s.s0 then date_trunc('hour', q.base_at) else s.s0 - interval '1 hour' end since
                         from unnest($1::uuid[], $2::date[], $3::text[], $4::text[], $5::timestamptz[]) q(mid, start, tz, rule, base_at)
                         cross join lateral (select q.start::timestamp at time zone q.tz s0) s),
-             qe as (select q.mid, q.since, e.id eid from q join entry e on e.node_id = q.mid or e.relay_id = q.mid where q.rule is null)
+             qe as (select q.mid, q.since, e.id eid from q join entry e on e.node_id = q.mid where q.rule is null
+                    union
+                    select q.mid, q.since, e.id from q join entry e on e.relay_id = q.mid where q.rule is null)
              select q.mid, least(case q.rule when 'min' then least(t.rx, t.tx) when 'max' then greatest(t.rx, t.tx) when 'sum' then t.rx + t.tx else t.tx end, 9e18)::bigint,
                     coalesce(q.cal, false), q.s0
              from q cross join lateral (
@@ -999,7 +1002,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 s.traffic_used_base s_base, s.traffic_used_base_at s_base_at, s.overrides s_overrides, sb.billing_day::int s_bday, p.traffic_rule p_rule,
                 tp.price_cents t_price, tp.currency t_currency, tp.cycle::text t_cycle, tp.billing_tz t_tz, tp.traffic_gb t_traffic, tp.traffic_reset t_reset, tp.remind_days t_remind, local_date(tp.billing_tz) t_today,
                 {A_COLS}, r.public_host r_host, r.generation r_gen, r.applied_generation r_applied, r.applied_at r_applied_at, r.generation_at r_gen_at,
-                r.apply_error r_err, r.port_min r_pmin, r.port_max r_pmax, m.tune_profile, m.tuned_at, {unreach} r_unreach
+                r.apply_error r_err, r.port_min r_pmin, r.port_max r_pmax, m.tune_profile, m.tuned_at, case when m.kind = 'relay' then {unreach} end r_unreach
          from machine m
          left join team t on t.id = m.team_id
          left join machine hm on hm.id = m.host_id
