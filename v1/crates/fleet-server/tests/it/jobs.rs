@@ -521,13 +521,17 @@ async fn relay_with_entries_cannot_be_retired() {
     let (entry, _, _) = fleet_server::entries::create(&mut tx, relay, node).await.unwrap();
     tx.commit().await.unwrap();
 
+    // 预览里先列出同一条阻断原因
+    let pv = t.get(&format!("/api/v1/machines/{relay}/retire")).await;
     let (s, v) = t.req("POST", &format!("/api/v1/machines/{relay}/retire"), Some(json!({"now": true, "confirm": "线路机2"})), None).await;
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
     assert!(v["error"]["message"].as_str().unwrap().contains("节点入口"), "{v}");
+    assert_eq!(pv["blockers"], json!([v["error"]["message"]]), "{pv}");
     assert_eq!(t.machine_lifecycle(relay).await, "active");
 
     // 入口摘光之后才允许退役
     sqlx::query("update entry set lifecycle = 'removed', removed_at = now() where id = $1").bind(entry).execute(&t.st.db).await.unwrap();
+    assert_eq!(t.get(&format!("/api/v1/machines/{relay}/retire")).await["blockers"], json!([]));
     let r: Value = t.post(&format!("/api/v1/machines/{relay}/retire"), json!({"now": true, "confirm": "线路机2"})).await;
     assert!(r["job_id"].is_string());
     assert_eq!(t.machine_lifecycle(relay).await, "retiring");
