@@ -620,12 +620,16 @@ async fn relay_reach_rounds_feed_relay_beats() {
     let ctl_ok = ctl.local_addr().unwrap().to_string();
     let ctl_bad = format!("127.0.0.1:{closed}");
     use fleet_server::reach::round;
-    assert_eq!(round(&t.st.db, &[&ctl_bad, &ctl_ok], 0).await.unwrap(), 2, "没有在用入口的线路机不探");
-    assert_eq!(round(&t.st.db, &[&ctl_bad], 1).await.unwrap(), 0, "对照目标都连不上：中控自己的问题，不记");
+    assert_eq!(round(&t.st, &[&ctl_bad, &ctl_ok], 0).await.unwrap(), 2, "没有在用入口的线路机不探");
+    assert_eq!(round(&t.st, &[&ctl_bad], 1).await.unwrap(), 0, "对照目标都连不上：中控自己的问题，不记");
     // 线路机1 再挂一条入口（端口不通）：每轮换下一个端口，两个口轮流连到；线路机2 一直不通，两台同时不通也照记
     seed_node(&t, up, team, 3, "203.0.113.7", closed2 as i32).await;
-    assert_eq!(round(&t.st.db, &[&ctl_ok], 1).await.unwrap(), 2);
-    assert_eq!(round(&t.st.db, &[&ctl_ok], 2).await.unwrap(), 2);
+    let unreachable = |v: &[fleet_server::views::MachineView]| v.iter().find(|m| m.id == down).unwrap().health.reasons.iter().any(|r| r.key == "relay_unreachable");
+    assert!(!unreachable(&fleet_server::views::live(&t.st).await.unwrap()));
+    assert_eq!(round(&t.st, &[&ctl_ok], 1).await.unwrap(), 2);
+    assert_eq!(round(&t.st, &[&ctl_ok], 2).await.unwrap(), 2);
+    // 缓存的视图（列表、告警评估）不等完整重算：结论变了，这一轮发了机器事件
+    assert!(unreachable(&fleet_server::views::live(&t.st).await.unwrap()));
     let v = t.get("/api/v1/probe-beats").await;
     let sum = |id: Uuid| {
         v[id.to_string()].as_array().unwrap().iter().fold((0, 0), |(n, ok), b| (n + b[0].as_i64().unwrap(), ok + b[1].as_i64().unwrap()))

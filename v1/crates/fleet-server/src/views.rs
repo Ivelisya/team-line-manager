@@ -360,7 +360,7 @@ pub struct RelayInfo {
     pub port_min: i32,
     pub port_max: i32,
     /// 中控 → 线路机最近 3 轮（5 分钟内，reach.rs）都连不上：这 3 次的失败原因（去重，带端口）；否则为 None。
-    /// 健康判定据此报 relay_unreachable；随完整加载更新（最多旧 `FULL_EVERY`），不对外输出
+    /// 健康判定据此报 relay_unreachable；它变了 reach.rs 发 `Event::Machine`（视图完整重算），不对外输出
     #[serde(skip)]
     pub unreachable: Option<String>,
 }
@@ -609,12 +609,12 @@ impl ReportGaps {
 
 /// 在用机器全量视图的短缓存：/machines、/relays、/overview、告警评估、实时指标共用，并发请求合并成一次查询（单飞）。
 /// 资源变更事件（`AppState::emit`）让它作废、下次完整加载；agent 上报的指标不发事件，TTL 过了就在上一份上补指标（`refresh`），
-/// 每 `FULL_EVERY` 或小时汇总之后才再完整加载一次。
+/// 每 `FULL_EVERY`、跨天或小时汇总之后才再完整加载一次。
 struct Snap {
     /// 最近一次加载或补指标的时刻（TTL 从这里算）
     at: Instant,
-    /// 最近一次完整加载的时刻
-    full_at: Instant,
+    /// 到这个时刻再完整加载：上次完整加载 + `FULL_EVERY`，最晚到组织时区的下一个零点（流量缓存同时过期）
+    full_until: Instant,
     gen: u64,
     rolled: u64,
     touched: u64,
@@ -622,8 +622,9 @@ struct Snap {
 }
 /// 指标（心跳、探测）最多旧这么久
 const LIVE_TTL: std::time::Duration = std::time::Duration::from_secs(3);
-/// 只补指标最多这么久，之后完整加载一次：跨天的到期天数与流量周期、国旗画像、作业步骤里改了机器却没发事件的，都在这时跟上
-const FULL_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+/// 只补指标最多这么久，之后完整加载一次（与小时汇总同一节奏）：账单时区跨天的到期天数与流量周期、国旗画像在这时跟上。
+/// 改机器的地方都发事件（含作业步骤、线路机连通性的结论），不靠它兜底
+const FULL_EVERY: std::time::Duration = std::time::Duration::from_secs(300);
 /// 入口 id → 今天 / 本月流量（组织时区，来自小时汇总表，含已移除的入口）
 pub type TrafficMap = Arc<HashMap<Uuid, Traffic>>;
 /// 机器 id → 按网卡计的今天 / 本月流量（组织时区，来自小时汇总表）
@@ -698,7 +699,7 @@ async fn cached(st: &AppState, ttl: std::time::Duration) -> sqlx::Result<Arc<Vec
         if s.touched == touched && s.at.elapsed() < ttl {
             return Ok(s.v.clone());
         }
-        if s.full_at.elapsed() < FULL_EVERY {
+        if Instant::now() < s.full_until {
             s.v = Arc::new(refresh(st, &s.v, s.touched != touched).await?);
             (s.at, s.touched) = (Instant::now(), touched);
             return Ok(s.v.clone());
@@ -706,7 +707,10 @@ async fn cached(st: &AppState, ttl: std::time::Duration) -> sqlx::Result<Arc<Vec
     }
     let v = Arc::new(load(st, Scope::Live, None).await?);
     let at = Instant::now();
-    *slot = Some(Snap { at, full_at: at, gen, rolled, touched, v: v.clone() });
+    // 流量缓存（load 刚取过）到组织时区的下一个零点过期：跨天时今天的流量清零，完整加载一次
+    let day_end = c.traffic.lock().await.as_ref().map(|((_, exp), _)| *exp);
+    let full_until = day_end.map_or(at + FULL_EVERY, |e| e.min(at + FULL_EVERY));
+    *slot = Some(Snap { at, full_until, gen, rolled, touched, v: v.clone() });
     Ok(v)
 }
 
@@ -1101,11 +1105,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 s.traffic_used_base s_base, s.traffic_used_base_at s_base_at, s.overrides s_overrides, sb.billing_day::int s_bday, p.traffic_rule p_rule,
                 tp.price_cents t_price, tp.currency t_currency, tp.cycle::text t_cycle, tp.billing_tz t_tz, tp.traffic_gb t_traffic, tp.traffic_reset t_reset, tp.remind_days t_remind, local_date(tp.billing_tz) t_today,
                 {A_COLS}, r.public_host r_host, r.generation r_gen, r.applied_generation r_applied, r.applied_at r_applied_at, r.generation_at r_gen_at,
-                r.apply_error r_err, r.port_min r_pmin, r.port_max r_pmax, m.tune_profile, m.tuned_at,
-                (select string_agg(distinct x.detail, '；' order by x.detail) from (
-                   select coalesce(rr.detail, '-') detail, rr.ok from relay_reach rr
-                   where rr.relay_id = m.id and rr.ts > now() - interval '5 minutes' order by rr.ts desc limit 3) x
-                 having count(*) = 3 and not bool_or(x.ok)) r_unreach
+                r.apply_error r_err, r.port_min r_pmin, r.port_max r_pmax, m.tune_profile, m.tuned_at, {unreach} r_unreach
          from machine m
          left join team t on t.id = m.team_id
          left join machine hm on hm.id = m.host_id
@@ -1118,7 +1118,8 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
          left join agent_state a on a.machine_id = coalesce(m.host_id, m.id)
          left join relay r on r.machine_id = m.id
          where {lc} and ($1::uuid is null or m.id = $1)
-         order by m.kind = 'relay' desc, t.sort_order nulls first, t.name, m.number, m.label, m.id"
+         order by m.kind = 'relay' desc, t.sort_order nulls first, t.name, m.number, m.label, m.id",
+        unreach = crate::reach::unreachable_sql("m.id")
     );
     let rows: Vec<MRow> = sqlx::query_as(&sql).bind(only).fetch_all(db).await?;
     if rows.is_empty() {

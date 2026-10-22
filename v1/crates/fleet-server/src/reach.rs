@@ -3,7 +3,7 @@
 //! 每 30 秒对每台在用、有在用入口的线路机做一次 TCP 建连：目标是客户连的地址（relay.public_host）+ 它的在用入口端口，
 //! 每轮换下一个（N 条入口 N 轮连一遍）——线路机在不在线、客户连的每个口连不连得上（防火墙、供应商封口、单个入站没起来）。
 //! 只建连，不做 REALITY 握手。只记通不通，不记延迟：中控在德国，到美国线路机的往返时间不代表客户体验。
-//! 同一台线路机最近 3 轮都连不上，健康判定报 relay_unreachable（views 的 `RelayInfo::unreachable`）。
+//! 同一台线路机最近 3 轮都连不上，健康判定报 relay_unreachable（views 的 `RelayInfo::unreachable`；结论变了就发 `Event::Machine`）。
 //! 不连 SSH 口：每 30 秒一次未认证就断开的连接会刷 sshd 日志，线路机上若有 fail2ban 还可能把中控封掉。
 //! Xray 的 REALITY 入站对只建连、不发数据的连接不记访问日志。
 //!
@@ -14,7 +14,7 @@
 //!
 //! 结果进 relay_reach，保留 2 天（db::cleanup_retention）。
 
-use crate::state::AppState;
+use crate::state::{AppState, Event};
 use std::time::Duration;
 use time::OffsetDateTime;
 use tokio::net::TcpStream;
@@ -34,15 +34,28 @@ pub async fn run_forever(st: AppState) {
     let mut turn = 0usize;
     loop {
         t.tick().await;
-        if let Err(e) = round(&st.db, CONTROLS, turn).await {
+        if let Err(e) = round(&st, CONTROLS, turn).await {
             tracing::warn!("中控 → 线路机连通性：{e:#}");
         }
         turn = turn.wrapping_add(1);
     }
 }
 
-/// 一轮：每台线路机连它第 `turn`（对入口数取余）个在用入口端口，返回写入的行数（整轮作废为 0）
-pub async fn round(db: &sqlx::PgPool, controls: &[&str], turn: usize) -> anyhow::Result<usize> {
+/// 线路机 `relay`（SQL 表达式）最近 3 轮（5 分钟内）都连不上时，这 3 次的失败原因（去重，带端口）；否则 null。
+/// 视图的 `RelayInfo::unreachable` 与本轮前后的比对共用
+pub(crate) fn unreachable_sql(relay: &str) -> String {
+    format!(
+        "(select string_agg(distinct x.detail, '；' order by x.detail) from (
+           select coalesce(rr.detail, '-') detail, rr.ok from relay_reach rr
+           where rr.relay_id = {relay} and rr.ts > now() - interval '5 minutes' order by rr.ts desc limit 3) x
+         having count(*) = 3 and not bool_or(x.ok))"
+    )
+}
+
+/// 一轮：每台线路机连它第 `turn`（对入口数取余）个在用入口端口，返回写入的行数（整轮作废为 0）。
+/// 写入后连不上的结论（`unreachable_sql`）变了的线路机发 `Event::Machine`：视图不用等完整重算
+pub async fn round(st: &AppState, controls: &[&str], turn: usize) -> anyhow::Result<usize> {
+    let db = &st.db;
     let targets: Vec<(Uuid, String, Vec<i32>)> = sqlx::query_as(
         "select m.id, r.public_host, array_agg(e.port order by e.port) from machine m join relay r on r.machine_id = m.id
          join entry e on e.relay_id = m.id and e.lifecycle = 'active'
@@ -66,13 +79,22 @@ pub async fn round(db: &sqlx::PgPool, controls: &[&str], turn: usize) -> anyhow:
     }
     // 失败原因带上端口：轮流连的，告警摘要里要看得出是哪个口
     let details: Vec<Option<String>> = res.iter().zip(&ports).map(|(r, port)| r.as_ref().err().map(|e| format!("端口 {port}：{e}"))).collect();
+    let ids: Vec<Uuid> = targets.iter().map(|t| t.0).collect();
+    let unreach = format!("select {} from unnest($1::uuid[]) with ordinality u(id, i) order by i", unreachable_sql("u.id"));
+    let before: Vec<Option<String>> = sqlx::query_scalar(&unreach).bind(&ids).fetch_all(db).await?;
     sqlx::query("insert into relay_reach (relay_id, ts, ok, detail) select u.id, $2, u.ok, u.detail from unnest($1::uuid[], $3::bool[], $4::text[]) u(id, ok, detail)")
-        .bind(targets.iter().map(|t| t.0).collect::<Vec<_>>())
+        .bind(&ids)
         .bind(ts)
         .bind(&oks)
         .bind(&details)
         .execute(db)
         .await?;
+    let after: Vec<Option<String>> = sqlx::query_scalar(&unreach).bind(&ids).fetch_all(db).await?;
+    for ((id, b), a) in ids.iter().zip(&before).zip(&after) {
+        if b != a {
+            st.emit(Event::Machine { id: *id });
+        }
+    }
     Ok(targets.len())
 }
 
