@@ -13,7 +13,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use fleet_proto::{ApplyReport, Report, ReportAck};
 use serde::Deserialize;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::{LazyLock, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -213,6 +213,23 @@ fn take_applied(m: &mut HashMap<Uuid, (f64, Instant)>, relay: Uuid, now: Instant
     Ok(())
 }
 
+/// 每台机器同时只处理一份上报、一份应用回报（各算各的）：上报的令牌入库提交后才扣，同一台机器并发的几份（seq 各不相同）
+/// 会一起看到余额、都放进来，限流就形同虚设。agent 本来就一份确认了才发下一份，正常碰不到；碰到的回 429，1 秒后重发
+static INFLIGHT: LazyLock<Mutex<HashSet<(Uuid, &'static str)>>> = LazyLock::new(Default::default);
+
+/// 占着「这台机器正在处理」的位置，处理完（含出错、连接断开时请求被取消）放掉
+struct InFlight((Uuid, &'static str));
+
+impl InFlight {
+    fn begin(machine: Uuid, what: &'static str) -> Option<Self> {
+        INFLIGHT.lock().unwrap_or_else(|e| e.into_inner()).insert((machine, what)).then_some(Self((machine, what)))
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) { INFLIGHT.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.0); }
+}
+
 /// 429 + Retry-After（秒）
 fn too_many(wait: u64, what: &str) -> Response {
     let mut resp = ApiError::new(StatusCode::TOO_MANY_REQUESTS, "rate_limited", format!("{what}太频繁，{wait} 秒后再发")).into_response();
@@ -292,6 +309,8 @@ async fn report(State(st): State<AppState>, h: HeaderMap, ApiJson(r): ApiJson<Re
 
 async fn ingest(st: &AppState, h: &HeaderMap, mut r: Report) -> Result<Json<ReportAck>, IngestErr> {
     let a = authenticate(st, h).await?;
+    // 到 charge 为止都占着：同一台机器的下一份等这一份扣完令牌再看余额
+    let _busy = InFlight::begin(a.machine_id, "report").ok_or(IngestErr::Limited(1))?;
     sanitize(&mut r);
     let now = OffsetDateTime::now_utc();
     let now_ms = (now.unix_timestamp_nanos() / 1_000_000) as i64;
@@ -548,6 +567,9 @@ async fn applied(State(st): State<AppState>, h: HeaderMap, ApiJson(mut r): ApiJs
     if a.kind != "relay" {
         return Err(ApiError::forbidden("只有线路机回报应用结果"));
     }
+    let Some(_busy) = InFlight::begin(a.machine_id, "applied") else {
+        return Ok(too_many(1, "应用回报"));
+    };
     if let Err(wait) = take_applied(&mut APPLIED.lock().unwrap(), a.machine_id, Instant::now()) {
         return Ok(too_many(wait, "应用回报"));
     }
@@ -582,6 +604,17 @@ mod tests {
         let n = peek_token(m, machine, seq, host, now)?;
         charge(m, machine, seq, n);
         Ok(n)
+    }
+
+    #[test]
+    fn one_in_flight_per_machine_and_kind() {
+        let (a, b) = (Uuid::now_v7(), Uuid::now_v7());
+        let g = InFlight::begin(a, "report").unwrap();
+        assert!(InFlight::begin(a, "report").is_none());
+        // 别的机器、同一台的应用回报不受影响
+        assert!(InFlight::begin(b, "report").is_some() && InFlight::begin(a, "applied").is_some());
+        drop(g);
+        assert!(InFlight::begin(a, "report").is_some());
     }
 
     #[test]

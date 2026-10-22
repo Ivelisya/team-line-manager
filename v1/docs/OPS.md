@@ -125,6 +125,7 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 - 全部机器的静默 / 维护等于把监控关掉：API 密钥建的最长 24 小时（账号登录的 30 天）；新建、删除静默 / 维护都会通知所有启用的渠道（不受静默影响），悄悄关监控会被看到。
 - 中控：fleet-server 在 systemd 沙箱里运行（无任何特权、只写 `/var/lib/fleet`、系统调用白名单），`/etc/fleet` 归 root、fleet 只读；部署后 `journalctl -u fleet-server` 里出现 SIGSYS / Permission denied 先看沙箱。Caddy 管理接口在 `/run/caddy/admin.sock`（只有 caddy 能连），改配置后用 `systemctl reload caddy`，直接 `caddy reload` 不带 `--config` 会连不上。网页带 CSP（只许本站脚本），不能再加内联脚本或外部 CDN。
 - 线路机：Xray 以 systemd 动态用户运行（不是 root），配置由 systemd 经标准输入交给它，读不到 `/etc/fleet-agent`、`/etc/ssh`，连不上本机的 systemd / D-Bus；访问日志实际在 `/var/log/private/fleet-xray`（`/var/log/fleet-xray` 是符号链接），agent 靠 `CAP_DAC_READ_SEARCH` 读。Xray 与 VPS 节点的 ssserver 都拦了链路本地网段与 100.100.100.200（客户经域名也到不了云元数据服务）；机器的 `/etc/resolv.conf` 用链路本地地址的 DNS（169.254.x、fe80::，GCE、Oracle 等不经 systemd-resolved 的镜像）时拦了就解析不了域名，这样的机器上装单元时不加这条拦截，作业日志记一条 warn。这些单元改动在升级 agent / 收敛时写入，Xray 下次重启、ssserver 下次收敛时生效。agent 上报按机器限速（突发 600 份、每秒补 1 份，超了回 429），agent 拒绝连公网的明文 http 中控。
+- 线路机 DNS 是链路本地地址时：agent 每次渲染 Xray 配置都读 `/etc/resolv.conf`，有链路本地的 nameserver 就给 Xray 加内置 DNS（`dns.servers` = 1.1.1.1、8.8.8.8，查询经 `direct` 出站），直出入口（freedom）改用 `UseIPv4` 按它解析；没有的机器配置不变。DNS 属于骨架，第一次切换时 Xray 重启一次。只管 Xray 内置 DNS 解析的部分：REALITY 伪装目标（`reality_dest`，默认 `www.cloudflare.com:443`）、家宽代理上游、节点地址若写成域名，Xray 仍经系统解析，单元拦着链路本地时解析不了，这样的机器上写成 IP。同一台机器同时只处理一份上报、一份应用回报，另一份回 429（Retry-After 1 秒）；agent 本来就逐份发送，正常碰不到。
 - 危险操作（退役、删除、轮换、批量升级、会改状态的 exec）先向负责人确认，再加 `--yes`。
 
 ## 6. 换线路机 / 搬空线路机 / 恢复已退役的机器 / 同机 IP 节点

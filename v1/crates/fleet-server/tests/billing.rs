@@ -103,12 +103,12 @@ async fn subscription_follows_plan_and_provider() {
         assert_eq!(t.req("POST", &renew, Some(bad.clone()), None).await.0, StatusCode::BAD_REQUEST, "{bad}");
     }
     let (st, v) = t.req("POST", &renew, Some(json!({"cycles": 2, "amount_cents": 8000})), None).await;
-    assert_eq!((st, v["data"]["old_due"].as_str(), v["data"]["new_due"].as_str()), (StatusCode::OK, Some("2027-04-30"), Some("2027-10-30")), "{v}");
-    // 视图带出：下次续费默认推到哪天、这一期几天（2027-07-30 → 10-30）、折成每月（季付 4000 → 1333）、到期状态
+    assert_eq!((st, v["data"]["old_due"].as_str(), v["data"]["new_due"].as_str()), (StatusCode::OK, Some("2027-04-30"), Some("2027-10-31")), "{v}");
+    // 视图带出：下次续费默认推到哪天、这一期几天（2027-07-31 → 10-31）、折成每月（季付 4000 → 1333）、到期状态
     let s = machine(&t, &id).await["subscription"].clone();
     assert_eq!(
         (s["next_due"].as_str(), s["period_days"].as_i64(), s["monthly_cents"].as_i64(), s["due_state"].as_str()),
-        (Some("2028-01-30"), Some(92), Some(1333), Some("ok")),
+        (Some("2028-01-31"), Some(92), Some(1333), Some("ok")),
         "{s}"
     );
 
@@ -153,6 +153,31 @@ async fn billing_day_reset_period() {
     let m = machine(&t, &relay.to_string()).await;
     assert_eq!(m["subscription"]["traffic_reset_day"], 31);
     assert_eq!(m["quota"]["period_start"], fleet_server::views::period_start(today, 31).to_string());
+
+    // 按周期续费落在账单日（31 号），不从落到月末的 2-28 接着漂成 3-28；重置日跟着账单日
+    let rid = relay.to_string();
+    let renew = format!("/api/v1/machines/{rid}/renewals");
+    let (st, v) = t.req("POST", &renew, Some(json!({"cycles": 1})), None).await;
+    assert_eq!((st, v["data"]["new_due"].as_str()), (StatusCode::OK, Some("2030-02-28")), "{v}");
+    let s = machine(&t, &rid).await["subscription"].clone();
+    assert_eq!((s["billing_day"].as_i64(), s["traffic_reset_day"].as_i64(), s["next_due"].as_str()), (Some(31), Some(31), Some("2030-03-31")), "{s}");
+    // 改订阅别的项、到期日不变：账单日不动
+    assert_eq!(put_sub(&t, &rid, json!({"due_date": "2030-02-28", "price_cents": 200})).await.0, StatusCode::OK);
+    let (st, v) = t.req("POST", &renew, Some(json!({"cycles": 1})), None).await;
+    assert_eq!((st, v["data"]["new_due"].as_str()), (StatusCode::OK, Some("2030-03-31")), "{v}");
+    // 直接给新到期日：落在账单日上的（网页默认填的 next_due，小月的月末）账单日不变
+    let (st, v) = t.req("POST", &renew, Some(json!({"new_due": "2030-04-30"})), None).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let s = machine(&t, &rid).await["subscription"].clone();
+    assert_eq!((s["billing_day"].as_i64(), s["next_due"].as_str()), (Some(31), Some("2030-05-31")), "{s}");
+    // 别的日子：账单日改成它几号，重置日跟着
+    let (st, v) = t.req("POST", &renew, Some(json!({"new_due": "2030-06-15"})), None).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let s = machine(&t, &rid).await["subscription"].clone();
+    assert_eq!((s["billing_day"].as_i64(), s["traffic_reset_day"].as_i64(), s["next_due"].as_str()), (Some(15), Some(15), Some("2030-07-15")), "{s}");
+    // 改订阅改了到期日：同样改账单日
+    assert_eq!(put_sub(&t, &rid, json!({"due_date": "2030-06-29", "price_cents": 200})).await.0, StatusCode::OK);
+    assert_eq!(machine(&t, &rid).await["subscription"]["billing_day"].as_i64(), Some(29));
 }
 
 /// 迁移 0026 对已有数据：账单日重置的供应商按数据识别；和模板相同的值改回跟随，不同的留作单独设置；机器的供应商按套餐修正。
@@ -197,6 +222,8 @@ async fn migration_normalizes_hard_coded_subscriptions() {
         ids.push(id);
     }
     sqlx::raw_sql(include_str!("../../../migrations/0026_subscription_inherit.sql")).execute(db).await.unwrap();
+    // 0026 换回了按到期日的重置日：再跑 0032（同样可重复执行）回到按账单日
+    sqlx::raw_sql(include_str!("../../../migrations/0032_billing_day.sql")).execute(db).await.unwrap();
 
     let reset: Vec<(String, String)> = sqlx::query_as("select code, traffic_reset from provider order by code").fetch_all(db).await.unwrap();
     assert_eq!(reset, [("ATT".into(), "month".into()), ("GM".into(), "billing".into())], "GM 的重置日都是到期日；ATT 只有 1 号的不算证据");
