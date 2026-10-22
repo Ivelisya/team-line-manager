@@ -22,6 +22,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
+use tracing_subscriber::fmt::format::Writer;
+use tracing_subscriber::fmt::{FmtContext, FormatEvent, FormatFields};
+use tracing_subscriber::registry::LookupSpan;
 
 const DEFAULT_CONFIG: &str = "/etc/fleet-agent/agent.toml";
 /// 关停时等后台任务自己收尾的上限 / 其后再等进行中的 apply 释放锁的上限
@@ -77,17 +80,56 @@ fn read_desired(a: &Args) -> Result<DesiredState> {
     serde_json::from_str(&s).with_context(|| format!("解析 {}", p.display()))
 }
 
+/// journald 按行首的 `<N>` 定级（SyslogLevelPrefix 默认开）：不加的话每行都记成 info，`journalctl -p warning` 查不到 WARN / ERROR。
+/// `on`：stdout 直连 journald（systemd 单元里运行）；终端里运行不加
+struct SyslogPrefix<F> {
+    on: bool,
+    fmt: F,
+}
+
+impl<S, N, F> FormatEvent<S, N> for SyslogPrefix<F>
+where
+    S: tracing::Subscriber + for<'a> LookupSpan<'a>,
+    N: for<'a> FormatFields<'a> + 'static,
+    F: FormatEvent<S, N>,
+{
+    fn format_event(&self, ctx: &FmtContext<'_, S, N>, mut w: Writer<'_>, ev: &tracing::Event<'_>) -> std::fmt::Result {
+        if self.on {
+            // syslog 优先级：3 err、4 warning、6 info、7 debug
+            let p = match *ev.metadata().level() {
+                tracing::Level::ERROR => 3,
+                tracing::Level::WARN => 4,
+                tracing::Level::INFO => 6,
+                _ => 7,
+            };
+            write!(w, "<{p}>")?;
+        }
+        self.fmt.format_event(ctx, w, ev)
+    }
+}
+
+/// stdout 是不是直连 journald：systemd 设的 JOURNAL_STREAM 是那条流的「设备号:inode」，与 stdout 对得上才算
+/// （变量会被子进程继承，输出被重定向的进程只看变量会误判）
+fn stdout_is_journal() -> bool {
+    use std::os::fd::AsFd;
+    use std::os::unix::fs::MetadataExt;
+    let Some(v) = std::env::var_os("JOURNAL_STREAM") else { return false };
+    let Ok(md) = std::io::stdout().as_fd().try_clone_to_owned().map(std::fs::File::from).and_then(|f| f.metadata()) else { return false };
+    v.to_str() == Some(format!("{}:{}", md.dev(), md.ino()).as_str())
+}
+
 // 工作线程固定 2 个：默认按核数开，大核数机器上 agent 自己就会占掉单元 TasksMax=128 的一大块
 // （阻塞 IO 都在 spawn_blocking 里，实验室单核机一直只有 1 个工作线程）
 #[tokio::main(worker_threads = 2)]
 async fn main() {
+    let journal = stdout_is_journal();
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
-        .with_target(false)
         .with_ansi(false)
+        .event_format(SyslogPrefix { on: journal, fmt: tracing_subscriber::fmt::format().with_target(false) })
         .init();
     if let Err(e) = real_main().await {
-        eprintln!("错误：{e:#}");
+        eprintln!("{}错误：{e:#}", if journal { "<3>" } else { "" });
         std::process::exit(1);
     }
 }
@@ -236,5 +278,52 @@ async fn wait_for_signal() {
     tokio::select! {
         _ = term.recv() => {}
         _ = int.recv() => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    #[derive(Clone, Default)]
+    struct Buf(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Buf {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// 按 main 里的格式各打一条 error / warn / info，返回输出的各行
+    fn lines(on: bool) -> Vec<String> {
+        let buf = Buf::default();
+        let w = buf.clone();
+        let sub = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || w.clone())
+            .event_format(SyslogPrefix { on, fmt: tracing_subscriber::fmt::format().with_target(false) })
+            .finish();
+        tracing::subscriber::with_default(sub, || {
+            tracing::error!("e");
+            tracing::warn!("w");
+            tracing::info!("i");
+        });
+        let out = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        out.lines().map(String::from).collect()
+    }
+
+    #[test]
+    fn syslog_priority_prefix_only_under_journald() {
+        let on = lines(true);
+        assert_eq!(on.iter().map(|l| &l[..3]).collect::<Vec<_>>(), ["<3>", "<4>", "<6>"], "{on:?}");
+        assert!(on[1].ends_with(" WARN w"), "{on:?}");
+        // 终端里：原样，不带前缀
+        let off = lines(false);
+        assert!(off.len() == 3 && off.iter().all(|l| !l.starts_with('<')), "{off:?}");
     }
 }
