@@ -78,7 +78,7 @@ pub struct Inner {
     pub notify_wake: Notify,
     /// 发送循环起了没有（每个进程一个，`notify::start`）
     pub notify_started: AtomicBool,
-    /// 唤醒作业引擎去领取（`wake_jobs`）；引擎空闲时等它，兜底每 800 ms 重查
+    /// 唤醒作业引擎去领取（`wake_jobs`）；引擎空闲时等它，或睡到最早一个作业到点（最多 30 秒）
     pub jobs_wake: Notify,
     /// 作业引擎在本进程里正在推进的作业（领取时排除）
     pub jobs_running: crate::jobs::Running,
