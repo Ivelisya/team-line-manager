@@ -4,6 +4,7 @@ use crate::auth::Actor;
 use crate::db::{audit, new_id};
 use crate::error::{ApiError, ApiPath, ApiResult};
 use crate::meta;
+use crate::policy::{Mode, Scope};
 use crate::state::{AppState, Event};
 use axum::extract::State;
 use axum::Json;
@@ -105,9 +106,12 @@ fn in_use(parts: &[(i64, &str)]) -> Option<String> {
     (!v.is_empty()).then(|| v.join("、"))
 }
 
-/// 删团队：还有机器（含已退役的——可能恢复，外键也拦着）或软路由时拒绝；它自己那一行访问规则一起删（团队没有节点，规则不影响任何线路机）
+/// 删团队：还有机器（含已退役的——可能恢复，外键也拦着）或软路由时拒绝。它的访问规则不是默认（仅观察、没有域名和备注）或有草稿时也拒绝：
+/// 生效的规则在发布版本的快照里，悄悄删掉就绕开了版本（回滚、核对都对不上）；规则是默认、没有草稿的那一行等于没有，一起删。
+/// 先拿访问规则的锁（同改草稿、发布、回滚），看过规则之后不会有并发的保存草稿插进来
 pub async fn delete_team(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
+    super::policy::lock(&mut tx).await?;
     let name: String = sqlx::query_scalar("select name from team where id = $1 for update")
         .bind(id)
         .fetch_optional(&mut *tx)
@@ -122,6 +126,19 @@ pub async fn delete_team(a: Actor, State(st): State<AppState>, ApiPath(id): ApiP
     .await?;
     if let Some(u) = in_use(&[(live, "台机器"), (retired, "台已退役的机器"), (routers, "台软路由")]) {
         return Err(ApiError::conflict(format!("「{name}」还有 {u}：先把它们移到别的团队（已退役的先彻底删除）再删")));
+    }
+    let rule: Option<(String, Vec<String>, String, bool)> =
+        sqlx::query_as("select mode, domains, note, draft is not null from policy where scope = 'team' and scope_id = $1")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if let Some((mode, domains, note, draft)) = rule {
+        let default = Scope::Team.default_data();
+        if draft || Mode::parse(&mode) != Some(default.mode) || domains != default.domains || note != default.note {
+            return Err(ApiError::conflict(format!(
+                "「{name}」的访问规则不是默认的「仅观察」或有未发布的草稿：先在「访问规则」里把它改回仅观察（清空域名和备注）并发布（有草稿的先发布或丢弃），再删团队"
+            )));
+        }
     }
     sqlx::query("delete from policy where scope = 'team' and scope_id = $1").bind(id).execute(&mut *tx).await?;
     sqlx::query("delete from team where id = $1").bind(id).execute(&mut *tx).await?;

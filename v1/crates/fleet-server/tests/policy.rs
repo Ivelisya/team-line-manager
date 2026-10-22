@@ -278,6 +278,35 @@ async fn rollback_invalidates_old_preview() {
     assert_eq!(v["seq"], 4);
 }
 
+/// 删团队不绕开发布版本：访问规则不是默认、或有草稿时 409；改回默认并发布后才能删。
+/// 回滚到删团队之前的版本时跳过这个团队（不建出没有主人的规则行），别的范围照常回滚
+#[tokio::test]
+async fn team_delete_respects_policy_versions() {
+    let t = setup().await;
+    let fx = seed(&t).await;
+    let team = common::seed_team(&t, "团队9").await;
+    let path = format!("/api/v1/teams/{team}");
+    let publish = || async {
+        let pv = t.post("/api/v1/policies/preview", json!({})).await;
+        t.post("/api/v1/policies/publish", json!({"draft_hash": pv["draft_hash"]})).await
+    };
+    t.put_policy("team", team, json!({"mode": "denylist", "domains": ["a.com"], "note": "", "expected_revision": 0})).await;
+    t.put_policy("team", fx.team1, json!({"mode": "denylist", "domains": ["a.com"], "note": "", "expected_revision": 0})).await;
+    assert!(t.fail("DELETE", &path, None, StatusCode::CONFLICT).await.contains("访问规则"), "只有草稿也不能删");
+    let v1 = publish().await;
+    assert!(t.fail("DELETE", &path, None, StatusCode::CONFLICT).await.contains("访问规则"), "生效的规则不是默认");
+    t.put_policy("team", team, json!({"mode": "observe", "domains": [], "note": "", "expected_revision": 2})).await;
+    t.put_policy("team", fx.team1, json!({"mode": "observe", "domains": [], "note": "", "expected_revision": 2})).await;
+    assert!(t.fail("DELETE", &path, None, StatusCode::CONFLICT).await.contains("草稿"), "改回默认的草稿还没发布");
+    publish().await;
+    let (s, v) = t.req("DELETE", &path, None, None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+
+    t.post(&format!("/api/v1/policies/versions/{}/rollback", v1["id"].as_str().unwrap()), json!({})).await;
+    let rows: Vec<(uuid::Uuid, String)> = sqlx::query_as("select scope_id, mode from policy where scope = 'team'").fetch_all(&t.st.db).await.unwrap();
+    assert_eq!(rows, vec![(fx.team1, "denylist".to_string())]);
+}
+
 #[tokio::test]
 async fn note_only_change_and_node_exemption() {
     let t = setup().await;
