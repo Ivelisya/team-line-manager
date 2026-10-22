@@ -29,7 +29,7 @@
 .ncard[data-health="degraded"] { border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
 .ncard.is-current { border-color: var(--accent); }
 .ncard.is-quiet .flow-rate, .ncard.is-quiet .nc-run-val { color: var(--fg-3); }
-.ncard.is-quiet .bar, .ncard.is-quiet .trend { opacity: 0.45; } /* 心跳条：卡片把 quiet 传成 Beat 的 stale（components.css .beat.is-stale） */
+.ncard.is-quiet .cells, .ncard.is-quiet .dots { opacity: 0.45; } /* 心跳条：卡片把 quiet 传成 Beat 的 stale（components.css .beat.is-stale） */
 
 /* 槽位通用：左右留白 = 卡片内边距；分段线在内边距之内 */
 .ncard > * { margin-inline: var(--card-pad); min-width: 0; }
@@ -82,7 +82,7 @@
 /* 3 字段 2×2 */
 .nc-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-8) var(--sp-16); margin-block: var(--card-seg) 0; padding-top: var(--card-seg); border-top: 1px solid var(--line); }
 
-/* 4 资源（主机：4 条细进度条；无主机：占位，同高） */
+/* 4 资源（主机：4 条分段格条；无主机：占位，同高） */
 .nc-res { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-14) var(--sp-20); margin-top: var(--card-seg); align-content: start; }
 .ncard[data-view="small"] .nc-res, .ncard[data-view="compact"] .nc-res { margin-top: 0; gap: var(--sp-12) var(--sp-16); }
 .nc-hold {
@@ -108,7 +108,7 @@
 [data-speed="low"] { --spd: var(--speed-low); }
 [data-speed="high"] { --spd: var(--speed-high); }
 [data-speed="max"] { --spd: var(--speed-max); }
-.flow-trend { align-items: center; gap: var(--sp-10); min-width: 0; min-height: 14px; } /* min-width 0：走势按列宽收，不把列撑宽、把「实时」挤出卡外 */
+.flow-trend { align-items: center; gap: var(--sp-10); min-width: 0; min-height: 14px; } /* min-width 0：点阵按列宽收，不把列撑宽、把「实时」挤出卡外 */
 /* 窄卡（手机）：方向标签放到读数上面，两列之间不挤。容器设在 .flow 上——卡片本身不能设 container-type（布局包含会让 subgrid 失效） */
 .flow { container-type: inline-size; }
 @container (max-width: 320px) { .flow-head { flex-direction: column; align-items: flex-start; gap: 0; } }
@@ -206,14 +206,14 @@
 .mtable .tname { display: flex; align-items: center; gap: var(--inline-gap); min-width: 0; }
 .mtable .tname > div { min-width: 0; } /* 名称 + 小字 IP 两行（同机器页名称列），长了各自省略 */
 .tmeter, .tquota { display: flex; align-items: center; gap: var(--sp-8); min-width: 0; }
-.tmeter .bar, .tquota .bar { flex: 1 1 auto; height: 5px; }
+.tmeter .cells, .tquota .cells { flex: 1 1 auto; height: 6px; }
 .tmeter > .num { flex: none; width: 34px; text-align: right; font-size: var(--fs-label); }
 .tmeter[data-tone="warn"] > .num { color: var(--warn-text); }
 .tmeter[data-tone="bad"] > .num { color: var(--bad-text); }
 .tquota > .num, .tquota > .t-sub { flex: none; min-width: 52px; margin-left: auto; text-align: right; font-size: var(--fs-label); }
 .trate { font-weight: var(--fw-semibold); color: var(--spd, var(--fg-3)); }
 .dt tr.is-quiet td { color: var(--fg-2); }
-.dt tr.is-quiet .bar { opacity: 0.45; }
+.dt tr.is-quiet .cells { opacity: 0.45; }
 .rc-rate small { margin-right: 2px; font: var(--fw-semibold) 11px / 1 var(--font-sans); letter-spacing: 0; color: var(--fg-2); }
 /* 窄环形卡（一行 5 张左右）：方向标签放到读数上面，读数单独一行，单位不再顶到卡片边 */
 .rc-foot { container-type: inline-size; }
