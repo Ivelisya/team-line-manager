@@ -23,6 +23,7 @@ import { copyNewShareLink } from '@/lib/moveShare';
 import { Pagination } from '@/components/app/Pagination';
 import { usePage } from '@/lib/usePage';
 import { Empty, ErrorNote, LabelValue, LabelValueGrid, Note, PageHead, Panel, Pill, type Tone } from '@/components/app/primitives';
+import '@/styles/jobs.css';
 
 /** 作业状态的色调（界面样式）；中文名在 /meta（jobStateLabel） */
 const STATE: Record<string, { tone: Tone; dot?: 'pulse' }> = {

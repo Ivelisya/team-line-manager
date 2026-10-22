@@ -12,6 +12,7 @@ import { Empty, ErrorNote, Pill, Section, SectionHeader } from '@/components/app
 import { fmtN } from '@/features/AccessBits';
 import { ConnCell, IspPlace, SourceProfile } from '@/features/IpIntelBits';
 import type { ProfileWindow } from '@/lib/ipintel';
+import '@/styles/access.css';
 
 const { BarChart, Bar, XAxis, YAxis, CartesianGrid, LabelList } = Recharts;
 

@@ -11,11 +11,7 @@ import './styles/home.css';
 import './styles/cards.css';
 import './styles/table.css';
 import './styles/pages.css';
-import './styles/jobs.css';
 import './styles/palette.css';
-import './styles/settings.css';
-import './styles/access.css';
-import './styles/routers.css';
 // 覆盖层放在所有组件与页面样式之后（同优先级靠文件顺序胜出）；按需加载的 policy.css、terminal.css 不写与它同名的规则
 import './styles/overrides.css';
 import './styles/tw-utilities.css';

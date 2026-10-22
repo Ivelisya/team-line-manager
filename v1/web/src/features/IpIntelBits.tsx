@@ -6,6 +6,7 @@ import { countryName } from '@/lib/flags';
 import * as F from '@/lib/format';
 import { InfoTip } from '@/components/ui/form';
 import { Chip, ErrorNote, Note, Pill, Section, SectionHeader, type Tone } from '@/components/app/primitives';
+import '@/styles/access.css';
 
 const TONE: Record<ConnType, Tone> = { residential: 'ok', mobile: 'info', datacenter: 'warn', vpn: 'bad', unknown: 'neutral' };
 const CONF: Record<string, string> = { high: '高', medium: '中', low: '低' };

@@ -22,6 +22,7 @@ import { CursorPager, Pagination } from '@/components/app/Pagination';
 import { scrollBackTo, usePage } from '@/lib/usePage';
 import { parseSort, useUrlSearch, useUrlState } from '@/lib/urlState';
 import { CONN_FILTER_OPTIONS, ConnCell, IpIntelHint, IpIntelStatusChip, IspPlace } from '@/features/IpIntelBits';
+import '@/styles/access.css';
 
 type View = 'targets' | 'new' | 'sources' | 'nodes' | 'events';
 const VIEWS: { value: View; label: string }[] = [
