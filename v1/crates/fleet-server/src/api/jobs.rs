@@ -43,7 +43,7 @@ pub struct ListQ {
     limit: Option<i64>,
     offset: Option<i64>,
     target_id: Option<Uuid>,
-    /// 作业类型：provision（各类上架）、restore（各类恢复），或 job.kind 本身（attach_entry、move_entry、retire、purge、upgrade_agent、tune…）
+    /// 作业类型：provision（各类上架），或 job.kind 本身（attach_entry、move_entry、retire、purge、upgrade_agent、tune…）
     kind: Option<String>,
 }
 
@@ -69,12 +69,12 @@ pub async fn list(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<L
         _ => "true",
     };
     let (limit, offset) = (q.limit.unwrap_or(100).clamp(1, 500), q.offset.unwrap_or(0).max(0));
-    // 上架、恢复各有四类机器，按大类筛；其余按 job.kind 原值
+    // 上架有四类机器，按大类筛；其余按 job.kind 原值
     let kind = match q.kind.as_deref().map(str::trim) {
         None | Some("" | "all") => None,
-        Some(k @ ("provision" | "restore")) => Some((format!("{k}\\_%"), true)),
+        Some("provision") => Some(("provision\\_%".to_string(), true)),
         Some(k) if !jobs::defs(k).is_empty() => Some((k.to_string(), false)),
-        Some(_) => return Err(ApiError::bad_request("kind 只能是 provision、restore 或作业类型（attach_entry、move_entry、retire、purge、upgrade_agent、tune、provision_vps…）")),
+        Some(_) => return Err(ApiError::bad_request("kind 只能是 provision 或作业类型（attach_entry、move_entry、retire、purge、upgrade_agent、tune、provision_vps…）")),
     };
     // 按机器、类型筛选的条件只在给了时才拼上（列表与总数各拼一份）
     let cond = |a: &mut Args| {
@@ -265,10 +265,9 @@ pub async fn retry(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     let back = jobs::provisions(&kind) && lc.as_deref() == Some("failed");
     if back {
         sqlx::query(
-            "update machine set lifecycle = 'provisioning', lifecycle_reason = case when $2 then '恢复中' end, revision = revision + 1, updated_at = now() where id = $1",
+            "update machine set lifecycle = 'provisioning', lifecycle_reason = null, revision = revision + 1, updated_at = now() where id = $1",
         )
         .bind(target)
-        .bind(kind.starts_with("restore_"))
         .execute(&mut *tx)
         .await?;
         lc = Some("provisioning".into());

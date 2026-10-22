@@ -57,10 +57,10 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
 ## 目录
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/teams` | `[{id,name,sort_order,spare,node_count}]`（`spare`：备用团队，里面在用、有订阅的机器过期满 1 天后中控自动退役并彻底删除；机器视图的 `spare` 同它） |
-| POST | `/teams` | `{name,sort_order?,spare?}` |
-| PATCH | `/teams/{id}` | `{name?,sort_order?,spare?}`（改团队名 = 该团队所有节点显示名一起变） |
-| DELETE | `/teams/{id}` | 还有机器（含已退役的）或软路由时 409（写明还有几台）；没有才删，团队自己的访问规则一起删。审计 `team.delete` |
+| GET | `/teams` | `[{id,name,sort_order,spare,node_count}]`（`spare`：唯一的备用团队，系统管理（迁移 0041 建好，唯一索引 `team_one_spare`）：退役的机器放这里，在用、有订阅的订阅过期满 1 天后中控清理并移进回收站，见「退役与回收站」；机器视图的 `spare` 同它） |
+| POST | `/teams` | `{name,sort_order?}`（建不了备用团队，`spare` 不收） |
+| PATCH | `/teams/{id}` | `{name?,sort_order?}`（改团队名 = 该团队所有节点显示名一起变；备用团队也能改名，如「团队2 备用」→「备用」；不能取消备用） |
+| DELETE | `/teams/{id}` | 备用团队 409（不能删）。还有机器（含已退役的、回收站里等待清除的）或软路由时 409（写明各有几台）；没有才删，团队自己的访问规则一起删。审计 `team.delete` |
 | GET | `/providers` | `[{id,name,code,panel_url,timezone,traffic_rule,traffic_reset,remind_days}]`；`traffic_rule` 是这家怎么计量流量额度（网卡本周期入、出总量）：`min` 取小（如 GOMAMI）/ `max` 取大 / `sum` 相加 / `out` 只算出站。供应商同时是名下机器订阅的**模板**：`timezone`（账单时区）、`traffic_reset`（流量周期：`month` 账单时区的自然月、每月 1 号起；`billing` 账单日，即每台机器到期日是几号就几号起，月份没有这一天按月末；`rolling30` 滚动 30 天，账单时区的今天往前 29 天起、没有重置日，如 Blossom）、`remind_days`（到期前几天提醒，0–60）——订阅没单独设置这几项的跟随它，改了立即生效 |
 | POST | `/providers` | `{name,code,panel_url?,timezone?,traffic_rule?,traffic_reset?,remind_days?}`；`traffic_rule` 不传 = `max`（不知道的供应商按取大，不会少算），`traffic_reset` 不传 = `month`，`remind_days` 不传 = 7，别的值 400；`panel_url` 须是 http(s) 地址（400）；`timezone` 不传 / null / 空串 = 存 null、跟随组织时区（`/meta` 的 org_timezone），否则须是 `at time zone` 认的时区（400）；名称或缩写重复 409 |
 | PATCH | `/providers/{id}` | `{name?,code?,panel_url?,timezone?,traffic_rule?,traffic_reset?,remind_days?}`：没传的不改（`traffic_rule` 改了立即影响这家机器的 `quota.used`；`timezone` / `traffic_reset` / `remind_days` 改了立即影响没单独设置这几项的订阅）；`panel_url` null / 空串 = 清空；`timezone` null / 空串 = 改回跟随组织时区（null）。校验同 POST（`panel_url` 和库里现有的一样时不校验：加 http(s) 校验之前存下的旧值不挡改别的字段）。写审计 `provider.update` |
@@ -74,6 +74,10 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
 `MachineView`（列表与详情同形）：
 ```
 { id, kind: "relay"|"vps"|"proxy", name, team:{id,name}|null, number|null, label|null, ip, ssh_port,
+  spare, spare_from|null, spare_since|null, recycle_on|null,
+                                // spare：在备用团队里（= 已退役、等到期回收；机器照常运行）。spare_from：进备用前的显示名（「团队2-07」），
+                                // spare_since：进备用的时刻（即退役时间，RFC3339），不在备用团队为 null（之前就在备用团队、没经退役进来的也为 null）。
+                                // recycle_on：备用团队里在用、有订阅的机器自动回收的日子（账单时区，到期日 + 2 天，这天 0 点起回收，"2026-11-17"），其余为 null
   country|null, country_set|null, // 国家的 ISO 3166-1 两位代码（"US"），网页在名字旁显示国旗。country_set 是上架 / 修改时手动指定的；
                                 // 没指定时 country 按 ip 查中控离线 IP 库，内网地址、家宽代理填的域名、库里查不到的为 null
   host_machine:{id,name}|null,  // 同机 IP 节点（kind 仍是 vps）：它所在的宿主机；它没有自己的 agent 和 SSH，下面的 agent、host 就是宿主机的，
@@ -136,7 +140,7 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
                                 // 不限流量（limit_gb 为 null）的机器 used 照算，界面只显示本月（nic 或业务流量），不显示本周期
   health: {status: "ok"|"degraded"|"down"|"unknown"|"maintenance"|"inactive", reasons:[{key,severity,text}]},
   active_job: {id,kind,state}|null,                    // 进行中的作业（queued/running/waiting/cancelling）
-  failed_job: {id,kind,state}|null,                    // lifecycle = failed（上架失败）时：失败的上架/恢复作业，重试回到 provisioning，取消则补偿退役；
+  failed_job: {id,kind,state}|null,                    // lifecycle = failed（上架失败）时：失败的上架作业，重试回到 provisioning，取消则补偿退役；
                                                        // lifecycle = retiring 且退役作业失败时：该 retire 作业（等重试）；其它情况 null
   open_incidents, maintenance,   // maintenance：同机 IP 节点在宿主机维护时也为 true
   relay: {public_host,generation,applied_generation,applied_at,apply_error,port_min,port_max}|null }
@@ -150,19 +154,18 @@ EntryView = { id, relay:{id,name}, node:{id,name}, direct, port, lifecycle, appl
 ```
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/machines?scope=live\|retired\|all` | 默认 live（未退役）。排序：线路机在前，然后按团队、编号。加 `view=brief` 只返回 `{id, kind, name, label, ip, lifecycle, host_id, team:{id,name}\|null}`（fleetctl 按名字找机器用；`host_id` 非 null 的是同机 IP 节点） |
+| GET | `/machines?scope=live\|all` | 默认 live（未退役）；all = 还没进回收站的全部机器（含退役完、还没收进回收站的，最多一小时）；回收站里的看 `GET /recycle-bin`；别的值 400（`retired` 已删）。排序：线路机在前，然后按团队、编号。加 `view=brief` 只返回 `{id, kind, name, label, ip, lifecycle, host_id, team:{id,name}\|null}`（fleetctl 按名字找机器用；`host_id` 非 null 的是同机 IP 节点） |
 | GET | `/machines/{id}` | 单台 |
 | PATCH | `/machines/{id}` | `{revision, team_id?, number?, label?, note?, provider_id?, plan_id?, service_ref?, country?}`。country 是 ISO 3166-1 两位代码（不在表里 400，「UK」提示英国是 GB），null 或空串 = 改回按 IP 自动。改团队/编号 = 改名：线路机备注随后自动同步，不换令牌、不断连接。有套餐时供应商就是套餐的：只改了套餐的，供应商跟着换；同时给了另一个供应商 400 |
 | GET | `/machines/{id}/series?metric=host\|traffic\|probe&range=1h\|6h\|24h\|7d\|30d` | 时序。≤24h 用原始点（1 分钟聚合），更长用小时汇总。同机 IP 节点的 `metric=host` 是宿主机的曲线 |
 | GET | `/machines/{id}/availability?days=30` | 近 N 天（`days` 1–90，默认 30，越界 400）每天的探测成功率：`{data:{days, items:[{date,tcp_total,tcp_ok,egress_total,egress_ok}], tcp_pct, egress_pct}}`。探测小时汇总按这台机器生效的账单时区（没有订阅按 `sub_template.billing_tz`）分到日历天（一个小时桶按起点归天），`items` 旧→新共 `days` 项、最后一项是今天（还没过完），没有探测的天各项为 0；`tcp_pct` / `egress_pct` 是整段的成功率（0–100），没有探测为 null。入口同 `series`：节点取自己的，线路机取挂在它上面的（含已移除的）。机器不存在 404 |
-| GET | `/machines/{id}/retire` | 退役预览：`{data:{name, renames:[{machine_id,old_name,new_name}], ip_nodes:[{id,name}]}}`——编号保持连续，退役后同团队后面的节点依次前移；`ip_nodes` 是会一并退役的同机 IP 节点（宿主机才有，还没开始退役的），`renames` 按所有受影响的团队算 |
-| POST | `/machines/{id}/retire` | `{confirm: <显示名>, reason?, cleanup?: true}` → `{data:{job_id, ip_node_jobs:[{machine_id,name,job_id}]}}`。退役完成时同团队编号自动压缩成 01..N（写审计）。线路机上还有节点入口时 409（提示先搬空）；这台（或它的同机 IP 节点）有作业正在执行一步（租约未过期）时 409，先取消并等它停下（升级 agent 不能取消，等它做完）；`reason` 最多 2000 字；它自己的直出入口不算，由退役作业的「摘除入口」一并摘掉。**宿主机**：它上面还没开始退役的同机 IP 节点在同一事务里一并置为退役中（`lifecycle_reason`「随宿主机「名字」退役」），作废它们进行中 / 失败的作业、关掉它们的告警，各建一个退役作业（`cleanup: false`：只摘入口，不登录清理——宿主机的清理连同所有实例一起删），列在 `ip_node_jobs`（没有为 []），各写一条审计 `machine.retire`。单独退役同机 IP 节点只删它自己的实例 |
-| POST | `/machines/{id}/purge` | 仅已退役。`{confirm: <显示名>}` → 作业；彻底删除机器与遥测，保留审计。宿主机上还有同机 IP 节点（含已退役的）没删时 409：「这台机器上还有同机 IP 节点没有彻底删除（含已退役的）：…；先删它们」。它的入口近 35 天有小时流量、且入口另一端的机器未退役时 409：「这台机器的入口在 YYYY-MM-DD 前仍计入其他机器的流量统计，届时再彻底删除」（作业执行时再查一次） |
+| GET | `/machines/{id}/retire` | 退役预览，见「退役与回收站」 |
+| POST | `/machines/{id}/retire` | 退役：默认移进备用团队，`now: true` 立即回收（退役作业），见「退役与回收站」 |
 | POST | `/machines/{id}/upgrade-agent` | 推送中控当前版本的 agent 并重启（作业 `upgrade_agent`；令牌顺带轮换） → `{data:{machine_id,name,kind,job_id,after:null}}`。线路机顺带收敛 fleet-xray 单元（变了只 daemon-reload，不重启 Xray，等它下次重启才生效）与访问日志轮转（配置 + 每小时的 fleet-xray-logrotate.timer），这两样没装上只记警告。**回滚**：推送时机器上的旧程序留成同目录的 `/usr/local/bin/fleet-agent.prev`（硬链接，新程序原子替换；上一次留的被覆盖，成功后也留着）；重启后新版本起不来（隔 3 秒主进程换了，或不是 active），或 2 分钟内没有用新令牌、以新版本号上报，就把 .prev 换回去并重启，作业失败，错误写明「新版本 X 起不来（…）/ 重启后 120 秒没有上报，已回滚到 <旧版本>」；机器上没有 .prev 或换回去也没起来时写明需要人工处理。程序和 dist 里的相同（推送跳过）时不回滚。**线路机**另要新版本自己报的 Xray 状态做到：Xray 在跑、已应用的配置追上升级开始时的期望代数、没有应用错误（`relay.apply_error` 与 agent 自报的 `last_apply_error` 都算）；只查升级前（推送之前读的 agent 最近状态）就做到的项，记在作业参数 `xray_checks`、推送那一步输出 `xray_checks`。2 分钟做不到同样换回并失败，错误「新版本 X 重启后 120 秒线路机检查没通过（Xray 没在跑；已应用的配置代数 2，没到 3；应用配置出错：…），已回滚到 <旧版本>」（`error_kind` remote）。「新版本自己报的」：中控入库时给 `agent_state.info.xray` 记上报它的 agent 版本（`agent_version`）——重启后新进程最先补发旧进程退出时落盘的报告，之后几份不带 Xray 状态，按上报时间分不出来。同机 IP 节点 409（agent 是宿主机的，升级宿主机） |
 | POST | `/machines/{id}/tune` | 重做系统调优（作业 `tune`，当前调优档 `tune-v1`，内容见 DESIGN.md §3）：写内核网络参数、journald 体积上限、补时间同步，逐键直接写 `/proc/sys` 再读回，只有读回一致的键进 `/etc/sysctl.d/99-zz-fleet-tune.conf`；不重启 ssserver / Xray、不断连接。无请求体 → `{data:{machine_id,name,job_id}}`。同机 IP 节点 409「同机 IP 节点和宿主机共用系统设置：对宿主机「X」调优」，家宽代理 409「家宽代理没有我们的机器」，非在用 409，机器上有进行中的作业 409。作业只能在排队时取消。审计 `machine.tune`（`{name, profile, job_id}`）。成功后机器的 `tune` = `{profile, at, current:true}`，不动 `revision` |
 | POST | `/agents/upgrade` | 所有在用线路机与 VPS 节点（不含同机 IP 节点）各建一个 `upgrade_agent` 作业（有进行中作业的跳过；每台单独提交，一台冲突不影响其他台），但不一起跑：先升一台做**金丝雀**（有线路机先挑线路机；同类里在用入口少的在前，一样少按名字），它成功后其余线路机**一台接一台**，线路机都成功后 VPS 节点**并发**（作业引擎的并发上限 `job_workers`）。编排记在作业参数 `after`（要等的作业 id）：那个作业结束之前这个作业领取不到（一直是 queued）；它在推送之后失败了（新版本起不来、没上报、线路机检查没通过）或被取消，这个作业一步都不做、直接取消，`error` 写明原因（如「金丝雀「线路机2」升级失败，其余机器不再升级」「「线路机3」升级失败，后面的机器不再升级」「「线路机3」的升级没有完成（已取消），后面的机器不再升级」，再往后的沿用同一个原因），日志一条「没有开始：…」。它在推送之前就失败的（SSH 连不上、登录被拒、推送失败：机器上的程序没换过，与新版本无关）不算，这个作业照常开始——agent 步骤每次尝试先记作业参数 `pushed=false`，要用 dist 里的程序重启 agent 之前置 true，编排据此判断（没有记的按推送之后算）。排队中的作业可以取消（`POST /jobs/{id}/cancel`），等它的跟着取消。VPS 节点之间互不等待，一台失败不影响别的。发起时把 dist 里 agent 的 sha256 与版本号记进各作业参数 `rollout:{sha256,version}`，每个作业开始前、推送时各核对一次：中途重新部署过中控（dist 换了）就不推，正要推送的失败、没开始的直接取消，`error` 都是「中控上的 agent 在升级过程中换了版本（发起时是 X），请重新发起全部升级」。dist 里没有 agent 程序或读不出版本号（`--version`）时 409、不建作业 → `{data:{jobs:[{machine_id,name,kind,job_id,after}], skipped:[{machine_id,name,reason}], order}}`：`jobs` 按执行顺序（第一个是金丝雀，`after` 为 null）；`order` 是给人看的顺序说明，如「先升「线路机3」做金丝雀，成功后其余 2 台线路机逐台升级，线路机都成功后 40 台 VPS 节点并发升级；新版本在任何一台线路机上出问题，没开始的都会取消」（只有一台时「只有「X」一台」，一台都没建时「没有要升级的机器」） |
 | PUT | `/machines/{id}/subscription` | `{due_date, price_cents?,currency?,cycle?,billing_tz?,remind_days?,traffic_gb?,traffic_reset_day?, auto_renew?}`。只有 `due_date` 必填。`price_cents` … `traffic_reset_day` 是**单独设置**，整份替换：没传或 null = 跟随模板（见 `sub_template`），给了值 = 这台单独设置；和模板相同的值也按跟随存（旧客户端整份带上生效值不会把套餐的值抄进来）。没有套餐的机器价格没有可跟随的，必须给 `price_cents`（400）。校验：`price_cents` / `traffic_gb` ≥ 0、`cycle` 四选一、`currency` 3 个字母（存成大写）、`remind_days` 0–60、`traffic_reset_day` 1–31、`billing_tz` 须是 `at time zone` 认的时区，否则 400。`auto_renew` 没传 = 不改（新建为否）。账单日（`billing_day`）：`due_date` 落在现有账单日上的（原样带回的到期日、小月的月末，如 31 号账单日的 2-28）不动，否则（或新建）记成 `due_date` 是几号。`traffic_gb` 是供应商的十进制 GB（10⁹ 字节，0 = 不限）。不再按面板校准：带 `traffic_used_gb`（数值或 null）400「流量已用改为由 agent 按网卡统计，不再按面板校准」；已录的接入前读数不受 PUT 影响，进入下一个周期自动失效（见 `quota.base`）。写审计 `subscription.set` |
-| POST | `/machines/{id}/renewals` | `{new_due?, cycles?, amount_cents?, note?}`，`new_due` 与 `cycles` 给一个（都给、都不给、`cycles` 不在 1–120 时 400）：`cycles` = 中控按订阅生效的 `cycle` 从当前到期日推几个周期，落在账单日（`billing_day`，目标月没有这一天时落到月末；账单日不变，所以 31 号的 1-31 → 2-28 → 3-31，不会漂成 3-28；fleetctl `renew --cycles`）；`new_due` 直接给新到期日（网页对话框默认填 `subscription.next_due`），账单日同改订阅：落在现有账单日上的不动，否则改成它是几号。新到期日要晚于当前的。只顺延到期日，单独设置照旧 → `{id, old_due, new_due}` |
+| POST | `/machines/{id}/renewals` | `{new_due?, cycles?, amount_cents?, note?}`，`new_due` 与 `cycles` 给一个（都给、都不给、`cycles` 不在 1–120 时 400）：`cycles` = 中控按订阅生效的 `cycle` 从当前到期日推几个周期，落在账单日（`billing_day`，目标月没有这一天时落到月末；账单日不变，所以 31 号的 1-31 → 2-28 → 3-31，不会漂成 3-28；fleetctl `renew --cycles`）；`new_due` 直接给新到期日（网页对话框默认填 `subscription.next_due`），账单日同改订阅：落在现有账单日上的不动，否则改成它是几号。新到期日要晚于当前的。只顺延到期日，单独设置照旧 → `{id, old_due, new_due}`。**自动续费**（`auto_renew`）：中控每小时的维护在账单时区的今天晚于到期日时按周期顺延到不早于今天（账单日不变），每期记一条续费记录（`amount_cents` 取生效价格，`note`「自动续费」，`actor`「系统」）与审计 `renewal`（`detail.auto = true`，摘要「到期 … → …（自动续费）」）；先于备用到期判断，开了自动续费的备用机器不会被回收。只记账，不向供应商付款 |
 | GET | `/machines/{id}/renewals` | |
 | GET | `/teams/{id}/renumber` | 预览：`{data:{changes:[{machine_id,old_name,new_name}],token}}` |
 | POST | `/teams/{id}/renumber` | `{token}`（预览返回的，防止预览后数据变了）→ 一次生效 |
@@ -211,7 +214,7 @@ ProvisionItem = {
 `Job = {id,kind,target:{id,name}|null,state,step,step_count,step_title,error,created_by,created_at,started_at,finished_at,steps:[{idx,key,title,state,started_at,finished_at,output,error}]}`（`step_count` = 该种作业的步骤数，`step_title` = 第 `step` 步的标题，做完为 null）
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/jobs?state=active\|done\|all\|failed&target_id=&kind=&limit=100&offset=0` | `kind`：`provision`（各类上架）、`restore`（各类恢复）或作业类型原值（`attach_entry`、`move_entry`、`replace`、`retire`、`purge`、`upgrade_agent`、`tune`、`provision_vps`…），别的值 400，与 `state` 等一起生效。分页：`{items:[Job（不含 steps、cancellable、result，另有 step_title）], total, next_offset}`，按创建先后倒序（`id desc`） |
+| GET | `/jobs?state=active\|done\|all\|failed&target_id=&kind=&limit=100&offset=0` | `kind`：`provision`（各类上架）或作业类型原值（`attach_entry`、`move_entry`、`replace`、`retire`、`purge`、`upgrade_agent`、`tune`、`provision_vps`…），别的值 400，与 `state` 等一起生效。分页：`{items:[Job（不含 steps、cancellable、result，另有 step_title）], total, next_offset}`，按创建先后倒序（`id desc`） |
 | GET | `/jobs/{id}` | 含 steps |
 | GET | `/jobs/{id}/logs?after=<log id>` | `[{id,ts,level,msg}]`，按 id 升序，一次最多 1000 行（满页按最后一行的 id 接着拉） |
 | GET | `/jobs/{id}/logs?tail=<N>[&after=<log id>]` | （after 之后的）最后 N 行（1-5000）：`{logs:[{id,ts,level,msg}], skipped, after}`，`skipped` 是前面没给的行数，`after` 是续拉用的游标（最后一行的 id，没有日志时原样返回） |
@@ -257,7 +260,7 @@ ProvisionItem = {
 | GET | `/incidents?state=firing\|resolved\|all&subject_id=&limit=100&offset=0` | 分页：`{items:[{id,rule,rule_name,subject:{id,name},subject_id,subject_name,severity,state,summary,opened_at,last_seen_at,resolved_at,ack_at,ack_by,reopen_count}], total, acked, next_offset}`；`acked` = 同一筛选下已确认的条数（确认不关闭告警，`total` 含它们）；`state` 默认 firing；`subject_id`（可选，机器 id）只看这台机器的告警，与 `state`、分页组合，`total` 同样只数它的（如抽屉的最近告警：`?subject_id=<id>&state=all&limit=5`；不是 uuid 时 400）；`reopen_count`：恢复后 30 分钟内同一（规则, 对象）复发会重开原告警而不是新建，每次 +1；顺序：进行中在前 → 严重度高在前 → 开始时间新在前（同时刻按 id，翻页不重不漏）；带 `subject_id` 时不看严重度：进行中在前 → 开始时间新在前（一台机器的「最近告警」按时间读）。中控自身的告警（规则 `central_` 开头，见下表）对象不是机器：`subject`、`subject_id` 为 null，`subject_name` 为「中控」 |
 | POST | `/incidents/{id}/ack` | 确认告警：不存在 404，已确认过 409；写审计 `incident.ack` |
 | GET/POST | `/silences`、DELETE `/silences/{id}` | GET：还没结束的（`ends_at` 晚于现在，含还没开始的预约）`[Silence]`，按 `starts_at` 排——进行中的在前，已预约的随后；只有此刻在窗口内的才起作用（不开告警、不发通知，维护还暂停健康判定）。POST `{subject_id?,rule?,starts_at,ends_at,is_maintenance,comment（最多 2000 字）}` → `{id}`（`subject_id` 空 = 全部机器，`rule` 空 = 全部规则）：`ends_at` 要晚于 `starts_at`、时长最多 30 天、`ends_at` 不能已经过去（`starts_at` 可以，「从现在开始」由客户端按自己的时钟填）、`starts_at` 最多在 90 天后，`rule` 必须是已知规则 key（且不能与 `is_maintenance` 同时给：维护针对整台机器）、`subject_id` 必须是存在的机器，否则 400（中文原因）；全部机器（`subject_id` 空）的用 API 密钥建时最长 24 小时（超了 400：全部机器的静默等于关掉监控），账号登录的会话仍是 30 天。DELETE 不存在或已删 404。新建、删除都写审计（详情是这条静默本身：对象名、规则、起止、维护、备注），并给所有启用的通知渠道发一条 `silence` 通知（谁、新建还是删除、对象、维护还是静默、起止、备注；不看渠道的 `min_severity`，也不受任何静默影响）：全部机器的一律发（含预约的），单台的只在此刻生效（`starts_at` ≤ 现在 < `ends_at`）时发 |
-| GET | `/audit?target_id=&cat=&q=&limit=&before_id=` | 按 id 倒序；`before_id` 翻页（只要 id 小于它的，传上一页最后一条的 id），与筛选一起用。`cat`：`all`、`auth`（auth.*）、`exec`（exec、ssh.login、terminal.open/close、machine.logs、server.logs、restore.probe）、`machine`（machine / entry / relay / subscription / agent / job / renewal 开头的，除去 exec 类）、`config`（其余），别的值 400。`q`：不分大小写的包含匹配，`%` `_` 按字面；匹配操作人（按界面写法：`cli` 是「中控命令行」，`apikey:名称` 是「名称（API 密钥）」）、标题（`title` 含它的动作）、摘要（`summary`，写审计时存下；`detail` 里摘要不展示的值不算），有 `exec` scope 时另搜命令原文；查询超过 5 秒中止，回 503 `unavailable`（换更具体的关键词或先按分类筛选）。没有 `exec` scope 的密钥看不到命令：`detail.command` 换成「命令已隐藏（N 字）」，`summary` 里的命令同样隐藏。`exec` / `machine.logs` 在执行前就写一条 `detail.started=true` 的记录，执行完补上结果并去掉 `started`；`started` 还在说明在执行中或中控中途重启 |
+| GET | `/audit?target_id=&cat=&q=&limit=&before_id=` | 按 id 倒序；`before_id` 翻页（只要 id 小于它的，传上一页最后一条的 id），与筛选一起用。`cat`：`all`、`auth`（auth.*）、`exec`（exec、ssh.login、terminal.open/close、machine.logs、server.logs，以及已删掉的恢复预检留下的旧记录 restore.probe）、`machine`（machine / entry / relay / subscription / agent / job / renewal / recycle 开头的，除去 exec 类）、`config`（其余），别的值 400。`q`：不分大小写的包含匹配，`%` `_` 按字面；匹配操作人（按界面写法：`cli` 是「中控命令行」，`apikey:名称` 是「名称（API 密钥）」）、标题（`title` 含它的动作）、摘要（`summary`，写审计时存下；`detail` 里摘要不展示的值不算），有 `exec` scope 时另搜命令原文；查询超过 5 秒中止，回 503 `unavailable`（换更具体的关键词或先按分类筛选）。没有 `exec` scope 的密钥看不到命令：`detail.command` 换成「命令已隐藏（N 字）」，`summary` 里的命令同样隐藏。`exec` / `machine.logs` 在执行前就写一条 `detail.started=true` 的记录，执行完补上结果并去掉 `started`；`started` 还在说明在执行中或中控中途重启 |
 | GET | `/notify-log?limit=100` | 通知发送记录（新→旧，`limit` 1–1000）：`[{id, channel_id, channel_name, incident_id, ts, ok, error, kind: "firing"\|"repeat"\|"resolved"\|"test"\|"silence", subject_name, rule_name}]`；一次投递一条，在送达或放弃时写：失败重试中的不记（还在发送队列里），入队满 30 分钟还没发出的放弃，记一条 `ok:false`、`error` 为「入队 30 分钟还没发出，放弃（最近一次失败：…）」；渠道拒绝（不值得重试）的当场记失败。`error` 只有 HTTP 状态与渠道 JSON 里的说明（Telegram `description`、企业微信 `errmsg`，截到 200 字），不存原始响应体；`subject_name` 是告警对象的显示名（中控自身的告警是「中控」，`silence`（静默 / 维护变更）是「静默 / 维护变更」），`rule_name` 是规则中文名（与通知正文一致）；测试消息两者为 null，机器或告警已删除时对应字段为 null。没收到某条告警「触发」的渠道不发它的「恢复」，也不记 |
 
 **中控自身的告警**（selfmon.rs，规则 `central_` 开头）：对象是「中控」而不是机器，每 30 秒随告警评估检查一次；不去抖，恢复后再出现新开一条；被静默的不开、不发（只能用全部机器 + 规则 key 静默）；critical 每 4 小时提醒一次。通知里「机器」一行写「中控」。
@@ -274,6 +277,7 @@ ProvisionItem = {
 ## 返回形状补充（前端以此为准）
 
 - `health.reasons[]`：`{key, rule_name, severity, text}`；`rule_name` 是规则中文名（同通知）；`severity`：`"info"` | `"warning"` | `"critical"`（info 只有 `policy_blocked`，不影响健康）。
+  `renewal_due`（「即将到期」）：到期前提醒天数内（不是自动续费）为 warning，文案「3 天后到期」「今天到期」；过期后同一条规则升为 critical，文案「已过期 2 天」——告警不先恢复再新开，按「严重度只升不降」马上再发一次触发（旧的 `renewal_overdue` 并进来了，迁移 0041 把开着的改名接上）。和流量额度一样**不影响** `health.status`（账单到期不是机器出了问题：不算降级、故障），只开告警；不去抖，持续提醒每天一次。备用团队的机器文案后面接哪天自动回收（「，备用节点明天自动回收」）与还指向它的软路由出口（「；软路由出口 路由名 · 出口名 还指向它」）。
   `traffic_quota_high`（「流量额度吃紧」）：本周期已用（`quota.used`）到上限（订阅的 `traffic_gb`，没填按套餐的；0 / 空 = 不限，不评估）的 90% 为 warning，到 100% 为 critical；上限按十进制 GB（1 GB = 10⁹ 字节，同供应商），文案也写 GB、不换算成 TB，如「本周期流量已用 92%（1840 GB / 2000 GB），9 天后重置」「本周期流量已超出额度（已用 102%，2050 GB / 2000 GB）」（有流量重置日才写几天后重置）；滚动 30 天（`quota.mode = rolling30`）写「近 30 天流量已用 …」、不写几天后重置；周期中途上架（`quota.counted_from` 非 null）末尾加「（10-22 起统计，之前的量不到）」（日期按组织时区）。
   它和 info 一样**不影响** `health.status`，只开告警：不去抖，回落到 90% 以下（如新周期开始）下一轮评估即恢复；升为 critical 时马上再通知一次，持续提醒每天最多一次（同续费类）。同机 IP 节点自己没设上限时不评估（额度算在宿主机上）。
   `clock_skew`（warning，「agent 时钟不准」）：agent 在线且 `|agent.clock_skew_ms|` > 60 秒，文案如「agent 时钟慢 17 分钟：读数可能缺失或冻结，请校时」——样本按 agent 的时间入库，当前读数只看最近 15 分钟、持续负载只看最近 5 分钟；比中控超前 10 分钟以上的样本（含入口流量、探测）直接丢弃。和其它 warning 原因一样满 60 秒去抖后开告警。
@@ -284,8 +288,8 @@ ProvisionItem = {
   - probe：`{ts, tcp_ok, tcp_ms, egress_ok, egress_ms}`（失败时 `*_ms` 为 null；1m 分辨率另有 `tcp_n`、`tcp_ok_n`（该分钟 TCP 探测次数 / 成功次数，线路机为其所有入口合计）；1h 分辨率另有 `tcp_success_pct`、`egress_success_pct`）
 - 作业 `Job`：`{id, kind, target: {id,name}|null, state, step, step_count, step_title, error, created_by, created_at, started_at, finished_at}`（`step` 当前或失败的步骤下标，`step_title` 它的标题，做完为 null）；
   `state` ∈ `queued | running | waiting | cancelling | succeeded | failed | cancelled`；详情另有 `steps[]`（`output` 是 JSON 对象或 null；各步骤输出的 key 与中文展示见 `web/src/lib/jobs.ts` 的 `OUTPUT`，跳过的步骤为 `{reason}`）与 `cancellable`。
-  作业 `kind` ∈ `provision_vps | provision_proxy | provision_relay | provision_ip | restore_vps | restore_proxy | restore_relay | restore_ip | attach_entry | move_entry | retire | purge | upgrade_agent | replace | tune`。
-  `provision_ip`（上架同机 IP 节点）/ `restore_ip`（恢复同机 IP 节点）的步骤：`ip_check`（在宿主机上核对 IP，输出 `{ss_port, local_ips, egress_ip, bind_ip}`：最终的 SS 端口、宿主机本机的 IPv4（逗号加空格分隔的字符串）、经这个 IP 访问中控 /echo 回显的地址、1:1 NAT 映射时公网 IP 映射到的本机地址（在网卡上的为 null；写进机器的 `bind_ip`，详情 JSON 里同名字段）→ `converge`（推 ssserver、装它自己的实例与防火墙，输出同 VPS 节点，`bbr` 为 null——不做系统基线）→ `attach` → `wait_applied` → `verify` → `activate`。
+  作业 `kind` ∈ `provision_vps | provision_proxy | provision_relay | provision_ip | attach_entry | move_entry | replace | retire | purge | upgrade_agent | tune`（`restore_*` 已删，旧记录照样显示中文名）。
+  `provision_ip`（上架同机 IP 节点）的步骤：`ip_check`（在宿主机上核对 IP，输出 `{ss_port, local_ips, egress_ip, bind_ip}`：最终的 SS 端口、宿主机本机的 IPv4（逗号加空格分隔的字符串）、经这个 IP 访问中控 /echo 回显的地址、1:1 NAT 映射时公网 IP 映射到的本机地址（在网卡上的为 null；写进机器的 `bind_ip`，详情 JSON 里同名字段）→ `converge`（推 ssserver、装它自己的实例与防火墙，输出同 VPS 节点，`bbr` 为 null——不做系统基线）→ `attach` → `wait_applied` → `verify` → `activate`。
   `ip_check` 失败：宿主机 SSH 连不上（network）；IP 不在宿主机网卡上、也没有哪个本机地址经 NAT 出去是它（「IP x 不在宿主机 H 的网卡上（本机：…），也没有哪个本机地址经 NAT 出去是这个 IP（…）」，remote；有几个本机地址都是它时也失败）；回显的来源不是这个 IP（出站路由不对，remote）。暂定的 SS 端口在宿主机上被占用时自动换成最小空闲端口，日志里有一条警告。
   同机 IP 节点的退役作业 `cleanup` 一步只删它自己的实例（输出 `ss` 是 gone / still_listening，指它自己的端口）。
   `upgrade_agent`（升级 agent）的步骤：`agent`「推送并重启 agent」（输出 `{binary_updated, agent_version, prev_version, xray_checks, xray_restarted}`：`xray_restarted` 为 true 表示线路机 DNS 是链路本地地址、为换上公共解析器重启了一次 Xray（其余为 null）；`agent_version` 是装上的版本，`prev_version` 是这次换下来、留作回滚的旧版本，程序没变时为 null；`xray_checks` 是升级线路机、程序换过时等上报还要做到的几项，如「Xray 在跑、配置应用到代数 3、没有应用错误」，升级前都没做到时「不查（升级前 Xray 就不正常）」，其余为 null；上架的 `agent` 步骤输出同形）→ `wait_report`「等待新版本上报」（等装上的版本用新令牌上报，线路机还要过 `xray_checks`，输出 `{first_report_at, agent_version, old_tokens_revoked}`）。回滚见 `POST /machines/{id}/upgrade-agent`；被编排取消的、排队时被取消的（见 `POST /agents/upgrade`、`POST /jobs/{id}/cancel`）`started_at` 为 null、步骤全是 pending。
@@ -380,17 +384,51 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 
 **异常告警**（warning，进 incident 表并走通知渠道）：节点第一条来源记录起 `learn_days`（默认 7）天内只学习；之后某节点出现新的运营商 → `ipintel_new_isp`，新的城市 → `ipintel_new_city`，某 (节点, 来源 IP) 第一次出现且为机房/VPN → `ipintel_datacenter_source`。跳过非公网地址和我方机器。一次性异常最后一次出现 `alert_ttl_hours`（默认 24）小时后自动恢复，不发恢复通知；同一个值恢复后，只要它还在来源画像里就不会再告警。来源画像（运营商、城市、接入方式、机房/VPN 来源 IP，一个值一行）最近一次出现超过 `profile_days`（见「访问记录保留期」）、且不在告警中的由每小时的清理删掉：之后同一个值再出现算「新的」，会再告警一次；一个节点的画像全删光（闲置超过这么久）后再有流量，学习期从头算。后台每 5 分钟从 `access_source_hourly` 增量维护 `node_source_seen`（水位在 `ipintel_state`；水位之前的小时若被补算，连接数差值经 `access_source_late` 补记，首次扫描按 7 天一页）。
 
-## 生命周期操作：换线路机、搬空线路机、替换节点、恢复已退役的机器
+## 退役与回收站
+生命周期只有一条路：`在用 →（退役 = 移进备用团队）→ 订阅过期满 1 天 → 清理 → 回收站`。「立即回收」走同一条路，只是不等到期。回收站是一张审计表（`recycle_bin`），机器进去后从所有视图消失；撤销退役 = 把机器移出备用团队（`PATCH /machines/{id}` 改团队），不用重新上架。「恢复已退役机器」与手动「彻底删除」已删掉。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/machines/{id}/retire` | 退役预览，见下 |
+| POST | `/machines/{id}/retire` | `{confirm: <显示名>, reason?, now?: false, cleanup?: true}`。默认移进备用团队 → `{mode:"spare", name（备用里的新名字）, from（原名）, recycle_on, ip_nodes:[{id, name, from}]}`；`now: true` 立即回收（退役作业）→ `{mode:"now", job_id, ip_node_jobs:[{machine_id,name,job_id}]}`。见下 |
+| GET | `/recycle-bin?q=&source=&limit=100&offset=0` | 回收站列表（只读，不含快照），按回收时间倒序：`{items:[RecycleItem], total, next_offset}`。`q`：不分大小写的包含匹配，搜名字（含回收时的名字）、IP、团队、供应商、套餐、供应商编号、宿主机名；`source`：`fleet` / `legacy`（别的值 400）；`limit` 1–500 |
+| GET | `/recycle-bin/{id}` | 单条：`RecycleItem` 加 `snapshot`；没有 404 |
+| POST | `/recycle-bin/import` | 旧面板的退役机器导入（要 `write`），见下 |
+
+`RecycleItem` = `{id, source:"fleet"|"legacy", source_id, machine_id|null, kind, name, last_name|null, team|null, ip|null, host_name|null, provider|null, plan|null, service_ref|null, price_cents|null, currency|null, cycle|null, activated_at|null, retired_at|null, due_date|null, recycled_at, reason|null, traffic_up|null, traffic_down|null, nic_rx|null, nic_tx|null, actor}`：
+`name` 退役前的名字（进过备用的是 `spare_from`），`last_name` 回收时的名字（「备用-03」；立即回收的同 `name`，导入的为 null），`team` 退役前的团队；`retired_at` 进备用的时刻（立即回收的是退役作业完成的时刻）；价格、币种、周期是订阅的生效值（没有订阅取模板）；`reason` 退役原因（到期回收的接上「备用到期自动回收（到期日 …）」）；`traffic_*` 入口业务流量合计（字节，整个生命周期；线路机按它上面全部入口算），`nic_*` 网卡累计（没有网卡读数的家宽代理、同机 IP 节点为 null）。数值的口径以流量改造为准。
+`snapshot`（fleet）：`{machine（机器行，不含秘密）, name, team, host, provider, plan, subscription（生效值）, renewals[], entries:[{relay,node,port,lifecycle,created_at,removed_at}], outbound（出站参数，不含秘密）}`；legacy 是导入时给的原始记录。回收站不受保留期清理影响，一直保留。
+
+**退役预览** `GET /machines/{id}/retire` → `{name, renames:[{machine_id,old_name,new_name}], ip_nodes:[{id,name}], spare:{ok, why|null, team:{id,name}, to_name|null, recycle_on|null, ip_nodes:[{id,name,to_name}]}, routers:[{id,name,exits:[{exit,node}]}]}`：
+- `renames`：机器离开后原团队压缩编号的改名（两种去向一样；`numbering.auto_compact` 关掉时为 []）；`ip_nodes`：立即回收时一并回收的同机 IP 节点（宿主机才有）。
+- `spare`：能不能移进备用（`ok`，不能时 `why`：线路机、已经在备用团队里、还没上线（上架中或上架失败）、没有订阅、订阅已经过期满 1 天——这些只能立即回收）；进去后的名字（备用团队最小的空号）、自动回收的日子（账单时区）、一起进备用的同机 IP 节点与它们的新名字（已经在备用团队的不算）。
+- `routers`：各软路由最近一次采集里还指向这台（和它的同机 IP 节点）的出口，`node` 是指向的那台；只提示、不阻断，软路由不自动改（要换掉先「替换」）。
+
+**移进备用**（默认）：一个事务、不建作业。先锁团队（原团队、同机 IP 节点的团队、备用团队）再锁机器；进不了备用（同 `spare.why`）409「不能移进备用：…。要现在就清理并移进回收站，选「立即回收」（now: true）」；它或它的同机 IP 节点有进行中的作业 409；`reason` 最多 2000 字。改到备用团队最小的空号（与 `PATCH /machines/{id}` 同一段代码：审计 `machine.rename`、刷新线路机备注，并记下 `spare_since` / `spare_from`），`lifecycle_reason` 记退役原因；宿主机上还没退役、不在备用团队的同机 IP 节点一起进（编号挨着，原因「随宿主机「名字」退役」）；原团队压缩编号。机器照常运行：入口、端口、软路由出口都不动，告警照常（备用期间故障照常通知）。审计 `machine.retire`（`detail.mode = "spare"`，`{name, to, reason, recycle_on, ip_nodes}`；同机 IP 节点各一条，带 `host`），摘要「团队1-01 → 备用-02（换新机）」。
+移出备用（改到别的团队）= 撤销退役：`spare_since`、`spare_from`、`lifecycle_reason` 清空。
+
+**立即回收**（`now: true`）：建退役作业 `retire`（摘入口 → 等线路机 → 清理 → 撤令牌 → 收尾），收尾时同一个事务移进回收站。线路机上还有节点入口时 409（提示先搬空，它自己的直出入口不算，由「摘除入口」一并摘掉）；这台（或它的同机 IP 节点）有作业正在执行一步（租约未过期）时 409，先取消并等它停下（升级 agent 不能取消）；`reason` 最多 2000 字；`cleanup: false` 不登录清理。宿主机：它上面还没开始退役的同机 IP 节点同一事务里一并置为退役中（作废它们进行中 / 失败的作业、关告警），各建一个 `cleanup: false` 的退役作业（只摘入口，宿主机的清理连同所有实例一起删），列在 `ip_node_jobs`。审计 `machine.retire`（`detail.mode = "now"`）。
+
+**到期回收**（中控每小时的维护，`spare.rs`；中控启动时先跑一轮）：
+1. 已退役、还没进回收站、没有进行中作业的（上架取消的、这一版之前就退役了的）移进回收站（审计 `machine.recycle`，`detail.auto = "retired_sweep"`）。
+2. 回收站里的机器行在 `purge_blocker` 放行时自动物理删除（作业 `purge`，操作人「系统」，`auto = "spare_expiry"`；遥测、入口、机器行删掉，回收站这一行留着）：宿主机上还有同机 IP 节点（含已退役的）先删它们；它的入口近 35 天的小时流量还计入另一端未退役机器的统计时等到那天之后。物理删除失败过的不再自动重建（等人重试那个作业）。
+3. 备用团队里在用、有订阅、账单时区的今天晚于「到期日 + 1 天」的（`recycle_on` 当天 0 点起）：发起退役作业（同立即回收，带清理，操作人「系统」，作业参数与审计 `auto = "spare_expiry"`），`lifecycle_reason` 接上「备用到期自动回收（到期日 …）」，经通知渠道发一条 `auto`（「自动回收」，发给所有启用的渠道，不看级别）；作业收尾时进回收站。机器（或它的同机 IP 节点）有进行中作业的这一轮跳过；宿主机上有不在备用团队的同机 IP 节点的不回收（留给人处理）。还指向它的软路由出口不拦回收（到期时供应商通常已停机）。
+提前通知复用续费告警 `renewal_due`：备用机器的文案写明哪天回收、列出还指向它的软路由出口；过期第 1 天的「已过期 1 天，备用节点明天自动回收」就是最后一次提醒。自动续费的先顺延（见续费），不会被回收。
+
+**移进回收站**（`recycle::record`，退役作业收尾与上面第 1 步共用）：写一行 `recycle_bin`（`source = "fleet"`，`source_id` = 机器 id，同一台只写一次）、设 `machine.recycled_at`、写审计 `machine.recycle`（`{name（回收时的名字）, from（退役前的名字）, recycle_bin_id, auto?}`）。之后这台机器在 `GET /machines`（任何 scope）、`GET /machines/{id}`（404）里都看不到；它的入口与小时流量还留着给线路机的今天 / 本月统计用，物理删除最多推迟约 35 天，用户看不到。
+
+**旧面板导入** `POST /recycle-bin/import`：`{items:[ImportItem], confirm?: false}`。`ImportItem` = `{source_id, kind:"vps"|"proxy"|"relay", name, team?, ip?, host_name?, provider?, plan?, service_ref?, price_cents?, currency?, cycle?, activated_at?（RFC3339）, retired_at?, due_date?（"YYYY-MM-DD"）, reason?, traffic_up?, traffic_down?, nic_rx?, nic_tx?, snapshot?（旧面板的原始记录）}`；`source` 固定为 `legacy`，`source_id` 用旧面板资产的 uuid（没有就用「供应商:service_id」）。1–1000 条；`source_id` / `name` 空、`kind` 不对、`ip` 不是 IP 时 400（「第 N 条（名字）：…」）。
+→ `{dry_run, inserted:[{source_id, name, id|null}], skipped:[{source_id, name, why}]}`。默认只预演（`dry_run: true`，`id` 为 null，什么都不写）；`confirm: true` 才写，写审计 `recycle.import`（`{inserted, skipped, names}`，摘要「导入 3 台，跳过 1 台」）。跳过：同一批里重复的、已经导入过的（幂等键 `(source, source_id)`，「已经导入过（回收站 #12）」）、`ip` 或（`provider` 名字或代码不分大小写, `service_ref`）对上面板里还没回收的机器的（「是在用机器 团队2-05」，不在用的写出状态）。
+
+## 生命周期操作：换线路机、搬空线路机、替换节点
 都是作业（可续跑、幂等、留日志），接口只做校验、建作业、写审计。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/machines/{old}/replace?new_machine_id=&team_id=&number=&routers=` | 替换节点预览（只读库，不登录路由）。见下 |
-| POST | `/machines/{old}/replace` | `{new_machine_id, old_to?:{team_id?, number?}, routers?（默认 true）}` → 预览同样的内容加 `job_id`。输入不对 400（新节点不存在 / 就是旧节点、指定的团队不存在、编号不在 1–999、没指定团队又找不到备用团队）；不满足条件 409（见 blockers）。写审计 `machine.replace`（不含凭据） |
+| POST | `/machines/{old}/replace` | `{new_machine_id, old_to?:{team_id?, number?}, routers?（默认 true）}` → 预览同样的内容加 `job_id`。输入不对 400（新节点不存在 / 就是旧节点、指定的团队不存在、编号不在 1–999）；不满足条件 409（见 blockers）。写审计 `machine.replace`（不含凭据） |
 | POST | `/machines/{id}/move` | `{to_relay_id, from_relay_id?}` → `{job_id, name, from, to, share_changed:true, note}`。节点（vps / proxy）必须 active 且恰有一个 active 入口（有多个时用 `from_relay_id` 指定换掉哪条）；目标线路机必须 active、不同于当前、节点在它上面没有未移除入口；节点有进行中的作业时 409。写审计 `entry.move` |
 | POST | `/relays/{id}/evacuate` | `{to_relay_id}` → `{from, to, jobs:[{machine_id,name,job_id}], skipped:[{machine_id,name,reason}], share_changed, note}`。为该线路机上每个在用入口的节点各建一个 move_entry 作业；暂时不能搬的（入口停用/还在应用中、节点有别的作业、目标上已有入口…）列入 `skipped`，不影响其它节点。线路机自己的直出入口不搬、也不列入 `skipped`（退役线路机时随之摘除；退役守卫只数节点入口）。写审计 `relay.evacuate` 与每个节点一条 `entry.move` |
-| GET | `/machines/{id}/restore?team_id=&number=&label=&probe=` | 恢复预检（只对已退役机器）。见下 |
-| POST | `/machines/{id}/restore` | 提交恢复 → `{job_id, machine_id, name, old_name, number}`；输入不对 400（编号不在 1–999、指定的团队不存在）；不满足条件 409（IP 被占用、编号被占、线路机同名、机器不是 retired）。写审计 `machine.restore` |
 
 **换线路机作业 `move_entry`**（目标 = 节点，要求节点 active）步骤：`attach_new`（目标线路机建新入口：新端口、新 client_uuid / short_id，pending）→ `firewall_widen`（vps：节点 nft 放行名单加入新线路机 IP；proxy 跳过）→ `wait_applied_new` → `verify_new`（经新入口的出口探测通过）→ `detach_old`（旧入口 removing）→ `wait_detached_old` → `firewall_narrow`（节点在旧线路机上不再有入口时，把旧线路机 IP 从放行名单拿掉）。新入口验收通过之前旧入口不动，节点始终至少有一个可用入口。
 - **取消**：`detach_old` 之前都能取消（`cancellable` 为 true）；补偿 = 摘除新入口、恢复防火墙，旧入口保持不动。开始摘旧入口之后不能取消（会让节点没有入口），失败了只能重试到完成；取消赶在摘除之后到达时保留新入口。
@@ -398,23 +436,15 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 - 旧线路机不在线时 `wait_detached_old` 会失败，线路机恢复后重试。
 - 线路机退役守卫的错误提示里指向「搬空线路机」。
 
-**替换节点**：新节点接替旧节点——软路由上指向旧节点入口的出口改成新节点的入口，新节点接旧编号，旧节点去备用团队（不退役，由备用到期自动删除接手）。
+**替换节点**：新节点接替旧节点——软路由上指向旧节点入口的出口改成新节点的入口，新节点接旧编号，旧节点去备用团队（同「退役」的默认去向：不建退役作业，由备用到期自动回收接手；`spare_from` 记下它原来的名字）。
 - 预览 `GET /machines/{old}/replace` 返回 `{old:{id,name,kind,team:{id,name}|null}, new:{同}, new_name（新节点替换后的名字 = 旧节点现在的名字）, old_to:{team:{id,name,spare}|null, number, name}, renames:[{machine_id,old_name,new_name}]（numbering.auto_compact 时新节点原来的团队压缩编号）, routers_enabled, routers:[{id,name,state:online|offline|pending, exits:[{exit,old_entry_id,new_entry_id,from:"server:port",to:"server:port"}]}], ok, blockers[], warnings[]}`。
-- 条件：旧、新都是在用（active）的节点（不是线路机）、都没有进行中的作业、旧节点有团队编号、新节点至少有一个 active 入口。新节点可以在别的团队（替换时改到旧节点的团队，warnings 里提示）。`old_to.team_id` 不给时找「同团队的备用团队」：备用团队里名字以旧团队名开头的恰好一个就用它，否则只有一个备用团队就用它，都不是 400；编号不给取目标团队最小的空号（作业执行时再取一次）。
-- 要改的路由：按各路由 `router_status.data` 里的出口（见软路由），出口对上的入口属于旧节点、未删除的都算。新入口按线路机一一对应（同一台线路机上的新入口；没有时新节点只有一个 active 入口就用它，否则 blockers 说明对不上）；出口原来写的是线路机 IP 就换成新线路机的 IP，否则换成它的 public_host。`routers_enabled` 时任何一台要改的路由不在线（`state` 不是 online）都是 blocker；`routers=false` 不看路由、只交换编号。
+- 条件：旧、新都是在用（active）的节点（不是线路机）、都没有进行中的作业、旧节点有团队编号、新节点至少有一个 active 入口。新节点可以在别的团队（替换时改到旧节点的团队，warnings 里提示）。`old_to.team_id` 不给时去唯一的备用团队；编号不给取目标团队最小的空号（作业执行时再取一次）。
+- 要改的路由：按各路由 `router_status.data` 里的出口（见软路由），出口对上的入口属于旧节点、未删除的都算（`routers::exits_to`，退役预览、备用到期提醒同一套匹配）。新入口按线路机一一对应（同一台线路机上的新入口；没有时新节点只有一个 active 入口就用它，否则 blockers 说明对不上）；出口原来写的是线路机 IP 就换成新线路机的 IP，否则换成它的 public_host。`routers_enabled` 时任何一台要改的路由不在线（`state` 不是 online）都是 blocker；`routers=false` 不看路由、只交换编号。
 
 **替换作业 `replace`**（目标 = 旧节点，要求 active）步骤：`routers`「改软路由出口」→ `renumber`「交换编号」。计划（改哪些路由的哪些出口）发起时存进作业参数（不含凭据）。
 - `routers`：先确认计划里的路由全部在线（有不在线的：一台都不改，失败，`error_kind=network`）；再逐台经隧道执行 `routers/replace.rs` 的脚本：备份源配置（`uci get openclash.config.config_path`）到 `/etc/fleet-backup/openclash/<文件名>.<UTC 时间戳>`、只改出口代理块里的 server / port / uuid / servername（或 sni）/ reality-opts 的 public-key / short-id 6 行（核对它现在指向旧入口或已经是新入口，认不出、行数不对一行不写）、重启 OpenClash、等 mihomo API、逐个测出口延迟（generate_204，各 3 次）。一台失败：它自己换回备份，之前改好的按各自的备份换回（`routers_applied` 参数记着时间戳），作业失败；回滚也失败的写明要人工处理及备份位置。凭据执行时从库里取（同分享链接），只进 ssh 的 stdin。步骤输出 `{routers:[{id,name,exits:[{exit,to}],backup,delay_ms[]}]}`。没有路由要改、或 `routers=false` 时跳过。
 - `renumber`：一个事务里先锁团队再锁两台机器，旧节点改到 `old_to`、新节点改成旧团队 + 旧编号，与 `PATCH /machines/{id}` 同一段代码（审计各一条 `machine.rename`、刷新入口所在线路机）；`numbering.auto_compact` 时新节点原来的团队压缩编号（审计 `team.renumber`）。已经换好（重跑）的跳过；旧节点的团队编号在发起后被改过则失败（不猜）。
 - **取消**：只在开始改路由之前——排队中，或 `routers` 失败（路由已换回）停在第一步；之后只能重试到完成。重试从失败那一步重来。
-
-**恢复作业 `restore_vps` / `restore_relay` / `restore_proxy`**（目标 = 机器，要求 provisioning）：机器保持原 id（历史、账单、审计接上），lifecycle retired → provisioning，步骤与同类型上架完全相同（vps：preflight、bootstrap、converge、agent、wait_report、attach、wait_applied、verify、activate；relay：…、converge_relay、…；proxy：只有 attach、wait_applied、verify、activate）。旧入口已 removed，不复活，`attach` 建新入口。成功后 `retired_at` 清空，`lifecycle_reason` 记「已恢复：<原因>」，订阅保留。取消（或失败后取消）：机器回到 retired（团队、编号、退役原因回到恢复之前），摘掉已建的入口、撤销令牌、清掉出站秘密（出站参数的其余部分留着），团队编号压缩。
-
-预检 `GET /machines/{id}/restore` 返回：`{id, kind, lifecycle, ip, old_name, name（恢复后的名字）, team:{id,name}|null, number, label, restorable, blockers[], warnings[], ip_conflict:{machine_id,name,lifecycle}|null, last_relay:{id,name}|null, retired_reason, ssh:{reachable,key_login:ok|denied|error|unreachable,host_key?,host_key_changed?}|null, outbound:{protocol,host,port,username}|null, needs:{relay,upstream,upstream_password,password:required|optional|no}}`。`outbound` 是退役时留下的出站参数（不含秘密，迁移 0029 起退役、取消时只清秘密）：VPS 节点是 SS 端口（NAT 映射的公网端口），家宽代理是上游；之前退役的为 null。`needs.upstream`：家宽代理没留下上游，要给全；`needs.upstream_password`：留下的上游有用户名，密码退役时已清掉，要重新给。`host_key_changed` 只在退役时存过主机公钥（`machine.retired_host_keys`，迁移 0023 起退役、取消时记）且探测拿到了公钥时出现：为 true 时 blockers 里有「主机指纹与退役时不同（退役时 …，现在 …）：确认机器重装过再勾选「重置主机指纹」…」；查询参数 `reset_host_key=true` 时这句改放 warnings、不阻断（`POST` 不探测，不看这一条；真正的拦截在作业预检，见下）。编号默认取团队里最小的空号（编号连续时就是 N+1），可用 `number` 指定空号；线路机按 label 唯一约束检查，原名被占用时用 `label` 改名。`ssh` 是服务端用中控密钥试一次登录（临时 known_hosts，不碰正式的）的结果，`probe=false` 跳过；试登录和 `POST` 恢复一样要 `write` scope（只读密钥 403，可加 `probe=false`），并写审计 `restore.probe`；`needs.password=required` 表示中控密钥被拒、必须给 root 密码。
-
-`POST` 请求体：`{team_id?, number?, label?, relay_id?（节点要接入的在用线路机，节点必填）, login?:{password}（只用来推一次中控公钥，用完即丢）, upstream?:{protocol?,host?,port?,username?,password?}（proxy：没给的字段沿用退役时留下的，username 给空串 = 去掉；有用户名时 password 必填（退役时已清掉）；没留下上游的要给全，否则 400）, ss_port?（vps，公网（NAT 映射）端口，不给沿用退役前的，都没有为 8388；节点上 ssserver 固定监听 8388；vps 恢复时重新生成 SS 密码）, reason?, reset_host_key?（机器重装过，允许预检按现在的公钥重新记录）}`。主机指纹：退役时从 known_hosts 删掉的公钥存在机器行上，恢复作业的 `preflight` 先放回 known_hosts（已有这台主机的记录则不动）再核对，不符时失败、`error_kind=host_key`，不会把 root 密码和中控密钥交给 IP 上现在的主机；确认重装过后 `POST /jobs/{id}/retry {reset_host_key:true}` 或一开始就带 `reset_host_key:true`（不放回、照旧重新记录）。恢复成功后清空存的公钥。迁移 0023 之前退役的机器没存过，照旧按现在的公钥重新记录。
-
-**同机 IP 节点的恢复**（作业 `restore_ip`，步骤同 `provision_ip`）：宿主机必须在用，否则预检 `restorable=false`、blockers 里有「宿主机「名字」现在是「…」：同机 IP 节点要等宿主机在用才能恢复」，`POST` 409。预检不试 SSH（`ssh` 为 null、`needs.password` 为 `"no"`）；`login`、`ss_port`、`reset_host_key` 不适用（忽略）；SS 端口沿用原来的，已被宿主机上别的同机节点占用（或迁移 0029 之前退役、没留下）时重新分配，SS 密码重新生成。
 
 ## 访问策略（域名黑白名单）
 按团队或节点设置：有效策略 = 节点策略（`mode≠inherit`）> 团队策略 > 默认 `observe`。模式：`observe`（不产生规则）、`allowlist`（只放行名单内域名，其余阻止）、`denylist`（阻止名单内域名，其余放行）、`blocked`（暂停该节点所有新连接）、`inherit`（仅节点：跟随团队）。`allowlist`/`denylist` 至少一个域名。GET 需 `read`，写操作需 `write` 并写审计；预览是 POST 但无副作用（也需 `write`）。

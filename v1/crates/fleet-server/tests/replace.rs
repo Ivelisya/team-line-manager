@@ -87,12 +87,13 @@ async fn entry(t: &T, relay: Uuid, node: Uuid, port: i32, uuid: &str, lifecycle:
     e
 }
 
-/// 团队2：01 是旧节点（线路机2:20003），02 是刚上架的新节点（线路机2:20020）；备用团队「团队2备用」
+/// 团队2：01 是旧节点（线路机2:20003），02 是刚上架的新节点（线路机2:20020）；备用团队是迁移建好的那个，改名为「团队2备用」
 async fn world() -> W {
     LazyLock::force(&FAKE);
     let t = setup(false).await;
     let team = seed_team(&t, "团队2").await;
-    let spare = t.post("/api/v1/teams", json!({"name": "团队2备用", "spare": true})).await["id"].as_str().unwrap().parse().unwrap();
+    let spare: Uuid = sqlx::query_scalar("select id from team where spare").fetch_one(&t.st.db).await.unwrap();
+    t.req("PATCH", &format!("/api/v1/teams/{spare}"), Some(json!({"name": "团队2备用"})), None).await;
     let (relay, _) = seed_relay(&t).await;
     let old = node(&t, team, 1, "203.0.113.11").await;
     let new = node(&t, team, 2, "203.0.113.12").await;
@@ -177,6 +178,7 @@ async fn preview_and_full_run() {
     assert_eq!((j["kind"].as_str(), j["steps"][0]["state"].as_str(), j["steps"][1]["state"].as_str()), (Some("replace"), Some("done"), Some("done")));
     assert_eq!((name_of(t, w.new).await, name_of(t, w.old).await), ("团队2-01".to_string(), "团队2备用-01".to_string()));
     assert_eq!(t.machine_lifecycle(w.old).await, "active", "旧节点不退役，放在备用团队");
+    assert_eq!(t.get(&format!("/api/v1/machines/{}", w.old)).await["spare_from"], "团队2-01", "进备用记下原名");
     // 两台路由各收到一份改配置的脚本：新入口的参数在 stdin 里；作业日志、步骤输出、审计里没有凭据
     for (port, srv) in [(23101, "198.51.100.2"), (23102, "relay.test")] {
         let a = applies(port);
@@ -348,12 +350,6 @@ async fn validation() {
     let p = t.get(&url(x)).await;
     assert_eq!((p["ok"].as_bool(), p["new_name"].as_str()), (Some(true), Some("团队2-01")));
     assert!(p["warnings"].to_string().contains("不在旧节点的团队（团队2）"));
-    // 找不到备用团队（两个都对不上名字）：要求指定
-    sqlx::query("update team set name = '备用甲' where id = $1").bind(w.spare).execute(&t.st.db).await.unwrap();
-    t.post("/api/v1/teams", json!({"name": "备用乙", "spare": true})).await;
-    let (s, v) = t.req("POST", &format!("/api/v1/machines/{}/replace", w.old), Some(json!({"new_machine_id": w.new})), None).await;
-    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
-    assert!(v["error"]["message"].as_str().unwrap().contains("old_to.team_id"), "{v}");
     // 新节点在两台线路机上都有入口、都不在旧入口的线路机上：说明对不上
     let oe = old_entry(&w).await;
     router(&w, "路由A", 23141, &[("节点01", "198.51.100.2", 20003, Some(oe))]).await;

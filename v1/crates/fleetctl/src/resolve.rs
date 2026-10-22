@@ -5,12 +5,10 @@ use serde_json::Value;
 /// 只在哪类机器里找
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Want {
-    /// 未退役优先，找不到再看已退役
+    /// 未退役优先，找不到再看已退役（退役完、还没进回收站的；回收站里的用 fleetctl recycle show）
     Any,
     /// 只要未退役
     Live,
-    /// 只要已退役（purge）
-    Retired,
 }
 
 fn s<'a>(v: &'a Value, k: &str) -> &'a str { v.get(k).and_then(|x| x.as_str()).unwrap_or("") }
@@ -31,7 +29,6 @@ pub fn machine<'a>(list: &'a [Value], q: &str, want: Want) -> Result<&'a Value, 
     let pool = |retired: bool| list.iter().filter(move |m| is_retired(m) == retired).collect::<Vec<_>>();
     let tiers: Vec<Vec<&Value>> = match want {
         Want::Live => vec![pool(false)],
-        Want::Retired => vec![pool(true)],
         Want::Any => vec![pool(false), pool(true)],
     };
     for cands in &tiers {
@@ -55,7 +52,6 @@ pub fn machine<'a>(list: &'a [Value], q: &str, want: Want) -> Result<&'a Value, 
         .map(|m| format!("  {}  (id {})", describe(m), s(m, "id")))
         .collect();
     let scope = match want {
-        Want::Retired => "已退役的",
         Want::Live => "未退役的",
         Want::Any => "",
     };
@@ -143,7 +139,8 @@ mod tests {
     fn by_name_prefers_live() {
         let f = fleet();
         assert_eq!(id_tail(machine(&f, "团队1-06", Want::Any).unwrap()), "01");
-        assert_eq!(id_tail(machine(&f, "团队1-06", Want::Retired).unwrap()), "03");
+        assert_eq!(id_tail(machine(&f, "10.0.0.99", Want::Any).unwrap()), "03", "未退役的里没有才看已退役的");
+        assert!(machine(&f, "10.0.0.99", Want::Live).is_err());
     }
 
     #[test]

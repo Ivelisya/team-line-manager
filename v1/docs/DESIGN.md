@@ -16,7 +16,7 @@
 ```
 team ─┐
       │      │  lifecycle: draft → provisioning → active → retiring → retired；provisioning ⇄ failed（上架作业失败；重试回到上架中）
-      │      │  lifecycle: draft → provisioning → active → retiring → retired
+      │      │  退役 = active 移进备用团队（spare_since / spare_from）；回收 = retired 之后写进 recycle_bin、recycled_at 非空（所有视图看不到）
       │      ├─< agent_token        （绑定 machine_id，退役时自动撤销）
       │      ├─< metric_* / probe_* （按天分区，过期整区删除）
       │      └─< incident
@@ -26,7 +26,7 @@ relay(machine) ─< entry >─ node(machine)
 job ─< job_step ─< job_log      audit_log      user / session / api_key
 ```
 
-- **machine**：`id, kind (vps | proxy | relay), team_id, number, label, primary_ip (inet), ssh_port, provider_id, plan_id, host_id, lifecycle, lifecycle_reason, created_at, activated_at, retired_at`。
+- **machine**：`id, kind (vps | proxy | relay), team_id, number, label, primary_ip (inet), ssh_port, provider_id, plan_id, host_id, lifecycle, lifecycle_reason, created_at, activated_at, retired_at, spare_since, spare_from, recycled_at`。
   叫法（中控 `src/meta.rs`，`GET /meta` 给网页与 fleetctl）：`vps` =「VPS 节点」、`proxy` =「家宽代理」、`relay` =「线路机」；加在宿主机上的 vps 叫「同机 IP 节点」；泛说「节点」= 团队的 VPS 节点 / 家宽代理。
   - 显示名 = `team.name + "-" + 两位编号`（如 `团队1-06`），**每次读取时计算**，不存储。
   - `(team_id, number)` 在未退役的节点中唯一；`primary_ip` 在未退役的机器中唯一（查重键）。
@@ -37,8 +37,10 @@ job ─< job_step ─< job_log      audit_log      user / session / api_key
     节点在宿主机上是 ssserver 模板单元的一个实例 `fleet-ssserver@<SS 端口>`（端口从 8389 起由中控分配）：监听并从自己的 IP 出站（`outbound_bind_addr`），nft 表 `ss_guard_<端口>` 只放行它自己的线路机；宿主机原来的 `fleet-ssserver` / `ss_guard`（8388）原样不动。
 - **entry**：线路机上的一个入口（VLESS REALITY 入站 → SS 出站到节点）。`id, relay_id, node_id, port, client_uuid, short_id, lifecycle, changed_gen`（最近一次改动时线路机的期望代数；线路机 `applied_generation ≥ changed_gen` 即已应用）。备注由节点显示名生成，改名后随期望状态自动同步。
   直出入口：`node_id = relay_id`（节点就是线路机自己），freedom 出站，从线路机自己的 IP 出去；每台线路机至多一条（同一个 (node_id, relay_id) 唯一索引），备注「线路机名-直出」，随线路机退役摘除。
+- **备用团队**（`team.spare`，唯一索引 `team_one_spare`，迁移 0041 建好「备用」）：系统管理，不能新建、取消、删除，可以改名。退役的、替换下来的机器放这里，`spare_since` / `spare_from` 记进备用的时刻与原名（`patch_tx` 统一维护：退役、替换、手动改团队进出都一样；移出 = 撤销退役，一并清空）。
+- **recycle_bin**（回收站，迁移 0041）：退役的终点，一台一行的审计表——退役前的名字与团队、回收时的名字、IP、供应商与套餐、价格周期（生效值）、上架 / 退役 / 回收时间、原因、流量合计、回收时的快照（不含秘密）；旧面板导入的 `source = legacy`。幂等键 `(source, source_id)`，不受保留期清理影响。机器行写进来后 `recycled_at` 非空、从所有视图消失，入口与小时流量留给线路机统计，`purge_blocker` 放行后由中控自动物理删除。
 - **subscription**：机器的账单。`due_date, auto_renew`，以及可「单独设置」的 `price_cents, currency, cycle, billing_tz, remind_days, traffic_gb, traffic_reset_day`（null = 跟随模板：价格、币种、周期、流量上限跟随机器的套餐 `machine.plan_id`，账单时区、提前提醒、流量重置跟随供应商，供应商没填时区时是组织时区 `org_timezone`）；生效值只在库里的视图 `subscription_eff` 算。到期状态（ok / soon / overdue）、月费、下一个到期日由视图层 `meta` 的同一组函数算；续费记录单独一张表。
-- **job**：`kind (provision_vps | provision_proxy | provision_relay | provision_ip | restore_* | attach_entry | move_entry | retire | purge | upgrade_agent | tune), target, params, state, steps[]`。每一步记录开始、结束、输出、错误类别；失败可从该步重试（升级 agent 从推送重来），取消会执行已完成步骤的补偿。`params.after` 指向要等的作业：它结束前不领取，它在推送之后失败（看它的 `params.pushed`）或被取消就直接取消，推送之前就失败的不算（「全部升级 agent」的金丝雀与线路机逐台）；`params.rollout` 记发起时 dist 里 agent 的 sha256 与版本号，开始前与推送时核对，换了就停。
+- **job**：`kind (provision_vps | provision_proxy | provision_relay | provision_ip | attach_entry | move_entry | replace | retire | purge | upgrade_agent | tune), target, params, state, steps[]`。每一步记录开始、结束、输出、错误类别；失败可从该步重试（升级 agent 从推送重来），取消会执行已完成步骤的补偿。`params.after` 指向要等的作业：它结束前不领取，它在推送之后失败（看它的 `params.pushed`）或被取消就直接取消，推送之前就失败的不算（「全部升级 agent」的金丝雀与线路机逐台）；`params.rollout` 记发起时 dist 里 agent 的 sha256 与版本号，开始前与推送时核对，换了就停。
 
 ## 3. 关键流程
 
@@ -47,11 +49,14 @@ job ─< job_step ─< job_log      audit_log      user / session / api_key
 创建入口（写期望状态）→ 等线路机回报已应用 → 端到端验收 → `active`。批量上架就是多行同时提交。
 
 **上架同机 IP 节点**（`provision_ip`，填宿主机 + 新 IP）：在宿主机上核对 IP（要直接配在宿主机网卡上，或 1:1 NAT 映射到网卡上的某个本机地址——各本机地址访问一次 `/echo`，回显是它的那个记进 `machine.bind_ip`，ssserver 监听并从它出站；经它访问中控 `/echo` 回显的必须是它自己，否则是出站路由不对；暂定的 SS 端口被占用就改用最小空闲端口）→
-推 ssserver、装自己的实例和防火墙表（不做系统基线、不装 agent）→ 创建入口 → 等线路机应用 → 出口验收（期望它自己的 IP）→ `active`。恢复（`restore_ip`）同样的步骤，要求宿主机在用，SS 端口重新分配。
+推 ssserver、装自己的实例和防火墙表（不做系统基线、不装 agent）→ 创建入口 → 等线路机应用 → 出口验收（期望它自己的 IP）→ `active`。
 
-**退役**：入口 → `removing`（期望状态去掉）→ 等线路机回报 → 撤销令牌 → （节点可达时）停掉节点上的 agent 和 ssserver → `retired`。
-退役机器从首页、告警、统计、费用里消失，在"已退役"筛选里可查历史；可"恢复"或"彻底删除"（purge 级联删除遥测，保留审计）。
-退役宿主机时它上面的同机 IP 节点**一并退役**（同一事务里置为退役中、作废它们进行中的作业、关告警，各建一个只摘入口不登录清理的退役作业；宿主机的清理连同所有实例一起删）；单独退役同机 IP 节点只删它自己的实例。彻底删除宿主机要等它的同机 IP 节点（含已退役的）先删。
+**退役 → 备用 → 到期满 1 天 → 清理 → 回收站**（生命周期只有这一条路）：
+- **退役**默认 = 一个事务里移进备用团队（最小空号，原团队压缩编号；宿主机带上它的同机 IP 节点），不建作业：机器照常运行，入口、端口、软路由出口都不动。撤销退役 = 移出备用团队，不用重新上架（「恢复」与手动「彻底删除」都已删掉）。
+- **清理**（退役作业 `retire`）：入口 → `removing`（期望状态去掉）→ 等线路机回报 → （节点可达时）停掉节点上的 agent 和 ssserver → 撤销令牌 → `retired`，**同一个事务**写回收站、设 `recycled_at`。备用团队里在用、有订阅、账单时区过期满 1 天的由中控每小时自动发起（`spare.rs`，操作人「系统」）；「立即回收」是人手动发起同一个作业，线路机、没有订阅、已过期满 1 天、没上线的只能这样。
+- **回收站**：每小时的维护先把不经退役作业收尾的已退役机器（上架取消、升级前就退役的）收进去，再对回收站里 `purge_blocker` 放行的自动物理删除（purge 级联删除遥测与入口，回收站这一行与审计保留）。35 天的限制只推迟物理删除：线路机卡片的今天 / 本月流量、流量曲线还要用 removed 入口的小时流量。
+- 软路由不自动改：退役预览、备用到期提醒列出还指向它的出口（`routers::exits_using`，同替换节点的匹配），回收不因此停。自动续费的订阅在到期判断之前按周期顺延（`renew.rs`），不会被回收。
+- 宿主机立即回收时它上面的同机 IP 节点**一并回收**（同一事务里置为退役中、作废它们进行中的作业、关告警，各建一个只摘入口不登录清理的退役作业；宿主机的清理连同所有实例一起删）；单独回收同机 IP 节点只删它自己的实例。物理删除宿主机要等它的同机 IP 节点（含已退役的）先删。
 
 **改名 / 重新编号 / 换团队**：只改 `team_id/number`，同步作业刷新线路机备注；不换令牌、不断连接。"重新编号"先出预览（旧名 → 新名），确认后一次生效。
 

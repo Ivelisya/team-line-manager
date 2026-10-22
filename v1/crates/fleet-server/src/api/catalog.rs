@@ -20,7 +20,7 @@ pub struct Team {
     id: Uuid,
     name: String,
     sort_order: i32,
-    /// 备用团队：里面在用的机器订阅过期满 1 天后由中控自动退役并彻底删除（见 spare.rs）
+    /// 备用团队（只有一个，系统管理：不能新建、取消、删除）：退役的机器放这里，订阅过期满 1 天后由中控回收（见 spare.rs）
     spare: bool,
     node_count: i64,
 }
@@ -40,7 +40,6 @@ pub async fn list_teams(_a: Actor, State(st): State<AppState>) -> ApiResult<Json
 pub struct TeamIn {
     name: Option<String>,
     sort_order: Option<i32>,
-    spare: Option<bool>,
 }
 
 fn clean_name(s: &str, what: &str) -> ApiResult<String> {
@@ -55,15 +54,13 @@ pub async fn create_team(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJs
     let name = clean_name(b.name.as_deref().unwrap_or(""), "团队名")?;
     let id = new_id();
     let mut tx = st.db.begin().await?;
-    let spare = b.spare.unwrap_or(false);
-    sqlx::query("insert into team (id, name, sort_order, spare) values ($1, $2, $3, $4)")
+    sqlx::query("insert into team (id, name, sort_order) values ($1, $2, $3)")
         .bind(id)
         .bind(&name)
         .bind(b.sort_order.unwrap_or(0))
-        .bind(spare)
         .execute(&mut *tx)
         .await?;
-    audit(&mut tx, &a.name, "team.create", "team", Some(id), json!({"name": name, "spare": spare})).await?;
+    audit(&mut tx, &a.name, "team.create", "team", Some(id), json!({"name": name})).await?;
     tx.commit().await?;
     st.emit(Event::Catalog);
     Ok(ok(json!({"id": id})))
@@ -71,20 +68,19 @@ pub async fn create_team(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJs
 
 pub async fn patch_team(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<TeamIn>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
-    let old: (String, i32, bool) = sqlx::query_as("select name, sort_order, spare from team where id = $1 for update")
+    let old: (String, i32) = sqlx::query_as("select name, sort_order from team where id = $1 for update")
         .bind(id)
-        .fetch_one(&mut *tx)
-        .await?;
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| ApiError::not_found("没有这个团队"))?;
     let name = match &b.name {
         Some(n) => clean_name(n, "团队名")?,
         None => old.0.clone(),
     };
-    let spare = b.spare.unwrap_or(old.2);
-    sqlx::query("update team set name = $2, sort_order = $3, spare = $4 where id = $1")
+    sqlx::query("update team set name = $2, sort_order = $3 where id = $1")
         .bind(id)
         .bind(&name)
         .bind(b.sort_order.unwrap_or(old.1))
-        .bind(spare)
         .execute(&mut *tx)
         .await?;
     // 团队改名 → 该团队所有节点显示名变化 → 线路机备注同步
@@ -97,7 +93,7 @@ pub async fn patch_team(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPa
         relays = crate::db::bump_relays_of_nodes(&mut tx, &nodes).await?;
     }
     audit(&mut tx, &a.name, "team.update", "team", Some(id),
-        json!({"before": {"name": old.0, "sort_order": old.1, "spare": old.2}, "after": {"name": name, "sort_order": b.sort_order.unwrap_or(old.1), "spare": spare}})).await?;
+        json!({"before": {"name": old.0, "sort_order": old.1}, "after": {"name": name, "sort_order": b.sort_order.unwrap_or(old.1)}})).await?;
     tx.commit().await?;
     for r in relays {
         st.relay_bumped(r);
@@ -113,26 +109,30 @@ fn in_use(parts: &[(i64, &str)]) -> Option<String> {
     (!v.is_empty()).then(|| v.join("、"))
 }
 
-/// 删团队：还有机器（含已退役的——可能恢复，外键也拦着）或软路由时拒绝。它的访问规则不是默认（仅观察、没有域名和备注）或有草稿时也拒绝：
+/// 删团队：备用团队不能删（退役的机器都放在这里）；还有机器（含已退役、回收站里等待清除的，外键也拦着）或软路由时拒绝。它的访问规则不是默认（仅观察、没有域名和备注）或有草稿时也拒绝：
 /// 生效的规则在发布版本的快照里，悄悄删掉就绕开了版本（回滚、核对都对不上）；规则是默认、没有草稿的那一行等于没有，一起删。
 /// 先拿访问规则的锁（同改草稿、发布、回滚），看过规则之后不会有并发的保存草稿插进来
 pub async fn delete_team(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
     super::policy::lock(&mut tx).await?;
-    let name: String = sqlx::query_scalar("select name from team where id = $1 for update")
+    let (name, spare): (String, bool) = sqlx::query_as("select name, spare from team where id = $1 for update")
         .bind(id)
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| ApiError::not_found("没有这个团队"))?;
-    let (live, retired, routers): (i64, i64, i64) = sqlx::query_as(
-        "select count(*) filter (where lifecycle <> 'retired'), count(*) filter (where lifecycle = 'retired'), (select count(*) from router where team_id = $1)
+    if spare {
+        return Err(ApiError::conflict(format!("「{name}」是备用团队，不能删：退役的机器都放在这里（可以改名）")));
+    }
+    let (live, retired, recycled, routers): (i64, i64, i64, i64) = sqlx::query_as(
+        "select count(*) filter (where lifecycle <> 'retired'), count(*) filter (where lifecycle = 'retired' and recycled_at is null),
+                count(*) filter (where recycled_at is not null), (select count(*) from router where team_id = $1)
          from machine where team_id = $1",
     )
     .bind(id)
     .fetch_one(&mut *tx)
     .await?;
-    if let Some(u) = in_use(&[(live, "台机器"), (retired, "台已退役的机器"), (routers, "台软路由")]) {
-        return Err(ApiError::conflict(format!("「{name}」还有 {u}：先把它们移到别的团队（已退役的先彻底删除）再删")));
+    if let Some(u) = in_use(&[(live, "台机器"), (retired, "台已退役的机器"), (recycled, "台回收站里等待清除的机器"), (routers, "台软路由")]) {
+        return Err(ApiError::conflict(format!("「{name}」还有 {u}：先把它们移到别的团队再删（已退役的一小时内进回收站，回收站里的约 35 天内自动清除）")));
     }
     // 按规范化后的值比（仅观察不看域名：旧数据里改回仅观察时可能还留着隐藏的域名）
     if let Some(r) = policy::load_row(&mut *tx, Scope::Team, id).await? {
@@ -324,7 +324,7 @@ pub async fn delete_provider(a: Actor, State(st): State<AppState>, ApiPath(id): 
         .fetch_one(&mut *tx)
         .await?;
     // 「含已归档的」跟着套餐、「含已退役的」跟着机器写，只写有的那一项
-    if let Some(u) = in_use(&[(plans, "个套餐（含已归档的）"), (machines, "台机器（含已退役的）")]) {
+    if let Some(u) = in_use(&[(plans, "个套餐（含已归档的）"), (machines, "台机器（含已退役的、回收站里等待清除的）")]) {
         return Err(ApiError::conflict(format!("「{name}」还有 {u}：先删掉或改到别的供应商再删")));
     }
     sqlx::query("delete from provider where id = $1").bind(id).execute(&mut *tx).await?;
@@ -453,7 +453,7 @@ pub async fn patch_plan(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPa
         let n = clean_name(n, "套餐名")?;
         set!("name", Some(n));
     }
-    // 机器的供应商就是套餐的：有机器（含已退役，可能恢复）用着的套餐不能换供应商
+    // 机器的供应商就是套餐的：有机器（含已退役的）用着的套餐不能换供应商
     if let Some(pv) = b.provider_id {
         let n: i64 = sqlx::query_scalar("select count(*) from machine m join plan p on p.id = m.plan_id where p.id = $1 and p.provider_id <> $2")
             .bind(id)
@@ -499,7 +499,7 @@ pub async fn patch_plan(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPa
     Ok(ok(json!({"id": id})))
 }
 
-/// 删套餐：还有机器（含已退役的，可能恢复）用着时拒绝，用不着的套餐建议归档
+/// 删套餐：还有机器（含已退役的）用着时拒绝，用不着的套餐建议归档
 pub async fn delete_plan(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
     let name: String = sqlx::query_scalar("select name from plan where id = $1 for update")
@@ -507,11 +507,14 @@ pub async fn delete_plan(a: Actor, State(st): State<AppState>, ApiPath(id): ApiP
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| ApiError::not_found("没有这个套餐"))?;
-    let (live, retired): (i64, i64) = sqlx::query_as("select count(*) filter (where lifecycle <> 'retired'), count(*) filter (where lifecycle = 'retired') from machine where plan_id = $1")
-        .bind(id)
-        .fetch_one(&mut *tx)
-        .await?;
-    if let Some(u) = in_use(&[(live, "台机器"), (retired, "台已退役的机器")]) {
+    let (live, retired, recycled): (i64, i64, i64) = sqlx::query_as(
+        "select count(*) filter (where lifecycle <> 'retired'), count(*) filter (where lifecycle = 'retired' and recycled_at is null),
+                count(*) filter (where recycled_at is not null) from machine where plan_id = $1",
+    )
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if let Some(u) = in_use(&[(live, "台机器"), (retired, "台已退役的机器"), (recycled, "台回收站里等待清除的机器")]) {
         return Err(ApiError::conflict(format!("「{name}」还有 {u}用着：不再上架的可以归档")));
     }
     sqlx::query("delete from plan where id = $1").bind(id).execute(&mut *tx).await?;

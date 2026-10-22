@@ -11,6 +11,7 @@ pub mod misc;
 pub mod notify;
 pub mod policy;
 pub mod provision;
+pub mod recycle;
 pub mod relays;
 pub mod replace;
 pub mod routers;
@@ -67,18 +68,20 @@ pub fn router() -> Router<AppState> {
         .route("/machines/{id}", get(machines::get_one).patch(machines::patch))
         .route("/machines/{id}/series", get(machines::series))
         .route("/machines/{id}/availability", get(machines::availability))
+        // 退役：默认移进备用团队，now = 立即回收（作业）；回收站只读，旧面板的退役机器从这里导入
         .route("/machines/{id}/retire", get(machines::retire_preview).post(machines::retire))
-        .route("/machines/{id}/purge", post(machines::purge))
+        .route("/recycle-bin", get(recycle::list))
+        .route("/recycle-bin/import", post(recycle::import))
+        .route("/recycle-bin/{id}", get(recycle::get_one))
         .route("/machines/{id}/upgrade-agent", post(machines::upgrade_agent))
         .route("/machines/{id}/tune", post(machines::tune))
         .route("/agents/upgrade", post(machines::upgrade_all_agents))
         .route("/machines/{id}/subscription", axum::routing::put(machines::put_subscription))
         .route("/machines/{id}/renewals", get(machines::list_renewals).post(machines::add_renewal))
         .route("/machines/{id}/entries", post(relays::add_entry))
-        // 换线路机、搬空线路机、恢复已退役的机器
+        // 换线路机、搬空线路机
         .route("/machines/{id}/move", post(lifecycle::move_node))
         .route("/relays/{id}/evacuate", post(lifecycle::evacuate))
-        .route("/machines/{id}/restore", get(lifecycle::restore_preview).post(lifecycle::restore))
         // 替换节点：GET 预览，POST 建作业（改软路由出口 → 交换编号）
         .route("/machines/{id}/replace", get(replace::preview).post(replace::replace))
         // 上架

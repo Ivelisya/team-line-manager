@@ -18,7 +18,7 @@ use uuid::Uuid;
 pub enum Scope {
     /// 未退役（含上架中、退役中）
     Live,
-    Retired,
+    /// 还没进回收站的全部机器（已退役、还没收进回收站的也在内）。回收站里的看 GET /recycle-bin
     All,
 }
 
@@ -27,8 +27,7 @@ impl Scope {
     fn cond(self) -> &'static str {
         match self {
             Scope::Live => "m.lifecycle <> 'retired'",
-            Scope::Retired => "m.lifecycle = 'retired'",
-            Scope::All => "true",
+            Scope::All => "m.recycled_at is null",
         }
     }
 }
@@ -264,8 +263,17 @@ pub struct MachineView {
     pub kind: String,
     pub name: String,
     pub team: Option<Ref>,
-    /// 所在团队是备用团队：在用时订阅过期满 1 天由中控自动退役并彻底删除（见 spare.rs）。没有团队为 false
+    /// 所在团队是备用团队（已退役、等到期回收）：在用时订阅过期满 1 天由中控清理并移进回收站（见 spare.rs）。没有团队为 false
     pub spare: bool,
+    /// 进备用团队前的显示名（「团队2-07」）与进备用的时刻（即退役时间）；不在备用团队为 null
+    pub spare_from: Option<String>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub spare_since: Option<OffsetDateTime>,
+    /// 备用团队里在用、有订阅的机器自动回收的日子（账单时区，到期日 + 2 天，见 spare::recycle_on）；其余为 null
+    pub recycle_on: Option<Date>,
+    /// 备用团队里在用的机器：还指向它的软路由出口（「路由名 · 出口名」），续费提醒里列出来（只给健康判定用，不对外输出）
+    #[serde(skip)]
+    pub router_exits: Vec<String>,
     pub number: Option<i32>,
     pub label: Option<String>,
     pub ip: String,
@@ -313,7 +321,7 @@ pub struct MachineView {
     pub quota: Quota,
     pub health: Health,
     pub active_job: Option<JobRef>,
-    /// 上架失败（lifecycle = failed）：最近一次失败的上架/恢复作业；退役中（retiring）：失败的退役作业。网页据此给出「查看作业」
+    /// 上架失败（lifecycle = failed）：最近一次失败的上架作业；退役中（retiring）：失败的退役作业。网页据此给出「查看作业」
     pub failed_job: Option<JobRef>,
     pub open_incidents: i64,
     pub maintenance: bool,
@@ -364,6 +372,8 @@ struct MRow {
     team_id: Option<Uuid>,
     team_name: Option<String>,
     team_spare: Option<bool>,
+    spare_from: Option<String>,
+    spare_since: Option<OffsetDateTime>,
     number: Option<i32>,
     label: Option<String>,
     ip: String,
@@ -925,12 +935,12 @@ async fn probes_of(db: &sqlx::PgPool, eids: &[Uuid]) -> sqlx::Result<HashMap<(Uu
         .collect())
 }
 
-/// 进行中的作业与失败的上架 / 恢复 / 退役作业，各按机器取最后建的：(进行中, 失败)
+/// 进行中的作业与失败的上架 / 退役作业，各按机器取最后建的：(进行中, 失败)
 async fn jobs_of(db: &sqlx::PgPool, ids: &[Uuid]) -> sqlx::Result<(HashMap<Uuid, JobRef>, HashMap<Uuid, JobRef>)> {
     let jobs = sqlx::query_as::<_, (Uuid, Uuid, String, String)>(
         "select target_id, id, kind, state::text from job
          where target_id = any($1) and (state in ('queued','running','waiting','cancelling')
-           or (state = 'failed' and kind ~ '^((provision|restore)_|retire$)'))
+           or (state = 'failed' and kind ~ '^(provision_|retire$)'))
          order by created_at",
     )
     .bind(ids)
@@ -945,7 +955,7 @@ async fn jobs_of(db: &sqlx::PgPool, ids: &[Uuid]) -> sqlx::Result<(HashMap<Uuid,
     Ok((live_jobs, failed_jobs))
 }
 
-/// 上架失败：最近失败的上架/恢复作业；退役中：失败的退役作业（等重试）
+/// 上架失败：最近失败的上架作业；退役中：失败的退役作业（等重试）
 fn failed_job(failed: &HashMap<Uuid, JobRef>, id: Uuid, lifecycle: &str) -> Option<JobRef> {
     failed
         .get(&id)
@@ -1081,7 +1091,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     let lc = scope.cond();
     // 同机 IP 节点没有自己的 agent：agent 状态取宿主机的
     let sql = format!(
-        "select m.id, m.kind::text kind, m.team_id, t.name team_name, t.spare team_spare, m.number, m.label, host(m.primary_ip) ip, coalesce(hm.ssh_port, m.ssh_port) ssh_port,
+        "select m.id, m.kind::text kind, m.team_id, t.name team_name, t.spare team_spare, m.spare_from, m.spare_since, m.number, m.label, host(m.primary_ip) ip, coalesce(hm.ssh_port, m.ssh_port) ssh_port,
                 m.host_id, display_name(hm.kind::text, hm.label, ht.name, hm.number) host_name, host(m.bind_ip) bind_ip,
                 p.id provider_id, p.name provider_name, p.code provider_code, m.plan_id, pl.name plan_name,
                 pl.bandwidth_mbps plan_bw, pl.traffic_gb plan_traffic, m.service_ref, m.country, m.lifecycle::text lifecycle,
@@ -1201,8 +1211,11 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     )
     .bind(&ids)
     .fetch_all(db);
+    // 备用团队里在用的机器：还指向它的软路由出口（到期提醒里列出，让人先「替换」）
+    let spare_ids: Vec<Uuid> = rows.iter().filter(|r| r.team_spare == Some(true) && r.lifecycle == "active").map(|r| r.id).collect();
+    let exits_q = crate::routers::exits_using(db, &spare_ids);
     let period_of: HashMap<Uuid, (Date, Option<&'static str>)> = periods.iter().map(|k| (k.0, (k.1, k.3))).collect();
-    let (intel, host, (es, probes), (traffic, nic, removed), (live_jobs, failed_jobs), inc, silences, sustained, policies, period_used, ipn) = tokio::try_join!(
+    let (intel, host, (es, probes), (traffic, nic, removed), (live_jobs, failed_jobs), inc, silences, sustained, policies, period_used, ipn, mut exits) = tokio::try_join!(
         intel_q,
         host_now(db, &hids),
         entries_q,
@@ -1213,7 +1226,8 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
         sustained_of(db, &hids),
         crate::policy::load_modes(db),
         quota_used(st, periods),
-        ipn_q
+        ipn_q,
+        exits_q
     )?;
 
     // 每条已移除入口的流量同时记到它的节点和线路机上；直出入口两端是同一台，只记一次
@@ -1362,12 +1376,19 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
             let maintenance = silences.maintenance(r.id) || r.host_id.is_some_and(|h| silences.maintenance(h));
             let policy_blocked = r.kind != "relay" && policies.effective(r.id, r.team_id).0.mode == crate::policy::Mode::Blocked;
             let failed_job = failed_job(&failed_jobs, r.id, &r.lifecycle);
+            let spare = r.team_spare.unwrap_or(false);
+            let recycle_on = subscription.as_ref().filter(|_| spare && r.lifecycle == "active").map(|s| crate::spare::recycle_on(s.due_date));
+            let router_exits = exits.remove(&r.id).unwrap_or_default().into_iter().map(|(_, rn, x)| format!("{rn} · {x}")).collect();
             let mut v = MachineView {
                 id: r.id,
                 kind: r.kind,
                 name,
                 team: r.team_id.map(|id| Ref { id, name: r.team_name.clone().unwrap_or_default() }),
-                spare: r.team_spare.unwrap_or(false),
+                spare,
+                spare_from: r.spare_from,
+                spare_since: r.spare_since,
+                recycle_on,
+                router_exits,
                 number: r.number,
                 label: r.label,
                 country: r.country.clone().or_else(|| r.ip.parse::<IpAddr>().ok().and_then(|ip| intel.get(&ip)).and_then(|b| b.country.clone())),
@@ -1568,12 +1589,12 @@ mod tests {
             net_tx_bps: Some(rx / 2.0),
             tcp_conns: None,
         };
-        // 已过期（严重告警，健康为故障）但照常上报：速率照算
+        // 已过期（严重告警，但续费不算故障；没有入口是降级）、照常上报：速率照算
         let mut down = base("vps");
         down.subscription = Some(sub(-3));
         down.host = Some(host(1000.0));
         down.health = health::evaluate(&down, now);
-        assert_eq!(down.health.status, Status::Down);
+        assert_eq!(down.health.status, Status::Degraded);
         // agent 离线：最后一份速率不算
         let mut off = base("vps");
         off.agent.as_mut().unwrap().online = false;
@@ -1582,7 +1603,7 @@ mod tests {
         let ov = overview_of(&[down, off], &HashMap::new());
         assert_eq!(ov["net_rx_bps"], 1000.0);
         assert_eq!(ov["net_tx_bps"], 500.0);
-        assert_eq!(ov["nodes"]["down"], 2);
+        assert_eq!(ov["nodes"]["down"], 1, "只有 agent 离线的那台算故障");
 
         // 同机 IP 节点的主机读数就是宿主机的：速率只算一次，节点数照常各算一台；在线数只算宿主机（agent 是它的）
         let mut h = base("vps");
@@ -1597,9 +1618,9 @@ mod tests {
     #[test]
     fn overview_online_by_agent_not_health() {
         let now = OffsetDateTime::now_utc();
-        // 严重告警（已过期）但 agent 在线：在线
+        // 严重告警（出口不通）但 agent 在线：在线
         let mut crit = base("vps");
-        crit.subscription = Some(sub(-3));
+        crit.entries = vec![crate::health::tests::entry(false, false)];
         crit.health = health::evaluate(&crit, now);
         assert_eq!(crit.health.status, Status::Down);
         let mut off = base("relay");

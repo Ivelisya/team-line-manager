@@ -70,7 +70,7 @@ impl Ctx<'_> {
     }
 
     /// 节点在机器上的 ssserver 实例：普通 VPS 节点（宿主机）固定 meta::SS_PORT；同机 IP 节点的端口是它出站参数里的 SS 端口，
-    /// 监听与出站用 bind 地址（1:1 NAT 映射的用 bind_ip，否则就是它的公网 IP）。收敛、退役清理、恢复、换线路机的补偿都从这里取
+    /// 监听与出站用 bind 地址（1:1 NAT 映射的用 bind_ip，否则就是它的公网 IP）。收敛、退役清理、换线路机的补偿都从这里取
     async fn ss_inst(&self, m: &M) -> anyhow::Result<SsInst> {
         if m.host_id.is_none() {
             return Ok(SsInst::host());
@@ -175,20 +175,7 @@ async fn preflight(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let m = c.machine().await?;
     // 该 IP 已有记录且指纹变了：失败，除非作业参数明确允许重置（机器重装过）
     let allow_reset = c.job.params["reset_host_key"].as_bool().unwrap_or(false);
-    // 恢复：退役时存下的主机公钥先放回 known_hosts，下面 pin_host_key 就按它核对（IP 换了主人则失败，不首次信任）。
-    // 勾了「重置主机指纹」、或这次改动之前退役没存过的，照旧按现在的公钥重新记录。
-    // 存过的：核对时必须还有记录（放回之后被删了就失败，不退回首次信任）
-    let mut must_match = false;
-    if c.job.kind.starts_with("restore_") && !allow_reset {
-        let saved: Option<String> = sqlx::query_scalar("select retired_host_keys from machine where id = $1").bind(m.id).fetch_one(&c.st.db).await?;
-        if let Some(s) = saved {
-            if ssh::put_back_host_keys(&c.st.cfg.known_hosts, &m.ip, m.ssh_port as u16, &s).await? {
-                c.log("已放回退役时记录的主机公钥，按它核对").await;
-            }
-            must_match = !ssh::keys_of(&s).is_empty();
-        }
-    }
-    // 同上架检查、恢复预检：要读到 SSH 版本行才算通（中控出网经透明代理时只看 TCP 什么地址都「连得上」，要等 ssh 自己超时才失败）
+    // 同上架检查：要读到 SSH 版本行才算通（中控出网经透明代理时只看 TCP 什么地址都「连得上」，要等 ssh 自己超时才失败）
     let mut probe = Ok(());
     for _ in 0..3 {
         probe = ssh::ssh_probe(&m.ip, m.ssh_port as u16, Duration::from_secs(5)).await;
@@ -200,11 +187,7 @@ async fn preflight(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     if let Err(why) = probe {
         return Err(StepError::err(ErrKind::Network, format!("SSH {}:{} {why}", m.ip, m.ssh_port)));
     }
-    let fp = if must_match {
-        ssh::check_pinned_host_key(&c.st.cfg.known_hosts, &m.ip, m.ssh_port as u16).await?
-    } else {
-        ssh::pin_host_key(&c.st.cfg.known_hosts, &m.ip, m.ssh_port as u16, allow_reset).await?
-    };
+    let fp = ssh::pin_host_key(&c.st.cfg.known_hosts, &m.ip, m.ssh_port as u16, allow_reset).await?;
     c.log(format!("主机公钥已记录/核对 {}", ssh::fingerprint(&fp))).await;
     let mut out = c.ssh(&m, None).run(scripts::FACTS, Duration::from_secs(30)).await?;
     if !out.ok() {
@@ -240,7 +223,7 @@ async fn preflight(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     })))
 }
 
-/// 同机 IP 节点上架（恢复）的第一步，在宿主机上执行：IP 要直接配在宿主机网卡上、或 1:1 NAT 映射到网卡上的某个本地地址
+/// 同机 IP 节点上架的第一步，在宿主机上执行：IP 要直接配在宿主机网卡上、或 1:1 NAT 映射到网卡上的某个本地地址
 /// （记进 bind_ip），经它访问中控回显的来源要正是这个 IP（出站路由对），暂定的 SS 端口被别的程序占着时锁住宿主机行，改成最小的空闲端口
 async fn ip_check(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let m = c.machine().await?;
@@ -269,7 +252,7 @@ async fn ip_check(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
             Err(_) => format!("经 {ip} 访问中控 {echo} 失败：{got}"),
         }));
     }
-    // 记下（或清掉）bind 地址：收敛时 ssserver 监听并从它出站。恢复时宿主机的网络可能改过，每次按这次核对的结果写
+    // 记下（或清掉）bind 地址：收敛时 ssserver 监听并从它出站。每次按这次核对的结果写
     sqlx::query("update machine set bind_ip = $2::inet where id = $1").bind(m.id).bind(&bind).execute(&c.st.db).await?;
     if let Some(b) = &bind {
         c.log(format!("{ip} 不在宿主机网卡上，是 1:1 NAT 映射到本地地址 {b} 的：ssserver 监听并从 {b} 出站")).await;
@@ -856,23 +839,6 @@ async fn verify(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
 
 async fn activate(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let id = c.target_id()?;
-    if c.job.kind.starts_with("restore_") {
-        // 恢复已退役的机器：清掉退役时间（和退役时存的主机公钥，known_hosts 里已有），原因记「已恢复：…」，历史、账单、审计都挂在原来的机器 id 上
-        let reason = match c.job.params["reason"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
-            Some(r) => format!("已恢复：{r}"),
-            None => "已恢复".to_string(),
-        };
-        sqlx::query(
-            "update machine set lifecycle = 'active', activated_at = coalesce(activated_at, now()), retired_at = null, retired_host_keys = null, lifecycle_reason = $2,
-                revision = revision + 1, updated_at = now() where id = $1 and lifecycle = 'provisioning'",
-        )
-        .bind(id)
-        .bind(&reason)
-        .execute(&c.st.db)
-        .await?;
-        c.log("机器已恢复上线").await;
-        return Ok(Outcome::Done(json!({"restored": true, "reason": reason})));
-    }
     sqlx::query(
         "update machine set lifecycle = 'active', activated_at = coalesce(activated_at, now()), lifecycle_reason = null,
             revision = revision + 1, updated_at = now() where id = $1 and lifecycle = 'provisioning'",
@@ -962,8 +928,6 @@ async fn revoke(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
 
 async fn finalize(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let m = c.machine().await?;
-    // 主机公钥先存到机器行再从 known_hosts 删（恢复时放回核对）。同机 IP 节点没有自己的；重跑时 known_hosts 里已删了就保留上次存的
-    let host_keys = if m.host_id.is_none() { ssh::host_lines(&c.st.cfg.known_hosts, &m.ip, m.ssh_port as u16).await? } else { None };
     let mut tx = c.st.db.begin().await?;
     // 先锁团队行再改机器行：宿主机连同它的同机 IP 节点退役时，同团队的几个退役作业会同时收尾，
     // 压缩编号要改同团队别的节点，都按「团队 → 机器」的顺序加锁才不会互相等
@@ -972,15 +936,15 @@ async fn finalize(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         sqlx::query("select 1 from team where id = $1 for update").bind(t).execute(&mut *tx).await?;
     }
     sqlx::query(
-        "update machine set lifecycle = 'retired', retired_at = now(), retired_host_keys = coalesce($2, retired_host_keys),
-            revision = revision + 1, updated_at = now() where id = $1",
+        "update machine set lifecycle = 'retired', retired_at = now(), revision = revision + 1, updated_at = now() where id = $1",
     )
     .bind(m.id)
-    .bind(host_keys)
     .execute(&mut *tx)
     .await?;
-    // 秘密不再需要；出站参数的其余部分（NAT 映射的 SS 端口、上游代理的地址端口用户名）留着，恢复时默认沿用
+    // 秘密不再需要；出站参数的其余部分（NAT 映射的 SS 端口、上游代理的地址端口用户名）留作记录
     sqlx::query("update node_outbound set secret_enc = null, updated_at = now() where machine_id = $1").bind(m.id).execute(&mut *tx).await?;
+    // 同一个事务里移进回收站（快照、统计列；机器从视图里消失）。作业带的 auto（备用到期）一并记进审计
+    let bin = crate::recycle::record(&mut tx, m.id, &c.job.created_by, c.job.params["auto"].as_str()).await?;
     // 编号连续：同团队剩下的节点压缩成 01..N
     let mut renamed = vec![];
     let mut relays = vec![];
@@ -1000,7 +964,7 @@ async fn finalize(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     if m.host_id.is_none() {
         ssh::forget_host(&c.st.cfg.known_hosts, &m.ip, m.ssh_port as u16).await?;
     }
-    Ok(Outcome::Done(json!({"renumbered": renamed.len()})))
+    Ok(Outcome::Done(json!({"renumbered": renamed.len(), "recycle_bin_id": bin})))
 }
 
 /// 按天分批删分区大表里这台机器（和它名下入口）的原始数据：每天一条语句，走 (entry_id/machine_id, ts) 索引，
@@ -1031,7 +995,7 @@ async fn purge(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     if lc != "retired" {
         bail!("机器不是已退役状态");
     }
-    // 排队期间对端可能被恢复了：执行前再查一次
+    // 排队期间情况可能变了（宿主机上又有了同机 IP 节点…）：执行前再查一次
     if let Some(why) = crate::db::purge_blocker(&c.st.db, id).await? {
         bail!("{why}");
     }
@@ -1095,7 +1059,7 @@ async fn remove_created_entry(st: &AppState, job: Uuid, eid: Uuid) {
     }
 }
 
-/// 上架/恢复/加入口/换线路机被取消：摘掉已建的入口；上架的机器直接退役，恢复的机器回到已退役（都释放 IP 与编号）。
+/// 上架/加入口/换线路机被取消：摘掉已建的入口；上架的机器直接退役（释放 IP 与编号）。
 /// 尽力而为，错误记日志。取消后不再需要保存的 root 密码，由调用方在置 cancelled 时一并清掉。
 pub async fn compensate(st: &AppState, job: &JobRow, owner: &str) {
     let c = Ctx { st, job, owner, started: OffsetDateTime::now_utc(), first: false };
@@ -1105,8 +1069,7 @@ pub async fn compensate(st: &AppState, job: &JobRow, owner: &str) {
     if let Ok(eid) = c.param_uuid("entry_id") {
         remove_created_entry(st, job.id, eid).await;
     }
-    let restoring = job.kind.starts_with("restore_");
-    if !job.kind.starts_with("provision_") && !restoring {
+    if !job.kind.starts_with("provision_") {
         return;
     }
     let Some(id) = job.target_id else { return };
@@ -1126,7 +1089,7 @@ pub async fn compensate(st: &AppState, job: &JobRow, owner: &str) {
         sqlx::query("update agent_token set revoked_at = now() where machine_id = $1 and revoked_at is null").bind(id).execute(&st.db).await,
     )
     .await;
-    // 压缩编号要用「取消前」这台机器占着编号的团队（恢复取消会把团队改回去，所以先读）
+    // 压缩编号要用这台机器占着编号的团队
     let team = note(
         st,
         job.id,
@@ -1135,63 +1098,25 @@ pub async fn compensate(st: &AppState, job: &JobRow, owner: &str) {
     )
     .await
     .flatten();
-    if restoring {
-        // 回到恢复之前的样子：原团队、原编号、原名、原退役原因（退役时间恢复期间一直没动过）
-        let prev = &job.params["prev"];
-        let prev_team = prev["team_id"].as_str().and_then(|s| Uuid::try_parse(s).ok());
-        let prev_number = prev["number"].as_i64().map(|n| n as i32);
-        note(
-            st,
-            job.id,
-            "机器回到已退役",
-            sqlx::query(
-                "update machine set lifecycle = 'retired', lifecycle_reason = $2, team_id = coalesce($3, team_id), number = coalesce($4, number),
-                    label = coalesce($5, label), revision = revision + 1, updated_at = now() where id = $1",
-            )
+    note(
+        st,
+        job.id,
+        "机器标记已退役",
+        sqlx::query("update machine set lifecycle = 'retired', retired_at = now(), lifecycle_reason = '上架取消', revision = revision + 1 where id = $1")
             .bind(id)
-            .bind(prev["reason"].as_str())
-            .bind(prev_team)
-            .bind(prev_number)
-            .bind(prev["label"].as_str())
             .execute(&st.db)
             .await,
-        )
-        .await;
-    } else {
-        note(
-            st,
-            job.id,
-            "机器标记已退役",
-            sqlx::query("update machine set lifecycle = 'retired', retired_at = now(), lifecycle_reason = '上架取消', revision = revision + 1 where id = $1")
-                .bind(id)
-                .execute(&st.db)
-                .await,
-        )
-        .await;
-    }
+    )
+    .await;
     note(st, job.id, "清掉出站秘密", sqlx::query("update node_outbound set secret_enc = null, updated_at = now() where machine_id = $1").bind(id).execute(&st.db).await).await;
-    // 同机 IP 节点记着的主机公钥是宿主机的，不能忘。其余的先存到机器行（恢复时放回核对，见 finalize），没存成就不删
+    // 同机 IP 节点记着的主机公钥是宿主机的，不能忘
     if m.host_id.is_none() {
-        let saved = match note(st, job.id, "读取主机公钥", ssh::host_lines(&st.cfg.known_hosts, &m.ip, m.ssh_port as u16).await).await {
-            Some(Some(lines)) => note(
-                st,
-                job.id,
-                "保存主机公钥",
-                sqlx::query("update machine set retired_host_keys = $2 where id = $1").bind(id).bind(lines).execute(&st.db).await,
-            )
-            .await
-            .is_some(),
-            Some(None) => true,
-            None => false,
-        };
-        if saved {
-            note(st, job.id, "忘记主机公钥", ssh::forget_host(&st.cfg.known_hosts, &m.ip, m.ssh_port as u16).await).await;
-        }
+        note(st, job.id, "忘记主机公钥", ssh::forget_host(&st.cfg.known_hosts, &m.ip, m.ssh_port as u16).await).await;
     }
     if st.cfg.numbering.auto_compact {
         if let Some((Some(t),)) = team {
             if let Some(mut tx) = note(st, job.id, "开启事务", st.db.begin().await).await {
-                if let Some((_, relays)) = note(st, job.id, "压缩编号", crate::db::compact_team(&mut tx, t, &job.created_by, if restoring { "恢复取消后自动压缩" } else { "上架取消后自动压缩" }).await).await {
+                if let Some((_, relays)) = note(st, job.id, "压缩编号", crate::db::compact_team(&mut tx, t, &job.created_by, "上架取消后自动压缩").await).await {
                     if note(st, job.id, "提交编号压缩", tx.commit().await).await.is_some() {
                         for r in relays {
                             st.relay_bumped(r);
@@ -1201,8 +1126,7 @@ pub async fn compensate(st: &AppState, job: &JobRow, owner: &str) {
             }
         }
     }
-    let msg = if restoring { "恢复已取消：机器回到已退役，IP 与编号已释放" } else { "上架已取消：机器标记为已退役，IP 与编号已释放" };
-    log(st, job.id, "warn", msg).await;
+    log(st, job.id, "warn", "上架已取消：机器标记为已退役，IP 与编号已释放").await;
 }
 
 #[cfg(test)]

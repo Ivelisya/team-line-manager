@@ -305,7 +305,8 @@ async fn catalog_delete_refuses_while_in_use() {
         let (s, v) = del(&t, &p).await;
         assert_eq!(s, StatusCode::OK, "{p}: {v}");
     }
-    assert!(t.get("/api/v1/teams").await.as_array().unwrap().is_empty());
+    let left: Vec<Value> = t.get("/api/v1/teams").await.as_array().unwrap().iter().map(|x| x["name"].clone()).collect();
+    assert_eq!(left, [json!("备用")], "只剩迁移建的备用团队");
     let audit = t.get("/api/v1/audit").await;
     let titles: Vec<&str> = audit.as_array().unwrap().iter().filter_map(|a| a["title"].as_str()).collect();
     assert!(titles.starts_with(&["删除团队", "删除供应商", "删除套餐"]), "{titles:?}");

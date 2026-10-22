@@ -122,11 +122,6 @@ pub fn defs(kind: &str) -> &'static [StepDef] {
         "provision_ip" => PROVISION_IP,
         "attach_entry" => ATTACH_ENTRY,
         "move_entry" => MOVE_ENTRY,
-        // 恢复已退役的机器：和上架走同一套收敛步骤
-        "restore_vps" => PROVISION_VPS,
-        "restore_proxy" => PROVISION_PROXY,
-        "restore_relay" => PROVISION_RELAY,
-        "restore_ip" => PROVISION_IP,
         "retire" => RETIRE,
         "purge" => PURGE,
         "upgrade_agent" => UPGRADE_AGENT,
@@ -140,8 +135,8 @@ pub fn title_of(kind: &str, key: &str) -> &'static str {
     defs(kind).iter().find(|d| d.key == key).map(|d| d.title).unwrap_or("")
 }
 
-/// 上架类作业（含恢复）：目标机器处于上架中，失败时机器标为上架失败
-pub fn provisions(kind: &str) -> bool { kind.starts_with("provision_") || kind.starts_with("restore_") }
+/// 上架类作业：目标机器处于上架中，失败时机器标为上架失败
+pub fn provisions(kind: &str) -> bool { kind.starts_with("provision_") }
 
 pub fn cancellable(kind: &str) -> bool { provisions(kind) || matches!(kind, "attach_entry" | "move_entry" | "upgrade_agent" | "replace" | "tune") }
 
@@ -180,7 +175,7 @@ fn outer_timeout(d: &StepDef) -> Duration { Duration::from_secs(d.timeout_s as u
 /// 这类作业要求目标机器处于什么状态。None = 不限。
 fn required_lifecycle(kind: &str) -> Option<&'static str> {
     match kind {
-        k if k.starts_with("provision_") || k.starts_with("restore_") => Some("provisioning"),
+        k if k.starts_with("provision_") => Some("provisioning"),
         "attach_entry" | "move_entry" | "upgrade_agent" | "replace" | "tune" => Some("active"),
         "retire" => Some("retiring"),
         "purge" => Some("retired"),
@@ -743,7 +738,7 @@ async fn fail(st: &AppState, job: &JobRow, owner: &str, d: &StepDef, kind: ErrKi
     .fetch_optional(&mut *tx)
     .await?;
     let Some(state) = state else { return lost(st, job).await };
-    // 上架/恢复失败：机器标为「上架失败」（重试回到上架中，取消则补偿退役）
+    // 上架失败：机器标为「上架失败」（重试回到上架中，取消则补偿退役）
     let marked = state == "failed"
         && provisions(&job.kind)
         && sqlx::query(
@@ -817,28 +812,22 @@ mod tests {
         assert!(check_target("retire", Some("retired")).is_err());
         assert!(check_target("move_entry", Some("active")).is_ok());
         assert!(check_target("move_entry", Some("retiring")).is_err());
-        assert!(check_target("restore_vps", Some("provisioning")).is_ok());
-        assert!(check_target("restore_vps", Some("retired")).is_err(), "恢复作业要求机器处于上架中");
-        assert!(check_target("restore_proxy", Some("active")).is_err());
         assert!(check_target("purge", Some("retired")).is_ok());
         assert!(check_target("purge", None).is_ok(), "机器已删：purge 的目标已达成");
         assert!(check_target("provision_vps", None).is_err());
-        // 同机 IP 节点的上架 / 恢复：和别的上架类作业一样要求上架中，失败标上架失败、可以取消
+        // 同机 IP 节点的上架：和别的上架类作业一样要求上架中，失败标上架失败、可以取消
         assert!(check_target("provision_ip", Some("provisioning")).is_ok() && check_target("provision_ip", Some("active")).is_err());
-        assert!(check_target("restore_ip", Some("provisioning")).is_ok() && check_target("restore_ip", Some("retired")).is_err());
-        assert!(provisions("provision_ip") && provisions("restore_ip") && cancellable("provision_ip") && cancellable("restore_ip"));
+        assert!(provisions("provision_ip") && cancellable("provision_ip"));
         let keys = |k: &str| defs(k).iter().map(|d| d.key).collect::<Vec<_>>();
         assert_eq!(keys("provision_ip"), ["ip_check", "converge", "attach", "wait_applied", "verify", "activate"]);
-        assert_eq!(keys("restore_ip"), keys("provision_ip"));
         let zh = crate::meta::job_kind_label;
-        assert_eq!((zh("provision_ip"), zh("restore_ip"), zh("provision_vps")), ("上架同机 IP 节点", "恢复同机 IP 节点", "上架 VPS 节点"));
+        assert_eq!((zh("provision_ip"), zh("provision_vps")), ("上架同机 IP 节点", "上架 VPS 节点"));
     }
 
     #[test]
     fn outer_timeout_covers_step_timeout() {
         for k in [
-            "provision_vps", "provision_proxy", "provision_relay", "provision_ip", "attach_entry", "retire", "purge", "upgrade_agent", "move_entry",
-            "restore_vps", "restore_proxy", "restore_relay", "restore_ip", "replace", "tune",
+            "provision_vps", "provision_proxy", "provision_relay", "provision_ip", "attach_entry", "retire", "purge", "upgrade_agent", "move_entry", "replace", "tune",
         ] {
             for d in defs(k) {
                 assert!(outer_timeout(d).as_secs() as i64 >= d.timeout_s + 120);
@@ -863,7 +852,7 @@ mod tests {
         assert!(can("move_entry", 0, "running") && can("move_entry", 3, "failed"));
         assert!(!can("move_entry", 4, "running") && !can("move_entry", 6, "failed"), "摘旧入口之后不能取消");
         assert_eq!(defs("move_entry")[MOVE_POINT_OF_NO_RETURN as usize].key, "detach_old");
-        assert!(can("restore_vps", 8, "failed") && can("provision_vps", 8, "waiting"));
+        assert!(can("provision_vps", 8, "failed") && can("provision_vps", 8, "waiting"));
         assert!(!can("retire", 0, "queued") && !can("provision_vps", 0, "succeeded"));
         // 升级 agent 只能在排队时取消
         assert!(can("upgrade_agent", 0, "queued"));

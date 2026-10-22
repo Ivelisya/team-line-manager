@@ -321,38 +321,83 @@ pub fn provision(ctx: &Ctx, o: ProvisionOpts) -> anyhow::Result<u8> {
     Ok(code)
 }
 
-// ── 退役 / 删除 / 改名 / 编号 / 升级 ──────────────────────────────────
+// ── 退役 / 改名 / 编号 / 升级 ──────────────────────────────────
 
-pub fn retire(ctx: &Ctx, machine: &str, reason: Option<&str>, no_cleanup: bool, yes: bool, follow: bool) -> anyhow::Result<u8> {
+/// `fleetctl retire <机器>`：默认移进备用团队（机器照常运行，订阅过期满 1 天后中控自动回收；移出备用就是撤销），
+/// `--now` 立即回收（退役作业：摘入口、清理、撤令牌、移进回收站）。先打印预览：去向与自动回收的日子、一起走的同机 IP 节点、
+/// 还指向它的软路由出口（不会自动改）、原团队的改名；进不了备用的说明原因（只能 --now）。`--follow` 只对 --now 有用
+pub fn retire(ctx: &Ctx, machine: &str, now: bool, reason: Option<&str>, no_cleanup: bool, yes: bool, follow: bool) -> anyhow::Result<u8> {
     let m = ctx.find(machine, Want::Live)?;
     let (id, name) = (st(&m, "/id"), st(&m, "/name"));
     let pre = ctx.c.get(&format!("/machines/{id}/retire"))?;
-    // 宿主机上的同机 IP 节点一并退役
-    let ip_nodes: Vec<String> = pre["ip_nodes"].as_array().map(|a| a.iter().map(|x| st(x, "/name")).collect()).unwrap_or_default();
+    let sp = &pre["spare"];
+    if !now && sp["ok"] != true {
+        bail!("{name} 不能移进备用：{}。要现在就清理并移进回收站，加 --now", st(sp, "/why"));
+    }
+    let names = |p: &str, to: bool| -> Vec<String> {
+        pre.pointer(p)
+            .and_then(Value::as_array)
+            .map(|a| a.iter().map(|x| if to { format!("{} → {}", st(x, "/name"), st(x, "/to_name")) } else { st(x, "/name") }).collect())
+            .unwrap_or_default()
+    };
+    let ip_nodes = if now { names("/ip_nodes", false) } else { names("/spare/ip_nodes", true) };
     if !ctx.json {
-        outln(format!("将退役 {name}（{}）。", st(&m, "/ip")));
-        if !ip_nodes.is_empty() {
-            outln(format!("它上面的同机 IP 节点会一并退役：{}", ip_nodes.join("、")));
+        if now {
+            let clean = if no_cleanup { "" } else { "停掉机器上的服务、" };
+            outln(format!("将立即回收 {name}（{}）：摘掉入口、{clean}撤销令牌，然后移进回收站（之后约 35 天内自动清除数据）。", st(&m, "/ip")));
+            if !ip_nodes.is_empty() {
+                outln(format!("它上面的同机 IP 节点一并回收：{}", ip_nodes.join("、")));
+            }
+        } else {
+            outln(format!(
+                "将把 {name} 移进备用：→ {}，机器照常运行，{} 起自动回收（账单时区）。在那之前移出备用（fleetctl rename {} --team <团队>）就是撤销退役。",
+                st(sp, "/to_name"),
+                st(sp, "/recycle_on"),
+                st(sp, "/to_name")
+            ));
+            if !ip_nodes.is_empty() {
+                outln(format!("同机 IP 节点一起进备用：{}", ip_nodes.join("，")));
+            }
+        }
+        let exits: Vec<String> = pre["routers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|r| r["exits"].as_array().cloned().unwrap_or_default().into_iter().map(move |e| format!("{} · {}（{}）", st(r, "/name"), st(&e, "/exit"), st(&e, "/node"))))
+            .collect();
+        if !exits.is_empty() {
+            outln(format!("还有软路由出口指向它（不会自动改；要换掉先 fleetctl replace）：{}", exits.join("、")));
         }
         if let Some(rs) = pre["renames"].as_array().filter(|r| !r.is_empty()) {
-            outln("同团队编号会前移：");
+            outln("原团队编号会前移：");
             for r in rs {
                 outln(format!("  {} → {}", st(r, "/old_name"), st(r, "/new_name")));
             }
         }
     }
-    let also = if ip_nodes.is_empty() { String::new() } else { format!("（连同 {}）", ip_nodes.join("、")) };
-    confirm(&format!("确认退役 {name}{also}？会摘掉入口、停掉机器上的服务"), yes)?;
-    let mut body = json!({"confirm": name, "cleanup": !no_cleanup});
+    let also = if ip_nodes.is_empty() { String::new() } else { "（连同同机 IP 节点）".into() };
+    let what = if now { "立即回收" } else { "退役（移进备用）" };
+    confirm(&format!("确认{what} {name}{also}？"), yes)?;
+    let mut body = json!({"confirm": name, "now": now, "cleanup": !no_cleanup});
     if let Some(r) = reason {
         body["reason"] = json!(r);
     }
     let d = ctx.c.post(&format!("/machines/{id}/retire"), &body)?;
+    if !now {
+        ctx.emit(&d, || {
+            let mut s = format!("{} → {}，{} 起自动回收", st(&d, "/from"), st(&d, "/name"), st(&d, "/recycle_on"));
+            for x in d["ip_nodes"].as_array().into_iter().flatten() {
+                s += &format!("\n一起进备用：{} → {}", st(x, "/from"), st(x, "/name"));
+            }
+            s
+        });
+        return Ok(0);
+    }
     let ip_jobs = d["ip_node_jobs"].as_array().cloned().unwrap_or_default();
     ctx.emit(&d, || {
-        let mut s = format!("已提交退役作业 {}\n看进度：fleetctl job {} --follow", st(&d, "/job_id"), st(&d, "/job_id"));
+        let mut s = format!("已提交退役作业 {}（完成后移进回收站）\n看进度：fleetctl job {} --follow", st(&d, "/job_id"), st(&d, "/job_id"));
         for j in &ip_jobs {
-            s += &format!("\n一并退役 {}：作业 {}", st(j, "/name"), st(j, "/job_id"));
+            s += &format!("\n一并回收 {}：作业 {}", st(j, "/name"), st(j, "/job_id"));
         }
         s
     });
@@ -363,15 +408,6 @@ pub fn retire(ctx: &Ctx, machine: &str, reason: Option<&str>, no_cleanup: bool, 
         }
     }
     Ok(code)
-}
-
-pub fn purge(ctx: &Ctx, machine: &str, yes: bool, follow: bool) -> anyhow::Result<u8> {
-    let m = ctx.find(machine, Want::Retired)?;
-    let (id, name) = (st(&m, "/id"), st(&m, "/name"));
-    confirm(&format!("确认彻底删除已退役的 {name}？机器与遥测数据都会清掉，不可恢复"), yes)?;
-    let d = ctx.c.post(&format!("/machines/{id}/purge"), &json!({"confirm": name}))?;
-    ctx.emit(&d, || format!("已提交删除作业 {}", st(&d, "/job_id")));
-    follow_if(ctx, follow, &st(&d, "/job_id"))
 }
 
 pub fn rename(
@@ -431,7 +467,7 @@ pub fn renumber(ctx: &Ctx, team: &str, yes: bool) -> anyhow::Result<u8> {
     Ok(0)
 }
 
-/// `team ls`：团队列表。`--json` 是 /teams 的 data 原样（`[{id,name,sort_order,spare,node_count}]`）
+/// `team ls`：团队列表。`--json` 是 /teams 的 data 原样（`[{id,name,sort_order,spare,node_count}]`）；备用团队只有一个，系统管理
 pub fn team_ls(ctx: &Ctx) -> anyhow::Result<u8> {
     let d = ctx.teams()?;
     ctx.emit(&d, || {
@@ -441,27 +477,22 @@ pub fn team_ls(ctx: &Ctx) -> anyhow::Result<u8> {
         }
         let rows: Vec<Vec<String>> = all
             .iter()
-            .map(|t| vec![st(t, "/name"), st(t, "/sort_order"), st(t, "/node_count"), if t["spare"] == true { "是（到期 +1 天自动删除）".into() } else { "-".into() }, st(t, "/id")])
+            .map(|t| vec![st(t, "/name"), st(t, "/sort_order"), st(t, "/node_count"), if t["spare"] == true { "是（退役的机器在这里，到期 +1 天自动回收）".into() } else { "-".into() }, st(t, "/id")])
             .collect();
         table::render(&["名称", "排序", "在用节点", "备用", "id"], &rows)
     });
     Ok(0)
 }
 
-/// `team set <团队> --spare true|false`。设为备用要确认：团队里已经过期满 1 天的在用机器，中控下一次每小时的维护就会退役并删除。
+/// `team set <团队> --name <新名>`：改团队名（备用团队也能改名；显示名跟着变，线路机备注刷新，节点不断线）。
 /// `--json` 输出改完后的这个团队（同 team ls 的一项）
-pub fn team_set(ctx: &Ctx, team: &str, spare: bool, yes: bool) -> anyhow::Result<u8> {
+pub fn team_set(ctx: &Ctx, team: &str, name: &str, yes: bool) -> anyhow::Result<u8> {
     let tid = lookup(&ctx.teams()?, team, &["name"], "团队")?;
-    if spare {
-        confirm(&format!("确认把「{team}」设为备用团队？里面在用的机器订阅过期满 1 天后会被自动退役并彻底删除（已经过期满 1 天的一小时内就删）"), yes)?;
-    }
-    ctx.c.patch(&format!("/teams/{tid}"), &json!({"spare": spare}))?;
+    confirm(&format!("确认把团队「{team}」改名为「{name}」？团队里的机器显示名跟着变（{name}-01…）"), yes)?;
+    ctx.c.patch(&format!("/teams/{tid}"), &json!({"name": name}))?;
     let all = ctx.c.get("/teams")?;
     let t = all.as_array().and_then(|a| a.iter().find(|t| t["id"] == tid.as_str())).cloned().unwrap_or(Value::Null);
-    ctx.emit(&t, || {
-        let name = st(&t, "/name");
-        if spare { format!("已把「{name}」设为备用团队：里面在用的机器订阅过期满 1 天后自动删除") } else { format!("已取消「{name}」的备用") }
-    });
+    ctx.emit(&t, || format!("已把「{team}」改名为「{}」", st(&t, "/name")));
     Ok(0)
 }
 

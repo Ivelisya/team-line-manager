@@ -189,14 +189,20 @@ pub(crate) fn month_cn(m: &Value) -> String {
     format!("{v}{from}")
 }
 
-/// 备用团队里在用的机器（`spare`）：到期后再留 1 天，由中控自动退役并彻底删除。不是备用、不在用时为 None（billing、show 共用）
+/// 备用团队里在用的机器（`spare`，即已退役、等到期回收）：什么时候退役、原名、哪天自动回收（`recycle_on`，账单时区）。
+/// 不是备用、不在用时为 None（billing、show 共用）
 pub(crate) fn spare_cn(m: &Value) -> Option<String> {
     if m["spare"] != true || m["lifecycle"] != "active" {
         return None;
     }
-    Some(match m["subscription"]["due_date"].as_str() {
-        Some(d) => format!("到期后 1 天自动删除（账单时区 {d} 的次日过完即删）"),
-        None => "没有订阅，不会自动删除".into(),
+    let when = match m["spare_since"].as_str().and_then(|t| t.get(..10)) {
+        Some(d) => format!("已于 {d} 退役"),
+        None => "已退役".into(),
+    };
+    let from = m["spare_from"].as_str().map(|f| format!("（原 {f}）")).unwrap_or_default();
+    Some(match m["recycle_on"].as_str() {
+        Some(d) => format!("{when}{from}，{d} 起自动回收（账单时区）"),
+        None => format!("{when}{from}，没有订阅，不会自动回收：要清理用 fleetctl retire --now"),
     })
 }
 
@@ -460,12 +466,16 @@ mod tests {
 
     #[test]
     fn spare_hint_only_for_active_spare() {
-        let m = |spare: bool, lc: &str, sub: Value| json!({"spare": spare, "lifecycle": lc, "subscription": sub});
-        let sub = json!({"due_date": "2026-10-20"});
-        assert_eq!(spare_cn(&m(true, "active", sub.clone())).as_deref(), Some("到期后 1 天自动删除（账单时区 2026-10-20 的次日过完即删）"));
-        assert_eq!(spare_cn(&m(true, "active", Value::Null)).as_deref(), Some("没有订阅，不会自动删除"));
-        assert_eq!(spare_cn(&m(false, "active", sub.clone())), None);
-        assert_eq!(spare_cn(&m(true, "retired", sub)), None);
+        let m = |spare: bool, lc: &str, on: Value| {
+            json!({"spare": spare, "lifecycle": lc, "recycle_on": on, "spare_from": "团队2-07", "spare_since": "2026-10-21T10:03:00Z"})
+        };
+        let on = json!("2026-10-22");
+        assert_eq!(spare_cn(&m(true, "active", on.clone())).as_deref(), Some("已于 2026-10-21 退役（原 团队2-07），2026-10-22 起自动回收（账单时区）"));
+        assert!(spare_cn(&m(true, "active", Value::Null)).unwrap().contains("没有订阅，不会自动回收"));
+        assert_eq!(spare_cn(&m(false, "active", on.clone())), None);
+        assert_eq!(spare_cn(&m(true, "retired", on)), None);
+        // 替换下来之前就在备用团队里的（没有 spare_from / spare_since）
+        assert_eq!(spare_cn(&json!({"spare": true, "lifecycle": "active", "recycle_on": "2026-10-22"})).as_deref(), Some("已退役，2026-10-22 起自动回收（账单时区）"));
     }
 
     #[test]

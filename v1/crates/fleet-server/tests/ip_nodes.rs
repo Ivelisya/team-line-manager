@@ -30,17 +30,6 @@ async fn seed_vps(t: &T, team: Uuid, number: i32, ip: &str, ssh_port: i32, lifec
     id
 }
 
-async fn seed_outbound(t: &T, machine: Uuid, ip: &str, port: i32) {
-    sqlx::query("insert into node_outbound (machine_id, protocol, host, port, method, secret_enc) values ($1, 'shadowsocks', $2, $3, 'aes-256-gcm', $4)")
-        .bind(machine)
-        .bind(ip)
-        .bind(port)
-        .bind(t.st.secrets.seal_str("pw"))
-        .execute(&t.st.db)
-        .await
-        .unwrap();
-}
-
 fn ip_item(ip: &str, host: Uuid, team: Uuid, relay: Uuid) -> Value {
     // 同机 IP 节点不用的字段也带上：SSH 端口、SS 端口、root 密码都要被忽略
     json!({"kind": "vps", "ip": ip, "host_id": host, "team_id": team, "relay_id": relay, "ssh_port": 22, "ss_port": 9999, "login": {"password": "root-pw"}})
@@ -286,7 +275,7 @@ async fn retiring_host_retires_its_ip_nodes() {
     assert_eq!(pv["ip_nodes"], json!([{"id": x1, "name": "团队1-02"}, {"id": x2, "name": "团队2-01"}]), "{pv}");
     assert_eq!(pv["renames"], json!([{"machine_id": n3, "old_name": "团队1-03", "new_name": "团队1-01"}]), "{pv}");
 
-    let r = t.post(&format!("/api/v1/machines/{host}/retire"), json!({"confirm": "团队1-01", "cleanup": false, "reason": "到期"})).await;
+    let r = t.post(&format!("/api/v1/machines/{host}/retire"), json!({"now": true, "confirm": "团队1-01", "cleanup": false, "reason": "到期"})).await;
     let ij = r["ip_node_jobs"].as_array().unwrap();
     assert_eq!(ij.iter().map(|j| j["machine_id"].as_str().unwrap().to_string()).collect::<Vec<_>>(), [x1.to_string(), x2.to_string()], "{r}");
     for j in ij {
@@ -308,57 +297,18 @@ async fn retiring_host_retires_its_ip_nodes() {
     }
     assert_eq!(t.get(&format!("/api/v1/machines/{n3}")).await["name"], "团队1-01");
 
-    // 彻底删除：宿主机要等同机节点（含已退役的）先删
-    let (s, v) = t.req("POST", &format!("/api/v1/machines/{host}/purge"), Some(json!({"confirm": "团队1-01"})), None).await;
-    assert_eq!(s, StatusCode::CONFLICT, "{v}");
-    assert!(v["error"]["message"].as_str().unwrap().contains("同机 IP 节点"), "{v}");
+    // 收尾时三台各自进了回收站；物理删除时宿主机要等同机节点（含已退役的）先删
+    let n: i64 = sqlx::query_scalar("select count(*) from recycle_bin where machine_id = any($1)").bind(vec![host, x1, x2]).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(n, 3);
+    assert!(fleet_server::db::purge_blocker(&t.st.db, host).await.unwrap().unwrap().contains("同机 IP 节点"));
+    let now = time::OffsetDateTime::now_utc();
+    let r = fleet_server::spare::run_once(&t.st, now).await.unwrap();
+    assert_eq!(r.purged, [x1, x2], "{r:?}");
     for x in [x1, x2] {
-        let name = t.get(&format!("/api/v1/machines/{x}")).await["name"].as_str().unwrap().to_string();
-        let j = t.post(&format!("/api/v1/machines/{x}/purge"), json!({"confirm": name})).await;
-        t.wait_job(j["job_id"].as_str().unwrap(), "succeeded").await;
+        let j = sqlx::query_scalar::<_, Uuid>("select id from job where target_id = $1 and kind = 'purge'").bind(x).fetch_one(&t.st.db).await.unwrap();
+        t.wait_job(&j.to_string(), "succeeded").await;
     }
-    let j = t.post(&format!("/api/v1/machines/{host}/purge"), json!({"confirm": "团队1-01"})).await;
-    t.wait_job(j["job_id"].as_str().unwrap(), "succeeded").await;
+    let r = fleet_server::spare::run_once(&t.st, now).await.unwrap();
+    assert_eq!(r.purged, [host], "{r:?}");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn restore_ip_node_needs_active_host() {
-    let t = setup(false).await;
-    let (relay, _) = seed_relay(&t).await;
-    let team = seed_team(&t, "团队1").await;
-    let host = seed_vps(&t, team, 1, "203.0.113.5", 22, "retired", None).await;
-    let x = seed_vps(&t, team, 2, "203.0.113.7", 22, "retired", Some(host)).await;
-    let path = format!("/api/v1/machines/{x}/restore");
-
-    let pv = t.get(&path).await;
-    assert_eq!(pv["restorable"], false, "{pv}");
-    assert!(pv["blockers"].to_string().contains("宿主机「团队1-01」现在是「已退役」"), "{pv}");
-    let (s, v) = t.req("POST", &path, Some(json!({"relay_id": relay})), None).await;
-    assert_eq!(s, StatusCode::CONFLICT, "{v}");
-
-    // 宿主机在用、上面已有一台同机节点占着 x 原来的 8389：恢复时重新分到 8390；不试 SSH、不要密码
-    sqlx::query("update machine set lifecycle = 'active', retired_at = null where id = $1").bind(host).execute(&t.st.db).await.unwrap();
-    let other = seed_vps(&t, team, 3, "203.0.113.8", 22, "active", Some(host)).await;
-    seed_outbound(&t, other, "203.0.113.8", 8389).await;
-    seed_outbound(&t, x, "203.0.113.7", 8389).await;
-    sqlx::query("update node_outbound set secret_enc = null where machine_id = $1").bind(x).execute(&t.st.db).await.unwrap();
-    let pv = t.get(&path).await;
-    assert_eq!((pv["restorable"].clone(), pv["ssh"].clone(), pv["needs"]["password"].clone()), (json!(true), Value::Null, json!("no")), "{pv}");
-    let r = t.post(&path, json!({"relay_id": relay, "login": {"password": "pw"}, "ss_port": 9999})).await;
-    let job = t.job(r["job_id"].as_str().unwrap()).await;
-    assert_eq!(job["kind"], "restore_ip");
-    assert_eq!(lifecycle_of(&t, x).await, "provisioning");
-    let (h, port): (String, i32) = sqlx::query_as("select host, port from node_outbound where machine_id = $1").bind(x).fetch_one(&t.st.db).await.unwrap();
-    assert_eq!((h.as_str(), port), ("203.0.113.7", 8390));
-    let p: Value = sqlx::query_scalar("select params from job where id = $1::uuid").bind(r["job_id"].as_str().unwrap()).fetch_one(&t.st.db).await.unwrap();
-    assert!(p.get("login").is_none(), "{p}");
-
-    // 原来的端口没被占：沿用
-    let y = seed_vps(&t, team, 4, "203.0.113.9", 22, "retired", Some(host)).await;
-    seed_outbound(&t, y, "203.0.113.9", 8395).await;
-    sqlx::query("update node_outbound set secret_enc = null where machine_id = $1").bind(y).execute(&t.st.db).await.unwrap();
-    assert_eq!(t.get(&format!("/api/v1/machines/{y}/restore")).await["outbound"]["port"], 8395);
-    t.post(&format!("/api/v1/machines/{y}/restore"), json!({"relay_id": relay})).await;
-    let (port, gone): (i32, bool) = sqlx::query_as("select port, secret_enc is null from node_outbound where machine_id = $1").bind(y).fetch_one(&t.st.db).await.unwrap();
-    assert_eq!((port, gone), (8395, false), "沿用原端口、重新生成秘密");
-}

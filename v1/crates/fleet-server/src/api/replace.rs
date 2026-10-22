@@ -2,11 +2,11 @@
 //! 再交换编号：旧节点去备用团队（或指定的团队 / 空号），新节点接旧节点的编号（客户看到的名字不变）。
 //! 这里只做校验、预览、建作业和写审计；步骤在 jobs/steps/replace.rs，路由上的脚本在 routers/replace.rs。
 //!
-//! - 要改哪些路由：按各路由最近一次采集的快照，出口对上的入口（server:port，见 routers::clash）属于旧节点、且没删除的就改。
+//! - 要改哪些路由：按各路由最近一次采集的快照，出口对上的入口属于旧节点、且没删除的就改（routers::exits_to，退役预览同一套匹配）。
 //!   新入口按线路机一一对应（旧入口在哪台线路机，就换成新节点在同一台上的入口）；对不上时新节点只有一个在用入口就用它，否则报错说明。
 //! - 改编号与 PATCH /machines/{id} 同一套代码（machines::patch_tx）：同样的校验、审计（machine.rename）、刷新线路机。
 //!   编号先挪开旧节点、再给新节点，`numbering.auto_compact` 打开时新节点原来所在的团队随后压缩（同退役）。旧节点不退役：
-//!   放进备用团队后由备用到期自动删除（spare.rs）接手。
+//!   放进备用团队后由备用到期自动回收（spare.rs）接手。
 
 use super::ok;
 use crate::auth::Actor;
@@ -110,15 +110,9 @@ pub fn new_server(old_server: &str, old: &Ent, new: &Ent) -> String {
     if host_eq(old_server, &old.relay_ip) { new.relay_ip.clone() } else { new.public_host.clone() }
 }
 
-/// 没指定团队时旧节点去哪：备用团队里名字以旧团队名开头的（「团队2备用」）恰好一个就用它，否则只有一个备用团队就用它
-async fn default_spare(conn: &mut PgConnection, team: &str) -> ApiResult<Option<(Uuid, String)>> {
-    let spares: Vec<(Uuid, String)> = sqlx::query_as("select id, name from team where spare order by sort_order, name").fetch_all(&mut *conn).await?;
-    let own: Vec<&(Uuid, String)> = spares.iter().filter(|(_, n)| n.starts_with(team) && n != team).collect();
-    Ok(match (own.as_slice(), spares.as_slice()) {
-        ([one], _) => Some((*one).clone()),
-        (_, [one]) => Some(one.clone()),
-        _ => None,
-    })
+/// 没指定团队时旧节点去哪：唯一的备用团队（迁移 0041 保证有且只有一个）
+async fn default_spare(conn: &mut PgConnection) -> ApiResult<(Uuid, String)> {
+    Ok(sqlx::query_as("select id, name from team where spare").fetch_one(&mut *conn).await?)
 }
 
 /// 替换的完整计划（预览与提交共用）
@@ -211,15 +205,10 @@ async fn plan(st: &AppState, conn: &mut PgConnection, old_id: Uuid, b: &ReplaceI
                 }
             }
         }
-        None => match default_spare(conn, &old_team_name).await? {
-            Some((t, n)) => Some((t, n, true)),
-            None => {
-                let msg = "没有找到旧节点要去的备用团队（没有备用团队，或有好几个对不上）：指定旧节点去哪个团队（old_to.team_id）".to_string();
-                blockers.push(msg.clone());
-                invalid.push(msg);
-                None
-            }
-        },
+        None => {
+            let (t, n) = default_spare(conn).await?;
+            Some((t, n, true))
+        }
     };
     let mut to_number = None;
     if let Some((t, _, _)) = &to_team {
@@ -264,7 +253,7 @@ async fn plan(st: &AppState, conn: &mut PgConnection, old_id: Uuid, b: &ReplaceI
         warnings.push(format!("新节点「{new_name}」不在旧节点的团队（{old_team_name}），替换时改到这个团队"));
     }
     if to_team.as_ref().is_some_and(|t| !t.2) {
-        warnings.push("旧节点要去的不是备用团队：不会到期自动删除".into());
+        warnings.push("旧节点要去的不是备用团队：不会到期自动回收".into());
     }
 
     // 编号压缩：新节点原来的团队少了一台（auto_compact 时，同退役）
@@ -329,8 +318,7 @@ async fn router_plan(
             warnings.push(format!("软路由「{}」的配置读不了（{e}），看不出它有没有用旧节点", r.name));
         }
         let mut exits = vec![];
-        for x in &snap.exits {
-            let Some(er) = x.entry.as_ref().filter(|er| er.node_id == old.id && er.lifecycle != "removed") else { continue };
+        for (x, er) in crate::routers::exits_to(&snap, old.id) {
             let (Some(srv), Some(port)) = (x.server.as_deref(), x.port) else { continue };
             let Some(oe) = old_es.iter().find(|e| e.id == er.id) else { continue };
             match map_entry(oe, &new_es) {

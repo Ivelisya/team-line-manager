@@ -103,12 +103,12 @@ async fn full_lifecycle() {
     rm.sort();
     assert_eq!(rm, ["一队-01", "一队-02", "一队-03"]);
 
-    // 退役 一队-01：预览显示后面两台前移
+    // 立即回收 一队-01：预览显示后面两台前移
     let pv = t.get(&format!("/api/v1/machines/{}/retire", ids[0])).await;
     assert_eq!(pv["renames"].as_array().unwrap().len(), 2);
-    let (s, _) = t.req("POST", &format!("/api/v1/machines/{}/retire", ids[0]), Some(json!({"confirm": "错的名字"})), None).await;
+    let (s, _) = t.req("POST", &format!("/api/v1/machines/{}/retire", ids[0]), Some(json!({"now": true, "confirm": "错的名字"})), None).await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
-    let job = t.post(&format!("/api/v1/machines/{}/retire", ids[0]), json!({"confirm": "一队-01"})).await["job_id"].as_str().unwrap().to_string();
+    let job = t.post(&format!("/api/v1/machines/{}/retire", ids[0]), json!({"now": true, "confirm": "一队-01"})).await["job_id"].as_str().unwrap().to_string();
     for _ in 0..150 {
         let ds = relay_round(&t, &rtok, gen, &mut seq).await;
         gen = ds.generation;
@@ -127,8 +127,11 @@ async fn full_lifecycle() {
     assert_eq!(rm, ["一队-01", "一队-02"]);
     let live = t.get("/api/v1/machines").await;
     assert!(live.as_array().unwrap().iter().all(|m| m["id"] != ids[0].as_str()), "退役的不在默认列表");
-    let retired = t.get("/api/v1/machines?scope=retired").await;
-    assert_eq!(retired[0]["lifecycle"], "retired");
+    // 退役作业收尾时进了回收站：所有视图里都看不到，回收站里有它
+    let (s, _) = t.req("GET", &format!("/api/v1/machines/{}", ids[0]), None, None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "回收站里的机器");
+    let bin = t.get("/api/v1/recycle-bin").await;
+    assert_eq!((bin["total"].as_i64(), bin["items"][0]["name"].as_str()), (Some(1), Some("一队-01")), "{bin}");
     // 精简列表（fleetctl 按名字找机器用）：顺序和这几个字段与完整视图一致
     let (brief, full) = (t.get("/api/v1/machines?scope=all&view=brief").await, t.get("/api/v1/machines?scope=all").await);
     assert_eq!(brief.as_array().unwrap().len(), full.as_array().unwrap().len());
@@ -141,12 +144,7 @@ async fn full_lifecycle() {
     let chk = t.post("/api/v1/provision/check", json!({"items": [{"kind": "proxy", "ip": "203.0.113.10", "team_id": team, "relay_id": relay,
         "upstream": {"protocol": "socks5", "host": "x", "port": 1}}]})).await;
     assert_eq!(chk["items"][0]["name"], "一队-03", "退役机器的 IP 已释放、编号接在末尾");
-    // 新入口端口不复用已删除的 20000
-    // 彻底删除
-    let pj = t.post(&format!("/api/v1/machines/{}/purge", ids[0]), json!({"confirm": retired[0]["name"]})).await["job_id"].as_str().unwrap().to_string();
-    t.wait_job(&pj, "succeeded").await;
-    let (s, _) = t.req("GET", &format!("/api/v1/machines/{}", ids[0]), None, None).await;
-    assert_eq!(s, StatusCode::NOT_FOUND);
+    // 物理删除由维护任务在 purge_blocker 放行后自动做（tests/spare.rs）
     // 审计里有重编号记录
     let audit = t.get("/api/v1/audit?limit=200").await;
     assert!(audit.as_array().unwrap().iter().any(|a| a["action"] == "team.renumber"));

@@ -11,6 +11,7 @@ mod lifecycle;
 mod meta;
 mod ops;
 mod policy;
+mod recycle;
 mod resolve;
 mod routers;
 mod settings;
@@ -207,14 +208,37 @@ enum SubscriptionCmd {
 
 #[derive(Subcommand)]
 enum TeamCmd {
-    /// 团队列表：排序、在用节点数、是否备用
+    /// 团队列表：排序、在用节点数、哪个是备用团队（只有一个，退役的机器放这里）
     Ls,
-    /// 设为 / 取消备用团队。备用团队里在用的机器订阅过期满 1 天（账单时区的「到期日 + 1 天」过完）后，中控自动退役并彻底删除
+    /// 改团队名（备用团队也能改）：团队里的机器显示名跟着变，线路机备注刷新，节点不断线
     Set {
         team: String,
-        /// true = 设为备用（设为备用要确认：已经过期满 1 天的机器一小时内就会被删）；false = 取消
-        #[arg(long, action = clap::ArgAction::Set, value_name = "true|false")]
-        spare: bool,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum RecycleCmd {
+    /// 回收站列表（只读），回收时间倒序
+    Ls {
+        /// fleet（面板里退役的）| legacy（旧面板导入的）
+        #[arg(long)]
+        source: Option<String>,
+        /// 搜名字（含回收时的名字）、IP、团队、供应商、套餐、供应商编号
+        #[arg(short, long)]
+        q: Option<String>,
+        #[arg(long, default_value_t = 100)]
+        limit: i64,
+    },
+    /// 一条的详情（id、退役前或回收时的名字、IP）；--json 带回收时的快照
+    Show { which: String },
+    /// 旧面板的退役机器导入回收站（文件：{"items": [...]} 或数组）。不加 --yes 只预演
+    Import {
+        #[arg(long)]
+        file: std::path::PathBuf,
         #[arg(long)]
         yes: bool,
     },
@@ -250,11 +274,8 @@ enum Cmd {
         /// 健康状态（ok/degraded/down/unknown/maintenance）或生命周期（active/provisioning/…）
         #[arg(long)]
         status: Option<String>,
-        /// 只看已退役
-        #[arg(long)]
-        retired: bool,
         /// 只列 N 天内到期（含已过期）的在用机器，按到期日排，表格加「到期」列（自动续费的也列出并标明）
-        #[arg(long, value_name = "DAYS", conflicts_with = "retired")]
+        #[arg(long, value_name = "DAYS")]
         due: Option<i64>,
     },
     /// 机器详情
@@ -320,7 +341,7 @@ enum Cmd {
     Jobs {
         #[arg(long)]
         active: bool,
-        /// 只看这类作业：provision（各类上架）| restore（各类恢复）| attach_entry | move_entry | replace | upgrade_agent | tune | retire | purge
+        /// 只看这类作业：provision（各类上架）| attach_entry | move_entry | replace | upgrade_agent | tune | retire | purge
         #[arg(long)]
         kind: Option<String>,
         #[arg(long, default_value_t = 30)]
@@ -347,26 +368,27 @@ enum Cmd {
     /// 上架：先 check 再提交（单台参数或 --file 批量）
     // 装箱：上架参数最多，免得整个 Cmd 跟着它变大（clippy large_enum_variant）
     Provision(Box<ops::ProvisionOpts>),
-    /// 退役一台机器（危险）
+    /// 退役：默认移进备用团队（照常运行，订阅过期满 1 天后自动回收；移出备用 = 撤销）。--now 立即回收（摘入口、清理、撤令牌、进回收站）
     Retire {
         machine: String,
+        /// 立即回收，不等到期（线路机、没有订阅、已过期满 1 天、没上线的、本来就在备用里的只能这样）
+        #[arg(long)]
+        now: bool,
         #[arg(long)]
         reason: Option<String>,
-        /// 不清理机器上的服务
+        /// 立即回收时不清理机器上的服务
         #[arg(long)]
         no_cleanup: bool,
         #[arg(long)]
         yes: bool,
+        /// 跟作业进度（只对 --now 有用）
         #[arg(long)]
         follow: bool,
     },
-    /// 彻底删除已退役的机器（危险，不可恢复）
-    Purge {
-        machine: String,
-        #[arg(long)]
-        yes: bool,
-        #[arg(long)]
-        follow: bool,
+    /// 回收站（只读）：列表、详情、旧面板导入
+    Recycle {
+        #[command(subcommand)]
+        cmd: RecycleCmd,
     },
     /// 改名 = 改团队/编号/线路机名/备注；也改国家（名字旁的国旗）
     Rename {
@@ -389,7 +411,7 @@ enum Cmd {
         #[arg(long)]
         yes: bool,
     },
-    /// 团队：列表（含是否备用）、设为 / 取消备用团队
+    /// 团队：列表（含哪个是备用团队）、改名
     Team {
         #[command(subcommand)]
         cmd: TeamCmd,
@@ -608,44 +630,6 @@ enum Cmd {
         #[arg(long)]
         follow: bool,
     },
-    /// 恢复已退役的机器（保持原 id；先预检再提交，重新走上架收敛）
-    Restore {
-        /// 已退役的机器（id / 显示名 / IP）
-        machine: String,
-        /// 改到别的团队（默认原团队）
-        #[arg(long)]
-        team: Option<String>,
-        /// 指定团队内编号（默认接在末尾）
-        #[arg(long)]
-        number: Option<i32>,
-        /// 节点要接入的线路机
-        #[arg(long)]
-        relay: Option<String>,
-        /// 线路机恢复时改名（原名被占用时）
-        #[arg(long)]
-        label: Option<String>,
-        /// 家宽代理：socks5://用户:密码@主机:端口。不给沿用退役前的上游；上游有用户名时要给（密码退役时已清掉）
-        #[arg(long)]
-        upstream: Option<String>,
-        /// VPS 节点的公网（NAT 映射）SS 端口：不给沿用退役前的（预检里能看到），都没有为 8388
-        #[arg(long)]
-        ss_port: Option<u16>,
-        /// root 密码放在哪个环境变量里（预检说中控密钥登录不了时必填）
-        #[arg(long)]
-        password_env: Option<String>,
-        #[arg(long)]
-        reason: Option<String>,
-        /// 机器重装过、主机指纹变了：允许覆盖已记录的指纹
-        #[arg(long)]
-        reset_host_key: bool,
-        /// 预检不试 SSH 登录（只做库内检查）
-        #[arg(long)]
-        no_probe: bool,
-        #[arg(long)]
-        yes: bool,
-        #[arg(long)]
-        follow: bool,
-    },
     /// 软路由列表：状态、出口通 / 总、客户端、CPU、内存、WAN 速率
     Routers {
         /// 只看这个团队的
@@ -817,7 +801,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Login { .. } | Cmd::Ssh { .. } => unreachable!(),
         Cmd::Whoami => cmds::whoami(x),
         Cmd::Status => cmds::status(x),
-        Cmd::Ls { team, kind, status, retired, due } => cmds::ls(x, team.as_deref(), kind.as_deref(), status.as_deref(), retired, due),
+        Cmd::Ls { team, kind, status, due } => cmds::ls(x, team.as_deref(), kind.as_deref(), status.as_deref(), due),
         Cmd::Show { machine } => cmds::show(x, &machine),
         Cmd::Series { machine, range, metric } => cmds::series(x, &machine, &range, &metric),
         Cmd::Uptime { machine, days } => cmds::uptime(x, &machine, days),
@@ -858,15 +842,19 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Retry { id, reset_host_key, password_env } => cmds::job_retry(x, &id, reset_host_key, password_env.as_deref()),
         Cmd::Cancel { id } => cmds::job_cancel(x, &id),
         Cmd::Provision(a) => ops::provision(x, *a),
-        Cmd::Retire { machine, reason, no_cleanup, yes, follow } => ops::retire(x, &machine, reason.as_deref(), no_cleanup, yes, follow),
-        Cmd::Purge { machine, yes, follow } => ops::purge(x, &machine, yes, follow),
+        Cmd::Retire { machine, now, reason, no_cleanup, yes, follow } => ops::retire(x, &machine, now, reason.as_deref(), no_cleanup, yes, follow),
+        Cmd::Recycle { cmd } => match cmd {
+            RecycleCmd::Ls { source, q, limit } => recycle::ls(x, source.as_deref(), q.as_deref(), limit),
+            RecycleCmd::Show { which } => recycle::show(x, &which),
+            RecycleCmd::Import { file, yes } => recycle::import(x, &file, yes),
+        },
         Cmd::Rename { machine, team, number, label, note, country } => {
             ops::rename(x, &machine, team.as_deref(), number, label.as_deref(), note.as_deref(), country.as_deref())
         }
         Cmd::Renumber { team, yes } => ops::renumber(x, &team, yes),
         Cmd::Team { cmd } => match cmd {
             TeamCmd::Ls => ops::team_ls(x),
-            TeamCmd::Set { team, spare, yes } => ops::team_set(x, &team, spare, yes),
+            TeamCmd::Set { team, name, yes } => ops::team_set(x, &team, &name, yes),
         },
         Cmd::UpgradeAgent { machine, all, yes, follow } => ops::upgrade_agent(x, machine.as_deref(), all, yes, follow),
         Cmd::Tune { machine, team, all, yes, follow } => ops::tune(x, machine.as_deref(), team.as_deref(), all, yes, follow),
@@ -909,24 +897,6 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Replace { old, new, to, number, no_routers, yes, follow } => {
             lifecycle::replace(x, lifecycle::ReplaceOpts { old: &old, new: &new, to: to.as_deref(), number, no_routers, yes, follow })
         }
-        Cmd::Restore { machine, team, number, relay, label, upstream, ss_port, password_env, reason, reset_host_key, no_probe, yes, follow } => lifecycle::restore(
-            x,
-            lifecycle::RestoreOpts {
-                machine: &machine,
-                team: team.as_deref(),
-                number,
-                relay: relay.as_deref(),
-                label: label.as_deref(),
-                upstream: upstream.as_deref(),
-                ss_port,
-                password_env: password_env.as_deref(),
-                reason: reason.as_deref(),
-                reset_host_key,
-                no_probe,
-                yes,
-                follow,
-            },
-        ),
         Cmd::Routers { team } => routers::ls(x, team.as_deref()),
         Cmd::Router { cmd } => match cmd {
             RouterCmd::Show { router } => routers::show(x, &router),
@@ -987,17 +957,16 @@ mod tests {
         assert_eq!((e.kind(), e.exit_code()), (clap::error::ErrorKind::InvalidValue, 2));
     }
 
-    /// `team set` 的 --spare 要明写 true / false（不是开关）
+    /// `team set` 只改名：--name 必给，--spare 没有了（备用团队由系统管理）
     #[test]
-    fn team_set_spare_takes_value() {
+    fn team_set_renames_only() {
         let parse = |a: &[&str]| match Cli::try_parse_from(["fleetctl", "team", "set"].iter().chain(a)).map(|c| c.cmd) {
-            Ok(Cmd::Team { cmd: super::TeamCmd::Set { team, spare, yes } }) => Ok((team, spare, yes)),
+            Ok(Cmd::Team { cmd: super::TeamCmd::Set { team, name, yes } }) => Ok((team, name, yes)),
             Ok(_) => panic!("不是 team set"),
             Err(e) => Err(e.kind()),
         };
-        assert_eq!(parse(&["备用", "--spare", "true", "--yes"]), Ok(("备用".into(), true, true)));
-        assert_eq!(parse(&["备用", "--spare", "false"]), Ok(("备用".into(), false, false)));
-        assert!(parse(&["备用", "--spare"]).is_err() && parse(&["备用"]).is_err() && parse(&["备用", "--spare", "yes"]).is_err());
+        assert_eq!(parse(&["团队2 备用", "--name", "备用", "--yes"]), Ok(("团队2 备用".into(), "备用".into(), true)));
+        assert!(parse(&["备用"]).is_err() && parse(&["备用", "--spare", "true"]).is_err());
     }
 
     #[test]

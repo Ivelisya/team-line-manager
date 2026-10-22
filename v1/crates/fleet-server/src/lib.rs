@@ -20,6 +20,8 @@ pub mod notify;
 pub mod policy;
 pub mod reach;
 pub mod pty;
+pub mod recycle;
+pub mod renew;
 pub mod routers;
 pub mod selfmon;
 pub mod settings;
@@ -167,7 +169,7 @@ where
     });
 }
 
-/// 每小时：组织时区偏移、分区维护（原始访问记录按面板里设的保留期，见 settings.rs）、作业清理、保留期清理、备用团队到期自动删除（spare.rs）。
+/// 每小时：组织时区偏移、分区维护（原始访问记录按面板里设的保留期，见 settings.rs）、作业清理、保留期清理、自动续费（renew.rs）、回收站与备用团队到期自动回收（spare.rs）。
 /// 访问汇总与来源画像的保留期清理在访问汇总的循环里（`access::prune`）
 async fn housekeeping(s: AppState) {
     let mut t = tokio::time::interval(std::time::Duration::from_secs(3600));
@@ -193,8 +195,13 @@ async fn housekeeping(s: AppState) {
         if let Err(e) = routers::collect::cleanup(&s.db, s.cfg.retention.raw_days).await {
             tracing::error!("软路由指标保留期清理失败：{e:#}");
         }
-        if let Err(e) = spare::run_once(&s, time::OffsetDateTime::now_utc()).await {
-            tracing::error!("备用团队到期自动删除失败：{e:#}");
+        // 先顺延自动续费的到期日，再判断备用到期：开了自动续费的备用机器不会被回收
+        let now = time::OffsetDateTime::now_utc();
+        if let Err(e) = renew::run_once(&s, now).await {
+            tracing::error!("自动续费失败：{e:#}");
+        }
+        if let Err(e) = spare::run_once(&s, now).await {
+            tracing::error!("回收站与备用团队到期自动回收失败：{e:#}");
         }
     }
 }

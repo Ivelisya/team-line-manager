@@ -151,7 +151,7 @@ pub fn monthly_cents(price_cents: i32, cycle: &str) -> i64 {
 // ── 到期 ──────────────────────────────────────────────────────────────────
 
 /// 订阅的到期状态：overdue = 已过期；soon = 到期前 remind_days 天内（含今天）且不是自动续费；其余 ok。
-/// 续费告警（renewal_due / renewal_overdue）、总览的「即将到期」、网页与 fleetctl 都按它
+/// 续费告警（renewal_due：即将到期为警告、已过期为严重）、总览的「即将到期」、网页与 fleetctl 都按它
 pub fn due_state(due_days: i64, remind_days: i32, auto_renew: bool) -> &'static str {
     if due_days < 0 {
         "overdue"
@@ -214,6 +214,7 @@ pub const JOB_KINDS: Labels = &[
     ("provision_ip", "上架同机 IP 节点"),
     ("attach_entry", "新增入口"),
     ("move_entry", "换线路机"),
+    // 恢复已退役机器已删掉：留着名字，旧作业记录照样显示
     ("restore_vps", "恢复 VPS 节点"),
     ("restore_proxy", "恢复家宽代理"),
     ("restore_relay", "恢复线路机"),
@@ -265,6 +266,7 @@ pub const RULES: Labels = &[
     ("egress_fail", "出口不通"),
     ("tcp_fail", "线路到节点不通"),
     ("renewal_due", "即将到期"),
+    // 已过期并进了 renewal_due（严重）：留着名字，旧告警记录照样显示
     ("renewal_overdue", "已过期"),
     ("relay_apply_lag", "配置未应用"),
     ("relay_apply_error", "配置应用失败"),
