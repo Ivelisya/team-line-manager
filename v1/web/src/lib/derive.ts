@@ -192,14 +192,12 @@ export type BeatCell = 'ok' | 'warn' | 'bad' | null;
 /** 探测成功率的档位：卡片心跳格（3 分钟一格）与抽屉可用率（一天一格）共用这一套——≥ 99% 绿、≥ 80% 黄、更低红，没有探测为 null。
  *  整数比较：正好落在边界上不受浮点误差影响 */
 const probeTone = (ok: number, total: number): BeatCell => (!total ? null : ok * 100 >= total * 99 ? 'ok' : ok * 100 >= total * 80 ? 'warn' : 'bad');
-/** 心跳格里平均延迟到这么高也算黄（每日格没有延迟） */
-const BEAT_SLOW_MS = 150;
 /** 颜色含义：只放在心跳条「近 1 小时」/「近 30 天」的悬停里，每格的悬停只给数据 */
-export const BEAT_LEGEND = `绿：成功 ≥ 99% 且平均 < ${BEAT_SLOW_MS} ms · 黄：成功 80%–99% 或平均 ≥ ${BEAT_SLOW_MS} ms\n红：成功不到 80% · 灰：没有探测`;
+// 只按成功率着色：跨境线路 150–250 ms 的延迟是常态，按延迟标黄会让正常线路一片警告色（延迟在每格的悬停里）
+export const BEAT_LEGEND = '绿：成功 ≥ 99% · 黄：成功 80%–99% · 红：成功不到 80% · 灰：没有探测';
 export const AVAIL_LEGEND = '绿：成功 ≥ 99% · 黄：成功 80%–99% · 红：成功不到 80%\n灰：没有探测；TCP 与出口取较差的一种';
 /** 探测桶 → 心跳格（20 格 = 近 1 小时，旧→新）。按桶内成功比例定色（线路机是它所有入口的合计） */
-export const beatCells = (buckets: ProbeBucket[] | undefined): BeatCell[] =>
-  (buckets ?? []).map(([n, ok, ms]) => { const t = probeTone(ok, n); return t === 'ok' && (ms ?? 0) >= BEAT_SLOW_MS ? 'warn' : t; });
+export const beatCells = (buckets: ProbeBucket[] | undefined): BeatCell[] => (buckets ?? []).map(([n, ok]) => probeTone(ok, n));
 const BEAT_MS = 3 * 60_000;
 /** 心跳格的悬停（与 beatCells 一一对应）：这 3 分钟的时段、成功率（次数）、平均延迟。
  *  桶按墙钟 3 分钟对齐，最后一格是当前这格（见 API.md /probe-beats） */
