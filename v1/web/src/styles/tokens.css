@@ -12,6 +12,7 @@
   --raised: #ffffff;                    /* H 浮层底（弹层、排序面板、tooltip、toast、命令面板、对话框） */
   --sunken: #f3f4f6;                    /* ≈ H --card-2 #f9fafb 与 O --card-2 #f0f2f7 之间：表头带、展开行、日志块、键帽 */
   --hover: rgba(17, 24, 39, 0.04);      /* 新增：H 的 #f9fafb 悬停在白卡上看不见（dna-home I2），改半透明，画布和白卡上都可见 */
+  --row-highlight: color-mix(in srgb, var(--fg) 8%, transparent); /* 菜单项、下拉项、可搜下拉项的键盘 / 指针高亮：比 --hover 深一倍，方向键移动时看得出在哪（暗色 10%） */
   --track: rgba(17, 24, 39, 0.05);      /* ≈ 分段轨道：H #f9fafb / O #f0f2f7；半透明后在画布和白卡上都看得见 */
   --thumb: #ffffff;                     /* H 分段选中项 */
   --selected: color-mix(in srgb, var(--accent) 6%, var(--surface)); /* O 表格选中行 accent 6% */
@@ -33,7 +34,8 @@
   /* ---------- 3. 文字（2 级 + 1 个只做装饰的第三级） ---------- */
   --fg: #111827;                        /* H --fg（O #202333、N #262936 / 原生表格 #29316b 统一到它） */
   --fg-2: #6b7280;                      /* H --fg-2（O #687087、N #687084）：标签、副行、单位、图标、未选中控件 */
-  --fg-3: #9ca3af;                      /* 新增：只给占位符、禁用、缺测“—”、“未设置”、过期旧值、表格行尾 ›；不承载关键信息 */
+  --fg-3: #9ca3af;                      /* 白底约 2.5:1，不达 AA：只给占位符、禁用、缺测“—”、“未设置”、过期 / 安静的旧值、行尾 › 与装饰图标；
+                                           要读的字（单位、说明行、坐标轴、分组小标题、日期分段、页码的「共 N 页」）一律 --fg-2 */
 
   /* ---------- 4. 强调（一个族，靛蓝） ---------- */
   --accent: #5b5bd6;                    /* H --accent（O #535bce/#676ee8、N iris #676ee8 统一到它）：进度填充、额度条、选中下划线、链接 */
@@ -152,6 +154,7 @@
   --section-line: rgba(17, 24, 39, 0.06);
   --cell-off: rgba(24, 24, 27, 0.09);   /* 格条 / 圆环 / 点阵的未点亮色 */
   --m-cpu: #3b82f6; --m-mem: #8b5cf6; --m-disk: #e97b35; --m-load: #ec4899;
+  --m-cpu-text: #2563eb;                /* 同色当 15px 文字（节点卡「已上架」）：#3b82f6 白底只有 3.7:1，加深一级 5.2:1；暗色沿用 --m-cpu */
   /* 速率量级色（卡片、表格、环形卡的速率读数与点阵）：浅色底上要当文字读，对比度都在 4.5:1 以上（原来的琥珀约 2.5:1）；深色主题另有一套 */
   --speed-idle: #1d7f4f; --speed-low: #9a6400; --speed-high: #b4541a; --speed-max: #c23a31;
   --tag-blue-bg: rgba(37, 99, 235, 0.12);   --tag-blue-fg: #1d4ed8;
@@ -162,7 +165,7 @@
   --tag-cyan-bg: rgba(8, 145, 178, 0.14);    --tag-cyan-fg: #0e7490;
   --tag-amber-bg: rgba(245, 158, 11, 0.16);  --tag-amber-fg: #b45309;
   --tag-green-bg: rgba(34, 197, 94, 0.14);   --tag-green-fg: #15803d;
-  --tag-gold-fg: #ca8a04; --tag-sky-fg: #0284c7;
+  --tag-gold-fg: #a16207; --tag-sky-fg: #0284c7;     /* 金色当图标 / 文字：#ca8a04 白底只有 2.9:1 */
   --tag-gray-bg: rgba(107, 114, 128, 0.14);  --tag-gray-fg: #4b5563;
   --cell-stagger: 14ms;                 /* 格条首次扫亮：每格多给的时长（home.css .cells 用 12 格的量加在 --dur-data 上） */
 
@@ -239,6 +242,7 @@
   --section: #121214;
   --section-line: rgba(255, 255, 255, 0.07);
   --hover: rgba(255, 255, 255, 0.05);
+  --row-highlight: color-mix(in srgb, var(--fg) 10%, transparent);
   --track: rgba(255, 255, 255, 0.07);
   --thumb: #2e2e33;
   --selected: color-mix(in srgb, var(--accent) 10%, var(--surface));
@@ -249,7 +253,7 @@
   --fg-2: #a1a1aa;
   --fg-3: #71717a;
   --cell-off: rgba(255, 255, 255, 0.08);
-  --m-disk: #f97316;
+  --m-disk: #f97316; --m-cpu-text: var(--m-cpu);
   --speed-idle: #10b981; --speed-low: #f59e0b; --speed-high: #f97316; --speed-max: #ef4444;
   --tag-blue-bg: rgba(59, 130, 246, 0.18);   --tag-blue-fg: #60a5fa;
   --tag-orange-bg: rgba(249, 115, 22, 0.18); --tag-orange-fg: #fb923c;

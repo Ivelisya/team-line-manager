@@ -113,7 +113,7 @@
 .flow-col[data-dir="up"] { --dir-c: var(--chart-2); }
 .flow-col[data-dir="down"] { --dir-c: var(--chart-1); }
 .flow-rate { min-width: 0; overflow: hidden; white-space: nowrap; font: var(--fw-semibold) 20px / 24px var(--font-num); font-variant-numeric: var(--num-variant); letter-spacing: -0.03em; color: var(--spd, var(--fg)); }
-.flow-rate .unit { margin-left: 1px; font-size: var(--fs-micro); font-weight: var(--fw-medium); letter-spacing: 0; color: var(--fg-3); }
+.flow-rate .unit { margin-left: 1px; font-size: var(--fs-micro); font-weight: var(--fw-medium); letter-spacing: 0; color: var(--fg-2); }
 .ncard[data-view="small"] .flow-rate, .ncard[data-view="compact"] .flow-rate { font-size: 17px; line-height: 22px; }
 [data-speed="idle"] { --spd: var(--speed-idle); }
 [data-speed="low"] { --spd: var(--speed-low); }
@@ -149,8 +149,8 @@
 .nc-run-label { display: inline-flex; align-items: center; gap: var(--sp-4); font: var(--fw-semibold) var(--fs-micro) / var(--lh-micro) var(--font-sans); color: var(--fg-2); white-space: nowrap; }
 .nc-run-label .lucide { width: 12px; height: 12px; }
 .nc-run-val { display: inline-flex; align-items: baseline; gap: var(--sp-4); font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-num); font-variant-numeric: var(--num-variant); letter-spacing: -0.02em; color: var(--fg); white-space: nowrap; min-width: 0; overflow: hidden; }
-.nc-run-val .unit { font-size: var(--fs-micro); font-weight: var(--fw-medium); letter-spacing: 0; color: var(--fg-3); }
-.nc-run-val[data-c="up"] { color: var(--m-cpu); }
+.nc-run-val .unit { font-size: var(--fs-micro); font-weight: var(--fw-medium); letter-spacing: 0; color: var(--fg-2); }
+.nc-run-val[data-c="up"] { color: var(--m-cpu-text); }
 
 /* 9 标签行 */
 .nc-tags { display: flex; align-items: center; gap: var(--inline-gap); min-height: 24px; margin-top: var(--card-seg); margin-bottom: var(--card-pad); min-width: 0; }
@@ -217,7 +217,7 @@
 .rc-pair b .unit { font-weight: var(--fw-regular); }
 .rc-rate { display: inline-flex; align-items: center; gap: var(--sp-4); font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-num); letter-spacing: -0.02em; color: var(--spd, var(--fg-3)); white-space: nowrap; }
 .rc-rate .lucide { width: 14px; height: 14px; stroke-width: 2.2; color: var(--fg-2); }
-.rc-rate .unit { font-size: var(--fs-micro); letter-spacing: 0; color: var(--fg-3); }
+.rc-rate .unit { font-size: var(--fs-micro); letter-spacing: 0; color: var(--fg-2); }
 
 /* ========== 表格视图（外框是通用的 .panel） ========== */
 .mtable { --cell-px: 10px; }

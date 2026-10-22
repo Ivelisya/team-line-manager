@@ -271,7 +271,7 @@
 .hint.is-error { color: var(--bad-text); }
 .field-label { display: inline-flex; align-items: center; gap: var(--sp-4); min-width: 0; }
 /* 标签后的「必填 / 选填」：淡色小字跟在标签旁，不另占一行（放在控件下面会让同排的字段高低不齐） */
-.field-tag { margin-inline-start: var(--sp-6); font-weight: var(--fw-regular); font-size: var(--fs-micro); color: var(--fg-3); }
+.field-tag { margin-inline-start: var(--sp-6); font-weight: var(--fw-regular); font-size: var(--fs-micro); color: var(--fg-2); }
 /* 「(i)」补充说明：一个淡灰的小圆 i，悬停 / 聚焦变深，说明走全站的 data-tip 气泡；跟在文字后面时自带左边距、和文字基线对齐 */
 .info-tip { display: inline-grid; place-items: center; flex: none; width: 16px; height: 16px; margin-inline-start: var(--sp-4); vertical-align: -3px; border-radius: 50%; color: var(--fg-3); cursor: help; transition: color var(--dur-1) var(--ease-std); }
 .field-label > .info-tip { margin: 0; } /* 标签行是 flex，间距由 gap 给 */
@@ -419,20 +419,20 @@
   font: var(--fw-regular) var(--fs-body) / var(--lh-body) var(--font-sans); color: var(--fg); user-select: none; outline: none;
 }
 .menu-item .lucide { color: var(--fg-2); width: 14px; height: 14px; }
-.menu-item[data-highlighted], .select-item[data-highlighted] { background: var(--hover); }
+.menu-item[data-highlighted], .select-item[data-highlighted] { background: var(--row-highlight); }
 .menu-item[data-disabled], .select-item[data-disabled] { color: var(--fg-3); pointer-events: none; }
 .menu-item.is-danger { color: var(--bad-text); }
 .menu-item.is-danger .lucide { color: var(--bad-text); }
 /* 子菜单：打开着的触发项、右侧箭头 */
-.menu-item[data-state="open"] { background: var(--hover); }
+.menu-item[data-state="open"] { background: var(--row-highlight); }
 .menu-chev { margin-left: auto; width: 14px; height: 14px; color: var(--fg-3); }
 .menu-sep { height: 1px; margin: var(--sp-4) 0; background: var(--line); }
-.menu-label { padding: var(--sp-6) var(--sp-10) var(--sp-2); font: var(--fw-medium) var(--fs-micro) / var(--lh-micro) var(--font-sans); color: var(--fg-3); }
+.menu-label { padding: var(--sp-6) var(--sp-10) var(--sp-2); font: var(--fw-medium) var(--fs-micro) / var(--lh-micro) var(--font-sans); color: var(--fg-2); }
 .menu-check { display: inline-flex; margin-left: auto; }
 /* 子菜单顶上的筛选框（线路机的分享链接）：吸顶，滚长列表时一直在；底色不透明，滚过去的项不从下面透出来 */
 .menu-filter { position: sticky; top: calc(-1 * var(--sp-4)); z-index: 1; margin: calc(-1 * var(--sp-4)) calc(-1 * var(--sp-4)) var(--sp-4); padding: var(--sp-6); background: var(--raised); border-bottom: 1px solid var(--line); border-radius: var(--r-float) var(--r-float) 0 0; }
 .menu-filter input { width: 100%; box-sizing: border-box; height: 28px; padding: 0 var(--sp-8); border: 1px solid var(--line-strong); border-radius: var(--r-xs); background: var(--surface); color: var(--fg); font: var(--fs-label) / 1 var(--font-sans); outline: none; }
-.menu-filter input:focus-visible { border-color: var(--accent); }
+.menu-filter input:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-halo); } /* 同输入框的聚焦光环 */
 .menu-item .menu-check .lucide { color: var(--accent); }
 .menu-appearance { min-width: 168px; }
 /* 配色色块：各配色亮色下的强调色（与当前深浅色无关，一眼认出是哪套） */
@@ -510,8 +510,8 @@
 .panel .pager { padding: var(--sp-6) var(--card-pad); border: 0; border-top: 1px solid var(--line); border-radius: 0; background: color-mix(in srgb, var(--sunken) 55%, var(--surface)); }
 .pager-range { display: inline-flex; align-items: baseline; gap: var(--sp-4); white-space: nowrap; }
 .pager-range > .num { color: var(--fg); font-weight: var(--fw-medium); }
-.pager-of { color: var(--fg-3); }
-.pager-range small { margin-left: var(--sp-4); font-size: var(--fs-micro); color: var(--fg-3); }
+.pager-of { color: var(--fg-2); }
+.pager-range small { margin-left: var(--sp-4); font-size: var(--fs-micro); color: var(--fg-2); }
 .pager-field { display: inline-flex; align-items: center; gap: var(--sp-6); white-space: nowrap; }
 .pager-select { width: 64px; font-family: var(--font-num); font-variant-numeric: var(--num-variant); }
 .pager-nav { margin-left: auto; display: inline-flex; align-items: center; gap: var(--sp-6); }
@@ -550,3 +550,4 @@ button.tag:active { scale: var(--press-md); transition-duration: var(--dur-press
 :is(.seg-item, .tab, .th-sort, .pol-chev, .pol-item, .job-item, .pop-item, .logbox):focus-visible, .dt tr.is-link:focus-visible { outline-offset: -2px; }
 button.tag:focus-visible { outline-offset: -2px; } /* 标签行、表格单元格都会裁掉外圈 */
 .cal-day:focus-visible { outline-offset: 0; }
+.cal-day[aria-selected="true"]:focus-visible { outline-color: var(--fg); } /* 选中格是强调色实底，强调色的环贴在上面看不出来 */

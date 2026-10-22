@@ -8,7 +8,7 @@
 .rt-hero { display: grid; gap: var(--sp-6); min-width: 0; }
 .rt-hero-main { display: flex; align-items: baseline; gap: var(--sp-8); }
 .rt-hero-num { font: var(--fw-semibold) 34px / 1 var(--font-num); font-variant-numeric: var(--num-variant); letter-spacing: -0.03em; color: var(--fg); }
-.rt-hero-num small { font-size: 20px; font-weight: var(--fw-medium); color: var(--fg-3); letter-spacing: -0.02em; }
+.rt-hero-num small { font-size: 20px; font-weight: var(--fw-medium); color: var(--fg-2); letter-spacing: -0.02em; }
 .rt-hero-unit { font: var(--fw-medium) var(--fs-emph) / var(--lh-emph) var(--font-sans); color: var(--fg-2); }
 .rt-hero-sum { margin: 0; font-size: var(--fs-body); line-height: var(--lh-body); color: var(--fg-2); text-wrap: pretty; }
 .rt-hero-sum b { font-weight: var(--fw-semibold); color: var(--fg); }
@@ -51,7 +51,7 @@
 .rt-tl li[data-tone="done"] .rt-tl-text { color: var(--fg-2); }
 .rt-tl li[data-tone="bad"] .rt-tl-text { color: var(--bad-text); font-weight: var(--fw-medium); }
 .rt-tl li[data-tone="run"] .rt-tl-text { font-weight: var(--fw-medium); }
-.rt-tl-at { font: var(--fs-micro) / 16px var(--font-num); color: var(--fg-3); }
+.rt-tl-at { font: var(--fs-micro) / 16px var(--font-num); color: var(--fg-2); }
 .rt-tl-err { flex-basis: 100%; font: var(--fs-label) / var(--lh-label) var(--font-mono); color: var(--fg-2); overflow-wrap: anywhere; }
 .rt-tl-acts { flex-basis: 100%; gap: var(--sp-4); margin-top: var(--sp-4); }
 .ncard .rt-tl-err { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -91,7 +91,7 @@
   display: inline-flex; align-items: center; gap: var(--sp-6); min-width: 0; max-width: 100%; height: var(--h-chip-lg); box-sizing: border-box; padding: 0 var(--sp-10);
   border: 0; border-radius: var(--r-pill); background: var(--sunken); font: var(--fw-medium) var(--fs-label) / 24px var(--font-sans); color: var(--fg); white-space: nowrap;
 }
-.rt-topo-pill small { font-size: var(--fs-micro); font-weight: var(--fw-regular); color: var(--fg-3); }
+.rt-topo-pill small { font-size: var(--fs-micro); font-weight: var(--fw-regular); color: var(--fg-2); }
 .rt-topo-pill .lucide { flex: none; width: 13px; height: 13px; }
 button.rt-topo-pill { cursor: pointer; transition: background-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out); }
 @media (hover: hover) { button.rt-topo-pill:hover { background: var(--hover); color: var(--accent); } }

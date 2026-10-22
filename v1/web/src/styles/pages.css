@@ -38,7 +38,7 @@
 /* 操作记录页：涉及机器的一行可点（打开抽屉），整行悬停变色；底下「加载更早的记录」居中 */
 .audit-list li.is-link { cursor: pointer; transition: background-color var(--dur-1) var(--ease-std); }
 /* 按天分段：每段一个小标题（今天 / 昨天 / 10月20日 周一），时间线在段内连续 */
-.audit-day { margin: var(--sp-12) 0 var(--sp-2); font: var(--fw-semibold) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-3); }
+.audit-day { margin: var(--sp-12) 0 var(--sp-2); font: var(--fw-semibold) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2); }
 .audit-day:first-child { margin-top: 0; }
 @media (hover: hover) { .audit-list li.is-link:hover { background-color: var(--hover); } }
 .audit-more { display: flex; justify-content: center; padding-top: var(--sp-12); }

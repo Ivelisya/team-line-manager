@@ -54,7 +54,7 @@
 .dt-grid td.idx { text-align: center; color: var(--fg-3); background: var(--sunken); font-variant-numeric: tabular-nums; }
 .dt-grid td { border-right: 1px solid var(--line); }
 .dt-grid .gcell { width: 100%; height: 100%; box-sizing: border-box; padding: 0 var(--sp-8); border: 0; border-radius: 0; background: transparent; color: var(--fg); font: inherit; text-overflow: ellipsis; }
-.dt-grid .gcell:focus { outline: 2px solid var(--accent); outline-offset: -2px; background: var(--surface); }
+.dt-grid .gcell:focus { outline: 2px solid var(--focus); outline-offset: -2px; background: var(--surface); }
 .dt-grid .gcell:disabled { background: var(--sunken); color: var(--fg-3); }
 .dt-grid .gcell-date { display: flex; align-items: center; height: 100%; }
 .dt-grid .gcell-date > .gcell { flex: 1 1 auto; min-width: 0; }

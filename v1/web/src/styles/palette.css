@@ -34,7 +34,7 @@
 .cmd-main > b { font-weight: var(--fw-medium); }
 .cmd-aside { flex: none; font-size: var(--fs-label); color: var(--fg-2); }
 .cmd-empty { padding: var(--sp-24) var(--sp-16); text-align: center; color: var(--fg-2); font-size: var(--fs-body); }
-.cmd-more { padding: var(--sp-6) var(--sp-10) var(--sp-4); font-size: var(--fs-label); color: var(--fg-3); }
+.cmd-more { padding: var(--sp-6) var(--sp-10) var(--sp-4); font-size: var(--fs-label); color: var(--fg-2); }
 .cmd-foot { display: flex; align-items: center; gap: var(--sp-14); padding: var(--sp-8) var(--sp-16); border-top: 1px solid var(--line); background: var(--sunken); font-size: var(--fs-micro); line-height: var(--lh-micro); color: var(--fg-2); }
 .cmd-foot .kbd { margin-right: var(--sp-4); }
 
@@ -49,4 +49,6 @@
 .cs-pop .cmd-list { max-height: 300px; }
 .cs-pop .cmd-item { min-height: 32px; gap: var(--sp-8); }
 .cs-check { flex: none; width: 14px; height: 14px; color: var(--accent); }
-.cmd-item[data-selected="true"] .cs-check { color: var(--accent-soft-fg); }
+/* 键盘 / 指针高亮同下拉选择（--row-highlight），不用命令面板的软紫底：已选中的勾才是紫色，两者分得开 */
+.cs-pop .cmd-item[data-selected="true"] { background-color: var(--row-highlight); color: var(--fg); }
+.cs-pop .cmd-item[data-selected="true"] > .lucide, .cs-pop .cmd-item[data-selected="true"] .cmd-aside { color: var(--fg-2); }

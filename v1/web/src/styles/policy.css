@@ -23,7 +23,7 @@
 .pol-row-node .pol-item { padding-left: var(--sp-12); }
 .pol-name { flex: 1 1 auto; min-width: 0; display: grid; gap: 0; }
 .pol-sub { font-size: var(--fs-micro); line-height: var(--lh-micro); color: var(--fg-2); }
-.pol-inh { flex: none; font-size: var(--fs-micro); color: var(--fg-3); }
+.pol-inh { flex: none; font-size: var(--fs-micro); color: var(--fg-2); }
 
 /* 编辑器 */
 .pol-form { display: grid; gap: var(--sp-16); padding: 0 var(--card-pad) var(--card-pad); min-width: 0; }
