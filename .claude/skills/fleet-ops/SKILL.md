@@ -24,6 +24,8 @@ fleetctl --json <命令>      # AI 一律加 --json，输出一行 JSON
 
 用户 ssh 进中控（root）后，本机 fleetctl 已配好全权密钥 central-local（部署时 `fleet-server local-admin` 建，令牌在 /root/.config/fleetctl/config.toml）：不用 login、不用令牌，`whoami` 显示 `apikey:central-local` 与全部 scopes。权限是全的，下文「先向用户确认」的操作照样先确认。
 
+你不在中控上、用户要经中控运维时，每条命令经 ssh 在中控上执行（`ssh <中控> 'fleetctl --json status'`，生产中控的 ssh 别名是 debian13），先 `ssh <中控> cat /root/AGENTS.md` 读一遍中控上的说明。
+
 登录机器或软路由（只在中控上能用：要读中控的私钥 /etc/fleet/ssh/id_ed25519，root 才行）：
 
 ```
