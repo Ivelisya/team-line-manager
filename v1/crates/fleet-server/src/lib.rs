@@ -96,8 +96,8 @@ async fn response_headers(State(https): State<bool>, req: axum::extract::Request
 
 /// 后台任务：作业、告警、实时指标、访问汇总、来源画像、通知发送、分区维护、小时汇总。
 /// 都在 `supervise` 下跑：panic 或意外返回时记 error、10 秒后原地重启（这些循环的状态在库里，内存里的去抖计数、缓存重启后重新累计）。
-/// 作业引擎例外：它启动时释放全部作业租约（认定之前的执行者已经不在了），原地重启会让还在跑的作业被再领一次、两个执行者同时推进，
-/// 所以它一退出就结束整个进程，交给 systemd 重启（单元里 Restart=always）
+/// 作业引擎例外：一退出就结束整个进程，交给 systemd 重启（单元里 Restart=always），重启时 main 清掉旧租约、作业从各自这一步重做。
+/// （清旧租约已挪到 main、本进程还在推进的作业不会被再领——jobs::Running——原地重启其实也不会两个执行者同时推进）
 pub fn spawn_background(st: &AppState) {
     supervise(st, "作业引擎", true, jobs::run_forever);
     supervise(st, "告警", false, alerts::run_forever);
