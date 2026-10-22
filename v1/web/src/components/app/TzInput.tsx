@@ -2,10 +2,14 @@
 // 常用一组（/meta 的常用时区 + 当前值），全部一组（浏览器认得的 IANA 时区）。emptyLabel：允许留空（如「跟随组织时区」），列表最前多一项
 import * as React from 'react';
 import { Check, ChevronDown } from 'lucide-react';
+import { prefixScore } from '@/lib/match';
 import { tzLabel, tzOptions, type TzOption } from '@/lib/tz';
 import { cn } from '@/lib/utils';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/overlays';
+
+/** 搜索打分：城市名 / 时区名里某个词以它开头的在前，其次是连续子串（lib/match）；搜的空格当下划线（「los an」→ Los_Angeles） */
+const tzFilter = (v: string, s: string, kw?: string[]) => prefixScore([v, ...(kw ?? [])], s.trim().toLowerCase().replace(/\s+/g, '_'));
 
 export function TzInput({ id, value, onChange, emptyLabel, placeholder = '选择时区', 'aria-label': ariaLabel }: {
   id?: string; value: string; onChange: (v: string) => void; emptyLabel?: string; placeholder?: string; 'aria-label'?: string;
@@ -29,7 +33,7 @@ export function TzInput({ id, value, onChange, emptyLabel, placeholder = '选择
       </PopoverTrigger>
       <PopoverContent className="cs-pop is-wide" align="start">
         {opts && (
-          <Command loop>
+          <Command loop filter={tzFilter}>
             <CommandInput placeholder="搜索：城市、时区名或 UTC+8" />
             <CommandList>
               <CommandEmpty>没有这个时区</CommandEmpty>

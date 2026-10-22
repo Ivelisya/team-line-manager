@@ -165,7 +165,8 @@ export function installPolicyMock(R: Reg, env: Env) {
     if ([...note].length > 500) throw env.bad('备注最多 500 个字符');
     const r = get(s, id);
     if (r.revision !== Number(body.expected_revision)) throw env.bad('草稿已被修改，请重新加载', 409, 'conflict');
-    const next: PolicyBody = { mode, domains: p.domains, note };
+    // 同中控：不用域名的模式不留域名
+    const next: PolicyBody = { mode, domains: uses(mode) ? p.domains : [], note };
     const saved = put({ ...r, draft: same(next, r.cur) ? null : next, revision: r.revision + 1, updated_by: env.user(), updated_at: iso() });
     env.emit({ type: 'policies' });
     return { policy: view(saved), draft_hash: draftHash(), draft_count: drafts().length };
@@ -217,7 +218,7 @@ export function installPolicyMock(R: Reg, env: Env) {
     return { discarded: ds.length };
   });
 
-  function versionView(v: Ver): PolicyVersion {
+  function versionView(v: Ver): PolicyVersion & { target: Map<string, Row> } {
     const now = Date.now();
     const rel = v.relays.map((r) => {
       const status: VersionStatus = r.fail ? 'failed' : now >= r.at ? 'applied' : 'applying';
@@ -226,10 +227,21 @@ export function installPolicyMock(R: Reg, env: Env) {
     const status: VersionStatus = rel.some((r) => r.status === 'failed') ? 'failed' : rel.some((r) => r.status === 'applying') ? 'applying' : 'applied';
     const curSnap = JSON.stringify([...curMap().values()].filter((r) => !same(r.cur, defaults(r.scope))).map((r) => [r.scope, r.id, r.cur]).sort());
     const isCur = JSON.stringify(v.snapshot.map((r) => [r.scope, r.id, r.cur]).sort()) === curSnap;
-    return { id: v.id, seq: v.seq, kind: v.kind, rollback_of_seq: v.rollback_of, actor: v.actor, created_at: iso(v.created_at), status, changes: v.changes, relays: rel, is_latest: versions[0] === v, is_current: isCur, rollbackable: !isCur };
+    const target = new Map(v.snapshot.map((r) => [key(r.scope, r.id), r]));
+    return {
+      id: v.id, seq: v.seq, kind: v.kind, rollback_of_seq: v.rollback_of, actor: v.actor, created_at: iso(v.created_at), status, changes: v.changes, relays: rel,
+      is_latest: versions[0] === v, is_current: isCur, rollbackable: !isCur, target,
+    };
   }
 
-  R('GET', '/policies/versions', () => { seed(); return versions.slice(0, 30).map(versionView); });
+  R('GET', '/policies/versions', () => { seed(); return versions.slice(0, 30).map((v) => { const { target: _t, ...view } = versionView(v); return view; }); });
+
+  R('GET', '/policies/versions/([^/]+)/rollback', ({ params }) => {
+    seed();
+    const v = versions.find((x) => x.id === params[0]); if (!v) throw env.bad('没有这个版本', 404, 'not_found');
+    const { rollbackable, target } = versionView(v);
+    return { seq: v.seq, rollbackable, changes: rollbackable ? diff(curMap(), target) : [] };
+  });
 
   R('POST', '/policies/versions/([^/]+)/rollback', ({ params }) => {
     seed();

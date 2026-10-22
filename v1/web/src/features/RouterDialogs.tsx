@@ -135,7 +135,8 @@ function BootstrapDialog() {
           <DialogDescription>在路由的 SSH 里粘贴执行<InfoTip text={`30 分钟内有效、只能用一次。\n${ONLY_ADDS}`} /></DialogDescription>
         </DialogHeader>
         {b.replaced && !done && <Note tone="warn">旧隧道已断开</Note>}
-        <div className="token-box rt-cmd"><code>{b.cmd}</code><CopyButton text={b.cmd} label="接入命令" size={15} /></div>
+        {/* 复制只留底部一个按钮 */}
+        <div className="token-box rt-cmd"><code>{b.cmd}</code></div>
         {done ? <Note tone="ok" icon={<CircleCheck size={14} />}>路由已在线，可以关闭了</Note>
           : left > 0 ? <div className="row hint" style={{ gap: 6 }}><Loader2 size={13} className="spin" />等路由连上 · 还有 <b className="num">{mmss(left)}</b> 过期<InfoTip text="执行后约 30 秒内显示在线，这个窗口开着会自动更新" /></div>
           : <Note tone="bad">命令已过期。<button type="button" className="btn btn-link btn-sm" style={{ height: 'auto', padding: 0 }} disabled={boot.pending} onClick={() => void boot.run({ id: b.id, name: b.name, last_seen_at: r?.last_seen_at ?? null })}><RefreshCw size={12} />重新生成</button></Note>}

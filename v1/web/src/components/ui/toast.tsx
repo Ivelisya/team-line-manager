@@ -63,7 +63,7 @@ function ToastItem({ t, onClose }: { t: T; onClose: (id: number) => void }) {
         {t.action && <button type="button" className="toast-action" onClick={() => { t.action!.onClick(); onClose(t.id); }}>{t.action.label}</button>}
       </div>
       {t.count > 1 && <span className="toast-count" aria-label={`重复 ${t.count} 次`}>×{t.count}</span>}
-      <button type="button" className="toast-x" aria-label="关闭通知" onClick={() => onClose(t.id)}><X size={14} /></button>
+      <button type="button" className="icon-btn icon-btn-xs toast-x" aria-label="关闭通知" onClick={() => onClose(t.id)}><X size={14} /></button>
       <span className="toast-timer" style={{ animationDuration: `${life}ms`, animationPlayState: paused ? 'paused' : 'running' }} key={t.count} />
     </div>
   );

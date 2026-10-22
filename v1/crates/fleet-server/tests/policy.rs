@@ -278,6 +278,48 @@ async fn rollback_invalidates_old_preview() {
     assert_eq!(v["seq"], 4);
 }
 
+/// 与生效值相同的草稿（读时当作没有）：回滚正好回到草稿的值时清掉；库里残留的不算丢弃、不动 revision
+#[tokio::test]
+async fn drafts_equal_to_current_are_not_drafts() {
+    let t = setup().await;
+    let fx = seed(&t).await;
+    let deny = |rev: i64| json!({"mode": "denylist", "domains": ["a.com"], "note": "", "expected_revision": rev});
+    let publish = || async {
+        let pv = t.post("/api/v1/policies/preview", json!({})).await;
+        t.post("/api/v1/policies/publish", json!({"draft_hash": pv["draft_hash"]})).await
+    };
+    t.put_policy("team", fx.team1, deny(0)).await;
+    let v1 = publish().await;
+    t.put_policy("team", fx.team1, json!({"mode": "observe", "domains": [], "note": "", "expected_revision": 2})).await;
+    publish().await;
+    // 草稿改回黑名单，再回滚到 v1（也是这个黑名单）：草稿正好是回滚后的值，一起清掉
+    t.put_policy("team", fx.team1, deny(4)).await;
+    t.post(&format!("/api/v1/policies/versions/{}/rollback", v1["id"].as_str().unwrap()), json!({})).await;
+    let draft = || async {
+        let (d, rev): (Option<Value>, i32) =
+            sqlx::query_as("select draft, revision from policy where scope = 'team' and scope_id = $1").bind(fx.team1).fetch_one(&t.st.db).await.unwrap();
+        (d.is_some(), rev)
+    };
+    let (has, rev) = draft().await;
+    assert!(!has, "回滚后不留与生效值相同的草稿");
+    // 库里残留一份（迁移 0035 之前的数据）：丢弃只算真正的草稿，这一行 revision 不动
+    sqlx::query("update policy set draft = $2 where scope = 'team' and scope_id = $1")
+        .bind(fx.team1)
+        .bind(json!({"mode": "denylist", "domains": ["a.com"], "note": ""}))
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    t.put_policy("node", fx.n[2], json!({"mode": "blocked", "domains": [], "note": "", "expected_revision": 0})).await;
+    let pv = t.post("/api/v1/policies/preview", json!({})).await;
+    assert_eq!(pv["draft_count"], 1);
+    let d = t.post("/api/v1/policies/discard", json!({"draft_hash": pv["draft_hash"]})).await;
+    assert_eq!(d["discarded"], 1);
+    assert_eq!(draft().await, (true, rev));
+    // 迁移 0035 把残留的清掉，同样不动 revision
+    sqlx::query(include_str!("../../../migrations/0035_policy_ghost_drafts.sql")).execute(&t.st.db).await.unwrap();
+    assert_eq!(draft().await, (false, rev));
+}
+
 /// 删团队不绕开发布版本：访问规则不是默认、或有草稿时 409；改回默认并发布后才能删。
 /// 回滚到删团队之前的版本时跳过这个团队（不建出没有主人的规则行），别的范围照常回滚
 #[tokio::test]
@@ -295,16 +337,39 @@ async fn team_delete_respects_policy_versions() {
     assert!(t.fail("DELETE", &path, None, StatusCode::CONFLICT).await.contains("访问规则"), "只有草稿也不能删");
     let v1 = publish().await;
     assert!(t.fail("DELETE", &path, None, StatusCode::CONFLICT).await.contains("访问规则"), "生效的规则不是默认");
-    t.put_policy("team", team, json!({"mode": "observe", "domains": [], "note": "", "expected_revision": 2})).await;
-    t.put_policy("team", fx.team1, json!({"mode": "observe", "domains": [], "note": "", "expected_revision": 2})).await;
+    // 改回仅观察时客户端仍带着隐藏的旧域名：服务端存成空的，删团队不再因此被拒
+    let r = t.put_policy("team", team, json!({"mode": "observe", "domains": ["a.com"], "note": "", "expected_revision": 2})).await;
+    assert_eq!(r["policy"]["draft"]["domains"], json!([]));
+    t.put_policy("team", fx.team1, json!({"mode": "observe", "domains": ["a.com"], "note": "", "expected_revision": 2})).await;
     assert!(t.fail("DELETE", &path, None, StatusCode::CONFLICT).await.contains("草稿"), "改回默认的草稿还没发布");
+    let pv = t.post("/api/v1/policies/preview", json!({})).await;
+    assert!(pv["changes"].as_array().unwrap().iter().all(|c| c["to"] == json!({"mode": "observe", "domains": 0})), "{pv}");
     publish().await;
+    // 「当前」= 最新一版；v1 可回滚，回滚会改什么（当前 → v1）按版本单独取
+    let vs = t.get("/api/v1/policies/versions").await;
+    assert_eq!((vs[0]["is_latest"].as_bool(), vs[0]["is_current"].as_bool(), vs[0]["rollbackable"].as_bool()), (Some(true), Some(true), Some(false)));
+    assert!(vs[1].get("rollback_changes").is_none(), "列表不带回滚预览");
+    let rp = t.get(&format!("/api/v1/policies/versions/{}/rollback", vs[1]["id"].as_str().unwrap())).await;
+    assert_eq!((rp["seq"].as_i64(), rp["rollbackable"].as_bool()), (Some(1), Some(true)), "{rp}");
+    let rc = rp["changes"].as_array().unwrap();
+    assert_eq!(rc.len(), 2);
+    assert!(rc.iter().all(|c| c["from"]["mode"] == "observe" && c["to"] == json!({"mode": "denylist", "domains": 1})), "{rc:?}");
+    let cur = t.get(&format!("/api/v1/policies/versions/{}/rollback", vs[0]["id"].as_str().unwrap())).await;
+    assert_eq!((cur["rollbackable"].as_bool(), cur["changes"].clone()), (Some(false), json!([])));
     let (s, v) = t.req("DELETE", &path, None, None).await;
     assert_eq!(s, StatusCode::OK, "{v}");
 
     t.post(&format!("/api/v1/policies/versions/{}/rollback", v1["id"].as_str().unwrap()), json!({})).await;
     let rows: Vec<(uuid::Uuid, String)> = sqlx::query_as("select scope_id, mode from policy where scope = 'team'").fetch_all(&t.st.db).await.unwrap();
     assert_eq!(rows, vec![(fx.team1, "denylist".to_string())]);
+    // v1 里被删掉的团队不算：v1 与当前相同（不可回滚，和回滚接口的判断一致），但「当前」只标最新的 v3
+    let vs = t.get("/api/v1/policies/versions").await;
+    assert_eq!((vs[0]["seq"].as_i64(), vs[0]["is_latest"].as_bool()), (Some(3), Some(true)));
+    assert_eq!((vs[2]["seq"].as_i64(), vs[2]["is_latest"].as_bool(), vs[2]["is_current"].as_bool(), vs[2]["rollbackable"].as_bool()), (Some(1), Some(false), Some(true), Some(false)));
+    t.fail("POST", &format!("/api/v1/policies/versions/{}/rollback", v1["id"].as_str().unwrap()), None, StatusCode::CONFLICT).await;
+    // 操作记录写出回滚到哪一版、改了什么
+    let s: String = sqlx::query_scalar("select search from audit_log where action = 'policy.rollback'").fetch_one(&t.st.db).await.unwrap();
+    assert!(s.contains("v3 · 回滚到 v1 · 团队1：仅观察 → 黑名单（1 个域名）"), "{s}");
 }
 
 #[tokio::test]
@@ -317,6 +382,7 @@ async fn note_only_change_and_node_exemption() {
     let pv = t.post("/api/v1/policies/preview", json!({})).await;
     assert_eq!(pv["affected_relays"], 0);
     assert!(pv["nodes"].as_array().unwrap().is_empty());
+    assert_eq!((pv["changes"][0]["note_changed"].as_bool(), pv["changes"][0]["domains_changed"].as_bool()), (Some(true), Some(false)), "{pv}");
     let v = t.post("/api/v1/policies/publish", json!({"draft_hash": pv["draft_hash"]})).await;
     assert_eq!(v["status"], "applied");
     assert!(v["relays"].as_array().unwrap().is_empty());

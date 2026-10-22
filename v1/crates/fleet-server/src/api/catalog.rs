@@ -4,7 +4,7 @@ use crate::auth::Actor;
 use crate::db::{audit, new_id};
 use crate::error::{ApiError, ApiPath, ApiResult};
 use crate::meta;
-use crate::policy::{Mode, Scope};
+use crate::policy::{self, Scope};
 use crate::state::{AppState, Event};
 use axum::extract::State;
 use axum::Json;
@@ -127,16 +127,11 @@ pub async fn delete_team(a: Actor, State(st): State<AppState>, ApiPath(id): ApiP
     if let Some(u) = in_use(&[(live, "台机器"), (retired, "台已退役的机器"), (routers, "台软路由")]) {
         return Err(ApiError::conflict(format!("「{name}」还有 {u}：先把它们移到别的团队（已退役的先彻底删除）再删")));
     }
-    let rule: Option<(String, Vec<String>, String, bool)> =
-        sqlx::query_as("select mode, domains, note, draft is not null from policy where scope = 'team' and scope_id = $1")
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?;
-    if let Some((mode, domains, note, draft)) = rule {
-        let default = Scope::Team.default_data();
-        if draft || Mode::parse(&mode) != Some(default.mode) || domains != default.domains || note != default.note {
+    // 按规范化后的值比（仅观察不看域名：旧数据里改回仅观察时可能还留着隐藏的域名）
+    if let Some(r) = policy::load_row(&mut *tx, Scope::Team, id).await? {
+        if r.draft.is_some() || r.cur != Scope::Team.default_data() {
             return Err(ApiError::conflict(format!(
-                "「{name}」的访问规则不是默认的「仅观察」或有未发布的草稿：先在「访问规则」里把它改回仅观察（清空域名和备注）并发布（有草稿的先发布或丢弃），再删团队"
+                "「{name}」的访问规则不是默认的「仅观察」或有未发布的草稿：先在「访问规则」里把它改回仅观察（清空备注）并发布（有草稿的先发布或丢弃），再删团队"
             )));
         }
     }
@@ -321,8 +316,9 @@ pub async fn delete_provider(a: Actor, State(st): State<AppState>, ApiPath(id): 
         .bind(id)
         .fetch_one(&mut *tx)
         .await?;
-    if let Some(u) = in_use(&[(plans, "个套餐"), (machines, "台机器")]) {
-        return Err(ApiError::conflict(format!("「{name}」还有 {u}（含已归档、已退役的）：先删掉或改到别的供应商再删")));
+    // 「含已归档的」跟着套餐、「含已退役的」跟着机器写，只写有的那一项
+    if let Some(u) = in_use(&[(plans, "个套餐（含已归档的）"), (machines, "台机器（含已退役的）")]) {
+        return Err(ApiError::conflict(format!("「{name}」还有 {u}：先删掉或改到别的供应商再删")));
     }
     sqlx::query("delete from provider where id = $1").bind(id).execute(&mut *tx).await?;
     audit(&mut tx, &a.name, "provider.delete", "provider", Some(id), json!({"name": name})).await?;

@@ -5,9 +5,9 @@ import * as React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowUpCircle, BellOff, CalendarPlus, Copy, Link2, PanelRightOpen, PencilLine, Power, Repeat2, SquareTerminal, Undo2, Wrench } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
-import { fetchShare, maintOwner, useEndMaintenance, useSilences, useUpgradeAgent } from '@/lib/queries';
+import { fetchShare, maintOwner, useEndMaintenance, useSilences } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
-import { openMaint, openMove, openRenew, openRestore, openRetire } from '@/lib/nodeActions';
+import { openMaint, openMove, openRenew, openRestore, openRetire, openUpgrade } from '@/lib/nodeActions';
 import { collator } from '@/lib/sort';
 import { openTerminal } from '@/lib/terminal';
 import { copyShareLink, copyText } from '@/lib/clipboard';
@@ -26,7 +26,6 @@ const FILTER_MIN = 8;
 function useNodeMenu(m: MachineView): MenuEntry[] {
   const { open } = useDrawer();
   const nav = useNavigate();
-  const upgrade = useUpgradeAgent();
   const endMaint = useEndMaintenance();
   // 菜单内容只在打开时挂载，这里取静默列表不给每张卡片加开销；同机 IP 节点因宿主机维护而「维护中」时，结束的是宿主机的
   const silences = useSilences().data;
@@ -45,8 +44,8 @@ function useNodeMenu(m: MachineView): MenuEntry[] {
     : { key: 'share', label: '复制分享链接', icon: <Link2 />, disabled: shareable.length === 0 || retired, onSelect: () => void share(shareable[0].id) };
   const items: MenuEntry[] = [
     { key: 'open', label: '打开详情', icon: <PanelRightOpen />, onSelect: () => open(m.id) },
-    { key: 'ip', label: '复制 IP', icon: <Copy />, onSelect: () => void copyText(m.ip, ' IP') },
-    { key: 'name', label: '复制名称', icon: <Copy />, onSelect: () => void copyText(m.name, '名称') },
+    { key: 'ip', label: '复制 IP', icon: <Copy />, onSelect: () => void copyText(m.ip, ' IP', true) },
+    { key: 'name', label: '复制名称', icon: <Copy />, onSelect: () => void copyText(m.name, '名称', true) },
   ];
   if (retired) {
     items.push({ key: 'sep1', sep: true }, { key: 'restore', label: '恢复…', icon: <Undo2 />, onSelect: () => openRestore(m.id) });
@@ -58,9 +57,9 @@ function useNodeMenu(m: MachineView): MenuEntry[] {
     ...(m.kind !== 'proxy' && m.lifecycle === 'active'
       ? [{ key: 'term', label: m.host_machine ? '打开终端（宿主机）' : '打开终端', icon: <SquareTerminal />, onSelect: () => openTerminal({ kind: 'machine', id: m.id, name: m.name }) } as MenuEntry] : []),
     // 同机 IP 节点没有自己的 agent（用宿主机的），不给升级
-    ...(m.host_machine ? [] : [{ key: 'upgrade', label: '升级 agent', icon: <ArrowUpCircle />, disabled: !m.agent || m.lifecycle !== 'active' || !!m.active_job || upgrade.isPending,
-      // 菜单选中后内容会卸载，mutate 的回调届时不再触发；用 Promise 才能保证提示一定出现
-      onSelect: () => { upgrade.mutateAsync(m.id).then(() => toast.ok('已提交升级作业'), (e) => toast.err(e)); } } as MenuEntry]),
+    // 升级会重启 agent、作业开始后不能取消：先弹确认（外壳里的 UpgradeDialog）。中控不报「当前 agent 版本」，判断不了是否已是最新
+    ...(m.host_machine ? [] : [{ key: 'upgrade', label: '升级 agent…', icon: <ArrowUpCircle />, disabled: !m.agent || m.lifecycle !== 'active' || !!m.active_job,
+      onSelect: () => openUpgrade(m.id) } as MenuEntry]),
     { key: 'rename', label: '改名 / 改编号', icon: <PencilLine />, onSelect: () => open(m.id, 'manage') },
     // 任何机器都能登记续费（提前续、按年续都行，不只是快到期的）；还没有订阅的先去「费用」页填
     m.subscription
@@ -106,15 +105,32 @@ function Render({ items, kit }: { items: MenuEntry[]; kit: Kit }) {
   );
 }
 
-/** 子菜单的项；filter 给了就在顶上放一个筛选框（按项的文字包含筛）。框里打字不触发菜单的按字母跳转，上下键照常移到菜单项 */
+/** 子菜单里能选的项（筛选框之外的菜单项） */
+const firstItem = (from: HTMLElement) => from.closest('[data-radix-menu-content]')?.querySelector<HTMLElement>('[role="menuitem"]:not([data-disabled])');
+
+/** 子菜单的项；filter 给了就在顶上放一个筛选框（按项的文字包含筛）。子菜单一打开（键盘 → 也是）焦点就在框里；
+ *  框里打字不触发菜单的按字母跳转，↓ 移到第一项，回车选中第一条匹配的。
+ *  Radix 只在焦点落在菜单本身时响应方向键（框里按的到不了它），键盘打开时还会把焦点放到第一项上：都在这里接过来 */
 function SubItems({ items, filter, Item }: { items: MenuEntry[]; filter?: string; Item: React.ElementType }) {
   const [q, setQ] = React.useState('');
+  const input = React.useRef<HTMLInputElement>(null);
+  // 等 Radix 打开时的自动聚焦（菜单容器 → 第一项）做完再接过焦点
+  React.useEffect(() => { const h = setTimeout(() => input.current?.focus({ preventScroll: true })); return () => clearTimeout(h); }, []);
   const t = q.trim().toLowerCase();
   const shown = items.filter((c): c is Exclude<MenuEntry, { sep: true }> => !('sep' in c) && (!t || c.label.toLowerCase().includes(t)));
+  const onKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Escape' || e.key === 'Tab') return; // 交给菜单：Esc 关闭
+    e.stopPropagation();
+    if (e.key === 'ArrowDown' || e.key === 'Enter') {
+      e.preventDefault();
+      const el = firstItem(e.currentTarget);
+      // 回车：点第一项，走菜单项自己的选中（执行并关掉整个菜单）
+      if (e.key === 'Enter') el?.click(); else el?.focus();
+    }
+  };
   return (
     <>
-      {filter && <div className="menu-filter"><input value={q} onChange={(e) => setQ(e.target.value)} placeholder={filter} aria-label={filter}
-        onKeyDown={(e) => { if (!['ArrowDown', 'ArrowUp', 'Escape', 'Tab'].includes(e.key)) e.stopPropagation(); }} /></div>}
+      {filter && <div className="menu-filter"><input ref={input} value={q} onChange={(e) => setQ(e.target.value)} placeholder={filter} aria-label={filter} onKeyDown={onKey} /></div>}
       {shown.map((c) => <Item key={c.key} onSelect={c.onSelect} disabled={c.disabled}>{c.label}</Item>)}
       {filter && !shown.length && <div className="menu-label">没有匹配的</div>}
     </>
@@ -146,7 +162,7 @@ export function NodeMenus({ rows, children }: { rows: MachineView[]; children: R
     const el = (e.target as Element).closest<HTMLElement>('[data-id]');
     if (el && find(el.dataset.id)) picked.current = el; else e.preventDefault();
   };
-  // 打开期间给那张卡 / 那一行写 data-menu（高亮，见 extras.css）
+  // 打开期间给那张卡 / 那一行写 data-menu（高亮，见 cards.css、table.css）
   const onCtx = (open: boolean) => {
     const el = picked.current;
     el?.toggleAttribute('data-menu', open);

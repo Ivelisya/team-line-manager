@@ -1,6 +1,9 @@
 /* DataTable：固定列宽（table-layout: fixed + colgroup），长文字省略，数字 tabular。移植自原版 table.css */
 
 .table-wrap { overflow-x: auto; min-width: 0; }
+/* 抽屉、对话框里不套面板的小表：自带细边框与浮层圆角；is-capped 最高 300px、超出在框里滚动 */
+.table-wrap.is-boxed { border: 1px solid var(--line); border-radius: var(--r-float); }
+.table-wrap.is-capped { max-height: 300px; overflow: auto; }
 /* 页面里的表（机器表 MachineGrid、其余页面的 TableWrap）放得下、不用横滑时组件写上 data-fit：overflow-x: clip 不建滚动容器，表头吸顶在顶栏下方，一百多行往下滚列名一直在。
    滚动容器里的 sticky 只相对容器本身，容器又不竖向滚动，表头就跟着滚走了。窄屏仍横滑，此时不吸顶 */
 .table-wrap[data-fit] { overflow-x: clip; }
@@ -19,12 +22,14 @@
 .dt.is-one td { height: var(--row-1); }
 .dt td.r, .dt th.r { text-align: right; }
 .dt td.c, .dt th.c { text-align: center; }
+.dt :is(td, th).c:last-child { padding-inline: var(--sp-6); } /* 居中的末列（只放一个图标按钮，列宽 52 左右）：不再套首末列的 16px 边距，按钮放得下、不出省略号 */
 .dt td.r, .dt td .num { font-variant-numeric: var(--num-variant); }
 .dt .strong { font-weight: var(--fw-semibold); }
 .dt .sub { display: block; font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dt .cell-main { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dt tr.is-link { cursor: pointer; transition: background-color var(--dur-1) var(--ease-std); }
 @media (hover: hover) { .dt tr.is-link:hover { background-color: var(--hover); } } /* 只写底色：按下时叠的那层 background-image（components.css「交互状态」）不能被简写清掉，下同 */
+.dt tr.is-link[data-menu] { background: var(--hover); } /* 右键菜单开着时它所属的行 */
 .dt tr.is-current { background: var(--selected); }
 .dt tr.is-current td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
 .dt tr.is-retired td { color: var(--fg-2); }
@@ -36,12 +41,24 @@
   display: inline-flex; align-items: center; gap: var(--sp-4); box-sizing: border-box;
   width: calc(100% + 2 * var(--sp-6)); min-height: calc(var(--thead-h) - 1px); margin-inline: calc(-1 * var(--sp-6)); padding: 0 var(--sp-6);
   border: 0; border-radius: var(--r-control); background: none; cursor: pointer; font: inherit; color: inherit;
-  transition: color var(--dur-1) var(--ease-std);
+  transition: color var(--dur-1) var(--ease-std), background-color var(--dur-1) var(--ease-std);
 }
 .dt th.r .th-sort { justify-content: flex-end; }
 @media (hover: hover) { .th-sort:hover { color: var(--fg); } }
-.th-sort .lucide { width: 12px; height: 12px; color: var(--fg-3); }
+.th-sort .lucide { width: var(--icon-2xs); height: var(--icon-2xs); color: var(--fg-3); }
 .th-sort[data-dir] .lucide { color: var(--accent); }
+/* 手机上横滑的表：首列（名称）吸在左边、窄的操作列吸在右边，滑到中间也知道是哪一行、点得到「确认 / 撤销」。
+   窄的操作列 = 末列里只放一个按钮，或只放几个图标按钮；放几个文字按钮的宽操作列（团队与套餐的「改名 / 重新编号」）吸住会占掉大半屏，不吸。
+   边缘渐隐靠滚动驱动动画，iOS Safari 不支持，这里不依赖它。吸住的格子要不透明：取表面色，当前行取选中色 */
+@media (max-width: 600px) {
+  .table-wrap:not([data-fit]) { mask-image: none; animation: none; } /* 两侧吸住了，不再用边缘渐隐（会把吸住的列一起淡掉） */
+  .table-wrap:not([data-fit]) .dt:not(.dt-grid) :is(th, td):first-child { position: sticky; left: 0; z-index: 1; background: var(--surface); box-shadow: 1px 0 0 var(--line); }
+  .table-wrap:not([data-fit]) .dt:not(.dt-grid):has(td:last-child > :is(.btn:only-child, .icon-btn), td:last-child > .row > .icon-btn):not(:has(td:last-child > .row > .btn)) :is(th, td):last-child { position: sticky; right: 0; z-index: 1; background: var(--surface); box-shadow: -1px 0 0 var(--line), var(--shadow-edge-l); }
+  .table-wrap:not([data-fit]) .dt:not(.dt-grid) thead th:first-child,
+  .table-wrap:not([data-fit]) .dt:not(.dt-grid):has(td:last-child > :is(.btn:only-child, .icon-btn), td:last-child > .row > .icon-btn):not(:has(td:last-child > .row > .btn)) thead th:last-child { background: var(--sunken); }
+  .table-wrap:not([data-fit]) .dt tr.is-current > td:first-child { background: var(--selected); box-shadow: inset 2px 0 0 var(--accent), 1px 0 0 var(--line); }
+  .table-wrap:not([data-fit]) .dt tr.acc-sub > td:first-child { background: var(--sunken); }
+}
 .dt-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); padding: var(--sp-8) var(--card-pad); border-top: 1px solid var(--line); font-size: var(--fs-label); color: var(--fg-2); }
 
 /* 可编辑网格（上架批量） */
@@ -50,11 +67,27 @@
 .dt-grid td.idx { text-align: center; color: var(--fg-3); background: var(--sunken); font-variant-numeric: tabular-nums; }
 .dt-grid td { border-right: 1px solid var(--line); }
 .dt-grid .gcell { width: 100%; height: 100%; box-sizing: border-box; padding: 0 var(--sp-8); border: 0; border-radius: 0; background: transparent; color: var(--fg); font: inherit; text-overflow: ellipsis; }
-.dt-grid .gcell:focus { outline: 2px solid var(--accent); outline-offset: -2px; background: var(--surface); }
+.dt-grid .gcell:focus { outline: 2px solid var(--focus); outline-offset: -2px; background: var(--surface); }
 .dt-grid .gcell:disabled { background: var(--sunken); color: var(--fg-3); }
+/* 格子里的原生下拉（类型、团队、线路机…）：去掉系统外观，右侧画一个同全站下拉的细箭头（两道斜渐变拼成），聚焦换底色时箭头留着 */
+.dt-grid select.gcell, .dt-grid select.gcell:focus {
+  appearance: none; -webkit-appearance: none; padding-right: 22px; cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, var(--fg-2) 50%), linear-gradient(135deg, var(--fg-2) 50%, transparent 50%);
+  background-position: calc(100% - 13px) 50%, calc(100% - 9px) 50%; background-size: 4px 4px; background-repeat: no-repeat;
+}
+.dt-grid select.gcell:disabled { cursor: default; background-image: none; }
 .dt-grid .gcell-date { display: flex; align-items: center; height: 100%; }
 .dt-grid .gcell-date > .gcell { flex: 1 1 auto; min-width: 0; }
 .dt-grid .gcell-date > .icon-btn { flex: none; margin-right: var(--sp-4); }
 .dt-grid td.is-bad { box-shadow: inset 0 0 0 1px var(--bad); background: var(--bad-bg); }
 .dt-grid td.is-na { background: var(--sunken); }
 .dt-grid tr.is-row-bad td.idx { color: var(--bad-text); }
+/* 「检查结果」与删除列吸附在右侧，二十几列横滑时也一直看得见；结果放不下省略，悬停看全文。左缘一道线 + 淡阴影，和滑到下面的格子分开 */
+.dt-grid .gc-res, .dt-grid .gc-del { position: sticky; z-index: 1; background: var(--surface); }
+.dt-grid thead :is(.gc-res, .gc-del) { background: var(--sunken); }
+.dt-grid .gc-res { right: 56px; padding: 0 var(--sp-8); box-shadow: -1px 0 0 var(--line), var(--shadow-edge-l); }
+.dt-grid .gc-del { right: 0; border-right: 0; }
+/* 窄容器（手机、竖屏平板）：两列右吸附就占掉大半屏，左边只剩「# / 类型」能编辑——不再吸附，跟着整表横滑 */
+@container content (max-width: 640px) {
+  .dt-grid :is(.gc-res, .gc-del) { position: static; box-shadow: none; }
+}

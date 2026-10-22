@@ -65,7 +65,7 @@ export function JobsIndicator() {
         <PopoverTrigger asChild>
           <button type="button" className="top-btn jobs-ind" aria-label={`${n} 个作业进行中`}>
             <ListChecks size={16} />
-            <span className="jobs-ind-n num">{n}</span>
+            <span className="count-badge" data-tone="accent">{n}</span>
           </button>
         </PopoverTrigger>
       </Tip>

@@ -100,6 +100,8 @@ async fn targets_grouped_by_target() {
         assert!(g["first_seen"].is_string() && g["last_seen"].is_string() && g.get("node_id").is_none());
         assert_eq!(d["items"][0]["dest_host"], "google.com", "{w} 按合计连接数排");
         assert_eq!(d["total"].as_i64(), Some(d["items"].as_array().unwrap().len() as i64), "{w}");
+        // 概览 KPI 的「访问目标」与这里的总数同口径
+        assert_eq!(t.get(&format!("/api/v1/access/summary?window={w}")).await["kpi"]["unique_targets"], d["total"], "{w}");
         // 展开：同样的筛选只看这一个目标，一个节点一行
         let d = t.get(&format!("/api/v1/access/targets?window={w}&target=google.com")).await;
         let mut per: Vec<_> = d["items"].as_array().unwrap().iter().map(|i| (i["name"].as_str().unwrap().to_string(), i["conns"].as_i64().unwrap())).collect();
@@ -189,9 +191,15 @@ async fn summary_targets_sources_events() {
     assert_eq!((d["nodes"].as_array().unwrap().len(), d["kpi"]["conns"].as_i64()), (1, Some(4)));
     let d = t.get("/api/v1/access/summary?window=24h&search=GOOGLE").await;
     assert_eq!((d["nodes"].as_array().unwrap().len(), d["kpi"]["conns"].as_i64(), d["kpi"]["targets"].as_i64()), (2, Some(7), Some(2)));
+    assert_eq!(d["kpi"]["unique_targets"], 1, "两个节点访问同一个 google.com：按目标去重算 1 个");
     // 搜索里的 % 和 _ 按字面匹配
     let d = t.get("/api/v1/access/summary?window=24h&search=%25").await;
     assert_eq!(d["kpi"]["conns"], 0);
+    // 照抄合并名「*.example.com」搜索：汇总（存合并名）和原始记录（存真实主机名）都按后缀「.example.com」匹配，两边一致
+    for w in ["1h", "24h"] {
+        let d = t.get(&format!("/api/v1/access/summary?window={w}&search=*.example.com")).await;
+        assert_eq!(d["kpi"]["conns"], 4, "{w}：3 个随机子域名 + www");
+    }
 
     // ── 目标列表：随机子域名合并、阻止数、排序、分页 ──
     let d = t.get(&format!("/api/v1/access/targets?window=24h&node={n1}")).await;
@@ -249,6 +257,21 @@ async fn summary_targets_sources_events() {
     let d = t.get("/api/v1/access/sources?window=1h&search=2.2.2").await;
     assert_eq!((d["items"].as_array().unwrap().len(), d["items"][0]["conns"].as_i64()), (1, Some(4)));
     assert_eq!(d["items"][0]["name"], "团队1-02");
+    // 按接入方式在服务端筛（测试环境没装 IP 库：都查不到画像，算「未知」）
+    let n = |d: Value| d["items"].as_array().unwrap().len();
+    assert_eq!(n(t.get(&format!("/api/v1/access/sources?window=24h&node={n1}&conn=unknown&limit=3")).await), 3);
+    assert_eq!(n(t.get(&format!("/api/v1/access/sources?window=24h&node={n1}&conn=residential")).await), 0);
+    assert_eq!(t.raw("/api/v1/access/sources?conn=x", true).await.0, StatusCode::BAD_REQUEST);
+    // 画像缓存里查过的在库里就按接入方式筛（1.1.1.1 是家宽）；没取满 5000 个，不算截断
+    sqlx::query("insert into ip_intel_cache (ip, conn_type, db_version) values ('1.1.1.1', 'residential', $1)")
+        .bind(t.st.ipintel.version())
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let d = t.get(&format!("/api/v1/access/sources?window=24h&node={n1}&conn=residential&limit=50")).await;
+    assert_eq!((d["items"][0]["src_ip"].as_str(), n(d.clone()), d["scan_capped"].as_bool()), (Some("1.1.1.1"), 1, Some(false)), "{d}");
+    let d = t.get(&format!("/api/v1/access/sources?window=1h&node={n1}&conn=unknown")).await;
+    assert!(d["items"].as_array().unwrap().iter().all(|s| s["src_ip"] != "1.1.1.1"), "{d}");
 
     // ── 原始记录：倒序分页、过滤 ──
     let d = t.get(&format!("/api/v1/access/events?node={n1}&limit=7")).await;

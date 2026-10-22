@@ -43,6 +43,24 @@ function valueTicks(max: number, base: 1000 | 1024): number[] | undefined {
   return [0, 1, 2, 3, 4].map((i) => i * step * unit);
 }
 
+/** 没有数据的时段（所选范围左边还没上架、中间离线、右边停了上报）每隔一段垫一个空点（只有时间）：悬停那里时没有提示
+ *  （recharts 滤掉空值后提示是空的），不会吸到很远的那个真实点上；曲线也在空段断开，不把两头连成一条斜线。
+ *  「空段」= 比常见点距的 3 倍还长；垫点的间隔不小于常见点距、整个范围最多约 240 个 */
+function withGaps<T extends { t: number }>(pts: T[], span: [number, number] | null): (T | { t: number })[] {
+  if (pts.length < 2 || !span) return pts;
+  const diffs = pts.slice(1).map((p, i) => p.t - pts[i].t).sort((a, b) => a - b);
+  const typical = diffs[diffs.length >> 1];
+  if (!(typical > 0)) return pts;
+  const step = Math.max(typical, (span[1] - span[0]) / 240);
+  const out: (T | { t: number })[] = [];
+  // (from, to) 之间隔 step 垫点，两头各让出半步
+  const fill = (from: number, to: number) => { if (to - from > 3 * typical) for (let t = from + step / 2; t < to - step / 2; t += step) out.push({ t }); };
+  fill(span[0] - step / 2, pts[0].t);
+  pts.forEach((p, i) => { if (i) fill(pts[i - 1].t, p.t); out.push(p); });
+  fill(pts[pts.length - 1].t, span[1] + step / 2);
+  return out;
+}
+
 export interface Line { key: string; label: string; color: string }
 /** 悬停点：描边取卡片底色（recharts 默认白描边，暗色下是一圈白边） */
 const ACTIVE_DOT = { r: 3.5, strokeWidth: 2, stroke: 'var(--surface)' };
@@ -61,12 +79,13 @@ export const TimeChart = memo(function TimeChart({ points, lines, range, kind = 
     if (!n.delete(k)) { if (n.size >= lines.length - 1) return h; n.add(k); }
     return n;
   }), [lines.length]);
-  const data = useMemo(() => (points ?? []).map((p) => ({ ...p, t: new Date(p.ts).getTime() })), [points]);
+  const real = useMemo(() => (points ?? []).map((p) => ({ ...p, t: new Date(p.ts).getTime() })), [points]);
   // 横轴范围：full 时是 [现在 − 所选范围, 现在]（数据取回时算一次，不随每次重渲染挪动），否则数据首尾
   const span = useMemo<[number, number] | null>(() => {
-    if (full && RANGE_MS[range]) { const end = Math.max(Date.now(), data[data.length - 1]?.t ?? 0); return [end - RANGE_MS[range], end]; }
-    return data.length > 1 ? [data[0].t, data[data.length - 1].t] : null;
-  }, [data, full, range]);
+    if (full && RANGE_MS[range]) { const end = Math.max(Date.now(), real[real.length - 1]?.t ?? 0); return [end - RANGE_MS[range], end]; }
+    return real.length > 1 ? [real[0].t, real[real.length - 1].t] : null;
+  }, [real, full, range]);
+  const data = useMemo(() => withGaps(real, span), [real, span]);
   const xRange = full ? range : span ? spanRange(span[1] - span[0]) : range;
   const xTicks = useMemo(() => (span ? timeTicks(span[0], span[1], xRange) : undefined), [span, xRange]);
   const yTicks = useMemo(() => {

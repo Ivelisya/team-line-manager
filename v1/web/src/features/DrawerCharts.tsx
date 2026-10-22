@@ -1,7 +1,7 @@
 // 抽屉里带图表的三个页签：连接质量 / 流量 / 主机。单独成文件按需加载，recharts 只在打开这些页签时才下载。
 // 图表卡、加载框与时间范围也给软路由抽屉的「曲线」页签用（RouterCharts）。
 import * as React from 'react';
-import { Cpu, Globe, MemoryStick, Network, Radar, ServerOff } from 'lucide-react';
+import { Cpu, Gauge, Globe, HardDrive, MemoryStick, Network, Radar, ServerOff } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
 import type { UseQueryResult } from '@tanstack/react-query';
 import { useAvailability, useSeries } from '@/lib/queries';
@@ -27,6 +27,9 @@ const L_CPU = [{ key: 'cpu_pct', label: 'CPU', color: 'var(--m-cpu)' }];
 // 按小时的点（7 天 / 30 天）是一小时的平均，短时冲高被摊平：同画每小时的峰值，色取 CPU 蓝的浅色
 const L_CPU_HOURLY = [{ key: 'cpu_pct', label: '平均', color: 'var(--m-cpu)' }, { key: 'cpu_max', label: '峰值', color: 'color-mix(in oklab, var(--m-cpu) 45%, transparent)' }];
 const L_MEM = [{ key: 'mem_pct', label: '内存', color: 'var(--m-mem)' }];
+const L_DISK = [{ key: 'disk_pct', label: '磁盘', color: 'var(--m-disk)' }];
+// 负载同卡片：1 分钟平均负载按核数折成百分比（load_pct 由 HostTab 从 load1 算出）；超过 100% 表示排队，纵轴不封顶
+const L_LOAD = [{ key: 'load_pct', label: '负载', color: 'var(--m-load)' }];
 const L_NET = [{ key: 'net_rx_bps', label: '↓ 下行', color: 'var(--chart-1)' }, { key: 'net_tx_bps', label: '↑ 上行', color: 'var(--chart-2)' }];
 const PCT_DOMAIN: [number, number] = [0, 100];
 const yMs = (v: number) => (v ? `${v} ms` : '0');
@@ -52,7 +55,7 @@ const fewText = (m: MachineView, range: string) =>
 export function ChartFrame<T extends { points: readonly unknown[] }>({ q, few, height = 180, children }: { q: UseQueryResult<T>; few: string; height?: number; children: React.ReactNode }) {
   // 轮询中偶尔一次取不到：留着上一份曲线（下一轮会再取），只有一份都没有时才显示错误
   if (q.isError && !q.data) return <ErrorNote error={q.error} onRetry={() => void q.refetch()}>曲线加载失败：</ErrorNote>;
-  if (q.isLoading) return <Skeleton h={height} style={{ borderRadius: 'var(--r-float)' }} />;
+  if (q.isLoading) return <Skeleton h={height} className="is-float" />;
   return (
     <div className="chart-frame" data-stale={q.isPlaceholderData} aria-busy={q.isPlaceholderData || undefined}>
       {(q.data?.points.length ?? 0) < 2 ? <div className="chart-empty" style={{ height }}>{few}</div> : children}
@@ -62,7 +65,7 @@ export function ChartFrame<T extends { points: readonly unknown[] }>({ q, few, h
 
 /** 图表卡：一张曲线一张卡，边框、底色与顶部色条取指标色（--cc）。卡头左边图标 + 标题，右边当前值 + 一行小字；
  *  没有当前值的图右边放时间范围（tools） */
-export function ChartCard({ c, icon, title, meta, value, caption, tools, children }: { c: string; icon: React.ReactNode; title: string; meta?: string; value?: React.ReactNode; caption?: string; tools?: React.ReactNode; children: React.ReactNode }) {
+export function ChartCard({ c, icon, title, meta, value, caption, tools, children }: { c: string; icon: React.ReactNode; title: string; meta?: React.ReactNode; value?: React.ReactNode; caption?: string; tools?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="chart-card" style={{ '--cc': c } as React.CSSProperties}>
       <div className="chart-card-head">
@@ -105,7 +108,9 @@ export function QualityTab({ m }: { m: MachineView }) {
     <>
       <AvailabilitySection id={m.id} relay={m.kind === 'relay'} />
       <Section>
-        <ChartCard c="var(--chart-1)" icon={<Radar />} title="延迟" meta="线路机 → 节点" tools={<RangeBar range={range} setRange={setRange} />}>
+        {/* 多条入口时曲线是各入口的平均（序列接口不分入口），写明几条、是哪几台线路机 */}
+        <ChartCard c="var(--chart-1)" icon={<Radar />} title="延迟" meta={m.kind !== 'relay' && m.entries.length > 1
+          ? <span data-tip={`${m.entries.map((e) => e.relay.name).join('、')} 的平均`}>线路机 → 节点 · {m.entries.length} 条入口平均</span> : '线路机 → 节点'} tools={<RangeBar range={range} setRange={setRange} />}>
           <ChartFrame q={s} few={fewText(m, range)}>
             <TimeChart full points={s.data?.points} range={s.data?.range ?? range} kind="line" lines={L_PROBE} yFmt={yMs} valueFmt={vMs} />
           </ChartFrame>
@@ -135,7 +140,7 @@ export function TrafficTab({ m }: { m: MachineView }) {
         </LabelValueGrid>
       </Section>
       <Section>
-        <ChartCard c="var(--chart-1)" icon={<Globe />} title="业务流量" meta={s.data?.resolution === '1h' ? '每小时的流量' : '每分钟的流量'} tools={<RangeBar range={range} setRange={setRange} />}>
+        <ChartCard c="var(--chart-1)" icon={<Globe />} title="业务流量" meta={<InfoTip text={s.data?.resolution === '1h' ? '每个点是这一小时的流量' : '每个点是这一分钟的流量'} />} tools={<RangeBar range={range} setRange={setRange} />}>
           <ChartFrame q={s} few={fewText(m, range)}>
             <TimeChart full points={s.data?.points} range={s.data?.range ?? range} lines={L_TRAFFIC} yFmt={yBytes} valueFmt={vBytes} yBase={1000} empty="这段时间没有业务流量" />
           </ChartFrame>
@@ -154,6 +159,9 @@ export function HostTab({ m }: { m: MachineView }) {
   // 家宽代理没有主机；其它机器即使现在没有读数（agent 离线、还没上报），历史曲线照样能看——排查掉线前发生了什么正要看它
   const agentful = m.kind !== 'proxy';
   const s = useSeries(m.id, 'host', range, agentful, poll(range));
+  const cores = m.agent?.cores ?? null;
+  // 负载曲线：load1 按核数折成百分比（同卡片）；核数不知道时没有这条
+  const loadPoints = React.useMemo(() => (cores && s.data?.points.some((p) => typeof p.load1 === 'number') ? s.data.points.map((p) => ({ ...p, load_pct: typeof p.load1 === 'number' ? (p.load1 / cores) * 100 : null })) : null), [s.data, cores]);
   if (!agentful) return <Empty icon={<ServerOff size={22} />} text="家宽代理没有主机指标" />;
   const h = hasHost(m) ? m.host! : null;
   const r = h ? resourceMeters(m)! : null;
@@ -169,17 +177,20 @@ export function HostTab({ m }: { m: MachineView }) {
           <LabelValueGrid>
             <LabelValue label="内存"><Num f={F.mem(h.mem_used)} /> <span className="t-sub">/ <Num f={F.mem(h.mem_total)} /></span></LabelValue>
             <LabelValue label="磁盘"><Num f={F.mem(h.disk_used)} /> <span className="t-sub">/ <Num f={F.mem(h.disk_total)} /></span></LabelValue>
-            <LabelValue label="负载">{h.load1 == null ? <span className="t-sub">{r.load.sub}</span>
-              : <><Num f={r.load.value} /> <span className="t-sub">（1 分钟均值 {h.load1.toFixed(2)}{m.agent?.cores ? ` / ${m.agent.cores} 核` : ''}）</span></>}</LabelValue>
+            {/* 同卡片的负载格条：百分比一行，「1 分钟 0.13 · 1 核」放第二行 */}
+            <LabelValue label="负载" wrap>{h.load1 == null ? <span className="t-sub">{r.load.sub}</span>
+              : <><Num f={r.load.value} /><div className="t-sub">{r.load.sub}</div></>}</LabelValue>
             <LabelValue label="TCP 连接数"><span className="num">{h.tcp_conns ?? '—'}</span></LabelValue>
           </LabelValueGrid>
         ) : <div className="hint">agent 离线，没有当前读数</div>}
         {m.host_machine && <div style={{ marginTop: 8 }}><Note>这是宿主机「{m.host_machine.name}」的读数 <InfoTip text="同机 IP 节点和宿主机是同一台机器，CPU、内存、磁盘与网卡都共用。" /></Note></div>}
       </Section>
-      {/* 三张图表卡同属一段，之间不再画分隔线 */}
+      {/* 图表卡同属一段，之间不再画分隔线 */}
       <Section className="chart-stack">
         <ChartCard c="var(--m-cpu)" icon={<Cpu />} title="CPU" meta={hourly ? '每小时平均与峰值' : undefined} value={h ? <Num f={F.pct(h.cpu_pct, 1)} /> : '—'} caption="使用率"><ChartFrame q={s} few={few} height={140}><TimeChart full points={s.data?.points} range={s.data?.range ?? range} lines={hourly ? L_CPU_HOURLY : L_CPU} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></ChartCard>
         <ChartCard c="var(--m-mem)" icon={<MemoryStick />} title="内存" value={r ? <Num f={F.pct(r.mem.pct, 1)} /> : '—'} caption="使用率"><ChartFrame q={s} few={few} height={140}><TimeChart full points={s.data?.points} range={s.data?.range ?? range} lines={L_MEM} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></ChartCard>
+        <ChartCard c="var(--m-disk)" icon={<HardDrive />} title="磁盘" value={r ? <Num f={F.pct(r.disk.pct, 1)} /> : '—'} caption="使用率"><ChartFrame q={s} few={few} height={140}><TimeChart full points={s.data?.points} range={s.data?.range ?? range} lines={L_DISK} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></ChartCard>
+        {cores != null && <ChartCard c="var(--m-load)" icon={<Gauge />} title="负载" meta={<InfoTip text={`1 分钟平均负载 ÷ ${cores} 核；超过 100% 表示有任务在排队`} />} value={r ? <Num f={r.load.value} /> : '—'} caption="1 分钟平均"><ChartFrame q={s} few={few} height={140}>{loadPoints ? <TimeChart full points={loadPoints} range={s.data?.range ?? range} lines={L_LOAD} yFmt={yPct} valueFmt={vPct} height={140} /> : <div className="chart-empty" style={{ height: 140 }}>{hourly ? '7 天、30 天的小时汇总不含负载' : '容器内无法获取本机负载'}</div>}</ChartFrame></ChartCard>}
         <ChartCard c="var(--chart-1)" icon={<Network />} title="网卡速率" value={h ? <>↓ <Num f={F.rate(h.net_rx_bps)} /> <span className="t-sub">·</span> ↑ <Num f={F.rate(h.net_tx_bps)} /></> : '—'} caption="当前速率"><ChartFrame q={s} few={few} height={160}><TimeChart full points={s.data?.points} range={s.data?.range ?? range} lines={L_NET} yFmt={yRate} valueFmt={vRate} yBase={1000} height={160} /></ChartFrame></ChartCard>
       </Section>
     </>

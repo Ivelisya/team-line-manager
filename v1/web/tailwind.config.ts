@@ -40,8 +40,9 @@ export default {
       },
       fontFamily: { sans: [v('font-sans')], num: [v('font-num')], mono: [v('font-mono')] },
       fontSize: {
-        micro: ['11px', '16px'], label: ['12px', '18px'], body: ['13px', '20px'],
-        emph: ['15px', '22px'], title: ['16px', '22px'], page: ['24px', '32px'], kpi: ['27px', '32px'],
+        // 字号同 tokens.css 的字阶，直接引用变量（改令牌一处生效）
+        micro: [v('fs-micro'), v('lh-micro')], label: [v('fs-label'), v('lh-label')], body: [v('fs-body'), v('lh-body')],
+        emph: [v('fs-emph'), v('lh-emph')], title: [v('fs-title'), v('lh-title')], page: [v('fs-page'), v('lh-page')], kpi: [v('fs-kpi'), v('lh-kpi')],
       },
       spacing: { 'card-pad': v('card-pad'), gutter: v('gutter') },
       height: { chip: v('h-chip'), sm: v('h-sm'), md: v('h-md'), lg: v('h-lg'), bar: v('h-bar') },

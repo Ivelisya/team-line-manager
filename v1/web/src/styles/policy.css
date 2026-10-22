@@ -6,26 +6,31 @@
 
 .pol-layout { display: grid; grid-template-columns: minmax(280px, 340px) minmax(0, 1fr); gap: var(--grid-gap); align-items: start; }
 @container content (max-width: 900px) { .pol-layout { grid-template-columns: minmax(0, 1fr); } }
+/* 模式四段在手机上放不下（「暂停新连接」被截）：排成 2×2，撑满整行 */
+@container content (max-width: 520px) {
+  .pol-form .seg { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); justify-self: stretch; height: auto; border-radius: var(--r-float); }
+  .pol-form .seg-item { justify-content: center; }
+}
 
 /* 范围树 */
 /* 不设内层滚动：团队默认折叠，节点多时有搜索框，列表跟着页面滚 */
-.pol-tree { display: grid; padding: var(--sp-4) 0 var(--sp-8); }
+.pol-tree { display: grid; padding: var(--sp-4) var(--sp-8) var(--sp-8); }
 .pol-find { padding: 0 var(--card-pad) var(--sp-8); }
 .pol-find .search { width: 100%; }
 .pol-row { display: flex; align-items: stretch; min-width: 0; }
 /* 展开箭头与节点行：按下反馈、焦点环内收（树的滚动容器会裁外圈）写在 components.css「交互状态」 */
 .pol-chev { flex: none; width: 28px; display: grid; place-items: center; border: 0; background: transparent; color: var(--fg-2); cursor: pointer; border-radius: var(--r-control); transition: background-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out); }
-.pol-chev:hover { background: var(--hover); color: var(--fg); }
-.pol-chev .lucide { transition: transform var(--dur-2) var(--ease-out); }
-.pol-chev[data-open="1"] .lucide { transform: rotate(90deg); }
+@media (hover: hover) { .pol-chev:hover { background: var(--hover); color: var(--fg); } } /* 箭头转动见 components.css「展开箭头」 */
 .pol-item { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: var(--sp-8); padding: var(--sp-8) var(--sp-12) var(--sp-8) var(--sp-6); border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; border-radius: var(--r-control); transition: background-color var(--dur-1) var(--ease-std); }
-.pol-item:hover { background-color: var(--hover); }
-.pol-item[aria-current="true"] { background-color: var(--selected); box-shadow: inset 2px 0 0 var(--accent); }
+@media (hover: hover) { .pol-item:hover { background-color: var(--hover); } }
+/* 选中底铺在整行上（连同左边的箭头 / 缩进），左右与面板边各留 8px，两侧对称 */
+.pol-row { border-radius: var(--r-control); }
+.pol-row:has(> .pol-item[aria-current="true"]) { background-color: var(--selected); box-shadow: inset 2px 0 0 var(--accent); }
 .pol-row-node { padding-left: 28px; }
 .pol-row-node .pol-item { padding-left: var(--sp-12); }
 .pol-name { flex: 1 1 auto; min-width: 0; display: grid; gap: 0; }
 .pol-sub { font-size: var(--fs-micro); line-height: var(--lh-micro); color: var(--fg-2); }
-.pol-inh { flex: none; font-size: var(--fs-micro); color: var(--fg-3); }
+.pol-inh { flex: none; font-size: var(--fs-micro); color: var(--fg-2); }
 
 /* 编辑器 */
 .pol-form { display: grid; gap: var(--sp-16); padding: 0 var(--card-pad) var(--card-pad); min-width: 0; }
@@ -56,7 +61,7 @@
 .pol-side + .pol-side { border-left: 1px solid var(--line); }
 .pol-side-head { display: flex; align-items: center; gap: var(--sp-8); flex-wrap: wrap; }
 .pol-chips { display: flex; flex-wrap: wrap; gap: var(--sp-4); max-height: 132px; overflow: auto; }
-.pol-tag { display: inline-flex; align-items: center; gap: var(--sp-4); max-width: 100%; padding: 0 var(--sp-8); height: 22px; border-radius: var(--r-pill); background: var(--neutral-bg); color: var(--fg); font: var(--fs-label) / 22px var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pol-tag { display: inline-flex; align-items: center; gap: var(--sp-4); max-width: 100%; padding: 0 var(--sp-8); height: var(--h-tag); border-radius: var(--r-pill); background: var(--neutral-bg); color: var(--fg); font: var(--fs-label) / 22px var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pol-tag small { font: var(--fw-medium) var(--fs-micro) / 22px var(--font-sans); color: var(--fg-2); }
 .pol-tag[data-mark="add"] { background: var(--ok-bg); color: var(--ok-text); }
 .pol-tag[data-mark="del"] { background: var(--bad-bg); color: var(--bad-text); text-decoration: line-through; }
@@ -75,13 +80,11 @@
 .pol-sum { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-8); }
 .pol-sum > div { display: grid; grid-template-columns: auto auto; justify-content: start; align-items: baseline; column-gap: var(--sp-6); padding: var(--sp-10) var(--sp-12); border: 1px solid var(--line); border-radius: var(--r-float); background: var(--sunken); }
 .pol-sum span { grid-column: 1 / -1; font-size: var(--fs-label); color: var(--fg-2); }
-.pol-sum b { font: var(--fw-semibold) var(--fs-kpi) / var(--lh-kpi) var(--font-sans); font-variant-numeric: tabular-nums; }
+.pol-sum b { font: var(--fw-semibold) var(--fs-kpi) / var(--lh-kpi) var(--font-num); font-variant-numeric: var(--num-variant); }
 .pol-sum small { font-size: var(--fs-label); color: var(--fg-2); }
 .pol-changes { margin: 0; padding: 0; list-style: none; display: grid; gap: var(--sp-4); font-size: var(--fs-body); }
 .pol-changes li { display: flex; align-items: baseline; gap: var(--sp-8); flex-wrap: wrap; }
-.pol-kind { font-size: var(--fs-micro); padding: 0 var(--sp-6); border-radius: var(--r-pill); background: var(--neutral-bg); color: var(--neutral-text); }
 .pol-arrow { color: var(--fg-3); }
-.pol-pv-table { max-height: 300px; overflow: auto; border: 1px solid var(--line); border-radius: var(--r-float); }
 .pol-hosts { display: flex; align-items: center; gap: var(--sp-4); flex-wrap: nowrap; min-width: 0; overflow: hidden; }
 .pol-hosts .pol-tag { flex: 0 1 auto; min-width: 0; }
 .pol-hosts .pol-more { flex: none; }
@@ -89,7 +92,7 @@
 .pol-tip b { margin-left: var(--sp-6); }
 
 /* 发布记录 */
-.pol-cur { margin-left: var(--sp-6); font-size: var(--fs-micro); padding: 0 var(--sp-6); border-radius: var(--r-pill); background: var(--accent-soft); color: var(--accent-soft-fg); }
+.pol-cur { margin-left: var(--sp-6); } /* 「当前」小胶囊（.pill-sm）跟在版本号后面 */
 .pol-apply { display: flex; align-items: center; gap: var(--sp-8); flex-wrap: wrap; min-width: 0; }
 .pol-relays { display: flex; flex-wrap: wrap; gap: var(--sp-4) var(--sp-10); }
 .pol-relay { display: inline-flex; align-items: center; gap: var(--sp-6); font-size: var(--fs-label); }

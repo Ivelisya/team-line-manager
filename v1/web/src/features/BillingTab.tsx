@@ -59,7 +59,7 @@ export function BillingTab({ m }: { m: MachineView }) {
         <Section>
           <SectionHeader title="续费记录" />
           {renewals.data?.length ? (
-            <div className="table-wrap" style={{ border: '1px solid var(--line)', borderRadius: 'var(--r-float)' }}>
+            <div className="table-wrap is-boxed">
               <table className="dt is-one" style={{ minWidth: 520 }}>
                 <colgroup><col style={{ width: 136 }} /><col style={{ width: 200 }} /><col style={{ width: 90 }} /><col /></colgroup>
                 <thead><tr><th>登记时间</th><th>到期日</th><th className="r">金额</th><th>备注</th></tr></thead>

@@ -3,10 +3,10 @@
 import * as React from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Check, CheckCircle2, ChevronDown, ClipboardPaste, ListChecks, Plus, Trash2, TriangleAlert } from 'lucide-react';
-import { useQueryClient } from '@tanstack/react-query';
-import { fetchMachines, useHostChoices, usePlans, useProviders, useProvision, useProvisionCheck, useRelayChoices, useTeams, type HostChoice } from '@/lib/queries';
+import { useHostChoices, usePlans, useProviders, useProvision, useProvisionCheck, useRelayChoices, useTeams, type HostChoice } from '@/lib/queries';
 import type { Kind, ProvisionCheckItem } from '@/lib/types';
 import { KIND_ORDER } from '@/lib/sort';
+import { prefixScore } from '@/lib/match';
 import { inheritSummary, kindLabel, meta } from '@/lib/derive';
 import * as F from '@/lib/format';
 import { Button, IconButton } from '@/components/ui/button';
@@ -19,7 +19,7 @@ import { ConfirmDialog } from '@/components/app/dialogs';
 import { errMessage, toast, useToastLift, type ToastTone } from '@/components/ui/toast';
 import { copyText } from '@/lib/clipboard';
 import { PageHead, Panel, Pill } from '@/components/app/primitives';
-import { COLS, PASTE_COLS, UNUSED_LABEL, applies, headerCols, ipIssue, isBlank, isIpNode, localErrors, localIssues, newRow, parseTsv, pasteLine, serverField, toItem, type Col, type Ctx, type Row } from '@/features/provision-model';
+import { COLS, PASTE_COLS, UNUSED_LABEL, applies, headerCols, ipIssue, isBlank, isIpNode, localErrors, localIssues, newRow, parseTsv, pasteLine, portIssue, serverField, toItem, type Col, type Ctx, type Row } from '@/features/provision-model';
 import { CountrySelect } from '@/components/app/CountrySelect';
 
 // 上架页懒加载、在外壳等到 /meta 之后才求值，类型名、默认端口可以在模块里取
@@ -30,8 +30,6 @@ const NONE: never[] = [];
 const BATCH_TIP = '· 可从表格软件整块粘贴，带表头按列名对上\n· 编号留空自动接在末尾\n· 灰格不适用，粘贴时跳过\n· 选择列粘名称；国家粘代码或中文名，空 = 按 IP\n· 填宿主机 = 同机 IP 节点，登录、供应商沿用宿主机';
 /** 检查结果的通知只留最新一条，内容一改就收起 */
 const CHECK_TOAST = 'provision-check';
-/** 服务端检查的「IP 已被占用」（api/provision.rs）只说被占用、不说被谁：按意思宽松地认（「属于一台…」），原话改了几个字也认得；补上名字后不再命中 */
-const IP_TAKEN = /IP.*属于一台/;
 const checkToast = (tone: ToastTone, text: string) => toast.show({ tone, text, key: CHECK_TOAST });
 const NONE_RELAYS: { id: string; name: string }[] = [];
 const NONE_HOSTS: HostChoice[] = [];
@@ -62,7 +60,6 @@ export function ProvisionPage() {
   const [confirm, setConfirm] = React.useState(false);
   const [created, setCreated] = React.useState<{ machine_id: string; job_id: string; name: string }[] | null>(null);
   const check = useProvisionCheck(); const provision = useProvision();
-  const qc = useQueryClient();
   const hostParam = sp.get('host');
   // 宿主机候选取自整份机器列表，订阅着时列表随实时推送最多每 2 秒整表重取（批量上架期间一直在推）：只在用得到时订阅——
   // 单台开了「在已有机器上添加 IP」、批量（哪一行都能填宿主机）；带着 ?host= 等预填时总要取（停在「已开始上架」面板时从抽屉点「添加 IP 节点…」也要能预填）
@@ -119,11 +116,6 @@ export function ProvisionPage() {
     if (bad) { setResults(null); setJump((n) => n + 1); checkToast('bad', mode === 'single' ? '信息不完整，见标红的字段' : `${bad} 行信息不完整，见「检查结果」列`); return; }
     try {
       const r = await check.mutateAsync(items);
-      // 「IP 已被占用」服务端不说是哪台：按 IP 在机器列表里找到就补上名字（取不到列表就保持原话）
-      if (r.items.some((x) => x.errors.some((e) => IP_TAKEN.test(e)))) {
-        const owners = new Map((await fetchMachines(qc).catch(() => [])).map((m) => [m.ip, m.name]));
-        r.items = r.items.map((x, i) => ({ ...x, errors: x.errors.map((e) => (IP_TAKEN.test(e) && owners.has(items[i].ip) ? `这个 IP 已经属于 ${owners.get(items[i].ip)}` : e)) }));
-      }
       setResults(r.items); setSig(curSig);
       const failed = r.items.filter((x) => !x.ok).length;
       if (!failed) checkToast('ok', `检查通过：${r.items.length} 台`);
@@ -164,9 +156,11 @@ export function ProvisionPage() {
     );
   }
 
-  const summary = results == null ? (localErrs?.some((e) => e.length) ? <Pill tone="bad">有行信息不完整</Pill> : null)
+  const single = mode === 'single';
+  // 单台不说「行」：「信息不完整」「未通过」
+  const summary = results == null ? (localErrs?.some((e) => e.length) ? <Pill tone="bad">{single ? '信息不完整' : '有行信息不完整'}</Pill> : null)
     : stale ? <Pill tone="warn">内容已修改，需要重新检查</Pill>
-    : passed ? <Pill tone="ok">检查通过，可以开始</Pill> : <Pill tone="bad">{results.filter((r) => !r.ok).length} 行未通过</Pill>;
+    : passed ? <Pill tone="ok">检查通过，可以开始</Pill> : <Pill tone="bad">{single ? '未通过' : `${results.filter((r) => !r.ok).length} 行未通过`}</Pill>;
   // 确认说明：同机 IP 节点不收登录信息、不装 agent，只在宿主机上装它自己的 SS 实例
   const ipRows = active.filter(isIpNode).length;
   const confirmTip = [
@@ -187,13 +181,15 @@ export function ProvisionPage() {
       </div>
 
       {mode === 'single'
-        ? <SingleForm row={rows[0]} onChange={(p) => setRow(0, p)} ctx={ctx} result={resOf(rows[0].id)} errors={errOf(rows[0].id)} stale={stale} />
+        ? <SingleForm key={rows[0].id} row={rows[0]} onChange={(p) => setRow(0, p)} ctx={ctx} result={resOf(rows[0].id)} errors={errOf(rows[0].id)} stale={stale} />
         : <BatchGrid rows={rows} setRows={setRows} ctx={ctx} resOf={resOf} errOf={errOf} checkedAny={results != null} stale={stale} />}
 
       <StickyBar>
         <div className="row row-between">
-          <div className="row">{summary}<span className="t-sub">共 {active.length} 台</span></div>
+          <div className="row">{summary}{!single && <span className="t-sub">共 {active.length} 台</span>}</div>
           <div className="row">
+            {/* 单台的清空（批量的在表格面板上）：清空后表单是空的，关页面不再提醒有未提交的内容 */}
+            {single && <Button variant="quiet" onClick={reset}>清空</Button>}
             <Button onClick={runCheck} loading={check.isPending} variant={passed ? 'secondary' : 'primary'}><ListChecks />检查</Button>
             <Button variant="primary" disabled={!passed} onClick={() => setConfirm(true)}>开始上架</Button>
           </div>
@@ -222,6 +218,9 @@ function StickyBar({ children }: { children: React.ReactNode }) {
   return <div ref={ref} className="panel sticky-bar" style={{ padding: '10px 16px' }}>{children}</div>;
 }
 
+/** 宿主机搜索：名称或 IP 以输入开头的排最前，其次是名称 / IP 里连着出现的，其余不列（lib/match） */
+const hostFilter = (_: string, search: string, keywords?: string[]) => prefixScore(keywords ?? [], search.trim().toLowerCase());
+
 /** 宿主机选择：在用的 VPS 节点可能上百台，弹出可搜索的列表（名称、IP 都能搜），每项写名称与 IP */
 function HostSelect({ id, value, onChange, hosts }: { id?: string; value: string; onChange: (v: string) => void; hosts: HostChoice[] }) {
   const [open, setOpen] = React.useState(false);
@@ -236,7 +235,7 @@ function HostSelect({ id, value, onChange, hosts }: { id?: string; value: string
       </PopoverTrigger>
       <PopoverContent className="cs-pop hs-pop" align="start">
         {open && (
-          <Command loop>
+          <Command loop filter={hostFilter}>
             <CommandInput placeholder="搜索名称或 IP" />
             <CommandList>
               <CommandEmpty>没有匹配的 VPS 节点</CommandEmpty>
@@ -285,22 +284,25 @@ function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; o
   // 选了宿主机：团队与线路机带出宿主机的（之后可改）
   const pickHost = (v: string) => { const h = ctx.hosts.find((x) => x.id === v); onChange(h ? { host_id: v, team_id: h.team_id, relay_id: h.relay_id } : { host_id: v }); };
   // 上次检查有本地错误时，把错误按字段标在字段旁（按当前内容重算，改对了就消失）；服务端检查没通过的，按错误文字对回字段（结果过期就不标）。
-  // IP 失焦即查格式，不等点「检查」
-  const [ipBlurred, setIpBlurred] = React.useState(false);
+  // IP、端口失焦即查格式与范围，不等点「检查」
+  const [blurred, setBlurred] = React.useState<ReadonlySet<keyof Row>>(() => new Set());
+  const blur = (k: keyof Row) => () => setBlurred((s) => (s.has(k) ? s : new Set(s).add(k)));
   const fe: Partial<Record<keyof Row, string>> = {};
   if (errors?.length) for (const x of localIssues(row)) fe[x.key] ??= x.msg;
   if (result && !result.ok && !stale) for (const msg of result.errors) { const k = serverField(msg); if (k) fe[k] ??= msg; }
-  if (ipBlurred && row.ip.trim()) fe.ip ??= ipIssue(row) ?? undefined;
-  const T = (key: keyof Row, label: React.ReactNode, p?: { hint?: string; info?: string; ph?: string; num?: boolean; onBlur?: () => void }) => (
-    <Field label={label} hint={p?.hint} info={p?.info} error={fe[key]}>
-      <Input inputMode={p?.num ? 'numeric' : undefined} placeholder={p?.ph} value={row[key] as string} aria-invalid={fe[key] ? true : undefined} onBlur={p?.onBlur}
+  if (blurred.has('ip') && row.ip.trim()) fe.ip ??= ipIssue(row) ?? undefined;
+  for (const k of ['ssh_port', 'ss_port', 'up_port'] as const) if (blurred.has(k)) fe[k] ??= portIssue(row, k) ?? undefined;
+  const T = (key: keyof Row, label: string, p?: { info?: string; ph?: string; num?: boolean; check?: boolean }) => (
+    <Field label={label} info={p?.info} error={fe[key]}>
+      <Input inputMode={p?.num ? 'numeric' : undefined} placeholder={p?.ph} value={row[key] as string} aria-label={label} aria-invalid={fe[key] ? true : undefined} onBlur={p?.check ? blur(key) : undefined}
         onChange={(e) => onChange({ [key]: p?.num ? e.target.value.replace(/\D/g, '') : e.target.value })} />
     </Field>
   );
-  const Fixed = (label: string, hint: string, value: string, ph = '') => <Field label={label} hint={hint}><Input disabled value={value} placeholder={ph} /></Field>;
+  // 同机 IP 节点不适用的格子：禁用、显示取自哪里的值，说明进 (i)
+  const Fixed = (label: string, info: string, value: string, ph = '') => <Field label={label} info={info}><Input disabled value={value} placeholder={ph} aria-label={label} /></Field>;
   const plan = ip ? undefined : ctx.plans.find((p) => p.id === row.plan_id);
   return (
-    <div className="stack">
+    <div className="stack prov-form">
       <Panel title="机器">
         <div className="stack">
           <Segmented label="类型" value={k} onChange={(v) => onChange({ kind: v })} items={KIND_OPTS} />
@@ -314,18 +316,18 @@ function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; o
             </div>
           )}
           <div className="form-grid">
-            {ip && <div className="span-2"><Field label="宿主机" info="这个 IP 所在的 VPS 节点；SSH、agent 与供应商都用它的" error={fe.host_id}><HostSelect value={row.host_id} onChange={pickHost} hosts={ctx.hosts} /></Field></div>}
-            {T('ip', k === 'proxy' ? '出口 IP' : 'IP', { ph: '198.51.100.20', hint: ip ? '须配在宿主机网卡上' : undefined, info: ip ? 'EIP / NAT 映射的不行' : undefined, onBlur: () => setIpBlurred(true) })}
+            {ip && <div className="span-2"><Field label="宿主机" info="这个 IP 所在的 VPS 节点；SSH、agent 与供应商都用它的，团队与线路机默认同它（可改）" error={fe.host_id}><HostSelect value={row.host_id} onChange={pickHost} hosts={ctx.hosts} /></Field></div>}
+            {T('ip', k === 'proxy' ? '出口 IP' : 'IP', { ph: '198.51.100.20', info: ip ? '要直接配在宿主机网卡上（EIP / NAT 映射的不行），检查时会登录宿主机核对' : undefined, check: true })}
             <Field label="国家" error={fe.country}>
               <CountrySelect value={row.country} onChange={(v) => onChange({ country: v })} autoLabel="自动（按 IP）" aria-label="国家" />
             </Field>
-            {k !== 'proxy' && (ip ? Fixed('SSH 端口', '沿用宿主机', host ? String(host.ssh_port) : '') : T('ssh_port', 'SSH 端口', { ph: '22', num: true }))}
+            {k !== 'proxy' && (ip ? Fixed('SSH 端口', '同机 IP 节点经宿主机登录，用宿主机的 SSH 端口', host ? String(host.ssh_port) : '') : T('ssh_port', 'SSH 端口', { ph: '22', num: true, check: true }))}
             {k === 'relay' ? <div className="span-2">{T('label', '线路机名', { ph: '线路机3' })}</div> : (
               <>
-                <Field label="团队" hint={ip ? '默认同宿主机，可改' : undefined} error={fe.team_id}><Select value={row.team_id} onChange={(v) => onChange({ team_id: v })} options={o.team} /></Field>
+                <Field label="团队" error={fe.team_id}><Select value={row.team_id} onChange={(v) => onChange({ team_id: v })} options={o.team} aria-label="团队" /></Field>
                 <Field label="编号" error={fe.number}><Input inputMode="numeric" placeholder="自动（接在末尾）" value={row.number} onChange={(e) => onChange({ number: e.target.value.replace(/\D/g, '') })} /></Field>
-                <Field label="挂在线路机" hint={ip ? '默认同宿主机，可改' : undefined} error={fe.relay_id}><Select value={row.relay_id} onChange={(v) => onChange({ relay_id: v })} options={o.relay} /></Field>
-                {k === 'vps' && (ip ? Fixed('SS 端口', '由中控分配', '', `自动分配（${meta().defaults.ss_port + 1} 起）`) : T('ss_port', 'SS 端口', { ph: String(meta().defaults.ss_port), num: true, info: 'NAT 机填供应商映射后的公网端口' }))}
+                <Field label="挂在线路机" error={fe.relay_id}><Select value={row.relay_id} onChange={(v) => onChange({ relay_id: v })} options={o.relay} aria-label="挂在线路机" /></Field>
+                {k === 'vps' && (ip ? Fixed('SS 端口', '由中控在宿主机上分配空闲端口', '', `自动分配（${meta().defaults.ss_port + 1} 起）`) : T('ss_port', 'SS 端口', { ph: String(meta().defaults.ss_port), num: true, check: true, info: 'NAT 机填供应商映射后的公网端口' }))}
               </>
             )}
           </div>
@@ -337,14 +339,12 @@ function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; o
           <div className="form-grid">
             <Field label="协议"><Select value={row.up_protocol} onChange={(v) => onChange({ up_protocol: v })} options={[{ value: 'socks5', label: 'SOCKS5' }, { value: 'http', label: 'HTTP' }]} /></Field>
             {T('up_host', '主机', { ph: 'proxy.example.net' })}
-            {T('up_port', '端口', { num: true, ph: '1080' })}
+            {T('up_port', '端口', { num: true, ph: '1080', check: true })}
             {T('up_user', '用户名', { ph: '选填' })}
             <Field label="密码"><Input type="password" autoComplete="new-password" placeholder="选填" value={row.up_pw} onChange={(e) => onChange({ up_pw: e.target.value })} /></Field>
           </div>
         </Panel>
-      ) : ip ? (
-        <Panel title="首次登录"><div className="hint">沿用宿主机，不需要填 <InfoTip text="中控用自己的密钥登录宿主机。" /></div></Panel>
-      ) : (
+      ) : ip ? null /* 同机 IP 节点：中控用自己的密钥登录宿主机，没有要填的 */ : (
         <Panel title="首次登录" sub={<InfoTip text="密码只在上架作业中用一次，成功后丢弃，不保存" />}>
           <div className="form-grid">
             <Field label="root 密码"><Input type="password" autoComplete="new-password" placeholder="留空用中控密钥" value={row.login_pw} onChange={(e) => onChange({ login_pw: e.target.value })} /></Field>
@@ -354,8 +354,8 @@ function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; o
 
       <Panel title="来源与订阅" sub={<InfoTip text={ip ? '默认不单独记费用：供应商对附加 IP 另收费时再填到期日与费用' : '选了套餐只需填到期日，其余跟随套餐与供应商'} />}>
         <div className="form-grid">
-          {ip ? Fixed('供应商', '沿用宿主机', host?.provider ?? '', '—') : <Field label="供应商" error={fe.provider_id}><Select value={row.provider_id} onChange={(v) => onChange({ provider_id: v, plan_id: '' })} options={o.provider} allowEmpty="不设置" /></Field>}
-          {ip ? Fixed('套餐', '同机 IP 节点不带套餐', '', '不带套餐') : <Field label="套餐" error={fe.plan_id}><Select value={row.plan_id} onChange={(v) => onChange({ plan_id: v })} options={o.planFor(row.provider_id)} allowEmpty="不设置" /></Field>}
+          {ip ? Fixed('供应商', '沿用宿主机的供应商', host?.provider ?? '', '—') : <Field label="供应商" error={fe.provider_id}><Select value={row.provider_id} onChange={(v) => onChange({ provider_id: v, plan_id: '' })} options={o.provider} allowEmpty="不设置" /></Field>}
+          {ip ? Fixed('套餐', '同机 IP 节点不带套餐，附加 IP 另收费时填到期日与费用', '', '不带套餐') : <Field label="套餐" error={fe.plan_id}><Select value={row.plan_id} onChange={(v) => onChange({ plan_id: v })} options={o.planFor(row.provider_id)} allowEmpty="不设置" /></Field>}
           {plan && (() => { const s = inheritSummary(plan, ctx.providers.find((p) => p.id === plan.provider_id)); return <div className="span-2 hint">{s.text} <InfoTip text={s.tip} /></div>; })()}
           {T('service_ref', '服务编号', { ph: 'SVC-1042' })}
           <Field label={<>到期日<span className="field-tag">{plan ? '必填' : '选填'}</span></>} info={plan ? undefined : '填了就记费用、到期提醒'} error={fe.due_date}><DateField value={row.due_date} onChange={(v) => onChange({ due_date: v })} /></Field>

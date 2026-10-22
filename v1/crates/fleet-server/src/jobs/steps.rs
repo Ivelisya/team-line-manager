@@ -180,16 +180,17 @@ async fn preflight(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
             must_match = !ssh::keys_of(&s).is_empty();
         }
     }
-    let mut up = false;
+    // 同上架检查、恢复预检：要读到 SSH 版本行才算通（中控出网经透明代理时只看 TCP 什么地址都「连得上」，要等 ssh 自己超时才失败）
+    let mut probe = Ok(());
     for _ in 0..3 {
-        if ssh::tcp_ok(&m.ip, m.ssh_port as u16, Duration::from_secs(5)).await {
-            up = true;
+        probe = ssh::ssh_probe(&m.ip, m.ssh_port as u16, Duration::from_secs(5)).await;
+        if probe.is_ok() {
             break;
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    if !up {
-        return Err(StepError::err(ErrKind::Network, format!("{}:{} 的 SSH 端口连不上", m.ip, m.ssh_port)));
+    if let Err(why) = probe {
+        return Err(StepError::err(ErrKind::Network, format!("SSH {}:{} {why}", m.ip, m.ssh_port)));
     }
     let fp = if must_match {
         ssh::check_pinned_host_key(&c.st.cfg.known_hosts, &m.ip, m.ssh_port as u16).await?
@@ -240,8 +241,8 @@ async fn ip_check(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         .bind(host)
         .fetch_one(&c.st.db)
         .await?;
-    if !ssh::tcp_ok(&m.ip, m.ssh_port as u16, Duration::from_secs(5)).await {
-        return Err(StepError::err(ErrKind::Network, format!("宿主机 {hname}（{}:{}）的 SSH 端口连不上", m.ip, m.ssh_port)));
+    if let Err(why) = ssh::ssh_probe(&m.ip, m.ssh_port as u16, Duration::from_secs(5)).await {
+        return Err(StepError::err(ErrKind::Network, format!("宿主机 {hname} 的 SSH {}:{} {why}", m.ip, m.ssh_port)));
     }
     let ip = m.own_ip.as_str();
     let echo = format!("{}/echo", c.st.cfg.public_url.trim_end_matches('/'));
@@ -249,10 +250,11 @@ async fn ip_check(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     if !out.ok() {
         return Err(out.fail(&format!("在宿主机 {hname} 上核对 IP 失败")));
     }
-    let local = out.kv("local_ips").unwrap_or("").replace(',', ", ");
-    if !ip_set(&local).contains(ip) {
-        return Err(remote(format!("IP {ip} 不在宿主机 {hname} 的网卡上（本机：{local}）：只支持直接配在网卡上的公网 IPv4，EIP / NAT 映射的 IP 不行")));
+    let local_ips = out.kv("local_ips").unwrap_or("");
+    if let Some(e) = scripts::ip_not_on_host(ip, &hname, local_ips) {
+        return Err(remote(e));
     }
+    let local = local_ips.replace(',', ", ");
     let got = out.kv("echo").unwrap_or("").trim();
     if got != ip {
         return Err(remote(match got.parse::<IpAddr>() {
@@ -337,11 +339,8 @@ fn check_nft(out: &Output, allow: &str, table: &str) -> anyhow::Result<()> {
     }
     let (want, got) = (ip_set(allow), ip_set(out.kv("nft_relays").unwrap_or("")));
     if want != got {
-        return Err(remote(format!(
-            "节点防火墙放行名单和期望不一致：期望 [{}]，实际 [{}]",
-            want.iter().cloned().collect::<Vec<_>>().join(", "),
-            got.iter().cloned().collect::<Vec<_>>().join(", ")
-        )));
+        let list = |s: &BTreeSet<String>| if s.is_empty() { "无".to_string() } else { s.iter().cloned().collect::<Vec<_>>().join("、") };
+        return Err(remote(format!("节点防火墙放行名单和期望不一致：期望 {}；实际 {}", list(&want), list(&got))));
     }
     Ok(())
 }
@@ -890,8 +889,8 @@ async fn cleanup(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     if c.job.params["cleanup"] == json!(false) {
         return Ok(Outcome::Skipped("选择了不清理机器".into()));
     }
-    if !ssh::tcp_ok(&m.ip, m.ssh_port as u16, Duration::from_secs(5)).await {
-        return Ok(Outcome::Skipped("机器连不上，跳过清理（令牌照样撤销）".into()));
+    if let Err(why) = ssh::ssh_probe(&m.ip, m.ssh_port as u16, Duration::from_secs(5)).await {
+        return Ok(Outcome::Skipped(format!("机器连不上（SSH {why}），跳过清理（令牌照样撤销）")));
     }
     let script = c.cleanup_script(&m).await?;
     match c.ssh(&m, None).run(&script, Duration::from_secs(120)).await {
@@ -1064,7 +1063,7 @@ pub async fn compensate(st: &AppState, job: &JobRow, owner: &str) {
     if !matches!(m.lifecycle.as_str(), "provisioning" | "failed") {
         return;
     }
-    if m.kind != "proxy" && ssh::tcp_ok(&m.ip, m.ssh_port as u16, Duration::from_secs(5)).await {
+    if m.kind != "proxy" && ssh::ssh_probe(&m.ip, m.ssh_port as u16, Duration::from_secs(5)).await.is_ok() {
         if let Some(script) = note(st, job.id, "读取清理参数", c.cleanup_script(&m).await).await {
             note(st, job.id, "清理机器上的服务", c.ssh(&m, None).run(&script, Duration::from_secs(120)).await).await;
         }

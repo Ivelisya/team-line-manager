@@ -148,8 +148,14 @@ async fn validate(tx: &mut Tx<'_>, items: &[Item]) -> ApiResult<Vec<Checked>> {
     for (t, n) in taken_rows {
         taken.entry(t).or_default().insert(n);
     }
-    let live_ips: Vec<(String,)> = sqlx::query_as("select host(primary_ip) from machine where lifecycle <> 'retired'").fetch_all(&mut **tx).await?;
-    let live_ips: HashSet<String> = live_ips.into_iter().map(|(s,)| s).collect();
+    // 未退役机器的 IP → 机器显示名（被占用时告诉用户是哪台）
+    let live_ips: Vec<(String, String)> = sqlx::query_as(
+        "select host(m.primary_ip), display_name(m.kind::text, m.label, t.name, m.number)
+         from machine m left join team t on t.id = m.team_id where m.lifecycle <> 'retired'",
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+    let live_ips: HashMap<String, String> = live_ips.into_iter().collect();
     let relays: Vec<(Uuid,)> = sqlx::query_as("select id from machine where kind = 'relay' and lifecycle = 'active'").fetch_all(&mut **tx).await?;
     let relays: HashSet<Uuid> = relays.into_iter().map(|(r,)| r).collect();
     let labels: Vec<(String,)> =
@@ -173,8 +179,8 @@ async fn validate(tx: &mut Tx<'_>, items: &[Item]) -> ApiResult<Vec<Checked>> {
                 IpAddr::from([0, 0, 0, 0])
             }
         };
-        if live_ips.contains(&ip.to_string()) {
-            errors.push("这个 IP 已经属于一台未退役的机器".into());
+        if let Some(owner) = live_ips.get(&ip.to_string()) {
+            errors.push(format!("这个 IP 已经属于 {owner}"));
         }
         if !batch_ips.insert(ip) {
             errors.push("这一批里 IP 重复".into());
@@ -353,7 +359,7 @@ pub async fn check(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Bat
     let mut tx = st.db.begin().await?;
     let mut v = validate(&mut tx, &b.items).await?;
     tx.rollback().await?;
-    // 只查库的校验之外再看一眼 SSH 端口通不通（同恢复的预检）：地址填错、防火墙没放行在这里就能看出来，不用等上架作业失败。
+    // 只查库的校验之外再看一眼 SSH 端口通不通（同恢复的预检；要读到 SSH 版本行，只连上 TCP 不算）：地址填错、防火墙没放行在这里就能看出来，不用等上架作业失败。
     // 家宽代理不 SSH；同机 IP 节点登录的是宿主机（在用的，不用再看）；不是一台机器的地址直接报错，不去连
     let mut probe = vec![];
     for (i, c) in v.iter_mut().enumerate() {
@@ -361,30 +367,83 @@ pub async fn check(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Bat
             continue;
         }
         match not_a_host(c.ip) {
-            Some(what) => c.errors.push(format!("{} 是{what}地址，不是一台可以上架的机器", c.ip)),
+            Some(what) => c.errors.push(format!("IP {} 是{what}地址，不能上架", c.ip)),
             None => probe.push(i),
         }
     }
-    if let Err(wait) = take_probes(&mut PROBE_BUDGET.lock().unwrap_or_else(|e| e.into_inner()), &a.name, probe.len(), Instant::now()) {
+    // 同机 IP 节点：登录宿主机看这个 IP 配没配在它的网卡上（同上架作业的第一步，同一段脚本），不用等作业失败。
+    // 每台宿主机只登录一次，拿到的本机 IP 对照它上面的全部条目；每台宿主机也算一次探测
+    let on_host: Vec<usize> = (0..v.len()).filter(|&i| v[i].errors.is_empty() && v[i].host.is_some()).collect();
+    let host_ids: Vec<Uuid> = on_host.iter().filter_map(|&i| v[i].item.host_id).collect::<HashSet<_>>().into_iter().collect();
+    if let Err(wait) = take_probes(&mut PROBE_BUDGET.lock().unwrap_or_else(|e| e.into_inner()), &a.name, probe.len() + host_ids.len(), Instant::now()) {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
             "rate_limited",
             format!("检查太频繁（每次检查都要探测各台机器的 SSH 端口），{wait} 秒后再试"),
         ));
     }
+    let host_rows: Vec<(Uuid, String, i32, String)> = sqlx::query_as(
+        "select m.id, host(m.primary_ip), m.ssh_port, display_name(m.kind::text, m.label, t.name, m.number)
+         from machine m left join team t on t.id = m.team_id where m.id = any($1)",
+    )
+    .bind(&host_ids)
+    .fetch_all(&st.db)
+    .await?;
+    if !host_rows.is_empty() {
+        tracing::info!(actor = %a.name, hosts = ?host_rows.iter().map(|r| &r.3).collect::<Vec<_>>(), "上架检查：登录宿主机核对同机 IP 节点的 IP");
+    }
+    // 整个检查最多等 CHECK_TIMEOUT：到点还没查完的条目报超时（排在后面、还没轮到的也一样），不让一次检查挂几分钟
+    let deadline = tokio::time::Instant::now() + CHECK_TIMEOUT;
+    let timed_out = || format!("检查超时（{} 秒内没查完），稍后再检查", CHECK_TIMEOUT.as_secs());
     let targets: Vec<(String, u16)> = probe.iter().map(|&i| (v[i].ip.to_string(), v[i].item.ssh_port.unwrap_or(22))).collect();
     // 每个探测拿自己的一份地址（借用 targets 的闭包过不了 axum 处理函数的生命周期检查）
-    let results: Vec<_> = futures::stream::iter(targets.clone())
-        .map(|(ip, port)| async move { crate::ssh::tcp_probe(&ip, port, Duration::from_secs(3)).await })
+    let ports = futures::stream::iter(targets.clone())
+        .map(|(ip, port)| async move {
+            tokio::time::timeout_at(deadline, crate::ssh::ssh_probe(&ip, port, Duration::from_secs(3))).await.unwrap_or_else(|_| Err(timed_out()))
+        })
         .buffered(PROBE_CONCURRENCY)
-        .collect()
-        .await;
-    for ((&i, (ip, port)), r) in probe.iter().zip(&targets).zip(results) {
+        .collect::<Vec<_>>();
+    let logins = futures::stream::iter(host_rows)
+        .map(|(id, ip, port, name)| {
+            let t = crate::ssh::Target { ip, port: port as u16, key: st.cfg.ssh_key.clone(), known_hosts: st.cfg.known_hosts.clone(), password: None };
+            async move { (id, (tokio::time::timeout_at(deadline, local_ips(&t, &name)).await.unwrap_or_else(|_| Err(timed_out())), name)) }
+        })
+        .buffered(PROBE_CONCURRENCY)
+        .collect::<HashMap<_, _>>();
+    let (ports, logins) = futures::join!(ports, logins);
+    for ((&i, (ip, port)), r) in probe.iter().zip(&targets).zip(ports) {
         if let Err(why) = r {
-            v[i].errors.push(format!("SSH {ip}:{port} 连不上（{why}）"));
+            v[i].errors.push(format!("SSH {ip}:{port} {why}"));
         }
     }
+    for &i in &on_host {
+        let c = &mut v[i];
+        // 校验之后宿主机被删了的，查不到行
+        let Some((r, host)) = c.item.host_id.and_then(|h| logins.get(&h)) else {
+            c.errors.push("宿主机不存在".into());
+            continue;
+        };
+        let e = match r {
+            Ok(ips) => jobs::scripts::ip_not_on_host(&c.ip.to_string(), host, ips),
+            Err(e) => Some(e.clone()),
+        };
+        c.errors.extend(e);
+    }
     Ok(ok(report(&v)))
+}
+
+/// 「检查」整体的时限（端口探测与登录宿主机一起算）
+const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// 登录宿主机 `host` 取它网卡上的 IPv4（`LOCAL_IPS` 的输出）：先看 SSH 端口（连不上时不用等 ssh 自己超时），再登录。
+/// 只读、不改宿主机，不写操作记录；登录过哪些宿主机记在中控的服务日志里
+async fn local_ips(t: &crate::ssh::Target, host: &str) -> Result<String, String> {
+    crate::ssh::ssh_probe(&t.ip, t.port, Duration::from_secs(3)).await.map_err(|why| format!("宿主机 {host} 的 SSH {}:{} {why}", t.ip, t.port))?;
+    let out = t.run_once(jobs::scripts::LOCAL_IPS, Duration::from_secs(15)).await.map_err(|e| format!("登录宿主机 {host} 核对 IP 失败：{e:#}"))?;
+    if !out.ok() {
+        return Err(format!("登录宿主机 {host} 核对 IP 失败：{}", out.stderr.trim()));
+    }
+    Ok(out.kv("local_ips").unwrap_or("").to_string())
 }
 
 pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Batch>) -> ApiResult<Json<Value>> {

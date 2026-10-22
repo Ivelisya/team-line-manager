@@ -136,7 +136,7 @@ pub fn router() -> Router<AppState> {
         .route("/policies/publish", post(policy::publish))
         .route("/policies/discard", post(policy::discard))
         .route("/policies/versions", get(policy::versions))
-        .route("/policies/versions/{id}/rollback", post(policy::rollback))
+        .route("/policies/versions/{id}/rollback", get(policy::rollback_preview).post(policy::rollback))
         .route("/policies/{scope}/{id}", axum::routing::put(policy::put_one))
         // 软路由（router-bootstrap 是给路由取接入脚本的，不要登录，靠一次性令牌）
         .route("/routers", get(routers::list).post(routers::create))

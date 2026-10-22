@@ -41,7 +41,7 @@ export const RetireDialog = resetOnOpen(function RetireDialog({ m, open, onOpenC
       {h && <Note>宿主机「{h.name}」不受影响 <InfoTip text={`只退役这个 IP 的节点：摘除它的入口${cleanup ? '，停掉宿主机上它自己的 SS 实例' : '；不清理时，它在宿主机上的 SS 实例留着'}。`} /></Note>}
       {xs.length > 0 && (
         <Note tone="warn">
-          <div style={{ fontWeight: 500, marginBottom: 4 }}>同机 IP 节点会一起退役：</div>
+          <div className="note-title">同机 IP 节点会一起退役：</div>
           <ul className="reason-list" style={{ maxHeight: 160, overflow: 'auto' }}>
             {xs.map((x) => <IpNodeItem key={x.id} id={x.id} name={x.name} />)}
           </ul>
@@ -49,7 +49,7 @@ export const RetireDialog = resetOnOpen(function RetireDialog({ m, open, onOpenC
       )}
       {done && pv.isSuccess && pv.data.renames.length > 0 && (
         <Note tone="warn">
-          <div style={{ fontWeight: 500, marginBottom: 4 }}>以下节点会改名 <InfoTip text="同团队后面的节点前移补号，编号保持连续" /></div>
+          <div className="note-title">以下节点会改名 <InfoTip text="同团队后面的节点前移补号，编号保持连续" /></div>
           <ul className="reason-list" style={{ maxHeight: 200, overflow: 'auto' }}>
             {pv.data.renames.map((r) => <li key={r.machine_id}><span className="num">{r.old_name} <ArrowRight size={12} style={{ display: 'inline', verticalAlign: -1 }} /> <b>{r.new_name}</b></span></li>)}
           </ul>

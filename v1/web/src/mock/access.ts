@@ -54,7 +54,8 @@ function build(machines: MachineView[]): NodeData[] {
   });
 }
 
-const like = (s: string, q: string) => s.toLowerCase().includes(q.toLowerCase());
+/** 同中控的 like_pattern：开头的「*.」按后缀「.」匹配 */
+const like = (s: string, q: string) => s.toLowerCase().includes((q.startsWith('*.') ? q.slice(1) : q).toLowerCase());
 
 /** 按筛选 + 窗口算出每个节点的目标统计 */
 function stats(machines: MachineView[], q: URLSearchParams) {
@@ -99,7 +100,7 @@ export function installAccessMock(R: Reg, machines: () => MachineView[]) {
       domains: targets.filter((t) => t.kind === 'domain').length, sources: noSources ? null : n.sources.length, blocked: targets.reduce((s, t) => s + t.blocked, 0),
       last_ts: targets.map((t) => t.last_seen!).sort().pop() ?? null,
     })).sort((a, b) => b.conns - a.conns);
-    return { kpi: { active_nodes: nodes.length, conns: nodes.reduce((s, x) => s + x.conns, 0), targets: nodes.reduce((s, x) => s + x.targets, 0), blocked: nodes.reduce((s, x) => s + x.blocked, 0) }, nodes, window_start: win(query) };
+    return { kpi: { active_nodes: nodes.length, conns: nodes.reduce((s, x) => s + x.conns, 0), targets: nodes.reduce((s, x) => s + x.targets, 0), unique_targets: new Set(rows.flatMap((x) => x.targets.map((t) => t.dest_host))).size, blocked: nodes.reduce((s, x) => s + x.blocked, 0) }, nodes, window_start: win(query) };
   });
 
   R('GET', '/access/targets', ({ query }) => {
@@ -139,10 +140,12 @@ export function installAccessMock(R: Reg, machines: () => MachineView[]) {
 
   R('GET', '/access/sources', ({ query }) => {
     const search = (query.get('search') ?? '').trim();
+    const conn = query.get('conn') ?? ''; // 同中控：按接入方式筛（unknown 含查不到画像的）后再取前 limit 个
     const items: AccessSource[] = stats(machines(), query).filter((x) => x.targets.length > 0).flatMap(({ n, targets }) => {
       const total = targets.reduce((s, t) => s + t.conns, 0);
       return n.sources.filter((s) => !search || like(s.ip, search)).map((s) => ({ node_id: n.m.id, name: n.m.name, src_ip: s.ip, conns: Math.round(total * s.w), last_ts: new Date(Date.now() - Math.random() * 600_000).toISOString(), intel: intelOf(s.ip) }));
-    }).sort((a, b) => b.conns - a.conns).slice(0, Math.min(500, +(query.get('limit') ?? 100)));
+    }).filter((s) => !conn || (s.intel ? s.intel.conn_type === conn : conn === 'unknown'))
+      .sort((a, b) => b.conns - a.conns).slice(0, Math.min(500, +(query.get('limit') ?? 100)));
     return { items };
   });
 

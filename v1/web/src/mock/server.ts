@@ -277,7 +277,7 @@ function freeSsPort(hostId: string, extra: number[] = [], except?: string) {
 function checkProvision(items: ProvisionItem[]): ProvisionCheckItem[] {
   const usedNum = new Map<string, Set<number>>();
   for (const m of db.machines) if (m.team && m.number != null && m.lifecycle !== 'retired') { const s = usedNum.get(m.team.id) ?? new Set(); s.add(m.number); usedNum.set(m.team.id, s); }
-  const ips = new Set(db.machines.filter((m) => m.lifecycle !== 'retired').map((m) => m.ip));
+  const ips = new Map(db.machines.filter((m) => m.lifecycle !== 'retired').map((m) => [m.ip, m.name]));
   const portUsed = new Map<string, number>();
   const ssBatch = new Map<string, number[]>(); // 宿主机 → 这一批分到的 SS 端口
   const out: ProvisionCheckItem[] = [];
@@ -285,8 +285,10 @@ function checkProvision(items: ProvisionItem[]): ProvisionCheckItem[] {
   for (const it of items) {
     const errors: string[] = [];
     if (!IP_RE.test(it.ip ?? '') || it.ip.split('.').some((x) => +x > 255)) errors.push('IP 格式不正确');
-    else if (ips.has(it.ip)) errors.push('这个 IP 已经属于一台未退役的机器'); // 同服务端原话
+    else if (ips.has(it.ip)) errors.push(`这个 IP 已经属于 ${ips.get(it.ip)}`); // 同服务端原话
     else if (seenIp.has(it.ip)) errors.push('这一批里 IP 重复');
+    // 不是一台机器的地址（同服务端 provision::not_a_host 的原话，只模拟回环与链路本地）
+    else if (it.kind !== 'proxy' && !it.host_id && /^(127\.|169\.254\.)/.test(it.ip)) errors.push(`IP ${it.ip} 是${it.ip.startsWith('127.') ? '回环' : '链路本地'}地址，不能上架`);
     seenIp.add(it.ip);
     if (it.ssh_port != null && (it.ssh_port < 1 || it.ssh_port > 65535)) errors.push('SSH 端口应在 1–65535');
     let name = ''; let number: number | null = null; let relayPort: number | undefined;
@@ -443,8 +445,8 @@ R('DELETE', '/teams/([^/]+)', ({ params }) => {
 });
 R('DELETE', '/providers/([^/]+)', ({ params }) => {
   const p = db.providers.find((x) => x.id === params[0]); if (!p) throw bad('没有这个供应商', 404, 'not_found');
-  const u = inUse([[db.plans.filter((x) => x.provider_id === p.id).length, '个套餐'], [db.machines.filter((m) => m.provider?.id === p.id).length, '台机器']]);
-  if (u) throw bad(`「${p.name}」还有 ${u}（含已归档、已退役的）：先删掉或改到别的供应商再删`, 409, 'conflict');
+  const u = inUse([[db.plans.filter((x) => x.provider_id === p.id).length, '个套餐（含已归档的）'], [db.machines.filter((m) => m.provider?.id === p.id).length, '台机器（含已退役的）']]);
+  if (u) throw bad(`「${p.name}」还有 ${u}：先删掉或改到别的供应商再删`, 409, 'conflict');
   db.providers = db.providers.filter((x) => x.id !== p.id); delAudit('provider.delete', '删除供应商', 'provider', p.id, p.name);
   emit({ type: 'catalog' }); return { id: p.id };
 });
@@ -677,11 +679,28 @@ const byOpened = (a: Incident, b: Incident) => b.opened_at.localeCompare(a.opene
 R('GET', '/incidents', ({ query }) => {
   const s = query.get('state') ?? 'firing'; const sid = query.get('subject_id');
   const order = sid ? (a: Incident, b: Incident) => byState(a, b) || byOpened(a, b) : (a: Incident, b: Incident) => byState(a, b) || bySev(a, b) || byOpened(a, b);
-  return paged(db.incidents.filter((i) => (s === 'all' || i.state === s) && (!sid || i.subject_id === sid)).sort(order), query);
+  const list = db.incidents.filter((i) => (s === 'all' || i.state === s) && (!sid || i.subject_id === sid)).sort(order);
+  return { ...paged(list, query), acked: list.filter((i) => i.ack_at).length };
 });
 R('POST', '/incidents/([^/]+)/ack', ({ params }) => { const i = db.incidents.find((x) => x.id === params[0]); if (!i) throw bad('告警不存在', 404, 'not_found'); i.ack_at = iso(); i.ack_by = db.user; emit({ type: 'incidents' }); return {}; });
 /** 静默同服务端：只列没结束的（含还没开始的预约），按开始时间排；新建的校验顺序与中文原因同服务端 */
 const RULE_NAMES = META.rules;
+/** 维护中同服务端：正在生效、标记为维护的静默落在这台、它的宿主机或「全部机器」上；维护中的健康不给原因，结束后回到维护前的健康 */
+const preMaint = new Map<string, MachineView['health']>();
+function syncMaint() {
+  const now = Date.now();
+  const live = db.silences.filter((s) => s.is_maintenance && Date.parse(s.starts_at) <= now && Date.parse(s.ends_at) > now);
+  const ids = new Set(live.map((s) => s.subject_id));
+  for (const m of db.machines) {
+    if (m.lifecycle !== 'active') continue;
+    const on = ids.has(null) || ids.has(m.id) || (!!m.host_machine && ids.has(m.host_machine.id));
+    if (on === m.maintenance) continue;
+    if (on) { preMaint.set(m.id, m.health); m.health = { status: 'maintenance', reasons: [] }; }
+    else { m.health = preMaint.get(m.id) ?? { status: 'ok', reasons: [] }; preMaint.delete(m.id); }
+    m.maintenance = on;
+  }
+  emit({ type: 'machines' });
+}
 R('GET', '/silences', () => clone(db.silences.filter((s) => Date.parse(s.ends_at) > Date.now()).sort((a, b) => Date.parse(a.starts_at) - Date.parse(b.starts_at))));
 R('POST', '/silences', ({ body }) => {
   const s = Date.parse(body.starts_at); const e = Date.parse(body.ends_at); const now = Date.now();
@@ -695,11 +714,11 @@ R('POST', '/silences', ({ body }) => {
   if (body.subject_id && !m) throw bad('subject_id 指向的机器不存在');
   const id = `s${db.seq++}`;
   db.silences.push({ id, subject_id: m?.id ?? null, subject_name: m?.name ?? null, rule: body.rule ?? null, rule_name: body.rule ? RULE_NAMES[body.rule] : null, starts_at: body.starts_at, ends_at: body.ends_at, is_maintenance: !!body.is_maintenance, comment: body.comment ?? '' });
-  emit({ type: 'incidents' }); return { id };
+  syncMaint(); emit({ type: 'incidents' }); return { id };
 });
 R('DELETE', '/silences/([^/]+)', ({ params }) => {
   if (!db.silences.some((s) => s.id === params[0])) throw bad('没有这条静默', 404, 'not_found');
-  db.silences = db.silences.filter((s) => s.id !== params[0]); emit({ type: 'incidents' }); return { ok: true };
+  db.silences = db.silences.filter((s) => s.id !== params[0]); syncMaint(); emit({ type: 'incidents' }); return { ok: true };
 });
 /** 同中控 api/misc.rs audit_cat：操作记录的分类 */
 const AUDIT_EXEC = new Set(['exec', 'ssh.login', 'terminal.open', 'terminal.close', 'machine.logs', 'server.logs', 'restore.probe']);

@@ -119,7 +119,8 @@ export function Stat({ icon, tone, label, info, value, unit, caption, to, onClic
       <span className="stat-cap">{loading ? '' : caption ?? ' '}</span>
     </>
   );
-  if (to) return <Link className="stat is-link" to={to}>{inner}</Link>;
+  // 整卡可点用铺满的透明链接（不是外层 <a>）：说明行里还有自己的链接（「故障 N」），<a> 不能嵌套
+  if (to) return <div className="stat is-link"><Link className="stat-hit" to={to} aria-label={label} />{inner}</div>;
   if (onClick) return <button type="button" className="stat is-link" onClick={onClick}>{inner}</button>;
   return <div className="stat">{inner}</div>;
 }
@@ -238,14 +239,14 @@ export function ErrorNote({ error, onRetry, children }: { error: unknown; onRetr
   );
 }
 
-/** 复制按钮：点击复制 text，图标短暂变成对勾作为反馈 */
-export function CopyButton({ text, label = '内容', className, size = 14 }: { text: string; label?: string; className?: string; size?: number }) {
+/** 复制按钮：点击复制 text，图标短暂变成对勾作为反馈；show：提示里写出复制的值（IP、编号这类短的） */
+export function CopyButton({ text, label = '内容', className, size = 14, show }: { text: string; label?: string; className?: string; size?: number; show?: boolean }) {
   const [done, setDone] = React.useState(false);
   React.useEffect(() => { if (!done) return; const h = setTimeout(() => setDone(false), 1400); return () => clearTimeout(h); }, [done]);
   return (
     <Tip text={done ? '已复制' : `复制${label}`}>
-      <button type="button" className={cn('copy-btn', done && 'is-done', className)} aria-label={`复制${label}`}
-        onClick={async (e) => { e.stopPropagation(); if (await copyText(text, label)) setDone(true); }}>
+      <button type="button" className={cn('icon-btn icon-btn-xs copy-btn', done && 'is-done', className)} aria-label={`复制${label}`}
+        onClick={async (e) => { e.stopPropagation(); if (await copyText(text, label, show)) setDone(true); }}>
         {done ? <Check size={size} /> : <Copy size={size} />}
       </button>
     </Tip>

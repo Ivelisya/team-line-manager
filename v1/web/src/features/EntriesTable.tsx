@@ -2,7 +2,7 @@
 import * as React from 'react';
 import type { EntryView, MachineView } from '@/lib/types';
 import * as F from '@/lib/format';
-import { errText, probeFail } from '@/lib/derive';
+import { errText, probeFail, probeFailLabel } from '@/lib/derive';
 import { entryState, Num, Pill } from '@/components/app/primitives';
 import { ShowAll } from '@/components/app/Pagination';
 
@@ -21,7 +21,7 @@ export function EntriesTable({ m, traffic }: { m: MachineView; traffic?: boolean
   if (!m.entries.length && !removed) return <div className="hint">还没有入口</div>;
   const entries = all ? m.entries : m.entries.slice(0, ENTRY_CAP);
   return (
-    <div className="table-wrap" style={{ border: '1px solid var(--line)', borderRadius: 'var(--r-float)' }}>
+    <div className="table-wrap is-boxed">
       <table className="dt is-one" style={{ minWidth: 480 }}>
         <colgroup><col style={{ width: 132 }} /><col style={{ width: 96 }} /><col style={{ width: 72 }} /><col style={{ width: 72 }} />{traffic && <col style={{ width: 112 }} />}</colgroup>
         <thead><tr><th>{m.kind === 'relay' ? '端口 · 节点' : '线路机:端口'}</th><th>状态</th><th className="r">TCP</th><th className="r">出口</th>{traffic && <th className="r">本月业务流量</th>}</tr></thead>
@@ -43,7 +43,7 @@ const EntryRow = React.memo(function EntryRow({ e, relay, traffic }: { e: EntryV
   return (
     <tr>
       <td className="strong">{relay ? `${e.port} · ${e.node.name}` : `${e.relay.name}:${e.port}`}</td>
-      <td>{fail ? <Pill tone="bad" tip={fail.detail ? errText(fail.detail) : undefined}>不通</Pill> : entryState(e)}</td>{e.lifecycle === 'disabled' ? <><td className="r t-muted">—</td><td className="r t-muted">—</td></> : <><td className="r">{tcpCell(e)}</td><td className="r">{probeCell(e.egress)}</td></>}
+      <td>{fail ? <Pill tone="bad" tip={fail.detail ? errText(fail.detail) : undefined}>{probeFailLabel(e)}</Pill> : entryState(e)}</td>{e.lifecycle === 'disabled' ? <><td className="r t-muted">—</td><td className="r t-muted">—</td></> : <><td className="r">{tcpCell(e)}</td><td className="r">{probeCell(e.egress)}</td></>}
       {traffic && <td className="r"><Num f={F.bytes(e.traffic.month_up + e.traffic.month_down)} /></td>}
     </tr>
   );

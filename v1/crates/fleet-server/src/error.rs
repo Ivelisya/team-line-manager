@@ -103,7 +103,40 @@ impl From<sqlx::Error> for ApiError {
 pub struct ApiJson<T>(pub T);
 
 impl From<axum::extract::rejection::JsonRejection> for ApiError {
-    fn from(r: axum::extract::rejection::JsonRejection) -> Self { Self::bad_request(format!("请求内容不对：{}", r.body_text())) }
+    /// 不把 serde 的英文原文给界面：写成中文，能定位时带出字段（serde 的错误路径，如 items[0].ssh_port）
+    fn from(r: axum::extract::rejection::JsonRejection) -> Self {
+        use axum::extract::rejection::JsonRejection as R;
+        // 超过请求体上限（DefaultBodyLimit）：413，不和读取出错混在一起
+        if r.status() == StatusCode::PAYLOAD_TOO_LARGE {
+            return Self::new(StatusCode::PAYLOAD_TOO_LARGE, "too_large", "请求内容太大");
+        }
+        Self::bad_request(match &r {
+            R::JsonDataError(e) => data_error(e),
+            R::JsonSyntaxError(_) => "请求内容不是合法的 JSON".into(),
+            R::MissingJsonContentType(_) => "请求要带 Content-Type: application/json".into(),
+            _ => "请求内容读取失败".into(),
+        })
+    }
+}
+
+/// JSON 合法但对不上接口的字段：从错误链里找 serde 的错误路径。缺字段时路径指向外层对象，字段名在错误原文的反引号里
+fn data_error(e: &(dyn std::error::Error + 'static)) -> String {
+    let mut cur = Some(e);
+    while let Some(x) = cur {
+        if let Some(p) = x.downcast_ref::<serde_path_to_error::Error<serde_json::Error>>() {
+            let path = p.path().to_string();
+            let inner = p.inner().to_string();
+            if let Some(f) = inner.strip_prefix("missing field `").and_then(|s| s.split('`').next()) {
+                return if path == "." { format!("请求内容格式不对：缺少字段 {f}") } else { format!("请求内容格式不对：缺少字段 {path}.{f}") };
+            }
+            if path != "." {
+                return format!("请求内容格式不对：字段 {path} 的值类型或范围不对");
+            }
+            break;
+        }
+        cur = x.source();
+    }
+    "请求内容格式不对".into()
 }
 
 /// 路径参数提取器：解析失败（如编号不是合法 uuid）时同样返回 JSON 400
@@ -172,6 +205,39 @@ mod tests {
     async fn db_errors_inside_anyhow_keep_their_status() {
         let (s, v) = body_of(ApiError::from(anyhow::Error::from(sqlx::Error::PoolTimedOut))).await;
         assert_eq!((s, v["error"]["code"].as_str()), (StatusCode::SERVICE_UNAVAILABLE, Some("unavailable")));
+    }
+
+    /// 请求体对不上接口：中文、带出字段路径，不给 serde 的英文原文
+    #[test]
+    fn json_rejections_in_chinese_with_field() {
+        #[derive(serde::Deserialize)]
+        #[allow(dead_code)]
+        struct In {
+            items: Vec<It>,
+        }
+        #[derive(serde::Deserialize)]
+        #[allow(dead_code)]
+        struct It {
+            kind: String,
+            ssh_port: Option<u16>,
+        }
+        let msg = |b: &str| ApiError::from(axum::Json::<In>::from_bytes(b.as_bytes()).err().unwrap()).message;
+        assert_eq!(msg(r#"{"items":[{"kind":"vps","ssh_port":99999}]}"#), "请求内容格式不对：字段 items[0].ssh_port 的值类型或范围不对");
+        assert_eq!(msg(r#"{"items":[{"ssh_port":22}]}"#), "请求内容格式不对：缺少字段 items[0].kind");
+        assert_eq!(msg(r#"{}"#), "请求内容格式不对：缺少字段 items");
+        assert_eq!(msg("{"), "请求内容不是合法的 JSON");
+    }
+
+    /// 请求体超过上限（默认 2 MiB）：413「请求内容太大」，不是笼统的「读取失败」
+    #[tokio::test]
+    async fn oversized_body_is_413() {
+        use axum::extract::FromRequest;
+        let req = axum::http::Request::builder()
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(vec![b' '; 2 * 1024 * 1024 + 1]))
+            .unwrap();
+        let e = ApiJson::<serde_json::Value>::from_request(req, &()).await.err().unwrap();
+        assert_eq!((e.status, e.message.as_str()), (StatusCode::PAYLOAD_TOO_LARGE, "请求内容太大"));
     }
 
     #[tokio::test]

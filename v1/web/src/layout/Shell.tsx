@@ -1,4 +1,4 @@
-// 外壳：56px 顶栏 + 240px 侧栏 + 内容区。选中项是软色胶囊。≤760px 侧栏收成抽屉。
+// 外壳：56px 顶栏 + 240px 侧栏 + 内容区。选中项是软色胶囊。≤1023px 侧栏收成抽屉。
 import * as React from 'react';
 import { NavLink, Navigate, Outlet, useLocation, useNavigationType } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
@@ -9,7 +9,7 @@ import { useIncidents, useMe, useMeta } from '@/lib/queries';
 import { useStream } from '@/lib/stream';
 import { useTheme, type Palette, type ThemePref } from '@/lib/theme';
 import { useTitleAlerts } from '@/lib/title';
-import { closeEvacuate, closeMaint, closeMove, closeRenew, closeRestore, closeRetire, useEvacuateTarget, useMaintTarget, useMoveTarget, useRenewTarget, useRestoreTarget, useRetireTarget } from '@/lib/nodeActions';
+import { closeEvacuate, closeMaint, closeMove, closeRenew, closeRestore, closeRetire, closeUpgrade, useEvacuateTarget, useMaintTarget, useMoveTarget, useRenewTarget, useRestoreTarget, useRetireTarget, useUpgradeTarget } from '@/lib/nodeActions';
 import { resetTerminal, useTerminalTarget } from '@/lib/terminal';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger, Tip, TipHost } from '@/components/ui/overlays';
 import { Button } from '@/components/ui/button';
@@ -34,6 +34,8 @@ const RouterDrawer = React.lazy(() => import('@/features/RouterDrawer').then((m)
 const RouterDialogsHost = React.lazy(() => import('@/features/RouterDialogs').then((m) => ({ default: m.RouterDialogsHost })));
 // 单台机器的维护窗口对话框（卡片菜单、抽屉「管理」）：第一次用到时才下载
 const MaintenanceHost = React.lazy(() => import('@/components/app/MaintenanceDialog').then((m) => ({ default: m.MaintenanceHost })));
+// 升级 agent 的确认框（卡片菜单、抽屉「管理」）：同样第一次用到时才下载
+const UpgradeHost = React.lazy(() => import('@/components/app/UpgradeDialog').then((m) => ({ default: m.UpgradeHost })));
 // 网页终端连同 xterm（约 290KB）同理：第一次打开终端时才下载
 const TerminalHost = React.lazy(() => import('@/features/Terminal').then((m) => ({ default: m.TerminalHost })));
 
@@ -82,6 +84,11 @@ function LifecycleHost() {
 function MaintHost() {
   const ever = useEver(!!useMaintTarget());
   return ever ? <React.Suspense fallback={null}><MaintenanceHost /></React.Suspense> : null;
+}
+
+function UpgHost() {
+  const ever = useEver(!!useUpgradeTarget());
+  return ever ? <React.Suspense fallback={null}><UpgradeHost /></React.Suspense> : null;
 }
 
 function TermHost() {
@@ -175,7 +182,7 @@ export function Shell() {
             {/* 深浅色与配色在同一个菜单里（原来配色是单独一个盲切的按钮，窄屏还被藏起来）；色块就是该配色的强调色 */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild><button className="top-btn" aria-label="外观：深浅色与配色" data-tip="外观"><ThemeIcon size={16} /></button></DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="menu-appearance">
+              <DropdownMenuContent align="end">
                 <DropdownMenuLabel>外观</DropdownMenuLabel>
                 <DropdownMenuRadioGroup value={theme.pref} onValueChange={(v) => theme.setPref(v as ThemePref)}>
                   {THEMES.map(([v, l, I]) => <DropdownMenuRadioItem key={v} value={v}><I />{l}</DropdownMenuRadioItem>)}
@@ -200,7 +207,7 @@ export function Shell() {
                 <NavLink to={n.to} end={n.end} className="nav-item">
                   {() => <>
                     <n.icon size={16} /><span className="nav-label">{n.label}</span>
-                    {n.badge && firing > 0 && <span className="nav-badge">{firing}</span>}
+                    {n.badge && firing > 0 && <span className="count-badge">{firing}</span>}
                   </>}
                 </NavLink>
               </li>
@@ -220,6 +227,7 @@ export function Shell() {
         <ErrorBoundary silent resetKey={loc.pathname} onError={closeLifecycle}><LifecycleHost /></ErrorBoundary>
         <ErrorBoundary silent resetKey={loc.pathname} onError={resetTerminal}><TermHost /></ErrorBoundary>
         <ErrorBoundary silent resetKey={loc.pathname} onError={closeMaint}><MaintHost /></ErrorBoundary>
+        <ErrorBoundary silent resetKey={loc.pathname} onError={closeUpgrade}><UpgHost /></ErrorBoundary>
         <Hotkeys theme={theme} />
         <TipHost />
         <Toaster />

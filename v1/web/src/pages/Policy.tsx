@@ -4,10 +4,10 @@ import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { ChevronRight, Eye, Save, ShieldCheck, Trash2, Undo2 } from 'lucide-react';
 import {
-  MODE_HINT, MODE_INFO, modeLabel, useDiscardPolicies, usePolicies, usePolicyPreview, usePolicyVersions, usePublishPolicies, useRollbackPolicy, useSavePolicy,
+  MODE_INFO, modeLabel, useDiscardPolicies, usePolicies, usePolicyPreview, usePolicyVersions, usePublishPolicies, useRollbackPolicy, useRollbackPreview, useSavePolicy,
   type PolicyBody, type PolicyChange, type PolicyMode, type PolicyNode, type PolicyTeam, type PolicyVersion, type ScopePolicy, type VersionRelay, type VersionStatus,
 } from '@/lib/policy';
-import { MAX_NOTE, diffDomains, domainsToText, parseDomainText } from '@/lib/policyDomains';
+import { MAX_NOTE, diffDomains, domainsToText, parseDomainText, toUnicode } from '@/lib/policyDomains';
 import * as F from '@/lib/format';
 import { meta } from '@/lib/derive';
 import { Button } from '@/components/ui/button';
@@ -176,7 +176,7 @@ function NodeRow({ n, here, pick }: { n: PolicyNode; here: boolean; pick: (s: Se
       <button type="button" className="pol-item" aria-current={here} onClick={() => pick({ scope: 'node', id: n.id })}>
         <span className="pol-name"><Trunc className="strong">{n.name}</Trunc>{!n.has_entry && <span className="pol-sub">还没有入口</span>}</span>
         {n.policy.draft && <Tip text={`草稿：${modeLabel(n.policy.draft.mode)}`}><span><Chip variant="warn">草稿</Chip></span></Tip>}
-        {n.effective.source === 'team' && n.effective.mode !== 'observe' && <span className="pol-inh" data-tip="跟随团队的设置">继承</span>}
+        {n.effective.source === 'team' && n.effective.mode !== 'observe' && <span className="pol-inh">跟随团队</span>}
         <ModePill mode={n.effective.mode} />
       </button>
     </div>
@@ -207,7 +207,12 @@ function Editor({ scope, name, sp, team, node, onDirty }: { scope: 'team' | 'nod
   const parsed = React.useMemo(() => parseDomainText(text), [text]);
   // 「请填写域名」等到域名框失焦或点了保存再提示：刚切到白名单时还没来得及填
   const [touched, setTouched] = React.useState(false);
-  const form: PolicyBody = { mode, domains: parsed.domains, note: note.trim() };
+  // 光标所在的那一行还在输入：它的问题等换行或失焦后再报（输入「exa」时不整框标红「必须包含点」）
+  const [caret, setCaret] = React.useState<number | null>(null);
+  const trackCaret = (el: HTMLTextAreaElement) => setCaret(el.value.slice(0, el.selectionStart).split('\n').length);
+  const uses = needsDomains(mode);
+  // 不用域名的模式（仅观察、暂停新连接、跟随团队）提交空域名：隐藏着的旧域名不算改动（服务端同样丢掉）
+  const form: PolicyBody = { mode, domains: uses ? parsed.domains : [], note: note.trim() };
   const dirty = !sameBody(form, synced.body);
   const stale = sp.revision !== synced.revision;
   React.useEffect(() => { onDirty(dirty); return () => onDirty(false); }, [dirty, onDirty]);
@@ -223,11 +228,11 @@ function Editor({ scope, name, sp, team, node, onDirty }: { scope: 'team' | 'nod
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sp.revision]);
 
-  const uses = needsDomains(mode);
   const noDomains = uses && parsed.domains.length === 0;
-  const invalid = (uses && (parsed.issues.length > 0 || !!parsed.overall)) || note.length > MAX_NOTE;
-  // 没填域名时保存按钮仍可点：点了才提示「请填写域名」
+  const invalid = (uses && !!parsed.overall) || note.length > MAX_NOTE;
+  // 没填域名、正在输入的那行有问题（还没亮出来）时保存按钮仍可点：点了才提示「请填写域名」、亮出那一行的问题
   const canSave = dirty && !invalid;
+  const onSave = () => { if (noDomains) setTouched(true); else if (uses && parsed.issues.length) setCaret(null); else void submit(form); };
 
   const req = (body: PolicyBody) => ({ scope, id: sp.id, ...body, expected_revision: synced.revision });
   const onSaved = (r: Awaited<ReturnType<typeof save.mutateAsync>>) => {
@@ -243,7 +248,10 @@ function Editor({ scope, name, sp, team, node, onDirty }: { scope: 'team' | 'nod
   // 节点「跟随团队」时对比里要说明团队当前是什么
   const teamCur = curOf(team.policy);
   const lines = text.split('\n');
-  const showIssues = uses ? parsed.issues : [];
+  const showIssues = uses ? parsed.issues.filter((i) => i.line !== caret) : [];
+  const badLines = new Set(showIssues.map((i) => i.line));
+  // 问题已经亮出来（标红的行、「请填写域名」）时保存置灰、悬停说明为什么（点了也不会有新反馈）
+  const blocked = !canSave ? undefined : showIssues.length ? '先改正标红的行' : noDomains && touched ? '请先填写域名' : undefined;
   const modes: PolicyMode[] = scope === 'node' ? ['inherit', 'observe', 'allowlist', 'denylist', 'blocked'] : ['observe', 'allowlist', 'denylist', 'blocked'];
 
   return (
@@ -258,21 +266,22 @@ function Editor({ scope, name, sp, team, node, onDirty }: { scope: 'team' | 'nod
         )}
 
         <div className="field">
-          <span className="label">模式</span>
+          <span className="field-label"><span className="label">模式</span><InfoTip text={MODE_INFO[mode]} /></span>
           <Segmented label="模式" value={mode} onChange={setMode} items={modes.map((m) => ({ value: m, label: modeLabel(m) }))} />
-          <div className="hint">{MODE_HINT[mode]}{mode === 'inherit' && <>，团队现在是「{modeLabel(teamCur.mode)}」{needsDomains(teamCur.mode) ? `（${teamCur.domains.length} 个域名）` : ''}</>}{MODE_INFO[mode] && <> <InfoTip text={MODE_INFO[mode]!} /></>}</div>
+          {mode === 'inherit' && <div className="hint">团队现在是「{modeLabel(teamCur.mode)}」{needsDomains(teamCur.mode) ? `（${teamCur.domains.length} 个域名）` : ''}</div>}
         </div>
 
         {/* 只有白名单 / 黑名单用域名列表：别的模式不显示（已填的内容留着，切回来仍在） */}
         {uses && <div className="field">
           <span className="field-label"><span className="label">域名<span className="pol-count"> · {fmtN(parsed.domains.length)} 个有效</span></span><InfoTip text="逗号、中文逗号、空格、换行都可以分隔；填 example.com 会同时匹配它的所有子域名，=example.com 只匹配它本身。" /></span>
-          <div className="pol-ed" data-bad={parsed.issues.length > 0 || (noDomains && touched) ? '1' : undefined}>
-            <Gutter lines={lines.length} bad={parsed.badLines} />
-            <Textarea className="pol-ta" value={text} wrap="off" spellCheck={false} autoComplete="off" aria-label="域名列表" aria-invalid={parsed.issues.length > 0 ? true : undefined}
-              placeholder={'example.com\n=exact.example.org'} onBlur={() => setTouched(true)}
-              onChange={(e) => setText(e.target.value)} onScroll={(e) => { const g = e.currentTarget.previousElementSibling as HTMLElement | null; if (g) g.scrollTop = e.currentTarget.scrollTop; }} />
+          <div className="pol-ed" data-bad={showIssues.length > 0 || (noDomains && touched) ? '1' : undefined}>
+            <Gutter lines={lines.length} bad={badLines} />
+            <Textarea className="pol-ta" value={text} wrap="off" spellCheck={false} autoComplete="off" aria-label="域名列表" aria-invalid={showIssues.length > 0 ? true : undefined}
+              placeholder={'example.com\n=exact.example.org'} onBlur={() => { setTouched(true); setCaret(null); }}
+              onSelect={(e) => trackCaret(e.currentTarget)}
+              onChange={(e) => { setText(e.target.value); trackCaret(e.currentTarget); }} onScroll={(e) => { const g = e.currentTarget.previousElementSibling as HTMLElement | null; if (g) g.scrollTop = e.currentTarget.scrollTop; }} />
           </div>
-          {noDomains && touched && parsed.issues.length === 0 && <div className="hint is-error">请填写域名</div>}
+          {noDomains && touched && showIssues.length === 0 && <div className="hint is-error">请填写域名</div>}
           {parsed.overall && <div className="hint is-error">{parsed.overall}</div>}
           {showIssues.length > 0 && (
             <ul className="pol-issues" role="alert">
@@ -289,10 +298,10 @@ function Editor({ scope, name, sp, team, node, onDirty }: { scope: 'team' | 'nod
         <Compare cur={cur} next={form} scope={scope} teamCur={teamCur} teamName={team.name} />
 
         <div className="pol-actions">
-          <Button variant="primary" disabled={!canSave} loading={save.isPending} onClick={() => { if (noDomains) setTouched(true); else void submit(form); }}><Save />保存草稿</Button>
+          <Button variant="primary" disabled={!canSave} aria-disabled={!!blocked || undefined} data-tip={blocked} loading={save.isPending} onClick={() => { if (!blocked) onSave(); }}><Save />保存草稿</Button>
           <Button variant="quiet" disabled={!dirty || save.isPending} onClick={() => load(sp)}><Undo2 />还原编辑</Button>
           {sp.draft && <Button variant="outline-danger" disabled={save.isPending} onClick={() => setAskDrop(true)}><Trash2 />放弃这份草稿</Button>}
-          <span className="pol-meta t-sub">{dirty ? <span className="pol-dirty">有未保存的修改</span> : sp.updated_at ? `最近修改 ${F.dtFull(sp.updated_at)}${sp.updated_by ? ` · ${F.actor(sp.updated_by)}` : ''}` : '还没有修改过'}</span>
+          <span className="pol-meta t-sub">{dirty ? <span className="pol-dirty">有未保存的修改</span> : sp.updated_at ? <span data-tip={F.dtFull(sp.updated_at)}>最近修改 {F.dt(sp.updated_at)}{sp.updated_by ? ` · ${F.actor(sp.updated_by)}` : ''}</span> : '还没有修改过'}</span>
         </div>
       </div>
       <ConfirmDialog open={askDrop} onOpenChange={setAskDrop} title={`放弃「${name}」的草稿？`} confirmLabel="放弃草稿" danger
@@ -345,9 +354,12 @@ function Chips({ domains, mark, marked }: { domains: string[]; mark?: 'add' | 'd
     </div>
   );
 }
+/** 国际化域名写原文，xn-- 形式放在括号里：「中文.中国（xn--fiq228c.xn--fiqs8s）」 */
 function DomainTag({ d, mark }: { d: string; mark?: 'add' | 'del' }) {
   const exact = d.startsWith('=');
-  return <span className="pol-tag" data-mark={mark}>{exact ? d.slice(1) : d}{exact && <small>精确</small>}</span>;
+  const ascii = exact ? d.slice(1) : d;
+  const uni = toUnicode(ascii);
+  return <span className="pol-tag" data-mark={mark}>{uni === ascii ? ascii : <>{uni}<small>{ascii}</small></>}{exact && <small>精确</small>}</span>;
 }
 
 /* ================================================================ 预览与发布 */
@@ -386,11 +398,13 @@ const PreviewDialog = resetOnOpen(function PreviewDialog({ open, onOpenChange }:
               {d.nodes.length === 0
                 ? <Note tone="info">不会多阻止连接{d.affected_relays === 0 && <> <InfoTip text="也不需要改线路机上的规则" /></>}</Note>
                 : (
-                  <div className="table-wrap pol-pv-table">
+                  <div className="table-wrap is-boxed is-capped">
                     <table className="dt" style={{ minWidth: 620 }}>
                       <colgroup><col style={{ width: 120 }} /><col style={{ width: 96 }} /><col style={{ width: 84 }} /><col style={{ width: 96 }} /><col /></colgroup>
                       <thead><tr><th>节点</th><th>模式</th><th className="r">24h 连接</th><th className="r">将阻止</th><th>被阻止最多的域名</th></tr></thead>
                       <tbody>
+                        {/* 改到的团队里还没有节点（或节点都有自己的规则）：只有这次没变的别处节点，先写明没有节点受影响 */}
+                        {changed.length === 0 && <tr><td colSpan={5} className="t-muted">没有节点的规则因这次发布改变</td></tr>}
                         {[...changed, ...(showSame ? same : [])].map((n) => (
                           <tr key={n.node_id} className={n.changed ? undefined : 'is-retired'}>
                             <td><Trunc className="cell-main strong">{n.name}</Trunc><span className="sub">{!n.changed ? '这次没变' : n.source === 'team' ? '跟随团队' : n.source === 'node' ? '节点自己的' : ''}</span></td>
@@ -411,7 +425,7 @@ const PreviewDialog = resetOnOpen(function PreviewDialog({ open, onOpenChange }:
                         ))}
                       </tbody>
                     </table>
-                    {same.length > 0 && <ShowAll total={changed.length + same.length} cap={changed.length} open={showSame} onToggle={() => setShowSame((v) => !v)} unit="个节点（含这次没变的）" />}
+                    {same.length > 0 && <ShowAll total={changed.length + same.length} cap={changed.length} open={showSame} onToggle={() => setShowSame((v) => !v)} unit="个有规则的节点（含各团队这次没变的）" />}
                   </div>
                 )}
             </div>
@@ -439,7 +453,7 @@ function ChangeList({ changes }: { changes: PolicyChange[] }) {
   const sum = (c: PolicyChange['from']) => `${modeLabel(c.mode)}${needsDomains(c.mode) ? ` · ${c.domains} 个域名` : ''}`;
   return (
     <ul className="pol-changes">
-      {changes.map((c) => <li key={`${c.scope}:${c.id}`}><span className="pol-kind">{c.scope === 'team' ? '团队' : '节点'}</span><b>{c.name}</b><span className="t-sub">{sum(c.from)}</span><span className="pol-arrow">→</span><span>{sum(c.to)}</span></li>)}
+      {changes.map((c) => <li key={`${c.scope}:${c.id}`}><span className="pill pill-sm">{c.scope === 'team' ? '团队' : '节点'}</span><b>{c.name}</b><span className="t-sub">{sum(c.from)}</span><span className="pol-arrow">→</span><span>{sum(c.to)}</span></li>)}
     </ul>
   );
 }
@@ -456,6 +470,7 @@ function VersionsPanel() {
   const rollback = useRollbackPolicy();
   const [ask, setAsk] = React.useState<PolicyVersion | null>(null);
   const askHeld = useHeld(ask?.id, ask ?? undefined); // 关闭动画期间标题里的版本号不变空
+  const pv = useRollbackPreview(ask?.id ?? null);
   const list = q.data ?? [];
   return (
     <>
@@ -466,16 +481,17 @@ function VersionsPanel() {
         ) : (
           <div className="table-wrap">
             <table className="dt" style={{ minWidth: 900 }}>
-              <colgroup><col style={{ width: 96 }} /><col style={{ width: 120 }} /><col /><col style={{ width: 240 }} /><col style={{ width: 150 }} /></colgroup>
+              <colgroup><col style={{ width: 140 }} /><col style={{ width: 150 }} /><col /><col style={{ width: 240 }} /><col style={{ width: 150 }} /></colgroup>
               <thead><tr><th>版本</th><th>时间</th><th>变更</th><th>状态</th><th /></tr></thead>
               <tbody>
                 {list.map((v) => (
                   <tr key={v.id}>
-                    <td><b className="strong">v{v.seq}</b>{v.is_current && <span className="pol-cur" data-tip="当前生效的就是这个版本的内容">当前</span>}<span className="sub">{v.kind === 'rollback' ? `回滚到 v${v.rollback_of_seq ?? '?'}` : '发布'}</span></td>
-                    <td data-tip={F.dtFull(v.created_at)}>{F.dt(v.created_at)}<span className="sub">{F.actor(v.actor)}</span></td>
+                    {/* 「当前」只标最新一版；更早的、内容和当前一样的写「与当前相同」（不能回滚到它） */}
+                    <td><b className="strong">v{v.seq}</b>{v.is_latest ? <span className="pill pill-sm pol-cur" data-tone="accent">当前</span> : v.is_current && <span className="pill pill-sm pol-cur">与当前相同</span>}<span className="sub">{v.kind === 'rollback' ? `回滚到 v${v.rollback_of_seq ?? '?'}` : '发布'}</span></td>
+                    <td data-tip={`${F.dtFull(v.created_at)}\n${F.actor(v.actor)}`}>{F.dt(v.created_at)}<span className="sub ellipsis">{F.actor(v.actor)}</span></td>
                     <td><VersionChanges changes={v.changes} /></td>
                     <td><VersionApply v={v} /></td>
-                    <td className="r">{v.status === 'applied' && v.rollbackable && <Button size="sm" onClick={() => setAsk(v)}><Undo2 size={13} />回滚到此版本</Button>}</td>
+                    <td className="r">{v.status === 'applied' && v.rollbackable && !v.is_latest && <Button size="sm" onClick={() => setAsk(v)}><Undo2 size={13} />回滚到此版本</Button>}</td>
                   </tr>
                 ))}
               </tbody>
@@ -486,8 +502,9 @@ function VersionsPanel() {
       <ConfirmDialog open={!!ask} onOpenChange={(o) => !o && setAsk(null)} confirmLabel="回滚" title={`回滚到版本 v${askHeld?.seq ?? ''}？`}
         description={<>作为新版本发布，草稿不受影响 <InfoTip text="会把当前生效的访问规则整体换成这个版本的内容，作为新版本发布并应用到线路机。" /></>}
         onConfirm={async () => { const v = await rollback.mutateAsync(ask!.id); toast.ok(`已回滚，新版本 v${v.seq}`); }}>
-        {/* 回滚后这个版本改过的范围是什么样：「团队1：黑名单 · 2 个域名」 */}
-        {askHeld && <ul className="pol-changes">{askHeld.changes.length ? askHeld.changes.map((c) => <li key={`${c.scope}:${c.id}`}><b>{c.name}</b><span>{modeLabel(c.to.mode)}{needsDomains(c.to.mode) ? ` · ${c.to.domains} 个域名` : ''}</span></li>) : <li className="t-sub">这个版本只改了备注</li>}</ul>}
+        {/* 回滚实际会改什么（当前 → 这个版本）：「模拟团队A：黑名单 → 仅观察」 */}
+        {pv.isError ? <ErrorNote error={pv.error} onRetry={() => void pv.refetch()} />
+          : <ul className="pol-changes">{pv.data ? pv.data.changes.map((c) => <li key={`${c.scope}:${c.id}`}>{changeText(c)}</li>) : <li className="t-sub">正在比较…</li>}</ul>}
       </ConfirmDialog>
     </>
   );
@@ -508,12 +525,15 @@ function VersionApply({ v }: { v: PolicyVersion }) {
   );
 }
 
-/** 一处变更的说明：模式没变时写域名数从几个变成几个；变了写模式（新模式用域名时带上个数） */
+/** 一处变更的说明（同服务端审计摘要）：模式没变时写域名怎么变、备注改没改；变了写模式（新模式用域名时带上个数）。
+ *  旧版本记录没有 domains_changed / note_changed：用域名的模式算换了域名，其余算改了备注 */
 function changeText(c: PolicyChange): string {
   const n = (k: number) => `${k} 个域名`;
   if (c.from.mode === c.to.mode) {
-    const what = !needsDomains(c.to.mode) ? '' : c.from.domains === c.to.domains ? ` · 换了域名（${n(c.to.domains)}）` : ` · 域名 ${c.from.domains} → ${c.to.domains} 个`;
-    return `${c.name}：${modeLabel(c.to.mode)}${what}`;
+    const dom = c.domains_changed ?? needsDomains(c.to.mode);
+    const note = c.note_changed ?? !needsDomains(c.to.mode);
+    const parts = [dom && (c.from.domains === c.to.domains ? `换了域名（${n(c.to.domains)}）` : `域名 ${c.from.domains} → ${c.to.domains} 个`), note && '改了备注'].filter(Boolean);
+    return `${c.name}：${modeLabel(c.to.mode)}${parts.length ? ` · ${parts.join('，')}` : ''}`;
   }
   return `${c.name}：${modeLabel(c.from.mode)} → ${modeLabel(c.to.mode)}${needsDomains(c.to.mode) ? `（${n(c.to.domains)}）` : ''}`;
 }

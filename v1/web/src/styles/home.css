@@ -1,5 +1,5 @@
 /* 首页的结构与新件（参照 CFSM-SAO 主题，用本项目的强调色与字体）：
-   大圆角浅灰分区 .hsec（胶囊标签 + 标题 + 一行说明）、KPI 卡 .stat、集群状态 .cluster、
+   大圆角浅灰分区 .hsec（胶囊标签 + 标题 + 一行说明）、KPI 卡 .stat、集群状态 .cluster（状态胶囊是 .pill.is-outlined）、
    分段格条 .cells、资源格条 .cmeter、圆环 .gauge、点阵 .dots、面积折线 .spark、彩色标签 .tag、分组分段控件 .seg-fill、日期选择 .cal。 */
 
 .stack.home { gap: var(--sp-24); }
@@ -8,24 +8,26 @@
 .hsec {
   display: grid; gap: var(--sp-16); min-width: 0;
   padding: clamp(14px, 1.6vw, 20px); /* 1440 宽（侧栏 240）下内宽 ≥ 3 张大卡片 */
-  background: var(--section); border: 1px solid var(--section-line); border-radius: 22px;
+  background: var(--section); border: 1px solid var(--section-line); border-radius: var(--r-section);
 }
 .hsec-head { display: grid; gap: var(--sp-12); min-width: 0; }
 .hsec-top { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-12); flex-wrap: wrap; min-width: 0; }
 .hsec-badge {
-  display: inline-flex; align-items: center; gap: var(--sp-6); height: 26px; box-sizing: border-box; padding: 0 var(--sp-10);
+  display: inline-flex; align-items: center; gap: var(--sp-6); height: var(--h-chip-lg); box-sizing: border-box; padding: 0 var(--sp-10);
   border: 1px solid var(--line); border-radius: var(--r-pill); background: var(--track);
   font: var(--fw-semibold) var(--fs-label) / 1 var(--font-sans); color: var(--fg); white-space: nowrap;
 }
-.hsec-badge .lucide { width: 13px; height: 13px; stroke-width: 2; }
+.hsec-badge .lucide { width: var(--icon-xs); height: var(--icon-xs); stroke-width: var(--icon-stroke-strong); }
 .hsec-actions { display: flex; align-items: center; gap: var(--control-gap); flex-wrap: wrap; min-width: 0; }
 .hsec-titles { display: grid; gap: var(--sp-4); min-width: 0; }
-.hsec-title { margin: 0; font: 700 18px / 26px var(--font-sans); letter-spacing: -0.015em; color: var(--fg); }
-.hero-greet { margin: 0; font: 700 clamp(21px, 2vw, 26px) / 1.25 var(--font-sans); letter-spacing: -0.025em; color: var(--fg); }
+.hsec-title { margin: 0; font: var(--fw-bold) var(--fs-section) / var(--lh-section) var(--font-sans); letter-spacing: -0.015em; color: var(--fg); }
+.hero-greet { margin: 0; font: var(--fw-bold) clamp(21px, 2vw, 26px) / 1.25 var(--font-sans); letter-spacing: -0.025em; color: var(--fg); }
 .hero-name { background: linear-gradient(90deg, var(--accent), color-mix(in oklab, var(--accent) 50%, var(--m-load))); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .hsec-sub { margin: 0; font-size: var(--fs-body); line-height: 1.5; color: var(--fg-2); text-wrap: pretty; }
 
 .hero-grid { display: grid; gap: var(--sp-16); min-width: 0; }
+/* 手机：分区底与它里面的白卡是两层边框两层内边距，屏幕本来就窄——去掉分区的底、边框与内边距，卡片直接排在页面上 */
+@media (max-width: 600px) { .hsec { padding: 0; border: 0; background: none; } }
 @container content (min-width: 1100px) { .hero-grid { grid-template-columns: minmax(0, 1.48fr) minmax(0, 1fr); } }
 
 /* ---------- KPI ---------- */
@@ -38,12 +40,16 @@
   box-shadow: var(--shadow-card); text-decoration: none; color: inherit;
   transition: border-color var(--dur-1) var(--ease-std), box-shadow var(--dur-2) var(--ease-out), translate var(--dur-2) var(--ease-out), scale var(--dur-2) var(--ease-out);
 }
+/* 整卡链接铺满卡片、垫在内容下面；说明行里的链接抬到它上面，各点各的 */
+.stat.is-link { position: relative; }
+.stat-hit { position: absolute; inset: 0; border-radius: inherit; }
+.stat-cap a { position: relative; z-index: 1; }
 /* 可点的 KPI 卡（悬停上浮、按下微缩见 components.css「交互状态」）：标题行最右一个小箭头，悬停时往右挪 2px、变深一级，提示“点进去看明细” */
 .stat-label { display: flex; align-items: center; gap: 7px; min-width: 0; font: var(--fw-semibold) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2); white-space: nowrap; }
-.stat-go { flex: none; margin-left: auto; width: 12px; height: 12px; color: var(--fg-3); transition: translate var(--dur-2) var(--ease-out), color var(--dur-1) var(--ease-std); }
+.stat-go { flex: none; margin-left: auto; width: var(--icon-2xs); height: var(--icon-2xs); color: var(--fg-3); transition: translate var(--dur-2) var(--ease-out), color var(--dur-1) var(--ease-std); }
 @media (hover: hover) { .stat.is-link:hover .stat-go { translate: 2px 0; color: var(--fg-2); } }
 .stat-ic { display: inline-flex; color: var(--tc); }
-.stat-ic .lucide { width: 15px; height: 15px; stroke-width: 2; }
+.stat-ic .lucide { width: var(--icon-sm); height: var(--icon-sm); stroke-width: var(--icon-stroke-strong); }
 .stat-ic[data-tone="ok"] { --tc: var(--ok); }
 .stat-ic[data-tone="teal"] { --tc: var(--tag-teal-fg); }
 .stat-ic[data-tone="bad"] { --tc: var(--bad); }
@@ -55,12 +61,12 @@
 /* 读数行、说明行给出正常时的高度（30 = 读数行高、16 = 说明行高）：加载中是 20px 骨架、说明为空，数据到了卡片不长高 */
 .stat-value {
   display: flex; align-items: baseline; gap: var(--sp-4); min-width: 0; min-height: 30px; overflow: hidden; white-space: nowrap;
-  font: 700 24px / 30px var(--font-num); font-variant-numeric: var(--num-variant); letter-spacing: -0.02em; color: var(--fg);
+  font: var(--fw-bold) var(--fs-kpi) / var(--lh-kpi) var(--font-num); font-variant-numeric: var(--num-variant); letter-spacing: -0.02em; color: var(--fg);
 }
 .stat-value small { font: var(--fw-medium) var(--fs-label) / var(--lh-label) var(--font-num); letter-spacing: 0; color: var(--fg-2); }
-.stat-cap { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-8); min-width: 0; min-height: 16px; font-size: 11.5px; line-height: 16px; color: var(--fg-3); }
+.stat-cap { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-8); min-width: 0; min-height: 16px; font-size: var(--fs-micro); line-height: var(--lh-micro); color: var(--fg-2); }
 .stat-cap > * { white-space: nowrap; }
-/* 说明行里的数字（下载 1.2 TB、降级 3）：数字 --fg 加粗，单位跟着数字、不再比数字大一号（.unit 默认 12px 灰，比 11.5px 的数字还显眼） */
+/* 说明行里的数字（下载 1.2 TB、降级 3）：数字 --fg 加粗，单位跟着数字、不再比数字大一号（.unit 默认 12px 灰，比 11px 的数字还显眼） */
 .stat-cap .num { color: var(--fg); font-weight: var(--fw-semibold); }
 .stat-cap .unit { font-size: inherit; color: inherit; }
 .stat-cap .dotline { display: inline-flex; align-items: center; gap: var(--sp-4); }
@@ -70,7 +76,7 @@
 a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 @media (hover: hover) { a.dotline:hover { text-decoration: underline; text-underline-offset: 2px; } }
 .stat-cap .stat-who { display: inline-flex; align-items: center; gap: var(--sp-4); min-width: 0; } /* 流量额度「最紧 某台 已用 93%」：名称放不下时省略，百分比留着 */
-@media (max-width: 760px) { .stat { padding: var(--sp-12); min-height: 92px; } .stat-value { font-size: 19px; } }
+@media (max-width: 760px) { .stat { padding: var(--sp-12); min-height: 92px; } .stat-value { font-size: var(--fs-metric); } }
 
 /* ---------- 集群状态 ---------- */
 .cluster {
@@ -78,44 +84,35 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
   padding: clamp(14px, 1.8vw, 18px); background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); box-shadow: var(--shadow-card);
 }
 .cluster-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-10); }
-.cluster-title { display: flex; align-items: center; gap: 7px; margin: 0; font: 700 var(--fs-emph) / 1.2 var(--font-sans); color: var(--fg); }
-.cluster-title .lucide { width: 16px; height: 16px; stroke-width: 2; }
-.cpill {
-  --pc: var(--ok-text); display: inline-flex; align-items: center; gap: var(--sp-6); flex: none; height: 22px; box-sizing: border-box; padding: 0 9px;
-  border: 1px solid color-mix(in srgb, var(--pc) 30%, transparent); border-radius: var(--r-pill); background: color-mix(in srgb, var(--pc) 13%, transparent);
-  font: 650 11px / 1 var(--font-sans); color: var(--pc); white-space: nowrap;
-}
-.cpill[data-tone="warn"] { --pc: var(--warn-text); }
-.cpill[data-tone="bad"] { --pc: var(--bad-text); }
-.cpill i { width: 12px; height: 12px; background: currentColor; -webkit-mask: var(--ic-ok) center / contain no-repeat; mask: var(--ic-ok) center / contain no-repeat; }
-.cpill[data-tone="bad"] i { -webkit-mask-image: var(--ic-bad); mask-image: var(--ic-bad); }
-.cluster-box { display: grid; gap: var(--sp-8); min-width: 0; padding: 11px 13px; border: 1px solid var(--line); border-radius: 12px; background: color-mix(in srgb, var(--section) 40%, var(--surface)); }
+.cluster-title { display: flex; align-items: center; gap: 7px; margin: 0; font: var(--fw-bold) var(--fs-emph) / 1.2 var(--font-sans); color: var(--fg); }
+.cluster-title .lucide { width: var(--icon-md); height: var(--icon-md); stroke-width: var(--icon-stroke-strong); }
+.cluster-box { display: grid; gap: var(--sp-8); min-width: 0; padding: 11px 13px; border: 1px solid var(--line); border-radius: var(--r-inner); background: color-mix(in srgb, var(--section) 40%, var(--surface)); }
 .cluster-row { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--sp-8); min-width: 0; }
 .cluster-big { display: inline-flex; align-items: baseline; gap: var(--sp-6); min-width: 0; white-space: nowrap; }
-.cluster-big > .num { font: 800 26px / 1 var(--font-num); letter-spacing: -0.03em; color: var(--fg); }
+.cluster-big > .num { font: var(--fw-bold) var(--fs-kpi) / 1 var(--font-num); letter-spacing: -0.03em; color: var(--fg); }
 /* 单位、读数的名称、在线 / 总计台数都是要读的信息：--fg-2（--fg-3 只给占位、缺测这类不承载信息的字，tokens.css） */
-.cluster-big small { font-size: 11px; font-weight: var(--fw-medium); color: var(--fg-2); }
+.cluster-big small { font-size: var(--fs-micro); font-weight: var(--fw-medium); color: var(--fg-2); }
 .cluster-kv { display: grid; justify-items: end; gap: 1px; }
 .cluster-kv small { font-size: var(--fs-micro); line-height: 1.2; color: var(--fg-2); }
-.cluster-kv b { font: 700 var(--fs-label) / 1.2 var(--font-sans); color: var(--fg); }
+.cluster-kv b { font: var(--fw-bold) var(--fs-label) / 1.2 var(--font-sans); color: var(--fg); }
 .cluster-kv b[data-bad] { color: var(--bad-text); }
-.cluster-foot { display: flex; justify-content: space-between; gap: var(--sp-8); font-size: 11px; line-height: 16px; color: var(--fg-2); }
+.cluster-foot { display: flex; justify-content: space-between; gap: var(--sp-8); font-size: var(--fs-micro); line-height: var(--lh-micro); color: var(--fg-2); }
 .cluster-foot b { font-weight: var(--fw-semibold); color: var(--fg); }
 .cluster-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-8); min-width: 0; }
 @container (max-width: 340px) { .cluster-charts { grid-template-columns: minmax(0, 1fr); } }
-.cchart { display: grid; gap: var(--sp-4); min-width: 0; padding: var(--sp-8) var(--sp-10) var(--sp-6); background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+.cchart { container-type: inline-size; display: grid; gap: var(--sp-4); min-width: 0; padding: var(--sp-8) var(--sp-10) var(--sp-6); background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-inner); }
 .cchart[data-dir="up"] { --cc: var(--chart-2); }
 .cchart[data-dir="down"] { --cc: var(--chart-1); }
-.cchart-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-6); min-width: 0; font: 700 11.5px / 16px var(--font-sans); color: var(--fg); white-space: nowrap; }
+.cchart-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-6); min-width: 0; font: var(--fw-bold) var(--fs-micro) / var(--lh-micro) var(--font-sans); color: var(--fg); white-space: nowrap; }
 .cchart-head > span { display: inline-flex; align-items: center; gap: var(--sp-4); }
-.cchart-head .lucide { width: 13px; height: 13px; stroke-width: 2.2; color: var(--cc); }
+.cchart-head .lucide { width: var(--icon-xs); height: var(--icon-xs); stroke-width: var(--icon-stroke-strong); color: var(--cc); }
 .cchart-head b { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: var(--fs-label); color: var(--cc); }
-.cchart-head b .unit { color: inherit; opacity: 0.8; font-size: 11px; }
+.cchart-head b .unit { color: inherit; opacity: 0.8; font-size: var(--fs-micro); }
 /* 浅色底上橙色的上行读数只有约 3:1：文字压暗一些（≥ 4.5:1），图标、折线仍用原色；深色主题不变 */
 [data-theme="light"] .cchart-head b { color: color-mix(in oklab, var(--cc) 72%, #000); }
 
 .spark { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: 56px auto; column-gap: var(--sp-6); min-width: 0; }
-.spark-axis { display: flex; flex-direction: column; justify-content: space-between; margin-block: -6px; font: var(--fs-micro) / 12px var(--font-num); color: var(--fg-3); text-align: right; white-space: nowrap; }
+.spark-axis { display: flex; flex-direction: column; justify-content: space-between; margin-block: -6px; font: var(--fs-micro) / 12px var(--font-num); color: var(--chart-axis); text-align: right; white-space: nowrap; }
 .spark-plot { position: relative; min-width: 0; }
 .spark-plot svg { display: block; width: 100%; height: 100%; overflow: visible; }
 .spark-grid { stroke: var(--line); stroke-dasharray: 3 3; }
@@ -124,16 +121,19 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 .spark-dot { position: absolute; width: 6px; height: 6px; margin: -3px 0 0 -3px; border-radius: 50%; background: var(--cc); box-shadow: 0 0 0 3px color-mix(in srgb, var(--cc) 22%, transparent); } /* 不给 top 过渡：折线是瞬间换形的，圆点慢慢滑会悬在线外 */
 .spark-plot { cursor: crosshair; }
 .spark-cursor { stroke: var(--cc); stroke-opacity: 0.45; stroke-dasharray: 2 2; }
-/* 悬停读数：贴在折线上方，靠两端时不出框（translate 由组件按位置给） */
+/* 悬停读数：贴在折线下方（上方是当前值，不盖住它），靠两端时不出框（translate 由组件按位置给）；外观同提示框（.tooltip） */
 .spark-tip {
-  position: absolute; bottom: calc(100% + 4px); z-index: 1; pointer-events: none; white-space: nowrap;
-  padding: 2px 6px; border-radius: 6px; background: var(--fg); color: var(--surface);
-  font: var(--fw-semibold) var(--fs-micro) / 16px var(--font-num); font-variant-numeric: var(--num-variant); box-shadow: var(--shadow-card);
+  position: absolute; top: calc(100% + 4px); z-index: 1; pointer-events: none; white-space: nowrap;
+  padding: 2px 6px; border-radius: var(--r-control); background: var(--tip-bg); color: var(--tip-fg); box-shadow: var(--shadow-pop), inset 0 0 0 0.5px var(--tip-ring);
+  font: var(--fw-semibold) var(--fs-micro) / var(--lh-micro) var(--font-num); font-variant-numeric: var(--num-variant);
 }
-.spark-time { grid-column: 2; display: flex; justify-content: space-between; margin-top: var(--sp-4); font: var(--fs-micro) / 12px var(--font-num); color: var(--fg-3); }
-
-/* 置灰的分段控件（卡片密度在表格 / 环形视图下）：照常占位，工具栏不跳 */
-.seg-item[data-disabled] { opacity: 0.45; cursor: default; }
+/* 小图窄（1440 宽时集群状态里每张约 180px）：纵轴刻度占掉一半宽、顶上的「1 Gbps」贴着标题——不画纵轴，满宽画线（量级看标题行的当前值） */
+@container (max-width: 220px) {
+  .cchart .spark { grid-template-columns: minmax(0, 1fr); }
+  .cchart .spark-axis { display: none; }
+  .cchart .spark-time { grid-column: 1; }
+}
+.spark-time { grid-column: 2; display: flex; justify-content: space-between; margin-top: var(--sp-4); font: var(--fs-micro) / 12px var(--font-num); color: var(--chart-axis); }
 
 /* ---------- 分组：整行分段控件 + 仅看异常 ---------- */
 .hgroups { display: flex; align-items: center; gap: var(--sp-10); min-width: 0; }
@@ -171,13 +171,13 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 .cmeter[data-metric="load"] { --mc: var(--m-load); }
 .cmeter-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); min-width: 0; }
 .cmeter-label { display: inline-flex; align-items: center; gap: 5px; font: var(--fw-semibold) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2); white-space: nowrap; }
-.cmeter-label .lucide { width: 13px; height: 13px; stroke-width: 2; color: var(--mc); }
+.cmeter-label .lucide { width: var(--icon-xs); height: var(--icon-xs); stroke-width: var(--icon-stroke-strong); color: var(--mc); }
 .cmeter-value { font: var(--fw-semibold) var(--fs-body) / var(--lh-body) var(--font-num); font-variant-numeric: var(--num-variant); color: var(--fg); white-space: nowrap; }
-.cmeter-value .unit { margin-left: 1px; font-size: 11px; color: var(--fg-3); }
+.cmeter-value .unit { margin-left: 1px; font-size: var(--fs-micro); color: var(--fg-2); }
 .cmeter[data-tone="warn"] .cmeter-value { color: var(--warn-text); }
 .cmeter[data-tone="bad"] .cmeter-value { color: var(--bad-text); }
 .cmeter.is-empty .cmeter-value, .cmeter.is-empty .cmeter-sub { color: var(--fg-3); }
-.cmeter-sub { font: var(--fw-medium) var(--fs-micro) / var(--lh-micro) var(--font-sans); font-variant-numeric: var(--num-variant); color: var(--fg-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cmeter-sub { font: var(--fw-medium) var(--fs-micro) / var(--lh-micro) var(--font-sans); font-variant-numeric: var(--num-variant); color: var(--fg-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ---------- 圆环 ---------- */
 .gauge { position: relative; flex: none; }
@@ -185,13 +185,15 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 .gauge[data-metric="cpu"] { --mc: var(--m-cpu); }
 .gauge[data-metric="mem"] { --mc: var(--m-mem); }
 .gauge[data-metric="disk"] { --mc: var(--m-disk); }
+.gauge[data-tone="warn"] { --mc: var(--warn); } /* 过阈值时环与中间的数字同色（usageTone） */
+.gauge[data-tone="bad"] { --mc: var(--bad); }
 .gauge-track { fill: none; stroke: var(--cell-off); }
 /* 第一次出现从 0 转到位（挂载时的 @keyframes）；之后读数变化直接到位、不过渡（同格条：描边过渡每帧都要主线程重画） */
 .gauge-val { fill: none; stroke: var(--mc); stroke-linecap: round; stroke-dashoffset: var(--ring-off); animation: ring-in var(--dur-data) var(--ease-out); }
 @keyframes ring-in { from { stroke-dashoffset: var(--ring-c); } }
 .gauge-center { position: absolute; inset: 0; display: flex; align-items: baseline; justify-content: center; padding-top: 22px; box-sizing: border-box; }
-.gauge-center b { font: 700 var(--fs-body) / 1 var(--font-num); letter-spacing: -0.02em; color: var(--fg); }
-.gauge-center small { margin-left: 1px; font-size: var(--fs-micro); color: var(--fg-3); }
+.gauge-center b { font: var(--fw-bold) var(--fs-body) / 1 var(--font-num); letter-spacing: -0.02em; color: var(--fg); }
+.gauge-center small { margin-left: 1px; font-size: var(--fs-micro); color: var(--fg-2); }
 .gauge[data-tone="warn"] .gauge-center b { color: var(--warn-text); }
 .gauge[data-tone="bad"] .gauge-center b { color: var(--bad-text); }
 
@@ -203,9 +205,9 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 /* 块级、行高撑满：inline-flex 的文字落在匿名项里，text-overflow 不生效，放不下时字被切成半个 */
 .tag {
   --tag-bg: var(--tag-gray-bg); --tag-fg: var(--tag-gray-fg);
-  display: inline-block; flex: 0 1 auto; min-width: 0; max-width: 10rem; height: 22px; box-sizing: border-box; padding: 0 var(--sp-8);
-  border-radius: 7px; background: var(--tag-bg); color: var(--tag-fg);
-  font: var(--fw-semibold) var(--fs-micro) / 22px var(--font-sans); letter-spacing: 0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  display: inline-block; flex: 0 1 auto; min-width: 0; max-width: 10rem; height: var(--h-tag); box-sizing: border-box; padding: 0 var(--sp-8);
+  border-radius: var(--r-tag); background: var(--tag-bg); color: var(--tag-fg);
+  font: var(--fw-semibold) var(--fs-micro) / var(--h-tag) var(--font-sans); letter-spacing: 0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .tag[data-c="blue"] { --tag-bg: var(--tag-blue-bg); --tag-fg: var(--tag-blue-fg); }
 .tag[data-c="orange"] { --tag-bg: var(--tag-orange-bg); --tag-fg: var(--tag-orange-fg); }
@@ -222,11 +224,11 @@ button.tag { border: 0; cursor: pointer; transition: background-color var(--dur-
 /* ---------- 日期选择（components/ui/date-field） ---------- */
 .datefield { width: 100%; }
 .datefield.is-empty > span { color: var(--fg-3); }
-.popover.cal { width: 268px; min-width: 0; padding: var(--sp-10); }
+.popover.cal { padding: var(--sp-10); }
 .cal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--sp-6); }
 .cal-title { font: var(--fw-semibold) var(--fs-body) / var(--lh-body) var(--font-sans); font-variant-numeric: var(--num-variant); }
 .cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 2px; }
-.cal-wd { display: grid; place-items: center; height: 26px; font-size: var(--fs-micro); color: var(--fg-3); }
+.cal-wd { display: grid; place-items: center; height: 26px; font-size: var(--fs-micro); color: var(--fg-2); }
 .cal-day {
   height: 32px; padding: 0; border: 0; border-radius: var(--r-control); background: none; cursor: pointer;
   font: var(--fw-medium) var(--fs-body) / 1 var(--font-num); font-variant-numeric: var(--num-variant); color: var(--fg);
@@ -236,6 +238,5 @@ button.tag { border: 0; cursor: pointer; transition: background-color var(--dur-
 .cal-day.is-off { color: var(--fg-3); }
 .cal-day.is-today { box-shadow: inset 0 0 0 1px var(--line-strong); }
 .cal-day[aria-selected="true"] { background: var(--accent-solid); color: var(--on-accent); }
-.cal-day:disabled { color: var(--fg-3); opacity: 0.45; cursor: default; }
 .cal-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); margin-top: var(--sp-8); padding-top: var(--sp-8); border-top: 1px solid var(--line); }
 .cal-cur { font-size: var(--fs-label); color: var(--fg-2); }

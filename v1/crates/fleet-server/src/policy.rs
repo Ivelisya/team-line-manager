@@ -96,6 +96,17 @@ impl Default for Data {
     fn default() -> Self { Data { mode: Mode::Observe, domains: vec![], note: String::new() } }
 }
 
+impl Data {
+    /// 不用域名的模式（仅观察、暂停新连接、跟随团队）不留域名：编辑器在这些模式下隐藏域名框，
+    /// 留着旧域名会让看起来一样的两份规则不相等（多出空草稿、预览「仅观察 → 仅观察」、删团队被拒）
+    pub fn normalized(mut self) -> Data {
+        if !self.mode.needs_domains() {
+            self.domains.clear();
+        }
+        self
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Source {
@@ -208,7 +219,7 @@ pub fn validate_draft(scope: Scope, mode: &str, domains: Vec<String>, note: &str
     if note.chars().count() > MAX_NOTE_CHARS {
         return Err(format!("备注最多 {MAX_NOTE_CHARS} 个字符"));
     }
-    Ok(Data { mode, domains, note: note.to_string() })
+    Ok(Data { mode, domains, note: note.to_string() }.normalized())
 }
 
 // ── 匹配（预览用）与编译（下发用）────────────────────────────────────────────────
@@ -302,12 +313,14 @@ struct RowRaw {
 }
 
 impl RowRaw {
+    /// 生效值与草稿都规范化（旧数据里不用域名的模式可能还留着域名）；规范化后与生效值相同的草稿等于没有
     fn into_row(self) -> Option<Row> {
+        let cur = Data { mode: Mode::parse(&self.mode)?, domains: self.domains, note: self.note }.normalized();
         Some(Row {
             scope: Scope::parse(&self.scope)?,
             scope_id: self.scope_id,
-            cur: Data { mode: Mode::parse(&self.mode)?, domains: self.domains, note: self.note },
-            draft: self.draft.and_then(|v| serde_json::from_value(v).ok()),
+            draft: self.draft.and_then(|v| serde_json::from_value::<Data>(v).ok()).map(Data::normalized).filter(|d| *d != cur),
+            cur,
             revision: self.revision,
             updated_by: self.updated_by,
             updated_at: self.updated_at,
@@ -321,6 +334,13 @@ pub async fn load_rows<'e, E: sqlx::PgExecutor<'e>>(ex: E, lock: bool) -> sqlx::
     let sql = format!("select {ROW_COLS} from policy order by scope, scope_id{}", if lock { " for update" } else { "" });
     let raw: Vec<RowRaw> = sqlx::query_as(&sql).fetch_all(ex).await?;
     Ok(raw.into_iter().filter_map(RowRaw::into_row).collect())
+}
+
+/// 一个范围的那一行（还没有记录为 None），规范化同 `load_rows`
+pub async fn load_row<'e, E: sqlx::PgExecutor<'e>>(ex: E, scope: Scope, id: Uuid) -> sqlx::Result<Option<Row>> {
+    let sql = format!("select {ROW_COLS} from policy where scope = $1 and scope_id = $2");
+    let raw: Option<RowRaw> = sqlx::query_as(&sql).bind(scope.as_str()).bind(id).fetch_optional(ex).await?;
+    Ok(raw.and_then(RowRaw::into_row))
 }
 
 /// 生效值视图
@@ -391,7 +411,7 @@ pub fn snapshot_of(rows: &[Row]) -> Vec<serde_json::Value> {
         .collect()
 }
 
-/// 快照 JSON → (scope, id) → 内容。无法解析的项跳过。
+/// 快照 JSON → (scope, id) → 内容（规范化，见 `Data::normalized`）。无法解析的项、规范化后是默认值的项跳过。
 pub fn parse_snapshot(v: &serde_json::Value) -> BTreeMap<(Scope, Uuid), Data> {
     let mut m = BTreeMap::new();
     for it in v.as_array().into_iter().flatten() {
@@ -404,7 +424,10 @@ pub fn parse_snapshot(v: &serde_json::Value) -> BTreeMap<(Scope, Uuid), Data> {
         };
         let domains = it["domains"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
         let note = it["note"].as_str().unwrap_or("").to_string();
-        m.insert((scope, id), Data { mode, domains, note });
+        let d = Data { mode, domains, note }.normalized();
+        if d != scope.default_data() {
+            m.insert((scope, id), d);
+        }
     }
     m
 }

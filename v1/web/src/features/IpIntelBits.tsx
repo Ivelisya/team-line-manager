@@ -39,10 +39,8 @@ export function ConnCell({ intel }: { intel: IpIntel | null | undefined }) {
 }
 
 export const CONN_FILTER_OPTIONS = [
-  { value: 'residential', label: '住宅宽带' }, { value: 'mobile', label: '移动网络' }, { value: 'datacenter', label: '机房' }, { value: 'vpn', label: 'VPN / 代理' }, { value: 'unknown', label: '未知 / 查不到' },
+  { value: 'residential', label: '住宅宽带' }, { value: 'mobile', label: '移动网络' }, { value: 'datacenter', label: '机房' }, { value: 'vpn', label: 'VPN / 代理' }, { value: 'unknown', label: '未知' },
 ];
-/** 来源行按接入方式筛：unknown 同时包含查不到画像的行 */
-export const connMatches = (intel: IpIntel | null | undefined, want: string) => !want || (intel ? intel.conn_type === want : want === 'unknown');
 
 /** 各个库的中文名（status 里的 id 是内部名，不显示） */
 const DB_NAME: Record<string, string> = {
@@ -76,6 +74,7 @@ export function IpIntelHint() {
 
 // ── 节点抽屉：来源画像卡 ────────────────────────────────────────────────────
 
+const DIST_ROW = { gridTemplateColumns: 'minmax(0, 1fr) auto', rowGap: 3 };
 function Dist({ title, items, empty = '没有数据' }: { title: string; items: DistItem[]; empty?: string }) {
   const top = items.slice(0, 5);
   return (
@@ -84,10 +83,11 @@ function Dist({ title, items, empty = '没有数据' }: { title: string; items: 
       {top.length === 0 ? <div className="hint">{empty}</div> : (
         <div className="dist">
           {top.map((x) => (
-            <div key={x.value} className="dist-row" data-tip={`${placeZh(x.label)}：${x.conns.toLocaleString('zh-CN')} 次连接，${x.sources} 个来源`}>
+            // 名字与占比一行、条在下面占满整宽：三列并排时名字只分到四成宽，「Bharat Sanchar Nigam」这类运营商名放不下。悬停整行看全文
+            <div key={x.value} className="dist-row" style={DIST_ROW} data-tip={`${placeZh(x.label)}：${x.conns.toLocaleString('zh-CN')} 次连接，${x.sources} 个来源`}>
               <span className="dist-name">{placeZh(x.label)}</span>
-              <span className="dist-track"><span className="dist-fill" style={{ width: `${Math.max(2, Math.min(100, x.pct))}%` }} /></span>
               <span className="dist-pct">{x.pct.toFixed(x.pct < 10 ? 1 : 0)}%</span>
+              <span className="dist-track" style={{ gridColumn: '1 / -1' }}><span className="dist-fill" style={{ width: `${Math.max(2, Math.min(100, x.pct))}%` }} /></span>
             </div>
           ))}
           {items.length > top.length && <div className="hint">另有 {items.length - top.length} 项</div>}
@@ -121,7 +121,7 @@ export function SourceProfile({ id, window, relay }: { id: string; window: Profi
   return (
     <Section>
       <SectionHeader title="来源画像" meta={<>近 {span} · {d.total_sources} 个来源{relay && <InfoTip text="汇总这台线路机名下所有节点的外部来源" />}</>} />
-      {/* 换时间范围、新数据未到时沿用的旧画像调淡（extras.css [data-stale]） */}
+      {/* 换时间范围、新数据未到时沿用的旧画像调淡（components.css [data-stale]） */}
       <div data-stale={q.isPlaceholderData}>
         {d.degraded && <Note tone="warn" icon={<ShieldQuestion size={16} />}>IP 库未安装 <InfoTip text={INSTALL_CMD} /></Note>}
         {d.empty ? <div className="hint">这段时间没有来源记录</div> : d.total_conns === 0 && !d.degraded ? <div className="hint">只有我方机器或内网的连接</div> : (

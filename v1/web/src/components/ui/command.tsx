@@ -20,6 +20,8 @@ export function CommandDialog({ open, onOpenChange, title, children }: { open: b
         <DialogPrimitive.Content className="cmd-dialog" aria-describedby={undefined}>
           <DialogPrimitive.Title className="sr-only">{title}</DialogPrimitive.Title>
           {children}
+          {/* 触屏没有 Esc：输入框右侧给一个「取消」（palette.css，只在 pointer: coarse 时显示） */}
+          <DialogPrimitive.Close className="btn btn-text cmd-cancel">取消</DialogPrimitive.Close>
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>
     </DialogPrimitive.Root>

@@ -1,0 +1,61 @@
+/* 命令面板（⌘K）与可搜索的下拉（国家、时区、静默对象、上架页的宿主机，同一套 cmdk 列表）。只用 tokens.css 里的令牌 */
+
+/* ========== 命令面板 ========== */
+.overlay.cmd-overlay { z-index: var(--z-palette-scrim); }
+/* 顶部锚定面板：进出场同对话框（components.css 的 panel-in / panel-out） */
+.cmd-dialog {
+  position: fixed; z-index: var(--z-palette); left: 50%; top: min(14vh, 120px); translate: -50% 0; transform-origin: 50% 0;
+  width: min(var(--palette-w), calc(100vw - 24px)); display: flex; flex-direction: column; overflow: hidden;
+  background: var(--raised); border: 1px solid var(--line-float); border-radius: var(--r-card); box-shadow: var(--shadow-modal);
+  animation: panel-in var(--dur-2) var(--ease-out);
+}
+.cmd-dialog[data-state="closed"] { animation: panel-out var(--dur-1) var(--ease-std) forwards; }
+.cmd { display: flex; flex-direction: column; min-height: 0; }
+.cmd-input-wrap { display: flex; align-items: center; gap: var(--sp-10); height: 52px; padding: 0 var(--sp-16); border-bottom: 1px solid var(--line); color: var(--fg-3); }
+.cmd-input { flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; outline: none; background: transparent; color: var(--fg); font: var(--fw-regular) var(--fs-emph) / var(--lh-emph) var(--font-sans); }
+.cmd-input::placeholder { color: var(--fg-3); }
+/* 高度跟着结果数平滑伸缩：cmdk 把内容高度写在 --cmdk-list-height 上，加上下内边距（border-box）；超过 max-height 时仍被它截住、内部滚动 */
+.cmd-list {
+  height: calc(var(--cmdk-list-height) + 2 * var(--sp-6)); max-height: min(432px, calc(100dvh - 240px)); overflow-y: auto; overscroll-behavior: contain;
+  padding: var(--sp-6); scroll-padding-block: var(--sp-6); transition: height var(--dur-2) var(--ease-out);
+}
+.cmd-group [cmdk-group-heading] { padding: var(--sp-8) var(--sp-10) var(--sp-4); font: var(--fw-medium) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2); }
+.cmd-group + .cmd-group { margin-top: var(--sp-4); }
+.cmd-item {
+  display: flex; align-items: center; gap: var(--sp-10); min-height: 36px; box-sizing: border-box; padding: 0 var(--sp-10);
+  border-radius: var(--r-control); color: var(--fg); cursor: pointer; user-select: none;
+  font: var(--fw-regular) var(--fs-body) / var(--lh-body) var(--font-sans);
+}
+.cmd-item > .lucide { width: var(--icon-md); height: var(--icon-md); color: var(--fg-2); }
+.cmd-item[data-selected="true"] { background-color: var(--accent-soft); color: var(--accent-soft-fg); }
+.cmd-item[data-selected="true"] > .lucide { color: var(--accent-soft-fg); }
+.cmd-item[data-selected="true"] .cmd-aside { color: var(--accent-soft-fg); }
+.cmd-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--sp-8); }
+.cmd-main > b { font-weight: var(--fw-medium); }
+.cmd-aside { flex: none; font-size: var(--fs-label); color: var(--fg-2); }
+.cmd-empty { padding: var(--sp-24) var(--sp-16); text-align: center; color: var(--fg-2); font-size: var(--fs-body); }
+.cmd-more { padding: var(--sp-6) var(--sp-10) var(--sp-4); font-size: var(--fs-label); color: var(--fg-2); }
+.cmd-foot { display: flex; align-items: center; gap: var(--sp-14); padding: var(--sp-8) var(--sp-16); border-top: 1px solid var(--line); background: var(--sunken); font-size: var(--fs-micro); line-height: var(--lh-micro); color: var(--fg-2); }
+.cmd-foot .kbd { margin-right: var(--sp-4); }
+/* 触屏：底部的键盘提示（↑↓ 选择 / ↵ 打开 / esc 关闭）没有意义，收起；输入框右侧出一个「取消」 */
+.cmd-cancel { display: none; }
+@media (pointer: coarse) {
+  .cmd-foot { display: none; }
+  .cmd-cancel { display: inline-flex; position: absolute; top: calc((52px - var(--h-sm)) / 2); right: var(--sp-10); color: var(--accent); }
+  .cmd-dialog > .cmd .cmd-input-wrap { padding-right: 64px; }
+}
+
+/* ========== 国家选择器（CountrySelect）：触发器里国旗 + 名称；弹层是一个可搜索的短列表 ========== */
+.cs-value { display: inline-flex; align-items: center; gap: var(--sp-8); min-width: 0; }
+.cs-trigger .nc-flag .lucide { width: var(--icon-3xs); height: var(--icon-3xs); }
+/* 可搜索的下拉（国家、时区、静默对象、上架页的宿主机）同下拉选择用实底：常开在对话框里，玻璃会透出底下的表单字 */
+.popover.cs-pop { padding: 0; background: var(--raised); -webkit-backdrop-filter: none; backdrop-filter: none; }
+.popover.cs-pop:is(.is-wide, .hs-pop) { width: max(var(--pop-w-md), var(--radix-popover-trigger-width)); } /* 时区、静默对象、宿主机：和输入框一样宽 */
+.cs-pop .cmd-input-wrap { height: 40px; padding: 0 var(--sp-12); gap: var(--sp-8); }
+.cs-pop .cmd-input { font-size: var(--fs-body); }
+.cs-pop .cmd-list { max-height: 300px; }
+.cs-pop .cmd-item { min-height: 32px; gap: var(--sp-8); }
+.cs-check { flex: none; width: var(--icon-sm); height: var(--icon-sm); color: var(--accent); }
+/* 键盘 / 指针高亮同下拉选择（--row-highlight），不用命令面板的软紫底：已选中的勾才是紫色，两者分得开 */
+.cs-pop .cmd-item[data-selected="true"] { background-color: var(--row-highlight); color: var(--fg); }
+.cs-pop .cmd-item[data-selected="true"] > .lucide, .cs-pop .cmd-item[data-selected="true"] .cmd-aside { color: var(--fg-2); }

@@ -20,21 +20,22 @@ const cut = (s: string, n = 24) => (s.length > n ? `${s.slice(0, n - 1)}…` : s
 const BAR_CFG: ChartConfig = { routed: { label: '已转发', color: 'var(--chart-1)' }, blocked: { label: '已阻止', color: 'var(--bad)' } };
 // 柱状图悬停时整列铺一层浅底（recharts 默认是 #ccc 实心块，暗色下刺眼；--hover 在浅色下太淡看不见）
 const BAR_CURSOR = { fill: 'var(--line)' };
-/** 提示框里的连接数带单位 */
+/** 提示框、纵轴刻度、条尾的连接数带单位 */
 const times = (_: string, v: number) => `${fmtN(v)} 次`;
+const yTimes = (v: number) => (v ? `${fmtN(v)} 次` : '0');
 
 /** 横向条形图：每行一个目标，已转发 + 已阻止叠在一起，条尾直接标总次数。limit：只画前几个（截取放在这里，轮询数据没变时 data 引用不变） */
 function HostBars({ items, limit }: { items: MachineAccess['top_domains']; limit?: number }) {
   const data = React.useMemo(() => items.slice(0, limit).map((d) => ({ host: d.dest_host, routed: Math.max(0, d.conns - d.blocked), blocked: d.blocked, total: d.conns })), [items, limit]);
   return (
     <ChartContainer config={BAR_CFG} height={Math.max(64, data.length * 26 + 8)}>
-      <BarChart data={data} layout="vertical" margin={{ top: 0, right: 56, bottom: 0, left: 0 }} barCategoryGap={5}>
+      <BarChart data={data} layout="vertical" margin={{ top: 0, right: 72, bottom: 0, left: 0 }} barCategoryGap={5}>
         <XAxis type="number" hide />
         <YAxis type="category" dataKey="host" width={176} tickFormatter={(v: string) => cut(v, 26)} interval={0} {...axisProps} />
         {chartTooltip(BAR_CFG, String, times, BAR_CURSOR)}
         <Bar dataKey="routed" stackId="a" fill="var(--color-routed)" isAnimationActive={false} />
         <Bar dataKey="blocked" stackId="a" fill="var(--color-blocked)" radius={[0, 3, 3, 0]} isAnimationActive={false}>
-          <LabelList dataKey="total" position="right" offset={6} formatter={(v: number) => fmtN(v)} className="bar-count" />
+          <LabelList dataKey="total" position="right" offset={6} formatter={(v: number) => `${fmtN(v)} 次`} className="bar-count" />
         </Bar>
       </BarChart>
     </ChartContainer>
@@ -57,7 +58,7 @@ function HourlyBars({ points, height = 160 }: { points: MachineAccess['hourly'];
       <BarChart data={data} margin={{ top: 6, right: 8, bottom: 0, left: 0 }} barCategoryGap={long ? 0 : 2}>
         <CartesianGrid vertical={false} stroke="var(--chart-grid)" />
         <XAxis dataKey="t" tickFormatter={tick} minTickGap={long ? 40 : 28} {...axisProps} />
-        <YAxis width={40} allowDecimals={false} {...axisProps} />
+        <YAxis width={64} allowDecimals={false} tickFormatter={yTimes} {...axisProps} />
         {chartTooltip(BAR_CFG, hourSpan, times, BAR_CURSOR)}
         <Bar dataKey="routed" stackId="a" fill="var(--color-routed)" isAnimationActive={false} />
         <Bar dataKey="blocked" stackId="a" fill="var(--color-blocked)" isAnimationActive={false} />
@@ -69,7 +70,7 @@ function HourlyBars({ points, height = 160 }: { points: MachineAccess['hourly'];
 /** 紧凑的最近记录表（抽屉里用）。时间列放得下「10-21 01:02:33」，不出省略号 */
 function RecentTable({ items }: { items: AccessEvent[] }) {
   return (
-    <div className="table-wrap" style={{ border: '1px solid var(--line)', borderRadius: 'var(--r-float)' }}>
+    <div className="table-wrap is-boxed">
       <table className="dt is-one" style={{ minWidth: 520 }}>
         <colgroup><col style={{ width: 140 }} /><col style={{ width: 136 }} /><col /><col style={{ width: 96 }} /></colgroup>
         <thead><tr><th>时间</th><th>来源</th><th>目标</th><th>结果</th></tr></thead>
@@ -113,7 +114,7 @@ export const AccessTab = React.memo(function AccessTab({ id, relay }: { id: stri
   // 来源按连接数，同次数按 IP 数值
   const sources = [...d.top_sources].sort((a, b) => b.conns - a.conns || byIp(a.src_ip, b.src_ip));
   const none = d.top_domains.length === 0 && d.recent.length === 0;
-  // 换时间范围、新数据未到时沿用的旧数据调淡（extras.css [data-stale]）；段标题和时间范围控件不调淡
+  // 换时间范围、新数据未到时沿用的旧数据调淡（components.css [data-stale]）；段标题和时间范围控件不调淡
   const stale = q.isPlaceholderData;
   return (
     <>
@@ -147,7 +148,7 @@ export const AccessTab = React.memo(function AccessTab({ id, relay }: { id: stri
             <SectionHeader title="来源地址" meta="按连接数" />
             <div data-stale={stale}>
               {d.top_sources.length ? (
-                <div className="table-wrap" style={{ border: '1px solid var(--line)', borderRadius: 'var(--r-float)' }}>
+                <div className="table-wrap is-boxed">
                   <table className="dt is-one" style={{ minWidth: 520 }}>
                     <colgroup><col style={{ width: 160 }} /><col /><col style={{ width: 120 }} /><col style={{ width: 70 }} /><col style={{ width: 110 }} /></colgroup>
                     <thead><tr><th>来源 IP</th><th>运营商 · 城市</th><th>接入方式</th><th className="r">连接数</th><th>最近</th></tr></thead>

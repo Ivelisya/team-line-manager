@@ -296,9 +296,11 @@ impl Filter {
     }
 }
 
-/// 用户输入 → ilike 模式
+/// 用户输入 → ilike 模式。开头的「*.」当后缀匹配（只留「.」）：小时汇总存的是合并后的「*.example.com」，
+/// 原始记录存真实主机名，照字面搜「*」原始记录永远是 0 条，各页签对不上
 pub fn like_pattern(s: &str) -> Option<String> {
     let s = s.trim();
+    let s = s.strip_prefix('*').filter(|r| r.starts_with('.')).unwrap_or(s);
     if s.is_empty() {
         return None;
     }
@@ -427,23 +429,31 @@ pub struct NodeRow {
     pub blocked: i64,
     #[serde(with = "time::serde::rfc3339::option")]
     pub last_ts: Option<OffsetDateTime>,
+    /// 全部节点合起来按目标去重的目标数（每行都带，取出来放进 KPI）
+    #[serde(skip)]
+    pub unique_targets: i64,
 }
 
 #[derive(Debug, Serialize)]
 pub struct Kpi {
     pub active_nodes: i64,
     pub conns: i64,
+    /// 各节点分别去重后相加（两个节点访问同一个目标算 2 个）
     pub targets: i64,
+    /// 按目标去重：同一个目标只算 1 个，与「域名与 IP」按目标合并的 `total` 同口径
+    pub unique_targets: i64,
     pub blocked: i64,
 }
 
-/// 节点概览 + 四张 KPI。访问目标是各节点分别去重后相加。
+/// 节点概览 + KPI。
 pub async fn summary(db: &PgPool, f: &Filter) -> sqlx::Result<(Kpi, Vec<NodeRow>)> {
     let mut a = Args::default();
+    // 按目标去重的总数：不相关子查询只算一次；f 引用了两次，PG 只物化一份，不会把汇总表（或原始记录）再扫一遍
     let sql = format!(
         "{} select f.node_id, {NAME} name, t.name team, sum(f.conns)::bigint conns, count(*)::bigint targets,
                 count(*) filter (where f.kind = 'domain')::bigint domains, sum(f.blocked)::bigint blocked,
-                max(coalesce(f.last_ts, s.last_seen)) last_ts
+                max(coalesce(f.last_ts, s.last_seen)) last_ts,
+                (select count(distinct u.dest_host) from f u join machine mu on mu.id = u.node_id)::bigint unique_targets
          from f join machine m on m.id = f.node_id left join team t on t.id = m.team_id
               left join access_target_seen s on s.node_id = f.node_id and s.dest_host = f.dest_host
          group by f.node_id, m.kind, m.label, m.number, m.lifecycle, t.name
@@ -480,6 +490,7 @@ pub async fn summary(db: &PgPool, f: &Filter) -> sqlx::Result<(Kpi, Vec<NodeRow>
         active_nodes: nodes.len() as i64,
         conns: nodes.iter().map(|n| n.conns).sum(),
         targets: nodes.iter().map(|n| n.targets).sum(),
+        unique_targets: nodes.first().map_or(0, |n| n.unique_targets),
         blocked: nodes.iter().map(|n| n.blocked).sum(),
     };
     Ok((kpi, nodes))
@@ -593,14 +604,25 @@ pub struct SourceRow {
 }
 
 /// 按 (节点, 来源 IP) 的连接数 top。search 在这里匹配来源 IP。
-pub async fn sources(db: &PgPool, f: &Filter, limit: i64) -> sqlx::Result<Vec<SourceRow>> {
+/// `conn`：(接入方式, 画像库版本)，去掉画像缓存里（这个库版本）已经查过、接入方式不是它的来源；
+/// 缓存里没有的（刚出现、库换了版本）留着，由调用方查过画像后再筛
+pub async fn sources(db: &PgPool, f: &Filter, conn: Option<(&str, &str)>, limit: i64) -> sqlx::Result<Vec<SourceRow>> {
     let mut a = Args::default();
+    let src = if f.events { "e.src_ip" } else { "s.src_ip" };
+    let having = match conn {
+        Some((c, ver)) => format!(
+            " having not exists (select 1 from ip_intel_cache c where c.ip = {src} and c.db_version = {} and c.conn_type <> {})",
+            a.add(ver.to_string()),
+            a.add(c.to_string())
+        ),
+        None => String::new(),
+    };
     let sql = if f.events {
         format!(
             "select en.node_id, {NAME} name, host(e.src_ip) src_ip, count(*)::bigint conns, max(e.ts) last_ts
              from access_event e join entry en on en.id = e.entry_id join machine m on m.id = en.node_id left join team t on t.id = m.team_id
              where {} and e.src_ip is not null
-             group by en.node_id, m.kind, m.label, m.number, m.lifecycle, t.name, e.src_ip
+             group by en.node_id, m.kind, m.label, m.number, m.lifecycle, t.name, e.src_ip{having}
              order by conns desc, src_ip limit {}",
             event_where(f, &mut a, true),
             a.add(limit)
@@ -610,7 +632,7 @@ pub async fn sources(db: &PgPool, f: &Filter, limit: i64) -> sqlx::Result<Vec<So
             "select s.node_id, {NAME} name, host(s.src_ip) src_ip, sum(s.conns)::bigint conns, max(s.hour) last_ts
              from access_source_hourly s join machine m on m.id = s.node_id left join team t on t.id = m.team_id
              where {}
-             group by s.node_id, m.kind, m.label, m.number, m.lifecycle, t.name, s.src_ip
+             group by s.node_id, m.kind, m.label, m.number, m.lifecycle, t.name, s.src_ip{having}
              order by conns desc, src_ip limit {}",
             hourly_where(f, &mut a, "s", "host(s.src_ip)"),
             a.add(limit)
@@ -806,7 +828,7 @@ pub async fn machine_access(db: &PgPool, machine_id: Uuid, window: Window, raw_d
         cte(&f, &mut a)
     );
     let top_domains: Vec<TopDomain> = sqlx::query_as_with(&sql, a.0).fetch_all(db).await?;
-    let top_sources = sources(db, &f, 20).await?;
+    let top_sources = sources(db, &f, None, 20).await?;
 
     // 最近的原始记录回看整个保留期：逐入口沿 (entry_id, ts desc) 索引各取前 20 条，回看多久都不慢
     let mut ef = Filter { from: now - Duration::days(raw_days as i64), ..Filter::new(Window::H1, now) };
@@ -844,6 +866,9 @@ mod tests {
     fn like_escapes() {
         assert_eq!(like_pattern("  "), None);
         assert_eq!(like_pattern("a_b%c").as_deref(), Some("%a\\_b\\%c%"));
+        // 开头的「*.」是后缀匹配：同时命中汇总里的「*.edge.net」和原始记录里的「x1.edge.net」
+        assert_eq!(like_pattern(" *.edge.net").as_deref(), Some("%.edge.net%"));
+        assert_eq!(like_pattern("a*b").as_deref(), Some("%a*b%"));
     }
 
     #[test]
