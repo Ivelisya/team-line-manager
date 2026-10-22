@@ -137,11 +137,11 @@
 /* 6 剩余流量 */
 .nc-quota { display: grid; gap: var(--sp-8); }
 .nc-qhead { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-8); font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); white-space: nowrap; min-width: 0; }
-.nc-qlabel { display: inline-flex; align-items: baseline; gap: var(--sp-6); font-weight: var(--fw-semibold); min-width: 0; }
+.nc-qlabel { display: inline-flex; align-items: baseline; gap: var(--sp-6); flex: none; font-weight: var(--fw-semibold); } /* 剩余量是主读数：不收缩，放不下时让右边的「本周期已用」省略 */
 .nc-qlabel .lucide { width: var(--icon-xs); height: var(--icon-xs); align-self: center; color: var(--ok); }
 .nc-qlabel b { font-weight: var(--fw-semibold); color: var(--fg); }
 .nc-qlabel b.is-bad { color: var(--bad-text); }
-.nc-quse { color: var(--fg-2); } /* 本周期已用 / 上限：要读的信息，不用 --fg-3 */
+.nc-quse { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--fg-2); } /* 本周期已用 / 上限：要读的信息，不用 --fg-3；窄卡放不下时先省略它 */
 
 /* 8 已上架 · 到期 · 剩余价值：彩色读数 */
 .nc-run { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-12); }
