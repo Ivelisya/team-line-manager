@@ -1,5 +1,6 @@
 //! 替换节点（replace）的步骤：改软路由出口 → 交换编号。计划（改哪些路由的哪些出口、旧节点去哪）发起时算好存在作业参数里，
 //! 见 api/replace.rs；路由上的脚本见 routers/replace.rs。
+//! 换线路机（move_entry）在验收新入口之后、摘旧入口之前也走这里的「改软路由出口」（计划见 api/lifecycle.rs，新入口取参数 `entry_id`）。
 //!
 //! 改路由：先确认计划里的路由全部在线（有一台不在线就一台都不改），再一台一台改（备份 → 改出口 → 重启 OpenClash → 测延迟）。
 //! 哪台失败了，它自己已经换回原配置（脚本做），之前改好的也按各自的备份换回去，作业失败：路由保持一致，修好后重试从头改。
@@ -43,17 +44,20 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     if c.job.params["routers"] == false {
         return Ok(Outcome::Skipped("选择了不改软路由".into()));
     }
+    let moving = c.job.kind == "move_entry";
+    let (what, redo, kept) = if moving { ("旧入口", "重新发起换线路机", "旧入口没摘") } else { ("旧节点", "重新发起替换", "编号没改") };
     let plan: Vec<RouterPlan> = serde_json::from_value(c.job.params["plan"]["routers"].clone()).unwrap_or_default();
     if plan.is_empty() {
-        return Ok(Outcome::Skipped("没有软路由的出口指向旧节点".into()));
+        return Ok(Outcome::Skipped(format!("没有软路由的出口指向{what}")));
     }
-    let new = c.param_uuid("new_id")?;
+    // 新入口属于谁：替换是新节点，换线路机是节点自己
+    let new = if moving { c.target_id()? } else { c.param_uuid("new_id")? };
     // 1. 全部在线才动手
     let mut ports = vec![];
     let mut down = vec![];
     for r in &plan {
         match routers::load(&c.st.db, Some(r.id)).await?.pop() {
-            None => bail!("软路由「{}」已经删掉了：重新发起替换", r.name),
+            None => bail!("软路由「{}」已经删掉了：{redo}", r.name),
             Some(row) if row.state() != "online" => {
                 down.push(format!("{}（{}）", row.name, row.error.as_deref().unwrap_or(if row.state() == "offline" { "离线" } else { "还没接入" })))
             }
@@ -72,11 +76,14 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
                 "select e.client_uuid, e.short_id, e.port, r.reality_sni, r.reality_public_key from entry e join relay r on r.machine_id = e.relay_id
                  where e.id = $1 and e.node_id = $2 and e.lifecycle = 'active'",
             )
-            .bind(x.new_entry_id)
+            .bind(match x.new_entry_id {
+                Some(id) => id,
+                None => c.param_uuid("entry_id")?,
+            })
             .bind(new)
             .fetch_optional(&c.st.db)
             .await?;
-            let Some(e) = e else { bail!("新节点的入口（{}:{}）已经不在用了：重新发起替换", x.server, x.port) };
+            let Some(e) = e else { bail!("新入口（{}）已经不在用了：{redo}", x.to()) };
             v.push(rr::Edit {
                 exit: x.exit.clone(),
                 old_server: x.old_server.clone(),
@@ -141,7 +148,7 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         }
         if stuck.is_empty() {
             c.set_params(json!({"routers_applied": []})).await?;
-            msg += "。软路由都是原样，编号没改：处理好后点重试";
+            msg += &format!("。软路由都是原样，{kept}：处理好后点重试");
         } else {
             msg += &format!("；换回失败、需要人工处理：{}", stuck.join("、"));
         }

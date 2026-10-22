@@ -92,18 +92,20 @@ const RETIRE: &[StepDef] = &[
     s("revoke", "撤销令牌", 30),
     s("finalize", "完成退役", 30),
 ];
-// 换线路机：新入口先建好并验收，再摘旧入口，节点全程至少有一个可用入口。detach_old 之后不可回滚（见 cancel_blocker）。
+// 换线路机：新入口先建好并验收，再把软路由上指向旧入口的出口改成新入口（同替换节点的「改软路由出口」，失败全部换回、旧入口不摘），
+// 最后摘旧入口，节点全程至少有一个可用入口。开始改路由之后不能取消（改路由失败、已换回原配置时除外），detach_old 之后不可回滚（见 cancel_blocker）。
 const MOVE_ENTRY: &[StepDef] = &[
     s("attach_new", "在新线路机建入口", 60),
     s("firewall_widen", "放行新线路机（节点防火墙）", 300),
     s("wait_applied_new", "等待新线路机应用", 300),
     s("verify_new", "经新入口出口验收", 300),
+    s("routers", "改软路由出口", 1800),
     s("detach_old", "摘除旧入口", 60),
     s("wait_detached_old", "等待旧线路机摘除", 600),
     s("firewall_narrow", "收紧节点防火墙", 300),
 ];
-/// MOVE_ENTRY 里 detach_old 的下标：作业走到这一步（含）之后不能再取消
-const MOVE_POINT_OF_NO_RETURN: i32 = 4;
+/// MOVE_ENTRY 里 routers 的下标：从这一步起不能再取消（这一步失败停着、路由已换回时除外）
+const MOVE_ROUTERS: i32 = 4;
 const PURGE: &[StepDef] = &[s("purge", "删除数据", 600)];
 // 替换节点（见 steps/replace.rs）：先把软路由上指向旧节点的出口换成新节点的入口（一台一台改，失败的连同已改好的都换回原配置），
 // 再交换编号（旧节点去备用团队 / 空号，新节点接旧编号）。改路由一开始就不能取消（见 cancel_blocker）。
@@ -141,14 +143,18 @@ pub fn provisions(kind: &str) -> bool { kind.starts_with("provision_") }
 pub fn cancellable(kind: &str) -> bool { provisions(kind) || matches!(kind, "attach_entry" | "move_entry" | "upgrade_agent" | "replace" | "tune") }
 
 /// 作业走到第 `step` 步、处于 `state` 时为什么不能取消；能取消返回 None。
-/// 换线路机一旦开始摘旧入口就只能重试到完成（回滚会让节点没有入口）；升级 agent 只能在排队时取消（推送、重启到一半中断更危险）；
+/// 换线路机一旦开始改软路由就只能重试到完成（取消会摘掉路由已经指向的新入口；摘旧入口之后回滚会让节点没有入口），
+/// 改路由失败（已换回原配置）停在这一步时还能取消；升级 agent 只能在排队时取消（推送、重启到一半中断更危险）；
 /// 替换节点只能在开始改路由之前取消：排队中，或改路由失败（已换回原配置）还停在第一步
 pub fn cancel_blocker(kind: &str, step: i32, state: &str) -> Option<&'static str> {
     if !cancellable(kind) {
         return Some("这类作业不能取消（可以重试到完成）");
     }
-    if kind == "move_entry" && step >= MOVE_POINT_OF_NO_RETURN {
+    if kind == "move_entry" && step > MOVE_ROUTERS {
         return Some("旧入口已经开始摘除，不能再取消（取消会让节点没有入口）：失败了点重试到完成");
+    }
+    if kind == "move_entry" && step == MOVE_ROUTERS && !matches!(state, "queued" | "failed") {
+        return Some("软路由已经开始改，不能再取消：失败了点重试到完成");
     }
     if !matches!(state, "queued" | "running" | "waiting" | "failed") {
         return Some("作业已结束");
@@ -417,6 +423,7 @@ async fn retry_later(st: &AppState, id: Uuid, owner: &str, e: &anyhow::Error) {
 /// 升级 agent、系统调优排在其它作业之后：「全部升级」一次建一百多个，不能让之后的上架、换线路机、退役排在它们后面。
 /// 同一事务建的作业 created_at 相同，再按 id（UUIDv7，按生成先后递增）：全部升级里先建的线路机先领。
 /// 参数里有 `after`（「全部升级」的编排：要等的作业）的，那个作业结束之前领不到；它在推送之后失败或被取消，这个作业领到后不开始、直接取消（见 `halted`）。
+/// `routers_after`（改同一台软路由的替换 / 换线路机，见 api::replace::routers_after）同样等它结束，但它怎么结束都照常开始。
 /// 排队时被取消的不用等：领到就收尾（没开始过，`started_at` 留空）
 pub async fn claim(st: &AppState, owner: &str) -> anyhow::Result<Option<JobRow>> {
     Ok(sqlx::query_as(
@@ -426,7 +433,8 @@ pub async fn claim(st: &AppState, owner: &str) -> anyhow::Result<Option<JobRow>>
          where id = (select id from job j where state in ('queued', 'running', 'waiting', 'cancelling') and run_after <= now()
                      and (lease_until is null or lease_until < now()) and id <> all($2)
                      and (state = 'cancelling'
-                          or not exists (select 1 from job p where p.id = (j.params->>'after')::uuid and p.state in ('queued', 'running', 'waiting', 'cancelling')))
+                          or not exists (select 1 from job p where p.id in ((j.params->>'after')::uuid, (j.params->>'routers_after')::uuid)
+                                         and p.state in ('queued', 'running', 'waiting', 'cancelling')))
                      order by kind in ('upgrade_agent', 'tune'), created_at, id for update skip locked limit 1)
          returning id, kind, target_id, params, state::text state, step, created_by",
     )
@@ -865,8 +873,10 @@ mod tests {
     fn cancel_window() {
         let can = |kind, step, state| cancel_blocker(kind, step, state).is_none();
         assert!(can("move_entry", 0, "running") && can("move_entry", 3, "failed"));
-        assert!(!can("move_entry", 4, "running") && !can("move_entry", 6, "failed"), "摘旧入口之后不能取消");
-        assert_eq!(defs("move_entry")[MOVE_POINT_OF_NO_RETURN as usize].key, "detach_old");
+        assert!(can("move_entry", 4, "failed") && !can("move_entry", 4, "running"), "改路由失败（已换回）还能取消，在改时不能");
+        assert!(!can("move_entry", 5, "running") && !can("move_entry", 5, "failed") && !can("move_entry", 7, "failed"), "摘旧入口之后不能取消");
+        assert_eq!(defs("move_entry")[MOVE_ROUTERS as usize].key, "routers");
+        assert_eq!(defs("move_entry")[MOVE_ROUTERS as usize + 1].key, "detach_old");
         assert!(can("provision_vps", 8, "failed") && can("provision_vps", 8, "waiting"));
         assert!(!can("retire", 0, "queued") && !can("provision_vps", 0, "succeeded"));
         // 升级 agent 只能在排队时取消

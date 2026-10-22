@@ -431,11 +431,14 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 |---|---|---|
 | GET | `/machines/{old}/replace?new_machine_id=&team_id=&number=&routers=` | 替换节点预览（只读库，不登录路由）。见下 |
 | POST | `/machines/{old}/replace` | `{new_machine_id, old_to?:{team_id?, number?}, routers?（默认 true）}` → 预览同样的内容加 `job_id`。输入不对 400（新节点不存在 / 就是旧节点、指定的团队不存在、编号不在 1–999）；不满足条件 409（见 blockers）。写审计 `machine.replace`（不含凭据） |
-| POST | `/machines/{id}/move` | `{to_relay_id, from_relay_id?}` → `{job_id, name, from, to, share_changed:true, note}`。节点（vps / proxy）必须 active 且恰有一个 active 入口（有多个时用 `from_relay_id` 指定换掉哪条）；目标线路机必须 active、不同于当前、节点在它上面没有未移除入口；节点有进行中的作业时 409。写审计 `entry.move` |
-| POST | `/relays/{id}/evacuate` | `{to_relay_id}` → `{from, to, jobs:[{machine_id,name,job_id}], skipped:[{machine_id,name,reason}], share_changed, note}`。为该线路机上每个在用入口的节点各建一个 move_entry 作业；暂时不能搬的（入口停用/还在应用中、节点有别的作业、目标上已有入口…）列入 `skipped`，不影响其它节点。线路机自己的直出入口不搬、也不列入 `skipped`（退役线路机时随之摘除；退役守卫只数节点入口）。写审计 `relay.evacuate` 与每个节点一条 `entry.move` |
+| GET | `/machines/{id}/move?to_relay_id=&from_relay_id=&routers=` | 换线路机预览（只读库）：`{name, from, to, routers_enabled, routers:[同替换，exits[].new_entry_id 为 null、to 为「server:新端口」], ok, blockers[], warnings[], share_changed, note}`；不能换时 `ok:false`、原因在 blockers |
+| POST | `/machines/{id}/move` | `{to_relay_id, from_relay_id?, routers?（默认 true）}` → 预览同样的内容加 `job_id`。节点（vps / proxy）必须 active 且恰有一个 active 入口（有多个时用 `from_relay_id` 指定换掉哪条）；目标线路机必须 active、不同于当前、节点在它上面没有未移除入口；节点有进行中的作业、要改的软路由不在线（blockers）时 409。写审计 `entry.move`（含 routers） |
+| GET | `/relays/{id}/evacuate?to_relay_id=&routers=` | 搬空预览（只读库）：同 POST 的响应，`jobs[]` 没有 `job_id` |
+| POST | `/relays/{id}/evacuate` | `{to_relay_id, routers?（默认 true）}` → `{from, to, jobs:[{machine_id,name,job_id,routers}], skipped:[{machine_id,name,reason}], warnings, share_changed, note}`。为该线路机上每个在用入口的节点各建一个 move_entry 作业；暂时不能搬的（入口停用/还在应用中、节点有别的作业、目标上已有入口、要改的软路由不在线…）列入 `skipped`，不影响其它节点。线路机自己的直出入口不搬、也不列入 `skipped`（退役线路机时随之摘除；退役守卫只数节点入口）。写审计 `relay.evacuate` 与每个节点一条 `entry.move` |
 
-**换线路机作业 `move_entry`**（目标 = 节点，要求节点 active）步骤：`attach_new`（目标线路机建新入口：新端口、新 client_uuid / short_id，pending）→ `firewall_widen`（vps：节点 nft 放行名单加入新线路机 IP；proxy 跳过）→ `wait_applied_new` → `verify_new`（经新入口的出口探测通过）→ `detach_old`（旧入口 removing）→ `wait_detached_old` → `firewall_narrow`（节点在旧线路机上不再有入口时，把旧线路机 IP 从放行名单拿掉）。新入口验收通过之前旧入口不动，节点始终至少有一个可用入口。
-- **取消**：`detach_old` 之前都能取消（`cancellable` 为 true）；补偿 = 摘除新入口、恢复防火墙，旧入口保持不动。开始摘旧入口之后不能取消（会让节点没有入口），失败了只能重试到完成；取消赶在摘除之后到达时保留新入口。
+**换线路机作业 `move_entry`**（目标 = 节点，要求节点 active）步骤：`attach_new`（目标线路机建新入口：新端口、新 client_uuid / short_id，pending）→ `firewall_widen`（vps：节点 nft 放行名单加入新线路机 IP；proxy 跳过）→ `wait_applied_new` → `verify_new`（经新入口的出口探测通过）→ `routers`（软路由上指向旧入口的出口改成新入口，同替换节点的「改软路由出口」：全部在线才动手，逐台备份 → 改 → 重启 OpenClash → 测延迟，一台失败已改的全部换回、作业失败、旧入口不摘；出口写的是旧线路机 IP 就换成新线路机 IP，否则换成新线路机的 public_host，端口用新入口的；要改哪些出口发起时按各路由最近的快照算好存进参数，`routers=false` 跳过）→ `detach_old`（旧入口 removing）→ `wait_detached_old` → `firewall_narrow`（节点在旧线路机上不再有入口时，把旧线路机 IP 从放行名单拿掉）。新入口验收通过之前旧入口不动，节点始终至少有一个可用入口。
+- **取消**：`routers` 之前都能取消（`cancellable` 为 true）；补偿 = 摘除新入口、恢复防火墙，旧入口保持不动。`routers` 失败（路由已换回原配置）停在这一步时也能取消；开始改路由之后、摘旧入口之后不能取消（会摘掉路由已经指向的新入口 / 让节点没有入口），失败了只能重试到完成；取消赶在摘除之后到达时保留新入口。
+- **改同一台软路由的作业排队**：替换、换线路机发起时，同一台路由上还有没结束的替换 / 换线路机作业，就记参数 `routers_after`（那个作业的 id），它结束之前不开始（怎么结束都照常开始），作业日志第一行写明排在谁后面。搬空一次建的作业因此一个接一个改路由。
 - **分享链接会变**：新入口有新的端口和凭据。`GET /jobs/{id}` 对 move_entry 多返回 `result:{new_entry_id, old_entry_id, from_relay_id, to_relay_id, share_changed:true, note}`；用 `GET /entries/{new_entry_id}/share` 取新链接（需要 secrets 权限）。作业日志里也有「客户端需要换成新的分享链接」。
 - 旧线路机不在线时 `wait_detached_old` 会失败，线路机恢复后重试。
 - 线路机退役守卫的错误提示里指向「搬空线路机」。

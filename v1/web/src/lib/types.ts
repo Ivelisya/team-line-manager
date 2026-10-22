@@ -224,9 +224,12 @@ export interface Renewal { id: string; old_due: string | null; new_due: string; 
 /** 审计：界面只显示 title 与 summary（服务端生成的中文）；detail 是原始 JSON，不要直接渲染 */
 export interface AuditEntry { id: string; ts: string; actor: string; action: string; title: string; summary: string; target_kind: string | null; target_id: string | null; detail: unknown }
 export interface RenumberPreview { changes: { machine_id: string; old_name: string; new_name: string }[]; token: string }
-/** 换线路机 / 搬空线路机（API.md「生命周期操作」） */
-export interface MoveResult { job_id: string; name: string; from: string; to: string; share_changed: boolean; note: string }
-export interface EvacuateResult { from: string; to: string; jobs: { machine_id: string; name: string; job_id: string }[]; skipped: { machine_id: string; name: string | null; reason: string }[]; share_changed: boolean; note: string }
+/** 软路由上要改的出口（替换节点、换线路机、搬空同一个格式）；换线路机的 new_entry_id 为 null、to 写「server:新端口」 */
+export interface RouterExitPlan { id: string; name: string; state: 'online' | 'offline' | 'pending' | string; exits: { exit: string; old_entry_id: string; new_entry_id: string | null; from: string; to: string }[] }
+/** 换线路机 / 搬空线路机（API.md「生命周期操作」）：GET 是预览（没有 job_id），POST 的响应同样的内容加 job_id */
+export interface MovePreview { name?: string; from?: string; to?: string; routers_enabled: boolean; routers: RouterExitPlan[]; ok: boolean; blockers: string[]; warnings: string[]; share_changed: boolean; note: string }
+export interface MoveResult extends MovePreview { job_id: string; name: string; from: string; to: string }
+export interface EvacuateResult { from: string; to: string; jobs: { machine_id: string; name: string; job_id: string; routers: RouterExitPlan[] }[]; skipped: { machine_id: string; name: string | null; reason: string }[]; warnings: string[]; share_changed: boolean; note: string }
 /** 替换节点预览（GET /machines/{old}/replace）：新节点接旧编号（new_name），旧节点去 old_to（默认同团队的备用团队）；
  *  routers：出口指向旧节点、会改成新节点入口的软路由（state 不是 online 时 blockers 里有原因）；renames：新节点原来的团队压缩编号 */
 export interface ReplaceSide { id: string; name: string; kind: Kind; team: { id: string; name: string } | null }
@@ -235,7 +238,7 @@ export interface ReplacePreview {
   old_to: { team: { id: string; name: string; spare: boolean } | null; number: number | null; name: string };
   renames: { machine_id: string; old_name: string; new_name: string }[];
   routers_enabled: boolean;
-  routers: { id: string; name: string; state: 'online' | 'offline' | 'pending' | string; exits: { exit: string; old_entry_id: string; new_entry_id: string; from: string; to: string }[] }[];
+  routers: RouterExitPlan[];
   ok: boolean; blockers: string[]; warnings: string[];
 }
 export interface ReplaceBody { new_machine_id: string; old_to?: { team_id?: string; number?: number }; routers?: boolean }

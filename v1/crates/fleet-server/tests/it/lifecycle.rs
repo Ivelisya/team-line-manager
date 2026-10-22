@@ -7,85 +7,11 @@
 use crate::common;
 
 use axum::http::StatusCode;
-use common::{seed_node, seed_relay, seed_team, setup, T};
-use fleet_proto::{ApplyReport, DesiredState, EntryApply, Outbound, ProbeKind, ProbeSample, Report};
+use common::{seed_node, seed_relay, seed_relay_b, seed_team, setup, Sim, T};
+use fleet_proto::{ApplyReport, DesiredState, Outbound};
 use serde_json::{json, Value};
 use std::time::Duration;
 use uuid::Uuid;
-
-fn now_ms() -> i64 { (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64 }
-
-struct Sim {
-    tok: String,
-    seq: u64,
-}
-
-impl Sim {
-    fn new(tok: String) -> Self { Sim { tok, seq: 0 } }
-
-    /// 一轮：拉期望状态 → 回报已应用 → 上报出口探测
-    async fn round(&mut self, t: &T) -> DesiredState {
-        let (s, v) = t.req("GET", "/agent/v1/desired?after=0", None, Some(&self.tok)).await;
-        assert_eq!(s, StatusCode::OK, "desired: {v}");
-        let ds: DesiredState = serde_json::from_value(v).unwrap();
-        let rep = ApplyReport {
-            generation: ds.generation,
-            ok: true,
-            error: None,
-            entries: ds.entries.iter().map(|e| EntryApply { id: e.id, ok: true, error: None }).collect(),
-        };
-        let (s, _) = t.req("POST", "/agent/v1/applied", Some(serde_json::to_value(&rep).unwrap()), Some(&self.tok)).await;
-        assert_eq!(s, StatusCode::NO_CONTENT);
-        self.seq += 1;
-        let r = Report {
-            seq: self.seq,
-            boot_id: "b1".into(),
-            agent_version: "test".into(),
-            sent_at_ms: now_ms(),
-            info: None,
-            host: vec![],
-            entries: vec![],
-            probes: ds
-                .entries
-                .iter()
-                .map(|e| ProbeSample { entry_id: e.id, ts_ms: now_ms(), kind: ProbeKind::Egress, ok: true, latency_ms: Some(12.0), detail: Some(e.expect_egress_ip.to_string()), retrans: None })
-                .collect(),
-            access: vec![],
-            xray: None,
-            agent_health: None,
-        };
-        let (s, v) = t.req("POST", "/agent/v1/report", Some(serde_json::to_value(&r).unwrap()), Some(&self.tok)).await;
-        assert_eq!(s, StatusCode::OK, "report: {v}");
-        ds
-    }
-}
-
-/// 第二台线路机「线路机3」（198.51.100.3）
-async fn seed_relay_b(t: &T) -> (Uuid, String) {
-    let id = Uuid::now_v7();
-    let (sk, pk) = fleet_server::crypto::reality_keypair();
-    sqlx::query("insert into machine (id, kind, label, primary_ip, lifecycle, activated_at) values ($1, 'relay', '线路机3', '198.51.100.3', 'active', now())")
-        .bind(id)
-        .execute(&t.st.db)
-        .await
-        .unwrap();
-    sqlx::query("insert into relay (machine_id, public_host, reality_private_enc, reality_public_key, min_client_ver, generation, applied_generation) values ($1, 'relay3.test', $2, $3, '1.8.2', 1, 1)")
-        .bind(id)
-        .bind(t.st.secrets.seal_str(&sk))
-        .bind(pk)
-        .execute(&t.st.db)
-        .await
-        .unwrap();
-    let tok = "fa1_test_relay_token_b";
-    sqlx::query("insert into agent_token (id, machine_id, token_hash) values ($1, $2, $3)")
-        .bind(Uuid::now_v7())
-        .bind(id)
-        .bind(fleet_server::crypto::sha256(tok.as_bytes()))
-        .execute(&t.st.db)
-        .await
-        .unwrap();
-    (id, tok.to_string())
-}
 
 fn upstream(host: &str) -> Value { json!({"protocol": "socks5", "host": host, "port": 1080, "username": "u", "password": "p"}) }
 
@@ -212,8 +138,9 @@ async fn move_proxy_node_never_loses_its_entry() {
     assert_eq!(j["result"]["new_entry_id"], new_entry.to_string());
     assert_eq!(j["result"]["share_changed"], true);
     let keys: Vec<&str> = j["steps"].as_array().unwrap().iter().map(|s| s["key"].as_str().unwrap()).collect();
-    assert_eq!(keys, ["attach_new", "firewall_widen", "wait_applied_new", "verify_new", "detach_old", "wait_detached_old", "firewall_narrow"]);
+    assert_eq!(keys, ["attach_new", "firewall_widen", "wait_applied_new", "verify_new", "routers", "detach_old", "wait_detached_old", "firewall_narrow"]);
     assert_eq!(j["steps"][1]["state"], "skipped", "家宽代理没有防火墙");
+    assert_eq!(j["steps"][4]["output"]["reason"], "没有软路由的出口指向旧入口");
     assert!(log_msgs(&t, &job).await.iter().any(|m| m.contains("新的分享链接")));
     // 新入口的分享链接指向新线路机
     let share = t.get(&format!("/api/v1/entries/{new_entry}/share")).await;

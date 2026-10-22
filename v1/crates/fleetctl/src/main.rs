@@ -581,7 +581,8 @@ enum Cmd {
         #[arg(long)]
         metrics: bool,
     },
-    /// 换线路机：把节点的入口换到另一台线路机（新入口验收后才摘旧入口，不断网；分享链接会变）
+    /// 换线路机：把节点的入口换到另一台线路机（新入口验收后才摘旧入口，不断网；分享链接会变）。
+    /// 软路由上指向旧入口的出口在摘旧入口之前改成新入口（备份、重启 OpenClash、测延迟，失败全部换回、旧入口不摘）
     Move {
         /// 节点（id / 显示名 / IP）
         node: String,
@@ -591,18 +592,24 @@ enum Cmd {
         /// 节点有多个入口时，指定换掉哪台线路机上的
         #[arg(long)]
         from: Option<String>,
+        /// 不改软路由，只换入口（路由上指向旧入口的出口摘掉后就断了）
+        #[arg(long)]
+        no_routers: bool,
         #[arg(long)]
         yes: bool,
         #[arg(long)]
         follow: bool,
     },
-    /// 搬空线路机：为它上面每个在用入口的节点各建一个换线路机作业（线路机退役前用）
+    /// 搬空线路机：为它上面每个在用入口的节点各建一个换线路机作业（线路机退役前用）；软路由出口跟着改，同 move
     Evacuate {
         /// 要搬空的线路机
         relay: String,
         /// 搬到哪台线路机
         #[arg(long)]
         to: String,
+        /// 不改软路由，只换入口
+        #[arg(long)]
+        no_routers: bool,
         #[arg(long)]
         yes: bool,
         #[arg(long)]
@@ -892,8 +899,8 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             PolicyCmd::Rollback { version, yes } => policy::rollback(x, &version, yes),
         },
         Cmd::Watch { count, metrics } => cmds::watch(x, count, metrics),
-        Cmd::Move { node, to, from, yes, follow } => lifecycle::mv(x, &node, &to, from.as_deref(), yes, follow),
-        Cmd::Evacuate { relay, to, yes, follow } => lifecycle::evacuate(x, &relay, &to, yes, follow),
+        Cmd::Move { node, to, from, no_routers, yes, follow } => lifecycle::mv(x, &node, &to, from.as_deref(), no_routers, yes, follow),
+        Cmd::Evacuate { relay, to, no_routers, yes, follow } => lifecycle::evacuate(x, &relay, &to, no_routers, yes, follow),
         Cmd::Replace { old, new, to, number, no_routers, yes, follow } => {
             lifecycle::replace(x, lifecycle::ReplaceOpts { old: &old, new: &new, to: to.as_deref(), number, no_routers, yes, follow })
         }

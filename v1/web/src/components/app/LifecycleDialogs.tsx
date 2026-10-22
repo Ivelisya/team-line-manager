@@ -3,22 +3,27 @@
 import * as React from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { MachineView } from '@/lib/types';
-import { useEvacuate, useMachine, useMoveEntry, useRelays } from '@/lib/queries';
+import { useEvacuate, useEvacuatePreview, useMachine, useMoveEntry, useMovePreview, useRelays } from '@/lib/queries';
 import { HEALTH_TONE } from '@/lib/sort';
 import { closeEvacuate, closeMove, closeRenew, closeReplace, closeRetire, useEvacuateTarget, useMoveTarget, useRenewTarget, useReplaceTarget, useRetireTarget } from '@/lib/nodeActions';
-import { ReplaceDialog } from './ReplaceDialog';
+import { ReplaceDialog, RouterExitList } from './ReplaceDialog';
 import { RenewDialog } from '@/features/BillingTab';
 import { useDrawer } from '@/lib/drawer';
 import { healthLabel } from '@/lib/derive';
-import { Field, InfoTip } from '@/components/ui/form';
+import { CheckRow, Field, InfoTip } from '@/components/ui/form';
 import { Select, type Option } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
 import { resetOnOpen, useHeld } from '@/lib/useHeld';
-import { Due, entryState, Note } from './primitives';
+import { Due, entryState, ErrorNote, Note } from './primitives';
 import { ConfirmDialog } from './dialogs';
 import { RetireDialog } from './RetireDialog';
 
 const SHARE_WARN = <Note tone="warn">换线后分享链接会变 <InfoTip text="需要把新的分享链接发给客户端；作业完成的通知里有「复制新分享链接」。" /></Note>;
+
+/** 「同时改软路由」：新入口验收后、摘旧入口前改，失败全部换回、旧入口不摘 */
+function RoutersCheck({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+  return <CheckRow checked={checked} onChange={onChange}>同时改软路由 <InfoTip text={'软路由上指向旧入口的出口改成新入口（逐台备份、改完重启 OpenClash 并测延迟，失败全部换回、旧入口不摘）。\n不改的话，这些出口在旧入口摘掉后就断了。'} /></CheckRow>;
+}
 
 /** 换线 / 搬空的目标线路机下拉：在用的线路机，每项写状态、入口数、到期；降级、故障、即将到期、已过期按级别着色 */
 function targetOptions(relays: MachineView[], keep: (r: MachineView) => boolean): Option[] {
@@ -51,12 +56,15 @@ export const MoveDialog = resetOnOpen(function MoveDialog({ m, open, onOpenChang
   const used = new Set(m.entries.map((e) => e.relay.id));
   const opts = targetOptions(relays, (r) => !used.has(r.id));
   const multi = cur.length > 1;
-  const ready = !!to && cur.length > 0 && (!multi || !!from);
+  const [routers, setRouters] = React.useState(true);
+  const q = useMovePreview(m.id, open && cur.length > 0 && (!multi || !!from), { to_relay_id: to, from_relay_id: multi ? from : undefined, routers });
+  const pv = q.isFetchedAfterMount ? q.data : undefined;
+  const ready = !!to && cur.length > 0 && (!multi || !!from) && !!pv?.ok && !q.isFetching;
   return (
     <ConfirmDialog asForm open={open} onOpenChange={onOpenChange} size="md" title={`把 ${m.name} 换到另一台线路机`} confirmLabel="开始换线" confirmDisabled={!ready}
-      description={<>换线期间不断网 <InfoTip text="先在新线路机建好入口并验收出口，通过后才摘掉旧入口；换线期间节点始终有一个可用入口。" /></>}
+      description={<>换线期间不断网 <InfoTip text="先在新线路机建好入口并验收出口，再改软路由出口，最后才摘掉旧入口；换线期间节点始终有一个可用入口。" /></>}
       onConfirm={async () => {
-        const r = await move.mutateAsync({ id: m.id, to_relay_id: to, from_relay_id: multi ? from : undefined });
+        const r = await move.mutateAsync({ id: m.id, to_relay_id: to, from_relay_id: multi ? from : undefined, routers });
         toast.ok(`已提交换线路机：${r.from} → ${r.to}`);
         onDone?.();
         nav(`/jobs/${r.job_id}`);
@@ -69,6 +77,17 @@ export const MoveDialog = resetOnOpen(function MoveDialog({ m, open, onOpenChang
           <Field label="目标线路机" info="目标必须是在用的线路机，且这台节点在上面还没有入口" hint={opts.length === 0 ? '没有可选的线路机' : undefined}>
             <Select value={to} onChange={setTo} options={opts} placeholder="选择线路机" />
           </Field>
+          <RoutersCheck checked={routers} onChange={setRouters} />
+        </div>
+      )}
+      {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()}>预览失败：</ErrorNote>}
+      {pv && to && (
+        <div className="stack-sm" style={{ opacity: q.isFetching ? 0.6 : 1 }}>
+          {pv.routers_enabled
+            ? <RouterExitList routers={pv.routers.map((plan) => ({ plan }))} />
+            : pv.routers.length > 0 && <Note tone="warn">不改软路由：{pv.routers.flatMap((r) => r.exits.map((e) => `${r.name} 的 ${e.exit}`)).join('、')} 在旧入口摘掉后就断了</Note>}
+          {pv.blockers.map((b) => <Note key={b} tone="bad">{b}</Note>)}
+          {pv.warnings.map((w) => <Note key={w} tone="warn">{w}</Note>)}
         </div>
       )}
       {SHARE_WARN}
@@ -83,21 +102,25 @@ export const EvacuateDialog = resetOnOpen(function EvacuateDialog({ relay, open,
   const evac = useEvacuate();
   const relays = useRelays().data ?? [];
   const [to, setTo] = React.useState('');
+  const [routers, setRouters] = React.useState(true);
+  const q = useEvacuatePreview(relay.id, open, { to_relay_id: to, routers });
+  const pv = q.isFetchedAfterMount && to ? q.data : undefined;
   const opts = targetOptions(relays, (r) => r.id !== relay.id);
   const list = relay.entries.filter((e) => e.lifecycle !== 'removing' && e.lifecycle !== 'removed' && !e.direct);
   const movable = list.filter((e) => e.lifecycle === 'active');
   const hasDirect = relay.entries.some((e) => e.direct);
   return (
-    <ConfirmDialog open={open} onOpenChange={onOpenChange} size="md" title={`搬空 ${relay.name}`} confirmLabel={`搬走 ${movable.length} 个节点`} confirmDisabled={!to || movable.length === 0}
+    <ConfirmDialog open={open} onOpenChange={onOpenChange} size="md" title={`搬空 ${relay.name}`} confirmLabel={`搬走 ${movable.length} 个节点`} confirmDisabled={!to || movable.length === 0 || !pv || q.isFetching}
       description={<>每个节点各建一个换线作业 <InfoTip text="为这台线路机上每个在用入口的节点各建一个「换线路机」作业；搬完后就可以安全退役这台线路机。" /></>}
       onConfirm={async () => {
-        const r = await evac.mutateAsync({ id: relay.id, to_relay_id: to });
+        const r = await evac.mutateAsync({ id: relay.id, to_relay_id: to, routers });
         toast.ok(`已为 ${r.jobs.length} 个节点提交换线路机作业${r.skipped.length ? `，${r.skipped.length} 个被跳过` : ''}`);
         for (const s of r.skipped) toast.info(`${s.name ?? '节点'} 被跳过：${s.reason}`);
         onDone?.();
         nav('/jobs');
       }}>
       <Field label="搬到哪台线路机"><Select value={to} onChange={setTo} options={opts} placeholder="选择目标线路机" /></Field>
+      <RoutersCheck checked={routers} onChange={setRouters} />
       <div>
         <div className="label" style={{ marginBottom: 6 }}>将被搬走的节点（{movable.length}）</div>
         {list.length === 0 ? <div className="hint">没有节点入口</div> : (
@@ -112,6 +135,16 @@ export const EvacuateDialog = resetOnOpen(function EvacuateDialog({ relay, open,
         )}
       </div>
       {hasDirect && <div className="hint">直出入口不搬 <InfoTip text="退役时一起摘除；用它的客户需要换成别的线路机的直出链接。" /></div>}
+      {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()}>预览失败：</ErrorNote>}
+      {pv && (
+        <div className="stack-sm" style={{ opacity: q.isFetching ? 0.6 : 1 }}>
+          {routers
+            ? <RouterExitList routers={pv.jobs.flatMap((j) => j.routers.map((plan) => ({ node: j.name, plan })))} title={<>要改的软路由出口 <InfoTip text="改同一台软路由的节点一个接一个换。" /></>} />
+            : pv.jobs.some((j) => j.routers.length > 0) && <Note tone="warn">不改软路由：指向这些入口的出口在旧入口摘掉后就断了</Note>}
+          {pv.skipped.map((k) => <Note key={k.machine_id} tone="warn">{k.name ?? '节点'} 会跳过：{k.reason}</Note>)}
+          {pv.warnings.map((w) => <Note key={w} tone="warn">{w}</Note>)}
+        </div>
+      )}
       {SHARE_WARN}
     </ConfirmDialog>
   );

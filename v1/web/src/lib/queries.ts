@@ -6,7 +6,7 @@ import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClie
 import { del, get, patch, post, put } from './api';
 import { collator, makeDefaultCompare } from './sort';
 import { nextDue, offlineNames, quotaTight, setMeta } from './derive';
-import type { ApiKey, Availability, Incident, Job, JobSummary, Paged, JobLog, MachineView, Meta, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RetireResult, RecycleItem, RecycleDetail, ReplaceBody, ReplacePreview, MoveResult, EvacuateResult, ProbeBeats, SeriesResp, Silence, SubField, Team, AuditEntry, NotifyChannel, NotifyLogEntry, AccountSession, TotpSetup, TotpStatus } from './types';
+import type { ApiKey, Availability, Incident, Job, JobSummary, Paged, JobLog, MachineView, Meta, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RetireResult, RecycleItem, RecycleDetail, ReplaceBody, ReplacePreview, MovePreview, MoveResult, EvacuateResult, ProbeBeats, SeriesResp, Silence, SubField, Team, AuditEntry, NotifyChannel, NotifyLogEntry, AccountSession, TotpSetup, TotpStatus } from './types';
 
 export const useMe = () => useQuery({ queryKey: ['me'], queryFn: () => get<{ username: string }>('/auth/me'), retry: false, staleTime: 5 * 60_000 });
 /** 中文名、枚举、阈值、默认值（服务端 meta.rs），一次会话内不变：取回时同时交给 derive 的同步读取（kindLabel 等）。外壳等它到了才渲染页面 */
@@ -203,8 +203,23 @@ export const useRenew = () => useWrite(({ id, ...b }: { id: string; amount_cents
   post<{ id: string; old_due: string | null; new_due: string }>(`/machines/${id}/renewals`, b), [...M, ['renewals']]);
 export const useEntryAction = () => useWrite(({ id, ...b }: { id: string; action: 'enable' | 'disable' | 'rotate'; confirm?: string }) => post(`/entries/${id}/actions`, b), M);
 export const useAddEntry = () => useWrite(({ id, relay_id }: { id: string; relay_id: string }) => post<{ job_id: string }>(`/machines/${id}/entries`, { relay_id }), [...M, ['jobs']]);
-export const useMoveEntry = () => useWrite(({ id, ...b }: { id: string; to_relay_id: string; from_relay_id?: string }) => post<MoveResult>(`/machines/${id}/move`, b), [...M, ['jobs']]);
-export const useEvacuate = () => useWrite(({ id, to_relay_id }: { id: string; to_relay_id: string }) => post<EvacuateResult>(`/relays/${id}/evacuate`, { to_relay_id }), [...M, ['jobs']]);
+export const useMoveEntry = () => useWrite(({ id, ...b }: { id: string; to_relay_id: string; from_relay_id?: string; routers: boolean }) => post<MoveResult>(`/machines/${id}/move`, b), [...M, ['jobs']]);
+export const useEvacuate = () => useWrite(({ id, ...b }: { id: string; to_relay_id: string; routers: boolean }) => post<EvacuateResult>(`/relays/${id}/evacuate`, b), [...M, ['jobs']]);
+/** 换线路机 / 搬空预览（只读库）：要改的软路由出口、不能换的原因 */
+const lifecyclePreview = <T,>(key: string, path: string | null, o: Record<string, string | undefined>, routers: boolean) =>
+  useQuery<T>({
+    queryKey: [key, path, o, routers], enabled: !!path && !!o.to_relay_id,
+    staleTime: 0, gcTime: 0, placeholderData: (p) => p, refetchOnWindowFocus: false,
+    queryFn: ({ signal }) => {
+      const q = new URLSearchParams(Object.entries(o).filter((e): e is [string, string] => !!e[1]));
+      if (!routers) q.set('routers', 'false');
+      return get<T>(`${path}?${q}`, signal);
+    },
+  });
+export const useMovePreview = (id: string | null, open: boolean, o: { to_relay_id: string; from_relay_id?: string; routers: boolean }) =>
+  lifecyclePreview<MovePreview>('move-preview', open && id ? `/machines/${id}/move` : null, { to_relay_id: o.to_relay_id, from_relay_id: o.from_relay_id }, o.routers);
+export const useEvacuatePreview = (id: string | null, open: boolean, o: { to_relay_id: string; routers: boolean }) =>
+  lifecyclePreview<EvacuateResult>('evacuate-preview', open && id ? `/relays/${id}/evacuate` : null, { to_relay_id: o.to_relay_id }, o.routers);
 /** 替换节点：预览（只读库，不登录机器）与提交（建 replace 作业：改软路由出口 → 交换编号） */
 export const useReplacePreview = (id: string | null, enabled: boolean, o: { new_machine_id: string; team_id?: string; number?: number; routers: boolean }) =>
   useQuery<ReplacePreview>({

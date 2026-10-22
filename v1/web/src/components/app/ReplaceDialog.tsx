@@ -3,7 +3,7 @@
 import * as React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowRight, Check, ChevronDown } from 'lucide-react';
-import type { MachineView } from '@/lib/types';
+import type { MachineView, RouterExitPlan } from '@/lib/types';
 import { useMachines, useReplace, useReplacePreview, useTeams } from '@/lib/queries';
 import { prefixScore } from '@/lib/match';
 import { CheckRow, Field, InfoTip, Input } from '@/components/ui/form';
@@ -75,6 +75,28 @@ function useSettled<T>(v: T, ms: number): T {
 
 const ROUTER_STATE: Record<string, string> = { offline: '离线', pending: '未接入' };
 
+/** 预览里要改的软路由出口（替换、换线路机、搬空共用）；node：搬空时每行前面写节点名 */
+export function RouterExitList({ routers, title }: { routers: { node?: string; plan: RouterExitPlan }[]; title?: React.ReactNode }) {
+  const n = routers.reduce((s, r) => s + r.plan.exits.length, 0);
+  if (n === 0) return null;
+  return (
+    <div>
+      <div className="label" style={{ marginBottom: 6 }}>{title ?? <>改 {new Set(routers.map((r) => r.plan.id)).size} 台软路由的 {n} 个出口</>}</div>
+      <ul className="reason-list" style={{ maxHeight: 200, overflow: 'auto' }}>
+        {routers.flatMap(({ node, plan: r }) => r.exits.map((e) => (
+          <li key={`${node ?? ''}-${r.id}-${e.exit}`}>
+            {node && <span className="num">{node}</span>}
+            <span>{r.name}</span>
+            {r.state !== 'online' && <Pill tone="bad">{ROUTER_STATE[r.state] ?? r.state}</Pill>}
+            <span className="num">{e.exit}</span>
+            <span className="t-sub num">{e.from} → {e.to}</span>
+          </li>
+        )))}
+      </ul>
+    </div>
+  );
+}
+
 export const ReplaceDialog = resetOnOpen(function ReplaceDialog({ m, open, onOpenChange, onDone }: { m: MachineView; open: boolean; onOpenChange: (o: boolean) => void; onDone?: () => void }) {
   const nav = useNavigate();
   const replace = useReplace();
@@ -92,7 +114,6 @@ export const ReplaceDialog = resetOnOpen(function ReplaceDialog({ m, open, onOpe
   const stale = q.isFetching || settledNum !== num;
   const ready = !!pv && pv.ok && !stale && !q.isError;
   const teamOpts = teams.map((t) => ({ value: t.id, label: t.spare ? <>{t.name} <span className="t-sub">· 备用</span></> : t.name }));
-  const exits = pv ? pv.routers.reduce((s, r) => s + r.exits.length, 0) : 0;
 
   const submit = async () => {
     const r = await replace.mutateAsync({ id: m.id, new_machine_id: pick, old_to: { team_id: team || undefined, number }, routers });
@@ -127,21 +148,7 @@ export const ReplaceDialog = resetOnOpen(function ReplaceDialog({ m, open, onOpe
             <span className="preview-name">{pv.old.name}<ArrowRight size={14} style={{ color: 'var(--fg-3)' }} />{pv.old_to.name}</span>
             {pv.old_to.team?.spare && <Pill tone="neutral">备用</Pill>}
           </div>
-          {pv.routers_enabled && pv.routers.length > 0 && (
-            <div>
-              <div className="label" style={{ marginBottom: 6 }}>改 {pv.routers.length} 台软路由的 {exits} 个出口</div>
-              <ul className="reason-list" style={{ maxHeight: 200, overflow: 'auto' }}>
-                {pv.routers.flatMap((r) => r.exits.map((e) => (
-                  <li key={`${r.id}-${e.exit}`}>
-                    <span>{r.name}</span>
-                    {r.state !== 'online' && <Pill tone="bad">{ROUTER_STATE[r.state] ?? r.state}</Pill>}
-                    <span className="num">{e.exit}</span>
-                    <span className="t-sub num">{e.from} → {e.to}</span>
-                  </li>
-                )))}
-              </ul>
-            </div>
-          )}
+          {pv.routers_enabled && <RouterExitList routers={pv.routers.map((plan) => ({ plan }))} />}
           {pv.renames.length > 0 && (
             <div className="hint">编号压缩：{pv.renames.map((r) => `${r.old_name} → ${r.new_name}`).join('、')} <InfoTip text="新节点原来的团队空出一个编号，后面的节点前移补号。" /></div>
           )}
