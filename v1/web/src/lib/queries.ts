@@ -6,7 +6,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient, type QueryClie
 import { del, get, patch, post, put } from './api';
 import { collator, makeDefaultCompare } from './sort';
 import { quotaTight } from './derive';
-import type { ApiKey, Incident, Job, JobSummary, Paged, JobLog, MachineView, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RetireResult, RestoreBody, RestorePreview, MoveResult, EvacuateResult, ProbeBeats, SeriesResp, Silence, Subscription, Team, AuditEntry, NotifyChannel, NotifyLogEntry } from './types';
+import type { ApiKey, Availability, Incident, Job, JobSummary, Paged, JobLog, MachineView, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RetireResult, RestoreBody, RestorePreview, MoveResult, EvacuateResult, ProbeBeats, SeriesResp, Silence, Subscription, Team, AuditEntry, NotifyChannel, NotifyLogEntry } from './types';
 
 export const useMe = () => useQuery({ queryKey: ['me'], queryFn: () => get<{ username: string }>('/auth/me'), retry: false, staleTime: 5 * 60_000 });
 // 团队、套餐带着由机器算出来的台数（node_count / machine_count），机器增减不发 catalog 事件，仍按时间过期；供应商只随 catalog 事件变
@@ -88,6 +88,10 @@ export const useProbeBeatsPoll = (enabled: boolean) => { useQuery({ ...probeBeat
 export const useSeries = (id: string | null, metric: 'host' | 'traffic' | 'probe', range: string, enabled: boolean, poll: number) =>
   useQuery({ queryKey: ['series', id, metric, range], queryFn: ({ signal }) => get<SeriesResp>(`/machines/${id}/series?metric=${metric}&range=${range}`, signal), enabled: !!id && enabled, staleTime: poll, refetchInterval: poll, refetchOnWindowFocus: false,
     placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[1] === id ? keepPreviousData(prev) : undefined) });
+/** 抽屉「连接质量」的近 N 天可用率：来自小时汇总（每 5 分钟汇总一次），抽屉开着时 10 分钟重取一次、切回窗口不重取。
+ *  按账单时区分天：改订阅时服务端发 machine 事件，随这台的详情一起失效（eventKeys） */
+export const useAvailability = (id: string, days: number) =>
+  useQuery({ queryKey: ['availability', id, days], queryFn: ({ signal }) => get<Availability>(`/machines/${id}/availability?days=${days}`, signal), staleTime: 600_000, refetchInterval: 600_000, refetchOnWindowFocus: false });
 export const useRenewals = (id: string | null) => useQuery({ queryKey: ['renewals', id], queryFn: ({ signal }) => get<Renewal[]>(`/machines/${id}/renewals`, signal), enabled: !!id });
 export const useAudit = (id: string | null) => useQuery({ queryKey: ['audit', id], queryFn: ({ signal }) => get<AuditEntry[]>(`/audit?target_id=${id}&limit=10`, signal), enabled: !!id });
 /** 作业列表一页（按创建先后倒序）；换页时先留着上一页，不闪骨架 */
@@ -113,10 +117,11 @@ export interface StreamEvent { type: string; id?: string }
  *  incidents：机器的健康与总览不看告警表，不重取整表；静默带来的「维护中」由服务端随后的 metrics 推送送达
  *  audit：抽屉里机器的操作记录，随改名、续费、退役等机器变更增加；policies：策略页的范围树列着各团队的节点（名字、有没有入口），
  *  机器增减、改名换团队、团队改名都会改它（只有挂着的查询会重取，策略页没开时只是标成过期）；
- *  incidents / jobs 列表里带机器名，machine（改名、生命周期）很少发，顺带重取让名字立刻跟上 */
+ *  incidents / jobs 列表里带机器名，machine（改名、生命周期）很少发，顺带重取让名字立刻跟上；
+ *  availability：近 N 天可用率按账单时区分天，改订阅（machine 事件）可能换了时区 */
 export function eventKeys(ev: StreamEvent): unknown[][] {
   switch (ev.type) {
-    case 'machine': return [['machine', ev.id], ['machines'], ['overview'], ['audit'], ['policies'], ['incidents'], ['jobs']];
+    case 'machine': return [['machine', ev.id], ['machines'], ['overview'], ['audit'], ['policies'], ['incidents'], ['jobs'], ['availability', ev.id]];
     case 'machine_job': return [['machine', ev.id]];
     case 'machines': return [['machine'], ['machines'], ['relays'], ['overview'], ['audit'], ['policies']];
     case 'relay': return [['relays'], ['machines']];

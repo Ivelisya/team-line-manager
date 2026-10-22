@@ -223,6 +223,54 @@ const PROBE_HOURLY: &str = "select coalesce(json_agg(json_build_object('ts', t, 
       100.0 * sum(h.ok) filter (where h.kind = 'egress') / nullif(sum(h.total) filter (where h.kind = 'egress'), 0) eg_pct
     from probe_hourly h join entry e on e.id = h.entry_id where (e.node_id = $1 or e.relay_id = $1) and h.hour >= $2 group by 1) a";
 
+#[derive(Deserialize)]
+pub struct AvailabilityQ {
+    days: Option<i32>,
+}
+
+#[derive(Serialize, sqlx::FromRow)]
+struct DayAvailability {
+    date: Date,
+    tcp_total: i64,
+    tcp_ok: i64,
+    egress_total: i64,
+    egress_ok: i64,
+}
+
+/// 近 N 天每天的探测成功率（抽屉「连接质量」的每日格条、fleetctl uptime）：小时汇总按这台机器的账单时区分到日历天
+/// （流量额度周期也按它；没有订阅按北京时间，同列默认值），旧→新共 N 天、最后一天是今天（还没过完），没有探测的天各项为 0。
+/// 入口同曲线：节点取自己的，线路机取挂在它上面的（含已移除的）
+pub async fn availability(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<AvailabilityQ>) -> ApiResult<Json<Value>> {
+    let days = q.days.unwrap_or(30);
+    if !(1..=90).contains(&days) {
+        return Err(ApiError::bad_request("days 只能是 1–90"));
+    }
+    let tz: String = sqlx::query_scalar("select coalesce(s.billing_tz, 'Asia/Shanghai') from machine m left join subscription s on s.machine_id = m.id where m.id = $1")
+        .bind(id)
+        .fetch_optional(&st.db)
+        .await?
+        .ok_or_else(|| ApiError::not_found("没有这台机器"))?;
+    let items: Vec<DayAvailability> = sqlx::query_as(AVAILABILITY).bind(id).bind(&tz).bind(days).fetch_all(&st.db).await?;
+    let pct = |good: i64, total: i64| (total > 0).then(|| 100.0 * good as f64 / total as f64);
+    let sum = |f: fn(&DayAvailability) -> i64| items.iter().map(f).sum::<i64>();
+    let tcp_pct = pct(sum(|d| d.tcp_ok), sum(|d| d.tcp_total));
+    let egress_pct = pct(sum(|d| d.egress_ok), sum(|d| d.egress_total));
+    Ok(ok(json!({"days": days, "items": items, "tcp_pct": tcp_pct, "egress_pct": egress_pct})))
+}
+
+/// 小时汇总按 UTC 整点分桶，一桶按起点归到账单时区（$2）的那一天：整点时区正好落在零点边界，半小时时区跨零点的那一桶归前一天
+const AVAILABILITY: &str = "with d as (select local_date($2) - i as day from generate_series($3 - 1, 0, -1) i),
+  p as (
+    select (h.hour at time zone $2)::date as day,
+      sum(h.total) filter (where h.kind = 'tcp') tcp_total, sum(h.ok) filter (where h.kind = 'tcp') tcp_ok,
+      sum(h.total) filter (where h.kind = 'egress') egress_total, sum(h.ok) filter (where h.kind = 'egress') egress_ok
+    from probe_hourly h join entry e on e.id = h.entry_id
+    where (e.node_id = $1 or e.relay_id = $1) and h.kind in ('tcp', 'egress')
+      and h.hour >= (local_date($2) - ($3 - 1))::timestamp at time zone $2
+    group by 1)
+  select d.day as date, coalesce(p.tcp_total, 0) tcp_total, coalesce(p.tcp_ok, 0) tcp_ok, coalesce(p.egress_total, 0) egress_total, coalesce(p.egress_ok, 0) egress_ok
+  from d left join p using (day) order by d.day";
+
 // ── 退役与彻底删除 ────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]

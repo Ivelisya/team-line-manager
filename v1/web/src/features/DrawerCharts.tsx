@@ -3,12 +3,12 @@ import * as React from 'react';
 import { Cpu, Globe, MemoryStick, Network, Radar, ServerOff } from 'lucide-react';
 import type { MachineView, SeriesResp } from '@/lib/types';
 import type { UseQueryResult } from '@tanstack/react-query';
-import { useSeries } from '@/lib/queries';
+import { useAvailability, useSeries } from '@/lib/queries';
 import * as F from '@/lib/format';
-import { hasHost, monthTraffic, resourceMeters } from '@/lib/derive';
+import { availCells, availTitles, hasHost, monthTraffic, resourceMeters, successPct } from '@/lib/derive';
 import { Segmented } from '@/components/ui/overlays';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Empty, ErrorNote, LabelValue, LabelValueGrid, Note, Num, Section, SectionHeader } from '@/components/app/primitives';
+import { Beat, Empty, ErrorNote, LabelValue, LabelValueGrid, Note, Num, Section, SectionHeader } from '@/components/app/primitives';
 import { RANGES, TimeChart } from '@/components/app/TimeChart';
 import { EntriesTable } from './EntriesTable';
 
@@ -72,11 +72,29 @@ function ChartCard({ c, icon, title, meta, value, caption, tools, children }: { 
   );
 }
 
+const AVAIL_DAYS = 30;
+const AVAIL_TIP = `近 ${AVAIL_DAYS} 天全部探测的成功率：TCP 是线路机到节点的 TCP 握手，出口是经入口访问外网的验证`;
+/** 近 30 天可用率：每天一格（旧→新，最后一格是今天），按 TCP 与出口里较差的一种定色，悬停看当天的成功率与次数；标题旁是整段的成功率。
+ *  只依赖机器 id 与是否线路机：实时推送重渲染页签时不跟着重画 */
+const AvailabilitySection = React.memo(function AvailabilitySection({ id, relay }: { id: string; relay: boolean }) {
+  const q = useAvailability(id, AVAIL_DAYS);
+  const d = q.data;
+  const total = d && (d.tcp_pct == null && d.egress_pct == null ? '—' : `TCP ${successPct(d.tcp_pct)} · 出口 ${successPct(d.egress_pct)}`);
+  return (
+    <Section>
+      <SectionHeader title={`近 ${AVAIL_DAYS} 天可用率`} meta={total && <span data-tip={relay ? `${AVAIL_TIP}；这里是挂在这台线路机上所有入口的合计` : AVAIL_TIP}>{total}</span>} />
+      {q.isError ? <ErrorNote error={q.error} onRetry={() => void q.refetch()}>可用率加载失败：</ErrorNote>
+        : <Beat n={AVAIL_DAYS} cells={d ? availCells(d.items) : []} titles={d && availTitles(d.items)} caption={`${AVAIL_DAYS} 天前`} win="今天" stale={!d} />}
+    </Section>
+  );
+});
+
 export function QualityTab({ m }: { m: MachineView }) {
   const [range, setRange] = React.useState('6h');
   const s = useSeries(m.id, 'probe', range, true, poll(range));
   return (
     <>
+      <AvailabilitySection id={m.id} relay={m.kind === 'relay'} />
       <Section>
         <ChartCard c="var(--chart-1)" icon={<Radar />} title="延迟" meta="线路机 → 节点 TCP 与出口验证" tools={<RangeBar range={range} setRange={setRange} />}>
           <ChartFrame q={s} few={fewText(m, range)}>

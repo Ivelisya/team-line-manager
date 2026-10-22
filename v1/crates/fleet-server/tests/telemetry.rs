@@ -128,6 +128,87 @@ async fn relay_probe_series_covers_its_entries() {
     }
 }
 
+/// 写一行探测小时汇总：时区 `tz` 里「今天往前 back 天」零点之后第 h 小时的那一桶（h = -1 是前一天的最后一桶）
+async fn put_probe_hour(t: &T, entry: Uuid, tz: &str, (back, h): (i32, i32), (kind, total, ok): (&str, i32, i32)) {
+    sqlx::query("insert into probe_hourly (entry_id, hour, kind, total, ok) values ($1, ((local_date($2) - $3)::timestamp at time zone $2) + make_interval(hours => $4), $5, $6, $7)")
+        .bind(entry)
+        .bind(tz)
+        .bind(back)
+        .bind(h)
+        .bind(kind)
+        .bind(total)
+        .bind(ok)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+}
+
+/// 近 N 天可用率：小时汇总按账单时区分天（没有订阅按北京时间），覆盖完整的 N 天、最后一天是今天，没有探测的天各项为 0；
+/// 线路机汇总挂在它上面的入口；days 越界 400、机器不存在 404
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn availability_days_follow_billing_tz() {
+    let t = setup().await;
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let relay2 = seed_relay(&t, "线路机2", "198.51.100.2", "tok2").await;
+    let team = seed_team(&t, "团队1").await;
+    // 节点 1 单独挂在线路机 2 上，账单时区洛杉矶；线路机 1 和它的两个节点都没有订阅
+    let (n1, e1) = seed_node(&t, relay2, team, 1, "203.0.113.5", 20000).await;
+    let (n2, e2) = seed_node(&t, relay, team, 2, "203.0.113.6", 20001).await;
+    let (n3, e3) = seed_node(&t, relay, team, 3, "203.0.113.7", 20002).await;
+    sqlx::query("insert into subscription (machine_id, price_cents, due_date, billing_tz) values ($1, 500, current_date + 60, 'America/Los_Angeles')")
+        .bind(n1)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let (la, sh) = ("America/Los_Angeles", "Asia/Shanghai");
+    put_probe_hour(&t, e1, la, (0, 0), ("tcp", 120, 119)).await;
+    put_probe_hour(&t, e1, la, (0, 0), ("egress", 60, 60)).await;
+    put_probe_hour(&t, e1, la, (0, -1), ("tcp", 120, 120)).await;
+    put_probe_hour(&t, e1, la, (2, 5), ("tcp", 100, 50)).await;
+    put_probe_hour(&t, e1, la, (29, 0), ("tcp", 7, 7)).await;
+    put_probe_hour(&t, e1, la, (29, -1), ("tcp", 9, 0)).await;
+    put_probe_hour(&t, e2, sh, (0, 0), ("tcp", 10, 10)).await;
+    put_probe_hour(&t, e2, sh, (0, -1), ("tcp", 10, 0)).await;
+    put_probe_hour(&t, e2, sh, (0, -1), ("egress", 4, 4)).await;
+    put_probe_hour(&t, e3, sh, (0, 0), ("tcp", 30, 27)).await;
+    let (la_today, sh_today): (time::Date, time::Date) = sqlx::query_as("select local_date($1), local_date($2)").bind(la).bind(sh).fetch_one(&t.st.db).await.unwrap();
+    let day = |v: &Value, i: usize| {
+        let d = &v["items"][i];
+        (d["tcp_total"].as_i64().unwrap(), d["tcp_ok"].as_i64().unwrap(), d["egress_total"].as_i64().unwrap(), d["egress_ok"].as_i64().unwrap())
+    };
+
+    // 默认 30 天：洛杉矶的今天和往前 29 天；零点那一桶算当天，零点前一小时那一桶算前一天，窗口第一天之前的不算
+    let v = t.get(&format!("/api/v1/machines/{n1}/availability")).await;
+    assert_eq!((v["days"].as_i64(), v["items"].as_array().unwrap().len()), (Some(30), 30), "{v}");
+    assert_eq!(v["items"][0]["date"], (la_today - time::Duration::days(29)).to_string());
+    assert_eq!(v["items"][29]["date"], la_today.to_string());
+    assert_eq!(day(&v, 29), (120, 119, 60, 60));
+    assert_eq!(day(&v, 28), (120, 120, 0, 0));
+    assert_eq!(day(&v, 27), (100, 50, 0, 0));
+    assert_eq!(day(&v, 0), (7, 7, 0, 0));
+    assert!((1..27).all(|i| day(&v, i) == (0, 0, 0, 0)), "没有探测的天各项为 0：{v}");
+    assert_eq!(v["tcp_pct"].as_f64(), Some(100.0 * 296.0 / 347.0));
+    assert_eq!(v["egress_pct"].as_f64(), Some(100.0));
+
+    // 线路机 1 没有订阅：按北京时间分天，汇总节点 2、3 的入口（不含线路机 2 上节点 1 的）
+    let v = t.get(&format!("/api/v1/machines/{relay}/availability?days=2")).await;
+    assert_eq!(v["items"][0]["date"], (sh_today - time::Duration::days(1)).to_string());
+    assert_eq!(v["items"][1]["date"], sh_today.to_string());
+    assert_eq!((day(&v, 0), day(&v, 1)), ((10, 0, 4, 4), (40, 37, 0, 0)), "{v}");
+    assert_eq!((v["tcp_pct"].as_f64(), v["egress_pct"].as_f64()), (Some(74.0), Some(100.0)));
+    // 节点只算自己的入口；整段没有出口探测：egress_pct 为 null
+    let v = t.get(&format!("/api/v1/machines/{n2}/availability?days=1")).await;
+    assert_eq!((v["items"].as_array().unwrap().len(), day(&v, 0)), (1, (10, 10, 0, 0)), "{v}");
+    let v = t.get(&format!("/api/v1/machines/{n3}/availability?days=2")).await;
+    assert_eq!((v["tcp_pct"].as_f64(), v["egress_pct"].is_null()), (Some(90.0), true), "{v}");
+
+    for bad in ["0", "91", "x"] {
+        let (s, v) = t.req("GET", &format!("/api/v1/machines/{n1}/availability?days={bad}"), None, None).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    }
+    assert_eq!(t.req("GET", &format!("/api/v1/machines/{}/availability", Uuid::now_v7()), None, None).await.0, StatusCode::NOT_FOUND);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn rollup_covers_backfilled_hours_and_counter_resets() {
     let t = setup().await;

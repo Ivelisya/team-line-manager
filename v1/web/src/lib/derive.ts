@@ -1,5 +1,5 @@
 // 从 MachineView 推导卡片/表格要显示的数据（纯函数，便于复用）
-import type { MachineView, ProbeBucket, ProbeResult, Subscription } from './types';
+import type { AvailabilityDay, MachineView, ProbeBucket, ProbeResult, Subscription } from './types';
 import * as F from './format';
 
 const GiB = 1024 ** 3;
@@ -90,6 +90,24 @@ export function beatTitles(buckets: ProbeBucket[] | undefined, now = Date.now())
     const t0 = cur - (bs.length - 1 - i) * BEAT_MS;
     const what = !n ? '没有探测' : `探测 ${n} 次，成功 ${ok} 次（${Math.round((ok / n) * 100)}%）${ms != null ? ` · 平均 ${Math.round(ms)} ms` : ''}`;
     return `${hm(t0)}–${hm(t0 + BEAT_MS)}${i === bs.length - 1 ? '（进行中）' : ''} · ${what}\n${BEAT_LEGEND}`;
+  });
+}
+/** 成功率的写法（近 30 天可用率）：全部成功才写 100%，否则最多写到 99.99%（1439/1440 不会四舍五入成 100%）；没有探测为「—」 */
+export const successPct = (p: number | null) => (p == null ? '—' : p >= 100 ? '100%' : `${Math.min(p, 99.99).toFixed(2)}%`);
+/** 一天里一种探测的档位：成功 ≥ 99.5% 绿、≥ 95% 黄、更低红（整数比较，正好落在边界上不受浮点误差影响）；没有探测为 null */
+const dayTone = (ok: number, total: number): BeatCell => (!total ? null : ok * 1000 >= total * 995 ? 'ok' : ok * 100 >= total * 95 ? 'warn' : 'bad');
+const WORST_FIRST = ['bad', 'warn', 'ok'] as const;
+/** 近 30 天可用率的每日格（旧→新）：取 TCP 与出口两种探测里较差的一档，当天没有探测为空格 */
+export const availCells = (days: AvailabilityDay[]): BeatCell[] =>
+  days.map((d) => { const a = dayTone(d.tcp_ok, d.tcp_total); const b = dayTone(d.egress_ok, d.egress_total); return WORST_FIRST.find((t) => t === a || t === b) ?? null; });
+const AVAIL_LEGEND = '绿：成功 ≥ 99.5% · 黄：成功 95%–99.5%\n红：成功不到 95% · 灰：没有探测（TCP 与出口取较差的一种）';
+/** 每日格的悬停说明（与 availCells 一一对应）：「10-21 · TCP 99.93%（1438/1440） · 出口 100%（288/288）」，没有探测写「没有探测」；
+ *  最后一格是今天（还没过完）；后两行是颜色含义（阈值同 availCells） */
+export function availTitles(days: AvailabilityDay[]): string[] {
+  const part = (label: string, ok: number, total: number) => (total ? `${label} ${successPct((ok / total) * 100)}（${ok}/${total}）` : '');
+  return days.map((d, i) => {
+    const what = [part('TCP', d.tcp_ok, d.tcp_total), part('出口', d.egress_ok, d.egress_total)].filter(Boolean).join(' · ') || '没有探测';
+    return `${d.date.slice(5)}${i === days.length - 1 ? '（今天，还没过完）' : ''} · ${what}\n${AVAIL_LEGEND}`;
   });
 }
 /** 有探测、却一个都没成功（延迟为 null）：显示「失败」，和「—」（还没有探测）区分开 */
