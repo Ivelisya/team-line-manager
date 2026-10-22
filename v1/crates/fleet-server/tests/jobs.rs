@@ -1,5 +1,5 @@
 //! 作业引擎：取消与补偿、退役后旧作业不能复活、purge 幂等、租约持有者校验、线路机退役守卫、退役即关告警、作业清理、重试重置主机指纹的范围、有步骤在执行时拒绝退役、
-//! 不重复领本进程还在推进的作业、步骤里库暂时不可用时从这一步重做。
+//! 不重复领本进程还在推进的作业、步骤里库暂时不可用时从这一步重做、优雅退出与先占端口、中控刚恢复时不判线路机不在线。
 //! 需要 PostgreSQL（见 common）。
 //!
 //! 「上架」类测试用 VPS 指向 127.0.0.1:1（必定连接被拒）：预检会失败，不需要真的 SSH 到任何机器。
@@ -851,6 +851,47 @@ async fn drain_lets_the_running_step_finish_then_lets_go() {
             .await
             .unwrap();
     assert_eq!((owner, step4.as_str()), (None, "pending"));
+}
+
+/// 中控刚恢复：等摘除的退役不因线路机「不在线」失败——线路机停机前一直在报，只是重发还没到（停机这段收不到上报，不算它的沉默）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn wait_detached_tolerates_central_outage() {
+    let t = setup(false).await;
+    let (relay, _) = seed_relay(&t).await;
+    let team = seed_team(&t, "团队1").await;
+    let node = seed_node(&t, team, 1, "203.0.113.10", "active").await;
+    sqlx::query("insert into entry (id, relay_id, node_id, port, client_uuid, short_id, lifecycle) values ($1, $2, $3, 20001, $4, 'ab', 'active')")
+        .bind(Uuid::now_v7())
+        .bind(relay)
+        .bind(node)
+        .bind(Uuid::now_v7())
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    // 中控停了 5 分钟：线路机最后一次上报在停的那一刻
+    sqlx::query("insert into agent_state (machine_id, agent_version, last_report_at) values ($1, 'v', now() - interval '5 minutes')").bind(relay).execute(&t.st.db).await.unwrap();
+    let name = t.get(&format!("/api/v1/machines/{node}")).await["name"].as_str().unwrap().to_string();
+    let job: Uuid = t.post(&format!("/api/v1/machines/{node}/retire"), json!({"confirm": name})).await["job_id"].as_str().unwrap().parse().unwrap();
+    let j = run_one(&t, job).await;
+    assert_eq!((j["state"].as_str(), j["step"].as_i64()), (Some("waiting"), Some(1)), "摘除入口，开始等线路机摘除：{j}");
+    // 「等线路机摘除」已经等了 2 分钟
+    let stale = "update job_step set started_at = now() - interval '2 minutes' where job_id = $1 and idx = 1";
+    let due = "update job set run_after = now() where id = $1";
+    for q in [stale, due] {
+        sqlx::query(q).bind(job).execute(&t.st.db).await.unwrap();
+    }
+    // 按墙钟算线路机 5 分钟没报：判不在线，失败
+    let j = run_one(&t, job).await;
+    assert!(j["state"] == "failed" && j["error"].as_str().unwrap().contains("线路机2 不在线"), "{j}");
+
+    // 中控刚启动（停机这段收不到上报）：线路机算在线，接着等
+    t.st.report_gaps.started(&t.st.db).await.unwrap();
+    t.post(&format!("/api/v1/jobs/{job}/retry"), json!({})).await;
+    for q in [stale, due] {
+        sqlx::query(q).bind(job).execute(&t.st.db).await.unwrap();
+    }
+    let j = run_one(&t, job).await;
+    assert_eq!((j["state"].as_str(), j["step"].as_i64()), (Some("waiting"), Some(1)), "{j}");
 }
 
 /// fleet-server serve 进程：先占端口再碰库——同一份配置再起一个，因端口被占在碰库之前退出，不会清掉在跑实例手里的作业租约；

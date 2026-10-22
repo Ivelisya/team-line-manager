@@ -80,6 +80,8 @@ pub struct Inner {
     pub jobs_wake: Notify,
     /// 作业引擎在本进程里正在推进的作业（领取时排除）
     pub jobs_running: crate::jobs::Running,
+    /// 中控收不到上报的时段：判 agent 离线时不算（视图、告警、作业判线路机在线都用它）
+    pub report_gaps: crate::views::ReportGaps,
 }
 
 impl std::ops::Deref for AppState {
@@ -115,6 +117,7 @@ impl AppState {
             notify_started: AtomicBool::new(false),
             jobs_wake: Notify::new(),
             jobs_running: Default::default(),
+            report_gaps: Default::default(),
         }))
     }
 

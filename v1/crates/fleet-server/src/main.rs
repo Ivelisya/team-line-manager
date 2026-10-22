@@ -81,6 +81,8 @@ async fn main() -> anyhow::Result<()> {
             db::MIGRATOR.run(&pool).await.context("数据库迁移")?;
             db::maintain_partitions(&pool, cfg.retention.raw_days, cfg.retention.access_days, 3).await?;
             let st = AppState::new(cfg, pool, secrets);
+            // 停机这段收不到上报：恢复后头两分钟里 agent 的重发还没到，不算它们离线（views::ReportGaps）
+            st.report_gaps.started(&st.db).await.context("读最近的上报时间")?;
             jobs::release_stale_leases(&st).await;
             fleet_server::spawn_background(&st);
             let app = fleet_server::app(st.clone());

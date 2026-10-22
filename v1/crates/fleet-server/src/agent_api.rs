@@ -53,7 +53,13 @@ async fn authenticate(st: &AppState, h: &HeaderMap) -> ApiResult<AgentId> {
     .bind(sha256(tok.trim().as_bytes()))
     .fetch_optional(&st.db)
     .await
-    .map_err(ingest_error)?;
+    .map_err(|e| {
+        // 库连不上时最先失败的就是这里：记进中控收不到上报的时段（views::ReportGaps）
+        if crate::db::unavailable(&e) {
+            st.report_gaps.failed(OffsetDateTime::now_utc());
+        }
+        ingest_error(e)
+    })?;
     let (machine_id, kind) = row.ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "token_revoked", "令牌无效或已撤销"))?;
     Ok(AgentId { machine_id, kind })
 }
@@ -269,7 +275,14 @@ fn sanitize(r: &mut Report) {
 }
 
 async fn report(State(st): State<AppState>, h: HeaderMap, ApiJson(r): ApiJson<Report>) -> Result<Response, ApiError> {
-    match ingest(&st, &h, r).await {
+    let res = ingest(&st, &h, r).await;
+    // 中控收不到上报的时段（views::ReportGaps）：入库了、库不可用没入成
+    match &res {
+        Ok(_) => st.report_gaps.ok(OffsetDateTime::now_utc()),
+        Err(IngestErr::Db(e)) if crate::db::unavailable(e) => st.report_gaps.failed(OffsetDateTime::now_utc()),
+        _ => {}
+    }
+    match res {
         Ok(ack) => Ok(ack.into_response()),
         Err(IngestErr::Limited(wait)) => Ok(too_many(wait, "上报")),
         Err(IngestErr::Api(e)) => Err(e),

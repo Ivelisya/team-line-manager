@@ -751,6 +751,39 @@ async fn relay_xray_down_alert_lifecycle() {
     assert!(matches!(ev.try_recv(), Ok(Event::Incidents)));
 }
 
+/// 中控停机后恢复：停机这段不算 agent 的沉默——停之前在报的，恢复后头一两分钟里重发还没到也不算离线、不开告警；
+/// 停之前就不报了的照样离线、照样开告警
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn central_outage_is_not_agent_silence() {
+    let t = setup().await;
+    let a = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let b = seed_relay(&t, "线路机2", "198.51.100.2", "tok2").await;
+    let c = seed_relay(&t, "线路机3", "198.51.100.3", "tok3").await;
+    // 中控 5 分钟前停的：c 停的那一刻还在报，a 停之前 20 秒报过最后一次，b 停之前一小时就不报了
+    for (m, ago) in [(a, 320), (b, 3900), (c, 300)] {
+        sqlx::query("insert into agent_state (machine_id, agent_version, last_report_at) values ($1, 'v', now() - make_interval(secs => $2))")
+            .bind(m)
+            .bind(ago as f64)
+            .execute(&t.st.db)
+            .await
+            .unwrap();
+    }
+    let offline = |r: Vec<String>| r.contains(&"agent_offline".to_string());
+    assert!(offline(t.health(a).await.1), "按墙钟算 a 5 分多钟没报");
+
+    // 中控启动：停机这段收不到上报
+    t.st.report_gaps.started(&t.st.db).await.unwrap();
+    t.st.live.invalidate();
+    assert!(!offline(t.health(a).await.1) && !offline(t.health(c).await.1));
+    assert!(offline(t.health(b).await.1));
+    let mut state = AlertState::default();
+    let base = OffsetDateTime::now_utc();
+    pass(&t, &mut state, base, 0).await;
+    pass(&t, &mut state, base, 61).await;
+    let inc = incidents(&t, "firing").await;
+    assert_eq!(inc.iter().map(|i| (i["rule"].as_str().unwrap(), i["subject_id"].as_str().unwrap())).collect::<Vec<_>>(), [("agent_offline", b.to_string().as_str())]);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn retiring_machine_alerts_are_left_to_retire_flow() {
     let t = setup().await;

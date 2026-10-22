@@ -853,10 +853,11 @@ async fn wait_detached(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     if left.is_empty() {
         return Ok(Outcome::Done(json!({})));
     }
-    // 线路机本身在退役（摘的是自己身上的入口）：agent 会照常应用空配置
+    // 线路机本身在退役（摘的是自己身上的入口）：agent 会照常应用空配置。
+    // 在不在线同机器视图（中控收不到上报的时段不算：中控、库刚恢复时线路机的重发还没到）
     let now = OffsetDateTime::now_utc();
     for (relay, port, seen) in &left {
-        if seen.is_none_or(|t| (now - t).whole_seconds() > 120) && (now - c.started).whole_seconds() > 60 {
+        if seen.is_none_or(|t| !c.st.report_gaps.online(t, now)) && (now - c.started).whole_seconds() > 60 {
             return Err(StepError::err(ErrKind::Network, format!("线路机 {relay} 不在线，入口 {relay}:{port} 摘不掉；线路机恢复后点重试")));
         }
     }
