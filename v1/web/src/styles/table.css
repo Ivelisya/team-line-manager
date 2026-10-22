@@ -46,6 +46,16 @@
 @media (hover: hover) { .th-sort:hover { color: var(--fg); } }
 .th-sort .lucide { width: var(--icon-2xs); height: var(--icon-2xs); color: var(--fg-3); }
 .th-sort[data-dir] .lucide { color: var(--accent); }
+/* 手机上横滑的表：首列（名称）吸在左边、操作列（末列里有按钮）吸在右边，滑到中间也知道是哪一行、点得到「确认 / 撤销」。
+   边缘渐隐靠滚动驱动动画，iOS Safari 不支持，这里不依赖它。吸住的格子要不透明：取表面色，当前行取选中色 */
+@media (max-width: 600px) {
+  .table-wrap:not([data-fit]) .dt:not(.dt-grid) :is(th, td):first-child { position: sticky; left: 0; z-index: 1; background: var(--surface); box-shadow: 1px 0 0 var(--line); }
+  .table-wrap:not([data-fit]) .dt:not(.dt-grid) td:last-child:has(button),
+  .table-wrap:not([data-fit]) .dt:not(.dt-grid):has(td:last-child button) th:last-child { position: sticky; right: 0; z-index: 1; background: var(--surface); box-shadow: -1px 0 0 var(--line), var(--shadow-edge-l); }
+  .table-wrap:not([data-fit]) .dt:not(.dt-grid) thead th:is(:first-child, :last-child) { background: var(--sunken); }
+  .table-wrap:not([data-fit]) .dt tr.is-current > td:first-child { background: var(--selected); box-shadow: inset 2px 0 0 var(--accent), 1px 0 0 var(--line); }
+  .table-wrap:not([data-fit]) .dt tr.acc-sub > td:first-child { background: var(--sunken); }
+}
 .dt-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); padding: var(--sp-8) var(--card-pad); border-top: 1px solid var(--line); font-size: var(--fs-label); color: var(--fg-2); }
 
 /* 可编辑网格（上架批量） */
