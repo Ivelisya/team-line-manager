@@ -240,7 +240,10 @@ WAL 三项由 `deploy/central/install.sh` 写进 `/etc/postgresql/<版本>/main/
    ```
 5. 启动并确认：`systemctl start fleet-server`（启动时跑迁移：备份来自旧版本时补上新迁移）；`curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/api/v1/auth/me` 应为 401；`fleetctl status` 看机器。
 6. 中控 IP 变了：把域名解析改到新机器。agent 按域名上报，解析生效后自动恢复；Caddy 自动签证书。
-7. 删掉 `/root/restore`（里面有密钥）。
+7. 放回了 `etc/fleet/backup.pub` 的，再跑一次第 1 步的 deploy.sh：install.sh 看到这个文件才写拉取用户的 authorized_keys，不重跑 PVE 就一直拉不到。
+8. agent 令牌：每次装 / 升级 agent 都会换令牌、撤销旧的。备份之后升级过 agent 的机器，机器上的令牌在恢复的库里不存在，上报一律 401（线路照常通，但上报、配置下发都停了）。解析生效几分钟后 `fleetctl ls` 里 agent 一直离线的那些，逐台 `fleetctl upgrade-agent <机器> --yes` 重发令牌（中控用恢复的 SSH 密钥登录）；不确定就 `fleetctl upgrade-agent --all --yes`。
+9. 新机器的 SSH 主机指纹变了：PVE 的拉取按 accept-new 只认第一次记下的指纹，会拒绝连接（`systemctl --failed` 里 fleet-backup-pull 失败）。在 PVE 上 `ssh-keygen -R <中控主机>`（拉取用的主机名或 IP），再手动跑一次 `systemctl start fleet-backup-pull` 记下新指纹。
+10. 删掉 `/root/restore`（里面有密钥）。
 
 ## 11. 访问入口
 
