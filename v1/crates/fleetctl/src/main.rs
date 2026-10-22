@@ -364,7 +364,7 @@ enum Cmd {
         #[arg(long)]
         password_env: Option<String>,
     },
-    /// 取消进行中的作业
+    /// 取消进行中的作业（升级 agent 只能在排队时取消，「全部升级」里等它的跟着取消）
     Cancel { id: String },
     /// 上架：先 check 再提交（单台参数或 --file 批量）
     Provision(ProvisionArgs),

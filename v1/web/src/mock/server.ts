@@ -586,12 +586,17 @@ R('POST', '/jobs/([^/]+)/retry', ({ params, body }) => {
   drive(j, 2500, () => { if (!m) return; if (j.kind === 'retire') { finishRetire(m); refreshCounts(); return; } m.lifecycle = 'active'; m.activated_at ??= iso(); m.active_job = null; m.health = { status: 'ok', reasons: [] }; });
   emit({ type: 'job', id: j.id }); emit({ type: 'machines' }); return {};
 });
-/** 取消：进行中的作业，或失败的上架 / 恢复作业（上架 → 退役并清理；恢复 → 退回已退役） */
+/** 取消：进行中的作业，或失败的上架 / 恢复作业（上架 → 退役并清理；恢复 → 退回已退役）；升级 agent 只有排队中的（编排里等它的跟着取消） */
 R('POST', '/jobs/([^/]+)/cancel', ({ params }) => {
   const j = jobOf(params[0]); if (!j.cancellable) throw bad('这个作业不能取消', 409, 'conflict');
   const failed = j.state === 'failed';
-  j.state = 'cancelled'; j.cancellable = false; j.finished_at = iso(); j.steps.forEach((s) => { if (s.state === 'running' || s.state === 'pending' || s.state === 'failed') s.state = 'skipped'; else if (s.state === 'done') s.state = 'compensated'; }); log(j.id, 'warn', '作业已取消，已完成的步骤已补偿');
   const m = db.machines.find((x) => x.id === j.target?.id);
+  if (j.kind === 'upgrade_agent') {
+    // 同中控：排队时取消的没开始过，步骤原样留着
+    j.state = 'cancelled'; j.cancellable = false; j.finished_at = iso(); log(j.id, 'warn', '已取消'); if (m) m.active_job = null;
+    upgradeNext(j); emit({ type: 'job', id: j.id }); emit({ type: 'machines' }); return {};
+  }
+  j.state = 'cancelled'; j.cancellable = false; j.finished_at = iso(); j.steps.forEach((s) => { if (s.state === 'running' || s.state === 'pending' || s.state === 'failed') s.state = 'skipped'; else if (s.state === 'done') s.state = 'compensated'; }); log(j.id, 'warn', '作业已取消，已完成的步骤已补偿');
   if (failed && m && m.lifecycle === 'failed') { m.failed_job = null; finishRetire(m); refreshCounts(); }
   emit({ type: 'job', id: j.id }); return {};
 });
@@ -641,11 +646,41 @@ installAccessMock(R, () => db.machines);
 installPolicyMock(R, { teams: () => db.teams, machines: () => db.machines, emit, user: () => db.user, bad });
 // ---------- 升级 agent ----------
 const UPSTEPS: [string, string][] = [['push', '推送 agent'], ['restart', '重启 agent'], ['verify', '确认上报']];
-function startUpgrade(m: MachineView) {
-  const job = newJob('upgrade_agent', { id: m.id, name: m.name }, UPSTEPS);
+/** 「全部升级」的编排（同中控作业参数 after）：排队中的作业 → 它要等的作业；halted：因为要等的没成功而取消的 */
+const upgradeAfter = new Map<string, string>();
+const halted = new Set<string>();
+/** 开始升级：同中控，已经开始的不能取消（推送、重启到一半中断更危险） */
+function startUpgrade(m: MachineView, job = newJob('upgrade_agent', { id: m.id, name: m.name }, UPSTEPS)) {
+  job.cancellable = false;
   m.active_job = { id: job.id, kind: 'upgrade_agent', state: 'running' };
-  drive(job, 1800, () => { m.active_job = null; if (m.agent) m.agent.version = '1.0.4'; });
+  drive(job, 1800, () => { m.active_job = null; if (m.agent) m.agent.version = '1.0.4'; upgradeNext(job); });
   return job;
+}
+/** 排队等 `after`：排队中的可以取消 */
+function queueUpgrade(m: MachineView, after: string) {
+  const job = newJob('upgrade_agent', { id: m.id, name: m.name }, UPSTEPS);
+  job.state = 'queued'; job.started_at = null; job.steps[0].state = 'pending'; job.steps[0].started_at = null;
+  upgradeAfter.set(job.id, after);
+  m.active_job = { id: job.id, kind: 'upgrade_agent', state: 'queued' };
+  return job;
+}
+/** `done` 结束了：等它的作业，它成功就开始，否则一步不做直接取消（原因同中控 jobs::halted；mock 的升级不会失败） */
+function upgradeNext(done: Job) {
+  for (const [id, after] of [...upgradeAfter]) {
+    if (after !== done.id) continue;
+    upgradeAfter.delete(id);
+    const j = jobOf(id); const m = machine(j.target!.id);
+    if (done.state === 'succeeded') {
+      j.state = 'running'; j.started_at = iso(); j.steps[0].state = 'running'; j.steps[0].started_at = iso();
+      startUpgrade(m, j);
+    } else {
+      j.state = 'cancelled'; j.cancellable = false; j.finished_at = iso(); m.active_job = null; halted.add(id);
+      j.error = halted.has(done.id) ? done.error : `「${done.target?.name}」的升级没有完成（已取消），后面的机器不再升级`;
+      log(id, 'warn', `没有开始：${j.error}`);
+      upgradeNext(j);
+    }
+    emit({ type: 'job', id }); emit({ type: 'machines' });
+  }
 }
 R('POST', '/machines/([^/]+)/upgrade-agent', ({ params }) => {
   const m = machine(params[0]);
@@ -656,10 +691,16 @@ R('POST', '/machines/([^/]+)/upgrade-agent', ({ params }) => {
   return { machine_id: m.id, job_id: job.id };
 });
 R('POST', '/agents/upgrade', () => {
-  // 同中控：线路机在前，第一台做金丝雀（mock 不真的排队，各台照常并发跑完，只给顺序说明）
+  // 同中控：线路机在前，第一台做金丝雀；线路机一台等前一台，落地机都等最后一台线路机（没有线路机时等金丝雀），之后并发
   const ms = db.machines.filter((m) => m.lifecycle === 'active' && m.agent && !m.host_machine && !m.active_job)
     .sort((a, b) => Number(b.kind === 'relay') - Number(a.kind === 'relay'));
-  const jobs = ms.map((m) => ({ machine_id: m.id, name: m.name, job_id: startUpgrade(m).id }));
+  let canary: string | undefined; let lastRelay: string | undefined;
+  const jobs = ms.map((m) => {
+    const after = m.kind === 'relay' ? lastRelay : lastRelay ?? canary;
+    const job = after ? queueUpgrade(m, after) : startUpgrade(m);
+    canary ??= job.id; if (m.kind === 'relay') lastRelay = job.id;
+    return { machine_id: m.id, name: m.name, kind: m.kind, job_id: job.id, after: after ?? null };
+  });
   // 说法同中控 upgrade_order 的几种情形
   const relays = ms.filter((m) => m.kind === 'relay').length; const nodes = ms.length - relays; const c = ms[0]?.name;
   const order = ms.length === 0 ? '没有要升级的机器' : ms.length === 1 ? `只有「${c}」一台`
@@ -667,7 +708,7 @@ R('POST', '/agents/upgrade', () => {
     : relays === 1 ? `先升「${c}」做金丝雀，成功后 ${nodes} 台落地机并发升级；金丝雀失败的话其余的都会取消`
     : nodes === 0 ? `先升「${c}」做金丝雀，成功后其余 ${relays - 1} 台线路机逐台升级；任何一台失败，没开始的都会取消`
     : `先升「${c}」做金丝雀，成功后其余 ${relays - 1} 台线路机逐台升级，线路机都成功后 ${nodes} 台落地机并发升级；任何一台线路机失败，没开始的都会取消`;
-  emit({ type: 'machines' }); return { jobs, order };
+  emit({ type: 'machines' }); return { jobs, skipped: [], order };
 });
 
 // ---------- 换线路机 / 搬空线路机 / 恢复已退役的机器 ----------

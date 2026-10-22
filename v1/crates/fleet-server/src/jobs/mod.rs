@@ -85,7 +85,7 @@ const RETIRE: &[StepDef] = &[
     s("revoke", "撤销令牌", 30),
     s("finalize", "完成退役", 30),
 ];
-// 换线路机：新入口先建好并验收，再摘旧入口，节点全程至少有一个可用入口。detach_old 之后不可回滚（见 cancellable_at）。
+// 换线路机：新入口先建好并验收，再摘旧入口，节点全程至少有一个可用入口。detach_old 之后不可回滚（见 cancel_blocker）。
 const MOVE_ENTRY: &[StepDef] = &[
     s("attach_new", "在新线路机建入口", 60),
     s("firewall_widen", "放行新线路机（节点防火墙）", 300),
@@ -128,10 +128,29 @@ pub fn title_of(kind: &str, key: &str) -> &'static str {
 /// 上架类作业（含恢复）：目标机器处于上架中，失败时机器标为上架失败
 pub fn provisions(kind: &str) -> bool { kind.starts_with("provision_") || kind.starts_with("restore_") }
 
-pub fn cancellable(kind: &str) -> bool { provisions(kind) || kind == "attach_entry" || kind == "move_entry" }
+pub fn cancellable(kind: &str) -> bool { provisions(kind) || matches!(kind, "attach_entry" | "move_entry" | "upgrade_agent") }
 
-/// 作业走到第 `step` 步时还能不能取消：换线路机一旦开始摘旧入口就只能重试到完成（回滚会让节点没有入口）
-pub fn cancellable_at(kind: &str, step: i32) -> bool { cancellable(kind) && !(kind == "move_entry" && step >= MOVE_POINT_OF_NO_RETURN) }
+/// 作业走到第 `step` 步、处于 `state` 时为什么不能取消；能取消返回 None。
+/// 换线路机一旦开始摘旧入口就只能重试到完成（回滚会让节点没有入口）；升级 agent 只能在排队时取消（推送、重启到一半中断更危险）
+pub fn cancel_blocker(kind: &str, step: i32, state: &str) -> Option<&'static str> {
+    if !cancellable(kind) {
+        return Some("这类作业不能取消（可以重试到完成）");
+    }
+    if kind == "move_entry" && step >= MOVE_POINT_OF_NO_RETURN {
+        return Some("旧入口已经开始摘除，不能再取消（取消会让节点没有入口）：失败了点重试到完成");
+    }
+    if !matches!(state, "queued" | "running" | "waiting" | "failed") {
+        return Some("作业已结束");
+    }
+    if kind != "upgrade_agent" || state == "queued" {
+        return None;
+    }
+    Some(if state == "failed" {
+        "失败的升级作业不用取消：它不占着机器，可以重试或重新发起升级"
+    } else {
+        "升级已经开始，不能取消：推送、重启到一半中断更危险，等它结束（新版本有问题会自动换回旧版本）"
+    })
+}
 
 /// 外层超时：步骤自己的 timeout_s 再加 120 秒余量
 fn outer_timeout(d: &StepDef) -> Duration { Duration::from_secs(d.timeout_s as u64 + 120) }
@@ -315,15 +334,17 @@ pub async fn run_forever(st: AppState) {
 /// 领取一个可执行的作业，租约先给 3 分钟；每步开始前会按该步的超时续租。
 /// 升级 agent 排在其它作业之后：「全部升级」一次建一百多个，不能让之后的上架、换线路机、退役排在它们后面。
 /// 同一事务建的作业 created_at 相同，再按 id（UUIDv7，按生成先后递增）：全部升级里先建的线路机先领。
-/// 参数里有 `after`（「全部升级」的编排：要等的作业）的，那个作业结束之前领不到；它没有成功，这个作业领到后不开始、直接取消（见 `halted`）
+/// 参数里有 `after`（「全部升级」的编排：要等的作业）的，那个作业结束之前领不到；它没有成功，这个作业领到后不开始、直接取消（见 `halted`）。
+/// 排队时被取消的不用等：领到就收尾（没开始过，`started_at` 留空）
 pub async fn claim(st: &AppState, owner: &str) -> anyhow::Result<Option<JobRow>> {
     Ok(sqlx::query_as(
         "update job set lease_owner = $1, lease_until = now() + interval '3 minutes',
             state = case when state in ('queued', 'waiting') then 'running'::job_state else state end,
-            started_at = coalesce(started_at, now())
+            started_at = case when state = 'cancelling' then started_at else coalesce(started_at, now()) end
          where id = (select id from job j where state in ('queued', 'running', 'waiting', 'cancelling') and run_after <= now()
                      and (lease_until is null or lease_until < now())
-                     and not exists (select 1 from job p where p.id = (j.params->>'after')::uuid and p.state in ('queued', 'running', 'waiting', 'cancelling'))
+                     and (state = 'cancelling'
+                          or not exists (select 1 from job p where p.id = (j.params->>'after')::uuid and p.state in ('queued', 'running', 'waiting', 'cancelling')))
                      order by kind = 'upgrade_agent', created_at, id for update skip locked limit 1)
          returning id, kind, target_id, params, state::text state, step, created_by",
     )
@@ -709,11 +730,15 @@ mod tests {
     }
 
     #[test]
-    fn move_cancel_window() {
-        assert!(cancellable_at("move_entry", 0) && cancellable_at("move_entry", 3));
-        assert!(!cancellable_at("move_entry", 4) && !cancellable_at("move_entry", 6), "摘旧入口之后不能取消");
+    fn cancel_window() {
+        let can = |kind, step, state| cancel_blocker(kind, step, state).is_none();
+        assert!(can("move_entry", 0, "running") && can("move_entry", 3, "failed"));
+        assert!(!can("move_entry", 4, "running") && !can("move_entry", 6, "failed"), "摘旧入口之后不能取消");
         assert_eq!(defs("move_entry")[MOVE_POINT_OF_NO_RETURN as usize].key, "detach_old");
-        assert!(cancellable_at("restore_vps", 8) && cancellable_at("provision_vps", 8));
-        assert!(!cancellable_at("retire", 0));
+        assert!(can("restore_vps", 8, "failed") && can("provision_vps", 8, "waiting"));
+        assert!(!can("retire", 0, "queued") && !can("provision_vps", 0, "succeeded"));
+        // 升级 agent 只能在排队时取消
+        assert!(can("upgrade_agent", 0, "queued"));
+        assert!(["running", "waiting", "failed", "cancelling"].iter().all(|s| !can("upgrade_agent", 0, s)));
     }
 }
