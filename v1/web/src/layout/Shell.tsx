@@ -1,4 +1,4 @@
-// 外壳：56px 顶栏 + 240px 侧栏 + 内容区。选中项是软色胶囊。≤760px 侧栏收成抽屉。
+// 外壳：56px 顶栏 + 240px 侧栏 + 内容区。选中项是软色胶囊。≤1023px 侧栏收成抽屉。
 import * as React from 'react';
 import { NavLink, Navigate, Outlet, useLocation, useNavigationType } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
