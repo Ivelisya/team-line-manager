@@ -27,7 +27,8 @@ export interface AccessFilter {
 }
 export type TargetSort = 'conns' | 'last' | 'first';
 
-export interface AccessKpi { active_nodes: number; conns: number; targets: number; blocked: number }
+/** `targets` 是各节点分别去重后相加；`unique_targets` 按目标去重（同「域名与 IP」的总数） */
+export interface AccessKpi { active_nodes: number; conns: number; targets: number; unique_targets: number; blocked: number }
 export interface AccessNode { node_id: string; name: string; team: string | null; conns: number; targets: number; domains: number; sources: number | null; blocked: number; last_ts: string | null }
 export interface AccessSummary { kpi: AccessKpi; nodes: AccessNode[]; window_start: string }
 export interface AccessTarget {

@@ -108,7 +108,7 @@ export function AccessPage() {
       <div className="stat-grid" data-stale={summary.isPlaceholderData}>
         <Stat tone="blue" icon={<Server />} label="有活动的节点" value={k ? fmtN(k.active_nodes) : '—'} loading={summary.isLoading} caption={`最近 ${winLabel(f.window)}`} />
         <Stat tone="teal" icon={<Activity />} label="连接记录" info="含已阻止的连接" value={k ? fmtN(k.conns) : '—'} loading={summary.isLoading} />
-        <Stat tone="violet" icon={<Target />} label="节点 × 目标" info={'每个节点访问过的目标数相加：两个节点访问同一个域名算 2 个。\n「域名与 IP」按目标去重，同一个域名只算 1 个'} value={k ? fmtN(k.targets) : '—'} loading={summary.isLoading} />
+        <Stat tone="violet" icon={<Target />} label="访问目标" info="访问过的不同域名与 IP 个数，多个节点访问同一个只算 1 个；同「域名与 IP」的总数" value={k ? fmtN(k.unique_targets) : '—'} loading={summary.isLoading} />
         <Stat tone="bad" icon={<ShieldX />} label="已阻止的连接" value={k ? fmtN(k.blocked) : '—'} loading={summary.isLoading} caption={k && k.conns > 0 ? blockedShare(k.blocked, k.conns) : undefined} />
       </div>
 

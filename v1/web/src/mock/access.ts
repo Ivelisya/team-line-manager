@@ -99,7 +99,7 @@ export function installAccessMock(R: Reg, machines: () => MachineView[]) {
       domains: targets.filter((t) => t.kind === 'domain').length, sources: noSources ? null : n.sources.length, blocked: targets.reduce((s, t) => s + t.blocked, 0),
       last_ts: targets.map((t) => t.last_seen!).sort().pop() ?? null,
     })).sort((a, b) => b.conns - a.conns);
-    return { kpi: { active_nodes: nodes.length, conns: nodes.reduce((s, x) => s + x.conns, 0), targets: nodes.reduce((s, x) => s + x.targets, 0), blocked: nodes.reduce((s, x) => s + x.blocked, 0) }, nodes, window_start: win(query) };
+    return { kpi: { active_nodes: nodes.length, conns: nodes.reduce((s, x) => s + x.conns, 0), targets: nodes.reduce((s, x) => s + x.targets, 0), unique_targets: new Set(rows.flatMap((x) => x.targets.map((t) => t.dest_host))).size, blocked: nodes.reduce((s, x) => s + x.blocked, 0) }, nodes, window_start: win(query) };
   });
 
   R('GET', '/access/targets', ({ query }) => {
