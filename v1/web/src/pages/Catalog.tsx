@@ -156,7 +156,7 @@ const RenumberDialog = resetOnOpen(function RenumberDialog({ team, open, onClose
         {pv.isFetchedAfterMount && pv.isError && <Note tone="bad">{(pv.error as Error).message}</Note>}
         {d && (n === 0
           ? <Note tone="ok">编号已经连续</Note>
-          : <div className="table-wrap" style={{ maxHeight: 300, overflow: 'auto', border: '1px solid var(--line)', borderRadius: 'var(--r-float)' }}>
+          : <div className="table-wrap is-boxed is-capped">
             <table className="dt is-one"><colgroup><col /><col style={{ width: 36 }} /><col /></colgroup>
               <thead><tr><th>当前名称</th><th /><th>调整后</th></tr></thead>
               <tbody>{d.changes.map((c) => <tr key={c.machine_id}><td className="num">{c.old_name}</td><td><ArrowRight size={14} style={{ color: 'var(--fg-3)' }} /></td><td className="strong num">{c.new_name}</td></tr>)}</tbody></table>
@@ -312,7 +312,7 @@ function PlansTab() {
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       <Panel title="套餐" count={list.length} sub={<InfoTip text="同一套餐的机器共用这里的流量配额、价格、周期" />} tools={<><CheckRow className="is-label" checked={showArchived} onChange={setShowArchived}>显示已归档</CheckRow><Button variant="primary" onClick={() => setEdit('new')}><Plus />新建套餐</Button></>} flush>
         <TableWrap>
-          <table className="dt" style={{ minWidth: 880 }}>
+          <table className="dt" style={{ minWidth: 1000 }}>
             <colgroup><col /><col style={{ width: 130 }} /><col style={{ width: 120 }} /><col style={{ width: 96 }} /><col style={{ width: 96 }} /><col style={{ width: 110 }} /><col style={{ width: 76 }} /><col style={{ width: 196 }} /></colgroup>
             <SortHead cols={PLAN_COLS} sort={sort} onSort={setSort} />
             <tbody>
@@ -322,7 +322,7 @@ function PlansTab() {
                   <td>{pname(p.provider_id)}</td>
                   <td>{planSpec(p)}<span className="sub">{p.disk_gb ? `磁盘 ${p.disk_gb} GiB` : ''}</span></td>
                   <td className="r"><Num f={F.mbps(p.bandwidth_mbps)} /></td><td className="r"><Num f={limitGb(p.traffic_gb)} /></td>
-                  <td className="r"><span className="num">{F.money(p.price_cents, p.currency)}</span><span className="sub">/ {cycleLabel(p.cycle)}</span></td>
+                  <td className="r"><span className="num">{F.money(p.price_cents, p.currency)}</span> <span className="t-sub">/ {cycleLabel(p.cycle)}</span></td>
                   <td className="r num"><CountLink n={p.machine_count} to={`/nodes?plan=${p.id}`} /></td>
                   <td className="r"><span className="row" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
                     <Button size="sm" variant="quiet" onClick={() => setEdit(p)}><Pencil size={13} />编辑</Button>

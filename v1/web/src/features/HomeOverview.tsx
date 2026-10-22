@@ -116,7 +116,7 @@ function ClusterPanel({ o }: { o: Overview | undefined }) {
     <section className="cluster" aria-label="集群状态">
       <header className="cluster-head">
         <h2 className="cluster-title"><Activity />集群状态</h2>
-        {o && <span className="cpill" data-tone={down ? 'bad' : 'ok'}><i />{down ? '有故障' : '状态健康'}</span>}
+        {o && <span className="pill is-outlined" data-tone={down ? 'bad' : 'ok'}>{down ? '有故障' : '状态健康'}</span>}
       </header>
       <div className="cluster-box">
         <div className="cluster-row">

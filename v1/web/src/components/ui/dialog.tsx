@@ -26,7 +26,7 @@ const bounceWhenKept = (cb: InteractHandler, panel: React.RefObject<HTMLDivEleme
   if (ms > 0) panel.current?.animate([{ scale: '1' }, { scale: '1.02' }, { scale: '1' }], { duration: ms, easing: getComputedStyle(document.documentElement).getPropertyValue('--ease-out').trim() });
 };
 
-// 毛玻璃遮罩（对话框、命令面板）开着时在 <html> 上挂 data-overlay，extras.css 据此停掉下面一层（页面、抽屉）的循环动画和读数过渡，
+// 毛玻璃遮罩（对话框、命令面板）开着时在 <html> 上挂 data-overlay，overrides.css 据此停掉下面一层（页面、抽屉）的循环动画和读数过渡，
 // KPI 数字也直接到位（useCountUp）。以前写成 body:has(.overlay[data-state="open"]) …：
 // :has 的参数里有 [data-state]，悬停提示、菜单开合一改 data-state，浏览器就要把整页几千个元素重新匹配一遍。
 // 计数而不是开关：对话框叠对话框、关一个开一个交替时不会被提前清掉。遮罩播退场动画期间仍算开着（模糊还在）。
@@ -58,6 +58,8 @@ export const DialogContent = React.forwardRef<React.ElementRef<typeof DialogPrim
         <DialogPrimitive.Content ref={panel} className={cn('dialog', size === 'md' && 'dialog-md', size === 'lg' && 'dialog-lg', className)}
           onPointerDownOutside={keepOnToast(onPointerDownOutside)} onInteractOutside={bounceWhenKept(onInteractOutside, panel)} onOpenAutoFocus={onOpenAutoFocus ?? skipInfoTip} {...p}>
           {children}
+          {/* 手机上对话框是底部面板，右上角补关闭键；宽屏 display: none（components.css .dialog-x） */}
+          <DialogPrimitive.Close asChild><IconButton label="关闭" className="dialog-x"><X size={16} /></IconButton></DialogPrimitive.Close>
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>
     );

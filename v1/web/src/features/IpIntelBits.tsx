@@ -121,7 +121,7 @@ export function SourceProfile({ id, window, relay }: { id: string; window: Profi
   return (
     <Section>
       <SectionHeader title="来源画像" meta={<>近 {span} · {d.total_sources} 个来源{relay && <InfoTip text="汇总这台线路机名下所有节点的外部来源" />}</>} />
-      {/* 换时间范围、新数据未到时沿用的旧画像调淡（extras.css [data-stale]） */}
+      {/* 换时间范围、新数据未到时沿用的旧画像调淡（components.css [data-stale]） */}
       <div data-stale={q.isPlaceholderData}>
         {d.degraded && <Note tone="warn" icon={<ShieldQuestion size={16} />}>IP 库未安装 <InfoTip text={INSTALL_CMD} /></Note>}
         {d.empty ? <div className="hint">这段时间没有来源记录</div> : d.total_conns === 0 && !d.degraded ? <div className="hint">只有我方机器或内网的连接</div> : (

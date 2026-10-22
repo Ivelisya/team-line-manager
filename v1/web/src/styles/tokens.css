@@ -9,9 +9,10 @@
   --canvas-glow: radial-gradient(1100px 560px at 50% -8%,
       color-mix(in srgb, var(--accent) 5%, transparent), transparent 60%); /* H --canvas-glow，只在亮色 */
   --surface: #ffffff;                   /* H --card：卡片、面板、KPI、顶栏、侧栏 */
-  --raised: #ffffff;                    /* H 浮层底（弹层、排序面板、tooltip、toast、命令面板、对话框） */
+  --raised: #ffffff;                    /* H 浮层底（下拉选择、可搜下拉、命令面板、对话框；毛玻璃弹层不支持时的回退）；提示框另有 --tip-* */
   --sunken: #f3f4f6;                    /* ≈ H --card-2 #f9fafb 与 O --card-2 #f0f2f7 之间：表头带、展开行、日志块、键帽 */
   --hover: rgba(17, 24, 39, 0.04);      /* 新增：H 的 #f9fafb 悬停在白卡上看不见（dna-home I2），改半透明，画布和白卡上都可见 */
+  --row-highlight: color-mix(in srgb, var(--fg) 8%, transparent); /* 菜单项、下拉项、可搜下拉项的键盘 / 指针高亮：比 --hover 深一倍，方向键移动时看得出在哪（暗色 10%） */
   --track: rgba(17, 24, 39, 0.05);      /* ≈ 分段轨道：H #f9fafb / O #f0f2f7；半透明后在画布和白卡上都看得见 */
   --thumb: #ffffff;                     /* H 分段选中项 */
   --selected: color-mix(in srgb, var(--accent) 6%, var(--surface)); /* O 表格选中行 accent 6% */
@@ -20,6 +21,10 @@
      不支持 backdrop-filter 时回退实底 --raised（components.css）。对话框、抽屉、提示框保持实底 */
   --glass: color-mix(in srgb, var(--raised) 84%, transparent);
   --glass-blur: saturate(180%) blur(20px);
+  /* 吸附条材质（顶栏、上架页底部操作条、抽屉页签里的吸顶条）：表面 78% + 模糊提饱和，不支持 backdrop-filter 时回退实底 --surface（overrides.css） */
+  --glass-bar: color-mix(in srgb, var(--surface) 78%, transparent);
+  --glass-bar-blur: saturate(180%) blur(12px);
+  --scrim-stacked: rgb(0 0 0 / 0.12);   /* 抽屉上再叠对话框 / 命令面板时的第二层遮罩：抽屉的遮罩已压暗，这层只轻压（components.css） */
 
   /* ---------- 2. 线（2 级 + 浮层边线） ---------- */
   --line: rgba(17, 24, 39, 0.08);       /* H --line（O #e3e6ef、N rgba(57,65,90,.12) 统一到它） */
@@ -29,13 +34,15 @@
   /* ---------- 3. 文字（2 级 + 1 个只做装饰的第三级） ---------- */
   --fg: #111827;                        /* H --fg（O #202333、N #262936 / 原生表格 #29316b 统一到它） */
   --fg-2: #6b7280;                      /* H --fg-2（O #687087、N #687084）：标签、副行、单位、图标、未选中控件 */
-  --fg-3: #9ca3af;                      /* 新增：只给占位符、禁用、缺测“—”、“未设置”、过期旧值、表格行尾 ›；不承载关键信息 */
+  --fg-3: #9ca3af;                      /* 白底约 2.5:1，不达 AA：只给占位符、禁用、缺测“—”、“未设置”、过期 / 安静的旧值、行尾 › 与装饰图标；
+                                           要读的字（单位、说明行、坐标轴、分组小标题、日期分段、页码的「共 N 页」）一律 --fg-2 */
 
   /* ---------- 4. 强调（一个族，靛蓝） ---------- */
   --accent: #5b5bd6;                    /* H --accent（O #535bce/#676ee8、N iris #676ee8 统一到它）：进度填充、额度条、选中下划线、链接 */
   --accent-strong: color-mix(in srgb, var(--accent) 86%, #000); /* 主按钮悬停/按下，≈ O 描边 #535bce */
   --accent-solid: #5b5bd6;              /* 主按钮底：亮暗同值，白字 5.4:1（修 O 暗色主按钮深色粗字，dna-ops A5） */
   --on-accent: #ffffff;
+  --accent-soft-strong: color-mix(in srgb, var(--accent-soft) 82%, var(--accent)); /* 软底加深一级：顶栏按钮悬停 / 展开 */
   --accent-soft: #e3e4fb;               /* N 侧栏选中胶囊底 --accent-4（用户喜欢的“软靛蓝胶囊”）；也用于顶栏图标按钮底、已选筛选 chip、命令面板当前项 */
   --accent-soft-fg: color-mix(in srgb, var(--accent) 86%, #000); /* N 选中字 #5961dc，加深到 ≥4.5:1 */
   --focus: color-mix(in srgb, var(--accent) 75%, transparent);   /* 焦点环 2px：强调色 75%，白底约 3.3:1（粉紫 3.7:1）、暗色卡片上 3.3:1 以上，过 3:1；原 55% 只有 2.3–2.5:1（H 3px 20% 光环太淡，dna-home I3） */
@@ -46,6 +53,8 @@
   --warn: #d97706;    --warn-text: #b45309;                     /* H/O --warn */
   --bad: #dc2626;     --bad-text: #b91c1c;                      /* H/O --bad */
   --bad-solid: #dc2626;                                         /* 危险按钮、告警计数徽标的实底：亮暗同值，白字 4.8:1（暗色 --bad 上白字只有 3.8:1） */
+  --bad-solid-strong: color-mix(in srgb, var(--bad-solid) 86%, black); /* 危险按钮悬停 */
+  --on-solid: #ffffff;                                          /* 实底（危险按钮、计数徽标）上的字、开关圆钮 */
   --info: #2563eb;    --info-text: #1d4ed8;                     /* H/O --info（维护中、进行中） */
   --neutral: #6b7280; --neutral-text: #4b5563;                  /* H --neutral（未知、跳过、排队、无主机） */
   --tint: 10%;                                                  /* H 状态底色 10%（暗 16%） */
@@ -54,6 +63,7 @@
   --bad-bg: color-mix(in srgb, var(--bad) var(--tint), transparent);
   --info-bg: color-mix(in srgb, var(--info) var(--tint), transparent);
   --neutral-bg: color-mix(in srgb, var(--neutral) var(--tint), transparent);
+  --bad-bg-strong: color-mix(in srgb, var(--bad) calc(var(--tint) + 8%), transparent); /* 故障底加深一级：顶栏告警胶囊悬停 / 预览开着 */
 
   /* ---------- 6. 图表（dataviz validate_palette.js：#ffffff / #161a21 上 all-pairs 全部通过） ---------- */
   --chart-1: #5b5bd6;                   /* ↓ 下行 / 接收、单序列默认（= 强调色；H 进度线与额度条同色） */
@@ -69,39 +79,55 @@
   --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace; /* 只给 UUID 前缀、令牌、指纹、日志正文 */
   --num-variant: tabular-nums slashed-zero;                     /* H 全部数字 */
 
-  /* 字阶：只用首页出现过的字号（O 17 种、N 8 种、H 8 种收拢成 7 个） */
-  --fs-micro: 11px;  --lh-micro: 16px;  /* H 11：资源副行、IP 版本标记、表格第三级、坐标轴刻度 */
+  /* 字阶：正文 7 档（O 17 种、N 8 种、H 8 种收拢）+ 首页分区标题 + 大读数 4 档（--fs-display ＞ --fs-kpi ＞ --fs-metric ＞ --fs-metric-sm） */
+  --fs-micro: 11px;  --lh-micro: 16px;  /* H 11：资源副行、IP 版本标记、表格第三级、坐标轴刻度、读数单位、计数徽标 */
   --fs-label: 12px;  --lh-label: 18px;  /* H 12：标签、副行、单位、chip、表头、小按钮、鲜度文字 */
   --fs-body: 13px;   --lh-body: 20px;   /* H/O/N 13：正文、字段值、表格、按钮、输入（H 19.5 取 20） */
   --fs-emph: 15px;   --lh-emph: 22px;   /* H 15：卡内大读数（持续运行/到期）、小卡片与紧凑卡标题、面板标题（O 15） */
   --fs-title: 16px;  --lh-title: 22px;  /* H 16：大卡片标题；抽屉标题（O 17）、对话框标题（O 19、N 18）统一到它 */
+  --fs-section: 18px; --lh-section: 26px; /* 首页大分区标题（监控总览、服务器集群） */
   --fs-page: 24px;   --lh-page: 32px;   /* H/O 24：页面标题（N 22/17 统一到它） */
-  --fs-kpi: 27px;    --lh-kpi: 32px;    /* H 27：KPI 主值（O 28 系统字统一到它） */
+  --fs-display: 34px;                   /* 不带框的总览大数（软路由页头），行高 1 */
+  --fs-kpi: 24px;    --lh-kpi: 30px;    /* KPI 主值：首页 KPI 卡、集群在线率、访问规则预览的汇总（原 27 / 26 / 24 三种统一） */
+  --fs-metric: 20px;                    /* 卡内主读数：节点卡实时速率、窄屏 KPI、页头大数的分母 */
+  --fs-metric-sm: 17px;                 /* 小卡片 / 紧凑卡的实时速率 */
 
-  --fw-regular: 400;                    /* 字重只留 3 档（H 11 档：400…720） */
+  --fw-regular: 400;                    /* 字重 4 档（H 11 档：400…720）：正文 / 控件 / 标题与读数 / 首页大标题与 KPI 数字 */
   --fw-medium: 500;
   --fw-semibold: 600;
+  --fw-bold: 700;                       /* 只给首页：分区标题、问候语、KPI 与集群读数、小图标题 */
 
   --tracking-title: -0.01em;            /* H 页面标题、卡片标题（O −0.6px、N 品牌 +.015em 统一到它） */
 
   /* ---------- 8. 圆角：4 档 + 1 个限定用途的小圆角（O/N/H 共 11 种以上收拢） ---------- */
   --r-card: 14px;                       /* H/O 卡、面板、KPI、对话框、命令面板（N 12、O 对话框 16、H 详情 20/16 统一到它） */
-  --r-float: 10px;                      /* H 条带与浮层：筛选条、弹层、菜单、tooltip、toast、卡内信息格、提示条、日志块 */
-  --r-control: 8px;                     /* H/O 按钮、输入、下拉、图标按钮、侧栏项、菜单项（N 9 / 4.4、H 9 统一到它） */
-  --r-pill: 999px;                      /* H 分段控件、chip、状态 pill、额度轨道 */
-  --r-xs: 4px;                          /* 只给复选框和键帽（H KPI 图标按钮 4 改为 8） */
-  /* 心跳格、资源进度线、表格：直角（H 原样） */
+  --r-float: 10px;                      /* H 条带与浮层：筛选条、弹层、菜单、toast、图表提示、卡内信息格、提示条、日志块、带框小表 */
+  --r-control: 8px;                     /* H/O 按钮、输入、下拉、图标按钮、侧栏项、提示框与迹线读数（N 9 / 4.4、H 9 统一到它）；菜单项是 --r-float 减菜单内边距 */
+  --r-pill: 999px;                      /* H 分段控件、chip、状态 pill、额度轨道、计数徽标 */
+  --r-section: 22px;                    /* 首页大分区底（.hsec），比卡片大一级，卡片浮在里面 */
+  --r-inner: 12px;                      /* 卡里再套一层的块：集群状态的在线率框与小图 */
+  --r-tag: 6px;                         /* 小方块：彩色标签、品牌标、22px 极小按钮（复制、通知关闭） */
+  --r-xs: 4px;                          /* 复选框、键帽、子菜单筛选框、可点的读数与文字按钮的焦点 / 悬停底 */
+  /* 只留字面量的极小圆角：心跳格 2px、图例色块 2px、国旗 3px、日志行 3px、页签下划线与时间线连线 1px；资源进度线、表格直角（H 原样） */
 
   /* ---------- 9. 阴影：卡片、KPI、面板有一层很轻的静止抬升（owner 2026-10-21 放开，原“卡片与面板无阴影”作废）；浮层分两级 ---------- */
   --shadow-card: 0 1px 2px rgba(17, 24, 39, 0.04), 0 4px 16px rgba(17, 24, 39, 0.04);        /* 卡片/KPI/面板静止态 */
   --shadow-card-hover: 0 1px 2px rgba(17, 24, 39, 0.05), 0 10px 24px -6px rgba(17, 24, 39, 0.1); /* 可点击卡片悬停：更深一点，落在下方配合上浮（参照 CFSM-SAO 0 10px 24px -6px） */
   /* 浮层两级（原来一份 --shadow-float 通用，菜单和对话框一样深，层次分不出来）：近处一层收边 + 远处一层落影 */
-  --shadow-pop: 0 2px 6px rgb(17 24 39 / 0.06), 0 12px 28px -6px rgb(17 24 39 / 0.16);      /* 锚定弹层：菜单、右键、下拉、悬浮卡、日历、作业弹层、toast、图表提示 */
+  --shadow-pop: 0 2px 6px rgb(17 24 39 / 0.06), 0 12px 28px -6px rgb(17 24 39 / 0.16);      /* 锚定弹层：菜单、右键、下拉、悬浮卡、日历、作业弹层、toast、图表提示、提示框 */
   --shadow-modal: 0 8px 20px rgb(17 24 39 / 0.08), 0 28px 64px -12px rgb(17 24 39 / 0.28); /* 模态面板：对话框、命令面板、节点抽屉、窄屏侧栏 */
   --shadow-thumb: 0 1px 4px rgba(0, 0, 0, 0.12);    /* H --segment-shadow：分段选中项（O 用线色当阴影，看不见） */
   --shadow-btn: 0 1px 2px rgba(0, 0, 0, 0.08);      /* O 主按钮 */
+  --shadow-bar-up: 0 -8px 24px -12px rgb(17 24 39 / 0.14);   /* 吸底条（上架页底部操作条）：阴影朝上 */
+  --shadow-edge-l: -8px 0 12px -10px rgb(17 24 39 / 0.25);   /* 右吸附列的左缘（批量网格「检查结果」列）：和滑到下面的格子分开 */
+  /* 提示框（.tooltip 与首页迹线的悬停读数）：亮色反色实底；暗色反色会是一块近白的亮斑，改比浮层再亮一级的深灰底 + 正文色，0.5px 内描边收边 */
+  --tip-bg: var(--fg); --tip-fg: var(--canvas); --tip-ring: transparent;
 
-  /* ---------- 10. 间距（偶数 px；首页节奏） ---------- */
+  /* 透明度：禁用的控件；换数据期间调淡的旧值（[data-stale]、安静卡片的格条与点阵） */
+  --o-disabled: 0.45;
+  --o-stale: 0.45;
+
+  /* ---------- 10. 间距（偶数 px；首页节奏）。首页卡内少数 5 / 7 / 9 / 11 / 13px 是对齐 probe 原稿的微调，保留字面量 ---------- */
   --sp-2: 2px; --sp-4: 4px; --sp-6: 6px; --sp-8: 8px; --sp-10: 10px;
   --sp-12: 12px; --sp-14: 14px; --sp-16: 16px; --sp-20: 20px; --sp-24: 24px;
   --gutter: 24px;                       /* H/O 内容区内边距（N 16 统一到它）；≤820 为 16 */
@@ -112,8 +138,12 @@
   --inline-gap: 6px;                    /* H 行内元素（圆点、国旗、名称之间） */
   --control-gap: 8px;                   /* 控件之间 */
 
-  /* ---------- 11. 控件尺寸（4 档高度 + chip） ---------- */
+  /* ---------- 11. 控件尺寸：控件 4 档高度（28 / 32 / 36 / 40）、胶囊 4 档（18 / 20 / 22 / 24）、22px 极小按钮、图标 5 档 ---------- */
+  --h-chip-sm: 18px;                    /* 小号标记：IP 版本标、键帽、卡内彩色标签、错误类别 */
   --h-chip: 20px;                       /* H 标签/状态 chip */
+  --h-tag: 22px;                        /* 彩色标签、集群状态胶囊、规则里的域名标 */
+  --h-chip-lg: 24px;                    /* 图例胶囊、出口关系图的胶囊 */
+  --h-xs: 22px;                         /* 极小图标按钮：复制、通知关闭 */
   --h-sm: 28px;                         /* H 卡内文字按钮“访问记录/管理节点”；表格内按钮与图标按钮 */
   --h-md: 32px;                         /* H 卡头图标按钮、地区/套餐筛选 chip、菜单项、侧栏项内容区 */
   --h-lg: 36px;                         /* O 页头与工具条：按钮、输入、下拉、搜索、排序、分段轨道外框（H 分段轨道 40 收到 36） */
@@ -121,9 +151,14 @@
   --seg-pad: 3px;                       /* O 分段轨道内边距 3（H 4） */
   --seg-item: 30px;                     /* = --h-lg − 2 × --seg-pad */
   --seg-item-sm: 22px;                  /* 小号分段（面板头里的时间范围）：轨道 28 */
+  /* 图标 5 档：写在 .xxx .lucide 上的尺寸一律用它们 */
+  --icon-3xs: 11px;                     /* 国旗位置的小地球、状态胶囊前的图标 */
+  --icon-2xs: 12px;                     /* chip、复选框、表头排序、步骤节点、展开箭头、卡内运行读数的标签 */
   --icon-xs: 13px;                      /* H 卡内标签图标 */
-  --icon-sm: 14px;                      /* 按钮、表格内图标 */
+  --icon-sm: 14px;                      /* 按钮、表格内图标、菜单项、KPI 卡标签 */
+  --icon-md: 16px;                      /* 命令面板结果、集群状态标题、时间线节点 */
   --icon-stroke: 1.5;                   /* H lucide 1.5（N 默认 2 统一到它） */
+  --icon-stroke-strong: 2;              /* 加粗一级：彩色的指标 / 方向小图标、步骤节点与复选框里的勾（原 2 / 2.2 / 2.4 / 2.5 四种） */
   --dot: 6px;                           /* H 状态圆点 */
   --flag-w: 21px; --flag-h: 14px;       /* ≈ H 卡片国旗 23×15、地区 chip 22×14，取 3:2 */
 
@@ -136,6 +171,7 @@
   --section-line: rgba(17, 24, 39, 0.06);
   --cell-off: rgba(24, 24, 27, 0.09);   /* 格条 / 圆环 / 点阵的未点亮色 */
   --m-cpu: #3b82f6; --m-mem: #8b5cf6; --m-disk: #e97b35; --m-load: #ec4899;
+  --m-cpu-text: #2563eb;                /* 同色当 15px 文字（节点卡「已上架」）：#3b82f6 白底只有 3.7:1，加深一级 5.2:1；暗色沿用 --m-cpu */
   /* 速率量级色（卡片、表格、环形卡的速率读数与点阵）：浅色底上要当文字读，对比度都在 4.5:1 以上（原来的琥珀约 2.5:1）；深色主题另有一套 */
   --speed-idle: #1d7f4f; --speed-low: #9a6400; --speed-high: #b4541a; --speed-max: #c23a31;
   --tag-blue-bg: rgba(37, 99, 235, 0.12);   --tag-blue-fg: #1d4ed8;
@@ -146,7 +182,7 @@
   --tag-cyan-bg: rgba(8, 145, 178, 0.14);    --tag-cyan-fg: #0e7490;
   --tag-amber-bg: rgba(245, 158, 11, 0.16);  --tag-amber-fg: #b45309;
   --tag-green-bg: rgba(34, 197, 94, 0.14);   --tag-green-fg: #15803d;
-  --tag-gold-fg: #ca8a04; --tag-sky-fg: #0284c7;
+  --tag-gold-fg: #a16207; --tag-sky-fg: #0284c7;     /* 金色当图标 / 文字：#ca8a04 白底只有 2.9:1 */
   --tag-gray-bg: rgba(107, 114, 128, 0.14);  --tag-gray-fg: #4b5563;
   --cell-stagger: 14ms;                 /* 格条首次扫亮：每格多给的时长（home.css .cells 用 12 格的量加在 --dur-data 上） */
 
@@ -168,29 +204,34 @@
   --dialog-md: 660px;                   /* O */
   --dialog-lg: 760px;                   /* O wide */
   --palette-w: 640px;
-  --popover-w: 248px;                   /* H 今日流量弹层 */
-  --card-min-large: 360px;              /* H 大卡片 */
+  /* 弹层宽度 3 档：菜单最小宽 / 日历、悬浮卡、可搜下拉、提示框最大宽 / 顶栏的作业与告警列表 */
+  --pop-w-sm: 168px; --pop-w-md: 280px; --pop-w-lg: 320px;
+  --card-min-large: 340px;              /* H 大卡片：1440 宽（侧栏展开）时分区内宽约 1090，排 3 列（360 只排得下 2 列、每张约 540） */
   --card-min-small: 340px;              /* H 小卡片 */
   --card-min-compact: 260px;            /* H 紧凑（组件原意 260）：视口约 ≥1420（侧栏展开）排 4 列；再窄卡内放不下，不要再压 */
 
-  /* ---------- 15. 动效：6 个时长 + 2 条曲线 + 3 档按下缩放。每条过渡都写“时长令牌 + 曲线令牌”，不留默认 ease；
-     系统“减少动态效果”时时长归零（文件末尾）。motion 的弹簧（lib/motion.tsx SPRING）只管滑块与卡片重排，不在这里 ---------- */
+  /* ---------- 15. 动效：7 个时长 + 2 条曲线 + 3 档按下缩放。每条过渡都写“时长令牌 + 曲线令牌”，不留默认 ease；
+     系统“减少动态效果”时时长归零（overrides.css）。motion 的弹簧（lib/motion.tsx SPRING）只管滑块与卡片重排，不在这里 ---------- */
   --dur-press: 80ms;                    /* 按下缩放：快按，松开按元素自己的 --dur-2 慢回 */
   --dur-1: 140ms;                       /* 悬停与颜色等原地变化；锚定弹层、顶部面板的退场 */
   --dur-2: 220ms;                       /* 浮层与面板进场、松开回弹、悬停上浮、页签内容；抽屉与 toast 的退场 */
   --dur-3: 340ms;                       /* 边缘抽屉滑入（节点抽屉、窄屏侧栏） */
   --dur-data: 450ms;                    /* 数据图形：格条首次扫亮、圆环进场、进度线、曲线展开、KPI 滚数（lib/useCountUp 读它）。格条、圆环、心跳格之后的读数变化不过渡 */
-  --dur-loop: 2s;                       /* 循环的统一节拍：卡片流量标签（.flow-live）的呼吸、作业徽标、状态胶囊脉冲、骨架、步骤环 */
+  --dur-spin: 0.9s;                     /* 转圈一周：按钮加载、进行中胶囊、状态标、进度细纹；减弱动效时放慢到 2s（overrides.css），不停——停住的转圈像坏了的图标 */
+  --dur-loop: 2s;                       /* 循环的统一节拍：卡片流量标签（.flow-live）的呼吸、作业徽标、骨架、步骤环（转圈另用 --dur-spin） */
   --ease-out: cubic-bezier(0.32, 0.72, 0, 1); /* 苹果式先快后缓：所有进场、移动到位、回弹 */
   --ease-std: cubic-bezier(0.4, 0, 0.2, 1);   /* 原地状态变化（颜色、透明度）、退场 */
   --press-sm: 0.94;                     /* 按下缩放（components.css「交互状态」）：小控件——图标按钮、顶栏按钮、复制、关闭、展开箭头、日历格 */
-  --press-md: 0.97;                     /* 文字控件——按钮、筛选 chip、分段、页签、图例、搜索入口、卡片名称、告警胶囊 */
+  --press-md: 0.97;                     /* 文字控件——按钮、筛选 chip、分段、页签、图例、搜索入口、卡片名称、线路机名、关系图胶囊、告警胶囊 */
   --press-lg: 0.98;                     /* 块——KPI 卡、卡内可点的读数 */
   --state-press: linear-gradient(var(--hover), var(--hover)); /* 行（菜单项、表格行、导航项、作业项…）按下不缩放：悬停底上再叠这一层 */
 
   /* ---------- 16. 层级 ---------- */
-  --z-sticky: 10; --z-topbar: 30; --z-drawer: 40;
-  --z-dialog: 50; --z-popover: 60; --z-palette: 65; --z-toast: 70; --z-tooltip: 80; /* 弹层（下拉、日期、菜单）在对话框之上，否则对话框里的下拉被盖住 */
+  /* 叠放顺序（从下到上）：吸顶表头 10 ＜ 顶栏、侧栏 30 ＜ 终端窗口 38 ＜ 抽屉遮罩 39 ＜ 节点抽屉 40 ＜ 窄屏侧栏 41 ＜ 对话框与遮罩 50
+     ＜ 弹层（下拉、日期、菜单）60 ＜ 命令面板遮罩 64 ＜ 命令面板 65 ＜ toast 70 ＜ 提示框 80 ＜ 跳到正文 90。
+     弹层在对话框之上，否则对话框里的下拉被盖住；终端在抽屉遮罩之下，临时打开的抽屉、对话框都盖在它上面 */
+  --z-sticky: 10; --z-topbar: 30; --z-term: 38; --z-drawer-scrim: 39; --z-drawer: 40; --z-nav: 41;
+  --z-dialog: 50; --z-popover: 60; --z-palette-scrim: 64; --z-palette: 65; --z-toast: 70; --z-tooltip: 80; --z-skip: 90;
 
   /* ---------- 17. 调色板：点缀渐变（靛蓝预设 = 原版，平涂；粉紫默认见文件末尾“调色板”） ---------- */
   --grad-soft: var(--accent-soft);      /* 侧栏当前项、已选胶囊的底 */
@@ -219,6 +260,7 @@
   --section: #121214;
   --section-line: rgba(255, 255, 255, 0.07);
   --hover: rgba(255, 255, 255, 0.05);
+  --row-highlight: color-mix(in srgb, var(--fg) 10%, transparent);
   --track: rgba(255, 255, 255, 0.07);
   --thumb: #2e2e33;
   --selected: color-mix(in srgb, var(--accent) 10%, var(--surface));
@@ -229,7 +271,7 @@
   --fg-2: #a1a1aa;
   --fg-3: #71717a;
   --cell-off: rgba(255, 255, 255, 0.08);
-  --m-disk: #f97316;
+  --m-disk: #f97316; --m-cpu-text: var(--m-cpu);
   --speed-idle: #10b981; --speed-low: #f59e0b; --speed-high: #f97316; --speed-max: #ef4444;
   --tag-blue-bg: rgba(59, 130, 246, 0.18);   --tag-blue-fg: #60a5fa;
   --tag-orange-bg: rgba(249, 115, 22, 0.18); --tag-orange-fg: #fb923c;
@@ -265,6 +307,10 @@
   --shadow-btn: none;
   --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.25);                 /* 暗色：近乎不可见，靠 1px 边线分层 */
   --shadow-card-hover: 0 12px 28px -6px rgba(0, 0, 0, 0.6);
+  --shadow-bar-up: 0 -8px 24px -12px rgb(0 0 0 / 0.6);
+  --shadow-edge-l: -8px 0 12px -10px rgb(0 0 0 / 0.7);
+  --tip-bg: #3a3a3f; --tip-fg: var(--fg); --tip-ring: rgb(255 255 255 / 0.1);
+  --scrim-stacked: rgb(0 0 0 / 0.24);   /* 暗底上同样的压暗看不出来，加一档 */
 }
 
 :root:not([data-palette="indigo"]) {
@@ -284,6 +330,8 @@
   --shadow-thumb: 0 1px 4px rgba(42, 11, 61, 0.14);
   --shadow-card: 0 1px 2px rgba(42, 11, 61, 0.04), 0 4px 16px rgba(42, 11, 61, 0.05);        /* 粉紫：阴影带一点紫调 */
   --shadow-card-hover: 0 1px 2px rgba(42, 11, 61, 0.05), 0 10px 24px -6px rgba(42, 11, 61, 0.11);
+  --shadow-bar-up: 0 -8px 24px -12px rgb(42 11 61 / 0.15);
+  --shadow-edge-l: -8px 0 12px -10px rgb(42 11 61 / 0.25);
 }
 :root:not([data-palette="indigo"])[data-theme="dark"] {
   /* 表面、线、文字与上面的炭黑暗色相同（这里要重写一遍，否则粉紫亮色块的同级选择器会盖住它们）；只保留粉紫的强调色 */
@@ -302,9 +350,6 @@
   --shadow-thumb: 0 1px 3px rgba(0, 0, 0, 0.5);
   --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.25);
   --shadow-card-hover: 0 12px 28px -6px rgba(0, 0, 0, 0.6);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  /* 循环动画（--dur-loop）不靠归零，各处显式 animation: none（extras.css 末尾、cards.css） */
-  :root { --dur-press: 0ms; --dur-1: 0ms; --dur-2: 0ms; --dur-3: 0ms; --dur-data: 0ms; --cell-stagger: 0ms; }
+  --shadow-bar-up: 0 -8px 24px -12px rgb(0 0 0 / 0.6);
+  --shadow-edge-l: -8px 0 12px -10px rgb(0 0 0 / 0.7);
 }

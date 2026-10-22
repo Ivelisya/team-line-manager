@@ -68,7 +68,7 @@ export function NodeDrawer() {
               <Flag country={m.country} manual={!!m.country_set} ip={m.ip} />
               <div className="m-head" style={{ flex: 1 }}>
                 <div className="m-head-row"><SheetTitle className="drawer-title ellipsis">{m.name}</SheetTitle><HealthPill m={m} /><MachineTags m={m} /></div>
-                <SheetDescription className="ellipsis" style={{ margin: 0, color: 'var(--fg-2)', fontSize: 12 }}>{m.ip} · {m.host_machine ? `同机 · ${m.host_machine.name}` : m.plan?.name ?? '未设套餐'}{!m.provider && ' · 未设供应商'}</SheetDescription>
+                <SheetDescription className="drawer-sub ellipsis">{m.ip} · {m.host_machine ? `同机 · ${m.host_machine.name}` : m.plan?.name ?? '未设套餐'}{!m.provider && ' · 未设供应商'}</SheetDescription>
               </div>
               {sib && (
                 <div className="drawer-nav">
@@ -100,7 +100,7 @@ export function NodeDrawer() {
                 </Note>
               )}
               <div key={tab} className="tab-pane">
-                <React.Suspense fallback={<Skeleton h={180} style={{ borderRadius: 'var(--r-float)' }} />}>
+                <React.Suspense fallback={<Skeleton h={180} className="is-float" />}>
                   {tab === 'overview' && <OverviewTab m={m} />}
                   {tab === 'quality' && <QualityTab m={m} />}
                   {tab === 'traffic' && <TrafficTab m={m} />}

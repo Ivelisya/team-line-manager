@@ -97,7 +97,7 @@ export function JobsPage() {
             <div key={j.id} data-id={j.id} className="job-item" role="button" tabIndex={0} aria-current={j.id === selected} onClick={() => go(j.id)}
               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(j.id); } }}>
               <span className="l1">
-                <b className="ellipsis" style={{ fontWeight: 600 }}>{jobKindLabel(j.kind)} · {j.target ? <NodeHover id={j.target.id} noFocus><span>{j.target.name}</span></NodeHover> : '—'}</b>
+                <b className="ellipsis">{jobKindLabel(j.kind)} · {j.target ? <NodeHover id={j.target.id} noFocus><span>{j.target.name}</span></NodeHover> : '—'}</b>
                 <span style={{ marginLeft: 'auto' }}><JobPill state={j.state} /></span>
               </span>
               {jobLive(j.state) && <span className="l-prog"><Progress value={jobProgress(j).pct} live label="总进度" /><span className="num">{jobProgress(j).done}/{jobProgress(j).total}</span></span>}
@@ -182,7 +182,7 @@ function JobDetail({ id }: { id: string }) {
                   {outputLines(s.output).length > 0 && <pre className="step-out">{outputLines(s.output).join('\n')}</pre>}
                   {(s.error || s.error_kind) && (
                     <div className="step-err-box">
-                      {s.error_kind && <span className="err-kind">{errorKindLabel(s.error_kind, s.error)}</span>}
+                      {s.error_kind && <span className="pill pill-sm" data-tone="bad" data-dot="none">{errorKindLabel(s.error_kind, s.error)}</span>}
                       {s.error && <p className="step-err">{jobText(s.error)}</p>}
                     </div>
                   )}

@@ -70,7 +70,7 @@ function HourlyBars({ points, height = 160 }: { points: MachineAccess['hourly'];
 /** 紧凑的最近记录表（抽屉里用）。时间列放得下「10-21 01:02:33」，不出省略号 */
 function RecentTable({ items }: { items: AccessEvent[] }) {
   return (
-    <div className="table-wrap" style={{ border: '1px solid var(--line)', borderRadius: 'var(--r-float)' }}>
+    <div className="table-wrap is-boxed">
       <table className="dt is-one" style={{ minWidth: 520 }}>
         <colgroup><col style={{ width: 140 }} /><col style={{ width: 136 }} /><col /><col style={{ width: 96 }} /></colgroup>
         <thead><tr><th>时间</th><th>来源</th><th>目标</th><th>结果</th></tr></thead>
@@ -114,7 +114,7 @@ export const AccessTab = React.memo(function AccessTab({ id, relay }: { id: stri
   // 来源按连接数，同次数按 IP 数值
   const sources = [...d.top_sources].sort((a, b) => b.conns - a.conns || byIp(a.src_ip, b.src_ip));
   const none = d.top_domains.length === 0 && d.recent.length === 0;
-  // 换时间范围、新数据未到时沿用的旧数据调淡（extras.css [data-stale]）；段标题和时间范围控件不调淡
+  // 换时间范围、新数据未到时沿用的旧数据调淡（components.css [data-stale]）；段标题和时间范围控件不调淡
   const stale = q.isPlaceholderData;
   return (
     <>
@@ -148,7 +148,7 @@ export const AccessTab = React.memo(function AccessTab({ id, relay }: { id: stri
             <SectionHeader title="来源地址" meta="按连接数" />
             <div data-stale={stale}>
               {d.top_sources.length ? (
-                <div className="table-wrap" style={{ border: '1px solid var(--line)', borderRadius: 'var(--r-float)' }}>
+                <div className="table-wrap is-boxed">
                   <table className="dt is-one" style={{ minWidth: 520 }}>
                     <colgroup><col style={{ width: 160 }} /><col /><col style={{ width: 120 }} /><col style={{ width: 70 }} /><col style={{ width: 110 }} /></colgroup>
                     <thead><tr><th>来源 IP</th><th>运营商 · 城市</th><th>接入方式</th><th className="r">连接数</th><th>最近</th></tr></thead>

@@ -1,7 +1,8 @@
-/* 页面级排布：stack / row / 两栏 / 抽屉内排布 / 作业时间线 / 日志 */
+/* 页面级排布：stack / row / 两栏 / 抽屉内排布 / 时间线 / 图表卡 / 线路机卡 / 上架 */
 
-.stack { display: grid; gap: var(--section-gap); min-width: 0; }
-.stack-sm { display: grid; gap: var(--sp-8); min-width: 0; }
+/* 竖排的一摞：列轨写死 minmax(0, 1fr)——隐式 auto 列会被子元素的最小内容宽度撑开（宽表格把整页撑出横向滚动，表格外层跟着变宽、误判成放得下） */
+.stack { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--section-gap); min-width: 0; }
+.stack-sm { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-8); min-width: 0; }
 .row { display: flex; align-items: center; gap: var(--control-gap); flex-wrap: wrap; min-width: 0; }
 .row-between { justify-content: space-between; }
 .cols-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--grid-gap); }
@@ -38,7 +39,7 @@
 /* 操作记录页：涉及机器的一行可点（打开抽屉），整行悬停变色；底下「加载更早的记录」居中 */
 .audit-list li.is-link { cursor: pointer; transition: background-color var(--dur-1) var(--ease-std); }
 /* 按天分段：每段一个小标题（今天 / 昨天 / 10月20日 周一），时间线在段内连续 */
-.audit-day { margin: var(--sp-12) 0 var(--sp-2); font: var(--fw-semibold) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-3); }
+.audit-day { margin: var(--sp-12) 0 var(--sp-2); font: var(--fw-semibold) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2); }
 .audit-day:first-child { margin-top: 0; }
 @media (hover: hover) { .audit-list li.is-link:hover { background-color: var(--hover); } }
 .audit-more { display: flex; justify-content: center; padding-top: var(--sp-12); }
@@ -48,8 +49,7 @@
 /* 操作记录（AuditList）：不画圆点和竖线；有明细的行前面一个展开箭头，点开在下面列出命令与结果、改动前后 */
 .audit-list.is-bare li::before { content: none; }
 .audit-chev { display: inline-flex; width: 14px; height: 1em; vertical-align: -2px; color: var(--fg-3); }
-.audit-chev .lucide { width: 12px; height: 12px; transition: transform var(--dur-2) var(--ease-out); }
-.audit-list li[data-open] .audit-chev .lucide { transform: rotate(90deg); }
+.audit-chev .lucide { width: var(--icon-2xs); height: var(--icon-2xs); } /* 转动见 components.css「展开箭头」 */
 .audit-list.is-bare .audit-detail { padding-left: 14px; }
 .audit-what[data-tone="bad"] b { color: var(--bad-text); }
 .audit-target.btn { display: inline; height: auto; font: inherit; vertical-align: baseline; }
@@ -63,17 +63,20 @@
 /* 告警页：已恢复的仍按原级别着色，调淡一些，眼睛先落在进行中的上面 */
 .pill.is-past { opacity: 0.6; }
 .chart-box { height: 180px; min-width: 0; }
+/* 曲线第一次有数据时从左往右展开一次：.chart-frame 在数据到了才挂载（之前是骨架），之后的轮询刷新、换时间范围（沿用旧曲线调淡）都不重新挂载，不会再播 */
+.chart-frame .chart-box { animation: chart-reveal var(--dur-data) var(--ease-out); }
+@keyframes chart-reveal { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0); } }
 /* 曲线全为 0 时的空状态：占住图的高度（换时间范围时卡片不跳），一句浅色说明居中 */
 .chart-empty { display: grid; place-items: center; min-width: 0; font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); text-align: center; }
 .chart-legend { display: flex; flex-wrap: wrap; gap: var(--sp-6); align-items: center; }
 /* 图例胶囊（--lc 是曲线色）：点掉后色块变空心、文字变淡；按下同其它文字控件微缩（components.css「交互状态」） */
 .chart-legend-item {
-  display: inline-flex; align-items: center; gap: var(--sp-6); height: 24px; padding: 0 var(--sp-8); cursor: pointer;
+  display: inline-flex; align-items: center; gap: var(--sp-6); height: var(--h-chip-lg); padding: 0 var(--sp-8); cursor: pointer;
   border: 1px solid color-mix(in srgb, var(--lc) 35%, var(--line)); border-radius: var(--r-pill); background: color-mix(in srgb, var(--lc) 8%, var(--surface));
   font: var(--fw-medium) var(--fs-label) / 1 var(--font-sans); color: var(--fg-2);
   transition: background-color var(--dur-1) var(--ease-std), border-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out);
 }
-.chart-legend-item:hover { color: var(--fg); border-color: color-mix(in srgb, var(--lc) 60%, var(--line)); }
+@media (hover: hover) { .chart-legend-item:hover { color: var(--fg); border-color: color-mix(in srgb, var(--lc) 60%, var(--line)); } }
 .chart-legend-item i { width: 8px; height: 8px; border-radius: 2px; background: var(--lc); box-shadow: inset 0 0 0 1.5px var(--lc); transition: background-color var(--dur-1) var(--ease-std); }
 .chart-legend-item[aria-pressed="false"] { background: transparent; border-color: var(--line); color: var(--fg-3); }
 .chart-legend-item[aria-pressed="false"] i { background: transparent; }
@@ -83,7 +86,7 @@
 .chart-card {
   --cc: var(--chart-1);
   display: grid; gap: var(--sp-8); min-width: 0; padding: 11px 12px;
-  border: 1px solid color-mix(in srgb, var(--cc) 30%, transparent); border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--cc) 30%, transparent); border-radius: var(--r-card);
   background:
     linear-gradient(90deg, color-mix(in srgb, var(--cc) 75%, transparent), transparent) 0 0 / 100% 2px no-repeat,
     linear-gradient(var(--raised), var(--raised)) 0 0 / 100% 1px no-repeat,
@@ -93,7 +96,7 @@
 /* 卡头按基线对齐：标题、当前值第一行、时间范围的文字落在同一条线上 */
 .chart-card-head { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: var(--sp-4) var(--sp-8); min-width: 0; }
 .chart-card-title { display: flex; align-items: baseline; gap: var(--sp-6); min-width: 0; font: var(--fw-semibold) var(--fs-body) / var(--lh-body) var(--font-sans); color: var(--fg); }
-.chart-card-title .lucide { flex: none; align-self: center; width: 14px; height: 14px; stroke-width: 2; color: var(--cc); } /* svg 被 preflight 设成 block：标题用 flex 让图标与文字同一行 */
+.chart-card-title .lucide { flex: none; align-self: center; width: var(--icon-sm); height: var(--icon-sm); stroke-width: var(--icon-stroke-strong); color: var(--cc); } /* svg 被 preflight 设成 block：标题用 flex 让图标与文字同一行 */
 .chart-card-meta { font-size: var(--fs-label); font-weight: var(--fw-regular); color: var(--fg-2); }
 .chart-card-val { display: grid; justify-items: end; text-align: right; }
 .chart-card-val b { font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-num); font-variant-numeric: var(--num-variant); letter-spacing: -0.02em; color: var(--fg); white-space: nowrap; }
@@ -121,56 +124,7 @@
 .relay-name { display: inline-flex; align-items: center; gap: 2px; padding: 0; border: 0; background: none; color: var(--fg); cursor: pointer; border-radius: var(--r-xs); transition: color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out); }
 .relay-name .lucide { color: var(--fg-3); transition: translate var(--dur-2) var(--ease-out), color var(--dur-1) var(--ease-std); }
 @media (hover: hover) { .relay-name:hover, .relay-name:hover .lucide { color: var(--accent); } .relay-name:hover .lucide { translate: 2px 0; } }
-.relay-name:active { scale: 0.98; }
 .apply-box { display: flex; align-items: center; gap: var(--sp-8); flex-wrap: wrap; padding: var(--sp-8) var(--card-pad); border-top: 1px solid var(--line); background: var(--sunken); font-size: var(--fs-label); color: var(--fg-2); }
-
-/* 作业：列表 + 详情 */
-.jobs-layout { display: grid; grid-template-columns: minmax(280px, 380px) minmax(0, 1fr); gap: var(--grid-gap); align-items: start; }
-.jobs-list { align-self: start; }
-/* 右侧详情（没选作业时是占位）跟着页面滚：自己不再是滚动容器，只有日志框一层内部滚动（换作业时 Jobs.tsx 把详情顶部滚进视口） */
-.jobs-detail { min-width: 0; }
-/* 没选作业时的占位：更高、居中 */
-.jobs-empty { min-height: min(360px, 60dvh); display: grid; align-content: center; }
-/* 列表为空、没打开作业：单栏，只留列表里那个空状态 */
-.jobs-layout[data-empty] { grid-template-columns: minmax(0, 1fr); }
-.jobs-layout[data-empty] .jobs-detail { display: none; }
-@container content (max-width: 720px) {
-  .jobs-layout { grid-template-columns: minmax(0, 1fr); } .jobs-layout[data-detail="1"] .jobs-list { display: none; } .jobs-layout[data-detail="0"] .jobs-detail { display: none; }
-}
-.job-item { display: grid; gap: 2px; width: 100%; padding: var(--sp-10) var(--card-pad); border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left; cursor: pointer; color: inherit; min-width: 0; transition: background-color var(--dur-1) var(--ease-std); }
-.job-item:last-child, .job-item:has(+ .pager) { border-bottom: 0; } /* 分页器自带顶线 */
-.job-item:hover { background-color: var(--hover); }
-.job-item[aria-current="true"] { background-color: var(--selected); box-shadow: inset 2px 0 0 var(--accent); }
-.job-item .l1 { display: flex; align-items: center; gap: var(--sp-8); min-width: 0; }
-.job-item .l2 { font-size: var(--fs-label); color: var(--fg-2); display: flex; gap: var(--sp-8); min-width: 0; }
-.job-item .l2 > span { flex: none; white-space: nowrap; } /* 时间、创建人不折行；失败原因占剩下的宽度并省略 */
-.job-item .l2 > .ellipsis { flex: 1 1 0; min-width: 0; }
-.job-item .l-prog { display: flex; align-items: center; gap: var(--sp-8); margin: var(--sp-4) 0 var(--sp-2); font-size: var(--fs-micro); color: var(--fg-2); }
-.job-item .l-prog .progress { flex: 1; height: 4px; }
-.steps { list-style: none; margin: 0; padding: 0; display: grid; }
-.step { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: var(--sp-10); position: relative; padding-bottom: var(--sp-14); }
-.step:last-child { padding-bottom: 0; }
-.step::before { content: ""; position: absolute; left: 9.5px; top: 22px; bottom: 2px; width: 1px; background: var(--line-strong); }
-.step:last-child::before { display: none; }
-.step-ic { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; background: var(--neutral-bg); color: var(--neutral-text); }
-.step-ic .lucide { width: 12px; height: 12px; stroke-width: 2.2; }
-.step-title { display: flex; align-items: baseline; gap: var(--sp-8); min-width: 0; }
-.step-title b { font-weight: var(--fw-medium); }
-.step-time { font-size: var(--fs-label); color: var(--fg-2); }
-.step-out { margin: var(--sp-4) 0 0; font: var(--fs-label) / var(--lh-label) var(--font-mono); color: var(--fg-2); white-space: pre-wrap; overflow-wrap: anywhere; }
-.step-err { margin: var(--sp-4) 0 0; font-size: var(--fs-label); color: var(--bad-text); overflow-wrap: anywhere; }
-.logbox { background: var(--sunken); border-radius: var(--r-float); padding: var(--sp-10) var(--sp-12); max-height: 360px; min-height: 120px; overflow: auto; font: var(--fs-label) / 18px var(--font-mono); }
-/* 日志：错误行整行淡红底，暂停/截断时的提示 */
-.logline { display: grid; grid-template-columns: 64px 44px minmax(0, 1fr); gap: var(--sp-8); padding: 0 var(--sp-4); margin: 0 calc(var(--sp-4) * -1); border-radius: 3px; }
-.logline[data-level="error"] { background: var(--bad-bg); }
-.logline[data-level="warn"] .msg { color: var(--warn-text); }
-.logline .lv-debug { color: var(--fg-3); }
-.logline-note .msg { font-style: italic; }
-.logline .ts { color: var(--fg-3); }
-.logline .lv-info { color: var(--info-text); }
-.logline .lv-warn { color: var(--warn-text); }
-.logline .lv-error { color: var(--bad-text); }
-.logline .msg { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg); }
 
 /* 上架 */
 .prov-steps { display: flex; gap: var(--sp-8); align-items: center; flex-wrap: wrap; font-size: var(--fs-label); color: var(--fg-2); }
@@ -185,16 +139,8 @@
 .sticky-bar { position: sticky; bottom: 0; z-index: var(--z-sticky); }
 /* 上架页底部操作条：与顶栏同一种毛玻璃，阴影朝上（顶边的线由面板自己的边框给）——表单从它下面滚过时隐约透出、分得清层次 */
 .panel.sticky-bar {
-  background: color-mix(in srgb, var(--surface) 78%, transparent); box-shadow: 0 -8px 24px -12px rgb(17 24 39 / 0.14);
-  -webkit-backdrop-filter: saturate(180%) blur(12px); backdrop-filter: saturate(180%) blur(12px);
+  background: var(--glass-bar); box-shadow: var(--shadow-bar-up);
+  -webkit-backdrop-filter: var(--glass-bar-blur); backdrop-filter: var(--glass-bar-blur);
 }
-@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .panel.sticky-bar { background: var(--surface); } }
-/* 批量网格：「检查结果」与删除列吸附在右侧，二十几列横滑时也一直看得见；结果放不下省略，悬停看全文。左缘一道线 + 淡阴影，和滑到下面的格子分开 */
-.dt-grid .gc-res, .dt-grid .gc-del { position: sticky; z-index: 1; background: var(--surface); }
-.dt-grid thead :is(.gc-res, .gc-del) { background: var(--sunken); }
-.dt-grid .gc-res { right: 56px; padding: 0 var(--sp-8); box-shadow: -1px 0 0 var(--line), -8px 0 12px -10px rgb(17 24 39 / 0.25); }
-.dt-grid .gc-del { right: 0; border-right: 0; }
 .lv.span-2 { grid-column: 1 / -1; }
 .check-row.span-2 { grid-column: 1 / -1; }
-.job-back { display: none; }
-@container content (max-width: 720px) { .job-back { display: inline-grid; } } /* 与上面变单栏同一个断点：双栏时列表就在旁边，不需要「返回列表」 */

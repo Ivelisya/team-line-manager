@@ -1,4 +1,4 @@
-// 外壳：56px 顶栏 + 240px 侧栏 + 内容区。选中项是软色胶囊。≤760px 侧栏收成抽屉。
+// 外壳：56px 顶栏 + 240px 侧栏 + 内容区。选中项是软色胶囊。≤1023px 侧栏收成抽屉。
 import * as React from 'react';
 import { NavLink, Navigate, Outlet, useLocation, useNavigationType } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
@@ -182,7 +182,7 @@ export function Shell() {
             {/* 深浅色与配色在同一个菜单里（原来配色是单独一个盲切的按钮，窄屏还被藏起来）；色块就是该配色的强调色 */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild><button className="top-btn" aria-label="外观：深浅色与配色" data-tip="外观"><ThemeIcon size={16} /></button></DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="menu-appearance">
+              <DropdownMenuContent align="end">
                 <DropdownMenuLabel>外观</DropdownMenuLabel>
                 <DropdownMenuRadioGroup value={theme.pref} onValueChange={(v) => theme.setPref(v as ThemePref)}>
                   {THEMES.map(([v, l, I]) => <DropdownMenuRadioItem key={v} value={v}><I />{l}</DropdownMenuRadioItem>)}
@@ -207,7 +207,7 @@ export function Shell() {
                 <NavLink to={n.to} end={n.end} className="nav-item">
                   {() => <>
                     <n.icon size={16} /><span className="nav-label">{n.label}</span>
-                    {n.badge && firing > 0 && <span className="nav-badge">{firing}</span>}
+                    {n.badge && firing > 0 && <span className="count-badge">{firing}</span>}
                   </>}
                 </NavLink>
               </li>

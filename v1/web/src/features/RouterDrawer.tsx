@@ -55,7 +55,7 @@ export function RouterDrawer() {
               <div className="drawer-body" ref={bodyRef}>
                 {q.isError && !q.data && <ErrorNote error={q.error} onRetry={() => void q.refetch()}>详情加载失败：</ErrorNote>}
                 <div key={tab} className="tab-pane">
-                  <React.Suspense fallback={<Skeleton h={180} style={{ borderRadius: 'var(--r-float)' }} />}>
+                  <React.Suspense fallback={<Skeleton h={180} className="is-float" />}>
                     {tab === 'overview' && <OverviewTab r={r} detail={detail} />}
                     {tab === 'exits' && <Needs r={r} detail={detail}>{(d) => <ExitsTab id={r.id} d={d} />}</Needs>}
                     {tab === 'clients' && <Needs r={r} detail={detail}>{(d) => <ClientsTab d={d} />}</Needs>}
@@ -73,7 +73,7 @@ export function RouterDrawer() {
 
 /** 出口、客户端只在采集成功过之后才有 */
 function Needs({ r, detail, children }: { r: RouterView; detail: RouterDetail | null | undefined; children: (d: RouterDetail) => React.ReactNode }) {
-  if (detail === undefined) return <Skeleton h={180} style={{ borderRadius: 'var(--r-float)' }} />;
+  if (detail === undefined) return <Skeleton h={180} className="is-float" />;
   if (!detail) return <div className="hint">{r.state === 'pending' ? '接入后才有数据' : '还没采集成功过'}</div>;
   return <>{children(detail)}</>;
 }
@@ -91,7 +91,7 @@ function Head({ r, detail, onClosed }: { r: RouterView; detail: RouterDetail | n
       <span className="nc-kind" role="img" aria-label="软路由"><RouterIcon /></span>
       <div className="m-head" style={{ flex: 1 }}>
         <div className="m-head-row"><SheetTitle className="drawer-title ellipsis">{r.name}</SheetTitle><RouterStatePill r={r} />{r.team && <Tag c={tagColor(r.team.name)} tip="团队">{r.team.name}</Tag>}</div>
-        <SheetDescription className="ellipsis" style={{ margin: 0, color: 'var(--fg-2)', fontSize: 12 }}>{sub}</SheetDescription>
+        <SheetDescription className="drawer-sub ellipsis">{sub}</SheetDescription>
       </div>
       <div className="drawer-nav">
         <DropdownMenu>

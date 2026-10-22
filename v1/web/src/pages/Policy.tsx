@@ -396,7 +396,7 @@ const PreviewDialog = resetOnOpen(function PreviewDialog({ open, onOpenChange }:
               {d.nodes.length === 0
                 ? <Note tone="info">不会多阻止连接{d.affected_relays === 0 && <> <InfoTip text="也不需要改线路机上的规则" /></>}</Note>
                 : (
-                  <div className="table-wrap pol-pv-table">
+                  <div className="table-wrap is-boxed is-capped">
                     <table className="dt" style={{ minWidth: 620 }}>
                       <colgroup><col style={{ width: 120 }} /><col style={{ width: 96 }} /><col style={{ width: 84 }} /><col style={{ width: 96 }} /><col /></colgroup>
                       <thead><tr><th>节点</th><th>模式</th><th className="r">24h 连接</th><th className="r">将阻止</th><th>被阻止最多的域名</th></tr></thead>
@@ -451,7 +451,7 @@ function ChangeList({ changes }: { changes: PolicyChange[] }) {
   const sum = (c: PolicyChange['from']) => `${modeLabel(c.mode)}${needsDomains(c.mode) ? ` · ${c.domains} 个域名` : ''}`;
   return (
     <ul className="pol-changes">
-      {changes.map((c) => <li key={`${c.scope}:${c.id}`}><span className="pol-kind">{c.scope === 'team' ? '团队' : '节点'}</span><b>{c.name}</b><span className="t-sub">{sum(c.from)}</span><span className="pol-arrow">→</span><span>{sum(c.to)}</span></li>)}
+      {changes.map((c) => <li key={`${c.scope}:${c.id}`}><span className="pill pill-sm">{c.scope === 'team' ? '团队' : '节点'}</span><b>{c.name}</b><span className="t-sub">{sum(c.from)}</span><span className="pol-arrow">→</span><span>{sum(c.to)}</span></li>)}
     </ul>
   );
 }
@@ -484,7 +484,7 @@ function VersionsPanel() {
                 {list.map((v) => (
                   <tr key={v.id}>
                     {/* 「当前」只标最新一版；更早的、内容和当前一样的写「与当前相同」（不能回滚到它） */}
-                    <td><b className="strong">v{v.seq}</b>{v.is_latest ? <span className="pol-cur">当前</span> : v.is_current && <span className="pol-cur is-same">与当前相同</span>}<span className="sub">{v.kind === 'rollback' ? `回滚到 v${v.rollback_of_seq ?? '?'}` : '发布'}</span></td>
+                    <td><b className="strong">v{v.seq}</b>{v.is_latest ? <span className="pill pill-sm pol-cur" data-tone="accent">当前</span> : v.is_current && <span className="pill pill-sm pol-cur">与当前相同</span>}<span className="sub">{v.kind === 'rollback' ? `回滚到 v${v.rollback_of_seq ?? '?'}` : '发布'}</span></td>
                     <td data-tip={`${F.dtFull(v.created_at)}\n${F.actor(v.actor)}`}>{F.dt(v.created_at)}<span className="sub ellipsis">{F.actor(v.actor)}</span></td>
                     <td><VersionChanges changes={v.changes} /></td>
                     <td><VersionApply v={v} /></td>

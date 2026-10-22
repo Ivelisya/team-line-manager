@@ -1,0 +1,101 @@
+/* 作业：作业页的列表 + 详情、总进度、横向步骤条、步骤时间线、日志。只用 tokens.css 里的令牌 */
+
+/* ========== 作业页：列表 + 详情 ========== */
+.jobs-layout { display: grid; grid-template-columns: minmax(280px, 380px) minmax(0, 1fr); gap: var(--grid-gap); align-items: start; }
+.jobs-list { align-self: start; }
+/* 右侧详情（没选作业时是占位）跟着页面滚：自己不再是滚动容器，只有日志框一层内部滚动（换作业时 Jobs.tsx 把详情顶部滚进视口） */
+.jobs-detail { min-width: 0; }
+/* 没选作业时的占位：更高、居中 */
+.jobs-empty { min-height: min(360px, 60dvh); display: grid; align-content: center; }
+/* 列表为空、没打开作业：单栏，只留列表里那个空状态 */
+.jobs-layout[data-empty] { grid-template-columns: minmax(0, 1fr); }
+.jobs-layout[data-empty] .jobs-detail { display: none; }
+@container content (max-width: 720px) {
+  .jobs-layout { grid-template-columns: minmax(0, 1fr); } .jobs-layout[data-detail="1"] .jobs-list { display: none; } .jobs-layout[data-detail="0"] .jobs-detail { display: none; }
+}
+.job-item { display: grid; gap: 2px; width: 100%; padding: var(--sp-10) var(--card-pad); border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left; cursor: pointer; color: inherit; min-width: 0; transition: background-color var(--dur-1) var(--ease-std); }
+.job-item:last-child, .job-item:has(+ .pager) { border-bottom: 0; } /* 分页器自带顶线 */
+@media (hover: hover) { .job-item:hover { background-color: var(--hover); } }
+.job-item[aria-current="true"] { background-color: var(--selected); box-shadow: inset 2px 0 0 var(--accent); }
+.job-item .l1 { display: flex; align-items: center; gap: var(--sp-8); min-width: 0; }
+.job-item .l1 > b { font-weight: var(--fw-semibold); }
+.job-item .l2 { font-size: var(--fs-label); color: var(--fg-2); display: flex; gap: var(--sp-8); min-width: 0; }
+.job-item .l2 > span { flex: none; white-space: nowrap; } /* 时间、创建人不折行；失败原因占剩下的宽度并省略 */
+.job-item .l2 > .ellipsis { flex: 1 1 0; min-width: 0; }
+.job-item .l-prog { display: flex; align-items: center; gap: var(--sp-8); margin: var(--sp-4) 0 var(--sp-2); font-size: var(--fs-micro); color: var(--fg-2); }
+.job-item .l-prog .progress { flex: 1; height: 4px; }
+.job-back { display: none; }
+@container content (max-width: 720px) { .job-back { display: inline-grid; } } /* 与上面变单栏同一个断点：双栏时列表就在旁边，不需要「返回列表」 */
+
+/* ========== 总进度 ========== */
+.job-prog { display: grid; gap: var(--sp-6); }
+.job-prog-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-12); min-width: 0; font-size: var(--fs-body); }
+.job-prog-head > .num { flex: none; font-weight: var(--fw-semibold); }
+.job-prog-head > .t-sub { font-size: var(--fs-label); text-align: right; }
+
+/* ========== 横向步骤条 ========== */
+/* 横向滚动的容器纵向也会裁切：顶部留 10px，进行中节点外扩 8px 的呼吸光圈、键盘焦点环不被切平 */
+.stepbar-wrap { overflow-x: auto; padding-bottom: var(--sp-4); scrollbar-width: thin; }
+.stepbar { display: flex; margin: 0; padding: var(--sp-10) 0 0; list-style: none; min-width: max-content; width: 100%; }
+.stepbar-item { position: relative; flex: 1 1 0; min-width: 104px; display: grid; justify-items: center; align-content: start; gap: var(--sp-4); padding: 0 var(--sp-4); text-align: center; }
+.stepbar-item::before { content: ""; position: absolute; top: 11px; right: 50%; width: 100%; height: 2px; background: linear-gradient(90deg, var(--line-strong) 55%, transparent 0) 0 0 / 8px 2px repeat-x; }
+.stepbar-item:first-child::before { display: none; }
+.stepbar-item[data-link="done"]::before { background: var(--ok); }
+.stepbar-item[data-link="comp"]::before { background: var(--warn); opacity: 0.6; }
+.stepbar-node {
+  position: relative; z-index: 1; display: grid; place-items: center; width: 24px; height: 24px; box-sizing: border-box; border-radius: 50%;
+  background: var(--surface); border: 2px solid var(--line-strong); color: var(--fg-3); transition: background-color var(--dur-1) var(--ease-std), border-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std);
+}
+.stepbar-node .lucide { width: var(--icon-2xs); height: var(--icon-2xs); stroke-width: var(--icon-stroke-strong); }
+.stepbar-item[data-kind="done"] .stepbar-node { background: color-mix(in srgb, var(--ok) 16%, var(--surface)); border-color: var(--ok); color: var(--ok-text); }
+.stepbar-item[data-kind="running"] .stepbar-node { background: color-mix(in srgb, var(--info) 16%, var(--surface)); border-color: var(--info); color: var(--info-text); animation: node-ring var(--dur-loop) var(--ease-out) infinite; }
+.stepbar-item[data-kind="failed"] .stepbar-node { background: color-mix(in srgb, var(--bad) 16%, var(--surface)); border-color: var(--bad); color: var(--bad-text); }
+.stepbar-item[data-kind="compensated"] .stepbar-node { background: color-mix(in srgb, var(--warn) 16%, var(--surface)); border-color: var(--warn); color: var(--warn-text); }
+.stepbar-item[data-kind="skipped"] .stepbar-node { border-style: dashed; color: var(--fg-3); }
+@keyframes node-ring { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--info) 45%, transparent); } 70%, 100% { box-shadow: 0 0 0 8px transparent; } }
+.stepbar-title { max-width: 100%; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font: var(--fw-medium) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg); }
+.stepbar-item[data-kind="pending"] .stepbar-title, .stepbar-item[data-kind="skipped"] .stepbar-title { color: var(--fg-2); }
+.stepbar-sub { font-size: var(--fs-micro); line-height: var(--lh-micro); color: var(--fg-2); font-variant-numeric: var(--num-variant); }
+.stepbar-item[data-kind="failed"] .stepbar-sub { color: var(--bad-text); }
+.stepbar-item[data-kind="compensated"] .stepbar-sub { color: var(--warn-text); }
+/* 步骤多（7 步起，JobProgress.tsx）：格子不再有最小宽度、整条放得下；只有当前那一步（进行中 / 失败）写标签、占得宽一些，其余悬停节点看 */
+.stepbar[data-compact] .stepbar-item { min-width: 0; }
+.stepbar[data-compact] .stepbar-item[data-focus] { flex-grow: 3; }
+.stepbar[data-compact] .stepbar-item:not([data-focus]) :is(.stepbar-title, .stepbar-sub) { display: none; }
+
+/* ========== 步骤时间线 ========== */
+.steps { list-style: none; margin: 0; padding: 0; display: grid; }
+.step { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: var(--sp-10); position: relative; padding-bottom: var(--sp-14); }
+.step:last-child { padding-bottom: 0; }
+.step::before { content: ""; position: absolute; left: 9.5px; top: 22px; bottom: 2px; width: 1px; background: var(--line-strong); }
+.step:last-child::before { display: none; }
+.step-ic { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; background: var(--neutral-bg); color: var(--neutral-text); }
+.step-ic .lucide { width: var(--icon-2xs); height: var(--icon-2xs); stroke-width: var(--icon-stroke-strong); }
+/* 按展示类别着色（后端的 state 有 done / succeeded 等不同写法，不再依赖原始值） */
+.step[data-kind="done"] .step-ic { background: var(--ok-bg); color: var(--ok-text); }
+.step[data-kind="running"] .step-ic { background: var(--info-bg); color: var(--info-text); }
+.step[data-kind="failed"] .step-ic { background: var(--bad-bg); color: var(--bad-text); }
+.step[data-kind="compensated"] .step-ic { background: var(--warn-bg); color: var(--warn-text); }
+.step[data-kind="skipped"] .step-ic, .step[data-kind="pending"] .step-ic { background: var(--neutral-bg); color: var(--neutral-text); }
+.step-title { display: flex; align-items: baseline; gap: var(--sp-8); min-width: 0; }
+.step-title b { font-weight: var(--fw-medium); }
+.step-title .pill { align-self: center; }
+.step-time { font-size: var(--fs-label); color: var(--fg-2); }
+.step-out { margin: var(--sp-4) 0 0; font: var(--fs-label) / var(--lh-label) var(--font-mono); color: var(--fg-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+.step-err { margin: var(--sp-4) 0 0; font-size: var(--fs-label); color: var(--bad-text); overflow-wrap: anywhere; }
+.step-err-box { display: flex; align-items: flex-start; gap: var(--sp-8); margin-top: var(--sp-4); }
+.step-err-box .step-err { margin: 0; min-width: 0; }
+
+/* ========== 日志 ========== */
+.logbox { background: var(--sunken); border-radius: var(--r-float); padding: var(--sp-10) var(--sp-12); max-height: 360px; min-height: 120px; overflow: auto; font: var(--fs-label) / 18px var(--font-mono); }
+/* 错误行整行淡红底，暂停/截断时的提示 */
+.logline { display: grid; grid-template-columns: 64px 44px minmax(0, 1fr); gap: var(--sp-8); padding: 0 var(--sp-4); margin: 0 calc(var(--sp-4) * -1); border-radius: 3px; }
+.logline[data-level="error"] { background: var(--bad-bg); }
+.logline[data-level="warn"] .msg { color: var(--warn-text); }
+.logline .lv-debug { color: var(--fg-3); }
+.logline-note .msg { font-style: italic; }
+.logline .ts { color: var(--fg-3); }
+.logline .lv-info { color: var(--info-text); }
+.logline .lv-warn { color: var(--warn-text); }
+.logline .lv-error { color: var(--bad-text); }
+.logline .msg { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg); }

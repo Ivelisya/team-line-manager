@@ -2,7 +2,7 @@
    右侧浮起的宽面板，不带遮罩、不拦页面：开着终端也能照常点侧栏、翻页面。顶栏露在外面（命令面板、告警照常用）。
    层级在顶栏之上、节点抽屉的遮罩之下：临时打开的抽屉、对话框、菜单都盖在它上面，关掉后终端还在原处 */
 .term {
-  position: fixed; z-index: calc(var(--z-drawer) - 2); top: calc(var(--topbar-h) + var(--sp-8)); right: var(--sp-8); bottom: var(--sp-8);
+  position: fixed; z-index: var(--z-term); top: calc(var(--topbar-h) + var(--sp-8)); right: var(--sp-8); bottom: var(--sp-8);
   width: min(880px, calc(100vw - 2 * var(--sp-8)));
   display: flex; flex-direction: column; overflow: hidden;
   background: var(--surface); border: 1px solid var(--line-float); border-radius: var(--r-card); box-shadow: var(--shadow-modal);

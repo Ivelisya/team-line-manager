@@ -21,7 +21,7 @@ export function EntriesTable({ m, traffic }: { m: MachineView; traffic?: boolean
   if (!m.entries.length && !removed) return <div className="hint">还没有入口</div>;
   const entries = all ? m.entries : m.entries.slice(0, ENTRY_CAP);
   return (
-    <div className="table-wrap" style={{ border: '1px solid var(--line)', borderRadius: 'var(--r-float)' }}>
+    <div className="table-wrap is-boxed">
       <table className="dt is-one" style={{ minWidth: 480 }}>
         <colgroup><col style={{ width: 132 }} /><col style={{ width: 96 }} /><col style={{ width: 72 }} /><col style={{ width: 72 }} />{traffic && <col style={{ width: 112 }} />}</colgroup>
         <thead><tr><th>{m.kind === 'relay' ? '端口 · 节点' : '线路机:端口'}</th><th>状态</th><th className="r">TCP</th><th className="r">出口</th>{traffic && <th className="r">本月业务流量</th>}</tr></thead>
