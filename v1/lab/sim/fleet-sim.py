@@ -683,10 +683,10 @@ def cmd_seed(a):
         if rnd.random() < 0.2:
             k = rnd.randint(2, 25)
             rrows.append((uuid7(), m["id"], Raw("((current_date - %d) - interval '%d month')::date" % (k, months[cyc])), Raw("current_date - %d" % k),
-                          price, "模拟续费", "fleet-sim", Raw("now() - interval '%d days'" % k)))
+                          price, p["currency"] if p else "USD", "模拟续费", "fleet-sim", Raw("now() - interval '%d days'" % k)))
     sql.append(insert("subscription", ["machine_id", "price_cents", "currency", "cycle", "due_date", "billing_tz", "auto_renew", "remind_days",
                                        "traffic_gb", "traffic_reset_day"], srows))
-    sql.append(insert("renewal", ["id", "machine_id", "old_due", "new_due", "amount_cents", "note", "actor", "created_at"], rrows))
+    sql.append(insert("renewal", ["id", "machine_id", "old_due", "new_due", "amount_cents", "currency", "note", "actor", "created_at"], rrows))
 
     # 令牌（服务端存 sha256(token)，见 agent_api::authenticate）
     toks, trows = {}, []

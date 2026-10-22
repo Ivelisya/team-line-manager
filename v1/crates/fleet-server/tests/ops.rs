@@ -267,6 +267,7 @@ async fn catalog_validation_and_audit_details() {
         (json!({"price_cents": -1}), "负价格"),
         (json!({"price_cents": 1, "currency": "US$"}), "币种只能是字母"),
         (json!({"price_cents": 1, "currency": "ABCDEFGHI"}), "币种过长"),
+        (json!({"price_cents": 1, "currency": "USDT"}), "币种不是 3 个字母"),
         (json!({"price_cents": 1, "notes": "备".repeat(2001)}), "备注过长"),
         (json!({"price_cents": 1, "name": "名".repeat(33)}), "名字过长"),
     ] {
@@ -544,5 +545,68 @@ async fn security_headers() {
         if path.starts_with("/api/") {
             assert_eq!(h("cache-control").as_deref(), Some("no-store"), "{path}");
         }
+    }
+}
+
+/// 续费记录记下登记时订阅的币种：之后改订阅币种，历史金额不跟着变；币种不是 3 个字母的订阅写不进库
+#[tokio::test]
+async fn renewal_keeps_currency_snapshot() {
+    let t = setup().await;
+    let team = common::seed_team(&t, "团队1").await;
+    let m = common::seed_node(&t, team, 1, "203.0.113.10", "active").await;
+    let sub = |cur: &str| json!({"price_cents": 500, "currency": cur, "due_date": "2027-01-01"});
+    t.ok("PUT", &format!("/api/v1/machines/{m}/subscription"), Some(sub("CNY"))).await;
+    t.ok("POST", &format!("/api/v1/machines/{m}/renewals"), Some(json!({"new_due": "2027-02-01", "amount_cents": 500}))).await;
+    t.ok("PUT", &format!("/api/v1/machines/{m}/subscription"), Some(sub("USD"))).await;
+    let rs = t.ok("GET", &format!("/api/v1/machines/{m}/renewals"), None).await;
+    assert_eq!((rs[0]["amount_cents"].clone(), rs[0]["currency"].clone()), (json!(500), json!("CNY")), "{rs}");
+    let (s, v) = t.call("PUT", &format!("/api/v1/machines/{m}/subscription"), Some(sub("USDT")), Auth::Session).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+}
+
+/// 迁移 0029 在存量数据上：同机 IP 节点的 SSH 端口副本清成 null、币种转大写、续费记录补币种、对象已删的静默删掉；
+/// 之后静默随机器级联删除，email 渠道与非 3 字母币种写不进来
+#[tokio::test]
+async fn migration_0029_normalizes_existing_rows() {
+    let (pool, _schema) = common::db_until(28).await;
+    let db = &pool;
+    let q = |sql: &'static str| async move { sqlx::query(sql).execute(db).await.unwrap() };
+    let (host, ipn, gone) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+    q("insert into team (id, name) values ('00000000-0000-7000-8000-000000000001', '团队1')").await;
+    q("insert into provider (id, name, code) values ('00000000-0000-7000-8000-000000000002', '甲', 'A')").await;
+    q("insert into plan (id, provider_id, name, price_cents, currency) values (gen_random_uuid(), '00000000-0000-7000-8000-000000000002', '基础版', 100, ' usd ')").await;
+    for (id, n, ip, h) in [(host, 1, "203.0.113.5", None), (ipn, 2, "203.0.113.6", Some(host))] {
+        sqlx::query("insert into machine (id, kind, team_id, number, primary_ip, ssh_port, host_id, lifecycle) values ($1, 'vps', '00000000-0000-7000-8000-000000000001', $2, $3::inet, 2222, $4, 'active')")
+            .bind(id).bind(n).bind(ip).bind(h).execute(db).await.unwrap();
+    }
+    sqlx::query("insert into subscription (machine_id, price_cents, currency, due_date) values ($1, 500, 'cny', '2027-01-01')").bind(host).execute(db).await.unwrap();
+    sqlx::query("insert into renewal (id, machine_id, old_due, new_due, amount_cents, actor) values (gen_random_uuid(), $1, '2026-12-01', '2027-01-01', 500, 'a')").bind(host).execute(db).await.unwrap();
+    for s in [Some(ipn), Some(gone), None] {
+        sqlx::query("insert into silence (id, subject_id, starts_at, ends_at, created_by) values (gen_random_uuid(), $1, now(), now() + interval '1 hour', 'a')").bind(s).execute(db).await.unwrap();
+    }
+
+    common::migrator(None).run(db).await.unwrap();
+    let ports: Vec<(Uuid, Option<i32>)> = sqlx::query_as("select id, ssh_port from machine order by number").fetch_all(db).await.unwrap();
+    assert_eq!(ports, [(host, Some(2222)), (ipn, None)]);
+    let cur: (String, String, String) = sqlx::query_as("select (select currency from plan), (select currency from subscription), (select currency from renewal)").fetch_one(db).await.unwrap();
+    assert_eq!(cur, ("USD".into(), "CNY".into(), "CNY".into()));
+    let subj: Vec<Option<Uuid>> = sqlx::query_scalar("select subject_id from silence order by subject_id nulls last").fetch_all(db).await.unwrap();
+    assert_eq!(subj, [Some(ipn), None], "对象已不存在的静默删掉");
+    // 约束都验证过了（存量合规）
+    let unvalidated: i64 = sqlx::query_scalar("select count(*) from pg_constraint where conname in ('plan_currency_iso', 'subscription_currency_iso', 'renewal_currency_iso', 'notify_channel_kind_check') and not convalidated and connamespace = (select oid from pg_namespace where nspname = current_schema())").fetch_one(db).await.unwrap();
+    assert_eq!(unvalidated, 0);
+
+    // 外键：删机器连带它的静默；同机 IP 节点不能再存 SSH 端口；email 渠道、非 3 字母币种写不进来
+    q("delete from machine where host_id is not null").await;
+    let n: i64 = sqlx::query_scalar("select count(*) from silence where subject_id is not null").fetch_one(db).await.unwrap();
+    assert_eq!(n, 0);
+    for bad in [
+        "insert into machine (id, kind, team_id, number, primary_ip, host_id, lifecycle) select gen_random_uuid(), 'vps', team_id, 9, '203.0.113.9', id, 'active' from machine",
+        "insert into notify_channel (id, kind, name, config_enc) values (gen_random_uuid(), 'email', 'x', '\\x00')",
+        "update plan set currency = 'USDT'",
+        "update renewal set currency = 'cny'",
+    ] {
+        let e = sqlx::query(bad).execute(db).await.unwrap_err();
+        assert_eq!(e.as_database_error().and_then(|d| d.code()).as_deref(), Some("23514"), "{bad}: {e}");
     }
 }

@@ -318,15 +318,15 @@ pub struct PlanIn {
     archived: Option<bool>,
 }
 
-/// 套餐字段校验（新建与 PATCH 共用，只看传了的）：价格不为负，币种 1–8 个字母（转成大写），备注不超过 2000 字
+/// 套餐字段校验（新建与 PATCH 共用，只看传了的）：价格不为负，币种 3 个字母（转成大写，与库里的约束一致），备注不超过 2000 字
 fn check_plan(b: &mut PlanIn) -> ApiResult<()> {
     if b.price_cents.is_some_and(|p| p < 0) {
         return Err(ApiError::bad_request("价格不能为负"));
     }
     if let Some(c) = &mut b.currency {
         let u = c.trim().to_ascii_uppercase();
-        if u.is_empty() || u.len() > 8 || !u.bytes().all(|x| x.is_ascii_uppercase()) {
-            return Err(ApiError::bad_request("币种是 1–8 个字母，如 USD、CNY"));
+        if u.len() != 3 || !u.bytes().all(|x| x.is_ascii_uppercase()) {
+            return Err(ApiError::bad_request("币种是 3 个字母的代码，如 USD、CNY"));
         }
         *c = u;
     }

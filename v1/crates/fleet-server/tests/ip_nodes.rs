@@ -10,7 +10,7 @@ use fleet_proto::{DesiredState, Outbound};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-/// 直接在库里放一台落地机当宿主机（同机 IP 节点 `host` 指向它时就是同机 IP 节点）
+/// 直接在库里放一台落地机当宿主机（同机 IP 节点 `host` 指向它时就是同机 IP 节点；同机 IP 节点不存 SSH 端口，`ssh_port` 忽略）
 async fn seed_vps(t: &T, team: Uuid, number: i32, ip: &str, ssh_port: i32, lifecycle: &str, host: Option<Uuid>) -> Uuid {
     let id = Uuid::now_v7();
     sqlx::query(
@@ -21,7 +21,7 @@ async fn seed_vps(t: &T, team: Uuid, number: i32, ip: &str, ssh_port: i32, lifec
     .bind(team)
     .bind(number)
     .bind(ip)
-    .bind(ssh_port)
+    .bind(host.is_none().then_some(ssh_port))
     .bind(lifecycle)
     .bind(host)
     .execute(&t.st.db)
@@ -69,9 +69,10 @@ async fn provision_checks_host_and_allocates_ports() {
     let mut xs = vec![];
     for (j, port) in created["jobs"].as_array().unwrap().iter().zip([8389, 8390]) {
         let x: Uuid = j["machine_id"].as_str().unwrap().parse().unwrap();
-        let row: (Option<Uuid>, i32, Option<Uuid>, Option<Uuid>, String) =
+        let row: (Option<Uuid>, Option<i32>, Option<Uuid>, Option<Uuid>, String) =
             sqlx::query_as("select host_id, ssh_port, provider_id, plan_id, kind::text from machine where id = $1").bind(x).fetch_one(&t.st.db).await.unwrap();
-        assert_eq!(row, (Some(host), 2222, Some(pv), None, "vps".to_string()));
+        assert_eq!(row, (Some(host), None, Some(pv), None, "vps".to_string()), "SSH 端口不抄宿主机的");
+        assert_eq!(t.get(&format!("/api/v1/machines/{x}")).await["ssh_port"], 2222, "显示取宿主机的");
         let ob: (String, String, i32, Option<String>) =
             sqlx::query_as("select protocol, host, port, method from node_outbound where machine_id = $1").bind(x).fetch_one(&t.st.db).await.unwrap();
         assert_eq!((ob.0.as_str(), ob.2, ob.3.as_deref()), ("shadowsocks", port, Some("aes-256-gcm")));
@@ -84,6 +85,9 @@ async fn provision_checks_host_and_allocates_ports() {
         assert!(p.get("login").is_none() && p.get("reset_host_key").is_none(), "{p}");
         xs.push(x);
     }
+    // 宿主机改了 SSH 端口：同机节点读到的跟着变（没有副本）
+    sqlx::query("update machine set ssh_port = 2200 where id = $1").bind(host).execute(&t.st.db).await.unwrap();
+    assert_eq!(t.get(&format!("/api/v1/machines/{}", xs[0])).await["ssh_port"], 2200);
     // 再加一台：接着库里已占的往上分
     let chk = t.post("/api/v1/provision/check", json!({"items": [ip_item("203.0.113.9", host, team, relay)]})).await;
     assert_eq!(chk["items"][0]["ss_port"], 8391, "{chk}");
@@ -232,8 +236,8 @@ async fn unreachable_host_fails_ip_check_and_cancel_keeps_host() {
     t.post(&format!("/api/v1/jobs/{job}/cancel"), json!({})).await;
     t.wait_job(&job, "cancelled").await;
     assert_eq!((lifecycle_of(&t, x).await, lifecycle_of(&t, host).await), ("retired".to_string(), "active".to_string()));
-    let ob: i64 = sqlx::query_scalar("select count(*) from node_outbound where machine_id = $1").bind(x).fetch_one(&t.st.db).await.unwrap();
-    assert_eq!(ob, 0);
+    let ob: (i32, bool) = sqlx::query_as("select port, secret_enc is null from node_outbound where machine_id = $1").bind(x).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(ob, (8389, true), "出站参数留着、秘密清掉");
     assert!(std::fs::read_to_string(&kh).unwrap().contains("[127.0.0.1]:1 "), "宿主机的主机公钥不能被忘掉");
 }
 
@@ -312,10 +316,12 @@ async fn restore_ip_node_needs_active_host() {
     let (s, v) = t.req("POST", &path, Some(json!({"relay_id": relay})), None).await;
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
 
-    // 宿主机在用、上面已有一台同机节点占着 8389：恢复时重新分到 8390；不试 SSH、不要密码
+    // 宿主机在用、上面已有一台同机节点占着 x 原来的 8389：恢复时重新分到 8390；不试 SSH、不要密码
     sqlx::query("update machine set lifecycle = 'active', retired_at = null where id = $1").bind(host).execute(&t.st.db).await.unwrap();
     let other = seed_vps(&t, team, 3, "203.0.113.8", 22, "active", Some(host)).await;
     seed_outbound(&t, other, "203.0.113.8", 8389).await;
+    seed_outbound(&t, x, "203.0.113.7", 8389).await;
+    sqlx::query("update node_outbound set secret_enc = null where machine_id = $1").bind(x).execute(&t.st.db).await.unwrap();
     let pv = t.get(&path).await;
     assert_eq!((pv["restorable"].clone(), pv["ssh"].clone(), pv["needs"]["password"].clone()), (json!(true), Value::Null, json!("no")), "{pv}");
     let r = t.post(&path, json!({"relay_id": relay, "login": {"password": "pw"}, "ss_port": 9999})).await;
@@ -326,4 +332,13 @@ async fn restore_ip_node_needs_active_host() {
     assert_eq!((h.as_str(), port), ("203.0.113.7", 8390));
     let p: Value = sqlx::query_scalar("select params from job where id = $1::uuid").bind(r["job_id"].as_str().unwrap()).fetch_one(&t.st.db).await.unwrap();
     assert!(p.get("login").is_none(), "{p}");
+
+    // 原来的端口没被占：沿用
+    let y = seed_vps(&t, team, 4, "203.0.113.9", 22, "retired", Some(host)).await;
+    seed_outbound(&t, y, "203.0.113.9", 8395).await;
+    sqlx::query("update node_outbound set secret_enc = null where machine_id = $1").bind(y).execute(&t.st.db).await.unwrap();
+    assert_eq!(t.get(&format!("/api/v1/machines/{y}/restore")).await["outbound"]["port"], 8395);
+    t.post(&format!("/api/v1/machines/{y}/restore"), json!({"relay_id": relay})).await;
+    let (port, gone): (i32, bool) = sqlx::query_as("select port, secret_enc is null from node_outbound where machine_id = $1").bind(y).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!((port, gone), (8395, false), "沿用原端口、重新生成秘密");
 }

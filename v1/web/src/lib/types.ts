@@ -153,7 +153,8 @@ export interface Incident {
 }
 /** 静默：subject_id 为 null = 全部机器，rule 为 null = 全部规则（rule_name 是规则中文名，同告警）。列表只有没结束的：进行中的与已预约的（starts_at 还没到） */
 export interface Silence { id: string; subject_id: string | null; subject_name: string | null; rule: string | null; rule_name: string | null; starts_at: string; ends_at: string; is_maintenance: boolean; comment: string }
-export interface Renewal { id: string; old_due: string | null; new_due: string; amount_cents: number | null; note: string | null; actor: string; created_at: string }
+/** currency：登记时订阅的币种（之后改订阅币种，这条的金额不跟着变） */
+export interface Renewal { id: string; old_due: string | null; new_due: string; amount_cents: number | null; currency: string; note: string | null; actor: string; created_at: string }
 /** 审计：界面只显示 title 与 summary（服务端生成的中文）；detail 是原始 JSON，不要直接渲染 */
 export interface AuditEntry { id: string; ts: string; actor: string; action: string; title: string; summary: string; target_kind: string | null; target_id: string | null; detail: unknown }
 export interface RenumberPreview { changes: { machine_id: string; old_name: string; new_name: string }[]; token: string }
@@ -167,12 +168,16 @@ export interface RestorePreview {
   /** 同机 IP 节点不试 SSH（用中控密钥登录宿主机），为 null、needs.password 为 no；宿主机不在用时 blockers 里有原因 */
   /** host_key_changed：退役时存过主机公钥才有；true 时 blockers 里有「主机指纹与退役时不同…」（请求带 reset_host_key=true 时改在 warnings） */
   ssh: { reachable: boolean; key_login: 'ok' | 'denied' | 'error' | 'unreachable' | string; host_key?: string; host_key_changed?: boolean; detail?: string } | null;
-  /** password：required 中控密钥登录被拒、必须给 root 密码；optional 探测不到、可选；no 不需要 */
-  needs: { relay: boolean; upstream: boolean; password: 'required' | 'optional' | 'no' };
+  /** 退役时留下的出站参数（不含秘密），恢复时默认沿用：VPS 节点是 SS 端口（NAT 映射的公网端口），家宽代理是上游。迁移 0029 之前退役的为 null */
+  outbound: { protocol: 'shadowsocks' | 'socks5' | 'http'; host: string; port: number; username: string | null } | null;
+  /** password：required 中控密钥登录被拒、必须给 root 密码；optional 探测不到、可选；no 不需要。
+   *  upstream：家宽代理没留下上游、要给全；upstream_password：留下的上游有用户名，密码退役时已清掉、要重新给 */
+  needs: { relay: boolean; upstream: boolean; upstream_password: boolean; password: 'required' | 'optional' | 'no' };
 }
 export interface RestoreBody {
-  team_id?: string; number?: number; label?: string; relay_id?: string; reason?: string; reset_host_key?: boolean;
-  login?: { password: string }; upstream?: { protocol: 'socks5' | 'http'; host: string; port: number; username?: string; password?: string };
+  team_id?: string; number?: number; label?: string; relay_id?: string; reason?: string; reset_host_key?: boolean; ss_port?: number;
+  /** 没给的字段沿用退役时留下的；username 给空串 = 去掉 */
+  login?: { password: string }; upstream?: { protocol?: 'socks5' | 'http'; host?: string; port?: number; username?: string; password?: string };
 }
 /** 退役预览：退役后同团队后面的节点会依次前移改名。ip_nodes：会一并退役的同机 IP 节点（宿主机才有），renames 按所有受影响的团队算 */
 export interface RetirePreview { name: string; renames: { machine_id: string; old_name: string; new_name: string }[]; ip_nodes: { id: string; name: string }[] }

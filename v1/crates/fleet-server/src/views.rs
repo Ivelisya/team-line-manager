@@ -513,7 +513,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     let lc = scope.cond();
     // 同机 IP 节点没有自己的 agent：agent 状态取宿主机的
     let sql = format!(
-        "select m.id, m.kind::text kind, m.team_id, t.name team_name, m.number, m.label, host(m.primary_ip) ip, m.ssh_port,
+        "select m.id, m.kind::text kind, m.team_id, t.name team_name, m.number, m.label, host(m.primary_ip) ip, coalesce(hm.ssh_port, m.ssh_port) ssh_port,
                 m.host_id, display_name(hm.kind::text, hm.label, ht.name, hm.number) host_name,
                 p.id provider_id, p.name provider_name, p.code provider_code, m.plan_id, pl.name plan_name,
                 pl.bandwidth_mbps plan_bw, pl.traffic_gb plan_traffic, m.service_ref, m.lifecycle::text lifecycle,

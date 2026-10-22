@@ -210,7 +210,7 @@ fn billing_text(name: &str, m: &Value, limit: Option<i64>, pct: Option<i64>, ren
             vec![
                 table::ts(&st(r, "/created_at")),
                 format!("{} → {}", st(r, "/old_due"), st(r, "/new_due")),
-                r["amount_cents"].as_i64().map_or("-".into(), |c| money(c, &cur)),
+                r["amount_cents"].as_i64().map_or("-".into(), |c| money(c, r["currency"].as_str().unwrap_or(&cur))),
                 st(r, "/actor"),
                 st(r, "/note"),
             ]

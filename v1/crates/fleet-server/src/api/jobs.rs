@@ -166,14 +166,15 @@ async fn reset_target(tx: &mut crate::db::Tx<'_>, job: Uuid, step: i32, target: 
     if ek.as_deref() != Some("host_key") {
         return Err(ApiError::conflict("这个作业不是因为主机指纹不符失败的，不需要重置主机指纹：去掉「重置主机指纹」再重试"));
     }
-    let (ip, port, host): (String, i32, Option<Uuid>) = sqlx::query_as("select host(primary_ip), ssh_port, host_id from machine where id = $1")
+    let (ip, port, host): (String, Option<i32>, Option<Uuid>) = sqlx::query_as("select host(primary_ip), ssh_port, host_id from machine where id = $1")
         .bind(t)
         .fetch_one(&mut **tx)
         .await?;
     if host.is_some() {
         return Err(ApiError::conflict("同机 IP 节点登录的是宿主机，不能在这里重置宿主机的主机指纹"));
     }
-    Ok((ip, port as u16))
+    // 不是同机 IP 节点就有自己的 SSH 端口（库里约束保证）
+    Ok((ip, port.unwrap_or(22) as u16))
 }
 
 pub async fn retry(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, body: axum::body::Bytes) -> ApiResult<Json<Value>> {

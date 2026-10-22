@@ -348,7 +348,7 @@ export function buildDb(): Db {
     { id: 'n5', channel_id: 'c1', channel_name: '运维群', incident_id: 'i9-0000-cccc', ts: iso(now() - 4 * DAY), ok: true, error: null, kind: 'repeat', subject_name: null, rule_name: 'agent 离线' },
   ];
   const s3 = machines.find((m) => m.id === 'm-t1-03')!.subscription!;
-  const renewals: Record<string, Renewal[]> = { 'm-t1-03': [{ id: 'rn1', old_due: addMonths(s3.due_date, -3), new_due: s3.due_date, amount_cents: s3.price_cents, note: '账单 #2041', actor: 'admin', created_at: iso(now() - 84 * DAY) }] };
+  const renewals: Record<string, Renewal[]> = { 'm-t1-03': [{ id: 'rn1', old_due: addMonths(s3.due_date, -3), new_due: s3.due_date, amount_cents: s3.price_cents, currency: s3.currency, note: '账单 #2041', actor: 'admin', created_at: iso(now() - 84 * DAY) }] };
   return { user: 'admin', teams, providers, plans, machines, jobs, logs, incidents, silences, audit, renewals, apiKeys, channels, notifyLog, ssPorts: { 'm-t1-14': 8389 }, seq: 100 };
 }
 
