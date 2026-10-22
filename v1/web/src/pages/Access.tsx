@@ -122,7 +122,7 @@ export function AccessPage() {
 }
 
 function None({ f, filtered, what = '访问记录' }: { f: AccessFilter; filtered: boolean; what?: string }) {
-  return <Empty icon={<Radar size={22} />} text={filtered ? `没有符合筛选条件的${what}` : `最近 ${winLabel(f.window)}没有${what}（需要线路机开启访问日志、且有真实客户端流量）`} />;
+  return <Empty icon={<Radar size={22} />} text={filtered ? `没有符合筛选条件的${what}` : `最近 ${winLabel(f.window)}没有${what}`} />;
 }
 const Loading = () => <div style={{ padding: 16 }}><span className="skel" style={{ width: '60%', height: 14 }} /></div>;
 /** 取数出错：带「重试」（同全站的 ErrorNote） */
@@ -141,7 +141,7 @@ const TargetsView = React.memo(function TargetsView({ open, f, sort, setSort, fi
   const q = useAccessTargets(f, sort, pg.offset, pg.size);
   const rows = q.data?.items ?? [];
   return (
-    <Panel ref={pg.anchor} title="域名与 IP" count={total != null ? `${fmtN(total)} 个` : undefined} sub="同一节点的随机子域名已合并为 *.域名"
+    <Panel ref={pg.anchor} title="域名与 IP" count={total != null ? `${fmtN(total)} 个` : undefined} sub={<InfoTip text="同一节点的随机子域名已合并为 *.域名" />}
       tools={<Segmented sm label="排序" value={sort} onChange={setSort} items={SORT_ITEMS} />} flush>
       {q.isError && <div style={{ padding: 12 }}><ErrNote q={q} /></div>}
       <div className="table-wrap" data-stale={q.isPlaceholderData}>
@@ -179,7 +179,7 @@ const NewView = React.memo(function NewView({ f, filtered, open }: { f: AccessFi
   const rows = q.data?.items ?? [];
   return (
     <Panel ref={pg.anchor} title="新出现的目标" count={q.data ? `${fmtN(q.data.total)} 个` : undefined}
-      sub="该节点第一次访问到的域名 / IP；新目标不等于异常，只作参考" flush>
+      sub={<InfoTip text="该节点第一次访问到的域名 / IP；新目标不等于异常，只作参考" />} flush>
       {q.isError && <div style={{ padding: 12 }}><ErrNote q={q} /></div>}
       <div className="table-wrap" data-stale={q.isPlaceholderData}>
         <table className="dt" style={{ minWidth: 760 }}>
@@ -222,7 +222,7 @@ const SourcesView = React.memo(function SourcesView({ f, filtered, open }: { f: 
     <>
       <IpIntelHint />
       <Panel ref={pg.anchor} title="来源地址" count={q.data ? `${rows.length}${ct ? ` / ${all.length}` : ''} 个` : undefined}
-        sub="连接到入口的客户端地址，按连接数排序，附运营商 · 城市 · 接入方式（离线库，不外发 IP）；搜索框在这里匹配来源 IP" flush>
+        sub={<InfoTip text="连接到入口的客户端地址，按连接数排序，附运营商 · 城市 · 接入方式（离线库，不外发 IP）；搜索框在这里匹配来源 IP" />} flush>
         {q.isError && <div style={{ padding: 12 }}><ErrNote q={q} /></div>}
         <div className="table-wrap" data-stale={q.isPlaceholderData}>
           <table className="dt" style={{ minWidth: 820 }}>
@@ -263,7 +263,7 @@ const NodesView = React.memo(function NodesView({ f, filtered, open }: { f: Acce
   const rows = q.data?.nodes ?? [];
   const pg = usePage({ total: q.data ? rows.length : undefined, sizes: LOCAL_SIZES, size: 50, reset: [f] });
   return (
-    <Panel ref={pg.anchor} title="节点概览" count={q.data ? `${rows.length} 个节点` : undefined} sub="点一行打开该节点的访问记录" flush>
+    <Panel ref={pg.anchor} title="节点概览" count={q.data ? `${rows.length} 个节点` : undefined} flush>
       {q.isError && <div style={{ padding: 12 }}><ErrNote q={q} /></div>}
       <div className="table-wrap" data-stale={q.isPlaceholderData}>
         <table className="dt" style={{ minWidth: 760 }}>
@@ -304,7 +304,7 @@ const EventsView = React.memo(function EventsView({ f, filtered, open }: { f: Ac
   const top = React.useRef<HTMLElement>(null);
   const go = (next: string[]) => { setSt({ fk, cur: next }); scrollBackTo(top.current); };
   return (
-    <Panel ref={top} title={<>原始记录<InfoTip text="最新在前；目标不做合并" /></>} sub={`保留 ${rawDays} 天`} flush>
+    <Panel ref={top} title="原始记录" sub={<>保留 {rawDays} 天<InfoTip text="最新在前；目标不做合并" /></>} flush>
       {q.isError && <div style={{ padding: 12 }}><ErrNote q={q} /></div>}
       <div className="table-wrap" data-stale={q.isPlaceholderData}>
         <table className="dt is-one" style={{ minWidth: 820 }}>

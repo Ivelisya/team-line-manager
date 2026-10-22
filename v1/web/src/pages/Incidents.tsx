@@ -13,7 +13,7 @@ import type { Incident, Silence } from '@/lib/types';
 import { resetOnOpen, useHeld } from '@/lib/useHeld';
 import { useNow } from '@/lib/useNow';
 import { Button, IconButton } from '@/components/ui/button';
-import { CheckRow, Field, Input } from '@/components/ui/form';
+import { CheckRow, Field, InfoTip, Input } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { Segmented, Trunc } from '@/components/ui/overlays';
 import { SkeletonRows } from '@/components/ui/skeleton';
@@ -70,7 +70,7 @@ export function IncidentsPage() {
             </tbody>
           </table>
           {q.isLoading && <SkeletonRows rows={4} />}
-          {q.data && list.length === 0 && <Empty icon={state === 'firing' ? <CheckCircle2 size={22} /> : undefined} text={state === 'firing' ? '没有进行中的告警' : '没有记录'} hint={state === 'firing' ? '所有机器都在正常范围内' : undefined} />}
+          {q.data && list.length === 0 && <Empty icon={state === 'firing' ? <CheckCircle2 size={22} /> : undefined} text={state === 'firing' ? '没有进行中的告警' : '没有记录'} />}
         </div>
         <Pagination pg={pg} unit="条" />
       </Panel>
@@ -119,7 +119,7 @@ function Silences() {
     <>
       <Panel title="静默与维护窗口" count={list.length} sub="窗口内不会产生告警" tools={<Button onClick={() => { setPreset(''); setOpen(true); }}><Plus />新建静默</Button>} flush>
         {q.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div>}
-        {q.isLoading ? <SkeletonRows rows={2} head /> : list.length === 0 && !q.isError ? <Empty icon={<BellOff size={22} />} text="没有进行中或已预约的静默" hint="维护机器前先建一个（可以预约开始时间），期间不会发告警" /> : (
+        {q.isLoading ? <SkeletonRows rows={2} head /> : list.length === 0 && !q.isError ? <Empty icon={<BellOff size={22} />} text="没有进行中或已预约的静默" /> : (
           <div className="table-wrap">
             {/* 服务端按开始时间排：进行中的在前，已预约的随后 */}
             <table className="dt" style={{ minWidth: 760 }}>
@@ -145,8 +145,8 @@ function Silences() {
       <SilenceDialog open={open} onOpenChange={setOpen} preset={preset} />
       <ConfirmDialog open={!!askDel} onOpenChange={(o) => !o && setAskDel(null)} title={`删除「${delHeld?.subject_name ?? '全部机器'}」的${delHeld?.is_maintenance ? '维护窗口' : '静默'}？`} confirmLabel="删除" danger
         description={delHeld && Date.parse(delHeld.starts_at) > now
-          ? `它还没开始（${F.dt(delHeld.starts_at)} 起），删除即取消这次预约，不影响现在的告警。`
-          : `删除后立即恢复告警：${delHeld?.subject_name ?? '所有机器'}若仍异常，会马上发出通知。`}
+          ? '删除即取消这次预约'
+          : '仍异常的会马上发出告警'}
         onConfirm={async () => { await del.mutateAsync(askDel!.id); toast.ok('已删除静默'); }} />
     </>
   );
@@ -168,7 +168,7 @@ const SilenceDialog = resetOnOpen(function SilenceDialog({ open, onOpenChange, p
   const now = Date.now();
   const startMs = Date.parse(start); // datetime-local 的值不带时区，按本地时间解析；没填完时为 NaN
   // 当前这一分钟还算数（同 fleetctl）
-  const startErr = mode === 'now' ? undefined : Number.isNaN(startMs) ? '请选择开始时间' : startMs + MIN <= now ? '这个时间已经过去了；要马上开始请选「现在」'
+  const startErr = mode === 'now' ? undefined : Number.isNaN(startMs) ? '请选择开始时间' : startMs + MIN <= now ? '这个时间已过，可选「现在」'
     : startMs > now + AHEAD_DAYS * 1440 * MIN ? `最多提前 ${AHEAD_DAYS} 天预约` : undefined;
   const h = Number(hours);
   const minutes = dur === 'custom' ? h * 60 : dur;
@@ -183,14 +183,14 @@ const SilenceDialog = resetOnOpen(function SilenceDialog({ open, onOpenChange, p
     return { subject_id: subject === ALL ? null : subject, starts_at: new Date(s).toISOString(), ends_at: new Date(s + minutes * MIN).toISOString(), is_maintenance: maint, comment: comment.trim() };
   };
   const submit = () => add.mutate(body(), { onSuccess: () => { toast.ok('已创建静默'); onOpenChange(false); }, onError: toast.err });
-  const desc = mode === 'now' ? `从现在开始，${durText}内所选对象不会触发告警。` : `从 ${dtMs(startMs)} 开始，${durText}内（到 ${dtMs(startMs + minutes * MIN)}）所选对象不会触发告警。`;
+  const desc = mode === 'now' ? `从现在起 ${durText}` : `${dtMs(startMs)} → ${dtMs(startMs + minutes * MIN)}`;
   return (
     <>
       <FormDialog open={open} onOpenChange={onOpenChange} title="新建静默" desc={desc} submitLabel="创建" busy={add.isPending} valid={valid}
         dirty={subject !== preset || mode !== 'now' || dur !== 240 || !maint || !!comment.trim()}
         onSubmit={() => (subject === ALL ? setAskAll(true) : submit())}>
-        <Field label="对象" hint="必须选择：是哪台机器要静默"><Select value={subject} onChange={setSubject} placeholder="选择机器" options={options} /></Field>
-        {subject === ALL && <Note tone="warn">静默「全部机器」会让所有机器在这段时间内都不发告警。提交时需要再确认一次。</Note>}
+        <Field label="对象"><Select value={subject} onChange={setSubject} placeholder="选择机器" options={options} /></Field>
+        {subject === ALL && <Note tone="warn">这段时间所有机器都不发告警</Note>}
         <div className="field">
           <span className="label">开始</span>
           <div className="row">
@@ -206,13 +206,13 @@ const SilenceDialog = resetOnOpen(function SilenceDialog({ open, onOpenChange, p
             <FilterChip pressed={dur === 'custom'} onClick={pickCustom}>自定义</FilterChip>
           </div>
           {dur === 'custom' && <Input inputMode="numeric" aria-label="自定义时长（小时）" placeholder="小时数" autoFocus value={hours} onChange={(e) => setHours(e.target.value.replace(/\D/g, ''))} aria-invalid={!!hoursErr} />}
-          {hoursErr ? <div className="hint is-error">{hoursErr}</div> : dur === 'custom' && <div className="hint">填小时数，最长 {MAX_HOURS} 小时（30 天）</div>}
+          {hoursErr ? <div className="hint is-error">{hoursErr}</div> : dur === 'custom' && <div className="hint">最长 {MAX_HOURS} 小时（30 天）</div>}
         </div>
-        <CheckRow checked={maint} onChange={setMaint}>标记为维护（卡片显示「维护」）</CheckRow>
+        <div className="row" style={{ gap: 4 }}><CheckRow checked={maint} onChange={setMaint}>标记为维护</CheckRow><InfoTip text="卡片显示「维护」" /></div>
         <Field label="备注"><Input value={comment} onChange={(e) => setComment(e.target.value)} placeholder="例如：换内核" /></Field>
       </FormDialog>
       <ConfirmDialog open={askAll} onOpenChange={setAskAll} title="静默全部机器？" confirmLabel="静默全部机器" danger
-        description={`从${mode === 'now' ? '现在' : ` ${dtMs(startMs)} `}到 ${dtMs(startAt() + minutes * MIN)}，所有机器的告警都不会发出${maint ? '（都显示「维护」）' : ''}。确认是要这样做吗？`}
+        description={`从${mode === 'now' ? '现在' : ` ${dtMs(startMs)} `}到 ${dtMs(startAt() + minutes * MIN)}，所有机器都不发告警`}
         onConfirm={async () => { await add.mutateAsync(body()); toast.ok('已创建静默'); onOpenChange(false); }} />
     </>
   );

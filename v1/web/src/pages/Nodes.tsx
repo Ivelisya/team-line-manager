@@ -136,7 +136,7 @@ export function NodesPage() {
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       <Panel flush>
         <MachineGrid cols={columns} rows={pageRows} sort={sort} onSort={setSort} openId={openId} onOpen={open} dim={isRetired} sig={rowSig} />
-        {!q.isLoading && !q.isError && rows.length === 0 && <Empty icon={<SearchX size={22} />} text={scope === 'retired' && !all.length ? '还没有已退役的机器' : '没有符合条件的机器'} hint={all.length ? '换个筛选条件试试' : undefined} />}
+        {!q.isLoading && !q.isError && rows.length === 0 && <Empty icon={<SearchX size={22} />} text={scope === 'retired' && !all.length ? '还没有已退役的机器' : '没有符合条件的机器'} />}
         {q.isLoading && <SkeletonRows rows={6} />}
         <Pagination pg={pg} unit="台" />
       </Panel>

@@ -115,7 +115,7 @@ export function Shell() {
         <div className="login-card" role="alert">
           <div className="login-brand"><span className="brand-mark"><Boxes size={14} /></span>团队线路管理</div>
           <Note tone="bad">{failed.error instanceof Error ? failed.error.message : '无法连接到中控'}</Note>
-          <div className="hint">这不是登录问题：中控暂时连不上或返回了错误，已登录的会话仍然有效。</div>
+          <div className="hint">不是登录问题，会话仍有效</div>
           <Button variant="primary" loading={failed.isFetching} onClick={() => void failed.refetch()}><RotateCw />重试</Button>
         </div>
       </div>

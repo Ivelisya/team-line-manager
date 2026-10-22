@@ -8,7 +8,7 @@ import { useDrawer } from '@/lib/drawer';
 import { lifecycleLabel } from '@/lib/derive';
 import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
-import { Field, Input } from '@/components/ui/form';
+import { Field, InfoTip, Input } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
 import { entryState, Note, Section, SectionHeader } from '@/components/app/primitives';
@@ -75,7 +75,7 @@ function RenameSection({ m }: { m: MachineView }) {
         ) : (
           <>
             <Field label="团队"><Select value={team} onChange={setTeam} options={teamOpts} /></Field>
-            <Field label="编号" hint="编号在团队内连续；已被占用时会提示" error={num && !numOk ? '编号应为 1–999 的整数' : undefined}>
+            <Field label="编号" error={num && !numOk ? '编号应为 1–999 的整数' : undefined}>
               <Input inputMode="numeric" value={num} onChange={(e) => setNum(e.target.value.replace(/\D/g, ''))} aria-invalid={!!num && !numOk} />
             </Field>
           </>
@@ -88,7 +88,7 @@ function RenameSection({ m }: { m: MachineView }) {
           </span>
           <Button type="submit" variant="primary" disabled={!changed || !valid || patch.isPending} loading={patch.isPending}>保存</Button>
         </div>
-        <div className="hint span-2">改名只改显示名与线路机上的备注，不换令牌，不会断开现有连接。</div>
+        <div className="hint span-2">不会断开现有连接 <InfoTip text="改名只改显示名与线路机上的备注，不换令牌。" /></div>
       </form>
     </Section>
   );
@@ -122,13 +122,13 @@ function EntrySection({ m }: { m: MachineView }) {
   const canAdd = m.kind !== 'relay' && opts.length > 0;
   return (
     <Section>
-      <SectionHeader title="入口" meta="停用 / 启用 / 轮换凭据 / 分享链接" />
+      <SectionHeader title="入口" />
       {/* 入口的“⋯”菜单与对话框整个入口列表共用一份 */}
       <EntryMenus entries={m.entries}><div className="stack-sm">
-        {m.entries.length === 0 && <div className="hint">{m.kind === 'relay' ? '这台线路机上还没有入口：节点的入口在节点上添加；也可以给它加一条直出入口。' : '这台机器还没有入口，选一台线路机把它挂上去。'}</div>}
+        {m.entries.length === 0 && <div className="hint">还没有入口{m.kind === 'relay' && <> <InfoTip text="节点的入口在节点上添加；也可以给这台线路机加一条直出入口。" /></>}</div>}
         {m.entries.map((e) => (
           <div key={e.id} className="manage-row" style={{ border: '1px solid var(--line)', borderRadius: 'var(--r-float)', padding: '8px 12px' }}>
-            <div><div className="t">{m.kind === 'relay' ? `${e.port} · ${e.node.name}` : entryLabel(e)}</div><div className="hint">{e.apply_error ?? (e.applied ? '已应用到线路机' : '应用中')}</div></div>
+            <div><div className="t">{m.kind === 'relay' ? `${e.port} · ${e.node.name}` : entryLabel(e)}</div><div className="hint">{e.apply_error ?? (e.applied ? '已应用' : '应用中')}</div></div>
             <span className="row" style={{ gap: 8 }}>{entryState(e)}<EntryMenuButton entry={e} /></span>
           </div>
         ))}
@@ -138,26 +138,26 @@ function EntrySection({ m }: { m: MachineView }) {
         <div className="manage-group">
           {canMove && m.kind !== 'relay' && (
             <div className="manage-row">
-              <div><div className="t">换线路机</div><div className="hint">把入口换到另一台线路机：新入口验收通过后才摘旧入口，不断网；完成后分享链接会变。</div></div>
+              <div><div className="t">换线路机</div><div className="hint">不断网，完成后分享链接会变 <InfoTip text="把入口换到另一台线路机：新入口验收通过后才摘旧入口。" /></div></div>
               <Button variant="secondary" disabled={!!m.active_job} onClick={() => setDlg('move')}><Repeat2 />换线路机…</Button>
             </div>
           )}
           {canMove && m.kind === 'relay' && (
             <div className="manage-row">
-              <div><div className="t">搬空线路机</div><div className="hint">把上面所有节点换到另一台线路机，之后就能安全退役这台。节点的分享链接会变。</div></div>
+              <div><div className="t">搬空线路机</div><div className="hint">节点的分享链接会变 <InfoTip text="把上面所有节点换到另一台线路机，之后就能安全退役这台。" /></div></div>
               <Button variant="secondary" onClick={() => setDlg('evacuate')}><PackageOpen />搬空到…</Button>
             </div>
           )}
           {canAddDirect && (
             <div className="manage-row">
-              <div><div className="t">直出入口</div><div className="hint">从这台线路机自己的 IP（{m.ip}）出去，不经节点；每台线路机一条，分享链接名「{m.name}-直出」。</div></div>
+              <div><div className="t">直出入口</div><div className="hint">从 {m.ip} 直接出去 <InfoTip text={`不经节点；每台线路机一条，分享链接名「${m.name}-直出」。`} /></div></div>
               <Button variant="secondary" disabled={add.isPending || !!m.active_job} loading={add.isPending}
                 onClick={() => add.mutate({ id: m.id, relay_id: m.id }, { onSuccess: () => toast.ok('已提交，直出入口正在应用'), onError: toast.err })}><Plus />添加直出入口</Button>
             </div>
           )}
           {canAdd && (
             <div className="manage-row">
-              <div><div className="t">加入口</div><div className="hint">再挂到另一台线路机，多一条入口和分享链接；原有的入口不受影响。</div></div>
+              <div><div className="t">加入口</div><div className="hint">多一条入口和分享链接 <InfoTip text="再挂到另一台线路机；原有的入口不受影响。" /></div></div>
               <span className="row" style={{ gap: 8, flexWrap: 'nowrap' }}>
                 <div style={{ width: 160 }}><Select value={relay} onChange={setRelay} options={opts} placeholder="选择线路机" aria-label="要挂到的线路机" /></div>
                 <Button disabled={!relay || add.isPending} loading={add.isPending} onClick={() => add.mutate({ id: m.id, relay_id: relay }, { onSuccess: () => { toast.ok('已提交，新入口正在应用'); setRelay(''); }, onError: toast.err })}><Plus />添加入口</Button>
@@ -178,7 +178,7 @@ function IpNodesSection({ m }: { m: MachineView }) {
     <Section>
       <SectionHeader title="同机 IP 节点" meta={m.ip_nodes.length ? `${m.ip_nodes.length} 个` : undefined} />
       <div className="manage-row">
-        <div><div className="t">添加 IP 节点</div><div className="hint">这台机器上另配了公网 IP 时，每个 IP 上架成一台独立节点（自己的团队编号、入口与分享链接）；SSH、agent 与主机读数都用这台的。</div></div>
+        <div><div className="t">添加 IP 节点</div><div className="hint">每个附加 IP 一台节点 <InfoTip text="这台机器上另配了公网 IP 时，每个 IP 上架成一台独立节点（自己的团队编号、入口与分享链接）；SSH、agent 与主机读数都用这台的。" /></div></div>
         <Button asChild variant="secondary"><Link to={`/provision?host=${m.id}`}><Plus />添加 IP 节点…</Link></Button>
       </div>
     </Section>
@@ -198,7 +198,7 @@ function AgentSection({ m }: { m: MachineView }) {
       <div className="manage-row">
         <div>
           <div className="t">版本 {a.version ?? '未知'}</div>
-          <div className="hint">{h ? `agent 在宿主机「${h.name}」上（${seen}），这台同机 IP 节点没有自己的 agent；要升级就升级宿主机的。` : `${seen}。升级会推送中控上的当前版本并重启 agent，不影响线路上的连接；新版本起不来、2 分钟内没有上报${m.kind === 'relay' ? '或 Xray 不正常' : ''}，会自动换回旧版本。`}</div>
+          <div className="hint">{h ? `用宿主机「${h.name}」的 · ${seen}` : seen} <InfoTip text={h ? '这台同机 IP 节点没有自己的 agent；要升级就升级宿主机的。' : `升级会推送中控上的当前版本并重启 agent，不影响线路上的连接；新版本起不来、2 分钟内没有上报${m.kind === 'relay' ? '或 Xray 不正常' : ''}，会自动换回旧版本。`} /></div>
         </div>
         {h ? <Button variant="secondary" onClick={() => open(h.id, 'manage')}>打开宿主机</Button> : (
           <Button variant="secondary" loading={up.isPending} disabled={!!m.active_job}
@@ -230,15 +230,14 @@ function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }
             <div className="manage-row">
               <div>
                 <div className="t">恢复</div>
-                <div className="hint">已于 {F.dtFull(m.retired_at)} 退役。恢复会保持原来的机器 ID（历史、账单、审计接上），重新走一遍上架，编号接在团队末尾。
-                  {hostDown && `宿主机「${host.name}」现在是「${lifecycleLabel(host.lifecycle)}」：同机 IP 节点要等宿主机在用才能恢复。`}</div>
+                <div className="hint">已于 {F.dtFull(m.retired_at)} 退役{hostDown && `；宿主机「${host.name}」${lifecycleLabel(host.lifecycle)}，暂不能恢复`} <InfoTip text={`恢复会保持原来的机器 ID（历史、账单、审计接上），重新走一遍上架，编号接在团队末尾。${hostDown ? '\n同机 IP 节点要等宿主机在用才能恢复。' : ''}`} /></div>
               </div>
               <Button variant="primary" disabled={hostDown} onClick={() => setDlg('restore')}><Undo2 />恢复…</Button>
             </div>
             <div className="manage-row">
               <div>
                 <div className="t">彻底删除</div>
-                <div className="hint">会清掉这台机器的记录与遥测，无法找回；审计记录保留。</div>
+                <div className="hint">无法找回，审计记录保留</div>
               </div>
               <Button variant="outline-danger" onClick={() => setDlg('purge')}><Trash2 />彻底删除…</Button>
             </div>
@@ -248,8 +247,11 @@ function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }
             <div>
               <div className="t">退役</div>
               <div className="hint">
-                {m.host_machine ? `只退役这个 IP 的节点：摘除它的入口，宿主机上它自己的 SS 实例可在退役时选择清理；宿主机「${m.host_machine.name}」不受影响。` : '停用入口、撤销令牌，机器进入「已退役」，不再出现在首页和统计里。'}
-                {m.kind !== 'relay' && '同团队后面的节点会自动前移补号。'}{n > 0 && `这台机器上有 ${n} 个同机 IP 节点，还没开始退役的会一起退役。`}
+                {m.host_machine ? `宿主机「${m.host_machine.name}」不受影响` : n > 0 ? `${n} 个同机 IP 节点会一起退役` : '停用入口、撤销令牌'}{' '}
+                <InfoTip text={[
+                  m.host_machine ? '只退役这个 IP 的节点：摘除它的入口，宿主机上它自己的 SS 实例可在退役时选择清理。' : '停用入口、撤销令牌，机器进入「已退役」，不再出现在首页和统计里。',
+                  m.kind !== 'relay' && '同团队后面的节点会自动前移补号。', n > 0 && `这台机器上有 ${n} 个同机 IP 节点，还没开始退役的会一起退役。`,
+                ].filter(Boolean).join('\n')} />
               </div>
             </div>
             <Button variant="outline-danger" disabled={busyJob || m.lifecycle === 'retiring'} onClick={() => setDlg('retire')}>退役…</Button>
@@ -258,7 +260,7 @@ function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }
         {busyJob && m.active_job && <Note tone="info">作业进行中，暂不能操作。<Link to={`/jobs/${m.active_job.id}`} className="btn btn-link" onClick={onClosed}>查看作业</Link></Note>}
         {/* 退役作业失败：机器仍是退役中，不能再发起退役，只能重试那个作业 */}
         {m.lifecycle === 'retiring' && m.failed_job && !m.active_job && (
-          <Note tone="bad">退役作业失败，机器仍在退役中，不能再次发起退役：<Link to={`/jobs/${m.failed_job.id}`} className="btn btn-link" onClick={onClosed}>到作业页重试</Link>。</Note>
+          <Note tone="bad">退役作业失败：<Link to={`/jobs/${m.failed_job.id}`} className="btn btn-link" onClick={onClosed}>到作业页重试</Link></Note>
         )}
       </div>
 
@@ -266,7 +268,7 @@ function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }
       <RetireDialog m={m} open={dlg === 'retire'} onOpenChange={(o) => !o && setDlg(null)} onDone={onClosed} />
 
       <TypedConfirmDialog open={dlg === 'purge'} onOpenChange={(o) => !o && setDlg(null)} title={`彻底删除 ${m.name}？`} expected={m.name} prompt="请输入显示名" confirmLabel="彻底删除" danger
-        description="会删除机器记录与全部遥测数据，无法找回；审计记录保留。它的入口近 35 天的流量还计入其他在用机器的统计时，要等到期后才能删。"
+        description={<>删除后无法找回 <InfoTip text={'会删除机器记录与全部遥测数据；审计记录保留。\n它的入口近 35 天的流量还计入其他在用机器的统计时，要等到期后才能删。'} /></>}
         onConfirm={async () => { await purge.mutateAsync({ id: m.id, confirm: m.name }); toast.ok('已提交删除作业'); onClosed(); }} />
     </Section>
   );

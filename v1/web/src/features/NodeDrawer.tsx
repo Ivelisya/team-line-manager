@@ -5,6 +5,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/dialog';
 import { Tabs, TabsList, TabsTrigger, Tip, Trunc } from '@/components/ui/overlays';
+import { InfoTip } from '@/components/ui/form';
 import { IconButton } from '@/components/ui/button';
 import { ErrorBoundary } from '@/components/app/ErrorBoundary';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -81,16 +82,16 @@ export function NodeDrawer() {
             </Tabs>
             <div className="drawer-body" ref={bodyRef}>
               {m.lifecycle === 'retired' && (
-                <Note tone="warn"><b>{m.name}</b> 已于 {F.dtFull(m.retired_at)} 退役（IP {m.ip}）。退役机器保留原编号，可能与在用机器同名，请以 IP 和机器 ID 区分。{m.lifecycle_reason && <> 原因：{m.lifecycle_reason}。</>}</Note>
+                <Note tone="warn"><b>{m.name}</b> 已于 {F.dtFull(m.retired_at)} 退役{m.lifecycle_reason && <>：{m.lifecycle_reason}</>} <InfoTip text="退役机器保留原编号，可能与在用机器同名，请以 IP 和机器 ID 区分。" /></Note>
               )}
               {m.lifecycle === 'failed' && (
                 <Note tone="bad">
-                  上架失败{m.lifecycle_reason && <>：{m.lifecycle_reason}</>}。{m.failed_job && <><Link to={`/jobs/${m.failed_job.id}`} className="btn btn-link" onClick={close}>查看作业</Link>，可在作业页重试；</>}也可以在「管理」里退役，释放 IP 与编号。
+                  上架失败{m.lifecycle_reason && <>：{m.lifecycle_reason}</>}。{m.failed_job && <Link to={`/jobs/${m.failed_job.id}`} className="btn btn-link" onClick={close}>查看作业</Link>} <InfoTip text="可在作业页重试；也可以在「管理」里退役，释放 IP 与编号。" />
                 </Note>
               )}
               {m.lifecycle === 'retiring' && m.failed_job && !m.active_job && (
                 <Note tone="bad">
-                  退役失败 · <Link to={`/jobs/${m.failed_job.id}`} className="btn btn-link" onClick={close}>查看作业</Link>。机器停在「退役中」，在作业页从失败的步骤重试即可完成退役。
+                  退役失败 · <Link to={`/jobs/${m.failed_job.id}`} className="btn btn-link" onClick={close}>查看作业</Link> <InfoTip text="机器停在「退役中」，在作业页从失败的步骤重试即可完成退役。" />
                 </Note>
               )}
               {m.active_job && (

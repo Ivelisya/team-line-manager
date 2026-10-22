@@ -54,17 +54,17 @@ export function AuditPage() {
 
   return (
     <div className="stack">
-      <PageHead title="操作记录" note="登录、API 密钥、远程执行与各项变更" tools={<Segmented label="分类" value={cat} onChange={setCat} items={CATS} />} />
+      <PageHead title="操作记录" tools={<Segmented label="分类" value={cat} onChange={setCat} items={CATS} />} />
       <div className="row" role="search">
         <SearchInput value={text} onChange={(e) => setText(e.target.value)} placeholder="搜索动作、对象、操作人…" aria-label="搜索" className="w-full sm:w-[300px]" />
       </div>
       {/* 第一页取不到：整页重取；往前翻的那一页取不到：只重试那一页 */}
       {q.isError && <ErrorNote error={q.error} onRetry={() => void (q.isFetchNextPageError ? q.fetchNextPage() : q.refetch())} />}
       <Panel title="记录" count={q.data ? (filtered ? `${rows.length} / 已加载 ${all.length}` : `已加载 ${all.length}`) : undefined}
-        sub={filtered ? '分类与搜索只在已加载的记录里筛' : '新的在前；涉及机器的一行点开看这台机器'}>
+        sub={filtered ? '只筛已加载的记录' : undefined}>
         {q.isLoading ? <SkeletonRows rows={6} />
           : rows.length ? byDay(rows).map((g) => <React.Fragment key={g.key}><div className="audit-day">{g.label}</div><AuditList items={g.items} onOpen={open} /></React.Fragment>)
-          : !q.isError && <Empty icon={filtered ? <SearchX size={22} /> : <History size={22} />} text={filtered ? '已加载的记录里没有符合条件的' : '还没有操作记录'} hint={filtered && q.hasNextPage ? '可以加载更早的记录再找' : undefined} />}
+          : !q.isError && <Empty icon={filtered ? <SearchX size={22} /> : <History size={22} />} text={filtered ? '已加载的记录里没有符合条件的' : '还没有操作记录'} />}
         {q.hasNextPage && (
           <div className="audit-more"><Button variant="quiet" size="md" loading={q.isFetchingNextPage} onClick={() => void q.fetchNextPage()}>加载更早的记录</Button></div>
         )}

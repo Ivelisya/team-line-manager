@@ -3,6 +3,7 @@
 import { ShieldQuestion } from 'lucide-react';
 import { useIpIntelStatus, useSourcesProfile, type ConnType, type DistItem, type IpIntel, type ProfileWindow, type SourcesProfile } from '@/lib/ipintel';
 import * as F from '@/lib/format';
+import { InfoTip } from '@/components/ui/form';
 import { Chip, ErrorNote, Note, Pill, Section, SectionHeader, type Tone } from '@/components/app/primitives';
 
 const TONE: Record<ConnType, Tone> = { residential: 'ok', mobile: 'info', datacenter: 'warn', vpn: 'bad', unknown: 'neutral' };
@@ -53,7 +54,7 @@ export function IpIntelStatusChip() {
 export function IpIntelHint() {
   const s = useIpIntelStatus().data;
   if (!s || (s.enabled && s.loaded >= s.expected)) return null;
-  const text = !s.enabled ? 'IP 情报已在配置里关闭，来源地址不显示运营商、城市和接入方式。' : !s.installed ? INSTALL_HINT : (s.hint ?? 'IP 库不全，部分来源的画像查不到。');
+  const text = !s.enabled ? 'IP 情报已关闭，不显示运营商与城市' : !s.installed ? INSTALL_HINT : (s.hint ?? 'IP 库不全，部分来源的画像查不到。');
   return <Note tone="warn" icon={<ShieldQuestion size={16} />}>{text}</Note>;
 }
 
@@ -81,11 +82,11 @@ function Dist({ title, items, empty = '没有数据' }: { title: string; items: 
 }
 
 function learningText(l: SourcesProfile['learning']): string {
-  if (!l.started_at) return '还没有来源记录，学习期从第一条记录开始算';
-  if (l.done) return `学习期已结束（${l.learn_days} 天）· 之后出现的新运营商、新城市、机房来源会告警`;
+  if (!l.started_at) return '还没有来源记录';
+  if (l.done) return `学习期已结束（${l.learn_days} 天）`;
   const h = l.remaining_hours ?? 0;
   const left = h >= 24 ? `${Math.floor(h / 24)} 天 ${h % 24} 小时` : `${h} 小时`;
-  return `学习期还剩 ${left}（共 ${l.learn_days} 天）· 期间只学习不告警`;
+  return `学习期还剩 ${left}（共 ${l.learn_days} 天）`;
 }
 
 export function SourceProfile({ id, window, relay }: { id: string; window: ProfileWindow; relay: boolean }) {
@@ -100,7 +101,7 @@ export function SourceProfile({ id, window, relay }: { id: string; window: Profi
       {/* 换时间范围、新数据未到时沿用的旧画像调淡（extras.css [data-stale]） */}
       <div data-stale={q.isPlaceholderData}>
         {d.degraded && <Note tone="warn" icon={<ShieldQuestion size={16} />}>{INSTALL_HINT}</Note>}
-        {d.empty ? <div className="hint">这段时间没有来源记录</div> : d.total_conns === 0 && !d.degraded ? <div className="hint">这段时间只有我方机器或非公网地址的连接，没有外部来源可画像</div> : (
+        {d.empty ? <div className="hint">这段时间没有来源记录</div> : d.total_conns === 0 && !d.degraded ? <div className="hint">只有我方机器或内网的连接</div> : (
           <>
             <div className="dist-grid">
               <Dist title="运营商" items={d.distribution.isp} empty={d.degraded ? '查不到（IP 库未安装）' : undefined} />
@@ -108,9 +109,9 @@ export function SourceProfile({ id, window, relay }: { id: string; window: Profi
               <Dist title="接入方式" items={d.distribution.conn_type} empty={d.degraded ? '查不到（IP 库未安装）' : undefined} />
             </div>
             <div className="hint" style={{ marginTop: 8 }}>
-              {learningText(d.learning)}
+              {learningText(d.learning)} <InfoTip text="学习期从第一条来源记录开始算，期间只学习不告警；结束后出现的新运营商、新城市、机房来源会告警。" />
               {known > 0 && <> · 已学基线：{d.known.isp.length} 个运营商、{d.known.city.length} 个城市</>}
-              {(d.internal_conns > 0 || d.private_conns > 0) && <> · 另有 {(d.internal_conns + d.private_conns).toLocaleString('zh-CN')} 次连接来自我方机器或非公网地址，未计入分布</>}
+              {(d.internal_conns > 0 || d.private_conns > 0) && <> · 另有 {(d.internal_conns + d.private_conns).toLocaleString('zh-CN')} 次来自我方机器或内网，未计入</>}
             </div>
             {d.known.isp.some((k) => k.anomaly) && (
               <div className="row" style={{ marginTop: 6, gap: 4 }}>

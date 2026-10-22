@@ -8,6 +8,7 @@ import * as F from '@/lib/format';
 import { availCells, availTitles, hasHost, monthTraffic, resourceMeters, successPct } from '@/lib/derive';
 import { Segmented } from '@/components/ui/overlays';
 import { Skeleton } from '@/components/ui/skeleton';
+import { InfoTip } from '@/components/ui/form';
 import { Beat, Empty, ErrorNote, LabelValue, LabelValueGrid, Note, Num, Section, SectionHeader } from '@/components/app/primitives';
 import { RANGES, TimeChart } from '@/components/app/TimeChart';
 import { EntriesTable } from './EntriesTable';
@@ -100,10 +101,9 @@ export function QualityTab({ m }: { m: MachineView }) {
     <>
       <AvailabilitySection id={m.id} relay={m.kind === 'relay'} />
       <Section>
-        <ChartCard c="var(--chart-1)" icon={<Radar />} title="延迟" meta="线路机 → 节点 TCP 与出口验证" tools={<RangeBar range={range} setRange={setRange} />}>
+        <ChartCard c="var(--chart-1)" icon={<Radar />} title="延迟" meta="线路机 → 节点" tools={<RangeBar range={range} setRange={setRange} />}>
           <ChartFrame q={s} few={fewText(m, range)}>
             <TimeChart points={s.data?.points} range={s.data?.range ?? range} kind="line" lines={L_PROBE} yFmt={yMs} valueFmt={vMs} />
-            <div className="hint" style={{ marginTop: 4 }}>缺口表示该时刻探测失败。</div>
           </ChartFrame>
         </ChartCard>
       </Section>
@@ -150,7 +150,7 @@ export function HostTab({ m }: { m: MachineView }) {
   // 家宽代理没有主机；其它机器即使现在没有读数（agent 离线、还没上报），历史曲线照样能看——排查掉线前发生了什么正要看它
   const agentful = m.kind !== 'proxy';
   const s = useSeries(m.id, 'host', range, agentful, poll(range));
-  if (!agentful) return <Empty icon={<ServerOff size={22} />} text="家宽代理没有主机，不采集 CPU / 内存 / 磁盘 / 网卡指标。" />;
+  if (!agentful) return <Empty icon={<ServerOff size={22} />} text="家宽代理没有主机指标" />;
   const h = hasHost(m) ? m.host! : null;
   const r = h ? resourceMeters(m)! : null;
   const few = fewText(m, range);
@@ -166,8 +166,8 @@ export function HostTab({ m }: { m: MachineView }) {
             <LabelValue label="负载"><Num f={r.load.value} /> <span className="t-sub">{r.load.sub}</span></LabelValue>
             <LabelValue label="TCP 连接数"><span className="num">{h.tcp_conns ?? '—'}</span></LabelValue>
           </LabelValueGrid>
-        ) : <div className="hint">agent 离线或还没上报过，没有当前读数；下面是所选时间范围内的历史曲线。</div>}
-        {m.host_machine && <div style={{ marginTop: 8 }}><Note>这是宿主机「{m.host_machine.name}」的读数：同机 IP 节点和宿主机是同一台机器，CPU、内存、磁盘与网卡都共用。</Note></div>}
+        ) : <div className="hint">agent 离线，没有当前读数</div>}
+        {m.host_machine && <div style={{ marginTop: 8 }}><Note>这是宿主机「{m.host_machine.name}」的读数 <InfoTip text="同机 IP 节点和宿主机是同一台机器，CPU、内存、磁盘与网卡都共用。" /></Note></div>}
       </Section>
       {/* 三张图表卡同属一段，之间不再画分隔线 */}
       <Section className="chart-stack">

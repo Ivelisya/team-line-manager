@@ -10,11 +10,11 @@ export type EffectiveMode = Exclude<PolicyMode, 'inherit'>;
 /** 模式的中文名（/meta 的 policy_modes）；下面的说明是界面文案 */
 export const modeLabel = (m: string) => meta().policy_modes[m] ?? m;
 export const MODE_HINT: Record<PolicyMode, string> = {
-  observe: '不产生任何规则，只记录访问。',
-  allowlist: '只放行名单内的域名，其余连接全部阻止。',
-  denylist: '阻止名单内的域名，其余连接照常放行。',
-  blocked: '暂停该范围内所有新连接（已建立的连接不受影响）。',
-  inherit: '使用所在团队的设置。',
+  observe: '只记录访问，不拦截',
+  allowlist: '只放行名单内的域名',
+  denylist: '只阻止名单内的域名',
+  blocked: '暂停所有新连接，已建立的不受影响',
+  inherit: '使用所在团队的设置',
 };
 
 export interface PolicyBody { mode: PolicyMode; domains: string[]; note: string }

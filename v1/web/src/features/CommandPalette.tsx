@@ -13,6 +13,7 @@ import { openEvacuate, openRenew } from '@/lib/nodeActions';
 import type { ThemePref } from '@/lib/theme';
 import { Command, CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { toast } from '@/components/ui/toast';
+import { InfoTip } from '@/components/ui/form';
 import { ConfirmDialog } from '@/components/app/dialogs';
 import { Flag, HealthPill } from '@/components/app/primitives';
 
@@ -52,7 +53,7 @@ export default function CommandPalette({ theme }: { theme: Theme }) {
       </CommandDialog>
 
       <ConfirmDialog open={askUpgrade} onOpenChange={setAskUpgrade} title="升级全部 agent？" confirmLabel="全部升级"
-        description="先升一台做金丝雀（有线路机先挑线路机），它成功后线路机逐台升级，线路机都成功后 VPS 节点并发。新版本起不来、2 分钟内没有上报，或线路机上 Xray 不正常，会自动换回旧版本；出在金丝雀或线路机上时，没开始的都会取消（连不上、推送之前就失败的只算那一台）。排队中的可以在作业详情里取消。已有进行中作业的机器会跳过；升级时 agent 会重启，不影响线路上的连接。"
+        description={<>先升一台金丝雀，失败自动回滚 <InfoTip text={'先升一台做金丝雀（有线路机先挑线路机），它成功后线路机逐台升级，线路机都成功后 VPS 节点并发。\n新版本起不来、2 分钟内没有上报，或线路机上 Xray 不正常，会自动换回旧版本；出在金丝雀或线路机上时，没开始的都会取消（连不上、推送之前就失败的只算那一台）。\n排队中的可以在作业详情里取消。已有进行中作业的机器会跳过；升级时 agent 会重启，不影响线路上的连接。'} /></>}
         onConfirm={async () => { const r = await upgradeAll.mutateAsync(); toast.ok(`已提交 ${r.jobs.length} 个升级作业：${r.order}`); }} />
     </>
   );
@@ -116,7 +117,7 @@ function PaletteBody({ theme, askUpgrade }: { theme: Theme; askUpgrade: () => vo
         {machineItems.length > 0 && (
           <CommandGroup heading={mode === 'copy-ip' ? '复制 IP' : mode === 'evacuate' ? '线路机' : mode === 'renew' ? '登记续费' : '机器'}>
             {machineItems}
-            {!search.trim() && mode !== 'evacuate' && machines.length > LIMIT && <div className="cmd-more">还有 {machines.length - LIMIT} 台，输入名称、IP 或团队来搜索</div>}
+            {!search.trim() && mode !== 'evacuate' && machines.length > LIMIT && <div className="cmd-more">还有 {machines.length - LIMIT} 台，输入以搜索</div>}
           </CommandGroup>
         )}
       </CommandList>

@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
-import { Boxes, ShieldCheck } from 'lucide-react';
+import { Boxes } from 'lucide-react';
 import { useMe, useLogin } from '@/lib/queries';
 import { ApiError } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -37,14 +37,13 @@ export function LoginPage() {
     <div className="login-screen">
       <form className="login-card" onSubmit={submit}>
         <div className="login-brand"><span className="brand-mark"><Boxes size={14} /></span>团队线路管理</div>
-        <div><h1 className="dialog-title">登录</h1><p className="dialog-desc" style={{ margin: '4px 0 0' }}>使用中控账号登录。</p></div>
+        <div><h1 className="dialog-title">登录</h1></div>
         {err && <Note tone="bad">{err.message}</Note>}
-        {needCode && !err && <Note icon={<ShieldCheck size={14} />}>这个账户开启了两步验证：输入认证器 App 上的 6 位验证码，或一个恢复码。</Note>}
         <Field label="用户名"><Input value={u} onChange={(e) => { setU(e.target.value); setNeedCode(false); setCode(''); }} autoComplete="username" autoFocus /></Field>
         <Field label="密码"><Input type="password" value={p} onChange={(e) => setP(e.target.value)} autoComplete="current-password" /></Field>
         {needCode && (
-          <Field label="两步验证码" hint="手机丢了时，输入保存的恢复码（形如 abcd-efgh-jkmn），每个只能用一次">
-            <Input ref={codeRef} value={code} onChange={(e) => setCode(e.target.value)} autoComplete="one-time-code" spellCheck={false} placeholder="6 位验证码" maxLength={20} className="mono" />
+          <Field label="两步验证码" info="手机丢了时，输入保存的恢复码（形如 abcd-efgh-jkmn），每个只能用一次">
+            <Input ref={codeRef} value={code} onChange={(e) => setCode(e.target.value)} autoComplete="one-time-code" spellCheck={false} placeholder="6 位验证码或恢复码" maxLength={20} className="mono" />
           </Field>
         )}
         <Button variant="primary" size="lg" className="btn-block" type="submit" loading={login.isPending} disabled={!u.trim() || !p || (needCode && !code.trim())}>登录</Button>
