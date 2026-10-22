@@ -109,8 +109,8 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 
 - 密钥按最小 scope 发；`exec` 等于 root shell，只给确实需要的 AI 或人。
 - exec 的命令全文会写进审计，不要在命令里放密码、令牌。
-- 登录有限速（15 分钟窗口，来源 = IPv4 地址或 IPv6 /64）：同一用户名从同一来源错 5 次、同一来源错 20 次、同一用户名不分来源错 100 次会被 429 拒绝；最后这条不拦你 30 天内登录成功过的来源（攻击者换很多地址凑满 100 次也锁不住你常用的网络）。别人在别处输错不会把你锁在外面；`fleet-server user-set` 重设密码时清掉该用户的失败记录。
-- **开两步验证**（网页「设置 → 账户安全」）：这个账户能以 root 登录全部机器，密码之外再要手机认证器上的 6 位验证码。开启时会给 10 个恢复码，只显示一次：存进密码管理器或打印出来，和手机分开放；每个只能用一次（登录页的验证码框里直接输），快用完时在同一页重新生成一组（旧的全部作废）。改密码、看 / 撤销登录会话（不认识的设备立即撤销、「退出其它设备」）也在这一页；改密码后其它设备自动退出。
+- 登录有限速（15 分钟窗口，来源 = IPv4 地址或 IPv6 /64）：同一用户名从同一来源错 5 次、同一来源错 20 次、同一用户名不分来源错 100 次会被 429 拒绝；最后这条不拦你 30 天内登录成功过的来源（攻击者换很多地址凑满 100 次也锁不住你常用的网络）。别人在别处输错不会把你锁在外面；`fleet-server user-set` 重设密码时清掉该用户的失败记录、全部会话与登录成功过的来源。两步验证码输错另有上限：同一用户名 1 小时 10 次，不分来源（知道密码的人换地址猜码也只能猜这么多；被封时你自己也要等，见到这种情况就该改密码）。
+- **开两步验证**（网页「设置 → 账户安全」）：这个账户能以 root 登录全部机器，密码之外再要手机认证器上的 6 位验证码。开启时会给 10 个恢复码，只显示一次：存进密码管理器或打印出来，和手机分开放；每个只能用一次（登录页的验证码框里直接输），快用完时在同一页重新生成一组（旧的全部作废）。改密码、看 / 撤销登录会话（不认识的设备立即撤销、「退出其它设备」）也在这一页；改密码后其它设备自动退出。开启两步验证、退出其它设备、新建 API 密钥都要再输一次密码（开了两步验证还要验证码）：只偷到浏览器会话的人做不了这些。API 密钥不随改密码失效：怀疑会话或密码泄露时，改密码时勾上「同时撤销所有 API 密钥」，再按需新建。
 - 手机和恢复码都丢了：在中控上以 root 执行 `fleet-server totp-reset -c /etc/fleet/fleet.toml <用户名>` 停用该用户的两步验证（恢复码一并作废，写审计 `auth.totp_disabled`，不输出任何秘密），然后用密码登录、立刻重新开启。忘了密码用 `fleet-server user-set`。
 - API 密钥（fleetctl、脚本）不经过两步验证，也不能调 `/account/*`：密钥本身就是凭据，按最小 scope 发、设有效期。
 - 有 `write` 权限就能上架线路机、把节点挂过去，那台线路机的 agent 会收到节点的 SS 密码与代理账号：`write` 实际上也能拿到凭据，按凭据级别发。
@@ -209,7 +209,7 @@ WAL 三项由 `deploy/central/install.sh` 写进 `/etc/postgresql/<版本>/main/
 - `etc/fleet/`：`secret.key`（库里 SS 密码、REALITY 私钥、通知渠道配置的加密密钥，丢了这些就解不开）、`fleet.toml`、`ssh/id_ed25519`（中控登录所有机器的密钥）。
 - `var/lib/fleet/known_hosts`：各机器的主机指纹。
 
-整个包都是敏感数据：中控上 0640 root:fleet-backup（只有拉取用户能读），PVE 上 0600 root。备份目录本身是 0755：fleet-server 要看得到最新一份的时间，超过 26 小时没有新的就开告警 `central_backup_stale`（§12）。
+整个包都是敏感数据：中控上 0640 root:fleet-backup（只有拉取用户能读），PVE 上 0600 root。备份目录本身是 0755：fleet-server 要看得到最新一份的时间，超过 26 小时没有新的就开告警 `central_backup_stale`（§12）。每份旁边有一个 `<备份名>.sha256`（`sha256sum` 格式，备份时算的；明文和加密的都有），随备份一起轮换；PVE 拉取时按它核对。
 
 ### 加密备份（可选，推荐）
 
@@ -219,13 +219,20 @@ WAL 三项由 `deploy/central/install.sh` 写进 `/etc/postgresql/<版本>/main/
 2. 把公钥写进中控 `/etc/fleet/backup-age.recipients`（一行一个，可以写多个，如再加一个备用身份；`#` 开头是注释）：`echo 'age1…' > /etc/fleet/backup-age.recipients`。
 3. 中控要有 `age` 包：install.sh 已经装（没有才装），老中控跑一次 deploy.sh 或 `apt-get install age`。之后的备份（下次定时或 `systemctl start fleet-backup`）就是 `/var/backups/fleet/fleet-<时间>.tar.age`：tar 经管道直接加密，明文不落盘。PVE 的拉取认得两种格式，加密的存成 `fleet-prod-<时间>.tar.age`（只查 age 文件头和大小，PVE 上没有私钥、解不开）。
 4. 确认能解开：把一份 `.tar.age` 拷到离线电脑，`age -d -i fleet-backup-key.txt fleet-<时间>.tar.age | tar -tv` 能列出 `fleet.dump`、`etc/fleet/secret.key`。
-5. 开启之前的明文备份不会自动消失：中控上按 14 份轮换，PVE 按 30 份；想马上清掉就手动删两边的旧 `.tar`。
+5. **开启之前的明文备份还在**：轮换只按份数删最旧的，中控上要再过 14 天、PVE 上 30 天，明文 `.tar`（含 `secret.key` 与中控 SSH 私钥）才会全部轮换掉。确认第 4 步能解开后马上删掉两边的明文：
+   ```
+   # 中控
+   rm -f /var/backups/fleet/fleet-*.tar /var/backups/fleet/fleet-*.tar.sha256
+   # PVE
+   rm -f /var/backups/fleet-prod/fleet-prod-*.tar /var/backups/fleet-prod/fleet-prod-*.tar.sha256
+   ```
+   通配符只匹配 `.tar` 结尾的（不会删到 `.tar.age`）；删之前先 `ls` 一遍，确认至少留着一份 `.tar.age`。中控上 `/root/restore` 之类解开过的目录也一并删掉。
 
 关掉加密：删掉 `/etc/fleet/backup-age.recipients`，之后又是明文 `.tar`。换身份：改这个文件即可，旧备份仍要用旧私钥解。
 
 ### 家里 PVE 每天取一份
 
-中控上的 `fleet-backup` 用户只能用指定公钥登录，authorized_keys 带 `restrict,command="/opt/fleet/backup/fleet-backup-latest.sh"`：不管请求执行什么都只输出最新一份 tar，不能开 shell、不能转发端口。authorized_keys 由 root 持有，这个用户改不了。第一次配置：
+中控上的 `fleet-backup` 用户只能用指定公钥登录，authorized_keys 带 `restrict,command="/opt/fleet/backup/fleet-backup-latest.sh"`：不管请求执行什么都只输出最新一份 tar（请求 `latest+sha256` 时先输出一行「sha256  备份名」），不能开 shell、不能转发端口。authorized_keys 由 root 持有，这个用户改不了。第一次配置：
 
 1. PVE 上生成专用密钥：`ssh-keygen -t ed25519 -N '' -C pve-fleet-backup -f /root/.ssh/fleet-backup`
 2. 把 `/root/.ssh/fleet-backup.pub` 的内容放到中控 `/etc/fleet/backup.pub`，再跑一次 deploy.sh：install.sh 看到这个文件才写 authorized_keys，没有就跳过。中控 sshd 配了 `AllowUsers` / `AllowGroups` 的话把 fleet-backup 加进去。
@@ -237,7 +244,7 @@ WAL 三项由 `deploy/central/install.sh` 写进 `/etc/postgresql/<版本>/main/
    中控的 SSH 地址不是 `fleet.kismet613.com` 的 22 端口（域名走了 CDN、改过端口）时，改 service 里的 `FLEET_BACKUP_HOST`，或在 PVE 的 `/root/.ssh/config` 里给这个主机配 `HostName`、`Port`。
 4. 手动跑一次（第一次连接会记下中控的主机指纹）：`systemctl daemon-reload && systemctl start fleet-backup-pull`，`journalctl -u fleet-backup-pull -n 5` 与 `ls -l /var/backups/fleet-prod` 确认后 `systemctl enable --now fleet-backup-pull.timer`。
 
-之后每天 04:30 左右取一份，存 `/var/backups/fleet-prod/fleet-prod-<北京时间>.tar`（0600），留 30 份。取到的和上一份完全一样（中控的备份没更新）时不存、服务以失败退出，`systemctl --failed` 里能看到；去中控 `systemctl status fleet-backup` 查原因。撤销 PVE 的拉取权限：删掉中控的 `/etc/fleet/backup.pub` 与 `/var/lib/fleet-backup/.ssh/authorized_keys`。
+之后每天 04:30 左右取一份，存 `/var/backups/fleet-prod/fleet-prod-<北京时间>.tar`（0600），留 30 份。取到的先按中控备份时算的 sha256 核对（明文、加密的都核），对不上不存、服务以失败退出；核对过的校验和存成旁边的 `<文件名>.sha256`，恢复前在那个目录里 `sha256sum -c fleet-prod-<时间>.tar.sha256` 再核一次。PVE 上的拉取脚本要和中控的 `fleet-backup-latest.sh` 一起更新（新拉取脚本遇到旧中控会报「中控没有先给出校验和」；旧拉取脚本遇到新中控照常工作，只是不核对）。取到的和上一份完全一样（中控的备份没更新）时不存、服务以失败退出，`systemctl --failed` 里能看到；去中控 `systemctl status fleet-backup` 查原因。撤销 PVE 的拉取权限：删掉中控的 `/etc/fleet/backup.pub` 与 `/var/lib/fleet-backup/.ssh/authorized_keys`。
 
 ### 从备份恢复
 

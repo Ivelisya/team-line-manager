@@ -811,13 +811,13 @@ async fn restore_vps_precheck_and_job_creation() {
     // 试登录记审计；和 POST 恢复一样要 write（不要 exec），只读密钥只能 probe=false
     let n: i64 = sqlx::query_scalar("select count(*) from audit_log where action = 'restore.probe' and target_id = $1").bind(vps).fetch_one(&t.st.db).await.unwrap();
     assert_eq!(n, 1);
-    let key = t.post("/api/v1/api-keys", json!({"name": "ci-read", "scopes": ["read"]})).await;
+    let key = t.post("/api/v1/api-keys", json!({"name": "ci-read", "scopes": ["read"], "password": common::ADMIN_PW})).await;
     let tok = key["token"].as_str().unwrap();
     let (s, v) = t.req("GET", &format!("/api/v1/machines/{vps}/restore"), None, Some(tok)).await;
     assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
     let (s, _) = t.req("GET", &format!("/api/v1/machines/{vps}/restore?probe=false"), None, Some(tok)).await;
     assert_eq!(s, StatusCode::OK);
-    let key = t.post("/api/v1/api-keys", json!({"name": "ci-write", "scopes": ["read", "write"]})).await;
+    let key = t.post("/api/v1/api-keys", json!({"name": "ci-write", "scopes": ["read", "write"], "password": common::ADMIN_PW})).await;
     let (s, v) = t.req("GET", &format!("/api/v1/machines/{vps}/restore"), None, Some(key["token"].as_str().unwrap())).await;
     assert_eq!(s, StatusCode::OK, "{v}");
 

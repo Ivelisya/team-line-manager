@@ -76,7 +76,9 @@ async fn report_drops_bad_timestamps_and_keeps_the_rest() {
     assert_eq!(t.count("select count(*) from host_metric").await, 2);
 }
 
-/// 入库失败按类回：数据错误 422（agent 移入 dead/），基础设施错误 503（agent 继续重试）
+/// 入库失败按类回：数据错误 422（agent 移入 dead/），基础设施错误 503（agent 继续重试）。
+/// agent 给的字符串里的 NUL（text / jsonb 不收）入库前去掉；入库失败的那份不扣令牌、不推进 seq，
+/// 故意让一份带极大 seq 的报告失败之后，后面的照样限流
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn report_ingest_errors_are_classified() {
     let t = setup().await;
@@ -87,9 +89,32 @@ async fn report_ingest_errors_are_classified() {
     let mut a = access(entry, now_ms() - 5_000);
     a.dest_host = "bad\0host".into();
     r.access = vec![a];
+    r.boot_id = "b\0oot".into();
+    let (s, v) = t.report("tok1", &r).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(t.count("select count(*) from access_event where dest_host = 'badhost'").await, 1);
+
+    // 违反约束（23 类）→ 422
+    sqlx::query("alter table agent_state add constraint test_bad_boot check (boot_id <> 'bad')").execute(&t.st.db).await.unwrap();
+    let mut r = blank_report(1 << 62);
+    r.boot_id = "bad".into();
     let (s, v) = t.report("tok1", &r).await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
     assert!(v["error"]["message"].as_str().unwrap().contains("无法入库"), "{v}");
+    // 突发 600 份（第一份已扣）：之后的照常扣，到不了 700 份就 429
+    let limited = {
+        let mut hit = None;
+        for seq in 2..700u64 {
+            let (s, v) = t.report("tok1", &blank_report(seq)).await;
+            if s == StatusCode::TOO_MANY_REQUESTS {
+                hit = Some(seq);
+                break;
+            }
+            assert_eq!(s, StatusCode::OK, "{seq} {v}");
+        }
+        hit
+    };
+    assert!(limited.is_some_and(|s| s >= 600), "{limited:?}");
 
     t.st.db.close().await;
     let (s, v) = t.report("tok1", &blank_report(2)).await;
@@ -374,6 +399,48 @@ async fn rollup_covers_backfilled_hours_and_counter_resets() {
         .await
         .unwrap();
     assert_eq!(rx, 400 - 300, "20 分钟前的样本不参与本小时第一个增量");
+}
+
+/// agent 报离谱的计数器（0 → u64::MAX，一小时里跳两次）：汇总不溢出（每段增量按 10 Gbit/s 封顶），
+/// 库里已有的超大小时行也不让机器列表、详情报错
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn absurd_counters_do_not_overflow_rollup_or_views() {
+    let t = setup().await;
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let team = seed_team(&t, "团队1").await;
+    let (node, entry) = seed_node(&t, relay, team, 1, "203.0.113.5", 20000).await;
+    let h0 = hour_floor(now_ms() - 2 * D);
+    let mut r = blank_report(1);
+    r.host = [(h0 + 10_000, 0u64), (h0 + 20_000, u64::MAX), (h0 + 30_000, 0), (h0 + 40_000, u64::MAX)].iter().map(|(ts, v)| host(*ts, 1.0, *v, *v)).collect();
+    r.entries = vec![entry_sample(entry, h0 + 5_000, u64::MAX, u64::MAX), entry_sample(entry, h0 + 15_000, u64::MAX, u64::MAX)];
+    assert_eq!(t.report("tok1", &r).await.0, StatusCode::OK);
+    db::rollup_hours(&t.st.db).await.unwrap();
+    let rx: i64 = sqlx::query_scalar("select net_rx from host_metric_hourly where machine_id = $1").bind(relay).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(rx, 2 * 1_250_000_000 * 10, "两次跳变各按 10 秒 × 10 Gbit/s 封顶");
+    let up: i64 = sqlx::query_scalar("select up_bytes from entry_traffic_hourly where entry_id = $1").bind(entry).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(up, 4_500_000_000_000);
+
+    // 升级前已经入库的超大小时行：本周期求和、今天 / 本月求和都超过 bigint
+    for m in [relay, node] {
+        sqlx::query(
+            "insert into host_metric_hourly (machine_id, hour, cpu_avg, cpu_max, mem_used_avg, mem_total_max, disk_used_max, disk_total_max, net_rx, net_tx)
+             select $1, date_trunc('hour', now()) + h * interval '1 hour', 1, 1, 1, 1, 1, 1, 9e18, 9e18 from generate_series(0, 1) h",
+        )
+        .bind(m)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    }
+    sqlx::query("insert into entry_traffic_hourly (entry_id, hour, up_bytes, down_bytes, conns_max) select $1, date_trunc('hour', now()) + h * interval '1 hour', 9e18, 9e18, 1 from generate_series(0, 1) h")
+        .bind(entry)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    t.st.live.invalidate();
+    t.get("/api/v1/machines").await;
+    let m = t.get(&format!("/api/v1/machines/{relay}")).await;
+    assert_eq!(m["quota"]["used"].as_i64(), Some(9_000_000_000_000_000_000), "夹到 9e18：{}", m["quota"]);
+    t.get(&format!("/api/v1/machines/{node}")).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1564,6 +1631,30 @@ async fn ws_requires_auth_and_resyncs_when_subscriber_lags() {
         t.st.emit(Event::Machines);
     }
     ws_next(&mut ws, "resync").await;
+}
+
+/// 会话被撤销（这里是登出）：实时流的连接马上以 4401 关闭，不等 60 秒一轮的复核；别的会话被撤销时不受影响
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ws_closes_at_once_when_session_revoked() {
+    use futures::StreamExt;
+    use tokio_tungstenite::tungstenite::Message;
+    let t = setup().await;
+    let mut ws = t.ws(true).await.unwrap();
+    t.st.revoked();
+    t.st.emit(Event::Machines);
+    ws_next(&mut ws, "machines").await;
+    assert_eq!(t.req("POST", "/api/v1/auth/logout", Some(json!({})), None).await.0, StatusCode::OK);
+    let close = tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(m) = ws.next().await {
+            if let Ok(Message::Close(f)) = m {
+                return f.map(|f| u16::from(f.code));
+            }
+        }
+        None
+    })
+    .await
+    .expect("5 秒内应关闭");
+    assert_eq!(close, Some(4401));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

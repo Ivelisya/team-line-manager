@@ -137,6 +137,25 @@ where
             tokio::time::sleep(std::time::Duration::from_secs(10)).await;
         }
     });
+    // 命令行（user-set 重设密码）在别的进程里删会话：经 NOTIFY 转来，实时流的连接马上复核
+    let s = st.clone();
+    tokio::spawn(async move {
+        loop {
+            match sqlx::postgres::PgListener::connect_with(&s.db).await {
+                Ok(mut l) => match l.listen(auth::REVOKED_CHANNEL).await {
+                    // 断线时 recv 自己重连；重连不上才返回错误
+                    Ok(()) => {
+                        while l.recv().await.is_ok() {
+                            s.revoked();
+                        }
+                    }
+                    Err(e) => tracing::warn!("监听会话撤销通知失败：{e}"),
+                },
+                Err(e) => tracing::warn!("监听会话撤销通知失败：{e}"),
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        }
+    });
 }
 
 /// 每小时：分区维护、作业清理、保留期清理

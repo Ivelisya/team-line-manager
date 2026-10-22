@@ -220,7 +220,8 @@ export async function fetchAllLogs(jobId: string, after: number, signal?: AbortS
 // ---- 设置页：API 密钥与告警通知渠道 ----
 /** 最近使用时间（last_used_at）随调用更新、不发事件，仍按时间过期 */
 export const useApiKeys = () => useQuery({ queryKey: ['api-keys'], queryFn: () => get<ApiKey[]>('/api-keys') });
-export const useCreateApiKey = () => useWrite((b: { name: string; scopes: string[]; expires_days?: number }) => post<{ id: string; token: string }>('/api-keys', b), [['api-keys']]);
+/** 新建要当前密码（开了两步验证还要 totp：验证码或恢复码） */
+export const useCreateApiKey = () => useWrite((b: { name: string; scopes: string[]; expires_days?: number; password: string; totp?: string }) => post<{ id: string; token: string }>('/api-keys', b), [['api-keys']]);
 export const useRevokeApiKey = () => useWrite((id: string) => del(`/api-keys/${id}`), [['api-keys']]);
 export const useNotifyChannels = () => useQuery({ queryKey: ['notify-channels'], queryFn: () => get<NotifyChannel[]>('/notify-channels'), staleTime: Infinity });
 export const useAddChannel = () => useWrite((b: { name: string; kind: string; config: Record<string, string>; min_severity: string; enabled: boolean }) => post<{ id: string }>('/notify-channels', b), [['notify-channels']]);
@@ -232,13 +233,14 @@ export const useRetirePreview = (id: string | null, enabled: boolean) => useQuer
 
 // ---- 设置页：账户安全（两步验证、登录会话、改密码） ----
 export const useTotpStatus = () => useQuery({ queryKey: ['account', 'totp'], queryFn: () => get<TotpStatus>('/account/totp') });
-/** 生成待确认的密钥：每次打开「开启两步验证」都重新生成，旧的作废 */
-export const useTotpSetup = () => useMutation({ mutationFn: () => post<TotpSetup>('/account/totp/setup') });
+/** 生成待确认的密钥（要当前密码）：每次开启都重新生成，旧的作废 */
+export const useTotpSetup = () => useMutation({ mutationFn: (password: string) => post<TotpSetup>('/account/totp/setup', { password }) });
 export const useTotpEnable = () => useWrite((code: string) => post<{ recovery_codes: string[] }>('/account/totp/enable', { code }), [['account', 'totp']]);
 export const useTotpDisable = () => useWrite((b: { password: string; code: string }) => post('/account/totp/disable', b), [['account', 'totp']]);
 export const useRegenRecovery = () => useWrite((code: string) => post<{ recovery_codes: string[] }>('/account/totp/recovery-codes', { code }), [['account', 'totp']]);
 export const useSessions = () => useQuery({ queryKey: ['account', 'sessions'], queryFn: () => get<AccountSession[]>('/account/sessions') });
 export const useRevokeSession = () => useWrite((id: string) => del(`/account/sessions/${id}`), [['account', 'sessions']]);
-export const useRevokeOtherSessions = () => useWrite(() => post<{ revoked: number }>('/account/sessions/revoke-others'), [['account', 'sessions']]);
-/** 改密码：成功后服务端撤销本设备以外的所有会话 */
-export const useChangePassword = () => useWrite((b: { current: string; new: string; totp?: string }) => post<{ ok: boolean; revoked_sessions: number }>('/account/password', b), [['account', 'sessions']]);
+/** 退出其它设备：要当前密码（开了两步验证还要验证码） */
+export const useRevokeOtherSessions = () => useWrite((b: { password: string; totp?: string }) => post<{ revoked: number }>('/account/sessions/revoke-others', b), [['account', 'sessions']]);
+/** 改密码：成功后服务端撤销本设备以外的所有会话；revoke_api_keys 同时撤销全部 API 密钥 */
+export const useChangePassword = () => useWrite((b: { current: string; new: string; totp?: string; revoke_api_keys?: boolean }) => post<{ ok: boolean; revoked_sessions: number; revoked_api_keys: number }>('/account/password', b), [['account', 'sessions'], ['api-keys']]);

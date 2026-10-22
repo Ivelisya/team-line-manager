@@ -867,6 +867,7 @@ R('POST', '/api-keys', ({ body }) => {
   const scopes: string[] = body.scopes ?? [];
   if (!String(body.name ?? '').trim()) throw bad('请填写密钥名称');
   if (!scopes.length || scopes.some((x) => !['read', 'write', 'secrets', 'exec'].includes(x))) throw bad('请至少选择一项有效权限');
+  recheck(body.password, body.totp);
   const prefix = rand(8); const id = `k${db.seq++}`;
   db.apiKeys.unshift({ id, name: String(body.name).trim(), prefix, scopes, created_at: iso(), expires_at: body.expires_days ? iso(Date.now() + body.expires_days * DAY) : null, last_used_at: null, revoked_at: null });
   emit({ type: 'api_keys' });
@@ -929,6 +930,11 @@ const checkCode = (c: string) => {
   acct.recovery.splice(i, 1);
 };
 const checkPw = (p: string) => { if (!p || p === 'wrong') throw bad('当前密码不对', 401, 'bad_password'); };
+/** 再次校验：当前密码，开了两步验证还要验证码 */
+function recheck(pw: string, code: string | undefined) {
+  if (acct.totp && !String(code ?? '').trim()) throw bad('请输入两步验证码', 401, 'totp_required');
+  checkPw(pw); if (acct.totp) checkCode(String(code));
+}
 const mockQr = (text: string) => {
   // 不是真的二维码：按文本哈希画一张 25×25 的点阵，外观像就行
   let h = hashStr(text); let cells = '';
@@ -943,8 +949,9 @@ const mockQr = (text: string) => {
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 29 29" shape-rendering="crispEdges"><rect width="29" height="29" fill="#fff"/><path d="${cells}" fill="#000"/></svg>`;
 };
 R('GET', '/account/totp', () => ({ enabled: acct.totp, recovery_codes_left: acct.recovery.length }));
-R('POST', '/account/totp/setup', () => {
+R('POST', '/account/totp/setup', ({ body }) => {
   if (acct.totp) throw bad('两步验证已经开着；要换手机请先停用再重新开启', 409, 'conflict');
+  checkPw(body?.password);
   const secret = Array.from({ length: 32 }, () => 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'[Math.floor(Math.random() * 32)]).join('');
   const url = `otpauth://totp/Fleet:${db.user}%40mock?secret=${secret}&issuer=Fleet&algorithm=SHA1&digits=6&period=30`;
   acct.pending = true;
@@ -972,14 +979,16 @@ R('DELETE', '/account/sessions/([^/]+)', ({ params }) => {
   const s = acct.sessions.find((x) => x.id === params[0]); if (!s) throw bad('没有这个会话（可能已经过期或被撤销）', 404, 'not_found');
   acct.sessions = acct.sessions.filter((x) => x !== s); return { ok: true, current: s.current };
 });
-R('POST', '/account/sessions/revoke-others', () => { const n = acct.sessions.filter((s) => !s.current).length; acct.sessions = acct.sessions.filter((s) => s.current); return { revoked: n }; });
+R('POST', '/account/sessions/revoke-others', ({ body }) => { recheck(body?.password, body?.totp); const n = acct.sessions.filter((s) => !s.current).length; acct.sessions = acct.sessions.filter((s) => s.current); return { revoked: n }; });
 R('POST', '/account/password', ({ body }) => {
   if ([...String(body.new ?? '')].length < 12) throw bad('新密码至少 12 个字符');
   if (acct.totp && !String(body.totp ?? '').trim()) throw bad('请输入两步验证码', 401, 'totp_required');
   checkPw(body.current); if (acct.totp) checkCode(body.totp);
   if (body.new === body.current) throw bad('新密码和当前密码一样');
   const n = acct.sessions.filter((s) => !s.current).length; acct.sessions = acct.sessions.filter((s) => s.current);
-  return { ok: true, revoked_sessions: n };
+  const keys = body.revoke_api_keys ? db.apiKeys.filter((k) => !k.revoked_at) : [];
+  keys.forEach((k) => { k.revoked_at = iso(); }); if (keys.length) emit({ type: 'api_keys' });
+  return { ok: true, revoked_sessions: n, revoked_api_keys: keys.length };
 });
 // 登录：开了两步验证时要码（放到路由表最前面，盖过上面不看验证码的那条）
 routes.unshift(['POST', /^\/auth\/login$/, ({ body }) => {

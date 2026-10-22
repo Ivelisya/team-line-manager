@@ -529,6 +529,9 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "auth.totp_disabled" if d["via"] == "totp-reset" => "中控命令行 totp-reset".into(),
         "auth.totp_disabled" => s("ip"),
         "auth.totp_recovery_used" => format!("{} · 剩 {} 个", s("ip"), d["left"]),
+        "auth.password_changed" if d["revoked_api_keys"].as_u64().is_some_and(|n| n > 0) => {
+            format!("{} · 撤销其它 {} 个会话、{} 个 API 密钥", s("ip"), d["revoked_sessions"], d["revoked_api_keys"])
+        }
         "auth.password_changed" => format!("{} · 撤销其它 {} 个会话", s("ip"), d["revoked_sessions"]),
         "auth.session_revoked" if d["others"].is_number() => format!("退出其它设备（{} 个）", d["others"]),
         "auth.session_revoked" => s("ip"),
@@ -599,7 +602,8 @@ const RECHECK_EVERY: Duration = Duration::from_secs(60);
 pub const CLOSE_REVOKED: u16 = 4401;
 
 /// 实时流（WebSocket，JSON 文本帧）：资源变更通知 + 实时指标（`live.rs`）。
-/// 广播落后丢了消息时发 `resync`（前端让全部查询失效）；每 60 s 复核一次会话/密钥，被撤销就以 4401 关闭。
+/// 广播落后丢了消息时发 `resync`（前端让全部查询失效）；每 60 s 复核一次会话/密钥，被撤销就以 4401 关闭；
+/// 撤销会话 / 密钥的地方另发 `Event::Revoked`，各连接马上复核。
 pub async fn stream(a: Actor, State(st): State<AppState>, jar: CookieJar, headers: HeaderMap, ws: WebSocketUpgrade) -> Response {
     // 会话（Cookie）连接要求 Origin 是中控自己（public_url 的协议 + 主机 + 端口）：WebSocket 握手不受同源策略约束，
     // 别的页面能借浏览器自动带上的 Cookie 连上来读实时数据。API 密钥不是浏览器带的，不查
@@ -629,9 +633,20 @@ async fn serve_ws(mut ws: WebSocket, mut rx: broadcast::Receiver<Event>, db: sql
     loop {
         let text = tokio::select! {
             r = rx.recv() => match r {
+                // 有会话 / 密钥被撤销：马上复核，不等下一轮
+                Ok(Event::Revoked) => {
+                    if !keep(&mut ws, &db, &cred).await {
+                        return;
+                    }
+                    continue;
+                }
                 Ok(e) => e.to_text(),
                 Err(RecvError::Lagged(n)) => {
                     tracing::debug!("实时流订阅者落后 {n} 条消息，通知前端重新同步");
+                    // 丢的消息里可能有 Revoked
+                    if !keep(&mut ws, &db, &cred).await {
+                        return;
+                    }
                     Event::Resync.to_text()
                 }
                 Err(RecvError::Closed) => return,
@@ -652,17 +667,7 @@ async fn serve_ws(mut ws: WebSocket, mut rx: broadcast::Receiver<Event>, db: sql
                 continue;
             }
             _ = check.tick() => {
-                if let Some(c) = &cred {
-                    // 复核查询失败就断开（1011），由客户端重连时重新鉴权
-                    let close = match still_valid(&db, c).await {
-                        Ok(true) => continue,
-                        Ok(false) => CloseFrame { code: CLOSE_REVOKED, reason: "会话或密钥已失效".into() },
-                        Err(e) => {
-                            tracing::warn!("实时流复核会话失败：{e}");
-                            CloseFrame { code: 1011, reason: "复核会话失败，请重连".into() }
-                        }
-                    };
-                    send(&mut ws, Message::Close(Some(close))).await;
+                if !keep(&mut ws, &db, &cred).await {
                     return;
                 }
                 continue;
@@ -672,6 +677,21 @@ async fn serve_ws(mut ws: WebSocket, mut rx: broadcast::Receiver<Event>, db: sql
             return;
         }
     }
+}
+
+/// 复核会话 / 密钥：仍有效返回 true；已失效以 4401 关闭、复核查询失败以 1011 关闭（客户端重连时重新鉴权），返回 false
+async fn keep(ws: &mut WebSocket, db: &sqlx::PgPool, cred: &Option<Cred>) -> bool {
+    let Some(c) = cred else { return true };
+    let close = match still_valid(db, c).await {
+        Ok(true) => return true,
+        Ok(false) => CloseFrame { code: CLOSE_REVOKED, reason: "会话或密钥已失效".into() },
+        Err(e) => {
+            tracing::warn!("实时流复核会话失败：{e}");
+            CloseFrame { code: 1011, reason: "复核会话失败，请重连".into() }
+        }
+    };
+    send(ws, Message::Close(Some(close))).await;
+    false
 }
 
 /// 发一帧；对端卡住（不读、TCP 窗口满）超过一个心跳周期就当连接已死，返回 false 由调用方断开

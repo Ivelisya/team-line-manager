@@ -4,7 +4,7 @@ import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Ban, Bell, FlaskConical, KeyRound, MessagesSquare, Pencil, Plus, Send, ShieldAlert, ShieldCheck, Trash2, Webhook } from 'lucide-react';
 import { AccountTab } from '@/features/AccountTab';
-import { useAddChannel, useApiKeys, useCreateApiKey, useDelChannel, useNotifyChannels, useNotifyLog, usePatchChannel, useRevokeApiKey, useTestChannel } from '@/lib/queries';
+import { useAddChannel, useApiKeys, useCreateApiKey, useDelChannel, useMe, useNotifyChannels, useNotifyLog, usePatchChannel, useRevokeApiKey, useTestChannel, useTotpStatus } from '@/lib/queries';
 import type { ApiKey, NotifyChannel, NotifyLogEntry } from '@/lib/types';
 import * as F from '@/lib/format';
 import { Button, IconButton } from '@/components/ui/button';
@@ -59,6 +59,9 @@ function ApiKeysSection() {
   const create = useCreateApiKey(); const revoke = useRevokeApiKey();
   const [open, setOpen] = React.useState(false);
   const [name, setName] = React.useState(''); const [scopes, setScopes] = React.useState<string[]>(['read']); const [exp, setExp] = React.useState('90');
+  // 新建要再输一次当前密码（开了两步验证还要验证码）：拿到会话的人不能借它建一把改密码后也不失效的密钥
+  const [pw, setPw] = React.useState(''); const [code, setCode] = React.useState('');
+  const totp = useTotpStatus().data?.enabled ?? false; const me = useMe();
   const [token, setToken] = React.useState<string | null>(null); // 创建成功后的明文，只在这个对话框里出现一次
   const [ask, setAsk] = React.useState<ApiKey | null>(null);
   // 关闭动画期间沿用最近的值：标题、密钥框不变空
@@ -66,12 +69,18 @@ function ApiKeysSection() {
   const tokenHeld = useHeld(token, token);
   const copyRef = React.useRef<HTMLButtonElement>(null);
   const list = q.data ?? [];
-  const openNew = () => { setName(''); setScopes(['read']); setExp('90'); setOpen(true); };
+  const [err, setErr] = React.useState<string | null>(null);
+  const openNew = () => { setName(''); setScopes(['read']); setExp('90'); setPw(''); setCode(''); setErr(null); setOpen(true); };
   const toggle = (s: string, on: boolean) => setScopes((l) => (on ? [...l, s] : l.filter((x) => x !== s)));
-  const valid = name.trim().length > 0 && scopes.length > 0;
-  const submit = () => create.mutate({ name: name.trim(), scopes, expires_days: exp === 'never' ? undefined : Number(exp) }, {
-    onSuccess: (r) => { setOpen(false); setToken(r.token); }, onError: toast.err,
-  });
+  const valid = name.trim().length > 0 && scopes.length > 0 && !!pw && (!totp || !!code.trim());
+  const submit = () => {
+    setErr(null);
+    create.mutate({ name: name.trim(), scopes, expires_days: exp === 'never' ? undefined : Number(exp), password: pw, ...(totp ? { totp: code.trim() } : {}) }, {
+      onSuccess: (r) => { setOpen(false); setPw(''); setCode(''); setToken(r.token); },
+      // 密码 / 验证码不对：留在对话框里说（401，code 不是 unauthorized，不会跳登录页）
+      onError: (e) => { setErr(e instanceof Error ? e.message : String(e)); setCode(''); },
+    });
+  };
   return (
     <>
       <Panel title="API 密钥" count={list.length} sub="给脚本和运维命令行调用中控用；只有登录会话能管理密钥" flush
@@ -102,7 +111,7 @@ function ApiKeysSection() {
         )}
       </Panel>
 
-      <FormDialog size="md" dirty={!!name.trim() || scopes.join() !== 'read' || exp !== '90'} open={open} onOpenChange={setOpen} title="新建 API 密钥" desc="只授予脚本需要的权限。创建后密钥只显示一次。" submitLabel="创建密钥" busy={create.isPending} valid={valid} onSubmit={submit}>
+      <FormDialog size="md" dirty={!!name.trim() || scopes.join() !== 'read' || exp !== '90' || !!pw} open={open} onOpenChange={setOpen} title="新建 API 密钥" desc="只授予脚本需要的权限。创建后密钥只显示一次。" submitLabel="创建密钥" busy={create.isPending} valid={valid} onSubmit={submit}>
         <div className="form-grid">
           <Field label="名称" hint="例如：备份脚本、监控 CLI"><Input value={name} onChange={(e) => setName(e.target.value)} autoFocus autoComplete="off" data-1p-ignore data-lpignore="true" /></Field>
           <Field label="有效期"><Select value={exp} onChange={setExp} options={EXPIRES} /></Field>
@@ -120,6 +129,12 @@ function ApiKeysSection() {
           {scopes.length === 0 && <div className="hint is-error">至少选择一项权限</div>}
         </div>
         {(scopes.includes('exec') || scopes.includes('secrets')) && <Note tone="warn" icon={<ShieldAlert size={14} />}>这个密钥可以{scopes.includes('exec') ? '在机器上执行命令' : ''}{scopes.includes('exec') && scopes.includes('secrets') ? '、' : ''}{scopes.includes('secrets') ? '读取分享链接等凭据' : ''}，泄露后风险很高。请只放在可信的环境里，并设置有效期。</Note>}
+        <input type="text" autoComplete="username" value={me.data?.username ?? ''} readOnly hidden />
+        <div className="form-grid">
+          <Field label="当前密码" hint="确认是你本人在操作"><Input type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="current-password" /></Field>
+          {totp && <Field label="两步验证码" hint="或一个恢复码"><Input value={code} onChange={(e) => setCode(e.target.value)} autoComplete="one-time-code" spellCheck={false} className="mono" maxLength={20} placeholder="6 位验证码或恢复码" data-1p-ignore data-lpignore="true" /></Field>}
+        </div>
+        {err && <Note tone="bad">{err}</Note>}
       </FormDialog>
 
       <Dialog open={token != null} onOpenChange={(o) => !o && setToken(null)}>
