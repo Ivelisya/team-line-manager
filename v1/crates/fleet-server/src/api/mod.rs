@@ -70,6 +70,7 @@ pub fn router() -> Router<AppState> {
         .route("/machines/{id}/retire", get(machines::retire_preview).post(machines::retire))
         .route("/machines/{id}/purge", post(machines::purge))
         .route("/machines/{id}/upgrade-agent", post(machines::upgrade_agent))
+        .route("/machines/{id}/tune", post(machines::tune))
         .route("/agents/upgrade", post(machines::upgrade_all_agents))
         .route("/machines/{id}/subscription", axum::routing::put(machines::put_subscription))
         .route("/machines/{id}/renewals", get(machines::list_renewals).post(machines::add_renewal))

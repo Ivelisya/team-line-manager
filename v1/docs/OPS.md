@@ -53,6 +53,7 @@
 | 改名 / 换团队 / 改编号 | `fleetctl rename 团队1-06 --team 团队2 --number 3` |
 | 编号压缩成连续 | `fleetctl renumber 团队1`（预览），`--yes` 执行 |
 | 升级 agent | `fleetctl upgrade-agent 团队1-06`、`fleetctl upgrade-agent --all --yes`（先升一台金丝雀，线路机逐台、VPS 节点并发；新版本起不来或没上报自动换回旧版本，见 §7） |
+| 系统调优（内核网络参数、日志体积、时间同步；上架时已自动做） | `fleetctl tune 团队1-06,线路机2`、`fleetctl tune --team 团队1`、`fleetctl tune --all --yes`（先做一台并跟到结束，成功后其余逐台提交；有进行中作业的跳过并列出）；`fleetctl ls` 的「调优」列（tune-v1 / 旧档 / 未调优）；逐键结果在作业详情。不重启 ssserver / Xray、不断连接。新调优档发布：改 `jobs/tune.rs` 的值并升档号 → 实验室验证 → 部署中控 → `fleetctl tune --all --yes`；回滚 = 发新档再重做 |
 | 入口启停、轮换凭据 | `fleetctl entries`、`fleetctl entry disable 线路机2:20001 --yes`、`fleetctl entry rotate … --yes` |
 | 线路机直出入口（从线路机自己的 IP 出去，旧系统的「节点00-默认」） | `fleetctl entry add-direct 线路机2 --yes --follow`（每台线路机至多一条；线路机 agent 要先升到新版本）；链接 `fleetctl share 线路机2-直出` |
 | 分享链接 | `fleetctl share 线路机2:20001`（需要 secrets，记审计） |

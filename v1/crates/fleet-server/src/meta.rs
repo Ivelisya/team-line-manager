@@ -216,6 +216,7 @@ pub const JOB_KINDS: Labels = &[
     ("purge", "彻底删除"),
     ("upgrade_agent", "升级 agent"),
     ("replace", "替换节点"),
+    ("tune", "系统调优"),
 ];
 
 pub const JOB_STATES: Labels = &[

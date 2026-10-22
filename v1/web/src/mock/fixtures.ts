@@ -97,7 +97,8 @@ export function buildDb(): Db {
     team: null, spare: false, number: null, label: null, ssh_port: 22, country: countryOf(o.ip), country_set: null, host_machine: null, bind_ip: null, ip_nodes: [], provider: null, provider_code: null, plan: null, service_ref: null,
     lifecycle: 'active', lifecycle_reason: null, note: '', revision: 1, created_at: iso(now() - 120 * DAY), activated_at: iso(now() - 100 * DAY), retired_at: null,
     subscription: null, agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, quota: { used: 0, period_start: '', rule: null, base: null, base_at: null }, health: { status: 'ok', reasons: [] },
-    active_job: null, failed_job: null, open_incidents: 0, maintenance: false, relay: null, ...o,
+    active_job: null, failed_job: null, open_incidents: 0, maintenance: false, relay: null,
+    tune: o.kind === 'proxy' || o.host_machine ? null : { profile: 'tune-v1', at: iso(now() - 3 * DAY), current: true }, ...o,
   });
 
   // 线路机
@@ -229,6 +230,10 @@ export function buildDb(): Db {
   // 线路机 2 的最后一个入口还没应用 → 降级提示
   machines[1].health = { status: 'degraded', reasons: [{ key: 'relay_apply_lag', severity: 'warning', text: '配置未应用（配置代数 8 · 已应用 7）' }] };
   machines[1].host = hostOf('r2', 58);
+  // 调优样本：线路机 2 是旧档，团队1 的 03 号还没调优过
+  machines[1].tune = { profile: 'tune-v0', at: iso(now() - 40 * DAY), current: false };
+  const untuned = machines.find((x) => x.team?.id === 't1' && x.number === 3 && x.kind === 'vps');
+  if (untuned) untuned.tune = { profile: null, at: null, current: false };
 
   for (const m of machines) m.quota = quotaOf(m, machines);
   // 统计

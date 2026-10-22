@@ -29,7 +29,7 @@ chmod 600 /root/.ssh/authorized_keys
 echo bootstrap=ok
 "#;
 
-/// 系统基线：缺的基础包补上（线路机访问日志轮转要 logrotate，精简系统可能没装）、sshd 只允许密钥、BBR（容器里可能设不了，只报告不失败）
+/// 系统基线：缺的基础包补上（线路机访问日志轮转要 logrotate，精简系统可能没装）、sshd 只允许密钥。BBR 等内核参数归调优档管（见 tune.rs）
 pub const BASELINE: &str = r#"
 set -eu
 export DEBIAN_FRONTEND=noninteractive
@@ -50,9 +50,6 @@ since=$(TZ=UTC0 systemctl show -p ExecMainStartTimestamp --value ssh)
 [ -z "$since" ] || [ "$(date -d "$since" +%s)" -gt "$(stat -c %Y $F /etc/ssh/sshd_config | sort -n | tail -n1)" ] || changed=1
 if [ $changed = 1 ]; then sshd -t; systemctl restart ssh 2>/dev/null || systemctl restart sshd; fi
 echo "sshd_password=$(sshd -T 2>/dev/null | awk '/^passwordauthentication /{print $2}')"
-printf '%s\n' 'net.core.default_qdisc=fq' 'net.ipv4.tcp_congestion_control=bbr' > /etc/sysctl.d/90-fleet-bbr.conf
-modprobe tcp_bbr 2>/dev/null || true; sysctl -q -p /etc/sysctl.d/90-fleet-bbr.conf 2>/dev/null || true
-echo "cc=$(cat /proc/sys/net/ipv4/tcp_congestion_control)"
 "#;
 
 /// 节点上的一个 ssserver 实例。宿主机（普通 VPS 节点）：单元 `fleet-ssserver`、配置 config.json、nft 表 `ss_guard`，监听 0.0.0.0:8388；

@@ -4,11 +4,11 @@ mod lifecycle;
 mod replace;
 
 use super::scripts::{self, vars, SsInst};
-use super::{clip, log, JobRow, Outcome};
+use super::{clip, log, tune, JobRow, Outcome};
 use crate::crypto::{random_token, sha256};
 use crate::entries;
 use crate::ssh::{self, kind_of, ErrKind, Output, StepError, Target};
-use crate::state::AppState;
+use crate::state::{AppState, Event};
 use anyhow::{anyhow, bail, Context};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -137,6 +137,7 @@ pub async fn run(c: &Ctx<'_>, key: &str) -> anyhow::Result<Outcome> {
         "bootstrap" => bootstrap(c).await,
         "converge" => converge_node(c).await,
         "converge_relay" => converge_relay(c).await,
+        "tune" => tune_step(c).await,
         "agent" => agent(c).await,
         "wait_report" => wait_report(c).await,
         "attach" => attach(c).await,
@@ -359,8 +360,8 @@ fn check_nft(out: &Output, allow: &str, table: &str) -> anyhow::Result<()> {
 async fn converge_node(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let m = c.machine().await?;
     let t = c.ssh(&m, None);
-    // 同机 IP 节点登录的是宿主机：系统基线宿主机上架时已经做过
-    let mut bbr = None;
+    // 同机 IP 节点登录的是宿主机：系统基线和调优宿主机上架时已经做过
+    let mut tuned = None;
     if m.host_id.is_none() {
         let base = t.run(scripts::BASELINE, Duration::from_secs(600)).await?;
         if !base.ok() {
@@ -369,10 +370,7 @@ async fn converge_node(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         if base.kv("sshd_password") != Some("no") {
             return Err(remote(format!("sshd 仍允许密码登录（{}）", base.kv("sshd_password").unwrap_or("?"))));
         }
-        if base.kv("cc") != Some("bbr") {
-            c.warn(format!("拥塞控制是 {}，没能切到 BBR（容器里属正常）", base.kv("cc").unwrap_or("?"))).await;
-        }
-        bbr = Some(base.kv("cc") == Some("bbr"));
+        tuned = Some(apply_tune(c, &m, &t).await?);
     }
     let pushed = t.push(&c.dist("ssserver"), "/usr/local/bin/ssserver", "0755", Duration::from_secs(180)).await?;
     let (method, secret): (Option<String>, Vec<u8>) = sqlx::query_as("select method, secret_enc from node_outbound where machine_id = $1")
@@ -401,7 +399,8 @@ async fn converge_node(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         // 只重启这台节点自己的实例：同一台机器上别的 ssserver（宿主机的、别的同机 IP 节点的）下次重启时才换上新程序
         t.run(&format!("systemctl restart {}", inst.svc()), Duration::from_secs(30)).await?;
     }
-    Ok(Outcome::Done(json!({"bbr": bbr, "nft_relays": out.kv("nft_relays"), "ssserver_updated": pushed})))
+    let bbr = tuned.as_ref().map(|x| x["bbr"] == true);
+    Ok(Outcome::Done(json!({"bbr": bbr, "tune": tuned, "nft_relays": out.kv("nft_relays"), "ssserver_updated": pushed})))
 }
 
 async fn converge_relay(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
@@ -414,6 +413,7 @@ async fn converge_relay(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     if base.kv("sshd_password") != Some("no") {
         return Err(remote(format!("sshd 仍允许密码登录（{}）", base.kv("sshd_password").unwrap_or("?"))));
     }
+    let tuned = apply_tune(c, &m, &t).await?;
     t.push(&c.dist("xray"), "/usr/local/bin/xray", "0755", Duration::from_secs(300)).await?;
     // 渲染出的配置只用到 geoip:private（策略不允许 geosite: 规则），geosite.dat 不推
     t.push(&c.dist("geoip.dat"), "/usr/local/share/xray/geoip.dat", "0644", Duration::from_secs(300)).await?;
@@ -422,7 +422,37 @@ async fn converge_relay(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         return Err(out.fail("安装 fleet-xray 失败"));
     }
     warn_linklocal_dns(c, &out, "Xray").await;
-    Ok(Outcome::Done(json!({"xray": out.kv("xray_version"), "bbr": base.kv("cc") == Some("bbr")})))
+    Ok(Outcome::Done(json!({"xray": out.kv("xray_version"), "bbr": tuned["bbr"], "tune": tuned})))
+}
+
+/// 系统调优（tune-v1，见 tune.rs）：上架收敛和作业 `tune` 共用。脚本自己出错（写文件失败）才失败；写不进的键、没同步的时钟记警告，
+/// 逐键结果就是返回值（存进步骤结果）。成功后记 machine.tune_profile / tuned_at（不动 revision：不是用户编辑）。同机 IP 节点不调用
+async fn apply_tune(c: &Ctx<'_>, m: &M, t: &Target) -> anyhow::Result<Value> {
+    let role = if m.kind == "relay" {
+        let (port_min, port_max): (i32, i32) = sqlx::query_as("select port_min, port_max from relay where machine_id = $1").bind(m.id).fetch_one(&c.st.db).await?;
+        tune::Role::Relay { port_min, port_max }
+    } else {
+        tune::Role::Node
+    };
+    let out = t.run(&tune::script(role), Duration::from_secs(480)).await?;
+    if !out.ok() {
+        return Err(out.fail("系统调优失败"));
+    }
+    if out.kv("tune_profile") != Some(tune::PROFILE) {
+        return Err(remote(format!("调优脚本没有跑到最后：{}", out.stdout.trim())));
+    }
+    let r = tune::parse(&out.stdout);
+    for w in &r.warns {
+        c.warn(w).await;
+    }
+    sqlx::query("update machine set tune_profile = $2, tuned_at = now() where id = $1").bind(m.id).bind(tune::PROFILE).execute(&c.st.db).await?;
+    c.st.emit(Event::Machine { id: m.id });
+    Ok(r.result)
+}
+
+async fn tune_step(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
+    let m = c.machine().await?;
+    Ok(Outcome::Done(apply_tune(c, &m, &c.ssh(&m, None)).await?))
 }
 
 /// 装单元的脚本报了 `linklocal_dns=1`（见 scripts::LINKLOCAL_DNS）：记一条 warn。`what` 是哪个程序

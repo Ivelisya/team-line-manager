@@ -38,12 +38,12 @@ job ─< job_step ─< job_log      audit_log      user / session / api_key
 - **entry**：线路机上的一个入口（VLESS REALITY 入站 → SS 出站到节点）。`id, relay_id, node_id, port, client_uuid, short_id, lifecycle, changed_gen`（最近一次改动时线路机的期望代数；线路机 `applied_generation ≥ changed_gen` 即已应用）。备注由节点显示名生成，改名后随期望状态自动同步。
   直出入口：`node_id = relay_id`（节点就是线路机自己），freedom 出站，从线路机自己的 IP 出去；每台线路机至多一条（同一个 (node_id, relay_id) 唯一索引），备注「线路机名-直出」，随线路机退役摘除。
 - **subscription**：机器的账单。`due_date, auto_renew`，以及可「单独设置」的 `price_cents, currency, cycle, billing_tz, remind_days, traffic_gb, traffic_reset_day`（null = 跟随模板：价格、币种、周期、流量上限跟随机器的套餐 `machine.plan_id`，账单时区、提前提醒、流量重置跟随供应商，供应商没填时区时是组织时区 `org_timezone`）；生效值只在库里的视图 `subscription_eff` 算。到期状态（ok / soon / overdue）、月费、下一个到期日由视图层 `meta` 的同一组函数算；续费记录单独一张表。
-- **job**：`kind (provision_vps | provision_proxy | provision_relay | provision_ip | restore_* | attach_entry | move_entry | retire | purge | upgrade_agent), target, params, state, steps[]`。每一步记录开始、结束、输出、错误类别；失败可从该步重试（升级 agent 从推送重来），取消会执行已完成步骤的补偿。`params.after` 指向要等的作业：它结束前不领取，它在推送之后失败（看它的 `params.pushed`）或被取消就直接取消，推送之前就失败的不算（「全部升级 agent」的金丝雀与线路机逐台）；`params.rollout` 记发起时 dist 里 agent 的 sha256 与版本号，开始前与推送时核对，换了就停。
+- **job**：`kind (provision_vps | provision_proxy | provision_relay | provision_ip | restore_* | attach_entry | move_entry | retire | purge | upgrade_agent | tune), target, params, state, steps[]`。每一步记录开始、结束、输出、错误类别；失败可从该步重试（升级 agent 从推送重来），取消会执行已完成步骤的补偿。`params.after` 指向要等的作业：它结束前不领取，它在推送之后失败（看它的 `params.pushed`）或被取消就直接取消，推送之前就失败的不算（「全部升级 agent」的金丝雀与线路机逐台）；`params.rollout` 记发起时 dist 里 agent 的 sha256 与版本号，开始前与推送时核对，换了就停。
 
 ## 3. 关键流程
 
 **上架节点（一次确认）**：填 IP、SSH 端口、登录方式、供应商/套餐、团队（编号自动）、目标线路机 →
-预检（连通、指纹、系统）→ 基线（sshd、nftables、sysctl/BBR）→ 装 ssserver → 装 fleet-agent 并签发令牌 → 等第一批上报 →
+预检（连通、指纹、系统）→ 基线（sshd、nftables）→ 系统调优（tune-v1）→ 装 ssserver → 装 fleet-agent 并签发令牌 → 等第一批上报 →
 创建入口（写期望状态）→ 等线路机回报已应用 → 端到端验收 → `active`。批量上架就是多行同时提交。
 
 **上架同机 IP 节点**（`provision_ip`，填宿主机 + 新 IP）：在宿主机上核对 IP（要直接配在宿主机网卡上，或 1:1 NAT 映射到网卡上的某个本机地址——各本机地址访问一次 `/echo`，回显是它的那个记进 `machine.bind_ip`，ssserver 监听并从它出站；经它访问中控 `/echo` 回显的必须是它自己，否则是出站路由不对；暂定的 SS 端口被占用就改用最小空闲端口）→
@@ -54,6 +54,12 @@ job ─< job_step ─< job_log      audit_log      user / session / api_key
 退役宿主机时它上面的同机 IP 节点**一并退役**（同一事务里置为退役中、作废它们进行中的作业、关告警，各建一个只摘入口不登录清理的退役作业；宿主机的清理连同所有实例一起删）；单独退役同机 IP 节点只删它自己的实例。彻底删除宿主机要等它的同机 IP 节点（含已退役的）先删。
 
 **改名 / 重新编号 / 换团队**：只改 `team_id/number`，同步作业刷新线路机备注；不换令牌、不断连接。"重新编号"先出预览（旧名 → 新名），确认后一次生效。
+
+**系统调优**（调优档 tune-v1，常量在 `jobs/tune.rs`，跟中控版本走）：上架/恢复时在 `converge` / `converge_relay` 里紧跟系统基线固定执行（同机 IP 节点不做：系统设置是宿主机的）；已有机器用作业 `tune`（`fleetctl tune`、网页抽屉「管理 → 重新调优」）重做。
+远端脚本逐键直接写 `/proc/sys/…` 再读回：目标「等于」或「至少」（现值已不小于目标就不动），只把读回一致的键写进 `/etc/sysctl.d/99-zz-fleet-tune.conf`（容器里写不了的 `net.core.*`、conntrack 记「跳过」，不算失败）；
+内容是 BBR+fq、16 MB 的 TCP 缓冲上限、`tcp_notsent_lowat`、`tcp_slow_start_after_idle=0`、MTU 探测、连接队列、`nf_conntrack_max`（模块已加载才设），线路机另有 `ip_local_reserved_ports`（该线路机 relay 行的入口端口池，先于本地端口范围写）、端口范围与 `tcp_tw_reuse`；
+另写 journald 体积上限（300 MB）、补装并启用时间同步（非容器且没同步时）、核对服务的 LimitNOFILE。不重启 ssserver / Xray，不断连接。逐键结果（applied/ok/kept/skipped）就是步骤结果，是核对凭据；
+成功后记 `machine.tune_profile` / `tuned_at`（不动 revision）。改任何一项值都升档号（tune-v2…），部署中控后 `fleetctl tune --all` 重做；回滚 = 发新档再重做。
 
 **换线路机**：新线路机建入口 → 验收 → 旧入口 removing；分享链接变化会在界面提示。
 

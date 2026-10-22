@@ -23,7 +23,7 @@
 | N1 | `/root/.ssh/authorized_keys` 追加上架公钥一行（0600，`~/.ssh` 0700 umask 077） | P2（仅密钥登录被拒时） |
 | N2 | `/etc/ssh/sshd_config` 首行可能被插入 `Include /etc/ssh/sshd_config.d/*.conf`；新建 `/etc/ssh/sshd_config.d/00-fleet-keyonly.conf`；sshd reload | P7 |
 | N3 | 若无 `nft` 则 `apt-get install -y -q nftables` | P7 |
-| N4 | `/etc/sysctl.d/90-fleet-bbr.conf`；`modprobe tcp_bbr`；`sysctl -p` 使 fq+bbr 立即生效 | P7 |
+| N4 | `/etc/sysctl.d/90-fleet-bbr.conf`；`modprobe tcp_bbr`；`sysctl -p` 使 fq+bbr 立即生效。**v1**：基线不再管 BBR，并入调优档 tune-v1（收敛里基线后紧跟执行，写 `/etc/sysctl.d/99-zz-fleet-tune.conf`、journald 体积上限，补时间同步；脚本顺手删掉旧的 90-fleet-bbr.conf），见 DESIGN.md §3 | P7 |
 | N5 | `/etc/fleet/nft/ss_guard.nft`；内核里的 `table inet ss_guard`；`/etc/nftables.conf` 末尾追加 include 行（文件不存在则建，首行 shebang）；`systemctl enable nftables` | P8 |
 | N6 | `/usr/local/bin/ssserver`（0755，shadowsocks-rust 1.25.0 musl）；`/etc/shadowsocks-rust/config.json`；系统用户 `fleet-ss`；`/etc/systemd/system/fleet-ssserver.service`；enable + start | P9 |
 | N7 | nodeagent 全套：用户/组 `fleet-edge`，`/opt/fleet-edge/**`，`/etc/fleet-edge/{agent.toml,token}`，`fleet-nodeagent.service` + drop-in，`/var/lib/fleet-nodeagent`（StateDirectory） | P11 |
@@ -207,6 +207,8 @@ sshd -T | grep -E '^(passwordauthentication|kbdinteractiveauthentication|challen
 modprobe tcp_bbr || true ; sysctl -q -p /etc/sysctl.d/90-fleet-bbr.conf || echo ==SYSCTLFAIL
 cat /proc/sys/net/ipv4/tcp_congestion_control ; cat /proc/sys/net/core/default_qdisc
 ```
+> **v1**：上面最后三行（BBR）已从基线脚本移走，归调优档 tune-v1（`jobs/tune.rs`，步骤结果 `tune`）；非 bbr 只记警告，不失败。
+
 通过条件：`sshd -T` 显示 `passwordauthentication no`；`permitrootlogin` ∈ {`without-password`, `prohibit-password`}（否则 bug）；`tcp_congestion_control == bbr`（否则 provider；仅容器演练 `require_bbr=false` 豁免）；若 CSV 给过密码文件，再用密码登录一次「反测」，必须被拒（`Permission denied`→input→记 `password_login_denied=true`），若 `LOGGED_IN` 出现 → bug。
 注意：没有 `apt-get update`（陈旧索引会装不上）；不检查 `kbdinteractiveauthentication`；`default_qdisc` 只记录不判断；不改 root 密码、不改 SSH 端口、不装 fail2ban/unattended-upgrades、不设主机名/时区。无补偿（保留）。
 
@@ -559,7 +561,7 @@ active 终态；cancel 对 active 行拒绝（「走下线流程」——该流�
 2. **nodeagent**：先 `REMOVE_SCRIPT`（disable --now、删单元/drop-in/状态目录；非 relayd 机器删 `/opt/fleet-edge`、`/etc/fleet-edge`、用户/组 `fleet-edge`），再撤销该 host_id 全部令牌（顺序不可反）。
 3. **SS**：`systemctl disable --now fleet-ssserver`；删 `/etc/systemd/system/fleet-ssserver.service`、`/usr/local/bin/ssserver`、`/etc/shadowsocks-rust/`；`daemon-reload`；（新增）`userdel fleet-ss`。复核 8388 不再监听。
 4. **防火墙**：`nft delete table inet ss_guard`；`rm /etc/fleet/nft/ss_guard.nft`；从 `/etc/nftables.conf` 删 include 行。（可选，机器要继续使用时）保留 nftables 包与 `nftables.service`。
-5. **机器级基线（可选，`--wipe`）**：`/etc/sysctl.d/90-fleet-bbr.conf`（运行态 BBR 不回退）、`/etc/ssh/sshd_config.d/00-fleet-keyonly.conf` + sshd reload、sshd_config 首行 Include——**默认保留**（机器仍归我方、回退会重新开放密码登录）；机器退还供应商前才由人决定是否清理，因为供应商会销毁/重装。
+5. **机器级基线（可选，`--wipe`）**：`/etc/sysctl.d/90-fleet-bbr.conf`（v1：`99-zz-fleet-tune.conf` 与 journald 的 `90-fleet.conf`，退役清理同样不动；运行态不回退）、`/etc/ssh/sshd_config.d/00-fleet-keyonly.conf` + sshd reload、sshd_config 首行 Include——**默认保留**（机器仍归我方、回退会重新开放密码登录）；机器退还供应商前才由人决定是否清理，因为供应商会销毁/重装。
 6. **接入凭据**（最后）：仅当机器要交还/不再管理时，从 `/root/.ssh/authorized_keys` 删除上架公钥行（`grep -vxF`）；**一旦删除即永久失联**，所以放在所有机器侧步骤之后，并且要二次确认。
 7. **中控清理**：资产 `lifecycle=retired`（唯一索引自动释放 `(team, number)` 与 `(relay, relay_port)` 的占用）；`allocations` 置 `retired`；删除 `known_hosts/<row>`；删除对应 `.pw` 文件；清除 `secrets`（`ss_password`、`reality_private_key`、`share_link` 等）；保留步骤/事件审计记录与一条「已退役」事件；释放 `rows_live_ip`（行置终态）。
 8. **线路机备份**：退役后按保留期清理 `onboard-backups` 中含该入口私钥的旧备份（或用新机制避免备份里存私钥）。

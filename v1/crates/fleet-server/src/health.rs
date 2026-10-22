@@ -304,6 +304,7 @@ pub(crate) mod tests {
             open_incidents: 0,
             maintenance: false,
             relay: None,
+            tune: None,
             sustained: Sustained::default(),
             policy_blocked: false,
         }

@@ -17,6 +17,7 @@
 
 pub mod scripts;
 mod steps;
+pub mod tune;
 
 use crate::db::Tx;
 use crate::error::ApiResult;
@@ -41,11 +42,11 @@ pub struct StepDef {
 const fn s(key: &'static str, title: &'static str, timeout_s: i64) -> StepDef { StepDef { key, title, timeout_s } }
 
 // 超时要覆盖步骤内所有 ssh/推送的累计时间（含瞬时错误重试），否则会被外层超时截断：
-// converge ≈ 基线 600 + 推 ssserver 200 + 脚本 120 + 重启 30；converge_relay ≈ 基线 600 + 推 xray 320 + 推 geo 2×320 + 脚本 60
+// converge ≈ 基线 600 + 调优 480 + 推 ssserver 200 + 脚本 120 + 重启 30；converge_relay ≈ 基线 600 + 调优 480 + 推 xray 320 + 推 geo 2×320 + 脚本 60
 const PROVISION_VPS: &[StepDef] = &[
     s("preflight", "预检与身份", 240),
     s("bootstrap", "引导密钥", 240),
-    s("converge", "节点收敛（SSH 加固、SS、防火墙）", 1500),
+    s("converge", "节点收敛（SSH 加固、系统调优、SS、防火墙）", 1800),
     s("agent", "安装 agent", 600),
     s("wait_report", "等待首次上报", 180),
     s("attach", "接入线路机", 60),
@@ -72,7 +73,7 @@ const PROVISION_PROXY: &[StepDef] = &[
 const PROVISION_RELAY: &[StepDef] = &[
     s("preflight", "预检与身份", 240),
     s("bootstrap", "引导密钥", 240),
-    s("converge_relay", "线路机收敛（SSH 加固、Xray）", 2400),
+    s("converge_relay", "线路机收敛（SSH 加固、系统调优、Xray）", 2700),
     s("agent", "安装 agent", 600),
     s("wait_report", "等待首次上报", 180),
     s("wait_applied", "等待 Xray 配置应用", 300),
@@ -110,6 +111,8 @@ const PURGE: &[StepDef] = &[s("purge", "删除数据", 600)];
 const REPLACE: &[StepDef] = &[s("routers", "改软路由出口", 1800), s("renumber", "交换编号", 60)];
 // 推送时旧程序留成 .prev；起不来、或 2 分钟内等不到新版本上报，就换回去并让作业失败（见 steps::agent / wait_report）。重试从推送重来
 const UPGRADE_AGENT: &[StepDef] = &[s("agent", "推送并重启 agent", 600), s("wait_report", "等待新版本上报", 180)];
+// 系统调优（tune-v1，见 tune.rs）：一个幂等脚本，不重启 ssserver / Xray；时间没同步的机器要装 systemd-timesyncd，留足 apt 的时间
+const TUNE: &[StepDef] = &[s("tune", "系统调优", 600)];
 
 pub fn defs(kind: &str) -> &'static [StepDef] {
     match kind {
@@ -128,6 +131,7 @@ pub fn defs(kind: &str) -> &'static [StepDef] {
         "purge" => PURGE,
         "upgrade_agent" => UPGRADE_AGENT,
         "replace" => REPLACE,
+        "tune" => TUNE,
         _ => &[],
     }
 }
@@ -139,7 +143,7 @@ pub fn title_of(kind: &str, key: &str) -> &'static str {
 /// 上架类作业（含恢复）：目标机器处于上架中，失败时机器标为上架失败
 pub fn provisions(kind: &str) -> bool { kind.starts_with("provision_") || kind.starts_with("restore_") }
 
-pub fn cancellable(kind: &str) -> bool { provisions(kind) || matches!(kind, "attach_entry" | "move_entry" | "upgrade_agent" | "replace") }
+pub fn cancellable(kind: &str) -> bool { provisions(kind) || matches!(kind, "attach_entry" | "move_entry" | "upgrade_agent" | "replace" | "tune") }
 
 /// 作业走到第 `step` 步、处于 `state` 时为什么不能取消；能取消返回 None。
 /// 换线路机一旦开始摘旧入口就只能重试到完成（回滚会让节点没有入口）；升级 agent 只能在排队时取消（推送、重启到一半中断更危险）；
@@ -157,8 +161,11 @@ pub fn cancel_blocker(kind: &str, step: i32, state: &str) -> Option<&'static str
     if kind == "replace" && (step > 0 || !matches!(state, "queued" | "failed")) {
         return Some("软路由已经开始改（或已经改好），不能再取消：失败了点重试到完成");
     }
-    if kind != "upgrade_agent" || state == "queued" {
+    if !matches!(kind, "upgrade_agent" | "tune") || state == "queued" {
         return None;
+    }
+    if kind == "tune" {
+        return Some(if state == "failed" { "失败的调优作业不用取消：它不占着机器，可以重试或重新发起调优" } else { "调优已经开始，不能取消：脚本几十秒就跑完，等它结束" });
     }
     Some(if state == "failed" {
         "失败的升级作业不用取消：它不占着机器，可以重试或重新发起升级"
@@ -174,7 +181,7 @@ fn outer_timeout(d: &StepDef) -> Duration { Duration::from_secs(d.timeout_s as u
 fn required_lifecycle(kind: &str) -> Option<&'static str> {
     match kind {
         k if k.starts_with("provision_") || k.starts_with("restore_") => Some("provisioning"),
-        "attach_entry" | "move_entry" | "upgrade_agent" | "replace" => Some("active"),
+        "attach_entry" | "move_entry" | "upgrade_agent" | "replace" | "tune" => Some("active"),
         "retire" => Some("retiring"),
         "purge" => Some("retired"),
         _ => None,
@@ -397,7 +404,7 @@ async fn retry_later(st: &AppState, id: Uuid, owner: &str, e: &anyhow::Error) {
 }
 
 /// 领取一个可执行的作业，租约先给 3 分钟；每步开始前会按该步的超时续租。本进程正在推进的不领（见 `Running`）。
-/// 升级 agent 排在其它作业之后：「全部升级」一次建一百多个，不能让之后的上架、换线路机、退役排在它们后面。
+/// 升级 agent、系统调优排在其它作业之后：「全部升级」一次建一百多个，不能让之后的上架、换线路机、退役排在它们后面。
 /// 同一事务建的作业 created_at 相同，再按 id（UUIDv7，按生成先后递增）：全部升级里先建的线路机先领。
 /// 参数里有 `after`（「全部升级」的编排：要等的作业）的，那个作业结束之前领不到；它在推送之后失败或被取消，这个作业领到后不开始、直接取消（见 `halted`）。
 /// 排队时被取消的不用等：领到就收尾（没开始过，`started_at` 留空）
@@ -410,7 +417,7 @@ pub async fn claim(st: &AppState, owner: &str) -> anyhow::Result<Option<JobRow>>
                      and (lease_until is null or lease_until < now()) and id <> all($2)
                      and (state = 'cancelling'
                           or not exists (select 1 from job p where p.id = (j.params->>'after')::uuid and p.state in ('queued', 'running', 'waiting', 'cancelling')))
-                     order by kind = 'upgrade_agent', created_at, id for update skip locked limit 1)
+                     order by kind in ('upgrade_agent', 'tune'), created_at, id for update skip locked limit 1)
          returning id, kind, target_id, params, state::text state, step, created_by",
     )
     .bind(owner)
@@ -805,6 +812,7 @@ mod tests {
         assert!(check_target("attach_entry", Some("active")).is_ok());
         assert!(check_target("attach_entry", Some("retiring")).is_err());
         assert!(check_target("upgrade_agent", Some("active")).is_ok());
+        assert!(check_target("tune", Some("active")).is_ok() && check_target("tune", Some("provisioning")).is_err());
         assert!(check_target("retire", Some("retiring")).is_ok());
         assert!(check_target("retire", Some("retired")).is_err());
         assert!(check_target("move_entry", Some("active")).is_ok());
@@ -830,7 +838,7 @@ mod tests {
     fn outer_timeout_covers_step_timeout() {
         for k in [
             "provision_vps", "provision_proxy", "provision_relay", "provision_ip", "attach_entry", "retire", "purge", "upgrade_agent", "move_entry",
-            "restore_vps", "restore_proxy", "restore_relay", "restore_ip", "replace",
+            "restore_vps", "restore_proxy", "restore_relay", "restore_ip", "replace", "tune",
         ] {
             for d in defs(k) {
                 assert!(outer_timeout(d).as_secs() as i64 >= d.timeout_s + 120);
@@ -860,6 +868,8 @@ mod tests {
         // 升级 agent 只能在排队时取消
         assert!(can("upgrade_agent", 0, "queued"));
         assert!(["running", "waiting", "failed", "cancelling"].iter().all(|s| !can("upgrade_agent", 0, s)));
+        // 系统调优同升级 agent：只能在排队时取消
+        assert!(can("tune", 0, "queued") && ["running", "waiting", "failed", "cancelling"].iter().all(|s| !can("tune", 0, s)));
         // 替换节点：排队中、或改路由失败（已换回原配置）停在第一步时能取消；改路由在跑、已经走到交换编号都不能
         assert!(can("replace", 0, "queued") && can("replace", 0, "failed"));
         assert!(!can("replace", 0, "running") && !can("replace", 1, "failed") && !can("replace", 1, "queued"));

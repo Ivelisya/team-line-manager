@@ -89,6 +89,8 @@ export interface MachineView {
   failed_job: { id: string; kind: string; state: string } | null;
   open_incidents: number; maintenance: boolean;
   relay: { public_host: string; generation: number; applied_generation: number; applied_at: string | null; apply_error: string | null; port_min: number; port_max: number } | null;
+  /** 系统调优记录：profile 为 null = 未调优（迁移前上线的机器）；current = 就是中控当前的档，false 为旧档或未调优。家宽代理、同机 IP 节点为 null */
+  tune: { profile: string | null; at: string | null; current: boolean } | null;
 }
 
 /** spare：备用团队（里面在用的机器订阅过期满 1 天后自动删除） */
@@ -143,7 +145,7 @@ export interface Meta {
 export type UsageMetric = 'cpu' | 'mem' | 'disk' | 'load';
 
 export type JobState = 'queued' | 'running' | 'waiting' | 'cancelling' | 'succeeded' | 'failed' | 'cancelled';
-export type JobKind = 'provision_vps' | 'provision_proxy' | 'provision_relay' | 'provision_ip' | 'attach_entry' | 'move_entry' | 'restore_vps' | 'restore_proxy' | 'restore_relay' | 'restore_ip' | 'retire' | 'purge' | 'upgrade_agent' | 'replace';
+export type JobKind = 'provision_vps' | 'provision_proxy' | 'provision_relay' | 'provision_ip' | 'attach_entry' | 'move_entry' | 'restore_vps' | 'restore_proxy' | 'restore_relay' | 'restore_ip' | 'retire' | 'purge' | 'upgrade_agent' | 'replace' | 'tune';
 /** 步骤 state 文档未列全，前端按 pending/running/waiting/succeeded(done)/failed/skipped(cancelled) 宽松处理 */
 export interface JobStep { idx: number; key: string; title: string; state: string; started_at: string | null; finished_at: string | null; output: Record<string, unknown> | null; error: string | null; error_kind?: string | null }
 /** 作业列表（GET /jobs）的一项：不带 steps。step = 当前（或失败的）步骤下标，step_title 为它的标题，做完为 null */

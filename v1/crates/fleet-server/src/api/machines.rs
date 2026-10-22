@@ -630,9 +630,9 @@ async fn enqueue_upgrade(st: &AppState, actor: &str, ms: &[(Uuid, String, String
     Ok((out, skipped))
 }
 
-/// 单台：推送中控上当前版本的 agent 并重启（令牌顺带轮换）；新版本起不来、没上报就换回旧版本（见 jobs::steps）
-pub async fn upgrade_agent(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
-    let (kind, lc, name, host): (String, String, String, Option<String>) = sqlx::query_as(
+/// 机器的 (种类, 生命周期, 显示名, 宿主机显示名)：升级 agent、系统调优这类只对有自己机器的节点 / 线路机做的操作先看这个
+async fn brief_of(st: &AppState, id: Uuid) -> ApiResult<(String, String, String, Option<String>)> {
+    sqlx::query_as(
         "select m.kind::text, m.lifecycle::text, display_name(m.kind::text, m.label, mt.name, m.number), display_name(h.kind::text, h.label, t.name, h.number)
          from machine m left join team mt on mt.id = m.team_id left join machine h on h.id = m.host_id left join team t on t.id = h.team_id
          where m.id = $1",
@@ -640,7 +640,12 @@ pub async fn upgrade_agent(a: Actor, State(st): State<AppState>, ApiPath(id): Ap
     .bind(id)
     .fetch_optional(&st.db)
     .await?
-    .ok_or_else(|| ApiError::not_found("没有这台机器"))?;
+    .ok_or_else(|| ApiError::not_found("没有这台机器"))
+}
+
+/// 单台：推送中控上当前版本的 agent 并重启（令牌顺带轮换）；新版本起不来、没上报就换回旧版本（见 jobs::steps）
+pub async fn upgrade_agent(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
+    let (kind, lc, name, host) = brief_of(&st, id).await?;
     if let Some(h) = host {
         return Err(ApiError::conflict(format!("同机 IP 节点没有自己的 agent，用的是宿主机「{h}」的：升级宿主机的 agent")));
     }
@@ -649,6 +654,28 @@ pub async fn upgrade_agent(a: Actor, State(st): State<AppState>, ApiPath(id): Ap
     }
     let (v, skipped) = enqueue_upgrade(&st, &a.name, &[(id, kind, name)], None).await?;
     v.into_iter().next().map(ok).ok_or_else(|| ApiError::conflict(skipped[0]["reason"].as_str().unwrap_or("这台机器还有进行中的作业")))
+}
+
+/// 重做系统调优（作业 `tune`，当前调优档见 jobs/tune.rs）：写内核参数、journald 体积、补时间同步，不重启 ssserver / Xray、不断客户连接。
+/// 同机 IP 节点和宿主机共用系统设置，家宽代理没有我们的机器；机器上已有进行中的作业时由唯一索引挡住（409）
+pub async fn tune(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
+    let (kind, lc, name, host) = brief_of(&st, id).await?;
+    if let Some(h) = host {
+        return Err(ApiError::conflict(format!("同机 IP 节点和宿主机共用系统设置：对宿主机「{h}」调优")));
+    }
+    if kind == "proxy" {
+        return Err(ApiError::conflict("家宽代理没有我们的机器"));
+    }
+    if lc != "active" {
+        return Err(ApiError::conflict("只有在用的机器能调优"));
+    }
+    let mut tx = st.db.begin().await?;
+    let job = jobs::enqueue(&mut tx, "tune", Some(id), json!({}), &a.name).await?;
+    audit(&mut tx, &a.name, "machine.tune", "machine", Some(id), json!({"name": name, "profile": jobs::tune::PROFILE, "job_id": job})).await?;
+    tx.commit().await?;
+    st.wake_jobs();
+    st.emit(Event::Job { id: job, target: Some(id) });
+    Ok(ok(json!({"machine_id": id, "name": name, "job_id": job})))
 }
 
 /// 「全部升级」要推的 agent：dist 里程序的 sha256 与版本号。记进每个作业的参数 `rollout`，作业开始前核对（jobs::halted）：
