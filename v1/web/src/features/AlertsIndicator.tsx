@@ -19,6 +19,7 @@ export function AlertsIndicator() {
   // 受控：点了一行要先收起预览——抽屉在弹层下面一层，开着的预览会盖在抽屉上
   const [open, setOpen] = React.useState(false);
   const n = q.data?.total ?? 0;
+  const acked = q.data?.acked ?? 0;
   const list = q.data?.items.slice(0, SHOW) ?? [];
   // 告警全部恢复时预览随胶囊一起卸掉，开关也复位（渲染中直接跟上）：不然下一条告警一来，预览会自己弹出来
   if (!n) { if (open) setOpen(false); return null; }
@@ -29,7 +30,8 @@ export function AlertsIndicator() {
         <NavLink to="/incidents" className="top-alert" aria-label={`${n} 条告警`} onClick={() => setOpen(false)}><Pill tone="bad">{n}<span className="hide-sm"> 条告警</span></Pill></NavLink>
       </HoverCardTrigger>
       <HoverCardContent align="end" className="alerts-pop">
-        <div className="pop-head">进行中的告警<span className="t-sub">{n}</span></div>
+        {/* 确认不关闭告警：计数仍含已确认的，这里分开写 */}
+        <div className="pop-head">进行中的告警<span className="t-sub">{n} 条{acked > 0 ? `（${acked} 条已确认）` : ''}</span></div>
         <ul className="pop-list">
           {list.map((i) => {
             const sid = i.subject?.id ?? i.subject_id;

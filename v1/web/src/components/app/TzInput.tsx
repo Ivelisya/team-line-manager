@@ -7,6 +7,15 @@ import { cn } from '@/lib/utils';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/overlays';
 
+/** 搜索打分：城市名 / 时区名里某个词以它开头的在前，其次是连续子串；不做模糊匹配（搜「Tokyo」不该带出 America/Kentucky/Monticello） */
+const tzFilter = (v: string, s: string, kw?: string[]) => {
+  const q = s.trim().toLowerCase().replace(/\s+/g, '_');
+  if (!q) return 1;
+  const text = [v, ...(kw ?? [])].join(' ').toLowerCase();
+  if (text.split(/[\s/_-]+/).some((w) => w.startsWith(q))) return 1;
+  return text.includes(q) ? 0.5 : 0;
+};
+
 export function TzInput({ id, value, onChange, emptyLabel, placeholder = '选择时区', 'aria-label': ariaLabel }: {
   id?: string; value: string; onChange: (v: string) => void; emptyLabel?: string; placeholder?: string; 'aria-label'?: string;
 }) {
@@ -29,7 +38,7 @@ export function TzInput({ id, value, onChange, emptyLabel, placeholder = '选择
       </PopoverTrigger>
       <PopoverContent className="cs-pop is-wide" align="start">
         {opts && (
-          <Command loop>
+          <Command loop filter={tzFilter}>
             <CommandInput placeholder="搜索：城市、时区名或 UTC+8" />
             <CommandList>
               <CommandEmpty>没有这个时区</CommandEmpty>

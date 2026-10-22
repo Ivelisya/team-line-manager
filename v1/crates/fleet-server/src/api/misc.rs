@@ -160,8 +160,9 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
     );
     let v: Vec<IncidentOut> = sqlx::query_as_with(&sql, a.0).fetch_all(&st.db).await?;
     let mut a = Args::default();
-    let sql = format!("select count(*) from incident i where {}", cond(&mut a));
-    let total: i64 = sqlx::query_scalar_with(&sql, a.0).fetch_one(&st.db).await?;
+    // acked：其中已确认的条数（确认不关闭告警，顶栏计数仍含它们，悬停里分开写）
+    let sql = format!("select count(*), count(*) filter (where i.ack_at is not null) from incident i where {}", cond(&mut a));
+    let (total, acked): (i64, i64) = sqlx::query_as_with(&sql, a.0).fetch_one(&st.db).await?;
     let out: Vec<Value> = v
         .iter()
         .map(|i| {
@@ -180,7 +181,9 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
             j
         })
         .collect();
-    Ok(paged(out, total, offset))
+    let mut r = paged(out, total, offset);
+    r.0["data"]["acked"] = json!(acked);
+    Ok(r)
 }
 
 pub async fn ack_incident(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
@@ -546,6 +549,9 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "machine.restore" => "恢复机器",
         "job.retry" => "重试作业",
         "job.cancel" => "取消作业",
+        // 标记为维护的叫维护窗口，否则叫静默（同界面）
+        "silence.create" if d["is_maintenance"] == true => "新建维护窗口",
+        "silence.delete" if d["is_maintenance"] == true => "删除维护窗口",
         "silence.create" => "新建静默",
         "silence.delete" => "删除静默",
         "incident.ack" => "确认告警",
@@ -594,6 +600,14 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         },
         "machine.purge" => s("name"),
         "renewal" => format!("到期 {} → {}", d["old_due"].as_str().unwrap_or("?"), d["new_due"].as_str().unwrap_or("?")),
+        // 「团队1-03 · 价格 5.00 → 6.00 USD，到期 2026-11-01 → 2026-12-01」；这一版之前的记录没有改动前后，不写摘要
+        "subscription.set" if d["after"].is_object() => {
+            let changes = sub_changes(d);
+            match (s("name"), changes.is_empty()) {
+                (n, true) => format!("{n} · 没有改动"),
+                (n, false) => format!("{n} · {changes}"),
+            }
+        }
         "team.renumber" => {
             let ch = d["changes"].as_array().cloned().unwrap_or_default();
             let mut parts: Vec<String> = ch.iter().take(3).map(|c| format!("{}→{}", c["from"].as_str().unwrap_or(""), c["to"].as_str().unwrap_or(""))).collect();
@@ -729,8 +743,22 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
             let how = if d["password"] == true { "密码" } else { "中控密钥" };
             format!("{} · {}@{}:{}（{how}）· {res}", s("name"), s("user"), s("host"), d["port"])
         }
+        // 「v5 · 回滚到 v3 · 团队1：黑名单 → 仅观察；团队2-03：白名单 · 域名 2 → 3 个 · 6 台线路机」
         "policy.publish" | "policy.rollback" => {
-            format!("第 {} 版 · {} 处改动 · {} 台线路机", d["seq"], d["changes"].as_array().map_or(0, |a| a.len()), d["relays"])
+            let ch = d["changes"].as_array().cloned().unwrap_or_default();
+            let mut parts = vec![format!("v{}", d["seq"])];
+            if let Some(to) = d["rollback_of_seq"].as_i64() {
+                parts.push(format!("回滚到 v{to}"));
+            }
+            let mut what: Vec<String> = ch.iter().take(2).map(policy_change).collect();
+            if ch.len() > 2 {
+                what.push(format!("等 {} 处", ch.len()));
+            }
+            parts.push(if what.is_empty() { "只改了备注".into() } else { what.join("；") });
+            if let Some(n) = d["relays"].as_u64().filter(|n| *n > 0) {
+                parts.push(format!("{n} 台线路机"));
+            }
+            parts.join(" · ")
         }
         // 「原始记录 7 → 3 天，汇总 31 天」：改了的写从几天到几天，没改的只写天数
         "settings.access_retention" => [("raw_days", "原始记录"), ("hourly_days", "汇总")]
@@ -744,6 +772,62 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         _ => String::new(),
     };
     (title, summary)
+}
+
+/// subscription.set 改了的生效值（before / after）；另写按面板校准的已用流量
+fn sub_changes(d: &Value) -> String {
+    let (b, a) = (&d["before"], &d["after"]);
+    if b.is_null() {
+        return format!("新建订阅，到期 {}", val(&a["due_date"]));
+    }
+    let cur = a["currency"].as_str().unwrap_or("");
+    let money = |v: &Value| v.as_i64().map_or("—".into(), |c| format!("{:.2}", c as f64 / 100.0));
+    let gb = |v: &Value| v.as_i64().filter(|g| *g > 0).map_or("不限".into(), |g| format!("{g} GB"));
+    let cycle = |v: &Value| v.as_str().and_then(|k| crate::meta::CYCLES.iter().find(|c| c.key == k)).map_or_else(|| val(v), |c| c.label.to_string());
+    let onoff = |v: &Value| if v == true { "开" } else { "关" }.to_string();
+    let fields: [(&str, &str, &dyn Fn(&Value) -> String); 9] = [
+        ("due_date", "到期", &val),
+        ("price_cents", "价格", &money),
+        ("currency", "币种", &val),
+        ("cycle", "周期", &cycle),
+        ("traffic_gb", "流量", &gb),
+        ("traffic_reset_day", "流量重置日", &|v| format!("{} 号", val(v))),
+        ("remind_days", "提前提醒", &|v| format!("{} 天", val(v))),
+        ("billing_tz", "账单时区", &val),
+        ("auto_renew", "自动续费", &onoff),
+    ];
+    let mut out: Vec<String> = fields
+        .iter()
+        .filter(|(k, ..)| b[*k] != a[*k])
+        .map(|(k, label, f)| match *k {
+            "price_cents" => format!("{label} {} → {} {cur}", f(&b[*k]), f(&a[*k])),
+            _ => format!("{label} {} → {}", f(&b[*k]), f(&a[*k])),
+        })
+        .collect();
+    match d.get("traffic_used_gb") {
+        Some(Value::Null) => out.push("清除已用流量校准".into()),
+        Some(v) if v.is_number() => out.push(format!("已用流量校准为 {v} GB")),
+        _ => {}
+    }
+    out.join("，")
+}
+
+/// 访问规则版本里的一处变更（同前端发布记录的写法）：模式变了写「团队1：黑名单 → 仅观察」，没变写域名个数的变化
+fn policy_change(c: &Value) -> String {
+    let (f, t) = (&c["from"], &c["to"]);
+    let mode = |v: &Value| crate::meta::label(crate::meta::POLICY_MODES, v["mode"].as_str().unwrap_or("")).to_string();
+    let uses = |v: &Value| matches!(v["mode"].as_str(), Some("allowlist" | "denylist"));
+    let what = if f["mode"] != t["mode"] {
+        let n = if uses(t) { format!("（{} 个域名）", t["domains"]) } else { String::new() };
+        format!("{} → {}{n}", mode(f), mode(t))
+    } else if !uses(t) {
+        format!("{} · 改了备注", mode(t))
+    } else if f["domains"] == t["domains"] {
+        format!("{} · 换了域名（{} 个）", mode(t), t["domains"])
+    } else {
+        format!("{} · 域名 {} → {} 个", mode(t), f["domains"], t["domains"])
+    };
+    format!("{}：{what}", c["name"].as_str().unwrap_or(""))
 }
 
 /// JSON 值的显示：字符串原样，null 写「—」，其余（数字）照写
@@ -958,6 +1042,23 @@ mod tests {
         assert_eq!((title.as_str(), s.as_str()), ("修改套餐", "季付 · 价格 59.00 → 69.00 USD，流量 800 → 1000 GB"));
         assert_eq!(t("machine.rename", json!({"name": "团队1-03", "old_name": "团队1-07"})).1, "团队1-07 → 团队1-03");
         assert_eq!(t("policy.draft", json!({"name": "团队1", "mode": "denylist", "domains": 2, "cleared": false})).1, "团队1 · 黑名单 · 2 个域名");
+        let ch = |name: &str, f: &str, fd: i64, to: &str, td: i64| json!({"name": name, "from": {"mode": f, "domains": fd}, "to": {"mode": to, "domains": td}});
+        let changes = json!([ch("团队1", "denylist", 2, "observe", 0), ch("团队2-03", "allowlist", 2, "allowlist", 3)]);
+        assert_eq!(
+            t("policy.publish", json!({"seq": 5, "rollback_of_seq": null, "changes": changes, "relays": 6})).1,
+            "v5 · 团队1：黑名单 → 仅观察；团队2-03：白名单 · 域名 2 → 3 个 · 6 台线路机"
+        );
+        assert_eq!(t("policy.rollback", json!({"seq": 6, "rollback_of_seq": 4, "changes": [ch("团队1", "observe", 0, "denylist", 2)], "relays": 0})).1, "v6 · 回滚到 v4 · 团队1：仅观察 → 黑名单（2 个域名）");
+        assert_eq!(t("silence.create", json!({"is_maintenance": true})).0, "新建维护窗口");
+        let sub = |b: Value, a: Value| t("subscription.set", json!({"name": "C-01", "before": b, "after": a})).1;
+        let b = json!({"due_date": "2026-11-01", "price_cents": 500, "currency": "USD", "cycle": "monthly", "traffic_gb": null, "remind_days": 7, "auto_renew": false});
+        let mut a = b.clone();
+        for (k, v) in [("due_date", json!("2026-12-01")), ("price_cents", json!(600)), ("traffic_gb", json!(1000)), ("auto_renew", json!(true))] {
+            a[k] = v;
+        }
+        assert_eq!(sub(b.clone(), a), "C-01 · 到期 2026-11-01 → 2026-12-01，价格 5.00 → 6.00 USD，流量 不限 → 1000 GB，自动续费 关 → 开");
+        assert_eq!(sub(b.clone(), b), "C-01 · 没有改动");
+        assert_eq!(t("subscription.set", json!({"due_date": "2026-11-01"})).1, "", "旧记录没有改动前后");
         assert_eq!(t("agent.upgrade", json!({"count": 12, "skipped": 1})).1, "12 台，跳过 1 台");
         assert_eq!(t("agent.upgrade", json!({"count": 1, "skipped": 0, "names": ["团队1-03"]})).1, "团队1-03");
         let three = json!(["团队1-03", "团队1-04", "线路机2"]);

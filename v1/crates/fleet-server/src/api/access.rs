@@ -30,6 +30,7 @@ pub struct Q {
     before: Option<String>,
     group: Option<String>,
     target: Option<String>,
+    conn: Option<String>,
 }
 
 fn nonempty(s: &Option<String>) -> Option<&str> { s.as_deref().map(str::trim).filter(|s| !s.is_empty()) }
@@ -145,13 +146,26 @@ pub async fn targets(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuer
     .await
 }
 
+/// 按接入方式筛来源时先取连接数最多的这么多个，查完画像再筛、再取前 limit 个
+const CONN_SCAN: i64 = 5000;
+
+/// `conn=`：只要这种接入方式的来源（unknown 含查不到画像的）。画像是离线库现查的、不在库表里，所以在取回之后筛
 pub async fn sources(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Q>) -> ApiResult<Response> {
     let f = filter_of(&q, agg_window(&st, &q)?)?;
     let (limit, _) = page_of(&q, 100)?;
-    let key = (!f.events).then(|| format!("sources|{f:?}|{limit}"));
+    let conn = match nonempty(&q.conn) {
+        None | Some("all") => None,
+        Some(c @ ("residential" | "mobile" | "datacenter" | "vpn" | "unknown")) => Some(c.to_string()),
+        Some(_) => return Err(ApiError::bad_request("conn 只能是 all、residential、mobile、datacenter、vpn、unknown")),
+    };
+    let key = (!f.events).then(|| format!("sources|{f:?}|{limit}|{conn:?}"));
     cached(&st, key, false, async {
-        let mut items = access::sources(&st.access_db, &f, limit).await?;
+        let mut items = access::sources(&st.access_db, &f, if conn.is_some() { CONN_SCAN } else { limit }).await?;
         crate::ipintel::attach(&st, &mut items).await;
+        if let Some(c) = &conn {
+            items.retain(|s| s.intel.as_ref().map_or(c == "unknown", |i| i.conn_type == *c));
+            items.truncate(limit as usize);
+        }
         Ok(ok(json!({"items": items, "window_start": access::fmt_ts(f.from)})).0)
     })
     .await

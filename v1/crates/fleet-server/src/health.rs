@@ -170,12 +170,13 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
     if own_agent && agent_online && m.sustained.span_s >= SUSTAIN_MIN_SPAN_S {
         let s = &m.sustained;
         for (key, label, min, limit) in [
-            ("host_cpu_high", "CPU", s.cpu_min, CPU_HIGH_PCT),
+            // 英文与中文之间留空格，中文之间不留：「CPU 持续…」「内存持续…」
+            ("host_cpu_high", "CPU ", s.cpu_min, CPU_HIGH_PCT),
             ("host_mem_high", "内存", s.mem_min, MEM_HIGH_PCT),
             ("host_disk_high", "磁盘", s.disk_min, DISK_HIGH_PCT),
         ] {
             if let Some(v) = min.filter(|v| *v >= limit) {
-                rs.push(Reason { key, severity: "warning", text: format!("{label} 持续 5 分钟高于 {limit:.0}%（最低 {v:.0}%）") });
+                rs.push(Reason { key, severity: "warning", text: format!("{label}持续 5 分钟高于 {limit:.0}%（最低 {v:.0}%）") });
             }
         }
     }

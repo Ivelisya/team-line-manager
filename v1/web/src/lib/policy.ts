@@ -7,16 +7,15 @@ import { meta } from './derive';
 export type PolicyMode = 'observe' | 'allowlist' | 'denylist' | 'blocked' | 'inherit';
 export type EffectiveMode = Exclude<PolicyMode, 'inherit'>;
 
-/** 模式的中文名（/meta 的 policy_modes）；下面的说明是界面文案：一句短的跟在模式下面，补充的放进「(i)」 */
+/** 模式的中文名（/meta 的 policy_modes）；下面的说明是界面文案，放进模式旁的「(i)」 */
 export const modeLabel = (m: string) => meta().policy_modes[m] ?? m;
-export const MODE_HINT: Record<PolicyMode, string> = {
+export const MODE_INFO: Record<PolicyMode, string> = {
   observe: '只记录访问，不拦截',
-  allowlist: '只放行名单内的域名',
+  allowlist: '只放行名单内的域名，其余一律阻止',
   denylist: '只阻止名单内的域名',
-  blocked: '暂停新连接',
+  blocked: '已经建立的连接不受影响，新连接一律拒绝',
   inherit: '使用所在团队的设置',
 };
-export const MODE_INFO: Partial<Record<PolicyMode, string>> = { blocked: '已经建立的连接不受影响，新连接一律拒绝' };
 
 export interface PolicyBody { mode: PolicyMode; domains: string[]; note: string }
 export interface ScopePolicy extends PolicyBody {
@@ -51,7 +50,10 @@ export interface VersionRelay {
 export interface PolicyVersion {
   id: string; seq: number; kind: 'publish' | 'rollback'; rollback_of_seq: number | null; actor: string; created_at: string;
   status: VersionStatus; changes: PolicyChange[]; relays: VersionRelay[];
+  /** is_latest：最新一版（即当前生效的）；is_current：内容与当前相同（不可回滚） */
   is_latest: boolean; is_current: boolean; rollbackable: boolean;
+  /** 回滚到它会改什么（当前 → 这个版本）；is_current 时为空 */
+  rollback_changes: PolicyChange[];
 }
 
 /** 草稿 / 发布由 policies 事件、范围树里的节点由机器与目录事件失效（见 queries.ts 的 eventKeys），不按时间过期 */

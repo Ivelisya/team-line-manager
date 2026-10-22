@@ -296,9 +296,11 @@ impl Filter {
     }
 }
 
-/// 用户输入 → ilike 模式
+/// 用户输入 → ilike 模式。开头的「*.」当后缀匹配（只留「.」）：小时汇总存的是合并后的「*.example.com」，
+/// 原始记录存真实主机名，照字面搜「*」原始记录永远是 0 条，各页签对不上
 pub fn like_pattern(s: &str) -> Option<String> {
     let s = s.trim();
+    let s = s.strip_prefix('*').filter(|r| r.starts_with('.')).unwrap_or(s);
     if s.is_empty() {
         return None;
     }
@@ -853,6 +855,9 @@ mod tests {
     fn like_escapes() {
         assert_eq!(like_pattern("  "), None);
         assert_eq!(like_pattern("a_b%c").as_deref(), Some("%a\\_b\\%c%"));
+        // 开头的「*.」是后缀匹配：同时命中汇总里的「*.edge.net」和原始记录里的「x1.edge.net」
+        assert_eq!(like_pattern(" *.edge.net").as_deref(), Some("%.edge.net%"));
+        assert_eq!(like_pattern("a*b").as_deref(), Some("%a*b%"));
     }
 
     #[test]
