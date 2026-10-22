@@ -74,17 +74,20 @@ function ChartCard({ c, icon, title, meta, value, caption, tools, children }: { 
 
 const AVAIL_DAYS = 30;
 const AVAIL_TIP = `近 ${AVAIL_DAYS} 天全部探测的成功率：TCP 是线路机到节点的 TCP 握手，出口是经入口访问外网的验证`;
-/** 近 30 天可用率：每天一格（旧→新，最后一格是今天），按 TCP 与出口里较差的一种定色，悬停看当天的成功率与次数；标题旁是整段的成功率。
+/** 近 30 天可用率：每天一格（旧→新，最后一格是今天），按 TCP 与出口里较差的一种定色，悬停看当天的成功率与次数；
+ *  格条上方左边是整段的成功率、右边是时间窗（同卡片上「入口连通 · 近 1 小时」的写法）。
  *  只依赖机器 id 与是否线路机：实时推送重渲染页签时不跟着重画 */
 const AvailabilitySection = React.memo(function AvailabilitySection({ id, relay }: { id: string; relay: boolean }) {
   const q = useAvailability(id, AVAIL_DAYS);
   const d = q.data;
-  const total = d && (d.tcp_pct == null && d.egress_pct == null ? '—' : `TCP ${successPct(d.tcp_pct)} · 出口 ${successPct(d.egress_pct)}`);
+  const tip = relay ? `${AVAIL_TIP}；这里是挂在这台线路机上所有入口的合计` : AVAIL_TIP;
+  const caption = !d ? '加载中…' : d.tcp_pct == null && d.egress_pct == null ? '没有探测'
+    : <span data-tip={tip}>TCP <b>{successPct(d.tcp_pct)}</b> · 出口 <b>{successPct(d.egress_pct)}</b></span>;
   return (
     <Section>
-      <SectionHeader title={`近 ${AVAIL_DAYS} 天可用率`} meta={total && <span data-tip={relay ? `${AVAIL_TIP}；这里是挂在这台线路机上所有入口的合计` : AVAIL_TIP}>{total}</span>} />
+      <SectionHeader title="可用率" />
       {q.isError ? <ErrorNote error={q.error} onRetry={() => void q.refetch()}>可用率加载失败：</ErrorNote>
-        : <Beat n={AVAIL_DAYS} cells={d ? availCells(d.items) : []} titles={d && availTitles(d.items)} caption={`${AVAIL_DAYS} 天前`} win="今天" stale={!d} />}
+        : <Beat n={AVAIL_DAYS} cells={d ? availCells(d.items) : []} titles={d && availTitles(d.items)} caption={caption} win={`近 ${AVAIL_DAYS} 天 · 每天一格`} stale={!d} />}
     </Section>
   );
 });
