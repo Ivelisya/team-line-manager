@@ -3,7 +3,9 @@
 //! 回滚 = 发新档把值改回去再重做。选值依据与每一项的理由见 docs/DESIGN.md §3「系统调优」。
 //!
 //! 远端脚本逐键直接写 `/proc/sys/…` 再读回，只把读回一致的键写进 `/etc/sysctl.d/99-zz-fleet-tune.conf`（容器里写不了的键不进文件，
-//! 开机时也不报错）。逐键结果就是核对凭据，原样存进步骤结果（`parse`）。
+//! 开机时也不报错）。`nf_conntrack_max` 存在（模块已加载）时另写 `/etc/modules-load.d/90-fleet-conntrack.conf`：开机时
+//! systemd-modules-load 先于 systemd-sysctl 载入 nf_conntrack，这个键才设得上（不然要等防火墙规则加载才有，设置就丢了）。
+//! 逐键结果就是核对凭据，原样存进步骤结果（`parse`）。
 
 use serde_json::{json, Value};
 
@@ -47,17 +49,26 @@ const fn k(key: &'static str, val: &'static str, at_least: bool, only: For) -> K
 /// 线路机的 ip_local_reserved_ports 目标值是渲染时代入的入口端口池（见 `reserved`）
 const RESERVED: &str = "@reserved@";
 
-/// 要保留的本地端口：入口端口池，加上各入口的回环探测入站端口（入口端口 + 10000，见 agent xray/render.rs 的 probe_ports）。
-/// 写成内核读回的格式（相邻或重叠的段合并成一段），读回才对得上
+/// 线路机上 Xray API 的监听端口（127.0.0.1），同 agent xray/render.rs 的 API_PORT：本地端口范围放宽到 65535 后要保留，
+/// 免得 Xray 重启那几秒里被本机出站连接占去、Xray 绑不上
+const XRAY_API_PORT: i32 = 62789;
+
+/// 要保留的本地端口：入口端口池，加上各入口的回环探测入站端口（入口端口 + 10000，见 agent xray/render.rs 的 probe_ports）与 Xray API 端口。
+/// 写成内核读回的格式（按端口排序，相邻或重叠的段合并成一段，单个端口不写成段），读回才对得上
 fn reserved(min: i32, max: i32) -> String {
-    let (pmin, pmax) = (min + 10000, (max + 10000).min(65535));
-    if pmin > 65535 {
-        format!("{min}-{max}")
-    } else if pmin <= max + 1 {
-        format!("{min}-{}", pmax.max(max))
-    } else {
-        format!("{min}-{max},{pmin}-{pmax}")
+    let mut segs = vec![(min, max), (XRAY_API_PORT, XRAY_API_PORT)];
+    if min + 10000 <= 65535 {
+        segs.push((min + 10000, (max + 10000).min(65535)));
     }
+    segs.sort();
+    let mut merged: Vec<(i32, i32)> = vec![];
+    for (a, b) in segs {
+        match merged.last_mut() {
+            Some(last) if a <= last.1 + 1 => last.1 = last.1.max(b),
+            _ => merged.push((a, b)),
+        }
+    }
+    merged.iter().map(|&(a, b)| if a == b { a.to_string() } else { format!("{a}-{b}") }).collect::<Vec<_>>().join(",")
 }
 
 /// 顺序就是应用顺序：ip_local_reserved_ports 要先于 ip_local_port_range 写
@@ -126,6 +137,12 @@ done <<'KNOBS'
 __KNOBS__
 KNOBS
 if cmp -s $CONF.tmp $CONF; then rm -f $CONF.tmp; else mv $CONF.tmp $CONF || exit 1; fi
+if [ -e $PS/net/netfilter/nf_conntrack_max ]; then
+  M=/etc/modules-load.d/90-fleet-conntrack.conf
+  install -d -m 755 /etc/modules-load.d || exit 1
+  printf '%s\n' '# fleet __PROFILE__（中控生成，勿手改）' nf_conntrack > $M.tmp || exit 1
+  if cmp -s $M.tmp $M; then rm -f $M.tmp; else mv $M.tmp $M || exit 1; fi
+fi
 rm -f /etc/sysctl.d/90-fleet-bbr.conf
 J=/etc/systemd/journald.conf.d/90-fleet.conf
 install -d -m 755 /etc/systemd/journald.conf.d || exit 1
@@ -252,16 +269,20 @@ mod tests {
     #[test]
     fn relay_script_reserves_the_entry_port_pool_before_the_port_range() {
         let s = script(RELAY);
-        // 入口端口池 20000-29999 与回环探测入站 30000-39999 相邻，合成一段
-        let (res, range) = (s.find("= net.ipv4.ip_local_reserved_ports 20000-39999\n").unwrap(), s.find("= net.ipv4.ip_local_port_range 10240 65535\n").unwrap());
+        // 入口端口池 20000-29999 与回环探测入站 30000-39999 相邻，合成一段；Xray API 端口单独一个
+        let (res, range) = (s.find("= net.ipv4.ip_local_reserved_ports 20000-39999,62789\n").unwrap(), s.find("= net.ipv4.ip_local_port_range 10240 65535\n").unwrap());
         assert!(res < range, "先保留入口端口池，再放宽本地端口范围");
         assert!(s.contains(">= net.netfilter.nf_conntrack_max 262144\n") && !s.contains("nf_conntrack_max 131072"));
         assert!(s.contains("tcp_tw_reuse 1\n") && s.contains("show -p LimitNOFILE --value fleet-xray "));
         assert!(!s.contains("__") && !s.contains(RESERVED));
         // 入口端口池按这台线路机自己的来
         let s = script(Role::Relay { port_min: 21000, port_max: 21999 });
-        assert!(s.contains("= net.ipv4.ip_local_reserved_ports 21000-21999,31000-31999\n"));
-        assert_eq!((reserved(60000, 65000), reserved(20000, 35000)), ("60000-65000".into(), "20000-45000".into()));
+        assert!(s.contains("= net.ipv4.ip_local_reserved_ports 21000-21999,31000-31999,62789\n"));
+        // API 端口落在端口池里、紧挨着探测入站段
+        assert_eq!(
+            (reserved(60000, 65000), reserved(20000, 35000), reserved(42000, 52788), reserved(40000, 49999)),
+            ("60000-65000".into(), "20000-45000,62789".into(), "42000-62789".into(), "40000-59999,62789".into())
+        );
     }
 
     #[test]
