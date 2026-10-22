@@ -136,7 +136,7 @@ export function quotaTight(list: MachineView[]) {
   }
   return { n, top: top && { name: top.name, pct: Math.floor(top.pct) } };
 }
-/** 资源占用的告警色（CPU / 内存 / 磁盘 / 负载的进度条、圆环、迷你条共用）：阈值按指标取 meta.thresholds.usage（bad 红、warn 黄） */
+/** 资源占用的告警色（CPU / 内存 / 磁盘 / 负载的格条、圆环、迷你条共用）：阈值按指标取 meta.thresholds.usage（bad 红、warn 黄） */
 export const usageTone = (pct: number | null | undefined, metric: UsageMetric) => {
   if (pct == null) return undefined;
   const t = meta().thresholds.usage[metric];

@@ -166,23 +166,18 @@
 .fchip[aria-pressed="true"] .fchip-count { color: var(--accent-soft-fg); }
 .fchip.is-zero, .fchip.is-zero .fchip-count { color: var(--fg-3); }
 
-/* ========== 连通细条 Beat（资源条、额度条在 home.css 的 .bar） ========== */
+/* ========== 心跳条 Beat（资源格条、额度格条在 home.css 的 .cells） ========== */
 .beat { display: grid; gap: var(--sp-6); min-width: 0; }
 .beat-cap { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-8); font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); white-space: nowrap; min-width: 0; }
 .beat-cap b { font: var(--fw-semibold) var(--fs-label) / var(--lh-label) var(--font-sans); font-variant-numeric: var(--num-variant); color: var(--fg); }
 .beat-main { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .beat-win { flex: none; font-size: var(--fs-micro); line-height: var(--lh-micro); }
-/* 一条连续的细条（用户：不要一格一格的方块）：每个时段仍是一个元素，按时间位置铺开、无缝相接，异常时段着色；
-   每段上下各伸出 5px 的透明命中区，细条也好悬停看这一段的说明 */
-.beat-cells { display: flex; width: 100%; height: 6px; border-radius: 3px; background: var(--cell-off); }
-.beat-cells > i { position: relative; display: block; flex: 1 1 0; min-width: 0; height: 100%; } /* 换色不过渡 */
-.beat-cells > i::after { content: ""; position: absolute; inset: -5px 0; }
-.beat-cells > i:first-child { border-radius: 3px 0 0 3px; }
-.beat-cells > i:last-child { border-radius: 0 3px 3px 0; }
+.beat-cells { display: flex; gap: var(--beat-gap); width: 100%; overflow: hidden; height: var(--beat-h); }
+.beat-cells > i { display: block; flex: 1 1 0; min-width: 2px; max-width: var(--beat-w-max); height: var(--beat-h); background: var(--line); border-radius: 2px; } /* 换色不过渡（同 .cells） */
 .beat-cells > i[data-t="ok"] { background: var(--latency-ok); }
 .beat-cells > i[data-t="warn"] { background: var(--warn); }
 .beat-cells > i[data-t="bad"] { background: var(--bad); }
-.beat.is-stale .beat-cells > i { background: none; }
+.beat.is-stale .beat-cells > i { background: transparent; box-shadow: inset 0 0 0 1px var(--line-strong); }
 
 /* ========== 面板 / 分段 / 标签-值 / 提示条 ========== */
 .panel { min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); overflow: clip; box-shadow: var(--shadow-card); }

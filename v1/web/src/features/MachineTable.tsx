@@ -5,8 +5,9 @@ import * as F from '@/lib/format';
 import { isQuiet, liveRate, monthTraffic, quota, quotaGb, remainingValue, resourceMeters } from '@/lib/derive';
 import { Due, Flag, HostTag, Num, StatusMark, type SortState } from '@/components/app/primitives';
 import { MachineGrid, byNum, byStr, sortByCol, type Col } from '@/components/app/MachineGrid';
-import { Bar, MiniMeter, QUOTA_FILL } from '@/components/app/viz';
+import { Cells, MiniMeter, quotaColors } from '@/components/app/viz';
 
+const Q8 = quotaColors(8);
 // 数据过期（isQuiet）的机器读数显示 “—”，排序也按 −1（和速率一样排到最后）
 const cpuPct = (m: MachineView) => (!isQuiet(m) && m.host?.cpu_pct != null ? m.host.cpu_pct : -1);
 const memPct = (m: MachineView) => (!isQuiet(m) && m.host?.mem_total ? (m.host.mem_used ?? 0) / m.host.mem_total : -1);
@@ -32,7 +33,7 @@ const cols: Col[] = [
     cell: (m) => { const r = liveRate(m); const v = r && (k === 'up' ? r.tx : r.rx); return <span className="trate" data-speed={r ? F.speedOf(v) : undefined}><Num f={F.rate(v)} /></span>; } })),
   { id: 'traffic', header: '本月业务流量', size: 112, r: true, ...byNum((m) => { const t = monthTraffic(m); return t.up + t.down; }), cell: (m) => { const t = monthTraffic(m); return <Num f={F.bytes(t.up + t.down)} />; } },
   { id: 'quota', header: '剩余流量', size: 106, ...byNum((m) => quota(m).rem ?? Infinity),
-    cell: (m) => { const q = quota(m); return <span className="tquota" data-tip={`本周期已用 ${F.str(quotaGb(q.used))}（${q.start.slice(5)} 起）${q.shared ? '，额度与宿主机共用' : ''}`}>{q.rem != null && <Bar pct={q.pct} gradient={QUOTA_FILL} />}{q.rem == null ? <span className="t-sub">{q.shared ? '与宿主机共用' : '不限'}</span> : q.rem > 0 ? <Num f={quotaGb(q.rem)} /> : <span className="due" data-tone="bad">已超限</span>}</span>; } },
+    cell: (m) => { const q = quota(m); return <span className="tquota" data-tip={`本周期已用 ${F.str(quotaGb(q.used))}（${q.start.slice(5)} 起）${q.shared ? '，额度与宿主机共用' : ''}`}>{q.rem != null && <Cells pct={q.pct} n={8} colors={Q8} />}{q.rem == null ? <span className="t-sub">{q.shared ? '与宿主机共用' : '不限'}</span> : q.rem > 0 ? <Num f={quotaGb(q.rem)} /> : <span className="due" data-tone="bad">已超限</span>}</span>; } },
   { id: 'due', header: '到期', size: 96, r: true, ...byNum((m) => m.subscription?.due_days ?? 1e9, 'asc'), cell: (m) => (m.subscription ? <Due days={m.subscription.due_days} state={m.subscription.due_state} /> : <span className="t-muted">—</span>) },
   { id: 'value', header: '剩余价值', size: 76, r: true, drop: 2, ...byNum((m) => remainingValue(m.subscription)?.cents ?? -1), cell: (m) => { const v = remainingValue(m.subscription); return v ? <span className="num">{F.money(v.cents, v.currency)}</span> : <span className="t-muted">—</span>; } },
   { id: 'fee', header: '月费', size: 72, r: true, drop: 1, cell: (m) => monthly(m) ?? <span className="t-muted">—</span> },
