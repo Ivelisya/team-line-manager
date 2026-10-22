@@ -127,7 +127,9 @@ async fn shortening_deletes_expired_rows_everywhere_lengthening_keeps_them() {
     let ago = |d: i64| now - Duration::days(d);
     let hour_ago = |d: i64| floor_hour(now) - Duration::days(d);
 
-    // 原始记录：2 天前、5 天前（分区在 common_mon::setup 里建好了）
+    // 原始记录：现在、2 天前、5 天前（分区在 common_mon::setup 里建好了）。要有现在的：删过期分区前先拿表里最新的数据核对本机时钟
+    // （db::drop_before），最新的离现在超过一天就不删
+    put_events(&t, e1, now, Some("1.1.1.1"), "now.example.com", 1, false).await;
     put_events(&t, e1, ago(2), Some("1.1.1.2"), "two.example.com", 1, false).await;
     put_events(&t, e1, ago(5), Some("1.1.1.5"), "five.example.com", 1, false).await;
     // 小时汇总、来源小时汇总：2 / 5 / 10 / 20 / 40 天前（40 天的超出现在默认的 31 天，用来看改长后不误删）
@@ -214,7 +216,7 @@ async fn shortening_deletes_expired_rows_everywhere_lengthening_keeps_them() {
         }
         v
     };
-    let all = vec![2, 5, 5, 4, 4, 4, 4, 16, 1, 4, 1, 4];
+    let all = vec![3, 5, 5, 4, 4, 4, 4, 16, 1, 4, 1, 4];
     assert_eq!(counts().await, all);
 
     // 改长（14 天原始记录、60 天汇总）：一条都不删，包括超出原来 31 天、在新期限内的
@@ -229,7 +231,7 @@ async fn shortening_deletes_expired_rows_everywhere_lengthening_keeps_them() {
     assert_eq!(s, StatusCode::OK);
     wait_count(&t, "select count(*) from incident where rule like 'ipintel!_%' escape '!' and state = 'resolved'", 2).await;
     // 原始记录：5 天前的整天分区删了；汇总：只剩 14 天以内的；来源画像各维度同（学习期 7 天，比汇总短）；在告警中的、别的告警不动
-    assert_eq!(counts().await, vec![1, 3, 3, 2, 2, 2, 2, 8, 1, 2, 1, 4]);
+    assert_eq!(counts().await, vec![2, 3, 3, 2, 2, 2, 2, 8, 1, 2, 1, 4]);
     assert!(partition(&t, 2).await && !partition(&t, 5).await, "5 天前的分区删掉，2 天前的留着");
     let left: Vec<String> = sqlx::query_scalar("select dest_host from access_target_seen order by 1").fetch_all(db).await.unwrap();
     assert_eq!(left, ["seen10.example.com", "seen5.example.com"]);
@@ -240,7 +242,7 @@ async fn shortening_deletes_expired_rows_everywhere_lengthening_keeps_them() {
     let (s, v) = put(&t, 1, 3).await;
     assert_eq!((s, v["data"]["profile_days"].as_i64()), (StatusCode::OK, Some(7)));
     wait_count(&t, "select count(*) from incident where rule like 'ipintel!_%' escape '!' and state = 'resolved'", 1).await;
-    assert_eq!(counts().await, vec![0, 1, 1, 0, 0, 0, 0, 4, 1, 1, 1, 4]);
+    assert_eq!(counts().await, vec![1, 1, 1, 0, 0, 0, 0, 4, 1, 1, 1, 4]);
     assert!(!partition(&t, 2).await);
     let left: Vec<String> = sqlx::query_scalar("select value from node_source_seen where flag is null order by 1").fetch_all(db).await.unwrap();
     assert_eq!(left, ["city-5", "conn_type-5", "ip-5", "isp-5"], "5 天前的来源画像还在学习期以内");
