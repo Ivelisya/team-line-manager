@@ -58,17 +58,20 @@ export function HomePage() {
   const ov = useOverview();
   const { id: openId, open } = useDrawer();
   const [sp, upd] = useUrlState();
-  const layout = LAYOUTS.includes(sp.get('view') as Layout) ? sp.get('view') as Layout : prefOf(P_LAYOUT, 'cards', LAYOUTS);
-  const view = DENSITIES.includes(sp.get('density') as CardView) ? sp.get('density') as CardView : prefOf(P_VIEW, 'large', DENSITIES);
-  const rawSort = sp.get('sort') ?? prefs.get(P_SORT) ?? 'default';
+  // 本地偏好只在打开首页时读一次 localStorage（实时推送每次重渲染都读没必要）；之后改选择时 setL / setV / setSort 同步改这份，
+  // 地址参数被清掉（再点一次侧栏的首页）时退回的是最近的选择
+  const [saved] = React.useState(() => ({ layout: prefOf(P_LAYOUT, 'cards', LAYOUTS), view: prefOf(P_VIEW, 'large', DENSITIES), sort: prefs.get(P_SORT) ?? 'default' }));
+  const layout = LAYOUTS.includes(sp.get('view') as Layout) ? sp.get('view') as Layout : saved.layout;
+  const view = DENSITIES.includes(sp.get('density') as CardView) ? sp.get('density') as CardView : saved.view;
+  const rawSort = sp.get('sort') ?? saved.sort;
   const sort = React.useMemo(() => homeSort(rawSort), [rawSort]);
   // 分组：线路机一组用 kind=relay，团队用 team=<id>（同机器页的筛选参数名）
   const team = sp.get('kind') === 'relay' ? 'relay' : sp.get('team') ?? 'all';
   const onlyIssues = sp.get('issues') === '1';
   // 写地址的同时记成本地偏好（下次没带参数打开时用）
-  const setL = React.useCallback((v: Layout) => { prefs.set(P_LAYOUT, v); upd({ view: v }); }, [upd]);
-  const setV = React.useCallback((v: CardView) => { prefs.set(P_VIEW, v); upd({ density: v }); }, [upd]);
-  const setSort = React.useCallback((s: SortState | null) => { const v = sortStr(s); prefs.set(P_SORT, v); upd({ sort: v }); }, [upd]);
+  const setL = React.useCallback((v: Layout) => { prefs.set(P_LAYOUT, v); saved.layout = v; upd({ view: v }); }, [upd, saved]);
+  const setV = React.useCallback((v: CardView) => { prefs.set(P_VIEW, v); saved.view = v; upd({ density: v }); }, [upd, saved]);
+  const setSort = React.useCallback((s: SortState | null) => { const v = sortStr(s); prefs.set(P_SORT, v); saved.sort = v; upd({ sort: v }); }, [upd, saved]);
   const pickSort = React.useCallback((v: string) => { if (v !== 'custom') setSort(homeSort(v)); }, [setSort]);
   useProbeBeatsPoll(layout === 'cards'); // 卡片心跳条每 2 分钟刷新：全页一个轮询
 
