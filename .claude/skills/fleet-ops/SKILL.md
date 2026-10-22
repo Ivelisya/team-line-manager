@@ -1,6 +1,6 @@
 ---
 name: fleet-ops
-description: 团队线路管理（fleet）的运维入口。查节点或线路机状态、排查告警、处理到期与续费提醒（看订阅、登记续费、改订阅）、维护前开维护窗口或静默告警（可预约）、看服务日志、在节点上执行命令、上架新机器、退役或删除机器、改名与编号、升级 agent、取入口分享链接时使用；一律先用 fleetctl，不要直接 ssh、psql 或手拼 curl。
+description: 团队线路管理（fleet）的运维入口。查节点或线路机状态、排查告警、处理到期与续费提醒（看订阅、登记续费、改订阅）、维护前开维护窗口或静默告警（可预约）、看服务日志、在节点上执行命令、登录机器或软路由、上架新机器、退役或删除机器、改名与编号、升级 agent、取入口分享链接时使用，在中控上运维也用它；一律先用 fleetctl（登录用 fleetctl ssh），不要直接 ssh、psql 或手拼 curl。
 ---
 
 # fleet-ops
@@ -14,11 +14,29 @@ fleetctl whoami            # 确认连得上，并看本密钥的 scopes
 fleetctl --json <命令>      # AI 一律加 --json，输出一行 JSON
 ```
 
-- 配置：环境变量 `FLEET_URL`、`FLEET_TOKEN`，或 `fleetctl login --url <地址>`（密钥从标准输入读一行，如 `< 密钥文件`；`--token <密钥>` 仍可用，但会留在 shell 历史与进程列表里）。实验室中控是 `http://192.168.31.60:8080`。
+- 配置：在中控上已经配好（见下文「在中控上运维」）。别处用环境变量 `FLEET_URL`、`FLEET_TOKEN`，或 `fleetctl login --url <地址>`（密钥从标准输入读一行，如 `< 密钥文件`；`--token <密钥>` 仍可用，但会留在 shell 历史与进程列表里）。实验室中控是 `http://192.168.31.60:8080`。
 - `--json` 的 `ls` / `entries` / `incidents` / `policy ls` / `silence` 是与表格同列的精简对象（字段见文末速查），一台机器的完整视图用 `show`、一个团队或节点的完整策略用 `policy show`；`billing` 是订阅、流量额度与最近续费记录合成的对象；其余命令是 API 的 data 原样。机器上百台时 `ls` 仍有几万字符，先用 `--team` / `--kind` / `--status` 缩小。
 - 成功退出码 0；失败退出码 1，错误 JSON 在 stderr（`{"error":{"code","message","status"}}`）。`exec` 单台时退出码等于远端命令的退出码。`job` / `job --follow`（以及各命令的 `--follow`）遇到作业失败或取消也退出 1，stderr 给 `{"error":{"code":"job_failed"|"job_cancelled","message",…}}`。
 - 没拿到中控响应时 `status` 为 null、`code` 是 `unreachable`（连不上，请求没发出去，可直接重试；`message` 带最底层原因）或 `timeout`（请求已发出、等响应超时）。`timeout` 时操作可能已在中控执行：先 `fleetctl --json jobs --active` / `fleetctl --json audit --limit 10` 核对，再决定是否重试，尤其是上架、退役、换线路机这类会建作业的命令。
 - `<机器>` 写机器 id、显示名（`团队1-06`）、线路机名（`线路机2`）或 IP。歧义时命令报错并列出候选，照候选里的 id 重试。
+
+## 在中控上运维
+
+用户 ssh 进中控（root）后，本机 fleetctl 已配好全权密钥 central-local（部署时 `fleet-server local-admin` 建，令牌在 /root/.config/fleetctl/config.toml）：不用 login、不用令牌，`whoami` 显示 `apikey:central-local` 与全部 scopes。权限是全的，下文「先向用户确认」的操作照样先确认。
+
+登录机器或软路由（只在中控上能用：要读中控的私钥 /etc/fleet/ssh/id_ed25519，root 才行）：
+
+```
+fleetctl ssh <机器>                                        # 交互式
+fleetctl ssh <机器> -- 'journalctl -u fleet-agent -n 50'    # 执行完退出，退出码同远端（ssh 自己失败是 255）
+fleetctl ssh router <名称> [-- 'logread | tail -50']        # 软路由（OpenWrt / iStoreOS，shell 是 ash）
+```
+
+- 用中控的密钥、只认中控记下的主机指纹（机器 /var/lib/fleet/known_hosts，软路由 /var/lib/fleet/router_known_hosts）；同机 IP 节点登录的是宿主机。软路由还没接入过（pending）登录不了，离线时多半连不上。
+- 每次登录记审计 `ssh.login`（谁、哪台、带没带命令；命令内容不记）。单条命令用 `exec`：命令全文进审计、输出有上限；交互式操作、超过 10 分钟或 256 KiB 输出的才用 ssh。
+- 带命令时标准输入照样转给远端（同 ssh）：在循环或 heredoc 脚本里调用时加 `</dev/null`。
+- 软路由现有的登录与监听配置保持原样：root 密码、dropbear、LuCI、OpenClash 的 external-controller 与 secret、router-tunnel。
+- 换 central-local：`/opt/fleet/fleet-server local-admin -c /etc/fleet/fleet.toml --rotate`（旧的立即失效）。
 
 ## 先看，再动
 
@@ -153,5 +171,6 @@ fleetctl settings retention [--raw 7] [--hourly 31] --yes   # 访问记录保留
 - `retire --json`：`{job_id, ip_node_jobs:[{machine_id,name,job_id}]}`，后者是一并退役的同机 IP 节点各自的退役作业。
 - `upgrade-agent --all --json`：`{jobs:[{machine_id,name,kind,job_id,after}], skipped:[{machine_id,name,reason}], order}`；`jobs` 按执行顺序，第一个是金丝雀，`after` 是它要等的作业（等的那个换上新版本后失败、或被取消，它就被取消）；`order` 是顺序说明，原样转述给用户。中控上没有 agent 程序时报错（409），不建作业。
 - `exec`：`exit_code stdout stderr duration_ms truncated timed_out`；多台时是这些字段加 `machine` 的数组，某台没执行成（请求被拒、连不上）时那一项是 `{machine,id,exit_code:null,error:{code,message,status}}`。
+- `ssh`：没有 JSON 输出（终端交给 ssh，输出是远端的原样），退出码同远端；登录之前的错误（找不到机器、不在中控上、审计没记上）照常是 stderr 的错误 JSON、退出码 1。
 
 完整接口见仓库 `docs/API.md`，运维流程与何时才需要直接 ssh 见 `docs/OPS.md`。
