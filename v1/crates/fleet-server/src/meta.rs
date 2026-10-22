@@ -223,6 +223,9 @@ pub const DEFAULT_TRAFFIC_RESET: &str = "month";
 /// 访问策略的模式（团队 / 节点）；inherit 只用于节点：跟随团队
 pub const POLICY_MODES: Labels = &[("observe", "仅观察"), ("allowlist", "白名单"), ("denylist", "黑名单"), ("blocked", "暂停新连接"), ("inherit", "跟随团队")];
 
+/// 策略版本在各线路机上的同步状态（gone：线路机已退役）
+pub const POLICY_SYNC_STATES: Labels = &[("applied", "已应用"), ("applying", "进行中"), ("failed", "失败"), ("gone", "已退役")];
+
 pub const DUE_STATES: Labels = &[("ok", "未到期"), ("soon", "即将到期"), ("overdue", "已过期")];
 
 /// 告警规则的中文名（告警、通知、静默、网页、fleetctl 同一套）
@@ -290,6 +293,7 @@ pub fn to_json() -> Value {
         "traffic_resets": map(TRAFFIC_RESETS),
         "due_states": map(DUE_STATES),
         "policy_modes": map(POLICY_MODES),
+        "policy_sync_states": map(POLICY_SYNC_STATES),
         "rules": map(RULES),
         "thresholds": {
             "traffic_quota_warn_pct": QUOTA_WARN_PCT,

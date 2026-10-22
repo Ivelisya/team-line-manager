@@ -422,10 +422,11 @@ function ChangeList({ changes }: { changes: PolicyChange[] }) {
 }
 
 /* ================================================================ 发布记录 */
-const STATUS: Record<VersionStatus | 'gone', { label: string; tone: Tone; dot?: 'pulse' }> = {
-  applied: { label: '已应用', tone: 'ok' }, applying: { label: '进行中', tone: 'info', dot: 'pulse' }, failed: { label: '失败', tone: 'bad' }, gone: { label: '已退役', tone: 'neutral' },
+/** 同步状态的色调（样式）；中文名在 /meta 的 policy_sync_states */
+const STATUS: Record<VersionStatus | 'gone', { tone: Tone; dot?: 'pulse' }> = {
+  applied: { tone: 'ok' }, applying: { tone: 'info', dot: 'pulse' }, failed: { tone: 'bad' }, gone: { tone: 'neutral' },
 };
-const StatusPill = ({ s }: { s: VersionStatus | 'gone' }) => <Pill tone={STATUS[s].tone} dot={STATUS[s].dot}>{STATUS[s].label}</Pill>;
+const StatusPill = ({ s }: { s: VersionStatus | 'gone' }) => <Pill tone={STATUS[s].tone} dot={STATUS[s].dot}>{meta().policy_sync_states[s] ?? s}</Pill>;
 
 function VersionsPanel() {
   const q = usePolicyVersions();

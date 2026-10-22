@@ -32,6 +32,7 @@ pub fn test_init() {
         "traffic_resets": {"month": "自然月", "billing": "账单日"},
         "entry_states": {"pending": "应用中", "active": "运行中", "disabled": "已停用", "removing": "移除中", "removed": "已移除"},
         "severities": {"critical": {"label": "严重"}, "warning": {"label": "警告"}, "info": {"label": "提示"}},
+        "policy_sync_states": {"applied": "已应用", "applying": "进行中", "failed": "失败", "gone": "已退役"},
         "policy_modes": {"observe": "仅观察", "allowlist": "白名单", "denylist": "黑名单", "blocked": "暂停新连接", "inherit": "跟随团队"},
     })));
 }

@@ -351,8 +351,9 @@ enum Cmd {
     },
     /// 订阅：费用、到期日、提醒、账单时区、流量上限（看用 billing）
     Subscription {
+        // 装箱：参数多，免得整个 Cmd 跟着变大（clippy large_enum_variant）
         #[command(subcommand)]
-        cmd: SubscriptionCmd,
+        cmd: Box<SubscriptionCmd>,
     },
     /// 告警
     Incidents {
@@ -718,23 +719,25 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Renew { machine, to, cycles, amount, note, yes } => {
             billing::renew(x, billing::RenewOpts { machine: &machine, to: to.as_deref(), cycles, amount: amount.as_deref(), note: note.as_deref(), yes })
         }
-        Cmd::Subscription { cmd: SubscriptionCmd::Set { machine, price, currency, cycle, due, auto_renew, remind_days, tz, traffic_gb, reset_day, used, yes } } => billing::subscription_set(
-            x,
-            billing::SubSetOpts {
-                machine: &machine,
-                price: price.as_deref(),
-                currency: currency.as_deref(),
-                cycle: cycle.as_deref(),
-                due: due.as_deref(),
-                auto_renew,
-                remind_days: remind_days.as_deref(),
-                tz: tz.as_deref(),
-                traffic_gb: traffic_gb.as_deref(),
-                reset_day: reset_day.as_deref(),
-                used: used.as_deref(),
-                yes,
-            },
-        ),
+        Cmd::Subscription { cmd } => match *cmd {
+            SubscriptionCmd::Set { machine, price, currency, cycle, due, auto_renew, remind_days, tz, traffic_gb, reset_day, used, yes } => billing::subscription_set(
+                x,
+                billing::SubSetOpts {
+                    machine: &machine,
+                    price: price.as_deref(),
+                    currency: currency.as_deref(),
+                    cycle: cycle.as_deref(),
+                    due: due.as_deref(),
+                    auto_renew,
+                    remind_days: remind_days.as_deref(),
+                    tz: tz.as_deref(),
+                    traffic_gb: traffic_gb.as_deref(),
+                    reset_day: reset_day.as_deref(),
+                    used: used.as_deref(),
+                    yes,
+                },
+            ),
+        },
         Cmd::Incidents { all, machine } => cmds::incidents(x, all, machine.as_deref()),
         Cmd::Ack { id } => cmds::ack(x, &id),
         Cmd::Silence { cmd } => match cmd {

@@ -12,15 +12,8 @@ pub const MODES: [&str; 5] = ["observe", "allowlist", "denylist", "blocked", "in
 /// 策略模式的中文名（中控 /meta 的 policy_modes）
 fn mode_cn(m: &str) -> &str { crate::meta::label("policy_modes", m) }
 
-fn status_cn(s: &str) -> &'static str {
-    match s {
-        "applied" => "已应用",
-        "applying" => "进行中",
-        "failed" => "失败",
-        "gone" => "已退役",
-        _ => "?",
-    }
-}
+/// 策略版本在线路机上的同步状态（中控 /meta 的 policy_sync_states）
+fn status_cn(s: &str) -> &str { crate::meta::label("policy_sync_states", s) }
 
 fn n(v: &Value, ptr: &str) -> i64 { v.pointer(ptr).and_then(Value::as_i64).unwrap_or(0) }
 
