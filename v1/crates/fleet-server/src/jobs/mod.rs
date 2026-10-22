@@ -503,7 +503,7 @@ pub async fn advance(st: &AppState, mut job: JobRow, owner: &str) -> anyhow::Res
 /// 要等的那个也是这样停下的（`halted`），就沿用它的原因：一路都指向最先失败的那台
 async fn halted(st: &AppState, job: &JobRow) -> sqlx::Result<Option<String>> {
     let Some(after) = job.params["after"].as_str().and_then(|s| Uuid::try_parse(s).ok()) else { return Ok(None) };
-    let prev: Option<(String, Option<String>, bool, bool, Option<String>)> = sqlx::query_as(
+    let prev = sqlx::query_as::<_, (String, Option<String>, bool, bool, Option<String>)>(
         "select p.state::text, p.error, p.params ? 'halted', p.params ? 'after', display_name(m.kind::text, m.label, t.name, m.number)
          from job p left join machine m on m.id = p.target_id left join team t on t.id = m.team_id where p.id = $1",
     )
