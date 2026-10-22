@@ -441,7 +441,7 @@ async fn baseline_restarts_sshd_older_than_its_config() {
 
 /// 节点的 ssserver 重跑时以运行中的实例为准：换上新密码之后没来得及重启就被打断（配置比实例新），重跑时文件没变也重启，
 /// 否则 ssserver 一直用旧密码；配置、单元、程序都没变且实例在它们之后启动的不重启（不断客户的连接）；单元换了没重新加载的先加载再重启。
-/// /etc/resolv.conf 的 DNS 是链路本地地址时单元不带 IPAddressDeny（拦了就解析不了域名），报 linklocal_dns=1
+/// /etc/resolv.conf 的 DNS 是链路本地地址时配置里加公共解析器（单元的元数据拦截照旧），报 linklocal_dns=1
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn node_ss_restarts_an_instance_older_than_its_config() {
     let ip = "192.0.2.42";
@@ -482,10 +482,11 @@ async fn node_ss_restarts_an_instance_older_than_its_config() {
     std::fs::write(root.join("need-reload.fleet-ssserver"), "").unwrap();
     let reloads = count("daemon-reload");
     assert_eq!((run(script("pw2")).await.code, count("daemon-reload"), restarts()), (0, reloads + 1, 4));
-    // DNS 是链路本地地址：单元去掉 IPAddressDeny（单元变了，加载、重启），报 linklocal_dns=1
+    // DNS 是链路本地地址：配置加公共解析器（配置变了，重启），元数据拦截照旧，报 linklocal_dns=1
     std::fs::write(root.join("etc/resolv.conf"), "nameserver 169.254.169.254\n").unwrap();
     let o = run(script("pw2")).await;
     assert_eq!((o.code, o.kv("linklocal_dns"), restarts()), (0, Some("1"), 5), "{o:?}");
-    assert!(!read(&unit).contains("IPAddressDeny") && read(&unit).contains("PrivateTmp=yes\n"), "{}", read(&unit));
+    assert!(read(&conf).contains(r#","dns":"1.1.1.1,8.8.8.8"}"#), "{}", read(&conf));
+    assert!(read(&unit).contains("\nIPAddressDeny=link-local 100.100.100.200/32\n"), "{}", read(&unit));
     drop(ss);
 }
