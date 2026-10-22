@@ -19,5 +19,5 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=/var/lib/fleet
+ReadWritePaths=/var/lib/fleet/ipintel
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
