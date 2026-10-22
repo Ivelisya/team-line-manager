@@ -12,6 +12,7 @@ import { useCountUp } from '@/lib/useCountUp';
 import { dueTone, entryLabel, healthLabel, hostRel, lifecycleLabel, severityOf, type BeatCell } from '@/lib/derive';
 import { useDrawer } from '@/lib/drawer';
 import { copyText } from '@/lib/clipboard';
+import { watchSize } from '@/lib/sharedObserver';
 
 /** 数值 + 灰色小单位 */
 export function Num({ f }: { f: Fmt }) {
@@ -186,6 +187,22 @@ export const Panel = React.forwardRef<HTMLElement, { title?: React.ReactNode; co
     </section>
   );
 });
+
+/** 页面里的表格容器：表放得下（不用横滑）时写上 data-fit，表头吸顶在顶栏下方（table.css）；放不下时照常横滑、不吸顶。
+ *  抽屉、对话框里的表不用它：那里的滚动容器不是页面，吸顶的位置不对 */
+export function TableWrap({ className, children, ...p }: React.HTMLAttributes<HTMLDivElement> & { 'data-stale'?: boolean }) {
+  const ref = React.useRef<HTMLDivElement>(null);
+  React.useLayoutEffect(() => {
+    const el = ref.current!;
+    const t = el.querySelector('table');
+    if (!t) return;
+    const apply = () => el.toggleAttribute('data-fit', t.offsetWidth <= el.clientWidth + 1);
+    apply();
+    const a = watchSize(el, apply); const b = watchSize(t, apply);
+    return () => { a(); b(); };
+  }, []);
+  return <div ref={ref} className={cn('table-wrap', className)} {...p}>{children}</div>;
+}
 
 /** 页头：全站同一个 */
 export function PageHead({ title, note, tools }: { title: string; note?: React.ReactNode; tools?: React.ReactNode }) {

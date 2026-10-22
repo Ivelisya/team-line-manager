@@ -88,16 +88,18 @@ export function Tip({ text, children, side = 'top' }: { text: React.ReactNode; c
 
 /** 共享悬停提示：卡片、表格行里成百上千的只读说明不各挂一个 Radix Tooltip 根（每个根带一套 Popper 上下文，随实时推送跟着重渲染），
  *  元素上写 data-tip="文字"，外壳里这一份按悬停 / 键盘聚焦到的元素定位显示。外观、延迟同 Tip：停 250ms 出现，刚有提示开着时直接换过去。
- *  空的 data-tip 当作没有（拼出来的说明可能为空，调用方不用再判） */
+ *  空的 data-tip 当作没有（拼出来的说明可能为空，调用方不用再判）；data-tip-side 指定弹出方向（默认在上方） */
 const TIP_SEL = '[data-tip]:not([data-tip=""])';
 export function TipHost() {
-  const [tip, setTip] = React.useState<{ id: number; text: string; r: DOMRect } | null>(null);
+  const [tip, setTip] = React.useState<{ id: number; text: string; r: DOMRect; side: Side } | null>(null);
   const [open, setOpen] = React.useState(false);
   const hide = React.useRef(() => {});
   React.useEffect(() => {
     let cur: Element | null = null; let timer = 0; let shown = false; let closedAt = 0; let seq = 0;
     let tapClosed: Element | null = null; // 按下时收起的是哪个（再点同一个「(i)」= 收起，不再打开）
-    const show = (el: HTMLElement) => { shown = true; setTip({ id: ++seq, text: el.dataset.tip ?? '', r: el.getBoundingClientRect() }); setOpen(true); };
+    // 对话框标题下面那行说明里的「(i)」往下弹：往上会盖住标题
+    const sideOf = (el: HTMLElement): Side => (el.dataset.tipSide as Side | undefined) ?? (el.closest('.dialog-desc') ? 'bottom' : 'top');
+    const show = (el: HTMLElement) => { shown = true; setTip({ id: ++seq, text: el.dataset.tip ?? '', r: el.getBoundingClientRect(), side: sideOf(el) }); setOpen(true); };
     const close = () => {
       clearTimeout(timer); cur = null;
       if (shown) { shown = false; closedAt = performance.now(); setOpen(false); }
@@ -135,7 +137,7 @@ export function TipHost() {
   return (
     <TooltipPrimitive.Root key={tip.id} open={open} onOpenChange={(o) => { if (!o) hide.current(); }}>
       <TooltipPrimitive.Trigger asChild><span className="float-anchor" style={{ left: tip.r.left, top: tip.r.top, width: tip.r.width, height: tip.r.height }} /></TooltipPrimitive.Trigger>
-      <TooltipPrimitive.Portal><TooltipPrimitive.Content sideOffset={6} collisionPadding={8} className="tooltip">{tip.text}</TooltipPrimitive.Content></TooltipPrimitive.Portal>
+      <TooltipPrimitive.Portal><TooltipPrimitive.Content side={tip.side} sideOffset={6} collisionPadding={8} className="tooltip">{tip.text}</TooltipPrimitive.Content></TooltipPrimitive.Portal>
     </TooltipPrimitive.Root>
   );
 }
