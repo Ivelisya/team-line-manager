@@ -10,7 +10,7 @@ use crate::server::{Outcome, ServerClient, REVOKED_SLEEP};
 use crate::state::{access_cursor_path, stats_path, SeqState, Shared};
 use crate::util::{backoff, load_json, now_ms, save_json};
 use crate::xray::access::{local_utc_offset_s, Cursor, Tailer};
-use crate::xray::stats::{carry_samples, StatsFile, StatsState};
+use crate::xray::stats::{add_carry, carry_samples, StatsFile, StatsState};
 use fleet_proto::{AgentHealth, Report};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -200,9 +200,10 @@ impl Reporter {
                     return;
                 }
                 Outcome::Rejected(why) => {
-                    // 永久拒绝：移入 dead/ 留证，继续发后面的，不堵队列
+                    // 永久拒绝：移入 dead/ 留证，其中的入口流量结转到下一份报告；继续发后面的，不堵队列
                     tracing::error!(seq, "服务端永久拒绝该报告（已移入 dead/ 目录）：{why}");
-                    self.blocking(move |c| c.queue.dead_letter(seq)).await;
+                    let sh = self.sh.clone();
+                    self.blocking(move |c| reject(&sh, c, seq)).await;
                     self.rejects += 1;
                     if self.rejects >= REJECTS_AS_FAILURE {
                         // 连续拒收多半是系统性问题（agent 与中控版本不配套等）：照常建报、读访问日志只会把数据成批送进 dead/。
@@ -214,6 +215,15 @@ impl Reporter {
                 }
             }
         }
+    }
+}
+
+/// 服务端永久拒绝的报告移入 dead/；`Queue::dead_letter` 交回的入口流量并进结转表（随 stats.json 落盘），由下一份报告补报
+fn reject(sh: &Shared, c: &mut Core, seq: u64) {
+    let es = c.queue.dead_letter(seq);
+    if !es.is_empty() {
+        add_carry(&mut c.stats.carry, &es);
+        let _ = save_json(&stats_path(&sh.cfg), &c.stats, false);
     }
 }
 
@@ -289,7 +299,7 @@ fn build_and_push_blocking(sh: &Shared, core: &Mutex<Core>, boot_id: &str, with_
             return false;
         }
     };
-    // 之前被淘汰的报告里结转下来的入口流量，接在本轮样本后面随这份报告补报（落盘失败时截掉，结转表不动）
+    // 之前被淘汰 / 拒收的报告里结转下来的入口流量，接在本轮样本后面随这份报告补报（落盘失败时截掉，结转表不动）
     let sampled = entries.len();
     entries.extend(carry_samples(&stats.carry, now_ms()));
     let report = Report {
@@ -305,7 +315,7 @@ fn build_and_push_blocking(sh: &Shared, core: &Mutex<Core>, boot_id: &str, with_
         xray,
         agent_health: with_samples.then(|| health_of(sh, queue, tailer.as_ref())),
     };
-    match queue.push(&report) {
+    match queue.push(&report, report.entries.len() > sampled) {
         Ok(evicted) => {
             // 结转表里的流量已经落进这份报告；换成这次入队时被淘汰的报告里的
             let carry_changed = !(stats.carry.is_empty() && evicted.is_empty());
@@ -397,6 +407,34 @@ mod tests {
         assert_eq!(r.entries.iter().map(|e| (e.entry_id, e.up_bytes, e.down_bytes)).collect::<Vec<_>>(), [(id, 100, 200)]);
         assert!(c.stats.carry.is_empty());
         assert_eq!(carried(), Some(Carry::new()));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn rejected_traffic_rides_on_the_next_report_once() {
+        use crate::xray::stats::Carry;
+        let d = tmp("reject");
+        let sh = shared(&d);
+        let id = uuid::Uuid::from_u128(9);
+        let core = core(&d, d.join("state.json"), None);
+        sh.buf.lock().unwrap().push_entries(vec![fleet_proto::EntrySample { entry_id: id, ts_ms: 0, up_bytes: 100, down_bytes: 200, conns: 3 }]);
+        build_and_push_blocking(&sh, &core, "b", true, true);
+        // 被拒：流量进结转表并随 stats.json 落盘
+        let first = lock(&core).queue.oldest().unwrap();
+        reject(&sh, &mut lock(&core), first);
+        assert_eq!(lock(&core).stats.carry, Carry::from([(id, (100, 200))]));
+        assert_eq!(load_json::<StatsFile>(&stats_path(&sh.cfg)).map(|f| f.carry), Some(Carry::from([(id, (100, 200))])));
+        // 下一份把它带上
+        sh.buf.lock().unwrap().info = Some(Default::default());
+        build_and_push_blocking(&sh, &core, "b", true, true);
+        let second = lock(&core).queue.oldest().unwrap();
+        let r: Report = serde_json::from_slice(&lock(&core).queue.read(second).unwrap()).unwrap();
+        assert_eq!(r.entries.iter().map(|e| (e.entry_id, e.up_bytes, e.down_bytes)).collect::<Vec<_>>(), [(id, 100, 200)]);
+        assert!(lock(&core).stats.carry.is_empty());
+        // 带着它的这份也被拒：不再结转
+        reject(&sh, &mut lock(&core), second);
+        assert!(lock(&core).stats.carry.is_empty());
+        assert_eq!(lock(&core).queue.dead, 2);
         let _ = std::fs::remove_dir_all(&d);
     }
 
