@@ -118,6 +118,7 @@ export const RestoreDialog = resetOnOpen(function RestoreDialog({ m, open, onOpe
   const relays = useRelayChoices().data ?? [];
   const isRelay = m.kind === 'relay';
   const isProxy = m.kind === 'proxy';
+  const isVps = m.kind === 'vps';
   // 同机 IP 节点：用中控密钥登录宿主机，预检不试 SSH、不要密码、不重置指纹；宿主机不在用时预检的 blockers 里有原因（不能恢复）
   const host = m.host_machine;
   const [team, setTeam] = React.useState(m.team?.id ?? '');
@@ -125,7 +126,9 @@ export const RestoreDialog = resetOnOpen(function RestoreDialog({ m, open, onOpe
   const [label, setLabel] = React.useState('');
   const [pickedRelay, setRelay] = React.useState<string | null>(null); // null = 还没选：用预检给的上次接的线路机
   const [pw, setPw] = React.useState('');
-  const [up, setUp] = React.useState({ protocol: 'socks5', host: '', port: '', username: '', password: '' });
+  // 出站参数：没改过的字段沿用预检给的退役前的值（家宽代理的上游、VPS 节点的 SS 端口）
+  const [upEdit, setUpEdit] = React.useState<Partial<Record<'protocol' | 'host' | 'port' | 'username' | 'password', string>>>({});
+  const [ssPortEdit, setSsPort] = React.useState<string | null>(null);
   const [reason, setReason] = React.useState('');
   const [reset, setReset] = React.useState(false);
 
@@ -148,9 +151,16 @@ export const RestoreDialog = resetOnOpen(function RestoreDialog({ m, open, onOpe
   const pv = edited && live.data ? live.data : b;
   const needs = b?.needs;
   const relay = pickedRelay ?? b?.last_relay?.id ?? '';
+  const ob = b?.outbound ?? null;
+  const up = { protocol: ob?.protocol === 'http' ? 'http' : 'socks5', host: ob?.host ?? '', port: ob ? String(ob.port) : '', username: ob?.username ?? '', password: '', ...upEdit };
+  const setUp = (p: typeof upEdit) => setUpEdit((e) => ({ ...e, ...p }));
+  const ssPort = ssPortEdit ?? (ob ? String(ob.port) : '');
 
   const relayOpts = relays.map((r) => ({ value: r.id, label: r.name }));
-  const upOk = !isProxy || (up.host.trim() !== '' && Number(up.port) > 0);
+  // 上游有用户名就要密码（退役时已清掉）
+  const upPwNeeded = isProxy && up.username.trim() !== '';
+  const upOk = !isProxy || (up.host.trim() !== '' && Number(up.port) > 0 && Number(up.port) <= 65535 && (!upPwNeeded || up.password !== ''));
+  const ssOk = !isVps || !!host || ssPort === '' || (Number(ssPort) > 0 && Number(ssPort) <= 65535);
   const pwOk = needs?.password !== 'required' || pw !== '';
   // 主机指纹与退役时不同（ssh.host_key_changed）：服务端列为阻断，勾了「重置主机指纹」放行。只有带探测的第一份预检知道，改团队/编号后的预检也照它算
   const keyChanged = b?.ssh?.host_key_changed === true;
@@ -158,9 +168,9 @@ export const RestoreDialog = resetOnOpen(function RestoreDialog({ m, open, onOpe
   const blockers = (pv?.blockers ?? []).filter((x) => x !== keyNote);
   // 改了团队 / 编号后的预检取不到时，名字还是旧的那份，不能提交
   const liveFailed = edited && live.isError;
-  const ready = !!pv && !liveFailed && blockers.length === 0 && !(keyChanged && !reset) && !!needs && (!needs.relay || !!relay) && upOk && pwOk && settled && !live.isFetching;
+  const ready = !!pv && !liveFailed && blockers.length === 0 && !(keyChanged && !reset) && !!needs && (!needs.relay || !!relay) && upOk && ssOk && pwOk && settled && !live.isFetching;
   // 填过东西就别让误点遮罩关掉（Esc、取消仍可关）
-  const dirty = edited || !!pw || !!reason.trim() || reset || relay !== (b?.last_relay?.id ?? '') || !!(up.host || up.port || up.username || up.password);
+  const dirty = edited || !!pw || !!reason.trim() || reset || relay !== (b?.last_relay?.id ?? '') || Object.keys(upEdit).length > 0 || ssPortEdit != null;
 
   const submit = async () => {
     const body: Parameters<typeof restore.mutateAsync>[0] = { id: m.id };
@@ -168,7 +178,9 @@ export const RestoreDialog = resetOnOpen(function RestoreDialog({ m, open, onOpe
     if (over.number != null) body.number = over.number;
     if (over.label) body.label = over.label;
     if (needs?.relay) body.relay_id = relay;
-    if (isProxy) body.upstream = { protocol: up.protocol as 'socks5' | 'http', host: up.host.trim(), port: Number(up.port), username: up.username || undefined, password: up.password || undefined };
+    // 用户名清空也要带上（空串 = 去掉；不带服务端会沿用退役前的）
+    if (isProxy) body.upstream = { protocol: up.protocol as 'socks5' | 'http', host: up.host.trim(), port: Number(up.port), username: up.username.trim(), password: up.password || undefined };
+    if (isVps && !host && ssPort) body.ss_port = Number(ssPort);
     if (pw) body.login = { password: pw };
     if (reason.trim()) body.reason = reason.trim();
     if (reset) body.reset_host_key = true;
@@ -214,16 +226,21 @@ export const RestoreDialog = resetOnOpen(function RestoreDialog({ m, open, onOpe
           )}
           {isProxy && (
             <>
-              <Field label="上游协议"><Select value={up.protocol} onChange={(v) => setUp({ ...up, protocol: v })} options={[{ value: 'socks5', label: 'SOCKS5' }, { value: 'http', label: 'HTTP' }]} /></Field>
-              <Field label="上游端口"><Input inputMode="numeric" value={up.port} onChange={(e) => setUp({ ...up, port: e.target.value.replace(/\D/g, '') })} /></Field>
-              <Field label="上游地址" className="span-2" hint="退役时出站参数已清掉，需要重新填写"><Input value={up.host} onChange={(e) => setUp({ ...up, host: e.target.value })} placeholder="例如 proxy.example.com" /></Field>
-              <Field label="用户名（选填）"><Input value={up.username} onChange={(e) => setUp({ ...up, username: e.target.value })} autoComplete="off" /></Field>
-              <Field label="密码（选填）"><Input type="password" value={up.password} onChange={(e) => setUp({ ...up, password: e.target.value })} autoComplete="new-password" /></Field>
+              <Field label="上游协议"><Select value={up.protocol} onChange={(v) => setUp({ protocol: v })} options={[{ value: 'socks5', label: 'SOCKS5' }, { value: 'http', label: 'HTTP' }]} /></Field>
+              <Field label="上游端口"><Input inputMode="numeric" value={up.port} onChange={(e) => setUp({ port: e.target.value.replace(/\D/g, '') })} /></Field>
+              <Field label="上游地址" className="span-2" hint={ob ? '沿用退役前的上游，可修改' : '这台退役时没留下上游参数，需要重新填写'}><Input value={up.host} onChange={(e) => setUp({ host: e.target.value })} placeholder="例如 proxy.example.com" /></Field>
+              <Field label="用户名（选填）"><Input value={up.username} onChange={(e) => setUp({ username: e.target.value })} autoComplete="off" /></Field>
+              <Field label={upPwNeeded ? '密码（必填）' : '密码（选填）'} hint={upPwNeeded && ob?.username ? '退役时已清掉，要重新填' : undefined}><Input type="password" value={up.password} onChange={(e) => setUp({ password: e.target.value })} autoComplete="new-password" /></Field>
             </>
+          )}
+          {isVps && !host && (
+            <Field label="SS 端口（公网）" className="span-2" hint={ob ? `沿用退役前的 ${ob.port}；NAT 机是服务商映射的公网端口，节点上 ssserver 固定监听 8388` : 'NAT 机填服务商映射的公网端口；不是 NAT 机留空（8388）'}>
+              <Input inputMode="numeric" value={ssPort} onChange={(e) => setSsPort(e.target.value.replace(/\D/g, ''))} placeholder="8388" aria-invalid={!ssOk || undefined} />
+            </Field>
           )}
           {!isProxy && needs && (
             needs.password === 'no' ? (
-              <div className="hint span-2">{host ? `同机 IP 节点用中控密钥登录宿主机「${host.name}」，不需要密码；SS 端口会在宿主机上重新分配。` : `${KEY_LOGIN[b?.ssh?.key_login ?? 'ok']}。`}</div>
+              <div className="hint span-2">{host ? `同机 IP 节点用中控密钥登录宿主机「${host.name}」，不需要密码；${ob ? `SS 端口沿用原来的 ${ob.port}（已被宿主机上别的同机节点占用时重新分配）` : 'SS 端口会在宿主机上重新分配'}。` : `${KEY_LOGIN[b?.ssh?.key_login ?? 'ok']}。`}</div>
             ) : (
               <Field className="span-2" label={needs.password === 'required' ? 'root 密码（必填）' : 'root 密码（选填）'}
                 hint={needs.password === 'required' ? `${KEY_LOGIN[b?.ssh?.key_login ?? 'denied']}。密码只用来推一次中控公钥，用完即丢。` : `${KEY_LOGIN[b?.ssh?.key_login ?? 'error'] ?? ''}。中控密钥登录不了时才会用到这个密码。`}>

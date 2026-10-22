@@ -606,10 +606,10 @@ enum Cmd {
         /// 线路机恢复时改名（原名被占用时）
         #[arg(long)]
         label: Option<String>,
-        /// 家宽代理：socks5://用户:密码@主机:端口（退役时出站参数已清掉）
+        /// 家宽代理：socks5://用户:密码@主机:端口。不给沿用退役前的上游；上游有用户名时要给（密码退役时已清掉）
         #[arg(long)]
         upstream: Option<String>,
-        /// vps 的公网（NAT 映射）SS 端口；节点上 ssserver 固定监听 8388，非 NAT 机不要填
+        /// VPS 节点的公网（NAT 映射）SS 端口：不给沿用退役前的（预检里能看到），都没有为 8388
         #[arg(long)]
         ss_port: Option<u16>,
         /// root 密码放在哪个环境变量里（预检说中控密钥登录不了时必填）

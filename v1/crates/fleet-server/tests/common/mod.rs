@@ -92,7 +92,7 @@ impl T {
 }
 
 /// 本测试的 schema，drop 时删掉。测试的运行时里不能等异步操作：另起一个线程和运行时，用一条新连接去删
-struct Schema {
+pub struct Schema {
     url: String,
     name: String,
 }
@@ -127,8 +127,25 @@ impl Drop for Schema {
 /// 每个进程只清一次残留的 schema
 static SWEPT: AtomicBool = AtomicBool::new(false);
 
-/// 建本测试的 schema，跑迁移、建分区，返回 search_path 指向它的连接池
-async fn test_db(url: &str) -> (PgPool, Schema) {
+/// 迁移不拿 sqlx 的咨询锁：它按库名加锁，所有测试的迁移会排成一队；各 schema 互不相干，用不着。
+/// `upto`：只跑到这个版本（测迁移本身：先放存量数据再跑后面的）
+pub fn migrator(upto: Option<i64>) -> sqlx::migrate::Migrator {
+    sqlx::migrate::Migrator {
+        migrations: db::MIGRATOR.migrations.iter().filter(|m| !matches!(upto, Some(v) if m.version > v)).cloned().collect::<Vec<_>>().into(),
+        ignore_missing: db::MIGRATOR.ignore_missing,
+        locking: false,
+        no_tx: db::MIGRATOR.no_tx,
+    }
+}
+
+/// 只迁移到 `version` 的空 schema（不建分区、不起服务），测迁移用；之后 `migrator(None).run(&pool)` 跑完其余的
+pub async fn db_until(version: i64) -> (PgPool, Schema) {
+    let url = std::env::var("FLEET_TEST_DB").unwrap_or_else(|_| "postgres://fleet:fleet@127.0.0.1/fleet_test".into());
+    test_db(&url, Some(version)).await
+}
+
+/// 建本测试的 schema，跑迁移（`upto` 见 [`migrator`]；跑全了才建分区），返回 search_path 指向它的连接池
+async fn test_db(url: &str, upto: Option<i64>) -> (PgPool, Schema) {
     let mut c = PgConnection::connect(url).await.unwrap();
     if !SWEPT.swap(true, Ordering::Relaxed) {
         let old: Vec<String> = sqlx::query_scalar(
@@ -157,15 +174,10 @@ async fn test_db(url: &str) -> (PgPool, Schema) {
         .connect_with(opts.options([("search_path", name.as_str())]).application_name(&name))
         .await
         .unwrap();
-    // 迁移不拿 sqlx 的咨询锁：它按库名加锁，所有测试的迁移会排成一队；各 schema 互不相干，用不着
-    let migrator = sqlx::migrate::Migrator {
-        migrations: db::MIGRATOR.migrations.clone(),
-        ignore_missing: db::MIGRATOR.ignore_missing,
-        locking: false,
-        no_tx: db::MIGRATOR.no_tx,
-    };
-    migrator.run(&pool).await.unwrap();
-    db::maintain_partitions(&pool, 14, 7, 2).await.unwrap();
+    migrator(upto).run(&pool).await.unwrap();
+    if upto.is_none() {
+        db::maintain_partitions(&pool, 14, 7, 2).await.unwrap();
+    }
     (pool, schema)
 }
 
@@ -178,7 +190,7 @@ pub async fn boot(background: bool, extra: &str) -> T { boot_in(tempfile::tempdi
 /// 同 `boot`，临时目录由调用方先准备好（比如往 ipintel/ 里放离线库）
 pub async fn boot_in(dir: tempfile::TempDir, background: bool, extra: &str) -> T {
     let url = std::env::var("FLEET_TEST_DB").unwrap_or_else(|_| "postgres://fleet:fleet@127.0.0.1/fleet_test".into());
-    let (pool, schema) = test_db(&url).await;
+    let (pool, schema) = test_db(&url, None).await;
     let d = dir.path().display().to_string().replace('\\', "/");
     let cfg: Config = toml::from_str(&format!(
         r#"database_url = "{url}"

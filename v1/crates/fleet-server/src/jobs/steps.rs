@@ -910,8 +910,8 @@ async fn finalize(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     .bind(host_keys)
     .execute(&mut *tx)
     .await?;
-    // 秘密不再需要
-    sqlx::query("delete from node_outbound where machine_id = $1").bind(m.id).execute(&mut *tx).await?;
+    // 秘密不再需要；出站参数的其余部分（NAT 映射的 SS 端口、上游代理的地址端口用户名）留着，恢复时默认沿用
+    sqlx::query("update node_outbound set secret_enc = null, updated_at = now() where machine_id = $1").bind(m.id).execute(&mut *tx).await?;
     // 编号连续：同团队剩下的节点压缩成 01..N
     let mut renamed = vec![];
     let mut relays = vec![];
@@ -1100,7 +1100,7 @@ pub async fn compensate(st: &AppState, job: &JobRow, owner: &str) {
         )
         .await;
     }
-    note(st, job.id, "删除出站秘密", sqlx::query("delete from node_outbound where machine_id = $1").bind(id).execute(&st.db).await).await;
+    note(st, job.id, "清掉出站秘密", sqlx::query("update node_outbound set secret_enc = null, updated_at = now() where machine_id = $1").bind(id).execute(&st.db).await).await;
     // 同机 IP 节点记着的主机公钥是宿主机的，不能忘。其余的先存到机器行（恢复时放回核对，见 finalize），没存成就不删
     if m.host_id.is_none() {
         let saved = match note(st, job.id, "读取主机公钥", ssh::host_lines(&st.cfg.known_hosts, &m.ip, m.ssh_port as u16).await).await {

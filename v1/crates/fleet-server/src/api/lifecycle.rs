@@ -224,6 +224,7 @@ struct RM {
     number: Option<i32>,
     label: Option<String>,
     ip: String,
+    /// SSH 端口（同机 IP 节点是宿主机的）
     ssh_port: i32,
     lifecycle: String,
     reason: Option<String>,
@@ -231,14 +232,20 @@ struct RM {
     host_id: Option<Uuid>,
     /// 退役时存下的主机公钥（known_hosts 行）
     host_keys: Option<String>,
+    /// 退役时留下的出站参数（秘密已清掉）：VPS 节点是 SS 端口（NAT 映射的公网端口），家宽代理是上游。迁移 0029 之前退役的没有
+    o_protocol: Option<String>,
+    o_host: Option<String>,
+    o_port: Option<i32>,
+    o_user: Option<String>,
 }
 
 async fn load_rm(conn: &mut PgConnection, id: Uuid, lock: bool) -> ApiResult<RM> {
     let sql = format!(
-        "select kind::text kind, team_id, number, label, host(primary_ip) ip, ssh_port, lifecycle::text lifecycle, lifecycle_reason reason, host_id,
-            retired_host_keys host_keys
-         from machine where id = $1{}",
-        if lock { " for update" } else { "" }
+        "select m.kind::text kind, m.team_id, m.number, m.label, host(m.primary_ip) ip, coalesce(h.ssh_port, m.ssh_port) ssh_port, m.lifecycle::text lifecycle,
+            m.lifecycle_reason reason, m.host_id, m.retired_host_keys host_keys, o.protocol o_protocol, o.host o_host, o.port o_port, o.username o_user
+         from machine m left join machine h on h.id = m.host_id left join node_outbound o on o.machine_id = m.id
+         where m.id = $1{}",
+        if lock { " for update of m" } else { "" }
     );
     sqlx::query_as(&sql).bind(id).fetch_optional(conn).await?.ok_or_else(|| ApiError::not_found("没有这台机器（已彻底删除的机器不能恢复）"))
 }
@@ -484,9 +491,14 @@ pub async fn restore_preview(a: Actor, State(st): State<AppState>, ApiPath(id): 
         "warnings": warnings,
         "last_relay": last_relay.map(|(id, name)| json!({"id": id, "name": name})),
         "ssh": ssh_info,
+        // 退役时留下的出站参数（不含秘密），恢复时默认沿用
+        "outbound": m.o_protocol.as_ref().map(|p| json!({"protocol": p, "host": m.o_host, "port": m.o_port, "username": m.o_user})),
         "needs": {
             "relay": m.kind != "relay",
-            "upstream": m.kind == "proxy",
+            // 家宽代理没留下上游（迁移 0029 之前退役的）：协议、地址、端口要重新给
+            "upstream": m.kind == "proxy" && m.o_protocol.is_none(),
+            // 留下的上游有用户名：密码退役时已清掉，要重新给
+            "upstream_password": m.kind == "proxy" && m.o_user.as_deref().is_some_and(|u| !u.is_empty()),
             "password": password,
         },
         "retired_reason": m.reason,
@@ -498,13 +510,30 @@ pub struct LoginIn {
     password: Option<String>,
 }
 
+/// 家宽代理的上游：没给的字段沿用退役时留下的（协议、地址、端口、用户名；用户名给空串 = 去掉）
 #[derive(Deserialize)]
 pub struct UpstreamIn {
-    protocol: String,
-    host: String,
-    port: u16,
+    protocol: Option<String>,
+    host: Option<String>,
+    port: Option<u16>,
     username: Option<String>,
     password: Option<String>,
+}
+
+/// 恢复后的上游：(协议, 地址, 端口, 用户名, 密码)。密码退役时已清掉，有用户名就要重新给
+fn restore_upstream(m: &RM, u: Option<&UpstreamIn>) -> Result<(String, String, u16, Option<String>, String), String> {
+    let protocol = u.and_then(|u| u.protocol.clone()).or_else(|| m.o_protocol.clone()).unwrap_or_default();
+    let host = u.and_then(|u| u.host.as_deref()).or(m.o_host.as_deref()).unwrap_or("").trim().to_string();
+    let port = u.and_then(|u| u.port).or_else(|| m.o_port.and_then(|p| u16::try_from(p).ok())).unwrap_or(0);
+    let username = u.and_then(|u| u.username.as_deref()).or(m.o_user.as_deref()).map(str::trim).filter(|s| !s.is_empty()).map(String::from);
+    let password = u.and_then(|u| u.password.clone()).unwrap_or_default();
+    if !matches!(protocol.as_str(), "socks5" | "http") || host.is_empty() || port == 0 {
+        return Err("家宽代理退役时没留下上游参数（迁移 0029 之前退役的），要在 upstream 里给全协议（socks5/http）、地址和端口".into());
+    }
+    if username.is_some() && password.is_empty() {
+        return Err("上游有用户名：密码在退役时已清掉，要在 upstream.password 里重新填".into());
+    }
+    Ok((protocol, host, port, username, password))
 }
 
 #[derive(Deserialize)]
@@ -516,8 +545,9 @@ pub struct RestoreIn {
     /// 节点要接入的线路机
     relay_id: Option<Uuid>,
     login: Option<LoginIn>,
-    /// 家宽代理：退役时出站参数已删除，要重新填
+    /// 家宽代理：没给的字段沿用退役时留下的；密码退役时已清掉
     upstream: Option<UpstreamIn>,
+    /// VPS 节点的公网（NAT 映射）SS 端口：不给沿用退役前的，都没有为 8388
     ss_port: Option<u16>,
     reason: Option<String>,
     /// 机器重装过、主机指纹变了：允许预检时覆盖已记录的指纹
@@ -546,12 +576,7 @@ pub async fn restore(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<
             return Err(ApiError::bad_request("暂不支持 IPv6 线路机：节点防火墙的放行名单只处理 IPv4"));
         }
     }
-    if m.kind == "proxy" {
-        match &b.upstream {
-            Some(u) if matches!(u.protocol.as_str(), "socks5" | "http") && !u.host.trim().is_empty() && u.port > 0 => {}
-            _ => return Err(ApiError::bad_request("家宽代理在退役时已清掉出站参数，要重新填协议（socks5/http）、地址和端口")),
-        }
-    }
+    let upstream = if m.kind == "proxy" { Some(restore_upstream(&m, b.upstream.as_ref()).map_err(ApiError::bad_request)?) } else { None };
     let reason = b.reason.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(String::from);
     let n = sqlx::query(
         "update machine set lifecycle = 'provisioning', team_id = $2, number = $3, label = coalesce($4, label), lifecycle_reason = '恢复中',
@@ -569,10 +594,14 @@ pub async fn restore(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<
     }
     match m.kind.as_str() {
         "vps" => {
-            // 同机 IP 节点重新分 SS 端口：退役时出站参数已删，原来的端口可能已经给了宿主机上别的同机节点（宿主机行在 restore_plan 里锁着）
+            let stored = m.o_port.and_then(|p| u16::try_from(p).ok());
             let port = match m.host_id {
-                Some(h) => crate::db::free_ss_port(&crate::db::ip_node_ports(&mut tx, h, Some(id)).await?).ok_or_else(|| ApiError::conflict("宿主机上没有空闲的 SS 端口"))?,
-                None => b.ss_port.unwrap_or(8388),
+                // 同机 IP 节点：原来的 SS 端口没被宿主机上别的同机节点占走就沿用，否则重新分（宿主机行在 restore_plan 里锁着）
+                Some(h) => {
+                    let taken = crate::db::ip_node_ports(&mut tx, h, Some(id)).await?;
+                    stored.filter(|p| !taken.contains(p)).or_else(|| crate::db::free_ss_port(&taken)).ok_or_else(|| ApiError::conflict("宿主机上没有空闲的 SS 端口"))?
+                }
+                None => b.ss_port.or(stored).unwrap_or(8388),
             };
             sqlx::query(
                 "insert into node_outbound (machine_id, protocol, host, port, method, secret_enc) values ($1, 'shadowsocks', $2, $3, 'aes-256-gcm', $4)
@@ -587,18 +616,18 @@ pub async fn restore(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<
             .await?;
         }
         "proxy" => {
-            let u = b.upstream.as_ref().expect("validated");
+            let (protocol, host, port, username, password) = upstream.expect("validated");
             sqlx::query(
                 "insert into node_outbound (machine_id, protocol, host, port, username, secret_enc) values ($1, $2, $3, $4, $5, $6)
                  on conflict (machine_id) do update set protocol = excluded.protocol, host = excluded.host, port = excluded.port, method = null,
                     username = excluded.username, secret_enc = excluded.secret_enc, updated_at = now()",
             )
             .bind(id)
-            .bind(&u.protocol)
-            .bind(u.host.trim())
-            .bind(u.port as i32)
-            .bind(&u.username)
-            .bind(st.secrets.seal_str(u.password.as_deref().unwrap_or("")))
+            .bind(protocol)
+            .bind(host)
+            .bind(port as i32)
+            .bind(username)
+            .bind(st.secrets.seal_str(&password))
             .execute(&mut *tx)
             .await?;
         }
@@ -663,6 +692,10 @@ mod tests {
             reason: None,
             host_id: None,
             host_keys: Some("203.0.113.1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOld".into()),
+            o_protocol: None,
+            o_host: None,
+            o_port: None,
+            o_user: None,
         };
         let same = json!({"key_login": "ok", "host_key": "SHA256:x", "host_key_changed": false});
         assert!(host_key_note(&m, &same, false).is_none());
@@ -672,5 +705,36 @@ mod tests {
         assert!(block && msg.contains("主机指纹与退役时不同") && msg.contains(&ssh::fingerprint("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOld")) && msg.contains("SHA256:new"), "{msg}");
         let (block, msg) = host_key_note(&m, &changed, true).unwrap();
         assert!(!block && msg.contains("已勾选"), "{msg}");
+    }
+
+    #[test]
+    fn restore_upstream_falls_back_to_stored() {
+        let mut m = RM {
+            kind: "proxy".into(),
+            team_id: None,
+            number: None,
+            label: None,
+            ip: "203.0.113.1".into(),
+            ssh_port: 22,
+            lifecycle: "retired".into(),
+            reason: None,
+            host_id: None,
+            host_keys: None,
+            o_protocol: Some("http".into()),
+            o_host: Some("up.example".into()),
+            o_port: Some(3128),
+            o_user: Some("bob".into()),
+        };
+        let up = |v: Value| serde_json::from_value::<UpstreamIn>(v).unwrap();
+        assert!(restore_upstream(&m, None).unwrap_err().contains("密码"), "有用户名：密码要重新给");
+        let r = restore_upstream(&m, Some(&up(json!({"password": "pw"})))).unwrap();
+        assert_eq!(r, ("http".into(), "up.example".into(), 3128, Some("bob".into()), "pw".into()));
+        let r = restore_upstream(&m, Some(&up(json!({"port": 8080, "username": ""})))).unwrap();
+        assert_eq!(r, ("http".into(), "up.example".into(), 8080, None, String::new()), "给了的字段覆盖，用户名空串 = 去掉");
+        m.o_protocol = None;
+        m.o_host = None;
+        m.o_port = None;
+        m.o_user = None;
+        assert!(restore_upstream(&m, Some(&up(json!({"password": "pw"})))).unwrap_err().contains("给全"), "没留下上游：要给全");
     }
 }

@@ -144,13 +144,13 @@ pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, ech
         username: Option<String>,
         secret_enc: Option<Vec<u8>>,
     }
-    // 直出入口没有 node_outbound 行（节点就是线路机自己）；节点入口缺出站参数的照旧不下发
+    // 直出入口没有 node_outbound 行（节点就是线路机自己）；节点入口缺出站参数（或秘密已在退役时清掉）的照旧不下发
     let rows: Vec<Row> = sqlx::query_as(
         "select e.id, e.node_id, m.team_id, e.port, e.lifecycle::text lifecycle, e.client_uuid, e.short_id, m.kind::text kind, t.name team, m.number,
                 m.label, host(m.primary_ip) ip, e.node_id = e.relay_id direct, o.protocol, o.host, o.port oport, o.method, o.username, o.secret_enc
          from entry e join machine m on m.id = e.node_id left join team t on t.id = m.team_id
          left join node_outbound o on o.machine_id = e.node_id
-         where e.relay_id = $1 and e.lifecycle in ('pending', 'active', 'disabled') and (e.node_id = e.relay_id or o.machine_id is not null)
+         where e.relay_id = $1 and e.lifecycle in ('pending', 'active', 'disabled') and (e.node_id = e.relay_id or o.secret_enc is not null)
          order by e.port",
     )
     .bind(relay_id)

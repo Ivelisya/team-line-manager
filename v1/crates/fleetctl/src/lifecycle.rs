@@ -169,6 +169,17 @@ pub fn restore(ctx: &Ctx, o: RestoreOpts) -> anyhow::Result<u8> {
                 rows.push(("主机指纹", st(&pv, "/ssh/host_key")));
             }
         }
+        // 退役时留下的出站参数（不含秘密），恢复时默认沿用
+        if pv["outbound"].is_object() {
+            let o = &pv["outbound"];
+            let v = if o["protocol"] == "shadowsocks" {
+                format!("SS 端口 {}", st(o, "/port"))
+            } else {
+                let user = o["username"].as_str().map(|u| format!("{u}:***@")).unwrap_or_default();
+                format!("{}://{user}{}:{}", st(o, "/protocol"), st(o, "/host"), st(o, "/port"))
+            };
+            rows.push(("出站（沿用）", v));
+        }
         outln(table::kv(&rows));
         for w in pv["warnings"].as_array().cloned().unwrap_or_default() {
             outln(format!("注意：{}", w.as_str().unwrap_or("")));
@@ -205,8 +216,13 @@ pub fn restore(ctx: &Ctx, o: RestoreOpts) -> anyhow::Result<u8> {
         };
         body["relay_id"] = find_relay(ctx, r)?["id"].clone();
     }
-    if pv["needs"]["upstream"] == true {
-        let u = o.upstream.ok_or_else(|| anyhow!("家宽代理在退役时已清掉出站参数：加 --upstream socks5://用户:密码@主机:端口"))?;
+    if pv["needs"]["upstream"] == true && o.upstream.is_none() {
+        bail!("这台家宽代理退役时没留下上游参数：加 --upstream socks5://用户:密码@主机:端口");
+    }
+    if pv["needs"]["upstream_password"] == true && o.upstream.is_none() {
+        bail!("上游有用户名，密码退役时已清掉：加 --upstream {}://用户:密码@{}:{}", st(&pv, "/outbound/protocol"), st(&pv, "/outbound/host"), st(&pv, "/outbound/port"));
+    }
+    if let Some(u) = o.upstream {
         body["upstream"] = parse_upstream(u)?;
     }
     let need_pw = pv["needs"]["password"] == "required";
