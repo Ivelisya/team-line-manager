@@ -2,7 +2,7 @@ import * as React from 'react';
 import * as LabelPrimitive from '@radix-ui/react-label';
 import * as CheckboxPrimitive from '@radix-ui/react-checkbox';
 import * as SwitchPrimitive from '@radix-ui/react-switch';
-import { Check, Search } from 'lucide-react';
+import { Check, Info, Search } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement> & { sm?: boolean }>(({ className, sm, ...p }, ref) => (
@@ -20,12 +20,17 @@ export const Label = React.forwardRef<React.ElementRef<typeof LabelPrimitive.Roo
 ));
 Label.displayName = 'Label';
 
-/** 表单项：标签 + 控件 + 说明/错误 */
-export function Field({ label, hint, error, children, className }: { label?: React.ReactNode; hint?: React.ReactNode; error?: React.ReactNode; children: React.ReactNode; className?: string }) {
+/** 「(i)」：悬停 / 聚焦时显示的补充说明。界面上只留必须知道的短字，解释放这里（用户：说明性的小字太多） */
+export function InfoTip({ text, className }: { text: string; className?: string }) {
+  return <span className={cn('info-tip', className)} tabIndex={0} role="img" aria-label={text} data-tip={text}><Info /></span>;
+}
+
+/** 表单项：标签（可带「(i)」补充说明）+ 控件 + 短提示 / 错误。hint 只放一句十来个字的必要提示，长的解释写进 info */
+export function Field({ label, info, hint, error, children, className }: { label?: React.ReactNode; info?: string; hint?: React.ReactNode; error?: React.ReactNode; children: React.ReactNode; className?: string }) {
   const id = React.useId();
   return (
     <div className={cn('field', className)}>
-      {label && <Label htmlFor={id}>{label}</Label>}
+      {label && (info ? <span className="field-label"><Label htmlFor={id}>{label}</Label><InfoTip text={info} /></span> : <Label htmlFor={id}>{label}</Label>)}
       {React.isValidElement(children) ? React.cloneElement(children as React.ReactElement<{ id?: string }>, { id }) : children}
       {error ? <div className="hint is-error">{error}</div> : hint ? <div className="hint">{hint}</div> : null}
     </div>
