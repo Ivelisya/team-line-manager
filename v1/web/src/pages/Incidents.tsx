@@ -1,7 +1,7 @@
 // 告警：事件列表（确认 / 查看机器，服务端分页）+ 静默与维护窗口（可预约开始时间）。列表都保持服务端顺序（告警严重度优先，静默按开始时间），前端不重排。
 import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { BellOff, CalendarPlus, Check, CheckCircle2, ChevronDown, Plus, Trash2, Wrench } from 'lucide-react';
+import { BellOff, CalendarPlus, Check, CheckCircle2, ChevronDown, ChevronRight, Plus, Trash2, Wrench } from 'lucide-react';
 import { RenewDialog } from '@/features/BillingTab';
 import { INCIDENT_PAGE, useAck, useAddSilence, useDelSilence, useIncidents, useMachineBriefs, useSilences } from '@/lib/queries';
 import { usePage } from '@/lib/usePage';
@@ -35,6 +35,19 @@ const summaryText = (i: Incident) => {
   const name = i.subject?.name ?? i.subject_name;
   return errText(name && i.summary.startsWith(`${name}：`) ? i.summary.slice(name.length + 1) : i.summary);
 };
+/** 已恢复的告警里，同一分钟开始的同一条规则（如一批 agent 同时离线）连着出现 3 条起折成一行；只合并相邻的，顺序仍是服务端的 */
+const BATCH_MIN = 3;
+const batchKey = (i: Incident) => `${i.rule}|${i.opened_at.slice(0, 16)}`;
+function foldBatches(list: Incident[]): (Incident | Incident[])[] {
+  const out: (Incident | Incident[])[] = [];
+  for (let a = 0; a < list.length;) {
+    let b = a + 1;
+    if (list[a].state === 'resolved') while (b < list.length && list[b].state === 'resolved' && batchKey(list[b]) === batchKey(list[a])) b++;
+    if (b - a >= BATCH_MIN) out.push(list.slice(a, b)); else out.push(...list.slice(a, b));
+    a = b;
+  }
+  return out;
+}
 type State = 'firing' | 'resolved' | 'all';
 const STATES: { value: State; label: string }[] = [{ value: 'firing', label: '进行中' }, { value: 'resolved', label: '已恢复' }, { value: 'all', label: '全部' }];
 
@@ -52,11 +65,33 @@ export function IncidentsPage() {
   const { open } = useDrawer();
   const { open: openRouter } = useRouterDrawer();
   const list = q.data?.items ?? [];
+  const rows = React.useMemo(() => foldBatches(list), [list]);
+  const [opened, setOpened] = React.useState<ReadonlySet<string>>(new Set()); // 展开了的批（以第一条的 id 为键）
+  const toggle = (k: string) => setOpened((o) => { const n = new Set(o); if (!n.delete(k)) n.add(k); return n; });
   // 续费类告警的「登记续费」要用机器的订阅信息；续费后下一轮评估（≤30 秒）自动恢复
   const machines = useMachineBriefs().data;
   const [renewId, setRenewId] = React.useState<string | null>(null);
   // 关闭后沿用最近的机器，对话框常驻挂载、播完退场动画
   const renewM = useHeld(renewId, machines?.find((m) => m.id === renewId));
+  const row = (i: Incident) => {
+      const sid = i.subject?.id ?? i.subject_id;
+      const canRenew = i.state === 'firing' && i.rule.startsWith('renewal_') && !!machines?.find((m) => m.id === sid)?.subscription;
+      const sum = summaryText(i);
+      return (
+        <tr key={i.id}>
+          <td>{SEV(i)}</td>
+          {/* 中控自身的告警（central_ 开头）没有机器可点开：只写对象名「中控」；软路由的（router_ 开头）打开路由抽屉 */}
+          <td>{sid && isRouterIncident(i) ? <button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => openRouter(sid)}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button>
+            : sid ? <NodeHover id={sid}><button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => open(sid)}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button></NodeHover> : (i.subject_name ?? '—')}</td>
+          <td>{i.rule_name}{i.reopen_count > 0 && <span className="sub" data-tip={`恢复后 30 分钟内又复发 ${i.reopen_count} 次，合并为这一条`}>反复 {i.reopen_count + 1} 次</span>}</td>
+          <td><span className="cell-main" data-tip={sum}>{sum}</span>{(i.resolved_at || i.ack_at) && <span className="sub">{i.resolved_at
+            ? <span data-tip={`恢复于 ${F.dtFull(i.resolved_at)}`}>已恢复 · 持续 {F.span(Date.parse(i.resolved_at) - Date.parse(i.opened_at))}</span>
+            : `${i.ack_by ? F.actor(i.ack_by) : ''} 已确认 · ${F.ago(i.ack_at!)}`}</span>}</td>
+          <td>{F.dt(i.opened_at)}<span className="sub">{F.ago(i.opened_at)}</span></td>
+          <td className="r">{canRenew && <Button size="sm" onClick={() => setRenewId(sid)}><CalendarPlus size={13} />登记续费</Button>}{!canRenew && i.state === 'firing' && !i.ack_at && <Button size="sm" loading={ack.isPending && ack.variables === i.id} disabled={ack.isPending} onClick={() => ack.mutate(i.id, { onSuccess: () => toast.ok('已确认'), onError: toast.err })}><Check size={13} />确认</Button>}</td>
+        </tr>
+      );
+  };
   return (
     <div className="stack" ref={pg.anchor}>
       <PageHead title="告警" note={q.data ? `${q.data.total.toLocaleString('zh-CN')} 条` : undefined}
@@ -73,23 +108,19 @@ export function IncidentsPage() {
             <colgroup><col style={{ width: 100 }} /><col style={{ width: 150 }} /><col style={{ width: 150 }} /><col /><col style={{ width: 110 }} /><col style={{ width: 120 }} /></colgroup>
             <thead><tr><th>级别</th><th>对象</th><th>规则</th><th>说明</th><th>开始</th><th /></tr></thead>
             <tbody>
-              {list.map((i) => {
-                const sid = i.subject?.id ?? i.subject_id;
-                const canRenew = i.state === 'firing' && i.rule.startsWith('renewal_') && !!machines?.find((m) => m.id === sid)?.subscription;
-                const sum = summaryText(i);
+              {rows.map((r) => {
+                if (!Array.isArray(r)) return row(r);
+                const k = r[0].id; const on = opened.has(k);
                 return (
-                  <tr key={i.id}>
-                    <td>{SEV(i)}</td>
-                    {/* 中控自身的告警（central_ 开头）没有机器可点开：只写对象名「中控」；软路由的（router_ 开头）打开路由抽屉 */}
-                    <td>{sid && isRouterIncident(i) ? <button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => openRouter(sid)}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button>
-                      : sid ? <NodeHover id={sid}><button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => open(sid)}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button></NodeHover> : (i.subject_name ?? '—')}</td>
-                    <td>{i.rule_name}{i.reopen_count > 0 && <span className="sub" data-tip={`恢复后 30 分钟内又复发 ${i.reopen_count} 次，合并为这一条`}>反复 {i.reopen_count + 1} 次</span>}</td>
-                    <td><span className="cell-main" data-tip={sum}>{sum}</span><span className="sub">{i.resolved_at
-                      ? <span data-tip={`恢复于 ${F.dtFull(i.resolved_at)}`}>已恢复 · 持续 {F.span(Date.parse(i.resolved_at) - Date.parse(i.opened_at))}</span>
-                      : i.ack_at ? `${i.ack_by ? F.actor(i.ack_by) : ''} 已确认 · ${F.ago(i.ack_at)}` : '未确认'}</span></td>
-                    <td>{F.dt(i.opened_at)}<span className="sub">{F.ago(i.opened_at)}</span></td>
-                    <td className="r">{canRenew && <Button size="sm" onClick={() => setRenewId(sid)}><CalendarPlus size={13} />登记续费</Button>}{!canRenew && i.state === 'firing' && !i.ack_at && <Button size="sm" loading={ack.isPending && ack.variables === i.id} disabled={ack.isPending} onClick={() => ack.mutate(i.id, { onSuccess: () => toast.ok('已确认'), onError: toast.err })}><Check size={13} />确认</Button>}</td>
-                  </tr>
+                  <React.Fragment key={k}>
+                    <tr data-open={on ? '' : undefined}>
+                      <td>{SEV(r[0])}</td>
+                      <td colSpan={3}><button type="button" className="btn btn-link inc-fold" aria-expanded={on} onClick={() => toggle(k)}><ChevronRight />{r[0].rule_name} × {r.length} 台</button><span className="sub">已恢复</span></td>
+                      <td>{F.dt(r[0].opened_at)}<span className="sub">{F.ago(r[0].opened_at)}</span></td>
+                      <td />
+                    </tr>
+                    {on && r.map(row)}
+                  </React.Fragment>
                 );
               })}
             </tbody>
@@ -141,7 +172,7 @@ function Silences() {
   const list = (q.data ?? []).filter((s) => Date.parse(s.ends_at) > now);
   return (
     <>
-      <Panel title="静默与维护窗口" count={list.length} sub={<InfoTip text="窗口内不会产生告警" />} tools={<Button onClick={() => { setPreset(''); setOpen(true); }}><Plus />新建静默</Button>} flush>
+      <Panel title="静默与维护窗口" count={list.length} sub={<InfoTip text="窗口内不会产生告警" />} tools={list.length === 0 && !q.isLoading ? <Button onClick={() => { setPreset(''); setOpen(true); }}><Plus />新建静默</Button> : undefined} flush>
         {q.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div>}
         {q.isLoading ? <SkeletonRows rows={2} head /> : list.length === 0 && !q.isError ? <Empty icon={<BellOff size={22} />} text="没有进行中或已预约的静默" /> : (
           <TableWrap>

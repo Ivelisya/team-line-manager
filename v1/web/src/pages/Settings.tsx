@@ -20,6 +20,7 @@ import { Chip, CopyButton, Empty, ErrorNote, Note, PageHead, Panel, Pill, TableW
 import { ShowAll } from '@/components/app/Pagination';
 import { copyText } from '@/lib/clipboard';
 import { resetOnOpen, useHeld } from '@/lib/useHeld';
+import '@/styles/settings.css';
 
 export function SettingsPage() {
   const [sp, setSp] = useSearchParams();

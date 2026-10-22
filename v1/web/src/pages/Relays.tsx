@@ -5,7 +5,7 @@ import * as React from 'react';
 import { CheckCircle2, ChevronRight, CircleAlert, Loader2, PackageOpen } from 'lucide-react';
 import { useRelays } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
-import { errText, probeFail, probeFailLabel } from '@/lib/derive';
+import { errText, healthLabel, probeFail, probeFailLabel } from '@/lib/derive';
 import * as F from '@/lib/format';
 import type { EntryView, MachineView } from '@/lib/types';
 import { Button } from '@/components/ui/button';
@@ -21,6 +21,7 @@ import { movableEntries } from '@/components/app/LifecycleDialogs';
 import { ShowAll } from '@/components/app/Pagination';
 import { scrollBackTo } from '@/lib/usePage';
 import { ENTRY_CAP, probeCell, tcpCell } from '@/features/EntriesTable';
+import { HEALTH_TONE } from '@/lib/sort';
 
 type Open = ReturnType<typeof useDrawer>['open'];
 
@@ -38,7 +39,7 @@ const EntryRow = React.memo(function EntryRow({ e, open }: { e: EntryView; open:
       {/* 直出入口的节点就是这台线路机自己 */}
       <td>{e.direct ? <span className="ellipsis block" data-tip="从线路机自己的 IP 出去，不经节点">{e.node.name}</span>
         : <NodeHover id={e.node.id} noFocus><span className="ellipsis block">{e.node.name}</span></NodeHover>}</td>
-      <td>{fail ? <Pill tone="bad" tip={fail.detail ? errText(fail.detail) : undefined}>{probeFailLabel(e)}</Pill> : entryState(e)}</td>
+      <td>{fail ? <Pill tone="bad" tip={fail.detail ? errText(fail.detail) : undefined}>{probeFailLabel(e)}</Pill> : entryState(e, true)}</td>
       {/* 停用的入口不再探测：留着的是停用前的旧读数，不显示 */}
       {e.lifecycle === 'disabled' ? <><td className="r t-muted">—</td><td className="r t-muted">—</td></> : <><td className="r">{tcpCell(e)}</td><td className="r">{probeCell(e.egress)}</td></>}
       <td className="r"><Num f={F.bytes(e.traffic.month_up + e.traffic.month_down)} /></td>
@@ -75,7 +76,7 @@ function RelayCard({ m, open }: { m: MachineView; open: Open }) {
   const cap = Math.max(ENTRY_CAP, m.entries.filter(isBad).length);
   const entries = all ? sorted : sorted.slice(0, cap);
   return (
-    <section ref={card} className="panel relay-card">
+    <section ref={card} id={`relay-${m.id}`} className="panel relay-card">
       <header className="relay-head">
         <Flag country={m.country} manual={!!m.country_set} ip={m.ip} />
         <button type="button" className="ttl relay-name" onClick={() => open(m.id)}>{m.name}<ChevronRight size={16} aria-hidden /></button>
@@ -113,6 +114,16 @@ export function RelaysPage() {
       <PageHead title="线路" note={q.data ? `${list.length} 台线路机 · ${list.reduce((s, m) => s + m.entries.length, 0)} 条入口` : undefined} />
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       {q.isLoading && <Skeleton h={220} />}
+      {/* 线路机多了竖着排很长：吸顶的一行名字，点一下跳到那张卡；只有故障的写状态 */}
+      {list.length > 2 && (
+        <nav className="relay-jump" aria-label="线路机">
+          {list.map((m) => (
+            <button key={m.id} type="button" className="fchip" onClick={() => document.getElementById(`relay-${m.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>
+              {m.name}{HEALTH_TONE[m.health.status] === 'bad' && <span className="relay-jump-bad">{healthLabel(m.health.status)}</span>}
+            </button>
+          ))}
+        </nav>
+      )}
       {list.map((m) => <RelayCard key={m.id} m={m} open={open} />)}
       {q.data && list.length === 0 && <Empty icon={<Waypoints size={22} />} text="还没有线路机" hint="去「上架」添加" />}
     </div>
