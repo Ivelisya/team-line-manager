@@ -12,10 +12,6 @@
 .menu-anchor { position: absolute; inset: 0; visibility: hidden; pointer-events: none; }
 .float-anchor { position: fixed; visibility: hidden; pointer-events: none; }
 
-/* ========== Tooltip 里的原因列表（健康 pill） ========== */
-.tip-list { display: grid; gap: var(--sp-4); margin: 0; padding: 0; list-style: none; text-align: left; }
-.tip-list li { display: flex; align-items: flex-start; gap: var(--sp-6); }
-.tip-list .smark { width: 12px; height: 12px; margin-top: 2px; }
 .block { display: block; }
 
 /* ========== 复制按钮 ========== */
@@ -241,7 +237,7 @@
    开关是 <html data-overlay>（dialog.tsx 的 Scrim 挂着时写上）。节点抽屉的遮罩只压暗不模糊，自己不挂开关；它开着时上面再叠对话框，抽屉也算下面一层。
    浮层都 Portal 到 body、不在 .app 里，自己的动画照常。骨架屏不管。
    无限循环的动画暂停： */
-html[data-overlay] :is(.app, .drawer) :is(.spin, .flow-dot, .top-btn.jobs-ind > .lucide, .stepbar-item[data-kind="running"] .stepbar-node),
+html[data-overlay] :is(.app, .drawer) :is(.spin, .top-btn.jobs-ind > .lucide, .stepbar-item[data-kind="running"] .stepbar-node),
 html[data-overlay] :is(.app, .drawer) .pill[data-dot="pulse"]::before,
 html[data-overlay] :is(.app, .drawer) .smark[data-spin],
 html[data-overlay] :is(.app, .drawer) .progress[data-live="1"] .progress-fill::after { animation-play-state: paused; }
