@@ -39,7 +39,7 @@ export const COLS: Col[] = [
   { key: 'team_id', label: '团队', w: 104, type: 'team', kinds: ['vps', 'proxy'] },
   { key: 'number', label: '编号', w: 76, type: 'num', kinds: ['vps', 'proxy'], ph: '自动' },
   { key: 'label', label: '线路机名', w: 108, type: 'text', kinds: ['relay'], ph: '线路机3' },
-  { key: 'relay_id', label: '挂在线路机', w: 116, type: 'relay', kinds: ['vps', 'proxy'] },
+  { key: 'relay_id', label: '挂在线路机', w: 140, type: 'relay', kinds: ['vps', 'proxy'] },
   { key: 'provider_id', label: '供应商', w: 112, type: 'provider', kinds: ALL },
   { key: 'plan_id', label: '套餐', w: 150, type: 'plan', kinds: ALL },
   { key: 'service_ref', label: '服务编号', w: 104, type: 'text', kinds: ALL },
@@ -150,10 +150,19 @@ export function ipIssue(r: Pick<Row, 'kind' | 'ip'>): string | null {
   return `IP「${v}」格式不对`;
 }
 
+/** 端口一格的问题（失焦即查，同 ipIssue）：不适用或没填不查，填了要是 1–65535 的整数（服务端按 u16 解析，超出范围整批被拒） */
+export function portIssue(r: Row, k: 'ssh_port' | 'ss_port' | 'up_port'): string | null {
+  const c = COLS.find((x) => x.key === k)!;
+  const v = r[k].trim();
+  if (!applies(c, r) || v === '') return null;
+  return /^\d+$/.test(v) && Number(v) >= 1 && Number(v) <= 65535 ? null : `${c.label}应为 1–65535`;
+}
+
 /** 服务端「检查」返回的错误（纯文本）对回表单字段：单台表单标在字段旁，对不上的只在检查结果里列出。先判断更具体的词（IP 的几句先判，补上的机器名「团队1-03」里有「团队」；
- *  「宿主机上没有空闲的 SS 端口」归宿主机，「选了套餐要填到期日」归到期日；「SSH 1.2.3.4:22 连不上 / 被拒绝」归 SSH 端口——原话带着 IP 与端口，两样哪个填错都看得出） */
+ *  「宿主机上没有空闲的 SS 端口」归宿主机，「选了套餐要填到期日」归到期日；「SSH 1.2.3.4:22 连不上 / 被拒绝」归 SSH 端口——原话带着 IP 与端口，两样哪个填错都看得出；
+ *  「IP 127.0.0.1 是回环地址」「IP x 不在宿主机 X 的网卡上」这类以「IP 」开头的归 IP（后者也带「宿主机」，所以 IP 先判）） */
 const SERVER_FIELDS: [RegExp, keyof Row][] = [
-  [/^SSH /, 'ssh_port'], [/IPv6|这个 IP|IP 重复|^IP「/, 'ip'], [/宿主机/, 'host_id'], [/到期日/, 'due_date'], [/费用/, 'price'], [/套餐/, 'plan_id'], [/供应商/, 'provider_id'],
+  [/^SSH /, 'ssh_port'], [/IPv6|这个 IP|IP 重复|^IP「|^IP /, 'ip'], [/宿主机/, 'host_id'], [/到期日/, 'due_date'], [/费用/, 'price'], [/套餐/, 'plan_id'], [/供应商/, 'provider_id'],
   [/线路机.*名称|名称.*重复/, 'label'], [/线路机/, 'relay_id'], [/团队/, 'team_id'], [/编号/, 'number'], [/上游/, 'up_host'], [/IP/, 'ip'],
 ];
 export const serverField = (msg: string): keyof Row | undefined => SERVER_FIELDS.find(([re]) => re.test(msg))?.[1];
@@ -171,7 +180,7 @@ export function localIssues(r: Row): { key: keyof Row; msg: string }[] {
   if (r.kind === 'relay' && !r.label.trim()) add('label', '请填写线路机名');
   if (r.kind !== 'relay') { if (!r.team_id && !r.unresolved.team_id) add('team_id', '请选择团队'); if (!r.relay_id && !r.unresolved.relay_id) add('relay_id', '请选择挂载的线路机'); }
   if (r.number.trim() !== '' && (!/^\d+$/.test(r.number.trim()) || Number(r.number) < 1 || Number(r.number) > 999)) add('number', '编号应为 1–999');
-  for (const k of ['ssh_port', 'ss_port', 'up_port'] as const) if (applies(col(k), r) && r[k].trim() !== '' && !/^\d+$/.test(r[k].trim())) add(k, `${col(k).label}应为整数`);
+  for (const k of ['ssh_port', 'ss_port', 'up_port'] as const) { const p = portIssue(r, k); if (p) add(k, p); }
   if (r.kind === 'proxy' && (!r.up_host.trim() || !r.up_port.trim())) add(r.up_host.trim() ? 'up_port' : 'up_host', '请填上游主机和端口');
   if (r.due_date && !/^\d{4}-\d{2}-\d{2}$/.test(r.due_date)) add('due_date', '到期日格式应为 YYYY-MM-DD');
   if (r.price.trim() && !isFinite(Number(r.price))) add('price', '费用应为数字');

@@ -75,6 +75,8 @@ const ERR_ZH: [RegExp, string | ((m: string, ...g: string[]) => string)][] = [
 export const errText = (s: string) => ERR_ZH.reduce<string>((t, [re, to]) => t.replace(re, to as string), s).replace(/\s+$/, '');
 /** 运行中的入口探测失败（直出入口不做 TCP 探测）：返回失败的那次探测。抽屉入口表、线路机页的状态列写「不通」，悬停看 errText(detail) */
 export const probeFail = (e: EntryView) => (e.lifecycle !== 'active' || !e.applied ? null : !e.direct && e.tcp && !e.tcp.ok ? e.tcp : e.egress && !e.egress.ok ? e.egress : null);
+/** 入口状态列的「不通」写明是哪一段：TCP 连不上入口，还是连上了但出口验收失败（抽屉的「入口探测 N/M 连通」只算 TCP） */
+export const probeFailLabel = (e: EntryView) => (probeFail(e) === e.tcp ? 'TCP 不通' : '出口不通');
 /** 状态筛选、状态列排序用的值：在用的看健康，其余看生命周期（同机器页状态筛选下拉的 value） */
 export const statusOf = (m: MachineView) => (m.lifecycle === 'active' ? m.health.status : m.lifecycle);
 /** 状态列升序：有问题的在前（上架失败、故障、降级…），正常的在后。机器页、首页表格的状态列与首页的「异常优先」共用 */

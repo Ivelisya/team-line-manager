@@ -359,7 +359,7 @@ pub async fn check(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Bat
     let mut tx = st.db.begin().await?;
     let mut v = validate(&mut tx, &b.items).await?;
     tx.rollback().await?;
-    // 只查库的校验之外再看一眼 SSH 端口通不通（同恢复的预检）：地址填错、防火墙没放行在这里就能看出来，不用等上架作业失败。
+    // 只查库的校验之外再看一眼 SSH 端口通不通（同恢复的预检；要读到 SSH 版本行，只连上 TCP 不算）：地址填错、防火墙没放行在这里就能看出来，不用等上架作业失败。
     // 家宽代理不 SSH；同机 IP 节点登录的是宿主机（在用的，不用再看）；不是一台机器的地址直接报错，不去连
     let mut probe = vec![];
     for (i, c) in v.iter_mut().enumerate() {
@@ -367,7 +367,7 @@ pub async fn check(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Bat
             continue;
         }
         match not_a_host(c.ip) {
-            Some(what) => c.errors.push(format!("{} 是{what}地址，不是一台可以上架的机器", c.ip)),
+            Some(what) => c.errors.push(format!("IP {} 是{what}地址，不能上架", c.ip)),
             None => probe.push(i),
         }
     }
@@ -381,16 +381,56 @@ pub async fn check(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Bat
     let targets: Vec<(String, u16)> = probe.iter().map(|&i| (v[i].ip.to_string(), v[i].item.ssh_port.unwrap_or(22))).collect();
     // 每个探测拿自己的一份地址（借用 targets 的闭包过不了 axum 处理函数的生命周期检查）
     let results: Vec<_> = futures::stream::iter(targets.clone())
-        .map(|(ip, port)| async move { crate::ssh::tcp_probe(&ip, port, Duration::from_secs(3)).await })
+        .map(|(ip, port)| async move { crate::ssh::ssh_probe(&ip, port, Duration::from_secs(3)).await })
         .buffered(PROBE_CONCURRENCY)
         .collect()
         .await;
     for ((&i, (ip, port)), r) in probe.iter().zip(&targets).zip(results) {
         if let Err(why) = r {
-            v[i].errors.push(format!("SSH {ip}:{port} 连不上（{why}）"));
+            v[i].errors.push(format!("SSH {ip}:{port} {why}"));
+        }
+    }
+    // 同机 IP 节点：登录宿主机看这个 IP 配没配在它的网卡上（同上架作业的第一步，同一段脚本），不用等作业失败。
+    // 宿主机是在用的机器、中控本来就登录它，不计入探测限速
+    let on_host: Vec<usize> = (0..v.len()).filter(|&i| v[i].errors.is_empty() && v[i].host.is_some()).collect();
+    let host_ids: Vec<Uuid> = on_host.iter().filter_map(|&i| v[i].item.host_id).collect();
+    let host_rows: Vec<(Uuid, String, i32, String)> = sqlx::query_as(
+        "select m.id, host(m.primary_ip), m.ssh_port, display_name(m.kind::text, m.label, t.name, m.number)
+         from machine m left join team t on t.id = m.team_id where m.id = any($1)",
+    )
+    .bind(&host_ids)
+    .fetch_all(&st.db)
+    .await?;
+    let host_rows: HashMap<Uuid, (String, i32, String)> = host_rows.into_iter().map(|(id, ip, port, name)| (id, (ip, port, name))).collect();
+    let targets: Vec<(String, crate::ssh::Target, String)> = on_host
+        .iter()
+        .map(|&i| {
+            let (ip, port, name) = host_rows[&v[i].item.host_id.expect("同机 IP 节点")].clone();
+            let t = crate::ssh::Target { ip, port: port as u16, key: st.cfg.ssh_key.clone(), known_hosts: st.cfg.known_hosts.clone(), password: None };
+            (v[i].ip.to_string(), t, name)
+        })
+        .collect();
+    let results: Vec<_> = futures::stream::iter(targets)
+        .map(|(own, t, host)| async move { ip_on_host(&own, &t, &host).await })
+        .buffered(PROBE_CONCURRENCY)
+        .collect()
+        .await;
+    for (&i, r) in on_host.iter().zip(results) {
+        if let Err(e) = r {
+            v[i].errors.push(e);
         }
     }
     Ok(ok(report(&v)))
+}
+
+/// 同机 IP 节点的 IP 在不在宿主机 `host` 的网卡上：先看宿主机的 SSH 端口（连不上时不用等 ssh 自己超时），再登录跑 `LOCAL_IPS`
+async fn ip_on_host(own: &str, t: &crate::ssh::Target, host: &str) -> Result<(), String> {
+    crate::ssh::ssh_probe(&t.ip, t.port, Duration::from_secs(3)).await.map_err(|why| format!("宿主机 {host} 的 SSH {}:{} {why}", t.ip, t.port))?;
+    let out = t.run_once(jobs::scripts::LOCAL_IPS, Duration::from_secs(15)).await.map_err(|e| format!("登录宿主机 {host} 核对 IP 失败：{e:#}"))?;
+    if !out.ok() {
+        return Err(format!("登录宿主机 {host} 核对 IP 失败：{}", out.stderr.trim()));
+    }
+    jobs::scripts::ip_not_on_host(own, host, out.kv("local_ips").unwrap_or("")).map_or(Ok(()), Err)
 }
 
 pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Batch>) -> ApiResult<Json<Value>> {

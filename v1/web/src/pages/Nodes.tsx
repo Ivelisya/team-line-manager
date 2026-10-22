@@ -21,7 +21,7 @@ import { NodeHover } from '@/components/app/NodeHover';
 import { MachineGrid, byNum, byStr, sortByCol, type Col } from '@/components/app/MachineGrid';
 import { Pagination } from '@/components/app/Pagination';
 import { usePage } from '@/lib/usePage';
-import { useUrlSort, useUrlState } from '@/lib/urlState';
+import { useUrlSearch, useUrlSort, useUrlState } from '@/lib/urlState';
 
 type Scope = 'live' | 'retired';
 /** 只调淡已退役的行：机器页看的是资产信息，离线机器的这些字段照常可读（首页表格调淡的是读数过期的） */
@@ -71,7 +71,9 @@ export function NodesPage() {
   const teams = useTeams().data;
   const teamOpts = React.useMemo(() => (teams ?? []).map((t) => ({ value: t.id, label: t.name })), [teams]);
   const { id: openId, open } = useDrawer();
+  // 输入框是本地状态、停手后写回 ?q=（直接绑地址参数时快速输入会丢字）；筛选按地址里的 q
   const text = sp.get('q') ?? '';
+  const [input, setInput] = useUrlSearch(sp, upd);
   const team = sp.get('team') ?? '';
   const kind = sp.get('kind') ?? '';
   const relay = sp.get('relay') ?? '';
@@ -85,7 +87,9 @@ export function NodesPage() {
   const setStatus = React.useCallback((v: string) => upd({ status: v }), [upd]);
   const filtered = !!(text || team || kind || relay || status || dueSoon || plan);
   const clearFilters = () => upd({ q: '', team: '', kind: '', relay: '', status: '', due: '', plan: '' });
-  const [sort, setSort] = useUrlSort(); // null = 默认顺序
+  const [urlSort, setSort] = useUrlSort(); // null = 默认顺序
+  // 只看即将到期时，没选排序就按到期日升序（最急的在前）
+  const sort = React.useMemo(() => urlSort ?? (dueSoon && scope === 'live' ? { id: 'due', desc: false } : null), [urlSort, dueSoon, scope]);
   const onScope = React.useCallback((v: Scope) => upd({ scope: v === 'retired' ? v : '', status: '' }), [upd]);
 
   const all = q.data ?? EMPTY;
@@ -118,7 +122,7 @@ export function NodesPage() {
         </div></div> },
       { id: 'kind', header: '类型', size: 84, drop: 1, ...byStr((m) => kindLabel(m.kind)), cell: (m) => kindLabel(m.kind) },
       { id: 'status', header: '状态', size: 96, ...byNum(statusRank, 'asc'), cell: (m) => <HealthPill m={m} /> },
-      { id: 'entry', header: '入口', size: 152, cell: (m) => <EntryCell m={m} /> },
+      { id: 'entry', header: '入口', size: 188, cell: (m) => <EntryCell m={m} /> },
       { id: 'plan', header: '供应商 · 套餐', size: 176, drop: 3,
         cell: (m) => <>{m.plan ? <Trunc className="cell-main">{m.plan.name}</Trunc> : <span className="cell-main t-muted">{m.host_machine ? '不带套餐' : '未设置'}</span>}<span className="sub">{m.provider?.name ?? '—'}</span></> },
       { id: 'traffic', header: '本月业务流量', size: 112, r: true, ...byNum(trafficTotal),
@@ -152,7 +156,7 @@ export function NodesPage() {
         tools={<Segmented label="范围" value={scope} onChange={onScope} items={SCOPES} />} />
 
       <div className="row" role="search" ref={pg.anchor}>
-        <SearchInput value={text} onChange={(e) => upd({ q: e.target.value })} placeholder="搜索名称、IP、套餐、服务编号…" aria-label="搜索" className="w-full sm:w-[260px]" />
+        <SearchInput value={input} onChange={(e) => setInput(e.target.value)} placeholder="搜索名称、IP、套餐、服务编号…" aria-label="搜索" className="w-full sm:w-[260px]" />
         <div className="w-[140px]"><Select value={team} onChange={setTeam} allowEmpty="全部团队" placeholder="团队" options={teamOpts} aria-label="团队" /></div>
         <div className="w-[130px]"><Select value={kind} onChange={setKind} allowEmpty="全部类型" placeholder="类型" options={filterOpts().kind} aria-label="类型" /></div>
         <div className="w-[140px]"><Select value={relay} onChange={setRelay} allowEmpty="全部线路机" placeholder="线路机" options={relayOpts} aria-label="线路机" /></div>
@@ -160,7 +164,7 @@ export function NodesPage() {
         {dueSoon && <button type="button" className="fchip" aria-pressed="true" aria-label="取消「即将到期」筛选" onClick={() => upd({ due: '' })}>即将到期<X size={14} /></button>}
         {plan && <button type="button" className="fchip" aria-pressed="true" aria-label="取消套餐筛选" onClick={() => upd({ plan: '' })}>套餐{planName && ` ${planName}`}<X size={14} /></button>}
         {filtered && <Button variant="quiet" size="md" onClick={clearFilters}><X />清除筛选</Button>}
-        {sort && <Button variant="quiet" size="md" onClick={() => setSort(null)}><RotateCcw />恢复默认顺序</Button>}
+        {urlSort && <Button variant="quiet" size="md" onClick={() => setSort(null)}><RotateCcw />恢复默认顺序</Button>}
       </div>
 
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}

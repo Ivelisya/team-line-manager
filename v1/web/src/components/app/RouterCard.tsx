@@ -25,12 +25,6 @@ export function RouterStatePill({ r }: { r: Pick<RouterView, 'state' | 'error' |
   const issues = routerIssues(r.summary);
   return issues.length ? <Pill tone="warn" tip={issues.join('\n')} tabIndex={0}>部分异常</Pill> : <Pill tone="ok">在线</Pill>;
 }
-/** 名字后面的状态标（同机器卡）：在线且没毛病不标；部署中转圈、离线三角、部分异常半圆、等待接入虚线圆 */
-function RouterMark({ r }: { r: RouterView }) {
-  const [tone, text] = r.deploy?.state === 'running' ? ['info', '部署中'] : r.state === 'offline' ? ['bad', '离线']
-    : r.state === 'pending' ? ['neutral', '等待接入'] : routerIssues(r.summary).length ? ['warn', '部分异常'] : [];
-  return tone ? <span className="smark" data-tone={tone} data-spin={tone === 'info' ? '' : undefined} role="img" aria-label={text} data-tip={text} /> : null;
-}
 /** 卡片描边：离线红、在线但有毛病黄（同机器卡的故障 / 降级） */
 export const routerHealth = (r: RouterView) => (r.state === 'offline' ? 'down' : r.state === 'online' && routerIssues(r.summary).length ? 'degraded' : 'ok');
 
@@ -156,7 +150,8 @@ function RouterCardImpl({ r, current, onOpen: open }: { r: RouterView; current?:
     <article className={cn('ncard', current && 'is-current', !s && 'is-quiet')} data-view="large" data-health={routerHealth(r)} style={{ '--rows': 8 } as CSSProperties}>
       <header className="nc-head">
         <span className="nc-kind" role="img" aria-label="软路由" data-tip="软路由（OpenWrt + OpenClash）"><RouterIcon /></span>
-        <span className="nc-named"><button type="button" className="nc-name" data-tip={`打开 ${r.name} 的详情`} onClick={() => onOpen()}>{r.name}</button><RouterMark r={r} /></span>
+        {/* 名字后面不再挂状态标：状态在底部的 pill 与描边上，等待接入时卡片中间还有说明 */}
+        <span className="nc-named"><button type="button" className="nc-name" data-tip={`打开 ${r.name} 的详情`} onClick={() => onOpen()}>{r.name}</button></span>
         <div className="nc-actions"><IconButton label="打开详情" tip={false} data-tip="打开详情" onClick={() => onOpen()}><PanelRightOpen size={16} /></IconButton></div>
       </header>
 

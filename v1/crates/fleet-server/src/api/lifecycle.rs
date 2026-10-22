@@ -286,7 +286,9 @@ async fn restore_plan(conn: &mut PgConnection, id: Uuid, m: &RM, team_ov: Option
     .await?;
     let ip_conflict = conflict.map(|(cid, k, l, t, n, lc)| {
         let name = display_name(&k, l.as_deref(), t.as_deref(), n);
-        blockers.push(format!("IP {} 已被未退役的机器「{name}」占用：先把它退役，或确认这台机器的 IP 没有变", m.ip));
+        // 占用者常常和这台同名（退役后编号回收、同一个 IP 又上架了一次）：写明是另一台，不然读着像自己占自己
+        let who = if name == old_name { format!("另一台未退役的「{name}」（与这台同名）") } else { format!("未退役的机器「{name}」") };
+        blockers.push(format!("IP {} 已被{who}占用：先把它退役，或确认这台机器的 IP 没有变", m.ip));
         json!({"machine_id": cid, "name": name, "lifecycle": lc})
     });
 
@@ -375,8 +377,9 @@ async fn restore_plan(conn: &mut PgConnection, id: Uuid, m: &RM, team_ov: Option
 /// 退役时存过主机公钥的，另给 host_key_changed（现在的公钥不在存的里面）。
 async fn probe_login(st: &AppState, m: &RM) -> Value {
     let port = m.ssh_port as u16;
-    if !ssh::tcp_ok(&m.ip, port, Duration::from_secs(3)).await {
-        return json!({"reachable": false, "key_login": "unreachable"});
+    // 要读到 SSH 版本行才算通（中控出网经透明代理时，TCP 对任何地址都连得上）
+    if let Err(why) = ssh::ssh_probe(&m.ip, port, Duration::from_secs(3)).await {
+        return json!({"reachable": false, "key_login": "unreachable", "detail": why});
     }
     let tmp = std::env::temp_dir().join(format!("fleet-restore-probe-{}", Uuid::new_v4().simple()));
     let run = async {
@@ -467,7 +470,8 @@ pub async fn restore_preview(a: Actor, State(st): State<AppState>, ApiPath(id): 
     };
     if let Some(i) = &ssh_info {
         if i["key_login"] == "unreachable" {
-            warnings.push(format!("SSH {}:{} 现在连不上：恢复作业会在「预检与身份」一步失败，先确认机器已开机、IP 没变", m.ip, m.ssh_port));
+            let why = i["detail"].as_str().unwrap_or("连不上");
+            warnings.push(format!("SSH {}:{} {why}：恢复作业会在「预检与身份」一步失败，先确认机器已开机、IP 没变", m.ip, m.ssh_port));
         }
         // 只是提示：POST 不再探测，真正的拦截在恢复作业的预检（放回退役时的公钥再核对）
         match host_key_note(&m, i, q.reset_host_key == Some(true)) {

@@ -287,6 +287,8 @@ function checkProvision(items: ProvisionItem[]): ProvisionCheckItem[] {
     if (!IP_RE.test(it.ip ?? '') || it.ip.split('.').some((x) => +x > 255)) errors.push('IP 格式不正确');
     else if (ips.has(it.ip)) errors.push(`这个 IP 已经属于 ${ips.get(it.ip)}`); // 同服务端原话
     else if (seenIp.has(it.ip)) errors.push('这一批里 IP 重复');
+    // 不是一台机器的地址（同服务端 provision::not_a_host 的原话，只模拟回环与链路本地）
+    else if (it.kind !== 'proxy' && !it.host_id && /^(127\.|169\.254\.)/.test(it.ip)) errors.push(`IP ${it.ip} 是${it.ip.startsWith('127.') ? '回环' : '链路本地'}地址，不能上架`);
     seenIp.add(it.ip);
     if (it.ssh_port != null && (it.ssh_port < 1 || it.ssh_port > 65535)) errors.push('SSH 端口应在 1–65535');
     let name = ''; let number: number | null = null; let relayPort: number | undefined;
