@@ -95,7 +95,8 @@ a { color: inherit; }
 .cmd-trigger-t { flex: 1; min-width: 0; text-align: left; white-space: nowrap; }
 .cmd-trigger-k { display: inline-flex; gap: var(--sp-2); }
 @media (max-width: 760px) {
-  .cmd-trigger { width: var(--h-md); padding: 0; justify-content: center; margin-left: auto; margin-right: var(--sp-4); }
+  .cmd-trigger { width: var(--h-md); padding: 0; justify-content: center; margin-left: auto; margin-right: var(--control-gap); }
+  .topbar-right { margin-left: 0; } /* 搜索按钮已靠右：右侧按钮组紧跟着它，不再各占一半空白、把搜索孤零零挤在中间 */
   .cmd-trigger-t, .cmd-trigger-k { display: none; }
 }
 /* 顶栏：进行中作业徽标 */
@@ -177,7 +178,7 @@ a { color: inherit; }
 @media (max-width: 400px) {
   .topbar { gap: 0; padding: 0 var(--sp-8) 0 var(--sp-4); }
   .brand { font-size: 0; gap: 0; flex: none; }
-  .topbar-right { gap: var(--sp-2); min-width: 0; flex-shrink: 1; }
+  .topbar-right { gap: var(--sp-4); min-width: 0; flex-shrink: 1; } /* 主题与退出之间至少 4px，免得误点退出 */
 }
 
 /* ---------- 页头（全站同一个） ---------- */
