@@ -236,7 +236,7 @@ pub(super) async fn lock(tx: &mut Tx<'_>) -> ApiResult<()> {
 
 fn mode_domains(d: &Data) -> Value { json!({"mode": d.mode.as_str(), "domains": d.domains.len()}) }
 
-/// 草稿相对生效值的变更摘要（给人看）
+/// 草稿相对生效值的变更摘要（给人看）：`from` / `to` 只有模式与域名个数，另写域名、备注各改没改（同模式同个数时分得清是换了域名还是只改了备注）
 fn diff_json(before: &BTreeMap<(Scope, Uuid), Data>, after: &BTreeMap<(Scope, Uuid), Data>, names: &HashMap<Uuid, String>) -> Vec<Value> {
     let mut keys: Vec<(Scope, Uuid)> = before.keys().chain(after.keys()).copied().collect();
     keys.sort();
@@ -249,6 +249,7 @@ fn diff_json(before: &BTreeMap<(Scope, Uuid), Data>, after: &BTreeMap<(Scope, Uu
                 json!({
                     "scope": s.as_str(), "id": id, "name": names.get(&id).cloned().unwrap_or_default(),
                     "from": mode_domains(&a), "to": mode_domains(&b),
+                    "domains_changed": a.domains != b.domains, "note_changed": a.note != b.note,
                 })
             })
         })
@@ -379,11 +380,18 @@ pub async fn discard(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<H
     lock(&mut tx).await?;
     let rows = policy::load_rows(&mut *tx, true).await?;
     check_hash(&mut tx, &rows, &b.draft_hash).await?;
-    let n = sqlx::query("update policy set draft = null, revision = revision + 1, updated_by = $1, updated_at = now() where draft is not null")
-        .bind(&a.name)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
+    // 只清读出来算有草稿的行（与预览、发布同一个口径）：规范化后与生效值相同的草稿本来就当作没有，不算丢弃、revision 不动
+    let (scopes, ids): (Vec<&str>, Vec<Uuid>) = rows.iter().filter(|r| r.draft.is_some()).map(|r| (r.scope.as_str(), r.scope_id)).unzip();
+    let n = sqlx::query(
+        "update policy p set draft = null, revision = revision + 1, updated_by = $1, updated_at = now()
+         from unnest($2::text[], $3::uuid[]) k(scope, id) where p.scope = k.scope and p.scope_id = k.id",
+    )
+    .bind(&a.name)
+    .bind(&scopes)
+    .bind(&ids)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
     audit(&mut tx, &a.name, "policy.discard", "policy", None, json!({"drafts": n})).await?;
     tx.commit().await?;
     st.emit(Event::Policies);
@@ -454,26 +462,32 @@ struct VRow {
     rollback_of_seq: Option<i64>,
     actor: String,
     created_at: OffsetDateTime,
-    snapshot: Value,
+    /// 与当前生效值的快照逐字相同时为 None（不用取回、解析）
+    snapshot: Option<Value>,
     changes: Value,
     relays: Value,
 }
 
 async fn load_versions(st: &AppState, only: Option<Uuid>) -> ApiResult<Vec<Value>> {
-    // 「与当前相同」和回滚用同一个比法（规范化、去掉已删除的团队与节点，见 rollback_target）：点得出回滚按钮的就一定回滚得了
+    // 「与当前相同」和回滚用同一个比法（规范化、去掉已删除的团队与节点，见 rollback_target）：点得出回滚按钮的就一定回滚得了。
+    // 先在库里比快照是否与当前逐字相同（通常就是最新一版），相同的不取回；回滚会改什么另由 rollback_preview 按版本给
     let rows = policy::load_rows(&st.db, false).await?;
-    let current = policy::parse_snapshot(&Value::Array(policy::snapshot_of(&rows)));
+    let cur_snap = Value::Array(policy::snapshot_of(&rows));
+    let current = policy::parse_snapshot(&cur_snap);
     let vs: Vec<VRow> = sqlx::query_as(
-        "select v.id, v.seq, v.kind, p.seq rollback_of_seq, v.actor, v.created_at, v.snapshot, v.changes, v.relays
+        "select v.id, v.seq, v.kind, p.seq rollback_of_seq, v.actor, v.created_at,
+                case when v.snapshot = $3 then null else v.snapshot end snapshot, v.changes, v.relays
          from policy_version v left join policy_version p on p.id = v.rollback_of
          where ($1::uuid is null or v.id = $1) order by v.seq desc limit $2",
     )
     .bind(only)
     .bind(VERSIONS_SHOWN)
+    .bind(&cur_snap)
     .fetch_all(&st.db)
     .await?;
     let exists = existing_scopes(&st.db).await?;
-    let names = policy::scope_names(&st.db).await?;
+    // 与当前逐字相同的快照：去掉已删除的范围后通常仍相同（当前生效值里还留着已彻底删除的节点时不同）
+    let same_as_cur = rollback_target(&cur_snap, &exists) == current;
     let latest: Option<i64> = sqlx::query_scalar("select max(seq) from policy_version").fetch_one(&st.db).await?;
     let latest = latest.unwrap_or(0);
 
@@ -531,14 +545,12 @@ async fn load_versions(st: &AppState, only: Option<Uuid>) -> ApiResult<Vec<Value
             } else {
                 "applied"
             };
-            // 回滚到它会改什么（当前 → 这个版本，确认框里列出）；内容与当前相同的不能回滚
-            let target = rollback_target(&v.snapshot, &exists);
-            let is_current = target == current;
-            let rollback_changes = if is_current { vec![] } else { diff_json(&current, &target, &names) };
+            // 内容与当前相同的不能回滚
+            let is_current = v.snapshot.as_ref().map_or(same_as_cur, |s| rollback_target(s, &exists) == current);
             json!({
                 "id": v.id, "seq": v.seq, "kind": v.kind, "rollback_of_seq": v.rollback_of_seq, "actor": v.actor,
                 "created_at": rfc3339(v.created_at), "status": status, "changes": v.changes, "relays": rel,
-                "is_latest": v.seq == latest, "is_current": is_current, "rollbackable": !is_current, "rollback_changes": rollback_changes,
+                "is_latest": v.seq == latest, "is_current": is_current, "rollbackable": !is_current,
             })
         })
         .collect())
@@ -561,6 +573,21 @@ fn rollback_target(snap: &Value, exists: &HashSet<Uuid>) -> BTreeMap<(Scope, Uui
     let mut t = policy::parse_snapshot(snap);
     t.retain(|(_, sid), _| exists.contains(sid));
     t
+}
+
+/// 回滚到这个版本会改什么（当前 → 这个版本，确认框里列出）：`{seq, rollbackable, changes}`，`changes` 形状同版本的 `changes`，
+/// 与当前相同时 `rollbackable` 为 false、`changes` 为空。比法同回滚
+pub async fn rollback_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
+    let (snap, seq): (Value, i64) = sqlx::query_as("select snapshot, seq from policy_version where id = $1")
+        .bind(id)
+        .fetch_optional(&st.db)
+        .await?
+        .ok_or_else(|| ApiError::not_found("没有这个版本"))?;
+    let rows = policy::load_rows(&st.db, false).await?;
+    let target = rollback_target(&snap, &existing_scopes(&st.db).await?);
+    let current = policy::parse_snapshot(&Value::Array(policy::snapshot_of(&rows)));
+    let changes = if target == current { vec![] } else { diff_json(&current, &target, &policy::scope_names(&st.db).await?) };
+    Ok(ok(json!({"seq": seq, "rollbackable": target != current, "changes": changes})))
 }
 
 /// 把某个历史版本的快照作为新版本发布
@@ -597,9 +624,11 @@ pub async fn rollback(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath
         let want = target.get(&(s, sid)).cloned().unwrap_or_else(|| s.default_data());
         match existing.get(&(s, sid)) {
             Some(r) if r.cur == want => {}
-            Some(_) => {
+            Some(r) => {
+                // 草稿正好就是回滚后的值：清掉，不留下一份与生效值相同的草稿（读时当作没有，库里却一直在）
                 sqlx::query(
-                    "update policy set mode = $3, domains = $4, note = $5, revision = revision + 1, updated_by = $6, updated_at = now()
+                    "update policy set mode = $3, domains = $4, note = $5, draft = case when $7 then null else draft end,
+                            revision = revision + 1, updated_by = $6, updated_at = now()
                      where scope = $1 and scope_id = $2",
                 )
                 .bind(s.as_str())
@@ -608,6 +637,7 @@ pub async fn rollback(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath
                 .bind(&want.domains)
                 .bind(&want.note)
                 .bind(&a.name)
+                .bind(r.draft.as_ref() == Some(&want))
                 .execute(&mut *tx)
                 .await?;
             }

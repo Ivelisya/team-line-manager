@@ -128,8 +128,7 @@ pub async fn delete_team(a: Actor, State(st): State<AppState>, ApiPath(id): ApiP
         return Err(ApiError::conflict(format!("「{name}」还有 {u}：先把它们移到别的团队（已退役的先彻底删除）再删")));
     }
     // 按规范化后的值比（仅观察不看域名：旧数据里改回仅观察时可能还留着隐藏的域名）
-    let rows = policy::load_rows(&mut *tx, false).await?;
-    if let Some(r) = rows.iter().find(|r| r.scope == Scope::Team && r.scope_id == id) {
+    if let Some(r) = policy::load_row(&mut *tx, Scope::Team, id).await? {
         if r.draft.is_some() || r.cur != Scope::Team.default_data() {
             return Err(ApiError::conflict(format!(
                 "「{name}」的访问规则不是默认的「仅观察」或有未发布的草稿：先在「访问规则」里把它改回仅观察（清空备注）并发布（有草稿的先发布或丢弃），再删团队"
