@@ -55,7 +55,10 @@ export const RetireDialog = resetOnOpen(function RetireDialog({ m, open, onOpenC
       confirmDisabled={!p} blocked={blocked}
       onConfirm={async () => {
         const r = await retire.mutateAsync({ id: m.id, confirm: m.name, now: mode === 'now', cleanup: mode === 'now' ? cleanup : undefined, reason: reason.trim() || undefined });
-        if (r.mode === 'spare') toast.ok(`已移入备用：${r.from} → ${r.name}${r.ip_nodes.length ? `，连同 ${r.ip_nodes.length} 个同机 IP 节点` : ''}`);
+        if (r.mode === 'spare') {
+          toast.ok(`已移入备用：${r.from} → ${r.name}${r.ip_nodes.length ? `，连同 ${r.ip_nodes.length} 个同机 IP 节点` : ''}`);
+          for (const n of r.notes) toast.info(n);
+        }
         else toast.ok(r.ip_node_jobs.length ? `已提交清理作业，连同 ${r.ip_node_jobs.length} 个同机 IP 节点` : '已提交清理作业');
         onDone?.();
       }}>
@@ -81,6 +84,7 @@ export const RetireDialog = resetOnOpen(function RetireDialog({ m, open, onOpenC
           </Choice>
         </div>
       )}
+      {p && mode === 'spare' && p.spare.notes.map((n) => <Note key={n}>{n}</Note>)}
       {p && !canSpare && !inSpare && !blocked && <Note>{h ? '同机 IP 节点没有订阅，只能立即回收' : `不能移入备用：${p.spare.why}`}</Note>}
       {h && <Note>宿主机「{h.name}」不受影响 <InfoTip text={mode === 'spare' ? '只动这个 IP 的节点。' : `只回收这个 IP 的节点：摘除它的入口${cleanup ? '，停掉宿主机上它自己的 SS 实例' : '；不清理时，它在宿主机上的 SS 实例留着'}。`} /></Note>}
       {xs.length > 0 && (

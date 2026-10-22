@@ -393,7 +393,7 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/machines/{id}/retire` | 退役预览，见下 |
-| POST | `/machines/{id}/retire` | `{confirm: <显示名>, reason?, now?: false, cleanup?: true}`。默认移进备用团队 → `{mode:"spare", name（备用里的新名字）, from（原名）, recycle_on, ip_nodes:[{id, name, from}]}`；`now: true` 立即回收（退役作业）→ `{mode:"now", job_id, ip_node_jobs:[{machine_id,name,job_id}]}`。见下 |
+| POST | `/machines/{id}/retire` | `{confirm: <显示名>, reason?, now?: false, cleanup?: true}`。默认移进备用团队 → `{mode:"spare", name（备用里的新名字）, from（原名）, recycle_on, ip_nodes:[{id, name, from}], auto_renew_off, notes:[string]}`；`now: true` 立即回收（退役作业）→ `{mode:"now", job_id, ip_node_jobs:[{machine_id,name,job_id}]}`。见下 |
 | GET | `/recycle-bin?q=&source=&limit=100&offset=0` | 回收站列表（只读，不含快照），按回收时间倒序：`{items:[RecycleItem], total, next_offset}`。`q`：不分大小写的包含匹配，搜名字（含回收时的名字）、IP、团队、供应商、套餐、供应商编号、宿主机名；`source`：`fleet` / `legacy`（别的值 400）；`limit` 1–500 |
 | GET | `/recycle-bin/{id}` | 单条：`RecycleItem` 加 `snapshot`；没有 404 |
 | POST | `/recycle-bin/import` | 旧面板的退役机器导入（要 `write`），见下 |
@@ -402,13 +402,13 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 `name` 退役前的名字（进过备用的是 `spare_from`），`last_name` 回收时的名字（「备用-03」；立即回收的同 `name`，导入的为 null），`team` 退役前的团队；`retired_at` 进备用的时刻（立即回收的是退役作业完成的时刻）；价格、币种、周期是订阅的生效值（没有订阅取模板）；`reason` 退役原因（到期回收的接上「备用到期自动回收（到期日 …）」）；`traffic_*` 入口业务流量合计（字节，整个生命周期；线路机按它上面全部入口算），`nic_*` 网卡累计（没有网卡读数的家宽代理、同机 IP 节点为 null）。数值的口径以流量改造为准。
 `snapshot`（fleet）：`{machine（机器行，不含秘密）, name, team, host, provider, plan, subscription（生效值）, renewals[], entries:[{relay,node,port,lifecycle,created_at,removed_at}], outbound（出站参数，不含秘密）}`；legacy 是导入时给的原始记录。回收站不受保留期清理影响，一直保留。
 
-**退役预览** `GET /machines/{id}/retire` → `{name, renames:[{machine_id,old_name,new_name}], ip_nodes:[{id,name}], spare:{ok, why|null, team:{id,name}, to_name|null, recycle_on|null, ip_nodes:[{id,name,to_name}]}, routers:[{id,name,exits:[{exit,node}]}], blockers:[string]}`：
+**退役预览** `GET /machines/{id}/retire` → `{name, renames:[{machine_id,old_name,new_name}], ip_nodes:[{id,name}], spare:{ok, why|null, team:{id,name}, to_name|null, recycle_on|null, ip_nodes:[{id,name,to_name}], notes:[string]（开着的自动续费会关掉、原团队压缩后撤销退役回不到原编号）}, routers:[{id,name,exits:[{exit,node}]}], blockers:[string]}`：
 - `renames`：机器离开后原团队压缩编号的改名（两种去向一样；`numbering.auto_compact` 关掉时为 []）；`ip_nodes`：立即回收时一并回收的同机 IP 节点（宿主机才有）。
 - `spare`：能不能移进备用（`ok`，不能时 `why`：线路机、已经在备用团队里、还没上线（上架中或上架失败）、没有订阅、订阅已经过期满 1 天——这些只能立即回收）；进去后的名字（备用团队最小的空号）、自动回收的日子（账单时区）、一起进备用的同机 IP 节点与它们的新名字（已经在备用团队的不算）。
 - `routers`：各软路由最近一次采集里还指向这台（和它的同机 IP 节点）的出口，`node` 是指向的那台；只提示、不阻断，软路由不自动改（要换掉先「替换」）。
 - `blockers`：立即回收提交时会 409 的原因，与提交时同一段判断（已经退役 / 退役中、线路机上还有节点入口、这台或它的同机 IP 节点有作业正在执行一步）；[] = 能立即回收。
 
-**移进备用**（默认）：一个事务、不建作业。先锁团队（原团队、同机 IP 节点的团队、备用团队）再锁机器；进不了备用（同 `spare.why`）409「不能移进备用：…。要现在就清理并移进回收站，选「立即回收」（now: true）」；它或它的同机 IP 节点有进行中的作业 409；`reason` 最多 2000 字。改到备用团队最小的空号（与 `PATCH /machines/{id}` 同一段代码：审计 `machine.rename`、刷新线路机备注，并记下 `spare_since` / `spare_from`），`lifecycle_reason` 记退役原因；宿主机上还没退役、不在备用团队的同机 IP 节点一起进（编号挨着，原因「随宿主机「名字」退役」）；原团队压缩编号。机器照常运行：入口、端口、软路由出口都不动，告警照常（备用期间故障照常通知）。审计 `machine.retire`（`detail.mode = "spare"`，`{name, to, reason, recycle_on, ip_nodes}`；同机 IP 节点各一条，带 `host`），摘要「团队1-01 → 备用-02（换新机）」。
+**移进备用**（默认）：一个事务、不建作业。先锁团队（原团队、同机 IP 节点的团队、备用团队）再锁机器；进不了备用（同 `spare.why`）409「不能移进备用：…。要现在就清理并移进回收站，选「立即回收」（now: true）」；它或它的同机 IP 节点有进行中的作业 409；`reason` 最多 2000 字。改到备用团队最小的空号（与 `PATCH /machines/{id}` 同一段代码：审计 `machine.rename`、刷新线路机备注，并记下 `spare_since` / `spare_from`，开着的自动续费关掉：不关的话每到期顺延一期、永远不会回收；审计 `machine.rename` 的 detail 记 `auto_renew_off: true`，移出备用不自动打开），`lifecycle_reason` 记退役原因；宿主机上还没退役、不在备用团队的同机 IP 节点一起进（编号挨着，原因「随宿主机「名字」退役」）；原团队压缩编号。机器照常运行：入口、端口、软路由出口都不动，告警照常（备用期间故障照常通知）。审计 `machine.retire`（`detail.mode = "spare"`，`{name, to, reason, recycle_on, ip_nodes}`；同机 IP 节点各一条，带 `host`），摘要「团队1-01 → 备用-02（换新机）」。
 移出备用（改到别的团队）= 撤销退役：`spare_since`、`spare_from`、`lifecycle_reason` 清空。
 
 **立即回收**（`now: true`）：建退役作业 `retire`（摘入口 → 等线路机 → 清理 → 撤令牌 → 收尾），收尾时同一个事务移进回收站。线路机上还有节点入口时 409（提示先搬空，它自己的直出入口不算，由「摘除入口」一并摘掉）；这台（或它的同机 IP 节点）有作业正在执行一步（租约未过期）时 409，先取消并等它停下（升级 agent 不能取消）；`reason` 最多 2000 字；`cleanup: false` 不登录清理。宿主机：它上面还没开始退役的同机 IP 节点同一事务里一并置为退役中（作废它们进行中 / 失败的作业、关告警），各建一个 `cleanup: false` 的退役作业（只摘入口，宿主机的清理连同所有实例一起删），列在 `ip_node_jobs`。审计 `machine.retire`（`detail.mode = "now"`）。

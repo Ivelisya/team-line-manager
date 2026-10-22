@@ -362,6 +362,9 @@ pub fn retire(ctx: &Ctx, machine: &str, now: bool, reason: Option<&str>, no_clea
             if !ip_nodes.is_empty() {
                 outln(format!("同机 IP 节点一起进备用：{}", ip_nodes.join("，")));
             }
+            for n in sp["notes"].as_array().into_iter().flatten() {
+                outln(format!("注意：{}", n.as_str().unwrap_or("")));
+            }
         }
         let exits: Vec<String> = pre["routers"]
             .as_array()
@@ -392,6 +395,9 @@ pub fn retire(ctx: &Ctx, machine: &str, now: bool, reason: Option<&str>, no_clea
             let mut s = format!("{} → {}，{} 起自动回收", st(&d, "/from"), st(&d, "/name"), st(&d, "/recycle_on"));
             for x in d["ip_nodes"].as_array().into_iter().flatten() {
                 s += &format!("\n一起进备用：{} → {}", st(x, "/from"), st(x, "/name"));
+            }
+            for n in d["notes"].as_array().into_iter().flatten() {
+                s += &format!("\n{}", n.as_str().unwrap_or(""));
             }
             s
         });

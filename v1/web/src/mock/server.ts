@@ -573,7 +573,7 @@ R('GET', '/machines/([^/]+)/retire', ({ params }) => {
   return {
     name: m.name, renames, ip_nodes: ips, routers: exitsUsing(m),
     blockers: m.kind === 'relay' && m.entries.some((e) => !e.direct) ? [`这台线路机上还有 ${m.entries.filter((e) => !e.direct).length} 个节点入口：先把节点迁走或退役。可先用「搬空线路机」把节点换到其他线路机`] : [],
-    spare: { ok: !why, why, team: { id: sp.id, name: sp.name }, to_name: displayName(sp.name, nums[0]), recycle_on: m.subscription ? addDays(m.subscription.due_date, 2) : null, ip_nodes: spareIps },
+    spare: { ok: !why, why, team: { id: sp.id, name: sp.name }, to_name: displayName(sp.name, nums[0]), recycle_on: m.subscription ? addDays(m.subscription.due_date, 2) : null, ip_nodes: spareIps, notes: m.subscription?.auto_renew ? ['这台开着自动续费：进备用时会关掉，到期后照常回收（供应商那边的自动扣款要自己去关）'] : [] },
   };
 });
 /** 移入备用（同服务端 move_to_spare）：机器照常运行，改到备用团队最小的空号，原团队前移补号 */
@@ -598,12 +598,14 @@ R('POST', '/machines/([^/]+)/retire', ({ params, body }) => {
     const why = spareWhy(m);
     if (why) throw bad(`不能移入备用：${why}`, 409, 'conflict');
     const from = m.name; const xfrom = xs.map((x) => x.name);
+    const autoOff = !!m.subscription?.auto_renew;
+    if (m.subscription) m.subscription.auto_renew = false;
     moveToSpare(m, body.reason ?? null);
     for (const x of xs) moveToSpare(x, `随宿主机「${from}」退役`);
     refreshCounts();
     db.audit.unshift({ id: `a${db.seq++}`, ts: iso(), actor: db.user, action: 'machine.retire', title: '退役机器', summary: `${from} 移入备用 → ${m.name}`, target_kind: 'machine', target_id: m.id, detail: { mode: 'spare' } });
     emit({ type: 'machines' }); emit({ type: 'catalog' });
-    return { mode: 'spare', name: m.name, from, recycle_on: m.recycle_on, ip_nodes: xs.map((x, i) => ({ id: x.id, name: x.name, from: xfrom[i] })) };
+    return { mode: 'spare', name: m.name, from, recycle_on: m.recycle_on, ip_nodes: xs.map((x, i) => ({ id: x.id, name: x.name, from: xfrom[i] })), auto_renew_off: autoOff, notes: autoOff ? ['自动续费已关闭（供应商那边的自动扣款要自己去关）'] : [] };
   }
   const job = startRetire(m, !!body.cleanup, body.reason ?? null);
   // 宿主机：同机 IP 节点一并退役，进行中 / 失败的作业作废，各自一个退役作业（不登录清理：宿主机的清理连同它们的实例一起删）

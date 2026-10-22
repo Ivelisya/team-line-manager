@@ -247,7 +247,8 @@ export interface ReplaceBody { new_machine_id: string; old_to?: { team_id?: stri
  *  renames：原团队后面的节点前移补号，按所有受影响的团队算 */
 export interface RetirePreview {
   name: string;
-  spare: { ok: boolean; why: string | null; team: { id: string; name: string }; to_name: string; recycle_on: string | null; ip_nodes: { id: string; name: string; to_name: string }[] };
+  /** notes：进备用的提示（开着的自动续费会关掉、撤销退役回不到原编号） */
+  spare: { ok: boolean; why: string | null; team: { id: string; name: string }; to_name: string; recycle_on: string | null; ip_nodes: { id: string; name: string; to_name: string }[]; notes: string[] };
   routers: { id: string; name: string; exits: { exit: string; node: string }[] }[];
   renames: { machine_id: string; old_name: string; new_name: string }[];
   ip_nodes: { id: string; name: string }[];
@@ -256,7 +257,7 @@ export interface RetirePreview {
 }
 /** 退役：mode=spare 已移入备用（name 是新名、from 原名、recycle_on 起自动回收）；mode=now 提交了清理作业（宿主机的同机 IP 节点各一个，没有为 []） */
 export type RetireResult =
-  | { mode: 'spare'; name: string; from: string; recycle_on: string | null; ip_nodes: { id: string; name: string; from: string }[] }
+  | { mode: 'spare'; name: string; from: string; recycle_on: string | null; ip_nodes: { id: string; name: string; from: string }[]; auto_renew_off: boolean; notes: string[] }
   | { mode: 'now'; job_id: string; ip_node_jobs: { machine_id: string; name: string; job_id: string }[] };
 
 /** 回收站一行（GET /recycle-bin，只读）：source = fleet 本面板 / legacy 旧面板导入；name 是退役前的名字，last_name 回收时的名字 */
