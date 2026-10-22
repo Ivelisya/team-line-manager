@@ -6,6 +6,7 @@
 # 四张原始时序表（按天分区、只保留几天、量最大）只备结构不备数据；小时汇总等其余表全量。
 # 可选加密：/etc/fleet/backup-age.recipients（age 公钥，一行一个）存在且非空时，tar 经管道交给 age 加密后才落盘，存成 .tar.age；
 # 私钥不放在中控和 PVE 上（docs/OPS.md §10）。没有这个文件照旧存明文 .tar。
+# 每份旁边写一个 <备份名>.sha256（sha256sum 格式），PVE 拉取时核对，传输或磁盘上的损坏不会悄悄混进去。
 # 家里 PVE 每天经 fleet-backup 用户取走最新一份（fleet-backup-latest.sh / fleet-backup-pull.sh）。恢复见 docs/OPS.md「备份与恢复」。
 set -euo pipefail
 D=/var/backups/fleet
@@ -24,8 +25,12 @@ if [ -s "$REC" ]; then
 else
   tar -cf "$W/$NAME" -C "$W" fleet.dump -C / etc/fleet var/lib/fleet/known_hosts
 fi
-chgrp fleet-backup "$W/$NAME"
-chmod 640 "$W/$NAME"   # fleet-backup 用户（PVE 拉取）要能读
+(cd "$W" && sha256sum "$NAME" > "$NAME.sha256")
+chgrp fleet-backup "$W/$NAME" "$W/$NAME.sha256"
+chmod 640 "$W/$NAME" "$W/$NAME.sha256"   # fleet-backup 用户（PVE 拉取）要能读
+# 校验和先就位：拉取时看得到的备份一定有它的校验和
+mv "$W/$NAME.sha256" "$D/$NAME.sha256"
 mv "$W/$NAME" "$D/$NAME"
-ls -1 "$D"/fleet-*.tar* | head -n -"$KEEP" | xargs -r rm -f
-echo "已备份 $D/$NAME（$(du -h "$D/$NAME" | cut -f1)），共 $(ls -1 "$D"/fleet-*.tar* | wc -l) 份"
+list() { ls -1 "$D"/fleet-*.tar* | grep -v '\.sha256$'; }
+list | head -n -"$KEEP" | while read -r f; do rm -f "$f" "$f.sha256"; done
+echo "已备份 $D/$NAME（$(du -h "$D/$NAME" | cut -f1)），共 $(list | wc -l) 份"

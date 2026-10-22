@@ -168,13 +168,16 @@ async fn preflight(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     // 该 IP 已有记录且指纹变了：失败，除非作业参数明确允许重置（机器重装过）
     let allow_reset = c.job.params["reset_host_key"].as_bool().unwrap_or(false);
     // 恢复：退役时存下的主机公钥先放回 known_hosts，下面 pin_host_key 就按它核对（IP 换了主人则失败，不首次信任）。
-    // 勾了「重置主机指纹」、或这次改动之前退役没存过的，照旧按现在的公钥重新记录
+    // 勾了「重置主机指纹」、或这次改动之前退役没存过的，照旧按现在的公钥重新记录。
+    // 存过的：核对时必须还有记录（放回之后被删了就失败，不退回首次信任）
+    let mut must_match = false;
     if c.job.kind.starts_with("restore_") && !allow_reset {
         let saved: Option<String> = sqlx::query_scalar("select retired_host_keys from machine where id = $1").bind(m.id).fetch_one(&c.st.db).await?;
         if let Some(s) = saved {
             if ssh::put_back_host_keys(&c.st.cfg.known_hosts, &m.ip, m.ssh_port as u16, &s).await? {
                 c.log("已放回退役时记录的主机公钥，按它核对").await;
             }
+            must_match = !ssh::keys_of(&s).is_empty();
         }
     }
     let mut up = false;
@@ -188,7 +191,11 @@ async fn preflight(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     if !up {
         return Err(StepError::err(ErrKind::Network, format!("{}:{} 的 SSH 端口连不上", m.ip, m.ssh_port)));
     }
-    let fp = ssh::pin_host_key(&c.st.cfg.known_hosts, &m.ip, m.ssh_port as u16, allow_reset).await?;
+    let fp = if must_match {
+        ssh::check_pinned_host_key(&c.st.cfg.known_hosts, &m.ip, m.ssh_port as u16).await?
+    } else {
+        ssh::pin_host_key(&c.st.cfg.known_hosts, &m.ip, m.ssh_port as u16, allow_reset).await?
+    };
     c.log(format!("主机公钥已记录/核对 {}", ssh::fingerprint(&fp))).await;
     let mut out = c.ssh(&m, None).run(scripts::FACTS, Duration::from_secs(30)).await?;
     if !out.ok() {

@@ -52,7 +52,7 @@ enum KeysCmd {
         #[command(flatten)]
         auth: KeyAuthArgs,
     },
-    /// 创建 API 密钥（token 只显示一次）
+    /// 创建 API 密钥（token 只显示一次）。中控要再核对一次当前密码，用 --user 登录的那个；开了两步验证的账户到网页上建
     Create {
         name: String,
         /// 权限，逗号分隔：read,write,secrets,exec

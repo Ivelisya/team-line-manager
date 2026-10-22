@@ -112,6 +112,23 @@ pub fn spawn_background(st: &AppState) {
     notify::start(st);
     supervise(st, "分区与保留期维护", false, housekeeping);
     supervise(st, "小时汇总", false, rollup_loop);
+    supervise(st, "会话撤销通知", false, revoked_listener);
+}
+
+/// 命令行（user-set 重设密码）在别的进程里删会话：经 NOTIFY 转来，实时流的连接马上复核。
+/// 断线时 recv 自己重连；连不上或 listen 失败才返回，由 supervise 10 秒后重启
+async fn revoked_listener(s: AppState) {
+    match sqlx::postgres::PgListener::connect_with(&s.db).await {
+        Ok(mut l) => match l.listen(auth::REVOKED_CHANNEL).await {
+            Ok(()) => {
+                while l.recv().await.is_ok() {
+                    s.revoked();
+                }
+            }
+            Err(e) => tracing::warn!("监听会话撤销通知失败：{e}"),
+        },
+        Err(e) => tracing::warn!("监听会话撤销通知失败：{e}"),
+    }
 }
 
 /// 跑一个不该结束的后台循环：panic 或返回了记 error，10 秒后重启；`exit` 为真时改为结束整个进程，交给 systemd 重启

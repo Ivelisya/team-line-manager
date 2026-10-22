@@ -35,6 +35,10 @@ pub enum Event {
     /// 实时指标（`live.rs` 拼好的整条 JSON，前端直接写进缓存；各连接共用同一份字节）；只经 `events.send` 发，不走 `emit`
     #[serde(skip)]
     Metrics(Utf8Bytes),
+    /// 有会话或 API 密钥被撤销（登出、撤销会话、退出其它设备、改密码、撤销密钥、命令行重设密码）：
+    /// 实时流的每个连接马上复核自己的凭据，失效的以 4401 关闭，不等 60 秒一轮。不推给前端；只经 `revoked()` 发
+    #[serde(skip)]
+    Revoked,
 }
 
 impl Event {
@@ -130,6 +134,11 @@ impl AppState {
             self.metrics_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         let _ = self.events.send(e);
+    }
+
+    /// 会话 / 密钥撤销之后调（事务提交之后）：实时流的连接马上复核，见 `Event::Revoked`
+    pub fn revoked(&self) {
+        let _ = self.events.send(Event::Revoked);
     }
 
     /// 有作业可领了（建作业、重试、取消，调用方在事务提交之后调）：唤醒空闲的作业引擎，不等它兜底重查

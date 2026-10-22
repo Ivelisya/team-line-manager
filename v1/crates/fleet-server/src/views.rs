@@ -407,9 +407,9 @@ async fn traffic(st: &AppState) -> sqlx::Result<TrafficMap> {
     .await?;
     let rows: Vec<(Uuid, i64, i64, i64, i64)> = sqlx::query_as(
         "select entry_id,
-           coalesce(sum(up_bytes) filter (where hour >= date_trunc('day', now() at time zone 'Asia/Shanghai') at time zone 'Asia/Shanghai'), 0)::bigint,
-           coalesce(sum(down_bytes) filter (where hour >= date_trunc('day', now() at time zone 'Asia/Shanghai') at time zone 'Asia/Shanghai'), 0)::bigint,
-           coalesce(sum(up_bytes), 0)::bigint, coalesce(sum(down_bytes), 0)::bigint
+           least(coalesce(sum(up_bytes) filter (where hour >= date_trunc('day', now() at time zone 'Asia/Shanghai') at time zone 'Asia/Shanghai'), 0), 9e18)::bigint,
+           least(coalesce(sum(down_bytes) filter (where hour >= date_trunc('day', now() at time zone 'Asia/Shanghai') at time zone 'Asia/Shanghai'), 0), 9e18)::bigint,
+           least(coalesce(sum(up_bytes), 0), 9e18)::bigint, least(coalesce(sum(down_bytes), 0), 9e18)::bigint
          from entry_traffic_hourly where hour >= date_trunc('month', now() at time zone 'Asia/Shanghai') at time zone 'Asia/Shanghai'
          group by entry_id",
     )
@@ -439,23 +439,24 @@ async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<
         // 校准时刻在周期内的从校准时刻所在整点的下一桶算起：那一小时里校准之后的流量不计（至多差 1 小时）。
         // 网卡：逐台按 host_metric_hourly 主键区间求本周期入、出总量，再按规则取小 / 取大 / 相加 / 只取出站。
         // 业务流量（家宽代理、同机 IP 节点）：先展开「机器 → 入口」，再逐个入口按小时表主键求和
-        // （子查询放在 OR 连接条件里时规划器会先连出全部小时行，实验室 64 台要 11 s）
+        // （子查询放在 OR 连接条件里时规划器会先连出全部小时行，实验室 64 台要 11 s）。
+        // 按 numeric 求和、夹到 9e18 再转 bigint：一台机器的离谱读数不让 bigint 溢出、拖垮所有人的机器列表
         let rows: Vec<(Uuid, i64, bool)> = sqlx::query_as(
             "with q as (select q.mid, q.rule, q.base_at >= s.s0 cal,
                                case when q.base_at >= s.s0 then date_trunc('hour', q.base_at) else s.s0 - interval '1 hour' end since
                         from unnest($1::uuid[], $2::date[], $3::text[], $4::text[], $5::timestamptz[]) q(mid, start, tz, rule, base_at)
                         cross join lateral (select q.start::timestamp at time zone q.tz s0) s),
              qe as (select q.mid, q.since, e.id eid from q join entry e on e.node_id = q.mid or e.relay_id = q.mid where q.rule is null)
-             select q.mid, case q.rule when 'min' then least(t.rx, t.tx) when 'max' then greatest(t.rx, t.tx) when 'sum' then t.rx + t.tx else t.tx end,
+             select q.mid, least(case q.rule when 'min' then least(t.rx, t.tx) when 'max' then greatest(t.rx, t.tx) when 'sum' then t.rx + t.tx else t.tx end, 9e18)::bigint,
                     coalesce(q.cal, false)
              from q cross join lateral (
-               select coalesce(sum(h.net_rx), 0)::bigint rx, coalesce(sum(h.net_tx), 0)::bigint tx from host_metric_hourly h
+               select coalesce(sum(h.net_rx), 0) rx, coalesce(sum(h.net_tx), 0) tx from host_metric_hourly h
                where h.machine_id = q.mid and h.hour > q.since) t
              where q.rule is not null
              union all
-             select q.mid, coalesce(sum(t.b), 0)::bigint, coalesce(q.cal, false)
+             select q.mid, least(coalesce(sum(t.b), 0), 9e18)::bigint, coalesce(q.cal, false)
              from q left join qe on qe.mid = q.mid left join lateral (
-               select sum(h.up_bytes + h.down_bytes) b from entry_traffic_hourly h where h.entry_id = qe.eid and h.hour > qe.since) t on true
+               select sum(h.up_bytes::numeric + h.down_bytes) b from entry_traffic_hourly h where h.entry_id = qe.eid and h.hour > qe.since) t on true
              where q.rule is null
              group by q.mid, q.cal",
         )
@@ -709,10 +710,10 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
         let ends: &[Uuid] = if node == relay { &[node] } else { &[node, relay] };
         for &m in ends {
             let t = removed_by.entry(m).or_default();
-            t.today_up += x.today_up;
-            t.today_down += x.today_down;
-            t.month_up += x.month_up;
-            t.month_down += x.month_down;
+            t.today_up = t.today_up.saturating_add(x.today_up);
+            t.today_down = t.today_down.saturating_add(x.today_down);
+            t.month_up = t.month_up.saturating_add(x.month_up);
+            t.month_down = t.month_down.saturating_add(x.month_down);
         }
     }
     let mut ip_nodes: HashMap<Uuid, Vec<Ref>> = HashMap::new();
@@ -805,7 +806,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
             let (after, cal) = period_used[&r.id];
             let base = r.s_base.filter(|_| cal);
             let quota = Quota {
-                used: base.unwrap_or(0) + after,
+                used: base.unwrap_or(0).saturating_add(after),
                 period_start: start,
                 rule,
                 base,
@@ -919,15 +920,15 @@ pub fn overview_of(ms: &[MachineView]) -> Value {
         // 业务流量按节点端算（每条入口恰好属于一个节点）；线路机只算它的直出入口（节点就是它自己）
         if m.kind != "relay" {
             for e in &m.entries {
-                up += e.traffic.month_up;
-                down += e.traffic.month_down;
+                up = up.saturating_add(e.traffic.month_up);
+                down = down.saturating_add(e.traffic.month_down);
             }
-            up += m.removed_traffic.month_up;
-            down += m.removed_traffic.month_down;
+            up = up.saturating_add(m.removed_traffic.month_up);
+            down = down.saturating_add(m.removed_traffic.month_down);
         } else {
             for e in m.entries.iter().filter(|e| e.direct) {
-                up += e.traffic.month_up;
-                down += e.traffic.month_down;
+                up = up.saturating_add(e.traffic.month_up);
+                down = down.saturating_add(e.traffic.month_down);
             }
         }
         // 实时速率只算数据没过期的：agent 离线的机器，最后一份上报的速率不算（同前端 liveRate）。

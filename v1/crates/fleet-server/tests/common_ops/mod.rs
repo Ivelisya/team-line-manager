@@ -41,7 +41,7 @@ impl T {
 
     /// 创建 API 密钥，返回 (id, token)
     pub async fn make_key(&self, name: &str, scopes: &[&str]) -> (String, String) {
-        let d = self.ok("POST", "/api/v1/api-keys", Some(json!({"name": name, "scopes": scopes}))).await;
+        let d = self.ok("POST", "/api/v1/api-keys", Some(json!({"name": name, "scopes": scopes, "password": ADMIN_PW}))).await;
         (d["id"].as_str().unwrap().to_string(), d["token"].as_str().unwrap().to_string())
     }
 

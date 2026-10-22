@@ -44,6 +44,9 @@ const FAIL_WINDOW_MIN: i64 = 15;
 const FAIL_PER_USER_IP: i64 = 5;
 const FAIL_PER_IP: i64 = 20;
 const FAIL_PER_USER: i64 = 100;
+/// 两步验证码输错（登录与再次校验）另有上限：同一用户名 1 小时内 10 次，不分来源、本人登录成功过的来源也不例外。
+/// 知道密码的人换 /64 猜 6 位码时，按来源的上限挡不住
+const WRONG_CODE_PER_USER: i64 = 10;
 
 /// 记失败、判断限速这一步同时在跑的个数：登录风暴时不占满主连接池
 static CHECK_SEM: Semaphore = Semaphore::const_new(4);
@@ -222,17 +225,19 @@ pub(crate) fn ip_group(ip: IpAddr) -> IpAddr {
 
 /// 窗口内失败次数（含本次先记下的这一条）超过任一上限时，返回还要等多少秒（之前第 N 条要滑出窗口才会降到上限以下）。
 /// 来源未知（没有对端地址）时算作同一个来源，只是不查按来源的上限。
-/// 该用户 30 天内登录成功过的来源（login_source）不受「同一用户名不分来源」的上限：否则攻击者换 20 个 /64 各错 5 次就能把本人一直锁在外面
+/// 该用户 30 天内登录成功过的来源（login_source）不受「同一用户名不分来源」的上限：否则攻击者换 20 个 /64 各错 5 次就能把本人一直锁在外面。
+/// 验证码输错（wrong_code）另按 1 小时 WRONG_CODE_PER_USER 次封，不看来源
 async fn blocked_secs(st: &AppState, user: &str, group: Option<IpAddr>) -> ApiResult<Option<i64>> {
     let secs: Option<f64> = sqlx::query_scalar(
         "select extract(epoch from greatest(
-           (select ts from login_failure where username = $1 and ip is not distinct from $2 and ts > now() - $6::text::interval order by ts desc offset $3 limit 1),
-           (select ts from login_failure where ip = $2 and ts > now() - $6::text::interval order by ts desc offset $4 limit 1),
+           (select ts from login_failure where username = $1 and ip is not distinct from $2 and ts > now() - $6::text::interval order by ts desc offset $3 limit 1) + $6::text::interval,
+           (select ts from login_failure where ip = $2 and ts > now() - $6::text::interval order by ts desc offset $4 limit 1) + $6::text::interval,
            (select ts from login_failure where username = $1 and ts > now() - $6::text::interval
               and not exists (select 1 from login_source s join app_user u on u.id = s.user_id
                               where u.username = $1 and s.ip = $2 and s.last_ok_at > now() - interval '30 days')
-            order by ts desc offset $5 limit 1)
-         ) + $6::text::interval - now())::float8",
+            order by ts desc offset $5 limit 1) + $6::text::interval,
+           (select ts from login_failure where username = $1 and wrong_code and ts > now() - interval '1 hour' order by ts desc offset $7 limit 1) + interval '1 hour'
+         ) - now())::float8",
     )
     .bind(user)
     .bind(group.map(ipnetwork::IpNetwork::from))
@@ -240,6 +245,7 @@ async fn blocked_secs(st: &AppState, user: &str, group: Option<IpAddr>) -> ApiRe
     .bind(FAIL_PER_IP)
     .bind(FAIL_PER_USER)
     .bind(format!("{FAIL_WINDOW_MIN} minutes"))
+    .bind(WRONG_CODE_PER_USER - 1)
     .fetch_one(&st.db)
     .await?;
     Ok(secs.map(|s| s.ceil() as i64))
@@ -247,7 +253,7 @@ async fn blocked_secs(st: &AppState, user: &str, group: Option<IpAddr>) -> ApiRe
 
 /// 记下一次要校验密码 / 验证码的尝试（先按失败记）再判断限速：并发的尝试各占一个名额（后提交的一定看得到先提交的），不会一起挤过限速；
 /// 被限速的这条删掉（不延长封禁）并回 429。成功时调用方用 [`clear_failures`] 连同该用户在本来源的失败记录一起清掉；
-/// 不算失败的结局（比如密码对了、还差验证码）用 [`forget_attempt`] 删掉这一条。登录与账户安全里的再次校验共用
+/// 验证码不对时用 [`mark_wrong_code`] 标上，另计验证码的上限。登录与账户安全里的再次校验共用
 pub(crate) async fn begin_attempt(st: &AppState, uname: &str, group: Option<IpAddr>) -> ApiResult<i64> {
     let _check = CHECK_SEM.acquire().await.map_err(|e| ApiError::internal(format!("登录限流信号量：{e}")))?;
     let attempt: i64 = sqlx::query_scalar("insert into login_failure (username, ip) values ($1, $2) returning id")
@@ -263,8 +269,13 @@ pub(crate) async fn begin_attempt(st: &AppState, uname: &str, group: Option<IpAd
     Ok(attempt)
 }
 
-pub(crate) async fn forget_attempt(st: &AppState, attempt: i64) -> sqlx::Result<()> {
+async fn forget_attempt(st: &AppState, attempt: i64) -> sqlx::Result<()> {
     sqlx::query("delete from login_failure where id = $1").bind(attempt).execute(&st.db).await.map(|_| ())
+}
+
+/// 这次尝试是验证码输错：计入 WRONG_CODE_PER_USER
+pub(crate) async fn mark_wrong_code(st: &AppState, attempt: i64) -> sqlx::Result<()> {
+    sqlx::query("update login_failure set wrong_code = true where id = $1").bind(attempt).execute(&st.db).await.map(|_| ())
 }
 
 /// 只清本来源的：别处（攻击者）的失败照样计数，不因为本人成功了一次就重新给他名额
@@ -359,12 +370,13 @@ pub async fn login(
     let mut recovery = false;
     if let Some(enc) = totp_enc {
         let Some(code) = r.totp.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
-            // 密码对了、还差验证码：这次不算失败
-            forget_attempt(&st, attempt).await?;
+            // 密码对了、还差验证码：这一条照样计数（不写审计）。不计的话知道密码的人能不限次数地让中控算 argon2，
+            // 占满 HASH_SEM 挤掉别人的登录；本人先不带码、再带码登录只多一条，成功后随本来源的记录一起清掉
             return Err(totp_required());
         };
         match check_factor(&st, uid, &enc, code).await? {
             None => {
+                mark_wrong_code(&st, attempt).await?;
                 record_failure(&st, &uname, "auth.login_failed", Some(uid), json!({"ip": ip_s, "reason": "totp"})).await?;
                 return Err(totp_invalid());
             }
@@ -418,6 +430,7 @@ pub async fn logout(State(st): State<AppState>, jar: CookieJar) -> ApiResult<(Co
         .fetch_optional(&st.db)
         .await?;
         if let Some((uid, name)) = gone {
+            st.revoked();
             let mut tx = st.db.begin().await?;
             audit(&mut tx, &name, "auth.logout", "user", Some(uid), json!({})).await?;
             tx.commit().await?;
@@ -430,7 +443,11 @@ pub async fn me(a: Actor) -> Json<Value> {
     Json(json!({"data": {"username": a.name, "kind": if a.is_session() { "session" } else { "api_key" }, "scopes": a.scopes}}))
 }
 
-/// CLI：建用户 / 改密码（清掉该用户的会话与登录失败记录：重设密码就是为了让他马上能登进来）
+/// 跑着的中控里实时流的连接马上复核（命令行在别的进程里删会话，经 PostgreSQL 的 NOTIFY 转过去，见 lib::spawn_background）
+pub const REVOKED_CHANNEL: &str = "fleet_revoked";
+
+/// CLI：建用户 / 改密码（清掉该用户的会话、登录失败记录与登录成功过的来源：重设密码就是为了让他马上能登进来，
+/// 旧来源可能是盗用密码的人的，不再免于「同一用户名不分来源」的上限）
 pub async fn upsert_user(db: &sqlx::PgPool, username: &str, password: &str) -> anyhow::Result<()> {
     let h = hash_password(password)?;
     sqlx::query(
@@ -443,11 +460,13 @@ pub async fn upsert_user(db: &sqlx::PgPool, username: &str, password: &str) -> a
     .execute(db)
     .await?;
     sqlx::query("delete from session where user_id = (select id from app_user where username = $1)").bind(username).execute(db).await?;
+    sqlx::query("delete from login_source where user_id = (select id from app_user where username = $1)").bind(username).execute(db).await?;
     sqlx::query("delete from login_failure where username = $1").bind(username).execute(db).await?;
+    sqlx::query("select pg_notify($1, '')").bind(REVOKED_CHANNEL).execute(db).await?;
     Ok(())
 }
 
-/// CLI：停用某个用户的两步验证（手机和恢复码都丢了时由中控上的 root 执行）。用户不存在时报错
+/// CLI：停用某个用户的两步验证（手机和恢复码都丢了时由中控上的 root 执行），清掉登录成功过的来源。用户不存在时报错
 pub async fn totp_reset(db: &sqlx::PgPool, username: &str) -> anyhow::Result<()> {
     let mut tx = db.begin().await?;
     let uid: Option<Uuid> = sqlx::query_scalar(
@@ -459,6 +478,8 @@ pub async fn totp_reset(db: &sqlx::PgPool, username: &str) -> anyhow::Result<()>
     .await?;
     let Some(uid) = uid else { anyhow::bail!("没有用户 {username}") };
     sqlx::query("delete from recovery_code where user_id = $1").bind(uid).execute(&mut *tx).await?;
+    // 登录成功过的来源一并清掉：其中可能有盗用账户的人的，不再免于总上限
+    sqlx::query("delete from login_source where user_id = $1").bind(uid).execute(&mut *tx).await?;
     audit(&mut tx, "cli", "auth.totp_disabled", "user", Some(uid), json!({"via": "totp-reset", "username": username})).await?;
     tx.commit().await?;
     Ok(())

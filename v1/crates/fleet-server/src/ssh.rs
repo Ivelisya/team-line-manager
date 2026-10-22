@@ -356,6 +356,16 @@ pub async fn put_back_host_keys(known_hosts: &Path, ip: &str, port: u16, saved: 
 /// keyscan 拿 ed25519 公钥（两次，必须一致）并写入 known_hosts。返回「类型 公钥」。
 /// 该主机已有记录时：一致就什么都不改；指纹变了则报「主机指纹变化」，`allow_reset` 为真才覆盖。
 pub async fn pin_host_key(known_hosts: &Path, ip: &str, port: u16, allow_reset: bool) -> anyhow::Result<String> {
+    pin(known_hosts, ip, port, allow_reset, false).await
+}
+
+/// 同 pin_host_key（不许重置），但必须已有记录：恢复时放回了退役时存下的公钥，之后到这里核对的十几秒里
+/// 记录要是被删了（同时在跑的退役 / 彻底删除），不能退回首次信任、把新主人的公钥记上
+pub async fn check_pinned_host_key(known_hosts: &Path, ip: &str, port: u16) -> anyhow::Result<String> {
+    pin(known_hosts, ip, port, false, true).await
+}
+
+async fn pin(known_hosts: &Path, ip: &str, port: u16, allow_reset: bool, require_pinned: bool) -> anyhow::Result<String> {
     let mut seen: Vec<String> = vec![];
     for i in 0..2 {
         if i > 0 {
@@ -400,6 +410,14 @@ pub async fn pin_host_key(known_hosts: &Path, ip: &str, port: u16, allow_reset: 
             });
         }
         forget_locked(known_hosts, ip, port).await?;
+    } else if require_pinned {
+        bail!(StepError {
+            kind: ErrKind::HostKey,
+            msg: format!(
+                "known_hosts 里没有 {ip}:{port} 退役时记录的主机公钥了（放回之后又被删掉），不按现在的公钥（{}）首次信任。确认是同一台机器后在网页作业的「重试」里勾选「重置主机指纹」，或 fleetctl retry <作业> --reset-host-key",
+                fingerprint(&seen[0])
+            )
+        });
     }
     let line = format!("{spec} {}\n", seen[0]);
     let mut f = tokio::fs::OpenOptions::new().create(true).append(true).open(known_hosts).await?;

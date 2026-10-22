@@ -600,7 +600,8 @@ pub struct KeyAuth {
 }
 
 /// 密钥管理接口只允许会话用户。给了 --user 就用用户名密码临时登录（密码来自 FLEET_PASSWORD 或标准输入），否则用现有令牌（会被中控拒绝）。
-fn keys_client(ctx: &Ctx, a: &KeyAuth) -> anyhow::Result<Option<Client>> {
+/// 返回会话与密码（新建密钥要再带一次密码）
+fn keys_client(ctx: &Ctx, a: &KeyAuth) -> anyhow::Result<Option<(Client, String)>> {
     let Some(user) = &a.user else { return Ok(None) };
     let pw = if a.password_stdin {
         let mut l = String::new();
@@ -611,7 +612,7 @@ fn keys_client(ctx: &Ctx, a: &KeyAuth) -> anyhow::Result<Option<Client>> {
     };
     let anon = Client::new(&ctx.base, Cred::None)?;
     let cookie = anon.login_session(user, &pw)?;
-    Ok(Some(Client::new(&ctx.base, Cred::Cookie(cookie))?))
+    Ok(Some((Client::new(&ctx.base, Cred::Cookie(cookie))?, pw)))
 }
 
 fn hint_403(e: anyhow::Error) -> anyhow::Error {
@@ -621,18 +622,19 @@ fn hint_403(e: anyhow::Error) -> anyhow::Error {
     }
 }
 
-fn with_session<T>(ctx: &Ctx, a: &KeyAuth, f: impl FnOnce(&Client) -> anyhow::Result<T>) -> anyhow::Result<T> {
+/// `f` 拿到会话与登录用的密码（没给 --user 时是现有令牌、密码为空）
+fn with_session<T>(ctx: &Ctx, a: &KeyAuth, f: impl FnOnce(&Client, &str) -> anyhow::Result<T>) -> anyhow::Result<T> {
     let sess = keys_client(ctx, a)?;
-    let c = sess.as_ref().unwrap_or(&ctx.c);
-    let r = f(c).map_err(hint_403);
-    if let Some(s) = &sess {
+    let (c, pw) = sess.as_ref().map(|(c, p)| (c, p.as_str())).unwrap_or((&ctx.c, ""));
+    let r = f(c, pw).map_err(hint_403);
+    if let Some((s, _)) = &sess {
         let _ = s.post("/auth/logout", &json!({}));
     }
     r
 }
 
 pub fn keys_ls(ctx: &Ctx, a: &KeyAuth) -> anyhow::Result<u8> {
-    let d = with_session(ctx, a, |c| c.get("/api-keys"))?;
+    let d = with_session(ctx, a, |c, _| c.get("/api-keys"))?;
     ctx.emit(&d, || {
         let rows: Vec<Vec<String>> = d
             .as_array()
@@ -664,13 +666,17 @@ pub fn keys_create(ctx: &Ctx, a: &KeyAuth, name: &str, scopes: &str, days: Optio
     if let Some(d) = days {
         body["expires_days"] = json!(d);
     }
-    let d = with_session(ctx, a, |c| c.post("/api-keys", &body))?;
+    // 中控要求新建密钥时再带一次当前密码（开了两步验证的账户还要验证码，命令行登录不支持两步验证，请到网页上建）
+    let d = with_session(ctx, a, |c, pw| {
+        body["password"] = json!(pw);
+        c.post("/api-keys", &body)
+    })?;
     ctx.emit(&d, || format!("已创建密钥 {name}（权限 {}）\ntoken（只显示这一次，请立刻保存）：\n{}", scopes.join(","), st(&d, "/token")));
     Ok(0)
 }
 
 pub fn keys_revoke(ctx: &Ctx, a: &KeyAuth, which: &str) -> anyhow::Result<u8> {
-    let d = with_session(ctx, a, |c| {
+    let d = with_session(ctx, a, |c, _| {
         let list = c.get("/api-keys")?;
         let hits: Vec<Value> = list.as_array().cloned().unwrap_or_default().into_iter().filter(|k| k["revoked_at"].is_null() && (st(k, "/id") == which || st(k, "/prefix") == which || st(k, "/name") == which)).collect();
         match hits.len() {

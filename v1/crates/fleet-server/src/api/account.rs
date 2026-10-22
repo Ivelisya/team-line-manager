@@ -45,7 +45,7 @@ async fn replace_recovery(tx: &mut Tx<'_>, uid: Uuid) -> sqlx::Result<Vec<String
 }
 
 /// 一次「再次校验」：开头按失败记一条（限速同登录），密码 / 验证码都对了在 `done` 里清掉，任何一步不对都记审计并回 401
-struct Recheck<'a> {
+pub(crate) struct Recheck<'a> {
     st: &'a AppState,
     name: &'a str,
     uid: Uuid,
@@ -53,13 +53,40 @@ struct Recheck<'a> {
     key: String,
     ip: Option<IpAddr>,
     op: &'static str,
+    /// 开头记的那一条（验证码不对时标上 wrong_code）
+    attempt: i64,
 }
 
 impl<'a> Recheck<'a> {
     async fn begin(st: &'a AppState, a: &'a Actor, uid: Uuid, ip: Option<IpAddr>, op: &'static str) -> ApiResult<Self> {
         let key: String = a.name.chars().take(64).collect();
-        auth::begin_attempt(st, &key, ip.map(auth::ip_group)).await?;
-        Ok(Self { st, name: &a.name, uid, key, ip, op })
+        let attempt = auth::begin_attempt(st, &key, ip.map(auth::ip_group)).await?;
+        Ok(Self { st, name: &a.name, uid, key, ip, op, attempt })
+    }
+
+    /// 当前密码，开了两步验证时再加验证码（或恢复码）。开着却没给码时直接回 totp_required，不记失败。
+    /// 都对了由调用方在写操作的事务里调 `done`
+    pub(crate) async fn password_and_code(
+        st: &'a AppState,
+        a: &'a Actor,
+        ip: Option<IpAddr>,
+        op: &'static str,
+        password: &str,
+        code: Option<&str>,
+    ) -> ApiResult<(Self, Option<Factor>)> {
+        let uid = uid(a)?;
+        let enc = totp_enc(st, uid).await?;
+        let code = code.map(str::trim).filter(|s| !s.is_empty());
+        if enc.is_some() && code.is_none() {
+            return Err(auth::totp_required());
+        }
+        let r = Self::begin(st, a, uid, ip, op).await?;
+        r.password(password).await?;
+        let f = match (&enc, code) {
+            (Some(e), Some(c)) => Some(r.factor(e, c).await?),
+            _ => None,
+        };
+        Ok((r, f))
     }
 
     async fn fail(&self, reason: &str, e: ApiError) -> ApiError {
@@ -85,12 +112,15 @@ impl<'a> Recheck<'a> {
     async fn factor(&self, enc: &[u8], code: &str) -> ApiResult<Factor> {
         match auth::check_factor(self.st, self.uid, enc, code).await? {
             Some(f) => Ok(f),
-            None => Err(self.fail("totp", auth::totp_invalid()).await),
+            None => {
+                auth::mark_wrong_code(self.st, self.attempt).await?;
+                Err(self.fail("totp", auth::totp_invalid()).await)
+            }
         }
     }
 
     /// 都过了：清掉本来源的失败记录；用的是恢复码时记一笔
-    async fn done(&self, tx: &mut Tx<'_>, f: Option<Factor>) -> ApiResult<()> {
+    pub(crate) async fn done(&self, tx: &mut Tx<'_>, f: Option<Factor>) -> ApiResult<()> {
         auth::clear_failures(tx, &self.key, self.ip.map(auth::ip_group)).await?;
         if f == Some(Factor::Recovery) {
             let left: i64 = sqlx::query_scalar("select count(*) from recovery_code where user_id = $1 and used_at is null").bind(self.uid).fetch_one(&mut **tx).await?;
@@ -119,18 +149,29 @@ fn account_label(st: &AppState, user: &str) -> String {
     if host.is_empty() { user.to_string() } else { format!("{user}@{host}") }
 }
 
-/// 生成一把待确认的密钥（10 分钟内用 enable 确认），返回给认证器扫的二维码与手动输入用的 base32
-pub async fn totp_setup(a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
+#[derive(Deserialize)]
+pub struct PasswordOnly {
+    #[serde(default)]
+    password: String,
+}
+
+/// 要当前密码：生成一把待确认的密钥（10 分钟内用 enable 确认），返回给认证器扫的二维码与手动输入用的 base32。
+/// 不核对密码的话，偷到 Cookie 的人能绑上自己的认证器，本人从此登不进来（只能到中控上 totp-reset）
+pub async fn totp_setup(a: Actor, State(st): State<AppState>, ClientIp(ip): ClientIp, ApiJson(b): ApiJson<PasswordOnly>) -> ApiResult<Json<Value>> {
     let uid = uid(&a)?;
     if totp_enc(&st, uid).await?.is_some() {
         return Err(ApiError::conflict("两步验证已经开着；要换手机请先停用再重新开启"));
     }
+    let (r, _) = Recheck::password_and_code(&st, &a, ip, "totp_setup", &b.password, None).await?;
     let secret = totp::new_secret();
+    let mut tx = st.db.begin().await?;
+    r.done(&mut tx, None).await?;
     sqlx::query("update app_user set totp_pending_enc = $2, totp_pending_expires = now() + interval '10 minutes' where id = $1")
         .bind(uid)
         .bind(st.secrets.seal(&secret))
-        .execute(&st.db)
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
     let b32 = totp::base32(&secret);
     let url = totp::otpauth_url("Fleet", &account_label(&st, &a.name), &b32);
     let svg = totp::qr_svg(&url).map_err(|e| ApiError::internal(format!("生成二维码：{e}")))?;
@@ -265,17 +306,37 @@ pub async fn revoke_session(a: Actor, State(st): State<AppState>, jar: CookieJar
     let (sip, current) = gone.ok_or_else(|| ApiError::not_found("没有这个会话（可能已经过期或被撤销）"))?;
     audit(&mut tx, &a.name, "auth.session_revoked", "user", Some(uid), json!({"session": id, "ip": sip, "current": current})).await?;
     tx.commit().await?;
+    st.revoked();
     Ok(ok(json!({"ok": true, "current": current})))
 }
 
-pub async fn revoke_other_sessions(a: Actor, State(st): State<AppState>, jar: CookieJar) -> ApiResult<Json<Value>> {
+#[derive(Deserialize)]
+pub struct PasswordCodeIn {
+    #[serde(default)]
+    password: String,
+    #[serde(default)]
+    totp: Option<String>,
+}
+
+/// 退出其它设备：要当前密码（开了两步验证还要验证码）。偷到 Cookie 的人不能借它把本人踢下线
+pub async fn revoke_other_sessions(
+    a: Actor,
+    State(st): State<AppState>,
+    ClientIp(ip): ClientIp,
+    jar: CookieJar,
+    ApiJson(b): ApiJson<PasswordCodeIn>,
+) -> ApiResult<Json<Value>> {
     let uid = uid(&a)?;
+    let cur = current_hash(&jar)?;
+    let (r, f) = Recheck::password_and_code(&st, &a, ip, "revoke_other_sessions", &b.password, b.totp.as_deref()).await?;
     let mut tx = st.db.begin().await?;
-    let n = sqlx::query("delete from session where user_id = $1 and id_hash <> $2").bind(uid).bind(current_hash(&jar)?).execute(&mut *tx).await?.rows_affected();
+    r.done(&mut tx, f).await?;
+    let n = sqlx::query("delete from session where user_id = $1 and id_hash <> $2").bind(uid).bind(cur).execute(&mut *tx).await?.rows_affected();
     if n > 0 {
         audit(&mut tx, &a.name, "auth.session_revoked", "user", Some(uid), json!({"others": n})).await?;
     }
     tx.commit().await?;
+    st.revoked();
     Ok(ok(json!({"revoked": n})))
 }
 
@@ -287,9 +348,13 @@ pub struct PasswordIn {
     new: String,
     #[serde(default)]
     totp: Option<String>,
+    /// 同时撤销所有 API 密钥（怀疑密码或会话泄露时：偷到的人可能已经建了密钥）
+    #[serde(default)]
+    revoke_api_keys: bool,
 }
 
-/// 改密码：核对当前密码（开了两步验证还要验证码），成功后撤销本设备以外的所有会话
+/// 改密码：核对当前密码（开了两步验证还要验证码），成功后撤销本设备以外的所有会话，
+/// 清掉本来源以外登录成功过的来源（可能是盗用密码的人的），按要求撤销全部 API 密钥
 pub async fn change_password(
     a: Actor,
     State(st): State<AppState>,
@@ -305,17 +370,7 @@ pub async fn change_password(
     if b.new.trim().eq_ignore_ascii_case(a.name.trim()) {
         return Err(ApiError::bad_request("新密码不能和用户名一样"));
     }
-    let enc = totp_enc(&st, uid).await?;
-    let code = b.totp.as_deref().map(str::trim).filter(|s| !s.is_empty());
-    if enc.is_some() && code.is_none() {
-        return Err(auth::totp_required());
-    }
-    let r = Recheck::begin(&st, &a, uid, ip, "password_change").await?;
-    r.password(&b.current).await?;
-    let f = match (&enc, code) {
-        (Some(e), Some(c)) => Some(r.factor(e, c).await?),
-        _ => None,
-    };
+    let (r, f) = Recheck::password_and_code(&st, &a, ip, "password_change", &b.current, b.totp.as_deref()).await?;
     // 当前密码核对过之后才比：否则这里就成了不限次数猜当前密码的捷径
     if b.new == b.current {
         let mut tx = st.db.begin().await?;
@@ -335,7 +390,23 @@ pub async fn change_password(
     r.done(&mut tx, f).await?;
     sqlx::query("update app_user set password_hash = $2 where id = $1").bind(uid).bind(phc).execute(&mut *tx).await?;
     let n = sqlx::query("delete from session where user_id = $1 and id_hash <> $2").bind(uid).bind(&cur).execute(&mut *tx).await?.rows_affected();
-    audit(&mut tx, &a.name, "auth.password_changed", "user", Some(uid), json!({"ip": ip.map(|i| i.to_string()), "revoked_sessions": n})).await?;
+    sqlx::query("delete from login_source where user_id = $1 and ip is distinct from $2")
+        .bind(uid)
+        .bind(ip.map(|i| ipnetwork::IpNetwork::from(auth::ip_group(i))))
+        .execute(&mut *tx)
+        .await?;
+    // 单租户：密钥不分用户，撤销全部
+    let keys = if b.revoke_api_keys {
+        sqlx::query("update api_key set revoked_at = now() where revoked_at is null").execute(&mut *tx).await?.rows_affected()
+    } else {
+        0
+    };
+    audit(&mut tx, &a.name, "auth.password_changed", "user", Some(uid), json!({"ip": ip.map(|i| i.to_string()), "revoked_sessions": n, "revoked_api_keys": keys}))
+        .await?;
     tx.commit().await?;
-    Ok(ok(json!({"ok": true, "revoked_sessions": n})))
+    st.revoked();
+    if keys > 0 {
+        st.emit(crate::state::Event::ApiKeys);
+    }
+    Ok(ok(json!({"ok": true, "revoked_sessions": n, "revoked_api_keys": keys})))
 }

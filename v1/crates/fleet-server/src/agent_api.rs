@@ -155,7 +155,7 @@ const HOST_REFILL_PER_S: f64 = 0.2;
 struct Bucket {
     tokens: f64,
     at: Instant,
-    /// 扣过令牌的最大 seq：同一份重发（网络错误、503 后重试）和重复的不再扣
+    /// 入库提交过的最大 seq：同一份重发（网络错误、503 后重试）和重复的不再扣
     seq: u64,
     /// 主机样本的余额
     host: f64,
@@ -163,9 +163,9 @@ struct Bucket {
 
 static BUCKETS: LazyLock<Mutex<HashMap<Uuid, Bucket>>> = LazyLock::new(Default::default);
 
-/// 新的一份（seq 大于扣过的）扣一个令牌、按余额扣 `host` 个主机样本，返回能收的主机样本数；扣不到令牌返回还要等几秒。
-/// 重发的不扣、样本全收：首次已提交的入库时按 seq 去重，没提交的本来就没写进去
-fn take_token(m: &mut HashMap<Uuid, Bucket>, machine: Uuid, seq: u64, host: usize, now: Instant) -> Result<usize, u64> {
+/// 只看不扣：新的一份（seq 大于提交过的）要有一个令牌，返回按余额能收的主机样本数；扣不到令牌返回还要等几秒。
+/// 重发的放行：提交过的入库时按 seq 去重、什么都不写
+fn peek_token(m: &mut HashMap<Uuid, Bucket>, machine: Uuid, seq: u64, host: usize, now: Instant) -> Result<usize, u64> {
     let b = m.entry(machine).or_insert(Bucket { tokens: REPORT_BURST, at: now, seq: 0, host: HOST_BURST });
     let dt = now.saturating_duration_since(b.at).as_secs_f64();
     b.tokens = (b.tokens + dt * REPORT_REFILL_PER_S).min(REPORT_BURST);
@@ -177,11 +177,18 @@ fn take_token(m: &mut HashMap<Uuid, Bucket>, machine: Uuid, seq: u64, host: usiz
     if b.tokens < 1.0 {
         return Err(((1.0 - b.tokens) / REPORT_REFILL_PER_S).ceil().max(1.0) as u64);
     }
-    b.tokens -= 1.0;
-    b.seq = seq;
-    let n = host.min(b.host as usize);
-    b.host -= n as f64;
-    Ok(n)
+    Ok(host.min(b.host.max(0.0) as usize))
+}
+
+/// 入库提交之后才扣令牌与主机样本余额、推进 seq：事务失败的那份不扣也不推进，
+/// 否则 agent 故意让一份带极大 seq 的报告入库失败，之后的每一份都会被当成重发、不扣令牌也不限样本。
+/// 并发的几份可能一起看到余额：都扣（扣成负数），欠的补回来之前不再放
+fn charge(m: &mut HashMap<Uuid, Bucket>, machine: Uuid, seq: u64, host: usize) {
+    if let Some(b) = m.get_mut(&machine).filter(|b| seq > b.seq) {
+        b.tokens -= 1.0;
+        b.host -= host as f64;
+        b.seq = seq;
+    }
 }
 
 /// 应用回报的限流（每台线路机）：正常一代一份，失败按退避重发；突发 120 份，之后 2 秒一份
@@ -215,7 +222,9 @@ const MAX_ACCESS: usize = 2000;
 /// 自由文本（错误信息、系统信息）截到这么多字符
 const MAX_TEXT: usize = 512;
 
+/// 截到 n 个字符，并去掉 NUL：PostgreSQL 的 text / jsonb 不收 \0，带一个就让整份上报的事务失败
 fn clip(s: &mut String, n: usize) {
+    s.retain(|c| c != '\0');
     if let Some((i, _)) = s.char_indices().nth(n) {
         s.truncate(i);
     }
@@ -225,7 +234,7 @@ fn clip(s: &mut String, n: usize) {
 fn i64c(v: u64) -> i64 { v.min(i64::MAX as u64) as i64 }
 fn i32c(v: u32) -> i32 { v.min(i32::MAX as u32) as i32 }
 
-/// 入库前截断：条数、自由文本
+/// 入库前截断：条数、自由文本（agent 给的字符串都过 clip，顺带去掉 NUL）
 fn sanitize(r: &mut Report) {
     r.host.truncate(MAX_HOST);
     r.entries.truncate(MAX_ENTRIES);
@@ -240,6 +249,7 @@ fn sanitize(r: &mut Report) {
     }
     for x in &mut r.access {
         clip(&mut x.network, 8);
+        clip(&mut x.dest_host, 253);
     }
     if let Some(i) = &mut r.info {
         for s in [&mut i.hostname, &mut i.kernel, &mut i.os, &mut i.arch] {
@@ -280,7 +290,7 @@ async fn ingest(st: &AppState, h: &HeaderMap, mut r: Report) -> Result<Json<Repo
 
     // ── 入库前整理：时间窗口过滤、补建分区。单条坏样本绝不能让整份上报失败 ──
     let mut host = windowed(r.host.iter(), |s| s.ts_ms, raw_lo, hi, &mut dropped);
-    let keep = take_token(&mut BUCKETS.lock().unwrap(), a.machine_id, r.seq, host.len(), Instant::now()).map_err(IngestErr::Limited)?;
+    let keep = peek_token(&mut BUCKETS.lock().unwrap(), a.machine_id, r.seq, host.len(), Instant::now()).map_err(IngestErr::Limited)?;
     // 超出余额的丢最早的：最新的读数要进实时视图
     if keep < host.len() {
         dropped += host.len() - keep;
@@ -440,7 +450,7 @@ async fn ingest(st: &AppState, h: &HeaderMap, mut r: Report) -> Result<Json<Repo
         .bind(ac.iter().map(|(x, _)| x.entry_id).collect::<Vec<_>>())
         .bind(ac.iter().map(|(_, t)| *t).collect::<Vec<_>>())
         .bind(ac.iter().map(|(x, _)| x.src_ip.map(ipnetwork::IpNetwork::from)).collect::<Vec<_>>())
-        .bind(ac.iter().map(|(x, _)| x.dest_host.chars().take(253).collect::<String>()).collect::<Vec<_>>())
+        .bind(ac.iter().map(|(x, _)| x.dest_host.clone()).collect::<Vec<_>>())
         .bind(ac.iter().map(|(x, _)| x.dest_port.map(|p| p as i32)).collect::<Vec<_>>())
         .bind(ac.iter().map(|(x, _)| x.network.clone()).collect::<Vec<_>>())
         .bind(ac.iter().map(|(x, _)| x.blocked).collect::<Vec<_>>())
@@ -466,6 +476,7 @@ async fn ingest(st: &AppState, h: &HeaderMap, mut r: Report) -> Result<Json<Repo
         .await?;
     }
     tx.commit().await?;
+    charge(&mut BUCKETS.lock().unwrap(), a.machine_id, r.seq, host.len());
     if last.is_none() {
         st.emit(Event::Machine { id: a.machine_id });
         // 上架中「等待首次上报」的作业
@@ -552,6 +563,32 @@ pub async fn echo(State(st): State<AppState>, ConnectInfo(addr): ConnectInfo<Soc
 mod tests {
     use super::*;
 
+    /// 看余额并扣（测试里每份都当入库成功）
+    fn take_token(m: &mut HashMap<Uuid, Bucket>, machine: Uuid, seq: u64, host: usize, now: Instant) -> Result<usize, u64> {
+        let n = peek_token(m, machine, seq, host, now)?;
+        charge(m, machine, seq, n);
+        Ok(n)
+    }
+
+    #[test]
+    fn failed_report_does_not_make_later_ones_free() {
+        let (mut m, id, t0) = (HashMap::new(), Uuid::now_v7(), Instant::now());
+        // 一份带极大 seq 的报告看过余额、入库失败（没 charge）
+        assert_eq!(peek_token(&mut m, id, 1 << 62, 360, t0), Ok(360));
+        // 之后的照常扣令牌
+        for seq in 1..=REPORT_BURST as u64 {
+            assert!(take_token(&mut m, id, seq, 0, t0).is_ok(), "{seq}");
+        }
+        assert_eq!(take_token(&mut m, id, REPORT_BURST as u64 + 1, 0, t0), Err(1));
+        // 并发的两份都看到最后一个令牌：都扣成负数，欠的补回来之前不放
+        m.get_mut(&id).unwrap().tokens = 1.0;
+        assert!(peek_token(&mut m, id, 9000, 0, t0).is_ok() && peek_token(&mut m, id, 9001, 0, t0).is_ok());
+        charge(&mut m, id, 9000, 0);
+        charge(&mut m, id, 9001, 0);
+        assert_eq!(peek_token(&mut m, id, 9002, 0, t0 + Duration::from_secs(1)), Err(1));
+        assert!(peek_token(&mut m, id, 9002, 0, t0 + Duration::from_secs(2)).is_ok());
+    }
+
     #[test]
     fn bucket_allows_burst_then_paces_and_never_charges_resends() {
         let (mut m, id, t0) = (HashMap::new(), Uuid::now_v7(), Instant::now());
@@ -619,7 +656,10 @@ mod tests {
         .unwrap();
         let ev = fleet_proto::AccessEvent { entry_id: Uuid::nil(), ts_ms: 0, src_ip: None, dest_host: "a".into(), dest_port: None, network: "tcp".into(), blocked: false };
         r.access = vec![ev; 5000];
+        r.boot_id = "a\0b".into();
+        r.access[0].dest_host = "x\0.com".into();
         sanitize(&mut r);
+        assert_eq!((r.boot_id.as_str(), r.access[0].dest_host.as_str()), ("ab", "x.com"), "NUL 去掉");
         assert_eq!(r.access.len(), MAX_ACCESS);
         assert_eq!(r.probes[0].detail.as_ref().unwrap().chars().count(), MAX_TEXT);
         assert_eq!(r.agent_health.unwrap().last_apply_error.unwrap().len(), MAX_TEXT);
