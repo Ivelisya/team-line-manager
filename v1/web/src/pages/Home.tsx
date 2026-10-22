@@ -1,34 +1,42 @@
 // 首页：两个分区。「监控总览」= 问候 + KPI + 集群状态（features/HomeOverview）；
-// 「服务器集群」= 分组分段控件 + 三种视图：卡片（大 / 小 / 紧凑三种密度）、表格、环形；都在同一份筛选 + 排序之后分页。
-// 默认排序：线路机 → 团队 → 编号；故障/离线不下沉。其它排序是用户的显式选择；表格视图另可点表头排序。
+// 「服务器集群」= 分组分段控件 + 三种视图：卡片（详细 / 标准 / 紧凑三种密度）、表格、环形；都在同一份筛选 + 排序之后分页。
+// 排序只有一份：工具栏的下拉与表格表头改的是同一个状态（下拉列常用的几种，表头点出来的其它排序在下拉里显示「自定义」），卡片 / 环形视图同样按它排。
+// 默认排序：线路机 → 团队 → 编号；故障/离线不下沉。分组、排序、仅看异常、视图、密度都写在地址里（刷新、分享后不变），没写时用上次的选择（本地偏好）。
 import * as React from 'react';
-import { AlertTriangle, CircleGauge, Inbox, LayoutGrid, Server, Table2 } from 'lucide-react';
+import { Link, useSearchParams } from 'react-router-dom';
+import { AlertTriangle, CircleGauge, CloudUpload, Inbox, LayoutGrid, Server, Table2 } from 'lucide-react';
 import { useMachines, useOverview, useProbeBeatsPoll, useTeams } from '@/lib/queries';
-import { useDrawer } from '@/lib/drawer';
-import { monthTraffic } from '@/lib/derive';
+import { setDrawerOrder, useDrawer } from '@/lib/drawer';
+import { prefOf, prefs } from '@/lib/prefs';
 import type { MachineView } from '@/lib/types';
 import { Empty, ErrorNote, FilterChip, type SortState } from '@/components/app/primitives';
-import { NodeCard, SkeletonCard, type CardView } from '@/components/app/NodeCard';
+import { NodeCard, SkeletonCard, type CardShow, type CardView } from '@/components/app/NodeCard';
 import { NodeMenus } from '@/components/app/NodeMenu';
 import { RingCard } from '@/components/app/RingCard';
 import { Segmented } from '@/components/ui/overlays';
 import { Select } from '@/components/ui/select';
+import { Button } from '@/components/ui/button';
 import { Pagination } from '@/components/app/Pagination';
 import { HomeSection, OverviewSection } from '@/features/HomeOverview';
 import { MachineTable, sortTable } from '@/features/MachineTable';
 import { usePage } from '@/lib/usePage';
-import { collator, useStableOrder } from '@/lib/sort';
+import { useStableOrder } from '@/lib/sort';
 
-type SortKey = 'default' | 'name' | 'due' | 'traffic' | 'issues';
-const SORTS: { value: SortKey; label: string }[] = [
+/** 排序写成「列 id」，降序前面加「-」（同机器页的 ?sort=）；下拉里的几种常用排序。default = 默认顺序 */
+const SORTS = [
   { value: 'default', label: '默认排序' }, { value: 'name', label: '名称' }, { value: 'due', label: '到期最近' },
-  { value: 'traffic', label: '本月业务流量最多' }, { value: 'issues', label: '异常优先' },
+  { value: '-traffic', label: '本月业务流量最多' }, { value: 'status', label: '异常优先' },
 ];
+const SORTS_CUSTOM = [...SORTS, { value: 'custom', label: '自定义' }];
+const parseSort = (s: string): SortState | null => (s && s !== 'default' ? { id: s.replace(/^-/, ''), desc: s.startsWith('-') } : null);
+const sortStr = (s: SortState | null) => (s ? `${s.desc ? '-' : ''}${s.id}` : 'default');
+/** 随实时推送变的排序依据（读数、流量、额度、状态）：显示顺序要稳住（useStableOrder），换页、换排序才重排 */
+const STATIC_SORT = new Set(['name', 'due', 'value', 'fee']);
 type Layout = 'cards' | 'table' | 'ring';
 const LAYOUTS: Layout[] = ['cards', 'table', 'ring'];
 const DENSITIES: CardView[] = ['large', 'small', 'compact'];
-// 分段控件的选项用模块常量：首页随实时推送重渲染时，memo 的分段控件不跟着重画
-const DENSITY_ITEMS: { value: CardView; label: string }[] = [{ value: 'large', label: '大' }, { value: 'small', label: '小' }, { value: 'compact', label: '紧凑' }];
+// 分段控件的选项用模块常量：首页随实时推送重渲染时，memo 的分段控件不跟着重画。密度按实际效果命名
+const DENSITY_ITEMS: { value: CardView; label: string }[] = [{ value: 'large', label: '详细' }, { value: 'small', label: '标准' }, { value: 'compact', label: '紧凑' }];
 const LAYOUT_ITEMS: { value: Layout; label: React.ReactNode }[] = [
   { value: 'cards', label: <><LayoutGrid size={14} />卡片</> }, { value: 'table', label: <><Table2 size={14} />表格</> }, { value: 'ring', label: <><CircleGauge size={14} />环形</> },
 ];
@@ -37,46 +45,43 @@ const LAYOUT_ANIM_MAX = 24;
 /** 每页条数：卡片与环形都是 2、3、4、6 的倍数，常见列数下最后一行是满的；中间那档是默认 */
 const PAGE_SIZES: Record<CardView | 'table' | 'ring', number[]> = { large: [12, 24, 48], small: [18, 36, 72], compact: [24, 48, 96], table: [25, 50, 100], ring: [24, 48, 96] };
 const EMPTY_MACHINES: MachineView[] = [];
-const store = {
-  /** 读本地偏好；值不在 allowed 里（旧版本或手改的脏值）一律回退默认 */
-  get: <T extends string>(k: string, d: T, allowed: readonly T[]): T => { try { const v = localStorage.getItem(k) as T | null; return v && allowed.includes(v) ? v : d; } catch { return d; } },
-  set: (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* 忽略 */ } },
-};
-const RANK: Record<string, number> = { down: 0, degraded: 1, unknown: 2, maintenance: 3, ok: 4, inactive: 5 };
+// 本地偏好的键（没写在地址里时用上次的选择）
+const P_LAYOUT = 'fleet:layout'; const P_VIEW = 'fleet:view'; const P_SORT = 'fleet:home-sort';
 
 /** 异常：故障、上架失败（上架失败的健康是 inactive，单看健康会漏掉）。降级照常服务、只是有提醒，算正常（同总览的「正常」） */
 const isIssue = (m: MachineView) => m.lifecycle === 'failed' || m.health.status === 'down';
-/** 异常优先的名次：上架失败排在故障之后、降级之前 */
-const rank = (m: MachineView) => (m.lifecycle === 'failed' ? 0.5 : RANK[m.health.status]);
-
-function sortList(list: MachineView[], key: SortKey): MachineView[] {
-  if (key === 'default') return list;
-  const c: Record<Exclude<SortKey, 'default'>, (a: MachineView, b: MachineView) => number> = {
-    name: (a, b) => collator.compare(a.name, b.name),
-    due: (a, b) => (a.subscription?.due_days ?? 1e9) - (b.subscription?.due_days ?? 1e9),
-    traffic: (a, b) => { const x = monthTraffic(a); const y = monthTraffic(b); return y.up + y.down - (x.up + x.down); },
-    issues: (a, b) => rank(a) - rank(b),
-  };
-  return [...list].sort(c[key]);
-}
 
 export function HomePage() {
   const machines = useMachines('live');
   const teams = useTeams();
   const ov = useOverview();
   const { id: openId, open } = useDrawer();
-  const [layout, setLayout] = React.useState<Layout>(() => store.get('fleet:layout', 'cards', LAYOUTS));
-  const [view, setView] = React.useState<CardView>(() => store.get('fleet:view', 'large', DENSITIES));
-  const [sort, setSort] = React.useState<SortKey>(() => store.get('fleet:sort', 'default', SORTS.map((x) => x.value)));
-  const [tsort, setTsort] = React.useState<SortState | null>(null); // 表格视图的表头排序（优先于上面的排序）
-  const [team, setTeam] = React.useState<string>('all');
-  const [onlyIssues, setOnlyIssues] = React.useState(false);
-  const setL = React.useCallback((v: Layout) => { setLayout(v); store.set('fleet:layout', v); }, []);
-  const setV = React.useCallback((v: CardView) => { setView(v); store.set('fleet:view', v); }, []);
-  const setS = React.useCallback((v: string) => { setSort(v as SortKey); setTsort(null); store.set('fleet:sort', v); }, []);
+  const [sp, setSp] = useSearchParams();
+  // setSearchParams 每次地址变化都换身份；用 ref 兜住，回调才稳定（分段控件是 memo 的，同 lib/drawer.ts）
+  const setRef = React.useRef(setSp); setRef.current = setSp;
+  const upd = React.useCallback((patch: Record<string, string>) => setRef.current((p) => {
+    const n = new URLSearchParams(p);
+    for (const [k, v] of Object.entries(patch)) { if (v) n.set(k, v); else n.delete(k); }
+    return n;
+  }, { replace: true }), []);
+  const layout = LAYOUTS.includes(sp.get('view') as Layout) ? sp.get('view') as Layout : prefOf(P_LAYOUT, 'cards', LAYOUTS);
+  const view = DENSITIES.includes(sp.get('density') as CardView) ? sp.get('density') as CardView : prefOf(P_VIEW, 'large', DENSITIES);
+  const rawSort = sp.get('sort') ?? prefs.get(P_SORT) ?? 'default';
+  const sort = React.useMemo(() => parseSort(rawSort), [rawSort]);
+  // 分组：线路机一组用 kind=relay，团队用 team=<id>（同机器页的筛选参数名）
+  const team = sp.get('kind') === 'relay' ? 'relay' : sp.get('team') ?? 'all';
+  const onlyIssues = sp.get('issues') === '1';
+  // 写地址的同时记成本地偏好（下次没带参数打开时用）
+  const setL = React.useCallback((v: Layout) => { prefs.set(P_LAYOUT, v); upd({ view: v }); }, [upd]);
+  const setV = React.useCallback((v: CardView) => { prefs.set(P_VIEW, v); upd({ density: v }); }, [upd]);
+  const setSort = React.useCallback((s: SortState | null) => { const v = sortStr(s); prefs.set(P_SORT, v); upd({ sort: v }); }, [upd]);
+  const pickSort = React.useCallback((v: string) => { if (v !== 'custom') setSort(parseSort(v)); }, [setSort]);
   useProbeBeatsPoll(layout === 'cards'); // 卡片心跳条每 2 分钟刷新：全页一个轮询
 
-  const all = machines.data ?? EMPTY_MACHINES; // live 范围已不含已退役
+  // 实时推送每条都换一份机器列表：按可打断的优先级重渲染（用户的点击、输入先处理，推送晚一点跟上）
+  const all = React.useDeferredValue(machines.data ?? EMPTY_MACHINES); // live 范围已不含已退役
+  // 首份列表刚到、推迟的那一轮还没渲染：仍按加载中处理（不闪「还没有机器」，也不把地址里的页码夹回第 1 页）
+  const pending = all === EMPTY_MACHINES && !!machines.data?.length;
   const counts = React.useMemo(() => ({
     all: all.length, relay: all.filter((m) => m.kind === 'relay').length,
     byTeam: new Map((teams.data ?? []).map((t) => [t.id, all.filter((m) => m.team?.id === t.id).length])),
@@ -86,34 +91,40 @@ export function HomePage() {
   const issueCount = React.useMemo(() => grouped.filter(isIssue).length, [grouped]);
 
   // 「仅看异常」开着时成员不随实时推送移出（像邮件的「未读」筛选）：恢复正常的那台留在原位、照常显示正常状态，
-  // 鼠标下的卡不会被换走、页面不跳。命中过的记在这里（筛选时只加不删，重复加无妨）；切换分组、开关筛选的回调里换一个空的
-  const seen = React.useRef(new Set<string>());
-  const pickTeam = React.useCallback((v: string) => { seen.current = new Set(); setTeam(v); }, []);
-  const toggleIssues = () => { seen.current = new Set(); setOnlyIssues((v) => !v); };
-  const ts = layout === 'table' ? tsort : null;
+  // 鼠标下的卡不会被换走、页面不跳。命中过的记在这里（筛选时只加不删，重复加无妨）；切换分组、开关筛选时换一个空的
+  const seen = React.useRef({ key: '', ids: new Set<string>() });
+  const seenKey = `${team}|${onlyIssues}`;
+  if (seen.current.key !== seenKey) seen.current = { key: seenKey, ids: new Set() };
+  const pickTeam = React.useCallback((v: string) => upd(v === 'relay' ? { kind: 'relay', team: '' } : { kind: '', team: v === 'all' ? '' : v }), [upd]);
+  const toggleIssues = () => upd({ issues: onlyIssues ? '' : '1' });
   const shown = React.useMemo(() => {
     let l = grouped;
-    if (onlyIssues) { const ids = seen.current; l = l.filter((m) => (isIssue(m) ? !!ids.add(m.id) : ids.has(m.id))); }
-    l = sortList(l, sort);
-    if (ts) l = sortTable(l, ts); // 稳定排序：相同值保持原顺序
-    return l;
-  }, [grouped, onlyIssues, sort, ts]);
+    if (onlyIssues) { const ids = seen.current.ids; l = l.filter((m) => (isIssue(m) ? !!ids.add(m.id) : ids.has(m.id))); }
+    return sortTable(l, sort); // 稳定排序：相同值保持默认顺序
+  }, [grouped, onlyIssues, sort]);
   // 只渲染当前页：KPI 和分组计数按全部机器算（上面的 counts）
   const sizes = PAGE_SIZES[layout === 'cards' ? view : layout];
-  const pg = usePage({ total: machines.data ? shown.length : undefined, sizes, size: sizes[1], reset: [team, onlyIssues, sort, layout, view, ts?.id, ts?.desc] });
-  const liveSort = !!ts || sort === 'traffic' || sort === 'issues'; // 依据随实时推送变的排序
-  const stable = useStableOrder(shown, liveSort ? JSON.stringify([team, onlyIssues, sort, ts, pg.page, pg.size]) : null);
+  const pg = usePage({ total: machines.data && !pending ? shown.length : undefined, sizes, size: sizes[1], reset: [team, onlyIssues, rawSort, layout, view] });
+  const liveSort = !!sort && !STATIC_SORT.has(sort.id);
+  const stable = useStableOrder(shown, liveSort ? JSON.stringify([team, onlyIssues, rawSort, pg.page, pg.size]) : null);
   const page = React.useMemo(() => stable.slice(pg.offset, pg.offset + pg.size), [stable, pg.offset, pg.size]);
-  const layoutKey = page.length > LAYOUT_ANIM_MAX ? null : `${team}|${onlyIssues}|${sort}|${view}`;
+  const layoutKey = page.length > LAYOUT_ANIM_MAX ? null : `${team}|${onlyIssues}|${rawSort}|${view}`;
+  // 抽屉的上一台 / 下一台按这里的顺序走（整份筛选结果，不只当前页）；离开首页还给默认顺序
+  React.useEffect(() => { setDrawerOrder(stable.map((m) => m.id)); }, [stable]);
+  React.useEffect(() => () => setDrawerOrder(null), []);
+  // 按到期、本月业务流量排序时，卡片上露出排序依据
+  const show: CardShow | undefined = sort?.id === 'due' ? 'due' : sort?.id === 'traffic' ? 'traffic' : undefined;
 
   const o = ov.data;
-  // 分组选项只随计数变：实时推送每次都换机器列表（counts 跟着重算），台数没变时选项引用不变，分组控件不重画
-  const countSig = `${counts.all}|${counts.relay}|${[...counts.byTeam.values()].join()}`;
+  // 分组选项只随计数变：实时推送每次都换机器列表（counts 跟着重算），台数没变时选项引用不变，分组控件不重画。
+  // 0 台的团队不列（选着的那个除外，免得选中项凭空消失）
+  const countSig = `${counts.all}|${counts.relay}|${[...counts.byTeam.values()].join()}|${team}`;
   const groups = React.useMemo(() => [
     { value: 'all', label: '全部', count: counts.all },
-    { value: 'relay', label: '线路机', count: counts.relay },
-    ...(teams.data ?? []).map((t) => ({ value: t.id, label: t.name, count: counts.byTeam.get(t.id) ?? 0 })),
+    ...(counts.relay || team === 'relay' ? [{ value: 'relay', label: '线路机', count: counts.relay }] : []),
+    ...(teams.data ?? []).filter((t) => (counts.byTeam.get(t.id) ?? 0) > 0 || t.id === team).map((t) => ({ value: t.id, label: t.name, count: counts.byTeam.get(t.id) ?? 0 })),
   ], [countSig, teams.data]); // eslint-disable-line react-hooks/exhaustive-deps
+  const sortValue = SORTS.some((x) => x.value === rawSort) ? rawSort : 'custom';
 
   return (
     <div className="stack home">
@@ -121,11 +132,11 @@ export function HomePage() {
       <OverviewSection o={o} loading={!o && !ov.isError /* 失败时不要一直停在骨架：显示“—”和重试 */} />
 
       <HomeSection icon={<Server />} label="服务器集群" headRef={pg.anchor}
-        title={<h2 className="hsec-title">机器矩阵与实时监控</h2>} sub="点读数或走势看历史曲线"
+        title={<h2 className="hsec-title">机器矩阵与实时监控</h2>}
         actions={<>
-          {/* 视图切换固定在最右：密度只在卡片视图出现，放在它左边，出现/消失时不把视图切换挤开 */}
-          <Select sm value={sort} onChange={setS} options={SORTS} className="w-[150px]" aria-label="排序" />
-          {layout === 'cards' && <Segmented sm label="卡片密度" value={view} onChange={setV} items={DENSITY_ITEMS} />}
+          {/* 视图切换固定在最右；密度只对卡片视图有用，其它视图下置灰、仍占位，工具栏不跳 */}
+          <Select sm value={sortValue} onChange={pickSort} options={sortValue === 'custom' ? SORTS_CUSTOM : SORTS} className="w-[150px]" aria-label="排序" />
+          <Segmented sm label="卡片密度" value={view} onChange={setV} items={DENSITY_ITEMS} disabled={layout !== 'cards'} />
           <Segmented sm label="视图" value={layout} onChange={setL} items={LAYOUT_ITEMS} />
         </>}>
         <div className="hgroups" role="group" aria-label="筛选">
@@ -134,21 +145,22 @@ export function HomePage() {
         </div>
 
         {machines.isError && <ErrorNote error={machines.error} onRetry={() => void machines.refetch()} />}
-        {machines.isLoading ? (
+        {machines.isLoading || pending ? (
           <div className="cards" data-view={view}>{Array.from({ length: 6 }, (_, i) => <SkeletonCard key={i} view={view} />)}</div>
         ) : !machines.data ? null /* 请求失败且没有缓存：上面的错误提示已说明，不要误报“还没有机器” */ : shown.length === 0 ? (
-          <Empty icon={<Inbox size={28} />} text={all.length ? '没有符合筛选条件的机器' : '还没有机器，去「上架」添加第一台'} />
+          all.length ? <Empty icon={<Inbox size={28} />} text="没有符合筛选条件的机器" />
+            : <Empty icon={<Inbox size={28} />} text="还没有机器"><Button asChild variant="primary"><Link to="/provision"><CloudUpload />上架</Link></Button></Empty>
         ) : (
           <>
             {/* 每页一个容器（key=页码）：翻页、切换卡片 / 环形 / 表格时整块淡入（换卡片密度不重挂、不淡入）。卡片页内：筛选/排序/密度变了（layoutKey 变）才量位置、滑到新位置。
                 右键与“⋯”菜单整页共用一份（NodeMenus） */}
             {layout === 'cards' && <NodeMenus rows={page}><div key={`c${pg.page}`} className="cards page-in" data-view={view}>
-              {page.map((m) => <NodeCard key={m.id} m={m} view={view} current={m.id === openId} onOpen={open} layoutKey={layoutKey} />)}
+              {page.map((m) => <NodeCard key={m.id} m={m} view={view} current={m.id === openId} onOpen={open} layoutKey={layoutKey} show={show} />)}
             </div></NodeMenus>}
             {layout === 'ring' && <NodeMenus rows={page}><div key={`r${pg.page}`} className="rings page-in">
-              {page.map((m) => <RingCard key={m.id} m={m} current={m.id === openId} onOpen={open} />)}
+              {page.map((m) => <RingCard key={m.id} m={m} current={m.id === openId} onOpen={open} show={show} />)}
             </div></NodeMenus>}
-            {layout === 'table' && <div key="t" className="panel page-in"><MachineTable rows={page} sort={tsort} onSort={setTsort} openId={openId} onOpen={open} /></div>}
+            {layout === 'table' && <div key="t" className="panel page-in"><MachineTable rows={page} sort={sort} onSort={setSort} openId={openId} onOpen={open} /></div>}
             <Pagination pg={pg} unit="台" />
           </>
         )}

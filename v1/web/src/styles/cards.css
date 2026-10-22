@@ -36,13 +36,17 @@
 .slot-seg { border-top: 1px solid var(--line); padding-top: var(--card-seg); margin-top: var(--card-seg); }
 .ncard[data-view="compact"] .slot-seg { padding-top: var(--sp-8); margin-top: var(--sp-8); }
 
-/* 卡内可点的读数（迹线、本月累计、剩余流量）：按钮去掉外观，悬停只给一层浅底，按下整块微缩（块级 --press-lg） */
-.flow-trend, .flow-foot, .nc-quota {
-  display: flex; width: 100%; box-sizing: border-box; margin: 0; padding: 0; border: 0; background: none;
+/* 卡内可点的读数（资源格条、迹线、本月累计、剩余流量、心跳条、家宽代理的两列读数）：按钮去掉外观，悬停只给一层浅底，按下整块微缩（块级 --press-lg）。
+   .nc-click 只换外观，排版（grid / flex）由各块自己的类给 */
+.flow-trend, .flow-foot, .nc-quota { display: flex; width: 100%; margin: 0; }
+.slot-seg > .nc-click, .nc-res-pair > .nc-click { width: 100%; } /* 详细卡的资源格条直接是卡片网格的一行（左右留白在 .ncard > *），撑满靠网格拉伸 */
+.flow-trend, .flow-foot, .nc-quota, .nc-click {
+  box-sizing: border-box; padding: 0; border: 0; background: none;
   font: inherit; color: inherit; text-align: left; cursor: pointer; border-radius: var(--r-xs);
   transition: background-color var(--dur-1) var(--ease-std), box-shadow var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out);
 }
-@media (hover: hover) { .flow-trend:hover, .flow-foot:hover, .nc-quota:hover { background: var(--hover); box-shadow: 0 0 0 4px var(--hover); } }
+@media (hover: hover) { .flow-trend:hover, .flow-foot:hover, .nc-quota:hover, .nc-click:hover { background: var(--hover); box-shadow: 0 0 0 4px var(--hover); } }
+.nc-beat { display: block; }
 
 /* 1 标题：圆点 + 类型标 + 名称 + 右侧操作 */
 .nc-head { display: flex; align-items: center; gap: var(--inline-gap); min-height: 32px; min-width: 0; margin-top: var(--card-pad); }
@@ -60,7 +64,7 @@
 @media (hover: hover) { .nc-name:hover { color: var(--accent); } }
 .ncard[data-view="small"] .nc-name, .ncard[data-view="compact"] .nc-name { font-size: var(--fs-emph); line-height: var(--lh-emph); }
 /* 紧凑：名称下面一行小字 IP（同表格名称列），两行合计 34px，头部只比单行高 2px */
-/* 名称与它后面的状态图标（正常时没有）一起省略、一起占位 */
+/* 名称与它后面的状态图标（软路由卡）一起省略、一起占位 */
 .nc-named { display: inline-flex; align-items: center; gap: var(--sp-4); min-width: 0; }
 .nc-named > .nc-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nc-title { display: grid; min-width: 0; }
@@ -92,6 +96,11 @@
 }
 .ncard[data-view="small"] .nc-hold, .ncard[data-view="compact"] .nc-hold { min-height: 74px; }
 .nc-hold .lucide { width: 14px; height: 14px; }
+/* 家宽代理：资源格条的位置放本月业务流量两列（详细卡里这一格不是分段，外面套一层 .nc-res 只为同样的上边距） */
+.nc-res.nc-res-pair { display: block; }
+.nc-pair { padding-block: var(--sp-2); align-content: start; }
+.flow-sub { font: var(--fw-medium) var(--fs-micro) / var(--lh-micro) var(--font-sans); font-variant-numeric: var(--num-variant); color: var(--fg-2); white-space: nowrap; }
+.flow-sub .unit { font-size: inherit; color: inherit; }
 
 /* 5 实时速率（主机）/ 业务流量（无主机） */
 .flow { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-20); }
@@ -112,18 +121,16 @@
 /* 窄卡（手机）：方向标签放到读数上面，两列之间不挤。容器设在 .flow 上——卡片本身不能设 container-type（布局包含会让 subgrid 失效） */
 .flow { container-type: inline-size; }
 @container (max-width: 320px) { .flow-head { flex-direction: column; align-items: flex-start; gap: 0; } }
-.flow-live { display: inline-flex; align-items: center; gap: 5px; flex: none; font: var(--fw-semibold) var(--fs-micro) / 14px var(--font-sans); letter-spacing: 0.04em; color: var(--fg-3); }
-.flow-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--fg-3); opacity: 0.6; }
-.flow-live[data-live] .flow-dot { background: var(--spd, var(--ok)); opacity: 1; }
-/* 呼吸只在卡片进入视口时（data-vis 由 NodeCard 的 IntersectionObserver 写；animation-delay 对齐全站同一节拍） */
-.flow-live[data-live][data-vis] .flow-dot { animation: breathe var(--dur-loop) var(--ease-std) infinite; animation-delay: inherit; }
-@media (prefers-reduced-motion: reduce) { .flow-live[data-live][data-vis] .flow-dot { animation: none; } }
+/* 「实时 / 离线」只是文字，不配小圆点；实时的取速率色，只在悬停这张卡时轻轻呼吸：
+   一页几十张卡平时不跑无限动画（毛玻璃顶栏下面每帧有变化还得重做模糊），也就不用再按视口开关 */
+.flow-live { flex: none; font: var(--fw-semibold) var(--fs-micro) / 14px var(--font-sans); letter-spacing: 0.04em; color: var(--fg-3); }
+.flow-live[data-live] { color: var(--spd, var(--ok)); }
+@media (hover: hover) and (prefers-reduced-motion: no-preference) { .ncard:hover .flow-live[data-live] { animation: breathe var(--dur-loop) var(--ease-std) infinite; } }
 .flow-foot { align-items: center; justify-content: space-between; gap: var(--sp-8); font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); white-space: nowrap; }
 .flow-foot-label { display: inline-flex; align-items: center; gap: var(--sp-6); }
 .flow-foot-label .lucide { width: 13px; height: 13px; color: var(--dir-c); }
 .flow-foot .num { color: var(--fg); font-weight: var(--fw-medium); }
 .flow-biz { grid-column: 1 / -1; --dir-c: var(--fg-3); } /* 本月业务流量（用户视角的下载 / 上传）：横跨两列，和网卡上行 / 下行分开 */
-.nc-seg-title { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); margin-bottom: var(--sp-6); font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); white-space: nowrap; }
 
 /* 6 剩余流量 */
 .nc-quota { display: grid; gap: var(--sp-8); }
@@ -154,25 +161,22 @@
 .ncard[data-view="compact"] .nc-tags { margin-top: var(--sp-6); min-height: 22px; margin-bottom: 0; gap: var(--sp-4); }
 .ncard[data-view="compact"] .nc-tags-list { gap: var(--sp-4); }
 
-/* 无主机：业务两列 / 小表 */
-.nc-flow2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-2) var(--sp-12); align-content: start; }
-.nc-flow2-title { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); }
-.nc-flow2-row { display: flex; align-items: center; gap: var(--sp-6); font: var(--fw-semibold) var(--fs-body) / var(--lh-body) var(--font-num); font-variant-numeric: var(--num-variant); color: var(--fg); white-space: nowrap; min-width: 0; }
-.nc-flow2-row .lucide { width: 12px; height: 12px; color: var(--fg-2); }
-.nc-flow2-row .unit { font-weight: var(--fw-regular); }
-.nc-etable { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: var(--fs-label); line-height: var(--lh-label); }
-.nc-etable th, .nc-etable td { padding: 3px 0; font-weight: var(--fw-regular); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.nc-etable th:first-child { text-align: left; width: 44px; color: var(--fg-2); }
-.nc-etable thead th { color: var(--fg-2); font-weight: var(--fw-medium); padding-top: 0; }
-.nc-etable td { font: var(--fw-semibold) var(--fs-body) / var(--lh-body) var(--font-num); font-variant-numeric: var(--num-variant); color: var(--fg); }
-
 /* 10 footer 带：与卡片等宽（抵消槽位通用左右留白） */
 .nc-foot {
   margin-inline: 0; display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8);
   min-height: 44px; box-sizing: border-box; padding: var(--sp-8) var(--card-pad); border-top: 1px solid var(--line);
   background: color-mix(in srgb, var(--section) 30%, var(--surface));
 }
-.nc-foot-right { display: flex; align-items: center; gap: var(--sp-4); min-width: 0; margin-right: -6px; }
+.nc-foot-right { display: flex; align-items: center; gap: var(--sp-4); flex: none; margin-right: -6px; }
+.nc-foot-left { display: flex; align-items: center; gap: var(--sp-8); min-width: 0; }
+.nc-foot-left > .pill { flex: none; }
+/* 按到期 / 流量排序时的排序依据：放不下先省略它，胶囊和按钮不动 */
+.nc-show { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--fw-semibold) var(--fs-label) / var(--lh-label) var(--font-sans); font-variant-numeric: var(--num-variant); color: var(--fg-2); }
+.nc-show[data-tone="warn"] { color: var(--warn-text); }
+.nc-show[data-tone="bad"] { color: var(--bad-text); }
+.ncard[data-view="compact"] .nc-foot-right .btn > span { display: none; } /* 紧凑卡的 footer 窄：详情 / 管理只留图标（按钮自带 aria） */
+/* 故障卡心跳条的标题：第一条健康原因，故障色 */
+.nc-reason { color: var(--bad-text); font-weight: var(--fw-medium); }
 
 /* 小卡片 / 紧凑：心跳条与 footer 之间留出内边距 */
 .ncard[data-view="small"] > .slot-seg:nth-last-child(2),
@@ -185,18 +189,32 @@
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); box-shadow: var(--shadow-card);
   transition: border-color var(--dur-1) var(--ease-std), box-shadow var(--dur-2) var(--ease-out), translate var(--dur-2) var(--ease-out);
 }
+/* 视口外的环形卡跳过排版与绘制（一页最多 96 张）；占位高度按实际卡高（约 200px），滚动条不跳 */
+.rcard { content-visibility: auto; contain-intrinsic-size: auto 200px; }
 .rcard[data-health="down"] { border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); }
 .rcard[data-health="degraded"] { border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
 .rcard.is-current { border-color: var(--accent); }
 .rc-head { display: flex; align-items: center; gap: var(--inline-gap); min-width: 0; }
 .rcard .nc-name { font-size: var(--fs-emph); line-height: var(--lh-emph); } /* 名称按钮同节点卡（.nc-name），只占名字的宽度：同机关系标紧跟在名称后面 */
-.rc-head > .pill { margin-left: auto; } /* 状态胶囊靠右 */
+.rc-extra { flex: none; margin-left: auto; font-size: var(--fs-label); font-weight: var(--fw-semibold); color: var(--fg-2); white-space: nowrap; } /* 按到期 / 流量排序时的排序依据 */
+.rc-show .num { color: var(--fg); }
 .rcard.is-quiet .nc-name { color: var(--fg-2); }
 .rc-rings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-4); margin: 0 calc(-1 * var(--sp-6)); padding: var(--sp-6); border: 0; border-radius: var(--r-float); background: none; font: inherit; color: inherit; cursor: pointer; transition: background-color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out); }
 @media (hover: hover) { .rc-rings:hover:not(:disabled) { background: var(--hover); } }
 .rc-rings:disabled { cursor: default; }
 .rc-gauge { display: grid; justify-items: center; gap: var(--sp-4); font: var(--fw-semibold) 11px / 16px var(--font-sans); color: var(--fg-2); }
+/* 底部：状态胶囊（同卡片视图的 footer 左侧）+ 上行 / 下行速率 */
 .rc-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); min-height: 22px; padding-top: var(--sp-10); border-top: 1px solid var(--line); font-size: var(--fs-label); }
+.rc-foot > .pill { flex: none; }
+.rc-rates { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: var(--sp-2) var(--sp-10); min-width: 0; }
+/* 速率只留方向箭头（「上行 / 下行」给读屏），字号比原来收一档：和状态胶囊排在一行，窄卡放不下时折到第二行 */
+.rc-rates .rc-rate { font-size: var(--fs-body); line-height: var(--lh-body); }
+/* 家宽代理：圆环的位置放本月业务与探测延迟两行，高度同三个圆环 */
+.rc-pair { grid-template-columns: minmax(0, 1fr); align-content: center; gap: var(--sp-8); min-height: 96px; text-align: left; }
+.rc-pair > span:not(.sr-only) { display: flex; align-items: center; gap: var(--sp-6); min-width: 0; font-size: var(--fs-label); color: var(--fg-2); white-space: nowrap; }
+.rc-pair .lucide { width: 13px; height: 13px; flex: none; color: var(--fg-3); }
+.rc-pair b { margin-left: auto; font: var(--fw-semibold) var(--fs-body) / var(--lh-body) var(--font-num); font-variant-numeric: var(--num-variant); color: var(--fg); overflow: hidden; text-overflow: ellipsis; }
+.rc-pair b .unit { font-weight: var(--fw-regular); }
 .rc-rate { display: inline-flex; align-items: center; gap: var(--sp-4); font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-num); letter-spacing: -0.02em; color: var(--spd, var(--fg-3)); white-space: nowrap; }
 .rc-rate .lucide { width: 14px; height: 14px; stroke-width: 2.2; color: var(--fg-2); }
 .rc-rate .unit { font-size: 11px; letter-spacing: 0; color: var(--fg-3); }
@@ -214,11 +232,3 @@
 .trate { font-weight: var(--fw-semibold); color: var(--spd, var(--fg-3)); }
 .dt tr.is-quiet td { color: var(--fg-2); }
 .dt tr.is-quiet .cells { opacity: 0.45; }
-.rc-rate small { margin-right: 2px; font: var(--fw-semibold) 11px / 1 var(--font-sans); letter-spacing: 0; color: var(--fg-2); }
-/* 窄环形卡（一行 5 张左右）：方向标签放到读数上面，读数单独一行，单位不再顶到卡片边 */
-.rc-foot { container-type: inline-size; }
-@container (max-width: 228px) {
-  .rc-rate { display: grid; grid-template-columns: auto 1fr; row-gap: 2px; }
-  .rc-rate > .num { grid-column: 1 / -1; }
-  .rc-rate + .rc-rate { grid-template-columns: 1fr auto; justify-items: end; }
-}

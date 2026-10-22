@@ -3,11 +3,12 @@
 // 菜单本身由 NodeMenus 按网格 / 表格挂一份，卡片和行里不放 Radix 根。
 import * as React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowUpCircle, BellOff, CalendarPlus, Copy, Link2, PanelRightOpen, PencilLine, Power, Repeat2, SquareTerminal, Undo2 } from 'lucide-react';
+import { ArrowUpCircle, BellOff, CalendarPlus, Copy, Link2, PanelRightOpen, PencilLine, Power, Repeat2, SquareTerminal, Undo2, Wrench } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
-import { fetchShare, useUpgradeAgent } from '@/lib/queries';
+import { fetchShare, useEndMaintenance, useUpgradeAgent } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
-import { openMove, openRenew, openRestore, openRetire } from '@/lib/nodeActions';
+import { openMaint, openMove, openRenew, openRestore, openRetire } from '@/lib/nodeActions';
+import { collator } from '@/lib/sort';
 import { openTerminal } from '@/lib/terminal';
 import { copyShareLink, copyText } from '@/lib/clipboard';
 import { useHeld } from '@/lib/useHeld';
@@ -18,20 +19,26 @@ import { useAnchoredDropdown } from './AnchoredDropdown';
 
 export type MenuEntry =
   | { key: string; sep: true }
-  | { key: string; label: string; icon?: React.ReactNode; onSelect?: () => void; danger?: boolean; disabled?: boolean; children?: MenuEntry[] };
+  | { key: string; label: string; icon?: React.ReactNode; onSelect?: () => void; danger?: boolean; disabled?: boolean; children?: MenuEntry[]; filter?: string };
+/** 子菜单超过这么多项时顶上给一个筛选框（线路机的分享链接一台几十条） */
+const FILTER_MIN = 8;
 
 function useNodeMenu(m: MachineView): MenuEntry[] {
   const { open } = useDrawer();
   const nav = useNavigate();
   const upgrade = useUpgradeAgent();
+  const endMaint = useEndMaintenance();
   const retired = m.lifecycle === 'retired';
   const share = async (entryId: string) => {
     try { const r = await fetchShare(entryId); await copyShareLink(r.url); } catch (e) { toast.err(e); }
   };
   // 还在应用或正在移除的入口不给分享
   const shareable = m.entries.filter((e) => e.lifecycle !== 'pending' && e.lifecycle !== 'removing');
+  // 线路机按节点名排（同名按端口），节点按线路机名
+  const shareLabel = (e: (typeof shareable)[number]) => (m.kind === 'relay' ? `${e.node.name} · ${e.port}` : `${e.relay.name}:${e.port}`);
   const shareItem: MenuEntry = shareable.length > 1
-    ? { key: 'share', label: '复制分享链接', icon: <Link2 />, children: shareable.map((e) => ({ key: `share-${e.id}`, label: m.kind === 'relay' ? `${e.port} · ${e.node.name}` : `${e.relay.name}:${e.port}`, onSelect: () => void share(e.id) })) }
+    ? { key: 'share', label: '复制分享链接', icon: <Link2 />, filter: shareable.length > FILTER_MIN ? '筛选节点…' : undefined,
+      children: shareable.map((e) => ({ key: `share-${e.id}`, label: shareLabel(e), onSelect: () => void share(e.id) })).sort((a, b) => collator.compare(a.label, b.label)) }
     : { key: 'share', label: '复制分享链接', icon: <Link2 />, disabled: shareable.length === 0 || retired, onSelect: () => void share(shareable[0].id) };
   const items: MenuEntry[] = [
     { key: 'open', label: '打开详情', icon: <PanelRightOpen />, onSelect: () => open(m.id) },
@@ -58,6 +65,10 @@ function useNodeMenu(m: MachineView): MenuEntry[] {
       : { key: 'renew', label: '设置费用…', icon: <CalendarPlus />, onSelect: () => open(m.id, 'billing') },
     ...(m.kind !== 'relay' && m.lifecycle === 'active' && m.entries.some((e) => e.lifecycle === 'active')
       ? [{ key: 'move', label: '换线路机…', icon: <Repeat2 />, disabled: !!m.active_job, onSelect: () => openMove(m.id) } as MenuEntry] : []),
+    // 维护中的：结束这台自己的维护窗口（全部机器的那种要到告警页结束，mutation 会报错说明）
+    m.maintenance
+      ? { key: 'maint', label: '结束维护', icon: <Wrench />, onSelect: () => { endMaint.mutateAsync(m.id).then(() => toast.ok(`${m.name} 已结束维护`), (e) => toast.err(e)); } }
+      : { key: 'maint', label: '维护窗口…', icon: <Wrench />, onSelect: () => openMaint(m.id) },
     { key: 'silence', label: '新建静默', icon: <BellOff />, onSelect: () => nav(`/incidents?silence=${m.id}`) },
     { key: 'sep2', sep: true },
     { key: 'retire', label: '退役…', icon: <Power />, danger: true, disabled: m.lifecycle === 'retiring' || (m.lifecycle === 'provisioning' && !!m.active_job), onSelect: () => openRetire(m.id) },
@@ -81,14 +92,27 @@ function Render({ items, kit }: { items: MenuEntry[]; kit: Kit }) {
           return (
             <Sub key={it.key}>
               <SubTrigger disabled={it.disabled}>{it.icon}{it.label}</SubTrigger>
-              <SubContent sideOffset={6} alignOffset={-4}>
-                {it.children.map((c) => ('sep' in c ? null : <Item key={c.key} onSelect={c.onSelect} disabled={c.disabled}>{c.label}</Item>))}
-              </SubContent>
+              <SubContent sideOffset={6} alignOffset={-4}><SubItems items={it.children} filter={it.filter} Item={Item} /></SubContent>
             </Sub>
           );
         }
         return <Item key={it.key} danger={it.danger} disabled={it.disabled} onSelect={it.onSelect}>{it.icon}{it.label}</Item>;
       })}
+    </>
+  );
+}
+
+/** 子菜单的项；filter 给了就在顶上放一个筛选框（按项的文字包含筛）。框里打字不触发菜单的按字母跳转，上下键照常移到菜单项 */
+function SubItems({ items, filter, Item }: { items: MenuEntry[]; filter?: string; Item: React.ElementType }) {
+  const [q, setQ] = React.useState('');
+  const t = q.trim().toLowerCase();
+  const shown = items.filter((c): c is Exclude<MenuEntry, { sep: true }> => !('sep' in c) && (!t || c.label.toLowerCase().includes(t)));
+  return (
+    <>
+      {filter && <div className="menu-filter"><input value={q} onChange={(e) => setQ(e.target.value)} placeholder={filter} aria-label={filter}
+        onKeyDown={(e) => { if (!['ArrowDown', 'ArrowUp', 'Escape', 'Tab'].includes(e.key)) e.stopPropagation(); }} /></div>}
+      {shown.map((c) => <Item key={c.key} onSelect={c.onSelect} disabled={c.disabled}>{c.label}</Item>)}
+      {filter && !shown.length && <div className="menu-label">没有匹配的</div>}
     </>
   );
 }
