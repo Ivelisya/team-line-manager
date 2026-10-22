@@ -21,7 +21,8 @@ const poll = (range: string) => POLL[range] ?? 300_000;
 
 // 曲线的线条与格式化放模块常量：抽屉随实时推送重渲染时 TimeChart（memo）的 props 不变，不重画。
 // CPU / 内存用首页节点卡的指标色（CPU 蓝、内存紫），上下行与对照序列沿用 --chart-1 / --chart-2
-const L_PROBE = [{ key: 'tcp_ms', label: 'TCP 握手', color: 'var(--chart-1)' }, { key: 'egress_ms', label: '出口验证', color: 'var(--chart-2)' }];
+// 只画 TCP：出口验证的耗时是经节点去中控回显服务的完整 HTTPS 往返，不是线路延迟（出口只判通不通，见可用率与入口表）
+const L_PROBE = [{ key: 'tcp_ms', label: 'TCP 握手', color: 'var(--chart-1)' }];
 const L_TRAFFIC = [{ key: 'down', label: '↓ 下载', color: 'var(--chart-1)' }, { key: 'up', label: '↑ 上传', color: 'var(--chart-2)' }];
 const L_CPU = [{ key: 'cpu_pct', label: 'CPU', color: 'var(--m-cpu)' }];
 // 按小时的点（7 天 / 30 天）是一小时的平均，短时冲高被摊平：同画每小时的峰值，色取 CPU 蓝的浅色
@@ -81,7 +82,8 @@ export function ChartCard({ c, icon, title, meta, value, caption, tools, childre
 const AVAIL_DAYS = 30;
 const AVAIL_TIP = `近 ${AVAIL_DAYS} 天全部探测的成功率：TCP 是线路机到节点的 TCP 握手，出口是经入口访问外网的验证`;
 /** 近 30 天可用率：每天一格（旧→新，最后一格是今天），按 TCP 与出口里较差的一种定色，悬停看当天的成功率与次数；
- *  格条上方左边是整段的成功率、右边是时间窗（同卡片上「入口连通 · 近 1 小时」的写法）。
+ *  格条上方左边是整段的成功率、右边是时间窗（同卡片心跳条「近 1 小时」的写法）。
+ *  线路机这里是名下所有入口（TCP 与出口）的合计，标题写明；卡片心跳格是中控 → 线路机，口径不同。
  *  只依赖机器 id 与是否线路机：实时推送重渲染页签时不跟着重画 */
 const AvailabilitySection = React.memo(function AvailabilitySection({ id, relay }: { id: string; relay: boolean }) {
   const q = useAvailability(id, AVAIL_DAYS);
@@ -91,7 +93,7 @@ const AvailabilitySection = React.memo(function AvailabilitySection({ id, relay 
     : <span data-tip={tip}>TCP <b>{successPct(d.tcp_pct)}</b> · 出口 <b>{successPct(d.egress_pct)}</b></span>;
   return (
     <Section>
-      <SectionHeader title="可用率" />
+      <SectionHeader title={relay ? '名下入口可用率' : '可用率'} />
       {q.isError && !q.data ? <ErrorNote error={q.error} onRetry={() => void q.refetch()}>可用率加载失败：</ErrorNote>
         : <Beat n={AVAIL_DAYS} cells={d ? availCells(d.items) : []} titles={d && availTitles(d.items)} caption={caption} win={`近 ${AVAIL_DAYS} 天 · 每天一格`} legend={AVAIL_LEGEND} stale={!d} />}
     </Section>

@@ -84,6 +84,7 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
    - `egress_fail` / `tcp_fail`：入口到出口不通，到 3。
    - `relay_apply_lag` / `relay_apply_error`：线路机没应用最新配置，到 4。
    - `relay_xray_down`：线路机上的 xray 停了，到 4。
+   - `relay_unreachable`：中控连续 3 轮（每 30 秒一轮，轮流连线路机的各个入口端口）连不上线路机的客户入口（public_host + 端口），摘要里有失败的端口与原因。只是 TCP 建连，不做 REALITY 握手。线路机 agent 也离线多半是机器挂了；agent 在线则查线路机防火墙、供应商是否封了端口（`fleetctl exec <线路机> -- 'ss -ltnp'` 看端口在不在听）。
    - `clock_skew`：agent 所在机器的时钟偏了超过 1 分钟（读数会缺失或停在旧值）；`fleetctl exec <机器> -- 'timedatectl'` 看 NTP 是否同步，没开就 `timedatectl set-ntp true`（修改状态，先确认）。
    - `renewal_due` / `renewal_overdue`：续费提醒，不是故障。网页告警页这一行可直接「登记续费」（或 `fleetctl billing <机器>` 看订阅、确认已付款后 `fleetctl renew <机器> --yes`），下一轮评估（≤30 秒）自动恢复。
    - `traffic_quota_high`：流量额度吃紧（本周期已用 ≥ 90% 警告，≥ 100% 严重：供应商可能限速或另收费），不是故障、不改健康状态。`fleetctl billing <机器>` 看本周期已用与上限（注明跟随套餐还是单独设置）；找供应商加流量、调高上限（整个套餐都加了改套餐，只这台加了 `subscription set --traffic-gb`）或把流量分走。新周期开始、上限调高后下一轮评估自动恢复。
@@ -93,7 +94,8 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
      和供应商面板对不上时：先看 `fleetctl show <机器>` 的计量网卡是不是供应商计费的那块（漏了附加公网 IP 的网卡、算进了内网网卡）、agent 是不是新版本（旧 agent 重启会丢十几秒）；再看周期口径——供应商按开通时刻而不是 0 点重置、按滚动 30 天、按入加出合计，都会差出一截，改供应商的「流量重置」「流量计量」而不是手填数字。
    - 告警恢复后 30 分钟内又出现会重开原告警（`reopen_count` +1，告警页显示「反复 N 次」），不会每抖一次发一对触发/恢复通知。
    - 去抖：原因连续出现满 60 秒才开告警、连续消失满 60 秒才恢复；探测类更长（`egress_fail` 150 秒、`tcp_fail` 90 秒），偶发一次探测失败不报。续费类、流量额度不去抖。
-   - `central_channel_failing` / `central_backup_stale` / `central_disk_low`：告警对象是「中控」自己（通知渠道发不出去、备份停了、磁盘快满），见 §12。
+   - `central_channel_failing` / `central_backup_stale` / `central_disk_low` / `central_ingress`：告警对象是「中控」自己（通知渠道发不出去、备份停了、磁盘快满、大批 agent 同时连不上中控），见 §12。
+   - 维护中的机器：进行中的告警保持原状，不算恢复；维护结束后按那时的状态再判。
    - 通知先写进库里的发送队列（`notify_outbox`）再发：中控重启、部署后接着发，不丢。每个渠道一个发送任务，同一渠道内按入队顺序逐条发（一批告警同时触发时不会并发打到同一渠道），渠道之间互不等待（一个渠道一直超时不拖慢别的）。发送失败（网络错误、5xx）隔 0.5 秒、2 秒、10 秒、30 秒、1 分钟、之后每 2 分钟重发同一条（后面的排着），回 429 时按渠道给的等待时长（Telegram 的 `parameters.retry_after`、通用的 `Retry-After` 头，最多 60 秒）；渠道拒绝（令牌不对、errcode 非 0）不重试，记一条失败。入队满 30 分钟还没发出的放弃，发送记录里记一条失败；渠道连续失败满 5 分钟另开告警 `central_channel_failing`。某个渠道没收到一条告警的「触发」（放弃了，或渠道是后来加的），这条告警恢复时也不给它发「恢复」。
    - 新建、删除静默 / 维护窗口会给所有启用的渠道发一条「静默 / 维护变更」（谁、新建还是删除、对象、维护还是静默、起止、备注；不看渠道的最低级别，也不受任何静默影响）：全部机器的一律发（含预约的），单台的只在此刻生效时发。
 2. **agent 离线**：`fleetctl show <机器>` 看最近上报时间；`fleetctl exec <机器> -- 'systemctl is-active fleet-agent; uptime'`。exec 返回 255 且 stderr 是连接失败 → 机器本身不通（去供应商面板看机器状态/重启）。agent 没运行则 `fleetctl logs <机器> --unit fleet-agent` 找原因，再 `fleetctl exec <机器> -- systemctl restart fleet-agent`（修改状态，先确认）。
@@ -336,6 +338,7 @@ heartbeat_url = "https://hc-ping.com/<检查的 uuid>"
 - `central_channel_failing`（严重）：某个启用的通知渠道连续发送失败满 5 分钟，每个渠道一条，摘要写渠道名和最近一次失败的原因；这条发给其它渠道，不发给它自己。发往它的通知在库里排队重试，入队满 30 分钟还发不出的放弃（发送记录里一条失败）。改好配置后在网页「设置 → 通知渠道」点「测试」：测试发成功也算恢复，下一轮（≤30 秒）关掉，排着的通知随后补发。渠道停用、删除时这条告警直接关掉，不发恢复。
 - `central_backup_stale`（警告）：`/var/backups/fleet` 里最新一份备份（`fleet-*.tar`、加密的 `fleet-*.tar.age`）超过 26 小时，或目录里一份都没有、读不了。每天 03:30 备份，没做成约两小时后报。`systemctl status fleet-backup`、`journalctl -u fleet-backup -n 20` 查原因，修好后 `systemctl start fleet-backup` 做一份，下一轮恢复。备份不在默认目录时在 `[selfmon]` 写 `backup_dir = "…"`；目录不存在（没装备份，如实验室）不检查。
 - `central_disk_low`（严重）：中控本机 `/`、`/var/lib/postgresql`、`/var/lib/fleet`、备份目录所在的文件系统可用空间低于 10%（同 `df` 的 Avail 占 Size），回到 11% 以上恢复。写满了 PostgreSQL 会停、中控跟着停：`df -h`、`du -sh /var/lib/postgresql /var/backups/fleet /var/log/journal` 找大头（原始时序按 `[retention]` 只留几天，备份留 14 份）。
+- `central_ingress`（严重）：有自己 agent 的在用机器里同时离线的超过一半、且至少 3 台。中控和库都好着，是 agent 到不了中控：查边缘机反代、Caddy、域名解析（从别的机器 `curl -sI https://<中控域名>` 试）。期间不再按台开「agent 离线」；这条恢复后仍没回来的再按台报。
 
 **后台任务监督**：中控里的后台循环（告警、实时指标、访问汇总、来源画像、通知发送、分区与保留期维护、小时汇总）panic 或意外退出时，`journalctl -u fleet-server` 记一条 error（「后台任务「…」…，10 秒后重启」），10 秒后原地重启，其余照常。作业引擎例外：它启动时释放全部作业租约，原地重启会让还在跑的作业被领两次，所以它一退出整个进程就退出，由 systemd（`Restart=always`）重启（`systemctl status fleet-server` 看重启次数）。告警循环一直起不来时死人开关会报。
 

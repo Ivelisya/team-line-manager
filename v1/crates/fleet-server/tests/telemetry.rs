@@ -601,13 +601,16 @@ async fn entry_view_carries_tcp_median_of_last_hour() {
     assert!(e["egress"]["median_ms"].is_null(), "{m}");
 }
 
-/// 中控 → 线路机：连客户入口（public_host + 最小的在用入口端口），只记通不通；中控自己的网络有问题时整轮不记
+/// 中控 → 线路机：轮流连客户入口（public_host + 各在用入口端口），只记通不通；对照目标都连不上时整轮不记，
+/// 两台线路机同时不通照记；同一台最近 3 轮都连不上报 relay_unreachable
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn relay_reach_rounds_feed_relay_beats() {
     let t = setup().await;
     let open = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let ctl = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap().port();
+    let (c1, c2) = (tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap(), tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap());
+    let (closed, closed2) = (c1.local_addr().unwrap().port(), c2.local_addr().unwrap().port());
+    drop((c1, c2));
     let up = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
     let down = seed_relay(&t, "线路机2", "198.51.100.2", "tok2").await;
     let idle = seed_relay(&t, "线路机3", "198.51.100.3", "tok3").await;
@@ -618,20 +621,29 @@ async fn relay_reach_rounds_feed_relay_beats() {
     let ctl_ok = ctl.local_addr().unwrap().to_string();
     let ctl_bad = format!("127.0.0.1:{closed}");
     use fleet_server::reach::round;
-    assert_eq!(round(&t.st.db, &[&ctl_bad, &ctl_ok]).await.unwrap(), 2, "没有在用入口的线路机不探");
-    assert_eq!(round(&t.st.db, &[&ctl_bad]).await.unwrap(), 0, "对照目标都连不上：中控自己的问题，不记");
-    drop(open);
-    assert_eq!(round(&t.st.db, &[&ctl_ok]).await.unwrap(), 0, "两台线路机全不通：不记");
+    assert_eq!(round(&t.st.db, &[&ctl_bad, &ctl_ok], 0).await.unwrap(), 2, "没有在用入口的线路机不探");
+    assert_eq!(round(&t.st.db, &[&ctl_bad], 1).await.unwrap(), 0, "对照目标都连不上：中控自己的问题，不记");
+    // 线路机1 再挂一条入口（端口不通）：每轮换下一个端口，两个口轮流连到；线路机2 一直不通，两台同时不通也照记
+    seed_node(&t, up, team, 3, "203.0.113.7", closed2 as i32).await;
+    assert_eq!(round(&t.st.db, &[&ctl_ok], 1).await.unwrap(), 2);
+    assert_eq!(round(&t.st.db, &[&ctl_ok], 2).await.unwrap(), 2);
     let v = t.get("/api/v1/probe-beats").await;
     let sum = |id: Uuid| {
         v[id.to_string()].as_array().unwrap().iter().fold((0, 0), |(n, ok), b| (n + b[0].as_i64().unwrap(), ok + b[1].as_i64().unwrap()))
     };
-    assert_eq!(sum(up), (1, 1), "{v}");
-    assert_eq!(sum(down), (1, 0), "{v}");
+    assert_eq!(sum(up), (3, 2), "{v}");
+    assert_eq!(sum(down), (3, 0), "{v}");
     assert!(v.get(idle.to_string()).is_none(), "{v}");
     assert!(v[up.to_string()].as_array().unwrap().iter().all(|b| b[2].is_null() && b[3] == 0), "线路机只判通不通：{v}");
-    let d: Option<String> = sqlx::query_scalar("select detail from relay_reach where relay_id = $1").bind(down).fetch_one(&t.st.db).await.unwrap();
-    assert_eq!(d.as_deref(), Some("连接被拒绝"));
+    let d: Vec<Option<String>> = sqlx::query_scalar("select detail from relay_reach where relay_id = $1 and not ok").bind(up).fetch_all(&t.st.db).await.unwrap();
+    assert_eq!(d, [Some(format!("端口 {closed2}：连接被拒绝"))], "失败原因带上端口");
+    // 线路机2 连续 3 轮连不上：严重告警；线路机1 只有一个口不通，不报
+    let h = t.health(down).await;
+    assert!(h.1.contains(&"relay_unreachable".to_string()), "{h:?}");
+    assert!(!t.health(up).await.1.contains(&"relay_unreachable".to_string()));
+    let m = t.get(&format!("/api/v1/machines/{down}")).await;
+    let text = m["health"]["reasons"].as_array().unwrap().iter().find(|r| r["key"] == "relay_unreachable").unwrap()["text"].clone();
+    assert_eq!(text, format!("中控连续 3 次连不上客户入口（端口 {closed}：连接被拒绝）"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -934,6 +946,93 @@ async fn central_outage_is_not_agent_silence() {
     third.started(&t.st.db).await.unwrap();
     assert!(!third.online(now - time::Duration::seconds(3900), OffsetDateTime::now_utc()));
     assert!(!third.online(now - time::Duration::seconds(480), OffsetDateTime::now_utc()), "停机约 300 秒只扣一次");
+}
+
+/// 上一个进程一直在跑、只是全网都没上报（模拟器停了、边缘机挂了）：重启补记的中断从它自己记的存活时刻算，
+/// 不从库里最新的上报算——一直不报的机器重启后照样离线；刚停的那一小段照样扣
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn restart_gap_starts_at_central_alive_time() {
+    let t = setup().await;
+    let a = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    sqlx::query("insert into agent_state (machine_id, agent_version, last_report_at) values ($1, 'v', now() - interval '3 hours')").bind(a).execute(&t.st.db).await.unwrap();
+    // 上一个进程 20 秒前还记了一次存活；之后 10 秒内再记不重写
+    let alive = OffsetDateTime::now_utc() - time::Duration::seconds(20);
+    let prev = fleet_server::views::ReportGaps::default();
+    prev.alive(&t.st.db, alive).await.unwrap();
+    prev.alive(&t.st.db, alive + time::Duration::seconds(10)).await.unwrap();
+    let saved: String = sqlx::query_scalar("select value #>> '{}' from app_setting where key = 'central_alive_at'").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(OffsetDateTime::parse(&saved, &time::format_description::well_known::Rfc3339).unwrap(), alive);
+
+    t.st.report_gaps.started(&t.st.db).await.unwrap();
+    t.st.live.invalidate();
+    assert!(t.health(a).await.1.contains(&"agent_offline".to_string()), "3 小时没报：重启后照样离线");
+    let now = OffsetDateTime::now_utc();
+    assert!(t.st.report_gaps.online(now - time::Duration::seconds(130), now), "停机的约 20 秒不算沉默");
+    assert!(!fleet_server::views::ReportGaps::default().online(now - time::Duration::seconds(130), now));
+}
+
+/// 有 agent 的在用机器同时离线超过一半且至少 3 台：不开单机的 agent 离线，开一条中控侧的「agent 同时失联」；
+/// 大部分回来后那条恢复，还没回来的去抖之后再按单机报
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mass_agent_loss_opens_one_central_alert() {
+    let t = setup().await;
+    let a = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let b = seed_relay(&t, "线路机2", "198.51.100.2", "tok2").await;
+    let c = seed_relay(&t, "线路机3", "198.51.100.3", "tok3").await;
+    for m in [a, b, c] {
+        sqlx::query("insert into agent_state (machine_id, agent_version, last_report_at) values ($1, 'v', now() - interval '10 minutes')").bind(m).execute(&t.st.db).await.unwrap();
+    }
+    let mut state = AlertState::default();
+    let base = OffsetDateTime::now_utc();
+    let firing = || async { incidents(&t, "firing").await.into_iter().map(|i| (i["rule"].as_str().unwrap().to_string(), i["summary"].as_str().unwrap().to_string())).collect::<Vec<_>>() };
+    for secs in [0, 61, 121] {
+        pass(&t, &mut state, base, secs).await;
+        selfmon::check_once(&t.st, base + time::Duration::seconds(secs)).await.unwrap();
+    }
+    assert_eq!(firing().await, [("central_ingress".to_string(), "中控：3/3 台 agent 同时失联：检查边缘机 / Caddy / DNS".to_string())]);
+    // a、b 回来了：中控侧的恢复；c 从这时起去抖，满 60 秒按单机报
+    for m in [a, b] {
+        sqlx::query("update agent_state set last_report_at = now() where machine_id = $1").bind(m).execute(&t.st.db).await.unwrap();
+    }
+    t.st.live.invalidate();
+    selfmon::check_once(&t.st, base + time::Duration::seconds(150)).await.unwrap();
+    pass(&t, &mut state, base, 150).await;
+    assert!(firing().await.is_empty());
+    pass(&t, &mut state, base, 211).await;
+    let f = firing().await;
+    assert_eq!(f.len(), 1);
+    assert_eq!((f[0].0.as_str(), f[0].1.starts_with("线路机3：")), ("agent_offline", true), "{f:?}");
+}
+
+/// 维护中健康判定不给原因：进行中的告警不算恢复，保持原状，维护结束后按那时的状态再判
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn maintenance_does_not_resolve_open_alerts() {
+    let t = setup().await;
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    xray_report(&t, 1, false).await;
+    let mut state = AlertState::default();
+    let base = OffsetDateTime::now_utc();
+    pass(&t, &mut state, base, 0).await;
+    pass(&t, &mut state, base, 61).await;
+    assert!(has_rule(&incidents(&t, "firing").await, "relay_xray_down"));
+    let f = time::format_description::well_known::Rfc3339;
+    let now = OffsetDateTime::now_utc();
+    let win = t.post("/api/v1/silences", json!({
+        "subject_id": relay, "is_maintenance": true, "comment": "换机房",
+        "starts_at": (now - time::Duration::minutes(1)).format(&f).unwrap(), "ends_at": (now + time::Duration::hours(1)).format(&f).unwrap(),
+    })).await["id"].as_str().unwrap().to_string();
+    for secs in [91, 151, 211] {
+        pass(&t, &mut state, base, secs).await;
+    }
+    assert!(has_rule(&incidents(&t, "firing").await, "relay_xray_down"), "维护中不恢复");
+    assert!(incidents(&t, "resolved").await.is_empty());
+    // 维护结束、Xray 已经好了：原因消失满 60 秒恢复
+    let (s, _) = t.req("DELETE", &format!("/api/v1/silences/{win}"), None, None).await;
+    assert_eq!(s, StatusCode::OK);
+    xray_report(&t, 2, true).await;
+    pass(&t, &mut state, base, 241).await;
+    pass(&t, &mut state, base, 302).await;
+    assert!(incidents(&t, "firing").await.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

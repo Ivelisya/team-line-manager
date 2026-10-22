@@ -57,6 +57,21 @@ fn slow(rule: &str) -> bool {
     rule.starts_with("renewal_") || rule == "traffic_quota_high"
 }
 
+/// 全网同时失联至少要这么多台 agent 离线（另要超过一半）
+const MASS_OFFLINE_MIN: usize = 3;
+
+/// 有自己 agent 的在用机器（不含维护中的、同机 IP 节点）里同时离线的超过一半、且至少 `MASS_OFFLINE_MIN` 台时给出 (离线, 总数)：
+/// 多半是 agent 到不了中控（边缘机、Caddy、DNS），由 selfmon.rs 开一条中控侧的告警，不按单机各报一条 agent 离线
+pub fn agents_unreachable(ms: &[views::MachineView]) -> Option<(usize, usize)> {
+    let online: Vec<bool> = ms
+        .iter()
+        .filter(|m| m.lifecycle == "active" && !m.maintenance && m.host_machine.is_none())
+        .filter_map(|m| m.agent.as_ref().map(|a| a.online))
+        .collect();
+    let off = online.iter().filter(|o| !**o).count();
+    (off >= MASS_OFFLINE_MIN && off * 2 > online.len()).then_some((off, online.len()))
+}
+
 /// 评估循环在两次之间要记住的东西
 #[derive(Default)]
 pub struct AlertState {
@@ -65,7 +80,7 @@ pub struct AlertState {
     clean_since: HashMap<Uuid, OffsetDateTime>,
 }
 
-/// 每 30 秒：评估机器的告警，成功了 ping 死人开关；再检查中控自身（selfmon.rs）
+/// 每 30 秒：记下中控还在跑（views::ReportGaps::alive），评估机器的告警，成功了 ping 死人开关；再检查中控自身（selfmon.rs）
 pub async fn run_forever(st: AppState) {
     let mut state = AlertState::default();
     let mut heartbeat = selfmon::Heartbeat::default();
@@ -74,6 +89,9 @@ pub async fn run_forever(st: AppState) {
     loop {
         tick.tick().await;
         let now = OffsetDateTime::now_utc();
+        if let Err(e) = st.report_gaps.alive(&st.db, now).await {
+            tracing::warn!("记录中控存活时刻失败：{e}");
+        }
         match evaluate_once(&st, &mut state, now).await {
             Ok(()) => heartbeat.beat(&st),
             Err(e) => tracing::error!("告警评估失败：{e:#}"),
@@ -162,6 +180,7 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
     let mut current: HashSet<(String, Uuid)> = HashSet::new();
     let mut changed = false;
     let mut touch: Vec<(Uuid, String)> = vec![];
+    let mass_offline = agents_unreachable(&ms).is_some();
     for m in ms.iter() {
         for r in &m.health.reasons {
             // info 级只用于界面提示（如访问策略暂停新连接），不开告警
@@ -169,6 +188,11 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
                 continue;
             }
             let k = (r.key.to_string(), m.id);
+            // 全网同时失联由中控侧的一条告警报（selfmon.rs）：不新开单机的 agent 离线（已开着的照旧）；
+            // 那条恢复后还没回来的，去抖从那时算起，再按单机报
+            if mass_offline && r.key == "agent_offline" && !open.contains_key(&k) {
+                continue;
+            }
             current.insert(k.clone());
             let since = *state.first_seen.entry(k.clone()).or_insert(now);
             let summary = format!("{}：{}", m.name, r.text);
@@ -282,10 +306,15 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
     // 原因消失的告警恢复：只处理 active 的机器。其它生命周期 evaluate 不给原因，不能当成「恢复」——
     // 退役中的在发起退役时已经关掉（closed_by = retire，见 api/machines.rs retire）。
     // `open` 里剩下的就是这一轮没有对应原因的告警。
-    let active: HashMap<Uuid, (&str, bool)> =
-        ms.iter().filter(|m| m.lifecycle == "active").map(|m| (m.id, (m.name.as_str(), m.health.probe_unknown))).collect();
+    let active: HashMap<Uuid, (&str, bool, bool)> =
+        ms.iter().filter(|m| m.lifecycle == "active").map(|m| (m.id, (m.name.as_str(), m.health.probe_unknown, m.maintenance))).collect();
     for (_, inc) in open {
-        let Some(&(name, probe_unknown)) = active.get(&inc.subject_id) else { continue };
+        let Some(&(name, probe_unknown, maintenance)) = active.get(&inc.subject_id) else { continue };
+        // 维护中 evaluate 不给原因：不是恢复，保持原状，维护结束后按那时的状态再判（同探测过期）
+        if maintenance {
+            state.clean_since.remove(&inc.id);
+            continue;
+        }
         // 探测结果过期（线路机 agent 离线、探测停了）：出口 / TCP 的原因消失不等于恢复，保持原状，
         // 等有新探测再判（去抖从那时重新算），否则线路机一离线这些告警就成批假恢复、补传后又重开
         if probe_unknown && matches!(inc.rule.as_str(), "egress_fail" | "tcp_fail") {

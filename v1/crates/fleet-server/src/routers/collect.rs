@@ -166,6 +166,9 @@ pub struct ClientExit {
     pub conns: i64,
 }
 
+/// 出口算不算可用：没测过、测通，或只测不通 1 次（同告警，连续两次不通才算不可用，见 routers/alerts.rs）
+pub fn usable(e: &Exit) -> bool { e.alive != Some(false) || e.fail_streak < 2 }
+
 /// 列表里的摘要（由快照算，不另存）
 pub fn summary(s: &Snapshot) -> Value {
     let wan = s.interfaces.iter().find(|i| i.name == "wan");
@@ -181,7 +184,7 @@ pub fn summary(s: &Snapshot) -> Value {
         },
         "exits": {
             "total": s.exits.len(),
-            "alive": s.exits.iter().filter(|e| e.alive == Some(true)).count(),
+            "alive": s.exits.iter().filter(|e| usable(e)).count(),
             "managed": s.exits.iter().filter(|e| e.sync != "unmanaged").count(),
             "drift": s.exits.iter().filter(|e| e.sync == "drift").count(),
         },
@@ -359,7 +362,7 @@ pub fn build(raw: &Value, prev: &Prev, last: Option<&Snapshot>, config: Option<&
         conns: openclash.conns,
         clients: clients.iter().filter(|c| c.online).count() as i64,
         exits_total: exits.len() as i64,
-        exits_alive: exits.iter().filter(|e| e.alive == Some(true)).count() as i64,
+        exits_alive: exits.iter().filter(|e| usable(e)).count() as i64,
     };
     let tested = oc.pointer("/delay/ok").and_then(Value::as_bool) == Some(true);
     let exit_rows = exits
@@ -937,7 +940,7 @@ mod tests {
         // 全部不通（mihomo 回 504，结果为空）：都 +1
         let b2 = build(&raw(0, 0, 0, tested(json!({}))), &b1.prev, Some(&b1.snap), Some(&proxies()), &[], t0 + time::Duration::seconds(300));
         assert_eq!(b2.snap.exits.iter().map(|e| e.fail_streak).collect::<Vec<_>>(), [1, 2]);
-        assert_eq!(summary(&b2.snap)["exits"], json!({"total": 2, "alive": 0, "managed": 0, "drift": 0}));
+        assert_eq!(summary(&b2.snap)["exits"], json!({"total": 2, "alive": 1, "managed": 0, "drift": 0}), "只测不通 1 次的还算可用");
         // 测试请求本身失败（API 出错）：不算出口不通
         let b3 = build(&raw(0, 0, 0, Some(json!({"ok": false, "error": "x"}))), &b2.prev, Some(&b2.snap), Some(&proxies()), &[], t0 + time::Duration::seconds(330));
         assert_eq!(b3.snap.exits.iter().map(|e| e.fail_streak).collect::<Vec<_>>(), [1, 2]);

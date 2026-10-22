@@ -314,6 +314,8 @@ const NODE_COLS = [
   { id: 'sources', header: '来源数', r: true, first: 'desc' as const }, { id: 'blocked', header: '已阻止', r: true, first: 'desc' as const },
   { id: 'last', header: '最近活动', first: 'desc' as const },
 ];
+/** 24 小时及以上查的是小时汇总：来源数是各小时去重数的最大值（服务端 access.rs） */
+const SOURCES_APPROX = '各小时去重来源数的最大值（跨小时无法精确去重，偏小）';
 const NODE_KEY: Record<string, (n: AccessNode) => number | string> = {
   name: (n) => n.name, conns: (n) => n.conns, targets: (n) => n.targets, domains: (n) => n.domains, sources: (n) => n.sources ?? -1, blocked: (n) => n.blocked,
   last: (n) => (n.last_ts ? Date.parse(n.last_ts) : 0),
@@ -321,6 +323,7 @@ const NODE_KEY: Record<string, (n: AccessNode) => number | string> = {
 /** sort：?sort= 的原值（「-」开头为降序）；空 = 服务端的顺序 */
 const NodesView = React.memo(function NodesView({ f, filtered, onClear, sort: raw, onSort, open }: { f: AccessFilter; filtered: boolean; onClear: () => void; sort: string; onSort: (s: string) => void; open: Open }) {
   const q = useAccessSummary(f);
+  const cols = React.useMemo(() => (f.window === '1h' ? NODE_COLS : NODE_COLS.map((c) => (c.id === 'sources' ? { ...c, tip: SOURCES_APPROX } : c))), [f.window]);
   const sort = React.useMemo(() => { const s = parseSort(raw); return s && NODE_KEY[s.id] ? s : null; }, [raw]);
   const rows = React.useMemo(() => {
     const list = q.data?.nodes ?? [];
@@ -335,7 +338,7 @@ const NodesView = React.memo(function NodesView({ f, filtered, onClear, sort: ra
       <TableWrap data-stale={q.isPlaceholderData}>
         <table className="dt" style={{ minWidth: 760 }}>
           <colgroup><col /><col style={{ width: 100 }} /><col style={{ width: 100 }} /><col style={{ width: 90 }} /><col style={{ width: 100 }} /><col style={{ width: 110 }} /><col style={{ width: 130 }} /></colgroup>
-          <SortHead cols={NODE_COLS} sort={sort} onSort={(s) => onSort(s ? `${s.desc ? '-' : ''}${s.id}` : '')} />
+          <SortHead cols={cols} sort={sort} onSort={(s) => onSort(s ? `${s.desc ? '-' : ''}${s.id}` : '')} />
           <tbody>
             {rows.slice(pg.offset, pg.offset + pg.size).map((n) => (
               <tr key={n.node_id} className="is-link" tabIndex={0} onClick={() => open(n.node_id, 'access')} onKeyDown={(e) => { if (e.key === 'Enter') open(n.node_id, 'access'); }}>

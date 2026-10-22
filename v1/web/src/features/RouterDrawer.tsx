@@ -15,7 +15,7 @@ import { ErrorNote, Note, Num, Pill, ReasonList, Section, SectionHeader } from '
 import { Tag } from '@/components/app/viz';
 import { DeployTimeline, MiniSpark, RouterMeters, RouterStatePill, Seen, useShowBootstrap } from '@/components/app/RouterCard';
 import { useMachineBriefs, useTeams } from '@/lib/queries';
-import { ROUTER_TABS, routerIssues, showDeploy, showRemoved, tempTone, uptimeFmt, useDeleteRouter, usePatchRouter, useRouter, useRouterDrawer, useRouterExitMetrics, useRouters, type RouterClient, type RouterDetail, type RouterExit, type RouterTab, type RouterView } from '@/lib/routers';
+import { exitUsable, ROUTER_TABS, routerIssues, showDeploy, showRemoved, tempTone, uptimeFmt, useDeleteRouter, usePatchRouter, useRouter, useRouterDrawer, useRouterExitMetrics, useRouters, type RouterClient, type RouterDetail, type RouterExit, type RouterTab, type RouterView } from '@/lib/routers';
 import { tagColor } from '@/lib/derive';
 import { resetOnOpen, useHeld } from '@/lib/useHeld';
 import { useTitleName } from '@/lib/title';
@@ -229,18 +229,21 @@ const SYNC: Record<RouterExit['sync'], { tone: 'ok' | 'warn' | 'neutral'; label:
   drift: { tone: 'warn', label: '不一致', tip: 'server:port 对上了面板入口，但 uuid / reality 参数和入口现在的不一致：入口轮换过凭据或换过线路机，路由上的这个出口可能已连不上' },
   unmanaged: { tone: 'neutral', label: '不受管', tip: '没对上任何面板入口（server:port 不是线路机的入口端口）：是路由上自己加的，中控不管它' },
 };
-const exitTone = (e: RouterExit) => (e.alive === false ? 'bad' : e.sync === 'drift' ? 'warn' : e.sync === 'unmanaged' ? 'neutral' : 'ok');
-const exitTip = (e: RouterExit) => [`${e.name}（${e.type}）→ ${e.server}:${e.port}`, e.alive === false ? '最近一次延迟测试失败' : e.delay_ms != null ? `延迟 ${e.delay_ms} ms` : '还没测过延迟', e.sync !== 'ok' && SYNC[e.sync].tip].filter(Boolean).join('\n');
+/** 不一致的说明：对上的入口已停用时直接写这个（凭据没变，是线路机上没有这个入站了） */
+const syncTip = (e: RouterExit) => (e.sync === 'drift' && e.entry?.lifecycle === 'disabled' ? '对应入口已停用：线路机上没有这个入站了，路由上的这个出口连不上' : SYNC[e.sync].tip);
+/** 只测不通 1 次的不算不可用（同告警，连续两次才算）：标黄 */
+const exitTone = (e: RouterExit) => (!exitUsable(e) ? 'bad' : e.alive === false || e.sync === 'drift' ? 'warn' : e.sync === 'unmanaged' ? 'neutral' : 'ok');
+const exitTip = (e: RouterExit) => [`${e.name}（${e.type}）→ ${e.server}:${e.port}`, e.alive === false ? `连续 ${e.fail_streak} 次延迟测试不通` : e.delay_ms != null ? `延迟 ${e.delay_ms} ms` : '还没测过延迟', e.sync !== 'ok' && syncTip(e)].filter(Boolean).join('\n');
 
 function ExitsTab({ id, d }: { id: string; d: RouterDetail }) {
   const { openMachine } = useRouterDrawer();
   const m = useExitMetricsMap(id);
-  const alive = d.exits.filter((e) => e.alive).length;
+  const alive = d.exits.filter(exitUsable).length;
   const managed = d.exits.filter((e) => e.entry).length;
   const drift = d.exits.filter((e) => e.sync === 'drift').length;
   return (
     <>
-      <p className="rt-lead">{d.exits.length} 个出口 · <b>{alive}</b> 个可用 · {managed} 个对应面板入口{drift > 0 && <> · <span className="rt-warn">{drift} 个参数不一致</span></>}<InfoTip text="延迟每 5 分钟测一次（经出口访问 generate_204）" /></p>
+      <p className="rt-lead">{d.exits.length} 个出口 · <b>{alive}</b> 个可用 · {managed} 个对应面板入口{drift > 0 && <> · <span className="rt-warn">{drift} 个参数不一致</span></>}<InfoTip text="延迟每 5 分钟测一次（经出口访问 generate_204）；连续两次测不通才算不可用" /></p>
       <Section>
         <SectionHeader title="出口 → 线路机 → 节点" />
         <Topology exits={d.exits} onOpen={openMachine} />
@@ -274,9 +277,10 @@ const ExitRow = React.memo(function ExitRow({ e, delays, onOpen }: { e: RouterEx
       <td><Trunc className="mono">{`${e.server}:${e.port}`}</Trunc></td>
       <td>{e.entry ? <button type="button" className="btn btn-link" style={{ height: 'auto', padding: 0, maxWidth: '100%' }} data-tip="打开这个节点的详情" onClick={() => onOpen(e.entry!.node_id)}><span className="ellipsis">{e.entry.name}</span></button> : <span className="t-muted">—</span>}</td>
       {/* 一致的不标（一列「一致」只是噪音），只标不一致 / 不受管 */}
-      <td>{e.sync !== 'ok' && <Pill tone={s.tone} tip={s.tip}>{s.label}</Pill>}</td>
+      <td>{e.sync !== 'ok' && <Pill tone={s.tone} tip={syncTip(e)}>{s.label}</Pill>}</td>
       <td className="r">
-        {e.alive === false ? <span className="rt-alive" data-tone="bad"><XCircle />失败</span>
+        {e.alive === false && exitUsable(e) ? <span className="rt-alive rt-warn" data-tip="只测不通 1 次，还算可用；连续两次不通才告警">刚才测不通 1 次</span>
+          : e.alive === false ? <span className="rt-alive" data-tone="bad"><XCircle />失败</span>
           : e.alive ? <Num f={F.ms(e.delay_ms)} /> : <span className="t-muted" data-tip="还没测过">—</span>}
         {e.delay_at && <span className="sub">{F.ago(e.delay_at)}</span>}
       </td>

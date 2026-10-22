@@ -168,7 +168,7 @@ const egressText = (ok: boolean, fail: boolean) => (fail ? FAIL : ok ? '正常' 
 function ProbePair({ m, onOpen }: { m: MachineView; onOpen: Open }) {
   const ps = probeSummary(m);
   return <Pair tab="quality" label="查看连接质量页签" onOpen={onOpen} cols={[
-    { icon: <Radar />, label: 'TCP 延迟', value: probeMs(ps.tcp, ps.tcpFail) },
+    { icon: <Radar />, label: 'TCP 延迟', value: <span data-tip={ps.tcpTip}>{probeMs(ps.tcp, ps.tcpFail)}</span> },
     { icon: <Globe />, label: '出口', value: egressText(ps.egressOk, ps.egressFail) },
   ]} />;
 }
@@ -196,23 +196,23 @@ function QuotaSlot({ m, onOpen }: { m: MachineView; onOpen: Open }) {
 
 /** 心跳条：近 1 小时的探测（全部卡片共用一个 /probe-beats 查询，各取自己的那份）；整条可点，打开连接质量页签。
  *  格子：节点是线路机 → 节点的 TCP 建连（线路机的 agent 探）；线路机是中控 → 线路机的连通性（中控探，只看通不通）。
- *  标题：故障的写第一条健康原因（同状态胶囊的悬停），线路机写入口连通数（各入口最新一次 TCP），家宽代理写成功率（延迟已在上面），
- *  其余写 TCP 延迟 · 出口通不通。节点自己的 agent 离线不影响它的心跳格：探测不是它自己做的，照常上色 */
-const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, reason, onOpen, tcpOk, total, tcp, egressOk, tcpFail, egressFail }: { id: string; kind: MachineView['kind']; lifecycle: MachineView['lifecycle']; reason: string | undefined; onOpen: Open } & ReturnType<typeof probeSummary>) {
+ *  标题：故障的写第一条健康原因（同状态胶囊的悬停），线路机写名下入口可用数（TCP 与出口各自最新一次都通，直出入口只看出口），
+ *  家宽代理写成功率（延迟已在上面），其余写 TCP 延迟 · 出口通不通。节点自己的 agent 离线不影响它的心跳格：探测不是它自己做的，照常上色 */
+const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, reason, onOpen, tcp, tcpTip, egressOk, tcpFail, egressFail, all, usable, tcpBad, egressBad }: { id: string; kind: MachineView['kind']; lifecycle: MachineView['lifecycle']; reason: string | undefined; onOpen: Open } & ReturnType<typeof probeSummary>) {
   const live = lifecycle === 'active';
   const bq = useProbeBeats(useCallback((d: ProbeBeats) => d[id], [id]));
   const beats = bq.data;
   const rate = kind === 'proxy' && live ? beatRate(beats) : null;
   const cap = !live ? <span className="t-muted">{lifecycle === 'retired' ? '已退役' : '尚未开始探测'}</span>
     : reason ? <span className="nc-reason" data-tip={reason}>{reason}</span>
-    : kind === 'relay' ? <>入口连通 <b className="num" style={tcpOk < total ? { color: 'var(--warn-text)' } : undefined}>{tcpOk}/{total}</b></>
+    : kind === 'relay' ? <span data-tip={`TCP 不通 ${tcpBad} 条 · 出口不通 ${egressBad} 条`}>入口可用 <b className="num" style={usable < all ? { color: 'var(--warn-text)' } : undefined}>{usable}/{all}</b></span>
     : kind === 'proxy' ? <>探测成功 <b className="num">{rate == null ? '—' : `${Math.round(rate)}%`}</b></>
-    : <>TCP <b>{probeMs(tcp, tcpFail)}</b> · 出口 <b>{egressText(egressOk, egressFail)}</b></>;
+    : <><span data-tip={tcpTip}>TCP <b>{probeMs(tcp, tcpFail)}</b></span> · 出口 <b>{egressText(egressOk, egressFail)}</b></>;
   // 时段按这份数据取回的时刻对齐（轮询间隔 2 分钟，用当前时刻在跨格时会错一格）
   const titles = useMemo(() => (live ? beatTitles(beats, bq.dataUpdatedAt) : undefined), [live, beats, bq.dataUpdatedAt]);
   return (
     <button type="button" className="nc-beat nc-click" onClick={() => onOpen('quality')}>
-      <Beat cells={live ? beatCells(beats) : []} titles={titles} caption={cap} win="近 1 小时" legend={kind === 'relay' ? BEAT_LEGEND_RELAY : BEAT_LEGEND} />
+      <Beat cells={live ? beatCells(beats, kind === 'relay') : []} titles={titles} caption={cap} win="近 1 小时" legend={kind === 'relay' ? BEAT_LEGEND_RELAY : BEAT_LEGEND} />
       <span className="sr-only">（查看连接质量页签）</span>
     </button>
   );

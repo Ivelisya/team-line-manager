@@ -228,8 +228,8 @@ export function quotaTight(list: MachineView[]) {
   }
   return { n, top: top && { ...top, pct: Math.floor(top.pct) } };
 }
-/** 集群状态在线率格条的悬停：离线（agent 不再上报）的机器名，同 overview.offline 的口径 */
-export const offlineNames = (list: MachineView[]) => list.filter((m) => m.agent && !m.agent.online).map((m) => m.name);
+/** 集群状态在线率格条的悬停：离线（agent 不再上报）的机器名，同 overview.offline 的口径（同机 IP 节点借宿主机的 agent，不计） */
+export const offlineNames = (list: MachineView[]) => list.filter((m) => m.agent && !m.agent.online && !m.host_machine).map((m) => m.name);
 /** 资源占用的告警色（CPU / 内存 / 磁盘 / 负载的格条、圆环、迷你条共用）：阈值按指标取 meta.thresholds.usage（bad 红、warn 黄） */
 export const usageTone = (pct: number | null | undefined, metric: UsageMetric) => {
   if (pct == null) return undefined;
@@ -262,10 +262,12 @@ const probeTone = (ok: number, total: number): BeatCell => (!total ? null : ok *
 // 一格 3 分钟、每 30 秒一次约 6 次：断 1 次（83%）黄，断 2 次（67%）红
 export const BEAT_LEGEND = '线路机每 30 秒连一次节点\n绿：成功 ≥ 99% · 黄：成功 80%–99% · 红：成功不到 80% · 灰：没有探测';
 export const AVAIL_LEGEND = '绿：成功 ≥ 99% · 黄：成功 80%–99% · 红：成功不到 80%\n灰：没有探测；TCP 与出口取较差的一种';
-/** 线路机的格子是中控 → 线路机的连通性（中控每 30 秒连一次它的入口端口），不是它名下入口的合计：入口通不通是各节点的事 */
-export const BEAT_LEGEND_RELAY = '中控每 30 秒连一次线路机，只看通不通\n绿：都连上 · 黄：断过 1 次 · 红：断 2 次以上 · 灰：没有数据';
-/** 探测桶 → 心跳格（20 格 = 近 1 小时，旧→新）。按桶内成功比例定色（节点与线路机同一套，线路机的桶来源见 BEAT_LEGEND_RELAY） */
-export const beatCells = (buckets: ProbeBucket[] | undefined): BeatCell[] => (buckets ?? []).map(([n, ok]) => probeTone(ok, n));
+/** 线路机的格子是中控 → 线路机的连通性（中控每 30 秒连一次，轮流连它的各个入口端口），不是它名下入口的合计：入口通不通是各节点的事 */
+export const BEAT_LEGEND_RELAY = '中控每 30 秒连一次线路机（轮流连它的各个入口端口），只看通不通\n绿：都连上 · 黄：断过 1 次 · 红：断 2 次以上 · 灰：没有数据';
+/** 探测桶 → 心跳格（20 格 = 近 1 小时，旧→新）。节点按桶内成功比例定色；线路机按断了几次（同 BEAT_LEGEND_RELAY）：
+ *  当前这一格还没满 6 次时，按比例会把断 1 次标成红 */
+export const beatCells = (buckets: ProbeBucket[] | undefined, relay = false): BeatCell[] =>
+  (buckets ?? []).map(([n, ok]): BeatCell => (!relay ? probeTone(ok, n) : !n ? null : n - ok === 0 ? 'ok' : n - ok === 1 ? 'warn' : 'bad'));
 const BEAT_MS = 3 * 60_000;
 /** 心跳格的悬停（与 beatCells 一一对应）：这 3 分钟的时段、成功率（次数）、延迟中位数、SYN 重发过几次（丢包，不算进延迟）。
  *  桶按墙钟 3 分钟对齐，最后一格是当前这格（见 API.md /probe-beats） */
@@ -304,18 +306,25 @@ export function availTitles(days: AvailabilityDay[]): string[] {
 const allFailed = (ps: (ProbeResult | null)[]) => ps.some((p) => p && !p.ok) && !ps.some((p) => p?.ok);
 /** TCP 延迟读数：近 1 小时的中位数（中控给的 median_ms），没有时用最近一次 */
 export const tcpMs = (p: ProbeResult | null) => p?.median_ms ?? p?.latency_ms ?? null;
-/** 入口探测摘要：TCP 延迟（线路机 → 节点，各入口近 1 小时中位数的平均）与出口通不通，tcpFail / egressFail = 全部失败。
+/** 入口探测摘要：TCP 延迟（线路机 → 节点）与出口通不通，tcpFail / egressFail = 全部失败。
+ *  TCP 读数取各入口近 1 小时中位数里最小的那条（挂两台线路机、一条 5 ms 一条 65 ms 时，平均出来的数哪条线都不是），tcpTip 列各条。
  *  出口探测只判通不通、IP 对不对：它的耗时是经节点去中控回显服务（在德国）的，不是线路延迟，不当读数。
  *  只算 active 的入口（同服务端健康规则）：应用中的还没有探测。
- *  直出入口没有节点、不做 TCP 探测：TCP 的连通数（total / tcpOk）与延迟只算经节点的入口，出口照算 */
+ *  直出入口没有节点、不做 TCP 探测：TCP 的连通数（total / tcpOk）与延迟只算经节点的入口，出口照算。
+ *  入口可用（线路机卡片）：all = 全部在用入口（含直出），usable = TCP（直出不看）与出口都通的条数；
+ *  tcpBad / egressBad 是各自不通（含还没有探测）的条数 */
 export function probeSummary(m: MachineView) {
   const es = m.entries.filter((e) => e.lifecycle === 'active');
   const viaNode = es.filter((e) => !e.direct);
   const tcpOk = viaNode.filter((e) => e.tcp?.ok).length;
-  const lat = viaNode.map((e) => tcpMs(e.tcp)).filter((x): x is number => x != null);
+  const egOk = es.filter((e) => e.egress?.ok).length;
+  const lat = viaNode.flatMap((e) => { const ms = tcpMs(e.tcp); return ms == null ? [] : [{ name: `${e.relay.name}:${e.port}`, ms }]; });
+  const each = lat.length > 1 ? lat.map((x) => `\n${x.name} ${Math.round(x.ms)} ms`).join('') : '';
   return {
-    total: viaNode.length, tcpOk, tcp: lat.length ? Math.round(lat.reduce((a, b) => a + b, 0) / lat.length) : null,
-    tcpFail: allFailed(viaNode.map((e) => e.tcp)), egressFail: allFailed(es.map((e) => e.egress)), egressOk: es.some((e) => e.egress?.ok),
+    total: viaNode.length, tcpOk, tcp: lat.length ? Math.round(Math.min(...lat.map((x) => x.ms))) : null,
+    tcpTip: `线路机 → 节点 TCP 握手，近 1 小时中位数${lat.length > 1 ? '，取最小的一条' : ''}；连接质量页签的曲线是每分钟平均${each}`,
+    tcpFail: allFailed(viaNode.map((e) => e.tcp)), egressFail: allFailed(es.map((e) => e.egress)), egressOk: egOk > 0,
+    all: es.length, usable: es.filter((e) => (e.direct || e.tcp?.ok) && e.egress?.ok).length, tcpBad: viaNode.length - tcpOk, egressBad: es.length - egOk,
   };
 }
 /** 备用团队里在用、有订阅的机器：到期 +1 天由中控自动删除（到期旁标出来）。旧接口没有 spare 时按否 */

@@ -157,12 +157,10 @@ function IpNodeLine({ id, name, onOpen }: { id: string; name: string; onOpen: (i
 
 /** 入口探测的连通数：「TCP 1/1 · 出口 0/1」，有不通的数字标黄；没有在用的入口为「—」 */
 function probeCounts(m: MachineView) {
-  const es = m.entries.filter((e) => e.lifecycle === 'active');
-  if (!es.length) return '—';
   const ps = probeSummary(m);
-  const egOk = es.filter((e) => e.egress?.ok).length;
+  if (!ps.all) return '—';
   const n = (ok: number, total: number) => <b className="num" style={ok < total ? { color: 'var(--warn-text)' } : undefined}>{ok}/{total}</b>;
-  return <span data-tip={`TCP：线路机到节点的握手，${ps.total - ps.tcpOk} 条不通\n出口：经入口访问外网的验证，${es.length - egOk} 条不通`}>{ps.total > 0 && <>TCP {n(ps.tcpOk, ps.total)} · </>}出口 {n(egOk, es.length)}</span>;
+  return <span data-tip={`TCP：线路机到节点的握手，${ps.tcpBad} 条不通\n出口：经入口访问外网的验证，${ps.egressBad} 条不通`}>{ps.total > 0 && <>TCP {n(ps.tcpOk, ps.total)} · </>}出口 {n(ps.all - ps.egressBad, ps.all)}</span>;
 }
 
 function OverviewTab({ m }: { m: MachineView }) {

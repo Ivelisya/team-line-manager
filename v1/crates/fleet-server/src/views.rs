@@ -351,6 +351,10 @@ pub struct RelayInfo {
     pub apply_error: Option<String>,
     pub port_min: i32,
     pub port_max: i32,
+    /// 中控 → 线路机最近 3 轮（5 分钟内，reach.rs）都连不上：这 3 次的失败原因（去重，带端口）；否则为 None。
+    /// 健康判定据此报 relay_unreachable；随完整加载更新（最多旧 `FULL_EVERY`），不对外输出
+    #[serde(skip)]
+    pub unreachable: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -420,6 +424,7 @@ struct MRow {
     r_pmax: Option<i32>,
     tune_profile: Option<String>,
     tuned_at: Option<OffsetDateTime>,
+    r_unreach: Option<String>,
 }
 
 /// agent_state 里视图要的列（`A_COLS`，表别名 a）：完整加载与补指标共用
@@ -455,13 +460,13 @@ impl ACols {
 /// agent 多久没上报算离线（中控收不到上报的时段不算，见 `ReportGaps`）
 pub const AGENT_OFFLINE_S: i64 = 120;
 
-/// 中控收不到上报的时段：中控没在跑（进程启动时补记：库里最新的上报时刻到启动）；库连不上——agent 的请求因库不可用
+/// 中控收不到上报的时段：中控没在跑（进程启动时补记：上一个进程最后还在跑的时刻到启动，见 `started`）；库连不上——agent 的请求因库不可用
 /// （`db::unavailable`）处理不了，而且整整 `GAP_MIN_S` 秒一份上报都没入库（中途有入库的，只是个别请求失败，不算）。
 /// 判 agent 离线时这些时段不算它的沉默：恢复后各 agent 退避中的重发（最长约 90 秒）要一会儿才到，按墙钟算会把一直在线的
 /// 机器成批判成离线（开一批「agent 离线」严重告警再成批恢复），等摘除的退役、换线路机作业也会判线路机不在线而失败。
 /// 停机之前就已经离线的机器照样离线：只扣掉中断的那一段，不是从恢复时重新计时。
 /// 最近一小时的时段同时存进库里（app_setting 的 `report_gaps`）：中断恢复后不久又重启一次（连着两次部署、崩溃重启），
-/// 新进程只看得到「库里最新的上报时刻」——那已经是恢复之后的了，前一段中断要从库里接着算，否则重发还没到的 agent 照样成批判离线
+/// 新进程只看得到上一个进程最后还在跑的时刻——那已经是恢复之后的了，前一段中断要从库里接着算，否则重发还没到的 agent 照样成批判离线
 #[derive(Default)]
 pub struct ReportGaps(std::sync::Mutex<Gaps>);
 
@@ -473,12 +478,18 @@ struct Gaps {
     last_fail: Option<OffsetDateTime>,
     /// 已经结束的中断时段 [起, 止]
     done: Vec<(OffsetDateTime, OffsetDateTime)>,
+    /// 最近一次写进库里的存活时刻（`alive`）
+    alive_saved: Option<OffsetDateTime>,
 }
 
 /// 连续这么久一份上报都没入库、其间又有因库不可用失败的，才算中控收不到上报
 const GAP_MIN_S: i64 = 30;
 /// 存中断时段的 app_setting 键：`[["起", "止"], …]`（RFC 3339）
 const GAPS_KEY: &str = "report_gaps";
+/// 中控自己记的存活时刻（app_setting，RFC 3339 字符串）：告警循环每轮写，进程启动时它就是上一个进程最后还在跑的时刻
+const ALIVE_KEY: &str = "central_alive_at";
+/// 存活时刻和库里的相差这么久以上才重写（每轮都写一遍只会产生死元组）
+const ALIVE_EVERY_S: i64 = 30;
 
 /// 加一段中断，和已有的重叠、相接的并成一段：同一段停机不会因为连着重启记两次而被重复扣掉
 /// （一直没收到上报时，每次启动补记的都是「库里最新的上报时刻 → 启动」，起点相同）
@@ -496,9 +507,16 @@ fn add_gap(done: &mut Vec<(OffsetDateTime, OffsetDateTime)>, gap: (OffsetDateTim
 }
 
 impl ReportGaps {
-    /// 进程启动时调：之前的进程记在库里的时段接着算，再补一段「上一个进程最后收到的上报（库里最新的上报时刻）→ 现在」，存回库里
+    /// 进程启动时调：之前的进程记在库里的时段接着算，再补一段「上一个进程最后还在跑的时刻 → 现在」，存回库里。
+    /// 起点取它自己记的存活时刻（`alive`）与库里最新的上报时刻中晚的那个；没记过存活时刻（第一次部署）就是最新的上报时刻。
+    /// 不能只看上报：上一个进程在跑、只是全网都没上报的时段（模拟器停了、边缘机挂了）不是中控收不到，扣掉的话一直离线的机器每次重启后都被判在线
     pub async fn started(&self, db: &sqlx::PgPool) -> sqlx::Result<()> {
-        let last: Option<OffsetDateTime> = sqlx::query_scalar("select max(last_report_at) from agent_state").fetch_one(db).await?;
+        let last: Option<OffsetDateTime> = sqlx::query_scalar(
+            "select greatest((select max(last_report_at) from agent_state), (select (value #>> '{}')::timestamptz from app_setting where key = $1))",
+        )
+        .bind(ALIVE_KEY)
+        .fetch_one(db)
+        .await?;
         let saved: Option<Value> = sqlx::query_scalar("select value from app_setting where key = $1").bind(GAPS_KEY).fetch_optional(db).await?;
         let now = OffsetDateTime::now_utc();
         {
@@ -531,6 +549,24 @@ impl ReportGaps {
         .execute(db)
         .await
         .map(|_| ())
+    }
+
+    /// 告警循环每轮调：把「中控此刻还在跑」记进库里（和上次写的相差满 `ALIVE_EVERY_S` 才写），下次启动时 `started` 从这里补中断
+    pub async fn alive(&self, db: &sqlx::PgPool, now: OffsetDateTime) -> sqlx::Result<()> {
+        if self.0.lock().unwrap().alive_saved.is_some_and(|t| (now - t).whole_seconds() < ALIVE_EVERY_S) {
+            return Ok(());
+        }
+        let at = now.format(&time::format_description::well_known::Rfc3339).unwrap_or_default();
+        sqlx::query(
+            "insert into app_setting (key, value, updated_by) values ($1, $2, 'fleet-server')
+             on conflict (key) do update set value = excluded.value, updated_at = now(), updated_by = excluded.updated_by",
+        )
+        .bind(ALIVE_KEY)
+        .bind(json!(at))
+        .execute(db)
+        .await?;
+        self.0.lock().unwrap().alive_saved = Some(now);
+        Ok(())
     }
 
     /// 一份上报入库了：之前在失败的，从上次入库到现在算一段（够 `GAP_MIN_S` 的话）。记了新的一段返回 true（调用方存进库里）
@@ -1055,7 +1091,11 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 s.traffic_used_base s_base, s.traffic_used_base_at s_base_at, s.overrides s_overrides, sb.billing_day::int s_bday, p.traffic_rule p_rule,
                 tp.price_cents t_price, tp.currency t_currency, tp.cycle::text t_cycle, tp.billing_tz t_tz, tp.traffic_gb t_traffic, tp.traffic_reset t_reset, tp.remind_days t_remind, local_date(tp.billing_tz) t_today,
                 {A_COLS}, r.public_host r_host, r.generation r_gen, r.applied_generation r_applied, r.applied_at r_applied_at, r.generation_at r_gen_at,
-                r.apply_error r_err, r.port_min r_pmin, r.port_max r_pmax, m.tune_profile, m.tuned_at
+                r.apply_error r_err, r.port_min r_pmin, r.port_max r_pmax, m.tune_profile, m.tuned_at,
+                (select string_agg(distinct x.detail, '；' order by x.detail) from (
+                   select coalesce(rr.detail, '-') detail, rr.ok from relay_reach rr
+                   where rr.relay_id = m.id and rr.ts > now() - interval '5 minutes' order by rr.ts desc limit 3) x
+                 having count(*) = 3 and not bool_or(x.ok)) r_unreach
          from machine m
          left join team t on t.id = m.team_id
          left join machine hm on hm.id = m.host_id
@@ -1279,6 +1319,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 apply_error: r.r_err.clone(),
                 port_min: r.r_pmin.unwrap_or(0),
                 port_max: r.r_pmax.unwrap_or(0),
+                unreachable: r.r_unreach.clone(),
             });
             let tune = (r.kind != "proxy" && r.host_id.is_none()).then(|| TuneInfo {
                 current: r.tune_profile.as_deref() == Some(crate::jobs::tune::PROFILE),
@@ -1393,7 +1434,8 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
     let (up, down) = traffic.values().fold((0i64, 0i64), |(u, d), t| (u.saturating_add(t.month_up), d.saturating_add(t.month_down)));
     // 到期：按订阅的 due_state（同续费告警）分别计即将到期、已过期
     let (mut due_soon, mut overdue) = (0, 0);
-    // 在线/离线按 agent 连通（同前端 isQuiet）：agent 没有近期上报为离线；家宽代理没有 agent，算在线。和健康无关
+    // 在线/离线按 agent 连通（同前端 isQuiet）：agent 没有近期上报为离线。只数有自己 agent 的机器：
+    // 家宽代理没有 agent、同机 IP 节点借宿主机的 agent，都不计。和健康无关
     let (mut online, mut offline) = (0, 0);
     // 月费按币种分别汇总（不做汇率折算）
     let mut cost: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
@@ -1430,10 +1472,12 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
         // 实时速率只算数据没过期的：agent 离线的机器，最后一份上报的速率不算（同前端 liveRate）。
         // 告警（哪怕严重）不影响：机器照常每 10 秒上报。同机 IP 节点的读数就是宿主机的：在线离线照常按节点计，速率不再算一遍
         let stale = m.agent.as_ref().is_some_and(|a| !a.online);
-        if stale {
-            offline += 1;
-        } else {
-            online += 1;
+        if m.agent.is_some() && m.host_machine.is_none() {
+            if stale {
+                offline += 1;
+            } else {
+                online += 1;
+            }
         }
         if let Some(h) = m.host.as_ref().filter(|_| !stale && m.host_machine.is_none()) {
             rx += h.net_rx_bps.unwrap_or(0.0);
@@ -1540,14 +1584,14 @@ mod tests {
         assert_eq!(ov["net_tx_bps"], 500.0);
         assert_eq!(ov["nodes"]["down"], 2);
 
-        // 同机 IP 节点的主机读数就是宿主机的：速率只算一次，节点数、在线数照常各算一台
+        // 同机 IP 节点的主机读数就是宿主机的：速率只算一次，节点数照常各算一台；在线数只算宿主机（agent 是它的）
         let mut h = base("vps");
         h.host = Some(host(800.0));
         let mut x = base("vps");
         x.host = h.host.clone();
         x.host_machine = Some(Ref { id: h.id, name: "团队1-03".into() });
         let ov = overview_of(&[h, x], &HashMap::new());
-        assert_eq!((ov["net_rx_bps"].as_f64(), ov["nodes"]["total"].as_i64(), ov["online"].as_i64()), (Some(800.0), Some(2), Some(2)));
+        assert_eq!((ov["net_rx_bps"].as_f64(), ov["nodes"]["total"].as_i64(), ov["online"].as_i64()), (Some(800.0), Some(2), Some(1)));
     }
 
     #[test]
@@ -1560,14 +1604,14 @@ mod tests {
         assert_eq!(crit.health.status, Status::Down);
         let mut off = base("relay");
         off.agent.as_mut().unwrap().online = false;
-        // 家宽代理没有 agent：在线
+        // 家宽代理没有 agent：不计
         let mut proxy = base("proxy");
         proxy.agent = None;
         let mut retired = base("vps");
         retired.lifecycle = "retired".into();
         retired.agent.as_mut().unwrap().online = false;
         let ov = overview_of(&[crit, off, proxy, retired], &HashMap::new());
-        assert_eq!((ov["online"].as_i64(), ov["offline"].as_i64()), (Some(2), Some(1)));
+        assert_eq!((ov["online"].as_i64(), ov["offline"].as_i64()), (Some(1), Some(1)));
     }
 
     #[test]

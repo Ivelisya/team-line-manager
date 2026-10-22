@@ -96,7 +96,8 @@ const ONLINE_N = 24;
 function ClusterPanel({ o }: { o: Overview | undefined }) {
   const trace = useFleetSeries();
   const offNames = useOfflineNames().data;
-  // 在线/离线按 agent 连通（服务端算，同 isQuiet）：有告警但照常上报的机器算在线；降级 / 故障只决定状态胶囊
+  // 在线/离线按 agent 连通（服务端算，同 isQuiet）：有告警但照常上报的机器算在线；降级 / 故障只决定状态胶囊。
+  // 只数有自己 agent 的机器：家宽代理没有 agent，同机 IP 节点借宿主机的 agent
   const online = o?.online ?? 0; const offline = o?.offline ?? 0; const total = online + offline;
   const down = o ? o.nodes.down + o.relays.down : 0; const degraded = o ? o.nodes.degraded + o.relays.degraded : 0;
   const rate = total ? (online / total) * 100 : 0;
@@ -120,7 +121,7 @@ function ClusterPanel({ o }: { o: Overview | undefined }) {
       </header>
       <div className="cluster-box">
         <div className="cluster-row">
-          <span className="cluster-big"><span className="num">{o ? <><CountUp value={rate} format={(n) => n.toFixed(rate % 1 ? 1 : 0)} />%</> : '—'}</span><small>在线率</small></span>
+          <span className="cluster-big"><span className="num">{o ? <><CountUp value={rate} format={(n) => n.toFixed(rate % 1 ? 1 : 0)} />%</> : '—'}</span><small data-tip="只数有自己 agent 的机器：家宽代理没有 agent，不计；同机 IP 节点算在宿主机里">在线率</small></span>
           {offline ? <Link className="cluster-kv" to={DOWN_LINK} data-tip="agent 不再上报">{kv}</Link> : <span className="cluster-kv" data-tip="agent 不再上报">{kv}</span>}
         </div>
         {offline ? <Link to={DOWN_LINK} className="block" data-tip={barTip} data-tip-side="bottom" aria-label={`离线 ${offline} 台`}>{bar}</Link> : <div data-tip={barTip} data-tip-side="bottom">{bar}</div>}
