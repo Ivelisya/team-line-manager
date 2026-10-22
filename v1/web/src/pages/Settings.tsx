@@ -1,7 +1,9 @@
-// 设置：API 密钥（创建时 token 只显示一次）与告警通知渠道（Telegram / 企业微信 / Webhook，可发测试、看最近发送记录）。
+// 设置：API 密钥（创建时 token 只显示一次）、告警通知渠道（Telegram / 企业微信 / Webhook，可发测试、看最近发送记录）、
+// 账户安全（两步验证、修改密码、登录会话，见 features/AccountTab）。
 import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Ban, Bell, FlaskConical, KeyRound, MessagesSquare, Pencil, Plus, Send, ShieldAlert, Trash2, Webhook } from 'lucide-react';
+import { Ban, Bell, FlaskConical, KeyRound, MessagesSquare, Pencil, Plus, Send, ShieldAlert, ShieldCheck, Trash2, Webhook } from 'lucide-react';
+import { AccountTab } from '@/features/AccountTab';
 import { useAddChannel, useApiKeys, useCreateApiKey, useDelChannel, useNotifyChannels, useNotifyLog, usePatchChannel, useRevokeApiKey, useTestChannel } from '@/lib/queries';
 import type { ApiKey, NotifyChannel, NotifyLogEntry } from '@/lib/types';
 import * as F from '@/lib/format';
@@ -19,17 +21,19 @@ import { resetOnOpen, useHeld } from '@/lib/useHeld';
 
 export function SettingsPage() {
   const [sp, setSp] = useSearchParams();
-  const tab = sp.get('section') === 'notify' ? 'notify' : 'keys';
+  const sec = sp.get('section');
+  const tab = sec === 'notify' || sec === 'account' ? sec : 'keys';
   return (
     <div className="stack">
-      <PageHead title="设置" note="API 密钥与告警通知" />
+      <PageHead title="设置" note="API 密钥、告警通知与账户安全" />
       <Tabs value={tab} onValueChange={(v) => setSp((p) => { const n = new URLSearchParams(p); n.set('section', v); return n; }, { replace: true })}>
         <TabsList className="set-tabs">
           <TabsTrigger value="keys" noPanel><KeyRound size={14} />API 密钥</TabsTrigger>
           <TabsTrigger value="notify" noPanel><Bell size={14} />告警通知</TabsTrigger>
+          <TabsTrigger value="account" noPanel><ShieldCheck size={14} />账户安全</TabsTrigger>
         </TabsList>
       </Tabs>
-      {tab === 'keys' ? <ApiKeysSection /> : <NotifySection />}
+      {tab === 'keys' ? <ApiKeysSection /> : tab === 'notify' ? <NotifySection /> : <AccountTab />}
     </div>
   );
 }

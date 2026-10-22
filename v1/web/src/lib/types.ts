@@ -173,3 +173,10 @@ export interface NotifyLogEntry { id: string; channel_id: string; channel_name: 
 
 /** 服务端分页列表（/jobs、/incidents）：next_offset 只在后面还有数据时给出 */
 export interface Paged<T> { items: T[]; total: number; next_offset: number | null }
+
+// ---- 账户安全（/account/*，只给登录会话） ----
+export interface TotpStatus { enabled: boolean; recovery_codes_left: number }
+/** 开启两步验证的第一步：待确认的密钥（10 分钟内用 enable 确认）。qr_svg 是服务端画好的二维码 SVG */
+export interface TotpSetup { secret: string; otpauth_url: string; qr_svg: string }
+/** 登录会话：id 是会话哈希前 8 字节的十六进制（不是 Cookie），current = 本设备 */
+export interface AccountSession { id: string; created_at: string; last_seen_at: string; expires_at: string; ip: string | null; user_agent: string | null; current: boolean }
