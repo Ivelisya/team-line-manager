@@ -431,6 +431,40 @@ pub fn renumber(ctx: &Ctx, team: &str, yes: bool) -> anyhow::Result<u8> {
     Ok(0)
 }
 
+/// `team ls`：团队列表。`--json` 是 /teams 的 data 原样（`[{id,name,sort_order,spare,node_count}]`）
+pub fn team_ls(ctx: &Ctx) -> anyhow::Result<u8> {
+    let d = ctx.teams()?;
+    ctx.emit(&d, || {
+        let all = d.as_array().cloned().unwrap_or_default();
+        if all.is_empty() {
+            return "还没有团队".into();
+        }
+        let rows: Vec<Vec<String>> = all
+            .iter()
+            .map(|t| vec![st(t, "/name"), st(t, "/sort_order"), st(t, "/node_count"), if t["spare"] == true { "是（到期 +1 天自动删除）".into() } else { "-".into() }, st(t, "/id")])
+            .collect();
+        table::render(&["名称", "排序", "在用节点", "备用", "id"], &rows)
+    });
+    Ok(0)
+}
+
+/// `team set <团队> --spare true|false`。设为备用要确认：团队里已经过期满 1 天的在用机器，中控下一次每小时的维护就会退役并删除。
+/// `--json` 输出改完后的这个团队（同 team ls 的一项）
+pub fn team_set(ctx: &Ctx, team: &str, spare: bool, yes: bool) -> anyhow::Result<u8> {
+    let tid = lookup(&ctx.teams()?, team, &["name"], "团队")?;
+    if spare {
+        confirm(&format!("确认把「{team}」设为备用团队？里面在用的机器订阅过期满 1 天后会被自动退役并彻底删除（已经过期满 1 天的一小时内就删）"), yes)?;
+    }
+    ctx.c.patch(&format!("/teams/{tid}"), &json!({"spare": spare}))?;
+    let all = ctx.c.get("/teams")?;
+    let t = all.as_array().and_then(|a| a.iter().find(|t| t["id"] == tid.as_str())).cloned().unwrap_or(Value::Null);
+    ctx.emit(&t, || {
+        let name = st(&t, "/name");
+        if spare { format!("已把「{name}」设为备用团队：里面在用的机器订阅过期满 1 天后自动删除") } else { format!("已取消「{name}」的备用") }
+    });
+    Ok(0)
+}
+
 pub fn upgrade_agent(ctx: &Ctx, machine: Option<&str>, all: bool, yes: bool, follow: bool) -> anyhow::Result<u8> {
     let d = if all {
         confirm("确认升级所有在用机器上的 agent？先升一台做金丝雀，成功后线路机逐台、VPS 节点并发；新版本起不来、没上报或线路机 Xray 不正常会自动换回旧版本，出在金丝雀或线路机上时没开始的都取消", yes)?;

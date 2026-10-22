@@ -261,8 +261,8 @@ export const useEndMaintenance = () => {
     return owner;
   }, [['silences'], ['incidents'], ['machines'], ['machine'], ['overview']]);
 };
-export const useAddTeam = () => useWrite((b: { name: string; sort_order?: number }) => post('/teams', b), [['teams']]);
-export const usePatchTeam = () => useWrite(({ id, ...b }: { id: string; name?: string; sort_order?: number }) => patch(`/teams/${id}`, b), [['teams'], ...M]);
+export const useAddTeam = () => useWrite((b: { name: string; sort_order?: number; spare?: boolean }) => post('/teams', b), [['teams']]);
+export const usePatchTeam = () => useWrite(({ id, ...b }: { id: string; name?: string; sort_order?: number; spare?: boolean }) => patch(`/teams/${id}`, b), [['teams'], ...M]);
 export const useRenumber = () => useWrite(({ id, token }: { id: string; token: string }) => post(`/teams/${id}/renumber`, { token }), [['teams'], ...M]);
 export const fetchRenumber = (id: string) => get<RenumberPreview>(`/teams/${id}/renumber`);
 export const useAddProvider = () => useWrite((b: Partial<Provider>) => post('/providers', b), [['providers']]);

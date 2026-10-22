@@ -201,9 +201,10 @@ struct LogOut {
     ts: OffsetDateTime,
     ok: bool,
     error: Option<String>,
-    /// firing / repeat / resolved / test / silence（有人新建、删除了静默或维护窗口）
+    /// firing / repeat / resolved / test / silence（有人新建、删除了静默或维护窗口）/ auto（备用团队的机器到期自动删除）
     kind: String,
-    /// 告警对象的显示名（中控自身的告警是「中控」，软路由的是路由名）；静默 / 维护变更是「静默 / 维护变更」；测试消息、机器或路由已删除时为 null
+    /// 告警对象的显示名（中控自身的告警是「中控」，软路由的是路由名）；静默 / 维护变更是「静默 / 维护变更」，自动删除是「自动删除」；
+    /// 测试消息、机器或路由已删除时为 null
     subject_name: Option<String>,
     /// 告警对象：机器 `{id, name}`，软路由 `{id, name, kind: "router"}`；中控自身、静默 / 维护变更、测试消息、对象已删除时为 null
     #[sqlx(skip)]
@@ -222,7 +223,7 @@ struct LogOut {
 pub async fn log(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<LogQ>) -> ApiResult<Json<Value>> {
     let mut v: Vec<LogOut> = sqlx::query_as(
         "select l.id, l.channel_id, c.name channel_name, l.incident_id, l.ts, l.ok, l.error, l.kind,
-                case when l.kind = 'silence' then '静默 / 维护变更' when i.rule like 'central!_%' escape '!' then '中控'
+                case when l.kind = 'silence' then '静默 / 维护变更' when l.kind = 'auto' then '自动删除' when i.rule like 'central!_%' escape '!' then '中控'
                      when i.rule like 'router!_%' escape '!' then r.name
                      else display_name(m.kind::text, m.label, t.name, m.number) || case when m.lifecycle = 'retired' then '（已退役）' else '' end end subject_name,
                 i.subject_id, case when r.id is not null then 'router' when m.id is not null then 'machine' end subject_kind, i.rule

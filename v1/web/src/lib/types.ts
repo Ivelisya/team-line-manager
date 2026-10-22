@@ -50,6 +50,8 @@ export interface AgentHealth {
 }
 export interface MachineView {
   id: string; kind: Kind; name: string; team: { id: string; name: string } | null; number: number | null; label: string | null;
+  /** 所在团队是备用团队：在用时订阅过期满 1 天（账单时区的「到期日 + 1 天」过完）由中控自动退役并彻底删除 */
+  spare: boolean;
   ip: string; ssh_port: number;
   /** 国家或地区（ISO 3166-1 两位大写，如 US）：手动设了用手动的，否则中控离线 IP 库按机器自己的 IP 查；
    *  内网、家宽代理填的域名、库没装时为 null */
@@ -88,7 +90,8 @@ export interface MachineView {
   relay: { public_host: string; generation: number; applied_generation: number; applied_at: string | null; apply_error: string | null; port_min: number; port_max: number } | null;
 }
 
-export interface Team { id: string; name: string; sort_order: number; node_count: number }
+/** spare：备用团队（里面在用的机器订阅过期满 1 天后自动删除） */
+export interface Team { id: string; name: string; sort_order: number; spare: boolean; node_count: number }
 /** 供应商怎么计量流量额度：网卡本周期入、出总量取小 / 取大 / 相加 / 只算出站 */
 export type TrafficRule = 'min' | 'max' | 'sum' | 'out';
 /** 供应商也是名下机器订阅的模板：账单时区（null = 跟随组织时区）、流量重置（自然月 / 账单日）、提前提醒天数 */
@@ -238,8 +241,8 @@ export type NotifySeverity = 'info' | 'warning' | 'critical';
 export interface NotifyChannel { id: string; name: string; kind: NotifyKind | string; min_severity: NotifySeverity | string; enabled: boolean; created_at: string; config_hint: string }
 /** channel_name：渠道删了之后为 null（发送记录还留着） */
 export interface NotifyLogEntry { id: string; channel_id: string; channel_name: string | null; incident_id: string | null; ts: string; ok: boolean; error: string | null;
-  /** firing / repeat / resolved / test */
-  kind: 'firing' | 'repeat' | 'resolved' | 'test'; subject_name: string | null; rule_name: string | null }
+  /** firing / repeat / resolved / test；silence 静默 / 维护变更；auto 备用团队的机器到期自动删除 */
+  kind: 'firing' | 'repeat' | 'resolved' | 'test' | 'silence' | 'auto'; subject_name: string | null; rule_name: string | null }
 
 /** 服务端分页列表（/jobs、/incidents）：next_offset 只在后面还有数据时给出 */
 export interface Paged<T> { items: T[]; total: number; next_offset: number | null }

@@ -209,6 +209,21 @@ enum SubscriptionCmd {
     },
 }
 
+#[derive(Subcommand)]
+enum TeamCmd {
+    /// 团队列表：排序、在用节点数、是否备用
+    Ls,
+    /// 设为 / 取消备用团队。备用团队里在用的机器订阅过期满 1 天（账单时区的「到期日 + 1 天」过完）后，中控自动退役并彻底删除
+    Set {
+        team: String,
+        /// true = 设为备用（设为备用要确认：已经过期满 1 天的机器一小时内就会被删）；false = 取消
+        #[arg(long, action = clap::ArgAction::Set, value_name = "true|false")]
+        spare: bool,
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
 fn keys_user(c: &KeysCmd) -> Option<&str> {
     match c {
         KeysCmd::Ls { auth } | KeysCmd::Create { auth, .. } | KeysCmd::Revoke { auth, .. } => auth.user.as_deref(),
@@ -377,6 +392,11 @@ enum Cmd {
         team: String,
         #[arg(long)]
         yes: bool,
+    },
+    /// 团队：列表（含是否备用）、设为 / 取消备用团队
+    Team {
+        #[command(subcommand)]
+        cmd: TeamCmd,
     },
     /// 升级 agent（单台，或 --all：先升一台做金丝雀，成功后线路机逐台、VPS 节点并发）；新版本起不来、没上报或线路机 Xray 不正常自动换回旧版本
     UpgradeAgent {
@@ -814,6 +834,10 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             ops::rename(x, &machine, team.as_deref(), number, label.as_deref(), note.as_deref(), country.as_deref())
         }
         Cmd::Renumber { team, yes } => ops::renumber(x, &team, yes),
+        Cmd::Team { cmd } => match cmd {
+            TeamCmd::Ls => ops::team_ls(x),
+            TeamCmd::Set { team, spare, yes } => ops::team_set(x, &team, spare, yes),
+        },
         Cmd::UpgradeAgent { machine, all, yes, follow } => ops::upgrade_agent(x, machine.as_deref(), all, yes, follow),
         Cmd::Entries { machine } => cmds::entries(x, machine.as_deref()),
         Cmd::Share { entry } => ops::share(x, &entry),
@@ -927,6 +951,19 @@ mod tests {
         assert_eq!(parse(&["rotate", "线路机2:20001", "--yes"]).ok(), Some(false));
         let e = parse(&["enabel", "线路机2:20001"]).unwrap_err();
         assert_eq!((e.kind(), e.exit_code()), (clap::error::ErrorKind::InvalidValue, 2));
+    }
+
+    /// `team set` 的 --spare 要明写 true / false（不是开关）
+    #[test]
+    fn team_set_spare_takes_value() {
+        let parse = |a: &[&str]| match Cli::try_parse_from(["fleetctl", "team", "set"].iter().chain(a)).map(|c| c.cmd) {
+            Ok(Cmd::Team { cmd: super::TeamCmd::Set { team, spare, yes } }) => Ok((team, spare, yes)),
+            Ok(_) => panic!("不是 team set"),
+            Err(e) => Err(e.kind()),
+        };
+        assert_eq!(parse(&["备用", "--spare", "true", "--yes"]), Ok(("备用".into(), true, true)));
+        assert_eq!(parse(&["备用", "--spare", "false"]), Ok(("备用".into(), false, false)));
+        assert!(parse(&["备用", "--spare"]).is_err() && parse(&["备用"]).is_err() && parse(&["备用", "--spare", "yes"]).is_err());
     }
 
     #[test]

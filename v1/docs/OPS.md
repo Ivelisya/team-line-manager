@@ -45,6 +45,7 @@
 | 看作业进度、失败原因 | `fleetctl jobs --active`（`--kind upgrade_agent` 等只看一类）、`fleetctl job <id> --follow`；失败后 `fleetctl retry <id>` |
 | 退役 | `fleetctl retire 团队1-06 --reason 到期不续 --yes --follow`（宿主机上的同机 IP 节点会一并退役，命令先列出来） |
 | 彻底删除已退役机器 | `fleetctl purge 团队1-06 --yes`（它的入口近 35 天的流量还计入另一端未退役的机器时会被拒，报错里给出可删日期；另一端已退役的不受限） |
+| 替换下来的机器放进备用团队、到期自动删除 | `fleetctl team ls` 看哪些团队是备用；`fleetctl team set 备用 --spare true --yes`（取消 `--spare false`；网页「团队与套餐」编辑团队勾「备用团队」），再把机器 `fleetctl rename 团队1-06 --team 备用` 移进去。备用团队里**在用**、有订阅的机器，账单时区的今天晚于「到期日 + 1 天」（到期日 10-20：10-21 还留着，10-22 0 点起）时，中控每小时的维护任务自动退役（带清理，宿主机连带同机 IP 节点，同手动退役），退役完成且 `purge` 不被拦时接着彻底删除；被拦的（入口流量还计入线路机统计、宿主机的同机 IP 节点没删完）等条件满足后的那一轮再删。有进行中作业的跳过、下一轮再看；续费顺延了到期日就不删；没有订阅的不删。提前通知复用续费告警：到期当天「今天到期，备用节点后天自动删除」，过期第 1 天「已过期 1 天，备用节点明天自动删除」（开新告警，发通知）；真删时另发一条「自动删除」通知（发给所有启用的渠道，不看级别）。`billing` / `show` 里有「备用」一行 |
 | 把节点换到另一台线路机 | `fleetctl move 团队1-06 --to 线路机3 --yes --follow`（分享链接会变，见 §6） |
 | 线路机退役前搬空 | `fleetctl evacuate 线路机2 --to 线路机3 --yes --follow` |
 | 恢复已退役的机器 | `fleetctl restore 团队1-06 --relay 线路机3 --reason 客户续约 --yes --follow`（先预检再提交，见 §6） |
@@ -368,6 +369,7 @@ heartbeat_url = "https://hc-ping.com/<检查的 uuid>"
 - 用户名（如 `kismet`）：在网页上登录的人。
 - `apikey:<其它名称>`：别的 API 密钥（脚本、别处的 fleetctl）。
 - `cli`：中控命令行（`user-set`、`totp-reset`，以及 local-admin 新建 / 撤销 central-local，摘要写「中控命令行 local-admin」）。
+- `系统`：中控自己做的——备用团队的机器到期自动退役、彻底删除（审计 detail 与作业参数里 `auto` 为 `spare_expiry`，退役原因「备用到期自动删除（到期日 …）」，见 §2）。
 
 `fleetctl ssh` 每次登录记一条「SSH 登录」（`ssh.login`：对象、交互式还是带命令；命令内容不记）；要留命令全文的单条命令用 `fleetctl exec`。在中控上绕开 fleetctl 直接 ssh、psql 做的事不进审计。
 

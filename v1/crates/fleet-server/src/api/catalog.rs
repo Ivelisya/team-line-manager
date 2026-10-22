@@ -20,12 +20,14 @@ pub struct Team {
     id: Uuid,
     name: String,
     sort_order: i32,
+    /// 备用团队：里面在用的机器订阅过期满 1 天后由中控自动退役并彻底删除（见 spare.rs）
+    spare: bool,
     node_count: i64,
 }
 
 pub async fn list_teams(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
     let v: Vec<Team> = sqlx::query_as(
-        "select t.id, t.name, t.sort_order,
+        "select t.id, t.name, t.sort_order, t.spare,
                 (select count(*) from machine m where m.team_id = t.id and m.lifecycle <> 'retired') node_count
          from team t order by t.sort_order, t.name",
     )
@@ -38,6 +40,7 @@ pub async fn list_teams(_a: Actor, State(st): State<AppState>) -> ApiResult<Json
 pub struct TeamIn {
     name: Option<String>,
     sort_order: Option<i32>,
+    spare: Option<bool>,
 }
 
 fn clean_name(s: &str, what: &str) -> ApiResult<String> {
@@ -52,13 +55,15 @@ pub async fn create_team(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJs
     let name = clean_name(b.name.as_deref().unwrap_or(""), "团队名")?;
     let id = new_id();
     let mut tx = st.db.begin().await?;
-    sqlx::query("insert into team (id, name, sort_order) values ($1, $2, $3)")
+    let spare = b.spare.unwrap_or(false);
+    sqlx::query("insert into team (id, name, sort_order, spare) values ($1, $2, $3, $4)")
         .bind(id)
         .bind(&name)
         .bind(b.sort_order.unwrap_or(0))
+        .bind(spare)
         .execute(&mut *tx)
         .await?;
-    audit(&mut tx, &a.name, "team.create", "team", Some(id), json!({"name": name})).await?;
+    audit(&mut tx, &a.name, "team.create", "team", Some(id), json!({"name": name, "spare": spare})).await?;
     tx.commit().await?;
     st.emit(Event::Catalog);
     Ok(ok(json!({"id": id})))
@@ -66,7 +71,7 @@ pub async fn create_team(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJs
 
 pub async fn patch_team(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<TeamIn>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
-    let old: (String, i32) = sqlx::query_as("select name, sort_order from team where id = $1 for update")
+    let old: (String, i32, bool) = sqlx::query_as("select name, sort_order, spare from team where id = $1 for update")
         .bind(id)
         .fetch_one(&mut *tx)
         .await?;
@@ -74,10 +79,12 @@ pub async fn patch_team(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPa
         Some(n) => clean_name(n, "团队名")?,
         None => old.0.clone(),
     };
-    sqlx::query("update team set name = $2, sort_order = $3 where id = $1")
+    let spare = b.spare.unwrap_or(old.2);
+    sqlx::query("update team set name = $2, sort_order = $3, spare = $4 where id = $1")
         .bind(id)
         .bind(&name)
         .bind(b.sort_order.unwrap_or(old.1))
+        .bind(spare)
         .execute(&mut *tx)
         .await?;
     // 团队改名 → 该团队所有节点显示名变化 → 线路机备注同步
@@ -90,7 +97,7 @@ pub async fn patch_team(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPa
         relays = crate::db::bump_relays_of_nodes(&mut tx, &nodes).await?;
     }
     audit(&mut tx, &a.name, "team.update", "team", Some(id),
-        json!({"before": {"name": old.0, "sort_order": old.1}, "after": {"name": name, "sort_order": b.sort_order.unwrap_or(old.1)}})).await?;
+        json!({"before": {"name": old.0, "sort_order": old.1, "spare": old.2}, "after": {"name": name, "sort_order": b.sort_order.unwrap_or(old.1), "spare": spare}})).await?;
     tx.commit().await?;
     for r in relays {
         st.relay_bumped(r);

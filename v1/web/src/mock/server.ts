@@ -354,7 +354,7 @@ function createMachine(it: ProvisionItem, c: ProvisionCheckItem): MachineView {
   const team = it.kind === 'relay' ? null : teamOf(it.team_id!);
   if (h) db.ssPorts[id] = c.ss_port!;
   const m: MachineView = {
-    id, kind: it.kind, name: c.name, team: team ? { id: team.id, name: team.name } : null, number: it.kind === 'relay' ? null : c.number, label: it.kind === 'relay' ? it.label ?? null : null,
+    id, kind: it.kind, name: c.name, team: team ? { id: team.id, name: team.name } : null, spare: team?.spare ?? false, number: it.kind === 'relay' ? null : c.number, label: it.kind === 'relay' ? it.label ?? null : null,
     ip: it.ip, ssh_port: h?.ssh_port ?? it.ssh_port ?? 22, country: it.country ?? countryOf(it.ip), country_set: it.country ?? null, host_machine: h && { id: h.id, name: h.name }, bind_ip: null, ip_nodes: [], provider: pv ? { id: pv.id, name: pv.name } : null, provider_code: pv?.code ?? null,
     plan: plan ? { id: plan.id, name: plan.name, bandwidth_mbps: plan.bandwidth_mbps, traffic_gb: plan.traffic_gb } : null, service_ref: it.service_ref ?? null,
     lifecycle: 'provisioning', lifecycle_reason: null, note: it.note ?? '', revision: 1, created_at: iso(), activated_at: null, retired_at: null,
@@ -387,7 +387,7 @@ R('GET', '/teams', () => clone(db.teams));
 R('POST', '/teams', ({ body }) => {
   if (!body.name?.trim()) throw bad('团队名不能为空');
   if (db.teams.some((t) => t.name === body.name)) throw bad('团队名已存在', 409, 'conflict');
-  const t = { id: `t${db.seq++}`, name: body.name.trim(), sort_order: body.sort_order ?? db.teams.length + 1, node_count: 0 };
+  const t = { id: `t${db.seq++}`, name: body.name.trim(), sort_order: body.sort_order ?? db.teams.length + 1, spare: !!body.spare, node_count: 0 };
   db.teams.push(t); emit({ type: 'catalog' }); return t;
 });
 R('PATCH', '/teams/([^/]+)', ({ params, body }) => {
@@ -399,6 +399,11 @@ R('PATCH', '/teams/([^/]+)', ({ params, body }) => {
     emit({ type: 'machines' });
   }
   if (body.sort_order != null) t.sort_order = body.sort_order;
+  // 备用团队：机器视图里的 spare 跟着变（到期旁的「到期 +1 天自动删除」）。mock 不模拟到期后的自动删除
+  if (body.spare != null && body.spare !== t.spare) {
+    t.spare = !!body.spare; db.machines.filter((m) => m.team?.id === t.id).forEach((m) => { m.spare = t.spare; });
+    emit({ type: 'machines' });
+  }
   emit({ type: 'catalog' }); return t;
 });
 const renumberPlan = (tid: string) => {
@@ -489,7 +494,7 @@ R('PATCH', '/machines/([^/]+)', ({ params, body }) => {
     const team = teamOf(body.team_id ?? m.team?.id);
     const number = body.number ?? m.number;
     if (db.machines.some((x) => x.id !== m.id && x.team?.id === team.id && x.number === number && x.lifecycle !== 'retired')) throw bad(`${displayName(team.name, number)} 已被占用`, 409, 'conflict');
-    m.team = { id: team.id, name: team.name }; m.number = number;
+    m.team = { id: team.id, name: team.name }; m.spare = team.spare; m.number = number;
   }
   if (body.label !== undefined) m.label = body.label;
   if (body.country !== undefined) {
@@ -918,7 +923,7 @@ R('POST', '/machines/([^/]+)/restore', ({ params, body }) => {
   if (m.kind !== 'relay' && !relay) throw bad('要选一台在用的线路机');
   if (m.kind === 'proxy' && !body.upstream?.password) throw bad('上游有用户名：密码在退役时已清掉，要在 upstream.password 里重新填');
   const old = m.name;
-  m.lifecycle = 'provisioning'; m.lifecycle_reason = '恢复中'; if (p.team) m.team = p.team; m.number = p.num; if (m.kind === 'relay') m.label = p.label; m.name = p.name; m.revision++;
+  m.lifecycle = 'provisioning'; m.lifecycle_reason = '恢复中'; if (p.team) { m.team = p.team; m.spare = teamOf(p.team.id).spare; } m.number = p.num; if (m.kind === 'relay') m.label = p.label; m.name = p.name; m.revision++;
   m.health = { status: 'unknown', reasons: [{ key: 'provisioning', severity: 'info', text: '恢复作业进行中' }] };
   let e: EntryView | null = null;
   if (relay) {

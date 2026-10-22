@@ -150,6 +150,17 @@ fn used_cn(m: &Value, limit: Option<i64>, pct: Option<i64>, incl: &str) -> Strin
     format!("{used}{lim}{p}，{} 起，{}{incl}{cal}", st(m, "/quota/period_start"), rule_cn(&m["quota"]["rule"]))
 }
 
+/// 备用团队里在用的机器（`spare`）：到期后再留 1 天，由中控自动退役并彻底删除。不是备用、不在用时为 None（billing、show 共用）
+pub(crate) fn spare_cn(m: &Value) -> Option<String> {
+    if m["spare"] != true || m["lifecycle"] != "active" {
+        return None;
+    }
+    Some(match m["subscription"]["due_date"].as_str() {
+        Some(d) => format!("到期后 1 天自动删除（账单时区 {d} 的次日过完即删）"),
+        None => "没有订阅，不会自动删除".into(),
+    })
+}
+
 fn billing_text(name: &str, m: &Value, limit: Option<i64>, pct: Option<i64>, renewals: &[Value], total: usize) -> String {
     let s = &m["subscription"];
     let mut rows = vec![("机器", name.to_string())];
@@ -157,6 +168,10 @@ fn billing_text(name: &str, m: &Value, limit: Option<i64>, pct: Option<i64>, ren
         let [fee, (due, d), (auto, a), remind, tz, _, reset] = sub_fields(s, m);
         let a = if s["auto_renew"] == true { "是（只影响提醒：到期前不提醒，过期才告警）".into() } else { a };
         rows.extend([fee, (due, format!("{d}（{}）", due_cn(s["due_days"].as_i64().unwrap_or(0)))), (auto, a), remind, tz, ("流量上限", limit_cn(m, limit)), reset]);
+        // 紧跟在到期那一行后面
+        if let Some(sp) = spare_cn(m) {
+            rows.insert(3, ("备用", sp));
+        }
     } else {
         rows.push(("流量上限", limit_cn(m, limit)));
     }
@@ -192,7 +207,7 @@ fn billing_text(name: &str, m: &Value, limit: Option<i64>, pct: Option<i64>, ren
     format!("{out}\n\n续费记录（{head}）\n{}", table::render(&["登记时间", "到期日", "金额", "操作者", "备注"], &rows))
 }
 
-/// `billing <机器>`：订阅 + 流量额度 + 最近的续费记录。`--json`：`{id, name, host_machine, subscription, sub_template, traffic_limit_gb, quota, quota_pct, renewals, renewal_count}`
+/// `billing <机器>`：订阅 + 流量额度 + 最近的续费记录。`--json`：`{id, name, host_machine, spare, subscription, sub_template, traffic_limit_gb, quota, quota_pct, renewals, renewal_count}`
 pub fn billing(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
     // 已退役的机器也能看当时的订阅与续费记录
     let (id, name) = ctx.find_id(machine, Want::Any)?;
@@ -204,7 +219,7 @@ pub fn billing(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
     // 向下取整（同流量额度告警）：还没用满时不会写成 100%
     let pct = limit.map(|g| (num(&m, "/quota/used").unwrap_or(0.0) * 100.0 / (g as f64 * GB)).floor() as i64);
     let d = json!({
-        "id": id, "name": name, "host_machine": m["host_machine"], "subscription": m["subscription"], "sub_template": m["sub_template"],
+        "id": id, "name": name, "host_machine": m["host_machine"], "spare": m["spare"], "subscription": m["subscription"], "sub_template": m["sub_template"],
         "traffic_limit_gb": limit, "quota": m["quota"], "quota_pct": pct, "renewals": recent, "renewal_count": all.len(),
     });
     ctx.emit(&d, || billing_text(&name, &m, limit, pct, recent, all.len()));
@@ -413,6 +428,16 @@ pub fn subscription_set(ctx: &Ctx, o: SubSetOpts<'_>) -> anyhow::Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spare_hint_only_for_active_spare() {
+        let m = |spare: bool, lc: &str, sub: Value| json!({"spare": spare, "lifecycle": lc, "subscription": sub});
+        let sub = json!({"due_date": "2026-10-20"});
+        assert_eq!(spare_cn(&m(true, "active", sub.clone())).as_deref(), Some("到期后 1 天自动删除（账单时区 2026-10-20 的次日过完即删）"));
+        assert_eq!(spare_cn(&m(true, "active", Value::Null)).as_deref(), Some("没有订阅，不会自动删除"));
+        assert_eq!(spare_cn(&m(false, "active", sub.clone())), None);
+        assert_eq!(spare_cn(&m(true, "retired", sub)), None);
+    }
 
     #[test]
     fn money_in_yuan_to_cents() {

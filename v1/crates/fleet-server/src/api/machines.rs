@@ -341,6 +341,23 @@ pub async fn retire(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<U
     }
     // 退役原因同备注的上限（写进机器的状态原因）
     check_text(None, b.reason.as_deref()).map_err(|_| ApiError::bad_request(format!("退役原因最多 {MAX_NOTE_CHARS} 个字符")))?;
+    Ok(ok(start_retire(&st, &a.name, id, &name, &kind, b.reason.as_deref(), b.cleanup.unwrap_or(true), None).await?))
+}
+
+/// 发起退役：手动退役与备用团队到期自动删除（spare.rs）走这同一条路径。`name`、`kind` 是调用方刚读出的显示名与种类；
+/// `auto`：中控自动发起时的标记（记进作业参数与审计的 auto，同机 IP 节点的作业也带上），手动退役为 None。
+/// 返回 `{job_id, ip_node_jobs}`
+#[allow(clippy::too_many_arguments)]
+pub async fn start_retire(
+    st: &AppState,
+    actor: &str,
+    id: Uuid,
+    name: &str,
+    kind: &str,
+    reason: Option<&str>,
+    cleanup: bool,
+    auto: Option<&str>,
+) -> ApiResult<Value> {
     let mut tx = st.db.begin().await?;
     // 先锁机器行再判断、再计数：和「给线路机加入口」（对同一行 for share）互斥，守卫不会被并发挤穿
     let (lifecycle,): (String,) = sqlx::query_as("select lifecycle::text from machine where id = $1 for update")
@@ -390,7 +407,7 @@ pub async fn retire(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<U
          where id = $1 and lifecycle not in ('retiring', 'retired')",
     )
     .bind(id)
-    .bind(&b.reason)
+    .bind(reason)
     .execute(&mut *tx)
     .await?
     .rows_affected();
@@ -425,29 +442,29 @@ pub async fn retire(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<U
     .execute(&mut *tx)
     .await?
     .rows_affected();
-    let job = jobs::enqueue(
-        &mut tx,
-        "retire",
-        Some(id),
-        json!({"cleanup": b.cleanup.unwrap_or(true), "reason": b.reason, "prev_lifecycle": lifecycle}),
-        &a.name,
-    )
-    .await?;
+    // 自动发起的：作业参数与审计带上 auto（spare.rs 据退役作业的 auto 接着彻底删除；审计里和手动退役分得开）
+    let tag = |mut v: Value| {
+        if let Some(x) = auto {
+            v["auto"] = json!(x);
+        }
+        v
+    };
+    let job = jobs::enqueue(&mut tx, "retire", Some(id), tag(json!({"cleanup": cleanup, "reason": reason, "prev_lifecycle": lifecycle})), actor).await?;
     audit(
         &mut tx,
-        &a.name,
+        actor,
         "machine.retire",
         "machine",
         Some(id),
-        json!({"name": name, "reason": b.reason, "job_id": job, "cancelled_jobs": dead.iter().map(|(j, _)| j).collect::<Vec<_>>(),
-               "ip_nodes": ip_nodes.iter().map(|x| &x.1).collect::<Vec<_>>()}),
+        tag(json!({"name": name, "reason": reason, "job_id": job, "cancelled_jobs": dead.iter().map(|(j, _)| j).collect::<Vec<_>>(),
+               "ip_nodes": ip_nodes.iter().map(|x| &x.1).collect::<Vec<_>>()})),
     )
     .await?;
     // 同机 IP 节点各自一个退役作业：只摘自己的入口、不登录清理（宿主机的清理连同它们的实例一起删）
     let mut ip_jobs = vec![];
     for (xid, xname, xlc) in &ip_nodes {
-        let j = jobs::enqueue(&mut tx, "retire", Some(*xid), json!({"cleanup": false, "reason": ip_reason, "prev_lifecycle": xlc}), &a.name).await?;
-        audit(&mut tx, &a.name, "machine.retire", "machine", Some(*xid), json!({"name": xname, "reason": ip_reason, "job_id": j, "host": name})).await?;
+        let j = jobs::enqueue(&mut tx, "retire", Some(*xid), tag(json!({"cleanup": false, "reason": ip_reason, "prev_lifecycle": xlc})), actor).await?;
+        audit(&mut tx, actor, "machine.retire", "machine", Some(*xid), tag(json!({"name": xname, "reason": ip_reason, "job_id": j, "host": name}))).await?;
         ip_jobs.push(json!({"machine_id": xid, "name": xname, "job_id": j}));
     }
     tx.commit().await?;
@@ -467,7 +484,7 @@ pub async fn retire(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<U
     for (j, t) in dead {
         st.emit(Event::Job { id: j, target: Some(t) });
     }
-    Ok(ok(json!({"job_id": job, "ip_node_jobs": ip_jobs})))
+    Ok(json!({"job_id": job, "ip_node_jobs": ip_jobs}))
 }
 
 /// 宿主机上还没开始退役的同机 IP 节点：(id, 显示名, 生命周期)，按团队、编号排。`lock`：锁住这些机器行（退役时）
@@ -530,13 +547,26 @@ pub async fn purge(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     if let Some(why) = crate::db::purge_blocker(&st.db, id).await? {
         return Err(ApiError::conflict(why));
     }
+    Ok(ok(json!({"job_id": start_purge(&st, &a.name, id, &name, None).await?})))
+}
+
+/// 建彻底删除作业并记审计（调用方已核对过：已退役、`db::purge_blocker` 不拦）。手动删除与备用到期自动删除（spare.rs）共用；
+/// `auto` 同 `start_retire`。同一台已有进行中的作业时由唯一索引挡住（409）
+pub async fn start_purge(st: &AppState, actor: &str, id: Uuid, name: &str, auto: Option<&str>) -> ApiResult<Uuid> {
     let mut tx = st.db.begin().await?;
-    let job = jobs::enqueue(&mut tx, "purge", Some(id), json!({"name": name}), &a.name).await?;
-    audit(&mut tx, &a.name, "machine.purge", "machine", Some(id), json!({"name": name, "job_id": job})).await?;
+    let mut params = json!({"name": name});
+    let mut detail = json!({"name": name});
+    if let Some(x) = auto {
+        params["auto"] = json!(x);
+        detail["auto"] = json!(x);
+    }
+    let job = jobs::enqueue(&mut tx, "purge", Some(id), params, actor).await?;
+    detail["job_id"] = json!(job);
+    audit(&mut tx, actor, "machine.purge", "machine", Some(id), detail).await?;
     tx.commit().await?;
     st.wake_jobs();
     st.emit(Event::Job { id: job, target: Some(id) });
-    Ok(ok(json!({"job_id": job})))
+    Ok(job)
 }
 
 // ── agent 升级 ────────────────────────────────────────────────────────────

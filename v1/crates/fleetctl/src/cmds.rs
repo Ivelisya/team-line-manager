@@ -436,6 +436,9 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
                 ),
             ));
         }
+        if let Some(sp) = crate::billing::spare_cn(&m) {
+            rows.push(("备用", sp));
+        }
         rows.push(("流量额度", format!("本周期已用 {}（{} 起）", table::gb(num(&m, "/quota/used").unwrap_or(0.0)), st(&m, "/quota/period_start"))));
         if !m["relay"].is_null() {
             rows.push(("线路机", format!("{}  配置代数 {} · 已应用 {}  {}", st(&m, "/relay/public_host"), st(&m, "/relay/generation"), st(&m, "/relay/applied_generation"), m["relay"]["apply_error"].as_str().unwrap_or(""))));
