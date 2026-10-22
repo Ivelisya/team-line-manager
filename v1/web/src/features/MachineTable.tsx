@@ -23,7 +23,7 @@ const monthly = (m: MachineView) => {
 // 同机关系标跟在名称后面，只写「同机」/「+N IP」（宿主机名在悬停说明里），放不下时先省略名称
 const cols: Col[] = [
   { id: 'name', header: '名称', size: 172, ...byStr((m) => m.name),
-    cell: (m) => <div className="tname"><Flag country={m.country} ip={m.ip} /><div>
+    cell: (m) => <div className="tname"><Flag country={m.country} manual={!!m.country_set} ip={m.ip} /><div>
       <div className="row" style={{ flexWrap: 'nowrap', gap: 6 }}><span className="cell-main strong">{m.name}</span><StatusMark status={m.health.status} lifecycle={m.lifecycle} /><HostTag id={m.id} host={m.host_machine} nodes={m.ip_nodes} short /></div>
       <span className="sub">{m.ip}</span>
     </div></div> },

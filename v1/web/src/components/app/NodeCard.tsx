@@ -29,12 +29,12 @@ type Open = (tab?: DrawerTab) => void;
 // 只读的悬停说明写 data-tip，由全站一份 TipHost 显示。
 
 /** 标题：国旗 + 名称（不正常时名称后一个状态图标）+ 右侧操作。紧凑卡的 IP 在名称下面一行小字（同表格名称列）：跟在名称后面时只剩约 100px 给名称和 IP，常被截成「· 1…」 */
-const Head = memo(function Head({ name, country, ip, status, lc, view, onOpen }: { name: string; country: string | null | undefined; ip: string; status: string; lc: MachineView['lifecycle']; view: CardView; onOpen: Open }) {
+const Head = memo(function Head({ name, country, manual, ip, status, lc, view, onOpen }: { name: string; country: string | null | undefined; manual: boolean; ip: string; status: string; lc: MachineView['lifecycle']; view: CardView; onOpen: Open }) {
   const btn = <button type="button" className="nc-name" data-tip={`打开 ${name} 的详情`} onClick={() => onOpen()}>{name}</button>;
   const named = <span className="nc-named">{btn}<StatusMark status={status} lifecycle={lc} /></span>;
   return (
     <header className="nc-head">
-      <Flag country={country} ip={ip} />
+      <Flag country={country} manual={manual} ip={ip} />
       {view === 'compact' ? <div className="nc-title">{named}<span className="nc-ip" data-tip={ip}>{ip}</span></div> : named}
       <div className="nc-actions">
         <IconButton label="打开详情" tip={false} data-tip="打开详情" onClick={() => onOpen()}><PanelRightOpen size={16} /></IconButton>
@@ -267,7 +267,7 @@ function NodeCardImpl({ m, view, current, onOpen: open, layoutKey }: { m: Machin
 
   return (
     <mo.article layout={layoutKey == null ? false : 'position'} layoutDependency={layoutKey} transition={SPRING} className={cn('ncard', current && 'is-current', quiet && 'is-quiet')} data-view={view} data-id={m.id} data-kind={m.kind} data-health={m.health.status} data-offline={quiet ? '1' : undefined}>
-      <Head name={m.name} country={m.country} ip={m.ip} status={m.health.status} lc={m.lifecycle} view={view} onOpen={onOpen} />
+      <Head name={m.name} country={m.country} manual={!!m.country_set} ip={m.ip} status={m.health.status} lc={m.lifecycle} view={view} onOpen={onOpen} />
 
       {view === 'large' && <>
         <LargeInfo {...info} limit={quota(m).limit} />

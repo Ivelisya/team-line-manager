@@ -16,12 +16,15 @@ import { TypedConfirmDialog } from '@/components/app/dialogs';
 import { RetireDialog } from '@/components/app/RetireDialog';
 import { EntryMenuButton, EntryMenus, entryLabel } from '@/components/app/EntryActions';
 import { EvacuateDialog, MoveDialog, RestoreDialog, movableEntries } from '@/components/app/LifecycleDialogs';
+import { CountrySelect } from '@/components/app/CountrySelect';
+import { countryName } from '@/lib/flags';
 
 export function ManageTab({ m, onClosed }: { m: MachineView; onClosed: () => void }) {
   const retired = m.lifecycle === 'retired';
   return (
     <>
       {!retired && <RenameSection m={m} />}
+      {!retired && <CountrySection m={m} />}
       {/* 在用的机器没有入口时也要能加：节点「添加入口」，线路机「添加直出入口」 */}
       {!retired && (m.lifecycle === 'active' || m.entries.length > 0) && <EntrySection m={m} />}
       {/* 在用的普通落地机都能当宿主机：上面另配的公网 IP 各上架成一台同机 IP 节点 */}
@@ -87,6 +90,21 @@ function RenameSection({ m }: { m: MachineView }) {
         </div>
         <div className="hint span-2">改名只改显示名与线路机上的备注，不换令牌，不会断开现有连接。</div>
       </form>
+    </Section>
+  );
+}
+
+/** 国家（名字前的国旗）：选了就存；第一项改回按 IP 自动，没手动设时写出 IP 查到的国家 */
+function CountrySection({ m }: { m: MachineView }) {
+  const patch = usePatchMachine();
+  const auto = m.country_set ? '自动（按 IP）' : `自动（按 IP：${m.country ? countryName(m.country) : '查不到'}）`;
+  const save = (v: string) => patch.mutate({ id: m.id, revision: m.revision, country: v || null }, {
+    onSuccess: () => toast.ok(v ? `国家已改为${countryName(v)}` : '国家已改回按 IP 自动'), onError: toast.err,
+  });
+  return (
+    <Section>
+      <SectionHeader title="国家" />
+      <div className="form-grid"><CountrySelect value={m.country_set ?? ''} onChange={save} autoLabel={auto} disabled={patch.isPending} aria-label="国家或地区" /></div>
     </Section>
   );
 }

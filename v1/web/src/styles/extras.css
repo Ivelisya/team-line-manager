@@ -258,3 +258,14 @@ html[data-overlay] :is(.app, .drawer) .progress-fill { transition: none; }
 .cmd-item, .cmd-trigger, .cmd-input, .kbd, .toast-action, .label, .sec-head, .brand, .pop-head { font-variant-numeric: tabular-nums; }
 /* 首页读数（集群大数、离线台数、圆环中心、迹线坐标与时间）：同 .num / .stat-value 用 --num-variant（tabular + 斜线零） */
 .cluster-big > .num, .cluster-kv b, .gauge-center b, .spark-axis, .spark-time { font-variant-numeric: var(--num-variant); }
+
+/* 国家选择器（CountrySelect）：触发器里国旗 + 名称；弹层是一个可搜索的短列表 */
+.cs-value { display: inline-flex; align-items: center; gap: var(--sp-8); min-width: 0; }
+.cs-trigger .nc-flag .lucide { width: 11px; height: 11px; }
+.cs-pop { width: 280px; padding: 0; }
+.cs-pop .cmd-input-wrap { height: 40px; padding: 0 var(--sp-12); gap: var(--sp-8); }
+.cs-pop .cmd-input { font-size: var(--fs-body); }
+.cs-pop .cmd-list { max-height: 300px; }
+.cs-pop .cmd-item { min-height: 32px; gap: var(--sp-8); }
+.cs-check { flex: none; width: 14px; height: 14px; color: var(--accent); }
+.cmd-item[data-selected="true"] .cs-check { color: var(--accent-soft-fg); }

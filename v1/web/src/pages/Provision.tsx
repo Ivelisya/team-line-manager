@@ -17,7 +17,8 @@ import { ConfirmDialog } from '@/components/app/dialogs';
 import { toast } from '@/components/ui/toast';
 import { copyText } from '@/lib/clipboard';
 import { Note, PageHead, Panel, Pill } from '@/components/app/primitives';
-import { COLS, applies, isBlank, isIpNode, localErrors, localIssues, newRow, parseTsv, pasteLine, toItem, type Col, type Ctx, type Row } from '@/features/provision-model';
+import { COLS, applies, headerCols, isBlank, isIpNode, localErrors, localIssues, newRow, parseTsv, pasteLine, toItem, type Col, type Ctx, type Row } from '@/features/provision-model';
+import { CountrySelect } from '@/components/app/CountrySelect';
 
 const KIND_OPTS = (Object.entries(KIND_LABEL) as [Kind, string][]).map(([value, label]) => ({ value, label }));
 
@@ -237,6 +238,9 @@ function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; o
           <div className="form-grid">
             {ip && <div className="span-2"><Field label="宿主机" hint="这个 IP 所在的 VPS 节点；SSH、agent 与供应商都用它的" error={fe.host_id}><Select value={row.host_id} onChange={pickHost} options={o.host} placeholder="选择在用的落地机" /></Field></div>}
             {T('ip', k === 'proxy' ? '出口 IP' : 'IP', { ph: '198.51.100.20', hint: ip ? '要已直接配在宿主机网卡上（EIP / NAT 映射的不行）' : undefined })}
+            <Field label="国家" error={fe.country}>
+              <CountrySelect value={row.country} onChange={(v) => onChange({ country: v })} autoLabel="自动（按 IP）" aria-label="国家" />
+            </Field>
             {k !== 'proxy' && (ip ? Fixed('SSH 端口', '沿用宿主机', host ? String(host.ssh_port) : '') : T('ssh_port', 'SSH 端口', { ph: '22', num: true }))}
             {k === 'relay' ? <div className="span-2">{T('label', '线路机名', { ph: '线路机3', hint: '显示名与线路机备注都用它' })}</div> : (
               <>
@@ -263,10 +267,9 @@ function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; o
       ) : ip ? (
         <Panel title="首次登录"><div className="hint">沿用宿主机：中控用自己的密钥登录宿主机，不需要填登录信息。</div></Panel>
       ) : (
-        <Panel title="首次登录" sub="只在上架作业里用一次，成功后丢弃">
+        <Panel title="首次登录" sub="只用一次，不保存">
           <div className="form-grid">
-            {T('login_user', '用户', { ph: 'root' })}
-            <Field label="密码" hint="不填则使用中控的密钥"><Input type="password" autoComplete="new-password" value={row.login_pw} onChange={(e) => onChange({ login_pw: e.target.value })} /></Field>
+            <Field label="root 密码" hint="不填则使用中控的密钥"><Input type="password" autoComplete="new-password" value={row.login_pw} onChange={(e) => onChange({ login_pw: e.target.value })} /></Field>
           </div>
         </Panel>
       )}
@@ -307,7 +310,7 @@ function CheckOutput({ rows, resOf, errOf, stale }: { rows: Row[]; resOf: (id: s
 
 /* ------------------------------------------------------------------ 批量网格 */
 function BatchGrid({ rows, setRows, ctx, resOf, errOf, checkedAny, stale }: { rows: Row[]; setRows: React.Dispatch<React.SetStateAction<Row[]>>; ctx: Ctx; resOf: (id: string) => ProvisionCheckItem | undefined; errOf: (id: string) => string[] | undefined; checkedAny: boolean; stale: boolean }) {
-  const addRows = (n: number) => setRows((rs) => { const last = rs[rs.length - 1]; const base = last ? { kind: last.kind, team_id: last.team_id, relay_id: last.relay_id, provider_id: last.provider_id, plan_id: last.plan_id, login_user: last.login_user, add_ip: last.add_ip, host_id: last.host_id } : {}; return [...rs, ...Array.from({ length: n }, () => newRow(base))]; });
+  const addRows = (n: number) => setRows((rs) => { const last = rs[rs.length - 1]; const base = last ? { kind: last.kind, team_id: last.team_id, relay_id: last.relay_id, provider_id: last.provider_id, plan_id: last.plan_id, add_ip: last.add_ip, host_id: last.host_id } : {}; return [...rs, ...Array.from({ length: n }, () => newRow(base))]; });
   const total = COLS.reduce((s, c) => s + c.w, 0) + 40 + 56 + 220;
   const [askClear, setAskClear] = React.useState(false);
 
@@ -319,14 +322,18 @@ function BatchGrid({ rows, setRows, ctx, resOf, errOf, checkedAny, stale }: { ro
     const text = e.clipboardData.getData('text');
     if (!/[\t\n]/.test(text.trim())) return; // 单个值走默认粘贴
     e.preventDefault();
-    const grid = parseTsv(text);
+    const all = parseTsv(text);
+    // 带表头（「复制表头」做的模板）按列名对上，列顺序随意；不带表头从光标所在的列起按表头顺序
+    const head = all.length ? headerCols(all[0]) : null;
+    const cols = head ?? COLS.slice(ci);
+    const grid = head ? all.slice(1) : all;
     const ri = Math.max(0, rowsRef.current.findIndex((r) => r.id === rowId));
     setRows((rs) => {
       const next = [...rs];
       grid.forEach((line, dy) => {
         const idx = ri + dy;
         while (next.length <= idx) next.push(newRow());
-        next[idx] = pasteLine(next[idx], line, ci, ctx);
+        next[idx] = pasteLine(next[idx], line, cols, ctx);
       });
       return next;
     });
@@ -335,7 +342,7 @@ function BatchGrid({ rows, setRows, ctx, resOf, errOf, checkedAny, stale }: { ro
 
   return (
     <div className="stack">
-      <Panel title="批量上架" sub="可从表格软件整块粘贴（Tab 分隔，列顺序同表头）" flush
+      <Panel title="批量上架" sub="可从表格软件整块粘贴（Tab 分隔；带表头时按列名对上，不带时列顺序同表头）" flush
         tools={<><Button size="sm" onClick={copyHeader}><ClipboardPaste />复制表头</Button><Button size="sm" onClick={() => addRows(1)}><Plus />加一行</Button><Button size="sm" onClick={() => addRows(5)}>加 5 行</Button><Button size="sm" variant="quiet" onClick={() => (rows.length > 1 ? setAskClear(true) : setRows([newRow()]))}>清空</Button></>}>
         <div className="table-wrap">
           <table className="dt dt-grid" style={{ minWidth: total }}>
@@ -366,7 +373,7 @@ function BatchGrid({ rows, setRows, ctx, resOf, errOf, checkedAny, stale }: { ro
           </table>
         </div>
       </Panel>
-      <Note icon={<ClipboardPaste size={14} />}>编号留空 = 自动编号（接在末尾）。灰色格子对当前类型不适用，粘贴时会自动跳过。选择列可直接粘贴名称（如「团队1」「线路机1」）。最后一列填了「宿主机」的 VPS 节点行是同机 IP 节点（宿主机上另配的 IP）：SSH 端口、登录与供应商沿用宿主机的，SS 端口由中控在宿主机上分配，不带套餐，这几格变灰。</Note>
+      <Note icon={<ClipboardPaste size={14} />}>编号留空 = 自动编号（接在末尾）。灰色格子对当前类型不适用，粘贴时会自动跳过。选择列可直接粘贴名称（如「团队1」「线路机1」），国家粘两位代码或中文名（如「JP」「日本」），留空按 IP 自动。最后一列填了「宿主机」的 VPS 节点行是同机 IP 节点（宿主机上另配的 IP）：SSH 端口、登录与供应商沿用宿主机的，SS 端口由中控在宿主机上分配，不带套餐，这几格变灰。</Note>
       {checkedAny && <CheckOutput rows={rows} resOf={resOf} errOf={errOf} stale={stale} />}
       <ConfirmDialog open={askClear} onOpenChange={setAskClear} title="清空批量表格？" confirmLabel="清空" danger
         description="表格里所有行已填写的内容（含登录密码）都会丢失，无法撤销。" onConfirm={() => setRows([newRow()])} />
@@ -396,6 +403,7 @@ const GridCell = React.memo(function GridCell({ col, ci, row, opts, onChange, on
     case 'relay': return sel(row.relay_id, 'relay_id');
     case 'provider': return sel(row.provider_id, 'provider_id');
     case 'plan': return sel(row.plan_id, 'plan_id');
+    case 'country': return <CountrySelect className="gcell" value={row.country} autoLabel="自动" aria-label={col.label} onPaste={paste} onChange={(v) => onChange(row.id, { country: v, unresolved: resolved('country') })} />;
     case 'proto': return <select className="gcell" value={row.up_protocol} disabled={na} aria-label={col.label} onChange={(e) => onChange(row.id, { up_protocol: e.target.value })} onPaste={paste}><option value="socks5">SOCKS5</option><option value="http">HTTP</option></select>;
     default: {
       const v = row[col.key as keyof Row] as string;

@@ -44,10 +44,13 @@ export interface AgentHealth {
 export interface MachineView {
   id: string; kind: Kind; name: string; team: { id: string; name: string } | null; number: number | null; label: string | null;
   ip: string; ssh_port: number;
+  /** 国家或地区（ISO 3166-1 两位大写，如 US）：手动设了用手动的，否则中控离线 IP 库按机器自己的 IP 查；
+   *  内网、家宽代理填的域名、库没装时为 null */
+  country: string | null;
+  /** 手动设的国家（上架时选的或「管理」页签改的）；null = 按 IP 自动 */
+  country_set: string | null;
   /** 同机 IP 节点（kind 仍是 vps）：它所在的宿主机。它没有自己的 agent 和 SSH——agent、host（主机读数）、ssh_port 都是宿主机的，
    *  plan 为 null，宿主机维护时 maintenance 也为 true；其它机器为 null */
-  /** IP 所在国家（ISO 3166-1 两位大写，如 US）：中控离线 IP 库按机器自己的 IP 查；内网、家宽代理填的域名、库没装时为 null */
-  country: string | null;
   host_machine: { id: string; name: string } | null;
   /** 宿主机：它上面未退役的同机 IP 节点（按团队、编号）；其它机器为 []。宿主机的 quota.used 按网卡算，含它们的流量 */
   ip_nodes: { id: string; name: string }[];
@@ -117,7 +120,10 @@ export interface JobLog { id: number; ts: string; level: 'info' | 'warn' | 'erro
 export interface ProvisionItem {
   kind: Kind; ip: string; ssh_port?: number; team_id?: string; number?: number | null; label?: string;
   provider_id?: string; plan_id?: string; service_ref?: string; note?: string; relay_id?: string;
-  login?: { user?: string; password?: string };
+  /** 首次登录（只支持 root）：不填用中控的密钥 */
+  login?: { password?: string };
+  /** 国家或地区（两位代码）；不给 = 按 IP 自动 */
+  country?: string;
   upstream?: { protocol: 'socks5' | 'http'; host: string; port: number; username?: string; password?: string };
   ss_port?: number;
   /** 只要到期日（选了套餐时必填），其余没给的跟随套餐 / 供应商；没有套餐（含同机 IP 节点）要给 price_cents */

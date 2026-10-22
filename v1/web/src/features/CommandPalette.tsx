@@ -81,7 +81,7 @@ function PaletteBody({ theme, askUpgrade }: { theme: Theme; askUpgrade: () => vo
   const machineItems = list.map((m) => (
     <CommandItem key={m.id} value={value(m)} keywords={[m.id]}
       onSelect={() => { close(); if (mode === 'copy-ip') void copyText(m.ip, ' IP'); else if (mode === 'evacuate') openEvacuate(m.id); else if (mode === 'renew') openRenew(m.id); else openDrawer(m.id); }}>
-      <Flag country={m.country} ip={m.ip} />
+      <Flag country={m.country} manual={!!m.country_set} ip={m.ip} />
       <span className="cmd-main"><b className="ellipsis">{m.name}</b><HealthPill m={m} /></span>
       <span className="cmd-aside">{mode === 'copy-ip' ? <>复制 <span className="num">{m.ip}</span></> : mode === 'evacuate' ? <span>搬空…</span> : mode === 'renew' ? <span>登记续费…</span> : <span className="num">{m.ip}</span>}</span>
     </CommandItem>

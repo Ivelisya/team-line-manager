@@ -27,8 +27,8 @@ export function useMachines(scope: 'live' | 'retired' = 'live') {
 export type MachineBrief = Pick<MachineView, 'id' | 'name' | 'kind' | 'team' | 'subscription'>;
 const brief = (m: MachineView): MachineBrief => ({ id: m.id, name: m.name, kind: m.kind, team: m.team, subscription: m.subscription });
 /** 命令面板：搜索（名称 / IP / 团队 / 类型）与健康标用到的字段 */
-export type MachineLabel = Pick<MachineView, 'id' | 'name' | 'ip' | 'country' | 'kind' | 'team' | 'health' | 'lifecycle' | 'maintenance'>;
-const label = (m: MachineView): MachineLabel => ({ id: m.id, name: m.name, ip: m.ip, country: m.country, kind: m.kind, team: m.team, health: m.health, lifecycle: m.lifecycle, maintenance: m.maintenance });
+export type MachineLabel = Pick<MachineView, 'id' | 'name' | 'ip' | 'country' | 'country_set' | 'kind' | 'team' | 'health' | 'lifecycle' | 'maintenance'>;
+const label = (m: MachineView): MachineLabel => ({ id: m.id, name: m.name, ip: m.ip, country: m.country, country_set: m.country_set, kind: m.kind, team: m.team, health: m.health, lifecycle: m.lifecycle, maintenance: m.maintenance });
 /** 与 useMachines 同一份缓存、同样的默认顺序，每台只取 pick 出的字段（pick 须是模块常量）。
  *  select 的结果做结构共享：实时推送只改读数时这些字段不变，引用不变，页面不重渲染 */
 function useMachinesPicked<T>(pick: (m: MachineView) => T) {
@@ -152,6 +152,8 @@ const M = [['machines'], ['machine'], ['relays'], ['overview'], ['audit']];
 export interface MachinePatchBody {
   revision: number; team_id?: string; number?: number; label?: string; note?: string;
   provider_id?: string | null; plan_id?: string | null; service_ref?: string | null;
+  /** 两位代码；null = 改回按 IP 自动 */
+  country?: string | null;
 }
 /** PUT /machines/{id}/subscription：到期日 + 单独设置，整份替换——没传或 null = 跟随套餐 / 供应商（和模板相同的值服务端也按跟随存）。
  *  auto_renew 没传 = 不改；traffic_used_gb 按面板校准，没传 = 不改、null = 清掉 */
