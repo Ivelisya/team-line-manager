@@ -41,7 +41,10 @@ done
 
 id fleet >/dev/null 2>&1 || useradd --system --home-dir /var/lib/fleet --shell /usr/sbin/nologin fleet
 usermod -aG systemd-journal fleet   # fleetctl server-logs 需要读本机 journal
-install -d -m 750 -o fleet -g fleet /etc/fleet /etc/fleet/ssh /var/lib/fleet
+# /etc/fleet 归 root、fleet 只读：fleet 的进程在这里摆不了符号链接，下面 root 的 chown、读 backup.pub 不会被引到别处。
+# /var/lib/fleet 是 fleet 可写的，root 不在里面建文件、改属主：要建的东西用 runuser -u fleet 去建
+install -d -m 750 -o root -g fleet /etc/fleet /etc/fleet/ssh
+install -d -m 750 -o fleet -g fleet /var/lib/fleet
 install -d -m 755 /opt/fleet /opt/fleet/dist /opt/fleet/ipintel /opt/fleet/backup
 
 if [ ! -f /etc/fleet/fleet.toml ]; then
@@ -85,7 +88,7 @@ TOML
 fi
 [ -f /etc/fleet/secret.key ] || { "$PKG/bin/fleet-server" gen-key /etc/fleet/secret.key; chown fleet:fleet /etc/fleet/secret.key; chmod 600 /etc/fleet/secret.key; }
 [ -f /etc/fleet/ssh/id_ed25519 ] || { ssh-keygen -q -t ed25519 -N "" -C "fleet-central@$DOMAIN" -f /etc/fleet/ssh/id_ed25519; chown fleet:fleet /etc/fleet/ssh/id_ed25519*; }
-[ -f /var/lib/fleet/known_hosts ] || install -m 640 -o fleet -g fleet /dev/null /var/lib/fleet/known_hosts
+[ -f /var/lib/fleet/known_hosts ] || runuser -u fleet -- install -m 640 /dev/null /var/lib/fleet/known_hosts
 
 # xray、ssserver、geoip.dat 只在与这台中控上的不同时才随包带来（deploy.sh 先比对 sha256），没带的保持原样
 install -m 755 "$PKG/bin/fleet-agent" /opt/fleet/dist/
@@ -113,18 +116,39 @@ ExecStart=/opt/fleet/fleet-server serve -c /etc/fleet/fleet.toml
 Restart=always
 RestartSec=3
 Environment=RUST_LOG=info,sqlx=warn,tower_http=warn
+# 沙箱（子进程 ssh、sshpass、ssh-keyscan、ssh-keygen、journalctl 同样受限）：只写 /var/lib/fleet，不要任何特权。
+# PrivateDevices 仍留着 /dev/ptmx 与 /dev/pts（sshpass 要 pty）；journal 靠 systemd-journal 组读 /var/log/journal，不受 ProtectProc、ProtectKernelLogs 影响。
+# 与 lab/deploy-server.sh 里的单元保持一致
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/var/lib/fleet
 ProtectHome=yes
 PrivateTmp=yes
+PrivateDevices=yes
+CapabilityBoundingSet=
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+UMask=0077
 [Install]
 WantedBy=multi-user.target
 UNIT
 
 # IP 情报离线库：每月更新；首次下载约 190 MB，后台进行，fleet-server 5 分钟内自动加载
 install -m 644 "$PKG/fetch-dbs.sh" /opt/fleet/ipintel/fetch-dbs.sh
-install -d -m 750 -o fleet -g fleet /var/lib/fleet/ipintel
+runuser -u fleet -- install -d -m 750 /var/lib/fleet/ipintel
 install -m 644 "$PKG/fleet-ipintel-fetch.service" "$PKG/fleet-ipintel-fetch.timer" /etc/systemd/system/
 
 # 每天备份（docs/OPS.md §10）：北京时间 03:30 把库与密钥打包到 /var/backups/fleet，留 14 份。
@@ -148,19 +172,40 @@ systemctl start fleet-ipintel-fetch.timer fleet-backup.timer
 systemctl restart fleet-server
 
 # Caddy 终止 TLS（Let's Encrypt 自动签发续期），整站反代到本机 fleet-server；长轮询、WebSocket、gzip 上报都不用额外配置
-CADDY="$DOMAIN {
+# 管理接口默认是 localhost:2019、不鉴权，本机任何用户（包括 fleet）都能改写 Caddy 配置：改成 /run/caddy 下的 unix socket，
+# 目录 0700 只有 caddy（与 root）进得去。官方源的 caddy.service 没有 RuntimeDirectory，由 drop-in 补上；
+# systemctl reload caddy 以 caddy 用户执行 caddy reload，从 Caddyfile 读到这个地址
+CADDY_ADMIN=unix//run/caddy/admin.sock
+CADDY="{
+	admin $CADDY_ADMIN
+}
+
+$DOMAIN {
 	reverse_proxy 127.0.0.1:8080
 }"
+CADDY_DROPIN="[Service]
+RuntimeDirectory=caddy
+RuntimeDirectoryMode=0700"
+caddy_restart=0
+if [ "$(cat /etc/systemd/system/caddy.service.d/fleet.conf 2>/dev/null)" != "$CADDY_DROPIN" ]; then
+  install -d -m 755 /etc/systemd/system/caddy.service.d
+  printf '%s\n' "$CADDY_DROPIN" > /etc/systemd/system/caddy.service.d/fleet.conf
+  systemctl daemon-reload
+  caddy_restart=1   # /run/caddy 要在启动时建
+fi
 if [ "$(cat /etc/caddy/Caddyfile 2>/dev/null)" != "$CADDY" ]; then
   [ -f /etc/caddy/Caddyfile.dist ] || cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.dist
   printf '%s\n' "$CADDY" > /etc/caddy/Caddyfile.new
   if caddy validate --config /etc/caddy/Caddyfile.new --adapter caddyfile >/dev/null 2>&1; then
+    # caddy reload 按新 Caddyfile 里的管理地址去连：正在跑的 Caddy 还在旧地址上（第一次从 2019 换过来）就连不上，只能重启
+    grep -qF "admin $CADDY_ADMIN" /etc/caddy/Caddyfile 2>/dev/null || caddy_restart=1
     mv /etc/caddy/Caddyfile.new /etc/caddy/Caddyfile
-    systemctl reload caddy
+    [ "$caddy_restart" = 1 ] || systemctl reload caddy
   else
     echo "新 Caddyfile 校验不过，保留原来的（见 /etc/caddy/Caddyfile.new）"; exit 1
   fi
 fi
+[ "$caddy_restart" = 0 ] || systemctl restart caddy
 
 # fleet-server 启动时先跑数据库迁移再监听：最多等 60 秒，未登录访问应回 401
 code=000

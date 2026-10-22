@@ -33,7 +33,7 @@ pub fn merge(env_url: Option<String>, env_token: Option<String>, file: FileCfg) 
         (Some(u), Some(t)) => Ok((u, t)),
         (u, t) => {
             let miss = [u.is_none().then_some("FLEET_URL"), t.is_none().then_some("FLEET_TOKEN")].into_iter().flatten().collect::<Vec<_>>().join("、");
-            bail!("缺少配置：{miss}。设置环境变量，或运行 `fleetctl login --url <中控地址> --token <API 密钥>`")
+            bail!("缺少配置：{miss}。设置环境变量，或运行 `fleetctl login --url <中控地址>`（再输入 API 密钥）")
         }
     }
 }
@@ -54,17 +54,32 @@ pub fn load() -> anyhow::Result<(String, String)> {
 pub fn save(url: &str, token: &str) -> anyhow::Result<PathBuf> {
     let p = config_path()?;
     if let Some(d) = p.parent() {
-        std::fs::create_dir_all(d).with_context(|| format!("创建目录 {}", d.display()))?;
+        let mut b = std::fs::DirBuilder::new();
+        b.recursive(true);
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
+        b.create(d).with_context(|| format!("创建目录 {}", d.display()))?;
     }
     let body = toml::to_string(&FileCfg { url: Some(url.to_string()), token: Some(token.to_string()) })?;
-    std::fs::write(&p, body).with_context(|| format!("写入 {}", p.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600))?;
-    }
+    write_private(&p, &body).with_context(|| format!("写入 {}", p.display()))?;
     Ok(p)
 }
+
+/// 写含密钥的文件：unix 上新建即 0600（不经过 umask 决定的宽权限）；已有的文件先收紧权限再写
+#[cfg(unix)]
+fn write_private(p: &std::path::Path, body: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    match std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o600)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
+    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(p)?;
+    f.write_all(body.as_bytes())
+}
+
+#[cfg(not(unix))]
+fn write_private(p: &std::path::Path, body: &str) -> std::io::Result<()> { std::fs::write(p, body) }
 
 #[cfg(test)]
 mod tests {
@@ -88,5 +103,23 @@ mod tests {
         let c = FileCfg { url: Some("http://x:8080".into()), token: Some("flk_aa_bb".into()) };
         let s = toml::to_string(&c).unwrap();
         assert_eq!(toml::from_str::<FileCfg>(&s).unwrap(), c);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_file_is_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("fleetctl-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let new = d.join("new.toml");
+        write_private(&new, "a").unwrap();
+        assert_eq!(mode(&new), 0o600);
+        let old = d.join("old.toml");
+        std::fs::write(&old, "x").unwrap();
+        std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_private(&old, "b").unwrap();
+        assert_eq!((mode(&old), std::fs::read_to_string(&old).unwrap().as_str()), (0o600, "b"));
+        std::fs::remove_dir_all(&d).unwrap();
     }
 }
