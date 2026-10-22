@@ -8,8 +8,8 @@ import { cn } from '@/lib/utils';
 import { Pill } from './primitives';
 
 type Obj = Record<string, unknown>;
-/** 一条记录在界面上的样子。more：展开后的明细（标签、内容）；res：执行结果（失败、非 0 退出码着色） */
-interface Desc { title: string; target: string; rest: string; res?: { text: string; tone?: 'warn' | 'bad' | 'info' }; more: [string, string][] }
+/** 一条记录在界面上的样子。more：展开后的明细（标签、内容）；res：执行结果（失败、非 0 退出码着色）；machine：对象名对应的机器 id（可点开抽屉） */
+interface Desc { title: string; target: string; rest: string; res?: { text: string; tone?: 'warn' | 'bad' | 'info' }; more: [string, string][]; machine?: string }
 
 const obj = (v: unknown): Obj => (v && typeof v === 'object' ? (v as Obj) : {});
 const str = (v: unknown) => (typeof v === 'string' ? v : '');
@@ -22,12 +22,14 @@ const secs = (ms: number) => (ms < 60_000 ? `${(ms / 1000).toFixed(ms < 10_000 ?
 function describe(a: AuditEntry): Desc {
   const d = obj(a.detail);
   // 记录里的显示名接在动作后面：摘要以它开头时（上架、执行命令、改套餐、换线路机…）从摘要里拿掉，其余是详情；
-  // 对象是机器、摘要不以名字开头（改名的摘要是「旧 → 新」）时名字照样接上，摘要整句留作详情。名字保持记录时的样子，之后改过名也不跟着变
-  const name = str(d.name);
-  const machine = MACHINE_KINDS.has(a.target_kind ?? '') && !!a.target_id;
-  const base: Desc = name && a.summary === name ? { title: a.title, target: name, rest: '', more: [] }
-    : name && a.summary.startsWith(`${name} · `) ? { title: a.title, target: name, rest: a.summary.slice(name.length + 3), more: [] }
-      : { title: a.title, target: name && machine ? name : '', rest: a.summary, more: [] };
+  // 对象是机器、摘要不以名字开头（改名的摘要是「旧 → 新」）时名字照样接上，摘要整句留作详情。名字保持记录时的样子，之后改过名也不跟着变。
+  // 静默 / 维护窗口的对象是 silence，名字与机器 id 在 subject_name / subject_id（全部机器的没有 id，不可点）
+  const silence = a.target_kind === 'silence';
+  const name = str(silence ? d.subject_name : d.name);
+  const machine = silence ? str(d.subject_id) || undefined : MACHINE_KINDS.has(a.target_kind ?? '') && a.target_id ? a.target_id : undefined;
+  const base: Desc = name && a.summary === name ? { title: a.title, target: name, rest: '', more: [], machine }
+    : name && a.summary.startsWith(`${name} · `) ? { title: a.title, target: name, rest: a.summary.slice(name.length + 3), more: [], machine }
+      : { title: a.title, target: name && machine ? name : '', rest: a.summary, more: [], machine };
   if (a.action !== 'exec') return base;
   // 远程执行：结果自己判断（中控摘要里的「执行中或中断」放久了就是结果未知），命令、结果、耗时进展开的明细
   const cmd = str(d.command);
@@ -52,7 +54,7 @@ export function AuditList({ items, onOpen, byDay }: { items: AuditEntry[]; onOpe
     <ul className="audit-list is-bare">
       {items.map((a) => {
         const p = describe(a);
-        const link = onOpen && MACHINE_KINDS.has(a.target_kind ?? '') && a.target_id && p.target ? a.target_id : null;
+        const link = onOpen && p.machine && p.target ? p.machine : null;
         const can = p.more.length > 0;
         const on = can && open.has(a.id);
         const d = new Date(a.ts);

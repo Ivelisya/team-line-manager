@@ -317,8 +317,9 @@ pub async fn delete_provider(a: Actor, State(st): State<AppState>, ApiPath(id): 
         .bind(id)
         .fetch_one(&mut *tx)
         .await?;
-    if let Some(u) = in_use(&[(plans, "个套餐"), (machines, "台机器")]) {
-        return Err(ApiError::conflict(format!("「{name}」还有 {u}（含已归档、已退役的）：先删掉或改到别的供应商再删")));
+    // 「含已归档的」跟着套餐、「含已退役的」跟着机器写，只写有的那一项
+    if let Some(u) = in_use(&[(plans, "个套餐（含已归档的）"), (machines, "台机器（含已退役的）")]) {
+        return Err(ApiError::conflict(format!("「{name}」还有 {u}：先删掉或改到别的供应商再删")));
     }
     sqlx::query("delete from provider where id = $1").bind(id).execute(&mut *tx).await?;
     audit(&mut tx, &a.name, "provider.delete", "provider", Some(id), json!({"name": name})).await?;
