@@ -24,6 +24,7 @@
 .job-item:hover { background-color: var(--hover); }
 .job-item[aria-current="true"] { background-color: var(--selected); box-shadow: inset 2px 0 0 var(--accent); }
 .job-item .l1 { display: flex; align-items: center; gap: var(--sp-8); min-width: 0; }
+.job-item .l1 > b { font-weight: var(--fw-semibold); }
 .job-item .l2 { font-size: var(--fs-label); color: var(--fg-2); display: flex; gap: var(--sp-8); min-width: 0; }
 .job-item .l2 > span { flex: none; white-space: nowrap; } /* 时间、创建人不折行；失败原因占剩下的宽度并省略 */
 .job-item .l2 > .ellipsis { flex: 1 1 0; min-width: 0; }

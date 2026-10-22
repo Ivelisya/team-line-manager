@@ -206,7 +206,7 @@ a { color: inherit; }
 /* 页面里的滚动区（抽屉正文、对话框里的列表、表格横向滚动…）一律细滚动条、跟随主题线色；页面本身的滚动条保持系统样式 */
 body * { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
 /* 独立滚动的面板：滚到头不把滚动链到页面 */
-.drawer-body, .sidebar, .logbox, .cmd-list, .pop-list, .menu, .pol-tree, .pol-pv-table, .pol-chips, .reason-list, .select-content [data-radix-select-viewport] { overscroll-behavior: contain; }
+.drawer-body, .sidebar, .logbox, .cmd-list, .pop-list, .menu, .pol-tree, .table-wrap.is-capped, .pol-chips, .reason-list, .select-content [data-radix-select-viewport] { overscroll-behavior: contain; }
 /* 横向滚动区（表格、分段、页签、步骤条、规则编辑器）：触控板横扫到头不触发浏览器的前进 / 后退手势 */
 .table-wrap, .seg, .tabs-list, .stepbar-wrap, .pol-ta { overscroll-behavior-x: contain; }
 

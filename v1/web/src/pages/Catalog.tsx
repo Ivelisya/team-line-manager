@@ -156,7 +156,7 @@ const RenumberDialog = resetOnOpen(function RenumberDialog({ team, open, onClose
         {pv.isFetchedAfterMount && pv.isError && <Note tone="bad">{(pv.error as Error).message}</Note>}
         {d && (n === 0
           ? <Note tone="ok">编号已经连续</Note>
-          : <div className="table-wrap" style={{ maxHeight: 300, overflow: 'auto', border: '1px solid var(--line)', borderRadius: 'var(--r-float)' }}>
+          : <div className="table-wrap is-boxed is-capped">
             <table className="dt is-one"><colgroup><col /><col style={{ width: 36 }} /><col /></colgroup>
               <thead><tr><th>当前名称</th><th /><th>调整后</th></tr></thead>
               <tbody>{d.changes.map((c) => <tr key={c.machine_id}><td className="num">{c.old_name}</td><td><ArrowRight size={14} style={{ color: 'var(--fg-3)' }} /></td><td className="strong num">{c.new_name}</td></tr>)}</tbody></table>

@@ -249,11 +249,13 @@
 .note[data-tone="ok"] { --note-bg: var(--ok-bg); --note-ic: var(--ok); }
 .note[data-tone="warn"] { --note-bg: var(--warn-bg); --note-ic: var(--warn); }
 .note[data-tone="bad"] { --note-bg: var(--bad-bg); --note-ic: var(--bad); }
+.note-title { margin-bottom: var(--sp-4); font-weight: var(--fw-medium); } /* 提示条里列表上方的一行小标题 */
 
 .empty { display: grid; justify-items: center; gap: var(--sp-8); padding: var(--sp-24) var(--sp-16); color: var(--fg-2); text-align: center; }
 .empty-ic { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; background: var(--sunken); box-shadow: inset 0 0 0 1px var(--line); color: var(--fg-3); }
 .empty-text { font-weight: var(--fw-medium); text-wrap: pretty; }
 .skel { display: block; border-radius: var(--r-xs); background: var(--cell-off); animation: skel-pulse var(--dur-loop) var(--ease-std) infinite; } /* 同格条未点亮色：暗色下 --sunken 比卡片还暗，骨架几乎看不见 */
+.skel.is-float { border-radius: var(--r-float); } /* 占一整块图表 / 面板位置的骨架 */
 .skel-row { display: flex; align-items: center; height: var(--row-2); box-sizing: border-box; padding: 0 var(--cell-edge); border-bottom: 1px solid var(--line); }
 .skel-row.is-one { height: var(--row-1); }
 .skel-row:last-child { border-bottom: 0; }
@@ -378,6 +380,7 @@
 .drawer[data-state="closed"]::before { animation: fade-out var(--dur-2) var(--ease-std) forwards; }
 .drawer-head { flex: none; display: flex; align-items: center; gap: var(--sp-8); padding: var(--sp-12) var(--sp-16); border-bottom: 0; min-width: 0; }
 .drawer-title { margin: 0; min-width: 0; font: var(--fw-semibold) var(--fs-title) / var(--lh-title) var(--font-sans); letter-spacing: var(--tracking-title); }
+.drawer-sub { font-size: var(--fs-label); } /* 标题下一行（IP · 同机 / 套餐）：其余同 .dialog-desc */
 .drawer-tabs { flex: none; padding: 0 var(--sp-16); overflow: hidden; scrollbar-gutter: stable; } /* 同正文留出滚动条槽：页签下的线与正文右缘对齐 */
 .drawer-body { flex: 1 1 auto; overflow-y: auto; scrollbar-gutter: stable; padding: var(--sp-16); display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-16); align-content: start; } /* 滚动条槽位常驻：切页签、内容长短变化时正文不左右横跳 */
 @media (max-width: 600px) { :root { --drawer-w: 100vw; } }

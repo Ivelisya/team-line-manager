@@ -111,7 +111,7 @@ export function JobsPage() {
             <div key={j.id} data-id={j.id} className="job-item" role="button" tabIndex={0} aria-current={j.id === selected} onClick={() => go(j.id)}
               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(j.id); } }}>
               <span className="l1">
-                <b className="ellipsis" style={{ fontWeight: 600 }}>{jobKindLabel(j.kind)} · {j.target ? <NodeHover id={j.target.id} noFocus><span>{j.target.name}</span></NodeHover> : '—'}</b>
+                <b className="ellipsis">{jobKindLabel(j.kind)} · {j.target ? <NodeHover id={j.target.id} noFocus><span>{j.target.name}</span></NodeHover> : '—'}</b>
                 <span style={{ marginLeft: 'auto' }}><JobPill state={j.state} /></span>
               </span>
               {jobLive(j.state) && <span className="l-prog"><Progress value={jobProgress(j).pct} live label="总进度" /><span className="num">{jobProgress(j).done}/{jobProgress(j).total}</span></span>}

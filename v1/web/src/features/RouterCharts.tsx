@@ -100,7 +100,7 @@ function ExitDelays({ r, range, few }: { r: RouterView; range: string; few: stri
     <Section>
       <SectionHeader title={<>各出口延迟<InfoTip text={'每 5 分钟经出口访问一次 generate_204。\n格子黄 / 红是那段时间有测试失败，曲线的缺口是那次测试失败'} /></>} />
       {q.isError && !q.data ? <ErrorNote error={q.error} onRetry={() => void q.refetch()}>出口曲线加载失败：</ErrorNote>
-        : q.isLoading ? <Skeleton h={180} style={{ borderRadius: 'var(--r-float)' }} />
+        : q.isLoading ? <Skeleton h={180} className="is-float" />
         : !exits?.length ? <div className="chart-empty" style={{ height: 120 }}>{few}</div> : (
           <div className="chart-frame stack-sm" data-stale={q.isPlaceholderData}>
             <div className="rt-exit-beats">

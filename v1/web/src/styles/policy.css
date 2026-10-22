@@ -81,7 +81,6 @@
 .pol-changes li { display: flex; align-items: baseline; gap: var(--sp-8); flex-wrap: wrap; }
 .pol-kind { font-size: var(--fs-micro); padding: 0 var(--sp-6); border-radius: var(--r-pill); background: var(--neutral-bg); color: var(--neutral-text); }
 .pol-arrow { color: var(--fg-3); }
-.pol-pv-table { max-height: 300px; overflow: auto; border: 1px solid var(--line); border-radius: var(--r-float); }
 .pol-hosts { display: flex; align-items: center; gap: var(--sp-4); flex-wrap: nowrap; min-width: 0; overflow: hidden; }
 .pol-hosts .pol-tag { flex: 0 1 auto; min-width: 0; }
 .pol-hosts .pol-more { flex: none; }

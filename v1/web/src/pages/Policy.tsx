@@ -386,7 +386,7 @@ const PreviewDialog = resetOnOpen(function PreviewDialog({ open, onOpenChange }:
               {d.nodes.length === 0
                 ? <Note tone="info">不会多阻止连接{d.affected_relays === 0 && <> <InfoTip text="也不需要改线路机上的规则" /></>}</Note>
                 : (
-                  <div className="table-wrap pol-pv-table">
+                  <div className="table-wrap is-boxed is-capped">
                     <table className="dt" style={{ minWidth: 620 }}>
                       <colgroup><col style={{ width: 120 }} /><col style={{ width: 96 }} /><col style={{ width: 84 }} /><col style={{ width: 96 }} /><col /></colgroup>
                       <thead><tr><th>节点</th><th>模式</th><th className="r">24h 连接</th><th className="r">将阻止</th><th>被阻止最多的域名</th></tr></thead>
