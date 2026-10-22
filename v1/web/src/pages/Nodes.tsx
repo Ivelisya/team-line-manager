@@ -21,7 +21,7 @@ import { NodeHover } from '@/components/app/NodeHover';
 import { MachineGrid, byNum, byStr, sortByCol, type Col } from '@/components/app/MachineGrid';
 import { Pagination } from '@/components/app/Pagination';
 import { usePage } from '@/lib/usePage';
-import { useUrlSearch, useUrlSort, useUrlState } from '@/lib/urlState';
+import { NODE_FILTERS, useUrlSearch, useUrlSort, useUrlState } from '@/lib/urlState';
 
 type Scope = 'live' | 'retired';
 /** 只调淡已退役的行：机器页看的是资产信息，离线机器的这些字段照常可读（首页表格调淡的是读数过期的） */
@@ -86,7 +86,7 @@ export function NodesPage() {
   const setRelay = React.useCallback((v: string) => upd({ relay: v }), [upd]);
   const setStatus = React.useCallback((v: string) => upd({ status: v }), [upd]);
   const filtered = !!(text || team || kind || relay || status || dueSoon || plan);
-  const clearFilters = () => upd({ q: '', team: '', kind: '', relay: '', status: '', due: '', plan: '' });
+  const clearFilters = () => { setInput(''); upd(Object.fromEntries(NODE_FILTERS.map((k) => [k, '']))); };
   const [urlSort, setSort] = useUrlSort(); // null = 默认顺序
   // 只看即将到期时，没选排序就按到期日升序（最急的在前）
   const sort = React.useMemo(() => urlSort ?? (dueSoon && scope === 'live' ? { id: 'due', desc: false } : null), [urlSort, dueSoon, scope]);
