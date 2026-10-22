@@ -48,7 +48,8 @@ const fewText = (m: MachineView, range: string) =>
 /** 图表的加载 / 出错状态：出错给重试，不要显示一张空图；换时间范围、新数据未到时沿用的旧曲线调淡。
  *  点不到两个时只剩一副空坐标轴：同全为 0 的空状态，占住图高、写一句说明（few） */
 function ChartFrame({ q, few, height = 180, children }: { q: UseQueryResult<SeriesResp>; few: string; height?: number; children: React.ReactNode }) {
-  if (q.isError) return <ErrorNote error={q.error} onRetry={() => void q.refetch()}>曲线加载失败：</ErrorNote>;
+  // 轮询中偶尔一次取不到：留着上一份曲线（下一轮会再取），只有一份都没有时才显示错误
+  if (q.isError && !q.data) return <ErrorNote error={q.error} onRetry={() => void q.refetch()}>曲线加载失败：</ErrorNote>;
   if (q.isLoading) return <Skeleton h={height} style={{ borderRadius: 'var(--r-float)' }} />;
   return (
     <div className="chart-frame" data-stale={q.isPlaceholderData} aria-busy={q.isPlaceholderData || undefined}>
@@ -86,7 +87,7 @@ const AvailabilitySection = React.memo(function AvailabilitySection({ id, relay 
   return (
     <Section>
       <SectionHeader title="可用率" />
-      {q.isError ? <ErrorNote error={q.error} onRetry={() => void q.refetch()}>可用率加载失败：</ErrorNote>
+      {q.isError && !q.data ? <ErrorNote error={q.error} onRetry={() => void q.refetch()}>可用率加载失败：</ErrorNote>
         : <Beat n={AVAIL_DAYS} cells={d ? availCells(d.items) : []} titles={d && availTitles(d.items)} caption={caption} win={`近 ${AVAIL_DAYS} 天 · 每天一格`} stale={!d} />}
     </Section>
   );

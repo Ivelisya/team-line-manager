@@ -113,8 +113,8 @@ function SubForm({ m }: { m: MachineView }) {
       <Field label="流量上限（GB）" hint={m.host_machine ? '留空 = 与宿主机共用额度' : '留空 = 按套餐'}><Input inputMode="numeric" value={traffic} placeholder={m.host_machine ? '与宿主机共用' : m.plan?.traffic_gb ? `套餐 ${m.plan.traffic_gb}` : '套餐不限'} onChange={(e) => setTraffic(e.target.value.replace(/\D/g, ''))} /></Field>
       <Field label="流量重置日（每月几号）" hint="按账单时区；月份没有这一天按月末" error={resetBad ? '填 1–31' : undefined}><Input inputMode="numeric" maxLength={2} value={resetDay} onChange={(e) => setResetDay(e.target.value.replace(/\D/g, ''))} /></Field>
       <Field label="按面板校准本周期已用（GB）" className="span-2" error={usedBad ? '应为 0 或正数' : undefined}
-        hint={`填供应商面板上本周期已用的数字；之后的用量按网卡流量累加${baseAt ? `。已校准 · ${F.dt(baseAt)}` : ''}`}>
-        <Input inputMode="decimal" value={used} onChange={(e) => setUsed(e.target.value)} placeholder={baseAt ? `已校准 · ${F.dt(baseAt)}` : '留空 = 不校准'} aria-invalid={usedBad || undefined} />
+        hint={`填供应商面板上本周期已用的数字；之后的用量按${m.quota.rule ? '网卡流量' : '业务流量'}累加${baseAt ? `。已校准 · ${F.dt(baseAt)}` : ''}`}>
+        <Input inputMode="decimal" value={used} onChange={(e) => setUsed(e.target.value)} placeholder="留空 = 不校准" aria-invalid={usedBad || undefined} />
       </Field>
       <label className="check-row span-2" style={{ gap: 10 }}><Switch checked={auto} onCheckedChange={setAuto} /><span>到期自动续费（只用于提醒口径，不会真的扣款）</span></label>
       <div className="span-2 row" style={{ justifyContent: 'flex-end' }}><Button variant="primary" disabled={!valid || save.isPending} loading={save.isPending} onClick={submit}>保存订阅</Button></div>
@@ -132,7 +132,7 @@ export const RenewDialog = resetOnOpen(function RenewDialog({ m, s, open, onOpen
   const ok = /^\d{4}-\d{2}-\d{2}$/.test(newDue) && newDue > s.due_date && amount.trim() !== '' && !amountBad;
   const submit = () => renew.mutate({ id: m.id, new_due: newDue, amount_cents: Math.round(Number(amount) * 100), note: note.trim() || undefined }, { onSuccess: () => { toast.ok(`已登记续费，到期日 ${newDue}`); onOpenChange(false); }, onError: toast.err });
   return (
-    <FormDialog open={open} onOpenChange={onOpenChange} title={`登记续费 · ${m.name}`} desc={`只记录「已续费」，到期日顺延；不会向供应商付款。当前到期日 ${s.due_date}。`}
+    <FormDialog open={open} onOpenChange={onOpenChange} dirty={!!note.trim() || amount !== String(s.price_cents / 100) || newDue !== F.addMonths(s.due_date, F.CYCLE_MONTHS[s.cycle] ?? 1)} title={`登记续费 · ${m.name}`} desc={`只记录「已续费」，到期日顺延；不会向供应商付款。当前到期日 ${s.due_date}。`}
       submitLabel="登记续费" busy={renew.isPending} valid={ok} onSubmit={submit}>
       <div className="form-grid">
         <Field label="新到期日" error={newDue && newDue <= s.due_date ? '应晚于当前到期日' : undefined}><DateField value={newDue} onChange={setNewDue} min={F.addDays(s.due_date, 1)} /></Field>

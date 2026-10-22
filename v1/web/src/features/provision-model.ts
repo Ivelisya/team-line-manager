@@ -113,6 +113,10 @@ export function toItem(r: Row): ProvisionItem {
   return it;
 }
 
+/** 批量里没动过的行：用户要填的格子都空（类型、团队、线路机、供应商、套餐、登录用户、宿主机是从上一行带下来的默认值，不算） */
+export const isBlank = (r: Row) => !Object.keys(r.unresolved).length
+  && [r.ip, r.ssh_port, r.number, r.label, r.service_ref, r.note, r.login_pw, r.up_host, r.up_port, r.up_user, r.up_pw, r.ss_port, r.due_date, r.price].every((v) => !v.trim());
+
 /** 提交前的本地校验（不依赖后端）：每条错误带出错的字段，单台表单把它标在字段旁 */
 export function localIssues(r: Row): { key: keyof Row; msg: string }[] {
   const e: { key: keyof Row; msg: string }[] = [];

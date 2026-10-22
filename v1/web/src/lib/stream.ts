@@ -47,6 +47,8 @@ export function useStream(enabled: boolean) {
       if (e.type === 'updated' && e.action.type === 'fetch' && LISTS.has(e.query.queryKey[0] as string)) fetchedAt.set(e.query.queryHash, Date.now());
     });
     const fresh = (q: Query, at: number) => { const t = fetchedAt.get(q.queryHash); return t != null && t > at && q.state.dataUpdatedAt >= t; };
+    // 往前翻过页的分页列表（操作记录）：失效会把已加载的每一页依次重取，这里只标过期，回到页面 / 切回窗口时再取
+    const deep = (q: Query) => ((q.state.data as { pages?: unknown[] } | undefined)?.pages?.length ?? 0) > 1;
 
     const inv = (queryKey?: unknown[], cancelRefetch = true) => qc.invalidateQueries({ queryKey, predicate: resyncable, refetchType: document.hidden ? 'none' : 'active' }, { cancelRefetch });
     const flush = () => {
@@ -69,7 +71,8 @@ export function useStream(enabled: boolean) {
       listTimer = undefined; lastList = Date.now();
       listKeys.forEach(({ k, at }, s) => {
         if (qc.isFetching({ queryKey: k })) return;
-        void qc.invalidateQueries({ queryKey: k, predicate: (q) => resyncable(q) && !fresh(q, at), refetchType: document.hidden ? 'none' : 'active' }, { cancelRefetch: false });
+        void qc.invalidateQueries({ queryKey: k, predicate: (q) => resyncable(q) && !fresh(q, at) && !deep(q), refetchType: document.hidden ? 'none' : 'active' }, { cancelRefetch: false });
+        void qc.invalidateQueries({ queryKey: k, predicate: (q) => resyncable(q) && deep(q), refetchType: 'none' });
         listKeys.delete(s);
       });
       if (listKeys.size) listTimer = setTimeout(flushLists, LIST_MS);

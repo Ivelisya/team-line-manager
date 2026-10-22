@@ -10,7 +10,7 @@ import { CheckRow, Field, Input } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
 import { resetOnOpen, useHeld } from '@/lib/useHeld';
-import { entryState, Note } from './primitives';
+import { entryState, ErrorNote, Note } from './primitives';
 import { ConfirmDialog } from './dialogs';
 import { RetireDialog } from './RetireDialog';
 
@@ -154,7 +154,9 @@ export const RestoreDialog = resetOnOpen(function RestoreDialog({ m, open, onOpe
   const keyChanged = b?.ssh?.host_key_changed === true;
   const keyNote = keyChanged ? b?.blockers.find((x) => x.startsWith('主机指纹')) : undefined;
   const blockers = (pv?.blockers ?? []).filter((x) => x !== keyNote);
-  const ready = !!pv && blockers.length === 0 && !(keyChanged && !reset) && !!needs && (!needs.relay || !!relay) && upOk && pwOk && settled && !live.isFetching;
+  // 改了团队 / 编号后的预检取不到时，名字还是旧的那份，不能提交
+  const liveFailed = edited && live.isError;
+  const ready = !!pv && !liveFailed && blockers.length === 0 && !(keyChanged && !reset) && !!needs && (!needs.relay || !!relay) && upOk && pwOk && settled && !live.isFetching;
   // 填过东西就别让误点遮罩关掉（Esc、取消仍可关）
   const dirty = edited || !!pw || !!reason.trim() || reset || relay !== (b?.last_relay?.id ?? '') || !!(up.host || up.port || up.username || up.password);
 
@@ -179,7 +181,8 @@ export const RestoreDialog = resetOnOpen(function RestoreDialog({ m, open, onOpe
       description="机器保持原来的 ID（历史、账单、审计都接上），重新走一遍上架的收敛步骤；成功后回到「在用」。失败会停在「上架失败」，可在作业页重试；取消会回到已退役。"
       onConfirm={submit}>
       {!base.isFetchedAfterMount && <div className="hint">{host ? '正在预检…' : '正在预检（会试一下中控密钥能不能登录这台机器，最多十几秒）…'}</div>}
-      {base.isFetchedAfterMount && base.isError && <Note tone="bad">预检失败：{(base.error as Error).message}</Note>}
+      {base.isFetchedAfterMount && base.isError && <ErrorNote error={base.error} onRetry={() => void base.refetch()}>预检失败：</ErrorNote>}
+      {liveFailed && <ErrorNote error={live.error} onRetry={() => void live.refetch()}>按新的团队 / 编号预检失败：</ErrorNote>}
       {pv && (
         <div className="stack-sm">
           <div className="row row-between">

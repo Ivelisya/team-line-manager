@@ -42,7 +42,6 @@ export function rate(bps: number | null | undefined): Fmt {
 }
 export const pct = (n: number | null | undefined, d = 0): Fmt => (n == null ? NA : { v: n.toFixed(d), u: '%' });
 export const ms = (n: number | null | undefined): Fmt => (n == null ? NA : { v: String(Math.round(n)), u: 'ms' });
-export const gb = (n: number | null | undefined): Fmt => (n == null || n <= 0 ? { v: '不限', u: '' } : n >= 1024 ? { v: num(n / 1024), u: 'TiB' } : { v: String(n), u: 'GiB' });
 export const mbps = (n: number | null | undefined): Fmt => (n == null ? NA : n >= 1000 ? { v: num(n / 1000), u: 'Gbps' } : { v: String(n), u: 'Mbps' });
 
 const SYM: Record<string, string> = { CNY: '¥', USD: '$', EUR: '€', HKD: 'HK$', JPY: 'JP¥', GBP: '£' };

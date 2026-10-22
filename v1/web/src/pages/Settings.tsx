@@ -102,7 +102,7 @@ function ApiKeysSection() {
         )}
       </Panel>
 
-      <FormDialog size="md" open={open} onOpenChange={setOpen} title="新建 API 密钥" desc="只授予脚本需要的权限。创建后密钥只显示一次。" submitLabel="创建密钥" busy={create.isPending} valid={valid} onSubmit={submit}>
+      <FormDialog size="md" dirty={!!name.trim() || scopes.join() !== 'read' || exp !== '90'} open={open} onOpenChange={setOpen} title="新建 API 密钥" desc="只授予脚本需要的权限。创建后密钥只显示一次。" submitLabel="创建密钥" busy={create.isPending} valid={valid} onSubmit={submit}>
         <div className="form-grid">
           <Field label="名称" hint="例如：备份脚本、监控 CLI"><Input value={name} onChange={(e) => setName(e.target.value)} autoFocus autoComplete="off" data-1p-ignore data-lpignore="true" /></Field>
           <Field label="有效期"><Select value={exp} onChange={setExp} options={EXPIRES} /></Field>

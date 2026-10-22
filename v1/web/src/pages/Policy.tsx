@@ -36,6 +36,9 @@ const parseSel = (s: string | null): Sel | null => {
 };
 const NO_TEAMS: PolicyTeam[] = [];
 
+/** 占比：有但不到 1% 写「<1%」（不写 0%、0.0%），10% 以下留一位小数 */
+const pctText = (n: number, total: number) => { const p = (n / total) * 100; return n > 0 && p < 1 ? '<1%' : `${p.toFixed(p < 10 ? 1 : 0)}%`; };
+
 export function PolicyPage() {
   const [sp, setSp] = useSearchParams();
   const q = usePolicies();
@@ -342,7 +345,7 @@ const PreviewDialog = resetOnOpen(function PreviewDialog({ open, onOpenChange }:
               <div className="pol-sum">
                 <div><span>草稿</span><b>{d.draft_count}</b><small>份</small></div>
                 <div><span>更新线路机</span><b>{d.affected_relays}</b><small>台</small></div>
-                <div><span>会被阻止的连接</span><b>{fmtN(totalBlock)}</b><small>{total > 0 ? `占 ${((totalBlock / total) * 100).toFixed(totalBlock / total < 0.1 ? 1 : 0)}%` : '近 24h 无记录'}</small></div>
+                <div><span>会被阻止的连接</span><b>{fmtN(totalBlock)}</b><small>{total > 0 ? `占 ${pctText(totalBlock, total)}` : '近 24h 无记录'}</small></div>
               </div>
               <ChangeList changes={d.changes} />
               {d.nodes.length === 0
@@ -358,7 +361,7 @@ const PreviewDialog = resetOnOpen(function PreviewDialog({ open, onOpenChange }:
                             <td><Trunc className="cell-main strong">{n.name}</Trunc><span className="sub">{n.source === 'team' ? '跟随团队' : n.source === 'node' ? '节点自己的' : ''}</span></td>
                             <td><ModePill mode={n.mode} /></td>
                             <td className="r">{fmtN(n.total_conns)}</td>
-                            <td className="r">{n.would_block > 0 ? <><b className="strong">{fmtN(n.would_block)}</b><span className="sub">{n.total_conns > 0 ? `${((n.would_block / n.total_conns) * 100).toFixed(0)}%` : ''}</span></> : <span className="t-muted">0</span>}</td>
+                            <td className="r">{n.would_block > 0 ? <><b className="strong">{fmtN(n.would_block)}</b><span className="sub">{n.total_conns > 0 ? pctText(n.would_block, n.total_conns) : ''}</span></> : <span className="t-muted">0</span>}</td>
                             <td>
                               {n.domains.length === 0 ? <span className="t-muted">—</span> : (
                                 <Tip text={<div className="pol-tip">{n.domains.map((x) => <div key={x.host}><span className="mono">{x.host}</span> <b>{fmtN(x.conns)}</b></div>)}</div>} side="left">
