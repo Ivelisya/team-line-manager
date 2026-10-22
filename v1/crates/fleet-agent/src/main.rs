@@ -180,7 +180,7 @@ async fn run(cfg: Config) -> Result<()> {
         applier.ensure_boot().await;
         desired::restore(&sh);
         spawn_named(&mut set, "stats_task", collect::stats_task(sh.clone(), applier.cli.clone(), sd_rx.clone()));
-        spawn_named(&mut set, "probe_task", collect::probe_task(sh.clone(), sd_rx.clone()));
+        spawn_named(&mut set, "probe_task", collect::probe_task(sh.clone(), probe::direct_client()?, sd_rx.clone()));
         spawn_named(&mut set, "desired_task", desired::desired_task(sh.clone(), applier.clone(), client.clone(), sd_rx.clone()));
         applier_handle = Some(applier);
     }
