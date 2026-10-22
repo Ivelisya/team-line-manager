@@ -2,14 +2,14 @@
 // 整个文件按需加载（首次打开时才下载 cmdk）。
 import * as React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowUpCircle, BellOff, Clipboard, CloudUpload, Moon, PackageOpen, ShieldCheck, Sun } from 'lucide-react';
+import { ArrowUpCircle, BellOff, CalendarPlus, Clipboard, CloudUpload, Moon, PackageOpen, ShieldCheck, Sun } from 'lucide-react';
 import { NAV, type NavItem } from '@/lib/nav';
 import { useMachineLabels, useUpgradeAllAgents } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import { copyText } from '@/lib/clipboard';
 import { KIND_LABEL } from '@/lib/sort';
 import { setOverlay, useOverlay } from '@/lib/palette';
-import { openEvacuate } from '@/lib/nodeActions';
+import { openEvacuate, openRenew } from '@/lib/nodeActions';
 import type { ThemePref } from '@/lib/theme';
 import { Command, CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { toast } from '@/components/ui/toast';
@@ -64,7 +64,7 @@ function PaletteBody({ theme, askUpgrade }: { theme: Theme; askUpgrade: () => vo
   // 只取面板用到的字段：开着面板时实时推送只改读数，不会让整表重渲染
   const machines = useMachineLabels().data ?? [];
   const [search, setSearch] = React.useState('');
-  const [mode, setMode] = React.useState<'root' | 'copy-ip' | 'evacuate'>('root');
+  const [mode, setMode] = React.useState<'root' | 'copy-ip' | 'evacuate' | 'renew'>('root');
   const go = (to: string) => { close(); nav(to); };
   const dark = document.documentElement.dataset.theme === 'dark';
 
@@ -80,17 +80,17 @@ function PaletteBody({ theme, askUpgrade }: { theme: Theme; askUpgrade: () => vo
   };
   const machineItems = list.map((m) => (
     <CommandItem key={m.id} value={value(m)} keywords={[m.id]}
-      onSelect={() => { close(); if (mode === 'copy-ip') void copyText(m.ip, ' IP'); else if (mode === 'evacuate') openEvacuate(m.id); else openDrawer(m.id); }}>
+      onSelect={() => { close(); if (mode === 'copy-ip') void copyText(m.ip, ' IP'); else if (mode === 'evacuate') openEvacuate(m.id); else if (mode === 'renew') openRenew(m.id); else openDrawer(m.id); }}>
       <KindIcon kind={m.kind} />
       <span className="cmd-main"><b className="ellipsis">{m.name}</b><HealthPill m={m} /></span>
-      <span className="cmd-aside">{mode === 'copy-ip' ? <>复制 <span className="num">{m.ip}</span></> : mode === 'evacuate' ? <span>搬空…</span> : <span className="num">{m.ip}</span>}</span>
+      <span className="cmd-aside">{mode === 'copy-ip' ? <>复制 <span className="num">{m.ip}</span></> : mode === 'evacuate' ? <span>搬空…</span> : mode === 'renew' ? <span>登记续费…</span> : <span className="num">{m.ip}</span>}</span>
     </CommandItem>
   ));
 
   return (
     <Command label="命令面板" loop filter={filter}
       onKeyDown={(e) => { if (e.key === 'Backspace' && !search && mode !== 'root') { e.preventDefault(); setMode('root'); } }}>
-      <CommandInput autoFocus value={search} onValueChange={setSearch} placeholder={mode === 'copy-ip' ? '选择要复制 IP 的机器…' : mode === 'evacuate' ? '选择要搬空的线路机…' : '搜索机器、页面或动作…'} />
+      <CommandInput autoFocus value={search} onValueChange={setSearch} placeholder={mode === 'copy-ip' ? '选择要复制 IP 的机器…' : mode === 'evacuate' ? '选择要搬空的线路机…' : mode === 'renew' ? '选择要登记续费的机器…' : '搜索机器、页面或动作…'} />
       <CommandList>
         <CommandEmpty>没有匹配的结果{search ? `：${search}` : ''}</CommandEmpty>
         {mode === 'root' && (
@@ -104,6 +104,7 @@ function PaletteBody({ theme, askUpgrade }: { theme: Theme; askUpgrade: () => vo
               <CommandItem value="上架机器 provision 添加机器 落地机 家宽代理 线路机" onSelect={() => go('/provision')}><CloudUpload /><span className="cmd-main">上架机器</span></CommandItem>
               <CommandItem value="新建静默 silence 维护窗口" onSelect={() => go('/incidents?silence=new')}><BellOff /><span className="cmd-main">新建静默</span></CommandItem>
               <CommandItem value="复制某机器 IP copy ip" onSelect={() => { setSearch(''); setMode('copy-ip'); }}><Clipboard /><span className="cmd-main">复制某台机器的 IP…</span></CommandItem>
+              <CommandItem value="登记续费 renew 续费 续期 到期" onSelect={() => { setSearch(''); setMode('renew'); }}><CalendarPlus /><span className="cmd-main">登记续费…</span></CommandItem>
               <CommandItem value="搬空线路机 evacuate 换线路机 退役 下线" onSelect={() => { setSearch(''); setMode('evacuate'); }}><PackageOpen /><span className="cmd-main">搬空线路机…</span></CommandItem>
               <CommandItem value="升级全部 agent upgrade" onSelect={() => { close(); askUpgrade(); }}><ArrowUpCircle /><span className="cmd-main">升级全部 agent</span></CommandItem>
               <CommandItem value="切换主题 深色 浅色 theme dark light" onSelect={() => { close(); theme.setPref(dark ? 'light' : 'dark'); }}>
@@ -113,7 +114,7 @@ function PaletteBody({ theme, askUpgrade }: { theme: Theme; askUpgrade: () => vo
           </>
         )}
         {machineItems.length > 0 && (
-          <CommandGroup heading={mode === 'copy-ip' ? '复制 IP' : mode === 'evacuate' ? '线路机' : '机器'}>
+          <CommandGroup heading={mode === 'copy-ip' ? '复制 IP' : mode === 'evacuate' ? '线路机' : mode === 'renew' ? '登记续费' : '机器'}>
             {machineItems}
             {!search.trim() && mode !== 'evacuate' && machines.length > LIMIT && <div className="cmd-more">还有 {machines.length - LIMIT} 台，输入名称、IP 或团队来搜索</div>}
           </CommandGroup>
@@ -121,7 +122,7 @@ function PaletteBody({ theme, askUpgrade }: { theme: Theme; askUpgrade: () => vo
       </CommandList>
       <div className="cmd-foot">
         <span><kbd className="kbd">↑</kbd><kbd className="kbd">↓</kbd>选择</span>
-        <span><kbd className="kbd">↵</kbd>{mode === 'copy-ip' ? '复制' : mode === 'evacuate' ? '搬空' : '打开'}</span>
+        <span><kbd className="kbd">↵</kbd>{mode === 'copy-ip' ? '复制' : mode === 'evacuate' ? '搬空' : mode === 'renew' ? '登记续费' : '打开'}</span>
         {mode !== 'root' && <span><kbd className="kbd">⌫</kbd>返回</span>}
         <span style={{ marginLeft: 'auto' }}><kbd className="kbd">esc</kbd>关闭</span>
       </div>

@@ -187,6 +187,7 @@ const SilenceDialog = resetOnOpen(function SilenceDialog({ open, onOpenChange, p
   return (
     <>
       <FormDialog open={open} onOpenChange={onOpenChange} title="新建静默" desc={desc} submitLabel="创建" busy={add.isPending} valid={valid}
+        dirty={subject !== preset || mode !== 'now' || dur !== 240 || !maint || !!comment.trim()}
         onSubmit={() => (subject === ALL ? setAskAll(true) : submit())}>
         <Field label="对象" hint="必须选择：是哪台机器要静默"><Select value={subject} onChange={setSubject} placeholder="选择机器" options={options} /></Field>
         {subject === ALL && <Note tone="warn">静默「全部机器」会让所有机器在这段时间内都不发告警。提交时需要再确认一次。</Note>}

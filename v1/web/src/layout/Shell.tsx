@@ -9,7 +9,7 @@ import { useIncidents, useMe } from '@/lib/queries';
 import { useStream } from '@/lib/stream';
 import { useTheme, type Palette, type ThemePref } from '@/lib/theme';
 import { useTitleAlerts } from '@/lib/title';
-import { closeEvacuate, closeMove, closeRestore, closeRetire, useEvacuateTarget, useMoveTarget, useRestoreTarget, useRetireTarget } from '@/lib/nodeActions';
+import { closeEvacuate, closeMove, closeRenew, closeRestore, closeRetire, useEvacuateTarget, useMoveTarget, useRenewTarget, useRestoreTarget, useRetireTarget } from '@/lib/nodeActions';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger, Tip, TipHost } from '@/components/ui/overlays';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -39,7 +39,7 @@ function PageFallback() {
   return <div className="stack" role="status" aria-label="加载中"><Skeleton w={160} h={28} /><Skeleton h={96} /><Skeleton h={220} /></div>;
 }
 
-const closeLifecycle = () => { closeMove(); closeEvacuate(); closeRestore(); closeRetire(); };
+const closeLifecycle = () => { closeMove(); closeEvacuate(); closeRestore(); closeRetire(); closeRenew(); };
 
 const THEMES: [ThemePref, string, typeof Sun][] = [['light', '浅色', Sun], ['dark', '深色', Moon], ['system', '跟随系统', Monitor]];
 const PALETTES: [Palette, string][] = [['plum', '粉紫'], ['indigo', '靛蓝']];
@@ -52,8 +52,8 @@ function DrawerHost() {
 
 function LifecycleHost() {
   // 四个 hook 都要无条件调用：写成 a() || b() 会短路，hook 数量随渲染变化，React 报错
-  const move = useMoveTarget(), evacuate = useEvacuateTarget(), restore = useRestoreTarget(), retire = useRetireTarget();
-  const ever = useEver(!!(move || evacuate || restore || retire));
+  const move = useMoveTarget(), evacuate = useEvacuateTarget(), restore = useRestoreTarget(), retire = useRetireTarget(), renew = useRenewTarget();
+  const ever = useEver(!!(move || evacuate || restore || retire || renew));
   return ever ? <React.Suspense fallback={null}><LifecycleDialogsHost /></React.Suspense> : null;
 }
 

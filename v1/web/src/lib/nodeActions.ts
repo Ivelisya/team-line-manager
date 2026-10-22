@@ -30,3 +30,9 @@ const restore = target();
 export const openRestore = restore.open;
 export const closeRestore = restore.close;
 export const useRestoreTarget = restore.use;
+
+/** 登记续费（任何有订阅的机器，不只是快到期的） */
+const renew = target();
+export const openRenew = renew.open;
+export const closeRenew = renew.close;
+export const useRenewTarget = renew.use;

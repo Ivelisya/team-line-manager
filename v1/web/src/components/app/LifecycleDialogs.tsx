@@ -5,7 +5,9 @@ import { useNavigate } from 'react-router-dom';
 import { ArrowRight } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
 import { useEvacuate, useMachine, useMoveEntry, useRelayChoices, useRestore, useRestorePreview, useTeams } from '@/lib/queries';
-import { closeEvacuate, closeMove, closeRestore, closeRetire, useEvacuateTarget, useMoveTarget, useRestoreTarget, useRetireTarget } from '@/lib/nodeActions';
+import { closeEvacuate, closeMove, closeRenew, closeRestore, closeRetire, useEvacuateTarget, useMoveTarget, useRenewTarget, useRestoreTarget, useRetireTarget } from '@/lib/nodeActions';
+import { RenewDialog } from '@/features/BillingTab';
+import { useDrawer } from '@/lib/drawer';
 import { CheckRow, Field, Input } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
@@ -244,17 +246,23 @@ export function LifecycleDialogsHost() {
   const evacId = useEvacuateTarget();
   const restoreId = useRestoreTarget();
   const retireId = useRetireTarget();
+  const renewId = useRenewTarget();
   // id 清空后继续用最近的机器渲染 open=false 的对话框，让 Radix 播完关闭动画再卸载
   const mv = useHeld(moveId, useMachine(moveId).data);
   const ev = useHeld(evacId, useMachine(evacId).data);
   const rs = useHeld(restoreId, useMachine(restoreId).data);
   const rt = useHeld(retireId, useMachine(retireId).data);
+  const rn = useHeld(renewId, useMachine(renewId).data);
+  // 还没有订阅的（命令面板里选的）登记不了续费：改为打开它抽屉的「费用」页去填
+  const { open: openDrawer } = useDrawer();
+  React.useEffect(() => { if (renewId && rn?.id === renewId && !rn.subscription) { closeRenew(); openDrawer(renewId, 'billing'); } }, [renewId, rn, openDrawer]);
   return (
     <>
       {mv && <MoveDialog key={mv.id} m={mv} open={!!moveId} onOpenChange={(o) => { if (!o) closeMove(); }} onDone={closeMove} />}
       {ev && <EvacuateDialog key={ev.id} relay={ev} open={!!evacId} onOpenChange={(o) => { if (!o) closeEvacuate(); }} onDone={closeEvacuate} />}
       {rs && <RestoreDialog key={rs.id} m={rs} open={!!restoreId} onOpenChange={(o) => { if (!o) closeRestore(); }} onDone={closeRestore} />}
       {rt && <RetireDialog key={rt.id} m={rt} open={!!retireId} onOpenChange={(o) => { if (!o) closeRetire(); }} onDone={closeRetire} />}
+      {rn?.subscription && <RenewDialog key={rn.id} m={rn} s={rn.subscription} open={!!renewId} onOpenChange={(o) => { if (!o) closeRenew(); }} />}
     </>
   );
 }
