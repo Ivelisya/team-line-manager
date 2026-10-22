@@ -1,9 +1,12 @@
-// 时长选择：常用时长胶囊 + 「自定义」分钟数（只收整数分钟、去掉前导 0）。告警页「新建静默」用，交互同卡片菜单的「维护窗口…」
+// 时长选择：常用时长胶囊 + 「自定义」分钟数（只收整数分钟、去掉前导 0）。告警页「新建静默」与卡片菜单的「维护窗口…」共用
 import * as React from 'react';
+import * as F from '@/lib/format';
 import { UnitInput } from '@/components/ui/form';
 import { FilterChip } from './primitives';
 
 export type DurationItem = { min: number; label: string };
+/** 静默 / 维护窗口最长多久（分钟）：中控最长收 30 天 */
+export const SILENCE_MAX_MIN = 720 * 60;
 
 /** 时长的状态：dur 是选中的胶囊（分钟）或 'custom'；minutes 是最终的分钟数，valid 为假时不能提交 */
 export function useDuration(init: number, max: number) {
@@ -27,7 +30,7 @@ export function DurationField({ d, items }: { d: ReturnType<typeof useDuration>;
         <UnitInput unit="分钟" width={160} inputMode="numeric" aria-label="自定义时长（分钟）" placeholder={`1–${d.max}`} autoFocus value={d.mins} aria-invalid={bad}
           onChange={(e) => d.setMins(e.target.value.replace(/\D/g, '').replace(/^0+/, ''))} />
       )}
-      {bad && <div className="hint is-error">填 1–{d.max} 分钟（最长 30 天）</div>}
+      {bad && <div className="hint is-error">填 1–{d.max} 分钟（最长 {F.span(d.max * 60_000)}）</div>}
     </div>
   );
 }

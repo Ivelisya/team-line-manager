@@ -230,7 +230,7 @@ function Editor({ scope, name, sp, team, node, onDirty }: { scope: 'team' | 'nod
 
   const noDomains = uses && parsed.domains.length === 0;
   const invalid = (uses && !!parsed.overall) || note.length > MAX_NOTE;
-  // 没填域名、正在输入的那行有问题时保存按钮仍可点：点了才提示「请填写域名」、亮出那一行的问题
+  // 没填域名、正在输入的那行有问题（还没亮出来）时保存按钮仍可点：点了才提示「请填写域名」、亮出那一行的问题
   const canSave = dirty && !invalid;
   const onSave = () => { if (noDomains) setTouched(true); else if (uses && parsed.issues.length) setCaret(null); else void submit(form); };
 
@@ -250,6 +250,8 @@ function Editor({ scope, name, sp, team, node, onDirty }: { scope: 'team' | 'nod
   const lines = text.split('\n');
   const showIssues = uses ? parsed.issues.filter((i) => i.line !== caret) : [];
   const badLines = new Set(showIssues.map((i) => i.line));
+  // 问题已经亮出来（标红的行、「请填写域名」）时保存置灰、悬停说明为什么（点了也不会有新反馈）
+  const blocked = !canSave ? undefined : showIssues.length ? '先改正标红的行' : noDomains && touched ? '请先填写域名' : undefined;
   const modes: PolicyMode[] = scope === 'node' ? ['inherit', 'observe', 'allowlist', 'denylist', 'blocked'] : ['observe', 'allowlist', 'denylist', 'blocked'];
 
   return (
@@ -296,7 +298,7 @@ function Editor({ scope, name, sp, team, node, onDirty }: { scope: 'team' | 'nod
         <Compare cur={cur} next={form} scope={scope} teamCur={teamCur} teamName={team.name} />
 
         <div className="pol-actions">
-          <Button variant="primary" disabled={!canSave} loading={save.isPending} onClick={onSave}><Save />保存草稿</Button>
+          <Button variant="primary" disabled={!canSave} aria-disabled={!!blocked || undefined} data-tip={blocked} loading={save.isPending} onClick={() => { if (!blocked) onSave(); }}><Save />保存草稿</Button>
           <Button variant="quiet" disabled={!dirty || save.isPending} onClick={() => load(sp)}><Undo2 />还原编辑</Button>
           {sp.draft && <Button variant="outline-danger" disabled={save.isPending} onClick={() => setAskDrop(true)}><Trash2 />放弃这份草稿</Button>}
           <span className="pol-meta t-sub">{dirty ? <span className="pol-dirty">有未保存的修改</span> : sp.updated_at ? <span data-tip={F.dtFull(sp.updated_at)}>最近修改 {F.dt(sp.updated_at)}{sp.updated_by ? ` · ${F.actor(sp.updated_by)}` : ''}</span> : '还没有修改过'}</span>

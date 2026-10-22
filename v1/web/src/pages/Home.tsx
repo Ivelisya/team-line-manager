@@ -73,9 +73,14 @@ export function HomePage() {
   const setV = React.useCallback((v: CardView) => { prefs.set(P_VIEW, v); saved.view = v; upd({ density: v }); }, [upd, saved]);
   const setSort = React.useCallback((s: SortState | null) => { const v = sortStr(s); prefs.set(P_SORT, v); saved.sort = v; upd({ sort: v }); }, [upd, saved]);
   const pickSort = React.useCallback((v: string) => { if (v !== 'custom') setSort(homeSort(v)); }, [setSort]);
-  // 地址里缺的（首次打开、点侧栏回到首页）补上当前生效的视图、密度、排序（替换当前记录）：复制地址分享出去，对方看到的和这里一样
-  const missing = !sp.has('view') || !sp.has('density') || !sp.has('sort');
-  React.useEffect(() => { if (missing) upd({ view: layout, density: view, sort: rawSort }); }, [missing, layout, view, rawSort, upd]);
+  // 视图、密度、排序没写在地址里时按本机偏好：缺哪个补哪个（首次打开、点侧栏回到首页；替换当前记录），复制地址分享出去，对方看到的和这里一样。
+  // 分组与仅看异常不记本机偏好，没写就是「全部」「关」，人人一样，不用补
+  const missing = (['view', 'density', 'sort'] as const).filter((k) => !sp.has(k)).join(' ');
+  React.useEffect(() => {
+    if (!missing) return;
+    const cur = { view: layout, density: view, sort: rawSort };
+    upd(Object.fromEntries(missing.split(' ').map((k) => [k, cur[k as keyof typeof cur]])));
+  }, [missing, layout, view, rawSort, upd]);
   useProbeBeatsPoll(layout === 'cards'); // 卡片心跳条每 2 分钟刷新：全页一个轮询
 
   // 实时推送每条都换一份机器列表：按可打断的优先级重渲染（用户的点击、输入先处理，推送晚一点跟上）
