@@ -11,6 +11,7 @@ mod lifecycle;
 mod ops;
 mod policy;
 mod resolve;
+mod routers;
 mod silence;
 mod table;
 
@@ -628,6 +629,97 @@ enum Cmd {
         #[arg(long)]
         follow: bool,
     },
+    /// 软路由列表：状态、出口通 / 总、客户端、CPU、内存、WAN 速率
+    Routers {
+        /// 只看这个团队的
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// 软路由：详情、接入（接入命令或一键部署）、重新生成接入命令、改名、删除
+    Router {
+        #[command(subcommand)]
+        cmd: RouterCmd,
+    },
+}
+
+/// 一键部署的目标（中控要能直接连到路由的 SSH）。密码只从标准输入读，不收参数
+#[derive(Args)]
+struct RouterSshArgs {
+    /// 路由的 IP 或主机名（中控连得到的）；给了就一键部署
+    #[arg(long)]
+    host: Option<String>,
+    /// 路由的 SSH 端口（默认 22）
+    #[arg(long)]
+    port: Option<u16>,
+    /// 登录用户（默认 root）
+    #[arg(long)]
+    user: Option<String>,
+    /// 从标准输入读一行密码（不给就用中控自己的密钥登录：路由上已经授权过中控公钥时）
+    #[arg(long)]
+    password_stdin: bool,
+}
+
+impl RouterSshArgs {
+    fn opts(&self) -> routers::SshOpts<'_> {
+        routers::SshOpts { host: self.host.as_deref(), port: self.port, user: self.user.as_deref(), password_stdin: self.password_stdin }
+    }
+}
+
+#[derive(Subcommand)]
+enum RouterCmd {
+    /// 一台软路由的详情：系统、接口、OpenClash、出口（对应的 fleet 入口、参数是否一致、延迟、连接）、客户端
+    Show {
+        /// 软路由（id / id 前缀 / 名称）
+        router: String,
+    },
+    /// 新建：不给 --host 打印接入命令（在路由上用 root 执行，30 分钟内有效）；给 --host 就一键部署（中控登录路由装好隧道）
+    Add {
+        name: String,
+        #[arg(long)]
+        team: Option<String>,
+        #[arg(long)]
+        note: Option<String>,
+        #[command(flatten)]
+        ssh: RouterSshArgs,
+        /// 一键部署要确认
+        #[arg(long)]
+        yes: bool,
+        /// 一键部署：等它结束（失败退出码 1）
+        #[arg(long)]
+        follow: bool,
+    },
+    /// 重新生成接入命令：现在的隧道密钥立刻作废、隧道换端口（危险，要 --yes）
+    Bootstrap {
+        router: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// 一键部署（重新部署）：中控用账号密码（或自己的密钥）登录路由装好隧道
+    Deploy {
+        router: String,
+        #[command(flatten)]
+        ssh: RouterSshArgs,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        follow: bool,
+    },
+    /// 改名称 / 团队（none 清掉）/ 备注
+    Edit {
+        router: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        team: Option<String>,
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// 删除：撤销隧道公钥，状态与指标一起删掉；路由上中控加的东西要在路由上自己清（会打印命令）
+    Rm {
+        router: String,
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 /// `session_login`：命令自己会用用户名密码登录（keys --user），没有 API 密钥也放行，只要有中控地址
@@ -832,6 +924,17 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
                 follow,
             },
         ),
+        Cmd::Routers { team } => routers::ls(x, team.as_deref()),
+        Cmd::Router { cmd } => match cmd {
+            RouterCmd::Show { router } => routers::show(x, &router),
+            RouterCmd::Add { name, team, note, ssh, yes, follow } => {
+                routers::add(x, routers::AddOpts { name: &name, team: team.as_deref(), note: note.as_deref(), ssh: ssh.opts(), yes, follow })
+            }
+            RouterCmd::Bootstrap { router, yes } => routers::bootstrap(x, &router, yes),
+            RouterCmd::Deploy { router, ssh, yes, follow } => routers::deploy(x, &router, ssh.opts(), yes, follow),
+            RouterCmd::Edit { router, name, team, note } => routers::edit(x, &router, name.as_deref(), team.as_deref(), note.as_deref()),
+            RouterCmd::Rm { router, yes } => routers::rm(x, &router, yes),
+        },
     }
 }
 

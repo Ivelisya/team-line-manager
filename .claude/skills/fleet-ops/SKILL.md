@@ -1,6 +1,6 @@
 ---
 name: fleet-ops
-description: 团队线路管理（fleet）的运维入口。查节点或线路机状态、排查告警、处理到期与续费提醒（看订阅、登记续费、改订阅）、维护前开维护窗口或静默告警（可预约）、看服务日志、在节点上执行命令、上架新机器、退役或删除机器、改名与编号、升级 agent、取入口分享链接时使用；一律先用 fleetctl，不要直接 ssh、psql 或手拼 curl。
+description: 团队线路管理（fleet）的运维入口。查节点或线路机状态、排查告警、处理到期与续费提醒（看订阅、登记续费、改订阅）、维护前开维护窗口或静默告警（可预约）、看服务日志、在节点上执行命令、上架新机器、退役或删除机器、改名与编号、升级 agent、取入口分享链接、查看与接入软路由（OpenWrt + OpenClash：状态、出口、客户端、接入命令、一键部署）时使用；一律先用 fleetctl，不要直接 ssh、psql 或手拼 curl。
 ---
 
 # fleet-ops
@@ -41,6 +41,8 @@ fleetctl --json <命令>      # AI 一律加 --json，输出一行 JSON
 | 节点来源画像分布（运营商/城市/接入方式、top 来源、学习期） | `fleetctl --json sources <机器> [--window 24h\|7d\|30d] [--limit 20]` |
 | IP 库状态（加载了几个、缺什么） | `fleetctl --json ipintel-status`（`loaded` 应为 5；未安装时在中控跑 `lab/install-ipintel.sh`） |
 | 访问规则（域名黑白名单，按团队/节点） | `fleetctl policy ls`、`policy show <团队\|节点>`；`policy set <团队\|节点> --mode observe\|allowlist\|denylist\|blocked\|inherit --domains a.com,=exact.org [--note …]`（只存草稿，不生效）；`policy preview`（最近 24h 每节点会阻止多少）→ `policy publish --yes`；`policy discard --yes`；`policy versions`；`policy rollback <版本> --yes`。`=` 开头是精确匹配，否则含子域。发布 / 回滚会立即改写线路机路由规则，先向用户确认 |
+| 软路由列表（状态、出口通 / 总、客户端、CPU、内存、WAN） | `fleetctl --json routers [--team 团队2]` |
+| 一台软路由的详情：系统、接口、OpenClash、每个出口对应的 fleet 入口与参数是否一致、延迟、连接、客户端 | `fleetctl --json router show <路由>`（`<路由>` 写 id、id 前缀或名称） |
 
 访问规则的健康提示：节点被设为 `blocked` 时健康原因里有 `policy_blocked`（info，不降级、不开告警）。
 
@@ -62,6 +64,18 @@ fleetctl exec --team 团队1 --timeout 30 -- uptime           # 多台并发 4�
 - 输出每个流最多 256 KiB（`truncated`）；超时 `timed_out=true`。
 - 执行只读命令（systemctl status、journalctl、df、ss、cat 日志）。会改动机器状态的命令先向用户确认。
 - 命令全文进审计，所以命令里不放密码或令牌。
+
+## 软路由
+
+客户现场的 OpenWrt / iStoreOS 路由（OpenClash，mihomo 内核）经一条反向 SSH 隧道连中控（路由上的 `fleet-tunnel` 服务，与原有的 router-tunnel 并存），中控每 30 秒经隧道只读采集一次、每 5 分钟测一次全部出口的延迟。接入只新增（隧道密钥、中控登录公钥、`/etc/init.d/fleet-tunnel`），不改路由的 root 密码、dropbear / LuCI 监听、OpenClash 配置与密钥、防火墙；用户明确要求过这些都不要动，AI 也不要去改。
+
+- 状态 `state`：`pending`（还没接入，或刚重新生成接入命令、等在路由上执行）/ `online` / `offline`（接入过、此刻连不上，`error` 是原因）。`deploy` 是最近一次一键部署：`state` running / failed / done，`step` 正在做的那一步，`error` 失败原因。
+- 出口的 `sync`：`ok` 参数和对应的 fleet 入口一致；`drift` 对上了入口但参数不一样（入口轮换过凭据、换了线路机后路由的配置没同步，或入口已删除）；`unmanaged` 不是 fleet 的入口。`drift` 要告诉用户，AI 不要去改路由的配置。
+- 告警（对象是路由：`subject.kind` 为 `router`，不能 `show`，用 `router show`）：`router_offline`（接入过、连不上超过 2 分钟，critical）、`router_openclash_down`（OpenClash 启用了但核心没在跑，critical）、`router_exits_down`（有出口连续两次延迟测试不通，warning；全部不通 critical）、`router_wan_down`（WAN 口断开，critical）、`router_resource_high`（CPU 持续 10 分钟 > 90%、内存 / 存储 > 90%、连接表 > 80%，warning）。全局静默对它们生效；单台机器的静默管不到路由。
+- 接入（会改路由，先向用户确认，见下一节的命令）有两种，路由上执行的是同一份脚本：
+  - 中控连不到路由（路由在 NAT 后面，三台现场路由都是）：`fleetctl router add <名称> [--team 团队2]` 打印接入命令（30 分钟、只能用一次），让用户在路由上用 root 执行；过期了 `fleetctl router bootstrap <路由> --yes` 重新生成（现在的隧道密钥立刻作废）。
+  - 中控能直接连到路由的 SSH（公网映射、同一网段）：一键部署 `fleetctl router add <名称> --host <IP> [--port 22] [--user root] --password-stdin --yes --follow`（密码从标准输入读一行，不要写在参数里）；路由上已经授权过中控公钥时不用密码。已有的路由重新部署用 `router deploy`。失败原因原样转告用户；中控连不到它就改用接入命令。
+- 删路由（`router rm --yes`）只撤销中控这边（隧道公钥、状态与指标）；输出里的 `cleanup` 是要在路由上执行的清理命令，转给用户。
 
 ## 维护窗口与静默
 
@@ -121,6 +135,10 @@ fleetctl provision ...                                     # 先 check，再确�
 fleetctl retry <作业> [--reset-host-key] [--password-env VAR]   # 重试失败作业；只有作业因主机指纹不符失败、且确认机器重装过才加 --reset-host-key（同机 IP 节点不行：对宿主机升级 agent 后重试那个作业）；在用机器指纹变了也走这条：先 upgrade-agent 让它失败再重试；报「没有可用的 root 密码」时用 --password-env 补密码
 fleetctl renew <机器> [--cycles N | --to YYYY-MM-DD] [--amount 39.46] [--note …] --yes   # 登记续费：用户确认付过款之后（见「到期与续费」）
 fleetctl subscription set <机器> --price 45 … --yes          # 改订阅：只改给了的字段；值 = 单独设置，none = 改回跟随套餐 / 供应商
+fleetctl router add <名称> --host <IP> --password-stdin --yes --follow   # 软路由一键部署：中控登录路由装上 fleet-tunnel（只新增）；不给 --host 只建记录、打印接入命令（不改路由，不用确认）
+fleetctl router deploy <路由> --host <IP> [--password-stdin] --yes --follow   # 重新部署：换一把隧道密钥
+fleetctl router bootstrap <路由> --yes                      # 重新生成接入命令：现在的隧道立刻作废，要在路由上执行新命令才连得回来
+fleetctl router rm <路由> --yes                             # 删软路由：撤销隧道公钥、删掉状态与指标；路由上的清理命令在输出里，转给用户
 ```
 
 - 上架：`fleetctl --json provision --file batch.json --dry-run` 只校验；通过后让用户确认名单，再去掉 `--dry-run` 加 `--yes --follow`。单台参数：`--kind vps --ip 1.2.3.4 --team 团队1 --relay 线路机2 --provider ATTVPS --plan 基础版 --due 2026-12-01`。选了套餐必须给 `--due`（到期日；价格、流量等跟随套餐，时区、提醒跟随供应商，`--provider` 可不给、取套餐的）；只有这台和套餐不同时才加 `--price 45` / `--currency` / `--cycle` / `--tz` / `--traffic-gb` / `--reset-day`（单独设置）。没有套餐时给了 `--due` 就要给 `--price`。root 密码放环境变量，用 `--ssh-password-env VAR` 传名字。`--ss-port`（批量文件里 `ss_port`）是线路机连节点用的公网（NAT 映射）端口，节点上 ssserver 固定监听 8388；非 NAT 机不要填。
@@ -136,7 +154,7 @@ fleetctl subscription set <机器> --price 45 … --yes          # 改订阅：�
 - `show`（MachineView）：上面这些的完整版（`health.status`、`agent.online`、`host.{cpu_pct,mem_used,mem_total,disk_used,disk_total,load1}`、`entries[]` 完整入口视图），另有 `ssh_port revision`、`health.reasons[{key,rule_name,severity,text}]`（`rule_name` 是规则中文名，同通知）、`agent.health`（agent 自报：离线队列、访问日志解析不了 / 丢弃的行数等）、`failed_job`。
   同机关系：`host_machine{id,name}` 非 null 的是同机 IP 节点（它的 `agent`、`host` 都是宿主机的，agent 离线 / 高负载告警在宿主机名下；`logs --unit ssserver` 看它自己的实例 `fleet-ssserver@<端口>`，`exec` 在宿主机上执行；不能单独 `upgrade-agent`）；`ip_nodes[{id,name}]` 是宿主机上未退役的同机 IP 节点。
 - `entries`（每个入口一个精简对象）：`id relay port node lifecycle(active|pending|disabled|removing|removed) applied apply_error tcp_ok egress_ok today_down today_up`（今日业务流量，字节）；`tcp_ok` / `egress_ok` 为 null 表示还没探测过。`node` 是「线路机名-直出」的是线路机直出入口：没有节点，`tcp_ok` 恒为 null；它出口不通时告警对象是线路机（`egress_fail`）；搬空不搬它，退役线路机时自动摘除。
-- `incidents`（每条一个精简对象，`status` 里的 `incidents` 相同）：`id severity(warning|critical) rule rule_name subject_id subject_name summary reopen_count state(firing|resolved) opened_at resolved_at ack_by`（`ack_by` 非 null 即已确认；恢复后 30 分钟内复发会重开同一条并 +1，表格里显示「反复 N 次」；大于 0 说明在抖，查探测/网络而不是只看当前状态）。规则 key：agent_offline、clock_skew、no_entry、egress_fail、tcp_fail、renewal_due、renewal_overdue、traffic_quota_high（流量额度：本周期已用 ≥ 90% warning、≥ 100% critical，不改健康状态，新周期或调高上限后自动恢复）、relay_apply_lag、relay_apply_error、relay_xray_down、host_cpu_high、host_mem_high、host_disk_high、ipintel_new_isp（来源出现新运营商）、ipintel_new_city（来源出现新城市）、ipintel_datacenter_source（机房 / VPN 来源 IP），这三个是 warning、学习期 7 天后才有、最后一次出现 24 小时后自动恢复，不用手动处理。中控自身的告警（对象是「中控」：`subject_id` 为 null、`subject_name` 为「中控」，不能 `show`）：central_channel_failing（通知渠道连续发送失败满 5 分钟，critical，摘要里有渠道名与原因；请用户在网页「设置 → 通知渠道」改配置并点「测试」，测试成功即恢复）、central_backup_stale（中控每日备份超过 26 小时没有新的，warning；`fleetctl server-logs` 帮不上，需要用户在中控上 `systemctl status fleet-backup`）、central_disk_low（中控本机磁盘可用低于 10%，critical，写满了中控会停；告诉用户尽快清理）。这三条都要转告用户，AI 处理不了。
+- `incidents`（每条一个精简对象，`status` 里的 `incidents` 相同）：`id severity(warning|critical) rule rule_name subject_id subject_name summary reopen_count state(firing|resolved) opened_at resolved_at ack_by`（`ack_by` 非 null 即已确认；恢复后 30 分钟内复发会重开同一条并 +1，表格里显示「反复 N 次」；大于 0 说明在抖，查探测/网络而不是只看当前状态）。规则 key：agent_offline、clock_skew、no_entry、egress_fail、tcp_fail、renewal_due、renewal_overdue、traffic_quota_high（流量额度：本周期已用 ≥ 90% warning、≥ 100% critical，不改健康状态，新周期或调高上限后自动恢复）、relay_apply_lag、relay_apply_error、relay_xray_down、host_cpu_high、host_mem_high、host_disk_high、ipintel_new_isp（来源出现新运营商）、ipintel_new_city（来源出现新城市）、ipintel_datacenter_source（机房 / VPN 来源 IP），这三个是 warning、学习期 7 天后才有、最后一次出现 24 小时后自动恢复，不用手动处理。中控自身的告警（对象是「中控」：`subject_id` 为 null、`subject_name` 为「中控」，不能 `show`）：central_channel_failing（通知渠道连续发送失败满 5 分钟，critical，摘要里有渠道名与原因；请用户在网页「设置 → 通知渠道」改配置并点「测试」，测试成功即恢复）、central_backup_stale（中控每日备份超过 26 小时没有新的，warning；`fleetctl server-logs` 帮不上，需要用户在中控上 `systemctl status fleet-backup`）、central_disk_low（中控本机磁盘可用低于 10%，critical，写满了中控会停；告诉用户尽快清理）。这三条都要转告用户，AI 处理不了。软路由的告警是 `router_` 开头的五条（见「软路由」一节），`subject_id` 是路由 id、`subject_name` 是路由名，用 `router show` 看，不要 `show`。
 - `silence ls`（每条一个精简对象；`silence add` / `silence rm` 输出新建 / 删掉的那一条，同形）：`id subject_id subject_name rule rule_name starts_at ends_at state(active|scheduled) is_maintenance comment`；`subject_id` 为 null = 全部机器，`rule` 为 null = 全部规则；`state` 是 `active`（进行中）或 `scheduled`（已预约，还没开始）。只列没结束的。
 - `billing`：`id name host_machine subscription sub_template traffic_limit_gb quota{limit_gb,limit_source,used,period_start,rule,base,base_at} quota_pct renewals renewal_count`。`subscription` 为 null 是没有订阅，否则 `{price_cents currency cycle(monthly|quarterly|semiannual|yearly) due_date due_days billing_tz auto_renew remind_days traffic_gb traffic_reset_day overrides}`，全是生效值，`overrides` 是单独设置了的字段名（其余跟随 `sub_template`：`{price_cents currency cycle billing_tz remind_days traffic_gb traffic_reset(month|billing)}`）；金额都是分（`price_cents` 3946 = 39.46，币种看 `currency`）。`traffic_gb` 0 / null = 不限，`traffic_limit_gb`（= `quota.limit_gb`）是生效的上限（null = 不限），`quota.limit_source` 是它的来源（`subscription` 单独设置 / `plan` 跟随套餐 / `host` 同机 IP 节点与宿主机共用 / `none`），`quota_pct` 是本周期已用（`quota.used`，字节）占它（GB × 10⁹）的百分比（向下取整，没有上限为 null）；`quota.rule` 是网卡计量规则（`min|max|sum|out`，null = 业务流量），`quota.base_at` 非 null 是本周期按面板校准过（`base` 为当时面板读数，字节）。`renewals` 是最近 10 条续费记录（新→旧）`{id old_due new_due amount_cents note actor created_at}`，`renewal_count` 是总条数。
 - `renew`：刚登记的这条续费记录（同 `billing` 的 `renewals[]`）。`subscription set`：改完的 `subscription`（同上，`due_days` 按新到期日算）；没有变化时不提交，输出现在的。
@@ -148,5 +166,8 @@ fleetctl subscription set <机器> --price 45 … --yes          # 改订阅：�
 - `retire --json`：`{job_id, ip_node_jobs:[{machine_id,name,job_id}]}`，后者是一并退役的同机 IP 节点各自的退役作业。
 - `upgrade-agent --all --json`：`{jobs:[{machine_id,name,kind,job_id,after}], skipped:[{machine_id,name,reason}], order}`；`jobs` 按执行顺序，第一个是金丝雀，`after` 是它要等的作业（等的那个换上新版本后失败、或被取消，它就被取消）；`order` 是顺序说明，原样转述给用户。中控上没有 agent 程序时报错（409），不建作业。
 - `exec`：`exit_code stdout stderr duration_ms truncated timed_out`；多台时是这些字段加 `machine` 的数组，某台没执行成（请求被拒、连不上）时那一项是 `{machine,id,exit_code:null,error:{code,message,status}}`。
+
+- `routers`：API 的 data 原样，每台 `{id name team{id,name} note tunnel_port created_at state(pending|online|offline) last_seen_at error summary deploy bootstrap_expires_at}`；`summary`（从没采集成功过为 null）：`uptime_s cpu_pct load1 cores mem_used mem_total disk_used disk_total conntrack conntrack_max temp_c wan{up,ip,rx_bps,tx_bps} openclash{enabled,running,version,mode,conns,up_bps,down_bps} exits{total,alive,managed,drift} clients`（速率 bit/s，字节为单位的是内存、存储）。
+- `router show`：上面这些加 `detail{system interfaces[] openclash exits[] clients[] collected_at}`；`exits[]` 每个 `{name type server port entry{id,name,node_id,relay_id,node_name,relay_name,port,lifecycle}|null sync(ok|drift|unmanaged) alive delay_ms delay_at fail_streak conns up_bps down_bps clients}`（`entry.name` 形如「团队2-03 · 线路机2:20003」；各出口的速率是按连接估的）；`clients[]` 每个 `{ip mac hostname online conns exits[{name,conns}]}`。`router add` 不带 --host 输出 `{id, bootstrap{cmd, expires_at}}`。
 
 完整接口见仓库 `docs/API.md`，运维流程与何时才需要直接 ssh 见 `docs/OPS.md`。
