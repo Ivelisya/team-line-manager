@@ -24,7 +24,7 @@ export const stepLabel = (k: string) => lbl(meta().step_states, k);
 export const ruleLabel = (k: string) => lbl(meta().rules, k);
 /** 网卡计量规则（供应商的「流量计量」） */
 export const trafficRuleLabel = (k: string) => lbl(meta().traffic_rules, k);
-/** 网卡计量规则写在费用页签「本周期已用」下面一行：「按网卡流量：入站和出站取较大值」（名字同供应商对话框，来自 /meta） */
+/** 网卡计量规则（费用页签「本周期已用」旁的 (i)、额度悬停）：「按网卡流量：下行、上行取较大值」（名字同供应商对话框，来自 /meta） */
 export const trafficRulePlain = (k: string) => `按网卡流量：${trafficRuleLabel(k)}`;
 /** 流量重置方式：自然月 / 账单日 / 滚动 30 天 */
 export const trafficResetLabel = (k: string) => lbl(meta().traffic_resets, k);
@@ -73,12 +73,19 @@ export function monthFlow(m: MachineView) {
 export const trafficTotal = (m: MachineView) => monthFlow(m).total;
 /** 日期写成「10-22」：服务端给日期（YYYY-MM-DD）或时刻，时刻取组织时区的那一天 */
 export const mmdd = (s: string) => (/^\d{4}-\d{2}-\d{2}$/.test(s) ? s : new Intl.DateTimeFormat('sv-SE', { timeZone: meta().org_timezone }).format(new Date(s))).slice(5);
+/** 「X 起」的写法（数据不完整时标出从哪天起才有）：一般只写日期「10-09」；正好落在周期 / 月的起点那天（没传 start 时按每月 1 号）时，
+ *  差几个小时才是缺的那部分，写到时刻「10-01 14:00」，不然读成「整月都有」。from 只有日期没有时刻时照写日期 */
+export function fromLabel(from: string, start?: string | null): string {
+  const d = mmdd(from);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(from) || !(start ? mmdd(start) === d : d.endsWith('-01'))) return d;
+  return `${d} ${new Intl.DateTimeFormat('sv-SE', { timeZone: meta().org_timezone, hour: '2-digit', minute: '2-digit' }).format(new Date(from))}`;
+}
 /** 本月流量的悬停说明（卡片底行、表格、流量页签）：口径，数据不完整时再加全句（数字后面只留灰字「10-22 起」） */
 export function monthFlowTip(m: MachineView) {
   const f = monthFlow(m);
   return [
     f.kind === 'nic' ? '网卡流量（供应商计费口径）：下行 = 本机收，上行 = 本机发' : m.host_machine ? '网卡与宿主机共用，这里是经它的业务流量（下载 / 上传）' : '业务流量（用户视角）：经入口的下载 / 上传',
-    f.from && `${mmdd(f.from)} 起才有这台机器的流量数据，之前的用量不在内；供应商控制台按自开通累计，数会更大`,
+    f.from && `${fromLabel(f.from)} 起才有这台机器的流量数据，之前的用量不在内；供应商控制台按自开通累计，数会更大`,
   ].filter(Boolean).join('\n');
 }
 
@@ -110,13 +117,15 @@ export const statusRank = (m: MachineView) => STATUS_RANK[statusOf(m)] ?? 8;
 /** 流量额度按供应商的十进制 GB（1 GB = 10⁹ 字节） */
 const GB = 1e9;
 /** 流量额度：上限（GB，服务端算好的 quota.limit_gb，0 = 不限）与本周期已用（服务端按网卡 / 业务流量、流量周期算，见 MachineView.quota）。
- *  shared：同机 IP 节点自己没设上限——额度与宿主机共用（宿主机的网卡含它的流量），不是「不限」。source 见 limit_source */
+ *  shared：同机 IP 节点自己没设上限——额度与宿主机共用（宿主机的网卡含它的流量），不是「不限」；unset：没设套餐、订阅里也没写上限，同样不是「不限」。source 见 limit_source */
 export function quota(m: MachineView) {
   // 旧接口（模拟数据）没有 limit_gb 时退回订阅 / 套餐的
   const limit = m.quota.limit_gb !== undefined ? m.quota.limit_gb ?? 0 : m.subscription?.traffic_gb ?? m.plan?.traffic_gb ?? 0;
   const { used, period_start: start, period_end: end, counted_from: from, rule, base } = m.quota;
   const shared = m.quota.limit_source ? m.quota.limit_source === 'host' : !!m.host_machine && !(limit > 0);
-  return { limit, used, start, end, from, base, rolling: m.quota.mode === 'rolling30', rule, pct: limit > 0 ? (used / (limit * GB)) * 100 : null, rem: limit > 0 ? Math.max(0, limit * GB - used) : null, shared, unlimited: !(limit > 0) && !shared, source: m.quota.limit_source };
+  // 没设套餐、订阅里也没写流量上限：没设置 ≠ 不限（套餐里写了不限、或订阅里单独写了 0 才是不限）
+  const unset = !(limit > 0) && !shared && m.quota.limit_source === 'none' && !m.plan && !isOverridden(m.subscription, 'traffic_gb');
+  return { limit, used, start, end, from, base, rolling: m.quota.mode === 'rolling30', rule, pct: limit > 0 ? (used / (limit * GB)) * 100 : null, rem: limit > 0 ? Math.max(0, limit * GB - used) : null, shared, unset, unlimited: !(limit > 0) && !shared && !unset, source: m.quota.limit_source };
 }
 /** 额度格里已用的叫法：滚动 30 天的是「近 30 天已用」 */
 export const quotaUsedLabel = (q: ReturnType<typeof quota>) => (q.rolling ? '近 30 天已用' : '本周期已用');
@@ -130,21 +139,21 @@ export function quotaCycleText(m: MachineView) {
   const q = quota(m);
   if (q.rolling) return '滚动 30 天（跟随供应商）';
   const from = isOverridden(m.subscription, 'traffic_reset_day') ? '单独设置' : m.sub_template ? `${inheritSource(m, 'traffic_reset_day')}：${trafficResetText(m.sub_template.traffic_reset)}` : '';
-  return `每月 ${m.subscription?.traffic_reset_day ?? Number(q.start.slice(8))} 号重置${from && `（${from}）`} · ${mmdd(q.start)} → ${mmdd(q.end!)}`;
+  return `每月 ${m.subscription?.traffic_reset_day ?? Number(q.start.slice(8))} 号重置${from && `（${from}）`} · ${mmdd(q.start)} 起，${mmdd(q.end!)} 重置`;
 }
 /** 已用的补充说明（各一句）：含接入前读数、数据不完整（之前的用量不在内） */
 export function quotaNotes(m: MachineView) {
   const q = quota(m);
   return [
     q.base != null && `含接入前 ${F.str(quotaGb(q.base))}（供应商面板读数，${mmdd(q.end!)} 起不再使用）`,
-    q.from && `${mmdd(q.from)} 起才有数据，之前的用量不在内，实际剩余可能更少`,
+    q.from && `${fromLabel(q.from, q.start)} 起才有数据，之前的用量不在内，实际剩余可能更少`,
   ].filter((x): x is string => !!x);
 }
 /** 额度格右侧「已用 / 上限」的悬停：周期起止 · 计量规则（含按哪块网卡），再接补充说明 */
 export function quotaTip(m: MachineView) {
   const q = quota(m);
   return [
-    `${q.rolling ? `近 30 天（${mmdd(q.start)} 起）` : `${mmdd(q.start)} → ${mmdd(q.end!)}（每月 ${m.subscription?.traffic_reset_day ?? Number(q.start.slice(8))} 号重置）`} · ${quotaRuleText(m)}`,
+    `${q.rolling ? `近 30 天（${mmdd(q.start)} 起）` : `${mmdd(q.start)} 起，${mmdd(q.end!)} 重置（每月 ${m.subscription?.traffic_reset_day ?? Number(q.start.slice(8))} 号）`} · ${quotaRuleText(m)}`,
     ...quotaNotes(m),
   ].join('\n');
 }
@@ -204,7 +213,8 @@ export function inheritText(m: MachineView, k: SubField, due?: string) {
 /** 额度用量的写法同供应商面板：十进制 GB，不换算成 TB（901.6 GB）。业务流量等其它字节数仍用 F.bytes */
 export const quotaGb = (bytes: number): F.Fmt => {
   const x = Math.max(0, bytes) / GB;
-  return { v: (x < 10 ? x.toFixed(2) : x.toFixed(1)).replace(/\.?0+$/, ''), u: 'GB' };
+  // 100 GB 以上取整（卡片、表格、费用页签同一个函数；不会再出现一处「1426 GB」另一处「1040.2 GB」）
+  return { v: x >= 100 ? String(Math.round(x)) : (x < 10 ? x.toFixed(2) : x.toFixed(1)).replace(/\.0+$|(\.\d)0$/, '$1'), u: 'GB' };
 };
 /** 额度上限（GB 数）：0 / 空 = 不限 */
 export const limitGb = (gb: number | null | undefined): F.Fmt => (gb && gb > 0 ? { v: String(gb), u: 'GB' } : { v: '不限', u: '' });
@@ -230,6 +240,16 @@ export function quotaTight(list: MachineView[]) {
 }
 /** 集群状态在线率格条的悬停：离线（agent 不再上报）的机器名，同 overview.offline 的口径（同机 IP 节点借宿主机的 agent，不计） */
 export const offlineNames = (list: MachineView[]) => list.filter((m) => m.agent && !m.agent.online && !m.host_machine).map((m) => m.name);
+/** 即将到期（due_state = soon）里最近的一台（首页 KPI「即将到期」的说明行）；没有为 null */
+export function nextDue(list: MachineView[]) {
+  let top: { id: string; name: string; days: number } | null = null;
+  for (const m of list) {
+    const s = m.subscription;
+    if (m.lifecycle !== 'active' || s?.due_state !== 'soon') continue;
+    if (!top || s.due_days < top.days) top = { id: m.id, name: m.name, days: s.due_days };
+  }
+  return top;
+}
 /** 资源占用的告警色（CPU / 内存 / 磁盘 / 负载的格条、圆环、迷你条共用）：阈值按指标取 meta.thresholds.usage（bad 红、warn 黄） */
 export const usageTone = (pct: number | null | undefined, metric: UsageMetric) => {
   if (pct == null) return undefined;
@@ -324,7 +344,7 @@ export function probeSummary(m: MachineView) {
     total: viaNode.length, tcpOk, tcp: lat.length ? Math.round(Math.min(...lat.map((x) => x.ms))) : null,
     tcpTip: `线路机 → 节点 TCP 握手，近 1 小时中位数${lat.length > 1 ? '，取最小的一条' : ''}；连接质量页签的曲线是每分钟平均${each}`,
     tcpFail: allFailed(viaNode.map((e) => e.tcp)), egressFail: allFailed(es.map((e) => e.egress)), egressOk: egOk > 0,
-    all: es.length, usable: es.filter((e) => (e.direct || e.tcp?.ok) && e.egress?.ok).length, tcpBad: viaNode.length - tcpOk, egressBad: es.length - egOk,
+    off: m.entries.filter((e) => e.lifecycle === 'disabled').length, all: es.length, usable: es.filter((e) => (e.direct || e.tcp?.ok) && e.egress?.ok).length, tcpBad: viaNode.length - tcpOk, egressBad: es.length - egOk,
   };
 }
 /** 备用团队里在用、有订阅的机器：从哪天起自动回收（MM-DD，到期旁标出来）；不在备用里、没有订阅为 null */

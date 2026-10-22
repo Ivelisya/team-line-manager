@@ -22,6 +22,7 @@ import { HomeSection, OverviewSection } from '@/features/HomeOverview';
 import { MachineTable, sortTable } from '@/features/MachineTable';
 import { usePage } from '@/lib/usePage';
 import { useStableOrder } from '@/lib/sort';
+import { watchSize } from '@/lib/sharedObserver';
 
 /** 排序写成「列 id」，降序前面加「-」（同机器页的 ?sort=）；下拉里的几种常用排序。default = 默认顺序 */
 const SORTS = [
@@ -51,6 +52,33 @@ const P_LAYOUT = 'fleet:layout'; const P_VIEW = 'fleet:view'; const P_SORT = 'fl
 
 /** 异常：故障、上架失败（上架失败的健康是 inactive，单看健康会漏掉）。降级照常服务、只是有提醒，算正常（同总览的「正常」） */
 const isIssue = (m: MachineView) => m.lifecycle === 'failed' || m.health.status === 'down';
+
+/** 吸顶条是否正吸在顶栏下面：哨兵放在条的原位（高 0），滚到顶栏线以上就是吸住了（吸住后才铺毛玻璃和底线）。
+ *  按滚动事件（每帧一次）量哨兵的位置，不用 IntersectionObserver：一下子滚过很远（锚点、刷新后恢复滚动位置）时哨兵从视口下方直接跳到上方，观察器不会触发。
+ *  同时把吸顶部分的高度写成 --hbar-h，表格视图的吸顶表头据此排在它下面（宽屏吸整条；窄屏 .hbar 是 display: contents，只吸团队页签那一行） */
+function useStuckBar() {
+  const sentinel = React.useRef<HTMLDivElement>(null);
+  const bar = React.useRef<HTMLDivElement>(null);
+  const [stuck, setStuck] = React.useState(false);
+  React.useEffect(() => {
+    const top = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--topbar-h')) || 56;
+    // 条的原位比哨兵低 8px（条上下各伸出 8px 内边距，见 home.css），条的上沿碰到顶栏下沿时才算吸住
+    let raf = 0;
+    const check = () => { raf = 0; setStuck(sentinel.current!.getBoundingClientRect().top < top - 8); };
+    const onScroll = () => { raf ||= requestAnimationFrame(check); };
+    check();
+    addEventListener('scroll', onScroll, { passive: true });
+    const b = bar.current!;
+    const measure = () => {
+      const el = getComputedStyle(b).display === 'contents' ? b.firstElementChild as HTMLElement : b;
+      b.parentElement!.style.setProperty('--hbar-h', `${el.offsetHeight}px`);
+    };
+    measure();
+    const off = [watchSize(b, measure), watchSize(b.firstElementChild!, measure)];
+    return () => { removeEventListener('scroll', onScroll); cancelAnimationFrame(raf); off.forEach((f) => f()); };
+  }, []);
+  return { sentinel, bar, stuck };
+}
 
 export function HomePage() {
   const machines = useMachines();
@@ -130,6 +158,7 @@ export function HomePage() {
     ...(teams.data ?? []).filter((t) => (counts.byTeam.get(t.id) ?? 0) > 0 || t.id === team).map((t) => ({ value: t.id, label: t.name, count: counts.byTeam.get(t.id) ?? 0 })),
   ], [countSig, teams.data]); // eslint-disable-line react-hooks/exhaustive-deps
   const sortValue = SORTS.some((x) => x.value === rawSort) ? rawSort : 'custom';
+  const sb = useStuckBar();
 
   return (
     <div className="stack home">
@@ -138,15 +167,19 @@ export function HomePage() {
 
       <HomeSection icon={<Server />} label="服务器集群" headRef={pg.anchor}
         title={<h2 className="hsec-title">机器矩阵与实时监控</h2>}
-        actions={<>
-          {/* 视图切换固定在最右；密度只对卡片视图有用，其它视图下置灰、仍占位，工具栏不跳 */}
-          <Select sm value={sortValue} onChange={pickSort} options={sortValue === 'custom' ? SORTS_CUSTOM : SORTS} className="w-[150px]" aria-label="排序" />
-          <Segmented sm label="卡片密度" value={view} onChange={setV} items={DENSITY_ITEMS} disabled={layout !== 'cards'} />
-          <Segmented sm label="视图" value={layout} onChange={setL} items={LAYOUT_ITEMS} />
-        </>}>
-        <div className="hgroups" role="group" aria-label="筛选">
-          <Segmented label="分组" value={team} onChange={pickTeam} items={groups} className="seg-fill" />
-          <FilterChip pressed={onlyIssues} onClick={toggleIssues} count={issueCount}><AlertTriangle size={13} />仅看异常</FilterChip>
+        >
+        {/* 吸顶条：团队页签 + 仅看异常 | 排序、密度、视图。滚过去后吸在顶栏下面（毛玻璃 + 底线）；窄屏只吸团队页签那一行。视图切换固定在最右；密度只对卡片视图有意义，其它视图下不显示 */}
+        <div className="hbar-sentinel" ref={sb.sentinel} aria-hidden />
+        <div className="hbar" ref={sb.bar} data-stuck={sb.stuck ? '' : undefined}>
+          <div className="hgroups" role="group" aria-label="筛选">
+            <Segmented label="分组" value={team} onChange={pickTeam} items={groups} className="seg-fill" />
+            <FilterChip pressed={onlyIssues} onClick={toggleIssues} count={issueCount}><AlertTriangle size={13} />仅看异常</FilterChip>
+          </div>
+          <div className="hctrls">
+            <Select sm value={sortValue} onChange={pickSort} options={sortValue === 'custom' ? SORTS_CUSTOM : SORTS} className="w-[150px]" aria-label="排序" />
+            {layout === 'cards' && <Segmented sm label="卡片密度" value={view} onChange={setV} items={DENSITY_ITEMS} />}
+            <Segmented sm label="视图" value={layout} onChange={setL} items={LAYOUT_ITEMS} />
+          </div>
         </div>
 
         {machines.isError && <ErrorNote error={machines.error} onRetry={() => void machines.refetch()} />}

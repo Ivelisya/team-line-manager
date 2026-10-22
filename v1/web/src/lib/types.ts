@@ -105,7 +105,7 @@ export interface MachineView {
 
 /** spare：唯一的备用团队（系统管理，不能删、不能取消；里面在用的机器订阅过期满 1 天后自动回收） */
 export interface Team { id: string; name: string; sort_order: number; spare: boolean; node_count: number }
-/** 供应商怎么计量流量额度：网卡本周期入、出总量取小 / 取大 / 相加 / 只算出站 */
+/** 供应商怎么计量流量额度：网卡本周期下行、上行总量取小 / 取大 / 相加 / 只算上行 */
 export type TrafficRule = 'min' | 'max' | 'sum' | 'out';
 /** 供应商也是名下机器订阅的模板：账单时区（null = 跟随组织时区）、流量重置（自然月 / 账单日）、提前提醒天数 */
 export interface Provider { id: string; name: string; code: string; panel_url: string | null; timezone: string | null; traffic_rule: TrafficRule; traffic_reset?: TrafficReset; remind_days?: number }
@@ -245,6 +245,8 @@ export interface RetirePreview {
   routers: { id: string; name: string; exits: { exit: string; node: string }[] }[];
   renames: { machine_id: string; old_name: string; new_name: string }[];
   ip_nodes: { id: string; name: string }[];
+  /** 现在做不了的原因（如线路机还挂着节点入口，要先搬空）；没有或为空 = 可以退役 */
+  blockers?: string[];
 }
 /** 退役：mode=spare 已移入备用（name 是新名、from 原名、recycle_on 起自动回收）；mode=now 提交了清理作业（宿主机的同机 IP 节点各一个，没有为 []） */
 export type RetireResult =

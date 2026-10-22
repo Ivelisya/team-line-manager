@@ -6,7 +6,7 @@ import type { MachineView } from '@/lib/types';
 import type { DrawerTab } from '@/lib/drawer';
 import type { CardShow } from './NodeCard';
 import * as F from '@/lib/format';
-import { isQuiet, liveRate, monthTraffic, probeSummary, resourceMeters, trafficTotal } from '@/lib/derive';
+import { isQuiet, liveRate, monthFlowTip, monthTraffic, probeSummary, resourceMeters, trafficTotal } from '@/lib/derive';
 import { cn } from '@/lib/utils';
 import { Due, Flag, HealthPill, HostTag, Num } from './primitives';
 import { Ring } from './viz';
@@ -27,13 +27,13 @@ function RingCardImpl({ m, current, onOpen, show }: { m: MachineView; current?: 
     </div>
   );
   const rate = (dir: 'up' | 'down', bps: number | null | undefined) => (
-    <span className="rc-rate" data-speed={lr ? F.speedOf(bps) : undefined}>{dir === 'up' ? <><ArrowUp /><span className="sr-only">上行</span></> : <><ArrowDown /><span className="sr-only">下行</span></>}<Num f={F.rate(bps)} /></span>
+    <span className="rc-rate" data-speed={lr && bps != null ? F.speedOf(bps, m.plan?.bandwidth_mbps) : undefined}>{dir === 'up' ? <><ArrowUp /><span className="sr-only">上行</span></> : <><ArrowDown /><span className="sr-only">下行</span></>}<Num f={F.rate(bps)} /></span>
   );
   const t = proxy ? monthTraffic(m) : null; const ps = proxy ? probeSummary(m) : null;
   const ms = (v: number | null, fail: boolean) => (fail ? <span style={{ color: 'var(--bad-text)' }}>失败</span> : <Num f={F.ms(v)} />);
   // 按到期、本月流量排序时：排序依据接在名称这一行最右（环形卡上没有这两个字段）
   const extra = show === 'due' ? (m.subscription ? <Due days={m.subscription.due_days} state={m.subscription.due_state} tail /> : <span className="t-muted">没有到期日</span>)
-    : show === 'traffic' && !proxy ? <span className="rc-show">本月 <Num f={F.bytes(trafficTotal(m))} /></span> : null;
+    : show === 'traffic' ? <span className="rc-show" data-tip={monthFlowTip(m)}>{proxy ? '本月业务' : '本月'} <Num f={F.bytes(trafficTotal(m))} /></span> : null;
   // 右键菜单由外面的 NodeMenus 整个网格共用一份（按 data-id 找到这张卡）
   return (
     <article className={cn('rcard', current && 'is-current', quiet && 'is-quiet')} data-health={m.health.status} data-id={m.id}>
@@ -45,7 +45,7 @@ function RingCardImpl({ m, current, onOpen, show }: { m: MachineView; current?: 
       </header>
       {proxy ? (
         <button type="button" className="rc-rings rc-pair" onClick={() => onOpen(m.id, 'traffic')}>
-          <span><Globe />本月业务<b>↓ <Num f={F.bytes(t!.down)} /> · ↑ <Num f={F.bytes(t!.up)} /></b></span>
+          <span data-tip={monthFlowTip(m)}><Globe />本月业务<b>下载 <Num f={F.bytes(t!.down)} /> · 上传 <Num f={F.bytes(t!.up)} /></b></span>
           <span><Radar />TCP · 出口<b>{ms(ps!.tcp, ps!.tcpFail)} · {ps!.egressFail ? <span style={{ color: 'var(--bad-text)' }}>失败</span> : ps!.egressOk ? '正常' : '—'}</b></span>
           <span className="sr-only">（查看流量页签）</span>
         </button>

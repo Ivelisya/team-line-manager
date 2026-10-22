@@ -97,6 +97,9 @@
     linear-gradient(180deg, color-mix(in srgb, var(--cc) 5%, var(--surface)), var(--surface) 72%);
   box-shadow: var(--shadow-card);
 }
+/* 缩成一行的图卡（没有曲线可画：容器里拿不到负载）：当前值与说明并排 */
+.chart-card.is-slim { padding-block: var(--sp-8); }
+.chart-card.is-slim .chart-card-val { display: flex; align-items: baseline; gap: var(--sp-6); }
 /* 卡头按基线对齐：标题、当前值第一行、时间范围的文字落在同一条线上 */
 .chart-card-head { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: var(--sp-4) var(--sp-8); min-width: 0; }
 .chart-card-title { display: flex; align-items: baseline; gap: var(--sp-6); min-width: 0; font: var(--fw-semibold) var(--fs-body) / var(--lh-body) var(--font-sans); color: var(--fg); }
@@ -112,12 +115,18 @@
 .chart-tip-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-12); }
 .chart-tip-row i { display: inline-block; width: 8px; height: 8px; margin-right: var(--sp-6); border-radius: 2px; }
 .chart-tip-row b { font-weight: var(--fw-semibold); }
-.danger-zone { border: 1px solid color-mix(in srgb, var(--bad) 30%, var(--line)); border-radius: var(--r-float); padding: var(--sp-12) var(--sp-16); display: grid; gap: var(--sp-12); }
+/* 苹果设置页式的分组列表：一组一个圆角容器，行之间细线分隔，行（.manage-row）自带内边距；危险操作（退役）的容器描淡红边 */
+.mgroup { display: grid; min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: var(--r-float); background: color-mix(in srgb, var(--section) 40%, var(--surface)); }
+.mgroup > * { min-width: 0; padding: var(--sp-10) var(--sp-14); }
+.mgroup > * + * { border-top: 1px solid var(--line); }
+.mgroup > .note { border: 0; border-radius: 0; }
+.mgroup.is-danger { border-color: color-mix(in srgb, var(--bad) 30%, var(--line)); }
+.sec > * + .mgroup { margin-top: var(--sp-8); }
+/* 费用页签：标签与右边的「跟随 / 单独」切换一行（切换比标签高，行高固定免得有无切换的项高低不一） */
+.ov-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); min-height: 26px; min-width: 0; }
 .manage-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-12); flex-wrap: wrap; }
 .manage-row > div:first-child { min-width: 0; flex: 1 1 220px; }
 .manage-row .t { font-weight: var(--fw-medium); }
-/* 管理页「入口」段里列表下面的操作（换线路机 / 搬空 / 直出入口 / 加入口）：与列表隔一道线，间距同段与段之间；组内行距同退役区 */
-.manage-group { display: grid; gap: var(--sp-12); margin-top: var(--card-seg); padding-top: var(--card-seg); border-top: 1px solid var(--line); }
 .preview-name { display: inline-flex; align-items: center; gap: var(--sp-8); padding: var(--sp-6) var(--sp-12); border-radius: var(--r-control); background: var(--sunken); font-weight: var(--fw-semibold); font-size: var(--fs-emph); }
 
 /* 线路机卡 */
