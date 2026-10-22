@@ -189,15 +189,21 @@ export const Panel = React.forwardRef<HTMLElement, { title?: React.ReactNode; co
  *  抽屉、对话框里的表不用它：那里的滚动容器不是页面，吸顶的位置不对 */
 export function TableWrap({ className, children, ...p }: React.HTMLAttributes<HTMLDivElement> & { 'data-stale'?: boolean }) {
   const ref = React.useRef<HTMLDivElement>(null);
+  const bound = React.useRef<{ t: HTMLTableElement; off: () => void } | null>(null);
+  // 每次渲染后看里面的表换没换（空状态 ↔ 表格、加载完才出表、换了一张），换了就重新绑定尺寸监听
   React.useLayoutEffect(() => {
     const el = ref.current!;
     const t = el.querySelector('table');
-    if (!t) return;
+    if (t === (bound.current?.t ?? null)) return;
+    bound.current?.off();
+    bound.current = null;
+    if (!t) { el.removeAttribute('data-fit'); return; }
     const apply = () => el.toggleAttribute('data-fit', t.offsetWidth <= el.clientWidth + 1);
     apply();
     const a = watchSize(el, apply); const b = watchSize(t, apply);
-    return () => { a(); b(); };
-  }, []);
+    bound.current = { t, off: () => { a(); b(); } };
+  });
+  React.useLayoutEffect(() => () => { bound.current?.off(); bound.current = null; }, []);
   return <div ref={ref} className={cn('table-wrap', className)} {...p}>{children}</div>;
 }
 
