@@ -133,11 +133,11 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 
 ### 恢复已退役的机器
 1. `fleetctl restore 团队1-06 --relay 线路机3 --reason 客户续约`：先做预检——IP 有没有被别的在用机器占用（占用则不能恢复）、恢复后的名字（旧名 → 新名，编号接在团队末尾，`--number` 可指定空号）、中控密钥还能不能登录机器。
-2. 预检说中控密钥被拒时必须给 root 密码：`ROOT_PW=… fleetctl restore … --password-env ROOT_PW`。家宽代理退役时出站参数已清掉，要重新给 `--upstream socks5://用户:密码@主机:端口`。线路机原名被占用用 `--label` 改名；换团队用 `--team`。
+2. 预检说中控密钥被拒时必须给 root 密码：`ROOT_PW=… fleetctl restore … --password-env ROOT_PW`。退役只清出站秘密：VPS 节点的 SS 端口（NAT 映射的公网端口）、家宽代理的上游地址端口用户名都留着，恢复时默认沿用（预检里「出站（沿用）」一行；`--ss-port`、`--upstream` 照旧可改）。上游有用户名时密码要重新给 `--upstream socks5://用户:密码@主机:端口`；迁移 0029 之前退役的家宽代理没留下上游，同样要给全。线路机原名被占用用 `--label` 改名；换团队用 `--team`。
 3. 机器保持原 id，重新走上架的收敛步骤（proxy 只有建入口、等应用、验收、上线）；旧入口不复活，建新入口，**分享链接是新的**。订阅、历史、审计保留。成功后 `retired_at` 清空，原因记「已恢复：…」。
 4. 取消或失败后取消：机器回到已退役，IP 与编号释放，团队编号压缩。
 5. 主机指纹：退役（和上架/恢复取消）时这台机器从中控 known_hosts 删掉，但公钥存在机器行上（`retired_host_keys`，迁移 0023）。恢复作业的预检先把它放回 known_hosts 再核对，不会对这个 IP 上现在的主机重新首次信任——服务商把 IP 给了别人时预检报「主机指纹变化」失败，root 密码和中控密钥都不会交出去。预检（网页对话框 / `fleetctl restore`）探测到的公钥和存的不同会列为阻断「主机指纹与退役时不同…」：**先确认是同一台机器重装过**（服务商控制台、重装记录），再勾「重置主机指纹」/ 加 `--reset-host-key`，按现在的公钥重新记录；拿不准就别恢复，换新机器上架。作业跑到预检才发现不符时，同样确认后 `fleetctl retry <作业> --reset-host-key`。恢复成功后存的公钥清空。迁移 0023 之前退役的机器没存过，恢复时照旧按现在的公钥重新记录（首次信任），恢复这类机器前自己核对一下预检显示的指纹。
-6. 同机 IP 节点要等宿主机在用才能恢复（先恢复宿主机）；不试登录、不要密码，SS 端口重新分配。
+6. 同机 IP 节点要等宿主机在用才能恢复（先恢复宿主机）；不试登录、不要密码，SS 端口沿用原来的（被宿主机上别的同机节点占了才重新分配）。
 
 ### 同机 IP 节点（一台落地机上的多个 IP）
 供应商给一台落地机加了 IP 时，每个附加 IP 上架成一台独立的节点（自己的团队编号、入口、出口 IP），按 IP 计节点：
@@ -190,6 +190,7 @@ WAL 三项由 `deploy/central/install.sh` 写进 `/etc/postgresql/<版本>/main/
 - xray、ssserver、geoip.dat 先和中控 `/opt/fleet/dist` 比 sha256，相同的不上传，中控上的保持原样。
 - 编译失败、或 install.sh 重启后等 60 秒未登录访问 `/api/v1/auth/me` 仍不是 401，部署以非 0 退出，后者会打出 fleet-server 最近 60 行日志。中控上的安装包无论成败都删掉。
 - 换下来的旧 fleet-server 留在中控 `/opt/fleet/fleet-server.prev`（同一个二进制重复部署时不覆盖它）。
+- 迁移 0029 先把币种去空白转大写，再给套餐 / 订阅 / 续费记录的币种（3 个大写字母）和通知渠道种类（telegram / wecom / webhook）加约束；存量里还有不合规的不让迁移失败，日志里有「0029：… 暂不验证」的警告。看到时查出那几行（如 `select id, currency from plan where currency !~ '^[A-Z]{3}$'`）改成正确的币种，再 `alter table plan validate constraint plan_currency_iso`（订阅 / 续费记录 / 渠道同理：`subscription_currency_iso`、`renewal_currency_iso`、`notify_channel_kind_check`）。
 
 回滚（新版起不来，或上线后有严重问题）：
 

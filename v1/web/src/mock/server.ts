@@ -514,7 +514,7 @@ R('GET', '/machines/([^/]+)/renewals', ({ params }) => clone(db.renewals[params[
 R('POST', '/machines/([^/]+)/renewals', ({ params, body }) => {
   const m = machine(params[0]); if (!m.subscription) throw bad('这台机器还没有订阅信息，请先保存订阅');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(body.new_due ?? '')) throw bad('新到期日格式应为 YYYY-MM-DD');
-  const r = { id: `rn${db.seq++}`, old_due: m.subscription.due_date, new_due: body.new_due, amount_cents: body.amount_cents ?? m.subscription.price_cents, note: body.note ?? null, actor: db.user, created_at: iso() };
+  const r = { id: `rn${db.seq++}`, old_due: m.subscription.due_date, new_due: body.new_due, amount_cents: body.amount_cents ?? m.subscription.price_cents, currency: m.subscription.currency, note: body.note ?? null, actor: db.user, created_at: iso() };
   (db.renewals[m.id] ??= []).unshift(r); m.subscription.due_date = body.new_due; recomputeDue(m);
   emit({ type: 'machine', id: m.id }); emit({ type: 'machines' }); return r;
 });
@@ -822,8 +822,11 @@ R('GET', '/machines/([^/]+)/restore', ({ params, query }) => {
     id: m.id, kind: m.kind, lifecycle: m.lifecycle, ip: m.ip, old_name: m.name, name: p.name, team: p.team, number: p.num, label: p.label,
     restorable: p.blockers.length === 0, blockers: p.blockers, warnings: [], ip_conflict: p.ip_conflict, retired_reason: m.lifecycle_reason,
     last_relay: last ? { id: last.id, name: last.name } : null,
+    // 退役时留下的出站参数：家宽代理的上游（假定有用户名，密码要重新填）、VPS 节点的 SS 端口
+    outbound: m.kind === 'relay' ? null : m.kind === 'proxy' ? { protocol: 'socks5', host: `up-${m.ip.replace(/\./g, '-')}.example.net`, port: 1080, username: 'fleet' }
+      : { protocol: 'shadowsocks', host: m.ip, port: db.ssPorts[m.id] ?? 8388, username: null },
     ssh: probe ? { reachable: true, key_login: keyLogin, host_key: 'SHA256:q3Zp1vJm0cJ2oWfX8sB9tqk1eYb7rUo5nHj2LdPaVx4' } : null,
-    needs: { relay: m.kind !== 'relay', upstream: m.kind === 'proxy', password: m.kind === 'proxy' || m.host_machine ? 'no' : keyLogin === 'denied' ? 'required' : 'no' },
+    needs: { relay: m.kind !== 'relay', upstream: false, upstream_password: m.kind === 'proxy', password: m.kind === 'proxy' || m.host_machine ? 'no' : keyLogin === 'denied' ? 'required' : 'no' },
   };
 });
 R('POST', '/machines/([^/]+)/restore', ({ params, body }) => {
@@ -832,7 +835,7 @@ R('POST', '/machines/([^/]+)/restore', ({ params, body }) => {
   if (p.blockers.length) throw bad(p.blockers.join('；'), 409, 'conflict');
   const relay = m.kind === 'relay' ? null : db.machines.find((x) => x.id === body.relay_id && x.kind === 'relay' && x.lifecycle === 'active');
   if (m.kind !== 'relay' && !relay) throw bad('要选一台在用的线路机');
-  if (m.kind === 'proxy' && !body.upstream?.host) throw bad('上游代理要重新填协议、地址和端口');
+  if (m.kind === 'proxy' && !body.upstream?.password) throw bad('上游有用户名：密码在退役时已清掉，要在 upstream.password 里重新填');
   const old = m.name;
   m.lifecycle = 'provisioning'; m.lifecycle_reason = '恢复中'; if (p.team) m.team = p.team; m.number = p.num; if (m.kind === 'relay') m.label = p.label; m.name = p.name; m.revision++;
   m.health = { status: 'unknown', reasons: [{ key: 'provisioning', severity: 'info', text: '恢复作业进行中' }] };

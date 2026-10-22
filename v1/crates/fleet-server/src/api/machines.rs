@@ -710,6 +710,8 @@ pub struct Renewal {
     old_due: Date,
     new_due: Date,
     amount_cents: Option<i32>,
+    /// 登记时订阅的币种（之后改订阅币种，这条的金额不跟着变）
+    currency: String,
     note: String,
     actor: String,
     #[serde(with = "time::serde::rfc3339")]
@@ -718,7 +720,7 @@ pub struct Renewal {
 
 pub async fn list_renewals(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     let v: Vec<Renewal> = sqlx::query_as(
-        "select id, old_due, new_due, amount_cents, note, actor, created_at from renewal where machine_id = $1 order by created_at desc",
+        "select id, old_due, new_due, amount_cents, currency, note, actor, created_at from renewal where machine_id = $1 order by created_at desc",
     )
     .bind(id)
     .fetch_all(&st.db)
@@ -735,21 +737,26 @@ pub struct RenewIn {
 
 pub async fn add_renewal(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<RenewIn>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
-    let (old,): (Date,) = sqlx::query_as("select due_date from subscription where machine_id = $1 for update")
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(|| ApiError::conflict("这台机器还没有账单信息，先填写费用"))?;
+    // 币种记登记时生效的（订阅没写的跟随套餐）
+    let (old, currency): (Date, String) = sqlx::query_as(
+        "select s.due_date, coalesce(s.currency, p.currency, 'USD') from subscription s join machine m on m.id = s.machine_id left join plan p on p.id = m.plan_id
+         where s.machine_id = $1 for update of s",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| ApiError::conflict("这台机器还没有账单信息，先填写费用"))?;
     if b.new_due <= old {
         return Err(ApiError::bad_request("新到期日必须晚于当前到期日"));
     }
     let rid = new_id();
-    sqlx::query("insert into renewal (id, machine_id, old_due, new_due, amount_cents, note, actor) values ($1,$2,$3,$4,$5,$6,$7)")
+    sqlx::query("insert into renewal (id, machine_id, old_due, new_due, amount_cents, currency, note, actor) values ($1,$2,$3,$4,$5,$6,$7,$8)")
         .bind(rid)
         .bind(id)
         .bind(old)
         .bind(b.new_due)
         .bind(b.amount_cents)
+        .bind(&currency)
         .bind(b.note.as_deref().unwrap_or(""))
         .bind(&a.name)
         .execute(&mut *tx)
@@ -759,7 +766,7 @@ pub async fn add_renewal(a: Actor, State(st): State<AppState>, ApiPath(id): ApiP
         .bind(b.new_due)
         .execute(&mut *tx)
         .await?;
-    audit(&mut tx, &a.name, "renewal", "machine", Some(id), json!({"old_due": old, "new_due": b.new_due, "amount_cents": b.amount_cents})).await?;
+    audit(&mut tx, &a.name, "renewal", "machine", Some(id), json!({"old_due": old, "new_due": b.new_due, "amount_cents": b.amount_cents, "currency": currency})).await?;
     tx.commit().await?;
     st.emit(Event::Machine { id });
     Ok(ok(json!({"id": rid})))

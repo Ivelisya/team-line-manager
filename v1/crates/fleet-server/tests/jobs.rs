@@ -674,7 +674,7 @@ async fn retry_reset_host_key_is_narrow() {
 
     // 同机 IP 节点：登录的是宿主机，不能借它重置宿主机的指纹
     let ipn = seed_vps(&t, team, 3, "198.51.100.10").await;
-    sqlx::query("update machine set host_id = $2, lifecycle = 'failed' where id = $1").bind(ipn).bind(host).execute(&t.st.db).await.unwrap();
+    sqlx::query("update machine set host_id = $2, ssh_port = null, lifecycle = 'failed' where id = $1").bind(ipn).bind(host).execute(&t.st.db).await.unwrap();
     let p = seed_failed_job(&t, "provision_ip", ipn, 0, "host_key").await;
     let (s, v) = retry(p).await;
     assert_eq!(s, StatusCode::CONFLICT, "{v}");

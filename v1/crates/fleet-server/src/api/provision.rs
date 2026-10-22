@@ -78,7 +78,6 @@ struct HostRow {
     kind: String,
     lifecycle: String,
     host_id: Option<Uuid>,
-    ssh_port: i32,
     provider_id: Option<Uuid>,
     name: String,
 }
@@ -88,8 +87,8 @@ struct Checked {
     ip: IpAddr,
     number: Option<i32>,
     name: String,
-    /// 同机 IP 节点：宿主机的 (SSH 端口, 供应商)
-    host: Option<(i32, Option<Uuid>)>,
+    /// 同机 IP 节点：宿主机的供应商
+    host: Option<Option<Uuid>>,
     /// 同机 IP 节点暂定的 SS 端口（作业在宿主机上核对时发现被占用会改）
     ss_port: Option<u16>,
     errors: Vec<String>,
@@ -117,7 +116,7 @@ async fn validate(tx: &mut Tx<'_>, items: &[Item]) -> ApiResult<Vec<Checked>> {
     // 同机 IP 节点的宿主机：在团队之后锁住（和退役宿主机互斥；同一台宿主机上的 SS 端口一个事务一个事务地分）
     let host_ids: Vec<Uuid> = items.iter().filter_map(|i| i.host_id).collect::<HashSet<_>>().into_iter().collect();
     let host_rows: Vec<HostRow> = sqlx::query_as(
-        "select m.id, m.kind::text kind, m.lifecycle::text lifecycle, m.host_id, m.ssh_port, m.provider_id,
+        "select m.id, m.kind::text kind, m.lifecycle::text lifecycle, m.host_id, m.provider_id,
                 display_name(m.kind::text, m.label, t.name, m.number) name
          from machine m left join team t on t.id = m.team_id where m.id = any($1) order by m.id for update of m",
     )
@@ -244,7 +243,7 @@ async fn validate(tx: &mut Tx<'_>, items: &[Item]) -> ApiResult<Vec<Checked>> {
                         }
                         None => errors.push(format!("宿主机「{}」上没有空闲的 SS 端口", h.name)),
                     }
-                    host = Some((h.ssh_port, h.provider_id));
+                    host = Some(h.provider_id);
                 }
             }
         }
@@ -297,10 +296,10 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Ba
         let it = &c.item;
         let id = new_id();
         let kind = it.kind.as_str();
-        // 同机 IP 节点：SSH 端口（只展示）和供应商取宿主机的，不带套餐（费用默认不记，要记到它的「费用」里单独填）
+        // 同机 IP 节点：SSH 端口不存（读时取宿主机的），供应商取宿主机的，不带套餐（费用默认不记，要记到它的「费用」里单独填）
         let (ssh_port, provider, plan) = match c.host {
-            Some((p, pv)) => (p, pv, None),
-            None => (it.ssh_port.unwrap_or(22) as i32, it.provider_id, it.plan_id),
+            Some(pv) => (None, pv, None),
+            None => (Some(it.ssh_port.unwrap_or(22) as i32), it.provider_id, it.plan_id),
         };
         sqlx::query(
             "insert into machine (id, kind, team_id, number, label, primary_ip, ssh_port, provider_id, plan_id, service_ref, note, host_id, lifecycle)

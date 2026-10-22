@@ -660,23 +660,27 @@ async fn restore_retired_proxy_node_appends_number_and_gets_new_entry() {
     assert_eq!(lifecycle_of(&t, n1).await, "retired");
     assert_eq!(name_of(&t, n2).await, "团队1-01");
     let old_entry = entries_of(&t, n1).await[0].2;
+    let ob: (String, i32, Option<String>, bool) = sqlx::query_as("select host, port, username, secret_enc is null from node_outbound where machine_id = $1").bind(n1).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(ob, ("p.example".to_string(), 1080, Some("u".to_string()), true), "退役只清秘密，上游地址端口用户名留着");
 
     // 只有已退役的机器能恢复
     let (s, _) = t.req("POST", &format!("/api/v1/machines/{n2}/restore"), Some(json!({"relay_id": ra})), None).await;
     assert_eq!(s, StatusCode::CONFLICT);
 
-    // 预检：接在团队末尾（团队1-02），上游代理要重新填出站参数，不需要密码
+    // 预检：接在团队末尾（团队1-02），上游沿用退役前的（有用户名：密码要重新给），不需要 root 密码
     let pv = t.get(&format!("/api/v1/machines/{n1}/restore")).await;
     assert_eq!(pv["restorable"], true, "{pv}");
     assert_eq!(pv["name"], "团队1-02");
     assert_eq!(pv["number"], 2);
     assert_eq!(pv["old_name"], "团队1-01");
-    assert_eq!(pv["needs"]["upstream"], true);
+    assert_eq!(pv["needs"]["upstream"], false);
+    assert_eq!(pv["needs"]["upstream_password"], true);
+    assert_eq!(pv["outbound"], json!({"protocol": "socks5", "host": "p.example", "port": 1080, "username": "u"}));
     assert_eq!(pv["needs"]["relay"], true);
     assert_eq!(pv["needs"]["password"], "no");
     assert!(pv["ip_conflict"].is_null());
     assert_eq!(pv["last_relay"]["id"], ra.to_string());
-    // 缺中转线路机 / 缺上游参数 → 400
+    // 缺中转线路机 / 缺上游密码 → 400
     let (s, _) = t.req("POST", &format!("/api/v1/machines/{n1}/restore"), Some(json!({"upstream": upstream("p.example")})), None).await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
     let (s, _) = t.req("POST", &format!("/api/v1/machines/{n1}/restore"), Some(json!({"relay_id": ra})), None).await;
@@ -684,7 +688,10 @@ async fn restore_retired_proxy_node_appends_number_and_gets_new_entry() {
 
     // 退役时存的主机公钥（家宽代理其实没有，这里直接写一份）：恢复成功后清空
     sqlx::query("update machine set retired_host_keys = 'x ssh-ed25519 AAAA' where id = $1").bind(n1).execute(&t.st.db).await.unwrap();
-    let r = t.post(&format!("/api/v1/machines/{n1}/restore"), json!({"relay_id": ra, "upstream": upstream("p2.example"), "reason": "客户续约"})).await;
+    let r = t.post(&format!("/api/v1/machines/{n1}/restore"), json!({"relay_id": ra, "upstream": {"password": "p2"}, "reason": "客户续约"})).await;
+    let (h, port, user, enc): (String, i32, Option<String>, Vec<u8>) =
+        sqlx::query_as("select host, port, username, secret_enc from node_outbound where machine_id = $1").bind(n1).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!((h.as_str(), port, user.as_deref(), t.st.secrets.open_str(&enc).unwrap().as_str()), ("p.example", 1080, Some("u"), "p2"), "沿用上游、用新密码");
     assert_eq!(r["name"], "团队1-02");
     assert_eq!(r["machine_id"], n1.to_string());
     let job = r["job_id"].as_str().unwrap().to_string();
@@ -768,8 +775,8 @@ async fn cancel_restore_returns_machine_to_retired_and_compacts_numbers() {
     assert_eq!(m["name"], "团队1-07", "团队、编号回到恢复之前");
     assert!(!m["retired_at"].is_null());
     assert_eq!(entries_of(&t, old).await[0].1, "removing", "摘掉了作业建的入口");
-    let outbound: i64 = sqlx::query_scalar("select count(*) from node_outbound where machine_id = $1").bind(old).fetch_one(&t.st.db).await.unwrap();
-    assert_eq!(outbound, 0, "出站秘密清掉");
+    let outbound: (String, bool) = sqlx::query_as("select host, secret_enc is null from node_outbound where machine_id = $1").bind(old).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(outbound, ("p".to_string(), true), "出站秘密清掉，其余参数留着");
     // 编号压缩：空档消失
     assert_eq!(name_of(&t, gap).await, "团队1-03");
     let audit = t.get("/api/v1/audit?limit=100").await;
@@ -797,9 +804,16 @@ async fn restore_vps_precheck_and_job_creation() {
     .execute(&t.st.db)
     .await
     .unwrap();
+    // NAT 机：退役时留下的公网 SS 端口（秘密已清掉）
+    sqlx::query("insert into node_outbound (machine_id, protocol, host, port, method) values ($1, 'shadowsocks', '127.0.0.1', 40001, 'aes-256-gcm')")
+        .bind(vps)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
 
     let pv = t.get(&format!("/api/v1/machines/{vps}/restore")).await;
     assert_eq!(pv["kind"], "vps");
+    assert_eq!(pv["outbound"]["port"], 40001, "{pv}");
     assert_eq!(pv["restorable"], true, "{pv}");
     assert_eq!(pv["name"], "团队1-01");
     assert_eq!(pv["needs"]["upstream"], false);
@@ -832,8 +846,8 @@ async fn restore_vps_precheck_and_job_creation() {
     assert_eq!(j0["steps"][0]["key"], "preflight");
     assert_eq!(j0["steps"].as_array().unwrap().len(), 9, "和上架同样的 9 步");
     assert_eq!(lifecycle_of(&t, vps).await, "provisioning");
-    let outbound: i64 = sqlx::query_scalar("select count(*) from node_outbound where machine_id = $1 and protocol = 'shadowsocks'").bind(vps).fetch_one(&t.st.db).await.unwrap();
-    assert_eq!(outbound, 1, "恢复时重新生成 SS 出站参数");
+    let outbound: (i32, bool) = sqlx::query_as("select port, secret_enc is not null from node_outbound where machine_id = $1 and protocol = 'shadowsocks'").bind(vps).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(outbound, (40001, true), "没给 ss_port：沿用 NAT 端口，SS 密码重新生成");
     let enc: bool = sqlx::query_scalar("select (params->'login'->>'password_enc') is not null from job where id = $1::uuid").bind(&job).fetch_one(&t.st.db).await.unwrap();
     assert!(enc, "root 密码加密存在作业参数里");
 
