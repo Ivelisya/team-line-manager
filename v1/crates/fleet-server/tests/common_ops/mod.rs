@@ -48,6 +48,19 @@ impl T {
     pub async fn login(&self, user: &str, pw: &str) -> (StatusCode, Value) {
         self.call("POST", "/api/v1/auth/login", Some(json!({"username": user, "password": pw})), Auth::None).await
     }
+
+    /// 从某个来源 IP 登录（X-Forwarded-For；环境要开 trust_forwarded_for）
+    pub async fn login_from(&self, user: &str, pw: &str, ip: &str) -> (StatusCode, Value) {
+        let req = Request::post("/api/v1/auth/login")
+            .header("content-type", "application/json")
+            .header("x-forwarded-for", ip)
+            .body(Body::from(json!({"username": user, "password": pw}).to_string()))
+            .unwrap();
+        let res = self.app.clone().oneshot(req).await.unwrap();
+        let status = res.status();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
 }
 
 pub async fn setup() -> T { crate::common::boot(false, "").await }

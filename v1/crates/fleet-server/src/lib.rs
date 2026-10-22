@@ -20,6 +20,7 @@ pub mod ssh;
 pub mod state;
 pub mod views;
 
+use axum::extract::State;
 use axum::routing::get;
 use axum::Router;
 use state::AppState;
@@ -39,26 +40,54 @@ pub fn app(st: AppState) -> Router {
         let spa = ServeDir::new(&dir).fallback(ServeFile::new(dir.join("index.html")));
         r = r.nest_service("/assets", ServeDir::new(dir.join("assets"))).fallback_service(spa);
     }
-    r.layer(axum::middleware::from_fn(cache_headers)).layer(CompressionLayer::new()).layer(TraceLayer::new_for_http()).with_state(st)
+    let https = st.cfg.public_url.starts_with("https://");
+    r.layer(axum::middleware::from_fn_with_state(https, response_headers))
+        .layer(CompressionLayer::new())
+        .layer(TraceLayer::new_for_http())
+        .with_state(st)
 }
 
-/// 前端缓存：/assets/ 下的文件名带内容哈希，可以永久缓存；index.html 等其余页面每次都要重新验证，
-/// 否则发布新版后浏览器还拿着旧的入口文件。接口自己管自己的缓存头，这里不碰。
-async fn cache_headers(req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
-    use axum::http::{header::CACHE_CONTROL, HeaderValue};
+/// 前端页面的 CSP：只许本站的脚本、样式、图片（图标是 data: URI）、连接；样式放开 'unsafe-inline' 是给 Radix 的内联 style
+const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; \
+                   object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+
+/// 缓存头与安全头。
+/// 缓存：/assets/ 下的文件名带内容哈希，可以永久缓存；index.html 等其余页面每次都要重新验证，否则发布新版后浏览器还拿着旧的入口文件；
+/// 接口没自己设 Cache-Control 的一律 no-store（数据里有 IP、令牌提示、审计，不留在浏览器和中间缓存里）。
+/// 安全：所有响应带 nosniff、同源才带 Referer、不许被嵌进框架；前端页面（/api、/agent、/echo 以外）再带 CSP；`https`（public_url 是 https）时带 HSTS
+async fn response_headers(State(https): State<bool>, req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    use axum::http::header::{CACHE_CONTROL, CONTENT_SECURITY_POLICY, REFERRER_POLICY, STRICT_TRANSPORT_SECURITY, X_CONTENT_TYPE_OPTIONS, X_FRAME_OPTIONS};
+    use axum::http::HeaderValue;
     let path = req.uri().path();
-    let value = if path.starts_with("/assets/") {
+    let api = path.starts_with("/api/");
+    let page = !api && !path.starts_with("/agent/") && path != "/echo";
+    let cache = if path.starts_with("/assets/") {
         Some("public, max-age=31536000, immutable")
-    } else if path.starts_with("/api/") || path.starts_with("/agent/") || path == "/echo" {
-        None
-    } else {
+    } else if page {
         Some("no-cache")
+    } else {
+        None
     };
     let mut res = next.run(req).await;
-    if let Some(v) = value {
-        if res.status().is_success() && !res.headers().contains_key(CACHE_CONTROL) {
-            res.headers_mut().insert(CACHE_CONTROL, HeaderValue::from_static(v));
+    let ok = res.status().is_success();
+    let h = res.headers_mut();
+    match cache {
+        Some(v) if ok && !h.contains_key(CACHE_CONTROL) => {
+            h.insert(CACHE_CONTROL, HeaderValue::from_static(v));
         }
+        None if api && !h.contains_key(CACHE_CONTROL) => {
+            h.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        }
+        _ => {}
+    }
+    h.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    h.insert(REFERRER_POLICY, HeaderValue::from_static("same-origin"));
+    h.insert(X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    if page {
+        h.insert(CONTENT_SECURITY_POLICY, HeaderValue::from_static(CSP));
+    }
+    if https {
+        h.insert(STRICT_TRANSPORT_SECURITY, HeaderValue::from_static("max-age=31536000"));
     }
     res
 }

@@ -87,6 +87,7 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Ne
     let name = check_name(&b.name)?;
     check_severity(&b.min_severity)?;
     let cfg = notify::normalize_config(&b.kind, &b.config).map_err(ApiError::bad_request)?;
+    notify::check_destination(&cfg, st.cfg.notify.allow_private).map_err(ApiError::bad_request)?;
     let id = new_id();
     let mut tx = st.db.begin().await?;
     sqlx::query("insert into notify_channel (id, kind, name, config_enc, min_severity, enabled) values ($1, $2, $3, $4, $5::severity, $6)")
@@ -126,7 +127,9 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
     let enc = match &b.config {
         Some(newc) => {
             // 令牌/地址不会回显给前端，所以编辑时没填的字段沿用旧值，填了的覆盖
-            let mut merged = open_config(&st, &cur.config_enc).unwrap_or_else(|| json!({}));
+            let old = open_config(&st, &cur.config_enc).unwrap_or_else(|| json!({}));
+            let mut merged = old.clone();
+            let given = |k: &str| newc[k].as_str().is_some_and(|s| !s.trim().is_empty());
             for (k, v) in newc.as_object().into_iter().flatten() {
                 let blank = v.is_null() || v.as_str().is_some_and(|s| s.trim().is_empty());
                 if !blank {
@@ -138,6 +141,12 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
                 }
             }
             let cfg = notify::normalize_config(&cur.kind, &merged).map_err(ApiError::bad_request)?;
+            // 沿用的令牌不能跟着换到新的 api_base 去：否则有 write 权限就能把 api_base 改成自己的地址、收走 bot_token。
+            // 改回官方地址（清空）不算
+            if cur.kind == "telegram" && cfg.get("api_base").is_some() && cfg.get("api_base") != old.get("api_base") && !given("bot_token") {
+                return Err(ApiError::bad_request("改 api_base 时要同时重新填写 bot_token"));
+            }
+            notify::check_destination(&cfg, st.cfg.notify.allow_private).map_err(ApiError::bad_request)?;
             st.secrets.seal_str(&cfg.to_string())
         }
         None => cur.config_enc.clone(),

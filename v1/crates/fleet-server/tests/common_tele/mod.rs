@@ -30,8 +30,11 @@ impl T {
         let rs = m["health"]["reasons"].as_array().unwrap().iter().map(|r| r["key"].as_str().unwrap().to_string()).collect();
         (m["health"]["status"].as_str().unwrap().to_string(), rs)
     }
-    /// 把应用起在本机随机端口上，连实时流 WebSocket（`cookie` 为假则不带会话）
+    /// 把应用起在本机随机端口上，连实时流 WebSocket（`cookie` 为假则不带会话；带会话时 Origin 是 public_url，同浏览器里的本站页面）
     pub async fn ws(&self, cookie: bool) -> Result<Ws, tokio_tungstenite::tungstenite::Error> {
+        self.ws_from(cookie, cookie.then_some("http://fleet.test")).await
+    }
+    pub async fn ws_from(&self, cookie: bool, origin: Option<&str>) -> Result<Ws, tokio_tungstenite::tungstenite::Error> {
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = l.local_addr().unwrap();
         let app = self.app.clone();
@@ -39,6 +42,9 @@ impl T {
         let mut req = format!("ws://{addr}/api/v1/stream").into_client_request().unwrap();
         if cookie {
             req.headers_mut().insert("cookie", self.cookie.parse().unwrap());
+        }
+        if let Some(o) = origin {
+            req.headers_mut().insert("origin", o.parse().unwrap());
         }
         tokio_tungstenite::connect_async(req).await.map(|(s, _)| s)
     }
@@ -62,8 +68,8 @@ pub async fn ws_next(ws: &mut Ws, kind: &str) -> Value {
     tokio::time::timeout(std::time::Duration::from_secs(5), read).await.unwrap_or_else(|_| panic!("5 秒内没等到 {kind}"))
 }
 
-/// 新建一个独立的测试环境（见 common），不带后台循环，登录好 admin
-pub async fn setup() -> T { crate::common::boot(false, "").await }
+/// 新建一个独立的测试环境（见 common），不带后台循环，登录好 admin。通知渠道允许指向内网（假服务在 127.0.0.1 上）
+pub async fn setup() -> T { crate::common::boot(false, "notify.allow_private = true").await }
 
 /// 在库里放一台在用的线路机，并签一个 agent 令牌
 pub async fn seed_relay(t: &T, label: &str, ip: &str, tok: &str) -> Uuid {
