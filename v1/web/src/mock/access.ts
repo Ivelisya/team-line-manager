@@ -80,6 +80,14 @@ function stats(machines: MachineView[], q: URLSearchParams) {
 }
 
 export function installAccessMock(R: Reg, machines: () => MachineView[]) {
+  // 访问记录保留期（设置「数据保留」）
+  const retention = { raw_days: 7, hourly_days: 31, min: 1, max: 90, profile_days: 60 };
+  R('GET', '/settings/access-retention', () => ({ ...retention }));
+  R('PUT', '/settings/access-retention', ({ body }) => {
+    const b = body as { raw_days: number; hourly_days: number };
+    Object.assign(retention, { raw_days: b.raw_days, hourly_days: b.hourly_days });
+    return { ...retention };
+  });
   const win = (q: URLSearchParams) => new Date(Date.now() - (SECONDS[q.get('window') ?? '24h'] ?? 86400) * 1000).toISOString();
 
   R('GET', '/access/summary', ({ query }) => {

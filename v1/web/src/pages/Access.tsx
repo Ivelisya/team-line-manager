@@ -5,14 +5,14 @@ import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Activity, Radar, Server, ShieldX, Target } from 'lucide-react';
 import {
-  ACCESS_WINDOWS, EVENTS_PAGE, isAccessWindow, useAccessEvents, useAccessSources, useAccessSummary, useAccessTargets, useNewTargets,
+  ACCESS_WINDOWS, EVENTS_PAGE, WINDOW_DAYS, isAccessWindow, useAccessRetention, useAccessEvents, useAccessSources, useAccessSummary, useAccessTargets, useNewTargets,
   type AccessFilter, type AccessWindow, type TargetSort,
 } from '@/lib/access';
 import { useMachineBriefs, useTeams } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
-import { SearchInput } from '@/components/ui/form';
+import { InfoTip, SearchInput } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { Segmented, Tabs, TabsList, TabsTrigger } from '@/components/ui/overlays';
 import { Empty, ErrorNote, PageHead, Panel, Pill, Stat } from '@/components/app/primitives';
@@ -30,7 +30,6 @@ const VIEWS: { value: View; label: string }[] = [
 const isView = (v: string | null): v is View => VIEWS.some((x) => x.value === v);
 const winLabel = (w: AccessWindow) => ACCESS_WINDOWS.find((x) => x.value === w)!.long;
 // 选项、每页条数用模块常量：搜索框每敲一个字整页重渲，memo 的下拉 / 分段控件 / 分页器不被新数组击穿
-const WINDOW_ITEMS = ACCESS_WINDOWS.map((x) => ({ value: x.value, label: x.label }));
 const KIND_OPTS = [{ value: 'domain', label: '域名' }, { value: 'ip', label: 'IP' }];
 const ACT_OPTS = [{ value: 'routed', label: '已转发' }, { value: 'blocked', label: '已阻止' }];
 const SORT_ITEMS: { value: TargetSort; label: string }[] = [{ value: 'conns', label: '连接数' }, { value: 'last', label: '最近' }, { value: 'first', label: '首次' }];
@@ -47,6 +46,10 @@ export function AccessPage() {
 
   // 先取出各个字符串再进依赖：整份 URL 参数（sp）一变就重建 f 的话，打开抽屉（?m=）也会让下面五个 memo 的视图全部重渲染
   const w = sp.get('w');
+  // 时间范围跟着保留期走：小时汇总只留 N 天时，超过 N 天的范围不给选（服务端会 400）；地址里带着的退到能选的最长那个
+  const retention = useAccessRetention().data;
+  const maxDays = retention?.hourly_days ?? 90;
+  const windowItems = React.useMemo(() => ACCESS_WINDOWS.filter((x) => WINDOW_DAYS[x.value] <= maxDays).map((x) => ({ value: x.value, label: x.label })), [maxDays]);
   const view = sp.get('view');
   const kind = sp.get('kind');
   const act = sp.get('act');
@@ -54,9 +57,9 @@ export function AccessPage() {
   const node = sp.get('node') ?? '';
   const search = sp.get('q') ?? '';
   const f = React.useMemo<AccessFilter>(() => ({
-    window: isAccessWindow(w) ? w : '24h', team, node, search,
+    window: isAccessWindow(w) ? (WINDOW_DAYS[w] <= maxDays ? w : windowItems[windowItems.length - 1].value) : '24h', team, node, search,
     kind: kind === 'domain' || kind === 'ip' ? kind : '', action: act === 'routed' || act === 'blocked' ? act : '',
-  }), [w, team, node, search, kind, act]);
+  }), [w, team, node, search, kind, act, maxDays, windowItems]);
   const tab: View = isView(view) ? view : 'targets';
   const { open } = useDrawer(); // 一次：各视图的行里不再各自订阅 URL
   const [sort, setSort] = React.useState<TargetSort>('conns');
@@ -85,7 +88,7 @@ export function AccessPage() {
   return (
     <div className="stack">
       <PageHead title="访问监控" note={`每 30 秒刷新${summary.data ? ` · 统计自 ${F.dt(summary.data.window_start)}` : ''}`}
-        tools={<><IpIntelStatusChip /><Segmented label="时间范围" value={f.window} onChange={onWindow} items={WINDOW_ITEMS} /><AccessViewSwitch value="behavior" /></>} /* 视图切换在最右，与访问规则页同位 */ />
+        tools={<><IpIntelStatusChip /><Segmented label="时间范围" value={f.window} onChange={onWindow} items={windowItems} /><AccessViewSwitch value="behavior" /></>} /* 视图切换在最右，与访问规则页同位 */ />
 
       <div className="row" role="search">
         <SearchInput value={text} onChange={(e) => setText(e.target.value)} placeholder="搜索域名或来源 IP…" aria-label="搜索域名或来源 IP" className="w-full sm:w-[260px]" />
@@ -289,6 +292,7 @@ const NodesView = React.memo(function NodesView({ f, filtered, open }: { f: Acce
 });
 
 const EventsView = React.memo(function EventsView({ f, filtered, open }: { f: AccessFilter; filtered: boolean; open: Open }) {
+  const rawDays = useAccessRetention().data?.raw_days ?? 7;
   // 游标栈：cur[i] 是第 i+1 页的 before（上一页的 next_before 原样存，'' = 最新一页）。筛选一变回到最新一页
   const fk = JSON.stringify(f);
   const [st, setSt] = React.useState({ fk, cur: [''] });
@@ -300,7 +304,7 @@ const EventsView = React.memo(function EventsView({ f, filtered, open }: { f: Ac
   const top = React.useRef<HTMLElement>(null);
   const go = (next: string[]) => { setSt({ fk, cur: next }); scrollBackTo(top.current); };
   return (
-    <Panel ref={top} title="原始记录" sub="最新在前；原始记录只保留 7 天，目标不做合并" flush>
+    <Panel ref={top} title={<>原始记录<InfoTip text="最新在前；目标不做合并" /></>} sub={`保留 ${rawDays} 天`} flush>
       {q.isError && <div style={{ padding: 12 }}><ErrNote q={q} /></div>}
       <div className="table-wrap" data-stale={q.isPlaceholderData}>
         <table className="dt is-one" style={{ minWidth: 820 }}>
