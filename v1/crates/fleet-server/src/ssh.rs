@@ -466,8 +466,16 @@ pub async fn forget_host(known_hosts: &Path, ip: &str, port: u16) -> anyhow::Res
 }
 
 /// TCP 可达性
-pub async fn tcp_ok(ip: &str, port: u16, timeout: Duration) -> bool {
-    tokio::time::timeout(timeout, tokio::net::TcpStream::connect((ip, port))).await.map(|r| r.is_ok()).unwrap_or(false)
+pub async fn tcp_ok(ip: &str, port: u16, timeout: Duration) -> bool { tcp_probe(ip, port, timeout).await.is_ok() }
+
+/// TCP 可达性，连不上时给原因（给人看）：连接被拒绝、`timeout` 内没有响应，或别的连接错误
+pub async fn tcp_probe(ip: &str, port: u16, timeout: Duration) -> Result<(), String> {
+    match tokio::time::timeout(timeout, tokio::net::TcpStream::connect((ip, port))).await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::ConnectionRefused => Err("连接被拒绝：端口没有在监听，或防火墙拒绝了".into()),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => Err(format!("{} 秒没有响应", timeout.as_secs())),
+    }
 }
 
 #[cfg(test)]

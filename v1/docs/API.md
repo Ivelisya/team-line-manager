@@ -150,7 +150,7 @@ EntryView = { id, relay:{id,name}, node:{id,name}, direct, port, lifecycle, appl
 ## 上架
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/provision/check` | 校验（不落库）：`{items:[ProvisionItem]}` → `{data:{items:[{ok,errors:[...],name,number,ss_port}]}}`（`ss_port`：同机 IP 节点暂定的 SS 端口，其它为 null） |
+| POST | `/provision/check` | 校验（不落库）：`{items:[ProvisionItem]}` → `{data:{items:[{ok,errors:[...],name,number,ss_port}]}}`（`ss_port`：同机 IP 节点暂定的 SS 端口，其它为 null）。还会探测 SSH 端口（同一批最多同时 8 个，连不上时写明「连接被拒绝」还是「3 秒没有响应」）；回环、链路本地、未指定、组播地址直接报错不探测；按操作人限速（突发 300 次探测、每秒补 1 次，超了回 429 `rate_limited`） |
 | POST | `/provision` | 同样的 body，全部通过才创建：每台建机器（provisioning）+ 一个作业 → `{data:{jobs:[{machine_id,job_id,name}]}}` |
 
 ```
