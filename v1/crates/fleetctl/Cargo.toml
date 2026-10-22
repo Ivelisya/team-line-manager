@@ -14,8 +14,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-# local-offset：silence add --start 按本机时区解析
-time = { workspace = true, features = ["local-offset"] }
+time.workspace = true
 toml.workspace = true
 # gzip：中控的响应都过 CompressionLayer，机器列表、作业日志这类大 JSON 压缩后小一个数量级
 reqwest = { workspace = true, features = ["blocking", "gzip"] }

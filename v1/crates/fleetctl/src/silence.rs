@@ -9,7 +9,7 @@ use anyhow::{anyhow, bail};
 use serde_json::{json, Value};
 use time::format_description::well_known::Rfc3339;
 use time::macros::{format_description, offset};
-use time::{Duration, OffsetDateTime, PrimitiveDateTime, UtcOffset};
+use time::{Duration, OffsetDateTime, PrimitiveDateTime};
 
 const HEAD: [&str; 7] = ["对象", "规则", "时间", "状态", "维护", "备注", "id"];
 
@@ -80,7 +80,7 @@ pub fn ls(ctx: &Ctx) -> anyhow::Result<u8> {
     Ok(0)
 }
 
-/// `--for`：`30m` / `4h` / `2d`，可组合（`1h30m`）
+/// `--for`：`30m` / `4h` / `2d`，可组合（`1h30m`），最长 30 天（同中控）
 fn parse_for(s: &str) -> anyhow::Result<Duration> {
     let bad = || anyhow!("--for 写成 30m / 4h / 2d（分钟 / 小时 / 天，可组合，如 1h30m）");
     let (mut total, mut n) = (Duration::ZERO, String::new());
@@ -102,12 +102,15 @@ fn parse_for(s: &str) -> anyhow::Result<Duration> {
     if !n.is_empty() || total.is_zero() {
         return Err(bad());
     }
+    if total > Duration::days(30) {
+        bail!("--for 最长 30 天；更久的请直接把机器退役");
+    }
     Ok(total)
 }
 
-/// `--start`：本机时区的 `2026-10-23 02:00`（日期与时间之间也可以写 `T`，可带秒），或带时区的 RFC 3339（`2026-10-23T02:00:00+08:00`）。
-/// `offset_of`：本机时区在这个本地时刻的 UTC 偏移
-fn parse_start(s: &str, offset_of: impl Fn(PrimitiveDateTime) -> Option<UtcOffset>) -> anyhow::Result<OffsetDateTime> {
+/// `--start`：北京时间的 `2026-10-23 02:00`（同表格里的时间；日期与时间之间也可以写 `T`，可带秒），或带时区的 RFC 3339
+/// （`2026-10-23T02:00:00+09:00`）。不按本机时区：fleetctl 常跑在 UTC 的服务器上，同一句命令换台机器不该换个时刻
+fn parse_start(s: &str) -> anyhow::Result<OffsetDateTime> {
     let s = s.trim();
     if let Ok(t) = OffsetDateTime::parse(s, &Rfc3339) {
         return Ok(t);
@@ -121,15 +124,8 @@ fn parse_start(s: &str, offset_of: impl Fn(PrimitiveDateTime) -> Option<UtcOffse
     let t = fmts
         .iter()
         .find_map(|f| PrimitiveDateTime::parse(s, f).ok())
-        .ok_or_else(|| anyhow!("--start 写成 2026-10-23 02:00（本机时区），或带时区的 2026-10-23T02:00:00+08:00"))?;
-    let off = offset_of(t).ok_or_else(|| anyhow!("取不到本机时区：--start 请写带时区的时间，如 2026-10-23T02:00:00+08:00"))?;
-    Ok(t.assume_offset(off))
-}
-
-/// 本机时区在这个本地时刻的偏移：先按 UTC 粗定位、再按那一刻的偏移校正一次（夏令时切换前后偏移不同）
-fn local_offset(t: PrimitiveDateTime) -> Option<UtcOffset> {
-    let guess = UtcOffset::local_offset_at(t.assume_utc()).ok()?;
-    UtcOffset::local_offset_at(t.assume_offset(guess)).ok()
+        .ok_or_else(|| anyhow!("--start 写成 2026-10-23 02:00（北京时间），或带时区的 2026-10-23T02:00:00+09:00"))?;
+    Ok(t.assume_offset(offset!(+8)))
 }
 
 pub struct AddOpts<'a> {
@@ -145,9 +141,12 @@ pub struct AddOpts<'a> {
 
 pub fn add(ctx: &Ctx, o: AddOpts<'_>) -> anyhow::Result<u8> {
     let dur = parse_for(o.dur)?;
+    if o.maintenance && o.rule.is_some() {
+        bail!("维护窗口针对整台机器，不能只选一条规则：只想静默这条告警就去掉 --maintenance");
+    }
     let now = OffsetDateTime::now_utc();
     let start = match o.start {
-        Some(s) => parse_start(s, local_offset)?,
+        Some(s) => parse_start(s)?,
         None => now,
     };
     // 当前这一分钟还算数（同网页）；更早的多半是时区写错了，不悄悄变成「从现在开始」
@@ -224,29 +223,24 @@ mod tests {
         assert_eq!(parse_for(" 2d ").unwrap(), Duration::days(2));
         assert_eq!(parse_for("1h30m").unwrap(), Duration::minutes(90));
         assert_eq!(parse_for("1d12h").unwrap(), Duration::hours(36));
-        for bad in ["", "4", "h", "4x", "0h", "-1h", "4 h", "1.5h", "4H", "99999999999d"] {
+        assert_eq!(parse_for("30d").unwrap(), Duration::days(30));
+        for bad in ["", "4", "h", "4x", "0h", "-1h", "4 h", "1.5h", "4H", "99999999999d", "30d1m", "3000000d"] {
             assert!(parse_for(bad).is_err(), "{bad}");
         }
     }
 
     #[test]
-    fn start_is_local_time_unless_it_carries_an_offset() {
-        let bj = |_: PrimitiveDateTime| Some(offset!(+8));
+    fn start_is_beijing_time_unless_it_carries_an_offset() {
         for s in ["2026-10-23 02:00", "2026-10-23T02:00", " 2026-10-23 02:00:00 "] {
-            assert_eq!(parse_start(s, bj).unwrap(), datetime!(2026-10-22 18:00 UTC), "{s}");
+            assert_eq!(parse_start(s).unwrap(), datetime!(2026-10-22 18:00 UTC), "{s}");
         }
-        assert_eq!(parse_start("2026-10-23 02:00:30", bj).unwrap(), datetime!(2026-10-22 18:00:30 UTC));
-        // 带时区的不看本机时区
-        assert_eq!(parse_start("2026-10-23T02:00:00+09:00", bj).unwrap(), datetime!(2026-10-22 17:00 UTC));
-        assert_eq!(parse_start("2026-10-22T18:00:00Z", |_| None).unwrap(), datetime!(2026-10-22 18:00 UTC));
-        // 本机时区取的是那个本地时刻的偏移
-        let dst = |t: PrimitiveDateTime| Some(if t.month() == time::Month::July { offset!(-4) } else { offset!(-5) });
-        assert_eq!(parse_start("2026-07-01 09:00", dst).unwrap(), datetime!(2026-07-01 13:00 UTC));
-        assert_eq!(parse_start("2026-12-01 09:00", dst).unwrap(), datetime!(2026-12-01 14:00 UTC));
+        assert_eq!(parse_start("2026-10-23 02:00:30").unwrap(), datetime!(2026-10-22 18:00:30 UTC));
+        // 带时区的按它自己的时区
+        assert_eq!(parse_start("2026-10-23T02:00:00+09:00").unwrap(), datetime!(2026-10-22 17:00 UTC));
+        assert_eq!(parse_start("2026-10-22T18:00:00Z").unwrap(), datetime!(2026-10-22 18:00 UTC));
         for bad in ["2026/10/23 02:00", "02:00", "2026-10-23", "2026-13-01 00:00", "2026-10-23 2:00", "明天 2 点"] {
-            assert!(parse_start(bad, bj).is_err(), "{bad}");
+            assert!(parse_start(bad).is_err(), "{bad}");
         }
-        assert!(parse_start("2026-10-23 02:00", |_| None).unwrap_err().to_string().contains("取不到本机时区"));
     }
 
     #[test]

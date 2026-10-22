@@ -204,27 +204,31 @@ pub struct Silence {
     /// 只在读取时给出
     #[serde(default, skip_deserializing)]
     subject_name: Option<String>,
+    /// 规则中文名（同告警），不限规则时为 null；只在读取时给出
+    #[sqlx(skip)]
+    #[serde(default, skip_deserializing)]
+    rule_name: Option<String>,
 }
 
-/// 没结束的静默（含还没开始的预约），按开始时间排：进行中的自然在前，已预约的随后。`rule_name` 是规则中文名（同告警），不限规则时为 null
+impl Silence {
+    fn named(mut self) -> Self {
+        self.rule_name = self.rule.as_deref().map(|r| crate::notify::rule_name(r).to_string());
+        self
+    }
+}
+
+/// 机器名（同列表的 subject_name）：静默的对象、审计里写它
+const SUBJECT_NAME: &str = "(select display_name(m.kind::text, m.label, t.name, m.number) from machine m left join team t on t.id = m.team_id where m.id = s.subject_id)";
+
+/// 没结束的静默（含还没开始的预约），按开始时间排：进行中的自然在前，已预约的随后
 pub async fn list_silences(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
-    let v: Vec<Silence> = sqlx::query_as(
-        "select s.id, s.subject_id, s.rule, s.starts_at, s.ends_at, s.is_maintenance, s.comment,
-                display_name(m.kind::text, m.label, t.name, m.number) subject_name
-         from silence s left join machine m on m.id = s.subject_id left join team t on t.id = m.team_id
-         where s.deleted_at is null and s.ends_at > now() order by s.starts_at",
-    )
+    let v: Vec<Silence> = sqlx::query_as(&format!(
+        "select s.id, s.subject_id, s.rule, s.starts_at, s.ends_at, s.is_maintenance, s.comment, {SUBJECT_NAME} subject_name
+         from silence s where s.deleted_at is null and s.ends_at > now() order by s.starts_at"
+    ))
     .fetch_all(&st.db)
     .await?;
-    let out: Vec<Value> = v
-        .iter()
-        .map(|s| {
-            let mut j = serde_json::to_value(s).unwrap_or_default();
-            j["rule_name"] = json!(s.rule.as_deref().map(crate::notify::rule_name));
-            j
-        })
-        .collect();
-    Ok(ok(out))
+    Ok(ok(v.into_iter().map(Silence::named).collect::<Vec<_>>()))
 }
 
 pub async fn create_silence(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Silence>) -> ApiResult<Json<Value>> {
@@ -247,13 +251,21 @@ pub async fn create_silence(a: Actor, State(st): State<AppState>, ApiJson(b): Ap
         if crate::notify::rule_name(r) == r {
             return Err(ApiError::bad_request(format!("没有「{r}」这条告警规则")));
         }
-    }
-    if let Some(sid) = b.subject_id {
-        let n: Option<(i32,)> = sqlx::query_as("select 1 from machine where id = $1").bind(sid).fetch_optional(&st.db).await?;
-        if n.is_none() {
-            return Err(ApiError::bad_request("subject_id 指向的机器不存在"));
+        // 维护是整台机器的（卡片显示「维护中」、暂停健康判定），只静默一条规则时说不通
+        if b.is_maintenance {
+            return Err(ApiError::bad_request("维护窗口针对整台机器，不能只选一条规则；只想静默这条告警就不要标记为维护"));
         }
     }
+    let subject_name = match b.subject_id {
+        Some(sid) => Some(
+            sqlx::query_scalar("select display_name(m.kind::text, m.label, t.name, m.number) from machine m left join team t on t.id = m.team_id where m.id = $1")
+                .bind(sid)
+                .fetch_optional(&st.db)
+                .await?
+                .ok_or_else(|| ApiError::bad_request("subject_id 指向的机器不存在"))?,
+        ),
+        None => None,
+    };
     let id = new_id();
     let mut tx = st.db.begin().await?;
     sqlx::query(
@@ -269,7 +281,9 @@ pub async fn create_silence(a: Actor, State(st): State<AppState>, ApiJson(b): Ap
     .bind(&a.name)
     .execute(&mut *tx)
     .await?;
-    audit_log(&mut tx, &a.name, "silence.create", "silence", Some(id), json!({"subject_id": b.subject_id, "maintenance": b.is_maintenance})).await?;
+    // 审计详情就是这条静默本身（对象名、规则、起止、备注），摘要见 audit_text
+    let s = Silence { id: Some(id), subject_name, ..b }.named();
+    audit_log(&mut tx, &a.name, "silence.create", "silence", Some(id), json!(s)).await?;
     tx.commit().await?;
     // 卡片上的「维护中」随 Incidents 标记的实时指标比对送达（最多 3 s），不发 Machines 让前端整表重取
     st.emit(Event::Incidents);
@@ -278,11 +292,15 @@ pub async fn create_silence(a: Actor, State(st): State<AppState>, ApiJson(b): Ap
 
 pub async fn delete_silence(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
-    let n = sqlx::query("update silence set deleted_at = now() where id = $1 and deleted_at is null").bind(id).execute(&mut *tx).await?.rows_affected();
-    if n == 0 {
-        return Err(ApiError::not_found("没有这条静默"));
-    }
-    audit_log(&mut tx, &a.name, "silence.delete", "silence", Some(id), json!({})).await?;
+    let s: Silence = sqlx::query_as(&format!(
+        "update silence s set deleted_at = now() where s.id = $1 and s.deleted_at is null
+         returning s.id, s.subject_id, s.rule, s.starts_at, s.ends_at, s.is_maintenance, s.comment, {SUBJECT_NAME} subject_name"
+    ))
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| ApiError::not_found("没有这条静默"))?;
+    audit_log(&mut tx, &a.name, "silence.delete", "silence", Some(id), json!(s.named())).await?;
     tx.commit().await?;
     st.emit(Event::Incidents);
     Ok(ok(json!({"ok": true})))
@@ -453,6 +471,17 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
                 m => m,
             };
             format!("{mode} · {} 个域名", d["domains"])
+        }
+        // 这一版之前的只记了对象 id 与是否维护，不写摘要
+        "silence.create" | "silence.delete" if d["starts_at"].is_string() => {
+            let at = |k: &str| {
+                let t = d[k].as_str().and_then(|v| OffsetDateTime::parse(v, &time::format_description::well_known::Rfc3339).ok());
+                t.map(|t| crate::notify::beijing(t).chars().take(16).collect::<String>()).unwrap_or_default()
+            };
+            let what = if d["is_maintenance"] == true { "维护窗口" } else { "静默" };
+            let rule = d["rule_name"].as_str().map(|r| format!(" · 只静默「{r}」")).unwrap_or_default();
+            let note = d["comment"].as_str().filter(|c| !c.is_empty()).map(|c| format!("（{c}）")).unwrap_or_default();
+            format!("{} · {what}{rule} · {} → {}{note}", d["subject_name"].as_str().unwrap_or("全部机器"), at("starts_at"), at("ends_at"))
         }
         "policy.discard" => format!("{} 个草稿", d["drafts"]),
         "policy.publish" | "policy.rollback" => {

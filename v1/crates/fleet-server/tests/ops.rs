@@ -303,6 +303,7 @@ async fn ack_incident_and_silence_validation() {
         (json!({"ends_at": at(d(30) + h(1))}), "最长 30 天；更久的请直接把机器退役"),
         (json!({"starts_at": at(-h(2)), "ends_at": at(-h(1))}), "结束时间已经过去了"),
         (json!({"starts_at": at(d(91)), "ends_at": at(d(91) + h(1))}), "最多提前 90 天预约"),
+        (json!({"rule": "agent_offline", "is_maintenance": true}), "维护窗口针对整台机器，不能只选一条规则；只想静默这条告警就不要标记为维护"),
     ] {
         let (s, v) = t.call("POST", "/api/v1/silences", Some(win(extra.clone())), Auth::Session).await;
         assert_eq!((s, v["error"]["message"].as_str()), (StatusCode::BAD_REQUEST, Some(want)), "{extra}");
@@ -318,6 +319,15 @@ async fn ack_incident_and_silence_validation() {
     assert_eq!((list[0]["rule_name"].as_str(), list[1]["rule_name"].is_null()), (Some("agent 离线"), true), "{list}");
     let live = fleet_server::silence::Silences::load(&t.st.db).await.unwrap();
     assert!(live.matches("agent_offline", mid) && !live.maintenance(mid), "预约的维护还没开始");
+
+    // 审计：新建、删除都写明对象、维护还是静默、起止（北京时间）与备注
+    let pre = ids[1].as_str().unwrap();
+    t.ok("DELETE", &format!("/api/v1/silences/{pre}"), None).await;
+    let log = t.ok("GET", &format!("/api/v1/audit?target_id={pre}"), None).await;
+    let bj = |off| fleet_server::notify::beijing(now + off).chars().take(16).collect::<String>();
+    let want = format!("{} · 维护窗口 · {} → {}", list[1]["subject_name"].as_str().unwrap(), bj(d(1)), bj(d(1) + h(2)));
+    let got: Vec<(&str, &str)> = log.as_array().unwrap().iter().map(|e| (e["action"].as_str().unwrap(), e["summary"].as_str().unwrap())).collect();
+    assert_eq!(got, [("silence.delete", want.as_str()), ("silence.create", want.as_str())], "{log}");
 }
 
 /// 批量升级 agent：一台冲突（建作业时撞上别人刚建的作业）只跳过这台

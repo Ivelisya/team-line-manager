@@ -624,6 +624,7 @@ R('POST', '/silences', ({ body }) => {
   if (e <= now) throw bad('结束时间已经过去了');
   if (s > now + 90 * DAY) throw bad('最多提前 90 天预约');
   if (body.rule && !RULE_NAMES[body.rule]) throw bad(`没有「${body.rule}」这条告警规则`);
+  if (body.rule && body.is_maintenance) throw bad('维护窗口针对整台机器，不能只选一条规则；只想静默这条告警就不要标记为维护');
   const m = body.subject_id ? db.machines.find((x) => x.id === body.subject_id) : null;
   if (body.subject_id && !m) throw bad('subject_id 指向的机器不存在');
   const id = `s${db.seq++}`;

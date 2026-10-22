@@ -68,15 +68,15 @@ fleetctl exec --team 团队1 --timeout 30 -- uptime           # 多台并发 4�
 
 ```
 fleetctl silence add <机器> --for 2h --maintenance --comment "换内核"                               # 从现在开始
-fleetctl silence add <机器> --start "2026-10-23 02:00" --for 4h --maintenance --comment "机房割接"    # 预约：--start 按本机时区，最多提前 90 天
-fleetctl silence add <机器> --rule agent_offline --for 30m --comment "重启 agent"                    # 只静默一条规则（规则 key 见文末）
+fleetctl silence add <机器> --start "2026-10-23 02:00" --for 4h --maintenance --comment "机房割接"    # 预约：--start 按北京时间，最多提前 90 天
+fleetctl silence add <机器> --rule agent_offline --for 30m --comment "重启 agent"                    # 只静默一条规则（规则 key 见文末；不能加 --maintenance）
 fleetctl --json silence ls                                                                          # 进行中的在前，已预约的随后
 fleetctl silence rm <id 前缀>                                                                       # 提前结束 / 取消预约，告警即刻恢复
 ```
 
 - `--for` 写 `30m` / `4h` / `2d`（可组合，如 `1h30m`），最长 30 天；更久说明机器不用了，该退役。`--comment` 写清在干什么，网页列表和审计里都看得到。
 - 给单台机器开维护窗口是维护流程的一部分，不必另问；`--all`（全部机器）要加 `--yes`，先向用户确认。不要拿静默盖住没处理的故障：机器正在告警、又不打算马上修时，先问用户。
-- 表格里的时间是北京时间；`--start` 按本机时区解析，`--start` 早于现在会报错（多半是时区写错了），带时区写法如 `2026-10-23T02:00:00+08:00` 不受本机时区影响。`id` 列是前 13 位，`rm` 给能唯一确定的前缀即可。
+- 时间都按北京时间：表格里的、`--start` 不带时区的写法都是（与 fleetctl 跑在哪台机器、本机什么时区无关）；用户说的是别的时区就写带时区的 `2026-10-23T02:00:00+09:00`。`--start` 早于现在会报错。`id` 列是前 13 位，`rm` 给能唯一确定的前缀即可。
 
 ## 会改变状态的操作：先向用户确认
 
