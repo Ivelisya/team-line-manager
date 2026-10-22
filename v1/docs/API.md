@@ -42,10 +42,10 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
 | PATCH | `/teams/{id}` | `{name?,sort_order?}`（改团队名 = 该团队所有节点显示名一起变） |
 | GET | `/providers` | `[{id,name,code,panel_url,timezone,traffic_rule}]`；`traffic_rule` 是这家怎么计量流量额度（网卡本周期入、出总量）：`min` 取小（如 GOMAMI）/ `max` 取大 / `sum` 相加 / `out` 只算出站 |
 | POST | `/providers` | `{name,code,panel_url?,timezone?,traffic_rule?}`；`traffic_rule` 不传 = `max`（不知道的供应商按取大，不会少算），别的值 400；`panel_url` 须是 http(s) 地址（400）；`timezone` 不传 / null / 空串 = 列默认值 UTC，否则须是 `at time zone` 认的时区（400）；名称或缩写重复 409 |
-| PATCH | `/providers/{id}` | `{name?,code?,panel_url?,timezone?,traffic_rule?}`：没传的不改（`traffic_rule` 改了立即影响这家机器的 `quota.used`）；`panel_url` null / 空串 = 清空；`timezone` null / 空串 = 回到 UTC。校验同 POST；只影响之后上架的机器（已上架机器的账单时区是当时抄过去的）。写审计 `provider.update` |
+| PATCH | `/providers/{id}` | `{name?,code?,panel_url?,timezone?,traffic_rule?}`：没传的不改（`traffic_rule` 改了立即影响这家机器的 `quota.used`）；`panel_url` null / 空串 = 清空；`timezone` null / 空串 = 回到 UTC。校验同 POST（`panel_url` 和库里现有的一样时不校验：加 http(s) 校验之前存下的旧值不挡改别的字段）；只影响之后上架的机器（已上架机器的账单时区是当时抄过去的）。写审计 `provider.update` |
 | GET | `/plans` | `[{id,provider_id,name,cpu_cores,mem_mb,disk_gb,bandwidth_mbps,traffic_gb,price_cents,currency,cycle,notes,archived_at,machine_count}]` |
-| POST | `/plans` | 同上字段（不含 id/统计） |
-| PATCH | `/plans/{id}` | 任意字段（没传的不改；规格类字段传 null = 清空）；`archived:true` 归档 |
+| POST | `/plans` | 同上字段（不含 id/统计）。校验（PATCH 同，只看传了的）：`name` 1–32 字，`price_cents` ≥ 0，`currency` 1–8 个字母（存成大写），`notes` ≤ 2000 字，否则 400 |
+| PATCH | `/plans/{id}` | 任意字段（没传的不改；规格类字段传 null = 清空）；`archived:true` 归档。审计 `plan.update` 记改了的字段 `{before:{…}, after:{…}}` |
 
 ## 机器
 `MachineView`（列表与详情同形）：
@@ -180,7 +180,7 @@ ProvisionItem = {
 - `health.reasons[]`：`{key, rule_name, severity, text}`；`rule_name` 是规则中文名（同通知）；`severity`：`"info"` | `"warning"` | `"critical"`（info 只有 `policy_blocked`，不影响健康）。
   `traffic_quota_high`（「流量额度吃紧」）：本周期已用（`quota.used`）到上限（订阅的 `traffic_gb`，没填按套餐的；0 / 空 = 不限，不评估）的 90% 为 warning，到 100% 为 critical；上限按十进制 GB（1 GB = 10⁹ 字节，同供应商），文案也写 GB、不换算成 TB，如「本周期流量已用 92%（1840 GB / 2000 GB），9 天后重置」「本周期流量已超出额度（已用 102%，2050 GB / 2000 GB）」（有流量重置日才写几天后重置）。
   它和 info 一样**不影响** `health.status`，只开告警：不去抖，回落到 90% 以下（如新周期开始）下一轮评估即恢复；升为 critical 时马上再通知一次，持续提醒每天最多一次（同续费类）。同机 IP 节点自己没设上限时不评估（额度算在宿主机上）。
-  `clock_skew`（warning，「agent 时钟不准」）：agent 在线且 `|agent.clock_skew_ms|` > 60 秒，文案如「agent 时钟慢 17 分钟：读数可能缺失或冻结，请校时」——样本按 agent 的时间入库，当前读数只看最近 15 分钟、持续负载只看最近 5 分钟。和其它 warning 原因一样满 60 秒去抖后开告警。
+  `clock_skew`（warning，「agent 时钟不准」）：agent 在线且 `|agent.clock_skew_ms|` > 60 秒，文案如「agent 时钟慢 17 分钟：读数可能缺失或冻结，请校时」——样本按 agent 的时间入库，当前读数只看最近 15 分钟、持续负载只看最近 5 分钟；比中控超前 10 分钟以上的样本（含入口流量、探测）直接丢弃。和其它 warning 原因一样满 60 秒去抖后开告警。
   同机 IP 节点不报 `agent_offline`、`clock_skew`、`host_cpu_high` / `host_mem_high` / `host_disk_high`（agent 与主机是宿主机的，由宿主机报）；`egress_fail`、`tcp_fail`、`no_entry`、续费照常自己报（宿主机整台宕机时宿主机和它的每个同机节点各报各的探测告警，不抑制）。
 - `GET /machines/{id}/series` → `{metric, range, resolution: "1m"|"1h", points: [...]}`，点里时间字段统一叫 `ts`：
   - host：`{ts, cpu_pct, mem_pct, disk_pct, load1, net_rx_bps, net_tx_bps}`（1h 分辨率另有 `cpu_max`，无 `load1`）
@@ -226,6 +226,10 @@ ProvisionItem = {
 
 `POST /agent/v1/report` 入库失败按类回：数据本身入不了库（SQLSTATE 22 类：坏字节、NUL、越界；23 类：违反约束）→ 422（`error.code="bad_report"`），agent 把这份报告移入 `dead/` 不再重发，其中的入口流量结转到下一份报告补报（同离线队列超限淘汰；这份本身带着结转补报的流量时不再结转，免得一份接一份地被拒）；其它（连接池超时、断连、磁盘满、只读…）→ 503，agent 退避重试（受本地队列的字节与时长上限约束）。agent 只把 4xx（401 撤销、403/404/408/429 除外）当永久拒绝，5xx 和网络错误一律重试。
 
+上报的限额（按机器，在内存里，中控重启归满）：新的一份（seq 变大）扣一个令牌，突发 600、之后每秒补 1，扣不到回 429 + `Retry-After`（重发的同一份不扣）。样本时间戳只收「保留期以内 ~ 中控时间往后 10 分钟」（agent 时钟快得更多时样本丢弃，健康原因 `clock_skew` 在偏差超过 60 秒时就已报出）。主机样本按 (机器, 时刻) 唯一，同一时刻重报的不再入库；另有主机样本余额：容量 8640 个（24 小时的量），每 5 秒补一个（两倍于 agent 10 秒一个的采样），超出的丢最早的——正常 agent 补传积压（最多 6 小时离线队列 + 12 小时内存缓冲）期间余额按两倍速回满，用不完；一台机器一天最多入库约 2.6 万条（正常 8640）。
+
+`POST /agent/v1/applied`：每台线路机突发 120 份、之后 2 秒一份，超出回 429 + `Retry-After`（agent 照 Retry-After 重试，三次不成落盘、下轮补发）。`error` 与 `entries[].error` 截到 512 字，`entries` 最多 3000 条（不属于这台线路机的入口 id 忽略）。回报没改变任何东西（重发的同一份、同样的错误）时不发 `relay` / `machines` 失效通知。
+
 ## 访问监控
 线路机 agent 解析 Xray 访问日志上报，服务端写入 `access_event`（原始记录保留 `retention.access_days`=7 天），并每 5 分钟把当前小时和被标脏的小时重算进小时汇总（`access_hourly` / `access_source_hourly` 保留 31 天，窗口最长 30d；`access_target_seen` 记每个目标的首次 / 最近出现，最近出现超 90 天才删；幂等；agent 断网后补传的旧记录在上报时把所在小时记进 `access_dirty`，下一轮补算；启动时补算缺口）。24h/7d/30d 的结果在进程内缓存：每轮汇总成功后整体作废；`summary` / `targets`（第一页）/ `sources` 最多缓存 `access_cache_secs`（默认 300）秒，单台机器的 `/machines/{id}/access` 与 `/machines/{id}/sources`（带最近原始记录、来源基线与异常）最多 30 秒；设 0 关闭。全部为只读 GET，读权限即可。
 
@@ -258,7 +262,7 @@ ProvisionItem = {
 | GET | `/ipintel/status` | `{enabled, installed, loaded, expected:5, db_dir, version, files:[{id, loaded, bytes, mtime, build, entries}], errors, lists（各清单条目数）, overrides{path,used,error}, cache_rows, hint}`；未安装时 `hint` 提示运行 `lab/install-ipintel.sh` |
 | GET | `/machines/{id}/sources?window=24h\|7d\|30d&limit=50` | 节点的来源画像（线路机：分布与 top 来源只算经它的流量；`known` 基线与 `anomalies` 按节点记，取它名下入口的节点）：`distribution.{isp,city,province,country,conn_type}[{value,label,conns,sources,pct}]`（只统计外部来源；我方机器和非公网地址分别计入 `internal_conns` / `private_conns`）、`top_sources[{src_ip,conns,last_ts,intel}]`、`known.{isp,city,conn_type}[{value,label,first_seen,last_seen,conns,anomaly}]`（已学基线）、`learning{started_at,ends_at,learn_days,done,remaining_hours}`、`anomalies[]`（进行中的 ipintel 告警）、`empty`、`degraded`、`unresolved_sources` |
 
-**异常告警**（warning，进 incident 表并走通知渠道）：节点第一条来源记录起 `learn_days`（默认 7）天内只学习；之后某节点出现新的运营商 → `ipintel_new_isp`，新的城市 → `ipintel_new_city`，某 (节点, 来源 IP) 第一次出现且为机房/VPN → `ipintel_datacenter_source`。跳过非公网地址和我方机器。一次性异常最后一次出现 `alert_ttl_hours`（默认 24）小时后自动恢复，不发恢复通知；同一个值恢复后不会再次告警。后台每 5 分钟从 `access_source_hourly` 增量维护 `node_source_seen`（水位在 `ipintel_state`；水位之前的小时若被补算，连接数差值经 `access_source_late` 补记，首次扫描按 7 天一页）。
+**异常告警**（warning，进 incident 表并走通知渠道）：节点第一条来源记录起 `learn_days`（默认 7）天内只学习；之后某节点出现新的运营商 → `ipintel_new_isp`，新的城市 → `ipintel_new_city`，某 (节点, 来源 IP) 第一次出现且为机房/VPN → `ipintel_datacenter_source`。跳过非公网地址和我方机器。一次性异常最后一次出现 `alert_ttl_hours`（默认 24）小时后自动恢复，不发恢复通知；同一个值恢复后不会再次告警。机房/VPN 来源 IP 一个 IP 一行，超过 max(`learn_days`, 31) + 1 天没再出现的由每小时的保留期清理删掉（运营商、城市、接入方式不删）：之后这个 IP 再出现算「首次出现」，会再告警一次。后台每 5 分钟从 `access_source_hourly` 增量维护 `node_source_seen`（水位在 `ipintel_state`；水位之前的小时若被补算，连接数差值经 `access_source_late` 补记，首次扫描按 7 天一页）。
 
 ## 生命周期操作：换线路机、搬空线路机、恢复已退役的机器
 都是作业（可续跑、幂等、留日志），接口只做校验、建作业、写审计。

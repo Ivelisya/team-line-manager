@@ -111,6 +111,90 @@ async fn report_gets_503_when_pool_exhausted() {
     assert_eq!(t.report("tok1", &blank_report(1)).await.0, StatusCode::OK);
 }
 
+/// 主机样本：同一时刻只收一条（重报不多占）；最多超前 10 分钟；每台机器按余额收（24 小时的量，之后 5 秒补一个）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn host_samples_dedup_future_window_and_budget() {
+    let t = setup().await;
+    seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let now = now_ms();
+    let mut r = blank_report(1);
+    r.host = vec![host(now - 10_000, 1.0, 1, 1), host(now - 10_000, 2.0, 1, 1), host(now + 5 * 60_000, 1.0, 1, 1), host(now + 15 * 60_000, 1.0, 1, 1)];
+    let (s, v) = t.report("tok1", &r).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(t.count("select count(*) from host_metric").await, 2, "重复的一条、超前 15 分钟的一条不收");
+    let mut r = blank_report(2);
+    r.host = vec![host(now - 10_000, 3.0, 1, 1)];
+    let (s, v) = t.report("tok1", &r).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(t.count("select count(*) from host_metric").await, 2, "下一份重报同一时刻：照样 200，不多一条");
+    // 一口气补传 9000 个（25 份 × 360，1 秒一个）：前面扣了 4 个，余额只够 8636 个（加上这几秒补的）
+    for j in 0..25i64 {
+        let mut r = blank_report(3 + j as u64);
+        r.host = (0..360).map(|i| host(now - 20_000 - (j * 360 + i) * 1000, 1.0, 1, 1)).collect();
+        let (s, v) = t.report("tok1", &r).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+    }
+    let n = t.count("select count(*) from host_metric").await;
+    assert!((2 + 8636..2 + 8700).contains(&n), "{n}");
+}
+
+/// 应用回报：错误文本截到 512 字、不认识的入口忽略；没变化的重发不推送；一台线路机连发超过突发量回 429
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn applied_report_is_clipped_quiet_when_unchanged_and_rate_limited() {
+    let t = setup().await;
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let team = seed_team(&t, "团队1").await;
+    let (_node, entry) = seed_node(&t, relay, team, 1, "203.0.113.5", 20000).await;
+    let mut ev = t.st.events.subscribe();
+    let mut machines_events = || {
+        let mut n = 0;
+        while let Ok(e) = ev.try_recv() {
+            n += matches!(e, Event::Machines) as usize;
+        }
+        n
+    };
+    let rep = json!({"generation": 1, "ok": false, "error": "x".repeat(600_000),
+        "entries": [{"id": entry, "ok": false, "error": "y".repeat(600_000)}, {"id": Uuid::now_v7(), "ok": false, "error": "z"}]});
+    let (s, v) = t.req("POST", "/agent/v1/applied", Some(rep.clone()), Some("tok1")).await;
+    assert_eq!(s, StatusCode::NO_CONTENT, "{v}");
+    let (re, ee): (String, String) = sqlx::query_as("select r.apply_error, e.apply_error from relay r, entry e where r.machine_id = $1 and e.id = $2")
+        .bind(relay)
+        .bind(entry)
+        .fetch_one(&t.st.db)
+        .await
+        .unwrap();
+    assert_eq!((re.len(), ee.len()), (512, 512));
+    assert_eq!(machines_events(), 1);
+    let (s, _) = t.req("POST", "/agent/v1/applied", Some(rep), Some("tok1")).await;
+    assert_eq!((s, machines_events()), (StatusCode::NO_CONTENT, 0), "同一份重发：没变化不推送");
+
+    let mut limited = None;
+    for i in 0..200 {
+        let (s, v) = t.req("POST", "/agent/v1/applied", Some(json!({"generation": 1, "ok": true})), Some("tok1")).await;
+        if s == StatusCode::TOO_MANY_REQUESTS {
+            limited = Some((i, v));
+            break;
+        }
+        assert_eq!(s, StatusCode::NO_CONTENT, "{v}");
+    }
+    let (i, v) = limited.expect("连发 200 份应被限流");
+    assert!(i >= 110 && v["error"]["code"] == "rate_limited", "{i} {v}");
+    assert_eq!(machines_events(), 1, "只有第一份成功回报（清掉错误）推送");
+}
+
+/// 取分享链接的审计记是哪条入口，不记链接
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn share_audit_names_the_entry() {
+    let t = setup().await;
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let team = seed_team(&t, "团队1").await;
+    let (_node, entry) = seed_node(&t, relay, team, 1, "203.0.113.5", 20000).await;
+    let url = t.get(&format!("/api/v1/entries/{entry}/share")).await["url"].as_str().unwrap().to_string();
+    let d: Value = sqlx::query_scalar("select detail from audit_log where action = 'entry.share' and target_id = $1").bind(entry).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!((d["relay"].as_str(), d["port"].as_i64()), (Some("线路机1"), Some(20000)), "{d}");
+    assert!(d["entry"].as_str().is_some_and(|s| !s.is_empty()) && !d.to_string().contains(&url), "{d}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn relay_probe_series_covers_its_entries() {
     let t = setup().await;
@@ -1384,8 +1468,24 @@ async fn retention_cleanup_removes_only_expired_rows() {
             .await
             .unwrap();
     }
+    // 来源画像：只删久未出现、不在告警中的 ip 行；运营商等其它维度不删
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    for (dim, value, days, flag) in [("ip", "203.0.113.1", 40, None), ("ip", "203.0.113.2", 10, None), ("ip", "203.0.113.3", 40, Some("open")), ("isp", "某运营商", 40, None)] {
+        sqlx::query(&format!(
+            "insert into node_source_seen (node_id, dim, value, first_seen, last_seen, flag) values ($1, $2, $3, now() - interval '50 days', now() - interval '{days} days', $4)"
+        ))
+        .bind(relay)
+        .bind(dim)
+        .bind(value)
+        .bind(flag)
+        .execute(db)
+        .await
+        .unwrap();
+    }
     let sessions_before = t.count("select count(*) from session").await;
-    db::cleanup_retention(db).await.unwrap();
+    db::cleanup_retention(db, 32).await.unwrap();
+    assert_eq!(t.count("select count(*) from node_source_seen where value <> '203.0.113.1'").await, 3, "只删 40 天没出现、没在告警的来源 IP");
+    assert_eq!(t.count("select count(*) from node_source_seen").await, 3);
     assert_eq!(t.count("select count(*) from silence").await, 1, "结束超 90 天的静默删掉");
     assert_eq!(t.count("select count(*) from incident").await, 2, "只删已恢复超 180 天的");
     assert_eq!(t.count("select count(*) from incident where state = 'firing'").await, 1);

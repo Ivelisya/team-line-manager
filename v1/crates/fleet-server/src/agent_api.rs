@@ -59,6 +59,8 @@ async fn authenticate(st: &AppState, h: &HeaderMap) -> ApiResult<AgentId> {
 }
 
 const DAY_MS: i64 = 86_400_000;
+/// 样本时间戳最多比中控超前这么久（毫秒）。agent 时钟快得更多时样本丢弃，健康原因 clock_skew（> 60 秒）早已报出
+const FUTURE_MS: i64 = 10 * 60_000;
 
 /// 时间戳落在 `[lo, hi]`（Unix 毫秒）内才收，否则丢弃。
 /// 分区只覆盖保留期以内到未来几天：窗口外的样本若硬写会让整份上报的事务失败，agent 又会对同一个 seq 无限重试。
@@ -110,7 +112,7 @@ fn warn_dropped(machine: Uuid, dropped: usize, seq: u64) {
     let mut m = LAST.get_or_init(Default::default).lock().unwrap();
     if m.get(&machine).is_none_or(|t| t.elapsed() >= Duration::from_secs(60)) {
         m.insert(machine, Instant::now());
-        tracing::warn!(%machine, seq, dropped, "上报里有时间戳超出可收范围（过期或在未来）的样本，已丢弃");
+        tracing::warn!(%machine, seq, dropped, "上报里有时间戳超出可收范围（过期或在未来）或超出主机样本余额的样本，已丢弃");
     }
 }
 
@@ -144,30 +146,65 @@ fn ingest_error(e: sqlx::Error) -> ApiError {
 /// 容量够补完 6 小时离线队列（离线时 60 s 建一份）再加追赶，之后每秒补一份（每秒 2000 条访问记录，远超线路机的量）
 const REPORT_BURST: f64 = 600.0;
 const REPORT_REFILL_PER_S: f64 = 1.0;
+/// 主机样本另记余额：agent 10 秒采一个，这里按两倍速（5 秒一个）补充，容量 24 小时的量。
+/// 积压补传最多 6 小时离线队列 + 12 小时内存缓冲，离线期间余额按两倍速回满，正常 agent 扣不完；
+/// 一台机器每天最多入库约 0.2 × 86400 + 8640 ≈ 2.6 万条（正常 8640），超出的丢弃（计入 dropped）
+const HOST_BURST: f64 = 8640.0;
+const HOST_REFILL_PER_S: f64 = 0.2;
 
 struct Bucket {
     tokens: f64,
     at: Instant,
     /// 扣过令牌的最大 seq：同一份重发（网络错误、503 后重试）和重复的不再扣
     seq: u64,
+    /// 主机样本的余额
+    host: f64,
 }
 
 static BUCKETS: LazyLock<Mutex<HashMap<Uuid, Bucket>>> = LazyLock::new(Default::default);
 
-/// 新的一份（seq 大于扣过的）扣一个令牌；扣不到返回还要等几秒
-fn take_token(m: &mut HashMap<Uuid, Bucket>, machine: Uuid, seq: u64, now: Instant) -> Result<(), u64> {
-    let b = m.entry(machine).or_insert(Bucket { tokens: REPORT_BURST, at: now, seq: 0 });
-    b.tokens = (b.tokens + now.saturating_duration_since(b.at).as_secs_f64() * REPORT_REFILL_PER_S).min(REPORT_BURST);
+/// 新的一份（seq 大于扣过的）扣一个令牌、按余额扣 `host` 个主机样本，返回能收的主机样本数；扣不到令牌返回还要等几秒。
+/// 重发的不扣、样本全收：首次已提交的入库时按 seq 去重，没提交的本来就没写进去
+fn take_token(m: &mut HashMap<Uuid, Bucket>, machine: Uuid, seq: u64, host: usize, now: Instant) -> Result<usize, u64> {
+    let b = m.entry(machine).or_insert(Bucket { tokens: REPORT_BURST, at: now, seq: 0, host: HOST_BURST });
+    let dt = now.saturating_duration_since(b.at).as_secs_f64();
+    b.tokens = (b.tokens + dt * REPORT_REFILL_PER_S).min(REPORT_BURST);
+    b.host = (b.host + dt * HOST_REFILL_PER_S).min(HOST_BURST);
     b.at = now;
     if seq <= b.seq {
-        return Ok(());
+        return Ok(host);
     }
     if b.tokens < 1.0 {
         return Err(((1.0 - b.tokens) / REPORT_REFILL_PER_S).ceil().max(1.0) as u64);
     }
     b.tokens -= 1.0;
     b.seq = seq;
+    let n = host.min(b.host as usize);
+    b.host -= n as f64;
+    Ok(n)
+}
+
+/// 应用回报的限流（每台线路机）：正常一代一份，失败按退避重发；突发 120 份，之后 2 秒一份
+const APPLIED_BURST: f64 = 120.0;
+const APPLIED_REFILL_PER_S: f64 = 0.5;
+static APPLIED: LazyLock<Mutex<HashMap<Uuid, (f64, Instant)>>> = LazyLock::new(Default::default);
+
+fn take_applied(m: &mut HashMap<Uuid, (f64, Instant)>, relay: Uuid, now: Instant) -> Result<(), u64> {
+    let (tokens, at) = m.entry(relay).or_insert((APPLIED_BURST, now));
+    *tokens = (*tokens + now.saturating_duration_since(*at).as_secs_f64() * APPLIED_REFILL_PER_S).min(APPLIED_BURST);
+    *at = now;
+    if *tokens < 1.0 {
+        return Err(((1.0 - *tokens) / APPLIED_REFILL_PER_S).ceil().max(1.0) as u64);
+    }
+    *tokens -= 1.0;
     Ok(())
+}
+
+/// 429 + Retry-After（秒）
+fn too_many(wait: u64, what: &str) -> Response {
+    let mut resp = ApiError::new(StatusCode::TOO_MANY_REQUESTS, "rate_limited", format!("{what}太频繁，{wait} 秒后再发")).into_response();
+    resp.headers_mut().insert(axum::http::header::RETRY_AFTER, wait.into());
+    resp
 }
 
 /// 每份报告的条数上限：agent 自己最多就发这么多（fleet-agent reporter.rs 的 MAX_*_PER_REPORT），多出来的不收
@@ -224,11 +261,7 @@ fn sanitize(r: &mut Report) {
 async fn report(State(st): State<AppState>, h: HeaderMap, ApiJson(r): ApiJson<Report>) -> Result<Response, ApiError> {
     match ingest(&st, &h, r).await {
         Ok(ack) => Ok(ack.into_response()),
-        Err(IngestErr::Limited(wait)) => {
-            let mut resp = ApiError::new(StatusCode::TOO_MANY_REQUESTS, "rate_limited", format!("上报太频繁，{wait} 秒后再发")).into_response();
-            resp.headers_mut().insert(axum::http::header::RETRY_AFTER, wait.into());
-            Ok(resp)
-        }
+        Err(IngestErr::Limited(wait)) => Ok(too_many(wait, "上报")),
         Err(IngestErr::Api(e)) => Err(e),
         Err(IngestErr::Db(e)) => Err(ingest_error(e)),
     }
@@ -236,18 +269,23 @@ async fn report(State(st): State<AppState>, h: HeaderMap, ApiJson(r): ApiJson<Re
 
 async fn ingest(st: &AppState, h: &HeaderMap, mut r: Report) -> Result<Json<ReportAck>, IngestErr> {
     let a = authenticate(st, h).await?;
-    take_token(&mut BUCKETS.lock().unwrap(), a.machine_id, r.seq, Instant::now()).map_err(IngestErr::Limited)?;
     sanitize(&mut r);
     let now = OffsetDateTime::now_utc();
     let now_ms = (now.unix_timestamp_nanos() / 1_000_000) as i64;
-    let hi = now_ms + DAY_MS;
+    let hi = now_ms + FUTURE_MS;
     let raw_lo = now_ms - st.cfg.retention.raw_days as i64 * DAY_MS;
     let acc_lo = now_ms - st.cfg.retention.access_days as i64 * DAY_MS;
     let today = now.date();
     let mut dropped = 0usize;
 
     // ── 入库前整理：时间窗口过滤、补建分区。单条坏样本绝不能让整份上报失败 ──
-    let host = windowed(r.host.iter(), |s| s.ts_ms, raw_lo, hi, &mut dropped);
+    let mut host = windowed(r.host.iter(), |s| s.ts_ms, raw_lo, hi, &mut dropped);
+    let keep = take_token(&mut BUCKETS.lock().unwrap(), a.machine_id, r.seq, host.len(), Instant::now()).map_err(IngestErr::Limited)?;
+    // 超出余额的丢最早的：最新的读数要进实时视图
+    if keep < host.len() {
+        dropped += host.len() - keep;
+        host.drain(..host.len() - keep);
+    }
     let host = with_partitions(st, "host_metric", host, today, &mut dropped).await;
     let (mut es, mut ps, mut ac) = (vec![], vec![], vec![]);
     // 线路机数据：只收属于这台线路机的入口
@@ -349,7 +387,8 @@ async fn ingest(st: &AppState, h: &HeaderMap, mut r: Report) -> Result<Json<Repo
         }
         sqlx::query(
             "insert into host_metric (machine_id, ts, cpu_pct, load1, mem_used, mem_total, disk_used, disk_total, net_rx_bytes, net_tx_bytes, tcp_conns)
-             select $1, * from unnest($2::timestamptz[], $3::real[], $4::real[], $5::bigint[], $6::bigint[], $7::bigint[], $8::bigint[], $9::bigint[], $10::bigint[], $11::int[])",
+             select $1, * from unnest($2::timestamptz[], $3::real[], $4::real[], $5::bigint[], $6::bigint[], $7::bigint[], $8::bigint[], $9::bigint[], $10::bigint[], $11::int[])
+             on conflict do nothing",
         )
         .bind(a.machine_id)
         .bind(&t)
@@ -471,20 +510,37 @@ async fn desired(State(st): State<AppState>, h: HeaderMap, Query(q): Query<Desir
     }
 }
 
-async fn applied(State(st): State<AppState>, h: HeaderMap, ApiJson(r): ApiJson<ApplyReport>) -> ApiResult<StatusCode> {
+/// 应用回报入库前截断：错误文本进告警摘要、通知和每个浏览器的健康推送；入口条数同上报的上限（不认识的 id 入库时本来就忽略）
+fn sanitize_applied(r: &mut ApplyReport) {
+    r.entries.truncate(MAX_ENTRIES);
+    for s in r.entries.iter_mut().filter_map(|e| e.error.as_mut()).chain(r.error.as_mut()) {
+        clip(s, MAX_TEXT);
+    }
+}
+
+async fn applied(State(st): State<AppState>, h: HeaderMap, ApiJson(mut r): ApiJson<ApplyReport>) -> ApiResult<Response> {
     let a = authenticate(&st, &h).await?;
     if a.kind != "relay" {
         return Err(ApiError::forbidden("只有线路机回报应用结果"));
     }
-    entries::on_applied(&st.db, a.machine_id, &r).await?;
+    if let Err(wait) = take_applied(&mut APPLIED.lock().unwrap(), a.machine_id, Instant::now()) {
+        return Ok(too_many(wait, "应用回报"));
+    }
+    sanitize_applied(&mut r);
+    let changed = entries::on_applied(&st.db, a.machine_id, &r).await?;
     if !r.ok {
-        tracing::warn!(relay = %a.machine_id, generation = r.generation, "应用失败：{:?}", r.error);
+        let mut e = r.error.clone().unwrap_or_default();
+        clip(&mut e, 120);
+        tracing::warn!(relay = %a.machine_id, generation = r.generation, "应用失败：{e}");
     }
     // 等这台线路机应用 / 摘除的作业（成功失败都要看）
     crate::jobs::wake_for(&st, a.machine_id).await;
-    st.emit(Event::Relay { id: a.machine_id });
-    st.emit(Event::Machines);
-    Ok(StatusCode::NO_CONTENT)
+    // 同一份回报重发、没变化的不推送（每个浏览器都会重取机器列表）
+    if changed {
+        st.emit(Event::Relay { id: a.machine_id });
+        st.emit(Event::Machines);
+    }
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 /// 回显请求方 IP（出口探测用）；取法同登录限速（X-Forwarded-For 最后一项）
@@ -500,20 +556,57 @@ mod tests {
     fn bucket_allows_burst_then_paces_and_never_charges_resends() {
         let (mut m, id, t0) = (HashMap::new(), Uuid::now_v7(), Instant::now());
         for seq in 1..=REPORT_BURST as u64 {
-            assert!(take_token(&mut m, id, seq, t0).is_ok(), "{seq}");
+            assert!(take_token(&mut m, id, seq, 0, t0).is_ok(), "{seq}");
         }
         let next = REPORT_BURST as u64 + 1;
-        assert_eq!(take_token(&mut m, id, next, t0), Err(1));
+        assert_eq!(take_token(&mut m, id, next, 0, t0), Err(1));
         // 重发、重复的（seq 不大于扣过的）照收，不扣
-        assert!(take_token(&mut m, id, next - 1, t0).is_ok() && take_token(&mut m, id, 1, t0).is_ok());
+        assert!(take_token(&mut m, id, next - 1, 0, t0).is_ok() && take_token(&mut m, id, 1, 0, t0).is_ok());
         // 过一秒补一个
-        assert!(take_token(&mut m, id, next, t0 + Duration::from_secs(1)).is_ok());
-        assert_eq!(take_token(&mut m, id, next + 1, t0 + Duration::from_secs(1)), Err(1));
-        // 别的机器不受影响；正常 10 秒一份永远扣得到
+        assert!(take_token(&mut m, id, next, 0, t0 + Duration::from_secs(1)).is_ok());
+        assert_eq!(take_token(&mut m, id, next + 1, 0, t0 + Duration::from_secs(1)), Err(1));
+        // 别的机器不受影响；正常 10 秒一份（每份一个主机样本）永远扣得到、样本全收
         let other = Uuid::now_v7();
         for k in 0..2000u64 {
-            assert!(take_token(&mut m, other, k + 1, t0 + Duration::from_secs(k * 10)).is_ok());
+            assert_eq!(take_token(&mut m, other, k + 1, 1, t0 + Duration::from_secs(k * 10)), Ok(1));
         }
+    }
+
+    #[test]
+    fn host_budget_covers_backlog_but_caps_floods() {
+        let (mut m, id, t0) = (HashMap::new(), Uuid::now_v7(), Instant::now());
+        // 18 小时积压（6 小时队列 + 12 小时缓冲，10 秒一个）按每份 360 个连发：全收
+        let backlog = 18 * 360;
+        for k in 0..(backlog / 360) as u64 {
+            assert_eq!(take_token(&mut m, id, k + 1, 360, t0), Ok(360));
+        }
+        // 之后猛灌：余额（24 小时的量）扣完就只收补充的部分
+        let mut got = backlog;
+        for k in 0..100u64 {
+            got += take_token(&mut m, id, 1000 + k, 360, t0).unwrap();
+        }
+        assert_eq!(got, HOST_BURST as usize);
+        // 一小时后补 720 个（两倍于正常采样）
+        assert_eq!(take_token(&mut m, id, 2000, 360, t0 + Duration::from_secs(3600)), Ok(360));
+        assert_eq!(take_token(&mut m, id, 2001, 720, t0 + Duration::from_secs(3600)), Ok(360));
+        // 重发的不扣
+        assert_eq!(take_token(&mut m, id, 2001, 360, t0 + Duration::from_secs(3600)), Ok(360));
+    }
+
+    #[test]
+    fn applied_bucket_paces_and_sanitize_clips_errors() {
+        let (mut m, id, t0) = (HashMap::new(), Uuid::now_v7(), Instant::now());
+        for _ in 0..APPLIED_BURST as u32 {
+            assert!(take_applied(&mut m, id, t0).is_ok());
+        }
+        assert_eq!(take_applied(&mut m, id, t0), Err(2));
+        assert!(take_applied(&mut m, id, t0 + Duration::from_secs(2)).is_ok());
+        let e = fleet_proto::EntryApply { id: Uuid::nil(), ok: false, error: Some("x".repeat(600)) };
+        let mut r = ApplyReport { generation: 1, ok: false, error: Some("错".repeat(100_000)), entries: vec![e; MAX_ENTRIES + 5] };
+        sanitize_applied(&mut r);
+        assert_eq!(r.entries.len(), MAX_ENTRIES);
+        assert!(r.entries.iter().all(|e| e.error.as_ref().unwrap().len() == MAX_TEXT));
+        assert_eq!(r.error.unwrap().chars().count(), MAX_TEXT);
     }
 
     #[test]

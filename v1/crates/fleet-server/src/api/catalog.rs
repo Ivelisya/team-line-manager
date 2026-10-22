@@ -87,7 +87,8 @@ pub async fn patch_team(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPa
             .await?;
         relays = crate::db::bump_relays_of_nodes(&mut tx, &nodes).await?;
     }
-    audit(&mut tx, &a.name, "team.update", "team", Some(id), json!({"before": {"name": old.0, "sort_order": old.1}, "after": {"name": name}})).await?;
+    audit(&mut tx, &a.name, "team.update", "team", Some(id),
+        json!({"before": {"name": old.0, "sort_order": old.1}, "after": {"name": name, "sort_order": b.sort_order.unwrap_or(old.1)}})).await?;
     tx.commit().await?;
     for r in relays {
         st.relay_bumped(r);
@@ -191,7 +192,9 @@ pub async fn patch_provider(a: Actor, State(st): State<AppState>, ApiPath(id): A
         Some(c) => clean_name(c, "供应商缩写")?,
         None => old.code.clone(),
     };
+    // 网页表单每次都带上控制台地址：和库里一样就不重新校验（http(s) 校验之前存下的旧值不能让别的字段改不了）
     let panel_url = match &b.panel_url {
+        Some(u) if blank(u) == blank(&old.panel_url) => old.panel_url.clone(),
         Some(u) => panel_url(u)?,
         None => old.panel_url.clone(),
     };
@@ -281,7 +284,26 @@ pub struct PlanIn {
     archived: Option<bool>,
 }
 
-pub async fn create_plan(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<PlanIn>) -> ApiResult<Json<Value>> {
+/// 套餐字段校验（新建与 PATCH 共用，只看传了的）：价格不为负，币种 1–8 个字母（转成大写），备注不超过 2000 字
+fn check_plan(b: &mut PlanIn) -> ApiResult<()> {
+    if b.price_cents.is_some_and(|p| p < 0) {
+        return Err(ApiError::bad_request("价格不能为负"));
+    }
+    if let Some(c) = &mut b.currency {
+        let u = c.trim().to_ascii_uppercase();
+        if u.is_empty() || u.len() > 8 || !u.bytes().all(|x| x.is_ascii_uppercase()) {
+            return Err(ApiError::bad_request("币种是 1–8 个字母，如 USD、CNY"));
+        }
+        *c = u;
+    }
+    if b.notes.as_ref().is_some_and(|n| n.chars().count() > 2000) {
+        return Err(ApiError::bad_request("备注不超过 2000 字"));
+    }
+    Ok(())
+}
+
+pub async fn create_plan(a: Actor, State(st): State<AppState>, ApiJson(mut b): ApiJson<PlanIn>) -> ApiResult<Json<Value>> {
+    check_plan(&mut b)?;
     let id = new_id();
     let provider = b.provider_id.ok_or_else(|| ApiError::bad_request("缺少 provider_id"))?;
     let name = clean_name(b.name.as_deref().unwrap_or(""), "套餐名")?;
@@ -311,9 +333,11 @@ pub async fn create_plan(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJs
     Ok(ok(json!({"id": id})))
 }
 
-pub async fn patch_plan(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<PlanIn>) -> ApiResult<Json<Value>> {
+pub async fn patch_plan(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(mut b): ApiJson<PlanIn>) -> ApiResult<Json<Value>> {
+    check_plan(&mut b)?;
     let mut tx = st.db.begin().await?;
-    sqlx::query("select 1 from plan where id = $1 for update").bind(id).fetch_one(&mut *tx).await?;
+    const ROW: &str = "select to_jsonb(p) - 'created_at' from plan p where id = $1";
+    let before: Value = sqlx::query_scalar(&format!("{ROW} for update")).bind(id).fetch_one(&mut *tx).await?;
     // 逐字段更新：Option<Option<T>> 区分「没传」与「设为空」
     macro_rules! set {
         ($col:literal, $v:expr) => {
@@ -345,7 +369,16 @@ pub async fn patch_plan(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPa
             .execute(&mut *tx)
             .await?;
     }
-    audit(&mut tx, &a.name, "plan.update", "plan", Some(id), json!({})).await?;
+    // 审计只记改了的字段（同团队、供应商的 before / after）
+    let after: Value = sqlx::query_scalar(ROW).bind(id).fetch_one(&mut *tx).await?;
+    let (mut was, mut now) = (serde_json::Map::new(), serde_json::Map::new());
+    if let (Value::Object(x), Value::Object(y)) = (&before, &after) {
+        for (k, v) in y.iter().filter(|(k, v)| x.get(*k) != Some(*v)) {
+            was.insert(k.clone(), x.get(k).cloned().unwrap_or(Value::Null));
+            now.insert(k.clone(), v.clone());
+        }
+    }
+    audit(&mut tx, &a.name, "plan.update", "plan", Some(id), json!({"before": was, "after": now})).await?;
     tx.commit().await?;
     st.emit(Event::Catalog);
     Ok(ok(json!({"id": id})))
