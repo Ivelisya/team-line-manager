@@ -124,22 +124,26 @@
 @media (max-width: 600px) { .hgroups { flex-wrap: wrap; } .seg.seg-fill { flex-basis: 100%; } }
 
 /* ---------- 分段格条 / 资源读数 ---------- */
-/* 一条格条只有一个元素：mask 按 --tile（一格加一道缝）横向平铺一个圆角矩形，切出 n 格（矩形宽 = 格宽 − 缝，缝是精确的 px）；
-   n 格加 n 道缝比元素宽一道缝，最后一道缝落在元素外面。底色是未点亮色，点亮部分是 Cells 写在行内的背景渐变（位置同样按 --tile）。
+/* 一条格条只有一个元素：mask 按 --tile（一格加一道缝）横向平铺，切出 n 个圆角格（缝是精确的 px，圆角半径 --r）；
+   n 格加 n 道缝比元素宽一道缝，最后一道缝落在元素外面。圆角格 = 横条 ∪ 竖条 ∪ 四角的圆，全用渐变拼（mask 各层默认取并集）——
+   不用 SVG 里靠 CSS calc 定宽的矩形，WebKit 不一定认。底色是未点亮色，点亮部分是 Cells 写在行内的背景渐变（位置同样按 --tile）。
    第一次出现时背景从 0 宽扫到整条（只播一次）；之后读数变化直接换渐变、不过渡——
    以前每格一个元素各带一条逐格点亮的动画，翻页、换视图时几千个格子同时动 */
 .cells {
-  --g: 2px; --tile: calc((100% + var(--g)) / var(--n));
-  --cells-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Crect style='width:calc(100%25 - 2px);height:100%25' rx='2'/%3E%3C/svg%3E");
+  --g: 2px; --r: 2px; --tile: calc((100% + var(--g)) / var(--n));
+  --cells-mask:
+    linear-gradient(to right, #000 calc(100% - var(--g)), transparent 0) 0 var(--r) / var(--tile) calc(100% - 2 * var(--r)) repeat-x,
+    linear-gradient(to right, transparent var(--r), #000 0 calc(100% - var(--g) - var(--r)), transparent 0) 0 0 / var(--tile) 100% repeat-x,
+    radial-gradient(circle at var(--r) var(--r), #000 var(--r), transparent 0) 0 0 / var(--tile) 100% repeat-x,
+    radial-gradient(circle at calc(100% - var(--g) - var(--r)) var(--r), #000 var(--r), transparent 0) 0 0 / var(--tile) 100% repeat-x,
+    radial-gradient(circle at var(--r) calc(100% - var(--r)), #000 var(--r), transparent 0) 0 0 / var(--tile) 100% repeat-x,
+    radial-gradient(circle at calc(100% - var(--g) - var(--r)) calc(100% - var(--r)), #000 var(--r), transparent 0) 0 0 / var(--tile) 100% repeat-x;
   height: 8px; min-width: 0; background: var(--cell-off) no-repeat 0 0 / 100% 100%;
-  -webkit-mask: var(--cells-mask) 0 0 / var(--tile) 100% repeat-x; mask: var(--cells-mask) 0 0 / var(--tile) 100% repeat-x;
+  -webkit-mask: var(--cells-mask); mask: var(--cells-mask);
   animation: cells-in calc(var(--dur-data) + 12 * var(--cell-stagger)) var(--ease-std) backwards;
 }
 @keyframes cells-in { from { background-size: 0 100%; } }
-.cells-lg {
-  --g: 3px; height: 9px;
-  --cells-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Crect style='width:calc(100%25 - 3px);height:100%25' rx='2'/%3E%3C/svg%3E");
-}
+.cells-lg { --g: 3px; height: 9px; }
 
 .cmeter { display: grid; gap: 5px; min-width: 0; }
 .cmeter[data-metric="cpu"] { --mc: var(--m-cpu); }

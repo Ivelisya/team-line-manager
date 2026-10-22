@@ -32,12 +32,12 @@ const KIND_OPTS = Object.entries(KIND_LABEL).map(([value, label]) => ({ value, l
 const STATUS_OPTS = [...Object.entries(HEALTH_LABEL).filter(([k]) => k !== 'inactive').map(([value, label]) => ({ value, label })), { value: 'provisioning', label: '上架中' }, { value: 'failed', label: '上架失败' }, { value: 'retiring', label: '退役中' }];
 const SCOPES: { value: Scope; label: string }[] = [{ value: 'live', label: '在用' }, { value: 'retired', label: '已退役' }];
 /** 行签名：这页的列只显示资产信息（流量按显示精度），不显示实时读数，推送只改读数时行不重渲染（MachineGrid sig）。
- *  列里显示的东西都要在这里；悬浮卡不传 m，打开时自己取这台的最新数据 */
+ *  列里显示的东西都要在这里——每加一列、列里多显示一个字段，都要同步改这里；悬浮卡不传 m，打开时自己取这台的最新数据 */
 const rowSig = (m: MachineView) => {
   const t = monthTraffic(m); const s = m.subscription;
   return [m.name, m.ip, m.kind, m.lifecycle, m.maintenance, m.health.status, m.health.reasons.map((r) => `${r.severity}${r.text}`).join(),
-    m.host_machine?.name, m.ip_nodes.length, entryText(m), m.plan?.name, m.provider?.name, F.str(F.bytes(t.up + t.down)), F.str(F.bytes(t.down)),
-    s?.due_days, s?.due_date, s?.price_cents, s?.currency, s?.cycle, m.retired_at, m.lifecycle_reason].join('');
+    m.host_machine?.id, m.host_machine?.name, m.ip_nodes.map((x) => `${x.id}:${x.name}`).join(), entryText(m), m.plan?.name, m.provider?.name, F.str(F.bytes(t.up + t.down)), F.str(F.bytes(t.down)),
+    s?.due_days, s?.due_date, s?.price_cents, s?.currency, s?.cycle, m.retired_at, m.lifecycle_reason].join('\u0001');
 };
 
 export function NodesPage() {

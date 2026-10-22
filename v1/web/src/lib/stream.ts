@@ -93,7 +93,7 @@ export function useStream(enabled: boolean) {
         if (stopped) return;
         setStatus('error');
         waiting = true;
-        retryTimer = setTimeout(open, Math.min(BACKOFF_MAX, 1000 * 2 ** retry++) * (0.8 + Math.random() * 0.4));
+        retryTimer = setTimeout(open, Math.min(BACKOFF_MAX, 1000 * 2 ** retry++ * (0.8 + Math.random() * 0.4)));
       };
     };
     const reconnectNow = () => {

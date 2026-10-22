@@ -44,11 +44,13 @@ export function MachineGrid({ cols, rows, sort, onSort, openId, onOpen, dim = is
 }) {
   const wrap = React.useRef<HTMLDivElement>(null);
   const [dropped, setDropped] = React.useState(0);
-  React.useEffect(() => watchSize(wrap.current!, (e) => {
-    const f = fitCols(cols, e.contentRect.width);
-    e.target.toggleAttribute('data-fit', f.fit);
-    setDropped(f.n);
-  }), [cols]);
+  // 挂载、换列（在用 / 已退役）时先在绘制前按当前宽度算一次，不先露出全部列和横向滚动条再收；之后的宽度变化交给共享的 ResizeObserver
+  React.useLayoutEffect(() => {
+    const el = wrap.current!;
+    const apply = (w: number) => { const f = fitCols(cols, w); el.toggleAttribute('data-fit', f.fit); setDropped(f.n); };
+    apply(el.clientWidth);
+    return watchSize(el, (e) => apply(e.contentRect.width));
+  }, [cols]);
   const shown = React.useMemo(() => {
     if (!dropped) return cols;
     const gone = new Set(cols.filter((c) => c.drop != null).sort((a, b) => a.drop! - b.drop!).slice(0, dropped).map((c) => c.id));

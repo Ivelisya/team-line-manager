@@ -176,9 +176,10 @@ function RetryButton({ j }: { j: Job }) {
   const retry = useRetryJob();
   const kind = j.steps.find((s) => s.state === 'failed')?.error_kind;
   const ask = kind === 'host_key' || kind === 'auth';
-  const target = useMachine(ask ? j.target?.id ?? null : null).data;
-  const ip = j.kind === 'provision_ip' || j.kind === 'restore_ip' || !!target?.host_machine;
-  const canReset = kind === 'host_key' && !ip;
+  const target = useMachine(ask ? j.target?.id ?? null : null);
+  const ip = j.kind === 'provision_ip' || j.kind === 'restore_ip' || !!target.data?.host_machine;
+  // 目标机器还没取回时不知道是不是同机 IP 节点：先不给重置（没有目标的作业不用等）
+  const canReset = kind === 'host_key' && !ip && (!j.target || !!target.data);
   const desc = kind === 'host_key'
     ? (ip ? '同机 IP 节点经宿主机登录，指纹不符说明宿主机的主机指纹变了（比如宿主机重装过系统）。先确认这是预期的变化，再对宿主机「升级 agent」：它也会因为指纹不符失败，在作业页重试它并勾选「重置主机指纹」；宿主机升级成功后，回来重试这个作业。'
       : '机器的主机指纹和记录的不一致。确认机器重装过、IP 没有换给别的机器，再重置指纹重试。')
