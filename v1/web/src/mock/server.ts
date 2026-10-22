@@ -578,6 +578,8 @@ R('GET', '/jobs/([^/]+)/logs', ({ params, query }) => { const after = +(query.ge
 R('POST', '/jobs/([^/]+)/retry', ({ params, body }) => {
   const j = jobOf(params[0]); if (j.state !== 'failed') throw bad('只有失败的作业才能重试', 409, 'conflict');
   const f = j.steps.find((s) => s.state === 'failed')!;
+  const ipNode = j.kind === 'provision_ip' || j.kind === 'restore_ip' || !!db.machines.find((x) => x.id === j.target?.id)?.host_machine;
+  if (body.reset_host_key && (f.error_kind !== 'host_key' || ipNode)) throw bad(ipNode ? '同机 IP 节点不能在这里重置主机指纹：先在宿主机的作业里重置' : '只有主机指纹不符的失败才能重置指纹', 409, 'conflict');
   if (f.error_kind === 'host_key' && !body.reset_host_key) throw bad('主机指纹仍与记录的不一致：确认机器重装过后勾选「重置主机指纹」', 409, 'conflict');
   if (f.error_kind === 'auth' && !body.ssh_password) throw bad('中控密钥仍登录不上：请填写 SSH 密码', 409, 'conflict');
   f.state = 'running'; f.error = null; f.error_kind = null; j.state = 'running'; j.cancellable = true; j.error = null; j.finished_at = null; log(j.id, 'info', `从失败的步骤重试${body.reset_host_key ? '（已重置主机指纹）' : ''}`);

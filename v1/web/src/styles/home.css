@@ -124,18 +124,26 @@
 @media (max-width: 600px) { .hgroups { flex-wrap: wrap; } .seg.seg-fill { flex-basis: 100%; } }
 
 /* ---------- 分段格条 / 资源读数 ---------- */
-.cells { display: flex; gap: 2px; height: 8px; min-width: 0; }
-/* 从左往右逐格点亮只在格条第一次出现时播（animation 只在元素挂载时跑一次）；之后读数变化像 LED 一样直接切换、不过渡：
-   每条推送上千个格子各起一条底色 / 透明度过渡，主线程逐帧重画整页（实测紧凑 96 张卡每条推送 329ms、大卡 24 张 100ms，去掉过渡降 86–88%）。
-   点亮色放 ::after 只过渡透明度也试过，总量不降。
-   没点亮的格子也挂着这段动画：起止都是底色，看不出来，但这样点亮与否变化时不会重新触发 */
-.cells > i {
-  flex: 1 1 0; min-width: 0; border-radius: 2px; background: var(--cell-off);
-  animation: cell-in var(--dur-data) var(--ease-std) calc(var(--i, 0) * var(--cell-stagger)) backwards;
+/* 一条格条只有一个元素：mask 按 --tile（一格加一道缝）横向平铺，切出 n 个圆角格（缝是精确的 px，圆角半径 --r）；
+   n 格加 n 道缝比元素宽一道缝，最后一道缝落在元素外面。圆角格 = 横条 ∪ 竖条 ∪ 四角的圆，全用渐变拼（mask 各层默认取并集）——
+   不用 SVG 里靠 CSS calc 定宽的矩形，WebKit 不一定认。底色是未点亮色，点亮部分是 Cells 写在行内的背景渐变（位置同样按 --tile）。
+   第一次出现时背景从 0 宽扫到整条（只播一次）；之后读数变化直接换渐变、不过渡——
+   以前每格一个元素各带一条逐格点亮的动画，翻页、换视图时几千个格子同时动 */
+.cells {
+  --g: 2px; --r: 2px; --tile: calc((100% + var(--g)) / var(--n));
+  --cells-mask:
+    linear-gradient(to right, #000 calc(100% - var(--g)), transparent 0) 0 var(--r) / var(--tile) calc(100% - 2 * var(--r)) repeat-x,
+    linear-gradient(to right, transparent var(--r), #000 0 calc(100% - var(--g) - var(--r)), transparent 0) 0 0 / var(--tile) 100% repeat-x,
+    radial-gradient(circle at var(--r) var(--r), #000 var(--r), transparent 0) 0 0 / var(--tile) 100% repeat-x,
+    radial-gradient(circle at calc(100% - var(--g) - var(--r)) var(--r), #000 var(--r), transparent 0) 0 0 / var(--tile) 100% repeat-x,
+    radial-gradient(circle at var(--r) calc(100% - var(--r)), #000 var(--r), transparent 0) 0 0 / var(--tile) 100% repeat-x,
+    radial-gradient(circle at calc(100% - var(--g) - var(--r)) calc(100% - var(--r)), #000 var(--r), transparent 0) 0 0 / var(--tile) 100% repeat-x;
+  height: 8px; min-width: 0; background: var(--cell-off) no-repeat 0 0 / 100% 100%;
+  -webkit-mask: var(--cells-mask); mask: var(--cells-mask);
+  animation: cells-in calc(var(--dur-data) + 12 * var(--cell-stagger)) var(--ease-std) backwards;
 }
-.cells > i[data-on] { background: var(--c); opacity: calc(0.42 + var(--l, 1) * 0.58); }
-@keyframes cell-in { from { background-color: var(--cell-off); opacity: 1; } }
-.cells-lg { height: 9px; gap: 3px; }
+@keyframes cells-in { from { background-size: 0 100%; } }
+.cells-lg { --g: 3px; height: 9px; }
 
 .cmeter { display: grid; gap: 5px; min-width: 0; }
 .cmeter[data-metric="cpu"] { --mc: var(--m-cpu); }

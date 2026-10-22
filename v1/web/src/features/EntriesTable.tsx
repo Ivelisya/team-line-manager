@@ -25,13 +25,7 @@ export function EntriesTable({ m, traffic }: { m: MachineView; traffic?: boolean
         <colgroup><col style={{ width: 132 }} /><col style={{ width: 96 }} /><col style={{ width: 72 }} /><col style={{ width: 72 }} />{traffic && <col style={{ width: 112 }} />}</colgroup>
         <thead><tr><th>{m.kind === 'relay' ? '端口 · 节点' : '线路机:端口'}</th><th>状态</th><th className="r">TCP</th><th className="r">出口</th>{traffic && <th className="r">本月业务流量</th>}</tr></thead>
         <tbody>
-          {entries.map((e) => (
-            <tr key={e.id}>
-              <td className="strong">{m.kind === 'relay' ? `${e.port} · ${e.node.name}` : `${e.relay.name}:${e.port}`}</td>
-              <td>{entryState(e)}</td><td className="r">{tcpCell(e)}</td><td className="r">{probeCell(e.egress)}</td>
-              {traffic && <td className="r"><Num f={F.bytes(e.traffic.month_up + e.traffic.month_down)} /></td>}
-            </tr>
-          ))}
+          {entries.map((e) => <EntryRow key={e.id} e={e} relay={m.kind === 'relay'} traffic={!!traffic} />)}
           {removed > 0 && (
             <tr><td className="t-sub" colSpan={4}>已移除的入口</td><td className="r"><Num f={F.bytes(removed)} /></td></tr>
           )}
@@ -41,3 +35,14 @@ export function EntriesTable({ m, traffic }: { m: MachineView; traffic?: boolean
     </div>
   );
 }
+
+/** 一行一个 memo：实时推送只换变了的入口（live.ts 的入口补丁把没变的原样返回），线路机展开全部的上百行不跟着重画 */
+const EntryRow = React.memo(function EntryRow({ e, relay, traffic }: { e: EntryView; relay: boolean; traffic: boolean }) {
+  return (
+    <tr>
+      <td className="strong">{relay ? `${e.port} · ${e.node.name}` : `${e.relay.name}:${e.port}`}</td>
+      <td>{entryState(e)}</td><td className="r">{tcpCell(e)}</td><td className="r">{probeCell(e.egress)}</td>
+      {traffic && <td className="r"><Num f={F.bytes(e.traffic.month_up + e.traffic.month_down)} /></td>}
+    </tr>
+  );
+});

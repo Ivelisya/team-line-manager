@@ -1,6 +1,6 @@
 // 首页的小型数据图形（全部是 HTML/SVG，不进 recharts 块）：
 // 分段格条 Cells、带标题的资源格条 CellMeter、迷你资源条 MiniMeter、圆环 Ring、点阵迹线 DotTrace、面积折线 AreaSpark、彩色标签 Tag。
-// 动效只靠 CSS：首次出现走挂载时的 @keyframes（格条逐格点亮、圆环转到位），之后读数变化直接到位、不过渡；令牌在系统“减少动态效果”时归零。
+// 动效只靠 CSS：首次出现走挂载时的 @keyframes（格条从左往右扫亮、圆环转到位），之后读数变化直接到位、不过渡；令牌在系统“减少动态效果”时归零。
 import * as React from 'react';
 import type { Fmt } from '@/lib/format';
 import * as F from '@/lib/format';
@@ -13,21 +13,32 @@ type Vars = React.CSSProperties & Record<`--${string}`, string | number>;
 const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
 const CELL_N = 18;
 
-/** 分段格条：n 格，按比例点亮；最后一格按剩余比例半亮。colors 给了就逐格取色（额度条的绿→黄→红）。
+/** 点亮部分的背景：逐格取色（相邻同色合并成一段），最后一格按剩余比例半亮；格子位置用 .cells 的 --tile（home.css） */
+function litFill(colorOf: (i: number) => string, f: number) {
+  const full = Math.floor(f);
+  const at = (k: number) => `calc(${k} * var(--tile))`;
+  const stops: string[] = [];
+  for (let i = 0; i < full;) {
+    const c = colorOf(i);
+    let j = i + 1;
+    while (j < full && colorOf(j) === c) j++;
+    stops.push(`${c} ${at(i)} ${at(j)}`);
+    i = j;
+  }
+  const part = f - full;
+  if (part > 0) stops.push(`color-mix(in srgb, ${colorOf(full)} ${Math.round((0.42 + part * 0.58) * 100)}%, transparent) ${at(full)} ${at(full + 1)}`);
+  stops.push(`transparent ${at(Math.ceil(f))}`);
+  return `linear-gradient(to right, ${stops.join(', ')})`;
+}
+
+/** 分段格条：n 格，按比例点亮；最后一格按剩余比例半亮。colors 给了就逐格取色（额度条的绿→黄→红、在线率条）。
+ *  整条只有一个元素：格子由 mask 切出（home.css .cells），点亮部分是一段背景渐变——每格一个元素时一张卡 70 多个、一页几千个。
  *  memo：卡片随推送重渲染时，比例没变的格条（额度、磁盘）不重画；colors 传模块常量 */
 export const Cells = React.memo(function Cells({ pct, color, colors, n = CELL_N, className }: { pct: number | null; color?: string; colors?: readonly string[]; n?: number; className?: string }) {
   const f = pct == null ? 0 : clamp01(pct / 100) * n;
-  return (
-    <div className={cn('cells', className)} style={color ? ({ '--c': color } as Vars) : undefined} aria-hidden>
-      {Array.from({ length: n }, (_, i) => {
-        const l = clamp01(f - i);
-        const s: Vars = { '--i': i };
-        if (l > 0) s['--l'] = l;
-        if (colors) s['--c'] = colors[i];
-        return <i key={i} style={s} data-on={l > 0 ? '' : undefined} />;
-      })}
-    </div>
-  );
+  const s: Vars = { '--n': n };
+  if (f > 0) s.backgroundImage = litFill(colors ? (i) => colors[i] : () => color ?? 'var(--accent)', f);
+  return <div className={cn('cells', className)} style={s} aria-hidden />;
 });
 
 /** 额度条每格的位置色：前半绿→黄，后半黄→红 */

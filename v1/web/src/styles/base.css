@@ -129,10 +129,7 @@ a { color: inherit; }
   .app:not([data-nav="open"]) .nav-scrim { opacity: 0; visibility: hidden; pointer-events: none; transition: opacity var(--dur-2) var(--ease-std), visibility 0s var(--dur-2); }
   .brand { font-size: var(--fs-body); }
 }
-@media (max-width: 480px) {
-  .top-btn[data-top="palette"] { display: none; }
-}
-/* ≤400px：顶栏放不下品牌文字 + 告警胶囊 + 作业徽标 + 三个按钮，收起品牌文字（图标仍在、仍可点回首页），间距收紧，允许右侧收缩 */
+/* ≤400px：顶栏放不下品牌文字 + 告警胶囊 + 作业徽标 + 两个按钮，收起品牌文字（图标仍在、仍可点回首页），间距收紧，允许右侧收缩 */
 @media (max-width: 400px) {
   .topbar { gap: 0; padding: 0 var(--sp-8) 0 var(--sp-4); }
   .brand { font-size: 0; gap: 0; flex: none; }

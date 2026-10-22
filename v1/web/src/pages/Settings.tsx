@@ -100,7 +100,7 @@ function ApiKeysSection() {
 
       <FormDialog size="md" open={open} onOpenChange={setOpen} title="新建 API 密钥" desc="只授予脚本需要的权限。创建后密钥只显示一次。" submitLabel="创建密钥" busy={create.isPending} valid={valid} onSubmit={submit}>
         <div className="form-grid">
-          <Field label="名称" hint="例如：备份脚本、监控 CLI"><Input value={name} onChange={(e) => setName(e.target.value)} autoFocus autoComplete="off" /></Field>
+          <Field label="名称" hint="例如：备份脚本、监控 CLI"><Input value={name} onChange={(e) => setName(e.target.value)} autoFocus autoComplete="off" data-1p-ignore data-lpignore="true" /></Field>
           <Field label="有效期"><Select value={exp} onChange={setExp} options={EXPIRES} /></Field>
         </div>
         <div className="field">
@@ -262,13 +262,13 @@ const ChannelDialog = resetOnOpen(function ChannelDialog({ target, open, onClose
     <FormDialog size="md" dirty={dirty} open={open} onOpenChange={(o) => !o && onClose()} title={ch ? `编辑渠道 · ${ch.name}` : '新建通知渠道'} desc="配置加密保存，保存后页面不再显示明文。"
       submitLabel={ch ? '保存' : '创建'} busy={busy} valid={valid} onSubmit={submit}>
       <div className="form-grid">
-        <Field label="名称"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：运维群" autoFocus autoComplete="off" /></Field>
+        <Field label="名称"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：运维群" autoFocus autoComplete="off" data-1p-ignore data-lpignore="true" /></Field>
         <Field label="类型" hint={ch ? '类型创建后不能改' : undefined}><Select value={kind} onChange={(v) => { setKind(v); setCfg({}); }} disabled={!!ch} options={Object.entries(KINDS).map(([value, x]) => ({ value, label: x.label }))} /></Field>
       </div>
       <div className="form-grid">
         {k.fields.map((f) => (
           <Field key={f.key} label={f.label} className={k.fields.length === 1 ? 'span-2' : undefined} hint={ch ? `留空则保持不变（当前：${ch.config_hint}）` : undefined}>
-            <Input type={f.secret ? 'password' : 'text'} value={cfg[f.key] ?? ''} onChange={(e) => { setCfg((c) => ({ ...c, [f.key]: e.target.value })); setTouched(true); }} placeholder={f.ph} autoComplete="off" spellCheck={false} />
+            <Input type={f.secret ? 'password' : 'text'} value={cfg[f.key] ?? ''} onChange={(e) => { setCfg((c) => ({ ...c, [f.key]: e.target.value })); setTouched(true); }} placeholder={f.ph} autoComplete="off" spellCheck={false} data-1p-ignore data-lpignore="true" />
           </Field>
         ))}
       </div>

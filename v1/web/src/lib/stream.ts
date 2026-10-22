@@ -2,7 +2,8 @@
 // - metrics：实时指标增量，直接写进查询缓存（live.ts），不重取。
 // - 其余是资源变更通知：300ms 合并后按事件类型让对应查询失效（同一类型/同一 id 只算一次）；resync（服务端广播滞后）则全部失效。
 //   整表（机器、线路机、总览、作业列表）的失效再合并成最多每 2 s 一次，且不打断在途的重取：批量上架时不至于每秒整表重取、请求被反复取消。
-// - 断开后指数退避重连（1s → 30s 封顶），期间不轮询（顶栏显示已断开）。首次连上让机器类查询失效一次：增量只带变了的字段，
+// - 断开后指数退避重连（1s → 30s 封顶，±20% 抖动，中控重启后各页面不同时涌进来），期间不轮询（顶栏显示已断开）；
+//   等待重连时网络恢复（online）或页面回到前台，立刻重连，不再等退避到点。首次连上让机器类查询失效一次：增量只带变了的字段，
 //   首屏快照若早于订阅，其间变过一次的状态（健康、维护、进行中的作业）不会再推，只能靠这次重取补上；
 //   断线重连后让全部查询失效：没连着时错过的事件和增量靠这次重取补上。
 // - 页面在后台：失效只标记过期、不重取，metrics 也不写缓存只标记过期（回到前台由 refetchOnWindowFocus 补上）。
@@ -31,6 +32,7 @@ export function useStream(enabled: boolean) {
     let retry = 0;
     let connected = false;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let waiting = false; // 断开后在等退避到点
     let mergeTimer: ReturnType<typeof setTimeout> | undefined;
     let listTimer: ReturnType<typeof setTimeout> | undefined;
     let lastList = 0;
@@ -72,6 +74,7 @@ export function useStream(enabled: boolean) {
 
     const open = () => {
       if (stopped) return;
+      waiting = false;
       const s = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/v1/stream`);
       ws = s;
       // 正在取的不打断重发（首次连上时首屏请求多半还在路上）
@@ -89,14 +92,22 @@ export function useStream(enabled: boolean) {
       s.onclose = () => {
         if (stopped) return;
         setStatus('error');
-        retryTimer = setTimeout(open, Math.min(BACKOFF_MAX, 1000 * 2 ** retry++));
+        waiting = true;
+        retryTimer = setTimeout(open, Math.min(BACKOFF_MAX, 1000 * 2 ** retry++ * (0.8 + Math.random() * 0.4)));
       };
     };
+    const reconnectNow = () => {
+      if (!waiting || document.hidden) return;
+      clearTimeout(retryTimer); retry = 0; open();
+    };
+    window.addEventListener('online', reconnectNow);
+    document.addEventListener('visibilitychange', reconnectNow);
     setStatus('connecting');
     // 推迟到下一轮再连：StrictMode 开发时挂载→卸载→再挂载，避免先建一个马上关掉的连接
     retryTimer = setTimeout(open, 0);
     return () => {
       stopped = true; ws?.close(); clearTimeout(retryTimer); clearTimeout(mergeTimer); clearTimeout(listTimer);
+      window.removeEventListener('online', reconnectNow); document.removeEventListener('visibilitychange', reconnectNow);
       setStatus('connecting');
     };
   }, [enabled, qc]);

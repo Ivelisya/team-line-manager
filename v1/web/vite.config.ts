@@ -11,7 +11,8 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': { target, changeOrigin: true, ws: true },
+      // 实时流用会话 Cookie 连接时中控要求 Origin 等于它的 public_url（安全会话第 21 轮），代理把 Origin 改成中控的（ws 升级请求同样生效）
+      '/api': { target, changeOrigin: true, ws: true, headers: { origin: target } },
       '/echo': { target, changeOrigin: true },
     },
   },

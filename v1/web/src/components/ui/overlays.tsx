@@ -56,6 +56,7 @@ export const DropdownMenuItem = React.forwardRef<React.ElementRef<typeof Dropdow
 ));
 DropdownMenuItem.displayName = 'DropdownMenuItem';
 export const DropdownMenuSeparator = () => <DropdownPrimitive.Separator className="menu-sep" />;
+export const DropdownMenuLabel = ({ children }: { children: React.ReactNode }) => <DropdownPrimitive.Label className="menu-label">{children}</DropdownPrimitive.Label>;
 export const DropdownMenuSub = DropdownPrimitive.Sub;
 export const DropdownMenuSubTrigger = React.forwardRef<React.ElementRef<typeof DropdownPrimitive.SubTrigger>, React.ComponentPropsWithoutRef<typeof DropdownPrimitive.SubTrigger>>(({ className, children, ...p }, ref) => (
   <DropdownPrimitive.SubTrigger ref={ref} className={cn('menu-item', className)} {...p}>{children}<ChevronRight className="menu-chev" /></DropdownPrimitive.SubTrigger>
