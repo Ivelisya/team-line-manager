@@ -18,12 +18,14 @@ pub mod meta;
 pub mod names;
 pub mod notify;
 pub mod policy;
+pub mod pty;
 pub mod routers;
 pub mod selfmon;
 pub mod settings;
 pub mod silence;
 pub mod ssh;
 pub mod state;
+pub mod terminal;
 pub mod totp;
 pub mod views;
 

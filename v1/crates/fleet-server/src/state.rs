@@ -88,6 +88,8 @@ pub struct Inner {
     pub report_gaps: crate::views::ReportGaps,
     /// 访问记录保留期（面板里改的）：读写经 `access_retention()` 等，见 settings.rs
     pub(crate) access_ret: std::sync::RwLock<crate::settings::AccessRetention>,
+    /// 网页终端：票据、再验证时间、在开的终端（`terminal.rs`）
+    pub terminals: crate::terminal::Hub,
 }
 
 impl std::ops::Deref for AppState {
@@ -127,6 +129,7 @@ impl AppState {
             jobs_running: Default::default(),
             report_gaps: Default::default(),
             access_ret,
+            terminals: Default::default(),
         }))
     }
 

@@ -8,7 +8,7 @@
 //! - `write`：非 GET 的业务写操作
 //! - `secrets`：凭据类 GET（分享链接）
 //! - `exec`：远程执行（`/machines/{id}/exec`、各类日志、`fleetctl ssh` 登录前报的审计 `POST /audit/ssh`）
-//! - 密钥管理（`/api-keys`）与账户安全（`/account/...`：两步验证、会话、改密码）只允许会话用户，API 密钥一律 403
+//! - 密钥管理（`/api-keys`）、账户安全（`/account/...`：两步验证、会话、改密码）与网页终端（`/terminal/...`）只允许会话用户，API 密钥一律 403
 
 use crate::crypto::{random_token, sha256};
 use crate::db::audit;
@@ -119,7 +119,7 @@ pub fn needed(method: &Method, path: &str) -> Need {
     let segs: &[&str] = if segs.len() >= 2 && segs[0] == "api" && segs[1] == "v1" { &segs[2..] } else { &segs };
     let get = matches!(*method, Method::GET | Method::HEAD);
     match segs {
-        ["api-keys", ..] | ["account", ..] => Need::Session,
+        ["api-keys", ..] | ["account", ..] | ["terminal", ..] => Need::Session,
         ["entries", _, "share"] if get => Need::Scope("secrets"),
         ["machines", _, "exec"] if !get => Need::Scope("exec"),
         ["machines", _, "logs"] | ["server", "logs"] if get => Need::Scope("exec"),
@@ -152,7 +152,7 @@ impl FromRequestParts<AppState> for Actor {
                 // nest 会剥掉前缀，原始路径在 OriginalUri 里
                 let path = parts.extensions.get::<OriginalUri>().map(|u| u.0.path().to_string()).unwrap_or_else(|| parts.uri.path().to_string());
                 match needed(&parts.method, &path) {
-                    Need::Session => return Err(ApiError::forbidden("密钥管理与账户安全只能由登录用户操作，API 密钥不行")),
+                    Need::Session => return Err(ApiError::forbidden("密钥管理、账户安全与网页终端只能由登录用户操作，API 密钥不行")),
                     Need::Scope(s) => {
                         if !scopes.iter().any(|x| x == s) {
                             return Err(ApiError::forbidden(format!("这个 API 密钥没有 {s} 权限")));
@@ -530,6 +530,8 @@ mod tests {
         assert_eq!(needed(&Method::DELETE, "/api/v1/api-keys/x"), Need::Session);
         assert_eq!(needed(&g, "/api/v1/account/sessions"), Need::Session);
         assert_eq!(needed(&p, "/api/v1/account/totp/setup"), Need::Session);
+        assert_eq!(needed(&p, "/api/v1/terminal/tickets"), Need::Session);
+        assert_eq!(needed(&g, "/api/v1/terminal/ws"), Need::Session);
         assert_eq!(needed(&g, "/api/v1/jobs/x/logs"), Need::Scope("read"));
         assert_eq!(needed(&p, "/api/v1/audit/ssh"), Need::Scope("exec"));
         assert_eq!(needed(&g, "/api/v1/audit"), Need::Scope("read"));
