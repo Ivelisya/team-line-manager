@@ -141,7 +141,7 @@ fn limit_cn(m: &Value, limit: Option<i64>) -> String {
     }
 }
 
-/// `901.6 GB / 2000 GB（45%），2026-10-13 起，网卡入出取小；已按面板校准（2026-10-22 15:30:00）`
+/// `901.6 GB / 2000 GB（45%），2026-10-13 起，入站和出站取较小值；已按面板校准（2026-10-22 15:30:00）`
 fn used_cn(m: &Value, limit: Option<i64>, pct: Option<i64>, incl: &str) -> String {
     let lim = limit.map(|g| format!(" / {g} GB")).unwrap_or_default();
     let p = pct.map(|p| format!("（{p}%）")).unwrap_or_default();
@@ -521,7 +521,7 @@ mod tests {
         assert_eq!(limit_cn(&m, traffic_limit(&m)), "不限");
         // 已用同供应商面板：十进制 GB；校准过的注明
         let q = json!({"ip_nodes": [], "quota": {"used": 901_600_000_000i64, "period_start": "2026-10-13", "rule": "min", "base": 869_700_000_000i64, "base_at": "2026-10-22T07:30:00Z"}});
-        assert_eq!(used_cn(&q, Some(2000), Some(45), ""), "901.6 GB / 2000 GB（45%），2026-10-13 起，网卡入出取小；已按面板校准（2026-10-22 15:30:00）");
+        assert_eq!(used_cn(&q, Some(2000), Some(45), ""), "901.6 GB / 2000 GB（45%），2026-10-13 起，入站和出站取较小值；已按面板校准（2026-10-22 15:30:00）");
         let q = json!({"quota": {"used": 31_900_000, "period_start": "2026-10-01", "rule": null, "base_at": null}});
         assert_eq!(used_cn(&q, None, None, ""), "0.03 GB，2026-10-01 起，业务流量");
     }

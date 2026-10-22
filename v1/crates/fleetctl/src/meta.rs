@@ -28,7 +28,7 @@ pub fn test_init() {
         "cycles": [{"key": "monthly", "label": "月", "months": 1}, {"key": "quarterly", "label": "季", "months": 3},
                    {"key": "semiannual", "label": "半年", "months": 6}, {"key": "yearly", "label": "年", "months": 12}],
         "kinds": {"vps": "VPS 节点", "proxy": "家宽代理", "relay": "线路机"},
-        "traffic_rules": {"min": "网卡入出取小", "max": "网卡入出取大", "sum": "网卡入出相加", "out": "只算网卡出站"},
+        "traffic_rules": {"min": "入站和出站取较小值", "max": "入站和出站取较大值", "sum": "入站加出站", "out": "只算出站"},
         "traffic_resets": {"month": "自然月", "billing": "账单日"},
         "entry_states": {"pending": "应用中", "active": "运行中", "disabled": "已停用", "removing": "移除中", "removed": "已移除"},
         "severities": {"critical": {"label": "严重"}, "warning": {"label": "警告"}, "info": {"label": "提示"}},
