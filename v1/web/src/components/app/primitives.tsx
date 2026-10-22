@@ -119,7 +119,8 @@ export function Stat({ icon, tone, label, info, value, unit, caption, to, onClic
       <span className="stat-cap">{loading ? '' : caption ?? ' '}</span>
     </>
   );
-  if (to) return <Link className="stat is-link" to={to}>{inner}</Link>;
+  // 整卡可点用铺满的透明链接（不是外层 <a>）：说明行里还有自己的链接（「故障 N」），<a> 不能嵌套
+  if (to) return <div className="stat is-link"><Link className="stat-hit" to={to} aria-label={label} />{inner}</div>;
   if (onClick) return <button type="button" className="stat is-link" onClick={onClick}>{inner}</button>;
   return <div className="stat">{inner}</div>;
 }
