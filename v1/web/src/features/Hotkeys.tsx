@@ -1,11 +1,12 @@
 // 全局快捷键：⌘K / Ctrl+K（或 /）命令面板，[ ] 在抽屉里切上一台/下一台，? 快捷键帮助。输入框里不触发。
 import * as React from 'react';
-import { Search } from 'lucide-react';
+import { Search, X } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { drawerSiblings, useDrawer } from '@/lib/drawer';
 import { modKey, setOverlay, useOverlay } from '@/lib/palette';
 import type { ThemePref } from '@/lib/theme';
-import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogHeader } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogTitle, DialogHeader } from '@/components/ui/dialog';
+import { IconButton } from '@/components/ui/button';
 
 const CommandPalette = React.lazy(() => import('./CommandPalette'));
 
@@ -66,24 +67,27 @@ export function Hotkeys({ theme }: { theme: { pref: ThemePref; setPref: (p: Them
 }
 
 const MOD = modKey();
-const KEYS: { keys: string[]; text: string }[] = [
-  { keys: [MOD, 'K'], text: '打开命令面板：跳转页面、搜索机器、常用动作' },
-  { keys: ['/'], text: '同上（不在输入框里时）' },
-  { keys: ['['], text: '抽屉打开时，切到上一台机器' },
-  { keys: [']'], text: '抽屉打开时，切到下一台机器' },
-  { keys: ['?'], text: '打开这份快捷键帮助' },
-  { keys: ['Esc'], text: '关闭抽屉、对话框和面板' },
-  { keys: ['Enter'], text: '在机器表格里，打开当前行的详情' },
+// 说明压成短词；在哪儿生效（抽屉里、表格里）放悬停
+const KEYS: { keys: string[]; text: string; tip?: string }[] = [
+  { keys: [MOD, 'K'], text: '命令面板', tip: '跳转页面、搜索机器、常用动作' },
+  { keys: ['/'], text: '命令面板', tip: '不在输入框里时' },
+  { keys: ['['], text: '上一台', tip: '抽屉打开时' },
+  { keys: [']'], text: '下一台', tip: '抽屉打开时' },
+  { keys: ['?'], text: '快捷键帮助' },
+  { keys: ['Esc'], text: '关闭浮层', tip: '抽屉、对话框、面板' },
+  { keys: ['Enter'], text: '打开当前行', tip: '机器表格里' },
+  { keys: ['右键'], text: '更多操作', tip: '卡片、表格行' },
 ];
 
 function ShortcutsHelp({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader><DialogTitle>键盘快捷键</DialogTitle><DialogDescription>卡片和表格行可右键打开菜单</DialogDescription></DialogHeader>
+      <DialogContent aria-describedby={undefined}>
+        <DialogHeader className="hk-head"><DialogTitle>键盘快捷键</DialogTitle>
+          <IconButton label="关闭" tip={false} onClick={() => onOpenChange(false)}><X size={16} /></IconButton></DialogHeader>
         <ul className="hk-list">
           {KEYS.map((k) => (
-            <li key={k.text}><span className="hk-keys">{k.keys.map((x, i) => <React.Fragment key={x}>{i > 0 && <span className="t-muted">+</span>}<kbd className="kbd">{x}</kbd></React.Fragment>)}</span><span>{k.text}</span></li>
+            <li key={k.keys.join()} data-tip={k.tip}><span className="hk-keys">{k.keys.map((x, i) => <React.Fragment key={x}>{i > 0 && <span className="t-muted">+</span>}<kbd className="kbd">{x}</kbd></React.Fragment>)}</span><span>{k.text}</span></li>
           ))}
         </ul>
       </DialogContent>
