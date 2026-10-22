@@ -92,7 +92,7 @@ pub async fn summary(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuer
     let f = filter_of(&q, Window::H24)?;
     let key = (!f.events).then(|| format!("summary|{f:?}"));
     cached(&st, key, false, async {
-        let (kpi, nodes) = access::summary(&st.db, &f).await?;
+        let (kpi, nodes) = access::summary(&st.access_db, &f).await?;
         Ok(ok(json!({"kpi": kpi, "nodes": nodes, "window_start": access::fmt_ts(f.from)})).0)
     })
     .await
@@ -111,7 +111,7 @@ pub async fn targets(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuer
     // 反而按页数把缓存撑满、把第一页这些常用的挤掉
     let key = (!f.events && offset == 0).then(|| format!("targets|{f:?}|{sort:?}|{limit}"));
     cached(&st, key, false, async {
-        let items = access::targets(&st.db, &f, sort, limit, offset).await?;
+        let items = access::targets(&st.access_db, &f, sort, limit, offset).await?;
         let next = (items.len() as i64 == limit).then_some(offset + limit);
         Ok(ok(json!({"items": items, "next_offset": next, "window_start": access::fmt_ts(f.from)})).0)
     })
@@ -123,7 +123,7 @@ pub async fn sources(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuer
     let (limit, _) = page_of(&q, 100)?;
     let key = (!f.events).then(|| format!("sources|{f:?}|{limit}"));
     cached(&st, key, false, async {
-        let mut items = access::sources(&st.db, &f, limit).await?;
+        let mut items = access::sources(&st.access_db, &f, limit).await?;
         crate::ipintel::attach(&st, &mut items).await;
         Ok(ok(json!({"items": items, "window_start": access::fmt_ts(f.from)})).0)
     })
@@ -137,7 +137,7 @@ pub async fn events(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery
     let before = nonempty(&q.before)
         .map(|s| access::parse_event_cursor(s).ok_or_else(|| ApiError::bad_request("before 不对：原样传上一页返回的 next_before")))
         .transpose()?;
-    let items = access::events(&st.db, &f, before, limit).await?;
+    let items = access::events(&st.access_db, &f, before, limit).await?;
     let next = (items.len() as i64 == limit).then(|| items.last().map(access::event_cursor)).flatten();
     Ok(ok(json!({"items": items, "next_before": next})))
 }
@@ -148,7 +148,7 @@ pub async fn new_targets(_a: Actor, State(st): State<AppState>, ApiQuery(q): Api
     // 首次出现时间是精确时间，窗口起点不对齐整点
     f.from = OffsetDateTime::now_utc() - window_of(&q, Window::H24)?.duration();
     let (limit, offset) = page_of(&q, 200)?;
-    let (items, total) = access::new_targets(&st.db, &f, limit, offset).await?;
+    let (items, total) = access::new_targets(&st.access_db, &f, limit, offset).await?;
     let next = (offset + (items.len() as i64) < total).then_some(offset + items.len() as i64);
     Ok(ok(json!({"items": items, "total": total, "next_offset": next, "window_start": access::fmt_ts(f.from)})))
 }
@@ -157,7 +157,7 @@ pub async fn machine(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath
     let w = window_of(&q, Window::H24)?;
     let key = (w != Window::H1).then(|| format!("machine|{id}|{w:?}"));
     cached(&st, key, true, async {
-        let mut m = access::machine_access(&st.db, id, w).await?;
+        let mut m = access::machine_access(&st.access_db, id, w).await?;
         crate::ipintel::attach(&st, &mut m.top_sources).await;
         Ok(ok(m).0)
     })

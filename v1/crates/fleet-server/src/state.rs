@@ -2,7 +2,8 @@ use crate::config::Config;
 use crate::crypto::SecretBox;
 use axum::extract::ws::Utf8Bytes;
 use serde::Serialize;
-use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
+use sqlx::{Executor, PgPool};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, Notify};
@@ -51,6 +52,9 @@ pub struct AppState(pub Arc<Inner>);
 pub struct Inner {
     pub cfg: Config,
     pub db: PgPool,
+    /// 访问监控的查询（几天原始记录上的统计、模糊搜索，一条可能要几秒）单独一个小池：最多 4 个连接、每条语句 20 秒超时。
+    /// 并发多了在这里排队（5 秒等不到回 503），占不满主池——上报入库、机器视图照常；汇总、清理等后台任务仍走主池、不限时
+    pub access_db: PgPool,
     pub secrets: SecretBox,
     /// 浏览器事件
     pub events: broadcast::Sender<Event>,
@@ -83,9 +87,16 @@ impl AppState {
         let ipintel = crate::ipintel::Service::new(&cfg.ipintel);
         let access_cache = crate::access::QueryCache::new(std::time::Duration::from_secs(cfg.access_cache_secs));
         let live = crate::views::LiveCache::default();
+        // 连接选项同主池（测试的 search_path 也在里面），懒连接：用到才建
+        let access_db = PgPoolOptions::new()
+            .max_connections(4)
+            .acquire_timeout(std::time::Duration::from_secs(5))
+            .after_connect(|c, _| Box::pin(async move { c.execute("set statement_timeout = '20s'").await.map(|_| ()) }))
+            .connect_lazy_with((*db.connect_options()).clone());
         Self(Arc::new(Inner {
             cfg,
             db,
+            access_db,
             secrets,
             events,
             relay_changed,
