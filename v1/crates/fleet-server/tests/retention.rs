@@ -55,7 +55,7 @@ async fn defaults_bounds_permissions_audit_and_event() {
     }
     let (s, _) = t.req("PUT", URL, Some(json!({"raw_days": 3})), None).await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "缺 hourly_days");
-    assert_eq!(count(&t, "select count(*) from app_setting").await, 0);
+    assert_eq!(count(&t, "select count(*) from app_setting where key = 'access_retention'").await, 0);
 
     // 只读密钥能看不能改
     let key = |name: &'static str, scopes: Value| {

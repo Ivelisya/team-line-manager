@@ -10,7 +10,7 @@ use time::{Date, Month, OffsetDateTime, UtcOffset};
 
 // ── 组织时区 ──────────────────────────────────────────────────────────────
 // fleet.toml 的 org_timezone：账单时区、供应商时区没填时的兜底，通知、审计、fleetctl 表格里的时间也按它写。
-// 库里的视图（sub_template）读 org_setting 表里的同一个值（启动时由 `sync_org_tz` 写入）
+// 库里的视图（sub_template）读 app_setting 里 key = org_timezone 的同一个值（启动时由 `sync_org_tz` 写入）
 
 /// 配置不写 org_timezone 时的组织时区
 pub const DEFAULT_ORG_TZ: &str = "Asia/Shanghai";
@@ -45,14 +45,21 @@ pub fn org_time(t: OffsetDateTime) -> String {
     t.to_offset(org_offset()).format(&f).unwrap_or_default()
 }
 
-/// 校验组织时区（PG 要认识）、写进库（org_setting）、算出当前偏移。启动时（失败则不启动）与每小时调用
+/// 校验组织时区（PG 要认识）、写进库（app_setting 的 org_timezone）、算出当前偏移。启动时（失败则不启动）与每小时调用
 pub async fn sync_org_tz(db: &PgPool, tz: &str) -> anyhow::Result<()> {
     let off: i32 = sqlx::query_scalar("select extract(epoch from (now() at time zone $1) - (now() at time zone 'UTC'))::int")
         .bind(tz)
         .fetch_one(db)
         .await
         .with_context(|| format!("org_timezone「{tz}」不是 IANA 时区名（如 Asia/Shanghai）"))?;
-    sqlx::query("update org_setting set timezone = $1 where timezone <> $1").bind(tz).execute(db).await?;
+    sqlx::query(
+        "insert into app_setting (key, value, updated_by) values ('org_timezone', to_jsonb($1::text), 'fleet.toml')
+         on conflict (key) do update set value = excluded.value, updated_by = excluded.updated_by, updated_at = now()
+         where app_setting.value is distinct from excluded.value",
+    )
+    .bind(tz)
+    .execute(db)
+    .await?;
     *ORG_TZ.write().unwrap_or_else(|e| e.into_inner()) = tz.to_string();
     ORG_OFFSET_S.store(off, Ordering::Relaxed);
     Ok(())
