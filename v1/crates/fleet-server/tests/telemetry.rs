@@ -1107,16 +1107,23 @@ async fn alert_notifications_firing_repeat_silence_and_resolved() {
     assert_eq!((mock.count("/bot123:ABC"), mock.count("/wecom/send"), mock.count("/hook/a")), (3, 2, 3), "提醒后计时重置");
     assert!(mock.bodies("/hook/a").iter().any(|b| b["event"] == "repeat" && b["rule"] == "relay_xray_down"));
 
-    // 静默：被静默的规则不再提醒
+    // 静默：被静默的规则不再提醒。建、删此刻生效的静默本身各通知所有启用的渠道一次（不看渠道级别）
     let f = time::format_description::well_known::Rfc3339;
     let now = OffsetDateTime::now_utc();
     let sil = t.post("/api/v1/silences", json!({"subject_id": relay, "rule": "relay_xray_down", "comment": "", "starts_at": (now - time::Duration::minutes(1)).format(&f).unwrap(), "ends_at": (now + time::Duration::hours(1)).format(&f).unwrap()})).await["id"].as_str().unwrap().to_string();
+    mock.wait("/bot123:ABC", 4).await;
+    mock.wait("/wecom/send", 3).await;
+    mock.wait("/hook/a", 4).await;
+    assert!(mock.bodies("/wecom/send")[2]["markdown"]["content"].as_str().unwrap().contains("静默 / 维护变更"));
     sqlx::query("update incident set notified_at = now() - interval '5 hours'").execute(&t.st.db).await.unwrap();
     pass(&t, &mut state, base, 151).await;
     tokio::time::sleep(Duration::from_millis(400)).await;
-    assert_eq!((mock.count("/bot123:ABC"), mock.count("/wecom/send")), (3, 2), "被静默的不发");
+    assert_eq!((mock.count("/bot123:ABC"), mock.count("/wecom/send")), (4, 3), "被静默的不发");
     let (s, _) = t.req("DELETE", &format!("/api/v1/silences/{sil}"), None, None).await;
     assert_eq!(s, StatusCode::OK);
+    mock.wait("/bot123:ABC", 5).await;
+    mock.wait("/wecom/send", 4).await;
+    mock.wait("/hook/a", 5).await;
 
     // 恢复：Xray 起来、配置也应用了；原因消失满 60 秒后各发一条「恢复」（只发给收到过触发的渠道）
     let mut r = blank_report(2);
@@ -1127,9 +1134,9 @@ async fn alert_notifications_firing_repeat_silence_and_resolved() {
     assert_eq!(incidents(&t, "firing").await.len(), 2);
     pass(&t, &mut state, base, 241).await;
     assert!(incidents(&t, "firing").await.is_empty());
-    mock.wait("/wecom/send", 3).await;
-    mock.wait("/bot123:ABC", 5).await;
-    mock.wait("/hook/a", 5).await;
+    mock.wait("/wecom/send", 5).await;
+    mock.wait("/bot123:ABC", 7).await;
+    mock.wait("/hook/a", 7).await;
     let last_wc = mock.bodies("/wecom/send").pop().unwrap();
     assert!(last_wc["markdown"]["content"].as_str().unwrap().contains("告警已恢复"), "{last_wc}");
     assert!(mock.bodies("/hook/a").iter().any(|b| b["event"] == "resolved" && b["rule"] == "relay_xray_down"));
@@ -1137,7 +1144,7 @@ async fn alert_notifications_firing_repeat_silence_and_resolved() {
     // 机器退役后，记录里的对象名带「（已退役）」，不和接过同名的新机器混淆
     sqlx::query("update machine set lifecycle = 'retired', retired_at = now() where id = $1").bind(relay).execute(&t.st.db).await.unwrap();
     let log = t.get("/api/v1/notify-log?limit=100").await;
-    assert!(log.as_array().unwrap().iter().all(|l| l["subject_name"] == "线路机1（已退役）"), "{log}");
+    assert!(log.as_array().unwrap().iter().filter(|l| l["kind"] != "silence").all(|l| l["subject_name"] == "线路机1（已退役）"), "{log}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1297,6 +1304,52 @@ async fn resolved_only_to_channels_that_got_firing() {
     let events: Vec<Value> = mock.bodies("/hook/a").iter().map(|b| b["event"].clone()).collect();
     assert_eq!(events, [json!("firing"), json!("resolved")]);
     assert_eq!(t.count("select count(*) from notify_outbox").await, 0);
+}
+
+/// 新建、删除静默 / 维护窗口告诉所有启用的渠道（不看渠道的最低级别、不受静默影响）：全部机器的建、删都发；单台的此刻生效才发，预约的不发。
+/// API 密钥建全部机器的最长 24 小时，账号不受限
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn silence_changes_are_announced() {
+    let t = setup().await;
+    let mock = Mock::start().await;
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "webhook", "config": {"url": mock.url("/hook/a")}, "min_severity": "critical", "enabled": true})).await;
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let key = t.post("/api/v1/api-keys", json!({"name": "ops", "scopes": ["read", "write"]})).await["token"].as_str().unwrap().to_string();
+    let f = time::format_description::well_known::Rfc3339;
+    let now = OffsetDateTime::now_utc();
+    let at = |min: i64| (now + time::Duration::minutes(min)).format(&f).unwrap();
+    let global = |end_min: i64| json!({"subject_id": null, "rule": null, "is_maintenance": true, "comment": "机房迁移\n预计一天", "starts_at": at(-1), "ends_at": at(end_min)});
+    let (s, v) = t.req("POST", "/api/v1/silences", Some(global(25 * 60)), Some(&key)).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("24 小时"), "{v}");
+    let (s, v) = t.req("POST", "/api/v1/silences", Some(global(23 * 60)), Some(&key)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    mock.wait("/hook/a", 1).await;
+    let b = &mock.bodies("/hook/a")[0];
+    assert_eq!((b["event"].as_str(), b["machine"].as_str(), b["incident_id"].is_null()), (Some("silence"), Some("全部机器"), true));
+    let text = b["text"].as_str().unwrap();
+    assert!(text.starts_with("【静默 / 维护变更】apikey:ops 新建了维护窗口\n对象：全部机器\n起止：") && text.contains("\n备注：机房迁移 预计一天\n"), "{text}");
+    // 删掉全部机器的：照样发
+    let (s, _) = t.req("DELETE", &format!("/api/v1/silences/{}", v["data"]["id"].as_str().unwrap()), None, None).await;
+    assert_eq!(s, StatusCode::OK);
+    mock.wait("/hook/a", 2).await;
+    assert!(mock.bodies("/hook/a")[1]["text"].as_str().unwrap().contains("admin 删除了维护窗口"));
+    // 单台：预约的（还没开始）建、删都不发；此刻生效的发
+    let one = |start: i64, end: i64| json!({"subject_id": relay, "rule": "relay_xray_down", "comment": "", "starts_at": at(start), "ends_at": at(end)});
+    let later = t.post("/api/v1/silences", one(60, 120)).await["id"].as_str().unwrap().to_string();
+    let (s, _) = t.req("DELETE", &format!("/api/v1/silences/{later}"), None, None).await;
+    assert_eq!(s, StatusCode::OK);
+    t.post("/api/v1/silences", one(-1, 60)).await;
+    mock.wait("/hook/a", 3).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let all = mock.bodies("/hook/a");
+    assert_eq!(all.len(), 3);
+    assert!(all[2]["text"].as_str().unwrap().contains("admin 新建了静默\n对象：线路机1（只静默「Xray 未运行」）"), "{}", all[2]["text"]);
+    // 账号建全部机器的不受 24 小时限制；静默期间这类通知照发
+    t.post("/api/v1/silences", global(3 * 24 * 60)).await;
+    mock.wait("/hook/a", 4).await;
+    let log = t.get("/api/v1/notify-log?limit=10").await;
+    assert!(log.as_array().unwrap().iter().all(|l| l["kind"] == "silence" && l["ok"] == true && l["subject_name"] == "静默 / 维护变更"), "{log}");
 }
 
 async fn xray_report(t: &T, seq: u64, up: bool) {

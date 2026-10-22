@@ -39,6 +39,8 @@ pub enum Kind {
     Resolved,
     /// 渠道测试
     Test,
+    /// 有人新建 / 删除了静默或维护窗口（发给所有启用的渠道，不受静默影响，见 api/misc.rs `tell_channels`）
+    Silence,
 }
 
 impl Kind {
@@ -48,6 +50,7 @@ impl Kind {
             Kind::Repeat => "repeat",
             Kind::Resolved => "resolved",
             Kind::Test => "test",
+            Kind::Silence => "silence",
         }
     }
 }
@@ -152,6 +155,7 @@ fn title(n: &Notice) -> String {
         (Kind::Resolved, Some(d)) => format!("告警已恢复（持续 {d}）"),
         (Kind::Resolved, None) => "告警已恢复".into(),
         (Kind::Test, _) => "测试通知".into(),
+        (Kind::Silence, _) => "静默 / 维护变更".into(),
     }
 }
 
@@ -159,6 +163,10 @@ fn title(n: &Notice) -> String {
 pub fn format_text(n: &Notice) -> String {
     if n.kind == Kind::Test {
         return format!("【测试通知】团队线路管理的告警通知渠道可用\n时间：{}（北京时间）", beijing(n.at));
+    }
+    // 静默 / 维护变更：摘要是写好的几行（谁、新建还是删除、对象、起止、备注）
+    if n.kind == Kind::Silence {
+        return format!("【{}】{}\n时间：{}（北京时间）", title(n), n.summary, beijing(n.at));
     }
     format!(
         "【{}】{}\n机器：{}\n规则：{}\n摘要：{}\n时间：{}（北京时间）",
@@ -198,6 +206,11 @@ fn md(s: &str, max: usize) -> String {
 pub fn format_wecom(n: &Notice) -> String {
     if n.kind == Kind::Test {
         return format!("### 测试通知\n> 团队线路管理的告警通知渠道可用\n> 时间：{}（北京时间）", beijing(n.at));
+    }
+    // 摘要里有备注、机器名：逐行转义
+    if n.kind == Kind::Silence {
+        let body: Vec<String> = n.summary.lines().map(|l| format!("> {}", md(l, 300))).collect();
+        return format!("### <font color=\"warning\">{}</font>\n{}\n> 时间：{}（北京时间）", title(n), body.join("\n"), beijing(n.at));
     }
     let color = match (n.kind, n.severity.as_str()) {
         (Kind::Resolved, _) => "info",
@@ -621,7 +634,7 @@ pub fn start(st: &AppState) {
 }
 
 /// 不阻塞告警循环：给每个已启用、`min_severity` 不高于它的渠道各写一行待发（`notify_outbox`，中控重启、部署后照样发），唤醒发送循环。
-/// 告警对象就是某个渠道时（渠道连续失败的告警）不发给它自己。
+/// 静默 / 维护变更发给所有已启用的渠道，不看级别。告警对象就是某个渠道时（渠道连续失败的告警）不发给它自己。
 /// 触发 / 持续提醒在同一事务里刷新 `incident.notified_at`：持续提醒从这时起计时，恢复时据此判断报过触发没有（见 alerts.rs）。
 /// 写进去了才算通知过：入队失败（库出错）不刷新，下一轮评估补发「触发」
 pub async fn enqueue(st: &AppState, n: Notice) {
@@ -637,11 +650,12 @@ async fn enqueue_tx(st: &AppState, n: &Notice) -> sqlx::Result<()> {
     sqlx::query(
         "insert into notify_outbox (channel_id, incident_id, notice)
          select id, $1, $2 from notify_channel
-         where enabled and min_severity <= $3::severity and id is distinct from (select subject_id from incident where id = $1)",
+         where enabled and ($4 or min_severity <= $3::severity) and id is distinct from (select subject_id from incident where id = $1)",
     )
     .bind(n.incident_id)
     .bind(sqlx::types::Json(n))
     .bind(&n.severity)
+    .bind(n.kind == Kind::Silence)
     .execute(&mut *tx)
     .await?;
     if let (Kind::Firing | Kind::Repeat, Some(id)) = (n.kind, n.incident_id) {
@@ -730,6 +744,25 @@ mod tests {
         assert!(w.contains("> 摘要：＊＊粗＊＊ ＜font＞ ＃＃＃ 标题 ｀x｀ ＿y＿ ＃z ＼\n"), "{w}");
         let long = Notice { summary: "x".repeat(2000), ..notice(Kind::Firing) };
         assert!(format_wecom(&long).chars().count() < 700);
+    }
+
+    #[test]
+    fn silence_change_text() {
+        let n = Notice {
+            kind: Kind::Silence,
+            rule: String::new(),
+            severity: "info".into(),
+            machine: "全部机器".into(),
+            summary: "apikey:ops 新建了维护窗口\n对象：全部机器（全部规则）\n备注：换 **内核** [点我](http://x)".into(),
+            opened_at: None,
+            ..notice(Kind::Firing)
+        };
+        let t = format_text(&n);
+        assert!(t.starts_with("【静默 / 维护变更】apikey:ops 新建了维护窗口\n对象：全部机器（全部规则）\n"), "{t}");
+        assert!(t.ends_with("\n时间：2026-10-20 15:04:05（北京时间）"), "{t}");
+        let w = format_wecom(&n);
+        assert!(w.contains("\n> 对象：全部机器（全部规则）\n> 备注：换 ＊＊内核＊＊ ［点我］（http://x）\n> 时间："), "{w}");
+        assert_eq!((webhook_body(&n)["event"].as_str(), webhook_body(&n)["machine"].as_str()), (Some("silence"), Some("全部机器")));
     }
 
     #[test]

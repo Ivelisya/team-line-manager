@@ -141,6 +141,10 @@ pub struct AddOpts<'a> {
 
 pub fn add(ctx: &Ctx, o: AddOpts<'_>) -> anyhow::Result<u8> {
     let dur = parse_for(o.dur)?;
+    // 同中控：API 密钥（fleetctl 用的就是）建的全部机器静默 / 维护最长 24 小时
+    if o.all && dur > Duration::hours(24) {
+        bail!("--all（全部机器）最长 24 小时：API 密钥不能把整个监控关得更久；更长的请登录网页用账号建");
+    }
     if o.maintenance && o.rule.is_some() {
         bail!("维护窗口针对整台机器，不能只选一条规则：只想静默这条告警就去掉 --maintenance");
     }

@@ -201,9 +201,9 @@ struct LogOut {
     ts: OffsetDateTime,
     ok: bool,
     error: Option<String>,
-    /// firing / repeat / resolved / test
+    /// firing / repeat / resolved / test / silence（有人新建、删除了静默或维护窗口）
     kind: String,
-    /// 告警对象的显示名；测试消息、机器已删除时为 null
+    /// 告警对象的显示名；静默 / 维护变更是「静默 / 维护变更」；测试消息、机器已删除时为 null
     subject_name: Option<String>,
     #[serde(skip)]
     rule: Option<String>,
@@ -215,7 +215,9 @@ struct LogOut {
 pub async fn log(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<LogQ>) -> ApiResult<Json<Value>> {
     let mut v: Vec<LogOut> = sqlx::query_as(
         "select l.id, l.channel_id, c.name channel_name, l.incident_id, l.ts, l.ok, l.error, l.kind,
-                display_name(m.kind::text, m.label, t.name, m.number) || case when m.lifecycle = 'retired' then '（已退役）' else '' end subject_name, i.rule
+                case when l.kind = 'silence' then '静默 / 维护变更'
+                     else display_name(m.kind::text, m.label, t.name, m.number) || case when m.lifecycle = 'retired' then '（已退役）' else '' end end subject_name,
+                i.rule
          from notify_log l left join notify_channel c on c.id = l.channel_id
          left join incident i on i.id = l.incident_id left join machine m on m.id = i.subject_id left join team t on t.id = m.team_id
          order by l.id desc limit $1",

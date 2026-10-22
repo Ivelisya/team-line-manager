@@ -238,6 +238,10 @@ pub async fn create_silence(a: Actor, State(st): State<AppState>, ApiJson(b): Ap
     if b.ends_at - b.starts_at > time::Duration::days(30) {
         return Err(ApiError::bad_request("最长 30 天；更久的请直接把机器退役"));
     }
+    // 全部机器的静默 / 维护等于把监控整个关掉：API 密钥（脚本、AI）建的最长 24 小时，更长的要登录网页用账号建
+    if b.subject_id.is_none() && !a.is_session() && b.ends_at - b.starts_at > time::Duration::hours(24) {
+        return Err(ApiError::bad_request("API 密钥建的全部机器静默 / 维护最长 24 小时；更长的请登录网页用账号建"));
+    }
     // 开始时间可以已经过去（「从现在开始」由客户端按它的时钟填），结束时间不行：那样的静默一刻也不会生效
     let now = OffsetDateTime::now_utc();
     if b.ends_at <= now {
@@ -288,6 +292,7 @@ pub async fn create_silence(a: Actor, State(st): State<AppState>, ApiJson(b): Ap
     let s = Silence { id: Some(id), subject_name, ..b }.named();
     audit_log(&mut tx, &a.name, "silence.create", "silence", Some(id), json!(s)).await?;
     tx.commit().await?;
+    tell_channels(&st, &a.name, false, &s).await;
     // 卡片上的「维护中」随 Incidents 标记的实时指标比对送达（最多 3 s），不发 Machines 让前端整表重取
     st.emit(Event::Incidents);
     Ok(ok(json!({"id": id})))
@@ -303,10 +308,55 @@ pub async fn delete_silence(a: Actor, State(st): State<AppState>, ApiPath(id): A
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| ApiError::not_found("没有这条静默"))?;
-    audit_log(&mut tx, &a.name, "silence.delete", "silence", Some(id), json!(s.named())).await?;
+    let s = s.named();
+    audit_log(&mut tx, &a.name, "silence.delete", "silence", Some(id), json!(s)).await?;
     tx.commit().await?;
+    tell_channels(&st, &a.name, true, &s).await;
     st.emit(Event::Incidents);
     Ok(ok(json!({"ok": true})))
+}
+
+/// 新建 / 删除静默、维护窗口时告诉所有启用的渠道（不看渠道的最低级别，也不受任何静默影响），免得有人悄悄开个全局维护、监控就没了：
+/// 全部机器的一律发（含预约的）；只针对一台的，此刻正生效的才发（预约的、已经结束的不影响现在的告警）
+async fn tell_channels(st: &AppState, actor: &str, deleted: bool, s: &Silence) {
+    let now = OffsetDateTime::now_utc();
+    if s.subject_id.is_some() && !(s.starts_at <= now && now < s.ends_at) {
+        return;
+    }
+    let what = if s.is_maintenance { "维护窗口" } else { "静默" };
+    let object = s.subject_name.as_deref().unwrap_or("全部机器");
+    let rules = match (&s.rule_name, s.is_maintenance) {
+        (Some(r), _) => format!("（只静默「{r}」）"),
+        (None, true) => String::new(),
+        (None, false) => "（全部规则）".into(),
+    };
+    let mut text = format!(
+        "{actor} {}了{what}\n对象：{object}{rules}\n起止：{} ~ {}（北京时间）",
+        if deleted { "删除" } else { "新建" },
+        crate::notify::beijing(s.starts_at),
+        crate::notify::beijing(s.ends_at)
+    );
+    // 备注收成一行、最多 200 个字
+    let comment: String = s.comment.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(200).collect();
+    if !comment.is_empty() {
+        text.push_str(&format!("\n备注：{comment}"));
+    }
+    text.push_str(match (deleted, s.is_maintenance) {
+        (true, _) => "\n告警与通知照常恢复",
+        (false, true) => "\n期间不开告警、不发通知，健康判定暂停",
+        (false, false) => "\n期间不开告警、不发通知",
+    });
+    let n = crate::notify::Notice {
+        kind: crate::notify::Kind::Silence,
+        incident_id: None,
+        rule: s.rule.clone().unwrap_or_default(),
+        severity: "info".into(),
+        machine: object.to_string(),
+        summary: text,
+        at: now,
+        opened_at: None,
+    };
+    crate::notify::enqueue(st, n).await;
 }
 
 #[derive(Deserialize)]
