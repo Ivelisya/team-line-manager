@@ -8,8 +8,9 @@ import { Tabs, TabsList, TabsTrigger, Tip } from '@/components/ui/overlays';
 import { IconButton } from '@/components/ui/button';
 import { ErrorBoundary } from '@/components/app/ErrorBoundary';
 import { Skeleton } from '@/components/ui/skeleton';
-import type { AuditEntry, Incident, MachineView } from '@/lib/types';
+import type { Incident, MachineView } from '@/lib/types';
 import { useMachine, useAudit, useMachineIncidents } from '@/lib/queries';
+import { AuditList } from '@/components/app/AuditList';
 import { DRAWER_TABS, drawerSiblings, useDrawer, type DrawerTab } from '@/lib/drawer';
 import { useHeld } from '@/lib/useHeld';
 import { useTitleName } from '@/lib/title';
@@ -213,23 +214,7 @@ function OverviewTab({ m }: { m: MachineView }) {
       <Section>
         <SectionHeader title="最近操作" />
         {audit.data?.length ? (
-          <ul className="audit-list">
-            {audit.data.map((a) => {
-              const p = auditParts(a);
-              return (
-                <li key={a.id}>
-                  <span className="dot" data-tone="neutral" />
-                  <div className="audit-body">
-                    <div className="audit-head">
-                      <span className="audit-what"><b>{a.title}</b>{p.target && <> {p.target}</>}</span>
-                      <span className="audit-meta">{a.actor} · <span data-tip={F.dtFull(a.ts)}>{F.ago(a.ts)}</span></span>
-                    </div>
-                    {p.rest && <div className="audit-detail mono" data-tip={p.rest}>{p.rest}</div>}
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
+          <AuditList items={audit.data} />
         ) : audit.isError ? <ErrorNote error={audit.error} onRetry={() => void audit.refetch()} /> : <div className="hint">{audit.isLoading ? '加载中…' : '暂无记录'}</div>}
       </Section>
     </>
@@ -277,12 +262,3 @@ function incidentSpan(i: Incident): string {
   return `触发 ${from} → 恢复 ${to.slice(0, 5) === from.slice(0, 5) ? to.slice(6) : to} · 持续 ${F.str(F.since(i.opened_at, Date.parse(i.resolved_at)))}`;
 }
 
-/** 一条操作记录拆成对象与详情：摘要以记录里的显示名开头时（上架、执行命令、换线路机…），名字接在动作后面，其余是详情。
- *  名字保持记录时的样子，之后改过名也不跟着变 */
-function auditParts(a: AuditEntry): { target: string; rest: string } {
-  const name = (a.detail as { name?: unknown } | null)?.name;
-  if (typeof name !== 'string' || !name) return { target: '', rest: a.summary };
-  if (a.summary === name) return { target: name, rest: '' };
-  if (a.summary.startsWith(`${name} · `)) return { target: name, rest: a.summary.slice(name.length + 3) };
-  return { target: '', rest: a.summary };
-}

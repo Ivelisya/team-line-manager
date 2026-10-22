@@ -642,7 +642,11 @@ R('DELETE', '/silences/([^/]+)', ({ params }) => {
   if (!db.silences.some((s) => s.id === params[0])) throw bad('没有这条静默', 404, 'not_found');
   db.silences = db.silences.filter((s) => s.id !== params[0]); emit({ type: 'incidents' }); return { ok: true };
 });
-R('GET', '/audit', ({ query }) => clone(db.audit.filter((a) => !query.get('target_id') || a.target_id === query.get('target_id')).slice(0, +(query.get('limit') ?? 50))));
+R('GET', '/audit', ({ query }) => {
+  const list = db.audit.filter((a) => !query.get('target_id') || a.target_id === query.get('target_id'));
+  const before = query.get('before_id'); const from = before ? list.findIndex((a) => a.id === before) + 1 : 0;
+  return clone(list.slice(from, from + +(query.get('limit') ?? 50)));
+});
 
 installAccessMock(R, () => db.machines);
 installPolicyMock(R, { teams: () => db.teams, machines: () => db.machines, emit, user: () => db.user, bad });

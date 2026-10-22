@@ -2,7 +2,7 @@
 // 内容只会因实时流事件而变的查询（eventKeys 覆盖到的）staleTime 设成 Infinity：切回窗口、重新挂载都不再重取，靠事件失效；
 // 断线重连时 stream.ts 会让全部查询失效一次，没连着时错过的变化照样补上。
 import { useCallback } from 'react';
-import { keepPreviousData, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { del, get, patch, post, put } from './api';
 import { collator, makeDefaultCompare } from './sort';
 import { quotaTight } from './derive';
@@ -94,6 +94,13 @@ export const useAvailability = (id: string, days: number) =>
   useQuery({ queryKey: ['availability', id, days], queryFn: ({ signal }) => get<Availability>(`/machines/${id}/availability?days=${days}`, signal), staleTime: 600_000, refetchInterval: 600_000, refetchOnWindowFocus: false });
 export const useRenewals = (id: string | null) => useQuery({ queryKey: ['renewals', id], queryFn: ({ signal }) => get<Renewal[]>(`/machines/${id}/renewals`, signal), enabled: !!id });
 export const useAudit = (id: string | null) => useQuery({ queryKey: ['audit', id], queryFn: ({ signal }) => get<AuditEntry[]>(`/audit?target_id=${id}&limit=10`, signal), enabled: !!id });
+/** 「操作记录」页：全站审计，一页 100 条、按 before_id 往前翻（不满一页就到头了）。键在 ['audit'] 下，随机器类事件与写操作一起失效；登录等不发事件的，切回页面时重取 */
+const AUDIT_PAGE = 100;
+export const useAuditLog = () => useInfiniteQuery({
+  queryKey: ['audit', 'all'], initialPageParam: '',
+  queryFn: ({ pageParam, signal }) => get<AuditEntry[]>(`/audit?limit=${AUDIT_PAGE}${pageParam ? `&before_id=${pageParam}` : ''}`, signal),
+  getNextPageParam: (last) => (last.length < AUDIT_PAGE ? undefined : String(last[last.length - 1].id)),
+});
 /** 作业列表一页（按创建先后倒序）；换页时先留着上一页，不闪骨架 */
 export const useJobs = (state: 'active' | 'done' | 'all' = 'all', offset = 0, limit = 100) =>
   useQuery({ queryKey: ['jobs', state, offset, limit], queryFn: ({ signal }) => get<Paged<JobSummary>>(`/jobs?state=${state}&limit=${limit}&offset=${offset}`, signal), placeholderData: keepPreviousData, staleTime: Infinity });

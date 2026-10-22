@@ -29,6 +29,10 @@
 .audit-detail { line-height: var(--lh-label); color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 抽屉「最近告警」用同一套排版：右边的状态进行中按级别着色、已恢复灰；已恢复的级别点调淡，眼睛先落在还没恢复的那几条上 */
 .audit-meta[data-tone="bad"] { color: var(--bad-text); }
+/* 操作记录页：涉及机器的一行可点（打开抽屉），整行悬停变色；底下「加载更早的记录」居中 */
+.audit-list li.is-link { margin-inline: calc(-1 * var(--sp-8)); padding: var(--sp-4) var(--sp-8); border-radius: var(--r-control); cursor: pointer; transition: background-color var(--dur-1) var(--ease-std); }
+@media (hover: hover) { .audit-list li.is-link:hover { background-color: var(--hover); } }
+.audit-more { display: flex; justify-content: center; padding-top: var(--sp-12); }
 .audit-meta[data-tone="warn"] { color: var(--warn-text); }
 .audit-meta[data-tone="info"] { color: var(--info-text); }
 .audit-list li[data-resolved] > .dot { opacity: 0.4; }

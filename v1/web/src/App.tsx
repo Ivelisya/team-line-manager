@@ -16,6 +16,7 @@ const IncidentsPage = lazyPage(() => import('./pages/Incidents'), 'IncidentsPage
 const SettingsPage = lazyPage(() => import('./pages/Settings'), 'SettingsPage');
 const AccessPage = lazyPage(() => import('./pages/Access'), 'AccessPage');
 const PolicyPage = lazyPage(() => import('./pages/Policy'), 'PolicyPage');
+const AuditPage = lazyPage(() => import('./pages/Audit'), 'AuditPage');
 
 export function App() {
   return (
@@ -32,6 +33,7 @@ export function App() {
         <Route path="access/policy" element={<PolicyPage />} />
         <Route path="catalog" element={<CatalogPage />} />
         <Route path="incidents" element={<IncidentsPage />} />
+        <Route path="audit" element={<AuditPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
