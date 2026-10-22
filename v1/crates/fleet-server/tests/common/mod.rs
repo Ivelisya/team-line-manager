@@ -242,6 +242,18 @@ pub async fn seed_relay(t: &T) -> (Uuid, String) {
     (id, tok.to_string())
 }
 
+/// 中控 dist 里放一个假的 agent 程序（shell 脚本，`--version` 打印版本）：「全部升级」要记下它的 sha256 与版本号
+pub fn dist_agent(t: &T, version: &str) {
+    let p = t.dir.path().join("dist/fleet-agent");
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(&p, format!("#!/bin/sh\necho 'fleet-agent {version}'\n")).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
 pub async fn seed_team(t: &T, name: &str) -> Uuid {
     t.post("/api/v1/teams", json!({"name": name})).await["id"].as_str().unwrap().parse().unwrap()
 }

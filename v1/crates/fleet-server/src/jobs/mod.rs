@@ -386,9 +386,13 @@ pub async fn advance(st: &AppState, mut job: JobRow, owner: &str) -> anyhow::Res
     if job.state == "cancelling" {
         return finish_cancel(st, &job, owner).await;
     }
+    // 编排：开始前看该不该开始。同一次尝试里中控重启后接着做的不再看：它已经开始了
     if job.step == 0 {
-        if let Some(why) = halted(st, &job).await? {
-            return halt(st, &job, owner, &why).await;
+        let fresh: Option<bool> = sqlx::query_scalar("select state = 'pending' from job_step where job_id = $1 and idx = 0").bind(job.id).fetch_optional(&st.db).await?;
+        if fresh.unwrap_or(true) {
+            if let Some(why) = halted(st, &job).await? {
+                return halt(st, &job, owner, &why).await;
+            }
         }
     }
     let defs = defs(&job.kind);
@@ -520,10 +524,31 @@ pub async fn advance(st: &AppState, mut job: JobRow, owner: &str) -> anyhow::Res
     Ok(())
 }
 
-/// 「全部升级」的编排：要等的作业（参数 `after`）在推送之后失败了（新版本起不来、没上报、线路机检查没通过）或被取消，
-/// 返回这个作业不再开始的原因。它在推送之前就失败的（连不上、推送失败…，机器上的程序没换过，与新版本无关）不算，照常开始。
-/// 要等的那个也是这样停下的（`halted`），就沿用它的原因：一路都指向最先失败的那台
+/// dist 里 agent 程序的 sha256（十六进制）
+pub async fn dist_agent_sha256(st: &AppState) -> std::io::Result<String> {
+    let data = tokio::fs::read(st.cfg.dist_dir.join("fleet-agent")).await?;
+    Ok(hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&data)))
+}
+
+/// 「全部升级」发起之后 dist 里的 agent 换了（中途重新部署过中控）：接着推，后面的机器装上的是金丝雀没验过的版本
+pub fn rollout_changed(params: &Value) -> String {
+    format!("中控上的 agent 在升级过程中换了版本（发起时是 {}），请重新发起全部升级", params["rollout"]["version"].as_str().unwrap_or("?"))
+}
+
+/// 「全部升级」的编排：这个作业不该开始时返回原因（之后一步都不做，见 `halt`）。
+/// dist 里的 agent 已经不是发起时的那个（参数 `rollout`）也停下；推送时还会再核对真正推的内容（steps::agent）
 async fn halted(st: &AppState, job: &JobRow) -> sqlx::Result<Option<String>> {
+    if let Some(why) = after_stopped(st, job).await? {
+        return Ok(Some(why));
+    }
+    let Some(want) = job.params["rollout"]["sha256"].as_str() else { return Ok(None) };
+    Ok((dist_agent_sha256(st).await.ok().as_deref() != Some(want)).then(|| rollout_changed(&job.params)))
+}
+
+/// 要等的作业（参数 `after`）在推送之后失败了（新版本起不来、没上报、线路机检查没通过）或被取消，返回这个作业不再开始的原因。
+/// 它在推送之前就失败的（连不上、推送失败…，机器上的程序没换过，与新版本无关）不算，照常开始。
+/// 要等的那个也是这样停下的（`halted`），就沿用它的原因：一路都指向最先失败的那台
+async fn after_stopped(st: &AppState, job: &JobRow) -> sqlx::Result<Option<String>> {
     let Some(after) = job.params["after"].as_str().and_then(|s| Uuid::try_parse(s).ok()) else { return Ok(None) };
     // pushed 由 agent 步骤记（每次尝试从 false 起，要用 dist 里的程序重启 agent 之前置 true）；没有记的按推送之后算
     let prev = sqlx::query_as::<_, (String, Option<String>, bool, bool, bool, Option<String>)>(
@@ -545,7 +570,7 @@ async fn halted(st: &AppState, job: &JobRow) -> sqlx::Result<Option<String>> {
     })
 }
 
-/// 编排里要等的作业没有成功：一步都不做，直接取消并写明原因；记上 `halted`，等它的作业沿用同一个原因
+/// 编排停下了（见 `halted`）：一步都不做，直接取消并写明原因；记上 `halted`，等它的作业沿用同一个原因
 async fn halt(st: &AppState, job: &JobRow, owner: &str, why: &str) -> anyhow::Result<()> {
     let n = sqlx::query(
         "update job set state = 'cancelled', error = $3, started_at = null, finished_at = now(), lease_until = null, lease_owner = null,

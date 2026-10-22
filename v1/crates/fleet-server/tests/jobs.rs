@@ -6,7 +6,7 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{seed_node, seed_relay, seed_team, setup};
+use common::{dist_agent, seed_node, seed_relay, seed_team, setup};
 use fleet_server::jobs;
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -355,6 +355,7 @@ async fn bulk_upgrade_runs_canary_then_relays_one_by_one() {
     fleet_server::entries::create(&mut tx, r2, vps[0]).await.unwrap();
     tx.commit().await.unwrap();
 
+    dist_agent(&t, "0.1.0+a");
     let up = t.post("/api/v1/agents/upgrade", json!({})).await;
     let list = up["jobs"].as_array().unwrap();
     let names: Vec<&str> = list.iter().map(|j| j["name"].as_str().unwrap()).collect();
@@ -367,6 +368,10 @@ async fn bulk_upgrade_runs_canary_then_relays_one_by_one() {
     let ids: Vec<Uuid> = list.iter().map(|j| j["job_id"].as_str().unwrap().parse().unwrap()).collect();
     let after: Vec<Option<Uuid>> = list.iter().map(|j| j["after"].as_str().map(|s| s.parse().unwrap())).collect();
     assert_eq!(after, [None, Some(ids[0]), Some(ids[1]), Some(ids[2]), Some(ids[2]), Some(ids[2])]);
+    // 每个作业都记着发起时 dist 里 agent 的 sha256 与版本号
+    let sha = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(std::fs::read(t.dir.path().join("dist/fleet-agent")).unwrap()));
+    let rollouts: Vec<Value> = sqlx::query_scalar("select params->'rollout' from job where id = any($1)").bind(&ids).fetch_all(&t.st.db).await.unwrap();
+    assert!(rollouts.iter().all(|r| *r == json!({"sha256": sha, "version": "0.1.0+a"})), "{rollouts:?}");
 
     let node = seed_node(&t, team, 9, "203.0.113.10", "provisioning").await;
     let mut tx = t.st.db.begin().await.unwrap();
@@ -401,6 +406,7 @@ async fn queued_upgrade_can_be_cancelled() {
     seed_relay(&t).await;
     seed_relay_named(&t, "线路机3", "198.51.100.3").await;
     seed_relay_named(&t, "线路机4", "198.51.100.4").await;
+    dist_agent(&t, "0.1.0+a");
     let up = t.post("/api/v1/agents/upgrade", json!({})).await;
     let ids: Vec<Uuid> = up["jobs"].as_array().unwrap().iter().map(|j| j["job_id"].as_str().unwrap().parse().unwrap()).collect();
     // 金丝雀「线路机2」已经领走开始了：不能取消
@@ -420,6 +426,38 @@ async fn queued_upgrade_can_be_cancelled() {
     let j = run_one(&t, ids[2]).await;
     assert_eq!(j["state"], "cancelled");
     assert_eq!(j["error"], "「线路机3」的升级没有完成（已取消），后面的机器不再升级");
+}
+
+/// 「全部升级」记下发起时 dist 里 agent 的 sha256 与版本号：中途重新部署过中控（dist 换了），推送前核对出来就不推、失败，
+/// 没开始的都取消、写明原因，后面的机器不会装上金丝雀没验过的版本。dist 里没有 agent 时不发起
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bulk_upgrade_stops_when_dist_changes() {
+    let t = setup(false).await;
+    seed_relay(&t).await;
+    seed_relay_named(&t, "线路机3", "198.51.100.3").await;
+    seed_relay_named(&t, "线路机4", "198.51.100.4").await;
+    let (s, v) = t.req("POST", "/api/v1/agents/upgrade", Some(json!({})), None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().starts_with("中控上没有可推送的 agent 程序"), "{v}");
+    let n: i64 = sqlx::query_scalar("select count(*) from job").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(n, 0);
+
+    dist_agent(&t, "0.1.0+a");
+    let up = t.post("/api/v1/agents/upgrade", json!({})).await;
+    let ids: Vec<Uuid> = up["jobs"].as_array().unwrap().iter().map(|j| j["job_id"].as_str().unwrap().parse().unwrap()).collect();
+    // 金丝雀已经开始、还没推送时中控被重新部署（先换 dist、后重启），重启后接着做这一步：推送前核对出来，不推、失败
+    sqlx::query("update job_step set state = 'running', started_at = now() where job_id = $1 and idx = 0").bind(ids[0]).execute(&t.st.db).await.unwrap();
+    sqlx::query("update job set params = params || '{\"pushed\": false}' where id = $1").bind(ids[0]).execute(&t.st.db).await.unwrap();
+    dist_agent(&t, "0.1.0+b");
+    let why = "中控上的 agent 在升级过程中换了版本（发起时是 0.1.0+a），请重新发起全部升级";
+    let j = run_one(&t, ids[0]).await;
+    assert_eq!((j["state"].as_str(), j["error"].as_str()), (Some("failed"), Some(format!("推送并重启 agent：{why}").as_str())), "{j}");
+    // 没开始的：开始前核对出来，一步不做、取消
+    for id in &ids[1..] {
+        let j = run_one(&t, *id).await;
+        assert_eq!((j["state"].as_str(), j["error"].as_str()), (Some("cancelled"), Some(why)), "{j}");
+        assert!(j["started_at"].is_null(), "{j}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

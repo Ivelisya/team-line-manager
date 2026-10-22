@@ -496,7 +496,14 @@ async fn agent(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         c.set_params(json!({"xray_checks": checks})).await?;
     }
     let t = c.ssh(&m, None);
-    let pushed = t.push_keep_prev(&c.dist("fleet-agent"), AGENT_BIN, "0755", Duration::from_secs(180)).await?;
+    let dist = c.dist("fleet-agent");
+    let bin = tokio::fs::read(&dist).await.with_context(|| format!("读取 {}", dist.display()))?;
+    // 「全部升级」：推的必须是发起时 dist 里的那个程序。作业开始前核对过（jobs::halted），这里核对真正要推的内容：
+    // 重新部署中控是先换 dist、后重启中控，其间开始推送的作业读到的已经是新程序
+    if c.job.params["rollout"]["sha256"].as_str().is_some_and(|w| w != hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bin))) {
+        bail!(super::rollout_changed(&c.job.params));
+    }
+    let pushed = t.push_keep_prev(bin, AGENT_BIN, "0755", Duration::from_secs(180)).await?;
     // 重试时推送发现已经是新程序会返回 false：以本作业第一次换上的为准
     let replaced = pushed || c.job.params["agent_replaced"] == true;
     let can_rollback = upgrading && replaced;

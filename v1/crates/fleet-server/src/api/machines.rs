@@ -473,14 +473,17 @@ pub async fn purge(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
 /// 给 `ms`（id, 种类, 显示名）按顺序各建一个升级作业，返回 (建好的作业, 跳过的机器)。已有进行中作业的机器由唯一索引
 /// job_one_active_per_target 挡住（409「这台机器还有进行中的作业」），不另外预查；每台一个 savepoint：一台冲突只跳过这台，不整批回滚。
 /// 多台时排成编排（作业参数 `after` = 要等的作业，见 jobs::claim）：第一个建成的是金丝雀；线路机一台等前一台；
-/// 落地机都等最后一台线路机（没有线路机时等金丝雀），之后并发
-async fn enqueue_upgrade(st: &AppState, actor: &str, ms: &[(Uuid, String, String)]) -> ApiResult<(Vec<Value>, Vec<Value>)> {
+/// 落地机都等最后一台线路机（没有线路机时等金丝雀），之后并发。`rollout`（「全部升级」才有）记进每个作业的参数，开始前核对
+async fn enqueue_upgrade(st: &AppState, actor: &str, ms: &[(Uuid, String, String)], rollout: Option<&Value>) -> ApiResult<(Vec<Value>, Vec<Value>)> {
     let mut tx = st.db.begin().await?;
     let (mut out, mut skipped) = (vec![], vec![]);
     let (mut canary, mut last_relay): (Option<Uuid>, Option<Uuid>) = (None, None);
     for (id, kind, name) in ms {
         let after = if kind == "relay" { last_relay } else { last_relay.or(canary) };
-        let params = after.map_or_else(|| json!({}), |a| json!({"after": a}));
+        let mut params = after.map_or_else(|| json!({}), |a| json!({"after": a}));
+        if let Some(r) = rollout {
+            params["rollout"] = r.clone();
+        }
         let mut sp = sqlx::Connection::begin(&mut *tx).await?;
         match jobs::enqueue(&mut sp, "upgrade_agent", Some(*id), params, actor).await {
             Ok(job) => {
@@ -527,13 +530,28 @@ pub async fn upgrade_agent(a: Actor, State(st): State<AppState>, ApiPath(id): Ap
     if kind == "proxy" || lc != "active" {
         return Err(ApiError::conflict("只有在用的线路机和落地机有 agent"));
     }
-    let (v, skipped) = enqueue_upgrade(&st, &a.name, &[(id, kind, name)]).await?;
+    let (v, skipped) = enqueue_upgrade(&st, &a.name, &[(id, kind, name)], None).await?;
     v.into_iter().next().map(ok).ok_or_else(|| ApiError::conflict(skipped[0]["reason"].as_str().unwrap_or("这台机器还有进行中的作业")))
+}
+
+/// 「全部升级」要推的 agent：dist 里程序的 sha256 与版本号。记进每个作业的参数 `rollout`，作业开始前核对（jobs::halted）：
+/// 中途重新部署过中控时，后面的机器不能装上金丝雀没验过的版本
+async fn dist_agent(st: &AppState) -> ApiResult<Value> {
+    let path = st.cfg.dist_dir.join("fleet-agent");
+    let sha = jobs::dist_agent_sha256(st).await.map_err(|e| ApiError::conflict(format!("中控上没有可推送的 agent 程序（{}：{e}）", path.display())))?;
+    let out = tokio::time::timeout(std::time::Duration::from_secs(10), tokio::process::Command::new(&path).arg("--version").output()).await;
+    let version = match out {
+        Ok(Ok(o)) if o.status.success() => String::from_utf8_lossy(&o.stdout).split_whitespace().nth(1).map(String::from),
+        _ => None,
+    };
+    let version = version.ok_or_else(|| ApiError::conflict(format!("中控上的 agent 程序（{}）读不出版本号", path.display())))?;
+    Ok(json!({"sha256": sha, "version": version}))
 }
 
 /// 全部在用的线路机与落地机（同机 IP 节点没有自己的 agent，不算）。不一起升：先升一台做金丝雀（有线路机先挑线路机），
 /// 它成功了线路机再一台接一台，线路机都成功后落地机并发（引擎的并发上限）。同类里在用入口少的在前（出问题影响最小的先上），再按名字
 pub async fn upgrade_all_agents(a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
+    let rollout = dist_agent(&st).await?;
     let ms: Vec<(Uuid, String, String)> = sqlx::query_as(
         "select m.id, m.kind::text, display_name(m.kind::text, m.label, t.name, m.number) name
          from machine m left join team t on t.id = m.team_id
@@ -542,7 +560,7 @@ pub async fn upgrade_all_agents(a: Actor, State(st): State<AppState>) -> ApiResu
     )
     .fetch_all(&st.db)
     .await?;
-    let (jobs, skipped) = enqueue_upgrade(&st, &a.name, &ms).await?;
+    let (jobs, skipped) = enqueue_upgrade(&st, &a.name, &ms, Some(&rollout)).await?;
     let order = upgrade_order(&jobs);
     Ok(ok(json!({"jobs": jobs, "skipped": skipped, "order": order})))
 }

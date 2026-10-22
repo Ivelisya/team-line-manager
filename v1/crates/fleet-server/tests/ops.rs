@@ -352,6 +352,7 @@ async fn upgrade_all_skips_conflicting_machine() {
     );
     sqlx::query(&ddl).execute(&t.st.db).await.unwrap();
     sqlx::query("create trigger fail_job before insert on job for each row execute function fail_job()").execute(&t.st.db).await.unwrap();
+    common::dist_agent(&t, "0.1.0+a");
     let d = t.ok("POST", "/api/v1/agents/upgrade", Some(json!({}))).await;
     assert_eq!(d["jobs"].as_array().unwrap().len(), 2, "{d}");
     assert_eq!(d["skipped"][0]["machine_id"], ids[1].to_string(), "{d}");
