@@ -115,7 +115,7 @@ pub struct Retention {
     /// 原始时序（主机指标、入口流量、探测）保留天数。读原始表的地方最多看 24 小时（7d / 30d 走小时汇总表），
     /// agent 离线队列 6 小时就淘汰，3 天足够补算迟到的小时汇总。上报接收窗口、分区维护、彻底删除的时间窗都由它推出
     pub raw_days: u32,
-    /// 访问记录保留天数
+    /// 访问记录（原始）保留天数的默认值：访问记录的保留期在面板里设（settings.rs），没设过时用它
     pub access_days: u32,
 }
 impl Default for Retention {

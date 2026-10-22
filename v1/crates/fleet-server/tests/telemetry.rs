@@ -1843,24 +1843,9 @@ async fn retention_cleanup_removes_only_expired_rows() {
             .await
             .unwrap();
     }
-    // 来源画像：只删久未出现、不在告警中的 ip 行；运营商等其它维度不删
-    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
-    for (dim, value, days, flag) in [("ip", "203.0.113.1", 40, None), ("ip", "203.0.113.2", 10, None), ("ip", "203.0.113.3", 40, Some("open")), ("isp", "某运营商", 40, None)] {
-        sqlx::query(&format!(
-            "insert into node_source_seen (node_id, dim, value, first_seen, last_seen, flag) values ($1, $2, $3, now() - interval '50 days', now() - interval '{days} days', $4)"
-        ))
-        .bind(relay)
-        .bind(dim)
-        .bind(value)
-        .bind(flag)
-        .execute(db)
-        .await
-        .unwrap();
-    }
+    // 访问记录（汇总、来源画像）按面板里设的保留期删，见 tests/retention.rs
     let sessions_before = t.count("select count(*) from session").await;
-    db::cleanup_retention(db, 32).await.unwrap();
-    assert_eq!(t.count("select count(*) from node_source_seen where value <> '203.0.113.1'").await, 3, "只删 40 天没出现、没在告警的来源 IP");
-    assert_eq!(t.count("select count(*) from node_source_seen").await, 3);
+    db::cleanup_retention(db).await.unwrap();
     assert_eq!(t.count("select count(*) from silence").await, 1, "结束超 90 天的静默删掉");
     assert_eq!(t.count("select count(*) from incident").await, 2, "只删已恢复超 180 天的");
     assert_eq!(t.count("select count(*) from incident where state = 'firing'").await, 1);

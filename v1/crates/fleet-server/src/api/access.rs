@@ -47,9 +47,21 @@ fn window_of(q: &Q, default: Window) -> ApiResult<Window> {
     }
 }
 
+/// 读汇总的窗口不能比汇总的保留期长（面板里设的，见 settings.rs）：更早的汇总已经删了，算出来的数是残缺的
+pub(super) fn check_retained(st: &AppState, w: Window) -> ApiResult<Window> {
+    let days = st.access_retention().hourly_days;
+    if w.retained(days) {
+        Ok(w)
+    } else {
+        Err(ApiError::bad_request(format!("访问记录的汇总只保留 {days} 天，看不了最近 {}；要看更久，先在设置里把保留期调长", w.label())))
+    }
+}
+
+/// 汇总类视图（概况、目标、来源、新目标、单台机器）的窗口：默认 24h，不能超过汇总的保留期
+fn agg_window(st: &AppState, q: &Q) -> ApiResult<Window> { check_retained(st, window_of(q, Window::H24)?) }
+
 /// team / node / search / kind / action 公共筛选
-fn filter_of(q: &Q, default_window: Window) -> ApiResult<Filter> {
-    let w = window_of(q, default_window)?;
+fn filter_of(q: &Q, w: Window) -> ApiResult<Filter> {
     let mut f = Filter::new(w, OffsetDateTime::now_utc());
     f.team = uuid_of(&q.team, "team")?;
     f.nodes = uuid_of(&q.node, "node")?.map(|n| vec![n]);
@@ -89,7 +101,7 @@ pub(super) async fn cached(st: &AppState, key: Option<String>, short: bool, comp
 }
 
 pub async fn summary(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Q>) -> ApiResult<Response> {
-    let f = filter_of(&q, Window::H24)?;
+    let f = filter_of(&q, agg_window(&st, &q)?)?;
     let key = (!f.events).then(|| format!("summary|{f:?}"));
     cached(&st, key, false, async {
         let (kpi, nodes) = access::summary(&st.access_db, &f).await?;
@@ -99,7 +111,7 @@ pub async fn summary(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuer
 }
 
 pub async fn targets(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Q>) -> ApiResult<Response> {
-    let f = filter_of(&q, Window::H24)?;
+    let f = filter_of(&q, agg_window(&st, &q)?)?;
     let (limit, offset) = page_of(&q, 100)?;
     let sort = match nonempty(&q.sort) {
         None | Some("conns") => TargetSort::Conns,
@@ -119,7 +131,7 @@ pub async fn targets(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuer
 }
 
 pub async fn sources(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Q>) -> ApiResult<Response> {
-    let f = filter_of(&q, Window::H24)?;
+    let f = filter_of(&q, agg_window(&st, &q)?)?;
     let (limit, _) = page_of(&q, 100)?;
     let key = (!f.events).then(|| format!("sources|{f:?}|{limit}"));
     cached(&st, key, false, async {
@@ -130,9 +142,10 @@ pub async fn sources(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuer
     .await
 }
 
-/// 原始记录：按时间倒序，`before` 原样传回上一页的 `next_before`（不透明游标），最多回看 7 天
+/// 原始记录：按时间倒序，`before` 原样传回上一页的 `next_before`（不透明游标），回看所选窗口（默认 7 天）。
+/// 原始记录只留面板里设的天数，窗口比它长时只是更早的已经没有了，不报错（访问页各视图共用一个窗口，汇总看得到的这里照样能选）
 pub async fn events(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Q>) -> ApiResult<Json<Value>> {
-    let f = filter_of(&q, Window::D7)?;
+    let f = filter_of(&q, window_of(&q, Window::D7)?)?;
     let (limit, _) = page_of(&q, 100)?;
     let before = nonempty(&q.before)
         .map(|s| access::parse_event_cursor(s).ok_or_else(|| ApiError::bad_request("before 不对：原样传上一页返回的 next_before")))
@@ -144,9 +157,10 @@ pub async fn events(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery
 
 /// 窗口内第一次出现的目标（旧系统「新域名」的替代，不告警）
 pub async fn new_targets(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Q>) -> ApiResult<Json<Value>> {
-    let mut f = filter_of(&q, Window::H24)?;
+    let w = agg_window(&st, &q)?;
+    let mut f = filter_of(&q, w)?;
     // 首次出现时间是精确时间，窗口起点不对齐整点
-    f.from = OffsetDateTime::now_utc() - window_of(&q, Window::H24)?.duration();
+    f.from = OffsetDateTime::now_utc() - w.duration();
     let (limit, offset) = page_of(&q, 200)?;
     let (items, total) = access::new_targets(&st.access_db, &f, limit, offset).await?;
     let next = (offset + (items.len() as i64) < total).then_some(offset + items.len() as i64);
@@ -154,10 +168,10 @@ pub async fn new_targets(_a: Actor, State(st): State<AppState>, ApiQuery(q): Api
 }
 
 pub async fn machine(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<Q>) -> ApiResult<Response> {
-    let w = window_of(&q, Window::H24)?;
+    let w = agg_window(&st, &q)?;
     let key = (w != Window::H1).then(|| format!("machine|{id}|{w:?}"));
     cached(&st, key, true, async {
-        let mut m = access::machine_access(&st.access_db, id, w).await?;
+        let mut m = access::machine_access(&st.access_db, id, w, st.access_retention().raw_days).await?;
         crate::ipintel::attach(&st, &mut m.top_sources).await;
         Ok(ok(m).0)
     })

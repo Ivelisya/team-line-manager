@@ -1,11 +1,14 @@
 //! 访问监控：把 access_event 汇总成小时表（每 5 分钟重算当前小时和被标脏的小时，幂等），以及各个查询。
 //!
-//! - 1h 窗口直接查 access_event（原始记录，保留 access_days 天）；24h 及以上查小时汇总表（保留 31 天，窗口最长 30d）。
+//! - 1h 窗口直接查 access_event（原始记录）；24h 及以上查小时汇总表。各留多久按面板里设的访问记录保留期（settings.rs），
+//!   窗口不能比汇总的保留期长（`Window::retained`），过期的由 `prune` 与分区维护删掉。
 //! - 随机子域名合并在库里的 `access_collapse()`（见迁移 0006），汇总和 1h 查询共用同一份规则。
 //! - 目标按 (节点, 目标) 聚合。「来源数」在小时表里是各小时去重数的最大值（跨小时无法精确去重，偏小的近似）。
 
 use crate::db::{floor_hour, Args};
+use crate::settings::AccessRetention;
 use crate::state::AppState;
+use anyhow::Context;
 use serde::Serialize;
 use sqlx::{FromRow, PgPool};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,10 +19,6 @@ use uuid::Uuid;
 
 /// 汇总用的咨询锁：同一时刻只让一个汇总在跑（增量累计 total 依赖这点）
 const LOCK_KEY: i64 = 0x6163_6365_7373;
-/// 小时汇总表（access_hourly / access_source_hourly / access_source_late）保留天数：查询窗口最长 30d，多留 1 天
-pub const HOURLY_DAYS: i64 = 31;
-/// 目标首次 / 最近出现（access_target_seen）按最近出现保留的天数：「新目标」靠它判断是不是第一次出现，比小时表留得久
-const TARGET_SEEN_DAYS: i64 = 90;
 
 // ── 汇总 ─────────────────────────────────────────────────────────────────────
 
@@ -107,33 +106,47 @@ pub async fn rollup_since(db: &PgPool, from: OffsetDateTime) -> anyhow::Result<(
     Ok(())
 }
 
-/// 启动补算：从汇总表里最新的小时算起（宕机期间的缺口），表是空的就补整个 access_event 保留期。
-pub async fn backfill(db: &PgPool, access_days: u32) -> anyhow::Result<()> {
-    let floor = OffsetDateTime::now_utc() - Duration::days(access_days as i64);
+/// 启动补算：从汇总表里最新的小时算起（宕机期间的缺口），表是空的就补整个原始记录的保留期（`raw_days`）。
+pub async fn backfill(db: &PgPool, raw_days: u32) -> anyhow::Result<()> {
+    let floor = OffsetDateTime::now_utc() - Duration::days(raw_days as i64);
     let last: Option<OffsetDateTime> = sqlx::query_scalar("select max(hour) from access_hourly").fetch_one(db).await?;
     let from = last.map(|l| l.max(floor)).unwrap_or(floor);
     rollup_since(db, from).await
 }
 
-/// 清理过期的汇总：小时表 HOURLY_DAYS 天前的小时（脏标记同），目标出现记录 TARGET_SEEN_DAYS 天没再出现的
-pub async fn prune(db: &PgPool) -> anyhow::Result<()> {
-    let now = OffsetDateTime::now_utc();
-    let (hourly, seen) = (now - Duration::days(HOURLY_DAYS), now - Duration::days(TARGET_SEEN_DAYS));
-    for (s, cutoff) in [
-        ("delete from access_hourly where hour < $1", hourly),
-        ("delete from access_source_hourly where hour < $1", hourly),
-        ("delete from access_target_seen where last_seen < $1", seen),
-        ("delete from access_source_late where hour < $1", hourly),
-        ("delete from access_dirty where hour < $1", hourly),
+/// 按访问记录保留期删过期的汇总与来源画像（后台每小时一次；面板改了保留期后马上一次，见 `settings::enforce`），返回删了多少行。
+/// 截止时间对齐整点：窗口起点也对齐整点，窗口和保留期一样长时第一个小时不会被删掉。
+/// - 小时汇总、来源小时汇总、迟到差值、脏标记：`hourly_days` 天前的小时；
+/// - 目标首次 / 最近出现（access_target_seen）：最近一次出现在 `hourly_days` 天前的。之后再出现按第一次出现算，
+///   即「新目标」= 保留期内没见过；
+/// - 来源 IP 画像缓存（只有访问来源会写进去）：`hourly_days` 天前写入的，再用到时重新查离线库；
+/// - 来源画像（node_source_seen：运营商 / 城市 / 接入方式 / 机房·VPN 来源 IP，各维度都删）：最近一次出现在 `profile_days` 天前、
+///   不在告警中（open）的。之后再出现按「新运营商 / 新城市 / 首次出现的机房来源」再告警一次，即「新」= 这段时间内没见过；
+///   学习期起点是节点剩下的行里最早的首次出现，一个节点的行全删光（闲置超过这么久）之后再有流量，学习期从头算；
+/// - 画像异常告警（ipintel_ 开头，摘要里写着来源 IP、运营商、城市）：恢复超过 `profile_days` 天的（别的告警仍是 180 天）。
+/// 原始记录按天分区，由 `db::maintain_partitions` 删。
+pub async fn prune(db: &PgPool, ret: AccessRetention, profile_days: u32) -> anyhow::Result<u64> {
+    let hour = floor_hour(OffsetDateTime::now_utc());
+    let (hourly, profile) = (hour - Duration::days(ret.hourly_days as i64), hour - Duration::days(profile_days as i64));
+    let mut n = 0;
+    for (what, sql, cutoff) in [
+        ("小时汇总", "delete from access_hourly where hour < $1", hourly),
+        ("来源小时汇总", "delete from access_source_hourly where hour < $1", hourly),
+        ("迟到差值", "delete from access_source_late where hour < $1", hourly),
+        ("脏标记", "delete from access_dirty where hour < $1", hourly),
+        ("目标首次出现", "delete from access_target_seen where last_seen < $1", hourly),
+        ("来源 IP 画像缓存", "delete from ip_intel_cache where updated_at < $1", hourly),
+        ("来源画像", "delete from node_source_seen where last_seen < $1 and flag is distinct from 'open'", profile),
+        ("画像异常告警", "delete from incident where rule like 'ipintel!_%' escape '!' and state = 'resolved' and resolved_at < $1", profile),
     ] {
-        sqlx::query(s).bind(cutoff).execute(db).await?;
+        n += sqlx::query(sql).bind(cutoff).execute(db).await.with_context(|| format!("清理过期的{what}"))?.rows_affected();
     }
-    Ok(())
+    Ok(n)
 }
 
-/// 后台循环：启动补算一次，之后每 5 分钟补算当前小时和脏小时并清理过期汇总。
+/// 后台循环：启动补算一次，之后每 5 分钟补算当前小时和脏小时；启动时和之后每小时按保留期清理一次。
 pub async fn run_forever(st: AppState) {
-    if let Err(e) = backfill(&st.db, st.cfg.retention.access_days).await {
+    if let Err(e) = backfill(&st.db, st.access_retention().raw_days).await {
         tracing::error!("访问汇总补算失败：{e:#}");
     }
     let mut t = tokio::time::interval(StdDuration::from_secs(300));
@@ -147,8 +160,8 @@ pub async fn run_forever(st: AppState) {
             Err(e) => tracing::error!("访问汇总失败：{e:#}"),
         }
         if n.is_multiple_of(12) {
-            if let Err(e) = prune(&st.db).await {
-                tracing::error!("访问汇总清理失败：{e:#}");
+            if let Err(e) = prune(&st.db, st.access_retention(), st.profile_days()).await {
+                tracing::error!("访问记录保留期清理失败：{e:#}");
             }
         }
         n = n.wrapping_add(1);
@@ -239,6 +252,18 @@ impl Window {
             Self::D30 => Duration::days(30),
         }
     }
+    /// 同访问页的写法
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::H1 => "1 小时",
+            Self::H24 => "24 小时",
+            Self::D7 => "7 天",
+            Self::D30 => "30 天",
+        }
+    }
+    /// 汇总只留 `hourly_days` 天时能不能看这个窗口：1h 读原始记录（至少留 1 天），其余读小时汇总，不能比它的保留期长
+    /// （更早的已经删了，算出来的数是残缺的）
+    pub fn retained(self, hourly_days: u32) -> bool { self == Self::H1 || self.duration() <= Duration::days(hourly_days as i64) }
 }
 
 /// 一次查询的筛选条件。拼 SQL 时只拼给了的条件（见 `db::Args`）
@@ -698,7 +723,8 @@ pub struct MachineAccess {
 }
 
 /// 单台机器的访问概况。线路机只算经它的流量（它名下的入口，含已移除的；同一节点经别的线路机的不算）；节点算它自己全部入口的。
-pub async fn machine_access(db: &PgPool, machine_id: Uuid, window: Window) -> Result<MachineAccess, crate::error::ApiError> {
+/// `raw_days`：原始记录的保留期，最近记录回看这么久
+pub async fn machine_access(db: &PgPool, machine_id: Uuid, window: Window, raw_days: u32) -> Result<MachineAccess, crate::error::ApiError> {
     let kind: String = sqlx::query_scalar("select kind::text from machine where id = $1")
         .bind(machine_id)
         .fetch_optional(db)
@@ -722,7 +748,8 @@ pub async fn machine_access(db: &PgPool, machine_id: Uuid, window: Window) -> Re
     let top_domains: Vec<TopDomain> = sqlx::query_as_with(&sql, a.0).fetch_all(db).await?;
     let top_sources = sources(db, &f, 20).await?;
 
-    let mut ef = Filter::new(Window::D7, now);
+    // 最近的原始记录回看整个保留期：逐入口沿 (entry_id, ts desc) 索引各取前 20 条，回看多久都不慢
+    let mut ef = Filter { from: now - Duration::days(raw_days as i64), ..Filter::new(Window::H1, now) };
     (ef.nodes, ef.relay) = (f.nodes.clone(), f.relay);
     let recent = events(db, &ef, None, 20).await?;
 
@@ -783,6 +810,9 @@ mod tests {
     fn window_parse() {
         assert_eq!(Window::parse("24h"), Some(Window::H24));
         assert_eq!(Window::parse("14d"), None);
+        // 窗口不能比汇总的保留期长；1h 读原始记录，总能看
+        assert!(Window::H1.retained(1) && Window::H24.retained(1) && Window::D7.retained(7) && Window::D30.retained(30));
+        assert!(!Window::D7.retained(6) && !Window::D30.retained(29));
     }
 
     #[test]

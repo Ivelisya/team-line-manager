@@ -61,7 +61,8 @@ fn part_name(table: &str, d: Date) -> String {
     format!("{table}_{:04}{:02}{:02}", d.year(), u8::from(d.month()), d.day())
 }
 
-/// 建好今天起往后 `ahead` 天的分区，删掉早于保留期的分区（先过时钟健全检查，见 `drop_before`）。幂等。
+/// 建好今天起往后 `ahead` 天的分区，删掉早于保留期的分区（先过时钟健全检查，见 `drop_before`）：遥测按 `raw_days`
+/// （配置文件），访问记录按 `access_days`（面板里设的原始记录保留期，见 settings.rs）。幂等。
 pub async fn maintain_partitions(db: &PgPool, raw_days: u32, access_days: u32, ahead: i64) -> anyhow::Result<()> {
     maintain_partitions_at(db, OffsetDateTime::now_utc(), raw_days, access_days, ahead).await
 }
@@ -342,14 +343,10 @@ async fn rollup_hour(db: &PgPool, hour: OffsetDateTime) -> anyhow::Result<()> {
 }
 
 /// 保留期清理（每小时一次）：已恢复超 180 天的告警、过期会话、超 1 天的登录失败记录、超 30 天没再登录成功的登录来源、
-/// 超 90 天的通知记录、结束超 90 天的静默、超 365 天的审计，以及 `source_ip_days` 天没再出现的机房 / VPN 来源 IP 画像。
-/// 来源 IP 画像（node_source_seen 的 dim = 'ip'）一个 IP 一行，访问量大的节点会一直涨；只删 ip 维度且不在告警中（open）的：
-/// 运营商 / 城市 / 接入方式行量少，学习期起点（节点最早的 first_seen）也落在它们上，删 ip 行不影响。
-/// 删掉的 IP 之后再出现按「首次出现」再告警一次（调用方传的天数不短于学习期与访问汇总的保留期）。
-pub async fn cleanup_retention(db: &PgPool, source_ip_days: i64) -> anyhow::Result<()> {
-    let ip = format!("delete from node_source_seen where dim = 'ip' and flag is distinct from 'open' and last_seen < now() - interval '{source_ip_days} days'");
+/// 超 90 天的通知记录、结束超 90 天的静默、超 365 天的审计。访问记录（汇总、来源画像、画像异常告警）按面板里设的保留期删，
+/// 见 `access::prune`
+pub async fn cleanup_retention(db: &PgPool) -> anyhow::Result<()> {
     let q = [
-        ("来源 IP 画像", ip.as_str()),
         ("告警", "delete from incident where state = 'resolved' and resolved_at < now() - interval '180 days'"),
         ("会话", "delete from session where expires_at < now()"),
         ("登录失败", "delete from login_failure where ts < now() - interval '1 day'"),

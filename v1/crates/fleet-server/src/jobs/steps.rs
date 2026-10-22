@@ -951,8 +951,8 @@ async fn finalize(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
 /// 按天分批删分区大表里这台机器（和它名下入口）的原始数据：每天一条语句，走 (entry_id/machine_id, ts) 索引，
 /// 单条语句只碰一个分区，不会一个事务里锁很久。窗口覆盖整个保留期加前后几天；幂等。
 async fn purge_partitioned(c: &Ctx<'_>, machine: Uuid, eids: &[Uuid]) -> anyhow::Result<u64> {
-    let ret = &c.st.cfg.retention;
-    let back = ret.raw_days.max(ret.access_days) as i64 + 2;
+    // 遥测按配置文件的保留期，访问记录按面板里设的
+    let back = c.st.cfg.retention.raw_days.max(c.st.access_retention().raw_days) as i64 + 2;
     let today = OffsetDateTime::now_utc().date();
     let mut n = 0u64;
     for i in -back..=3 {

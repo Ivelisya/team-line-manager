@@ -104,6 +104,8 @@ pub async fn machine_sources(_a: Actor, State(st): State<AppState>, ApiPath(id):
         Some("30d") => Window::D30,
         Some(_) => return Err(ApiError::bad_request("window 只能是 24h、7d、30d")),
     };
+    // 分布与 top 来源读来源小时汇总：不能超过汇总的保留期
+    let w = super::access::check_retained(&st, w)?;
     let limit = match q.limit.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         None => 50,
         Some(s) => s.parse::<i64>().map_err(|_| ApiError::bad_request("limit 不是整数"))?.clamp(1, 500),

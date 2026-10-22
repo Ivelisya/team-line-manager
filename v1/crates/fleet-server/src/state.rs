@@ -32,6 +32,8 @@ pub enum Event {
     ApiKeys,
     /// 访问策略的草稿/版本变化
     Policies,
+    /// 面板设置变了（目前只有访问记录保留期，见 settings.rs）
+    Settings,
     /// 实时指标（`live.rs` 拼好的整条 JSON，前端直接写进缓存；各连接共用同一份字节）；只经 `events.send` 发，不走 `emit`
     #[serde(skip)]
     Metrics(Utf8Bytes),
@@ -82,6 +84,8 @@ pub struct Inner {
     pub jobs_running: crate::jobs::Running,
     /// 中控收不到上报的时段：判 agent 离线时不算（视图、告警、作业判线路机在线都用它）
     pub report_gaps: crate::views::ReportGaps,
+    /// 访问记录保留期（面板里改的）：读写经 `access_retention()` 等，见 settings.rs
+    pub(crate) access_ret: std::sync::RwLock<crate::settings::AccessRetention>,
 }
 
 impl std::ops::Deref for AppState {
@@ -96,6 +100,8 @@ impl AppState {
         let ipintel = crate::ipintel::Service::new(&cfg.ipintel);
         let access_cache = crate::access::QueryCache::new(std::time::Duration::from_secs(cfg.access_cache_secs));
         let live = crate::views::LiveCache::default();
+        // 没在面板里设过时的默认值；serve 启动时从库里读（settings::load）
+        let access_ret = std::sync::RwLock::new(crate::settings::AccessRetention::default_for(&cfg.retention));
         // 连接选项同主池（测试的 search_path 也在里面），懒连接：用到才建
         let access_db = PgPoolOptions::new()
             .max_connections(4)
@@ -118,6 +124,7 @@ impl AppState {
             jobs_wake: Notify::new(),
             jobs_running: Default::default(),
             report_gaps: Default::default(),
+            access_ret,
         }))
     }
 
