@@ -3,14 +3,14 @@ import * as React from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowDownUp, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Copy, Globe, Inbox, RotateCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { dueFmt, type Fmt } from '@/lib/format';
+import { bytes, dueFmt, str, type Fmt } from '@/lib/format';
 import type { DueState, EntryView, HealthReason, Lifecycle, MachineView } from '@/lib/types';
 import { HEALTH_TONE } from '@/lib/sort';
 import { countryName, flagUrl } from '@/lib/flags';
 import { Tip, Trunc } from '@/components/ui/overlays';
 import { InfoTip } from '@/components/ui/form';
 import { useCountUp } from '@/lib/useCountUp';
-import { dueTone, entryLabel, errText, healthLabel, hostRel, lifecycleLabel, severityOf, type BeatCell } from '@/lib/derive';
+import { dueTone, entryLabel, errText, healthLabel, hostRel, lifecycleLabel, mmdd, monthFlow, monthFlowTip, severityOf, type BeatCell } from '@/lib/derive';
 import { openDrawer } from '@/lib/drawer';
 import { copyText } from '@/lib/clipboard';
 import { watchSize } from '@/lib/sharedObserver';
@@ -18,6 +18,24 @@ import { watchSize } from '@/lib/sharedObserver';
 /** 数值 + 灰色小单位 */
 export function Num({ f }: { f: Fmt }) {
   return <span className="num">{f.v}{f.u && <> <span className="unit">{f.u}</span></>}</span>;
+}
+
+/** 数据不完整时，数字后面的灰字「10-22 起」（全句说明放悬停 tip / 费用页签） */
+export function FromTag({ from, tip }: { from: string | null | undefined; tip?: string }) {
+  return from ? <> <span className="unit" data-tip={tip}>{mmdd(from)} 起</span></> : null;
+}
+
+/** 表格「本月流量」格：主值 = 下行 + 上行（家宽代理、同机 IP 节点是下载 + 上传），副行「↓ X ↑ Y」/「业务 · 下载 X」，不完整时副行末尾灰字「10-22 起」。
+ *  empty：没有流量时写 “—”（已退役的） */
+export function MonthFlowCell({ m, empty }: { m: MachineView; empty?: boolean }) {
+  const f = monthFlow(m);
+  if (empty && !f.total) return <span className="t-muted">—</span>;
+  return (
+    <div data-tip={monthFlowTip(m)}>
+      <Num f={bytes(f.total)} />
+      <span className="sub">{f.kind === 'nic' ? `↓ ${str(bytes(f.down))} ↑ ${str(bytes(f.up))}` : `业务 · 下载 ${str(bytes(f.down))}`}<FromTag from={f.from} /></span>
+    </div>
+  );
 }
 
 export type Tone = 'ok' | 'warn' | 'bad' | 'info' | 'neutral';

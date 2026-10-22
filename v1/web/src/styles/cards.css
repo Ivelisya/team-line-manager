@@ -133,6 +133,8 @@
 .flow-foot-label .lucide { width: var(--icon-xs); height: var(--icon-xs); color: var(--dir-c); }
 .flow-foot .num { color: var(--fg); font-weight: var(--fw-medium); }
 .flow-biz { grid-column: 1 / -1; --dir-c: var(--fg-3); } /* 本月业务流量（用户视角的下载 / 上传）：横跨两列，和网卡上行 / 下行分开 */
+.flow-foot-label { flex: none; }
+.flow-vals { min-width: 0; overflow: hidden; text-overflow: ellipsis; } /* 窄卡放不下「10-22 起」时先省略它，全文在悬停里 */
 
 /* 6 剩余流量 */
 .nc-quota { display: grid; gap: var(--sp-8); }

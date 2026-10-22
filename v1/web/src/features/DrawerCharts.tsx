@@ -6,11 +6,11 @@ import type { MachineView } from '@/lib/types';
 import type { UseQueryResult } from '@tanstack/react-query';
 import { useAvailability, useSeries } from '@/lib/queries';
 import * as F from '@/lib/format';
-import { AVAIL_LEGEND, availCells, availTitles, hasHost, monthTraffic, resourceMeters, successPct } from '@/lib/derive';
+import { AVAIL_LEGEND, availCells, availTitles, hasHost, monthFlowTip, monthTraffic, resourceMeters, successPct } from '@/lib/derive';
 import { Segmented } from '@/components/ui/overlays';
 import { Skeleton } from '@/components/ui/skeleton';
 import { InfoTip } from '@/components/ui/form';
-import { Beat, Empty, ErrorNote, LabelValue, LabelValueGrid, Note, Num, Section, SectionHeader } from '@/components/app/primitives';
+import { Beat, Empty, ErrorNote, LabelValue, FromTag, LabelValueGrid, Note, Num, Section, SectionHeader } from '@/components/app/primitives';
 import { RANGES, TimeChart } from '@/components/app/TimeChart';
 import { EntriesTable } from './EntriesTable';
 
@@ -127,16 +127,30 @@ export function QualityTab({ m }: { m: MachineView }) {
 export function TrafficTab({ m }: { m: MachineView }) {
   const [range, setRange] = React.useState(DEFAULT_RANGE);
   const s = useSeries(m.id, 'traffic', range, true, poll(range));
-  const t = monthTraffic(m);
+  const t = monthTraffic(m); const nic = m.nic; const from = m.month_counted_from;
+  // 数据不完整时的全句说明放在标题后的 (i) 里，数字后面只留灰字「10-22 起」
+  const tip = from ? <InfoTip text={monthFlowTip(m)} /> : undefined;
   return (
     <>
+      {/* 有 agent 的机器分两组：网卡（供应商计费口径，下行 / 上行）与业务（Xray 入口，下载 / 上传）；家宽代理、同机 IP 节点只有业务一组 */}
+      {nic && (
+        <Section>
+          <SectionHeader title="网卡（供应商计费口径）" meta={tip} />
+          <LabelValueGrid cols2>
+            <LabelValue label="今日 ↓ 下行"><Num f={F.bytes(nic.today_rx)} /></LabelValue>
+            <LabelValue label="今日 ↑ 上行"><Num f={F.bytes(nic.today_tx)} /></LabelValue>
+            <LabelValue label="本月 ↓ 下行"><Num f={F.bytes(nic.month_rx)} /><FromTag from={from} /></LabelValue>
+            <LabelValue label="本月 ↑ 上行"><Num f={F.bytes(nic.month_tx)} /><FromTag from={from} /></LabelValue>
+          </LabelValueGrid>
+        </Section>
+      )}
       <Section>
-        <SectionHeader title="汇总" />
+        <SectionHeader title={nic ? '业务（Xray 入口）' : '汇总'} meta={nic ? undefined : tip} />
         <LabelValueGrid cols2>
           <LabelValue label="今日 ↓ 下载"><Num f={F.bytes(t.today_down)} /></LabelValue>
           <LabelValue label="今日 ↑ 上传"><Num f={F.bytes(t.today_up)} /></LabelValue>
-          <LabelValue label="本月 ↓ 下载"><Num f={F.bytes(t.down)} /></LabelValue>
-          <LabelValue label="本月 ↑ 上传"><Num f={F.bytes(t.up)} /></LabelValue>
+          <LabelValue label="本月 ↓ 下载"><Num f={F.bytes(t.down)} /><FromTag from={from} /></LabelValue>
+          <LabelValue label="本月 ↑ 上传"><Num f={F.bytes(t.up)} /><FromTag from={from} /></LabelValue>
         </LabelValueGrid>
       </Section>
       <Section>

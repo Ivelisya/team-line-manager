@@ -7,11 +7,11 @@ import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
 import { Field, InfoTip, Input, Switch } from '@/components/ui/form';
 import { DateField } from '@/components/ui/date-field';
-import { autoDeletes, inheritedValue, inheritSource, inheritText, isOverridden, limitGb, quota, quotaGb, remainingValue, trafficRulePlain, cycleLabel, currencyOptions, cycleOptions, meta } from '@/lib/derive';
+import { autoDeletes, inheritedValue, inheritSource, inheritText, isOverridden, limitGb, monthFlow, monthFlowTip, quota, quotaCycleText, quotaGb, quotaNotes, quotaRuleText, quotaUsedLabel, remainingValue, cycleLabel, currencyOptions, cycleOptions, meta } from '@/lib/derive';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
 import { resetOnOpen } from '@/lib/useHeld';
-import { Due, ErrorNote, LabelValue, LabelValueGrid, Note, Section, SectionHeader, SpareDue } from '@/components/app/primitives';
+import { Due, ErrorNote, FromTag, LabelValue, LabelValueGrid, Note, Num, Section, SectionHeader, SpareDue } from '@/components/app/primitives';
 import { FormDialog } from '@/components/app/dialogs';
 import { TzInput } from '@/components/app/TzInput';
 
@@ -19,7 +19,7 @@ export function BillingTab({ m }: { m: MachineView }) {
   const s = m.subscription;
   const renewals = useRenewals(m.id);
   const [renew, setRenew] = React.useState(false);
-  const rv = remainingValue(m.subscription); const q = quota(m);
+  const rv = remainingValue(m.subscription); const q = quota(m); const fl = monthFlow(m);
   const h = m.host_machine;
   return (
     <>
@@ -40,11 +40,19 @@ export function BillingTab({ m }: { m: MachineView }) {
             <LabelValue label="剩余价值">{rv ? <><span className="num">{F.money(rv.cents, rv.currency)}</span> {rv.frac > 1
               ? <InfoTip text={`已预付 ${rv.frac.toFixed(1)} 期 · 每期 ${rv.days} 天`} />
               : <span className="unit" data-tip={`剩 ${Math.max(0, s.due_days)} 天 / 共 ${rv.days} 天`}>本期剩 {Math.round(rv.frac * 100)}%</span>}</> : <span className="t-muted">—</span>}</LabelValue>
-            <LabelValue label={m.ip_nodes.length ? '本周期已用（含同机 IP 节点）' : '本周期已用'} wrap>
-              <span className="num">{F.str(quotaGb(q.used))}</span> <span className="unit">/ {q.limit > 0 ? F.str(limitGb(q.limit)) : q.shared ? '与宿主机共用' : '不限'}</span>
-              <div className="hint">{q.rule ? trafficRulePlain(q.rule) : '按业务流量'}{q.baseAt && ` · 已校准 · ${F.dt(q.baseAt)}`}</div>
-            </LabelValue>
-            <LabelValue label="流量周期"><span className="num">{q.start.slice(5)}</span> 起</LabelValue>
+            {/* 有额度：本周期已用 + 规则 · 网卡，流量周期；不限流量不评估周期，只写本月；同机 IP 节点指向宿主机 */}
+            {q.limit > 0 ? <>
+              <LabelValue label={m.ip_nodes.length ? `${quotaUsedLabel(q)}（含同机 IP 节点）` : quotaUsedLabel(q)} wrap>
+                <span className="num">{F.str(quotaGb(q.used))}</span> <span className="unit">/ {F.str(limitGb(q.limit))}</span><FromTag from={q.from} />
+                <div className="hint">{quotaRuleText(m)}{quotaNotes(m).length > 0 && <> <InfoTip text={quotaNotes(m).join('\n')} /></>}</div>
+              </LabelValue>
+              <LabelValue label="流量周期" wrap>{quotaCycleText(m)}</LabelValue>
+            </> : q.shared ? <LabelValue label="流量额度">与宿主机共用</LabelValue> : (
+              <LabelValue label="本月流量" wrap>
+                {fl.kind === 'nic' ? <>↓ 下行 <Num f={F.bytes(fl.down)} /> · ↑ 上行 <Num f={F.bytes(fl.up)} /></> : <>下载 <Num f={F.bytes(fl.down)} /> · 上传 <Num f={F.bytes(fl.up)} /></>}<FromTag from={fl.from} />
+                <div className="hint">流量不限 <InfoTip text={monthFlowTip(m)} /></div>
+              </LabelValue>
+            )}
             <LabelValue label="自动续费">{s.auto_renew ? '是' : '否'}</LabelValue>
           </LabelValueGrid>
           <div style={{ marginTop: 12 }}><Button variant="primary" onClick={() => setRenew(true)}><CalendarPlus />登记续费</Button></div>
@@ -119,8 +127,6 @@ function SubForm({ m }: { m: MachineView }) {
   const [traffic, setTraffic] = React.useState(() => init('traffic_gb'));
   const [resetDay, setResetDay] = React.useState(() => init('traffic_reset_day'));
   const [auto, setAuto] = React.useState(s?.auto_renew ?? false);
-  // 按面板校准本周期已用：留空 = 不动原有校准
-  const [used, setUsed] = React.useState('');
   const priceNum = Number(price);
   // 保存按钮不可用时要能看出原因：空着提示必填，填错了标红（只看单独设置的项）
   const priceBad = ov.price_cents && (price.trim() === '' || !(isFinite(priceNum) && priceNum >= 0));
@@ -129,18 +135,15 @@ function SubForm({ m }: { m: MachineView }) {
   const trafficBad = ov.traffic_gb && traffic === '';
   const tzBad = ov.billing_tz && tz === '';
   const dueBad = dueDate !== '' && !/^\d{4}-\d{2}-\d{2}$/.test(dueDate);
-  const usedBad = used.trim() !== '' && !(isFinite(Number(used)) && Number(used) >= 0);
-  const valid = dueDate !== '' && !dueBad && !priceBad && !remindBad && !resetBad && !trafficBad && !tzBad && !usedBad;
-  const baseAt = m.quota.base_at;
+  const valid = dueDate !== '' && !dueBad && !priceBad && !remindBad && !resetBad && !trafficBad && !tzBad;
   const submit = () => {
     const val: Record<SubField, string | number> = {
       price_cents: Math.round(priceNum * 100), currency, cycle, billing_tz: tz, remind_days: Number(remind), traffic_gb: Number(traffic), traffic_reset_day: Number(resetDay),
     };
     const body: SubscriptionBody = {
       due_date: dueDate, auto_renew: auto, ...Object.fromEntries(OV_FIELDS.map((k) => [k, ov[k] ? val[k] : null])),
-      ...(used.trim() !== '' && { traffic_used_gb: Number(used) }),
     };
-    save.mutate({ id: m.id, ...body }, { onSuccess: () => { setUsed(''); toast.ok('订阅已保存'); }, onError: toast.err });
+    save.mutate({ id: m.id, ...body }, { onSuccess: () => toast.ok('订阅已保存'), onError: toast.err });
   };
   const o = (k: SubField, label: string, children: React.ReactNode, error?: string, info?: string) => (
     <OvField m={m} k={k} label={label} info={info} on={ov[k]} setOn={setOn(k)} due={dueDate} error={error} locked={legacy || (k === 'price_cents' && priceLocked)}>{children}</OvField>
@@ -155,10 +158,6 @@ function SubForm({ m }: { m: MachineView }) {
       {o('remind_days', '提前提醒（天）', <Input inputMode="numeric" value={remind} onChange={(e) => setRemind(e.target.value.replace(/\D/g, ''))} />, remindBad ? '填 0–60' : undefined)}
       {o('traffic_gb', '流量上限（GB）', <Input inputMode="numeric" value={traffic} onChange={(e) => setTraffic(e.target.value.replace(/\D/g, ''))} placeholder="0 = 不限" />, trafficBad ? '填 GB 数，0 = 不限' : undefined)}
       {o('traffic_reset_day', '流量重置日', <Input inputMode="numeric" maxLength={2} value={resetDay} onChange={(e) => setResetDay(e.target.value.replace(/\D/g, ''))} placeholder="1–31" />, resetBad ? '填 1–31' : undefined, '每月几号重置，按账单时区；月份没有这一天按月末')}
-      <Field label="按面板校准本周期已用（GB）" className="span-2" error={usedBad ? '应为 0 或正数' : undefined}
-        info={`填供应商面板上本周期已用的数字；之后的用量按${m.quota.rule ? '网卡流量' : '业务流量'}累加`} hint={baseAt ? `已校准 · ${F.dt(baseAt)}` : undefined}>
-        <Input inputMode="decimal" value={used} onChange={(e) => setUsed(e.target.value)} placeholder="留空 = 不校准" aria-invalid={usedBad || undefined} />
-      </Field>
       <div className="row span-2" style={{ gap: 4 }}><label className="check-row" style={{ gap: 10 }}><Switch checked={auto} onCheckedChange={setAuto} /><span>到期自动续费</span></label><InfoTip text="只用于提醒口径，不会真的扣款" /></div>
       <div className="span-2 row" style={{ justifyContent: 'flex-end' }}><Button variant="primary" disabled={!valid || save.isPending} loading={save.isPending} onClick={submit}>保存订阅</Button></div>
     </div>

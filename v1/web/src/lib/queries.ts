@@ -187,8 +187,8 @@ export interface MachinePatchBody {
   country?: string | null;
 }
 /** PUT /machines/{id}/subscription：到期日 + 单独设置，整份替换——没传或 null = 跟随套餐 / 供应商（和模板相同的值服务端也按跟随存）。
- *  auto_renew 没传 = 不改；traffic_used_gb 按面板校准，没传 = 不改、null = 清掉 */
-export type SubscriptionBody = { due_date: string; auto_renew?: boolean; traffic_used_gb?: number | null }
+ *  auto_renew 没传 = 不改 */
+export type SubscriptionBody = { due_date: string; auto_renew?: boolean }
   & { [K in SubField]?: (K extends 'currency' | 'cycle' | 'billing_tz' ? string : number) | null };
 /** POST /plans：套餐字段（不含 id 与统计）。PATCH 传其中任意几项（没传的不改，规格类传 null = 清空），archived 归档 / 取消归档 */
 export type PlanBody = Omit<Plan, 'id' | 'archived_at' | 'machine_count'>;

@@ -79,7 +79,7 @@ export const OverviewSection = React.memo(function OverviewSection({ o, loading 
           <Stat loading={loading} tone="gold" icon={<CircleDollarSign />} label="每月费用" to={COST_LINK} value={cost0 ? <span data-tip="在用机器按月折算，不同币种分开计">{F.money(cost0.cents, cost0.currency)}</span> : '—'}
             caption={costMore.length ? `另有 ${costMore.map((c) => F.money(c.cents, c.currency)).join(' + ')}` : undefined} />
           {/* 每条推送都在涨，不滚数（滚到的位数也显示不出来，白白逐帧重画）：同网卡速率，直接到位 */}
-          <Stat loading={loading} tone="sky" icon={<TrendingUp />} label="本月业务流量" to={TRAFFIC_LINK} value={tr ? F.inScale(trTotal, trScale) : '—'} unit={tr ? trScale.u : undefined}
+          <Stat loading={loading} tone="sky" icon={<TrendingUp />} label="本月业务流量" info="按入口统计；网卡流量在线路机和节点上各算一次，不做合计" to={TRAFFIC_LINK} value={tr ? F.inScale(trTotal, trScale) : '—'} unit={tr ? trScale.u : undefined}
             caption={tr && <><span>下载 <Num f={F.bytes(tr.down)} /></span><span>上传 <Num f={F.bytes(tr.up)} /></span></>} />
           {/* 有吃紧的：点卡片打开最紧那台的流量页签 */}
           <Stat loading={loading} tone="violet" icon={<Database />} label="流量额度吃紧" value={<CountUp value={qt?.n} />} unit={qt ? '台' : undefined} onClick={top ? () => openDrawer(top.id, 'traffic') : undefined}
