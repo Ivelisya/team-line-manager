@@ -172,6 +172,10 @@ if [ -f /etc/fleet/backup.pub ]; then
   chmod 644 /var/lib/fleet-backup/.ssh/authorized_keys
 fi
 
+# 软路由的反向隧道（docs/OPS.md「软路由接入与隧道」）：fleet-tunnel 账号、sshd 的 AuthorizedKeysCommand（tunnel-keys）与只对它生效的
+# Match 段；23000–23999 被别的程序占着、sshd -t 不通过时停在这里（sshd 配置换回原来的）
+bash "$PKG/tunnel-setup.sh" "$PKG"
+
 systemctl daemon-reload
 systemctl enable -q fleet-server fleet-ipintel-fetch.timer fleet-backup.timer
 systemctl start fleet-ipintel-fetch.timer fleet-backup.timer

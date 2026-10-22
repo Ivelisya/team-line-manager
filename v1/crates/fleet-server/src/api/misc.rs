@@ -148,9 +148,11 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
     let mut a = Args::default();
     let sql = format!(
         "select i.id, i.rule, i.subject_id,
-            case when i.rule like 'central!_%' escape '!' then '中控' else display_name(m.kind::text, m.label, t.name, m.number) end subject_name,
+            case when i.rule like 'central!_%' escape '!' then '中控' when i.rule like 'router!_%' escape '!' then r.name
+                 else display_name(m.kind::text, m.label, t.name, m.number) end subject_name,
             i.severity::text severity, i.state::text state, i.summary, i.opened_at, i.last_seen_at, i.resolved_at, i.ack_at, i.ack_by, i.reopen_count
          from incident i left join machine m on m.id = i.subject_id left join team t on t.id = m.team_id
+              left join router r on r.id = i.subject_id and i.rule like 'router!_%' escape '!'
          where {} order by {order} limit {} offset {}",
         cond(&mut a),
         a.add(limit),
@@ -168,6 +170,9 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
                 // 中控自身的告警：对象不是机器，没有可点开的机器
                 j["subject"] = Value::Null;
                 j["subject_id"] = Value::Null;
+            } else if crate::routers::alerts::is_router(&i.rule) {
+                // 软路由的告警：对象是路由，前端按 kind 打开路由而不是机器
+                j["subject"] = crate::routers::alerts::subject(i.subject_id, i.subject_name.as_deref());
             } else {
                 j["subject"] = json!({"id": i.subject_id, "name": i.subject_name.clone().unwrap_or_else(|| "（已删除）".into())});
             }
@@ -481,6 +486,12 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "policy.publish" => "发布访问规则",
         "policy.rollback" => "回滚访问规则",
         "settings.access_retention" => "修改访问记录保留期",
+        "router.create" => "新建软路由",
+        "router.update" => "修改软路由",
+        "router.delete" => "删除软路由",
+        "router.bootstrap" => "重新生成接入命令",
+        "router.bootstrap_used" => "路由取走接入脚本",
+        "router.deploy" => "一键部署软路由",
         other => other,
     }
     .to_string();
@@ -560,6 +571,18 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
             format!("{} · {what}{rule} · {} → {}{note}", d["subject_name"].as_str().unwrap_or("全部机器"), at("starts_at"), at("ends_at"))
         }
         "policy.discard" => format!("{} 个草稿", d["drafts"]),
+        "router.create" if d["method"] == "deploy" => format!("{} · 一键部署", s("name")),
+        "router.create" | "router.update" | "router.delete" | "router.bootstrap" => s("name"),
+        "router.bootstrap_used" => format!("{} · 来自 {}", s("name"), s("ip")),
+        "router.deploy" => {
+            let res = match d["result"].as_str() {
+                _ if d["started"] == true => "进行中或中断（未记录结果）".to_string(),
+                Some("ok") => "成功".to_string(),
+                _ => format!("失败：{}", s("error")),
+            };
+            let how = if d["password"] == true { "密码" } else { "中控密钥" };
+            format!("{} · {}@{}:{}（{how}）· {res}", s("name"), s("user"), s("host"), d["port"])
+        }
         "policy.publish" | "policy.rollback" => {
             format!("第 {} 版 · {} 处改动 · {} 台线路机", d["seq"], d["changes"].as_array().map_or(0, |a| a.len()), d["relays"])
         }
@@ -724,6 +747,7 @@ mod tests {
             "apikey.revoke", "auth.login", "auth.login_failed", "auth.logout", "auth.totp_enabled", "auth.totp_disabled", "auth.totp_recovery_used",
             "auth.totp_recovery_regenerated", "auth.password_changed", "auth.session_revoked", "auth.verify_failed", "policy.draft", "policy.discard", "policy.publish", "policy.rollback",
             "settings.access_retention",
+            "router.create", "router.update", "router.delete", "router.bootstrap", "router.bootstrap_used", "router.deploy",
         ] {
             assert_ne!(audit_text(a, &json!({})).0, a, "{a} 没有中文标题");
         }

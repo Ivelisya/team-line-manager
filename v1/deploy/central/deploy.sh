@@ -50,7 +50,8 @@ echo "== 构建前端"
 cp -r "$ROOT/web/dist/." "$STAGE/pkg/web/"
 cp "$HERE/install.sh" "$HERE/central-agents.md" "$ROOT/deploy/ipintel/fetch-dbs.sh" "$ROOT/deploy/ipintel/fleet-ipintel-fetch.service" \
   "$ROOT/deploy/ipintel/fleet-ipintel-fetch.timer" "$ROOT/deploy/backup/fleet-backup.sh" "$ROOT/deploy/backup/fleet-backup-latest.sh" \
-  "$ROOT/deploy/backup/fleet-backup.service" "$ROOT/deploy/backup/fleet-backup.timer" "$STAGE/pkg/"
+  "$ROOT/deploy/backup/fleet-backup.service" "$ROOT/deploy/backup/fleet-backup.timer" \
+  "$HERE/tunnel-setup.sh" "$HERE/tunnel-keys" "$HERE/sshd-fleet-tunnel.conf" "$STAGE/pkg/"
 cp "$SKILL" "$STAGE/pkg/fleet-ops-SKILL.md"
 
 echo "== 上传并安装到 $HOST"

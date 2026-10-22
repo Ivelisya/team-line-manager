@@ -129,6 +129,33 @@ async fn read_capped<R: tokio::io::AsyncRead + Unpin>(mut r: R) -> Vec<u8> {
     }
 }
 
+/// 跑一条已拼好的 ssh 命令：脚本经 stdin 交给它，超过 `timeout` 杀掉（软路由的采集与一键部署也走这里）。
+/// 边读边限量：超过 OUT_CAP 的部分只排空不保存（`cat` 几 GB 的日志不会把中控撑爆）；多余的在调用方按各自上限再截
+pub(crate) async fn exec(mut c: Command, script: &str, timeout: Duration) -> anyhow::Result<Output> {
+    c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    let mut child = c.spawn().context("启动 ssh")?;
+    let mut stdin = child.stdin.take().unwrap();
+    let body = script.to_string();
+    tokio::spawn(async move {
+        let _ = stdin.write_all(body.as_bytes()).await;
+        let _ = stdin.shutdown().await;
+    });
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let run = async {
+        let (o, e, status) = tokio::join!(read_capped(stdout), read_capped(stderr), child.wait());
+        (o, e, status)
+    };
+    let (stdout, stderr, status) = tokio::time::timeout(timeout, run)
+        .await
+        .map_err(|_| StepError::err(ErrKind::Timeout, format!("ssh 执行超过 {} 秒", timeout.as_secs())))?;
+    Ok(Output {
+        code: status?.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+    })
+}
+
 fn host_spec(ip: &str, port: u16) -> String {
     if port == 22 { ip.to_string() } else { format!("[{ip}]:{port}") }
 }
@@ -182,29 +209,7 @@ impl Target {
     pub async fn run_once(&self, script: &str, timeout: Duration) -> anyhow::Result<Output> {
         let mut c = self.base();
         c.arg("bash -s");
-        c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
-        let mut child = c.spawn().context("启动 ssh")?;
-        let mut stdin = child.stdin.take().unwrap();
-        let body = script.to_string();
-        tokio::spawn(async move {
-            let _ = stdin.write_all(body.as_bytes()).await;
-            let _ = stdin.shutdown().await;
-        });
-        // 边读边限量：超过 OUT_CAP 的部分只排空不保存（`cat` 几 GB 的日志不会把中控撑爆）；多余的在调用方按各自上限再截
-        let stdout = child.stdout.take().unwrap();
-        let stderr = child.stderr.take().unwrap();
-        let run = async {
-            let (o, e, status) = tokio::join!(read_capped(stdout), read_capped(stderr), child.wait());
-            (o, e, status)
-        };
-        let (stdout, stderr, status) = tokio::time::timeout(timeout, run)
-            .await
-            .map_err(|_| StepError::err(ErrKind::Timeout, format!("ssh 执行超过 {} 秒", timeout.as_secs())))?;
-        Ok(self.normalize(Output {
-            code: status?.code().unwrap_or(-1),
-            stdout: String::from_utf8_lossy(&stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&stderr).into_owned(),
-        }))
+        Ok(self.normalize(exec(c, script, timeout).await?))
     }
 
     /// 执行 bash 脚本（经 stdin）。连接类的瞬时错误自动重试（2s、5s、10s 退避）；脚本自己失败、登录被拒不重试。

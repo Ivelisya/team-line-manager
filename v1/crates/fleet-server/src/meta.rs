@@ -258,6 +258,11 @@ pub const RULES: Labels = &[
     ("central_channel_failing", "通知渠道发送失败"),
     ("central_backup_stale", "备份过期"),
     ("central_disk_low", "中控磁盘空间不足"),
+    ("router_offline", "软路由离线"),
+    ("router_openclash_down", "OpenClash 没在运行"),
+    ("router_exits_down", "出口测不通"),
+    ("router_wan_down", "软路由 WAN 口断开"),
+    ("router_resource_high", "软路由资源吃紧"),
 ];
 
 /// 查中文名；没收录的原样返回

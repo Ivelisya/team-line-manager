@@ -47,6 +47,69 @@ pub struct Config {
     /// 中控自监控（死人开关、备份检查，见 selfmon.rs）；整段不写也能跑
     #[serde(default)]
     pub selfmon: SelfmonConfig,
+    /// 软路由的反向隧道（见 routers/mod.rs）；整段不写也能跑
+    #[serde(default)]
+    pub routers: RoutersConfig,
+}
+
+/// `[routers]`：路由经反向 SSH 隧道连中控 sshd（账号 fleet-tunnel），中控经隧道登录路由采集
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct RoutersConfig {
+    /// 路由连中控 sshd 用的地址：不填取 public_url 的主机名
+    pub ssh_host: Option<String>,
+    /// 中控 sshd 的端口
+    pub ssh_port: u16,
+    /// 写给 sshd 的隧道公钥清单（每行「端口 ssh-ed25519 <base64>」），由 /usr/local/lib/fleet/tunnel-keys 读取；
+    /// 那个脚本只认默认路径，改了要同步改脚本
+    pub tunnel_keys_file: PathBuf,
+    /// 中控 sshd 的 ed25519 主机公钥：写进接入脚本，路由按它核对中控（HostKeyAlias=fleet-central）
+    pub sshd_host_key: PathBuf,
+    /// 经隧道登录路由时用的 known_hosts（每行「router-<id> 公钥」，由库里的 router.host_key 整份重写）
+    pub known_hosts: PathBuf,
+    /// OpenSSH ControlMaster 的套接字目录（每台路由一个，复用连接，30 秒一次的采集不每次握手）
+    pub control_dir: PathBuf,
+    /// 隧道端口段，必须在 23000–23999 之内（库里的检查约束与 tunnel-keys 脚本都按这一段）
+    pub port_min: u16,
+    pub port_max: u16,
+}
+impl Default for RoutersConfig {
+    fn default() -> Self {
+        Self {
+            ssh_host: None,
+            ssh_port: 22,
+            tunnel_keys_file: PathBuf::from("/var/lib/fleet/tunnel-keys"),
+            sshd_host_key: PathBuf::from("/etc/ssh/ssh_host_ed25519_key.pub"),
+            known_hosts: PathBuf::from("/var/lib/fleet/router_known_hosts"),
+            control_dir: PathBuf::from("/var/lib/fleet/ssh-ctl"),
+            port_min: 23000,
+            port_max: 23999,
+        }
+    }
+}
+
+impl RoutersConfig {
+    /// 路由连中控用的主机名：配置的 ssh_host，否则 public_url 的主机名。只许主机名 / IP 的字符（它会写进路由上的启动命令）
+    pub fn ssh_host_of(&self, public_url: &str) -> anyhow::Result<String> {
+        let h = match &self.ssh_host {
+            Some(h) => h.trim().to_string(),
+            None => reqwest::Url::parse(public_url)
+                .ok()
+                .and_then(|u| u.host_str().map(|h| h.trim_start_matches('[').trim_end_matches(']').to_string()))
+                .context("public_url 里取不到主机名，[routers] ssh_host 要写上")?,
+        };
+        if h.is_empty() || h.len() > 253 || !h.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':')) {
+            anyhow::bail!("[routers] ssh_host 不对：{h}（只能是主机名或 IP）");
+        }
+        Ok(h)
+    }
+
+    fn check(&self, public_url: &str) -> anyhow::Result<()> {
+        if !(23000..=23999).contains(&self.port_min) || !(23000..=23999).contains(&self.port_max) || self.port_min > self.port_max {
+            anyhow::bail!("[routers] port_min / port_max 要在 23000–23999 之内且 port_min ≤ port_max");
+        }
+        self.ssh_host_of(public_url).map(|_| ())
+    }
 }
 
 /// `[notify]`
@@ -144,6 +207,7 @@ impl Config {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let s = std::fs::read_to_string(path).with_context(|| format!("读取配置 {}", path.display()))?;
         let c: Config = toml::from_str(&s).with_context(|| format!("解析配置 {}", path.display()))?;
+        c.routers.check(&c.public_url)?;
         Ok(c)
     }
 }
@@ -160,5 +224,20 @@ mod tests {
         assert!(n.auto_compact);
         let s: SelfmonConfig = toml::from_str("heartbeat_url = \"https://hc-ping.com/x\"").unwrap();
         assert_eq!((s.heartbeat_url.as_deref(), s.backup_dir), (Some("https://hc-ping.com/x"), PathBuf::from("/var/backups/fleet")));
+        let r: RoutersConfig = toml::from_str("ssh_port = 2222").unwrap();
+        assert_eq!((r.ssh_port, r.port_min, r.port_max), (2222, 23000, 23999));
+        assert_eq!(r.tunnel_keys_file, PathBuf::from("/var/lib/fleet/tunnel-keys"));
+    }
+
+    #[test]
+    fn router_ssh_host_defaults_to_public_url() {
+        let r = RoutersConfig::default();
+        assert_eq!(r.ssh_host_of("https://fleet.kismet613.com").unwrap(), "fleet.kismet613.com");
+        assert_eq!(r.ssh_host_of("http://192.168.31.60:8080/").unwrap(), "192.168.31.60");
+        assert_eq!(r.ssh_host_of("http://[2001:db8::1]:8080").unwrap(), "2001:db8::1");
+        let bad = RoutersConfig { ssh_host: Some("a b; rm -rf /".into()), ..RoutersConfig::default() };
+        assert!(bad.ssh_host_of("https://x.test").is_err());
+        assert!(RoutersConfig { port_min: 22000, ..RoutersConfig::default() }.check("https://x.test").is_err());
+        assert!(RoutersConfig { port_min: 23500, port_max: 23400, ..RoutersConfig::default() }.check("https://x.test").is_err());
     }
 }
