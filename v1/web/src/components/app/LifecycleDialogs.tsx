@@ -9,7 +9,7 @@ import { closeEvacuate, closeMove, closeRenew, closeRestore, closeRetire, useEva
 import { RenewDialog } from '@/features/BillingTab';
 import { useDrawer } from '@/lib/drawer';
 import { meta } from '@/lib/derive';
-import { CheckRow, Field, Input } from '@/components/ui/form';
+import { CheckRow, Field, Input, InfoTip } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
 import { resetOnOpen, useHeld } from '@/lib/useHeld';
@@ -17,7 +17,7 @@ import { entryState, ErrorNote, Note } from './primitives';
 import { ConfirmDialog } from './dialogs';
 import { RetireDialog } from './RetireDialog';
 
-const SHARE_WARN = '换线完成后分享链接会变：需要把新的分享链接发给客户端（作业完成的通知里有「复制新分享链接」）。';
+const SHARE_WARN = <Note tone="warn">换线后分享链接会变 <InfoTip text="需要把新的分享链接发给客户端；作业完成的通知里有「复制新分享链接」。" /></Note>;
 
 /** 节点当前在用的入口（可以被换走的）。线路机的直出入口不搬：退役线路机时随之摘除 */
 export const movableEntries = (m: MachineView) => m.entries.filter((e) => e.lifecycle === 'active' && !e.direct);
@@ -38,24 +38,24 @@ export const MoveDialog = resetOnOpen(function MoveDialog({ m, open, onOpenChang
   const ready = !!to && cur.length > 0 && (!multi || !!from);
   return (
     <ConfirmDialog asForm open={open} onOpenChange={onOpenChange} size="md" title={`把 ${m.name} 换到另一台线路机`} confirmLabel="开始换线" confirmDisabled={!ready}
-      description="先在新线路机建好入口并验收出口，通过后才摘掉旧入口；换线期间节点始终有一个可用入口，不会断网。"
+      description={<>换线期间不断网 <InfoTip text="先在新线路机建好入口并验收出口，通过后才摘掉旧入口；换线期间节点始终有一个可用入口。" /></>}
       onConfirm={async () => {
         const r = await move.mutateAsync({ id: m.id, to_relay_id: to, from_relay_id: multi ? from : undefined });
         toast.ok(`已提交换线路机：${r.from} → ${r.to}`);
         onDone?.();
         nav(`/jobs/${r.job_id}`);
       }}>
-      {cur.length === 0 && <Note tone="warn">这台机器没有运行中的入口，没法换线路机（入口需要先生效）。</Note>}
+      {cur.length === 0 && <Note tone="warn">没有运行中的入口，不能换线</Note>}
       {cur.length > 0 && (
         <div className="stack-sm">
           <div className="hint">当前入口：{cur.map((e) => `${e.relay.name}:${e.port}`).join('、')}</div>
           {multi && <Field label="换掉哪条线路机上的入口"><Select value={from} onChange={setFrom} options={cur.map((e) => ({ value: e.relay.id, label: `${e.relay.name}:${e.port}` }))} placeholder="选择要换掉的入口" /></Field>}
-          <Field label="目标线路机" hint={opts.length === 0 ? '没有可选的线路机：目标必须是在用的，且这台节点在上面还没有入口' : undefined}>
+          <Field label="目标线路机" info="目标必须是在用的线路机，且这台节点在上面还没有入口" hint={opts.length === 0 ? '没有可选的线路机' : undefined}>
             <Select value={to} onChange={setTo} options={opts} placeholder="选择线路机" />
           </Field>
         </div>
       )}
-      <Note tone="warn">{SHARE_WARN}</Note>
+      {SHARE_WARN}
     </ConfirmDialog>
   );
 });
@@ -73,7 +73,7 @@ export const EvacuateDialog = resetOnOpen(function EvacuateDialog({ relay, open,
   const hasDirect = relay.entries.some((e) => e.direct);
   return (
     <ConfirmDialog open={open} onOpenChange={onOpenChange} size="md" title={`搬空 ${relay.name}`} confirmLabel={`搬走 ${movable.length} 个节点`} confirmDisabled={!to || movable.length === 0}
-      description="为这台线路机上每个在用入口的节点各建一个「换线路机」作业，搬完后就可以安全退役这台线路机。"
+      description={<>每个节点各建一个换线作业 <InfoTip text="为这台线路机上每个在用入口的节点各建一个「换线路机」作业；搬完后就可以安全退役这台线路机。" /></>}
       onConfirm={async () => {
         const r = await evac.mutateAsync({ id: relay.id, to_relay_id: to });
         toast.ok(`已为 ${r.jobs.length} 个节点提交换线路机作业${r.skipped.length ? `，${r.skipped.length} 个被跳过` : ''}`);
@@ -84,19 +84,19 @@ export const EvacuateDialog = resetOnOpen(function EvacuateDialog({ relay, open,
       <Field label="搬到哪台线路机"><Select value={to} onChange={setTo} options={opts} placeholder="选择目标线路机" /></Field>
       <div>
         <div className="label" style={{ marginBottom: 6 }}>将被搬走的节点（{movable.length}）</div>
-        {list.length === 0 ? <div className="hint">这台线路机上没有节点入口。</div> : (
+        {list.length === 0 ? <div className="hint">没有节点入口</div> : (
           <ul className="reason-list" style={{ maxHeight: 220, overflow: 'auto' }}>
             {list.map((e) => (
               <li key={e.id}>
                 <span className="num">{e.node.name}</span> <span className="t-sub">端口 {e.port}</span> {entryState(e)}
-                {e.lifecycle !== 'active' && <span className="t-sub"> · 会被跳过（入口需处于运行中）</span>}
+                {e.lifecycle !== 'active' && <span className="t-sub" data-tip="入口不在运行中"> · 会跳过</span>}
               </li>
             ))}
           </ul>
         )}
       </div>
-      {hasDirect && <div className="hint">这台线路机的直出入口不搬，退役时一起摘除；用它的客户需要换成别的线路机的直出链接。</div>}
-      <Note tone="warn">{SHARE_WARN}</Note>
+      {hasDirect && <div className="hint">直出入口不搬 <InfoTip text="退役时一起摘除；用它的客户需要换成别的线路机的直出链接。" /></div>}
+      {SHARE_WARN}
     </ConfirmDialog>
   );
 });
@@ -110,7 +110,7 @@ function useSettled<T>(v: T, ms: number): T {
   return s;
 }
 
-const KEY_LOGIN: Record<string, string> = { ok: '中控密钥仍可登录，不需要密码', denied: '中控密钥被拒绝，需要 root 密码重新引导', unreachable: 'SSH 现在连不上', error: '探测失败' };
+const KEY_LOGIN: Record<string, string> = { ok: '中控密钥可登录', denied: '中控密钥被拒绝', unreachable: 'SSH 连不上', error: '探测失败' };
 
 export const RestoreDialog = resetOnOpen(function RestoreDialog({ m, open, onOpenChange, onDone }: { m: MachineView; open: boolean; onOpenChange: (o: boolean) => void; onDone?: () => void }) {
   const nav = useNavigate();
@@ -193,9 +193,9 @@ export const RestoreDialog = resetOnOpen(function RestoreDialog({ m, open, onOpe
 
   return (
     <ConfirmDialog asForm dirty={dirty} open={open} onOpenChange={onOpenChange} size="md" title={`恢复 ${m.name}`} confirmLabel="恢复" confirmDisabled={!ready}
-      description="机器保持原来的 ID（历史、账单、审计都接上），重新走一遍上架的收敛步骤；成功后回到「在用」。失败会停在「上架失败」，可在作业页重试；取消会回到已退役。"
+      description={<>重新上架，保留原 ID <InfoTip text={'机器保持原来的 ID（历史、账单、审计都接上），重新走一遍上架的收敛步骤；成功后回到「在用」。\n失败会停在「上架失败」，可在作业页重试；取消会回到已退役。'} /></>}
       onConfirm={submit}>
-      {!base.isFetchedAfterMount && <div className="hint">{host ? '正在预检…' : '正在预检（会试一下中控密钥能不能登录这台机器，最多十几秒）…'}</div>}
+      {!base.isFetchedAfterMount && <div className="hint">{host ? '正在预检…' : '正在预检（最多十几秒）…'}</div>}
       {base.isFetchedAfterMount && base.isError && <ErrorNote error={base.error} onRetry={() => void base.refetch()}>预检失败：</ErrorNote>}
       {liveFailed && <ErrorNote error={live.error} onRetry={() => void live.refetch()}>按新的团队 / 编号预检失败：</ErrorNote>}
       {pv && (
@@ -207,7 +207,7 @@ export const RestoreDialog = resetOnOpen(function RestoreDialog({ m, open, onOpe
             </span>
             <span className="t-sub">IP {pv.ip}</span>
           </div>
-          {pv.ip_conflict && <Note tone="bad">IP {pv.ip} 已被在用的「{pv.ip_conflict.name}」占用，现在不能恢复。先把它退役，或确认这台机器的 IP 没有变。</Note>}
+          {pv.ip_conflict && <Note tone="bad">IP {pv.ip} 已被「{pv.ip_conflict.name}」占用，不能恢复 <InfoTip text="先把它退役，或确认这台机器的 IP 没有变。" /></Note>}
           {blockers.filter((b) => !pv.ip_conflict || !b.includes(pv.ip)).map((b) => <Note key={b} tone="bad">{b}</Note>)}
           {keyNote && <Note tone={reset ? 'warn' : 'bad'}>{keyNote}</Note>}
           {pv.warnings.map((w) => <Note key={w} tone="warn">{w}</Note>)}
@@ -218,10 +218,10 @@ export const RestoreDialog = resetOnOpen(function RestoreDialog({ m, open, onOpe
       {pv && (
         <div className="form-grid">
           {!isRelay && <Field label="团队"><Select value={team} onChange={setTeam} options={teams.map((t) => ({ value: t.id, label: t.name }))} /></Field>}
-          {!isRelay && <Field label="编号" hint="留空 = 自动接在团队末尾"><Input inputMode="numeric" value={num} onChange={(e) => setNum(e.target.value.replace(/\D/g, ''))} placeholder={pv.number != null ? `自动：${pv.number}` : '自动'} /></Field>}
+          {!isRelay && <Field label="编号"><Input inputMode="numeric" value={num} onChange={(e) => setNum(e.target.value.replace(/\D/g, ''))} placeholder={pv.number != null ? `自动：${pv.number}` : '自动'} /></Field>}
           {isRelay && <Field label="线路机名称" hint="原名被占用时换一个" className="span-2"><Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder={pv.label ?? ''} /></Field>}
           {needs?.relay && (
-            <Field label="接入的线路机" hint={b?.last_relay ? `上次接的是 ${b.last_relay.name}；旧入口不会复活，会建新入口` : '会在这台线路机上建新入口'} className="span-2">
+            <Field label="接入的线路机" info="旧入口不会复活，会在所选线路机上建新入口" hint={b?.last_relay ? `上次是 ${b.last_relay.name}` : undefined} className="span-2">
               <Select value={relay} onChange={setRelay} options={relayOpts} placeholder="选择线路机" />
             </Field>
           )}
@@ -229,28 +229,29 @@ export const RestoreDialog = resetOnOpen(function RestoreDialog({ m, open, onOpe
             <>
               <Field label="上游协议"><Select value={up.protocol} onChange={(v) => setUp({ protocol: v })} options={[{ value: 'socks5', label: 'SOCKS5' }, { value: 'http', label: 'HTTP' }]} /></Field>
               <Field label="上游端口"><Input inputMode="numeric" value={up.port} onChange={(e) => setUp({ port: e.target.value.replace(/\D/g, '') })} /></Field>
-              <Field label="上游地址" className="span-2" hint={ob ? '沿用退役前的上游，可修改' : '这台退役时没留下上游参数，需要重新填写'}><Input value={up.host} onChange={(e) => setUp({ host: e.target.value })} placeholder="例如 proxy.example.com" /></Field>
+              <Field label="上游地址" className="span-2" hint={ob ? undefined : '退役时没留下，需重填'}><Input value={up.host} onChange={(e) => setUp({ host: e.target.value })} placeholder="例如 proxy.example.com" /></Field>
               <Field label="用户名（选填）"><Input value={up.username} onChange={(e) => setUp({ username: e.target.value })} autoComplete="off" /></Field>
-              <Field label={upPwNeeded ? '密码（必填）' : '密码（选填）'} hint={upPwNeeded && ob?.username ? '退役时已清掉，要重新填' : undefined}><Input type="password" value={up.password} onChange={(e) => setUp({ password: e.target.value })} autoComplete="new-password" /></Field>
+              <Field label={upPwNeeded ? '密码（必填）' : '密码（选填）'}><Input type="password" value={up.password} onChange={(e) => setUp({ password: e.target.value })} autoComplete="new-password" placeholder={upPwNeeded && ob?.username ? '退役时已清掉，请重填' : undefined} /></Field>
             </>
           )}
           {isVps && !host && (
-            <Field label="SS 端口（公网）" className="span-2" hint={ob ? `沿用退役前的 ${ob.port}；NAT 机是服务商映射的公网端口，节点上 ssserver 固定监听 ${meta().defaults.ss_port}` : `NAT 机填服务商映射的公网端口；不是 NAT 机留空（${meta().defaults.ss_port}）`}>
+            <Field label="SS 端口（公网）" className="span-2" hint={ob ? `沿用退役前的 ${ob.port}` : undefined} info={`NAT 机填服务商映射的公网端口，节点上 ssserver 固定监听 ${meta().defaults.ss_port}；不是 NAT 机留空（${meta().defaults.ss_port}）`}>
               <Input inputMode="numeric" value={ssPort} onChange={(e) => setSsPort(e.target.value.replace(/\D/g, ''))} placeholder={String(meta().defaults.ss_port)} aria-invalid={!ssOk || undefined} />
             </Field>
           )}
           {!isProxy && needs && (
             needs.password === 'no' ? (
-              <div className="hint span-2">{host ? `同机 IP 节点用中控密钥登录宿主机「${host.name}」，不需要密码；${ob ? `SS 端口沿用原来的 ${ob.port}（已被宿主机上别的同机节点占用时重新分配）` : 'SS 端口会在宿主机上重新分配'}。` : `${KEY_LOGIN[b?.ssh?.key_login ?? 'ok']}。`}</div>
+              <div className="hint span-2">{host ? <>不需要密码 <InfoTip text={`同机 IP 节点用中控密钥登录宿主机「${host.name}」；${ob ? `SS 端口沿用原来的 ${ob.port}（已被宿主机上别的同机节点占用时重新分配）` : 'SS 端口会在宿主机上重新分配'}。`} /></> : `${KEY_LOGIN[b?.ssh?.key_login ?? 'ok']}，不需要密码`}</div>
             ) : (
               <Field className="span-2" label={needs.password === 'required' ? 'root 密码（必填）' : 'root 密码（选填）'}
-                hint={needs.password === 'required' ? `${KEY_LOGIN[b?.ssh?.key_login ?? 'denied']}。密码只用来推一次中控公钥，用完即丢。` : `${KEY_LOGIN[b?.ssh?.key_login ?? 'error'] ?? ''}。中控密钥登录不了时才会用到这个密码。`}>
-                <Input type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="new-password" />
+                hint={KEY_LOGIN[b?.ssh?.key_login ?? (needs.password === 'required' ? 'denied' : 'error')]}
+                info={needs.password === 'required' ? '密码只用来推一次中控公钥，用完即丢' : '中控密钥登录不了时才会用到这个密码，只用一次、用完即丢'}>
+                <Input type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="new-password" placeholder={needs.password === 'required' ? undefined : '留空用中控密钥'} />
               </Field>
             )
           )}
           <Field label="原因（选填）" className="span-2"><Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="例如：客户续约" /></Field>
-          {!isProxy && !host && <div className="span-2"><CheckRow checked={reset} onChange={setReset}>机器重装过：允许覆盖已记录的主机指纹</CheckRow></div>}
+          {!isProxy && !host && <div className="span-2"><CheckRow checked={reset} onChange={setReset}>机器重装过，重置主机指纹</CheckRow></div>}
         </div>
       )}
     </ConfirmDialog>

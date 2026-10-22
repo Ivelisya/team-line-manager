@@ -83,7 +83,7 @@ function RelayCard({ m, open }: { m: MachineView; open: Open }) {
             {entries.map((e) => <EntryRow key={e.id} e={e} open={open} />)}
           </tbody>
         </table>
-        {m.entries.length === 0 && <Empty text="这台线路机还没有挂载入口" />}
+        {m.entries.length === 0 && <Empty text="还没有入口" />}
       </div></EntryMenus>
       <ShowAll total={m.entries.length} cap={ENTRY_CAP} open={all} onToggle={() => setAll((v) => !v)} />
     </section>
@@ -100,7 +100,7 @@ export function RelaysPage() {
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       {q.isLoading && <Skeleton h={220} />}
       {list.map((m) => <RelayCard key={m.id} m={m} open={open} />)}
-      {q.data && list.length === 0 && <Empty icon={<Waypoints size={22} />} text="还没有线路机" hint="去「上架」添加第一台线路机" />}
+      {q.data && list.length === 0 && <Empty icon={<Waypoints size={22} />} text="还没有线路机" hint="去「上架」添加" />}
     </div>
   );
 }

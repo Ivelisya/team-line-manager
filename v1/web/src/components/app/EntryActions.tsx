@@ -9,7 +9,7 @@ import { fetchShare, useEntryAction } from '@/lib/queries';
 import { DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/overlays';
 import { IconButton, Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogHeader } from '@/components/ui/dialog';
-import { Textarea } from '@/components/ui/form';
+import { InfoTip, Textarea } from '@/components/ui/form';
 import { toast } from '@/components/ui/toast';
 import { copyText } from '@/lib/clipboard';
 import { ConfirmDialog, TypedConfirmDialog } from './dialogs';
@@ -54,16 +54,16 @@ export function EntryMenus({ entries, children }: { entries: EntryView[]; childr
       </>)}
 
       {dlg?.k === 'disable' && <ConfirmDialog open={dlg.open} onOpenChange={hide} title={`停用入口 ${entryLabel(dlg.e)}？`}
-        description="停用后该入口立即不再转发流量，已有连接会断开。可随时重新启用。" confirmLabel="停用入口" danger
+        description={<>已有连接会断开 <InfoTip text="停用后入口立即不再转发流量；可随时重新启用。" /></>} confirmLabel="停用入口" danger
         onConfirm={async () => { await act.mutateAsync({ id: dlg.e.id, action: 'disable' }); toast.ok('入口已停用'); }} />}
 
       {dlg?.k === 'rotate' && <TypedConfirmDialog open={dlg.open} onOpenChange={hide} title="轮换凭据" expected={entryLabel(dlg.e)} confirmLabel="轮换凭据" danger
-        description={<>会为入口 <b>{entryLabel(dlg.e)}</b> 生成新的凭据，旧分享链接立即失效，需要重新发给使用者。</>}
+        description={<>旧分享链接会立即失效 <InfoTip text="会生成新的凭据，需要把新的分享链接重新发给使用者。" /></>}
         onConfirm={async () => { await act.mutateAsync({ id: dlg.e.id, action: 'rotate', confirm: entryLabel(dlg.e) }); toast.ok('凭据已轮换'); }} />}
 
       {dlg?.k === 'share' && <Dialog open={dlg.open} onOpenChange={hide}>
         <DialogContent size="md">
-          <DialogHeader><DialogTitle>分享链接 · {entryLabel(dlg.e)}</DialogTitle><DialogDescription>查看分享链接会记入审计。链接等同于凭据，请只发给需要的人。</DialogDescription></DialogHeader>
+          <DialogHeader><DialogTitle>分享链接 · {entryLabel(dlg.e)}</DialogTitle><DialogDescription>只发给需要的人 <InfoTip text="链接等同于凭据；查看分享链接会记入审计。" /></DialogDescription></DialogHeader>
           <Textarea readOnly value={dlg.url} rows={4} className="mono" onFocus={(ev) => ev.currentTarget.select()} />
           <DialogFooter>
             <Button onClick={() => hide(false)}>关闭</Button>

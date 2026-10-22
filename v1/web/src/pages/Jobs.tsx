@@ -6,7 +6,7 @@ import { fetchAllLogs, useCancelJob, useJob, useJobs, useMachine, useRetryJob } 
 import type { Job, JobLog } from '@/lib/types';
 import { errorKindLabel, jobKindLabel, jobLive, jobProgress, outputLines, stepKind, type StepKind } from '@/lib/jobs';
 import { jobStateLabel } from '@/lib/derive';
-import { CheckRow, Field, Input } from '@/components/ui/form';
+import { CheckRow, Field, InfoTip, Input } from '@/components/ui/form';
 import { useNow } from '@/lib/useNow';
 import { copyText } from '@/lib/clipboard';
 import * as F from '@/lib/format';
@@ -69,7 +69,7 @@ export function JobsPage() {
               <span className="l2"><span>{F.dt(j.created_at)}</span><span>{j.created_by}</span>{j.error && <span className="ellipsis" style={{ color: j.state === 'cancelled' ? 'var(--fg-2)' : 'var(--bad-text)' }} data-tip={j.error}>{j.error}</span>}</span>
             </div>
           ))}
-          {jobs.data && list.length === 0 && <Empty icon={<ListChecks size={22} />} text="没有作业" hint="上架、退役、升级 agent 都会在这里留下一条" />}
+          {jobs.data && list.length === 0 && <Empty icon={<ListChecks size={22} />} text="没有作业" />}
           <Pagination pg={pg} unit="个" compact />
         </Panel>
         <div className="jobs-detail" ref={detail}>
@@ -124,7 +124,7 @@ function JobDetail({ id }: { id: string }) {
           <div style={{ marginTop: 12 }}>
             <Note tone={j.state === 'succeeded' ? 'warn' : 'info'}>
               <span className="row row-between" style={{ gap: 12 }}>
-                <span>{j.result?.note ?? '客户端需要换成新的分享链接'}：{j.state === 'succeeded' ? '旧链接已失效。' : '新入口验收通过、旧入口摘除后，旧链接会失效。'}</span>
+                <span>{j.result?.note ?? '客户端需要换成新的分享链接'}{j.state === 'succeeded' ? '：旧链接已失效' : <> <InfoTip text="新入口验收通过、旧入口摘除后，旧链接会失效。" /></>}</span>
                 {j.result?.new_entry_id && <Button size="sm" onClick={() => void copyNewShareLink(j.id)}><Copy size={14} />复制新分享链接</Button>}
               </span>
             </Note>
@@ -164,11 +164,11 @@ function JobDetail({ id }: { id: string }) {
 }
 
 /** 取消的后果：失败的上架 / 恢复作业取消后机器不再停在「上架失败」；升级 agent 只有排队中的能取消 */
-function cancelDesc(j: Job) {
-  if (j.state === 'failed' && j.kind.startsWith('provision_')) return '不再重试这次上架：已完成的步骤会被补偿（回滚），机器会被退役并清理，释放 IP 与编号。';
-  if (j.state === 'failed' && j.kind.startsWith('restore_')) return '不再重试这次恢复：已完成的步骤会被补偿（回滚），机器退回「已退役」。';
-  if (j.kind === 'upgrade_agent') return '这台还没开始升级，取消后不升了；「全部升级」里排在它后面、等它的机器也会跟着取消。';
-  return '已完成的步骤会被补偿（回滚），然后停下。';
+function cancelDesc(j: Job): React.ReactNode {
+  if (j.state === 'failed' && j.kind.startsWith('provision_')) return <>机器会被退役并清理 <InfoTip text="不再重试这次上架：已完成的步骤会被补偿（回滚），机器会被退役并清理，释放 IP 与编号。" /></>;
+  if (j.state === 'failed' && j.kind.startsWith('restore_')) return <>机器退回「已退役」 <InfoTip text="不再重试这次恢复：已完成的步骤会被补偿（回滚），机器退回「已退役」。" /></>;
+  if (j.kind === 'upgrade_agent') return <>不升了，排在后面的也取消 <InfoTip text="这台还没开始升级，取消后不升了；「全部升级」里排在它后面、等它的机器也会跟着取消。" /></>;
+  return '已完成的步骤会回滚';
 }
 
 /** 重试：失败原因是主机指纹不符 / SSH 认证失败时先问一句，其余直接重试。
@@ -183,11 +183,12 @@ function RetryButton({ j }: { j: Job }) {
   const ip = j.kind === 'provision_ip' || j.kind === 'restore_ip' || !!target.data?.host_machine;
   // 目标机器还没取回时不知道是不是同机 IP 节点：先不给重置（没有目标的作业不用等）
   const canReset = kind === 'host_key' && !ip && (!j.target || !!target.data);
-  const desc = kind === 'host_key'
-    ? (ip ? '同机 IP 节点经宿主机登录，指纹不符说明宿主机的主机指纹变了（比如宿主机重装过系统）。先确认这是预期的变化，再对宿主机「升级 agent」：它也会因为指纹不符失败，在作业页重试它并勾选「重置主机指纹」；宿主机升级成功后，回来重试这个作业。'
-      : '机器的主机指纹和记录的不一致。确认机器重装过、IP 没有换给别的机器，再重置指纹重试。')
-    : ip ? 'SSH 认证失败：中控密钥登录不了宿主机。同机 IP 节点没有引导密钥这一步，填密码也用不上：先把中控公钥（中控上的 /etc/fleet/ssh/id_ed25519.pub）加回宿主机 root 的 authorized_keys，再重试。'
-    : 'SSH 认证失败：中控密钥登录不上。可以填 SSH 密码，重试时用它重新推送中控公钥。';
+  const [short, tip] = kind === 'host_key'
+    ? (ip ? ['宿主机的主机指纹变了', '同机 IP 节点经宿主机登录，指纹不符说明宿主机的主机指纹变了（比如宿主机重装过系统）。先确认这是预期的变化，再对宿主机「升级 agent」：它也会因为指纹不符失败，在作业页重试它并勾选「重置主机指纹」；宿主机升级成功后，回来重试这个作业。']
+      : ['主机指纹和记录的不一致', '确认机器重装过、IP 没有换给别的机器，再重置指纹重试。'])
+    : ip ? ['中控密钥登录不了宿主机', '同机 IP 节点没有引导密钥这一步，填密码也用不上：先把中控公钥（中控上的 /etc/fleet/ssh/id_ed25519.pub）加回宿主机 root 的 authorized_keys，再重试。']
+    : ['中控密钥登录不上', '可以填 SSH 密码，重试时用它重新推送中控公钥。'];
+  const desc = <>{short} <InfoTip text={tip} /></>;
   const [open, setOpen] = React.useState(false);
   const [reset, setReset] = React.useState(false);
   const [pw, setPw] = React.useState('');
@@ -205,8 +206,8 @@ function RetryButton({ j }: { j: Job }) {
           <div className="stack-sm">
             {canReset && <CheckRow checked={reset} onChange={setReset}>重置主机指纹</CheckRow>}
             {!ip && (
-              <Field label={kind === 'auth' ? 'SSH 密码' : 'SSH 密码（选填）'} hint="留空则继续用中控密钥登录">
-                <Input type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="new-password" />
+              <Field label={kind === 'auth' ? 'SSH 密码' : 'SSH 密码（选填）'}>
+                <Input type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="new-password" placeholder="留空用中控密钥" />
               </Field>
             )}
           </div>
@@ -283,7 +284,7 @@ const LogPanel = React.memo(function LogPanel({ jobId, state }: { jobId: string;
       <div className="logbox" ref={box} role="log" aria-live="off" tabIndex={0} aria-label="作业日志"
         onScroll={(e) => { const el = e.currentTarget; setStuck(el.scrollHeight - el.scrollTop - el.clientHeight < 24); }}>
         {logs.length === 0 && <span className="t-muted">暂无日志</span>}
-        {(dropped > 0 || shown.length > SHOW_MAX) && <div className="logline logline-note"><span /><span /><span className="msg t-sub">{dropped > 0 ? `页面只保留最近 ${KEEP_MAX} 行，更早的 ${dropped} 行已省略；` : ''}仅显示最近 {Math.min(SHOW_MAX, shown.length)} 行，共 {shown.length + dropped} 行</span></div>}
+        {(dropped > 0 || shown.length > SHOW_MAX) && <div className="logline logline-note"><span /><span /><span className="msg t-sub">仅显示最近 {Math.min(SHOW_MAX, shown.length)} 行，共 {shown.length + dropped} 行</span></div>}
         {view.map((l) => <LogLine key={l.id} l={l} />)}
       </div>
     </Panel>

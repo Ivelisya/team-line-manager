@@ -6,6 +6,7 @@ import { ACCESS_WINDOWS, WINDOW_DAYS, useAccessRetention, useMachineAccess, type
 import * as F from '@/lib/format';
 import { Segmented } from '@/components/ui/overlays';
 import { Button } from '@/components/ui/button';
+import { InfoTip } from '@/components/ui/form';
 import { ChartContainer, chartTooltip, Recharts, axisProps, type ChartConfig } from '@/components/ui/chart';
 import { Empty, ErrorNote, Pill, Section, SectionHeader } from '@/components/app/primitives';
 import { fmtN } from '@/features/AccessBits';
@@ -111,14 +112,14 @@ export const AccessTab = React.memo(function AccessTab({ id, relay }: { id: stri
         {head}
         <div data-stale={stale}>
           {none ? (
-            <Empty icon={<Radar size={22} />} text={`最近 ${long}没有访问记录（需要线路机开启访问日志、且有真实客户端流量）`} />
+            <Empty icon={<Radar size={22} />} text={`最近 ${long}没有访问记录`} />
           ) : d.top_domains.length === 0 ? (
-            <div className="hint">这段时间没有汇总数据。汇总每 5 分钟更新一次，下方「最近记录」是实时的。</div>
+            <div className="hint">这段时间没有汇总数据 <InfoTip text="汇总每 5 分钟更新一次，下方「最近记录」是实时的。" /></div>
           ) : (
             <>
               <HostBars items={d.top_domains} limit={all ? undefined : 10} />
               <div className="row row-between" style={{ marginTop: 6 }}>
-                <span className="hint">共 {fmtN(total)} 次连接（前 {d.top_domains.length} 个目标）。绿色已转发，红色已阻止。</span>
+                <span className="hint">共 {fmtN(total)} 次连接（前 {d.top_domains.length} 个目标）</span>
                 {d.top_domains.length > 10 && <Button size="sm" variant="quiet" onClick={() => setAll((v) => !v)}>{all ? '收起' : `展开全部 ${d.top_domains.length} 个`}</Button>}
               </div>
             </>
@@ -156,7 +157,7 @@ export const AccessTab = React.memo(function AccessTab({ id, relay }: { id: stri
             </div>
           </Section>
           <Section>
-            <SectionHeader title="最近记录" meta="最近 20 条 · 原始记录保留 7 天" />
+            <SectionHeader title="最近记录" meta="最近 20 条" />
             <div data-stale={stale}>{d.recent.length ? <RecentTable items={d.recent} /> : <div className="hint">最近 7 天没有原始记录</div>}</div>
           </Section>
         </>

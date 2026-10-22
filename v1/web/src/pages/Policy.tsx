@@ -11,7 +11,7 @@ import { MAX_NOTE, diffDomains, domainsToText, parseDomainText } from '@/lib/pol
 import * as F from '@/lib/format';
 import { meta } from '@/lib/derive';
 import { Button } from '@/components/ui/button';
-import { Field, Input, Textarea } from '@/components/ui/form';
+import { Field, InfoTip, Input, Textarea } from '@/components/ui/form';
 import { Segmented, Tip, Trunc } from '@/components/ui/overlays';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle, DialogHeader } from '@/components/ui/dialog';
 import { SkeletonRows } from '@/components/ui/skeleton';
@@ -86,13 +86,13 @@ export function PolicyPage() {
 
   return (
     <div className="stack">
-      <PageHead title="访问监控" note="访问规则：改动先存为草稿，发布后才会应用到线路机" tools={<AccessViewSwitch value="policy" />} />
+      <PageHead title="访问监控" note={<>访问规则 <InfoTip text="改动先存为草稿，发布后才会应用到线路机" /></>} tools={<AccessViewSwitch value="policy" />} />
 
       <div className="pol-bar" data-draft={draftCount > 0 ? '1' : undefined}>
         <div className="pol-bar-main">
           {draftCount > 0
-            ? <><Chip variant="warn">草稿</Chip><span><b>{draftCount}</b> 份改动还没有发布，线路机上的规则没有变化</span></>
-            : <span className="t-sub row" style={{ gap: 6, flexWrap: 'nowrap' }}><ShieldCheck size={14} />没有未发布的草稿，当前生效的规则已经全部应用</span>}
+            ? <><Chip variant="warn">草稿</Chip><span><b>{draftCount}</b> 份改动未发布</span></>
+            : <span className="t-sub row" style={{ gap: 6, flexWrap: 'nowrap' }}><ShieldCheck size={14} />没有未发布的草稿</span>}
         </div>
         <div className="row">
           <Button variant="quiet" disabled={draftCount === 0} onClick={() => setAskDiscard(true)}><Trash2 />丢弃全部草稿</Button>
@@ -104,7 +104,7 @@ export function PolicyPage() {
       <div className="pol-layout">
         <Panel title="范围" count={q.data ? `${teams.length} 个团队` : undefined} className="pol-scope" flush>
           {q.isLoading && <SkeletonRows rows={6} list />}
-          {q.data && teams.length === 0 && <Empty text="还没有团队" hint="先在「团队与套餐」里添加团队" />}
+          {q.data && teams.length === 0 && <Empty text="还没有团队" hint="先去「团队与套餐」添加" />}
           <div className="pol-tree" role="tree" aria-label="团队与节点">
             {teams.map((t) => (
               <TeamRows key={t.id} t={t} sel={sel} open={openTeams.has(t.id)}
@@ -122,10 +122,10 @@ export function PolicyPage() {
 
       <PreviewDialog open={preview} onOpenChange={setPreview} />
       <ConfirmDialog open={pending != null} onOpenChange={(o) => { if (!o) setPending(null); }} danger confirmLabel="放弃修改并切换" title="放弃未保存的修改？"
-        description={`「${target?.name ?? '当前范围'}」有还没保存的修改，切换到别的范围后会丢失。`}
+        description={`「${target?.name ?? '当前范围'}」的修改会丢失`}
         onConfirm={() => { if (pending) { if (sel) unsaved.delete(`${sel.scope}:${sel.id}`); dirtyRef.current = false; apply(pending); } }} />
       <ConfirmDialog open={askDiscard} onOpenChange={setAskDiscard} danger confirmLabel="丢弃" title={`丢弃全部 ${draftCount} 份草稿？`}
-        description="这些还没发布的改动会丢失。已经生效的规则不受影响。"
+        description="已生效的规则不受影响"
         onConfirm={async () => {
           const h = q.data?.draft_hash;
           if (!h) throw new Error('没有可丢弃的草稿');
@@ -230,11 +230,11 @@ function Editor({ scope, name, sp, team, node, onDirty }: { scope: 'team' | 'nod
 
   return (
     <Panel className="pol-edit" title={name} count={scope === 'team' ? '团队策略' : '节点策略'}
-      sub={scope === 'team' ? `团队内选了「跟随团队」的节点都会使用这里的设置` : `当前生效：${modeLabel(node!.effective.mode)}${node!.effective.source === 'team' ? `（来自 ${team.name}）` : ''}`}>
+      sub={scope === 'team' ? <InfoTip text="团队内选了「跟随团队」的节点都会使用这里的设置" /> : `当前生效：${modeLabel(node!.effective.mode)}${node!.effective.source === 'team' ? `（来自 ${team.name}）` : ''}`}>
       <div className="pol-form">
         {stale && (
           <Note tone="warn">
-            这份草稿在你编辑期间被其他人改过了。直接保存会提示冲突；点右边载入最新内容（你的修改会丢失）。
+            草稿已被别人改过 <InfoTip text="直接保存会提示冲突；载入最新内容会丢掉你的修改。" />
             <Button size="sm" variant="secondary" style={{ marginLeft: 8 }} onClick={() => load(sp)}>载入最新</Button>
           </Note>
         )}
@@ -242,19 +242,19 @@ function Editor({ scope, name, sp, team, node, onDirty }: { scope: 'team' | 'nod
         <div className="field">
           <span className="label">模式</span>
           <Segmented label="模式" value={mode} onChange={setMode} items={modes.map((m) => ({ value: m, label: modeLabel(m) }))} />
-          <div className="hint">{MODE_HINT[mode]}{mode === 'inherit' && <> 团队现在是「{modeLabel(teamCur.mode)}」{needsDomains(teamCur.mode) ? `（${teamCur.domains.length} 个域名）` : ''}。</>}</div>
+          <div className="hint">{MODE_HINT[mode]}{mode === 'inherit' && <>，团队现在是「{modeLabel(teamCur.mode)}」{needsDomains(teamCur.mode) ? `（${teamCur.domains.length} 个域名）` : ''}</>}</div>
         </div>
 
         <div className="field">
-          <span className="label">域名{uses && <span className="pol-count"> · {fmtN(parsed.domains.length)} 个有效</span>}</span>
+          <span className="field-label"><span className="label">域名{uses && <span className="pol-count"> · {fmtN(parsed.domains.length)} 个有效</span>}</span><InfoTip text="逗号、中文逗号、空格、换行都可以分隔；填 example.com 会同时匹配它的所有子域名，=example.com 只匹配它本身。" /></span>
           <div className="pol-ed" data-bad={uses && (parsed.issues.length > 0 || noDomains) ? '1' : undefined} data-off={uses ? undefined : '1'}>
             <Gutter lines={lines.length} bad={uses ? parsed.badLines : new Set()} />
             <Textarea className="pol-ta" value={text} disabled={!uses} wrap="off" spellCheck={false} autoComplete="off" aria-label="域名列表" aria-invalid={uses && parsed.issues.length > 0 ? true : undefined}
               placeholder={'每行一个，也可以用逗号分隔：\nexample.com\n=exact.example.org   （等号开头 = 只匹配这个域名本身）'}
               onChange={(e) => setText(e.target.value)} onScroll={(e) => { const g = e.currentTarget.previousElementSibling as HTMLElement | null; if (g) g.scrollTop = e.currentTarget.scrollTop; }} />
           </div>
-          {!uses && <div className="hint">这个模式不使用域名列表；已填的内容会保留，切回白名单 / 黑名单后仍在。</div>}
-          {uses && noDomains && parsed.issues.length === 0 && <div className="hint is-error">启用白名单或黑名单前必须填写域名</div>}
+          {!uses && <div className="hint">这个模式不用域名列表 <InfoTip text="已填的内容会保留，切回白名单 / 黑名单后仍在。" /></div>}
+          {uses && noDomains && parsed.issues.length === 0 && <div className="hint is-error">请填写域名</div>}
           {uses && parsed.overall && <div className="hint is-error">{parsed.overall}</div>}
           {showIssues.length > 0 && (
             <ul className="pol-issues" role="alert">
@@ -262,7 +262,6 @@ function Editor({ scope, name, sp, team, node, onDirty }: { scope: 'team' | 'nod
               {showIssues.length > 6 && <li className="t-sub">还有 {showIssues.length - 6} 处问题</li>}
             </ul>
           )}
-          {uses && !showIssues.length && <div className="hint">逗号、中文逗号、空格、换行都可以分隔；填 <span className="mono">example.com</span> 会同时匹配它的所有子域名，<span className="mono">=example.com</span> 只匹配它本身。</div>}
         </div>
 
         <Field label="备注" hint={`${note.length}/${MAX_NOTE}`} error={note.length > MAX_NOTE ? `备注最多 ${MAX_NOTE} 个字符` : undefined}>
@@ -279,7 +278,7 @@ function Editor({ scope, name, sp, team, node, onDirty }: { scope: 'team' | 'nod
         </div>
       </div>
       <ConfirmDialog open={askDrop} onOpenChange={setAskDrop} title={`放弃「${name}」的草稿？`} confirmLabel="放弃草稿" danger
-        description={`这份草稿里的改动会丢失，生效中的规则不变。${dirty ? '你正在编辑、还没保存的内容也会一起丢掉。' : ''}`}
+        description={`草稿里的改动会丢失${dirty ? '，未保存的编辑也会丢' : ''}`}
         onConfirm={() => save.mutateAsync(req(cur)).then(onSaved)} />
     </Panel>
   );
@@ -349,7 +348,7 @@ const PreviewDialog = resetOnOpen(function PreviewDialog({ open, onOpenChange }:
         <DialogContent size="lg">
           <DialogHeader>
             <DialogTitle>预览：发布后会怎样</DialogTitle>
-            <DialogDescription>{d ? `按最近 ${d.window_hours} 小时的访问汇总模拟，实际结果以发布后为准。` : '正在按最近 24 小时的访问汇总模拟…'}</DialogDescription>
+            <DialogDescription>{d ? <>按最近 {d.window_hours} 小时的访问模拟 <InfoTip text="按访问汇总模拟，实际结果以发布后为准。" /></> : '正在模拟…'}</DialogDescription>
           </DialogHeader>
           {!q.isFetchedAfterMount && <SkeletonRows rows={4} list />}
           {q.isFetchedAfterMount && q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
@@ -363,7 +362,7 @@ const PreviewDialog = resetOnOpen(function PreviewDialog({ open, onOpenChange }:
               </div>
               <ChangeList changes={d.changes} />
               {d.nodes.length === 0
-                ? <Note tone="info">按最近的访问记录，没有节点会因此多阻止连接。{d.affected_relays === 0 && '这些改动不会改变任何线路机的规则。'}</Note>
+                ? <Note tone="info">不会多阻止任何连接{d.affected_relays === 0 && '，也不改线路机规则'}</Note>
                 : (
                   <div className="table-wrap pol-pv-table">
                     <table className="dt" style={{ minWidth: 620 }}>
@@ -401,7 +400,7 @@ const PreviewDialog = resetOnOpen(function PreviewDialog({ open, onOpenChange }:
         </DialogContent>
       </Dialog>
       <ConfirmDialog open={ask} onOpenChange={setAsk} confirmLabel="确认发布" title={`发布 ${d?.draft_count ?? 0} 份草稿？`}
-        description={`发布后立即生效：${d?.affected_relays ? `${d.affected_relays} 台线路机会热加载新的路由规则（不重启 Xray，已建立的连接不受影响）。` : '不需要线路机做任何事。'}可以在「发布记录」里回滚。`}
+        description={<>立即生效，可以回滚 <InfoTip text={`${d?.affected_relays ? `${d.affected_relays} 台线路机会热加载新的路由规则（不重启 Xray，已建立的连接不受影响）。` : '不需要线路机做任何事。'}可以在「发布记录」里回滚。`} /></>}
         onConfirm={async () => {
           if (!d?.draft_hash) throw new Error('草稿已变化，请重新预览');
           const v = await publish.mutateAsync(d.draft_hash);
@@ -437,10 +436,10 @@ function VersionsPanel() {
   const list = q.data ?? [];
   return (
     <>
-      <Panel title="发布记录" count={q.data ? `最近 ${list.length} 个版本` : undefined} sub="每次发布都是一个完整快照；回滚 = 把旧版本作为新版本再发布一次" flush>
+      <Panel title="发布记录" count={q.data ? `最近 ${list.length} 个版本` : undefined} sub={<InfoTip text="每次发布都是一个完整快照；回滚 = 把旧版本作为新版本再发布一次" />} flush>
         {q.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div>}
         {q.isLoading ? <SkeletonRows rows={3} head /> : list.length === 0 && !q.isError ? (
-          <Empty icon={<ShieldCheck size={22} />} text="还没有发布过访问规则" hint="在上面编辑并保存草稿，预览后发布" />
+          <Empty icon={<ShieldCheck size={22} />} text="还没有发布过访问规则" />
         ) : (
           <div className="table-wrap">
             <table className="dt" style={{ minWidth: 900 }}>
@@ -473,7 +472,7 @@ function VersionsPanel() {
         )}
       </Panel>
       <ConfirmDialog open={!!ask} onOpenChange={(o) => !o && setAsk(null)} confirmLabel="回滚" title={`回滚到版本 v${askHeld?.seq ?? ''}？`}
-        description="会把当前生效的访问规则整体换成这个版本的内容，作为新版本发布并应用到线路机。未发布的草稿不受影响。"
+        description={<>作为新版本发布，草稿不受影响 <InfoTip text="会把当前生效的访问规则整体换成这个版本的内容，作为新版本发布并应用到线路机。" /></>}
         onConfirm={async () => { const v = await rollback.mutateAsync(ask!.id); toast.ok(`已回滚，新版本 v${v.seq}`); }} />
     </>
   );

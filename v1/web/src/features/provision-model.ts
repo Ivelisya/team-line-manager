@@ -2,6 +2,7 @@
 import type { Kind, Plan, Provider, ProvisionItem, Team } from '@/lib/types';
 import type { HostChoice } from '@/lib/queries';
 import { parseCountry } from '@/lib/flags';
+import { meta } from '@/lib/derive';
 
 export interface Row {
   /** 稳定的行 id（React key、单元格回调用），不进入提交内容 */
@@ -42,7 +43,7 @@ export const COLS: Col[] = [
   { key: 'provider_id', label: '供应商', w: 112, type: 'provider', kinds: ALL },
   { key: 'plan_id', label: '套餐', w: 150, type: 'plan', kinds: ALL },
   { key: 'service_ref', label: '服务编号', w: 104, type: 'text', kinds: ALL },
-  { key: 'ss_port', label: 'SS 端口', w: 84, type: 'num', kinds: ['vps'], ph: '8388' },
+  { key: 'ss_port', label: 'SS 端口', w: 84, type: 'num', kinds: ['vps'], ph: String(meta().defaults.ss_port) }, // 只被懒加载的上架页引用，求值时 /meta 已到
   { key: 'login_pw', label: 'root 密码', w: 108, type: 'secret', kinds: ['relay', 'vps'], ph: '留空用密钥' },
   { key: 'up_protocol', label: '上游协议', w: 92, type: 'proto', kinds: ['proxy'] },
   { key: 'up_host', label: '上游主机', w: 124, type: 'text', kinds: ['proxy'] },
@@ -55,7 +56,7 @@ export const COLS: Col[] = [
   { key: 'host_id', label: '宿主机', w: 116, type: 'host', kinds: ['vps'] },
   { key: 'country', label: '国家', w: 132, type: 'country', kinds: ALL },
 ];
-/** 同机 IP 节点：落地机行打开了「在已有机器上添加 IP」（批量里是填了宿主机） */
+/** 同机 IP 节点：VPS 节点行打开了「在已有机器上添加 IP」（批量里是填了宿主机） */
 export const isIpNode = (r: Pick<Row, 'kind' | 'add_ip'>) => r.kind === 'vps' && r.add_ip;
 /** 同机 IP 节点不适用的列：SSH 端口、首次登录与供应商取宿主机的，SS 端口由中控在宿主机上分配，不带套餐 */
 const HOST_NA = new Set<Col['key']>(['ssh_port', 'login_pw', 'ss_port', 'provider_id', 'plan_id']);
@@ -142,17 +143,17 @@ export function localIssues(r: Row): { key: keyof Row; msg: string }[] {
   if (isIpNode(r) && !r.host_id && !r.unresolved.host_id) add('host_id', '请选择宿主机');
   if (r.kind === 'relay' && !r.label.trim()) add('label', '请填写线路机名');
   if (r.kind !== 'relay') { if (!r.team_id && !r.unresolved.team_id) add('team_id', '请选择团队'); if (!r.relay_id && !r.unresolved.relay_id) add('relay_id', '请选择挂载的线路机'); }
-  if (r.number.trim() !== '' && (!/^\d+$/.test(r.number.trim()) || Number(r.number) < 1 || Number(r.number) > 999)) add('number', '编号应为 1–999 的整数，或留空自动编号');
+  if (r.number.trim() !== '' && (!/^\d+$/.test(r.number.trim()) || Number(r.number) < 1 || Number(r.number) > 999)) add('number', '编号应为 1–999');
   for (const k of ['ssh_port', 'ss_port', 'up_port'] as const) if (applies(col(k), r) && r[k].trim() !== '' && !/^\d+$/.test(r[k].trim())) add(k, `${col(k).label}应为整数`);
-  if (r.kind === 'proxy' && (!r.up_host.trim() || !r.up_port.trim())) add(r.up_host.trim() ? 'up_port' : 'up_host', '家宽代理要填上游协议（socks5/http）、主机和端口');
+  if (r.kind === 'proxy' && (!r.up_host.trim() || !r.up_port.trim())) add(r.up_host.trim() ? 'up_port' : 'up_host', '请填上游主机和端口');
   if (r.due_date && !/^\d{4}-\d{2}-\d{2}$/.test(r.due_date)) add('due_date', '到期日格式应为 YYYY-MM-DD');
   if (r.price.trim() && !isFinite(Number(r.price))) add('price', '费用应为数字');
   // 费用只挂在订阅上：没有到期日就没有订阅，填了的费用会被悄悄丢掉——在这里拦下
   if (r.price.trim() && !r.due_date) add('due_date', '填了费用，也需要填到期日');
   // 选了套餐就建订阅（费用、流量跟随套餐，只要到期日）；没有套餐（含同机 IP 节点）时费用没有可跟随的（同服务端校验）
   const plan = !isIpNode(r) && (r.plan_id || r.unresolved.plan_id);
-  if (plan && !r.due_date) add('due_date', '选了套餐要填到期日（费用、流量跟随套餐）');
-  if (!plan && r.due_date && !r.price.trim()) add('price', '没有套餐：填了到期日也要填费用（免费填 0）');
+  if (plan && !r.due_date) add('due_date', '选了套餐要填到期日');
+  if (!plan && r.due_date && !r.price.trim()) add('price', '请填费用（免费填 0）');
   return e;
 }
 export const localErrors = (r: Row): string[] => localIssues(r).map((x) => x.msg);

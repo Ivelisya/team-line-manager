@@ -16,16 +16,16 @@ function normalizeOne(tok: string): { ok: true; value: string } | { ok: false; e
   d = d.replace(/\.+$/, '');
   if (!d) return bad(`「${shown}」后面没有域名`);
   // eslint-disable-next-line no-control-regex
-  if (/[^\x00-\x7f]/.test(d)) return bad(`「${shown}」含有非 ASCII 字符，国际化域名请填 xn-- 形式`);
-  if (d.includes('://') || /[/?#@]/.test(d)) return bad(`「${shown}」看起来是网址，请只填域名（不要 http://、路径、参数）`);
+  if (/[^\x00-\x7f]/.test(d)) return bad(`「${shown}」含非 ASCII 字符，请填 xn-- 形式`);
+  if (d.includes('://') || /[/?#@]/.test(d)) return bad(`「${shown}」是网址，请只填域名`);
   const pre = PREFIXES.find((p) => d.startsWith(p));
-  if (pre) return bad(`「${shown}」不要带 ${pre} 前缀：直接填域名，精确匹配在前面加 =`);
+  if (pre) return bad(`「${shown}」不要带 ${pre} 前缀`);
   const ipLike = isIp(d) || isIp(d.replace(/^\[|\]$/g, '')) || d.split('.').every((l) => l !== '' && /^[0-9]+$/.test(l));
-  if (ipLike) return bad(`「${shown}」是 IP 地址：请填写域名，不支持 IP 地址白名单`);
-  if (d.includes(':')) return bad(`「${shown}」带了端口：策略按域名匹配，不要写端口`);
-  if (d.includes('*')) return bad(`「${shown}」不要写通配符 *：example.com 已经包含它的所有子域名`);
-  if (/[\^$()[\]{}\\|+!%&'"`<>~=,]/.test(d)) return bad(`「${shown}」含有不支持的字符，不支持正则表达式`);
-  if (d.length > 253) return bad(`「${shown}」太长（域名总长不超过 253 个字符）`);
+  if (ipLike) return bad(`「${shown}」是 IP 地址，请填域名`);
+  if (d.includes(':')) return bad(`「${shown}」不要写端口`);
+  if (d.includes('*')) return bad(`「${shown}」不要写 *，已含子域名`);
+  if (/[\^$()[\]{}\\|+!%&'"`<>~=,]/.test(d)) return bad(`「${shown}」含有不支持的字符`);
+  if (d.length > 253) return bad(`「${shown}」太长（最多 253 个字符）`);
   if (!d.includes('.')) return bad(`「${shown}」必须包含点（例如 example.com）`);
   for (const label of d.split('.')) {
     if (!label) return bad(`「${shown}」里有空的标签（连续的点或开头的点）`);

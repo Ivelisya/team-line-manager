@@ -234,7 +234,7 @@
 .hint.ellipsis { white-space: nowrap; } /* text-wrap 是简写，上一条的 pretty 会把 .ellipsis（base.css）的不折行重置成折行 */
 .hint.is-error { color: var(--bad-text); }
 .field-label { display: inline-flex; align-items: center; gap: var(--sp-4); min-width: 0; }
-/* 「(i)」补充说明：一个淡灰的小圆 i，悬停 / 聚焦变深，说明走全站的 data-tip 气泡 */
+/* 「(i)」补充说明：一个淡灰的小圆 i，悬停 / 聚焦变深，说明走全站的 data-tip 气泡；跟在文字后面时自带左边距、和文字基线对齐 */
 .info-tip { display: inline-grid; place-items: center; flex: none; width: 16px; height: 16px; margin-inline-start: var(--sp-4); vertical-align: -3px; border-radius: 50%; color: var(--fg-3); cursor: help; transition: color var(--dur-1) var(--ease-std); }
 .field-label > .info-tip { margin: 0; } /* 标签行是 flex，间距由 gap 给 */
 .info-tip .lucide { width: 13px; height: 13px; }
