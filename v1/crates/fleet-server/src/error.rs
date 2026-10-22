@@ -106,6 +106,10 @@ impl From<axum::extract::rejection::JsonRejection> for ApiError {
     /// 不把 serde 的英文原文给界面：写成中文，能定位时带出字段（serde 的错误路径，如 items[0].ssh_port）
     fn from(r: axum::extract::rejection::JsonRejection) -> Self {
         use axum::extract::rejection::JsonRejection as R;
+        // 超过请求体上限（DefaultBodyLimit）：413，不和读取出错混在一起
+        if r.status() == StatusCode::PAYLOAD_TOO_LARGE {
+            return Self::new(StatusCode::PAYLOAD_TOO_LARGE, "too_large", "请求内容太大");
+        }
         Self::bad_request(match &r {
             R::JsonDataError(e) => data_error(e),
             R::JsonSyntaxError(_) => "请求内容不是合法的 JSON".into(),
@@ -222,6 +226,18 @@ mod tests {
         assert_eq!(msg(r#"{"items":[{"ssh_port":22}]}"#), "请求内容格式不对：缺少字段 items[0].kind");
         assert_eq!(msg(r#"{}"#), "请求内容格式不对：缺少字段 items");
         assert_eq!(msg("{"), "请求内容不是合法的 JSON");
+    }
+
+    /// 请求体超过上限（默认 2 MiB）：413「请求内容太大」，不是笼统的「读取失败」
+    #[tokio::test]
+    async fn oversized_body_is_413() {
+        use axum::extract::FromRequest;
+        let req = axum::http::Request::builder()
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(vec![b' '; 2 * 1024 * 1024 + 1]))
+            .unwrap();
+        let e = ApiJson::<serde_json::Value>::from_request(req, &()).await.err().unwrap();
+        assert_eq!((e.status, e.message.as_str()), (StatusCode::PAYLOAD_TOO_LARGE, "请求内容太大"));
     }
 
     #[tokio::test]
