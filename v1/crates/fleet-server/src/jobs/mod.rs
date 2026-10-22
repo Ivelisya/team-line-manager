@@ -315,13 +315,16 @@ pub async fn run_forever(st: AppState) {
 /// 领取一个可执行的作业，租约先给 3 分钟；每步开始前会按该步的超时续租。
 /// 升级 agent 排在其它作业之后：「全部升级」一次建一百多个，不能让之后的上架、换线路机、退役排在它们后面。
 /// 同一事务建的作业 created_at 相同，再按 id（UUIDv7，按生成先后递增）：全部升级里先建的线路机先领。
+/// 参数里有 `after`（「全部升级」的编排：要等的作业）的，那个作业结束之前领不到；它没有成功，这个作业领到后不开始、直接取消（见 `halted`）
 pub async fn claim(st: &AppState, owner: &str) -> anyhow::Result<Option<JobRow>> {
     Ok(sqlx::query_as(
         "update job set lease_owner = $1, lease_until = now() + interval '3 minutes',
             state = case when state in ('queued', 'waiting') then 'running'::job_state else state end,
             started_at = coalesce(started_at, now())
-         where id = (select id from job where state in ('queued', 'running', 'waiting', 'cancelling') and run_after <= now()
-                     and (lease_until is null or lease_until < now()) order by kind = 'upgrade_agent', created_at, id for update skip locked limit 1)
+         where id = (select id from job j where state in ('queued', 'running', 'waiting', 'cancelling') and run_after <= now()
+                     and (lease_until is null or lease_until < now())
+                     and not exists (select 1 from job p where p.id = (j.params->>'after')::uuid and p.state in ('queued', 'running', 'waiting', 'cancelling'))
+                     order by kind = 'upgrade_agent', created_at, id for update skip locked limit 1)
          returning id, kind, target_id, params, state::text state, step, created_by",
     )
     .bind(owner)
@@ -361,6 +364,11 @@ const OWN: &str = "exists (select 1 from job where id = $1 and lease_owner = $3)
 pub async fn advance(st: &AppState, mut job: JobRow, owner: &str) -> anyhow::Result<()> {
     if job.state == "cancelling" {
         return finish_cancel(st, &job, owner).await;
+    }
+    if job.step == 0 {
+        if let Some(why) = halted(st, &job).await? {
+            return halt(st, &job, owner, &why).await;
+        }
     }
     let defs = defs(&job.kind);
     while (job.step as usize) < defs.len() {
@@ -488,6 +496,48 @@ pub async fn advance(st: &AppState, mut job: JobRow, owner: &str) -> anyhow::Res
     }
     notify(st, &job);
     st.emit(Event::Machines);
+    Ok(())
+}
+
+/// 「全部升级」的编排：要等的作业（参数 `after`）没有成功时，返回这个作业不再开始的原因。
+/// 要等的那个也是这样停下的（`halted`），就沿用它的原因：一路都指向最先失败的那台
+async fn halted(st: &AppState, job: &JobRow) -> sqlx::Result<Option<String>> {
+    let Some(after) = job.params["after"].as_str().and_then(|s| Uuid::try_parse(s).ok()) else { return Ok(None) };
+    let prev: Option<(String, Option<String>, bool, bool, Option<String>)> = sqlx::query_as(
+        "select p.state::text, p.error, p.params ? 'halted', p.params ? 'after', display_name(m.kind::text, m.label, t.name, m.number)
+         from job p left join machine m on m.id = p.target_id left join team t on t.id = m.team_id where p.id = $1",
+    )
+    .bind(after)
+    .fetch_optional(&st.db)
+    .await?;
+    let Some((state, err, was_halted, chained, name)) = prev.filter(|p| p.0 != "succeeded") else { return Ok(None) };
+    let name = name.unwrap_or_else(|| "（已删除）".into());
+    Ok(Some(match (state.as_str(), chained) {
+        _ if was_halted => err.unwrap_or_default(),
+        ("failed", false) => format!("金丝雀「{name}」升级失败，其余机器不再升级"),
+        ("failed", true) => format!("「{name}」升级失败，后面的机器不再升级"),
+        _ => format!("「{name}」的升级没有完成（{}），后面的机器不再升级", err.as_deref().unwrap_or("已取消")),
+    }))
+}
+
+/// 编排里要等的作业没有成功：一步都不做，直接取消并写明原因；记上 `halted`，等它的作业沿用同一个原因
+async fn halt(st: &AppState, job: &JobRow, owner: &str, why: &str) -> anyhow::Result<()> {
+    let n = sqlx::query(
+        "update job set state = 'cancelled', error = $3, started_at = null, finished_at = now(), lease_until = null, lease_owner = null,
+            params = params || jsonb_build_object('halted', true)
+         where id = $1 and lease_owner = $2",
+    )
+    .bind(job.id)
+    .bind(owner)
+    .bind(why)
+    .execute(&st.db)
+    .await?
+    .rows_affected();
+    if n == 0 {
+        return lost(st, job).await;
+    }
+    log(st, job.id, "warn", format!("没有开始：{why}")).await;
+    notify(st, job);
     Ok(())
 }
 

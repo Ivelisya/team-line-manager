@@ -656,8 +656,15 @@ R('POST', '/machines/([^/]+)/upgrade-agent', ({ params }) => {
   return { machine_id: m.id, job_id: job.id };
 });
 R('POST', '/agents/upgrade', () => {
-  const jobs = db.machines.filter((m) => m.lifecycle === 'active' && m.agent && !m.host_machine && !m.active_job).map((m) => ({ machine_id: m.id, job_id: startUpgrade(m).id }));
-  emit({ type: 'machines' }); return { jobs };
+  // 同中控：线路机在前，第一台做金丝雀（mock 不真的排队，各台照常并发跑完，只给顺序说明）
+  const ms = db.machines.filter((m) => m.lifecycle === 'active' && m.agent && !m.host_machine && !m.active_job)
+    .sort((a, b) => Number(b.kind === 'relay') - Number(a.kind === 'relay'));
+  const jobs = ms.map((m) => ({ machine_id: m.id, name: m.name, job_id: startUpgrade(m).id }));
+  const relays = ms.filter((m) => m.kind === 'relay').length;
+  const order = ms.length === 0 ? '没有要升级的机器' : relays === 0
+    ? `先升「${ms[0].name}」做金丝雀，成功后其余 ${ms.length - 1} 台落地机并发升级；金丝雀失败的话其余的都会取消`
+    : `先升「${ms[0].name}」做金丝雀，成功后其余 ${relays - 1} 台线路机逐台升级，线路机都成功后 ${ms.length - relays} 台落地机并发升级；任何一台线路机失败，没开始的都会取消`;
+  emit({ type: 'machines' }); return { jobs, order };
 });
 
 // ---------- 换线路机 / 搬空线路机 / 恢复已退役的机器 ----------

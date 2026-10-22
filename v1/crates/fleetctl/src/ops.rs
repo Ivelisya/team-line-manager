@@ -347,19 +347,22 @@ pub fn renumber(ctx: &Ctx, team: &str, yes: bool) -> anyhow::Result<u8> {
 
 pub fn upgrade_agent(ctx: &Ctx, machine: Option<&str>, all: bool, yes: bool, follow: bool) -> anyhow::Result<u8> {
     let d = if all {
-        confirm("确认升级所有在用机器上的 agent？会逐台重启 agent", yes)?;
+        confirm("确认升级所有在用机器上的 agent？先升一台做金丝雀，成功后线路机逐台、落地机并发；新版本起不来或没上报会自动换回旧版本", yes)?;
         ctx.c.post("/agents/upgrade", &json!({}))?
     } else {
         let q = machine.ok_or_else(|| anyhow!("给机器名，或用 --all"))?;
         let (id, _) = ctx.find_id(q, Want::Live)?;
         let j = ctx.c.post(&format!("/machines/{id}/upgrade-agent"), &json!({}))?;
-        json!({"jobs": [{"machine_id": id, "job_id": j["job_id"]}]})
+        json!({"jobs": [j]})
     };
     ctx.emit(&d, || {
         let jobs = d["jobs"].as_array().cloned().unwrap_or_default();
         let skipped = d["skipped"].as_array().map_or(0, |s| s.len());
         let skip = if skipped > 0 { format!("，跳过 {skipped} 台（有进行中的作业）") } else { "（有进行中作业的机器会被跳过）".into() };
-        format!("已提交 {} 个升级作业{skip}\n{}", jobs.len(), jobs.iter().map(|j| format!("  {}", st(j, "/job_id"))).collect::<Vec<_>>().join("\n"))
+        // 全部升级：先说顺序，作业按执行顺序列出
+        let order = d["order"].as_str().map(|o| format!("\n{o}")).unwrap_or_default();
+        let rows: Vec<String> = jobs.iter().map(|j| format!("  {}  {}", st(j, "/job_id"), st(j, "/name"))).collect();
+        format!("已提交 {} 个升级作业{skip}{order}\n{}", jobs.len(), rows.join("\n"))
     });
     let mut code = 0;
     if follow {

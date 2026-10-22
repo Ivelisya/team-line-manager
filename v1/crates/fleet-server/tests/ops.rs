@@ -355,6 +355,8 @@ async fn upgrade_all_skips_conflicting_machine() {
     let d = t.ok("POST", "/api/v1/agents/upgrade", Some(json!({}))).await;
     assert_eq!(d["jobs"].as_array().unwrap().len(), 2, "{d}");
     assert_eq!(d["skipped"][0]["machine_id"], ids[1].to_string(), "{d}");
+    // 跳过的那台不在编排里：第三台直接等金丝雀
+    assert_eq!(d["jobs"][1]["after"], d["jobs"][0]["job_id"], "{d}");
     let n: i64 = sqlx::query_scalar("select count(*) from job where kind = 'upgrade_agent'").fetch_one(&t.st.db).await.unwrap();
     assert_eq!(n, 2);
 }

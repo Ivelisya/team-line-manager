@@ -470,21 +470,30 @@ pub async fn purge(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
 
 // ── agent 升级 ────────────────────────────────────────────────────────────
 
-/// 返回 (建好的作业, 跳过的机器)。已有进行中作业的机器由唯一索引 job_one_active_per_target 挡住（409「这台机器还有进行中的作业」），
-/// 不另外预查；每台一个 savepoint：一台冲突只跳过这台，不整批回滚。
-async fn enqueue_upgrade(st: &AppState, actor: &str, ids: &[Uuid]) -> ApiResult<(Vec<Value>, Vec<Value>)> {
+/// 给 `ms`（id, 种类, 显示名）按顺序各建一个升级作业，返回 (建好的作业, 跳过的机器)。已有进行中作业的机器由唯一索引
+/// job_one_active_per_target 挡住（409「这台机器还有进行中的作业」），不另外预查；每台一个 savepoint：一台冲突只跳过这台，不整批回滚。
+/// 多台时排成编排（作业参数 `after` = 要等的作业，见 jobs::claim）：第一个建成的是金丝雀；线路机一台等前一台；
+/// 落地机都等最后一台线路机（没有线路机时等金丝雀），之后并发
+async fn enqueue_upgrade(st: &AppState, actor: &str, ms: &[(Uuid, String, String)]) -> ApiResult<(Vec<Value>, Vec<Value>)> {
     let mut tx = st.db.begin().await?;
     let (mut out, mut skipped) = (vec![], vec![]);
-    for id in ids {
+    let (mut canary, mut last_relay): (Option<Uuid>, Option<Uuid>) = (None, None);
+    for (id, kind, name) in ms {
+        let after = if kind == "relay" { last_relay } else { last_relay.or(canary) };
+        let params = after.map_or_else(|| json!({}), |a| json!({"after": a}));
         let mut sp = sqlx::Connection::begin(&mut *tx).await?;
-        match jobs::enqueue(&mut sp, "upgrade_agent", Some(*id), json!({}), actor).await {
+        match jobs::enqueue(&mut sp, "upgrade_agent", Some(*id), params, actor).await {
             Ok(job) => {
                 sp.commit().await?;
-                out.push(json!({"machine_id": id, "job_id": job}));
+                canary = canary.or(Some(job));
+                if kind == "relay" {
+                    last_relay = Some(job);
+                }
+                out.push(json!({"machine_id": id, "name": name, "kind": kind, "job_id": job, "after": after}));
             }
             Err(e) if e.status == StatusCode::CONFLICT => {
                 sp.rollback().await?;
-                skipped.push(json!({"machine_id": id, "reason": e.message}));
+                skipped.push(json!({"machine_id": id, "name": name, "reason": e.message}));
             }
             Err(e) => return Err(e),
         }
@@ -501,11 +510,12 @@ async fn enqueue_upgrade(st: &AppState, actor: &str, ids: &[Uuid]) -> ApiResult<
     Ok((out, skipped))
 }
 
-/// 单台：推送中控上当前版本的 agent 并重启（令牌顺带轮换）
+/// 单台：推送中控上当前版本的 agent 并重启（令牌顺带轮换）；新版本起不来、没上报就换回旧版本（见 jobs::steps）
 pub async fn upgrade_agent(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
-    let (kind, lc, host): (String, String, Option<String>) = sqlx::query_as(
-        "select m.kind::text, m.lifecycle::text, display_name(h.kind::text, h.label, t.name, h.number)
-         from machine m left join machine h on h.id = m.host_id left join team t on t.id = h.team_id where m.id = $1",
+    let (kind, lc, name, host): (String, String, String, Option<String>) = sqlx::query_as(
+        "select m.kind::text, m.lifecycle::text, display_name(m.kind::text, m.label, mt.name, m.number), display_name(h.kind::text, h.label, t.name, h.number)
+         from machine m left join team mt on mt.id = m.team_id left join machine h on h.id = m.host_id left join team t on t.id = h.team_id
+         where m.id = $1",
     )
     .bind(id)
     .fetch_optional(&st.db)
@@ -517,18 +527,42 @@ pub async fn upgrade_agent(a: Actor, State(st): State<AppState>, ApiPath(id): Ap
     if kind == "proxy" || lc != "active" {
         return Err(ApiError::conflict("只有在用的线路机和落地机有 agent"));
     }
-    let (v, skipped) = enqueue_upgrade(&st, &a.name, &[id]).await?;
+    let (v, skipped) = enqueue_upgrade(&st, &a.name, &[(id, kind, name)]).await?;
     v.into_iter().next().map(ok).ok_or_else(|| ApiError::conflict(skipped[0]["reason"].as_str().unwrap_or("这台机器还有进行中的作业")))
 }
 
-/// 全部在用的线路机与落地机（同机 IP 节点没有自己的 agent，不算）
+/// 全部在用的线路机与落地机（同机 IP 节点没有自己的 agent，不算）。不一起升：先升一台做金丝雀（有线路机先挑线路机），
+/// 它成功了线路机再一台接一台，线路机都成功后落地机并发（引擎的并发上限）。同类里在用入口少的在前（出问题影响最小的先上），再按名字
 pub async fn upgrade_all_agents(a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
-    let ids: Vec<(Uuid,)> = sqlx::query_as("select id from machine where kind <> 'proxy' and lifecycle = 'active' and host_id is null order by kind = 'relay' desc")
-        .fetch_all(&st.db)
-        .await?;
-    let ids: Vec<Uuid> = ids.into_iter().map(|(i,)| i).collect();
-    let (jobs, skipped) = enqueue_upgrade(&st, &a.name, &ids).await?;
-    Ok(ok(json!({"jobs": jobs, "skipped": skipped})))
+    let ms: Vec<(Uuid, String, String)> = sqlx::query_as(
+        "select m.id, m.kind::text, display_name(m.kind::text, m.label, t.name, m.number) name
+         from machine m left join team t on t.id = m.team_id
+         where m.kind <> 'proxy' and m.lifecycle = 'active' and m.host_id is null
+         order by m.kind = 'relay' desc, (select count(*) from entry e where (e.relay_id = m.id or e.node_id = m.id) and e.lifecycle <> 'removed'), name, m.id",
+    )
+    .fetch_all(&st.db)
+    .await?;
+    let (jobs, skipped) = enqueue_upgrade(&st, &a.name, &ms).await?;
+    let order = upgrade_order(&jobs);
+    Ok(ok(json!({"jobs": jobs, "skipped": skipped, "order": order})))
+}
+
+/// 「全部升级」的顺序说明（接口返回，fleetctl 与网页照着显示）。`jobs` 是 enqueue_upgrade 建好的、按执行顺序
+fn upgrade_order(jobs: &[Value]) -> String {
+    let Some(first) = jobs.first() else { return "没有要升级的机器".into() };
+    let canary = first["name"].as_str().unwrap_or("");
+    let relays = jobs.iter().filter(|j| j["kind"] == "relay").count();
+    let nodes = jobs.len() - relays;
+    match (relays, nodes) {
+        _ if jobs.len() == 1 => format!("只有「{canary}」一台"),
+        (0, n) => format!("先升「{canary}」做金丝雀，成功后其余 {} 台落地机并发升级；金丝雀失败的话其余的都会取消", n - 1),
+        (1, n) => format!("先升「{canary}」做金丝雀，成功后 {n} 台落地机并发升级；金丝雀失败的话其余的都会取消"),
+        (r, 0) => format!("先升「{canary}」做金丝雀，成功后其余 {} 台线路机逐台升级；任何一台失败，没开始的都会取消", r - 1),
+        (r, n) => format!(
+            "先升「{canary}」做金丝雀，成功后其余 {} 台线路机逐台升级，线路机都成功后 {n} 台落地机并发升级；任何一台线路机失败，没开始的都会取消",
+            r - 1
+        ),
+    }
 }
 
 // ── 账单 ──────────────────────────────────────────────────────────────────
