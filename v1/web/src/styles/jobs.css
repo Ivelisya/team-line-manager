@@ -85,6 +85,15 @@
 .step-title .pill { align-self: center; }
 .step-time { font-size: var(--fs-label); color: var(--fg-2); }
 .step-out { margin: var(--sp-4) 0 0; font: var(--fs-label) / var(--lh-label) var(--font-mono); color: var(--fg-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+/* 系统调优的结果块：摘要一行、参数表、其余几项一行 */
+.tune-res { display: grid; gap: var(--sp-6); margin-top: var(--sp-4); min-width: 0; }
+.tune-sum { font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); }
+.tune-sum b { color: var(--fg); font-weight: var(--fw-semibold); }
+.tune-tbl { justify-self: start; border-collapse: collapse; font-size: var(--fs-label); line-height: var(--lh-label); max-width: 100%; }
+.tune-tbl th { padding: 2px var(--sp-16) 2px 0; text-align: left; font-weight: var(--fw-medium); color: var(--fg-2); }
+.tune-tbl td { padding: 3px var(--sp-16) 3px 0; border-top: 1px solid var(--line); white-space: nowrap; }
+.tune-tbl td.mono { font-family: var(--font-mono); }
+.tune-tbl td:last-child { color: var(--fg-2); white-space: normal; }
 .step-err { margin: var(--sp-4) 0 0; font-size: var(--fs-label); color: var(--bad-text); overflow-wrap: anywhere; }
 .step-err-box { display: flex; align-items: flex-start; gap: var(--sp-8); margin-top: var(--sp-4); }
 .step-err-box .step-err { margin: 0; min-width: 0; }

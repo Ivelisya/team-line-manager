@@ -17,10 +17,10 @@ import { usePage } from '@/lib/usePage';
 import { useUrlSearch } from '@/lib/urlState';
 
 const PAGE_SIZES = [25, 50, 100];
-const SOURCE_LABEL: Record<string, string> = { fleet: 'fleet', legacy: '旧面板' };
+const SOURCE_LABEL: Record<string, string> = { fleet: '本面板', legacy: '旧面板' };
 const SOURCE_OPTS = Object.entries(SOURCE_LABEL).map(([value, label]) => ({ value, label }));
-const COLS = ['名称', 'IP', '供应商 · 套餐', '价格 / 周期', '上架 → 退役 → 回收', '原因', '流量', '来源', ''];
-const WIDTHS = [160, 136, 140, 116, 232, 150, 80, 84, 36];
+const COLS = ['名称', 'IP', '供应商 · 套餐', '价格 / 周期', '上架 → 退役 → 回收', '原因', '业务流量', '来源', ''];
+const WIDTHS = [160, 136, 140, 116, 232, 150, 96, 84, 36];
 const day = (iso: string | null | undefined) => (iso ? F.dtFull(iso).slice(0, 10) : '—');
 const traffic = (r: Pick<RecycleItem, 'traffic_up' | 'traffic_down'>) => (r.traffic_up == null && r.traffic_down == null ? null : (r.traffic_up ?? 0) + (r.traffic_down ?? 0));
 const price = (r: Pick<RecycleItem, 'price_cents' | 'currency' | 'cycle'>) => (r.price_cents != null && r.currency ? `${F.money(r.price_cents, r.currency)}${r.cycle ? ` / ${cycleLabel(r.cycle)}` : ''}` : null);
@@ -35,20 +35,21 @@ function Detail({ r }: { r: RecycleItem }) {
   const bytes = (n: number | null) => (n == null ? '—' : F.str(F.bytes(n)));
   return (
     <LabelValueGrid>
-      <LabelValue label="退役前的名字">{r.name}</LabelValue>
-      <LabelValue label="回收时的名字">{r.last_name ?? '—'}</LabelValue>
+      {/* 只在有信息量时显示：两个名字相同只写一个；宿主机只有同机 IP 节点才有 */}
+      <LabelValue label={r.last_name && r.last_name !== r.name ? '退役前的名字' : '名字'}>{r.name}</LabelValue>
+      {r.last_name && r.last_name !== r.name && <LabelValue label="回收时的名字">{r.last_name}</LabelValue>}
       <LabelValue label="团队">{r.team ?? '—'}</LabelValue>
-      <LabelValue label="宿主机">{r.host_name ?? '—'}</LabelValue>
+      {r.host_name && <LabelValue label="宿主机">{r.host_name}</LabelValue>}
       <LabelValue label="服务编号">{r.service_ref ?? '—'}</LabelValue>
       <LabelValue label="到期日">{r.due_date ?? '—'}</LabelValue>
       <LabelValue label="回收者">{F.actor(r.actor)}</LabelValue>
-      <LabelValue label="来源编号">{r.source_id}</LabelValue>
-      <LabelValue label="业务流量 上行 / 下行">{`${bytes(r.traffic_up)} / ${bytes(r.traffic_down)}`}</LabelValue>
-      <LabelValue label="网卡 收 / 发">{`${bytes(r.nic_rx)} / ${bytes(r.nic_tx)}`}</LabelValue>
-      {out && <LabelValue label="出口">{out}</LabelValue>}
+      <LabelValue label="业务流量 下载 / 上传">{`${bytes(r.traffic_down)} / ${bytes(r.traffic_up)}`}</LabelValue>
+      <LabelValue label="网卡流量 下行 / 上行">{`${bytes(r.nic_rx)} / ${bytes(r.nic_tx)}`}</LabelValue>
+      {out && <LabelValue label="出口" plain>{out}</LabelValue>}
       {entries != null && <LabelValue label="入口历史" wrap>{entries.length ? entries.map((e) => `${e.relay}:${e.port}${e.removed_at ? '（已摘除）' : ''}`).join('、') : '无'}</LabelValue>}
       {renewals != null && <LabelValue label="续费记录">{`${renewals.length} 次`}</LabelValue>}
       {note && <LabelValue label="备注" wrap>{note}</LabelValue>}
+      <LabelValue label="来源编号" plain>{r.source_id}</LabelValue>
       {d.isError && <ErrorNote error={d.error} onRetry={() => void d.refetch()}>快照加载失败：</ErrorNote>}
     </LabelValueGrid>
   );
@@ -92,7 +93,7 @@ export function RecycleBin({ sp, upd, tools }: { sp: URLSearchParams; upd: (patc
 
   return (
     <div className="stack">
-      <PageHead title="机器" note={q.data ? `${q.data.total} 台` : undefined} tools={tools} />
+      <PageHead title="机器" note={q.data ? `回收站 ${q.data.total} 台` : undefined} tools={tools} />
 
       <div className="row" role="search" ref={pg.anchor}>
         <SearchInput value={input} onChange={(e) => setInput(e.target.value)} placeholder="搜索名称、IP、团队、供应商…" aria-label="搜索" className="w-full sm:w-[260px]" />
@@ -103,9 +104,9 @@ export function RecycleBin({ sp, upd, tools }: { sp: URLSearchParams; upd: (patc
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       <Panel flush>
         <TableWrap>
-          <table className="dt" style={{ minWidth: 1134 }}>
+          <table className="dt" style={{ minWidth: 1150 }}>
             <colgroup>{WIDTHS.map((w, i) => <col key={i} style={{ width: w }} />)}</colgroup>
-            <thead><tr>{COLS.map((c, i) => <th key={i} className={c === '流量' ? 'r' : undefined}>{c}</th>)}</tr></thead>
+            <thead><tr>{COLS.map((c, i) => <th key={i} className={c === '业务流量' ? 'r' : undefined}>{c}</th>)}</tr></thead>
             <tbody>{rows.map((r) => <Row key={r.id} r={r} open={r.id === openId} onToggle={setOpenId} />)}</tbody>
           </table>
         </TableWrap>

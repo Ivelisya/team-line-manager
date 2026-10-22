@@ -30,8 +30,8 @@ export function MonthFlowCell({ m }: { m: MachineView }) {
   const f = monthFlow(m);
   return (
     <div data-tip={monthFlowTip(m)}>
-      <Num f={bytes(f.total)} />
-      <span className="sub">{`↓ ${str(bytes(f.down))} ↑ ${str(bytes(f.up))}`}<FromTag from={f.from} /></span>
+      <Num f={bytes(f.total)} /><FromTag from={f.from} />
+      <span className="sub">{`↓ ${str(bytes(f.down))} ↑ ${str(bytes(f.up))}`}</span>
     </div>
   );
 }

@@ -2,7 +2,7 @@
 import * as React from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, ArrowDownToLine, Check, CircleDashed, Copy, ListChecks, Loader2, Minus, Pause, Play, RotateCw, Square, Undo2, X } from 'lucide-react';
-import { fetchAllLogs, fetchTailLogs, useCancelJob, useJob, useJobs, useMachine, useRetryJob } from '@/lib/queries';
+import { fetchAllLogs, fetchTailLogs, useCancelJob, useJob, useJobs, useMachine, useMachineBriefs, useRetryJob } from '@/lib/queries';
 import type { Job, JobLog } from '@/lib/types';
 import { errorKindLabel, jobKindLabel, jobLive, jobProgress, jobText, outputLines, stepKind, type StepKind } from '@/lib/jobs';
 import { jobStateLabel } from '@/lib/derive';
@@ -17,6 +17,7 @@ import { Progress } from '@/components/ui/progress';
 import { SkeletonRows } from '@/components/ui/skeleton';
 import { ConfirmDialog } from '@/components/app/dialogs';
 import { JobProgressBar, StepBar } from '@/components/app/JobProgress';
+import { TuneResult, isTuneOutput } from '@/components/app/TuneResult';
 import { NodeHover } from '@/components/app/NodeHover';
 import { toast } from '@/components/ui/toast';
 import { copyNewShareLink } from '@/lib/moveShare';
@@ -66,6 +67,8 @@ export function JobsPage() {
   const jobs = useJobs(filter, pg.offset, pg.size, kind);
   if (jobs.data && jobs.data.total !== total) setTotal(jobs.data.total);
   const list = jobs.data?.items ?? [];
+  // 退役进备用后机器改了名：列表标题带上原名（机器视图的 spare_from；已回收的不在视图里，不写）
+  const origin = new Map((useMachineBriefs().data ?? []).filter((m) => m.spare_from).map((m) => [m.id, m.spare_from]));
   const selected = id ?? null;
   // 地址里没有作业时，右栏默认显示第一条失败的（没有就第一条）；窄屏（单栏）仍先看列表，所以 data-detail 只认地址
   const shown = selected ?? (list.find((j) => j.state === 'failed') ?? list[0])?.id ?? null;
@@ -97,7 +100,7 @@ export function JobsPage() {
             <div key={j.id} data-id={j.id} className="job-item" role="button" tabIndex={0} aria-current={j.id === shown} onClick={() => go(j.id)}
               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(j.id); } }}>
               <span className="l1">
-                <b className="ellipsis">{jobKindLabel(j.kind)} · {j.target ? <NodeHover id={j.target.id} noFocus><span>{j.target.name}</span></NodeHover> : '—'}</b>
+                <b className="ellipsis">{jobKindLabel(j.kind)} · {j.target ? <NodeHover id={j.target.id} noFocus><span>{j.target.name}</span></NodeHover> : '—'}{j.target && origin.has(j.target.id) && <span className="t-sub">（原 {origin.get(j.target.id)}）</span>}</b>
                 <span style={{ marginLeft: 'auto' }}><JobPill state={j.state} /></span>
               </span>
               {jobLive(j.state) && <span className="l-prog"><Progress value={jobProgress(j).pct} live label="总进度" /><span className="num">{jobProgress(j).done}/{jobProgress(j).total}</span></span>}
@@ -185,7 +188,7 @@ function JobDetail({ id }: { id: string }) {
                 <span className="step-ic">{STEP_ICON[k]}</span>
                 <div style={{ minWidth: 0 }}>
                   <div className="step-title"><b>{s.title}</b><span className="step-time">{s.started_at ? <>{F.clock(s.started_at)} · <Dur a={s.started_at} b={s.finished_at ?? (k === 'failed' ? j.finished_at : null)} live={live && !s.finished_at && k !== 'failed'} /></> : k === 'skipped' || k === 'compensated' || !live ? '未执行' : '等待'}</span>{k === 'compensated' && <Pill tone="warn" dot="none">已补偿</Pill>}</div>
-                  {outputLines(s.output).length > 0 && <pre className="step-out">{outputLines(s.output).join('\n')}</pre>}
+                  {isTuneOutput(s.output) ? <TuneResult out={s.output} /> : outputLines(s.output).length > 0 && <pre className="step-out">{outputLines(s.output).join('\n')}</pre>}
                   {(s.error || s.error_kind) && (
                     <div className="step-err-box">
                       {s.error_kind && <span className="pill pill-sm" data-tone="bad" data-dot="none">{errorKindLabel(s.error_kind, s.error)}</span>}

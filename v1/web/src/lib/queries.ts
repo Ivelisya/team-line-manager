@@ -30,8 +30,8 @@ export function useMachines() {
   return useQuery({ ...machinesQuery, select });
 }
 /** 只用名称等少量字段的页面（访问监控的节点下拉、告警页的对象与续费）：读数不进来 */
-export type MachineBrief = Pick<MachineView, 'id' | 'name' | 'kind' | 'team' | 'subscription'>;
-const brief = (m: MachineView): MachineBrief => ({ id: m.id, name: m.name, kind: m.kind, team: m.team, subscription: m.subscription });
+export type MachineBrief = Pick<MachineView, 'id' | 'name' | 'kind' | 'team' | 'subscription' | 'spare_from'>;
+const brief = (m: MachineView): MachineBrief => ({ id: m.id, name: m.name, kind: m.kind, team: m.team, subscription: m.subscription, spare_from: m.spare_from });
 /** 命令面板：搜索（名称 / IP / 团队 / 类型）与健康标用到的字段 */
 export type MachineLabel = Pick<MachineView, 'id' | 'name' | 'ip' | 'country' | 'country_set' | 'kind' | 'team' | 'health' | 'lifecycle' | 'maintenance'>;
 const label = (m: MachineView): MachineLabel => ({ id: m.id, name: m.name, ip: m.ip, country: m.country, country_set: m.country_set, kind: m.kind, team: m.team, health: m.health, lifecycle: m.lifecycle, maintenance: m.maintenance });

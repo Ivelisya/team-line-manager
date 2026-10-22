@@ -97,12 +97,14 @@ function TeamsTab() {
                 // 编号已经连续（或团队里还没有节点）就没有可调的；机器列表还没到时先不禁用
                 const done = compact ? compact[t.id] ?? true : false;
                 return (
-                  <tr key={t.id}><td className="strong">{t.name}{t.spare && <> <Chip variant="neutral" tip={SPARE_TIP}>备用</Chip></>}</td><td className="r num">{t.sort_order}</td><td className="r num"><CountLink n={t.node_count} to={`/nodes?team=${t.id}`} /></td>
+                  <tr key={t.id}><td className="strong">{t.name}{t.spare && <> <InfoTip text={SPARE_TIP} /></>}</td><td className="r num">{t.sort_order}</td><td className="r num"><CountLink n={t.node_count} to={`/nodes?team=${t.id}`} /></td>
                     <td className="r"><span className="row row-acts" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
                       <Button size="sm" variant="quiet" onClick={() => setEdit(t)}><Pencil size={13} />改名 / 排序</Button>
                       {/* aria-disabled 而不是 disabled：禁用的按钮收不到悬停，看不到为什么不能点 */}
                       <Button size="sm" variant="quiet" aria-disabled={done || undefined} data-tip={done ? '编号已连续' : undefined} onClick={() => { if (!done) setRenum(t); }}><ListOrdered size={13} />重新编号</Button>
-                      <IconButton size="sm" label={t.spare ? '备用团队不能删除' : '删除团队'} aria-disabled={t.spare || undefined} onClick={() => { if (!t.spare) setAskDel(t); }}><Trash2 size={14} /></IconButton></span></td></tr>
+                      {t.spare
+                        ? <span data-tip="备用团队不能删除"><IconButton size="sm" label="删除团队" tip={false} disabled style={{ pointerEvents: 'none' }}><Trash2 size={14} /></IconButton></span>
+                        : <IconButton size="sm" label="删除团队" onClick={() => setAskDel(t)}><Trash2 size={14} /></IconButton>}</span></td></tr>
                 );
               })}
             </tbody>
