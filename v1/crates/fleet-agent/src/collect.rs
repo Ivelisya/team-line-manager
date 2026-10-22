@@ -20,6 +20,8 @@ pub const SAMPLE_INTERVAL: Duration = Duration::from_secs(10);
 pub const STATS_INTERVAL: Duration = Duration::from_secs(30);
 /// Xray 不可达（或取版本失败）后，重新探查 API 的最短间隔
 const DOWN_RECHECK: Duration = Duration::from_secs(60);
+/// 问 systemctl 退避的上限：每这么多个 SAMPLE_INTERVAL 一次（= DOWN_RECHECK）
+const PID_RECHECK_TICKS: u32 = (DOWN_RECHECK.as_secs() / SAMPLE_INTERVAL.as_secs()) as u32;
 /// 进程还在时，API 连续失败这么多次才算不可达（单次 statsquery 失败不报 Xray 未运行）
 const DOWN_AFTER_FAILS: u32 = 3;
 
@@ -85,20 +87,32 @@ pub async fn stats_task(sh: Arc<Shared>, cli: XrayCli, mut sd: watch::Receiver<b
     let mut api_fails = 0u32; // xray api 连续失败次数
     let mut down_check_at: Option<Instant> = None; // Xray 不可达时，下次允许重查的时刻
     let mut version_retry_at = Instant::now();
+    // 问 systemctl 连续几次都没有 Xray 进程、还要跳过几个 tick 才再问
+    let (mut pid_misses, mut pid_skip) = (0u32, 0u32);
+    // 上一次算增量时启用的入口：这一轮刚停用的照样算、出样本（见 stats::entry_counters）
+    let mut last_ids: HashSet<uuid::Uuid> = HashSet::new();
     loop {
         tokio::select! {
             _ = tick.tick() => {}
             _ = sd.changed() => return,
         }
-        // 每个 SAMPLE_INTERVAL 确认一次进程：缓存的进程还在只读 /proc，对不上才问 systemctl
-        if !proc.is_some_and(|(p, ticks)| ctl::proc_start_ticks(p) == Some(ticks)) {
+        // 每个 SAMPLE_INTERVAL 确认一次进程：缓存的进程还在只读 /proc，对不上才问 systemctl。
+        // 问不到进程时退避：下一个 tick、20 s、40 s，之后每 DOWN_RECHECK 一次——重启的空档下一个 tick 就能找回进程，
+        // Xray 停着时不每 10 s 起一个 systemctl 子进程
+        let alive = proc.is_some_and(|(p, ticks)| ctl::proc_start_ticks(p) == Some(ticks));
+        if !alive && pid_skip > 0 {
+            pid_skip -= 1;
+        } else if !alive {
             proc = match ctl::main_pid(&cfg.xray_service).await {
                 Some(p) => ctl::proc_start_ticks(p).map(|t| (p, t)),
                 None => None,
             };
-            // 进程（重新）出现：结束退避，本轮就查 API
             if proc.is_some() {
-                down_check_at = None;
+                // 进程（重新）出现：结束退避，本轮就查 API
+                (down_check_at, pid_misses) = (None, 0);
+            } else {
+                pid_misses += 1;
+                pid_skip = (1u32 << (pid_misses.min(4) - 1)).min(PID_RECHECK_TICKS) - 1;
             }
         }
         // Xray 已确认不可达时，xray api 子进程至多每 DOWN_RECHECK 试一次；其余 tick 只更新状态
@@ -126,13 +140,20 @@ pub async fn stats_task(sh: Arc<Shared>, cli: XrayCli, mut sd: watch::Receiver<b
             let ts = now_ms();
             // pid/启动时间取不到：本轮不算增量（保留基线和上一轮 core_id），免得被误判成 Xray 重启而重复计数
             if let Ok(list) = res {
-                let cur: HashMap<String, u64> = list.into_iter().collect();
+                let entries = enabled_entries(&sh);
+                let ids: HashSet<uuid::Uuid> = entries.iter().map(|&(id, _)| id).collect();
+                let cur = stats::entry_counters(list, &ids.union(&last_ids).copied().collect());
                 if let Some(deltas) = stats::compute_if_known(&mut st, core_id.as_deref(), &cur) {
                     last_core = core_id.clone();
-                    let entries = enabled_entries(&sh);
                     let ports: Vec<u16> = entries.iter().map(|&(_, port)| port).collect();
                     let cn = tokio::task::spawn_blocking(move || conns::count_now(&ports)).await.unwrap_or_default();
-                    let with_conns: Vec<_> = entries.iter().map(|&(id, port)| (id, cn.get(&port).copied().unwrap_or(0))).collect();
+                    // 上一轮启用、这一轮停用的入口补出最后一段流量（端口已不归它，连接数记 0）
+                    let with_conns: Vec<_> = entries
+                        .iter()
+                        .map(|&(id, port)| (id, cn.get(&port).copied().unwrap_or(0)))
+                        .chain(last_ids.difference(&ids).map(|&id| (id, 0)))
+                        .collect();
+                    last_ids = ids;
                     let samples = stats::to_samples(&deltas, &with_conns, ts);
                     let mut b = sh.buf.lock().unwrap();
                     b.push_entries(samples);
