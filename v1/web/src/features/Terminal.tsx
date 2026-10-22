@@ -12,7 +12,7 @@ import { useMachine } from '@/lib/queries';
 import { useHeld } from '@/lib/useHeld';
 import { cancelTerminalAsk, closeTerminal, confirmTerminalAsk, requestTicket, setTerminalLive, terminalUrl, useTerminalAsk, useTerminalTarget, type TermTarget } from '@/lib/terminal';
 import { Button, IconButton } from '@/components/ui/button';
-import { Field, Input } from '@/components/ui/form';
+import { Field, InfoTip, Input } from '@/components/ui/form';
 import { ConfirmDialog } from '@/components/app/dialogs';
 import { Pill, type Tone } from '@/components/app/primitives';
 
@@ -155,17 +155,17 @@ export function Terminal({ kind, id, name }: TermTarget) {
           <IconButton label="关闭" onClick={closeTerminal}><X size={16} /></IconButton>
         </div>
       </header>
-      {host && <div className="term-sub hint">同机 IP 节点没有自己的 SSH，连接的是宿主机「{host.name}」</div>}
+      {host && <div className="term-sub hint">连的是宿主机「{host.name}」<InfoTip className="term-info" text="同机 IP 节点没有自己的 SSH，连接的是它的宿主机" /></div>}
       <div className="term-screen">
         <div ref={box} className="term-xterm" />
         {need && <CredForm key={need} need={need} err={phase.s === 'cred' ? phase.err : undefined} busy={phase.s === 'auth'} onSubmit={(c) => void connect(c)} />}
       </div>
-      <footer className="term-foot hint">终端里输入的命令不进审计，只记谁、哪台、多久、多少字节</footer>
+      <footer className="term-foot hint">输入的命令不进审计<InfoTip className="term-info" text="终端里输入的命令不进审计，只记谁、哪台、多久、多少字节" /></footer>
     </section>
   );
 }
 
-const LIMIT_HINT = '验证后 5 分钟内再开终端不用重输。输错会计入登录的失败次数，错太多次会被暂时限制登录。';
+const LIMIT_INFO = '验证后 5 分钟内再开终端不用重输。输错会计入登录的失败次数，错太多次会被暂时限制登录。';
 
 /** 开终端前再验证一次身份：开了两步验证要验证码（或恢复码），没开的要当前登录密码。输入只用于这一次请求，提交即清空 */
 function CredForm({ need, err, busy, onSubmit }: { need: Need; err?: string; busy: boolean; onSubmit: (c: { code: string } | { password: string }) => void }) {
@@ -175,8 +175,8 @@ function CredForm({ need, err, busy, onSubmit }: { need: Need; err?: string; bus
     <div className="term-cover">
       <form className="term-card" onSubmit={(e) => { e.preventDefault(); if (!v.trim() || busy) return; onSubmit(totp ? { code: v.trim() } : { password: v }); setV(''); }}>
         <div className="term-card-title">{totp ? '输入两步验证码' : '输入当前登录密码'}</div>
-        <div className="hint">{totp ? '打开终端前要再验证一次：输入验证器里的 6 位验证码，或一个恢复码（用过即作废）。' : '打开终端前要再输入一次当前登录密码，确认是本人在操作。'}{LIMIT_HINT}</div>
-        <Field label={totp ? '验证码或恢复码' : '登录密码'} error={err}>
+        <Field label={totp ? '验证码或恢复码' : '登录密码'} error={err} hint="输错计入登录失败次数"
+          info={`${totp ? '打开终端前要再验证一次：验证器里的 6 位验证码，或一个恢复码（用过即作废）。' : '打开终端前要再输入一次当前登录密码，确认是本人在操作。'}\n${LIMIT_INFO}`}>
           {/* 恢复码带字母，不能限成纯数字键盘 */}
           {totp
             ? <Input value={v} onChange={(e) => setV(e.target.value)} autoFocus autoComplete="one-time-code" autoCapitalize="off" spellCheck={false} placeholder="6 位验证码，或一个恢复码" />
@@ -203,7 +203,7 @@ export function TerminalHost() {
       {t && <Terminal key={`${t.kind}:${t.id}`} {...t} />}
       <ConfirmDialog open={!!ask} onOpenChange={(o) => { if (!o) cancelTerminalAsk(); }} danger
         title={a === 'close' || !a ? `断开 ${cur?.name ?? ''} 的终端？` : `断开 ${cur?.name ?? ''}，打开 ${a.name} 的终端？`}
-        description="会话会立即断开，终端里还在跑的命令会随之结束（放在 tmux、screen 或 nohup 里的除外）。"
+        description={<>还在跑的命令会随之结束<InfoTip className="term-info" text="会话会立即断开；放在 tmux、screen 或 nohup 里的命令除外" /></>}
         confirmLabel={a === 'close' || !a ? '断开并关闭' : '断开并切换'} onConfirm={() => { if (ask) confirmTerminalAsk(ask); }} />
     </>
   );
