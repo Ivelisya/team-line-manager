@@ -63,14 +63,19 @@ export function monthTraffic(m: MachineView) {
 export const trafficTotal = (m: MachineView) => { const t = monthTraffic(m); return t.up + t.down; };
 
 /** 探测 / 应用的英文原始错误 → 中文（抽屉、卡片的健康原因、告警悬停卡片共用）。只换认得的片段，前面的中文（「出口不通：」）
- *  和认不出的原样留着。片段只吃 ASCII 字符，不会把前缀一起吞掉 */
+ *  和认不出的原样留着。片段只吃 ASCII 字符，不会把前缀一起吞掉。
+ *  旧 agent 报的是单词（「出口不通：timeout；refused」），新 agent 自己写中文（fleet-agent probe.rs 的 reason_cn），两种都认 */
 const ERR_ZH: [RegExp, string | ((m: string, ...g: string[]) => string)][] = [
   [/\b(?:timed out|timeout)(?: after)? (\d+(?:\.\d+)?) ?s\b/gi, (_, n) => `超时 ${n} 秒`],
   [/\b(?:i\/o )?(?:timed out|timeout)\b/gi, '超时'],
-  [/\bconnection refused\b/gi, '连接被拒绝'],
-  [/\bconnection reset(?: by peer)?\b/gi, '连接被重置'],
-  [/\b(?:no route to host|network (?:is )?unreachable)\b/gi, '网络不可达'],
+  [/\b(?:connection )?refused\b/gi, '连接被拒绝'],
+  [/\b(?:connection )?reset(?: by peer)?\b/gi, '连接被重置'],
+  [/\b(?:connection (?:closed|aborted)|broken pipe)\b/gi, '连接被关闭'],
+  [/\b(?:unexpected eof|end of file|eof)\b/gi, '对端提前断开'],
+  [/\b(?:no route to host|(?:network|host) (?:is )?unreachable|unreachable)\b/gi, '网络不可达'],
   [/\bdns\b[\w .:'/-]*|[\w '/-]*\bname resolution\b[\w .:'/-]*|\bno such host\b/gi, '域名解析失败'],
+  [/\b(?:tls|ssl)\b[\w .:'/-]*|\bcertificate\b[\w .:'/-]*/gi, 'TLS 握手失败'],
+  [/\bsocks5?\b[\w .:'/-]*/gi, '代理握手失败'],
 ];
 export const errText = (s: string) => ERR_ZH.reduce<string>((t, [re, to]) => t.replace(re, to as string), s).replace(/\s+$/, '');
 /** 运行中的入口探测失败（直出入口不做 TCP 探测）：返回失败的那次探测。抽屉入口表、线路机页的状态列写「不通」，悬停看 errText(detail) */
@@ -203,18 +208,24 @@ const probeTone = (ok: number, total: number): BeatCell => (!total ? null : ok *
 // 只按成功率着色：跨境线路 150–250 ms 的延迟是常态，按延迟标黄会让正常线路一片警告色（延迟在每格的悬停里）
 export const BEAT_LEGEND = '绿：成功 ≥ 99% · 黄：成功 80%–99% · 红：成功不到 80% · 灰：没有探测';
 export const AVAIL_LEGEND = '绿：成功 ≥ 99% · 黄：成功 80%–99% · 红：成功不到 80%\n灰：没有探测；TCP 与出口取较差的一种';
-/** 探测桶 → 心跳格（20 格 = 近 1 小时，旧→新）。按桶内成功比例定色（线路机是它所有入口的合计） */
-export const beatCells = (buckets: ProbeBucket[] | undefined): BeatCell[] => (buckets ?? []).map(([n, ok]) => probeTone(ok, n));
+/** 线路机的桶是它名下所有入口的合计：几条入口不通多半是那几台节点的事，线路机照常（状态仍「正常」）。
+ *  所以线路机只有一条都不通时才红，部分不通黄（按 80% 划线的话，30 条入口里 7 条不通就整格红了） */
+export const BEAT_LEGEND_RELAY = '绿：成功 ≥ 99% · 黄：部分入口不通 · 红：全部不通 · 灰：没有探测';
+const relayTone = (ok: number, total: number): BeatCell => (!total ? null : ok * 100 >= total * 99 ? 'ok' : ok > 0 ? 'warn' : 'bad');
+/** 探测桶 → 心跳格（20 格 = 近 1 小时，旧→新）。按桶内成功比例定色；relay：线路机的定色见 relayTone */
+export const beatCells = (buckets: ProbeBucket[] | undefined, relay?: boolean): BeatCell[] => (buckets ?? []).map(([n, ok]) => (relay ? relayTone : probeTone)(ok, n));
 const BEAT_MS = 3 * 60_000;
 /** 心跳格的悬停（与 beatCells 一一对应）：这 3 分钟的时段、成功率（次数）、平均延迟。
- *  桶按墙钟 3 分钟对齐，最后一格是当前这格（见 API.md /probe-beats） */
-export function beatTitles(buckets: ProbeBucket[] | undefined, now = Date.now()): string[] {
+ *  桶按墙钟 3 分钟对齐，最后一格是当前这格（见 API.md /probe-beats）。
+ *  entries：线路机经节点的入口数——桶是各入口的合计，每条入口探测次数相同，按成功比例折成「约 28/29 入口通」：
+ *  一条入口长期不通时整条是黄的（成功 96%），悬停写明是几条入口的事 */
+export function beatTitles(buckets: ProbeBucket[] | undefined, now = Date.now(), entries?: number): string[] {
   const bs = buckets ?? [];
   const cur = Math.floor(now / BEAT_MS) * BEAT_MS;
   const hm = (t: number) => { const d = new Date(t); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
   return bs.map(([n, ok, ms], i) => {
     const t0 = cur - (bs.length - 1 - i) * BEAT_MS;
-    const what = !n ? '没有探测' : `成功 ${Math.round((ok / n) * 100)}%（${ok}/${n}）${ms != null ? ` · 平均 ${Math.round(ms)} ms` : ''}`;
+    const what = !n ? '没有探测' : `${entries ? `约 ${Math.round((ok / n) * entries)}/${entries} 入口通 · ` : ''}成功 ${Math.round((ok / n) * 100)}%（${ok}/${n}）${ms != null ? ` · 平均 ${Math.round(ms)} ms` : ''}`;
     return `${hm(t0)}–${hm(t0 + BEAT_MS)}${i === bs.length - 1 ? '（进行中）' : ''} · ${what}`;
   });
 }

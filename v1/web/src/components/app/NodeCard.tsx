@@ -10,7 +10,7 @@ import { SPRING } from '@/lib/motion';
 import { ArrowDown, ArrowUp, Calendar, CircleDollarSign, Cpu, Database, Gauge, Globe, HardDrive, MemoryStick, MoreHorizontal, Radar, RefreshCw, Settings2, PanelRightOpen, ServerOff, Wallet } from 'lucide-react';
 import type { DueState, MachineView, ProbeBeats, Subscription } from '@/lib/types';
 import * as F from '@/lib/format';
-import { BEAT_LEGEND, beatCells, beatRate, beatTitles, dueTone, entryText, errText, hasHost, hostRel, isQuiet, limitGb, liveRate, monthlyHint, monthTraffic, probeSummary, quota, quotaGb, remainingValue, resourceMeters, subLabel, trafficTotal } from '@/lib/derive';
+import { BEAT_LEGEND, BEAT_LEGEND_RELAY, beatCells, beatRate, beatTitles, dueTone, entryText, errText, hasHost, hostRel, isQuiet, limitGb, liveRate, monthlyHint, monthTraffic, probeSummary, quota, quotaGb, remainingValue, resourceMeters, subLabel, trafficTotal } from '@/lib/derive';
 import { useProbeBeats } from '@/lib/queries';
 import { useLiveSeries } from '@/lib/live';
 import { useNow } from '@/lib/useNow';
@@ -40,8 +40,8 @@ const Head = memo(function Head({ name, country, manual, ip, view, onOpen }: { n
     <header className="nc-head">
       <Flag country={country} manual={manual} ip={ip} />
       {view === 'compact' ? <div className="nc-title">{btn}<span className="nc-ip" data-tip={ip}>{ip}</span></div> : btn}
+      {/* 打开详情：点名字或底部「详情」，标题行只留「⋯」 */}
       <div className="nc-actions">
-        <IconButton label="打开详情" tip={false} data-tip="打开详情" onClick={() => onOpen()}><PanelRightOpen size={16} /></IconButton>
         <IconButton label="更多操作" tip={false} data-node-menu="" aria-haspopup="menu"><MoreHorizontal size={16} /></IconButton>
       </div>
     </header>
@@ -202,10 +202,11 @@ const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, reason, onOpen, t
     : kind === 'proxy' ? <>探测成功 <b className="num">{rate == null ? '—' : `${Math.round(rate)}%`}</b></>
     : <>TCP <b>{probeMs(tcp, tcpFail)}</b> · 出口 <b>{probeMs(egress, egressFail)}</b></>;
   // 时段按这份数据取回的时刻对齐（轮询间隔 2 分钟，用当前时刻在跨格时会错一格）
-  const titles = useMemo(() => (live ? beatTitles(beats, bq.dataUpdatedAt) : undefined), [live, beats, bq.dataUpdatedAt]);
+  const entries = kind === 'relay' ? total : undefined;
+  const titles = useMemo(() => (live ? beatTitles(beats, bq.dataUpdatedAt, entries) : undefined), [live, beats, bq.dataUpdatedAt, entries]);
   return (
     <button type="button" className="nc-beat nc-click" onClick={() => onOpen('quality')}>
-      <Beat cells={live ? beatCells(beats) : []} titles={titles} caption={cap} win="近 1 小时" legend={BEAT_LEGEND} />
+      <Beat cells={live ? beatCells(beats, kind === 'relay') : []} titles={titles} caption={cap} win="近 1 小时" legend={kind === 'relay' ? BEAT_LEGEND_RELAY : BEAT_LEGEND} />
       <span className="sr-only">（查看连接质量页签）</span>
     </button>
   );
