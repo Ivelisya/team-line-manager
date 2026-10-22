@@ -53,7 +53,7 @@ export function RoutersPage() {
           <p className="rt-hero-sum">
             {sum.online} 台在线{sum.offline > 0 && <> · <span className="rt-bad">{sum.offline} 台离线</span></>}{sum.pending > 0 && <> · {sum.pending} 台等待接入</>}
             {sum.total > 0 && <> · 出口 <b className={sum.alive < sum.total ? 'rt-warn' : undefined}>{sum.alive}/{sum.total}</b> 可用 · 客户端 {sum.clients} 台</>}
-            {sum.drift > 0 && <> · <span className="rt-warn">{sum.drift} 个出口参数与 fleet 入口不一致</span></>}
+            {sum.drift > 0 && <> · <span className="rt-warn">{sum.drift} 个出口参数与面板入口不一致</span></>}
           </p>
         </div>
       )}

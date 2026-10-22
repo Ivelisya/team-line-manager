@@ -220,7 +220,6 @@
 .note[data-tone="bad"] { --note-bg: var(--bad-bg); --note-ic: var(--bad); }
 
 .empty { display: grid; justify-items: center; gap: var(--sp-8); padding: var(--sp-24) var(--sp-16); color: var(--fg-2); text-align: center; }
-.empty .lucide { color: var(--fg-3); }
 .skel { display: block; border-radius: var(--r-xs); background: var(--cell-off); animation: skel-pulse var(--dur-loop) var(--ease-std) infinite; } /* 同格条未点亮色：暗色下 --sunken 比卡片还暗，骨架几乎看不见 */
 .skel-row { display: flex; align-items: center; height: var(--row-2); box-sizing: border-box; padding: 0 var(--cell-edge); border-bottom: 1px solid var(--line); }
 .skel-row.is-one { height: var(--row-1); }

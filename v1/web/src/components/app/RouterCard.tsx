@@ -185,7 +185,7 @@ function RouterCardImpl({ r, current, onOpen: open }: { r: RouterView; current?:
         </div>
       </section>
 
-      {/* 出口：一格一个出口，亮的是最近一次延迟测试通过的；参数与 fleet 入口不一致的单独提醒 */}
+      {/* 出口：一格一个出口，亮的是最近一次延迟测试通过的；参数与面板入口不一致的单独提醒 */}
       <section className="slot-seg">
         <button type="button" className="nc-quota" onClick={() => onOpen('exits')}>
           <span className="nc-qhead">
@@ -193,8 +193,8 @@ function RouterCardImpl({ r, current, onOpen: open }: { r: RouterView; current?:
               <b className={cn('num', ex!.alive < ex!.total && 'is-warn')}>{ex!.alive}/{ex!.total}</b>
             </span>
             {ex!.drift > 0
-              ? <span className="nc-quse rt-drift" data-tip="这些出口的 server:port 对上了 fleet 入口，但 uuid / reality 参数和入口现在的不一致（入口轮换过凭据或换过线路机），可能已连不上">{ex!.drift} 个参数与入口不一致</span>
-              : <span className="nc-quse" data-tip="server:port 对上了 fleet 入口的出口个数（其余是路由上自己加的，中控不管）">{ex!.managed} 个对应 fleet 入口</span>}
+              ? <span className="nc-quse rt-drift" data-tip="这些出口的 server:port 对上了面板入口，但 uuid / reality 参数和入口现在的不一致（入口轮换过凭据或换过线路机），可能已连不上">{ex!.drift} 个参数与入口不一致</span>
+              : <span className="nc-quse" data-tip="server:port 对上了面板入口的出口个数（其余是路由上自己加的，中控不管）">{ex!.managed} 个对应面板入口</span>}
           </span>
           <Cells pct={ex!.total ? (ex!.alive / ex!.total) * 100 : null} n={ex!.total || 18} color="var(--ok)" />
           <span className="sr-only">（查看出口页签）</span>

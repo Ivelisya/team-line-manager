@@ -115,5 +115,8 @@ button.rt-topo-pill { cursor: pointer; transition: background-color var(--dur-1)
 .rt-topo-note { padding-top: var(--sp-2); }
 
 /* ---- 接入对话框 ---- */
-.rt-method-note { margin: var(--sp-8) 0 0; font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); text-wrap: pretty; }
+/* 账号密码那块：换到「执行命令」时高度平滑收到 0（grid 行 1fr ↔ 0fr），连同表单的行间距（16px）一起收，对话框不跳 */
+.rt-collapse { display: grid; grid-template-rows: 0fr; margin-top: -16px; opacity: 0; transition: grid-template-rows var(--dur-2) var(--ease-out), margin-top var(--dur-2) var(--ease-out), opacity var(--dur-2) var(--ease-std); }
+.rt-collapse[data-open] { grid-template-rows: 1fr; margin-top: 0; opacity: 1; }
+.rt-collapse > div { min-height: 0; overflow: hidden; padding: 2px; margin: -2px; } /* 留 2px 给焦点环，不被裁 */
 .token-box.rt-cmd code { white-space: pre-wrap; }
