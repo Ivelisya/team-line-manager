@@ -183,13 +183,19 @@ echo "own=$(grep -lF "\"server\":\"$IP\"" /etc/shadowsocks-rust/[0-9]*.json 2>/d
 /// 线路机：fleet-xray 单元与访问日志轮转（配置由 agent 生成）。xray 二进制与 geoip.dat 已推到 /usr/local/bin、/usr/local/share/xray。
 pub fn relay_xray() -> String { RELAY_XRAY.replace("__UNIT__", XRAY_UNIT.trim_end()).replace("__LOGROTATE_SH__", logrotate_sh().trim()) }
 
-/// 升级 agent 时也装一遍访问日志轮转（较早上架、还没有这份配置的线路机升级一次就补上）。
+/// 升级 agent 时也装一遍访问日志轮转（较早上架、还没有这份配置或每小时定时器的线路机升级一次就补上）。
 /// 只是补装：包在子 shell 里，失败只输出 `logrotate=error`，不让 agent 步骤失败
 pub fn relay_logrotate() -> String { format!("(\n{}\n) || echo logrotate=error\n", logrotate_sh().trim()) }
 
-fn logrotate_sh() -> String { LOGROTATE_SH.replace("__LOGROTATE__", XRAY_LOGROTATE.trim_end()) }
+fn logrotate_sh() -> String {
+    LOGROTATE_SH
+        .replace("__LOGROTATE__", XRAY_LOGROTATE.trim_end())
+        .replace("__LR_SERVICE__", XRAY_LOGROTATE_SERVICE.trim_end())
+        .replace("__LR_TIMER__", XRAY_LOGROTATE_TIMER.trim_end())
+}
 
-/// 线路机访问日志轮转配置（上架时随 fleet-xray 一起装，失败则该步骤失败）
+/// 线路机访问日志轮转配置（上架时随 fleet-xray 一起装，失败则该步骤失败）。
+/// 系统 logrotate 每天只跑一次：另装一个每小时只跑这一份配置的定时器，maxsize 才起作用
 const LOGROTATE_SH: &str = r#"
 install -d -m 755 /etc/logrotate.d
 L=/etc/logrotate.d/fleet-xray
@@ -197,12 +203,27 @@ cat > $L.tmp <<'LOGROTATE'
 __LOGROTATE__
 LOGROTATE
 cmp -s $L.tmp $L && rm -f $L.tmp || mv $L.tmp $L
+LR=0
+T=/etc/systemd/system/fleet-xray-logrotate.service
+cat > $T.tmp <<'UNIT'
+__LR_SERVICE__
+UNIT
+cmp -s $T.tmp $T && rm -f $T.tmp || { mv $T.tmp $T; LR=1; }
+T=/etc/systemd/system/fleet-xray-logrotate.timer
+cat > $T.tmp <<'UNIT'
+__LR_TIMER__
+UNIT
+cmp -s $T.tmp $T && rm -f $T.tmp || { mv $T.tmp $T; LR=1; }
+[ $LR = 0 ] || systemctl daemon-reload
+systemctl enable -q --now fleet-xray-logrotate.timer
 "#;
 
 /// systemd 单元、logrotate 配置：唯一来源在 deploy/
 pub const AGENT_UNIT: &str = include_str!("../../../../deploy/units/fleet-agent.service");
 pub const XRAY_UNIT: &str = include_str!("../../../../deploy/units/fleet-xray.service");
 pub const XRAY_LOGROTATE: &str = include_str!("../../../../deploy/logrotate/fleet-xray");
+pub const XRAY_LOGROTATE_SERVICE: &str = include_str!("../../../../deploy/units/fleet-xray-logrotate.service");
+pub const XRAY_LOGROTATE_TIMER: &str = include_str!("../../../../deploy/units/fleet-xray-logrotate.timer");
 
 const RELAY_XRAY: &str = r#"
 set -eu
@@ -283,11 +304,12 @@ ss -Hltn "sport = :$SS_PORT" | grep -q . && echo ss=still_listening || echo ss=g
 echo cleanup=done
 "##;
 
-/// 退役清理（线路机）：停 agent 与 xray，删配置、日志轮转和 xray 二进制与数据文件
+/// 退役清理（线路机）：停 agent 与 xray，删配置、日志轮转（含每小时的定时器）和 xray 二进制与数据文件
 pub const RELAY_CLEANUP: &str = r#"
 set -u
-systemctl disable --now fleet-agent 2>/dev/null; systemctl disable --now fleet-xray 2>/dev/null
+systemctl disable --now fleet-agent 2>/dev/null; systemctl disable --now fleet-xray 2>/dev/null; systemctl disable --now fleet-xray-logrotate.timer 2>/dev/null
 rm -f /etc/systemd/system/fleet-agent.service /etc/systemd/system/fleet-xray.service /etc/logrotate.d/fleet-xray
+rm -f /etc/systemd/system/fleet-xray-logrotate.service /etc/systemd/system/fleet-xray-logrotate.timer
 rm -rf /etc/fleet-agent /var/lib/fleet-agent /var/log/fleet-xray /usr/local/bin/fleet-agent /usr/local/bin/xray /usr/local/share/xray
 systemctl daemon-reload
 echo cleanup=done
@@ -431,11 +453,16 @@ echo "nft_relays=$(nft list set inet ss_guard relays | tr -d '\n' | sed 's/.*ele
     fn relay_xray_installs_logrotate() {
         let s = super::relay_xray();
         assert!(!s.contains("__"), "占位符都已替换");
-        assert!(s.contains("/var/log/fleet-xray/access.log {") && s.contains("copytruncate"));
+        assert!(s.contains("/var/log/fleet-xray/access.log {") && s.contains("copytruncate") && s.contains("    maxsize 200M\n"));
         assert!(s.contains("install -d -m 755 /etc/logrotate.d\n") && s.contains("mv $L.tmp $L"));
+        // 每小时只跑这一份配置的定时器：单元变了才 daemon-reload
+        assert!(s.contains("ExecStart=/usr/sbin/logrotate /etc/logrotate.d/fleet-xray\n") && s.contains("OnCalendar=*-*-* 01..23:00:00\n"));
+        assert!(s.contains("[ $LR = 0 ] || systemctl daemon-reload\nsystemctl enable -q --now fleet-xray-logrotate.timer\n"));
         assert!(!s.contains("logrotate=error"), "上架时装不上要让步骤失败");
         assert!(super::BASELINE.contains(r#"command -v logrotate >/dev/null || need="$need logrotate""#));
-        assert!(super::RELAY_CLEANUP.contains("/etc/logrotate.d/fleet-xray"));
+        let c = super::RELAY_CLEANUP;
+        assert!(c.contains("/etc/logrotate.d/fleet-xray") && c.contains("systemctl disable --now fleet-xray-logrotate.timer"));
+        assert!(c.contains("/etc/systemd/system/fleet-xray-logrotate.service /etc/systemd/system/fleet-xray-logrotate.timer"));
     }
 
     #[test]

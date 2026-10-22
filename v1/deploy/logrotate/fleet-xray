@@ -1,11 +1,14 @@
 # /etc/logrotate.d/fleet-xray —— Xray 一直持有访问日志的文件句柄，用 copytruncate。
-# 线路机上架时由 fleet-server 安装（jobs/scripts.rs 的 RELAY_XRAY，内容与本文件一致），退役时删除；
-# 没有它 access.log 会无限增长。系统 logrotate 每天只跑一次，所以只按天轮转（maxsize 不起作用，不写）。
+# 线路机上架、升级 agent 时由 fleet-server 安装（jobs/scripts.rs 的 LOGROTATE_SH，内容与本文件一致），退役时删除；
+# 没有它 access.log 会无限增长。系统 logrotate 每天跑一次、按天轮转；连接多的线路机一天能写几 GB，
+# 所以另有随它一起装的 fleet-xray-logrotate.timer 每小时只跑这一份，超过 maxsize 就提前轮转
+# （留 3 份：.1 不压缩、agent 还要读完它，更早的压缩）。
 # Agent 用「文件开头指纹」识别轮转/截断：指纹不再匹配时，先读完 access.log.1（指纹匹配的那份拷贝）里没读的部分，
 # 再从新文件开头读；找不到匹配的 .1 才算漏一段（计入 access_truncations / access_rotation_gaps）。
 # 拷贝与截断之间的极短窗口里写入的行仍可能丢失，所以别轮得太勤。
 /var/log/fleet-xray/access.log {
     daily
+    maxsize 200M
     rotate 3
     missingok
     notifempty
