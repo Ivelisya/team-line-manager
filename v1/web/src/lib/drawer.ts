@@ -12,10 +12,11 @@ export const DRAWER_TABS: { value: DrawerTab; label: string }[] = [
 
 // 全站只有一个路由：任意一处 useDrawer 渲染时记下地址参数的写函数，模块级的 openDrawer 用它（同机关系标等成批的小按钮不必各自订阅地址）
 let setLatest: { current: SetURLSearchParams } | null = null;
-const openWith = (set: SetURLSearchParams, mid: string, t?: DrawerTab) =>
-  set((p) => { const n = new URLSearchParams(p); n.set('m', mid); if (t) n.set('tab', t); else n.delete('tab'); return n; });
+/** drop：同一步里一起删掉的地址参数（背后列表的筛选会把要打开的那台筛掉时） */
+const openWith = (set: SetURLSearchParams, mid: string, t?: DrawerTab, drop?: readonly string[]) =>
+  set((p) => { const n = new URLSearchParams(p); drop?.forEach((k) => n.delete(k)); n.set('m', mid); if (t) n.set('tab', t); else n.delete('tab'); return n; });
 /** 打开抽屉（不订阅地址）：外壳里一直挂着 useDrawer，调用时总有写函数 */
-export const openDrawer = (mid: string, t?: DrawerTab) => { if (setLatest) openWith(setLatest.current, mid, t); };
+export const openDrawer = (mid: string, t?: DrawerTab, drop?: readonly string[]) => { if (setLatest) openWith(setLatest.current, mid, t, drop); };
 
 export function useDrawer() {
   const [sp, setSp] = useSearchParams();
@@ -24,7 +25,7 @@ export function useDrawer() {
   const tab: DrawerTab = DRAWER_TABS.some((t) => t.value === rawTab) ? (rawTab as DrawerTab) : 'overview';
   // react-router 的 setSearchParams 每次地址变化都换身份；用 ref 兜住，open/setTab/close 才稳定（卡片 memo 依赖它）
   const setRef = useRef(setSp); setRef.current = setSp; setLatest = setRef;
-  const open = useCallback((mid: string, t?: DrawerTab) => openWith(setRef.current, mid, t), []);
+  const open = useCallback((mid: string, t?: DrawerTab, drop?: readonly string[]) => openWith(setRef.current, mid, t, drop), []);
   // 抽屉开着、只是换一台（[ ] 键、抽屉头部的上一台 / 下一台）：留在当前页签，替换当前历史，后退键仍是一步关掉抽屉
   const switchTo = useCallback((mid: string) => setRef.current((p) => { const n = new URLSearchParams(p); n.set('m', mid); return n; }, { replace: true }), []);
   const setTab = useCallback((t: DrawerTab) => setRef.current((p) => { const n = new URLSearchParams(p); n.set('tab', t); return n; }, { replace: true }), []);

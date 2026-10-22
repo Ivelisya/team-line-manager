@@ -1,7 +1,7 @@
 // 生命周期对话框：换线路机（节点）、搬空线路机（线路机）、恢复已退役的机器。
 // 抽屉“管理”页、线路页、卡片/表格的右键菜单、命令面板共用；菜单触发的（连同退役）走 LifecycleDialogsHost（外壳里只渲染一份）。
 import * as React from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { ArrowRight } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
 import { useEvacuate, useMachine, useMoveEntry, useRelayChoices, useRelays, useRestore, useRestorePreview, useTeams } from '@/lib/queries';
@@ -9,6 +9,7 @@ import { HEALTH_TONE } from '@/lib/sort';
 import { closeEvacuate, closeMove, closeRenew, closeRestore, closeRetire, useEvacuateTarget, useMoveTarget, useRenewTarget, useRestoreTarget, useRetireTarget } from '@/lib/nodeActions';
 import { RenewDialog } from '@/features/BillingTab';
 import { useDrawer } from '@/lib/drawer';
+import { NODE_FILTERS } from '@/lib/urlState';
 import { healthLabel, meta } from '@/lib/derive';
 import { CheckRow, Field, Input, InfoTip } from '@/components/ui/form';
 import { Select, type Option } from '@/components/ui/select';
@@ -131,14 +132,10 @@ const KEY_LOGIN: Record<string, string> = { ok: '中控密钥可登录', denied:
 export const RestoreDialog = resetOnOpen(function RestoreDialog({ m, open, onOpenChange, onDone }: { m: MachineView; open: boolean; onOpenChange: (o: boolean) => void; onDone?: () => void }) {
   const nav = useNavigate();
   const restore = useRestore();
-  const [, setSp] = useSearchParams();
-  // 打开占用这个 IP 的那台（在用的）：机器页停在「已退役」范围时一起切回在用，背后的列表与抽屉的上一台 / 下一台跟它一致
-  const openOwner = (id: string) => setSp((p) => {
-    const n = new URLSearchParams(p);
-    if (n.get('scope') === 'retired') n.delete('scope');
-    n.set('m', id); n.delete('tab');
-    return n;
-  });
+  const { open: openDrawer } = useDrawer();
+  const { pathname } = useLocation();
+  // 打开占用这个 IP 的那台（在用的）：在机器页时一起切回「在用」、清掉筛选（按这台退役机器筛的多半筛不到它），背后的列表与抽屉的上一台 / 下一台跟它一致
+  const openOwner = (id: string) => openDrawer(id, undefined, pathname === '/nodes' ? ['scope', ...NODE_FILTERS] : undefined);
   const teams = useTeams().data ?? [];
   const relays = useRelayChoices().data ?? [];
   const isRelay = m.kind === 'relay';
