@@ -16,6 +16,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
+use std::time::Duration;
 use time::Date;
 use uuid::Uuid;
 
@@ -312,8 +313,21 @@ fn report(v: &[Checked]) -> Value {
 
 pub async fn check(_a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Batch>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
-    let v = validate(&mut tx, &b.items).await?;
+    let mut v = validate(&mut tx, &b.items).await?;
     tx.rollback().await?;
+    // 只查库的校验之外再看一眼 SSH 端口通不通（同恢复的预检）：地址填错、防火墙没放行在这里就能看出来，不用等上架作业失败。
+    // 家宽代理不 SSH；同机 IP 节点登录的是宿主机（在用的，不用再看）
+    let probes = v.iter().map(|c| async move {
+        if !c.errors.is_empty() || c.item.kind == "proxy" || c.host.is_some() {
+            return true;
+        }
+        crate::ssh::tcp_ok(&c.ip.to_string(), c.item.ssh_port.unwrap_or(22), Duration::from_secs(3)).await
+    });
+    for (c, up) in v.iter_mut().zip(futures::future::join_all(probes).await) {
+        if !up {
+            c.errors.push(format!("SSH {}:{} 连不上（3 秒没有响应）", c.ip, c.item.ssh_port.unwrap_or(22)));
+        }
+    }
     Ok(ok(report(&v)))
 }
 

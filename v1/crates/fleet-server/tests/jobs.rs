@@ -30,6 +30,18 @@ async fn job_login_is_null(t: &common::T, job: &str) -> bool {
     sqlx::query_scalar("select (params->'login') is null from job where id = $1::uuid").bind(job).fetch_one(&t.st.db).await.unwrap()
 }
 
+/// 上架前的「检查」看 SSH 端口通不通：连不上的不算通过（不用等上架作业失败）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn check_reports_unreachable_ssh() {
+    let t = setup(false).await;
+    let (relay, _) = seed_relay(&t).await;
+    let team = seed_team(&t, "团队1").await;
+    let chk = t
+        .post("/api/v1/provision/check", json!({"items": [{"kind": "vps", "ip": "127.0.0.1", "ssh_port": 1, "team_id": team, "relay_id": relay, "login": {"password": "s3cret-root-password"}}]}))
+        .await;
+    assert!(chk["items"][0]["ok"] == false && chk["items"][0]["errors"].to_string().contains("SSH 127.0.0.1:1 连不上"), "{chk}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancel_while_running_ends_cancelled_and_compensates() {
     let t = setup(true).await;
