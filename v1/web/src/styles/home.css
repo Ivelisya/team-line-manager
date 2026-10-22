@@ -1,6 +1,6 @@
 /* 首页的结构与新件（参照 CFSM-SAO 主题，用本项目的强调色与字体）：
    大圆角浅灰分区 .hsec（胶囊标签 + 标题 + 一行说明）、KPI 卡 .stat、集群状态 .cluster、
-   分段格条 .cells、资源格条 .cmeter、圆环 .gauge、点阵 .dots、面积折线 .spark、彩色标签 .tag、分组分段控件 .seg-fill、日期选择 .cal。 */
+   细进度条 .bar、资源读数 .cmeter、圆环 .gauge、迷你走势 .trend、面积折线 .spark、彩色标签 .tag、分组分段控件 .seg-fill、日期选择 .cal。 */
 
 .stack.home { gap: var(--sp-24); }
 
@@ -29,21 +29,16 @@
 @container content (min-width: 1100px) { .hero-grid { grid-template-columns: minmax(0, 1.48fr) minmax(0, 1fr); } }
 
 /* ---------- KPI ---------- */
-/* 一组读数放在同一块面板里，格与格之间一条发丝线（iOS 分组列表的做法），不再是八张各自带框带影的卡片：
-   读数是一块「概况」，不是八个对象。发丝线是格子之间 1px 的缝透出的面板线色 */
-.stat-grid {
-  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-auto-rows: 1fr; gap: 1px; min-width: 0;
-  background: var(--line); border: 1px solid var(--line); border-radius: var(--r-card); box-shadow: var(--shadow-card); overflow: hidden;
-}
-@container content (max-width: 760px) { .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+/* 八张独立的卡片，卡片之间留间隔（用户：有间隔的更好看） */
+.stat-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-auto-rows: 1fr; gap: var(--grid-gap); min-width: 0; }
+@container content (max-width: 760px) { .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-8); } }
 .stat {
   display: flex; flex-direction: column; justify-content: space-between; gap: var(--sp-6); min-width: 0; min-height: 100px; box-sizing: border-box;
-  padding: 14px 16px; background: var(--surface); text-decoration: none; color: inherit;
-  transition: background-color var(--dur-1) var(--ease-std);
+  padding: 14px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card);
+  box-shadow: var(--shadow-card); text-decoration: none; color: inherit;
+  transition: border-color var(--dur-1) var(--ease-std), box-shadow var(--dur-2) var(--ease-out), translate var(--dur-2) var(--ease-out), scale var(--dur-2) var(--ease-out);
 }
-/* 可点的读数：整格悬停变一层底色（不再上浮——它在面板里）、按下再深一层；标题行最右一个小箭头，悬停时往右挪 2px、变深一级，提示“点进去看明细” */
-@media (hover: hover) { a.stat:hover { background: color-mix(in srgb, var(--fg) 4%, var(--surface)); } }
-a.stat:active { background: color-mix(in srgb, var(--fg) 7%, var(--surface)); }
+/* 可点的 KPI 卡（悬停上浮、按下微缩见 components.css「交互状态」）：标题行最右一个小箭头，悬停时往右挪 2px、变深一级，提示“点进去看明细” */
 .stat-label { display: flex; align-items: center; gap: 7px; min-width: 0; font: var(--fw-semibold) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2); white-space: nowrap; }
 .stat-go { flex: none; margin-left: auto; width: 12px; height: 12px; color: var(--fg-3); transition: translate var(--dur-2) var(--ease-out), color var(--dur-1) var(--ease-std); }
 @media (hover: hover) { a.stat:hover .stat-go { translate: 2px 0; color: var(--fg-2); } }
@@ -132,27 +127,13 @@ a.stat:active { background: color-mix(in srgb, var(--fg) 7%, var(--surface)); }
 .hgroups .fchip { height: var(--h-lg); }
 @media (max-width: 600px) { .hgroups { flex-wrap: wrap; } .seg.seg-fill { flex-basis: 100%; } }
 
-/* ---------- 分段格条 / 资源读数 ---------- */
-/* 一条格条只有一个元素：mask 按 --tile（一格加一道缝）横向平铺，切出 n 个圆角格（缝是精确的 px，圆角半径 --r）；
-   n 格加 n 道缝比元素宽一道缝，最后一道缝落在元素外面。圆角格 = 横条 ∪ 竖条 ∪ 四角的圆，全用渐变拼（mask 各层默认取并集）——
-   不用 SVG 里靠 CSS calc 定宽的矩形，WebKit 不一定认。底色是未点亮色，点亮部分是 Cells 写在行内的背景渐变（位置同样按 --tile）。
-   第一次出现时背景从 0 宽扫到整条（只播一次）；之后读数变化直接换渐变、不过渡——
-   以前每格一个元素各带一条逐格点亮的动画，翻页、换视图时几千个格子同时动 */
-.cells {
-  --g: 2px; --r: 2px; --tile: calc((100% + var(--g)) / var(--n));
-  --cells-mask:
-    linear-gradient(to right, #000 calc(100% - var(--g)), transparent 0) 0 var(--r) / var(--tile) calc(100% - 2 * var(--r)) repeat-x,
-    linear-gradient(to right, transparent var(--r), #000 0 calc(100% - var(--g) - var(--r)), transparent 0) 0 0 / var(--tile) 100% repeat-x,
-    radial-gradient(circle at var(--r) var(--r), #000 var(--r), transparent 0) 0 0 / var(--tile) 100% repeat-x,
-    radial-gradient(circle at calc(100% - var(--g) - var(--r)) var(--r), #000 var(--r), transparent 0) 0 0 / var(--tile) 100% repeat-x,
-    radial-gradient(circle at var(--r) calc(100% - var(--r)), #000 var(--r), transparent 0) 0 0 / var(--tile) 100% repeat-x,
-    radial-gradient(circle at calc(100% - var(--g) - var(--r)) calc(100% - var(--r)), #000 var(--r), transparent 0) 0 0 / var(--tile) 100% repeat-x;
-  height: 8px; min-width: 0; background: var(--cell-off) no-repeat 0 0 / 100% 100%;
-  -webkit-mask: var(--cells-mask); mask: var(--cells-mask);
-  animation: cells-in calc(var(--dur-data) + 12 * var(--cell-stagger)) var(--ease-std) backwards;
-}
-@keyframes cells-in { from { background-size: 0 100%; } }
-.cells-lg { --g: 3px; height: 9px; }
+/* ---------- 细进度条 / 资源读数 ---------- */
+/* 细进度条（viz.tsx Bar）：一条连续的圆角细条，填充是里面的 <i>（宽 = 比例），单色或铺满整条的渐变（见 Bar）。
+   第一次出现时填充从左往右长出来（只播一次）；之后读数变化直接到位、不过渡 */
+.bar { display: block; height: 6px; min-width: 0; border-radius: 3px; background: var(--cell-off); }
+.bar > i { display: block; height: 100%; border-radius: inherit; background-repeat: no-repeat; transform-origin: left; animation: bar-in var(--dur-data) var(--ease-std) backwards; }
+@keyframes bar-in { from { transform: scaleX(0); } }
+.bar-lg { height: 8px; border-radius: 4px; }
 
 .cmeter { display: grid; gap: 5px; min-width: 0; }
 .cmeter[data-metric="cpu"] { --mc: var(--m-cpu); }
@@ -176,7 +157,7 @@ a.stat:active { background: color-mix(in srgb, var(--fg) 7%, var(--surface)); }
 .gauge[data-metric="mem"] { --mc: var(--m-mem); }
 .gauge[data-metric="disk"] { --mc: var(--m-disk); }
 .gauge-track { fill: none; stroke: var(--cell-off); }
-/* 第一次出现从 0 转到位（挂载时的 @keyframes）；之后读数变化直接到位、不过渡（同格条：描边过渡每帧都要主线程重画） */
+/* 第一次出现从 0 转到位（挂载时的 @keyframes）；之后读数变化直接到位、不过渡（同进度条：描边过渡每帧都要主线程重画） */
 .gauge-val { fill: none; stroke: var(--mc); stroke-linecap: round; stroke-dashoffset: var(--ring-off); animation: ring-in var(--dur-data) var(--ease-out); }
 @keyframes ring-in { from { stroke-dashoffset: var(--ring-c); } }
 .gauge-center { position: absolute; inset: 0; display: flex; align-items: baseline; justify-content: center; padding-top: 22px; box-sizing: border-box; }
@@ -185,9 +166,12 @@ a.stat:active { background: color-mix(in srgb, var(--fg) 7%, var(--surface)); }
 .gauge[data-tone="warn"] .gauge-center b { color: var(--warn-text); }
 .gauge[data-tone="bad"] .gauge-center b { color: var(--bad-text); }
 
-/* ---------- 点阵迹线 ---------- */
-.dots { display: block; flex: 1 1 auto; min-width: 0; height: 10px; }
-/* 点阵画在背景里（viz.tsx DotTrace，每点一层径向渐变）。不加过渡：迹线是滑动窗口，每来一个点整排右移一格，渐变过去看起来是在原地抖而不是往前走 */
+/* ---------- 迷你走势 ---------- */
+/* viz.tsx Trend：平滑细线 + 很淡的面积，颜色跟方向（--dir-c）。不加过渡：走势是滑动窗口，每来一个点整条左移一格 */
+.trend { display: block; flex: 1 1 auto; min-width: 0; width: 100%; height: 20px; overflow: visible; }
+.trend-line { fill: none; stroke: var(--dir-c, var(--accent)); stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
+.trend-area { fill: color-mix(in srgb, var(--dir-c, var(--accent)) 14%, transparent); }
+.trend-base { fill: none; stroke: var(--cell-off); stroke-width: 1.5; }
 
 /* ---------- 彩色标签 ---------- */
 /* 块级、行高撑满：inline-flex 的文字落在匿名项里，text-overflow 不生效，放不下时字被切成半个 */

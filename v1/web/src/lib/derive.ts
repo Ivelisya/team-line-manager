@@ -101,7 +101,7 @@ export function quotaTight(list: MachineView[]) {
   }
   return { n, top: top && { name: top.name, pct: Math.floor(top.pct) } };
 }
-/** 资源占用的告警色（CPU / 内存 / 磁盘 / 负载的格条、圆环、迷你条共用）：≥ 90% 红，≥ 75% 黄 */
+/** 资源占用的告警色（CPU / 内存 / 磁盘 / 负载的进度条、圆环、迷你条共用）：≥ 90% 红，≥ 75% 黄 */
 export const usageTone = (pct: number | null | undefined) => (pct == null ? undefined : pct >= 90 ? 'bad' : pct >= 75 ? 'warn' : undefined);
 const SEVERITY = { critical: { tone: 'bad', label: '严重' }, warning: { tone: 'warn', label: '警告' }, info: { tone: 'info', label: '提示' } } as const;
 /** 告警级别的色调与中文名（同告警页的级别列）；没见过的级别按警告 */

@@ -1,7 +1,7 @@
 // 节点卡片：一套外壳、三种密度（大 / 小 / 紧凑）。每种密度的“槽位”固定（大 10 / 小 7 / 紧凑 6），
 // 无论机器是主机、家宽代理还是线路机，同一个槽位都渲染同样高度的内容或占位——配合 cards.css 的 subgrid，同一行的卡片分段永远对齐。
-// 视觉语言：资源用分段格条（每个指标一个颜色），实时速率是大号读数 + 点阵迹线（实时流喂的环形缓冲，见 lib/live），
-// 剩余流量也是格条（绿→黄→红），心跳条同属“格子”语言。迹线与流量可点，直接打开抽屉的“主机 / 流量”页签看历史曲线。
+// 视觉语言：资源用连续的细进度条（每个指标一个颜色），实时速率是大号读数 + 平滑的迷你走势（实时流喂的环形缓冲，见 lib/live），
+// 剩余流量也是细条（按位置绿→黄→红），入口连通是一条按时间着色的细条（用户：不要格子）。迹线与流量可点，直接打开抽屉的“主机 / 流量”页签看历史曲线。
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { m as mo } from 'motion/react'; // 别名：组件里的 props 叫 m（机器）
 import { SPRING } from '@/lib/motion';
@@ -17,14 +17,14 @@ import { type DrawerTab } from '@/lib/drawer';
 import { cn } from '@/lib/utils';
 import { Beat, Due, Flag, HealthPill, LabelValue, Mark, Num, StatusMark } from './primitives';
 import { MachineTag, machineTagItems } from './MachineTags';
-import { CellMeter, Cells, DotTrace, QUOTA_COLORS, Tag } from './viz';
+import { Bar, Meter, QUOTA_FILL, Tag, Trend } from './viz';
 import { Button, IconButton } from '@/components/ui/button';
 
 export type CardView = 'large' | 'small' | 'compact';
 type Open = (tab?: DrawerTab) => void;
 
 // 卡片随实时推送重渲染（m 换了引用）。静态的几块（标题、地址与字段、标签、运行行、footer、心跳条）各自 memo、只收用到的字段，
-// 推送只重画读数（资源格条、速率、剩余流量）。
+// 推送只重画读数（资源条、速率、剩余流量）。
 // 卡片里不挂 Radix 根：右键菜单与“⋯”下拉由外面的 NodeMenus 整个网格共用一份（按 data-id / data-node-menu 找到这张卡），
 // 只读的悬停说明写 data-tip，由全站一份 TipHost 显示。
 
@@ -78,10 +78,10 @@ function Meters({ m, compact }: { m: MachineView; compact?: boolean }) {
   const quiet = isQuiet(m);
   return (
     <div className="nc-res">
-      <CellMeter metric="cpu" icon={<Cpu />} label="CPU" value={r.cpu.value} pct={r.cpu.pct} sub={compact ? undefined : r.cpu.sub} empty={quiet} />
-      <CellMeter metric="mem" icon={<MemoryStick />} label="内存" value={r.mem.value} pct={r.mem.pct} sub={compact ? undefined : r.mem.sub} empty={quiet} />
-      <CellMeter metric="disk" icon={<HardDrive />} label="磁盘" value={r.disk.value} pct={r.disk.pct} sub={compact ? undefined : r.disk.sub} empty={quiet} />
-      <CellMeter metric="load" icon={<Gauge />} label="负载" value={r.load.value} pct={r.load.pct} sub={compact ? undefined : r.load.sub} empty={quiet} tip={r.load.hint} />
+      <Meter metric="cpu" icon={<Cpu />} label="CPU" value={r.cpu.value} pct={r.cpu.pct} sub={compact ? undefined : r.cpu.sub} empty={quiet} />
+      <Meter metric="mem" icon={<MemoryStick />} label="内存" value={r.mem.value} pct={r.mem.pct} sub={compact ? undefined : r.mem.sub} empty={quiet} />
+      <Meter metric="disk" icon={<HardDrive />} label="磁盘" value={r.disk.value} pct={r.disk.pct} sub={compact ? undefined : r.disk.sub} empty={quiet} />
+      <Meter metric="load" icon={<Gauge />} label="负载" value={r.load.value} pct={r.load.pct} sub={compact ? undefined : r.load.sub} empty={quiet} tip={r.load.hint} />
     </div>
   );
 }
@@ -99,7 +99,7 @@ function LiveDot({ live }: { live: boolean }) {
   return <span ref={ref} className="flow-live" data-live={live ? '' : undefined}><i className="flow-dot" />{live ? '实时' : '离线'}</span>;
 }
 
-/** 网卡速率一列：方向 + 大号读数（按量级着色）、点阵迹线（点击看主机曲线）。实时 / 离线标两列各一个（保持两列等宽对称），呼吸只给视口里的卡 */
+/** 网卡速率一列：方向 + 大号读数（按量级着色）、迷你走势（点击看主机曲线）。实时 / 离线标两列各一个（保持两列等宽对称），呼吸只给视口里的卡 */
 function FlowCol({ dir, rate, values, dots, live, onOpen }: { dir: 'up' | 'down'; rate: number | null; values: number[]; dots?: number; live: boolean; onOpen: Open }) {
   const up = dir === 'up';
   return (
@@ -109,7 +109,7 @@ function FlowCol({ dir, rate, values, dots, live, onOpen }: { dir: 'up' | 'down'
         <span className="flow-rate"><Num f={F.rate(rate)} /></span>
       </div>
       <button type="button" className="flow-trend" data-tip="查看主机曲线" onClick={() => onOpen('host')} aria-label={`${up ? '上行' : '下行'}速率：查看主机曲线`}>
-        <DotTrace values={values} n={dots} />
+        <Trend values={values} n={dots} />
         <LiveDot live={live} />
       </button>
     </div>
@@ -119,7 +119,7 @@ function FlowCol({ dir, rate, values, dots, live, onOpen }: { dir: 'up' | 'down'
 /** compact：紧凑卡的流量列窄（约 120px），迹线只画最近 20 个点，30 个点挤在一起看不清 */
 function Flow({ m, onOpen, totals, compact }: { m: MachineView; onOpen: Open; totals?: boolean; compact?: boolean }) {
   const tr = useLiveSeries(m.id);
-  const tx = useMemo(() => tr.map((p) => p.tx), [tr]); const rx = useMemo(() => tr.map((p) => p.rx), [tr]); // 迹线没变时 DotTrace（memo）不重画
+  const tx = useMemo(() => tr.map((p) => p.tx), [tr]); const rx = useMemo(() => tr.map((p) => p.rx), [tr]); // 迹线没变时 Trend（memo）不重画
   const r = liveRate(m); const t = monthTraffic(m);
   return (
     <div className="flow">
@@ -164,7 +164,7 @@ function FlowRow({ m }: { m: MachineView }) {
   );
 }
 
-/** 剩余流量：标题 + 剩余量，右侧本周期已用 / 上限（周期按流量重置日），下面绿→黄→红的格条（不限额度不画）；点击打开流量页签。
+/** 剩余流量：标题 + 剩余量，右侧本周期已用 / 上限（周期按流量重置日），下面按位置绿→黄→红的细条（不限额度不画）；点击打开流量页签。
  *  同机 IP 节点自己没设上限：额度与宿主机共用（算在宿主机的已用里） */
 function QuotaSlot({ m, onOpen }: { m: MachineView; onOpen: Open }) {
   const q = quota(m);
@@ -176,7 +176,7 @@ function QuotaSlot({ m, onOpen }: { m: MachineView; onOpen: Open }) {
         </span>
         <span className="nc-quse" data-tip={`周期 ${q.start.slice(5)} 起`}>本周期已用 <Num f={quotaGb(q.used)} />{q.limit > 0 && <> / <Num f={limitGb(q.limit)} /></>}</span>
       </span>
-      {q.rem != null && <Cells pct={q.pct} colors={QUOTA_COLORS} />}
+      {q.rem != null && <Bar pct={q.pct} gradient={QUOTA_FILL} />}
       <span className="sr-only">（查看流量页签）</span>
     </button>
   );
