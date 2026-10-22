@@ -25,7 +25,7 @@ use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::convert::Infallible;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::OnceLock;
 use time::{Duration, OffsetDateTime};
 use tokio::sync::Semaphore;
@@ -37,10 +37,15 @@ const SESSION_DAYS: i64 = 14;
 /// 全部 scope（会话用户拥有；创建密钥时只能从中选）
 pub const ALL_SCOPES: [&str; 4] = ["read", "write", "secrets", "exec"];
 
-/// 登录失败限速窗口与阈值
+/// 登录失败限速窗口与阈值：同一用户名 + 同一来源 5 次、同一来源 20 次、同一用户名（不分来源）100 次。
+/// 只按用户名封的话，谁都能用错误密码把 admin 一直锁在外面；按来源分开后只封攻击者自己，100 次的总上限挡分布式猜密码
 const FAIL_WINDOW_MIN: i64 = 15;
-const FAIL_PER_USER: i64 = 5;
+const FAIL_PER_USER_IP: i64 = 5;
 const FAIL_PER_IP: i64 = 20;
+const FAIL_PER_USER: i64 = 100;
+
+/// 记失败、判断限速这一步同时在跑的个数：登录风暴时不占满主连接池
+static CHECK_SEM: Semaphore = Semaphore::const_new(4);
 
 /// argon2 很吃 CPU：放 spawn_blocking，并限制同时在算的个数，免得登录风暴挤占 runtime 与内存
 static HASH_SEM: Semaphore = Semaphore::const_new(2);
@@ -203,33 +208,33 @@ fn wait_text(secs: i64) -> String {
     if secs < 60 { format!("{} 秒", secs.max(1)) } else { format!("{} 分钟", (secs + 59) / 60) }
 }
 
-/// 窗口内失败次数（含本次先记下的这一条）超过上限时，返回还要等多少秒（之前第 N 条要滑出窗口才会降到上限以下）
-async fn blocked_secs(st: &AppState, user: &str, ip: Option<IpAddr>) -> ApiResult<Option<i64>> {
-    let secs = format!("{FAIL_WINDOW_MIN} minutes");
-    let by_user: Option<(f64,)> = sqlx::query_as(
-        "select extract(epoch from (ts + $3::text::interval - now()))::float8 from login_failure
-         where username = $1 and ts > now() - $3::text::interval order by ts desc offset $2 limit 1",
+/// 限速按来源分组：IPv4 按单个地址，IPv6 按 /64（一台机器通常能随意换同一 /64 里的地址）。`login_failure.ip` 存的就是分组后的地址
+fn ip_group(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => IpAddr::V6(Ipv6Addr::from(u128::from(v6) & !(u64::MAX as u128))),
+        v4 => v4,
+    }
+}
+
+/// 窗口内失败次数（含本次先记下的这一条）超过任一上限时，返回还要等多少秒（之前第 N 条要滑出窗口才会降到上限以下）。
+/// 来源未知（没有对端地址）时算作同一个来源，只是不查按来源的上限
+async fn blocked_secs(st: &AppState, user: &str, group: Option<IpAddr>) -> ApiResult<Option<i64>> {
+    let secs: Option<f64> = sqlx::query_scalar(
+        "select extract(epoch from greatest(
+           (select ts from login_failure where username = $1 and ip is not distinct from $2 and ts > now() - $6::text::interval order by ts desc offset $3 limit 1),
+           (select ts from login_failure where ip = $2 and ts > now() - $6::text::interval order by ts desc offset $4 limit 1),
+           (select ts from login_failure where username = $1 and ts > now() - $6::text::interval order by ts desc offset $5 limit 1)
+         ) + $6::text::interval - now())::float8",
     )
     .bind(user)
+    .bind(group.map(ipnetwork::IpNetwork::from))
+    .bind(FAIL_PER_USER_IP)
+    .bind(FAIL_PER_IP)
     .bind(FAIL_PER_USER)
-    .bind(&secs)
-    .fetch_optional(&st.db)
+    .bind(format!("{FAIL_WINDOW_MIN} minutes"))
+    .fetch_one(&st.db)
     .await?;
-    let by_ip: Option<(f64,)> = match ip {
-        Some(ip) => {
-            sqlx::query_as(
-                "select extract(epoch from (ts + $3::text::interval - now()))::float8 from login_failure
-                 where ip = $1 and ts > now() - $3::text::interval order by ts desc offset $2 limit 1",
-            )
-            .bind(ipnetwork::IpNetwork::from(ip))
-            .bind(FAIL_PER_IP)
-            .bind(&secs)
-            .fetch_optional(&st.db)
-            .await?
-        }
-        None => None,
-    };
-    Ok([by_user, by_ip].into_iter().flatten().map(|(s,)| s.ceil() as i64).max())
+    Ok(secs.map(|s| s.ceil() as i64))
 }
 
 pub async fn login(
@@ -240,19 +245,24 @@ pub async fn login(
 ) -> ApiResult<(CookieJar, Json<Value>)> {
     // 限速键：用户名截断，避免超长字符串灌库
     let uname: String = r.username.chars().take(64).collect();
-    let _permit = HASH_SEM.acquire().await.map_err(|e| ApiError::internal(format!("登录限流信号量：{e}")))?;
+    let group = ip.map(ip_group);
     // 先按失败记下这次尝试再判断：并发的尝试各占一个名额（后提交的一定看得到先提交的），不会一起挤过限速；
-    // 被限速的这条删掉（不延长封禁），登录成功时连同该用户的失败记录一起清掉
-    let attempt: i64 = sqlx::query_scalar("insert into login_failure (username, ip) values ($1, $2) returning id")
-        .bind(&uname)
-        .bind(ip.map(ipnetwork::IpNetwork::from))
-        .fetch_one(&st.db)
-        .await?;
-    if let Some(wait) = blocked_secs(&st, &uname, ip).await? {
-        sqlx::query("delete from login_failure where id = $1").bind(attempt).execute(&st.db).await?;
-        return Err(ApiError::new(StatusCode::TOO_MANY_REQUESTS, "rate_limited", format!("登录失败次数过多，请 {}后再试", wait_text(wait)))
-            .with_detail(json!({"retry_after_s": wait})));
+    // 被限速的这条删掉（不延长封禁），登录成功时连同该用户在本来源的失败记录一起清掉。
+    // 这一步在等算哈希的许可之前：被限速的请求不排进 argon2 的队，挤不掉别人的登录
+    {
+        let _check = CHECK_SEM.acquire().await.map_err(|e| ApiError::internal(format!("登录限流信号量：{e}")))?;
+        let attempt: i64 = sqlx::query_scalar("insert into login_failure (username, ip) values ($1, $2) returning id")
+            .bind(&uname)
+            .bind(group.map(ipnetwork::IpNetwork::from))
+            .fetch_one(&st.db)
+            .await?;
+        if let Some(wait) = blocked_secs(&st, &uname, group).await? {
+            sqlx::query("delete from login_failure where id = $1").bind(attempt).execute(&st.db).await?;
+            return Err(ApiError::new(StatusCode::TOO_MANY_REQUESTS, "rate_limited", format!("登录失败次数过多，请 {}后再试", wait_text(wait)))
+                .with_detail(json!({"retry_after_s": wait})));
+        }
     }
+    let _permit = HASH_SEM.acquire().await.map_err(|e| ApiError::internal(format!("登录限流信号量：{e}")))?;
     let row: Option<(Uuid, String)> =
         sqlx::query_as("select id, password_hash from app_user where username = $1 and disabled_at is null")
             .bind(&r.username)
@@ -281,7 +291,12 @@ pub async fn login(
         .bind(exp)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("delete from login_failure where username = $1").bind(&uname).execute(&mut *tx).await?;
+    // 只清本来源的：别处（攻击者）的失败照样计数，不因为本人登录了一次就重新给他名额
+    sqlx::query("delete from login_failure where username = $1 and ip is not distinct from $2")
+        .bind(&uname)
+        .bind(group.map(ipnetwork::IpNetwork::from))
+        .execute(&mut *tx)
+        .await?;
     audit(&mut tx, &r.username, "auth.login", "user", Some(uid), json!({"ip": ip_s})).await?;
     tx.commit().await?;
     let secure = st.cfg.cookie_secure.unwrap_or_else(|| st.cfg.public_url.starts_with("https://"));
@@ -317,7 +332,7 @@ pub async fn me(a: Actor) -> Json<Value> {
     Json(json!({"data": {"username": a.name, "kind": if a.is_session() { "session" } else { "api_key" }, "scopes": a.scopes}}))
 }
 
-/// CLI：建用户 / 改密码
+/// CLI：建用户 / 改密码（清掉该用户的会话与登录失败记录：重设密码就是为了让他马上能登进来）
 pub async fn upsert_user(db: &sqlx::PgPool, username: &str, password: &str) -> anyhow::Result<()> {
     let h = hash_password(password)?;
     sqlx::query(
@@ -330,6 +345,7 @@ pub async fn upsert_user(db: &sqlx::PgPool, username: &str, password: &str) -> a
     .execute(db)
     .await?;
     sqlx::query("delete from session where user_id = (select id from app_user where username = $1)").bind(username).execute(db).await?;
+    sqlx::query("delete from login_failure where username = $1").bind(username).execute(db).await?;
     Ok(())
 }
 
@@ -375,6 +391,14 @@ mod tests {
         assert_eq!(needed(&g, "/api/v1/api-keys"), Need::Session);
         assert_eq!(needed(&Method::DELETE, "/api/v1/api-keys/x"), Need::Session);
         assert_eq!(needed(&g, "/api/v1/jobs/x/logs"), Need::Scope("read"));
+    }
+
+    #[test]
+    fn ip_group_masks_v6_to_64() {
+        let g = |s: &str| ip_group(s.parse().unwrap()).to_string();
+        assert_eq!(g("203.0.113.7"), "203.0.113.7");
+        assert_eq!(g("2001:db8:1:2:aaaa:bbbb:cccc:dddd"), "2001:db8:1:2::");
+        assert_eq!(g("2001:db8:1:2::1"), g("2001:db8:1:2:ffff::9"));
     }
 
     #[test]

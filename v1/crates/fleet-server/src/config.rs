@@ -39,6 +39,17 @@ pub struct Config {
     /// 来源 IP 画像（离线库，只查本地）；整段不写也能跑
     #[serde(default)]
     pub ipintel: IpintelConfig,
+    #[serde(default)]
+    pub notify: NotifyConfig,
+}
+
+/// `[notify]`
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct NotifyConfig {
+    /// 允许通知渠道指向内网 / 环回 / 保留地址。默认不允许：渠道地址由有 write 权限的人填，不能借它探中控所在的内网；
+    /// 只有测试或自建在内网的 webhook 才打开
+    pub allow_private: bool,
 }
 
 /// `[ipintel]`：全部有默认值，老配置文件不用改

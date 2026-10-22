@@ -124,14 +124,21 @@ pub fn parse_line(line: &str, utc_offset_s: i64) -> Parsed {
     if !host_ok(&host) {
         return Parsed::BadHost;
     }
-    // 路由 [in -> out]
+    // 路由 [in -> out]。目标（客户给的域名）里可以带空格，伪造出 `[in-别人 -> …] email: e-别人`：伪造的只能在真路由之前，
+    // 所以取最后一组；它前面还有别的 token（目标被空格断开了）就整行丢弃
     let tail = &tok[i + 2..];
-    let route: Option<String> = tail.iter().position(|t| t.starts_with('[')).and_then(|s| {
+    let rs = tail.iter().rposition(|t| t.starts_with('['));
+    if rs.is_some_and(|s| s > 0) {
+        return Parsed::BadHost;
+    }
+    let mut route_end = 0;
+    let route: Option<String> = rs.and_then(|s| {
         let mut buf = String::new();
-        for t in &tail[s..] {
+        for (k, t) in tail.iter().enumerate().skip(s) {
             buf.push_str(t);
             buf.push(' ');
             if t.ends_with(']') {
+                route_end = k + 1;
                 return Some(buf.trim().trim_start_matches('[').trim_end_matches(']').to_string());
             }
         }
@@ -148,9 +155,12 @@ pub fn parse_line(line: &str, utc_offset_s: i64) -> Parsed {
     if !inbound.starts_with("in-") {
         return Parsed::Other;
     }
-    let email = tail.iter().position(|t| *t == "email:").and_then(|k| tail.get(k + 1)).copied();
-    let entry_id: Option<Uuid> = email.and_then(tags::parse_entry_id).or_else(|| tags::parse_entry_id(&inbound));
-    let Some(entry_id) = entry_id else { return Parsed::Bad };
+    // 入口按入站 tag 认；有 email（路由之后、最后一个）就必须是同一个入口
+    let Some(entry_id) = tags::parse_entry_id(&inbound) else { return Parsed::Bad };
+    let email = tail[route_end..].iter().rposition(|t| *t == "email:").map(|k| tail.get(route_end + k + 1).copied());
+    if email.is_some_and(|e| e.and_then(tags::parse_entry_id) != Some(entry_id)) {
+        return Parsed::Bad;
+    }
     Parsed::Event(AccessEvent {
         entry_id,
         ts_ms,
@@ -424,6 +434,27 @@ mod tests {
         // 分隔符 >>
         let l = format!("2026/10/20 13:50:56 from 1.2.3.4:5 accepted tcp:a.com:80 [in-{} >> out-x] email: e-{}", id().simple(), id().simple());
         assert!(matches!(parse_line(&l, 0), Parsed::Event(_)));
+    }
+
+    /// 客户在目标域名里塞进 `[in-别人 -> out-别人] email: e-别人`：不能记到别的入口头上
+    #[test]
+    fn forged_route_in_destination_is_not_attributed() {
+        let (me, other) = (id().simple(), Uuid::from_u128(0xdef).simple());
+        let forged = format!("a.com:443 [in-{other} -> out-{other}] email: e-{other} b.com");
+        let l = format!("2026/10/20 13:50:56 from 1.2.3.4:5 accepted tcp:{forged}:443 [in-{me} -> out-{me}] email: e-{me}");
+        assert!(matches!(parse_line(&l, 0), Parsed::BadHost), "{l}");
+        // 伪造的在真路由之前、没有空格隔开以外的东西也一样
+        let l = format!("2026/10/20 13:50:56 from 1.2.3.4:5 accepted tcp:a.com:443 [in-{other} -> out-{other}] email: e-{other} [in-{me} -> out-{me}] email: e-{me}");
+        assert!(matches!(parse_line(&l, 0), Parsed::BadHost), "{l}");
+        // email 与入站不是同一个入口：坏行
+        let l = format!("2026/10/20 13:50:56 from 1.2.3.4:5 accepted tcp:a.com:443 [in-{me} -> out-{me}] email: e-{other}");
+        assert!(matches!(parse_line(&l, 0), Parsed::Bad), "{l}");
+        let l = format!("2026/10/20 13:50:56 from 1.2.3.4:5 accepted tcp:a.com:443 [in-{me} -> out-{me}] email:");
+        assert!(matches!(parse_line(&l, 0), Parsed::Bad), "{l}");
+        // 取最后一个 email
+        let l = format!("2026/10/20 13:50:56 from 1.2.3.4:5 accepted tcp:a.com:443 [in-{me} -> out-{me}] email: e-{other} email: e-{me}");
+        let Parsed::Event(e) = parse_line(&l, 0) else { panic!("{l}") };
+        assert_eq!(e.entry_id, id());
     }
 
     #[test]

@@ -9,7 +9,7 @@ use crate::crypto::sha256;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::http::HeaderMap;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use axum_extra::extract::cookie::CookieJar;
 use serde::{Deserialize, Serialize};
@@ -245,6 +245,9 @@ pub async fn create_silence(a: Actor, State(st): State<AppState>, ApiJson(b): Ap
     }
     if b.starts_at > now + time::Duration::days(90) {
         return Err(ApiError::bad_request("最多提前 90 天预约"));
+    }
+    if b.comment.chars().count() > 2000 {
+        return Err(ApiError::bad_request("备注最长 2000 个字"));
     }
     if let Some(r) = b.rule.as_deref() {
         // rule_name 对不认识的规则原样返回
@@ -528,7 +531,15 @@ pub const CLOSE_REVOKED: u16 = 4401;
 
 /// 实时流（WebSocket，JSON 文本帧）：资源变更通知 + 实时指标（`live.rs`）。
 /// 广播落后丢了消息时发 `resync`（前端让全部查询失效）；每 60 s 复核一次会话/密钥，被撤销就以 4401 关闭。
-pub async fn stream(_a: Actor, State(st): State<AppState>, jar: CookieJar, headers: HeaderMap, ws: WebSocketUpgrade) -> Response {
+pub async fn stream(a: Actor, State(st): State<AppState>, jar: CookieJar, headers: HeaderMap, ws: WebSocketUpgrade) -> Response {
+    // 会话（Cookie）连接要求 Origin 是中控自己（public_url 的协议 + 主机 + 端口）：WebSocket 握手不受同源策略约束，
+    // 别的页面能借浏览器自动带上的 Cookie 连上来读实时数据。API 密钥不是浏览器带的，不查
+    if a.is_session() {
+        let want = reqwest::Url::parse(&st.cfg.public_url).map(|u| u.origin().ascii_serialization()).unwrap_or_default();
+        if headers.get("origin").and_then(|v| v.to_str().ok()) != Some(want.as_str()) {
+            return ApiError::forbidden("实时流只接受本站页面的连接（Origin 不符）").into_response();
+        }
+    }
     let bearer = headers.get("authorization").and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer "));
     let cred = match (bearer, jar.get(crate::auth::COOKIE)) {
         (Some(k), _) => Some(Cred::Key(sha256(k.as_bytes()))),

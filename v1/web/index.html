@@ -5,16 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>团队线路管理</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%238e3bb0'/%3E%3Cpath d='M8 21l5-6 4 3 7-9' stroke='white' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
-    <script>
-      // 首屏前把主题（light/dark/system）与配色解析成 data-theme / data-palette，避免闪烁。
-      // 之后跟随系统的深浅色变化由 src/lib/theme.ts 接管（切换时整页同时换色）
-      try {
-        var t = localStorage.getItem('fleet:theme') || 'system';
-        document.documentElement.dataset.theme = t === 'system' ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : t;
-        var p = localStorage.getItem('fleet:palette');
-        if (p) document.documentElement.dataset.palette = p;
-      } catch (e) {}
-    </script>
+    <script src="/theme-init.js"></script>
   </head>
   <body>
     <div id="root"></div>

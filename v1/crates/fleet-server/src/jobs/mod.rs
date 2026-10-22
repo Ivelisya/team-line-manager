@@ -254,6 +254,26 @@ pub enum Outcome {
     Wait(u64),
 }
 
+/// 存进作业的远端输出（步骤错误 → 作业错误、日志、机器的状态原因；步骤的警告、跳过原因）最多约 4 KiB：stderr 可能上百 KB。
+/// 留开头（在做什么）和结尾（真正的错误多在最后），中间标「已截断」
+const DETAIL_CAP: usize = 4096;
+const DETAIL_HEAD: usize = 512;
+
+pub fn clip(s: &str) -> std::borrow::Cow<'_, str> {
+    if s.len() <= DETAIL_CAP {
+        return s.into();
+    }
+    let mut h = DETAIL_HEAD;
+    while !s.is_char_boundary(h) {
+        h -= 1;
+    }
+    let mut t = s.len() - (DETAIL_CAP - DETAIL_HEAD);
+    while !s.is_char_boundary(t) {
+        t += 1;
+    }
+    format!("{}\n…（已截断）…\n{}", &s[..h], &s[t..]).into()
+}
+
 pub async fn log(st: &AppState, job: Uuid, level: &str, msg: impl AsRef<str>) {
     let m = msg.as_ref();
     tracing::info!(%job, level, "{m}");
@@ -455,7 +475,10 @@ pub async fn advance(st: &AppState, mut job: JobRow, owner: &str) -> anyhow::Res
             Ok(o) => {
                 let (state, out, msg) = match o {
                     Outcome::Done(v) => ("done", v, format!("完成：{}", d.title)),
-                    Outcome::Skipped(why) => ("skipped", json!({"reason": why}), format!("跳过：{}（{why}）", d.title)),
+                    Outcome::Skipped(why) => {
+                        let why = clip(&why);
+                        ("skipped", json!({"reason": why}), format!("跳过：{}（{why}）", d.title))
+                    }
                     Outcome::Wait(_) => unreachable!(),
                 };
                 let n = sqlx::query(&format!("update job_step set state = $4, finished_at = now(), output = $5 where job_id = $1 and idx = $2 and {OWN}"))
@@ -624,6 +647,7 @@ async fn finish_cancel(st: &AppState, job: &JobRow, owner: &str) -> anyhow::Resu
 
 /// 步骤失败。若作业同时被标为取消，保留 cancelling（只释放租约，让下一轮去补偿），不改成 failed。
 async fn fail(st: &AppState, job: &JobRow, owner: &str, d: &StepDef, kind: ErrKind, msg: &str) -> anyhow::Result<()> {
+    let msg = &*clip(msg);
     let n = sqlx::query(&format!(
         "update job_step set state = 'failed', finished_at = now(), error = $4, error_kind = $5 where job_id = $1 and idx = $2 and {OWN}"
     ))
@@ -756,6 +780,14 @@ mod tests {
         // 线路机收敛内层累计约 1620 秒，必须放得下
         let d = defs("provision_relay").iter().find(|d| d.key == "converge_relay").unwrap();
         assert!(outer_timeout(d).as_secs() >= 1620);
+    }
+
+    #[test]
+    fn clip_keeps_head_and_tail() {
+        assert_eq!(clip("短"), "短");
+        let long = format!("推送失败：{}真正的错误", "噪".repeat(100_000));
+        let c = clip(&long);
+        assert!(c.len() < DETAIL_CAP + 64 && c.starts_with("推送失败：") && c.ends_with("真正的错误") && c.contains("（已截断）"), "{}", c.len());
     }
 
     #[test]

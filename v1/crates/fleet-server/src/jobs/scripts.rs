@@ -119,6 +119,8 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
+# ssserver 自己解析域名：客户经域名（169.254.169.254.nip.io）也到不了云厂商的元数据服务。不拦回环：Ubuntu 上解析要经 127.0.0.53
+IPAddressDeny=link-local 100.100.100.200/32
 [Install]
 WantedBy=multi-user.target
 UNIT
@@ -350,7 +352,7 @@ set -u
 systemctl disable --now fleet-agent 2>/dev/null; systemctl disable --now fleet-xray 2>/dev/null; systemctl disable --now fleet-xray-logrotate.timer 2>/dev/null
 rm -f /etc/systemd/system/fleet-agent.service /etc/systemd/system/fleet-xray.service /etc/logrotate.d/fleet-xray
 rm -f /etc/systemd/system/fleet-xray-logrotate.service /etc/systemd/system/fleet-xray-logrotate.timer
-rm -rf /etc/fleet-agent /var/lib/fleet-agent /var/log/fleet-xray /usr/local/bin/fleet-agent /usr/local/bin/fleet-agent.prev /usr/local/bin/xray /usr/local/share/xray
+rm -rf /etc/fleet-agent /var/lib/fleet-agent /var/log/fleet-xray /var/log/private/fleet-xray /usr/local/bin/fleet-agent /usr/local/bin/fleet-agent.prev /usr/local/bin/xray /usr/local/share/xray
 systemctl daemon-reload
 echo cleanup=done
 "#;
@@ -432,14 +434,18 @@ echo "nft_relays=$(nft list set inet ss_guard relays | tr -d '\n' | sed 's/.*ele
     const STALE: &str = "# 磁盘上的 ssserver 已换成新版（同机别的实例收敛时推的）、这个实例还在跑旧的：也重启，换上新程序；程序没换过时不重启\n\
                          [ /proc/$(systemctl show -p MainPID --value fleet-ssserver)/exe -ef /usr/local/bin/ssserver ] || RESTART=1\n";
 
-    /// 宿主机（普通落地机）除了多一行锁和一行「进程跑的是旧程序才重启」，和改动前逐字相同：生产节点升级中控后重新收敛，配置、单元、nft、include 行都不变，
-    /// 程序没换过也不重启 ssserver
+    /// 第 22 轮单元加的一行（拦元数据服务）：已上架的节点下次收敛时单元变了，重启一次 ssserver
+    const DENY: &str = "# ssserver 自己解析域名：客户经域名（169.254.169.254.nip.io）也到不了云厂商的元数据服务。不拦回环：Ubuntu 上解析要经 127.0.0.53\n\
+                        IPAddressDeny=link-local 100.100.100.200/32\n";
+
+    /// 宿主机（普通落地机）除了多一行锁、一行「进程跑的是旧程序才重启」和单元里拦元数据服务的一行，和改动前逐字相同：
+    /// 生产节点升级中控后重新收敛，配置、nft、include 行都不变
     #[test]
     fn host_render_is_unchanged() {
         let s = node_ss(&SsInst::host());
         assert!(s.starts_with(&format!("\nset -eu\n{LOCK}")), "{s}");
-        assert!(s.contains(STALE), "{s}");
-        assert_eq!(s.replacen(LOCK, "", 1).replacen(STALE, "", 1), OLD_NODE_SS);
+        assert!(s.contains(STALE) && s.contains(&format!("PrivateTmp=yes\n{DENY}[Install]\n")), "{s}");
+        assert_eq!(s.replacen(LOCK, "", 1).replacen(STALE, "", 1).replacen(DENY, "", 1), OLD_NODE_SS);
         assert_eq!((SsInst::host().svc(), SsInst::host().table()), ("fleet-ssserver".to_string(), "ss_guard".to_string()));
     }
 
@@ -505,6 +511,8 @@ echo "nft_relays=$(nft list set inet ss_guard relays | tr -d '\n' | sed 's/.*ele
         let c = super::RELAY_CLEANUP;
         assert!(c.contains("/etc/logrotate.d/fleet-xray") && c.contains("systemctl disable --now fleet-xray-logrotate.timer"));
         assert!(c.contains("/etc/systemd/system/fleet-xray-logrotate.service /etc/systemd/system/fleet-xray-logrotate.timer"));
+        // 动态用户的日志目录在 /var/log/private 下，/var/log/fleet-xray 只是符号链接
+        assert!(c.contains(" /var/log/fleet-xray /var/log/private/fleet-xray "));
     }
 
     /// 升级时留下的旧 agent（.prev）退役清理时一起删
@@ -532,8 +540,13 @@ echo "nft_relays=$(nft list set inet ss_guard relays | tr -d '\n' | sed 's/.*ele
         let s = super::relay_xray_unit();
         let body = super::xray_unit_sh();
         assert_eq!(s, format!("(\n{}\n) || echo xray_unit=error\n", body.trim()));
-        assert!(body.contains("TemporaryFileSystem=/etc/fleet-agent:ro\nBindReadOnlyPaths=/etc/fleet-agent/xray.json\n"), "{body}");
-        assert!(body.contains("InaccessiblePaths=-/etc/ssh -/var/lib/fleet-agent "), "{body}");
+        // Xray 以动态用户运行、配置经标准输入交给它，连不上本地套接字、到不了元数据服务
+        assert!(body.contains("DynamicUser=yes\nStandardInput=file:/etc/fleet-agent/xray.json\nExecStart=/usr/local/bin/xray run -c stdin:\n"), "{body}");
+        assert!(body.contains("\nRestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK\n") && body.contains("\nIPAddressDeny=link-local 100.100.100.200/32\n"));
+        assert!(body.contains("InaccessiblePaths=-/etc/fleet-agent -/var/lib/fleet-agent -/etc/ssh\n"), "{body}");
+        assert!(!body.contains("\nUser=") && !body.contains("\nTemporaryFileSystem="));
+        // agent 要读动态用户写的 0600 访问日志
+        assert!(super::AGENT_UNIT.contains("\nCapabilityBoundingSet=CAP_DAC_READ_SEARCH\n"));
         // 写、换都查结果：包在 `( … ) || echo` 里 set -e 不起作用，写失败的空文件不能被当成新单元换上
         assert!(body.contains("cat > $U.tmp <<'UNIT' || exit 1\n"));
         assert!(body.contains("cmp -s $U.tmp $U && rm -f $U.tmp || { mv $U.tmp $U || exit 1; systemctl daemon-reload; }\n"));

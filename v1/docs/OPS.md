@@ -13,10 +13,10 @@
    - Linux x86_64：在 fleet-dev 上跑 `lab/install-fleetctl.sh`，从 `/opt/fleet/dist/fleetctl` 取。
 3. 写配置并自检：
    ```
-   fleetctl login --url http://192.168.31.60:8080 --token flk_xxxxxxxx_xxxx
+   fleetctl login --url http://192.168.31.60:8080 < 密钥文件     # 或直接运行、按提示粘贴；--token 也能用，但会留在 shell 历史与进程列表里
    fleetctl whoami
    ```
-   配置也可用环境变量 `FLEET_URL`、`FLEET_TOKEN`；文件位置：Linux/macOS `~/.config/fleetctl/config.toml`，Windows `%APPDATA%\fleetctl\config.toml`。
+   公网地址用明文 `http://` 时会警告（密钥明文传输）。配置也可用环境变量 `FLEET_URL`、`FLEET_TOKEN`；文件位置（unix 上 0600）：Linux/macOS `~/.config/fleetctl/config.toml`，Windows `%APPDATA%\fleetctl\config.toml`。
 
 约定：脚本和 AI 都加 `--json`（一行 JSON：`ls` / `entries` / `incidents` / `policy ls` / `silence` 是与表格同列的精简对象，单台完整视图用 `show`、`policy show`；`billing` 是订阅、流量额度与最近续费记录合成的对象；其余是 API `data` 原样）；错误走 stderr、退出码非 0（没拿到中控响应时 code 为 `unreachable` 或 `timeout`，后者说明操作可能已执行，先查 `jobs` / `audit` 再决定重试）；人看的输出时间一律是北京时间；`<机器>` 可写 id、显示名（团队1-06）、线路机名、IP，歧义时命令会列出候选。
 
@@ -95,7 +95,7 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 默认不需要。只有这些情形：
 
 - 中控本机故障（fleet-server 起不来、数据库挂了）：fleetctl 依赖中控，此时 ssh 进中控机用 `journalctl -u fleet-server`、`systemctl`、`psql` 处理。
-- 机器的 SSH 指纹变了或 known_hosts 校验失败（exec 返回 255，stderr 提示主机密钥）：先确认不是 IP 冲突或被冒用，再在中控机更新 known_hosts。
+- 机器的 SSH 指纹变了或 known_hosts 校验失败（exec 返回 255，stderr 提示主机密钥）：先确认不是 IP 冲突或被冒用（比如服务商确实重装了系统），再对这台机器 `fleetctl upgrade-agent`：它会因指纹不符失败，`fleetctl retry <作业> --reset-host-key` 重新记录指纹（只有指纹不符失败的作业能这样重试；同机 IP 节点对宿主机做）。
 - 要交互式操作（编辑文件、长时间抓包）或持续数分钟的任务，超出 exec 的 10 分钟上限与 256 KiB 输出上限。
 - 给机器装中控没管理的东西。
 
@@ -105,7 +105,11 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 
 - 密钥按最小 scope 发；`exec` 等于 root shell，只给确实需要的 AI 或人。
 - exec 的命令全文会写进审计，不要在命令里放密码、令牌。
-- 登录有限速：同一用户名 15 分钟内错 5 次、同一 IP 错 20 次会被 429 拒绝。
+- 登录有限速（15 分钟窗口，来源 = IPv4 地址或 IPv6 /64）：同一用户名从同一来源错 5 次、同一来源错 20 次、同一用户名不分来源错 100 次会被 429 拒绝。别人在别处输错不会把你锁在外面；`fleet-server user-set` 重设密码时清掉该用户的失败记录。
+- 有 `write` 权限就能上架线路机、把节点挂过去，那台线路机的 agent 会收到节点的 SS 密码与代理账号：`write` 实际上也能拿到凭据，按凭据级别发。
+- 通知渠道（webhook、企业微信、Telegram 的 `api_base`）不能指向内网、环回、链路本地（云元数据）地址，域名在发送时只解析公网地址；确实要用内网 webhook 时在 `fleet.toml` 写 `[notify] allow_private = true`。改 Telegram 的 `api_base` 要同时重新填 `bot_token`。
+- 中控：fleet-server 在 systemd 沙箱里运行（无任何特权、只写 `/var/lib/fleet`、系统调用白名单），`/etc/fleet` 归 root、fleet 只读；部署后 `journalctl -u fleet-server` 里出现 SIGSYS / Permission denied 先看沙箱。Caddy 管理接口在 `/run/caddy/admin.sock`（只有 caddy 能连），改配置后用 `systemctl reload caddy`，直接 `caddy reload` 不带 `--config` 会连不上。网页带 CSP（只许本站脚本），不能再加内联脚本或外部 CDN。
+- 线路机：Xray 以 systemd 动态用户运行（不是 root），配置由 systemd 经标准输入交给它，读不到 `/etc/fleet-agent`、`/etc/ssh`，连不上本机的 systemd / D-Bus；访问日志实际在 `/var/log/private/fleet-xray`（`/var/log/fleet-xray` 是符号链接），agent 靠 `CAP_DAC_READ_SEARCH` 读。Xray 与落地机的 ssserver 都拦了链路本地网段与 100.100.100.200（客户经域名也到不了云元数据服务）；机器的 `/etc/resolv.conf` 若用 169.254.x 的 DNS，它们会解析不了域名。这些单元改动在升级 agent / 收敛时写入，Xray 下次重启、ssserver 下次收敛时生效。agent 上报按机器限速（突发 600 份、每秒补 1 份，超了回 429），agent 拒绝连公网的明文 http 中控。
 - 危险操作（退役、删除、轮换、批量升级、会改状态的 exec）先向负责人确认，再加 `--yes`。
 
 ## 6. 换线路机 / 搬空线路机 / 恢复已退役的机器 / 同机 IP 节点

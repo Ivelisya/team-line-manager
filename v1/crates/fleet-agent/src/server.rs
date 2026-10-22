@@ -41,7 +41,7 @@ fn is_private_ip(ip: IpAddr) -> bool {
     }
 }
 
-/// 中控地址是明文 http:// 且目标不是回环/内网（主机名无法判断内外网，一律算公网）→ 令牌和报告会明文过公网
+/// 中控地址是明文 http:// 且目标不是回环/内网（主机名无法判断内外网，一律算公网）→ 令牌和报告会明文过公网，agent 拒绝启动
 pub fn plain_http_over_public(url: &str) -> bool {
     let Ok(u) = reqwest::Url::parse(url) else { return false };
     if u.scheme() != "http" {
@@ -115,13 +115,6 @@ pub fn classify(status: u16, retry_after_s: Option<u64>, body: &str) -> Outcome<
         403 | 404 | 408 => Outcome::Retry { wait: None, why: short() },
         400..=499 => Outcome::Rejected(short()),
         _ => Outcome::Retry { wait: None, why: short() },
-    }
-}
-
-/// 启动时调用一次：明文 http 过公网要打醒目警告（不拒绝，实验室用内网 http）
-pub fn warn_if_plain_http(url: &str) {
-    if plain_http_over_public(url) {
-        tracing::warn!("!!! 安全警告：中控地址 {url} 是明文 http:// 且不在内网/回环：令牌与全部遥测会明文经公网传输，可被窃听、劫持。生产环境请改用 https:// !!!");
     }
 }
 
@@ -352,7 +345,7 @@ pub mod tests {
         assert!(!plain_http_over_public("http://localhost:8080"));
         assert!(!plain_http_over_public("http://[::1]:8080"));
         assert!(!plain_http_over_public("http://[fd00::1]:8080"));
-        // 公网 / 域名的明文 http 要警告
+        // 公网 / 域名的明文 http 拒绝
         assert!(plain_http_over_public("http://203.0.113.5:8080"));
         assert!(plain_http_over_public("http://172.32.0.1"));
         assert!(plain_http_over_public("http://fleet.example.com"));

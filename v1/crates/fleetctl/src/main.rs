@@ -254,12 +254,13 @@ struct ProvisionArgs {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// 保存中控地址与 API 密钥到配置文件
+    /// 保存中控地址与 API 密钥到配置文件（密钥从标准输入读一行：`fleetctl login --url <地址> < 密钥文件`）
     Login {
         #[arg(long)]
         url: String,
+        /// API 密钥。写在命令行会进 shell 历史与进程列表，不给就从标准输入读
         #[arg(long)]
-        token: String,
+        token: Option<String>,
     },
     /// 当前凭据的身份与权限
     Whoami,
@@ -357,7 +358,7 @@ enum Cmd {
     /// 重试失败的作业
     Retry {
         id: String,
-        /// 机器重装过、主机指纹变了：清掉已记录的指纹，按现在的重新记录
+        /// 机器重装过、主机指纹变了：清掉已记录的指纹，按现在的重新记录（只有因主机指纹不符失败的作业能用；同机 IP 节点对宿主机的作业用）
         #[arg(long)]
         reset_host_key: bool,
         /// root 密码放在哪个环境变量里（作业报「中控密钥登录不了，也没有可用的 root 密码」时用）
@@ -617,7 +618,41 @@ fn make_ctx(json: bool, session_login: bool) -> anyhow::Result<Ctx> {
     Ok(Ctx::new(Client::new(&url, Cred::Bearer(token))?, url.trim_end_matches('/').to_string(), json))
 }
 
-fn login(url: &str, token: &str, json: bool) -> anyhow::Result<u8> {
+/// 明文 http 且主机不是本机 / 内网地址：密钥会在公网上裸传
+fn insecure_http(url: &str) -> bool {
+    use std::net::IpAddr;
+    let Ok(u) = reqwest::Url::parse(url) else { return false };
+    let Some(host) = u.host_str().filter(|_| u.scheme() == "http") else { return false };
+    let Ok(ip) = host.trim_start_matches('[').trim_end_matches(']').parse::<IpAddr>() else {
+        return !host.eq_ignore_ascii_case("localhost");
+    };
+    !match ip {
+        IpAddr::V4(a) => a.is_loopback() || a.is_private() || a.is_link_local(),
+        IpAddr::V6(a) => a.is_loopback() || a.is_unique_local() || a.is_unicast_link_local(),
+    }
+}
+
+fn login(url: &str, token: Option<&str>, json: bool) -> anyhow::Result<u8> {
+    use std::io::{BufRead, IsTerminal, Write};
+    let token = match token {
+        Some(t) => t.trim().to_string(),
+        None => {
+            if std::io::stdin().is_terminal() {
+                eprint!("API 密钥：");
+                let _ = std::io::stderr().flush();
+            }
+            let mut l = String::new();
+            std::io::stdin().lock().read_line(&mut l)?;
+            l.trim().to_string()
+        }
+    };
+    if token.is_empty() {
+        anyhow::bail!("没有拿到 API 密钥：从标准输入给一行，或加 --token");
+    }
+    if insecure_http(url) {
+        eprintln!("警告：{url} 是明文 http 且不是本机或内网地址，API 密钥会在网络上明文传输；请改用 https://");
+    }
+    let token = token.as_str();
     let c = Client::new(url, Cred::Bearer(token.to_string()))?;
     // 先验证再保存，免得存进去一把用不了的
     let me = c.get("/auth/me")?;
@@ -633,7 +668,7 @@ fn login(url: &str, token: &str, json: bool) -> anyhow::Result<u8> {
 fn run(cli: Cli) -> anyhow::Result<u8> {
     let json = cli.json;
     if let Cmd::Login { url, token } = &cli.cmd {
-        return login(url, token, json);
+        return login(url, token.as_deref(), json);
     }
     let session_login = matches!(&cli.cmd, Cmd::Keys { cmd } if keys_user(cmd).is_some());
     let ctx = make_ctx(json, session_login)?;
@@ -780,6 +815,21 @@ fn main() -> ExitCode {
                 eprintln!("错误：{e:#}");
             }
             ExitCode::from(1)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::insecure_http;
+
+    #[test]
+    fn plain_http_warns_only_for_public_hosts() {
+        for u in ["http://192.168.31.60:8080", "http://127.0.0.1:8080", "http://localhost:8080", "http://10.1.2.3", "http://[::1]:8080", "http://[fd00::1]/", "https://fleet.kismet613.com", "https://8.8.8.8"] {
+            assert!(!insecure_http(u), "{u}");
+        }
+        for u in ["http://fleet.kismet613.com", "http://8.8.8.8:8080", "http://[2001:db8::1]/"] {
+            assert!(insecure_http(u), "{u}");
         }
     }
 }

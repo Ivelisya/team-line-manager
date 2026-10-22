@@ -12,9 +12,10 @@ RestartSec=3
 # 关停时 agent 最多等约 35 s 让上报器落盘、进行中的 apply 收尾
 TimeoutStopSec=45
 # v1 选择：以 root 运行（线路机上要 systemctl restart fleet-xray、读写 0600 的 xray.json），
-# 但丢掉全部 capability + 只读文件系统，只留下面两个可写目录。落地节点同一份单元也能用。
+# 但只留 CAP_DAC_READ_SEARCH + 只读文件系统，只留下面两个可写目录。落地节点同一份单元也能用。
+# CAP_DAC_READ_SEARCH：Xray 以动态用户运行，访问日志是它建的 0600 文件（在 root 的 0700 目录 /var/log/private 下），没有它读不到
 User=root
-CapabilityBoundingSet=
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/var/lib/fleet-agent /etc/fleet-agent

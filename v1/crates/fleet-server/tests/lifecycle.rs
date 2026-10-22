@@ -365,6 +365,9 @@ async fn provider_create_defaults_and_patch() {
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
     assert!(v.to_string().contains("已有同缩写的供应商"), "{v}");
     assert_eq!(t.req("PATCH", &path, Some(json!({"name": "  "})), None).await.0, StatusCode::BAD_REQUEST);
+    // 控制台地址只能是 http(s)（网页上是链接）
+    assert_eq!(t.req("PATCH", &path, Some(json!({"panel_url": "javascript:alert(1)"})), None).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(t.req("POST", "/api/v1/providers", Some(json!({"name": "丙", "code": "D", "panel_url": "panel.example"})), None).await.0, StatusCode::BAD_REQUEST);
     assert_eq!(t.req("PATCH", &format!("/api/v1/providers/{}", Uuid::now_v7()), Some(json!({"name": "x"})), None).await.0, StatusCode::NOT_FOUND);
     assert_eq!(get().await["name"], "甲改");
     // 清空：panel_url null、时区空串 = 回到 UTC；没传的字段不动
@@ -930,6 +933,15 @@ async fn direct_entry_create_desired_view_and_one_per_relay() {
     let ds = sim.round(&t).await;
     assert!(ds.generation as i64 > gen0);
     assert_eq!(ds.entries[0].remark, "线路机9-直出");
+
+    // 名字、备注有长度上限
+    let rev = t.get(&format!("/api/v1/machines/{ra}")).await["revision"].clone();
+    let (s, v) = t.req("PATCH", &format!("/api/v1/machines/{ra}"), Some(json!({"revision": rev, "label": "长".repeat(201)})), None).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    let (s, v) = t.req("PATCH", &format!("/api/v1/machines/{ra}"), Some(json!({"revision": rev, "note": "x".repeat(2001)})), None).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    let (s, v) = t.req("PATCH", &format!("/api/v1/machines/{ra}"), Some(json!({"revision": rev, "note": "备".repeat(2000)})), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
 }
 
 /// 搬空：只给节点建换线路机作业，直出入口不搬、也不算「跳过」；线路机本身不能换线路机

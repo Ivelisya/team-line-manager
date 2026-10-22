@@ -1,4 +1,4 @@
-//! 作业引擎：取消与补偿、退役后旧作业不能复活、purge 幂等、租约持有者校验、线路机退役守卫、退役即关告警、作业清理。
+//! 作业引擎：取消与补偿、退役后旧作业不能复活、purge 幂等、租约持有者校验、线路机退役守卫、退役即关告警、作业清理、重试重置主机指纹的范围、有步骤在执行时拒绝退役。
 //! 需要 PostgreSQL（见 common）。
 //!
 //! 「上架」类测试用 VPS 指向 127.0.0.1:1（必定连接被拒）：预检会失败，不需要真的 SSH 到任何机器。
@@ -591,4 +591,128 @@ async fn job_list_pages_with_total() {
     assert_eq!((done["total"].as_i64(), ids(&done)), (Some(4), vec![done_ids[1].clone()]), "筛选后的总数与偏移");
     let active = t.get("/api/v1/jobs?state=active").await;
     assert_eq!((active["total"].as_i64(), active["next_offset"].is_null()), (Some(1), true));
+}
+
+/// 直接在库里放一个失败在第 `step` 步、类别为 `ek` 的作业
+async fn seed_failed_job(t: &common::T, kind: &str, target: Uuid, step: i32, ek: &str) -> Uuid {
+    let mut tx = t.st.db.begin().await.unwrap();
+    let id = jobs::enqueue(&mut tx, kind, Some(target), json!({}), "test").await.unwrap();
+    tx.commit().await.unwrap();
+    sqlx::query("update job set state = 'failed', step = $2, finished_at = now() where id = $1").bind(id).bind(step).execute(&t.st.db).await.unwrap();
+    sqlx::query("update job_step set state = 'failed', error = 'x', error_kind = $3 where job_id = $1 and idx = $2")
+        .bind(id)
+        .bind(step)
+        .bind(ek)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    id
+}
+
+/// 重试时重置主机指纹：只给因指纹不符失败的作业（不限种类）、目标不是同机 IP 节点；其它情形 409，且不碰 known_hosts、不改作业与机器
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retry_reset_host_key_is_narrow() {
+    let t = setup(false).await;
+    let team = seed_team(&t, "团队1").await;
+    let kh = t.dir.path().join("known_hosts");
+    let pinned = "[127.0.0.1]:1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGWzOldOldOldOldOldOldOldOldOldOldOldOldOld\n";
+    std::fs::write(&kh, pinned).unwrap();
+    let vps = seed_vps(&t, team, 1, "127.0.0.1").await;
+    sqlx::query("update machine set ssh_port = 1, lifecycle = 'failed' where id = $1").bind(vps).execute(&t.st.db).await.unwrap();
+    let (tr, khr) = (&t, &kh);
+    let retry = |job: Uuid| async move { tr.req("POST", &format!("/api/v1/jobs/{job}/retry"), Some(json!({"reset_host_key": true})), None).await };
+    let unchanged = |job: Uuid| async move {
+        let (s, ek): (String, Option<String>) =
+            sqlx::query_as("select j.state::text, s.error_kind from job j join job_step s on s.job_id = j.id and s.idx = j.step where j.id = $1")
+                .bind(job)
+                .fetch_one(&tr.st.db)
+                .await
+                .unwrap();
+        assert_eq!(s, "failed", "被拒的重试不改作业");
+        assert!(ek.is_some(), "失败步骤的类别还在");
+        assert_eq!(std::fs::read_to_string(khr).unwrap(), pinned, "known_hosts 没被动过");
+    };
+
+    // 上架作业，但不是因为指纹失败的
+    let j = seed_failed_job(&t, "provision_vps", vps, 2, "network").await;
+    let (s, v) = retry(j).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("不是因为主机指纹不符"), "{v}");
+    unchanged(j).await;
+    assert_eq!(t.machine_lifecycle(vps).await, "failed", "事务回滚，机器没被拉回上架中");
+
+    // 指纹不符失败的上架作业：检查都过了才去 keyscan（127.0.0.1:1 连不上 → 重置失败），整个重试作废
+    sqlx::query("update job_step set error_kind = 'host_key' where job_id = $1").bind(j).execute(&t.st.db).await.unwrap();
+    let (s, v) = retry(j).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("重置主机指纹失败"), "{v}");
+    unchanged(j).await;
+    assert_eq!(t.machine_lifecycle(vps).await, "failed");
+
+    // 机器状态不对：先按作业种类检查机器，不去重置
+    sqlx::query("update machine set lifecycle = 'retired' where id = $1").bind(vps).execute(&t.st.db).await.unwrap();
+    let (s, v) = retry(j).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("已退役"), "{v}");
+    unchanged(j).await;
+    sqlx::query("update job set state = 'cancelled' where id = $1").bind(j).execute(&t.st.db).await.unwrap();
+
+    // 不限作业种类（升级 agent，在用的机器）：不是指纹失败的拒绝；指纹失败的放行到 keyscan（127.0.0.2:1 连不上 → 重置失败、重试作废）
+    let host = seed_vps(&t, team, 2, "127.0.0.2").await;
+    sqlx::query("update machine set ssh_port = 1 where id = $1").bind(host).execute(&t.st.db).await.unwrap();
+    let u = seed_failed_job(&t, "upgrade_agent", host, 0, "remote").await;
+    let (s, v) = retry(u).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("不是因为主机指纹不符"), "{v}");
+    unchanged(u).await;
+    sqlx::query("update job_step set error_kind = 'host_key' where job_id = $1").bind(u).execute(&t.st.db).await.unwrap();
+    let (s, v) = retry(u).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("重置主机指纹失败"), "{v}");
+    unchanged(u).await;
+    sqlx::query("update job set state = 'cancelled' where id = $1").bind(u).execute(&t.st.db).await.unwrap();
+
+    // 同机 IP 节点：登录的是宿主机，不能借它重置宿主机的指纹
+    let ipn = seed_vps(&t, team, 3, "198.51.100.10").await;
+    sqlx::query("update machine set host_id = $2, lifecycle = 'failed' where id = $1").bind(ipn).bind(host).execute(&t.st.db).await.unwrap();
+    let p = seed_failed_job(&t, "provision_ip", ipn, 0, "host_key").await;
+    let (s, v) = retry(p).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("同机 IP 节点"), "{v}");
+    unchanged(p).await;
+    assert_eq!(t.machine_lifecycle(ipn).await, "failed");
+}
+
+/// 退役：有作业正在执行一步（租约未过期）时拒绝；租约过期（执行者已不在）照常作废它
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retire_refused_while_a_step_is_running() {
+    let t = setup(false).await;
+    let team = seed_team(&t, "团队1").await;
+    let node = seed_node(&t, team, 1, "203.0.113.10", "active").await;
+    let mut tx = t.st.db.begin().await.unwrap();
+    let job = jobs::enqueue(&mut tx, "attach_entry", Some(node), json!({}), "test").await.unwrap();
+    tx.commit().await.unwrap();
+    sqlx::query("update job set state = 'running', lease_owner = 'w', lease_until = now() + interval '5 minutes' where id = $1")
+        .bind(job)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let name = t.get(&format!("/api/v1/machines/{node}")).await["name"].as_str().unwrap().to_string();
+    let (s, v) = t.req("POST", &format!("/api/v1/machines/{node}/retire"), Some(json!({"confirm": name})), None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("正在执行一步"), "{v}");
+    assert_eq!(t.machine_lifecycle(node).await, "active");
+    let st0: String = sqlx::query_scalar("select state::text from job where id = $1").bind(job).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(st0, "running");
+
+    // 退役原因有长度上限
+    let (s, v) = t.req("POST", &format!("/api/v1/machines/{node}/retire"), Some(json!({"confirm": name, "reason": "x".repeat(2001)})), None).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+
+    // 租约过期：执行者已经不在，作废它、照常退役
+    sqlx::query("update job set lease_until = now() - interval '1 second' where id = $1").bind(job).execute(&t.st.db).await.unwrap();
+    t.post(&format!("/api/v1/machines/{node}/retire"), json!({"confirm": name})).await;
+    assert_eq!(t.machine_lifecycle(node).await, "retiring");
+    let st0: String = sqlx::query_scalar("select state::text from job where id = $1").bind(job).fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(st0, "cancelled");
 }

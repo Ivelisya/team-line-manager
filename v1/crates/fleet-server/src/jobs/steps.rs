@@ -3,7 +3,7 @@
 mod lifecycle;
 
 use super::scripts::{self, vars, SsInst};
-use super::{log, JobRow, Outcome};
+use super::{clip, log, JobRow, Outcome};
 use crate::crypto::{random_token, sha256};
 use crate::entries;
 use crate::ssh::{self, kind_of, ErrKind, Output, StepError, Target};
@@ -119,8 +119,9 @@ impl Ctx<'_> {
         Ok(Some(self.st.secrets.open_str(&raw)?))
     }
 
-    async fn log(&self, msg: impl AsRef<str>) { log(self.st, self.job.id, "info", msg).await }
-    async fn warn(&self, msg: impl AsRef<str>) { log(self.st, self.job.id, "warn", msg).await }
+    // 步骤的日志、警告常带远端输出：按 clip 截短
+    async fn log(&self, msg: impl AsRef<str>) { log(self.st, self.job.id, "info", clip(msg.as_ref())).await }
+    async fn warn(&self, msg: impl AsRef<str>) { log(self.st, self.job.id, "warn", clip(msg.as_ref())).await }
 
     fn dist(&self, name: &str) -> std::path::PathBuf { self.st.cfg.dist_dir.join(name) }
 }
@@ -509,12 +510,20 @@ async fn agent(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let can_rollback = upgrading && replaced;
     let token = format!("fa1_{}", random_token(32));
     let token_id = crate::db::new_id();
-    sqlx::query("insert into agent_token (id, machine_id, token_hash) values ($1, $2, $3)")
-        .bind(token_id)
-        .bind(m.id)
-        .bind(sha256(token.as_bytes()))
-        .execute(&c.st.db)
-        .await?;
+    // 只给上架中、运行中的机器签：这一步跑着时机器被退役了（退役的「撤销令牌」可能已经做完），不能再留下一枚有效令牌
+    let n = sqlx::query(
+        "insert into agent_token (id, machine_id, token_hash)
+         select $1, $2, $3 where exists (select 1 from machine where id = $2 and lifecycle in ('provisioning', 'active'))",
+    )
+    .bind(token_id)
+    .bind(m.id)
+    .bind(sha256(token.as_bytes()))
+    .execute(&c.st.db)
+    .await?
+    .rows_affected();
+    if n == 0 {
+        bail!("机器已经不在上架中或运行中（可能刚被退役），不再签发 agent 令牌");
+    }
     // 记下这枚新令牌，wait_report 用它判断「新 agent 已经在用新令牌上报」。
     // 从这里起要用 dist 里的程序重启 agent（pushed）：之后的失败（起不来、没上报、线路机检查没通过）与新版本有关
     c.set_params(json!({"agent_token_id": token_id, "agent_replaced": replaced, "pushed": true})).await?;
@@ -975,7 +984,7 @@ async fn note<T, E: std::fmt::Display>(st: &AppState, job: Uuid, what: &str, r: 
     match r {
         Ok(v) => Some(v),
         Err(e) => {
-            log(st, job, "warn", format!("补偿「{what}」失败（已忽略）：{e}")).await;
+            log(st, job, "warn", clip(&format!("补偿「{what}」失败（已忽略）：{e}"))).await;
             None
         }
     }
