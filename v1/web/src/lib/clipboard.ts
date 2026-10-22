@@ -15,10 +15,10 @@ export async function writeClipboard(text: string): Promise<boolean> {
   } catch { return false; }
 }
 
-/** 复制并提示：copyText('1.2.3.4', 'IP') → “已复制 IP” */
-export async function copyText(text: string, label = '内容'): Promise<boolean> {
+/** 复制并提示：copyText('1.2.3.4', ' IP') → “已复制 IP”；show：短的值（IP、名称）一并写出 → “已复制 IP 1.2.3.4” */
+export async function copyText(text: string, label = '内容', show = false): Promise<boolean> {
   const ok = await writeClipboard(text);
-  if (ok) toast.ok(`已复制${label}`); else toast.err('复制失败，请手动选择文本');
+  if (ok) toast.ok(`已复制${label}${show ? ` ${text}` : ''}`); else toast.err('复制失败，请手动选择文本');
   return ok;
 }
 

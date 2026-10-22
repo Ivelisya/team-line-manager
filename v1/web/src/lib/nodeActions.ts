@@ -37,6 +37,12 @@ export const openMaint = maint.open;
 export const closeMaint = maint.close;
 export const useMaintTarget = maint.use;
 
+/** 升级 agent 前的确认（卡片菜单、抽屉「管理」）：对话框见 components/app/UpgradeDialog */
+const upgrade = target();
+export const openUpgrade = upgrade.open;
+export const closeUpgrade = upgrade.close;
+export const useUpgradeTarget = upgrade.use;
+
 /** 登记续费（任何有订阅的机器，不只是快到期的） */
 const renew = target();
 export const openRenew = renew.open;
