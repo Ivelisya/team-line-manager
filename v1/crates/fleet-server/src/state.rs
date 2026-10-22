@@ -5,7 +5,7 @@ use serde::Serialize;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Executor, PgPool};
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::sync::{broadcast, Notify};
 use uuid::Uuid;
 
@@ -68,9 +68,10 @@ pub struct Inner {
     pub live: crate::views::LiveCache,
     /// 有新上报、实时指标该重新比对了（`live::run_forever` 消费）
     pub metrics_dirty: AtomicBool,
-    /// 告警通知发送队列，每个渠道一个、有容量上限（`notify::enqueue` 第一次给某渠道入队时建好并启动它的发送任务；
-    /// 渠道被删除或停用后，发送任务发现时把自己移出这里并退出）
-    pub notify_queues: Mutex<std::collections::HashMap<Uuid, crate::notify::Queue>>,
+    /// 有新的待发通知了（`notify::enqueue` 写进 notify_outbox 之后）：唤醒发送循环（`notify::run_forever`），不等它兜底重查
+    pub notify_wake: Notify,
+    /// 发送循环起了没有（每个进程一个，`notify::start`）
+    pub notify_started: AtomicBool,
     /// 唤醒作业引擎去领取（`wake_jobs`）；引擎空闲时等它，兜底每 800 ms 重查
     pub jobs_wake: Notify,
 }
@@ -104,7 +105,8 @@ impl AppState {
             access_cache,
             live,
             metrics_dirty: AtomicBool::new(false),
-            notify_queues: Default::default(),
+            notify_wake: Notify::new(),
+            notify_started: AtomicBool::new(false),
             jobs_wake: Notify::new(),
         }))
     }

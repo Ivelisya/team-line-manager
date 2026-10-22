@@ -171,8 +171,7 @@ pub async fn delete(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<U
     let (name,) = name.ok_or_else(|| ApiError::not_found("没有这个通知渠道"))?;
     audit(&mut tx, &a.name, "notify.delete", "notify_channel", Some(id), json!({"name": name})).await?;
     tx.commit().await?;
-    // 丢掉它的发送队列：队列空着时发送任务立刻退出，不留一个空等的任务；还有排着的，取下一条时发现渠道已不在，连同其余的一起丢掉退出
-    st.notify_queues.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+    // 它排着的待发随外键一起删掉；正在发的那条发完，发送任务取下一条时发现没有了就退出
     st.emit(Event::Catalog);
     Ok(ok(json!({"ok": true})))
 }
@@ -202,9 +201,9 @@ struct LogOut {
     ts: OffsetDateTime,
     ok: bool,
     error: Option<String>,
-    /// firing / repeat / resolved / test
+    /// firing / repeat / resolved / test / silence（有人新建、删除了静默或维护窗口）
     kind: String,
-    /// 告警对象的显示名；测试消息、机器已删除时为 null
+    /// 告警对象的显示名（中控自身的告警是「中控」）；静默 / 维护变更是「静默 / 维护变更」；测试消息、机器已删除时为 null
     subject_name: Option<String>,
     #[serde(skip)]
     rule: Option<String>,
@@ -216,7 +215,9 @@ struct LogOut {
 pub async fn log(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<LogQ>) -> ApiResult<Json<Value>> {
     let mut v: Vec<LogOut> = sqlx::query_as(
         "select l.id, l.channel_id, c.name channel_name, l.incident_id, l.ts, l.ok, l.error, l.kind,
-                display_name(m.kind::text, m.label, t.name, m.number) || case when m.lifecycle = 'retired' then '（已退役）' else '' end subject_name, i.rule
+                case when l.kind = 'silence' then '静默 / 维护变更' when i.rule like 'central!_%' escape '!' then '中控'
+                     else display_name(m.kind::text, m.label, t.name, m.number) || case when m.lifecycle = 'retired' then '（已退役）' else '' end end subject_name,
+                i.rule
          from notify_log l left join notify_channel c on c.id = l.channel_id
          left join incident i on i.id = l.incident_id left join machine m on m.id = i.subject_id left join team t on t.id = m.team_id
          order by l.id desc limit $1",

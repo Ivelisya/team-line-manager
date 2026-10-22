@@ -156,7 +156,8 @@ install -m 644 "$PKG/fleet-ipintel-fetch.service" "$PKG/fleet-ipintel-fetch.time
 # 登录后只能执行 forced command（把最新一份 cat 出来）；文件由 root 持有，这个用户自己改不了。
 # /etc/fleet/backup-age.recipients（age 公钥，一行一个）存在时备份用 age 加密成 .tar.age（上面装了 age 包）
 id fleet-backup >/dev/null 2>&1 || useradd --system --home-dir /var/lib/fleet-backup --shell /bin/sh fleet-backup
-install -d -m 750 -o root -g fleet-backup /var/backups/fleet
+# 目录 0755：fleet-server 要看得到最新一份的时间（超过 26 小时开告警 central_backup_stale）；每份备份本身仍是 0640 root:fleet-backup
+install -d -m 755 -o root -g fleet-backup /var/backups/fleet
 install -m 644 "$PKG/fleet-backup.sh" /opt/fleet/backup/fleet-backup.sh
 install -m 755 "$PKG/fleet-backup-latest.sh" /opt/fleet/backup/fleet-backup-latest.sh
 install -m 644 "$PKG/fleet-backup.service" "$PKG/fleet-backup.timer" /etc/systemd/system/

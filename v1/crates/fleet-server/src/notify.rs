@@ -5,33 +5,32 @@
 //! - wecom：`{url}`（群机器人 webhook 地址）
 //! - webhook：`{url}`，POST JSON
 //!
-//! 触发时机在 `alerts.rs`；这里只管「给定一条通知，发给所有符合条件的渠道，并记 `notify_log`」。
+//! 触发时机在 `alerts.rs`（中控自身的告警在 `selfmon.rs`）；这里管「给定一条通知，排进所有符合条件的渠道、发出去，并记 `notify_log`」。
+//! 待发的写在库里（`notify_outbox`）：中控重启、部署后接着发；失败的按退避重试，入队满 30 分钟还没发出才放弃。
 
 use crate::state::AppState;
+use futures::FutureExt;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
+use std::panic::AssertUnwindSafe;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use time::OffsetDateTime;
-use tokio::sync::mpsc::error::TrySendError;
 use uuid::Uuid;
 
 /// 单次发送超时
 const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 const TELEGRAM_BASE: &str = "https://api.telegram.org";
 
-/// 每个渠道的发送队列最多积压这么多条（渠道一直超时、被限流时），满了新的直接丢弃
-const QUEUE_CAP: usize = 500;
-/// 排队超过这么久还没轮到的通知不再发：告警多半已经恢复或又提醒过了，晚到的旧消息只会误导
-const MAX_QUEUED: Duration = Duration::from_secs(600);
-/// 因队列满丢弃的通知累计条数（进程启动起），写进 warn 日志
-static DROPPED: AtomicU64 = AtomicU64::new(0);
+/// 入队满这么久还没发出（渠道一直失败）就放弃，记一条失败：渠道在这段时间里恢复了就补发。
+/// 渠道连续失败另开告警（central_channel_failing，见 selfmon.rs），经别的渠道发
+const MAX_AGE: Duration = Duration::from_secs(30 * 60);
 
-/// 一个渠道的发送队列：(入队时间, 通知)
-pub type Queue = tokio::sync::mpsc::Sender<(Instant, Notice)>;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Kind {
     /// 新触发
     Firing,
@@ -40,6 +39,8 @@ pub enum Kind {
     Resolved,
     /// 渠道测试
     Test,
+    /// 有人新建 / 删除了静默或维护窗口（发给所有启用的渠道，不受静默影响，见 api/misc.rs `tell_channels`）
+    Silence,
 }
 
 impl Kind {
@@ -49,11 +50,13 @@ impl Kind {
             Kind::Repeat => "repeat",
             Kind::Resolved => "resolved",
             Kind::Test => "test",
+            Kind::Silence => "silence",
         }
     }
 }
 
-#[derive(Debug, Clone)]
+/// 一条通知。入队时整条存进 `notify_outbox.notice`（JSON），发送时按入队时的样子发
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Notice {
     pub kind: Kind,
     pub incident_id: Option<Uuid>,
@@ -63,8 +66,10 @@ pub struct Notice {
     pub machine: String,
     /// 不带机器名前缀的原因描述
     pub summary: String,
+    #[serde(with = "time::serde::rfc3339")]
     pub at: OffsetDateTime,
     /// 告警开始时间（持续提醒和恢复通知里算持续时长）
+    #[serde(with = "time::serde::rfc3339::option")]
     pub opened_at: Option<OffsetDateTime>,
 }
 
@@ -91,6 +96,9 @@ pub fn rule_name(key: &str) -> &str {
         "ipintel_new_city" => "来源出现新城市",
         "ipintel_datacenter_source" => "机房 / VPN 来源",
         "policy_blocked" => "访问策略暂停",
+        "central_channel_failing" => "通知渠道发送失败",
+        "central_backup_stale" => "备份过期",
+        "central_disk_low" => "中控磁盘空间不足",
         other => other,
     }
 }
@@ -150,6 +158,7 @@ fn title(n: &Notice) -> String {
         (Kind::Resolved, Some(d)) => format!("告警已恢复（持续 {d}）"),
         (Kind::Resolved, None) => "告警已恢复".into(),
         (Kind::Test, _) => "测试通知".into(),
+        (Kind::Silence, _) => "静默 / 维护变更".into(),
     }
 }
 
@@ -157,6 +166,10 @@ fn title(n: &Notice) -> String {
 pub fn format_text(n: &Notice) -> String {
     if n.kind == Kind::Test {
         return format!("【测试通知】团队线路管理的告警通知渠道可用\n时间：{}（北京时间）", beijing(n.at));
+    }
+    // 静默 / 维护变更：摘要是写好的几行（谁、新建还是删除、对象、起止、备注）
+    if n.kind == Kind::Silence {
+        return format!("【{}】{}\n时间：{}（北京时间）", title(n), n.summary, beijing(n.at));
     }
     format!(
         "【{}】{}\n机器：{}\n规则：{}\n摘要：{}\n时间：{}（北京时间）",
@@ -196,6 +209,11 @@ fn md(s: &str, max: usize) -> String {
 pub fn format_wecom(n: &Notice) -> String {
     if n.kind == Kind::Test {
         return format!("### 测试通知\n> 团队线路管理的告警通知渠道可用\n> 时间：{}（北京时间）", beijing(n.at));
+    }
+    // 摘要里有备注、机器名：逐行转义
+    if n.kind == Kind::Silence {
+        let body: Vec<String> = n.summary.lines().map(|l| format!("> {}", md(l, 300))).collect();
+        return format!("### <font color=\"warning\">{}</font>\n{}\n> 时间：{}（北京时间）", title(n), body.join("\n"), beijing(n.at));
     }
     let color = match (n.kind, n.severity.as_str()) {
         (Kind::Resolved, _) => "info",
@@ -248,7 +266,7 @@ pub fn http_url(s: &str, what: &str) -> Result<String, String> {
 fn http_url_v(v: &Value, what: &str) -> Result<String, String> { http_url(v.as_str().unwrap_or(""), what) }
 
 /// 不是公网地址：环回、未指定、私网、CGNAT、链路本地（含云元数据 169.254.169.254）、ULA、组播、广播与保留、文档、基准测试网段；
-/// IPv4 映射的 IPv6 按其中的 IPv4 判断
+/// IPv4 映射的 IPv6 按其中的 IPv4 判断；内嵌 IPv4 的转换地址（NAT64、6to4、Teredo：经转换网关能到任意 IPv4，含内网与云元数据）一律不算
 pub fn non_global(ip: IpAddr) -> bool {
     match ip.to_canonical() {
         IpAddr::V4(a) => {
@@ -267,7 +285,17 @@ pub fn non_global(ip: IpAddr) -> bool {
         }
         IpAddr::V6(a) => {
             let s = a.segments();
-            a.is_loopback() || a.is_unspecified() || a.is_multicast() || s[0] & 0xfe00 == 0xfc00 || s[0] & 0xffc0 == 0xfe80 || (s[0] == 0x2001 && s[1] == 0x0db8)
+            a.is_loopback()
+                || a.is_unspecified()
+                || a.is_multicast()
+                || s[0] & 0xfe00 == 0xfc00
+                || s[0] & 0xffc0 == 0xfe80
+                || (s[0] == 0x2001 && s[1] == 0x0db8)
+                // NAT64：64:ff9b::/96 与本地用的 64:ff9b:1::/48（整个 64:ff9b::/32 都没有普通公网地址）
+                || (s[0] == 0x0064 && s[1] == 0xff9b)
+                // Teredo 2001::/32、6to4 2002::/16
+                || (s[0] == 0x2001 && s[1] == 0)
+                || s[0] == 0x2002
         }
     }
 }
@@ -340,7 +368,8 @@ impl reqwest::dns::Resolve for PublicOnly {
     }
 }
 
-/// `allow_private`（配置 `[notify] allow_private`）为假时用只解析公网地址的客户端
+/// `allow_private`（配置 `[notify] allow_private`）为假时用只解析公网地址的客户端。
+/// 不走环境变量里的代理（HTTP(S)_PROXY、ALL_PROXY）：经代理时目标域名由代理去解析，PublicOnly 就管不住了
 fn client(allow_private: bool) -> &'static reqwest::Client {
     static OPEN: OnceLock<reqwest::Client> = OnceLock::new();
     static PUBLIC: OnceLock<reqwest::Client> = OnceLock::new();
@@ -348,6 +377,7 @@ fn client(allow_private: bool) -> &'static reqwest::Client {
         let b = reqwest::Client::builder()
             .timeout(SEND_TIMEOUT)
             .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
             .user_agent(concat!("fleet-server/", env!("CARGO_PKG_VERSION")));
         let b = if public { b.dns_resolver(Arc::new(PublicOnly)) } else { b };
         b.build().expect("构建 HTTP 客户端")
@@ -385,8 +415,16 @@ impl SendErr {
     }
 }
 
-/// 发送失败后的重试间隔：最多再试两次（0.5 秒、2 秒），不拖住后面的通知太久
-const RETRY_BACKOFF: [Duration; 2] = [Duration::from_millis(500), Duration::from_secs(2)];
+/// 可重试的失败之后隔多久再发同一条（429 按渠道给的等待时长）：渠道已连续失败 n 次就等第 n 项，再往后都等最后一项，
+/// 直到入队满 MAX_AGE。按渠道而不是按条计：渠道一直不通时新排进来的不会从 0.5 秒重新密集地试
+const RETRY_BACKOFF: [Duration; 6] = [
+    Duration::from_millis(500),
+    Duration::from_secs(2),
+    Duration::from_secs(10),
+    Duration::from_secs(30),
+    Duration::from_secs(60),
+    Duration::from_secs(120),
+];
 /// 429 要求的等待时长最多等这么久
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
 
@@ -396,26 +434,7 @@ fn retry_after(header: Option<&str>, body: &Value) -> Option<Duration> {
     Some(Duration::from_secs(secs).min(MAX_RETRY_AFTER))
 }
 
-/// 发一条通知到一个渠道（只发一次，渠道测试用）。错误文本里不带令牌（reqwest 错误会带 URL，这里去掉）。
-pub async fn send(kind: &str, config: &Value, n: &Notice, allow_private: bool) -> Result<(), String> {
-    send_once(kind, config, n, allow_private).await.map_err(|e| e.msg)
-}
-
-/// 发送，网络错误 / 5xx 时退避重试；429 按渠道给的等待时长再试
-async fn send_retry(kind: &str, config: &Value, n: &Notice, allow_private: bool) -> Result<(), String> {
-    let mut res = send_once(kind, config, n, allow_private).await;
-    for wait in RETRY_BACKOFF {
-        match &res {
-            Err(e) if e.retry => {
-                tokio::time::sleep(e.wait.unwrap_or(wait)).await;
-                res = send_once(kind, config, n, allow_private).await;
-            }
-            _ => break,
-        }
-    }
-    res.map_err(|e| e.msg)
-}
-
+/// 发一条通知到一个渠道（只发一次）。错误文本里不带令牌（reqwest 错误会带 URL，这里去掉）。
 /// 渠道的回复只取 HTTP 状态和它 JSON 里的错误说明（截短），不记原始响应体：发送记录 read 密钥也能看
 async fn send_once(kind: &str, config: &Value, n: &Notice, allow_private: bool) -> Result<(), SendErr> {
     let cfg = normalize_config(kind, config).map_err(SendErr::fatal)?;
@@ -465,90 +484,202 @@ struct Channel {
     config_enc: Vec<u8>,
 }
 
-/// 发送并记 `notify_log`（一次投递记一条，重试不重复记）。渠道测试不重试，让用户马上看到结果。
-async fn deliver(st: &AppState, ch: &Channel, n: &Notice) -> Result<(), String> {
+/// 发一次，并记下渠道的连续失败状态（`notify_channel.failing_since / fail_count / last_error`：发成功清零，失败累加；
+/// 连续失败满 5 分钟开告警，见 selfmon.rs）。渠道测试也算：测试发成功了，渠道就算恢复了
+async fn attempt(st: &AppState, ch: &Channel, n: &Notice) -> Result<(), SendErr> {
     let res = match st.secrets.open_str(&ch.config_enc).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()) {
-        Some(cfg) if n.kind == Kind::Test => send(&ch.kind, &cfg, n, st.cfg.notify.allow_private).await,
-        Some(cfg) => send_retry(&ch.kind, &cfg, n, st.cfg.notify.allow_private).await,
-        None => Err("渠道配置无法解密（密钥变了？）".into()),
+        Some(cfg) => send_once(&ch.kind, &cfg, n, st.cfg.notify.allow_private).await,
+        None => Err(SendErr::fatal("渠道配置无法解密（密钥变了？）")),
     };
-    let logged = sqlx::query("insert into notify_log (channel_id, incident_id, ok, error, kind) values ($1, $2, $3, $4, $5)")
-        .bind(ch.id)
-        .bind(n.incident_id)
-        .bind(res.is_ok())
-        .bind(res.as_ref().err())
-        .bind(n.kind.as_str())
-        .execute(&st.db)
-        .await;
-    if let Err(e) = logged {
-        tracing::warn!("写通知记录失败：{e}");
+    let q = match &res {
+        Ok(()) => sqlx::query("update notify_channel set failing_since = null, fail_count = 0, last_error = null where id = $1 and fail_count > 0").bind(ch.id),
+        Err(e) => sqlx::query("update notify_channel set failing_since = coalesce(failing_since, now()), fail_count = fail_count + 1, last_error = $2 where id = $1")
+            .bind(ch.id)
+            .bind(&e.msg),
+    };
+    if let Err(e) = q.execute(&st.db).await {
+        tracing::warn!("记录渠道发送结果失败：{e}");
     }
     if let Err(e) = &res {
-        tracing::warn!(channel = %ch.id, "通知发送失败：{e}");
+        tracing::warn!(channel = %ch.id, "通知发送失败：{}", e.msg);
     }
     res
 }
 
-/// 一个渠道的发送任务：逐条按顺序发，排队超过 MAX_QUEUED 的丢弃。排队期间渠道可能被删除或停用，发送时以数据库里的当前配置为准；
-/// 查不到（已删除或停用）就把自己从队列表里移除并退出，队列里剩下的一起丢掉（再启用后下一条通知会重建任务）
-fn channel_worker(st: &AppState, id: Uuid) -> Queue {
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<(Instant, Notice)>(QUEUE_CAP);
-    let st = st.clone();
-    tokio::spawn(async move {
-        while let Some((queued, n)) = rx.recv().await {
-            if queued.elapsed() > MAX_QUEUED {
-                tracing::warn!(channel = %id, rule = %n.rule, "通知排队超过 {} 分钟还没发出，丢弃", MAX_QUEUED.as_secs() / 60);
-                continue;
-            }
-            match sqlx::query_as::<_, Channel>("select id, kind, config_enc from notify_channel where id = $1 and enabled").bind(id).fetch_optional(&st.db).await {
-                Ok(Some(ch)) => {
-                    let _ = deliver(&st, &ch, &n).await;
-                }
-                Ok(None) => {
-                    st.notify_queues.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
-                    break;
-                }
-                Err(e) => tracing::warn!(channel = %id, "读取通知渠道失败：{e}"),
-            }
-        }
-    });
-    tx
+/// 记一条发送记录，同一条语句删掉这条待发（`outbox`）。一次投递记一条：重试不重复记，放弃时记最后一次失败的原因。
+/// 渠道、告警在发送期间被删了的照样记（对应字段为 null），不会因外键写不进去
+async fn record(st: &AppState, outbox: Option<i64>, ch: Uuid, n: &Notice, err: Option<&str>) -> sqlx::Result<()> {
+    sqlx::query(
+        "with d as (delete from notify_outbox where id = $6)
+         insert into notify_log (channel_id, incident_id, ok, error, kind)
+         select (select id from notify_channel where id = $1), (select id from incident where id = $2), $3, $4, $5",
+    )
+    .bind(ch)
+    .bind(n.incident_id)
+    .bind(err.is_none())
+    .bind(err)
+    .bind(n.kind.as_str())
+    .bind(outbox)
+    .execute(&st.db)
+    .await
+    .map(|_| ())
 }
 
-/// 不阻塞告警循环：放进所有已启用、且 `min_severity` 不高于它的渠道各自的发送队列（队列满了丢弃这条并记 warn）。
-/// 同一渠道内逐条按顺序发（一批告警同时触发时不会并发打到同一个渠道，Telegram 等不容易被限流）；
-/// 渠道之间互不等待，一个渠道一直超时不拖慢别的。
-/// 触发/持续提醒在入队时就刷新 `incident.notified_at`（持续提醒的计时起点）：队列积压时下一轮评估不会重复入队。
+/// 这个渠道收到过这条告警的触发或提醒、之后还没收到它的恢复（看它最近一条送达的触发 / 提醒 / 恢复）。
+/// 同一渠道按入队顺序发：轮到恢复时，排在它前面的触发已经发出或放弃了
+async fn got_firing(st: &AppState, ch: Uuid, incident: Option<Uuid>) -> sqlx::Result<bool> {
+    let last: Option<String> = sqlx::query_scalar(
+        "select kind from notify_log where channel_id = $1 and incident_id = $2 and ok and kind in ('firing', 'repeat', 'resolved')
+         order by id desc limit 1",
+    )
+    .bind(ch)
+    .bind(incident)
+    .fetch_optional(&st.db)
+    .await?;
+    Ok(last.is_some_and(|k| k != "resolved"))
+}
+
+/// 一个渠道排在最前面的一条待发，连同渠道此刻的配置（排队期间渠道可能被改、停用：发送时以库里的当前配置为准）
+#[derive(sqlx::FromRow)]
+struct Pending {
+    id: i64,
+    notice: sqlx::types::Json<Notice>,
+    created_at: OffsetDateTime,
+    kind: String,
+    config_enc: Vec<u8>,
+    enabled: bool,
+    fail_count: i32,
+    last_error: Option<String>,
+}
+
+/// 一个渠道的发送任务：按入队顺序逐条发，发完（没有待发的了）就退出。读写库出错时歇 5 秒再退出，交回发送循环重新起（不空转）
+async fn drain(st: &AppState, ch: Uuid) {
+    if let Err(e) = drain_queue(st, ch).await {
+        tracing::warn!(channel = %ch, "发送通知时读写库失败：{e}");
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+}
+
+/// 可重试的失败（网络错误、5xx、429）退避后重发同一条，后面的接着排（保证顺序）；渠道拒绝、配置有误之类重试也没用的记失败、发下一条；
+/// 入队满 MAX_AGE 还没发出的放弃。恢复通知只发给收到过这条告警触发的渠道。渠道停用了就丢掉它排着的（再启用后只发新的），删了的随外键一起没了
+async fn drain_queue(st: &AppState, ch: Uuid) -> sqlx::Result<()> {
+    loop {
+        let p: Option<Pending> = sqlx::query_as(
+            "select o.id, o.notice, o.created_at, c.kind, c.config_enc, c.enabled, c.fail_count, c.last_error
+             from notify_outbox o join notify_channel c on c.id = o.channel_id
+             where o.channel_id = $1 order by o.id limit 1",
+        )
+        .bind(ch)
+        .fetch_optional(&st.db)
+        .await?;
+        let Some(p) = p else { return Ok(()) };
+        if !p.enabled {
+            sqlx::query("delete from notify_outbox where channel_id = $1").bind(ch).execute(&st.db).await?;
+            return Ok(());
+        }
+        let n = &p.notice.0;
+        // 这个渠道没收到过这条告警的触发（触发没发出去，或渠道是后来才加的、后来才收这个级别的）：不发恢复，删掉就是
+        if n.kind == Kind::Resolved && !got_firing(st, ch, n.incident_id).await? {
+            sqlx::query("delete from notify_outbox where id = $1").bind(p.id).execute(&st.db).await?;
+            continue;
+        }
+        let err = if OffsetDateTime::now_utc() - p.created_at > MAX_AGE {
+            Some(short(&format!("入队 {} 分钟还没发出，放弃（最近一次失败：{}）", MAX_AGE.as_secs() / 60, p.last_error.as_deref().unwrap_or("-"))))
+        } else {
+            let c = Channel { id: ch, kind: p.kind, config_enc: p.config_enc };
+            match attempt(st, &c, n).await {
+                Ok(()) => None,
+                Err(e) if e.retry => {
+                    let backoff = RETRY_BACKOFF[(p.fail_count.max(0) as usize).min(RETRY_BACKOFF.len() - 1)];
+                    tokio::time::sleep(e.wait.unwrap_or(backoff)).await;
+                    continue;
+                }
+                Err(e) => Some(e.msg),
+            }
+        };
+        // 发出去了（或放弃了）就要记下、删掉这条。库写不进去（磁盘满之类）时隔 10 秒再写，不退出：退出会被重新领走、把已经发出的再发一遍
+        while let Err(e) = record(st, Some(p.id), ch, n, err.as_deref()).await {
+            tracing::warn!(channel = %ch, "写通知记录失败，10 秒后再写：{e}");
+            tokio::time::sleep(Duration::from_secs(10)).await;
+        }
+    }
+}
+
+/// 发送循环（每个进程一个，`start` 起）：notify_outbox 里有待发的渠道各起一个发送任务（`drain`）——渠道之间互不等待，
+/// 一个渠道一直超时不拖慢别的；同一渠道内逐条按顺序发，一批告警同时触发时不会并发打到同一个渠道（Telegram 等不容易被限流）。
+/// 入队时唤醒（`AppState::notify_wake`），兜底每 5 秒查一次：中控重启、部署后接着发上次没发完的
+pub async fn run_forever(st: AppState) {
+    let mut tasks = tokio::task::JoinSet::new();
+    let mut busy: HashSet<Uuid> = HashSet::new();
+    loop {
+        match sqlx::query_scalar::<_, Uuid>("select distinct channel_id from notify_outbox").fetch_all(&st.db).await {
+            Ok(chs) => {
+                for ch in chs {
+                    if !busy.insert(ch) {
+                        continue;
+                    }
+                    let st = st.clone();
+                    tasks.spawn(async move {
+                        // 发送任务 panic 不能让这个渠道从此停发：记下来，歇 10 秒（不空转）再交回发送循环重新起
+                        if AssertUnwindSafe(drain(&st, ch)).catch_unwind().await.is_err() {
+                            tracing::error!(channel = %ch, "通知发送任务 panic，10 秒后重来");
+                            tokio::time::sleep(Duration::from_secs(10)).await;
+                        }
+                        ch
+                    });
+                }
+            }
+            Err(e) => tracing::warn!("读取待发通知失败：{e}"),
+        }
+        tokio::select! {
+            _ = st.notify_wake.notified() => {}
+            Some(Ok(ch)) = tasks.join_next() => {
+                busy.remove(&ch);
+            }
+            _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+        }
+    }
+}
+
+/// 起发送循环（每个进程一次）：spawn_background 里起；第一次入队时也起（测试不起后台循环）
+pub fn start(st: &AppState) {
+    if !st.notify_started.swap(true, Ordering::Relaxed) {
+        crate::supervise(st, "通知发送", false, run_forever);
+    }
+}
+
+/// 不阻塞告警循环：给每个已启用、`min_severity` 不高于它的渠道各写一行待发（`notify_outbox`，中控重启、部署后照样发），唤醒发送循环。
+/// 静默 / 维护变更发给所有已启用的渠道，不看级别。告警对象就是某个渠道时（渠道连续失败的告警）不发给它自己。
+/// 触发 / 持续提醒在同一事务里刷新 `incident.notified_at`：持续提醒从这时起计时，恢复时据此判断报过触发没有（见 alerts.rs）。
+/// 写进去了才算通知过：入队失败（库出错）不刷新，下一轮评估补发「触发」
 pub async fn enqueue(st: &AppState, n: Notice) {
-    if matches!(n.kind, Kind::Firing | Kind::Repeat) {
-        if let Some(id) = n.incident_id {
-            if let Err(e) = sqlx::query("update incident set notified_at = now() where id = $1").bind(id).execute(&st.db).await {
-                tracing::warn!("记录通知时间失败：{e}");
-            }
-        }
-    }
-    let ids: Vec<Uuid> = match sqlx::query_scalar("select id from notify_channel where enabled and min_severity <= $1::severity")
-        .bind(&n.severity)
-        .fetch_all(&st.db)
-        .await
-    {
-        Ok(ids) => ids,
-        Err(e) => {
-            tracing::warn!("读取通知渠道失败：{e}");
-            return;
-        }
-    };
-    let now = Instant::now();
-    let mut qs = st.notify_queues.lock().unwrap_or_else(|e| e.into_inner());
-    for id in ids {
-        if let Err(TrySendError::Full(_)) = qs.entry(id).or_insert_with(|| channel_worker(st, id)).try_send((now, n.clone())) {
-            let total = DROPPED.fetch_add(1, Ordering::Relaxed) + 1;
-            tracing::warn!(channel = %id, rule = %n.rule, "通知发送队列已满（{QUEUE_CAP} 条），丢弃这条（累计丢弃 {total} 条）");
-        }
+    start(st);
+    match enqueue_tx(st, &n).await {
+        Ok(()) => st.notify_wake.notify_one(),
+        Err(e) => tracing::warn!(rule = %n.rule, "通知入队失败：{e}"),
     }
 }
 
-/// 渠道测试：发一条测试消息，记入 `notify_log`（kind = test），返回发送结果
+async fn enqueue_tx(st: &AppState, n: &Notice) -> sqlx::Result<()> {
+    let mut tx = st.db.begin().await?;
+    sqlx::query(
+        "insert into notify_outbox (channel_id, incident_id, notice)
+         select id, $1, $2 from notify_channel
+         where enabled and ($4 or min_severity <= $3::severity) and id is distinct from (select subject_id from incident where id = $1)",
+    )
+    .bind(n.incident_id)
+    .bind(sqlx::types::Json(n))
+    .bind(&n.severity)
+    .bind(n.kind == Kind::Silence)
+    .execute(&mut *tx)
+    .await?;
+    if let (Kind::Firing | Kind::Repeat, Some(id)) = (n.kind, n.incident_id) {
+        sqlx::query("update incident set notified_at = now() where id = $1").bind(id).execute(&mut *tx).await?;
+    }
+    tx.commit().await
+}
+
+/// 渠道测试：发一条测试消息（只发一次、不排队，让用户马上看到结果），记入 `notify_log`（kind = test），返回发送结果
 pub async fn send_test(st: &AppState, channel_id: Uuid) -> Result<(), String> {
     let ch: Option<Channel> = sqlx::query_as("select id, kind, config_enc from notify_channel where id = $1")
         .bind(channel_id)
@@ -566,7 +697,11 @@ pub async fn send_test(st: &AppState, channel_id: Uuid) -> Result<(), String> {
         at: OffsetDateTime::now_utc(),
         opened_at: None,
     };
-    deliver(st, &ch, &n).await
+    let res = attempt(st, &ch, &n).await.map_err(|e| e.msg);
+    if let Err(e) = record(st, None, ch.id, &n, res.as_ref().err().map(String::as_str)).await {
+        tracing::warn!("写通知记录失败：{e}");
+    }
+    res
 }
 
 #[cfg(test)]
@@ -627,6 +762,25 @@ mod tests {
     }
 
     #[test]
+    fn silence_change_text() {
+        let n = Notice {
+            kind: Kind::Silence,
+            rule: String::new(),
+            severity: "info".into(),
+            machine: "全部机器".into(),
+            summary: "apikey:ops 新建了维护窗口\n对象：全部机器（全部规则）\n备注：换 **内核** [点我](http://x)".into(),
+            opened_at: None,
+            ..notice(Kind::Firing)
+        };
+        let t = format_text(&n);
+        assert!(t.starts_with("【静默 / 维护变更】apikey:ops 新建了维护窗口\n对象：全部机器（全部规则）\n"), "{t}");
+        assert!(t.ends_with("\n时间：2026-10-20 15:04:05（北京时间）"), "{t}");
+        let w = format_wecom(&n);
+        assert!(w.contains("\n> 对象：全部机器（全部规则）\n> 备注：换 ＊＊内核＊＊ ［点我］（http://x）\n> 时间："), "{w}");
+        assert_eq!((webhook_body(&n)["event"].as_str(), webhook_body(&n)["machine"].as_str()), (Some("silence"), Some("全部机器")));
+    }
+
+    #[test]
     fn private_destinations() {
         for ip in ["127.0.0.1", "10.0.0.1", "172.16.5.1", "192.168.1.1", "100.64.0.1", "169.254.169.254", "0.0.0.0", "255.255.255.255", "224.0.0.1", "192.0.2.1", "198.18.0.1", "::1", "::", "fe80::1", "fd00::1", "ff02::1", "2001:db8::1", "::ffff:10.0.0.1"] {
             assert!(non_global(ip.parse().unwrap()), "{ip}");
@@ -634,6 +788,11 @@ mod tests {
         for ip in ["1.1.1.1", "149.154.167.220", "100.128.0.1", "2001:4860:4860::8888"] {
             assert!(!non_global(ip.parse().unwrap()), "{ip}");
         }
+        // 内嵌 IPv4 的转换地址：NAT64（含本地用的 /48）、Teredo、6to4，哪怕里面是公网 IPv4 也不连
+        for ip in ["64:ff9b::a9fe:a9fe", "64:ff9b::808:808", "64:ff9b:1::a00:1", "2001:0:4136:e378:8000:63bf:3fff:fdd2", "2002:a9fe:a9fe::1", "2002:808:808::1"] {
+            assert!(non_global(ip.parse().unwrap()), "{ip}");
+        }
+        assert!(check_destination(&json!({"url": "http://[64:ff9b::a9fe:a9fe]/latest/meta-data"}), false).is_err());
         assert!(check_destination(&json!({"url": "http://[::ffff:127.0.0.1]:8080/x"}), false).is_err());
         assert!(check_destination(&json!({"api_base": "http://2130706433"}), false).is_err());
         assert!(check_destination(&json!({"url": "https://qyapi.weixin.qq.com/x"}), false).is_ok());

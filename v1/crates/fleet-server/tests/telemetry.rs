@@ -9,10 +9,12 @@ use axum::http::StatusCode;
 use common_tele::*;
 use fleet_proto::ProbeKind;
 use fleet_server::alerts::{self, AlertState};
-use fleet_server::state::Event;
-use fleet_server::{db, live};
+use fleet_server::crypto::SecretBox;
+use fleet_server::state::{AppState, Event};
+use fleet_server::{db, live, selfmon};
 use serde_json::{json, Value};
-use std::time::Duration;
+use std::sync::atomic::Ordering;
+use std::time::{Duration, SystemTime};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -1069,14 +1071,8 @@ async fn alert_notifications_firing_repeat_silence_and_resolved() {
     mock.wait("/wecom/send", 1).await;
     mock.wait("/hook/a", 2).await;
     mock.wait("/fail/x", 2).await;
-    // 坏渠道每条按 0.5 s、2 s 退避重试两次，两条排队发完约 5 秒
-    for _ in 0..200 {
-        if t.count("select count(*) from notify_log").await == 7 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert_eq!(t.count("select count(*) from notify_log").await, 7);
+    // 坏渠道一直 500：第一条按 0.5 s、2 s、10 s… 退避重发（入队满 30 分钟才放弃），第二条排在它后面；别的渠道照常发完
+    log_settles(&t, 5).await;
     assert_eq!((mock.count("/bot123:ABC"), mock.count("/wecom/send"), mock.count("/hook/a"), mock.count("/disabled")), (2, 1, 2, 0));
     let tg: Vec<String> = mock.bodies("/bot123:ABC").iter().map(|b| b["text"].as_str().unwrap().to_string()).collect();
     let crit = tg.iter().find(|x| x.contains("Xray 未运行")).expect("严重告警的 Telegram 消息");
@@ -1089,11 +1085,13 @@ async fn alert_notifications_firing_repeat_silence_and_resolved() {
     let wh_crit = wh.iter().find(|b| b["rule"] == "relay_xray_down").unwrap();
     assert_eq!((wh_crit["event"].as_str(), wh_crit["severity"].as_str(), wh_crit["machine"].as_str(), wh_crit["rule_name"].as_str()), (Some("firing"), Some("critical"), Some("线路机1"), Some("Xray 未运行")));
     assert!(wh.iter().any(|b| b["rule"] == "relay_apply_lag" && b["rule_name"] == "配置未应用"));
-    // 记录：坏渠道记失败，其余成功；一个渠道失败不影响别的
+    // 记录：发出去的都记成功；坏渠道的两条还在库里排着重试（不记），渠道记着连续失败与原因。一个渠道失败不影响别的
     let log = t.get("/api/v1/notify-log?limit=100").await;
     let log = log.as_array().unwrap();
-    assert_eq!(log.iter().filter(|l| l["ok"] == false).count(), 2);
-    assert!(log.iter().filter(|l| l["ok"] == false).all(|l| l["channel_name"] == "broken" && l["error"].as_str().is_some_and(|e| e.contains("500"))));
+    assert!(log.iter().all(|l| l["ok"] == true && l["channel_name"] != "broken"), "{log:?}");
+    let pending = t.count("select count(*) from notify_outbox o join notify_channel c on c.id = o.channel_id where c.name = 'broken'").await;
+    let (fails, err): (i32, String) = sqlx::query_as("select fail_count, last_error from notify_channel where name = 'broken'").fetch_one(&t.st.db).await.unwrap();
+    assert!(pending == 2 && fails >= 2 && err.contains("500"), "{pending} {fails} {err}");
     assert!(log.iter().all(|l| l["incident_id"].is_string() && l["kind"] == "firing" && l["subject_name"] == "线路机1"));
     assert!(log.iter().any(|l| l["rule_name"] == "Xray 未运行") && log.iter().any(|l| l["rule_name"] == "配置未应用"), "{log:?}");
     assert!(log.iter().all(|l| l.get("rule").is_none()));
@@ -1109,16 +1107,23 @@ async fn alert_notifications_firing_repeat_silence_and_resolved() {
     assert_eq!((mock.count("/bot123:ABC"), mock.count("/wecom/send"), mock.count("/hook/a")), (3, 2, 3), "提醒后计时重置");
     assert!(mock.bodies("/hook/a").iter().any(|b| b["event"] == "repeat" && b["rule"] == "relay_xray_down"));
 
-    // 静默：被静默的规则不再提醒
+    // 静默：被静默的规则不再提醒。建、删此刻生效的静默本身各通知所有启用的渠道一次（不看渠道级别）
     let f = time::format_description::well_known::Rfc3339;
     let now = OffsetDateTime::now_utc();
     let sil = t.post("/api/v1/silences", json!({"subject_id": relay, "rule": "relay_xray_down", "comment": "", "starts_at": (now - time::Duration::minutes(1)).format(&f).unwrap(), "ends_at": (now + time::Duration::hours(1)).format(&f).unwrap()})).await["id"].as_str().unwrap().to_string();
+    mock.wait("/bot123:ABC", 4).await;
+    mock.wait("/wecom/send", 3).await;
+    mock.wait("/hook/a", 4).await;
+    assert!(mock.bodies("/wecom/send")[2]["markdown"]["content"].as_str().unwrap().contains("静默 / 维护变更"));
     sqlx::query("update incident set notified_at = now() - interval '5 hours'").execute(&t.st.db).await.unwrap();
     pass(&t, &mut state, base, 151).await;
     tokio::time::sleep(Duration::from_millis(400)).await;
-    assert_eq!((mock.count("/bot123:ABC"), mock.count("/wecom/send")), (3, 2), "被静默的不发");
+    assert_eq!((mock.count("/bot123:ABC"), mock.count("/wecom/send")), (4, 3), "被静默的不发");
     let (s, _) = t.req("DELETE", &format!("/api/v1/silences/{sil}"), None, None).await;
     assert_eq!(s, StatusCode::OK);
+    mock.wait("/bot123:ABC", 5).await;
+    mock.wait("/wecom/send", 4).await;
+    mock.wait("/hook/a", 5).await;
 
     // 恢复：Xray 起来、配置也应用了；原因消失满 60 秒后各发一条「恢复」（只发给收到过触发的渠道）
     let mut r = blank_report(2);
@@ -1129,9 +1134,9 @@ async fn alert_notifications_firing_repeat_silence_and_resolved() {
     assert_eq!(incidents(&t, "firing").await.len(), 2);
     pass(&t, &mut state, base, 241).await;
     assert!(incidents(&t, "firing").await.is_empty());
-    mock.wait("/wecom/send", 3).await;
-    mock.wait("/bot123:ABC", 5).await;
-    mock.wait("/hook/a", 5).await;
+    mock.wait("/wecom/send", 5).await;
+    mock.wait("/bot123:ABC", 7).await;
+    mock.wait("/hook/a", 7).await;
     let last_wc = mock.bodies("/wecom/send").pop().unwrap();
     assert!(last_wc["markdown"]["content"].as_str().unwrap().contains("告警已恢复"), "{last_wc}");
     assert!(mock.bodies("/hook/a").iter().any(|b| b["event"] == "resolved" && b["rule"] == "relay_xray_down"));
@@ -1139,7 +1144,7 @@ async fn alert_notifications_firing_repeat_silence_and_resolved() {
     // 机器退役后，记录里的对象名带「（已退役）」，不和接过同名的新机器混淆
     sqlx::query("update machine set lifecycle = 'retired', retired_at = now() where id = $1").bind(relay).execute(&t.st.db).await.unwrap();
     let log = t.get("/api/v1/notify-log?limit=100").await;
-    assert!(log.as_array().unwrap().iter().all(|l| l["subject_name"] == "线路机1（已退役）"), "{log}");
+    assert!(log.as_array().unwrap().iter().filter(|l| l["kind"] != "silence").all(|l| l["subject_name"] == "线路机1（已退役）"), "{log}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1210,6 +1215,228 @@ async fn resolved_sent_while_firing_still_queued() {
     log_settles(&t, 2).await;
     let events: Vec<Value> = mock.bodies("/slow/a").iter().map(|b| b["event"].clone()).collect();
     assert_eq!(events, [json!("firing"), json!("resolved")]);
+}
+
+/// 渠道一时发不出去：同一条按 0.5 秒、2 秒…退避重发到送达，只记一条成功；渠道的连续失败随之清零
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn failed_notice_is_retried_until_delivered() {
+    let t = setup().await;
+    let mock = Mock::start().await;
+    t.post("/api/v1/notify-channels", json!({"name": "flaky", "kind": "webhook", "config": {"url": mock.url("/flaky/a")}, "min_severity": "info", "enabled": true})).await;
+    seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let mut state = AlertState::default();
+    let base = OffsetDateTime::now_utc();
+    xray_report(&t, 1, false).await;
+    pass(&t, &mut state, base, 0).await;
+    pass(&t, &mut state, base, 61).await;
+    // 前两次 500，第三次（约 2.5 秒后）送达
+    mock.wait("/flaky/a", 3).await;
+    log_settles(&t, 1).await;
+    assert_eq!(t.count("select count(*) from notify_log where ok and kind = 'firing'").await, 1);
+    assert_eq!(t.count("select count(*) from notify_outbox").await, 0);
+    let (fails, since): (i32, Option<OffsetDateTime>) = sqlx::query_as("select fail_count, failing_since from notify_channel").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!((fails, since), (0, None));
+}
+
+/// 中控重启 / 部署：排着没发的通知在库里，新进程起来接着发；入队满 30 分钟还没发出的放弃，记一条失败
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn queued_notices_survive_restart() {
+    let t = setup().await;
+    let mock = Mock::start().await;
+    for (name, path) in [("a", "/hook/a"), ("b", "/hook/b")] {
+        t.post("/api/v1/notify-channels", json!({"name": name, "kind": "webhook", "config": {"url": mock.url(path)}, "min_severity": "info", "enabled": true})).await;
+    }
+    seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    // 「旧进程」入队后还没来得及发就退出了：不起发送循环，通知只在库里
+    t.st.notify_started.store(true, Ordering::Relaxed);
+    let mut state = AlertState::default();
+    let base = OffsetDateTime::now_utc();
+    xray_report(&t, 1, false).await;
+    pass(&t, &mut state, base, 0).await;
+    pass(&t, &mut state, base, 61).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!((mock.count("/hook"), t.count("select count(*) from notify_outbox").await), (0, 2));
+    // 发给 b 的那条已经排了 31 分钟
+    sqlx::query("update notify_outbox set created_at = now() - interval '31 minutes' where channel_id = (select id from notify_channel where name = 'b')")
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    // 「新进程」：同一个库、新的内存状态，起发送循环
+    let st2 = AppState::new(t.st.cfg.clone(), t.st.db.clone(), SecretBox::from_key(&[9u8; 32]).unwrap());
+    fleet_server::notify::start(&st2);
+    mock.wait("/hook/a", 1).await;
+    log_settles(&t, 2).await;
+    assert_eq!((mock.bodies("/hook/a")[0]["event"].as_str(), mock.count("/hook/b")), (Some("firing"), 0));
+    let (ok, err): (bool, Option<String>) =
+        sqlx::query_as("select ok, error from notify_log where channel_id = (select id from notify_channel where name = 'b')").fetch_one(&t.st.db).await.unwrap();
+    assert!(!ok && err.as_deref().is_some_and(|e| e.contains("30 分钟还没发出，放弃")), "{err:?}");
+    assert_eq!(t.count("select count(*) from notify_outbox").await, 0);
+}
+
+/// 某个渠道没收到这条告警的「触发」（被拒了），恢复时也不给它发「恢复」——哪怕渠道这时已经修好；收到过触发的照发
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn resolved_only_to_channels_that_got_firing() {
+    let t = setup().await;
+    let mock = Mock::start().await;
+    let wc = t.post("/api/v1/notify-channels", json!({"name": "企微", "kind": "wecom", "config": {"url": mock.url("/wecom/bad")}, "min_severity": "info", "enabled": true})).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "webhook", "config": {"url": mock.url("/hook/a")}, "min_severity": "info", "enabled": true})).await;
+    seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let mut state = AlertState::default();
+    let base = OffsetDateTime::now_utc();
+    xray_report(&t, 1, false).await;
+    pass(&t, &mut state, base, 0).await;
+    pass(&t, &mut state, base, 61).await;
+    // 企业微信拒绝（errcode，重试也没用）：记一条失败；webhook 收到触发
+    log_settles(&t, 2).await;
+    assert_eq!(t.count("select count(*) from notify_log where not ok").await, 1);
+    // 企业微信改好了地址，之后告警恢复
+    let (s, v) = t.req("PATCH", &format!("/api/v1/notify-channels/{wc}"), Some(json!({"config": {"url": mock.url("/wecom/ok")}})), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    xray_report(&t, 2, true).await;
+    pass(&t, &mut state, base, 91).await;
+    pass(&t, &mut state, base, 151).await;
+    assert!(incidents(&t, "firing").await.is_empty());
+    log_settles(&t, 3).await;
+    assert_eq!(mock.count("/wecom/ok"), 0, "没收到触发的渠道不发恢复");
+    let events: Vec<Value> = mock.bodies("/hook/a").iter().map(|b| b["event"].clone()).collect();
+    assert_eq!(events, [json!("firing"), json!("resolved")]);
+    assert_eq!(t.count("select count(*) from notify_outbox").await, 0);
+}
+
+/// 新建、删除静默 / 维护窗口告诉所有启用的渠道（不看渠道的最低级别、不受静默影响）：全部机器的建、删都发；单台的此刻生效才发，预约的不发。
+/// API 密钥建全部机器的最长 24 小时，账号不受限
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn silence_changes_are_announced() {
+    let t = setup().await;
+    let mock = Mock::start().await;
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "webhook", "config": {"url": mock.url("/hook/a")}, "min_severity": "critical", "enabled": true})).await;
+    let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let key = t.post("/api/v1/api-keys", json!({"name": "ops", "scopes": ["read", "write"]})).await["token"].as_str().unwrap().to_string();
+    let f = time::format_description::well_known::Rfc3339;
+    let now = OffsetDateTime::now_utc();
+    let at = |min: i64| (now + time::Duration::minutes(min)).format(&f).unwrap();
+    let global = |end_min: i64| json!({"subject_id": null, "rule": null, "is_maintenance": true, "comment": "机房迁移\n预计一天", "starts_at": at(-1), "ends_at": at(end_min)});
+    let (s, v) = t.req("POST", "/api/v1/silences", Some(global(25 * 60)), Some(&key)).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("24 小时"), "{v}");
+    let (s, v) = t.req("POST", "/api/v1/silences", Some(global(23 * 60)), Some(&key)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    mock.wait("/hook/a", 1).await;
+    let b = &mock.bodies("/hook/a")[0];
+    assert_eq!((b["event"].as_str(), b["machine"].as_str(), b["incident_id"].is_null()), (Some("silence"), Some("全部机器"), true));
+    let text = b["text"].as_str().unwrap();
+    assert!(text.starts_with("【静默 / 维护变更】apikey:ops 新建了维护窗口\n对象：全部机器\n起止：") && text.contains("\n备注：机房迁移 预计一天\n"), "{text}");
+    // 删掉全部机器的：照样发
+    let (s, _) = t.req("DELETE", &format!("/api/v1/silences/{}", v["data"]["id"].as_str().unwrap()), None, None).await;
+    assert_eq!(s, StatusCode::OK);
+    mock.wait("/hook/a", 2).await;
+    assert!(mock.bodies("/hook/a")[1]["text"].as_str().unwrap().contains("admin 删除了维护窗口"));
+    // 单台：预约的（还没开始）建、删都不发；此刻生效的发
+    let one = |start: i64, end: i64| json!({"subject_id": relay, "rule": "relay_xray_down", "comment": "", "starts_at": at(start), "ends_at": at(end)});
+    let later = t.post("/api/v1/silences", one(60, 120)).await["id"].as_str().unwrap().to_string();
+    let (s, _) = t.req("DELETE", &format!("/api/v1/silences/{later}"), None, None).await;
+    assert_eq!(s, StatusCode::OK);
+    t.post("/api/v1/silences", one(-1, 60)).await;
+    mock.wait("/hook/a", 3).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let all = mock.bodies("/hook/a");
+    assert_eq!(all.len(), 3);
+    assert!(all[2]["text"].as_str().unwrap().contains("admin 新建了静默\n对象：线路机1（只静默「Xray 未运行」）"), "{}", all[2]["text"]);
+    // 账号建全部机器的不受 24 小时限制；静默期间这类通知照发
+    t.post("/api/v1/silences", global(3 * 24 * 60)).await;
+    mock.wait("/hook/a", 4).await;
+    let log = t.get("/api/v1/notify-log?limit=10").await;
+    assert!(log.as_array().unwrap().iter().all(|l| l["kind"] == "silence" && l["ok"] == true && l["subject_name"] == "静默 / 维护变更"), "{log}");
+}
+
+// ── 中控自监控 ──────────────────────────────────────────────────────────────
+
+/// 通知渠道连续发送失败满 5 分钟：开中控自身的告警（对象「中控」，经别的渠道发、不发给它自己）；渠道发成功一次（这里是渠道测试）就恢复
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn failing_channel_opens_central_alert() {
+    let t = setup().await;
+    let mock = Mock::start().await;
+    let broken = t.post("/api/v1/notify-channels", json!({"name": "坏渠道", "kind": "webhook", "config": {"url": mock.url("/fail/x")}, "min_severity": "info", "enabled": true})).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "webhook", "config": {"url": mock.url("/hook/a")}, "min_severity": "info", "enabled": true})).await;
+    seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let mut state = AlertState::default();
+    let base = OffsetDateTime::now_utc();
+    xray_report(&t, 1, false).await;
+    pass(&t, &mut state, base, 0).await;
+    pass(&t, &mut state, base, 61).await;
+    mock.wait("/fail/x", 2).await;
+    mock.wait("/hook/a", 1).await;
+    let central = || async { incidents(&t, "firing").await.into_iter().filter(|i| i["rule"] == "central_channel_failing").collect::<Vec<_>>() };
+    // 失败还不满 5 分钟：不开
+    selfmon::check_once(&t.st, OffsetDateTime::now_utc()).await.unwrap();
+    assert!(central().await.is_empty());
+    selfmon::check_once(&t.st, OffsetDateTime::now_utc() + time::Duration::minutes(6)).await.unwrap();
+    let inc = central().await;
+    assert_eq!(inc.len(), 1, "{inc:?}");
+    assert_eq!(
+        (inc[0]["severity"].as_str(), inc[0]["subject"].is_null(), inc[0]["subject_id"].is_null(), inc[0]["subject_name"].as_str(), inc[0]["rule_name"].as_str()),
+        (Some("critical"), true, true, Some("中控"), Some("通知渠道发送失败"))
+    );
+    let summary = inc[0]["summary"].as_str().unwrap();
+    assert!(summary.starts_with("中控：通知渠道「坏渠道」连续发送失败超过 5 分钟：webhook 返回 HTTP 500"), "{summary}");
+    mock.wait("/hook/a", 2).await;
+    let b = mock.bodies("/hook/a").pop().unwrap();
+    assert_eq!((b["event"].as_str(), b["rule"].as_str(), b["machine"].as_str()), (Some("firing"), Some("central_channel_failing"), Some("中控")));
+    let to_itself = format!("select count(*) from notify_outbox o join incident i on i.id = o.incident_id where o.channel_id = '{broken}' and i.rule = 'central_channel_failing'");
+    assert_eq!(t.count(&to_itself).await, 0, "不发给失败的渠道自己");
+    // 渠道修好、测试发成功：下一轮恢复，「恢复」发给收到过触发的渠道
+    let (s, v) = t.req("PATCH", &format!("/api/v1/notify-channels/{broken}"), Some(json!({"config": {"url": mock.url("/hook/fixed")}})), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(t.post(&format!("/api/v1/notify-channels/{broken}/test"), json!({})).await["ok"], true);
+    selfmon::check_once(&t.st, OffsetDateTime::now_utc() + time::Duration::minutes(7)).await.unwrap();
+    assert!(central().await.is_empty());
+    mock.wait("/hook/a", 3).await;
+    let b = mock.bodies("/hook/a").pop().unwrap();
+    assert_eq!((b["event"].as_str(), b["rule"].as_str()), (Some("resolved"), Some("central_channel_failing")));
+    assert_eq!(t.count(&to_itself).await, 0);
+}
+
+/// 备份目录里最新一份超过 26 小时（或一份都没有）：开中控自身的告警，有了新的一份就恢复；目录不存在（没装备份）不检查
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stale_backup_opens_central_alert() {
+    let dir = tempfile::tempdir().unwrap();
+    let bk = dir.path().join("backups");
+    let t = common::boot_in(dir, false, &format!("notify.allow_private = true\nselfmon.backup_dir = \"{}\"", bk.display())).await;
+    let backup = |state: &'static str| {
+        let t = &t;
+        async move { incidents(t, state).await.into_iter().filter(|i| i["rule"] == "central_backup_stale").collect::<Vec<_>>() }
+    };
+    let check = || selfmon::check_once(&t.st, OffsetDateTime::now_utc());
+    check().await.unwrap();
+    assert!(backup("all").await.is_empty(), "没装备份：不检查");
+    std::fs::create_dir(&bk).unwrap();
+    check().await.unwrap();
+    let inc = backup("firing").await;
+    assert_eq!(inc.len(), 1);
+    assert_eq!(
+        (inc[0]["severity"].as_str(), inc[0]["subject"].is_null(), inc[0]["subject_id"].is_null(), inc[0]["subject_name"].as_str(), inc[0]["rule_name"].as_str()),
+        (Some("warning"), true, true, Some("中控"), Some("备份过期"))
+    );
+    assert!(inc[0]["summary"].as_str().unwrap().contains("里没有备份"), "{}", inc[0]["summary"]);
+    // 只有一份 30 小时前的：还在告警，摘要换成最新一份
+    let old = bk.join("fleet-20261021-033000.tar");
+    std::fs::write(&old, b"x").unwrap();
+    std::fs::File::options().write(true).open(&old).unwrap().set_modified(SystemTime::now() - Duration::from_secs(30 * 3600)).unwrap();
+    check().await.unwrap();
+    let inc = backup("firing").await;
+    let s = inc[0]["summary"].as_str().unwrap();
+    assert!(inc.len() == 1 && s.contains("fleet-20261021-033000.tar") && s.contains("超过 26 小时没有新的"), "{inc:?}");
+    // 做了新的一份（age 加密的）：恢复
+    std::fs::write(bk.join("fleet-20261022-033000.tar.age"), b"x").unwrap();
+    check().await.unwrap();
+    assert!(backup("firing").await.is_empty());
+    assert_eq!(backup("resolved").await.len(), 1);
 }
 
 async fn xray_report(t: &T, seq: u64, up: bool) {

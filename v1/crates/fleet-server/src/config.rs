@@ -41,6 +41,9 @@ pub struct Config {
     pub ipintel: IpintelConfig,
     #[serde(default)]
     pub notify: NotifyConfig,
+    /// 中控自监控（死人开关、备份检查，见 selfmon.rs）；整段不写也能跑
+    #[serde(default)]
+    pub selfmon: SelfmonConfig,
 }
 
 /// `[notify]`
@@ -50,6 +53,21 @@ pub struct NotifyConfig {
     /// 允许通知渠道指向内网 / 环回 / 保留地址。默认不允许：渠道地址由有 write 权限的人填，不能借它探中控所在的内网；
     /// 只有测试或自建在内网的 webhook 才打开
     pub allow_private: bool,
+}
+
+/// `[selfmon]`
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct SelfmonConfig {
+    /// 死人开关：告警评估每轮成功后，最多每分钟 GET 一次这个地址（healthchecks.io 之类的 ping URL）。
+    /// 中控挂了、卡住、告警循环一直失败时那边收不到 ping，由它报警；不填不发
+    pub heartbeat_url: Option<String>,
+    /// 每日备份所在的目录（deploy/backup/fleet-backup.sh 的 D）：最新一份 fleet-*.tar（.tar.age）超过 26 小时开告警；
+    /// 目录不存在（没装备份，如实验室）不检查
+    pub backup_dir: PathBuf,
+}
+impl Default for SelfmonConfig {
+    fn default() -> Self { Self { heartbeat_url: None, backup_dir: PathBuf::from("/var/backups/fleet") } }
 }
 
 /// `[ipintel]`：全部有默认值，老配置文件不用改
@@ -136,5 +154,7 @@ mod tests {
         assert_eq!((r.raw_days, r.access_days), (30, 7));
         let n: Numbering = toml::from_str("").unwrap();
         assert!(n.auto_compact);
+        let s: SelfmonConfig = toml::from_str("heartbeat_url = \"https://hc-ping.com/x\"").unwrap();
+        assert_eq!((s.heartbeat_url.as_deref(), s.backup_dir), (Some("https://hc-ping.com/x"), PathBuf::from("/var/backups/fleet")));
     }
 }

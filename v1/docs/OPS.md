@@ -31,7 +31,7 @@
 | 最近一天的 CPU/内存/磁盘/网速 | `fleetctl series 团队1-06 --range 24h` |
 | 入口的流量与探测 | `fleetctl series 团队1-06 --metric traffic` / `--metric probe` |
 | 告警列表、确认 | `fleetctl incidents`、`fleetctl ack <id>`；一台机器的告警历史 `fleetctl incidents --all --machine 团队1-06` |
-| 维护前开维护窗口（免得告警刷屏），或预约 | `fleetctl silence add 团队1-06 --for 2h --maintenance --comment 换内核`；预约加 `--start "2026-10-23 02:00"`（北京时间）；只静默一条规则 `--rule agent_offline`；`fleetctl silence ls`，做完 `fleetctl silence rm <id 前缀>`；全部机器 `--all --yes` |
+| 维护前开维护窗口（免得告警刷屏），或预约 | `fleetctl silence add 团队1-06 --for 2h --maintenance --comment 换内核`；预约加 `--start "2026-10-23 02:00"`（北京时间）；只静默一条规则 `--rule agent_offline`；`fleetctl silence ls`，做完 `fleetctl silence rm <id 前缀>`；全部机器 `--all --yes`（API 密钥最长 24 小时，更长的在网页用账号建；建、删都会通知所有渠道） |
 | 到期与续费：快到期的机器、看订阅、登记续费、改订阅 | `fleetctl ls --due 7`（7 天内到期、含已过期的在用机器）、`fleetctl billing 团队1-06`（订阅与续费记录）；确认已付款后 `fleetctl renew 团队1-06 --yes`（默认同网页：按订阅周期推一个周期、金额取订阅价格；一次付几期 `--cycles 3`，按面板 `--to 2027-01-15 --amount 39.46 --note …`）；改订阅 `fleetctl subscription set 团队1-06 --price 45 --yes`（只改给了的字段） |
 | 服务日志 | `fleetctl logs 团队1-06 --unit fleet-agent --lines 300`（unit：fleet-agent / fleet-xray / ssserver） |
 | 中控自己的日志 | `fleetctl server-logs --lines 300` |
@@ -84,13 +84,15 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
      周期中途上架（之前的用量量不到）或和面板对不上时，按面板校准一次：`fleetctl subscription set <机器> --used 901.6 --yes`（面板上本周期已用的 GB 数；之后按网卡累加，至多差 1 小时），网页「费用」页签同样能填；进入下个周期自动失效。
    - 告警恢复后 30 分钟内又出现会重开原告警（`reopen_count` +1，告警页显示「反复 N 次」），不会每抖一次发一对触发/恢复通知。
    - 去抖：原因连续出现满 60 秒才开告警、连续消失满 60 秒才恢复；探测类更长（`egress_fail` 150 秒、`tcp_fail` 90 秒），偶发一次探测失败不报。续费类、流量额度不去抖。
-   - 通知按渠道各一个发送队列，同一渠道内逐条按顺序发（一批告警同时触发时不会并发打到同一渠道），渠道之间互不等待（一个渠道一直超时不拖慢别的）。渠道回 429 时按它给的等待时长再试（Telegram 的 `parameters.retry_after`、通用的 `Retry-After` 头，最多等 60 秒），其它可重试的失败（网络错误、5xx）隔 0.5 秒、2 秒各再试一次；积压时通知会晚到。
+   - `central_channel_failing` / `central_backup_stale` / `central_disk_low`：告警对象是「中控」自己（通知渠道发不出去、备份停了、磁盘快满），见 §12。
+   - 通知先写进库里的发送队列（`notify_outbox`）再发：中控重启、部署后接着发，不丢。每个渠道一个发送任务，同一渠道内按入队顺序逐条发（一批告警同时触发时不会并发打到同一渠道），渠道之间互不等待（一个渠道一直超时不拖慢别的）。发送失败（网络错误、5xx）隔 0.5 秒、2 秒、10 秒、30 秒、1 分钟、之后每 2 分钟重发同一条（后面的排着），回 429 时按渠道给的等待时长（Telegram 的 `parameters.retry_after`、通用的 `Retry-After` 头，最多 60 秒）；渠道拒绝（令牌不对、errcode 非 0）不重试，记一条失败。入队满 30 分钟还没发出的放弃，发送记录里记一条失败；渠道连续失败满 5 分钟另开告警 `central_channel_failing`。某个渠道没收到一条告警的「触发」（放弃了，或渠道是后来加的），这条告警恢复时也不给它发「恢复」。
+   - 新建、删除静默 / 维护窗口会给所有启用的渠道发一条「静默 / 维护变更」（谁、新建还是删除、对象、维护还是静默、起止、备注；不看渠道的最低级别，也不受任何静默影响）：全部机器的一律发（含预约的），单台的只在此刻生效时发。
 2. **agent 离线**：`fleetctl show <机器>` 看最近上报时间；`fleetctl exec <机器> -- 'systemctl is-active fleet-agent; uptime'`。exec 返回 255 且 stderr 是连接失败 → 机器本身不通（去供应商面板看机器状态/重启）。agent 没运行则 `fleetctl logs <机器> --unit fleet-agent` 找原因，再 `fleetctl exec <机器> -- systemctl restart fleet-agent`（修改状态，先确认）。
 3. **入口不通**：`fleetctl show <节点>` 看入口的 TCP/出口探测；`fleetctl logs <节点> --unit ssserver`；`fleetctl exec <节点> -- 'ss -ltnp | grep -E "8388|ssserver"'`；再看线路机 `fleetctl logs <线路机> --unit fleet-xray`。告警对象是线路机时，是它的直出入口（没有节点、没有 TCP 探测）出口不通：看线路机自己的出网（`fleetctl exec <线路机> -- 'curl -sS -m 10 https://1.1.1.1 -o /dev/null -w %{http_code}'`）和 fleet-xray 日志。
    同机 IP 节点（`show` 里有「宿主机」）：`logs <节点> --unit ssserver` 看的是宿主机上它自己的实例 `fleet-ssserver@<SS 端口>`，`exec <节点>` 在宿主机上执行；它的 agent 离线、高负载告警都在宿主机名下。出口不对时 `fleetctl exec <节点> -- 'ip -4 addr; curl -4 -sS --interface <它的 IP> <中控地址>/echo'` 看 IP 还在不在网卡上、回显的是不是它自己。
 4. **线路机配置未应用**：`fleetctl show <线路机>`（代数与 apply_error）；`fleetctl logs <线路机> --unit fleet-agent`；`fleetctl logs <线路机> --unit fleet-xray`。xray 配置错误会写在这里。
 5. **作业失败**：`fleetctl job <id>` 看失败步骤和日志；修好原因后 `fleetctl retry <id>`；放弃用 `fleetctl cancel <id>`（已完成的步骤会补偿回退）。报「主机指纹变化」且确认机器重装过：`fleetctl retry <id> --reset-host-key`；报「没有可用的 root 密码」：`ROOT_PW=… fleetctl retry <id> --password-env ROOT_PW`（网页作业的「重试」里同样能勾选 / 填写）。
-6. **中控本身异常**：`fleetctl server-logs`。读不到时按错误提示授权 journal（`usermod -aG systemd-journal fleet` 后重启 fleet-server）。
+6. **中控本身异常**：告警对象是「中控」的按 §12 处理；`fleetctl server-logs` 看日志，读不到时按错误提示授权 journal（`usermod -aG systemd-journal fleet` 后重启 fleet-server）。中控整个挂了时 fleetctl 也用不了，靠死人开关（§12）知道，ssh 进中控按 §4 处理。
 
 ## 4. 何时才需要直接 ssh
 
@@ -112,7 +114,8 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 - 手机和恢复码都丢了：在中控上以 root 执行 `fleet-server totp-reset -c /etc/fleet/fleet.toml <用户名>` 停用该用户的两步验证（恢复码一并作废，写审计 `auth.totp_disabled`，不输出任何秘密），然后用密码登录、立刻重新开启。忘了密码用 `fleet-server user-set`。
 - API 密钥（fleetctl、脚本）不经过两步验证，也不能调 `/account/*`：密钥本身就是凭据，按最小 scope 发、设有效期。
 - 有 `write` 权限就能上架线路机、把节点挂过去，那台线路机的 agent 会收到节点的 SS 密码与代理账号：`write` 实际上也能拿到凭据，按凭据级别发。
-- 通知渠道（webhook、企业微信、Telegram 的 `api_base`）不能指向内网、环回、链路本地（云元数据）地址，域名在发送时只解析公网地址；确实要用内网 webhook 时在 `fleet.toml` 写 `[notify] allow_private = true`。改 Telegram 的 `api_base` 要同时重新填 `bot_token`。
+- 通知渠道（webhook、企业微信、Telegram 的 `api_base`）不能指向内网、环回、链路本地（云元数据）地址，也不能是内嵌 IPv4 的转换地址（NAT64 `64:ff9b::/32`、6to4 `2002::/16`、Teredo `2001::/32`）；域名在发送时只解析公网地址，发送不走环境变量里的 HTTP 代理（代理会替它解析域名）。确实要用内网 webhook 时在 `fleet.toml` 写 `[notify] allow_private = true`。改 Telegram 的 `api_base` 要同时重新填 `bot_token`。
+- 全部机器的静默 / 维护等于把监控关掉：API 密钥建的最长 24 小时（账号登录的 30 天）；新建、删除静默 / 维护都会通知所有启用的渠道（不受静默影响），悄悄关监控会被看到。
 - 中控：fleet-server 在 systemd 沙箱里运行（无任何特权、只写 `/var/lib/fleet`、系统调用白名单），`/etc/fleet` 归 root、fleet 只读；部署后 `journalctl -u fleet-server` 里出现 SIGSYS / Permission denied 先看沙箱。Caddy 管理接口在 `/run/caddy/admin.sock`（只有 caddy 能连），改配置后用 `systemctl reload caddy`，直接 `caddy reload` 不带 `--config` 会连不上。网页带 CSP（只许本站脚本），不能再加内联脚本或外部 CDN。
 - 线路机：Xray 以 systemd 动态用户运行（不是 root），配置由 systemd 经标准输入交给它，读不到 `/etc/fleet-agent`、`/etc/ssh`，连不上本机的 systemd / D-Bus；访问日志实际在 `/var/log/private/fleet-xray`（`/var/log/fleet-xray` 是符号链接），agent 靠 `CAP_DAC_READ_SEARCH` 读。Xray 与落地机的 ssserver 都拦了链路本地网段与 100.100.100.200（客户经域名也到不了云元数据服务）；机器的 `/etc/resolv.conf` 若用 169.254.x 的 DNS，它们会解析不了域名。这些单元改动在升级 agent / 收敛时写入，Xray 下次重启、ssserver 下次收敛时生效。agent 上报按机器限速（突发 600 份、每秒补 1 份，超了回 429），agent 拒绝连公网的明文 http 中控。
 - 危险操作（退役、删除、轮换、批量升级、会改状态的 exec）先向负责人确认，再加 `--yes`。
@@ -206,7 +209,7 @@ WAL 三项由 `deploy/central/install.sh` 写进 `/etc/postgresql/<版本>/main/
 - `etc/fleet/`：`secret.key`（库里 SS 密码、REALITY 私钥、通知渠道配置的加密密钥，丢了这些就解不开）、`fleet.toml`、`ssh/id_ed25519`（中控登录所有机器的密钥）。
 - `var/lib/fleet/known_hosts`：各机器的主机指纹。
 
-整个包都是敏感数据：中控上 0640 root:fleet-backup（只有拉取用户能读），PVE 上 0600 root。
+整个包都是敏感数据：中控上 0640 root:fleet-backup（只有拉取用户能读），PVE 上 0600 root。备份目录本身是 0755：fleet-server 要看得到最新一份的时间，超过 26 小时没有新的就开告警 `central_backup_stale`（§12）。
 
 ### 加密备份（可选，推荐）
 
@@ -272,3 +275,24 @@ WAL 三项由 `deploy/central/install.sh` 写进 `/etc/postgresql/<版本>/main/
 - 联通走 CF 免费版普遍更差：武汉联通实测所有 CF IP 都落美西，接口首字节 1.6–2.9 s、首屏 JS 一半超时；直连 1.2 s / 2.4 s。
 - 同一个域名做不到「agent 直连、大陆走优选」：CF 的 DNS 不分线路，agent 经 Worker 会超免费额度（每天 10 万次）。真要三网最优，只能把 `fleet` 子域 NS 委派到支持运营商 / 境内外分线路的 DNS（华为云、DNSPod）。
 - 不要把 `fleet.kismet613.com` 改成橙云：`/echo` 会拿到 CF 的 IP、上架出口校验全部失败，agent 的上报与长轮询还要过 CF 的机器人防护。
+
+## 12. 中控自监控
+
+中控自己出事（进程挂了、卡住、磁盘快满、备份停了、通知发不出去）也要有人知道。
+
+**死人开关**（推荐配）：在 healthchecks.io（或自建的 Healthchecks 等收 ping 的服务）建一个检查，周期 1 分钟、宽限 5 分钟，告警发到不经过中控的地方（手机 App、邮件）；把它的 ping 地址写进中控 `/etc/fleet/fleet.toml`，`systemctl restart fleet-server` 生效：
+
+```
+[selfmon]
+heartbeat_url = "https://hc-ping.com/<检查的 uuid>"
+```
+
+告警循环每轮（30 秒）评估成功后最多每分钟 GET 一次这个地址。中控进程挂了、卡住、连不上数据库导致评估一直失败、整台断网时 ping 就停了，由那边报警——这些情况下中控自己的通知渠道也发不出去。不写不发；ping 失败只在 `journalctl -u fleet-server` 里记一条 warn（地址里带着检查的密钥，不写进日志）。验证：重启 fleet-server 后一分钟内 healthchecks 的检查显示刚收到 ping。
+
+**中控自身的告警**：规则 `central_` 开头，告警对象是「中控」（不是机器：告警页对象列写「中控」、点不开；`fleetctl --json incidents` 里 `subject_id` 为 null、`subject_name` 为「中控」），照常走通知渠道、告警页、`fleetctl incidents`。告警循环每轮评估完机器后检查，不去抖，恢复后再出现新开一条；被静默的不开、不发（只能「全部机器 + 规则」静默，如 `fleetctl silence add --all --rule central_backup_stale --for 24h --comment … --yes`）；严重的每 4 小时提醒一次。
+
+- `central_channel_failing`（严重）：某个启用的通知渠道连续发送失败满 5 分钟，每个渠道一条，摘要写渠道名和最近一次失败的原因；这条发给其它渠道，不发给它自己。发往它的通知在库里排队重试，入队满 30 分钟还发不出的放弃（发送记录里一条失败）。改好配置后在网页「设置 → 通知渠道」点「测试」：测试发成功也算恢复，下一轮（≤30 秒）关掉，排着的通知随后补发。渠道停用、删除时这条告警直接关掉，不发恢复。
+- `central_backup_stale`（警告）：`/var/backups/fleet` 里最新一份备份（`fleet-*.tar`、加密的 `fleet-*.tar.age`）超过 26 小时，或目录里一份都没有、读不了。每天 03:30 备份，没做成约两小时后报。`systemctl status fleet-backup`、`journalctl -u fleet-backup -n 20` 查原因，修好后 `systemctl start fleet-backup` 做一份，下一轮恢复。备份不在默认目录时在 `[selfmon]` 写 `backup_dir = "…"`；目录不存在（没装备份，如实验室）不检查。
+- `central_disk_low`（严重）：中控本机 `/`、`/var/lib/postgresql`、`/var/lib/fleet`、备份目录所在的文件系统可用空间低于 10%（同 `df` 的 Avail 占 Size），回到 11% 以上恢复。写满了 PostgreSQL 会停、中控跟着停：`df -h`、`du -sh /var/lib/postgresql /var/backups/fleet /var/log/journal` 找大头（原始时序按 `[retention]` 只留几天，备份留 14 份）。
+
+**后台任务监督**：中控里的后台循环（告警、实时指标、访问汇总、来源画像、通知发送、分区与保留期维护、小时汇总）panic 或意外退出时，`journalctl -u fleet-server` 记一条 error（「后台任务「…」…，10 秒后重启」），10 秒后原地重启，其余照常。作业引擎例外：它启动时释放全部作业租约，原地重启会让还在跑的作业被领两次，所以它一退出整个进程就退出，由 systemd（`Restart=always`）重启（`systemctl status fleet-server` 看重启次数）。告警循环一直起不来时死人开关会报。
