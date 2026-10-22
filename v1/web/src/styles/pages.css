@@ -18,8 +18,14 @@
 .reason-list li { display: flex; align-items: flex-start; gap: var(--sp-8); font-size: var(--fs-body); }
 .reason-list .dot { margin-top: 7px; }
 /* 抽屉「最近操作」：第一行动作 + 对象，右边谁 · 多久前（悬停看具体时间）；第二行命令 / 详情，等宽浅色单行省略（悬停看全文） */
-.audit-list { display: grid; gap: var(--sp-10); margin: 0; padding: 0; list-style: none; }
-.audit-list li { display: flex; align-items: flex-start; gap: var(--sp-8); min-width: 0; }
+/* 时间线：圆点之间一条细竖线连到下一条（操作记录页、抽屉的最近操作 / 最近告警）——事件按时间往下走，而不是一格一格的列表。
+   每行左右各伸出 --sp-8（可点的行悬停底色有地方铺），竖线从圆点下沿画到下一行圆点上沿，各留 3px */
+.audit-list { display: grid; margin: 0; padding: 0; list-style: none; }
+.audit-list li { position: relative; display: flex; align-items: flex-start; gap: var(--sp-8); min-width: 0; margin-inline: calc(-1 * var(--sp-8)); padding: var(--sp-6) var(--sp-8); border-radius: var(--r-control); }
+.audit-list li:not(:last-child)::before {
+  content: ''; position: absolute; left: calc(var(--sp-8) + var(--dot) / 2 - 0.5px); width: 1px; background: var(--line-strong);
+  top: calc(var(--sp-6) + 7px + var(--dot) + 3px); bottom: calc(3px - var(--sp-6) - 7px);
+}
 .audit-list .dot { margin-top: 7px; }
 .audit-body { flex: 1; min-width: 0; display: grid; gap: var(--sp-2); }
 .audit-head { display: flex; align-items: baseline; gap: var(--sp-12); min-width: 0; }
@@ -30,7 +36,10 @@
 /* 抽屉「最近告警」用同一套排版：右边的状态进行中按级别着色、已恢复灰；已恢复的级别点调淡，眼睛先落在还没恢复的那几条上 */
 .audit-meta[data-tone="bad"] { color: var(--bad-text); }
 /* 操作记录页：涉及机器的一行可点（打开抽屉），整行悬停变色；底下「加载更早的记录」居中 */
-.audit-list li.is-link { margin-inline: calc(-1 * var(--sp-8)); padding: var(--sp-4) var(--sp-8); border-radius: var(--r-control); cursor: pointer; transition: background-color var(--dur-1) var(--ease-std); }
+.audit-list li.is-link { cursor: pointer; transition: background-color var(--dur-1) var(--ease-std); }
+/* 按天分段：每段一个小标题（今天 / 昨天 / 10月20日 周一），时间线在段内连续 */
+.audit-day { margin: var(--sp-12) 0 var(--sp-2); font: var(--fw-semibold) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-3); }
+.audit-day:first-child { margin-top: 0; }
 @media (hover: hover) { .audit-list li.is-link:hover { background-color: var(--hover); } }
 .audit-more { display: flex; justify-content: center; padding-top: var(--sp-12); }
 .audit-meta[data-tone="warn"] { color: var(--warn-text); }
