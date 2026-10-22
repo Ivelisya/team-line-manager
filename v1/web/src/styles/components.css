@@ -119,7 +119,7 @@
   --ic-info: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round' d='M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94z'/%3E%3C/svg%3E");
   --ic-tip: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='9' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round' d='M12 16v-4.5M12 8h.01'/%3E%3C/svg%3E");
 }
-.pill::before { content: none; flex: none; width: 11px; height: 11px; background: currentColor; -webkit-mask: var(--pill-ic) center / contain no-repeat; mask: var(--pill-ic) center / contain no-repeat; }
+.pill::before { content: none; flex: none; width: var(--icon-3xs); height: var(--icon-3xs); background: currentColor; -webkit-mask: var(--pill-ic) center / contain no-repeat; mask: var(--pill-ic) center / contain no-repeat; }
 .pill[data-tone="bad"]:not([data-dot])::before { content: ""; --pill-ic: var(--ic-bad); }
 .pill[data-tone="warn"]:not([data-dot])::before { content: ""; --pill-ic: var(--ic-warn); }
 .pill[data-dot="pulse"]::before { content: ""; width: 9px; height: 9px; box-sizing: border-box; border: 1.5px solid currentColor; border-top-color: transparent; border-radius: 50%; background: none; -webkit-mask: none; mask: none; animation: spin var(--dur-spin) linear infinite; }
@@ -128,7 +128,7 @@
 .pill[data-tone="bad"] { --pill-bg: var(--bad-bg); --pill-fg: var(--bad-text); }
 .pill[data-tone="info"] { --pill-bg: var(--info-bg); --pill-fg: var(--info-text); }
 /* 名字后面的状态标（卡片头、表格名称列、顶栏告警预览）：正常不标，其余一个小图标 */
-.smark { display: inline-block; flex: none; width: 13px; height: 13px; color: var(--smark-c); background: currentColor; -webkit-mask: var(--smark-ic) center / contain no-repeat; mask: var(--smark-ic) center / contain no-repeat; }
+.smark { display: inline-block; flex: none; width: var(--icon-xs); height: var(--icon-xs); color: var(--smark-c); background: currentColor; -webkit-mask: var(--smark-ic) center / contain no-repeat; mask: var(--smark-ic) center / contain no-repeat; }
 .smark[data-tone="bad"] { --smark-c: var(--bad); --smark-ic: var(--ic-bad); }
 .smark[data-tone="warn"] { --smark-c: var(--warn); --smark-ic: var(--ic-warn); }
 .smark[data-tone="info"] { --smark-c: var(--info); --smark-ic: var(--ic-info); }
@@ -143,7 +143,7 @@
   border: 1px solid var(--line); border-radius: var(--r-pill); background: transparent;
   font: var(--fw-regular) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2); white-space: nowrap;
 }
-.chip .lucide { width: 12px; height: 12px; color: var(--fg-2); }
+.chip .lucide { width: var(--icon-2xs); height: var(--icon-2xs); color: var(--fg-2); }
 .chip-neutral { border-color: transparent; background: var(--neutral-bg); color: var(--neutral-text); }
 .chip-warn { border-color: transparent; background: var(--warn-bg); color: var(--warn-text); }
 .mark {
@@ -275,7 +275,7 @@
 /* 「(i)」补充说明：一个淡灰的小圆 i，悬停 / 聚焦变深，说明走全站的 data-tip 气泡；跟在文字后面时自带左边距、和文字基线对齐 */
 .info-tip { display: inline-grid; place-items: center; flex: none; width: 16px; height: 16px; margin-inline-start: var(--sp-4); vertical-align: -3px; border-radius: 50%; color: var(--fg-3); cursor: help; transition: color var(--dur-1) var(--ease-std); }
 .field-label > .info-tip { margin: 0; } /* 标签行是 flex，间距由 gap 给 */
-.info-tip .lucide { width: 13px; height: 13px; }
+.info-tip .lucide { width: var(--icon-xs); height: var(--icon-xs); }
 .info-tip:focus-visible { color: var(--fg-2); }
 @media (hover: hover) { .info-tip:hover { color: var(--fg-2); } }
 .input, .textarea, .select-trigger {
@@ -294,9 +294,9 @@
 .select-trigger { display: inline-flex; align-items: center; justify-content: space-between; gap: var(--sp-8); cursor: pointer; text-align: left; }
 .select-trigger > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .select-trigger[data-placeholder] { color: var(--fg-3); }
-.select-trigger .lucide { color: var(--fg-2); width: 14px; height: 14px; }
+.select-trigger .lucide { color: var(--fg-2); width: var(--icon-sm); height: var(--icon-sm); }
 .search { position: relative; display: inline-flex; align-items: center; min-width: 0; }
-.search > .lucide { position: absolute; left: var(--sp-10); color: var(--fg-3); pointer-events: none; width: 14px; height: 14px; }
+.search > .lucide { position: absolute; left: var(--sp-10); color: var(--fg-3); pointer-events: none; width: var(--icon-sm); height: var(--icon-sm); }
 .search > .input { padding-left: 30px; }
 .input-unit { position: relative; display: inline-flex; align-items: center; min-width: 0; max-width: 100%; }
 .input-unit > .input { padding-right: calc(var(--sp-10) + 2.5em); font-variant-numeric: tabular-nums; }
@@ -304,7 +304,7 @@
 
 .checkbox { width: 16px; height: 16px; flex: none; border: 1px solid var(--line-strong); border-radius: var(--r-xs); background: var(--surface); display: inline-grid; place-items: center; cursor: pointer; color: var(--on-accent); transition: background-color var(--dur-1) var(--ease-std), border-color var(--dur-1) var(--ease-std); }
 .checkbox[data-state="checked"] { background: var(--accent-solid); border-color: var(--accent-solid); }
-.checkbox .lucide { width: 12px; height: 12px; stroke-width: 2.5; }
+.checkbox .lucide { width: var(--icon-2xs); height: var(--icon-2xs); stroke-width: var(--icon-stroke-strong); }
 .check-row.is-label { font-size: var(--fs-label); }
 .check-row { display: flex; align-items: center; gap: var(--sp-8); font-size: var(--fs-body); cursor: pointer; }
 .switch { width: 34px; height: 20px; flex: none; border: 0; border-radius: var(--r-pill); background: var(--line-strong); padding: 2px; cursor: pointer; transition: background-color var(--dur-1) var(--ease-std); }
@@ -418,14 +418,14 @@
   border: 0; border-radius: calc(var(--r-float) - var(--sp-4)); /* 同心圆角：外圈 --r-float 减去菜单内边距 */ background: transparent; cursor: pointer; text-align: left;
   font: var(--fw-regular) var(--fs-body) / var(--lh-body) var(--font-sans); color: var(--fg); user-select: none; outline: none;
 }
-.menu-item .lucide { color: var(--fg-2); width: 14px; height: 14px; }
+.menu-item .lucide { color: var(--fg-2); width: var(--icon-sm); height: var(--icon-sm); }
 .menu-item[data-highlighted], .select-item[data-highlighted] { background: var(--row-highlight); }
 .menu-item[data-disabled], .select-item[data-disabled] { color: var(--fg-3); pointer-events: none; }
 .menu-item.is-danger { color: var(--bad-text); }
 .menu-item.is-danger .lucide { color: var(--bad-text); }
 /* 子菜单：打开着的触发项、右侧箭头 */
 .menu-item[data-state="open"] { background: var(--row-highlight); }
-.menu-chev { margin-left: auto; width: 14px; height: 14px; color: var(--fg-3); }
+.menu-chev { margin-left: auto; width: var(--icon-sm); height: var(--icon-sm); color: var(--fg-3); }
 .menu-sep { height: 1px; margin: var(--sp-4) 0; background: var(--line); }
 .menu-label { padding: var(--sp-6) var(--sp-10) var(--sp-2); font: var(--fw-medium) var(--fs-micro) / var(--lh-micro) var(--font-sans); color: var(--fg-2); }
 .menu-check { display: inline-flex; margin-left: auto; }
@@ -440,7 +440,7 @@
 .swatch[data-palette="plum"] { background: linear-gradient(135deg, #f7c6ea, #8e3bb0); }
 .swatch[data-palette="indigo"] { background: linear-gradient(135deg, #c7c9f7, #5b5bd6); }
 .select-item { justify-content: space-between; }
-.select-item .lucide { width: 14px; height: 14px; color: var(--accent); }
+.select-item .lucide { width: var(--icon-sm); height: var(--icon-sm); color: var(--accent); }
 /* 共用“⋯”下拉的定位锚：插在被点的按钮里、盖满它（随按钮移动）；共用悬停提示的定位锚：固定定位框，出现时盖在悬停 / 聚焦的元素上。都看不见、不接指针 */
 [data-node-menu], [data-entry-menu] { position: relative; }
 .menu-anchor { position: absolute; inset: 0; visibility: hidden; pointer-events: none; }

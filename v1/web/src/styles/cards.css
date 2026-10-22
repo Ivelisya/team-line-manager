@@ -55,7 +55,7 @@
 /* 国旗：4:3 小圆角矩形，外面一圈很淡的描边（浅色旗在浅色底上也看得清）；没有国家时是一个浅灰底的小地球 */
 .nc-flag { display: inline-grid; place-items: center; flex: none; box-sizing: border-box; width: var(--flag-w); height: var(--flag-h); border-radius: 3px; object-fit: cover; box-shadow: 0 0 0 1px var(--line-strong); }
 .nc-flag.is-none { background: var(--sunken); color: var(--fg-3); box-shadow: inset 0 0 0 1px var(--line); }
-.nc-flag .lucide { width: 11px; height: 11px; }
+.nc-flag .lucide { width: var(--icon-3xs); height: var(--icon-3xs); }
 /* 名称是文字按钮：按下从左端缩（文字不往中间跑），焦点环带小圆角 */
 .nc-name {
   min-width: 0; padding: 0; border: 0; border-radius: var(--r-xs); background: none; cursor: pointer; text-align: left;
@@ -97,7 +97,7 @@
   font-size: var(--fs-label); color: var(--fg-3); text-align: center; padding: 0 var(--sp-12);
 }
 .ncard[data-view="small"] .nc-hold, .ncard[data-view="compact"] .nc-hold { min-height: 74px; }
-.nc-hold .lucide { width: 14px; height: 14px; }
+.nc-hold .lucide { width: var(--icon-sm); height: var(--icon-sm); }
 /* 家宽代理：资源格条的位置放本月业务流量两列（详细卡里这一格不是分段，外面套一层 .nc-res 只为同样的上边距） */
 .nc-res.nc-res-pair { display: block; }
 .nc-pair { padding-block: var(--sp-2); align-content: start; }
@@ -109,7 +109,7 @@
 .flow-col { display: grid; gap: var(--sp-6); min-width: 0; }
 .flow-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); min-width: 0; }
 .flow-label { display: inline-flex; align-items: center; gap: var(--sp-4); font: var(--fw-semibold) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2); white-space: nowrap; }
-.flow-label .lucide { width: 14px; height: 14px; stroke-width: 2.2; color: var(--dir-c); }
+.flow-label .lucide { width: var(--icon-sm); height: var(--icon-sm); stroke-width: var(--icon-stroke-strong); color: var(--dir-c); }
 .flow-col[data-dir="up"] { --dir-c: var(--chart-2); }
 .flow-col[data-dir="down"] { --dir-c: var(--chart-1); }
 .flow-rate { min-width: 0; overflow: hidden; white-space: nowrap; font: var(--fw-semibold) var(--fs-metric) / 24px var(--font-num); font-variant-numeric: var(--num-variant); letter-spacing: -0.03em; color: var(--spd, var(--fg)); }
@@ -130,7 +130,7 @@
 @media (hover: hover) and (prefers-reduced-motion: no-preference) { .ncard:hover .flow-live[data-live] { animation: breathe var(--dur-loop) var(--ease-std) infinite; } }
 .flow-foot { align-items: center; justify-content: space-between; gap: var(--sp-8); font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); white-space: nowrap; }
 .flow-foot-label { display: inline-flex; align-items: center; gap: var(--sp-6); }
-.flow-foot-label .lucide { width: 13px; height: 13px; color: var(--dir-c); }
+.flow-foot-label .lucide { width: var(--icon-xs); height: var(--icon-xs); color: var(--dir-c); }
 .flow-foot .num { color: var(--fg); font-weight: var(--fw-medium); }
 .flow-biz { grid-column: 1 / -1; --dir-c: var(--fg-3); } /* 本月业务流量（用户视角的下载 / 上传）：横跨两列，和网卡上行 / 下行分开 */
 
@@ -147,7 +147,7 @@
 .nc-run { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-12); }
 .nc-run-item { display: grid; gap: var(--sp-2); min-width: 0; }
 .nc-run-label { display: inline-flex; align-items: center; gap: var(--sp-4); font: var(--fw-semibold) var(--fs-micro) / var(--lh-micro) var(--font-sans); color: var(--fg-2); white-space: nowrap; }
-.nc-run-label .lucide { width: 12px; height: 12px; }
+.nc-run-label .lucide { width: var(--icon-2xs); height: var(--icon-2xs); }
 .nc-run-val { display: inline-flex; align-items: baseline; gap: var(--sp-4); font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-num); font-variant-numeric: var(--num-variant); letter-spacing: -0.02em; color: var(--fg); white-space: nowrap; min-width: 0; overflow: hidden; }
 .nc-run-val .unit { font-size: var(--fs-micro); font-weight: var(--fw-medium); letter-spacing: 0; color: var(--fg-2); }
 .nc-run-val[data-c="up"] { color: var(--m-cpu-text); }
@@ -159,7 +159,7 @@
 .nc-tags-list { display: flex; flex-wrap: wrap; align-items: center; gap: var(--inline-gap); height: 22px; min-width: 0; overflow: hidden; flex: 0 1 auto; }
 .nc-tags > .tag { flex: none; } /* 「+N」 */
 .nc-price { display: inline-flex; align-items: center; gap: var(--sp-4); flex: none; margin-left: auto; font: var(--fw-semibold) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg); }
-.nc-price .lucide { width: 13px; height: 13px; color: var(--tag-gold-fg); }
+.nc-price .lucide { width: var(--icon-xs); height: var(--icon-xs); color: var(--tag-gold-fg); }
 .ncard[data-view="compact"] .nc-tags { margin-top: var(--sp-6); min-height: 22px; margin-bottom: 0; gap: var(--sp-4); }
 .ncard[data-view="compact"] .nc-tags-list { gap: var(--sp-4); }
 
@@ -212,11 +212,11 @@
 /* 家宽代理：圆环的位置放本月业务与探测延迟两行，高度同三个圆环 */
 .rc-pair { grid-template-columns: minmax(0, 1fr); align-content: center; gap: var(--sp-8); min-height: 96px; text-align: left; }
 .rc-pair > span:not(.sr-only) { display: flex; align-items: center; gap: var(--sp-6); min-width: 0; font-size: var(--fs-label); color: var(--fg-2); white-space: nowrap; }
-.rc-pair .lucide { width: 13px; height: 13px; flex: none; color: var(--fg-3); }
+.rc-pair .lucide { width: var(--icon-xs); height: var(--icon-xs); flex: none; color: var(--fg-3); }
 .rc-pair b { margin-left: auto; font: var(--fw-semibold) var(--fs-body) / var(--lh-body) var(--font-num); font-variant-numeric: var(--num-variant); color: var(--fg); overflow: hidden; text-overflow: ellipsis; }
 .rc-pair b .unit { font-weight: var(--fw-regular); }
 .rc-rate { display: inline-flex; align-items: center; gap: var(--sp-4); font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-num); letter-spacing: -0.02em; color: var(--spd, var(--fg-3)); white-space: nowrap; }
-.rc-rate .lucide { width: 14px; height: 14px; stroke-width: 2.2; color: var(--fg-2); }
+.rc-rate .lucide { width: var(--icon-sm); height: var(--icon-sm); stroke-width: var(--icon-stroke-strong); color: var(--fg-2); }
 .rc-rate .unit { font-size: var(--fs-micro); letter-spacing: 0; color: var(--fg-2); }
 
 /* ========== 表格视图（外框是通用的 .panel） ========== */

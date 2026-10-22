@@ -17,7 +17,7 @@
   border: 1px solid var(--line); border-radius: var(--r-pill); background: var(--track);
   font: var(--fw-semibold) var(--fs-label) / 1 var(--font-sans); color: var(--fg); white-space: nowrap;
 }
-.hsec-badge .lucide { width: 13px; height: 13px; stroke-width: 2; }
+.hsec-badge .lucide { width: var(--icon-xs); height: var(--icon-xs); stroke-width: var(--icon-stroke-strong); }
 .hsec-actions { display: flex; align-items: center; gap: var(--control-gap); flex-wrap: wrap; min-width: 0; }
 .hsec-titles { display: grid; gap: var(--sp-4); min-width: 0; }
 .hsec-title { margin: 0; font: var(--fw-bold) var(--fs-section) / var(--lh-section) var(--font-sans); letter-spacing: -0.015em; color: var(--fg); }
@@ -40,10 +40,10 @@
 }
 /* 可点的 KPI 卡（悬停上浮、按下微缩见 components.css「交互状态」）：标题行最右一个小箭头，悬停时往右挪 2px、变深一级，提示“点进去看明细” */
 .stat-label { display: flex; align-items: center; gap: 7px; min-width: 0; font: var(--fw-semibold) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2); white-space: nowrap; }
-.stat-go { flex: none; margin-left: auto; width: 12px; height: 12px; color: var(--fg-3); transition: translate var(--dur-2) var(--ease-out), color var(--dur-1) var(--ease-std); }
+.stat-go { flex: none; margin-left: auto; width: var(--icon-2xs); height: var(--icon-2xs); color: var(--fg-3); transition: translate var(--dur-2) var(--ease-out), color var(--dur-1) var(--ease-std); }
 @media (hover: hover) { .stat.is-link:hover .stat-go { translate: 2px 0; color: var(--fg-2); } }
 .stat-ic { display: inline-flex; color: var(--tc); }
-.stat-ic .lucide { width: 15px; height: 15px; stroke-width: 2; }
+.stat-ic .lucide { width: var(--icon-sm); height: var(--icon-sm); stroke-width: var(--icon-stroke-strong); }
 .stat-ic[data-tone="ok"] { --tc: var(--ok); }
 .stat-ic[data-tone="teal"] { --tc: var(--tag-teal-fg); }
 .stat-ic[data-tone="bad"] { --tc: var(--bad); }
@@ -79,7 +79,7 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 }
 .cluster-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-10); }
 .cluster-title { display: flex; align-items: center; gap: 7px; margin: 0; font: var(--fw-bold) var(--fs-emph) / 1.2 var(--font-sans); color: var(--fg); }
-.cluster-title .lucide { width: 16px; height: 16px; stroke-width: 2; }
+.cluster-title .lucide { width: var(--icon-md); height: var(--icon-md); stroke-width: var(--icon-stroke-strong); }
 .cpill {
   --pc: var(--ok-text); display: inline-flex; align-items: center; gap: var(--sp-6); flex: none; height: var(--h-tag); box-sizing: border-box; padding: 0 9px;
   border: 1px solid color-mix(in srgb, var(--pc) 30%, transparent); border-radius: var(--r-pill); background: color-mix(in srgb, var(--pc) 13%, transparent);
@@ -87,7 +87,7 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 }
 .cpill[data-tone="warn"] { --pc: var(--warn-text); }
 .cpill[data-tone="bad"] { --pc: var(--bad-text); }
-.cpill i { width: 12px; height: 12px; background: currentColor; -webkit-mask: var(--ic-ok) center / contain no-repeat; mask: var(--ic-ok) center / contain no-repeat; }
+.cpill i { width: var(--icon-2xs); height: var(--icon-2xs); background: currentColor; -webkit-mask: var(--ic-ok) center / contain no-repeat; mask: var(--ic-ok) center / contain no-repeat; }
 .cpill[data-tone="bad"] i { -webkit-mask-image: var(--ic-bad); mask-image: var(--ic-bad); }
 .cluster-box { display: grid; gap: var(--sp-8); min-width: 0; padding: 11px 13px; border: 1px solid var(--line); border-radius: var(--r-inner); background: color-mix(in srgb, var(--section) 40%, var(--surface)); }
 .cluster-row { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--sp-8); min-width: 0; }
@@ -108,7 +108,7 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 .cchart[data-dir="down"] { --cc: var(--chart-1); }
 .cchart-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-6); min-width: 0; font: var(--fw-bold) var(--fs-micro) / var(--lh-micro) var(--font-sans); color: var(--fg); white-space: nowrap; }
 .cchart-head > span { display: inline-flex; align-items: center; gap: var(--sp-4); }
-.cchart-head .lucide { width: 13px; height: 13px; stroke-width: 2.2; color: var(--cc); }
+.cchart-head .lucide { width: var(--icon-xs); height: var(--icon-xs); stroke-width: var(--icon-stroke-strong); color: var(--cc); }
 .cchart-head b { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: var(--fs-label); color: var(--cc); }
 .cchart-head b .unit { color: inherit; opacity: 0.8; font-size: var(--fs-micro); }
 /* 浅色底上橙色的上行读数只有约 3:1：文字压暗一些（≥ 4.5:1），图标、折线仍用原色；深色主题不变 */
@@ -168,7 +168,7 @@ a.dotline { color: inherit; text-decoration: none; border-radius: var(--r-xs); }
 .cmeter[data-metric="load"] { --mc: var(--m-load); }
 .cmeter-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); min-width: 0; }
 .cmeter-label { display: inline-flex; align-items: center; gap: 5px; font: var(--fw-semibold) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2); white-space: nowrap; }
-.cmeter-label .lucide { width: 13px; height: 13px; stroke-width: 2; color: var(--mc); }
+.cmeter-label .lucide { width: var(--icon-xs); height: var(--icon-xs); stroke-width: var(--icon-stroke-strong); color: var(--mc); }
 .cmeter-value { font: var(--fw-semibold) var(--fs-body) / var(--lh-body) var(--font-num); font-variant-numeric: var(--num-variant); color: var(--fg); white-space: nowrap; }
 .cmeter-value .unit { margin-left: 1px; font-size: var(--fs-micro); color: var(--fg-2); }
 .cmeter[data-tone="warn"] .cmeter-value { color: var(--warn-text); }

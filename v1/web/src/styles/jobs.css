@@ -52,7 +52,7 @@
   position: relative; z-index: 1; display: grid; place-items: center; width: 24px; height: 24px; box-sizing: border-box; border-radius: 50%;
   background: var(--surface); border: 2px solid var(--line-strong); color: var(--fg-3); transition: background-color var(--dur-1) var(--ease-std), border-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std);
 }
-.stepbar-node .lucide { width: 12px; height: 12px; stroke-width: 2.4; }
+.stepbar-node .lucide { width: var(--icon-2xs); height: var(--icon-2xs); stroke-width: var(--icon-stroke-strong); }
 .stepbar-item[data-kind="done"] .stepbar-node { background: color-mix(in srgb, var(--ok) 16%, var(--surface)); border-color: var(--ok); color: var(--ok-text); }
 .stepbar-item[data-kind="running"] .stepbar-node { background: color-mix(in srgb, var(--info) 16%, var(--surface)); border-color: var(--info); color: var(--info-text); animation: node-ring var(--dur-loop) var(--ease-out) infinite; }
 .stepbar-item[data-kind="failed"] .stepbar-node { background: color-mix(in srgb, var(--bad) 16%, var(--surface)); border-color: var(--bad); color: var(--bad-text); }
@@ -76,7 +76,7 @@
 .step::before { content: ""; position: absolute; left: 9.5px; top: 22px; bottom: 2px; width: 1px; background: var(--line-strong); }
 .step:last-child::before { display: none; }
 .step-ic { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; background: var(--neutral-bg); color: var(--neutral-text); }
-.step-ic .lucide { width: 12px; height: 12px; stroke-width: 2.2; }
+.step-ic .lucide { width: var(--icon-2xs); height: var(--icon-2xs); stroke-width: var(--icon-stroke-strong); }
 /* 按展示类别着色（后端的 state 有 done / succeeded 等不同写法，不再依赖原始值） */
 .step[data-kind="done"] .step-ic { background: var(--ok-bg); color: var(--ok-text); }
 .step[data-kind="running"] .step-ic { background: var(--info-bg); color: var(--info-text); }

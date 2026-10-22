@@ -48,7 +48,7 @@
 /* 操作记录（AuditList）：不画圆点和竖线；有明细的行前面一个展开箭头，点开在下面列出命令与结果、改动前后 */
 .audit-list.is-bare li::before { content: none; }
 .audit-chev { display: inline-flex; width: 14px; height: 1em; vertical-align: -2px; color: var(--fg-3); }
-.audit-chev .lucide { width: 12px; height: 12px; } /* 转动见 components.css「展开箭头」 */
+.audit-chev .lucide { width: var(--icon-2xs); height: var(--icon-2xs); } /* 转动见 components.css「展开箭头」 */
 .audit-list.is-bare .audit-detail { padding-left: 14px; }
 .audit-what[data-tone="bad"] b { color: var(--bad-text); }
 .audit-target.btn { display: inline; height: auto; font: inherit; vertical-align: baseline; }
@@ -95,7 +95,7 @@
 /* 卡头按基线对齐：标题、当前值第一行、时间范围的文字落在同一条线上 */
 .chart-card-head { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: var(--sp-4) var(--sp-8); min-width: 0; }
 .chart-card-title { display: flex; align-items: baseline; gap: var(--sp-6); min-width: 0; font: var(--fw-semibold) var(--fs-body) / var(--lh-body) var(--font-sans); color: var(--fg); }
-.chart-card-title .lucide { flex: none; align-self: center; width: 14px; height: 14px; stroke-width: 2; color: var(--cc); } /* svg 被 preflight 设成 block：标题用 flex 让图标与文字同一行 */
+.chart-card-title .lucide { flex: none; align-self: center; width: var(--icon-sm); height: var(--icon-sm); stroke-width: var(--icon-stroke-strong); color: var(--cc); } /* svg 被 preflight 设成 block：标题用 flex 让图标与文字同一行 */
 .chart-card-meta { font-size: var(--fs-label); font-weight: var(--fw-regular); color: var(--fg-2); }
 .chart-card-val { display: grid; justify-items: end; text-align: right; }
 .chart-card-val b { font: var(--fw-semibold) var(--fs-emph) / var(--lh-emph) var(--font-num); font-variant-numeric: var(--num-variant); letter-spacing: -0.02em; color: var(--fg); white-space: nowrap; }

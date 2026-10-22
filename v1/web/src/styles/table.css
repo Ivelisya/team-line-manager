@@ -44,7 +44,7 @@
 }
 .dt th.r .th-sort { justify-content: flex-end; }
 @media (hover: hover) { .th-sort:hover { color: var(--fg); } }
-.th-sort .lucide { width: 12px; height: 12px; color: var(--fg-3); }
+.th-sort .lucide { width: var(--icon-2xs); height: var(--icon-2xs); color: var(--fg-3); }
 .th-sort[data-dir] .lucide { color: var(--accent); }
 .dt-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); padding: var(--sp-8) var(--card-pad); border-top: 1px solid var(--line); font-size: var(--fs-label); color: var(--fg-2); }
 
