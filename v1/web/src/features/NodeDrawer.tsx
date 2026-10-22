@@ -6,7 +6,7 @@ import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/dialog';
 import { Tabs, TabsList, TabsTrigger, Trunc } from '@/components/ui/overlays';
 import { InfoTip } from '@/components/ui/form';
-import { IconButton } from '@/components/ui/button';
+import { Button, IconButton } from '@/components/ui/button';
 import { ErrorBoundary } from '@/components/app/ErrorBoundary';
 import { Skeleton } from '@/components/ui/skeleton';
 import type { Incident, MachineView } from '@/lib/types';
@@ -18,7 +18,7 @@ import { useTitleName } from '@/lib/title';
 import * as F from '@/lib/format';
 import { jobKindLabel } from '@/lib/jobs';
 import { errText, kindLabel, meta, probeSummary, severityOf } from '@/lib/derive';
-import { CopyButton, ErrorNote, ReasonList, HealthPill, Flag, LabelValue, LabelValueGrid, LifecyclePill, Note, Section, SectionHeader, SeverityDot } from '@/components/app/primitives';
+import { CopyButton, ErrorNote, ReasonList, HealthPill, Flag, LabelValue, LabelValueGrid, LifecyclePill, Note, Section, SectionHeader } from '@/components/app/primitives';
 import { MachineTags } from '@/components/app/MachineTags';
 import { ManageTab } from './ManageTab';
 import { BillingTab } from './BillingTab';
@@ -165,7 +165,7 @@ function probeCounts(m: MachineView) {
 
 function OverviewTab({ m }: { m: MachineView }) {
   const audit = useAudit(m.id);
-  const { open } = useDrawer();
+  const { open, setTab } = useDrawer();
   // 同机 IP 节点：SSH 端口、agent 都是宿主机的
   const h = m.host_machine;
   const ofHost = h ? '（宿主机的）' : '';
@@ -226,8 +226,11 @@ function OverviewTab({ m }: { m: MachineView }) {
         </Section>
       )}
       <Section>
-        <SectionHeader title={m.kind === 'relay' ? '挂载的入口' : '入口'} meta={entriesMeta(m)} />
-        <EntriesTable m={m} />
+        {/* 线路机的入口多（几十条）：概览只放异常的，全部在连接质量页签 */}
+        <SectionHeader title={m.kind === 'relay' ? '挂载的入口' : '入口'} meta={entriesMeta(m)}>
+          {m.kind === 'relay' && m.entries.length > 0 && <Button variant="quiet" size="sm" onClick={() => setTab('quality')}>查看全部</Button>}
+        </SectionHeader>
+        <EntriesTable m={m} onlyBad={m.kind === 'relay'} />
       </Section>
       <RecentIncidents m={m} />
       <Section>
@@ -240,8 +243,8 @@ function OverviewTab({ m }: { m: MachineView }) {
   );
 }
 
-/** 最近告警：级别点 + 规则名，右边进行中 / 恢复观察中 / 已恢复；下一行触发、恢复的时刻与持续多久（进行中算到现在），反复的带次数。
- *  排版同「最近操作」，悬停规则名看摘要，已恢复的级别点调淡。
+/** 最近告警：规则名，右边进行中 / 恢复观察中 / 已恢复；下一行触发、恢复的时刻与持续多久（进行中算到现在），反复的带次数。
+ *  排版同「最近操作」（不画圆点），悬停规则名看摘要，已恢复的整条调淡。
  *  恢复观察中：告警还开着，机器的健康原因里却已经没有这条规则了（告警按健康原因开关，规则名就是原因的 key）——
  *  中控要原因连续消失满去抖时长（出口 150 秒、TCP 90 秒、其余 60 秒）才恢复，探测停了时还要等新探测。维护中健康不给原因，不这么判 */
 function RecentIncidents({ m }: { m: MachineView }) {
@@ -251,13 +254,12 @@ function RecentIncidents({ m }: { m: MachineView }) {
     <Section>
       <SectionHeader title="最近告警" />
       {q.data?.length ? (
-        <ul className="audit-list">
+        <ul className="audit-list is-flat">
           {q.data.map((i) => {
             const firing = i.state === 'firing';
             const settling = firing && judge && !m.health.reasons.some((r) => r.key === i.rule);
             return (
               <li key={i.id} data-resolved={firing ? undefined : ''}>
-                <SeverityDot severity={i.severity} />
                 <div className="audit-body">
                   <div className="audit-head">
                     <span className="audit-what" data-tip={errText(i.summary)}><b>{i.rule_name}</b></span>

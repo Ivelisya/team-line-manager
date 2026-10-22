@@ -5,7 +5,7 @@ import * as React from 'react';
 import { CheckCircle2, ChevronRight, CircleAlert, Loader2, PackageOpen } from 'lucide-react';
 import { useRelays } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
-import { errText, healthLabel, probeFail, probeFailLabel } from '@/lib/derive';
+import { entryBad, healthLabel, reachFail } from '@/lib/derive';
 import * as F from '@/lib/format';
 import type { EntryView, MachineView } from '@/lib/types';
 import { Button } from '@/components/ui/button';
@@ -15,22 +15,17 @@ import { NodeHover } from '@/components/app/NodeHover';
 import { Waypoints } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { EntryMenuButton, EntryMenus } from '@/components/app/EntryActions';
-import { entryState } from '@/components/app/primitives';
 import { openEvacuate } from '@/lib/nodeActions';
 import { movableEntries } from '@/components/app/LifecycleDialogs';
 import { ShowAll } from '@/components/app/Pagination';
 import { scrollBackTo } from '@/lib/usePage';
-import { ENTRY_CAP, probeCell, tcpCell } from '@/features/EntriesTable';
+import { ENTRY_CAP, entryStatus, probeCell, tcpCell } from '@/features/EntriesTable';
 import { HEALTH_TONE } from '@/lib/sort';
 
 type Open = ReturnType<typeof useDrawer>['open'];
 
-/** 有问题的入口：探测不通或应用失败 */
-const isBad = (e: EntryView) => !!probeFail(e) || (e.lifecycle === 'active' && !!e.apply_error);
-
 /** 入口一行。memo：实时推送对没变的入口原样返回（live.ts 的 patchEntry），open 是稳定引用，只有变了的那几行重渲染 */
 const EntryRow = React.memo(function EntryRow({ e, open }: { e: EntryView; open: Open }) {
-  const fail = probeFail(e);
   return (
     // 行里的「⋯」由外面的 EntryMenus 接住，不当成点行
     <tr className="is-link" tabIndex={0} onClick={(ev) => { if (!(ev.target as Element).closest('button')) open(e.node.id); }}
@@ -39,7 +34,7 @@ const EntryRow = React.memo(function EntryRow({ e, open }: { e: EntryView; open:
       {/* 直出入口的节点就是这台线路机自己 */}
       <td>{e.direct ? <span className="ellipsis block" data-tip="从线路机自己的 IP 出去，不经节点">{e.node.name}</span>
         : <NodeHover id={e.node.id} noFocus><span className="ellipsis block">{e.node.name}</span></NodeHover>}</td>
-      <td>{fail ? <Pill tone="bad" tip={fail.detail ? errText(fail.detail) : undefined}>{probeFailLabel(e)}</Pill> : entryState(e, true)}</td>
+      <td>{entryStatus(e)}</td>
       {/* 停用的入口不再探测：留着的是停用前的旧读数，不显示 */}
       {e.lifecycle === 'disabled' ? <><td className="r t-muted">—</td><td className="r t-muted">—</td></> : <><td className="r">{tcpCell(e)}</td><td className="r">{probeCell(e.egress)}</td></>}
       <td className="r"><Num f={F.bytes(e.traffic.month_up + e.traffic.month_down)} /></td>
@@ -72,8 +67,9 @@ function RelayCard({ m, open }: { m: MachineView; open: Open }) {
   const [all, setAll] = React.useState(false);
   const card = React.useRef<HTMLElement>(null);
   // 有问题的排前面（稳定：同组内保持原顺序），折叠时也全部露出
-  const sorted = React.useMemo(() => [...m.entries.filter(isBad), ...m.entries.filter((e) => !isBad(e))], [m.entries]);
-  const cap = Math.max(ENTRY_CAP, m.entries.filter(isBad).length);
+  const sorted = React.useMemo(() => [...m.entries.filter(entryBad), ...m.entries.filter((e) => !entryBad(e))], [m.entries]);
+  const cap = Math.max(ENTRY_CAP, m.entries.filter(entryBad).length);
+  const unreach = m.entries.filter(reachFail).length;
   const entries = all ? sorted : sorted.slice(0, cap);
   return (
     <section ref={card} id={`relay-${m.id}`} className="panel relay-card">
@@ -81,6 +77,7 @@ function RelayCard({ m, open }: { m: MachineView; open: Open }) {
         <Flag country={m.country} manual={!!m.country_set} ip={m.ip} />
         <button type="button" className="ttl relay-name" onClick={() => open(m.id)}>{m.name}<ChevronRight size={16} aria-hidden /></button>
         <HealthPill m={m} />
+        {unreach > 0 && <span className="relay-unreach" data-tip="中控连不上这些入口的端口，见下表标红的行">中控连不上 {unreach} 个入口</span>}
         <span className="t-sub">{r?.public_host && r.public_host !== m.ip ? `${r.public_host} · ${m.ip}` : m.ip}</span>
         {m.subscription && <Chip variant={dueWarn ? 'warn' : undefined}><Due days={m.subscription.due_days} state={m.subscription.due_state} tail /></Chip>}
         {m.lifecycle === 'active' && movableEntries(m).length > 0 && <Button size="sm" style={{ marginLeft: 'auto' }} onClick={() => openEvacuate(m.id)}><PackageOpen size={14} />搬空到…</Button>}
@@ -105,10 +102,27 @@ function RelayCard({ m, open }: { m: MachineView; open: Open }) {
   );
 }
 
+/** 吸顶跳转条高亮当前看着的那台：各卡与视口上部一条带（顶栏和跳转条之下、到视口 45% 处）相交的第一台 */
+function useCurrentRelay(idsKey: string) {
+  const [cur, setCur] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    if (!idsKey) return;
+    const ids = idsKey.split(','); const seen = new Set<string>();
+    const io = new IntersectionObserver((es) => {
+      for (const e of es) { const id = e.target.id.slice('relay-'.length); if (e.isIntersecting) seen.add(id); else seen.delete(id); }
+      const first = ids.find((id) => seen.has(id)); if (first) setCur(first);
+    }, { rootMargin: '-140px 0px -55% 0px' });
+    ids.forEach((id) => { const el = document.getElementById(`relay-${id}`); if (el) io.observe(el); });
+    return () => io.disconnect();
+  }, [idsKey]);
+  return cur;
+}
+
 export function RelaysPage() {
   const q = useRelays();
   const { open } = useDrawer();
   const list = q.data ?? [];
+  const cur = useCurrentRelay(list.length > 2 ? list.map((m) => m.id).join() : '');
   return (
     <div className="stack">
       <PageHead title="线路" note={q.data ? `${list.length} 台线路机 · ${list.reduce((s, m) => s + m.entries.length, 0)} 条入口` : undefined} />
@@ -118,7 +132,7 @@ export function RelaysPage() {
       {list.length > 2 && (
         <nav className="relay-jump" aria-label="线路机">
           {list.map((m) => (
-            <button key={m.id} type="button" className="fchip" onClick={() => document.getElementById(`relay-${m.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>
+            <button key={m.id} type="button" className="fchip" aria-pressed={cur === m.id} onClick={() => document.getElementById(`relay-${m.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>
               {m.name}{HEALTH_TONE[m.health.status] === 'bad' && <span className="relay-jump-bad">{healthLabel(m.health.status)}</span>}
             </button>
           ))}

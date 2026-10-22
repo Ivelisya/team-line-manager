@@ -124,8 +124,8 @@ function Flow({ m, onOpen, totals, compact, paused }: { m: MachineView; onOpen: 
   const r = liveRate(m); const t = monthFlow(m); const bw = m.plan?.bandwidth_mbps;
   return (
     <div className="flow">
-      <FlowCol dir="up" rate={r?.tx ?? null} values={tx} dots={compact ? 20 : undefined} live={r != null} bw={bw} onOpen={onOpen} />
       <FlowCol dir="down" rate={r?.rx ?? null} values={rx} dots={compact ? 20 : undefined} live={r != null} bw={bw} onOpen={onOpen} />
+      <FlowCol dir="up" rate={r?.tx ?? null} values={tx} dots={compact ? 20 : undefined} live={r != null} bw={bw} onOpen={onOpen} />
       {/* 本月流量单独一行：有 agent 的是网卡口径（下行 / 上行，供应商计费口径）；同机 IP 节点没有自己的网卡，是业务流量（用户视角的下载 / 上传）。两种不混在一行 */}
       {totals && (
         <button type="button" className="flow-foot flow-month" data-tip={monthFlowTip(m)} onClick={() => onOpen('traffic')}>
@@ -204,7 +204,7 @@ function QuotaSlot({ m, onOpen, large }: { m: MachineView; onOpen: Open; large?:
  *  格子：节点是线路机 → 节点的 TCP 建连（线路机的 agent 探）；线路机是中控 → 线路机的连通性（中控探，只看通不通）。
  *  标题：故障的写第一条健康原因（同状态胶囊的悬停），线路机写名下入口可用数（TCP 与出口各自最新一次都通，直出入口只看出口），
  *  家宽代理写成功率（延迟已在上面），其余写 TCP 延迟 · 出口通不通。节点自己的 agent 离线不影响它的心跳格：探测不是它自己做的，照常上色 */
-const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, reason, reasonKey, onOpen, tcp, tcpTip, egressOk, tcpFail, egressFail, all, off, usable, tcpBad, egressBad }: { id: string; kind: MachineView['kind']; lifecycle: MachineView['lifecycle']; reason: string | undefined; reasonKey: string | undefined; onOpen: Open } & ReturnType<typeof probeSummary>) {
+const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, reason, reasonKey, onOpen, tcp, tcpTip, egressOk, tcpFail, egressFail, all, off, usable, tcpBad, egressBad, reachBad }: { id: string; kind: MachineView['kind']; lifecycle: MachineView['lifecycle']; reason: string | undefined; reasonKey: string | undefined; onOpen: Open } & ReturnType<typeof probeSummary>) {
   const live = lifecycle === 'active';
   const relayTip = `入口可用 = 线路机到节点的 TCP 与出口都通的在用入口数（TCP 不通 ${tcpBad} 条 · 出口不通 ${egressBad} 条${off ? ` · 停用 ${off} 条不计` : ''}）。下面的格子是中控连线路机本身的结果`;
   const bq = useProbeBeats(useCallback((d: ProbeBeats) => d[id], [id]));
@@ -212,7 +212,7 @@ const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, reason, reasonKey
   const rate = kind === 'proxy' && live ? beatRate(beats) : null;
   const empty = live && bq.isSuccess && !beats?.some((b) => b[0] > 0); // 整条都没有探测：标题写明、格子画虚线，不是 20 格灰块
   const cap = !live ? <span className="t-muted">{lifecycle === 'retired' ? '已退役' : '尚未开始探测'}</span>
-    : kind === 'relay' && reason ? <><span className="nc-reason" data-tip={reason}>{reasonKey === 'relay_unreachable' ? '中控连不上入口' : reason}</span> · <span data-tip={relayTip}><b className="num">{usable}/{all}</b></span></>
+    : kind === 'relay' && reason ? <><span className="nc-reason" data-tip={reason}>{reasonKey === 'relay_unreachable' ? (reachBad ? `中控连不上 ${reachBad} 个入口` : '中控连不上入口') : reason}</span> · <span data-tip={relayTip}>入口可用 <b className="num">{usable}/{all}</b></span></>
     : reason ? <span className="nc-reason" data-tip={reason}>{reason}</span>
     : empty ? <span className="t-muted">暂无探测</span>
     : kind === 'relay' ? <span data-tip={relayTip}>入口可用 <b className="num" style={usable < all ? { color: 'var(--warn-text)' } : undefined}>{usable}/{all}</b></span>

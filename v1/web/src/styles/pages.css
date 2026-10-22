@@ -34,7 +34,7 @@
 .audit-what b { font-weight: var(--fw-medium); }
 .audit-meta { flex: none; font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); white-space: nowrap; }
 .audit-detail { line-height: var(--lh-label); color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* 抽屉「最近告警」用同一套排版：右边的状态进行中按级别着色、已恢复灰；已恢复的级别点调淡，眼睛先落在还没恢复的那几条上 */
+/* 抽屉「最近告警」用同一套排版：右边的状态进行中按级别着色、已恢复灰；已恢复的整条调淡，眼睛先落在还没恢复的那几条上 */
 .audit-meta[data-tone="bad"] { color: var(--bad-text); }
 /* 操作记录页：涉及机器的一行可点（打开抽屉），整行悬停变色；底下「加载更早的记录」居中 */
 .audit-list li.is-link { cursor: pointer; transition: background-color var(--dur-1) var(--ease-std); }
@@ -45,7 +45,8 @@
 .audit-more { display: flex; justify-content: center; padding-top: var(--sp-12); }
 .audit-meta[data-tone="warn"] { color: var(--warn-text); }
 .audit-meta[data-tone="info"] { color: var(--info-text); }
-.audit-list li[data-resolved] > .dot { opacity: 0.4; }
+.audit-list.is-flat li::before { content: none; }
+.audit-list.is-flat li[data-resolved] .audit-what b { font-weight: var(--fw-regular); color: var(--fg-2); }
 /* 操作记录（AuditList）：不画圆点和竖线；有明细的行前面一个展开箭头，点开在下面列出命令与结果、改动前后 */
 .audit-list.is-bare li::before { content: none; }
 .audit-chev { display: inline-flex; width: 14px; height: 1em; vertical-align: -2px; color: var(--fg-3); }
@@ -123,6 +124,7 @@
 .mgroup.is-danger { border-color: color-mix(in srgb, var(--bad) 30%, var(--line)); }
 .sec > * + .mgroup { margin-top: var(--sp-8); }
 /* 费用页签：标签与右边的「跟随 / 单独」切换一行（切换比标签高，行高固定免得有无切换的项高低不一） */
+.ov-follow { display: flex; align-items: center; min-height: var(--h-md); padding: 0 var(--sp-12); color: var(--fg-2); }
 .ov-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); min-height: 26px; min-width: 0; }
 .manage-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-12); flex-wrap: wrap; }
 .manage-row > div:first-child { min-width: 0; flex: 1 1 220px; }
@@ -146,6 +148,7 @@
 /* 有吸顶的跳转条时，各卡的表头吸在它下面（表头默认吸在顶栏下，会盖住它） */
 .relay-jump ~ .relay-card .table-wrap[data-fit] thead th { top: calc(var(--topbar-h) + var(--h-md) + 2 * var(--sp-8)); }
 .relay-jump-bad { color: var(--bad-text); }
+.relay-unreach { color: var(--bad-text); font-size: var(--fs-label); }
 .relay-head { display: flex; align-items: center; gap: var(--sp-12); flex-wrap: wrap; padding: var(--sp-12) var(--card-pad); }
 .relay-head .ttl { font: var(--fw-semibold) var(--fs-title) / var(--lh-title) var(--font-sans); letter-spacing: var(--tracking-title); }
 /* 线路机名可点（打开它的抽屉）：去掉按钮外观，后面一个淡箭头，悬停变主色、箭头右移一点，按下微缩 */
@@ -162,6 +165,7 @@
 .prov-steps .s[data-on="1"] .n { background: var(--accent-solid); color: var(--on-accent); }
 .prov-steps .s[data-done="1"] .n { background: var(--ok-bg); color: var(--ok-text); }
 /* 单台上架：每个字段下面都留出一行提示 / 错误的位置（失焦报错时下面的字段不整体下移、点不偏），这一行代替表单的行距 */
+.prov-steps.is-form { width: 100%; max-width: 760px; margin-inline: auto; } /* 单台：步骤条与下面收窄居中的表单同宽，左缘对齐 */
 .prov-form { width: 100%; max-width: 760px; margin-inline: auto; } /* 两列表单铺满 1100px 太散：收到 760 并居中 */
 .prov-form .form-grid { row-gap: 0; }
 .prov-form .field { grid-template-rows: auto auto minmax(var(--lh-label), auto); }

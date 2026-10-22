@@ -42,7 +42,10 @@ export interface EntryView {
   direct: boolean;
   port: number;
   lifecycle: EntryLifecycle; applied: boolean; apply_error: string | null;
-  tcp: ProbeResult | null; egress: ProbeResult | null; traffic: EntryTraffic;
+  tcp: ProbeResult | null; egress: ProbeResult | null;
+  /** 中控 → 这个入口端口（线路机上）最近一次 TCP 检查；从没检查过为 null。与 tcp / egress（线路机 → 节点）是两段 */
+  reach: { ok: boolean; ts: string; detail: string | null } | null;
+  traffic: EntryTraffic;
 }
 export interface HealthReason { key: string; severity: 'info' | 'warning' | 'critical' | string; text: string }
 /** agent 自报的健康数据（只列界面用到的字段，完整见 docs/API.md） */

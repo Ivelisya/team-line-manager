@@ -63,11 +63,6 @@ export const ReasonList = ({ reasons, className }: { reasons: HealthReason[]; cl
     {reasons.map((r, i) => <li key={i}><SeverityMark severity={r.severity} />{errText(r.text)}</li>)}
   </ul>
 );
-/** 告警级别圆点（抽屉「最近告警」时间线的节点）：颜色之外给读屏与悬停一份文字 */
-export const SeverityDot = ({ severity }: { severity: string }) => {
-  const s = severityOf(severity);
-  return <span className="dot" data-tone={s.tone} role="img" aria-label={s.label} data-tip={s.label} />;
-};
 /** 告警级别图标（顶栏告警预览的列表）：严重同故障、警告同降级 */
 export const SeverityMark = ({ severity }: { severity: string }) => {
   const s = severityOf(severity);
