@@ -51,7 +51,7 @@ export const QUOTA_COLORS = quotaColors(CELL_N);
 /** 资源读数：图标 + 名称 + 数值，副行，格条。metric 决定颜色（--m-cpu / --m-mem / --m-disk / --m-load） */
 export function CellMeter({ icon, label, value, pct, sub, metric, empty, tip }: { icon: React.ReactNode; label: string; value: Fmt; pct: number | null; sub?: React.ReactNode; metric: 'cpu' | 'mem' | 'disk' | 'load'; empty?: boolean; tip?: string }) {
   return (
-    <div className={cn('cmeter', empty && 'is-empty')} data-tip={tip} data-metric={metric} data-tone={empty ? undefined : usageTone(pct)}>
+    <div className={cn('cmeter', empty && 'is-empty')} data-tip={tip} data-metric={metric} data-tone={empty ? undefined : usageTone(pct, metric)}>
       <div className="cmeter-head"><span className="cmeter-label">{icon}{label}</span><span className="cmeter-value"><Num f={empty ? F.NA : value} /></span></div>
       {/* 数据过期时副标题也是旧读数：留空行占位，卡片不跳高 */}
       {sub !== undefined && <div className="cmeter-sub">{empty ? ' ' : sub}</div>}
@@ -63,7 +63,7 @@ export function CellMeter({ icon, label, value, pct, sub, metric, empty, tip }: 
 /** 迷你资源条（表格单元格、悬浮卡）：8 格 + 百分比；数据过期（empty）显示 “—” */
 export function MiniMeter({ pct, metric, empty }: { pct: number | null; metric: 'cpu' | 'mem' | 'disk'; empty?: boolean }) {
   return (
-    <span className="tmeter" data-metric={metric} data-tone={empty ? undefined : usageTone(pct)}>
+    <span className="tmeter" data-metric={metric} data-tone={empty ? undefined : usageTone(pct, metric)}>
       <Cells pct={empty ? null : pct} n={8} color={`var(--m-${metric})`} /><Num f={empty ? F.NA : F.pct(pct)} />
     </span>
   );
@@ -74,7 +74,7 @@ const RING = 64; const RING_W = 6; const RING_R = (RING - RING_W) / 2; const RIN
 export function Ring({ pct, metric, children }: { pct: number | null; metric: 'cpu' | 'mem' | 'disk'; children?: React.ReactNode }) {
   const off = RING_C * (1 - clamp01((pct ?? 0) / 100));
   return (
-    <div className="gauge" data-metric={metric} data-tone={usageTone(pct)} style={{ width: RING, height: RING }}>
+    <div className="gauge" data-metric={metric} data-tone={usageTone(pct, metric)} style={{ width: RING, height: RING }}>
       <svg width={RING} height={RING} viewBox={`0 0 ${RING} ${RING}`} aria-hidden>
         <circle className="gauge-track" cx={RING / 2} cy={RING / 2} r={RING_R} strokeWidth={RING_W} />
         {pct != null && <circle className="gauge-val" cx={RING / 2} cy={RING / 2} r={RING_R} strokeWidth={RING_W} strokeDasharray={RING_C}

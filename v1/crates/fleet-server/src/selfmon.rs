@@ -225,8 +225,9 @@ fn backup_problem(dir: &Path, now: SystemTime) -> Option<String> {
     match newest {
         None => Some(format!("备份目录 {} 里没有备份（fleet-*.tar、fleet-*.tar.age）", dir.display())),
         Some((t, name)) if now.duration_since(t).unwrap_or_default() > BACKUP_MAX_AGE => Some(format!(
-            "最新一份备份做于 {}（北京时间，{}），超过 26 小时没有新的：每日备份没做成，查 systemctl status fleet-backup",
+            "最新一份备份做于 {}（{}，{}），超过 26 小时没有新的：每日备份没做成，查 systemctl status fleet-backup",
             notify::beijing(OffsetDateTime::from(t)),
+            crate::meta::org_tz_label(),
             name.to_string_lossy()
         )),
         Some(_) => None,

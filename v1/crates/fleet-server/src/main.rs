@@ -79,6 +79,7 @@ async fn main() -> anyhow::Result<()> {
             let l = tokio::net::TcpListener::bind(listen).await.with_context(|| format!("监听 {listen}（已经有一个 fleet-server 在跑？）"))?;
             let pool = db::connect(&cfg.database_url).await?;
             db::MIGRATOR.run(&pool).await.context("数据库迁移")?;
+            fleet_server::meta::sync_org_tz(&pool, &cfg.org_timezone).await?;
             let st = AppState::new(cfg, pool, secrets);
             // 面板里设的访问记录保留期：分区维护、访问汇总的启动补算、上报的接收窗口都按它
             fleet_server::settings::load(&st).await.context("读取访问记录保留期")?;

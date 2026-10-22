@@ -9,26 +9,11 @@ use serde_json::{json, Value};
 
 pub const MODES: [&str; 5] = ["observe", "allowlist", "denylist", "blocked", "inherit"];
 
-fn mode_cn(m: &str) -> &'static str {
-    match m {
-        "observe" => "仅观察",
-        "allowlist" => "白名单",
-        "denylist" => "黑名单",
-        "blocked" => "暂停新连接",
-        "inherit" => "跟随团队",
-        _ => "?",
-    }
-}
+/// 策略模式的中文名（中控 /meta 的 policy_modes）
+fn mode_cn(m: &str) -> &str { crate::meta::label("policy_modes", m) }
 
-fn status_cn(s: &str) -> &'static str {
-    match s {
-        "applied" => "已应用",
-        "applying" => "进行中",
-        "failed" => "失败",
-        "gone" => "已退役",
-        _ => "?",
-    }
-}
+/// 策略版本在线路机上的同步状态（中控 /meta 的 policy_sync_states）
+fn status_cn(s: &str) -> &str { crate::meta::label("policy_sync_states", s) }
 
 fn n(v: &Value, ptr: &str) -> i64 { v.pointer(ptr).and_then(Value::as_i64).unwrap_or(0) }
 
@@ -367,6 +352,7 @@ mod tests {
 
     #[test]
     fn brief_texts() {
+        crate::meta::test_init();
         assert_eq!(brief("denylist", 3), "黑名单 · 3 个域名");
         assert_eq!(brief("blocked", 0), "暂停新连接");
         assert_eq!(draft_brief(&Value::Null), "-");

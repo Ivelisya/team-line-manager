@@ -19,7 +19,7 @@ const EVERY: Duration = Duration::from_secs(3);
 const SWEEP: Duration = Duration::from_secs(30);
 
 /// 机器级字段（消息里的键名）。host、tcp/egress 用定长数组（每条上报都变，省字节），其余与 REST 同形
-const M_FIELDS: [&str; 9] = ["host", "seen", "agent", "health", "maintenance", "due_days", "removed_traffic", "quota", "active_job"];
+const M_FIELDS: [&str; 10] = ["host", "seen", "agent", "health", "maintenance", "due_days", "due_state", "removed_traffic", "quota", "active_job"];
 const E_FIELDS: [&str; 3] = ["tcp", "egress", "traffic"];
 
 type Fields = Vec<Box<RawValue>>;
@@ -142,6 +142,7 @@ fn machine_fields(m: &MachineView) -> Fields {
         raw(&m.health),
         raw(&m.maintenance),
         raw(&m.subscription.as_ref().map(|s| s.due_days)),
+        raw(&m.subscription.as_ref().map(|s| s.due_state)),
         raw(&m.removed_traffic),
         raw(&m.quota),
         raw(&m.active_job),

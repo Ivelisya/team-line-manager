@@ -4,12 +4,12 @@ import { Link } from 'react-router-dom';
 import { ArrowDownUp, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Copy, Globe, Inbox, RotateCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { dueFmt, type Fmt } from '@/lib/format';
-import type { EntryView, HealthReason, Lifecycle, MachineView } from '@/lib/types';
-import { ENTRY_LABEL, HEALTH_LABEL, HEALTH_TONE, LIFECYCLE_LABEL } from '@/lib/sort';
+import type { DueState, EntryView, HealthReason, Lifecycle, MachineView } from '@/lib/types';
+import { HEALTH_TONE } from '@/lib/sort';
 import { countryName, flagUrl } from '@/lib/flags';
 import { Tip, Trunc } from '@/components/ui/overlays';
 import { useCountUp } from '@/lib/useCountUp';
-import { hostRel, severityOf, type BeatCell } from '@/lib/derive';
+import { dueTone, entryLabel, healthLabel, hostRel, lifecycleLabel, severityOf, type BeatCell } from '@/lib/derive';
 import { useDrawer } from '@/lib/drawer';
 import { copyText } from '@/lib/clipboard';
 
@@ -31,12 +31,12 @@ export const Pill = React.forwardRef<HTMLSpanElement, { tone?: Tone; dot?: 'puls
 Pill.displayName = 'Pill';
 export function HealthPill({ m }: { m: Pick<MachineView, 'health' | 'lifecycle' | 'maintenance'> }) {
   const lc = m.lifecycle;
-  if (lc === 'provisioning') return <Pill tone="info" dot="pulse">上架中</Pill>;
-  if (lc === 'retiring') return <Pill tone="info" dot="pulse">退役中</Pill>;
-  if (lc === 'retired') return <Pill tone="neutral">已退役</Pill>;
-  if (lc === 'failed') return <Pill tone="bad">上架失败</Pill>;
+  if (lc === 'provisioning') return <Pill tone="info" dot="pulse">{lifecycleLabel(lc)}</Pill>;
+  if (lc === 'retiring') return <Pill tone="info" dot="pulse">{lifecycleLabel(lc)}</Pill>;
+  if (lc === 'retired') return <Pill tone="neutral">{lifecycleLabel(lc)}</Pill>;
+  if (lc === 'failed') return <Pill tone="bad">{lifecycleLabel(lc)}</Pill>;
   const s = m.health.status;
-  const pill = <Pill tone={HEALTH_TONE[s]} tabIndex={m.health.reasons.length ? 0 : undefined}>{HEALTH_LABEL[s]}</Pill>;
+  const pill = <Pill tone={HEALTH_TONE[s]} tabIndex={m.health.reasons.length ? 0 : undefined}>{healthLabel(s)}</Pill>;
   return <Tip text={reasonsTip(m.health.reasons)}>{pill}</Tip>;
 }
 /** 健康原因列表（带严重度圆点）：健康 pill 的悬停提示与抽屉“状态原因”共用 */
@@ -52,7 +52,7 @@ export const StatusMark = ({ status, lifecycle }: { status: string; lifecycle: L
   const busy = lifecycle === 'provisioning' || lifecycle === 'retiring';
   const tone = lifecycle === 'failed' ? 'bad' : busy ? 'info' : HEALTH_TONE[status];
   if (tone === 'ok') return null;
-  const text = busy || lifecycle === 'failed' ? LIFECYCLE_LABEL[lifecycle] : HEALTH_LABEL[status];
+  const text = busy || lifecycle === 'failed' ? lifecycleLabel(lifecycle) : healthLabel(status);
   return <span className="smark" data-tone={tone} data-spin={busy ? '' : undefined} role="img" aria-label={text} data-tip={text} />;
 };
 /** 告警级别圆点（抽屉「最近告警」时间线的节点）：颜色之外给读屏与悬停一份文字 */
@@ -65,19 +65,19 @@ export const SeverityMark = ({ severity }: { severity: string }) => {
   const s = severityOf(severity);
   return <span className="smark" data-tone={s.tone} data-sev={s.tone === 'info' ? 'info' : undefined} role="img" aria-label={s.label} data-tip={s.label} />;
 };
-/** 到期读数：N 天后 / 今天 / 已过期 N 天，7 天内黄、过期红（卡片、表格、悬浮卡共用）。
+/** 到期读数：N 天后 / 今天 / 已过期 N 天，颜色按服务端的 due_state：即将到期黄、已过期红（卡片、表格、悬浮卡共用）。
  *  tail：没有“到期”标签的地方接上“到期”（3 天后到期 / 今天到期 / 已过期 3 天） */
-export function Due({ days, tail }: { days: number | null | undefined; tail?: boolean }) {
-  const d = dueFmt(days);
+export function Due({ days, state, tail }: { days: number | null | undefined; state: DueState | null | undefined; tail?: boolean }) {
+  const d = dueFmt(days, dueTone(state));
   const post = d.post + (tail && days != null && !d.past ? '到期' : '');
   return <span className="due" data-tone={d.tone || undefined}>{d.pre && <span className="due-t">{d.pre}</span>}{d.f && <Num f={d.f} />}{post && <span className="due-t">{post}</span>}</span>;
 }
 export const LifecyclePill = ({ lc }: { lc: Lifecycle | string }) => (
-  <Pill tone={lc === 'active' ? 'ok' : lc === 'provisioning' || lc === 'retiring' ? 'info' : lc === 'failed' ? 'bad' : 'neutral'}>{LIFECYCLE_LABEL[lc] ?? lc}</Pill>
+  <Pill tone={lc === 'active' ? 'ok' : lc === 'provisioning' || lc === 'retiring' ? 'info' : lc === 'failed' ? 'bad' : 'neutral'}>{lifecycleLabel(lc)}</Pill>
 );
 
 // 入口状态：active 按是否已应用细分
-export const entryState = (e: EntryView) => (e.lifecycle === 'disabled' ? <Pill tone="neutral">已停用</Pill> : e.lifecycle === 'active' ? (e.applied ? <Pill tone="ok">运行中</Pill> : e.apply_error ? <Pill tone="bad" tip={e.apply_error}>应用失败</Pill> : <Pill tone="info" dot="pulse">应用中</Pill>) : <Pill tone="info" dot="pulse">{ENTRY_LABEL[e.lifecycle]}</Pill>);
+export const entryState = (e: EntryView) => (e.lifecycle === 'disabled' ? <Pill tone="neutral">{entryLabel('disabled')}</Pill> : e.lifecycle === 'active' ? (e.applied ? <Pill tone="ok">{entryLabel('active')}</Pill> : e.apply_error ? <Pill tone="bad" tip={e.apply_error}>应用失败</Pill> : <Pill tone="info" dot="pulse">{entryLabel('pending')}</Pill>) : <Pill tone="info" dot="pulse">{entryLabel(e.lifecycle)}</Pill>);
 
 export function Chip({ children, variant, tip, className }: { children: React.ReactNode; variant?: 'neutral' | 'warn'; tip?: string; className?: string }) {
   return <span className={cn('chip', variant === 'neutral' && 'chip-neutral', variant === 'warn' && 'chip-warn', className)} data-tip={tip}>{children}</span>;

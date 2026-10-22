@@ -62,7 +62,7 @@ pub struct Item {
     subscription: Option<SubIn>,
     /// 机器重装过、主机指纹变了：允许预检时覆盖已记录的指纹
     reset_host_key: Option<bool>,
-    /// 同机 IP 节点：加在这台落地机（宿主机）上，SSH 与 agent 用宿主机的；`ip` 是它自己的出口 IP，要已配在宿主机网卡上。
+    /// 同机 IP 节点：加在这台 VPS 节点（宿主机）上，SSH 与 agent 用宿主机的；`ip` 是它自己的出口 IP，要已配在宿主机网卡上。
     /// 这时 ssh_port、login、ss_port、provider_id、plan_id、reset_host_key 不适用（忽略）：SSH 端口与供应商取宿主机的、不带套餐，SS 端口由中控分配
     host_id: Option<Uuid>,
 }
@@ -175,10 +175,10 @@ async fn validate(tx: &mut Tx<'_>, items: &[Item]) -> ApiResult<Vec<Checked>> {
         if !batch_ips.insert(ip) {
             errors.push("这一批里 IP 重复".into());
         }
-        // 节点防火墙的放行集合是 ipv4_addr、ssserver 只监听 0.0.0.0：线路机和落地机目前只支持 IPv4
+        // 节点防火墙的放行集合是 ipv4_addr、ssserver 只监听 0.0.0.0：线路机和 VPS 节点目前只支持 IPv4
         // （家宽代理不受限，它的出站地址另填）
         if ip.is_ipv6() && matches!(it.kind.as_str(), "vps" | "relay") {
-            errors.push("暂不支持 IPv6 地址：线路机和落地机的防火墙放行名单、SS 监听都只处理 IPv4，请填 IPv4 地址".into());
+            errors.push("暂不支持 IPv6 地址：线路机和 VPS 节点的防火墙放行名单、SS 监听都只处理 IPv4，请填 IPv4 地址".into());
         }
         match it.kind.as_str() {
             "vps" | "proxy" => {
@@ -258,12 +258,12 @@ async fn validate(tx: &mut Tx<'_>, items: &[Item]) -> ApiResult<Vec<Checked>> {
         if let Some(hid) = it.host_id {
             match hosts.get(&hid) {
                 None => errors.push("宿主机不存在".into()),
-                Some(_) if it.kind != "vps" => errors.push("只有落地机（vps）能加在宿主机上".into()),
+                Some(_) if it.kind != "vps" => errors.push("只有 VPS 节点能加在宿主机上".into()),
                 Some(h) if h.kind != "vps" || h.host_id.is_some() => {
-                    errors.push(format!("「{}」不能当宿主机：宿主机要是普通落地机（不能是线路机、家宽代理或同机 IP 节点）", h.name))
+                    errors.push(format!("「{}」不能当宿主机：宿主机要是普通 VPS 节点（不能是线路机、家宽代理或同机 IP 节点）", h.name))
                 }
                 Some(h) if h.lifecycle != "active" => {
-                    errors.push(format!("宿主机「{}」现在是「{}」，只能加在运行中的落地机上", h.name, jobs::lifecycle_zh(&h.lifecycle)))
+                    errors.push(format!("宿主机「{}」现在是「{}」，只能加在运行中的 VPS 节点上", h.name, crate::meta::lifecycle_label(&h.lifecycle)))
                 }
                 Some(h) => {
                     let taken = host_ports.entry(hid).or_default();
@@ -356,12 +356,13 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Ba
         match kind {
             "vps" => {
                 sqlx::query(
-                    "insert into node_outbound (machine_id, protocol, host, port, method, secret_enc) values ($1, 'shadowsocks', $2, $3, 'aes-256-gcm', $4)",
+                    "insert into node_outbound (machine_id, protocol, host, port, method, secret_enc) values ($1, 'shadowsocks', $2, $3, $5, $4)",
                 )
                 .bind(id)
                 .bind(c.ip.to_string())
-                .bind(c.ss_port.or(it.ss_port).unwrap_or(8388) as i32)
+                .bind(c.ss_port.or(it.ss_port).unwrap_or(crate::meta::SS_PORT) as i32)
                 .bind(st.secrets.seal_str(&ss_password()))
+                .bind(crate::meta::SS_METHOD)
                 .execute(&mut *tx)
                 .await?;
             }

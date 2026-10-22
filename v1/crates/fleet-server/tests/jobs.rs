@@ -300,7 +300,7 @@ async fn stale_lease_holder_cannot_write() {
     assert_eq!((state.as_str(), step), ("waiting", 1));
 }
 
-/// 在用的落地机（kind vps），名字「团队-编号」
+/// 在用的 VPS 节点（kind vps），名字「团队-编号」
 async fn seed_vps(t: &common::T, team: Uuid, number: i32, ip: &str) -> Uuid {
     let id = Uuid::now_v7();
     sqlx::query("insert into machine (id, kind, team_id, number, primary_ip, lifecycle) values ($1, 'vps', $2, $3, $4::inet, 'active')")
@@ -337,12 +337,12 @@ async fn claim_all(t: &common::T) -> Vec<Uuid> {
 }
 
 /// 「全部升级」：一批升级作业不挡住之后建的其它作业；先升金丝雀（线路机里在用入口最少的，一样少按名字），
-/// 它成功后线路机一台接一台，线路机都成功后落地机才领得到（一起领：并发）
+/// 它成功后线路机一台接一台，线路机都成功后 VPS 节点才领得到（一起领：并发）
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn bulk_upgrade_runs_canary_then_relays_one_by_one() {
     let t = setup(false).await;
     let team = seed_team(&t, "团队1").await;
-    // 落地机先插入（id 更小）：领取顺序看编排，不是机器 id
+    // VPS 节点先插入（id 更小）：领取顺序看编排，不是机器 id
     let mut vps = vec![];
     for i in 1..=3 {
         vps.push(seed_vps(&t, team, i, &format!("203.0.113.{}", 20 + i)).await);
@@ -350,7 +350,7 @@ async fn bulk_upgrade_runs_canary_then_relays_one_by_one() {
     let (r2, _) = seed_relay(&t).await;
     seed_relay_named(&t, "线路机4", "198.51.100.4").await;
     seed_relay_named(&t, "线路机3", "198.51.100.3").await;
-    // 线路机2 上有一个经团队1-01 的入口：线路机2 排在线路机里最后、团队1-01 排在落地机里最后
+    // 线路机2 上有一个经团队1-01 的入口：线路机2 排在线路机里最后、团队1-01 排在 VPS 节点里最后
     let mut tx = t.st.db.begin().await.unwrap();
     fleet_server::entries::lock_policy_shared(&mut tx).await.unwrap();
     fleet_server::entries::create(&mut tx, r2, vps[0]).await.unwrap();
@@ -363,9 +363,9 @@ async fn bulk_upgrade_runs_canary_then_relays_one_by_one() {
     assert_eq!(names, ["线路机3", "线路机4", "线路机2", "团队1-02", "团队1-03", "团队1-01"], "{up}");
     assert_eq!(
         up["order"],
-        "先升「线路机3」做金丝雀，成功后其余 2 台线路机逐台升级，线路机都成功后 3 台落地机并发升级；新版本在任何一台线路机上出问题，没开始的都会取消"
+        "先升「线路机3」做金丝雀，成功后其余 2 台线路机逐台升级，线路机都成功后 3 台 VPS 节点并发升级；新版本在任何一台线路机上出问题，没开始的都会取消"
     );
-    // 编排：线路机一台等前一台，落地机都等最后一台线路机
+    // 编排：线路机一台等前一台，VPS 节点都等最后一台线路机
     let ids: Vec<Uuid> = list.iter().map(|j| j["job_id"].as_str().unwrap().parse().unwrap()).collect();
     let after: Vec<Option<Uuid>> = list.iter().map(|j| j["after"].as_str().map(|s| s.parse().unwrap())).collect();
     assert_eq!(after, [None, Some(ids[0]), Some(ids[1]), Some(ids[2]), Some(ids[2]), Some(ids[2])]);
@@ -381,7 +381,7 @@ async fn bulk_upgrade_runs_canary_then_relays_one_by_one() {
 
     // 后建的上架作业先领，然后只有金丝雀
     assert_eq!(claim_all(&t).await, [prov, ids[0]]);
-    // 前一台成功了才轮到下一台线路机；线路机都成功后三台落地机一起领得到
+    // 前一台成功了才轮到下一台线路机；线路机都成功后三台 VPS 节点一起领得到
     let done = |id: Uuid| {
         let db = t.st.db.clone();
         async move {

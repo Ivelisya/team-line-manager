@@ -4,6 +4,7 @@ use crate::auth::Actor;
 use crate::db::{audit, bump_relays_of_nodes, new_id};
 use crate::error::{ApiError, ApiPath, ApiQuery, ApiResult};
 use crate::jobs;
+use crate::meta;
 use crate::names::{compact_numbers, node_name};
 use crate::state::{AppState, Event};
 use crate::views::{self, Scope};
@@ -280,7 +281,7 @@ struct DayAvailability {
 }
 
 /// 近 N 天每天的探测成功率（抽屉「连接质量」的每日格条、fleetctl uptime）：小时汇总按这台机器的账单时区分到日历天
-/// （生效的账单时区，同流量额度周期：没有订阅时取模板的，即供应商时区，没有供应商按北京时间），旧→新共 N 天、最后一天是今天（还没过完），没有探测的天各项为 0。
+/// （生效的账单时区，同流量额度周期：没有订阅时取模板的，即供应商时区，供应商没填按组织时区），旧→新共 N 天、最后一天是今天（还没过完），没有探测的天各项为 0。
 /// 入口同曲线：节点取自己的，线路机取挂在它上面的（含已移除的）
 pub async fn availability(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<AvailabilityQ>) -> ApiResult<Json<Value>> {
     let days = q.days.unwrap_or(30);
@@ -370,7 +371,7 @@ pub async fn retire(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<U
     if let Some((k, _)) = open.iter().find(|j| j.1) {
         return Err(ApiError::conflict(format!(
             "有作业（{}）正在执行一步：先在作业页取消它，等它停下再退役（升级 agent 不能取消，等它做完）",
-            jobs::kind_zh(k)
+            meta::job_kind_label(k)
         )));
     }
     let n = sqlx::query(
@@ -532,7 +533,7 @@ pub async fn purge(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
 /// 给 `ms`（id, 种类, 显示名）按顺序各建一个升级作业，返回 (建好的作业, 跳过的机器)。已有进行中作业的机器由唯一索引
 /// job_one_active_per_target 挡住（409「这台机器还有进行中的作业」），不另外预查；每台一个 savepoint：一台冲突只跳过这台，不整批回滚。
 /// 多台时排成编排（作业参数 `after` = 要等的作业，见 jobs::claim）：第一个建成的是金丝雀；线路机一台等前一台；
-/// 落地机都等最后一台线路机（没有线路机时等金丝雀），之后并发。`rollout`（「全部升级」才有）记进每个作业的参数，开始前核对
+/// VPS 节点都等最后一台线路机（没有线路机时等金丝雀），之后并发。`rollout`（「全部升级」才有）记进每个作业的参数，开始前核对
 async fn enqueue_upgrade(st: &AppState, actor: &str, ms: &[(Uuid, String, String)], rollout: Option<&Value>) -> ApiResult<(Vec<Value>, Vec<Value>)> {
     let mut tx = st.db.begin().await?;
     let (mut out, mut skipped) = (vec![], vec![]);
@@ -587,7 +588,7 @@ pub async fn upgrade_agent(a: Actor, State(st): State<AppState>, ApiPath(id): Ap
         return Err(ApiError::conflict(format!("同机 IP 节点没有自己的 agent，用的是宿主机「{h}」的：升级宿主机的 agent")));
     }
     if kind == "proxy" || lc != "active" {
-        return Err(ApiError::conflict("只有在用的线路机和落地机有 agent"));
+        return Err(ApiError::conflict("只有在用的线路机和 VPS 节点有 agent"));
     }
     let (v, skipped) = enqueue_upgrade(&st, &a.name, &[(id, kind, name)], None).await?;
     v.into_iter().next().map(ok).ok_or_else(|| ApiError::conflict(skipped[0]["reason"].as_str().unwrap_or("这台机器还有进行中的作业")))
@@ -607,8 +608,8 @@ async fn dist_agent(st: &AppState) -> ApiResult<Value> {
     Ok(json!({"sha256": sha, "version": version}))
 }
 
-/// 全部在用的线路机与落地机（同机 IP 节点没有自己的 agent，不算）。不一起升：先升一台做金丝雀（有线路机先挑线路机），
-/// 它成功了线路机再一台接一台，线路机都成功后落地机并发（引擎的并发上限）。同类里在用入口少的在前（出问题影响最小的先上），再按名字
+/// 全部在用的线路机与 VPS 节点（同机 IP 节点没有自己的 agent，不算）。不一起升：先升一台做金丝雀（有线路机先挑线路机），
+/// 它成功了线路机再一台接一台，线路机都成功后 VPS 节点并发（引擎的并发上限）。同类里在用入口少的在前（出问题影响最小的先上），再按名字
 pub async fn upgrade_all_agents(a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
     let rollout = dist_agent(&st).await?;
     let ms: Vec<(Uuid, String, String)> = sqlx::query_as(
@@ -633,11 +634,11 @@ fn upgrade_order(jobs: &[Value]) -> String {
     let nodes = jobs.len() - relays;
     match (relays, nodes) {
         _ if jobs.len() == 1 => format!("只有「{canary}」一台"),
-        (0, n) => format!("先升「{canary}」做金丝雀，成功后其余 {} 台落地机并发升级；新版本在金丝雀上出问题的话其余的都会取消", n - 1),
-        (1, n) => format!("先升「{canary}」做金丝雀，成功后 {n} 台落地机并发升级；新版本在金丝雀上出问题的话其余的都会取消"),
+        (0, n) => format!("先升「{canary}」做金丝雀，成功后其余 {} 台 VPS 节点并发升级；新版本在金丝雀上出问题的话其余的都会取消", n - 1),
+        (1, n) => format!("先升「{canary}」做金丝雀，成功后 {n} 台 VPS 节点并发升级；新版本在金丝雀上出问题的话其余的都会取消"),
         (r, 0) => format!("先升「{canary}」做金丝雀，成功后其余 {} 台线路机逐台升级；新版本在任何一台上出问题，没开始的都会取消", r - 1),
         (r, n) => format!(
-            "先升「{canary}」做金丝雀，成功后其余 {} 台线路机逐台升级，线路机都成功后 {n} 台落地机并发升级；新版本在任何一台线路机上出问题，没开始的都会取消",
+            "先升「{canary}」做金丝雀，成功后其余 {} 台线路机逐台升级，线路机都成功后 {n} 台 VPS 节点并发升级；新版本在任何一台线路机上出问题，没开始的都会取消",
             r - 1
         ),
     }
@@ -667,8 +668,8 @@ impl SubOverrides {
         if self.price_cents.is_some_and(|p| p < 0) || self.traffic_gb.is_some_and(|g| g < 0) {
             return Err(ApiError::bad_request("金额、流量上限不能为负"));
         }
-        if self.cycle.as_deref().is_some_and(|c| !matches!(c, "monthly" | "quarterly" | "semiannual" | "yearly")) {
-            return Err(ApiError::bad_request("计费周期只能是 monthly / quarterly / semiannual / yearly"));
+        if let Some(c) = &self.cycle {
+            meta::check_cycle(c).map_err(ApiError::bad_request)?;
         }
         if self.remind_days.is_some_and(|d| !(0..=60).contains(&d)) {
             return Err(ApiError::bad_request("提醒天数要在 0–60 之间"));
@@ -677,12 +678,8 @@ impl SubOverrides {
             return Err(ApiError::bad_request("流量重置日要在 1–31 之间"));
         }
         if let Some(c) = &mut self.currency {
-            let u = c.trim().to_ascii_uppercase();
             // 同套餐的币种规则（比较「和套餐相同」时口径一致）
-            if u.is_empty() || u.len() > 8 || !u.bytes().all(|x| x.is_ascii_uppercase()) {
-                return Err(ApiError::bad_request("币种是 1–8 个字母，如 USD、CNY"));
-            }
-            *c = u;
+            *c = meta::currency(c).map_err(ApiError::bad_request)?;
         }
         if let Some(tz) = &self.billing_tz {
             check_tz(db, tz).await?;
@@ -734,7 +731,7 @@ pub struct SubIn {
 pub async fn check_tz(db: &mut sqlx::PgConnection, tz: &str) -> ApiResult<()> {
     match sqlx::query("select now() at time zone $1").bind(tz).execute(db).await {
         Err(e) if e.as_database_error().and_then(|d| d.code()).as_deref() == Some("22023") => {
-            Err(ApiError::bad_request(format!("账单时区「{tz}」不存在：请填 IANA 时区名，如 Asia/Shanghai")))
+            Err(ApiError::bad_request(format!("账单时区「{tz}」不存在：请填 IANA 时区名，如 {}", meta::org_tz())))
         }
         r => r.map(drop).map_err(Into::into),
     }
@@ -801,25 +798,36 @@ pub async fn list_renewals(_a: Actor, State(st): State<AppState>, ApiPath(id): A
     Ok(ok(v))
 }
 
+/// 登记续费：`new_due`（直接给新到期日）与 `cycles`（从当前到期日按订阅周期推几个周期，中控算新到期日，小月按月末）二选一
 #[derive(Deserialize)]
 pub struct RenewIn {
-    new_due: Date,
+    new_due: Option<Date>,
+    cycles: Option<u32>,
     amount_cents: Option<i32>,
     note: Option<String>,
 }
 
 pub async fn add_renewal(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<RenewIn>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
-    // 币种记登记时生效的（subscription_eff：订阅没单独设置的跟随套餐）
-    let (old, currency): (Date, String) = sqlx::query_as(
-        "select s.due_date, e.currency from subscription s join subscription_eff e on e.machine_id = s.machine_id
+    // 币种记登记时生效的（subscription_eff：订阅没单独设置的跟随套餐）；按周期推时也用生效的周期
+    let (old, currency, cycle): (Date, String, String) = sqlx::query_as(
+        "select s.due_date, e.currency, e.cycle::text from subscription s join subscription_eff e on e.machine_id = s.machine_id
          where s.machine_id = $1 for update of s",
     )
     .bind(id)
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| ApiError::conflict("这台机器还没有账单信息，先填写费用"))?;
-    if b.new_due <= old {
+    let new_due = match (b.new_due, b.cycles) {
+        (Some(d), None) => d,
+        (None, Some(n @ 1..=120)) => {
+            let months = meta::cycle_months(&cycle).ok_or_else(|| ApiError::conflict(format!("不认识订阅的计费周期「{cycle}」：直接给 new_due")))?;
+            meta::add_months(old, i64::from(months) * i64::from(n)).ok_or_else(|| ApiError::bad_request("新到期日超出范围"))?
+        }
+        (None, Some(_)) => return Err(ApiError::bad_request("cycles 要在 1–120 之间")),
+        _ => return Err(ApiError::bad_request("new_due（新到期日）与 cycles（推几个周期）给一个")),
+    };
+    if new_due <= old {
         return Err(ApiError::bad_request("新到期日必须晚于当前到期日"));
     }
     let rid = new_id();
@@ -827,7 +835,7 @@ pub async fn add_renewal(a: Actor, State(st): State<AppState>, ApiPath(id): ApiP
         .bind(rid)
         .bind(id)
         .bind(old)
-        .bind(b.new_due)
+        .bind(new_due)
         .bind(b.amount_cents)
         .bind(&currency)
         .bind(b.note.as_deref().unwrap_or(""))
@@ -836,13 +844,13 @@ pub async fn add_renewal(a: Actor, State(st): State<AppState>, ApiPath(id): ApiP
         .await?;
     sqlx::query("update subscription set due_date = $2, updated_at = now() where machine_id = $1")
         .bind(id)
-        .bind(b.new_due)
+        .bind(new_due)
         .execute(&mut *tx)
         .await?;
-    audit(&mut tx, &a.name, "renewal", "machine", Some(id), json!({"old_due": old, "new_due": b.new_due, "amount_cents": b.amount_cents, "currency": currency})).await?;
+    audit(&mut tx, &a.name, "renewal", "machine", Some(id), json!({"old_due": old, "new_due": new_due, "amount_cents": b.amount_cents, "currency": currency, "cycles": b.cycles})).await?;
     tx.commit().await?;
     st.emit(Event::Machine { id });
-    Ok(ok(json!({"id": rid})))
+    Ok(ok(json!({"id": rid, "old_due": old, "new_due": new_due})))
 }
 
 // ── 重新编号 ──────────────────────────────────────────────────────────────

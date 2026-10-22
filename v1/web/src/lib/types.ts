@@ -13,7 +13,12 @@ export interface Subscription {
   price_cents: number; currency: string; cycle: Cycle; due_date: string; due_days: number;
   billing_tz: string; auto_renew: boolean; remind_days: number; traffic_gb: number | null; traffic_reset_day: number | null;
   overrides?: SubField[];
+  /** 服务端算好的：due_state 到期状态（同续费告警）、monthly_cents 折成每月的价格（分）、next_due 续一个周期后的到期日（续费的默认值）、
+   *  period_days 当前这期的天数（到期日往前推一个周期 → 到期日） */
+  due_state: DueState; monthly_cents: number; next_due: string; period_days: number;
 }
+/** overdue 已过期；soon 到期前 remind_days 天内且不是自动续费；其余 ok */
+export type DueState = 'ok' | 'soon' | 'overdue';
 /** 订阅里可以单独设置的字段 */
 export type SubField = 'price_cents' | 'currency' | 'cycle' | 'billing_tz' | 'remind_days' | 'traffic_gb' | 'traffic_reset_day';
 /** 机器的订阅模板：订阅没单独设置的项取这里。没有套餐时 price_cents 为 null（要单独设置价格）；traffic_reset：供应商按自然月 / 账单日重置流量 */
@@ -81,7 +86,7 @@ export interface MachineView {
 export interface Team { id: string; name: string; sort_order: number; node_count: number }
 /** 供应商怎么计量流量额度：网卡本周期入、出总量取小 / 取大 / 相加 / 只算出站 */
 export type TrafficRule = 'min' | 'max' | 'sum' | 'out';
-/** 供应商也是名下机器订阅的模板：账单时区、流量重置（自然月 / 账单日）、提前提醒天数 */
+/** 供应商也是名下机器订阅的模板：账单时区（null = 跟随组织时区）、流量重置（自然月 / 账单日）、提前提醒天数 */
 export interface Provider { id: string; name: string; code: string; panel_url: string | null; timezone: string | null; traffic_rule: TrafficRule; traffic_reset?: TrafficReset; remind_days?: number }
 export interface Plan {
   id: string; provider_id: string; name: string; cpu_cores: number | null; mem_mb: number | null; disk_gb: number | null;
@@ -95,9 +100,36 @@ export interface Overview {
   /** 在线/离线按 agent 连通（同 isQuiet），与健康无关 */
   online: number; offline: number;
   /** failed：上架失败（lifecycle = failed）的台数 */
-  provisioning: number; retiring: number; failed: number; due_7d: number; monthly_cost: { currency: string; cents: number }[];
+  provisioning: number; retiring: number; failed: number;
+  /** 在用机器里即将到期（due_state = soon）与已过期（overdue）的台数 */
+  due_soon: number; overdue: number;
+  /** 各币种的月费合计（每台的 monthly_cents 相加） */
+  monthly_cost: { currency: string; cents: number }[];
   traffic_month: { up: number; down: number }; net_rx_bps: number; net_tx_bps: number;
 }
+
+/** GET /meta：中文名、枚举、阈值、默认值的唯一来源（服务端 meta.rs），一次会话内不变 */
+export interface Meta {
+  org_timezone: string; org_timezone_label: string; org_utc_offset_s: number;
+  /** 时区下拉的常用项；不在里面的照样能填 */
+  timezones: string[];
+  currencies: string[];
+  cycles: { key: string; label: string; months: number }[];
+  kinds: Record<string, string>; ip_node_label: string;
+  lifecycles: Record<string, string>; healths: Record<string, string>;
+  job_kinds: Record<string, string>; job_states: Record<string, string>; step_states: Record<string, string>; entry_states: Record<string, string>;
+  traffic_rules: Record<string, string>; traffic_resets: Record<string, string>; due_states: Record<string, string>;
+  /** 访问策略的模式 → 中文名 */
+  policy_modes: Record<string, string>;
+  /** 策略版本在线路机上的同步状态：applied / applying / failed / gone */
+  policy_sync_states: Record<string, string>;
+  /** 告警规则 key → 中文名 */
+  rules: Record<string, string>;
+  severities: Record<string, { label: string; tone: 'bad' | 'warn' | 'info' }>;
+  thresholds: { traffic_quota_warn_pct: number; traffic_quota_over_pct: number; usage: Record<UsageMetric, { warn: number; bad: number }> };
+  defaults: { currency: string; cycle: string; remind_days: number; traffic_rule: TrafficRule; traffic_reset: TrafficReset; ss_method: string; ss_port: number };
+}
+export type UsageMetric = 'cpu' | 'mem' | 'disk' | 'load';
 
 export type JobState = 'queued' | 'running' | 'waiting' | 'cancelling' | 'succeeded' | 'failed' | 'cancelled';
 export type JobKind = 'provision_vps' | 'provision_proxy' | 'provision_relay' | 'provision_ip' | 'attach_entry' | 'move_entry' | 'restore_vps' | 'restore_proxy' | 'restore_relay' | 'restore_ip' | 'retire' | 'purge' | 'upgrade_agent';
@@ -128,7 +160,7 @@ export interface ProvisionItem {
   ss_port?: number;
   /** 只要到期日（选了套餐时必填），其余没给的跟随套餐 / 供应商；没有套餐（含同机 IP 节点）要给 price_cents */
   subscription?: { due_date: string; price_cents?: number; currency?: string; cycle?: string; billing_tz?: string; remind_days?: number; traffic_gb?: number; traffic_reset_day?: number };
-  /** 同机 IP 节点：加在这台落地机（宿主机）上。带了它时 ssh_port / login / ss_port / provider_id / plan_id 不适用（服务端忽略）：
+  /** 同机 IP 节点：加在这台 VPS 节点（宿主机）上。带了它时 ssh_port / login / ss_port / provider_id / plan_id 不适用（服务端忽略）：
    *  SSH 端口与供应商取宿主机的、不带套餐，SS 端口由中控在宿主机上分配 */
   host_id?: string;
 }

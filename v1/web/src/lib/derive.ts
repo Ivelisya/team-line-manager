@@ -1,6 +1,40 @@
 // 从 MachineView 推导卡片/表格要显示的数据（纯函数，便于复用）
-import type { AvailabilityDay, MachineView, Plan, ProbeBucket, ProbeResult, Provider, SubField, Subscription, TrafficReset } from './types';
+import type { AvailabilityDay, DueState, MachineView, Meta, Plan, ProbeBucket, ProbeResult, Provider, SubField, Subscription, TrafficReset, UsageMetric } from './types';
 import * as F from './format';
+
+// ── /meta：中文名、枚举、阈值、默认值只认服务端这一份 ──
+// 外壳等 /meta 取回（useMeta 的 queryFn 里 setMeta）之后才渲染页面，所以下面这些同步读取在页面里总有值；登录页不用它们
+let META: Meta | null = null;
+export const setMeta = (m: Meta) => { META = m; };
+export function meta(): Meta {
+  if (!META) throw new Error('/meta 还没取回');
+  return META;
+}
+/** 查中文名；没收录的原样返回 */
+const lbl = (t: Record<string, string>, k: string) => t[k] ?? k;
+export const kindLabel = (k: string) => lbl(meta().kinds, k);
+export const lifecycleLabel = (k: string) => lbl(meta().lifecycles, k);
+export const healthLabel = (k: string) => lbl(meta().healths, k);
+export const entryLabel = (k: string) => lbl(meta().entry_states, k);
+export const jobKindLabel = (k: string) => lbl(meta().job_kinds, k);
+export const jobStateLabel = (k: string) => lbl(meta().job_states, k);
+export const stepLabel = (k: string) => lbl(meta().step_states, k);
+/** 告警规则的中文名 */
+export const ruleLabel = (k: string) => lbl(meta().rules, k);
+/** 网卡计量规则（供应商的「流量计量」） */
+export const trafficRuleLabel = (k: string) => lbl(meta().traffic_rules, k);
+/** 流量重置方式：自然月 / 账单日 */
+export const trafficResetLabel = (k: string) => lbl(meta().traffic_resets, k);
+/** 计费周期的那个字：月 / 季 / 半年 / 年 */
+export const cycleLabel = (k: string) => meta().cycles.find((c) => c.key === k)?.label ?? k;
+export const dueStateLabel = (k: string) => lbl(meta().due_states, k);
+/** 告警级别的色调与中文名（同告警页的级别列）；没见过的级别按警告 */
+export const severityOf = (s: string) => meta().severities[s] ?? meta().severities.warning ?? { tone: 'warn' as const, label: s };
+/** 到期状态 → 色调：已过期红、即将到期黄 */
+export const dueTone = (s: DueState | null | undefined): '' | 'warn' | 'bad' => (s === 'overdue' ? 'bad' : s === 'soon' ? 'warn' : '');
+/** 下拉选项：计费周期（每月 / 每季 / …）、币种（常用的，带符号） */
+export const cycleOptions = () => meta().cycles.map((c) => ({ value: c.key, label: `每${c.label}` }));
+export const currencyOptions = () => meta().currencies.map((c) => ({ value: c, label: F.currencyLabel(c) }));
 
 export const hasHost = (m: MachineView) => m.kind !== 'proxy' && m.host != null;
 /** 数据过期：agent 离线（没有近期上报）或已退役。和健康无关：有严重告警的机器照常上报，读数照常显示 */
@@ -49,23 +83,24 @@ export function inheritedValue(m: MachineView, k: SubField, due?: string): strin
 /** 跟随的来源：「跟随套餐」「跟随供应商」，机器没有套餐 / 供应商时是「默认」 */
 export const inheritSource = (m: MachineView, k: SubField) => (SUB_FROM[k] === 'plan' ? (m.plan ? '跟随套餐' : '默认') : (m.provider ? '跟随供应商' : '默认'));
 /** 一项的值写成文字（订阅表单「跟随套餐：2000 GB」、上架页的跟随摘要共用）；currency 给价格配币种 */
-export function subValueText(k: SubField, v: string | number | null, currency = 'USD', reset?: TrafficReset): string {
+export function subValueText(k: SubField, v: string | number | null, currency?: string, reset?: TrafficReset): string {
   if (v == null) return k === 'traffic_gb' ? '不限' : '—';
   switch (k) {
-    case 'price_cents': return F.money(Number(v), currency);
-    case 'cycle': return `每${F.cycleLabel(String(v))}`;
+    case 'price_cents': return F.money(Number(v), currency ?? meta().defaults.currency);
+    case 'cycle': return `每${cycleLabel(String(v))}`;
     case 'remind_days': return `提前 ${v} 天`;
     case 'traffic_gb': return Number(v) > 0 ? `${v} GB` : '不限';
     case 'traffic_reset_day': return reset === 'billing' ? `每月 ${v} 号（账单日）` : reset === 'month' ? `每月 ${v} 号（自然月）` : `每月 ${v} 号`;
     default: return String(v);
   }
 }
-/** 上架页选了套餐后的一行：订阅会跟随的值（同服务端 sub_template；供应商没有时是默认值） */
+/** 上架页选了套餐后的一行：订阅会跟随的值（同服务端 sub_template；供应商没有时是默认值，时区空 = 组织时区） */
 export function inheritSummary(plan: Plan, pv: Provider | undefined) {
+  const M = meta();
   const fee = `${subValueText('price_cents', plan.price_cents, plan.currency)} / ${subValueText('cycle', plan.cycle)}`;
-  const reset = pv?.traffic_reset === 'billing' ? '按账单日重置' : '按自然月重置';
+  const reset = `按${lbl(M.traffic_resets, pv?.traffic_reset ?? M.defaults.traffic_reset)}重置`;
   return `跟随套餐「${plan.name}」：${fee} · 流量 ${subValueText('traffic_gb', plan.traffic_gb)}；`
-    + `跟随${pv ? `供应商「${pv.name}」` : '默认'}：账单时区 ${pv?.timezone ?? 'Asia/Shanghai'} · 流量${reset} · ${subValueText('remind_days', pv?.remind_days ?? 7)}提醒`;
+    + `跟随${pv ? `供应商「${pv.name}」` : '默认'}：账单时区 ${pv?.timezone || M.org_timezone} · 流量${reset} · ${subValueText('remind_days', pv?.remind_days ?? M.defaults.remind_days)}提醒`;
 }
 /** 「跟随套餐：2000 GB」：没有模板（旧接口）为 null */
 export function inheritText(m: MachineView, k: SubField, due?: string) {
@@ -81,8 +116,6 @@ export const quotaGb = (bytes: number): F.Fmt => {
 };
 /** 额度上限（GB 数）：0 / 空 = 不限 */
 export const limitGb = (gb: number | null | undefined): F.Fmt => (gb && gb > 0 ? { v: String(gb), u: 'GB' } : { v: '不限', u: '' });
-/** 网卡计量规则（供应商的「流量计量」）；null = 没有网卡读数，按业务流量 */
-export const RULE_LABEL: Record<string, string> = { min: '网卡入出取小', max: '网卡入出取大', sum: '网卡入出相加', out: '只算网卡出站' };
 /** 同机关系标的文字与悬停说明（卡片、环形卡、机器表）：同机 IP 节点「同机 · 宿主机名」（short：窄处只写「同机」，宿主机名在说明里），
  *  宿主机「+N IP」；没有同机关系为 null */
 export function hostRel(host: MachineView['host_machine'], nodes: MachineView['ip_nodes'], short?: boolean) {
@@ -90,22 +123,25 @@ export function hostRel(host: MachineView['host_machine'], nodes: MachineView['i
   if (nodes.length) return { text: `+${nodes.length} IP`, tip: `这台机器上还有 ${nodes.length} 个同机 IP 节点：${nodes.map((x) => x.name).join('、')}` };
   return null;
 }
-/** 流量额度吃紧（首页 KPI）：本周期已用 ≥ 80% 的台数（没设额度的不计），和用得最多的那台（已用百分比向下取整）；没有吃紧的 top 为 null */
+/** 流量额度吃紧（首页 KPI）：本周期已用 ≥ meta 的 traffic_quota_warn_pct（同额度告警）的台数（没设额度的不计），
+ *  和用得最多的那台（已用百分比向下取整）；没有吃紧的 top 为 null */
 export function quotaTight(list: MachineView[]) {
+  const warn = meta().thresholds.traffic_quota_warn_pct;
   let n = 0; let top: { name: string; pct: number } | null = null;
   for (const m of list) {
     const { pct } = quota(m);
-    if (pct == null || pct < 80) continue;
+    if (pct == null || pct < warn) continue;
     n++;
     if (!top || pct > top.pct) top = { name: m.name, pct };
   }
   return { n, top: top && { name: top.name, pct: Math.floor(top.pct) } };
 }
-/** 资源占用的告警色（CPU / 内存 / 磁盘 / 负载的格条、圆环、迷你条共用）：≥ 90% 红，≥ 75% 黄 */
-export const usageTone = (pct: number | null | undefined) => (pct == null ? undefined : pct >= 90 ? 'bad' : pct >= 75 ? 'warn' : undefined);
-const SEVERITY = { critical: { tone: 'bad', label: '严重' }, warning: { tone: 'warn', label: '警告' }, info: { tone: 'info', label: '提示' } } as const;
-/** 告警级别的色调与中文名（同告警页的级别列）；没见过的级别按警告 */
-export const severityOf = (s: string) => SEVERITY[s as keyof typeof SEVERITY] ?? SEVERITY.warning;
+/** 资源占用的告警色（CPU / 内存 / 磁盘 / 负载的格条、圆环、迷你条共用）：阈值按指标取 meta.thresholds.usage（bad 红、warn 黄） */
+export const usageTone = (pct: number | null | undefined, metric: UsageMetric) => {
+  if (pct == null) return undefined;
+  const t = meta().thresholds.usage[metric];
+  return pct >= t.bad ? 'bad' : pct >= t.warn ? 'warn' : undefined;
+};
 const ratio = (used: number | null, total: number | null) => (used == null || total == null || !(total > 0) ? null : (used / total) * 100);
 const usedTotal = (u: number | null, t: number | null) => (u == null || t == null ? '—' : `${F.str(F.bytes(u))} / ${F.str(F.bytes(t))}`);
 /** 资源读数；指标缺测（null）时对应项显示 “—”，进度为 null（不会出现 NaN） */
@@ -178,14 +214,13 @@ export function probeSummary(m: MachineView) {
   };
 }
 /**
- * 剩余价值：已付还没用掉的部分，按天折算。每期天数 = 到期日往前推一个周期的天数，剩余比例 = 距到期天数 / 每期天数；
+ * 剩余价值：已付还没用掉的部分，按天折算。每期天数 = 服务端的 period_days（到期日往前推一个周期 → 到期日），剩余比例 = 距到期天数 / 每期天数；
  * 预付了多期时比例大于 1；已过期为 0。
  */
 export function remainingValue(s: Subscription | null) {
   if (!s) return null;
-  const months = F.CYCLE_MONTHS[s.cycle];
-  const days = Math.round((Date.parse(s.due_date) - Date.parse(F.addMonths(s.due_date, -months))) / 86_400_000);
-  const frac = Math.max(0, s.due_days / days);
+  const days = s.period_days;
+  const frac = days > 0 ? Math.max(0, s.due_days / days) : 0;
   return { cents: Math.round(s.price_cents * frac), currency: s.currency, frac, days };
 }
 
@@ -201,5 +236,5 @@ export function tagColor(text: string): TagColor {
 
 export const subLabel = (m: MachineView) => {
   const s = m.subscription; if (!s) return null;
-  return `${F.money(s.price_cents, s.currency)}/${F.cycleLabel(s.cycle)}`;
+  return `${F.money(s.price_cents, s.currency)}/${cycleLabel(s.cycle)}`;
 };

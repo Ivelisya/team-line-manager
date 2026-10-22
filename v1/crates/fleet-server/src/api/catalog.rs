@@ -3,6 +3,7 @@ use super::ok;
 use crate::auth::Actor;
 use crate::db::{audit, new_id};
 use crate::error::{ApiError, ApiPath, ApiResult};
+use crate::meta;
 use crate::state::{AppState, Event};
 use axum::extract::State;
 use axum::Json;
@@ -106,7 +107,8 @@ pub struct Provider {
     name: String,
     code: String,
     panel_url: Option<String>,
-    timezone: String,
+    /// 账单时区；null = 跟随组织时区（fleet.toml 的 org_timezone）
+    timezone: Option<String>,
     /// 流量额度的网卡计量：min / max / sum / out = 本周期入出取小 / 取大 / 相加 / 只算出站
     traffic_rule: String,
     /// 流量额度周期：month = 账单时区的自然月（1 号起），billing = 账单日（到期日几号）起。名下机器没单独设置重置日的跟随它
@@ -122,7 +124,7 @@ pub async fn list_providers(_a: Actor, State(st): State<AppState>) -> ApiResult<
     Ok(ok(v))
 }
 
-/// 新建与 PATCH 共用：没传 = 不改；`panel_url` 传 null / 空串 = 清空；`timezone` null / 空串 = 列默认值（UTC）
+/// 新建与 PATCH 共用：没传 = 不改；`panel_url` 传 null / 空串 = 清空；`timezone` null / 空串 = 跟随组织时区（存 null）
 #[derive(Deserialize)]
 pub struct ProviderIn {
     name: Option<String>,
@@ -131,9 +133,9 @@ pub struct ProviderIn {
     panel_url: Option<Option<String>>,
     #[serde(default, deserialize_with = "super::some")]
     timezone: Option<Option<String>>,
-    /// 没传 = 不改（新建为 max）
+    /// 没传 = 不改（新建为 meta::DEFAULT_TRAFFIC_RULE）
     traffic_rule: Option<String>,
-    /// month / billing；没传 = 不改（新建为 month）
+    /// month / billing；没传 = 不改（新建为 meta::DEFAULT_TRAFFIC_RESET）
     traffic_reset: Option<String>,
     /// 0–60；没传 = 不改（新建为列默认值 7）
     remind_days: Option<i32>,
@@ -146,23 +148,21 @@ fn remind_days(v: Option<i32>) -> ApiResult<Option<i32>> {
     }
 }
 
-/// 流量重置方式只认这两种
-fn traffic_reset(v: &Option<String>) -> ApiResult<Option<&str>> {
+/// 只认 `table` 里的值（meta 的枚举）：报错列出全部可选值与中文名
+fn one_of<'a>(v: &'a Option<String>, table: &[(&str, &str)], what: &str) -> ApiResult<Option<&'a str>> {
     match v.as_deref() {
         None => Ok(None),
-        Some(r @ ("month" | "billing")) => Ok(Some(r)),
-        Some(r) => Err(ApiError::bad_request(format!("流量重置方式「{r}」不认识：只能是 month（自然月）/ billing（账单日）"))),
+        Some(r) if table.iter().any(|(k, _)| *k == r) => Ok(Some(r)),
+        Some(r) => {
+            let all = table.iter().map(|(k, l)| format!("{k}（{l}）")).collect::<Vec<_>>().join(" / ");
+            Err(ApiError::bad_request(format!("{what}「{r}」不认识：只能是 {all}")))
+        }
     }
 }
 
-/// 流量计量规则只认这四种
-fn traffic_rule(v: &Option<String>) -> ApiResult<Option<&str>> {
-    match v.as_deref() {
-        None => Ok(None),
-        Some(r @ ("min" | "max" | "sum" | "out")) => Ok(Some(r)),
-        Some(r) => Err(ApiError::bad_request(format!("流量计量规则「{r}」不认识：只能是 min / max / sum / out（网卡入出取小 / 取大 / 相加 / 只算出站）"))),
-    }
-}
+fn traffic_reset(v: &Option<String>) -> ApiResult<Option<&str>> { one_of(v, meta::TRAFFIC_RESETS, "流量重置方式") }
+
+fn traffic_rule(v: &Option<String>) -> ApiResult<Option<&str>> { one_of(v, meta::TRAFFIC_RULES, "流量计量规则") }
 
 /// 空白当没填
 fn blank(v: &Option<String>) -> Option<&str> { v.as_deref().map(str::trim).filter(|s| !s.is_empty()) }
@@ -178,8 +178,8 @@ pub async fn create_provider(a: Actor, State(st): State<AppState>, ApiJson(b): A
     let code = clean_name(b.code.as_deref().unwrap_or(""), "供应商缩写")?;
     let panel = b.panel_url.as_ref().map(panel_url).transpose()?.flatten();
     let tz = b.timezone.as_ref().and_then(blank);
-    let rule = traffic_rule(&b.traffic_rule)?.unwrap_or("max");
-    let reset = traffic_reset(&b.traffic_reset)?.unwrap_or("month");
+    let rule = traffic_rule(&b.traffic_rule)?.unwrap_or(meta::DEFAULT_TRAFFIC_RULE);
+    let reset = traffic_reset(&b.traffic_reset)?.unwrap_or(meta::DEFAULT_TRAFFIC_RESET);
     let remind = remind_days(b.remind_days)?;
     let mut tx = st.db.begin().await?;
     // 名下机器的账单时区跟随它，按同一标准校验
@@ -230,7 +230,7 @@ pub async fn patch_provider(a: Actor, State(st): State<AppState>, ApiPath(id): A
     };
     let tz = match &b.timezone {
         Some(t) => blank(t).map(String::from),
-        None => Some(old.timezone.clone()),
+        None => old.timezone.clone(),
     };
     let rule = traffic_rule(&b.traffic_rule)?.unwrap_or(old.traffic_rule.as_str()).to_string();
     let reset = traffic_reset(&b.traffic_reset)?.unwrap_or(old.traffic_reset.as_str()).to_string();
@@ -248,13 +248,8 @@ pub async fn patch_provider(a: Actor, State(st): State<AppState>, ApiPath(id): A
         .bind(remind)
         .execute(&mut *tx)
         .await?;
-    // 时区清空 = 回到列默认值。名下机器没单独设置账单时区 / 重置日的立即跟着变（订阅里不存模板的值）
-    let (tz,): (String,) = match &tz {
-        Some(tz) => sqlx::query_as("update provider set timezone = $2 where id = $1 returning timezone").bind(id).bind(tz),
-        None => sqlx::query_as("update provider set timezone = default where id = $1 returning timezone").bind(id),
-    }
-    .fetch_one(&mut *tx)
-    .await?;
+    // 时区清空 = 跟随组织时区（null）。名下机器没单独设置账单时区 / 重置日的立即跟着变（订阅里不存模板的值）
+    sqlx::query("update provider set timezone = $2 where id = $1").bind(id).bind(&tz).execute(&mut *tx).await?;
     audit(&mut tx, &a.name, "provider.update", "provider", Some(id),
         json!({"before": {"name": old.name, "code": old.code, "panel_url": old.panel_url, "timezone": old.timezone, "traffic_rule": old.traffic_rule, "traffic_reset": old.traffic_reset, "remind_days": old.remind_days},
                "after": {"name": name, "code": code, "panel_url": panel_url, "timezone": tz, "traffic_rule": rule, "traffic_reset": reset, "remind_days": remind}})).await?;
@@ -318,17 +313,16 @@ pub struct PlanIn {
     archived: Option<bool>,
 }
 
-/// 套餐字段校验（新建与 PATCH 共用，只看传了的）：价格不为负，币种 3 个字母（转成大写，与库里的约束一致），备注不超过 2000 字
+/// 套餐字段校验（新建与 PATCH 共用，只看传了的）：价格不为负，币种 3 个字母（转成大写，与库里的约束一致），周期四选一，备注不超过 2000 字
 fn check_plan(b: &mut PlanIn) -> ApiResult<()> {
     if b.price_cents.is_some_and(|p| p < 0) {
         return Err(ApiError::bad_request("价格不能为负"));
     }
     if let Some(c) = &mut b.currency {
-        let u = c.trim().to_ascii_uppercase();
-        if u.len() != 3 || !u.bytes().all(|x| x.is_ascii_uppercase()) {
-            return Err(ApiError::bad_request("币种是 3 个字母的代码，如 USD、CNY"));
-        }
-        *c = u;
+        *c = meta::currency(c).map_err(ApiError::bad_request)?;
+    }
+    if let Some(c) = &b.cycle {
+        meta::check_cycle(c).map_err(ApiError::bad_request)?;
     }
     if b.notes.as_ref().is_some_and(|n| n.chars().count() > 2000) {
         return Err(ApiError::bad_request("备注不超过 2000 字"));
@@ -356,8 +350,8 @@ pub async fn create_plan(a: Actor, State(st): State<AppState>, ApiJson(mut b): A
     .bind(b.bandwidth_mbps.flatten())
     .bind(b.traffic_gb.flatten())
     .bind(price)
-    .bind(b.currency.as_deref().unwrap_or("USD"))
-    .bind(b.cycle.as_deref().unwrap_or("monthly"))
+    .bind(b.currency.as_deref().unwrap_or(meta::DEFAULT_CURRENCY))
+    .bind(b.cycle.as_deref().unwrap_or(meta::DEFAULT_CYCLE))
     .bind(b.notes.as_deref().unwrap_or(""))
     .execute(&mut *tx)
     .await?;

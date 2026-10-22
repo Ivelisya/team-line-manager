@@ -23,6 +23,9 @@ pub async fn overview(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<V
     Ok(ok(views::overview_of(&views::live(&st).await?)))
 }
 
+/// 共用的枚举中文名、常量、阈值、默认值与组织时区（见 meta.rs）：网页启动时取一次，fleetctl 每次命令需要时取一次
+pub async fn meta(_a: Actor) -> ApiResult<Json<Value>> { Ok(ok(crate::meta::to_json())) }
+
 #[derive(Deserialize)]
 pub struct SeriesQ {
     minutes: Option<i64>,
@@ -337,10 +340,11 @@ async fn tell_channels(st: &AppState, actor: &str, deleted: bool, s: &Silence) {
         (None, false) => "（全部规则）".into(),
     };
     let mut text = format!(
-        "{actor} {}了{what}\n对象：{object}{rules}\n起止：{} ~ {}（北京时间）",
+        "{actor} {}了{what}\n对象：{object}{rules}\n起止：{} ~ {}（{}）",
         if deleted { "删除" } else { "新建" },
         crate::notify::beijing(s.starts_at),
-        crate::notify::beijing(s.ends_at)
+        crate::notify::beijing(s.ends_at),
+        crate::meta::org_tz_label()
     );
     // 备注收成一行、最多 200 个字
     let comment: String = s.comment.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(200).collect();
@@ -538,14 +542,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "auth.session_revoked" => s("ip"),
         "policy.draft" if d["cleared"] == true => "撤销草稿".into(),
         "policy.draft" => {
-            let mode = match d["mode"].as_str().unwrap_or("") {
-                "observe" => "仅观察",
-                "allowlist" => "白名单",
-                "denylist" => "黑名单",
-                "blocked" => "暂停新连接",
-                "inherit" => "跟随团队",
-                m => m,
-            };
+            let mode = crate::meta::label(crate::meta::POLICY_MODES, d["mode"].as_str().unwrap_or(""));
             format!("{mode} · {} 个域名", d["domains"])
         }
         // 这一版之前的只记了对象 id 与是否维护，不写摘要

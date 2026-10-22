@@ -1,5 +1,6 @@
 import { useMemo, useRef } from 'react';
-import type { EntryLifecycle, MachineView, Team } from './types';
+import type { Kind, MachineView, Team } from './types';
+import { kindLabel } from './derive';
 
 /** 中文名称比较（编号按数值：团队1-2 排在 团队1-10 前面）；全站共用一个 */
 export const collator = new Intl.Collator('zh-Hans-CN', { numeric: true });
@@ -44,15 +45,16 @@ export function useStableOrder<T extends { id: string }>(list: T[], key: string 
   }, [list, key]);
 }
 
-export const HEALTH_LABEL: Record<string, string> = {
-  ok: '正常', degraded: '降级', down: '故障', unknown: '未知', maintenance: '维护中', inactive: '未启用',
-};
+/** 类型在下拉、分段里的先后（同默认排序：线路机在前）；中文名在 /meta（derive.kindLabel） */
+export const KIND_ORDER: Kind[] = ['relay', 'vps', 'proxy'];
+/** 兼容：上架页（pages/Provision.tsx，另一会话在改）还按表读类型名。不是第二份表：读的是 /meta（按 KIND_ORDER 列键），
+ *  上架页是懒加载的、在外壳等到 /meta 之后才求值。那边改用 kindLabel 后删掉 */
+export const KIND_LABEL: Record<string, string> = new Proxy({}, {
+  get: (_, k) => (typeof k === 'string' ? kindLabel(k) : undefined),
+  ownKeys: () => [...KIND_ORDER],
+  getOwnPropertyDescriptor: (_, k) => ({ value: kindLabel(String(k)), enumerable: true, configurable: true, writable: false }),
+});
+/** 健康状态的色调（界面样式），键的先后也是筛选下拉里的先后；中文名在 /meta（derive.healthLabel） */
 export const HEALTH_TONE: Record<string, 'ok' | 'warn' | 'bad' | 'info' | 'neutral'> = {
   ok: 'ok', degraded: 'warn', down: 'bad', unknown: 'neutral', maintenance: 'info', inactive: 'neutral',
 };
-export const LIFECYCLE_LABEL: Record<string, string> = {
-  draft: '草稿', provisioning: '上架中', active: '运行中', retiring: '退役中', retired: '已退役', failed: '上架失败',
-};
-export const KIND_LABEL: Record<string, string> = { relay: '线路机', vps: 'VPS 节点', proxy: '家宽代理' };
-// 入口状态：pending / removing 是等线路机应用
-export const ENTRY_LABEL: Record<EntryLifecycle, string> = { pending: '应用中', active: '运行中', disabled: '已停用', removing: '移除中', removed: '已移除' };

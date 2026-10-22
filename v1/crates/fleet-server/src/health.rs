@@ -2,6 +2,7 @@
 //!
 //! 只对 `active` 的机器判定；其它生命周期直接返回对应状态，不参与告警、统计。
 
+use crate::meta::{CPU_HIGH_PCT, DISK_HIGH_PCT, MEM_HIGH_PCT, QUOTA_OVER_PCT, QUOTA_WARN_PCT};
 use crate::views::{EntryView, MachineView};
 use serde::Serialize;
 use time::OffsetDateTime;
@@ -53,17 +54,10 @@ impl Serialize for Reason {
 /// 线路机期望状态未应用超过这么久算异常
 const APPLY_LAG_S: i64 = 120;
 
-/// 持续高负载阈值（%）：最近 5 分钟的每个样本都不低于它才报
-pub const CPU_HIGH_PCT: f32 = 90.0;
-pub const MEM_HIGH_PCT: f32 = 90.0;
-pub const DISK_HIGH_PCT: f32 = 85.0;
-/// 样本至少覆盖这么多秒才判定持续高负载（窗口 5 分钟，留出一次上报间隔的余量）
+/// 样本至少覆盖这么多秒才判定持续高负载（窗口 5 分钟，留出一次上报间隔的余量）。阈值是 meta 的 CPU_HIGH_PCT 等：5 分钟里每个样本都不低于它才报
 const SUSTAIN_MIN_SPAN_S: i64 = 270;
 /// agent 时钟偏差超过这么久（毫秒）报警告：样本按 agent 的时间入库，当前读数只看最近 15 分钟、持续负载看最近 5 分钟
 const CLOCK_SKEW_MAX_MS: i64 = 60_000;
-/// 流量额度：本周期已用到上限的这么多（%）报警告，到 100%（已超限）报严重
-const QUOTA_WARN_PCT: f64 = 90.0;
-const QUOTA_OVER_PCT: f64 = 100.0;
 /// 流量上限按供应商的十进制 GB（1 GB = 10⁹ 字节）
 const GB: f64 = 1e9;
 
@@ -225,13 +219,15 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
         rs.push(Reason { key: "policy_blocked", severity: "info", text: "访问策略：已暂停新连接".into() });
     }
 
-    // 续费提醒：线路机和节点都有账单
+    // 续费提醒：线路机和节点都有账单。到期状态由视图按生效的提前提醒天数算（meta::due_state），总览、网页、fleetctl 同一口径
     if let Some(s) = &m.subscription {
-        if s.due_days < 0 {
-            rs.push(Reason { key: "renewal_overdue", severity: "critical", text: format!("已过期 {} 天", -s.due_days) });
-        } else if s.due_days <= s.remind_days as i64 && !s.auto_renew {
-            let text = if s.due_days == 0 { "今天到期".into() } else { format!("{} 天后到期", s.due_days) };
-            rs.push(Reason { key: "renewal_due", severity: "warning", text });
+        match s.due_state {
+            "overdue" => rs.push(Reason { key: "renewal_overdue", severity: "critical", text: format!("已过期 {} 天", -s.due_days) }),
+            "soon" => {
+                let text = if s.due_days == 0 { "今天到期".into() } else { format!("{} 天后到期", s.due_days) };
+                rs.push(Reason { key: "renewal_due", severity: "warning", text });
+            }
+            _ => {}
         }
     }
 
@@ -287,7 +283,7 @@ pub(crate) mod tests {
                 price_cents: None,
                 currency: "USD".into(),
                 cycle: "monthly".into(),
-                billing_tz: "Asia/Shanghai".into(),
+                billing_tz: crate::meta::DEFAULT_ORG_TZ.into(),
                 traffic_gb: None,
                 traffic_reset: "month".into(),
                 remind_days: 7,
@@ -310,19 +306,25 @@ pub(crate) mod tests {
 
     fn keys(h: &Health) -> Vec<&'static str> { h.reasons.iter().map(|r| r.key).collect() }
 
-    pub(crate) fn sub(due_days: i64) -> Subscription {
+    pub(crate) fn sub(due_days: i64) -> Subscription { sub_with(due_days, false) }
+
+    pub(crate) fn sub_with(due_days: i64, auto_renew: bool) -> Subscription {
         Subscription {
             price_cents: 100,
             currency: "USD".into(),
             cycle: "monthly".into(),
             due_date: time::macros::date!(2030 - 01 - 01),
             due_days,
-            billing_tz: "Asia/Shanghai".into(),
-            auto_renew: false,
+            due_state: crate::meta::due_state(due_days, 7, auto_renew),
+            billing_tz: crate::meta::DEFAULT_ORG_TZ.into(),
+            auto_renew,
             remind_days: 7,
             traffic_gb: None,
             traffic_reset_day: Some(1),
             overrides: vec![],
+            monthly_cents: 100,
+            next_due: time::macros::date!(2030 - 02 - 01),
+            period_days: 31,
         }
     }
 

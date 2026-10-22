@@ -15,9 +15,8 @@ import { DRAWER_TABS, drawerSiblings, useDrawer, type DrawerTab } from '@/lib/dr
 import { useHeld } from '@/lib/useHeld';
 import { useTitleName } from '@/lib/title';
 import * as F from '@/lib/format';
-import { KIND_LABEL } from '@/lib/sort';
 import { jobKindLabel } from '@/lib/jobs';
-import { probeSummary, severityOf } from '@/lib/derive';
+import { kindLabel, meta, probeSummary, severityOf } from '@/lib/derive';
 import { CopyButton, ErrorNote, ReasonList, HealthPill, Flag, LabelValue, LabelValueGrid, LifecyclePill, Note, Section, SectionHeader, SeverityDot } from '@/components/app/primitives';
 import { MachineTags } from '@/components/app/MachineTags';
 import { ManageTab } from './ManageTab';
@@ -172,7 +171,7 @@ function OverviewTab({ m }: { m: MachineView }) {
       <Section>
         <SectionHeader title="基本信息" />
         <LabelValueGrid>
-          <LabelValue label="类型">{`${KIND_LABEL[m.kind]}${h ? ' · 同机 IP 节点' : ''}`}</LabelValue>
+          <LabelValue label="类型">{`${kindLabel(m.kind)}${h ? ` · ${meta().ip_node_label}` : ''}`}</LabelValue>
           <LabelValue label="团队 / 编号">{m.team ? `${m.team.name} / ${m.number != null ? F.pad2(m.number) : '—'}` : '—'}</LabelValue>
           <LabelValue label="IP">{m.ip}</LabelValue>
           {h && <LabelValue label="宿主机"><button type="button" className="btn btn-link" onClick={() => open(h.id)}>{h.name}</button></LabelValue>}

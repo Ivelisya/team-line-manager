@@ -1,7 +1,7 @@
 # 上架流水线规格（旧实现逆向，供 v3 重写）
 
 来源：`backend/fleet/crates/onboard/`（下称 `ob/`）。行号均指 2026-10-20 的 `v3-rewrite` 分支（commit a6c993a）。
-文中「节点」= 落地机（住宅 IP 的 SS 出口机），「线路机」= 客户端入口机（Xray VLESS+REALITY，转发到节点的 SS）。
+文中「节点」= VPS 节点（住宅 IP 的 SS 出口机），「线路机」= 客户端入口机（Xray VLESS+REALITY，转发到节点的 SS）。
 「中控」= 执行流水线的机器（38.58.57.22，同时是线路机2）。
 
 ---
@@ -327,7 +327,7 @@ SSH 端口 **没有**任何防火墙限制（对全网开放，靠仅密钥）�
 ```
 vless://<client_uuid>@<public_host>:<relay_port>?encryption=none&flow=xtls-rprx-vision&security=reality&sni=<sni>&fp=chrome&pbk=<reality_public_key>&sid=<short_id>&type=tcp#<百分号编码的完整名称 "团队1-37 · ATT · <节点IP>">
 ```
-存 `secrets(share_link)`，资产 `lifecycle=active`，端口分配 `reserved→active`。**注意：fragment 里带了节点真实 IP**，分享给客户端会泄露落地机 IP。`fleetctl onboard reveal` 输出链接。
+存 `secrets(share_link)`，资产 `lifecycle=active`，端口分配 `reserved→active`。**注意：fragment 里带了节点真实 IP**，分享给客户端会泄露 VPS 节点 IP。`fleetctl onboard reveal` 输出链接。
 
 ---
 

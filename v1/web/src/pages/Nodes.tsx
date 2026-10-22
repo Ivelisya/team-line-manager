@@ -1,5 +1,5 @@
 // 节点：表格视图。固定列宽（窄时先收起类型、费用列）；筛选（团队 / 类型 / 线路机 / 状态 / 范围）+ 搜索；点行打开右侧抽屉。
-// 默认顺序 = 线路机 → 团队 → 编号（不排序时保持），表头排序是用户的显式选择，可一键恢复；排序记在 URL（?sort=due 升序、?sort=-due 降序，首页“7 天内到期”链到这里），
+// 默认顺序 = 线路机 → 团队 → 编号（不排序时保持），表头排序是用户的显式选择，可一键恢复；排序记在 URL（?sort=due 升序、?sort=-due 降序，首页“即将到期”链到这里），
 // 范围也是（?scope=retired 已退役，缺省在用）。
 // 分页在筛选、排序之后（每页 50）。
 import * as React from 'react';
@@ -8,8 +8,8 @@ import { ChevronRight, RotateCcw, SearchX } from 'lucide-react';
 import { useMachines, useTeams } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
-import { entryText, monthTraffic } from '@/lib/derive';
-import { HEALTH_LABEL, KIND_LABEL, useStableOrder } from '@/lib/sort';
+import { cycleLabel, entryText, healthLabel, kindLabel, lifecycleLabel, monthTraffic } from '@/lib/derive';
+import { HEALTH_TONE, KIND_ORDER, useStableOrder } from '@/lib/sort';
 import type { MachineView } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { SearchInput } from '@/components/ui/form';
@@ -25,11 +25,17 @@ import { usePage } from '@/lib/usePage';
 type Scope = 'live' | 'retired';
 /** 只调淡已退役的行：机器页看的是资产信息，离线机器的这些字段照常可读（首页表格调淡的是读数过期的） */
 const isRetired = (m: MachineView) => m.lifecycle === 'retired';
-// 筛选下拉的固定选项与空列表兜底用模块常量：页面随实时推送重渲染时，memo 的下拉（Select）不被新数组击穿
+// 筛选下拉的固定选项与空列表兜底用模块常量：页面随实时推送重渲染时，memo 的下拉（Select）不被新数组击穿。
+// 选项的中文名来自 /meta（模块加载时还没取回），第一次用时算好留着
 const EMPTY: MachineView[] = [];
 const PAGE_SIZES = [25, 50, 100];
-const KIND_OPTS = Object.entries(KIND_LABEL).map(([value, label]) => ({ value, label }));
-const STATUS_OPTS = [...Object.entries(HEALTH_LABEL).filter(([k]) => k !== 'inactive').map(([value, label]) => ({ value, label })), { value: 'provisioning', label: '上架中' }, { value: 'failed', label: '上架失败' }, { value: 'retiring', label: '退役中' }];
+type Opt = { value: string; label: string };
+let opts: { kind: Opt[]; status: Opt[] } | null = null;
+const filterOpts = () => (opts ??= {
+  kind: KIND_ORDER.map((value) => ({ value, label: kindLabel(value) })),
+  status: [...Object.keys(HEALTH_TONE).filter((k) => k !== 'inactive').map((value) => ({ value, label: healthLabel(value) })),
+    ...(['provisioning', 'failed', 'retiring'] as const).map((value) => ({ value, label: lifecycleLabel(value) }))],
+});
 const SCOPES: { value: Scope; label: string }[] = [{ value: 'live', label: '在用' }, { value: 'retired', label: '已退役' }];
 /** 行签名：这页的列只显示资产信息（流量按显示精度），不显示实时读数，推送只改读数时行不重渲染（MachineGrid sig）。
  *  列里显示的东西都要在这里——每加一列、列里多显示一个字段，都要同步改这里；悬浮卡不传 m，打开时自己取这台的最新数据 */
@@ -37,7 +43,7 @@ const rowSig = (m: MachineView) => {
   const t = monthTraffic(m); const s = m.subscription;
   return [m.name, m.ip, m.kind, m.lifecycle, m.maintenance, m.health.status, m.health.reasons.map((r) => `${r.severity}${r.text}`).join(),
     m.host_machine?.id, m.host_machine?.name, m.ip_nodes.map((x) => `${x.id}:${x.name}`).join(), entryText(m), m.plan?.name, m.provider?.name, F.str(F.bytes(t.up + t.down)), F.str(F.bytes(t.down)),
-    s?.due_days, s?.due_date, s?.price_cents, s?.currency, s?.cycle, m.retired_at, m.lifecycle_reason].join('\u0001');
+    s?.due_days, s?.due_state, s?.due_date, s?.price_cents, s?.currency, s?.cycle, m.retired_at, m.lifecycle_reason].join('\u0001');
 };
 
 export function NodesPage() {
@@ -87,7 +93,7 @@ export function NodesPage() {
           <div className="row" style={{ flexWrap: 'nowrap', gap: 6 }}><NodeHover id={m.id} noFocus><span className="cell-main strong">{m.name}{m.lifecycle === 'retired' && <> <Pill tone="neutral">已退役</Pill></>}</span></NodeHover><HostTag id={m.id} host={m.host_machine} nodes={m.ip_nodes} short /></div>
           <span className="sub">{m.ip}</span>
         </div></div> },
-      { id: 'kind', header: '类型', size: 84, drop: 1, ...byStr((m) => KIND_LABEL[m.kind]), cell: (m) => KIND_LABEL[m.kind] },
+      { id: 'kind', header: '类型', size: 84, drop: 1, ...byStr((m) => kindLabel(m.kind)), cell: (m) => kindLabel(m.kind) },
       { id: 'status', header: '状态', size: 96, cell: (m) => <HealthPill m={m} /> },
       { id: 'entry', header: '线路机:端口', size: 140, cell: (m) => <Trunc className="cell-main">{entryText(m)}</Trunc> },
       { id: 'plan', header: '供应商 · 套餐', size: 176, drop: 3,
@@ -99,9 +105,9 @@ export function NodesPage() {
       c.push({ id: 'retired', header: '退役时间 · 原因', size: 170, ...byStr((m) => m.retired_at ?? ''), cell: (m) => <><span className="cell-main">{F.dtFull(m.retired_at)}</span><span className="sub">{m.lifecycle_reason ?? ''}</span></> });
     } else {
       c.push({ id: 'due', header: '到期', size: 112, r: true, ...byNum((m) => m.subscription?.due_days ?? 1e9, 'asc'),
-        cell: (m) => (m.subscription ? <><Due days={m.subscription.due_days} /><span className="sub">{m.subscription.due_date}</span></> : <span className="t-muted">—</span>) });
+        cell: (m) => (m.subscription ? <><Due days={m.subscription.due_days} state={m.subscription.due_state} /><span className="sub">{m.subscription.due_date}</span></> : <span className="t-muted">—</span>) });
       c.push({ id: 'cost', header: '费用', size: 92, r: true, drop: 2,
-        cell: (m) => m.subscription ? <><span className="num">{F.money(m.subscription.price_cents, m.subscription.currency)}</span><span className="sub">/ {F.cycleLabel(m.subscription.cycle)}</span></> : <span className="t-muted">—</span> });
+        cell: (m) => m.subscription ? <><span className="num">{F.money(m.subscription.price_cents, m.subscription.currency)}</span><span className="sub">/ {cycleLabel(m.subscription.cycle)}</span></> : <span className="t-muted">—</span> });
     }
     c.push({ id: 'chev', header: '', size: 36, cell: () => <ChevronRight size={14} /> });
     return c;
@@ -121,9 +127,9 @@ export function NodesPage() {
       <div className="row" role="search" ref={pg.anchor}>
         <SearchInput value={text} onChange={(e) => setText(e.target.value)} placeholder="搜索名称、IP、套餐、服务编号…" aria-label="搜索" className="w-full sm:w-[260px]" />
         <div className="w-[140px]"><Select value={team} onChange={setTeam} allowEmpty="全部团队" placeholder="团队" options={teamOpts} aria-label="团队" /></div>
-        <div className="w-[130px]"><Select value={kind} onChange={setKind} allowEmpty="全部类型" placeholder="类型" options={KIND_OPTS} aria-label="类型" /></div>
+        <div className="w-[130px]"><Select value={kind} onChange={setKind} allowEmpty="全部类型" placeholder="类型" options={filterOpts().kind} aria-label="类型" /></div>
         <div className="w-[140px]"><Select value={relay} onChange={setRelay} allowEmpty="全部线路机" placeholder="线路机" options={relayOpts} aria-label="线路机" /></div>
-        {scope === 'live' && <div className="w-[130px]"><Select value={status} onChange={setStatus} allowEmpty="全部状态" placeholder="状态" options={STATUS_OPTS} aria-label="状态" /></div>}
+        {scope === 'live' && <div className="w-[130px]"><Select value={status} onChange={setStatus} allowEmpty="全部状态" placeholder="状态" options={filterOpts().status} aria-label="状态" /></div>}
         {sort && <Button variant="quiet" size="md" onClick={() => setSort(null)}><RotateCcw />恢复默认顺序</Button>}
       </div>
 

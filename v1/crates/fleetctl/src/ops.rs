@@ -123,7 +123,7 @@ fn normalize_item(ctx: &Ctx, item: &mut Value, cache: &mut Cache) -> anyhow::Res
     if let Some(h) = o.remove("host").and_then(|v| v.as_str().map(String::from)) {
         let m = ctx.find(&h, Want::Live)?;
         if m["kind"] != "vps" || !m["host_id"].is_null() {
-            bail!("「{h}」不能当宿主机：宿主机要是普通落地机（不能是线路机、家宽代理或同机 IP 节点）");
+            bail!("「{h}」不能当宿主机：宿主机要是普通 VPS 节点（不能是线路机、家宽代理或同机 IP 节点）");
         }
         o.insert("host_id".into(), m["id"].clone());
     }
@@ -380,7 +380,7 @@ pub fn renumber(ctx: &Ctx, team: &str, yes: bool) -> anyhow::Result<u8> {
 
 pub fn upgrade_agent(ctx: &Ctx, machine: Option<&str>, all: bool, yes: bool, follow: bool) -> anyhow::Result<u8> {
     let d = if all {
-        confirm("确认升级所有在用机器上的 agent？先升一台做金丝雀，成功后线路机逐台、落地机并发；新版本起不来、没上报或线路机 Xray 不正常会自动换回旧版本，出在金丝雀或线路机上时没开始的都取消", yes)?;
+        confirm("确认升级所有在用机器上的 agent？先升一台做金丝雀，成功后线路机逐台、VPS 节点并发；新版本起不来、没上报或线路机 Xray 不正常会自动换回旧版本，出在金丝雀或线路机上时没开始的都取消", yes)?;
         ctx.c.post("/agents/upgrade", &json!({}))?
     } else {
         let q = machine.ok_or_else(|| anyhow!("给机器名，或用 --all"))?;
@@ -488,7 +488,7 @@ struct ExecResult {
     data: anyhow::Result<Value>,
 }
 
-/// `--team` 的执行目标：团队里在用的线路机与落地机（家宽代理没有 SSH）。同机 IP 节点登录的是宿主机：按登录的那台机器（host_id，没有就是自己）
+/// `--team` 的执行目标：团队里在用的线路机与 VPS 节点（家宽代理没有 SSH）。同机 IP 节点登录的是宿主机：按登录的那台机器（host_id，没有就是自己）
 /// 去重，同一台物理机只执行一次——宿主机也在团队里时留宿主机，否则留第一个同机节点
 fn team_targets(all: &[Value], team: &str) -> Vec<ExecTarget> {
     let members: Vec<&Value> = all.iter().filter(|m| st(m, "/team/name") == team && st(m, "/lifecycle") == "active" && st(m, "/kind") != "proxy").collect();

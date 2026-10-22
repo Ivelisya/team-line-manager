@@ -2,9 +2,12 @@
 // 有状态：改名、退役、上架、续费等操作都会改内存里的数据，并通过 mock 实时流通知前端刷新。
 
 import type { Availability, AvailabilityDay, EntryView, Incident, Job, JobLog, JobSummary, MachineView, ProbeBucket, ProvisionCheckItem, ProvisionItem, SeriesPoint } from '@/lib/types';
-import { addDays, displayName } from '@/lib/format';
+import { addDays, addMonths, displayName } from '@/lib/format';
 import { isQuiet, liveRate } from '@/lib/derive';
-import { LIFECYCLE_LABEL, makeDefaultCompare } from '@/lib/sort';
+import { makeDefaultCompare } from '@/lib/sort';
+import { cycleMonths, META, subCalc } from './meta';
+
+const LIFECYCLE_LABEL = META.lifecycles;
 import { buildDb, countryOf, hashStr, IP_STEPS, quotaOf, rng, type Db } from './fixtures';
 import { calibration } from './fixtures';
 import { installAccessMock } from './access';
@@ -75,10 +78,10 @@ function finishRetire(m: MachineView) {
   }
   emit({ type: 'machines' });
 }
+/** 距到期天数与服务端算的几项（到期状态、月费、续一期的到期日、每期天数） */
 function recomputeDue(m: MachineView) {
-  if (m.subscription) m.subscription.due_days = Math.ceil((new Date(m.subscription.due_date).getTime() - Date.now()) / DAY);
+  if (m.subscription) { m.subscription.due_days = Math.ceil((new Date(m.subscription.due_date).getTime() - Date.now()) / DAY); subCalc(m.subscription); }
 }
-const monthly = (cents: number, cycle: string) => cents / ({ monthly: 1, quarterly: 3, semiannual: 6, yearly: 12 }[cycle] ?? 1);
 
 function overview() {
   const live = db.machines.filter((m) => m.lifecycle === 'active');
@@ -92,11 +95,11 @@ function overview() {
     nodes: cnt(live.filter((m) => m.kind !== 'relay')), relays: cnt(live.filter((m) => m.kind === 'relay')),
     provisioning: db.machines.filter((m) => m.lifecycle === 'provisioning').length, retiring: db.machines.filter((m) => m.lifecycle === 'retiring').length,
     failed: db.machines.filter((m) => m.lifecycle === 'failed').length,
-    // 需要续费的：自动续费的只在已过期时算（同服务端）
+    // 需要续费的按订阅的 due_state（同服务端）：自动续费的只在已过期时算
     // 在线/离线按 agent 连通（同 isQuiet）
     online: live.filter((m) => !isQuiet(m)).length, offline: live.filter(isQuiet).length,
-    due_7d: live.filter((m) => m.subscription && m.subscription.due_days <= 7 && (m.subscription.due_days < 0 || !m.subscription.auto_renew)).length,
-    monthly_cost: Object.entries(live.reduce<Record<string, number>>((acc, m) => { if (m.subscription) acc[m.subscription.currency] = (acc[m.subscription.currency] ?? 0) + Math.round(monthly(m.subscription.price_cents, m.subscription.cycle)); return acc; }, {})).map(([currency, cents]) => ({ currency, cents })),
+    due_soon: live.filter((m) => m.subscription?.due_state === 'soon').length, overdue: live.filter((m) => m.subscription?.due_state === 'overdue').length,
+    monthly_cost: Object.entries(live.reduce<Record<string, number>>((acc, m) => { if (m.subscription) acc[m.subscription.currency] = (acc[m.subscription.currency] ?? 0) + m.subscription.monthly_cents; return acc; }, {})).map(([currency, cents]) => ({ currency, cents })),
     traffic_month: { up, down },
     // 实时速率只算数据没过期的（同 liveRate）；同机 IP 节点的读数就是宿主机的，不重复算
     net_rx_bps: live.reduce((s, m) => s + (m.host_machine ? 0 : liveRate(m)?.rx ?? 0), 0), net_tx_bps: live.reduce((s, m) => s + (m.host_machine ? 0 : liveRate(m)?.tx ?? 0), 0),
@@ -156,7 +159,7 @@ function probeBeats() {
  *  出口 1440 次，今天按已过去的部分算。大多数天全成功，个别天有零星失败，故障机最近两天大面积失败 */
 function availability(m: MachineView, days: number): Availability {
   if (!Number.isInteger(days) || days < 1 || days > 90) throw bad('days 只能是 1–90');
-  const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: m.subscription?.billing_tz ?? 'Asia/Shanghai' }); // 账单时区里的 YYYY-MM-DD
+  const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: m.subscription?.billing_tz ?? META.org_timezone }); // 账单时区里的 YYYY-MM-DD
   const today = fmt.format(Date.now());
   const from = m.activated_at && fmt.format(Date.parse(m.activated_at));
   const to = m.retired_at ? fmt.format(Date.parse(m.retired_at)) : today;
@@ -314,14 +317,14 @@ function checkProvision(items: ProvisionItem[]): ProvisionCheckItem[] {
     }
     if (it.kind !== 'proxy' && it.login?.password === '' ) errors.push('登录密码为空：不填请整项留空以使用中控密钥');
     if (it.subscription?.due_date && !/^\d{4}-\d{2}-\d{2}$/.test(it.subscription.due_date)) errors.push('到期日格式应为 YYYY-MM-DD');
-    // 同机 IP 节点：宿主机要是在用的普通落地机；SS 端口在宿主机上暂定（同服务端 provision::validate）
+    // 同机 IP 节点：宿主机要是在用的普通 VPS 节点；SS 端口在宿主机上暂定（同服务端 provision::validate）
     let ssPort: number | null = null;
     if (it.host_id) {
       const h = db.machines.find((m) => m.id === it.host_id);
       if (!h) errors.push('宿主机不存在');
-      else if (it.kind !== 'vps') errors.push('只有落地机（vps）能加在宿主机上');
-      else if (h.kind !== 'vps' || h.host_machine) errors.push(`「${h.name}」不能当宿主机：宿主机要是普通落地机（不能是线路机、家宽代理或同机 IP 节点）`);
-      else if (h.lifecycle !== 'active') errors.push(`宿主机「${h.name}」现在是「${LIFECYCLE_LABEL[h.lifecycle]}」，只能加在运行中的落地机上`);
+      else if (it.kind !== 'vps') errors.push('只有 VPS 节点（vps）能加在宿主机上');
+      else if (h.kind !== 'vps' || h.host_machine) errors.push(`「${h.name}」不能当宿主机：宿主机要是普通 VPS 节点（不能是线路机、家宽代理或同机 IP 节点）`);
+      else if (h.lifecycle !== 'active') errors.push(`宿主机「${h.name}」现在是「${LIFECYCLE_LABEL[h.lifecycle]}」，只能加在运行中的 VPS 节点上`);
       else {
         const batch = ssBatch.get(h.id) ?? [];
         ssPort = freeSsPort(h.id, batch);
@@ -346,7 +349,7 @@ function createMachine(it: ProvisionItem, c: ProvisionCheckItem): MachineView {
     ip: it.ip, ssh_port: h?.ssh_port ?? it.ssh_port ?? 22, country: it.country ?? countryOf(it.ip), country_set: it.country ?? null, host_machine: h && { id: h.id, name: h.name }, ip_nodes: [], provider: pv ? { id: pv.id, name: pv.name } : null, provider_code: pv?.code ?? null,
     plan: plan ? { id: plan.id, name: plan.name, bandwidth_mbps: plan.bandwidth_mbps, traffic_gb: plan.traffic_gb } : null, service_ref: it.service_ref ?? null,
     lifecycle: 'provisioning', lifecycle_reason: null, note: it.note ?? '', revision: 1, created_at: iso(), activated_at: null, retired_at: null,
-    subscription: it.subscription?.due_date ? { price_cents: it.subscription.price_cents ?? plan?.price_cents ?? 0, currency: plan?.currency ?? 'USD', cycle: it.subscription.cycle ?? plan?.cycle ?? 'monthly', due_date: it.subscription.due_date, due_days: 0, billing_tz: it.subscription.billing_tz ?? pv?.timezone ?? 'Asia/Shanghai', auto_renew: false, remind_days: 7, traffic_gb: plan?.traffic_gb || null, traffic_reset_day: 1 } : null,
+    subscription: it.subscription?.due_date ? subCalc({ price_cents: it.subscription.price_cents ?? plan?.price_cents ?? 0, currency: plan?.currency ?? META.defaults.currency, cycle: it.subscription.cycle ?? plan?.cycle ?? META.defaults.cycle, due_date: it.subscription.due_date, due_days: 0, billing_tz: it.subscription.billing_tz ?? pv?.timezone ?? META.org_timezone, auto_renew: false, remind_days: pv?.remind_days ?? META.defaults.remind_days, traffic_gb: plan?.traffic_gb || null, traffic_reset_day: 1 } as NonNullable<MachineView['subscription']>) : null,
     agent: null, host: null, entries: [], removed_traffic: { today_up: 0, today_down: 0, month_up: 0, month_down: 0 }, quota: { used: 0, period_start: '', rule: null, base: null, base_at: null }, health: { status: 'unknown', reasons: [{ key: 'provisioning', severity: 'info', text: '上架作业进行中' }] }, active_job: null, failed_job: null, open_incidents: 0, maintenance: false,
     relay: it.kind === 'relay' ? { public_host: it.ip, generation: 1, applied_generation: 0, applied_at: null, apply_error: null, port_min: 20001, port_max: 20999 } : null,
   };
@@ -407,7 +410,7 @@ R('POST', '/teams/([^/]+)/renumber', ({ params, body }) => {
 R('GET', '/providers', () => clone(db.providers));
 R('POST', '/providers', ({ body }) => {
   if (!body.name || !body.code) throw bad('名称与代码必填');
-  const p = { id: `p${db.seq++}`, name: body.name, code: String(body.code).toUpperCase(), panel_url: body.panel_url || null, timezone: body.timezone || 'UTC', traffic_rule: body.traffic_rule ?? 'max' };
+  const p = { id: `p${db.seq++}`, name: body.name, code: String(body.code).toUpperCase(), panel_url: body.panel_url || null, timezone: body.timezone || null, traffic_rule: body.traffic_rule ?? META.defaults.traffic_rule };
   db.providers.push(p); emit({ type: 'catalog' }); return p;
 });
 R('PATCH', '/providers/([^/]+)', ({ params, body }) => {
@@ -416,7 +419,7 @@ R('PATCH', '/providers/([^/]+)', ({ params, body }) => {
   if (body.name !== undefined) p.name = body.name;
   if (body.code !== undefined) p.code = body.code;
   if (body.panel_url !== undefined) p.panel_url = body.panel_url || null;
-  if (body.timezone !== undefined) p.timezone = body.timezone || 'UTC';
+  if (body.timezone !== undefined) p.timezone = body.timezone || null; // 空 = 跟随组织时区
   if (body.traffic_rule !== undefined) p.traffic_rule = body.traffic_rule;
   emit({ type: 'catalog' }); return { id: p.id };
 });
@@ -517,10 +520,13 @@ R('PUT', '/machines/([^/]+)/subscription', ({ params, body }) => {
 R('GET', '/machines/([^/]+)/renewals', ({ params }) => clone(db.renewals[params[0]] ?? []));
 R('POST', '/machines/([^/]+)/renewals', ({ params, body }) => {
   const m = machine(params[0]); if (!m.subscription) throw bad('这台机器还没有订阅信息，请先保存订阅');
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(body.new_due ?? '')) throw bad('新到期日格式应为 YYYY-MM-DD');
-  const r = { id: `rn${db.seq++}`, old_due: m.subscription.due_date, new_due: body.new_due, amount_cents: body.amount_cents ?? m.subscription.price_cents, currency: m.subscription.currency, note: body.note ?? null, actor: db.user, created_at: iso() };
-  (db.renewals[m.id] ??= []).unshift(r); m.subscription.due_date = body.new_due; recomputeDue(m);
-  emit({ type: 'machine', id: m.id }); emit({ type: 'machines' }); return r;
+  // new_due 与 cycles（续几个周期，从当前到期日一次加够）二选一，同服务端
+  if ((body.new_due == null) === (body.cycles == null)) throw bad('new_due 与 cycles 要给且只给一个');
+  const newDue: string = body.new_due ?? addMonths(m.subscription.due_date, cycleMonths(m.subscription.cycle) * Number(body.cycles));
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(newDue)) throw bad('新到期日格式应为 YYYY-MM-DD');
+  const r = { id: `rn${db.seq++}`, old_due: m.subscription.due_date, new_due: newDue, amount_cents: body.amount_cents ?? m.subscription.price_cents, currency: m.subscription.currency, note: body.note ?? null, actor: db.user, created_at: iso() };
+  (db.renewals[m.id] ??= []).unshift(r); m.subscription.due_date = newDue; recomputeDue(m);
+  emit({ type: 'machine', id: m.id }); emit({ type: 'machines' }); return { id: r.id, old_due: r.old_due, new_due: r.new_due };
 });
 R('POST', '/provision/check', ({ body }) => ({ items: checkProvision(body.items ?? []) }));
 R('POST', '/provision', ({ body }) => {
@@ -611,6 +617,7 @@ R('POST', '/jobs/([^/]+)/cancel', ({ params }) => {
   emit({ type: 'job', id: j.id }); return {};
 });
 
+R('GET', '/meta', () => clone(META));
 R('GET', '/overview', () => overview());
 R('GET', '/overview/series', ({ query }) => overviewSeries(Math.min(60, +(query.get('minutes') ?? 30))));
 R('GET', '/probe-beats', () => probeBeats());
@@ -626,11 +633,7 @@ R('GET', '/incidents', ({ query }) => {
 });
 R('POST', '/incidents/([^/]+)/ack', ({ params }) => { const i = db.incidents.find((x) => x.id === params[0]); if (!i) throw bad('告警不存在', 404, 'not_found'); i.ack_at = iso(); i.ack_by = db.user; emit({ type: 'incidents' }); return {}; });
 /** 静默同服务端：只列没结束的（含还没开始的预约），按开始时间排；新建的校验顺序与中文原因同服务端 */
-const RULE_NAMES: Record<string, string> = {
-  agent_offline: 'agent 离线', clock_skew: 'agent 时钟不准', no_entry: '没有在用入口', egress_fail: '出口不通', tcp_fail: '线路到节点不通', renewal_due: '即将到期', renewal_overdue: '已过期',
-  relay_apply_lag: '配置未应用', relay_apply_error: '配置应用失败', relay_xray_down: 'Xray 未运行', host_cpu_high: 'CPU 持续偏高', host_mem_high: '内存持续偏高', host_disk_high: '磁盘空间不足',
-  traffic_quota_high: '流量额度吃紧', ipintel_new_isp: '来源出现新运营商', ipintel_new_city: '来源出现新城市', ipintel_datacenter_source: '机房 / VPN 来源', policy_blocked: '访问策略暂停',
-};
+const RULE_NAMES = META.rules;
 R('GET', '/silences', () => clone(db.silences.filter((s) => Date.parse(s.ends_at) > Date.now()).sort((a, b) => Date.parse(a.starts_at) - Date.parse(b.starts_at))));
 R('POST', '/silences', ({ body }) => {
   const s = Date.parse(body.starts_at); const e = Date.parse(body.ends_at); const now = Date.now();
@@ -705,7 +708,7 @@ R('POST', '/machines/([^/]+)/upgrade-agent', ({ params }) => {
   return { machine_id: m.id, job_id: job.id };
 });
 R('POST', '/agents/upgrade', () => {
-  // 同中控：线路机在前，第一台做金丝雀；线路机一台等前一台，落地机都等最后一台线路机（没有线路机时等金丝雀），之后并发
+  // 同中控：线路机在前，第一台做金丝雀；线路机一台等前一台，VPS 节点与家宽代理都等最后一台线路机（没有线路机时等金丝雀），之后并发
   const ms = db.machines.filter((m) => m.lifecycle === 'active' && m.agent && !m.host_machine && !m.active_job)
     .sort((a, b) => Number(b.kind === 'relay') - Number(a.kind === 'relay'));
   let canary: string | undefined; let lastRelay: string | undefined;
@@ -718,10 +721,10 @@ R('POST', '/agents/upgrade', () => {
   // 说法同中控 upgrade_order 的几种情形
   const relays = ms.filter((m) => m.kind === 'relay').length; const nodes = ms.length - relays; const c = ms[0]?.name;
   const order = ms.length === 0 ? '没有要升级的机器' : ms.length === 1 ? `只有「${c}」一台`
-    : relays === 0 ? `先升「${c}」做金丝雀，成功后其余 ${nodes - 1} 台落地机并发升级；新版本在金丝雀上出问题的话其余的都会取消`
-    : relays === 1 ? `先升「${c}」做金丝雀，成功后 ${nodes} 台落地机并发升级；新版本在金丝雀上出问题的话其余的都会取消`
+    : relays === 0 ? `先升「${c}」做金丝雀，成功后其余 ${nodes - 1} 台节点并发升级；新版本在金丝雀上出问题的话其余的都会取消`
+    : relays === 1 ? `先升「${c}」做金丝雀，成功后 ${nodes} 台节点并发升级；新版本在金丝雀上出问题的话其余的都会取消`
     : nodes === 0 ? `先升「${c}」做金丝雀，成功后其余 ${relays - 1} 台线路机逐台升级；新版本在任何一台上出问题，没开始的都会取消`
-    : `先升「${c}」做金丝雀，成功后其余 ${relays - 1} 台线路机逐台升级，线路机都成功后 ${nodes} 台落地机并发升级；新版本在任何一台线路机上出问题，没开始的都会取消`;
+    : `先升「${c}」做金丝雀，成功后其余 ${relays - 1} 台线路机逐台升级，线路机都成功后 ${nodes} 台节点并发升级；新版本在任何一台线路机上出问题，没开始的都会取消`;
   emit({ type: 'machines' }); return { jobs, skipped: [], order };
 });
 

@@ -31,14 +31,14 @@
 | 最近一天的 CPU/内存/磁盘/网速 | `fleetctl series 团队1-06 --range 24h` |
 | 入口的流量与探测 | `fleetctl series 团队1-06 --metric traffic` / `--metric probe` |
 | 告警列表、确认 | `fleetctl incidents`、`fleetctl ack <id>`；一台机器的告警历史 `fleetctl incidents --all --machine 团队1-06` |
-| 维护前开维护窗口（免得告警刷屏），或预约 | `fleetctl silence add 团队1-06 --for 2h --maintenance --comment 换内核`；预约加 `--start "2026-10-23 02:00"`（北京时间）；只静默一条规则 `--rule agent_offline`；`fleetctl silence ls`，做完 `fleetctl silence rm <id 前缀>`；全部机器 `--all --yes`（API 密钥最长 24 小时，更长的在网页用账号建；建、删都会通知所有渠道） |
-| 到期与续费：快到期的机器、看订阅、登记续费、改订阅 | `fleetctl ls --due 7`（7 天内到期、含已过期的在用机器）、`fleetctl billing 团队1-06`（订阅与续费记录）；确认已付款后 `fleetctl renew 团队1-06 --yes`（默认同网页：按订阅周期推一个周期、金额取订阅价格；一次付几期 `--cycles 3`，按面板 `--to 2027-01-15 --amount 39.46 --note …`）；改订阅 `fleetctl subscription set 团队1-06 --price 45 --yes`（只改给了的字段；`--price none` 改回跟随套餐）。订阅跟随模板：价格、币种、周期、流量上限跟随**套餐**，账单时区、提前提醒、流量重置（自然月 / 账单日）跟随**供应商**，订阅只存到期日、自动续费和单独设置的项——同一套餐一起调价、改额度在网页「团队与套餐」改套餐，立即对没单独设置的机器生效；上架选了套餐只要填到期日 |
+| 维护前开维护窗口（免得告警刷屏），或预约 | `fleetctl silence add 团队1-06 --for 2h --maintenance --comment 换内核`；预约加 `--start "2026-10-23 02:00"`（组织时区，默认北京时间）；只静默一条规则 `--rule agent_offline`；`fleetctl silence ls`，做完 `fleetctl silence rm <id 前缀>`；全部机器 `--all --yes`（API 密钥最长 24 小时，更长的在网页用账号建；建、删都会通知所有渠道） |
+| 到期与续费：快到期的机器、看订阅、登记续费、改订阅 | `fleetctl ls --due 7`（7 天内到期、含已过期的在用机器；`fleetctl status` 的「即将到期 / 已过期」按各台的提前提醒天数算，同续费告警）、`fleetctl billing 团队1-06`（订阅与续费记录）；确认已付款后 `fleetctl renew 团队1-06 --yes`（默认同网页：按订阅周期推一个周期（新到期日由中控算，小月按月末）、金额取订阅价格；一次付几期 `--cycles 3`，按面板 `--to 2027-01-15 --amount 39.46 --note …`）；改订阅 `fleetctl subscription set 团队1-06 --price 45 --yes`（只改给了的字段；`--price none` 改回跟随套餐）。订阅跟随模板：价格、币种、周期、流量上限跟随**套餐**，账单时区、提前提醒、流量重置（自然月 / 账单日）跟随**供应商**，订阅只存到期日、自动续费和单独设置的项——同一套餐一起调价、改额度在网页「团队与套餐」改套餐，立即对没单独设置的机器生效；上架选了套餐只要填到期日 |
 | 服务日志 | `fleetctl logs 团队1-06 --unit fleet-agent --lines 300`（unit：fleet-agent / fleet-xray / ssserver） |
 | 中控自己的日志 | `fleetctl server-logs --lines 300` |
 | 在一台机器上执行命令 | `fleetctl exec 团队1-06 -- systemctl status fleet-agent` |
 | 对一个团队的全部节点执行 | `fleetctl exec --team 团队1 -- uptime`（并发 4，汇总退出码） |
 | 上架 | `fleetctl provision --file batch.json --dry-run`，确认后 `fleetctl provision --file batch.json --yes --follow` |
-| 已有落地机上多了一个 IP，加成一台节点（同机 IP 节点，见 §6） | `fleetctl provision --kind vps --host 团队1-03 --ip 203.0.113.7 --team 团队1 --relay 线路机2 --yes --follow` |
+| 已有 VPS 节点上多了一个 IP，加成一台节点（同机 IP 节点，见 §6） | `fleetctl provision --kind vps --host 团队1-03 --ip 203.0.113.7 --team 团队1 --relay 线路机2 --yes --follow` |
 | 看作业进度、失败原因 | `fleetctl jobs --active`、`fleetctl job <id> --follow`；失败后 `fleetctl retry <id>` |
 | 退役 | `fleetctl retire 团队1-06 --reason 到期不续 --yes --follow`（宿主机上的同机 IP 节点会一并退役，命令先列出来） |
 | 彻底删除已退役机器 | `fleetctl purge 团队1-06 --yes`（它的入口近 35 天的流量还计入另一端未退役的机器时会被拒，报错里给出可删日期；另一端已退役的不受限） |
@@ -47,7 +47,7 @@
 | 恢复已退役的机器 | `fleetctl restore 团队1-06 --relay 线路机3 --reason 客户续约 --yes --follow`（先预检再提交，见 §6） |
 | 改名 / 换团队 / 改编号 | `fleetctl rename 团队1-06 --team 团队2 --number 3` |
 | 编号压缩成连续 | `fleetctl renumber 团队1`（预览），`--yes` 执行 |
-| 升级 agent | `fleetctl upgrade-agent 团队1-06`、`fleetctl upgrade-agent --all --yes`（先升一台金丝雀，线路机逐台、落地机并发；新版本起不来或没上报自动换回旧版本，见 §7） |
+| 升级 agent | `fleetctl upgrade-agent 团队1-06`、`fleetctl upgrade-agent --all --yes`（先升一台金丝雀，线路机逐台、VPS 节点并发；新版本起不来或没上报自动换回旧版本，见 §7） |
 | 入口启停、轮换凭据 | `fleetctl entries`、`fleetctl entry disable 线路机2:20001 --yes`、`fleetctl entry rotate … --yes` |
 | 线路机直出入口（从线路机自己的 IP 出去，旧系统的「节点00-默认」） | `fleetctl entry add-direct 线路机2 --yes --follow`（每台线路机至多一条；线路机 agent 要先升到新版本）；链接 `fleetctl share 线路机2-直出` |
 | 分享链接 | `fleetctl share 线路机2:20001`（需要 secrets，记审计） |
@@ -121,14 +121,14 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 - 通知渠道（webhook、企业微信、Telegram 的 `api_base`）不能指向内网、环回、链路本地（云元数据）地址，也不能是内嵌 IPv4 的转换地址（NAT64 `64:ff9b::/32`、6to4 `2002::/16`、Teredo `2001::/32`）；域名在发送时只解析公网地址，发送不走环境变量里的 HTTP 代理（代理会替它解析域名）。确实要用内网 webhook 时在 `fleet.toml` 写 `[notify] allow_private = true`。改 Telegram 的 `api_base` 要同时重新填 `bot_token`。
 - 全部机器的静默 / 维护等于把监控关掉：API 密钥建的最长 24 小时（账号登录的 30 天）；新建、删除静默 / 维护都会通知所有启用的渠道（不受静默影响），悄悄关监控会被看到。
 - 中控：fleet-server 在 systemd 沙箱里运行（无任何特权、只写 `/var/lib/fleet`、系统调用白名单），`/etc/fleet` 归 root、fleet 只读；部署后 `journalctl -u fleet-server` 里出现 SIGSYS / Permission denied 先看沙箱。Caddy 管理接口在 `/run/caddy/admin.sock`（只有 caddy 能连），改配置后用 `systemctl reload caddy`，直接 `caddy reload` 不带 `--config` 会连不上。网页带 CSP（只许本站脚本），不能再加内联脚本或外部 CDN。
-- 线路机：Xray 以 systemd 动态用户运行（不是 root），配置由 systemd 经标准输入交给它，读不到 `/etc/fleet-agent`、`/etc/ssh`，连不上本机的 systemd / D-Bus；访问日志实际在 `/var/log/private/fleet-xray`（`/var/log/fleet-xray` 是符号链接），agent 靠 `CAP_DAC_READ_SEARCH` 读。Xray 与落地机的 ssserver 都拦了链路本地网段与 100.100.100.200（客户经域名也到不了云元数据服务）；机器的 `/etc/resolv.conf` 用链路本地地址的 DNS（169.254.x、fe80::，GCE、Oracle 等不经 systemd-resolved 的镜像）时拦了就解析不了域名，这样的机器上装单元时不加这条拦截，作业日志记一条 warn。这些单元改动在升级 agent / 收敛时写入，Xray 下次重启、ssserver 下次收敛时生效。agent 上报按机器限速（突发 600 份、每秒补 1 份，超了回 429），agent 拒绝连公网的明文 http 中控。
+- 线路机：Xray 以 systemd 动态用户运行（不是 root），配置由 systemd 经标准输入交给它，读不到 `/etc/fleet-agent`、`/etc/ssh`，连不上本机的 systemd / D-Bus；访问日志实际在 `/var/log/private/fleet-xray`（`/var/log/fleet-xray` 是符号链接），agent 靠 `CAP_DAC_READ_SEARCH` 读。Xray 与 VPS 节点的 ssserver 都拦了链路本地网段与 100.100.100.200（客户经域名也到不了云元数据服务）；机器的 `/etc/resolv.conf` 用链路本地地址的 DNS（169.254.x、fe80::，GCE、Oracle 等不经 systemd-resolved 的镜像）时拦了就解析不了域名，这样的机器上装单元时不加这条拦截，作业日志记一条 warn。这些单元改动在升级 agent / 收敛时写入，Xray 下次重启、ssserver 下次收敛时生效。agent 上报按机器限速（突发 600 份、每秒补 1 份，超了回 429），agent 拒绝连公网的明文 http 中控。
 - 危险操作（退役、删除、轮换、批量升级、会改状态的 exec）先向负责人确认，再加 `--yes`。
 
 ## 6. 换线路机 / 搬空线路机 / 恢复已退役的机器 / 同机 IP 节点
 
 ### 换线路机（节点换到另一台线路机）
 1. `fleetctl move 团队1-06 --to 线路机3`（交互确认）或加 `--yes --follow`。节点必须在用，且只有一个在用入口（有多个用 `--from 线路机2` 指定换掉哪条）。
-2. 作业先在目标线路机建新入口（新端口、新凭据），节点是落地机时同时把新线路机 IP 加进节点防火墙放行名单；新入口应用完、出口探测通过之后才摘旧入口，最后把旧线路机 IP 从放行名单拿掉。换线期间节点始终有一个可用入口，不断网。
+2. 作业先在目标线路机建新入口（新端口、新凭据），节点是 VPS 节点时同时把新线路机 IP 加进节点防火墙放行名单；新入口应用完、出口探测通过之后才摘旧入口，最后把旧线路机 IP 从放行名单拿掉。换线期间节点始终有一个可用入口，不断网。
 3. **分享链接会变**：完成后用 `fleetctl share 团队1-06` 取新链接发给客户端，旧链接失效。网页上作业完成的通知里有「复制新分享链接」。
 4. 想中止：摘旧入口之前 `fleetctl cancel <job>`，新入口被摘除、防火墙恢复，旧入口不动。摘了旧入口之后只能 `fleetctl retry` 到完成。旧线路机不在线时「等待旧线路机摘除」会失败，线路机恢复后重试。
 
@@ -143,8 +143,8 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 5. 主机指纹：退役（和上架/恢复取消）时这台机器从中控 known_hosts 删掉，但公钥存在机器行上（`retired_host_keys`，迁移 0023）。恢复作业的预检先把它放回 known_hosts 再核对，不会对这个 IP 上现在的主机重新首次信任——服务商把 IP 给了别人时预检报「主机指纹变化」失败，root 密码和中控密钥都不会交出去。预检（网页对话框 / `fleetctl restore`）探测到的公钥和存的不同会列为阻断「主机指纹与退役时不同…」：**先确认是同一台机器重装过**（服务商控制台、重装记录），再勾「重置主机指纹」/ 加 `--reset-host-key`，按现在的公钥重新记录；拿不准就别恢复，换新机器上架。作业跑到预检才发现不符时，同样确认后 `fleetctl retry <作业> --reset-host-key`。恢复成功后存的公钥清空。迁移 0023 之前退役的机器没存过，恢复时照旧按现在的公钥重新记录（首次信任），恢复这类机器前自己核对一下预检显示的指纹。
 6. 同机 IP 节点要等宿主机在用才能恢复（先恢复宿主机）；不试登录、不要密码，SS 端口沿用原来的（被宿主机上别的同机节点占了才重新分配）。
 
-### 同机 IP 节点（一台落地机上的多个 IP）
-供应商给一台落地机加了 IP 时，每个附加 IP 上架成一台独立的节点（自己的团队编号、入口、出口 IP），按 IP 计节点：
+### 同机 IP 节点（一台 VPS 节点上的多个 IP）
+供应商给一台 VPS 节点加了 IP 时，每个附加 IP 上架成一台独立的节点（自己的团队编号、入口、出口 IP），按 IP 计节点：
 1. 先在供应商那边把 IP 直接配到这台机器的网卡上（`ip -4 addr` 看得到；EIP / NAT 映射的不支持）；从这个 IP 发出的流量对外显示的要是它自己（作业第一步会用 `curl --interface` 访问中控自动核对）。
 2. `fleetctl provision --kind vps --host <宿主机> --ip <新 IP> --team 团队1 --relay 线路机2 --yes --follow`（批量文件条目写 `"host"`）。不用填 SSH 端口、密码、SS 端口：作业用中控密钥登录宿主机，先核对 IP（不在网卡上、或经它访问中控回显的来源不是它都会失败并说明原因），再在宿主机上装它自己的 ssserver 实例 `fleet-ssserver@<端口>`（端口 8389 起由中控分配，从这个 IP 监听和出站）和防火墙表 `ss_guard_<端口>`，然后建入口、验收。宿主机原来的 ssserver 与防火墙不动、不重启。
 3. `show <宿主机>` 列出「同机 IP 节点」，`show <同机节点>` 显示「宿主机」。它没有自己的 agent：在线状态、主机读数、曲线都是宿主机的，`upgrade-agent` 升级宿主机即可。供应商取宿主机的；费用默认不记（附加 IP 单独收费时在它的「费用」里填），宿主机的流量额度把它的流量算进去。
@@ -157,10 +157,10 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 反过来，期望状态里的新东西旧 agent 也不认：直出入口（出站 `direct`）要等那台线路机的 agent 升级后再建，否则线路机报「agent 版本过旧」、整台的配置停在旧代数（这时升级 agent，或取消那个新增入口作业把直出入口摘掉，都能恢复）。
 
 ### 升级 agent：金丝雀与回滚
-- **顺序**：`--all` 不是一起升。先升一台做金丝雀（有线路机先挑线路机，同类里在用入口少的先上），它成功了其余线路机一台接一台，线路机都成功后落地机并发（同时最多 `job_workers` 台）。命令输出第一行后面就是这次的顺序（金丝雀是哪台），作业按执行顺序列出；`--follow` 依次跟着看。排在后面的作业在前一台结束之前一直是「排队中」：排队中的可以取消（`fleetctl cancel <作业>` 或网页作业详情），「全部升级」里等它的跟着取消；已经开始的不能取消（推送、重启到一半中断更危险），等它结束。
+- **顺序**：`--all` 不是一起升。先升一台做金丝雀（有线路机先挑线路机，同类里在用入口少的先上），它成功了其余线路机一台接一台，线路机都成功后 VPS 节点并发（同时最多 `job_workers` 台）。命令输出第一行后面就是这次的顺序（金丝雀是哪台），作业按执行顺序列出；`--follow` 依次跟着看。排在后面的作业在前一台结束之前一直是「排队中」：排队中的可以取消（`fleetctl cancel <作业>` 或网页作业详情），「全部升级」里等它的跟着取消；已经开始的不能取消（推送、重启到一半中断更危险），等它结束。
 - **每台的回滚**：推送前旧程序留成同目录的 `/usr/local/bin/fleet-agent.prev`（成功后也留着，下次升级覆盖；退役清理一并删）。新版本重启后 3 秒内主进程就退出（起不来），或 2 分钟内没有以新版本号上报，作业自动把 .prev 换回去并重启 agent，然后失败，错误写「新版本 X …，已回滚到 <旧版本>」：这时机器已经回到旧版本、照常上报，不用动它。
 - **线路机还要查 Xray**：新版本自己报的 Xray 状态要做到——Xray 在跑、已应用的配置追上升级开始时的代数、没有应用错误（中控记的与 agent 自报的都算）；2 分钟做不到同样换回旧版本并失败，错误写「线路机检查没通过（Xray 没在跑；…）」逐项列出。只查升级前就做到的项（升级前 Xray 就没在跑、配置没应用到最新、有应用错误的，那一项不查），要查哪几项见推送那一步输出的「升级后检查」。换回旧版本后，旧 agent 启动时按原来的配置重新应用一遍；之后 Xray 仍不正常就按告警处理。所以新版本让 Xray 不在跑、配置应用不上或应用出错时，金丝雀就被换回、其余线路机不再升级，不会一台接一台弄坏；这几项查不出的问题（Xray 照常，但流量统计、探测出了错）仍可能逐台带到所有线路机，升级后看一眼告警与读数。
-- **停在半路**：金丝雀或任何一台线路机换上新版本后出问题（起不来、没上报、线路机检查没通过），没开始的作业全部取消（错误写明是哪台），已经升好的不动。推送之前就失败的（SSH 连不上、登录被拒、推送失败：机器上的程序没换过，与新版本无关）只算那一台，后面的照常继续；这样失败的金丝雀不算验证过，下一台线路机就是实际的金丝雀。先查原因：失败作业的错误、`fleetctl logs <机器> --unit fleet-agent`。修好（多半是换一个 agent 版本、重新部署中控）后再 `--all` 一次：已经是新版本的机器推送跳过，只轮换令牌、重启 agent。落地机之间互不等待，一台失败只影响它自己。
+- **停在半路**：金丝雀或任何一台线路机换上新版本后出问题（起不来、没上报、线路机检查没通过），没开始的作业全部取消（错误写明是哪台），已经升好的不动。推送之前就失败的（SSH 连不上、登录被拒、推送失败：机器上的程序没换过，与新版本无关）只算那一台，后面的照常继续；这样失败的金丝雀不算验证过，下一台线路机就是实际的金丝雀。先查原因：失败作业的错误、`fleetctl logs <机器> --unit fleet-agent`。修好（多半是换一个 agent 版本、重新部署中控）后再 `--all` 一次：已经是新版本的机器推送跳过，只轮换令牌、重启 agent。VPS 节点之间互不等待，一台失败只影响它自己。
 - **中途重新部署了中控**：`--all` 发起时记下 dist 里 agent 的 sha256 与版本号，每台推送前核对。中途换了版本，没开始的都取消、正要推送的失败，错误写「中控上的 agent 在升级过程中换了版本（发起时是 X），请重新发起全部升级」：照做，新的 `--all` 按新版本从金丝雀重来。中控上没有 agent 程序（或读不出版本号）时 `--all` 直接报错，不建作业。
 - **重试**：失败的升级作业可以 `fleetctl retry <作业>`，从推送重来（不是只重等上报）；线路机检查沿用第一次换程序之前记下的升级前状态。
 - **回滚也失败**（错误里写「需要人工处理」：机器上没有 .prev，或换回去旧版本也没起来）：agent 可能没在运行，这台会报 agent 离线。看日志找原因后手动换回并重启（修改状态，先确认）：

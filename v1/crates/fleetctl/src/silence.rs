@@ -4,11 +4,12 @@
 use crate::cmds::{st, Ctx};
 use crate::ops::confirm;
 use crate::resolve::Want;
+use crate::meta;
 use crate::table;
 use anyhow::{anyhow, bail};
 use serde_json::{json, Value};
 use time::format_description::well_known::Rfc3339;
-use time::macros::{format_description, offset};
+use time::macros::format_description;
 use time::{Duration, OffsetDateTime, PrimitiveDateTime};
 
 const HEAD: [&str; 7] = ["对象", "规则", "时间", "状态", "维护", "备注", "id"];
@@ -37,8 +38,8 @@ fn span_cn(d: Duration) -> String {
     }
 }
 
-/// 北京时间（同其它命令的表格），到分钟
-fn bj(t: OffsetDateTime) -> String { t.to_offset(offset!(+8)).format(format_description!("[year]-[month]-[day] [hour]:[minute]")).unwrap_or_default() }
+/// 组织时区（中控 org_timezone，默认北京时间；同其它命令的表格），到分钟
+fn bj(t: OffsetDateTime) -> String { t.to_offset(meta::offset()).format(format_description!("[year]-[month]-[day] [hour]:[minute]")).unwrap_or_default() }
 
 /// 「2026-10-23 02:00 → 06:00」：结束与开始同一天时只写时分
 fn window(a: OffsetDateTime, b: OffsetDateTime) -> String {
@@ -108,7 +109,7 @@ fn parse_for(s: &str) -> anyhow::Result<Duration> {
     Ok(total)
 }
 
-/// `--start`：北京时间的 `2026-10-23 02:00`（同表格里的时间；日期与时间之间也可以写 `T`，可带秒），或带时区的 RFC 3339
+/// `--start`：组织时区（默认北京时间）的 `2026-10-23 02:00`（同表格里的时间；日期与时间之间也可以写 `T`，可带秒），或带时区的 RFC 3339
 /// （`2026-10-23T02:00:00+09:00`）。不按本机时区：fleetctl 常跑在 UTC 的服务器上，同一句命令换台机器不该换个时刻
 fn parse_start(s: &str) -> anyhow::Result<OffsetDateTime> {
     let s = s.trim();
@@ -124,8 +125,8 @@ fn parse_start(s: &str) -> anyhow::Result<OffsetDateTime> {
     let t = fmts
         .iter()
         .find_map(|f| PrimitiveDateTime::parse(s, f).ok())
-        .ok_or_else(|| anyhow!("--start 写成 2026-10-23 02:00（北京时间），或带时区的 2026-10-23T02:00:00+09:00"))?;
-    Ok(t.assume_offset(offset!(+8)))
+        .ok_or_else(|| anyhow!("--start 写成 2026-10-23 02:00（{}），或带时区的 2026-10-23T02:00:00+09:00", meta::tz_label()))?;
+    Ok(t.assume_offset(meta::offset()))
 }
 
 pub struct AddOpts<'a> {
@@ -155,7 +156,7 @@ pub fn add(ctx: &Ctx, o: AddOpts<'_>) -> anyhow::Result<u8> {
     };
     // 当前这一分钟还算数（同网页）；更早的多半是时区写错了，不悄悄变成「从现在开始」
     if start + Duration::minutes(1) <= now {
-        bail!("--start 的时间（北京时间 {}）已经过去了；要马上开始就不写 --start", bj(start));
+        bail!("--start 的时间（{} {}）已经过去了；要马上开始就不写 --start", meta::tz_label(), bj(start));
     }
     let end = start + dur;
     let subject = match (o.machine, o.all) {
@@ -235,6 +236,7 @@ mod tests {
 
     #[test]
     fn start_is_beijing_time_unless_it_carries_an_offset() {
+        crate::meta::test_init();
         for s in ["2026-10-23 02:00", "2026-10-23T02:00", " 2026-10-23 02:00:00 "] {
             assert_eq!(parse_start(s).unwrap(), datetime!(2026-10-22 18:00 UTC), "{s}");
         }
@@ -249,6 +251,7 @@ mod tests {
 
     #[test]
     fn window_state_and_span_wording() {
+        crate::meta::test_init();
         let now = datetime!(2026-10-22 06:00 UTC); // 北京时间 14:00
         assert_eq!(window(now, now + Duration::hours(4)), "2026-10-22 14:00 → 18:00");
         assert_eq!(window(now, now + Duration::hours(12)), "2026-10-22 14:00 → 2026-10-23 02:00");

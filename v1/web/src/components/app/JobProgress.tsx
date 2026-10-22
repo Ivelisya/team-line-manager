@@ -1,9 +1,10 @@
 // 作业进度可视化：横向步骤条（StepBar）、总进度（JobProgressBar）。作业页、作业详情、顶栏进度浮层共用。
 import { Check, CircleDashed, Loader2, Minus, Undo2, X } from 'lucide-react';
 import type { Job, JobStep, JobSummary } from '@/lib/types';
-import { STEP_KIND_LABEL, currentStepTitle, errorKindLabel, jobLive, jobProgress, stepKind, type StepKind } from '@/lib/jobs';
+import { currentStepTitle, errorKindLabel, jobLive, jobProgress, stepKind, type StepKind } from '@/lib/jobs';
 import * as F from '@/lib/format';
 import { Tip } from '@/components/ui/overlays';
+import { stepLabel } from '@/lib/derive';
 import { Progress } from '@/components/ui/progress';
 
 const ICON: Record<StepKind, React.ReactNode> = {
@@ -12,8 +13,8 @@ const ICON: Record<StepKind, React.ReactNode> = {
 
 function stepSub(s: JobStep, k: StepKind): string {
   if (k === 'running') return s.started_at ? `进行中 · ${F.duration(s.started_at, null)}` : '进行中';
-  if (k === 'done') return s.started_at ? F.duration(s.started_at, s.finished_at) : STEP_KIND_LABEL[k];
-  return STEP_KIND_LABEL[k];
+  if (k === 'done') return s.started_at ? F.duration(s.started_at, s.finished_at) : stepLabel(k);
+  return stepLabel(k);
 }
 
 /** 横向步骤条：完成 / 进行中（节点有呼吸光圈）/ 失败 / 跳过 / 已补偿 / 等待，各自不同的节点与连线。窄屏横向滚动 */
@@ -30,7 +31,7 @@ export function StepBar({ job }: { job: Job }) {
             : s.title;
           return (
             <li key={s.idx} className="stepbar-item" data-kind={k} data-link={prev === 'done' ? 'done' : prev === 'compensated' ? 'comp' : undefined} aria-current={k === 'running' ? 'step' : undefined}>
-              <Tip text={tip}><span className="stepbar-node" tabIndex={0} aria-label={`${s.title}：${STEP_KIND_LABEL[k]}`}>{ICON[k]}</span></Tip>
+              <Tip text={tip}><span className="stepbar-node" tabIndex={0} aria-label={`${s.title}：${stepLabel(k)}`}>{ICON[k]}</span></Tip>
               <span className="stepbar-title">{s.title}</span>
               <span className="stepbar-sub">{stepSub(s, k)}</span>
             </li>

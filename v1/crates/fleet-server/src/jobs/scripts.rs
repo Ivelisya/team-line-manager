@@ -55,7 +55,7 @@ modprobe tcp_bbr 2>/dev/null || true; sysctl -q -p /etc/sysctl.d/90-fleet-bbr.co
 echo "cc=$(cat /proc/sys/net/ipv4/tcp_congestion_control)"
 "#;
 
-/// 节点上的一个 ssserver 实例。宿主机（普通落地机）：单元 `fleet-ssserver`、配置 config.json、nft 表 `ss_guard`，监听 0.0.0.0:8388；
+/// 节点上的一个 ssserver 实例。宿主机（普通 VPS 节点）：单元 `fleet-ssserver`、配置 config.json、nft 表 `ss_guard`，监听 0.0.0.0:8388；
 /// 同机 IP 节点：模板单元的实例 `fleet-ssserver@<端口>`、配置 `<端口>.json`、nft 表 `ss_guard_<端口>`，监听自己的 IP 并从它出站
 pub struct SsInst {
     /// 本机监听端口
@@ -65,7 +65,7 @@ pub struct SsInst {
 }
 
 impl SsInst {
-    pub fn host() -> Self { SsInst { port: 8388, ip: None } }
+    pub fn host() -> Self { SsInst { port: crate::meta::SS_PORT, ip: None } }
 
     /// systemd 单元
     pub fn svc(&self) -> String {
@@ -470,7 +470,7 @@ echo "nft_relays=$(nft list set inet ss_guard relays | tr -d '\n' | sed 's/.*ele
                          since=$(TZ=UTC0 systemctl show -p ExecMainStartTimestamp --value fleet-ssserver)\n\
                          [ -z \"$since\" ] || [ \"$(date -d \"$since\" +%s)\" -ge \"$(stat -c %Y $C $U | sort -n | tail -n1)\" ] || RESTART=1\n";
 
-    /// 宿主机（普通落地机）除了多一行锁、一行「进程跑的是旧程序才重启」、单元里拦元数据服务的一行（链路本地 DNS 时去掉）
+    /// 宿主机（普通 VPS 节点）除了多一行锁、一行「进程跑的是旧程序才重启」、单元里拦元数据服务的一行（链路本地 DNS 时去掉）
     /// 和重跑时以运行中的实例为准的几行，和改动前逐字相同：生产节点升级中控后重新收敛，配置、nft、include 行都不变
     #[test]
     fn host_render_is_unchanged() {
