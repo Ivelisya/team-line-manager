@@ -427,23 +427,31 @@ pub struct NodeRow {
     pub blocked: i64,
     #[serde(with = "time::serde::rfc3339::option")]
     pub last_ts: Option<OffsetDateTime>,
+    /// 全部节点合起来按目标去重的目标数（每行都带，取出来放进 KPI）
+    #[serde(skip)]
+    pub unique_targets: i64,
 }
 
 #[derive(Debug, Serialize)]
 pub struct Kpi {
     pub active_nodes: i64,
     pub conns: i64,
+    /// 各节点分别去重后相加（两个节点访问同一个目标算 2 个）
     pub targets: i64,
+    /// 按目标去重：同一个目标只算 1 个，与「域名与 IP」按目标合并的 `total` 同口径
+    pub unique_targets: i64,
     pub blocked: i64,
 }
 
-/// 节点概览 + 四张 KPI。访问目标是各节点分别去重后相加。
+/// 节点概览 + KPI。
 pub async fn summary(db: &PgPool, f: &Filter) -> sqlx::Result<(Kpi, Vec<NodeRow>)> {
     let mut a = Args::default();
+    // 按目标去重的总数：不相关子查询只算一次；f 引用了两次，PG 只物化一份，不会把汇总表（或原始记录）再扫一遍
     let sql = format!(
         "{} select f.node_id, {NAME} name, t.name team, sum(f.conns)::bigint conns, count(*)::bigint targets,
                 count(*) filter (where f.kind = 'domain')::bigint domains, sum(f.blocked)::bigint blocked,
-                max(coalesce(f.last_ts, s.last_seen)) last_ts
+                max(coalesce(f.last_ts, s.last_seen)) last_ts,
+                (select count(distinct u.dest_host) from f u join machine mu on mu.id = u.node_id)::bigint unique_targets
          from f join machine m on m.id = f.node_id left join team t on t.id = m.team_id
               left join access_target_seen s on s.node_id = f.node_id and s.dest_host = f.dest_host
          group by f.node_id, m.kind, m.label, m.number, m.lifecycle, t.name
@@ -480,6 +488,7 @@ pub async fn summary(db: &PgPool, f: &Filter) -> sqlx::Result<(Kpi, Vec<NodeRow>
         active_nodes: nodes.len() as i64,
         conns: nodes.iter().map(|n| n.conns).sum(),
         targets: nodes.iter().map(|n| n.targets).sum(),
+        unique_targets: nodes.first().map_or(0, |n| n.unique_targets),
         blocked: nodes.iter().map(|n| n.blocked).sum(),
     };
     Ok((kpi, nodes))

@@ -100,6 +100,8 @@ async fn targets_grouped_by_target() {
         assert!(g["first_seen"].is_string() && g["last_seen"].is_string() && g.get("node_id").is_none());
         assert_eq!(d["items"][0]["dest_host"], "google.com", "{w} 按合计连接数排");
         assert_eq!(d["total"].as_i64(), Some(d["items"].as_array().unwrap().len() as i64), "{w}");
+        // 概览 KPI 的「访问目标」与这里的总数同口径
+        assert_eq!(t.get(&format!("/api/v1/access/summary?window={w}")).await["kpi"]["unique_targets"], d["total"], "{w}");
         // 展开：同样的筛选只看这一个目标，一个节点一行
         let d = t.get(&format!("/api/v1/access/targets?window={w}&target=google.com")).await;
         let mut per: Vec<_> = d["items"].as_array().unwrap().iter().map(|i| (i["name"].as_str().unwrap().to_string(), i["conns"].as_i64().unwrap())).collect();
@@ -189,6 +191,7 @@ async fn summary_targets_sources_events() {
     assert_eq!((d["nodes"].as_array().unwrap().len(), d["kpi"]["conns"].as_i64()), (1, Some(4)));
     let d = t.get("/api/v1/access/summary?window=24h&search=GOOGLE").await;
     assert_eq!((d["nodes"].as_array().unwrap().len(), d["kpi"]["conns"].as_i64(), d["kpi"]["targets"].as_i64()), (2, Some(7), Some(2)));
+    assert_eq!(d["kpi"]["unique_targets"], 1, "两个节点访问同一个 google.com：按目标去重算 1 个");
     // 搜索里的 % 和 _ 按字面匹配
     let d = t.get("/api/v1/access/summary?window=24h&search=%25").await;
     assert_eq!(d["kpi"]["conns"], 0);
