@@ -113,7 +113,11 @@ function Head({ r, detail, onClosed }: { r: RouterView; detail: RouterDetail | n
         onConfirm={() => boot.run(r)} />
       <TypedConfirmDialog open={askDel} onOpenChange={setAskDel} title={`删除软路由「${r.name}」？`} confirmLabel="删除" danger expected={r.name} prompt="请输入名称"
         description={<>只删采集历史<InfoTip text="撤销它的隧道公钥、删掉采集的历史；OpenClash、原来的 router-tunnel 照常。删除后会给出在路由上停掉 fleet-tunnel 的命令" /></>}
-        onConfirm={async () => { await del.mutateAsync(r.id); onClosed(); showRemoved(r.name); }} />
+        onConfirm={async () => {
+          await del.mutateAsync(r.id); onClosed();
+          // 从没连上过、也没一键部署过的：路由上没装 fleet-tunnel，不用给清理命令
+          if (r.last_seen_at || r.deploy) showRemoved(r.name); else toast.ok(`已删除「${r.name}」`);
+        }} />
     </header>
   );
 }
@@ -171,7 +175,7 @@ function OverviewTab({ r, detail }: { r: RouterView; detail: RouterDetail | null
       <Group title="基本信息">
         <Row label="团队">{r.team?.name ?? <span className="t-muted">不分团队</span>}</Row>
         <Row label="隧道端口" tip="中控上分给这台的反向隧道端口（路由连上中控后，中控经它登录路由采集）"><span className="num">{r.tunnel_port}</span></Row>
-        <Row label="接入时间">{F.dtFull(r.created_at)}</Row>
+        <Row label="创建时间">{F.dtFull(r.created_at)}</Row>
         <Row label={r.state === 'offline' ? '最后在线' : '最近采集'} tip="每 30 秒采集一次">{r.last_seen_at ? <>{F.dt(r.last_seen_at)} <span className="t-sub">· <Seen at={r.last_seen_at} /></span></> : '还没有'}</Row>
         {r.note && <Row label="备注"><span className="rt-row-wrap">{r.note}</span></Row>}
       </Group>
