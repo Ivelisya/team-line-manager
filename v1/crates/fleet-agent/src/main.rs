@@ -200,6 +200,12 @@ async fn once(cfg: Config) -> Result<()> {
 
 async fn run(cfg: Config) -> Result<()> {
     anyhow::ensure!(!cfg.server_url.is_empty(), "配置缺少 server_url");
+    // 明文 http 过公网：令牌与全部遥测可被窃听、劫持。不发，直接退出（实验室用内网 http，照常）
+    anyhow::ensure!(
+        !server::plain_http_over_public(&cfg.server_url),
+        "中控地址 {} 是明文 http:// 且不在内网/回环，拒绝连接：请改用 https://",
+        cfg.server_url
+    );
     std::fs::create_dir_all(&cfg.data_dir).with_context(|| format!("创建 {}", cfg.data_dir.display()))?;
     #[cfg(unix)]
     {
@@ -207,7 +213,6 @@ async fn run(cfg: Config) -> Result<()> {
         let _ = std::fs::set_permissions(&cfg.data_dir, std::fs::Permissions::from_mode(0o700));
     }
     tracing::info!(role = ?cfg.role, machine_id = %cfg.machine_id, version = fleet_proto::build_version(), "fleet-agent 启动");
-    server::warn_if_plain_http(&cfg.server_url);
     let cfg = Arc::new(cfg);
     let sh = state::Shared::new(cfg.clone());
     let (sd_tx, sd_rx) = watch::channel(false);
