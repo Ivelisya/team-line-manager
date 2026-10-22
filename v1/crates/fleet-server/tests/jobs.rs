@@ -361,7 +361,7 @@ async fn bulk_upgrade_runs_canary_then_relays_one_by_one() {
     assert_eq!(names, ["线路机3", "线路机4", "线路机2", "团队1-02", "团队1-03", "团队1-01"], "{up}");
     assert_eq!(
         up["order"],
-        "先升「线路机3」做金丝雀，成功后其余 2 台线路机逐台升级，线路机都成功后 3 台落地机并发升级；任何一台线路机失败，没开始的都会取消"
+        "先升「线路机3」做金丝雀，成功后其余 2 台线路机逐台升级，线路机都成功后 3 台落地机并发升级；新版本在任何一台线路机上出问题，没开始的都会取消"
     );
     // 编排：线路机一台等前一台，落地机都等最后一台线路机
     let ids: Vec<Uuid> = list.iter().map(|j| j["job_id"].as_str().unwrap().parse().unwrap()).collect();
@@ -392,34 +392,6 @@ async fn bulk_upgrade_runs_canary_then_relays_one_by_one() {
     }
     done(ids[2]).await;
     assert_eq!(claim_all(&t).await, ids[3..]);
-}
-
-/// 金丝雀失败：其余作业一步都不做，直接取消，原因写明是哪台失败（沿着编排一路传下去）；机器随即空出来
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn canary_failure_cancels_the_rest() {
-    let t = setup(true).await;
-    let team = seed_team(&t, "团队1").await;
-    seed_relay(&t).await;
-    seed_relay_named(&t, "线路机3", "198.51.100.3").await;
-    for i in 1..=2 {
-        seed_vps(&t, team, i, &format!("203.0.113.{}", 20 + i)).await;
-    }
-    // 中控 dist 里没有 fleet-agent：金丝雀在推送之前就失败，不会去连机器
-    let up = t.post("/api/v1/agents/upgrade", json!({})).await;
-    let list = up["jobs"].as_array().unwrap();
-    assert_eq!(list[0]["name"], "线路机2", "{up}");
-    let canary = t.wait_job(list[0]["job_id"].as_str().unwrap(), "failed").await;
-    assert!(canary["error"].as_str().unwrap().contains("dist/fleet-agent"), "{canary}");
-    for j in &list[1..] {
-        let j = t.wait_job(j["job_id"].as_str().unwrap(), "cancelled").await;
-        assert_eq!(j["error"], "金丝雀「线路机2」升级失败，其余机器不再升级", "{j}");
-        assert!(j["started_at"].is_null(), "{j}");
-        assert!(j["steps"].as_array().unwrap().iter().all(|s| s["state"] == "pending"), "{j}");
-        let logs = t.get(&format!("/api/v1/jobs/{}/logs", j["id"].as_str().unwrap())).await;
-        assert_eq!(logs[0]["msg"], "没有开始：金丝雀「线路机2」升级失败，其余机器不再升级", "{logs}");
-    }
-    let m = t.get(&format!("/api/v1/machines/{}", list[1]["machine_id"].as_str().unwrap())).await;
-    assert!(m["active_job"].is_null(), "{m}");
 }
 
 /// 排队中的升级作业可以取消，不用等它要等的那个结束；编排里等它的跟着取消、写明原因。已经开始的不能取消

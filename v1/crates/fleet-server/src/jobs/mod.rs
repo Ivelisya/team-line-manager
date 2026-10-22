@@ -334,7 +334,7 @@ pub async fn run_forever(st: AppState) {
 /// 领取一个可执行的作业，租约先给 3 分钟；每步开始前会按该步的超时续租。
 /// 升级 agent 排在其它作业之后：「全部升级」一次建一百多个，不能让之后的上架、换线路机、退役排在它们后面。
 /// 同一事务建的作业 created_at 相同，再按 id（UUIDv7，按生成先后递增）：全部升级里先建的线路机先领。
-/// 参数里有 `after`（「全部升级」的编排：要等的作业）的，那个作业结束之前领不到；它没有成功，这个作业领到后不开始、直接取消（见 `halted`）。
+/// 参数里有 `after`（「全部升级」的编排：要等的作业）的，那个作业结束之前领不到；它在推送之后失败或被取消，这个作业领到后不开始、直接取消（见 `halted`）。
 /// 排队时被取消的不用等：领到就收尾（没开始过，`started_at` 留空）
 pub async fn claim(st: &AppState, owner: &str) -> anyhow::Result<Option<JobRow>> {
     Ok(sqlx::query_as(
@@ -520,25 +520,29 @@ pub async fn advance(st: &AppState, mut job: JobRow, owner: &str) -> anyhow::Res
     Ok(())
 }
 
-/// 「全部升级」的编排：要等的作业（参数 `after`）没有成功时，返回这个作业不再开始的原因。
+/// 「全部升级」的编排：要等的作业（参数 `after`）在推送之后失败了（新版本起不来、没上报、线路机检查没通过）或被取消，
+/// 返回这个作业不再开始的原因。它在推送之前就失败的（连不上、推送失败…，机器上的程序没换过，与新版本无关）不算，照常开始。
 /// 要等的那个也是这样停下的（`halted`），就沿用它的原因：一路都指向最先失败的那台
 async fn halted(st: &AppState, job: &JobRow) -> sqlx::Result<Option<String>> {
     let Some(after) = job.params["after"].as_str().and_then(|s| Uuid::try_parse(s).ok()) else { return Ok(None) };
-    let prev = sqlx::query_as::<_, (String, Option<String>, bool, bool, Option<String>)>(
-        "select p.state::text, p.error, p.params ? 'halted', p.params ? 'after', display_name(m.kind::text, m.label, t.name, m.number)
+    // pushed 由 agent 步骤记（每次尝试从 false 起，要用 dist 里的程序重启 agent 之前置 true）；没有记的按推送之后算
+    let prev = sqlx::query_as::<_, (String, Option<String>, bool, bool, bool, Option<String>)>(
+        "select p.state::text, p.error, p.params ? 'halted', p.params ? 'after', coalesce((p.params->>'pushed')::bool, true),
+                display_name(m.kind::text, m.label, t.name, m.number)
          from job p left join machine m on m.id = p.target_id left join team t on t.id = m.team_id where p.id = $1",
     )
     .bind(after)
     .fetch_optional(&st.db)
     .await?;
-    let Some((state, err, was_halted, chained, name)) = prev.filter(|p| p.0 != "succeeded") else { return Ok(None) };
+    let Some((state, err, was_halted, chained, pushed, name)) = prev.filter(|p| p.0 != "succeeded") else { return Ok(None) };
     let name = name.unwrap_or_else(|| "（已删除）".into());
-    Ok(Some(match (state.as_str(), chained) {
-        _ if was_halted => err.unwrap_or_default(),
-        ("failed", false) => format!("金丝雀「{name}」升级失败，其余机器不再升级"),
-        ("failed", true) => format!("「{name}」升级失败，后面的机器不再升级"),
-        _ => format!("「{name}」的升级没有完成（{}），后面的机器不再升级", err.as_deref().unwrap_or("已取消")),
-    }))
+    Ok(match (state.as_str(), chained) {
+        _ if was_halted => Some(err.unwrap_or_default()),
+        ("failed", _) if !pushed => None,
+        ("failed", false) => Some(format!("金丝雀「{name}」升级失败，其余机器不再升级")),
+        ("failed", true) => Some(format!("「{name}」升级失败，后面的机器不再升级")),
+        _ => Some(format!("「{name}」的升级没有完成（{}），后面的机器不再升级", err.as_deref().unwrap_or("已取消"))),
+    })
 }
 
 /// 编排里要等的作业没有成功：一步都不做，直接取消并写明原因；记上 `halted`，等它的作业沿用同一个原因

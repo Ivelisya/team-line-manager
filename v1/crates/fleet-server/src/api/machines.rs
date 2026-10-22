@@ -547,7 +547,8 @@ pub async fn upgrade_all_agents(a: Actor, State(st): State<AppState>) -> ApiResu
     Ok(ok(json!({"jobs": jobs, "skipped": skipped, "order": order})))
 }
 
-/// 「全部升级」的顺序说明（接口返回，fleetctl 与网页照着显示）。`jobs` 是 enqueue_upgrade 建好的、按执行顺序
+/// 「全部升级」的顺序说明（接口返回，fleetctl 与网页照着显示）。`jobs` 是 enqueue_upgrade 建好的、按执行顺序。
+/// 「出问题」指换上新版本之后的失败（起不来、没上报、线路机检查没通过）：推送之前就失败的只算那一台，见 jobs::halted
 fn upgrade_order(jobs: &[Value]) -> String {
     let Some(first) = jobs.first() else { return "没有要升级的机器".into() };
     let canary = first["name"].as_str().unwrap_or("");
@@ -555,11 +556,11 @@ fn upgrade_order(jobs: &[Value]) -> String {
     let nodes = jobs.len() - relays;
     match (relays, nodes) {
         _ if jobs.len() == 1 => format!("只有「{canary}」一台"),
-        (0, n) => format!("先升「{canary}」做金丝雀，成功后其余 {} 台落地机并发升级；金丝雀失败的话其余的都会取消", n - 1),
-        (1, n) => format!("先升「{canary}」做金丝雀，成功后 {n} 台落地机并发升级；金丝雀失败的话其余的都会取消"),
-        (r, 0) => format!("先升「{canary}」做金丝雀，成功后其余 {} 台线路机逐台升级；任何一台失败，没开始的都会取消", r - 1),
+        (0, n) => format!("先升「{canary}」做金丝雀，成功后其余 {} 台落地机并发升级；新版本在金丝雀上出问题的话其余的都会取消", n - 1),
+        (1, n) => format!("先升「{canary}」做金丝雀，成功后 {n} 台落地机并发升级；新版本在金丝雀上出问题的话其余的都会取消"),
+        (r, 0) => format!("先升「{canary}」做金丝雀，成功后其余 {} 台线路机逐台升级；新版本在任何一台上出问题，没开始的都会取消", r - 1),
         (r, n) => format!(
-            "先升「{canary}」做金丝雀，成功后其余 {} 台线路机逐台升级，线路机都成功后 {n} 台落地机并发升级；任何一台线路机失败，没开始的都会取消",
+            "先升「{canary}」做金丝雀，成功后其余 {} 台线路机逐台升级，线路机都成功后 {n} 台落地机并发升级；新版本在任何一台线路机上出问题，没开始的都会取消",
             r - 1
         ),
     }

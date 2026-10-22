@@ -1,8 +1,8 @@
-//! 升级 agent 的回滚：推送时旧程序留成 .prev，新版本起不来、或重启后 2 分钟没有上报，就换回去并让作业失败。
-//! 需要 PostgreSQL（见 common）。「全部升级」的编排（金丝雀、线路机逐台）不碰机器，在 tests/jobs.rs。
+//! 升级 agent 的回滚：推送时旧程序留成 .prev，新版本起不来、或重启后 2 分钟没有上报，就换回去并让作业失败；
+//! 「全部升级」里哪种失败会让编排停下（要真的执行步骤）。需要 PostgreSQL（见 common）。编排的领取顺序在 tests/jobs.rs。
 //!
 //! 机器是假的：PATH 最前面放一个假 ssh，远端命令在「机器根目录」`<临时目录>/<IP>/` 里真的执行（/usr/local/bin、/etc、/var/lib
-//! 改到里面），systemctl 换成桩：记下调用；装着的 agent 版本号里带 crash 的，每次查主进程号都不一样（起来就退出、被反复拉起）。
+//! 改到里面；根目录里有 refuse 时登录被拒），systemctl 换成桩：记下调用；装着的 agent 版本号里带 crash 的，每次查主进程号都不一样（起来就退出、被反复拉起）。
 //! agent 程序是 shell 脚本，`--version` 打印版本。上报由测试直接写库模拟；线路机的用作业装到机器上的令牌走真的上报接口
 //! （Xray 状态要记上报它的版本）。
 //! PATH 是整个测试进程共用的，所以单独一个测试文件；各测试的机器 IP 不同，根目录互不相干。
@@ -24,6 +24,7 @@ use uuid::Uuid;
 const SSH: &str = r#"#!/bin/sh
 for a; do last=$a; case $a in root@*) ip=${a#root@};; esac; done
 export R="$FAKE_ROOT/$ip"
+[ -e "$R/refuse" ] && { echo "root@$ip: Permission denied (publickey)." >&2; exit 255; }
 mkdir -p "$R/etc/systemd/system"
 fix() { sed "s#/usr/local/bin/#$R/usr/local/bin/#g; s#/etc/#$R/etc/#g; s#/var/lib/#$R/var/lib/#g"; }
 if [ "$last" = "bash -s" ]; then fix | bash -s; else sh -c "$(printf '%s' "$last" | fix)"; fi
@@ -111,16 +112,17 @@ async fn report(t: &T, machine: Uuid, job: &str, version: &str) {
     .unwrap();
 }
 
-/// 一台在用的线路机「线路机2」：配置代数 3，机器上装着 `old` 版本的 agent，中控 dist 里是 `new`。
+/// 一台在用的线路机 `label`：配置代数 3，机器上装着 `old` 版本的 agent，中控 dist 里是 `new`。
 /// 升级前旧 agent 最近报的 Xray 状态是 `xray`，中控记的应用错误是 `apply_error`。返回 (机器 id, 机器根目录)
-async fn relay(t: &T, ip: &str, old: &str, new: &str, xray: Value, apply_error: Option<&str>) -> (Uuid, PathBuf) {
+async fn relay(t: &T, label: &str, ip: &str, old: &str, new: &str, xray: Value, apply_error: Option<&str>) -> (Uuid, PathBuf) {
     let root = FAKE.path().join(ip);
     agent_bin(&root.join("usr/local/bin/fleet-agent"), old);
     agent_bin(&t.dir.path().join("dist/fleet-agent"), new);
     let id = Uuid::now_v7();
     let (sk, pk) = fleet_server::crypto::reality_keypair();
-    sqlx::query("insert into machine (id, kind, label, primary_ip, lifecycle) values ($1, 'relay', '线路机2', $2::inet, 'active')")
+    sqlx::query("insert into machine (id, kind, label, primary_ip, lifecycle) values ($1, 'relay', $2, $3::inet, 'active')")
         .bind(id)
+        .bind(label)
         .bind(ip)
         .execute(&t.st.db)
         .await
@@ -258,7 +260,7 @@ fn xray_ok(by: &str) -> Value { json!({"running": true, "applied_generation": 3,
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn relay_upgrade_waits_for_xray_from_the_new_version() {
     let t = setup(false).await;
-    let (m, root) = relay(&t, "192.0.2.21", "0.1.0+old", "0.1.0+new", xray_ok("0.1.0+old"), None).await;
+    let (m, root) = relay(&t, "线路机2", "192.0.2.21", "0.1.0+old", "0.1.0+new", xray_ok("0.1.0+old"), None).await;
     let job = upgrade(&t, m).await;
     let j = run_round(&t, &job).await;
     assert_eq!((j["state"].as_str(), j["step"].as_i64()), (Some("waiting"), Some(1)), "{j}");
@@ -279,7 +281,7 @@ async fn relay_upgrade_waits_for_xray_from_the_new_version() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn relay_upgrade_rolls_back_when_xray_breaks() {
     let t = setup(false).await;
-    let (m, root) = relay(&t, "192.0.2.22", "0.1.0+old", "0.1.0+new", xray_ok("0.1.0+old"), None).await;
+    let (m, root) = relay(&t, "线路机2", "192.0.2.22", "0.1.0+old", "0.1.0+new", xray_ok("0.1.0+old"), None).await;
     let job = upgrade(&t, m).await;
     assert_eq!(run_round(&t, &job).await["state"], "waiting");
     agent_report(&t, &root, 1, "0.1.0+new", json!({"running": false, "applied_generation": 2}), Some("xray -test 失败")).await;
@@ -298,10 +300,56 @@ async fn relay_upgrade_rolls_back_when_xray_breaks() {
     // 升级前 Xray 就没在跑、配置停在旧代数、有应用错误：这几项都不查，新版本上报了就算成功
     let t = setup(false).await;
     let before = json!({"running": false, "applied_generation": 2, "agent_version": "0.1.0+old"});
-    let (m, root) = relay(&t, "192.0.2.23", "0.1.0+old", "0.1.0+new", before, Some("xray -test 失败")).await;
+    let (m, root) = relay(&t, "线路机2", "192.0.2.23", "0.1.0+old", "0.1.0+new", before, Some("xray -test 失败")).await;
     let job = upgrade(&t, m).await;
     let j = run_round(&t, &job).await;
     assert_eq!(j["steps"][0]["output"]["xray_checks"], "不查（升级前 Xray 就不正常）", "{j}");
     agent_report(&t, &root, 1, "0.1.0+new", Value::Null, Some("xray -test 失败")).await;
     assert_eq!(run_round(&t, &job).await["state"], "succeeded");
+}
+
+/// 「全部升级」，返回按执行顺序的作业 id
+async fn upgrade_all(t: &T) -> Vec<String> {
+    let up = t.post("/api/v1/agents/upgrade", json!({})).await;
+    up["jobs"].as_array().unwrap().iter().map(|j| j["job_id"].as_str().unwrap().to_string()).collect()
+}
+
+/// 「全部升级」：新版本在金丝雀上没上报、换回了旧版本，其余作业一步都不做，直接取消，原因写明是哪台（沿着编排一路传下去）；机器随即空出来
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bulk_upgrade_stops_when_the_new_version_fails() {
+    let t = setup(false).await;
+    let (_, root) = relay(&t, "线路机2", "192.0.2.31", "0.1.0+old", "0.1.0+new", xray_ok("0.1.0+old"), None).await;
+    relay(&t, "线路机3", "192.0.2.32", "0.1.0+old", "0.1.0+new", xray_ok("0.1.0+old"), None).await;
+    let (vps, _) = machine(&t, "192.0.2.33", "0.1.0+old", "0.1.0+new").await;
+    let ids = upgrade_all(&t).await;
+    assert_eq!(run_round(&t, &ids[0]).await["state"], "waiting");
+    wait_out(&t, &ids[0]).await;
+    let j = run_round(&t, &ids[0]).await;
+    assert!(j["error"].as_str().unwrap().ends_with("没有上报，已回滚到 0.1.0+old"), "{j}");
+    assert_eq!(restarts(&root), 2);
+    for id in &ids[1..] {
+        let j = run_round(&t, id).await;
+        assert_eq!(j["state"], "cancelled", "{j}");
+        assert_eq!(j["error"], "金丝雀「线路机2」升级失败，其余机器不再升级");
+        assert!(j["started_at"].is_null() && j["steps"].as_array().unwrap().iter().all(|s| s["state"] == "pending"), "{j}");
+        let logs = t.get(&format!("/api/v1/jobs/{id}/logs")).await;
+        assert_eq!(logs[0]["msg"], "没有开始：金丝雀「线路机2」升级失败，其余机器不再升级", "{logs}");
+    }
+    assert!(t.get(&format!("/api/v1/machines/{vps}")).await["active_job"].is_null());
+}
+
+/// 「全部升级」：金丝雀推送之前就失败（登录被拒，机器上的程序没换过）与新版本无关，只算它自己，后面的照常升级
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bulk_upgrade_goes_on_after_a_failure_before_push() {
+    let t = setup(false).await;
+    let (_, r2) = relay(&t, "线路机2", "192.0.2.34", "0.1.0+old", "0.1.0+new", xray_ok("0.1.0+old"), None).await;
+    std::fs::write(r2.join("refuse"), "").unwrap();
+    let (_, r3) = relay(&t, "线路机3", "192.0.2.35", "0.1.0+old", "0.1.0+new", xray_ok("0.1.0+old"), None).await;
+    let ids = upgrade_all(&t).await;
+    let j = run_round(&t, &ids[0]).await;
+    assert_eq!((j["state"].as_str(), j["steps"][0]["error_kind"].as_str()), (Some("failed"), Some("auth")), "{j}");
+    assert!(read(&r2.join("usr/local/bin/fleet-agent")).contains("0.1.0+old"));
+    assert_eq!(run_round(&t, &ids[1]).await["state"], "waiting", "线路机3 照常开始");
+    agent_report(&t, &r3, 1, "0.1.0+new", json!({"running": true, "applied_generation": 3}), None).await;
+    assert_eq!(run_round(&t, &ids[1]).await["state"], "succeeded");
 }

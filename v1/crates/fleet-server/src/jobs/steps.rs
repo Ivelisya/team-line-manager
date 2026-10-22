@@ -483,6 +483,11 @@ impl XrayChecks {
 /// 升级时程序换成了新版本（`agent_replaced`），之后装不上、起不来（或 wait_report 等不到新版本上报、线路机检查没通过）就换回 .prev
 async fn agent(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let upgrading = c.job.kind == "upgrade_agent";
+    // pushed：「全部升级」据此看失败在推送之前还是之后（见 jobs::halted）。每次尝试从 false 起；
+    // 同一次尝试里重跑这一步（中控重启后接着做）不清：前一次可能已经换上程序、重启过了
+    if upgrading && c.first {
+        c.set_params(json!({"pushed": false})).await?;
+    }
     let m = c.machine().await?;
     // 升级线路机：记下升级前的 Xray 状态。本作业已经换过程序的（重试）沿用第一次记的：之后机器被新版本动过
     let mut checks = serde_json::from_value::<XrayChecks>(c.job.params["xray_checks"].clone()).ok();
@@ -503,8 +508,9 @@ async fn agent(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         .bind(sha256(token.as_bytes()))
         .execute(&c.st.db)
         .await?;
-    // 记下这枚新令牌，wait_report 用它判断「新 agent 已经在用新令牌上报」
-    c.set_params(json!({"agent_token_id": token_id, "agent_replaced": replaced})).await?;
+    // 记下这枚新令牌，wait_report 用它判断「新 agent 已经在用新令牌上报」。
+    // 从这里起要用 dist 里的程序重启 agent（pushed）：之后的失败（起不来、没上报、线路机检查没通过）与新版本有关
+    c.set_params(json!({"agent_token_id": token_id, "agent_replaced": replaced, "pushed": true})).await?;
     let mut script = vars(&[
         ("SERVER_URL", &c.st.cfg.public_url),
         ("ROLE", if m.kind == "relay" { "relay" } else { "node" }),
