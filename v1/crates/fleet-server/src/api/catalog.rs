@@ -106,10 +106,12 @@ pub struct Provider {
     code: String,
     panel_url: Option<String>,
     timezone: String,
+    /// 流量额度的网卡计量：min / max / sum / out = 本周期入出取小 / 取大 / 相加 / 只算出站
+    traffic_rule: String,
 }
 
 pub async fn list_providers(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
-    let v: Vec<Provider> = sqlx::query_as("select id, name, code, panel_url, timezone from provider order by name")
+    let v: Vec<Provider> = sqlx::query_as("select id, name, code, panel_url, timezone, traffic_rule from provider order by name")
         .fetch_all(&st.db)
         .await?;
     Ok(ok(v))
@@ -124,6 +126,17 @@ pub struct ProviderIn {
     panel_url: Option<Option<String>>,
     #[serde(default, deserialize_with = "super::some")]
     timezone: Option<Option<String>>,
+    /// 没传 = 不改（新建为 max）
+    traffic_rule: Option<String>,
+}
+
+/// 流量计量规则只认这四种
+fn traffic_rule(v: &Option<String>) -> ApiResult<Option<&str>> {
+    match v.as_deref() {
+        None => Ok(None),
+        Some(r @ ("min" | "max" | "sum" | "out")) => Ok(Some(r)),
+        Some(r) => Err(ApiError::bad_request(format!("流量计量规则「{r}」不认识：只能是 min / max / sum / out（网卡入出取小 / 取大 / 相加 / 只算出站）"))),
+    }
 }
 
 /// 空白当没填
@@ -140,22 +153,24 @@ pub async fn create_provider(a: Actor, State(st): State<AppState>, ApiJson(b): A
     let code = clean_name(b.code.as_deref().unwrap_or(""), "供应商缩写")?;
     let panel = b.panel_url.as_ref().map(panel_url).transpose()?.flatten();
     let tz = b.timezone.as_ref().and_then(blank);
+    let rule = traffic_rule(&b.traffic_rule)?.unwrap_or("max");
     let mut tx = st.db.begin().await?;
     // 上架时供应商时区会被抄进账单时区，按同一标准校验
     if let Some(tz) = tz {
         super::machines::check_tz(&mut tx, tz).await?;
     }
-    sqlx::query("insert into provider (id, name, code, panel_url) values ($1, $2, $3, $4)")
+    sqlx::query("insert into provider (id, name, code, panel_url, traffic_rule) values ($1, $2, $3, $4, $5)")
         .bind(id)
         .bind(&name)
         .bind(&code)
         .bind(panel)
+        .bind(rule)
         .execute(&mut *tx)
         .await?;
     if let Some(tz) = tz {
         sqlx::query("update provider set timezone = $2 where id = $1").bind(id).bind(tz).execute(&mut *tx).await?;
     }
-    audit(&mut tx, &a.name, "provider.create", "provider", Some(id), json!({"name": name, "code": code})).await?;
+    audit(&mut tx, &a.name, "provider.create", "provider", Some(id), json!({"name": name, "code": code, "traffic_rule": rule})).await?;
     tx.commit().await?;
     st.emit(Event::Catalog);
     Ok(ok(json!({"id": id})))
@@ -163,7 +178,7 @@ pub async fn create_provider(a: Actor, State(st): State<AppState>, ApiJson(b): A
 
 pub async fn patch_provider(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<ProviderIn>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
-    let old: Provider = sqlx::query_as("select id, name, code, panel_url, timezone from provider where id = $1 for update")
+    let old: Provider = sqlx::query_as("select id, name, code, panel_url, timezone, traffic_rule from provider where id = $1 for update")
         .bind(id)
         .fetch_optional(&mut *tx)
         .await?
@@ -184,14 +199,16 @@ pub async fn patch_provider(a: Actor, State(st): State<AppState>, ApiPath(id): A
         Some(t) => blank(t).map(String::from),
         None => Some(old.timezone.clone()),
     };
+    let rule = traffic_rule(&b.traffic_rule)?.unwrap_or(old.traffic_rule.as_str()).to_string();
     if let Some(tz) = &tz {
         super::machines::check_tz(&mut tx, tz).await?;
     }
-    sqlx::query("update provider set name = $2, code = $3, panel_url = $4 where id = $1")
+    sqlx::query("update provider set name = $2, code = $3, panel_url = $4, traffic_rule = $5 where id = $1")
         .bind(id)
         .bind(&name)
         .bind(&code)
         .bind(&panel_url)
+        .bind(&rule)
         .execute(&mut *tx)
         .await?;
     // 时区清空 = 回到列默认值；已上架机器的账单时区是当时抄过去的，这里不跟着改
@@ -202,8 +219,8 @@ pub async fn patch_provider(a: Actor, State(st): State<AppState>, ApiPath(id): A
     .fetch_one(&mut *tx)
     .await?;
     audit(&mut tx, &a.name, "provider.update", "provider", Some(id),
-        json!({"before": {"name": old.name, "code": old.code, "panel_url": old.panel_url, "timezone": old.timezone},
-               "after": {"name": name, "code": code, "panel_url": panel_url, "timezone": tz}})).await?;
+        json!({"before": {"name": old.name, "code": old.code, "panel_url": old.panel_url, "timezone": old.timezone, "traffic_rule": old.traffic_rule},
+               "after": {"name": name, "code": code, "panel_url": panel_url, "timezone": tz, "traffic_rule": rule}})).await?;
     tx.commit().await?;
     // 机器视图里的供应商名 / 缩写：Catalog 事件已让视图缓存和前端机器列表作废
     st.emit(Event::Catalog);
