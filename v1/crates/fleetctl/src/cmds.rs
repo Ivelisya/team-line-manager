@@ -726,6 +726,12 @@ pub fn job(ctx: &Ctx, id: &str, follow: bool) -> anyhow::Result<u8> {
             let rows: Vec<Vec<String>> = steps.iter().map(|x| vec![st(x, "/idx"), st(x, "/title"), step_state_cn(&st(x, "/state")).to_string(), x["error"].as_str().unwrap_or("").to_string()]).collect();
             s.push_str("\n\n");
             s.push_str(&table::render(&["#", "步骤", "状态", "错误"], &rows));
+            let briefs: Vec<String> =
+                steps.iter().filter_map(|x| Some(format!("#{} {}：{}", st(x, "/idx"), st(x, "/title"), step_brief(&x["output"])?))).collect();
+            if !briefs.is_empty() {
+                s.push_str("\n\n步骤结果\n");
+                s.push_str(&briefs.join("\n"));
+            }
         }
         let ls = logs.as_array().cloned().unwrap_or_default();
         if !ls.is_empty() {
@@ -735,6 +741,45 @@ pub fn job(ctx: &Ctx, id: &str, follow: bool) -> anyhow::Result<u8> {
         s
     });
     Ok(job_end(ctx, &j))
+}
+
+/// 步骤结果（job_step.output）的一行摘要：调优（tune 步骤本身，或收敛结果里的 `tune`）写应用、保持了几项和跳过的键；
+/// 跳过的步骤写原因；其余列出标量字段（数组只写项数，对象略过）。没什么可说的为 None
+fn step_brief(out: &Value) -> Option<String> {
+    let o = out.as_object()?;
+    if let Some(r) = o.get("reason").and_then(Value::as_str) {
+        return Some(format!("跳过：{r}"));
+    }
+    // tune 步骤的结果整个就是调优结果，只写调优那一句
+    let whole = o.contains_key("applied");
+    let tune = if whole { Some(out) } else { o.get("tune").filter(|t| t.is_object()) };
+    let scalar = |(k, v): (&String, &Value)| match v {
+        Value::Null | Value::Object(_) => None,
+        Value::String(s) if s.is_empty() => None,
+        Value::String(s) => Some(format!("{k}={s}")),
+        Value::Array(a) => Some(format!("{k}={} 项", a.len())),
+        v => Some(format!("{k}={v}")),
+    };
+    let mut parts: Vec<String> = if whole { vec![] } else { o.iter().filter_map(scalar).collect() };
+    if let Some(t) = tune {
+        let n = |k: &str| t[k].as_array().map_or(0, Vec::len);
+        let mut s = format!("调优 {}：已应用 {} 项、本来就是 {} 项、保持 {} 项", st(t, "/profile"), n("applied"), n("ok"), n("kept"));
+        let skipped: Vec<String> = t["skipped"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|x| match st(x, "/why").as_str() {
+                "missing" => format!("{}（没有这个参数）", st(x, "/key")),
+                "readonly" => format!("{}（写不进，现为 {}）", st(x, "/key"), st(x, "/got")),
+                w => format!("{}（{w}）", st(x, "/key")),
+            })
+            .collect();
+        if !skipped.is_empty() {
+            s.push_str(&format!("；跳过 {}", skipped.join("、")));
+        }
+        parts.insert(0, s);
+    }
+    (!parts.is_empty()).then(|| parts.join("，"))
 }
 
 /// 作业的退出码：失败 / 取消为 1，`--json` 时 stderr 另给 `{"error":{"code":"job_failed"|"job_cancelled",…}}`；其余为 0
@@ -990,6 +1035,18 @@ mod tests {
         // 外面包了 context 也认得出底下的 ApiError
         assert!(!follow_error_is_transient(&api(403).context("读取")));
         assert!(follow_error_is_transient(&api(503).context("读取")));
+    }
+
+    #[test]
+    fn step_brief_summarizes_outputs() {
+        let tune = json!({"profile": "tune-v1", "applied": ["a", "b"], "ok": ["c"], "kept": [], "bbr": true,
+            "skipped": [{"key": "net.x", "why": "missing", "got": null}, {"key": "net.y", "why": "readonly", "got": "1"}]});
+        assert_eq!(step_brief(&tune).unwrap(), "调优 tune-v1：已应用 2 项、本来就是 1 项、保持 0 项；跳过 net.x（没有这个参数）、net.y（写不进，现为 1）");
+        let conv = json!({"bbr": true, "tune": {"profile": "tune-v1", "applied": [], "ok": ["c"], "kept": ["d"], "skipped": []}, "nft_relays": "1.2.3.4", "ssserver_updated": false});
+        assert_eq!(step_brief(&conv).unwrap(), "调优 tune-v1：已应用 0 项、本来就是 1 项、保持 1 项，bbr=true，nft_relays=1.2.3.4，ssserver_updated=false");
+        assert_eq!(step_brief(&json!({"reason": "没有要改的路由"})).unwrap(), "跳过：没有要改的路由");
+        assert_eq!(step_brief(&json!({"routers": [1, 2], "port": 20001})).unwrap(), "port=20001，routers=2 项");
+        assert!(step_brief(&json!({})).is_none() && step_brief(&Value::Null).is_none());
     }
 
     #[test]

@@ -17,7 +17,7 @@ import { useNow } from '@/lib/useNow';
 import { sharedObserver, watchSize } from '@/lib/sharedObserver';
 import { type DrawerTab } from '@/lib/drawer';
 import { cn } from '@/lib/utils';
-import { Beat, Due, Flag, FromTag, HealthPill, LabelValue, Mark, Num, SpareDue } from './primitives';
+import { Beat, Due, Flag, FromTag, HealthPill, LabelValue, Mark, Num, SPARE_TIP } from './primitives';
 import { MachineTag, machineTagItems } from './MachineTags';
 import { CellMeter, Cells, DotTrace, QUOTA_COLORS, Tag } from './viz';
 import { Button, IconButton } from '@/components/ui/button';
@@ -54,14 +54,14 @@ const IpTags = ({ ip, sshPort }: Pick<Info, 'ip' | 'sshPort'>) => (
 );
 interface Info { id: string; ip: string; sshPort: number; entry: string; plan: MachineView['plan']; host: MachineView['host_machine']; nodes: MachineView['ip_nodes'] }
 /** 详细卡：地址行 + 入口 / 套餐 / 套餐带宽 / 流量上限 2×2。同机 IP 节点不带套餐，自己没设上限时额度与宿主机共用 */
-const LargeInfo = memo(function LargeInfo({ entry, plan, limit, ...a }: Info & { limit: number }) {
+const LargeInfo = memo(function LargeInfo({ entry, plan, limit, unset, ...a }: Info & { limit: number; unset: boolean }) {
   return <>
     <div className="nc-addr"><span className="ellipsis" data-tip={a.ip}>{a.ip}</span><IpTags {...a} /></div>
     <dl className="nc-fields">
       <LabelValue plain label="入口">{entry}</LabelValue>
       <LabelValue plain label="套餐">{plan?.name ?? <span className="t-muted">{a.host ? '不带套餐' : '未设置'}</span>}</LabelValue>
       <LabelValue plain label="套餐带宽">{plan ? <Num f={F.mbps(plan.bandwidth_mbps)} /> : '—'}</LabelValue>
-      <LabelValue plain label="流量上限">{a.host && !(limit > 0) ? '与宿主机共用' : <Num f={limitGb(limit)} />}</LabelValue>
+      <LabelValue plain label="流量上限">{a.host && !(limit > 0) ? '与宿主机共用' : unset ? '未设置' : <Num f={limitGb(limit)} />}</LabelValue>
     </dl>
   </>;
 });
@@ -71,7 +71,7 @@ const SmallInfo = memo(function SmallInfo({ entry, plan, dueDays, dueState, recy
   return (
     <div className="nc-meta2">
       <div><span data-tip={a.ip}>{a.ip}</span><IpTags {...a} /></div>
-      <div><span data-tip={meta}>{meta}</span><span className="nc-due"><Due days={dueDays} state={dueState} tail />{recycle && <SpareDue on={recycle} iconOnly />}</span></div>
+      <div><span data-tip={meta}>{meta}</span><span className="nc-due">{recycle && <span className="nc-recycle" data-tip={SPARE_TIP}>{recycle} 自动回收</span>}<Due days={dueDays} state={dueState} tail /></span></div>
     </div>
   );
 });
@@ -101,17 +101,17 @@ function Meters({ m, compact, onOpen }: { m: MachineView; compact?: boolean; onO
 
 /** 网卡速率一列：方向 + 大号读数（按量级着色）、点阵迹线（点击看主机曲线）。实时 / 离线标两列各一个（保持两列等宽对称）；
  *  不配小圆点，只在悬停卡片时轻轻呼吸（cards.css），平时一页几十张卡不跑无限动画 */
-function FlowCol({ dir, rate, values, dots, live, onOpen }: { dir: 'up' | 'down'; rate: number | null; values: number[]; dots?: number; live: boolean; onOpen: Open }) {
+function FlowCol({ dir, rate, values, dots, live, bw, onOpen }: { dir: 'up' | 'down'; rate: number | null; values: number[]; dots?: number; live: boolean; bw: number | null | undefined; onOpen: Open }) {
   const up = dir === 'up';
   return (
-    <div className="flow-col" data-dir={dir} data-speed={live ? F.speedOf(rate) : undefined}>
+    <div className="flow-col" data-dir={dir} data-speed={live && rate != null ? F.speedOf(rate, bw) : undefined}>
       <div className="flow-head">
         <span className="flow-label">{up ? <ArrowUp /> : <ArrowDown />}{up ? '上行' : '下行'}</span>
         <span className="flow-rate"><Num f={F.rate(rate)} /></span>
       </div>
       <button type="button" className="flow-trend" data-tip="查看主机曲线" onClick={() => onOpen('host')} aria-label={`${up ? '上行' : '下行'}速率：查看主机曲线`}>
         <DotTrace values={values} n={dots} />
-        <span className="flow-live" data-live={live ? '' : undefined}>{live ? '实时' : '离线'}</span>
+        <span className="flow-live" data-live={live && rate != null ? '' : undefined}>{!live ? '离线' : rate == null ? '无读数' : '实时'}</span>
       </button>
     </div>
   );
@@ -121,14 +121,14 @@ function FlowCol({ dir, rate, values, dots, live, onOpen }: { dir: 'up' | 'down'
 function Flow({ m, onOpen, totals, compact, paused }: { m: MachineView; onOpen: Open; totals?: boolean; compact?: boolean; paused: Paused }) {
   const tr = useLiveSeries(m.id, paused);
   const tx = useMemo(() => tr.map((p) => p.tx), [tr]); const rx = useMemo(() => tr.map((p) => p.rx), [tr]); // 迹线没变时 DotTrace（memo）不重画
-  const r = liveRate(m); const t = monthFlow(m);
+  const r = liveRate(m); const t = monthFlow(m); const bw = m.plan?.bandwidth_mbps;
   return (
     <div className="flow">
-      <FlowCol dir="up" rate={r?.tx ?? null} values={tx} dots={compact ? 20 : undefined} live={r != null} onOpen={onOpen} />
-      <FlowCol dir="down" rate={r?.rx ?? null} values={rx} dots={compact ? 20 : undefined} live={r != null} onOpen={onOpen} />
+      <FlowCol dir="up" rate={r?.tx ?? null} values={tx} dots={compact ? 20 : undefined} live={r != null} bw={bw} onOpen={onOpen} />
+      <FlowCol dir="down" rate={r?.rx ?? null} values={rx} dots={compact ? 20 : undefined} live={r != null} bw={bw} onOpen={onOpen} />
       {/* 本月流量单独一行：有 agent 的是网卡口径（下行 / 上行，供应商计费口径）；同机 IP 节点没有自己的网卡，是业务流量（用户视角的下载 / 上传）。两种不混在一行 */}
       {totals && (
-        <button type="button" className="flow-foot flow-biz" data-tip={monthFlowTip(m)} onClick={() => onOpen('traffic')}>
+        <button type="button" className="flow-foot flow-month" data-tip={monthFlowTip(m)} onClick={() => onOpen('traffic')}>
           {t.kind === 'nic' ? <span className="flow-foot-label"><ArrowDownUp />本月</span> : <span className="flow-foot-label"><Globe />本月业务</span>}
           <span className="flow-vals">{t.kind === 'nic' ? <>↓ 下行 <Num f={F.bytes(t.down)} /> · ↑ 上行 <Num f={F.bytes(t.up)} /></> : <>下载 <Num f={F.bytes(t.down)} /> · 上传 <Num f={F.bytes(t.up)} /></>}<FromTag from={t.from} /></span><span className="sr-only">（查看流量页签）</span>
         </button>
@@ -174,22 +174,28 @@ function ProbePair({ m, onOpen }: { m: MachineView; onOpen: Open }) {
 }
 
 /** 剩余流量：标题 + 剩余量，右侧本周期已用 / 上限（滚动 30 天的是近 30 天已用；周期起止、计量规则、数据不完整的说明在悬停里），
- *  下面绿→黄→红的格条；点击打开流量页签。不限流量的只写「流量不限」（不显示已用，也不画格条）。
+ *  下面绿→黄→红的格条；点击打开费用页签（额度、周期、计量规则都在那里）。不限流量的左边写本周期已用、右边「流量不限」（详细卡字段里已有「流量上限 不限」，右边不再写），不画格条，一行垂直居中。
  *  同机 IP 节点自己没设上限：额度与宿主机共用（算在宿主机的已用里） */
-function QuotaSlot({ m, onOpen }: { m: MachineView; onOpen: Open }) {
+function QuotaSlot({ m, onOpen, large }: { m: MachineView; onOpen: Open; large?: boolean }) {
   const q = quota(m);
+  // 没设套餐 ≠ 不限：不画额度，只写一句「未设置」
+  if (q.unset) return <div className="nc-quota is-unl"><span className="nc-qhead"><span className="nc-qlabel t-muted"><Database />流量额度未设置</span></span></div>;
   return (
-    <button type="button" className="nc-quota" onClick={() => onOpen('traffic')}>
+    <button type="button" className={cn('nc-quota', q.unlimited && 'is-unl')} onClick={() => onOpen('billing')}>
       <span className="nc-qhead">
-        {q.unlimited ? <span className="nc-qlabel"><Database />流量不限</span> : (
+        {q.unlimited ? <>
+          <span className="nc-qlabel"><Database />{quotaUsedLabel(q)}<b className="num"><Num f={quotaGb(q.used)} /></b></span>
+          {/* 详细卡的字段里已经写了「流量上限 不限」，这里不再重复 */}
+          {!large && <span className="nc-quse" data-tip={quotaTip(m)}>流量不限</span>}
+        </> : (
           <span className="nc-qlabel"><Database />剩余流量
             <b className={cn('num', q.rem === 0 && 'is-bad')}>{q.rem == null ? '与宿主机共用' : q.rem > 0 ? <Num f={quotaGb(q.rem)} /> : '已超限'}</b>
           </span>
         )}
-        {q.limit > 0 && <span className="nc-quse" data-tip={quotaTip(m)}>{quotaUsedLabel(q)} <Num f={quotaGb(q.used)} /> / <Num f={limitGb(q.limit)} /><FromTag from={q.from} /></span>}
+        {q.limit > 0 && <span className="nc-quse" data-tip={quotaTip(m)}>{quotaUsedLabel(q)} <Num f={quotaGb(q.used)} /> / <Num f={limitGb(q.limit)} /><FromTag from={q.from} start={q.start} sep /></span>}
       </span>
       {q.rem != null && <Cells pct={q.pct} colors={QUOTA_COLORS} />}
-      <span className="sr-only">（查看流量页签）</span>
+      <span className="sr-only">（查看费用页签）</span>
     </button>
   );
 }
@@ -198,21 +204,25 @@ function QuotaSlot({ m, onOpen }: { m: MachineView; onOpen: Open }) {
  *  格子：节点是线路机 → 节点的 TCP 建连（线路机的 agent 探）；线路机是中控 → 线路机的连通性（中控探，只看通不通）。
  *  标题：故障的写第一条健康原因（同状态胶囊的悬停），线路机写名下入口可用数（TCP 与出口各自最新一次都通，直出入口只看出口），
  *  家宽代理写成功率（延迟已在上面），其余写 TCP 延迟 · 出口通不通。节点自己的 agent 离线不影响它的心跳格：探测不是它自己做的，照常上色 */
-const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, reason, onOpen, tcp, tcpTip, egressOk, tcpFail, egressFail, all, usable, tcpBad, egressBad }: { id: string; kind: MachineView['kind']; lifecycle: MachineView['lifecycle']; reason: string | undefined; onOpen: Open } & ReturnType<typeof probeSummary>) {
+const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, reason, reasonKey, onOpen, tcp, tcpTip, egressOk, tcpFail, egressFail, all, off, usable, tcpBad, egressBad }: { id: string; kind: MachineView['kind']; lifecycle: MachineView['lifecycle']; reason: string | undefined; reasonKey: string | undefined; onOpen: Open } & ReturnType<typeof probeSummary>) {
   const live = lifecycle === 'active';
+  const relayTip = `入口可用 = 线路机到节点的 TCP 与出口都通的在用入口数（TCP 不通 ${tcpBad} 条 · 出口不通 ${egressBad} 条${off ? ` · 停用 ${off} 条不计` : ''}）。下面的格子是中控连线路机本身的结果`;
   const bq = useProbeBeats(useCallback((d: ProbeBeats) => d[id], [id]));
   const beats = bq.data;
   const rate = kind === 'proxy' && live ? beatRate(beats) : null;
+  const empty = live && bq.isSuccess && !beats?.some((b) => b[0] > 0); // 整条都没有探测：标题写明、格子画虚线，不是 20 格灰块
   const cap = !live ? <span className="t-muted">{lifecycle === 'retired' ? '已退役' : '尚未开始探测'}</span>
+    : kind === 'relay' && reason ? <><span className="nc-reason" data-tip={reason}>{reasonKey === 'relay_unreachable' ? '中控连不上入口' : reason}</span> · <span data-tip={relayTip}><b className="num">{usable}/{all}</b></span></>
     : reason ? <span className="nc-reason" data-tip={reason}>{reason}</span>
-    : kind === 'relay' ? <span data-tip={`TCP 不通 ${tcpBad} 条 · 出口不通 ${egressBad} 条`}>入口可用 <b className="num" style={usable < all ? { color: 'var(--warn-text)' } : undefined}>{usable}/{all}</b></span>
+    : empty ? <span className="t-muted">暂无探测</span>
+    : kind === 'relay' ? <span data-tip={relayTip}>入口可用 <b className="num" style={usable < all ? { color: 'var(--warn-text)' } : undefined}>{usable}/{all}</b></span>
     : kind === 'proxy' ? <>探测成功 <b className="num">{rate == null ? '—' : `${Math.round(rate)}%`}</b></>
     : <><span data-tip={tcpTip}>TCP <b>{probeMs(tcp, tcpFail)}</b></span> · 出口 <b>{egressText(egressOk, egressFail)}</b></>;
   // 时段按这份数据取回的时刻对齐（轮询间隔 2 分钟，用当前时刻在跨格时会错一格）
   const titles = useMemo(() => (live ? beatTitles(beats, bq.dataUpdatedAt) : undefined), [live, beats, bq.dataUpdatedAt]);
   return (
     <button type="button" className="nc-beat nc-click" onClick={() => onOpen('quality')}>
-      <Beat cells={live ? beatCells(beats, kind === 'relay') : []} titles={titles} caption={cap} win="近 1 小时" legend={kind === 'relay' ? BEAT_LEGEND_RELAY : BEAT_LEGEND} />
+      <Beat cells={live ? beatCells(beats, kind === 'relay') : []} titles={titles} caption={cap} win={kind === 'relay' ? '中控探测 · 近 1 小时' : '近 1 小时'} empty={empty} legend={kind === 'relay' ? BEAT_LEGEND_RELAY : BEAT_LEGEND} />
       <span className="sr-only">（查看连接质量页签）</span>
     </button>
   );
@@ -225,7 +235,7 @@ const RunRow = memo(function RunRow({ activated, sub, recycle }: { activated: st
   return (
     <section className="slot-seg nc-run">
       <div className="nc-run-item"><span className="nc-run-label"><RefreshCw />已上架</span><span className="nc-run-val" data-c="up"><Num f={F.since(activated, now)} /></span></div>
-      <div className="nc-run-item"><span className="nc-run-label"><Calendar />到期</span><span className="nc-run-val"><Due days={sub?.due_days} state={sub?.due_state} />{recycle && <SpareDue on={recycle} iconOnly />}</span></div>
+      <div className="nc-run-item"><span className="nc-run-label"><Calendar />到期{recycle && <span className="nc-run-note" data-tip={SPARE_TIP}>{recycle} 自动回收</span>}</span><span className="nc-run-val"><Due days={sub?.due_days} state={sub?.due_state} /></span></div>
       <div className="nc-run-item"><span className="nc-run-label"><Wallet />剩余价值</span><span className="nc-run-val">{rv ? <span className="num">{F.money(rv.cents, rv.currency)}</span> : <span className="t-muted">—</span>}</span></div>
     </section>
   );
@@ -285,10 +295,10 @@ const Tags = memo(function Tags({ code, provider, kind, maintenance, price, pric
 });
 
 /** footer：状态胶囊（健康原因在它的悬停里）、按到期 / 流量排序时的排序依据、详情与管理 */
-const Foot = memo(function Foot({ health, lifecycle, maintenance, show, showTone, onOpen }: Pick<MachineView, 'health' | 'lifecycle' | 'maintenance'> & { show?: string; showTone?: string; onOpen: Open }) {
+const Foot = memo(function Foot({ health, lifecycle, maintenance, show, showTone, showTip, onOpen }: Pick<MachineView, 'health' | 'lifecycle' | 'maintenance'> & { show?: string; showTone?: string; showTip?: string; onOpen: Open }) {
   return (
     <footer className="nc-foot">
-      <span className="nc-foot-left"><HealthPill m={{ health, lifecycle, maintenance }} />{show && <span className="nc-show" data-tone={showTone || undefined}>{show}</span>}</span>
+      <span className="nc-foot-left"><HealthPill m={{ health, lifecycle, maintenance }} />{show && <span className="nc-show" data-tone={showTone || undefined} data-tip={showTip}>{show}</span>}</span>
       <div className="nc-foot-right">
         <Button variant="text" size="sm" onClick={() => onOpen()}><PanelRightOpen size={14} /><span>详情</span></Button>
         <Button variant="text" size="sm" onClick={() => onOpen('manage')}><Settings2 size={14} /><span>管理</span></Button>
@@ -297,13 +307,13 @@ const Foot = memo(function Foot({ health, lifecycle, maintenance, show, showTone
   );
 });
 /** footer 里的排序依据（文字）：详细卡、标准卡本来就有到期的不写；详细卡有本月流量的不写 */
-function showOf(m: MachineView, show: CardShow | undefined, view: CardView): { text?: string; tone?: string } {
+function showOf(m: MachineView, show: CardShow | undefined, view: CardView): { text?: string; tone?: string; tip?: string } {
   if (show === 'due' && view === 'compact') {
     const s = m.subscription; if (!s) return { text: '没有到期日' };
     const d = F.dueFmt(s.due_days, dueTone(s.due_state));
     return { text: `${d.pre}${d.f ? F.str(d.f) : ''}${d.post}${d.past ? '' : '到期'}`, tone: d.tone };
   }
-  if (show === 'traffic' && !(view === 'large' && hasHost(m))) return { text: `本月 ${F.str(F.bytes(trafficTotal(m)))}` };
+  if (show === 'traffic' && !(view === 'large' && hasHost(m))) return { text: `${monthFlow(m).kind === 'biz' ? '本月业务' : '本月'} ${F.str(F.bytes(trafficTotal(m)))}`, tip: monthFlowTip(m) };
   return {};
 }
 
@@ -332,7 +342,7 @@ const CardBody = memo(function CardBody({ m, view, current, onOpen: open, layout
   const info: Info = { id: m.id, ip: m.ip, sshPort: m.ssh_port, entry: entryText(m), plan: m.plan, host: m.host_machine, nodes: m.ip_nodes };
   const tags = <Tags code={m.provider_code} provider={m.provider} kind={m.kind} maintenance={m.maintenance} price={subLabel(m)} priceTip={monthlyHint(m.subscription)} id={m.id} host={m.host_machine} nodes={m.ip_nodes} />;
   const reason = m.lifecycle === 'active' && m.health.status === 'down' && m.health.reasons[0] ? errText(m.health.reasons[0].text) : undefined;
-  const beat = <section className="slot-seg"><BeatSlot id={m.id} kind={m.kind} lifecycle={m.lifecycle} reason={reason} onOpen={onOpen} {...probeSummary(m)} /></section>;
+  const beat = <section className="slot-seg"><BeatSlot id={m.id} kind={m.kind} lifecycle={m.lifecycle} reason={reason} reasonKey={m.health.reasons[0]?.key} onOpen={onOpen} {...probeSummary(m)} /></section>;
   const sv = showOf(m, show, view);
   const res = proxy ? <BizPair m={m} onOpen={onOpen} today={view === 'large'} /> : <Meters m={m} compact={view !== 'large'} onOpen={onOpen} />;
   // 还没有主机读数的（上架中、没上报过）照样是速率两列：读数「—」、标「离线」
@@ -343,10 +353,10 @@ const CardBody = memo(function CardBody({ m, view, current, onOpen: open, layout
       <Head name={m.name} from={m.spare_from} country={m.country} manual={!!m.country_set} ip={m.ip} view={view} onOpen={onOpen} />
 
       {view === 'large' && <>
-        <LargeInfo {...info} limit={quota(m).limit} />
+        <LargeInfo {...info} limit={quota(m).limit} unset={quota(m).unset} />
         {proxy ? <div className="nc-res nc-res-pair">{res}</div> : res}
         <section className="slot-seg">{flow}</section>
-        <section className="slot-seg"><QuotaSlot m={m} onOpen={onOpen} /></section>
+        <section className="slot-seg"><QuotaSlot m={m} onOpen={onOpen} large /></section>
         {beat}
         <RunRow activated={m.activated_at} sub={m.subscription} recycle={recycleOn(m)} />
         {tags}
@@ -367,7 +377,7 @@ const CardBody = memo(function CardBody({ m, view, current, onOpen: open, layout
         {beat}
       </>}
 
-      <Foot health={m.health} lifecycle={m.lifecycle} maintenance={m.maintenance} show={sv.text} showTone={sv.tone} onOpen={onOpen} />
+      <Foot health={m.health} lifecycle={m.lifecycle} maintenance={m.maintenance} show={sv.text} showTone={sv.tone} showTip={sv.tip} onOpen={onOpen} />
     </mo.article>
   );
 });

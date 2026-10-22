@@ -12,6 +12,7 @@ import { Empty, ErrorNote, Pill, Section, SectionHeader } from '@/components/app
 import { fmtN } from '@/features/AccessBits';
 import { ConnCell, IspPlace, SourceProfile } from '@/features/IpIntelBits';
 import type { ProfileWindow } from '@/lib/ipintel';
+import '@/styles/access.css';
 
 const { BarChart, Bar, XAxis, YAxis, CartesianGrid, LabelList } = Recharts;
 
@@ -96,20 +97,17 @@ export const AccessTab = React.memo(function AccessTab({ id, relay }: { id: stri
   // 时间范围不超过小时汇总的保留期（服务端会 400）；保留期调短后选着的退回 24 小时
   const ret = useAccessRetention().data;
   const maxDays = ret?.hourly_days ?? 90; const rawDays = ret?.raw_days ?? 7;
-  const items = React.useMemo(() => ACCESS_WINDOWS.filter((x) => x.value !== '30d' && WINDOW_DAYS[x.value] <= maxDays).map((x) => ({ value: x.value, label: x.label })), [maxDays]);
+  const items = React.useMemo(() => ACCESS_WINDOWS.filter((x) => WINDOW_DAYS[x.value] <= maxDays).map((x) => ({ value: x.value, label: x.label })), [maxDays]);
   const w = WINDOW_DAYS[picked] <= maxDays ? picked : '24h';
   const [all, setAll] = React.useState(false);
   const q = useMachineAccess(id, w);
   const d = q.data;
   const long = ACCESS_WINDOWS.find((x) => x.value === w)!.long;
-  const head = (
-    <SectionHeader title="常访问的目标" meta={relay ? `汇总名下所有节点 · 最近 ${long}` : `最近 ${long}`}>
-      <Segmented sm label="时间范围" value={w} onChange={setW} items={items} />
-    </SectionHeader>
-  );
-  // 出错时留着时间范围控件：可以重试，也可以换一段时间
-  if (q.isError && !d) return <Section>{head}<ErrorNote error={q.error} onRetry={() => void q.refetch()} /></Section>;
-  if (!d) return <div className="skel" style={{ height: 160 }} />;
+  // 时间范围同其它曲线页签：放在页签顶部并吸顶，默认 24 小时（出错时也留着：可以重试，也可以换一段时间）
+  const bar = <div className="tab-sticky"><span>时间范围</span><Segmented sm label="时间范围" value={w} onChange={setW} items={items} /></div>;
+  const head = <SectionHeader title="常访问的目标" meta={relay ? `汇总名下所有节点 · 最近 ${long}` : `最近 ${long}`} />;
+  if (q.isError && !d) return <>{bar}<Section>{head}<ErrorNote error={q.error} onRetry={() => void q.refetch()} /></Section></>;
+  if (!d) return <>{bar}<div className="skel" style={{ height: 160 }} /></>;
   const total = d.top_domains.reduce((s, x) => s + x.conns, 0);
   // 来源按连接数，同次数按 IP 数值
   const sources = [...d.top_sources].sort((a, b) => b.conns - a.conns || byIp(a.src_ip, b.src_ip));
@@ -118,6 +116,7 @@ export const AccessTab = React.memo(function AccessTab({ id, relay }: { id: stri
   const stale = q.isPlaceholderData;
   return (
     <>
+      {bar}
       <Section>
         {head}
         <div data-stale={stale}>

@@ -174,7 +174,7 @@ function probeBeats() {
     if (m.lifecycle !== 'active' || !m.entries.length) continue;
     const isDown = m.health.status === 'down';
     out[m.id] = Array.from({ length: 20 }, (_, i): ProbeBucket => {
-      const per = m.entries.length * (i === 19 ? curMin : 3); // 每条入口每分钟探测一次
+      const per = m.kind === 'relay' ? 2 * (i === 19 ? curMin : 3) : m.entries.length * (i === 19 ? curMin : 3); // 节点：每条入口每分钟探测一次；线路机：中控每 30 秒连它一次
       const r = rng(hashStr(`${m.id}:${slot - 19 + i}`));
       if (m.id.endsWith('2') && i < 4) return [0, 0, null]; // 演示：刚开始探测的那段没有数据
       const fail = isDown && i >= 17 ? per : r() < 0.06 ? 1 + Math.floor(r() * per * 0.6) : 0;
@@ -572,6 +572,7 @@ R('GET', '/machines/([^/]+)/retire', ({ params }) => {
   const spareIps = xs.map((x, i) => ({ id: x.id, name: x.name, to_name: displayName(sp.name, nums[i + 1]) }));
   return {
     name: m.name, renames, ip_nodes: ips, routers: exitsUsing(m),
+    blockers: m.kind === 'relay' && m.entries.some((e) => !e.direct) ? [`这台线路机上还有 ${m.entries.filter((e) => !e.direct).length} 个节点入口：先把节点迁走或退役。可先用「搬空线路机」把节点换到其他线路机`] : [],
     spare: { ok: !why, why, team: { id: sp.id, name: sp.name }, to_name: displayName(sp.name, nums[0]), recycle_on: m.subscription ? addDays(m.subscription.due_date, 2) : null, ip_nodes: spareIps },
   };
 });

@@ -17,6 +17,7 @@ import { FormDialog } from '@/components/app/dialogs';
 import { CopyButton, Note } from '@/components/app/primitives';
 import { useShowBootstrap } from '@/components/app/RouterCard';
 import { prefs } from '@/lib/prefs';
+import '@/styles/settings.css';
 
 type Method = 'ssh' | 'cmd';
 const METHODS: { value: Method; label: string }[] = [{ value: 'ssh', label: '填账号密码一键部署' }, { value: 'cmd', label: '在路由上执行命令' }];

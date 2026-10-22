@@ -1,5 +1,5 @@
 //! 升级 agent 的回滚：推送时旧程序留成 .prev，新版本起不来、或重启后 2 分钟没有上报，就换回去并让作业失败；
-//! 「全部升级」里哪种失败会让编排停下（要真的执行步骤）。需要 PostgreSQL（见 common）。编排的领取顺序在 tests/jobs.rs。
+//! 「全部升级」里哪种失败会让编排停下（要真的执行步骤）。需要 PostgreSQL（见 common）。编排的领取顺序在 tests/it/jobs.rs。
 //! 还有系统基线、节点 ssserver 脚本重跑时以运行中的 sshd / 实例为准，系统调优脚本逐键写入读回（不建作业，脚本直接经假 ssh 跑）。
 //!
 //! 机器是假的：PATH 最前面放一个假 ssh，远端命令在「机器根目录」`<临时目录>/<IP>/` 里真的执行（/run、/usr/local/bin、/etc、/var/lib
@@ -11,6 +11,7 @@
 
 #![cfg(unix)]
 
+#[path = "it/common/mod.rs"]
 mod common;
 
 use axum::http::StatusCode;

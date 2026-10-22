@@ -8,6 +8,7 @@ import { Due, Flag, HealthPill, HostTag, MonthFlowCell, Num, type SortState } fr
 import { MachineGrid, byNum, byStr, sortByCol, type Col } from '@/components/app/MachineGrid';
 import { Cells, MiniMeter, quotaColors } from '@/components/app/viz';
 import { IconButton } from '@/components/ui/button';
+import { openDrawer } from '@/lib/drawer';
 
 const Q8 = quotaColors(8);
 // 数据过期（isQuiet）的机器读数显示 “—”；排序时没有值的（null）不论升降都排在最后（MachineGrid 的 nil）
@@ -23,17 +24,23 @@ const cols: Col[] = [
   { id: 'name', header: '名称', size: 172, ...byStr((m) => m.name),
     cell: (m) => <div className="tname"><Flag country={m.country} manual={!!m.country_set} ip={m.ip} /><div>
       <div className="row" style={{ flexWrap: 'nowrap', gap: 6 }}><span className="cell-main strong">{m.name}</span><HostTag id={m.id} host={m.host_machine} nodes={m.ip_nodes} short /></div>
-      <span className="sub">{m.ip}</span>
+      <span className="sub">{m.ip}{m.spare_from && ` · 原 ${m.spare_from}`}</span>
     </div></div> },
   { id: 'status', header: '状态', size: 88, ...byNum(statusRank, 'asc'), cell: (m) => <HealthPill m={m} /> },
   ...(['cpu', 'mem', 'disk'] as const).map((k): Col => ({ id: k, header: k === 'cpu' ? 'CPU' : k === 'mem' ? '内存' : '磁盘', size: 82, drop: k === 'disk' ? 3 : k === 'mem' ? 4 : undefined, ...byNum(PCT[k]),
     cell: (m) => { const r = resourceMeters(m); return r ? <MiniMeter pct={r[k].pct} metric={k} empty={isQuiet(m)} /> : <span className="t-muted">—</span>; } })),
   ...(['up', 'down'] as const).map((k): Col => ({ id: k, header: k === 'up' ? '上行' : '下行', size: 92, r: true, ...byNum((m) => (k === 'up' ? liveRate(m)?.tx : liveRate(m)?.rx) ?? null),
-    cell: (m) => { const r = liveRate(m); const v = r && (k === 'up' ? r.tx : r.rx); return <span className="trate" data-speed={r ? F.speedOf(v) : undefined}><Num f={F.rate(v)} /></span>; } })),
+    cell: (m) => { const r = liveRate(m); const v = r && (k === 'up' ? r.tx : r.rx); return <span className="trate" data-speed={r && v != null ? F.speedOf(v, m.plan?.bandwidth_mbps) : undefined}><Num f={F.rate(v)} /></span>; } })),
   { id: 'traffic', header: '本月流量', size: 144, r: true, ...byNum(trafficTotal), cell: (m) => <MonthFlowCell m={m} /> },
   // 不限额度、与宿主机共用的没有「剩余」可比，排在最后
   { id: 'quota', header: '剩余流量', size: 106, ...byNum((m) => quota(m).rem),
-    cell: (m) => { const q = quota(m); return <span className="tquota" data-tip={q.rem == null ? (q.shared ? '额度与宿主机共用' : undefined) : `${quotaUsedLabel(q)} ${F.str(quotaGb(q.used))}\n${quotaTip(m)}`}>{q.rem != null && <Cells pct={q.pct} n={8} colors={Q8} />}{q.rem == null ? <span className="t-sub">{q.shared ? '与宿主机共用' : '不限'}</span> : q.rem > 0 ? <Num f={quotaGb(q.rem)} /> : <span className="due" data-tone="bad">已超限</span>}</span>; } },
+    cell: (m) => {
+      const q = quota(m);
+      const body = <>{q.rem != null && <Cells pct={q.pct} n={8} colors={Q8} />}{q.rem == null ? <span className="t-sub">{q.shared ? '与宿主机共用' : q.unset ? '未设置' : '不限'}</span> : q.rem > 0 ? <Num f={quotaGb(q.rem)} /> : <span className="due" data-tone="bad">已超限</span>}</>;
+      if (q.rem == null) return <span className="tquota" data-tip={q.shared ? '额度与宿主机共用' : undefined}>{body}</span>;
+      // 点额度打开费用页签（额度、周期、计量规则都在那里），不触发整行的打开
+      return <button type="button" className="tquota is-click" data-tip={`${quotaUsedLabel(q)} ${F.str(quotaGb(q.used))}\n${quotaTip(m)}`} onClick={(e) => { e.stopPropagation(); openDrawer(m.id, 'billing'); }}>{body}</button>;
+    } },
   { id: 'due', header: '到期', size: 96, r: true, ...byNum((m) => m.subscription?.due_days ?? null, 'asc'), cell: (m) => (m.subscription ? <Due days={m.subscription.due_days} state={m.subscription.due_state} /> : <span className="t-muted">—</span>) },
   { id: 'value', header: '剩余价值', size: 76, r: true, drop: 2, ...byNum((m) => remainingValue(m.subscription)?.cents ?? null), cell: (m) => { const v = remainingValue(m.subscription); return v ? <span className="num">{F.money(v.cents, v.currency)}</span> : <span className="t-muted">—</span>; } },
   // 服务端折好的月费（不同币种直接按数值比）；季付、年付的悬停写原价

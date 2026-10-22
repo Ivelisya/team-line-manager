@@ -10,7 +10,7 @@ import { countryName, flagUrl } from '@/lib/flags';
 import { Tip, Trunc } from '@/components/ui/overlays';
 import { InfoTip } from '@/components/ui/form';
 import { useCountUp } from '@/lib/useCountUp';
-import { dueTone, entryLabel, errText, healthLabel, hostRel, lifecycleLabel, mmdd, monthFlow, monthFlowTip, severityOf, type BeatCell } from '@/lib/derive';
+import { dueTone, entryLabel, errText, healthLabel, fromLabel, hostRel, lifecycleLabel, monthFlow, monthFlowTip, severityOf, type BeatCell } from '@/lib/derive';
 import { openDrawer } from '@/lib/drawer';
 import { copyText } from '@/lib/clipboard';
 import { watchSize } from '@/lib/sharedObserver';
@@ -21,17 +21,17 @@ export function Num({ f }: { f: Fmt }) {
 }
 
 /** 数据不完整时，数字后面的灰字「10-22 起」（全句说明放悬停 tip / 费用页签） */
-export function FromTag({ from, tip }: { from: string | null | undefined; tip?: string }) {
-  return from ? <> <span className="unit" data-tip={tip}>{mmdd(from)} 起</span></> : null;
+export function FromTag({ from, start, tip, sep }: { from: string | null | undefined; start?: string | null; tip?: string; sep?: boolean }) {
+  return from ? <>{sep ? ' · ' : ' '}<span className="unit" data-tip={tip}>{fromLabel(from, start)} 起</span></> : null;
 }
-
-/** 表格「本月流量」格：主值 = 下行 + 上行（家宽代理、同机 IP 节点是下载 + 上传），副行「↓ X ↑ Y」/「业务 · 下载 X」，不完整时副行末尾灰字「10-22 起」。 */
+/** 表格「本月流量」格（首页表格、机器页共用）：主值 = 下行 + 上行（家宽代理、同机 IP 节点是下载 + 上传），不完整时主值旁灰字「10-22 起」；副行「↓ X ↑ Y」（口径见悬停）。 */
+/** 表格「本月流量」格：主值 = 下行 + 上行（家宽代理、同机 IP 节点是下载 + 上传），副行「↓ X ↑ Y」（口径见悬停），不完整时副行末尾灰字「10-22 起」。 */
 export function MonthFlowCell({ m }: { m: MachineView }) {
   const f = monthFlow(m);
   return (
     <div data-tip={monthFlowTip(m)}>
-      <Num f={bytes(f.total)} />
-      <span className="sub">{f.kind === 'nic' ? `↓ ${str(bytes(f.down))} ↑ ${str(bytes(f.up))}` : `业务 · 下载 ${str(bytes(f.down))}`}<FromTag from={f.from} /></span>
+      <Num f={bytes(f.total)} /><FromTag from={f.from} />
+      <span className="sub">{`↓ ${str(bytes(f.down))} ↑ ${str(bytes(f.up))}`}</span>
     </div>
   );
 }
@@ -90,8 +90,8 @@ export const LifecyclePill = ({ lc }: { lc: Lifecycle | string }) => (
   <Pill tone={lc === 'active' ? 'ok' : lc === 'provisioning' || lc === 'retiring' ? 'info' : lc === 'failed' ? 'bad' : 'neutral'}>{lifecycleLabel(lc)}</Pill>
 );
 
-// 入口状态：active 按是否已应用细分
-export const entryState = (e: EntryView) => (e.lifecycle === 'disabled' ? <Pill tone="neutral">{entryLabel('disabled')}</Pill> : e.lifecycle === 'active' ? (e.applied ? <Pill tone="ok">{entryLabel('active')}</Pill> : e.apply_error ? <Pill tone="bad" tip={errText(e.apply_error)}>应用失败</Pill> : <Pill tone="info" dot="pulse">{entryLabel('pending')}</Pill>) : <Pill tone="info" dot="pulse">{entryLabel(e.lifecycle)}</Pill>);
+// 入口状态：active 按是否已应用细分；quiet：运行中且已应用的不写（一整列都是同一个绿胶囊，只标不正常的）
+export const entryState = (e: EntryView, quiet = false) => (quiet && e.lifecycle === 'active' && e.applied ? null : e.lifecycle === 'disabled' ? <Pill tone="neutral">{entryLabel('disabled')}</Pill> : e.lifecycle === 'active' ? (e.applied ? <Pill tone="ok">{entryLabel('active')}</Pill> : e.apply_error ? <Pill tone="bad" tip={errText(e.apply_error)}>应用失败</Pill> : <Pill tone="info" dot="pulse">{entryLabel('pending')}</Pill>) : <Pill tone="info" dot="pulse">{entryLabel(e.lifecycle)}</Pill>);
 
 export function Chip({ children, variant, tip, className }: { children: React.ReactNode; variant?: 'neutral' | 'warn'; tip?: string; className?: string }) {
   return <span className={cn('chip', variant === 'neutral' && 'chip-neutral', variant === 'warn' && 'chip-warn', className)} data-tip={tip}>{children}</span>;
@@ -277,11 +277,11 @@ export function CopyButton({ text, label = '内容', className, size = 14, show 
 
 /** 心跳条：n 格（默认 20 格 = 卡片上的近 1 小时），ok/warn/bad/空；titles 与 cells 一一对应，作每格的悬停说明（只给数据）；
  *  颜色含义（legend）放在右上角时间窗的悬停里 */
-export function Beat({ cells, titles, caption, win, legend, stale, n = 20 }: { cells: BeatCell[]; titles?: string[]; caption: React.ReactNode; win?: string; legend?: string; stale?: boolean; n?: number }) {
+export function Beat({ cells, titles, caption, win, legend, stale, empty, n = 20 }: { cells: BeatCell[]; titles?: string[]; caption: React.ReactNode; win?: string; legend?: string; stale?: boolean; empty?: boolean; n?: number }) {
   const pad = Math.max(0, n - cells.length);
   const shown = cells.slice(-n); const tips = titles?.slice(-n);
   return (
-    <div className={cn('beat', stale && 'is-stale')}>
+    <div className={cn('beat', stale && 'is-stale', empty && 'is-empty')}>
       <div className="beat-cap"><span className="beat-main ellipsis">{caption}</span>{win && <span className="beat-win" data-tip={legend}>{win}</span>}</div>
       <div className="beat-cells">{Array.from({ length: pad + shown.length }, (_, i) => i < pad ? <i key={i} /> : <i key={i} data-t={shown[i - pad] ?? undefined} data-tip={tips?.[i - pad]} />)}</div>
     </div>

@@ -13,6 +13,7 @@ import { InfoTip } from '@/components/ui/form';
 import { toast } from '@/components/ui/toast';
 import { Num, Pill } from './primitives';
 import { CellMeter, Cells, DotTrace, Tag } from './viz';
+import '@/styles/routers.css';
 
 type Open = (tab?: RouterTab) => void;
 

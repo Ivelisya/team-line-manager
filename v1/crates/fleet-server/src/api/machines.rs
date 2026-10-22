@@ -522,12 +522,6 @@ pub async fn start_retire(
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| ApiError::not_found("没有这台机器"))?;
-    if lifecycle == "retired" {
-        return Err(ApiError::conflict("已经退役"));
-    }
-    if lifecycle == "retiring" {
-        return Err(ApiError::conflict("这台机器已经在退役中：到作业页看进度，失败了点重试"));
-    }
     // 查出过期列表到这里之间，可能有人登记了续费、改了到期日，或者把它改回了原团队
     if let Some((crate::spare::AUTO, now)) = auto {
         let still: bool = sqlx::query_scalar(
@@ -542,36 +536,12 @@ pub async fn start_retire(
             return Err(ApiError::conflict("已经不在备用团队，或已续费：不自动回收"));
         }
     }
-    if kind == "relay" {
-        let (n,): (i64,) = sqlx::query_as(
-            "select count(*) from entry e join machine m on m.id = e.node_id
-             where e.relay_id = $1 and e.lifecycle <> 'removed' and m.id <> $1",
-        )
-        .bind(id)
-        .fetch_one(&mut *tx)
-        .await?;
-        if n > 0 {
-            return Err(ApiError::conflict(format!("这台线路机上还有 {n} 个节点入口：先把节点迁走或退役。可先用「搬空线路机」把节点换到其他线路机")));
-        }
-    }
     // 宿主机退役：它上面的同机 IP 节点一并退役（它们的 SSH、agent、ssserver 都在这台机器上）
     let ip_nodes = ip_nodes_of(&mut tx, id, true).await?;
     let ip_ids: Vec<Uuid> = ip_nodes.iter().map(|x| x.0).collect();
     let all: Vec<Uuid> = std::iter::once(id).chain(ip_ids.iter().copied()).collect();
-    // 有作业正在执行一步（租约未过期）：库里标成作废拦不住它，那一步还会接着跑（装 agent、签令牌…），和退役的清理撞在一起。
-    // 先锁住这些机器上没结束的作业（领取跳过锁住的行），再看租约
-    let open: Vec<(String, bool)> = sqlx::query_as(
-        "select kind, state in ('running', 'cancelling') and lease_until > now() from job
-         where target_id = any($1) and state in ('queued', 'running', 'waiting', 'cancelling') for update",
-    )
-    .bind(&all)
-    .fetch_all(&mut *tx)
-    .await?;
-    if let Some((k, _)) = open.iter().find(|j| j.1) {
-        return Err(ApiError::conflict(format!(
-            "有作业（{}）正在执行一步：先在作业页取消它，等它停下再退役（升级 agent 不能取消，等它做完）",
-            meta::job_kind_label(k)
-        )));
+    if let Some(why) = retire_blockers(&mut tx, id, kind, &lifecycle, &all, true).await?.into_iter().next() {
+        return Err(ApiError::conflict(why));
     }
     let n = sqlx::query(
         "update machine set lifecycle = 'retiring', lifecycle_reason = $2, revision = revision + 1, updated_at = now()
@@ -658,6 +628,42 @@ pub async fn start_retire(
     Ok(json!({"job_id": job, "ip_node_jobs": ip_jobs}))
 }
 
+/// 立即回收会被拒绝的原因（提交时取第一条回 409，预览里全部列在 `blockers`）：已经退役 / 退役中、线路机上还有节点入口、
+/// 这台或它的同机 IP 节点（`all`）有作业正在执行一步。`lock`：提交时锁住这些机器上没结束的作业（领取跳过锁住的行）再看租约
+async fn retire_blockers(conn: &mut sqlx::PgConnection, id: Uuid, kind: &str, lifecycle: &str, all: &[Uuid], lock: bool) -> sqlx::Result<Vec<String>> {
+    let mut out = vec![];
+    match lifecycle {
+        "retired" => out.push("已经退役".to_string()),
+        "retiring" => out.push("这台机器已经在退役中：到作业页看进度，失败了点重试".to_string()),
+        _ => {}
+    }
+    if kind == "relay" {
+        let (n,): (i64,) = sqlx::query_as(
+            "select count(*) from entry e join machine m on m.id = e.node_id
+             where e.relay_id = $1 and e.lifecycle <> 'removed' and m.id <> $1",
+        )
+        .bind(id)
+        .fetch_one(&mut *conn)
+        .await?;
+        if n > 0 {
+            out.push(format!("这台线路机上还有 {n} 个节点入口：先把节点迁走或退役。可先用「搬空线路机」把节点换到其他线路机"));
+        }
+    }
+    // 有作业正在执行一步（租约未过期）：库里标成作废拦不住它，那一步还会接着跑（装 agent、签令牌…），和退役的清理撞在一起
+    let open: Vec<(String, bool)> = sqlx::query_as(&format!(
+        "select kind, state in ('running', 'cancelling') and lease_until > now() from job
+         where target_id = any($1) and state in ('queued', 'running', 'waiting', 'cancelling'){}",
+        if lock { " for update" } else { "" }
+    ))
+    .bind(all)
+    .fetch_all(&mut *conn)
+    .await?;
+    if let Some((k, _)) = open.iter().find(|j| j.1) {
+        out.push(format!("有作业（{}）正在执行一步：先在作业页取消它，等它停下再退役（升级 agent 不能取消，等它做完）", meta::job_kind_label(k)));
+    }
+    Ok(out)
+}
+
 /// 宿主机上还没开始退役的同机 IP 节点：(id, 显示名, 生命周期, 在不在备用团队)，按团队、编号排。`lock`：锁住这些机器行（退役时）
 async fn ip_nodes_of(conn: &mut sqlx::PgConnection, host: Uuid, lock: bool) -> sqlx::Result<Vec<(Uuid, String, String, bool)>> {
     sqlx::query_as(&format!(
@@ -673,12 +679,14 @@ async fn ip_nodes_of(conn: &mut sqlx::PgConnection, host: Uuid, lock: bool) -> s
 
 /// 退役预览。立即回收：会一并退役的同机 IP 节点（宿主机才有）、涉及的团队里会因压缩而改名的节点（进备用时原团队同样压缩）；
 /// `spare`：能不能移进备用（不能的原因）、进去后的名字、自动回收的日子（账单时区）、一起进备用的同机 IP 节点；
-/// `routers`：还指向这台（和它的同机 IP 节点）的软路由出口，只提示不阻断（要换掉就先「替换」）
+/// `routers`：还指向这台（和它的同机 IP 节点）的软路由出口，只提示不阻断（要换掉就先「替换」）；
+/// `blockers`：立即回收提交时会被拒绝的原因（`retire_blockers`），空 = 能回收
 pub async fn retire_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
-    let (name, _kind, _lc) = display_name_of(&st.db, id).await?;
+    let (name, kind, lc) = display_name_of(&st.db, id).await?;
     let mut conn = st.db.acquire().await?;
     let ip_nodes = ip_nodes_of(&mut conn, id, false).await?;
     let leaving: Vec<Uuid> = std::iter::once(id).chain(ip_nodes.iter().map(|x| x.0)).collect();
+    let blockers = retire_blockers(&mut conn, id, &kind, &lc, &leaving, false).await?;
     let mut renames = vec![];
     if st.cfg.numbering.auto_compact {
         let teams: Vec<(Uuid, String)> =
@@ -727,7 +735,7 @@ pub async fn retire_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
     }
     let routers: Vec<Value> = routers.into_iter().map(|(i, n, e)| json!({"id": i, "name": n, "exits": e})).collect();
     let ip_nodes: Vec<Value> = ip_nodes.iter().map(|(i, n, _, _)| json!({"id": i, "name": n})).collect();
-    Ok(ok(json!({"name": name, "renames": renames, "ip_nodes": ip_nodes, "spare": spare, "routers": routers})))
+    Ok(ok(json!({"name": name, "renames": renames, "ip_nodes": ip_nodes, "spare": spare, "routers": routers, "blockers": blockers})))
 }
 
 /// 建物理删除作业并记审计（调用方已核对过：已进回收站、`db::purge_blocker` 不拦）。只由维护任务调（spare.rs `purge_pass`）；
@@ -1016,7 +1024,7 @@ pub async fn put_subscription(a: Actor, State(st): State<AppState>, ApiPath(id):
     if let Some(auto) = b.auto_renew {
         sqlx::query("update subscription set auto_renew = $2 where machine_id = $1").bind(id).bind(auto).execute(&mut *tx).await?;
     }
-    // 审计详情：请求本身 + 机器名 + 改动前后的生效值（摘要写出改了哪几项，见 misc::audit_text）
+    // 审计详情：请求本身 + 机器名 + 改动前后的生效值（摘要写出改了哪几项，见 audit::audit_text）
     let after: Option<Value> = sqlx::query_scalar(SUB_AUDIT).bind(id).fetch_optional(&mut *tx).await?;
     let name: String = sqlx::query_scalar("select display_name(m.kind::text, m.label, t.name, m.number) from machine m left join team t on t.id = m.team_id where m.id = $1")
         .bind(id)

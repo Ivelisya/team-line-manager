@@ -15,8 +15,9 @@ use crate::access::{self, SourceRow, Window};
 use crate::db::floor_hour;
 use crate::config::IpintelConfig;
 use crate::error::{ApiError, ApiResult};
-use crate::notify::{self, Kind, Notice};
-use crate::state::{AppState, Event};
+use crate::incident::{self, Close, Want};
+use crate::notify;
+use crate::state::AppState;
 use fleet_ipintel::{canonical, is_global, ConnType, IpIntel};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -597,22 +598,8 @@ pub async fn reconcile_incidents(st: &AppState, now: OffsetDateTime, rep: &mut S
     .into_iter()
     .collect();
 
-    #[derive(sqlx::FromRow)]
-    struct Firing {
-        id: Uuid,
-        rule: String,
-        subject_id: Uuid,
-        summary: String,
-    }
-    let firing: Vec<Firing> = sqlx::query_as("select id, rule, subject_id, summary from incident where state = 'firing' and rule like 'ipintel!_%' escape '!'")
-        .fetch_all(db)
-        .await?;
-    let mut have: HashMap<(String, Uuid), Firing> = firing.into_iter().map(|f| ((f.rule.clone(), f.subject_id), f)).collect();
-    let silences = crate::silence::Silences::load(db).await?;
-
-    let mut changed = false;
-    // 摘要没变、只需刷新 last_seen_at 的，循环后一条语句批量改
-    let mut touch: Vec<Uuid> = vec![];
+    let open = incident::firing(db, "ipintel").await?;
+    let mut wants = vec![];
     for ((rule, node), vals) in &want {
         let Some(name) = names.get(node) else { continue };
         let total = vals.len();
@@ -633,70 +620,14 @@ pub async fn reconcile_incidents(st: &AppState, now: OffsetDateTime, rep: &mut S
             RULE_NEW_CITY => format!("出现新的来源城市：{}", join_values(&shown, total)),
             _ => format!("出现机房 / VPN 来源 IP：{}", join_values(&shown, total)),
         };
-        let summary = format!("{name}：{text}");
         let detail = json!({"name": name, "values": vals.iter().map(|o| json!({"value": o.value, "conns": o.conns})).collect::<Vec<_>>()});
-        if let Some(inc) = have.remove(&(rule.to_string(), *node)) {
-            if inc.summary != summary {
-                sqlx::query("update incident set summary = $2, detail = $3, last_seen_at = now() where id = $1").bind(inc.id).bind(&summary).bind(&detail).execute(db).await?;
-                rep.updated += 1;
-                changed = true;
-            } else {
-                touch.push(inc.id);
-            }
-            continue;
-        }
-        if silences.matches(rule, *node) {
-            continue;
-        }
-        let id = crate::db::new_id();
-        let res = sqlx::query(
-            "insert into incident (id, rule, subject_id, severity, summary, detail) values ($1, $2, $3, 'warning'::severity, $4, $5)
-             on conflict (rule, subject_id) where state = 'firing' do nothing",
-        )
-        .bind(id)
-        .bind(rule)
-        .bind(node)
-        .bind(&summary)
-        .bind(&detail)
-        .execute(db)
-        .await?;
-        if res.rows_affected() > 0 {
-            rep.opened += 1;
-            changed = true;
-            notify::enqueue(
-                st,
-                Notice {
-                    kind: Kind::Firing,
-                    incident_id: Some(id),
-                    rule: rule.to_string(),
-                    severity: "warning".into(),
-                    machine: name.clone(),
-                    summary: text,
-                    at: now,
-                    opened_at: Some(now),
-                },
-            )
-            .await;
-        }
+        wants.push(Want { rule, subject: *node, name, severity: "warning", text, detail: Some(detail), ready: true });
     }
-    if !touch.is_empty() {
-        sqlx::query("update incident set last_seen_at = now() where id = any($1)").bind(&touch).execute(db).await?;
-    }
-    // 剩下的 firing = 已经没有 open 值（或节点不再 active）→ 恢复；一次性异常结束不发恢复通知
-    let gone: Vec<Uuid> = have.into_values().map(|inc| inc.id).collect();
-    if !gone.is_empty() {
-        sqlx::query(
-            "update incident set state = 'resolved', resolved_at = now(), detail = detail || '{\"closed_by\":\"ipintel_ttl\"}' where id = any($1) and state = 'firing'",
-        )
-        .bind(&gone)
-        .execute(db)
-        .await?;
-        rep.resolved += gone.len();
-        changed = true;
-    }
-    if changed {
-        st.emit(Event::Incidents);
-    }
+    // 没有 open 值了（或节点不再 active）→ 恢复；一次性异常结束不发恢复通知
+    let t = incident::reconcile(st, open, wants, "true", now, |_| Close::Quiet("ipintel_ttl")).await?;
+    rep.opened += t.opened;
+    rep.updated += t.updated;
+    rep.resolved += t.resolved;
     Ok(())
 }
 

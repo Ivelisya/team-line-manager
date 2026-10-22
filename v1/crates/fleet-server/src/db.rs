@@ -36,7 +36,7 @@ pub fn unavailable(e: &sqlx::Error) -> bool {
 pub fn unavailable_in(e: &anyhow::Error) -> bool { e.chain().any(|c| c.downcast_ref::<sqlx::Error>().is_some_and(unavailable)) }
 
 /// 和库的连接断了、连不上，或库在重启、关停（`unavailable` 去掉等不到空闲连接、连接池已关）：中控收不到上报的时段
-/// （views::ReportGaps）只认这些。等不到连接是池子被挤满了——一大批（哪怕没鉴权的）请求就能做到，不能因此把 agent 的离线判定往后推
+/// （report_gaps::ReportGaps）只认这些。等不到连接是池子被挤满了——一大批（哪怕没鉴权的）请求就能做到，不能因此把 agent 的离线判定往后推
 pub fn connection_lost(e: &sqlx::Error) -> bool { !matches!(e, sqlx::Error::PoolTimedOut | sqlx::Error::PoolClosed) && unavailable(e) }
 
 pub fn new_id() -> Uuid { Uuid::now_v7() }
@@ -464,7 +464,7 @@ pub async fn audit(tx: &mut Tx<'_>, actor: &str, action: &str, target_kind: &str
     audit_insert(&mut **tx, actor, action, target_kind, target_id, detail).await.map(|_| ())
 }
 
-/// 写一条审计，返回 id。search 列一并写上（界面上看得到的标题与摘要，见 api::misc::audit_search_text）：操作记录的关键词搜索只搜它
+/// 写一条审计，返回 id。search 列一并写上（界面上看得到的标题与摘要，见 api::audit::audit_search_text）：操作记录的关键词搜索只搜它
 pub async fn audit_insert<'e, E: sqlx::PgExecutor<'e>>(
     ex: E,
     actor: &str,
@@ -473,7 +473,7 @@ pub async fn audit_insert<'e, E: sqlx::PgExecutor<'e>>(
     target_id: Option<Uuid>,
     detail: serde_json::Value,
 ) -> sqlx::Result<i64> {
-    let search = crate::api::misc::audit_search_text(action, &detail);
+    let search = crate::api::audit::audit_search_text(action, &detail);
     sqlx::query_scalar("insert into audit_log (actor, action, target_kind, target_id, detail, search) values ($1, $2, $3, $4, $5, $6) returning id")
         .bind(actor)
         .bind(action)
@@ -494,7 +494,7 @@ pub async fn audit_finish(db: &PgPool, id: i64, patch: serde_json::Value) -> sql
             .bind(patch)
             .fetch_one(&mut *tx)
             .await?;
-    sqlx::query("update audit_log set search = $2 where id = $1").bind(id).bind(crate::api::misc::audit_search_text(&action, &detail)).execute(&mut *tx).await?;
+    sqlx::query("update audit_log set search = $2 where id = $1").bind(id).bind(crate::api::audit::audit_search_text(&action, &detail)).execute(&mut *tx).await?;
     tx.commit().await
 }
 
@@ -507,7 +507,7 @@ pub async fn backfill_audit_search(db: &PgPool) -> sqlx::Result<u64> {
         if rows.is_empty() {
             return Ok(n);
         }
-        let (ids, texts): (Vec<i64>, Vec<String>) = rows.iter().map(|(id, a, d)| (*id, crate::api::misc::audit_search_text(a, d))).unzip();
+        let (ids, texts): (Vec<i64>, Vec<String>) = rows.iter().map(|(id, a, d)| (*id, crate::api::audit::audit_search_text(a, d))).unzip();
         sqlx::query("update audit_log a set search = v.s from unnest($1::bigint[], $2::text[]) v(id, s) where a.id = v.id")
             .bind(&ids)
             .bind(&texts)

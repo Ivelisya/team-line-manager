@@ -1,4 +1,4 @@
-// 入口表：抽屉的概览 / 连接质量 / 流量页签共用。线路机的入口可能有几十条：先露前 ENTRY_CAP 条，表尾展开全部。
+// 入口表：抽屉的概览 / 连接质量 / 流量页签共用。线路机的入口可能有几十条：异常的排在前面，先露 max(ENTRY_CAP, 异常条数) 条，表尾展开全部。
 import * as React from 'react';
 import type { EntryView, MachineView } from '@/lib/types';
 import * as F from '@/lib/format';
@@ -8,6 +8,10 @@ import { ShowAll } from '@/components/app/Pagination';
 
 /** 入口表先露的条数（抽屉入口表、线路机页共用） */
 export const ENTRY_CAP = 10;
+/** 有问题的入口：探测不通或应用失败（排在前面，折叠时也全部露出） */
+const isBad = (e: EntryView) => !!probeFail(e) || (e.lifecycle === 'active' && !!e.apply_error);
+/** 入口表的表头说明：「29 条 · 2 条异常」 */
+export const entriesMeta = (m: MachineView) => { const bad = m.entries.filter(isBad).length; return `${m.entries.length} 条${bad ? ` · ${bad} 条异常` : ''}`; };
 
 const failCell = (p: NonNullable<EntryView['tcp']>) => <span style={{ color: 'var(--bad-text)' }} data-tip={p.detail ? errText(p.detail) : undefined}>失败</span>;
 /** 出口单元格（线路机页共用）：只写通不通，悬停给出口 IP 与这次出口验证的耗时（经节点去中控，不是线路延迟）；
@@ -26,10 +30,12 @@ export const tcpCell = (e: EntryView) => {
 
 export function EntriesTable({ m, traffic }: { m: MachineView; traffic?: boolean }) {
   const [all, setAll] = React.useState(false);
+  const sorted = React.useMemo(() => [...m.entries.filter(isBad), ...m.entries.filter((e) => !isBad(e))], [m.entries]);
   // 流量页：已移除入口（换线路机后的旧入口）本月的流量也计入汇总，单列一行，各行加起来等于汇总
   const removed = traffic ? m.removed_traffic.month_up + m.removed_traffic.month_down : 0;
   if (!m.entries.length && !removed) return <div className="hint">还没有入口</div>;
-  const entries = all ? m.entries : m.entries.slice(0, ENTRY_CAP);
+  const cap = Math.max(ENTRY_CAP, m.entries.filter(isBad).length);
+  const entries = all ? sorted : sorted.slice(0, cap);
   return (
     <div className="table-wrap is-boxed">
       <table className="dt is-one" style={{ minWidth: 480 }}>
@@ -42,7 +48,7 @@ export function EntriesTable({ m, traffic }: { m: MachineView; traffic?: boolean
           )}
         </tbody>
       </table>
-      <ShowAll total={m.entries.length} cap={ENTRY_CAP} open={all} onToggle={() => setAll((v) => !v)} />
+      <ShowAll total={m.entries.length} cap={cap} open={all} onToggle={() => setAll((v) => !v)} />
     </div>
   );
 }

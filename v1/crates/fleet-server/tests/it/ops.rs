@@ -1,12 +1,11 @@
 //! 运维接口：API 密钥与 scope、中控本机的全权密钥（local-admin）、登录限速、远程执行的前置校验与 SSH 登录审计；前端静态文件的 404 与缓存头。
 //! 需要 PostgreSQL（见 common）。
 
-mod common;
-mod common_ops;
+use crate::common;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use common_ops::{setup, Auth, ADMIN_PW};
+use common::ops::{setup, Auth, ADMIN_PW};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;

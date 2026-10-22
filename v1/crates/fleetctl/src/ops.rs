@@ -325,7 +325,7 @@ pub fn provision(ctx: &Ctx, o: ProvisionOpts) -> anyhow::Result<u8> {
 
 /// `fleetctl retire <机器>`：默认移进备用团队（机器照常运行，订阅过期满 1 天后中控自动回收；移出备用就是撤销），
 /// `--now` 立即回收（退役作业：摘入口、清理、撤令牌、移进回收站）。先打印预览：去向与自动回收的日子、一起走的同机 IP 节点、
-/// 还指向它的软路由出口（不会自动改）、原团队的改名；进不了备用的说明原因（只能 --now）。`--follow` 只对 --now 有用
+/// 还指向它的软路由出口（不会自动改）、原团队的改名；进不了备用的说明原因（只能 --now），--now 会被拒绝的列出阻断原因。`--follow` 只对 --now 有用
 pub fn retire(ctx: &Ctx, machine: &str, now: bool, reason: Option<&str>, no_cleanup: bool, yes: bool, follow: bool) -> anyhow::Result<u8> {
     let m = ctx.find(machine, Want::Live)?;
     let (id, name) = (st(&m, "/id"), st(&m, "/name"));
@@ -333,6 +333,10 @@ pub fn retire(ctx: &Ctx, machine: &str, now: bool, reason: Option<&str>, no_clea
     let sp = &pre["spare"];
     if !now && sp["ok"] != true {
         bail!("{name} 不能移进备用：{}。要现在就清理并移进回收站，加 --now", st(sp, "/why"));
+    }
+    let blockers: Vec<String> = pre["blockers"].as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect();
+    if now && !blockers.is_empty() {
+        bail!("{name} 现在不能立即回收：{}", blockers.join("；"));
     }
     let names = |p: &str, to: bool| -> Vec<String> {
         pre.pointer(p)

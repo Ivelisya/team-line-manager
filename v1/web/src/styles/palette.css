@@ -20,7 +20,8 @@
   padding: var(--sp-6); scroll-padding-block: var(--sp-6); transition: height var(--dur-2) var(--ease-out);
 }
 .cmd-group [cmdk-group-heading] { padding: var(--sp-8) var(--sp-10) var(--sp-4); font: var(--fw-medium) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2); }
-.cmd-group + .cmd-group { margin-top: var(--sp-4); }
+/* 只在两个都显示的组之间留间距：前面的组被搜索筛掉（hidden）时，剩下的一组不再带 4px 上边距——它会让内容比 cmdk 量到的高度多 4px，只有 1 条结果时就冒出滚动条 */
+.cmd-group:not([hidden]) ~ .cmd-group:not([hidden]) { margin-top: var(--sp-4); }
 .cmd-item {
   display: flex; align-items: center; gap: var(--sp-10); min-height: 36px; box-sizing: border-box; padding: 0 var(--sp-10);
   border-radius: var(--r-control); color: var(--fg); cursor: pointer; user-select: none;

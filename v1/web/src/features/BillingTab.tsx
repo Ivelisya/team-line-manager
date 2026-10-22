@@ -5,7 +5,8 @@ import type { MachineView, SubField, Subscription } from '@/lib/types';
 import { useRenew, useRenewals, useSaveSubscription, type SubscriptionBody } from '@/lib/queries';
 import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
-import { Field, InfoTip, Input, Switch } from '@/components/ui/form';
+import { Field, InfoTip, Input, Label, Switch } from '@/components/ui/form';
+import { Segmented } from '@/components/ui/overlays';
 import { DateField } from '@/components/ui/date-field';
 import { inheritedValue, inheritSource, inheritText, isOverridden, limitGb, monthFlow, monthFlowTip, quota, quotaCycleText, quotaGb, quotaNotes, quotaRuleText, quotaUsedLabel, recycleOn, remainingValue, cycleLabel, currencyOptions, cycleOptions, meta } from '@/lib/derive';
 import { Select } from '@/components/ui/select';
@@ -40,26 +41,26 @@ export function BillingTab({ m }: { m: MachineView }) {
             <LabelValue label="剩余价值">{rv ? <><span className="num">{F.money(rv.cents, rv.currency)}</span> {rv.frac > 1
               ? <InfoTip text={`已预付 ${rv.frac.toFixed(1)} 期 · 每期 ${rv.days} 天`} />
               : <span className="unit" data-tip={`剩 ${Math.max(0, s.due_days)} 天 / 共 ${rv.days} 天`}>本期剩 {Math.round(rv.frac * 100)}%</span>}</> : <span className="t-muted">—</span>}</LabelValue>
+            <LabelValue label="自动续费">{s.auto_renew ? '是' : '否'}</LabelValue>
             {/* 有额度：本周期已用 + 规则 · 网卡，流量周期；不限流量不评估周期，只写本月；同机 IP 节点指向宿主机 */}
             {q.limit > 0 ? <>
-              <LabelValue label={m.ip_nodes.length ? `${quotaUsedLabel(q)}（含同机 IP 节点）` : quotaUsedLabel(q)} wrap>
-                <span className="num">{F.str(quotaGb(q.used))}</span> <span className="unit">/ {F.str(limitGb(q.limit))}</span><FromTag from={q.from} />
-                <div className="hint">{quotaRuleText(m)}{quotaNotes(m).length > 0 && <> <InfoTip text={quotaNotes(m).join('\n')} /></>}</div>
+              {/* 流量相关的两项各占一行的两列：数字、单位与「X 起」不折行 */}
+              <LabelValue label={m.ip_nodes.length ? `${quotaUsedLabel(q)}（含同机 IP 节点）` : quotaUsedLabel(q)} wrap className="span-2">
+                <span className="nowrap"><span className="num">{F.str(quotaGb(q.used))}</span> <span className="unit">/ {F.str(limitGb(q.limit))}</span><FromTag from={q.from} start={q.start} /></span> <InfoTip text={[quotaRuleText(m), ...quotaNotes(m)].join('\n')} />
               </LabelValue>
-              <LabelValue label="流量周期" wrap>{quotaCycleText(m)}</LabelValue>
+              <LabelValue label="流量周期" wrap className="span-2"><span className="nowrap">{quotaCycleText(m)}</span></LabelValue>
             </> : q.shared ? <LabelValue label="流量额度">与宿主机共用</LabelValue> : (
-              <LabelValue label="本月流量" wrap>
-                {fl.kind === 'nic' ? <>↓ 下行 <Num f={F.bytes(fl.down)} /> · ↑ 上行 <Num f={F.bytes(fl.up)} /></> : <>下载 <Num f={F.bytes(fl.down)} /> · 上传 <Num f={F.bytes(fl.up)} /></>}<FromTag from={fl.from} />
-                <div className="hint">流量不限 <InfoTip text={monthFlowTip(m)} /></div>
+              <LabelValue label="本月流量" wrap className="span-2">
+                <span className="nowrap">{fl.kind === 'nic' ? <>↓ 下行 <Num f={F.bytes(fl.down)} /> · ↑ 上行 <Num f={F.bytes(fl.up)} /></> : <>下载 <Num f={F.bytes(fl.down)} /> · 上传 <Num f={F.bytes(fl.up)} /></>}<FromTag from={fl.from} /></span>
+                <div className="hint">{q.unset ? '未设置流量上限' : '流量不限'} <InfoTip text={monthFlowTip(m)} /></div>
               </LabelValue>
             )}
-            <LabelValue label="自动续费">{s.auto_renew ? '是' : '否'}</LabelValue>
           </LabelValueGrid>
           <div style={{ marginTop: 12 }}><Button variant="primary" onClick={() => setRenew(true)}><CalendarPlus />登记续费</Button></div>
         </Section>
       )}
       <Section>
-        <SectionHeader title={<>{s ? '修改订阅' : '设置订阅'}{m.sub_template && <> <InfoTip text={`没点「单独设置」的项跟随${m.plan ? `套餐「${m.plan.name}」` : '默认值'}${m.provider ? `与供应商「${m.provider.name}」` : ''}：在「团队与套餐」里改了，这里立即跟着变。`} /></>}</>} />
+        <SectionHeader title={<>{s ? '修改订阅' : '设置订阅'}{m.sub_template && <> <InfoTip text={`选「跟随」的项跟随${m.plan ? `套餐「${m.plan.name}」` : '默认值'}${m.provider ? `与供应商「${m.provider.name}」` : ''}：在「团队与套餐」里改了，这里立即跟着变。`} /></>}</>} />
         {!s && !h && <div style={{ marginBottom: 12 }}><Note>还没有订阅信息 <InfoTip text={`填写后会参与到期提醒与费用统计。${m.plan ? '有套餐时只需填到期日。' : ''}`} /></Note></div>}
         <SubForm key={m.id + (s?.due_date ?? '')} m={m} />
       </Section>
@@ -87,19 +88,27 @@ export function BillingTab({ m }: { m: MachineView }) {
 /** 可以单独设置的几项（表单里的顺序） */
 const OV_FIELDS: SubField[] = ['price_cents', 'currency', 'cycle', 'billing_tz', 'remind_days', 'traffic_gb', 'traffic_reset_day'];
 
-/** 可跟随的一项：跟随时显示套餐 / 供应商给的值（不可编辑），点「单独设置」才能改；单独设置时注明跟随的值，可改回跟随 */
+const OV_ITEMS = [{ value: 'follow', label: '跟随' }, { value: 'own', label: '单独' }];
+/** 可跟随的一项：标签右边一个紧凑的「跟随 / 单独」切换。跟随时显示套餐 / 供应商给的值（不可编辑），切到「单独」才能改；
+ *  跟随的来源与值在切换的悬停里（提交的字段不变：单独的带值，跟随的为 null） */
 function OvField({ m, k, label, info, on, setOn, due, error, locked, children }: {
-  m: MachineView; k: SubField; label: string; info?: string; on: boolean; setOn: (on: boolean) => void; due: string; error?: string; locked?: boolean; children: React.ReactNode;
+  m: MachineView; k: SubField; label: string; info?: string; on: boolean; setOn: (on: boolean) => void; due: string; error?: string; locked?: boolean; children: React.ReactElement;
 }) {
+  const id = React.useId();
   // 同机 IP 节点没有套餐：流量上限跟随的是宿主机的额度
   const follow = k === 'traffic_gb' && m.host_machine && !m.plan ? '与宿主机共用额度' : inheritText(m, k, due);
   const toggle = !locked && follow != null && (
-    <Button variant="link" size="sm" onClick={() => setOn(!on)}>{on ? `改回${inheritSource(m, k) === '默认' ? '默认' : inheritSource(m, k)}` : '单独设置'}</Button>
+    <span data-tip={`跟随${inheritSource(m, k)}：${follow}`}><Segmented sm label={`${label}：跟随或单独设置`} value={on ? 'own' : 'follow'} onChange={(v) => setOn(v === 'own')} items={OV_ITEMS} /></span>
   );
   return (
-    <Field label={label} info={info} error={on ? error : undefined} hint={<span className="row" style={{ gap: 8 }}>{on && follow != null && <span>单独设置 · {follow}</span>}{toggle}</span>}>
-      {on ? children : <Input disabled value={follow ?? ''} aria-label={label} />}
-    </Field>
+    <div className="field">
+      <div className="ov-head">
+        <span className="field-label"><Label htmlFor={id}>{label}</Label>{info && <InfoTip text={info} />}</span>
+        {toggle}
+      </div>
+      {on ? React.cloneElement(children as React.ReactElement<{ id?: string }>, { id }) : <Input id={id} disabled value={follow ?? ''} />}
+      {on && error && <div className="hint is-error">{error}</div>}
+    </div>
   );
 }
 
@@ -145,7 +154,7 @@ function SubForm({ m }: { m: MachineView }) {
     };
     save.mutate({ id: m.id, ...body }, { onSuccess: () => toast.ok('订阅已保存'), onError: toast.err });
   };
-  const o = (k: SubField, label: string, children: React.ReactNode, error?: string, info?: string) => (
+  const o = (k: SubField, label: string, children: React.ReactElement, error?: string, info?: string) => (
     <OvField m={m} k={k} label={label} info={info} on={ov[k]} setOn={setOn(k)} due={dueDate} error={error} locked={legacy || (k === 'price_cents' && priceLocked)}>{children}</OvField>
   );
   return (

@@ -1,6 +1,4 @@
 //! 遥测/告警/通知测试共用的搭建代码（不起后台循环，告警评估由测试手动驱动）。
-//! 放在子目录里，cargo 不会把它当成独立的测试目标。
-#![allow(dead_code)]
 
 use axum::extract::State;
 use axum::http::{StatusCode, Uri};
@@ -14,7 +12,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
-pub use crate::common::T;
+pub use super::T;
 
 impl T {
     /// agent 上报，返回 (状态码, 响应体)
@@ -69,7 +67,7 @@ pub async fn ws_next(ws: &mut Ws, kind: &str) -> Value {
 }
 
 /// 新建一个独立的测试环境（见 common），不带后台循环，登录好 admin。通知渠道允许指向内网（假服务在 127.0.0.1 上）
-pub async fn setup() -> T { crate::common::boot(false, "notify.allow_private = true").await }
+pub async fn setup() -> T { super::boot(false, "notify.allow_private = true").await }
 
 /// 在库里放一台在用的线路机，并签一个 agent 令牌
 pub async fn seed_relay(t: &T, label: &str, ip: &str, tok: &str) -> Uuid {

@@ -2,7 +2,7 @@
 // 流程：编辑只存草稿 → 预览（最近 24 小时每个节点会被阻止多少连接）→ 发布（所有草稿一起生效，线路机热加载路由规则）→ 发布记录里可回滚。
 import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { ChevronRight, Eye, Save, ShieldCheck, Trash2, Undo2 } from 'lucide-react';
+import { ChevronRight, Eye, Save, ShieldBan, ShieldCheck, Trash2, Undo2 } from 'lucide-react';
 import {
   MODE_INFO, modeLabel, useDiscardPolicies, usePolicies, usePolicyPreview, usePolicyVersions, usePublishPolicies, useRollbackPolicy, useRollbackPreview, useSavePolicy,
   type PolicyBody, type PolicyChange, type PolicyMode, type PolicyNode, type PolicyTeam, type PolicyVersion, type ScopePolicy, type VersionRelay, type VersionStatus,
@@ -28,6 +28,8 @@ const MODE_TONE: Record<PolicyMode, Tone> = { observe: 'neutral', allowlist: 'in
 const needsDomains = (m: PolicyMode) => m === 'allowlist' || m === 'denylist';
 
 function ModePill({ mode }: { mode: PolicyMode }) {
+  // 黑名单自带盾牌图标（黄色胶囊默认的半圆图标是「降级」的标记，借用会读错）
+  if (mode === 'denylist') return <Pill tone="warn" dot="none"><ShieldBan size={12} />{modeLabel(mode)}</Pill>;
   return <Pill tone={MODE_TONE[mode]}>{modeLabel(mode)}</Pill>;
 }
 
@@ -126,9 +128,11 @@ export function PolicyPage() {
             ))}
           </div>
         </Panel>
-        {target
-          ? <Editor key={`${sel!.scope}:${sel!.id}`} scope={sel!.scope} name={target.name} sp={target.sp} team={target.team} node={target.node} onDirty={onDirty} />
-          : <Panel title="编辑"><Empty icon={<ShieldCheck size={22} />} text="在左侧选择团队或节点" /></Panel>}
+        <div className="pol-col">
+          {target
+            ? <Editor key={`${sel!.scope}:${sel!.id}`} scope={sel!.scope} name={target.name} sp={target.sp} team={target.team} node={target.node} onDirty={onDirty} />
+            : <Panel title="编辑"><Empty icon={<ShieldCheck size={22} />} text="在左侧选择团队或节点" /></Panel>}
+        </div>
       </div>
 
       <VersionsPanel />
@@ -176,8 +180,8 @@ function NodeRow({ n, here, pick }: { n: PolicyNode; here: boolean; pick: (s: Se
       <button type="button" className="pol-item" aria-current={here} onClick={() => pick({ scope: 'node', id: n.id })}>
         <span className="pol-name"><Trunc className="strong">{n.name}</Trunc>{!n.has_entry && <span className="pol-sub">还没有入口</span>}</span>
         {n.policy.draft && <Tip text={`草稿：${modeLabel(n.policy.draft.mode)}`}><span><Chip variant="warn">草稿</Chip></span></Tip>}
-        {n.effective.source === 'team' && n.effective.mode !== 'observe' && <span className="pol-inh">跟随团队</span>}
-        <ModePill mode={n.effective.mode} />
+        {/* 跟随团队的不挂胶囊（团队行上有）：只标和团队设置不同的节点 */}
+        {n.effective.source === 'node' && <ModePill mode={n.effective.mode} />}
       </button>
     </div>
   );

@@ -4,8 +4,8 @@
 //! 等待超过该步的 `timeout_s` 即失败。
 //!
 //! 唤醒：建作业、重试、取消后调 `AppState::wake_jobs`；线路机回报应用结果、agent 首次上报时 `wake_for` 把等这些事的作业
-//! 提前到现在再唤醒；推进中发现作业已被取消、放开租约等补偿时也唤醒。引擎空闲时等唤醒，兜底每 800 ms 重查
-//! （等待中的作业到点、过期租约被接管）。
+//! 提前到现在再唤醒；推进中发现作业已被取消、放开租约等补偿时也唤醒；每次推进告一段落也唤醒（等它的作业可能能领了）。
+//! 引擎空闲时等唤醒，或睡到最早一个作业到点（等待中的作业到点、过期租约被接管），最多 30 秒。
 //!
 //! 租约：领取时给一个短租约，每步开始前按「步骤超时 + 余量」续租；所有对 job / job_step 的状态写入都带
 //! `lease_owner = 自己`，0 行受影响说明租约已被别人接管（或作业被取消、被退役清掉），本执行者立刻放弃推进。
@@ -341,6 +341,9 @@ pub async fn drain(st: &AppState, max: Duration) -> usize {
     }
 }
 
+/// 空闲时最多睡这么久再领一次
+const IDLE_MAX: Duration = Duration::from_secs(30);
+
 /// 后台循环：领取并推进作业
 pub async fn run_forever(st: AppState) {
     let sem = Arc::new(Semaphore::new(st.cfg.job_workers.max(1)));
@@ -362,14 +365,26 @@ pub async fn run_forever(st: AppState) {
                     if let Err(e) = advance(&st, job, &owner).await {
                         retry_later(&st, id, &owner, &e).await;
                     }
+                    // 推进告一段落（结束、等待、放手）：等它结束的作业（`after`）可能能领了
+                    st.wake_jobs();
                 });
             }
             Ok(None) => {
                 drop(permit);
+                // 睡到最早一个作业到点（等待到期、10 秒后重做、过期租约被接管），最多 IDLE_MAX。
                 // 唤醒在忙的时候到达也不丢（Notify 记一次许可），下一轮立刻再领
+                let due: Option<f64> = sqlx::query_scalar(
+                    "select extract(epoch from min(greatest(run_after, lease_until)) - now())::float8 from job
+                     where state in ('queued', 'running', 'waiting', 'cancelling') and id <> all($1) and greatest(run_after, lease_until) > now()",
+                )
+                .bind(st.jobs_running.ids())
+                .fetch_one(&st.db)
+                .await
+                .unwrap_or(None);
+                let wait = due.map_or(IDLE_MAX, |s| Duration::from_secs_f64(s).min(IDLE_MAX));
                 tokio::select! {
                     _ = st.jobs_wake.notified() => {}
-                    _ = tokio::time::sleep(Duration::from_millis(800)) => {}
+                    _ = tokio::time::sleep(wait) => {}
                 }
             }
             Err(e) => {

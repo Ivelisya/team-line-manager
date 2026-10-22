@@ -22,7 +22,7 @@ import { CopyButton, ErrorNote, ReasonList, HealthPill, Flag, LabelValue, LabelV
 import { MachineTags } from '@/components/app/MachineTags';
 import { ManageTab } from './ManageTab';
 import { BillingTab } from './BillingTab';
-import { EntriesTable } from './EntriesTable';
+import { EntriesTable, entriesMeta } from './EntriesTable';
 
 // 带图表的页签（recharts）按需加载
 const QualityTab = React.lazy(() => import('./DrawerCharts').then((m) => ({ default: m.QualityTab })));
@@ -155,11 +155,11 @@ function IpNodeLine({ id, name, onOpen }: { id: string; name: string; onOpen: (i
   );
 }
 
-/** 入口探测的连通数：「TCP 1/1 · 出口 0/1」，有不通的数字标黄；没有在用的入口为「—」 */
+/** 入口探测的连通数：「TCP 1/1 · 出口 0/1」，有不通的数字标红（同入口表里的「失败」）；没有在用的入口为「—」 */
 function probeCounts(m: MachineView) {
   const ps = probeSummary(m);
   if (!ps.all) return '—';
-  const n = (ok: number, total: number) => <b className="num" style={ok < total ? { color: 'var(--warn-text)' } : undefined}>{ok}/{total}</b>;
+  const n = (ok: number, total: number) => <b className="num" style={ok < total ? { color: 'var(--bad-text)' } : undefined}>{ok}/{total}</b>;
   return <span data-tip={`TCP：线路机到节点的握手，${ps.tcpBad} 条不通\n出口：经入口访问外网的验证，${ps.egressBad} 条不通`}>{ps.total > 0 && <>TCP {n(ps.tcpOk, ps.total)} · </>}出口 {n(ps.all - ps.egressBad, ps.all)}</span>;
 }
 
@@ -192,7 +192,9 @@ function OverviewTab({ m }: { m: MachineView }) {
           {/* 供应商后台里这台的服务号（DeerVPS 的 SRV-…、ATTVPS 的数字），对账、开工单时用：不是分类，不进标签；搜索照样能搜到 */}
           <LabelValue label="供应商服务编号">{m.service_ref ? <span className="row" style={{ gap: 4, flexWrap: 'nowrap', minWidth: 0 }}><Trunc className="mono">{m.service_ref}</Trunc><CopyButton text={m.service_ref} label="服务编号" size={13} /></span> : null}</LabelValue>
           {/* 已退役、上架失败的原因与时间在顶上的横幅里，这里只放状态（原因放这格会被截断） */}
-          <LabelValue label="生命周期"><LifecyclePill lc={m.lifecycle} />{m.lifecycle_reason && m.lifecycle !== 'retired' && m.lifecycle !== 'failed' && <span className="t-sub" data-tip={errText(m.lifecycle_reason)}> {errText(m.lifecycle_reason)}</span>}</LabelValue>
+          {/* 带原因的占满整行、可换行（半格放不下会被截断成「运行中 已恢复：实验：…」） */}
+          {(() => { const why = m.lifecycle_reason && m.lifecycle !== 'retired' && m.lifecycle !== 'failed' ? errText(m.lifecycle_reason) : null;
+            return <LabelValue label="生命周期" className={why ? 'span-2' : undefined} wrap={!!why}><LifecyclePill lc={m.lifecycle} />{why && <span className="t-sub"> {why}</span>}</LabelValue>; })()}
           <LabelValue label="上架时间">{F.dtFull(m.activated_at)}</LabelValue>
           {m.lifecycle === 'retired' ? null : m.agent ? <>
             <LabelValue label="agent 版本">{`${m.agent.version ?? '未知'}${ofHost}`}</LabelValue>
@@ -224,7 +226,7 @@ function OverviewTab({ m }: { m: MachineView }) {
         </Section>
       )}
       <Section>
-        <SectionHeader title={m.kind === 'relay' ? '挂载的入口' : '入口'} meta={`${m.entries.length} 条`} />
+        <SectionHeader title={m.kind === 'relay' ? '挂载的入口' : '入口'} meta={entriesMeta(m)} />
         <EntriesTable m={m} />
       </Section>
       <RecentIncidents m={m} />

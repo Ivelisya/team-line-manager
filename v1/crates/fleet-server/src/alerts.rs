@@ -44,7 +44,7 @@ const REPEAT_CRITICAL_S: i64 = 4 * 3600;
 const REPEAT_SLOW_S: i64 = 24 * 3600;
 
 /// 严重度的高低（同库里 severity 枚举的顺序）
-fn rank(severity: &str) -> u8 {
+pub(crate) fn rank(severity: &str) -> u8 {
     match severity {
         "critical" => 2,
         "warning" => 1,
@@ -80,7 +80,7 @@ pub struct AlertState {
     clean_since: HashMap<Uuid, OffsetDateTime>,
 }
 
-/// 每 30 秒：记下中控还在跑（views::ReportGaps::alive），评估机器的告警，成功了 ping 死人开关；再检查中控自身（selfmon.rs）
+/// 每 30 秒：记下中控还在跑（report_gaps::ReportGaps::alive），评估机器的告警，成功了 ping 死人开关；再检查中控自身（selfmon.rs）
 pub async fn run_forever(st: AppState) {
     let mut state = AlertState::default();
     let mut heartbeat = selfmon::Heartbeat::default();

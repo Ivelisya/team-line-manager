@@ -60,8 +60,12 @@
   border-radius: var(--r-control); background: var(--sunken); font-size: var(--fs-label); line-height: var(--lh-label); cursor: auto; }
 .audit-ex dt { color: var(--fg-2); }
 .audit-ex dd { margin: 0; min-width: 0; color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; }
-/* 告警页：已恢复的仍按原级别着色，调淡一些，眼睛先落在进行中的上面 */
-.pill.is-past { opacity: 0.6; }
+/* 已恢复的仍按原级别着色，但去掉底色、改描边，不再整页一片红 */
+.pill.is-past { --pill-bg: transparent; border: 1px solid color-mix(in srgb, var(--pill-fg) 35%, transparent); opacity: 0.75; }
+/* 折叠的一批：规则名 × 台数，点开列出每一台；箭头同其它展开行，展开时转向下 */
+.inc-fold { gap: var(--sp-4); }
+.inc-fold .lucide { width: var(--icon-xs); height: var(--icon-xs); flex: none; transition: transform var(--dur-2) var(--ease-out); }
+.dt tr[data-open] .inc-fold .lucide { transform: rotate(90deg); }
 .chart-box { height: 180px; min-width: 0; }
 /* 曲线第一次有数据时从左往右展开一次：.chart-frame 在数据到了才挂载（之前是骨架），之后的轮询刷新、换时间范围（沿用旧曲线调淡）都不重新挂载，不会再播 */
 .chart-frame .chart-box { animation: chart-reveal var(--dur-data) var(--ease-out); }
@@ -93,6 +97,9 @@
     linear-gradient(180deg, color-mix(in srgb, var(--cc) 5%, var(--surface)), var(--surface) 72%);
   box-shadow: var(--shadow-card);
 }
+/* 缩成一行的图卡（没有曲线可画：容器里拿不到负载）：当前值与说明并排 */
+.chart-card.is-slim { padding-block: var(--sp-8); }
+.chart-card.is-slim .chart-card-val { display: flex; align-items: baseline; gap: var(--sp-6); }
 /* 卡头按基线对齐：标题、当前值第一行、时间范围的文字落在同一条线上 */
 .chart-card-head { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: var(--sp-4) var(--sp-8); min-width: 0; }
 .chart-card-title { display: flex; align-items: baseline; gap: var(--sp-6); min-width: 0; font: var(--fw-semibold) var(--fs-body) / var(--lh-body) var(--font-sans); color: var(--fg); }
@@ -108,16 +115,37 @@
 .chart-tip-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-12); }
 .chart-tip-row i { display: inline-block; width: 8px; height: 8px; margin-right: var(--sp-6); border-radius: 2px; }
 .chart-tip-row b { font-weight: var(--fw-semibold); }
-.danger-zone { border: 1px solid color-mix(in srgb, var(--bad) 30%, var(--line)); border-radius: var(--r-float); padding: var(--sp-12) var(--sp-16); display: grid; gap: var(--sp-12); }
+/* 苹果设置页式的分组列表：一组一个圆角容器，行之间细线分隔，行（.manage-row）自带内边距；危险操作（退役）的容器描淡红边 */
+.mgroup { display: grid; min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: var(--r-float); background: color-mix(in srgb, var(--section) 40%, var(--surface)); }
+.mgroup > * { min-width: 0; padding: var(--sp-10) var(--sp-14); }
+.mgroup > * + * { border-top: 1px solid var(--line); }
+.mgroup > .note { border: 0; border-radius: 0; }
+.mgroup.is-danger { border-color: color-mix(in srgb, var(--bad) 30%, var(--line)); }
+.sec > * + .mgroup { margin-top: var(--sp-8); }
+/* 费用页签：标签与右边的「跟随 / 单独」切换一行（切换比标签高，行高固定免得有无切换的项高低不一） */
+.ov-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); min-height: 26px; min-width: 0; }
 .manage-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-12); flex-wrap: wrap; }
 .manage-row > div:first-child { min-width: 0; flex: 1 1 220px; }
 .manage-row .t { font-weight: var(--fw-medium); }
-/* 管理页「入口」段里列表下面的操作（换线路机 / 搬空 / 直出入口 / 加入口）：与列表隔一道线，间距同段与段之间；组内行距同退役区 */
-.manage-group { display: grid; gap: var(--sp-12); margin-top: var(--card-seg); padding-top: var(--card-seg); border-top: 1px solid var(--line); }
 .preview-name { display: inline-flex; align-items: center; gap: var(--sp-8); padding: var(--sp-6) var(--sp-12); border-radius: var(--r-control); background: var(--sunken); font-weight: var(--fw-semibold); font-size: var(--fs-emph); }
 
 /* 线路机卡 */
-.relay-card { display: grid; gap: 0; }
+/* 表格行尾的操作（改名 / 编辑 / 删除）：平时淡去，悬停或键盘聚焦到这一行才显出来；触屏没有悬停，一直显示 */
+@media (hover: hover) {
+  .dt tr .row-acts { opacity: 0; transition: opacity var(--dur-2) var(--ease-std); }
+  .dt tr:hover .row-acts, .dt tr:focus-within .row-acts { opacity: 1; }
+}
+.btn.btn-slot { transition: background-color var(--dur-1) var(--ease-std), color var(--dur-1) var(--ease-std), border-color var(--dur-1) var(--ease-std), scale var(--dur-2) var(--ease-out), opacity var(--dur-2) var(--ease-std), visibility 0s linear var(--dur-2); }
+.btn-slot[data-off] { opacity: 0; visibility: hidden; }
+.relay-card { display: grid; gap: 0; scroll-margin-top: calc(var(--h-md) + var(--sp-16)); } /* 跳转时让出上面吸顶的那一行 */
+.relay-jump {
+  position: sticky; top: var(--topbar-h); z-index: var(--z-sticky); display: flex; gap: var(--sp-8); padding-block: var(--sp-8);
+  box-sizing: content-box; height: var(--h-md); overflow-x: auto; scrollbar-width: none; background: var(--glass-bar); -webkit-backdrop-filter: var(--glass-bar-blur); backdrop-filter: var(--glass-bar-blur);
+}
+.relay-jump::-webkit-scrollbar { display: none; }
+/* 有吸顶的跳转条时，各卡的表头吸在它下面（表头默认吸在顶栏下，会盖住它） */
+.relay-jump ~ .relay-card .table-wrap[data-fit] thead th { top: calc(var(--topbar-h) + var(--h-md) + 2 * var(--sp-8)); }
+.relay-jump-bad { color: var(--bad-text); }
 .relay-head { display: flex; align-items: center; gap: var(--sp-12); flex-wrap: wrap; padding: var(--sp-12) var(--card-pad); }
 .relay-head .ttl { font: var(--fw-semibold) var(--fs-title) / var(--lh-title) var(--font-sans); letter-spacing: var(--tracking-title); }
 /* 线路机名可点（打开它的抽屉）：去掉按钮外观，后面一个淡箭头，悬停变主色、箭头右移一点，按下微缩 */
@@ -134,6 +162,7 @@
 .prov-steps .s[data-on="1"] .n { background: var(--accent-solid); color: var(--on-accent); }
 .prov-steps .s[data-done="1"] .n { background: var(--ok-bg); color: var(--ok-text); }
 /* 单台上架：每个字段下面都留出一行提示 / 错误的位置（失焦报错时下面的字段不整体下移、点不偏），这一行代替表单的行距 */
+.prov-form { width: 100%; max-width: 760px; margin-inline: auto; } /* 两列表单铺满 1100px 太散：收到 760 并居中 */
 .prov-form .form-grid { row-gap: 0; }
 .prov-form .field { grid-template-rows: auto auto minmax(var(--lh-label), auto); }
 .sticky-bar { position: sticky; bottom: 0; z-index: var(--z-sticky); }

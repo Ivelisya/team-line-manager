@@ -1,11 +1,10 @@
 //! 访问策略集成测试：草稿 → 预览 → 发布 → 期望状态 → agent 回报 → 版本状态 → 回滚；冲突与校验。
-//! 需要 PostgreSQL（见 common）。只跑这一套：`cargo test -p fleet-server --test policy`。
+//! 需要 PostgreSQL（见 common）。只跑这一套：`cargo test -p fleet-server --test it policy::`。
 
-mod common;
-mod common_pol;
+use crate::common;
 
 use axum::http::StatusCode;
-use common_pol::{put_hourly, seed, setup};
+use common::pol::{put_hourly, seed, setup};
 use fleet_proto::PolicyMode;
 use fleet_server::state::Event;
 use serde_json::{json, Value};
@@ -316,7 +315,7 @@ async fn drafts_equal_to_current_are_not_drafts() {
     assert_eq!(d["discarded"], 1);
     assert_eq!(draft().await, (true, rev));
     // 迁移 0035 把残留的清掉，同样不动 revision
-    sqlx::query(include_str!("../../../migrations/0035_policy_ghost_drafts.sql")).execute(&t.st.db).await.unwrap();
+    sqlx::query(include_str!("../../../../migrations/0035_policy_ghost_drafts.sql")).execute(&t.st.db).await.unwrap();
     assert_eq!(draft().await, (false, rev));
 }
 

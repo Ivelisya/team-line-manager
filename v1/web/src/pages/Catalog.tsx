@@ -97,12 +97,14 @@ function TeamsTab() {
                 // 编号已经连续（或团队里还没有节点）就没有可调的；机器列表还没到时先不禁用
                 const done = compact ? compact[t.id] ?? true : false;
                 return (
-                  <tr key={t.id}><td className="strong">{t.name}{t.spare && <> <Chip variant="neutral" tip={SPARE_TIP}>备用</Chip></>}</td><td className="r num">{t.sort_order}</td><td className="r num"><CountLink n={t.node_count} to={`/nodes?team=${t.id}`} /></td>
-                    <td className="r"><span className="row" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
+                  <tr key={t.id}><td className="strong">{t.name}{t.spare && <> <InfoTip text={SPARE_TIP} /></>}</td><td className="r num">{t.sort_order}</td><td className="r num"><CountLink n={t.node_count} to={`/nodes?team=${t.id}`} /></td>
+                    <td className="r"><span className="row row-acts" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
                       <Button size="sm" variant="quiet" onClick={() => setEdit(t)}><Pencil size={13} />改名 / 排序</Button>
                       {/* aria-disabled 而不是 disabled：禁用的按钮收不到悬停，看不到为什么不能点 */}
-                      <Button size="sm" aria-disabled={done || undefined} data-tip={done ? '编号已连续' : undefined} onClick={() => { if (!done) setRenum(t); }}><ListOrdered size={13} />重新编号</Button>
-                      <IconButton size="sm" label={t.spare ? '备用团队不能删除' : '删除团队'} aria-disabled={t.spare || undefined} onClick={() => { if (!t.spare) setAskDel(t); }}><Trash2 size={14} /></IconButton></span></td></tr>
+                      <Button size="sm" variant="quiet" aria-disabled={done || undefined} data-tip={done ? '编号已连续' : undefined} onClick={() => { if (!done) setRenum(t); }}><ListOrdered size={13} />重新编号</Button>
+                      {t.spare
+                        ? <span data-tip="备用团队不能删除"><IconButton size="sm" label="删除团队" tip={false} disabled style={{ pointerEvents: 'none' }}><Trash2 size={14} /></IconButton></span>
+                        : <IconButton size="sm" label="删除团队" onClick={() => setAskDel(t)}><Trash2 size={14} /></IconButton>}</span></td></tr>
                 );
               })}
             </tbody>
@@ -224,7 +226,7 @@ function ProvidersTab() {
                 <td>提前 <span className="num">{p.remind_days ?? meta().defaults.remind_days}</span> 天</td>
                 <td className="r num">{planCount.get(p.id) ?? <span className="t-muted">0</span>}</td>
                 {panel && <td>{p.panel_url && /^https?:\/\//i.test(p.panel_url) ? <a href={p.panel_url} target="_blank" rel="noreferrer noopener" className="btn-link btn" style={{ gap: 4, maxWidth: '100%' }}><span className="ellipsis">{p.panel_url.replace(/^https?:\/\//, '')}</span><ExternalLink size={12} /></a> : (p.panel_url || <span className="t-muted">—</span>)}</td>}
-                <td className="r"><span className="row" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
+                <td className="r"><span className="row row-acts" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
                   <Button size="sm" variant="quiet" onClick={() => setEdit(p)}><Pencil size={13} />编辑</Button>
                   <IconButton size="sm" label="删除供应商" onClick={() => setAskDel(p)}><Trash2 size={14} /></IconButton></span></td></tr>
             ))}</tbody>
@@ -324,7 +326,7 @@ function PlansTab() {
                   <td className="r"><Num f={F.mbps(p.bandwidth_mbps)} /></td><td className="r"><Num f={limitGb(p.traffic_gb)} /></td>
                   <td className="r"><span className="num">{F.money(p.price_cents, p.currency)}</span> <span className="t-sub">/ {cycleLabel(p.cycle)}</span></td>
                   <td className="r num"><CountLink n={p.machine_count} to={`/nodes?plan=${p.id}`} /></td>
-                  <td className="r"><span className="row" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
+                  <td className="r"><span className="row row-acts" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
                     <Button size="sm" variant="quiet" onClick={() => setEdit(p)}><Pencil size={13} />编辑</Button>
                     {p.archived_at
                       ? <Button size="sm" variant="quiet" disabled={patch.isPending} onClick={() => void setArchived(p, false).catch(toast.err)}><ArchiveRestore size={13} />取消归档</Button>

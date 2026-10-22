@@ -14,7 +14,7 @@ html[data-overlay] :is(.app, .drawer) .progress[data-live="1"] .progress-fill::a
 html[data-overlay] :is(.app, .drawer) .progress-fill { transition: none; }
 
 /* ========== 吸附条毛玻璃的回退（--glass-bar）：不支持 backdrop-filter 时用实底，免得半透明的条下面字叠字 ========== */
-@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .topbar, .panel.sticky-bar, .tab-sticky { background: var(--surface); } }
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .topbar, .panel.sticky-bar, .tab-sticky, .relay-jump { background: var(--surface); } }
 
 /* ========== 触屏（pointer: coarse）==========
    手指点的地方至少约 40px：控件高度令牌上调一档（按钮、输入、下拉、分段轨道 40；顶栏 / 卡头图标按钮、菜单项 36），分段项随轨道，小号分段项 28；
@@ -35,7 +35,7 @@ html[data-overlay] :is(.app, .drawer) .progress-fill { transition: none; }
   /* 一次性的过渡与进场时长归零（tokens.css 的动效令牌）；循环动画（--dur-loop）不靠归零，下面显式 animation: none */
   :root { --dur-press: 0ms; --dur-1: 0ms; --dur-2: 0ms; --dur-3: 0ms; --dur-data: 0ms; --cell-stagger: 0ms; --dur-spin: 2s; }
   /* 无限循环的细纹、呼吸、脉冲停掉（骨架静止显示）；转圈（.spin、进行中胶囊、状态标）不停，按上面的 --dur-spin 慢转 */
-  .progress[data-live="1"] .progress-fill::after, .stepbar-item[data-kind="running"] .stepbar-node, .top-btn.jobs-ind > .lucide, .toast-timer, .skel { animation: none; }
+  .progress[data-live="1"] .progress-fill::after, html .stepbar-item[data-kind="running"] .stepbar-node, .top-btn.jobs-ind > .lucide, .toast-timer, .skel { animation: none; }
   /* 浮层关闭：不播退出动画，Radix 立即卸载（抽屉的投影层一起；悬浮卡、日历、作业弹层都是 .popover） */
   .overlay[data-state="closed"], .drawer-overlay[data-state="closed"], .dialog[data-state="closed"], .cmd-dialog[data-state="closed"], .drawer[data-state="closed"], .drawer[data-state="closed"]::before,
   .menu[data-state="closed"], .popover[data-state="closed"], .select-content[data-state="closed"], .tooltip[data-state="closed"], .page-in { animation: none; }

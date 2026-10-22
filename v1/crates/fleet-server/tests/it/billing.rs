@@ -1,7 +1,7 @@
 //! 订阅跟随模板：价格、币种、周期、流量上限跟随套餐，账单时区、提前提醒、流量重置跟随供应商；订阅只存到期日和单独设置的值。
 //! 需要 PostgreSQL（见 common）。
 
-mod common;
+use crate::common;
 
 use axum::http::StatusCode;
 use common::{seed_relay, seed_team, setup, T};
@@ -221,9 +221,9 @@ async fn migration_normalizes_hard_coded_subscriptions() {
             .unwrap();
         ids.push(id);
     }
-    sqlx::raw_sql(include_str!("../../../migrations/0026_subscription_inherit.sql")).execute(db).await.unwrap();
+    sqlx::raw_sql(include_str!("../../../../migrations/0026_subscription_inherit.sql")).execute(db).await.unwrap();
     // 0026 换回了按到期日的重置日：再跑 0032（同样可重复执行）回到按账单日
-    sqlx::raw_sql(include_str!("../../../migrations/0032_billing_day.sql")).execute(db).await.unwrap();
+    sqlx::raw_sql(include_str!("../../../../migrations/0032_billing_day.sql")).execute(db).await.unwrap();
 
     let reset: Vec<(String, String)> = sqlx::query_as("select code, traffic_reset from provider order by code").fetch_all(db).await.unwrap();
     assert_eq!(reset, [("ATT".into(), "month".into()), ("GM".into(), "billing".into())], "GM 的重置日都是到期日；ATT 只有 1 号的不算证据");

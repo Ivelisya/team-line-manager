@@ -244,7 +244,7 @@ pub const STEP_STATES: Labels = &[("pending", "等待"), ("running", "进行中"
 pub const ENTRY_STATES: Labels = &[("pending", "应用中"), ("active", "运行中"), ("disabled", "已停用"), ("removing", "移除中"), ("removed", "已移除")];
 
 /// 供应商的网卡计量规则（流量额度怎么量）；没有网卡读数的（家宽代理、同机 IP 节点）按业务流量
-pub const TRAFFIC_RULES: Labels = &[("min", "入站和出站取较小值"), ("max", "入站和出站取较大值"), ("sum", "入站加出站"), ("out", "只算出站")];
+pub const TRAFFIC_RULES: Labels = &[("min", "下行、上行取较小"), ("max", "下行、上行取较大"), ("sum", "下行 + 上行"), ("out", "只算上行")];
 pub const DEFAULT_TRAFFIC_RULE: &str = "max";
 /// 供应商的流量重置方式：month = 账单时区的自然月（每月 1 号），billing = 每个账单日（到期日几号），
 /// rolling30 = 滚动 30 天（账单时区的今天往前 29 天起，没有重置日）

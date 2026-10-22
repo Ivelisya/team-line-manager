@@ -164,8 +164,11 @@ function LiveNodes({ sp, upd, tools }: { sp: URLSearchParams; upd: (patch: Recor
         <div className="w-[130px]"><Select value={status} onChange={setStatus} allowEmpty="全部状态" placeholder="状态" options={filterOpts().status} aria-label="状态" /></div>
         {dueSoon && <button type="button" className="fchip" aria-pressed="true" aria-label="取消「即将到期」筛选" onClick={() => upd({ due: '' })}>即将到期<X size={14} /></button>}
         {plan && <button type="button" className="fchip" aria-pressed="true" aria-label="取消套餐筛选" onClick={() => upd({ plan: '' })}>套餐{planName && ` ${planName}`}<X size={14} /></button>}
-        {filtered && <Button variant="quiet" size="md" onClick={clearFilters}><X />清除筛选</Button>}
-        {urlSort && <Button variant="quiet" size="md" onClick={() => setSort(null)}><RotateCcw />恢复默认顺序</Button>}
+        {/* 两个按钮只要有一个在就都占着位置（另一个淡出隐藏）：点掉一个时另一个不平移到鼠标下面 */}
+        {(filtered || urlSort) && <>
+          <Button variant="quiet" size="md" className="btn-slot" data-off={filtered ? undefined : ''} onClick={clearFilters}><X />清除筛选</Button>
+          <Button variant="quiet" size="md" className="btn-slot" data-off={urlSort ? undefined : ''} onClick={() => setSort(null)}><RotateCcw />恢复默认顺序</Button>
+        </>}
       </div>
 
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}

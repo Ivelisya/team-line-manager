@@ -19,7 +19,7 @@ import { useAnchoredDropdown } from './AnchoredDropdown';
 
 export type MenuEntry =
   | { key: string; sep: true }
-  | { key: string; label: string; icon?: React.ReactNode; onSelect?: () => void; danger?: boolean; disabled?: boolean; children?: MenuEntry[]; filter?: string };
+  | { key: string; label: string; icon?: React.ReactNode; onSelect?: () => void; danger?: boolean; disabled?: boolean; why?: string; children?: MenuEntry[]; filter?: string };
 /** 子菜单超过这么多项时顶上给一个筛选框（线路机的分享链接一台几十条） */
 const FILTER_MIN = 8;
 
@@ -41,7 +41,7 @@ function useNodeMenu(m: MachineView): MenuEntry[] {
   const shareItem: MenuEntry = shareable.length > 1
     ? { key: 'share', label: '复制分享链接', icon: <Link2 />, filter: shareable.length > FILTER_MIN ? '筛选节点…' : undefined,
       children: shareable.map((e) => ({ key: `share-${e.id}`, label: shareLabel(e), onSelect: () => void share(e.id) })).sort((a, b) => collator.compare(a.label, b.label)) }
-    : { key: 'share', label: '复制分享链接', icon: <Link2 />, disabled: shareable.length === 0 || retired, onSelect: () => void share(shareable[0].id) };
+    : { key: 'share', label: '复制分享链接', icon: <Link2 />, disabled: shareable.length === 0 || retired, why: '没有可分享的入口', onSelect: () => void share(shareable[0].id) };
   const items: MenuEntry[] = [
     { key: 'open', label: '打开详情', icon: <PanelRightOpen />, onSelect: () => open(m.id) },
     { key: 'ip', label: '复制 IP', icon: <Copy />, onSelect: () => void copyText(m.ip, ' IP', true) },
@@ -56,6 +56,7 @@ function useNodeMenu(m: MachineView): MenuEntry[] {
     // 同机 IP 节点没有自己的 agent（用宿主机的），不给升级
     // 升级会重启 agent、作业开始后不能取消：先弹确认（外壳里的 UpgradeDialog）。中控不报「当前 agent 版本」，判断不了是否已是最新
     ...(m.host_machine ? [] : [{ key: 'upgrade', label: '升级 agent…', icon: <ArrowUpCircle />, disabled: !m.agent || m.lifecycle !== 'active' || !!m.active_job,
+      why: !m.agent ? (m.kind === 'proxy' ? '家宽代理没有 agent' : '这台还没有 agent') : m.lifecycle !== 'active' ? '只有在用的机器能升级' : '有作业正在进行，等它结束',
       onSelect: () => openUpgrade(m.id) } as MenuEntry]),
     { key: 'rename', label: '改名 / 改编号', icon: <PencilLine />, onSelect: () => open(m.id, 'manage') },
     // 任何机器都能登记续费（提前续、按年续都行，不只是快到期的）；还没有订阅的先去「费用」页填
@@ -63,10 +64,10 @@ function useNodeMenu(m: MachineView): MenuEntry[] {
       ? { key: 'renew', label: '登记续费…', icon: <CalendarPlus />, onSelect: () => openRenew(m.id) }
       : { key: 'renew', label: '设置费用…', icon: <CalendarPlus />, onSelect: () => open(m.id, 'billing') },
     ...(m.kind !== 'relay' && m.lifecycle === 'active' && m.entries.some((e) => e.lifecycle === 'active')
-      ? [{ key: 'move', label: '换线路机…', icon: <Repeat2 />, disabled: !!m.active_job, onSelect: () => openMove(m.id) } as MenuEntry] : []),
+      ? [{ key: 'move', label: '换线路机…', icon: <Repeat2 />, disabled: !!m.active_job, why: '有作业正在进行，等它结束', onSelect: () => openMove(m.id) } as MenuEntry] : []),
     // 替换：另一台在用节点接替它（软路由出口跟着换，编号交换，它进备用团队）
     ...(m.kind !== 'relay' && m.lifecycle === 'active'
-      ? [{ key: 'replace', label: '替换为…', icon: <Replace />, disabled: !!m.active_job, onSelect: () => openReplace(m.id) } as MenuEntry] : []),
+      ? [{ key: 'replace', label: '替换为…', icon: <Replace />, disabled: !!m.active_job, why: '有作业正在进行，等它结束', onSelect: () => openReplace(m.id) } as MenuEntry] : []),
     // 维护中的：结束这台自己的（同机 IP 节点可能是宿主机的）维护窗口；全部机器的那种要到告警页结束，mutation 会报错说明
     m.maintenance
       ? { key: 'maint', label: maintOnHost ? '结束宿主机维护' : '结束维护', icon: <Wrench />,
@@ -74,7 +75,7 @@ function useNodeMenu(m: MachineView): MenuEntry[] {
       : { key: 'maint', label: '维护窗口…', icon: <Wrench />, onSelect: () => openMaint(m.id) },
     { key: 'silence', label: '新建静默', icon: <BellOff />, onSelect: () => nav(`/incidents?silence=${m.id}`) },
     { key: 'sep2', sep: true },
-    { key: 'retire', label: m.spare && m.lifecycle === 'active' ? '立即回收…' : '退役…', icon: <Power />, danger: true, disabled: m.lifecycle === 'retiring' || (m.lifecycle === 'provisioning' && !!m.active_job), onSelect: () => openRetire(m.id) },
+    { key: 'retire', label: m.spare && m.lifecycle === 'active' ? '立即回收…' : '退役…', icon: <Power />, danger: true, disabled: m.lifecycle === 'retiring' || (m.lifecycle === 'provisioning' && !!m.active_job), why: m.lifecycle === 'retiring' ? '正在退役' : '上架作业还在进行，等它结束', onSelect: () => openRetire(m.id) },
   );
   return items;
 }
@@ -94,12 +95,12 @@ function Render({ items, kit }: { items: MenuEntry[]; kit: Kit }) {
         if (it.children) {
           return (
             <Sub key={it.key}>
-              <SubTrigger disabled={it.disabled}>{it.icon}{it.label}</SubTrigger>
+              <SubTrigger disabled={it.disabled} data-tip={it.disabled ? it.why : undefined}>{it.icon}{it.label}</SubTrigger>
               <SubContent sideOffset={6} alignOffset={-4}><SubItems items={it.children} filter={it.filter} Item={Item} /></SubContent>
             </Sub>
           );
         }
-        return <Item key={it.key} danger={it.danger} disabled={it.disabled} onSelect={it.onSelect}>{it.icon}{it.label}</Item>;
+        return <Item key={it.key} danger={it.danger} disabled={it.disabled} data-tip={it.disabled ? it.why : undefined} onSelect={it.onSelect}>{it.icon}{it.label}</Item>;
       })}
     </>
   );

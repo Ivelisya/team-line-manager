@@ -4,7 +4,7 @@
 //! db::purge_blocker 放行后自动物理删除（同机 IP 节点先于宿主机）；旧面板导入的幂等与防导错。
 //! 需要 PostgreSQL（见 common）。
 
-mod common;
+use crate::common;
 
 use axum::http::StatusCode;
 use common::{seed_node, seed_relay, seed_team, setup, T};
@@ -431,7 +431,7 @@ async fn migration_0042_backfills_spare_columns_from_audit() {
         .execute(&t.st.db)
         .await
         .unwrap();
-    sqlx::raw_sql(include_str!("../../../migrations/0042_reach_port_spare_backfill.sql")).execute(&t.st.db).await.unwrap();
+    sqlx::raw_sql(include_str!("../../../../migrations/0042_reach_port_spare_backfill.sql")).execute(&t.st.db).await.unwrap();
     let got: Vec<(Uuid, Option<String>, Option<String>)> =
         sqlx::query_as("select id, spare_from, to_char(spare_since at time zone 'UTC', 'YYYY-MM-DD') from machine where id = any($1) order by number")
             .bind(vec![a, b, c])
