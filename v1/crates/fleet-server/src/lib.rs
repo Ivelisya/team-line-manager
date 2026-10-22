@@ -93,47 +93,84 @@ async fn response_headers(State(https): State<bool>, req: axum::extract::Request
     res
 }
 
-/// 后台任务：作业、告警、实时指标、分区维护、小时汇总
+/// 后台任务：作业、告警、实时指标、访问汇总、来源画像、分区维护、小时汇总。
+/// 都在 `supervise` 下跑：panic 或意外返回时记 error、10 秒后原地重启（这些循环的状态在库里，内存里的去抖计数、缓存重启后重新累计）。
+/// 作业引擎例外：它启动时释放全部作业租约（认定之前的执行者已经不在了），原地重启会让还在跑的作业被再领一次、两个执行者同时推进，
+/// 所以它一退出就结束整个进程，交给 systemd 重启（单元里 Restart=always）
 pub fn spawn_background(st: &AppState) {
-    tokio::spawn(jobs::run_forever(st.clone()));
-    tokio::spawn(alerts::run_forever(st.clone()));
-    tokio::spawn(live::run_forever(st.clone()));
-    tokio::spawn(access::run_forever(st.clone()));
-    tokio::spawn(ipintel::run_forever(st.clone()));
-    let s = st.clone();
+    supervise(st, "作业引擎", true, jobs::run_forever);
+    supervise(st, "告警", false, alerts::run_forever);
+    supervise(st, "实时指标", false, live::run_forever);
+    supervise(st, "访问汇总", false, access::run_forever);
+    // 配置里关掉时它直接返回，不算意外退出，不起
+    if st.ipintel.enabled {
+        supervise(st, "来源画像", false, ipintel::run_forever);
+    } else {
+        tracing::info!("ipintel 已在配置里关闭");
+    }
+    supervise(st, "分区与保留期维护", false, housekeeping);
+    supervise(st, "小时汇总", false, rollup_loop);
+}
+
+/// 跑一个不该结束的后台循环：panic 或返回了记 error，10 秒后重启；`exit` 为真时改为结束整个进程，交给 systemd 重启
+pub(crate) fn supervise<F, Fut>(st: &AppState, name: &'static str, exit: bool, f: F)
+where
+    F: Fn(AppState) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    let st = st.clone();
     tokio::spawn(async move {
-        let mut t = tokio::time::interval(std::time::Duration::from_secs(3600));
         loop {
-            t.tick().await;
-            if let Err(e) = db::maintain_partitions(&s.db, s.cfg.retention.raw_days, s.cfg.retention.access_days, 3).await {
-                tracing::error!("分区维护失败：{e:#}");
+            let why = match tokio::spawn(f(st.clone())).await {
+                Ok(()) => "意外退出".to_string(),
+                Err(e) if e.is_panic() => format!("panic（{e}）"),
+                // 运行时正在关（进程退出、测试结束）
+                Err(_) => return,
+            };
+            if exit {
+                tracing::error!("后台任务「{name}」{why}，结束进程交给 systemd 重启");
+                std::process::exit(1);
             }
-            match jobs::prune(&s.db).await {
-                Ok(p) if p.passwords_cleared + p.jobs_deleted > 0 => {
-                    tracing::info!("作业清理：清掉 {} 份引导密码，删除 {} 个旧作业", p.passwords_cleared, p.jobs_deleted)
-                }
-                Ok(_) => {}
-                Err(e) => tracing::error!("作业清理失败：{e:#}"),
-            }
-            // 来源 IP 画像：不短于学习期，也不短于访问小时汇总的保留期（来源同步首次扫描回看这么久）
-            let source_ip_days = (s.cfg.ipintel.learn_days as i64).max(access::HOURLY_DAYS) + 1;
-            if let Err(e) = db::cleanup_retention(&s.db, source_ip_days).await {
-                tracing::error!("保留期清理失败：{e:#}");
-            }
+            tracing::error!("后台任务「{name}」{why}，10 秒后重启");
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
         }
     });
-    let s = st.clone();
-    tokio::spawn(async move {
-        let mut t = tokio::time::interval(std::time::Duration::from_secs(300));
-        // 一轮跑得比间隔长时顺延，不连着补跑
-        t.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            t.tick().await;
-            if let Err(e) = db::rollup_hours(&s.db).await {
-                tracing::error!("小时汇总失败：{e:#}");
-            }
-            // 失败也可能已写进一部分小时：照样作废流量缓存
-            s.live.rolled_up();
+}
+
+/// 每小时：分区维护、作业清理、保留期清理
+async fn housekeeping(s: AppState) {
+    let mut t = tokio::time::interval(std::time::Duration::from_secs(3600));
+    loop {
+        t.tick().await;
+        if let Err(e) = db::maintain_partitions(&s.db, s.cfg.retention.raw_days, s.cfg.retention.access_days, 3).await {
+            tracing::error!("分区维护失败：{e:#}");
         }
-    });
+        match jobs::prune(&s.db).await {
+            Ok(p) if p.passwords_cleared + p.jobs_deleted > 0 => {
+                tracing::info!("作业清理：清掉 {} 份引导密码，删除 {} 个旧作业", p.passwords_cleared, p.jobs_deleted)
+            }
+            Ok(_) => {}
+            Err(e) => tracing::error!("作业清理失败：{e:#}"),
+        }
+        // 来源 IP 画像：不短于学习期，也不短于访问小时汇总的保留期（来源同步首次扫描回看这么久）
+        let source_ip_days = (s.cfg.ipintel.learn_days as i64).max(access::HOURLY_DAYS) + 1;
+        if let Err(e) = db::cleanup_retention(&s.db, source_ip_days).await {
+            tracing::error!("保留期清理失败：{e:#}");
+        }
+    }
+}
+
+/// 每 5 分钟：小时汇总
+async fn rollup_loop(s: AppState) {
+    let mut t = tokio::time::interval(std::time::Duration::from_secs(300));
+    // 一轮跑得比间隔长时顺延，不连着补跑
+    t.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        t.tick().await;
+        if let Err(e) = db::rollup_hours(&s.db).await {
+            tracing::error!("小时汇总失败：{e:#}");
+        }
+        // 失败也可能已写进一部分小时：照样作废流量缓存
+        s.live.rolled_up();
+    }
 }
