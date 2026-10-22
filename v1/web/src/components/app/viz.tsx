@@ -85,18 +85,22 @@ export function Ring({ pct, metric, children }: { pct: number | null; metric: 'c
   );
 }
 
-/** 点阵迹线：最近 SERIES_N 个点，最新在右；点的大小与浓淡随速率（相对本条最大值），没数据的槽是浅灰小点 */
-export const DotTrace = React.memo(function DotTrace({ values }: { values: number[] }) {
-  const max = Math.max(1, ...values);
-  const pad = SERIES_N - values.length;
-  return (
-    <span className="dots" aria-hidden>
-      {Array.from({ length: SERIES_N }, (_, i) => {
-        const v = i < pad ? null : values[i - pad];
-        return <i key={i} data-on={v != null && v > 0 ? '' : undefined} style={v != null && v > 0 ? ({ '--l': clamp01(v / max) } as Vars) : undefined} />;
-      })}
-    </span>
-  );
+const DOT_BOX = 6; // px：每个点的背景层大小（最大的点直径 6px）
+/** 点阵迹线：最近 n 个点（紧凑卡 20 个，列窄），最新在右；点的大小与浓淡随速率（相对显示的这几个点里的最大值），没数据的槽是浅灰小点。
+ *  整条一个元素：每个点是一层径向渐变，按百分比定位（同 flex 两端对齐）。原来每点一个元素，一张卡 60 个，
+ *  每条推送所有点都要改样式（实测 96 条迹线一次更新，样式与布局约 45ms，改成渐变层约 10ms，含拼字符串） */
+export const DotTrace = React.memo(function DotTrace({ values, n = SERIES_N }: { values: number[]; n?: number }) {
+  const shown = values.slice(-n);
+  const max = Math.max(1, ...shown);
+  const pad = n - shown.length;
+  const layers = Array.from({ length: n }, (_, i) => {
+    const v = i < pad ? 0 : shown[i - pad];
+    const l = v > 0 ? clamp01(v / max) : -1;
+    const r = l < 0 ? 1.5 : 2 * (0.8 + l * 0.7);
+    const c = l < 0 ? 'var(--cell-off)' : `color-mix(in srgb, var(--spd, var(--accent)) ${Math.round((0.35 + l * 0.65) * 100)}%, transparent)`;
+    return `radial-gradient(circle, ${c} ${r.toFixed(2)}px, transparent ${(r + 0.5).toFixed(2)}px) ${((i / (n - 1)) * 100).toFixed(2)}% 50% / ${DOT_BOX}px ${DOT_BOX}px no-repeat`;
+  });
+  return <span className="dots" style={{ background: layers.join(',') }} aria-hidden />;
 });
 
 /** 坐标上限取整档（×10^k），刻度读起来干净；档位密一些，速率小幅波动时坐标不会在 200 / 500 之间来回跳、曲线忽高忽扁 */
