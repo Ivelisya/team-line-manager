@@ -79,6 +79,9 @@ export function JobsPage() {
   if (jobs.data && jobs.data.total !== total) setTotal(jobs.data.total);
   const list = jobs.data?.items ?? [];
   const selected = id ?? null;
+  // 列表为空、也没打开作业：整页只留一个与筛选相符的空状态（右栏不再同时写「选择左侧作业」）
+  const none = !!jobs.data && list.length === 0 && !selected;
+  const noneText = `没有${view === 'all' ? '' : `${VIEWS.find((v) => v.value === view)!.label}的`}${kind ? `「${kindOpts.find((o) => o.value === kind)!.label}」` : ''}作业`;
   const go = (jid: string) => nav({ pathname: `/jobs/${jid}`, search });
   // 宽屏时详情栏吸顶、自己滚动（pages.css .jobs-detail）：换作业回到详情顶部
   const detail = React.useRef<HTMLDivElement>(null);
@@ -100,7 +103,7 @@ export function JobsPage() {
           <div className="w-[140px]"><Select value={kind} onChange={(v) => setParam('kind', v)} allowEmpty="全部类型" placeholder="作业类型" options={kindOpts} aria-label="作业类型" /></div>
           <Segmented label="筛选" value={view} onChange={setView} items={VIEWS} />
         </>} />
-      <div className="jobs-layout" data-detail={selected ? '1' : '0'}>
+      <div className="jobs-layout" data-detail={selected ? '1' : '0'} data-empty={none ? '' : undefined}>
         <Panel ref={pg.anchor} className="jobs-list" flush>
           {jobs.isLoading && <SkeletonRows rows={5} list />}
           {jobs.isError && <div style={{ padding: 'var(--sp-12)' }}><ErrorNote error={jobs.error} onRetry={() => void jobs.refetch()} /></div>}
@@ -115,11 +118,13 @@ export function JobsPage() {
               <span className="l2"><span>{F.dt(j.created_at)}</span><span>{F.actor(j.created_by)}</span>{j.error && <span className="ellipsis" style={{ color: j.state === 'cancelled' ? 'var(--fg-2)' : 'var(--bad-text)' }} data-tip={jobText(j.error)}>{jobText(j.error)}</span>}</span>
             </div>
           ))}
-          {jobs.data && list.length === 0 && <Empty icon={<ListChecks size={22} />} text="没有作业" />}
+          {jobs.data && list.length === 0 && <div className={none ? 'jobs-empty' : undefined}><Empty icon={<ListChecks size={22} />} text={noneText}>
+            {(view !== 'all' || kind) && <Button size="sm" variant="quiet" onClick={() => nav({ pathname: '/jobs' }, { replace: true })}>清除筛选</Button>}
+          </Empty></div>}
           <Pagination pg={pg} unit="个" compact />
         </Panel>
         <div className="jobs-detail" ref={detail}>
-          {selected ? <JobDetail id={selected} /> : <Panel className="jobs-empty"><Empty icon={<ListChecks size={22} />} text="选择左侧作业" /></Panel>}
+          {selected ? <JobDetail id={selected} /> : !none && <Panel className="jobs-empty"><Empty icon={<ListChecks size={22} />} text="选择左侧作业" /></Panel>}
         </div>
       </div>
     </div>
