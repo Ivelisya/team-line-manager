@@ -154,6 +154,7 @@ export function Terminal({ kind, id, name }: TermTarget) {
       <header className="term-head">
         <SquareTerminal size={16} className="term-ic" aria-hidden />
         <h2 id={titleId} className="term-title ellipsis">终端 · {name}</h2>
+        <InfoTip text="终端里输入的命令不进审计，只记谁、哪台、多久、多少字节" />
         <Pill tone={tone} dot={phase.s === 'auth' || phase.s === 'connecting' ? 'pulse' : undefined}
           tip={phase.s === 'closed' ? label : undefined} role="status"><span className="ellipsis">{label}</span></Pill>
         <div className="term-tools">
@@ -166,7 +167,6 @@ export function Terminal({ kind, id, name }: TermTarget) {
         <div ref={box} className="term-xterm" />
         {need && <CredForm key={need} need={need} err={phase.s === 'cred' ? phase.err : undefined} busy={phase.s === 'auth'} onSubmit={(c) => void connect(c)} />}
       </div>
-      <footer className="term-foot hint">输入的命令不进审计<InfoTip text="终端里输入的命令不进审计，只记谁、哪台、多久、多少字节" /></footer>
     </section>
   );
 }
@@ -181,7 +181,7 @@ function CredForm({ need, err, busy, onSubmit }: { need: Need; err?: string; bus
     <div className="term-cover">
       <form className="term-card" onSubmit={(e) => { e.preventDefault(); if (!v.trim() || busy) return; onSubmit(totp ? { code: v.trim() } : { password: v }); setV(''); }}>
         <div className="term-card-title">{totp ? '输入两步验证码' : '输入当前登录密码'}</div>
-        <Field label={totp ? '验证码或恢复码' : '登录密码'} error={err} hint="输错计入登录失败次数"
+        <Field label={totp ? '验证码或恢复码' : '登录密码'} error={err}
           info={`${totp ? '打开终端前要再验证一次：验证器里的 6 位验证码，或一个恢复码（用过即作废）。' : '打开终端前要再输入一次当前登录密码，确认是本人在操作。'}\n${limitInfo()}`}>
           {/* 恢复码带字母，不能限成纯数字键盘 */}
           {totp

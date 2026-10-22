@@ -25,7 +25,7 @@ export async function copyText(text: string, label = '内容'): Promise<boolean>
 /** 复制分享链接：提示与管理页的分享对话框一致（取链接会记审计，链接等同凭据） */
 export async function copyShareLink(url: string, label = '分享链接'): Promise<boolean> {
   const ok = await writeClipboard(url);
-  if (ok) toast.show({ tone: 'ok', title: `已复制${label}`, text: '已记入审计；链接等同凭据，只发给需要的人' });
+  if (ok) toast.ok(`已复制${label}，已记入审计`);
   else toast.err('复制失败，请手动选择文本');
   return ok;
 }
