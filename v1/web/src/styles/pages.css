@@ -131,9 +131,11 @@
 .relay-card { display: grid; gap: 0; scroll-margin-top: calc(var(--h-md) + var(--sp-16)); } /* 跳转时让出上面吸顶的那一行 */
 .relay-jump {
   position: sticky; top: var(--topbar-h); z-index: var(--z-sticky); display: flex; gap: var(--sp-8); padding-block: var(--sp-8);
-  overflow-x: auto; scrollbar-width: none; background: var(--glass-bar); -webkit-backdrop-filter: var(--glass-bar-blur); backdrop-filter: var(--glass-bar-blur);
+  box-sizing: content-box; height: var(--h-md); overflow-x: auto; scrollbar-width: none; background: var(--glass-bar); -webkit-backdrop-filter: var(--glass-bar-blur); backdrop-filter: var(--glass-bar-blur);
 }
 .relay-jump::-webkit-scrollbar { display: none; }
+/* 有吸顶的跳转条时，各卡的表头吸在它下面（表头默认吸在顶栏下，会盖住它） */
+.relay-jump ~ .relay-card .table-wrap[data-fit] thead th { top: calc(var(--topbar-h) + var(--h-md) + 2 * var(--sp-8)); }
 .relay-jump-bad { color: var(--bad-text); }
 .relay-head { display: flex; align-items: center; gap: var(--sp-12); flex-wrap: wrap; padding: var(--sp-12) var(--card-pad); }
 .relay-head .ttl { font: var(--fw-semibold) var(--fs-title) / var(--lh-title) var(--font-sans); letter-spacing: var(--tracking-title); }
