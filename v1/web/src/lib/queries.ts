@@ -231,7 +231,6 @@ export const useRetirePreview = (id: string | null, enabled: boolean) => useQuer
 
 // ---- 设置页：账户安全（两步验证、登录会话、改密码）；类型的 import 随这一段整块追加在末尾 ----
 import type { AccountSession, TotpSetup, TotpStatus } from './types';
-/** 登录（可带两步验证码 / 恢复码）：服务端回 totp_required 时再带上 totp 重新提交 */
 export const useTotpStatus = () => useQuery({ queryKey: ['account', 'totp'], queryFn: () => get<TotpStatus>('/account/totp') });
 /** 生成待确认的密钥：每次打开「开启两步验证」都重新生成，旧的作废 */
 export const useTotpSetup = () => useMutation({ mutationFn: () => post<TotpSetup>('/account/totp/setup') });
