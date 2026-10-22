@@ -5,12 +5,12 @@ import * as React from 'react';
 import { CheckCircle2, ChevronRight, CircleAlert, Loader2, PackageOpen } from 'lucide-react';
 import { useRelays } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
-import { errText, probeFail } from '@/lib/derive';
+import { errText, probeFail, probeFailLabel } from '@/lib/derive';
 import * as F from '@/lib/format';
 import type { EntryView, MachineView } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { Tip } from '@/components/ui/overlays';
-import { Chip, Due, Empty, ErrorNote, Flag, HealthPill, Num, PageHead, Pill } from '@/components/app/primitives';
+import { Chip, Due, Empty, ErrorNote, Flag, HealthPill, Num, PageHead, Pill, TableWrap } from '@/components/app/primitives';
 import { NodeHover } from '@/components/app/NodeHover';
 import { Waypoints } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -38,7 +38,7 @@ const EntryRow = React.memo(function EntryRow({ e, open }: { e: EntryView; open:
       {/* 直出入口的节点就是这台线路机自己 */}
       <td>{e.direct ? <span className="ellipsis block" data-tip="从线路机自己的 IP 出去，不经节点">{e.node.name}</span>
         : <NodeHover id={e.node.id} noFocus><span className="ellipsis block">{e.node.name}</span></NodeHover>}</td>
-      <td>{fail ? <Pill tone="bad" tip={fail.detail ? errText(fail.detail) : undefined}>不通</Pill> : entryState(e)}</td>
+      <td>{fail ? <Pill tone="bad" tip={fail.detail ? errText(fail.detail) : undefined}>{probeFailLabel(e)}</Pill> : entryState(e)}</td>
       {/* 停用的入口不再探测：留着的是停用前的旧读数，不显示 */}
       {e.lifecycle === 'disabled' ? <><td className="r t-muted">—</td><td className="r t-muted">—</td></> : <><td className="r">{tcpCell(e)}</td><td className="r">{probeCell(e.egress)}</td></>}
       <td className="r"><Num f={F.bytes(e.traffic.month_up + e.traffic.month_down)} /></td>
@@ -58,7 +58,7 @@ function ApplyStatus({ m }: { m: MachineView }) {
         : pending ? <Pill tone="info" dot="none"><Loader2 size={12} className="spin" />应用中</Pill>
         : <Pill tone="ok" dot="none"><CheckCircle2 size={12} />已应用</Pill>}
       <Tip text="两个数相等表示线路机已同步"><span tabIndex={0}>配置版本 <b className="num" style={{ color: 'var(--fg)' }}>{r.generation}</b> · 已生效 <b className="num" style={{ color: 'var(--fg)' }}>{r.applied_generation}</b></span></Tip>
-      {pending && <span>{pendingEntries} 条入口应用中</span>}
+      {pending && pendingEntries > 0 && <span>{pendingEntries} 条入口应用中</span>}
       <span style={{ marginLeft: 'auto' }} data-tip={r.applied_at ? F.dtFull(r.applied_at) : undefined}>最近应用 {F.dt(r.applied_at)}</span>
       {r.apply_error && <div style={{ flexBasis: '100%', color: 'var(--bad-text)' }}>{r.apply_error}</div>}
     </div>
@@ -86,7 +86,8 @@ function RelayCard({ m, open }: { m: MachineView; open: Open }) {
       </header>
       <ApplyStatus m={m} />
       {/* 入口的“⋯”菜单与对话框整张卡共用一份 */}
-      <EntryMenus entries={m.entries}><div className="table-wrap">
+      {/* TableWrap：放得下时表头吸顶，长卡往下滚列名一直在 */}
+      <EntryMenus entries={m.entries}><div><TableWrap>
         <table className="dt is-one" style={{ minWidth: 700 }}>
           <colgroup><col style={{ width: 84 }} /><col style={{ width: 160 }} /><col style={{ width: 104 }} /><col style={{ width: 96 }} /><col style={{ width: 96 }} /><col style={{ width: 120 }} /><col style={{ width: 52 }} /></colgroup>
           <thead><tr><th>端口</th><th>节点</th><th>状态</th><th className="r">TCP 延迟</th><th className="r">出口延迟</th><th className="r">本月业务流量</th><th /></tr></thead>
@@ -94,6 +95,7 @@ function RelayCard({ m, open }: { m: MachineView; open: Open }) {
             {entries.map((e) => <EntryRow key={e.id} e={e} open={open} />)}
           </tbody>
         </table>
+        </TableWrap>
         {m.entries.length === 0 && <Empty text="还没有入口" />}
       </div></EntryMenus>
       {/* 收起后回到这张卡的顶部，不停在下一台线路机中间 */}
