@@ -278,6 +278,9 @@ enum Cmd {
         /// 只看已退役
         #[arg(long)]
         retired: bool,
+        /// 只列 N 天内到期（含已过期）的在用机器，按到期日排，表格加「到期」列（自动续费的也列出并标明）
+        #[arg(long, value_name = "DAYS", conflicts_with = "retired")]
+        due: Option<i64>,
     },
     /// 机器详情
     Show { machine: String },
@@ -639,7 +642,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Login { .. } => unreachable!(),
         Cmd::Whoami => cmds::whoami(x),
         Cmd::Status => cmds::status(x),
-        Cmd::Ls { team, kind, status, retired } => cmds::ls(x, team.as_deref(), kind.as_deref(), status.as_deref(), retired),
+        Cmd::Ls { team, kind, status, retired, due } => cmds::ls(x, team.as_deref(), kind.as_deref(), status.as_deref(), retired, due),
         Cmd::Show { machine } => cmds::show(x, &machine),
         Cmd::Series { machine, range, metric } => cmds::series(x, &machine, &range, &metric),
         Cmd::Uptime { machine, days } => cmds::uptime(x, &machine, days),
