@@ -556,17 +556,14 @@ async fn agent(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     // 记下这枚新令牌，wait_report 用它判断「新 agent 已经在用新令牌上报」。
     // 从这里起要用 dist 里的程序重启 agent（pushed）：之后的失败（起不来、没上报、线路机检查没通过）与新版本有关
     c.set_params(json!({"agent_token_id": token_id, "agent_replaced": replaced, "pushed": true})).await?;
-    let mut script = vars(&[
+    // 线路机先收敛 Xray 单元、后换 agent（见 scripts::relay_agent）
+    let script = vars(&[
         ("SERVER_URL", &c.st.cfg.public_url),
         ("ROLE", if m.kind == "relay" { "relay" } else { "node" }),
         ("MACHINE_ID", &m.id.to_string()),
         ("TOKEN", &token),
         ("BIN_CHANGED", if pushed { "1" } else { "0" }),
-    ]) + &scripts::agent();
-    if m.kind == "relay" {
-        script += &scripts::relay_xray_unit();
-        script += &scripts::relay_logrotate();
-    }
+    ]) + &if m.kind == "relay" { scripts::relay_agent() } else { scripts::agent() };
     let out = match t.run(&script, Duration::from_secs(120)).await {
         Ok(o) => o,
         Err(e) if can_rollback => return Err(rollback(c, &m, kind_of(&e), &format!("新版本装上后没能配置、重启 agent（{e:#}）")).await),
@@ -593,12 +590,20 @@ async fn agent(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         c.warn(format!("fleet-xray 单元没更新上：{}", out.stderr.trim())).await;
     }
     warn_linklocal_dns(c, &out, "Xray").await;
+    // 链路本地 DNS 的公共解析器挂载要 Xray 重启才生效（见 scripts::XRAY_RESOLV_SH）
+    let xray_restarted = out.kv("xray_restart") == Some("resolv");
+    if xray_restarted {
+        c.log("重启了一次 Xray（这台线路机上客户的连接断开了一下，客户端会自动重连）：它还在用被拦掉的链路本地解析器，重启后才用上公共解析器").await;
+    } else if out.kv("xray_restart") == Some("error") {
+        c.warn(format!("重启 Xray 换上公共解析器没成功，Xray 可能解析不了域名，需要手动 systemctl restart fleet-xray：{}", out.stderr.trim())).await;
+    }
     if out.kv("logrotate") == Some("error") {
         c.warn(format!("访问日志轮转配置没装上：{}", out.stderr.trim())).await;
     }
     // xray_checks：等新版本上报时线路机还要做到的几项（程序换过才查，见 wait_report）
     Ok(Outcome::Done(json!({
         "binary_updated": pushed, "token_id": token_id, "agent_version": version, "prev_version": out.kv("prev_version").filter(|_| replaced),
+        "xray_restarted": xray_restarted.then_some(true),
         "xray_checks": checks.filter(|_| can_rollback).map(|k| k.describe()),
     })))
 }

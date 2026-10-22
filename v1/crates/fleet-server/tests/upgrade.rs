@@ -346,6 +346,26 @@ async fn relay_upgrade_rolls_back_when_xray_breaks() {
     assert_eq!(run_round(&t, &job).await["state"], "succeeded");
 }
 
+/// 线路机的 DNS 是链路本地地址、正在跑的 Xray 还没用上公共解析器的挂载：先装 Xray 单元、重启一次 Xray，再换 agent，步骤里记一条说明。
+/// 不是链路本地 DNS 的线路机（上面几个测试）不重启 Xray
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn relay_upgrade_restarts_xray_for_linklocal_dns() {
+    let t = setup(false).await;
+    let (m, root) = relay(&t, "线路机2", "192.0.2.24", "0.1.0+old", "0.1.0+new", xray_ok("0.1.0+old"), None).await;
+    std::fs::create_dir_all(root.join("etc")).unwrap();
+    std::fs::write(root.join("etc/resolv.conf"), "nameserver 169.254.169.254\n").unwrap();
+    std::fs::write(root.join("pid.fleet-xray"), "42\n").unwrap();
+    let job = upgrade(&t, m).await;
+    let j = run_round(&t, &job).await;
+    assert_eq!((j["state"].as_str(), &j["steps"][0]["output"]["xray_restarted"]), (Some("waiting"), &json!(true)), "{j}");
+    let log = read(&root.join("systemctl.log"));
+    let (xray, agent) = (log.find("restart fleet-xray\n").unwrap(), log.find("restart fleet-agent\n").unwrap());
+    assert!(xray < agent && log.matches("restart fleet-xray\n").count() == 1, "{log}");
+    assert!(read(&root.join("etc/fleet-xray/resolv.conf")).starts_with("nameserver 1.1.1.1\n"));
+    let logs = t.get(&format!("/api/v1/jobs/{job}/logs")).await;
+    assert!(logs.as_array().unwrap().iter().any(|l| l["msg"].as_str().unwrap().starts_with("重启了一次 Xray")), "{logs}");
+}
+
 /// 「全部升级」，返回按执行顺序的作业 id
 async fn upgrade_all(t: &T) -> Vec<String> {
     let up = t.post("/api/v1/agents/upgrade", json!({})).await;
