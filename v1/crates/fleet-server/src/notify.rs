@@ -263,7 +263,7 @@ pub fn http_url(s: &str, what: &str) -> Result<String, String> {
 fn http_url_v(v: &Value, what: &str) -> Result<String, String> { http_url(v.as_str().unwrap_or(""), what) }
 
 /// 不是公网地址：环回、未指定、私网、CGNAT、链路本地（含云元数据 169.254.169.254）、ULA、组播、广播与保留、文档、基准测试网段；
-/// IPv4 映射的 IPv6 按其中的 IPv4 判断
+/// IPv4 映射的 IPv6 按其中的 IPv4 判断；内嵌 IPv4 的转换地址（NAT64、6to4、Teredo：经转换网关能到任意 IPv4，含内网与云元数据）一律不算
 pub fn non_global(ip: IpAddr) -> bool {
     match ip.to_canonical() {
         IpAddr::V4(a) => {
@@ -282,7 +282,17 @@ pub fn non_global(ip: IpAddr) -> bool {
         }
         IpAddr::V6(a) => {
             let s = a.segments();
-            a.is_loopback() || a.is_unspecified() || a.is_multicast() || s[0] & 0xfe00 == 0xfc00 || s[0] & 0xffc0 == 0xfe80 || (s[0] == 0x2001 && s[1] == 0x0db8)
+            a.is_loopback()
+                || a.is_unspecified()
+                || a.is_multicast()
+                || s[0] & 0xfe00 == 0xfc00
+                || s[0] & 0xffc0 == 0xfe80
+                || (s[0] == 0x2001 && s[1] == 0x0db8)
+                // NAT64：64:ff9b::/96 与本地用的 64:ff9b:1::/48（整个 64:ff9b::/32 都没有普通公网地址）
+                || (s[0] == 0x0064 && s[1] == 0xff9b)
+                // Teredo 2001::/32、6to4 2002::/16
+                || (s[0] == 0x2001 && s[1] == 0)
+                || s[0] == 0x2002
         }
     }
 }
@@ -355,7 +365,8 @@ impl reqwest::dns::Resolve for PublicOnly {
     }
 }
 
-/// `allow_private`（配置 `[notify] allow_private`）为假时用只解析公网地址的客户端
+/// `allow_private`（配置 `[notify] allow_private`）为假时用只解析公网地址的客户端。
+/// 不走环境变量里的代理（HTTP(S)_PROXY、ALL_PROXY）：经代理时目标域名由代理去解析，PublicOnly 就管不住了
 fn client(allow_private: bool) -> &'static reqwest::Client {
     static OPEN: OnceLock<reqwest::Client> = OnceLock::new();
     static PUBLIC: OnceLock<reqwest::Client> = OnceLock::new();
@@ -363,6 +374,7 @@ fn client(allow_private: bool) -> &'static reqwest::Client {
         let b = reqwest::Client::builder()
             .timeout(SEND_TIMEOUT)
             .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
             .user_agent(concat!("fleet-server/", env!("CARGO_PKG_VERSION")));
         let b = if public { b.dns_resolver(Arc::new(PublicOnly)) } else { b };
         b.build().expect("构建 HTTP 客户端")
@@ -773,6 +785,11 @@ mod tests {
         for ip in ["1.1.1.1", "149.154.167.220", "100.128.0.1", "2001:4860:4860::8888"] {
             assert!(!non_global(ip.parse().unwrap()), "{ip}");
         }
+        // 内嵌 IPv4 的转换地址：NAT64（含本地用的 /48）、Teredo、6to4，哪怕里面是公网 IPv4 也不连
+        for ip in ["64:ff9b::a9fe:a9fe", "64:ff9b::808:808", "64:ff9b:1::a00:1", "2001:0:4136:e378:8000:63bf:3fff:fdd2", "2002:a9fe:a9fe::1", "2002:808:808::1"] {
+            assert!(non_global(ip.parse().unwrap()), "{ip}");
+        }
+        assert!(check_destination(&json!({"url": "http://[64:ff9b::a9fe:a9fe]/latest/meta-data"}), false).is_err());
         assert!(check_destination(&json!({"url": "http://[::ffff:127.0.0.1]:8080/x"}), false).is_err());
         assert!(check_destination(&json!({"api_base": "http://2130706433"}), false).is_err());
         assert!(check_destination(&json!({"url": "https://qyapi.weixin.qq.com/x"}), false).is_ok());
