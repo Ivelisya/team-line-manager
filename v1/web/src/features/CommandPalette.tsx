@@ -52,7 +52,7 @@ export default function CommandPalette({ theme }: { theme: Theme }) {
       </CommandDialog>
 
       <ConfirmDialog open={askUpgrade} onOpenChange={setAskUpgrade} title="升级全部 agent？" confirmLabel="全部升级"
-        description="先升一台做金丝雀（有线路机先挑线路机），它成功后线路机逐台升级，线路机都成功后落地机并发；金丝雀或任何一台线路机失败，没开始的都会取消。新版本起不来或 2 分钟内没有上报，会自动换回旧版本。已有进行中作业的机器会跳过；升级时 agent 会重启，不影响线路上的连接。"
+        description="先升一台做金丝雀（有线路机先挑线路机），它成功后线路机逐台升级，线路机都成功后落地机并发。新版本起不来、2 分钟内没有上报，或线路机上 Xray 不正常，会自动换回旧版本；出在金丝雀或线路机上时，没开始的都会取消（连不上、推送之前就失败的只算那一台）。排队中的可以在作业详情里取消。已有进行中作业的机器会跳过；升级时 agent 会重启，不影响线路上的连接。"
         onConfirm={async () => { const r = await upgradeAll.mutateAsync(); toast.ok(`已提交 ${r.jobs.length} 个升级作业：${r.order}`); }} />
     </>
   );

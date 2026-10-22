@@ -347,7 +347,7 @@ pub fn renumber(ctx: &Ctx, team: &str, yes: bool) -> anyhow::Result<u8> {
 
 pub fn upgrade_agent(ctx: &Ctx, machine: Option<&str>, all: bool, yes: bool, follow: bool) -> anyhow::Result<u8> {
     let d = if all {
-        confirm("确认升级所有在用机器上的 agent？先升一台做金丝雀，成功后线路机逐台、落地机并发；新版本起不来或没上报会自动换回旧版本", yes)?;
+        confirm("确认升级所有在用机器上的 agent？先升一台做金丝雀，成功后线路机逐台、落地机并发；新版本起不来、没上报或线路机 Xray 不正常会自动换回旧版本，出在金丝雀或线路机上时没开始的都取消", yes)?;
         ctx.c.post("/agents/upgrade", &json!({}))?
     } else {
         let q = machine.ok_or_else(|| anyhow!("给机器名，或用 --all"))?;

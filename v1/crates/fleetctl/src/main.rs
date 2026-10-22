@@ -407,7 +407,7 @@ enum Cmd {
         #[arg(long)]
         yes: bool,
     },
-    /// 升级 agent（单台，或 --all：先升一台做金丝雀，成功后线路机逐台、落地机并发）；新版本起不来或没上报自动换回旧版本
+    /// 升级 agent（单台，或 --all：先升一台做金丝雀，成功后线路机逐台、落地机并发）；新版本起不来、没上报或线路机 Xray 不正常自动换回旧版本
     UpgradeAgent {
         machine: Option<String>,
         #[arg(long)]
