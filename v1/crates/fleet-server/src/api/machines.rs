@@ -634,6 +634,9 @@ pub struct SubIn {
     remind_days: i32,
     traffic_gb: Option<i32>,
     traffic_reset_day: Option<i32>,
+    /// 按供应商面板校准本周期已用（十进制 GB，可带小数）：记下这个数和现在的时间。没传 = 不改，null = 清掉
+    #[serde(default, deserialize_with = "super::some", skip_serializing_if = "Option::is_none")]
+    traffic_used_gb: Option<Option<f64>>,
 }
 fn usd() -> String { "USD".into() }
 fn monthly() -> String { "monthly".into() }
@@ -658,6 +661,13 @@ pub async fn put_subscription(a: Actor, State(st): State<AppState>, ApiPath(id):
     if b.traffic_reset_day.is_some_and(|d| !(1..=31).contains(&d)) {
         return Err(ApiError::bad_request("流量重置日要在 1–31 之间"));
     }
+    // 校准值：GB → 字节（1 GB = 10⁹ 字节）
+    let base = match b.traffic_used_gb {
+        Some(Some(g)) if !(g.is_finite() && (0.0..1e9).contains(&g)) => return Err(ApiError::bad_request("本周期已用要填 0 或正数（GB）")),
+        Some(Some(g)) => Some(Some((g * 1e9).round() as i64)),
+        Some(None) => Some(None),
+        None => None,
+    };
     let mut tx = st.db.begin().await?;
     check_tz(&mut tx, &b.billing_tz).await?;
     sqlx::query(
@@ -679,6 +689,15 @@ pub async fn put_subscription(a: Actor, State(st): State<AppState>, ApiPath(id):
     .bind(b.traffic_reset_day)
     .execute(&mut *tx)
     .await?;
+    if let Some(base) = base {
+        sqlx::query(
+            "update subscription set traffic_used_base = $2, traffic_used_base_at = case when $2::bigint is null then null else now() end where machine_id = $1",
+        )
+        .bind(id)
+        .bind(base)
+        .execute(&mut *tx)
+        .await?;
+    }
     audit(&mut tx, &a.name, "subscription.set", "machine", Some(id), serde_json::to_value(&b).unwrap_or_default()).await?;
     tx.commit().await?;
     st.emit(Event::Machine { id });
