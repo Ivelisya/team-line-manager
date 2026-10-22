@@ -12,6 +12,8 @@ anyhow.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
+# 请求体解析失败时取 serde 的错误路径（axum 的 Json 已经用它解析，同一个版本，见 error.rs）
+serde_path_to_error = "0.1"
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

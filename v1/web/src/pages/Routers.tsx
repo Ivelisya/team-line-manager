@@ -7,7 +7,7 @@ import { useRouterDrawer, useRouters, type RouterView } from '@/lib/routers';
 import { Button } from '@/components/ui/button';
 import { Segmented } from '@/components/ui/overlays';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Empty, ErrorNote, PageHead } from '@/components/app/primitives';
+import { Empty, ErrorNote, PageHead, Panel } from '@/components/app/primitives';
 import { RouterCard } from '@/components/app/RouterCard';
 import { AddRouterDialog } from '@/features/RouterDialogs';
 
@@ -60,7 +60,8 @@ export function RoutersPage() {
       {groups.length > 2 && <div className="hgroups" role="group" aria-label="筛选"><Segmented label="团队" value={cur} onChange={setTeam} items={groups} className="seg-fill" /></div>}
       {q.isLoading && <div className="cards" data-view="large">{Array.from({ length: 3 }, (_, i) => <Skeleton key={i} h={520} style={{ borderRadius: 'var(--r-card)', marginBottom: 'var(--grid-gap)' }} />)}</div>}
       {q.data && all.length === 0 && (
-        <Empty icon={<RouterIcon size={22} />} text="还没有接入软路由">{add}</Empty>
+        // 空状态放在卡片底板上（同作业页）
+        <Panel><Empty icon={<RouterIcon size={22} />} text="还没有接入软路由">{add}</Empty></Panel>
       )}
       {shown.length > 0 && <div className="cards page-in" data-view="large">{shown.map((r) => <RouterCard key={r.id} r={r} current={r.id === openId} onOpen={open} />)}</div>}
       <AddRouterDialog open={adding} onOpenChange={setAdding} />

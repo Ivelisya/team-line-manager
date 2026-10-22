@@ -249,10 +249,11 @@ async fn ip_check(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     if !out.ok() {
         return Err(out.fail(&format!("在宿主机 {hname} 上核对 IP 失败")));
     }
-    let local = out.kv("local_ips").unwrap_or("").replace(',', ", ");
-    if !ip_set(&local).contains(ip) {
-        return Err(remote(format!("IP {ip} 不在宿主机 {hname} 的网卡上（本机：{local}）：只支持直接配在网卡上的公网 IPv4，EIP / NAT 映射的 IP 不行")));
+    let local_ips = out.kv("local_ips").unwrap_or("");
+    if let Some(e) = scripts::ip_not_on_host(ip, &hname, local_ips) {
+        return Err(remote(e));
     }
+    let local = local_ips.replace(',', ", ");
     let got = out.kv("echo").unwrap_or("").trim();
     if got != ip {
         return Err(remote(match got.parse::<IpAddr>() {
@@ -337,11 +338,8 @@ fn check_nft(out: &Output, allow: &str, table: &str) -> anyhow::Result<()> {
     }
     let (want, got) = (ip_set(allow), ip_set(out.kv("nft_relays").unwrap_or("")));
     if want != got {
-        return Err(remote(format!(
-            "节点防火墙放行名单和期望不一致：期望 [{}]，实际 [{}]",
-            want.iter().cloned().collect::<Vec<_>>().join(", "),
-            got.iter().cloned().collect::<Vec<_>>().join(", ")
-        )));
+        let list = |s: &BTreeSet<String>| if s.is_empty() { "无".to_string() } else { s.iter().cloned().collect::<Vec<_>>().join("、") };
+        return Err(remote(format!("节点防火墙放行名单和期望不一致：期望 {}；实际 {}", list(&want), list(&got))));
     }
     Ok(())
 }

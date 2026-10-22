@@ -1,7 +1,7 @@
 // 生命周期对话框：换线路机（节点）、搬空线路机（线路机）、恢复已退役的机器。
 // 抽屉“管理”页、线路页、卡片/表格的右键菜单、命令面板共用；菜单触发的（连同退役）走 LifecycleDialogsHost（外壳里只渲染一份）。
 import * as React from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowRight } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
 import { useEvacuate, useMachine, useMoveEntry, useRelayChoices, useRelays, useRestore, useRestorePreview, useTeams } from '@/lib/queries';
@@ -131,7 +131,14 @@ const KEY_LOGIN: Record<string, string> = { ok: '中控密钥可登录', denied:
 export const RestoreDialog = resetOnOpen(function RestoreDialog({ m, open, onOpenChange, onDone }: { m: MachineView; open: boolean; onOpenChange: (o: boolean) => void; onDone?: () => void }) {
   const nav = useNavigate();
   const restore = useRestore();
-  const { open: openDrawer } = useDrawer();
+  const [, setSp] = useSearchParams();
+  // 打开占用这个 IP 的那台（在用的）：机器页停在「已退役」范围时一起切回在用，背后的列表与抽屉的上一台 / 下一台跟它一致
+  const openOwner = (id: string) => setSp((p) => {
+    const n = new URLSearchParams(p);
+    if (n.get('scope') === 'retired') n.delete('scope');
+    n.set('m', id); n.delete('tab');
+    return n;
+  });
   const teams = useTeams().data ?? [];
   const relays = useRelayChoices().data ?? [];
   const isRelay = m.kind === 'relay';
@@ -212,16 +219,17 @@ export const RestoreDialog = resetOnOpen(function RestoreDialog({ m, open, onOpe
   };
 
   return (
-    <ConfirmDialog asForm dirty={dirty} open={open} onOpenChange={onOpenChange} size="md" title={`恢复 ${m.name}`} confirmLabel="恢复" confirmDisabled={!ready}
+    <ConfirmDialog asForm scroll dirty={dirty} open={open} onOpenChange={onOpenChange} size="md" title={`恢复 ${m.name}`} confirmLabel="恢复" confirmDisabled={!ready}
       description={<>重新上架，保留原 ID <InfoTip text={'机器保持原来的 ID（历史、账单、审计都接上），重新走一遍上架的收敛步骤；成功后回到「在用」。\n失败会停在「上架失败」，可在作业页重试；取消会回到已退役。'} /></>}
       onConfirm={submit}>
       {!base.isFetchedAfterMount && <div className="hint">{host ? '正在预检…' : '正在预检（最多十几秒）…'}</div>}
       {base.isFetchedAfterMount && base.isError && <ErrorNote error={base.error} onRetry={() => void base.refetch()}>预检失败：</ErrorNote>}
       {liveFailed && <ErrorNote error={live.error} onRetry={() => void live.refetch()}>按新的团队 / 编号预检失败：</ErrorNote>}
       {conflict && (
-        <Note tone="bad">IP {b!.ip} 已被{' '}
-          <button type="button" className="btn btn-link btn-sm" style={{ height: 'auto', padding: 0 }} onClick={() => { onOpenChange(false); openDrawer(conflict.machine_id); }}>{conflict.name}</button>
-          {' '}占用，不能恢复 <InfoTip text="先把它退役，或确认这台机器的 IP 没有变。" />
+        // 占用者常和这台同名（退役后编号回收、同一 IP 又上架了一次）：写明是另一台
+        <Note tone="bad">IP {b!.ip} 已被{conflict.name === m.name ? '另一台未退役的' : '未退役的'}{' '}
+          <button type="button" className="btn btn-link btn-sm" style={{ height: 'auto', padding: 0 }} onClick={() => { onOpenChange(false); openOwner(conflict.machine_id); }}>{conflict.name}</button>
+          {conflict.name === m.name && '（与这台同名）'}占用，不能恢复 <InfoTip text="先把它退役，或确认这台机器的 IP 没有变。" />
         </Note>
       )}
       {pv && !conflict && (
@@ -269,7 +277,7 @@ export const RestoreDialog = resetOnOpen(function RestoreDialog({ m, open, onOpe
               <div className="hint span-2">{host ? <>不需要密码 <InfoTip text={`同机 IP 节点用中控密钥登录宿主机「${host.name}」；${ob ? `SS 端口沿用原来的 ${ob.port}（已被宿主机上别的同机节点占用时重新分配）` : 'SS 端口会在宿主机上重新分配'}。`} /></> : `${KEY_LOGIN[b?.ssh?.key_login ?? 'ok']}，不需要密码`}</div>
             ) : (
               <Field className="span-2" label={needs.password === 'required' ? 'root 密码（必填）' : 'root 密码（选填）'}
-                hint={KEY_LOGIN[b?.ssh?.key_login ?? (needs.password === 'required' ? 'denied' : 'error')]}
+                hint={b?.ssh?.key_login === 'unreachable' ? undefined /* 连不上：上面的警告已写明原因，不重复 */ : KEY_LOGIN[b?.ssh?.key_login ?? (needs.password === 'required' ? 'denied' : 'error')]}
                 info={needs.password === 'required' ? '密码只用来推一次中控公钥，用完即丢' : '中控密钥登录不了时才会用到这个密码，只用一次、用完即丢'}>
                 <Input type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="new-password" placeholder={needs.password === 'required' ? undefined : '留空用中控密钥'} />
               </Field>

@@ -11,12 +11,18 @@ import { Note } from './primitives';
 
 interface Base {
   open: boolean; onOpenChange: (o: boolean) => void; title: string; description?: React.ReactNode;
-  confirmLabel: string; danger?: boolean; /** 额外的禁用条件（例如预览还没加载完） */ confirmDisabled?: boolean; onConfirm: () => Promise<unknown> | unknown; children?: React.ReactNode; size?: 'sm' | 'md';
+  confirmLabel: string; /** 取消按钮的字（确认的动作本身叫「取消…」时换成「返回」之类，不撞名） */ cancelLabel?: string; danger?: boolean; /** 额外的禁用条件（例如预览还没加载完） */ confirmDisabled?: boolean; onConfirm: () => Promise<unknown> | unknown; children?: React.ReactNode; size?: 'sm' | 'md';
   /** 有未提交的改动：点遮罩不关闭（Esc 与取消仍可关） */ dirty?: boolean;
 }
 
+/** 内容长的对话框（scroll）：只滚中间，标题与按钮留在原位。左右各让出对话框的内边距，聚焦环不被裁掉 */
+const SCROLL_BODY: React.CSSProperties = {
+  display: 'grid', gap: 16, overflowY: 'auto', maxHeight: 'calc(100dvh - min(10vh, 96px) - 220px)',
+  margin: '0 calc(-1 * var(--sp-20))', padding: '2px var(--sp-20)',
+};
+
 /** asForm：内容包在 form 里，可确认时在输入框里按 Enter 即执行 */
-export function ConfirmDialog({ open, onOpenChange, title, description, confirmLabel, danger, confirmDisabled, onConfirm, children, size, dirty, asForm }: Base & { asForm?: boolean }) {
+export function ConfirmDialog({ open, onOpenChange, title, description, confirmLabel, danger, confirmDisabled, onConfirm, children, size, dirty, asForm, scroll, cancelLabel }: Base & { asForm?: boolean; scroll?: boolean }) {
   const [busy, setBusy] = React.useState(false);
   const run = async () => {
     setBusy(true);
@@ -25,9 +31,9 @@ export function ConfirmDialog({ open, onOpenChange, title, description, confirmL
   const body = (
     <>
       <DialogHeader><DialogTitle>{title}</DialogTitle>{description && <DialogDescription>{description}</DialogDescription>}</DialogHeader>
-      {children}
+      {scroll ? <div style={SCROLL_BODY}>{children}</div> : children}
       <DialogFooter>
-        <Button onClick={() => onOpenChange(false)} disabled={busy}>取消</Button>
+        <Button onClick={() => onOpenChange(false)} disabled={busy}>{cancelLabel ?? '取消'}</Button>
         <Button type={asForm ? 'submit' : 'button'} variant={danger ? 'danger' : 'primary'} loading={busy} disabled={confirmDisabled} onClick={asForm ? undefined : run}>{confirmLabel}</Button>
       </DialogFooter>
     </>

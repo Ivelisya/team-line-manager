@@ -13,8 +13,9 @@ export const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttribute
 Input.displayName = 'Input';
 
 /** 带单位后缀的短输入框（「7 天」「4 小时」）：width 是整个框的宽度，只填一两位数的不用撑满一行。id 等属性落在里面的 input 上（Field 的标签对得上） */
-export const UnitInput = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement> & { unit: string; width?: number }>(({ unit, width, ...p }, ref) => (
-  <span className="input-unit" style={width ? { width } : undefined}><Input ref={ref} {...p} /><span className="input-unit-u" aria-hidden>{unit}</span></span>
+/** 带单位后缀的输入框；width 是像素宽，'full' 占满一格（表单网格里与下拉框等宽） */
+export const UnitInput = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement> & { unit: string; width?: number | 'full' }>(({ unit, width, ...p }, ref) => (
+  <span className="input-unit" style={width ? { width: width === 'full' ? '100%' : width } : undefined}><Input ref={ref} {...p} /><span className="input-unit-u" aria-hidden>{unit}</span></span>
 ));
 UnitInput.displayName = 'UnitInput';
 

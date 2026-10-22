@@ -39,10 +39,8 @@ export function ConnCell({ intel }: { intel: IpIntel | null | undefined }) {
 }
 
 export const CONN_FILTER_OPTIONS = [
-  { value: 'residential', label: '住宅宽带' }, { value: 'mobile', label: '移动网络' }, { value: 'datacenter', label: '机房' }, { value: 'vpn', label: 'VPN / 代理' }, { value: 'unknown', label: '未知 / 查不到' },
+  { value: 'residential', label: '住宅宽带' }, { value: 'mobile', label: '移动网络' }, { value: 'datacenter', label: '机房' }, { value: 'vpn', label: 'VPN / 代理' }, { value: 'unknown', label: '未知' },
 ];
-/** 来源行按接入方式筛：unknown 同时包含查不到画像的行 */
-export const connMatches = (intel: IpIntel | null | undefined, want: string) => !want || (intel ? intel.conn_type === want : want === 'unknown');
 
 /** 各个库的中文名（status 里的 id 是内部名，不显示） */
 const DB_NAME: Record<string, string> = {

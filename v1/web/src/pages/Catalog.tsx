@@ -8,7 +8,7 @@ import type { Plan, Provider, Team, TrafficReset, TrafficRule } from '@/lib/type
 import { currencyOptions, cycleLabel, cycleOptions, limitGb, meta, trafficResetLabel, trafficRuleLabel } from '@/lib/derive';
 import { collator } from '@/lib/sort';
 import { tzLabel } from '@/lib/tz';
-import { useUrlSort } from '@/lib/urlState';
+import { useUrlSort, useUrlState } from '@/lib/urlState';
 import * as F from '@/lib/format';
 import { Button, IconButton } from '@/components/ui/button';
 import { CheckRow, Field, InfoTip, Input, UnitInput } from '@/components/ui/form';
@@ -25,13 +25,13 @@ import { TzInput } from '@/components/app/TzInput';
 const SECTIONS = ['teams', 'providers', 'plans'];
 
 export function CatalogPage() {
-  // 子页写进 URL 的 section（同设置页），刷新 / 分享链接停在原处；换子页时排序（?sort=）不带过去
+  // 子页写进 URL 的 section（同设置页），刷新 / 分享链接停在原处；换子页时排序（?sort=）、套餐的「显示已归档」不带过去
   const [sp, setSp] = useSearchParams();
   const tab = SECTIONS.find((s) => s === sp.get('section')) ?? 'teams';
   return (
     <div className="stack">
       <PageHead title="团队与套餐" />
-      <Tabs value={tab} onValueChange={(v) => setSp((p) => { const n = new URLSearchParams(p); n.set('section', v); n.delete('sort'); return n; }, { replace: true })}>
+      <Tabs value={tab} onValueChange={(v) => setSp((p) => { const n = new URLSearchParams(p); n.set('section', v); n.delete('sort'); n.delete('archived'); return n; }, { replace: true })}>
         <TabsList><TabsTrigger value="teams">团队</TabsTrigger><TabsTrigger value="providers">供应商</TabsTrigger><TabsTrigger value="plans">套餐</TabsTrigger></TabsList>
         <div style={{ marginTop: 16 }}>
           <TabsContent value="teams"><TeamsTab /></TabsContent>
@@ -58,7 +58,7 @@ function DeleteDialog({ what, item, onClose, run }: { what: string; item: { id: 
   const held = useHeld(item?.id, item);
   return (
     <ConfirmDialog open={!!item} onOpenChange={(o) => !o && onClose()} danger confirmLabel="删除" title={`删除${what}「${held?.name ?? ''}」？`}
-      description={<>删了不能恢复 <InfoTip text={`还有机器${what === '供应商' ? '、套餐' : ''}用着（含已退役的）时删不掉，会提示还有哪些`} /></>}
+      description={<>删了不能恢复 <InfoTip text={what === '供应商' ? '还有机器（含已退役的）、套餐（含已归档的）用着时删不掉，会提示还有哪些' : '还有机器用着（含已退役的）时删不掉，会提示还有哪些'} /></>}
       onConfirm={async () => { await run(item!.id); toast.ok(`${what}「${item!.name}」已删除`); }} />
   );
 }
@@ -185,29 +185,44 @@ const RESET_NOTE: Record<string, string> = { month: '（每月 1 号）', billin
 const resetOptions = () => Object.entries(meta().traffic_resets).map(([value, label]) => ({ value, label: `按${label}${RESET_NOTE[value] ?? ''}` }));
 /** 留空的账单时区跟随组织时区：「跟随组织 · 上海（UTC+8）」 */
 const orgTz = () => `跟随组织 · ${tzLabel(meta().org_timezone)}`;
+const PROVIDER_COLS = [
+  { id: 'name', header: '名称', first: 'asc' as const }, { id: 'code', header: '代码', first: 'asc' as const }, { id: 'tz', header: '账单时区' }, { id: 'rule', header: '流量计量' },
+  { id: 'reset', header: '流量重置' }, { id: 'remind', header: '到期提醒', first: 'desc' as const }, { id: 'plans', header: '在用套餐', r: true, first: 'desc' as const },
+];
 function ProvidersTab() {
-  const q = useProviders();
+  const q = useProviders(); const plans = usePlans().data;
+  const [sort, setSort] = useUrlSort();
   const [edit, setEdit] = React.useState<Provider | 'new' | null>(null);
   const held = useHeld(edit === 'new' ? 'new' : edit?.id, edit);
   const [askDel, setAskDel] = React.useState<Provider | null>(null);
   const delProvider = useDelProvider();
-  const list = q.data ?? [];
+  // 在用套餐数：名下没归档的套餐
+  const planCount = React.useMemo(() => {
+    const m = new Map<string, number>();
+    for (const p of plans ?? []) if (!p.archived_at) m.set(p.provider_id, (m.get(p.provider_id) ?? 0) + 1);
+    return m;
+  }, [plans]);
+  const list = sortRows(q.data ?? [], sort, {
+    name: (p) => p.name, code: (p) => p.code, remind: (p) => p.remind_days ?? meta().defaults.remind_days, plans: (p) => planCount.get(p.id) ?? 0,
+  });
   // 一个面板地址都没填时不占一列
   const panel = list.some((p) => p.panel_url);
+  const cols = React.useMemo(() => [...PROVIDER_COLS, ...(panel ? [{ id: 'panel', header: '面板' }] : []), { id: 'act', header: '' }], [panel]);
   return (
     <>
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       <Panel title="供应商" count={list.length} sub={<InfoTip text="名下机器的账单时区、流量重置、到期提醒跟随这里" />} tools={<Button variant="primary" onClick={() => setEdit('new')}><Plus />新建供应商</Button>} flush>
         <TableWrap>
-          <table className="dt is-one" style={{ minWidth: panel ? 1100 : 960 }}>
-            <colgroup><col style={{ width: 170 }} /><col style={{ width: 84 }} /><col style={{ width: 190 }} /><col style={{ width: 170 }} /><col style={{ width: 110 }} /><col style={{ width: 96 }} />{panel && <col />}<col style={{ width: 128 }} /></colgroup>
-            <thead><tr><th>名称</th><th>代码</th><th>账单时区</th><th>流量计量</th><th>流量重置</th><th>到期提醒</th>{panel && <th>面板</th>}<th /></tr></thead>
+          <table className="dt is-one" style={{ minWidth: panel ? 1190 : 1050 }}>
+            <colgroup><col style={{ width: 170 }} /><col style={{ width: 84 }} /><col style={{ width: 190 }} /><col style={{ width: 170 }} /><col style={{ width: 110 }} /><col style={{ width: 96 }} /><col style={{ width: 90 }} />{panel && <col />}<col style={{ width: 128 }} /></colgroup>
+            <SortHead cols={cols} sort={sort} onSort={setSort} />
             <tbody>{list.map((p) => (
               <tr key={p.id}><td className="strong">{p.name}</td><td><Chip>{p.code}</Chip></td>
                 <td data-tip={p.timezone ?? meta().org_timezone}>{p.timezone ? tzLabel(p.timezone) : <span className="t-muted">{orgTz()}</span>}</td>
                 <td>{trafficRuleLabel(p.traffic_rule)}</td>
                 <td data-tip={resetOptions().find((o) => o.value === (p.traffic_reset ?? meta().defaults.traffic_reset))?.label}>按{trafficResetLabel(p.traffic_reset ?? meta().defaults.traffic_reset)}</td>
                 <td>提前 <span className="num">{p.remind_days ?? meta().defaults.remind_days}</span> 天</td>
+                <td className="r num">{planCount.get(p.id) ?? <span className="t-muted">0</span>}</td>
                 {panel && <td>{p.panel_url && /^https?:\/\//i.test(p.panel_url) ? <a href={p.panel_url} target="_blank" rel="noreferrer noopener" className="btn-link btn" style={{ gap: 4, maxWidth: '100%' }}><span className="ellipsis">{p.panel_url.replace(/^https?:\/\//, '')}</span><ExternalLink size={12} /></a> : (p.panel_url || <span className="t-muted">—</span>)}</td>}
                 <td className="r"><span className="row" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
                   <Button size="sm" variant="quiet" onClick={() => setEdit(p)}><Pencil size={13} />编辑</Button>
@@ -277,7 +292,10 @@ function PlansTab() {
   const [askDel, setAskDel] = React.useState<Plan | null>(null);
   const delPlan = useDelPlan();
   const archiveHeld = useHeld(askArchive?.id, askArchive);
-  const [showArchived, setShowArchived] = React.useState(false);
+  // 「显示已归档」写进 URL（?archived=1）
+  const [sp, upd] = useUrlState();
+  const showArchived = sp.get('archived') === '1';
+  const setShowArchived = (v: boolean) => upd({ archived: v ? '1' : '' });
   const held = useHeld(edit === 'new' ? 'new' : edit?.id, edit);
   const pname = (id: string) => providers.find((p) => p.id === id)?.name ?? '—';
   // 流量不限（0 / 空）排在最大
@@ -350,7 +368,8 @@ const PlanDialog = resetOnOpen(function PlanDialog({ plan, open, onClose }: { pl
     if (plan === 'new') add.mutate(body(), { onSuccess: ok, onError: toast.err });
     else patch.mutate({ id: plan.id, ...body() }, { onSuccess: ok, onError: toast.err });
   };
-  const num = (k: keyof PlanForm, label: string, ph?: string, info?: string) => <Field label={label} info={info}><Input inputMode="decimal" placeholder={ph} value={f[k]} onChange={(e) => setF({ ...f, [k]: e.target.value.replace(/[^\d.]/g, '') })} /></Field>;
+  // 单位写在输入框后缀（同其它对话框）
+  const num = (k: keyof PlanForm, label: string, unit: string, ph?: string, info?: string) => <Field label={label} info={info}><UnitInput unit={unit} width="full" inputMode="decimal" placeholder={ph} value={f[k]} onChange={(e) => setF({ ...f, [k]: e.target.value.replace(/[^\d.]/g, '') })} /></Field>;
   return (
     <FormDialog size="md" dirty={dirty} open={open} onOpenChange={(o) => !o && onClose()} title={plan === 'new' ? '新建套餐' : '编辑套餐'} submitLabel="保存" busy={add.isPending || patch.isPending} valid={f.name.trim() !== '' && f.provider_id !== ''} onSubmit={save}
       desc={plan !== 'new' && <>{plan.machine_count ? `${plan.machine_count} 台在用，` : ''}改了立即生效 <InfoTip text="套餐是模板：同一套餐的机器共用这里的配额、价格、周期；在「费用」页单独设置过的除外。" /></>}>
@@ -359,8 +378,8 @@ const PlanDialog = resetOnOpen(function PlanDialog({ plan, open, onClose }: { pl
         {/* 机器的供应商就是套餐的：有机器用着时不能换（服务端也拦） */}
         <Field label="供应商" hint={plan !== 'new' && plan.machine_count ? '有机器在用，不能换' : undefined} info={plan !== 'new' && plan.machine_count ? '要换供应商就给别的供应商另建套餐' : undefined}>
           <Select value={f.provider_id} onChange={(v) => setF({ ...f, provider_id: v })} disabled={plan !== 'new' && plan.machine_count > 0} options={providers.map((p) => ({ value: p.id, label: p.name }))} /></Field>
-        {num('cpu_cores', 'CPU 核数')}{num('mem_gb', '内存（GiB）')}{num('disk_gb', '磁盘（GiB）')}{num('bandwidth_mbps', '带宽（Mbps）')}
-        {num('traffic_gb', '流量（GB / 每个流量周期）', '留空或 0 = 不限', '流量周期按供应商的「流量重置」')}{num('price', '价格（每个计费周期）')}
+        {num('cpu_cores', 'CPU', '核')}{num('mem_gb', '内存', 'GiB')}{num('disk_gb', '磁盘', 'GiB')}{num('bandwidth_mbps', '带宽', 'Mbps')}
+        {num('traffic_gb', '流量', 'GB', '留空或 0 = 不限', '每个流量周期的额度；流量周期按供应商的「流量重置」')}{num('price', '价格', f.currency, undefined, '每个计费周期')}
         <Field label="币种"><Select value={f.currency} onChange={(v) => setF({ ...f, currency: v })} options={F.withCurrent(currencyOptions(), f.currency)} /></Field>
         <Field label="计费周期"><Select value={f.cycle} onChange={(v) => setF({ ...f, cycle: v })} options={cycleOptions()} /></Field>
         <Field label="备注" className="span-2"><Input value={f.notes} onChange={(e) => setF({ ...f, notes: e.target.value })} /></Field>

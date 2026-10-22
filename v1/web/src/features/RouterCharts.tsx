@@ -9,7 +9,7 @@ import type { SeriesPoint } from '@/lib/types';
 import { InfoTip } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Beat, ErrorNote, Num, Section, SectionHeader } from '@/components/app/primitives';
+import { Beat, Empty, ErrorNote, Num, Section, SectionHeader } from '@/components/app/primitives';
 import { TimeChart } from '@/components/app/TimeChart';
 import { ChartCard, ChartFrame, RangeBar } from './DrawerCharts';
 
@@ -36,9 +36,14 @@ const vMs = (_: string, v: number) => `${Math.round(v)} ms`;
 
 const RANGE_MS: Record<string, number> = { '1h': 3600_000, '6h': 6 * 3600_000, '24h': 86400_000, '7d': 7 * 86400_000, '30d': 30 * 86400_000 };
 /** 点不到两个时的说明：所选范围内才接入的是数据还在积累，其余（离线）是这段时间没有数据 */
-const fewText = (r: RouterView, range: string) => (r.state === 'pending' ? '还没接入，没有数据' : Date.now() - Date.parse(r.created_at) < (RANGE_MS[range] ?? 0) ? '刚接入，数据积累中' : '这段时间没有数据');
+const fewText = (r: RouterView, range: string) => (Date.now() - Date.parse(r.created_at) < (RANGE_MS[range] ?? 0) ? '刚接入，数据积累中' : '这段时间没有数据');
 
+/** 还没接入的路由没有任何读数：一个空状态，不画一排空图 */
 export function RouterChartsTab({ r }: { r: RouterView }) {
+  return r.state === 'pending' ? <Empty icon={<Activity size={22} />} text="还没接入，没有曲线" /> : <Charts r={r} />;
+}
+
+function Charts({ r }: { r: RouterView }) {
   const [range, setRange] = React.useState('6h');
   const q = useRouterMetrics(r.id, range);
   const few = fewText(r, range);

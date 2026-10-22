@@ -2,7 +2,7 @@
 // 账户安全（两步验证、修改密码、登录会话，见 features/AccountTab）。
 import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Archive, Ban, Bell, FlaskConical, KeyRound, MessagesSquare, Pencil, Plus, Send, ShieldAlert, ShieldCheck, Trash2, Webhook } from 'lucide-react';
+import { Archive, Ban, Bell, Eye, EyeOff, FlaskConical, KeyRound, MessagesSquare, Pencil, Plus, Send, ShieldAlert, ShieldCheck, Trash2, Webhook } from 'lucide-react';
 import { RetentionTab } from '@/features/RetentionTab';
 import { AccountTab } from '@/features/AccountTab';
 import { useAddChannel, useApiKeys, useCreateApiKey, useDelChannel, useMe, useNotifyChannels, useNotifyLog, usePatchChannel, useRevokeApiKey, useTestChannel, useTotpStatus } from '@/lib/queries';
@@ -122,7 +122,8 @@ function ApiKeysSection() {
         </div>
         <div className="field">
           <span className="label">权限</span>
-          <div className="scope-list">
+          {/* 四项权限排成 2×2（自适应列宽在对话框里会排成 3+1） */}
+          <div className="scope-list" style={{ gridTemplateColumns: 'repeat(2, minmax(0, 1fr))' }}>
             {SCOPES.map((s) => (
               <label key={s.value} className="scope-row" data-on={scopes.includes(s.value) ? '1' : undefined}>
                 <Checkbox checked={scopes.includes(s.value)} onCheckedChange={(v) => toggle(s.value, v === true)} aria-label={s.label} />
@@ -274,6 +275,7 @@ const ChannelDialog = resetOnOpen(function ChannelDialog({ target, open, onClose
   const [name, setName] = React.useState(ch?.name ?? ''); const [kind, setKind] = React.useState(ch?.kind ?? 'telegram');
   const [cfg, setCfg] = React.useState<Record<string, string>>({}); const [sev, setSev] = React.useState(ch?.min_severity ?? 'warning'); const [enabled, setEnabled] = React.useState(ch?.enabled ?? true);
   const [touched, setTouched] = React.useState(false); // 动过配置字段后才提示“填写完整”，不一打开就标红
+  const [reveal, setReveal] = React.useState(false);
   const k = KINDS[kind];
   const filled = k.fields.filter((f) => (cfg[f.key] ?? '').trim() !== '').length;
   // 配置整体替换：新建必须填全；编辑时留空 = 不改，只填一部分则要求补全
@@ -296,7 +298,11 @@ const ChannelDialog = resetOnOpen(function ChannelDialog({ target, open, onClose
       <div className="form-grid">
         {k.fields.map((f) => (
           <Field key={f.key} label={f.label} className={k.fields.length === 1 ? 'span-2' : undefined} >
-            <Input type={f.secret ? 'password' : 'text'} value={cfg[f.key] ?? ''} onChange={(e) => { setCfg((c) => ({ ...c, [f.key]: e.target.value })); setTouched(true); }} placeholder={ch ? `留空不改（当前：${ch.config_hint}）` : f.ph} autoComplete="off" spellCheck={false} data-1p-ignore data-lpignore="true" />
+            {/* 密钥类字段默认遮住，旁边可切换显示（核对粘贴进来的地址、token） */}
+            <div className="row" style={{ flexWrap: 'nowrap', gap: 'var(--sp-6)' }}>
+              <Input type={f.secret && !reveal ? 'password' : 'text'} value={cfg[f.key] ?? ''} onChange={(e) => { setCfg((c) => ({ ...c, [f.key]: e.target.value })); setTouched(true); }} placeholder={ch ? `留空不改（当前：${ch.config_hint}）` : f.ph} autoComplete="off" spellCheck={false} data-1p-ignore data-lpignore="true" />
+              {f.secret && <IconButton label={reveal ? '隐藏' : '显示'} aria-pressed={reveal} onClick={() => setReveal((v) => !v)}>{reveal ? <EyeOff size={15} /> : <Eye size={15} />}</IconButton>}
+            </div>
           </Field>
         ))}
       </div>

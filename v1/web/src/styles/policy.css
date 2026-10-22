@@ -90,6 +90,7 @@
 
 /* 发布记录 */
 .pol-cur { margin-left: var(--sp-6); font-size: var(--fs-micro); padding: 0 var(--sp-6); border-radius: var(--r-pill); background: var(--accent-soft); color: var(--accent-soft-fg); }
+.pol-cur.is-same { background: var(--neutral-bg); color: var(--fg-2); }
 .pol-apply { display: flex; align-items: center; gap: var(--sp-8); flex-wrap: wrap; min-width: 0; }
 .pol-relays { display: flex; flex-wrap: wrap; gap: var(--sp-4) var(--sp-10); }
 .pol-relay { display: inline-flex; align-items: center; gap: var(--sp-6); font-size: var(--fs-label); }
