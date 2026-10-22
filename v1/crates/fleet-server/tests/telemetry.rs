@@ -1381,7 +1381,7 @@ async fn silence_changes_are_announced() {
     let mock = Mock::start().await;
     t.post("/api/v1/notify-channels", json!({"name": "wh", "kind": "webhook", "config": {"url": mock.url("/hook/a")}, "min_severity": "critical", "enabled": true})).await;
     let relay = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
-    let key = t.post("/api/v1/api-keys", json!({"name": "ops", "scopes": ["read", "write"]})).await["token"].as_str().unwrap().to_string();
+    let key = t.post("/api/v1/api-keys", json!({"name": "ops", "scopes": ["read", "write"], "password": common::ADMIN_PW})).await["token"].as_str().unwrap().to_string();
     let f = time::format_description::well_known::Rfc3339;
     let now = OffsetDateTime::now_utc();
     let at = |min: i64| (now + time::Duration::minutes(min)).format(&f).unwrap();
