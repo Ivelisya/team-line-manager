@@ -1,4 +1,4 @@
-//! 运维接口：API 密钥与 scope、中控本机的全权密钥（local-admin）、登录限速、远程执行的前置校验；前端静态文件的 404 与缓存头。
+//! 运维接口：API 密钥与 scope、中控本机的全权密钥（local-admin）、登录限速、远程执行的前置校验与 SSH 登录审计；前端静态文件的 404 与缓存头。
 //! 需要 PostgreSQL（见 common）。
 
 mod common;
@@ -712,4 +712,71 @@ async fn local_admin_repairs_and_reserves_name() {
     let (s, v) = t.call("POST", "/api/v1/api-keys", Some(json!({"name": "central-local", "scopes": ["read"], "password": ADMIN_PW})), Auth::Session).await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
     assert!(v["error"]["message"].as_str().unwrap().contains("local-admin"), "{v}");
+}
+
+/// fleetctl ssh 登录前报的审计（POST /audit/ssh）：要 exec 权限；对象名按库里的写，带没带命令照记、命令内容不记；
+/// 不存在 404，已退役、家宽代理 409（同 exec），kind 不对 400
+#[tokio::test]
+async fn ssh_login_audit() {
+    let t = setup().await;
+    let team = t.ok("POST", "/api/v1/teams", Some(json!({"name": "团队1"}))).await;
+    let tid: Uuid = team["id"].as_str().unwrap().parse().unwrap();
+    let node = Uuid::now_v7();
+    sqlx::query("insert into machine (id, kind, team_id, number, primary_ip, ssh_port, lifecycle) values ($1, 'vps', $2, 3, '198.51.100.3', 2222, 'active')")
+        .bind(node)
+        .bind(tid)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let (_, rw_tok) = t.make_key("ci-rw", &["read", "write"]).await;
+    let (_, x_tok) = t.make_key("ci-exec", &["exec"]).await;
+    let login = |id: Uuid, command: Option<bool>| {
+        let mut b = json!({"kind": "machine", "id": id});
+        if let Some(c) = command {
+            b["command"] = json!(c);
+        }
+        b
+    };
+    let (s, _) = t.call("POST", "/api/v1/audit/ssh", Some(login(node, Some(true))), Auth::Key(&rw_tok)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "没有 exec 的密钥伪造不了登录记录");
+    let (s, v) = t.call("POST", "/api/v1/audit/ssh", Some(login(node, Some(true))), Auth::Key(&x_tok)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v) = t.call("POST", "/api/v1/audit/ssh", Some(login(node, None)), Auth::Key(&x_tok)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let rows: Vec<(String, String, Value)> = sqlx::query_as("select actor, target_kind, detail from audit_log where action = 'ssh.login' and target_id = $1 order by id")
+        .bind(node)
+        .fetch_all(&t.st.db)
+        .await
+        .unwrap();
+    let want = |c: bool| ("apikey:ci-exec".to_string(), "machine".to_string(), json!({"name": "团队1-03", "command": c}));
+    assert_eq!(rows, [want(true), want(false)]);
+    let audit = t.ok("GET", &format!("/api/v1/audit?target_id={node}"), None).await;
+    let sums: Vec<String> = audit.as_array().unwrap().iter().map(|a| format!("{}|{}", a["title"].as_str().unwrap(), a["summary"].as_str().unwrap())).collect();
+    assert_eq!(sums, ["SSH 登录|团队1-03 · 交互式", "SSH 登录|团队1-03 · 带命令（内容不记录）"]);
+
+    let retired = Uuid::now_v7();
+    sqlx::query("insert into machine (id, kind, label, primary_ip, lifecycle, retired_at) values ($1, 'relay', '线路机7', '198.51.100.7', 'retired', now())")
+        .bind(retired)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let proxy = Uuid::now_v7();
+    sqlx::query("insert into machine (id, kind, team_id, number, primary_ip, lifecycle) values ($1, 'proxy', $2, 4, '198.51.100.8', 'active')")
+        .bind(proxy)
+        .bind(tid)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    for (body, want, why) in [
+        (login(Uuid::now_v7(), None), StatusCode::NOT_FOUND, "不存在"),
+        (login(retired, None), StatusCode::CONFLICT, "已退役"),
+        (login(proxy, None), StatusCode::CONFLICT, "家宽代理"),
+        (json!({"kind": "vm", "id": node}), StatusCode::BAD_REQUEST, "kind 不对"),
+        (json!({"kind": "machine", "id": "团队1-03"}), StatusCode::BAD_REQUEST, "id 不是 uuid"),
+    ] {
+        let (s, v) = t.call("POST", "/api/v1/audit/ssh", Some(body), Auth::Key(&x_tok)).await;
+        assert_eq!(s, want, "{why}：{v}");
+    }
+    let n: i64 = sqlx::query_scalar("select count(*) from audit_log where action = 'ssh.login'").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(n, 2, "被拒的不记");
 }

@@ -117,6 +117,7 @@ pub fn router() -> Router<AppState> {
         .route("/silences", get(misc::list_silences).post(misc::create_silence))
         .route("/silences/{id}", axum::routing::delete(misc::delete_silence))
         .route("/audit", get(misc::audit))
+        .route("/audit/ssh", post(exec::audit_ssh))
         .route("/stream", get(misc::stream))
         // 告警通知渠道
         .route("/notify-channels", get(notify::list).post(notify::create))
