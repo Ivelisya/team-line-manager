@@ -203,7 +203,7 @@
 .mtable .tname { display: flex; align-items: center; gap: var(--inline-gap); min-width: 0; }
 .mtable .tname > div { min-width: 0; } /* 名称 + 小字 IP 两行（同机器页名称列），长了各自省略 */
 .tmeter, .tquota { display: flex; align-items: center; gap: var(--sp-8); min-width: 0; }
-.tmeter .cells, .tquota .cells { flex: 1 1 auto; height: 6px; gap: 2px; }
+.tmeter .cells, .tquota .cells { flex: 1 1 auto; height: 6px; }
 .tmeter > .num { flex: none; width: 34px; text-align: right; font-size: var(--fs-label); }
 .tmeter[data-tone="warn"] > .num { color: var(--warn-text); }
 .tmeter[data-tone="bad"] > .num { color: var(--bad-text); }
