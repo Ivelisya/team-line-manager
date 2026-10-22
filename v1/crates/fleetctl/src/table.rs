@@ -77,6 +77,19 @@ pub fn kv(rows: &[(&str, String)]) -> String {
     rows.iter().map(|(k, v)| format!("{}  {}", pad(k, w), v)).collect::<Vec<_>>().join("\n")
 }
 
+/// 流量：十进制 B / KB / MB / GB / TB（同网页、同供应商的流量额度）
+pub fn traffic(n: f64) -> String {
+    let units = ["B", "KB", "MB", "GB", "TB", "PB"];
+    let mut v = n.max(0.0);
+    let mut i = 0;
+    while v >= 1000.0 && i + 1 < units.len() {
+        v /= 1000.0;
+        i += 1;
+    }
+    if i == 0 { format!("{v:.0} B") } else { format!("{v:.1} {}", units[i]) }
+}
+
+/// 内存、磁盘：二进制 KiB…TiB（同系统报的容量）
 pub fn bytes(n: f64) -> String {
     let units = ["B", "KiB", "MiB", "GiB", "TiB"];
     let mut v = n.max(0.0);
@@ -148,6 +161,9 @@ mod tests {
         assert_eq!(clip("a\nb", 10), "a b");
         assert_eq!(clip("abcdefghij", 5), "abcd…");
         assert_eq!(bytes(1536.0), "1.5 KiB");
+        // 同一个本月业务流量，网页写 5.3 TB：fleetctl 也是
+        assert_eq!(traffic(5_304_260_163_350.0), "5.3 TB");
+        assert_eq!((traffic(999.0), traffic(1_500_000.0)), ("999 B".to_string(), "1.5 MB".to_string()));
         assert_eq!(bytes(12.0), "12 B");
         assert_eq!(bps(2_500_000.0), "2.5 Mbps");
         assert_eq!(money(1234, "USD"), "12.34 USD");

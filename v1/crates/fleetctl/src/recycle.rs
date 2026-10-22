@@ -84,7 +84,7 @@ pub fn show(ctx: &Ctx, which: &str) -> anyhow::Result<u8> {
             (Some(c), Some(cur)) => format!("{:.2} {cur} / {}", c as f64 / 100.0, cycle_cn(&st(&d, "/cycle"))),
             _ => "-".into(),
         };
-        let gb = |p: &str| d.pointer(p).and_then(Value::as_i64).map(|b| format!("{:.2} GB", b as f64 / 1e9)).unwrap_or("-".into());
+        let gb = |p: &str| d.pointer(p).and_then(Value::as_i64).map(|b| table::traffic(b as f64)).unwrap_or("-".into());
         let rows = vec![
             ("名字", name_cell(&d)),
             ("类型", kind_cn(&st(&d, "/kind")).to_string()),
@@ -97,8 +97,8 @@ pub fn show(ctx: &Ctx, which: &str) -> anyhow::Result<u8> {
             ("上架 → 退役 → 回收", format!("{} → {} → {}", day(&d, "/activated_at"), day(&d, "/retired_at"), day(&d, "/recycled_at"))),
             ("到期日", st(&d, "/due_date")),
             ("原因", st(&d, "/reason")),
-            ("业务流量（上 / 下）", format!("{} / {}", gb("/traffic_up"), gb("/traffic_down"))),
-            ("网卡（入 / 出）", format!("{} / {}", gb("/nic_rx"), gb("/nic_tx"))),
+            ("业务流量", format!("下载 {} / 上传 {}", gb("/traffic_down"), gb("/traffic_up"))),
+            ("网卡流量", format!("下行 {} / 上行 {}", gb("/nic_rx"), gb("/nic_tx"))),
             ("来源", format!("{}（{}）", source_cn(&d), st(&d, "/source_id"))),
             ("操作人", st(&d, "/actor")),
         ];

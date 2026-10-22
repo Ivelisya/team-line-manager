@@ -3,7 +3,7 @@
 use crate::client::{ApiError, Client, NetError};
 use crate::meta;
 use crate::resolve::{self, Want};
-use crate::table::{self, bps, bytes, money};
+use crate::table::{self, bps, money, traffic};
 use anyhow::{anyhow, bail};
 use serde_json::{json, Value};
 use std::io::Write;
@@ -175,7 +175,7 @@ pub fn status(ctx: &Ctx) -> anyhow::Result<u8> {
             (meta::label("due_states", "soon"), st(&ov, "/due_soon")),
             (meta::label("due_states", "overdue"), st(&ov, "/overdue")),
             ("每月费用", if cost.is_empty() { "-".into() } else { cost }),
-            ("本月业务流量", format!("下载 {} / 上传 {}", bytes(num(&ov, "/traffic_month/down").unwrap_or(0.0)), bytes(num(&ov, "/traffic_month/up").unwrap_or(0.0)))),
+            ("本月业务流量", format!("下载 {} / 上传 {}", traffic(num(&ov, "/traffic_month/down").unwrap_or(0.0)), traffic(num(&ov, "/traffic_month/up").unwrap_or(0.0)))),
             ("网卡速率", format!("下行 {} / 上行 {}", bps(num(&ov, "/net_rx_bps").unwrap_or(0.0)), bps(num(&ov, "/net_tx_bps").unwrap_or(0.0)))),
         ]);
         let list = inc.as_array().cloned().unwrap_or_default();
@@ -513,7 +513,7 @@ fn entry_table(items: &[Value]) -> String {
                 entry_state_cn(e).into(),
                 probe("tcp_ok"),
                 probe("egress_ok"),
-                format!("下载 {} / 上传 {}", bytes(num(e, "/today_down").unwrap_or(0.0)), bytes(num(e, "/today_up").unwrap_or(0.0))),
+                format!("下载 {} / 上传 {}", traffic(num(e, "/today_down").unwrap_or(0.0)), traffic(num(e, "/today_up").unwrap_or(0.0))),
                 e["apply_error"].as_str().unwrap_or("").to_string(),
             ]
         })
@@ -562,7 +562,7 @@ pub fn series(ctx: &Ctx, machine: &str, range: &str, metric: &str) -> anyhow::Re
             _ => &["cpu_pct", "mem_pct", "disk_pct", "load1", "net_rx_bps", "net_tx_bps"],
         };
         let fmt_n = |c: &str, n: f64| -> String {
-            if c.ends_with("_bps") { bps(n) } else if c == "up" || c == "down" { bytes(n) } else if c.ends_with("_pct") { format!("{n:.0}%") } else { format!("{n:.2}") }
+            if c.ends_with("_bps") { bps(n) } else if c == "up" || c == "down" { traffic(n) } else if c.ends_with("_pct") { format!("{n:.0}%") } else { format!("{n:.2}") }
         };
         let fmt = |c: &str, p: &Value| -> String {
             match p.get(c) {
