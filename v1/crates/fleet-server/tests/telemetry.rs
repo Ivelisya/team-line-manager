@@ -566,6 +566,12 @@ async fn duplicate_report_still_refreshes_last_report_at() {
     }
     let last: i64 = sqlx::query_scalar("select last_seq from agent_state where machine_id = $1").bind(relay).fetch_one(&t.st.db).await.unwrap();
     assert_eq!(last, 5, "last_seq 不回退");
+    // 上面的重发在内存里就认出来了；中控重启过（内存里记的 seq 比库里的旧）时靠库里的 last_seq 去重，同样只确认、刷新最近上报时间
+    sqlx::query("update agent_state set last_seq = 9, last_report_at = now() - interval '10 minutes' where machine_id = $1").bind(relay).execute(&t.st.db).await.unwrap();
+    let (s, v) = t.report("tok1", &blank_report(7)).await;
+    assert_eq!((s, v["accepted_seq"].as_u64()), (StatusCode::OK, Some(9)), "{v}");
+    let age: f64 = sqlx::query_scalar("select extract(epoch from now() - last_report_at)::float8 from agent_state where machine_id = $1").bind(relay).fetch_one(&t.st.db).await.unwrap();
+    assert!(age < 5.0, "{age}");
 }
 
 /// 令牌最近一次使用距今多少秒（没用过为 None）

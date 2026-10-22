@@ -15,7 +15,7 @@ use fleet_proto::{ApplyReport, Report, ReportAck};
 use serde::Deserialize;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::net::SocketAddr;
-use std::sync::{LazyLock, Mutex, OnceLock};
+use std::sync::{LazyLock, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 use time::{Date, OffsetDateTime};
 use tower_http::decompression::RequestDecompressionLayer;
@@ -115,7 +115,7 @@ fn warn_dropped(machine: Uuid, dropped: usize, seq: u64) {
         return;
     }
     static LAST: OnceLock<Mutex<HashMap<Uuid, Instant>>> = OnceLock::new();
-    let mut m = LAST.get_or_init(Default::default).lock().unwrap();
+    let mut m = lock(LAST.get_or_init(Default::default));
     if m.get(&machine).is_none_or(|t| t.elapsed() >= Duration::from_secs(60)) {
         m.insert(machine, Instant::now());
         tracing::warn!(%machine, seq, dropped, "上报里有时间戳超出可收范围（过期或在未来）或超出主机样本余额的样本，已丢弃");
@@ -169,26 +169,30 @@ struct Bucket {
 
 static BUCKETS: LazyLock<Mutex<HashMap<Uuid, Bucket>>> = LazyLock::new(Default::default);
 
+/// 本文件的几把锁里只做算术和集合增删，别处 panic 留下的中毒标记不影响数据，照常用；
+/// InFlight 的 drop 可能在 panic 展开途中执行，这时再 panic 进程就直接中止了
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> { m.lock().unwrap_or_else(|e| e.into_inner()) }
+
 /// 只看不扣：新的一份（seq 大于提交过的）要有一个令牌，返回按余额能收的主机样本数；扣不到令牌返回还要等几秒。
-/// 重发的放行：提交过的入库时按 seq 去重、什么都不写
-fn peek_token(m: &mut HashMap<Uuid, Bucket>, machine: Uuid, seq: u64, host: usize, now: Instant) -> Result<usize, u64> {
+/// 重发的（seq 不大于提交过的）放行、返回 None：这份已经入过库，调用方只刷新最近上报时间
+fn peek_token(m: &mut HashMap<Uuid, Bucket>, machine: Uuid, seq: u64, host: usize, now: Instant) -> Result<Option<usize>, u64> {
     let b = m.entry(machine).or_insert(Bucket { tokens: REPORT_BURST, at: now, seq: 0, host: HOST_BURST });
     let dt = now.saturating_duration_since(b.at).as_secs_f64();
     b.tokens = (b.tokens + dt * REPORT_REFILL_PER_S).min(REPORT_BURST);
     b.host = (b.host + dt * HOST_REFILL_PER_S).min(HOST_BURST);
     b.at = now;
     if seq <= b.seq {
-        return Ok(host);
+        return Ok(None);
     }
     if b.tokens < 1.0 {
         return Err(((1.0 - b.tokens) / REPORT_REFILL_PER_S).ceil().max(1.0) as u64);
     }
-    Ok(host.min(b.host.max(0.0) as usize))
+    Ok(Some(host.min(b.host.max(0.0) as usize)))
 }
 
 /// 入库提交之后才扣令牌与主机样本余额、推进 seq：事务失败的那份不扣也不推进，
 /// 否则 agent 故意让一份带极大 seq 的报告入库失败，之后的每一份都会被当成重发、不扣令牌也不限样本。
-/// 并发的几份可能一起看到余额：都扣（扣成负数），欠的补回来之前不再放
+/// 同一台机器的上报一次只处理一份（InFlight），看余额到扣之间不会有别的一份插进来，余额扣不成负数
 fn charge(m: &mut HashMap<Uuid, Bucket>, machine: Uuid, seq: u64, host: usize) {
     if let Some(b) = m.get_mut(&machine).filter(|b| seq > b.seq) {
         b.tokens -= 1.0;
@@ -213,21 +217,20 @@ fn take_applied(m: &mut HashMap<Uuid, (f64, Instant)>, relay: Uuid, now: Instant
     Ok(())
 }
 
-/// 每台机器同时只处理一份上报、一份应用回报（各算各的）：上报的令牌入库提交后才扣，同一台机器并发的几份（seq 各不相同）
-/// 会一起看到余额、都放进来，限流就形同虚设。agent 本来就一份确认了才发下一份，正常碰不到；碰到的回 429，1 秒后重发
-static INFLIGHT: LazyLock<Mutex<HashSet<(Uuid, &'static str)>>> = LazyLock::new(Default::default);
+/// 每台机器同时只处理一份上报：令牌入库提交后才扣，同一台机器并发的几份（seq 各不相同）会一起看到余额、都放进来，
+/// 限流就形同虚设。agent 本来就一份确认了才发下一份，正常碰不到；碰到的回 429，1 秒后重发。
+/// 应用回报不用：它的令牌在看余额时就同步扣掉（take_applied），入库时 on_applied 又锁着线路机行
+static INFLIGHT: LazyLock<Mutex<HashSet<Uuid>>> = LazyLock::new(Default::default);
 
-/// 占着「这台机器正在处理」的位置，处理完（含出错、连接断开时请求被取消）放掉
-struct InFlight((Uuid, &'static str));
+/// 占着「这台机器正在处理上报」的位置，处理完（含出错、连接断开时请求被取消）放掉
+struct InFlight(Uuid);
 
 impl InFlight {
-    fn begin(machine: Uuid, what: &'static str) -> Option<Self> {
-        INFLIGHT.lock().unwrap_or_else(|e| e.into_inner()).insert((machine, what)).then_some(Self((machine, what)))
-    }
+    fn begin(machine: Uuid) -> Option<Self> { lock(&INFLIGHT).insert(machine).then_some(Self(machine)) }
 }
 
 impl Drop for InFlight {
-    fn drop(&mut self) { INFLIGHT.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.0); }
+    fn drop(&mut self) { lock(&INFLIGHT).remove(&self.0); }
 }
 
 /// 429 + Retry-After（秒）
@@ -320,7 +323,7 @@ async fn report(State(st): State<AppState>, h: HeaderMap, ApiJson(r): ApiJson<Re
 async fn ingest(st: &AppState, h: &HeaderMap, mut r: Report) -> Result<Json<ReportAck>, IngestErr> {
     let a = authenticate(st, h).await?;
     // 到 charge 为止都占着：同一台机器的下一份等这一份扣完令牌再看余额
-    let _busy = InFlight::begin(a.machine_id, "report").ok_or(IngestErr::Limited(1))?;
+    let _busy = InFlight::begin(a.machine_id).ok_or(IngestErr::Limited(1))?;
     sanitize(&mut r);
     let now = OffsetDateTime::now_utc();
     let now_ms = (now.unix_timestamp_nanos() / 1_000_000) as i64;
@@ -333,7 +336,9 @@ async fn ingest(st: &AppState, h: &HeaderMap, mut r: Report) -> Result<Json<Repo
 
     // ── 入库前整理：时间窗口过滤、补建分区。单条坏样本绝不能让整份上报失败 ──
     let mut host = windowed(r.host.iter(), |s| s.ts_ms, raw_lo, hi, &mut dropped);
-    let keep = peek_token(&mut BUCKETS.lock().unwrap(), a.machine_id, r.seq, host.len(), Instant::now()).map_err(IngestErr::Limited)?;
+    let Some(keep) = peek_token(&mut lock(&BUCKETS), a.machine_id, r.seq, host.len(), Instant::now()).map_err(IngestErr::Limited)? else {
+        return Ok(resent(st, a.machine_id).await?);
+    };
     // 超出余额的丢最早的：最新的读数要进实时视图
     if keep < host.len() {
         dropped += host.len() - keep;
@@ -376,7 +381,7 @@ async fn ingest(st: &AppState, h: &HeaderMap, mut r: Report) -> Result<Json<Repo
             .fetch_optional(&mut *tx)
             .await?;
     let last = prev.map(|p| p.0);
-    // 去重：同一份数据重发（seq 不增）直接确认；但这仍说明 agent 活着，要刷新最近上报时间
+    // 去重（中控重启后内存里的 seq 没了，靠库里的）：同一份数据重发（seq 不增）直接确认；但这仍说明 agent 活着，要刷新最近上报时间
     if let Some(seq) = &last {
         if i64c(r.seq) <= *seq {
             sqlx::query("update agent_state set last_report_at = now(), last_seq = greatest(last_seq, $2) where machine_id = $1")
@@ -519,7 +524,7 @@ async fn ingest(st: &AppState, h: &HeaderMap, mut r: Report) -> Result<Json<Repo
         .await?;
     }
     tx.commit().await?;
-    charge(&mut BUCKETS.lock().unwrap(), a.machine_id, r.seq, host.len());
+    charge(&mut lock(&BUCKETS), a.machine_id, r.seq, host.len());
     if last.is_none() {
         st.emit(Event::Machine { id: a.machine_id });
         // 上架中「等待首次上报」的作业
@@ -528,6 +533,16 @@ async fn ingest(st: &AppState, h: &HeaderMap, mut r: Report) -> Result<Json<Repo
     // 新读数由 live.rs 合并推送（最多每 3 s 一次），不发失效事件
     st.metrics_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
     Ok(Json(ReportAck { accepted_seq: r.seq, interval_s: 10 }))
+}
+
+/// 本进程已入库过的一份又发来（确认在路上丢了、503 后重试）：不查入口、不补建分区、不进去重事务，只刷新最近上报时间（agent 活着），
+/// 确认库里记的最大 seq（不小于这份的）。行一定在：入库提交过才推进内存里的 seq
+async fn resent(st: &AppState, machine: Uuid) -> sqlx::Result<Json<ReportAck>> {
+    let last: i64 = sqlx::query_scalar("update agent_state set last_report_at = now() where machine_id = $1 returning last_seq")
+        .bind(machine)
+        .fetch_one(&st.db)
+        .await?;
+    Ok(Json(ReportAck { accepted_seq: last as u64, interval_s: 10 }))
 }
 
 #[derive(Deserialize)]
@@ -577,10 +592,7 @@ async fn applied(State(st): State<AppState>, h: HeaderMap, ApiJson(mut r): ApiJs
     if a.kind != "relay" {
         return Err(ApiError::forbidden("只有线路机回报应用结果"));
     }
-    let Some(_busy) = InFlight::begin(a.machine_id, "applied") else {
-        return Ok(too_many(1, "应用回报"));
-    };
-    if let Err(wait) = take_applied(&mut APPLIED.lock().unwrap(), a.machine_id, Instant::now()) {
+    if let Err(wait) = take_applied(&mut lock(&APPLIED), a.machine_id, Instant::now()) {
         return Ok(too_many(wait, "应用回报"));
     }
     sanitize_applied(&mut r);
@@ -590,10 +602,10 @@ async fn applied(State(st): State<AppState>, h: HeaderMap, ApiJson(mut r): ApiJs
         clip(&mut e, 120);
         tracing::warn!(relay = %a.machine_id, generation = r.generation, "应用失败：{e}");
     }
-    // 等这台线路机应用 / 摘除的作业（成功失败都要看）
-    crate::jobs::wake_for(&st, a.machine_id).await;
-    // 同一份回报重发、没变化的不推送（每个浏览器都会重取机器列表）
+    // 同一份回报重发、没变化的不推送（每个浏览器都会重取机器列表），也不叫醒作业：等这台线路机应用 / 摘除的作业
+    // 只看已应用代数、应用错误和入口状态，这些没变，叫醒了也是接着等
     if changed {
+        crate::jobs::wake_for(&st, a.machine_id).await;
         st.emit(Event::Relay { id: a.machine_id });
         st.emit(Event::Machines);
     }
@@ -610,40 +622,35 @@ mod tests {
     use super::*;
 
     /// 看余额并扣（测试里每份都当入库成功）
-    fn take_token(m: &mut HashMap<Uuid, Bucket>, machine: Uuid, seq: u64, host: usize, now: Instant) -> Result<usize, u64> {
+    fn take_token(m: &mut HashMap<Uuid, Bucket>, machine: Uuid, seq: u64, host: usize, now: Instant) -> Result<Option<usize>, u64> {
         let n = peek_token(m, machine, seq, host, now)?;
-        charge(m, machine, seq, n);
+        if let Some(n) = n {
+            charge(m, machine, seq, n);
+        }
         Ok(n)
     }
 
     #[test]
-    fn one_in_flight_per_machine_and_kind() {
+    fn one_in_flight_per_machine() {
         let (a, b) = (Uuid::now_v7(), Uuid::now_v7());
-        let g = InFlight::begin(a, "report").unwrap();
-        assert!(InFlight::begin(a, "report").is_none());
-        // 别的机器、同一台的应用回报不受影响
-        assert!(InFlight::begin(b, "report").is_some() && InFlight::begin(a, "applied").is_some());
+        let g = InFlight::begin(a).unwrap();
+        assert!(InFlight::begin(a).is_none());
+        // 别的机器不受影响
+        assert!(InFlight::begin(b).is_some());
         drop(g);
-        assert!(InFlight::begin(a, "report").is_some());
+        assert!(InFlight::begin(a).is_some());
     }
 
     #[test]
     fn failed_report_does_not_make_later_ones_free() {
         let (mut m, id, t0) = (HashMap::new(), Uuid::now_v7(), Instant::now());
         // 一份带极大 seq 的报告看过余额、入库失败（没 charge）
-        assert_eq!(peek_token(&mut m, id, 1 << 62, 360, t0), Ok(360));
+        assert_eq!(peek_token(&mut m, id, 1 << 62, 360, t0), Ok(Some(360)));
         // 之后的照常扣令牌
         for seq in 1..=REPORT_BURST as u64 {
             assert!(take_token(&mut m, id, seq, 0, t0).is_ok(), "{seq}");
         }
         assert_eq!(take_token(&mut m, id, REPORT_BURST as u64 + 1, 0, t0), Err(1));
-        // 并发的两份都看到最后一个令牌：都扣成负数，欠的补回来之前不放
-        m.get_mut(&id).unwrap().tokens = 1.0;
-        assert!(peek_token(&mut m, id, 9000, 0, t0).is_ok() && peek_token(&mut m, id, 9001, 0, t0).is_ok());
-        charge(&mut m, id, 9000, 0);
-        charge(&mut m, id, 9001, 0);
-        assert_eq!(peek_token(&mut m, id, 9002, 0, t0 + Duration::from_secs(1)), Err(1));
-        assert!(peek_token(&mut m, id, 9002, 0, t0 + Duration::from_secs(2)).is_ok());
     }
 
     #[test]
@@ -654,15 +661,15 @@ mod tests {
         }
         let next = REPORT_BURST as u64 + 1;
         assert_eq!(take_token(&mut m, id, next, 0, t0), Err(1));
-        // 重发、重复的（seq 不大于扣过的）照收，不扣
-        assert!(take_token(&mut m, id, next - 1, 0, t0).is_ok() && take_token(&mut m, id, 1, 0, t0).is_ok());
+        // 重发、重复的（seq 不大于扣过的）认作重发（None），不扣
+        assert!(take_token(&mut m, id, next - 1, 0, t0) == Ok(None) && take_token(&mut m, id, 1, 0, t0) == Ok(None));
         // 过一秒补一个
         assert!(take_token(&mut m, id, next, 0, t0 + Duration::from_secs(1)).is_ok());
         assert_eq!(take_token(&mut m, id, next + 1, 0, t0 + Duration::from_secs(1)), Err(1));
         // 别的机器不受影响；正常 10 秒一份（每份一个主机样本）永远扣得到、样本全收
         let other = Uuid::now_v7();
         for k in 0..2000u64 {
-            assert_eq!(take_token(&mut m, other, k + 1, 1, t0 + Duration::from_secs(k * 10)), Ok(1));
+            assert_eq!(take_token(&mut m, other, k + 1, 1, t0 + Duration::from_secs(k * 10)), Ok(Some(1)));
         }
     }
 
@@ -672,19 +679,19 @@ mod tests {
         // 18 小时积压（6 小时队列 + 12 小时缓冲，10 秒一个）按每份 360 个连发：全收
         let backlog = 18 * 360;
         for k in 0..(backlog / 360) as u64 {
-            assert_eq!(take_token(&mut m, id, k + 1, 360, t0), Ok(360));
+            assert_eq!(take_token(&mut m, id, k + 1, 360, t0), Ok(Some(360)));
         }
         // 之后猛灌：余额（24 小时的量）扣完就只收补充的部分
         let mut got = backlog;
         for k in 0..100u64 {
-            got += take_token(&mut m, id, 1000 + k, 360, t0).unwrap();
+            got += take_token(&mut m, id, 1000 + k, 360, t0).unwrap().unwrap();
         }
         assert_eq!(got, HOST_BURST as usize);
         // 一小时后补 720 个（两倍于正常采样）
-        assert_eq!(take_token(&mut m, id, 2000, 360, t0 + Duration::from_secs(3600)), Ok(360));
-        assert_eq!(take_token(&mut m, id, 2001, 720, t0 + Duration::from_secs(3600)), Ok(360));
+        assert_eq!(take_token(&mut m, id, 2000, 360, t0 + Duration::from_secs(3600)), Ok(Some(360)));
+        assert_eq!(take_token(&mut m, id, 2001, 720, t0 + Duration::from_secs(3600)), Ok(Some(360)));
         // 重发的不扣
-        assert_eq!(take_token(&mut m, id, 2001, 360, t0 + Duration::from_secs(3600)), Ok(360));
+        assert_eq!(take_token(&mut m, id, 2001, 360, t0 + Duration::from_secs(3600)), Ok(None));
     }
 
     #[test]
