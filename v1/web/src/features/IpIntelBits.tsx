@@ -76,6 +76,7 @@ export function IpIntelHint() {
 
 // ── 节点抽屉：来源画像卡 ────────────────────────────────────────────────────
 
+const DIST_ROW = { gridTemplateColumns: 'minmax(0, 1fr) auto', rowGap: 3 };
 function Dist({ title, items, empty = '没有数据' }: { title: string; items: DistItem[]; empty?: string }) {
   const top = items.slice(0, 5);
   return (
@@ -84,10 +85,11 @@ function Dist({ title, items, empty = '没有数据' }: { title: string; items: 
       {top.length === 0 ? <div className="hint">{empty}</div> : (
         <div className="dist">
           {top.map((x) => (
-            <div key={x.value} className="dist-row" data-tip={`${placeZh(x.label)}：${x.conns.toLocaleString('zh-CN')} 次连接，${x.sources} 个来源`}>
+            // 名字与占比一行、条在下面占满整宽：三列并排时名字只分到四成宽，「Bharat Sanchar Nigam」这类运营商名放不下。悬停整行看全文
+            <div key={x.value} className="dist-row" style={DIST_ROW} data-tip={`${placeZh(x.label)}：${x.conns.toLocaleString('zh-CN')} 次连接，${x.sources} 个来源`}>
               <span className="dist-name">{placeZh(x.label)}</span>
-              <span className="dist-track"><span className="dist-fill" style={{ width: `${Math.max(2, Math.min(100, x.pct))}%` }} /></span>
               <span className="dist-pct">{x.pct.toFixed(x.pct < 10 ? 1 : 0)}%</span>
+              <span className="dist-track" style={{ gridColumn: '1 / -1' }}><span className="dist-fill" style={{ width: `${Math.max(2, Math.min(100, x.pct))}%` }} /></span>
             </div>
           ))}
           {items.length > top.length && <div className="hint">另有 {items.length - top.length} 项</div>}
