@@ -2,12 +2,14 @@
 # 生产中控部署 / 升级。在 fleet-dev 上按当前提交编译 fleet-server 与 fleet-agent（musl），连同 fleet-dev:/opt/fleet/dist 里
 # 实验室验证过的 xray、ssserver、geoip.dat（只带与生产不同的），以及本机构建的前端打成一个包，传到中控机由 install.sh 安装并重启。
 # 幂等，升级同样用它。编译失败或 install.sh 的健康检查不过，整个部署以非 0 退出；回滚见 docs/OPS.md §9。
-# 用法：deploy/central/deploy.sh <中控 ssh 主机> <域名>      例：deploy/central/deploy.sh debian13 fleet.kismet613.com
+# 用法：deploy/central/deploy.sh <中控 ssh 主机> <域名> [人用入口域名]   例：deploy/central/deploy.sh debian13 fleet.kismet613.com panel.kismet613.com
+# 人用入口（Cloudflare 后面，见 docs/OPS.md §11）给过一次就记在中控的 /etc/fleet/panel_host，之后的部署不带也沿用。
 # 首次部署后建登录账号（密码从标准输入读一行，至少 10 位）：
 #   printf '%s\n' '<密码>' | ssh <主机> /opt/fleet/fleet-server user-set -c /etc/fleet/fleet.toml <用户名>
 set -euo pipefail
-HOST=${1:?用法：deploy.sh <中控 ssh 主机> <域名>}
-DOMAIN=${2:?用法：deploy.sh <中控 ssh 主机> <域名>}
+HOST=${1:?用法：deploy.sh <中控 ssh 主机> <域名> [人用入口域名]}
+DOMAIN=${2:?用法：deploy.sh <中控 ssh 主机> <域名> [人用入口域名]}
+PANEL=${3:-}
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 # 进包的都要已提交：deploy/ 下的单元与 logrotate 由 scripts.rs 编进 fleet-server，web 下 src 以外的文件也影响前端构建
@@ -51,4 +53,4 @@ cp "$HERE/install.sh" "$ROOT/deploy/ipintel/fetch-dbs.sh" "$ROOT/deploy/ipintel/
 echo "== 上传并安装到 $HOST"
 tar -C "$STAGE/pkg" -czf - . | ssh "$HOST" "set -e; trap 'rm -rf /root/fleet-pkg' EXIT; rm -rf /root/fleet-pkg; mkdir -p /root/fleet-pkg
 tar --no-same-owner -xzf - -C /root/fleet-pkg
-bash /root/fleet-pkg/install.sh '$DOMAIN'"
+bash /root/fleet-pkg/install.sh '$DOMAIN' '$PANEL'"

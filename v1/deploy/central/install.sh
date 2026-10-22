@@ -7,10 +7,20 @@
 # /etc/fleet/secret.key 丢了，库里所有 SS 密码、REALITY 私钥、通知渠道配置都解不开：每天的备份连它一起打包（/var/backups/fleet），
 # 家里 PVE 每天取走一份，见 docs/OPS.md §10。
 set -euo pipefail
-DOMAIN=${1:?用法：install.sh <域名>}
+DOMAIN=${1:?用法：install.sh <域名> [人用入口域名]}
 PKG=$(cd "$(dirname "$0")" && pwd)
 chmod 755 "$PKG/bin/fleet-server"   # 包经 Windows 中转会丢可执行位；首次安装要直接运行它生成密钥
 export DEBIAN_FRONTEND=noninteractive
+
+# Caddy 用官方源：Debian 自带的 2.6 没有 trusted_proxies / client_ip_headers，人用入口在 Cloudflare 后面要靠它们取真实 IP
+if [ ! -f /etc/apt/sources.list.d/caddy-stable.list ]; then
+  apt-get update -qq
+  apt-get install -y -qq curl gpg debian-keyring debian-archive-keyring apt-transport-https >/dev/null
+  curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/gpg.key | gpg --batch --yes --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+  curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt > /etc/apt/sources.list.d/caddy-stable.list
+  apt-get update -qq
+  apt-get install -y -qq -o Dpkg::Options::=--force-confold caddy >/dev/null
+fi
 
 missing=$(for p in postgresql caddy sshpass openssh-client systemd-timesyncd curl jq; do dpkg -s "$p" >/dev/null 2>&1 || echo "$p"; done)
 if [ -n "$missing" ]; then
@@ -137,15 +147,42 @@ systemctl start fleet-ipintel-fetch.timer fleet-backup.timer
 [ -n "$(ls -A /var/lib/fleet/ipintel)" ] || systemctl start --no-block fleet-ipintel-fetch.service
 systemctl restart fleet-server
 
-# Caddy 终止 TLS（Let's Encrypt 自动签发续期），整站反代到本机 fleet-server；长轮询、WebSocket、gzip 上报都不用额外配置
+# Caddy 终止 TLS（Let's Encrypt 自动签发续期），整站反代到本机 fleet-server；长轮询、WebSocket、gzip 上报都不用额外配置。
+# $DOMAIN 是 agent 回连与上架出口校验（/echo）用的，DNS 只能灰云直连。人用入口（第二个参数，给过一次就记在 /etc/fleet/panel_host）
+# 在 Cloudflare 后面：只接受 CF 网段的连接，客户端 IP 取 CF-Connecting-IP，见 docs/OPS.md §11
+PANEL=${2:-}
+if [ -n "$PANEL" ]; then echo "$PANEL" > /etc/fleet/panel_host; else PANEL=$(cat /etc/fleet/panel_host 2>/dev/null || true); fi
+CF_NETS="173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32"   # cloudflare.com/ips-v4、ips-v6
 CADDY="$DOMAIN {
 	reverse_proxy 127.0.0.1:8080
 }"
+if [ -n "$PANEL" ]; then
+  CADDY="{
+	servers {
+		trusted_proxies static $CF_NETS
+		client_ip_headers CF-Connecting-IP
+	}
+}
+
+$CADDY
+
+$PANEL {
+	@direct not remote_ip $CF_NETS
+	respond @direct \"请经 Cloudflare 访问\" 403
+	reverse_proxy 127.0.0.1:8080 {
+		header_up X-Forwarded-For {client_ip}
+	}
+}"
+fi
 if [ "$(cat /etc/caddy/Caddyfile 2>/dev/null)" != "$CADDY" ]; then
   [ -f /etc/caddy/Caddyfile.dist ] || cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.dist
-  printf '%s\n' "$CADDY" > /etc/caddy/Caddyfile
-  caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1
-  systemctl reload caddy
+  printf '%s\n' "$CADDY" > /etc/caddy/Caddyfile.new
+  if caddy validate --config /etc/caddy/Caddyfile.new --adapter caddyfile >/dev/null 2>&1; then
+    mv /etc/caddy/Caddyfile.new /etc/caddy/Caddyfile
+    systemctl reload caddy
+  else
+    echo "新 Caddyfile 校验不过，保留原来的（见 /etc/caddy/Caddyfile.new）"; exit 1
+  fi
 fi
 
 # fleet-server 启动时先跑数据库迁移再监听：最多等 60 秒，未登录访问应回 401

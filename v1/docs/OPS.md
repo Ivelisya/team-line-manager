@@ -222,3 +222,21 @@ WAL 三项由 `deploy/central/install.sh` 写进 `/etc/postgresql/<版本>/main/
 5. 启动并确认：`systemctl start fleet-server`（启动时跑迁移：备份来自旧版本时补上新迁移）；`curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/api/v1/auth/me` 应为 401；`fleetctl status` 看机器。
 6. 中控 IP 变了：把域名解析改到新机器。agent 按域名上报，解析生效后自动恢复；Caddy 自动签证书。
 7. 删掉 `/root/restore`（里面有密钥）。
+
+## 11. 访问入口与 Cloudflare
+
+中控源站在法兰克福（185.13.159.131），三个入口都指向同一个 fleet-server，只是路径不同：
+
+| 入口 | DNS | 用途 |
+|---|---|---|
+| `fleet.kismet613.com` | 灰云直连 | **只给 agent 与上架出口校验**（`public_url`）。不能开橙云：`/echo` 要拿到节点真实 IP，agent 的长轮询与上报也不该经过 CF 的机器人防护 |
+| `panel.kismet613.com` | 橙云 | 人用入口（浏览器、fleetctl 都行）。Caddy 只接受 CF 网段的连接（直连回 403），客户端 IP 取 `CF-Connecting-IP`，登录限速与审计记的是真实 IP |
+| `cn.kismet613.com` | 灰云 A 记录指向优选的 CF IP | 大陆优化入口：请求落到离大陆更近的 CF 机房，由 Worker `fleet-panel-cn` 原样转给 `panel.kismet613.com`（同区，真实 IP 不丢；WebSocket 透传） |
+
+要点：
+- Caddy 用官方源（`dl.cloudsmith.io/public/caddy/stable`，≥ 2.7 才有 `trusted_proxies` / `client_ip_headers`）。人用入口域名部署时作为第三个参数传给 `deploy.sh`，记在中控 `/etc/fleet/panel_host`，之后的部署沿用；Caddyfile 由 `install.sh` 生成，不要手改。
+- CF 网段（`install.sh` 里的 `CF_NETS`）对照 cloudflare.com/ips-v4、ips-v6，变了要同步，否则新网段来的请求会被当成直连回 403。
+- zone（kismet613.com）设置：SSL 完全（严格）；HTTP/3 关（大陆晚高峰 UDP 被限速）；0-RTT、Early Hints、Rocket Loader、Email 混淆关；Always Use HTTPS 开；最低 TLS 1.2；浏览器缓存 TTL「遵从源站」（否则 `index.html` 的 no-cache 会被改成缓存，发版后白屏）；安全级别低、Bot Fight Mode 关（质询会让 XHR / WebSocket 直接失败）；Smart Tiered Cache 开。源站已给 `/assets/*` 一年 immutable、页面 no-cache，CF 缓存不用另加规则。
+- `panel.kismet613.com` 的 Let's Encrypt 证书在灰云时签下，之后经 CF 走 HTTP-01 自动续期；不要给 `/.well-known/acme-challenge/` 加 WAF 或缓存规则。
+- Worker 路由 `cn.kismet613.com/*` 配灰云记录是 CF 文档没写的用法，可能失效，Workers 免费额度每天 10 万次请求；出问题就用 `panel.kismet613.com`。
+- `cn.kismet613.com` 现在的优选 IP（2026-10-22 itdog 全国三网 TCPing 平均）：`104.18.37.15`（电信 83 ms、联通 309、移动 185）与 `104.17.150.199`（电信 235、联通 241、移动 83），两条互补、互为后备；CF 默认 anycast 是 234 / 300 / 192，直连法兰克福 291 / 273 / 215。CF 的 DNS 做不了按运营商分线路，想三网各走最佳要把 `cn` 用 NS 委派到支持运营商线路的 DNS（华为云、DNSPod）。优选 IP 会变，晚高峰与每月复测一次（itdog 批量 TCPing，或在国内用 CloudflareSpeedTest），只用自己测出来的 IP 写 A 记录，不要 CNAME 到第三方「优选域名」（对方可把解析改到自己的服务器并签出证书，中间人拿到面板登录）。Worker 代码在 `deploy/cf/fleet-panel-cn.js`。
