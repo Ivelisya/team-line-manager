@@ -20,7 +20,6 @@
 /* FitAddon 按 xterm 父元素的尺寸算行列：父元素本身不带内边距，留白放在定位上 */
 .term-xterm { position: absolute; inset: var(--sp-8) var(--sp-4) var(--sp-8) var(--sp-12); }
 .term-xterm .xterm-viewport { overscroll-behavior: contain; }
-.term-foot { flex: none; padding: var(--sp-8) var(--sp-16) var(--sp-12); }
 
 /* 验证身份的表单盖在终端区上 */
 .term-cover { position: absolute; inset: 0; display: grid; place-items: center; padding: var(--sp-16); background: color-mix(in srgb, var(--sunken) 82%, transparent); animation: fade-in var(--dur-2) var(--ease-out); }

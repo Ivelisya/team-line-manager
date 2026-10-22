@@ -44,9 +44,9 @@ export const useMachineBriefs = () => useMachinesPicked(brief);
 export const useMachineLabels = () => useMachinesPicked(label);
 /** 上架页「在已有机器上添加 IP」的宿主机候选：在用、自身不是同机 IP 节点的 VPS 节点，带出它的团队、线路机（第一个入口的）、SSH 端口与供应商。
  *  同一份机器列表缓存，结果做结构共享：推送只改读数时引用不变（批量网格的 memo 不被击穿） */
-export interface HostChoice { id: string; name: string; team_id: string; relay_id: string; ssh_port: number; provider: string | null }
+export interface HostChoice { id: string; name: string; ip: string; team_id: string; relay_id: string; ssh_port: number; provider: string | null }
 const hostChoices = (d: MachineView[]) => d.filter((m) => m.kind === 'vps' && m.lifecycle === 'active' && !m.host_machine)
-  .map((m): HostChoice => ({ id: m.id, name: m.name, team_id: m.team?.id ?? '', relay_id: m.entries[0]?.relay.id ?? '', ssh_port: m.ssh_port, provider: m.provider?.name ?? null }))
+  .map((m): HostChoice => ({ id: m.id, name: m.name, ip: m.ip, team_id: m.team?.id ?? '', relay_id: m.entries[0]?.relay.id ?? '', ssh_port: m.ssh_port, provider: m.provider?.name ?? null }))
   .sort((a, b) => collator.compare(a.name, b.name));
 export const useHostChoices = (enabled: boolean) => useQuery({ ...machinesQuery('live'), select: hostChoices, enabled });
 /** 首页 KPI「流量额度」：同一份机器列表缓存，只取吃紧的台数与最紧的一台；结果做结构共享，没变时首页总览不跟着推送重渲染 */
@@ -56,6 +56,8 @@ export function readMachines(qc: QueryClient): MachineView[] | undefined {
   const raw = qc.getQueryData<MachineView[]>(['machines', 'live']);
   return raw && [...raw].sort(makeDefaultCompare(qc.getQueryData<Team[]>(['teams']) ?? []));
 }
+/** 用时才取一次的在用机器列表（不订阅）：缓存 30 秒内新鲜就直接用。上架页给「IP 已被占用」补上是哪台 */
+export const fetchMachines = (qc: QueryClient) => qc.fetchQuery({ ...machinesQuery('live'), staleTime: 30_000 });
 /** 机器列表缓存（在用 / 已退役都找）里的这台，和那份列表取回的时刻 */
 function fromLists(qc: QueryClient, id: string | null) {
   for (const q of qc.getQueryCache().findAll({ queryKey: ['machines'] })) {

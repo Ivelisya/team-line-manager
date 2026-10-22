@@ -180,6 +180,10 @@
 .stepbar-sub { font-size: var(--fs-micro); line-height: var(--lh-micro); color: var(--fg-2); font-variant-numeric: var(--num-variant); }
 .stepbar-item[data-kind="failed"] .stepbar-sub { color: var(--bad-text); }
 .stepbar-item[data-kind="compensated"] .stepbar-sub { color: var(--warn-text); }
+/* 步骤多（7 步起，JobProgress.tsx）：格子不再有最小宽度、整条放得下；只有当前那一步（进行中 / 失败）写标签、占得宽一些，其余悬停节点看 */
+.stepbar[data-compact] .stepbar-item { min-width: 0; }
+.stepbar[data-compact] .stepbar-item[data-focus] { flex-grow: 3; }
+.stepbar[data-compact] .stepbar-item:not([data-focus]) :is(.stepbar-title, .stepbar-sub) { display: none; }
 
 /* 步骤时间线：按展示类别着色（后端的 state 有 done / succeeded 等不同写法，不再依赖原始值） */
 .step[data-kind="done"] .step-ic { background: var(--ok-bg); color: var(--ok-text); }
@@ -264,6 +268,7 @@ html[data-overlay] :is(.app, .drawer) .progress-fill { transition: none; }
 .cs-value { display: inline-flex; align-items: center; gap: var(--sp-8); min-width: 0; }
 .cs-trigger .nc-flag .lucide { width: 11px; height: 11px; }
 .cs-pop { width: 280px; padding: 0; }
+.cs-pop.hs-pop { width: max(var(--radix-popover-trigger-width), 280px); } /* 上架页的宿主机选择：同触发器一样宽 */
 .cs-pop .cmd-input-wrap { height: 40px; padding: 0 var(--sp-12); gap: var(--sp-8); }
 .cs-pop .cmd-input { font-size: var(--fs-body); }
 .cs-pop .cmd-list { max-height: 300px; }

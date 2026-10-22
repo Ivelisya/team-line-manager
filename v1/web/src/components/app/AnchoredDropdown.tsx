@@ -25,12 +25,14 @@ export function useAnchoredDropdown<T>(btn: string, idOf: (el: HTMLElement) => s
     setAt({ id: id!, el }); setOpen(true);
   };
   const close = () => { at?.el.setAttribute('aria-expanded', 'false'); setOpen(false); };
+  const openRef = React.useRef(open); openRef.current = open;
   const menu = (label: string, items: React.ReactNode) => (
     <DropdownMenu open={open} onOpenChange={(o) => { if (!o) close(); }}>
       {at && createPortal(<DropdownMenuTrigger asChild><span className="menu-anchor" aria-label={label} /></DropdownMenuTrigger>, at.el)}
-      {/* 关闭后焦点回到被点的“⋯”（Radix 默认回到触发元素，这里的触发元素是看不见的定位框） */}
-      <DropdownMenuContent align="end" onCloseAutoFocus={(e) => { e.preventDefault(); if (at?.el.isConnected) at.el.focus(); }}>{items}</DropdownMenuContent>
+      {/* 关闭后焦点回到被点的“⋯”（Radix 默认回到触发元素，这里的触发元素是看不见的定位框）。
+          关闭动画播完再撤掉定位框：不一直挂在最后点过的按钮里（那张卡被筛掉、翻页后成了脱离文档的节点）；期间又点开了别的就不撤 */}
+      <DropdownMenuContent align="end" onCloseAutoFocus={(e) => { e.preventDefault(); if (at?.el.isConnected) at.el.focus(); setAt((a) => (openRef.current ? a : null)); }}>{items}</DropdownMenuContent>
     </DropdownMenu>
   );
-  return { onClick, cur, menu };
+  return { onClick, cur, menu, close };
 }

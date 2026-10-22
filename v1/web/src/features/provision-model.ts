@@ -44,14 +44,14 @@ export const COLS: Col[] = [
   { key: 'plan_id', label: '套餐', w: 150, type: 'plan', kinds: ALL },
   { key: 'service_ref', label: '服务编号', w: 104, type: 'text', kinds: ALL },
   { key: 'ss_port', label: 'SS 端口', w: 84, type: 'num', kinds: ['vps'], ph: String(meta().defaults.ss_port) }, // 只被懒加载的上架页引用，求值时 /meta 已到
-  { key: 'login_pw', label: 'root 密码', w: 108, type: 'secret', kinds: ['relay', 'vps'], ph: '留空用密钥' },
+  { key: 'login_pw', label: 'root 密码', w: 120, type: 'secret', kinds: ['relay', 'vps'], ph: '留空用中控密钥' },
   { key: 'up_protocol', label: '上游协议', w: 92, type: 'proto', kinds: ['proxy'] },
   { key: 'up_host', label: '上游主机', w: 124, type: 'text', kinds: ['proxy'] },
-  { key: 'up_port', label: '上游端口', w: 84, type: 'num', kinds: ['proxy'] },
-  { key: 'up_user', label: '上游用户', w: 96, type: 'text', kinds: ['proxy'] },
-  { key: 'up_pw', label: '上游密码', w: 104, type: 'secret', kinds: ['proxy'] },
-  { key: 'due_date', label: '到期日', w: 148, type: 'date', kinds: ALL, ph: '2026-12-01' },
-  { key: 'price', label: '周期费用', w: 96, type: 'text', kinds: ALL, ph: '跟随套餐' },
+  { key: 'up_port', label: '上游端口', w: 84, type: 'num', kinds: ['proxy'], ph: '1080' },
+  { key: 'up_user', label: '上游用户名', w: 104, type: 'text', kinds: ['proxy'], ph: '选填' },
+  { key: 'up_pw', label: '上游密码', w: 104, type: 'secret', kinds: ['proxy'], ph: '选填' },
+  { key: 'due_date', label: '到期日', w: 148, type: 'date', kinds: ALL, ph: 'YYYY-MM-DD' },
+  { key: 'price', label: '费用', w: 96, type: 'text', kinds: ALL, ph: '跟随套餐' },
   { key: 'note', label: '备注', w: 140, type: 'text', kinds: ALL },
   { key: 'host_id', label: '宿主机', w: 116, type: 'host', kinds: ['vps'] },
   { key: 'country', label: '国家', w: 132, type: 'country', kinds: ALL },
@@ -92,8 +92,10 @@ export const PASTE_COLS: (Col | null)[] = COLS.flatMap((c) => (c.key === 'ss_por
 export const UNUSED_LABEL = '（不用）';
 /** 粘贴的第一行是不是表头：至少两格是列名、其余格是空的或已去掉的旧列名。是的话返回每格对应的列（旧列为 undefined，跳过） */
 const OLD_LABELS = new Set(['登录用户', '登录密码', UNUSED_LABEL]);
+/** 改过名的列：旧模板的表头照样对得上 */
+const RENAMED: Record<string, Col['key']> = { 登录密码: 'login_pw', 周期费用: 'price', 上游用户: 'up_user' };
 export function headerCols(line: string[]): (Col | undefined)[] | null {
-  const cols = line.map((h) => COLS.find((c) => c.label === h.trim() || (c.key === 'login_pw' && h.trim() === '登录密码')));
+  const cols = line.map((h) => COLS.find((c) => c.label === h.trim() || RENAMED[h.trim()] === c.key));
   const ok = cols.filter(Boolean).length >= 2 && line.every((h, i) => cols[i] || !h.trim() || OLD_LABELS.has(h.trim()));
   return ok ? cols : null;
 }
@@ -136,6 +138,26 @@ export function toItem(r: Row): ProvisionItem {
 export const isBlank = (r: Row) => !Object.keys(r.unresolved).length
   && [r.ip, r.ssh_port, r.number, r.label, r.service_ref, r.note, r.login_pw, r.up_host, r.up_port, r.up_user, r.up_pw, r.ss_port, r.due_date, r.price, r.country].every((v) => !v.trim());
 
+const IPV4 = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+/** IPv6：交给 URL 解析（方括号里只收合法的 IPv6 字面量） */
+const isIpv6 = (s: string) => s.includes(':') && (() => { try { new URL(`http://[${s}]/`); return true; } catch { return false; } })();
+/** IP 一格的问题（失焦即查，单台表单的 IP 格用）：线路机、VPS 节点要 IPv4 / IPv6；家宽代理的出口还可以是域名，只有看着像 IPv4（全是数字和点）时才按 IPv4 查 */
+export function ipIssue(r: Pick<Row, 'kind' | 'ip'>): string | null {
+  const v = r.ip.trim();
+  if (!v) return '请填写 IP';
+  if (IPV4.test(v) || isIpv6(v)) return null;
+  if (r.kind === 'proxy' && !/^[\d.]+$/.test(v) && /^[a-z0-9.-]+$/i.test(v)) return null;
+  return `IP「${v}」格式不对`;
+}
+
+/** 服务端「检查」返回的错误（纯文本）对回表单字段：单台表单标在字段旁，对不上的只在检查结果里列出。先判断更具体的词（IP 的几句先判，补上的机器名「团队1-03」里有「团队」；
+ *  「宿主机上没有空闲的 SS 端口」归宿主机，「选了套餐要填到期日」归到期日） */
+const SERVER_FIELDS: [RegExp, keyof Row][] = [
+  [/IPv6|这个 IP|IP 重复|^IP「/, 'ip'], [/宿主机/, 'host_id'], [/到期日/, 'due_date'], [/费用/, 'price'], [/套餐/, 'plan_id'], [/供应商/, 'provider_id'],
+  [/线路机.*名称|名称.*重复/, 'label'], [/线路机/, 'relay_id'], [/团队/, 'team_id'], [/编号/, 'number'], [/上游/, 'up_host'], [/IP/, 'ip'],
+];
+export const serverField = (msg: string): keyof Row | undefined => SERVER_FIELDS.find(([re]) => re.test(msg))?.[1];
+
 /** 提交前的本地校验（不依赖后端）：每条错误带出错的字段，单台表单把它标在字段旁 */
 export function localIssues(r: Row): { key: keyof Row; msg: string }[] {
   const e: { key: keyof Row; msg: string }[] = [];
@@ -143,7 +165,8 @@ export function localIssues(r: Row): { key: keyof Row; msg: string }[] {
   const col = (k: Col['key']) => COLS.find((c) => c.key === k)!;
   // 不适用的格子（灰格：类型不对、同机 IP 节点沿用宿主机的）不提交，里面残留的内容不报错
   for (const [k, v] of Object.entries(r.unresolved)) { const c = col(k as Col['key']); if (applies(c, r)) add(k as keyof Row, `${c.label}「${v}」不存在`); }
-  if (!r.ip.trim()) add('ip', '请填写 IP');
+  const ipErr = ipIssue(r);
+  if (ipErr) add('ip', ipErr);
   if (isIpNode(r) && !r.host_id && !r.unresolved.host_id) add('host_id', '请选择宿主机');
   if (r.kind === 'relay' && !r.label.trim()) add('label', '请填写线路机名');
   if (r.kind !== 'relay') { if (!r.team_id && !r.unresolved.team_id) add('team_id', '请选择团队'); if (!r.relay_id && !r.unresolved.relay_id) add('relay_id', '请选择挂载的线路机'); }
