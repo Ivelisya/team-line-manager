@@ -257,6 +257,9 @@ pub struct EntryView {
     /// 这条入口所在线路机的 agent 离线：探测是它做的，最后一次结果之后不再更新（全网失联时尤其如此），节点侧按「判不出」处理
     #[serde(skip)]
     pub relay_offline: bool,
+    /// 这条入口所在线路机在维护中（改防火墙、换内核…）：经它的探测失败不算节点的问题，节点侧同样按「判不出」处理
+    #[serde(skip)]
+    pub relay_maint: bool,
     pub tcp: Option<Probe>,
     pub egress: Option<Probe>,
     /// 中控 → 这个入口端口（线路机上）最近一次 TCP 检查；只有在用入口有，没检查过为 None。与 tcp / egress（线路机 → 节点）是两段
@@ -378,6 +381,9 @@ pub struct RelayInfo {
     /// 健康判定据此报 relay_unreachable；它变了 reach.rs 发 `Event::Machine`（视图完整重算），不对外输出
     #[serde(skip)]
     pub unreachable: Option<String>,
+    /// 有在用入口、5 分钟内中控的检查不到 3 轮（中控刚重启、整轮作废）：整台通不通判不出，relay_unreachable 的原因消失不算恢复
+    #[serde(skip)]
+    pub reach_unknown: bool,
 }
 
 #[derive(sqlx::FromRow)]
@@ -450,6 +456,7 @@ struct MRow {
     tune_profile: Option<String>,
     tuned_at: Option<OffsetDateTime>,
     r_unreach: Option<String>,
+    r_reach_unknown: bool,
 }
 
 /// agent_state 里视图要的列（`A_COLS`，表别名 a）：完整加载与补指标共用
@@ -692,6 +699,7 @@ async fn refresh(st: &AppState, prev: &[MachineView], jobs: bool) -> sqlx::Resul
             if let Some(&(d, off)) = xray_down.get(&e.relay.id) {
                 (e.relay_xray_down, e.relay_offline) = (d, off);
             }
+            e.relay_maint = silences.maintenance(e.relay.id);
         }
         m.health = health::evaluate(m, now);
     }
@@ -1002,7 +1010,8 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 s.traffic_used_base s_base, s.traffic_used_base_at s_base_at, s.overrides s_overrides, sb.billing_day::int s_bday, p.traffic_rule p_rule,
                 tp.price_cents t_price, tp.currency t_currency, tp.cycle::text t_cycle, tp.billing_tz t_tz, tp.traffic_gb t_traffic, tp.traffic_reset t_reset, tp.remind_days t_remind, local_date(tp.billing_tz) t_today,
                 {A_COLS}, r.public_host r_host, r.generation r_gen, r.applied_generation r_applied, r.applied_at r_applied_at, r.generation_at r_gen_at,
-                r.apply_error r_err, r.port_min r_pmin, r.port_max r_pmax, m.tune_profile, m.tuned_at, case when m.kind = 'relay' then {unreach} end r_unreach
+                r.apply_error r_err, r.port_min r_pmin, r.port_max r_pmax, m.tune_profile, m.tuned_at, case when m.kind = 'relay' then {unreach} end r_unreach,
+                m.kind = 'relay' and {reach_unknown} r_reach_unknown
          from machine m
          left join team t on t.id = m.team_id
          left join machine hm on hm.id = m.host_id
@@ -1016,7 +1025,8 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
          left join relay r on r.machine_id = m.id
          where {lc} and ($1::uuid is null or m.id = $1)
          order by m.kind = 'relay' desc, t.sort_order nulls first, t.name, m.number, m.label, m.id",
-        unreach = crate::reach::unreachable_sql("m.id")
+        unreach = crate::reach::unreachable_sql("m.id"),
+        reach_unknown = crate::reach::unknown_sql("m.id")
     );
     let rows: Vec<MRow> = sqlx::query_as(&sql).bind(only).fetch_all(db).await?;
     if rows.is_empty() {
@@ -1170,6 +1180,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
             apply_error: e.apply_error,
             relay_xray_down: e.relay_xray_down,
             relay_offline: !e.relay_last.is_some_and(|t| st.report_gaps.online(t, now)),
+            relay_maint: silences.maintenance(e.relay_id),
             tcp: probes.get(&(e.id, "tcp".into())).cloned(),
             egress: probes.get(&(e.id, "egress".into())).cloned(),
             reach: reach.get(&e.id).cloned(),
@@ -1237,6 +1248,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 port_min: r.r_pmin.unwrap_or(0),
                 port_max: r.r_pmax.unwrap_or(0),
                 unreachable: r.r_unreach.clone(),
+                reach_unknown: r.r_reach_unknown,
             });
             let tune = (r.kind != "proxy" && r.host_id.is_none()).then(|| TuneInfo {
                 current: r.tune_profile.as_deref() == Some(crate::jobs::tune::PROFILE),

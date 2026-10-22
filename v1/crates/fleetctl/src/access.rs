@@ -39,13 +39,17 @@ pub fn access(ctx: &Ctx, o: AccessOpts) -> anyhow::Result<u8> {
     match o.view {
         "summary" => {
             q.push(("window", o.window.to_string()));
-            let d = ctx.c.get_q("/access/summary", &q)?;
+            let mut d = ctx.c.get_q("/access/summary", &q)?;
+            // 中控按连接数降序给全部节点：只留前 --limit 个（KPI 仍是全部的）
+            let all = d["nodes"].as_array().map_or(0, Vec::len);
+            if let Some(a) = d["nodes"].as_array_mut() {
+                a.truncate(o.limit.max(1) as usize);
+            }
             ctx.emit(&d, || {
                 let k = &d["kpi"];
-                let rows: Vec<Vec<String>> = d["nodes"]
-                    .as_array()
-                    .cloned()
-                    .unwrap_or_default()
+                let nodes = d["nodes"].as_array().cloned().unwrap_or_default();
+                let more = if nodes.len() < all { format!("\n只列连接数最多的 {} 个（共 {all} 个，--limit 调整）", nodes.len()) } else { String::new() };
+                let rows: Vec<Vec<String>> = nodes
                     .iter()
                     // 来源数：24h 以上带搜索 / 类型 / 处理结果筛选时中控给 null（算不出），显示「-」
                     .map(|n| vec![st(n, "/name"), st(n, "/team"), num(n, "/conns"), num(n, "/domains"), st(n, "/sources"), num(n, "/blocked"), table::ts(&st(n, "/last_ts"))])
@@ -58,7 +62,7 @@ pub fn access(ctx: &Ctx, o: AccessOpts) -> anyhow::Result<u8> {
                     num(k, "/unique_targets"),
                     num(k, "/blocked"),
                     table::render(&["节点", "团队", "连接", "域名", "来源", "阻止", "最近"], &rows)
-                )
+                ) + &more
             });
         }
         "targets" | "new" => {

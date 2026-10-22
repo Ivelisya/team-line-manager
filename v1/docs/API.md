@@ -170,7 +170,7 @@ EntryView = { id, relay:{id,name}, node:{id,name}, direct, port, lifecycle, appl
 | PUT | `/machines/{id}/subscription` | `{due_date, price_cents?,currency?,cycle?,billing_tz?,remind_days?,traffic_gb?,traffic_reset_day?, auto_renew?}`。只有 `due_date` 必填。`price_cents` … `traffic_reset_day` 是**单独设置**，整份替换：没传或 null = 跟随模板（见 `sub_template`），给了值 = 这台单独设置；和模板相同的值也按跟随存（旧客户端整份带上生效值不会把套餐的值抄进来）。没有套餐的机器价格没有可跟随的，必须给 `price_cents`（400）。校验：`price_cents` / `traffic_gb` ≥ 0、`cycle` 四选一、`currency` 3 个字母（存成大写）、`remind_days` 0–60、`traffic_reset_day` 1–31、`billing_tz` 须是 `at time zone` 认的时区，否则 400。`auto_renew` 没传 = 不改（新建为否）。账单日（`billing_day`）：`due_date` 落在现有账单日上的（原样带回的到期日、小月的月末，如 31 号账单日的 2-28）不动，否则（或新建）记成 `due_date` 是几号。`traffic_gb` 是供应商的十进制 GB（10⁹ 字节，0 = 不限）。不再按面板校准：带 `traffic_used_gb`（数值或 null）400「流量已用改为由 agent 按网卡统计，不再按面板校准」；已录的接入前读数不受 PUT 影响，进入下一个周期自动失效（见 `quota.base`）。写审计 `subscription.set` |
 | POST | `/machines/{id}/renewals` | `{new_due?, cycles?, amount_cents?, note?}`，`new_due` 与 `cycles` 给一个（都给、都不给、`cycles` 不在 1–120 时 400）：`cycles` = 中控按订阅生效的 `cycle` 从当前到期日推几个周期，落在账单日（`billing_day`，目标月没有这一天时落到月末；账单日不变，所以 31 号的 1-31 → 2-28 → 3-31，不会漂成 3-28；fleetctl `renew --cycles`）；`new_due` 直接给新到期日（网页对话框默认填 `subscription.next_due`），账单日同改订阅：落在现有账单日上的不动，否则改成它是几号。新到期日要晚于当前的。只顺延到期日，单独设置照旧 → `{id, old_due, new_due}`。**自动续费**（`auto_renew`）：中控每小时的维护在账单时区的今天晚于到期日时按周期顺延到不早于今天（账单日不变），每期记一条续费记录（`amount_cents` 取生效价格，`note`「自动续费」，`actor`「系统」）与审计 `renewal`（`detail.auto = true`，摘要「到期 … → …（自动续费）」）；先于备用到期判断，开了自动续费的备用机器不会被回收。只记账，不向供应商付款 |
 | GET | `/machines/{id}/renewals` | |
-| GET | `/teams/{id}/renumber` | 预览：`{data:{changes:[{machine_id,old_name,new_name}],token}}` |
+| GET | `/teams/{id}/renumber` | 预览：`{data:{changes:[{machine_id,old_name,new_name}],notes:[string],token}}`。notes：各路由快照里指向要改名的节点的出口（出口名是路由上自己起的，不跟着改） |
 | POST | `/teams/{id}/renumber` | `{token}`（预览返回的，防止预览后数据变了）→ 一次生效 |
 
 ## 上架
@@ -393,7 +393,7 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/machines/{id}/retire` | 退役预览，见下 |
-| POST | `/machines/{id}/retire` | `{confirm: <显示名>, reason?, now?: false, cleanup?: true}`。默认移进备用团队 → `{mode:"spare", name（备用里的新名字）, from（原名）, recycle_on, ip_nodes:[{id, name, from}]}`；`now: true` 立即回收（退役作业）→ `{mode:"now", job_id, ip_node_jobs:[{machine_id,name,job_id}]}`。见下 |
+| POST | `/machines/{id}/retire` | `{confirm: <显示名>, reason?, now?: false, cleanup?: true}`。默认移进备用团队 → `{mode:"spare", name（备用里的新名字）, from（原名）, recycle_on, ip_nodes:[{id, name, from}], auto_renew_off, notes:[string]}`；`now: true` 立即回收（退役作业）→ `{mode:"now", job_id, ip_node_jobs:[{machine_id,name,job_id}]}`。见下 |
 | GET | `/recycle-bin?q=&source=&limit=100&offset=0` | 回收站列表（只读，不含快照），按回收时间倒序：`{items:[RecycleItem], total, next_offset}`。`q`：不分大小写的包含匹配，搜名字（含回收时的名字）、IP、团队、供应商、套餐、供应商编号、宿主机名；`source`：`fleet` / `legacy`（别的值 400）；`limit` 1–500 |
 | GET | `/recycle-bin/{id}` | 单条：`RecycleItem` 加 `snapshot`；没有 404 |
 | POST | `/recycle-bin/import` | 旧面板的退役机器导入（要 `write`），见下 |
@@ -402,13 +402,13 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 `name` 退役前的名字（进过备用的是 `spare_from`），`last_name` 回收时的名字（「备用-03」；立即回收的同 `name`，导入的为 null），`team` 退役前的团队；`retired_at` 进备用的时刻（立即回收的是退役作业完成的时刻）；价格、币种、周期是订阅的生效值（没有订阅取模板）；`reason` 退役原因（到期回收的接上「备用到期自动回收（到期日 …）」）；`traffic_*` 入口业务流量合计（字节，整个生命周期；线路机按它上面全部入口算），`nic_*` 网卡累计（没有网卡读数的家宽代理、同机 IP 节点为 null）。数值的口径以流量改造为准。
 `snapshot`（fleet）：`{machine（机器行，不含秘密）, name, team, host, provider, plan, subscription（生效值）, renewals[], entries:[{relay,node,port,lifecycle,created_at,removed_at}], outbound（出站参数，不含秘密）}`；legacy 是导入时给的原始记录。回收站不受保留期清理影响，一直保留。
 
-**退役预览** `GET /machines/{id}/retire` → `{name, renames:[{machine_id,old_name,new_name}], ip_nodes:[{id,name}], spare:{ok, why|null, team:{id,name}, to_name|null, recycle_on|null, ip_nodes:[{id,name,to_name}]}, routers:[{id,name,exits:[{exit,node}]}], blockers:[string]}`：
+**退役预览** `GET /machines/{id}/retire` → `{name, renames:[{machine_id,old_name,new_name}], ip_nodes:[{id,name}], spare:{ok, why|null, team:{id,name}, to_name|null, recycle_on|null, ip_nodes:[{id,name,to_name}], notes:[string]（开着的自动续费会关掉、原团队压缩后撤销退役回不到原编号）}, routers:[{id,name,exits:[{exit,node}]}], blockers:[string]}`：
 - `renames`：机器离开后原团队压缩编号的改名（两种去向一样；`numbering.auto_compact` 关掉时为 []）；`ip_nodes`：立即回收时一并回收的同机 IP 节点（宿主机才有）。
 - `spare`：能不能移进备用（`ok`，不能时 `why`：线路机、已经在备用团队里、还没上线（上架中或上架失败）、没有订阅、订阅已经过期满 1 天——这些只能立即回收）；进去后的名字（备用团队最小的空号）、自动回收的日子（账单时区）、一起进备用的同机 IP 节点与它们的新名字（已经在备用团队的不算）。
 - `routers`：各软路由最近一次采集里还指向这台（和它的同机 IP 节点）的出口，`node` 是指向的那台；只提示、不阻断，软路由不自动改（要换掉先「替换」）。
 - `blockers`：立即回收提交时会 409 的原因，与提交时同一段判断（已经退役 / 退役中、线路机上还有节点入口、这台或它的同机 IP 节点有作业正在执行一步）；[] = 能立即回收。
 
-**移进备用**（默认）：一个事务、不建作业。先锁团队（原团队、同机 IP 节点的团队、备用团队）再锁机器；进不了备用（同 `spare.why`）409「不能移进备用：…。要现在就清理并移进回收站，选「立即回收」（now: true）」；它或它的同机 IP 节点有进行中的作业 409；`reason` 最多 2000 字。改到备用团队最小的空号（与 `PATCH /machines/{id}` 同一段代码：审计 `machine.rename`、刷新线路机备注，并记下 `spare_since` / `spare_from`），`lifecycle_reason` 记退役原因；宿主机上还没退役、不在备用团队的同机 IP 节点一起进（编号挨着，原因「随宿主机「名字」退役」）；原团队压缩编号。机器照常运行：入口、端口、软路由出口都不动，告警照常（备用期间故障照常通知）。审计 `machine.retire`（`detail.mode = "spare"`，`{name, to, reason, recycle_on, ip_nodes}`；同机 IP 节点各一条，带 `host`），摘要「团队1-01 → 备用-02（换新机）」。
+**移进备用**（默认）：一个事务、不建作业。先锁团队（原团队、同机 IP 节点的团队、备用团队）再锁机器；进不了备用（同 `spare.why`）409「不能移进备用：…。要现在就清理并移进回收站，选「立即回收」（now: true）」；它或它的同机 IP 节点有进行中的作业 409；`reason` 最多 2000 字。改到备用团队最小的空号（与 `PATCH /machines/{id}` 同一段代码：审计 `machine.rename`、刷新线路机备注，并记下 `spare_since` / `spare_from`，开着的自动续费关掉：不关的话每到期顺延一期、永远不会回收；审计 `machine.rename` 的 detail 记 `auto_renew_off: true`，移出备用不自动打开），`lifecycle_reason` 记退役原因；宿主机上还没退役、不在备用团队的同机 IP 节点一起进（编号挨着，原因「随宿主机「名字」退役」）；原团队压缩编号。机器照常运行：入口、端口、软路由出口都不动，告警照常（备用期间故障照常通知）。审计 `machine.retire`（`detail.mode = "spare"`，`{name, to, reason, recycle_on, ip_nodes}`；同机 IP 节点各一条，带 `host`），摘要「团队1-01 → 备用-02（换新机）」。
 移出备用（改到别的团队）= 撤销退役：`spare_since`、`spare_from`、`lifecycle_reason` 清空。
 
 **立即回收**（`now: true`）：建退役作业 `retire`（摘入口 → 等线路机 → 清理 → 撤令牌 → 收尾），收尾时同一个事务移进回收站。线路机上还有节点入口时 409（提示先搬空，它自己的直出入口不算，由「摘除入口」一并摘掉）；这台（或它的同机 IP 节点）有作业正在执行一步（租约未过期）时 409，先取消并等它停下（升级 agent 不能取消）；`reason` 最多 2000 字；`cleanup: false` 不登录清理。宿主机：它上面还没开始退役的同机 IP 节点同一事务里一并置为退役中（作废它们进行中 / 失败的作业、关告警），各建一个 `cleanup: false` 的退役作业（只摘入口，宿主机的清理连同所有实例一起删），列在 `ip_node_jobs`。审计 `machine.retire`（`detail.mode = "now"`）。
@@ -431,18 +431,21 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 |---|---|---|
 | GET | `/machines/{old}/replace?new_machine_id=&team_id=&number=&routers=` | 替换节点预览（只读库，不登录路由）。见下 |
 | POST | `/machines/{old}/replace` | `{new_machine_id, old_to?:{team_id?, number?}, routers?（默认 true）}` → 预览同样的内容加 `job_id`。输入不对 400（新节点不存在 / 就是旧节点、指定的团队不存在、编号不在 1–999）；不满足条件 409（见 blockers）。写审计 `machine.replace`（不含凭据） |
-| POST | `/machines/{id}/move` | `{to_relay_id, from_relay_id?}` → `{job_id, name, from, to, share_changed:true, note}`。节点（vps / proxy）必须 active 且恰有一个 active 入口（有多个时用 `from_relay_id` 指定换掉哪条）；目标线路机必须 active、不同于当前、节点在它上面没有未移除入口；节点有进行中的作业时 409。写审计 `entry.move` |
-| POST | `/relays/{id}/evacuate` | `{to_relay_id}` → `{from, to, jobs:[{machine_id,name,job_id}], skipped:[{machine_id,name,reason}], share_changed, note}`。为该线路机上每个在用入口的节点各建一个 move_entry 作业；暂时不能搬的（入口停用/还在应用中、节点有别的作业、目标上已有入口…）列入 `skipped`，不影响其它节点。线路机自己的直出入口不搬、也不列入 `skipped`（退役线路机时随之摘除；退役守卫只数节点入口）。写审计 `relay.evacuate` 与每个节点一条 `entry.move` |
+| GET | `/machines/{id}/move?to_relay_id=&from_relay_id=&routers=` | 换线路机预览（只读库）：`{name, from, to, routers_enabled, routers:[同替换，exits[].new_entry_id 为 null、to 为「server:新端口」], ok, blockers[], warnings[], share_changed, note}`；不能换时 `ok:false`、原因在 blockers |
+| POST | `/machines/{id}/move` | `{to_relay_id, from_relay_id?, routers?（默认 true）}` → 预览同样的内容加 `job_id`。节点（vps / proxy）必须 active 且恰有一个 active 入口（有多个时用 `from_relay_id` 指定换掉哪条）；目标线路机必须 active、不同于当前、节点在它上面没有未移除入口；节点有进行中的作业、要改的软路由不在线（blockers）时 409。写审计 `entry.move`（含 routers） |
+| GET | `/relays/{id}/evacuate?to_relay_id=&routers=` | 搬空预览（只读库）：同 POST 的响应，`jobs[]` 没有 `job_id` |
+| POST | `/relays/{id}/evacuate` | `{to_relay_id, routers?（默认 true）}` → `{from, to, jobs:[{machine_id,name,job_id,routers}], skipped:[{machine_id,name,reason}], warnings, share_changed, note}`。为该线路机上每个在用入口的节点各建一个 move_entry 作业；暂时不能搬的（入口停用/还在应用中、节点有别的作业、目标上已有入口、要改的软路由不在线…）列入 `skipped`，不影响其它节点。线路机自己的直出入口不搬、也不列入 `skipped`（退役线路机时随之摘除；退役守卫只数节点入口）。写审计 `relay.evacuate` 与每个节点一条 `entry.move` |
 
-**换线路机作业 `move_entry`**（目标 = 节点，要求节点 active）步骤：`attach_new`（目标线路机建新入口：新端口、新 client_uuid / short_id，pending）→ `firewall_widen`（vps：节点 nft 放行名单加入新线路机 IP；proxy 跳过）→ `wait_applied_new` → `verify_new`（经新入口的出口探测通过）→ `detach_old`（旧入口 removing）→ `wait_detached_old` → `firewall_narrow`（节点在旧线路机上不再有入口时，把旧线路机 IP 从放行名单拿掉）。新入口验收通过之前旧入口不动，节点始终至少有一个可用入口。
-- **取消**：`detach_old` 之前都能取消（`cancellable` 为 true）；补偿 = 摘除新入口、恢复防火墙，旧入口保持不动。开始摘旧入口之后不能取消（会让节点没有入口），失败了只能重试到完成；取消赶在摘除之后到达时保留新入口。
+**换线路机作业 `move_entry`**（目标 = 节点，要求节点 active）步骤：`attach_new`（目标线路机建新入口：新端口、新 client_uuid / short_id，pending）→ `firewall_widen`（vps：节点 nft 放行名单加入新线路机 IP；proxy 跳过）→ `wait_applied_new` → `verify_new`（经新入口的出口探测通过）→ `routers`（软路由上指向旧入口的出口改成新入口，同替换节点的「改软路由出口」：全部在线才动手，逐台备份 → 改 → 重启 OpenClash → 测延迟，一台失败已改的全部换回、作业失败、旧入口不摘；出口写的是旧线路机 IP 就换成新线路机 IP，否则换成新线路机的 public_host，端口用新入口的；要改哪些出口发起时按各路由最近的快照算好存进参数，`routers=false` 跳过）→ `detach_old`（旧入口 removing）→ `wait_detached_old` → `firewall_narrow`（节点在旧线路机上不再有入口时，把旧线路机 IP 从放行名单拿掉）。新入口验收通过之前旧入口不动，节点始终至少有一个可用入口。
+- **取消**：`routers` 之前都能取消（`cancellable` 为 true）；补偿 = 摘除新入口、恢复防火墙，旧入口保持不动。`routers` 失败（路由已换回原配置）停在这一步时也能取消；开始改路由之后、摘旧入口之后不能取消（会摘掉路由已经指向的新入口 / 让节点没有入口），失败了只能重试到完成；取消赶在摘除之后到达时保留新入口。
+- **改同一台软路由的作业排队**：替换、换线路机发起时，同一台路由上还有没结束的替换 / 换线路机作业，就记参数 `routers_after`（那个作业的 id），它结束之前不开始（怎么结束都照常开始），作业日志第一行写明排在谁后面。搬空一次建的作业因此一个接一个改路由。
 - **分享链接会变**：新入口有新的端口和凭据。`GET /jobs/{id}` 对 move_entry 多返回 `result:{new_entry_id, old_entry_id, from_relay_id, to_relay_id, share_changed:true, note}`；用 `GET /entries/{new_entry_id}/share` 取新链接（需要 secrets 权限）。作业日志里也有「客户端需要换成新的分享链接」。
 - 旧线路机不在线时 `wait_detached_old` 会失败，线路机恢复后重试。
 - 线路机退役守卫的错误提示里指向「搬空线路机」。
 
 **替换节点**：新节点接替旧节点——软路由上指向旧节点入口的出口改成新节点的入口，新节点接旧编号，旧节点去备用团队（同「退役」的默认去向：不建退役作业，由备用到期自动回收接手；`spare_from` 记下它原来的名字）。
 - 预览 `GET /machines/{old}/replace` 返回 `{old:{id,name,kind,team:{id,name}|null}, new:{同}, new_name（新节点替换后的名字 = 旧节点现在的名字）, old_to:{team:{id,name,spare}|null, number, name}, renames:[{machine_id,old_name,new_name}]（numbering.auto_compact 时新节点原来的团队压缩编号）, routers_enabled, routers:[{id,name,state:online|offline|pending, exits:[{exit,old_entry_id,new_entry_id,from:"server:port",to:"server:port"}]}], ok, blockers[], warnings[]}`。
-- 条件：旧、新都是在用（active）的节点（不是线路机）、都没有进行中的作业、旧节点有团队编号、新节点至少有一个 active 入口。新节点可以在别的团队（替换时改到旧节点的团队，warnings 里提示）。`old_to.team_id` 不给时去唯一的备用团队；编号不给取目标团队最小的空号（作业执行时再取一次）。
+- 条件：旧、新都是在用（active）的节点（不是线路机）、都没有进行中的作业、旧节点有团队编号、新节点至少有一个 active 入口。新节点可以在别的团队（替换时改到旧节点的团队，warnings 里提示）。旧节点去备用团队时 warnings 还提示什么时候回收：没有订阅（不会自动回收）、已过期满 1 天（一小时内就回收）、开着自动续费（进备用时关掉）。交换编号时旧节点的 `lifecycle_reason` 记「替换下来：新 接替了 旧」，旧节点的来源画像（`node_source_seen`，连接数记 0）复制给新节点，客户换过来不算新出现、新机器不用重新学。`old_to.team_id` 不给时去唯一的备用团队；编号不给取目标团队最小的空号（作业执行时再取一次）。
 - 要改的路由：按各路由 `router_status.data` 里的出口（见软路由），出口对上的入口属于旧节点、未删除的都算（`routers::exits_to`，退役预览、备用到期提醒同一套匹配）。新入口按线路机一一对应（同一台线路机上的新入口；没有时新节点只有一个 active 入口就用它，否则 blockers 说明对不上）；出口原来写的是线路机 IP 就换成新线路机的 IP，否则换成它的 public_host。`routers_enabled` 时任何一台要改的路由不在线（`state` 不是 online）都是 blocker；`routers=false` 不看路由、只交换编号。
 
 **替换作业 `replace`**（目标 = 旧节点，要求 active）步骤：`routers`「改软路由出口」→ `renumber`「交换编号」。计划（改哪些路由的哪些出口）发起时存进作业参数（不含凭据）。

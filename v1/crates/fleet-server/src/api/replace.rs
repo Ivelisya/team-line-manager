@@ -25,18 +25,24 @@ use sqlx::PgConnection;
 use std::collections::HashSet;
 use uuid::Uuid;
 
-/// 路由上要改的一个出口（存进作业参数，作业按它改；凭据不在这里，执行时从库里取）
+/// 路由上要改的一个出口（存进作业参数，作业按它改；凭据不在这里，执行时从库里取）。
+/// 替换节点和换线路机（api/lifecycle.rs）共用；换线路机的新入口在作业里才建，`new_entry_id` / `port` 为空，执行时取参数 `entry_id`
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ExitPlan {
     pub exit: String,
     pub old_entry_id: Uuid,
-    pub new_entry_id: Uuid,
+    pub new_entry_id: Option<Uuid>,
     /// 出口现在的 server:port（核对用：路由上它必须还指向这里，或已经是新入口）
     pub old_server: String,
     pub old_port: u16,
     /// 要改成的 server:port：出口原来写的是线路机 IP 就写新线路机的 IP，否则写它的 public_host
     pub server: String,
-    pub port: u16,
+    pub port: Option<u16>,
+}
+
+impl ExitPlan {
+    /// 预览里的「改成」：换线路机的新端口建好才知道
+    pub fn to(&self) -> String { format!("{}:{}", self.server, self.port.map_or("新端口".to_string(), |p| p.to_string())) }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -106,8 +112,105 @@ pub fn map_entry<'a>(old: &Ent, new: &'a [Ent]) -> Result<&'a Ent, String> {
 }
 
 /// 出口要改成的 server：原来写的是旧线路机的 IP 就写新线路机的 IP，否则写新线路机的 public_host
-pub fn new_server(old_server: &str, old: &Ent, new: &Ent) -> String {
-    if host_eq(old_server, &old.relay_ip) { new.relay_ip.clone() } else { new.public_host.clone() }
+pub fn new_server(old_server: &str, old_relay_ip: &str, new_relay_ip: &str, new_host: &str) -> String {
+    if host_eq(old_server, old_relay_ip) { new_relay_ip.to_string() } else { new_host.to_string() }
+}
+
+/// 各路由最近一次采集的快照里指向 `node` 的出口，`pick` 决定每个出口怎么改（None = 不改，Err = 改不了的原因，进 blockers）。
+/// 计划里有出口的路由不在线、又要改路由（`enabled`）时阻断；`team` 里的路由没有快照或配置读不了时提醒。
+/// `(verb, what)`：「替换」/「旧节点」、「换线路机」/「旧入口」，拼进提示
+#[allow(clippy::too_many_arguments)]
+pub fn scan_routers(
+    rows: &[crate::routers::Row],
+    node: Uuid,
+    team: Option<Uuid>,
+    enabled: bool,
+    (verb, what): (&str, &str),
+    blockers: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+    mut pick: impl FnMut(&crate::routers::clash::EntryRef, &str, u16) -> Option<Result<ExitPlan, String>>,
+) -> Vec<RouterPlan> {
+    let mut out = vec![];
+    for r in rows {
+        let Some(snap) = r.snapshot() else {
+            if team.is_some() && r.team_id == team {
+                warnings.push(format!("软路由「{}」还没有采集到状态，看不出它有没有用{what}", r.name));
+            }
+            continue;
+        };
+        if let Some(e) = snap.openclash.config_error.as_deref().filter(|_| team.is_some() && r.team_id == team) {
+            warnings.push(format!("软路由「{}」的配置读不了（{e}），看不出它有没有用{what}", r.name));
+        }
+        let mut exits = vec![];
+        for (x, er) in crate::routers::exits_to(&snap, node) {
+            let (Some(srv), Some(port)) = (x.server.as_deref(), x.port) else { continue };
+            match pick(er, srv, port) {
+                Some(Ok(e)) => exits.push(ExitPlan { exit: x.name.clone(), ..e }),
+                Some(Err(why)) => blockers.push(format!("软路由「{}」的出口「{}」：{why}", r.name, x.name)),
+                None => {}
+            }
+        }
+        if exits.is_empty() {
+            continue;
+        }
+        let state = r.state();
+        if enabled && state != "online" {
+            let why = r.error.as_deref().map(|e| format!("：{e}")).unwrap_or_default();
+            blockers.push(format!(
+                "软路由「{}」现在{}{why}。它的出口 {} 指向{what}，要等它在线再{verb}（或选不改软路由）",
+                r.name,
+                if state == "offline" { "离线" } else { "还没接入" },
+                exits.iter().map(|e| e.exit.as_str()).collect::<Vec<_>>().join("、")
+            ));
+        }
+        out.push(RouterPlan { id: r.id, name: r.name.clone(), state: state.to_string(), exits });
+    }
+    out
+}
+
+/// 预览 / 响应里的路由计划
+pub fn routers_view(rs: &[RouterPlan]) -> Value {
+    json!(rs
+        .iter()
+        .map(|r| json!({
+            "id": r.id, "name": r.name, "state": r.state,
+            "exits": r.exits.iter().map(|e| json!({
+                "exit": e.exit, "old_entry_id": e.old_entry_id, "new_entry_id": e.new_entry_id,
+                "from": format!("{}:{}", e.old_server, e.old_port), "to": e.to(),
+            })).collect::<Vec<_>>(),
+        }))
+        .collect::<Vec<_>>())
+}
+
+/// 改软路由的作业（替换、换线路机）排队：同一台路由上还没结束的这类作业结束之后才开始（参数 `routers_after`，见 jobs::claim）。
+/// 搬空一次建很多个换线路机作业，同时改同一台路由会互相覆盖配置、回滚时换回别人改之前的备份。先锁路由行，并发发起的也排得上。
+/// 返回要等的作业与它的机器名
+pub async fn routers_after(tx: &mut Tx<'_>, rs: &[RouterPlan]) -> ApiResult<Option<(Uuid, Option<String>)>> {
+    if rs.is_empty() {
+        return Ok(None);
+    }
+    let ids: Vec<Uuid> = rs.iter().map(|r| r.id).collect();
+    sqlx::query("select 1 from router where id = any($1) order by id for update").bind(&ids).execute(&mut **tx).await?;
+    Ok(sqlx::query_as(
+        "select j.id, display_name(m.kind::text, m.label, t.name, m.number) from job j
+           left join machine m on m.id = j.target_id left join team t on t.id = m.team_id
+         where j.kind in ('replace', 'move_entry') and j.state in ('queued', 'running', 'waiting', 'cancelling')
+           and jsonb_typeof(j.params #> '{plan,routers}') = 'array'
+           and exists (select 1 from jsonb_array_elements(j.params #> '{plan,routers}') r where (r->>'id')::uuid = any($1))
+         order by j.created_at desc, j.id desc limit 1",
+    )
+    .bind(&ids)
+    .fetch_optional(&mut **tx)
+    .await?)
+}
+
+/// 建好作业后在它的日志里记一行在等谁
+pub async fn note_after(tx: &mut Tx<'_>, job: Uuid, after: &Option<(Uuid, Option<String>)>) -> ApiResult<()> {
+    if let Some((id, name)) = after {
+        let msg = format!("排在作业 {id}（{}）之后：它也要改同一台软路由，等它结束再开始", name.as_deref().unwrap_or("已删除的机器"));
+        sqlx::query("insert into job_log (job_id, level, msg) values ($1, 'info', $2)").bind(job).bind(msg).execute(&mut **tx).await?;
+    }
+    Ok(())
 }
 
 /// 没指定团队时旧节点去哪：唯一的备用团队（迁移 0041 保证有且只有一个）
@@ -254,6 +357,18 @@ async fn plan(st: &AppState, conn: &mut PgConnection, old_id: Uuid, b: &ReplaceI
     }
     if to_team.as_ref().is_some_and(|t| !t.2) {
         warnings.push("旧节点要去的不是备用团队：不会到期自动回收".into());
+    } else if to_team.is_some() {
+        // 进备用之后什么时候回收（spare.rs）：没有订阅的永远不回收，已过期满 1 天的下一轮维护就回收；开着的自动续费会关掉（machines::patch_tx）
+        let sub: Option<(time::Date, time::Date, bool)> =
+            sqlx::query_as("select due_date, local_date(billing_tz), auto_renew from subscription_eff where machine_id = $1").bind(old.id).fetch_optional(&mut *conn).await?;
+        match sub {
+            None => warnings.push(format!("旧节点「{old_name}」没有订阅：进备用后没有到期日，不会自动回收（不要了就之后「立即回收」）")),
+            Some((due, today, _)) if crate::spare::expired(today, due) => {
+                warnings.push(format!("旧节点「{old_name}」的订阅已过期满 1 天：进备用后下一轮维护（一小时内）就自动回收；还想留几天对账，先续费或改到期日"))
+            }
+            Some((_, _, true)) => warnings.push(format!("旧节点「{old_name}」开着自动续费：进备用时会关掉，到期后照常回收（供应商那边的自动扣款要自己去关）")),
+            Some(_) => {}
+        }
     }
 
     // 编号压缩：新节点原来的团队少了一台（auto_compact 时，同退役）
@@ -306,50 +421,24 @@ async fn router_plan(
     if new_es.is_empty() {
         blockers.push(format!("新节点「{}」没有在用的入口（上架完成、入口生效后再替换）", new.name()));
     }
-    let mut out = vec![];
-    for r in crate::routers::load(&st.db, None).await? {
-        let Some(snap) = r.snapshot() else {
-            if r.team_id == Some(old_team) {
-                warnings.push(format!("软路由「{}」还没有采集到状态，看不出它有没有用旧节点", r.name));
-            }
-            continue;
-        };
-        if let Some(e) = snap.openclash.config_error.as_deref().filter(|_| r.team_id == Some(old_team)) {
-            warnings.push(format!("软路由「{}」的配置读不了（{e}），看不出它有没有用旧节点", r.name));
+    let rows = crate::routers::load(&st.db, None).await?;
+    let has_new = !new_es.is_empty();
+    let out = scan_routers(&rows, old.id, Some(old_team), enabled, ("替换", "旧节点"), blockers, warnings, |er, srv, port| {
+        let oe = old_es.iter().find(|e| e.id == er.id)?;
+        match map_entry(oe, &new_es) {
+            Ok(ne) => Some(Ok(ExitPlan {
+                exit: String::new(),
+                old_entry_id: oe.id,
+                new_entry_id: Some(ne.id),
+                old_server: srv.to_string(),
+                old_port: port,
+                server: new_server(srv, &oe.relay_ip, &ne.relay_ip, &ne.public_host),
+                port: Some(ne.port as u16),
+            })),
+            Err(why) if has_new && enabled => Some(Err(why)),
+            Err(_) => None,
         }
-        let mut exits = vec![];
-        for (x, er) in crate::routers::exits_to(&snap, old.id) {
-            let (Some(srv), Some(port)) = (x.server.as_deref(), x.port) else { continue };
-            let Some(oe) = old_es.iter().find(|e| e.id == er.id) else { continue };
-            match map_entry(oe, &new_es) {
-                Ok(ne) => exits.push(ExitPlan {
-                    exit: x.name.clone(),
-                    old_entry_id: oe.id,
-                    new_entry_id: ne.id,
-                    old_server: srv.to_string(),
-                    old_port: port,
-                    server: new_server(srv, oe, ne),
-                    port: ne.port as u16,
-                }),
-                Err(why) if !new_es.is_empty() && enabled => blockers.push(format!("软路由「{}」的出口「{}」：{why}", r.name, x.name)),
-                Err(_) => {}
-            }
-        }
-        if exits.is_empty() {
-            continue;
-        }
-        let state = r.state();
-        if enabled && state != "online" {
-            let why = r.error.as_deref().map(|e| format!("：{e}")).unwrap_or_default();
-            blockers.push(format!(
-                "软路由「{}」现在{}{why}。它的出口 {} 指向旧节点，要等它在线再替换（或选不改软路由）",
-                r.name,
-                if state == "offline" { "离线" } else { "还没接入" },
-                exits.iter().map(|e| e.exit.as_str()).collect::<Vec<_>>().join("、")
-            ));
-        }
-        out.push(RouterPlan { id: r.id, name: r.name.clone(), state: state.to_string(), exits });
-    }
+    });
     if enabled && out.is_empty() {
         warnings.push("没有软路由的出口指向旧节点：只交换编号".into());
     }
@@ -370,13 +459,7 @@ impl Plan {
             },
             "renames": self.renames,
             "routers_enabled": self.routers_enabled,
-            "routers": self.routers.iter().map(|r| json!({
-                "id": r.id, "name": r.name, "state": r.state,
-                "exits": r.exits.iter().map(|e| json!({
-                    "exit": e.exit, "old_entry_id": e.old_entry_id, "new_entry_id": e.new_entry_id,
-                    "from": format!("{}:{}", e.old_server, e.old_port), "to": format!("{}:{}", e.server, e.port),
-                })).collect::<Vec<_>>(),
-            })).collect::<Vec<_>>(),
+            "routers": routers_view(&self.routers),
             "ok": self.blockers.is_empty(),
             "blockers": self.blockers,
             "warnings": self.warnings,
@@ -413,7 +496,7 @@ pub async fn replace(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<
 
 async fn enqueue(tx: &mut Tx<'_>, actor: &str, p: &Plan) -> ApiResult<Uuid> {
     let (to_team, to_name, _) = p.to_team.clone().ok_or_else(|| ApiError::internal("没有目标团队"))?;
-    let params = json!({
+    let mut params = json!({
         "new_id": p.new.id,
         "old_team_id": p.old.team_id,
         "old_number": p.old.number,
@@ -425,7 +508,12 @@ async fn enqueue(tx: &mut Tx<'_>, actor: &str, p: &Plan) -> ApiResult<Uuid> {
         "old_name": p.old.name(),
         "new_name": p.new.name(),
     });
+    let after = if p.routers_enabled { routers_after(tx, &p.routers).await? } else { None };
+    if let Some((id, _)) = &after {
+        params["routers_after"] = json!(id);
+    }
     let job = jobs::enqueue(tx, "replace", Some(p.old.id), params, actor).await?;
+    note_after(tx, job, &after).await?;
     let routers: Vec<Value> = if p.routers_enabled {
         p.routers.iter().map(|r| json!({"id": r.id, "name": r.name, "exits": r.exits.iter().map(|e| &e.exit).collect::<Vec<_>>()})).collect()
     } else {
@@ -468,7 +556,7 @@ mod tests {
         assert!(map_entry(&old, &[]).is_err());
         // 出口写的是线路机 IP 就换成新线路机的 IP，写的是域名就换成新线路机的 public_host
         let other = Ent { relay_ip: "203.0.113.7".into(), ..ent(r2, "线路机2", 20030) };
-        assert_eq!(new_server("198.51.100.2", &old, &other), "203.0.113.7");
-        assert_eq!(new_server("线路机1.TEST.", &old, &other), "线路机2.test");
+        assert_eq!(new_server("198.51.100.2", &old.relay_ip, &other.relay_ip, &other.public_host), "203.0.113.7");
+        assert_eq!(new_server("线路机1.TEST.", &old.relay_ip, &other.relay_ip, &other.public_host), "线路机2.test");
     }
 }

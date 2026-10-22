@@ -29,6 +29,28 @@ pub struct Health {
     /// 告警引擎不能把这两条规则的原因消失当成恢复（只给告警用，不对外输出）
     #[serde(skip)]
     pub probe_unknown: bool,
+    /// agent 离线、或回来后样本还不够 5 分钟：CPU / 内存 / 磁盘持续偏高判不出（只给告警用）
+    #[serde(skip)]
+    pub load_unknown: bool,
+    /// agent 离线：时钟偏差判不出（只给告警用）
+    #[serde(skip)]
+    pub clock_unknown: bool,
+    /// 中控检查线路机入口的新记录还不够 3 轮：整台连不连得上判不出（只给告警用）
+    #[serde(skip)]
+    pub reach_unknown: bool,
+}
+
+impl Health {
+    /// 这条规则这一轮判不出：原因消失不等于恢复，告警保持原状（alerts.rs），等判得出再按那时的状态算
+    pub fn undecided(&self, rule: &str) -> bool {
+        match rule {
+            "egress_fail" | "tcp_fail" => self.probe_unknown,
+            "host_cpu_high" | "host_mem_high" | "host_disk_high" => self.load_unknown,
+            "clock_skew" => self.clock_unknown,
+            "relay_unreachable" => self.reach_unknown,
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -126,8 +148,9 @@ fn probe_reasons(live: &[&EntryView], rs: &mut Vec<Reason>, unknown: &mut bool, 
             *unknown = true;
             continue;
         }
-        // 线路机 agent 离线（探测是它做的）：最后报的那次结果不再更新，失败的不开告警，开着的也不因此恢复
-        if e.relay_offline {
+        // 线路机 agent 离线（探测是它做的）：最后报的那次结果不再更新，失败的不开告警，开着的也不因此恢复。
+        // 线路机在维护中同样：维护期间经它的探测失败不是节点的问题
+        if e.relay_offline || e.relay_maint {
             *unknown = true;
             *probe_unknown = true;
             continue;
@@ -196,7 +219,9 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
         }
     }
 
-    // 持续高负载：只在 agent 在线时判定（离线本身已经是严重告警）
+    // 持续高负载：只在 agent 在线时判定（离线本身已经是严重告警）。离线、回来后样本还不够 5 分钟时判不出：开着的不因此恢复
+    let load_unknown = own_agent && m.agent.is_some() && (!agent_online || m.sustained.span_s < SUSTAIN_MIN_SPAN_S);
+    let clock_unknown = own_agent && m.agent.is_some() && !agent_online;
     if own_agent && agent_online && m.sustained.span_s >= SUSTAIN_MIN_SPAN_S {
         let s = &m.sustained;
         for (key, label, min, limit) in [
@@ -266,7 +291,8 @@ pub fn evaluate(m: &MachineView, now: OffsetDateTime) -> Health {
     // 续费与流量额度在状态定下之后才加：只开告警，不让机器变「降级」/「故障」（账单快到期、额度快用完都不是机器出了问题）
     rs.extend(renewal_reason(m));
     rs.extend(quota_reason(m));
-    Health { status, reasons: rs, probe_unknown }
+    let reach_unknown = m.relay.as_ref().is_some_and(|r| r.reach_unknown);
+    Health { status, reasons: rs, probe_unknown, load_unknown, clock_unknown, reach_unknown }
 }
 
 #[cfg(test)]
@@ -384,7 +410,7 @@ pub(crate) mod tests {
     }
 
     fn relay_info(generation: i64, applied: i64, generation_at: Option<OffsetDateTime>, applied_at: Option<OffsetDateTime>) -> RelayInfo {
-        RelayInfo { public_host: "h".into(), generation, applied_generation: applied, applied_at, generation_at, apply_error: None, port_min: 20000, port_max: 29999, unreachable: None }
+        RelayInfo { public_host: "h".into(), generation, applied_generation: applied, applied_at, generation_at, apply_error: None, port_min: 20000, port_max: 29999, unreachable: None, reach_unknown: false }
     }
 
     pub(crate) fn entry(relay_xray_down: bool, egress_ok: bool) -> EntryView {
@@ -400,6 +426,7 @@ pub(crate) mod tests {
             apply_error: None,
             relay_xray_down,
             relay_offline: false,
+            relay_maint: false,
             tcp: Some(Probe { ok: egress_ok, latency_ms: None, detail: None, ts, median_ms: None }),
             egress: Some(Probe { ok: egress_ok, latency_ms: None, detail: Some("timeout".into()), ts, median_ms: None }),
             reach: None,
@@ -475,6 +502,11 @@ pub(crate) mod tests {
         n.entries[0].relay_offline = true;
         let h = evaluate(&n, now);
         assert!(h.reasons.is_empty() && h.status == Status::Unknown && h.probe_unknown, "线路机离线：它最后报的失败不开告警，开着的也不恢复：{:?}", keys(&h));
+        // 线路机在维护中：同样判不出
+        n.entries[0].relay_offline = false;
+        n.entries[0].relay_maint = true;
+        let h = evaluate(&n, now);
+        assert!(h.reasons.is_empty() && h.undecided("egress_fail") && h.undecided("tcp_fail"), "线路机维护：{:?}", keys(&h));
         // 另一条入口的线路机在线、探测失败：照常报
         n.entries.push(entry(false, false));
         assert_eq!(keys(&evaluate(&n, now)), ["egress_fail", "tcp_fail"]);
@@ -583,9 +615,12 @@ pub(crate) mod tests {
         assert_eq!(h.reasons[0].text, "agent 时钟慢 17 分钟：读数可能缺失或冻结，请校时");
         m.agent.as_mut().unwrap().clock_skew_ms = Some(-2 * 3_600_000);
         assert_eq!(evaluate(&m, now).reasons[0].text, "agent 时钟快 2 小时 0 分钟：读数可能缺失或冻结，请校时");
-        // 离线时只报离线
+        assert!(!evaluate(&m, now).undecided("clock_skew"));
+        // 离线时只报离线，时钟偏差判不出（开着的不恢复）
         m.agent.as_mut().unwrap().online = false;
-        assert_eq!(keys(&evaluate(&m, now)), ["agent_offline"]);
+        let h = evaluate(&m, now);
+        assert_eq!(keys(&h), ["agent_offline"]);
+        assert!(h.undecided("clock_skew") && h.undecided("host_cpu_high") && !h.undecided("agent_offline"));
     }
 
     #[test]
@@ -613,6 +648,10 @@ pub(crate) mod tests {
         let h = evaluate(&r, now);
         assert_eq!((keys(&h), h.status), (vec!["relay_unreachable"], Status::Down));
         assert_eq!(h.reasons[0].text, "中控连续 3 次连不上客户入口（端口 20001：超时 10 秒；端口 20002：连接被拒绝）");
+        assert!(!h.undecided("relay_unreachable"));
+        // 中控刚重启、新记录不到 3 轮：判不出
+        r.relay = Some(RelayInfo { reach_unknown: true, ..relay_info(1, 1, None, Some(now)) });
+        assert!(evaluate(&r, now).undecided("relay_unreachable"));
     }
 
     #[test]
@@ -696,9 +735,11 @@ pub(crate) mod tests {
         m.entries = vec![entry(false, true)];
         m.sustained = Sustained { span_s: 290, cpu_min: Some(95.0), mem_min: Some(50.0), disk_min: Some(86.0) };
         assert_eq!(keys(&evaluate(&m, now)), ["host_cpu_high", "host_disk_high"]);
-        // 样本覆盖不足 5 分钟：不判定
+        assert!(!evaluate(&m, now).undecided("host_cpu_high"));
+        // 样本覆盖不足 5 分钟（agent 刚回来）：不判定，开着的也不恢复
         m.sustained.span_s = 60;
-        assert!(keys(&evaluate(&m, now)).is_empty());
+        let h = evaluate(&m, now);
+        assert!(keys(&h).is_empty() && h.undecided("host_cpu_high") && h.undecided("host_disk_high") && !h.undecided("clock_skew"));
         // 内存 89% 没到 90%
         m.sustained = Sustained { span_s: 290, cpu_min: None, mem_min: Some(89.0), disk_min: Some(84.9) };
         assert!(keys(&evaluate(&m, now)).is_empty());

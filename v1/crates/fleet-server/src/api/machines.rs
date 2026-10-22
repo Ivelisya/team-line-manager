@@ -217,23 +217,22 @@ pub async fn patch_tx(tx: &mut crate::db::Tx<'_>, actor: &str, id: Uuid, b: Patc
     .await?;
     let old_name = crate::names::display_name(&cur.1, cur.4.as_deref(), old_team.as_deref(), cur.3);
     let name = crate::names::display_name(&cur.1, label.as_deref(), new_team.as_deref(), number);
-    // 进备用团队（退役、替换下来、手动改到备用）记下时刻和原名；移出备用（撤销退役）清掉，退役原因一并清掉
+    // 进备用团队（退役、替换下来、手动改到备用）记下时刻和原名，并关掉自动续费（开着的话每到期就顺延一期，永远不会回收）；
+    // 移出备用（撤销退役）清掉时刻、原名和退役原因，自动续费不自动打开
+    let mut auto_renew_off = false;
     if new_spare && !old_spare {
         sqlx::query("update machine set spare_since = now(), spare_from = $2 where id = $1").bind(id).bind(&old_name).execute(&mut **tx).await?;
+        auto_renew_off = sqlx::query("update subscription set auto_renew = false where machine_id = $1 and auto_renew").bind(id).execute(&mut **tx).await?.rows_affected() > 0;
     } else if old_spare && !new_spare {
         sqlx::query("update machine set spare_since = null, spare_from = null, lifecycle_reason = null where id = $1").bind(id).execute(&mut **tx).await?;
     }
-    audit(
-        tx,
-        actor,
-        if renamed { "machine.rename" } else { "machine.update" },
-        "machine",
-        Some(id),
-        json!({"name": name, "old_name": old_name,
-               "before": {"team_id": cur.2, "number": cur.3, "label": cur.4, "country": cur.6},
-               "after": {"team_id": team_id, "number": number, "label": label, "country": country.clone().unwrap_or(cur.6.clone())}}),
-    )
-    .await?;
+    let mut detail = json!({"name": name, "old_name": old_name,
+           "before": {"team_id": cur.2, "number": cur.3, "label": cur.4, "country": cur.6},
+           "after": {"team_id": team_id, "number": number, "label": label, "country": country.clone().unwrap_or(cur.6.clone())}});
+    if auto_renew_off {
+        detail["auto_renew_off"] = json!(true);
+    }
+    audit(tx, actor, if renamed { "machine.rename" } else { "machine.update" }, "machine", Some(id), detail).await?;
     Ok(relays)
 }
 
@@ -443,6 +442,8 @@ pub async fn move_to_spare(st: &AppState, actor: &str, id: Uuid, reason: Option<
     }
     let (spare_id, spare_name, taken) = spare_team(&mut tx).await?;
     let mut free = (1..=999).filter(|n| !taken.contains(n));
+    // patch_tx 进备用时关掉自动续费：先记下原来开没开，结果里写明
+    let auto_renew_off: bool = sqlx::query_scalar("select exists (select 1 from subscription where machine_id = $1 and auto_renew)").bind(id).fetch_one(&mut *tx).await?;
     let mut revs: Vec<(Uuid, i32, Option<Uuid>, String)> = sqlx::query_as(
         "select m.id, m.revision, m.team_id, display_name(m.kind::text, m.label, t.name, m.number) from machine m left join team t on t.id = m.team_id
          where m.id = any($1)",
@@ -468,9 +469,12 @@ pub async fn move_to_spare(st: &AppState, actor: &str, id: Uuid, reason: Option<
     }
     // 原团队少了这几台：压缩编号（同退役完成时）
     teams.retain(|t| *t != spare_id && revs.iter().any(|r| r.2 == Some(*t)));
+    let mut compacted = false;
     if st.cfg.numbering.auto_compact {
         for t in &teams {
-            relays.extend(crate::db::compact_team(&mut tx, *t, actor, "节点退役后自动压缩").await?.1);
+            let (ch, rs) = crate::db::compact_team(&mut tx, *t, actor, "节点退役后自动压缩").await?;
+            compacted |= !ch.is_empty();
+            relays.extend(rs);
         }
     }
     let recycle_on = due.map(crate::spare::recycle_on);
@@ -496,7 +500,21 @@ pub async fn move_to_spare(st: &AppState, actor: &str, id: Uuid, reason: Option<
         st.relay_bumped(r);
     }
     st.emit(Event::Machines);
-    Ok(json!({"mode": "spare", "name": host_to, "from": host_from, "recycle_on": recycle_on, "ip_nodes": ip_out}))
+    let notes = spare_notes(auto_renew_off, compacted.then_some(host_from.as_str()), true);
+    Ok(json!({"mode": "spare", "name": host_to, "from": host_from, "recycle_on": recycle_on, "ip_nodes": ip_out, "auto_renew_off": auto_renew_off, "notes": notes}))
+}
+
+/// 进备用的提示（预览 `done = false`、结果 `done = true`）：开着的自动续费会关掉（不关的话每到期顺延一期，永远不回收）；
+/// 原团队压缩了编号时，撤销退役（改回原团队）拿到的是那时最小的空号，回不到原来的名字（`renumbered` = 原名）
+fn spare_notes(auto_renew: bool, renumbered: Option<&str>, done: bool) -> Vec<String> {
+    let mut v = vec![];
+    if auto_renew {
+        v.push(if done { "自动续费已关闭（供应商那边的自动扣款要自己去关）" } else { "这台开着自动续费：进备用时会关掉，到期后照常回收（供应商那边的自动扣款要自己去关）" }.to_string());
+    }
+    if let Some(n) = renumbered {
+        v.push(format!("原团队后面的节点{}前移补号：撤销退役（改回原团队）拿到的是那时最小的空号，回不到 {n}", if done { "已" } else { "会" }));
+    }
+    v
 }
 
 /// 立即回收：建退役作业（摘入口 → 等线路机 → 清理 → 撤令牌 → 收尾时移进回收站）。手动「立即回收」与备用团队到期自动回收（spare.rs）
@@ -716,9 +734,11 @@ pub async fn retire_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
     let to_name = free.next().map(|n| node_name(&spare_name, n));
     let spare_ip: Vec<Value> =
         ip_nodes.iter().filter(|x| !x.3).map(|(i, n, _, _)| json!({"id": i, "name": n, "to_name": free.next().map(|k| node_name(&spare_name, k))})).collect();
+    let auto_renew: bool = sqlx::query_scalar("select exists (select 1 from subscription where machine_id = $1 and auto_renew)").bind(id).fetch_one(&mut *conn).await?;
     let spare = json!({
         "ok": eligible.is_ok(), "why": eligible.err(), "team": {"id": spare_id, "name": spare_name}, "to_name": to_name,
         "recycle_on": due.map(crate::spare::recycle_on), "ip_nodes": spare_ip,
+        "notes": spare_notes(auto_renew, (!renames.is_empty()).then_some(name.as_str()), false),
     });
     // 软路由出口：按路由归在一起，写明指向的是哪台
     let names: std::collections::HashMap<Uuid, &str> = std::iter::once((id, name.as_str())).chain(ip_nodes.iter().map(|x| (x.0, x.1.as_str()))).collect();
@@ -1154,7 +1174,17 @@ pub async fn renumber_preview(_a: Actor, State(st): State<AppState>, ApiPath(tea
         .iter()
         .map(|(id, o, n)| json!({"machine_id": id, "old_name": node_name(&team, *o), "new_name": node_name(&team, *n)}))
         .collect();
-    Ok(ok(json!({"changes": list, "token": plan_token(&changes)})))
+    // 软路由的出口名是路由上自己起的（「节点05」），不跟着改：指向要改名的节点的列出来，对不上的自己去改
+    let ids: Vec<Uuid> = changes.iter().map(|c| c.0).collect();
+    let exits = crate::routers::exits_using(&st.db, &ids).await?;
+    let notes: Vec<String> = changes
+        .iter()
+        .flat_map(|(id, o, n)| {
+            let (from, to) = (node_name(&team, *o), node_name(&team, *n));
+            exits.get(id).into_iter().flatten().map(move |(_, r, x)| format!("软路由「{r}」的出口「{x}」指向 {from}，改名为 {to} 后出口名不跟着改"))
+        })
+        .collect();
+    Ok(ok(json!({"changes": list, "notes": notes, "token": plan_token(&changes)})))
 }
 
 #[derive(Deserialize)]

@@ -163,6 +163,7 @@ const RenumberDialog = resetOnOpen(function RenumberDialog({ team, open, onClose
               <thead><tr><th>当前名称</th><th /><th>调整后</th></tr></thead>
               <tbody>{d.changes.map((c) => <tr key={c.machine_id}><td className="num">{c.old_name}</td><td><ArrowRight size={14} style={{ color: 'var(--fg-3)' }} /></td><td className="strong num">{c.new_name}</td></tr>)}</tbody></table>
           </div>)}
+        {d?.notes.map((x) => <Note key={x} tone="warn">{x}</Note>)}
         <DialogFooter>
           <Button onClick={onClose} disabled={apply.isPending}>取消</Button>
           {/* 应用失败后会重取预览（切回窗口也会）：重取完之前不让应用 */}

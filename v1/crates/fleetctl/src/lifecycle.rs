@@ -30,18 +30,61 @@ fn follow_jobs(ctx: &Ctx, d: &Value) -> anyhow::Result<u8> {
     Ok(code)
 }
 
-/// `fleetctl move <节点> --to <线路机>`
-pub fn mv(ctx: &Ctx, node: &str, to: &str, from: Option<&str>, yes: bool, follow: bool) -> anyhow::Result<u8> {
+/// 预览里要改的软路由出口（替换、换线路机、搬空同一个格式）：软路由、状态、出口、现在、改成
+fn exit_rows(routers: &[Value], node: Option<&str>) -> Vec<Vec<String>> {
+    let mut t = vec![];
+    for r in routers {
+        let state = match r["state"].as_str() {
+            Some("online") => "在线",
+            Some("offline") => "离线",
+            _ => "未接入",
+        };
+        for e in r["exits"].as_array().cloned().unwrap_or_default() {
+            let mut row = vec![st(r, "/name"), state.to_string(), st(&e, "/exit"), st(&e, "/from"), st(&e, "/to")];
+            if let Some(n) = node {
+                row.insert(0, n.to_string());
+            }
+            t.push(row);
+        }
+    }
+    t
+}
+
+const EXITS_HEAD: &str = "要改的软路由出口（新入口验收后、摘旧入口前改：备份后改，改完重启 OpenClash 并测延迟；任何一台失败全部换回、旧入口不摘）";
+
+fn blockers(v: &Value) -> String { v["blockers"].as_array().map(|a| a.iter().filter_map(|s| s.as_str()).collect::<Vec<_>>().join("；")).unwrap_or_default() }
+
+/// `fleetctl move <节点> --to <线路机>`：先 GET 预览（要改的软路由出口、不能换的原因），确认后提交
+pub fn mv(ctx: &Ctx, node: &str, to: &str, from: Option<&str>, no_routers: bool, yes: bool, follow: bool) -> anyhow::Result<u8> {
     let n = ctx.find(node, Want::Live)?;
     let (id, name) = (st(&n, "/id"), st(&n, "/name"));
     let target = find_relay(ctx, to)?;
     let mut body = json!({"to_relay_id": target["id"]});
+    let mut q: Vec<(&str, String)> = vec![("to_relay_id", st(&target, "/id"))];
     if let Some(f) = from {
         body["from_relay_id"] = find_relay(ctx, f)?["id"].clone();
+        q.push(("from_relay_id", st(&body, "/from_relay_id")));
     }
+    if no_routers {
+        body["routers"] = json!(false);
+        q.push(("routers", "false".into()));
+    }
+    let pv = ctx.c.get_q(&format!("/machines/{id}/move"), &q)?;
     if !ctx.json {
-        outln(format!("将把 {name} 换到线路机 {}：先在新线路机建入口并验收，通过后才摘旧入口，换线期间不断网。", st(&target, "/name")));
+        outln(format!("将把 {name} 换到线路机 {}：先在新线路机建入口并验收，通过后才改软路由、摘旧入口，换线期间不断网。", st(&target, "/name")));
+        let rows = exit_rows(pv["routers"].as_array().map(Vec::as_slice).unwrap_or_default(), None);
+        if no_routers {
+            outln(format!("软路由：不改（--no-routers）{}", if rows.is_empty() { String::new() } else { format!("，{} 个出口指向旧入口，摘掉后就断了", rows.len()) }));
+        } else if !rows.is_empty() {
+            outln(format!("{EXITS_HEAD}：\n{}", table::render(&["软路由", "状态", "出口", "现在", "改成"], &rows)));
+        }
+        for w in pv["warnings"].as_array().cloned().unwrap_or_default() {
+            outln(format!("注意：{}", w.as_str().unwrap_or("")));
+        }
         outln(SHARE_HINT);
+    }
+    if pv["ok"] != true {
+        bail!("现在不能换线路机：{}", blockers(&pv));
     }
     confirm(&format!("确认把 {name} 换到 {}？", st(&target, "/name")), yes)?;
     let d = ctx.c.post(&format!("/machines/{id}/move"), &body)?;
@@ -65,10 +108,14 @@ fn moving_entries(relay: &Value) -> Vec<Value> {
 }
 
 /// `fleetctl evacuate <线路机> --to <线路机>`
-pub fn evacuate(ctx: &Ctx, relay: &str, to: &str, yes: bool, follow: bool) -> anyhow::Result<u8> {
+pub fn evacuate(ctx: &Ctx, relay: &str, to: &str, no_routers: bool, yes: bool, follow: bool) -> anyhow::Result<u8> {
     let src = find_relay(ctx, relay)?;
     let dst = find_relay(ctx, to)?;
     let (sid, sname, dname) = (st(&src, "/id"), st(&src, "/name"), st(&dst, "/name"));
+    let mut q: Vec<(&str, String)> = vec![("to_relay_id", st(&dst, "/id"))];
+    if no_routers {
+        q.push(("routers", "false".into()));
+    }
     // 将被搬走的节点：线路机完整视图里的入口列表（find 取的是精简列表，没有入口）
     let moving = moving_entries(&ctx.c.get(&format!("/machines/{sid}"))?);
     if !ctx.json {
@@ -77,6 +124,22 @@ pub fn evacuate(ctx: &Ctx, relay: &str, to: &str, yes: bool, follow: bool) -> an
         } else {
             let rows: Vec<Vec<String>> = moving.iter().map(|e| vec![st(e, "/node/name"), st(e, "/port"), cmds::entry_state_cn(e).to_string()]).collect();
             outln(format!("将把 {sname} 上的 {} 个节点换到 {dname}：\n{}", moving.len(), table::render(&["节点", "端口", "入口状态"], &rows)));
+            let pv = ctx.c.get_q(&format!("/relays/{sid}/evacuate"), &q)?;
+            let mut ex = vec![];
+            for j in pv["jobs"].as_array().cloned().unwrap_or_default() {
+                ex.extend(exit_rows(j["routers"].as_array().map(Vec::as_slice).unwrap_or_default(), Some(&st(&j, "/name"))));
+            }
+            if no_routers {
+                outln(format!("软路由：不改（--no-routers）{}", if ex.is_empty() { String::new() } else { format!("，{} 个出口指向这些入口，摘掉后就断了", ex.len()) }));
+            } else if !ex.is_empty() {
+                outln(format!("{EXITS_HEAD}；改同一台软路由的节点一个接一个换：\n{}", table::render(&["节点", "软路由", "状态", "出口", "现在", "改成"], &ex)));
+            }
+            for k in pv["skipped"].as_array().cloned().unwrap_or_default() {
+                outln(format!("会跳过 {}：{}", st(&k, "/name"), st(&k, "/reason")));
+            }
+            for w in pv["warnings"].as_array().cloned().unwrap_or_default() {
+                outln(format!("注意：{}", w.as_str().unwrap_or("")));
+            }
             outln(SHARE_HINT);
         }
     }
@@ -88,7 +151,11 @@ pub fn evacuate(ctx: &Ctx, relay: &str, to: &str, yes: bool, follow: bool) -> an
         return Ok(0);
     }
     confirm(&format!("确认把 {sname} 上的 {} 个节点搬到 {dname}？", moving.len()), yes)?;
-    let d = ctx.c.post(&format!("/relays/{sid}/evacuate"), &json!({"to_relay_id": dst["id"]}))?;
+    let mut body = json!({"to_relay_id": dst["id"]});
+    if no_routers {
+        body["routers"] = json!(false);
+    }
+    let d = ctx.c.post(&format!("/relays/{sid}/evacuate"), &body)?;
     ctx.emit(&d, || {
         let jobs = d["jobs"].as_array().cloned().unwrap_or_default();
         let mut s = format!("已提交 {} 个换线路机作业：\n", jobs.len());
@@ -158,19 +225,8 @@ pub fn replace(ctx: &Ctx, o: ReplaceOpts) -> anyhow::Result<u8> {
             ctx.emit(&pv, String::new);
         } else {
             outln(table::kv(&rows));
-            let routers = pv["routers"].as_array().cloned().unwrap_or_default();
-            if pv["routers_enabled"] == true && !routers.is_empty() {
-                let mut t = vec![];
-                for r in &routers {
-                    for e in r["exits"].as_array().cloned().unwrap_or_default() {
-                        let state = match r["state"].as_str() {
-                            Some("online") => "在线",
-                            Some("offline") => "离线",
-                            _ => "未接入",
-                        };
-                        t.push(vec![st(r, "/name"), state.to_string(), st(&e, "/exit"), st(&e, "/from"), st(&e, "/to")]);
-                    }
-                }
+            let t = exit_rows(pv["routers"].as_array().map(Vec::as_slice).unwrap_or_default(), None);
+            if pv["routers_enabled"] == true && !t.is_empty() {
                 outln(format!("要改的软路由出口（备份后改，改完重启 OpenClash 并测延迟；任何一台失败全部换回）：\n{}", table::render(&["软路由", "状态", "出口", "现在", "改成"], &t)));
             }
             for w in pv["warnings"].as_array().cloned().unwrap_or_default() {
@@ -179,8 +235,7 @@ pub fn replace(ctx: &Ctx, o: ReplaceOpts) -> anyhow::Result<u8> {
         }
     }
     if pv["ok"] != true {
-        let why = pv["blockers"].as_array().map(|a| a.iter().filter_map(|s| s.as_str()).collect::<Vec<_>>().join("；")).unwrap_or_default();
-        bail!("现在不能替换：{why}");
+        bail!("现在不能替换：{}", blockers(&pv));
     }
     if !o.yes {
         if !ctx.json {

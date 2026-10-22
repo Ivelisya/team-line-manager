@@ -362,6 +362,9 @@ pub fn retire(ctx: &Ctx, machine: &str, now: bool, reason: Option<&str>, no_clea
             if !ip_nodes.is_empty() {
                 outln(format!("同机 IP 节点一起进备用：{}", ip_nodes.join("，")));
             }
+            for n in sp["notes"].as_array().into_iter().flatten() {
+                outln(format!("注意：{}", n.as_str().unwrap_or("")));
+            }
         }
         let exits: Vec<String> = pre["routers"]
             .as_array()
@@ -392,6 +395,9 @@ pub fn retire(ctx: &Ctx, machine: &str, now: bool, reason: Option<&str>, no_clea
             let mut s = format!("{} → {}，{} 起自动回收", st(&d, "/from"), st(&d, "/name"), st(&d, "/recycle_on"));
             for x in d["ip_nodes"].as_array().into_iter().flatten() {
                 s += &format!("\n一起进备用：{} → {}", st(x, "/from"), st(x, "/name"));
+            }
+            for n in d["notes"].as_array().into_iter().flatten() {
+                s += &format!("\n{}", n.as_str().unwrap_or(""));
             }
             s
         });
@@ -462,7 +468,8 @@ pub fn renumber(ctx: &Ctx, team: &str, yes: bool) -> anyhow::Result<u8> {
     if !yes {
         ctx.emit(&pre, || {
             let rows: Vec<Vec<String>> = changes.iter().map(|c| vec![st(c, "/old_name"), st(c, "/new_name")]).collect();
-            format!("{}\n预览，未生效。加 --yes 执行", table::render(&["现名", "新名"], &rows))
+            let notes: String = pre["notes"].as_array().into_iter().flatten().filter_map(Value::as_str).map(|n| format!("\n注意：{n}")).collect();
+            format!("{}{notes}\n预览，未生效。加 --yes 执行", table::render(&["现名", "新名"], &rows))
         });
         return Ok(0);
     }

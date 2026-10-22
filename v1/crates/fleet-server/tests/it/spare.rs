@@ -103,7 +103,8 @@ async fn spare_team_is_system_managed() {
 }
 
 /// 退役默认移进备用：最小的空号、记下原名和时刻、原团队压缩、不建作业、审计写去向；宿主机带上它的同机 IP 节点（编号挨着）。
-/// 进不了备用的说明原因（加 now 才能立即回收）；移出备用 = 撤销退役，标记清掉
+/// 进不了备用的说明原因（加 now 才能立即回收）；移出备用 = 撤销退役，标记清掉。开着的自动续费进备用时关掉（移出不自动打开），
+/// 预览与结果都写明；原团队压缩时提示撤销退役回不到原编号
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn retire_moves_into_spare() {
     let t = setup(false).await;
@@ -114,14 +115,33 @@ async fn retire_moves_into_spare() {
     let n2 = seed_node(&t, team, 2, "203.0.113.12", "active").await;
     let n3 = seed_node(&t, team, 3, "203.0.113.13", "active").await;
     sub(&t, n1, "2030-01-01", "UTC").await;
+    sqlx::query("update subscription set auto_renew = true where machine_id = $1").bind(n1).execute(&t.st.db).await.unwrap();
+    let auto = |m: Uuid| {
+        let db = t.st.db.clone();
+        async move { sqlx::query_scalar::<_, bool>("select auto_renew from subscription where machine_id = $1").bind(m).fetch_one(&db).await.unwrap() }
+    };
 
     let pv = t.get(&format!("/api/v1/machines/{n1}/retire")).await;
     assert_eq!(pv["spare"]["ok"], true, "{pv}");
+    assert_eq!(
+        pv["spare"]["notes"],
+        json!([
+            "这台开着自动续费：进备用时会关掉，到期后照常回收（供应商那边的自动扣款要自己去关）",
+            "原团队后面的节点会前移补号：撤销退役（改回原团队）拿到的是那时最小的空号，回不到 团队1-01"
+        ])
+    );
     assert_eq!((pv["spare"]["to_name"].as_str(), pv["spare"]["recycle_on"].as_str()), (Some("备用-02"), Some("2030-01-03")), "{pv}");
     assert_eq!(pv["renames"], json!([{"machine_id": n2, "old_name": "团队1-02", "new_name": "团队1-01"}, {"machine_id": n3, "old_name": "团队1-03", "new_name": "团队1-02"}]));
     assert_eq!(pv["routers"], json!([]));
     let r = t.post(&format!("/api/v1/machines/{n1}/retire"), json!({"confirm": "团队1-01", "reason": "换新机"})).await;
-    assert_eq!(r, json!({"mode": "spare", "name": "备用-02", "from": "团队1-01", "recycle_on": "2030-01-03", "ip_nodes": []}));
+    assert_eq!(
+        r,
+        json!({"mode": "spare", "name": "备用-02", "from": "团队1-01", "recycle_on": "2030-01-03", "ip_nodes": [], "auto_renew_off": true,
+               "notes": ["自动续费已关闭（供应商那边的自动扣款要自己去关）", "原团队后面的节点已前移补号：撤销退役（改回原团队）拿到的是那时最小的空号，回不到 团队1-01"]})
+    );
+    assert!(!auto(n1).await, "进备用关掉自动续费");
+    let au = t.get(&format!("/api/v1/audit?target_id={n1}")).await;
+    assert!(au.as_array().unwrap().iter().any(|a| a["action"] == "machine.rename" && a["detail"]["auto_renew_off"] == true), "{au}");
     let v = t.get(&format!("/api/v1/machines/{n1}")).await;
     assert_eq!(
         (v["name"].as_str(), v["lifecycle"].as_str(), v["spare_from"].as_str(), v["lifecycle_reason"].as_str(), v["spare_since"].is_string()),
@@ -149,6 +169,7 @@ async fn retire_moves_into_spare() {
     let v = &v["data"];
     assert_eq!((s, v["name"].as_str(), v["spare"].as_bool()), (StatusCode::OK, Some("团队1-03"), Some(false)), "{v}");
     assert_eq!((v["spare_from"].clone(), v["spare_since"].clone(), v["recycle_on"].clone(), v["lifecycle_reason"].clone()), (Value::Null, Value::Null, Value::Null, Value::Null), "{v}");
+    assert!(!auto(n1).await, "移出备用不自动打开");
 
     // 宿主机进备用：上面的同机 IP 节点一起进，编号挨着
     let host = seed_vps(&t, team, 7, "203.0.113.20", None).await;
@@ -479,6 +500,8 @@ async fn legacy_import_is_idempotent_and_skips_live_machines() {
     assert_eq!((list["total"].as_i64(), list["items"][0]["id"].as_i64(), list["items"][0]["ip"].as_str()), (Some(1), Some(id), Some("75.37.237.38")), "{list}");
     let one = t.get(&format!("/api/v1/recycle-bin/{id}")).await;
     assert_eq!((one["source"].as_str(), one["snapshot"].clone(), one["traffic_down"].clone(), one["due_date"].as_str()), (Some("legacy"), json!({"uuid": "01"}), Value::Null, Some("2026-10-01")), "{one}");
+    // 旧面板没有「回收」这一步：回收时刻取退役时刻（不是导入时刻），按回收时间排序时不会全排在最前
+    assert_eq!(one["recycled_at"], one["retired_at"], "{one}");
     let au = t.get("/api/v1/audit?cat=machine").await;
     assert!(au.as_array().unwrap().iter().any(|a| a["action"] == "recycle.import" && a["summary"] == "导入 1 台，跳过 2 台"), "{au}");
 

@@ -4,6 +4,7 @@
 //! 路由是假的：PATH 最前面放假 ssh（路由上的脚本本身在 routers::replace 的单元测试里用 sh 真跑过）。按 `-p <端口>` 分路由根目录，
 //! 收到改配置的脚本存成 apply-<n>.sh，按根目录里的 mode 回答（ok / fail = 测不通、自己换回 / refuse = 认不出、一行没写），
 //! 收到回滚脚本记进 rollback.log。PATH 是整个进程共用的，所以单独一个测试文件。作业引擎不在后台跑（采集循环会改路由状态），测试里手动推进。
+//! 换线路机 / 搬空改软路由出口用的是同一步，也在这里测（线路机用 common::Sim 模拟）。
 
 #![cfg(unix)]
 
@@ -11,7 +12,7 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{seed_relay, seed_team, setup, T};
+use common::{seed_relay, seed_relay_b, seed_team, setup, Sim, T};
 use fleet_server::jobs;
 use serde_json::{json, Value};
 use std::os::unix::fs::PermissionsExt;
@@ -170,6 +171,17 @@ async fn preview_and_full_run() {
     assert_eq!(rs[1]["exits"][0]["to"], "relay.test:20020");
     // 新节点原来的 02 空出来，团队里没有 03 以后的：不用压缩
     assert_eq!(p["renames"], json!([]));
+    assert!(p["warnings"].to_string().contains("旧节点「团队2-01」没有订阅：进备用后没有到期日，不会自动回收"), "{p}");
+    // 来源画像：旧节点见过的跟到新节点，新节点自己已有的不动
+    sqlx::query(
+        "insert into node_source_seen (node_id, dim, value, first_seen, last_seen, conns) values
+           ($1, 'isp', '电信', '2026-09-01T00:00:00Z', now(), 50), ($1, 'city', '上海', '2026-09-02T00:00:00Z', now(), 9), ($2, 'isp', '电信', '2026-10-20T00:00:00Z', now(), 3)",
+    )
+    .bind(w.old)
+    .bind(w.new)
+    .execute(&t.st.db)
+    .await
+    .unwrap();
 
     let d = t.post(&format!("/api/v1/machines/{}/replace", w.old), json!({"new_machine_id": w.new})).await;
     let job = d["job_id"].as_str().unwrap().to_string();
@@ -179,7 +191,14 @@ async fn preview_and_full_run() {
     assert_eq!((j["kind"].as_str(), j["steps"][0]["state"].as_str(), j["steps"][1]["state"].as_str()), (Some("replace"), Some("done"), Some("done")));
     assert_eq!((name_of(t, w.new).await, name_of(t, w.old).await), ("团队2-01".to_string(), "团队2备用-01".to_string()));
     assert_eq!(t.machine_lifecycle(w.old).await, "active", "旧节点不退役，放在备用团队");
-    assert_eq!(t.get(&format!("/api/v1/machines/{}", w.old)).await["spare_from"], "团队2-01", "进备用记下原名");
+    let ov = t.get(&format!("/api/v1/machines/{}", w.old)).await;
+    assert_eq!((ov["spare_from"].as_str(), ov["lifecycle_reason"].as_str()), (Some("团队2-01"), Some("替换下来：团队2-02 接替了 团队2-01")), "进备用记下原名和原因");
+    let seen: Vec<(String, String, String, i64)> = sqlx::query_as("select dim, value, first_seen::date::text, conns from node_source_seen where node_id = $1 order by dim")
+        .bind(w.new)
+        .fetch_all(&t.st.db)
+        .await
+        .unwrap();
+    assert_eq!(seen, [("city".to_string(), "上海".to_string(), "2026-09-02".to_string(), 0), ("isp".into(), "电信".into(), "2026-10-20".into(), 3)]);
     // 两台路由各收到一份改配置的脚本：新入口的参数在 stdin 里；作业日志、步骤输出、审计里没有凭据
     for (port, srv) in [(23101, "198.51.100.2"), (23102, "relay.test")] {
         let a = applies(port);
@@ -344,6 +363,15 @@ async fn validation() {
     sqlx::query("insert into job (id, kind, target_id, state, created_by) values ($1, 'upgrade_agent', $2, 'queued', 't')").bind(Uuid::now_v7()).bind(w.old).execute(&t.st.db).await.unwrap();
     assert!(t.get(&url(w.new)).await["blockers"].to_string().contains("「团队2-01」还有进行中的作业（升级 agent）"));
     sqlx::query("delete from job").execute(&t.st.db).await.unwrap();
+    // 旧节点进备用后什么时候回收：开着自动续费的会关掉、已过期满 1 天的一小时内就回收
+    sqlx::query("insert into subscription (machine_id, price_cents, currency, due_date, billing_tz, auto_renew) values ($1, 500, 'USD', '2099-01-01', 'UTC', true)")
+        .bind(w.old)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    assert!(t.get(&url(w.new)).await["warnings"].to_string().contains("开着自动续费：进备用时会关掉"));
+    sqlx::query("update subscription set due_date = '2020-01-01' where machine_id = $1").bind(w.old).execute(&t.st.db).await.unwrap();
+    assert!(t.get(&url(w.new)).await["warnings"].to_string().contains("订阅已过期满 1 天：进备用后下一轮维护（一小时内）就自动回收"));
     // 新节点在别的团队：替换时改到旧节点的团队（提示一下）
     let other = seed_team(t, "待分配").await;
     let x = node(t, other, 1, "203.0.113.30").await;
@@ -364,4 +392,142 @@ async fn validation() {
     entry(t, third, w.new, 20050, "44444444-4444-4444-8444-444444444444", "active").await;
     let b = t.get(&format!("{}&team_id={}", url(w.new), w.spare)).await["blockers"].to_string();
     assert!(b.contains("软路由「路由A」的出口「节点01」") && b.contains("不知道换成哪个"), "{b}");
+}
+
+// ── 换线路机 / 搬空：摘旧入口之前改软路由出口 ─────────────────────────────
+
+const RELAY_TOKEN: &str = "fa1_test_relay_token";
+
+/// 模拟两台线路机、手动推进作业，直到这个作业结束
+async fn run(t: &T, sims: &mut [Sim], job: &str) -> Value {
+    for _ in 0..100 {
+        for s in sims.iter_mut() {
+            s.round(t).await;
+        }
+        // 出口探测直接记一份（这里没有后台任务）：验收新入口要它
+        sqlx::query("insert into probe_result (entry_id, ts, kind, ok, latency_ms, detail) select id, now(), 'egress', true, 12, '' from entry where lifecycle = 'active'")
+            .execute(&t.st.db)
+            .await
+            .unwrap();
+        drive(t).await;
+        let j = t.job(job).await;
+        if matches!(j["state"].as_str(), Some("failed" | "cancelled" | "succeeded")) {
+            return j;
+        }
+        t.nudge_jobs().await;
+        // 应用回报有限流（同 it/lifecycle.rs 的节奏）
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("作业 {job} 没结束：{} {}", t.job(job).await, logs(t, job).await);
+}
+
+async fn entry_state(t: &T, id: Uuid) -> String { sqlx::query_scalar("select lifecycle::text from entry where id = $1").bind(id).fetch_one(&t.st.db).await.unwrap() }
+
+/// 出口写的是旧线路机 IP 的改成新线路机 IP，写域名的改成新线路机的 public_host，端口是新入口的；改完才摘旧入口
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn move_rewrites_router_exits() {
+    let w = world().await;
+    let oe = old_entry(&w).await;
+    router(&w, "路由A", 23151, &[("节点01", "198.51.100.2", 20003, Some(oe))]).await;
+    router(&w, "路由B", 23152, &[("节点01", "relay.test", 20003, Some(oe))]).await;
+    let t = &w.t;
+    let (rb, tb) = seed_relay_b(t).await;
+    let p = t.get(&format!("/api/v1/machines/{}/move?to_relay_id={rb}", w.old)).await;
+    assert_eq!((p["ok"].as_bool(), p["routers_enabled"].as_bool()), (Some(true), Some(true)), "{p}");
+    let rs = p["routers"].as_array().unwrap();
+    assert_eq!((rs[0]["exits"][0]["from"].as_str(), rs[0]["exits"][0]["to"].as_str()), (Some("198.51.100.2:20003"), Some("198.51.100.3:新端口")));
+    assert_eq!(rs[1]["exits"][0]["to"], "relay3.test:新端口");
+    let d = t.post(&format!("/api/v1/machines/{}/move", w.old), json!({"to_relay_id": rb})).await;
+    assert_eq!(d["routers"].as_array().unwrap().len(), 2, "{d}");
+    let job = d["job_id"].as_str().unwrap().to_string();
+    let j = run(t, &mut [Sim::new(RELAY_TOKEN.into()), Sim::new(tb)], &job).await;
+    assert_eq!(j["state"], "succeeded", "{j} {}", logs(t, &job).await);
+    assert_eq!((j["steps"][4]["key"].as_str(), j["steps"][4]["state"].as_str()), (Some("routers"), Some("done")));
+    let (np, uuid): (i32, Uuid) = sqlx::query_as("select port, client_uuid from entry where node_id = $1 and relay_id = $2").bind(w.old).bind(rb).fetch_one(&t.st.db).await.unwrap();
+    for (port, osrv, srv) in [(23151, "198.51.100.2", "198.51.100.3"), (23152, "relay.test", "relay3.test")] {
+        let a = applies(port);
+        assert_eq!(a.len(), 1, "{port}");
+        assert!(a[0].contains(&format!("OSRV_1='{osrv}'\nOPORT_1='20003'\nSRV_1='{srv}'\nPORT_1='{np}'")) && a[0].contains(&format!("UUID_1='{uuid}'")), "{}", &a[0][..400]);
+    }
+    assert_eq!(entry_state(t, oe).await, "removed");
+    let l = logs(t, &job).await;
+    assert!(l.contains(&format!("节点01 198.51.100.2:20003 → 198.51.100.3:{np}")), "{l}");
+}
+
+/// 路由不在线时预览阻断（不改路由的不阻断）；一台改失败：已改好的换回，旧入口不摘，作业失败、可以取消（取消摘掉新入口）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn move_router_failure_keeps_old_entry() {
+    let w = world().await;
+    let oe = old_entry(&w).await;
+    router(&w, "路由A", 23161, &[("节点01", "198.51.100.2", 20003, Some(oe))]).await;
+    let b = router(&w, "路由B", 23162, &[("节点01", "198.51.100.2", 20003, Some(oe))]).await;
+    let t = &w.t;
+    let (rb, tb) = seed_relay_b(t).await;
+    sqlx::query("update router_status set reachable = false, error = '经隧道连不上路由：refused' where router_id = $1").bind(b).execute(&t.st.db).await.unwrap();
+    let p = t.get(&format!("/api/v1/machines/{}/move?to_relay_id={rb}", w.old)).await;
+    let bl = p["blockers"].to_string();
+    assert!(p["ok"] == false && bl.contains("软路由「路由B」现在离线") && bl.contains("要等它在线再换线路机"), "{p}");
+    assert_eq!(t.req("POST", &format!("/api/v1/machines/{}/move", w.old), Some(json!({"to_relay_id": rb})), None).await.0, StatusCode::CONFLICT);
+    assert_eq!(t.get(&format!("/api/v1/machines/{}/move?to_relay_id={rb}&routers=false", w.old)).await["ok"], true);
+    sqlx::query("update router_status set reachable = true where router_id = $1").bind(b).execute(&t.st.db).await.unwrap();
+
+    std::fs::write(root(23162).join("mode"), "fail").unwrap();
+    let d = t.post(&format!("/api/v1/machines/{}/move", w.old), json!({"to_relay_id": rb})).await;
+    let job = d["job_id"].as_str().unwrap().to_string();
+    let mut sims = [Sim::new(RELAY_TOKEN.into()), Sim::new(tb)];
+    let j = run(t, &mut sims, &job).await;
+    assert_eq!((j["state"].as_str(), j["steps"][4]["state"].as_str()), (Some("failed"), Some("failed")), "{j}");
+    let err = j["error"].as_str().unwrap();
+    assert!(err.contains("软路由「路由B」：出口「节点01」换成新入口后测了 3 次都不通；已换回原配置：路由A。软路由都是原样，旧入口没摘"), "{err}");
+    let stamp_a = read(root(23161).join("apply-1.sh")).lines().find_map(|l| l.strip_prefix("STAMP='").map(|s| s.trim_end_matches('\'').to_string())).unwrap();
+    assert_eq!(read(root(23161).join("rollback.log")), format!("{stamp_a}\n"));
+    assert_eq!(entry_state(t, oe).await, "active", "旧入口没摘");
+    assert_eq!(j["cancellable"], true, "改路由失败、已换回：能取消");
+    t.post(&format!("/api/v1/jobs/{job}/cancel"), json!({})).await;
+    assert_eq!(run(t, &mut sims, &job).await["state"], "cancelled");
+    let es: Vec<(Uuid, String)> = sqlx::query_as("select id, lifecycle::text from entry where node_id = $1").bind(w.old).fetch_all(&t.st.db).await.unwrap();
+    assert!(es.iter().all(|e| (e.0 == oe) == (e.1 == "active")), "只剩旧入口在用：{es:?}");
+}
+
+/// 搬空：预览列出各节点要改的出口；改同一台路由的作业一个接一个跑（后建的排在前一个之后）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn evacuate_rewrites_exits_one_job_at_a_time() {
+    let w = world().await;
+    let oe = old_entry(&w).await;
+    let ne: Uuid = sqlx::query_scalar("select id from entry where node_id = $1").bind(w.new).fetch_one(&w.t.st.db).await.unwrap();
+    router(&w, "路由A", 23171, &[("节点01", "198.51.100.2", 20003, Some(oe)), ("节点02", "198.51.100.2", 20020, Some(ne))]).await;
+    let t = &w.t;
+    let (rb, tb) = seed_relay_b(t).await;
+    let p = t.get(&format!("/api/v1/relays/{}/evacuate?to_relay_id={rb}", w.relay)).await;
+    let exits: Vec<&str> = p["jobs"].as_array().unwrap().iter().map(|j| j["routers"][0]["exits"][0]["exit"].as_str().unwrap()).collect();
+    assert_eq!(exits, ["节点01", "节点02"], "{p}");
+    let d = t.post(&format!("/api/v1/relays/{}/evacuate", w.relay), json!({"to_relay_id": rb})).await;
+    let ids: Vec<String> = d["jobs"].as_array().unwrap().iter().map(|j| j["job_id"].as_str().unwrap().to_string()).collect();
+    let after: Vec<Option<String>> = sqlx::query_scalar("select params->>'routers_after' from job order by created_at, id").fetch_all(&t.st.db).await.unwrap();
+    assert_eq!(after, [None, Some(ids[0].clone())]);
+    assert!(logs(t, &ids[1]).await.contains(&format!("排在作业 {}（团队2-01）之后", ids[0])));
+    // 第一个在跑时第二个领不到
+    let c = jobs::claim(&t.st, "test").await.unwrap().unwrap();
+    assert_eq!(c.id.to_string(), ids[0]);
+    assert!(jobs::claim(&t.st, "test").await.unwrap().is_none());
+    jobs::advance(&t.st, c, "test").await.unwrap();
+    let mut sims = [Sim::new(RELAY_TOKEN.into()), Sim::new(tb)];
+    for id in &ids {
+        assert_eq!(run(t, &mut sims, id).await["state"], "succeeded", "{}", logs(t, id).await);
+    }
+    let a = applies(23171);
+    assert!(a.len() == 2 && a[0].contains("NAME_1='节点01'") && a[1].contains("NAME_1='节点02'"), "{a:?}");
+}
+
+/// 重新编号预览：指向要改名的节点的软路由出口列出来（出口名是路由上自己起的，不跟着改）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn renumber_preview_lists_router_exits() {
+    let w = world().await;
+    let t = &w.t;
+    sqlx::query("update machine set number = 3 where id = $1").bind(w.new).execute(&t.st.db).await.unwrap();
+    let ne: Uuid = sqlx::query_scalar("select id from entry where node_id = $1").bind(w.new).fetch_one(&t.st.db).await.unwrap();
+    router(&w, "路由A", 23181, &[("节点03", "198.51.100.2", 20020, Some(ne))]).await;
+    let p = t.get(&format!("/api/v1/teams/{}/renumber", w.team)).await;
+    assert_eq!(p["changes"][0]["new_name"], "团队2-02", "{p}");
+    assert_eq!(p["notes"], json!(["软路由「路由A」的出口「节点03」指向 团队2-03，改名为 团队2-02 后出口名不跟着改"]));
 }

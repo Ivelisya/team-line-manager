@@ -60,13 +60,19 @@ pub struct SsInst {
     /// 同机 IP 节点在宿主机网卡上的地址（bind 地址）：公网 IP 直接配在网卡上时就是它，1:1 NAT 映射的是映射到的本地地址
     /// （`machine.bind_ip`）。线路机连的仍是公网 IP，这里只用于 ssserver 的监听与出站；宿主机为 None
     pub ip: Option<String>,
+    /// 上面有同机 IP 节点的宿主机：(宿主机的公网 IP, 同机 IP 节点在网卡上的地址)，ssserver 出站绑宿主机自己的地址（见 `HOST_BIND`）；
+    /// 其它为 None（没有同机 IP 节点的宿主机渲染出的脚本不变）
+    pub host_out: Option<(String, Vec<String>)>,
 }
 
 impl SsInst {
-    pub fn host() -> Self { SsInst { port: crate::meta::SS_PORT, ip: None } }
+    pub fn host() -> Self { SsInst { port: crate::meta::SS_PORT, ip: None, host_out: None } }
+
+    /// 上面有同机 IP 节点的宿主机：`public` 是它的公网 IP，`others` 是同机 IP 节点在网卡上的地址（bind_ip 或公网 IP）
+    pub fn host_with_ip_nodes(public: &str, others: Vec<String>) -> Self { SsInst { host_out: Some((public.to_string(), others)), ..Self::host() } }
 
     /// 同机 IP 节点的实例：`bind` 是 `machine.bind_ip`（1:1 NAT 映射到的本地地址），为空时公网 IP `public` 就在网卡上、用它
-    pub fn ip_node(port: u16, public: &str, bind: Option<&str>) -> Self { SsInst { port, ip: Some(bind.unwrap_or(public).to_string()) } }
+    pub fn ip_node(port: u16, public: &str, bind: Option<&str>) -> Self { SsInst { port, ip: Some(bind.unwrap_or(public).to_string()), host_out: None } }
 
     /// systemd 单元
     pub fn svc(&self) -> String {
@@ -84,12 +90,22 @@ impl SsInst {
 /// 不会重启 ssserver。同机 IP 节点的 bind 地址直接写进配置（校验过的或 `ip -4 addr` 列出的 IPv4，不含引号和 %）。
 /// 重跑时以运行中的实例为准：配置、单元比它新（换上之后没来得及重启就被打断）也重启。输出 `linklocal_dns=1` 见 `LINKLOCAL_DNS`
 pub fn node_ss(i: &SsInst) -> String {
-    let (conf, unit, unit_conf, listen, bind) = match &i.ip {
-        None => ("config.json".to_string(), "fleet-ssserver.service", "config.json", "0.0.0.0".to_string(), String::new()),
-        Some(ip) => (format!("{}.json", i.port), "fleet-ssserver@.service", "%i.json", ip.clone(), format!(r#","outbound_bind_addr":"{ip}""#)),
+    let (conf, unit, unit_conf, listen, bind) = match (&i.ip, &i.host_out) {
+        (None, None) => ("config.json".to_string(), "fleet-ssserver.service", "config.json", "0.0.0.0".to_string(), String::new()),
+        // 宿主机绑的地址在机器上才判断得出（HOST_BIND 算出 $BIND）：从单引号里出来接上它
+        (None, Some(_)) => ("config.json".to_string(), "fleet-ssserver.service", "config.json", "0.0.0.0".to_string(), r#"'"$BIND"'"#.to_string()),
+        (Some(ip), _) => (format!("{}.json", i.port), "fleet-ssserver@.service", "%i.json", ip.clone(), format!(r#","outbound_bind_addr":"{ip}""#)),
     };
-    NODE_SS
-        .replace("__LINKLOCAL_DNS__", LINKLOCAL_DNS)
+    let tpl = match &i.host_out {
+        Some((public, others)) => {
+            let q = |s: &str| format!("'{s}'");
+            let excl: Vec<String> = others.iter().map(|o| format!("-e {}", q(o))).collect();
+            let pick = HOST_BIND.replace("__HOST_IP__", &q(public)).replace("__EXCL__", &excl.join(" "));
+            NODE_SS.replacen("\nprintf '{\"server\"", &format!("\n{pick}printf '{{\"server\""), 1)
+        }
+        None => NODE_SS.to_string(),
+    };
+    tpl.replace("__LINKLOCAL_DNS__", LINKLOCAL_DNS)
         .replace("__PUBLIC_DNS__", PUBLIC_DNS)
         .replace("__UNIT_CONF__", unit_conf)
         .replace("__UNIT__", unit)
@@ -108,6 +124,18 @@ pub fn node_ss(i: &SsInst) -> String {
 const LINKLOCAL_DNS: &str = r#"grep -qiE '^[[:space:]]*nameserver[[:space:]]+(169\.254\.|fe[89ab][0-9a-f]:)' /etc/resolv.conf 2>/dev/null"#;
 /// 链路本地 DNS 时 ssserver 用的公共解析器（shadowsocks-rust 配置的 "dns"：逗号分隔，UDP / TCP 53；1.25 核对过）
 const PUBLIC_DNS: &str = "1.1.1.1,8.8.8.8";
+
+/// 上面有同机 IP 节点的宿主机，ssserver 出站绑它自己的地址：不绑时内核按网卡的主地址选源地址，附加 IP 先配上（开机时）就成了主地址，
+/// 宿主机节点的客户出口 IP 跟着变成附加 IP。公网 IP 在网卡上就绑它；1:1 NAT（不在网卡上）绑网卡上去掉同机 IP 节点的地址后剩下的唯一一个；
+/// 剩下的不止一个（docker0 之类）就不绑，输出 `host_bind=none`（步骤记一条 warn）；绑了输出 `host_bind=<地址>`。
+/// 地址只含数字和点（库里的 inet），单引号里原样
+const HOST_BIND: &str = r#"L=$(ip -4 -o addr show scope global | awk '{split($4, a, "/"); print a[1]}')
+OUT=
+if echo "$L" | grep -qxF __HOST_IP__; then OUT=__HOST_IP__
+else R=$(echo "$L" | grep -vxF __EXCL__ || true); [ "$(echo "$R" | grep -c .)" != 1 ] || OUT=$R
+fi
+BIND=; if [ -n "$OUT" ]; then BIND=",\"outbound_bind_addr\":\"$OUT\""; echo "host_bind=$OUT"; else echo host_bind=none; fi
+"#;
 
 const NODE_SS: &str = r#"
 set -eu
@@ -643,7 +671,7 @@ echo "nft_relays=$(nft list set inet ss_guard relays | tr -d '\n' | sed 's/.*ele
 
     #[test]
     fn ip_node_render_uses_own_instance() {
-        let i = SsInst { port: 8389, ip: Some("203.0.113.7".into()) };
+        let i = SsInst::ip_node(8389, "203.0.113.7", None);
         let s = node_ss(&i);
         assert!(!s.contains("__"), "占位符都已替换");
         assert!(s.contains(
@@ -659,6 +687,43 @@ echo "nft_relays=$(nft list set inet ss_guard relays | tr -d '\n' | sed 's/.*ele
             assert!(!s.contains(host), "{host}");
         }
         assert_eq!((i.svc(), i.table()), ("fleet-ssserver@8389".to_string(), "ss_guard_8389".to_string()));
+    }
+
+    /// 上面有同机 IP 节点的宿主机：监听、单元、防火墙同普通宿主机，出站绑它自己的地址——公网 IP 在网卡上（附加 IP 是不是主地址都一样）
+    /// 就绑它；1:1 NAT 绑去掉同机 IP 节点地址后剩下的唯一一个；判断不了不绑。选地址到写配置那几行在 bash 里真跑（ip 换成函数）
+    #[cfg(unix)]
+    #[test]
+    fn host_with_ip_nodes_binds_own_address() {
+        let s = node_ss(&SsInst::host_with_ip_nodes("192.168.31.63", vec!["192.168.31.66".into()]));
+        assert!(!s.contains("__"), "占位符都已替换");
+        assert!(s.contains("C=/etc/shadowsocks-rust/config.json\n") && s.contains("systemctl enable -q fleet-ssserver\n") && s.contains("table inet ss_guard {"));
+        assert!(s.contains(r#"printf '{"server":"0.0.0.0","server_port":%s,"password":"%s","method":"%s","mode":"tcp_and_udp","timeout":300'"$BIND"'%s}\n'"#), "{s}");
+        // 选地址的几行接在 DNS= 那行之后、写配置之前
+        assert!(s.find("DNS=; if ").unwrap() < s.find("L=$(ip -4").unwrap());
+        let dir = tempfile::tempdir().unwrap();
+        let run = |addrs: &str, public: &str, others: &[&str]| {
+            let s = node_ss(&SsInst::host_with_ip_nodes(public, others.iter().map(|x| x.to_string()).collect()));
+            let a = s.find("L=$(ip -4").unwrap();
+            let b = s[a..].find("> $C.tmp\n").unwrap() + a + "> $C.tmp\n".len();
+            let sh = format!("set -eu\nip() {{ printf '%b' '{addrs}'; }}\nSS_PORT=8388 SS_PASSWORD=pw SS_METHOD=m C=$1 DNS=\n{}", &s[a..b]);
+            let out = std::process::Command::new("bash").arg("-c").arg(&sh).arg("x").arg(dir.path().join("c")).output().unwrap();
+            assert!(out.status.success(), "{out:?}");
+            let cfg = std::fs::read_to_string(dir.path().join("c.tmp")).unwrap();
+            (String::from_utf8_lossy(&out.stdout).trim().to_string(), cfg)
+        };
+        let line = |ip: &str| format!("2: eth0    inet {ip}/24 brd 192.168.31.255 scope global eth0\\n");
+        let conf = |bind: &str| format!("{{\"server\":\"0.0.0.0\",\"server_port\":8388,\"password\":\"pw\",\"method\":\"m\",\"mode\":\"tcp_and_udp\",\"timeout\":300{bind}}}\n");
+        // 附加 IP 抢到了主地址：照样绑宿主机自己的公网 IP
+        let (o, c) = run(&(line("192.168.31.66") + &line("192.168.31.63")), "192.168.31.63", &["192.168.31.66"]);
+        assert_eq!((o.as_str(), c), ("host_bind=192.168.31.63", conf(r#","outbound_bind_addr":"192.168.31.63""#)));
+        // 1:1 NAT：公网 IP 不在网卡上，绑剩下的那个本地地址
+        let (o, c) = run(&(line("10.0.0.5") + &line("10.0.0.6")), "209.240.166.49", &["10.0.0.6"]);
+        assert_eq!((o.as_str(), c), ("host_bind=10.0.0.5", conf(r#","outbound_bind_addr":"10.0.0.5""#)));
+        // 剩下不止一个：不绑
+        let (o, c) = run(&(line("10.0.0.5") + &line("10.0.0.6") + &line("172.17.0.1")), "209.240.166.49", &["10.0.0.6"]);
+        assert_eq!((o.as_str(), c), ("host_bind=none", conf("")));
+        // 没有同机 IP 节点的宿主机不变（host_render_is_unchanged）
+        assert!(!node_ss(&SsInst::host()).contains("host_bind"));
     }
 
     /// 1:1 NAT 映射的同机 IP 节点：ssserver 监听并从映射到的本地地址出站，公网 IP 不出现在配置里；没有 bind 地址的照旧用公网 IP

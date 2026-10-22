@@ -20,6 +20,7 @@ pub mod pol;
 pub mod tele;
 
 use axum::body::Body;
+use fleet_proto::{ApplyReport, DesiredState, EntryApply, ProbeKind, ProbeSample, Report};
 use axum::http::{Request, StatusCode};
 use fleet_server::{config::Config, crypto::SecretBox, db, state::AppState};
 use http_body_util::BodyExt;
@@ -276,6 +277,81 @@ pub fn dist_agent(t: &T, version: &str) {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
+}
+
+pub fn now_ms() -> i64 { (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64 }
+
+/// 模拟线路机：拉期望状态、回报全部应用成功、给每个入口报一个成功的出口探测
+pub struct Sim {
+    tok: String,
+    seq: u64,
+}
+
+impl Sim {
+    pub fn new(tok: String) -> Self { Sim { tok, seq: 0 } }
+
+    /// 一轮：拉期望状态 → 回报已应用 → 上报出口探测
+    pub async fn round(&mut self, t: &T) -> DesiredState {
+        let (s, v) = t.req("GET", "/agent/v1/desired?after=0", None, Some(&self.tok)).await;
+        assert_eq!(s, StatusCode::OK, "desired: {v}");
+        let ds: DesiredState = serde_json::from_value(v).unwrap();
+        let rep = ApplyReport {
+            generation: ds.generation,
+            ok: true,
+            error: None,
+            entries: ds.entries.iter().map(|e| EntryApply { id: e.id, ok: true, error: None }).collect(),
+        };
+        let (s, _) = t.req("POST", "/agent/v1/applied", Some(serde_json::to_value(&rep).unwrap()), Some(&self.tok)).await;
+        assert_eq!(s, StatusCode::NO_CONTENT);
+        self.seq += 1;
+        let r = Report {
+            seq: self.seq,
+            boot_id: "b1".into(),
+            agent_version: "test".into(),
+            sent_at_ms: now_ms(),
+            info: None,
+            host: vec![],
+            entries: vec![],
+            probes: ds
+                .entries
+                .iter()
+                .map(|e| ProbeSample { entry_id: e.id, ts_ms: now_ms(), kind: ProbeKind::Egress, ok: true, latency_ms: Some(12.0), detail: Some(e.expect_egress_ip.to_string()), retrans: None })
+                .collect(),
+            access: vec![],
+            xray: None,
+            agent_health: None,
+        };
+        let (s, v) = t.req("POST", "/agent/v1/report", Some(serde_json::to_value(&r).unwrap()), Some(&self.tok)).await;
+        assert_eq!(s, StatusCode::OK, "report: {v}");
+        ds
+    }
+}
+
+/// 第二台线路机「线路机3」（198.51.100.3）
+pub async fn seed_relay_b(t: &T) -> (Uuid, String) {
+    let id = Uuid::now_v7();
+    let (sk, pk) = fleet_server::crypto::reality_keypair();
+    sqlx::query("insert into machine (id, kind, label, primary_ip, lifecycle, activated_at) values ($1, 'relay', '线路机3', '198.51.100.3', 'active', now())")
+        .bind(id)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    sqlx::query("insert into relay (machine_id, public_host, reality_private_enc, reality_public_key, min_client_ver, generation, applied_generation) values ($1, 'relay3.test', $2, $3, '1.8.2', 1, 1)")
+        .bind(id)
+        .bind(t.st.secrets.seal_str(&sk))
+        .bind(pk)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let tok = "fa1_test_relay_token_b";
+    sqlx::query("insert into agent_token (id, machine_id, token_hash) values ($1, $2, $3)")
+        .bind(Uuid::now_v7())
+        .bind(id)
+        .bind(fleet_server::crypto::sha256(tok.as_bytes()))
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    (id, tok.to_string())
 }
 
 pub async fn seed_team(t: &T, name: &str) -> Uuid {

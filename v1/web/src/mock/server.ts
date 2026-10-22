@@ -432,7 +432,7 @@ const renumberPlan = (tid: string) => {
   const changes = list.map((m, i) => ({ machine_id: m.id, old_name: m.name, new_name: displayName(team.name, i + 1), n: i + 1 })).filter((c, i) => list[i].number !== c.n);
   return { changes: changes.map(({ n: _n, ...c }) => c), token: `tok-${hashStr(JSON.stringify(changes))}`, raw: changes };
 };
-R('GET', '/teams/([^/]+)/renumber', ({ params }) => { const { changes, token } = renumberPlan(params[0]); return { changes, token }; });
+R('GET', '/teams/([^/]+)/renumber', ({ params }) => { const { changes, token } = renumberPlan(params[0]); return { changes, notes: [], token }; });
 R('POST', '/teams/([^/]+)/renumber', ({ params, body }) => {
   const p = renumberPlan(params[0]);
   if (body.token !== p.token) throw bad('数据在预览后已变化，请重新预览', 409, 'conflict');
@@ -573,7 +573,7 @@ R('GET', '/machines/([^/]+)/retire', ({ params }) => {
   return {
     name: m.name, renames, ip_nodes: ips, routers: exitsUsing(m),
     blockers: m.kind === 'relay' && m.entries.some((e) => !e.direct) ? [`这台线路机上还有 ${m.entries.filter((e) => !e.direct).length} 个节点入口：先把节点迁走或退役。可先用「搬空线路机」把节点换到其他线路机`] : [],
-    spare: { ok: !why, why, team: { id: sp.id, name: sp.name }, to_name: displayName(sp.name, nums[0]), recycle_on: m.subscription ? addDays(m.subscription.due_date, 2) : null, ip_nodes: spareIps },
+    spare: { ok: !why, why, team: { id: sp.id, name: sp.name }, to_name: displayName(sp.name, nums[0]), recycle_on: m.subscription ? addDays(m.subscription.due_date, 2) : null, ip_nodes: spareIps, notes: m.subscription?.auto_renew ? ['这台开着自动续费：进备用时会关掉，到期后照常回收（供应商那边的自动扣款要自己去关）'] : [] },
   };
 });
 /** 移入备用（同服务端 move_to_spare）：机器照常运行，改到备用团队最小的空号，原团队前移补号 */
@@ -598,12 +598,14 @@ R('POST', '/machines/([^/]+)/retire', ({ params, body }) => {
     const why = spareWhy(m);
     if (why) throw bad(`不能移入备用：${why}`, 409, 'conflict');
     const from = m.name; const xfrom = xs.map((x) => x.name);
+    const autoOff = !!m.subscription?.auto_renew;
+    if (m.subscription) m.subscription.auto_renew = false;
     moveToSpare(m, body.reason ?? null);
     for (const x of xs) moveToSpare(x, `随宿主机「${from}」退役`);
     refreshCounts();
     db.audit.unshift({ id: `a${db.seq++}`, ts: iso(), actor: db.user, action: 'machine.retire', title: '退役机器', summary: `${from} 移入备用 → ${m.name}`, target_kind: 'machine', target_id: m.id, detail: { mode: 'spare' } });
     emit({ type: 'machines' }); emit({ type: 'catalog' });
-    return { mode: 'spare', name: m.name, from, recycle_on: m.recycle_on, ip_nodes: xs.map((x, i) => ({ id: x.id, name: x.name, from: xfrom[i] })) };
+    return { mode: 'spare', name: m.name, from, recycle_on: m.recycle_on, ip_nodes: xs.map((x, i) => ({ id: x.id, name: x.name, from: xfrom[i] })), auto_renew_off: autoOff, notes: autoOff ? ['自动续费已关闭（供应商那边的自动扣款要自己去关）'] : [] };
   }
   const job = startRetire(m, !!body.cleanup, body.reason ?? null);
   // 宿主机：同机 IP 节点一并退役，进行中 / 失败的作业作废，各自一个退役作业（不登录清理：宿主机的清理连同它们的实例一起删）
@@ -882,7 +884,7 @@ R('POST', '/agents/upgrade', () => {
 });
 
 // ---------- 换线路机 / 搬空线路机 ----------
-const MOVE_STEPS: [string, string][] = [['attach_new', '在新线路机建入口'], ['firewall_widen', '放行新线路机（节点防火墙）'], ['wait_applied_new', '等待新线路机应用'], ['verify_new', '经新入口出口验收'], ['detach_old', '摘除旧入口'], ['wait_detached_old', '等待旧线路机摘除'], ['firewall_narrow', '收紧节点防火墙']];
+const MOVE_STEPS: [string, string][] = [['attach_new', '在新线路机建入口'], ['firewall_widen', '放行新线路机（节点防火墙）'], ['wait_applied_new', '等待新线路机应用'], ['verify_new', '经新入口出口验收'], ['routers', '改软路由出口'], ['detach_old', '摘除旧入口'], ['wait_detached_old', '等待旧线路机摘除'], ['firewall_narrow', '收紧节点防火墙']];
 const SHARE_NOTE = '换线路机后分享链接会变：客户端需要换成新的分享链接（作业完成后到节点的入口里复制）';
 const blankTraffic = () => ({ today_up: 0, today_down: 0, month_up: 0, month_down: 0 });
 
@@ -917,6 +919,27 @@ function startMove(m: MachineView, plan: { old: EntryView; to: MachineView }) {
   }, [{ entry_id: ne.id, relay: to.name, port: ne.port }]);
   return job;
 }
+// 预览：mock 的软路由快照不对入口，routers 一律为空
+R('GET', '/machines/([^/]+)/move', ({ params, query }) => {
+  const m = machine(params[0]);
+  const plan = planMove(m, query.get('to_relay_id') ?? '', query.get('from_relay_id') ?? undefined);
+  const base = { routers_enabled: query.get('routers') !== 'false', routers: [], warnings: [], share_changed: true, note: SHARE_NOTE };
+  if (typeof plan === 'string') return { ...base, ok: false, blockers: [plan] };
+  return { ...base, name: m.name, from: plan.old.relay.name, to: plan.to.name, ok: true, blockers: [] };
+});
+R('GET', '/relays/([^/]+)/evacuate', ({ params, query }) => {
+  const src = machine(params[0]);
+  const dst = machine(query.get('to_relay_id') ?? '');
+  const jobs: { machine_id: string; name: string; routers: [] }[] = []; const skipped: { machine_id: string; name: string | null; reason: string }[] = [];
+  for (const e of src.entries) {
+    if (e.lifecycle === 'removing' || e.lifecycle === 'removed' || e.direct) continue;
+    const node = machine(e.node.id);
+    const plan = planMove(node, dst.id, src.id);
+    if (typeof plan === 'string') skipped.push({ machine_id: node.id, name: node.name, reason: plan });
+    else jobs.push({ machine_id: node.id, name: node.name, routers: [] });
+  }
+  return { from: src.name, to: dst.name, jobs, skipped, warnings: [], share_changed: jobs.length > 0, note: SHARE_NOTE };
+});
 R('POST', '/machines/([^/]+)/move', ({ params, body }) => {
   const m = machine(params[0]);
   const plan = planMove(m, body.to_relay_id, body.from_relay_id);
@@ -925,7 +948,7 @@ R('POST', '/machines/([^/]+)/move', ({ params, body }) => {
   const job = startMove(m, plan);
   db.audit.unshift({ id: `a${db.seq++}`, ts: iso(), actor: db.user, action: 'entry.move', title: '换线路机', summary: `${m.name} · ${from} → ${plan.to.name}`, target_kind: 'machine', target_id: m.id, detail: {} });
   emit({ type: 'machines' }); emit({ type: 'job', id: job.id });
-  return { job_id: job.id, name: m.name, from, to: plan.to.name, share_changed: true, note: SHARE_NOTE };
+  return { job_id: job.id, name: m.name, from, to: plan.to.name, routers_enabled: body.routers !== false, routers: [], ok: true, blockers: [], warnings: [], share_changed: true, note: SHARE_NOTE };
 });
 R('POST', '/relays/([^/]+)/evacuate', ({ params, body }) => {
   const src = machine(params[0]);
@@ -933,17 +956,17 @@ R('POST', '/relays/([^/]+)/evacuate', ({ params, body }) => {
   if (body.to_relay_id === src.id) throw bad('目标线路机不能和要搬空的是同一台');
   const dst = machine(body.to_relay_id);
   if (dst.kind !== 'relay' || dst.lifecycle !== 'active') throw bad('目标线路机不在用', 409, 'conflict');
-  const jobs: { machine_id: string; name: string; job_id: string }[] = []; const skipped: { machine_id: string; name: string | null; reason: string }[] = [];
+  const jobs: { machine_id: string; name: string; job_id: string; routers: [] }[] = []; const skipped: { machine_id: string; name: string | null; reason: string }[] = [];
   for (const e of [...src.entries]) {
     if (e.lifecycle === 'removing' || e.lifecycle === 'removed') continue;
     const node = machine(e.node.id);
     const plan = planMove(node, dst.id, src.id);
     if (typeof plan === 'string') { skipped.push({ machine_id: node.id, name: node.name, reason: plan }); continue; }
-    jobs.push({ machine_id: node.id, name: node.name, job_id: startMove(node, plan).id });
+    jobs.push({ machine_id: node.id, name: node.name, job_id: startMove(node, plan).id, routers: [] });
   }
   db.audit.unshift({ id: `a${db.seq++}`, ts: iso(), actor: db.user, action: 'relay.evacuate', title: '搬空线路机', summary: `${src.name} → ${dst.name}（${jobs.length} 个作业）`, target_kind: 'machine', target_id: src.id, detail: {} });
   emit({ type: 'machines' });
-  return { from: src.name, to: dst.name, jobs, skipped, share_changed: jobs.length > 0, note: SHARE_NOTE };
+  return { from: src.name, to: dst.name, jobs, skipped, warnings: [], share_changed: jobs.length > 0, note: SHARE_NOTE };
 });
 
 // ---------- 替换节点 ----------

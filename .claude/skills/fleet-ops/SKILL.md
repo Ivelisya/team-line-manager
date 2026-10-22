@@ -155,8 +155,8 @@ fleetctl entry add-direct <线路机> --yes [--follow]          # 线路机直�
 fleetctl upgrade-agent <机器> | --all --yes                # 重启 agent；--all 先升一台金丝雀，成功后线路机逐台、VPS 节点并发；排队中的可 fleetctl cancel <作业>
 fleetctl tune <机器>[,<机器>…] | --team <团队> | --all [--yes] [--follow]   # 重做系统调优（上架时已自动做）：内核网络参数、BBR、日志体积上限、时间同步，不重启 ss/Xray、不断连接；--team/--all 先做一台（线路机优先）并跟到结束，成功后其余逐台提交，有进行中作业的跳过并列出；--all 要 --yes；同机 IP 节点、家宽代理 409；`ls` 的「调优」列看谁是旧档 / 未调优
 fleetctl renumber <团队> --yes                             # 不加 --yes 只预览
-fleetctl move <节点> --to <线路机> --yes [--from <线路机>] [--follow]   # 换线路机：新入口验收后才摘旧入口，不断网；分享链接会变，完成后 fleetctl share <节点> 取新链接
-fleetctl evacuate <线路机> --to <线路机> --yes [--follow]          # 搬空线路机（退役前）：每个在用节点一个换线路机作业
+fleetctl move <节点> --to <线路机> --yes [--from <线路机>] [--no-routers] [--follow]   # 换线路机：新入口验收后改软路由出口（同替换，失败全部换回、旧入口不摘）、再摘旧入口，不断网；分享链接会变，完成后 fleetctl share <节点> 取新链接。不加 --yes 先看预览
+fleetctl evacuate <线路机> --to <线路机> --yes [--no-routers] [--follow]          # 搬空线路机（退役前）：每个在用节点一个换线路机作业，软路由出口跟着改；改同一台路由的作业一个接一个跑
 fleetctl replace <旧节点> --with <新节点> [--to <团队>] [--number N] [--no-routers] --yes [--follow]   # 替换节点：不加 --yes 只预览（见下）
 fleetctl provision ...                                     # 先 check，再确认，再提交
 fleetctl retry <作业> [--reset-host-key] [--password-env VAR]   # 重试失败作业；只有作业因主机指纹不符失败、且确认机器重装过才加 --reset-host-key（同机 IP 节点不行：对宿主机升级 agent 后重试那个作业）；在用机器指纹变了也走这条：先 upgrade-agent 让它失败再重试；报「没有可用的 root 密码」时用 --password-env 补密码

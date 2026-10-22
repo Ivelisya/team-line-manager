@@ -226,8 +226,8 @@ pub async fn import(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Im
         let id: Option<i64> = if b.confirm {
             sqlx::query_scalar(
                 "insert into recycle_bin (source, source_id, kind, name, team, ip, host_name, provider, plan, service_ref, price_cents, currency, cycle,
-                     activated_at, retired_at, due_date, reason, traffic_up, traffic_down, nic_rx, nic_tx, actor, snapshot)
-                 values ('legacy', $1, $2, $3, $4, $5::inet, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+                     activated_at, retired_at, due_date, reason, traffic_up, traffic_down, nic_rx, nic_tx, actor, snapshot, recycled_at)
+                 values ('legacy', $1, $2, $3, $4, $5::inet, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, coalesce($14, now()))
                  on conflict (source, source_id) do nothing returning id",
             )
             .bind(sid)
