@@ -415,11 +415,11 @@ async fn converge_relay(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     Ok(Outcome::Done(json!({"xray": out.kv("xray_version"), "bbr": base.kv("cc") == Some("bbr")})))
 }
 
-/// 装单元的脚本报了 `linklocal_dns=1`（见 scripts::LINKLOCAL_DNS）：记一条 warn。`what` 是哪个程序的单元
+/// 装单元的脚本报了 `linklocal_dns=1`（见 scripts::LINKLOCAL_DNS）：记一条 warn。`what` 是哪个程序
 async fn warn_linklocal_dns(c: &Ctx<'_>, out: &Output, what: &str) {
     if out.kv("linklocal_dns") == Some("1") {
         c.warn(format!(
-            "这台机器的 DNS（/etc/resolv.conf）是链路本地地址：{what} 的单元没加元数据拦截（IPAddressDeny，拦了就解析不了域名），客户经域名能到云厂商的元数据服务"
+            "这台机器的 DNS（/etc/resolv.conf）是链路本地地址（多半和云厂商的元数据服务是同一个）：{what} 改用公共解析器（1.1.1.1、8.8.8.8）解析域名，元数据服务照旧拦着；这台机器出不了 53 端口的话域名会解析失败"
         ))
         .await;
     }

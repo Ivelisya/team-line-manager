@@ -89,6 +89,7 @@ pub fn node_ss(i: &SsInst) -> String {
     };
     NODE_SS
         .replace("__LINKLOCAL_DNS__", LINKLOCAL_DNS)
+        .replace("__PUBLIC_DNS__", PUBLIC_DNS)
         .replace("__UNIT_CONF__", unit_conf)
         .replace("__UNIT__", unit)
         .replace("__CONF__", &conf)
@@ -98,12 +99,13 @@ pub fn node_ss(i: &SsInst) -> String {
         .replace("__T__", &i.table())
 }
 
-/// 刚写好的单元 `$U.tmp` 里的元数据拦截（IPAddressDeny=link-local …）：/etc/resolv.conf 的 nameserver 是链路本地地址
-/// （169.254.0.0/16、fe80::/10：GCE、Oracle 等不经 systemd-resolved 的镜像）时拦了就解析不了域名，去掉这一行，
-/// 输出 `linklocal_dns=1` 让步骤记一条 warn。写、换都查结果（同 XRAY_UNIT_SH，升级时包在子 shell 里 set -e 不起作用）
-const LINKLOCAL_DNS: &str = r#"if grep -qiE '^[[:space:]]*nameserver[[:space:]]+(169\.254\.|fe[89ab][0-9a-f]:)' /etc/resolv.conf 2>/dev/null; then
-  sed -i '/^IPAddressDeny=/d' $U.tmp || exit 1; echo linklocal_dns=1
-fi"#;
+/// 条件：/etc/resolv.conf 的 nameserver 是链路本地地址（169.254.0.0/16、fe80::/10：GCE、Oracle 等不经 systemd-resolved 的镜像；
+/// GCE 上 DNS 和元数据服务是同一个 169.254.169.254）。单元里拦着 link-local，程序就解析不了域名。拦截不能去掉：去掉了，客户经域名
+/// （metadata.google.internal、169.254.169.254.nip.io）就能让程序连上元数据服务、读走实例的服务账号令牌。改用公共解析器：
+/// ssserver 在配置里加 "dns"（NODE_SS），Xray 由 agent 在它的配置里配。脚本输出 `linklocal_dns=1`，步骤记一条 warn
+const LINKLOCAL_DNS: &str = r#"grep -qiE '^[[:space:]]*nameserver[[:space:]]+(169\.254\.|fe[89ab][0-9a-f]:)' /etc/resolv.conf 2>/dev/null"#;
+/// 链路本地 DNS 时 ssserver 用的公共解析器（shadowsocks-rust 配置的 "dns"：逗号分隔，UDP / TCP 53；1.25 核对过）
+const PUBLIC_DNS: &str = "1.1.1.1,8.8.8.8";
 
 const NODE_SS: &str = r#"
 set -eu
@@ -111,7 +113,9 @@ exec 9>/run/fleet-ss.lock; flock 9
 id fleet-ss >/dev/null 2>&1 || useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin fleet-ss
 install -d -m 750 -g fleet-ss /etc/shadowsocks-rust
 C=/etc/shadowsocks-rust/__CONF__
-printf '{"server":"__LISTEN__","server_port":%s,"password":"%s","method":"%s","mode":"tcp_and_udp","timeout":300__BIND__}\n' "$SS_PORT" "$SS_PASSWORD" "$SS_METHOD" > $C.tmp
+# DNS 是链路本地地址（见 LINKLOCAL_DNS）：ssserver 改用公共解析器，元数据拦截照旧；不是时配置和原来逐字相同
+DNS=; if __LINKLOCAL_DNS__; then DNS=',"dns":"__PUBLIC_DNS__"'; echo linklocal_dns=1; fi
+printf '{"server":"__LISTEN__","server_port":%s,"password":"%s","method":"%s","mode":"tcp_and_udp","timeout":300__BIND__%s}\n' "$SS_PORT" "$SS_PASSWORD" "$SS_METHOD" "$DNS" > $C.tmp
 chgrp fleet-ss $C.tmp; chmod 640 $C.tmp
 RESTART=0
 cmp -s $C.tmp $C && rm -f $C.tmp || { mv $C.tmp $C; RESTART=1; }
@@ -138,7 +142,6 @@ IPAddressDeny=link-local 100.100.100.200/32
 [Install]
 WantedBy=multi-user.target
 UNIT
-__LINKLOCAL_DNS__
 cmp -s $U.tmp $U && rm -f $U.tmp || { mv $U.tmp $U; systemctl daemon-reload; RESTART=1; }
 # 单元文件换了、systemd 还没重新加载（上次换上之后没来得及 daemon-reload 就被打断）
 [ "$(systemctl show -p NeedDaemonReload --value __SVC__)" != yes ] || { systemctl daemon-reload; RESTART=1; }
@@ -215,13 +218,13 @@ fn xray_unit_sh() -> String { XRAY_UNIT_SH.replace("__LINKLOCAL_DNS__", LINKLOCA
 
 /// fleet-xray 单元：内容变了才换，只 daemon-reload，从不重启 Xray（重启会断开所有连接）。
 /// 写、换每一步都查结果：升级时这段包在 `( … ) || echo …` 里，set -e 不起作用，磁盘满时写出来的空文件会被当成新单元换上。
-/// 输出 `linklocal_dns=1` 见 `LINKLOCAL_DNS`
+/// DNS 是链路本地地址时输出 `linklocal_dns=1`（见 `LINKLOCAL_DNS`；元数据拦截照旧，Xray 的公共解析器由 agent 配）
 const XRAY_UNIT_SH: &str = r#"
 U=/etc/systemd/system/fleet-xray.service
 cat > $U.tmp <<'UNIT' || exit 1
 __UNIT__
 UNIT
-__LINKLOCAL_DNS__
+if __LINKLOCAL_DNS__; then echo linklocal_dns=1; fi
 cmp -s $U.tmp $U && rm -f $U.tmp || { mv $U.tmp $U || exit 1; systemctl daemon-reload; }
 "#;
 
@@ -470,28 +473,35 @@ echo "nft_relays=$(nft list set inet ss_guard relays | tr -d '\n' | sed 's/.*ele
                          since=$(TZ=UTC0 systemctl show -p ExecMainStartTimestamp --value fleet-ssserver)\n\
                          [ -z \"$since\" ] || [ \"$(date -d \"$since\" +%s)\" -ge \"$(stat -c %Y $C $U | sort -n | tail -n1)\" ] || RESTART=1\n";
 
-    /// 宿主机（普通 VPS 节点）除了多一行锁、一行「进程跑的是旧程序才重启」、单元里拦元数据服务的一行（链路本地 DNS 时去掉）
-    /// 和重跑时以运行中的实例为准的几行，和改动前逐字相同：生产节点升级中控后重新收敛，配置、nft、include 行都不变
+    /// 链路本地 DNS 时选公共解析器的那两行（写配置之前）
+    const DNS_LINES: &str = "# DNS 是链路本地地址（见 LINKLOCAL_DNS）：ssserver 改用公共解析器，元数据拦截照旧；不是时配置和原来逐字相同\n";
+
+    /// 宿主机（普通 VPS 节点）除了多一行锁、一行「进程跑的是旧程序才重启」、单元里拦元数据服务的一行、链路本地 DNS 时选公共解析器的两行
+    /// 和重跑时以运行中的实例为准的几行，和改动前逐字相同：生产节点升级中控后重新收敛，配置（不是链路本地 DNS 时）、nft、include 行都不变
     #[test]
     fn host_render_is_unchanged() {
         let s = node_ss(&SsInst::host());
-        let ll = format!("UNIT\n{}\n", super::LINKLOCAL_DNS);
+        let pick = format!("{DNS_LINES}DNS=; if {}; then DNS=',\"dns\":\"{}\"'; echo linklocal_dns=1; fi\n", super::LINKLOCAL_DNS, super::PUBLIC_DNS);
+        let (new_printf, old_printf) = ("300%s}\\n' \"$SS_PORT\" \"$SS_PASSWORD\" \"$SS_METHOD\" \"$DNS\"", "300}\\n' \"$SS_PORT\" \"$SS_PASSWORD\" \"$SS_METHOD\"");
         assert!(s.starts_with(&format!("\nset -eu\n{LOCK}")), "{s}");
         assert!(s.contains(STALE) && s.contains(&format!("PrivateTmp=yes\n{DENY}[Install]\n")), "{s}");
-        assert!(s.contains(&ll) && s.contains(&format!("RESTART=1; }}\n{RELOAD}{STALE}{OLDER}systemctl enable")), "{s}");
-        let old = [LOCK, STALE, DENY, RELOAD, OLDER].iter().fold(s.replacen(&ll, "UNIT\n", 1), |s, x| s.replacen(x, "", 1));
+        assert!(s.contains(&pick) && s.contains(new_printf) && s.contains(&format!("RESTART=1; }}\n{RELOAD}{STALE}{OLDER}systemctl enable")), "{s}");
+        let old = [LOCK, STALE, DENY, RELOAD, OLDER, pick.as_str()].iter().fold(s.replacen(new_printf, old_printf, 1), |s, x| s.replacen(x, "", 1));
         assert_eq!(old, OLD_NODE_SS);
         assert_eq!((SsInst::host().svc(), SsInst::host().table()), ("fleet-ssserver".to_string(), "ss_guard".to_string()));
     }
 
-    /// 刚写好的单元里的元数据拦截：/etc/resolv.conf 的 nameserver 是链路本地地址时去掉（拦了就解析不了域名）并报 linklocal_dns=1；
-    /// 节点的 ssserver 单元、线路机的 Xray 单元都在写完单元、比较之前做
+    /// /etc/resolv.conf 的 nameserver 是链路本地地址时：ssserver 配置加公共解析器、报 linklocal_dns=1，单元里的元数据拦截一律不动；
+    /// 不是时配置和原来逐字相同。拿渲染出来的那两行在 bash 里真跑；线路机的 Xray 单元同样不动拦截、只报 linklocal_dns=1
     #[cfg(unix)]
     #[test]
-    fn linklocal_dns_drops_ip_address_deny() {
+    fn linklocal_dns_keeps_ip_address_deny() {
         let dir = tempfile::tempdir().unwrap();
-        let (resolv, unit) = (dir.path().join("resolv.conf"), dir.path().join("u"));
-        let sh = format!("U={}\n{}", unit.display(), super::LINKLOCAL_DNS.replace("/etc/resolv.conf", &resolv.display().to_string()));
+        let resolv = dir.path().join("resolv.conf");
+        let s = node_ss(&SsInst::host());
+        let lines: String = s.lines().filter(|l| l.starts_with("DNS=;") || l.starts_with("printf '{\"server\"")).map(|l| format!("{l}\n")).collect();
+        let sh = format!("SS_PORT=8388 SS_PASSWORD=pw SS_METHOD=aes-256-gcm C=$1\n{}", lines.replace("/etc/resolv.conf", &resolv.display().to_string()));
+        let conf_out = dir.path().join("c");
         for (conf, linklocal) in [
             ("nameserver 127.0.0.53\noptions edns0\n", false),
             ("# nameserver 169.254.169.254\nnameserver 10.0.0.2\n", false),
@@ -499,16 +509,19 @@ echo "nft_relays=$(nft list set inet ss_guard relays | tr -d '\n' | sed 's/.*ele
             ("nameserver FE80::1%eth0\n", true),
         ] {
             std::fs::write(&resolv, conf).unwrap();
-            std::fs::write(dir.path().join("u.tmp"), "[Service]\nIPAddressDeny=link-local 100.100.100.200/32\nPrivateTmp=yes\n").unwrap();
-            let out = std::process::Command::new("bash").arg("-c").arg(&sh).output().unwrap();
+            let out = std::process::Command::new("bash").arg("-c").arg(&sh).arg("x").arg(&conf_out).output().unwrap();
             assert!(out.status.success(), "{conf}");
-            let unit = std::fs::read_to_string(dir.path().join("u.tmp")).unwrap();
-            assert_eq!((String::from_utf8_lossy(&out.stdout).contains("linklocal_dns=1"), unit.contains("IPAddressDeny=")), (linklocal, !linklocal), "{conf}");
-            assert!(unit.contains("[Service]\n") && unit.contains("PrivateTmp=yes\n"), "{unit}");
+            let cfg = std::fs::read_to_string(dir.path().join("c.tmp")).unwrap();
+            let want = format!(
+                "{{\"server\":\"0.0.0.0\",\"server_port\":8388,\"password\":\"pw\",\"method\":\"aes-256-gcm\",\"mode\":\"tcp_and_udp\",\"timeout\":300{}}}\n",
+                if linklocal { ",\"dns\":\"1.1.1.1,8.8.8.8\"" } else { "" }
+            );
+            assert_eq!((String::from_utf8_lossy(&out.stdout).contains("linklocal_dns=1"), cfg), (linklocal, want), "{conf}");
         }
         for s in [node_ss(&SsInst::host()), super::xray_unit_sh()] {
-            assert!(s.contains(&format!("UNIT\n{}\ncmp -s $U.tmp $U", super::LINKLOCAL_DNS)), "{s}");
+            assert!(s.contains("IPAddressDeny=link-local 100.100.100.200/32\n") && !s.contains("/^IPAddressDeny=/d"), "{s}");
         }
+        assert!(super::xray_unit_sh().contains(&format!("UNIT\nif {}; then echo linklocal_dns=1; fi\ncmp -s $U.tmp $U", super::LINKLOCAL_DNS)));
     }
 
     /// 重跑系统基线时以运行中的 sshd 为准：比配置文件旧（换上之后没来得及重启）也重启，同一秒里的也算旧
@@ -527,7 +540,7 @@ echo "nft_relays=$(nft list set inet ss_guard relays | tr -d '\n' | sed 's/.*ele
         let s = node_ss(&i);
         assert!(!s.contains("__"), "占位符都已替换");
         assert!(s.contains(
-            r#"printf '{"server":"203.0.113.7","server_port":%s,"password":"%s","method":"%s","mode":"tcp_and_udp","timeout":300,"outbound_bind_addr":"203.0.113.7"}\n'"#
+            r#"printf '{"server":"203.0.113.7","server_port":%s,"password":"%s","method":"%s","mode":"tcp_and_udp","timeout":300,"outbound_bind_addr":"203.0.113.7"%s}\n'"#
         ));
         assert!(s.contains("C=/etc/shadowsocks-rust/8389.json\n"));
         assert!(s.contains("U=/etc/systemd/system/fleet-ssserver@.service\n") && s.contains("ExecStart=/usr/local/bin/ssserver -c /etc/shadowsocks-rust/%i.json\n"));
