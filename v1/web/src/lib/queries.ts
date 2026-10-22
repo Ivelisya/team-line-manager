@@ -49,6 +49,13 @@ const hostChoices = (d: MachineView[]) => d.filter((m) => m.kind === 'vps' && m.
   .map((m): HostChoice => ({ id: m.id, name: m.name, team_id: m.team?.id ?? '', relay_id: m.entries[0]?.relay.id ?? '', ssh_port: m.ssh_port, provider: m.provider?.name ?? null }))
   .sort((a, b) => collator.compare(a.name, b.name));
 export const useHostChoices = (enabled: boolean) => useQuery({ ...machinesQuery('live'), select: hostChoices, enabled });
+/** 团队与套餐页：各团队的编号是否已经连续（01..N），已连续时「重新编号」不可点。范围同服务端重新编号：团队里未退役的非线路机 */
+const numbersCompact = (d: MachineView[]) => {
+  const by: Record<string, number[]> = {};
+  for (const m of d) if (m.team && m.kind !== 'relay' && m.lifecycle !== 'retired' && m.number != null) (by[m.team.id] ??= []).push(m.number);
+  return Object.fromEntries(Object.entries(by).map(([t, ns]) => [t, ns.sort((a, b) => a - b).every((n, i) => n === i + 1)]));
+};
+export const useTeamsCompact = () => useQuery({ ...machinesQuery('live'), select: numbersCompact });
 /** 首页 KPI「流量额度」：同一份机器列表缓存，只取吃紧的台数与最紧的一台；结果做结构共享，没变时首页总览不跟着推送重渲染 */
 export const useQuotaTight = () => useQuery({ ...machinesQuery('live'), select: quotaTight });
 /** 按键等“用时才读”的场景：直接读缓存里的机器列表（同样的默认顺序），不订阅、不触发请求 */
