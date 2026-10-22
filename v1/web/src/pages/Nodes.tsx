@@ -7,9 +7,9 @@ import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { ChevronRight, RotateCcw, SearchX, X } from 'lucide-react';
 import { useMachines, useTeams } from '@/lib/queries';
-import { useDrawer } from '@/lib/drawer';
+import { setDrawerOrder, useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
-import { cycleLabel, healthLabel, kindLabel, lifecycleLabel, meta, monthTraffic } from '@/lib/derive';
+import { cycleLabel, healthLabel, kindLabel, lifecycleLabel, meta, monthTraffic, trafficTotal } from '@/lib/derive';
 import { HEALTH_TONE, KIND_ORDER, useStableOrder } from '@/lib/sort';
 import type { MachineView } from '@/lib/types';
 import { Button } from '@/components/ui/button';
@@ -131,7 +131,7 @@ export function NodesPage() {
       { id: 'entry', header: '入口', size: 152, cell: (m) => <EntryCell m={m} /> },
       { id: 'plan', header: '供应商 · 套餐', size: 176, drop: 3,
         cell: (m) => <>{m.plan ? <Trunc className="cell-main">{m.plan.name}</Trunc> : <span className="cell-main t-muted">{m.host_machine ? '不带套餐' : '未设置'}</span>}<span className="sub">{m.provider?.name ?? '—'}</span></> },
-      { id: 'traffic', header: '本月业务流量', size: 112, r: true, ...byNum((m) => { const t = monthTraffic(m); return t.up + t.down; }),
+      { id: 'traffic', header: '本月业务流量', size: 112, r: true, ...byNum(trafficTotal),
         cell: (m) => { const t = monthTraffic(m); return retired && !(t.up + t.down) ? <span className="t-muted">—</span> : <><Num f={F.bytes(t.up + t.down)} /><span className="sub">下载 {F.str(F.bytes(t.down))}</span></>; } },
     ];
     if (retired) {
@@ -153,6 +153,8 @@ export function NodesPage() {
   const pg = usePage({ total: q.data ? rows.length : undefined, sizes: PAGE_SIZES, size: 50, reset: [scope, text, team, kind, relay, status, dueSoon, sort] });
   const stable = useStableOrder(rows, sort?.id === 'traffic' ? JSON.stringify([scope, text, team, kind, relay, status, dueSoon, sort, pg.page, pg.size]) : null);
   const pageRows = React.useMemo(() => stable.slice(pg.offset, pg.offset + pg.size), [stable, pg.offset, pg.size]);
+  React.useEffect(() => { setDrawerOrder(stable.map((m) => m.id)); }, [stable]);
+  React.useEffect(() => () => setDrawerOrder(null), []);
 
   return (
     <div className="stack">

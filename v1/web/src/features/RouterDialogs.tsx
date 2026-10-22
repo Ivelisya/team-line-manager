@@ -16,6 +16,7 @@ import { toast } from '@/components/ui/toast';
 import { FormDialog } from '@/components/app/dialogs';
 import { CopyButton, Note } from '@/components/app/primitives';
 import { useShowBootstrap } from '@/components/app/RouterCard';
+import { prefs } from '@/lib/prefs';
 
 type Method = 'ssh' | 'cmd';
 const METHODS: { value: Method; label: string }[] = [{ value: 'ssh', label: '填账号密码一键部署' }, { value: 'cmd', label: '在路由上执行命令' }];
@@ -25,8 +26,8 @@ const METHOD_INFO = `一键部署：中控 SSH 登录路由替你装好，要中
 
 /** 这个浏览器上次给这台路由填的 SSH 地址（中控不回传地址；密码从不保存）：「重新部署」预填 */
 const sshKey = (id: string) => `fleet:router-ssh:${id}`;
-const rememberSsh = (id: string, v: Omit<SshLogin, 'password'>) => { try { localStorage.setItem(sshKey(id), JSON.stringify(v)); } catch { /* 隐私模式 */ } };
-const recallSsh = (id: string): Omit<SshLogin, 'password'> | null => { try { return JSON.parse(localStorage.getItem(sshKey(id)) ?? 'null'); } catch { return null; } };
+const rememberSsh = (id: string, v: Omit<SshLogin, 'password'>) => prefs.set(sshKey(id), JSON.stringify(v));
+const recallSsh = (id: string): Omit<SshLogin, 'password'> | null => { try { return JSON.parse(prefs.get(sshKey(id)) ?? 'null'); } catch { return null; } };
 
 interface SshDraft { host: string; port: string; user: string; password: string }
 const sshValid = (d: SshDraft) => !!d.host.trim() && /^\d+$/.test(d.port) && +d.port >= 1 && +d.port <= 65535 && !!d.user.trim();

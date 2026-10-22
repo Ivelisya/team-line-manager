@@ -17,7 +17,7 @@ import { setStreamState as setStatus, useStreamState } from './streamState';
 
 const MERGE_MS = 300;
 const LIST_MS = 2000;
-const LISTS = new Set(['machines', 'relays', 'overview', 'jobs', 'audit']);
+const LISTS = new Set(['machines', 'relays', 'overview', 'jobs', 'audit', 'incidents']);
 const BACKOFF_MAX = 30_000;
 // 服务端每 15 s 发一个文本心跳 {type:"hb"}：连着这么久什么都没收到就当连接已死
 const STALE_MS = 45_000;

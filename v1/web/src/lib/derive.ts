@@ -1,6 +1,7 @@
 // 从 MachineView 推导卡片/表格要显示的数据（纯函数，便于复用）
 import type { AvailabilityDay, DueState, MachineView, Meta, Plan, ProbeBucket, ProbeResult, Provider, SubField, Subscription, TrafficReset, UsageMetric } from './types';
 import * as F from './format';
+import { tzLabel } from './tz';
 
 // ── /meta：中文名、枚举、阈值、默认值只认服务端这一份 ──
 // 外壳等 /meta 取回（useMeta 的 queryFn 里 setMeta）之后才渲染页面，所以下面这些同步读取在页面里总有值；登录页不用它们
@@ -23,9 +24,8 @@ export const stepLabel = (k: string) => lbl(meta().step_states, k);
 export const ruleLabel = (k: string) => lbl(meta().rules, k);
 /** 网卡计量规则（供应商的「流量计量」） */
 export const trafficRuleLabel = (k: string) => lbl(meta().traffic_rules, k);
-/** 网卡计量规则的直白写法（费用页签「本周期已用」下面一行，同供应商对话框的选项说明）；没收录的退回 meta 的名字 */
-const RULE_PLAIN: Record<string, string> = { min: '按网卡流量：入站和出站取较小值', max: '按网卡流量：入站和出站取较大值', sum: '按网卡流量：入站加出站', out: '按网卡流量：只算出站' };
-export const trafficRulePlain = (k: string) => RULE_PLAIN[k] ?? trafficRuleLabel(k);
+/** 网卡计量规则写在费用页签「本周期已用」下面一行：「按网卡流量：入站和出站取较大值」（名字同供应商对话框，来自 /meta） */
+export const trafficRulePlain = (k: string) => `按网卡流量：${trafficRuleLabel(k)}`;
 /** 流量重置方式：自然月 / 账单日 */
 export const trafficResetLabel = (k: string) => lbl(meta().traffic_resets, k);
 /** 计费周期的那个字：月 / 季 / 半年 / 年 */
@@ -112,6 +112,7 @@ export function subValueText(k: SubField, v: string | number | null, currency?: 
     case 'price_cents': return F.money(Number(v), currency ?? meta().defaults.currency);
     case 'cycle': return `每${cycleLabel(String(v))}`;
     case 'remind_days': return `提前 ${v} 天`;
+    case 'billing_tz': return tzLabel(String(v));
     case 'traffic_gb': return Number(v) > 0 ? `${v} GB` : '不限';
     case 'traffic_reset_day': return reset === 'billing' ? `每月 ${v} 号（账单日）` : reset === 'month' ? `每月 ${v} 号（自然月）` : `每月 ${v} 号`;
     default: return String(v);
