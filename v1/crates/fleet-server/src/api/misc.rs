@@ -525,6 +525,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "machine.logs" | "restore.probe" => s("name"),
         "incident.ack" => format!("{} · {}", crate::notify::rule_name(d["rule"].as_str().unwrap_or("")), s("summary")),
         "server.logs" => format!("{} 行", d["lines"]),
+        "apikey.create" | "apikey.revoke" if d["via"] == "local-admin" => format!("{}（{}）· 中控命令行 local-admin", s("name"), s("prefix")),
         "apikey.create" | "apikey.revoke" => format!("{}（{}）", s("name"), s("prefix")),
         "auth.login" | "auth.login_failed" | "auth.totp_recovery_regenerated" | "auth.verify_failed" => s("ip"),
         "auth.totp_disabled" if d["via"] == "totp-reset" => "中控命令行 totp-reset".into(),

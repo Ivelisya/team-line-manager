@@ -1,4 +1,4 @@
-//! 运维接口：API 密钥与 scope、登录限速、远程执行的前置校验；前端静态文件的 404 与缓存头。
+//! 运维接口：API 密钥与 scope、中控本机的全权密钥（local-admin）、登录限速、远程执行的前置校验；前端静态文件的 404 与缓存头。
 //! 需要 PostgreSQL（见 common）。
 
 mod common;
@@ -609,4 +609,107 @@ async fn migration_0029_normalizes_existing_rows() {
         let e = sqlx::query(bad).execute(db).await.unwrap_err();
         assert_eq!(e.as_database_error().and_then(|d| d.code()).as_deref(), Some("23514"), "{bad}: {e}");
     }
+}
+
+/// root 的 fleetctl 配置里的令牌
+fn cfg_token(p: &std::path::Path) -> (String, String) {
+    let v: toml::Value = toml::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+    (v["url"].as_str().unwrap().to_string(), v["token"].as_str().unwrap().to_string())
+}
+
+/// 有效的 central-local（id、权限、是否不过期）
+async fn live_local_keys(t: &common::T) -> Vec<(Uuid, Vec<String>, bool)> {
+    sqlx::query_as("select id, scopes, expires_at is null from api_key where name = 'central-local' and revoked_at is null")
+        .fetch_all(&t.st.db)
+        .await
+        .unwrap()
+}
+
+/// 中控本机的全权密钥（fleet-server local-admin）：第一次建，权限是全部 scope、不过期；再跑不换（部署每次都跑，干活的 agent 不能半路失效）；
+/// listen 的端口改了只改写地址；--rotate 换新的、旧的立即失效。令牌只进 0600 的配置文件，不出现在输出与审计里
+#[tokio::test]
+async fn local_admin_creates_keeps_and_rotates() {
+    use fleet_server::local_admin::ensure;
+    let t = setup().await;
+    let cfg = t.dir.path().join("root/.config/fleetctl/config.toml");
+    let url = "http://127.0.0.1:8080";
+
+    let o = ensure(&t.st.db, url, &cfg, false).await.unwrap();
+    assert!(o.created && o.revoked == 0);
+    let (u, tok) = cfg_token(&cfg);
+    assert_eq!(u, url);
+    assert!(tok.starts_with(&format!("flk_{}_", o.prefix)) && !o.summary().contains(&tok), "{}", o.summary());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&cfg).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+    let (s, me) = t.call("GET", "/api/v1/auth/me", None, Auth::Key(&tok)).await;
+    assert_eq!((s, me["data"]["username"].as_str()), (StatusCode::OK, Some("apikey:central-local")), "{me}");
+    assert_eq!(me["data"]["scopes"], json!(["read", "write", "secrets", "exec"]));
+    let keys = live_local_keys(&t).await;
+    assert_eq!(keys.len(), 1);
+    assert!(keys[0].2, "不过期");
+
+    // 再跑：还是这一把，配置不动
+    let o = ensure(&t.st.db, url, &cfg, false).await.unwrap();
+    assert!(!o.created && o.summary().contains("仍有效"), "{}", o.summary());
+    assert_eq!(cfg_token(&cfg), (url.to_string(), tok.clone()));
+    // listen 端口改了：令牌照旧，只改地址
+    let o = ensure(&t.st.db, "http://127.0.0.1:9090", &cfg, false).await.unwrap();
+    assert!(!o.created);
+    assert_eq!(cfg_token(&cfg), ("http://127.0.0.1:9090".to_string(), tok.clone()));
+
+    // --rotate：新令牌，旧的立即 401，有效的始终只有一把
+    let o = ensure(&t.st.db, url, &cfg, true).await.unwrap();
+    assert!(o.created && o.revoked == 1, "{}", o.summary());
+    let (_, tok2) = cfg_token(&cfg);
+    assert_ne!(tok2, tok);
+    assert_eq!(t.call("GET", "/api/v1/auth/me", None, Auth::Key(&tok)).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(t.call("GET", "/api/v1/machines", None, Auth::Key(&tok2)).await.0, StatusCode::OK);
+    assert_eq!(live_local_keys(&t).await.len(), 1);
+
+    // 审计：操作者 cli，摘要写明是中控命令行建 / 撤销的；令牌不出现
+    let audit = t.ok("GET", "/api/v1/audit?limit=20", None).await;
+    let rows: Vec<String> = audit.as_array().unwrap().iter().map(|a| format!("{}|{}|{}", a["actor"].as_str().unwrap(), a["action"].as_str().unwrap(), a["summary"].as_str().unwrap())).collect();
+    assert_eq!(rows.iter().filter(|r| r.starts_with("cli|apikey.create|central-local（") && r.ends_with("· 中控命令行 local-admin")).count(), 2, "{rows:?}");
+    assert_eq!(rows.iter().filter(|r| r.starts_with("cli|apikey.revoke|central-local（")).count(), 1, "{rows:?}");
+    assert!(!audit.to_string().contains(&tok) && !audit.to_string().contains(&tok2));
+}
+
+/// local-admin 修复：配置文件丢了、密钥在网页上被撤销、权限不全（以后加了 scope）时重建；网页 / 接口不能建同名密钥
+#[tokio::test]
+async fn local_admin_repairs_and_reserves_name() {
+    use fleet_server::local_admin::ensure;
+    let t = setup().await;
+    let cfg = t.dir.path().join("fleetctl/config.toml");
+    let url = "http://127.0.0.1:8080";
+    ensure(&t.st.db, url, &cfg, false).await.unwrap();
+
+    // 配置文件丢了：旧的撤销、建新的
+    std::fs::remove_file(&cfg).unwrap();
+    let o = ensure(&t.st.db, url, &cfg, false).await.unwrap();
+    assert!(o.created && o.revoked == 1);
+    let (_, tok) = cfg_token(&cfg);
+    assert_eq!(t.call("GET", "/api/v1/machines", None, Auth::Key(&tok)).await.0, StatusCode::OK);
+
+    // 用户在网页上撤销了它：下次运行重建（撤销过的不再算）
+    let id = live_local_keys(&t).await[0].0;
+    assert_eq!(t.call("DELETE", &format!("/api/v1/api-keys/{id}"), None, Auth::Session).await.0, StatusCode::OK);
+    let o = ensure(&t.st.db, url, &cfg, false).await.unwrap();
+    assert!(o.created && o.revoked == 0);
+    let (_, tok) = cfg_token(&cfg);
+    assert_eq!(t.call("GET", "/api/v1/machines", None, Auth::Key(&tok)).await.0, StatusCode::OK);
+
+    // 权限不全（旧版本建的、后来加了 scope）：换一把全的
+    sqlx::query("update api_key set scopes = '{read,write}' where name = 'central-local' and revoked_at is null").execute(&t.st.db).await.unwrap();
+    let o = ensure(&t.st.db, url, &cfg, false).await.unwrap();
+    assert!(o.created && o.revoked == 1);
+    let keys = live_local_keys(&t).await;
+    assert_eq!((keys.len(), keys[0].1.len()), (1, 4), "{keys:?}");
+
+    // 名字留给 local-admin：审计里 apikey:central-local 只可能是中控本机
+    let (s, v) = t.call("POST", "/api/v1/api-keys", Some(json!({"name": "central-local", "scopes": ["read"], "password": ADMIN_PW})), Auth::Session).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("local-admin"), "{v}");
 }

@@ -13,6 +13,7 @@ pub mod health;
 pub mod ipintel;
 pub mod jobs;
 pub mod live;
+pub mod local_admin;
 pub mod names;
 pub mod notify;
 pub mod policy;
