@@ -429,19 +429,20 @@ pub async fn move_to_spare(st: &AppState, actor: &str, id: Uuid, reason: Option<
     }
     let (spare_id, spare_name, taken) = spare_team(&mut tx).await?;
     let mut free = (1..=999).filter(|n| !taken.contains(n));
-    let revs: Vec<(Uuid, i32, Option<Uuid>, String)> = sqlx::query_as(
+    let mut revs: Vec<(Uuid, i32, Option<Uuid>, String)> = sqlx::query_as(
         "select m.id, m.revision, m.team_id, display_name(m.kind::text, m.label, t.name, m.number) from machine m left join team t on t.id = m.team_id
          where m.id = any($1)",
     )
     .bind(&all)
     .fetch_all(&mut *tx)
     .await?;
+    // 按 all 的顺序：宿主机在前
+    revs.sort_by_key(|r| all.iter().position(|x| *x == r.0));
     let ip_reason = revs.iter().find(|r| r.0 == id).map(|r| format!("随宿主机「{}」退役", r.3)).unwrap_or_default();
     // (id, 原名, 新名)，宿主机在前
     let mut moved: Vec<(Uuid, String, String)> = vec![];
     let mut relays = vec![];
-    for mid in &all {
-        let Some((_, rev, _, from)) = revs.iter().find(|r| r.0 == *mid) else { continue };
+    for (mid, rev, _, from) in &revs {
         let n = free.next().ok_or_else(|| ApiError::conflict(format!("备用团队「{spare_name}」的编号用完了")))?;
         relays.extend(patch_tx(&mut tx, actor, *mid, PatchIn::rename(*rev, spare_id, n)).await?);
         sqlx::query("update machine set lifecycle_reason = $2 where id = $1")

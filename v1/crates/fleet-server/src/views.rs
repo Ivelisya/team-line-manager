@@ -1080,8 +1080,8 @@ async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<
         .await?;
         let got: HashMap<Uuid, QuotaUsed> = rows.into_iter().map(|(m, b, cal, s0)| (m, (b, cal, s0))).collect();
         for k in miss {
-            // 每个键都有一行（q 是 unnest 出来的，两支都按 q 聚合）
-            slot.1.insert(k.clone(), got[&k.0]);
+            // 每个键都有一行（q 是 unnest 出来的，两支都按 q 聚合）；万一缺了记 0，不让一台打断整个视图与实时推送
+            slot.1.insert(k.clone(), got.get(&k.0).copied().unwrap_or((0, false, k.1.midnight().assume_utc())));
         }
     }
     Ok(keys.into_iter().map(|k| (k.0, slot.1[&k])).collect())

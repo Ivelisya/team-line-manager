@@ -43,7 +43,6 @@ const INSERT: &str = "with m as (
   cross join lateral (select case when count(net_rx) > 0 then least(sum(net_rx), 9e18)::bigint end rx,
                              case when count(net_tx) > 0 then least(sum(net_tx), 9e18)::bigint end tx
                       from host_metric_hourly where machine_id = m.id) nic
-  on conflict (source, source_id) do nothing
   returning id, name, last_name";
 
 /// 把机器写进回收站并隐藏（调用方的事务里；机器已退役）。`auto`：中控自动做的标记（spare::AUTO / spare::SWEEP），写进审计；
@@ -53,12 +52,8 @@ pub async fn record(tx: &mut Tx<'_>, id: Uuid, actor: &str, auto: Option<&str>) 
     if !matches!(cur, Some(None)) {
         return Ok(None);
     }
-    let row: Option<(i64, String, Option<String>)> = sqlx::query_as(INSERT).bind(id).bind(actor).fetch_optional(&mut **tx).await?;
-    // 已经有这台的一行（recycled_at 和这一行同一个事务里写，正常不会有）：照样隐藏，审计指向那一行
-    let (bin, name, last) = match row {
-        Some(r) => r,
-        None => sqlx::query_as("select id, name, last_name from recycle_bin where source = 'fleet' and source_id = $1").bind(id.to_string()).fetch_one(&mut **tx).await?,
-    };
+    // recycled_at 和这一行在同一个事务里写、上面锁着机器行：不会已经有这台的一行，有就是数据坏了，直接报错
+    let (bin, name, last): (i64, String, Option<String>) = sqlx::query_as(INSERT).bind(id).bind(actor).fetch_one(&mut **tx).await?;
     sqlx::query("update machine set recycled_at = now(), revision = revision + 1, updated_at = now() where id = $1").bind(id).execute(&mut **tx).await?;
     let mut detail = json!({"name": last.as_deref().unwrap_or(&name), "from": name, "recycle_bin_id": bin});
     if let Some(a) = auto {
