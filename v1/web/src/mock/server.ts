@@ -909,6 +909,86 @@ R('POST', '/notify-channels/([^/]+)/test', ({ params }) => {
 });
 R('GET', '/notify-log', ({ query }) => clone(db.notifyLog.slice(0, +(query.get('limit') ?? 100))));
 
+// ---------- 账户安全：两步验证 / 登录会话 / 改密码 ----------
+// mock 不真算 TOTP：任意 6 位数字都算对，000000 算错；恢复码按列表核对、用一次就删。密码只认「wrong」为错
+const acct = {
+  totp: false, pending: false, recovery: [] as string[],
+  sessions: [
+    { id: 'a1b2c3d4e5f60718', created_at: iso(Date.now() - 2 * DAY), last_seen_at: iso(), expires_at: iso(Date.now() + 12 * DAY), ip: '198.51.100.23', user_agent: navigator.userAgent, current: true },
+    { id: '0f1e2d3c4b5a6978', created_at: iso(Date.now() - 6 * DAY), last_seen_at: iso(Date.now() - 3 * 3600_000), expires_at: iso(Date.now() + 8 * DAY), ip: '203.0.113.88', user_agent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1', current: false },
+    { id: '99aa88bb77cc66dd', created_at: iso(Date.now() - 9 * DAY), last_seen_at: iso(Date.now() - 4 * DAY), expires_at: iso(Date.now() + 5 * DAY), ip: '2001:db8:4:1::27', user_agent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0', current: false },
+  ],
+};
+const recoveryCodes = () => Array.from({ length: 10 }, () => `${rand(4)}-${rand(4)}-${rand(4)}`);
+/** 校验第二步：6 位数字（000000 为错）或一个没用过的恢复码 */
+const checkCode = (c: string) => {
+  const s = String(c ?? '').trim();
+  if (/^\d{6}$/.test(s.replace(/\s/g, ''))) { if (s === '000000') throw bad('两步验证码不对或已经用过', 401, 'totp_invalid'); return; }
+  const i = acct.recovery.indexOf(s.toLowerCase());
+  if (i < 0) throw bad('两步验证码不对或已经用过', 401, 'totp_invalid');
+  acct.recovery.splice(i, 1);
+};
+const checkPw = (p: string) => { if (!p || p === 'wrong') throw bad('当前密码不对', 401, 'bad_password'); };
+const mockQr = (text: string) => {
+  // 不是真的二维码：按文本哈希画一张 25×25 的点阵，外观像就行
+  let h = hashStr(text); let cells = '';
+  for (let y = 0; y < 25; y++) for (let x = 0; x < 25; x++) {
+    h = (Math.imul(h, 1103515245) + 12345) >>> 0;
+    // 三个角上的定位方块：7×7 外框 + 3×3 实心
+    const lx = x > 17 ? x - 18 : x; const ly = y > 17 ? y - 18 : y;
+    const finder = lx < 7 && ly < 7 && !(x > 17 && y > 17);
+    const on = finder ? lx === 0 || lx === 6 || ly === 0 || ly === 6 || (lx >= 2 && lx <= 4 && ly >= 2 && ly <= 4) : (h >>> 16) % 2 === 0;
+    if (on) cells += `M${x + 2} ${y + 2}h1v1h-1z`;
+  }
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 29 29" shape-rendering="crispEdges"><rect width="29" height="29" fill="#fff"/><path d="${cells}" fill="#000"/></svg>`;
+};
+R('GET', '/account/totp', () => ({ enabled: acct.totp, recovery_codes_left: acct.recovery.length }));
+R('POST', '/account/totp/setup', () => {
+  if (acct.totp) throw bad('两步验证已经开着；要换手机请先停用再重新开启', 409, 'conflict');
+  const secret = Array.from({ length: 32 }, () => 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'[Math.floor(Math.random() * 32)]).join('');
+  const url = `otpauth://totp/Fleet:${db.user}%40mock?secret=${secret}&issuer=Fleet&algorithm=SHA1&digits=6&period=30`;
+  acct.pending = true;
+  return { secret, otpauth_url: url, qr_svg: mockQr(url) };
+});
+R('POST', '/account/totp/enable', ({ body }) => {
+  if (!acct.pending) throw bad('没有待确认的密钥，或已超过 10 分钟，请重新开始');
+  if (!/^\d{6}$/.test(String(body.code ?? '').replace(/\s/g, ''))) throw bad('验证码是 6 位数字');
+  if (body.code === '000000') throw bad('验证码不对：确认扫的是刚才的二维码、手机时间准确', 400, 'totp_invalid');
+  acct.totp = true; acct.pending = false; acct.recovery = recoveryCodes();
+  return { recovery_codes: [...acct.recovery] };
+});
+R('POST', '/account/totp/disable', ({ body }) => {
+  if (!acct.totp) throw bad('两步验证没有开', 409, 'conflict');
+  checkPw(body.password); checkCode(body.code);
+  acct.totp = false; acct.recovery = []; return { ok: true };
+});
+R('POST', '/account/totp/recovery-codes', ({ body }) => {
+  if (!acct.totp) throw bad('两步验证没有开', 409, 'conflict');
+  checkCode(body.code); acct.recovery = recoveryCodes();
+  return { recovery_codes: [...acct.recovery] };
+});
+R('GET', '/account/sessions', () => clone(acct.sessions));
+R('DELETE', '/account/sessions/([^/]+)', ({ params }) => {
+  const s = acct.sessions.find((x) => x.id === params[0]); if (!s) throw bad('没有这个会话（可能已经过期或被撤销）', 404, 'not_found');
+  acct.sessions = acct.sessions.filter((x) => x !== s); return { ok: true, current: s.current };
+});
+R('POST', '/account/sessions/revoke-others', () => { const n = acct.sessions.filter((s) => !s.current).length; acct.sessions = acct.sessions.filter((s) => s.current); return { revoked: n }; });
+R('POST', '/account/password', ({ body }) => {
+  if ([...String(body.new ?? '')].length < 12) throw bad('新密码至少 12 个字符');
+  if (acct.totp && !String(body.totp ?? '').trim()) throw bad('请输入两步验证码', 401, 'totp_required');
+  checkPw(body.current); if (acct.totp) checkCode(body.totp);
+  if (body.new === body.current) throw bad('新密码和当前密码一样');
+  const n = acct.sessions.filter((s) => !s.current).length; acct.sessions = acct.sessions.filter((s) => s.current);
+  return { ok: true, revoked_sessions: n };
+});
+// 登录：开了两步验证时要码（放到路由表最前面，盖过上面不看验证码的那条）
+routes.unshift(['POST', /^\/auth\/login$/, ({ body }) => {
+  if (!body?.username) throw bad('请输入用户名');
+  if (body.password === 'wrong') throw bad('用户名或密码不对', 401, 'bad_credentials');
+  if (acct.totp) { if (!String(body.totp ?? '').trim()) throw bad('请输入两步验证码', 401, 'totp_required'); checkCode(body.totp); }
+  db.user = body.username; sessionStorage.setItem('mock:auth', '1'); return { username: db.user };
+}]);
+
 // ---------- 安装 ----------
 /** 模拟上报：改读数，按服务端 metrics 消息的形状推增量（见 lib/live.ts） */
 function jitter() {

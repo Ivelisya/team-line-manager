@@ -12,9 +12,24 @@
 ## 认证
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/auth/login` | `{username,password}` → 设 Cookie，`{data:{username}}`。限速（15 分钟窗口；来源 = IPv4 地址或 IPv6 /64）：同一用户名从同一来源失败 5 次、同一来源失败 20 次（不分用户名）、同一用户名失败 100 次（不分来源）→ 429；别处的失败不影响从自己的来源登录，成功登录只清本来源的失败记录（`error.code="rate_limited"`，`error.detail.retry_after_s`，message 含剩余等待时间）。成功、失败、登出都写审计 |
+| POST | `/auth/login` | `{username,password,totp?}` → 设 Cookie，`{data:{username}}`。限速（15 分钟窗口；来源 = IPv4 地址或 IPv6 /64）：同一用户名从同一来源失败 5 次、同一来源失败 20 次（不分用户名）、同一用户名失败 100 次（不分来源；该用户 30 天内登录成功过的来源不受这一条）→ 429；别处的失败不影响从自己的来源登录，成功登录只清本来源的失败记录（`error.code="rate_limited"`，`error.detail.retry_after_s`，message 含剩余等待时间）。成功、失败、登出都写审计。**两步验证**：用户开了 TOTP 时，密码对但没给 `totp` → 401 `totp_required`（不算失败；密码错时一律 `bad_credentials`，猜密码的人看不出开没开）；`totp` 是 6 位验证码（前后各容忍 30 秒，同一个时间步只收一次）或一个恢复码（用掉即作废，写审计 `auth.totp_recovery_used`），不对或重放 → 401 `totp_invalid`，算一次登录失败 |
 | POST | `/auth/logout` | |
 | GET | `/auth/me` | `{data:{username, kind:"session"\|"api_key", scopes:[...]}}`；未登录 401 |
+
+## 账户安全（两步验证、登录会话、改密码）
+只允许会话用户，用 API 密钥调用一律 403（fleetctl 走 API 密钥，不受两步验证影响）。要再输一次密码 / 验证码的接口（停用两步验证、重新生成恢复码、改密码）与登录共用失败限速（同一用户名 + 来源），输错写审计 `auth.verify_failed`。输错当前密码回 401 `bad_password`、验证码不对回 401 `totp_invalid`、该给验证码没给回 401 `totp_required`——只有 `code="unauthorized"` 的 401 才表示会话失效。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/account/totp` | `{enabled, recovery_codes_left}` |
+| POST | `/account/totp/setup` | 生成待确认的密钥（20 字节，加密保存，10 分钟内有效；再调一次换一把）→ `{secret(base32), otpauth_url, qr_svg}`；已开启 409 |
+| POST | `/account/totp/enable` | `{code}`（6 位，核对待确认的密钥）→ 开启并返回 `{recovery_codes:[10 个 xxxx-xxxx-xxxx]}`，**只返回这一次**（库里只存 sha256）；码不对 400 `totp_invalid`；审计 `auth.totp_enabled` |
+| POST | `/account/totp/disable` | `{password, code}`（code 可以是恢复码）→ 停用，恢复码全部作废；审计 `auth.totp_disabled` |
+| POST | `/account/totp/recovery-codes` | `{code}`（验证码或恢复码）→ 新的一组 `{recovery_codes}`，旧的全部作废；审计 `auth.totp_recovery_regenerated` |
+| GET | `/account/sessions` | 当前用户未过期的会话 `[{id, created_at, last_seen_at, expires_at, ip, user_agent, current}]`，本设备排第一；`id` 是会话哈希前 8 字节的十六进制（推不出 Cookie），`user_agent` 最多 200 字符，`last_seen_at` 一分钟内不重复更新 |
+| DELETE | `/account/sessions/{id}` | 撤销一个会话（不存在 404）→ `{ok, current}`；审计 `auth.session_revoked` |
+| POST | `/account/sessions/revoke-others` | 撤销本设备以外的全部会话 → `{revoked}`；审计 `auth.session_revoked` |
+| POST | `/account/password` | `{current, new, totp?}`：新密码至少 12 个字符、不能等于用户名或当前密码；开了两步验证要 `totp`（或恢复码）。成功后撤销本设备以外的全部会话 → `{ok, revoked_sessions}`；审计 `auth.password_changed` |
 
 ## API 密钥与 scope
 密钥是 `flk_<8位十六进制前缀>_<随机串>`，库里只存 sha256 与前缀。每个请求按「方法 + 路径」需要一个 scope，密钥没有就 403（会话用户拥有全部）：

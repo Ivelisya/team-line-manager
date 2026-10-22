@@ -18,6 +18,7 @@ pub mod policy;
 pub mod silence;
 pub mod ssh;
 pub mod state;
+pub mod totp;
 pub mod views;
 
 use axum::extract::State;
