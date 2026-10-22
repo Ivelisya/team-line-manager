@@ -18,7 +18,7 @@ import * as F from '@/lib/format';
 import { KIND_LABEL } from '@/lib/sort';
 import { jobKindLabel } from '@/lib/jobs';
 import { probeSummary, severityOf } from '@/lib/derive';
-import { CopyButton, ErrorNote, ReasonList, HealthPill, KindIcon, LabelValue, LabelValueGrid, LifecyclePill, Note, Section, SectionHeader, SeverityDot } from '@/components/app/primitives';
+import { CopyButton, ErrorNote, ReasonList, HealthPill, Flag, LabelValue, LabelValueGrid, LifecyclePill, Note, Section, SectionHeader, SeverityDot } from '@/components/app/primitives';
 import { MachineTags } from '@/components/app/MachineTags';
 import { ManageTab } from './ManageTab';
 import { BillingTab } from './BillingTab';
@@ -65,7 +65,7 @@ export function NodeDrawer() {
         ) : (
           <>
             <header className="drawer-head" style={{ paddingRight: 56 }}>
-              <KindIcon kind={m.kind} />
+              <Flag country={m.country} ip={m.ip} />
               <div className="m-head" style={{ flex: 1 }}>
                 <div className="m-head-row"><SheetTitle className="drawer-title ellipsis">{m.name}</SheetTitle><HealthPill m={m} /><MachineTags m={m} /></div>
                 <SheetDescription className="ellipsis" style={{ margin: 0, color: 'var(--fg-2)', fontSize: 12 }}>{m.ip} · {m.host_machine ? `同机 · ${m.host_machine.name}` : m.plan?.name ?? '未设套餐'}{!m.provider && ' · 未设供应商'}</SheetDescription>

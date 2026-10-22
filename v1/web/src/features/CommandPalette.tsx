@@ -14,7 +14,7 @@ import type { ThemePref } from '@/lib/theme';
 import { Command, CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { toast } from '@/components/ui/toast';
 import { ConfirmDialog } from '@/components/app/dialogs';
-import { HealthPill, KindIcon } from '@/components/app/primitives';
+import { Flag, HealthPill } from '@/components/app/primitives';
 
 // 与侧栏同一份导航，在「访问监控」后加上「访问规则」（侧栏里它是访问监控页头的视图切换）
 const POLICY: NavItem = { to: '/access/policy', label: '访问规则', icon: ShieldCheck, kw: 'policy access 访问规则 策略 白名单 黑名单 阻止 域名 allowlist denylist' };
@@ -81,7 +81,7 @@ function PaletteBody({ theme, askUpgrade }: { theme: Theme; askUpgrade: () => vo
   const machineItems = list.map((m) => (
     <CommandItem key={m.id} value={value(m)} keywords={[m.id]}
       onSelect={() => { close(); if (mode === 'copy-ip') void copyText(m.ip, ' IP'); else if (mode === 'evacuate') openEvacuate(m.id); else if (mode === 'renew') openRenew(m.id); else openDrawer(m.id); }}>
-      <KindIcon kind={m.kind} />
+      <Flag country={m.country} ip={m.ip} />
       <span className="cmd-main"><b className="ellipsis">{m.name}</b><HealthPill m={m} /></span>
       <span className="cmd-aside">{mode === 'copy-ip' ? <>复制 <span className="num">{m.ip}</span></> : mode === 'evacuate' ? <span>搬空…</span> : mode === 'renew' ? <span>登记续费…</span> : <span className="num">{m.ip}</span>}</span>
     </CommandItem>

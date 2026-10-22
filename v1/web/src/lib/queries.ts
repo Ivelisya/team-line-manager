@@ -27,8 +27,8 @@ export function useMachines(scope: 'live' | 'retired' = 'live') {
 export type MachineBrief = Pick<MachineView, 'id' | 'name' | 'kind' | 'team' | 'subscription'>;
 const brief = (m: MachineView): MachineBrief => ({ id: m.id, name: m.name, kind: m.kind, team: m.team, subscription: m.subscription });
 /** 命令面板：搜索（名称 / IP / 团队 / 类型）与健康标用到的字段 */
-export type MachineLabel = Pick<MachineView, 'id' | 'name' | 'ip' | 'kind' | 'team' | 'health' | 'lifecycle' | 'maintenance'>;
-const label = (m: MachineView): MachineLabel => ({ id: m.id, name: m.name, ip: m.ip, kind: m.kind, team: m.team, health: m.health, lifecycle: m.lifecycle, maintenance: m.maintenance });
+export type MachineLabel = Pick<MachineView, 'id' | 'name' | 'ip' | 'country' | 'kind' | 'team' | 'health' | 'lifecycle' | 'maintenance'>;
+const label = (m: MachineView): MachineLabel => ({ id: m.id, name: m.name, ip: m.ip, country: m.country, kind: m.kind, team: m.team, health: m.health, lifecycle: m.lifecycle, maintenance: m.maintenance });
 /** 与 useMachines 同一份缓存、同样的默认顺序，每台只取 pick 出的字段（pick 须是模块常量）。
  *  select 的结果做结构共享：实时推送只改读数时这些字段不变，引用不变，页面不重渲染 */
 function useMachinesPicked<T>(pick: (m: MachineView) => T) {

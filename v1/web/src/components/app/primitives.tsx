@@ -1,11 +1,12 @@
 // 通用展示原件：每种只有一份实现（状态 pill / 圆点、KPI 卡、到期读数、表头排序、标签/值、段标题、面板、页头…）。
 import * as React from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowDownUp, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Copy, Home, Inbox, RotateCw, Server, Waypoints } from 'lucide-react';
+import { ArrowDownUp, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Copy, Globe, Inbox, RotateCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { dueFmt, type Fmt } from '@/lib/format';
-import type { EntryView, HealthReason, Kind, Lifecycle, MachineView } from '@/lib/types';
-import { ENTRY_LABEL, HEALTH_LABEL, HEALTH_TONE, KIND_LABEL, LIFECYCLE_LABEL } from '@/lib/sort';
+import type { EntryView, HealthReason, Lifecycle, MachineView } from '@/lib/types';
+import { ENTRY_LABEL, HEALTH_LABEL, HEALTH_TONE, LIFECYCLE_LABEL } from '@/lib/sort';
+import { countryName, flagUrl } from '@/lib/flags';
 import { Tip, Trunc } from '@/components/ui/overlays';
 import { useCountUp } from '@/lib/useCountUp';
 import { hostRel, severityOf, type BeatCell } from '@/lib/derive';
@@ -95,10 +96,15 @@ function HostTagButton({ id, host, nodes, short, tabIndex }: HostTagProps) {
   return <button type="button" className="tag" data-c="violet" data-tip={`${r.tip}。${act}`} tabIndex={tabIndex} onClick={(e) => { e.stopPropagation(); open(to); }}>{r.text}</button>;
 }
 
-/** 类型标（原版国旗位）：线路机 / VPS 节点 / 家宽代理 */
-export function KindIcon({ kind }: { kind: Kind }) {
-  const Ic = kind === 'relay' ? Waypoints : kind === 'proxy' ? Home : Server;
-  return <span className="nc-kind" role="img" data-tip={KIND_LABEL[kind]} aria-label={KIND_LABEL[kind]}><Ic /></span>;
+/** 名字前的国旗（原版国旗位）：机器自己 IP 所在的国家（中控离线 IP 库按 IP 查）；查不到（内网地址、家宽代理填的是域名、库没装）
+ *  是一个中性的小地球——类型（线路机 / 家宽代理）在标签行里，这里不再放类型图标。悬停：中文国名 · IP */
+export function Flag({ country, ip }: { country?: string | null; ip?: string }) {
+  const url = country ? flagUrl(country) : undefined;
+  const name = country ? countryName(country) : '国家未知';
+  const tip = ip ? `${name} · ${ip}` : name;
+  return url
+    ? <img className="nc-flag" src={url} alt={name} data-tip={tip} />
+    : <span className="nc-flag is-none" role="img" aria-label={name} data-tip={tip}><Globe /></span>;
 }
 
 /** 筛选 chip */

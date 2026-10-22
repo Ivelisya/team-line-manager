@@ -46,8 +46,10 @@
 
 /* 1 标题：圆点 + 类型标 + 名称 + 右侧操作 */
 .nc-head { display: flex; align-items: center; gap: var(--inline-gap); min-height: 32px; min-width: 0; margin-top: var(--card-pad); }
-.nc-kind { display: inline-grid; place-items: center; flex: none; width: var(--flag-w); height: var(--flag-h); border-radius: 3px; background: var(--sunken); color: var(--fg-2); box-shadow: inset 0 0 0 1px var(--line); }
-.nc-kind .lucide { width: 11px; height: 11px; }
+/* 国旗：4:3 小圆角矩形，外面一圈很淡的描边（浅色旗在浅色底上也看得清）；没有国家时是一个浅灰底的小地球 */
+.nc-flag { display: inline-grid; place-items: center; flex: none; box-sizing: border-box; width: var(--flag-w); height: var(--flag-h); border-radius: 3px; object-fit: cover; box-shadow: 0 0 0 1px var(--line-strong); }
+.nc-flag.is-none { background: var(--sunken); color: var(--fg-3); box-shadow: inset 0 0 0 1px var(--line); }
+.nc-flag .lucide { width: 11px; height: 11px; }
 /* 名称是文字按钮：按下从左端缩（文字不往中间跑），焦点环带小圆角 */
 .nc-name {
   min-width: 0; padding: 0; border: 0; border-radius: var(--r-xs); background: none; cursor: pointer; text-align: left;
