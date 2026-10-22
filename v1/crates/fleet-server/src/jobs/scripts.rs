@@ -196,16 +196,34 @@ nft -f $N || { echo nft=error; exit 21; }
 echo "nft_relays=$(nft list set inet $NFT_TABLE relays | tr -d '\n' | sed 's/.*elements = { \(.*\) }.*/\1/' | tr -d ' \t')"
 "#;
 
+/// 本机的 IPv4（不含回环），逗号分隔：输出 `local_ips=…` 一行
+macro_rules! local_ips {
+    () => {
+        r#"echo "local_ips=$(ip -4 -o addr show | awk '{split($4, a, "/"); if (a[1] !~ /^127\./) print a[1]}' | paste -sd, -)""#
+    };
+}
+/// 同上，单独一段：上架「检查」时登录宿主机看同机 IP 节点的 IP 在不在网卡上（作业里的 `IP_CHECK` 也是这一行）
+pub const LOCAL_IPS: &str = local_ips!();
+
+/// `local_ips`（`LOCAL_IPS` 的输出）里没有 `ip` 时的错误（给人看）；上架检查与作业第一步共用
+pub fn ip_not_on_host(ip: &str, host: &str, local_ips: &str) -> Option<String> {
+    (!local_ips.split(',').any(|x| x.trim() == ip)).then(|| {
+        format!("IP {ip} 不在宿主机 {host} 的网卡上（本机：{}）：只支持直接配在网卡上的公网 IPv4，EIP / NAT 映射的 IP 不行", local_ips.replace(',', ", "))
+    })
+}
+
 /// 同机 IP 节点上架前在宿主机上核对：本机的 IPv4、经这个 IP 访问中控 /echo 看到的来源、正在监听的端口（TCP + UDP），
 /// 以及配置里本来就绑着这个 IP 的实例端口（这台节点上次退役没清理掉的旧实例：恢复时收敛会覆盖它，不算被别人占用）。
 /// 变量 IP（节点自己的 IP）ECHO（中控的 /echo 地址）
-pub const IP_CHECK: &str = r#"
-set -u
-echo "local_ips=$(ip -4 -o addr show | awk '{split($4, a, "/"); if (a[1] !~ /^127\./) print a[1]}' | paste -sd, -)"
+pub const IP_CHECK: &str = concat!(
+    "\nset -u\n",
+    local_ips!(),
+    r#"
 echo "echo=$(curl -4 -sS -m 10 --interface "$IP" "$ECHO" 2>&1 | tr -d '\r\n' | head -c 200)"
 echo "busy=$(ss -Hltun | awk '{n = split($5, a, ":"); print a[n]}' | sort -un | paste -sd, -)"
 echo "own=$(grep -lF "\"server\":\"$IP\"" /etc/shadowsocks-rust/[0-9]*.json 2>/dev/null | sed 's#.*/##; s#\.json$##' | paste -sd, -)"
-"#;
+"#
+);
 
 /// 线路机：fleet-xray 单元与访问日志轮转（配置由 agent 生成）。xray 二进制与 geoip.dat 已推到 /usr/local/bin、/usr/local/share/xray。
 pub fn relay_xray() -> String { RELAY_XRAY.replace("__XRAY_UNIT_SH__", xray_unit_sh().trim()).replace("__LOGROTATE_SH__", logrotate_sh().trim()) }
