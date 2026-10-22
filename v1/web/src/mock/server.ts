@@ -433,8 +433,13 @@ R('POST', '/plans', ({ body }) => {
 });
 R('PATCH', '/plans/([^/]+)', ({ params, body }) => {
   const p = db.plans.find((x) => x.id === params[0]); if (!p) throw bad('套餐不存在', 404, 'not_found');
+  const before = { ...p } as Record<string, unknown>;
   const { archived, ...rest } = body; Object.assign(p, rest);
   if (archived === true) p.archived_at = iso(); if (archived === false) p.archived_at = null;
+  // 同中控：审计只记改了的字段（before / after），标题「修改套餐」、摘要为空
+  const after = p as unknown as Record<string, unknown>;
+  const keys = Object.keys(after).filter((k) => JSON.stringify(after[k]) !== JSON.stringify(before[k]));
+  db.audit.unshift({ id: `a${db.seq++}`, ts: iso(), actor: db.user, action: 'plan.update', title: '修改套餐', summary: '', target_kind: 'plan', target_id: p.id, detail: { before: Object.fromEntries(keys.map((k) => [k, before[k]])), after: Object.fromEntries(keys.map((k) => [k, after[k]])) } });
   emit({ type: 'catalog' }); return p;
 });
 

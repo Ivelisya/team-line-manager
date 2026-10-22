@@ -45,6 +45,21 @@
 .audit-meta[data-tone="warn"] { color: var(--warn-text); }
 .audit-meta[data-tone="info"] { color: var(--info-text); }
 .audit-list li[data-resolved] > .dot { opacity: 0.4; }
+/* 操作记录（AuditList）：不画圆点和竖线；有明细的行前面一个展开箭头，点开在下面列出命令与结果、改动前后 */
+.audit-list.is-bare li::before { content: none; }
+.audit-chev { display: inline-flex; width: 14px; height: 1em; vertical-align: -2px; color: var(--fg-3); }
+.audit-chev .lucide { width: 12px; height: 12px; transition: transform var(--dur-2) var(--ease-out); }
+.audit-list li[data-open] .audit-chev .lucide { transform: rotate(90deg); }
+.audit-list.is-bare .audit-detail { padding-left: 14px; }
+.audit-what[data-tone="bad"] b { color: var(--bad-text); }
+.audit-target.btn { display: inline; height: auto; font: inherit; vertical-align: baseline; }
+.audit-res { margin-left: var(--sp-8); font-size: var(--fs-label); color: var(--fg-2); }
+.audit-res[data-tone="warn"] { color: var(--warn-text); font-weight: var(--fw-medium); }
+.audit-res[data-tone="bad"] { color: var(--bad-text); font-weight: var(--fw-medium); }
+.audit-ex { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--sp-4) var(--sp-12); margin: var(--sp-4) 0 var(--sp-2) 14px; padding: var(--sp-8) var(--sp-12);
+  border-radius: var(--r-control); background: var(--sunken); font-size: var(--fs-label); line-height: var(--lh-label); cursor: auto; }
+.audit-ex dt { color: var(--fg-2); }
+.audit-ex dd { margin: 0; min-width: 0; color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; }
 /* 告警页：已恢复的仍按原级别着色，调淡一些，眼睛先落在进行中的上面 */
 .pill.is-past { opacity: 0.6; }
 .chart-box { height: 180px; min-width: 0; }
