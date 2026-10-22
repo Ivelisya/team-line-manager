@@ -47,7 +47,7 @@ export const COLS: Col[] = [
   { key: 'up_user', label: '上游用户', w: 96, type: 'text', kinds: ['proxy'] },
   { key: 'up_pw', label: '上游密码', w: 104, type: 'secret', kinds: ['proxy'] },
   { key: 'due_date', label: '到期日', w: 148, type: 'date', kinds: ALL, ph: '2026-12-01' },
-  { key: 'price', label: '周期费用', w: 96, type: 'text', kinds: ALL },
+  { key: 'price', label: '周期费用', w: 96, type: 'text', kinds: ALL, ph: '跟随套餐' },
   { key: 'note', label: '备注', w: 140, type: 'text', kinds: ALL },
   { key: 'host_id', label: '宿主机', w: 116, type: 'host', kinds: ['vps'] },
 ];
@@ -93,7 +93,7 @@ export function pasteLine(row: Row, line: string[], ci: number, ctx: Ctx): Row {
 }
 
 const num = (s: string) => (s.trim() === '' ? undefined : Number(s));
-/** 订阅只带到期日和手填的费用：币种、周期取套餐，账单时区取供应商，都由服务端补。
+/** 订阅只带到期日和手填的费用（单独设置）：价格、币种、周期、流量跟随套餐，账单时区、提醒、流量重置跟随供应商，都不抄进订阅。
  *  同机 IP 节点带 host_id，不带它不适用的字段（SSH 端口、登录、SS 端口、供应商、套餐；服务端也会忽略） */
 export function toItem(r: Row): ProvisionItem {
   const it: ProvisionItem = { kind: r.kind, ip: r.ip.trim() };
@@ -135,6 +135,10 @@ export function localIssues(r: Row): { key: keyof Row; msg: string }[] {
   if (r.price.trim() && !isFinite(Number(r.price))) add('price', '费用应为数字');
   // 费用只挂在订阅上：没有到期日就没有订阅，填了的费用会被悄悄丢掉——在这里拦下
   if (r.price.trim() && !r.due_date) add('due_date', '填了费用，也需要填到期日');
+  // 选了套餐就建订阅（费用、流量跟随套餐，只要到期日）；没有套餐（含同机 IP 节点）时费用没有可跟随的（同服务端校验）
+  const plan = !isIpNode(r) && (r.plan_id || r.unresolved.plan_id);
+  if (plan && !r.due_date) add('due_date', '选了套餐要填到期日（费用、流量跟随套餐）');
+  if (!plan && r.due_date && !r.price.trim()) add('price', '没有套餐：填了到期日也要填费用（免费填 0）');
   return e;
 }
 export const localErrors = (r: Row): string[] => localIssues(r).map((x) => x.msg);

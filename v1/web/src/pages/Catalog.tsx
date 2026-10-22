@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { Archive, ArchiveRestore, ArrowRight, ExternalLink, ListOrdered, Pencil, Plus } from 'lucide-react';
 import { fetchRenumber, useAddPlan, useAddProvider, useAddTeam, usePatchPlan, usePatchProvider, usePatchTeam, usePlans, useProviders, useRenumber, useTeams } from '@/lib/queries';
-import type { Plan, Provider, Team, TrafficRule } from '@/lib/types';
+import type { Plan, Provider, Team, TrafficReset, TrafficRule } from '@/lib/types';
 import { limitGb, RULE_LABEL } from '@/lib/derive';
 import * as F from '@/lib/format';
 import { Button, IconButton } from '@/components/ui/button';
@@ -130,9 +130,12 @@ const RenumberDialog = resetOnOpen(function RenumberDialog({ team, open, onClose
 });
 
 /* ---------------------------------------------------------------- 供应商 */
-const EMPTY_PROVIDER = { name: '', code: '', panel_url: '', timezone: 'Asia/Shanghai', traffic_rule: 'max' as TrafficRule };
+const EMPTY_PROVIDER = { name: '', code: '', panel_url: '', timezone: 'Asia/Shanghai', traffic_rule: 'max' as TrafficRule, traffic_reset: 'month' as TrafficReset, remind_days: '7' };
 /** 流量计量下拉：供应商怎么算本周期用量（网卡入、出总量） */
 const RULE_OPTIONS = (['min', 'max', 'sum', 'out'] as const).map((value) => ({ value, label: RULE_LABEL[value] }));
+/** 流量重置：每个流量周期从哪天起 */
+const RESET_LABEL: Record<TrafficReset, string> = { month: '按自然月（每月 1 号）', billing: '按账单日（到期日那天）' };
+const RESET_OPTIONS = (['month', 'billing'] as const).map((value) => ({ value, label: RESET_LABEL[value] }));
 function ProvidersTab() {
   const q = useProviders();
   const [edit, setEdit] = React.useState<Provider | 'new' | null>(null);
@@ -141,13 +144,14 @@ function ProvidersTab() {
   return (
     <>
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
-      <Panel title="供应商" count={list.length} tools={<Button variant="primary" onClick={() => setEdit('new')}><Plus />新增供应商</Button>} flush>
+      <Panel title="供应商" count={list.length} sub="名下机器的账单时区、流量重置、提前提醒跟随这里" tools={<Button variant="primary" onClick={() => setEdit('new')}><Plus />新增供应商</Button>} flush>
         <div className="table-wrap">
-          <table className="dt is-one" style={{ minWidth: 780 }}>
-            <colgroup><col style={{ width: 180 }} /><col style={{ width: 90 }} /><col style={{ width: 180 }} /><col style={{ width: 130 }} /><col /><col style={{ width: 112 }} /></colgroup>
-            <thead><tr><th>名称</th><th>代码</th><th>时区</th><th>流量计量</th><th>面板</th><th /></tr></thead>
+          <table className="dt is-one" style={{ minWidth: 900 }}>
+            <colgroup><col style={{ width: 170 }} /><col style={{ width: 84 }} /><col style={{ width: 170 }} /><col style={{ width: 120 }} /><col style={{ width: 120 }} /><col /><col style={{ width: 112 }} /></colgroup>
+            <thead><tr><th>名称</th><th>代码</th><th>时区</th><th>流量计量</th><th>流量重置</th><th>面板</th><th /></tr></thead>
             <tbody>{list.map((p) => (
               <tr key={p.id}><td className="strong">{p.name}</td><td><Chip>{p.code}</Chip></td><td>{p.timezone ?? '—'}</td><td>{RULE_LABEL[p.traffic_rule] ?? p.traffic_rule}</td>
+                <td>{p.traffic_reset === 'billing' ? '账单日' : '自然月'}<span className="sub">提前 {p.remind_days ?? 7} 天提醒</span></td>
                 <td>{p.panel_url && /^https?:\/\//i.test(p.panel_url) ? <a href={p.panel_url} target="_blank" rel="noreferrer noopener" className="btn-link btn" style={{ gap: 4 }}>{p.panel_url.replace(/^https?:\/\//, '')}<ExternalLink size={12} /></a> : (p.panel_url || <span className="t-muted">—</span>)}</td>
                 <td className="r"><Button size="sm" variant="quiet" onClick={() => setEdit(p)}><Pencil size={13} />编辑</Button></td></tr>
             ))}</tbody>
@@ -164,25 +168,31 @@ function ProvidersTab() {
 /** 新增 / 编辑供应商。每次打开重新挂载（resetOnOpen）：字段直接按这次的供应商初始化 */
 const ProviderDialog = resetOnOpen(function ProviderDialog({ provider, open, onClose }: { provider: Provider | 'new'; open: boolean; onClose: () => void }) {
   const add = useAddProvider(); const patch = usePatchProvider();
-  const [f0] = React.useState(() => (provider === 'new' ? EMPTY_PROVIDER : { name: provider.name, code: provider.code, panel_url: provider.panel_url ?? '', timezone: provider.timezone ?? '', traffic_rule: provider.traffic_rule }));
+  const [f0] = React.useState(() => (provider === 'new' ? EMPTY_PROVIDER : {
+    name: provider.name, code: provider.code, panel_url: provider.panel_url ?? '', timezone: provider.timezone ?? '', traffic_rule: provider.traffic_rule,
+    traffic_reset: provider.traffic_reset ?? 'month', remind_days: String(provider.remind_days ?? 7),
+  }));
   const [f, setF] = React.useState(f0);
   const dirty = (Object.keys(f) as (keyof typeof f)[]).some((k) => f[k] !== f0[k]);
+  const remindBad = !(f.remind_days !== '' && Number(f.remind_days) <= 60);
   // 面板地址、时区留空：服务端分别按清空、列默认值（UTC）处理
   const save = () => {
-    const body = { name: f.name.trim(), code: f.code.trim().toUpperCase(), panel_url: f.panel_url.trim() || null, timezone: f.timezone.trim() || null, traffic_rule: f.traffic_rule };
+    const body = { name: f.name.trim(), code: f.code.trim().toUpperCase(), panel_url: f.panel_url.trim() || null, timezone: f.timezone.trim() || null, traffic_rule: f.traffic_rule, traffic_reset: f.traffic_reset, remind_days: Number(f.remind_days) };
     const ok = () => { toast.ok(provider === 'new' ? '供应商已添加' : '供应商已保存'); onClose(); };
     if (provider === 'new') add.mutate(body, { onSuccess: ok, onError: toast.err });
     else patch.mutate({ id: provider.id, ...body }, { onSuccess: ok, onError: toast.err });
   };
   return (
-    <FormDialog dirty={dirty} open={open} onOpenChange={(o) => !o && onClose()} title={provider === 'new' ? '新增供应商' : '编辑供应商'} submitLabel="保存" busy={add.isPending || patch.isPending} valid={f.name.trim() !== '' && f.code.trim() !== ''}
-      desc={provider !== 'new' && '改时区只影响之后上架的机器；已上架机器的账单时区在各自的「费用」页修改。'} onSubmit={save}>
+    <FormDialog dirty={dirty} open={open} onOpenChange={(o) => !o && onClose()} title={provider === 'new' ? '新增供应商' : '编辑供应商'} submitLabel="保存" busy={add.isPending || patch.isPending} valid={f.name.trim() !== '' && f.code.trim() !== '' && !remindBad}
+      desc="账单时区、流量重置、提前提醒是名下机器订阅的模板：改了立即对这些机器生效（在「费用」页单独设置过的除外）。" onSubmit={save}>
       <div className="form-grid">
         <Field label="名称"><Input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} autoFocus /></Field>
         <Field label="代码" hint="卡片上显示的缩写，如 BWH"><Input value={f.code} onChange={(e) => setF({ ...f, code: e.target.value })} /></Field>
         <Field label="面板地址（选填）" className="span-2"><Input value={f.panel_url} onChange={(e) => setF({ ...f, panel_url: e.target.value })} placeholder="https://" /></Field>
-        <Field label="账单时区" hint="IANA 时区名；留空 = UTC" className="span-2"><Input value={f.timezone} onChange={(e) => setF({ ...f, timezone: e.target.value })} placeholder="UTC" /></Field>
+        <Field label="账单时区" hint="IANA 时区名；留空 = UTC。到期日、流量周期按它的日期算" className="span-2"><Input value={f.timezone} onChange={(e) => setF({ ...f, timezone: e.target.value })} placeholder="UTC" /></Field>
         <Field label="流量计量" hint="供应商面板怎么算本周期用量（如 GOMAMI 是入出取小）；不清楚选取大，不会少算" className="span-2"><Select value={f.traffic_rule} onChange={(v) => setF({ ...f, traffic_rule: v as TrafficRule })} options={RULE_OPTIONS} /></Field>
+        <Field label="流量重置" hint="每个流量周期从哪天起（按账单时区）：按账单日 = 每台机器到期日是几号就几号，月份没有这一天按月末"><Select value={f.traffic_reset} onChange={(v) => setF({ ...f, traffic_reset: v as TrafficReset })} options={RESET_OPTIONS} /></Field>
+        <Field label="提前提醒（天）" hint="到期前几天开始提醒" error={remindBad ? '填 0–60' : undefined}><Input inputMode="numeric" value={f.remind_days} onChange={(e) => setF({ ...f, remind_days: e.target.value.replace(/\D/g, '') })} /></Field>
       </div>
     </FormDialog>
   );
@@ -204,7 +214,7 @@ function PlansTab() {
   return (
     <>
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
-      <Panel title="套餐" count={list.length} tools={<><CheckRow className="is-label" checked={showArchived} onChange={setShowArchived}>显示已归档</CheckRow><Button variant="primary" onClick={() => setEdit('new')}><Plus />新增套餐</Button></>} flush>
+      <Panel title="套餐" count={list.length} sub="同一套餐的机器共用这里的流量配额、价格、周期" tools={<><CheckRow className="is-label" checked={showArchived} onChange={setShowArchived}>显示已归档</CheckRow><Button variant="primary" onClick={() => setEdit('new')}><Plus />新增套餐</Button></>} flush>
         <div className="table-wrap">
           <table className="dt" style={{ minWidth: 860 }}>
             <colgroup><col style={{ width: 200 }} /><col style={{ width: 120 }} /><col style={{ width: 150 }} /><col style={{ width: 100 }} /><col style={{ width: 100 }} /><col style={{ width: 110 }} /><col style={{ width: 70 }} /><col style={{ width: 120 }} /></colgroup>
@@ -256,12 +266,15 @@ const PlanDialog = resetOnOpen(function PlanDialog({ plan, open, onClose }: { pl
   };
   const num = (k: keyof typeof EMPTY_PLAN, label: string, hint?: string) => <Field label={label} hint={hint}><Input inputMode="decimal" value={f[k]} onChange={(e) => setF({ ...f, [k]: e.target.value.replace(/[^\d.]/g, '') })} /></Field>;
   return (
-    <FormDialog size="md" dirty={dirty} open={open} onOpenChange={(o) => !o && onClose()} title={plan === 'new' ? '新增套餐' : '编辑套餐'} submitLabel="保存" busy={add.isPending || patch.isPending} valid={f.name.trim() !== '' && f.provider_id !== ''} onSubmit={save}>
+    <FormDialog size="md" dirty={dirty} open={open} onOpenChange={(o) => !o && onClose()} title={plan === 'new' ? '新增套餐' : '编辑套餐'} submitLabel="保存" busy={add.isPending || patch.isPending} valid={f.name.trim() !== '' && f.provider_id !== ''} onSubmit={save}
+      desc={`套餐是模板：同一套餐的机器共用这里的配额、价格、周期；改了立即对这些机器生效（在「费用」页单独设置过的除外）。${plan !== 'new' && plan.machine_count ? `现在有 ${plan.machine_count} 台在用。` : ''}`}>
       <div className="form-grid">
         <Field label="套餐名"><Input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} autoFocus /></Field>
-        <Field label="供应商"><Select value={f.provider_id} onChange={(v) => setF({ ...f, provider_id: v })} options={providers.map((p) => ({ value: p.id, label: p.name }))} /></Field>
+        {/* 机器的供应商就是套餐的：有机器用着时不能换（服务端也拦） */}
+        <Field label="供应商" hint={plan !== 'new' && plan.machine_count ? '有机器在用，不能换供应商；给别的供应商另建套餐' : undefined}>
+          <Select value={f.provider_id} onChange={(v) => setF({ ...f, provider_id: v })} disabled={plan !== 'new' && plan.machine_count > 0} options={providers.map((p) => ({ value: p.id, label: p.name }))} /></Field>
         {num('cpu_cores', 'CPU 核数')}{num('mem_gb', '内存（GiB）')}{num('disk_gb', '磁盘（GiB）')}{num('bandwidth_mbps', '带宽（Mbps）')}
-        {num('traffic_gb', '流量（GB / 周期）', '留空或 0 = 不限')}{num('price', '价格')}
+        {num('traffic_gb', '流量（GB / 每个流量周期）', '留空或 0 = 不限；流量周期按供应商的「流量重置」')}{num('price', '价格（每个计费周期）')}
         <Field label="币种"><Select value={f.currency} onChange={(v) => setF({ ...f, currency: v })} options={F.withCurrent(F.CURRENCY_OPTIONS, f.currency)} /></Field>
         <Field label="计费周期"><Select value={f.cycle} onChange={(v) => setF({ ...f, cycle: v })} options={F.CYCLE_OPTIONS} /></Field>
         <Field label="备注" className="span-2"><Input value={f.notes} onChange={(e) => setF({ ...f, notes: e.target.value })} /></Field>

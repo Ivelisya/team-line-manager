@@ -53,6 +53,12 @@ pub struct ProvisionOpts {
     pub ssh_password_env: Option<String>,
     pub due: Option<String>,
     pub price_cents: Option<i64>,
+    pub price: Option<String>,
+    pub currency: Option<String>,
+    pub cycle: Option<String>,
+    pub tz: Option<String>,
+    pub traffic_gb: Option<String>,
+    pub reset_day: Option<String>,
     pub dry_run: bool,
     pub yes: bool,
     pub follow: bool,
@@ -190,12 +196,25 @@ fn single_item(o: &ProvisionOpts) -> anyhow::Result<Value> {
         let pw = std::env::var(var).with_context(|| format!("环境变量 {var} 没设置"))?;
         put("login", Some(json!({"user": "root", "password": pw})));
     }
-    if let Some(due) = &o.due {
-        let mut s = json!({"due_date": due});
-        if let Some(p) = o.price_cents {
-            s["price_cents"] = json!(p);
-        }
-        put("subscription", Some(s));
+    // 订阅：到期日 + 给了的单独设置（同 subscription set 的写法与校验），其余由中控跟随套餐 / 供应商
+    let so = crate::billing::SubSetOpts {
+        price: o.price.as_deref(),
+        currency: o.currency.as_deref(),
+        cycle: o.cycle.as_deref(),
+        due: o.due.as_deref(),
+        tz: o.tz.as_deref(),
+        traffic_gb: o.traffic_gb.as_deref(),
+        reset_day: o.reset_day.as_deref(),
+        ..Default::default()
+    };
+    let mut s = crate::billing::sub_patch(&so)?;
+    if let Some(p) = o.price_cents {
+        s.insert("price_cents".into(), json!(p));
+    }
+    match (o.due.is_some(), s.is_empty()) {
+        (true, _) => put("subscription", Some(Value::Object(s))),
+        (false, false) => bail!("--price / --currency / --cycle / --tz / --traffic-gb / --reset-day 是订阅的字段，要和 --due 一起给"),
+        _ => {}
     }
     Ok(Value::Object(m))
 }

@@ -15,8 +15,39 @@ use time::{Date, Month};
 const RECENT: usize = 10;
 /// 流量上限是供应商的十进制 GB
 const GB: f64 = 1e9;
-/// `PUT /machines/{id}/subscription` 的字段：整份替换，没给的字段会被改成中控的默认值（另有 traffic_used_gb：没传 = 不改）
+/// `PUT /machines/{id}/subscription` 的字段：整份替换（另有 traffic_used_gb：没传 = 不改）
 const SUB_KEYS: [&str; 9] = ["price_cents", "currency", "cycle", "due_date", "billing_tz", "auto_renew", "remind_days", "traffic_gb", "traffic_reset_day"];
+/// 其中可以「单独设置」的：null = 跟随模板（价格、币种、周期、流量上限跟随套餐，账单时区、提前提醒、流量重置日跟随供应商）
+const OVR: [&str; 7] = ["price_cents", "currency", "cycle", "billing_tz", "remind_days", "traffic_gb", "traffic_reset_day"];
+
+/// 这一项单独设置了（订阅的 overrides 里有它）
+fn overridden(s: &Value, k: &str) -> bool { s["overrides"].as_array().is_some_and(|a| a.iter().any(|x| x == k)) }
+
+/// 跟随时的值（同中控 sub_template / subscription_eff）：重置日按供应商的方式，账单日 = 到期日几号、自然月 = 1 号
+fn inherited(tpl: &Value, k: &str, due: &str) -> Value {
+    match k {
+        "traffic_reset_day" => json!(if tpl["traffic_reset"] == "billing" { date(due).map_or(1, |d| d.day()) } else { 1 }),
+        _ => tpl[k].clone(),
+    }
+}
+
+/// 要提交的订阅的生效值与 overrides：null 或和模板相同的按跟随（同中控 subscription_normalize；流量上限 0 与套餐的 null 都是不限）。
+/// 改订阅的确认语按它逐项对比
+fn effective(body: &Value, tpl: &Value) -> Value {
+    let mut e = body.clone();
+    let mut ov = vec![];
+    for k in OVR {
+        let inh = inherited(tpl, k, &st(body, "/due_date"));
+        let same = body[k] == inh || (k == "traffic_gb" && body[k] == 0 && inh.is_null());
+        if body[k].is_null() || same {
+            e[k] = inh;
+        } else {
+            ov.push(k);
+        }
+    }
+    e["overrides"] = json!(ov);
+    e
+}
 
 /// 金额：`39.46` / `39` / `0.5`（最多两位小数，不带正负号）→ 分。接口收整数分，币种是订阅的
 fn parse_money(s: &str) -> anyhow::Result<i32> {
@@ -71,12 +102,22 @@ fn renew_to(due: Date, cycle: &str, to: Option<&str>, cycles: u32) -> anyhow::Re
 /// 费用：`39.46 USD / 月`（同网页）
 fn fee(s: &Value) -> String { format!("{} / {}", money(s["price_cents"].as_i64().unwrap_or(0), &st(s, "/currency")), cycle_cn(&st(s, "/cycle"))) }
 
-/// 订阅里存的流量上限：null = 不单独设（按套餐；同机 IP 节点与宿主机共用），0 = 不限
+/// 生效的流量上限：0 / null = 不限
 fn traffic_gb_cn(v: &Value) -> String {
     match v.as_i64() {
-        None => "不单独设".into(),
-        Some(0) => "不限".into(),
+        None | Some(0) => "不限".into(),
         Some(g) => format!("{g} GB"),
+    }
+}
+
+/// 来源：单独设置了其中一项 →「单独设置」；否则跟随套餐 / 供应商（机器没有就是默认值）
+fn src(s: &Value, m: &Value, keys: &[&str]) -> &'static str {
+    let plan = keys.iter().any(|k| matches!(*k, "price_cents" | "currency" | "cycle" | "traffic_gb"));
+    match () {
+        _ if keys.iter().any(|k| overridden(s, k)) => "（单独设置）",
+        _ if plan && !m["plan"].is_null() => "（跟随套餐）",
+        _ if !plan && !m["provider"].is_null() => "（跟随供应商）",
+        _ => "（默认）",
     }
 }
 
@@ -91,34 +132,40 @@ fn rule_cn(v: &Value) -> &'static str {
     }
 }
 
-/// 流量重置日：没设时流量周期是北京时间的自然月
-fn reset_day_cn(v: &Value) -> String { v.as_i64().map_or("不设（按北京时间的自然月）".into(), |d| format!("每月 {d} 号")) }
+/// 流量重置日（生效值）：跟随供应商时注明按账单日还是自然月
+fn reset_day_cn(s: &Value, m: &Value) -> String {
+    let d = s["traffic_reset_day"].as_i64().unwrap_or(1);
+    match m.pointer("/sub_template/traffic_reset").and_then(Value::as_str) {
+        _ if overridden(s, "traffic_reset_day") => format!("每月 {d} 号（单独设置）"),
+        Some("billing") if !m["provider"].is_null() => format!("每月 {d} 号（跟随供应商：按账单日）"),
+        _ if !m["provider"].is_null() => format!("每月 {d} 号（跟随供应商：按自然月）"),
+        _ => format!("每月 {d} 号（默认）"),
+    }
+}
 
-/// 订阅各项的文字：billing 的表、改订阅的确认语逐项对比都用它
-fn sub_fields(s: &Value) -> [(&'static str, String); 7] {
+/// 订阅各项的文字（生效值 + 来源）：billing 的表、改订阅的确认语逐项对比都用它。`m` 是机器（看有没有套餐、供应商）
+fn sub_fields(s: &Value, m: &Value) -> [(&'static str, String); 7] {
     [
-        ("费用", fee(s)),
+        ("费用", format!("{}{}", fee(s), src(s, m, &["price_cents", "currency", "cycle"]))),
         ("到期日", st(s, "/due_date")),
         ("自动续费", if s["auto_renew"] == true { "是" } else { "否" }.into()),
-        ("提前提醒", format!("{} 天", st(s, "/remind_days"))),
-        ("账单时区", st(s, "/billing_tz")),
-        ("流量上限", traffic_gb_cn(&s["traffic_gb"])),
-        ("流量重置日", reset_day_cn(&s["traffic_reset_day"])),
+        ("提前提醒", format!("{} 天{}", st(s, "/remind_days"), src(s, m, &["remind_days"]))),
+        ("账单时区", format!("{}{}", st(s, "/billing_tz"), src(s, m, &["billing_tz"]))),
+        ("流量上限", format!("{}{}", traffic_gb_cn(&s["traffic_gb"]), src(s, m, &["traffic_gb"]))),
+        ("流量重置日", reset_day_cn(s, m)),
     ]
 }
 
-/// 生效的流量上限（GB）：订阅的 traffic_gb，没填按套餐的；0 或都没有 = 不限（同中控的流量额度告警与网页）
-fn traffic_limit(m: &Value) -> Option<i64> {
-    m.pointer("/subscription/traffic_gb").and_then(Value::as_i64).or_else(|| m.pointer("/plan/traffic_gb").and_then(Value::as_i64)).filter(|g| *g > 0)
-}
+/// 生效的流量上限（GB）：中控算好的 quota.limit_gb（同流量额度告警与网页）；null = 没有上限
+fn traffic_limit(m: &Value) -> Option<i64> { m.pointer("/quota/limit_gb").and_then(Value::as_i64).filter(|g| *g > 0) }
 
-/// billing 的流量上限：生效值与来源；没有上限时同机 IP 节点是与宿主机共用（宿主机的已用含它的流量），其余是不限
+/// billing 的流量上限：生效值与来源（quota.limit_source）；同机 IP 节点没设上限是与宿主机共用（宿主机的已用含它的流量）
 fn limit_cn(m: &Value, limit: Option<i64>) -> String {
-    match limit {
-        Some(g) if m.pointer("/subscription/traffic_gb").is_some_and(|v| !v.is_null()) => format!("{g} GB"),
-        Some(g) => format!("{g} GB（按套餐「{}」）", st(m, "/plan/name")),
-        None if !m["host_machine"].is_null() => format!("与宿主机「{}」共用", st(m, "/host_machine/name")),
-        None => "不限".into(),
+    match (limit, m.pointer("/quota/limit_source").and_then(Value::as_str)) {
+        (Some(g), Some("plan")) => format!("{g} GB（跟随套餐「{}」）", st(m, "/plan/name")),
+        (Some(g), _) => format!("{g} GB（单独设置）"),
+        (None, Some("host")) => format!("与宿主机「{}」共用", st(m, "/host_machine/name")),
+        (None, _) => "不限".into(),
     }
 }
 
@@ -135,7 +182,7 @@ fn billing_text(name: &str, m: &Value, limit: Option<i64>, pct: Option<i64>, ren
     let s = &m["subscription"];
     let mut rows = vec![("机器", name.to_string())];
     if !s.is_null() {
-        let [fee, (due, d), (auto, a), remind, tz, _, reset] = sub_fields(s);
+        let [fee, (due, d), (auto, a), remind, tz, _, reset] = sub_fields(s, m);
         let a = if s["auto_renew"] == true { "是（只影响提醒：到期前不提醒，过期才告警）".into() } else { a };
         rows.extend([fee, (due, format!("{d}（{}）", due_cn(s["due_days"].as_i64().unwrap_or(0)))), (auto, a), remind, tz, ("流量上限", limit_cn(m, limit)), reset]);
     } else {
@@ -145,7 +192,8 @@ fn billing_text(name: &str, m: &Value, limit: Option<i64>, pct: Option<i64>, ren
     rows.push(("本周期已用", used_cn(m, limit, pct, incl)));
     let out = table::kv(&rows);
     if s.is_null() {
-        let set = format!("fleetctl subscription set {name} --price <金额> --due <YYYY-MM-DD>");
+        let price = if m["plan"].is_null() { " --price <金额>" } else { "" };
+        let set = format!("fleetctl subscription set {name} --due <YYYY-MM-DD>{price}");
         return if m["host_machine"].is_null() {
             format!("{out}\n\n还没有订阅（费用、到期日），不参与到期提醒与费用统计。填写：{set}")
         } else {
@@ -172,7 +220,7 @@ fn billing_text(name: &str, m: &Value, limit: Option<i64>, pct: Option<i64>, ren
     format!("{out}\n\n续费记录（{head}）\n{}", table::render(&["登记时间", "到期日", "金额", "操作者", "备注"], &rows))
 }
 
-/// `billing <机器>`：订阅 + 流量额度 + 最近的续费记录。`--json`：`{id, name, host_machine, subscription, traffic_limit_gb, quota, quota_pct, renewals, renewal_count}`
+/// `billing <机器>`：订阅 + 流量额度 + 最近的续费记录。`--json`：`{id, name, host_machine, subscription, sub_template, traffic_limit_gb, quota, quota_pct, renewals, renewal_count}`
 pub fn billing(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
     // 已退役的机器也能看当时的订阅与续费记录
     let (id, name) = ctx.find_id(machine, Want::Any)?;
@@ -184,7 +232,7 @@ pub fn billing(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
     // 向下取整（同流量额度告警）：还没用满时不会写成 100%
     let pct = limit.map(|g| (num(&m, "/quota/used").unwrap_or(0.0) * 100.0 / (g as f64 * GB)).floor() as i64);
     let d = json!({
-        "id": id, "name": name, "host_machine": m["host_machine"], "subscription": m["subscription"],
+        "id": id, "name": name, "host_machine": m["host_machine"], "subscription": m["subscription"], "sub_template": m["sub_template"],
         "traffic_limit_gb": limit, "quota": m["quota"], "quota_pct": pct, "renewals": recent, "renewal_count": all.len(),
     });
     ctx.emit(&d, || billing_text(&name, &m, limit, pct, recent, all.len()));
@@ -240,7 +288,7 @@ pub struct SubSetOpts<'a> {
     pub cycle: Option<&'a str>,
     pub due: Option<&'a str>,
     pub auto_renew: Option<bool>,
-    pub remind_days: Option<i64>,
+    pub remind_days: Option<&'a str>,
     pub tz: Option<&'a str>,
     pub traffic_gb: Option<&'a str>,
     pub reset_day: Option<&'a str>,
@@ -248,33 +296,40 @@ pub struct SubSetOpts<'a> {
     pub yes: bool,
 }
 
+/// `none`（不分大小写）= null：单独设置的字段改回跟随
+fn is_none(s: &str) -> bool { s.trim().eq_ignore_ascii_case("none") }
+
 /// `N` 或 `none`（= null）；N 不在 `range` 里报 `bad`
 fn int_or_none(s: &str, range: RangeInclusive<i32>, bad: &str) -> anyhow::Result<Value> {
-    let s = s.trim();
-    if s.eq_ignore_ascii_case("none") {
+    if is_none(s) {
         return Ok(Value::Null);
     }
-    s.parse::<i32>().ok().filter(|n| range.contains(n)).map(|n| json!(n)).ok_or_else(|| anyhow!("{bad}"))
+    s.trim().parse::<i32>().ok().filter(|n| range.contains(n)).map(|n| json!(n)).ok_or_else(|| anyhow!("{bad}"))
 }
 
-/// 命令行给了的字段，换成接口的写法，提交前先校验
-fn sub_patch(o: &SubSetOpts<'_>) -> anyhow::Result<Map<String, Value>> {
+/// 命令行给了的字段，换成接口的写法，提交前先校验。可单独设置的字段给 none = null（改回跟随套餐 / 供应商）。
+/// 上架（provision）的订阅也用它
+pub(crate) fn sub_patch(o: &SubSetOpts<'_>) -> anyhow::Result<Map<String, Value>> {
     let mut p = Map::new();
     if let Some(v) = o.price {
-        p.insert("price_cents".into(), json!(parse_money(v)?));
+        p.insert("price_cents".into(), if is_none(v) { Value::Null } else { json!(parse_money(v)?) });
     }
     if let Some(c) = o.currency {
         let c = c.trim().to_uppercase();
-        if c.len() != 3 || !c.bytes().all(|b| b.is_ascii_alphabetic()) {
-            bail!("--currency 写 3 个字母的币种代码，如 USD / CNY");
-        }
-        p.insert("currency".into(), json!(c));
+        let v = match c.as_str() {
+            "NONE" => Value::Null,
+            _ if c.len() == 3 && c.bytes().all(|b| b.is_ascii_alphabetic()) => json!(c),
+            _ => bail!("--currency 写 3 个字母的币种代码，如 USD / CNY；none = 跟随套餐"),
+        };
+        p.insert("currency".into(), v);
     }
     if let Some(c) = o.cycle {
-        if cycle_months(c).is_none() {
-            bail!("--cycle 只能是 monthly / quarterly / semiannual / yearly（月 / 季 / 半年 / 年）");
-        }
-        p.insert("cycle".into(), json!(c));
+        let v = match c.trim() {
+            c if is_none(c) => Value::Null,
+            c if cycle_months(c).is_some() => json!(c),
+            _ => bail!("--cycle 只能是 monthly / quarterly / semiannual / yearly（月 / 季 / 半年 / 年）；none = 跟随套餐"),
+        };
+        p.insert("cycle".into(), v);
     }
     if let Some(d) = o.due {
         p.insert("due_date".into(), json!(date(d).ok_or_else(|| anyhow!("--due 写成 YYYY-MM-DD，如 2026-11-25"))?.to_string()));
@@ -282,42 +337,41 @@ fn sub_patch(o: &SubSetOpts<'_>) -> anyhow::Result<Map<String, Value>> {
     if let Some(b) = o.auto_renew {
         p.insert("auto_renew".into(), json!(b));
     }
-    if let Some(n) = o.remind_days {
-        if !(0..=60).contains(&n) {
-            bail!("--remind-days 要在 0 到 60 之间");
-        }
-        p.insert("remind_days".into(), json!(n));
+    if let Some(v) = o.remind_days {
+        p.insert("remind_days".into(), int_or_none(v, 0..=60, "--remind-days 写 0–60（到期前几天提醒），或 none（跟随供应商）")?);
     }
     if let Some(z) = o.tz {
-        p.insert("billing_tz".into(), json!(z.trim()));
+        p.insert("billing_tz".into(), if is_none(z) { Value::Null } else { json!(z.trim()) });
     }
     if let Some(v) = o.traffic_gb {
-        p.insert("traffic_gb".into(), int_or_none(v, 0..=i32::MAX, "--traffic-gb 写流量上限的 GiB 数（0 = 不限），或 none（不单独设，按套餐）")?);
+        p.insert("traffic_gb".into(), int_or_none(v, 0..=i32::MAX, "--traffic-gb 写流量上限的 GB 数（0 = 不限），或 none（跟随套餐）")?);
     }
     if let Some(v) = o.reset_day {
-        p.insert("traffic_reset_day".into(), int_or_none(v, 1..=31, "--reset-day 写 1–31（每月几号），或 none（不设，按北京时间的自然月）")?);
+        p.insert("traffic_reset_day".into(), int_or_none(v, 1..=31, "--reset-day 写 1–31（每月几号），或 none（跟随供应商：按账单日或自然月）")?);
     }
     if let Some(v) = o.used {
-        let v = v.trim();
-        let g = if v.eq_ignore_ascii_case("none") {
+        let g = if is_none(v) {
             Value::Null
         } else {
-            v.parse::<f64>().ok().filter(|g| g.is_finite() && *g >= 0.0).map(|g| json!(g)).ok_or_else(|| anyhow!("--used 写供应商面板上本周期已用的 GB 数（如 901.6），或 none（清掉校准）"))?
+            v.trim().parse::<f64>().ok().filter(|g| g.is_finite() && *g >= 0.0).map(|g| json!(g)).ok_or_else(|| anyhow!("--used 写供应商面板上本周期已用的 GB 数（如 901.6），或 none（清掉校准）"))?
         };
         p.insert("traffic_used_gb".into(), g);
     }
     Ok(p)
 }
 
-/// PUT 是整份替换：以现有订阅为底、只改给了的字段。没有订阅时按网页「设置订阅」表单的默认值新建，价格与到期日必填
+/// PUT 是整份替换：以现有订阅为底、只改给了的字段；单独设置过的照旧提交，跟随的提交 null（不把套餐的值抄进订阅）。
+/// 没有订阅时新建，只要到期日（没有套餐的机器中控还要价格）
 fn merge_sub(cur: &Value, patch: Map<String, Value>) -> anyhow::Result<Value> {
     let mut b = if cur.is_null() {
-        if !patch.contains_key("price_cents") || !patch.contains_key("due_date") {
-            bail!("这台机器还没有订阅，新建要给 --price 和 --due（其余不给按默认：USD、monthly、Asia/Shanghai、不自动续费、提前 7 天提醒、流量上限按套餐、每月 1 号重置）");
+        if !patch.contains_key("due_date") {
+            bail!("这台机器还没有订阅，新建要给 --due（价格、币种、周期、流量上限跟随套餐，时区、提醒、流量重置跟随供应商；没有套餐的机器还要给 --price）");
         }
-        json!({"currency": "USD", "cycle": "monthly", "billing_tz": "Asia/Shanghai", "auto_renew": false, "remind_days": 7, "traffic_gb": null, "traffic_reset_day": 1})
+        Value::Object(OVR.iter().map(|k| (k.to_string(), Value::Null)).collect())
     } else {
-        Value::Object(SUB_KEYS.iter().map(|k| (k.to_string(), cur[*k].clone())).collect())
+        Value::Object(
+            SUB_KEYS.iter().map(|k| (k.to_string(), if OVR.contains(k) && !overridden(cur, k) { Value::Null } else { cur[*k].clone() })).collect(),
+        )
     };
     for (k, v) in patch {
         b[k] = v;
@@ -325,12 +379,18 @@ fn merge_sub(cur: &Value, patch: Map<String, Value>) -> anyhow::Result<Value> {
     Ok(b)
 }
 
-/// 改了哪些（`费用 39.46 USD / 月 → 45.00 USD / 月`）；新建时列出全部。按面板校准不在现有订阅里，给了就列
-fn sub_changes(cur: &Value, new: &Value) -> Vec<String> {
+/// 改了哪些（`费用 39.46 USD / 月（跟随套餐） → 45.00 USD / 月（单独设置）`）；新建时列出全部。按面板校准不在现有订阅里，给了就列。
+/// 新值按 `effective` 算生效值（和模板相同的按跟随，同中控）
+fn sub_changes(m: &Value, new: &Value) -> Vec<String> {
+    let cur = &m["subscription"];
+    let mut eff = effective(new, &m["sub_template"]);
+    if eff["auto_renew"].is_null() {
+        eff["auto_renew"] = json!(false);
+    }
     let mut v: Vec<String> = if cur.is_null() {
-        sub_fields(new).into_iter().map(|(k, v)| format!("{k} {v}")).collect()
+        sub_fields(&eff, m).into_iter().map(|(k, v)| format!("{k} {v}")).collect()
     } else {
-        sub_fields(cur).into_iter().zip(sub_fields(new)).filter(|(a, b)| a.1 != b.1).map(|((k, a), (_, b))| format!("{k} {a} → {b}")).collect()
+        sub_fields(cur, m).into_iter().zip(sub_fields(&eff, m)).filter(|(a, b)| a.1 != b.1).map(|((k, a), (_, b))| format!("{k} {a} → {b}")).collect()
     };
     match new.get("traffic_used_gb") {
         Some(Value::Null) => v.push("清掉按面板的校准".into()),
@@ -340,7 +400,8 @@ fn sub_changes(cur: &Value, new: &Value) -> Vec<String> {
     v
 }
 
-/// `subscription set <机器>`：先读现有订阅、只改给了的字段再整份提交。`--json` 输出改完的订阅（同 show 的 subscription）
+/// `subscription set <机器>`：先读现有订阅、只改给了的字段再整份提交；可单独设置的字段给 none 改回跟随。
+/// `--json` 输出改完的订阅（同 show 的 subscription，含 overrides）
 pub fn subscription_set(ctx: &Ctx, o: SubSetOpts<'_>) -> anyhow::Result<u8> {
     let patch = sub_patch(&o)?;
     if patch.is_empty() {
@@ -350,7 +411,7 @@ pub fn subscription_set(ctx: &Ctx, o: SubSetOpts<'_>) -> anyhow::Result<u8> {
     let m = ctx.c.get(&format!("/machines/{id}"))?;
     let cur = &m["subscription"];
     let body = merge_sub(cur, patch)?;
-    let changes = sub_changes(cur, &body).join("；");
+    let changes = sub_changes(&m, &body).join("；");
     if changes.is_empty() {
         ctx.emit(cur, || format!("{name} 的订阅没有变化，未提交"));
         return Ok(0);
@@ -397,38 +458,56 @@ mod tests {
         }
     }
 
+    /// 机器：套餐 Mini（2000 GB、39.46 USD / 月），供应商按账单日重置、洛杉矶时区、提前 7 天；订阅单独设置了价格
+    fn machine() -> Value {
+        json!({
+            "plan": {"name": "Mini", "traffic_gb": 2000}, "provider": {"name": "GOMAMI"}, "host_machine": null,
+            "sub_template": {"price_cents": 3946, "currency": "USD", "cycle": "monthly", "billing_tz": "America/Los_Angeles", "remind_days": 7, "traffic_gb": 2000, "traffic_reset": "billing"},
+            "subscription": {"price_cents": 4200, "currency": "USD", "cycle": "monthly", "due_date": "2026-10-25", "due_days": 3, "billing_tz": "America/Los_Angeles",
+                "auto_renew": false, "remind_days": 7, "traffic_gb": 2000, "traffic_reset_day": 25, "overrides": ["price_cents"]},
+        })
+    }
+
     #[test]
     fn subscription_set_merges_given_fields() {
-        let cur = json!({"price_cents": 3946, "currency": "USD", "cycle": "monthly", "due_date": "2026-10-25", "due_days": 3, "billing_tz": "America/Los_Angeles",
-            "auto_renew": false, "remind_days": 7, "traffic_gb": 2000, "traffic_reset_day": 15});
-        let o = SubSetOpts { price: Some("45"), traffic_gb: Some("none"), ..Default::default() };
-        let b = merge_sub(&cur, sub_patch(&o).unwrap()).unwrap();
-        // 只改给了的两项，其余照旧；due_days 是中控算的，不提交
-        let want = json!({"price_cents": 4500, "currency": "USD", "cycle": "monthly", "due_date": "2026-10-25", "billing_tz": "America/Los_Angeles",
-            "auto_renew": false, "remind_days": 7, "traffic_gb": null, "traffic_reset_day": 15});
+        let m = machine();
+        let cur = &m["subscription"];
+        // 跟随的提交 null（不把套餐的值抄进订阅），单独设置的照旧；due_days 是中控算的，不提交
+        let o = SubSetOpts { traffic_gb: Some("500"), ..Default::default() };
+        let b = merge_sub(cur, sub_patch(&o).unwrap()).unwrap();
+        let want = json!({"price_cents": 4200, "currency": null, "cycle": null, "due_date": "2026-10-25", "billing_tz": null,
+            "auto_renew": false, "remind_days": null, "traffic_gb": 500, "traffic_reset_day": null});
         assert_eq!(b, want);
-        assert_eq!(sub_changes(&cur, &b), ["费用 39.46 USD / 月 → 45.00 USD / 月", "流量上限 2000 GB → 不单独设"]);
+        assert_eq!(sub_changes(&m, &b), ["流量上限 2000 GB（跟随套餐） → 500 GB（单独设置）"]);
+        // none = 改回跟随
+        let b = merge_sub(cur, sub_patch(&SubSetOpts { price: Some("none"), ..Default::default() }).unwrap()).unwrap();
+        assert!(b["price_cents"].is_null());
+        assert_eq!(sub_changes(&m, &b), ["费用 42.00 USD / 月（单独设置） → 39.46 USD / 月（跟随套餐）"]);
+        // 填的和套餐一样：按跟随（同中控），没有变化
+        let same = SubSetOpts { price: Some("42"), cycle: Some("monthly"), currency: Some("usd"), reset_day: Some("25"), ..Default::default() };
+        assert!(sub_changes(&m, &merge_sub(cur, sub_patch(&same).unwrap()).unwrap()).is_empty());
+        // 按账单日重置的跟随值随到期日变（小月按月末的事中控按周期算）
+        let b = merge_sub(cur, sub_patch(&SubSetOpts { due: Some("2026-11-30"), ..Default::default() }).unwrap()).unwrap();
+        assert_eq!(sub_changes(&m, &b), ["到期日 2026-10-25 → 2026-11-30", "流量重置日 每月 25 号（跟随供应商：按账单日） → 每月 30 号（跟随供应商：按账单日）"]);
         // 按面板校准：不在现有订阅里，给了就提交（GB，可带小数），none = 清掉
-        let b = merge_sub(&cur, sub_patch(&SubSetOpts { used: Some("901.6"), ..Default::default() }).unwrap()).unwrap();
-        assert_eq!((b["traffic_used_gb"].as_f64(), b["price_cents"].as_i64()), (Some(901.6), Some(3946)));
-        assert_eq!(sub_changes(&cur, &b), ["按面板校准本周期已用为 901.6 GB（之后按网卡流量累加）"]);
-        let b = merge_sub(&cur, sub_patch(&SubSetOpts { used: Some("none"), ..Default::default() }).unwrap()).unwrap();
-        assert_eq!(sub_changes(&cur, &b), ["清掉按面板的校准"]);
-        let same = SubSetOpts { cycle: Some("monthly"), currency: Some("usd"), ..Default::default() };
-        assert!(sub_changes(&cur, &merge_sub(&cur, sub_patch(&same).unwrap()).unwrap()).is_empty());
-        // 没有订阅：新建要价格和到期日，其余取网页「设置订阅」表单的默认值
-        let only_price = SubSetOpts { price: Some("39.46"), ..Default::default() };
-        assert!(merge_sub(&Value::Null, sub_patch(&only_price).unwrap()).is_err());
-        let o = SubSetOpts { price: Some("39.46"), due: Some("2026-11-25"), currency: Some("cny"), auto_renew: Some(true), ..Default::default() };
-        let b = merge_sub(&Value::Null, sub_patch(&o).unwrap()).unwrap();
-        let want = json!({"price_cents": 3946, "currency": "CNY", "cycle": "monthly", "due_date": "2026-11-25", "billing_tz": "Asia/Shanghai",
-            "auto_renew": true, "remind_days": 7, "traffic_gb": null, "traffic_reset_day": 1});
+        let b = merge_sub(cur, sub_patch(&SubSetOpts { used: Some("901.6"), ..Default::default() }).unwrap()).unwrap();
+        assert_eq!((b["traffic_used_gb"].as_f64(), b["price_cents"].as_i64()), (Some(901.6), Some(4200)));
+        assert_eq!(sub_changes(&m, &b), ["按面板校准本周期已用为 901.6 GB（之后按网卡流量累加）"]);
+        let b = merge_sub(cur, sub_patch(&SubSetOpts { used: Some("none"), ..Default::default() }).unwrap()).unwrap();
+        assert_eq!(sub_changes(&m, &b), ["清掉按面板的校准"]);
+        // 没有订阅：新建只要到期日，其余跟随（不写默认值）
+        let mut fresh = machine();
+        fresh["subscription"] = Value::Null;
+        assert!(merge_sub(&Value::Null, sub_patch(&SubSetOpts { price: Some("39.46"), ..Default::default() }).unwrap()).is_err());
+        let b = merge_sub(&Value::Null, sub_patch(&SubSetOpts { due: Some("2026-11-25"), auto_renew: Some(true), ..Default::default() }).unwrap()).unwrap();
+        let want = json!({"price_cents": null, "currency": null, "cycle": null, "due_date": "2026-11-25", "billing_tz": null,
+            "auto_renew": true, "remind_days": null, "traffic_gb": null, "traffic_reset_day": null});
         assert_eq!(b, want);
-        assert_eq!(sub_changes(&Value::Null, &b)[..3], ["费用 39.46 CNY / 月", "到期日 2026-11-25", "自动续费 是"]);
+        assert_eq!(sub_changes(&fresh, &b)[..3], ["费用 39.46 USD / 月（跟随套餐）", "到期日 2026-11-25", "自动续费 是"]);
         // 写法不对的在提交前就报
         let bad = [
             SubSetOpts { cycle: Some("month"), ..Default::default() },
-            SubSetOpts { remind_days: Some(61), ..Default::default() },
+            SubSetOpts { remind_days: Some("61"), ..Default::default() },
             SubSetOpts { reset_day: Some("32"), ..Default::default() },
             SubSetOpts { reset_day: Some("0"), ..Default::default() },
             SubSetOpts { traffic_gb: Some("-1"), ..Default::default() },
@@ -441,24 +520,34 @@ mod tests {
         for o in &bad {
             assert!(sub_patch(o).is_err());
         }
-        assert_eq!(sub_patch(&SubSetOpts { traffic_gb: Some("0"), reset_day: Some("none"), ..Default::default() }).unwrap(), *json!({"traffic_gb": 0, "traffic_reset_day": null}).as_object().unwrap());
+        let all_none = SubSetOpts { price: Some("none"), currency: Some("None"), cycle: Some("none"), tz: Some("none"), remind_days: Some("none"), traffic_gb: Some("0"), reset_day: Some("none"), ..Default::default() };
+        let want = json!({"price_cents": null, "currency": null, "cycle": null, "billing_tz": null, "remind_days": null, "traffic_gb": 0, "traffic_reset_day": null});
+        assert_eq!(sub_patch(&all_none).unwrap(), *want.as_object().unwrap());
+    }
+
+    #[test]
+    fn billing_fields_show_source() {
+        let m = machine();
+        let f = sub_fields(&m["subscription"], &m);
+        assert_eq!(f[0].1, "42.00 USD / 月（单独设置）");
+        assert_eq!((f[4].1.as_str(), f[5].1.as_str(), f[6].1.as_str()), ("America/Los_Angeles（跟随供应商）", "2000 GB（跟随套餐）", "每月 25 号（跟随供应商：按账单日）"));
     }
 
     #[test]
     fn limit_and_billing_wording() {
-        let m = json!({"subscription": {"traffic_gb": null}, "plan": {"name": "Mini", "traffic_gb": 2000}, "host_machine": null});
-        assert_eq!((traffic_limit(&m), limit_cn(&m, traffic_limit(&m))), (Some(2000), "2000 GB（按套餐「Mini」）".into()));
+        let q = |limit: Value, source: &str| json!({"plan": {"name": "Mini"}, "host_machine": {"id": "h", "name": "团队1-03"}, "quota": {"limit_gb": limit, "limit_source": source}});
+        let m = q(json!(2000), "plan");
+        assert_eq!((traffic_limit(&m), limit_cn(&m, traffic_limit(&m))), (Some(2000), "2000 GB（跟随套餐「Mini」）".into()));
+        let m = q(json!(500), "subscription");
+        assert_eq!(limit_cn(&m, traffic_limit(&m)), "500 GB（单独设置）");
+        let m = q(Value::Null, "host");
+        assert_eq!(limit_cn(&m, traffic_limit(&m)), "与宿主机「团队1-03」共用");
+        let m = q(Value::Null, "none");
+        assert_eq!(limit_cn(&m, traffic_limit(&m)), "不限");
         // 已用同供应商面板：十进制 GB；校准过的注明
         let q = json!({"ip_nodes": [], "quota": {"used": 901_600_000_000i64, "period_start": "2026-10-13", "rule": "min", "base": 869_700_000_000i64, "base_at": "2026-10-22T07:30:00Z"}});
         assert_eq!(used_cn(&q, Some(2000), Some(45), ""), "901.6 GB / 2000 GB（45%），2026-10-13 起，网卡入出取小；已按面板校准（2026-10-22 15:30:00）");
         let q = json!({"quota": {"used": 31_900_000, "period_start": "2026-10-01", "rule": null, "base_at": null}});
         assert_eq!(used_cn(&q, None, None, ""), "0.03 GB，2026-10-01 起，业务流量");
-        // 订阅填 0 = 不限，不再看套餐
-        let m = json!({"subscription": {"traffic_gb": 0}, "plan": {"name": "Mini", "traffic_gb": 2000}, "host_machine": null});
-        assert_eq!(limit_cn(&m, traffic_limit(&m)), "不限");
-        let m = json!({"subscription": null, "plan": null, "host_machine": {"id": "h", "name": "团队1-03"}});
-        assert_eq!(limit_cn(&m, traffic_limit(&m)), "与宿主机「团队1-03」共用");
-        let m = json!({"subscription": {"traffic_gb": 500}, "plan": null, "host_machine": null});
-        assert_eq!(limit_cn(&m, traffic_limit(&m)), "500 GB");
     }
 }

@@ -55,12 +55,12 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
 | GET | `/teams` | `[{id,name,sort_order,node_count}]` |
 | POST | `/teams` | `{name,sort_order?}` |
 | PATCH | `/teams/{id}` | `{name?,sort_order?}`（改团队名 = 该团队所有节点显示名一起变） |
-| GET | `/providers` | `[{id,name,code,panel_url,timezone,traffic_rule}]`；`traffic_rule` 是这家怎么计量流量额度（网卡本周期入、出总量）：`min` 取小（如 GOMAMI）/ `max` 取大 / `sum` 相加 / `out` 只算出站 |
-| POST | `/providers` | `{name,code,panel_url?,timezone?,traffic_rule?}`；`traffic_rule` 不传 = `max`（不知道的供应商按取大，不会少算），别的值 400；`panel_url` 须是 http(s) 地址（400）；`timezone` 不传 / null / 空串 = 列默认值 UTC，否则须是 `at time zone` 认的时区（400）；名称或缩写重复 409 |
-| PATCH | `/providers/{id}` | `{name?,code?,panel_url?,timezone?,traffic_rule?}`：没传的不改（`traffic_rule` 改了立即影响这家机器的 `quota.used`）；`panel_url` null / 空串 = 清空；`timezone` null / 空串 = 回到 UTC。校验同 POST（`panel_url` 和库里现有的一样时不校验：加 http(s) 校验之前存下的旧值不挡改别的字段）；只影响之后上架的机器（已上架机器的账单时区是当时抄过去的）。写审计 `provider.update` |
-| GET | `/plans` | `[{id,provider_id,name,cpu_cores,mem_mb,disk_gb,bandwidth_mbps,traffic_gb,price_cents,currency,cycle,notes,archived_at,machine_count}]` |
+| GET | `/providers` | `[{id,name,code,panel_url,timezone,traffic_rule,traffic_reset,remind_days}]`；`traffic_rule` 是这家怎么计量流量额度（网卡本周期入、出总量）：`min` 取小（如 GOMAMI）/ `max` 取大 / `sum` 相加 / `out` 只算出站。供应商同时是名下机器订阅的**模板**：`timezone`（账单时区）、`traffic_reset`（流量周期：`month` 账单时区的自然月、每月 1 号起；`billing` 账单日，即每台机器到期日是几号就几号起，月份没有这一天按月末）、`remind_days`（到期前几天提醒，0–60）——订阅没单独设置这几项的跟随它，改了立即生效 |
+| POST | `/providers` | `{name,code,panel_url?,timezone?,traffic_rule?,traffic_reset?,remind_days?}`；`traffic_rule` 不传 = `max`（不知道的供应商按取大，不会少算），`traffic_reset` 不传 = `month`，`remind_days` 不传 = 7，别的值 400；`panel_url` 须是 http(s) 地址（400）；`timezone` 不传 / null / 空串 = 列默认值 UTC，否则须是 `at time zone` 认的时区（400）；名称或缩写重复 409 |
+| PATCH | `/providers/{id}` | `{name?,code?,panel_url?,timezone?,traffic_rule?,traffic_reset?,remind_days?}`：没传的不改（`traffic_rule` 改了立即影响这家机器的 `quota.used`；`timezone` / `traffic_reset` / `remind_days` 改了立即影响没单独设置这几项的订阅）；`panel_url` null / 空串 = 清空；`timezone` null / 空串 = 回到 UTC。校验同 POST（`panel_url` 和库里现有的一样时不校验：加 http(s) 校验之前存下的旧值不挡改别的字段）。写审计 `provider.update` |
+| GET | `/plans` | `[{id,provider_id,name,cpu_cores,mem_mb,disk_gb,bandwidth_mbps,traffic_gb,price_cents,currency,cycle,notes,archived_at,machine_count}]`。套餐是机器订阅的**模板**：`price_cents` / `currency` / `cycle`（每个计费周期的价格）与 `traffic_gb`（每个流量周期的额度，十进制 GB，null 或 0 = 不限）——用这个套餐的机器没单独设置的跟随它，改了立即生效。`machine_count`：在用（未退役）的机器数 |
 | POST | `/plans` | 同上字段（不含 id/统计）。校验（PATCH 同，只看传了的）：`name` 1–32 字，`price_cents` ≥ 0，`currency` 1–8 个字母（存成大写），`notes` ≤ 2000 字，否则 400 |
-| PATCH | `/plans/{id}` | 任意字段（没传的不改；规格类字段传 null = 清空）；`archived:true` 归档。审计 `plan.update` 记改了的字段 `{before:{…}, after:{…}}` |
+| PATCH | `/plans/{id}` | 任意字段（没传的不改；规格类字段传 null = 清空）；`archived:true` 归档。机器的供应商就是套餐的：有机器（含已退役的）用着时改 `provider_id` 409（给新供应商另建套餐）。审计 `plan.update` 记改了的字段 `{before:{…}, after:{…}}` |
 
 ## 机器
 `MachineView`（列表与详情同形）：
@@ -70,9 +70,17 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
                                 // ssh_port 是宿主机的（只展示），provider 取宿主机的、plan 为 null；其它机器为 null
   ip_nodes:[{id,name}],         // 宿主机：它上面未退役的同机 IP 节点（按团队、编号）；其它机器为 []
   provider:{id,name}|null, provider_code|null, plan:{id,name,bandwidth_mbps,traffic_gb}|null, service_ref|null,
+                                // provider：有套餐时是套餐的供应商（机器上存的那份在上架、改套餐时按套餐写），没有套餐取机器的
   lifecycle: "draft"|"provisioning"|"active"|"retiring"|"retired"|"failed", lifecycle_reason|null, note, revision,
   created_at, activated_at|null, retired_at|null,
-  subscription: {price_cents,currency,cycle,due_date,due_days,billing_tz,auto_renew,remind_days,traffic_gb,traffic_reset_day}|null,
+  subscription: {price_cents,currency,cycle,due_date,due_days,billing_tz,auto_renew,remind_days,traffic_gb,traffic_reset_day,overrides}|null,
+                                // 全是生效值（字段名同以前，旧调用方照用）：订阅只存到期日、自动续费和「单独设置」的项，其余跟随 sub_template——
+                                // price_cents / currency / cycle / traffic_gb 跟随套餐，billing_tz / remind_days / traffic_reset_day 跟随供应商。
+                                // overrides：单独设置了的字段名（如 ["price_cents"]），不在里面的就是跟随的。traffic_gb：0 / null = 不限。
+                                // traffic_reset_day 总有值：单独设置的，或供应商 traffic_reset = billing 时到期日是几号、month 时 1
+  sub_template: {price_cents|null, currency, cycle, billing_tz, remind_days, traffic_gb|null, traffic_reset},
+                                // 订阅模板（没有订阅也给）：套餐的价格 / 币种 / 周期 / 流量（没有套餐时 price_cents、traffic_gb 为 null，币种周期 USD / monthly），
+                                // 供应商的时区 / 提醒天数 / 重置方式（没有供应商时 Asia/Shanghai / 7 / month）。网页「跟随套餐：2000 GB」就是它
   agent: {version,last_report_at,online,xray_running,cores,health,clock_skew_ms}|null,  // proxy 没有；cores 为 agent 报的可用核数（容器里是限额），没报过为 null
                                 // clock_skew_ms：agent 时钟偏差（毫秒）= 中控收到时刻 − 报告的 sent_at_ms，正数 = agent 时钟慢；只按新鲜的报告
                                 // （建报时离线队列为空、上一份 30 秒内收到）更新，误差 < 30 秒，没算过为 null。|偏差| > 60 秒时健康原因有 clock_skew
@@ -84,15 +92,18 @@ scope 之间不互相包含：只有 `write` 的密钥不能 GET。`/api-keys` �
   host: {ts,cpu_pct,load1,mem_used,mem_total,disk_used,disk_total,net_rx_bps,net_tx_bps,tcp_conns}|null,  // load1 在容器里为 null（/proc/loadavg 是宿主机的）
   entries: [EntryView],                                // 节点：自己的入口；线路机：挂在上面的入口
   removed_traffic: {today_up,today_down,month_up,month_down},  // 已移除入口（如换线路机后的旧入口）本月/今天的流量，不在 entries 里
-  quota: {used, period_start, rule, base, base_at},  // 流量额度周期已用（字节）与周期起点（日期）。
+  quota: {limit_gb, limit_source, used, period_start, rule, base, base_at},  // 流量额度：生效的上限、周期已用（字节）与周期起点（日期）。
+                                // limit_gb：生效的上限（十进制 GB），没有上限为 null；告警、网页、fleetctl 都按它，不各自再算。
+                                // limit_source：subscription（订阅单独设置）/ plan（跟随套餐，没有订阅时也是套餐的）/
+                                // host（同机 IP 节点没有自己的上限，与宿主机共用：宿主机的已用含它的流量）/ none（不限）。
                                 // 有自己 agent 的机器（线路机、落地机、宿主机）按网卡：本周期物理网卡入、出总量按供应商的 traffic_rule
                                 // 取小 / 取大 / 相加 / 只取出站（没有供应商按 max），rule 即所用规则；宿主机的网卡也走了它的同机 IP 节点的流量。
                                 // 家宽代理和同机 IP 节点没有自己的网卡读数：rule 为 null，used 是业务流量（下载+上传，含已移除入口）。
                                 // base / base_at：本周期按供应商面板校准过（见 PUT subscription 的 traffic_used_gb）时的面板读数（字节）与校准时间，
                                 // used = base + 校准时刻所在整点之后的用量（那一小时里校准之后的部分不计，至多差 1 小时；取小 / 取大按校准之后的入、出总量算）；
                                 // 校准时间早于周期起点（已进入新周期）时不算，二者为 null。
-                                // 订阅有 traffic_reset_day：账单时区里今天或之前最近一次重置日起（月份没有这一天按月末，如 31 号在 9 月是 30 号），
-                                // 从该日账单时区零点累计；否则为北京时间的本月。来自小时汇总表，每次汇总后更新。
+                                // 有订阅：账单时区里今天或之前最近一次（生效的）重置日起（月份没有这一天按月末，如 31 号在 9 月是 30 号、2 月是 28 / 29 号），
+                                // 从该日账单时区零点累计；没有订阅：sub_template.billing_tz 的本月。来自小时汇总表，每次汇总后更新。
   health: {status: "ok"|"degraded"|"down"|"unknown"|"maintenance"|"inactive", reasons:[{key,severity,text}]},
   active_job: {id,kind,state}|null,                    // 进行中的作业（queued/running/waiting/cancelling）
   failed_job: {id,kind,state}|null,                    // lifecycle = failed（上架失败）时：失败的上架/恢复作业，重试回到 provisioning，取消则补偿退役；
@@ -108,16 +119,16 @@ EntryView = { id, relay:{id,name}, node:{id,name}, direct, port, lifecycle, appl
 |---|---|---|
 | GET | `/machines?scope=live\|retired\|all` | 默认 live（未退役）。排序：线路机在前，然后按团队、编号。加 `view=brief` 只返回 `{id, kind, name, label, ip, lifecycle, host_id, team:{id,name}\|null}`（fleetctl 按名字找机器用；`host_id` 非 null 的是同机 IP 节点） |
 | GET | `/machines/{id}` | 单台 |
-| PATCH | `/machines/{id}` | `{revision, team_id?, number?, label?, note?, provider_id?, plan_id?, service_ref?}`。改团队/编号 = 改名：线路机备注随后自动同步，不换令牌、不断连接 |
+| PATCH | `/machines/{id}` | `{revision, team_id?, number?, label?, note?, provider_id?, plan_id?, service_ref?}`。改团队/编号 = 改名：线路机备注随后自动同步，不换令牌、不断连接。有套餐时供应商就是套餐的：只改了套餐的，供应商跟着换；同时给了另一个供应商 400 |
 | GET | `/machines/{id}/series?metric=host\|traffic\|probe&range=1h\|6h\|24h\|7d\|30d` | 时序。≤24h 用原始点（1 分钟聚合），更长用小时汇总。同机 IP 节点的 `metric=host` 是宿主机的曲线 |
-| GET | `/machines/{id}/availability?days=30` | 近 N 天（`days` 1–90，默认 30，越界 400）每天的探测成功率：`{data:{days, items:[{date,tcp_total,tcp_ok,egress_total,egress_ok}], tcp_pct, egress_pct}}`。探测小时汇总按这台机器的账单时区（没有订阅按北京时间）分到日历天（一个小时桶按起点归天），`items` 旧→新共 `days` 项、最后一项是今天（还没过完），没有探测的天各项为 0；`tcp_pct` / `egress_pct` 是整段的成功率（0–100），没有探测为 null。入口同 `series`：节点取自己的，线路机取挂在它上面的（含已移除的）。机器不存在 404 |
+| GET | `/machines/{id}/availability?days=30` | 近 N 天（`days` 1–90，默认 30，越界 400）每天的探测成功率：`{data:{days, items:[{date,tcp_total,tcp_ok,egress_total,egress_ok}], tcp_pct, egress_pct}}`。探测小时汇总按这台机器生效的账单时区（没有订阅按 `sub_template.billing_tz`）分到日历天（一个小时桶按起点归天），`items` 旧→新共 `days` 项、最后一项是今天（还没过完），没有探测的天各项为 0；`tcp_pct` / `egress_pct` 是整段的成功率（0–100），没有探测为 null。入口同 `series`：节点取自己的，线路机取挂在它上面的（含已移除的）。机器不存在 404 |
 | GET | `/machines/{id}/retire` | 退役预览：`{data:{name, renames:[{machine_id,old_name,new_name}], ip_nodes:[{id,name}]}}`——编号保持连续，退役后同团队后面的节点依次前移；`ip_nodes` 是会一并退役的同机 IP 节点（宿主机才有，还没开始退役的），`renames` 按所有受影响的团队算 |
 | POST | `/machines/{id}/retire` | `{confirm: <显示名>, reason?, cleanup?: true}` → `{data:{job_id, ip_node_jobs:[{machine_id,name,job_id}]}}`。退役完成时同团队编号自动压缩成 01..N（写审计）。线路机上还有节点入口时 409（提示先搬空）；这台（或它的同机 IP 节点）有作业正在执行一步（租约未过期）时 409，先取消并等它停下（升级 agent 不能取消，等它做完）；`reason` 最多 2000 字；它自己的直出入口不算，由退役作业的「摘除入口」一并摘掉。**宿主机**：它上面还没开始退役的同机 IP 节点在同一事务里一并置为退役中（`lifecycle_reason`「随宿主机「名字」退役」），作废它们进行中 / 失败的作业、关掉它们的告警，各建一个退役作业（`cleanup: false`：只摘入口，不登录清理——宿主机的清理连同所有实例一起删），列在 `ip_node_jobs`（没有为 []），各写一条审计 `machine.retire`。单独退役同机 IP 节点只删它自己的实例 |
 | POST | `/machines/{id}/purge` | 仅已退役。`{confirm: <显示名>}` → 作业；彻底删除机器与遥测，保留审计。宿主机上还有同机 IP 节点（含已退役的）没删时 409：「这台机器上还有同机 IP 节点没有彻底删除（含已退役的）：…；先删它们」。它的入口近 35 天有小时流量、且入口另一端的机器未退役时 409：「这台机器的入口在 YYYY-MM-DD 前仍计入其他机器的流量统计，届时再彻底删除」（作业执行时再查一次） |
 | POST | `/machines/{id}/upgrade-agent` | 推送中控当前版本的 agent 并重启（作业 `upgrade_agent`；令牌顺带轮换） → `{data:{machine_id,name,kind,job_id,after:null}}`。线路机顺带收敛 fleet-xray 单元（变了只 daemon-reload，不重启 Xray，等它下次重启才生效）与访问日志轮转（配置 + 每小时的 fleet-xray-logrotate.timer），这两样没装上只记警告。**回滚**：推送时机器上的旧程序留成同目录的 `/usr/local/bin/fleet-agent.prev`（硬链接，新程序原子替换；上一次留的被覆盖，成功后也留着）；重启后新版本起不来（隔 3 秒主进程换了，或不是 active），或 2 分钟内没有用新令牌、以新版本号上报，就把 .prev 换回去并重启，作业失败，错误写明「新版本 X 起不来（…）/ 重启后 120 秒没有上报，已回滚到 <旧版本>」；机器上没有 .prev 或换回去也没起来时写明需要人工处理。程序和 dist 里的相同（推送跳过）时不回滚。**线路机**另要新版本自己报的 Xray 状态做到：Xray 在跑、已应用的配置追上升级开始时的期望代数、没有应用错误（`relay.apply_error` 与 agent 自报的 `last_apply_error` 都算）；只查升级前（推送之前读的 agent 最近状态）就做到的项，记在作业参数 `xray_checks`、推送那一步输出 `xray_checks`。2 分钟做不到同样换回并失败，错误「新版本 X 重启后 120 秒线路机检查没通过（Xray 没在跑；已应用的配置代数 2，没到 3；应用配置出错：…），已回滚到 <旧版本>」（`error_kind` remote）。「新版本自己报的」：中控入库时给 `agent_state.info.xray` 记上报它的 agent 版本（`agent_version`）——重启后新进程最先补发旧进程退出时落盘的报告，之后几份不带 Xray 状态，按上报时间分不出来。同机 IP 节点 409（agent 是宿主机的，升级宿主机） |
 | POST | `/agents/upgrade` | 所有在用线路机与落地机（不含同机 IP 节点）各建一个 `upgrade_agent` 作业（有进行中作业的跳过；每台单独提交，一台冲突不影响其他台），但不一起跑：先升一台做**金丝雀**（有线路机先挑线路机；同类里在用入口少的在前，一样少按名字），它成功后其余线路机**一台接一台**，线路机都成功后落地机**并发**（作业引擎的并发上限 `job_workers`）。编排记在作业参数 `after`（要等的作业 id）：那个作业结束之前这个作业领取不到（一直是 queued）；它在推送之后失败了（新版本起不来、没上报、线路机检查没通过）或被取消，这个作业一步都不做、直接取消，`error` 写明原因（如「金丝雀「线路机2」升级失败，其余机器不再升级」「「线路机3」升级失败，后面的机器不再升级」「「线路机3」的升级没有完成（已取消），后面的机器不再升级」，再往后的沿用同一个原因），日志一条「没有开始：…」。它在推送之前就失败的（SSH 连不上、登录被拒、推送失败：机器上的程序没换过，与新版本无关）不算，这个作业照常开始——agent 步骤每次尝试先记作业参数 `pushed=false`，要用 dist 里的程序重启 agent 之前置 true，编排据此判断（没有记的按推送之后算）。排队中的作业可以取消（`POST /jobs/{id}/cancel`），等它的跟着取消。落地机之间互不等待，一台失败不影响别的。发起时把 dist 里 agent 的 sha256 与版本号记进各作业参数 `rollout:{sha256,version}`，每个作业开始前、推送时各核对一次：中途重新部署过中控（dist 换了）就不推，正要推送的失败、没开始的直接取消，`error` 都是「中控上的 agent 在升级过程中换了版本（发起时是 X），请重新发起全部升级」。dist 里没有 agent 程序或读不出版本号（`--version`）时 409、不建作业 → `{data:{jobs:[{machine_id,name,kind,job_id,after}], skipped:[{machine_id,name,reason}], order}}`：`jobs` 按执行顺序（第一个是金丝雀，`after` 为 null）；`order` 是给人看的顺序说明，如「先升「线路机3」做金丝雀，成功后其余 2 台线路机逐台升级，线路机都成功后 40 台落地机并发升级；新版本在任何一台线路机上出问题，没开始的都会取消」（只有一台时「只有「X」一台」，一台都没建时「没有要升级的机器」） |
-| PUT | `/machines/{id}/subscription` | `{price_cents,currency,cycle,due_date,billing_tz,auto_renew,remind_days,traffic_gb?,traffic_reset_day?,traffic_used_gb?}`。`traffic_gb` 是供应商的十进制 GB（10⁹ 字节）。`traffic_used_gb`：按供应商面板校准本周期已用（GB，可带小数，如 901.6；负数 400），记成字节与当前时间（`quota.base` / `base_at`）；不传 = 不动原有校准（整份替换只针对其余字段），null = 清掉。写审计 `subscription.set` |
-| POST | `/machines/{id}/renewals` | `{new_due,amount_cents?,note?}` |
+| PUT | `/machines/{id}/subscription` | `{due_date, price_cents?,currency?,cycle?,billing_tz?,remind_days?,traffic_gb?,traffic_reset_day?, auto_renew?, traffic_used_gb?}`。只有 `due_date` 必填。`price_cents` … `traffic_reset_day` 是**单独设置**，整份替换：没传或 null = 跟随模板（见 `sub_template`），给了值 = 这台单独设置；和模板相同的值也按跟随存（旧客户端整份带上生效值不会把套餐的值抄进来）。没有套餐的机器价格没有可跟随的，必须给 `price_cents`（400）。校验：`price_cents` / `traffic_gb` ≥ 0、`cycle` 四选一、`currency` 1–8 个字母（存成大写）、`remind_days` 0–60、`traffic_reset_day` 1–31、`billing_tz` 须是 `at time zone` 认的时区，否则 400。`auto_renew` 没传 = 不改（新建为否）。`traffic_gb` 是供应商的十进制 GB（10⁹ 字节，0 = 不限）。`traffic_used_gb`：按供应商面板校准本周期已用（GB，可带小数，如 901.6；负数 400），记成字节与当前时间（`quota.base` / `base_at`）；不传 = 不动原有校准（整份替换只针对其余字段），null = 清掉。写审计 `subscription.set` |
+| POST | `/machines/{id}/renewals` | `{new_due,amount_cents?,note?}`：只顺延到期日（新到期日由调用方按订阅生效的 `cycle` 推，网页与 fleetctl 默认推一个周期），单独设置照旧 |
 | GET | `/machines/{id}/renewals` | |
 | GET | `/teams/{id}/renumber` | 预览：`{data:{changes:[{machine_id,old_name,new_name}],token}}` |
 | POST | `/teams/{id}/renumber` | `{token}`（预览返回的，防止预览后数据变了）→ 一次生效 |
@@ -141,12 +152,14 @@ ProvisionItem = {
   // vps：线路机连节点 SS 用的公网端口（NAT 机填供应商映射到节点 8388 的那个公网端口；非 NAT 机不要填）。
   // 节点上 ssserver 与防火墙固定在 8388，这个值只写进线路机出站
   ss_port?: 8388,
-  // 没给的：price_cents / currency / cycle 取套餐，billing_tz 取供应商时区（机器的供应商，否则套餐的）；都没有时 0 / USD / monthly / Asia/Shanghai
-  subscription?: {price_cents?, currency?, due_date, cycle?, billing_tz?},
+  // 订阅只存到期日和给了的单独设置（同 PUT subscription），其余跟随套餐 / 供应商，不再抄一份。
+  // 选了套餐（同机 IP 节点不算）必须给 subscription（只要 due_date），否则校验报「选了套餐要填到期日」；
+  // 没有套餐时给了 subscription 就要给 price_cents（「没有套餐：订阅要填费用」）。provider_id 和套餐的供应商不一致报错，不给取套餐的
+  subscription?: {due_date, price_cents?, currency?, cycle?, billing_tz?, remind_days?, traffic_gb?, traffic_reset_day?},
   // 同机 IP 节点（kind 必须是 vps）：加在这台落地机（宿主机）上，ip 是它自己的出口 IP（要已直接配在宿主机网卡上，EIP / NAT 映射的不行）。
   // 宿主机必须存在、是在用的普通落地机（不是线路机、家宽代理或同机 IP 节点）。这时 ssh_port / login / ss_port / provider_id / plan_id / reset_host_key
   // 不适用（忽略）：SSH 端口与供应商取宿主机的、不带套餐、不收 root 密码；SS 端口由中控在宿主机上分配（8389 起，同批依次递增，跳过宿主机上未退役同机节点已占的）。
-  // 作业是 provision_ip；费用默认不记（subscription 照常可给）
+  // 作业是 provision_ip；费用默认不记（subscription 照常可给，要带 price_cents）
   host_id?: uuid
 }
 ```

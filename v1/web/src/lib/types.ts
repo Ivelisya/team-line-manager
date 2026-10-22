@@ -7,10 +7,18 @@ export type EntryLifecycle = 'pending' | 'active' | 'disabled' | 'removing' | 'r
 export type HealthStatus = 'ok' | 'degraded' | 'down' | 'unknown' | 'maintenance' | 'inactive';
 export type Cycle = 'monthly' | 'quarterly' | 'semiannual' | 'yearly' | string;
 
+/** 订阅的生效值：价格、币种、周期、流量上限没单独设置的跟随套餐，账单时区、提前提醒、流量重置日跟随供应商（见 SubTemplate）。
+ *  traffic_gb 0 / null = 不限；traffic_reset_day 是生效的重置日。overrides：单独设置了的字段 */
 export interface Subscription {
   price_cents: number; currency: string; cycle: Cycle; due_date: string; due_days: number;
   billing_tz: string; auto_renew: boolean; remind_days: number; traffic_gb: number | null; traffic_reset_day: number | null;
+  overrides?: SubField[];
 }
+/** 订阅里可以单独设置的字段 */
+export type SubField = 'price_cents' | 'currency' | 'cycle' | 'billing_tz' | 'remind_days' | 'traffic_gb' | 'traffic_reset_day';
+/** 机器的订阅模板：订阅没单独设置的项取这里。没有套餐时 price_cents 为 null（要单独设置价格）；traffic_reset：供应商按自然月 / 账单日重置流量 */
+export interface SubTemplate { price_cents: number | null; currency: string; cycle: Cycle; billing_tz: string; remind_days: number; traffic_gb: number | null; traffic_reset: TrafficReset }
+export type TrafficReset = 'month' | 'billing';
 /** 指标缺测（agent 刚装、上报不全）时对应字段为 null，使用处一律按可空处理 */
 export interface HostMetrics {
   ts: string; cpu_pct: number | null; load1: number | null; mem_used: number | null; mem_total: number | null;
@@ -46,6 +54,7 @@ export interface MachineView {
   lifecycle: Lifecycle; lifecycle_reason: string | null; note: string; revision: number;
   created_at: string; activated_at: string | null; retired_at: string | null;
   subscription: Subscription | null;
+  sub_template?: SubTemplate;
   /** cores：agent 报的可用核数（容器里是限额），没报过为 null */
   /** health：agent 自报的健康数据（自 agent 进程启动起累计；旧 agent 没报过为 null），不随实时推送更新 */
   agent: { version: string | null; last_report_at: string | null; online: boolean; xray_running: boolean | null; cores: number | null; health: AgentHealth | null } | null;
@@ -54,7 +63,8 @@ export interface MachineView {
   removed_traffic: EntryTraffic; // 已移除入口（如换线路机后的旧入口）今天/本月的流量，不在 entries 里
   /** 流量额度周期：起点（YYYY-MM-DD，有流量重置日按它，否则本月 1 号）与周期内已用（字节）。有 agent 的机器按网卡、照供应商的
    *  rule 算；家宽代理与同机 IP 节点 rule 为 null，是业务流量。base / base_at：本周期按供应商面板校准时的读数（字节）与时间，没有为 null */
-  quota: { used: number; period_start: string; rule: TrafficRule | null; base: number | null; base_at: string | null };
+  /** limit_gb / limit_source：生效的流量上限（GB，没有为 null）与来源——subscription 单独设置、plan 跟随套餐、host 同机 IP 节点与宿主机共用、none 不限 */
+  quota: { used: number; period_start: string; rule: TrafficRule | null; base: number | null; base_at: string | null; limit_gb?: number | null; limit_source?: 'subscription' | 'plan' | 'host' | 'none' };
   health: { status: HealthStatus; reasons: HealthReason[] };
   active_job: { id: string; kind: string; state: string } | null;
   /** 上架失败（lifecycle = failed）：失败的上架/恢复作业；退役中（retiring）且最近的退役作业失败：那个退役作业 */
@@ -66,7 +76,8 @@ export interface MachineView {
 export interface Team { id: string; name: string; sort_order: number; node_count: number }
 /** 供应商怎么计量流量额度：网卡本周期入、出总量取小 / 取大 / 相加 / 只算出站 */
 export type TrafficRule = 'min' | 'max' | 'sum' | 'out';
-export interface Provider { id: string; name: string; code: string; panel_url: string | null; timezone: string | null; traffic_rule: TrafficRule }
+/** 供应商也是名下机器订阅的模板：账单时区、流量重置（自然月 / 账单日）、提前提醒天数 */
+export interface Provider { id: string; name: string; code: string; panel_url: string | null; timezone: string | null; traffic_rule: TrafficRule; traffic_reset?: TrafficReset; remind_days?: number }
 export interface Plan {
   id: string; provider_id: string; name: string; cpu_cores: number | null; mem_mb: number | null; disk_gb: number | null;
   bandwidth_mbps: number | null; traffic_gb: number | null; price_cents: number; currency: string; cycle: Cycle; notes: string | null;
@@ -107,7 +118,8 @@ export interface ProvisionItem {
   login?: { user?: string; password?: string };
   upstream?: { protocol: 'socks5' | 'http'; host: string; port: number; username?: string; password?: string };
   ss_port?: number;
-  subscription?: { price_cents?: number; currency?: string; due_date: string; cycle?: string; billing_tz?: string };
+  /** 只要到期日（选了套餐时必填），其余没给的跟随套餐 / 供应商；没有套餐（含同机 IP 节点）要给 price_cents */
+  subscription?: { due_date: string; price_cents?: number; currency?: string; cycle?: string; billing_tz?: string; remind_days?: number; traffic_gb?: number; traffic_reset_day?: number };
   /** 同机 IP 节点：加在这台落地机（宿主机）上。带了它时 ssh_port / login / ss_port / provider_id / plan_id 不适用（服务端忽略）：
    *  SSH 端口与供应商取宿主机的、不带套餐，SS 端口由中控在宿主机上分配 */
   host_id?: string;
