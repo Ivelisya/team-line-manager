@@ -34,12 +34,14 @@
 | 入口的流量与探测 | `fleetctl series 团队1-06 --metric traffic` / `--metric probe` |
 | 告警列表、确认 | `fleetctl incidents`、`fleetctl ack <id>`；一台机器的告警历史 `fleetctl incidents --all --machine 团队1-06` |
 | 维护前开维护窗口（免得告警刷屏），或预约 | `fleetctl silence add 团队1-06 --for 2h --maintenance --comment 换内核`；预约加 `--start "2026-10-23 02:00"`（组织时区，默认北京时间）；只静默一条规则 `--rule agent_offline`；`fleetctl silence ls`，做完 `fleetctl silence rm <id 前缀>`；全部机器 `--all --yes`（API 密钥最长 24 小时，更长的在网页用账号建；建、删都会通知所有渠道） |
-| 到期与续费：快到期的机器、看订阅、登记续费、改订阅 | `fleetctl ls --due 7`（7 天内到期、含已过期的在用机器；`fleetctl status` 的「即将到期 / 已过期」按各台的提前提醒天数算，同续费告警）、`fleetctl billing 团队1-06`（订阅与续费记录）；确认已付款后 `fleetctl renew 团队1-06 --yes`（默认同网页：按订阅周期推一个周期（新到期日由中控算，小月按月末）、金额取订阅价格；一次付几期 `--cycles 3`，按面板 `--to 2027-01-15 --amount 39.46 --note …`）；改订阅 `fleetctl subscription set 团队1-06 --price 45 --yes`（只改给了的字段；`--price none` 改回跟随套餐）。订阅跟随模板：价格、币种、周期、流量上限跟随**套餐**，账单时区、提前提醒、流量重置（自然月 / 账单日）跟随**供应商**，订阅只存到期日、自动续费和单独设置的项——同一套餐一起调价、改额度在网页「团队与套餐」改套餐，立即对没单独设置的机器生效；上架选了套餐只要填到期日 |
+| 到期与续费：快到期的机器、看订阅、登记续费、改订阅 | `fleetctl ls --due 7`（7 天内到期、含已过期的在用机器；`fleetctl status` 的「即将到期 / 已过期」按各台的提前提醒天数算，同续费告警）、`fleetctl billing 团队1-06`（订阅与续费记录）；确认已付款后 `fleetctl renew 团队1-06 --yes`（默认同网页：按订阅周期推一个周期（新到期日由中控算，小月按月末）、金额取订阅价格；一次付几期 `--cycles 3`，按面板 `--to 2027-01-15 --amount 39.46 --note …`）；改订阅 `fleetctl subscription set 团队1-06 --price 45 --yes`（只改给了的字段；`--price none` 改回跟随套餐）。订阅跟随模板：价格、币种、周期、流量上限跟随**套餐**，账单时区、提前提醒、流量重置（自然月 / 账单日）跟随**供应商**，订阅只存到期日、自动续费和单独设置的项——同一套餐一起调价、改额度改套餐（`fleetctl plan set <套餐> --price 45 --yes`，或网页「团队与套餐」），立即对没单独设置的机器生效；上架选了套餐只要填到期日 |
 | 服务日志 | `fleetctl logs 团队1-06 --unit fleet-agent --lines 300`（unit：fleet-agent / fleet-xray / ssserver） |
 | 中控自己的日志 | `fleetctl server-logs --lines 300` |
 | 在一台机器上执行命令 | `fleetctl exec 团队1-06 -- systemctl status fleet-agent` |
 | 对一个团队的全部节点执行 | `fleetctl exec --team 团队1 -- uptime`（并发 4，汇总退出码） |
+| 软路由出口时好时坏：每个出口的测试次数、失败次数、成功率、连续两轮失败几次、延迟中位 / 最大、当前连接 | `fleetctl router exits 团队2-路由A --range 24h`（1h 按每轮测试数；6h / 24h 按 5 分钟一点；7d / 30d 是小时汇总，次数准、看不出连续失败；延迟只算通了的）；当前状态 `fleetctl router show 团队2-路由A` |
 | 登录机器或软路由（在中控上，见 §14） | `fleetctl ssh 团队1-06`（交互式）、`fleetctl ssh 团队1-06 -- 'df -h'`（退出码同远端）、`fleetctl ssh router <名称>` |
+| 供应商与套餐（上架前先确认存在，没有就建） | `fleetctl provider ls`、`fleetctl plan ls [--provider ATTVPS] [--all]`；新建 `fleetctl provider add ATTVPS --code ATT [--tz America/Los_Angeles] [--traffic-rule min] [--traffic-reset billing] [--remind-days 7]`、`fleetctl plan add 基础版 --provider ATTVPS --price 299.99 --currency CNY --cycle monthly [--cpu 2 --mem-mb 2048 --disk-gb 40 --bandwidth-mbps 1000 --traffic-gb 2000]`；改 `fleetctl provider set <供应商> … --yes`、`fleetctl plan set <套餐> --price 309.99 --yes`（只改给了的项，`--tz none` / 规格 `none` 清空；改价、改额度、改时区立即对没单独设置的机器生效）；不再上架 `fleetctl plan set <套餐> --archive --yes`；删 `provider rm` / `plan rm --yes`（还有套餐 / 机器用着时中控拒绝）。套餐重名写 `供应商/套餐` |
 | 上架 | `fleetctl provision --file batch.json --dry-run`，确认后 `fleetctl provision --file batch.json --yes --follow` |
 | 已有 VPS 节点上多了一个 IP，加成一台节点（同机 IP 节点，见 §6） | `fleetctl provision --kind vps --host 团队1-03 --ip 203.0.113.7 --team 团队1 --relay 线路机2 --yes --follow` |
 | 看作业进度、失败原因 | `fleetctl jobs --active`（`--kind upgrade_agent` 等只看一类）、`fleetctl job <id> --follow`；失败后 `fleetctl retry <id>` |
@@ -62,7 +64,7 @@
 | 访问记录留几天、改保留期（见 §13） | `fleetctl settings retention`；`fleetctl settings retention --raw 3 --hourly 14 --yes`（调短会删数据） |
 | 密钥管理 | 网页，或 `FLEET_PASSWORD=… fleetctl keys ls --user admin`（密钥管理只认登录会话） |
 
-批量上架文件 `batch.json` 是条目数组，条目里的 `team`、`relay`、`provider`、`plan` 直接写名字：
+批量上架文件 `batch.json` 是条目数组，条目里的 `team`、`relay`、`provider`、`plan` 直接写名字（供应商、套餐要先存在：`fleetctl provider ls` / `fleetctl plan ls` 看，没有就 `provider add` / `plan add` 建，见上表）：
 
 ```json
 [{"kind":"vps","ip":"203.0.113.10","team":"团队1","relay":"线路机2","provider":"ATTVPS","plan":"基础版"}]

@@ -3,6 +3,7 @@
 
 mod access;
 mod billing;
+mod catalog;
 mod client;
 mod cmds;
 mod config;
@@ -30,7 +31,7 @@ use std::process::ExitCode;
     name = "fleetctl",
     version,
     about = "团队线路管理 运维命令行",
-    after_help = "连接配置：环境变量 FLEET_URL、FLEET_TOKEN，或 `fleetctl login` 写入的配置文件。\n<机器> 可以写 机器 id、显示名（团队1-06）、线路机名、IP。\n加 --json 输出一行 JSON：ls / entries / incidents / policy ls / silence 是与表格同列的精简对象（单台完整视图用 show、policy show），billing 是订阅、流量额度与最近续费记录合成的对象，其余是 API 返回的 data 原样；错误一律走 stderr 且退出码非 0。"
+    after_help = "连接配置：环境变量 FLEET_URL、FLEET_TOKEN，或 `fleetctl login` 写入的配置文件。\n<机器> 可以写 机器 id、显示名（团队1-06）、线路机名、IP。\n加 --json 输出一行 JSON：ls / entries / incidents / policy ls / silence 是与表格同列的精简对象（单台完整视图用 show、policy show），billing 是订阅、流量额度与最近续费记录合成的对象，router exits 是按出口算好的统计，provider / plan 的 add、set 是改完后的那一项（同 ls 的一项），其余是 API 返回的 data 原样；错误一律走 stderr 且退出码非 0。"
 )]
 struct Cli {
     /// 输出 JSON（给脚本和 AI）
@@ -244,6 +245,77 @@ enum RecycleCmd {
     },
 }
 
+#[derive(Subcommand)]
+enum ProviderCmd {
+    /// 供应商列表：缩写、账单时区、流量计量与重置、提前提醒天数、套餐数
+    Ls,
+    /// 新建供应商（上架前先确认供应商存在，没有就建）：只给 --code 就行，其余默认跟随组织时区、流量取大、自然月、提前 7 天提醒
+    Add {
+        name: String,
+        #[command(flatten)]
+        args: catalog::ProviderArgs,
+    },
+    /// 改供应商：只改给了的项（--tz none 改回跟随组织时区、--panel-url none 清空）；时区、流量计量与重置、提醒天数立即对名下没单独设置的机器生效
+    Set {
+        /// 供应商（id / 名称 / 缩写）
+        provider: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[command(flatten)]
+        args: catalog::ProviderArgs,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// 删供应商：还有套餐（含已归档的）或机器（含已退役的）时中控拒绝
+    Rm {
+        provider: String,
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum PlanCmd {
+    /// 套餐列表（默认不含已归档的）：供应商、规格、价格 / 周期、在用机器数
+    Ls {
+        /// 只看这家供应商的
+        #[arg(long)]
+        provider: Option<String>,
+        /// 含已归档的
+        #[arg(long)]
+        all: bool,
+    },
+    /// 新建套餐（上架前先确认套餐存在，没有就建）：--provider、--price（主单位，如 299.99）、--currency、--cycle 必填
+    Add {
+        name: String,
+        #[command(flatten)]
+        args: catalog::PlanArgs,
+    },
+    /// 改套餐：只改给了的项（规格给 none 清空）；价格、币种、周期、流量上限立即对用它、没单独设置的机器生效。不再上架的 --archive
+    Set {
+        /// 套餐（id / 名称；重名时写「供应商/套餐」）
+        plan: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[command(flatten)]
+        args: catalog::PlanArgs,
+        /// 归档（上架时不再列出，已用着的机器不受影响）
+        #[arg(long, conflicts_with = "unarchive")]
+        archive: bool,
+        /// 取消归档
+        #[arg(long)]
+        unarchive: bool,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// 删套餐：还有机器（含已退役的）用着时中控拒绝，不再上架的用 set --archive
+    Rm {
+        plan: String,
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
 fn keys_user(c: &KeysCmd) -> Option<&str> {
     match c {
         KeysCmd::Ls { auth } | KeysCmd::Create { auth, .. } | KeysCmd::Revoke { auth, .. } => auth.user.as_deref(),
@@ -415,6 +487,16 @@ enum Cmd {
     Team {
         #[command(subcommand)]
         cmd: TeamCmd,
+    },
+    /// 供应商：列表、新建、修改、删除（上架前先确认供应商存在）
+    Provider {
+        #[command(subcommand)]
+        cmd: ProviderCmd,
+    },
+    /// 套餐：列表、新建、修改（含归档）、删除（上架前先确认套餐存在）
+    Plan {
+        #[command(subcommand)]
+        cmd: PlanCmd,
     },
     /// 升级 agent（单台，或 --all：先升一台做金丝雀，成功后线路机逐台、VPS 节点并发）；新版本起不来、没上报或线路机 Xray 不正常自动换回旧版本
     UpgradeAgent {
@@ -702,6 +784,13 @@ enum RouterCmd {
         #[arg(long)]
         yes: bool,
     },
+    /// 出口历史：每个出口在这段时间里的测试次数、失败次数、成功率、连续两轮失败的次数、延迟中位数与最大值、当前连接数，末行合计
+    Exits {
+        router: String,
+        /// 1h（原始点）| 6h | 24h（5 分钟一点）| 7d | 30d（小时汇总：看不出连续失败）
+        #[arg(long, default_value = "24h")]
+        range: String,
+    },
     /// 一键部署（重新部署）：中控用账号密码（或自己的密钥）登录路由装好隧道
     Deploy {
         router: String,
@@ -863,6 +952,21 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             TeamCmd::Ls => ops::team_ls(x),
             TeamCmd::Set { team, name, yes } => ops::team_set(x, &team, &name, yes),
         },
+        Cmd::Provider { cmd } => match cmd {
+            ProviderCmd::Ls => catalog::provider_ls(x),
+            ProviderCmd::Add { name, args } => catalog::provider_add(x, &name, &args),
+            ProviderCmd::Set { provider, name, args, yes } => catalog::provider_set(x, &provider, name.as_deref(), &args, yes),
+            ProviderCmd::Rm { provider, yes } => catalog::provider_rm(x, &provider, yes),
+        },
+        Cmd::Plan { cmd } => match cmd {
+            PlanCmd::Ls { provider, all } => catalog::plan_ls(x, provider.as_deref(), all),
+            PlanCmd::Add { name, args } => catalog::plan_add(x, &name, &args),
+            PlanCmd::Set { plan, name, args, archive, unarchive, yes } => {
+                let ar = if archive { Some(true) } else if unarchive { Some(false) } else { None };
+                catalog::plan_set(x, &plan, name.as_deref(), &args, ar, yes)
+            }
+            PlanCmd::Rm { plan, yes } => catalog::plan_rm(x, &plan, yes),
+        },
         Cmd::UpgradeAgent { machine, all, yes, follow } => ops::upgrade_agent(x, machine.as_deref(), all, yes, follow),
         Cmd::Tune { machine, team, all, yes, follow } => ops::tune(x, machine.as_deref(), team.as_deref(), all, yes, follow),
         Cmd::Entries { machine } => cmds::entries(x, machine.as_deref()),
@@ -907,6 +1011,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Routers { team } => routers::ls(x, team.as_deref()),
         Cmd::Router { cmd } => match cmd {
             RouterCmd::Show { router } => routers::show(x, &router),
+            RouterCmd::Exits { router, range } => routers::exits(x, &router, &range),
             RouterCmd::Add { name, team, note, ssh, yes, follow } => {
                 routers::add(x, routers::AddOpts { name: &name, team: team.as_deref(), note: note.as_deref(), ssh: ssh.opts(), yes, follow })
             }
@@ -974,6 +1079,31 @@ mod tests {
         };
         assert_eq!(parse(&["团队2 备用", "--name", "备用", "--yes"]), Ok(("团队2 备用".into(), "备用".into(), true)));
         assert!(parse(&["备用"]).is_err() && parse(&["备用", "--spare", "true"]).is_err());
+    }
+
+    /// 供应商 / 套餐：可改项 add 与 set 共用；--archive 与 --unarchive 互斥
+    #[test]
+    fn catalog_command_line() {
+        let parse = |a: &[&str]| Cli::try_parse_from(["fleetctl"].iter().chain(a)).map(|c| c.cmd);
+        match parse(&["provider", "add", "ATTVPS", "--code", "ATT", "--tz", "Asia/Shanghai", "--traffic-rule", "min", "--remind-days", "5"]) {
+            Ok(Cmd::Provider { cmd: super::ProviderCmd::Add { name, args } }) => {
+                assert_eq!((name.as_str(), args.code.as_deref(), args.tz.as_deref(), args.traffic_rule.as_deref(), args.remind_days), ("ATTVPS", Some("ATT"), Some("Asia/Shanghai"), Some("min"), Some(5)));
+            }
+            _ => panic!("不是 provider add"),
+        }
+        match parse(&["plan", "set", "GOMAMI/Mini", "--price", "39.46", "--traffic-gb", "none", "--archive", "--yes"]) {
+            Ok(Cmd::Plan { cmd: super::PlanCmd::Set { plan, args, archive, unarchive, yes, .. } }) => {
+                assert_eq!((plan.as_str(), args.price.as_deref(), args.traffic_gb.as_deref(), archive, unarchive, yes), ("GOMAMI/Mini", Some("39.46"), Some("none"), true, false, true));
+            }
+            _ => panic!("不是 plan set"),
+        }
+        assert!(parse(&["plan", "set", "Mini", "--archive", "--unarchive"]).is_err());
+        assert!(parse(&["plan", "ls", "--provider", "GM", "--all"]).is_ok());
+        assert!(parse(&["provider", "rm"]).is_err(), "要给供应商");
+        match parse(&["router", "exits", "团队2-路由A"]) {
+            Ok(Cmd::Router { cmd: super::RouterCmd::Exits { router, range } }) => assert_eq!((router.as_str(), range.as_str()), ("团队2-路由A", "24h")),
+            _ => panic!("不是 router exits"),
+        }
     }
 
     #[test]

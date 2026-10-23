@@ -61,7 +61,7 @@ fn effective(body: &Value, tpl: &Value, cur: &Value) -> Value {
 }
 
 /// 金额：`39.46` / `39` / `0.5`（最多两位小数，不带正负号）→ 分。接口收整数分，币种是订阅的
-fn parse_money(s: &str) -> anyhow::Result<i32> {
+pub(crate) fn parse_money(s: &str) -> anyhow::Result<i32> {
     let s = s.trim();
     let (int, frac) = s.split_once('.').unwrap_or((s, "0"));
     let digits = |x: &str| !x.is_empty() && x.bytes().all(|b| b.is_ascii_digit());
@@ -341,7 +341,7 @@ pub struct SubSetOpts<'a> {
 }
 
 /// `none`（不分大小写）= null：单独设置的字段改回跟随
-fn is_none(s: &str) -> bool { s.trim().eq_ignore_ascii_case("none") }
+pub(crate) fn is_none(s: &str) -> bool { s.trim().eq_ignore_ascii_case("none") }
 
 /// `N` 或 `none`（= null）；N 不在 `range` 里报 `bad`
 fn int_or_none(s: &str, range: RangeInclusive<i32>, bad: &str) -> anyhow::Result<Value> {
