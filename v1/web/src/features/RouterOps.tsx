@@ -26,7 +26,7 @@ export function GroupsSection({ r, groups }: { r: RouterView; groups: RouterGrou
   const sw = (g: RouterGroup): RouterSwitch | undefined => r.switches?.find((s) => s.group === g.name);
   return (
     <Section>
-      <SectionHeader title={<>策略组<InfoTip text={'临时切换只改 mihomo 当前的选择，不改配置、不重启 OpenClash，已有连接不断\n路由重启或 OpenClash 重载后组会回到它自己的默认选择'} /></>} meta={`${groups.length} 个`} />
+      <SectionHeader title={<>策略组<InfoTip text={'临时切换只改 mihomo 当前的选择，不改配置、不重启 OpenClash，已有连接不断\nOpenClash 重启后一般保留当前选择，到时仍由中控切回'} /></>} meta={`${groups.length} 个`} />
       <div className="mgroup">
         {sel.map((g) => {
           const s = sw(g);
@@ -109,7 +109,7 @@ const SwitchDialog = resetOnOpen(function SwitchDialog({ open, t }: { open: bool
   });
   return (
     <FormDialog open={open} onOpenChange={(o) => !o && showSwitch(null)} title={`临时切换出口 · ${t.name}`} submitLabel="切换" busy={run.isPending} valid={valid} onSubmit={submit}
-      desc={<>不重启 OpenClash，已有连接不断，新连接走新出口<InfoTip text="路由重启或 OpenClash 重载后，组会回到它自己的默认选择，待切回随之取消" /></>}>
+      desc={<>不重启 OpenClash，已有连接不断，新连接走新出口<InfoTip text="OpenClash 重启后一般保留当前选择；组的选择被别人改掉时，待切回随之取消" /></>}>
       {q.isLoading ? <Skeleton h={96} /> : !groups.length ? <Note tone="warn">这台路由没有可以手动切换的 select 组</Note> : (
         <div className="form-grid">
           <Field label="策略组" className="span-2"><Select value={g?.name ?? ''} onChange={(v) => { setGroup(v); setTo(''); }} options={groups.map((x) => ({ value: x.name, label: x.name }))} /></Field>

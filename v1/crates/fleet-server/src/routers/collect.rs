@@ -944,7 +944,7 @@ async fn one(st: &AppState, t: &Target, m: &mut Mem, entries: &[Entry], delay: b
                 .await?;
             }
             tx.commit().await?;
-            // 临时切换的组被路由自己改回了（重启、OpenClash 重载）：待切回取消（routers/switch.rs）
+            // 临时切换的组被改成了别的（有人手动改、换了配置）：待切回取消（routers/switch.rs）
             if let Err(e) = super::switch::reconcile(st, t.id, &b.snap, now).await {
                 tracing::warn!(router = %t.id, "核对临时切换失败：{e:#}");
             }

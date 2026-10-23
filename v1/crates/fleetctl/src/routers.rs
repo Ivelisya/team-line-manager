@@ -658,7 +658,7 @@ pub fn switch(ctx: &Ctx, q: &str, group: &str, to: Option<&str>, dur: Option<&st
         } else {
             s.push_str(&format!("。不会自动切回：要切回时 fleetctl router switch {name} {group} --back"));
         }
-        s.push_str("。已有的连接不受影响，新连接走新出口；路由重启或 OpenClash 重载后组会回到它自己的默认选择");
+        s.push_str("。已有的连接不受影响，新连接走新出口；OpenClash 重启后一般保留当前选择，到时仍由中控切回");
         s
     });
     Ok(0)

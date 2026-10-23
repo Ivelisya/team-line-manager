@@ -205,7 +205,7 @@ pub async fn due(st: &AppState) {
     }
 }
 
-/// 采集成功之后核对：组现在选中的不是记录里切到的（或组没了）= 路由自己改回了（重启、OpenClash 重载），记录结束、待切回取消。
+/// 采集成功之后核对：组现在选中的不是记录里切到的（或组没了）= 路由那边改了（有人手动改、换了配置；OpenClash 重启一般保留选择），记录结束、待切回取消。
 /// `started` 是这次采集开始的时刻：切换生效之前开始的采集读到的可能是切之前的，不算。mihomo 的 API 没调通（没有组）时不判
 pub async fn reconcile(st: &AppState, router: Uuid, snap: &Snapshot, started: OffsetDateTime) -> anyhow::Result<()> {
     if snap.groups.is_empty() {
