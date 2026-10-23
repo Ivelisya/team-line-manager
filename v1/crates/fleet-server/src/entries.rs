@@ -113,7 +113,7 @@ pub async fn transition(tx: &mut Tx<'_>, entry_id: Uuid, to: &str, rotate: bool)
     Ok((relay_id, gen))
 }
 
-/// 线路机的期望状态
+/// 线路机的期望状态。改了这里生成的内容（数据没变、结果会变的那种）要把 `db::DESIRED_FORMAT` +1，否则线路机拿不到新的
 pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, echo_url: &str) -> anyhow::Result<DesiredState> {
     let (gen, dest, sni, sk_enc, mcv): (i64, String, String, Vec<u8>, Option<String>) = sqlx::query_as(
         "select generation, reality_dest, reality_sni, reality_private_enc, min_client_ver from relay where machine_id = $1",

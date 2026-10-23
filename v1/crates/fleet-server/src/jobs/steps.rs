@@ -753,6 +753,7 @@ async fn wait_report(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
             .await?
             .rows_affected();
         if revoked > 0 {
+            c.st.agent_auth.forget(id);
             c.log(format!("新令牌已上报，撤销了 {revoked} 枚旧令牌")).await;
         }
     }
@@ -968,11 +969,13 @@ async fn cleanup(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
 }
 
 async fn revoke(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
+    let id = c.target_id()?;
     let n = sqlx::query("update agent_token set revoked_at = now() where machine_id = $1 and revoked_at is null")
-        .bind(c.target_id()?)
+        .bind(id)
         .execute(&c.st.db)
         .await?
         .rows_affected();
+    c.st.agent_auth.forget(id);
     Ok(Outcome::Done(json!({"revoked": n})))
 }
 
@@ -1065,8 +1068,10 @@ async fn purge(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         n += sqlx::query(&format!("delete from {t} where entry_id = any($1)")).bind(&eids).execute(&mut *tx).await?.rows_affected();
     }
     n += sqlx::query("delete from host_metric_hourly where machine_id = $1").bind(id).execute(&mut *tx).await?.rows_affected();
-    // 访问汇总：access_hourly 按节点或线路机，其余三张按节点（线路机自己没有这三张的行）
-    n += sqlx::query("delete from access_hourly where node_id = $1 or relay_id = $1").bind(id).execute(&mut *tx).await?.rows_affected();
+    // 访问汇总：access_hourly、access_daily 按节点或线路机，其余三张按节点（线路机自己没有这三张的行）
+    for t in ["access_hourly", "access_daily"] {
+        n += sqlx::query(&format!("delete from {t} where node_id = $1 or relay_id = $1")).bind(id).execute(&mut *tx).await?.rows_affected();
+    }
     for t in ["access_source_hourly", "access_target_seen", "access_source_late"] {
         n += sqlx::query(&format!("delete from {t} where node_id = $1")).bind(id).execute(&mut *tx).await?.rows_affected();
     }
@@ -1139,6 +1144,7 @@ pub async fn compensate(st: &AppState, job: &JobRow, owner: &str) {
         sqlx::query("update agent_token set revoked_at = now() where machine_id = $1 and revoked_at is null").bind(id).execute(&st.db).await,
     )
     .await;
+    st.agent_auth.forget(id);
     // 压缩编号要用这台机器占着编号的团队
     let team = note(
         st,

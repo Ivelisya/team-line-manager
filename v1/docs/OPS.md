@@ -103,7 +103,7 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
      和供应商面板对不上时：先看 `fleetctl show <机器>` 的计量网卡是不是供应商计费的那块（漏了附加公网 IP 的网卡、算进了内网网卡）、agent 是不是新版本（旧 agent 重启会丢十几秒）；再看周期口径——供应商按开通时刻而不是 0 点重置、按滚动 30 天、按入加出合计，都会差出一截，改供应商的「流量重置」「流量计量」而不是手填数字。
    - 告警恢复后 30 分钟内又出现会重开原告警（`reopen_count` +1，告警页显示「反复 N 次」），不会每抖一次发一对触发/恢复通知。
    - 去抖：原因连续出现满 60 秒才开告警、连续消失满 60 秒才恢复；探测类更长（`egress_fail` 150 秒、`tcp_fail` 90 秒），偶发一次探测失败不报。续费类、流量额度不去抖。
-   - `central_channel_failing` / `central_backup_stale` / `central_disk_low` / `central_ingress`：告警对象是「中控」自己（通知渠道发不出去、备份停了、磁盘快满、大批 agent 同时连不上中控），见 §12。
+   - `central_channel_failing` / `central_backup_stale` / `central_disk_low` / `central_ingress` / `central_view_stuck`：告警对象是「中控」自己（通知渠道发不出去、备份停了、磁盘快满、大批 agent 同时连不上中控、机器视图算不出来），见 §12。
    - 维护中的机器：进行中的告警保持原状，不算恢复；维护结束后按那时的状态再判。线路机维护时，经它探测的节点出口 / TCP 结果同样判不出（不开、开着的不恢复）。
    - 判不出的不算恢复，告警保持原状：线路机 agent 离线或维护中时节点的出口 / TCP；agent 离线时 CPU / 内存 / 磁盘持续偏高与时钟偏差（负载类回来后还要攒够 5 分钟样本）；中控停机超过 5 分钟重启后、新的检查不足 3 轮时的「客户入口连不上」；主来源的探测点离线、暂由中控代替（或标灰）期间的「客户入口连不上」（中控连得上不算恢复，等探测点回来再判）。
    - 通知先写进库里的发送队列（`notify_outbox`）再发：中控重启、部署后接着发，不丢。每个渠道一个发送任务，同一渠道内按入队顺序逐条发（一批告警同时触发时不会并发打到同一渠道），渠道之间互不等待（一个渠道一直超时不拖慢别的）。发送失败（网络错误、5xx）隔 0.5 秒、2 秒、10 秒、30 秒、1 分钟、之后每 2 分钟重发同一条（后面的排着），回 429 时按渠道给的等待时长（Telegram 的 `parameters.retry_after`、通用的 `Retry-After` 头，最多 60 秒）；渠道拒绝（令牌不对、errcode 非 0）不重试，记一条失败。入队满 30 分钟还没发出的放弃，发送记录里记一条失败；渠道连续失败满 5 分钟另开告警 `central_channel_failing`。某个渠道没收到一条告警的「触发」（放弃了，或渠道是后来加的），这条告警恢复时也不给它发「恢复」。
@@ -191,6 +191,7 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
 先升中控（`lab/deploy-server.sh` 就是先装 fleet-server、再把新 agent 放进 dist），再 `fleetctl upgrade-agent --all --yes` 升 agent：新 agent 的上报可能带旧中控不认的字段形状（如容器里 `load1` 为 null），旧中控会拒收整份上报。
 探测口径修正（迁移 0038）两边都兼容，仍按这个顺序：新中控收旧 agent 的上报照常（没有 `retrans`，卡片读数已改成近 1 小时中位数，SYN 重发尖刺不再左右它）；新 agent 报的 `retrans` 旧中控忽略。线路机的心跳格改由中控探（`relay_reach`），只要中控升级就生效。
 反过来，期望状态里的新东西旧 agent 也不认：直出入口（出站 `direct`）要等那台线路机的 agent 升级后再建，否则线路机报「agent 版本过旧」、整台的配置停在旧代数（这时升级 agent，或取消那个新增入口作业把直出入口摘掉，都能恢复）。
+中控改了期望状态的生成逻辑（加字段、改算法），而库里的数据没变时，线路机不会自己重拉：改的人要把 `db::DESIRED_FORMAT` +1，新中控启动时和库里记的（app_setting `desired_format`）不同就给所有未退役线路机代数 +1，日志里有一行「期望状态格式版本变为 n」。
 
 ### 升级 agent：金丝雀与回滚
 - **顺序**：`--all` 不是一起升。先升一台做金丝雀（有线路机先挑线路机，同类里在用入口少的先上），它成功了其余线路机一台接一台，线路机都成功后 VPS 节点并发（同时最多 `job_workers` 台）。命令输出第一行后面就是这次的顺序（金丝雀是哪台），作业按执行顺序列出；`--follow` 依次跟着看。排在后面的作业在前一台结束之前一直是「排队中」：排队中的可以取消（`fleetctl cancel <作业>` 或网页作业详情），「全部升级」里等它的跟着取消；已经开始的不能取消（推送、重启到一半中断更危险），等它结束。
@@ -396,6 +397,7 @@ heartbeat_url = "https://hc-ping.com/<检查的 uuid>"
 - `central_backup_stale`（警告）：`/var/backups/fleet` 里最新一份备份（`fleet-*.tar`、加密的 `fleet-*.tar.age`）超过 26 小时，或目录里一份都没有、读不了。每天 03:30 备份，没做成约两小时后报。`systemctl status fleet-backup`、`journalctl -u fleet-backup -n 20` 查原因，修好后 `systemctl start fleet-backup` 做一份，下一轮恢复。备份不在默认目录时在 `[selfmon]` 写 `backup_dir = "…"`；目录不存在（没装备份，如实验室）不检查。
 - `central_disk_low`（严重）：中控本机 `/`、`/var/lib/postgresql`、`/var/lib/fleet`、备份目录所在的文件系统可用空间低于 10%（同 `df` 的 Avail 占 Size），回到 11% 以上恢复。写满了 PostgreSQL 会停、中控跟着停：`df -h`、`du -sh /var/lib/postgresql /var/backups/fleet /var/log/journal` 找大头（原始时序按 `[retention]` 只留几天，备份留 14 份）。
 - `central_ingress`（严重）：有自己 agent 的在用机器里同时离线的超过一半、且至少 3 台。中控和库都好着，是 agent 到不了中控：查边缘机反代、Caddy、域名解析（从别的机器 `curl -sI https://<中控域名>` 试）。期间不再按台开「agent 离线」；这条恢复后仍没回来的再按台报。
+- `central_view_stuck`（严重）：机器视图（列表、总览、实时推送、告警评估共用的那一份）连续 2 分钟算不出来。视图查询每条 15 秒超时，取一次最多等 20 秒，失败时先用上一份顶 1 分钟，再久告警评估就跟着失败、死人开关停止 ping。多半是有查询被锁住（迁移、建分区排在父表锁后面）：`select pid, wait_event_type, state, now() - query_start, left(query, 80) from pg_stat_activity where datname = 'fleet' and state <> 'idle' order by 4 desc`，看是谁拿着锁。算成一次就恢复。
 
 **后台任务监督**：中控里的后台循环（告警、实时指标、访问汇总、来源画像、通知发送、分区与保留期维护、小时汇总）panic 或意外退出时，`journalctl -u fleet-server` 记一条 error（「后台任务「…」…，10 秒后重启」），10 秒后原地重启，其余照常。作业引擎例外：它启动时释放全部作业租约，原地重启会让还在跑的作业被领两次，所以它一退出整个进程就退出，由 systemd（`Restart=always`）重启（`systemctl status fleet-server` 看重启次数）。告警循环一直起不来时死人开关会报。
 

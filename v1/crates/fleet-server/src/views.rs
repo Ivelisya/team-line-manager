@@ -45,7 +45,7 @@ pub async fn brief(st: &AppState, scope: Scope) -> sqlx::Result<Value> {
          where {}",
         scope.cond()
     ))
-    .fetch_one(&st.db)
+    .fetch_one(&st.view_db)
     .await
 }
 
@@ -507,6 +507,7 @@ pub const AGENT_OFFLINE_S: i64 = 120;
 /// 在用机器全量视图的短缓存：/machines、/relays、/overview、告警评估、实时指标共用，并发请求合并成一次查询（单飞）。
 /// 资源变更事件（`AppState::emit`）让它作废、下次完整加载；agent 上报的指标不发事件，TTL 过了就在上一份上补指标（`refresh`），
 /// 每 `FULL_EVERY`、跨天或小时汇总之后才再完整加载一次。
+/// 重算正在进行（锁被占）或失败、超时时先回上一份（`LiveCache::stale`），见 `cached`。
 struct Snap {
     /// 最近一次加载或补指标的时刻（TTL 从这里算）
     at: Instant,
@@ -519,6 +520,11 @@ struct Snap {
 }
 /// 指标（心跳、探测）最多旧这么久
 const LIVE_TTL: std::time::Duration = std::time::Duration::from_secs(3);
+/// 取一次视图（等锁加重算）最多等这么久，到点算失败（回上一份或报错）。视图池每条语句 15 秒超时，但一次完整加载有几轮先后依赖的查询，
+/// 叠起来会更久；告警评估（30 秒一轮）不能被它拖住
+const VIEW_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+/// 上一份视图最多旧这么久还拿来顶：再旧就报错（告警评估这一轮失败、中控自检报 `central_view_stuck`），不拿很久以前的在线状态判告警
+const STALE_MAX: std::time::Duration = std::time::Duration::from_secs(60);
 /// 只补指标最多这么久，之后完整加载一次（与小时汇总同一节奏）：账单时区跨天的到期天数与流量周期、国旗画像在这时跟上。
 /// 改机器的地方都发事件（含作业步骤、线路机连通性的结论），不靠它兜底
 const FULL_EVERY: std::time::Duration = std::time::Duration::from_secs(300);
@@ -535,6 +541,10 @@ pub struct LiveCache {
     /// 作业推进、告警或静默变化 +1（`touched`）：下次取视图时补指标并重查作业与告警数，不等 TTL、不整份重算
     touched: AtomicU64,
     slot: tokio::sync::Mutex<Option<Snap>>,
+    /// 最近一次算成的视图（同 `slot` 里的那份，另存一份不用拿锁就能读）：(算成的时刻, gen, rolled, 视图)
+    last: std::sync::Mutex<Option<(Instant, u64, u64, Arc<Vec<MachineView>>)>>,
+    /// 视图从什么时候起一直算不出来（失败或超时）、最近一次的错误；算成一次就清掉。中控自检据此报 `central_view_stuck`
+    failing: std::sync::Mutex<Option<(OffsetDateTime, String)>>,
     /// `GET /machines` 的响应体，与它序列化自的那一份视图（同一份视图只序列化一次）
     json: std::sync::Mutex<Option<(Arc<Vec<MachineView>>, axum::body::Bytes)>>,
     /// 小时汇总每跑完一轮 +1
@@ -575,6 +585,24 @@ impl LiveCache {
     pub fn rolled_up(&self) {
         self.rolled.fetch_add(1, Ordering::SeqCst);
     }
+
+    /// 视图从什么时候起一直算不出来、最近一次的错误（`cached` 失败或超时时记下，算成一次就清掉）
+    pub fn failing(&self) -> Option<(OffsetDateTime, String)> {
+        self.failing.lock().unwrap().clone()
+    }
+
+    /// 上一份视图，旧不过 `STALE_MAX` 才给；`same`：还要求之后没有资源变更、没有新的小时汇总（只差随上报变的指标）
+    fn settled(&self, at: Instant, gen: u64, rolled: u64, v: &Arc<Vec<MachineView>>) {
+        *self.last.lock().unwrap() = Some((at, gen, rolled, v.clone()));
+        *self.failing.lock().unwrap() = None;
+    }
+
+    fn stale(&self, same: bool) -> Option<Arc<Vec<MachineView>>> {
+        let last = self.last.lock().unwrap();
+        let (at, gen, rolled, v) = last.as_ref()?;
+        let unchanged = *gen == self.gen.load(Ordering::SeqCst) && *rolled == self.rolled.load(Ordering::SeqCst);
+        (at.elapsed() < STALE_MAX && (unchanged || !same)).then(|| v.clone())
+    }
 }
 
 /// 在用机器的完整视图，走 `LiveCache`
@@ -587,9 +615,39 @@ pub async fn live_fresh(st: &AppState) -> sqlx::Result<Arc<Vec<MachineView>>> {
     cached(st, std::time::Duration::ZERO).await
 }
 
+/// 取视图：锁空着就自己算（或用缓存）；锁被占（别的请求正在重算）时，之后没有资源变更的话直接回上一份、不排队等它，
+/// 有资源变更才等（改完马上重取的要看到改动）。等锁加重算最多 `VIEW_WAIT`；失败或超时回上一份（旧不过 `STALE_MAX`），
+/// 再旧就报错——超时报 `PoolTimedOut`（接口回 503，同等不到连接）
 async fn cached(st: &AppState, ttl: std::time::Duration) -> sqlx::Result<Arc<Vec<MachineView>>> {
     let c = &st.live;
-    let mut slot = c.slot.lock().await;
+    let got = match c.slot.try_lock() {
+        Ok(slot) => tokio::time::timeout(VIEW_WAIT, fill(st, slot, ttl)).await,
+        Err(_) => {
+            if let Some(v) = c.stale(true) {
+                return Ok(v);
+            }
+            tokio::time::timeout(VIEW_WAIT, async { fill(st, c.slot.lock().await, ttl).await }).await
+        }
+    };
+    let e = match got {
+        Ok(Ok(v)) => return Ok(v),
+        Ok(Err(e)) => e,
+        Err(_) => sqlx::Error::PoolTimedOut,
+    };
+    let msg = if matches!(e, sqlx::Error::PoolTimedOut) { format!("{} 秒内没算出来", VIEW_WAIT.as_secs()) } else { e.to_string() };
+    c.failing.lock().unwrap().get_or_insert((OffsetDateTime::now_utc(), String::new())).1 = msg;
+    match c.stale(false) {
+        Some(v) => {
+            tracing::warn!("机器视图没算出来，先用上一份：{e}");
+            Ok(v)
+        }
+        None => Err(e),
+    }
+}
+
+/// 拿着锁：缓存还新就直接用，否则补指标或完整加载；算成的记进 `last`、清掉失败标记
+async fn fill(st: &AppState, mut slot: tokio::sync::MutexGuard<'_, Option<Snap>>, ttl: std::time::Duration) -> sqlx::Result<Arc<Vec<MachineView>>> {
+    let c = &st.live;
     // 先记下再查：查询期间又有变更的，下次照样重查
     let (gen, rolled, touched) = (c.gen.load(Ordering::SeqCst), c.rolled.load(Ordering::SeqCst), c.touched.load(Ordering::SeqCst));
     if let Some(s) = slot.as_mut().filter(|s| s.gen == gen && s.rolled == rolled) {
@@ -599,6 +657,7 @@ async fn cached(st: &AppState, ttl: std::time::Duration) -> sqlx::Result<Arc<Vec
         if Instant::now() < s.full_until {
             s.v = Arc::new(refresh(st, &s.v, s.touched != touched).await?);
             (s.at, s.touched) = (Instant::now(), touched);
+            c.settled(s.at, gen, rolled, &s.v);
             return Ok(s.v.clone());
         }
     }
@@ -607,6 +666,7 @@ async fn cached(st: &AppState, ttl: std::time::Duration) -> sqlx::Result<Arc<Vec
     // 流量缓存（load 刚取过）到组织时区的下一个零点过期：跨天时今天的流量清零，完整加载一次
     let day_end = c.traffic.lock().await.as_ref().map(|((_, exp), _)| *exp);
     let full_until = day_end.map_or(at + FULL_EVERY, |e| e.min(at + FULL_EVERY));
+    c.settled(at, gen, rolled, &v);
     *slot = Some(Snap { at, full_until, gen, rolled, touched, v: v.clone() });
     Ok(v)
 }
@@ -632,7 +692,7 @@ pub async fn live_json(st: &AppState) -> sqlx::Result<axum::body::Bytes> {
 /// （探测由线路机上报，补它上面的入口）；维护中每次都查；`jobs`（作业、告警或静默变过）时再补进行中 / 失败的作业与未恢复的告警数。
 /// 最后按现在的时刻重判在线与健康。其余字段（名称、订阅、入口、流量、额度、策略、国旗）随完整加载更新
 async fn refresh(st: &AppState, prev: &[MachineView], jobs: bool) -> sqlx::Result<Vec<MachineView>> {
-    let db = &st.db;
+    let db = &st.view_db;
     let hid = |m: &MachineView| m.host_machine.as_ref().map_or(m.id, |h| h.id);
     let mut last: HashMap<Uuid, Option<OffsetDateTime>> = HashMap::new();
     for m in prev {
@@ -942,7 +1002,7 @@ async fn flows(st: &AppState) -> sqlx::Result<Flows> {
         "select date_trunc('day', l) at time zone z, date_trunc('month', l) at time zone z, extract(epoch from date_trunc('day', l) + interval '1 day' - l)::float8
          from (select z, now() at time zone z l from (select org_tz() z) o) b",
     )
-    .fetch_one(&st.db)
+    .fetch_one(&st.view_db)
     .await?;
     let rows: Vec<(Uuid, i64, i64, i64, i64)> = sqlx::query_as(
         "select entry_id,
@@ -952,7 +1012,7 @@ async fn flows(st: &AppState) -> sqlx::Result<Flows> {
     )
     .bind(d0)
     .bind(m0)
-    .fetch_all(&st.db)
+    .fetch_all(&st.view_db)
     .await?;
     let v: TrafficMap =
         Arc::new(rows.into_iter().map(|(id, tu, td, mu, md)| (id, Traffic { today_up: tu, today_down: td, month_up: mu, month_down: md })).collect());
@@ -965,7 +1025,7 @@ async fn flows(st: &AppState) -> sqlx::Result<Flows> {
     )
     .bind(d0)
     .bind(m0)
-    .fetch_all(&st.db)
+    .fetch_all(&st.view_db)
     .await?;
     let n: NicMap =
         Arc::new(rows.into_iter().map(|(id, tr, tt, mr, mt)| (id, NicTraffic { today_rx: tr, today_tx: tt, month_rx: mr, month_tx: mt })).collect());
@@ -1021,7 +1081,7 @@ async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<
         .bind(miss.iter().map(|k| k.2.clone()).collect::<Vec<_>>())
         .bind(miss.iter().map(|k| k.3).collect::<Vec<_>>())
         .bind(miss.iter().map(|k| k.4).collect::<Vec<_>>())
-        .fetch_all(&st.db)
+        .fetch_all(&st.view_db)
         .await?;
         let got: HashMap<Uuid, QuotaUsed> = rows.into_iter().map(|(m, b, cal, s0)| (m, (b, cal, s0))).collect();
         for k in miss {
@@ -1033,7 +1093,7 @@ async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<
 }
 
 pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Result<Vec<MachineView>> {
-    let db = &st.db;
+    let db = &st.view_db;
     let lc = scope.cond();
     // 线路机客户入口的连通性看哪一路检查（主探测来源；离线时退回中控或标灰，见 probe_points/）
     let reach_src = crate::probe_points::effective(db).await?;

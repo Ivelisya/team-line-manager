@@ -282,6 +282,7 @@ ProvisionItem = {
 | `central_backup_stale`（备份过期） | warning | 备份目录（`[selfmon] backup_dir`，默认 `/var/backups/fleet`）里最新一份 `fleet-*.tar` / `fleet-*.tar.age` 超过 26 小时，或一份都没有、读不了；目录不存在（没装备份）不检查 | 有了 26 小时内的一份 |
 | `central_disk_low`（中控磁盘空间不足） | critical | 中控本机 `/`、`/var/lib/postgresql`、`/var/lib/fleet`、备份目录所在的文件系统可用空间低于 10%（同 df） | 回到 11% 以上 |
 | `central_ingress`（agent 同时失联） | critical | 有自己 agent 的在用机器（不含维护中的、同机 IP 节点）里同时离线的超过一半且至少 3 台：摘要「x/y 台 agent 同时失联：检查边缘机 / Caddy / DNS」。期间不新开单机的 `agent_offline`（已开着的照旧） | 离线的不再过半或不到 3 台；还没回来的从这时起按单机去抖、报 `agent_offline` |
+| `central_view_stuck`（机器视图算不出来） | critical | 机器视图（列表、总览、实时推送、告警评估共用）连续 2 分钟算不出来（查询被锁住或超时）：摘要「机器视图已经 n 分钟算不出来（原因）：…」。期间 `central_ingress` 判断不了，开着的留着 | 算成一次 |
 
 **探测点的告警**（`probe_points/`，规则 `probe_` 开头）：`probe_point_offline`（探测点离线，warning）——启用的、上报过的探测点超过 180 秒没上报；摘要「香港：5 分钟没有上报（最近一次 …）」，它是主探测来源时后面写明线路机的连通性暂由中控代替 / 暂时判不出。上报恢复即恢复；停用、删除时直接关、不发恢复（`detail.closed_by = probe_point_disabled / probe_point_removed`）。对象是探测点：`subject` / `subject_id` 为 null、`subject_name` 是它的名字（通知记录同）。每 30 秒检查一次，不去抖（条件自带 180 秒）。
 
@@ -339,6 +340,8 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 
 直出入口在期望状态里是 `"outbound": {"protocol": "direct"}`（`expect_egress_ip` 为线路机自己的 IP）。不认识它的旧 agent 整份期望状态解析失败、回报「agent 版本过旧」（线路机 apply_error），所以**先升级线路机 agent，再建直出入口**。agent 为它渲染入口自己的 freedom 出站（`out-<入口>`，不复用共享的 `direct`），不做 TCP 探测；路由和节点入口相同（AsIs，`block-private` / `block-bittorrent` 在前），另在该入口规则最前面加 `guard-<入口>-api`：目标端口是本机 Xray API（62789）或任一入口的回环探测入站（入口端口 + 10000）的连接一律 blocked（各入口的探测规则 `probe-<入口>` 本身也只放行到回显服务，即 echo_url 的主机与端口，和出口探测的备用目标，别的目标落到默认的 `deny`：探测入站是不要密码的 SOCKS，不能当跳板）——`block-private` 只拦 IP 目标，客户写解析到回环的域名（`localhost`、`127.0.0.1.nip.io`）时 freedom 会在线路机本机解析并连上 API。解析到内网其它地址的域名仍能连（与旧系统的主入口相同）；没有改成 IPIfNonMatch 先解析再过 `block-private`，是因为 fake-ip DNS 环境（实验室，域名都解析到 198.18.0.0/15）里那样会把所有域名都拦掉。
 
+鉴权（三个接口相同）：先认令牌、再读请求体（没鉴权的请求不解压、不解析）。认令牌的结果在内存里缓存：有效的 30 秒、无效或已撤销的 10 秒；作业撤销令牌时马上作废。令牌查库没查到的按来源 IP 计失败：突发 30 次、之后每 2 秒 1 次，超出回 429 + `Retry-After`（`error.code="rate_limited"`）、不查库；缓存里认得的令牌（有效的、记着无效的）不计也不受限。合法 agent 收到的响应不变（请求体有问题照旧 400 / 413）。
+
 `POST /agent/v1/report` 入库失败按类回：数据本身入不了库（SQLSTATE 22 类：坏字节、NUL、越界；23 类：违反约束）→ 422（`error.code="bad_report"`），agent 把这份报告移入 `dead/` 不再重发，其中的入口流量结转到下一份报告补报（同离线队列超限淘汰；这份本身带着结转补报的流量时不再结转，免得一份接一份地被拒）；其它（连接池超时、断连、磁盘满、只读…）→ 503，agent 退避重试（受本地队列的字节与时长上限约束）。agent 只把 4xx（401 撤销、403/404/408/429 除外）当永久拒绝，5xx 和网络错误一律重试。
 
 上报的限额（按机器，在内存里，中控重启归满）：新的一份（seq 大于入库提交过的）要有一个令牌，突发 600、之后每秒补 1，扣不到回 429 + `Retry-After`；入库提交之后才扣令牌与主机样本余额，入库失败的那份不扣、也不算「提交过的 seq」（重发的同一份不扣）。agent 给的字符串里的 NUL 入库前去掉（text / jsonb 不收）。主机网卡计数器的每段增量在小时汇总里按 10 Gbit/s × 两个样本的间隔封顶、入口流量每小时按 10 Gbit/s 跑满封顶，用量求和夹到 9e18：离谱的计数器不会让汇总或机器列表溢出。样本时间戳只收「保留期以内 ~ 中控时间往后 10 分钟」（访问记录按面板里设的原始记录保留期，其余按 `[retention] raw_days`；agent 时钟快得更多时样本丢弃，健康原因 `clock_skew` 在偏差超过 60 秒时就已报出）。主机样本按 (机器, 时刻) 唯一，同一时刻重报的不再入库；另有主机样本余额：容量 8640 个（24 小时的量），每 5 秒补一个（两倍于 agent 10 秒一个的采样），超出的丢最早的——正常 agent 补传积压（最多 6 小时离线队列 + 12 小时内存缓冲）期间余额按两倍速回满，用不完；一台机器一天最多入库约 2.6 万条（正常 8640）。
@@ -346,7 +349,7 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 `POST /agent/v1/applied`：每台线路机突发 120 份、之后 2 秒一份，超出回 429 + `Retry-After`（agent 照 Retry-After 重试，三次不成落盘、下轮补发）。`error` 与 `entries[].error` 截到 512 字，`entries` 最多 3000 条（不属于这台线路机的入口 id 忽略）。回报没改变任何东西（重发的同一份、同样的错误）时不发 `relay` / `machines` 失效通知。
 
 ## 访问监控
-线路机 agent 解析 Xray 访问日志上报，服务端写入 `access_event`（原始记录，默认留 7 天），并每 5 分钟把当前小时和被标脏的小时重算进小时汇总（`access_hourly` / `access_source_hourly`，默认留 31 天，窗口最长 30d 且不超过汇总的保留期；`access_target_seen` 记每个目标的首次 / 最近出现，最近一次出现超过汇总的保留期就删；留多久见下文「访问记录保留期」；幂等；agent 断网后补传的旧记录在上报时把所在小时记进 `access_dirty`，下一轮补算；启动时补算缺口）。24h/7d/30d 的结果在进程内缓存：每轮汇总成功后整体作废；`summary` / `targets`（第一页）/ `sources` 最多缓存 `access_cache_secs`（默认 300）秒，单台机器的 `/machines/{id}/access` 与 `/machines/{id}/sources`（带最近原始记录、来源基线与异常）最多 30 秒；设 0 关闭。全部为只读 GET，读权限即可。
+线路机 agent 解析 Xray 访问日志上报，服务端写入 `access_event`（原始记录，默认留 7 天），并每 5 分钟把当前小时和被标脏的小时重算进小时汇总（`access_hourly` / `access_source_hourly`，默认留 31 天；同一事务里重算那个小时所在那天（UTC）的天汇总 `access_daily`，留得一样久——窗口里整天的部分读它，首尾不满一天的读小时表，7d / 30d 主要读天表，结果与只读小时表相同；窗口最长 30d 且不超过汇总的保留期；`access_target_seen` 记每个目标的首次 / 最近出现，最近一次出现超过汇总的保留期就删；留多久见下文「访问记录保留期」；幂等；agent 断网后补传的旧记录在上报时把所在小时记进 `access_dirty`，下一轮补算；启动时补算缺口）。24h/7d/30d 的结果在进程内缓存：每轮汇总成功后整体作废；`summary` / `targets`（第一页）/ `sources` 最多缓存 `access_cache_secs`（默认 300）秒，单台机器的 `/machines/{id}/access` 与 `/machines/{id}/sources`（带最近原始记录、来源基线与异常）最多 30 秒；设 0 关闭。全部为只读 GET，读权限即可。
 
 公共筛选参数（空串等同没给，非法值返回 400）：`window=1h|24h|7d|30d`（默认 24h，events 默认 7d；除 events 外不能比汇总的保留期 `hourly_days` 长，超了 400，见「访问记录保留期」）、`team=<团队id>`、`node=<节点id>`、`search=`（大小写不敏感的子串，`%` `_` 按字面）、`action=all|blocked|routed`、`kind=all|domain|ip`。
 

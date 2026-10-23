@@ -1,6 +1,7 @@
 // 实时流：WebSocket /api/v1/stream（JSON 文本帧）。
 // - metrics：实时指标增量，直接写进查询缓存（live.ts），不重取。
 // - 其余是资源变更通知：300ms 合并后按事件类型让对应查询失效（同一类型/同一 id 只算一次）；resync（服务端广播滞后）则全部失效。
+//   单台机器的 machine 事件只取这一台（/machines/{id}）拼回机器列表（live.ts refreshMachine），拼不上或页面在后台才整表失效。
 //   整表（机器、线路机、总览、作业列表）的失效再合并成最多每 2 s 一次，且不打断在途的重取：批量上架时不至于每秒整表重取、请求被反复取消；
 //   事件到达之后才开始、并已成功取回的整表不再重取（它已经包含这次变更）——自己保存时写操作当场重取了一次，事件随后又会引起一次，这样只取一次。
 // - 断开后指数退避重连（1s → 30s 封顶，±20% 抖动，中控重启后各页面不同时涌进来），期间不轮询（顶栏显示已断开）；
@@ -11,8 +12,8 @@
 // - 页面在后台：失效只标记过期、不重取，metrics 也不写缓存只标记过期（回到前台由 refetchOnWindowFocus 补上）。
 import { useEffect } from 'react';
 import { useQueryClient, type Query } from '@tanstack/react-query';
-import { eventKeys, type StreamEvent } from './queries';
-import { applyMetrics, LIVE_KEYS, type MetricsMsg } from './live';
+import { eventKeys, MACHINE_LIST_KEYS, type StreamEvent } from './queries';
+import { applyMetrics, LIVE_KEYS, refreshMachine, type MetricsMsg } from './live';
 import { setStreamState as setStatus, useStreamState } from './streamState';
 
 const MERGE_MS = 300;
@@ -61,14 +62,30 @@ export function useStream(enabled: boolean) {
       else {
         // 一批事件里各键只失效一次；['machine'] 已覆盖 ['machine', id]
         const keys = new Map<string, unknown[]>();
-        pending.forEach((ev) => eventKeys(ev).forEach((k) => keys.set(JSON.stringify(k), k)));
+        const add = (k: unknown[]) => keys.set(JSON.stringify(k), k);
+        const ones: string[] = [];
+        pending.forEach((ev) => {
+          eventKeys(ev).forEach(add);
+          if (ev.type !== 'machine' || !ev.id) return;
+          if (document.hidden) [['machine', ev.id], ...MACHINE_LIST_KEYS].forEach(add);
+          else ones.push(ev.id);
+        });
         keys.forEach((k, s) => {
           if (k.length > 1 && keys.has(JSON.stringify([k[0]]))) return;
-          if (LISTS.has(k[0] as string)) listKeys.set(s, { k, at: eventAt }); else inv(k);
+          if (LISTS.has(k[0] as string)) queueList(k, s, eventAt); else inv(k);
         });
-        if (listKeys.size) listTimer ??= setTimeout(flushLists, Math.max(0, lastList + LIST_MS - Date.now()));
+        // 同一批里已经整表失效的（machines 事件）不用再取单台
+        if (!keys.has('["machines"]') && !keys.has('["machine"]')) {
+          const at = eventAt;
+          const full = () => MACHINE_LIST_KEYS.forEach((k) => queueList(k, JSON.stringify(k), at));
+          for (const id of ones) refreshMachine(qc, id).then((ok) => ok || full(), full);
+        }
       }
       pending.clear(); all = false;
+    };
+    const queueList = (k: unknown[], s: string, at: number) => {
+      listKeys.set(s, { k, at });
+      listTimer ??= setTimeout(flushLists, Math.max(0, lastList + LIST_MS - Date.now()));
     };
     // 正在取的整表不打断，也先不失效（取完会清掉失效标记）：留到它回来后的下一轮，它可能是变更之前的快照
     const flushLists = () => {

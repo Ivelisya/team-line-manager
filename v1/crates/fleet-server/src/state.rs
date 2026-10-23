@@ -61,11 +61,17 @@ pub struct Inner {
     /// 访问监控的查询（几天原始记录上的统计、模糊搜索，一条可能要几秒）单独一个小池：最多 4 个连接、每条语句 20 秒超时。
     /// 并发多了在这里排队（5 秒等不到回 503），占不满主池——上报入库、机器视图照常；汇总、清理等后台任务仍走主池、不限时
     pub access_db: PgPool,
+    /// 机器视图的查询（views.rs：列表、总览、实时推送、告警评估共用的那一份）单独一个池：每条语句 15 秒超时，连接数是主池的一半。
+    /// 一条被锁住的查询（迁移、建分区排在父表锁后面）到点就取消，视图回上一份（见 views::cached），不会一直挂着、连带告警评估停住；
+    /// 也占不满主池，上报入库照常
+    pub view_db: PgPool,
     pub secrets: SecretBox,
     /// 浏览器事件
     pub events: broadcast::Sender<Event>,
     /// 线路机期望状态变化（relay_id）：唤醒 agent 的长轮询
     pub relay_changed: broadcast::Sender<Uuid>,
+    /// agent 令牌的鉴权缓存与按来源 IP 的失败限速（agent_api.rs）
+    pub agent_auth: crate::agent_api::AgentAuth,
     /// 来源 IP 画像：离线库 + 内部地址表（库缺失时降级）
     pub ipintel: crate::ipintel::Service,
     /// 访问监控聚合结果的短 TTL 缓存
@@ -113,13 +119,20 @@ impl AppState {
             .acquire_timeout(std::time::Duration::from_secs(5))
             .after_connect(|c, _| Box::pin(async move { c.execute("set statement_timeout = '20s'").await.map(|_| ()) }))
             .connect_lazy_with((*db.connect_options()).clone());
+        let view_db = PgPoolOptions::new()
+            .max_connections((db.options().get_max_connections() / 2).max(2))
+            .acquire_timeout(std::time::Duration::from_secs(5))
+            .after_connect(|c, _| Box::pin(async move { c.execute("set statement_timeout = '15s'").await.map(|_| ()) }))
+            .connect_lazy_with((*db.connect_options()).clone());
         Self(Arc::new(Inner {
             cfg,
             db,
             access_db,
+            view_db,
             secrets,
             events,
             relay_changed,
+            agent_auth: Default::default(),
             ipintel,
             access_cache,
             live,

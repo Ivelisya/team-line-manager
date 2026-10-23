@@ -542,6 +542,40 @@ pub async fn bump_relay(tx: &mut Tx<'_>, relay_id: Uuid) -> sqlx::Result<i64> {
     Ok(g)
 }
 
+/// 期望状态的格式版本：`entries::desired_state` 生成的内容变了（加字段、改算法、改默认值），而库里的数据没变时，**手动 +1**。
+/// 线路机只在代数变了时才重拉期望状态，中控升级后数据没变就一直用旧格式的那份；启动时和库里记的比（`sync_desired_format`），
+/// 不同就给所有未退役线路机代数 +1
+pub const DESIRED_FORMAT: i64 = 1;
+/// 库里记 `DESIRED_FORMAT` 的 app_setting 键
+const DESIRED_FORMAT_KEY: &str = "desired_format";
+
+/// 中控启动时（迁移之后、开始处理请求之前）调：库里记的期望状态格式版本和 `DESIRED_FORMAT` 不同（含从没记过）就给所有未退役线路机
+/// 代数 +1 并记下新值，返回改了几台；相同什么都不做。没启动时没有长轮询在等，不用唤醒，线路机重连后看到代数变了自己来拉
+pub async fn sync_desired_format(db: &PgPool) -> sqlx::Result<u64> {
+    let mut tx = db.begin().await?;
+    let old: Option<i64> =
+        sqlx::query_scalar("select (value #>> '{}')::bigint from app_setting where key = $1 for update").bind(DESIRED_FORMAT_KEY).fetch_optional(&mut *tx).await?;
+    if old == Some(DESIRED_FORMAT) {
+        return Ok(0);
+    }
+    let n = sqlx::query(
+        "update relay r set generation = generation + 1, generation_at = now() from machine m where m.id = r.machine_id and m.lifecycle <> 'retired'",
+    )
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    sqlx::query(
+        "insert into app_setting (key, value, updated_by) values ($1, to_jsonb($2::bigint), 'fleet-server')
+         on conflict (key) do update set value = excluded.value, updated_at = now(), updated_by = excluded.updated_by",
+    )
+    .bind(DESIRED_FORMAT_KEY)
+    .bind(DESIRED_FORMAT)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(n)
+}
+
 /// 把团队的未退役节点编号压缩成 1..n（锁团队行；新号 ≤ 旧号，按新号升序更新不撞唯一索引）。
 /// 写审计；返回 (改动列表 (id, 旧号, 新号), 需要刷新的线路机)。
 pub async fn compact_team(tx: &mut Tx<'_>, team_id: Uuid, actor: &str, why: &str) -> sqlx::Result<(Vec<(Uuid, i32, i32)>, Vec<Uuid>)> {

@@ -29,7 +29,7 @@ export const META: Meta = {
     agent_offline: 'agent 离线', clock_skew: 'agent 时钟不准', no_entry: '没有在用入口', egress_fail: '出口不通', tcp_fail: '线路机到节点不通', renewal_due: '即将到期', renewal_overdue: '已过期',
     relay_apply_lag: '配置未应用', relay_apply_error: '配置应用失败', relay_xray_down: 'Xray 未运行', relay_unreachable: '客户入口连不上', host_cpu_high: 'CPU 持续偏高', host_mem_high: '内存持续偏高', host_disk_high: '磁盘空间不足',
     traffic_quota_high: '流量额度吃紧', ipintel_new_isp: '来源出现新运营商', ipintel_new_city: '来源出现新城市', ipintel_datacenter_source: '机房 / VPN 来源', policy_blocked: '访问规则暂停',
-    central_channel_failing: '通知渠道发送失败', central_backup_stale: '备份过期', central_disk_low: '中控磁盘空间不足', central_ingress: 'agent 同时失联',
+    central_channel_failing: '通知渠道发送失败', central_backup_stale: '备份过期', central_disk_low: '中控磁盘空间不足', central_ingress: 'agent 同时失联', central_view_stuck: '机器视图算不出来',
   },
   severities: { critical: { label: '严重', tone: 'bad' }, warning: { label: '警告', tone: 'warn' }, info: { label: '提示', tone: 'info' } },
   thresholds: {
