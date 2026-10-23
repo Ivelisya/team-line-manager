@@ -89,7 +89,7 @@ export function RouterExitList({ routers, title }: { routers: { node?: string; p
             <span>{r.name}</span>
             {r.state !== 'online' && <Pill tone="bad">{ROUTER_STATE[r.state] ?? r.state}</Pill>}
             <span className="num">{e.exit}</span>
-            <span className="t-sub num">{e.from} → {e.to}</span>
+            {e.error ? <><span className="t-sub num">{e.from}</span><Pill tone="bad" tip={e.error}>对不上新入口</Pill></> : <span className="t-sub num">{e.from} → {e.to}</span>}
           </li>
         )))}
       </ul>

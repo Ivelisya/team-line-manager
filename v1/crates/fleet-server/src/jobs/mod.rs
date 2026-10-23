@@ -1,7 +1,9 @@
 //! 作业引擎：PG 是唯一状态。领取用 `FOR UPDATE SKIP LOCKED` + 租约；每步幂等，可从失败处重试。
 //!
-//! 步骤返回 Done / Skipped / Wait(秒)：Wait 把作业置为 waiting 并在到点后重新领取（等线路机生效、等首次上报…），
-//! 等待超过该步的 `timeout_s` 即失败。
+//! 步骤返回 Done / Skipped / Wait(秒) / Queue(秒)：Wait 把作业置为 waiting 并在到点后重新领取（等线路机生效、等首次上报…），
+//! 等待超过该步的 `timeout_s` 即失败；Queue 同 Wait，但等的是别的作业放手（同一台软路由同时只有一个作业在改），不算这一步的超时。
+//!
+//! 作业建立时按当时的定义插入步骤行（job_step 的 idx / key）。中控升级后定义可能变了：推进前按步骤 key 对齐现在的定义（`align`）。
 //!
 //! 唤醒：建作业、重试、取消后调 `AppState::wake_jobs`；线路机回报应用结果、agent 首次上报时 `wake_for` 把等这些事的作业
 //! 提前到现在再唤醒；推进中发现作业已被取消、放开租约等补偿时也唤醒；每次推进告一段落也唤醒（等它的作业可能能领了）。
@@ -93,7 +95,7 @@ const RETIRE: &[StepDef] = &[
     s("finalize", "完成退役", 30),
 ];
 // 换线路机：新入口先建好并验收，再把软路由上指向旧入口的出口改成新入口（同替换节点的「改软路由出口」，失败全部换回、旧入口不摘），
-// 最后摘旧入口，节点全程至少有一个可用入口。开始改路由之后不能取消（改路由失败、已换回原配置时除外），detach_old 之后不可回滚（见 cancel_blocker）。
+// 最后摘旧入口，节点全程至少有一个可用入口。开始改路由之后不能取消（排队等路由、改路由失败且已换回原配置时除外），detach_old 之后不可回滚（见 cancel_blocker）。
 const MOVE_ENTRY: &[StepDef] = &[
     s("attach_new", "在新线路机建入口", 60),
     s("firewall_widen", "放行新线路机（节点防火墙）", 300),
@@ -104,11 +106,11 @@ const MOVE_ENTRY: &[StepDef] = &[
     s("wait_detached_old", "等待旧线路机摘除", 600),
     s("firewall_narrow", "收紧节点防火墙", 300),
 ];
-/// MOVE_ENTRY 里 routers 的下标：从这一步起不能再取消（这一步失败停着、路由已换回时除外）
+/// MOVE_ENTRY 里 routers 的下标：从这一步起不能再取消（排队等路由、这一步失败停着且路由已换回时除外）
 const MOVE_ROUTERS: i32 = 4;
 const PURGE: &[StepDef] = &[s("purge", "删除数据", 600)];
 // 替换节点（见 steps/replace.rs）：先把软路由上指向旧节点的出口换成新节点的入口（一台一台改，失败的连同已改好的都换回原配置），
-// 再交换编号（旧节点去备用团队 / 空号，新节点接旧编号）。改路由一开始就不能取消（见 cancel_blocker）。
+// 再交换编号（旧节点去备用团队 / 空号，新节点接旧编号）。改路由一开始就不能取消（排队等路由时除外，见 cancel_blocker）。
 // 一台路由：改配置 + 重启 OpenClash + 等 API + 测延迟最多约 7 分钟（routers::replace::APPLY_TIMEOUT），回滚约 4 分钟；按两三台留足
 const REPLACE: &[StepDef] = &[s("routers", "改软路由出口", 1800), s("renumber", "交换编号", 60)];
 // 推送时旧程序留成 .prev；起不来、或 2 分钟内等不到新版本上报，就换回去并让作业失败（见 steps::agent / wait_report）。重试从推送重来
@@ -142,24 +144,31 @@ pub fn provisions(kind: &str) -> bool { kind.starts_with("provision_") }
 
 pub fn cancellable(kind: &str) -> bool { provisions(kind) || matches!(kind, "attach_entry" | "move_entry" | "upgrade_agent" | "replace" | "tune") }
 
-/// 作业走到第 `step` 步、处于 `state` 时为什么不能取消；能取消返回 None。
+/// 作业走到第 `step` 步、处于 `state` 时为什么不能取消；能取消返回 None。`params` 是作业参数（「改软路由出口」记的
+/// `routers_queued` / `routers_stuck`，见 steps/replace.rs）。
 /// 换线路机一旦开始改软路由就只能重试到完成（取消会摘掉路由已经指向的新入口；摘旧入口之后回滚会让节点没有入口），
-/// 改路由失败（已换回原配置）停在这一步时还能取消；升级 agent 只能在排队时取消（推送、重启到一半中断更危险）；
-/// 替换节点只能在开始改路由之前取消：排队中，或改路由失败（已换回原配置）还停在第一步
-pub fn cancel_blocker(kind: &str, step: i32, state: &str) -> Option<&'static str> {
+/// 排队等别的作业改完同一台路由、或改路由失败（已换回原配置）停在这一步时还能取消；改失败且有路由没换回时不能取消，人工处理好后重试。
+/// 升级 agent 只能在排队时取消（推送、重启到一半中断更危险）；替换节点同换线路机，只能在动路由之前取消
+pub fn cancel_blocker(kind: &str, step: i32, state: &str, params: &Value) -> Option<&'static str> {
     if !cancellable(kind) {
         return Some("这类作业不能取消（可以重试到完成）");
     }
+    let at_routers = (kind == "replace" && step == 0) || (kind == "move_entry" && step == MOVE_ROUTERS);
+    if at_routers && state == "failed" && params["routers_stuck"].as_array().is_some_and(|a| !a.is_empty()) {
+        return Some("有软路由改失败后没能换回原配置（见作业日志）：人工处理好那台路由再点重试；现在取消，路由上的出口会指着对不上的入口");
+    }
+    // 排队等别的作业改完同一台路由：路由还没动
+    let queued = at_routers && state == "waiting" && params["routers_queued"].is_string();
     if kind == "move_entry" && step > MOVE_ROUTERS {
         return Some("旧入口已经开始摘除，不能再取消（取消会让节点没有入口）：失败了点重试到完成");
     }
-    if kind == "move_entry" && step == MOVE_ROUTERS && !matches!(state, "queued" | "failed") {
+    if kind == "move_entry" && step == MOVE_ROUTERS && !queued && !matches!(state, "queued" | "failed") {
         return Some("软路由已经开始改，不能再取消：失败了点重试到完成");
     }
     if !matches!(state, "queued" | "running" | "waiting" | "failed") {
         return Some("作业已结束");
     }
-    if kind == "replace" && (step > 0 || !matches!(state, "queued" | "failed")) {
+    if kind == "replace" && !queued && (step > 0 || !matches!(state, "queued" | "failed")) {
         return Some("软路由已经开始改（或已经改好），不能再取消：失败了点重试到完成");
     }
     if !matches!(kind, "upgrade_agent" | "tune") || state == "queued" {
@@ -242,6 +251,8 @@ pub enum Outcome {
     Done(Value),
     Skipped(String),
     Wait(u64),
+    /// 排队等别的作业放手（同一台软路由的锁）：同 Wait，但这一步的开始时间清空，超时从轮到时算起
+    Queue(u64),
 }
 
 /// 存进作业的远端输出（步骤错误 → 作业错误、日志、机器的状态原因；步骤的警告、跳过原因）最多约 4 KiB：stderr 可能上百 KB。
@@ -423,7 +434,6 @@ async fn retry_later(st: &AppState, id: Uuid, owner: &str, e: &anyhow::Error) {
 /// 升级 agent、系统调优排在其它作业之后：「全部升级」一次建一百多个，不能让之后的上架、换线路机、退役排在它们后面。
 /// 同一事务建的作业 created_at 相同，再按 id（UUIDv7，按生成先后递增）：全部升级里先建的线路机先领。
 /// 参数里有 `after`（「全部升级」的编排：要等的作业）的，那个作业结束之前领不到；它在推送之后失败或被取消，这个作业领到后不开始、直接取消（见 `halted`）。
-/// `routers_after`（改同一台软路由的替换 / 换线路机，见 api::replace::routers_after）同样等它结束，但它怎么结束都照常开始。
 /// 排队时被取消的不用等：领到就收尾（没开始过，`started_at` 留空）
 pub async fn claim(st: &AppState, owner: &str) -> anyhow::Result<Option<JobRow>> {
     Ok(sqlx::query_as(
@@ -433,8 +443,7 @@ pub async fn claim(st: &AppState, owner: &str) -> anyhow::Result<Option<JobRow>>
          where id = (select id from job j where state in ('queued', 'running', 'waiting', 'cancelling') and run_after <= now()
                      and (lease_until is null or lease_until < now()) and id <> all($2)
                      and (state = 'cancelling'
-                          or not exists (select 1 from job p where p.id in ((j.params->>'after')::uuid, (j.params->>'routers_after')::uuid)
-                                         and p.state in ('queued', 'running', 'waiting', 'cancelling')))
+                          or not exists (select 1 from job p where p.id = (j.params->>'after')::uuid and p.state in ('queued', 'running', 'waiting', 'cancelling')))
                      order by kind in ('upgrade_agent', 'tune'), created_at, id for update skip locked limit 1)
          returning id, kind, target_id, params, state::text state, step, created_by",
     )
@@ -472,10 +481,131 @@ async fn lost(st: &AppState, job: &JobRow) -> anyhow::Result<()> {
 /// 对 job_step 的写入要求持有租约：把「job 行的 lease_owner = 我」写进同一条语句
 const OWN: &str = "exists (select 1 from job where id = $1 and lease_owner = $3)";
 
+/// 现在定义里的一步，在作业建立时的步骤行里是什么样（见 `align_plan`）
+#[derive(Debug, Clone, PartialEq)]
+enum Slot {
+    /// 原来就有：沿用那一行（状态、输出都不动）
+    Kept,
+    /// 新插入的，排在还没做的步骤之间：照做
+    New,
+    /// 新插入的，但排在已经做完的步骤之前：先后没法照旧，跳过
+    Skip,
+}
+
+const SKIP_REASON: &str = "作业发起时还没有这一步（中控升级后作业定义变了），后面的步骤已经做过";
+
+/// 作业建立时的步骤行（按 idx 的 (key, 状态)）对齐现在的定义 `keys`：一样返回 None；否则返回每一步怎么处理与对齐后的当前步
+/// （第一个没做完的）。已删除的步骤：没开始、已做完的丢掉。对不上返回原因：正在做 / 失败停着的那一步被删了，或留下的步骤先后变了
+fn align_plan(rows: &[(String, String)], keys: &[&str]) -> Result<Option<(Vec<Slot>, i32)>, String> {
+    if rows.iter().map(|r| r.0.as_str()).eq(keys.iter().copied()) {
+        return Ok(None);
+    }
+    let finished = |s: &str| matches!(s, "done" | "skipped");
+    let at = |k: &str| keys.iter().position(|x| *x == k);
+    if let Some(r) = rows.iter().find(|r| at(&r.0).is_none() && !finished(&r.1) && r.1 != "pending") {
+        return Err(format!("作业定义已变：发起时的步骤「{}」已经没有了，而它{}", r.0, if r.1 == "failed" { "失败停着" } else { "做到一半" }));
+    }
+    let pos: Vec<usize> = rows.iter().filter_map(|r| at(&r.0)).collect();
+    if pos.windows(2).any(|w| w[0] >= w[1]) {
+        return Err("作业定义已变：步骤的先后和发起时不一样了".into());
+    }
+    let last_done = rows.iter().filter(|r| finished(&r.1)).filter_map(|r| at(&r.0)).max();
+    let state = |k: &str| rows.iter().find(|r| r.0 == k).map(|r| r.1.as_str());
+    let slots: Vec<Slot> = keys
+        .iter()
+        .enumerate()
+        .map(|(i, k)| match state(k) {
+            Some(_) => Slot::Kept,
+            None if last_done.is_some_and(|d| i < d) => Slot::Skip,
+            None => Slot::New,
+        })
+        .collect();
+    let step = keys.iter().zip(&slots).position(|(k, s)| match s {
+        Slot::Kept => !state(k).is_some_and(finished),
+        Slot::New => true,
+        Slot::Skip => false,
+    });
+    Ok(Some((slots, step.unwrap_or(keys.len()) as i32)))
+}
+
+enum Aligned {
+    Same,
+    /// 改了步骤行，当前步变成这个
+    Moved(i32),
+    Lost,
+    Broken(String),
+}
+
+/// 推进前按步骤 key 对齐现在的定义（中控升级后，部署时还没跑完、或失败后重试的旧作业），而不是按序号：
+/// 序号错位会把一步的结果写到另一步的行上，最后没有对应的行、作业停在运行中。见 `align_plan`
+async fn align(st: &AppState, job: &JobRow, owner: &str) -> anyhow::Result<Aligned> {
+    let rows: Vec<(String, String)> = sqlx::query_as("select key, state from job_step where job_id = $1 order by idx").bind(job.id).fetch_all(&st.db).await?;
+    let keys: Vec<&str> = defs(&job.kind).iter().map(|d| d.key).collect();
+    let (slots, step) = match align_plan(&rows, &keys) {
+        Ok(None) => return Ok(Aligned::Same),
+        Ok(Some(p)) => p,
+        Err(why) => return Ok(Aligned::Broken(why)),
+    };
+    let mut tx = st.db.begin().await?;
+    // 先改作业行（带租约条件，顺带锁住它）：租约已不在自己手里时一行都不改
+    let n = sqlx::query("update job set step = $2 where id = $1 and lease_owner = $3").bind(job.id).bind(step).bind(owner).execute(&mut *tx).await?.rows_affected();
+    if n == 0 {
+        return Ok(Aligned::Lost);
+    }
+    sqlx::query("delete from job_step where job_id = $1 and key <> all($2)").bind(job.id).bind(&keys).execute(&mut *tx).await?;
+    // 主键是 (job_id, idx)：先挪到负数再按现在的顺序编号
+    sqlx::query("update job_step set idx = -1 - idx where job_id = $1").bind(job.id).execute(&mut *tx).await?;
+    sqlx::query("update job_step s set idx = u.i - 1 from unnest($2::text[]) with ordinality u(k, i) where s.job_id = $1 and s.key = u.k")
+        .bind(job.id)
+        .bind(&keys)
+        .execute(&mut *tx)
+        .await?;
+    let pick = |want: Slot| keys.iter().zip(&slots).filter(|(_, s)| **s == want).map(|(k, _)| *k).collect::<Vec<_>>();
+    let (new, skip) = (pick(Slot::New), pick(Slot::Skip));
+    sqlx::query(
+        "insert into job_step (job_id, idx, key, state, output)
+         select $1, u.i - 1, u.k, case when u.k = any($3) then 'skipped' else 'pending' end, case when u.k = any($3) then jsonb_build_object('reason', $4::text) end
+         from unnest($2::text[]) with ordinality u(k, i) where u.k = any($3) or u.k = any($5)",
+    )
+    .bind(job.id)
+    .bind(&keys)
+    .bind(&skip)
+    .bind(SKIP_REASON)
+    .bind(&new)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    let titles = |ks: &[&str]| ks.iter().map(|k| format!("「{}」", title_of(&job.kind, k))).collect::<Vec<_>>().join("");
+    let gone: Vec<&str> = rows.iter().map(|r| r.0.as_str()).filter(|k| !keys.contains(k)).collect();
+    let mut parts = vec![];
+    if !new.is_empty() {
+        parts.push(format!("新增的{}照做", titles(&new)));
+    }
+    if !skip.is_empty() {
+        parts.push(format!("新增的{}排在已做完的步骤之前，跳过", titles(&skip)));
+    }
+    if !gone.is_empty() {
+        parts.push(format!("去掉了 {}", gone.join("、")));
+    }
+    log(st, job.id, "warn", format!("中控升级后这类作业的步骤变了，按步骤名对齐：{}", parts.join("；"))).await;
+    Ok(Aligned::Moved(step))
+}
+
+/// 对不上现在的作业定义（见 `align`）：作业失败，写清原因，不停在运行中
+async fn fail_unaligned(st: &AppState, job: &JobRow, owner: &str, why: &str) -> anyhow::Result<()> {
+    fail_job(st, job, owner, &format!("{why}：这个作业没法接着做，请重新发起")).await
+}
+
 /// 推进一个已领取的作业，直到它等待、失败、完成、被取消或丢失租约。`owner` 必须是领取时用的执行者名。
 pub async fn advance(st: &AppState, mut job: JobRow, owner: &str) -> anyhow::Result<()> {
     if job.state == "cancelling" {
         return finish_cancel(st, &job, owner).await;
+    }
+    match align(st, &job, owner).await? {
+        Aligned::Same => {}
+        Aligned::Moved(step) => job.step = step,
+        Aligned::Lost => return lost(st, &job).await,
+        Aligned::Broken(why) => return fail_unaligned(st, &job, owner, &why).await,
     }
     // 编排：开始前看该不该开始。同一次尝试里中控重启后接着做的不再看：它已经开始了
     if job.step == 0 {
@@ -531,10 +661,26 @@ pub async fn advance(st: &AppState, mut job: JobRow, owner: &str) -> anyhow::Res
             Err(_) => Err(StepError::err(ErrKind::Timeout, format!("超过 {} 秒没有完成", outer.as_secs()))),
         };
         match res {
-            Ok(Outcome::Wait(secs)) => {
-                if (OffsetDateTime::now_utc() - started).whole_seconds() > d.timeout_s {
-                    return fail(st, &job, owner, d, ErrKind::Timeout, &format!("等了 {} 秒仍未完成", d.timeout_s)).await;
-                }
+            Ok(o @ (Outcome::Wait(_) | Outcome::Queue(_))) => {
+                let secs = match o {
+                    Outcome::Wait(secs) => {
+                        if (OffsetDateTime::now_utc() - started).whole_seconds() > d.timeout_s {
+                            return fail(st, &job, owner, d, ErrKind::Timeout, &format!("等了 {} 秒仍未完成", d.timeout_s)).await;
+                        }
+                        secs
+                    }
+                    Outcome::Queue(secs) => {
+                        // 排队不算这一步的时间：开始时间清空，轮到时（下一次运行）重新记
+                        sqlx::query(&format!("update job_step set started_at = null where job_id = $1 and idx = $2 and {OWN}"))
+                            .bind(job.id)
+                            .bind(job.step)
+                            .bind(owner)
+                            .execute(&st.db)
+                            .await?;
+                        secs
+                    }
+                    _ => unreachable!(),
+                };
                 let state: Option<String> = sqlx::query_scalar(
                     "update job set state = case when state = 'cancelling' then state else 'waiting' end,
                         run_after = case when state = 'cancelling' then now() else now() + make_interval(secs => $2) end,
@@ -560,7 +706,7 @@ pub async fn advance(st: &AppState, mut job: JobRow, owner: &str) -> anyhow::Res
                         let why = clip(&why);
                         ("skipped", json!({"reason": why}), format!("跳过：{}（{why}）", d.title))
                     }
-                    Outcome::Wait(_) => unreachable!(),
+                    Outcome::Wait(_) | Outcome::Queue(_) => unreachable!(),
                 };
                 let n = sqlx::query(&format!("update job_step set state = $4, finished_at = now(), output = $5 where job_id = $1 and idx = $2 and {OWN}"))
                     .bind(job.id)
@@ -745,7 +891,11 @@ async fn fail(st: &AppState, job: &JobRow, owner: &str, d: &StepDef, kind: ErrKi
     if n == 0 {
         return lost(st, job).await;
     }
-    let err = format!("{}：{msg}", d.title);
+    fail_job(st, job, owner, &format!("{}：{msg}", d.title)).await
+}
+
+/// 作业失败（`fail` 记好失败的那一步之后；`align` 对不上时没有对应的步骤，直接调）
+async fn fail_job(st: &AppState, job: &JobRow, owner: &str, err: &str) -> anyhow::Result<()> {
     // 作业置失败与机器置「上架失败」同一事务：看到作业失败时机器状态已经变了
     let mut tx = st.db.begin().await?;
     let state: Option<String> = sqlx::query_scalar(
@@ -756,7 +906,7 @@ async fn fail(st: &AppState, job: &JobRow, owner: &str, d: &StepDef, kind: ErrKi
          where id = $1 and lease_owner = $3 returning state::text",
     )
     .bind(job.id)
-    .bind(&err)
+    .bind(err)
     .bind(owner)
     .fetch_optional(&mut *tx)
     .await?;
@@ -769,7 +919,7 @@ async fn fail(st: &AppState, job: &JobRow, owner: &str, d: &StepDef, kind: ErrKi
              where id = $1 and lifecycle = 'provisioning'",
         )
         .bind(job.target_id)
-        .bind(&err)
+        .bind(err)
         .execute(&mut *tx)
         .await?
         .rows_affected()
@@ -871,7 +1021,7 @@ mod tests {
 
     #[test]
     fn cancel_window() {
-        let can = |kind, step, state| cancel_blocker(kind, step, state).is_none();
+        let can = |kind, step, state| cancel_blocker(kind, step, state, &Value::Null).is_none();
         assert!(can("move_entry", 0, "running") && can("move_entry", 3, "failed"));
         assert!(can("move_entry", 4, "failed") && !can("move_entry", 4, "running"), "改路由失败（已换回）还能取消，在改时不能");
         assert!(!can("move_entry", 5, "running") && !can("move_entry", 5, "failed") && !can("move_entry", 7, "failed"), "摘旧入口之后不能取消");
@@ -892,5 +1042,44 @@ mod tests {
         // 路由一台最多 APPLY_TIMEOUT，失败时还要回滚：至少放得下两台改加两台回滚
         let d = &defs("replace")[0];
         assert!(d.timeout_s as u64 >= 2 * (crate::routers::replace::APPLY_TIMEOUT + crate::routers::replace::ROLLBACK_TIMEOUT).as_secs());
+        // 改软路由这一步：排队等别的作业改同一台路由时能取消；改失败、有路由没换回时不能
+        let with = |kind, step, state, p: Value| cancel_blocker(kind, step, state, &p).is_none();
+        let queued = json!({"routers_queued": "路由A"});
+        assert!(with("move_entry", 4, "waiting", queued.clone()) && with("replace", 0, "waiting", queued.clone()));
+        assert!(!with("move_entry", 4, "running", queued.clone()) && !with("move_entry", 5, "waiting", queued), "轮到了、或已经过了这一步");
+        let stuck = json!({"routers_stuck": ["路由A"]});
+        assert!(!with("move_entry", 4, "failed", stuck.clone()) && !with("replace", 0, "failed", stuck));
+        assert!(with("move_entry", 4, "failed", json!({"routers_stuck": []})));
+    }
+
+    /// 作业定义变了：按步骤 key 对齐。MOVE_ENTRY 在第 4 步插入了 routers（原来 7 步）
+    #[test]
+    fn align_by_key() {
+        let old = ["attach_new", "firewall_widen", "wait_applied_new", "verify_new", "detach_old", "wait_detached_old", "firewall_narrow"];
+        let keys: Vec<&str> = defs("move_entry").iter().map(|d| d.key).collect();
+        let rows = |states: &[&str]| old.iter().zip(states).map(|(k, s)| (k.to_string(), s.to_string())).collect::<Vec<_>>();
+        let same: Vec<(String, String)> = keys.iter().map(|k| (k.to_string(), "pending".to_string())).collect();
+        assert_eq!(align_plan(&same, &keys), Ok(None));
+        use Slot::*;
+        // 还没摘旧入口（旧的第 4 步 detach_old 在跑）：新插入的 routers 照做，当前步是它，detach_old 之后重做
+        let (slots, step) = align_plan(&rows(&["done", "done", "done", "skipped", "running", "pending", "pending"]), &keys).unwrap().unwrap();
+        assert_eq!((slots, step), (vec![Kept, Kept, Kept, Kept, New, Kept, Kept, Kept], 4));
+        // 已经摘了旧入口（在等摘除）：routers 排在已做完的 detach_old 之前，跳过；接着等摘除
+        let (slots, step) = align_plan(&rows(&["done", "done", "done", "done", "done", "failed", "pending"]), &keys).unwrap().unwrap();
+        assert_eq!((slots[4..6].to_vec(), step), (vec![Skip, Kept], 6));
+        // 还在排队：从头做
+        assert_eq!(align_plan(&rows(&["pending"; 7]), &keys).unwrap().unwrap().1, 0);
+        // 全做完了（只看边界）：新插入的跳过，当前步在末尾
+        assert_eq!(align_plan(&rows(&["done"; 7]), &keys).unwrap().unwrap(), (vec![Kept, Kept, Kept, Kept, Skip, Kept, Kept, Kept], 8));
+        // 删掉的步骤：没开始、做完的丢掉；正在做 / 失败停着的对不上
+        let mut extra = same.clone();
+        extra.insert(2, ("gone".into(), "done".into()));
+        assert_eq!(align_plan(&extra, &keys).unwrap().unwrap().1, 0);
+        extra[2].1 = "failed".into();
+        assert!(align_plan(&extra, &keys).unwrap_err().contains("「gone」已经没有了，而它失败停着"));
+        // 先后变了
+        let mut swapped = same;
+        swapped.swap(0, 1);
+        assert!(align_plan(&swapped, &keys).unwrap_err().contains("先后"));
     }
 }

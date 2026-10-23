@@ -83,6 +83,20 @@ pub fn apply_script(edits: &[Edit], stamp: &str) -> String {
 /// 换回 `stamp` 那次改之前的备份并重启 OpenClash（没有这份备份：什么都不做，输出 rollback=none）
 pub fn rollback_script(stamp: &str) -> String { vars(&[("MODE", "rollback"), ("STAMP", stamp), ("N", "0")]) + SCRIPT }
 
+/// 读配置（几百 KB 经隧道）的时长上限
+pub const READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// 读源配置：作业动手前按它重新确定要改哪些出口。顶层 `secret:` 行在路由上先删掉、最多多取 1 字节（同采集的 fetch_config）
+pub fn read_script() -> String {
+    vars(&[("MODE", "read")])
+        + &format!(
+            "CFG=$(uci -q get openclash.config.config_path 2>/dev/null || true)\n\
+             if [ -z \"$CFG\" ] || [ ! -f \"$CFG\" ]; then echo \"fleet：OpenClash 的源配置（uci openclash.config.config_path）不存在：${{CFG:-没有设置}}\" >&2; exit 2; fi\n\
+             sed '/^secret[[:space:]]*:/d' \"$CFG\" | head -c {}\n",
+            super::clash::MAX_CONFIG + 1
+        )
+}
+
 /// 路由上的脚本。整段包在函数里（sh 读完整个函数才执行，里面的命令读 stdin 吃不到后面的脚本），见 collect.rs 的 WRAPPER
 pub const SCRIPT: &str = r#"
 main() {
@@ -289,6 +303,7 @@ mod tests {
         assert!(!dbg.contains(UUID_NEW) && !dbg.contains("NEW_PBK") && !dbg.contains("01234567") && dbg.contains("198.51.100.2:20020"), "{dbg}");
         assert_eq!(stamp(time::macros::datetime!(2026-10-23 15:30:12 +8)), "20261023-073012Z");
         assert!(rollback_script("S").starts_with("MODE='rollback'\nSTAMP='S'\nN='0'\n"));
+        assert!(read_script().starts_with("MODE='read'\nCFG=$(uci -q get openclash.config.config_path") && read_script().ends_with("| head -c 1048577\n"));
     }
 
     /// 现场的写法：列表项顶格（`- name:` 在第 0 列）、字段缩进 2、reality-opts 下缩进 4；外加带引号的名字、不改的同名字段、注释、CRLF
@@ -358,8 +373,12 @@ rules:\n- MATCH,节点01组\n";
     #[test]
     fn apply_edits_only_the_named_exits() {
         for bb in shells() {
+            // 读配置：原样取回，顶层 secret 行不出路由
+            let f = Fake::new(&format!("secret: s3cret\n{CONFIG}"), bb);
+            let o = f.run(&read_script(), &[]);
+            assert_eq!((o.code, o.stdout.as_str()), (0, CONFIG), "busybox={bb} {o:?}");
             let f = Fake::new(CONFIG, bb);
-            let e2 = Edit { exit: "节点02".into(), old_server: "relay.test".into(), old_port: 20004, server: "relay.test".into(), port: 20021, ..edit("节点02") };
+            let e2 =Edit { exit: "节点02".into(), old_server: "relay.test".into(), old_port: 20004, server: "relay.test".into(), port: 20021, ..edit("节点02") };
             let o = f.run(&apply_script(&[edit("节点01"), e2], "20261023-073012Z"), &[("节点01", 88), ("节点02", 95)]);
             assert_eq!(o.code, 0, "busybox={bb} {o:?}");
             assert_eq!((o.kv("changed"), o.kv("delay_1"), o.kv("delay_2"), o.kv("replace")), (Some("12"), Some("88"), Some("95"), Some("ok")), "{o:?}");

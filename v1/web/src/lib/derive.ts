@@ -119,8 +119,13 @@ export function probeErr(detail: string | null | undefined) {
 export const probeFail = (e: EntryView) => (e.lifecycle !== 'active' || !e.applied ? null : !e.direct && e.tcp && !e.tcp.ok ? e.tcp : e.egress && !e.egress.ok ? e.egress : null);
 /** 入口状态列的「不通」写明是哪一段：TCP 连不上入口，还是连上了但出口验收失败（抽屉的「入口探测 N/M 连通」只算 TCP） */
 export const probeFailLabel = (e: EntryView) => (probeFail(e) === e.tcp ? 'TCP 不通' : '出口不通');
-/** 中控连不上这个入口的端口（中控 → 线路机最近一次 TCP 检查失败，与上面「线路机 → 节点」是两段）：返回那次检查；通的、没检查过、不在运行中的为 null */
-export const reachFail = (e: EntryView) => (e.lifecycle === 'active' && e.applied && e.reach?.ok === false ? e.reach : null);
+/** 同一个端口连续连不上几次才算「中控连不上」：同 relay_unreachable 告警（reach.rs） */
+const REACH_FAILS = 3;
+const reachOf = (e: EntryView) => (e.lifecycle === 'active' && e.applied && e.reach?.ok === false ? e.reach : null);
+/** 中控连不上这个入口的端口（中控 → 线路机的 TCP 检查连续 3 次失败，与上面「线路机 → 节点」是两段）：返回最近一次检查；通的、没检查过、不在运行中的为 null */
+export const reachFail = (e: EntryView) => { const r = reachOf(e); return r && r.fails >= REACH_FAILS ? r : null; };
+/** 刚才连不上 1–2 次（还不算连不上、不告警，同软路由出口的「刚才测不通」）：返回最近一次检查 */
+export const reachFlaky = (e: EntryView) => { const r = reachOf(e); return r && r.fails < REACH_FAILS ? r : null; };
 /** 入口表里的异常行（排在前面、折叠时也全露出、计入「N 条异常」）：中控连不上、线路机到节点探测不通、应用失败 */
 export const entryBad = (e: EntryView) => !!reachFail(e) || !!probeFail(e) || (e.lifecycle === 'active' && !!e.apply_error);
 /** 状态筛选、状态列排序用的值：在用的看健康，其余看生命周期（同机器页状态筛选下拉的 value） */

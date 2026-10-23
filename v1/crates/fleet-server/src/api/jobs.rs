@@ -20,6 +20,9 @@ pub struct JobOut {
     target_id: Option<Uuid>,
     #[serde(skip)]
     target_name: Option<String>,
+    /// 目标机器退役（进备用、回收）前的名字：还在备用的取 spare_from，回收了的取回收站里那条的
+    #[serde(skip)]
+    target_origin: Option<String>,
     state: String,
     step: i32,
     error: Option<String>,
@@ -34,6 +37,7 @@ pub struct JobOut {
 
 const SELECT: &str = "select j.id, j.kind, j.target_id,
     display_name(m.kind::text, m.label, t.name, m.number) target_name,
+    coalesce(m.spare_from, (select rb.name from recycle_bin rb where rb.source = 'fleet' and rb.source_id = j.target_id::text)) target_origin,
     j.state::text state, j.step, j.error, j.created_by, j.created_at, j.started_at, j.finished_at
   from job j left join machine m on m.id = j.target_id left join team t on t.id = m.team_id";
 
@@ -47,7 +51,7 @@ pub struct ListQ {
     kind: Option<String>,
 }
 
-/// 作业 JSON：目标机器以 `target{id,name}` 给出；`step_title` = 当前（或失败的）步骤标题，做完为 null。列表不带 steps
+/// 作业 JSON：目标机器以 `target{id,name,origin}` 给出（origin：退役前的名字，没退役过为 null）；`step_title` = 当前（或失败的）步骤标题，做完为 null。列表不带 steps
 fn job_json(j: &JobOut) -> Value {
     let mut v = serde_json::to_value(j).unwrap_or_default();
     // 步骤数 = 静态步骤定义的个数（作业建立时按定义建步骤行），不逐行子查询
@@ -55,7 +59,7 @@ fn job_json(j: &JobOut) -> Value {
     v["step_count"] = json!(defs.len());
     v["step_title"] = json!(defs.get(j.step as usize).map(|d| d.title));
     v["target"] = match j.target_id {
-        Some(id) => json!({"id": id, "name": j.target_name.clone().unwrap_or_else(|| "（已删除）".into())}),
+        Some(id) => json!({"id": id, "name": j.target_name.clone().unwrap_or_else(|| "（已删除）".into()), "origin": j.target_origin}),
         None => Value::Null,
     };
     v
@@ -129,17 +133,15 @@ pub async fn get_one(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath
         .collect();
     let mut v = job_json(&j);
     v["steps"] = json!(steps);
+    let p: Value = sqlx::query_scalar("select params from job where id = $1").bind(id).fetch_optional(&st.db).await?.unwrap_or_default();
     // 换线路机：把新入口 id 摆在明处（前端据此提供「复制新分享链接」），并提示分享链接已变
     if j.kind == "move_entry" {
-        let p: Option<Value> = sqlx::query_scalar("select params from job where id = $1").bind(id).fetch_optional(&st.db).await?;
-        if let Some(p) = p {
-            v["result"] = json!({
-                "new_entry_id": p["entry_id"], "old_entry_id": p["old_entry_id"], "from_relay_id": p["from_relay_id"], "to_relay_id": p["to_relay_id"],
-                "share_changed": true, "note": "客户端需要换成新的分享链接",
-            });
-        }
+        v["result"] = json!({
+            "new_entry_id": p["entry_id"], "old_entry_id": p["old_entry_id"], "from_relay_id": p["from_relay_id"], "to_relay_id": p["to_relay_id"],
+            "share_changed": true, "note": "客户端需要换成新的分享链接",
+        });
     }
-    v["cancellable"] = json!(cancel_blocker(&j.kind, j.step, &j.state).is_none());
+    v["cancellable"] = json!(cancel_blocker(&j.kind, j.step, &j.state, &p).is_none());
     Ok(ok(v))
 }
 
@@ -320,12 +322,12 @@ pub async fn retry(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
 
 pub async fn cancel(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
-    let (state, kind, step, target): (String, String, i32, Option<Uuid>) = sqlx::query_as("select state::text, kind, step, target_id from job where id = $1 for update")
+    let (state, kind, step, target, params): (String, String, i32, Option<Uuid>, Value) = sqlx::query_as("select state::text, kind, step, target_id, params from job where id = $1 for update")
         .bind(id)
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| ApiError::not_found("没有这个作业"))?;
-    if let Some(why) = cancel_blocker(&kind, step, &state) {
+    if let Some(why) = cancel_blocker(&kind, step, &state, &params) {
         return Err(ApiError::conflict(why));
     }
     // 排队中的升级作业：领到就收尾，编排里等它的随后跟着取消（jobs::claim、halted）

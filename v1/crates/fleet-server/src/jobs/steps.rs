@@ -58,29 +58,22 @@ impl Ctx<'_> {
     fn target_id(&self) -> anyhow::Result<Uuid> { self.job.target_id.ok_or_else(|| anyhow!("作业没有目标机器")) }
 
     /// 目标机器。同机 IP 节点的 ip / ssh_port 取宿主机的：步骤里的 SSH 都自动登录宿主机
-    async fn machine(&self) -> anyhow::Result<M> { self.machine_of(self.target_id()?).await }
-
-    async fn machine_of(&self, id: Uuid) -> anyhow::Result<M> {
+    async fn machine(&self) -> anyhow::Result<M> {
         Ok(sqlx::query_as(
             "select m.id, m.kind::text kind, host(coalesce(h.primary_ip, m.primary_ip)) ip, coalesce(h.ssh_port, m.ssh_port) ssh_port,
                     m.lifecycle::text lifecycle, m.host_id, host(m.primary_ip) own_ip, host(m.bind_ip) bind_ip
              from machine m left join machine h on h.id = m.host_id where m.id = $1",
         )
-        .bind(id)
+        .bind(self.target_id()?)
         .fetch_one(&self.st.db)
         .await?)
     }
 
-    /// 节点在机器上的 ssserver 实例：普通 VPS 节点（宿主机）固定 meta::SS_PORT，上面有（没退役的）同机 IP 节点时出站绑它自己的地址；
-    /// 同机 IP 节点的端口是它出站参数里的 SS 端口，监听与出站用 bind 地址（1:1 NAT 映射的用 bind_ip，否则就是它的公网 IP）。
-    /// 收敛、退役清理、换线路机的补偿都从这里取
+    /// 节点在机器上的 ssserver 实例：普通 VPS 节点（宿主机）固定 meta::SS_PORT；同机 IP 节点的端口是它出站参数里的 SS 端口，
+    /// 监听与出站用 bind 地址（1:1 NAT 映射的用 bind_ip，否则就是它的公网 IP）。收敛、退役清理、换线路机的补偿都从这里取
     async fn ss_inst(&self, m: &M) -> anyhow::Result<SsInst> {
         if m.host_id.is_none() {
-            let others: Vec<String> = sqlx::query_scalar("select host(coalesce(bind_ip, primary_ip)) from machine where host_id = $1 and lifecycle <> 'retired' order by 1")
-                .bind(m.id)
-                .fetch_all(&self.st.db)
-                .await?;
-            return Ok(if others.is_empty() { SsInst::host() } else { SsInst::host_with_ip_nodes(&m.own_ip, others) });
+            return Ok(SsInst::host());
         }
         let port: i32 = sqlx::query_scalar("select port from node_outbound where machine_id = $1").bind(m.id).fetch_one(&self.st.db).await?;
         Ok(SsInst::ip_node(port as u16, &m.own_ip, m.bind_ip.as_deref()))
@@ -368,59 +361,30 @@ async fn converge_node(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         .bind(m.id)
         .fetch_one(&c.st.db)
         .await?;
+    let password = c.st.secrets.open_str(&secret)?;
     let allow = relay_ips_for(c, m.id, c.param_uuid("relay_id").ok()).await?;
     let inst = c.ss_inst(&m).await?;
-    let out = ss_converge(c, &t, &inst, method.as_deref(), &secret, &allow, "").await?;
-    // 宿主机上第一次有同机 IP 节点：宿主机自己的 ssserver 也改成出站绑它自己的地址（附加 IP 抢到网卡主地址时出口不跟着变）。
-    // 已经绑过的不动；要改时宿主机的 ssserver 重启一次（几秒，顺带换上刚推的新程序）
-    if let Some(h) = m.host_id {
-        let hm = c.machine_of(h).await?;
-        let hinst = c.ss_inst(&hm).await?;
-        let (hmethod, hsecret): (Option<String>, Vec<u8>) =
-            sqlx::query_as("select method, secret_enc from node_outbound where machine_id = $1").bind(h).fetch_one(&c.st.db).await?;
-        let hallow = relay_ips_for(c, h, None).await?;
-        let skip = "grep -q '\"outbound_bind_addr\"' /etc/shadowsocks-rust/config.json && { echo host_bind=kept; exit 0; }\n";
-        let ho = ss_converge(c, &t, &hinst, hmethod.as_deref(), &hsecret, &hallow, skip).await.map_err(|e| remote(format!("宿主机的 ssserver：{e:#}")))?;
-        match ho.kv("host_bind") {
-            Some("kept") => {}
-            Some("none") => c.warn("宿主机的 ssserver 出站没有绑地址：网卡上分不出哪个是宿主机自己的（公网 IP 不在网卡上、剩下的不止一个）").await,
-            b => c.log(format!("宿主机的 ssserver 出站改为绑 {}（重启了一次）", b.unwrap_or("?"))).await,
-        }
+    let script = vars(&[
+        ("SS_PORT", &inst.port.to_string()),
+        ("SS_METHOD", method.as_deref().unwrap_or(crate::meta::SS_METHOD)),
+        ("SS_PASSWORD", &password),
+        ("ALLOW", &allow),
+    ]) + &scripts::node_ss(&inst);
+    let out = t.run(&script, Duration::from_secs(120)).await?;
+    if !out.ok() {
+        return Err(out.fail("配置 ssserver / 防火墙失败"));
     }
-    if inst.host_out.is_some() && out.kv("host_bind") == Some("none") {
-        c.warn("ssserver 出站没有绑地址：网卡上分不出哪个是这台宿主机自己的（公网 IP 不在网卡上、剩下的不止一个）").await;
+    check_nft(&out, &allow, &inst.table())?;
+    if out.kv("ss") != Some("listening") {
+        return Err(remote(format!("ssserver 没有起来：{}", out.stdout.trim())));
     }
+    warn_linklocal_dns(c, &out, "ssserver").await;
     if pushed {
         // 只重启这台节点自己的实例：同一台机器上别的 ssserver（宿主机的、别的同机 IP 节点的）下次重启时才换上新程序
         t.run(&format!("systemctl restart {}", inst.svc()), Duration::from_secs(30)).await?;
     }
     let bbr = tuned.as_ref().map(|x| x["bbr"] == true);
     Ok(Outcome::Done(json!({"bbr": bbr, "tune": tuned, "nft_relays": out.kv("nft_relays"), "ssserver_updated": pushed})))
-}
-
-/// 在机器上配好一个 ssserver 实例和它的防火墙（scripts::node_ss），核对放行名单与监听。`pre`：接在变量之后、脚本之前的几行
-async fn ss_converge(c: &Ctx<'_>, t: &Target, inst: &SsInst, method: Option<&str>, secret: &[u8], allow: &str, pre: &str) -> anyhow::Result<Output> {
-    let password = c.st.secrets.open_str(secret)?;
-    let script = vars(&[
-        ("SS_PORT", &inst.port.to_string()),
-        ("SS_METHOD", method.unwrap_or(crate::meta::SS_METHOD)),
-        ("SS_PASSWORD", &password),
-        ("ALLOW", allow),
-    ]) + pre
-        + &scripts::node_ss(inst);
-    let out = t.run(&script, Duration::from_secs(120)).await?;
-    if !out.ok() {
-        return Err(out.fail("配置 ssserver / 防火墙失败"));
-    }
-    if out.kv("host_bind") == Some("kept") {
-        return Ok(out);
-    }
-    check_nft(&out, allow, &inst.table())?;
-    if out.kv("ss") != Some("listening") {
-        return Err(remote(format!("ssserver 没有起来：{}", out.stdout.trim())));
-    }
-    warn_linklocal_dns(c, &out, "ssserver").await;
-    Ok(out)
 }
 
 async fn converge_relay(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
