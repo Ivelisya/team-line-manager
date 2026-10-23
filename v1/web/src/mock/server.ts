@@ -664,6 +664,44 @@ R('POST', '/machines/([^/]+)/renewals', ({ params, body }) => {
   (db.renewals[m.id] ??= []).unshift(r); m.subscription.billing_day = billingDay(newDue, m.subscription.billing_day); m.subscription.due_date = newDue; recomputeDue(m);
   emit({ type: 'machine', id: m.id }); emit({ type: 'machines' }); return { id: r.id, old_due: r.old_due, new_due: r.new_due };
 });
+// 待付清单（同服务端 billing.rs）：在用机器里窗口内到期的，按 供应商 × 到期日 分组；备用团队、自动续费的不算待付
+R('GET', '/billing/due', ({ query }) => {
+  const days = Number(query.get('days') ?? 30);
+  const rows = db.machines.filter((m) => m.lifecycle === 'active' && !m.spare && m.subscription && m.subscription.due_days <= days)
+    .sort((a, b) => a.subscription!.due_date.localeCompare(b.subscription!.due_date) || (a.provider?.name ?? '￿').localeCompare(b.provider?.name ?? '￿'));
+  const view = (m: MachineView) => { const s = m.subscription!; return { id: m.id, name: m.name, kind: m.kind, due_date: s.due_date, due_days: s.due_days, cycle: s.cycle, price_cents: s.price_cents, currency: s.currency, price_usd_cents: toUsd(s.price_cents, s.currency) }; };
+  const prov = (m: MachineView) => ({ id: m.provider?.id ?? null, name: m.provider?.name ?? null, panel_url: db.providers.find((p) => p.id === m.provider?.id)?.panel_url ?? null });
+  const total = (ms: MachineView[]) => usdTotal(ms.map((m) => ({ currency: m.subscription!.currency, monthly_cents: m.subscription!.price_cents })));
+  const pay = rows.filter((m) => !m.subscription!.auto_renew);
+  const groups: { provider: ReturnType<typeof prov>; due_date: string; ms: MachineView[] }[] = [];
+  for (const m of pay) {
+    const g = groups.find((x) => x.provider.id === (m.provider?.id ?? null) && x.due_date === m.subscription!.due_date);
+    if (g) g.ms.push(m); else groups.push({ provider: prov(m), due_date: m.subscription!.due_date, ms: [m] });
+  }
+  return { days, until: null, total: total(pay), groups: groups.map((g) => ({ provider: g.provider, due_date: g.due_date, machines: g.ms.map(view), total: total(g.ms) })),
+    auto: rows.filter((m) => m.subscription!.auto_renew).map((m) => ({ provider: prov(m), machine: view(m) })) };
+});
+R('POST', '/renewals/batch', ({ body }) => {
+  const ms = (body.items ?? []).map((i: any) => ({ m: machine(i.machine_id), amount: i.amount_cents })); // eslint-disable-line @typescript-eslint/no-explicit-any
+  if (!ms.length) throw bad('一次登记 1–200 台');
+  const cycles = Number(body.cycles ?? 1);
+  const note = [body.ref?.trim() ? `账单 ${body.ref.trim()}` : '', body.note?.trim() ?? ''].filter(Boolean).join('，');
+  const items = ms.map(({ m, amount }: { m: MachineView; amount?: number }) => {
+    const s = m.subscription; if (!s) throw bad(`${m.name}：这台机器还没有账单信息，先填写费用`, 409, 'conflict');
+    const onBday = `${s.due_date.slice(0, 8)}${String(s.billing_day).padStart(2, '0')}`;
+    const cents = amount ?? s.price_cents * cycles;
+    return { m, s, old_due: s.due_date, new_due: addMonths(onBday, cycleMonths(s.cycle) * cycles), cents };
+  });
+  const out = items.map((i: any) => ({ machine_id: i.m.id, name: i.m.name, old_due: i.old_due, new_due: i.new_due, amount_cents: i.cents, currency: i.s.currency, usd_cents: toUsd(i.cents, i.s.currency) })); // eslint-disable-line @typescript-eslint/no-explicit-any
+  const total = usdTotal(items.map((i: any) => ({ currency: i.s.currency, monthly_cents: i.cents }))); // eslint-disable-line @typescript-eslint/no-explicit-any
+  if (body.dry_run) return { dry_run: true, items: out, total };
+  for (const i of items as any[]) { // eslint-disable-line @typescript-eslint/no-explicit-any
+    (db.renewals[i.m.id] ??= []).unshift({ id: `rn${db.seq++}`, old_due: i.old_due, new_due: i.new_due, amount_cents: i.cents, currency: i.s.currency, note, actor: db.user, created_at: iso() });
+    i.s.billing_day = billingDay(i.new_due, i.s.billing_day); i.s.due_date = i.new_due; recomputeDue(i.m);
+    emit({ type: 'machine', id: i.m.id });
+  }
+  emit({ type: 'machines' }); return { dry_run: false, items: out, total };
+});
 R('POST', '/provision/check', ({ body }) => ({ items: checkProvision(body.items ?? []) }));
 R('POST', '/provision', ({ body }) => {
   const items: ProvisionItem[] = body.items ?? [];

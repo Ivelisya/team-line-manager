@@ -22,8 +22,9 @@ import { resetOnOpen, useHeld } from '@/lib/useHeld';
 import { Chip, Empty, ErrorNote, Note, Num, PageHead, Panel, SortHead, SPARE_TIP, TableWrap, type SortState } from '@/components/app/primitives';
 import { ConfirmDialog, FormDialog } from '@/components/app/dialogs';
 import { TzInput } from '@/components/app/TzInput';
+import { DueTab } from '@/features/DueTab';
 
-const SECTIONS = ['teams', 'providers', 'plans'];
+const SECTIONS = ['teams', 'providers', 'plans', 'due'];
 
 /** 三张表的行：点行打开编辑（同机器列表点行开抽屉），行尾常驻一个「⋯」收其余操作（重新编号、归档、删除），不靠悬停才出现。
  *  点到行里的链接（台数）、按钮时不算点行 */
@@ -49,11 +50,12 @@ export function CatalogPage() {
     <div className="stack">
       <PageHead title="团队与套餐" />
       <Tabs value={tab} onValueChange={(v) => setSp((p) => { const n = new URLSearchParams(p); n.set('section', v); n.delete('sort'); n.delete('archived'); return n; }, { replace: true })}>
-        <TabsList><TabsTrigger value="teams">团队</TabsTrigger><TabsTrigger value="providers">供应商</TabsTrigger><TabsTrigger value="plans">套餐</TabsTrigger></TabsList>
+        <TabsList><TabsTrigger value="teams">团队</TabsTrigger><TabsTrigger value="providers">供应商</TabsTrigger><TabsTrigger value="plans">套餐</TabsTrigger><TabsTrigger value="due">待付</TabsTrigger></TabsList>
         <div style={{ marginTop: 16 }}>
           <TabsContent value="teams"><TeamsTab /></TabsContent>
           <TabsContent value="providers"><ProvidersTab /></TabsContent>
           <TabsContent value="plans"><PlansTab /></TabsContent>
+          <TabsContent value="due"><DueTab /></TabsContent>
         </div>
       </Tabs>
     </div>
