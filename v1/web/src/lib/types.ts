@@ -103,8 +103,17 @@ export interface MachineView {
   failed_job: { id: string; kind: string; state: string } | null;
   open_incidents: number; maintenance: boolean;
   relay: { public_host: string; generation: number; applied_generation: number; applied_at: string | null; apply_error: string | null; port_min: number; port_max: number } | null;
-  /** 系统调优记录：profile 为 null = 未调优（迁移前上线的机器）；current = 就是中控当前的档，false 为旧档或未调优。家宽代理、同机 IP 节点为 null */
-  tune: { profile: string | null; at: string | null; current: boolean } | null;
+  /** 系统调优记录：profile 为 null = 未调优（迁移前上线的机器、已撤销）；current = 就是中控当前的档，false 为旧档或未调优；
+   *  params = 最近一次调优的推导参数（tune-v2 起，旧档与未调优为 null）。家宽代理、同机 IP 节点为 null */
+  tune: { profile: string | null; at: string | null; current: boolean; params: TuneParams | null } | null;
+}
+
+/** 调优档 tune-v2 的推导参数：缓冲区上限 buf_max（字节）= clamp(2×bw×rtt/8 + 2 MiB, 16 MiB, min(内存/32, 64 MiB))。
+ *  bw（Mbps）取套餐（封顶 1000；没写用 1000，bw_source=default）；rtt（ms）线路机采样入口连接的 P90（rtt_source=sampled，样本 rtt_samples 条），否则默认值 */
+export interface TuneParams {
+  bw: number; bw_plan: number | null; bw_source: 'plan' | 'default';
+  rtt: number; rtt_source: 'sampled' | 'default'; rtt_samples: number | null;
+  mem_mb: number | null; buf_max: number;
 }
 
 /** spare：唯一的备用团队（系统管理，不能删、不能取消；里面在用的机器订阅过期满 1 天后自动回收） */

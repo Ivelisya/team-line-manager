@@ -364,6 +364,9 @@ pub struct TuneInfo {
     pub at: Option<OffsetDateTime>,
     /// 机器上的档就是中控当前的档（`jobs::tune::PROFILE`）；false = 旧档或没调优过
     pub current: bool,
+    /// 最近一次调优的推导参数（tune-v2 起）：`{bw, bw_plan, bw_source, rtt, rtt_source, rtt_samples, mem_mb, buf_max}`；
+    /// null = 没调优过、旧档 tune-v1（固定值）或已撤销
+    pub params: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -458,6 +461,7 @@ struct MRow {
     r_pmax: Option<i32>,
     tune_profile: Option<String>,
     tuned_at: Option<OffsetDateTime>,
+    tune_params: Option<serde_json::Value>,
     r_unreach: Option<String>,
     r_reach_unknown: bool,
 }
@@ -1037,7 +1041,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 s.traffic_used_base s_base, s.traffic_used_base_at s_base_at, s.overrides s_overrides, sb.billing_day::int s_bday, p.traffic_rule p_rule,
                 tp.price_cents t_price, tp.currency t_currency, tp.cycle::text t_cycle, tp.billing_tz t_tz, tp.traffic_gb t_traffic, tp.traffic_reset t_reset, tp.remind_days t_remind, local_date(tp.billing_tz) t_today,
                 {A_COLS}, r.public_host r_host, r.generation r_gen, r.applied_generation r_applied, r.applied_at r_applied_at, r.generation_at r_gen_at,
-                r.apply_error r_err, r.port_min r_pmin, r.port_max r_pmax, m.tune_profile, m.tuned_at, case when m.kind = 'relay' then {unreach} end r_unreach,
+                r.apply_error r_err, r.port_min r_pmin, r.port_max r_pmax, m.tune_profile, m.tuned_at, m.tune_params, case when m.kind = 'relay' then {unreach} end r_unreach,
                 m.kind = 'relay' and {reach_unknown} r_reach_unknown
          from machine m
          left join team t on t.id = m.team_id
@@ -1281,6 +1285,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
                 current: r.tune_profile.as_deref() == Some(crate::jobs::tune::PROFILE),
                 profile: r.tune_profile.clone(),
                 at: r.tuned_at,
+                params: r.tune_params.clone(),
             });
             let entries = entries_by.remove(&r.id).unwrap_or_default();
             let removed_traffic = removed_by.remove(&r.id).unwrap_or_default();

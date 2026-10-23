@@ -536,8 +536,8 @@ pub fn upgrade_agent(ctx: &Ctx, machine: Option<&str>, all: bool, yes: bool, fol
 }
 
 /// 一台的调优作业提交结果：Ok(Some(作业)) 已提交；`skip_conflict` 时 409（有进行中的作业、同机 IP 节点、家宽代理…）记进 `skipped` 返回 Ok(None)
-fn tune_submit(ctx: &Ctx, (id, name): &(String, String), skip_conflict: bool, skipped: &mut Vec<Value>) -> anyhow::Result<Option<Value>> {
-    match ctx.c.post(&format!("/machines/{id}/tune"), &json!({})) {
+fn tune_submit(ctx: &Ctx, (id, name): &(String, String), body: &Value, skip_conflict: bool, skipped: &mut Vec<Value>) -> anyhow::Result<Option<Value>> {
+    match ctx.c.post(&format!("/machines/{id}/tune"), body) {
         Ok(d) => Ok(Some(json!({"machine_id": id, "name": name, "job_id": d["job_id"]}))),
         Err(e) => match e.downcast_ref::<ApiError>() {
             Some(a) if skip_conflict && a.status == 409 => {
@@ -551,8 +551,10 @@ fn tune_submit(ctx: &Ctx, (id, name): &(String, String), skip_conflict: bool, sk
 
 /// `fleetctl tune <机器>[,<机器>…] | --team <团队> | --all`：重做系统调优（作业 tune，不重启 ssserver / Xray）。
 /// --team / --all 只取在用的线路机和 VPS 节点（同机 IP 节点随宿主机，家宽代理没有机器），线路机在前：先做一台并跟到结束，
-/// 它失败就停（其余不提交），成功后其余逐台提交；409 的机器（有进行中的作业）跳过并列出。--all 要确认（--yes）
-pub fn tune(ctx: &Ctx, machine: Option<&str>, team: Option<&str>, all: bool, yes: bool, follow: bool) -> anyhow::Result<u8> {
+/// 它失败就停（其余不提交），成功后其余逐台提交；409 的机器（有进行中的作业）跳过并列出。--all 要确认（--yes）。
+/// `rollback`：撤销列出的机器的调优（同一个作业类型，参数 rollback），要确认（--yes）
+pub fn tune(ctx: &Ctx, machine: Option<&str>, team: Option<&str>, all: bool, rollback: bool, yes: bool, follow: bool) -> anyhow::Result<u8> {
+    let body = json!({"rollback": rollback});
     let mut targets: Vec<(String, String)> = vec![];
     if all || team.is_some() {
         if all {
@@ -575,6 +577,13 @@ pub fn tune(ctx: &Ctx, machine: Option<&str>, team: Option<&str>, all: bool, yes
                 targets.push((id, name));
             }
         }
+        if rollback {
+            let names: Vec<&str> = targets.iter().map(|t| t.1.as_str()).collect();
+            confirm(
+                &format!("确认撤销 {} 的系统调优？按机器上第一次调优前记下的原值写回内核参数、删掉调优写的 sysctl 配置；不重启 ssserver / Xray", names.join("、")),
+                yes,
+            )?;
+        }
     }
     let (mut jobs, mut skipped): (Vec<Value>, Vec<Value>) = (vec![], vec![]);
     let many = targets.len() > 1;
@@ -582,7 +591,7 @@ pub fn tune(ctx: &Ctx, machine: Option<&str>, team: Option<&str>, all: bool, yes
     let (mut next, mut followed) = (0, 0);
     if (all || team.is_some()) && many {
         while next < targets.len() && jobs.is_empty() {
-            jobs.extend(tune_submit(ctx, &targets[next], true, &mut skipped)?);
+            jobs.extend(tune_submit(ctx, &targets[next], &body, true, &mut skipped)?);
             next += 1;
         }
         if let Some(j) = jobs.first() {
@@ -599,11 +608,11 @@ pub fn tune(ctx: &Ctx, machine: Option<&str>, team: Option<&str>, all: bool, yes
         }
     }
     for t in &targets[next..] {
-        jobs.extend(tune_submit(ctx, t, many, &mut skipped)?);
+        jobs.extend(tune_submit(ctx, t, &body, many, &mut skipped)?);
     }
     let d = json!({"jobs": jobs, "skipped": skipped});
     ctx.emit(&d, || {
-        let mut s = format!("已提交 {} 个调优作业", jobs.len());
+        let mut s = format!("已提交 {} 个{}作业", jobs.len(), if rollback { "撤销调优" } else { "调优" });
         for j in &jobs {
             s.push_str(&format!("\n  {}  {}", st(j, "/job_id"), st(j, "/name")));
         }

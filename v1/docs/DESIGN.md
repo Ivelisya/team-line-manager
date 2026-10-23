@@ -45,7 +45,7 @@ job ─< job_step ─< job_log      audit_log      user / session / api_key
 ## 3. 关键流程
 
 **上架节点（一次确认）**：填 IP、SSH 端口、登录方式、供应商/套餐、团队（编号自动）、目标线路机 →
-预检（连通、指纹、系统）→ 基线（sshd、nftables）→ 系统调优（tune-v1）→ 装 ssserver → 装 fleet-agent 并签发令牌 → 等第一批上报 →
+预检（连通、指纹、系统）→ 基线（sshd、nftables）→ 系统调优（tune-v2）→ 装 ssserver → 装 fleet-agent 并签发令牌 → 等第一批上报 →
 创建入口（写期望状态）→ 等线路机回报已应用 → 端到端验收 → `active`。批量上架就是多行同时提交。
 
 **上架同机 IP 节点**（`provision_ip`，填宿主机 + 新 IP）：在宿主机上核对 IP（要直接配在宿主机网卡上，或 1:1 NAT 映射到网卡上的某个本机地址——各本机地址访问一次 `/echo`，回显是它的那个记进 `machine.bind_ip`，ssserver 监听并从它出站；经它访问中控 `/echo` 回显的必须是它自己，否则是出站路由不对；暂定的 SS 端口被占用就改用最小空闲端口）→
@@ -60,11 +60,31 @@ job ─< job_step ─< job_log      audit_log      user / session / api_key
 
 **改名 / 重新编号 / 换团队**：只改 `team_id/number`，同步作业刷新线路机备注；不换令牌、不断连接。"重新编号"先出预览（旧名 → 新名），确认后一次生效。
 
-**系统调优**（调优档 tune-v1，常量在 `jobs/tune.rs`，跟中控版本走）：上架/恢复时在 `converge` / `converge_relay` 里紧跟系统基线固定执行（同机 IP 节点不做：系统设置是宿主机的）；已有机器用作业 `tune`（`fleetctl tune`、网页抽屉「管理 → 重新调优」）重做。
-远端脚本逐键直接写 `/proc/sys/…` 再读回：目标「等于」或「至少」（现值已不小于目标就不动），只把读回一致的键写进 `/etc/sysctl.d/99-zz-fleet-tune.conf`（容器里写不了的 `net.core.*`、conntrack 记「跳过」，不算失败）；
-内容是 BBR+fq、16 MB 的 TCP 缓冲上限、`tcp_notsent_lowat`、`tcp_slow_start_after_idle=0`、MTU 探测、连接队列、`nf_conntrack_max`（模块已加载才设，同时写 `/etc/modules-load.d/90-fleet-conntrack.conf` 让开机时模块先于 systemd-sysctl 载入），线路机另有 `ip_local_reserved_ports`（该线路机 relay 行的入口端口池，加上各入口的回环探测入站端口 = 入口端口 + 10000，与 Xray API 端口 62789；先于本地端口范围写）、端口范围与 `tcp_tw_reuse`；
-另写 journald 体积上限（300 MB）、补装并启用时间同步（非容器且没同步时）、核对服务的 LimitNOFILE。不重启 ssserver / Xray，不断连接。逐键结果（applied/ok/kept/skipped）就是步骤结果，是核对凭据；
-成功后记 `machine.tune_profile` / `tuned_at`（不动 revision）。改任何一项值都升档号（tune-v2…），部署中控后 `fleetctl tune --all` 重做；回滚 = 发新档再重做。
+**系统调优**（调优档 tune-v2，代码在 `jobs/tune.rs`，跟中控版本走）：上架/恢复时在 `converge` / `converge_relay` 里紧跟系统基线固定执行（同机 IP 节点不做：系统设置是宿主机的）；已有机器用作业 `tune`（`fleetctl tune`、网页抽屉「管理 → 重新调优」）重做，作业参数 `rollback` 时撤销。tune-v1 的机器显示「旧档」，`fleetctl tune --all` 升上来。
+tune-v2 借鉴了开源脚本 tcpfit 的缓冲区推导（只搬这一处推导；其余各项要么我们已有，要么不适合由中控无人值守地对正在跑客户流量的生产机做，逐项结论如下）。
+
+- **写法**：远端脚本逐键直接写 `/proc/sys/…` 再读回，目标「等于」或「至少」；「至少」逐项取现值与目标的较大者（三元组 `tcp_rmem` / `tcp_wmem` 也逐项比），现值已不小于目标就不动（kept）——**任何「至少」键都不往下调**（内核按内存自动给的、别人调大的都保留）。只把读回一致的键写进 `/etc/sysctl.d/99-zz-fleet-tune.conf`（按字典序最后生效；容器里写不了的 `net.core.*`、conntrack 记「跳过」，不算失败，开机时 systemd-sysctl 也不报错）。不重启 ssserver / Xray，不断连接。
+- **缓冲区上限按机器推导**（取代 tune-v1 的固定 16 MB）：`buf_max = clamp(2 × BW × RTT / 8 + 2 MiB, 16 MiB, min(MemTotal / 32, 64 MiB))`，下限优先。
+  - 2×BDP：`tcp_adv_win_scale=1`（6.6+ 的 scaling_ratio 同理）时约一半 socket 空间是开销，可通告窗口约为缓冲区的一半；+2 MiB 是 tcpfit 在 300M/168ms 实测出的余量。
+  - 下限 16 MiB = tune-v1 的值：换档不会把已有机器调小。封顶 MemTotal/32：单个 socket 最多用约 1/8 的内核 TCP 内存预算，至少能同时跑满 8 条大流；绝对封顶 64 MiB（tcpfit 是 256 MiB）：我们是代理机，单流速率受客户家宽限制，再大没收益只多占内存。
+  - **BW**（Mbps）= 套餐 `plan.bandwidth_mbps`，没写用 1000，参与计算前封顶 1000（单个客户经家宽跨境的单流几乎不会超过 1G）。由中控渲染脚本时代入（`bw_source` = plan | default），远端原样回显，对不上作业失败。不读网卡 speed（虚拟网卡常报 10000 这类标称值），不跑 iperf3。
+  - **RTT**（ms）：线路机在远端被动采样——`ss -tin state established` 里本地端口落在入口端口池（`relay.port_min..port_max`）内的连接，取 tcp_info 的 `rtt`，样本 ≥ 20 条取 P90，夹在 [150, 300]；不够用 200（`rtt_source` = sampled | default，样本数 `rtt_samples`）。关键链路是「线路机 → 中国客户」（客户下载时线路机是发送端，单连接天花板就是它的 wmem：16 MB 在 200 ms 下只有约 300–450 Mbps）；线路机 → 节点是美国本地（几到几十 ms），不决定缓冲。节点固定 100 ms 不采样：对端是线路机和目标网站，结果基本落在下限上（18 台 50M 的 ATTVPS 不需要大缓冲）。tcpfit 固定 150 ms 不区分角色。
+  - MemTotal 远端读 `/proc/meminfo`；计算在远端 awk 里做（整数：bw × rtt × 250 + 2097152），bw、rtt、mem、buf_max 原样进步骤结果 `params`，中控按同一公式（`tune::buf_max`）重算核对，不一致记警告；成功后存 `machine.tune_params`，网页抽屉「管理」与 `fleetctl show` 的「调优推导」据此显示。
+  - 写入：`rmem_max` / `wmem_max` 至少 buf_max（它们只限制应用自己 setsockopt 的值）；`tcp_rmem` / `tcp_wmem` 至少 `4096 131072 buf_max` / `4096 16384 buf_max`。中间项（每条连接的初始缓冲）保持 131072 / 16384，不学 tcpfit 的 1–2 MiB：线路机是几百条并发的代理连接，默认值大只会让每条连接一开始就多吃内存、发送队列更深；配合我们保留的 `tcp_notsent_lowat=131072`（tcpfit 故意不设）。
+- **固定项**：BBR+fq（`modprobe tcp_bbr`，写不进只记警告）、`tcp_notsent_lowat=131072`、`tcp_slow_start_after_idle=0`、`tcp_mtu_probing=1`、`somaxconn ≥ 8192`、`tcp_max_syn_backlog ≥ 8192`、`netdev_max_backlog ≥ 16384`、`optmem_max ≥ 65536`（6.9+ 内核默认已是 128 KiB，「至少」不会调小）、`tcp_fin_timeout=30`（不用 tcpfit 的 15，没必要）、`tcp_keepalive_time=600`（只影响开了 SO_KEEPALIVE 的连接，客户端掉线留下的半死连接早点清掉）、`tcp_tw_reuse=1`（线路机和节点都设，只作用于出站连接）、`fs.file-max ≥ 1000000`（systemd ≥ 240 默认是 LONG_MAX，「至少」绝不往下改——tcpfit 用「等于」会把它调低）、`nf_conntrack_max ≥ 131072`（节点）/ `262144`（线路机）（模块已加载才设，同时写 `/etc/modules-load.d/90-fleet-conntrack.conf` 让开机时模块先于 systemd-sysctl 载入）；线路机另有 `ip_local_reserved_ports`（该线路机 relay 行的入口端口池，加上各入口的回环探测入站端口 = 入口端口 + 10000，与 Xray API 端口 62789；先于本地端口范围写）、`ip_local_port_range=10240 65535`。
+- **守卫项**：`tcp_sack` / `tcp_dsack` / `tcp_timestamps` / `tcp_window_scaling` / `tcp_syncookies` / `tcp_moderate_rcvbuf` 至少 1——内核默认就是 1，只纠正被人改成 0 的机器（2 也是合法取值，如 syncookies=2，保持）。
+- **其余**：journald 体积上限（300 MB）、补装并启用时间同步（非容器且没同步时）、核对服务的 LimitNOFILE（低于 65536 告警）、`systemd-detect-virt -c` 识别容器（写不进的键不告警）。
+- **原值快照与撤销**：第一次跑 tune-v2（`/var/lib/fleet/tune-orig.conf` 不存在）时，在动任何键之前把本档每个键的现值写进这个文件（0600，root；已有就保留最早那份）；机器上已有 `99-zz-fleet-tune.conf`（tune-v1 调过）时快照记的是旧档的值，结果 `snapshot:"created_tuned"` 并记日志。每次的步骤结果另带这次改动前的值（`before`）。撤销 = 作业 `tune` 带 `rollback`（`fleetctl tune <机器> --rollback --yes`）：按快照逆序逐键写回、读回核对，删掉 `99-zz-fleet-tune.conf` 与 conntrack 的开机载入文件，清掉 `machine.tune_profile` / `tuned_at` / `tune_params`（显示「未调优」）；journald 上限、时间同步不撤（无害）；没有快照时作业失败、什么都不改。
+- **第三方调优残留检测**（只报告，不删，记作业警告与结果 `warnings`）：`/etc/sysctl.d/99-tcpfit.conf`（按字典序先于我们生效，两边都设的键以我们为准，其余如 `ip_local_port_range=1024 65535`、`tcp_mem` 照样生效）、tcpfit 的整形服务（`tcpfit-qdisc.service` / `tcpfit-qdisc.sh`）、`tc qdisc show` 里网卡根上的 HTB（全部出向流量被限速）。默认路由上的 `initcwnd` / `initrwnd` 只记录数值（结果 `route`、作业日志），不算问题：线路机3 的供应商镜像就带着 initcwnd 10000。
+- **明确不做**（以及为什么）：
+  - `ip_local_port_range=1024 65535`：会和线路机入口端口池、节点 ssserver 端口抢端口，服务重启时可能绑不上；我们用 10240-65535 加保留端口。
+  - `tcp_mem`（tcpfit 抬到 RAM/16、/8、/4，约内核默认的 2.7 倍）：小内存线路机连接多时更容易 OOM；只有观测到 TCP 内存压力才动。
+  - `rmem_default` / `wmem_default`：影响所有 socket（含 UDP），多连接时更占内存。
+  - `vm.min_free_kbytes=32768`：「等于」会把内核按 THP 自动设的更大值往下改，小内存机还白占内存。`vm.swappiness`：与网络无关。
+  - `tcp_fastopen=3`：服务端 TFO 对 REALITY / ss 没收益，还多一个特征。`netdev_budget=600`：tcpfit 作者自己测出没有差别。`tcp_adv_win_scale`：默认就是 1，6.6+ 已废弃。
+  - initcwnd / initrwnd：要改默认路由（有失联风险）且持久化散在四处；小带宽 policer 上首轮突发会打穿令牌桶；线路机3 的 10000 照 tcpfit 的 32 改反而调低。
+  - iperf3 测速 / 拐点扫描、HTB 整形、改运行中网卡的根 qdisc：测速会把生产上行打满几分钟、吃月流量、测量混着客户流量不可信；整形是全网卡出向的硬上限，测偏了就是长期负优化（tcpfit 的余量按标称带宽扣，能把回程压到个位数 Mbps）；换根 qdisc 的瞬间丢队列里的包，BBR 自带 pacing，`default_qdisc=fq` 下次重启自然生效。
+- 逐键结果（applied / ok / kept / skipped）就是步骤结果，是核对凭据；成功后记 `machine.tune_profile` / `tuned_at` / `tune_params`（不动 revision）。改任何一项值或推导方法都升档号（tune-v3…），部署中控后 `fleetctl tune --all` 重做。
 
 **换线路机**：新线路机建入口 → 验收 → 旧入口 removing；分享链接变化会在界面提示。
 

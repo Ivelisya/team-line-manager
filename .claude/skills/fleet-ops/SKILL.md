@@ -153,7 +153,8 @@ fleetctl entry rotate <入口> --yes                         # 旧分享链接�
 fleetctl entry disable <入口> --yes
 fleetctl entry add-direct <线路机> --yes [--follow]          # 线路机直出入口：从线路机自己的 IP 出去（旧系统的「节点00-默认」），每台至多一条；链接 fleetctl share <线路机>-直出
 fleetctl upgrade-agent <机器> | --all --yes                # 重启 agent；--all 先升一台金丝雀，成功后线路机逐台、VPS 节点并发；排队中的可 fleetctl cancel <作业>
-fleetctl tune <机器>[,<机器>…] | --team <团队> | --all [--yes] [--follow]   # 重做系统调优（上架时已自动做）：内核网络参数、BBR、日志体积上限、时间同步，不重启 ss/Xray、不断连接；--team/--all 先做一台（线路机优先）并跟到结束，成功后其余逐台提交，有进行中作业的跳过并列出；--all 要 --yes；同机 IP 节点、家宽代理 409；`ls` 的「调优」列看谁是旧档 / 未调优
+fleetctl tune <机器>[,<机器>…] | --team <团队> | --all [--yes] [--follow]   # 重做系统调优（上架时已自动做；档 tune-v2：TCP 缓冲上限按套餐带宽、客户连接 RTT、内存推导，任何参数不往小改）：内核网络参数、BBR、日志体积上限、时间同步，不重启 ss/Xray、不断连接；--team/--all 先做一台（线路机优先）并跟到结束，成功后其余逐台提交，有进行中作业的跳过并列出；--all 要 --yes；同机 IP 节点、家宽代理 409；`ls` 的「调优」列看谁是旧档（tune-v1）/ 未调优，`show` 的「调优推导」看缓冲上限怎么来的
+fleetctl tune <机器>[,<机器>…] --rollback --yes [--follow]   # 撤销调优：按机器上第一次调优前记的原值写回、删掉调优的 sysctl 配置（没有原值快照的机器作业失败，什么都不改）；先向用户确认
 fleetctl renumber <团队> --yes                             # 不加 --yes 只预览
 fleetctl move <节点> --to <线路机> --yes [--from <线路机>] [--no-routers] [--follow]   # 换线路机：新入口验收后改软路由出口（同替换，失败全部换回、旧入口不摘）、再摘旧入口，不断网；分享链接会变，完成后 fleetctl share <节点> 取新链接。不加 --yes 先看预览
 fleetctl evacuate <线路机> --to <线路机> --yes [--no-routers] [--follow]          # 搬空线路机（退役前）：每个在用节点一个换线路机作业，软路由出口跟着改；作业并行，同一台路由一次只改一个节点（其余的在「改软路由出口」这一步排队）
@@ -197,7 +198,7 @@ fleetctl router rm <路由> --yes                             # 删软路由：�
 - `retire --json`：进备用 `{mode:"spare", name（备用里的名字）, from, recycle_on, ip_nodes:[{id,name,from}]}`；`--now` 为 `{mode:"now", job_id, ip_node_jobs:[{machine_id,name,job_id}]}`，后者是一并回收的同机 IP 节点各自的退役作业。
 - `recycle ls --json`：`{items:[{id source(fleet|legacy) source_id machine_id kind name last_name team ip host_name provider plan service_ref price_cents currency cycle activated_at retired_at due_date recycled_at reason traffic_up traffic_down nic_rx nic_tx actor}], total, next_offset}`；`recycle show --json` 另有 `snapshot`。`recycle import --json`：`{dry_run, inserted:[{source_id,name,id}], skipped:[{source_id,name,why}]}`。
 - `upgrade-agent --all --json`：`{jobs:[{machine_id,name,kind,job_id,after}], skipped:[{machine_id,name,reason}], order}`；`jobs` 按执行顺序，第一个是金丝雀，`after` 是它要等的作业（等的那个换上新版本后失败、或被取消，它就被取消）；`order` 是顺序说明，原样转述给用户。中控上没有 agent 程序时报错（409），不建作业。
-- `tune --json`：`{jobs:[{machine_id,name,job_id}], skipped:[{machine_id,name,reason}]}`（`--team` / `--all` 时金丝雀失败则多一个 `stopped:true`，其余没提交）；逐键结果（`applied ok kept skipped[{key,why,got}] journald ntp nofile container`）在作业 `job <id>` 的 `steps[0].output`。`ls` 每台带 `tune`、`show` 带 `tune`：`{profile,at,current}`（`current:false` 且 `profile` 为 null = 未调优，非 null = 旧档），家宽代理和同机 IP 节点为 null。
+- `tune --json`：`{jobs:[{machine_id,name,job_id}], skipped:[{machine_id,name,reason}]}`（`--team` / `--all` 时金丝雀失败则多一个 `stopped:true`，其余没提交）；逐键结果（`applied ok kept skipped[{key,why,got}] before{键:改前的值} params snapshot warnings[第三方调优残留] route{initcwnd,initrwnd} journald ntp nofile container`；撤销时 `rollback:true`）在作业 `job <id>` 的 `steps[0].output`。`ls` 每台带 `tune`、`show` 带 `tune`：`{profile,at,current,params}`（`current:false` 且 `profile` 为 null = 未调优或已撤销，非 null = 旧档；`params` = `{bw,bw_plan,bw_source,rtt,rtt_source,rtt_samples,mem_mb,buf_max}`，旧档 / 未调优为 null），家宽代理和同机 IP 节点为 null。
 - `exec`：`exit_code stdout stderr duration_ms truncated timed_out`；多台时是这些字段加 `machine` 的数组，某台没执行成（请求被拒、连不上）时那一项是 `{machine,id,exit_code:null,error:{code,message,status}}`。
 - `ssh`：没有 JSON 输出（终端交给 ssh，输出是远端的原样），退出码同远端；登录之前的错误（找不到机器、不在中控上、审计没记上）照常是 stderr 的错误 JSON、退出码 1。
 

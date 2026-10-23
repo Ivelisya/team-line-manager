@@ -18,6 +18,7 @@ import { ShowAll } from '@/components/app/Pagination';
 import { RouterMark, entryStatus } from './EntriesTable';
 import { useEntryRouters } from '@/lib/routers';
 import { ConfirmDialog } from '@/components/app/dialogs';
+import { tuneParamsText } from '@/components/app/TuneResult';
 import { RetireDialog } from '@/components/app/RetireDialog';
 import { EntryMenuButton, EntryMenus, entryLabel } from '@/components/app/EntryActions';
 import { EvacuateDialog, MoveDialog, movableEntries } from '@/components/app/LifecycleDialogs';
@@ -232,17 +233,21 @@ function AgentRow({ m }: { m: MachineView }) {
   );
 }
 
-/** 系统调优：记录的调优档与时间（「调优：tune-v1 · 10-23」/「旧档 tune-v0 · 10-23」/「未调优」）；重新调优 = 作业 tune，只写内核网络参数等，不重启 ss/Xray */
+/** 系统调优：记录的调优档与时间（「已调优 · 10-23」/「需要重新调优（旧档）」/「未调优」），下面一行是这台的推导参数（缓冲上限从哪来）；重新调优 = 作业 tune，只写内核网络参数等，不重启 ss/Xray */
 function TuneRow({ m }: { m: MachineView }) {
   const tune = useTune();
   const [ask, setAsk] = React.useState(false);
   const t = m.tune!;
-  // 档名是内部名，放进悬停；这里只写「已调优 · 10-23」，旧档写「需要重新调优」
+  // 档名是内部名，放进悬停；这里只写「已调优 · 10-23」，旧档写「需要重新调优」；下面一行是这台的推导参数（缓冲上限从哪来）
   const state = !t.profile ? '未调优' : !t.current ? '需要重新调优（旧档）' : `已调优${t.at ? ` · ${F.dt(t.at).slice(0, 5)}` : ''}`;
+  const old = t.profile && !t.current ? '\n旧档的 TCP 缓冲上限是固定 16 MB；新档按这台的套餐带宽、客户连接的 RTT、内存推导，重新调优即升级（不往小改任何参数）。' : '';
   return (
     <>
       <div className="manage-row">
-        <div className="t">系统调优：{state} <InfoTip text={`内核网络参数（缓冲区、拥塞控制、连接队列等）、日志体积上限、时间同步。逐键结果在作业详情里。${t.profile ? `\n档位 ${t.profile}${t.at ? `，${F.dtFull(t.at)}` : ''}` : ''}`} /></div>
+        <div>
+          <div className="t">系统调优：{state} <InfoTip text={`内核网络参数（缓冲区、拥塞控制、连接队列等）、日志体积上限、时间同步。逐键结果在作业详情里。${old}${t.profile ? `\n档位 ${t.profile}${t.at ? `，${F.dtFull(t.at)}` : ''}` : ''}`} /></div>
+          {t.params && <div className="hint">{tuneParamsText(t.params)}</div>}
+        </div>
         <Button variant="secondary" disabled={!!m.active_job} onClick={() => setAsk(true)}>{t.profile ? '重新调优…' : '调优…'}</Button>
       </div>
       <ConfirmDialog open={ask} onOpenChange={setAsk} title={`${t.profile ? '重新调优' : '调优'} ${m.name}？`} confirmLabel="开始调优" confirmDisabled={!!m.active_job}
