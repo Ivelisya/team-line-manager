@@ -1,7 +1,7 @@
 //! 作业引擎：PG 是唯一状态。领取用 `FOR UPDATE SKIP LOCKED` + 租约；每步幂等，可从失败处重试。
 //!
-//! 步骤返回 Done / Skipped / Wait(秒)：Wait 把作业置为 waiting 并在到点后重新领取（等线路机生效、等首次上报…），
-//! 等待超过该步的 `timeout_s` 即失败。
+//! 步骤返回 Done / Skipped / Wait(秒) / Queue(秒)：Wait 把作业置为 waiting 并在到点后重新领取（等线路机生效、等首次上报…），
+//! 等待超过该步的 `timeout_s` 即失败；Queue 同 Wait，但等的是别的作业放手（同一台软路由同时只有一个作业在改），不算这一步的超时。
 //!
 //! 唤醒：建作业、重试、取消后调 `AppState::wake_jobs`；线路机回报应用结果、agent 首次上报时 `wake_for` 把等这些事的作业
 //! 提前到现在再唤醒；推进中发现作业已被取消、放开租约等补偿时也唤醒；每次推进告一段落也唤醒（等它的作业可能能领了）。
@@ -93,7 +93,7 @@ const RETIRE: &[StepDef] = &[
     s("finalize", "完成退役", 30),
 ];
 // 换线路机：新入口先建好并验收，再把软路由上指向旧入口的出口改成新入口（同替换节点的「改软路由出口」，失败全部换回、旧入口不摘），
-// 最后摘旧入口，节点全程至少有一个可用入口。开始改路由之后不能取消（改路由失败、已换回原配置时除外），detach_old 之后不可回滚（见 cancel_blocker）。
+// 最后摘旧入口，节点全程至少有一个可用入口。开始改路由之后不能取消（排队等路由、改路由失败且已换回原配置时除外），detach_old 之后不可回滚（见 cancel_blocker）。
 const MOVE_ENTRY: &[StepDef] = &[
     s("attach_new", "在新线路机建入口", 60),
     s("firewall_widen", "放行新线路机（节点防火墙）", 300),
@@ -104,11 +104,11 @@ const MOVE_ENTRY: &[StepDef] = &[
     s("wait_detached_old", "等待旧线路机摘除", 600),
     s("firewall_narrow", "收紧节点防火墙", 300),
 ];
-/// MOVE_ENTRY 里 routers 的下标：从这一步起不能再取消（这一步失败停着、路由已换回时除外）
+/// MOVE_ENTRY 里 routers 的下标：从这一步起不能再取消（排队等路由、这一步失败停着且路由已换回时除外）
 const MOVE_ROUTERS: i32 = 4;
 const PURGE: &[StepDef] = &[s("purge", "删除数据", 600)];
 // 替换节点（见 steps/replace.rs）：先把软路由上指向旧节点的出口换成新节点的入口（一台一台改，失败的连同已改好的都换回原配置），
-// 再交换编号（旧节点去备用团队 / 空号，新节点接旧编号）。改路由一开始就不能取消（见 cancel_blocker）。
+// 再交换编号（旧节点去备用团队 / 空号，新节点接旧编号）。改路由一开始就不能取消（排队等路由时除外，见 cancel_blocker）。
 // 一台路由：改配置 + 重启 OpenClash + 等 API + 测延迟最多约 7 分钟（routers::replace::APPLY_TIMEOUT），回滚约 4 分钟；按两三台留足
 const REPLACE: &[StepDef] = &[s("routers", "改软路由出口", 1800), s("renumber", "交换编号", 60)];
 // 推送时旧程序留成 .prev；起不来、或 2 分钟内等不到新版本上报，就换回去并让作业失败（见 steps::agent / wait_report）。重试从推送重来
@@ -142,24 +142,31 @@ pub fn provisions(kind: &str) -> bool { kind.starts_with("provision_") }
 
 pub fn cancellable(kind: &str) -> bool { provisions(kind) || matches!(kind, "attach_entry" | "move_entry" | "upgrade_agent" | "replace" | "tune") }
 
-/// 作业走到第 `step` 步、处于 `state` 时为什么不能取消；能取消返回 None。
+/// 作业走到第 `step` 步、处于 `state` 时为什么不能取消；能取消返回 None。`params` 是作业参数（「改软路由出口」记的
+/// `routers_queued` / `routers_stuck`，见 steps/replace.rs）。
 /// 换线路机一旦开始改软路由就只能重试到完成（取消会摘掉路由已经指向的新入口；摘旧入口之后回滚会让节点没有入口），
-/// 改路由失败（已换回原配置）停在这一步时还能取消；升级 agent 只能在排队时取消（推送、重启到一半中断更危险）；
-/// 替换节点只能在开始改路由之前取消：排队中，或改路由失败（已换回原配置）还停在第一步
-pub fn cancel_blocker(kind: &str, step: i32, state: &str) -> Option<&'static str> {
+/// 排队等别的作业改完同一台路由、或改路由失败（已换回原配置）停在这一步时还能取消；改失败且有路由没换回时不能取消，人工处理好后重试。
+/// 升级 agent 只能在排队时取消（推送、重启到一半中断更危险）；替换节点同换线路机，只能在动路由之前取消
+pub fn cancel_blocker(kind: &str, step: i32, state: &str, params: &Value) -> Option<&'static str> {
     if !cancellable(kind) {
         return Some("这类作业不能取消（可以重试到完成）");
     }
+    let at_routers = (kind == "replace" && step == 0) || (kind == "move_entry" && step == MOVE_ROUTERS);
+    if at_routers && state == "failed" && params["routers_stuck"].as_array().is_some_and(|a| !a.is_empty()) {
+        return Some("有软路由改失败后没能换回原配置（见作业日志）：人工处理好那台路由再点重试；现在取消，路由上的出口会指着对不上的入口");
+    }
+    // 排队等别的作业改完同一台路由：路由还没动
+    let queued = at_routers && state == "waiting" && params["routers_queued"].is_string();
     if kind == "move_entry" && step > MOVE_ROUTERS {
         return Some("旧入口已经开始摘除，不能再取消（取消会让节点没有入口）：失败了点重试到完成");
     }
-    if kind == "move_entry" && step == MOVE_ROUTERS && !matches!(state, "queued" | "failed") {
+    if kind == "move_entry" && step == MOVE_ROUTERS && !queued && !matches!(state, "queued" | "failed") {
         return Some("软路由已经开始改，不能再取消：失败了点重试到完成");
     }
     if !matches!(state, "queued" | "running" | "waiting" | "failed") {
         return Some("作业已结束");
     }
-    if kind == "replace" && (step > 0 || !matches!(state, "queued" | "failed")) {
+    if kind == "replace" && !queued && (step > 0 || !matches!(state, "queued" | "failed")) {
         return Some("软路由已经开始改（或已经改好），不能再取消：失败了点重试到完成");
     }
     if !matches!(kind, "upgrade_agent" | "tune") || state == "queued" {
@@ -242,6 +249,8 @@ pub enum Outcome {
     Done(Value),
     Skipped(String),
     Wait(u64),
+    /// 排队等别的作业放手（同一台软路由的锁）：同 Wait，但这一步的开始时间清空，超时从轮到时算起
+    Queue(u64),
 }
 
 /// 存进作业的远端输出（步骤错误 → 作业错误、日志、机器的状态原因；步骤的警告、跳过原因）最多约 4 KiB：stderr 可能上百 KB。
@@ -423,7 +432,6 @@ async fn retry_later(st: &AppState, id: Uuid, owner: &str, e: &anyhow::Error) {
 /// 升级 agent、系统调优排在其它作业之后：「全部升级」一次建一百多个，不能让之后的上架、换线路机、退役排在它们后面。
 /// 同一事务建的作业 created_at 相同，再按 id（UUIDv7，按生成先后递增）：全部升级里先建的线路机先领。
 /// 参数里有 `after`（「全部升级」的编排：要等的作业）的，那个作业结束之前领不到；它在推送之后失败或被取消，这个作业领到后不开始、直接取消（见 `halted`）。
-/// `routers_after`（改同一台软路由的替换 / 换线路机，见 api::replace::routers_after）同样等它结束，但它怎么结束都照常开始。
 /// 排队时被取消的不用等：领到就收尾（没开始过，`started_at` 留空）
 pub async fn claim(st: &AppState, owner: &str) -> anyhow::Result<Option<JobRow>> {
     Ok(sqlx::query_as(
@@ -433,8 +441,7 @@ pub async fn claim(st: &AppState, owner: &str) -> anyhow::Result<Option<JobRow>>
          where id = (select id from job j where state in ('queued', 'running', 'waiting', 'cancelling') and run_after <= now()
                      and (lease_until is null or lease_until < now()) and id <> all($2)
                      and (state = 'cancelling'
-                          or not exists (select 1 from job p where p.id in ((j.params->>'after')::uuid, (j.params->>'routers_after')::uuid)
-                                         and p.state in ('queued', 'running', 'waiting', 'cancelling')))
+                          or not exists (select 1 from job p where p.id = (j.params->>'after')::uuid and p.state in ('queued', 'running', 'waiting', 'cancelling')))
                      order by kind in ('upgrade_agent', 'tune'), created_at, id for update skip locked limit 1)
          returning id, kind, target_id, params, state::text state, step, created_by",
     )
@@ -531,10 +538,26 @@ pub async fn advance(st: &AppState, mut job: JobRow, owner: &str) -> anyhow::Res
             Err(_) => Err(StepError::err(ErrKind::Timeout, format!("超过 {} 秒没有完成", outer.as_secs()))),
         };
         match res {
-            Ok(Outcome::Wait(secs)) => {
-                if (OffsetDateTime::now_utc() - started).whole_seconds() > d.timeout_s {
-                    return fail(st, &job, owner, d, ErrKind::Timeout, &format!("等了 {} 秒仍未完成", d.timeout_s)).await;
-                }
+            Ok(o @ (Outcome::Wait(_) | Outcome::Queue(_))) => {
+                let secs = match o {
+                    Outcome::Wait(secs) => {
+                        if (OffsetDateTime::now_utc() - started).whole_seconds() > d.timeout_s {
+                            return fail(st, &job, owner, d, ErrKind::Timeout, &format!("等了 {} 秒仍未完成", d.timeout_s)).await;
+                        }
+                        secs
+                    }
+                    Outcome::Queue(secs) => {
+                        // 排队不算这一步的时间：开始时间清空，轮到时（下一次运行）重新记
+                        sqlx::query(&format!("update job_step set started_at = null where job_id = $1 and idx = $2 and {OWN}"))
+                            .bind(job.id)
+                            .bind(job.step)
+                            .bind(owner)
+                            .execute(&st.db)
+                            .await?;
+                        secs
+                    }
+                    _ => unreachable!(),
+                };
                 let state: Option<String> = sqlx::query_scalar(
                     "update job set state = case when state = 'cancelling' then state else 'waiting' end,
                         run_after = case when state = 'cancelling' then now() else now() + make_interval(secs => $2) end,
@@ -560,7 +583,7 @@ pub async fn advance(st: &AppState, mut job: JobRow, owner: &str) -> anyhow::Res
                         let why = clip(&why);
                         ("skipped", json!({"reason": why}), format!("跳过：{}（{why}）", d.title))
                     }
-                    Outcome::Wait(_) => unreachable!(),
+                    Outcome::Wait(_) | Outcome::Queue(_) => unreachable!(),
                 };
                 let n = sqlx::query(&format!("update job_step set state = $4, finished_at = now(), output = $5 where job_id = $1 and idx = $2 and {OWN}"))
                     .bind(job.id)
@@ -745,7 +768,11 @@ async fn fail(st: &AppState, job: &JobRow, owner: &str, d: &StepDef, kind: ErrKi
     if n == 0 {
         return lost(st, job).await;
     }
-    let err = format!("{}：{msg}", d.title);
+    fail_job(st, job, owner, &format!("{}：{msg}", d.title)).await
+}
+
+/// 作业失败（`fail` 记好失败的那一步之后调）
+async fn fail_job(st: &AppState, job: &JobRow, owner: &str, err: &str) -> anyhow::Result<()> {
     // 作业置失败与机器置「上架失败」同一事务：看到作业失败时机器状态已经变了
     let mut tx = st.db.begin().await?;
     let state: Option<String> = sqlx::query_scalar(
@@ -756,7 +783,7 @@ async fn fail(st: &AppState, job: &JobRow, owner: &str, d: &StepDef, kind: ErrKi
          where id = $1 and lease_owner = $3 returning state::text",
     )
     .bind(job.id)
-    .bind(&err)
+    .bind(err)
     .bind(owner)
     .fetch_optional(&mut *tx)
     .await?;
@@ -769,7 +796,7 @@ async fn fail(st: &AppState, job: &JobRow, owner: &str, d: &StepDef, kind: ErrKi
              where id = $1 and lifecycle = 'provisioning'",
         )
         .bind(job.target_id)
-        .bind(&err)
+        .bind(err)
         .execute(&mut *tx)
         .await?
         .rows_affected()
@@ -871,7 +898,7 @@ mod tests {
 
     #[test]
     fn cancel_window() {
-        let can = |kind, step, state| cancel_blocker(kind, step, state).is_none();
+        let can = |kind, step, state| cancel_blocker(kind, step, state, &Value::Null).is_none();
         assert!(can("move_entry", 0, "running") && can("move_entry", 3, "failed"));
         assert!(can("move_entry", 4, "failed") && !can("move_entry", 4, "running"), "改路由失败（已换回）还能取消，在改时不能");
         assert!(!can("move_entry", 5, "running") && !can("move_entry", 5, "failed") && !can("move_entry", 7, "failed"), "摘旧入口之后不能取消");
@@ -892,5 +919,13 @@ mod tests {
         // 路由一台最多 APPLY_TIMEOUT，失败时还要回滚：至少放得下两台改加两台回滚
         let d = &defs("replace")[0];
         assert!(d.timeout_s as u64 >= 2 * (crate::routers::replace::APPLY_TIMEOUT + crate::routers::replace::ROLLBACK_TIMEOUT).as_secs());
+        // 改软路由这一步：排队等别的作业改同一台路由时能取消；改失败、有路由没换回时不能
+        let with = |kind, step, state, p: Value| cancel_blocker(kind, step, state, &p).is_none();
+        let queued = json!({"routers_queued": "路由A"});
+        assert!(with("move_entry", 4, "waiting", queued.clone()) && with("replace", 0, "waiting", queued.clone()));
+        assert!(!with("move_entry", 4, "running", queued.clone()) && !with("move_entry", 5, "waiting", queued), "轮到了、或已经过了这一步");
+        let stuck = json!({"routers_stuck": ["路由A"]});
+        assert!(!with("move_entry", 4, "failed", stuck.clone()) && !with("replace", 0, "failed", stuck));
+        assert!(with("move_entry", 4, "failed", json!({"routers_stuck": []})));
     }
 }

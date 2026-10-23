@@ -1,19 +1,21 @@
 //! 生命周期操作：换线路机（move_entry）、搬空线路机（evacuate）。
 //! 都是作业：这里只做校验、预览、建作业和写审计，真正的步骤在 jobs/steps。
 //!
-//! 软路由：快照里指向要摘掉的旧入口的出口，在新入口验收之后、摘旧入口之前改成新入口（作业的「改软路由出口」一步，
+//! 软路由：指向要摘掉的旧入口的出口，在新入口验收之后、摘旧入口之前改成新入口（作业的「改软路由出口」一步，
 //! 和替换节点同一套：全部在线才动手，逐台备份 → 改 → 重启 OpenClash → 测延迟，一台失败已改的全部换回、旧入口不摘）。
+//! 预览按快照列出要改的出口；执行时按路由当时的配置重新确定（`move_exit`），同一台路由同时只有一个作业在改。
 //! 出口写的是旧线路机的 IP 就改成新线路机的 IP，否则改成新线路机的 public_host；端口是新入口的。
 //! `routers = false` 只换入口，路由上的出口留着指向旧入口（摘掉后就断了）。
 
 use super::ok;
-use super::replace::{new_server, note_after, routers_after, routers_view, scan_routers, ExitPlan, RouterPlan};
+use super::replace::{new_server, routers_view, scan_routers, ExitPlan, RouterPlan};
 use crate::auth::Actor;
 use crate::db::{audit, Tx};
 use crate::error::{ApiError, ApiJson, ApiPath, ApiQuery, ApiResult};
 use crate::jobs;
 use crate::meta;
 use crate::names::display_name;
+use crate::routers::clash::EntryRef;
 use crate::state::{AppState, Event};
 use axum::extract::State;
 use axum::Json;
@@ -84,8 +86,12 @@ async fn plan_move(
     if to_lc != "active" {
         return Ok(Err(format!("目标线路机「{to_name}」现在是「{}」，只能换到在用的线路机", meta::lifecycle_label(&to_lc))));
     }
-    let busy: Option<(String,)> = sqlx::query_as("select kind from job where target_id = $1 and state in ('queued', 'running', 'waiting', 'cancelling') limit 1")
-        .bind(node_id)
+    // 替换作业的目标是旧节点：这台是它的新节点时也算忙（它在改路由、交换编号，路由刚改成指向这台的入口）
+    let busy: Option<(String,)> = sqlx::query_as(
+        "select kind from job where state in ('queued', 'running', 'waiting', 'cancelling')
+           and (target_id = $1 or (kind = 'replace' and params->>'new_id' = $1::text)) limit 1",
+    )
+    .bind(node_id)
         .fetch_optional(&mut **tx)
         .await?;
     if let Some((k,)) = busy {
@@ -122,41 +128,41 @@ async fn plan_move(
         return Ok(Err(format!("「{name}」在「{to_name}」上已经有入口")));
     }
     // 软路由上指向旧入口的出口：server 按旧线路机的 IP / 新线路机的 IP、public_host 换
-    let addr: Vec<(Uuid, String, String)> = sqlx::query_as("select r.machine_id, host(m.primary_ip), r.public_host from relay r join machine m on m.id = r.machine_id where r.machine_id = any($1)")
-        .bind(vec![from_relay, to])
-        .fetch_all(&mut **tx)
-        .await?;
-    let get = |id: Uuid| addr.iter().find(|x| x.0 == id).map(|x| (x.1.clone(), x.2.clone())).unwrap_or_default();
-    let ((from_ip, _), (to_ip, to_host)) = (get(from_relay), get(to));
+    let (from_ip, _) = relay_addr(&mut **tx, from_relay).await?;
+    let to_addr = relay_addr(&mut **tx, to).await?;
     let (mut blockers, mut warnings) = (vec![], vec![]);
     let rs = scan_routers(routers, node_id, team_id, routers_on, ("换线路机", "这个入口"), &mut blockers, &mut warnings, |er, srv, port| {
-        (er.id == old_entry).then(|| {
-            Ok(ExitPlan {
-                exit: String::new(),
-                old_entry_id: old_entry,
-                new_entry_id: None,
-                old_server: srv.to_string(),
-                old_port: port,
-                server: new_server(srv, &from_ip, &to_ip, &to_host),
-                port: None,
-            })
-        })
+        move_exit(er, old_entry, None, &from_ip, &to_addr, srv, port).map(Ok)
     });
     Ok(Ok(MovePlan { node_name: name, from_relay, from_name, to_name, old_entry, routers_enabled: routers_on, routers: rs, blockers, warnings }))
 }
 
+/// 线路机的 (IP, public_host)
+pub async fn relay_addr<'e>(db: impl sqlx::PgExecutor<'e>, id: Uuid) -> sqlx::Result<(String, String)> {
+    sqlx::query_as("select host(m.primary_ip), r.public_host from relay r join machine m on m.id = r.machine_id where r.machine_id = $1").bind(id).fetch_one(db).await
+}
+
+/// 换线路机：对上旧入口 `old_entry` 的出口（server:port 是 `srv:port`）改成什么，不是旧入口返回 None（预览与执行共用）。
+/// `new`：新入口与端口（预览时还没建）；`from_ip`：旧线路机的 IP；`to`：新线路机的 (IP, public_host)
+pub fn move_exit(er: &EntryRef, old_entry: Uuid, new: Option<(Uuid, u16)>, from_ip: &str, to: &(String, String), srv: &str, port: u16) -> Option<ExitPlan> {
+    (er.id == old_entry).then(|| ExitPlan {
+        exit: String::new(),
+        old_entry_id: old_entry,
+        new_entry_id: new.map(|n| n.0),
+        old_server: srv.to_string(),
+        old_port: port,
+        server: new_server(srv, from_ip, &to.0, &to.1),
+        port: new.map(|n| n.1),
+    })
+}
+
 async fn enqueue_move(tx: &mut Tx<'_>, actor: &str, node: Uuid, p: &MovePlan, to: Uuid, via: &str) -> ApiResult<Uuid> {
     let routers = if p.routers_enabled { p.routers.as_slice() } else { &[] };
-    let mut params = json!({
+    let params = json!({
         "from_relay_id": p.from_relay, "to_relay_id": to, "old_entry_id": p.old_entry,
         "routers": p.routers_enabled, "plan": {"routers": serde_json::to_value(routers).unwrap_or_default()},
     });
-    let after = routers_after(tx, routers).await?;
-    if let Some((id, _)) = &after {
-        params["routers_after"] = json!(id);
-    }
     let job = jobs::enqueue(tx, "move_entry", Some(node), params, actor).await?;
-    note_after(tx, job, &after).await?;
     let changed: Vec<Value> = routers.iter().map(|r| json!({"id": r.id, "name": r.name, "exits": r.exits.iter().map(|e| &e.exit).collect::<Vec<_>>()})).collect();
     audit(
         tx,
@@ -180,7 +186,7 @@ pub struct MoveIn {
     routers: Option<bool>,
 }
 
-/// 预览：要换掉的入口、要改的软路由出口、不能换的原因（只读库）
+/// 预览：要换掉的入口、要改的软路由出口、不能换的原因（不写库；规划时对节点、线路机加的共享锁随只读事务结束放开）
 pub async fn move_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<MoveIn>) -> ApiResult<Json<Value>> {
     let routers = crate::routers::load(&st.db, None).await?;
     let on = q.routers != Some(false);
@@ -299,7 +305,7 @@ async fn plan_evacuate(st: &AppState, tx: &mut Tx<'_>, relay: Uuid, to: Uuid, ro
     Ok(Evac { from_name, to_name, plans, skipped })
 }
 
-/// 搬空预览：会搬哪些节点、各自要改的软路由出口、哪些暂时不能搬（只读库）
+/// 搬空预览：会搬哪些节点、各自要改的软路由出口、哪些暂时不能搬（不写库，同 move_preview）
 pub async fn evacuate_preview(_a: Actor, State(st): State<AppState>, ApiPath(relay): ApiPath<Uuid>, ApiQuery(q): ApiQuery<EvacuateIn>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
     let e = plan_evacuate(&st, &mut tx, relay, q.to_relay_id, q.routers != Some(false)).await?;
@@ -308,7 +314,7 @@ pub async fn evacuate_preview(_a: Actor, State(st): State<AppState>, ApiPath(rel
 
 /// 搬空线路机：为这台线路机上每个在用入口的节点各建一个换线路机作业（线路机退役前用）。
 /// 暂时不能搬的节点（停用、有别的作业、已在目标线路机上有入口、软路由不在线…）列在 skipped 里，不影响其它节点。
-/// 要改同一台软路由的作业一个接一个跑（routers_after）
+/// 各作业并行；改同一台软路由的「改软路由出口」一步一台路由同时只有一个作业在改（按路由加锁，见 jobs/steps/replace.rs）
 pub async fn evacuate(a: Actor, State(st): State<AppState>, ApiPath(relay): ApiPath<Uuid>, ApiJson(b): ApiJson<EvacuateIn>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
     let e = plan_evacuate(&st, &mut tx, relay, b.to_relay_id, b.routers != Some(false)).await?;

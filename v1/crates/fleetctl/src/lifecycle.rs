@@ -50,7 +50,7 @@ fn exit_rows(routers: &[Value], node: Option<&str>) -> Vec<Vec<String>> {
     t
 }
 
-const EXITS_HEAD: &str = "要改的软路由出口（新入口验收后、摘旧入口前改：备份后改，改完重启 OpenClash 并测延迟；任何一台失败全部换回、旧入口不摘）";
+const EXITS_HEAD: &str = "要改的软路由出口（按最近一次采集；新入口验收后、摘旧入口前按路由当时的配置再定一次：备份后改，改完重启 OpenClash 并测延迟；任何一台失败全部换回、旧入口不摘）";
 
 fn blockers(v: &Value) -> String { v["blockers"].as_array().map(|a| a.iter().filter_map(|s| s.as_str()).collect::<Vec<_>>().join("；")).unwrap_or_default() }
 
@@ -132,7 +132,7 @@ pub fn evacuate(ctx: &Ctx, relay: &str, to: &str, no_routers: bool, yes: bool, f
             if no_routers {
                 outln(format!("软路由：不改（--no-routers）{}", if ex.is_empty() { String::new() } else { format!("，{} 个出口指向这些入口，摘掉后就断了", ex.len()) }));
             } else if !ex.is_empty() {
-                outln(format!("{EXITS_HEAD}；改同一台软路由的节点一个接一个换：\n{}", table::render(&["节点", "软路由", "状态", "出口", "现在", "改成"], &ex)));
+                outln(format!("{EXITS_HEAD}；同一台软路由一次只改一个节点，其余排队：\n{}", table::render(&["节点", "软路由", "状态", "出口", "现在", "改成"], &ex)));
             }
             for k in pv["skipped"].as_array().cloned().unwrap_or_default() {
                 outln(format!("会跳过 {}：{}", st(&k, "/name"), st(&k, "/reason")));
