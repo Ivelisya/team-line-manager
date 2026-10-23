@@ -174,7 +174,7 @@ fn switches(routers: &[routers::Row], only: Option<Uuid>, bad: impl Fn(&routers:
 }
 
 /// 命令行参数：只有字母数字（含中文）与 -_.:/@+=, 的原样，否则加单引号
-fn sh(s: &str) -> String {
+pub(crate) fn sh(s: &str) -> String {
     if !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || "-_.:/@+=,".contains(c)) {
         s.to_string()
     } else {

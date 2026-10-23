@@ -102,27 +102,29 @@ export const MoveDialog = resetOnOpen(function MoveDialog({ m, open, onOpenChang
 
 // ── 几个节点一起换线路机 ────────────────────────────────────────────────
 
-/** 要一起换的节点（入口都在 from 这台线路机上）：port 是要换走的入口端口 */
-export interface MoveNode { id: string; name: string; port: number }
+/** 要一起换的节点：port 是要换走的入口端口；from 是它所在的线路机（不给 = 对话框的 from，入口都在那一台上） */
+export interface MoveNode { id: string; name: string; port: number; from?: { id: string; name: string } }
 
 /** 批量换线路机（POST /moves）：各节点同时建新入口，都验收完后一起改软路由，每台只改一次、OpenClash 只重启一次。
  *  有一个不能换就整批不能提交（原因列在下面） */
-export const MovesDialog = resetOnOpen(function MovesDialog({ nodes, from, open, onOpenChange, onDone, initialTo }: { nodes: MoveNode[]; from: { id: string; name: string }; open: boolean; onOpenChange: (o: boolean) => void; onDone?: () => void; initialTo?: string }) {
+export const MovesDialog = resetOnOpen(function MovesDialog({ nodes, from, open, onOpenChange, onDone, initialTo }: { nodes: MoveNode[]; from?: { id: string; name: string }; open: boolean; onOpenChange: (o: boolean) => void; onDone?: () => void; initialTo?: string }) {
   const nav = useNavigate();
   const moves = useMoves();
   const relays = useRelays().data ?? [];
   const [to, setTo] = React.useState(initialTo ?? '');
   const [routers, setRouters] = React.useState(true);
   const ids = nodes.map((n) => n.id);
-  const q = useMovesPreview(open, { machine_ids: ids, to_relay_id: to, from_relay_id: from.id, routers });
+  // 不给 from：各节点只有一条在用入口，换的就是它（放置矩阵的建议，节点可能在不同的线路机上）
+  const q = useMovesPreview(open, { machine_ids: ids, to_relay_id: to, from_relay_id: from?.id, routers });
   const pv = q.isFetchedAfterMount && to ? q.data : undefined;
-  const opts = targetOptions(relays, (r) => r.id !== from.id);
+  const froms = new Set([from?.id, ...nodes.map((n) => n.from?.id)]);
+  const opts = targetOptions(relays, (r) => !froms.has(r.id));
   return (
     <ConfirmDialog asForm open={open} onOpenChange={onOpenChange} size="md" title={`换线路机 · ${nodes.length} 个节点`} confirmLabel={`换 ${nodes.length} 个节点`} confirmDisabled={!pv?.ok || q.isFetching}
       description={<>一起换，每台软路由只重启一次 <InfoTip text={'各节点先在新线路机建好入口并验证出口，都通过后一起改软路由（每台只改一次、OpenClash 只重启一次），最后才移除旧入口\n过程中节点始终有一个入口可用；有一个不能换就都不提交'} /></>}
       onConfirm={async () => {
-        const r = await moves.mutateAsync({ machine_ids: ids, to_relay_id: to, from_relay_id: from.id, routers });
-        toast.ok(`已为 ${r.jobs.length} 个节点提交换线路机：${from.name} → ${r.to}`);
+        const r = await moves.mutateAsync({ machine_ids: ids, to_relay_id: to, from_relay_id: from?.id, routers });
+        toast.ok(`已为 ${r.jobs.length} 个节点提交换线路机：${from?.name ?? r.from} → ${r.to}`);
         onDone?.();
         nav('/jobs');
       }}>
@@ -131,7 +133,7 @@ export const MovesDialog = resetOnOpen(function MovesDialog({ nodes, from, open,
       <div>
         <div className="label" style={{ marginBottom: 6 }}>要换走的入口（{nodes.length}）</div>
         <ul className="reason-list" style={{ maxHeight: 220, overflow: 'auto' }}>
-          {nodes.map((n) => <li key={n.id}><span className="num">{n.name}</span> <span className="t-sub">{from.name}:{n.port}</span></li>)}
+          {nodes.map((n) => <li key={n.id}><span className="num">{n.name}</span> <span className="t-sub">{(n.from ?? from)?.name}:{n.port}</span></li>)}
         </ul>
       </div>
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()}>预览失败：</ErrorNote>}

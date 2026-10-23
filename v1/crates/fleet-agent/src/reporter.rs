@@ -27,6 +27,8 @@ const MAX_ENTRIES_PER_REPORT: usize = 3000;
 const MAX_PROBES_PER_REPORT: usize = 1000;
 /// 三网 PING：一份最多这么多条（中控一份收 2000 条）
 const MAX_PING_PER_REPORT: usize = 1000;
+/// 放置矩阵：一份最多这么多条（中控一份收 2000 条）
+const MAX_RTT_PER_REPORT: usize = 1000;
 const QUEUE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const QUEUE_MAX_AGE_MS: i64 = 6 * 3600 * 1000;
 /// 服务端连续拒收（4xx）这么多份报告就按上报失败处理
@@ -100,8 +102,8 @@ struct Unsaved {
 impl Unsaved {
     /// 样本、系统信息、流量基线放回缓冲；访问事件不放（游标没前移，下次从原处重读）
     fn restore(self, sh: &Shared) {
-        let Report { host, entries, probes, ping, info, .. } = self.report;
-        sh.buf.lock().unwrap().restore(host, entries, probes, ping, info, self.stats_commit);
+        let Report { host, entries, probes, ping, rtt, info, .. } = self.report;
+        sh.buf.lock().unwrap().restore(host, entries, probes, ping, rtt, info, self.stats_commit);
     }
 }
 
@@ -383,7 +385,7 @@ fn commit(sh: &Shared, tailer: &mut Option<Tailer>, cursor: Option<Cursor>, stat
 /// 以及写不进磁盘、留在内存里待发的这份（见 `Unsaved`）。
 /// `online`：上报没有连续失败（Reporter::fails == 0）
 fn build_and_push_blocking(sh: &Shared, core: &Mutex<Core>, boot_id: &str, with_samples: bool, online: bool) -> (bool, Option<Unsaved>) {
-    let (mut host, mut entries, mut probes, mut ping, mut info, mut xray, mut stats_commit) = (vec![], vec![], vec![], vec![], None, None, None);
+    let (mut host, mut entries, mut probes, mut ping, mut rtt, mut info, mut xray, mut stats_commit) = (vec![], vec![], vec![], vec![], vec![], None, None, None);
     if with_samples {
         let mut b = sh.buf.lock().unwrap();
         let n = b.host.len().min(MAX_HOST_PER_REPORT);
@@ -394,6 +396,8 @@ fn build_and_push_blocking(sh: &Shared, core: &Mutex<Core>, boot_id: &str, with_
         probes = b.probes.drain(..n).collect();
         let n = b.ping.len().min(MAX_PING_PER_REPORT);
         ping = b.ping.drain(..n).collect();
+        let n = b.rtt.len().min(MAX_RTT_PER_REPORT);
+        rtt = b.rtt.drain(..n).collect();
         info = b.info.take();
         xray = b.xray.clone();
         stats_commit = b.stats_commit.take();
@@ -421,7 +425,7 @@ fn build_and_push_blocking(sh: &Shared, core: &Mutex<Core>, boot_id: &str, with_
             }
         }
     }
-    if host.is_empty() && entries.is_empty() && probes.is_empty() && ping.is_empty() && access.is_empty() && info.is_none() && xray.is_none() {
+    if host.is_empty() && entries.is_empty() && probes.is_empty() && ping.is_empty() && rtt.is_empty() && access.is_empty() && info.is_none() && xray.is_none() {
         // 没有内容；但访问日志游标（例如首次定位到文件末尾）仍要提交
         commit(sh, tailer, next_cursor, stats, stats_commit, false);
         return (more, None);
@@ -447,6 +451,7 @@ fn build_and_push_blocking(sh: &Shared, core: &Mutex<Core>, boot_id: &str, with_
         xray,
         agent_health: with_samples.then(|| health_of(sh, queue, tailer.as_ref())),
         ping,
+        rtt,
     };
     let err = match seq_err {
         Some(e) => e,

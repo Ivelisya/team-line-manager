@@ -666,6 +666,13 @@ enum Cmd {
         #[arg(long)]
         exclude: Vec<String>,
     },
+    /// 放置矩阵：各节点到每台线路机近 24 小时的往返（中位数、成功率）、当前与最优线路机，末尾给建议换线的批量 move 命令；只读，不执行。
+    /// 换线前先看它（不用手写 ping 脚本）
+    Placement {
+        /// 只看这个团队的节点（团队名或 id）
+        #[arg(long)]
+        team: Option<String>,
+    },
     /// 替换节点：新节点接替旧节点。软路由上指向旧节点的出口改成新节点的入口（备份、重启 OpenClash、测延迟，失败全部换回），
     /// 旧节点去备用团队（或 --to 指定的团队），新节点接旧编号。不加 --yes 只打印预览
     Replace(lifecycle::ReplaceOpts),
@@ -1080,6 +1087,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         },
         Cmd::Watch { count, metrics } => cmds::watch(x, count, metrics),
         Cmd::Rebalance { relay, target, exclude } => lifecycle::rebalance(x, &relay, target.as_deref(), &exclude),
+        Cmd::Placement { team } => lifecycle::placement(x, team.as_deref()),
         Cmd::Move { node, to, from, no_routers, yes, follow } => lifecycle::mv(x, &node, &to, from.as_deref(), no_routers, yes, follow),
         Cmd::Evacuate { relay, to, no_routers, yes, follow } => lifecycle::evacuate(x, &relay, &to, no_routers, yes, follow),
         Cmd::Replace(o) => lifecycle::replace(x, o),

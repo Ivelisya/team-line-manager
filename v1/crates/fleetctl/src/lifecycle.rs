@@ -340,6 +340,73 @@ pub fn rebalance(ctx: &Ctx, relay: &str, target: Option<&str>, exclude: &[String
 
 fn num_of(v: &Value, p: &str) -> f64 { num(v, p).unwrap_or(0.0) }
 
+/// 放置矩阵的一格：往返中位数，成功率不到 100% 时带上；测过但全不通写「不通」，没数据「—」
+fn rtt_cell(c: &Value) -> String {
+    if c["samples"].as_i64().unwrap_or(0) == 0 {
+        return "—".into();
+    }
+    let ms = c["p50_ms"].as_f64().map(|v| format!("{v:.0} ms"));
+    match (ms, c["success_pct"].as_f64()) {
+        (None, _) => "不通".into(),
+        (Some(m), Some(s)) if s < 100.0 => format!("{m} · {s}%"),
+        (Some(m), _) => m,
+    }
+}
+
+/// `fleetctl placement [--team]`：各节点到每台线路机近 24 小时的往返（中位数、成功率），`*` 当前线路机、`→` 建议换到；
+/// 末尾是建议换线的批量命令（每台目标线路机一条）。只读，不执行。换线前先看它，不要手写 ping 脚本
+pub fn placement(ctx: &Ctx, team: Option<&str>) -> anyhow::Result<u8> {
+    let q: Vec<(&str, String)> = team.map(|t| ("team", t.to_string())).into_iter().collect();
+    let d = ctx.c.get_q("/placement", &q)?;
+    ctx.emit(&d, || {
+        let relays: Vec<Value> = d["relays"].as_array().cloned().unwrap_or_default();
+        let mut nodes: Vec<Value> = d["nodes"].as_array().cloned().unwrap_or_default();
+        if nodes.is_empty() {
+            return "没有在用的 VPS 节点".into();
+        }
+        nodes.sort_by_key(|n| (n["suggest"] != true, st(n, "/name")));
+        let mut head: Vec<String> = vec!["节点".into()];
+        head.extend(relays.iter().map(|r| st(r, "/name")));
+        head.extend(["近 7 天 TCP 不通告警".into(), "建议".into()]);
+        let rows: Vec<Vec<String>> = nodes
+            .iter()
+            .map(|n| {
+                let mut row = vec![st(n, "/name")];
+                for (r, c) in relays.iter().zip(n["cells"].as_array().into_iter().flatten()) {
+                    let mark = if n["current_relay_id"] == r["id"] { "*" } else if n["suggest"] == true && n["best_relay_id"] == r["id"] { "→" } else { "" };
+                    row.push(format!("{mark}{}", rtt_cell(c)));
+                }
+                row.push(format!("{} 次", n["tcp_fail_7d"].as_i64().unwrap_or(0)));
+                let to = relays.iter().find(|r| r["id"] == n["best_relay_id"]).map(|r| st(r, "/name")).unwrap_or_default();
+                row.push(match (n["suggest"] == true, n["current_relay_id"].is_null()) {
+                    (true, _) => format!("{} → {to}", st(n, "/reason")),
+                    (false, true) if n["entries"].as_i64().unwrap_or(0) > 1 => "有多个入口，不建议".into(),
+                    (false, true) => "没有在用入口".into(),
+                    _ => String::new(),
+                });
+                row
+            })
+            .collect();
+        let heads: Vec<&str> = head.iter().map(String::as_str).collect();
+        let mut s = format!(
+            "近 {} 小时线路机到节点的往返（中位数 · 成功率，100% 不写；每 {} 分钟测一轮）。* 当前线路机，→ 建议换到\n{}",
+            d["window_h"],
+            d["interval_s"].as_i64().unwrap_or(300) / 60,
+            table::render(&heads, &rows)
+        );
+        let cmds: Vec<String> = d["suggestions"].as_array().into_iter().flatten().map(|g| st(g, "/command")).collect();
+        if cmds.is_empty() {
+            s += &format!("\n没有要换的节点：当前线路机比最优慢不到 {} ms、成功率不低于 {}%，或更快的那台额度放不下", num_of(&d, "/min_gain_ms"), num_of(&d, "/min_success_pct"));
+        } else {
+            s += "\n\n建议换线（只是建议，没有执行；每条一起换、每台软路由只重启一次，先预览再确认）：\n";
+            s += &cmds.join("\n");
+            s += &format!("\n{SHARE_HINT}");
+        }
+        s
+    });
+    Ok(0)
+}
+
 // `fleetctl replace` 的参数（clap 直接解析成它）
 #[derive(clap::Args)]
 pub struct ReplaceOpts {

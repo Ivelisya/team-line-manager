@@ -106,7 +106,7 @@ fn warn_fallback(why: &str) {
 }
 
 /// 跑系统 ping。Ok((通了的各次延迟, 丢了几次))；Err = ping 用不了（没有这个程序、没权限、建不了套接字），调用方退回 TCP
-async fn icmp(host: &str, count: u32) -> Result<(Vec<f32>, u32), String> {
+pub(crate) async fn icmp(host: &str, count: u32) -> Result<(Vec<f32>, u32), String> {
     let mut c = tokio::process::Command::new("ping");
     c.args(["-n", "-c", &count.to_string(), "-i", "0.5", "-W", "2", host]).kill_on_drop(true);
     let wait = Duration::from_secs(u64::from(count) + 5);
@@ -140,7 +140,7 @@ pub fn parse_ping(out: &str, count: u32) -> (Vec<f32>, u32) {
     (rtts, count.saturating_sub(received.min(count)))
 }
 
-fn median(mut v: Vec<f32>) -> Option<f32> {
+pub(crate) fn median(mut v: Vec<f32>) -> Option<f32> {
     v.retain(|x| x.is_finite());
     if v.is_empty() {
         return None;

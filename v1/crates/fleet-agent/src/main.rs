@@ -7,6 +7,7 @@ mod collect;
 mod config;
 mod desired;
 mod ping;
+mod rtt;
 mod host;
 mod probe;
 mod probe_point;
@@ -233,6 +234,7 @@ async fn run(cfg: Config) -> Result<()> {
         spawn_named(&mut set, "stats_task", collect::stats_task(sh.clone(), applier.cli.clone(), sd_rx.clone()));
         spawn_named(&mut set, "probe_task", collect::probe_task(sh.clone(), probe::direct_client()?, sd_rx.clone()));
         spawn_named(&mut set, "ping_task", ping::ping_task(sh.clone(), sd_rx.clone()));
+        spawn_named(&mut set, "rtt_task", rtt::rtt_task(sh.clone(), sd_rx.clone()));
         spawn_named(&mut set, "desired_task", desired::desired_task(sh.clone(), applier.clone(), client.clone(), sd_rx.clone()));
         applier_handle = Some(applier);
     }

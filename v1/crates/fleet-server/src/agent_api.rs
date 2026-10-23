@@ -650,6 +650,10 @@ async fn ingest(st: &AppState, a: AgentId, mut r: Report) -> Result<Json<ReportA
     if a.kind == "relay" && !r.ping.is_empty() {
         crate::ping::ingest(&mut tx, a.machine_id, &r.ping, now_ms - 7 * DAY_MS, hi).await?;
     }
+    // 放置矩阵（线路机 → 各 VPS 节点的往返，placement.rs）：只收 7 天以内的
+    if a.kind == "relay" && !r.rtt.is_empty() {
+        crate::placement::ingest(&mut tx, a.machine_id, &r.rtt, now_ms - 7 * DAY_MS, hi).await?;
+    }
     if !dirty.is_empty() {
         sqlx::query(
             "insert into rollup_dirty (hour, touched_at) select t.h, clock_timestamp() from unnest($1::timestamptz[]) as t(h)

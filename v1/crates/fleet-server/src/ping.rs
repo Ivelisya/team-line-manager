@@ -180,7 +180,7 @@ pub async fn config_for(db: &sqlx::PgPool, relay: Uuid) -> sqlx::Result<Option<P
 }
 
 /// 在用线路机的代数 +1（目标变了，要下发）。返回涉及的线路机
-async fn bump_relays(tx: &mut Tx<'_>, only: Option<Uuid>) -> sqlx::Result<Vec<Uuid>> {
+pub(crate) async fn bump_relays(tx: &mut Tx<'_>, only: Option<Uuid>) -> sqlx::Result<Vec<Uuid>> {
     let ids: Vec<Uuid> = sqlx::query_scalar(
         "select r.machine_id from relay r join machine m on m.id = r.machine_id
          where m.lifecycle = 'active' and ($1::uuid is null or r.machine_id = $1) order by r.machine_id",

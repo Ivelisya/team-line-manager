@@ -171,6 +171,20 @@
 /* 有吸顶的跳转条时，各卡的表头吸在它下面（表头默认吸在顶栏下，会盖住它） */
 .relay-jump ~ .relay-card .table-wrap[data-fit] thead th { top: calc(var(--topbar-h) + var(--h-md) + 2 * var(--sp-8)); }
 .relay-jump-bad { color: var(--bad-text); }
+/* 放置矩阵（线路页顶部）：建议条、当前格加粗、建议换到的格软色底 */
+.pm-sugs { display: grid; gap: var(--sp-8); padding: 0 var(--card-pad) var(--sp-12); }
+.pm-sug { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-8); flex-wrap: wrap; padding: var(--sp-8) var(--sp-12); border-radius: var(--r-control); background: var(--accent-soft); color: var(--accent-soft-fg); }
+.pm-sug-text { min-width: 0; }
+.pm-sug-node { white-space: nowrap; }
+.pm-sug-node + .pm-sug-node::before { content: "、"; }
+.pm-sug .t-sub { color: inherit; opacity: 0.75; }
+.dt td.pm-cell { white-space: nowrap; }
+.dt td.pm-cell.is-current { font-weight: var(--fw-semibold); }
+.dt td.pm-cell.is-best { background: var(--accent-soft); color: var(--accent-soft-fg); }
+.pm-tag { margin-right: var(--sp-6); font-size: var(--fs-micro); font-weight: var(--fw-regular); color: var(--fg-2); }
+.pm-cell.is-best .pm-tag { color: inherit; }
+.pm-pct { color: var(--fg-2); font-weight: var(--fw-regular); }
+.pm-pct.is-weak, .pm-bad { color: var(--warn-text); }
 .relay-head { display: flex; align-items: center; gap: var(--sp-12); flex-wrap: wrap; padding: var(--sp-12) var(--card-pad); }
 .relay-head .ttl { font: var(--fw-semibold) var(--fs-title) / var(--lh-title) var(--font-sans); letter-spacing: var(--tracking-title); }
 /* 线路机名可点（打开它的抽屉）：去掉按钮外观，后面一个淡箭头，悬停变主色、箭头右移一点，按下微缩 */

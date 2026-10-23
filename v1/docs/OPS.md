@@ -56,6 +56,7 @@
 | 替换节点（新节点接替旧节点，软路由跟着换） | 先上架新节点，再 `fleetctl replace 团队2-01 --with 团队2-20` 看预览，确认后加 `--yes --follow`（见 §6「替换节点」）。不要手改路由配置或数据库 |
 | 把节点换到另一台线路机 | `fleetctl move 团队1-06 --to 线路机3 --yes --follow`（分享链接会变，见 §6）；几个节点一律用一条：`fleetctl move 团队1-02,团队1-05,团队1-07 --to 线路机3 --yes --follow`（每台软路由只重启一次） |
 | 线路机退役前搬空 | `fleetctl evacuate 线路机2 --to 线路机3 --yes --follow` |
+| 节点放在哪台线路机最好 / 节点连线路机老断 / 换线前 | `fleetctl placement [--team 团队2]`：各节点到每台线路机近 24 小时的往返中位数与成功率（`*` 当前，`→` 建议换到），近 7 天 TCP 不通告警次数，末尾每台目标线路机一条批量 `fleetctl move A,B --to X`（只是建议，照它执行时先看预览）。网页：「线路」页顶部「节点放置」，建议条上「换 N 个节点…」打开批量换线。不要再到线路机上手写 ping / mtr 脚本逐个测（见 §18 放置矩阵） |
 | 线路机流量额度快用完，要搬走一部分入口 | `fleetctl rebalance 线路机1 [--target 线路机3] [--exclude 团队2-07]`：按近 7 天的速度算重置前会不会用满，挑出搬走后能撑到重置日的最少入口和目标线路机，只打印建议和一条可直接执行的批量 `fleetctl move A,B,C --to X` 命令，不执行；`--exclude` 的节点（如分享给别人的）不动。网页：线路机抽屉「费用」→「搬迁建议」，「全部搬过去」一次提交（每行「搬过去」只换那一个） |
 | 改名 / 换团队 / 改编号 | `fleetctl rename 团队1-06 --team 团队2 --number 3` |
 | 编号压缩成连续 | `fleetctl renumber 团队1`（预览），`--yes` 执行 |
@@ -544,6 +545,14 @@ url = "https://api.frankfurter.dev/v1/latest?base=USD"   # 回包 {base:"USD", d
 - 单台覆盖：抽屉「管理」→ 三网 PING，或 `fleetctl ping <线路机> set <槽位> --name … --target …`、`fleetctl ping <线路机> mode icmp|tcp|global`、`fleetctl ping <线路机> reset [<槽位>]`。看读数：`fleetctl ping <线路机>` 或 `fleetctl show <线路机>`。
 - 要新版 agent：旧 agent 照常应用期望状态、只是不测（卡片上没有三网一块）。中控部署后升级线路机 agent（§7）。
 - 某个目标一直 100% 丢包：先看是不是目标不开那个口（TCP 不写端口连 80）——换成 `host:443` 或改 ICMP 试；ICMP 时卡片悬停写的实际方式是 TCP，说明线路机上的系统 ping 用不了（没装 iputils-ping，或 `sysctl net.ipv4.ping_group_range` 不含 0），agent 日志里 10 分钟一条「ICMP 用不了」。
+
+### 放置矩阵（节点放在哪台线路机）
+
+线路机 agent 每 5 分钟对**全部**在用 VPS 节点（不含家宽代理、备用团队）各测一次到节点 IP 的往返：系统 ping 3 次（同三网 PING 的 ICMP），3 秒内有回应算通；系统 ping 用不了时退回 TCP 建连节点的 SSH 端口，连上或被拒（RST）都算通。不连 SS 端口（节点防火墙只放行它所挂的线路机），也不连 SSH 端口（每 5 分钟几台线路机各握手一次，auth.log 一天多出近千行，fail2ban 开 aggressive 模式时会封线路机）。中控存小时汇总（`relay_node_rtt_hourly`，30 天）。
+
+- 看：`fleetctl placement [--team …]` 或网页「线路」页顶部「节点放置」。最优 = 成功率 ≥ 99%、没故障、额度放得下（接下这个节点近 7 天的流量后，到重置日预计不超过上限的 80%，同一轮建议换过去的节点累计算）的线路机里往返中位数最小的；当前比最优慢 ≥ 10 ms，或当前成功率 < 99%，才建议换。节点有多条在用入口的只看、不建议。
+- 某个节点在所有线路机上都「不通」：多半是节点或云厂商安全组挡了 ICMP（ufw 默认放行回显请求），不是链路坏；看 `fleetctl show <节点>` 的 TCP 探测。
+- 要新版 agent：旧 agent 照常应用期望状态、只是不测（矩阵里那一列是「—」）。节点上架、退役、换 IP 后中控 5 分钟内让所有线路机重拉期望状态（代数 +1，不动 Xray、不断连接）。
 
 ## 19. 软路由（采集、告警口径）
 采集与接入的原理见 `routers/` 的模块注释，日常命令见 §2。这里是看告警、看状态时要知道的口径。
