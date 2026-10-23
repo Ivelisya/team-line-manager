@@ -68,7 +68,7 @@ export function EntriesTable({ m, traffic, onlyBad }: { m: MachineView; traffic?
 }
 
 /** 被软路由的出口用着的入口：小标「软路由 N」，悬停列出是哪台的哪个出口，点开那台软路由的出口页签 */
-function RouterMark({ users }: { users: { id: string; name: string; exit: string }[] }) {
+export function RouterMark({ users }: { users: { id: string; name: string; exit: string }[] }) {
   const { open } = useRouterDrawer();
   return <button type="button" className="rt-mark" data-tip={users.map((u) => `${u.name} · ${u.exit}`).join('\n')} onClick={() => open(users[0].id, 'exits')}>软路由 {users.length}</button>;
 }

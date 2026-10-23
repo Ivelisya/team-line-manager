@@ -95,6 +95,12 @@
 .tune-tbl td { padding: 3px var(--sp-16) 3px 0; border-top: 1px solid var(--line); white-space: nowrap; }
 .tune-tbl td.mono { font-family: var(--font-mono); }
 .tune-tbl td:last-child { color: var(--fg-2); white-space: normal; }
+/* 需要人工处理：顶部警示块，说明下面一行一台软路由（名字可点）和它的出口 */
+.job-manual-msg { margin: 0; overflow-wrap: anywhere; }
+.job-manual-list { margin: var(--sp-8) 0 0; padding: 0; list-style: none; display: grid; gap: var(--sp-4); }
+.job-manual-list li { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-4) var(--sp-8); min-width: 0; }
+.job-manual-list .mono { overflow-wrap: anywhere; }
+.pill.pill-manual { --pill-bg: var(--bad); --pill-fg: #fff; font-weight: var(--fw-semibold); } /* 实心红：和普通失败的浅红胶囊一眼分开 */
 .step-err { margin: var(--sp-4) 0 0; font-size: var(--fs-label); color: var(--bad-text); overflow-wrap: anywhere; }
 .step-err-box { display: flex; align-items: flex-start; gap: var(--sp-8); margin-top: var(--sp-4); }
 .step-err-box .step-err { margin: 0; min-width: 0; }

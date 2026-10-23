@@ -42,7 +42,7 @@ export interface RouterExit {
 }
 /** 出口算不算可用（同服务端摘要的 alive 与告警）：连续两次测不通才不算，只不通 1 次的还算 */
 export const exitUsable = (e: RouterExit) => e.alive !== false || e.fail_streak < 2;
-export interface RouterClient { ip: string; mac: string | null; hostname: string | null; online: boolean; conns: number; exits: { name: string; conns: number }[] }
+export interface RouterClient { ip: string; mac: string | null; hostname: string | null; online: boolean; conns: number; down_bps: number; up_bps: number; exits: { name: string; conns: number }[] }
 export interface RouterDetail {
   system: { os: string; kernel: string; cpu_model: string; cores: number; load: [number, number, number]; procs: number; clock_skew_s: number | null; clash_rss: number | null };
   interfaces: RouterIface[];
@@ -177,15 +177,17 @@ export const routerIssues = (s: RouterSummary | null, names?: string[]): string[
 export const deadExitNames = (d: RouterDetail | null | undefined) => d?.exits.filter((e) => !exitUsable(e)).map((e) => e.name);
 
 // ---- 各出口的延迟测试：按固定时间窗切格 ----
-/** 各范围切几格：每格至少盖住一次测试（5 分钟一次），所以 1 小时只切 12 格 */
-const BEAT_BINS: Record<string, number> = { '1h': 12, '6h': 24, '24h': 24, '7d': 28, '30d': 30 };
+/** 各范围切几格：每格要稳稳盖住至少一次测试（5 分钟一次，实际间隔 300–330 秒），格宽取 2 倍以上，所以 1 小时只切 6 格（10 分钟一格） */
+const BEAT_BINS: Record<string, number> = { '1h': 6, '6h': 24, '24h': 24, '7d': 28, '30d': 30 };
 const RANGE_MS: Record<string, number> = { '1h': 3600_000, '6h': 6 * 3600_000, '24h': 86400_000, '7d': 7 * 86400_000, '30d': 30 * 86400_000 };
 export const beatBins = (range: string) => BEAT_BINS[range] ?? 24;
 /** 一个出口在所选范围内的测试结果切成 bins 格（从 end 往前，每格一样宽，不按数据的首末）：
  *  颜色只看成功率——全成功绿、有失败黄、失败过半红；这格里没有测试为空（路由还没接入、离线）。延迟高低看延迟曲线，不进格子。
- *  7 天 / 30 天的点是一小时的汇总，带 alive_pct（这一小时测通的比例） */
-export function exitBeats(points: SeriesPoint[], range: string, bins: number, end: number): { cells: BeatCell[]; titles: string[] } {
-  const width = (RANGE_MS[range] ?? RANGE_MS['6h']) / bins; const start = end - width * bins;
+ *  7 天 / 30 天的点是一小时的汇总，带 alive_pct（这一小时测通的比例）。
+ *  from：数据的起点；晚于所选范围的起点（新接入）就从它起切，不让前面一大段斜纹挤掉真正的数据。rate：整个窗口的测通比例，没有数据为 null */
+export function exitBeats(points: SeriesPoint[], range: string, bins: number, end: number, from?: number): { cells: BeatCell[]; titles: string[]; rate: number | null } {
+  const span0 = RANGE_MS[range] ?? RANGE_MS['6h'];
+  const width = (from != null && from > end - span0 ? end - from : span0) / bins; const start = end - width * bins;
   const acc = Array.from({ length: bins }, () => ({ n: 0, ok: 0, sum: 0, sumN: 0 }));
   for (const p of points) {
     const i = Math.min(bins - 1, Math.floor((Date.parse(p.ts) - start) / width));
@@ -195,6 +197,7 @@ export function exitBeats(points: SeriesPoint[], range: string, bins: number, en
     if (typeof p.delay_ms === 'number') { b.sum += p.delay_ms; b.sumN++; }
   }
   const cells: BeatCell[] = []; const titles: string[] = [];
+  const total = acc.reduce((s, b) => s + b.n, 0);
   acc.forEach((b, i) => {
     const t0 = new Date(start + i * width).toISOString(); const t1 = new Date(start + (i + 1) * width).toISOString();
     const span = `${F.dt(t0)} – ${F.dt(t1).slice(6)}`;
@@ -203,7 +206,7 @@ export function exitBeats(points: SeriesPoint[], range: string, bins: number, en
     cells.push(rate === 1 ? 'ok' : rate < 0.5 ? 'bad' : 'warn');
     titles.push(`${span}\n${Number.isInteger(b.ok) ? `成功 ${b.ok}/${b.n}` : `测通 ${Math.round(rate * 100)}%`}${b.sumN ? ` · 平均 ${Math.round(b.sum / b.sumN)} ms` : ''}`);
   });
-  return { cells, titles };
+  return { cells, titles, rate: total ? acc.reduce((s, b) => s + b.ok, 0) / total : null };
 }
 
 // ---- 地址 → 线路机名 / 入口被哪些软路由出口在用 ----

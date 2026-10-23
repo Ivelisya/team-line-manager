@@ -55,7 +55,7 @@ export function installRoutersMock(R: Reg, env: Env) {
       const ex = via.map((e) => ({ name: e.name, conns: 1 + Math.floor(r() * 20) }));
       return {
         ip: `192.168.124.${101 + i}`, mac: opts.lanBypass ? null : Array.from({ length: 6 }, () => Math.floor(r() * 256).toString(16).padStart(2, '0')).join(':'),
-        hostname: opts.lanBypass ? null : HOSTS[i % HOSTS.length], online, conns: ex.reduce((s, x) => s + x.conns, 0), exits: ex,
+        hostname: opts.lanBypass ? null : HOSTS[i % HOSTS.length], online, conns: ex.reduce((s, x) => s + x.conns, 0), down_bps: online ? Math.round(r() * 1.2e7) : 0, up_bps: online ? Math.round(r() * 9e5) : 0, exits: ex,
       };
     });
     return {

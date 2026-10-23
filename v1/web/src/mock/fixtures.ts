@@ -330,7 +330,11 @@ export function buildDb(): Db {
   const cj = mk('j-cancel', 'provision_vps', { id: 'x2', name: '团队2-14' }, 'cancelled', PSTEPS, 3, 180);
   cj.steps.forEach((x, i) => { x.state = i < 3 ? 'compensated' : 'skipped'; if (i >= 3) { x.started_at = null; x.finished_at = null; } });
   const uj = mk('j-up', 'upgrade_agent', { id: 'r1', name: '线路机1' }, 'succeeded', [['push', '推送 agent'], ['restart', '重启 agent'], ['verify', '确认上报']], 3, 60 * 5);
-  jobs.splice(3, 0, cj, uj);
+  // 改软路由出口失败、换回也失败：需要人工处理（manual 非空）
+  const mj = mk('j-manual', 'replace', { id: 'm-t1-03', name: '团队1-03' }, 'failed', [['preflight', '检查'], ['router_edit', '改软路由出口'], ['swap', '交换编号']], 1, 20, '软路由「团队2-路由B」：经隧道连不上路由；换回失败，需要人工处理：团队2-路由B，备份 /etc/fleet-backup/openclash/config.20261023-005514Z。处理好后点重试');
+  mj.steps[1].error_kind = 'network';
+  mj.manual = { message: '软路由「团队2-路由B」的配置可能停在改了一半：经隧道连不上路由，换回没成功。备份在 /etc/fleet-backup/openclash/config.20261023-005514Z；登录路由检查 OpenClash 配置后，点重试。', routers: [{ id: 'rt-b', name: '团队2-路由B', exits: ['节点03', '节点07'] }, { id: 'rt-a', name: '团队2-路由A', exits: ['节点12'] }] };
+  jobs.splice(3, 0, cj, uj, mj);
   // 同机 IP 节点的上架：先在宿主机上核对 IP，收敛不做系统基线（bbr 为 null）
   const ij = mk('j-ip', 'provision_ip', { id: 'm-t1-14', name: '团队1-14' }, 'succeeded', IP_STEPS, 6, 60 * 24 * 9);
   ij.steps[0].output = { ss_port: 8389, local_ips: '198.51.100.13, 198.51.100.66', egress_ip: '198.51.100.66', bind_ip: null };
@@ -450,6 +454,6 @@ function recycled(): RecycleDetail[] {
     row(2, { source: 'legacy', kind: 'vps', name: '团队1-33', team: '团队1', ip: '198.51.100.120', provider: '搬瓦工', plan: 'KVM 2C4G', service_ref: '60131', price_cents: 1999, currency: 'USD', cycle: 'monthly',
       activated_at: ago(300), retired_at: ago(60), due_date: dateOnly(now() - 59 * DAY), recycled_at: ago(5), reason: '旧面板已退役（迁移时未接管）', actor: 'admin', traffic_up: 80 * GiB, traffic_down: 410 * GiB }),
     row(1, { source: 'legacy', kind: 'relay', name: '线路机0', ip: '203.0.113.5', provider: '腾讯云', plan: '2C4G 5M', price_cents: 9800, currency: 'CNY', cycle: 'monthly',
-      activated_at: ago(420), retired_at: ago(120), recycled_at: ago(5), reason: '旧面板已退役', actor: 'admin' }),
+      activated_at: ago(420), retired_at: ago(120), recycled_at: ago(5), reason: '旧面板 2026-09-30 标注「弃用·仅备份，勿续费」，最后流量 10-08', actor: 'admin' }),
   ];
 }

@@ -166,7 +166,10 @@ export interface JobStep { idx: number; key: string; title: string; state: strin
 export interface JobSummary {
   id: string; kind: JobKind | string; target: { id: string; name: string; /** 退役（进备用、回收）前的名字，没退役过为 null */ origin?: string | null } | null; state: JobState | string;
   step: number; step_count: number; step_title: string | null; error: string | null; created_by: string; created_at: string; started_at: string | null; finished_at: string | null;
+  /** 失败且要人去软路由上手工处理（改一半、换回失败）时才有：说明与要处理的软路由、出口；普通失败为 null */
+  manual?: JobManual | null;
 }
+export interface JobManual { message: string; routers: { id: string; name: string; exits: string[] }[] }
 /** 作业详情（GET /jobs/{id}） */
 export interface Job extends JobSummary {
   steps: JobStep[]; cancellable: boolean;

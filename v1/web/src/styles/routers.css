@@ -75,14 +75,14 @@
 
 /* ---- 表格里的读数 ---- */
 /* 入口行里的「软路由 N」小标 */
-.rt-mark { margin-left: var(--sp-6); padding: 0 var(--sp-6); border: 0; border-radius: var(--r-pill); background: var(--sunken); font: var(--fw-medium) var(--fs-micro) / 16px var(--font-sans); color: var(--fg-2); cursor: pointer; }
+.rt-mark { flex: none; white-space: nowrap; margin-left: var(--sp-6); padding: 0 var(--sp-6); border: 0; border-radius: var(--r-pill); background: var(--sunken); font: var(--fw-medium) var(--fs-micro) / 16px var(--font-sans); color: var(--fg-2); cursor: pointer; }
 @media (hover: hover) { .rt-mark:hover { background: var(--hover); color: var(--accent); } }
 .rt-alive { display: inline-flex; align-items: center; gap: var(--sp-4); }
 .rt-alive .lucide { width: var(--icon-sm); height: var(--icon-sm); }
 .rt-alive[data-tone="bad"] { color: var(--bad-text); }
 /* 行内迷你格子（出口近 6 小时的延迟测试）：一格一段时间，绿 / 黄 / 红，没有数据的淡格 */
-.rt-minibeat { display: flex; gap: 2px; width: 60px; height: 14px; }
-.rt-minibeat > i { display: block; flex: 1 1 0; min-width: 2px; border-radius: 1px; background: var(--line); }
+.rt-minibeat { display: flex; gap: 1px; width: 66px; height: 16px; } /* 12 格每格约 4.6 px：悬停点得中 */
+.rt-minibeat > i { display: block; flex: 1 1 0; min-width: 4px; border-radius: 1px; background: var(--line); }
 .rt-minibeat > i[data-t="ok"] { background: var(--latency-ok); }
 .rt-minibeat > i[data-t="warn"] { background: var(--warn); }
 .rt-minibeat > i[data-t="bad"] { background: var(--bad); }
