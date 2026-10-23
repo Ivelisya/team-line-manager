@@ -171,7 +171,15 @@ fn items(mut v: Value) -> anyhow::Result<Value> { v.get_mut("items").map(Value::
 pub fn status(ctx: &Ctx) -> anyhow::Result<u8> {
     let ov = ctx.c.get("/overview")?;
     let inc = incident_items(ctx, "firing", None)?;
-    let both = json!({"overview": ov, "incidents": inc});
+    // 近 7 天反复：同对象同规则开过 ≥3 次（进行中或已恢复的都算），按 (规则, 对象) 去重
+    let mut chronic: Vec<Value> = vec![];
+    for i in incident_items(ctx, "all", None)?.as_array().into_iter().flatten() {
+        let key = |x: &Value| (x["rule"].clone(), x["subject_id"].clone(), x["subject_name"].clone());
+        if i["recent_count"].as_i64().unwrap_or(0) >= 3 && !chronic.iter().any(|c| key(c) == key(i)) {
+            chronic.push(json!({"rule": i["rule"], "rule_name": i["rule_name"], "subject_id": i["subject_id"], "subject_name": i["subject_name"], "recent_count": i["recent_count"]}));
+        }
+    }
+    let both = json!({"overview": ov, "incidents": inc, "chronic": chronic});
     ctx.emit(&both, || {
         let bucket = |k: &str| {
             let n = |f: &str| ov.pointer(&format!("/{k}/{f}")).and_then(|x| x.as_i64()).unwrap_or(0);
@@ -208,6 +216,18 @@ pub fn status(ctx: &Ctx) -> anyhow::Result<u8> {
             s.push('\n');
             s.push_str(&incident_table(&list, false));
         }
+        if !chronic.is_empty() {
+            s.push_str("
+
+近 7 天反复");
+            for c in &chronic {
+                s.push_str(&format!("
+  {} · {} · 近 7 天 {} 次", st(c, "/subject_name"), st(c, "/rule_name"), st(c, "/recent_count")));
+                if matches!(st(c, "/rule").as_str(), "tcp_fail" | "egress_fail") {
+                    s.push_str("；看 fleetctl placement 选更合适的线路机");
+                }
+            }
+        }
         s
     });
     Ok(0)
@@ -229,7 +249,7 @@ fn incident_item(i: &Value) -> Value {
     json!({
         "id": i["id"], "severity": i["severity"], "rule": i["rule"], "rule_name": i["rule_name"],
         "subject_id": i["subject_id"], "subject_name": i.pointer("/subject/name").or(i.get("subject_name")),
-        "summary": i["summary"], "reopen_count": i["reopen_count"], "state": i["state"],
+        "summary": i["summary"], "reopen_count": i["reopen_count"], "recent_count": i["recent_count"], "state": i["state"],
         "opened_at": i["opened_at"], "resolved_at": i["resolved_at"], "ack_by": i["ack_by"],
         // 中控按规则给的建议操作（可以直接执行的 fleetctl 命令）；旧中控没有，为 []
         "suggested": i.get("suggested").cloned().unwrap_or_else(|| json!([])),
@@ -245,9 +265,15 @@ fn incident_table(list: &[Value], with_state: bool) -> String {
                 severity_cn(&st(i, "/severity")).to_string(),
                 st(i, "/rule_name"),
                 st(i, "/subject_name"),
-                match i["reopen_count"].as_i64() {
-                    Some(n) if n > 0 => format!("{}（反复 {} 次）", st(i, "/summary"), n + 1),
-                    _ => st(i, "/summary"),
+                {
+                    let mut t = match i["reopen_count"].as_i64() {
+                        Some(n) if n > 0 => format!("{}（反复 {} 次）", st(i, "/summary"), n + 1),
+                        _ => st(i, "/summary"),
+                    };
+                    if let Some(n) = i["recent_count"].as_i64().filter(|n| *n >= 3) {
+                        t.push_str(&format!("（近 7 天第 {n} 次）"));
+                    }
+                    t
                 },
                 table::ts(&st(i, "/opened_at")),
             ];

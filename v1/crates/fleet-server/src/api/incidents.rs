@@ -90,10 +90,23 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
     } else {
         vec![]
     };
+    // 近 7 天同对象同规则开过几次（含这次）：一条分组查询，不逐条查
+    let subjects: Vec<Uuid> = v.iter().map(|i| i.subject_id).collect();
+    let recent: std::collections::HashMap<(String, String, Uuid), i64> = sqlx::query_as::<_, (String, String, Uuid, i64)>(
+        "select engine, rule, subject_id, count(*) from incident
+         where subject_id = any($1) and opened_at > now() - interval '7 days' group by engine, rule, subject_id",
+    )
+    .bind(&subjects)
+    .fetch_all(&st.db)
+    .await?
+    .into_iter()
+    .map(|(e, r, s, n)| ((e, r, s), n))
+    .collect();
     let out: Vec<Value> = v
         .iter()
         .map(|i| {
             let mut j = serde_json::to_value(i).unwrap_or_default();
+            j["recent_count"] = json!(recent.get(&(i.engine.clone(), i.rule.clone(), i.subject_id)).copied().unwrap_or(1).max(1));
             if i.engine == Engine::Central.as_str() || i.engine == Engine::Probe.as_str() {
                 // 中控自身、探测点的告警：对象不是机器，没有可点开的机器（探测点的名字在 subject_name）
                 j["subject"] = Value::Null;

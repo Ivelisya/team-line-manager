@@ -267,6 +267,8 @@ export interface Incident {
   opened_at: string; last_seen_at: string | null; resolved_at: string | null; ack_at: string | null; ack_by: string | null;
   /** 恢复后 30 分钟内复发、合并进这条的次数 */
   reopen_count: number;
+  /** 近 7 天同对象同规则开过几次（含这次） */
+  recent_count?: number;
   /** 建议操作：可以直接执行的 fleetctl 命令（只有进行中的、只有几条规则有）；quick_switch：其中临时切换的结构化一份（网页「临时切到…」用）。旧中控没有这两个字段 */
   suggested?: string[];
   quick_switch?: { router_id: string; router: string; group: string; from: string; to: string }[];

@@ -126,6 +126,13 @@ async fn reconcile_reopens_throttles_and_clears_ack_like_machine_alerts() {
     round(&t, at(920), Some(want(subject, "warning")), resolve).await;
     let s = state(&t).await;
     assert_eq!((s.len(), s[2].1.as_str(), s[2].2), (3, "firing", 0), "{s:?}");
+
+    // 隔得远的老毛病：近 7 天开了 3 次，告警列表带 recent_count；触发通知摘要带「近 24 小时第 N 次」
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let items = t.get("/api/v1/incidents?state=all").await["items"].as_array().unwrap().clone();
+    let counts: Vec<_> = items.iter().filter(|i| i["rule"] == RULE).map(|i| i["recent_count"].as_i64().unwrap()).collect();
+    assert_eq!(counts, [3, 3, 3], "{items:?}");
+    assert!(mock.bodies("/hook/a").iter().any(|b| b["summary"].as_str().unwrap().ends_with("（近 24 小时第 3 次）")));
 }
 
 /// 一轮：这个引擎此刻成立的问题只有 `w`，不成立的恢复（`exists` 恒真）
