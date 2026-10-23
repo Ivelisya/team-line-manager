@@ -193,10 +193,10 @@ export function HomePage() {
             {/* 每页一个容器（key=页码）：翻页、切换卡片 / 环形 / 表格时整块淡入（换卡片密度不重挂、不淡入）。卡片页内：筛选/排序/密度变了（layoutKey 变）才量位置、滑到新位置。
                 右键与“⋯”菜单整页共用一份（NodeMenus） */}
             {layout === 'cards' && <NodeMenus rows={page}><div key={`c${pg.page}`} className="cards page-in" data-view={view}>
-              {page.map((m) => <NodeCard key={m.id} m={m} view={view} current={m.id === openId} onOpen={open} layoutKey={layoutKey} show={show} />)}
+              {page.map((m) => <NodeCard key={m.id} m={m} view={view} current={m.id === openId} onOpen={open} layoutKey={layoutKey} show={show} recovered={onlyIssues && !isIssue(m)} />)}
             </div></NodeMenus>}
             {layout === 'ring' && <NodeMenus rows={page}><div key={`r${pg.page}`} className="rings page-in">
-              {page.map((m) => <RingCard key={m.id} m={m} current={m.id === openId} onOpen={open} show={show} />)}
+              {page.map((m) => <RingCard key={m.id} m={m} current={m.id === openId} onOpen={open} show={show} recovered={onlyIssues && !isIssue(m)} />)}
             </div></NodeMenus>}
             {layout === 'table' && <div key="t" className="panel page-in"><MachineTable rows={page} sort={sort} onSort={setSort} openId={openId} onOpen={open} /></div>}
             <Pagination pg={pg} unit="台" />

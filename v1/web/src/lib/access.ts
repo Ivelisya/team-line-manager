@@ -3,14 +3,15 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import { get, put } from './api';
 import type { IpIntel } from './ipintel';
 
-export type AccessWindow = '1h' | '24h' | '7d' | '30d';
+/** 同抽屉其它曲线页签的时间范围（1 / 6 / 24 小时、7 / 30 天） */
+export type AccessWindow = '1h' | '6h' | '24h' | '7d' | '30d';
 export const ACCESS_WINDOWS: { value: AccessWindow; label: string; long: string }[] = [
-  { value: '1h', label: '1 小时', long: '1 小时' }, { value: '24h', label: '24 小时', long: '24 小时' },
+  { value: '1h', label: '1 小时', long: '1 小时' }, { value: '6h', label: '6 小时', long: '6 小时' }, { value: '24h', label: '24 小时', long: '24 小时' },
   { value: '7d', label: '7 天', long: '7 天' }, { value: '30d', label: '30 天', long: '30 天' },
 ];
 export const isAccessWindow = (v: string | null): v is AccessWindow => ACCESS_WINDOWS.some((w) => w.value === v);
 /** 各时间范围要多少天的小时汇总：超过保留期的范围不给选（查出来是不全的） */
-export const WINDOW_DAYS: Record<AccessWindow, number> = { '1h': 1, '24h': 1, '7d': 7, '30d': 30 };
+export const WINDOW_DAYS: Record<AccessWindow, number> = { '1h': 1, '6h': 1, '24h': 1, '7d': 7, '30d': 30 };
 
 /** 访问记录保留期（设置「数据保留」）：原始记录与小时汇总各保留多少天。改动由实时流的 settings 事件失效 */
 /** profile_days：来源画像实际留的天数（汇总天数与 IP 画像学习期取长的），只读 */

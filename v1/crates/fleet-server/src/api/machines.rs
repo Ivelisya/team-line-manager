@@ -100,7 +100,7 @@ impl PatchIn {
 }
 
 /// PATCH 前锁住的当前值：(revision, kind, team_id, number, label, lifecycle, country)
-type PatchCur = (i32, String, Option<Uuid>, Option<i32>, Option<String>, String, Option<String>);
+type PatchCur = (i32, String, Option<Uuid>, Option<i32>, Option<String>, String, Option<String>, Option<String>);
 
 pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<PatchIn>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
@@ -129,7 +129,7 @@ pub async fn patch_tx(tx: &mut crate::db::Tx<'_>, actor: &str, id: Uuid, b: Patc
         None => None,
     };
     let cur: PatchCur = sqlx::query_as(
-        "select revision, kind::text, team_id, number, label, lifecycle::text, country from machine where id = $1 for update",
+        "select revision, kind::text, team_id, number, label, lifecycle::text, country, note from machine where id = $1 for update",
     )
     .bind(id)
     .fetch_optional(&mut **tx)
@@ -235,8 +235,8 @@ pub async fn patch_tx(tx: &mut crate::db::Tx<'_>, actor: &str, id: Uuid, b: Patc
         sqlx::query("update machine set spare_since = null, spare_from = null, lifecycle_reason = null where id = $1").bind(id).execute(&mut **tx).await?;
     }
     let mut detail = json!({"name": name, "old_name": old_name,
-           "before": {"team_id": cur.2, "number": cur.3, "label": cur.4, "country": cur.6},
-           "after": {"team_id": team_id, "number": number, "label": label, "country": country.clone().unwrap_or(cur.6.clone())}});
+           "before": {"team_id": cur.2, "number": cur.3, "label": cur.4, "country": cur.6, "note": cur.7},
+           "after": {"team_id": team_id, "number": number, "label": label, "country": country.clone().unwrap_or(cur.6.clone()), "note": b.note.clone().or(cur.7.clone())}});
     if auto_renew_off {
         detail["auto_renew_off"] = json!(true);
     }

@@ -94,7 +94,7 @@ export function ProbeTab() {
       <Panel title={<>探测点<InfoTip text="放在离客户近的地方（比如香港）的小机器，定时连各线路机的入口，记录通不通和延迟" /></>}
         tools={<><Segmented sm label="时间范围" value={win} onChange={setWin} items={WINDOWS} /><Button variant="primary" size="sm" onClick={() => setAdding(true)}><Plus />新增探测点</Button></>}>
         {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
-        {q.isLoading ? <SkeletonRows rows={2} /> : !list.length ? <Empty icon={<Radar size={22} />} text="还没有探测点" hint="新增后，在探测点上执行安装命令。中控能 SSH 到它的话，也可以用 fleetctl probe add <名称> --host <IP> 直接装" /> : (
+        {q.isLoading ? <SkeletonRows rows={2} /> : !list.length ? <Empty icon={<Radar size={22} />} text="还没有探测点" hint={<>新增后在探测点上执行安装命令 <InfoTip text="中控能 SSH 到它的话，也可以用 fleetctl probe add <名称> --host <IP> 直接装" /></>} /> : (
           <TableWrap data-stale={q.isPlaceholderData}>
             <table className="dt" style={{ minWidth: 860 }}>
               <colgroup><col style={{ width: 150 }} /><col style={{ width: 170 }} /><col style={{ width: 110 }} /><col style={{ width: 110 }} /><col /><col style={{ width: 64 }} /><col style={{ width: 116 }} /></colgroup>

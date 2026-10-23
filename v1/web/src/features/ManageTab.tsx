@@ -1,4 +1,4 @@
-// 抽屉“管理”页：改名/改编号（带实时预览）、入口操作、同机 IP 节点、agent、退役（移入备用）/ 立即回收（备用里的机器）。
+// 抽屉“管理”页：改名/改编号（带实时预览）、国家与备注、入口操作、同机 IP 节点、agent、退役（移入备用）/ 立即回收（备用里的机器）。
 // 操作类的行按苹果设置页的分组列表排：一组一个圆角容器（.mgroup），行之间细线分隔，只有行标签，没有重复的小节标题。
 import * as React from 'react';
 import { Link } from 'react-router-dom';
@@ -11,7 +11,7 @@ import { entryBad, errText, reachWho, recycleOn } from '@/lib/derive';
 import { useReachLabel } from '@/lib/probePoints';
 import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
-import { Field, InfoTip, Input } from '@/components/ui/form';
+import { Field, InfoTip, Input, Textarea } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
 import { Note, Section, SectionHeader } from '@/components/app/primitives';
@@ -27,6 +27,9 @@ import { EvacuateDialog, MoveDialog, movableEntries } from '@/components/app/Lif
 import { ReplaceDialog, canReplace } from '@/components/app/ReplaceDialog';
 import { CountrySelect } from '@/components/app/CountrySelect';
 import { countryName } from '@/lib/flags';
+
+/** 备注长度上限（同服务端 MAX_NOTE_CHARS） */
+const NOTE_MAX = 2000;
 
 export function ManageTab({ m, onClosed }: { m: MachineView; onClosed: () => void }) {
   const retired = m.lifecycle === 'retired';
@@ -54,7 +57,8 @@ export function ManageTab({ m, onClosed }: { m: MachineView; onClosed: () => voi
   );
 }
 
-/** 改名 / 改编号 / 国家：团队 + 编号（节点）或名称（线路机），实时预览新显示名；国家（名字前的国旗）选了不立即保存，和名字一起点「保存」。
+/** 改名 / 改编号 / 国家 / 备注：团队 + 编号（节点）或名称（线路机），实时预览新显示名；国家（名字前的国旗）、备注改了不立即保存，和名字一起点「保存」。
+ *  编号补成两位（同名字里的「05」） 
  *  当前显示名只在改了之后作为「旧名 → 新名」出现（没改时它就是上面的输入，不重复） */
 function RenameSection({ m }: { m: MachineView }) {
   const teams = useTeams().data;
@@ -63,18 +67,19 @@ function RenameSection({ m }: { m: MachineView }) {
   const patch = usePatchMachine();
   const isRelay = m.kind === 'relay';
   const [team, setTeam] = React.useState(m.team?.id ?? '');
-  const [num, setNum] = React.useState(m.number != null ? String(m.number) : '');
+  const [num, setNum] = React.useState(m.number != null ? F.pad2(m.number) : '');
   const [label, setLabel] = React.useState(m.label ?? '');
   const [country, setCountry] = React.useState(m.country_set ?? '');
+  const [note, setNote] = React.useState(m.note ?? '');
   // 实时推送会改 revision 和编号（如同团队有机器退役后自动压缩编号）：只同步用户没动过的字段（输入仍等于上次的服务端值），
   // 正在编辑的不覆盖；换了机器则全部重置
-  const srv = { id: m.id, team: m.team?.id ?? '', num: m.number != null ? String(m.number) : '', label: m.label ?? '', country: m.country_set ?? '' };
+  const srv = { id: m.id, team: m.team?.id ?? '', num: m.number != null ? F.pad2(m.number) : '', label: m.label ?? '', country: m.country_set ?? '', note: m.note ?? '' };
   const last = React.useRef(srv);
   React.useEffect(() => {
     const prev = last.current; last.current = srv;
     const keep = (v: string, was: string, now: string) => (prev.id === srv.id && v !== was ? v : now);
-    setTeam((v) => keep(v, prev.team, srv.team)); setNum((v) => keep(v, prev.num, srv.num)); setLabel((v) => keep(v, prev.label, srv.label)); setCountry((v) => keep(v, prev.country, srv.country));
-  }, [srv.id, srv.team, srv.num, srv.label, srv.country]); // eslint-disable-line react-hooks/exhaustive-deps
+    setTeam((v) => keep(v, prev.team, srv.team)); setNum((v) => keep(v, prev.num, srv.num)); setLabel((v) => keep(v, prev.label, srv.label)); setCountry((v) => keep(v, prev.country, srv.country)); setNote((v) => keep(v, prev.note, srv.note));
+  }, [srv.id, srv.team, srv.num, srv.label, srv.country, srv.note]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const teamName = teams?.find((t) => t.id === team)?.name;
   const n = Number(num);
@@ -82,19 +87,22 @@ function RenameSection({ m }: { m: MachineView }) {
   const preview = isRelay ? label.trim() : teamName && numOk ? F.displayName(teamName, n) : '';
   const nameChanged = isRelay ? label.trim() !== (m.label ?? '') : team !== (m.team?.id ?? '') || (numOk && n !== m.number);
   const countryChanged = country !== (m.country_set ?? '');
+  const noteChanged = note.trim() !== (m.note ?? '').trim();
+  const changed = nameChanged || countryChanged || noteChanged;
   const valid = isRelay ? label.trim().length > 0 : !!team && numOk;
   const auto = m.country_set ? '自动（按 IP）' : `自动（按 IP：${m.country ? countryName(m.country) : '查不到'}）`;
 
   const save = () => {
-    const body = { ...(nameChanged ? (isRelay ? { label: label.trim() } : { team_id: team, number: n }) : null), ...(countryChanged ? { country: country || null } : null) };
+    const body = { ...(nameChanged ? (isRelay ? { label: label.trim() } : { team_id: team, number: n }) : null), ...(countryChanged ? { country: country || null } : null), ...(noteChanged ? { note: note.trim() } : null) };
+    const what = [countryChanged && '国家', noteChanged && '备注'].filter(Boolean).join('、');
     patch.mutate({ id: m.id, revision: m.revision, ...body }, {
-      onSuccess: () => toast.ok(nameChanged ? `已改名为 ${preview}${countryChanged ? '，国家已更新' : ''}` : country ? `国家已改为${countryName(country)}` : '国家已改回按 IP 自动'), onError: toast.err,
+      onSuccess: () => toast.ok(nameChanged ? `已改名为 ${preview}${what ? `，${what}已更新` : ''}` : countryChanged && !noteChanged ? (country ? `国家已改为${countryName(country)}` : '国家已改回按 IP 自动') : `${what}已更新`), onError: toast.err,
     });
   };
   return (
     <Section>
-      <SectionHeader title={<>{isRelay ? '改名 / 国家' : '改名 / 改编号 / 国家'} <InfoTip text="不影响现有连接。只改显示名和线路机上的备注" /></>} />
-      <form className="form-grid" onSubmit={(e) => { e.preventDefault(); if ((nameChanged || countryChanged) && valid && !patch.isPending) save(); }}>
+      <SectionHeader title={<>{isRelay ? '改名 / 国家 / 备注' : '改名 / 改编号 / 国家 / 备注'} <InfoTip text="不影响现有连接。只改显示名和线路机上的备注" /></>} />
+      <form className="form-grid" onSubmit={(e) => { e.preventDefault(); if (changed && valid && !patch.isPending) save(); }}>
         {isRelay ? (
           <Field label="线路机名称" className="span-2"><Input value={label} onChange={(e) => setLabel(e.target.value)} /></Field>
         ) : (
@@ -106,12 +114,13 @@ function RenameSection({ m }: { m: MachineView }) {
           </>
         )}
         <Field label="国家" className="span-2" info="显示在名字前的国旗。默认按 IP 判断，不准可以手动选"><CountrySelect value={country} onChange={setCountry} autoLabel={auto} disabled={patch.isPending} aria-label="国家或地区" /></Field>
+        <Field label="备注" className="span-2" error={note.length > NOTE_MAX ? `备注最多 ${NOTE_MAX} 个字符` : undefined}><Textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="例如：客户专用、合同到 2027 年" disabled={patch.isPending} /></Field>
         <div className="span-2 row row-between">
           {/* 改了名字才出现「旧名 → 新名」 */}
           <span className="row" style={{ gap: 8 }}>
             {nameChanged && <><span className="t-sub">新显示名</span><span className="preview-name">{m.name}<ArrowRight size={14} style={{ color: 'var(--fg-3)' }} />{preview || '—'}</span></>}
           </span>
-          <Button type="submit" variant="primary" disabled={!(nameChanged || countryChanged) || !valid || patch.isPending} loading={patch.isPending}>保存</Button>
+          <Button type="submit" variant="primary" disabled={!changed || !valid || note.length > NOTE_MAX || patch.isPending} loading={patch.isPending}>保存</Button>
         </div>
       </form>
     </Section>

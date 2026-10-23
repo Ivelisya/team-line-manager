@@ -10,7 +10,7 @@ import { SPRING } from '@/lib/motion';
 import { ArrowDown, ArrowDownUp, ArrowUp, Calendar, CircleDollarSign, Cpu, Database, Gauge, Globe, HardDrive, MemoryStick, MoreHorizontal, Radar, RefreshCw, Settings2, PanelRightOpen, ServerOff, Wallet } from 'lucide-react';
 import type { DueState, MachineView, ProbeBeats, Subscription } from '@/lib/types';
 import * as F from '@/lib/format';
-import { BEAT_LEGEND, beatCells, beatRate, beatTitles, dueTone, entryText, errText, hasHost, hostRel, isQuiet, limitGb, liveRate, monthFlow, monthFlowTip, monthTraffic, priceHint, probeSummary, quota, quotaForecast, quotaGb, quotaTip, quotaUsedLabel, recycleOn, remainingValue, resourceMeters, subLabel, trafficTotal, beatLegendRelay, reachWho, reachWin, relayRttMs } from '@/lib/derive';
+import { BEAT_LEGEND, beatCells, beatRate, beatTitles, dueTone, entryText, errText, hasHost, hostRel, isQuiet, limitGb, liveRate, monthFlow, monthFlowTip, monthTraffic, priceHint, probeSummary, quota, quotaForecast, quotaGb, quotaTip, quotaUsedLabel, recycleOn, remainingValue, resourceMeters, subLabel, trafficTotal, beatLegendRelay, linkCounts, reachWho, reachWin, relayRttMs } from '@/lib/derive';
 import { useProbeBeats } from '@/lib/queries';
 import { useReachLabel } from '@/lib/probePoints';
 import { useLiveSeries } from '@/lib/live';
@@ -18,7 +18,7 @@ import { useNow } from '@/lib/useNow';
 import { sharedObserver, watchSize } from '@/lib/sharedObserver';
 import { type DrawerTab } from '@/lib/drawer';
 import { cn } from '@/lib/utils';
-import { Beat, Due, Flag, FromTag, HealthPill, LabelValue, Mark, Num, SPARE_TIP } from './primitives';
+import { Beat, Due, Flag, FromTag, HealthPill, LabelValue, LinkCounts, Mark, Num, Pill, SPARE_TIP } from './primitives';
 import { MachineTag, machineTagItems } from './MachineTags';
 import { PingRows } from './PingRows';
 import { CellMeter, Cells, DotTrace, QUOTA_COLORS, Tag } from './viz';
@@ -29,6 +29,8 @@ export type CardView = 'large' | 'small' | 'compact';
 export type CardShow = 'due' | 'traffic';
 type Open = (tab?: DrawerTab) => void;
 type Paused = { readonly current: boolean };
+/** 「仅看异常」里恢复正常、还留在原位的那张卡（首页传 recovered）的「已恢复」标记的说明，环形卡共用 */
+export const RECOVERED_TIP = '开着「仅看异常」时，恢复正常的留在原位；关掉筛选或换分组后不再列出';
 
 // 卡片随实时推送重渲染（m 换了引用）。静态的几块（标题、地址与字段、标签、运行行、footer、心跳条）各自 memo、只收用到的字段，
 // 推送只重画读数（资源格条、速率、剩余流量）。滚出视口（含上下 200px 余量）的卡冻结在最后一份数据上，回到视口时换成最新的（见 NodeCardImpl）。
@@ -209,25 +211,29 @@ const NO_ENTRY_TIP = '探测连的是线路机上客户用的入口端口\n这�
 /** 心跳条：近 1 小时的探测（全部卡片共用一个 /probe-beats 查询，各取自己的那份）；整条可点，打开连接质量页签。
  *  格子：节点是线路机 → 节点的 TCP 建连（线路机的 agent 探）；线路机是主探测来源 → 线路机的连通性（中控，或靠近客户的探测点；
  *  说明文字随来源变，探测点另有建连延迟：标题后面写近 1 小时的中位延迟）。
- *  标题：故障的写第一条健康原因（同状态胶囊的悬停），线路机写名下入口可用数（TCP 与出口各自最新一次都通，直出入口只看出口），
+ *  标题：故障的写第一条健康原因（同状态胶囊的悬停），线路机写「入口可达 x/y」（同抽屉，linkCounts；节点通、出口通不全通时跟在后面），
  *  家宽代理写成功率（延迟已在上面），其余写 TCP 延迟 · 出口通不通。节点自己的 agent 离线不影响它的心跳格：探测不是它自己做的，照常上色 */
-const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, reason, reasonKey, onOpen, tcp, tcpTip, egressOk, tcpFail, egressFail, all, off, usable, tcpBad, egressBad, reachBad }: { id: string; kind: MachineView['kind']; lifecycle: MachineView['lifecycle']; reason: string | undefined; reasonKey: string | undefined; onOpen: Open } & ReturnType<typeof probeSummary>) {
+const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, reason, reasonKey, onOpen, tcp, tcpTip, egressOk, tcpFail, egressFail, all, off, total, tcpOk, egressBad, reachBad }: { id: string; kind: MachineView['kind']; lifecycle: MachineView['lifecycle']; reason: string | undefined; reasonKey: string | undefined; onOpen: Open } & ReturnType<typeof probeSummary>) {
   const live = lifecycle === 'active';
   const src = useReachLabel();
   const bq = useProbeBeats(useCallback((d: ProbeBeats) => d[id], [id]));
   const beats = bq.data;
   const rtt = kind === 'relay' && live ? relayRttMs(beats) : null;
-  // 有异常原因时，标题行只留原因和入口可用数（放不下会被截断）；延迟放进入口可用数的悬停
-  const relayTip = `能用的入口数：线路机到节点的 TCP 和出口都通才算\nTCP 不通 ${tcpBad} 条 · 出口不通 ${egressBad} 条${off ? ` · 停用 ${off} 条不计` : ''}\n下面的格子是${reachWho(src)}连线路机的结果${rtt != null && reason ? `\n${src?.label ?? '探测点'}连到这台线路机的延迟 ${Math.round(rtt)} ms（近 1 小时中位数）` : ''}`;
+  const who = reachWho(src);
+  const links = linkCounts({ all, reachBad, tcpOk, total, egressBad });
+  // 入口连不上（relay_unreachable）时原因就是「入口可达」那个数，不再另写一遍；整台连不上、但还没有哪个端口满 3 次时（轮流检查）照写原因。
+  // 别的原因写在前面；延迟放进悬停
+  const reachReason = reasonKey === 'relay_unreachable' && reachBad > 0;
+  const relayCounts = <span data-tip={`${reachReason ? `${reason}\n` : ''}下面的格子是${who}连线路机入口的结果${off ? `\n停用的 ${off} 条入口不计` : ''}${rtt != null && reason ? `\n${src?.label ?? '探测点'}连到这台线路机的延迟 ${Math.round(rtt)} ms（近 1 小时中位数）` : ''}`}><LinkCounts c={links} who={who} only={['reach']} /></span>;
   const rttTag = rtt == null ? null : <> · <span data-tip={`${src?.label ?? '探测点'}连到这台线路机的延迟，近 1 小时中位数`}>延迟 <b className="num">{Math.round(rtt)} ms</b></span></>;
   const rate = kind === 'proxy' && live ? beatRate(beats) : null;
   const empty = live && bq.isSuccess && !beats?.some((b) => b[0] > 0); // 整条都没有探测：标题写明、格子画虚线，不是 20 格灰块
   const cap = !live ? <span className="t-muted">{lifecycle === 'retired' ? '已退役' : '还没开始探测'}</span>
-    : kind === 'relay' && reason ? <><span className="nc-reason" data-tip={reason}>{reasonKey === 'relay_unreachable' ? (reachBad ? `${reachWho(src)}连不上 ${reachBad} 个入口` : `${reachWho(src)}连不上入口`) : reason}</span> · <span data-tip={relayTip}>入口可用 <b className="num">{usable}/{all}</b></span></>
+    : kind === 'relay' && reason ? (reachReason ? relayCounts : <><span className="nc-reason" data-tip={reason}>{reasonKey === 'relay_unreachable' ? `${who}连不上入口` : reason}</span>{all > 0 && <> · {relayCounts}</>}</>)
     : reason ? <span className="nc-reason" data-tip={reason}>{reason}</span>
     : kind === 'relay' && all === 0 ? <span className="t-muted" data-tip={NO_ENTRY_TIP}>还没有入口，不用探测</span>
     : empty ? <span className="t-muted">暂无探测</span>
-    : kind === 'relay' ? <><span data-tip={relayTip}>入口可用 <b className="num" style={usable < all ? { color: 'var(--warn-text)' } : undefined}>{usable}/{all}</b></span>{rttTag}</>
+    : kind === 'relay' ? <>{relayCounts}{rttTag}</>
     : kind === 'proxy' ? <>探测成功 <b className="num">{rate == null ? '—' : `${Math.round(rate)}%`}</b></>
     : <><span data-tip={tcpTip}>TCP <b>{probeMs(tcp, tcpFail)}</b></span> · 出口 <b>{egressText(egressOk, egressFail)}</b></>;
   // 时段按这份数据取回的时刻对齐（轮询间隔 2 分钟，用当前时刻在跨格时会错一格）
@@ -312,11 +318,11 @@ const Tags = memo(function Tags({ code, provider, kind, maintenance, price, pric
   );
 });
 
-/** footer：状态胶囊（健康原因在它的悬停里）、按到期 / 流量排序时的排序依据、详情与管理 */
-const Foot = memo(function Foot({ health, lifecycle, maintenance, show, showTone, showTip, onOpen }: Pick<MachineView, 'health' | 'lifecycle' | 'maintenance'> & { show?: string; showTone?: string; showTip?: string; onOpen: Open }) {
+/** footer：状态胶囊（健康原因在它的悬停里）、「仅看异常」里已恢复的标记、按到期 / 流量排序时的排序依据、详情与管理 */
+const Foot = memo(function Foot({ health, lifecycle, maintenance, recovered, show, showTone, showTip, onOpen }: Pick<MachineView, 'health' | 'lifecycle' | 'maintenance'> & { recovered?: boolean; show?: string; showTone?: string; showTip?: string; onOpen: Open }) {
   return (
     <footer className="nc-foot">
-      <span className="nc-foot-left"><HealthPill m={{ health, lifecycle, maintenance }} />{show && <span className="nc-show" data-tone={showTone || undefined} data-tip={showTip}>{show}</span>}</span>
+      <span className="nc-foot-left"><HealthPill m={{ health, lifecycle, maintenance }} />{recovered && <Pill tone="neutral" dot="none" tip={RECOVERED_TIP}>已恢复</Pill>}{show && <span className="nc-show" data-tone={showTone || undefined} data-tip={showTip}>{show}</span>}</span>
       <div className="nc-foot-right">
         <Button variant="text" size="sm" onClick={() => onOpen()}><PanelRightOpen size={14} /><span>详情</span></Button>
         <Button variant="text" size="sm" onClick={() => onOpen('manage')}><Settings2 size={14} /><span>管理</span></Button>
@@ -331,7 +337,7 @@ function showOf(m: MachineView, show: CardShow | undefined, view: CardView): { t
     const d = F.dueFmt(s.due_days, dueTone(s.due_state));
     return { text: `${d.pre}${d.f ? F.str(d.f) : ''}${d.post}${d.past ? '' : '到期'}`, tone: d.tone };
   }
-  if (show === 'traffic' && !(view === 'large' && hasHost(m))) return { text: `${monthFlow(m).kind === 'biz' ? '本月业务' : '本月'} ${F.str(F.bytes(trafficTotal(m)))}`, tip: monthFlowTip(m) };
+  if (show === 'traffic' && !(view === 'large' && hasHost(m))) return { text: `本月流量 ${F.str(F.bytes(trafficTotal(m)))}`, tip: monthFlowTip(m) };
   return {};
 }
 
@@ -339,7 +345,7 @@ function showOf(m: MachineView, show: CardShow | undefined, view: CardView): { t
 // 回到视口时换成最新的。一页 96 张紧凑卡，一条推送原来要把视口外的几十张一起重画
 const watchNear = sharedObserver<IntersectionObserverEntry>((cb) => new IntersectionObserver(cb, { rootMargin: '200px 0px' }));
 
-type CardProps = { m: MachineView; view: CardView; current?: boolean; onOpen: (id: string, tab?: DrawerTab) => void; layoutKey: string | null; show?: CardShow };
+type CardProps = { m: MachineView; view: CardView; current?: boolean; onOpen: (id: string, tab?: DrawerTab) => void; layoutKey: string | null; show?: CardShow; recovered?: boolean };
 /** 卡片只吃稳定的 props（onOpen 回调不随地址变化），配合 memo，抽屉开关时只有变了的那张重渲染。
  *  layoutKey：筛选/排序/视图的签名，变了才量位置做布局动画（layoutDependency），平时重渲染不量；null = 不做布局动画（卡片太多时由首页传）。
  *  出现时的淡入走 CSS（cards.css），不等 motion 特性包：特性包到位之前 initial 的透明度会一直停在 0 */
@@ -353,7 +359,7 @@ function NodeCardImpl(p: CardProps) {
   return <CardBody {...p} m={held.current} cardRef={ref} paused={paused} />;
 }
 
-const CardBody = memo(function CardBody({ m, view, current, onOpen: open, layoutKey, show, cardRef, paused }: CardProps & { cardRef: React.RefObject<HTMLElement | null>; paused: Paused }) {
+const CardBody = memo(function CardBody({ m, view, current, onOpen: open, layoutKey, show, recovered, cardRef, paused }: CardProps & { cardRef: React.RefObject<HTMLElement | null>; paused: Paused }) {
   const onOpen = useCallback<Open>((tab) => open(m.id, tab), [open, m.id]);
   const proxy = m.kind === 'proxy';
   const quiet = isQuiet(m);
@@ -398,7 +404,7 @@ const CardBody = memo(function CardBody({ m, view, current, onOpen: open, layout
         {beat}
       </>}
 
-      <Foot health={m.health} lifecycle={m.lifecycle} maintenance={m.maintenance} show={sv.text} showTone={sv.tone} showTip={sv.tip} onOpen={onOpen} />
+      <Foot health={m.health} lifecycle={m.lifecycle} maintenance={m.maintenance} recovered={recovered} show={sv.text} showTone={sv.tone} showTip={sv.tip} onOpen={onOpen} />
     </mo.article>
   );
 });

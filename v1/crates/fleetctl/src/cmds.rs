@@ -185,7 +185,15 @@ pub fn status(ctx: &Ctx) -> anyhow::Result<u8> {
         let mut s = table::kv(&[
             ("节点", bucket("nodes")),
             ("线路机", bucket("relays")),
-            ("agent", format!("在线 {} · 离线 {}", st(&ov, "/online"), st(&ov, "/offline"))),
+            // 按台机器：同机 IP 节点随宿主机的 agent 计入，家宽代理不需要 agent（同网页集群状态）
+            ("agent", {
+                let n = |k: &str| ov[k].as_i64().unwrap_or(0);
+                let mut s = format!("在线 {} / {} 台 · 离线 {}", n("online"), n("online") + n("offline"), n("offline"));
+                if n("no_agent") > 0 {
+                    s.push_str(&format!("（家宽代理 {} 台不需要 agent）", n("no_agent")));
+                }
+                s
+            }),
             ("上架中/退役中", format!("{} / {}", st(&ov, "/provisioning"), st(&ov, "/retiring"))),
             // 即将到期 / 已过期：中控按每台的提前提醒天数算（同续费告警）
             (meta::label("due_states", "soon"), st(&ov, "/due_soon")),

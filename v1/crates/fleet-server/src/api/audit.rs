@@ -331,12 +331,20 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
                 (n, false) => format!("{n} · {changes}"),
             }
         }
-        // 「团队1-07 → 团队1-03」；修改资料写名字和改了的国家（团队、编号变了算改名）
+        // 「团队1-07 → 团队1-03」；修改资料写名字和改了的国家、备注（前后值；团队、编号变了算改名）。这一版之前的记录没有备注
         "machine.rename" if d["old_name"].is_string() => format!("{} → {}", s("old_name"), s("name")),
-        "machine.update" if d["name"].is_string() => match (d["before"]["country"].as_str(), d["after"]["country"].as_str()) {
-            (b, a) if b != a => format!("{} · 国家 {} → {}", s("name"), b.unwrap_or("自动"), a.unwrap_or("自动")),
-            _ => s("name"),
-        },
+        "machine.update" if d["name"].is_string() => {
+            let mut out = s("name");
+            let (b, a) = (d["before"]["country"].as_str(), d["after"]["country"].as_str());
+            if b != a {
+                out += &format!(" · 国家 {} → {}", b.unwrap_or("自动"), a.unwrap_or("自动"));
+            }
+            let note = |k: &str| d[k]["note"].as_str().filter(|x| !x.is_empty()).map_or("（空）".to_string(), |x| format!("「{x}」"));
+            if d["after"].get("note").is_some() && d["before"]["note"] != d["after"]["note"] && note("before") != note("after") {
+                out += &format!(" · 备注 {} → {}", note("before"), note("after"));
+            }
+            out
+        }
         // 「团队1-03」「5 台（团队1-03、团队1-04、团队1-05、…），跳过 1 台」；这一版之前的记录没有台名，只写台数
         "agent.upgrade" => {
             let n = d["count"].as_u64().unwrap_or(0);
@@ -636,6 +644,9 @@ mod tests {
         let (title, s) = t("plan.update", json!({"name": "季付", "currency": "USD", "before": {"price_cents": 5900, "traffic_gb": 800}, "after": {"price_cents": 6900, "traffic_gb": 1000}}));
         assert_eq!((title.as_str(), s.as_str()), ("修改套餐", "季付 · 价格 59.00 → 69.00 USD，流量 800 → 1000 GB"));
         assert_eq!(t("machine.rename", json!({"name": "团队1-03", "old_name": "团队1-07"})).1, "团队1-07 → 团队1-03");
+        let upd = |b: Value, a: Value| t("machine.update", json!({"name": "团队1-03", "before": b, "after": a})).1;
+        assert_eq!(upd(json!({"country": null, "note": "老机器"}), json!({"country": "JP", "note": ""})), "团队1-03 · 国家 自动 → JP · 备注 「老机器」 → （空）");
+        assert_eq!(upd(json!({"country": "JP"}), json!({"country": "JP"})), "团队1-03", "这一版之前的记录没有备注");
         assert_eq!(t("policy.draft", json!({"name": "团队1", "mode": "denylist", "domains": 2, "cleared": false})).1, "团队1 · 黑名单 · 2 个域名");
         let ch = |name: &str, f: &str, fd: i64, to: &str, td: i64| json!({"name": name, "from": {"mode": f, "domains": fd}, "to": {"mode": to, "domains": td}});
         let changes = json!([ch("团队1", "denylist", 2, "observe", 0), ch("团队2-03", "allowlist", 2, "allowlist", 3)]);

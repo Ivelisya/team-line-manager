@@ -106,7 +106,9 @@ export function Shell() {
   const theme = useTheme();
   const stream = useStream(!!me.data);
   const online = useOnline();
-  const firing = useIncidents('firing').data?.total ?? 0;
+  // 标签页标题同顶栏告警胶囊：进行中、还没确认的条数
+  const inc = useIncidents('firing').data;
+  const firing = inc ? inc.total - inc.acked : 0;
   useTitleAlerts(firing);
 
   React.useEffect(() => { setNavOpen(false); }, [loc.pathname]);

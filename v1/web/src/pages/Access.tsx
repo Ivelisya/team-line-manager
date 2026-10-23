@@ -82,6 +82,10 @@ export function AccessPage() {
   const onWindow = React.useCallback((v: AccessWindow) => upd({ w: v === '24h' ? '' : v }), [upd]);
   const summary = useAccessSummary(f);
   const k = summary.data?.kpi;
+  // 大数字只数现在还在用的节点（在机器列表里、没退役）；这段时间里有记录、后来退役或回收的另写一句
+  const live = React.useMemo(() => new Set((machines ?? []).filter((m) => m.lifecycle !== 'retired').map((m) => m.id)), [machines]);
+  const inUse = summary.data && machines ? summary.data.nodes.filter((n) => live.has(n.node_id)).length : undefined;
+  const gone = k && inUse != null ? k.active_nodes - inUse : 0;
   // 接入方式（?conn=）只在「来源地址」页签有：换页签时清掉，生效时也给「清除筛选」
   const conn = tab === 'sources' && CONN_FILTER_OPTIONS.some((o) => o.value === sp.get('conn')) ? sp.get('conn')! : '';
   const filtered = !!(f.team || f.node || f.search || f.kind || f.action || conn);
@@ -109,7 +113,7 @@ export function AccessPage() {
       {summary.isError && <ErrNote q={summary} />}
       {/* 换时间范围、筛选后新数字未到时，沿用的旧数字调淡（components.css [data-stale]）；下面各视图的表格同样 */}
       <div className="stat-grid" data-stale={summary.isPlaceholderData}>
-        <Stat tone="blue" icon={<Server />} label="有活动的节点" info="这段时间有访问记录的节点，包括后来退役或回收的，所以可能比现有节点多" value={k ? fmtN(k.active_nodes) : '—'} unit="台" loading={summary.isLoading} caption={`最近 ${winLabel(f.window)}`} />
+        <Stat tone="blue" icon={<Server />} label="有活动的节点" info="这段时间有访问记录、现在还在用的节点；后来退役或回收的另列" value={inUse != null ? fmtN(inUse) : '—'} unit="台" loading={summary.isLoading} caption={`最近 ${winLabel(f.window)}${gone > 0 ? ` · 另有 ${fmtN(gone)} 台已退役或回收` : ''}`} />
         <Stat tone="teal" icon={<Activity />} label="连接记录" info="含已阻止的连接" value={k ? fmtN(k.conns) : '—'} unit="次" loading={summary.isLoading} />
         <Stat tone="violet" icon={<Target />} label="访问目标" info="访问过的不同域名和 IP 的个数，多个节点访问同一个只算 1 个" value={k ? fmtN(k.unique_targets) : '—'} unit="个" loading={summary.isLoading} />
         <Stat tone="bad" icon={<ShieldX />} label="已阻止的连接" value={k ? fmtN(k.blocked) : '—'} unit="次" loading={summary.isLoading} caption={k && k.conns > 0 ? blockedShare(k.blocked, k.conns) : undefined} />

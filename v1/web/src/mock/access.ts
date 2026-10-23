@@ -9,7 +9,7 @@ type Reg = (method: string, path: string, h: (c: Ctx) => unknown) => void;
 
 const HOUR = 3600_000;
 const DAY = 24 * HOUR;
-const SECONDS: Record<string, number> = { '1h': 3600, '24h': 86400, '7d': 604800, '30d': 2592000 };
+const SECONDS: Record<string, number> = { '1h': 3600, '6h': 21600, '24h': 86400, '7d': 604800, '30d': 2592000 };
 const DOMAINS = [
   'www.google.com', 'www.youtube.com', 'i.ytimg.com', 'api.openai.com', 'chat.openai.com', 'github.com', 'raw.githubusercontent.com', 'api.github.com',
   'www.facebook.com', 'graph.facebook.com', 'twitter.com', 'abs.twimg.com', 'www.netflix.com', 'occ-0-1.1.nflxso.net', 'discord.com', 'cdn.discordapp.com',

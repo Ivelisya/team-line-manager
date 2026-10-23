@@ -3,7 +3,7 @@ import * as React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
 import { ArrowRight, ExternalLink, MoreHorizontal, Plus } from 'lucide-react';
-import { fetchRenumber, useAddPlan, useAddProvider, useAddTeam, useDelPlan, useDelProvider, useDelTeam, usePatchPlan, usePatchProvider, usePatchTeam, usePlans, useProviders, useRenumber, useTeams, useTeamsCompact } from '@/lib/queries';
+import { fetchRenumber, useAddPlan, useAddProvider, useAddTeam, useDelPlan, useDelProvider, useDelTeam, usePatchPlan, usePatchProvider, usePatchTeam, usePlans, useProviders, useRelaysMonthlyUsd, useRenumber, useTeams, useTeamsCompact } from '@/lib/queries';
 import type { Plan, Provider, Team, TrafficReset, TrafficRule } from '@/lib/types';
 import { currencyOptions, cycleOptions, feeView, limitGb, meta, trafficResetText, trafficRuleLabel, usdTotalTip } from '@/lib/derive';
 import { useUsdPreview } from '@/lib/fx';
@@ -108,12 +108,15 @@ function TeamsTab() {
   const renumHeld = useHeld(renum?.id, renum);
   const list = sortRows([...(q.data ?? [])].sort((a, b) => a.sort_order - b.sort_order), sort, TEAM_KEY);
   // 各团队在用机器的月费合计（USD）；有团队带没折算的币种时注明
-  const total = list.reduce((s, t) => s + t.monthly_usd.cents, 0);
+  const teamsUsd = list.reduce((s, t) => s + t.monthly_usd.cents, 0);
+  // 线路机不归团队：单列一项，合计 = 各团队 + 线路机，同首页「每月费用」
+  const relaysUsd = useRelaysMonthlyUsd().data ?? 0;
+  const total = teamsUsd + relaysUsd;
   const partial = list.some((t) => t.monthly_usd.unconverted.length);
   return (
     <>
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
-      <Panel title="团队" count={list.length} sub={<><InfoTip text={"首页和表格按「排序」从小到大排列\n月费是在用节点折成美元的合计，汇率在「设置 → 汇率」\n只算节点，线路机不归团队，所以合计比首页「每月费用」少线路机那部分"} />{list.length > 0 && <span className="t-sub" style={{ marginLeft: 'var(--sp-8)' }} data-tip={partial ? '带 * 的团队有币种缺汇率，没计入合计' : undefined}>月费合计 <span className="num">{F.money(total, 'USD')}</span>{partial ? '*' : ''}</span>}</>} tools={<Button variant="primary" size="md" onClick={() => setEdit('new')}><Plus />新建团队</Button>} flush>
+      <Panel title="团队" count={list.length} sub={<><InfoTip text={"首页和表格按「排序」从小到大排列\n月费是在用机器折成美元的合计，汇率在「设置 → 汇率」\n线路机不归团队，单列一项；合计同首页「每月费用」"} />{list.length > 0 && <span className="t-sub" style={{ marginLeft: 'var(--sp-8)' }} data-tip={partial ? '带 * 的团队有币种缺汇率，没计入合计' : undefined}>月费合计 <span className="num">{F.money(total, 'USD')}</span>{partial ? '*' : ''}{relaysUsd > 0 && <> · 其中线路机 <span className="num">{F.money(relaysUsd, 'USD')}</span></>}</span>}</>} tools={<Button variant="primary" size="md" onClick={() => setEdit('new')}><Plus />新建团队</Button>} flush>
         <TableWrap>
           <table className="dt is-one" style={{ minWidth: 430 }}>
             <colgroup><col /><col style={{ width: 90 }} /><col style={{ width: 100 }} /><col style={{ width: 110 }} /><col style={{ width: 52 }} /></colgroup>
@@ -211,8 +214,8 @@ const ruleOptions = () => Object.entries(meta().traffic_rules).map(([value, labe
 /** 流量重置：每个流量周期从哪天起（括注只是说明） */
 const RESET_NOTE: Record<string, string> = { month: '（每月 1 号）', billing: '（到期日那天）', rolling30: '（含今天往前 30 天）' };
 const resetOptions = () => Object.keys(meta().traffic_resets).map((value) => ({ value, label: `${trafficResetText(value)}${RESET_NOTE[value] ?? ''}` }));
-/** 留空的账单时区跟随组织时区：「跟随组织 · 上海（UTC+8）」 */
-const orgTz = () => `跟随组织 · ${tzLabel(meta().org_timezone)}`;
+/** 留空的账单时区跟随组织时区：「跟随组织（北京时间）」，同 fleetctl（中控给的叫法；没有专门叫法的时区写城市与时差） */
+const orgTz = () => { const m = meta(); return `跟随组织（${m.org_timezone_label === m.org_timezone ? tzLabel(m.org_timezone) : m.org_timezone_label}）`; };
 const PROVIDER_COLS = [
   { id: 'name', header: '名称', first: 'asc' as const }, { id: 'code', header: '代码', first: 'asc' as const }, { id: 'tz', header: '账单时区' }, { id: 'rule', header: '流量计量' },
   { id: 'reset', header: '流量重置' }, { id: 'remind', header: '到期提醒', first: 'desc' as const }, { id: 'plans', header: '在用套餐', r: true, first: 'desc' as const },

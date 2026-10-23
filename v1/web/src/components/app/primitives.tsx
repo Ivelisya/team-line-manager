@@ -10,28 +10,38 @@ import { countryName, flagUrl } from '@/lib/flags';
 import { Tip, Trunc } from '@/components/ui/overlays';
 import { InfoTip } from '@/components/ui/form';
 import { useCountUp } from '@/lib/useCountUp';
-import { dueTone, entryLabel, errText, healthLabel, fromLabel, hostRel, lifecycleLabel, monthFlow, monthFlowTip, severityOf, type BeatCell } from '@/lib/derive';
+import { dueTone, entryLabel, errText, healthLabel, fromLabel, hostRel, LINK_LABEL, linkTip, lifecycleLabel, monthFlow, monthFlowTip, severityOf, type BeatCell, type linkCounts, type LinkKey } from '@/lib/derive';
 import { openDrawer } from '@/lib/drawer';
 import { copyText } from '@/lib/clipboard';
 import { watchSize } from '@/lib/sharedObserver';
+
+const LINK_KEYS: LinkKey[] = ['reach', 'node', 'egress'];
+/** 入口三段连通数：「入口可达 1/1 · 节点通 1/1 · 出口通 0/1」，不全通的数字标红；总数为 0 的段不写。
+ *  only：只写这几段，其余段不全通时照样写出来（卡片放不下三段时用） */
+export function LinkCounts({ c, who, only }: { c: ReturnType<typeof linkCounts>; who: string; only?: LinkKey[] }) {
+  const ks = LINK_KEYS.filter((k) => c[k].total > 0 && (!only || only.includes(k) || c[k].ok < c[k].total));
+  return <>{ks.map((k, i) => (
+    <React.Fragment key={k}>{i > 0 && ' · '}<span data-tip={linkTip(k, who)}>{LINK_LABEL[k]} <b className="num" style={c[k].ok < c[k].total ? { color: 'var(--bad-text)' } : undefined}>{c[k].ok}/{c[k].total}</b></span></React.Fragment>
+  ))}</>;
+}
 
 /** 数值 + 灰色小单位 */
 export function Num({ f }: { f: Fmt }) {
   return <span className="num">{f.v}{f.u && <> <span className="unit">{f.u}</span></>}</span>;
 }
 
-/** 数据不完整时，数字后面的灰字「10-22 起」（全句说明放悬停 tip / 费用页签） */
-export function FromTag({ from, start, tip, sep }: { from: string | null | undefined; start?: string | null; tip?: string; sep?: boolean }) {
-  return from ? <>{sep ? ' · ' : ' '}<span className="unit" data-tip={tip}>{fromLabel(from, start)} 起</span></> : null;
+/** 数据不完整时，数字后面的灰字「10-22 起」（全句说明放悬停 tip / 费用页签）。dateOnly：只写日期、不带时分（表格副行放不下） */
+export function FromTag({ from, start, tip, sep, dateOnly }: { from: string | null | undefined; start?: string | null; tip?: string; sep?: boolean; dateOnly?: boolean }) {
+  return from ? <>{sep ? ' · ' : ' '}<span className="unit" data-tip={tip}>{dateOnly ? fromLabel(from, start).slice(0, 5) : fromLabel(from, start)} 起</span></> : null;
 }
 /** 表格「本月流量」格（首页表格、机器页共用）：主值 = 下行 + 上行（家宽代理、同机 IP 节点是下载 + 上传），副行「↓ X ↑ Y」（口径见悬停），
- *  不完整时副行末尾灰字「10-22 起」：日期不拼在主值后面，右对齐的一列数字才对得齐 */
+ *  不完整时副行末尾灰字「10-22 起」（只写日期，时分在悬停里）：日期不拼在主值后面，右对齐的一列数字才对得齐 */
 export function MonthFlowCell({ m }: { m: MachineView }) {
   const f = monthFlow(m);
   return (
     <div data-tip={`${f.kind === 'nic' ? `↓ 下行 ${str(bytes(f.down))} · ↑ 上行 ${str(bytes(f.up))}` : `下载 ${str(bytes(f.down))} · 上传 ${str(bytes(f.up))}`}\n${monthFlowTip(m)}`}>
       <Num f={bytes(f.total)} />
-      <span className="sub">{`↓ ${str(bytes(f.down))} ↑ ${str(bytes(f.up))}`}<FromTag from={f.from} sep /></span>
+      <span className="sub">{`↓ ${str(bytes(f.down))} ↑ ${str(bytes(f.up))}`}<FromTag from={f.from} sep dateOnly /></span>
     </div>
   );
 }

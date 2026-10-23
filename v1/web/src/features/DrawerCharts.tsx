@@ -34,7 +34,8 @@ const L_DISK = [{ key: 'disk_pct', label: '磁盘', color: 'var(--m-disk)' }];
 const L_LOAD = [{ key: 'load_pct', label: '负载', color: 'var(--m-load)' }];
 const L_NET = [{ key: 'net_rx_bps', label: '↓ 下行', color: 'var(--chart-1)' }, { key: 'net_tx_bps', label: '↑ 上行', color: 'var(--chart-2)' }];
 const PCT_DOMAIN: [number, number] = [0, 100];
-const yBytes = (v: number) => (v ? F.str(F.bytes(v)) : '0');
+// 坐标轴刻度是整齐的数（2、4、6 GB），不用固定小数位
+const yBytes = (v: number) => { if (!v) return '0'; const s = F.bytesScale(v); return `${F.inScale(v, s)} ${s.u}`; };
 const vBytes = (_: string, v: number) => { const b = F.bytes(v); return `${b.v} ${b.u}`; };
 
 export function RangeBar({ range, setRange }: { range: string; setRange: (r: string) => void }) {
@@ -78,7 +79,7 @@ export function ChartCard({ c, icon, title, meta, value, caption, tools, slim, c
 }
 
 const AVAIL_DAYS = 30;
-const AVAIL_TIP = `近 ${AVAIL_DAYS} 天全部探测的成功率：TCP 是线路机到节点的 TCP 握手，出口是经入口访问外网的验证`;
+const AVAIL_TIP = `近 ${AVAIL_DAYS} 天全部探测的成功率：节点通是线路机到节点的 TCP 握手，出口通是经入口访问外网的验证`;
 /** 近 30 天可用率：每天一格（旧→新，最后一格是今天），按 TCP 与出口里较差的一种定色，悬停看当天的成功率与次数；
  *  格条上方左边是整段的成功率、右边是时间窗（同卡片心跳条「近 1 小时」的写法）。
  *  线路机这里是名下所有入口（TCP 与出口）的合计，标题写明；卡片心跳格是中控 → 线路机，口径不同。
@@ -88,7 +89,7 @@ const AvailabilitySection = React.memo(function AvailabilitySection({ id, relay 
   const d = q.data;
   const tip = relay ? `${AVAIL_TIP}；这里是挂在这台线路机上所有入口的合计` : AVAIL_TIP;
   const caption = !d ? '加载中…' : d.tcp_pct == null && d.egress_pct == null ? '没有探测'
-    : <span data-tip={tip}>TCP <b>{successPct(d.tcp_pct)}</b> · 出口 <b>{successPct(d.egress_pct)}</b></span>;
+    : <span data-tip={tip}>节点通 <b>{successPct(d.tcp_pct)}</b> · 出口通 <b>{successPct(d.egress_pct)}</b></span>;
   return (
     <Section>
       <SectionHeader title={relay ? '名下入口可用率' : '可用率'} />
@@ -212,7 +213,8 @@ export function TrafficTab({ m }: { m: MachineView }) {
       {/* 有 agent 的机器分两组：网卡（供应商计费口径，下行 / 上行）与业务（Xray 入口，下载 / 上传）；家宽代理、同机 IP 节点只有业务一组 */}
       {nic && (
         <Section>
-          <SectionHeader title="网卡（供应商计费口径）" />
+          {/* 两组方向的叫法不同、对不上数：换算说明放 (i) */}
+          <SectionHeader title={<>网卡（供应商计费口径） <InfoTip text={'网卡按这台机器算：下行 = 流进来，上行 = 流出去\n业务按客户算：下载 = 客户收到的，上传 = 客户发出的\n客户下载的数据经过这台机器时一进一出，网卡下行、上行各算一次，所以两组数对不上'} /></>} />
           <LabelValueGrid cols2>
             <LabelValue label="今日 ↓ 下行"><Num f={F.bytes(nic.today_rx)} /></LabelValue>
             <LabelValue label="今日 ↑ 上行"><Num f={F.bytes(nic.today_tx)} /></LabelValue>

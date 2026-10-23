@@ -4,18 +4,18 @@ import { memo } from 'react';
 import { ArrowDown, ArrowUp, Radar } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
 import type { DrawerTab } from '@/lib/drawer';
-import type { CardShow } from './NodeCard';
+import { RECOVERED_TIP, type CardShow } from './NodeCard';
 import * as F from '@/lib/format';
 import { isQuiet, liveRate, monthFlowTip, monthTraffic, probeSummary, resourceMeters, trafficTotal } from '@/lib/derive';
 import { cn } from '@/lib/utils';
-import { Due, Flag, HealthPill, HostTag, Num } from './primitives';
+import { Due, Flag, HealthPill, HostTag, Num, Pill } from './primitives';
 import { Ring } from './viz';
 
 type Meter = { value: F.Fmt; pct: number | null; sub?: string };
 /** 圆环的悬停：内存、磁盘写用量（2.44 / 4 GiB），CPU 写核数，负载照抄格条的副行 */
 const ringTip = (label: string, v: Meter | undefined, quiet: boolean) => (!v || quiet ? undefined : `${label} ${F.str(v.value)}${v.sub && v.sub !== '—' ? ` · ${v.sub}` : ''}`);
 
-function RingCardImpl({ m, current, onOpen, show }: { m: MachineView; current?: boolean; onOpen: (id: string, tab?: DrawerTab) => void; show?: CardShow }) {
+function RingCardImpl({ m, current, onOpen, show, recovered }: { m: MachineView; current?: boolean; onOpen: (id: string, tab?: DrawerTab) => void; show?: CardShow; recovered?: boolean }) {
   const r = resourceMeters(m);
   const quiet = isQuiet(m);
   const proxy = m.kind === 'proxy';
@@ -33,7 +33,7 @@ function RingCardImpl({ m, current, onOpen, show }: { m: MachineView; current?: 
   const ms = (v: number | null, fail: boolean) => (fail ? <span style={{ color: 'var(--bad-text)' }}>失败</span> : <Num f={F.ms(v)} />);
   // 按到期、本月流量排序时：排序依据接在名称这一行最右（环形卡上没有这两个字段）
   const extra = show === 'due' ? (m.subscription ? <Due days={m.subscription.due_days} state={m.subscription.due_state} tail /> : <span className="t-muted">没有到期日</span>)
-    : show === 'traffic' ? <span className="rc-show" data-tip={monthFlowTip(m)}>{proxy ? '本月业务' : '本月'} <Num f={F.bytes(trafficTotal(m))} /></span> : null;
+    : show === 'traffic' ? <span className="rc-show" data-tip={monthFlowTip(m)}>本月流量 <Num f={F.bytes(trafficTotal(m))} /></span> : null;
   // 右键菜单由外面的 NodeMenus 整个网格共用一份（按 data-id 找到这张卡）
   return (
     <article className={cn('rcard', current && 'is-current', quiet && 'is-quiet')} data-health={m.health.status} data-id={m.id}>
@@ -57,7 +57,7 @@ function RingCardImpl({ m, current, onOpen, show }: { m: MachineView; current?: 
         </button>
       )}
       <footer className="rc-foot">
-        <HealthPill m={m} />
+        <HealthPill m={m} />{recovered && <Pill tone="neutral" dot="none" tip={RECOVERED_TIP}>已恢复</Pill>}
         {!proxy && <span className="rc-rates">{rate('down', lr?.rx)}{rate('up', lr?.tx)}</span>}
       </footer>
     </article>

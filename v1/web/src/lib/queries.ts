@@ -46,8 +46,8 @@ export function useMachines() {
   return { data, isLoading: q.isLoading, isError: q.isError, error: q.error, refetch: q.refetch };
 }
 /** 只用名称等少量字段的页面（访问监控的节点下拉、告警页的对象与续费）：读数不进来 */
-export type MachineBrief = Pick<MachineView, 'id' | 'name' | 'kind' | 'team' | 'subscription' | 'spare_from'>;
-const brief = (m: MachineView): MachineBrief => ({ id: m.id, name: m.name, kind: m.kind, team: m.team, subscription: m.subscription, spare_from: m.spare_from });
+export type MachineBrief = Pick<MachineView, 'id' | 'name' | 'kind' | 'team' | 'subscription' | 'spare_from' | 'lifecycle'>;
+const brief = (m: MachineView): MachineBrief => ({ id: m.id, name: m.name, kind: m.kind, team: m.team, subscription: m.subscription, spare_from: m.spare_from, lifecycle: m.lifecycle });
 /** 命令面板：搜索（名称 / IP / 团队 / 类型）与健康标用到的字段 */
 export type MachineLabel = Pick<MachineView, 'id' | 'name' | 'ip' | 'country' | 'country_set' | 'kind' | 'team' | 'health' | 'lifecycle' | 'maintenance'>;
 const label = (m: MachineView): MachineLabel => ({ id: m.id, name: m.name, ip: m.ip, country: m.country, country_set: m.country_set, kind: m.kind, team: m.team, health: m.health, lifecycle: m.lifecycle, maintenance: m.maintenance });
@@ -59,6 +59,9 @@ function useMachinesPicked<T>(pick: (m: MachineView) => T) {
   return useQuery({ ...machinesQuery, select });
 }
 export const useMachineBriefs = () => useMachinesPicked(brief);
+/** 在用线路机的月费合计（USD 分，同 /overview 的 monthly_usd：只算有汇率的）：线路机不归团队，团队页单列这一项，合计才对得上首页「每月费用」 */
+const relaysUsd = (d: MachineView[]) => d.reduce((s, m) => s + (m.kind === 'relay' && m.lifecycle === 'active' ? m.subscription?.monthly_usd_cents ?? 0 : 0), 0);
+export const useRelaysMonthlyUsd = () => useQuery({ ...machinesQuery, select: relaysUsd });
 export const useMachineLabels = () => useMachinesPicked(label);
 /** 上架页「在已有机器上添加 IP」的宿主机候选：在用、自身不是同机 IP 节点的 VPS 节点，带出它的团队、线路机（第一个入口的）、SSH 端口与供应商。
  *  同一份机器列表缓存，结果做结构共享：推送只改读数时引用不变（批量网格的 memo 不被击穿） */
@@ -263,6 +266,8 @@ export interface RetryBody { reset_host_key?: boolean; ssh_password?: string }
 export const useRetryJob = () => useWrite(({ id, ...b }: { id: string } & RetryBody) => post(`/jobs/${id}/retry`, b), [...M, ['jobs'], ['job']]);
 export const useCancelJob = () => useWrite((id: string) => post(`/jobs/${id}/cancel`), [...M, ['jobs'], ['job']]);
 export const useAck = () => useWrite((id: string) => post(`/incidents/${id}/ack`), [['incidents']]);
+/** 批量确认（告警页合并行）：逐条确认，全部成功才算成功 */
+export const useAckMany = () => useWrite((ids: string[]) => Promise.all(ids.map((id) => post(`/incidents/${id}/ack`))), [['incidents']]);
 /** 静默变了，软路由、探测点的「维护中」也跟着变（机器的随实时指标推来） */
 const SILENCE_KEYS = [['silences'], ['incidents'], ['routers'], ['probe-points']];
 export const useAddSilence = () => useWrite((b: Partial<Silence>) => post('/silences', b), SILENCE_KEYS);

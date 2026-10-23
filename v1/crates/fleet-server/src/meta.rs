@@ -309,6 +309,10 @@ pub fn label(table: Labels, key: &str) -> &str { table.iter().find(|(k, _)| *k =
 pub fn lifecycle_label(l: &str) -> &str { label(LIFECYCLES, l) }
 pub fn job_kind_label(k: &str) -> &str { label(JOB_KINDS, k) }
 pub fn rule_label(k: &str) -> &str { label(RULES, k) }
+/// 带级别的规则中文名：续费提醒（renewal_due）严重级就是已过期，叫「已过期」而不是「即将到期」（只改叫法，规则还是这一条）
+pub fn rule_label_of<'a>(k: &'a str, severity: &str) -> &'a str {
+    if k == "renewal_due" && severity == "critical" { label(RULES, "renewal_overdue") } else { rule_label(k) }
+}
 /// 告警级别的中文名；不认识的按「提示」
 pub fn severity_label(s: &str) -> &'static str { SEVERITIES.iter().find(|x| x.0 == s).map_or("提示", |x| x.1) }
 
@@ -403,6 +407,7 @@ mod tests {
     #[test]
     fn labels_and_meta_shape() {
         assert_eq!((job_kind_label("restore_vps"), rule_label("new_rule")), ("恢复 VPS 节点", "new_rule"));
+        assert_eq!((rule_label_of("renewal_due", "warning"), rule_label_of("renewal_due", "critical")), ("即将到期", "已过期"));
         assert_eq!((severity_label("critical"), severity_label("x")), ("严重", "提示"));
         let m = to_json();
         assert_eq!(m["org_timezone"], DEFAULT_ORG_TZ);

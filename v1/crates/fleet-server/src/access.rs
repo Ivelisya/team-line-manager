@@ -262,6 +262,8 @@ impl QueryCache {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Window {
     H1,
+    /// 6 小时：同抽屉其它曲线页签的时间范围（1 / 6 / 24 小时、7 / 30 天），读小时汇总
+    H6,
     H24,
     D7,
     D30,
@@ -271,6 +273,7 @@ impl Window {
     pub fn parse(s: &str) -> Option<Self> {
         Some(match s {
             "1h" => Self::H1,
+            "6h" => Self::H6,
             "24h" => Self::H24,
             "7d" => Self::D7,
             "30d" => Self::D30,
@@ -280,6 +283,7 @@ impl Window {
     pub fn duration(self) -> Duration {
         match self {
             Self::H1 => Duration::hours(1),
+            Self::H6 => Duration::hours(6),
             Self::H24 => Duration::hours(24),
             Self::D7 => Duration::days(7),
             Self::D30 => Duration::days(30),
@@ -289,6 +293,7 @@ impl Window {
     pub fn label(self) -> &'static str {
         match self {
             Self::H1 => "1 小时",
+            Self::H6 => "6 小时",
             Self::H24 => "24 小时",
             Self::D7 => "7 天",
             Self::D30 => "30 天",
@@ -961,6 +966,7 @@ mod tests {
     #[test]
     fn window_parse() {
         assert_eq!(Window::parse("24h"), Some(Window::H24));
+        assert!(Window::parse("6h").is_some_and(|w| w.retained(1)));
         assert_eq!(Window::parse("14d"), None);
         // 窗口不能比汇总的保留期长；1h 读原始记录，总能看
         assert!(Window::H1.retained(1) && Window::H24.retained(1) && Window::D7.retained(7) && Window::D30.retained(30));

@@ -7,7 +7,7 @@ let alerts = 0;
 let name = '';
 const apply = () => { document.title = `${alerts > 0 ? `(${alerts}) ` : ''}${name ? `${name} · ` : ''}${APP}`; };
 
-/** 顶栏：进行中的告警数（同告警胶囊），0 不显示 */
+/** 顶栏：进行中、还没确认的告警条数（同告警胶囊），0 不显示 */
 export function useTitleAlerts(n: number) {
   useEffect(() => { alerts = n; apply(); return () => { alerts = 0; apply(); }; }, [n]);
 }

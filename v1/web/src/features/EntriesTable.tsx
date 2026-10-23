@@ -10,7 +10,7 @@ import { useEntryRouters, useRouterDrawer } from '@/lib/routers';
 
 /** 入口表先露的条数（抽屉入口表、线路机页共用） */
 export const ENTRY_CAP = 10;
-/** 入口表的表头说明：「29 条 · 2 条异常」（异常 = 中控连不上、探测不通或应用失败，见 entryBad） */
+/** 入口表的表头说明：「29 条 · 2 条异常」（异常 = 入口不可达、探测不通或应用失败，见 entryBad） */
 export const entriesMeta = (m: MachineView) => { const bad = m.entries.filter(entryBad).length; return `${m.entries.length} 条${bad ? ` · ${bad} 条异常` : ''}`; };
 
 const failCell = (p: NonNullable<EntryView['tcp']>) => <span style={{ color: 'var(--bad-text)' }} data-tip={probeErr(p.detail)}>失败</span>;
@@ -31,10 +31,10 @@ export const tcpCell = (e: EntryView) => {
 /** 检查失败的原因：reach.rs 记的是「端口 N：原因」，提示第一行已经写了端口 */
 const reachErr = (detail: string | null) => (detail ? `\n${probeErr(detail.replace(/^端口 \d+：/, ''))}` : '');
 
-/** 入口状态列：主探测来源（`who`：中控或探测点，reachWho）连不上 > 线路机到节点探测不通 > 刚才连不上 > 配置状态；正常的不写（一整列同一个绿胶囊没有信息，同线路页） */
+/** 入口状态列：入口不可达（主探测来源 `who`：中控或探测点，reachWho，连不上端口）> 线路机到节点探测不通 > 刚才连不上 > 配置状态；正常的不写（一整列同一个绿胶囊没有信息，同线路页） */
 export const entryStatus = (e: EntryView, who = '中控') => {
   const reach = reachFail(e); const fail = probeFail(e); const flaky = reachFlaky(e);
-  if (reach) return <Pill tone="bad" tip={`${who}连续 ${reach.fails} 次连不上线路机的 ${e.port} 端口（上次检查 ${F.dt(reach.ts)}）${reachErr(reach.detail)}`}>{who}连不上</Pill>;
+  if (reach) return <Pill tone="bad" tip={`${who}连续 ${reach.fails} 次连不上线路机的 ${e.port} 端口（上次检查 ${F.dt(reach.ts)}）${reachErr(reach.detail)}`}>入口不可达</Pill>;
   if (fail) return <Pill tone="bad" tip={probeErr(fail.detail)}>{probeFailLabel(e)}</Pill>;
   if (flaky) return <Pill tone="warn" tip={`${who}最近 ${flaky.fails} 次没连上线路机的 ${e.port} 端口（上次检查 ${F.dt(flaky.ts)}）\n连续 3 次算连不上，再持续 1 分钟才告警${reachErr(flaky.detail)}`}>刚才连不上 {flaky.fails} 次</Pill>;
   return entryState(e, true);

@@ -30,12 +30,18 @@ export function rateScale(bps: number): Scale {
 }
 /** 用给定量级格式化数值部分（单位由 Scale.u 另行显示） */
 export const inScale = (n: number, s: Scale): string => (s.div === 1 ? String(Math.round(Math.abs(n))) : num(Math.abs(n) / s.div));
+/** 流量的数值部分：小数位固定（不到 10 两位、不到 100 一位），不去掉末尾的 0——推送里涨着的读数不会在「6.19」「6.2」之间跳，各处同一个数写法一样 */
+export const inScaleBytes = (n: number, s: Scale): string => {
+  if (s.div === 1) return String(Math.round(Math.abs(n)));
+  const x = Math.abs(n) / s.div;
+  return x >= 100 ? x.toFixed(0) : x >= 10 ? x.toFixed(1) : x.toFixed(2);
+};
 
-/** 流量字节 → B/KB/MB/GB/TB（十进制） */
+/** 流量字节 → B/KB/MB/GB/TB（十进制），小数位固定（inScaleBytes） */
 export function bytes(n: number | null | undefined): Fmt {
   if (n == null || !isFinite(n)) return NA;
   const s = bytesScale(n);
-  return { v: inScale(n, s), u: s.u };
+  return { v: inScaleBytes(n, s), u: s.u };
 }
 /** 内存、磁盘字节 → B/KiB/MiB/GiB/TiB（二进制） */
 export function mem(n: number | null | undefined): Fmt {

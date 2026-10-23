@@ -1,9 +1,9 @@
-// 告警：事件列表（确认 / 查看机器，服务端分页）+ 静默与维护窗口（可预约开始时间）。列表都保持服务端顺序（告警严重度优先，静默按开始时间），前端不重排。
+// 告警：事件列表（确认 / 查看机器，服务端分页）+ 静默与维护窗口（独立页签，可预约开始时间）。列表都保持服务端顺序（告警严重度优先，静默按开始时间），前端不重排。
 import * as React from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { BellOff, CalendarPlus, Check, CheckCircle2, ChevronDown, ChevronRight, Plus, Trash2, Wrench } from 'lucide-react';
 import { RenewDialog } from '@/features/BillingTab';
-import { INCIDENT_PAGE, useAck, useAddSilence, useDelSilence, useIncidents, useMachineBriefs, useSilences } from '@/lib/queries';
+import { INCIDENT_PAGE, useAck, useAckMany, useAddSilence, useDelSilence, useIncidents, useMachineBriefs, useSilences } from '@/lib/queries';
 import { usePage } from '@/lib/usePage';
 import { Pagination } from '@/components/app/Pagination';
 import { useDrawer } from '@/lib/drawer';
@@ -28,8 +28,8 @@ import { NodeHover } from '@/components/app/NodeHover';
 import { Empty, ErrorNote, Note, PageHead, Panel, Pill, TableWrap } from '@/components/app/primitives';
 
 const PAGE_SIZES = [20, INCIDENT_PAGE, 100];
-/** 级别一直按原级别（严重 / 警告）显示；已恢复的调淡，状态写在说明下面 */
-const SEV = (i: Incident) => { const s = severityOf(i.severity); return <Pill tone={s.tone} className={i.state === 'resolved' ? 'is-past' : undefined}>{s.label}</Pill>; };
+/** 级别一直按原级别（严重 / 警告）写；已恢复的灰掉（不再是要处理的红黄），状态写在说明下面 */
+const SEV = (i: Incident) => { const s = severityOf(i.severity); return i.state === 'resolved' ? <Pill tone="neutral" className="is-past">{s.label}</Pill> : <Pill tone={s.tone}>{s.label}</Pill>; };
 /** 说明列：摘要以「对象名：」开头（通知要能单独看懂），对象列已有名字，去掉不重复；英文原始错误换成中文（同顶栏预览与抽屉） */
 const summaryText = (i: Incident) => {
   const name = i.subject?.name ?? i.subject_name;
@@ -49,19 +49,29 @@ function foldBatches(list: Incident[]): (Incident | Incident[])[] {
   return out;
 }
 type State = 'firing' | 'resolved' | 'all';
-const STATES: { value: State; label: string }[] = [{ value: 'firing', label: '进行中' }, { value: 'resolved', label: '已恢复' }, { value: 'all', label: '全部' }];
+/** 页签：三种告警 + 静默与维护窗口（单独一页，不压在几百条告警下面） */
+type Tab = State | 'silences';
+const TABS: Tab[] = ['firing', 'resolved', 'all', 'silences'];
+const TAB_LABEL: Record<Tab, string> = { firing: '进行中', resolved: '已恢复', all: '全部', silences: '静默与维护' };
 
 export function IncidentsPage() {
   // 页签写进 URL 的 ?state=（进行中是默认，不写）；页码在 usePage 里（?p=）
   const [sp, setSp] = useSearchParams();
-  const state: State = STATES.find((s) => s.value === sp.get('state'))?.value ?? 'firing';
-  const setState = (v: State) => setSp((p) => { const n = new URLSearchParams(p); if (v === 'firing') n.delete('state'); else n.set('state', v); return n; }, { replace: true });
+  const tab: Tab = TABS.find((s) => s === sp.get('state')) ?? 'firing';
+  const state: State = tab === 'silences' ? 'firing' : tab;
+  const setState = (v: Tab) => setSp((p) => { const n = new URLSearchParams(p); if (v === 'firing') n.delete('state'); else n.set('state', v); return n; }, { replace: true });
   // 页码先于查询算出（偏移量进查询）；总数取上一次的结果。渲染中直接跟上（不等 effect 提交一遍再重渲染）
   const [total, setTotal] = React.useState<number>();
   const pg = usePage({ total, sizes: PAGE_SIZES, size: INCIDENT_PAGE, reset: [state] });
   const q = useIncidents(state, pg.offset, pg.size);
   if (q.data && q.data.total !== total) setTotal(q.data.total);
-  const ack = useAck();
+  const ack = useAck(); const ackMany = useAckMany();
+  const silences = useSilences().data;
+  // 静默页签上的数：还没结束的（进行中 + 已预约），同列表
+  const silenceN = silences?.filter((s) => Date.parse(s.ends_at) > Date.now()).length;
+  const tabs = React.useMemo(() => TABS.map((v) => ({ value: v, label: TAB_LABEL[v], count: v === 'silences' && silenceN ? silenceN : undefined })), [silenceN]);
+  // 告警按「条」：已确认的不进主数字，另写「另有 N 条已确认」（同顶栏、标签页标题）
+  const acked = state === 'firing' ? q.data?.acked ?? 0 : 0;
   const { open } = useDrawer();
   const { open: openRouter } = useRouterDrawer();
   const list = q.data?.items ?? [];
@@ -101,14 +111,14 @@ export function IncidentsPage() {
   };
   return (
     <div className="stack" ref={pg.anchor}>
-      <PageHead title="告警" note={q.data ? `${q.data.total.toLocaleString('zh-CN')} 条` : undefined}
+      <PageHead title="告警" note={tab === 'silences' ? undefined : q.data ? `${(q.data.total - acked).toLocaleString('zh-CN')} 条${acked ? ` · 另有 ${acked} 条已确认` : ''}` : undefined}
         tools={<>
-          <Segmented label="状态" value={state} onChange={setState} items={STATES} />
-          {/* 静默与维护窗口的列表在页面最下面：新建入口放在页头（走 ?silence=new，同命令面板） */}
+          <Segmented label="状态" value={tab} onChange={setState} items={tabs} />
+          {/* 新建入口放在页头（走 ?silence=new，同命令面板），哪个页签都能建 */}
           <Button onClick={() => setSp((p) => { const n = new URLSearchParams(p); n.set('silence', 'new'); return n; }, { replace: true })}><BellOff />新建静默</Button>
         </>} />
-      {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
-      <Panel flush>
+      {tab !== 'silences' && q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
+      {tab !== 'silences' && <Panel flush>
         <TableWrap>
           {/* 窄屏（inc-tbl，pages.css）：规则、说明、开始三列收起，并进对象格的第二、三行（规则 · 多久前 / 说明），不用横滑也看得到 */}
           <table className="dt inc-tbl" style={{ minWidth: 820 }}>
@@ -119,15 +129,18 @@ export function IncidentsPage() {
               {rows.map((r) => {
                 if (!Array.isArray(r)) return row(r);
                 const k = r[0].id; const on = opened.has(k);
+                const todo = r.filter((i) => i.state === 'firing' && !i.ack_at).map((i) => i.id);
+                const busy = ackMany.isPending && ackMany.variables?.[0] === todo[0];
                 return (
                   <React.Fragment key={k}>
                     <tr data-open={on ? '' : undefined}>
                       <td>{SEV(r[0])}</td>
-                      <td><button type="button" className="btn btn-link inc-fold" aria-expanded={on} data-tip={on ? '收起' : '展开看每一台'} onClick={() => toggle(k)}>{r.length} 台{foldNoun(r)}<ChevronRight /></button><span className="sub inc-narrow">{r[0].rule_name} · {F.ago(r[0].opened_at)}</span></td>
+                      <td><button type="button" className="btn btn-link inc-fold" aria-expanded={on} data-tip={on ? '收起' : '展开看每一条'} onClick={() => toggle(k)}>{r.length} 条 · {foldNoun(r)}<ChevronRight /></button><span className="sub inc-narrow">{r[0].rule_name} · {F.ago(r[0].opened_at)}</span></td>
                       <td>{r[0].rule_name}</td>
                       <td>同时出现{r[0].state === 'resolved' && <span className="sub">已恢复</span>}</td>
                       <td>{F.dt(r[0].opened_at)}<span className="sub">{F.ago(r[0].opened_at)}</span></td>
-                      <td />
+                      <td className="r">{todo.length > 0 && <Button size="sm" loading={busy} disabled={ackMany.isPending} data-tip={`确认这一批未确认的 ${todo.length} 条`}
+                        onClick={() => ackMany.mutate(todo, { onSuccess: () => toast.ok(`已确认 ${todo.length} 条`), onError: toast.err })}><Check size={13} />全部确认</Button>}</td>
                     </tr>
                     {on && r.map(row)}
                   </React.Fragment>
@@ -139,9 +152,9 @@ export function IncidentsPage() {
           {q.data && list.length === 0 && <Empty icon={state === 'firing' ? <CheckCircle2 size={22} /> : undefined} text={state === 'firing' ? '没有进行中的告警' : '没有记录'} />}
         </TableWrap>
         <Pagination pg={pg} unit="条" />
-      </Panel>
+      </Panel>}
       {renewM?.subscription && <RenewDialog m={renewM} s={renewM.subscription} open={!!renewId} onOpenChange={(o) => !o && setRenewId(null)} />}
-      <Silences />
+      <Silences show={tab === 'silences'} />
     </div>
   );
 }
@@ -149,9 +162,9 @@ export function IncidentsPage() {
 const ALL = '__all__';
 /** 静默对象类型的叫法（同服务端 api/incidents.rs KINDS） */
 const KIND_LABEL: Record<SilenceKind, string> = { machine: '机器', router: '软路由', probe_point: '探测点' };
-/** 对象在确认框、提示里的叫法：机器是名字，软路由、探测点带上类型，全部是「全部机器」（同服务端通知） */
+/** 对象在确认框标题里的叫法：机器是名字，软路由、探测点带上类型，全部是「全部机器」。同套餐、供应商的删除框（「删除套餐 · 名字」），不加引号 */
 const subjectText = (s: Pick<Silence, 'subject_kind' | 'subject_name'>) =>
-  !s.subject_name ? '全部机器' : s.subject_kind && s.subject_kind !== 'machine' ? `${KIND_LABEL[s.subject_kind]}「${s.subject_name}」` : `「${s.subject_name}」`;
+  !s.subject_name ? '全部机器' : s.subject_kind && s.subject_kind !== 'machine' ? `${KIND_LABEL[s.subject_kind]} ${s.subject_name}` : s.subject_name;
 const AHEAD_DAYS = 90; // 最多提前 90 天预约（同中控）
 const MIN = 60_000;
 type StartMode = 'now' | 'at';
@@ -166,7 +179,8 @@ const localInput = (t: number) => { const d = new Date(t); return `${d.getFullYe
 const nextHour = () => { const d = new Date(); d.setMinutes(60, 0, 0); return localInput(d.getTime()); };
 const dtMs = (t: number) => (Number.isNaN(t) ? '—' : F.dt(new Date(t).toISOString()));
 
-function Silences() {
+/** show：在「静默与维护」页签上才列出；对话框（含 ?silence= 打开的新建）一直挂着，哪个页签都能用 */
+function Silences({ show }: { show: boolean }) {
   const q = useSilences(); const del = useDelSilence();
   const [sp, setSp] = useSearchParams();
   const [open, setOpen] = React.useState(false);
@@ -187,7 +201,7 @@ function Silences() {
   const list = (q.data ?? []).filter((s) => Date.parse(s.ends_at) > now);
   return (
     <>
-      <Panel title="静默与维护窗口" count={list.length} sub={<InfoTip text="窗口内不会产生告警" />} tools={list.length === 0 && !q.isLoading ? <Button onClick={() => { setPreset(''); setOpen(true); }}><Plus />新建静默</Button> : undefined} flush>
+      {show && <Panel title="静默与维护窗口" count={list.length} sub={<InfoTip text="窗口内不会产生告警" />} tools={list.length === 0 && !q.isLoading ? <Button onClick={() => { setPreset(''); setOpen(true); }}><Plus />新建静默</Button> : undefined} flush>
         {q.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div>}
         {q.isLoading ? <SkeletonRows rows={2} head /> : list.length === 0 && !q.isError ? <Empty icon={<BellOff size={22} />} text="没有进行中或已预约的静默" /> : (
           <TableWrap>
@@ -212,7 +226,7 @@ function Silences() {
             </table>
           </TableWrap>
         )}
-      </Panel>
+      </Panel>}
       <SilenceDialog open={open} onOpenChange={setOpen} preset={preset} />
       <ConfirmDialog open={!!askDel} onOpenChange={(o) => !o && setAskDel(null)} title={`删除${delHeld?.is_maintenance ? '维护窗口' : '静默'} · ${delHeld ? subjectText(delHeld) : ''}`} confirmLabel="删除" danger
         description={delHeld && Date.parse(delHeld.starts_at) > now
