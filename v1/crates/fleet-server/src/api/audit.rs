@@ -149,6 +149,7 @@ const AUDIT_ACTIONS: &[&str] = &[
     "auth.totp_recovery_regenerated", "auth.user_removed", "auth.user_disabled", "auth.password_changed", "auth.session_revoked", "auth.verify_failed", "policy.draft", "policy.discard", "policy.publish", "policy.rollback",
     "settings.access_retention", "settings.fx_rate", "terminal.open", "terminal.close", "ssh.login",
     "router.create", "router.update", "router.delete", "router.bootstrap", "router.bootstrap_used", "router.deploy",
+    "client_sub.create", "client_sub.update", "client_sub.rotate", "client_sub.delete",
 ];
 
 /// 审计记录的中文标题与一句话摘要（界面直接显示）
@@ -235,6 +236,10 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "router.bootstrap" => "重新生成接入命令",
         "router.bootstrap_used" => "路由取走接入脚本",
         "router.deploy" => "一键部署软路由",
+        "client_sub.create" => "新建客户端订阅",
+        "client_sub.update" => "修改客户端订阅",
+        "client_sub.rotate" => "轮换订阅链接",
+        "client_sub.delete" => "删除客户端订阅",
         other => other,
     }
     .to_string();
@@ -416,6 +421,13 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "policy.discard" => format!("{} 个草稿", d["drafts"]),
         "router.create" if d["method"] == "deploy" => format!("{} · 一键部署", s("name")),
         "router.create" | "router.update" | "router.delete" | "router.bootstrap" => s("name"),
+        // 「家里 · 全部团队（不含备用团队）；含线路机直出」；改名的写从什么改成什么
+        "client_sub.create" => format!("{} · {}", s("name"), s("rule")),
+        "client_sub.update" => {
+            let name = if d["old_name"] == d["name"] { s("name") } else { format!("{} → {}", s("old_name"), s("name")) };
+            format!("{name} · {}{}", s("rule"), if d["enabled"] == false { "（已停用）" } else { "" })
+        }
+        "client_sub.rotate" | "client_sub.delete" => s("name"),
         "router.bootstrap_used" => format!("{} · 来自 {}", s("name"), s("ip")),
         "router.deploy" => {
             let res = match d["result"].as_str() {

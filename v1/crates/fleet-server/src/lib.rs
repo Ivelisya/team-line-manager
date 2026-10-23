@@ -51,7 +51,9 @@ pub fn app(st: AppState) -> Router {
     let mut r = Router::new()
         .nest("/api/v1", api::router().fallback(no_api))
         .nest("/agent/v1", agent_api::router().fallback(no_api))
-        .route("/echo", get(agent_api::echo));
+        .route("/echo", get(agent_api::echo))
+        // 客户端订阅的拉取：不登录，靠令牌（api/client_subs.rs）
+        .route("/sub/{token}", get(api::client_subs::fetch));
     if let Some(dir) = st.cfg.web_dir.clone().filter(|d| d.join("index.html").exists()) {
         // 前端是单页应用：未知路径回 index.html。/assets/ 下的除外，缺的文件回 404：发布新版后旧页面懒加载的旧 chunk
         // 拿到 index.html 会当脚本解析失败，还会带着下面的一年缓存头留在浏览器里
@@ -72,13 +74,13 @@ const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsa
 /// 缓存头与安全头。
 /// 缓存：/assets/ 下的文件名带内容哈希，可以永久缓存；index.html 等其余页面每次都要重新验证，否则发布新版后浏览器还拿着旧的入口文件；
 /// 接口没自己设 Cache-Control 的一律 no-store（数据里有 IP、令牌提示、审计，不留在浏览器和中间缓存里）。
-/// 安全：所有响应带 nosniff、同源才带 Referer、不许被嵌进框架；前端页面（/api、/agent、/echo 以外）再带 CSP；`https`（public_url 是 https）时带 HSTS
+/// 安全：所有响应带 nosniff、同源才带 Referer、不许被嵌进框架；前端页面（/api、/agent、/sub、/echo 以外）再带 CSP；`https`（public_url 是 https）时带 HSTS
 async fn response_headers(State(https): State<bool>, req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
     use axum::http::header::{CACHE_CONTROL, CONTENT_SECURITY_POLICY, REFERRER_POLICY, STRICT_TRANSPORT_SECURITY, X_CONTENT_TYPE_OPTIONS, X_FRAME_OPTIONS};
     use axum::http::HeaderValue;
     let path = req.uri().path();
     let api = path.starts_with("/api/");
-    let page = !api && !path.starts_with("/agent/") && path != "/echo";
+    let page = !api && !path.starts_with("/agent/") && !path.starts_with("/sub/") && path != "/echo";
     let cache = if path.starts_with("/assets/") {
         Some("public, max-age=31536000, immutable")
     } else if page {

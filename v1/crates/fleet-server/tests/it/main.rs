@@ -19,5 +19,6 @@ mod policy;
 mod probe;
 mod retention;
 mod spare;
+mod subs;
 mod telemetry;
 mod terminal;
