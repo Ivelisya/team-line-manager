@@ -120,8 +120,22 @@ pub fn bps(n: f64) -> String {
     if i == 0 { format!("{v:.0} {}", units[0]) } else { format!("{v:.1} {}", units[i]) }
 }
 
+/// 占比：a / b 的整数百分比；缺测或 b 不大于 0 写「-」
+pub fn pct(a: Option<f64>, b: Option<f64>) -> String {
+    match (a, b) {
+        (Some(a), Some(b)) if b > 0.0 => format!("{:.0}%", a * 100.0 / b),
+        _ => "-".into(),
+    }
+}
+
 /// 金额（分）
 pub fn money(cents: i64, cur: &str) -> String { format!("{}.{:02} {cur}", cents / 100, (cents % 100).abs()) }
+
+/// 取 `ptr` 处的金额（分）写成 `money`；中控没返回这个字段时写「-」，不当成 0.00
+pub fn money_at(v: &serde_json::Value, ptr: &str, cur: &str) -> String { v.pointer(ptr).and_then(serde_json::Value::as_i64).map_or("-".into(), |c| money(c, cur)) }
+
+/// 时间戳的日期部分（组织时区）：「2026-10-22」；缺失（`-`）原样
+pub fn day(t: &str) -> String { ts(t).chars().take(10).collect() }
 
 /// RFC 3339 → 组织时区（中控 org_timezone，默认北京时间）的 `2026-10-20 20:34:56`（同通知，截到秒）；缺失（`-`）原样
 pub fn ts(s: &str) -> String {

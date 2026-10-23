@@ -2,15 +2,12 @@
 
 use crate::cmds::{cycle_cn, kind_cn, st, Ctx};
 use crate::table;
-use anyhow::{bail, Context};
+use anyhow::bail;
 use serde_json::{json, Value};
 use std::path::Path;
 
 /// 「2026-10-21」：时间按组织时区（同其它命令）只取日期
-fn day(v: &Value, p: &str) -> String {
-    let s = table::ts(&st(v, p));
-    s.get(..10).unwrap_or(if s.is_empty() { "-" } else { &s }).to_string()
-}
+fn day(v: &Value, p: &str) -> String { table::day(&st(v, p)) }
 
 /// 「团队2-07（回收时 备用-03）」
 fn name_cell(i: &Value) -> String {
@@ -81,7 +78,7 @@ pub fn show(ctx: &Ctx, which: &str) -> anyhow::Result<u8> {
     let d = ctx.c.get(&format!("/recycle-bin/{id}"))?;
     ctx.emit(&d, || {
         let money = match (d["price_cents"].as_i64(), d["currency"].as_str()) {
-            (Some(c), Some(cur)) => format!("{:.2} {cur} / {}", c as f64 / 100.0, cycle_cn(&st(&d, "/cycle"))),
+            (Some(c), Some(cur)) => format!("{} / {}", table::money(c, cur), cycle_cn(&st(&d, "/cycle"))),
             _ => "-".into(),
         };
         let gb = |p: &str| d.pointer(p).and_then(Value::as_i64).map(|b| table::traffic(b as f64)).unwrap_or("-".into());
@@ -110,13 +107,7 @@ pub fn show(ctx: &Ctx, which: &str) -> anyhow::Result<u8> {
 /// `recycle import --file <json>`：旧面板的退役机器导入回收站。文件是 `{"items": [...]}` 或直接一个数组（每项见 API.md）。
 /// 不加 --yes 只预演：列出会导入、会跳过（导入过的、对上面板里还没回收的机器）的；加了才写
 pub fn import(ctx: &Ctx, file: &Path, yes: bool) -> anyhow::Result<u8> {
-    let text = std::fs::read_to_string(file).with_context(|| format!("读取 {}", file.display()))?;
-    let v: Value = serde_json::from_str(&text).with_context(|| format!("{} 不是合法 JSON", file.display()))?;
-    let items = match v {
-        Value::Array(a) => Value::Array(a),
-        Value::Object(mut o) => o.remove("items").filter(Value::is_array).context("JSON 里要有 items 数组")?,
-        _ => bail!("JSON 要是数组，或带 items 数组的对象"),
-    };
+    let items = crate::ops::items_from_file(file)?;
     let d = ctx.c.post("/recycle-bin/import", &json!({"items": items, "confirm": yes}))?;
     let inserted = d["inserted"].as_array().cloned().unwrap_or_default();
     let skipped = d["skipped"].as_array().cloned().unwrap_or_default();

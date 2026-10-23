@@ -1,11 +1,11 @@
 //! 费用与续费：billing（订阅、流量额度、最近的续费记录）、renew（登记续费）、subscription set（改订阅）。
 //! 默认值与说法同网页抽屉的「费用」页签：续费默认按订阅周期推一个周期、金额取订阅价格；只记账，不会向供应商付款。
 
-use crate::cmds::{cycle_cn, due_cn, num, st, Ctx};
+use crate::cmds::{cycle_cn, due_at, due_cn, num, st, Ctx};
 use crate::meta;
 use crate::ops::confirm;
 use crate::resolve::Want;
-use crate::table::{self, gb, money, traffic};
+use crate::table::{self, gb, money, money_at, traffic};
 use anyhow::{anyhow, bail};
 use serde_json::{json, Map, Value};
 use std::ops::RangeInclusive;
@@ -86,7 +86,7 @@ fn renew_body(to: Option<&str>, cycles: u32, amount: i64, note: Option<&str>) ->
 }
 
 /// 费用：`39.46 USD / 月`（同网页）
-fn fee(s: &Value) -> String { format!("{} / {}", money(s["price_cents"].as_i64().unwrap_or(0), &st(s, "/currency")), cycle_cn(&st(s, "/cycle"))) }
+fn fee(s: &Value) -> String { format!("{} / {}", money_at(s, "/price_cents", &st(s, "/currency")), cycle_cn(&st(s, "/cycle"))) }
 
 /// 生效的流量上限：0 / null = 不限
 fn traffic_gb_cn(v: &Value) -> String {
@@ -147,9 +147,6 @@ fn limit_cn(m: &Value, limit: Option<i64>) -> String {
     }
 }
 
-/// 时间戳的日期部分（组织时区）：「2026-10-22 起统计」
-fn day_of(t: &str) -> String { table::ts(t).chars().take(10).collect() }
-
 /// 按哪几块网卡计（agent 报的；旧 agent 没报为空）：`，按 ens3 计`。按业务流量算的不写（billing、show 共用）
 pub(crate) fn nic_cn(m: &Value) -> String {
     let names: Vec<&str> = m.pointer("/agent/nic_ifaces").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
@@ -168,7 +165,7 @@ fn used_cn(m: &Value, limit: Option<i64>, pct: Option<i64>, incl: &str) -> Strin
     };
     let note = match (num(q, "/base"), q["counted_from"].as_str()) {
         (Some(b), _) => format!("；含接入前读数 {}（供应商面板读数{}）", gb(b), q["period_end"].as_str().map(|e| format!("，{e} 起不再计入")).unwrap_or_default()),
-        (None, Some(t)) => format!("；{} 起统计，之前的用量不在内", day_of(t)),
+        (None, Some(t)) => format!("；{} 起统计，之前的用量不在内", table::day(t)),
         _ => String::new(),
     };
     format!("{}{lim}{p}，{span}，{}{}{incl}{note}", gb(num(q, "/used").unwrap_or(0.0)), rule_cn(&q["rule"]), nic_cn(m))
@@ -185,7 +182,7 @@ pub(crate) fn month_cn(m: &Value) -> String {
         let sum = |k: &str| es.iter().filter_map(|e| e["traffic"][k].as_f64()).sum::<f64>() + n(&format!("/removed_traffic/{k}"));
         format!("业务 下载 {} / 上传 {}", traffic(sum("month_down")), traffic(sum("month_up")))
     };
-    let from = m["month_counted_from"].as_str().map(|t| format!("（{} 起）", day_of(t))).unwrap_or_default();
+    let from = m["month_counted_from"].as_str().map(|t| format!("（{} 起）", table::day(t))).unwrap_or_default();
     format!("{v}{from}")
 }
 
@@ -196,7 +193,7 @@ pub(crate) fn spare_cn(m: &Value) -> Option<String> {
         return None;
     }
     let when = match m["spare_since"].as_str() {
-        Some(t) => format!("已于 {} 退役", day_of(t)),
+        Some(t) => format!("已于 {} 退役", table::day(t)),
         None => "已退役".into(),
     };
     let from = m["spare_from"].as_str().map(|f| format!("（原 {f}）")).unwrap_or_default();
@@ -214,7 +211,7 @@ fn billing_text(name: &str, m: &Value, limit: Option<i64>, pct: Option<i64>, ren
         // 费用后面补折成的 USD 月费（中控按汇率算好；原币种照录入的写）
         let fee = (fee, format!("{f}{}", crate::fx::sub_usd_cn(s)));
         let a = if s["auto_renew"] == true { "是（到期后中控按周期自动顺延到期日、记一条续费记录；到期前不提醒）".into() } else { a };
-        rows.extend([fee, (due, format!("{d}（{}）", due_cn(s["due_days"].as_i64().unwrap_or(0)))), (auto, a), remind, tz, ("流量上限", limit_cn(m, limit)), reset]);
+        rows.extend([fee, (due, format!("{d}（{}）", due_at(s, "/due_days"))), (auto, a), remind, tz, ("流量上限", limit_cn(m, limit)), reset]);
         // 紧跟在到期那一行后面
         if let Some(sp) = spare_cn(m) {
             rows.insert(3, ("备用", sp));
@@ -287,6 +284,12 @@ pub struct RenewOpts<'a> {
     pub yes: bool,
 }
 
+/// 没给 --amount 时的实付金额：订阅价格 × 周期数（给了 --to 按一期算）。订阅里没有价格就报错，不按 0 元登记
+fn default_amount(s: &Value, name: &str, has_to: bool, cycles: u32) -> anyhow::Result<i64> {
+    let price = s["price_cents"].as_i64().ok_or_else(|| anyhow!("中控没有返回 {name} 的订阅价格（price_cents），不按 0 元登记：用 --amount 指定实付金额"))?;
+    Ok(price * i64::from(if has_to { 1 } else { cycles }))
+}
+
 /// `renew <机器>`：登记一次续费（到期日顺延、续费类告警下一轮评估恢复）。`--json` 输出这条续费记录（同 billing 的 renewals[]）
 pub fn renew(ctx: &Ctx, o: RenewOpts<'_>) -> anyhow::Result<u8> {
     let (id, name) = ctx.find_id(o.machine, Want::Live)?;
@@ -300,7 +303,7 @@ pub fn renew(ctx: &Ctx, o: RenewOpts<'_>) -> anyhow::Result<u8> {
     let amount = match o.amount {
         Some(a) => i64::from(parse_money(a)?),
         // 默认是订阅价格（同网页）；--cycles 推几个周期就是几期的钱
-        None => s["price_cents"].as_i64().unwrap_or(0) * i64::from(if o.to.is_some() { 1 } else { o.cycles }),
+        None => default_amount(s, &name, o.to.is_some(), o.cycles)?,
     };
     let note = o.note.map(str::trim).filter(|n| !n.is_empty());
     let note_cn = note.map(|n| format!("，备注「{n}」")).unwrap_or_default();
@@ -319,10 +322,10 @@ pub fn renew(ctx: &Ctx, o: RenewOpts<'_>) -> anyhow::Result<u8> {
     let all = ctx.c.get(&format!("/machines/{id}/renewals"))?;
     let r = all.as_array().and_then(|a| a.iter().find(|r| r["id"] == rid.as_str())).ok_or_else(|| anyhow!("刚登记的续费 {rid} 不在续费记录里"))?;
     // due_days = 到期日 − 账单时区的今天，新的到期日顺延了几天就加几天
-    let days = s["due_days"].as_i64().unwrap_or(0) + (new - due).whole_days();
+    let days = s["due_days"].as_i64().map(|d| d + (new - due).whole_days());
     ctx.emit(r, || {
         let paid = r["amount_cents"].as_i64().map_or("-".into(), |c| money(c, &cur));
-        format!("已登记续费：{name} 到期 {} → {}（{}），实付 {paid}{note_cn}", st(r, "/old_due"), st(r, "/new_due"), due_cn(days))
+        format!("已登记续费：{name} 到期 {} → {}（{}），实付 {paid}{note_cn}", st(r, "/old_due"), st(r, "/new_due"), days.map_or("-".into(), due_cn))
     });
     Ok(0)
 }
@@ -458,7 +461,7 @@ pub fn subscription_set(ctx: &Ctx, o: SubSetOpts<'_>) -> anyhow::Result<u8> {
     ctx.c.put(&format!("/machines/{id}/subscription"), &body)?;
     // 回读：due_days 由中控按账单时区算
     let s = ctx.c.get(&format!("/machines/{id}"))?["subscription"].take();
-    ctx.emit(&s, || format!("已{act} {name} 的订阅：{changes}\n到期日 {}（{}）", st(&s, "/due_date"), due_cn(s["due_days"].as_i64().unwrap_or(0))));
+    ctx.emit(&s, || format!("已{act} {name} 的订阅：{changes}\n到期日 {}（{}）", st(&s, "/due_date"), due_at(&s, "/due_days")));
     Ok(0)
 }
 
@@ -495,6 +498,10 @@ mod tests {
         assert_eq!(renew_body(None, 3, 11838, None).unwrap(), json!({"amount_cents": 11838, "note": null, "cycles": 3}));
         assert_eq!(renew_body(Some(" 2027-01-01 "), 1, 100, Some("账单 #1")).unwrap(), json!({"amount_cents": 100, "note": "账单 #1", "new_due": "2027-01-01"}));
         assert!(renew_body(None, 0, 1, None).is_err() && renew_body(Some("2026/11/25"), 1, 1, None).is_err());
+        // 默认金额是订阅价格 × 周期数；订阅里没有价格不能当 0 元记账
+        let sub = json!({"price_cents": 3946});
+        assert_eq!((default_amount(&sub, "x", false, 3).unwrap(), default_amount(&sub, "x", true, 3).unwrap()), (11838, 3946));
+        assert!(default_amount(&json!({"currency": "USD"}), "x", false, 1).unwrap_err().to_string().contains("不按 0 元登记"));
     }
 
     /// 机器：套餐 Mini（2000 GB、39.46 USD / 月），供应商按账单日重置、洛杉矶时区、提前 7 天；订阅单独设置了价格

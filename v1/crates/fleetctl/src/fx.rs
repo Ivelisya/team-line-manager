@@ -3,7 +3,7 @@
 
 use crate::cmds::Ctx;
 use crate::ops::confirm;
-use crate::table::{self, money};
+use crate::table::{self, money, money_at};
 use anyhow::bail;
 use serde_json::{json, Value};
 
@@ -17,9 +17,9 @@ pub(crate) fn rate_cn(cur: &str, usd_per_unit: f64) -> String {
 }
 
 /// 订阅的费用后面补的 USD 折算：「；折合 37.50 USD/月（1 CNY = 0.125 USD）」。USD 按月付的不补；
-/// 没有汇率的写「未折算」；旧中控没有这几个字段时什么都不写
+/// 没有汇率的写「未折算」
 pub(crate) fn sub_usd_cn(s: &Value) -> String {
-    let Some(obj) = s.as_object().filter(|o| o.contains_key("monthly_usd_cents")) else { return String::new() };
+    let Some(obj) = s.as_object() else { return String::new() };
     let cur = obj.get("currency").and_then(Value::as_str).unwrap_or("");
     let monthly = obj.get("cycle").and_then(Value::as_str) == Some("monthly");
     match (s["monthly_usd_cents"].as_i64(), s["usd_per_unit"].as_f64()) {
@@ -36,7 +36,7 @@ pub(crate) fn monthly_cell(s: &Value) -> String {
         return "-".into();
     }
     let cur = s["currency"].as_str().unwrap_or("");
-    let orig = money(s["monthly_cents"].as_i64().unwrap_or(0), cur);
+    let orig = money_at(s, "/monthly_cents", cur);
     match s["monthly_usd_cents"].as_i64() {
         Some(u) if cur == "USD" => money(u, "USD"),
         Some(u) => format!("{}（{orig}）", money(u, "USD")),
@@ -44,13 +44,9 @@ pub(crate) fn monthly_cell(s: &Value) -> String {
     }
 }
 
-/// `status` 的每月费用：USD 合计，括注各原币种的金额与汇率；没有汇率的单列。旧中控（没有 monthly_usd）按币种分别写
+/// `status` 的每月费用：USD 合计，括注各原币种的金额与汇率；没有汇率的单列
 pub(crate) fn cost_cn(ov: &Value) -> String {
     let u = &ov["monthly_usd"];
-    if !u.is_object() {
-        let parts: Vec<String> = ov["monthly_cost"].as_array().map(Vec::as_slice).unwrap_or_default().iter().map(|c| money(c["cents"].as_i64().unwrap_or(0), c["currency"].as_str().unwrap_or(""))).collect();
-        return if parts.is_empty() { "-".into() } else { parts.join(" + ") };
-    }
     let by = u["by_currency"].as_array().map(Vec::as_slice).unwrap_or_default();
     let un = u["unconverted"].as_array().map(Vec::as_slice).unwrap_or_default();
     if by.is_empty() && un.is_empty() {
@@ -179,7 +175,6 @@ mod tests {
         assert_eq!(sub_usd_cn(&s("USD", "monthly", json!(29999), json!(1.0))), "");
         assert_eq!(sub_usd_cn(&s("USD", "quarterly", json!(10000), json!(1.0))), "；折合 100.00 USD/月");
         assert!(sub_usd_cn(&s("XYZ", "monthly", Value::Null, Value::Null)).starts_with("；未折算（没有 XYZ 的汇率"));
-        assert_eq!(sub_usd_cn(&json!({"currency": "CNY", "cycle": "monthly"})), "", "旧中控");
         assert_eq!(monthly_cell(&s("CNY", "monthly", json!(3750), json!(0.125))), "37.50 USD（299.99 CNY）");
         assert_eq!(monthly_cell(&s("XYZ", "monthly", Value::Null, Value::Null)), "299.99 XYZ（未折算）");
         assert_eq!(monthly_cell(&Value::Null), "-");
@@ -187,12 +182,9 @@ mod tests {
 
     #[test]
     fn status_cost() {
-        let ov = json!({"monthly_cost": [{"currency": "CNY", "cents": 29999}, {"currency": "USD", "cents": 96868}],
-            "monthly_usd": {"cents": 100618, "unconverted": [{"currency": "XYZ", "cents": 500}],
+        let ov = json!({"monthly_usd": {"cents": 100618, "unconverted": [{"currency": "XYZ", "cents": 500}],
                 "by_currency": [{"currency": "CNY", "cents": 29999, "usd_cents": 3750, "usd_per_unit": 0.125}, {"currency": "USD", "cents": 96868, "usd_cents": 96868, "usd_per_unit": 1.0}]}});
         assert_eq!(cost_cn(&ov), "1006.18 USD（含 299.99 CNY ≈ 37.50 USD，1 CNY = 0.125 USD）；未折算（没有汇率）：5.00 XYZ");
-        // 旧中控：按币种分别写
-        assert_eq!(cost_cn(&json!({"monthly_cost": [{"currency": "CNY", "cents": 29999}, {"currency": "USD", "cents": 100}]})), "299.99 CNY + 1.00 USD");
-        assert_eq!(cost_cn(&json!({"monthly_cost": [], "monthly_usd": {"cents": 0, "by_currency": [], "unconverted": []}})), "-");
+        assert_eq!(cost_cn(&json!({"monthly_usd": {"cents": 0, "by_currency": [], "unconverted": []}})), "-");
     }
 }

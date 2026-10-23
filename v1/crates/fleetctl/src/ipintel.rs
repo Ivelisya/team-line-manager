@@ -5,10 +5,6 @@ use crate::resolve::Want;
 use crate::table;
 use serde_json::Value;
 
-fn i(v: &Value, ptr: &str) -> String {
-    v.pointer(ptr).and_then(Value::as_i64).map(|n| n.to_string()).unwrap_or_else(|| "-".into())
-}
-
 fn flags(b: &Value) -> String {
     let mut f = vec![];
     if let Some(n) = b["internal"].as_str() {
@@ -87,7 +83,7 @@ fn dist_table(d: &Value, title: &str, top: usize) -> String {
     let rows: Vec<Vec<String>> = list
         .iter()
         .take(top)
-        .map(|x| vec![st(x, "/label"), i(x, "/conns"), format!("{}%", x["pct"].as_f64().map(|p| format!("{p:.1}")).unwrap_or_else(|| "-".into())), i(x, "/sources")])
+        .map(|x| vec![st(x, "/label"), st(x, "/conns"), format!("{}%", x["pct"].as_f64().map(|p| format!("{p:.1}")).unwrap_or_else(|| "-".into())), st(x, "/sources")])
         .collect();
     format!("{title}\n{}", table::render(&["值", "连接", "占比", "来源数"], &rows))
 }
@@ -102,18 +98,18 @@ pub fn sources(ctx: &Ctx, machine: &str, window: &str, limit: i64) -> anyhow::Re
         let learn = if l["started_at"].is_null() {
             "还没有来源记录".to_string()
         } else if l["done"].as_bool() == Some(true) {
-            format!("学习期已结束（自 {} 起 {} 天）", table::ts(&st(l, "/started_at")), i(l, "/learn_days"))
+            format!("学习期已结束（自 {} 起 {} 天）", table::ts(&st(l, "/started_at")), st(l, "/learn_days"))
         } else {
-            format!("学习中，还剩约 {} 小时（自 {} 起 {} 天；期间只学习不告警）", i(l, "/remaining_hours"), table::ts(&st(l, "/started_at")), i(l, "/learn_days"))
+            format!("学习中，还剩约 {} 小时（自 {} 起 {} 天；期间只学习不告警）", st(l, "/remaining_hours"), table::ts(&st(l, "/started_at")), st(l, "/learn_days"))
         };
         out.push(format!(
             "{name}  窗口 {}（自 {} 起）：外部来源 {} 个、连接 {}；我方 {}、非公网 {}\n{learn}",
             st(&d, "/window"),
             table::ts(&st(&d, "/window_start")),
-            i(&d, "/total_sources"),
-            i(&d, "/total_conns"),
-            i(&d, "/internal_conns"),
-            i(&d, "/private_conns")
+            st(&d, "/total_sources"),
+            st(&d, "/total_conns"),
+            st(&d, "/internal_conns"),
+            st(&d, "/private_conns")
         ));
         if d["degraded"].as_bool() == Some(true) {
             out.push("提示：IP 库未安装或不全，画像查不到（在中控运行 lab/install-ipintel.sh；fleetctl ipintel-status 看详情）".into());
@@ -132,7 +128,7 @@ pub fn sources(ctx: &Ctx, machine: &str, window: &str, limit: i64) -> anyhow::Re
             .iter()
             .map(|s| {
                 let b = &s["intel"];
-                vec![st(s, "/src_ip"), i(s, "/conns"), st(b, "/isp"), st(b, "/place"), st(b, "/conn_label"), flags(b)]
+                vec![st(s, "/src_ip"), st(s, "/conns"), st(b, "/isp"), st(b, "/place"), st(b, "/conn_label"), flags(b)]
             })
             .collect();
         out.push(format!("来源 IP\n{}", table::render(&["IP", "连接", "运营商", "地点", "接入方式", "备注"], &top)));
@@ -167,9 +163,9 @@ pub fn status(ctx: &Ctx) -> anyhow::Result<u8> {
         let mut out = vec![format!(
             "IP 情报：{}  已加载 {}/{} 个库  缓存 {} 条\n库目录 {}\n版本 {}",
             if d["enabled"].as_bool() == Some(true) { "启用" } else { "已关闭" },
-            i(&d, "/loaded"),
-            i(&d, "/expected"),
-            i(&d, "/cache_rows"),
+            st(&d, "/loaded"),
+            st(&d, "/expected"),
+            st(&d, "/cache_rows"),
             st(&d, "/db_dir"),
             st(&d, "/version")
         )];

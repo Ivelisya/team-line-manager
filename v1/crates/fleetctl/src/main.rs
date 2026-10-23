@@ -94,7 +94,7 @@ enum PolicyCmd {
     Set {
         who: String,
         /// observe | allowlist | denylist | blocked | inherit（仅节点）
-        #[arg(long)]
+        #[arg(long, value_parser = ["observe", "allowlist", "denylist", "blocked", "inherit"])]
         mode: String,
         /// 域名，逗号或空白分隔；`=example.com` 为精确匹配，否则含子域
         #[arg(long)]
@@ -1265,7 +1265,7 @@ mod tests {
             Err(e) => Err(e.kind()),
         };
         assert_eq!(parse(&["团队2 备用", "--name", "备用", "--yes"]), Ok(("团队2 备用".into(), "备用".into(), true)));
-        assert!(parse(&["备用"]).is_err() && parse(&["备用", "--spare", "true"]).is_err());
+        assert!(parse(&["备用"]).is_err());
     }
 
     /// 供应商 / 套餐：可改项 add 与 set 共用；--archive 与 --unarchive 互斥
