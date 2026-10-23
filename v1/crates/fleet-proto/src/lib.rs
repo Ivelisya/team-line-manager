@@ -384,9 +384,15 @@ pub struct ProbeReport {
     /// 正在跑的程序的 sha256（十六进制）：与 `ProbeTargets::upgrade` 的一致时中控清掉升级请求
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
-    /// 整轮作废的原因（对照目标都连不上、三台以上线路机全部连不上）：这时 `results` 为空，只算心跳
+    /// 整轮作废的原因（对照目标都连不上）：这时 `results` 为空，只算心跳。
+    /// 旧探测点在三台以上线路机全部连不上时也整轮作废（带「N 台线路机全部连不上」）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discarded: Option<String>,
+    /// 对照目标是通的、三台以上线路机却全部连不上（[`all_down`]）：照常带结果上报并置 true，中控照记、告警摘要写明
+    /// 「全部线路机同时连不上」（可能是供应商整段故障）。旧探测点没有这个字段（这种轮次整轮作废）；
+    /// 旧中控不认识它，按旧规则丢掉这一轮
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub all_down: bool,
     pub results: Vec<ProbeResult>,
 }
 
@@ -403,9 +409,11 @@ pub struct ProbeResult {
     pub detail: Option<String>,
 }
 
-/// 这一轮记不记（中控 reach.rs 与探测点同一条规则）：对照目标都连不上，或三台以上线路机全部失败 → 是测的这一方自己的问题，不记。
-/// 两台同时不通照记：生产两台线路机在同一家供应商的同一个 /24，一起出问题并不罕见，正是要报的时候
-pub fn keep_round(oks: &[bool], control_ok: bool) -> bool { control_ok && (oks.len() < 3 || oks.iter().any(|&o| o)) }
+/// 三台以上线路机全部连不上（中控 reach.rs 与探测点同一条规则）。一轮记不记只看对照目标：一个都连不上是测的这一方自己的网络有问题，整轮作废。
+/// 三台以上全不通以前也当成测的这一方的问题整轮作废；但对照目标是通的时候，更可能是线路机这边一起出了问题
+/// （生产几台线路机在同一家供应商、同一个 /24，供应商整段故障时就是这样），这正是最该报的时候：照记，带上这个标记，
+/// relay_unreachable 的摘要写明「全部线路机同时连不上」。两台同时不通不算（线路机少时太容易凑上）
+pub fn all_down(oks: &[bool]) -> bool { oks.len() >= 3 && !oks.iter().any(|&o| o) }
 
 /// Xray 里用到的标签：只由 entry_id 派生，和名字、端口都无关。
 pub mod tags {
@@ -427,12 +435,19 @@ mod tests {
 
     #[test]
     fn probe_round_keep_rule() {
-        assert!(keep_round(&[true, false], true), "一台不通照记");
-        assert!(keep_round(&[false], true), "只有一台线路机：靠对照目标判断");
-        assert!(keep_round(&[false, false], true), "两台全不通照记：同一家供应商一起出问题");
-        assert!(!keep_round(&[false, false, false], true), "三台以上全不通：测的这一方自己的问题");
-        assert!(!keep_round(&[true, true], false), "对照目标都连不上：不记");
-        assert!(keep_round(&[], true));
+        assert!(!all_down(&[false, false]), "两台全不通：不算全部");
+        assert!(all_down(&[false, false, false]), "三台以上全不通：全部线路机同时连不上");
+        assert!(!all_down(&[false, true, false]) && !all_down(&[]));
+    }
+
+    #[test]
+    fn probe_report_all_down_is_optional() {
+        // 旧探测点不带 all_down：解析成 false；false 时不序列化出这个字段（旧中控看到的形状不变）
+        let r: ProbeReport = serde_json::from_value(serde_json::json!({"version": "v", "results": []})).unwrap();
+        assert!(!r.all_down);
+        assert!(serde_json::to_value(&r).unwrap().get("all_down").is_none());
+        let r = ProbeReport { all_down: true, ..r };
+        assert_eq!(serde_json::to_value(&r).unwrap()["all_down"], true);
     }
 
     #[test]

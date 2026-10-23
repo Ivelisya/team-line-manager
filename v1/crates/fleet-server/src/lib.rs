@@ -197,7 +197,7 @@ async fn housekeeping(s: AppState) {
             Ok(_) => {}
             Err(e) => tracing::error!("作业清理失败：{e:#}"),
         }
-        if let Err(e) = db::cleanup_retention(&s.db).await {
+        if let Err(e) = db::cleanup_retention(&s.db, &s.cfg.retention).await {
             tracing::error!("保留期清理失败：{e:#}");
         }
         if let Err(e) = routers::collect::cleanup(&s.db, s.cfg.retention.raw_days).await {

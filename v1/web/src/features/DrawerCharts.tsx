@@ -4,6 +4,7 @@ import * as React from 'react';
 import { Cpu, Gauge, Globe, HardDrive, MemoryStick, Network, Radar, ServerOff } from 'lucide-react';
 import type { MachineView, SeriesPoint } from '@/lib/types';
 import { usePingSeries } from '@/lib/ping';
+import { useReachQuality, type ReachWindowStat } from '@/lib/probePoints';
 import type { UseQueryResult } from '@tanstack/react-query';
 import { useAvailability, useSeries } from '@/lib/queries';
 import { useDrawer } from '@/lib/drawer';
@@ -12,7 +13,7 @@ import { AVAIL_LEGEND, availCells, availTitles, fromLabel, hasHost, monthFlowTip
 import { Segmented } from '@/components/ui/overlays';
 import { Skeleton } from '@/components/ui/skeleton';
 import { InfoTip } from '@/components/ui/form';
-import { Beat, Empty, ErrorNote, LabelValue, LabelValueGrid, Note, Num, Section, SectionHeader } from '@/components/app/primitives';
+import { Beat, Empty, ErrorNote, LabelValue, LabelValueGrid, Note, Num, Section, SectionHeader, TableWrap } from '@/components/app/primitives';
 import { RANGES, TimeChart } from '@/components/app/TimeChart';
 import { EntriesTable, entriesMeta } from './EntriesTable';
 
@@ -106,6 +107,40 @@ const AvailabilitySection = React.memo(function AvailabilitySection({ id, relay 
   );
 });
 
+const REACH_WINDOWS = [['24h', '近 24 小时'], ['7d', '近 7 天'], ['30d', '近 30 天']] as const;
+const reachCell = (w: ReachWindowStat | null) => (!w || !w.total ? '—'
+  : <span data-tip={`${w.ok}/${w.total} 次连上${w.median_ms == null ? '' : `；延迟中位数约 ${Math.round(w.median_ms)} ms`}`}>
+    <b className="num">{successPct((100 * w.ok) / w.total)}</b>{w.avg_ms != null && <span className="t-sub"> · {Math.round(w.avg_ms)} ms</span>}</span>);
+/** 线路机的客户入口连通性：各路来源（中控、各探测点）连它客户入口的成功率与平均建连延迟（中控只判通不通），来自小时汇总。
+ *  卡片心跳格只看主来源近 1 小时；这里给长期的、各路并排的（对比香港与中控、事后核对投诉） */
+const ReachQualitySection = React.memo(function ReachQualitySection({ id }: { id: string }) {
+  const q = useReachQuality(id);
+  const s = q.data?.sources ?? [];
+  return (
+    <Section>
+      <SectionHeader title={<>客户入口连通性<InfoTip text="中控与各探测点连这台线路机客户入口（public_host + 在用入口端口）的成功率与平均建连延迟，来自小时汇总（每 5 分钟重算）。对照目标连不上的轮次不算；中控只判通不通，没有延迟" /></>} />
+      {q.isError && !q.data ? <ErrorNote error={q.error} onRetry={() => void q.refetch()}>连通性加载失败：</ErrorNote>
+        : q.isLoading ? <Skeleton h={72} />
+        : !s.length ? <div className="hint">还没有检查记录</div>
+        : (
+          <TableWrap>
+            <table className="table">
+              <thead><tr><th>来源</th>{REACH_WINDOWS.map(([k, l]) => <th key={k}>{l}</th>)}</tr></thead>
+              <tbody>
+                {s.map((x) => (
+                  <tr key={x.source}>
+                    <td><span className="cell-main">{x.label}</span>{x.primary && <span className="sub">主来源</span>}</td>
+                    {REACH_WINDOWS.map(([k]) => <td key={k}>{reachCell(x.windows[k])}</td>)}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </TableWrap>
+        )}
+    </Section>
+  );
+});
+
 const PING_COLORS = ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--m-cpu)', 'var(--m-mem)', 'var(--m-disk)', 'var(--m-load)', 'var(--fg-3)'];
 /** 线路机的三网 PING 曲线：延迟（各目标一条线，1h–24h 每分钟的中位数，7d / 30d 每小时平均）与丢包率。
  *  同一轮各目标的时刻相同，按时刻合成一组点（s<槽位> 延迟、l<槽位> 丢包） */
@@ -146,6 +181,7 @@ export function QualityTab({ m }: { m: MachineView }) {
     <>
       <RangeSticky range={range} setRange={setRange} />
       <AvailabilitySection id={m.id} relay={m.kind === 'relay'} />
+      {m.kind === 'relay' && <ReachQualitySection id={m.id} />}
       {m.kind === 'relay' && <PingSection id={m.id} range={range} />}
       <Section>
         {/* 多条入口时曲线是各入口的平均（序列接口不分入口），写明几条、是哪几台线路机 */}

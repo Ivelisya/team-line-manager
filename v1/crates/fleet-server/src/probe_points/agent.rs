@@ -3,7 +3,8 @@
 //! - `GET targets` → `fleet_proto::ProbeTargets`：在用的、有在用入口的线路机（public_host + 在用入口端口）、对照目标、要不要升级；
 //!   停用的探测点拿到空目标（照常上报心跳，不测）；
 //! - `POST report` ← `fleet_proto::ProbeReport`：写进 relay_reach（probe_point_id 是它，时间取中控收到的时刻），刷新最近上报、版本、来源地址；
-//!   只收在用线路机的在用入口端口，别的丢掉；服务端再按 `keep_round` 核一遍（三台以上全不通整轮不记）；
+//!   只收在用线路机的在用入口端口，别的丢掉。带 `all_down`（对照目标通、三台以上线路机全部连不上）的照记，行上标 all_down；
+//!   没作废的轮次刷新 `last_kept_at`（最近一次被采纳），作废的记下原因（`discard_reason`）：主来源超过 3 分钟没有被采纳的轮次按离线处理（probe_points/）；
 //! - `GET binary`：dist 里的 fleet-agent（一次性安装命令下载它；`upgrade` 时探测点自己下载替换）。
 //!
 //! 上报太频繁（同一个探测点 10 秒内第二份）回 429：正常每 30 秒一份。
@@ -82,13 +83,15 @@ async fn report(State(st): State<AppState>, ClientIp(ip): ClientIp, h: HeaderMap
         return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "too_many", format!("一份最多 {MAX_RESULTS} 条")));
     }
     let version: String = r.version.chars().take(64).collect();
-    // 刷新最近上报；离上一份不到 10 秒的不收（不刷新）。升级到位（报上来的程序 sha256 就是要它换的）清掉升级请求
+    // 刷新最近上报；离上一份不到 10 秒的不收（不刷新）。升级到位（报上来的程序 sha256 就是要它换的）清掉升级请求。
+    // 返回改之前的最近上报：自连接读旧版本（写成 `with o as (select … for update) … returning (select … from o)` 时，
+    // CTE 在 returning 里才求值，那一行已被本语句改过、看不到，恒为 null——每一份都会被当成「刚回来」）
     let prev: Option<(Option<OffsetDateTime>,)> = sqlx::query_as(
-        "with o as (select last_seen_at from probe_point where id = $1 for update)
-         update probe_point set last_seen_at = now(), last_ip = $2::inet, version = $3,
-                upgrade_sha256 = case when upgrade_sha256 = $4 then null else upgrade_sha256 end
-         where id = $1 and (last_seen_at is null or last_seen_at < now() - make_interval(secs => $5))
-         returning (select last_seen_at from o)",
+        "update probe_point p set last_seen_at = now(), last_ip = $2::inet, version = $3,
+                upgrade_sha256 = case when p.upgrade_sha256 = $4 then null else p.upgrade_sha256 end
+         from probe_point o
+         where p.id = $1 and o.id = p.id and (p.last_seen_at is null or p.last_seen_at < now() - make_interval(secs => $5))
+         returning o.last_seen_at",
     )
     .bind(p.id)
     .bind(ip.map(|i| i.to_string()))
@@ -101,8 +104,22 @@ async fn report(State(st): State<AppState>, ClientIp(ip): ClientIp, h: HeaderMap
         return Ok((StatusCode::TOO_MANY_REQUESTS, [(header::RETRY_AFTER, "10")], Json(json!({"error": {"code": "too_frequent", "message": "上报太频繁"}}))).into_response());
     };
     // 刚回来（之前离线或从没上报过）：它若是主来源，实际用的那一路就变了
-    let back = prev.is_none_or(|t| (OffsetDateTime::now_utc() - t).whole_seconds() >= super::OFFLINE_S);
-    let accepted = if p.enabled && r.discarded.is_none() { ingest(&st, p.id, &r).await? } else { 0 };
+    let now = OffsetDateTime::now_utc();
+    let back = prev.is_none_or(|t| st.report_gaps.silent_s(t, now) >= super::OFFLINE_S);
+    let kept = p.enabled && r.discarded.is_none();
+    let accepted = if kept { ingest(&st, p.id, &r).await? } else { 0 };
+    // 最近一次被采纳的轮次：采纳了就是现在；作废的记下原因。刚回来的从现在算起（离线那段不算作废，回来后又满 3 分钟都作废才算）。
+    // 停用的不测，不动它（启用时多半正离线，回来时从那一刻算起）。作废满 3 分钟、又被采纳时实际用的那一路会变，由 run_forever 发事件
+    if p.enabled {
+        let why: Option<String> = r.discarded.as_deref().map(|w| w.chars().take(200).collect());
+        sqlx::query("update probe_point set last_kept_at = case when $2 or $3 or last_kept_at is null then now() else last_kept_at end, discard_reason = $4 where id = $1")
+            .bind(p.id)
+            .bind(kept)
+            .bind(back)
+            .bind(&why)
+            .execute(&st.db)
+            .await?;
+    }
     if back {
         super::changed(&st);
     }
@@ -112,7 +129,7 @@ async fn report(State(st): State<AppState>, ClientIp(ip): ClientIp, h: HeaderMap
     Ok(Json(json!({"accepted": accepted, "interval_s": INTERVAL_S})).into_response())
 }
 
-/// 只收在用线路机的在用入口端口；服务端再按 keep_round 核一遍。返回写入的条数
+/// 只收在用线路机的在用入口端口。返回写入的条数
 async fn ingest(st: &AppState, id: Uuid, r: &ProbeReport) -> anyhow::Result<usize> {
     let live: HashMap<Uuid, HashSet<i32>> = reach::targets(&st.db).await?.into_iter().map(|(rid, _, ps)| (rid, ps.into_iter().collect())).collect();
     let mut seen = HashSet::new();
@@ -129,11 +146,10 @@ async fn ingest(st: &AppState, id: Uuid, r: &ProbeReport) -> anyhow::Result<usiz
             rtt_ms: x.rtt_ms.filter(|v| v.is_finite() && *v >= 0.0 && *v < 60_000.0).filter(|_| x.ok),
         })
         .collect();
-    let oks: Vec<bool> = samples.iter().map(|s| s.ok).collect();
-    if samples.is_empty() || !reach::keep_round(&oks, true) {
+    if samples.is_empty() {
         return Ok(0);
     }
-    reach::record(st, Some(id), OffsetDateTime::now_utc(), &samples).await?;
+    reach::record(st, Some(id), OffsetDateTime::now_utc(), &samples, r.all_down).await?;
     Ok(samples.len())
 }
 

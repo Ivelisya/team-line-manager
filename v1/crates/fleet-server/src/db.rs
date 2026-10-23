@@ -384,6 +384,13 @@ async fn rollup_hour(db: &PgPool, hour: OffsetDateTime) -> anyhow::Result<()> {
          select entry_id, $1, kind, count(*), count(*) filter (where ok), avg(latency_ms) filter (where ok)
          from probe_result where ts >= $1 and ts < $1 + interval '1 hour' group by entry_id, kind
          on conflict (entry_id, hour, kind) do update set total = excluded.total, ok = excluded.ok, latency_avg = excluded.latency_avg",
+        // 客户入口连通性（中控与各探测点，见 reach.rs）：原始记录由中控收到时写、时刻就是收到的时刻，不会迟到；这一小时没有原始记录（早过了保留期）时不动已有的汇总
+        "insert into relay_reach_hourly (relay_id, probe_point_id, hour, total, ok, rtt_avg, rtt_p50)
+         select relay_id, probe_point_id, $1, count(*), count(*) filter (where ok),
+                avg(rtt_ms) filter (where ok), percentile_cont(0.5) within group (order by rtt_ms) filter (where ok)
+         from relay_reach where ts >= $1 and ts < $1 + interval '1 hour' group by relay_id, probe_point_id
+         on conflict (relay_id, coalesce(probe_point_id, '00000000-0000-0000-0000-000000000000'::uuid), hour) do update
+           set total = excluded.total, ok = excluded.ok, rtt_avg = excluded.rtt_avg, rtt_p50 = excluded.rtt_p50",
     ];
     for s in q {
         sqlx::query(s).bind(hour).execute(db).await?;
@@ -392,9 +399,11 @@ async fn rollup_hour(db: &PgPool, hour: OffsetDateTime) -> anyhow::Result<()> {
 }
 
 /// 保留期清理（每小时一次）：已恢复超 180 天的告警、过期会话、超 1 天的登录失败记录、超 30 天没再登录成功的登录来源、
-/// 超 90 天的通知记录、结束超 90 天的静默、超 365 天的审计、超 2 天的中控到线路机连通性记录。访问记录（汇总、来源画像、画像异常告警）按面板里设的保留期删，
-/// 见 `access::prune`
-pub async fn cleanup_retention(db: &PgPool) -> anyhow::Result<()> {
+/// 超 90 天的通知记录、结束超 90 天的静默、超 365 天的审计、超 [retention] reach_days（默认 2 天）的客户入口连通性原始记录
+/// （小时汇总 relay_reach_hourly 一直留着，同 probe_hourly）。访问记录（汇总、来源画像、画像异常告警）按面板里设的保留期删，
+/// 见 `access::prune`；三网 PING 在 ping.rs 自己的循环里按 [retention] ping_days / ping_hourly_days 删
+pub async fn cleanup_retention(db: &PgPool, r: &crate::config::Retention) -> anyhow::Result<()> {
+    let reach = format!("delete from relay_reach where ts < now() - interval '{} days'", r.reach_days);
     let q = [
         ("告警", "delete from incident where state = 'resolved' and resolved_at < now() - interval '180 days'"),
         ("会话", "delete from session where expires_at < now()"),
@@ -403,7 +412,7 @@ pub async fn cleanup_retention(db: &PgPool) -> anyhow::Result<()> {
         ("通知记录", "delete from notify_log where ts < now() - interval '90 days'"),
         ("静默", "delete from silence where ends_at < now() - interval '90 days'"),
         ("审计", "delete from audit_log where ts < now() - interval '365 days'"),
-        ("中控到线路机的连通性", "delete from relay_reach where ts < now() - interval '2 days'"),
+        ("客户入口连通性", reach.as_str()),
     ];
     for (what, sql) in q {
         let n = sqlx::query(sql).execute(db).await.with_context(|| format!("清理{what}"))?.rows_affected();
