@@ -121,6 +121,8 @@ pub fn needed(method: &Method, path: &str) -> Need {
     match segs {
         ["api-keys", ..] | ["account", ..] | ["terminal", ..] => Need::Session,
         ["entries", _, "share"] if get => Need::Scope("secrets"),
+        // 批量取分享链接（POST 只为带一组 id）：同单个，只要 secrets
+        ["entries", "share"] => Need::Scope("secrets"),
         // 客户端订阅：列表、新建、改、轮换、删都是发凭据（同分享链接）
         ["client-subs", ..] => Need::Scope("secrets"),
         ["machines", _, "exec"] if !get => Need::Scope("exec"),
@@ -548,6 +550,7 @@ mod tests {
         assert_eq!(needed(&g, "/api/v1/machines"), Need::Scope("read"));
         assert_eq!(needed(&g, "/api/v1/entries/abc/share"), Need::Scope("secrets"));
         assert_eq!(needed(&g, "/entries/abc/share"), Need::Scope("secrets"));
+        assert_eq!(needed(&p, "/api/v1/entries/share"), Need::Scope("secrets"));
         assert_eq!(needed(&p, "/api/v1/client-subs/x/rotate"), Need::Scope("secrets"));
         assert_eq!(needed(&p, "/api/v1/entries/abc/actions"), Need::Scope("write"));
         assert_eq!(needed(&p, "/api/v1/machines/x/exec"), Need::Scope("exec"));
