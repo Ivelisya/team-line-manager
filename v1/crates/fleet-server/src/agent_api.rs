@@ -53,11 +53,14 @@ const AUTH_FAIL_REFILL_PER_S: f64 = 0.5;
 /// 两张表超过这么多项时清掉过期的、补满的（换着令牌、换着 IP 乱发的请求撑不大它们）
 const AUTH_MAP_MAX: usize = 4096;
 
+/// 令牌缓存的一项：(机器，None = 无效或已撤销; 查库的时刻)
+type TokenEntry = (Option<AgentId>, Instant);
+
 /// agent 令牌的鉴权缓存与失败限速（`AppState::agent_auth`）
 #[derive(Default)]
 pub struct AgentAuth {
-    /// 令牌哈希 → (机器，None = 无效或已撤销; 查库的时刻)
-    tokens: Mutex<HashMap<Vec<u8>, (Option<AgentId>, Instant)>>,
+    /// 令牌哈希 → 缓存项
+    tokens: Mutex<HashMap<Vec<u8>, TokenEntry>>,
     /// 来源 IP → (鉴权失败的余额, 上次补充的时刻)；取不到来源 IP 的共用 None
     fails: Mutex<HashMap<Option<IpAddr>, (f64, Instant)>>,
     /// 验证通过过的令牌哈希 → 机器：撤销时 `forget` 去掉，最多每台机器一项，不随乱发的请求变大
@@ -121,6 +124,8 @@ impl AgentAuth {
 
 /// 认 agent 令牌：先看缓存，没记着的查库（来源 IP 鉴权失败太多时不查、回 429）。
 /// 失败直接给出响应（401 / 429 带 Retry-After / 库不可用 503）
+// Err 就是要原样返回给客户端的整份响应，只在鉴权失败时才构造；装箱要改三处调用，不值得
+#[allow(clippy::result_large_err)]
 async fn authenticate(st: &AppState, h: &HeaderMap, ip: Option<IpAddr>) -> Result<AgentId, Response> {
     let tok = h
         .get("authorization")

@@ -533,6 +533,8 @@ pub type TrafficMap = Arc<HashMap<Uuid, Traffic>>;
 /// 机器 id → 按网卡计的今天 / 本月流量（组织时区，来自小时汇总表）
 type NicMap = Arc<HashMap<Uuid, NicTraffic>>;
 type Flows = (TrafficMap, NicMap);
+/// 上一份算成的视图：(算成的时刻, gen, rolled, 视图)
+type LastView = (Instant, u64, u64, Arc<Vec<MachineView>>);
 
 #[derive(Default)]
 pub struct LiveCache {
@@ -542,7 +544,7 @@ pub struct LiveCache {
     touched: AtomicU64,
     slot: tokio::sync::Mutex<Option<Snap>>,
     /// 最近一次算成的视图（同 `slot` 里的那份，另存一份不用拿锁就能读）：(算成的时刻, gen, rolled, 视图)
-    last: std::sync::Mutex<Option<(Instant, u64, u64, Arc<Vec<MachineView>>)>>,
+    last: std::sync::Mutex<Option<LastView>>,
     /// 视图从什么时候起一直算不出来（失败或超时）、最近一次的错误；算成一次就清掉。中控自检据此报 `central_view_stuck`
     failing: std::sync::Mutex<Option<(OffsetDateTime, String)>>,
     /// `GET /machines` 的响应体，与它序列化自的那一份视图（同一份视图只序列化一次）

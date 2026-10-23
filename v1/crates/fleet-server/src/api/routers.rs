@@ -283,7 +283,9 @@ pub async fn deploy_one(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPa
 /// 同一来源（IPv4 地址 / IPv6 的 /64）10 分钟最多取这么多次（令牌 32 字节随机，猜不到；这里只防刷库）
 const FETCH_LIMIT: u32 = 20;
 const FETCH_WINDOW: Duration = Duration::from_secs(600);
-static FETCHES: Mutex<Option<HashMap<Option<IpAddr>, (Instant, u32)>>> = Mutex::new(None);
+/// 来源 → (窗口起点, 窗口内取过的次数)
+type FetchMap = HashMap<Option<IpAddr>, (Instant, u32)>;
+static FETCHES: Mutex<Option<FetchMap>> = Mutex::new(None);
 
 pub(crate) fn rate_ok(ip: Option<IpAddr>) -> bool {
     let mut g = FETCHES.lock().unwrap_or_else(|e| e.into_inner());

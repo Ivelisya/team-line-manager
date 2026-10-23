@@ -20,7 +20,7 @@ use crate::state::{AppState, Event};
 use futures::FutureExt;
 use serde_json::json;
 use std::panic::AssertUnwindSafe;
-use std::path::PathBuf;
+use std::path::Path;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -154,7 +154,7 @@ fn remote_reason(o: &crate::ssh::Output) -> String {
 
 /// 在路由上跑一段脚本，要求输出里有 `marker`。失败时给 (原因, 脚本已经输出的)；输出为 None = 不知道脚本跑到了哪（ssh 超时：
 /// 已经收到的输出随之丢掉，见 ssh::exec），不能当成「什么都没输出」
-async fn remote(st: &AppState, id: Uuid, l: &Login, kh: &PathBuf, script: &str, marker: &str, what: &str) -> Result<(), (String, Option<String>)> {
+async fn remote(st: &AppState, id: Uuid, l: &Login, kh: &Path, script: &str, marker: &str, what: &str) -> Result<(), (String, Option<String>)> {
     let o = crate::ssh::exec(tunnel::direct(&st.cfg, id, l, kh), script, Duration::from_secs(60)).await.map_err(|e| (format!("{what}失败：{e:#}"), None))?;
     let o = tunnel::normalize(o, l.password.is_some());
     if o.code == 255 {
@@ -225,7 +225,7 @@ async fn run(st: &AppState, id: Uuid, l: &Login) -> Result<(), String> {
     res
 }
 
-async fn run_steps(st: &AppState, id: Uuid, l: &Login, kh: &PathBuf, key: &str) -> Result<(), String> {
+async fn run_steps(st: &AppState, id: Uuid, l: &Login, kh: &Path, key: &str) -> Result<(), String> {
     remote(st, id, l, kh, "echo fleet_login=ok\n", "fleet_login=ok", "登录路由").await.map_err(|e| e.0)?;
     // 上传密钥：先把新的隧道公钥、路由的主机公钥记进库（旧隧道密钥随之撤销，发过密钥的换个隧道端口），再把私钥送过去
     step(st, id, "上传密钥").await?;

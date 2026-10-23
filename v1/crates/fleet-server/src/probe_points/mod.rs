@@ -234,11 +234,14 @@ pub async fn run_forever(st: AppState) {
     }
 }
 
+/// 探测点表的一行：(id, 名字, 启用, 最后上报, 最后采纳, 丢弃原因)
+type ProbeRow = (Uuid, String, bool, Option<OffsetDateTime>, Option<OffsetDateTime>, Option<String>);
+
 /// 对齐一轮 probe_point_offline（incident.rs）：离线（超过 [`OFFLINE_S`] 没上报），或在线但超过 [`OFFLINE_S`] 没有一轮检查被采纳。
 /// 都扣掉中控收不到上报的时段。`now` 由调用方给（测试可以快进）
 pub async fn check_once(st: &AppState, now: OffsetDateTime) -> anyhow::Result<()> {
     let open = incident::firing(&st.db, Engine::Probe).await?;
-    let rows: Vec<(Uuid, String, bool, Option<OffsetDateTime>, Option<OffsetDateTime>, Option<String>)> =
+    let rows: Vec<ProbeRow> =
         sqlx::query_as("select id, name, enabled, last_seen_at, last_kept_at, discard_reason from probe_point").fetch_all(&st.db).await?;
     let set = setting(&st.db).await?;
     let names: HashMap<Uuid, (String, bool)> = rows.iter().map(|r| (r.0, (r.1.clone(), r.2))).collect();

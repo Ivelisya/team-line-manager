@@ -284,7 +284,7 @@ pub async fn upgrade(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<
 /// `{primary: "central" | 探测点 id, primary_name, central_enabled, effective: {state, label, probe_point_id, primary_label, primary_issue}}`
 async fn source_view(st: &AppState) -> ApiResult<Value> {
     let s = probe_points::setting(&st.db).await?;
-    let eff = probe_points::effective(&st).await?;
+    let eff = probe_points::effective(st).await?;
     let name: Option<String> = match s.primary {
         Some(id) => sqlx::query_scalar("select name from probe_point where id = $1").bind(id).fetch_optional(&st.db).await?,
         None => None,

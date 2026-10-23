@@ -458,7 +458,9 @@ async fn reach_hourly_rollup_and_windows() {
         .unwrap();
     sqlx::query("insert into rollup_dirty (hour, touched_at) values (date_trunc('hour', now()) - interval '3 hours', now())").execute(db).await.unwrap();
     fleet_server::db::rollup_hours(db).await.unwrap();
-    let rows: Vec<(Option<Uuid>, i32, i32, Option<f32>, Option<f32>)> =
+    // 小时汇总行：(探测点，总数，成功数，平均 rtt，p50 rtt)；探测点为 None 的是不经探测点的那一行
+    type HourlyRow = (Option<Uuid>, i32, i32, Option<f32>, Option<f32>);
+    let rows: Vec<HourlyRow> =
         sqlx::query_as("select probe_point_id, total, ok, rtt_avg, rtt_p50 from relay_reach_hourly where hour = date_trunc('hour', now()) order by probe_point_id nulls first").fetch_all(db).await.unwrap();
     assert_eq!(rows, [(None, 2, 2, None, None), (Some(id), 3, 2, Some(160.0), Some(160.0))]);
     assert_eq!(t.count("select count(*) from relay_reach_hourly").await, 3);
