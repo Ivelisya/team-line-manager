@@ -4,7 +4,7 @@ import * as React from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowRight } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
-import { maintOwner, useAddEntry, useEndMaintenance, usePatchMachine, useRelayChoices, useSilences, useTeams, useTune } from '@/lib/queries';
+import { maintOwner, useAddEntry, useEndMaintenance, usePatchMachine, useRelayChoices, useSilences, useSsRefresh, useTeams, useTune } from '@/lib/queries';
 import { openMaint, openUpgrade } from '@/lib/nodeActions';
 import { useDrawer } from '@/lib/drawer';
 import { entryBad, errText, reachWho, recycleOn } from '@/lib/derive';
@@ -49,6 +49,7 @@ export function ManageTab({ m, onClosed }: { m: MachineView; onClosed: () => voi
           {ipNodes && <IpNodesRow m={m} />}
           {m.agent && active && <AgentRow m={m} />}
           {m.tune && active && <TuneRow m={m} />}
+          {m.kind === 'vps' && !m.host_machine && active && m.entries.length > 0 && <SsRefreshRow m={m} />}
           {active && <MaintRow m={m} />}
         </div></Section>
       )}
@@ -267,6 +268,25 @@ function TuneRow({ m }: { m: MachineView }) {
       <ConfirmDialog open={ask} onOpenChange={setAsk} title={`${t.profile ? '重新调优' : '调优'} · ${m.name}`} confirmLabel="开始调优" confirmDisabled={!!m.active_job}
         description="不会重启代理服务，也不会断开客户连接。可能重启一次系统日志服务"
         onConfirm={async () => { await tune.mutateAsync(m.id); toast.ok(`已提交「${m.name}」的调优作业`); }} />
+    </>
+  );
+}
+
+/** SS 配置：把中控当前的 ssserver 配置（含出站目标黑名单）重新推到这台节点（作业 ss_refresh）；配置有变化才重启 ssserver，同机 IP 节点的实例一起刷 */
+function SsRefreshRow({ m }: { m: MachineView }) {
+  const refresh = useSsRefresh();
+  const [ask, setAsk] = React.useState(false);
+  return (
+    <>
+      <div className="manage-row">
+        <div>
+          <div className="t">SS 配置 <InfoTip text={`重新下发中控当前的 ssserver 配置（含出站目标黑名单）\n配置没有变化就不重启${m.ip_nodes.length > 0 ? '\n同机 IP 节点的 ssserver 一起刷' : ''}\n完成后经入口验收出口`} /></div>
+        </div>
+        <Button variant="secondary" disabled={!!m.active_job} onClick={() => setAsk(true)}>重新下发…</Button>
+      </div>
+      <ConfirmDialog open={ask} onOpenChange={setAsk} title={`重新下发 SS 配置 · ${m.name}`} confirmLabel="开始下发" confirmDisabled={!!m.active_job}
+        description="配置有变化时会重启 ssserver，该节点的连接会断开几秒"
+        onConfirm={async () => { await refresh.mutateAsync(m.id); toast.ok(`已提交「${m.name}」的 SS 配置下发作业`); }} />
     </>
   );
 }

@@ -141,7 +141,7 @@ pub async fn audit(a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<A
 /// 所有写审计的动作（git grep 'audit(' 核对过）；新增动作时补这里和 audit_text。按标题搜索时在这里面找。
 /// machine.restore、restore.probe 是已删掉的「恢复已退役机器」留下的旧记录，标题照样显示
 const AUDIT_ACTIONS: &[&str] = &[
-    "machine.provision", "machine.retire", "machine.recycle", "recycle.import", "machine.purge", "machine.rename", "machine.update", "machine.restore", "machine.replace", "machine.tune", "subscription.set", "renewal",
+    "machine.provision", "machine.retire", "machine.recycle", "recycle.import", "machine.purge", "machine.rename", "machine.update", "machine.restore", "machine.replace", "machine.tune", "machine.ss_refresh", "subscription.set", "renewal",
     "team.create", "team.update", "team.delete", "team.renumber", "provider.create", "provider.update", "provider.delete", "plan.create", "plan.update", "plan.delete", "entry.enable",
     "entry.disable", "entry.rotate", "entry.share", "entry.add", "entry.move", "entry.repoint", "relay.evacuate", "job.retry", "job.cancel", "silence.create",
     "silence.delete", "incident.ack", "restore.probe", "agent.upgrade", "notify.create", "notify.update", "notify.delete", "exec", "machine.logs", "server.logs", "apikey.create",
@@ -191,6 +191,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "machine.restore" => "恢复机器",
         "machine.replace" => "替换节点",
         "machine.tune" => "系统调优",
+        "machine.ss_refresh" => "重新下发 SS 配置",
         "job.retry" => "重试作业",
         "job.cancel" => "取消作业",
         // 标记为维护的叫维护窗口，否则叫静默（同界面）
@@ -267,6 +268,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "machine.purge" => s("name"),
         "machine.tune" if d["rollback"] == true => format!("{} · 撤销调优", s("name")),
         "machine.tune" => format!("{} · {}", s("name"), s("profile")),
+        "machine.ss_refresh" => s("name"),
         "renewal" => {
             let auto = if d["auto"] == true { "（自动续费）" } else { "" };
             format!("到期 {} → {}{auto}", d["old_due"].as_str().unwrap_or("?"), d["new_due"].as_str().unwrap_or("?"))

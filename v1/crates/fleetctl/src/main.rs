@@ -491,6 +491,19 @@ enum Cmd {
         #[arg(long)]
         follow: bool,
     },
+    /// 重新下发节点的 SS 配置（升级中控后把新的 ssserver 配置推到存量节点，例如出站目标黑名单）：配置有变化才重启 ssserver（该节点的连接断开几秒），同机 IP 节点随宿主机一起刷，最后经入口验收出口。
+    /// 机器名（可逗号分隔多台），或 --team / --all（只含在用的 VPS 节点）：先做一台并跟到结束，成功后其余逐台提交，有进行中作业的跳过并列出；--all 要确认（--yes）
+    SsRefresh {
+        machine: Option<String>,
+        #[arg(long, conflicts_with_all = ["machine", "all"])]
+        team: Option<String>,
+        #[arg(long, conflicts_with = "machine")]
+        all: bool,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        follow: bool,
+    },
     /// 入口列表（可只看某台机器相关的）
     Entries { machine: Option<String> },
     /// 输出入口的分享链接（vless://…；需要 secrets 权限，记审计）
@@ -957,6 +970,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         },
         Cmd::UpgradeAgent { machine, all, yes, follow } => ops::upgrade_agent(x, machine.as_deref(), all, yes, follow),
         Cmd::Tune { machine, team, all, rollback, yes, follow } => ops::tune(x, machine.as_deref(), team.as_deref(), all, rollback, yes, follow),
+        Cmd::SsRefresh { machine, team, all, yes, follow } => ops::ss_refresh(x, machine.as_deref(), team.as_deref(), all, yes, follow),
         Cmd::Entries { machine } => cmds::entries(x, machine.as_deref()),
         Cmd::Share { entry } => ops::share(x, &entry),
         Cmd::Sub { cmd } => match cmd {

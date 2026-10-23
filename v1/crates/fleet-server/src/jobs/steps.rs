@@ -59,13 +59,15 @@ impl Ctx<'_> {
     fn target_id(&self) -> anyhow::Result<Uuid> { self.job.target_id.ok_or_else(|| anyhow!("作业没有目标机器")) }
 
     /// 目标机器。同机 IP 节点的 ip / ssh_port 取宿主机的：步骤里的 SSH 都自动登录宿主机
-    async fn machine(&self) -> anyhow::Result<M> {
+    async fn machine(&self) -> anyhow::Result<M> { self.machine_of(self.target_id()?).await }
+
+    async fn machine_of(&self, id: Uuid) -> anyhow::Result<M> {
         Ok(sqlx::query_as(
             "select m.id, m.kind::text kind, host(coalesce(h.primary_ip, m.primary_ip)) ip, coalesce(h.ssh_port, m.ssh_port) ssh_port,
                     m.lifecycle::text lifecycle, m.host_id, host(m.primary_ip) own_ip, host(m.bind_ip) bind_ip
              from machine m left join machine h on h.id = m.host_id where m.id = $1",
         )
-        .bind(self.target_id()?)
+        .bind(id)
         .fetch_one(&self.st.db)
         .await?)
     }
@@ -139,6 +141,7 @@ pub async fn run(c: &Ctx<'_>, key: &str) -> anyhow::Result<Outcome> {
         "converge" => converge_node(c).await,
         "converge_relay" => converge_relay(c).await,
         "tune" => tune_step(c).await,
+        "ss" => ss_refresh(c).await,
         "agent" => agent(c).await,
         "wait_report" => wait_report(c).await,
         "attach" => attach(c).await,
@@ -355,6 +358,72 @@ fn check_nft(out: &Output, allow: &str, table: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// 渲染节点 `m` 的 ssserver 实例脚本（上架收敛和作业 `ss_refresh` 共用）：SS 密码等从库里取，放行名单 = 它所挂线路机的 IP（含 `extra`）。
+/// 返回 (实例, 放行名单, 脚本)
+async fn render_ss(c: &Ctx<'_>, m: &M, extra: Option<Uuid>) -> anyhow::Result<(SsInst, String, String)> {
+    let (method, secret): (Option<String>, Vec<u8>) = sqlx::query_as("select method, secret_enc from node_outbound where machine_id = $1")
+        .bind(m.id)
+        .fetch_one(&c.st.db)
+        .await?;
+    let password = c.st.secrets.open_str(&secret)?;
+    let allow = relay_ips_for(c, m.id, extra).await?;
+    let inst = c.ss_inst(m).await?;
+    let script = vars(&[
+        ("SS_PORT", &inst.port.to_string()),
+        ("SS_METHOD", method.as_deref().unwrap_or(crate::meta::SS_METHOD)),
+        ("SS_PASSWORD", &password),
+        ("ALLOW", &allow),
+    ]) + &scripts::node_ss(&inst);
+    Ok((inst, allow, script))
+}
+
+/// 跑 `render_ss` 渲染出的脚本并校验：脚本成功、nft 放行名单对得上、ssserver 在监听
+async fn run_ss(c: &Ctx<'_>, t: &Target, inst: &SsInst, allow: &str, script: &str) -> anyhow::Result<Output> {
+    let out = t.run(script, Duration::from_secs(120)).await?;
+    if !out.ok() {
+        return Err(out.fail("配置 ssserver / 防火墙失败"));
+    }
+    check_nft(&out, allow, &inst.table())?;
+    if out.kv("ss") != Some("listening") {
+        return Err(remote(format!("ssserver 没有起来：{}", out.stdout.trim())));
+    }
+    warn_linklocal_dns(c, &out, "ssserver").await;
+    Ok(out)
+}
+
+/// 作业 `ss_refresh` 的下发步骤：在目标节点（宿主机）上跑与上架同一份 node_ss 脚本，同机的所有同机 IP 节点实例一起刷（共用 fleet.acl）。
+/// 不做 SSH 加固、系统调优、装 agent、推 ssserver 程序。脚本幂等：配置、出站黑名单、单元都没变就不重启，变了重启一次（断该实例现有连接几秒）。
+/// 没有入口的同机 IP 节点（没有线路机放行名单）跳过。记下要验收的入口（每个实例一条启用的入口）到参数 `entry_ids`
+async fn ss_refresh(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
+    let host = c.machine().await?;
+    let t = c.ssh(&host, None);
+    let mut ids = vec![host.id];
+    let ip_nodes: Vec<(Uuid,)> = sqlx::query_as("select id from machine where host_id = $1 and lifecycle = 'active' order by number, id").bind(host.id).fetch_all(&c.st.db).await?;
+    ids.extend(ip_nodes.into_iter().map(|r| r.0));
+    let (mut results, mut entries) = (vec![], vec![]);
+    for id in ids {
+        let m = c.machine_of(id).await?;
+        let has_entry: bool = sqlx::query_scalar("select exists (select 1 from entry where node_id = $1 and lifecycle <> 'removed')").bind(id).fetch_one(&c.st.db).await?;
+        let what = if m.host_id.is_none() { "本机实例".to_string() } else { format!("同机 IP 节点 {}", m.own_ip) };
+        if !has_entry {
+            if m.host_id.is_none() {
+                bail!("这台节点没有入口（没有线路机在连它），没有可放行的线路机 IP");
+            }
+            c.warn(format!("{what}没有入口，跳过")).await;
+            continue;
+        }
+        let (inst, allow, script) = render_ss(c, &m, None).await?;
+        let out = run_ss(c, &t, &inst, &allow, &script).await?;
+        let restarted = out.kv("ss_restarted") == Some("1");
+        c.log(format!("{what}（端口 {}）：{}", inst.port, if restarted { "配置有变化，已重启 ssserver" } else { "配置没有变化，ssserver 没有重启" })).await;
+        results.push(json!({"port": inst.port, "ip": m.own_ip, "restarted": restarted, "nft_relays": out.kv("nft_relays")}));
+        let eid: Option<Uuid> = sqlx::query_scalar("select id from entry where node_id = $1 and lifecycle = 'active' order by created_at desc, id desc limit 1").bind(id).fetch_optional(&c.st.db).await?;
+        entries.extend(eid);
+    }
+    c.set_params(json!({"entry_ids": entries})).await?;
+    Ok(Outcome::Done(json!({"instances": results})))
+}
+
 async fn converge_node(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let m = c.machine().await?;
     let t = c.ssh(&m, None);
@@ -371,28 +440,8 @@ async fn converge_node(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         tuned = Some(apply_tune(c, &m, &t).await?);
     }
     let pushed = t.push(&c.dist("ssserver"), "/usr/local/bin/ssserver", "0755", Duration::from_secs(180)).await?;
-    let (method, secret): (Option<String>, Vec<u8>) = sqlx::query_as("select method, secret_enc from node_outbound where machine_id = $1")
-        .bind(m.id)
-        .fetch_one(&c.st.db)
-        .await?;
-    let password = c.st.secrets.open_str(&secret)?;
-    let allow = relay_ips_for(c, m.id, c.param_uuid("relay_id").ok()).await?;
-    let inst = c.ss_inst(&m).await?;
-    let script = vars(&[
-        ("SS_PORT", &inst.port.to_string()),
-        ("SS_METHOD", method.as_deref().unwrap_or(crate::meta::SS_METHOD)),
-        ("SS_PASSWORD", &password),
-        ("ALLOW", &allow),
-    ]) + &scripts::node_ss(&inst);
-    let out = t.run(&script, Duration::from_secs(120)).await?;
-    if !out.ok() {
-        return Err(out.fail("配置 ssserver / 防火墙失败"));
-    }
-    check_nft(&out, &allow, &inst.table())?;
-    if out.kv("ss") != Some("listening") {
-        return Err(remote(format!("ssserver 没有起来：{}", out.stdout.trim())));
-    }
-    warn_linklocal_dns(c, &out, "ssserver").await;
+    let (inst, allow, script) = render_ss(c, &m, c.param_uuid("relay_id").ok()).await?;
+    let out = run_ss(c, &t, &inst, &allow, &script).await?;
     if pushed {
         // 只重启这台节点自己的实例：同一台机器上别的 ssserver（宿主机的、别的同机 IP 节点的）下次重启时才换上新程序
         t.run(&format!("systemctl restart {}", inst.svc()), Duration::from_secs(30)).await?;
@@ -859,8 +908,29 @@ async fn wait_applied(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     Ok(if a >= g { Outcome::Done(json!({"generation": a})) } else { Outcome::Wait(EVENT_POLL_S) })
 }
 
+/// 出口验收：参数 `entry_id` 的入口，经它的出口探测在本步开始之后至少有一次成功。
+/// 作业 `ss_refresh` 的参数是 `entry_ids`（下发步骤记下的、每个实例一条入口），要全部通过；一条都没有（没有启用的入口）时跳过。
+/// 它失败不回滚：这次只多了出站黑名单等配置，写进作业日志
 async fn verify(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
-    let eid = c.param_uuid("entry_id")?;
+    let Some(ids) = c.job.params["entry_ids"].as_array() else { return verify_entry(c, c.param_uuid("entry_id")?).await };
+    if ids.is_empty() {
+        return Ok(Outcome::Skipped("没有启用的入口，无法经入口验收出口".into()));
+    }
+    let mut done = vec![];
+    for id in ids.iter().filter_map(|v| v.as_str().and_then(|s| Uuid::try_parse(s).ok())) {
+        match verify_entry(c, id).await {
+            Ok(Outcome::Done(v)) => done.push(v),
+            Ok(o) => return Ok(o),
+            Err(e) => {
+                c.warn("出口验收没有通过。不会自动回滚：这次下发只改了 ssserver 配置（加了出站目标黑名单等），已经生效；先排查线路机到节点的链路，没问题再重新下发").await;
+                return Err(e);
+            }
+        }
+    }
+    Ok(Outcome::Done(json!({"entries": done})))
+}
+
+async fn verify_entry(c: &Ctx<'_>, eid: Uuid) -> anyhow::Result<Outcome> {
     let row: Option<(bool, Option<f32>, Option<String>)> = sqlx::query_as(
         "select ok, latency_ms, detail from probe_result where entry_id = $1 and kind = 'egress' and ts >= $2 order by ts desc limit 1",
     )

@@ -1013,6 +1013,20 @@ R('POST', '/machines/([^/]+)/tune', ({ params }) => {
   emit({ type: 'machines' });
   return { machine_id: m.id, name: m.name, job_id: job.id };
 });
+R('POST', '/machines/([^/]+)/ss-refresh', ({ params }) => {
+  const m = machine(params[0]);
+  if (m.host_machine) throw bad(`同机 IP 节点和宿主机共用 ssserver 的黑名单文件：对宿主机「${m.host_machine.name}」下发，同机的实例一起刷`, 409, 'conflict');
+  if (m.kind === 'relay') throw bad('线路机上没有落地节点的 ssserver', 409, 'conflict');
+  if (m.kind === 'proxy') throw bad('家宽代理没有我们的 ssserver', 409, 'conflict');
+  if (m.lifecycle !== 'active') throw bad('只有在用的节点能下发', 409, 'conflict');
+  if (m.active_job) throw bad('这台机器有进行中的作业，请等它结束', 409, 'conflict');
+  const job = newJob('ss_refresh', { id: m.id, name: m.name }, [['ss', '下发 SS 配置'], ['verify', '出口验收']]);
+  job.cancellable = false;
+  m.active_job = { id: job.id, kind: 'ss_refresh', state: 'running' };
+  drive(job, 2500, () => { m.active_job = null; }, [{ instances: [{ port: 8388, ip: null, restarted: true, nft_relays: '203.0.113.7' }] }, { entries: [{ latency_ms: 142, egress_ip: '198.51.100.20' }] }]);
+  emit({ type: 'machines' });
+  return { machine_id: m.id, name: m.name, job_id: job.id };
+});
 R('POST', '/agents/upgrade', () => {
   // 同中控：线路机在前，第一台做金丝雀；线路机一台等前一台，VPS 节点与家宽代理都等最后一台线路机（没有线路机时等金丝雀），之后并发
   const ms = db.machines.filter((m) => m.lifecycle === 'active' && m.agent && !m.host_machine && !m.active_job)

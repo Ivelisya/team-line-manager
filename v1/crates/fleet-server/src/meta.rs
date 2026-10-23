@@ -231,6 +231,7 @@ pub const JOB_KINDS: Labels = &[
     ("upgrade_agent", "升级 agent"),
     ("replace", "替换节点"),
     ("tune", "系统调优"),
+    ("ss_refresh", "重新下发 SS 配置"),
     ("repoint", "改出口指向"),
 ];
 

@@ -84,6 +84,7 @@ pub fn router() -> Router<AppState> {
         .route("/recycle-bin/{id}", get(recycle::get_one))
         .route("/machines/{id}/upgrade-agent", post(machines::upgrade_agent))
         .route("/machines/{id}/tune", post(machines::tune))
+        .route("/machines/{id}/ss-refresh", post(machines::ss_refresh))
         .route("/agents/upgrade", post(machines::upgrade_all_agents))
         .route("/machines/{id}/subscription", axum::routing::put(machines::put_subscription))
         .route("/machines/{id}/subscription/preview", post(machines::preview_subscription))

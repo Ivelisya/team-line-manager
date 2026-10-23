@@ -187,6 +187,7 @@ fleetctl entry add-direct <线路机> --yes [--follow]          # 线路机直�
 fleetctl upgrade-agent <机器> | --all --yes                # 重启 agent；--all 先升一台金丝雀，成功后线路机逐台、VPS 节点并发；排队中的可 fleetctl cancel <作业>
 fleetctl tune <机器>[,<机器>…] | --team <团队> | --all [--yes] [--follow]   # 重做系统调优（上架时已自动做；档 tune-v2：TCP 缓冲上限按套餐带宽、客户连接 RTT、内存推导，任何参数不往小改）：内核网络参数、BBR、日志体积上限、时间同步，不重启 ss/Xray、不断连接；--team/--all 先做一台（线路机优先）并跟到结束，成功后其余逐台提交，有进行中作业的跳过并列出；--all 要 --yes；同机 IP 节点、家宽代理 409；`ls` 的「调优」列看谁是旧档（tune-v1）/ 未调优，`show` 的「调优推导」看缓冲上限怎么来的
 fleetctl tune <机器>[,<机器>…] --rollback --yes [--follow]   # 撤销调优：按机器上第一次调优前记的原值写回、删掉调优的 sysctl 配置（没有原值快照的机器作业失败，什么都不改）；先向用户确认
+fleetctl ss-refresh <机器>[,<机器>…] | --team <团队> | --all [--yes] [--follow]   # 重新下发节点的 SS 配置：升级中控后把新的 ssserver 配置（如出站目标黑名单 fleet.acl）推到存量节点；配置有变化才重启 ssserver（该节点连接断开几秒），同机 IP 节点随宿主机一起刷，做完经入口验收出口（失败不自动回滚）；--team/--all 只含在用的 VPS 节点，先做一台并跟到结束，成功后其余逐台提交，有进行中作业的跳过并列出；--all 要 --yes；线路机、家宽代理、同机 IP 节点单独下发、没有入口的节点 409
 fleetctl renumber <团队> --yes                             # 不加 --yes 只预览
 fleetctl move <节点> --to <线路机> --yes [--from <线路机>] [--no-routers] [--follow]   # 换线路机：新入口验收后改软路由出口（同替换，失败全部换回、旧入口不摘）、再摘旧入口，不断网；分享链接会变，完成后 fleetctl share <节点> 取新链接。不加 --yes 先看预览
 fleetctl evacuate <线路机> --to <线路机> --yes [--no-routers] [--follow]          # 搬空线路机（退役前）：每个在用节点一个换线路机作业，软路由出口跟着改；作业并行建新入口，都验收完后由一个「带头」的一起改，每台路由只改一次、重启一次（任何一台失败全部换回、旧入口都不摘，同批一起失败，修好后都重试）。预览写「软路由 X 的 N 个节点的出口一起改，OpenClash 重启 1 次（断开它上面全部连接）」，确认前告诉用户
