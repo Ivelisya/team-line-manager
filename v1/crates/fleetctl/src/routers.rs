@@ -10,6 +10,9 @@ use serde_json::{json, Value};
 use std::io::BufRead;
 use std::time::Duration;
 
+/// 速率：路由还没算出来（null）显示「—」，不是 0
+fn rate(v: &Value, ptr: &str) -> String { num(v, ptr).map_or_else(|| "—".to_string(), bps) }
+
 fn state_cn(s: &str) -> &str {
     match s {
         "pending" => "等待接入",
@@ -86,7 +89,7 @@ fn row(r: &Value) -> Vec<String> {
     };
     let wan = match s.get("wan").filter(|w| w.is_object()) {
         Some(w) if w["up"] == false => "断开".to_string(),
-        Some(w) => format!("↓{} ↑{}", bps(num(w, "/rx_bps").unwrap_or(0.0)), bps(num(w, "/tx_bps").unwrap_or(0.0))),
+        Some(w) => format!("↓{} ↑{}", rate(w, "/rx_bps"), rate(w, "/tx_bps")),
         None => "-".into(),
     };
     let mut state = state_cn(&st(r, "/state")).to_string();
@@ -181,7 +184,7 @@ fn human_show(d: &Value) -> String {
             (true, false) => "已启用但没在运行",
             (false, false) => "未启用",
         };
-        let mut s = format!("{run} · {} · 模式 {} · {} 个连接 · ↑{} ↓{}", st(oc, "/version"), st(oc, "/mode"), st(oc, "/conns"), bps(num(oc, "/up_bps").unwrap_or(0.0)), bps(num(oc, "/down_bps").unwrap_or(0.0)));
+        let mut s = format!("{run} · {} · 模式 {} · {} 个连接 · ↑{} ↓{}", st(oc, "/version"), st(oc, "/mode"), st(oc, "/conns"), rate(oc, "/up_bps"), rate(oc, "/down_bps"));
         for k in ["error", "config_error"] {
             if let Some(e) = oc[k].as_str() {
                 s.push_str(&format!(" · {e}"));
@@ -201,7 +204,7 @@ fn human_show(d: &Value) -> String {
                     if i["up"] == true { "up".into() } else { "down".into() },
                     st(i, "/proto"),
                     st(i, "/ip"),
-                    format!("↓{} ↑{}", bps(num(i, "/rx_bps").unwrap_or(0.0)), bps(num(i, "/tx_bps").unwrap_or(0.0))),
+                    format!("↓{} ↑{}", rate(i, "/rx_bps"), rate(i, "/tx_bps")),
                 ]
             })
             .collect();
@@ -225,7 +228,7 @@ fn human_show(d: &Value) -> String {
                     alive,
                     st(e, "/conns"),
                     st(e, "/clients"),
-                    format!("↓{} ↑{}", bps(num(e, "/down_bps").unwrap_or(0.0)), bps(num(e, "/up_bps").unwrap_or(0.0))),
+                    format!("↓{} ↑{}", rate(e, "/down_bps"), rate(e, "/up_bps")),
                 ]
             })
             .collect();
@@ -236,8 +239,8 @@ fn human_show(d: &Value) -> String {
             .iter()
             .map(|c| {
                 let ex = c["exits"].as_array().map(|a| a.iter().map(|x| format!("{}×{}", st(x, "/name"), st(x, "/conns"))).collect::<Vec<_>>().join(" ")).unwrap_or_default();
-                let rate = format!("↓{} ↑{}", bps(num(c, "/down_bps").unwrap_or(0.0)), bps(num(c, "/up_bps").unwrap_or(0.0)));
-                vec![st(c, "/ip"), st(c, "/hostname"), st(c, "/mac"), if c["online"] == true { "在线".into() } else { "离线".into() }, st(c, "/conns"), rate, ex]
+                let speed = format!("↓{} ↑{}", rate(c, "/down_bps"), rate(c, "/up_bps"));
+                vec![st(c, "/ip"), st(c, "/hostname"), st(c, "/mac"), if c["online"] == true { "在线".into() } else { "离线".into() }, st(c, "/conns"), speed, ex]
             })
             .collect();
         out.push_str(&format!("\n\n客户端\n{}", table::render(&["IP", "主机名", "MAC", "状态", "连接", "速率", "出口"], &rows)));
@@ -443,6 +446,15 @@ mod tests {
         });
         assert_eq!(row(&r), ["R", "团队2", "离线（部署失败）", "4/5（1 个不一致）", "3", "3%", "25%", "↓40.0 Kbps ↑12.0 Kbps", "2026-10-22 16:10:54", "01a162a9-39c4"]);
         assert_eq!(row(&json!({"id": "x", "name": "P", "state": "pending", "summary": null}))[2..5], ["等待接入", "-", "-"]);
+    }
+
+    /// 路由还没算出来的速率（null）显示「—」，不是 0 bps
+    #[test]
+    fn null_rate_shows_dash() {
+        let wan = |w: Value| row(&json!({"id": "x", "name": "R", "state": "online", "summary": {"wan": w}}))[7].clone();
+        assert_eq!(wan(json!({"up": true, "rx_bps": null, "tx_bps": null})), "↓— ↑—");
+        assert_eq!(wan(json!({"up": true, "rx_bps": 0, "tx_bps": 1500})), "↓0 bps ↑1.5 Kbps");
+        assert_eq!(rate(&json!({"down_bps": null}), "/down_bps"), "—");
     }
 
     #[test]

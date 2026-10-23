@@ -93,6 +93,9 @@ export function monthFlowTip(m: MachineView) {
  *  和认不出的原样留着。片段只吃 ASCII 字符，不会把前缀一起吞掉。
  *  旧 agent 报的是单词（「出口不通：timeout；refused」），新 agent 自己写中文（fleet-agent probe.rs 的 reason_cn），两种都认 */
 const ERR_ZH: [RegExp, string | ((m: string, ...g: string[]) => string)][] = [
+  // ssh 自己的报错行（原文在服务端日志里）：本机端口是软路由的反向隧道，被拒绝 = 隧道没连上来；其它地址写成「连不上 地址:端口」，后面的英文由下面几条接着换。先于下面各条（它们会先把 refused 换掉）
+  [/ssh: connect to host (?:127\.0\.0\.1|localhost) port (\d+): (?:connection refused|连接被拒绝)/gi, (_, port) => `隧道没连上（中控本机的隧道端口 ${port} 没有监听）`],
+  [/ssh: connect to host (\S+) port (\d+): ?/gi, (_, host, port) => `连不上 ${host}:${port}：`],
   [/\b(?:connection )?(?:timed out|timeout) during (?:ssh )?banner exchange\b|\bbanner exchange\b/gi, 'SSH 握手超时'], // 先于下面的「超时」，不留半句中文半句英文
   [/\b(?:timed out|timeout)(?: after)? (\d+(?:\.\d+)?) ?s\b/gi, (_, n) => `超时 ${n} 秒`],
   [/\b(?:i\/o )?(?:timed out|timeout)\b/gi, '超时'],

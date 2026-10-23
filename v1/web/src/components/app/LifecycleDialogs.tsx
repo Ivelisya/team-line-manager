@@ -21,7 +21,8 @@ import { RetireDialog } from './RetireDialog';
 const SHARE_WARN = <Note tone="warn">换线后分享链接会变 <InfoTip text="需要把新的分享链接发给客户端；作业完成的通知里有「复制新分享链接」。" /></Note>;
 
 /** 「同时改软路由」：新入口验收后、摘旧入口前改，失败全部换回、旧入口不摘 */
-function RoutersCheck({ checked, onChange, none }: { checked: boolean; onChange: (v: boolean) => void; none?: boolean }) {
+function RoutersCheck({ checked, onChange, none, failed }: { checked: boolean; onChange: (v: boolean) => void; none?: boolean; failed?: boolean }) {
+  if (failed) return <div className="hint">预览失败，看不出有没有软路由出口指向这个入口（原因见下）</div>;
   if (none) return <div className="hint">没有软路由出口指向这个入口</div>;
   return <CheckRow checked={checked} onChange={onChange}>同时改软路由 <InfoTip text={'软路由上指向旧入口的出口改成新入口（逐台备份、改完重启 OpenClash 并测延迟，失败全部换回、旧入口不摘）。\n不改的话，这些出口在旧入口摘掉后就断了。'} /></CheckRow>;
 }
@@ -81,7 +82,7 @@ export const MoveDialog = resetOnOpen(function MoveDialog({ m, open, onOpenChang
           <Field label="目标线路机" info="目标必须是在用的线路机，且这台节点在上面还没有入口" hint={opts.length === 0 ? '没有可选的线路机' : undefined}>
             <Select value={to} onChange={setTo} options={opts} placeholder="选择线路机" />
           </Field>
-          <RoutersCheck checked={routers} onChange={setRouters} none={!!pv && pv.routers.length === 0} />
+          <RoutersCheck checked={routers} onChange={setRouters} none={!!pv && pv.ok && pv.routers.length === 0 && pv.warnings.length === 0} failed={!!pv && !pv.ok && pv.routers.length === 0} />
         </div>
       )}
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()}>预览失败：</ErrorNote>}

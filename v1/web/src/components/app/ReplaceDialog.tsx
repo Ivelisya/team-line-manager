@@ -78,14 +78,11 @@ function useSettled<T>(v: T, ms: number): T {
 
 const ROUTER_STATE: Record<string, string> = { offline: '离线', pending: '未接入' };
 
-/** 出口的映射失败原因去掉「软路由 X 的出口 Y：」的前缀（软路由与出口就在这一行的前一格） */
-const exitReason = (error: string) => error.replace(/^[^：]*：/, '');
-
-/** 阻断原因条（替换、换线路机共用）：映射失败的出口原因已经逐行写在上面的小表里，服务端又把同样的话放进阻断原因——合并成一条；
- *  其余的阻断（软路由离线…）逐条列出，英文错误换成中文 */
+/** 阻断原因条（替换、换线路机共用）：映射失败的出口原因已经逐行写在上面的小表里，服务端又把同样的话（前面加「软路由「X」的出口「Y」：」）
+ *  放进阻断原因——合并成一条；其余的阻断（软路由离线…）逐条列出，英文错误换成中文 */
 export function PlanBlockers({ routers, blockers }: { routers: RouterExitPlan[]; blockers: string[] }) {
   const bad = routers.flatMap((r) => r.exits.filter((e) => e.error).map((e) => ({ r, e })));
-  const rest = blockers.filter((b) => !bad.some(({ r, e }) => b === e.error || (b.includes(r.name) && b.includes(e.exit))));
+  const rest = blockers.filter((b) => !bad.some(({ r, e }) => b === `软路由「${r.name}」的出口「${e.exit}」：${e.error}`));
   return (
     <>
       {bad.length > 0 && <Note tone="bad">{bad.length} 个出口对不上新入口：按上表的原因先处理，或不勾「同时改软路由」</Note>}
@@ -118,7 +115,7 @@ export function RouterExitList({ routers, title }: { routers: { node?: string; p
               <tr key={`${node ?? ''}-${r.id}-${e.exit}`}>
                 {withNode && <td className="num">{node}</td>}
                 <td><span className="num">{r.name}</span> · <span className="num">{e.exit}</span>{r.state !== 'online' && <> <Pill tone="bad">{ROUTER_STATE[r.state] ?? r.state}</Pill></>}</td>
-                <td className="rx-to">{e.error ? <><Pill tone="bad" tip={e.error}>对不上新入口</Pill><div className="rt-bad">{exitReason(e.error)}</div></> : <>{shown(e.from)} → <b>{e.to ? shown(e.to) : '?'}</b></>}</td>
+                <td className="rx-to">{e.error ? <><Pill tone="bad" tip={e.error}>对不上新入口</Pill><div className="rt-bad">{e.error}</div></> : <>{shown(e.from)} → <b>{e.to ? shown(e.to) : '?'}</b></>}</td>
               </tr>
             ))}
           </tbody>

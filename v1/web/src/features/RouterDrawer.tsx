@@ -81,6 +81,7 @@ function Needs({ r, detail, children }: { r: RouterView; detail: RouterDetail | 
 
 /** 头部：类型标 + 名称 + 状态 + 团队，副标题 WAN 与系统；右边「⋯」放管理操作 */
 function Head({ r, detail, onClosed }: { r: RouterView; detail: RouterDetail | null | undefined; onClosed: () => void }) {
+  const { open, tab } = useRouterDrawer();
   const [edit, setEdit] = React.useState(false);
   const [askRegen, setAskRegen] = React.useState(false);
   const [askDel, setAskDel] = React.useState(false);
@@ -103,7 +104,7 @@ function Head({ r, detail, onClosed }: { r: RouterView; detail: RouterDetail | n
             {/* 还没连上过的没有隧道可断，直接生成；连上过的先确认（旧隧道立刻失效） */}
             <DropdownMenuItem onSelect={() => (r.last_seen_at ? setAskRegen(true) : void boot.run(r))}><Terminal />{r.state === 'pending' ? '查看接入命令' : '重新生成接入命令…'}</DropdownMenuItem>
             {/* 打开终端先收起抽屉：终端窗口的层级在抽屉遮罩之下，开着抽屉会被盖住 */}
-            {r.state !== 'pending' && <DropdownMenuItem onSelect={() => { onClosed(); openTerminal({ kind: 'router', id: r.id, name: r.name }); }}><SquareTerminal />打开终端</DropdownMenuItem>}
+            {r.state !== 'pending' && <DropdownMenuItem onSelect={() => { onClosed(); openTerminal({ kind: 'router', id: r.id, name: r.name }, () => open(r.id, tab)); }}><SquareTerminal />打开终端</DropdownMenuItem>}
             <DropdownMenuSeparator />
             <DropdownMenuItem danger onSelect={() => setAskDel(true)}><Trash2 />删除…</DropdownMenuItem>
           </DropdownMenuContent>

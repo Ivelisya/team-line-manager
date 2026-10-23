@@ -157,7 +157,7 @@ pub struct Client {
     pub hostname: Option<String>,
     pub online: bool,
     pub conns: i64,
-    /// 经 OpenClash 的速率（bit/s，按 mihomo 连接的来源 IP 汇总，取差同出口）：没有连接为 0，中控重启后第一轮算不出为 None
+    /// 经 OpenClash 的速率（bit/s，按 mihomo 连接的来源 IP 汇总，取差同出口）：没有连接为 0；路由上第一次采集（没有上一次的读数）、mihomo API 调不通时算不出为 None（上一次的读数存在路由上，中控重启不影响）
     pub down_bps: Option<i64>,
     pub up_bps: Option<i64>,
     pub exits: Vec<ClientExit>,

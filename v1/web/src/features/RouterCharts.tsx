@@ -81,7 +81,7 @@ function ExitDelays({ r, range, few }: { r: RouterView; range: string; few: stri
   const opts = React.useMemo(() => (exits ?? []).map((x) => ({ value: x.name, label: x.name })), [exits]);
   const bins = beatBins(range);
   // 所选范围比数据长（新接入的路由）：格子从有数据的那刻起切，和上面的曲线横轴一致，左边写「数据从 … 起」
-  const since = React.useMemo(() => Math.min(Infinity, ...(exits ?? []).flatMap((x) => x.points.map((p) => Date.parse(p.ts)))), [exits]);
+  const since = React.useMemo(() => (exits ?? []).reduce((m, x) => x.points.reduce((m2, p) => Math.min(m2, Date.parse(p.ts)), m), Infinity), [exits]);
   const late = Number.isFinite(since) && since > Date.now() - (RANGE_MS[range] ?? 0) + (RANGE_MS[range] ?? 0) / bins;
   const beats = React.useMemo(() => (exits ?? []).map((x) => ({ name: x.name, ...exitBeats(x.points, range, bins, Date.now(), late ? since : undefined) })), [exits, range, bins, late, since]);
   return (

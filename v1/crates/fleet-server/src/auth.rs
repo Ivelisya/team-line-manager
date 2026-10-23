@@ -468,6 +468,30 @@ pub async fn upsert_user(db: &sqlx::PgPool, username: &str, password: &str) -> a
     Ok(())
 }
 
+/// CLI：删除一个用户，`disable` 时只停用（不能再登录，留着记录；`upsert_user` 重设密码即恢复）。会话马上作废（跑着的中控里它的实时流断开），
+/// 登录失败记录清掉；删除时两步验证、恢复码、登录来源随用户一起没了。至少要留一个别的、没停用的用户，否则谁都登不进来：报错
+pub async fn remove_user(db: &sqlx::PgPool, username: &str, disable: bool) -> anyhow::Result<()> {
+    let mut tx = db.begin().await?;
+    // 全部用户行（没几行）一起锁住：两个人同时被删，也不会都通过「还剩别人」的检查
+    let users: Vec<(Uuid, String, bool)> = sqlx::query_as("select id, username, disabled_at is null from app_user order by id for update").fetch_all(&mut *tx).await?;
+    let Some(&(uid, ..)) = users.iter().find(|u| u.1 == username) else { anyhow::bail!("没有用户 {username}") };
+    if !users.iter().any(|u| u.0 != uid && u.2) {
+        anyhow::bail!("{username} 是最后一个能登录的账号，不能{}", if disable { "停用" } else { "删除" });
+    }
+    sqlx::query("delete from session where user_id = $1").bind(uid).execute(&mut *tx).await?;
+    sqlx::query("delete from login_failure where username = $1").bind(username).execute(&mut *tx).await?;
+    if disable {
+        sqlx::query("update app_user set disabled_at = now() where id = $1").bind(uid).execute(&mut *tx).await?;
+    } else {
+        sqlx::query("delete from app_user where id = $1").bind(uid).execute(&mut *tx).await?;
+    }
+    let action = if disable { "auth.user_disabled" } else { "auth.user_removed" };
+    audit(&mut tx, "cli", action, "user", Some(uid), json!({"via": "user-del", "username": username})).await?;
+    tx.commit().await?;
+    sqlx::query("select pg_notify($1, '')").bind(REVOKED_CHANNEL).execute(db).await?;
+    Ok(())
+}
+
 /// CLI：停用某个用户的两步验证（手机和恢复码都丢了时由中控上的 root 执行），清掉登录成功过的来源。用户不存在时报错
 pub async fn totp_reset(db: &sqlx::PgPool, username: &str) -> anyhow::Result<()> {
     let mut tx = db.begin().await?;

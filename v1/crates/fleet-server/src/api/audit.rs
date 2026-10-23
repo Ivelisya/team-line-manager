@@ -143,7 +143,7 @@ const AUDIT_ACTIONS: &[&str] = &[
     "entry.disable", "entry.rotate", "entry.share", "entry.add", "entry.move", "relay.evacuate", "job.retry", "job.cancel", "silence.create",
     "silence.delete", "incident.ack", "restore.probe", "agent.upgrade", "notify.create", "notify.update", "notify.delete", "exec", "machine.logs", "server.logs", "apikey.create",
     "apikey.revoke", "auth.login", "auth.login_failed", "auth.logout", "auth.totp_enabled", "auth.totp_disabled", "auth.totp_recovery_used",
-    "auth.totp_recovery_regenerated", "auth.password_changed", "auth.session_revoked", "auth.verify_failed", "policy.draft", "policy.discard", "policy.publish", "policy.rollback",
+    "auth.totp_recovery_regenerated", "auth.user_removed", "auth.user_disabled", "auth.password_changed", "auth.session_revoked", "auth.verify_failed", "policy.draft", "policy.discard", "policy.publish", "policy.rollback",
     "settings.access_retention", "terminal.open", "terminal.close", "ssh.login",
     "router.create", "router.update", "router.delete", "router.bootstrap", "router.bootstrap_used", "router.deploy",
 ];
@@ -214,6 +214,8 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "auth.totp_disabled" => "关闭两步验证",
         "auth.totp_recovery_used" => "用恢复码验证",
         "auth.totp_recovery_regenerated" => "重新生成恢复码",
+        "auth.user_removed" => "删除账号",
+        "auth.user_disabled" => "停用账号",
         "auth.password_changed" => "修改密码",
         "auth.session_revoked" => "撤销登录会话",
         "auth.verify_failed" => "密码或验证码校验失败",
@@ -370,6 +372,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "auth.login" | "auth.login_failed" | "auth.totp_recovery_regenerated" | "auth.verify_failed" => s("ip"),
         "auth.totp_disabled" if d["via"] == "totp-reset" => "中控命令行 totp-reset".into(),
         "auth.totp_disabled" => s("ip"),
+        "auth.user_removed" | "auth.user_disabled" => format!("{} · 中控命令行 user-del", s("username")),
         "auth.totp_recovery_used" => format!("{} · 剩 {} 个", s("ip"), d["left"]),
         "auth.password_changed" if d["revoked_api_keys"].as_u64().is_some_and(|n| n > 0) => {
             format!("{} · 撤销其它 {} 个会话、{} 个 API 密钥", s("ip"), d["revoked_sessions"], d["revoked_api_keys"])
