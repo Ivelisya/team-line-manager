@@ -1,4 +1,5 @@
 use anyhow::{bail, Context};
+use axum::serve::ListenerExt;
 use fleet_server::{auth, config::Config, crypto::SecretBox, db, jobs, local_admin, state::AppState};
 use std::future::IntoFuture;
 use std::net::SocketAddr;
@@ -136,6 +137,12 @@ async fn main() -> anyhow::Result<()> {
             // 开始处理请求之前就装上信号处理：能应答请求时 SIGTERM 一定走优雅退出
             let term = terminated();
             let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+            // 关 Nagle：Caddy 复用到这里的长连接，gzip 响应分几次小写，不关的话每个响应尾巴等对端延迟 ACK 约 40ms
+            let l = l.tap_io(|tcp| {
+                if let Err(e) = tcp.set_nodelay(true) {
+                    tracing::warn!("设置 TCP_NODELAY 失败：{e}");
+                }
+            });
             let mut http = tokio::spawn(
                 axum::serve(l, app.into_make_service_with_connect_info::<SocketAddr>())
                     .with_graceful_shutdown(async move {
