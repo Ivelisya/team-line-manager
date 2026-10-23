@@ -127,15 +127,15 @@ impl Liveness {
     pub fn usable(self) -> bool { self.online && self.kept }
 }
 
-/// 按设置与探测点此刻在不在线、有没有轮次被采纳算出实际用哪一路（一次查询）
-pub async fn effective(st: &AppState) -> sqlx::Result<Effective> {
+/// 按设置与探测点此刻在不在线、有没有轮次被采纳算出实际用哪一路（一次查询）。`db`：在哪个池上查（视图加载走 `view_db`，有语句超时）
+pub async fn effective(st: &AppState, db: &sqlx::PgPool) -> sqlx::Result<Effective> {
     let row: (Option<Value>, Option<String>, bool, Option<OffsetDateTime>, Option<OffsetDateTime>) = sqlx::query_as(
         "select s.v, p.name, coalesce(p.enabled, false), p.last_seen_at, p.last_kept_at
          from (select (select value from app_setting where key = $1) v) s
          left join probe_point p on p.id = case when s.v->>'primary' ~ '^[0-9a-f-]{36}$' then (s.v->>'primary')::uuid end",
     )
     .bind(KEY)
-    .fetch_one(&st.db)
+    .fetch_one(db)
     .await?;
     let set = row.0.as_ref().map(Setting::from_json).unwrap_or_default();
     Ok(decide(set, row.1.as_deref(), row.2, Liveness::of(st, row.3, row.4, OffsetDateTime::now_utc())))
@@ -218,7 +218,7 @@ pub async fn run_forever(st: AppState) {
     let mut last: Option<Effective> = None;
     loop {
         t.tick().await;
-        match effective(&st).await {
+        match effective(&st, &st.db).await {
             Ok(e) => {
                 if last.as_ref().is_some_and(|l| *l != e) {
                     tracing::info!(from = ?last.as_ref().map(|l| &l.label), to = %e.label, "线路机连通性改用另一路检查");

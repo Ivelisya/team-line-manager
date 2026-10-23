@@ -111,7 +111,7 @@ export function installRoutersMock(R: Reg, env: Env) {
     c.v.deploy = { state: 'failed', step: '连接 SSH', error: 'ssh: connect to host 10.0.0.99 port 22: Connection timed out', started_at: iso(now - 5 * MIN), finished_at: iso(now - 5 * MIN + 30_000) };
     list.push(a, b, c);
     const inc = (id: string, rt: Rt, rule: string, rule_name: string, severity: string, summary: string, ago: number): Incident => ({
-      id, rule, rule_name, subject: { id: rt.v.id, name: rt.v.name, kind: 'router' }, subject_id: rt.v.id, subject_name: rt.v.name, severity, state: 'firing', summary,
+      id, engine: 'router', rule, rule_name, subject: { id: rt.v.id, name: rt.v.name, kind: 'router' }, subject_id: rt.v.id, subject_name: rt.v.name, severity, state: 'firing', summary,
       opened_at: iso(now - ago), last_seen_at: iso(now - MIN), resolved_at: null, ack_at: null, ack_by: null, reopen_count: 0,
     });
     env.incidents().push(

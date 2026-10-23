@@ -13,7 +13,7 @@
 //! 旧的留成同目录的 `fleet-agent.prev`，写下试运行标记（[`TRIAL`]），然后退出（退出码 0），由服务管理器（supervise-daemon / systemd）拉起新的。
 //! 新的启动后看到标记就是在试运行：[`TRIAL_WINDOW`] 内有一次上报成功就删掉标记；到时候一次都没成功（起来了但连不上中控、
 //! 读不了配置等启动就失败被反复拉起）就把 `.prev` 换回来、记下这个版本的 sha256（[`BAD`]，之后中控再要它升级到这个版本时不换），
-//! 以非 0 退出，由服务管理器拉起旧版本。标记在启动的第一步（读配置之前）看，所以任何启动失败都算在试运行里；
+//! 以非 0 退出，由服务管理器拉起旧版本。之后的上报都带上这个 sha256（`ProbeReport::bad_sha256`），中控据此马上记成升级失败、不再下发。标记在启动的第一步（读配置之前）看，所以任何启动失败都算在试运行里；
 //! 是否到时只在每轮结束和启动时看：一轮卡住不返回不会回滚（取目标、上报各有 15 秒超时，建连 10 秒，实际卡不住）。
 //! 试运行期间不接受新的升级（`.prev` 留着已知能用的那个版本）。
 //! 中控那边也防反复：下载过程序、过了试运行的时长还没报上新版本的 sha256，就算这次升级失败，不再下发（probe_points/agent.rs）。
@@ -222,13 +222,14 @@ enum Next {
 /// `in_trial`：自己还在升级后的试运行里（还没上报成功过）：这时不再升级，免得 `.prev` 被这个没验证过的版本覆盖，等上报成功之后的下一轮再换
 async fn round(c: &Client, turn: usize, own: Option<&str>, exe: &Path, in_trial: bool) -> Result<Next, RoundErr> {
     let t = c.targets().await?;
-    // 上次换成它之后没能上报、已经换回来了的版本（`BAD`）不再换：中控那边也会在试运行时长过后记成升级失败、不再下发
-    if let Some(u) = t.upgrade.as_ref().filter(|u| !in_trial && wants(own, bad_sha(exe).as_deref(), &u.sha256)) {
+    // 上次换成它之后没能上报、已经换回来了的版本（`BAD`）不再换：上报里带上它，中控看到要它升的正是这个，就记成升级失败、不再下发
+    let bad = bad_sha(exe);
+    if let Some(u) = t.upgrade.as_ref().filter(|u| !in_trial && wants(own, bad.as_deref(), &u.sha256)) {
         upgrade(c, u, exe).await.map_err(|e| RoundErr::Other(format!("升级失败（照旧用现在的版本）：{e:#}")))?;
         return Ok(Next::Upgraded(u.version.clone()));
     }
     let m = measure(&t, turn).await;
-    let rep = ProbeReport { version: fleet_proto::build_version().into(), sha256: own.map(String::from), discarded: m.discarded.clone(), all_down: m.all_down, results: m.results };
+    let rep = ProbeReport { version: fleet_proto::build_version().into(), sha256: own.map(String::from), discarded: m.discarded.clone(), all_down: m.all_down, bad_sha256: bad, results: m.results };
     c.report(&rep).await?;
     Ok(Next::Sleep(Duration::from_secs(u64::from(t.interval_s.clamp(10, 300))), m.discarded))
 }

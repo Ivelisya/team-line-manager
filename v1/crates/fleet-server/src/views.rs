@@ -520,8 +520,8 @@ struct Snap {
 }
 /// 指标（心跳、探测）最多旧这么久
 const LIVE_TTL: std::time::Duration = std::time::Duration::from_secs(3);
-/// 取一次视图（等锁加重算）最多等这么久，到点算失败（回上一份或报错）。视图池每条语句 15 秒超时，但一次完整加载有几轮先后依赖的查询，
-/// 叠起来会更久；告警评估（30 秒一轮）不能被它拖住
+/// 重算一次视图最多这么久，到点算失败（回上一份或报错）；排队等别人算完（等锁）另算一份同样长的时限。视图池每条语句 15 秒超时，
+/// 但一次完整加载有几轮先后依赖的查询，叠起来会更久；告警评估（30 秒一轮）不能被它拖住
 const VIEW_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 /// 上一份视图最多旧这么久还拿来顶：再旧就报错（告警评估这一轮失败、中控自检报 `central_view_stuck`），不拿很久以前的在线状态判告警
 const STALE_MAX: std::time::Duration = std::time::Duration::from_secs(60);
@@ -593,17 +593,18 @@ impl LiveCache {
         self.failing.lock().unwrap().clone()
     }
 
-    /// 上一份视图，旧不过 `STALE_MAX` 才给；`same`：还要求之后没有资源变更、没有新的小时汇总（只差随上报变的指标）
     fn settled(&self, at: Instant, gen: u64, rolled: u64, v: &Arc<Vec<MachineView>>) {
         *self.last.lock().unwrap() = Some((at, gen, rolled, v.clone()));
         *self.failing.lock().unwrap() = None;
     }
 
-    fn stale(&self, same: bool) -> Option<Arc<Vec<MachineView>>> {
+    /// 上一份视图，旧不过 `STALE_MAX`、之后没有资源变更才给（变更之后还给变更前的，改完马上重取的会一直看到旧的）；
+    /// `rolled`：还要求之后没有新的小时汇总（只差随上报变的指标）
+    fn stale(&self, rolled: bool) -> Option<Arc<Vec<MachineView>>> {
         let last = self.last.lock().unwrap();
-        let (at, gen, rolled, v) = last.as_ref()?;
-        let unchanged = *gen == self.gen.load(Ordering::SeqCst) && *rolled == self.rolled.load(Ordering::SeqCst);
-        (at.elapsed() < STALE_MAX && (unchanged || !same)).then(|| v.clone())
+        let (at, gen, r, v) = last.as_ref()?;
+        let unchanged = *gen == self.gen.load(Ordering::SeqCst) && (!rolled || *r == self.rolled.load(Ordering::SeqCst));
+        (at.elapsed() < STALE_MAX && unchanged).then(|| v.clone())
     }
 }
 
@@ -618,8 +619,9 @@ pub async fn live_fresh(st: &AppState) -> sqlx::Result<Arc<Vec<MachineView>>> {
 }
 
 /// 取视图：锁空着就自己算（或用缓存）；锁被占（别的请求正在重算）时，之后没有资源变更的话直接回上一份、不排队等它，
-/// 有资源变更才等（改完马上重取的要看到改动）。等锁加重算最多 `VIEW_WAIT`；失败或超时回上一份（旧不过 `STALE_MAX`），
-/// 再旧就报错——超时报 `PoolTimedOut`（接口回 503，同等不到连接）
+/// 有资源变更才等（改完马上重取的要看到改动）。等锁、重算各最多 `VIEW_WAIT`：前一个算得久，排在后面的拿到锁后照样有完整的时限
+/// （多半直接用前一个刚算成的那份）。失败或超时回上一份（旧不过 `STALE_MAX`、之后没有资源变更），
+/// 否则报错——超时报 `PoolTimedOut`、视图池的语句超时报 57014（接口都回 503，同等不到连接；前端查询会重试）
 async fn cached(st: &AppState, ttl: std::time::Duration) -> sqlx::Result<Arc<Vec<MachineView>>> {
     let c = &st.live;
     let got = match c.slot.try_lock() {
@@ -628,7 +630,10 @@ async fn cached(st: &AppState, ttl: std::time::Duration) -> sqlx::Result<Arc<Vec
             if let Some(v) = c.stale(true) {
                 return Ok(v);
             }
-            tokio::time::timeout(VIEW_WAIT, async { fill(st, c.slot.lock().await, ttl).await }).await
+            match tokio::time::timeout(VIEW_WAIT, c.slot.lock()).await {
+                Ok(slot) => tokio::time::timeout(VIEW_WAIT, fill(st, slot, ttl)).await,
+                Err(e) => Err(e),
+            }
         }
     };
     let e = match got {
@@ -643,6 +648,7 @@ async fn cached(st: &AppState, ttl: std::time::Duration) -> sqlx::Result<Arc<Vec
             tracing::warn!("机器视图没算出来，先用上一份：{e}");
             Ok(v)
         }
+        // 上一份太旧或之后有过资源变更：报错让调用方重试，不拿变更前的顶
         None => Err(e),
     }
 }
@@ -1104,7 +1110,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
     let db = &st.view_db;
     let lc = scope.cond();
     // 线路机客户入口的连通性看哪一路检查（主探测来源；离线时退回中控或标灰，见 probe_points/）
-    let reach_src = crate::probe_points::effective(st).await?;
+    let reach_src = crate::probe_points::effective(st, db).await?;
     // 同机 IP 节点没有自己的 agent：agent 状态取宿主机的
     let sql = format!(
         "select m.id, m.kind::text kind, m.team_id, t.name team_name, t.spare team_spare, m.spare_from, m.spare_since, m.number, m.label, host(m.primary_ip) ip, coalesce(hm.ssh_port, m.ssh_port) ssh_port,

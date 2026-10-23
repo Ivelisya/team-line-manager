@@ -80,7 +80,7 @@ type Bucket = (i64, i64, Option<f64>, i64);
 /// 按探测行连机器表的计划会在 30 ms 与 400+ ms 之间跳
 pub async fn probe_beats(_a: Actor, State(st): State<AppState>) -> ApiResult<Json<Value>> {
     const BUCKETS: usize = 20;
-    let src = crate::probe_points::effective(&st).await?;
+    let src = crate::probe_points::effective(&st, &st.db).await?;
     let rows: Vec<(Uuid, i32, i64, i64, Option<f64>, i64)> = sqlx::query_as(&format!(
         "with w as (select s, s + interval '60 minutes' e from (select date_bin('3 minutes', now(), timestamptz 'epoch') - interval '57 minutes' s) z),
          p as (

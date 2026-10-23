@@ -10,6 +10,8 @@
 //! 升级失败不反复下发：下载过程序、过了 [`UPGRADE_FAIL_S`]（探测点的试运行时长）还没报上目标 sha256，就是新版本没能上报、已经换回了旧版本。
 //! 旧版本不一定认得「换回来过的不再换」（fleet-agent 的 BAD 标记是后来才有的），照旧下发会五分钟一轮反复换上、换回。
 //! 这时（它下次取目标时）清掉升级请求、记下 upgrade_failed（列表显示「升级到 X 失败，已回到 Y」），要手动再触发；之后报上了目标 sha256 就清掉。
+//! 新探测点在上报里带上它记着的坏版本（`bad_sha256`：换上过、没能上报、自己换回来了的；它不会再换，也就不去下载，上面的判定等不到）：
+//! 存进 probe_point.bad_sha256；要它升级到的正是这个就当场记成升级失败、不再下发；手动升级到这个版本直接 409（api/probe_points.rs）。
 //!
 //! 上报太频繁（同一个探测点 10 秒内第二份）回 429：正常每 30 秒一份。
 
@@ -109,25 +111,35 @@ async fn report(State(st): State<AppState>, ClientIp(ip): ClientIp, h: HeaderMap
     // 刷新最近上报；离上一份不到 10 秒的不收（不刷新）。升级到位（报上来的程序 sha256 就是要它换的）清掉升级请求（记成失败了的也清掉）。
     // 返回改之前的最近上报：自连接读旧版本（写成 `with o as (select … for update) … returning (select … from o)` 时，
     // CTE 在 returning 里才求值，那一行已被本语句改过、看不到，恒为 null——每一份都会被当成「刚回来」）
-    let prev: Option<(Option<OffsetDateTime>,)> = sqlx::query_as(
-        "update probe_point p set last_seen_at = now(), last_ip = $2::inet, version = $3,
-                upgrade_sha256 = case when p.upgrade_sha256 = $4 then null else p.upgrade_sha256 end,
-                upgrade_fetched_at = case when p.upgrade_sha256 = $4 then null else p.upgrade_fetched_at end,
-                upgrade_failed = case when p.upgrade_failed->>'sha256' = $4 then null else p.upgrade_failed end
+    // 要它升级到的正是它记着的坏版本（换上过、没能上报、自己换回来了）：它不会再换（也不下载），等下载后的失败判定永远等不到，
+    // 这里直接记成升级失败、不再下发
+    let bad: Option<String> = r.bad_sha256.as_deref().map(|s| s.chars().take(64).collect());
+    let prev: Option<(Option<OffsetDateTime>, bool)> = sqlx::query_as(
+        "update probe_point p set last_seen_at = now(), last_ip = $2::inet, version = $3, bad_sha256 = $6,
+                upgrade_sha256 = case when p.upgrade_sha256 in ($4, $6) then null else p.upgrade_sha256 end,
+                upgrade_fetched_at = case when p.upgrade_sha256 in ($4, $6) then null else p.upgrade_fetched_at end,
+                upgrade_failed = case when p.upgrade_failed->>'sha256' = $4 then null
+                                      when p.upgrade_sha256 = $6 then jsonb_build_object('sha256', p.upgrade_sha256, 'to', p.upgrade_version, 'from', $3::text, 'at', now())
+                                      else p.upgrade_failed end
          from probe_point o
          where p.id = $1 and o.id = p.id and (p.last_seen_at is null or p.last_seen_at < now() - make_interval(secs => $5))
-         returning o.last_seen_at",
+         returning o.last_seen_at, coalesce(o.upgrade_sha256 = $6 and o.upgrade_sha256 is distinct from $4, false)",
     )
     .bind(p.id)
     .bind(ip.map(|i| i.to_string()))
     .bind(&version)
     .bind(r.sha256.as_deref())
     .bind(MIN_GAP_S)
+    .bind(&bad)
     .fetch_optional(&st.db)
     .await?;
-    let Some((prev,)) = prev else {
+    let Some((prev, bad_hit)) = prev else {
         return Ok((StatusCode::TOO_MANY_REQUESTS, [(header::RETRY_AFTER, "10")], Json(json!({"error": {"code": "too_frequent", "message": "上报太频繁"}}))).into_response());
     };
+    if bad_hit {
+        tracing::warn!(probe_point = %p.id, "要探测点升级到的版本之前在它上面换上后没能上报、已经换回过（现在跑的是 {version}）：记成升级失败，不再下发");
+        st.emit(crate::state::Event::Settings);
+    }
     // 刚回来（之前离线或从没上报过）：它若是主来源，实际用的那一路就变了
     let now = OffsetDateTime::now_utc();
     let back = prev.is_none_or(|t| st.report_gaps.silent_s(t, now) >= super::OFFLINE_S);

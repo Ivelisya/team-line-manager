@@ -68,12 +68,17 @@ export function FormDialog({ open, onOpenChange, title, desc, children, onSubmit
 
 /** 需要输入 expected 才能确认。expected 区分大小写，两端空格忽略。blocked：现在做不了（内容里已经说明原因）：不要输入框和确认按钮，取消换成「关闭」。
  *  每次打开重新挂载（resetOnOpen）：输入与上次的失败原因清空，关闭动画期间内容保持原样 */
-/** typed={false}：这次的动作可以撤销（退役里的「移入备用」），不要求输入，直接确认；同一个对话框里切到不可撤销的选项再要求输入 */
-export const TypedConfirmDialog = resetOnOpen(function TypedConfirmDialog({ expected, prompt, blocked, typed = true, ...base }: Base & { expected: string; prompt?: string; blocked?: boolean; typed?: boolean }) {
+/** typed={false}：这次的动作可以撤销（退役里的「移入备用」），不要求输入，直接确认；同一个对话框里切到不可撤销的选项再要求输入。
+ *  retype：变了就清空已输入的、焦点回到输入框（确认的动作换成了更重的一种，如删路由被拦下后换成强制删除：不让顺手再按一次回车就过去） */
+export const TypedConfirmDialog = resetOnOpen(function TypedConfirmDialog({ expected, prompt, blocked, typed = true, retype, ...base }: Base & { expected: string; prompt?: string; blocked?: boolean; typed?: boolean; retype?: unknown }) {
   const [text, setText] = React.useState('');
   const [busy, setBusy] = React.useState(false);
   const [err, setErr] = React.useState<string | null>(null);
   const input = React.useRef<HTMLInputElement>(null);
+  const [seen, setSeen] = React.useState(retype);
+  if (seen !== retype) { setSeen(retype); setText(''); }
+  const mounted = React.useRef(false);
+  React.useEffect(() => { if (mounted.current) input.current?.focus(); mounted.current = true; }, [seen]);
   const ok = (!typed || text.trim() === expected) && !base.confirmDisabled;
   const run = async () => {
     setBusy(true); setErr(null);

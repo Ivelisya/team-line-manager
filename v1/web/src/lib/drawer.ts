@@ -16,9 +16,10 @@ const DEFAULT_RANGE = '24h';
 
 // 全站只有一个路由：任意一处 useDrawer 渲染时记下地址参数的写函数，模块级的 openDrawer 用它（同机关系标等成批的小按钮不必各自订阅地址）
 let setLatest: { current: SetURLSearchParams } | null = null;
-/** drop：同一步里一起删掉的地址参数（背后列表的筛选会把要打开的那台筛掉时） */
+/** drop：同一步里一起删掉的地址参数（背后列表的筛选会把要打开的那台筛掉时）。
+ *  同时收起软路由抽屉（?r= / ?rtab=，同 useRouterDrawer 的 open 收起机器抽屉）：两个抽屉不叠在一起，[ ] 不会两边一起切 */
 const openWith = (set: SetURLSearchParams, mid: string, t?: DrawerTab, drop?: readonly string[]) =>
-  set((p) => { const n = new URLSearchParams(p); drop?.forEach((k) => n.delete(k)); n.set('m', mid); if (t) n.set('tab', t); else n.delete('tab'); n.delete('range'); return n; });
+  set((p) => { const n = new URLSearchParams(p); drop?.forEach((k) => n.delete(k)); n.delete('r'); n.delete('rtab'); n.set('m', mid); if (t) n.set('tab', t); else n.delete('tab'); n.delete('range'); return n; });
 /** 打开抽屉（不订阅地址）：外壳里一直挂着 useDrawer，调用时总有写函数 */
 export const openDrawer = (mid: string, t?: DrawerTab, drop?: readonly string[]) => { if (setLatest) openWith(setLatest.current, mid, t, drop); };
 

@@ -128,7 +128,7 @@ pub(crate) struct Sample {
 /// 写入后连不上的结论（`unreachable_sql`）或判不判得出（`unknown_sql`）变了的线路机发 `Event::Machine`：视图不用等完整重算
 pub(crate) async fn record(st: &AppState, src: Option<Uuid>, ts: OffsetDateTime, samples: &[Sample], all_down: bool) -> anyhow::Result<()> {
     let db = &st.db;
-    let eff = crate::probe_points::effective(st).await?;
+    let eff = crate::probe_points::effective(st, &st.db).await?;
     let ids: Vec<Uuid> = samples.iter().map(|s| s.relay).collect();
     let judge = eff.uses(src) && !ids.is_empty();
     let unreach = format!("select {}, {} from unnest($1::uuid[]) with ordinality u(id, i) order by i", unreachable_sql("u.id", &eff), unknown_sql("u.id", &eff));

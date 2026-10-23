@@ -247,8 +247,9 @@ export interface SeriesResp { metric: string; range: string; resolution: '1m' | 
 export interface AvailabilityDay { date: string; tcp_total: number; tcp_ok: number; egress_total: number; egress_ok: number }
 export interface Availability { days: number; items: AvailabilityDay[]; tcp_pct: number | null; egress_pct: number | null }
 export interface Incident {
-  /** subject.kind：规则以 router_ 开头的告警对象是软路由，为 "router"（机器的没有这个字段） */
-  id: string; rule: string; rule_name: string; subject: { id: string; name: string; kind?: 'router' } | null; subject_id: string | null; subject_name: string | null;
+  /** engine：写这条告警的引擎（machine 机器、ipintel 来源画像、central 中控自身、router 软路由、probe 探测点）；
+   *  subject.kind：软路由的告警对象是路由，为 "router"（机器的没有这个字段） */
+  id: string; engine: 'machine' | 'ipintel' | 'central' | 'router' | 'probe'; rule: string; rule_name: string; subject: { id: string; name: string; kind?: 'router' } | null; subject_id: string | null; subject_name: string | null;
   severity: 'info' | 'warning' | 'critical' | string; state: 'firing' | 'resolved'; summary: string;
   opened_at: string; last_seen_at: string | null; resolved_at: string | null; ack_at: string | null; ack_by: string | null;
   /** 恢复后 30 分钟内复发、合并进这条的次数 */

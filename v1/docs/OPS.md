@@ -284,6 +284,7 @@ FLEET_BUILD=docker FLEET_BUILD_HOST=10.172.17.213 lab/sync-server.sh 'cargo test
 回滚（新版起不来，或上线后有严重问题）：
 
 1. 先确认这次部署**没有新迁移**：`git diff --name-only <旧哈希> <新哈希> -- migrations` 为空（新旧哈希见中控 `journalctl -u fleet-server | grep 监听 | tail -2`；当前与换下来的二进制也可直接 `/opt/fleet/fleet-server version`、`/opt/fleet/fleet-server.prev version` 看，早于这个子命令的旧版本会打用法）。fleet-server 启动时自动跑迁移；新迁移一旦执行过，旧版本发现库里有它不认识的迁移会拒绝启动，这时不能直接换回，只能修好再发新版本（或按 §10 从备份恢复，丢失备份之后的数据）。
+   - **迁移 0055（`incident.engine`）之后**回退到更早的版本（如 627d929），必须连库一起恢复成部署之前的备份，不能只换二进制：0055 给告警表加了不能为空、没有默认值的 `engine` 列，「开着的只有一条」的唯一索引也换成了带 `engine` 的。旧版本本来就会因为不认识的迁移拒绝启动；就算手工删掉 `_sqlx_migrations` 里的记录让它起来，它写告警不带 `engine`、按旧的唯一索引去冲突，**所有告警都写不进去**（机器、软路由、探测点、中控自身的都开不出来、不发通知，只有日志里报错，面板上看不出来）。所以含 0055 的版本上线前先在中控 `systemctl start fleet-backup` 做一份（`journalctl -u fleet-backup -n 5` 确认），要回退就按 §10「从备份恢复」用这一份恢复库、再换回旧版本，备份之后的数据（上报、作业、审计）会丢。之后带新迁移的版本同理：上线前先做一份备份。
 2. 没有新迁移时，在中控上换回旧版（先复制再改名：正在运行的可执行文件不能直接覆盖）：
    ```
    cp -p /opt/fleet/fleet-server.prev /opt/fleet/fleet-server.new && mv -f /opt/fleet/fleet-server.new /opt/fleet/fleet-server && systemctl restart fleet-server
@@ -397,7 +398,7 @@ heartbeat_url = "https://hc-ping.com/<检查的 uuid>"
 - `central_backup_stale`（警告）：`/var/backups/fleet` 里最新一份备份（`fleet-*.tar`、加密的 `fleet-*.tar.age`）超过 26 小时，或目录里一份都没有、读不了。每天 03:30 备份，没做成约两小时后报。`systemctl status fleet-backup`、`journalctl -u fleet-backup -n 20` 查原因，修好后 `systemctl start fleet-backup` 做一份，下一轮恢复。备份不在默认目录时在 `[selfmon]` 写 `backup_dir = "…"`；目录不存在（没装备份，如实验室）不检查。
 - `central_disk_low`（严重）：中控本机 `/`、`/var/lib/postgresql`、`/var/lib/fleet`、备份目录所在的文件系统可用空间低于 10%（同 `df` 的 Avail 占 Size），回到 11% 以上恢复。写满了 PostgreSQL 会停、中控跟着停：`df -h`、`du -sh /var/lib/postgresql /var/backups/fleet /var/log/journal` 找大头（原始时序按 `[retention]` 只留几天，备份留 14 份）。
 - `central_ingress`（严重）：有自己 agent 的在用机器里同时离线的超过一半、且至少 3 台。中控和库都好着，是 agent 到不了中控：查边缘机反代、Caddy、域名解析（从别的机器 `curl -sI https://<中控域名>` 试）。期间不再按台开「agent 离线」；这条恢复后仍没回来的再按台报。
-- `central_view_stuck`（严重）：机器视图（列表、总览、实时推送、告警评估共用的那一份）连续 2 分钟算不出来。视图查询每条 15 秒超时，取一次最多等 20 秒，失败时先用上一份顶 1 分钟，再久告警评估就跟着失败、死人开关停止 ping。多半是有查询被锁住（迁移、建分区排在父表锁后面）：`select pid, wait_event_type, state, now() - query_start, left(query, 80) from pg_stat_activity where datname = 'fleet' and state <> 'idle' order by 4 desc`，看是谁拿着锁。算成一次就恢复。
+- `central_view_stuck`（严重）：机器视图（列表、总览、实时推送、告警评估共用的那一份）连续 2 分钟算不出来。视图查询每条 15 秒超时，重算一次最多 20 秒（排队等别人算完另算 20 秒），失败时先用上一份顶 1 分钟（这期间有过资源变更——改名、退役、改订阅等——就不顶，接口回 503 让页面重试，免得一直显示改动之前的），再久告警评估就跟着失败、死人开关停止 ping。多半是有查询被锁住（迁移、建分区排在父表锁后面）：`select pid, wait_event_type, state, now() - query_start, left(query, 80) from pg_stat_activity where datname = 'fleet' and state <> 'idle' order by 4 desc`，看是谁拿着锁。算成一次就恢复。
 
 **后台任务监督**：中控里的后台循环（告警、实时指标、访问汇总、来源画像、通知发送、分区与保留期维护、小时汇总）panic 或意外退出时，`journalctl -u fleet-server` 记一条 error（「后台任务「…」…，10 秒后重启」），10 秒后原地重启，其余照常。作业引擎例外：它启动时释放全部作业租约，原地重启会让还在跑的作业被领两次，所以它一退出整个进程就退出，由 systemd（`Restart=always`）重启（`systemctl status fleet-server` 看重启次数）。告警循环一直起不来时死人开关会报。
 
@@ -513,7 +514,7 @@ url = "https://api.frankfurter.dev/v1/latest?base=USD"   # 回包 {base:"USD", d
 **排障**：
 - `probe_point_offline` / `fleetctl probe ls` 显示离线：在探测点上 `rc-service fleet-probe status`（或 `systemctl status fleet-probe`）、看日志。「连不上中控」查它的出网与 DNS；「中控说令牌无效」是探测点被删除或重装过（重装：`fleetctl probe install <名>`）；「这一轮作废：对照目标都连不上」是探测点自己的出网坏了（只算心跳，不判线路机）。
 - 卡片上写「中控（代替离线的香港探测点）」：主来源离线，暂由中控代替——连不上照报，连得上不算恢复，等它回来再判。
-- 升级：`fleetctl probe upgrade 香港`，探测点 30 秒内自己从中控下载 dist 里的 fleet-agent、核对 sha256、换上（旧的留成 `/opt/fleet/fleet-agent.prev`）、重启，命令等到它报上新版本。新版本 5 分钟内一次都没上报成功（起来了但连不上中控、一启动就崩溃被反复拉起）时自己换回 `.prev`、退出由服务管理器拉起旧版本，日志写「升级后 300 秒内一次都没能上报成功：已换回旧版本」；这个版本记在 `/opt/fleet/.fleet-agent.bad-sha256`，之后探测点不再换成它；中控那边下载过程序、5 分钟后还没报上新版本的就记成升级失败、不再下发（旧版本不认 bad-sha256，不这样会反复换上、换回），`fleetctl probe ls` 显示「升级到 X 失败，已回到 Y」：修好后再 `probe upgrade`（手动再触发才再试）。试运行标记是 `/opt/fleet/.fleet-agent.trial`（读配置之前就看，新版本读不了配置这类启动就失败的也会换回；试运行期间不接受新的升级）；重装探测点会删掉这两个标记。
+- 升级：`fleetctl probe upgrade 香港`，探测点 30 秒内自己从中控下载 dist 里的 fleet-agent、核对 sha256、换上（旧的留成 `/opt/fleet/fleet-agent.prev`）、重启，命令等到它报上新版本。新版本 5 分钟内一次都没上报成功（起来了但连不上中控、一启动就崩溃被反复拉起）时自己换回 `.prev`、退出由服务管理器拉起旧版本，日志写「升级后 300 秒内一次都没能上报成功：已换回旧版本」；这个版本记在 `/opt/fleet/.fleet-agent.bad-sha256`，之后探测点不再换成它；新探测点每份上报都带上这个 sha256，中控看到要它升级到的正是这个，当场记成升级失败、不再下发；旧探测点不带，中控就在它下载过程序、5 分钟后还没报上新版本时记成升级失败、不再下发（旧版本不认 bad-sha256，不这样会反复换上、换回）。`fleetctl probe ls` 显示「升级到 X 失败，已回到 Y」：修好后发新版本（换掉中控 dist 里的 fleet-agent）再 `probe upgrade`；同一个版本再 `probe upgrade` 中控直接拒绝（409「这个版本在「X」上跑不起来过」），探测点也不会再换成它，除非重装探测点。试运行标记是 `/opt/fleet/.fleet-agent.trial`（读配置之前就看，新版本读不了配置这类启动就失败的也会换回；试运行期间不接受新的升级）；重装探测点会删掉这两个标记。
 - 删除：`fleetctl probe rm 香港 --yes`（主来源要先改走）；令牌立刻作废，探测点上的东西按打印出来的清理命令自己清。
 
 ## 18. 三网 PING（线路机往外测线路质量）

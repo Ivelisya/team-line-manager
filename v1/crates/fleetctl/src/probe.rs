@@ -268,14 +268,14 @@ pub fn upgrade(ctx: &Ctx, q: &str, no_wait: bool) -> anyhow::Result<u8> {
         std::thread::sleep(Duration::from_millis(1500));
         let p = ctx.c.get(&format!("/probe-points/{id}"))?;
         if p["upgrade_failed"]["sha256"] == d["sha256"] {
-            bail!("「{name}」{}：新版本没能上报，探测点自己换回了旧版本。在它上面看日志（OpenRC：tail /var/log/fleet-probe.log；systemd：journalctl -u fleet-probe），修好后再 probe upgrade", upgrade_failed(&p).unwrap_or_default());
+            bail!("「{name}」{}：新版本没能上报，探测点自己换回了旧版本。在它上面看日志（OpenRC：tail /var/log/fleet-probe.log；systemd：journalctl -u fleet-probe），修好后发新版本（换掉中控 dist 里的 fleet-agent）再 probe upgrade：同一个版本它不会再换，中控也会拒绝", upgrade_failed(&p).unwrap_or_default());
         }
         if p["upgrade"].is_null() && p["state"] == "online" {
             ctx.emit(&p, || format!("「{name}」已升级到 {}", st(&p, "/version")));
             return Ok(0);
         }
     }
-    bail!("3 分钟内「{name}」没换上新版本：在它上面看日志（OpenRC：tail /var/log/fleet-probe.log；systemd：journalctl -u fleet-probe）。升级请求还留着；下载后 5 分钟还没报上新版本，中控记成升级失败、不再下发（probe ls 里看）")
+    bail!("3 分钟内「{name}」没换上新版本：在它上面看日志（OpenRC：tail /var/log/fleet-probe.log；systemd：journalctl -u fleet-probe）。升级请求还留着；下载后 5 分钟还没报上新版本，或探测点报告这个版本之前换上后跑不起来过，中控记成升级失败、不再下发（probe ls 里看）")
 }
 
 #[cfg(test)]
