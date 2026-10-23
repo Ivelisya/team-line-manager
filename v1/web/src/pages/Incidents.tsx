@@ -7,7 +7,7 @@ import { INCIDENT_PAGE, useAck, useAckMany, useAddSilence, useDelSilence, useInc
 import { usePage } from '@/lib/usePage';
 import { Pagination } from '@/components/app/Pagination';
 import { useDrawer } from '@/lib/drawer';
-import { isRouterIncident, routerIncidentTab, useRouterDrawer, useRouters } from '@/lib/routers';
+import { isRouterIncident, routerIncidentTab, showSwitch, showSync, useRouterDrawer, useRouters } from '@/lib/routers';
 import { useProbePoints } from '@/lib/probePoints';
 import * as F from '@/lib/format';
 import { errText, severityOf } from '@/lib/derive';
@@ -37,6 +37,17 @@ const summaryText = (i: Incident) => {
 };
 /** 同一状态（进行中 / 已恢复）里，同一分钟开始的同一条规则（如一批 agent 同时离线、一批线路机入口连不上）连着出现 3 条起折成一行；只合并相邻的，顺序仍是服务端的 */
 const BATCH_MIN = 3;
+/** 告警的快捷操作（说明下面一行小链接）：出口参数不一致 → 同步；出口不通、节点被路由的 select 组用着 → 临时切到组里别的出口（中控给的 quick_switch，取第一条） */
+function IncidentOps({ i }: { i: Incident }) {
+  if (i.state !== 'firing') return null;
+  const sid = i.subject?.id ?? i.subject_id;
+  const sw = i.quick_switch?.[0];
+  const link = (label: string, tip: string, on: () => void) => <span className="sub"><button type="button" className="btn btn-link btn-sm" style={{ height: 'auto', padding: 0 }} data-tip={tip} onClick={on}>{label}</button></span>;
+  if (i.rule === 'router_exit_drift' && sid) return link('同步出口参数…', '改成入口现在的凭据（会重启 OpenClash）', () => showSync({ id: sid, name: i.subject?.name ?? i.subject_name ?? '', exits: [] }));
+  if (sw) return link(`临时切到 ${sw.to}…`, `${sw.router} 的「${sw.group}」现在用 ${sw.from}，切到组里的 ${sw.to}，不重启 OpenClash`, () => showSwitch({ id: sw.router_id, name: sw.router, group: sw.group, to: sw.to }));
+  return null;
+}
+
 const batchKey = (i: Incident) => `${i.rule}|${i.opened_at.slice(0, 16)}`;
 function foldBatches(list: Incident[]): (Incident | Incident[])[] {
   const out: (Incident | Incident[])[] = [];
@@ -101,7 +112,7 @@ export function IncidentsPage() {
             : sid ? <NodeHover id={sid}><button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => open(sid)}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button></NodeHover> : (i.subject_name ?? '—')}
             <span className="sub inc-narrow">{i.rule_name} · {F.ago(i.opened_at)}</span><span className="sub inc-narrow" data-tip={sum}>{sum}</span></td>
           <td>{i.rule_name}{i.reopen_count > 0 && <span className="sub" data-tip={`恢复后 30 分钟内又出现 ${i.reopen_count} 次，已合并成这一条`}>反复 {i.reopen_count + 1} 次</span>}</td>
-          <td><span className="cell-main" data-tip={sum}>{sum}</span>{(i.resolved_at || i.ack_at) && <span className="sub">{i.resolved_at
+          <td><span className="cell-main" data-tip={sum}>{sum}</span><IncidentOps i={i} />{(i.resolved_at || i.ack_at) && <span className="sub">{i.resolved_at
             ? <span data-tip={`恢复于 ${F.dtFull(i.resolved_at)}`}>已恢复 · 持续 {F.span(Date.parse(i.resolved_at) - Date.parse(i.opened_at))}</span>
             : `${i.ack_by ? F.actor(i.ack_by) : ''} 已确认 · ${F.ago(i.ack_at!)}`}</span>}</td>
           <td>{F.dt(i.opened_at)}<span className="sub">{F.ago(i.opened_at)}</span></td>

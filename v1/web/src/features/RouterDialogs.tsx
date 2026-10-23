@@ -17,6 +17,7 @@ import { FormDialog } from '@/components/app/dialogs';
 import { CopyButton, Note } from '@/components/app/primitives';
 import { useShowBootstrap } from '@/components/app/RouterCard';
 import { prefs } from '@/lib/prefs';
+import { RouterOpsHost } from './RouterOps';
 import '@/styles/settings.css';
 
 type Method = 'ssh' | 'cmd';
@@ -172,5 +173,5 @@ function DeployHost() {
 }
 
 export function RouterDialogsHost() {
-  return <><BootstrapDialog /><DeployHost /><RemovedDialog /></>;
+  return <><BootstrapDialog /><DeployHost /><RemovedDialog /><RouterOpsHost /></>;
 }

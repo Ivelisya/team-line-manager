@@ -17,7 +17,8 @@ import { Tag } from '@/components/app/viz';
 import { DeployTimeline, MiniBeat, RouterMeters, RouterStatePill, Seen, useShowBootstrap } from '@/components/app/RouterCard';
 import { useEndSubjectMaint, useMachineBriefs, useTeams } from '@/lib/queries';
 import { MaintenanceDialog } from '@/components/app/MaintenanceDialog';
-import { deadExitNames, exitBeats, exitUsable, ROUTER_TABS, routerIssues, routerSiblings, showDeploy, showRemoved, tempTone, uptimeFmt, useDeleteRouter, usePatchRouter, useRouter, useRouterDrawer, useRouterExitMetrics, useRouters, type RouterClient, type RouterDetail, type RouterExit, type RouterTab, type RouterView } from '@/lib/routers';
+import { GroupsSection } from './RouterOps';
+import { deadExitNames, exitBeats, showSync, exitUsable, ROUTER_TABS, routerIssues, routerSiblings, showDeploy, showRemoved, tempTone, uptimeFmt, useDeleteRouter, usePatchRouter, useRouter, useRouterDrawer, useRouterExitMetrics, useRouters, type RouterClient, type RouterDetail, type RouterExit, type RouterTab, type RouterView } from '@/lib/routers';
 import { tagColor } from '@/lib/derive';
 import { useHeld } from '@/lib/useHeld';
 import { openTerminal } from '@/lib/terminal';
@@ -66,7 +67,7 @@ export function RouterDrawer() {
                 <div key={tab} className="tab-pane">
                   <React.Suspense fallback={<Skeleton h={180} className="is-float" />}>
                     {tab === 'overview' && <OverviewTab r={r} detail={detail} />}
-                    {tab === 'exits' && <Needs r={r} detail={detail}>{(d) => <ExitsTab id={r.id} d={d} />}</Needs>}
+                    {tab === 'exits' && <Needs r={r} detail={detail}>{(d) => <ExitsTab r={r} d={d} />}</Needs>}
                     {tab === 'clients' && <Needs r={r} detail={detail}>{(d) => <ClientsTab d={d} />}</Needs>}
                     {tab === 'charts' && <ChartsTab r={r} />}
                     {tab === 'manage' && <ManageTab r={r} onClosed={close} />}
@@ -372,6 +373,8 @@ const SYNC: Record<RouterExit['sync'], { tone: 'ok' | 'warn' | 'neutral'; label:
 };
 /** 不一致的说明：对上的入口已停用时直接写这个（凭据没变，是线路机上没有这个入站了） */
 const syncTip = (e: RouterExit) => (e.sync === 'drift' && e.entry?.lifecycle === 'disabled' ? '对应的入口已停用，这个出口连不上' : SYNC[e.sync].tip);
+/** 能同步到入口当前参数：不一致、对上的入口还在用 */
+const syncable = (e: RouterExit) => e.sync === 'drift' && e.entry?.lifecycle === 'active';
 /** 只测不通 1 次的不算不可用（同告警，连续两次才算）：标黄 */
 const exitTone = (e: RouterExit) => (!exitUsable(e) ? 'bad' : e.alive === false || e.sync === 'drift' ? 'warn' : e.sync === 'unmanaged' ? 'neutral' : 'ok');
 const exitTip = (e: RouterExit) => [`${e.name}（${e.type}）→ ${e.server}:${e.port}`, e.alive === false ? `连续 ${e.fail_streak} 次延迟测试不通` : e.delay_ms != null ? `延迟 ${e.delay_ms} ms` : '还没测过延迟', e.sync !== 'ok' && syncTip(e)].filter(Boolean).join('\n');
@@ -379,26 +382,30 @@ const exitTip = (e: RouterExit) => [`${e.name}（${e.type}）→ ${e.server}:${e
 const splitEntry = (name: string) => { const i = name.indexOf(' · '); return i < 0 ? [name, ''] : [name.slice(0, i), name.slice(i + 3)]; };
 const BEAT_RANGE = '6h';
 
-function ExitsTab({ id, d }: { id: string; d: RouterDetail }) {
+function ExitsTab({ r, d }: { r: RouterView; d: RouterDetail }) {
   const { openMachine } = useRouterDrawer();
-  const m = useExitBeats(id);
+  const m = useExitBeats(r.id);
   const alive = d.exits.filter(exitUsable).length;
   const managed = d.exits.filter((e) => e.entry).length;
   const drift = d.exits.filter((e) => e.sync === 'drift').length;
+  // 参数不一致、对上的入口还在用的出口能同步（入口已删除 / 停用的要改指向别的入口）
+  const onSync = React.useCallback((names: string[]) => showSync({ id: r.id, name: r.name, exits: names }), [r.id, r.name]);
+  const canSync = r.state === 'online' && d.exits.some(syncable);
   return (
     <>
-      <p className="rt-lead">{d.exits.length} 个出口 · <b>{alive}</b> 个可用 · {managed} 个对应入口{drift > 0 && <> · <span className="rt-warn">{drift} 个不一致</span></>}<InfoTip text="定期测一次延迟。连续两轮不通才算不可用，只不通一次不告警" /></p>
+      <p className="rt-lead">{d.exits.length} 个出口 · <b>{alive}</b> 个可用 · {managed} 个对应入口{drift > 0 && <> · <span className="rt-warn">{drift} 个不一致</span>{canSync && <> <button type="button" className="btn btn-link btn-sm" style={{ height: 'auto', padding: 0 }} onClick={() => onSync([])}>全部同步…</button></>}</>}<InfoTip text="定期测一次延迟。连续两轮不通才算不可用，只不通一次不告警" /></p>
       <Section>
         <SectionHeader title="出口 → 节点" />
         <Topology exits={d.exits} onOpen={openMachine} />
       </Section>
+      <GroupsSection r={r} groups={d.groups ?? []} />
       <Section>
         <SectionHeader title="明细" meta={`${d.exits.length} 个`} />
         <div className="table-wrap">
           <table className="dt rt-exit-tbl" style={{ minWidth: 708 }}>
             <colgroup><col style={{ width: 90 }} /><col style={{ width: 150 }} /><col style={{ width: 74 }} /><col style={{ width: 84 }} /><col style={{ width: 90 }} /><col style={{ width: 48 }} /><col style={{ width: 104 }} /><col style={{ width: 68 }} /></colgroup>
             <thead><tr><th>出口</th><th>对应入口</th><th>参数<InfoTip text={(['drift', 'unmanaged'] as const).map((k) => `${SYNC[k].label}：${SYNC[k].tip}`).join('\n')} /></th><th className="r">延迟</th><th>近 6 小时</th><th className="r">连接</th><th className="r">↓ / ↑ 速率</th><th className="r">客户端</th></tr></thead>
-            <tbody>{d.exits.map((e) => <ExitRow key={e.name} e={e} beats={m.get(e.name)} onOpen={openMachine} />)}</tbody>
+            <tbody>{d.exits.map((e) => <ExitRow key={e.name} e={e} beats={m.get(e.name)} onOpen={openMachine} onSync={r.state === 'online' && syncable(e) ? onSync : undefined} />)}</tbody>
           </table>
         </div>
       </Section>
@@ -413,7 +420,7 @@ function useExitBeats(id: string) {
 }
 
 /** 一行。memo：routers 事件重取详情后，没变的出口结构共享、引用不变（延迟格子另由曲线轮询换） */
-const ExitRow = React.memo(function ExitRow({ e, beats, onOpen }: { e: RouterExit; beats: ReturnType<typeof exitBeats> | undefined; onOpen: (id: string) => void }) {
+const ExitRow = React.memo(function ExitRow({ e, beats, onOpen, onSync }: { e: RouterExit; beats: ReturnType<typeof exitBeats> | undefined; onOpen: (id: string) => void; onSync?: (names: string[]) => void }) {
   const s = SYNC[e.sync];
   const [node, via] = e.entry ? splitEntry(e.entry.name) : ['', ''];
   return (
@@ -421,7 +428,7 @@ const ExitRow = React.memo(function ExitRow({ e, beats, onOpen }: { e: RouterExi
       <td><span className="cell-main strong" data-tip={`${e.name}（${e.type}）→ ${e.server}:${e.port}`}>{e.name}</span><span className="sub">{e.type}</span></td>
       <td>{e.entry ? <><button type="button" className="btn btn-link" style={{ height: 'auto', padding: 0, maxWidth: '100%' }} data-tip="打开这个节点的详情" onClick={() => onOpen(e.entry!.node_id)}><span className="ellipsis">{node}</span></button>{via && <span className="sub ellipsis" data-tip={e.entry.name}>{via}</span>}</> : <span className="t-muted">—</span>}</td>
       {/* 一致的不标（一列「一致」只是噪音），只标不一致 / 不受管 */}
-      <td>{e.sync !== 'ok' && <Pill tone={s.tone} tip={syncTip(e)}>{s.label}</Pill>}</td>
+      <td>{e.sync !== 'ok' && <Pill tone={s.tone} tip={syncTip(e)}>{s.label}</Pill>}{onSync && <button type="button" className="btn btn-link btn-sm sub" style={{ height: 'auto', padding: 0 }} data-tip="改成入口现在的凭据（会重启 OpenClash）" onClick={() => onSync([e.name])}>同步…</button>}</td>
       <td className="r">
         {e.alive === false && exitUsable(e) ? <span className="rt-alive rt-warn" data-tip="只不通 1 次，还算可用；连续两次不通才告警">不通 1 次</span>
           : e.alive === false ? <span className="rt-alive" data-tone="bad"><XCircle />不通</span>

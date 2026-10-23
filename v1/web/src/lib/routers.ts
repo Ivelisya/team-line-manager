@@ -33,7 +33,12 @@ export interface RouterView {
   state: RouterState; last_seen_at: string | null; error: string | null; summary: RouterSummary | null; deploy: RouterDeploy | null;
   /** 在维护窗口里（自己的或「全部」的）：开着的告警保持、不开新的、不发通知 */
   maintenance: boolean;
+  /** 进行中的临时切换（select 组经 mihomo API 切到组里另一个出口；from 是第一次切之前选中的，切回到它）。旧中控没有这个字段 */
+  switches?: RouterSwitch[];
 }
+export interface RouterSwitch { group: string; from: string; to: string; back_at: string | null; by: string; switched_at: string }
+/** 策略组：type 是 mihomo 的类型，只有 Selector（select）能手动切换；now 是当前选中的 */
+export interface RouterGroup { name: string; type: string; now: string | null; all: string[] }
 export interface RouterIface { name: string; device: string; up: boolean; proto: string; ip: string | null; uptime_s: number | null; rx_bps: number; tx_bps: number; rx_bytes: number; tx_bytes: number }
 /** ok：参数与 fleet 入口一致；drift：server:port 对上了，但 uuid / reality 参数不一致；unmanaged：没对上任何 fleet 入口 */
 export type ExitSync = 'ok' | 'drift' | 'unmanaged';
@@ -53,6 +58,8 @@ export interface RouterDetail {
   /** config_error：配置文件取不回、解析不了；config_stale：这时出口与入口的对应沿用上次读到的。delay_error：最近一次延迟测试没做成的原因 */
   openclash: { enabled: boolean; running: boolean; version: string | null; mode: string | null; config_path: string | null; config_mtime: string | null; config_error?: string | null; config_stale?: boolean; delay_error?: string | null };
   exits: RouterExit[]; clients: RouterClient[]; collected_at: string;
+  /** mihomo 的 API 调不通时为空；旧中控没有这个字段 */
+  groups?: RouterGroup[];
 }
 /** 详情：没采集成功过（pending）时 detail 为 null */
 export type RouterFull = RouterView & { detail: RouterDetail | null };
@@ -95,6 +102,15 @@ export const useRegenBootstrap = () => useWrite((id: string) => post<Bootstrap>(
 export const usePatchRouter = () => useWrite(({ id, ...b }: { id: string; name?: string; team_id?: string | null; note?: string }) => patch(`/routers/${id}`, b), K);
 /** 有没做完的作业改过它的出口、没确认改回时 409（错误信息直接给用户看）；force：照删，这些作业不再改回它（返回摘掉了哪些作业） */
 export const useDeleteRouter = () => useWrite(({ id, force }: { id: string; force?: boolean }) => del<{ jobs?: string[] }>(`/routers/${id}${force ? '?force=true' : ''}`), K);
+/** 同步出口参数的预览：要改的出口（from / to 都是 server:port，不变，换的是凭据）、同步不了的（入口不在用）、不能做的原因 */
+export interface SyncPreview { ok: boolean; blockers: string[]; skipped: string[]; warnings: string[]; routers: { exits: { exit: string; from: string; to: string | null }[] }[] }
+export const useSyncPreview = (id: string | null, exits: string[]) =>
+  useQuery({ queryKey: ['router-sync', id, exits.join(',')], queryFn: ({ signal }) => get<SyncPreview>(`/routers/${id}/sync?exits=${encodeURIComponent(exits.join(','))}`, signal), enabled: !!id, staleTime: 0, gcTime: 0 });
+/** 发起同步作业（router_sync：备份、改、重启 OpenClash、测延迟，失败自动改回） */
+export const useSyncRouter = () => useWrite(({ id, exits }: { id: string; exits: string[] }) => post<{ job_id: string }>(`/routers/${id}/sync`, { exits }), [...K, ['jobs']]);
+/** 临时切换：back_after_s 不给 = 不自动切回。返回切之前选中的（from）与第一次切之前的（original） */
+export const useSwitchGroup = () => useWrite(({ id, ...b }: { id: string; group: string; to: string; back_after_s?: number }) => post<{ from: string; to: string; original: string; back_at: string | null; ended: boolean }>(`/routers/${id}/switch`, b), K);
+export const useSwitchBack = () => useWrite(({ id, group }: { id: string; group: string }) => post<{ from: string; to: string }>(`/routers/${id}/switch/back`, { group }), K);
 
 // ---- 抽屉：?r=<路由id>&rtab=<页签>，与机器抽屉（?m=）各管各的 ----
 export type RouterTab = 'overview' | 'exits' | 'clients' | 'charts' | 'manage';
@@ -134,7 +150,18 @@ export function useRouterDrawer() {
 /** 告警对象是路由：软路由引擎写的（engine = "router"，subject.kind 同为 "router"），点对象要开路由抽屉 */
 export const isRouterIncident = (i: { engine: string }) => i.engine === 'router';
 /** 点告警对象开路由抽屉的哪一页：出口不通的直接开出口页签，其余开概览 */
-export const routerIncidentTab = (i: { rule: string }): RouterTab | undefined => (i.rule === 'router_exits_down' ? 'exits' : undefined);
+export const routerIncidentTab = (i: { rule: string }): RouterTab | undefined => (i.rule === 'router_exits_down' || i.rule === 'router_exit_drift' ? 'exits' : undefined);
+
+// ---- 同步出口参数、临时切换：抽屉与告警页都能弹，由外壳里那一份 RouterOpsDialogs 渲染 ----
+export interface SyncTarget { id: string; name: string; exits: string[] }
+const syncT = createStore<SyncTarget | null>(null);
+export const showSync = syncT.set;
+export const useSyncTarget = syncT.use;
+/** group / to 给了就预选（告警的「临时切到…」） */
+export interface SwitchTarget { id: string; name: string; group?: string; to?: string }
+const switchT = createStore<SwitchTarget | null>(null);
+export const showSwitch = switchT.set;
+export const useSwitchTarget = switchT.use;
 
 // ---- 接入命令 / 删除后的说明：页面、卡片、抽屉都能弹，由外壳里那一份 RouterDialogs 渲染 ----
 /** issued_at：拿到命令的时刻，路由在这之后连上才算「已接入」（重新生成时旧隧道之前也是在线的）；

@@ -194,7 +194,7 @@ export interface Meta {
 export type UsageMetric = 'cpu' | 'mem' | 'disk' | 'load';
 
 export type JobState = 'queued' | 'running' | 'waiting' | 'cancelling' | 'succeeded' | 'failed' | 'cancelled';
-export type JobKind = 'provision_vps' | 'provision_proxy' | 'provision_relay' | 'provision_ip' | 'attach_entry' | 'move_entry' | 'retire' | 'purge' | 'upgrade_agent' | 'replace' | 'tune' | 'ss_refresh';
+export type JobKind = 'provision_vps' | 'provision_proxy' | 'provision_relay' | 'provision_ip' | 'attach_entry' | 'move_entry' | 'retire' | 'purge' | 'upgrade_agent' | 'replace' | 'tune' | 'ss_refresh' | 'router_sync';
 /** 步骤 state 文档未列全，前端按 pending/running/waiting/succeeded(done)/failed/skipped(cancelled) 宽松处理 */
 export interface JobStep { idx: number; key: string; title: string; state: string; started_at: string | null; finished_at: string | null; output: Record<string, unknown> | null; error: string | null; error_kind?: string | null }
 /** 作业列表（GET /jobs）的一项：不带 steps。step = 当前（或失败的）步骤下标，step_title 为它的标题，做完为 null */
@@ -257,6 +257,9 @@ export interface Incident {
   opened_at: string; last_seen_at: string | null; resolved_at: string | null; ack_at: string | null; ack_by: string | null;
   /** 恢复后 30 分钟内复发、合并进这条的次数 */
   reopen_count: number;
+  /** 建议操作：可以直接执行的 fleetctl 命令（只有进行中的、只有几条规则有）；quick_switch：其中临时切换的结构化一份（网页「临时切到…」用）。旧中控没有这两个字段 */
+  suggested?: string[];
+  quick_switch?: { router_id: string; router: string; group: string; from: string; to: string }[];
 }
 /** 静默：subject_id 为 null = 全部机器，rule 为 null = 全部规则（rule_name 是规则中文名，同告警）。列表只有没结束的：进行中的与已预约的（starts_at 还没到） */
 /** 静默 / 维护窗口的对象类型；全部为 null */

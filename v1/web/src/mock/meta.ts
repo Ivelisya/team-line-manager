@@ -15,7 +15,7 @@ export const META: Meta = {
   job_kinds: {
     provision_vps: '上架 VPS 节点', provision_proxy: '上架家宽代理', provision_relay: '上架线路机', provision_ip: '上架同机 IP 节点',
     attach_entry: '添加入口', move_entry: '换线路机', restore_vps: '恢复 VPS 节点', restore_proxy: '恢复家宽代理', restore_relay: '恢复线路机', restore_ip: '恢复同机 IP 节点',
-    retire: '退役', purge: '彻底删除', upgrade_agent: '升级 agent', replace: '替换节点', tune: '系统调优', ss_refresh: '重新下发 SS 配置',
+    retire: '退役', purge: '彻底删除', upgrade_agent: '升级 agent', replace: '替换节点', tune: '系统调优', ss_refresh: '重新下发 SS 配置', router_sync: '同步软路由出口',
   },
   job_states: { queued: '排队中', running: '进行中', waiting: '等待中', cancelling: '取消中', succeeded: '已完成', failed: '失败', cancelled: '已取消' },
   step_states: { pending: '等待', running: '进行中', done: '已完成', skipped: '已跳过', failed: '失败', compensated: '已回滚' },
@@ -30,7 +30,7 @@ export const META: Meta = {
     relay_apply_lag: '配置未应用', relay_apply_error: '配置应用失败', relay_xray_down: 'Xray 未运行', relay_unreachable: '客户入口连不上', host_cpu_high: 'CPU 持续偏高', host_mem_high: '内存持续偏高', host_disk_high: '磁盘空间不足',
     traffic_quota_high: '流量额度吃紧', ipintel_new_isp: '来源出现新运营商', ipintel_new_city: '来源出现新城市', ipintel_datacenter_source: '机房 / VPN 来源', policy_blocked: '访问规则暂停',
     central_channel_failing: '通知渠道发送失败', central_backup_stale: '备份过期', central_disk_low: '中控磁盘空间不足', central_ingress: 'agent 同时失联', central_view_stuck: '机器视图算不出来', central_tunnel_host: '软路由回连地址不是中控',
-    router_offline: '软路由离线', router_collect_error: '软路由读取出错', router_openclash_down: 'OpenClash 没在运行', router_exits_down: '软路由出口不通', router_wan_down: '软路由 WAN 口断开', router_resource_high: '软路由资源吃紧',
+    router_offline: '软路由离线', router_collect_error: '软路由读取出错', router_openclash_down: 'OpenClash 没在运行', router_exits_down: '软路由出口不通', router_wan_down: '软路由 WAN 口断开', router_resource_high: '软路由资源吃紧', router_exit_drift: '软路由出口参数不一致',
   },
   severities: { critical: { label: '严重', tone: 'bad' }, warning: { label: '警告', tone: 'warn' }, info: { label: '提示', tone: 'info' } },
   thresholds: {
