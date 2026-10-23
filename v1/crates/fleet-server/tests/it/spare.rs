@@ -94,7 +94,7 @@ async fn spare_team_is_system_managed() {
     assert_eq!((v["spare"].clone(), v["recycle_on"].is_string()), (json!(true), true), "{v}");
     assert_eq!(t.get(&format!("/api/v1/machines/{n}")).await["recycle_on"], Value::Null);
     let renewal = |v: Value| v["health"]["reasons"].as_array().unwrap().iter().find(|r| r["key"] == "renewal_due").map(|r| r["text"].clone());
-    assert_eq!(renewal(v), Some(json!("已过期 1 天，备用节点明天自动回收")));
+    assert_eq!(renewal(v), None, "备用的不提醒续费（没有软路由出口指向它）");
     assert_eq!(renewal(t.get(&format!("/api/v1/machines/{n}")).await), Some(json!("已过期 1 天")));
     // 改名照旧：显示名跟着变
     let (s, v) = t.req("PATCH", &format!("/api/v1/teams/{sp}"), Some(json!({"name": "团队2 备用"})), None).await;

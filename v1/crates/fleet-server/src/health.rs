@@ -123,13 +123,13 @@ fn quota_reason(m: &MachineView) -> Option<Reason> {
 
 /// 续费提醒（renewal_due）：线路机和节点都有账单。到期状态由视图按生效的提前提醒天数算（meta::due_state），总览、网页、fleetctl 同一口径。
 /// 即将到期与已过期是同一条规则：到期后严重度从警告升到严重（告警引擎「只升不降、升级马上再发一次触发」），不先发一条「已恢复」。
-/// 备用团队的机器过期满 1 天自动回收（spare.rs）：提醒后面写明哪天回收、还有哪些软路由出口指向它（要换掉就先「替换」），
-/// 过期第 1 天的「已过期」告警就是「明天自动回收」的通知
+/// 备用团队的机器是替换下来、等到期丢弃的，不续费，也就不提醒（过期满 1 天自动回收，spare.rs）；
+/// 只有还被软路由出口指向的要提醒：回收后这些出口就不通了，提醒后面写明哪天回收、是哪些出口（要换掉就先「替换」）
 fn renewal_reason(m: &MachineView) -> Option<Reason> {
     let s = m.subscription.as_ref()?;
     let note = match (m.spare, m.router_exits.as_slice()) {
         (false, _) => String::new(),
-        (true, []) => crate::spare::due_note(s.due_days).to_string(),
+        (true, []) => return None,
         (true, x) => format!("{}；软路由出口 {} 还指向它", crate::spare::due_note(s.due_days), x.join("、")),
     };
     match s.due_state {
@@ -460,28 +460,28 @@ pub(crate) mod tests {
         assert_eq!(h.status, Status::Ok);
     }
 
-    /// 备用团队的机器：续费提醒写明哪天自动回收（过期第 1 天的「已过期」告警就是「明天回收」的通知）、还指向它的软路由出口；
-    /// 自动续费的到期前不提醒，过期照样说
+    /// 备用团队的机器：替换下来等丢弃的，不提醒续费；还被软路由出口指向的照样提醒，写明哪天自动回收、是哪些出口
     #[test]
-    fn spare_renewal_text_says_when_recycled() {
+    fn spare_renewal_only_when_router_exits_point_to_it() {
         let now = OffsetDateTime::now_utc();
         let mut m = base("proxy");
         m.spare = true;
         let text = |m: &MachineView| evaluate(m, now).reasons.iter().find(|r| r.key.starts_with("renewal_")).map(|r| r.text.clone());
-        m.subscription = Some(sub(3));
-        assert_eq!(text(&m).as_deref(), Some("3 天后到期，备用节点过期满 1 天后自动回收"));
-        m.subscription = Some(sub(0));
-        assert_eq!(text(&m).as_deref(), Some("今天到期，备用节点后天自动回收"));
+        for d in [3, 0, -1, -2] {
+            m.subscription = Some(sub(d));
+            assert_eq!(text(&m), None, "没有出口指向它：到期前后都不提醒（{d}）");
+        }
         m.router_exits = vec!["团队2 新办公室 · 节点20".into(), "办公室2 · 美国".into()];
+        m.subscription = Some(sub(3));
+        assert_eq!(text(&m).as_deref(), Some("3 天后到期，备用节点过期满 1 天后自动回收；软路由出口 团队2 新办公室 · 节点20、办公室2 · 美国 还指向它"));
+        m.subscription = Some(sub(0));
         assert_eq!(text(&m).as_deref(), Some("今天到期，备用节点后天自动回收；软路由出口 团队2 新办公室 · 节点20、办公室2 · 美国 还指向它"));
-        m.router_exits.clear();
         m.subscription = Some(sub(-1));
-        assert_eq!(text(&m).as_deref(), Some("已过期 1 天，备用节点明天自动回收"));
+        assert_eq!(text(&m).as_deref(), Some("已过期 1 天，备用节点明天自动回收；软路由出口 团队2 新办公室 · 节点20、办公室2 · 美国 还指向它"));
         m.subscription = Some(sub_with(-1, true));
         assert_eq!(text(&m), None, "自动续费的过期放宽 1 天");
-        m.subscription = Some(sub_with(0, true));
-        assert_eq!(text(&m), None);
         m.spare = false;
+        m.router_exits.clear();
         m.subscription = Some(sub(-1));
         assert_eq!(text(&m).as_deref(), Some("已过期 1 天"), "不是备用团队：不提回收");
     }
