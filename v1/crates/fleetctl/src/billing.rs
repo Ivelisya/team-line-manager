@@ -114,6 +114,16 @@ fn limit_cn(m: &Value, limit: Option<i64>) -> String {
 /// 时间戳的月-日（组织时区）：「10-22 起」（总览的本月业务流量，同网页）
 pub(crate) fn md_of(t: &str) -> String { table::day(t).chars().skip(5).collect() }
 
+/// 预计用满：`预计 11-03 用满（重置 11-13）· 近 7 天日均 96 GB`（中控按近 7 天日均算好，早于重置日才有）；
+/// 重置前用不满、数据不足 1 天、没有上限时为 None（billing、show 共用）
+pub(crate) fn forecast_cn(m: &Value) -> Option<String> {
+    let q = &m["quota"];
+    let at = q["forecast_full_at"].as_str()?;
+    let reset = q["period_end"].as_str().map(|e| format!("（重置 {}）", e.chars().skip(5).collect::<String>())).unwrap_or_default();
+    let daily = num(q, "/daily_avg").map(|d| format!(" · 近 7 天日均 {}", gb(d))).unwrap_or_default();
+    Some(format!("预计 {} 用满{reset}{daily}", md_of(at)))
+}
+
 /// 按哪几块网卡计（agent 报的；旧 agent 没报为空）：`，按 ens3 计`。按业务流量算的不写（billing、show 共用）
 pub(crate) fn nic_cn(m: &Value) -> String {
     let names: Vec<&str> = m.pointer("/agent/nic_ifaces").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
@@ -198,7 +208,12 @@ fn billing_text(name: &str, m: &Value, limit: Option<i64>, pct: Option<i64>, ren
     let incl = if m["ip_nodes"].as_array().is_some_and(|a| !a.is_empty()) { "，含同机 IP 节点" } else { "" };
     // 有额度的才有「本周期」；不限流量的只写本月；同机 IP 节点没设上限的与宿主机共用（流量上限那一行已写明）
     match limit {
-        Some(_) => rows.push((if m["quota"]["mode"] == "rolling30" { "近 30 天已用" } else { "本周期已用" }, used_cn(m, limit, pct, incl))),
+        Some(_) => {
+            rows.push((if m["quota"]["mode"] == "rolling30" { "近 30 天已用" } else { "本周期已用" }, used_cn(m, limit, pct, incl)));
+            if let Some(f) = forecast_cn(m) {
+                rows.push(("预计用满", f));
+            }
+        }
         None if m["host_machine"].is_null() => rows.push(("本月流量", format!("流量不限 · 本月 {}", month_cn(m)))),
         None => {}
     }
@@ -648,5 +663,8 @@ mod tests {
         assert_eq!(month_cn(&m), "业务 下载 3.5 GB / 上传 1.0 GB");
         // 总览的本月业务流量只标月-日（组织时区）
         assert_eq!(md_of("2026-10-21T17:10:00Z"), "10-22");
+        let m = json!({"quota": {"forecast_full_at": "2026-11-02T20:00:00Z", "period_end": "2026-11-13", "daily_avg": 96_000_000_000i64}});
+        assert_eq!(forecast_cn(&m).as_deref(), Some("预计 11-03 用满（重置 11-13） · 近 7 天日均 96 GB"));
+        assert_eq!(forecast_cn(&json!({"quota": {"forecast_full_at": null}})), None);
     }
 }
