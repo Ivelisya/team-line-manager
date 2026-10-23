@@ -268,7 +268,7 @@ async fn retiring_host_retires_its_ip_nodes() {
         .await
         .unwrap();
     let inc = Uuid::now_v7();
-    sqlx::query("insert into incident (id, rule, subject_id, severity, summary) values ($1, 'egress_fail', $2, 'critical', 's')").bind(inc).bind(x1).execute(&t.st.db).await.unwrap();
+    sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary) values ($1, 'machine', 'egress_fail', $2, 'critical', 's')").bind(inc).bind(x1).execute(&t.st.db).await.unwrap();
 
     // 预览：列出一并退役的同机节点；两个团队里剩下的节点按压缩前移
     let pv = t.get(&format!("/api/v1/machines/{host}/retire")).await;

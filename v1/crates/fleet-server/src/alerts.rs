@@ -14,6 +14,7 @@
 //! 所以反复抖动的告警每 5 分钟最多一对触发/恢复，真故障最多晚 5 分钟报。被静默（含维护）的不发任何通知。
 //! 「发过」= 写进了库里的发送队列（notify_outbox，`notified_at` 同一事务刷新）：之后由发送循环重试到送达或放弃，中控重启也不丢。
 
+use crate::incident::Engine;
 use crate::notify::{self, Kind, Notice};
 use crate::selfmon;
 use crate::silence::Silences;
@@ -168,13 +169,12 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
     // 与列表、实时指标共用在用机器视图（最多旧 3 s）
     let ms = views::live(st).await?;
     let silences = Silences::load(&st.db).await?;
-    // ipintel_ 开头的规则由 ipintel.rs 自己开和关（一次性异常，24 小时后恢复），central_ 开头的（中控自身）由 selfmon.rs 开和关，
-    // router_ 开头的（软路由）由 routers/alerts.rs 开和关，probe_ 开头的（探测点）由 probe_points/ 开和关，这里都不碰，否则会被当成「原因消失」恢复掉
+    // 只读写机器引擎（incident::Engine::Machine）的告警：来源画像、中控自身、软路由、探测点由各自的引擎开和关，这里不碰，否则会被当成「原因消失」恢复掉
     let cols = open_cols();
     let mut open: HashMap<(String, Uuid), Open> = sqlx::query_as::<_, Open>(&format!(
-        "select {cols} from incident where state = 'firing' and rule not like 'ipintel!_%' escape '!' and rule not like 'central!_%' escape '!'
-           and rule not like 'router!_%' escape '!' and rule not like 'probe!_%' escape '!'"
+        "select {cols} from incident where state = 'firing' and engine = $1"
     ))
+    .bind(Engine::Machine.as_str())
     .fetch_all(&st.db)
     .await?
     .into_iter()
@@ -258,7 +258,7 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
             let reopened = sqlx::query_as::<_, Open>(&format!(
                 "update incident set state = 'firing', resolved_at = null, ack_at = null, ack_by = null, reopen_count = reopen_count + 1, last_seen_at = now(),
                      severity = $3::severity, summary = $4
-                 where id = (select id from incident where rule = $1 and subject_id = $2 and state = 'resolved' and resolved_at > $5 and not detail ? 'closed_by'
+                 where id = (select id from incident where engine = $6 and rule = $1 and subject_id = $2 and state = 'resolved' and resolved_at > $5 and not detail ? 'closed_by'
                              order by resolved_at desc limit 1)
                    and exists (select 1 from machine where id = $2 and lifecycle = 'active' for share)
                  returning {cols}"
@@ -268,6 +268,7 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
             .bind(r.severity)
             .bind(&summary)
             .bind(now - time::Duration::seconds(REOPEN_WINDOW_S))
+            .bind(Engine::Machine.as_str())
             .fetch_optional(&st.db)
             .await?;
             if let Some(inc) = reopened {
@@ -279,9 +280,9 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
             }
             let id = crate::db::new_id();
             let res = sqlx::query(
-                "insert into incident (id, rule, subject_id, severity, summary, detail)
-                 select $1, $2, $3, $4::severity, $5, $6 where exists (select 1 from machine where id = $3 and lifecycle = 'active' for share)
-                 on conflict (rule, subject_id) where state = 'firing' do nothing",
+                "insert into incident (id, engine, rule, subject_id, severity, summary, detail)
+                 select $1, $7, $2, $3, $4::severity, $5, $6 where exists (select 1 from machine where id = $3 and lifecycle = 'active' for share)
+                 on conflict (engine, rule, subject_id) where state = 'firing' do nothing",
             )
             .bind(id)
             .bind(r.key)
@@ -289,6 +290,7 @@ pub async fn evaluate_once(st: &AppState, state: &mut AlertState, now: OffsetDat
             .bind(r.severity)
             .bind(&summary)
             .bind(json!({"name": m.name}))
+            .bind(Engine::Machine.as_str())
             .execute(&st.db)
             .await?;
             if res.rows_affected() > 0 {

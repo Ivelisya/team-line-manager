@@ -138,7 +138,7 @@ pub async fn prune(db: &PgPool, ret: AccessRetention, profile_days: u32) -> anyh
         ("目标首次出现", "delete from access_target_seen where last_seen < $1", hourly),
         ("来源 IP 画像缓存", "delete from ip_intel_cache where updated_at < $1", hourly),
         ("来源画像", "delete from node_source_seen where last_seen < $1 and flag is distinct from 'open'", profile),
-        ("画像异常告警", "delete from incident where rule like 'ipintel!_%' escape '!' and state = 'resolved' and resolved_at < $1", profile),
+        ("画像异常告警", "delete from incident where engine = 'ipintel' and state = 'resolved' and resolved_at < $1", profile),
     ] {
         n += sqlx::query(sql).bind(cutoff).execute(db).await.with_context(|| format!("清理过期的{what}"))?.rows_affected();
     }

@@ -17,6 +17,35 @@ use std::collections::HashMap;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+/// 告警引擎：每条 incident 属于写它的那个引擎（`incident.engine`），各引擎只读、只开、只关自己的，规则名随便取，不靠前缀分地盘。
+/// 新加引擎在这里加一项即可
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Engine {
+    /// 机器告警（alerts.rs，按 health::evaluate 的原因）
+    Machine,
+    /// 来源画像异常（ipintel.rs）
+    Ipintel,
+    /// 中控自身（selfmon.rs）
+    Central,
+    /// 软路由（routers/alerts.rs）
+    Router,
+    /// 探测点（probe_points/）
+    Probe,
+}
+
+impl Engine {
+    /// `incident.engine` 里存的值
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Engine::Machine => "machine",
+            Engine::Ipintel => "ipintel",
+            Engine::Central => "central",
+            Engine::Router => "router",
+            Engine::Probe => "probe",
+        }
+    }
+}
+
 /// 一条在告警的
 #[derive(sqlx::FromRow)]
 pub struct Firing {
@@ -33,13 +62,13 @@ pub struct Firing {
     told_resolved_at: Option<OffsetDateTime>,
 }
 
-/// 规则以 `<prefix>_` 开头的在告警的
-pub async fn firing(db: &sqlx::PgPool, prefix: &str) -> sqlx::Result<Vec<Firing>> {
+/// 这个引擎在告警的
+pub async fn firing(db: &sqlx::PgPool, engine: Engine) -> sqlx::Result<Vec<Firing>> {
     sqlx::query_as(&format!(
         "select id, rule, subject_id, severity::text severity, summary, detail, opened_at, notified_at, {TOLD_RESOLVED_SQL} told_resolved_at from incident
-         where state = 'firing' and rule like $1 escape '!'"
+         where state = 'firing' and engine = $1"
     ))
-    .bind(format!("{prefix}!_%"))
+    .bind(engine.as_str())
     .fetch_all(db)
     .await
 }
@@ -77,10 +106,11 @@ pub struct Tally {
     pub resolved: usize,
 }
 
-/// 对齐一轮。`open`：`firing` 读出来的；`exists`：新开时对象还在的 SQL 条件（`$3` 是对象 id，不用查就是 `true`）；
+/// 对齐一轮。`open`：`firing` 按同一个 `engine` 读出来的；`exists`：新开时对象还在的 SQL 条件（`$3` 是对象 id，不用查就是 `true`）；
 /// `close`：`want` 里没有的那些怎么办。有变化时发 `Event::Incidents`
 pub async fn reconcile<'n>(
     st: &AppState,
+    engine: Engine,
     open: Vec<Firing>,
     want: Vec<Want<'_>>,
     exists: &str,
@@ -139,7 +169,7 @@ pub async fn reconcile<'n>(
         let reopened: Option<(Uuid, OffsetDateTime, Option<OffsetDateTime>, Option<OffsetDateTime>)> = sqlx::query_as(&format!(
             "update incident set state = 'firing', resolved_at = null, ack_at = null, ack_by = null, reopen_count = reopen_count + 1, last_seen_at = now(),
                  severity = $2::severity, summary = $4, detail = coalesce($6, detail)
-             where id = (select id from incident where rule = $1 and subject_id = $3 and state = 'resolved' and resolved_at > $5 and not detail ? 'closed_by'
+             where id = (select id from incident where engine = $7 and rule = $1 and subject_id = $3 and state = 'resolved' and resolved_at > $5 and not detail ? 'closed_by'
                          order by resolved_at desc limit 1)
                and {exists}
              returning id, opened_at, notified_at, {TOLD_RESOLVED_SQL} told_resolved_at"
@@ -150,6 +180,7 @@ pub async fn reconcile<'n>(
         .bind(&summary)
         .bind(now - time::Duration::seconds(REOPEN_WINDOW_S))
         .bind(&w.detail)
+        .bind(engine.as_str())
         .fetch_optional(&st.db)
         .await?;
         if let Some((id, opened_at, notified_at, told_resolved_at)) = reopened {
@@ -161,9 +192,9 @@ pub async fn reconcile<'n>(
         }
         let id = crate::db::new_id();
         let res = sqlx::query(&format!(
-            "insert into incident (id, rule, subject_id, severity, summary, detail)
-             select $1, $2, $3, $4::severity, $5, coalesce($6, '{{}}') where {exists}
-             on conflict (rule, subject_id) where state = 'firing' do nothing"
+            "insert into incident (id, engine, rule, subject_id, severity, summary, detail)
+             select $1, $7, $2, $3, $4::severity, $5, coalesce($6, '{{}}') where {exists}
+             on conflict (engine, rule, subject_id) where state = 'firing' do nothing"
         ))
         .bind(id)
         .bind(w.rule)
@@ -171,6 +202,7 @@ pub async fn reconcile<'n>(
         .bind(w.severity)
         .bind(&summary)
         .bind(&w.detail)
+        .bind(engine.as_str())
         .execute(&st.db)
         .await?;
         if res.rows_affected() > 0 {

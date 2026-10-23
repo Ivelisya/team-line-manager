@@ -600,7 +600,7 @@ async fn retire_closes_open_incidents_up_front() {
     let t = setup(false).await;
     let (relay, _) = seed_relay(&t).await;
     let inc = Uuid::now_v7();
-    sqlx::query("insert into incident (id, rule, subject_id, severity, summary) values ($1, 'relay_xray_down', $2, 'critical', 's')")
+    sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary) values ($1, 'machine', 'relay_xray_down', $2, 'critical', 's')")
         .bind(inc)
         .bind(relay)
         .execute(&t.st.db)

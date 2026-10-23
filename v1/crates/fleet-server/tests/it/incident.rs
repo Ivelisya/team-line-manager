@@ -1,12 +1,14 @@
 //! 通用告警对齐（incident.rs：软路由、探测点、中控、来源画像共用）与机器的告警口径一致：
 //! 恢复后 30 分钟内复发重开原告警（复发计数 +1、清掉确认）、报过恢复后 5 分钟内复发不再报触发（抖动限流）、恢复不重复报、
 //! 严重度升级时清掉确认并马上再发「触发」、悄悄关掉的（带 closed_by）不重开。
+//! 引擎分地盘（`incident.engine`）：同名规则 / 同一个对象在不同引擎下互不相干，规则名不带任何前缀也不会被别的引擎关掉，迁移按旧前缀回填。
 //! 直接调 `incident::reconcile`（公开接口不变），评估时钟可以快进；通知的时刻由测试改成评估时钟上的（同 telemetry 的抖动测试）。
 
 use crate::common;
 
 use common::tele::*;
-use fleet_server::incident::{self, Close, Want};
+use fleet_server::incident::{self, Close, Engine, Want};
+use fleet_server::{alerts, probe_points, routers, selfmon};
 use serde_json::json;
 use std::time::Duration;
 use time::OffsetDateTime;
@@ -20,8 +22,8 @@ fn want(subject: Uuid, severity: &'static str) -> Want<'static> {
 
 /// 一轮：`up` = 这一轮问题成立（给出 Want），否则不成立时按 `close` 关
 async fn round(t: &T, at: OffsetDateTime, w: Option<Want<'static>>, close: fn() -> Close<'static>) {
-    let open = incident::firing(&t.st.db, "central").await.unwrap();
-    incident::reconcile(&t.st, open, w.into_iter().collect(), "true", at, |_| close()).await.unwrap();
+    let open = incident::firing(&t.st.db, Engine::Central).await.unwrap();
+    incident::reconcile(&t.st, Engine::Central, open, w.into_iter().collect(), "true", at, |_| close()).await.unwrap();
 }
 
 fn resolve() -> Close<'static> { Close::Resolve("测试对象") }
@@ -124,4 +126,124 @@ async fn reconcile_reopens_throttles_and_clears_ack_like_machine_alerts() {
     round(&t, at(920), Some(want(subject, "warning")), resolve).await;
     let s = state(&t).await;
     assert_eq!((s.len(), s[2].1.as_str(), s[2].2), (3, "firing", 0), "{s:?}");
+}
+
+/// 一轮：这个引擎此刻成立的问题只有 `w`，不成立的恢复（`exists` 恒真）
+async fn round_of(t: &T, engine: Engine, at: OffsetDateTime, w: Option<Want<'static>>) {
+    let open = incident::firing(&t.st.db, engine).await.unwrap();
+    incident::reconcile(&t.st, engine, open, w.into_iter().collect(), "true", at, |_| resolve()).await.unwrap();
+}
+
+/// 同一条规则、同一个对象在两个引擎下各有一条：各开各的、各恢复各的、各复发各的，互不影响
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn same_rule_and_subject_in_two_engines_do_not_interfere() {
+    let t = setup().await;
+    let subject = Uuid::now_v7();
+    let base = OffsetDateTime::now_utc();
+    let at = |s: i64| base + time::Duration::seconds(s);
+    let rows = || async {
+        sqlx::query_as::<_, (String, String, i32)>("select engine, state::text, reopen_count from incident where rule = $1 order by engine, opened_at")
+            .bind(RULE)
+            .fetch_all(&t.st.db)
+            .await
+            .unwrap()
+    };
+    let row = |e: &str, st: &str, n: i32| (e.to_string(), st.to_string(), n);
+
+    round_of(&t, Engine::Central, at(0), Some(want(subject, "warning"))).await;
+    round_of(&t, Engine::Router, at(0), Some(want(subject, "warning"))).await;
+    assert_eq!(rows().await, [row("central", "firing", 0), row("router", "firing", 0)], "同名同对象各开一条");
+
+    // 中控侧的问题没了：只恢复它自己的；软路由引擎再对齐一轮（问题仍成立）不会新开、不会动中控那条
+    round_of(&t, Engine::Central, at(60), None).await;
+    round_of(&t, Engine::Router, at(60), Some(want(subject, "warning"))).await;
+    assert_eq!(rows().await, [row("central", "resolved", 0), row("router", "firing", 0)]);
+
+    // 中控侧复发：只重开自己恢复的那条（不会因为软路由那条还开着而不开，也不会动软路由那条）
+    round_of(&t, Engine::Central, at(120), Some(want(subject, "warning"))).await;
+    assert_eq!(rows().await, [row("central", "firing", 1), row("router", "firing", 0)]);
+
+    // 软路由引擎一个问题都没了：只恢复它的，中控那条照旧
+    round_of(&t, Engine::Router, at(180), None).await;
+    assert_eq!(rows().await, [row("central", "firing", 1), row("router", "resolved", 0)]);
+
+    // 两个引擎的 firing 读取也各看各的
+    let (c, r) = (incident::firing(&t.st.db, Engine::Central).await.unwrap(), incident::firing(&t.st.db, Engine::Router).await.unwrap());
+    assert_eq!((c.len(), r.len()), (1, 0));
+}
+
+/// 新加一条规则（或新引擎）不用改任何前缀：规则名不带 central_ / router_ / probe_ / ipintel_，别的引擎的评估一轮也不会把它当成「原因消失」关掉
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rule_without_any_prefix_is_not_closed_by_other_engines() {
+    let t = setup().await;
+    let subject = Uuid::now_v7();
+    let base = OffsetDateTime::now_utc();
+    let w = || Want { rule: "plain_new_rule", subject, name: "对象", severity: "warning", text: "出问题了".into(), detail: None, ready: true };
+    for e in [Engine::Machine, Engine::Ipintel, Engine::Central, Engine::Router, Engine::Probe] {
+        incident::reconcile(&t.st, e, vec![], vec![w()], "true", base, |_| resolve()).await.unwrap();
+    }
+    let firing = || async {
+        sqlx::query_scalar::<_, String>("select engine from incident where rule = 'plain_new_rule' and state = 'firing' order by engine")
+            .fetch_all(&t.st.db)
+            .await
+            .unwrap()
+    };
+    assert_eq!(firing().await, ["central", "ipintel", "machine", "probe", "router"]);
+
+    // 各引擎的评估循环各跑一轮：每一轮只关它自己的那条（对象不存在），其余原样
+    routers::alerts::evaluate(&t.st, &mut Default::default(), base).await.unwrap();
+    assert_eq!(firing().await, ["central", "ipintel", "machine", "probe"]);
+    probe_points::check_once(&t.st, base).await.unwrap();
+    assert_eq!(firing().await, ["central", "ipintel", "machine"]);
+    selfmon::check_once(&t.st, base).await.unwrap();
+    assert_eq!(firing().await, ["ipintel", "machine"]);
+    // 机器引擎只处理在用机器的告警：这个对象不是机器，原样；来源画像引擎这里没有评估，原样
+    alerts::evaluate_once(&t.st, &mut Default::default(), base).await.unwrap();
+    assert_eq!(firing().await, ["ipintel", "machine"]);
+}
+
+/// 迁移 0055：存量告警按旧的规则前缀回填 engine，开着的唯一约束带上 engine（同规则同对象不同引擎可以各开一条）
+#[tokio::test]
+async fn migration_0055_backfills_engine_from_rule_prefix() {
+    let (pool, _schema) = common::db_until(50).await;
+    let db = &pool;
+    let subject = Uuid::now_v7();
+    let rules = ["ipintel_new_city", "central_ingress", "router_offline", "probe_point_offline", "agent_offline", "renewal_due", "egress_fail", "routerless_machine_rule"];
+    for rule in rules {
+        for state in ["firing", "resolved"] {
+            sqlx::query("insert into incident (id, rule, subject_id, severity, state, summary, resolved_at) values ($1, $2, $3, 'warning', $4::incident_state, 's', case when $4 = 'resolved' then now() end)")
+                .bind(Uuid::now_v7())
+                .bind(rule)
+                .bind(subject)
+                .bind(state)
+                .execute(db)
+                .await
+                .unwrap();
+        }
+    }
+    common::migrator(None).run(db).await.unwrap();
+    let got: Vec<(String, String, i64)> = sqlx::query_as("select rule, engine, count(*) from incident group by 1, 2 order by 1").fetch_all(db).await.unwrap();
+    let want: Vec<(String, String, i64)> = [
+        ("agent_offline", "machine"),
+        ("central_ingress", "central"),
+        ("egress_fail", "machine"),
+        ("ipintel_new_city", "ipintel"),
+        ("probe_point_offline", "probe"),
+        ("renewal_due", "machine"),
+        ("router_offline", "router"),
+        ("routerless_machine_rule", "machine"),
+    ]
+    .iter()
+    .map(|(r, e)| (r.to_string(), e.to_string(), 2))
+    .collect();
+    assert_eq!(got, want);
+    // engine 没有默认值：漏带写不进去；同规则同对象在不同引擎下可以各开一条，同一引擎下不行
+    let e = sqlx::query("insert into incident (id, rule, subject_id, severity, summary) values ($1, 'x', $2, 'warning', 's')").bind(Uuid::now_v7()).bind(subject).execute(db).await.unwrap_err();
+    assert_eq!(e.as_database_error().and_then(|d| d.code()).as_deref(), Some("23502"), "{e}");
+    let ins = |engine: &'static str| {
+        sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary) values ($1, $2, 'agent_offline', $3, 'warning', 's')").bind(Uuid::now_v7()).bind(engine).bind(subject).execute(db)
+    };
+    ins("central").await.unwrap();
+    let e = ins("central").await.unwrap_err();
+    assert_eq!(e.as_database_error().and_then(|d| d.code()).as_deref(), Some("23505"), "{e}");
 }

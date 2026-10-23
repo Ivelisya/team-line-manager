@@ -476,7 +476,7 @@ async fn ack_incident_and_silence_validation() {
         .await
         .unwrap();
     let inc = Uuid::now_v7();
-    sqlx::query("insert into incident (id, rule, subject_id, severity, summary) values ($1, 'agent_offline', $2, 'critical', 'agent 5 分钟没上报')")
+    sqlx::query("insert into incident (id, engine, rule, subject_id, severity, summary) values ($1, 'machine', 'agent_offline', $2, 'critical', 'agent 5 分钟没上报')")
         .bind(inc)
         .bind(mid)
         .execute(&t.st.db)
