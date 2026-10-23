@@ -966,7 +966,26 @@ async fn verify_entry(c: &Ctx<'_>, eid: Uuid) -> anyhow::Result<Outcome> {
     match row {
         Some((true, lat, detail)) => Ok(Outcome::Done(json!({"latency_ms": lat, "egress_ip": detail}))),
         Some((false, _, detail)) => {
-            c.warn(format!("出口探测未通过：{}（继续等待重试）", detail.unwrap_or_default())).await;
+            // 线路机到节点 SS 端口的 TCP 探测也不通：多半是节点防火墙挡了，直接说出来，而不是只有「超时 12 秒」
+            let tcp: Option<(bool, String)> = sqlx::query_as(
+                "select p.ok, display_name(r.kind::text, r.label, t.name, r.number) from probe_result p
+                 join entry e on e.id = p.entry_id join machine r on r.id = e.relay_id left join team t on t.id = r.team_id
+                 where p.entry_id = $1 and p.kind = 'tcp' and p.ts >= $2 order by p.ts desc limit 1",
+            )
+            .bind(eid)
+            .bind(c.started)
+            .fetch_optional(&c.st.db)
+            .await?;
+            let detail = detail.unwrap_or_default();
+            let why = match tcp {
+                Some((false, r)) => format!("线路机 {r} 连不上节点 SS 端口（多半是节点防火墙挡了：ufw / firewalld / 云厂商安全组）；出口探测：{detail}"),
+                _ => format!("出口探测未通过：{detail}"),
+            };
+            let limit = super::defs(&c.job.kind).iter().find(|d| d.key == "verify").map_or(300, |d| d.timeout_s);
+            if (OffsetDateTime::now_utc() - c.started).whole_seconds() + 15 > limit {
+                return Err(StepError::err(ErrKind::Timeout, format!("等了 {limit} 秒出口探测一直没通过：{why}")));
+            }
+            c.warn(format!("{why}（继续等待重试）")).await;
             Ok(Outcome::Wait(10))
         }
         None => {
