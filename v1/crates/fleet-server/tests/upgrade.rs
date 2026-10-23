@@ -470,11 +470,13 @@ async fn node_ss_restarts_an_instance_older_than_its_config() {
     let ip = "192.0.2.42";
     let root = FAKE.path().join(ip);
     // 在跑的 ssserver：磁盘上的程序是指向 sleep 的符号链接，由它起的进程当主进程（「进程跑的是磁盘上的程序」成立）。
-    // 不复制：刚写完就执行，别的测试线程同时 fork 出的子进程还拿着写句柄时会 ETXTBSY
+    // 不复制：刚写完就执行，别的测试线程同时 fork 出的子进程还拿着写句柄时会 ETXTBSY。
+    // argv[0] 固定写 sleep：sleep 可能是按 argv[0] 分派的多合一程序（busybox；Alpine 3.24 的 coreutils 包换成了 uutils），
+    // 经符号链接起的进程 argv[0] 是 ssserver，会报 unknown program 立即退出，脚本就看不到「进程跑的是磁盘上的程序」
     let bin = root.join("usr/local/bin/ssserver");
     std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
     std::os::unix::fs::symlink("/bin/sleep", &bin).unwrap();
-    let ss = tokio::process::Command::new(&bin).arg("600").kill_on_drop(true).spawn().unwrap();
+    let mut ss = tokio::process::Command::new(&bin).arg0("sleep").arg("600").kill_on_drop(true).spawn().unwrap();
     std::fs::write(root.join("pid.fleet-ssserver"), ss.id().unwrap().to_string()).unwrap();
     let script = |pw: &str| {
         jobs::scripts::vars(&[("SS_PORT", "8388"), ("SS_METHOD", "aes-256-gcm"), ("SS_PASSWORD", pw), ("ALLOW", "198.51.100.2")])
@@ -491,6 +493,7 @@ async fn node_ss_restarts_an_instance_older_than_its_config() {
     assert_eq!((o.code, o.kv("ss"), o.kv("nft_relays"), o.kv("linklocal_dns")), (0, Some("listening"), Some("198.51.100.2"), None), "{o:?}");
     assert!(read(&conf).contains(r#""password":"pw1""#) && read(&unit).contains("\nIPAddressDeny=link-local 100.100.100.200/32\n"));
     assert_eq!(restarts(), 1);
+    assert!(ss.try_wait().unwrap().is_none(), "假 ssserver 已退出，下面「不重启」的断言没有意义");
     // 都没变、实例在配置和单元之后启动：不重启
     for f in [&conf, &unit] {
         set_mtime(f, now - time::Duration::hours(2));
