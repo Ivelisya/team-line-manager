@@ -1109,6 +1109,55 @@ async fn relay_maintenance_freezes_node_probe_alerts() {
     assert_eq!(t.health(node).await.0, "unknown");
 }
 
+/// 节点两条入口：线路机2 那条 TCP 不通开了告警；之后线路机1 进维护、线路机2 那条恢复了——告警照常恢复
+/// （只看当初失败的那条入口判不判得出，另一条入口的线路机在维护不挡）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn other_relay_maintenance_does_not_hold_node_probe_alerts() {
+    let t = setup().await;
+    let r1 = seed_relay(&t, "线路机1", "198.51.100.1", "tok1").await;
+    let r2 = seed_relay(&t, "线路机2", "198.51.100.2", "tok2").await;
+    let team = seed_team(&t, "团队1").await;
+    let (node, e1) = seed_node(&t, r1, team, 1, "203.0.113.5", 20000).await;
+    let e2 = Uuid::now_v7();
+    sqlx::query("insert into entry (id, relay_id, node_id, port, client_uuid, short_id, lifecycle) values ($1, $2, $3, 20001, $4, 'abcd', 'active')")
+        .bind(e2)
+        .bind(r2)
+        .bind(node)
+        .bind(Uuid::now_v7())
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let report = |tok: &'static str, seq: u64, e: Uuid, tcp_ok: bool| {
+        let t = &t;
+        async move {
+            let mut r = blank_report(seq);
+            r.xray = Some(xray(true));
+            r.probes = vec![probe(e, now_ms() - 2_000, ProbeKind::Egress, true), probe(e, now_ms() - 2_000, ProbeKind::Tcp, tcp_ok)];
+            assert_eq!(t.report(tok, &r).await.0, StatusCode::OK);
+        }
+    };
+    report("tok1", 1, e1, true).await;
+    report("tok2", 1, e2, false).await;
+    let mut state = AlertState::default();
+    let base = OffsetDateTime::now_utc();
+    pass(&t, &mut state, base, 0).await;
+    pass(&t, &mut state, base, 91).await;
+    let firing = incidents(&t, "firing").await;
+    assert!(firing.iter().any(|i| i["rule"] == "tcp_fail" && i["summary"].as_str().unwrap().contains("线路机2 到节点 TCP 不通")), "{firing:?}");
+    let f = time::format_description::well_known::Rfc3339;
+    let now = OffsetDateTime::now_utc();
+    t.post("/api/v1/silences", json!({
+        "subject_id": r1, "is_maintenance": true, "comment": "换内核",
+        "starts_at": (now - time::Duration::minutes(1)).format(&f).unwrap(), "ends_at": (now + time::Duration::hours(4)).format(&f).unwrap(),
+    })).await;
+    report("tok2", 2, e2, true).await;
+    for secs in [121, 181, 241, 301] {
+        pass(&t, &mut state, base, secs).await;
+    }
+    assert!(!has_rule(&incidents(&t, "firing").await, "tcp_fail"), "线路机1 维护不挡线路机2 那条的恢复");
+    assert!(has_rule(&incidents(&t, "resolved").await, "tcp_fail"));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn retiring_machine_alerts_are_left_to_retire_flow() {
     let t = setup().await;
