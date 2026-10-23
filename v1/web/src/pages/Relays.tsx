@@ -19,21 +19,26 @@ import { openEvacuate } from '@/lib/nodeActions';
 import { movableEntries } from '@/components/app/LifecycleDialogs';
 import { ShowAll } from '@/components/app/Pagination';
 import { scrollBackTo } from '@/lib/usePage';
-import { ENTRY_CAP, entryStatus, probeCell, tcpCell } from '@/features/EntriesTable';
+import { ENTRY_CAP, RouterMark, entryStatus, probeCell, tcpCell } from '@/features/EntriesTable';
+import { useEntryRouters } from '@/lib/routers';
 import { HEALTH_TONE } from '@/lib/sort';
 
 type Open = ReturnType<typeof useDrawer>['open'];
+type Users = { id: string; name: string; exit: string }[];
 
 /** 入口一行。memo：实时推送对没变的入口原样返回（live.ts 的 patchEntry），open 是稳定引用，只有变了的那几行重渲染 */
-const EntryRow = React.memo(function EntryRow({ e, open }: { e: EntryView; open: Open }) {
+const EntryRow = React.memo(function EntryRow({ e, open, routers }: { e: EntryView; open: Open; routers?: Users }) {
   return (
     // 行里的「⋯」由外面的 EntryMenus 接住，不当成点行
     <tr className="is-link" tabIndex={0} onClick={(ev) => { if (!(ev.target as Element).closest('button')) open(e.node.id); }}
       onKeyDown={(ev) => { if (ev.key === 'Enter' && ev.target === ev.currentTarget) open(e.node.id); }}>
       <td className="strong num">{e.port}</td>
       {/* 直出入口的节点就是这台线路机自己 */}
-      <td>{e.direct ? <span className="ellipsis block" data-tip="从线路机自己的 IP 出去，不经节点">{e.node.name}</span>
-        : <NodeHover id={e.node.id} noFocus><span className="ellipsis block">{e.node.name}</span></NodeHover>}</td>
+      <td><div className="row" style={{ gap: 0, flexWrap: 'nowrap' }}>
+        {e.direct ? <span className="ellipsis" data-tip="从线路机自己的 IP 出去，不经节点">{e.node.name}</span>
+          : <NodeHover id={e.node.id} noFocus><span className="ellipsis">{e.node.name}</span></NodeHover>}
+        {routers && <RouterMark users={routers} />}
+      </div></td>
       <td>{entryStatus(e)}</td>
       {/* 停用的入口不再探测：留着的是停用前的旧读数，不显示 */}
       {e.lifecycle === 'disabled' ? <><td className="r t-muted">—</td><td className="r t-muted">—</td></> : <><td className="r">{tcpCell(e)}</td><td className="r">{probeCell(e.egress)}</td></>}
@@ -61,7 +66,7 @@ function ApplyStatus({ m }: { m: MachineView }) {
   );
 }
 
-function RelayCard({ m, open }: { m: MachineView; open: Open }) {
+function RelayCard({ m, open, routers }: { m: MachineView; open: Open; routers: Map<string, Users> }) {
   const r = m.relay;
   const dueWarn = !!m.subscription && m.subscription.due_state !== 'ok';
   const [all, setAll] = React.useState(false);
@@ -90,7 +95,7 @@ function RelayCard({ m, open }: { m: MachineView; open: Open }) {
           <colgroup><col style={{ width: 84 }} /><col style={{ width: 160 }} /><col style={{ width: 104 }} /><col style={{ width: 96 }} /><col style={{ width: 96 }} /><col style={{ width: 120 }} /><col style={{ width: 52 }} /></colgroup>
           <thead><tr><th>端口</th><th>节点</th><th>状态</th><th className="r">TCP 延迟</th><th className="r">出口</th><th className="r">本月业务流量</th><th /></tr></thead>
           <tbody>
-            {entries.map((e) => <EntryRow key={e.id} e={e} open={open} />)}
+            {entries.map((e) => <EntryRow key={e.id} e={e} open={open} routers={routers.get(e.id)} />)}
           </tbody>
         </table>
         </TableWrap>
@@ -102,27 +107,33 @@ function RelayCard({ m, open }: { m: MachineView; open: Open }) {
   );
 }
 
-/** 吸顶跳转条高亮当前看着的那台：各卡与视口上部一条带（顶栏和跳转条之下、到视口 45% 处）相交的第一台 */
+/** 吸顶跳转条高亮当前看着的那台：各卡与视口上部一条带（顶栏和跳转条之下、到视口 45% 处）相交的第一台。
+ *  点了某台就直接高亮它，直到用户自己滚动：最后几台内容短、滚不到顶部，不能让高亮停在别的卡上 */
 function useCurrentRelay(idsKey: string) {
   const [cur, setCur] = React.useState<string | null>(null);
+  const pinned = React.useRef(false);
   React.useEffect(() => {
     if (!idsKey) return;
     const ids = idsKey.split(','); const seen = new Set<string>();
     const io = new IntersectionObserver((es) => {
       for (const e of es) { const id = e.target.id.slice('relay-'.length); if (e.isIntersecting) seen.add(id); else seen.delete(id); }
-      const first = ids.find((id) => seen.has(id)); if (first) setCur(first);
+      const first = ids.find((id) => seen.has(id)); if (first && !pinned.current) setCur(first);
     }, { rootMargin: '-140px 0px -55% 0px' });
     ids.forEach((id) => { const el = document.getElementById(`relay-${id}`); if (el) io.observe(el); });
-    return () => io.disconnect();
+    const unpin = () => { pinned.current = false; };
+    window.addEventListener('wheel', unpin, { passive: true }); window.addEventListener('touchmove', unpin, { passive: true }); window.addEventListener('keydown', unpin);
+    return () => { io.disconnect(); window.removeEventListener('wheel', unpin); window.removeEventListener('touchmove', unpin); window.removeEventListener('keydown', unpin); };
   }, [idsKey]);
-  return cur;
+  const pick = (id: string) => { pinned.current = true; setCur(id); document.getElementById(`relay-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+  return [cur, pick] as const;
 }
 
 export function RelaysPage() {
   const q = useRelays();
   const { open } = useDrawer();
+  const routers = useEntryRouters();
   const list = q.data ?? [];
-  const cur = useCurrentRelay(list.length > 2 ? list.map((m) => m.id).join() : '');
+  const [cur, jump] = useCurrentRelay(list.length > 2 ? list.map((m) => m.id).join() : '');
   return (
     <div className="stack">
       <PageHead title="线路" note={q.data ? `${list.length} 台线路机 · ${list.reduce((s, m) => s + m.entries.length, 0)} 条入口` : undefined} />
@@ -132,13 +143,13 @@ export function RelaysPage() {
       {list.length > 2 && (
         <nav className="relay-jump" aria-label="线路机">
           {list.map((m) => (
-            <button key={m.id} type="button" className="fchip" aria-pressed={cur === m.id} onClick={() => document.getElementById(`relay-${m.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>
+            <button key={m.id} type="button" className="fchip" aria-pressed={cur === m.id} onClick={() => jump(m.id)}>
               {m.name}{HEALTH_TONE[m.health.status] === 'bad' && <span className="relay-jump-bad">{healthLabel(m.health.status)}</span>}
             </button>
           ))}
         </nav>
       )}
-      {list.map((m) => <RelayCard key={m.id} m={m} open={open} />)}
+      {list.map((m) => <RelayCard key={m.id} m={m} open={open} routers={routers} />)}
       {q.data && list.length === 0 && <Empty icon={<Waypoints size={22} />} text="还没有线路机" hint="去「上架」添加" />}
     </div>
   );

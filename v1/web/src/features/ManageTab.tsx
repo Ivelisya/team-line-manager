@@ -15,7 +15,8 @@ import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
 import { Note, Section, SectionHeader } from '@/components/app/primitives';
 import { ShowAll } from '@/components/app/Pagination';
-import { entryStatus } from './EntriesTable';
+import { RouterMark, entryStatus } from './EntriesTable';
+import { useEntryRouters } from '@/lib/routers';
 import { ConfirmDialog } from '@/components/app/dialogs';
 import { RetireDialog } from '@/components/app/RetireDialog';
 import { EntryMenuButton, EntryMenus, entryLabel } from '@/components/app/EntryActions';
@@ -118,6 +119,7 @@ const MANAGE_CAP = 5;
 function EntrySection({ m }: { m: MachineView }) {
   const relays = useRelayChoices().data ?? [];
   const add = useAddEntry();
+  const routers = useEntryRouters();
   const [relay, setRelay] = React.useState('');
   const [dlg, setDlg] = React.useState<null | 'move' | 'evacuate'>(null);
   const used = new Set(m.entries.map((e) => e.relay.id));
@@ -140,7 +142,7 @@ function EntrySection({ m }: { m: MachineView }) {
         {/* 入口行的副标题是配置状态（是否已推到线路机），右边的胶囊只标不正常的（中控连不上、探测不通…），两者各说各的 */}
         {m.entries.length > 0 && <div className="mgroup">{shown.map((e) => (
           <div key={e.id} className="manage-row">
-            <div><div className="t">{m.kind === 'relay' ? `${e.port} · ${e.node.name}` : entryLabel(e)}</div><div className="hint">{e.apply_error ? errText(e.apply_error) : e.applied ? '配置已应用' : '配置应用中'}</div></div>
+            <div><div className="t">{m.kind === 'relay' ? `${e.port} · ${e.node.name}` : entryLabel(e)}{routers.get(e.id) && <RouterMark users={routers.get(e.id)!} />}</div><div className="hint">{e.apply_error ? errText(e.apply_error) : e.applied ? '配置已应用' : '配置应用中'}</div></div>
             <span className="row" style={{ gap: 8 }}>{entryStatus(e)}<EntryMenuButton entry={e} /></span>
           </div>
         ))}<ShowAll total={m.entries.length} cap={cap} open={all} onToggle={() => setAll((v) => !v)} /></div>}
