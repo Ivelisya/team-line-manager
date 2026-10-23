@@ -86,7 +86,7 @@ function ExitDelays({ r, range, few }: { r: RouterView; range: string; few: stri
   const beats = React.useMemo(() => (exits ?? []).map((x) => ({ name: x.name, ...exitBeats(x.points, range, bins, Date.now(), late ? since : undefined) })), [exits, range, bins, late, since]);
   return (
     <Section>
-      <SectionHeader meta={late ? `数据从 ${F.dt(new Date(since).toISOString())} 起` : undefined} title={<>各出口延迟<InfoTip text={'每 5 分钟经出口访问一次 generate_204。\n每格是一段时间（从现在往前等分）：全部成功绿、有测试失败黄、失败过半红，斜纹是那段没有数据；右边是整段的成功率。\n延迟高低看下面的曲线，曲线的缺口是那次测试失败'} /></>} />
+      <SectionHeader meta={late ? `数据从 ${F.dt(new Date(since).toISOString())} 起` : undefined} title={<>各出口延迟<InfoTip text={'每 5 分钟经出口访问一次 generate_204（每批 6 个出口，没通的当场单独再测一次，再不通才记失败）。\n每格是一段时间（从现在往前等分）：全部成功绿、有测试失败黄、失败过半红，斜纹是那段没有数据；右边是整段的成功率。\n延迟高低看下面的曲线，曲线的缺口是那次测试失败'} /></>} />
       {q.isError && !q.data ? <ErrorNote error={q.error} onRetry={() => void q.refetch()}>出口曲线加载失败：</ErrorNote>
         : q.isLoading ? <Skeleton h={180} className="is-float" />
         : !exits?.length ? <div className="chart-empty" style={{ height: 120 }}>{few}</div> : (

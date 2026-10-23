@@ -269,15 +269,67 @@ function proxies(oc, port) {
 	}
 }
 
-// 测一次全部出口：mihomo 并发经每个出口请求一次 DELAY_URL，通的回延迟，不通的不在结果里；全部不通回 504
+// 出口名按字节百分号编码，放进 /proxies/<名字>/delay
+function enc(s) {
+	let r = '';
+	for (let i = 0; i < length(s); i++) {
+		let c = substr(s, i, 1);
+		r += match(c, /^[A-Za-z0-9._~-]$/) ? c : sprintf('%%%02X', ord(s, i));
+	}
+	return r;
+}
+
+// 并发测一批出口（各自经 /proxies/<名字>/delay、各一条连接、各 5 秒时限）：通的写进 results，返回 [通的, 没回话的]。
+// mihomo 测不通也会回 JSON（{"message": …}）；什么都没回（API 没响应）的不算测过
+function delay_batch(port, names, results) {
+	let cmd = [];
+	for (let i, n in names) {
+		fs.unlink(D + '/delay.' + i);
+		push(cmd, sprintf("curl -sS -m 7 -H @%s -o %s %s 2>/dev/null &", D + '/auth', D + '/delay.' + i,
+			q('http://127.0.0.1:' + port + '/proxies/' + enc(n) + '/delay?url=' + DELAY_URL + '&timeout=5000')));
+	}
+	run(join(' ', cmd) + ' wait');
+	let ok = [], silent = [];
+	for (let i, n in names) {
+		let d = null;
+		try {
+			d = json(fs.readfile(D + '/delay.' + i) || 'null');
+		}
+		catch (e) {}
+		fs.unlink(D + '/delay.' + i);
+		if (type(d) != 'object')
+			push(silent, n);
+		else if (type(d.delay) == 'int' && d.delay > 0) {
+			results[n] = d.delay;
+			push(ok, n);
+		}
+	}
+	return [ok, silent];
+}
+
+// 测一次全部出口：分批，每批最多 BATCH 个并发（不用 /group/GLOBAL/delay：它让全部出口同一时刻经家宽各建一条跨境连接、
+// 共用一个时限，挤在一起丢一两个握手包就超时）。整批测完没通的（不超过 RETEST_MAX 个时）当场单独再测一次，通了就算这一轮通；
+// 没通的太多多半是路由自己的网络断了，不重测。时间预算：开测 BUDGET 秒后不再开新的一批，重测也只在 RETEST_BUDGET 秒内开始；
+// 没轮到的、mihomo 没回话的记进 untested（中控沿用上一次的结果，不算不通），起点按分钟轮换，超预算时不总是同几个轮不上。
+// results 只有通的出口，同 mihomo 分组测试的格式
+const BATCH = 6, RETEST_MAX = 5, BUDGET = 15, RETEST_BUDGET = 20;
+
 function delay(oc, port) {
-	let r = api(port, '/group/GLOBAL/delay?url=' + DELAY_URL + '&timeout=5000', 15);
-	if (r.code == 200 && r.data != null)
-		oc.delay = { ok: true, results: r.data };
-	else if (r.code == 504)
-		oc.delay = { ok: true, results: {} };
-	else
-		oc.delay = { ok: false, error: r.error };
+	let n = length(oc.proxies), k = (n > 0) ? int(time() / 60) % n : 0, names = [];
+	for (let i = 0; i < n; i++)
+		push(names, oc.proxies[(i + k) % n].name);
+	let results = {}, untested = [], t0 = time(), i = 0;
+	for (; i < n && time() - t0 < BUDGET; i += BATCH)
+		for (let x in delay_batch(port, slice(names, i, i + BATCH), results)[1])
+			push(untested, x);
+	for (let x in slice(names, i))
+		push(untested, x);
+	let failed = filter(names, (x) => results[x] == null && index(untested, x) < 0);
+	oc.delay = { ok: true, results: results, untested: untested };
+	if (length(failed) > 0 && length(failed) <= RETEST_MAX && time() - t0 < RETEST_BUDGET) {
+		let r = delay_batch(port, failed, results);
+		oc.delay.retest = { tried: failed, ok: r[0] };
+	}
 }
 
 function openclash() {
@@ -310,7 +362,7 @@ function openclash() {
 	oc.version = v.data.version;
 	connections(oc, port);
 	proxies(oc, port);
-	if (DELAY && DELAY_URL)
+	if (DELAY && DELAY_URL && oc.proxies != null)
 		delay(oc, port);
 }
 
