@@ -61,7 +61,7 @@ export function FxTab() {
             <TableWrap>
               <table className="dt" style={{ minWidth: 720 }}>
                 <colgroup><col style={{ width: 90 }} /><col style={{ width: 200 }} /><col style={{ width: 170 }} /><col style={{ width: 110 }} /><col style={{ width: 70 }} /><col /></colgroup>
-                <thead><tr><th>币种</th><th>汇率</th><th>反向</th><th>来源</th><th>在用</th><th /></tr></thead>
+                <thead><tr><th>币种</th><th>汇率</th><th>反向</th><th>来源</th><th>状态</th><th /></tr></thead>
                 <tbody>
                   {rows.map((r) => (
                     <tr key={r.currency}>
@@ -69,7 +69,7 @@ export function FxTab() {
                       <td className="num">{r.usd_per_unit != null ? F.fxRate(r.currency, r.usd_per_unit) : <span className="t-muted">未折算</span>}</td>
                       <td className="num t-sub">{r.per_usd != null ? `1 USD = ${n4(r.per_usd)} ${r.currency}` : '—'}</td>
                       <td><SourcePill r={r} date={d.rates_date} /></td>
-                      <td>{r.in_use ? '在用' : <span className="t-muted">—</span>}</td>
+                      <td>{r.in_use ? <span className="t-muted">—</span> : <span className="t-muted">未在用</span>}</td>
                       <td className="r">{r.source !== 'base' && <span className="row row-acts" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
                         <Button size="sm" variant="quiet" onClick={() => setEdit({ currency: r.currency })}><Pencil size={13} />手动设置</Button>
                         {r.source === 'manual' && <Button size="sm" variant="quiet" onClick={() => setAsk(r.currency)}><RotateCcw size={13} />改回自动</Button>}
@@ -84,7 +84,7 @@ export function FxTab() {
         )}
       </Panel>
       {editHeld && <RateDialog target={editHeld} data={d} open={edit != null} onClose={() => setEdit(null)} />}
-      <ConfirmDialog open={!!ask} onOpenChange={(o) => !o && setAsk(null)} title={`${askHeld ?? ''} 改回自动汇率？`} confirmLabel="改回自动"
+      <ConfirmDialog open={!!ask} onOpenChange={(o) => !o && setAsk(null)} title={`改回自动汇率 · ${askHeld ?? ''}`} confirmLabel="改回自动"
         description={(() => { const r = d?.rates.find((x) => x.currency === askHeld); return r?.auto_per_usd != null ? `改回自动汇率：1 USD = ${n4(r.auto_per_usd)} ${askHeld}` : `自动汇率里没有 ${askHeld}，改回后这个币种的费用不会折成美元`; })()}
         onConfirm={async () => { await clear.mutateAsync(ask!); toast.ok('已改回自动汇率'); }} />
     </>

@@ -214,7 +214,7 @@ function Silences() {
         )}
       </Panel>
       <SilenceDialog open={open} onOpenChange={setOpen} preset={preset} />
-      <ConfirmDialog open={!!askDel} onOpenChange={(o) => !o && setAskDel(null)} title={`删除${delHeld ? subjectText(delHeld) : ''}的${delHeld?.is_maintenance ? '维护窗口' : '静默'}？`} confirmLabel="删除" danger
+      <ConfirmDialog open={!!askDel} onOpenChange={(o) => !o && setAskDel(null)} title={`删除${delHeld?.is_maintenance ? '维护窗口' : '静默'} · ${delHeld ? subjectText(delHeld) : ''}`} confirmLabel="删除" danger
         description={delHeld && Date.parse(delHeld.starts_at) > now
           ? '删除后，这次预约会取消'
           : '仍然异常的对象会马上发出告警'}

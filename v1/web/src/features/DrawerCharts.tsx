@@ -262,11 +262,7 @@ export function HostTab({ m }: { m: MachineView }) {
         <SectionHeader title="当前" meta={h ? `更新于 ${F.ago(h.ts)}` : m.agent?.last_report_at ? `最后上报于 ${F.ago(m.agent.last_report_at)}` : '还没上报过'} />
         {h && r ? (
           <LabelValueGrid>
-            <LabelValue label="内存"><Num f={F.mem(h.mem_used)} /> <span className="t-sub">/ <Num f={F.mem(h.mem_total)} /></span></LabelValue>
-            <LabelValue label="磁盘"><Num f={F.mem(h.disk_used)} /> <span className="t-sub">/ <Num f={F.mem(h.disk_total)} /></span></LabelValue>
-            {/* 同卡片的负载格条：百分比一行，「1 分钟 0.13 · 1 核」放第二行 */}
-            <LabelValue label="负载" wrap>{h.load1 == null ? <span className="t-sub">{r.load.sub}</span>
-              : <><Num f={r.load.value} /><div className="t-sub">{r.load.sub}</div></>}</LabelValue>
+            {/* 内存、磁盘、负载的当前读数在下面各图表头里（百分比 + 绝对值），这里只留图里没有的 TCP 连接数 */}
             <LabelValue label="TCP 连接数"><span className="num">{h.tcp_conns ?? '—'}</span></LabelValue>
           </LabelValueGrid>
         ) : <div className="hint">agent 离线，没有当前读数</div>}
@@ -275,12 +271,12 @@ export function HostTab({ m }: { m: MachineView }) {
       {/* 图表卡同属一段，之间不再画分隔线 */}
       <Section className="chart-stack">
         <ChartCard c="var(--m-cpu)" icon={<Cpu />} title="CPU" meta={hourly ? '每小时平均与峰值' : undefined} value={h ? <Num f={F.pct(h.cpu_pct, 1)} /> : '—'} caption="使用率"><ChartFrame q={s} few={few} height={140}><TimeChart full holeLabel="agent 离线" points={s.data?.points} range={s.data?.range ?? range} lines={hourly ? L_CPU_HOURLY : L_CPU} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></ChartCard>
-        <ChartCard c="var(--m-mem)" icon={<MemoryStick />} title="内存" value={r ? <Num f={F.pct(r.mem.pct, 1)} /> : '—'} caption="使用率"><ChartFrame q={s} few={few} height={140}><TimeChart full holeLabel="agent 离线" points={s.data?.points} range={s.data?.range ?? range} lines={L_MEM} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></ChartCard>
-        <ChartCard c="var(--m-disk)" icon={<HardDrive />} title="磁盘" value={r ? <Num f={F.pct(r.disk.pct, 1)} /> : '—'} caption="使用率"><ChartFrame q={s} few={few} height={140}><TimeChart full holeLabel="agent 离线" points={s.data?.points} range={s.data?.range ?? range} lines={L_DISK} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></ChartCard>
+        <ChartCard c="var(--m-mem)" icon={<MemoryStick />} title="内存" value={r ? <Num f={F.pct(r.mem.pct, 1)} /> : '—'} caption={r ? `使用率 · ${r.mem.sub}` : '使用率'}><ChartFrame q={s} few={few} height={140}><TimeChart full holeLabel="agent 离线" points={s.data?.points} range={s.data?.range ?? range} lines={L_MEM} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></ChartCard>
+        <ChartCard c="var(--m-disk)" icon={<HardDrive />} title="磁盘" value={r ? <Num f={F.pct(r.disk.pct, 1)} /> : '—'} caption={r ? `使用率 · ${r.disk.sub}` : '使用率'}><ChartFrame q={s} few={few} height={140}><TimeChart full holeLabel="agent 离线" points={s.data?.points} range={s.data?.range ?? range} lines={L_DISK} yFmt={yPct} valueFmt={vPct} domain={PCT_DOMAIN} height={140} /></ChartFrame></ChartCard>
         {/* 容器里拿不到负载（或小时汇总不含）：图卡缩成一行，不占一整张图的高度 */}
         {cores != null && (s.data && !loadPoints
           ? <ChartCard slim c="var(--m-load)" icon={<Gauge />} title="负载" meta={<InfoTip text={`1 分钟平均负载除以 ${cores} 核。超过 100% 说明有进程在排队`} />} value="—" caption={hourly ? '小时汇总不含负载' : '容器里读不到负载'} />
-          : <ChartCard c="var(--m-load)" icon={<Gauge />} title="负载" meta={<InfoTip text={`1 分钟平均负载除以 ${cores} 核。超过 100% 说明有进程在排队`} />} value={r ? <Num f={r.load.value} /> : '—'} caption="1 分钟平均"><ChartFrame q={s} few={few} height={140}>{loadPoints && <TimeChart full holeLabel="agent 离线" points={loadPoints} range={s.data?.range ?? range} lines={L_LOAD} yFmt={yPct} valueFmt={vPct} height={140} />}</ChartFrame></ChartCard>)}
+          : <ChartCard c="var(--m-load)" icon={<Gauge />} title="负载" meta={<InfoTip text={`1 分钟平均负载除以 ${cores} 核。超过 100% 说明有进程在排队`} />} value={r ? <Num f={r.load.value} /> : '—'} caption={h && h.load1 != null && r ? `1 分钟 ${h.load1.toFixed(2)} · ${cores} 核` : '1 分钟平均'}><ChartFrame q={s} few={few} height={140}>{loadPoints && <TimeChart full holeLabel="agent 离线" points={loadPoints} range={s.data?.range ?? range} lines={L_LOAD} yFmt={yPct} valueFmt={vPct} pct height={140} />}</ChartFrame></ChartCard>)}
         <ChartCard c="var(--chart-1)" icon={<Network />} title="网卡速率" value={h ? <>↓ <Num f={F.rate(h.net_rx_bps)} /> <span className="t-sub">·</span> ↑ <Num f={F.rate(h.net_tx_bps)} /></> : '—'} caption="当前速率"><ChartFrame q={s} few={few} height={160}><TimeChart full holeLabel="agent 离线" points={s.data?.points} range={s.data?.range ?? range} lines={L_NET} yFmt={yRate} valueFmt={vRate} yBase={1000} height={160} clip /></ChartFrame></ChartCard>
       </Section>
     </>

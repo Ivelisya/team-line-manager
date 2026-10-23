@@ -53,7 +53,7 @@
 .rt-tl-at { font: var(--fs-micro) / 16px var(--font-num); color: var(--fg-2); }
 .rt-tl-err { flex-basis: 100%; font: var(--fs-label) / var(--lh-label) var(--font-mono); color: var(--fg-2); overflow-wrap: anywhere; }
 .rt-tl-acts { flex-basis: 100%; gap: var(--sp-4); margin-top: var(--sp-4); }
-.ncard .rt-tl-err { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ncard .rt-tl-err { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; } /* 卡片上最多三行，全文在悬停里 */
 
 /* ---- 抽屉 ---- */
 /* 头部的类型图标：同机器抽屉的国旗，对齐标题那一行（窄屏状态、团队折到第二行时不落到两行中间） */
@@ -61,6 +61,9 @@
 .m-drawer-head > .nc-kind > .lucide { width: var(--icon-md); height: var(--icon-md); }
 /* 概览：总览数字下面接资源四项 */
 .rt-hero-meters { margin-top: var(--sp-12); }
+/* 离线软路由的读数是掉线前最后一次读到的：弱化，并在最上面标明时间 */
+.rt-stale { opacity: 0.6; }
+.rt-stale-tag { margin: 0; font-size: var(--fs-label); line-height: var(--lh-label); color: var(--fg-2); }
 
 /* ---- 表格里的读数 ---- */
 /* 入口行里的「软路由 N」小标 */
@@ -84,7 +87,7 @@
 
 /* ---- 出口 → 节点：按线路机分组，组标题是线路机（或「不受管」），每行「出口 ── 节点」一一对应 ---- */
 .rt-topo { display: grid; gap: var(--sp-14); min-width: 360px; }
-.rt-topo-group { display: grid; grid-template-columns: max-content 28px minmax(0, 1fr); grid-auto-rows: 28px; align-items: center; }
+.rt-topo-group { display: grid; grid-template-columns: minmax(0, 180px) 28px minmax(0, 1fr); /* 左列定宽：各组的出口胶囊一样宽，连线与右侧节点名才对得齐 */ grid-auto-rows: 28px; align-items: center; }
 .rt-topo-title { grid-column: 1 / -1; display: flex; align-items: baseline; gap: var(--sp-8); height: auto; padding-bottom: var(--sp-4); font: var(--fw-medium) var(--fs-label) / var(--lh-label) var(--font-sans); color: var(--fg-2); }
 .rt-topo-title .btn-link { font: inherit; font-weight: var(--fw-medium); color: var(--fg); }
 .rt-topo-title small { font-size: var(--fs-micro); font-weight: var(--fw-regular); color: var(--fg-2); }

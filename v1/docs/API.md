@@ -282,7 +282,7 @@ ProvisionItem = {
 | `central_channel_failing`（通知渠道发送失败） | critical | 某个启用的通知渠道连续发送失败满 5 分钟（`notify_channel.failing_since`）。每个渠道一条（库里 `subject_id` 是渠道 id）；这条不发给它自己 | 它发成功一次（含渠道测试）；渠道停用、删除时直接关，不发恢复（`detail.closed_by = "channel_removed"`） |
 | `central_backup_stale`（备份过期） | warning | 备份目录（`[selfmon] backup_dir`，默认 `/var/backups/fleet`）里最新一份 `fleet-*.tar` / `fleet-*.tar.age` 超过 26 小时，或一份都没有、读不了；目录不存在（没装备份）不检查 | 有了 26 小时内的一份 |
 | `central_disk_low`（中控磁盘空间不足） | critical | 中控本机 `/`、`/var/lib/postgresql`、`/var/lib/fleet`、备份目录所在的文件系统可用空间低于 10%（同 df） | 回到 11% 以上 |
-| `central_ingress`（agent 同时失联） | critical | 有自己 agent 的在用机器（不含维护中的、同机 IP 节点）里同时离线的超过一半且至少 3 台：摘要「x/y 台 agent 同时失联：检查边缘机 / Caddy / DNS」。期间不新开单机的 `agent_offline`（已开着的照旧） | 离线的不再过半或不到 3 台；还没回来的从这时起按单机去抖、报 `agent_offline` |
+| `central_ingress`（agent 同时失联） | critical | 有自己 agent 的在用机器（不含维护中的、同机 IP 节点）里同时离线的超过一半且至少 3 台：摘要「x/y 台 agent 同时失联：检查边缘机、Caddy、域名解析」。期间不新开单机的 `agent_offline`（已开着的照旧） | 离线的不再过半或不到 3 台；还没回来的从这时起按单机去抖、报 `agent_offline` |
 | `central_view_stuck`（机器视图算不出来） | critical | 机器视图（列表、总览、实时推送、告警评估共用）连续 2 分钟算不出来（查询被锁住或超时）：摘要「机器视图已经 n 分钟算不出来（原因）：…」。期间 `central_ingress` 判断不了，开着的留着 | 算成一次 |
 
 **探测点的告警**（`probe_points/`，规则 `probe_` 开头）：`probe_point_offline`（探测点离线，warning）——启用的、上报过的探测点超过 180 秒没上报；摘要「香港：5 分钟没有上报（最近一次 …）」，它是主探测来源时后面写明线路机的连通性暂由中控代替 / 暂时判不出。上报恢复即恢复；停用、删除时直接关、不发恢复（`detail.closed_by = probe_point_disabled / probe_point_removed`）。对象是探测点：`subject` / `subject_id` 为 null、`subject_name` 是它的名字（通知记录同）。每 30 秒检查一次，不去抖（条件自带 180 秒）。

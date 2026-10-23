@@ -25,9 +25,29 @@ export const Tabs = React.forwardRef<React.ElementRef<typeof TabsPrimitive.Root>
   );
 });
 Tabs.displayName = 'Tabs';
-export const TabsList = React.forwardRef<React.ElementRef<typeof TabsPrimitive.List>, React.ComponentPropsWithoutRef<typeof TabsPrimitive.List>>(({ className, ...p }, ref) => (
-  <TabsPrimitive.List ref={ref} className={cn('tabs-list', className)} {...p} />
-));
+/** 页签放不下时（窄屏抽屉）横向滚动：被裁的那一侧渐隐提示还有页签，选中的页签自动滚进可见区 */
+export const TabsList = React.forwardRef<React.ElementRef<typeof TabsPrimitive.List>, React.ComponentPropsWithoutRef<typeof TabsPrimitive.List>>(({ className, ...p }, ref) => {
+  const el = React.useRef<HTMLDivElement | null>(null);
+  const cur = React.useContext(TabsCtx)?.value;
+  const [fade, setFade] = React.useState('');
+  const setRef = React.useCallback((n: HTMLDivElement | null) => { el.current = n; if (typeof ref === 'function') ref(n); else if (ref) (ref as React.MutableRefObject<HTMLDivElement | null>).current = n; }, [ref]);
+  React.useLayoutEffect(() => {
+    const n = el.current; if (!n) return;
+    const update = () => { const l = n.scrollLeft > 1; const r = n.scrollLeft + n.clientWidth < n.scrollWidth - 1; setFade(l && r ? 'lr' : l ? 'l' : r ? 'r' : ''); };
+    update();
+    n.addEventListener('scroll', update, { passive: true });
+    const off = watchSize(n, update);
+    return () => { n.removeEventListener('scroll', update); off(); };
+  }, []);
+  React.useEffect(() => {
+    const n = el.current; const t = n?.querySelector<HTMLElement>('[data-state="active"]');
+    if (!n || !t) return;
+    const pad = 28; // 留出渐隐的宽度
+    if (t.offsetLeft < n.scrollLeft + pad) n.scrollTo({ left: Math.max(0, t.offsetLeft - pad), behavior: 'smooth' });
+    else if (t.offsetLeft + t.offsetWidth > n.scrollLeft + n.clientWidth - pad) n.scrollTo({ left: t.offsetLeft + t.offsetWidth - n.clientWidth + pad, behavior: 'smooth' });
+  }, [cur]);
+  return <TabsPrimitive.List ref={setRef} className={cn('tabs-list', className)} data-fade={fade || undefined} {...p} />;
+});
 TabsList.displayName = 'TabsList';
 /** noPanel：这组页签没有配对的 TabsContent（内容由页面自己按 value 渲染）时传，去掉 Radix 默认写上的、指向不存在元素的 aria-controls */
 export const TabsTrigger = React.forwardRef<React.ElementRef<typeof TabsPrimitive.Trigger>, React.ComponentPropsWithoutRef<typeof TabsPrimitive.Trigger> & { noPanel?: boolean }>(({ className, noPanel, children, ...p }, ref) => {

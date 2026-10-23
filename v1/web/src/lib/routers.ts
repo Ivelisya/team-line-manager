@@ -39,7 +39,7 @@ export interface RouterIface { name: string; device: string; up: boolean; proto:
 export type ExitSync = 'ok' | 'drift' | 'unmanaged';
 export interface RouterExit {
   name: string; type: string; server: string; port: number;
-  /** lifecycle：对上的面板入口现在的状态（已停用、已删除的对不上，sync 为 drift） */
+  /** lifecycle：对上的入口现在的状态（已停用、已删除的对不上，sync 为 drift） */
   entry: { id: string; name: string; node_id: string; relay_id: string; lifecycle: EntryLifecycle } | null; sync: ExitSync;
   /** alive / delay_ms 来自每 5 分钟一次的延迟测试（delay_at 是测试时刻）；还没测过为 null。fail_streak：连续几次测不通。conns 等是 mihomo 连接的汇总 */
   alive: boolean | null; delay_ms: number | null; delay_at: string | null; fail_streak: number; conns: number; up_bps: number; down_bps: number; clients: number;
@@ -237,7 +237,7 @@ export function useAddrName() {
     return { text: n ? `${n}${i < 0 ? '' : addr.slice(i)}` : addr, tip: n ? addr : undefined };
   }, [names]);
 }
-/** 面板入口 id → 在用它的软路由出口（软路由 + 出口名）：各台软路由详情里的出口按对上的入口汇总，抽屉入口表、线路页的入口行用它标「软路由」 */
+/** 入口 id → 在用它的软路由出口（软路由 + 出口名）：各台软路由详情里的出口按对上的入口汇总，抽屉入口表、线路页的入口行用它标「软路由」 */
 export function useEntryRouters() {
   const list = useRouters().data;
   const live = (list ?? []).filter((r) => r.summary);

@@ -255,7 +255,7 @@ function SessionsPanel() {
                       {/* 原始 User-Agent 只在悬停里 */}
                       <div className="row" style={{ flexWrap: 'nowrap', gap: 8 }}><span className="cell-main strong" data-tip={s.user_agent ?? '没有记录浏览器信息'}>{uaLabel(s.user_agent)}</span>{s.current && <Chip>本设备</Chip>}</div>
                     </td>
-                    <td>{s.ip ? <Trunc className="mono">{s.ip}</Trunc> : <span className="t-sub">未知</span>}</td>
+                    <td>{s.ip ? <Trunc>{s.ip}</Trunc> : <span className="t-sub">未知</span>}</td>
                     <td>{F.dt(s.created_at)}</td>
                     <td>{F.dt(s.last_seen_at)}<span className="sub">{F.ago(s.last_seen_at)}</span></td>
                     <td>{F.dt(s.expires_at)}</td>
@@ -269,7 +269,7 @@ function SessionsPanel() {
         )}
       </Panel>
       <ConfirmDialog open={!!ask} onOpenChange={(o) => !o && setAsk(null)} confirmLabel="撤销" danger
-        title={`撤销「${askHeld ? uaLabel(askHeld.user_agent) : ''}」的会话？`}
+        title={`撤销会话 · ${askHeld ? uaLabel(askHeld.user_agent) : ''}`}
         description={`${askHeld?.ip ? `来自 ${askHeld.ip}，` : ''}那台设备需要重新登录`}
         onConfirm={async () => { if (ask) { await revoke.mutateAsync(ask.id); toast.ok('会话已撤销'); } }} />
       <RevokeOthersDialog open={others} n={nOthers} onClose={() => setOthers(false)} />

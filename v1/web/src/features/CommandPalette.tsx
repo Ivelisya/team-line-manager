@@ -89,7 +89,7 @@ function PaletteBody({ theme, askUpgrade }: { theme: Theme; askUpgrade: () => vo
     <CommandItem key={m.id} value={value(m)} keywords={[m.id]}
       onSelect={() => { close(); if (mode === 'copy-ip') void copyText(m.ip, ' IP', true); else if (mode === 'evacuate') openEvacuate(m.id); else if (mode === 'renew') openRenew(m.id); else if (mode === 'terminal') openTerminal({ kind: 'machine', id: m.id, name: m.name }); else openDrawer(m.id); }}>
       <Flag country={m.country} manual={!!m.country_set} ip={m.ip} />
-      <span className="cmd-main"><b className="ellipsis">{m.name}</b><HealthPill m={m} /></span>
+      <span className="cmd-main"><b className="ellipsis">{m.name}</b>{m.health.status !== 'ok' && <HealthPill m={m} />}</span>
       <span className="cmd-aside">{mode === 'copy-ip' ? <>复制 <span className="num">{m.ip}</span></> : mode === 'evacuate' ? <span>搬空…</span> : mode === 'renew' ? <span>登记续费…</span> : mode === 'terminal' ? <span>打开终端</span> : <span className="num">{m.ip}</span>}</span>
     </CommandItem>
   ));

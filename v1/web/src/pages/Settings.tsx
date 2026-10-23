@@ -161,7 +161,7 @@ function ApiKeysSection() {
         </DialogContent>
       </Dialog>
 
-      <ConfirmDialog open={!!ask} onOpenChange={(o) => !o && setAsk(null)} title={`撤销密钥「${askHeld?.name ?? ''}」？`} confirmLabel="撤销" danger
+      <ConfirmDialog open={!!ask} onOpenChange={(o) => !o && setAsk(null)} title={`撤销密钥 · ${askHeld?.name ?? ''}`} confirmLabel="撤销" danger
         description={<>用它的脚本会立即失效，无法恢复 <InfoTip text="脚本会收到 401 错误。需要的话，只能新建一个" /></>}
         onConfirm={async () => { await revoke.mutateAsync(ask!.id); toast.ok('密钥已撤销'); }} />
     </>
@@ -269,7 +269,7 @@ function NotifySection() {
       </Panel>
 
       {editHeld && <ChannelDialog target={editHeld} open={edit != null} onClose={() => setEdit(null)} />}
-      <ConfirmDialog open={!!ask} onOpenChange={(o) => !o && setAsk(null)} title={`删除渠道「${askHeld?.name ?? ''}」？`} confirmLabel="删除" danger
+      <ConfirmDialog open={!!ask} onOpenChange={(o) => !o && setAsk(null)} title={`删除渠道 · ${askHeld?.name ?? ''}`} confirmLabel="删除" danger
         description="发送记录会保留"
         onConfirm={async () => { await del.mutateAsync(ask!.id); toast.ok('渠道已删除'); }} />
     </>

@@ -382,7 +382,7 @@ function SingleForm({ row, onChange, ctx, result, errors, stale }: { row: Row; o
           {T('service_ref', '服务编号', { ph: 'SVC-1042' })}
           <Field label={<>到期日{plan && <span className="field-tag">必填</span>}</>} info={plan ? undefined : '填了才有费用统计和到期提醒'} error={fe.due_date}><DateField value={row.due_date} onChange={(v) => onChange({ due_date: v })} /></Field>
           {T('price', '费用', { ph: ip ? '附加 IP 的费用' : plan ? `跟随套餐（${F.money(plan.price_cents, plan.currency)}${plan.currency !== 'USD' && plan.price_usd_cents != null ? ` ≈ ${F.money(plan.price_usd_cents, 'USD')}` : ''}）` : '没有套餐时要填', info: plan ? '留空就跟随套餐，填了就是这台单独设置' : undefined })}
-          <div className="span-2"><Field label="备注"><Input value={row.note} onChange={(e) => onChange({ note: e.target.value })} /></Field></div>
+          <Field label="备注"><Input value={row.note} onChange={(e) => onChange({ note: e.target.value })} /></Field>
         </div>
       </Panel>
       <CheckOutput rows={[row]} resOf={() => result} errOf={() => errors} stale={stale} />
@@ -446,7 +446,7 @@ function BatchGrid({ rows, setRows, ctx, resOf, errOf, checkedAny, stale }: { ro
   return (
     <div className="stack">
       <Panel title="批量上架" sub={<InfoTip text={BATCH_TIP} />} flush
-        tools={<>{meta().ssh_public_key && <Button size="sm" variant="quiet" title={PUBKEY_TIP} onClick={copyPubkey}><KeyRound />复制中控公钥</Button>}<Button size="sm" onClick={copyHeader}><ClipboardPaste />复制表头</Button><Button size="sm" onClick={() => addRows(1)}><Plus />加一行</Button><Button size="sm" onClick={() => addRows(5)}>加 5 行</Button><Button size="sm" variant="quiet" onClick={() => (rows.length > 1 ? setAskClear(true) : setRows([newRow()]))}>清空</Button></>}>
+        tools={<>{meta().ssh_public_key && <Button size="sm" title={PUBKEY_TIP} onClick={copyPubkey}><KeyRound />复制中控公钥</Button>}<Button size="sm" onClick={copyHeader}><ClipboardPaste />复制表头</Button><Button size="sm" onClick={() => addRows(1)}><Plus />加一行</Button><Button size="sm" onClick={() => addRows(5)}>加 5 行</Button><Button size="sm" variant="quiet" onClick={() => (rows.length > 1 ? setAskClear(true) : setRows([newRow()]))}>清空</Button></>}>
         <div className="table-wrap">
           <table className="dt dt-grid" style={{ minWidth: total }}>
             <colgroup><col style={{ width: 40 }} />{COLS.map((c) => <col key={c.key} style={{ width: c.w }} />)}<col style={{ width: 220 }} /><col style={{ width: 56 }} /></colgroup>

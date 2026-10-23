@@ -42,18 +42,18 @@ const TRAFFIC_LINK = '/nodes?sort=-traffic';
 /** 算正常的：只有故障算异常，降级（照常服务、只是有提醒）与维护都算正常；未知（还判断不了）两头都不算 */
 const normal = (c: Counts) => c.total - c.down - c.unknown;
 
-/** 问候语下的一行状态：只列要处理的事（故障、上架失败、到期），没有就是「全部正常」 */
+/** 问候语下的一行状态：只说有几类事要处理、是哪几类（具体台数在下面的 KPI 卡里，这里不再重复一遍数字）；没有就是「全部正常」 */
 function statusLine(o: Overview | undefined, down: number): string {
   if (!o) return '';
-  const parts = [
-    down && `${down} 台故障`,
-    o.failed && `${o.failed} 台上架失败`,
-    o.overdue && `${o.overdue} 台已过期`,
-    o.due_soon && `${o.due_soon} 台即将到期`,
+  const todo = [
+    down && '故障',
+    o.failed && '上架失败',
+    o.overdue && '已过期',
+    o.due_soon && '即将到期',
   ].filter(Boolean);
   const unknown = o.nodes.unknown + o.relays.unknown;
-  if (!down && !o.failed) parts.unshift(unknown ? `${unknown} 台状态未知` : '全部正常');
-  return parts.join(' · ');
+  if (todo.length) return `有 ${todo.length} 件事要处理：${todo.join('、')}${unknown ? ` · ${unknown} 台状态未知` : ''}`;
+  return unknown ? `${unknown} 台状态未知` : '全部正常';
 }
 
 /** memo：首页因机器列表推送、筛选、开关抽屉重渲染时，总览只在 overview 数据（metrics 推送单独更新）或额度吃紧的结果变了才重画 */
@@ -81,7 +81,7 @@ export const OverviewSection = React.memo(function OverviewSection({ o, loading 
             caption={relays && <><DotCount tone="warn" n={relays.degraded} label="降级" />{relays.maintenance > 0 && <DotCount tone="neutral" n={relays.maintenance} label="维护" />}<DotCount tone="bad" n={relays.down} label="故障" to={`${DOWN_LINK}&kind=relay`} />{relays.unknown > 0 && <DotCount tone="neutral" n={relays.unknown} label="未知" />}</>} />
           <Stat loading={loading} tone="bad" icon={<AlertTriangle />} label="故障" value={<CountUp value={o ? down : undefined} />} unit="台" to={DOWN_LINK} caption={o && <><DotCount tone="bad" n={o.nodes.down} label="节点" /><DotCount tone="bad" n={o.relays.down} label="线路机" />{o.failed > 0 && <DotCount tone="bad" n={o.failed} label="上架失败" />}</>} />
           <Stat loading={loading} tone="amber" icon={<CalendarClock />} label="即将到期" value={<CountUp value={o?.due_soon} />} unit="台" to="/nodes?due=soon&sort=due" caption={o && nd !== undefined && <>{nd ? <span className="stat-who">最近<span className="ellipsis" data-tip={nd.name}>{nd.name}</span>{nd.days <= 1 ? <b>{nd.days === 0 ? '今天' : '明天'}</b> : <><b className="num">{nd.days}</b>天后</>}</span> : <span>近期没有到期</span>}{o.overdue > 0 && <DotCount tone="bad" n={o.overdue} label="已过期" />}</>} />
-          <Stat loading={loading} tone="gold" icon={<CircleDollarSign />} label="每月费用" to={COST_LINK} info={`在用机器的月费，统一折成美元。汇率在「设置 → 汇率」${usd ? `\n${usdTotalTip(usd)}` : ''}`}
+          <Stat loading={loading} tone="gold" icon={<CircleDollarSign />} label="每月费用" to={COST_LINK} info={`在用的节点和线路机的月费，统一折成美元。汇率在「设置 → 汇率」${usd ? `\n${usdTotalTip(usd)}` : ''}`}
             value={!usd || usdEmpty ? '—' : <span data-tip={usdTotalTip(usd)}>{F.money(usd.cents, 'USD')}</span>}
             caption={usd && (usd.unconverted.length ? <span style={{ color: 'var(--warn-text)' }} data-tip="没有这些币种的汇率，未计入合计">未折算 {usd.unconverted.map((c) => F.money(c.cents, c.currency)).join(' + ')}</span>
               : foreign.length ? <span data-tip={usdTotalTip(usd)}>含 {foreign.map((p) => `${F.money(p.cents, p.currency)} ≈ ${F.money(p.usd_cents, 'USD')}`).join(' · ')}</span>

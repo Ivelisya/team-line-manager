@@ -138,7 +138,7 @@ function LiveNodes({ sp, upd, tools }: { sp: URLSearchParams; upd: (patch: Recor
       { id: 'cost', header: '费用', size: 104, r: true, drop: 2, ...byNum((m) => m.subscription?.monthly_usd_cents ?? null),
         cell: (m) => { const s = m.subscription; if (!s) return <span className="t-muted">—</span>;
           const v = feeView(s);
-          return <><Num f={{ v: v.main, u: v.unit }} />{v.sub && <span className="sub" data-tip={v.tip ?? undefined}>{v.sub}</span>}</>; } },
+          return <div data-tip={v.tip ?? undefined}><Num f={{ v: v.main, u: v.unit }} />{v.sub && <span className="sub">{v.sub}</span>}</div>; } },
       { id: 'chev', header: '', size: 36, cell: () => <ChevronRight size={14} /> },
     ];
     return c;

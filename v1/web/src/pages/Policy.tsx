@@ -308,7 +308,7 @@ function Editor({ scope, name, sp, team, node, onDirty }: { scope: 'team' | 'nod
           <span className="pol-meta t-sub">{dirty ? <span className="pol-dirty">有未保存的修改</span> : sp.updated_at ? <span data-tip={F.dtFull(sp.updated_at)}>最近修改 {F.dt(sp.updated_at)}{sp.updated_by ? ` · ${F.actor(sp.updated_by)}` : ''}</span> : '还没有修改过'}</span>
         </div>
       </div>
-      <ConfirmDialog open={askDrop} onOpenChange={setAskDrop} title={`放弃「${name}」的草稿？`} confirmLabel="放弃草稿" danger
+      <ConfirmDialog open={askDrop} onOpenChange={setAskDrop} title={`放弃草稿 · ${name}`} confirmLabel="放弃草稿" danger
         description={`草稿里的改动会丢失${dirty ? '，未保存的编辑也会丢' : ''}`}
         onConfirm={() => save.mutateAsync(req(cur)).then(onSaved)} />
     </Panel>

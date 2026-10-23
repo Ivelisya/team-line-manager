@@ -528,7 +528,7 @@ fn spare_notes(auto_renew: &[String], host: &str, renumbered: Option<&str>, done
         });
     }
     if let Some(n) = renumbered {
-        v.push(format!("原团队后面的节点{}前移补号：撤销退役（改回原团队）拿到的是那时最小的空号，回不到 {n}", if done { "已" } else { "会" }));
+        v.push(format!("原团队后面的节点{}前移补号：撤销退役（改回原团队）拿到的是那时最小的空号，回不到{n}", if done { "已" } else { "会" }));
     }
     v
 }

@@ -29,7 +29,7 @@ export function FromTag({ from, start, tip, sep }: { from: string | null | undef
 export function MonthFlowCell({ m }: { m: MachineView }) {
   const f = monthFlow(m);
   return (
-    <div data-tip={monthFlowTip(m)}>
+    <div data-tip={`${f.kind === 'nic' ? `↓ 下行 ${str(bytes(f.down))} · ↑ 上行 ${str(bytes(f.up))}` : `下载 ${str(bytes(f.down))} · 上传 ${str(bytes(f.up))}`}\n${monthFlowTip(m)}`}>
       <Num f={bytes(f.total)} />
       <span className="sub">{`↓ ${str(bytes(f.down))} ↑ ${str(bytes(f.up))}`}<FromTag from={f.from} sep /></span>
     </div>

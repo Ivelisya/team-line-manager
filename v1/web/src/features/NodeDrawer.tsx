@@ -219,8 +219,8 @@ function OverviewTab({ m }: { m: MachineView }) {
             <LabelValue label="公网地址">{m.relay.public_host}</LabelValue>
             <LabelValue label="端口范围">{m.relay.port_min}–{m.relay.port_max}</LabelValue>
             {/* 中控上的配置版本与线路机已生效的版本：相等即已同步，不等时写出从哪一版到哪一版 */}
-            <LabelValue label="配置">{m.relay.generation === m.relay.applied_generation ? '已同步'
-              : <span style={{ color: 'var(--warn-text)' }}>待同步（{m.relay.applied_generation} → {m.relay.generation}）</span>}</LabelValue>
+            <LabelValue label="配置">{m.relay.generation === m.relay.applied_generation ? '已应用'
+              : <span style={{ color: 'var(--warn-text)' }}>配置未应用（配置版本 {m.relay.generation}，已生效 {m.relay.applied_generation}）</span>}</LabelValue>
             <LabelValue label="上次应用">{F.dtFull(m.relay.applied_at)}</LabelValue>
           </LabelValueGrid>
           {m.relay.apply_error && <div style={{ marginTop: 8 }}><Note tone="bad">{errText(m.relay.apply_error)}</Note></div>}

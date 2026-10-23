@@ -66,7 +66,7 @@ export const MoveDialog = resetOnOpen(function MoveDialog({ m, open, onOpenChang
   const pv = q.isFetchedAfterMount ? q.data : undefined;
   const ready = !!to && cur.length > 0 && (!multi || !!from) && !!pv?.ok && !q.isFetching;
   return (
-    <ConfirmDialog asForm open={open} onOpenChange={onOpenChange} size="md" title={`把 ${m.name} 换到另一台线路机`} confirmLabel="开始换线" confirmDisabled={!ready}
+    <ConfirmDialog asForm open={open} onOpenChange={onOpenChange} size="md" title={`换线路机 · ${m.name}`} confirmLabel="开始换线" confirmDisabled={!ready}
       description={<>换线期间不断网 <InfoTip text={"先在新线路机建好入口并验证出口，再改软路由，最后才移除旧入口\n过程中节点始终有一个入口可用"} /></>}
       onConfirm={async () => {
         const r = await move.mutateAsync({ id: m.id, to_relay_id: to, from_relay_id: multi ? from : undefined, routers });
@@ -90,7 +90,7 @@ export const MoveDialog = resetOnOpen(function MoveDialog({ m, open, onOpenChang
         <div className="stack-sm" style={{ opacity: q.isFetching ? 0.6 : 1 }}>
           {pv.routers_enabled
             ? <RouterExitList routers={pv.routers.map((plan) => ({ node: m.name, plan }))} />
-            : pv.routers.length > 0 && <Note tone="bad">不改软路由的话，{pv.routers.flatMap((r) => r.exits.map((e) => `${r.name} 的 ${e.exit}`)).join('、')}会在旧入口移除后断开</Note>}
+            : pv.routers.length > 0 && <Note tone="bad">不改软路由的话，{pv.routers.flatMap((r) => r.exits.map((e) => `「${r.name}」的出口「${e.exit}」`)).join('、')}会在旧入口移除后断开</Note>}
           <PlanBlockers routers={pv.routers_enabled ? pv.routers : []} blockers={pv.blockers} />
           {pv.warnings.map((w) => <Note key={w} tone="warn">{w}</Note>)}
         </div>
@@ -117,7 +117,7 @@ export const EvacuateDialog = resetOnOpen(function EvacuateDialog({ relay, open,
   // 实际会建几个作业以预览为准（软路由不在线、有别的作业的节点会被跳过）；还没选目标时按在用入口数
   const n = pv?.jobs.length ?? movable.length;
   return (
-    <ConfirmDialog open={open} onOpenChange={onOpenChange} size="md" title={`搬空 ${relay.name}`} confirmLabel={`搬走 ${n} 个节点`} confirmDisabled={!to || n === 0 || !pv || q.isFetching}
+    <ConfirmDialog open={open} onOpenChange={onOpenChange} size="md" title={`搬空 · ${relay.name}`} confirmLabel={`搬走 ${n} 个节点`} confirmDisabled={!to || n === 0 || !pv || q.isFetching}
       description={<>每个节点各建一个换线作业 <InfoTip text="为这台线路机上每个在用入口的节点，各建一个「换线路机」作业。搬完后就可以放心退役这台线路机" /></>}
       onConfirm={async () => {
         const r = await evac.mutateAsync({ id: relay.id, to_relay_id: to, routers });
