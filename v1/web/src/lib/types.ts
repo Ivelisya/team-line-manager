@@ -203,7 +203,7 @@ export interface ProvisionCheckItem { ok: boolean; errors: string[]; name: strin
  *  probe: tcp_ok tcp_ms egress_ok egress_ms（失败时 *_ms 为 null） */
 export interface SeriesPoint { ts: string; [k: string]: number | boolean | string | null }
 /** 心跳格：每台机器近 60 分钟、20 个 3 分钟桶（旧→新），每桶 [次数, 成功次数, 成功的延迟中位数 ms, SYN 重发过的次数]；[0,0,null,0] = 这段没有数据。
- *  节点是线路机 → 节点的 TCP 探测；线路机是中控 → 线路机的连通性（只判通不通，延迟为 null） */
+ *  节点是线路机 → 节点的 TCP 探测；线路机是主探测来源（中控或探测点）→ 线路机的连通性（中控只判通不通、延迟为 null；探测点带建连延迟） */
 export type ProbeBucket = [number, number, number | null, number?];
 export type ProbeBeats = Record<string, ProbeBucket[]>;
 /** 全站网卡速率的历史：每分钟一个点（旧→新），首页集群状态折线开场用 */

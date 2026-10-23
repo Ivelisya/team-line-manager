@@ -1,12 +1,14 @@
-//! fleet-agent：边缘程序（落地节点 / 线路机共用一个二进制）
+//! fleet-agent：边缘程序（落地节点 / 线路机 / 探测点共用一个二进制）
 //!
-//! 用法：fleet-agent [--config PATH] [run|once|render|apply|version] [--desired FILE]
+//! 用法：fleet-agent [--config PATH] [run|once|render|apply|probe|version] [--desired FILE]
+//! `probe`：探测点模式（放在靠近客户的地方测线路机的客户入口，见 probe_point.rs），配置默认 /etc/fleet/probe.toml
 
 mod collect;
 mod config;
 mod desired;
 mod host;
 mod probe;
+mod probe_point;
 mod queue;
 mod reporter;
 mod server;
@@ -62,7 +64,7 @@ fn parse_args() -> Result<Args> {
 
 fn usage() {
     println!(
-        "fleet-agent {}\n\n用法：fleet-agent [--config PATH] <命令>\n\n命令：\n  run                 常驻运行（默认）\n  once                采集并打印一份上报 JSON（诊断）\n  render --desired F  按期望状态生成 xray.json 并打印\n  apply  --desired F  不经中控，在本机直接应用期望状态（实验室测试）\n  version             打印版本\n\n配置默认 {DEFAULT_CONFIG}（也可用环境变量 FLEET_AGENT_CONFIG）。",
+        "fleet-agent {}\n\n用法：fleet-agent [--config PATH] <命令>\n\n命令：\n  run                 常驻运行（默认）\n  once                采集并打印一份上报 JSON（诊断）\n  render --desired F  按期望状态生成 xray.json 并打印\n  apply  --desired F  不经中控，在本机直接应用期望状态（实验室测试）\n  probe               探测点模式：每 30 秒测线路机的客户入口并上报（配置默认 /etc/fleet/probe.toml）\n  version             打印版本\n\n配置默认 {DEFAULT_CONFIG}（也可用环境变量 FLEET_AGENT_CONFIG）。",
         fleet_proto::build_version()
     );
 }
@@ -158,6 +160,10 @@ async fn real_main() -> Result<()> {
             if !rep.ok {
                 std::process::exit(2);
             }
+        }
+        "probe" => {
+            let p = if a.config_given { a.config.clone() } else { PathBuf::from(probe_point::DEFAULT_CONFIG) };
+            probe_point::run(&p).await?
         }
         "once" => once(load_config(&a, false)?).await?,
         "run" => run(load_config(&a, false)?).await?,

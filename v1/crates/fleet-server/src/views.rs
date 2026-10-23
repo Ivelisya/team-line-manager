@@ -161,7 +161,7 @@ pub struct Probe {
     pub median_ms: Option<f32>,
 }
 
-/// 中控 → 线路机上这个入口端口的最近一次 TCP 建连（`reach::round`，轮流连各端口，所以每个口隔 N 轮才更新一次）
+/// 主探测来源（中控或探测点，见 probe_points/）→ 线路机上这个入口端口的最近一次 TCP 建连（reach.rs，轮流连各端口，所以每个口隔 N 轮才更新一次）
 #[derive(Debug, Clone, Serialize)]
 pub struct Reach {
     pub ok: bool,
@@ -379,12 +379,13 @@ pub struct RelayInfo {
     pub apply_error: Option<String>,
     pub port_min: i32,
     pub port_max: i32,
-    /// 中控 → 线路机（reach.rs）最近 3 轮（5 分钟内）都连不上，或某个在用入口端口最近 3 次（30 分钟、至少 3 遍轮换内）都连不上：
-    /// 失败原因（去重，带端口；单个端口的取它最近一次）；否则为 None（`reach::unreachable_sql`）。
+    /// 主探测来源（中控或探测点，reach.rs）最近 3 轮（5 分钟内）都连不上，或某个在用入口端口最近 3 次（30 分钟、至少 3 遍轮换内）都连不上：
+    /// 告警摘要（写明哪一路测的，括号里是失败原因：去重，带端口；单个端口的取它最近一次）；否则为 None（`reach::unreachable_sql`）。
     /// 健康判定据此报 relay_unreachable；它变了 reach.rs 发 `Event::Machine`（视图完整重算），不对外输出
     #[serde(skip)]
     pub unreachable: Option<String>,
-    /// 有在用入口、5 分钟内中控的检查不到 3 轮（中控刚重启、整轮作废）：整台通不通判不出，relay_unreachable 的原因消失不算恢复
+    /// 有在用入口、5 分钟内主探测来源的检查不到 3 轮（刚重启、整轮作废），或主来源离线（暂由中控代替 / 标灰）：整台通不通判不出，
+    /// relay_unreachable 的原因消失不算恢复
     #[serde(skip)]
     pub reach_unknown: bool,
 }
@@ -828,18 +829,19 @@ async fn probes_of(db: &sqlx::PgPool, eids: &[Uuid]) -> sqlx::Result<HashMap<(Uu
         .collect())
 }
 
-/// 在用入口各自端口上中控最近一次 TCP 检查，沿 (relay_id, port, ts desc) 索引逐个取最新一条，失败的再数连续失败了几次；
-/// 检查早于入口创建的（端口复用）不算
-async fn reach_of(db: &sqlx::PgPool, es: &[(Uuid, Uuid, i32)]) -> sqlx::Result<HashMap<Uuid, Reach>> {
-    let rs = sqlx::query_as::<_, (Uuid, bool, OffsetDateTime, Option<String>, i32)>(
+/// 在用入口各自端口上主探测来源（`src`，中控或探测点，见 probe_points::Effective）最近一次 TCP 检查，
+/// 沿 (relay_id, probe_point_id, port, ts desc) 索引逐个取最新一条，失败的再数连续失败了几次；检查早于入口创建的（端口复用）不算
+async fn reach_of(db: &sqlx::PgPool, es: &[(Uuid, Uuid, i32)], src: &crate::probe_points::Effective) -> sqlx::Result<HashMap<Uuid, Reach>> {
+    let (cf, cg, cr) = (src.cond("f"), src.cond("g"), src.cond("rr"));
+    let rs = sqlx::query_as::<_, (Uuid, bool, OffsetDateTime, Option<String>, i32)>(&format!(
         "select e.id, x.ok, x.ts, x.detail, x.fails from unnest($1::uuid[], $2::uuid[], $3::int[]) e(id, relay, port)
          join entry en on en.id = e.id cross join lateral (
             select ok, ts, detail, case when ok then 0 else (
-                     select count(*)::int from relay_reach f where f.relay_id = e.relay and f.port = e.port and f.ts >= en.created_at and not f.ok
-                       and f.ts > coalesce((select max(g.ts) from relay_reach g where g.relay_id = e.relay and g.port = e.port and g.ok), '-infinity')) end fails
-            from relay_reach where relay_id = e.relay and port = e.port and ts >= en.created_at
-            order by ts desc limit 1) x",
-    )
+                     select count(*)::int from relay_reach f where f.relay_id = e.relay and {cf} and f.port = e.port and f.ts >= en.created_at and not f.ok
+                       and f.ts > coalesce((select max(g.ts) from relay_reach g where g.relay_id = e.relay and {cg} and g.port = e.port and g.ok), '-infinity')) end fails
+            from relay_reach rr where rr.relay_id = e.relay and {cr} and rr.port = e.port and rr.ts >= en.created_at
+            order by rr.ts desc limit 1) x",
+    ))
     .bind(es.iter().map(|e| e.0).collect::<Vec<_>>())
     .bind(es.iter().map(|e| e.1).collect::<Vec<_>>())
     .bind(es.iter().map(|e| e.2).collect::<Vec<_>>())
@@ -850,12 +852,12 @@ async fn reach_of(db: &sqlx::PgPool, es: &[(Uuid, Uuid, i32)]) -> sqlx::Result<H
     let mut relays: Vec<Uuid> = es.iter().map(|e| e.1).collect();
     relays.sort();
     relays.dedup();
-    let down: Vec<(Uuid, OffsetDateTime, Option<String>)> = sqlx::query_as(
+    let down: Vec<(Uuid, OffsetDateTime, Option<String>)> = sqlx::query_as(&format!(
         "select u.id, x.ts, x.detail from unnest($1::uuid[]) u(id) cross join lateral (
             select max(ts) ts, (array_agg(detail order by ts desc))[1] detail, count(*) n, bool_or(ok) any_ok from (
-                select ts, ok, detail from relay_reach rr where rr.relay_id = u.id and rr.ts > now() - interval '5 minutes' order by ts desc limit 3) l) x
+                select ts, ok, detail from relay_reach rr where rr.relay_id = u.id and {cr} and rr.ts > now() - interval '5 minutes' order by ts desc limit 3) l) x
          where x.n = 3 and not x.any_ok",
-    )
+    ))
     .bind(&relays)
     .fetch_all(db)
     .await?;
@@ -1025,6 +1027,8 @@ async fn quota_used(st: &AppState, keys: Vec<QuotaKey>) -> sqlx::Result<HashMap<
 pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Result<Vec<MachineView>> {
     let db = &st.db;
     let lc = scope.cond();
+    // 线路机客户入口的连通性看哪一路检查（主探测来源；离线时退回中控或标灰，见 probe_points/）
+    let reach_src = crate::probe_points::effective(db).await?;
     // 同机 IP 节点没有自己的 agent：agent 状态取宿主机的
     let sql = format!(
         "select m.id, m.kind::text kind, m.team_id, t.name team_name, t.spare team_spare, m.spare_from, m.spare_since, m.number, m.label, host(m.primary_ip) ip, coalesce(hm.ssh_port, m.ssh_port) ssh_port,
@@ -1052,8 +1056,8 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
          left join relay r on r.machine_id = m.id
          where {lc} and ($1::uuid is null or m.id = $1)
          order by m.kind = 'relay' desc, t.sort_order nulls first, t.name, m.number, m.label, m.id",
-        unreach = crate::reach::unreachable_sql("m.id"),
-        reach_unknown = crate::reach::unknown_sql("m.id")
+        unreach = crate::reach::unreachable_sql("m.id", &reach_src),
+        reach_unknown = crate::reach::unknown_sql("m.id", &reach_src)
     );
     let rows: Vec<MRow> = sqlx::query_as(&sql).bind(only).fetch_all(db).await?;
     if rows.is_empty() {
@@ -1123,7 +1127,7 @@ pub async fn load(st: &AppState, scope: Scope, only: Option<Uuid>) -> sqlx::Resu
         .await?;
         let eids: Vec<Uuid> = es.iter().map(|e| e.id).collect();
         let live: Vec<(Uuid, Uuid, i32)> = es.iter().filter(|e| e.lifecycle == "active").map(|e| (e.id, e.relay_id, e.port)).collect();
-        let (ps, rc) = tokio::try_join!(probes_of(db, &eids), reach_of(db, &live))?;
+        let (ps, rc) = tokio::try_join!(probes_of(db, &eids), reach_of(db, &live, &reach_src))?;
         Ok::<_, sqlx::Error>((es, ps, rc))
     };
     // 已移除入口本月的流量（换线路机后旧入口 removed，但本月它跑过的流量仍属于这个节点 / 线路机）：

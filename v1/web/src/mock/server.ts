@@ -735,6 +735,34 @@ R('GET', '/meta', () => clone(META));
 R('GET', '/overview', () => overview());
 R('GET', '/overview/series', ({ query }) => overviewSeries(Math.min(60, +(query.get('minutes') ?? 30))));
 R('GET', '/probe-beats', () => probeBeats());
+// 探测点（设置「探测点」）：演示数据只有一个在线的香港探测点、主来源是中控；改主来源、开关、新增只改内存
+const MOCK_PROBES: Record<string, unknown>[] = [{
+  id: 'pp-hk', name: '香港', label: '香港探测点', enabled: true, note: '阿里云香港 · Alpine', state: 'online', installed: true, primary: false,
+  last_seen_at: iso(), last_ip: '47.242.0.10', version: '0.1.0+mock', created_at: iso(), bootstrap_expires_at: null, install: null, upgrade: null,
+  relays: [{ relay_id: 'r1', name: '线路机1', avg_ms: 158, median_ms: 156, total: 120, ok: 120 }],
+}];
+const reachSrc = { primary: 'central', central_enabled: true };
+const reachView = () => {
+  const p = MOCK_PROBES.find((x) => x.id === reachSrc.primary);
+  const effective = p ? { state: 'probe', probe_point_id: p.id, label: p.label, primary_label: p.label } : { state: 'central', probe_point_id: null, label: '中控', primary_label: null };
+  return { primary: reachSrc.primary, primary_name: p ? p.name : '中控', central_enabled: reachSrc.central_enabled, effective, offline_after_s: 180 };
+};
+R('GET', '/settings/reach-source', () => reachView());
+R('PUT', '/settings/reach-source', ({ body }) => {
+  const b = body as { primary?: string; central_enabled?: boolean };
+  if (b.primary) reachSrc.primary = b.primary;
+  if (b.central_enabled != null) reachSrc.central_enabled = b.central_enabled;
+  MOCK_PROBES.forEach((p) => { p.primary = p.id === reachSrc.primary; });
+  emit({ type: 'settings' }); return reachView();
+});
+R('GET', '/probe-points', () => clone(MOCK_PROBES));
+R('POST', '/probe-points', ({ body }) => {
+  const b = body as { name: string; note?: string };
+  const id = `pp-${MOCK_PROBES.length + 1}`;
+  MOCK_PROBES.push({ id, name: b.name, label: `${b.name}探测点`, enabled: true, note: b.note ?? '', state: 'pending', installed: false, primary: false, last_seen_at: null, last_ip: null, version: null, created_at: iso(), bootstrap_expires_at: iso(), install: null, upgrade: null, relays: [] });
+  emit({ type: 'settings' });
+  return { id, bootstrap: { cmd: `{ curl -fsS https://fleet.example/api/v1/probe-bootstrap/MOCK 2>/dev/null || wget -qO- https://fleet.example/api/v1/probe-bootstrap/MOCK; } | sh`, expires_at: iso() } };
+});
 /** 告警的顺序同服务端：进行中在前 → 严重度高在前 → 开始时间新在前；subject_id（只要这台机器的）时不看严重度，只按时间 */
 const SEV_RANK: Record<string, number> = { critical: 0, warning: 1, info: 2 };
 const byState = (a: Incident, b: Incident) => (a.state === b.state ? 0 : a.state === 'firing' ? -1 : 1);

@@ -12,6 +12,7 @@ pub mod machines;
 pub mod misc;
 pub mod notify;
 pub mod policy;
+pub mod probe_points;
 pub mod provision;
 pub mod recycle;
 pub mod relays;
@@ -156,4 +157,11 @@ pub fn router() -> Router<AppState> {
         .route("/routers/{id}/bootstrap", post(routers::bootstrap))
         .route("/routers/{id}/deploy", post(routers::deploy_one))
         .route("/router-bootstrap/{token}", get(routers::bootstrap_script))
+        // 探测点（probe-bootstrap 是给探测点取安装脚本的，不要登录，靠一次性令牌）
+        .route("/probe-points", get(probe_points::list).post(probe_points::create))
+        .route("/probe-points/{id}", get(probe_points::get_one).patch(probe_points::patch).delete(probe_points::delete))
+        .route("/probe-points/{id}/install", post(probe_points::reinstall))
+        .route("/probe-points/{id}/upgrade", post(probe_points::upgrade))
+        .route("/settings/reach-source", get(probe_points::get_source).put(probe_points::put_source))
+        .route("/probe-bootstrap/{token}", get(probe_points::bootstrap_script))
 }

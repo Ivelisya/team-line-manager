@@ -7,7 +7,8 @@ import type { MachineView } from '@/lib/types';
 import { maintOwner, useAddEntry, useEndMaintenance, usePatchMachine, useRelayChoices, useSilences, useTeams, useTune } from '@/lib/queries';
 import { openMaint, openUpgrade } from '@/lib/nodeActions';
 import { useDrawer } from '@/lib/drawer';
-import { entryBad, errText, recycleOn } from '@/lib/derive';
+import { entryBad, errText, reachWho, recycleOn } from '@/lib/derive';
+import { useReachLabel } from '@/lib/probePoints';
 import * as F from '@/lib/format';
 import { Button } from '@/components/ui/button';
 import { Field, InfoTip, Input } from '@/components/ui/form';
@@ -117,6 +118,7 @@ function RenameSection({ m }: { m: MachineView }) {
 const MANAGE_CAP = 5;
 
 function EntrySection({ m }: { m: MachineView }) {
+  const who = reachWho(useReachLabel());
   const relays = useRelayChoices().data ?? [];
   const add = useAddEntry();
   const routers = useEntryRouters();
@@ -143,7 +145,7 @@ function EntrySection({ m }: { m: MachineView }) {
         {m.entries.length > 0 && <div className="mgroup">{shown.map((e) => (
           <div key={e.id} className="manage-row">
             <div><div className="t">{m.kind === 'relay' ? `${e.port} · ${e.node.name}` : entryLabel(e)}{routers.get(e.id) && <RouterMark users={routers.get(e.id)!} />}</div><div className="hint">{e.apply_error ? errText(e.apply_error) : e.applied ? '配置已应用' : '配置应用中'}</div></div>
-            <span className="row" style={{ gap: 8 }}>{entryStatus(e)}<EntryMenuButton entry={e} /></span>
+            <span className="row" style={{ gap: 8 }}>{entryStatus(e, who)}<EntryMenuButton entry={e} /></span>
           </div>
         ))}<ShowAll total={m.entries.length} cap={cap} open={all} onToggle={() => setAll((v) => !v)} /></div>}
       </div></EntryMenus>

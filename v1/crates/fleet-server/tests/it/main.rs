@@ -13,6 +13,7 @@ mod jobs;
 mod lifecycle;
 mod ops;
 mod policy;
+mod probe;
 mod retention;
 mod spare;
 mod telemetry;

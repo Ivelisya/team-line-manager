@@ -2,6 +2,7 @@
 import type { AvailabilityDay, DueState, EntryView, MachineView, Meta, Plan, ProbeBucket, ProbeResult, Provider, SubField, Subscription, TrafficReset, UsageMetric } from './types';
 import * as F from './format';
 import { tzLabel } from './tz';
+import type { ReachEffective } from './probePoints';
 
 // ── /meta：中文名、枚举、阈值、默认值只认服务端这一份 ──
 // 外壳等 /meta 取回（useMeta 的 queryFn 里 setMeta）之后才渲染页面，所以下面这些同步读取在页面里总有值；登录页不用它们
@@ -307,8 +308,30 @@ const probeTone = (ok: number, total: number): BeatCell => (!total ? null : ok *
 // 一格 3 分钟、每 30 秒一次约 6 次：断 1 次（83%）黄，断 2 次（67%）红
 export const BEAT_LEGEND = '线路机每 30 秒连一次节点\n绿：成功 ≥ 99% · 黄：成功 80%–99% · 红：成功不到 80% · 灰：没有探测';
 export const AVAIL_LEGEND = '绿：成功 ≥ 99% · 黄：成功 80%–99% · 红：成功不到 80%\n灰：没有探测；TCP 与出口取较差的一种';
-/** 线路机的格子是中控 → 线路机的连通性（中控每 30 秒连一次，轮流连它的各个入口端口），不是它名下入口的合计：入口通不通是各节点的事 */
-export const BEAT_LEGEND_RELAY = '中控每 30 秒连一次线路机（轮流连它的各个入口端口），只看通不通\n绿：都连上 · 黄：断过 1 次 · 红：断 2 次以上 · 灰：没有数据';
+const RELAY_COLORS = '绿：都连上 · 黄：断过 1 次 · 红：断 2 次以上 · 灰：没有数据';
+/** 线路机的格子是主探测来源 → 线路机的连通性（每 30 秒连一次，轮流连它的各个入口端口），不是它名下入口的合计：入口通不通是各节点的事。
+ *  主探测来源是中控或放在靠近客户的地方的探测点（设置「探测点」，GET /settings/reach-source），说明随来源变；还没取到时按中控 */
+export const BEAT_LEGEND_RELAY = `中控每 30 秒连一次线路机（轮流连它的各个入口端口），只看通不通\n${RELAY_COLORS}`;
+export function beatLegendRelay(src: ReachEffective | undefined): string {
+  switch (src?.state) {
+    case 'probe': return `${src.label}每 30 秒连一次线路机的客户入口（轮流连它的各个入口端口），看通不通，悬停里是建连延迟的中位数\n${RELAY_COLORS}`;
+    case 'fallback': return `${src.primary_label ?? '主探测点'}离线，暂由中控代替：中控每 30 秒连一次线路机（轮流连各个入口端口），只看通不通；连不上照报，连得上不算恢复\n${RELAY_COLORS}`;
+    case 'none': return `${src.primary_label ?? '主探测点'}离线、中控的检查关着：线路机的客户入口通不通暂时没有数据\n${RELAY_COLORS}`;
+    default: return BEAT_LEGEND_RELAY;
+  }
+}
+/** 心跳格标题里的来源：「中控探测」「香港探测点」「中控代测」 */
+export const reachWin = (src: ReachEffective | undefined) =>
+  `${src?.state === 'probe' ? src.label : src?.state === 'fallback' ? '中控代测' : src?.state === 'none' ? '暂无来源' : '中控探测'} · 近 1 小时`;
+/** 「谁连不上」的主语：中控 / 香港探测点（入口表、卡片的原因） */
+export const reachWho = (src: ReachEffective | undefined) => (src?.state === 'probe' ? src.label : '中控');
+/** 线路机近 1 小时建连延迟（探测点才有）：各格中位数的中位数；没有为 null */
+export function relayRttMs(buckets: ProbeBucket[] | undefined): number | null {
+  const v = (buckets ?? []).map((b) => b[2]).filter((x): x is number => x != null).sort((a, b) => a - b);
+  if (!v.length) return null;
+  const m = v.length >> 1;
+  return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
+}
 /** 探测桶 → 心跳格（20 格 = 近 1 小时，旧→新）。节点按桶内成功比例定色；线路机按断了几次（同 BEAT_LEGEND_RELAY）：
  *  当前这一格还没满 6 次时，按比例会把断 1 次标成红 */
 export const beatCells = (buckets: ProbeBucket[] | undefined, relay = false): BeatCell[] =>

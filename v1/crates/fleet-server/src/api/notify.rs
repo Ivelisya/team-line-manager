@@ -224,12 +224,13 @@ pub async fn log(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<Lo
     let mut v: Vec<LogOut> = sqlx::query_as(
         "select l.id, l.channel_id, c.name channel_name, l.incident_id, l.ts, l.ok, l.error, l.kind,
                 case when l.kind = 'silence' then '静默 / 维护变更' when l.kind = 'auto' then '自动回收' when i.rule like 'central!_%' escape '!' then '中控'
-                     when i.rule like 'router!_%' escape '!' then r.name
+                     when i.rule like 'router!_%' escape '!' then r.name when i.rule like 'probe!_%' escape '!' then coalesce(pp.name, '探测点（已删除）')
                      else display_name(m.kind::text, m.label, t.name, m.number) || case when m.lifecycle = 'retired' then '（已退役）' else '' end end subject_name,
                 i.subject_id, case when r.id is not null then 'router' when m.id is not null then 'machine' end subject_kind, i.rule
          from notify_log l left join notify_channel c on c.id = l.channel_id
          left join incident i on i.id = l.incident_id left join machine m on m.id = i.subject_id left join team t on t.id = m.team_id
          left join router r on r.id = i.subject_id and i.rule like 'router!_%' escape '!'
+         left join probe_point pp on pp.id = i.subject_id and i.rule like 'probe!_%' escape '!'
          order by l.id desc limit $1",
     )
     .bind(q.limit.unwrap_or(100).clamp(1, 1000))

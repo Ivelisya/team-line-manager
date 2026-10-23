@@ -19,6 +19,7 @@ pub mod meta;
 pub mod names;
 pub mod notify;
 pub mod policy;
+pub mod probe_points;
 pub mod reach;
 pub mod report_gaps;
 pub mod pty;
@@ -107,7 +108,7 @@ async fn response_headers(State(https): State<bool>, req: axum::extract::Request
     res
 }
 
-/// 后台任务：作业、告警、实时指标、访问汇总、来源画像、通知发送、分区维护、小时汇总、软路由采集（含它的告警）、中控到线路机的连通性。
+/// 后台任务：作业、告警、实时指标、访问汇总、来源画像、通知发送、分区维护、小时汇总、软路由采集（含它的告警）、中控到线路机的连通性、探测点（离线告警、主来源切换）。
 /// 都在 `supervise` 下跑：panic 或意外返回时记 error、10 秒后原地重启（这些循环的状态在库里，内存里的去抖计数、缓存重启后重新累计）。
 /// 作业引擎例外：一退出就结束整个进程，交给 systemd 重启（单元里 Restart=always），重启时 main 清掉旧租约、作业从各自这一步重做。
 /// （清旧租约已挪到 main、本进程还在推进的作业不会被再领——jobs::Running——原地重启其实也不会两个执行者同时推进）
@@ -128,6 +129,7 @@ pub fn spawn_background(st: &AppState) {
     supervise(st, "会话撤销通知", false, revoked_listener);
     supervise(st, "软路由采集", false, routers::collect::run_forever);
     supervise(st, "中控到线路机的连通性", false, reach::run_forever);
+    supervise(st, "探测点", false, probe_points::run_forever);
 }
 
 /// 命令行（user-set 重设密码）在别的进程里删会话：经 NOTIFY 转来，实时流的连接马上复核。

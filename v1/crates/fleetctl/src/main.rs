@@ -11,6 +11,7 @@ mod lifecycle;
 mod meta;
 mod ops;
 mod policy;
+mod probe;
 mod recycle;
 mod resolve;
 mod routers;
@@ -648,6 +649,83 @@ enum Cmd {
         #[command(subcommand)]
         cmd: RouterCmd,
     },
+    /// 探测点：从靠近客户的地方（如香港）测线路机的客户入口；主探测来源决定心跳格与「客户入口连不上」告警
+    Probe {
+        #[command(subcommand)]
+        cmd: ProbeCmd,
+    },
+}
+
+/// 探测点的安装方式：给 --host 由中控 SSH 登录装（中控用自己的密钥登录 root）；不给就打印一次性安装命令
+#[derive(Args)]
+struct ProbeInstallArgs {
+    /// 探测点的 IP 或主机名（中控 SSH 连得到的）；不给就打印一次性安装命令（30 分钟内有效、只能用一次），在探测点上用 root 执行
+    #[arg(long)]
+    host: Option<String>,
+    /// 探测点的 SSH 端口（默认 22）
+    #[arg(long)]
+    ssh_port: Option<u16>,
+    /// 主机指纹和中控记下的不一样时（确认是重装过系统）重新记录
+    #[arg(long)]
+    reset_host_key: bool,
+    /// 不等安装结束（默认等到收到首次上报）
+    #[arg(long)]
+    no_wait: bool,
+}
+
+#[derive(Subcommand)]
+enum ProbeCmd {
+    /// 列表：状态、最近上报、版本、近 1 小时到各线路机的平均延迟；主探测来源与此刻实际用的那一路
+    Ls,
+    /// 新建并安装：给 --host 由中控 SSH 装好、等首次上报；不给就打印一次性安装命令
+    Add {
+        name: String,
+        #[arg(long)]
+        note: Option<String>,
+        #[command(flatten)]
+        install: ProbeInstallArgs,
+    },
+    /// 重装（换新令牌）：给 --host 由中控 SSH 重装；不给就打印新的一次性安装命令
+    Install {
+        /// 探测点（id / id 前缀 / 名称）
+        probe: String,
+        #[command(flatten)]
+        install: ProbeInstallArgs,
+    },
+    /// 启用 / 停用（停用的拿到空目标、不测；主来源不能停用）、改名、改备注
+    Set {
+        probe: String,
+        #[arg(long, conflicts_with = "disable")]
+        enable: bool,
+        #[arg(long)]
+        disable: bool,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// 删除：令牌作废、检查记录一起删；探测点机器上的东西要自己清（会打印命令）。主来源不能删
+    Rm {
+        probe: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// 设主探测来源：探测点名称，或 central（中控；同时打开中控自己的检查）
+    Primary {
+        /// 探测点（id / id 前缀 / 名称）或 central
+        source: String,
+    },
+    /// 中控自己的检查开 / 关（主来源是中控时不能关）
+    Central {
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+    },
+    /// 升级成中控 dist 里的 fleet-agent：探测点 30 秒内自己下载、核对、替换、重启；默认等它报上新版本
+    Upgrade {
+        probe: String,
+        #[arg(long)]
+        no_wait: bool,
+    },
 }
 
 /// 一键部署的目标（中控要能直接连到路由的 SSH）。密码只从标准输入读，不收参数
@@ -915,6 +993,26 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             RouterCmd::Edit { router, name, team, note } => routers::edit(x, &router, name.as_deref(), team.as_deref(), note.as_deref()),
             RouterCmd::Rm { router, yes } => routers::rm(x, &router, yes),
         },
+        Cmd::Probe { cmd } => match cmd {
+            ProbeCmd::Ls => probe::ls(x),
+            ProbeCmd::Add { name, note, install: i } => probe::add(
+                x,
+                probe::AddOpts { name: &name, note: note.as_deref(), host: i.host.as_deref(), ssh_port: i.ssh_port, reset_host_key: i.reset_host_key, no_wait: i.no_wait },
+            ),
+            ProbeCmd::Install { probe: q, install: i } => probe::install(
+                x,
+                &q,
+                probe::AddOpts { name: "", note: None, host: i.host.as_deref(), ssh_port: i.ssh_port, reset_host_key: i.reset_host_key, no_wait: i.no_wait },
+            ),
+            ProbeCmd::Set { probe: q, enable, disable, name, note } => {
+                let en = if enable { Some(true) } else if disable { Some(false) } else { None };
+                probe::set(x, &q, en, name.as_deref(), note.as_deref())
+            }
+            ProbeCmd::Rm { probe: q, yes } => probe::rm(x, &q, yes),
+            ProbeCmd::Primary { source } => probe::primary(x, &source),
+            ProbeCmd::Central { state } => probe::central(x, state == "on"),
+            ProbeCmd::Upgrade { probe: q, no_wait } => probe::upgrade(x, &q, no_wait),
+        },
     }
 }
 
@@ -974,6 +1072,21 @@ mod tests {
         };
         assert_eq!(parse(&["团队2 备用", "--name", "备用", "--yes"]), Ok(("团队2 备用".into(), "备用".into(), true)));
         assert!(parse(&["备用"]).is_err() && parse(&["备用", "--spare", "true"]).is_err());
+    }
+
+    /// `probe add <名> --host <IP> [--ssh-port]`、`probe set --enable/--disable` 互斥、`probe central on|off`
+    #[test]
+    fn probe_commands_parse() {
+        let p = |a: &[&str]| Cli::try_parse_from(["fleetctl", "probe"].iter().chain(a)).map(|c| c.cmd);
+        match p(&["add", "香港", "--host", "47.0.0.1", "--ssh-port", "2222"]) {
+            Ok(Cmd::Probe { cmd: super::ProbeCmd::Add { name, install, .. } }) => {
+                assert_eq!((name.as_str(), install.host.as_deref(), install.ssh_port, install.no_wait), ("香港", Some("47.0.0.1"), Some(2222), false))
+            }
+            _ => panic!("不是 probe add"),
+        }
+        assert!(p(&["set", "香港", "--enable", "--disable"]).is_err());
+        assert!(p(&["central", "maybe"]).is_err() && p(&["central", "off"]).is_ok());
+        assert!(p(&["primary", "central"]).is_ok() && p(&["upgrade", "香港", "--no-wait"]).is_ok());
     }
 
     #[test]

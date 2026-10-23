@@ -232,7 +232,7 @@ const FETCH_LIMIT: u32 = 20;
 const FETCH_WINDOW: Duration = Duration::from_secs(600);
 static FETCHES: Mutex<Option<HashMap<Option<IpAddr>, (Instant, u32)>>> = Mutex::new(None);
 
-fn rate_ok(ip: Option<IpAddr>) -> bool {
+pub(crate) fn rate_ok(ip: Option<IpAddr>) -> bool {
     let mut g = FETCHES.lock().unwrap_or_else(|e| e.into_inner());
     let m = g.get_or_insert_with(HashMap::new);
     if m.len() > 10_000 {

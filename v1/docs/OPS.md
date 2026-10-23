@@ -84,7 +84,8 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
    - `egress_fail` / `tcp_fail`：入口到出口不通，到 3。
    - `relay_apply_lag` / `relay_apply_error`：线路机没应用最新配置，到 4。
    - `relay_xray_down`：线路机上的 xray 停了，到 4。
-   - `relay_unreachable`：中控连续 3 轮（每 30 秒一轮，轮流连线路机的各个入口端口）连不上线路机的客户入口（public_host + 端口），摘要里有失败的端口与原因。只是 TCP 建连，不做 REALITY 握手。线路机 agent 也离线多半是机器挂了；agent 在线则查线路机防火墙、供应商是否封了端口（`fleetctl exec <线路机> -- 'ss -ltnp'` 看端口在不在听）。
+   - `relay_unreachable`：主探测来源（中控，或设成主来源的探测点，见 §16）连续 3 轮（每 30 秒一轮，轮流连线路机的各个入口端口）连不上线路机的客户入口（public_host + 端口），摘要开头写是谁测的（「香港探测点连续 3 次…」「中控（代替离线的香港探测点）连续 3 次…」），括号里是失败的端口与原因。只是 TCP 建连，不做 REALITY 握手。线路机 agent 也离线多半是机器挂了；agent 在线则查线路机防火墙、供应商是否封了端口（`fleetctl exec <线路机> -- 'ss -ltnp'` 看端口在不在听）。只有探测点连不上、中控连得上（`fleetctl probe ls` 看到各路的延迟与成功次数）多半是大陆方向的线路或封锁问题，中控看不到也不代表客户没事。
+   - `probe_point_offline`：探测点超过 3 分钟没上报（警告），见 §16。
    - `clock_skew`：agent 所在机器的时钟偏了超过 1 分钟（读数会缺失或停在旧值）；`fleetctl exec <机器> -- 'timedatectl'` 看 NTP 是否同步，没开就 `timedatectl set-ntp true`（修改状态，先确认）。
    - `renewal_due`：续费提醒，不是故障（不改健康状态）。到期前是警告，过期后同一条告警升为严重（旧的 `renewal_overdue` 并进来了）。开了自动续费的到期后由中控按周期顺延、自动记续费（只记账，供应商那边要自己设好扣费）。网页告警页这一行可直接「登记续费」（或 `fleetctl billing <机器>` 看订阅、确认已付款后 `fleetctl renew <机器> --yes`），下一轮评估（≤30 秒）自动恢复。
    - `traffic_quota_high`：流量额度吃紧（本周期已用 ≥ 90% 警告，≥ 100% 严重：供应商可能限速或另收费），不是故障、不改健康状态。`fleetctl billing <机器>` 看本周期已用与上限（注明跟随套餐还是单独设置）；找供应商加流量、调高上限（整个套餐都加了改套餐，只这台加了 `subscription set --traffic-gb`）或把流量分走。新周期开始、上限调高后下一轮评估自动恢复。
@@ -96,7 +97,7 @@ root 密码不要写进文件：条目里省略 `login` 则用中控的密钥；
    - 去抖：原因连续出现满 60 秒才开告警、连续消失满 60 秒才恢复；探测类更长（`egress_fail` 150 秒、`tcp_fail` 90 秒），偶发一次探测失败不报。续费类、流量额度不去抖。
    - `central_channel_failing` / `central_backup_stale` / `central_disk_low` / `central_ingress`：告警对象是「中控」自己（通知渠道发不出去、备份停了、磁盘快满、大批 agent 同时连不上中控），见 §12。
    - 维护中的机器：进行中的告警保持原状，不算恢复；维护结束后按那时的状态再判。线路机维护时，经它探测的节点出口 / TCP 结果同样判不出（不开、开着的不恢复）。
-   - 判不出的不算恢复，告警保持原状：线路机 agent 离线或维护中时节点的出口 / TCP；agent 离线时 CPU / 内存 / 磁盘持续偏高与时钟偏差（负载类回来后还要攒够 5 分钟样本）；中控停机超过 5 分钟重启后、新的检查不足 3 轮时的「客户入口连不上」。
+   - 判不出的不算恢复，告警保持原状：线路机 agent 离线或维护中时节点的出口 / TCP；agent 离线时 CPU / 内存 / 磁盘持续偏高与时钟偏差（负载类回来后还要攒够 5 分钟样本）；中控停机超过 5 分钟重启后、新的检查不足 3 轮时的「客户入口连不上」；主来源的探测点离线、暂由中控代替（或标灰）期间的「客户入口连不上」（中控连得上不算恢复，等探测点回来再判）。
    - 通知先写进库里的发送队列（`notify_outbox`）再发：中控重启、部署后接着发，不丢。每个渠道一个发送任务，同一渠道内按入队顺序逐条发（一批告警同时触发时不会并发打到同一渠道），渠道之间互不等待（一个渠道一直超时不拖慢别的）。发送失败（网络错误、5xx）隔 0.5 秒、2 秒、10 秒、30 秒、1 分钟、之后每 2 分钟重发同一条（后面的排着），回 429 时按渠道给的等待时长（Telegram 的 `parameters.retry_after`、通用的 `Retry-After` 头，最多 60 秒）；渠道拒绝（令牌不对、errcode 非 0）不重试，记一条失败。入队满 30 分钟还没发出的放弃，发送记录里记一条失败；渠道连续失败满 5 分钟另开告警 `central_channel_failing`。某个渠道没收到一条告警的「触发」（放弃了，或渠道是后来加的），这条告警恢复时也不给它发「恢复」。
    - 新建、删除静默 / 维护窗口会给所有启用的渠道发一条「静默 / 维护变更」（谁、新建还是删除、对象、维护还是静默、起止、备注；不看渠道的最低级别，也不受任何静默影响）：全部机器的一律发（含预约的），单台的只在此刻生效时发。
 2. **agent 离线**：`fleetctl show <机器>` 看最近上报时间；`fleetctl exec <机器> -- 'systemctl is-active fleet-agent; uptime'`。exec 返回 255 且 stderr 是连接失败 → 机器本身不通（去供应商面板看机器状态/重启）。agent 没运行则 `fleetctl logs <机器> --unit fleet-agent` 找原因，再 `fleetctl exec <机器> -- systemctl restart fleet-agent`（修改状态，先确认）。
@@ -415,3 +416,22 @@ heartbeat_url = "https://hc-ping.com/<检查的 uuid>"
 断开时中控结束本地的 ssh，远端的 shell 随连接断开收到 SIGHUP 退出；`nohup`、`setsid`、`systemd-run` 起的后台进程照常留着。
 
 **日志级别**：生产不要把 `tungstenite` / `axum::extract::ws` 的日志级别调到 trace（`RUST_LOG`）：trace 会把帧内容写进日志，包括票据和键入的内容。
+
+## 16. 探测点（从靠近客户的地方测线路机入口）
+
+中控在德国，客户在中国大陆：中控连得上线路机不代表客户连得上，偶尔连不上也不代表客户受影响。探测点是放在靠近客户的地方（如阿里云香港）的一台小机器，跑 `fleet-agent probe`，每 30 秒连一遍各线路机的客户入口（同中控的轮换、对照目标与作废规则），另记建连延迟。设置里的「主探测来源」决定线路机卡片的心跳格、入口表的「连不上」、`relay_unreachable` 看哪一路（DESIGN.md「探测点」）。
+
+要求：x86_64 Linux（dist 里的 fleet-agent 是 musl 静态的，Alpine 直接跑），systemd 或 OpenRC，能出网访问中控（https）与 1.1.1.1 / 8.8.8.8 的 443；不需要公网入站，几 MB 内存。
+
+**加一台**（二选一）：
+- 中控能 SSH 到它（有公网 IP，NAT 后面但 22 映射出来了）：`fleetctl probe add 香港 --host <IP> [--ssh-port 22]`。中控用自己的密钥登录 root（主机指纹首次记录、之后严格校验），推 fleet-agent 到 `/opt/fleet/`、写 `/etc/fleet/probe.toml`（0600）、装服务，等到首次上报才算完。登不进时报错里有中控公钥全文：在探测点上把它加进 `/root/.ssh/authorized_keys` 再执行一次 `fleetctl probe install 香港 --host <IP>`。
+- 不让中控 SSH：`fleetctl probe add 香港`（或网页 设置 → 探测点 → 新增）打印一条一次性安装命令（30 分钟内有效、只能用一次），在探测点上用 root 执行；它下载 fleet-agent、装服务，半分钟内 `fleetctl probe ls` 显示在线。过期了 `fleetctl probe install 香港` 重新生成。
+- 装好之后 `fleetctl probe primary 香港` 设为主来源（网页 设置 → 探测点 → 主探测来源）。中控自己的检查默认开着，探测点离线时由它代替；不想要德国的结论可以 `fleetctl probe central off`（这时探测点离线就标灰，线路机整台挂了仍有 agent 离线告警）。
+
+**服务**：OpenRC（Alpine）是 `/etc/init.d/fleet-probe`（`supervise-daemon` 守护、挂了 5 秒后拉起、开机启动），日志 `/var/log/fleet-probe.log`（只在出问题时写、同一个问题 10 分钟一条，不轮转也涨得很慢）；systemd 是 `fleet-probe.service`（`journalctl -u fleet-probe`）。以系统用户 `fleet-probe` 跑。
+
+**排障**：
+- `probe_point_offline` / `fleetctl probe ls` 显示离线：在探测点上 `rc-service fleet-probe status`（或 `systemctl status fleet-probe`）、看日志。「连不上中控」查它的出网与 DNS；「中控说令牌无效」是探测点被删除或重装过（重装：`fleetctl probe install <名>`）；「这一轮作废：对照目标都连不上」是探测点自己的出网坏了（只算心跳，不判线路机）。
+- 卡片上写「中控（代替离线的香港探测点）」：主来源离线，暂由中控代替——连不上照报，连得上不算恢复，等它回来再判。
+- 升级：`fleetctl probe upgrade 香港`，探测点 30 秒内自己从中控下载 dist 里的 fleet-agent、核对 sha256、换上（旧的留成 `/opt/fleet/fleet-agent.prev`）、重启，命令等到它报上新版本。新版本起不来时在探测点上 `mv /opt/fleet/fleet-agent.prev /opt/fleet/fleet-agent` 再重启服务。
+- 删除：`fleetctl probe rm 香港 --yes`（主来源要先改走）；令牌立刻作废，探测点上的东西按打印出来的清理命令自己清。

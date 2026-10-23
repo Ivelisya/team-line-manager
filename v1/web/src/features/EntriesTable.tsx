@@ -2,7 +2,8 @@
 import * as React from 'react';
 import type { EntryView, MachineView } from '@/lib/types';
 import * as F from '@/lib/format';
-import { entryBad, probeErr, probeFail, probeFailLabel, reachFail, reachFlaky, tcpMs } from '@/lib/derive';
+import { entryBad, probeErr, probeFail, probeFailLabel, reachFail, reachFlaky, reachWho, tcpMs } from '@/lib/derive';
+import { useReachLabel } from '@/lib/probePoints';
 import { entryState, Num, Pill } from '@/components/app/primitives';
 import { ShowAll } from '@/components/app/Pagination';
 import { useEntryRouters, useRouterDrawer } from '@/lib/routers';
@@ -30,12 +31,12 @@ export const tcpCell = (e: EntryView) => {
 /** 检查失败的原因：reach.rs 记的是「端口 N：原因」，提示第一行已经写了端口 */
 const reachErr = (detail: string | null) => (detail ? `\n${probeErr(detail.replace(/^端口 \d+：/, ''))}` : '');
 
-/** 入口状态列：中控连不上 > 线路机到节点探测不通 > 中控刚才连不上 > 配置状态；正常的不写（一整列同一个绿胶囊没有信息，同线路页） */
-export const entryStatus = (e: EntryView) => {
+/** 入口状态列：主探测来源（`who`：中控或探测点，reachWho）连不上 > 线路机到节点探测不通 > 刚才连不上 > 配置状态；正常的不写（一整列同一个绿胶囊没有信息，同线路页） */
+export const entryStatus = (e: EntryView, who = '中控') => {
   const reach = reachFail(e); const fail = probeFail(e); const flaky = reachFlaky(e);
-  if (reach) return <Pill tone="bad" tip={`中控连续 ${reach.fails} 次连不上线路机的 ${e.port} 端口（${F.dt(reach.ts)} 最近一次检查）${reachErr(reach.detail)}`}>中控连不上</Pill>;
+  if (reach) return <Pill tone="bad" tip={`${who}连续 ${reach.fails} 次连不上线路机的 ${e.port} 端口（${F.dt(reach.ts)} 最近一次检查）${reachErr(reach.detail)}`}>{who}连不上</Pill>;
   if (fail) return <Pill tone="bad" tip={probeErr(fail.detail)}>{probeFailLabel(e)}</Pill>;
-  if (flaky) return <Pill tone="warn" tip={`中控最近 ${flaky.fails} 次没连上线路机的 ${e.port} 端口（${F.dt(flaky.ts)} 最近一次检查）；连续 3 次才算连不上、告警${reachErr(flaky.detail)}`}>刚才连不上 {flaky.fails} 次</Pill>;
+  if (flaky) return <Pill tone="warn" tip={`${who}最近 ${flaky.fails} 次没连上线路机的 ${e.port} 端口（${F.dt(flaky.ts)} 最近一次检查）；连续 3 次才算连不上、告警${reachErr(flaky.detail)}`}>刚才连不上 {flaky.fails} 次</Pill>;
   return entryState(e, true);
 };
 
@@ -75,10 +76,11 @@ export function RouterMark({ users }: { users: { id: string; name: string; exit:
 
 /** 一行一个 memo：实时推送只换变了的入口（live.ts 的入口补丁把没变的原样返回），线路机展开全部的上百行不跟着重画 */
 const EntryRow = React.memo(function EntryRow({ e, relay, traffic, routers }: { e: EntryView; relay: boolean; traffic: boolean; routers?: { id: string; name: string; exit: string }[] }) {
+  const who = reachWho(useReachLabel());
   return (
     <tr>
       <td className="strong">{relay ? `${e.port} · ${e.node.name}` : `${e.relay.name}:${e.port}`}{routers && <RouterMark users={routers} />}</td>
-      <td>{entryStatus(e)}</td>{e.lifecycle === 'disabled' ? <><td className="r t-muted">—</td><td className="r t-muted">—</td></> : <><td className="r">{tcpCell(e)}</td><td className="r">{probeCell(e.egress)}</td></>}
+      <td>{entryStatus(e, who)}</td>{e.lifecycle === 'disabled' ? <><td className="r t-muted">—</td><td className="r t-muted">—</td></> : <><td className="r">{tcpCell(e)}</td><td className="r">{probeCell(e.egress)}</td></>}
       {traffic && <td className="r"><Num f={F.bytes(e.traffic.month_up + e.traffic.month_down)} /></td>}
     </tr>
   );

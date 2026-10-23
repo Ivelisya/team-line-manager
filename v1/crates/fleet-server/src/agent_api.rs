@@ -28,6 +28,8 @@ pub fn router() -> Router<AppState> {
         .route("/report", post(report).layer(RequestDecompressionLayer::new()))
         .route("/desired", get(desired))
         .route("/applied", post(applied))
+        // 探测点（令牌是探测点自己的，见 probe_points/agent.rs）
+        .merge(crate::probe_points::agent::router())
 }
 
 struct AgentId {
