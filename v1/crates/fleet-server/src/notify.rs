@@ -148,7 +148,7 @@ pub fn format_text(n: &Notice) -> String {
         crate::meta::severity_label(&n.severity),
         title(n),
         n.machine,
-        crate::meta::rule_label(&n.rule),
+        crate::meta::rule_label_of(&n.rule, &n.severity),
         n.summary,
         when(n.at)
     )
@@ -200,7 +200,7 @@ pub fn format_wecom(n: &Notice) -> String {
         crate::meta::severity_label(&n.severity),
         title(n),
         md(&n.machine, 64),
-        md(crate::meta::rule_label(&n.rule), 64),
+        md(crate::meta::rule_label_of(&n.rule, &n.severity), 64),
         md(&n.summary, 500),
         when(n.at)
     )
@@ -212,7 +212,7 @@ pub fn webhook_body(n: &Notice) -> Value {
         "event": n.kind.as_str(),
         "incident_id": n.incident_id,
         "rule": n.rule,
-        "rule_name": crate::meta::rule_label(&n.rule),
+        "rule_name": crate::meta::rule_label_of(&n.rule, &n.severity),
         "severity": n.severity,
         "machine": n.machine,
         "summary": n.summary,

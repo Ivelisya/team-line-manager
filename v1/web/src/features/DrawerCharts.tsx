@@ -212,7 +212,8 @@ export function TrafficTab({ m }: { m: MachineView }) {
       {/* 有 agent 的机器分两组：网卡（供应商计费口径，下行 / 上行）与业务（Xray 入口，下载 / 上传）；家宽代理、同机 IP 节点只有业务一组 */}
       {nic && (
         <Section>
-          <SectionHeader title="网卡（供应商计费口径）" />
+          {/* 两组方向的叫法不同、对不上数：换算说明放 (i) */}
+          <SectionHeader title={<>网卡（供应商计费口径） <InfoTip text={'网卡按这台机器算：下行 = 流进来，上行 = 流出去\n业务按客户算：下载 = 客户收到的，上传 = 客户发出的\n客户下载的数据经过这台机器时一进一出，网卡下行、上行各算一次，所以两组数对不上'} /></>} />
           <LabelValueGrid cols2>
             <LabelValue label="今日 ↓ 下行"><Num f={F.bytes(nic.today_rx)} /></LabelValue>
             <LabelValue label="今日 ↑ 上行"><Num f={F.bytes(nic.today_tx)} /></LabelValue>

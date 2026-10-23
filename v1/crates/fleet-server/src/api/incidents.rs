@@ -93,7 +93,7 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
             } else {
                 j["subject"] = json!({"id": i.subject_id, "name": i.subject_name.clone().unwrap_or_else(|| "（已删除）".into())});
             }
-            j["rule_name"] = json!(crate::meta::rule_label(&i.rule));
+            j["rule_name"] = json!(crate::meta::rule_label_of(&i.rule, &i.severity));
             j
         })
         .collect();
