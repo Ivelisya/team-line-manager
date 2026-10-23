@@ -128,8 +128,81 @@ pub fn ls(ctx: &Ctx, team: Option<&str>) -> anyhow::Result<u8> {
 
 pub fn show(ctx: &Ctx, q: &str) -> anyhow::Result<u8> {
     let r = find(&ctx.list("/routers")?, q)?;
-    let d = ctx.c.get(&format!("/routers/{}", st(&r, "/id")))?;
-    ctx.emit(&d, || human_show(&d));
+    let id = st(&r, "/id");
+    let d = ctx.c.get(&format!("/routers/{id}"))?;
+    // 末尾带最近 5 条配置变更（--json 的 data 仍是详情原样，要变更用 router changes --json）
+    let recent = if ctx.json { Value::Null } else { ctx.c.get_q(&format!("/routers/{id}/changes"), &[("limit", "5".to_string())])? };
+    ctx.emit(&d, || {
+        let mut s = human_show(&d);
+        if let Some(list) = recent.as_array().filter(|a| !a.is_empty()) {
+            s.push_str(&format!("
+
+最近配置变更（fleetctl router changes {} 看全部）
+{}", st(&d, "/name"), changes_human(list)));
+        }
+        s
+    });
+    Ok(0)
+}
+
+/// 一条变更的来源：中控作业（类型名 + 作业 id，fleetctl job 能看）/ 路由上改的
+fn change_source(c: &Value) -> String {
+    match c["source"].as_str() {
+        Some("job") => format!("中控作业「{}」{}", crate::meta::label("job_kinds", &st(c, "/job_kind")), st(c, "/job_id")),
+        _ => "路由上改的".to_string(),
+    }
+}
+
+/// 出口的一条增删改：`节点01  server:port relay.test:20003 → relay.test:20010；凭据变了`
+fn change_item(x: &Value) -> String {
+    let what = match x["op"].as_str() {
+        Some("added") => format!("新增 {}", st(x, "/to")),
+        Some("removed") => format!("删除 {}", st(x, "/from")),
+        _ => {
+            let mut parts = vec![];
+            if x["from"].is_string() {
+                parts.push(format!("server:port {} → {}", st(x, "/from"), st(x, "/to")));
+            }
+            if x["creds"] == true {
+                parts.push("凭据变了".to_string());
+            }
+            parts.join("；")
+        }
+    };
+    format!("  {}  {what}", st(x, "/exit"))
+}
+
+/// 变更列表（新的在前）：每条一行时间 + 来源 + 新旧 sha（前 8 位），下面缩进列出出口的增删改
+fn changes_human(list: &[Value]) -> String {
+    let short = |c: &Value, k: &str| st(c, k).chars().take(8).collect::<String>();
+    list.iter()
+        .map(|c| {
+            let mut lines = vec![format!("{}  {}  配置 {} → {}", table::ts(&st(c, "/at")), change_source(c), short(c, "/old_sha"), short(c, "/new_sha"))];
+            lines.extend(c["diff"].as_array().into_iter().flatten().map(change_item));
+            match (c["diff"].as_array().is_none_or(Vec::is_empty), c["note"].as_str()) {
+                (_, Some(n)) => lines.push(format!("  （{n}）")),
+                (true, None) => lines.push("  出口没有变化（改的是出口以外的部分）".to_string()),
+                _ => {}
+            }
+            lines.join("
+")
+        })
+        .collect::<Vec<_>>()
+        .join("
+")
+}
+
+/// `router changes <路由> [--limit N]`：配置变更时间线（新的在前）
+pub fn changes(ctx: &Ctx, q: &str, limit: Option<u32>) -> anyhow::Result<u8> {
+    let r = find(&ctx.list("/routers")?, q)?;
+    let query: Vec<(&str, String)> = limit.map(|n| ("limit", n.to_string())).into_iter().collect();
+    let d = ctx.c.get_q(&format!("/routers/{}/changes", st(&r, "/id")), &query)?;
+    ctx.emit(&d, || match d.as_array().filter(|a| !a.is_empty()) {
+        Some(list) => format!("{}
+{}
+共 {} 条", st(&r, "/name"), changes_human(list), list.len()),
+        None => format!("{} 还没有记录到配置变更（中控发现配置文件变了才记，记录从中控升级后开始）", st(&r, "/name")),
+    });
     Ok(0)
 }
 
@@ -682,6 +755,22 @@ mod tests {
             json!({"id": "01a162a9-39c4-752c-b647-e61f34ef48bd", "name": "团队2-路由A", "state": "online"}),
             json!({"id": "01a162a9-4000-752c-b647-e61f34ef48bd", "name": "团队2-路由B", "state": "pending"}),
         ]
+    }
+
+    /// 变更时间线：作业来源写类型与作业 id、路由上改的单独标明；出口新增 / 删除 / 地址与凭据变了；比不出差异时写原因
+    #[test]
+    fn changes_timeline_text() {
+        let list = [
+            json!({"at": "2026-10-24T04:30:56Z", "old_sha": "aaaaaaaa11", "new_sha": "bbbbbbbb22", "source": "job", "job_id": "J1", "job_kind": "router_sync",
+                   "diff": [{"exit": "节点01", "op": "changed", "from": "a:1", "to": "b:2", "creds": true}, {"exit": "节点03", "op": "added", "to": "c:3"}, {"exit": "节点02", "op": "removed", "from": "d:4"}]}),
+            json!({"at": "2026-10-24T04:00:00Z", "old_sha": "cccccccc33", "new_sha": "aaaaaaaa11", "source": "router", "diff": [], "note": null}),
+        ];
+        let s = changes_human(&list);
+        assert!(s.contains("J1  配置 aaaaaaaa → bbbbbbbb") && s.contains("  节点01  server:port a:1 → b:2；凭据变了
+  节点03  新增 c:3
+  节点02  删除 d:4"), "{s}");
+        assert!(s.contains("路由上改的  配置 cccccccc → aaaaaaaa
+  出口没有变化"), "{s}");
     }
 
     /// 在线却带原因 = 连得上但采集出错；配置读不了时写明出口按上次的配置对应；延迟测试没做成写原因；时钟偏差写明符号
