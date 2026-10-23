@@ -516,11 +516,12 @@ async fn ingest(st: &AppState, a: AgentId, mut r: Report) -> Result<Json<ReportA
     // 主连接池不设语句超时：一条卡住的语句（如插分区表时排在建 / 摘分区的父表锁后面）会让这份一直占着处理位置，
     // 这台机器之后的上报就一直 429。10 秒（加上等连接最多 5 秒，在 agent 的 15 秒超时以内）没完就取消、回 503，agent 退避重发
     sqlx::query("set local statement_timeout = '10s'").execute(&mut *tx).await?;
-    let prev: Option<(i64, bool)> =
-        sqlx::query_as("select last_seq, coalesce(last_report_at > now() - interval '30 seconds', false) from agent_state where machine_id = $1 for update")
-            .bind(a.machine_id)
-            .fetch_optional(&mut *tx)
-            .await?;
+    let prev: Option<(i64, bool, Option<OffsetDateTime>)> = sqlx::query_as(
+        "select last_seq, coalesce(last_report_at > now() - interval '30 seconds', false), last_report_at from agent_state where machine_id = $1 for update",
+    )
+    .bind(a.machine_id)
+    .fetch_optional(&mut *tx)
+    .await?;
     let last = prev.map(|p| p.0);
     // 去重（中控重启后内存里的 seq 没了，靠库里的）：同一份数据重发（seq 不增）直接确认；但这仍说明 agent 活着，要刷新最近上报时间
     if let Some(seq) = &last {
@@ -679,6 +680,13 @@ async fn ingest(st: &AppState, a: AgentId, mut r: Report) -> Result<Json<ReportA
     }
     // 新读数由 live.rs 合并推送（最多每 3 s 一次），不发失效事件
     st.metrics_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
+    // 告警的判断可能变了（探测结果翻转、agent 从离线回来、Xray 起停）：马上评估，不等 30 秒一轮
+    let was_offline = !prev.and_then(|p| p.2).is_some_and(|t| st.report_gaps.online(t, now));
+    let probes: Vec<(Uuid, &str, bool)> =
+        ps.iter().map(|(p, _)| (p.entry_id, if p.kind == fleet_proto::ProbeKind::Tcp { "tcp" } else { "egress" }, p.ok)).collect();
+    if crate::alerts::report_matters(st, a.machine_id, was_offline, r.xray.as_ref().map(|x| x.running), &probes) {
+        st.wake_alerts();
+    }
     Ok(Json(ReportAck { accepted_seq: r.seq, interval_s: fleet_proto::REPORT_INTERVAL_S }))
 }
 
