@@ -711,7 +711,7 @@ const WATCH_EVERY: Duration = Duration::from_secs(2);
 /// 路由断电、断网这类没告别的断开，中控 sshd 要 ClientAlive 约 30 秒才发现（deploy/central/sshd-fleet-tunnel.conf）；
 /// 离线告警本身按「连不上满 1 分钟」开（alerts.rs），不靠它。读不了 /proc/net/tcp（不是 Linux）就不盯，照 30 秒一轮
 pub async fn watch_tunnels(st: AppState) {
-    let (lo, hi) = (st.cfg.routers.port_min, st.cfg.routers.port_max);
+    let (lo, hi) = (crate::config::TUNNEL_PORT_MIN, crate::config::TUNNEL_PORT_MAX);
     let mut prev: Option<HashSet<u16>> = None;
     let mut tick = tokio::time::interval(WATCH_EVERY);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
