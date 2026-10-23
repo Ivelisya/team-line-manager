@@ -42,7 +42,7 @@ type View = 'all' | 'running' | 'done';
 const VIEWS: { value: View; label: string }[] = [{ value: 'all', label: '全部' }, { value: 'running', label: '进行中' }, { value: 'done', label: '已结束' }];
 const STATE_OF: Record<View, 'all' | 'active' | 'done'> = { all: 'all', running: 'active', done: 'done' };
 /** 类型筛选（?kind=，与页签组合）：上架含四类机器，按大类筛（同列表接口的 kind）；其余是作业类型原值，名字取 /meta */
-const KIND_VALUES = ['provision', 'attach_entry', 'move_entry', 'replace', 'upgrade_agent', 'tune', 'retire', 'purge'];
+const KIND_VALUES = ['provision', 'attach_entry', 'move_entry', 'replace', 'upgrade_agent', 'tune', 'ss_refresh', 'retire', 'purge'];
 const KIND_GROUP: Record<string, string> = { provision: '上架' };
 
 /** 需要人工处理的失败（改软路由出口改了一半、换回失败）：胶囊换成醒目的「需人工处理」，不和普通失败混在一起 */
@@ -241,6 +241,7 @@ function cancelDesc(j: Job): React.ReactNode {
   if (j.state === 'failed' && j.kind.startsWith('provision_')) return <>机器会被退役并清理 <InfoTip text="这次上架不会再重试。已完成的步骤会回滚，机器退役并清理，IP 和编号释放出来" /></>;
   if (j.kind === 'upgrade_agent') return <>不再升级，排在后面的也一起取消 <InfoTip text="这台还没开始升级。「全部升级」里排在它后面的机器，也会一起取消" /></>;
   if (j.kind === 'tune') return '不再调优';
+  if (j.kind === 'ss_refresh') return '不再下发';
   return '已完成的步骤会回滚';
 }
 

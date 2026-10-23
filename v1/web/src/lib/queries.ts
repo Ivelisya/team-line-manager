@@ -257,6 +257,7 @@ export const useProvisionCheck = () => useMutation({ mutationFn: (items: Provisi
 export const useProvision = () => useWrite((items: ProvisionItem[]) => post<{ jobs: { machine_id: string; job_id: string; name: string }[] }>('/provision', { items }), [...M, ['jobs'], ['teams']]);
 export const useUpgradeAgent = () => useWrite((id: string) => post<{ machine_id: string; job_id: string }>(`/machines/${id}/upgrade-agent`), [...M, ['jobs']]);
 export const useTune = () => useWrite((id: string) => post<{ machine_id: string; job_id: string }>(`/machines/${id}/tune`), [...M, ['jobs']]);
+export const useSsRefresh = () => useWrite((id: string) => post<{ machine_id: string; job_id: string }>(`/machines/${id}/ss-refresh`), [...M, ['jobs']]);
 export const useUpgradeAllAgents = () => useWrite(() => post<{ jobs: { machine_id: string; job_id: string }[]; order: string }>('/agents/upgrade'), [...M, ['jobs']]);
 /** 重试：主机指纹不符 / SSH 认证失败时可带 reset_host_key、ssh_password */
 export interface RetryBody { reset_host_key?: boolean; ssh_password?: string }
