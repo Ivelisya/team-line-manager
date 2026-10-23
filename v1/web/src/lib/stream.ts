@@ -4,6 +4,7 @@
 //   单台机器的 machine 事件只取这一台（/machines/{id}）拼回机器列表（live.ts refreshMachine），拼不上或页面在后台才整表失效；
 //   机器列表和这台的详情都没人看（设置页之类）时不取，只标过期（回到那些页面时再取）。同一台正在取时又来了事件，取完再取一次，不并发取同一台。
 //   整表（机器、线路机、总览、作业列表）的失效再合并成最多每 2 s 一次，且不打断在途的重取：批量上架时不至于每秒整表重取、请求被反复取消；
+//   告警列表不在其中（只合并 300ms）：告警开、恢复要即时；
 //   事件到达之后才开始、并已成功取回的整表不再重取（它已经包含这次变更）——自己保存时写操作当场重取了一次，事件随后又会引起一次，这样只取一次。
 // - 断开后指数退避重连（1s → 30s 封顶，±20% 抖动，中控重启后各页面不同时涌进来），期间不轮询（顶栏显示已断开）；
 //   等待重连时网络恢复（online）或页面回到前台，立刻重连，不再等退避到点。首次连上让机器类查询失效一次：增量只带变了的字段，
@@ -24,7 +25,7 @@ const useStreamState = status.use;
 
 const MERGE_MS = 300;
 const LIST_MS = 2000;
-const LISTS = new Set(['machines', 'relays', 'overview', 'jobs', 'audit', 'incidents']);
+const LISTS = new Set(['machines', 'relays', 'overview', 'jobs', 'audit']);
 const BACKOFF_MAX = 30_000;
 // 服务端每 15 s 发一个文本心跳 {type:"hb"}：连着这么久什么都没收到就当连接已死
 const STALE_MS = 45_000;
