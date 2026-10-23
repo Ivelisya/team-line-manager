@@ -105,7 +105,7 @@ fleetctl exec --team 团队1 --timeout 30 -- uptime           # 多台并发 4�
   - 中控连不到路由（路由在 NAT 后面，三台现场路由都是）：`fleetctl router add <名称> [--team 团队2]` 打印接入命令（30 分钟、只能用一次），让用户在路由上用 root 执行；过期了 `fleetctl router bootstrap <路由> --yes` 重新生成（现在的隧道密钥立刻作废，在线的路由马上掉线）。
   - 中控能直接连到路由的 SSH（公网映射、同一网段）：一键部署 `fleetctl router add <名称> --host <IP> [--port 22] [--user root] --password-stdin --yes --follow`（密码从标准输入读一行，不要写在参数里）；路由上已经授权过中控公钥时不用密码。已有的路由重新部署用 `router deploy`；上传密钥、启动隧道这两步失败时中控把原来的隧道密钥与端口写回，在线的路由不掉线（错误里写「已改回原来的隧道密钥与端口」）。失败原因原样转告用户；中控连不到它就改用接入命令。
 - 删路由（`router rm --yes`）只撤销中控这边（隧道公钥、状态与指标）；输出里的 `cleanup` 是要在路由上执行的清理命令，转给用户。还有没做完的作业改过它的出口、没确认改回（「需要人工处理」）时删不了，报错里有作业 id：先把作业处理完；路由确实回不来了（扔了、刷机）才用 `router rm <路由> --force --yes`（先向用户确认：作业不再改回它，它上面被改过的出口要自己处理），之后作业能重试收尾或取消。
-- 轮换入口凭据、停用入口不会改软路由：`entry rotate` / `entry disable` 的确认语会列出指向这个入口的软路由出口（之后它们就连不上了），先告诉用户。要换节点让路由跟着改用 `replace` / `move`。
+- 轮换入口凭据、停用入口不会改软路由：`entry rotate` / `entry disable` 的确认语会列出指向这个入口的软路由出口（之后它们就连不上了），先告诉用户。要换节点让路由跟着改用 `replace` / `move`，只改路由出口指向别的入口用 `repoint`。
 
 ## 探测点
 
@@ -191,6 +191,7 @@ fleetctl renumber <团队> --yes                             # 不加 --yes 只�
 fleetctl move <节点> --to <线路机> --yes [--from <线路机>] [--no-routers] [--follow]   # 换线路机：新入口验收后改软路由出口（同替换，失败全部换回、旧入口不摘）、再摘旧入口，不断网；分享链接会变，完成后 fleetctl share <节点> 取新链接。不加 --yes 先看预览
 fleetctl evacuate <线路机> --to <线路机> --yes [--no-routers] [--follow]          # 搬空线路机（退役前）：每个在用节点一个换线路机作业，软路由出口跟着改；作业并行建新入口，都验收完后由一个「带头」的一起改，每台路由只改一次、重启一次（任何一台失败全部换回、旧入口都不摘，同批一起失败，修好后都重试）。预览写「软路由 X 的 N 个节点的出口一起改，OpenClash 重启 1 次（断开它上面全部连接）」，确认前告诉用户
 fleetctl replace <旧节点> --with <新节点> [--to <团队>] [--number N] [--no-routers] --yes [--follow]   # 替换节点：不加 --yes 只预览（见下）
+fleetctl repoint <旧入口> --to <新入口> [--router <路由>]… --yes [--follow]   # 改出口指向：软路由上指向旧入口的出口改成新入口（同替换的改路由：备份、重启 OpenClash、测延迟，失败全部换回），两个入口都不动、不改编号。不加 --yes 只预览
 fleetctl provision ...                                     # 先 check，再确认，再提交
 fleetctl retry <作业> [--reset-host-key] [--password-env VAR]   # 重试失败作业；只有作业因主机指纹不符失败、且确认机器重装过才加 --reset-host-key（同机 IP 节点不行：对宿主机升级 agent 后重试那个作业）；在用机器指纹变了也走这条：先 upgrade-agent 让它失败再重试；报「没有可用的 root 密码」时用 --password-env 补密码
 fleetctl renew <机器> [--cycles N | --to YYYY-MM-DD] [--amount 39.46] [--note …] --yes   # 登记续费：用户确认付过款之后（见「到期与续费」）
@@ -218,6 +219,7 @@ fleetctl plan rm <套餐> --yes                               # 还有机器（�
 - 同机 IP 节点（已有 VPS 节点上多出来的 IP 当一台独立节点，按 IP 计节点）：`fleetctl provision --kind vps --host <宿主机> --ip <新 IP> --team 团队1 --relay 线路机2 --yes --follow`（批量文件条目写 `"host": "<宿主机>"`）。宿主机要是在用的普通 VPS 节点；IP 要已直接配在宿主机网卡上。不填 SSH 端口 / 密码 / SS 端口（SSH 与 agent 用宿主机的，SS 端口中控从 8389 起分配），供应商取宿主机的、费用默认不记。作业 `provision_ip` 第一步「在宿主机上核对 IP」：报「不在宿主机网卡上」或「中控看到的来源是 …」时是机器网络配置问题，让用户去供应商面板 / 机器上配好再 `fleetctl retry`。
 - 升级 agent：新版本起不来、2 分钟内没上报，或线路机上新版本报的 Xray 不正常（没在跑、配置没应用到升级开始时的代数、有应用错误；升级前就这样的项不查），作业自动换回旧版本后失败（错误「…，已回滚到 <旧版本>」，线路机的写「线路机检查没通过（…）」：机器照常上报，把错误告诉用户即可）；错误里写「需要人工处理」时 agent 可能没在运行，按 `docs/OPS.md` §7 处理。`--all` 的金丝雀或任何一台线路机换上新版本后出问题，没开始的作业都取消（`error` 写明是哪台），不要逐台去重试或再 `--all`，先查失败的原因；推送之前就失败的（SSH 连不上、登录被拒）只算那一台，后面的照常继续，修好那台后 `retry` 它的作业。用户要停下 `--all`：排队中的作业 `fleetctl cancel <作业>`，等它的跟着取消；进行中的不能取消。错误是「中控上的 agent 在升级过程中换了版本…」时是中途重新部署过中控，问过用户后重新 `--all`。失败的升级作业 `retry` 从推送重来。
 - 替换节点（用户说「把 团队2-01 换成新机器」「替换下来的放备用」）：**一律用 `fleetctl replace`，不要手改软路由的 OpenClash 配置、不要 `fleetctl ssh router` 去改、不要直接写数据库，也不要用 rename + retire 拼**。新节点先上架（同团队拿到临时编号、入口生效）；`fleetctl replace 团队2-01 --with 团队2-20` 先看预览（新节点 → 旧编号、旧节点 → 备用团队的哪个号、要改哪些软路由的哪些出口、编号压缩、阻断原因），告诉用户，同意后加 `--yes --follow`。作业先改软路由（同团队几台路由都改；备份 → 只改那个出口的 server/port/uuid/servername/public-key/short-id → 重启 OpenClash → 测延迟，任何一台失败全部换回原配置），再交换编号（同 rename，旧节点进备用团队，同退役的默认去向，到期满 1 天由中控自动回收）。阻断里有「软路由「X」现在离线」：等路由在线（`fleetctl routers`）或用户同意只换编号（`--no-routers`，路由上的出口就还指向旧节点）。旧节点默认去备用团队，用户要放别处再加 `--to`。作业失败：把 `fleetctl job <id>` 的错误告诉用户（改路由失败时路由都已换回、编号没动；写「需要人工处理」的是回滚也失败了，备份路径在错误里），处理后 `fleetctl retry <id>`；开始改路由之后不能取消。
+- 改出口指向（用户说「把软路由的直连 / 默认出口换成线路机3」「节点11 被打了，客户先切到备用」）：`fleetctl repoint 线路机1-直出 --to 线路机3-直出 [--router 团队2-老办公室]`。入口写入口 id、`线路机名:端口` 或节点显示名（直出入口是「线路机名-直出」）；目标线路机还没有直出入口就先 `fleetctl entry add-direct <线路机> --yes --follow`。旧入口照常在用（别的客户端、个人订阅还能用它），不要的话另行停用。不要手改路由的 OpenClash 配置、不要用 router-swap 一类脚本。
 - 改名：`fleetctl rename <机器> --team 团队2 --number 3`。
 - 国家（名字旁的国旗）：默认按 IP 查离线库自动定；查错了或想固定就 `fleetctl rename <机器> --country JP`（ISO 3166-1 两位代码，英国是 GB），`--country auto` 改回自动；上架时也可以 `fleetctl provision … --country US`。
 - 分享链接 `fleetctl share <入口>` 需要 `secrets` scope，会记审计；链接是凭据，只给用户本人，不写进文件或日志。

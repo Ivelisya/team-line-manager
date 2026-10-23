@@ -19,6 +19,7 @@ pub mod provision;
 pub mod recycle;
 pub mod relays;
 pub mod replace;
+pub mod repoint;
 pub mod routers;
 pub mod settings;
 pub mod stream;
@@ -92,6 +93,8 @@ pub fn router() -> Router<AppState> {
         .route("/relays/{id}/evacuate", get(lifecycle::evacuate_preview).post(lifecycle::evacuate))
         // 替换节点：GET 预览，POST 建作业（改软路由出口 → 交换编号）
         .route("/machines/{id}/replace", get(replace::preview).post(replace::replace))
+        // 改出口指向：软路由上指向这个入口的出口改成另一个入口（GET 预览，POST 建作业）
+        .route("/entries/{id}/repoint", get(repoint::preview).post(repoint::repoint))
         // 上架
         .route("/provision/check", post(provision::check))
         .route("/provision", post(provision::create))

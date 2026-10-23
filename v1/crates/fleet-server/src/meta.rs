@@ -230,6 +230,7 @@ pub const JOB_KINDS: Labels = &[
     ("upgrade_agent", "升级 agent"),
     ("replace", "替换节点"),
     ("tune", "系统调优"),
+    ("repoint", "改出口指向"),
 ];
 
 pub const JOB_STATES: Labels = &[

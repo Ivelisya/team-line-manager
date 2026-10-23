@@ -1,6 +1,8 @@
 //! 替换节点（replace）的步骤：改软路由出口 → 交换编号。发起时按快照算好的计划（改哪些路由的哪些出口、旧节点去哪）存在作业参数里，
 //! 见 api/replace.rs；路由上的脚本见 routers/replace.rs。
 //! 换线路机（move_entry）在验收新入口之后、摘旧入口之前也走这里的「改软路由出口」（计划见 api/lifecycle.rs，新入口取参数 `entry_id`）。
+//! 改出口指向（repoint）只有这一步（计划见 api/repoint.rs）：出口从 `old_entry_id` 改成 `new_entry_id`（属于 `new_id` 那台），
+//! 匹配与换线路机相同；`router_ids` 不空时只改这几台路由。新入口不叫 `entry_id`：取消作业时 compensate 会把 `entry_id` 当成作业建的入口摘掉。
 //!
 //! 改路由：要改哪些出口按执行时路由的配置重新确定（经隧道读源配置，同一套匹配：api::replace::replace_exit / api::lifecycle::move_exit），
 //! 发起时的计划只作展示。不在线的路由按最近一次采集看，有出口要改就一台都不改。出口对不上新入口（同预览的原因）也一台都不改。
@@ -106,19 +108,23 @@ enum Pick {
 
 impl Pick {
     /// `node`：作业的目标（替换是旧节点，换线路机是节点自己）
-    async fn load(db: &sqlx::PgPool, job: &JobRow, node: Uuid, moving: bool) -> anyhow::Result<Pick> {
-        if !moving {
+    async fn load(db: &sqlx::PgPool, job: &JobRow, node: Uuid) -> anyhow::Result<Pick> {
+        if job.kind == "replace" {
             let mut conn = db.acquire().await?;
             let (old, new) = replace_entries(&mut conn, node, uuid_of(&job.params, "new_id")?).await?;
             return Ok(Pick::Replace { old, new });
         }
-        let eid = uuid_of(&job.params, "entry_id")?;
+        // 换线路机的新入口是节点自己的（作业里建的）；改出口指向的新入口是 new_id 那台的（发起时就在用）
+        let (eid, owner, redo) = match job.kind.as_str() {
+            "repoint" => (uuid_of(&job.params, "new_entry_id")?, uuid_of(&job.params, "new_id")?, "重新发起改出口指向"),
+            _ => (uuid_of(&job.params, "entry_id")?, node, "重新发起换线路机"),
+        };
         let port: Option<i32> = sqlx::query_scalar("select port from entry where id = $1 and node_id = $2 and lifecycle = 'active'")
             .bind(eid)
-            .bind(node)
+            .bind(owner)
             .fetch_optional(db)
             .await?;
-        let Some(port) = port else { bail!("新入口已经不在用了：重新发起换线路机") };
+        let Some(port) = port else { bail!("新入口已经不在用了：{redo}") };
         let (from_ip, _) = relay_addr(db, uuid_of(&job.params, "from_relay_id")?).await?;
         let to = relay_addr(db, uuid_of(&job.params, "to_relay_id")?).await?;
         Ok(Pick::Move { old_entry: uuid_of(&job.params, "old_entry_id")?, new: (eid, port as u16), from_ip, to })
@@ -158,10 +164,9 @@ struct Part {
 
 impl Part {
     async fn load(db: &sqlx::PgPool, job: &JobRow) -> anyhow::Result<Part> {
-        let moving = job.kind == "move_entry";
         let node = job.target_id.ok_or_else(|| anyhow!("作业没有目标机器"))?;
-        let new = if moving { node } else { uuid_of(&job.params, "new_id")? };
-        let pick = Pick::load(db, job, node, moving).await?;
+        let new = if job.kind == "move_entry" { node } else { uuid_of(&job.params, "new_id")? };
+        let pick = Pick::load(db, job, node).await?;
         let plan = serde_json::from_value(job.params["plan"]["routers"].clone()).unwrap_or_default();
         Ok(Part { job: job.id, node, new, pick, plan })
     }
@@ -316,7 +321,11 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         return Ok(Outcome::Skipped("选择了不改软路由".into()));
     }
     let moving = c.job.kind == "move_entry";
-    let (what, redo, kept) = if moving { ("旧入口", "重新发起换线路机", "旧入口没摘") } else { ("旧节点", "重新发起替换", "编号没改") };
+    let (what, redo, kept) = match c.job.kind.as_str() {
+        "move_entry" => ("旧入口", "重新发起换线路机", "旧入口没摘"),
+        "repoint" => ("旧入口", "重新发起改出口指向", "入口都没动"),
+        _ => ("旧节点", "重新发起替换", "编号没改"),
+    };
     let mut locks = Locks::new(&c.st.db);
     // 排队中：只等那台路由的锁，别的都不做
     let queued_on = if c.first { None } else { c.job.params["routers_queued_id"].as_str().and_then(|s| Uuid::try_parse(s).ok()) };
@@ -364,6 +373,11 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let owners: Vec<Uuid> = parts.iter().map(|p| p.new).collect();
     let entries: Vec<clash::Entry> = sqlx::query_as(clash::ENTRIES).fetch_all(&c.st.db).await?;
     let mut rows = routers::load(&c.st.db, None).await?;
+    // 改出口指向可以只改选中的几台路由
+    let only: Vec<Uuid> = c.job.params["router_ids"].as_array().into_iter().flatten().filter_map(|x| x.as_str()).filter_map(|s| Uuid::try_parse(s).ok()).collect();
+    if !only.is_empty() {
+        rows.retain(|r| only.contains(&r.id));
+    }
     rows.sort_by_key(|r| r.id);
     let plan: Vec<&RouterPlan> = parts.iter().flat_map(|p| &p.plan).collect();
     let none_yet = if resumed { "" } else { "，一台都没有改" };

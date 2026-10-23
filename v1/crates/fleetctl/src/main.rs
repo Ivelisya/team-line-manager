@@ -578,6 +578,22 @@ enum Cmd {
     /// 替换节点：新节点接替旧节点。软路由上指向旧节点的出口改成新节点的入口（备份、重启 OpenClash、测延迟，失败全部换回），
     /// 旧节点去备用团队（或 --to 指定的团队），新节点接旧编号。不加 --yes 只打印预览
     Replace(lifecycle::ReplaceOpts),
+    /// 改出口指向：软路由上指向旧入口的出口改成新入口（备份、重启 OpenClash、测延迟，失败全部换回），两个入口都不动。
+    /// 如直出出口换线路机（repoint 线路机1-直出 --to 线路机3-直出）、节点出问题时临时指到备用节点。不加 --yes 只打印预览
+    Repoint {
+        /// 旧入口（入口 id、`线路机名:端口`、节点显示名如「团队2-11」「线路机1-直出」）
+        from: String,
+        /// 新入口
+        #[arg(long)]
+        to: String,
+        /// 只改这台软路由（可重复；不给 = 所有指向旧入口的）
+        #[arg(long = "router")]
+        routers: Vec<String>,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        follow: bool,
+    },
     /// 软路由列表：状态、出口通 / 总、客户端、CPU、内存、WAN 速率
     Routers {
         /// 只看这个团队的
@@ -919,6 +935,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Move { node, to, from, no_routers, yes, follow } => lifecycle::mv(x, &node, &to, from.as_deref(), no_routers, yes, follow),
         Cmd::Evacuate { relay, to, no_routers, yes, follow } => lifecycle::evacuate(x, &relay, &to, no_routers, yes, follow),
         Cmd::Replace(o) => lifecycle::replace(x, o),
+        Cmd::Repoint { from, to, routers, yes, follow } => lifecycle::repoint(x, &from, &to, &routers, yes, follow),
         Cmd::Routers { team } => routers::ls(x, team.as_deref()),
         Cmd::Router { cmd } => match cmd {
             RouterCmd::Show { router } => routers::show(x, &router),

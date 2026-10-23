@@ -143,7 +143,7 @@ pub async fn audit(a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<A
 const AUDIT_ACTIONS: &[&str] = &[
     "machine.provision", "machine.retire", "machine.recycle", "recycle.import", "machine.purge", "machine.rename", "machine.update", "machine.restore", "machine.replace", "machine.tune", "subscription.set", "renewal",
     "team.create", "team.update", "team.delete", "team.renumber", "provider.create", "provider.update", "provider.delete", "plan.create", "plan.update", "plan.delete", "entry.enable",
-    "entry.disable", "entry.rotate", "entry.share", "entry.add", "entry.move", "relay.evacuate", "job.retry", "job.cancel", "silence.create",
+    "entry.disable", "entry.rotate", "entry.share", "entry.add", "entry.move", "entry.repoint", "relay.evacuate", "job.retry", "job.cancel", "silence.create",
     "silence.delete", "incident.ack", "restore.probe", "agent.upgrade", "notify.create", "notify.update", "notify.delete", "exec", "machine.logs", "server.logs", "apikey.create",
     "apikey.revoke", "auth.login", "auth.login_failed", "auth.logout", "auth.totp_enabled", "auth.totp_disabled", "auth.totp_recovery_used",
     "auth.totp_recovery_regenerated", "auth.user_removed", "auth.user_disabled", "auth.password_changed", "auth.session_revoked", "auth.verify_failed", "policy.draft", "policy.discard", "policy.publish", "policy.rollback",
@@ -185,6 +185,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "entry.share" => "查看分享链接",
         "entry.add" => "添加入口",
         "entry.move" => "换线路机",
+        "entry.repoint" => "改出口指向",
         "relay.evacuate" => "搬空线路机",
         "machine.restore" => "恢复机器",
         "machine.replace" => "替换节点",
@@ -283,6 +284,8 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
             format!("{why}{}", parts.join("，"))
         }
         "entry.move" => format!("{} · {} → {}", s("name"), s("from"), s("to")),
+        // 「线路机1-直出 · 线路机1:20010 → 线路机3-直出 · 线路机3:20000（改 2 台软路由）」
+        "entry.repoint" => format!("{} → {}（改 {} 台软路由）", s("from"), s("to"), d["routers"].as_array().map_or(0, |a| a.len())),
         "relay.evacuate" => format!("{} → {}（{} 个作业）", s("from"), s("to"), d["jobs"].as_array().map_or(0, |a| a.len())),
         // 「团队2-01 由 团队2-20 接替，旧节点改为 备用-03（改 2 台软路由）」
         "machine.replace" => {

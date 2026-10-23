@@ -1,0 +1,183 @@
+//! 改出口指向：软路由上指向入口 A 的出口改成入口 B（名字、分组、规则不动），两个入口本身都不动（不建、不摘、不改编号）。
+//! 用途：直出出口换一台线路机（线路机1-直出 → 线路机3-直出）、节点出问题时临时把客户的出口指到备用节点、再指回来。
+//! 只改指定的路由（`router_ids`，空 = 所有指向入口 A 的路由）。这里只做校验、预览、建作业和写审计；
+//! 作业只有一步「改软路由出口」，与替换、换线路机共用（jobs/steps/replace.rs：执行时按路由当时的配置重新确定、备份 → 改 → 重启 OpenClash →
+//! 测延迟，任何一台失败全部换回）。出口写的是旧线路机 IP 就换成新线路机的 IP，否则换成新线路机的 public_host（同换线路机）。
+
+use super::lifecycle::{move_exit, relay_addr};
+use super::ok;
+use super::replace::{routers_view, scan_routers, RouterPlan};
+use crate::auth::Actor;
+use crate::db::{audit, Tx};
+use crate::error::{ApiError, ApiJson, ApiPath, ApiQuery, ApiResult};
+use crate::jobs;
+use crate::state::{AppState, Event};
+use axum::extract::State;
+use axum::Json;
+use serde::Deserialize;
+use serde_json::{json, Value};
+use sqlx::PgConnection;
+use uuid::Uuid;
+
+/// 入口：(id, 节点, 线路机, 端口, 状态, 显示名「线路机1-直出 · 线路机1:20010」)
+#[derive(sqlx::FromRow, Clone, Debug)]
+struct Ent {
+    id: Uuid,
+    node_id: Uuid,
+    relay_id: Uuid,
+    port: i32,
+    lifecycle: String,
+    node_name: String,
+    relay_name: String,
+}
+
+impl Ent {
+    fn name(&self) -> String { format!("{} · {}:{}", self.node_name, self.relay_name, self.port) }
+}
+
+const ENT: &str = "select e.id, e.node_id, e.relay_id, e.port, e.lifecycle::text lifecycle, coalesce(rm.label, '') relay_name,
+        case when e.node_id = e.relay_id then coalesce(rm.label, '') || '-直出' else display_name(n.kind::text, n.label, t.name, n.number) end node_name
+    from entry e join machine rm on rm.id = e.relay_id join machine n on n.id = e.node_id left join team t on t.id = n.team_id where e.id = $1";
+
+#[derive(Deserialize)]
+pub struct RepointIn {
+    to_entry_id: Uuid,
+    /// 只改这几台路由（空 = 所有指向旧入口的）
+    #[serde(default)]
+    router_ids: Vec<Uuid>,
+}
+
+#[derive(Deserialize)]
+pub struct PreviewQ {
+    to_entry_id: Uuid,
+    /// 逗号分隔的路由 id
+    routers: Option<String>,
+}
+
+struct Plan {
+    old: Ent,
+    new: Ent,
+    router_ids: Vec<Uuid>,
+    routers: Vec<RouterPlan>,
+    blockers: Vec<String>,
+    invalid: Vec<String>,
+    warnings: Vec<String>,
+}
+
+async fn plan(st: &AppState, conn: &mut PgConnection, old_id: Uuid, b: &RepointIn) -> ApiResult<Plan> {
+    let (mut blockers, mut invalid, mut warnings) = (vec![], vec![], vec![]);
+    let old: Option<Ent> = sqlx::query_as(ENT).bind(old_id).fetch_optional(&mut *conn).await?;
+    let old = old.ok_or_else(|| ApiError::not_found("没有这个入口"))?;
+    let new: Option<Ent> = sqlx::query_as(ENT).bind(b.to_entry_id).fetch_optional(&mut *conn).await?;
+    let Some(new) = new else { return Err(ApiError::bad_request("要改成的入口不存在")) };
+    if old.id == new.id {
+        blockers.push("新入口就是旧入口".into());
+        invalid.push("新入口就是旧入口".into());
+    }
+    if old.lifecycle == "removed" {
+        blockers.push(format!("旧入口「{}」已经删除", old.name()));
+    }
+    if new.lifecycle != "active" {
+        blockers.push(format!("新入口「{}」现在不在用（{}）：等它生效再改", new.name(), new.lifecycle));
+    }
+    let mut rows = crate::routers::load(&st.db, None).await?;
+    if !b.router_ids.is_empty() {
+        for id in &b.router_ids {
+            if !rows.iter().any(|r| r.id == *id) {
+                blockers.push(format!("没有软路由 {id}"));
+                invalid.push(format!("没有软路由 {id}"));
+            }
+        }
+        rows.retain(|r| b.router_ids.contains(&r.id));
+    }
+    let from_ip = relay_addr(&mut *conn, old.relay_id).await?.0;
+    let to = relay_addr(&mut *conn, new.relay_id).await?;
+    let routers = scan_routers(&rows, old.node_id, None, true, true, ("改", "旧入口"), &mut blockers, &mut warnings, |er, srv, port| {
+        move_exit(er, old.id, Some((new.id, new.port as u16)), &from_ip, &to, srv, port).map(Ok)
+    });
+    if routers.is_empty() && invalid.is_empty() {
+        blockers.push(format!("没有{}软路由的出口指向「{}」：没有要改的", if b.router_ids.is_empty() { "" } else { "选中的" }, old.name()));
+    }
+    if new.node_id != old.node_id {
+        warnings.push(format!("改完后这些出口的流量走「{}」：入口本身都不动，「{}」照常在用", new.name(), old.name()));
+    }
+    Ok(Plan { old, new, router_ids: b.router_ids.clone(), routers, blockers, invalid, warnings })
+}
+
+impl Plan {
+    fn view(&self) -> Value {
+        let side = |e: &Ent| json!({"id": e.id, "name": e.name(), "node_id": e.node_id, "relay_id": e.relay_id, "port": e.port});
+        json!({
+            "old": side(&self.old),
+            "new": side(&self.new),
+            "router_ids": self.router_ids,
+            "routers": routers_view(&self.routers),
+            "ok": self.blockers.is_empty(),
+            "blockers": self.blockers,
+            "warnings": self.warnings,
+        })
+    }
+}
+
+fn parse_ids(s: Option<&str>) -> ApiResult<Vec<Uuid>> {
+    s.unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|x| !x.is_empty())
+        .map(|x| Uuid::try_parse(x).map_err(|_| ApiError::bad_request(format!("软路由 id 不对：{x}"))))
+        .collect()
+}
+
+/// 预览：会改哪些路由的哪些出口，以及不能改的原因
+pub async fn preview(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiQuery(q): ApiQuery<PreviewQ>) -> ApiResult<Json<Value>> {
+    let b = RepointIn { to_entry_id: q.to_entry_id, router_ids: parse_ids(q.routers.as_deref())? };
+    let mut conn = st.db.acquire().await?;
+    let p = plan(&st, &mut conn, id, &b).await?;
+    Ok(ok(p.view()))
+}
+
+/// 发起：建 repoint 作业（只有「改软路由出口」一步）
+pub async fn repoint(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<RepointIn>) -> ApiResult<Json<Value>> {
+    let mut tx = st.db.begin().await?;
+    let p = plan(&st, &mut tx, id, &b).await?;
+    if !p.invalid.is_empty() {
+        return Err(ApiError::bad_request(p.invalid.join("；")).with_detail(json!({"blockers": p.blockers})));
+    }
+    if !p.blockers.is_empty() {
+        return Err(ApiError::conflict(p.blockers.join("；")).with_detail(json!({"blockers": p.blockers})));
+    }
+    let job = enqueue(&mut tx, &a.name, &p).await?;
+    tx.commit().await?;
+    st.wake_jobs();
+    st.emit(Event::Job { id: job, target: Some(p.old.node_id) });
+    let mut v = p.view();
+    v["job_id"] = json!(job);
+    Ok(ok(v))
+}
+
+async fn enqueue(tx: &mut Tx<'_>, actor: &str, p: &Plan) -> ApiResult<Uuid> {
+    let params = json!({
+        "old_entry_id": p.old.id,
+        "new_entry_id": p.new.id,
+        "new_id": p.new.node_id,
+        "from_relay_id": p.old.relay_id,
+        "to_relay_id": p.new.relay_id,
+        "router_ids": p.router_ids,
+        "routers": true,
+        "plan": {"routers": serde_json::to_value(&p.routers).unwrap_or_default()},
+        "old_name": p.old.name(),
+        "new_name": p.new.name(),
+    });
+    let job = jobs::enqueue(tx, "repoint", Some(p.old.node_id), params, actor).await?;
+    let routers: Vec<Value> = p.routers.iter().map(|r| json!({"id": r.id, "name": r.name, "exits": r.exits.iter().map(|e| &e.exit).collect::<Vec<_>>()})).collect();
+    audit(
+        tx,
+        actor,
+        "entry.repoint",
+        "machine",
+        Some(p.old.node_id),
+        json!({"from": p.old.name(), "from_id": p.old.id, "to": p.new.name(), "to_id": p.new.id, "routers": routers, "job_id": job}),
+    )
+    .await?;
+    Ok(job)
+}

@@ -270,6 +270,56 @@ pub fn replace(ctx: &Ctx, o: ReplaceOpts) -> anyhow::Result<u8> {
     Ok(0)
 }
 
+/// `fleetctl repoint <旧入口> --to <新入口> [--router <路由>]…`：软路由上指向旧入口的出口改成新入口，入口都不动。
+/// 先 GET 预览（改哪些路由的哪些出口、不能改的原因）；不加 --yes 只打印预览，加了才提交作业
+pub fn repoint(ctx: &Ctx, from: &str, to: &str, routers: &[String], yes: bool, follow: bool) -> anyhow::Result<u8> {
+    let es = cmds::all_entries(ctx)?;
+    let old = crate::resolve::entry(&es, from).map_err(|e| anyhow::anyhow!(e))?;
+    let new = crate::resolve::entry(&es, to).map_err(|e| anyhow::anyhow!(e))?;
+    let id = st(old, "/id");
+    let mut rids = vec![];
+    if !routers.is_empty() {
+        let all = ctx.list("/routers")?;
+        for q in routers {
+            rids.push(st(&crate::routers::find(&all, q)?, "/id"));
+        }
+    }
+    let mut q: Vec<(&str, String)> = vec![("to_entry_id", st(new, "/id"))];
+    if !rids.is_empty() {
+        q.push(("routers", rids.join(",")));
+    }
+    let pv = ctx.c.get_q(&format!("/entries/{id}/repoint"), &q)?;
+    if !ctx.json || !yes {
+        if ctx.json {
+            ctx.emit(&pv, String::new);
+        } else {
+            outln(table::kv(&[("旧入口", st(&pv, "/old/name")), ("新入口", st(&pv, "/new/name"))]));
+            let t = exit_rows(pv["routers"].as_array().map(Vec::as_slice).unwrap_or_default(), None);
+            if !t.is_empty() {
+                outln(format!("要改的软路由出口（备份后改，改完重启 OpenClash 并测延迟；任何一台失败全部换回）：\n{}", table::render(&["软路由", "状态", "出口", "现在", "改成"], &t)));
+            }
+            for w in pv["warnings"].as_array().cloned().unwrap_or_default() {
+                outln(format!("注意：{}", w.as_str().unwrap_or("")));
+            }
+        }
+    }
+    if pv["ok"] != true {
+        bail!("现在不能改：{}", blockers(&pv));
+    }
+    if !yes {
+        if !ctx.json {
+            outln("以上是预览，没有改动。确认无误后加 --yes 执行（--follow 跟进度）");
+        }
+        return Ok(0);
+    }
+    let d = ctx.c.post(&format!("/entries/{id}/repoint"), &json!({"to_entry_id": new["id"], "router_ids": rids}))?;
+    ctx.emit(&d, || format!("已提交改出口指向作业 {}（{} → {}）\n看进度：fleetctl job {} --follow", st(&d, "/job_id"), st(&d, "/old/name"), st(&d, "/new/name"), st(&d, "/job_id")));
+    if follow {
+        return cmds::follow_job(ctx, &st(&d, "/job_id"));
+    }
+    Ok(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

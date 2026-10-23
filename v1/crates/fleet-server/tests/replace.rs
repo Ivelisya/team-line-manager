@@ -4,7 +4,7 @@
 //! 路由是假的：PATH 最前面放假 ssh（路由上的脚本本身在 routers::replace 的单元测试里用 sh 真跑过）。按 `-p <端口>` 分路由根目录，
 //! 收到读配置的脚本回 config.yaml（`router` 按快照里的出口写好，测试可以改：执行时按它定要改的出口；每读一次往 reads 里记一行），
 //! 收到改配置的脚本存成 apply-<n>.sh（根目录里有 hold 就等它删掉再回答），按根目录里的 mode 回答（ok / fail = 测不通、自己改回 / refuse = 认不出、一行没写 /
-//! drop = 备份之后连接断了、没有输出），收到回滚脚本把「时间戳 出口 地址 端口」记进 rollback.log（有 rollback-fail 就回答改回失败）。PATH 是整个进程共用的，所以单独一个测试文件。作业引擎不在后台跑（采集循环会改路由状态），测试里手动推进。
+//! drop = 备份之后连接断了、没有输出；之后的取结果有 result 文件就回它，否则「没有结果」），收到回滚脚本把「时间戳 出口 地址 端口」记进 rollback.log（有 rollback-fail 就回答改回失败）。PATH 是整个进程共用的，所以单独一个测试文件。作业引擎不在后台跑（采集循环会改路由状态），测试里手动推进。
 //! 换线路机 / 搬空改软路由出口用的是同一步，也在这里测（线路机用 common::Sim 模拟）。
 
 #![cfg(unix)]
@@ -36,6 +36,10 @@ case $script in
     [ -e "$R/read-fail" ] && { echo "fleet：读配置失败了" >&2; exit 1; }
     [ -e "$R/no-config" ] && { echo "fleet：OpenClash 的源配置（uci openclash.config.config_path）不存在：没有设置" >&2; exit 3; }
     echo >> "$R/reads"; cat "$R/config.yaml"; exit 0 ;;
+  # 连接断了之后取结果（routers::replace::fetch_script）：有 result 就当路由上的脚本跑完了、回它，否则没有结果
+  *"WAIT='"*)
+    [ -e "$R/result" ] && { cat "$R/result"; exit 0; }
+    echo "fleet：路由上没有这次的结果" >&2; exit 5 ;;
   *"MODE='apply'"*) [ -e "$R/down-apply" ] && { echo "Connection timed out during banner exchange" >&2; exit 255; } ;;
   *"MODE='rollback'"*)
     [ -e "$R/rollback-fail" ] && { echo "fleet：写回备份失败" >&2; exit 3; }
@@ -1101,4 +1105,47 @@ async fn unreadable_router_config_blocks_change() {
     assert_eq!(j["state"], "succeeded", "{j} {}", logs(t, &job).await);
     assert_eq!(applies(23221).len(), 1);
     assert!(logs(t, &job).await.contains("软路由「别队路由」：OpenClash 的源配置（uci openclash.config.config_path）不存在：没有设置，没有出口要改"));
+}
+
+/// 改出口指向：直出出口从线路机2 的直出入口换到线路机3 的直出入口，只改选中的路由，两个入口都不动；
+/// 改的时候连接断了（重启 OpenClash 掐断了隧道）：等回连后取回路由上的结果，照常算改好了
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repoint_direct_exit_to_other_relay() {
+    let w = world().await;
+    let t = &w.t;
+    let (relay_b, _) = seed_relay_b(t).await;
+    let d1 = entry(t, w.relay, w.relay, 20010, "33333333-3333-4333-8333-333333333333", "active").await;
+    let d2 = entry(t, relay_b, relay_b, 20030, NEW_UUID, "active").await;
+    let ra = router(&w, "团队2-路由A", 23401, &[("节点00-默认", "198.51.100.2", 20010, Some(d1))]).await;
+    router(&w, "团队2-路由B", 23402, &[("节点00-默认", "198.51.100.2", 20010, Some(d1))]).await;
+    // 不选路由：两台都列出
+    let p = t.get(&format!("/api/v1/entries/{d1}/repoint?to_entry_id={d2}")).await;
+    assert_eq!((p["ok"].as_bool(), p["routers"].as_array().map(Vec::len)), (Some(true), Some(2)), "{p}");
+    assert_eq!((p["old"]["name"].as_str(), p["new"]["name"].as_str()), (Some("线路机2-直出 · 线路机2:20010"), Some("线路机3-直出 · 线路机3:20030")));
+    // 只选路由A；出口写的是线路机 IP，换成新线路机的 IP
+    let p = t.get(&format!("/api/v1/entries/{d1}/repoint?to_entry_id={d2}&routers={ra}")).await;
+    assert_eq!(p["routers"].as_array().map(Vec::len), Some(1), "{p}");
+    assert_eq!(p["routers"][0]["exits"][0]["to"], "198.51.100.3:20030");
+    // 输入不对
+    assert_eq!(t.req("POST", &format!("/api/v1/entries/{d1}/repoint"), Some(json!({"to_entry_id": d1})), None).await.0, StatusCode::BAD_REQUEST);
+
+    std::fs::write(root(23401).join("mode"), "drop").unwrap();
+    std::fs::write(root(23401).join("result"), "backup=/etc/fleet-backup/openclash/c.yaml.x\nchanged=6\ndelay_1=77\nreplace=ok\n").unwrap();
+    let d = t.post(&format!("/api/v1/entries/{d1}/repoint"), json!({"to_entry_id": d2, "router_ids": [ra]})).await;
+    let job = d["job_id"].as_str().unwrap().to_string();
+    drive(t).await;
+    let j = t.job(&job).await;
+    let l = logs(t, &job).await;
+    assert_eq!((j["state"].as_str(), j["kind"].as_str()), (Some("succeeded"), Some("repoint")), "{j} {l}");
+    assert!(l.contains("隧道回连了，取回路由上的结果") && l.contains("77 ms"), "{l}");
+    let a = applies(23401);
+    assert_eq!(a.len(), 1);
+    assert!(a[0].contains("OSRV_1='198.51.100.2'\nOPORT_1='20010'\nSRV_1='198.51.100.3'\nPORT_1='20030'") && a[0].contains(&format!("UUID_1='{NEW_UUID}'")), "{}", &a[0][..400]);
+    assert!(applies(23402).is_empty(), "没选的路由不改");
+    for e in [d1, d2] {
+        assert_eq!(entry_state(t, e).await, "active", "入口都不动");
+    }
+    let au = t.get(&format!("/api/v1/audit?target_id={}", w.relay)).await;
+    let rp = au.as_array().unwrap().iter().find(|a| a["action"] == "entry.repoint").unwrap();
+    assert_eq!((rp["title"].as_str(), rp["summary"].as_str()), (Some("改出口指向"), Some("线路机2-直出 · 线路机2:20010 → 线路机3-直出 · 线路机3:20030（改 1 台软路由）")));
 }
