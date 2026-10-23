@@ -35,9 +35,21 @@ const price = (r: Pick<RecycleItem, 'price_cents' | 'currency' | 'cycle'>) => (r
 const ISO_TIME = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})/g;
 const orgTime = (iso: string) => new Intl.DateTimeFormat('sv-SE', { timeZone: meta().org_timezone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(iso));
 const reasonFull = (s: string) => s.replace(ISO_TIME, orgTime);
-/** 列表里的原因只留关键句：旧面板导入的原因全带「旧面板 2026-09-30 标注：」这样的前缀，去掉后各行才看得出差别；全文在展开区 */
-const LEGACY_PREFIX = /^旧面板[^：:]*[：:]\s*/;
-const reasonKey = (s: string) => reasonFull(s).replace(LEGACY_PREFIX, '');
+/** 列表里的原因只留关键句：旧面板导入的原因全带「旧面板 2026-09-30 标注：」这样的前缀，去掉后各行才看得出差别；全文在展开区。
+ *  去掉前缀后按句号 / 分号切句（括号里的不切），有「推断…」的那句就留它，没有就留整段开头——不从括号中间切 */
+const LEGACY_PREFIX = /^旧面板\s*\d{4}-\d{2}-\d{2}[^：:（(]*标注[：:]\s*/;
+const SENTENCE_END = new Set(['。', '；', ';']);
+function sentences(s: string): string[] {
+  const out: string[] = []; let depth = 0; let cur = '';
+  for (const c of s) {
+    if (c === '（' || c === '(') depth++;
+    else if ((c === '）' || c === ')') && depth > 0) depth--;
+    if (depth === 0 && SENTENCE_END.has(c)) { out.push(cur); cur = ''; } else cur += c;
+  }
+  out.push(cur);
+  return out.map((x) => x.trim()).filter(Boolean);
+}
+const reasonKey = (s: string) => { const t = reasonFull(s).replace(LEGACY_PREFIX, ''); return sentences(t).find((x) => x.includes('推断')) ?? t; };
 
 /** 展开的一行：这条记录的关键字段 + 快照里挑出来的几项（快照形状不固定，没有就不显示）；名字、团队行里已有，不重复 */
 function Detail({ r }: { r: RecycleItem }) {

@@ -3,11 +3,12 @@
 // 网卡速率只在集群状态里出现（KPI 原先也有一张，与它重复），KPI 那一格换成流量额度
 import * as React from 'react';
 import { Link } from 'react-router-dom';
-import { Activity, AlertTriangle, ArrowDown, ArrowUp, CalendarClock, CircleDollarSign, CloudUpload, Database, LayoutDashboard, Server, TrendingUp, Waypoints } from 'lucide-react';
+import { Activity, AlertTriangle, ArrowDown, ArrowUp, CalendarClock, ChevronRight, CircleDollarSign, CloudUpload, Database, LayoutDashboard, Router as RouterIcon, Server, TrendingUp, Waypoints } from 'lucide-react';
 import type { Overview } from '@/lib/types';
 import * as F from '@/lib/format';
 import { useMe, useNextDue, useOfflineNames, useQuotaTight } from '@/lib/queries';
 import { openDrawer } from '@/lib/drawer';
+import { useRouters } from '@/lib/routers';
 import { useFleetSeries } from '@/lib/live';
 import { cn } from '@/lib/utils';
 import { meta } from '@/lib/derive';
@@ -95,6 +96,22 @@ export const OverviewSection = React.memo(function OverviewSection({ o, loading 
 
 const ONLINE_N = 24;
 const OFFLINE_TIP = 'agent 不再上报的机器，健康一定是故障；点进去是故障筛选，里面还有入口不通等其它原因的故障';
+/** 软路由一行（集群状态底部，点进软路由页）：在线台数、出口可用、客户端。离线的读数是旧的，不算；一台软路由都没有就不出现 */
+function RoutersLink() {
+  const list = useRouters().data;
+  if (!list?.length) return null;
+  const on = list.filter((r) => r.state === 'online');
+  const ex = on.reduce((a, r) => ({ alive: a.alive + (r.summary?.exits.alive ?? 0), total: a.total + (r.summary?.exits.total ?? 0) }), { alive: 0, total: 0 });
+  const bad = list.some((r) => r.state === 'offline');
+  return (
+    <Link to="/routers" className="cluster-routers" aria-label="软路由">
+      <span className="cluster-routers-label"><RouterIcon />软路由</span>
+      <span>在线 <b className="num" data-bad={bad ? '' : undefined}>{on.length}/{list.length}</b> · 出口 <b className="num" data-warn={ex.alive < ex.total ? '' : undefined}>{ex.alive}/{ex.total}</b> · 客户端 <b className="num">{on.reduce((n, r) => n + (r.summary?.clients ?? 0), 0)}</b></span>
+      <ChevronRight className="cluster-routers-go" aria-hidden />
+    </Link>
+  );
+}
+
 function ClusterPanel({ o }: { o: Overview | undefined }) {
   const trace = useFleetSeries();
   const offNames = useOfflineNames().data;
@@ -144,6 +161,7 @@ function ClusterPanel({ o }: { o: Overview | undefined }) {
           </div>
         </div>
       </div>
+      <RoutersLink />
     </section>
   );
 }

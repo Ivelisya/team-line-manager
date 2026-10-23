@@ -5,6 +5,8 @@ import { useNavigate } from 'react-router-dom';
 import { ArrowRight, Check, ChevronDown } from 'lucide-react';
 import type { MachineView, RouterExitPlan } from '@/lib/types';
 import { useMachines, useReplace, useReplacePreview, useTeams } from '@/lib/queries';
+import { useAddrName } from '@/lib/routers';
+import '@/styles/routers.css';
 import { prefixScore } from '@/lib/match';
 import { CheckRow, Field, InfoTip, Input } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
@@ -75,25 +77,60 @@ function useSettled<T>(v: T, ms: number): T {
 
 const ROUTER_STATE: Record<string, string> = { offline: '离线', pending: '未接入' };
 
-/** 预览里要改的软路由出口（替换、换线路机、搬空共用）；node：搬空时每行前面写节点名 */
+/** 预览里要改的软路由出口（替换、换线路机、搬空共用）：一张小表「节点 | 软路由 · 出口 | 旧 → 新」，地址写线路机名（IP 放悬停）。
+ *  出口里可能有带原因（error）的：映射不到新入口，和阻断原因一致，在这里标红 */
 export function RouterExitList({ routers, title }: { routers: { node?: string; plan: RouterExitPlan }[]; title?: React.ReactNode }) {
-  const n = routers.reduce((s, r) => s + r.plan.exits.length, 0);
-  if (n === 0) return null;
+  const addr = useAddrName();
+  const rows = routers.flatMap(({ node, plan }) => plan.exits.map((e) => ({ node, plan, e })));
+  if (rows.length === 0) return null;
+  const bad = rows.filter((r) => r.e.error).length;
+  const ok = rows.filter((r) => !r.e.error);
+  const withNode = rows.some((r) => r.node);
+  const shown = (a: string) => { const x = addr(a); return <span className="rx-addr" data-tip={x.tip}>{x.text}</span>; };
   return (
     <div>
-      <div className="label" style={{ marginBottom: 6 }}>{title ?? <>改 {new Set(routers.map((r) => r.plan.id)).size} 台软路由的 {n} 个出口</>}</div>
-      <ul className="reason-list" style={{ maxHeight: 200, overflow: 'auto' }}>
-        {routers.flatMap(({ node, plan: r }) => r.exits.map((e) => (
-          <li key={`${node ?? ''}-${r.id}-${e.exit}`}>
-            {node && <span className="num">{node}</span>}
-            <span>{r.name}</span>
-            {r.state !== 'online' && <Pill tone="bad">{ROUTER_STATE[r.state] ?? r.state}</Pill>}
-            <span className="num">{e.exit}</span>
-            {e.error ? <><span className="t-sub num">{e.from}</span><Pill tone="bad" tip={e.error}>对不上新入口</Pill></> : <span className="t-sub num">{e.from} → {e.to}</span>}
-          </li>
-        )))}
-      </ul>
+      <div className="label" style={{ marginBottom: 6 }}>
+        {title ?? (ok.length ? <>改 {new Set(ok.map((r) => r.plan.id)).size} 台软路由的 {ok.length} 个出口</> : '软路由出口')}
+        {bad > 0 && <>{ok.length > 0 && ' · '}<span className="rt-bad">{bad} 个对不上新入口</span></>}
+      </div>
+      <div style={{ maxHeight: 200, overflow: 'auto' }}>
+        <table className="rx-tbl">
+          <thead><tr>{withNode && <th>节点</th>}<th>软路由 · 出口</th><th>改成</th></tr></thead>
+          <tbody>
+            {rows.map(({ node, plan: r, e }) => (
+              <tr key={`${node ?? ''}-${r.id}-${e.exit}`}>
+                {withNode && <td className="num">{node}</td>}
+                <td><span className="num">{r.name}</span> · <span className="num">{e.exit}</span>{r.state !== 'online' && <> <Pill tone="bad">{ROUTER_STATE[r.state] ?? r.state}</Pill></>}</td>
+                <td className="rx-to">{e.error ? <Pill tone="bad" tip={e.error}>对不上新入口</Pill> : <>{shown(e.from)} → <b>{e.to ? shown(e.to) : '?'}</b></>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
+  );
+}
+
+/** 编号压缩（后面的节点前移补号）：正常的副作用，收成一行，要看逐台再展开成两列表格（替换、退役共用） */
+export function RenameNote({ renames, tip }: { renames: { machine_id: string; old_name: string; new_name: string }[]; tip: string }) {
+  const [open, setOpen] = React.useState(false);
+  if (renames.length === 0) return null;
+  const first = renames[0]; const last = renames[renames.length - 1];
+  return (
+    <Note>
+      <div className="row row-between" style={{ gap: 8 }}>
+        <span>补号：{renames.length} 台节点前移（{renames.length > 1 ? `${first.old_name} … ${last.old_name}` : `${first.old_name} → ${first.new_name}`}） <InfoTip text={tip} /></span>
+        {renames.length > 1 && <button type="button" className="btn btn-link btn-sm" style={{ height: 'auto', padding: 0 }} aria-expanded={open} onClick={() => setOpen((v) => !v)}>{open ? '收起' : '展开'}</button>}
+      </div>
+      {open && (
+        <div style={{ maxHeight: 200, overflow: 'auto', marginTop: 6 }}>
+          <table className="rx-tbl">
+            <thead><tr><th>原名</th><th>补号后</th></tr></thead>
+            <tbody>{renames.map((r) => <tr key={r.machine_id}><td className="num">{r.old_name}</td><td className="num"><b>{r.new_name}</b></td></tr>)}</tbody>
+          </table>
+        </div>
+      )}
+    </Note>
   );
 }
 
@@ -148,10 +185,8 @@ export const ReplaceDialog = resetOnOpen(function ReplaceDialog({ m, open, onOpe
             <span className="preview-name">{pv.old.name}<ArrowRight size={14} style={{ color: 'var(--fg-3)' }} />{pv.old_to.name}</span>
             {pv.old_to.team?.spare && <Pill tone="neutral">备用</Pill>}
           </div>
-          {pv.routers_enabled && <RouterExitList routers={pv.routers.map((plan) => ({ plan }))} />}
-          {pv.renames.length > 0 && (
-            <div className="hint">编号压缩：{pv.renames.map((r) => `${r.old_name} → ${r.new_name}`).join('、')} <InfoTip text="新节点原来的团队空出一个编号，后面的节点前移补号。" /></div>
-          )}
+          {pv.routers_enabled && <RouterExitList routers={pv.routers.map((plan) => ({ node: pv.old.name, plan }))} />}
+          <RenameNote renames={pv.renames} tip="新节点原来的团队空出一个编号，后面的节点前移补号，编号保持连续。" />
           {pv.blockers.map((b) => <Note key={b} tone="bad">{b}</Note>)}
           {pv.warnings.map((w) => <Note key={w} tone="warn">{w}</Note>)}
         </div>

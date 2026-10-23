@@ -797,8 +797,8 @@ R('GET', '/audit', ({ query }) => {
 
 installAccessMock(R, () => db.machines);
 installPolicyMock(R, { teams: () => db.teams, machines: () => db.machines, emit, user: () => db.user, bad });
-installRoutersMock(R, { teams: () => db.teams, machines: () => db.machines, incidents: () => db.incidents, emit, bad });
-installTerminalMock(R, { machines: () => db.machines, bad });
+const routersMock = installRoutersMock(R, { teams: () => db.teams, machines: () => db.machines, incidents: () => db.incidents, emit, bad });
+installTerminalMock(R, { machines: () => db.machines, routers: routersMock.routers, bad });
 // ---------- 升级 agent ----------
 const UPSTEPS: [string, string][] = [['push', '推送 agent'], ['restart', '重启 agent'], ['verify', '确认上报']];
 /** 「全部升级」的编排（同中控作业参数 after）：排队中的作业 → 它要等的作业；halted：因为要等的没成功而取消的 */
@@ -997,7 +997,10 @@ function replacePlan(old: MachineView, newId: string | null, teamId: string | nu
     exits: old.entries.filter((e) => e.lifecycle === 'active').map((e, i) => {
       const ne = nw.entries.find((x) => x.relay.id === e.relay.id && x.lifecycle === 'active') ?? nw.entries.find((x) => x.lifecycle === 'active');
       const host = machine(e.relay.id).ip;
-      return { exit: `节点${String((old.number ?? 1) + i).padStart(2, '0')}`, old_entry_id: e.id, new_entry_id: ne?.id ?? '', from: `${host}:${e.port}`, to: ne ? `${machine(ne.relay.id).ip}:${ne.port}` : '?' };
+      const exit = `节点${String((old.number ?? 1) + i).padStart(2, '0')}`;
+      // 第二个出口演示「映射不了」：服务端把它也列在出口里，带原因，同时进阻断
+      if (i === 1) { const why = `软路由 ${old.team!.name}-路由A 的出口 ${exit}：旧入口在线路机 ${e.relay.name} 上，新节点在这台线路机上没有入口`; blockers.push(why); return { exit, old_entry_id: e.id, new_entry_id: null, from: `${host}:${e.port}`, to: null, error: why }; }
+      return { exit, old_entry_id: e.id, new_entry_id: ne?.id ?? '', from: `${host}:${e.port}`, to: ne ? `${machine(ne.relay.id).ip}:${ne.port}` : '?' };
     }),
   }] : [];
   if (routers && rts.length === 0) warnings.push('没有软路由的出口指向旧节点：只交换编号');
@@ -1007,7 +1010,7 @@ function replacePlan(old: MachineView, newId: string | null, teamId: string | nu
     view: {
       old: side(old), new: side(nw), new_name: old.team && old.number != null ? displayName(old.team.name, old.number) : old.name,
       old_to: { team: spare ? { id: spare.id, name: spare.name, spare: spare.spare } : null, number: num, name: spare && num != null ? displayName(spare.name, num) : old.name },
-      renames: [], routers_enabled: routers, routers: rts, ok: blockers.length === 0, blockers, warnings,
+      renames: nw.team ? compactPlan(nw.team.id, [nw.id]).map((c) => ({ machine_id: c.m.id, old_name: c.old_name, new_name: c.new_name })) : [], routers_enabled: routers, routers: rts, ok: blockers.length === 0, blockers, warnings,
     },
   };
 }
@@ -1024,7 +1027,7 @@ R('POST', '/machines/([^/]+)/replace', ({ params, body }) => {
     if (spare!.spare && !old.spare) { old.spare_from = old.name; old.spare_since = iso(); } old.team = { id: spare!.id, name: spare!.name }; old.spare = spare!.spare; old.number = num; old.name = displayName(spare!.name, num!); old.revision++;
     nw.team = team; nw.spare = false; nw.number = number; nw.name = p.view.new_name; nw.revision++;
     old.active_job = null; refreshCounts();
-  }, [{ routers: p.view.routers.map((r) => ({ id: r.id, name: r.name, exits: r.exits.map((e) => ({ exit: e.exit, to: e.to })), delay_ms: r.exits.map(() => 120) })) }, { old: p.view.old_to.name, new: p.view.new_name, renumbered: 0 }]);
+  }, [{ routers: p.view.routers.map((r) => ({ id: r.id, name: r.name, exits: r.exits.map((e) => ({ exit: e.exit, to: e.to })), backup: `/etc/fleet-backup/openclash/${r.name}.yaml.20261023-020000Z`, delay_ms: r.exits.map(() => 120) })) }, { old: p.view.old_to.name, new: p.view.new_name, renumbered: 0 }]);
   db.audit.unshift({ id: `a${db.seq++}`, ts: iso(), actor: db.user, action: 'machine.replace', title: '替换节点', summary: `${old.name} 由 ${nw.name} 接替，旧节点改为 ${p.view.old_to.name}（改 ${p.view.routers.length} 台软路由）`, target_kind: 'machine', target_id: old.id, detail: {} });
   emit({ type: 'machines' }); emit({ type: 'job', id: job.id });
   return { ...p.view, job_id: job.id };

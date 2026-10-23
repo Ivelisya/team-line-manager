@@ -7,8 +7,9 @@ import * as F from '@/lib/format';
 import { tagColor } from '@/lib/derive';
 import { useNow } from '@/lib/useNow';
 import { cn } from '@/lib/utils';
-import { deploySteps, routerIssues, routerMeters, showBootstrap, showDeploy, tempTone, uptimeFmt, useRegenBootstrap, useRouterMetrics, type RouterSummary, type RouterTab, type RouterView } from '@/lib/routers';
-import { Button, IconButton } from '@/components/ui/button';
+import { deadExitNames, deploySteps, routerIssues, routerMeters, showBootstrap, showDeploy, tempTone, uptimeFmt, useRegenBootstrap, useRouter, useRouterMetrics, type RouterSummary, type RouterTab, type RouterView } from '@/lib/routers';
+import type { BeatCell } from '@/lib/derive';
+import { Button } from '@/components/ui/button';
 import { InfoTip } from '@/components/ui/form';
 import { toast } from '@/components/ui/toast';
 import { Num, Pill } from './primitives';
@@ -18,13 +19,16 @@ import '@/styles/routers.css';
 type Open = (tab?: RouterTab) => void;
 
 /** 状态 pill（只靠底色与文字，不带圆点；要醒目的配一个图标）：部署中（转圈）/ 等待接入 / 在线 /
- *  部分异常（在线但有毛病，悬停列出）/ 离线（悬停看连不上的原因） */
-export function RouterStatePill({ r }: { r: Pick<RouterView, 'state' | 'error' | 'summary' | 'deploy'> }) {
+ *  降级（在线但有毛病，悬停点名是哪个出口；同机器的叫法，降级算正常）/ 离线（悬停看连不上的原因，才是故障） */
+export function RouterStatePill({ r }: { r: Pick<RouterView, 'id' | 'state' | 'error' | 'summary' | 'deploy'> }) {
+  // 不通的出口名只在详情里：降级的才取详情（和抽屉同一份缓存）
+  const slow = r.state === 'online' && !!r.summary && r.summary.exits.alive < r.summary.exits.total;
+  const names = deadExitNames(useRouter(slow ? r.id : null).data?.detail);
   if (r.deploy?.state === 'running') return <Pill tone="info" dot="pulse">部署中</Pill>;
   if (r.state === 'pending') return <Pill tone="info" tip={r.deploy?.state === 'failed' ? `一键部署失败：${r.deploy.error ?? ''}` : '路由还没连上过中控'}>等待接入</Pill>;
   if (r.state === 'offline') return <Pill tone="bad" tip={r.error ?? undefined} tabIndex={r.error ? 0 : undefined}>离线</Pill>;
-  const issues = routerIssues(r.summary);
-  return issues.length ? <Pill tone="warn" tip={issues.join('\n')} tabIndex={0}>部分异常</Pill> : <Pill tone="ok">在线</Pill>;
+  const issues = routerIssues(r.summary, names);
+  return issues.length ? <Pill tone="warn" tip={issues.join('\n')} tabIndex={0}>降级</Pill> : <Pill tone="ok">在线</Pill>;
 }
 /** 卡片描边：离线红、在线但有毛病黄（同机器卡的故障 / 降级） */
 export const routerHealth = (r: RouterView) => (r.state === 'offline' ? 'down' : r.state === 'online' && routerIssues(r.summary).length ? 'degraded' : 'ok');
@@ -84,19 +88,9 @@ export function DeployTimeline({ r, max }: { r: RouterView; max?: number }) {
   );
 }
 
-/** 行内迷你折线（出口延迟、表格行里）：null 是缺口（测试失败），按这段的最小 / 最大值铺满高度 */
-export const MiniSpark = memo(function MiniSpark({ values, tip }: { values: (number | null)[]; tip?: string }) {
-  const W = 80; const H = 20;
-  const nums = values.filter((v): v is number => v != null);
-  if (nums.length < 2) return <span className="rt-spark is-empty" data-tip={tip} aria-hidden />;
-  const lo = Math.min(...nums); const span = Math.max(...nums) - lo || 1;
-  let d = ''; let pen = false;
-  values.forEach((v, i) => {
-    if (v == null) { pen = false; return; }
-    d += `${pen ? 'L' : 'M'}${((i / (values.length - 1)) * W).toFixed(1)} ${(H - 2 - ((v - lo) / span) * (H - 4)).toFixed(1)}`;
-    pen = true;
-  });
-  return <svg className="rt-spark" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" data-tip={tip} aria-hidden><path d={d} vectorEffect="non-scaling-stroke" /></svg>;
+/** 行内迷你格子（出口近 6 小时的延迟测试、表格行里）：格子语言同曲线页签的「各出口延迟」，一格一段时间，每格悬停看那段的结果 */
+export const MiniBeat = memo(function MiniBeat({ cells, titles }: { cells: BeatCell[]; titles: string[] }) {
+  return <span className="rt-minibeat" role="img" aria-label="近 6 小时的延迟测试">{cells.map((c, i) => <i key={i} data-t={c ?? undefined} data-tip={titles[i]} />)}</span>;
 });
 
 /** 没有读数时（部署中 / 等待接入 / 离线）占掉资源、流量、出口、运行四个槽位（一排里仍与在线的卡对齐），不再排一列「—」：一键部署的时间线（部署中；还没接入的；离线后重新部署失败的）、等路由执行接入命令、离线多久了。不画框（用户：不要每块都是格子） */
@@ -153,7 +147,6 @@ function RouterCardImpl({ r, current, onOpen: open }: { r: RouterView; current?:
         <span className="nc-kind" role="img" aria-label="软路由" data-tip="软路由（OpenWrt + OpenClash）"><RouterIcon /></span>
         {/* 名字后面不再挂状态标：状态在底部的 pill 与描边上，等待接入时卡片中间还有说明 */}
         <span className="nc-named"><button type="button" className="nc-name" data-tip={`打开 ${r.name} 的详情`} onClick={() => onOpen()}>{r.name}</button></span>
-        <div className="nc-actions"><IconButton label="打开详情" tip={false} data-tip="打开详情" onClick={() => onOpen()}><PanelRightOpen size={16} /></IconButton></div>
       </header>
 
       {/* 地址行：WAN 口地址 + WAN / OpenClash 状态标；还没采集过的写隧道端口 */}
@@ -199,7 +192,7 @@ function RouterCardImpl({ r, current, onOpen: open }: { r: RouterView; current?:
 
       <section className="slot-seg nc-run">
         <div className="nc-run-item"><span className="nc-run-label"><Users />客户端</span><span className="nc-run-val" data-tip="在线的局域网设备（DHCP 租约、邻居表与经过 OpenClash 的来源 IP）"><Num f={{ v: String(s.clients), u: '台' }} /></span></div>
-        <div className="nc-run-item"><span className="nc-run-label"><Cable />代理连接</span><span className="nc-run-val" data-tip="OpenClash 当前的连接数"><span className="num">{oc!.conns.toLocaleString()}</span></span></div>
+        <div className="nc-run-item"><span className="nc-run-label"><Cable />代理连接</span><span className="nc-run-val" data-tip="OpenClash 当前的连接数"><Num f={{ v: oc!.conns.toLocaleString(), u: '条' }} /></span></div>
         <div className="nc-run-item"><span className="nc-run-label"><Thermometer />温度</span><span className="nc-run-val" data-tone={tt} data-tip="CPU / 主板传感器里最高的读数">{s.temp_c != null ? <Num f={{ v: s.temp_c.toFixed(0), u: '°C' }} /> : <span className="t-muted">—</span>}</span></div>
       </section>
 

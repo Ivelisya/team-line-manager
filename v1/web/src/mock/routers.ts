@@ -236,4 +236,5 @@ export function installRoutersMock(R: Reg, env: Env) {
     }
     if (any) changed();
   }, 15_000);
+  return { routers: () => list.map((x) => x.v) };
 }

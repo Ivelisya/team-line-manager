@@ -18,6 +18,7 @@ import { SkeletonRows } from '@/components/ui/skeleton';
 import { ConfirmDialog } from '@/components/app/dialogs';
 import { JobProgressBar, StepBar } from '@/components/app/JobProgress';
 import { TuneResult, isTuneOutput } from '@/components/app/TuneResult';
+import { RouterEditResult, isRouterEditOutput } from '@/components/app/RouterEditResult';
 import { NodeHover } from '@/components/app/NodeHover';
 import { toast } from '@/components/ui/toast';
 import { copyNewShareLink } from '@/lib/moveShare';
@@ -187,7 +188,7 @@ function JobDetail({ id }: { id: string }) {
                 <span className="step-ic">{STEP_ICON[k]}</span>
                 <div style={{ minWidth: 0 }}>
                   <div className="step-title"><b>{s.title}</b><span className="step-time">{s.started_at ? <>{F.clock(s.started_at)} · <Dur a={s.started_at} b={s.finished_at ?? (k === 'failed' ? j.finished_at : null)} live={live && !s.finished_at && k !== 'failed'} /></> : k === 'skipped' || k === 'compensated' || !live ? '未执行' : '等待'}</span>{k === 'compensated' && <Pill tone="warn" dot="none">已补偿</Pill>}</div>
-                  {isTuneOutput(s.output) ? <TuneResult out={s.output} /> : outputLines(s.output).length > 0 && <pre className="step-out">{outputLines(s.output).join('\n')}</pre>}
+                  {isTuneOutput(s.output) ? <TuneResult out={s.output} /> : isRouterEditOutput(s.output) ? <RouterEditResult out={s.output} /> : outputLines(s.output).length > 0 && <pre className="step-out">{outputLines(s.output).join('\n')}</pre>}
                   {(s.error || s.error_kind) && (
                     <div className="step-err-box">
                       {s.error_kind && <span className="pill pill-sm" data-tone="bad" data-dot="none">{errorKindLabel(s.error_kind, s.error)}</span>}

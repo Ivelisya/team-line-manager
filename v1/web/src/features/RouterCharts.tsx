@@ -2,10 +2,9 @@
 // 单独成文件按需加载（recharts）；图表卡、加载框、时间范围与机器抽屉共用（DrawerCharts）。
 import * as React from 'react';
 import { Activity, Cable, Cpu, Network, Radar, Shuffle, Thermometer, Users } from 'lucide-react';
-import { routerPoll, useRouterExitMetrics, useRouterMetrics, type RouterView } from '@/lib/routers';
+import { beatBins, exitBeats, routerMeters, routerPoll, useRouterExitMetrics, useRouterMetrics, type RouterView } from '@/lib/routers';
+import { useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
-import type { BeatCell } from '@/lib/derive';
-import type { SeriesPoint } from '@/lib/types';
 import { InfoTip } from '@/components/ui/form';
 import { Select } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -44,10 +43,11 @@ export function RouterChartsTab({ r }: { r: RouterView }) {
 }
 
 function Charts({ r }: { r: RouterView }) {
-  const [range, setRange] = React.useState('6h');
+  const { range, setRange } = useDrawer(); // 同机器抽屉：?range=，默认 24 小时
   const q = useRouterMetrics(r.id, range);
   const few = fewText(r, range);
   const s = r.state === 'online' ? r.summary : null;
+  const mt = s ? routerMeters(s) : null;
   const pts = q.data?.points;
   const hasTemp = React.useMemo(() => pts?.some((p) => typeof p.temp_c === 'number'), [pts]);
   const chart = (lines: typeof L_CPU, yFmt: (v: number) => string, valueFmt: (k: string, v: number) => string, o: { domain?: [number, number]; yBase?: 1000; kind?: 'line' } = {}) => (
@@ -60,7 +60,7 @@ function Charts({ r }: { r: RouterView }) {
       </Section>
       <Section className="chart-stack">
         <ChartCard c="var(--m-cpu)" icon={<Cpu />} title="CPU" value={s ? <Num f={F.pct(s.cpu_pct, 1)} /> : '—'} caption="使用率">{chart(L_CPU, yPct, vPct, { domain: PCT })}</ChartCard>
-        <ChartCard c="var(--m-mem)" icon={<Activity />} title="内存 · 存储 · 连接表" meta="占总量的百分比">{chart(L_RES, yPct, vPct, { domain: PCT, kind: 'line' })}</ChartCard>
+        <ChartCard c="var(--m-mem)" icon={<Activity />} title="内存 · 存储 · 连接表" value={mt ? <>内存 <Num f={mt.mem.value} /> <span className="t-sub">·</span> 存储 <Num f={mt.disk.value} /> <span className="t-sub">·</span> 连接表 <Num f={mt.ct.value} /></> : '—'} caption="占总量的百分比">{chart(L_RES, yPct, vPct, { domain: PCT, kind: 'line' })}</ChartCard>
         {hasTemp && <ChartCard c="var(--m-load)" icon={<Thermometer />} title="温度" value={s?.temp_c != null ? <Num f={{ v: s.temp_c.toFixed(0), u: '°C' }} /> : '—'} caption="当前">{chart(L_TEMP, yTemp, vTemp, { kind: 'line' })}</ChartCard>}
         <ChartCard c="var(--chart-1)" icon={<Network />} title="WAN 速率" value={s ? <>↓ <Num f={F.rate(s.wan.rx_bps)} /> <span className="t-sub">·</span> ↑ <Num f={F.rate(s.wan.tx_bps)} /></> : '—'} caption="当前">{chart(L_WAN, yRate, vRate, { yBase: 1000 })}</ChartCard>
         <ChartCard c="var(--chart-1)" icon={<Shuffle />} title="OpenClash 代理速率" value={s ? <>↓ <Num f={F.rate(s.openclash.down_bps)} /> <span className="t-sub">·</span> ↑ <Num f={F.rate(s.openclash.up_bps)} /></> : '—'} caption="当前">{chart(L_PROXY, yRate, vRate, { yBase: 1000 })}</ChartCard>
@@ -72,44 +72,24 @@ function Charts({ r }: { r: RouterView }) {
   );
 }
 
-const BEATS = 24;
-/** 一个出口的一段时间切成 24 格：格里有测试失败的按比例黄 / 红，平均延迟 ≥ 300 ms 黄，没有点为空（同心跳条的格子语言） */
-function exitBeats(points: SeriesPoint[]): { cells: BeatCell[]; titles: string[] } {
-  const cells: BeatCell[] = []; const titles: string[] = [];
-  if (!points.length) return { cells, titles };
-  const t0 = Date.parse(points[0].ts); const span = Math.max(1, Date.parse(points[points.length - 1].ts) - t0);
-  const bins = Array.from({ length: BEATS }, () => ({ n: 0, ok: 0, sum: 0, from: '', to: '' }));
-  for (const p of points) {
-    const b = bins[Math.min(BEATS - 1, Math.floor(((Date.parse(p.ts) - t0) / span) * BEATS))];
-    b.n++; b.from ||= p.ts; b.to = p.ts;
-    if (typeof p.delay_ms === 'number') { b.ok++; b.sum += p.delay_ms; }
-  }
-  for (const b of bins) {
-    if (!b.n) { cells.push(null); titles.push('没有数据'); continue; }
-    const avg = b.ok ? b.sum / b.ok : null; const rate = b.ok / b.n;
-    cells.push(rate < 0.5 ? 'bad' : rate < 1 || (avg ?? 0) >= 300 ? 'warn' : 'ok');
-    titles.push(`${F.dt(b.from)} – ${F.dt(b.to).slice(6)}\n成功 ${b.ok}/${b.n}${avg != null ? ` · 平均 ${Math.round(avg)} ms` : ''}`);
-  }
-  return { cells, titles };
-}
-
-/** 各出口的延迟：每个出口一条格子（一眼看出哪个、什么时候不通），下面选一个看延迟曲线 */
+/** 各出口的延迟测试：每个出口一条格子（一眼看出哪个、什么时候不通；格子按所选范围从现在往前等分），下面选一个看延迟曲线 */
 function ExitDelays({ r, range, few }: { r: RouterView; range: string; few: string }) {
   const q = useRouterExitMetrics(r.id, range);
   const exits = q.data?.exits;
   const [pick, setPick] = React.useState('');
   const cur = exits?.find((x) => x.name === pick) ?? exits?.[0];
   const opts = React.useMemo(() => (exits ?? []).map((x) => ({ value: x.name, label: x.name })), [exits]);
-  const beats = React.useMemo(() => (exits ?? []).map((x) => ({ name: x.name, ...exitBeats(x.points) })), [exits]);
+  const bins = beatBins(range);
+  const beats = React.useMemo(() => (exits ?? []).map((x) => ({ name: x.name, ...exitBeats(x.points, range, bins, Date.now()) })), [exits, range, bins]);
   return (
     <Section>
-      <SectionHeader title={<>各出口延迟<InfoTip text={'每 5 分钟经出口访问一次 generate_204。\n格子黄 / 红是那段时间有测试失败，曲线的缺口是那次测试失败'} /></>} />
+      <SectionHeader title={<>各出口延迟<InfoTip text={'每 5 分钟经出口访问一次 generate_204。\n每格是一段时间（从现在往前等分）：全部成功绿、有测试失败黄、失败过半红，斜纹是那段没有数据。\n延迟高低看下面的曲线，曲线的缺口是那次测试失败'} /></>} />
       {q.isError && !q.data ? <ErrorNote error={q.error} onRetry={() => void q.refetch()}>出口曲线加载失败：</ErrorNote>
         : q.isLoading ? <Skeleton h={180} className="is-float" />
         : !exits?.length ? <div className="chart-empty" style={{ height: 120 }}>{few}</div> : (
           <div className="chart-frame stack-sm" data-stale={q.isPlaceholderData}>
             <div className="rt-exit-beats">
-              {beats.map((b) => <Beat key={b.name} n={BEATS} cells={b.cells} titles={b.titles} caption={<b>{b.name}</b>} win={b.cells.some((c) => c === 'bad') ? '有失败' : undefined} />)}
+              {beats.map((b) => <Beat key={b.name} n={bins} cells={b.cells} titles={b.titles} caption={<b>{b.name}</b>} win={b.cells.some((c) => c === 'bad') ? '有失败' : undefined} />)}
             </div>
             <ChartCard c="var(--chart-1)" icon={<Radar />} title="延迟曲线" tools={<Select sm value={cur?.name ?? ''} onChange={setPick} options={opts} aria-label="出口" className="w-[160px]" />}>
               {cur && cur.points.length > 1 ? <TimeChart points={cur.points} range={range} kind="line" lines={L_DELAY} yFmt={yMs} valueFmt={vMs} height={160} /> : <div className="chart-empty" style={{ height: 160 }}>{few}</div>}

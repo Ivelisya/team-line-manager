@@ -7,7 +7,7 @@ import { INCIDENT_PAGE, useAck, useAddSilence, useDelSilence, useIncidents, useM
 import { usePage } from '@/lib/usePage';
 import { Pagination } from '@/components/app/Pagination';
 import { useDrawer } from '@/lib/drawer';
-import { isRouterIncident, useRouterDrawer } from '@/lib/routers';
+import { isRouterIncident, routerIncidentTab, useRouterDrawer } from '@/lib/routers';
 import * as F from '@/lib/format';
 import { errText, severityOf } from '@/lib/derive';
 import type { Incident, Silence } from '@/lib/types';
@@ -73,6 +73,12 @@ export function IncidentsPage() {
   const [renewId, setRenewId] = React.useState<string | null>(null);
   // 关闭后沿用最近的机器，对话框常驻挂载、播完退场动画
   const renewM = useHeld(renewId, machines?.find((m) => m.id === renewId));
+  // 折叠行的对象列写「6 台线路机」：这一批的对象类型（软路由、线路机、节点；混着的写机器）
+  const foldNoun = (r: Incident[]) => {
+    if (isRouterIncident(r[0])) return '软路由';
+    const kinds = new Set(r.map((i) => machines?.find((m) => m.id === (i.subject?.id ?? i.subject_id))?.kind));
+    return kinds.size === 1 ? (kinds.has('relay') ? '线路机' : kinds.has(undefined) ? '机器' : '节点') : '机器';
+  };
   const row = (i: Incident) => {
       const sid = i.subject?.id ?? i.subject_id;
       const canRenew = i.state === 'firing' && i.rule.startsWith('renewal_') && !!machines?.find((m) => m.id === sid)?.subscription;
@@ -81,7 +87,7 @@ export function IncidentsPage() {
         <tr key={i.id}>
           <td>{SEV(i)}</td>
           {/* 中控自身的告警（central_ 开头）没有机器可点开：只写对象名「中控」；软路由的（router_ 开头）打开路由抽屉 */}
-          <td>{sid && isRouterIncident(i) ? <button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => openRouter(sid)}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button>
+          <td>{sid && isRouterIncident(i) ? <button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => openRouter(sid, routerIncidentTab(i))}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button>
             : sid ? <NodeHover id={sid}><button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => open(sid)}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button></NodeHover> : (i.subject_name ?? '—')}</td>
           <td>{i.rule_name}{i.reopen_count > 0 && <span className="sub" data-tip={`恢复后 30 分钟内又复发 ${i.reopen_count} 次，合并为这一条`}>反复 {i.reopen_count + 1} 次</span>}</td>
           <td><span className="cell-main" data-tip={sum}>{sum}</span>{(i.resolved_at || i.ack_at) && <span className="sub">{i.resolved_at
@@ -115,9 +121,9 @@ export function IncidentsPage() {
                   <React.Fragment key={k}>
                     <tr data-open={on ? '' : undefined}>
                       <td>{SEV(r[0])}</td>
-                      <td><button type="button" className="btn btn-link inc-fold" aria-expanded={on} onClick={() => toggle(k)}><ChevronRight />{on ? '收起' : '展开'}</button></td>
+                      <td><button type="button" className="btn btn-link inc-fold" aria-expanded={on} data-tip={on ? '收起' : '展开看每一台'} onClick={() => toggle(k)}>{r.length} 台{foldNoun(r)}<ChevronRight /></button></td>
                       <td>{r[0].rule_name}</td>
-                      <td>{r.length} 台{r[0].state === 'resolved' && <span className="sub">已恢复</span>}</td>
+                      <td>同时出现{r[0].state === 'resolved' && <span className="sub">已恢复</span>}</td>
                       <td>{F.dt(r[0].opened_at)}<span className="sub">{F.ago(r[0].opened_at)}</span></td>
                       <td />
                     </tr>

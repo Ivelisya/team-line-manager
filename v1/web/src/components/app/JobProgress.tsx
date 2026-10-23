@@ -27,7 +27,9 @@ export function StepBar({ job, now }: { job: Job; now?: number }) {
   if (!job.steps.length) return null;
   const ended = !jobLive(job.state);
   const compact = job.steps.length >= COMPACT_AT;
-  const focus = job.steps.findIndex((s) => { const k = stepKind(s); return k === 'running' || k === 'failed'; });
+  let focus = job.steps.findIndex((s) => { const k = stepKind(s); return k === 'running' || k === 'failed'; });
+  // 没有进行中、失败的（全部做完、或取消了）：标最后一个走过的步骤，不让一排圆点一个字都没有
+  if (focus < 0) { const kinds = job.steps.map(stepKind); focus = Math.max(kinds.lastIndexOf('done'), kinds.lastIndexOf('compensated')); }
   return (
     <div className="stepbar-wrap">
       <ol className="stepbar" aria-label="作业步骤" data-compact={compact ? '' : undefined}>

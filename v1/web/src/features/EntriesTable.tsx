@@ -5,6 +5,7 @@ import * as F from '@/lib/format';
 import { entryBad, probeErr, probeFail, probeFailLabel, reachFail, reachFlaky, tcpMs } from '@/lib/derive';
 import { entryState, Num, Pill } from '@/components/app/primitives';
 import { ShowAll } from '@/components/app/Pagination';
+import { useEntryRouters, useRouterDrawer } from '@/lib/routers';
 
 /** 入口表先露的条数（抽屉入口表、线路机页共用） */
 export const ENTRY_CAP = 10;
@@ -41,6 +42,7 @@ export const entryStatus = (e: EntryView) => {
 /** onlyBad：只列异常的入口（线路机概览：正常的几十条不重复列，全部在连接质量页签） */
 export function EntriesTable({ m, traffic, onlyBad }: { m: MachineView; traffic?: boolean; onlyBad?: boolean }) {
   const [all, setAll] = React.useState(false);
+  const routers = useEntryRouters();
   const sorted = React.useMemo(() => (onlyBad ? m.entries.filter(entryBad) : [...m.entries.filter(entryBad), ...m.entries.filter((e) => !entryBad(e))]), [m.entries, onlyBad]);
   // 流量页：已移除入口（换线路机后的旧入口）本月的流量也计入汇总，单列一行，各行加起来等于汇总
   const removed = traffic ? m.removed_traffic.month_up + m.removed_traffic.month_down : 0;
@@ -50,11 +52,11 @@ export function EntriesTable({ m, traffic, onlyBad }: { m: MachineView; traffic?
   const entries = all ? sorted : sorted.slice(0, cap);
   return (
     <div className="table-wrap is-boxed">
-      <table className="dt is-one" style={{ minWidth: 480 }}>
-        <colgroup><col style={{ width: 132 }} /><col style={{ width: 96 }} /><col style={{ width: 72 }} /><col style={{ width: 72 }} />{traffic && <col style={{ width: 112 }} />}</colgroup>
+      <table className="dt is-one" style={{ minWidth: 520 }}>
+        <colgroup><col style={{ width: 172 }} /><col style={{ width: 96 }} /><col style={{ width: 72 }} /><col style={{ width: 72 }} />{traffic && <col style={{ width: 112 }} />}</colgroup>
         <thead><tr><th>{m.kind === 'relay' ? '端口 · 节点' : '线路机:端口'}</th><th>状态</th><th className="r">TCP</th><th className="r">出口</th>{traffic && <th className="r">本月业务流量</th>}</tr></thead>
         <tbody>
-          {entries.map((e) => <EntryRow key={e.id} e={e} relay={m.kind === 'relay'} traffic={!!traffic} />)}
+          {entries.map((e) => <EntryRow key={e.id} e={e} relay={m.kind === 'relay'} traffic={!!traffic} routers={routers.get(e.id)} />)}
           {removed > 0 && (
             <tr><td className="t-sub" colSpan={4}>已移除的入口</td><td className="r"><Num f={F.bytes(removed)} /></td></tr>
           )}
@@ -65,11 +67,17 @@ export function EntriesTable({ m, traffic, onlyBad }: { m: MachineView; traffic?
   );
 }
 
+/** 被软路由的出口用着的入口：小标「软路由 N」，悬停列出是哪台的哪个出口，点开那台软路由的出口页签 */
+function RouterMark({ users }: { users: { id: string; name: string; exit: string }[] }) {
+  const { open } = useRouterDrawer();
+  return <button type="button" className="rt-mark" data-tip={users.map((u) => `${u.name} · ${u.exit}`).join('\n')} onClick={() => open(users[0].id, 'exits')}>软路由 {users.length}</button>;
+}
+
 /** 一行一个 memo：实时推送只换变了的入口（live.ts 的入口补丁把没变的原样返回），线路机展开全部的上百行不跟着重画 */
-const EntryRow = React.memo(function EntryRow({ e, relay, traffic }: { e: EntryView; relay: boolean; traffic: boolean }) {
+const EntryRow = React.memo(function EntryRow({ e, relay, traffic, routers }: { e: EntryView; relay: boolean; traffic: boolean; routers?: { id: string; name: string; exit: string }[] }) {
   return (
     <tr>
-      <td className="strong">{relay ? `${e.port} · ${e.node.name}` : `${e.relay.name}:${e.port}`}</td>
+      <td className="strong">{relay ? `${e.port} · ${e.node.name}` : `${e.relay.name}:${e.port}`}{routers && <RouterMark users={routers} />}</td>
       <td>{entryStatus(e)}</td>{e.lifecycle === 'disabled' ? <><td className="r t-muted">—</td><td className="r t-muted">—</td></> : <><td className="r">{tcpCell(e)}</td><td className="r">{probeCell(e.egress)}</td></>}
       {traffic && <td className="r"><Num f={F.bytes(e.traffic.month_up + e.traffic.month_down)} /></td>}
     </tr>
