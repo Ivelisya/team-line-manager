@@ -175,6 +175,9 @@ macro_rules! host_fw {
     () => {
         r##"
 {
+# 同一台主机上几个作业可能同时改（同机 IP 节点一起换线、NODE_SS 与 NODE_NFT_ONLY 并发）：ufw / firewalld 改规则不加锁、整份读改写，
+# 并发会丢规则。单独一把锁（不能用 NODE_SS 已持有的 fd 9 那把，会自己锁死）
+exec 8>/run/fleet-hostfw.lock; flock 8
 HOST_FW=none; FWERR=
 FW_IPS=$(echo "$ALLOW" | tr ',' ' ')
 if command -v ufw >/dev/null 2>&1 && LC_ALL=C ufw status 2>/dev/null | grep -qx 'Status: active'; then
@@ -839,7 +842,7 @@ ACL
         let d = dir.path().display().to_string();
         let run = |fakes: &str| -> (String, Vec<String>) {
             let _ = std::fs::remove_file(dir.path().join("log"));
-            let sh = format!("{fakes}\nSS_PORT=8388 ALLOW='192.0.2.1, 192.0.2.2'\nset -eu\n{}", super::HOST_FW);
+            let sh = format!("{fakes}\nSS_PORT=8388 ALLOW='192.0.2.1, 192.0.2.2'\nset -eu\n{}", super::HOST_FW.replace("/run/fleet-hostfw.lock", &format!("{d}/lock")));
             let out = std::process::Command::new("bash").arg("-c").arg(&sh).output().unwrap();
             assert!(out.status.success(), "{out:?}");
             let log = std::fs::read_to_string(dir.path().join("log")).unwrap_or_default();

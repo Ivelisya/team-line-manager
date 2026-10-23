@@ -222,7 +222,8 @@ fn group_title(ns: &[Notice]) -> String {
 }
 
 /// 列出的那几台：(对象名, 摘要；恢复的带持续时长)，加上没列出的台数
-fn group_items(ns: &[Notice]) -> (Vec<(&str, String)>, usize) {
+/// `keep`：摘要最多留几个字（先截摘要再接「（持续 X）」，截短时时长不会被截掉）
+fn group_items(ns: &[Notice], keep: usize) -> (Vec<(&str, String)>, usize) {
     let items = ns
         .iter()
         .take(LIST_MAX)
@@ -231,7 +232,8 @@ fn group_items(ns: &[Notice]) -> (Vec<(&str, String)>, usize) {
                 (Kind::Resolved, Some(o)) => format!("（持续 {}）", fmt_duration((n.at - o).whole_seconds())),
                 _ => String::new(),
             };
-            (n.machine.as_str(), format!("{}{last}", n.summary.chars().take(200).collect::<String>()))
+            let cut = n.summary.chars().count() > keep;
+            (n.machine.as_str(), format!("{}{}{last}", n.summary.chars().take(keep).collect::<String>(), if cut { "…" } else { "" }))
         })
         .collect();
     (items, ns.len().saturating_sub(LIST_MAX))
@@ -242,7 +244,7 @@ pub fn text_of(ns: &[Notice]) -> String {
     if let [n] = ns {
         return format_text(n);
     }
-    let (items, more) = group_items(ns);
+    let (items, more) = group_items(ns, 200);
     let mut lines = vec![format!("【{}】{}", crate::meta::severity_label(top_severity(ns)), group_title(ns))];
     lines.extend(items.into_iter().map(|(m, s)| format!("· {m}：{s}")));
     if more > 0 {
@@ -258,9 +260,9 @@ pub fn wecom_of(ns: &[Notice]) -> String {
         return format_wecom(n);
     }
     let color = if ns[0].kind == Kind::Resolved { "info" } else { "warning" };
-    let (items, more) = group_items(ns);
+    let (items, more) = group_items(ns, 56);
     let mut lines = vec![format!("### <font color=\"{color}\">【{}】{}</font>", crate::meta::severity_label(top_severity(ns)), md(&group_title(ns), 80))];
-    lines.extend(items.into_iter().map(|(m, s)| format!("> **{}**：{}", md(m, 32), md(&s, 70))));
+    lines.extend(items.into_iter().map(|(m, s)| format!("> **{}**：{}", md(m, 32), md(&s, 90))));
     if more > 0 {
         lines.push(format!("> 另 {more} 台"));
     }
