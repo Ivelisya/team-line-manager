@@ -3,9 +3,11 @@
 //! 路由上的 fleet-tunnel 每次重连都按主机名重新解析，连 `ssh_host:ssh_port` 上中控的 sshd（routers/scripts.rs）。回连主机是 [routers] ssh_host，
 //! 没配时取 public_url 的主机名（config.rs）。public_url 的域名经 CDN / 边缘机（只转发 80/443）时，路由断线后就回连不上中控；
 //! 现在连着的隧道是长连接，不受影响，断了才出事。所以中控自己定期查（启动时一次，之后每 10 分钟；没有软路由时不查）：
-//! - 解析回连主机（写的是 IP 就用它）；解析不了、解析不出地址都算不对；
-//! - 解析到的每个地址：是中控本机网卡上的地址（能在它上面 bind）就对；不是（中控在 NAT 后，网卡上是内网地址）就 keyscan 它的 ssh_port，
-//!   SSH 主机公钥是中控 sshd 的（[routers] sshd_host_key）才算对。
+//! - 解析回连主机（写的是 IP 就用它）；解析不了、解析不出地址算不对；
+//! - 解析到的地址里有一个是中控本机网卡上的地址（能在它上面 bind），或者在它的 ssh_port 上 keyscan 出的 SSH 主机公钥是中控 sshd 的
+//!   （[routers] sshd_host_key；中控在 NAT 后、网卡上是内网地址时靠这个）就对（A 与 AAAA 并存时路由上的 ssh 连不上一个会退回另一个）；
+//! - 都不是时，只有「连上了但主机公钥不是中控 sshd 的」（多半是 CDN / 边缘机）才算不对；keyscan 连不上（超时、拒绝，也可能只是中控连不回自己的
+//!   公网地址：NAT 回环不通）、读不了中控自己的公钥都只算判断不了：不开告警，写一行日志，同时有算不对的地址时附在摘要里。
 //!
 //! 结论（不对时的告警摘要）放在 `AppState::tunnel_host`，告警循环里 selfmon::check_once 照它开、关告警。解析与比较经 `Net`，测试注入。
 
@@ -76,24 +78,32 @@ pub(crate) async fn judge(net: &impl Net, host: &str, port: u16, own: Option<&st
             Err(e) => return Some(format!("软路由隧道回连主机 {host}（{from}）解析不了（{e}）：{FIX}")),
         },
     };
-    let mut bad = vec![];
+    if addrs.iter().any(|ip| net.is_local(*ip)) {
+        return None;
+    }
+    // 连上了但不是中控 sshd 的 / 判断不了的（连不上、读不了中控自己的公钥）
+    let (mut wrong, mut unsure) = (vec![], vec![]);
     for ip in &addrs {
-        if net.is_local(*ip) {
+        let Some(own) = own else {
+            unsure.push(format!("{ip} 不是中控本机网卡上的地址，读不了中控 sshd 的主机公钥，没法核对"));
             continue;
-        }
-        let why = match own {
-            None => "不是中控本机网卡上的地址，读不了中控 sshd 的主机公钥，没法核对".to_string(),
-            Some(own) => match net.host_key(*ip, port).await {
-                Ok(Some(k)) if k == own => continue,
-                Ok(Some(_)) => format!("{port} 口的 SSH 主机公钥不是中控 sshd 的（多半是 CDN / 边缘机）"),
-                Ok(None) => format!("{port} 口连不上 SSH"),
-                Err(e) => format!("核对 {port} 口的 SSH 主机公钥失败：{e:#}"),
-            },
         };
-        bad.push(format!("{ip} {why}"));
+        match net.host_key(*ip, port).await {
+            Ok(Some(k)) if k == own => return None,
+            Ok(Some(_)) => wrong.push(format!("{ip} {port} 口的 SSH 主机公钥不是中控 sshd 的（多半是 CDN / 边缘机）")),
+            Ok(None) => unsure.push(format!("{ip} {port} 口连不上 SSH（也可能是中控连不回自己的公网地址）")),
+            Err(e) => unsure.push(format!("{ip} 核对 {port} 口的 SSH 主机公钥失败：{e:#}")),
+        }
+    }
+    if wrong.is_empty() {
+        if !unsure.is_empty() {
+            tracing::warn!("软路由隧道回连 {host}:{port} 判断不了是不是中控，不开告警：{}", unsure.join("；"));
+        }
+        return None;
     }
     let all: Vec<String> = addrs.iter().map(IpAddr::to_string).collect();
-    (!bad.is_empty()).then(|| format!("软路由隧道回连 {host}:{port}（{from}）解析到 {}，不是中控：{}。{FIX}", all.join("、"), bad.join("；")))
+    wrong.extend(unsure);
+    Some(format!("软路由隧道回连 {host}:{port}（{from}）解析到 {}，不是中控：{}。{FIX}", all.join("、"), wrong.join("；")))
 }
 
 #[cfg(test)]
@@ -131,17 +141,46 @@ mod tests {
 
     #[tokio::test]
     async fn edge_or_unresolvable_is_reported() {
-        // 域名经边缘机：一个地址的 22 口是别人的 sshd，另一个连不上
+        // 域名经边缘机：一个地址的 22 口是别人的 sshd，另一个连不上（附在摘要里）
         let f = Fake { dns: Ok(vec![ip("203.0.113.7"), ip("203.0.113.8")]), local: vec![ip("10.0.0.5")], keys: vec![(ip("203.0.113.7"), "ssh-ed25519 EDGE")] };
         let s = judge(&f, "fleet.example.com", 22, Some(OWN), false).await.unwrap();
         assert!(s.starts_with("软路由隧道回连 fleet.example.com:22（没配 [routers] ssh_host，用的是 public_url 的主机名）解析到 203.0.113.7、203.0.113.8，不是中控："), "{s}");
         assert!(s.contains("203.0.113.7 22 口的 SSH 主机公钥不是中控 sshd 的（多半是 CDN / 边缘机）；203.0.113.8 22 口连不上 SSH"), "{s}");
         assert!(s.contains("把 [routers] ssh_host 配成中控源站的 IP") && s.contains("现在连着的隧道断开之后才受影响"), "{s}");
-        // 读不了中控自己的主机公钥：没法核对，照报
-        let f = Fake { dns: Ok(vec![ip("203.0.113.7")]), local: vec![], keys: vec![(ip("203.0.113.7"), OWN)] };
-        assert!(judge(&f, "fleet.example.com", 22, None, true).await.unwrap().contains("没法核对"));
         let f = Fake { dns: Err("no such host".into()), local: vec![], keys: vec![] };
         assert!(judge(&f, "fleet.example.com", 22, Some(OWN), true).await.unwrap().starts_with("软路由隧道回连主机 fleet.example.com（[routers] ssh_host）解析不了（no such host）"));
+        let f = Fake { dns: Ok(vec![]), local: vec![], keys: vec![] };
+        assert!(judge(&f, "fleet.example.com", 22, Some(OWN), true).await.unwrap().contains("解析不出地址"));
+    }
+
+    /// 连不上（超时、拒绝）、读不了中控自己的公钥都只算判断不了：不报，免得 NAT 回环不通、没有 IPv6 出口时每 10 分钟误报一次
+    #[tokio::test]
+    async fn unreachable_is_not_reported() {
+        // NAT 后连不回自己的公网地址
+        let f = Fake { dns: Ok(vec![ip("198.51.100.10")]), local: vec![ip("10.0.0.5")], keys: vec![] };
+        assert_eq!(judge(&f, "ssh.example.com", 22, Some(OWN), true).await, None);
+        // 读不了中控自己的主机公钥：没法核对
+        let f = Fake { dns: Ok(vec![ip("203.0.113.7")]), local: vec![], keys: vec![(ip("203.0.113.7"), "ssh-ed25519 EDGE")] };
+        assert_eq!(judge(&f, "fleet.example.com", 22, None, true).await, None);
+    }
+
+    /// A 与 AAAA 并存：任一个地址是本机或公钥对上就算中控；都不对才看有没有「连上了但不是中控」的
+    #[tokio::test]
+    async fn any_address_matching_is_central() {
+        let (v4, v6) = (ip("198.51.100.10"), ip("2001:db8::10"));
+        // AAAA 连不上（没有 IPv6 出口），A 对上
+        let f = Fake { dns: Ok(vec![v6, v4]), local: vec![ip("10.0.0.5")], keys: vec![(v4, OWN)] };
+        assert_eq!(judge(&f, "ssh.example.com", 22, Some(OWN), true).await, None);
+        // AAAA 是本机地址，A 经边缘机
+        let f = Fake { dns: Ok(vec![v4, v6]), local: vec![v6], keys: vec![(v4, "ssh-ed25519 EDGE")] };
+        assert_eq!(judge(&f, "ssh.example.com", 22, Some(OWN), true).await, None);
+        // A 是别人的（过期记录）、AAAA 连不上：连上的那个不是中控，报
+        let f = Fake { dns: Ok(vec![v6, v4]), local: vec![], keys: vec![(v4, "ssh-ed25519 EDGE")] };
+        let s = judge(&f, "ssh.example.com", 22, Some(OWN), true).await.unwrap();
+        assert!(s.contains("198.51.100.10 22 口的 SSH 主机公钥不是中控 sshd 的") && s.contains("2001:db8::10 22 口连不上 SSH"), "{s}");
+        // 两个都连不上：判断不了
+        let f = Fake { dns: Ok(vec![v6, v4]), local: vec![], keys: vec![] };
+        assert_eq!(judge(&f, "ssh.example.com", 22, Some(OWN), true).await, None);
     }
 
     #[test]

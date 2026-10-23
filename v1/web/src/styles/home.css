@@ -284,7 +284,9 @@ button.tag { border: 0; cursor: pointer; transition: background-color var(--dur-
 
 /* 团队分组放不下时：轨道撑满可用宽度（基准 0，宽度不随内容变，才量得出放得下几项），其余收进最右的「更多 ▾」。
    量宽用的隐藏副本叠在原位、不占位、不可见；.seg-ovf 裁掉它超出的部分，否则窄屏下它的宽度会撑出整页横向滚动 */
-.seg-ovf { position: relative; flex: 1 1 0; min-width: 0; display: flex; overflow: clip; overflow-clip-margin: 4px; }
+/* overflow: hidden 给不认 clip 的旧 Safari（< 16）兜底，认的浏览器被下一行覆盖。里面的选中胶囊阴影在 .seg 自己的内边距里（.seg 本身 overflow-x: auto 就裁在它的
+   内边距框上）、焦点环向里收 2px（components.css 的 .seg-item:focus-visible），都不会被这一层多裁；overflow-clip-margin 只在认它的浏览器里多留 4px */
+.seg-ovf { position: relative; flex: 1 1 0; min-width: 0; display: flex; overflow: hidden; overflow: clip; overflow-clip-margin: 4px; }
 .seg-ovf > .seg.seg-fill { flex: 1 1 0; max-width: none; }
 .seg-ovf > .seg-measure { position: absolute; left: 0; top: 0; visibility: hidden; pointer-events: none; max-width: none; width: max-content; overflow: visible; animation: none; mask-image: none; }
 .seg-more { flex: none !important; gap: var(--sp-2); }

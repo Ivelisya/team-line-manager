@@ -10,7 +10,8 @@
 //!   重试带头的那个接着改完，之后重试它们就跟着完成。
 //!
 //! 失败停着、被取消的不算同批在等的；之后单独重试的，同批别的已经改过，就自己改（同单独换线路机）。
-//! 带头的排队等路由的锁时被取消：被认领的放开，重新推一个带头的。
+//! 带头的排队等路由的锁时被取消：被认领的放开，重新推一个带头的（认领它们的作业已经不在改路由这一步的，参数里的 routers_batch_leader 不再算数：
+//! role 判断和认领的 SQL 都不拿它排除）。
 
 use super::*;
 
@@ -89,8 +90,10 @@ pub(super) fn role(me: Uuid, flag: Option<Uuid>, sibs: &[Sib]) -> Role<'_> {
     if sibs.iter().any(|s| s.active() && s.step < s.at) {
         return Role::Wait(BEHIND);
     }
-    // 已经跟着本作业的（重试时它先看到了本作业上一次认领的名单）照样认领
-    let others: Vec<Uuid> = sibs.iter().filter(|s| s.at_routers() && s.leader.is_none_or(|l| l == me) && !s.applied).map(|s| s.id).collect();
+    // 已经跟着本作业的（重试时它先看到了本作业上一次认领的名单）照样认领；认领它的带头作业已经不在改路由这一步（被取消、结束了）的当没有人认领：
+    // 重新推一个带头的（参数里的 routers_batch_leader 要等它自己下一次轮询才放开，不能等）
+    let led = |s: &Sib| s.leader.is_none_or(|l| l == me || !sibs.iter().any(|x| x.id == l && x.at_routers()));
+    let others: Vec<Uuid> = sibs.iter().filter(|s| s.at_routers() && led(s) && !s.applied).map(|s| s.id).collect();
     if others.iter().any(|id| *id < me) {
         return Role::Wait(TURN);
     }
@@ -221,7 +224,10 @@ pub(super) async fn join(c: &Ctx<'_>, batch: &str) -> anyhow::Result<Result<Vec<
             let claimed: Vec<JobRow> = sqlx::query_as(
                 "update job j set params = j.params || jsonb_build_object('routers_batch_leader', $1::text)
                  where j.id = any($2) and j.kind = 'move_entry' and j.params->>'batch' = $3 and j.state in ('queued', 'running', 'waiting')
-                   and coalesce(j.params->>'routers_batch_leader', $1::text) = $1::text and j.step = (select s.idx from job_step s where s.job_id = j.id and s.key = 'routers')
+                   and j.step = (select s.idx from job_step s where s.job_id = j.id and s.key = 'routers')
+                   and (coalesce(j.params->>'routers_batch_leader', $1::text) = $1::text
+                        or not exists (select 1 from job l join job_step ls on ls.job_id = l.id and ls.key = 'routers'
+                                       where l.id::text = j.params->>'routers_batch_leader' and l.state in ('queued', 'running', 'waiting') and l.step = ls.idx))
                  returning j.id, j.kind, j.target_id, j.params, j.state::text state, j.step, j.created_by",
             )
             .bind(me)
@@ -313,16 +319,23 @@ mod tests {
         sibs[0].step = 4;
         sibs[0].step_state = "compensated".into();
         assert_eq!(role(me, Some(lid), &sibs), Role::Lead(vec![Uuid::from_u128(3)]));
+        // 另一个被认领的作业（3）的 leader 还指着被取消的带头作业（它还没轮询、没放开）：同样算没人认领，先醒的重新推带头，不各走 Solo
+        sibs[1].leader = Some(lid);
+        assert_eq!(role(me, Some(lid), &sibs), Role::Lead(vec![Uuid::from_u128(3)]), "leader 指向已取消的作业");
+        let mut from_3 = vec![sib(2, "waiting", 4), sibs.remove(0)];
+        from_3[0].leader = Some(lid);
+        assert_eq!(role(Uuid::from_u128(3), Some(lid), &from_3), Role::Wait(TURN), "两个都被放开：id 小的带头，另一个等它");
     }
 
-    /// 已被别的认领的、自己接着做完的不认领；同批有另一个带头的在改就等它
+    /// 自己接着做完的不认领；认领它的带头作业还在改路由就等它，已经不在了（没有这个作业）当没人认领
     #[test]
     fn claimed_and_resuming_are_left_alone() {
         let me = Uuid::from_u128(1);
         let mut sibs = vec![sib(2, "waiting", 4), sib(3, "waiting", 4)];
-        sibs[0].leader = Some(Uuid::from_u128(9));
         sibs[1].applied = true;
-        assert_eq!(role(me, None, &sibs), Role::Solo);
+        assert_eq!(role(me, None, &sibs), Role::Lead(vec![Uuid::from_u128(2)]), "接着做完的不认领");
+        sibs[0].leader = Some(Uuid::from_u128(9));
+        assert_eq!(role(me, None, &sibs), Role::Lead(vec![Uuid::from_u128(2)]), "认领它的作业已经不在了：当没人认领");
         sibs[0].leader = Some(me);
         assert_eq!(role(me, None, &sibs), Role::Lead(vec![Uuid::from_u128(2)]), "已经跟着本作业的照样认领");
         sibs[1].batch = vec![Uuid::from_u128(2)];

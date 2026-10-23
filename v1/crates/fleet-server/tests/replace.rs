@@ -476,24 +476,29 @@ const RELAY_TOKEN: &str = "fa1_test_relay_token";
 /// 模拟两台线路机、手动推进作业，直到这个作业结束
 async fn run(t: &T, sims: &mut [Sim], job: &str) -> Value {
     for _ in 0..100 {
-        for s in sims.iter_mut() {
-            s.round(t).await;
-        }
-        // 出口探测直接记一份（这里没有后台任务）：验收新入口要它
-        sqlx::query("insert into probe_result (entry_id, ts, kind, ok, latency_ms, detail) select id, now(), 'egress', true, 12, '' from entry where lifecycle = 'active'")
-            .execute(&t.st.db)
-            .await
-            .unwrap();
-        drive(t).await;
+        one_round(t, sims).await;
         let j = t.job(job).await;
         if matches!(j["state"].as_str(), Some("failed" | "cancelled" | "succeeded")) {
             return j;
         }
-        t.nudge_jobs().await;
-        // 应用回报有限流（同 it/lifecycle.rs 的节奏）
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     panic!("作业 {job} 没结束：{} {}", t.job(job).await, logs(t, job).await);
+}
+
+/// 推进一轮：线路机回报、记探测、推进作业、唤醒等待的
+async fn one_round(t: &T, sims: &mut [Sim]) {
+    for s in sims.iter_mut() {
+        s.round(t).await;
+    }
+    // 出口探测直接记一份（这里没有后台任务）：验收新入口要它
+    sqlx::query("insert into probe_result (entry_id, ts, kind, ok, latency_ms, detail) select id, now(), 'egress', true, 12, '' from entry where lifecycle = 'active'")
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    drive(t).await;
+    t.nudge_jobs().await;
+    // 应用回报有限流（同 it/lifecycle.rs 的节奏）
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 }
 
 async fn entry_state(t: &T, id: Uuid) -> String { sqlx::query_scalar("select lifecycle::text from entry where id = $1").bind(id).fetch_one(&t.st.db).await.unwrap() }
@@ -682,6 +687,62 @@ async fn evacuate_changes_each_router_once() {
     assert_eq!(mine, [("路由A", "节点02"), ("路由B", "节点02")], "{fo}");
     assert_eq!(fo["routers"][0]["delay_ms"], json!([null]), "延迟跟着出口取（假 ssh 只回第一个出口的）：{fo}");
     assert_eq!((entry_state(t, oe).await, entry_state(t, ne).await), ("removed".to_string(), "removed".to_string()));
+}
+
+/// 搬空三个节点、带头的在排队等路由的锁时被取消（这时能取消）：被它认领的两个重新推一个带头的，一起改、路由只改一次，
+/// 不各走各的（认领它们的 routers_batch_leader 还指着被取消的作业，先醒的那个也要把另一个算进来）
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn evacuate_leader_cancelled_while_queued_repicks_leader() {
+    let w = world().await;
+    let oe = old_entry(&w).await;
+    let ne: Uuid = sqlx::query_scalar("select id from entry where node_id = $1").bind(w.new).fetch_one(&w.t.st.db).await.unwrap();
+    let n3 = node(&w.t, w.team, 3, "203.0.113.13").await;
+    let e3 = entry(&w.t, w.relay, n3, 20021, "33333333-3333-4333-8333-333333333333", "active").await;
+    let a = router(&w, "路由A", 23241, &[("节点01", "198.51.100.2", 20003, Some(oe)), ("节点02", "198.51.100.2", 20020, Some(ne)), ("节点03", "198.51.100.2", 20021, Some(e3))]).await;
+    let t = &w.t;
+    let (rb, tb) = seed_relay_b(t).await;
+    // 路由A 的锁被别的作业占着（测试自己拿，PG 会话级 advisory lock）
+    let mut lock = t.st.db.acquire().await.unwrap();
+    sqlx::query("select pg_advisory_lock(hashtextextended('router:' || $1::text, 0))").bind(a).execute(&mut *lock).await.unwrap();
+    let d = t.post(&format!("/api/v1/relays/{}/evacuate", w.relay), json!({"to_relay_id": rb})).await;
+    let mut ids: Vec<String> = d["jobs"].as_array().unwrap().iter().map(|j| j["job_id"].as_str().unwrap().to_string()).collect();
+    assert_eq!(ids.len(), 3, "{d}");
+    ids.sort();
+    let (lead, f1, f2) = (ids[0].clone(), ids[1].clone(), ids[2].clone());
+    let mut sims = [Sim::new(RELAY_TOKEN.into()), Sim::new(tb)];
+    let params = |job: &str| {
+        let (db, job): (_, Uuid) = (t.st.db.clone(), job.parse().unwrap());
+        async move { sqlx::query_scalar::<_, Value>("select params from job where id = $1").bind(job).fetch_one(&db).await.unwrap() }
+    };
+    // 带头的认领了另外两个、排队等路由A 的锁
+    for _ in 0..100 {
+        one_round(t, &mut sims).await;
+        if params(&lead).await["routers_batch"].as_array().is_some_and(|b| b.len() == 2) && params(&lead).await["routers_queued_id"] == json!(a) {
+            break;
+        }
+    }
+    assert_eq!(params(&lead).await["routers_queued_id"], json!(a), "{}", logs(t, &lead).await);
+    // 取消它：被认领的放开，重新推一个带头的（id 小的 f1 带头、认领 f2），路由A 的锁还占着，所以排队
+    let (s, v) = t.req("POST", &format!("/api/v1/jobs/{lead}/cancel"), None, None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let mut repicked = false;
+    for _ in 0..100 {
+        one_round(t, &mut sims).await;
+        if params(&f1).await["routers_batch"] == json!([f2]) {
+            repicked = true;
+            break;
+        }
+    }
+    assert!(repicked, "f1 应该重新带头认领 f2：{} / {}", params(&f1).await, logs(t, &f1).await);
+    assert_eq!(t.job(&lead).await["state"], "cancelled");
+    // 锁放开：两个一起改，路由A 只改一次、两个出口一起
+    sqlx::query("select pg_advisory_unlock(hashtextextended('router:' || $1::text, 0))").bind(a).execute(&mut *lock).await.unwrap();
+    drop(lock);
+    for id in [&f1, &f2] {
+        assert_eq!(run(t, &mut sims, id).await["state"], "succeeded", "{}", logs(t, id).await);
+    }
+    let ap = applies(23241);
+    assert!(ap.len() == 1 && ap[0].contains("N='2'\n"), "路由A 只改一次、两个出口一起：{}", ap.iter().map(|a| a.lines().filter(|l| l.starts_with("N=") || l.starts_with("NAME_")).collect::<Vec<_>>().join(" ")).collect::<Vec<_>>().join(" / "));
 }
 
 /// 搬空同批一起改时一台失败：已改的路由全部换回，几个节点的旧入口都不摘，跟着的一起失败（能取消）；

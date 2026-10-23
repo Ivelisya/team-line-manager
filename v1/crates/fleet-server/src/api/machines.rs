@@ -1063,26 +1063,12 @@ const SUB_EFFECTIVE: &str = "select jsonb_build_object('due_date', due_date, 'pr
     'remind_days', remind_days, 'traffic_gb', traffic_gb, 'traffic_reset_day', traffic_reset_day, 'auto_renew', auto_renew, 'overrides', to_jsonb(overrides))
     from subscription_eff where machine_id = $1";
 
-#[derive(Deserialize, Default)]
-pub struct SubQuery {
-    /// 只预览：照常校验、写、规整（和模板相同的改回跟随，账单日照规则算），读出生效值后整个回滚，什么都不留（不记审计、不广播）。
-    /// 返回 `{dry_run: true, effective: {…生效值…, overrides: […]}}`，fleetctl 用它在确认前显示「改前 → 改后」，不在客户端重算跟随规则
-    #[serde(default)]
-    dry_run: bool,
-}
-
-pub async fn put_subscription(
-    a: Actor,
-    State(st): State<AppState>,
-    ApiPath(id): ApiPath<Uuid>,
-    ApiQuery(q): ApiQuery<SubQuery>,
-    ApiJson(mut b): ApiJson<SubIn>,
-) -> ApiResult<Json<Value>> {
+/// 校验、写入、规整订阅（`put_subscription` 与预览共用，都在调用方的事务里），返回改动前的生效值（审计用）
+async fn write_subscription(tx: &mut sqlx::PgConnection, id: Uuid, b: &mut SubIn) -> ApiResult<Option<Value>> {
     if b.traffic_used_gb.is_some() {
         return Err(ApiError::bad_request("流量已用改为由 agent 按网卡统计，不再按面板校准"));
     }
-    let mut tx = st.db.begin().await?;
-    b.ov.check(&mut tx).await?;
+    b.ov.check(tx).await?;
     let (template_price,): (Option<i32>,) = sqlx::query_as("select price_cents from sub_template where machine_id = $1")
         .bind(id)
         .fetch_optional(&mut *tx)
@@ -1092,15 +1078,16 @@ pub async fn put_subscription(
         return Err(ApiError::bad_request("这台机器没有套餐，价格没有可跟随的：要填费用（免费填 0）"));
     }
     let before: Option<Value> = sqlx::query_scalar(SUB_AUDIT).bind(id).fetch_optional(&mut *tx).await?;
-    b.ov.write(&mut tx, id, b.due_date).await?;
+    b.ov.write(tx, id, b.due_date).await?;
     if let Some(auto) = b.auto_renew {
         sqlx::query("update subscription set auto_renew = $2 where machine_id = $1").bind(id).bind(auto).execute(&mut *tx).await?;
     }
-    if q.dry_run {
-        let effective: Option<Value> = sqlx::query_scalar(SUB_EFFECTIVE).bind(id).fetch_optional(&mut *tx).await?;
-        tx.rollback().await?;
-        return Ok(ok(json!({"dry_run": true, "effective": effective})));
-    }
+    Ok(before)
+}
+
+pub async fn put_subscription(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(mut b): ApiJson<SubIn>) -> ApiResult<Json<Value>> {
+    let mut tx = st.db.begin().await?;
+    let before = write_subscription(&mut tx, id, &mut b).await?;
     // 审计详情：请求本身 + 机器名 + 改动前后的生效值（摘要写出改了哪几项，见 audit::audit_text）
     let after: Option<Value> = sqlx::query_scalar(SUB_AUDIT).bind(id).fetch_optional(&mut *tx).await?;
     let name: String = sqlx::query_scalar("select display_name(m.kind::text, m.label, t.name, m.number) from machine m left join team t on t.id = m.team_id where m.id = $1")
@@ -1115,6 +1102,18 @@ pub async fn put_subscription(
     tx.commit().await?;
     st.emit(Event::Machine { id });
     Ok(ok(json!({"ok": true})))
+}
+
+/// 预览改订阅（`POST /machines/{id}/subscription/preview`，请求体同 PUT）：照常校验、写、规整（和模板相同的改回跟随，账单日照规则算），
+/// 读出生效值后整个回滚，什么都不留（不记审计、不广播）。返回 `{dry_run: true, effective: {…生效值…, overrides: […]}}`，
+/// fleetctl 用它在确认前显示「改前 → 改后」，不在客户端重算跟随规则。独立路由而不是 PUT 的 query：旧中控没有这个路由（404），
+/// 不会把预览当成真改
+pub async fn preview_subscription(_a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(mut b): ApiJson<SubIn>) -> ApiResult<Json<Value>> {
+    let mut tx = st.db.begin().await?;
+    write_subscription(&mut tx, id, &mut b).await?;
+    let effective: Option<Value> = sqlx::query_scalar(SUB_EFFECTIVE).bind(id).fetch_optional(&mut *tx).await?;
+    tx.rollback().await?;
+    Ok(ok(json!({"dry_run": true, "effective": effective})))
 }
 
 #[derive(Serialize, sqlx::FromRow)]

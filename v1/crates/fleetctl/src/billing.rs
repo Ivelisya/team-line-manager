@@ -1,6 +1,7 @@
 //! 费用与续费：billing（订阅、流量额度、最近的续费记录）、renew（登记续费）、subscription set（改订阅）。
 //! 默认值与说法同网页抽屉的「费用」页签：续费默认按订阅周期推一个周期、金额取订阅价格；只记账，不会向供应商付款。
 
+use crate::client::ApiError;
 use crate::cmds::{cycle_cn, due_at, due_cn, num, st, Ctx};
 use crate::meta;
 use crate::ops::confirm;
@@ -415,13 +416,21 @@ fn merge_sub(cur: &Value, patch: Map<String, Value>) -> anyhow::Result<Value> {
 }
 
 /// 改了哪些（`费用 39.46 USD / 月（跟随套餐） → 45.00 USD / 月（单独设置）`）；新建时列出全部。
-/// `eff` 是中控预览（`PUT …?dry_run=true`）返回的规整后的生效值：和模板相同的按跟随、账单日与重置日怎么算都是中控的规则，这里只对比
+/// `eff` 是中控预览（`POST …/subscription/preview`）返回的规整后的生效值：和模板相同的按跟随、账单日与重置日怎么算都是中控的规则，这里只对比
 fn sub_changes(m: &Value, eff: &Value) -> Vec<String> {
     let cur = &m["subscription"];
     if cur.is_null() {
         sub_fields(eff, m).into_iter().map(|(k, v)| format!("{k} {v}")).collect()
     } else {
         sub_fields(cur, m).into_iter().zip(sub_fields(eff, m)).filter(|(a, b)| a.1 != b.1).map(|((k, a), (_, b))| format!("{k} {a} → {b}")).collect()
+    }
+}
+
+/// 预览是独立路由：旧中控没有它（404），不会像 query 参数那样被忽略、直接把订阅改了；这时报错退出，不提交
+fn preview_effective(r: anyhow::Result<Value>) -> anyhow::Result<Value> {
+    match r {
+        Err(e) if e.downcast_ref::<ApiError>().is_some_and(|a| a.status == 404) => bail!("中控版本较旧，先升级中控再用 subscription set"),
+        r => Ok(r?["effective"].clone()),
     }
 }
 
@@ -437,7 +446,7 @@ pub fn subscription_set(ctx: &Ctx, o: SubSetOpts) -> anyhow::Result<u8> {
     let cur = &m["subscription"];
     let body = merge_sub(cur, patch)?;
     // 先让中控预览：校验与规整都在中控（不通过就是中控的报错），回来的是改完之后的生效值
-    let eff = ctx.c.put(&format!("/machines/{id}/subscription?dry_run=true"), &body)?["effective"].clone();
+    let eff = preview_effective(ctx.c.post(&format!("/machines/{id}/subscription/preview"), &body))?;
     let changes = sub_changes(&m, &eff).join("；");
     if changes.is_empty() {
         ctx.emit(cur, || format!("{name} 的订阅没有变化，未提交"));
@@ -472,6 +481,15 @@ mod tests {
     }
 
     #[test]
+    fn preview_404_means_old_server() {
+        let old = anyhow::Error::from(ApiError { status: 404, code: "not_found".into(), message: "没有这个接口".into() });
+        assert_eq!(preview_effective(Err(old)).unwrap_err().to_string(), "中控版本较旧，先升级中控再用 subscription set");
+        let bad = anyhow::Error::from(ApiError { status: 400, code: "bad_request".into(), message: "cycle 不对".into() });
+        assert!(preview_effective(Err(bad)).unwrap_err().to_string().contains("cycle 不对"));
+        assert_eq!(preview_effective(Ok(json!({"dry_run": true, "effective": {"price_cents": 1}}))).unwrap(), json!({"price_cents": 1}));
+    }
+
+    #[test]
     fn money_in_yuan_to_cents() {
         assert_eq!(["39.46", "39", "0.5", " 12.30 ", "0"].map(|s| parse_money(s).unwrap()), [3946, 3900, 50, 1230, 0]);
         for bad in ["", "abc", "-1", "+5", "1.234", "39.", ".5", "1,000", "1e3", "1.2.3", "99999999999"] {
@@ -502,7 +520,7 @@ mod tests {
         })
     }
 
-    /// 当前订阅的副本，再改几项：模拟中控预览（`PUT …?dry_run=true`）回来的生效值
+    /// 当前订阅的副本，再改几项：模拟中控预览（`POST …/subscription/preview`）回来的生效值
     fn eff(cur: &Value, set: Value) -> Value {
         let mut e = cur.clone();
         for (k, v) in set.as_object().unwrap() {

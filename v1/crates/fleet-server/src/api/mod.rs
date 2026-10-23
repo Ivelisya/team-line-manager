@@ -84,6 +84,7 @@ pub fn router() -> Router<AppState> {
         .route("/machines/{id}/tune", post(machines::tune))
         .route("/agents/upgrade", post(machines::upgrade_all_agents))
         .route("/machines/{id}/subscription", axum::routing::put(machines::put_subscription))
+        .route("/machines/{id}/subscription/preview", post(machines::preview_subscription))
         .route("/machines/{id}/renewals", get(machines::list_renewals).post(machines::add_renewal))
         .route("/machines/{id}/entries", post(relays::add_entry))
         // 换线路机、搬空线路机：GET 预览（含要改的软路由出口），POST 建作业

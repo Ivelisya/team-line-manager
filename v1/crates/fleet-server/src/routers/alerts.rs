@@ -21,7 +21,7 @@ use super::collect::{Exit, Snapshot};
 use crate::incident::{self, Close, Engine, Want};
 use crate::notify;
 use crate::silence::Silences;
-use crate::state::AppState;
+use crate::state::{AppState, Event};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use time::OffsetDateTime;
@@ -46,12 +46,13 @@ const SLACK_S: i64 = 5;
 /// 从 `since` 到 `now` 已经满 `secs` 秒（含余量）
 fn held(since: OffsetDateTime, now: OffsetDateTime, secs: i64) -> bool { (now - since).whole_seconds() + SLACK_S >= secs }
 
-/// 评估之间要记住的：各问题第一次出现的时间、各告警原因消失的时间、CPU 从什么时候起一直偏高
+/// 评估之间要记住的：各问题第一次出现的时间、各告警原因消失的时间、CPU 从什么时候起一直偏高、上一轮在维护中的路由
 #[derive(Default)]
 pub struct AlertState {
     first_seen: HashMap<(&'static str, Uuid), OffsetDateTime>,
     clean_since: HashMap<Uuid, OffsetDateTime>,
     cpu_high_since: HashMap<Uuid, OffsetDateTime>,
+    maintenance: HashSet<Uuid>,
 }
 
 /// 一台路由此刻的样子
@@ -223,6 +224,15 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
         })
         .collect();
     let tg = targets(&st.db, &views).await?;
+    // 维护窗口自己开始 / 结束（预约的到点、到期）时没有人操作、也就没有事件：路由列表里的「维护」靠这里发 Routers 才跟上（新建 / 删除静默时 api/incidents.rs 已发）
+    let maintenance: HashSet<Uuid> = {
+        let silences = Silences::load(&st.db).await?;
+        views.iter().filter(|v| silences.maintenance(v.id)).map(|v| v.id).collect()
+    };
+    if maintenance != state.maintenance {
+        state.maintenance = maintenance;
+        st.emit(Event::Routers);
+    }
     let open = incident::firing(&st.db, Engine::Router).await?;
     let open_ids: HashSet<Uuid> = open.iter().map(|o| o.id).collect();
     let mut seen: HashSet<(&'static str, Uuid)> = HashSet::new();

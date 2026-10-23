@@ -21,6 +21,7 @@ use axum::http::{Request, StatusCode};
 use common::{seed_team, T};
 use common::tele::Mock;
 use fleet_server::routers::{self, alerts, collect};
+use fleet_server::state::Event;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use std::os::unix::fs::PermissionsExt;
@@ -625,9 +626,13 @@ async fn router_maintenance_and_silence() {
     // 维护中：A 连上了但 WAN 断着——离线告警保持（不恢复、不发恢复），WAN 告警不开；B 照常开
     status(&t, &a, true, 0, snap(true, [0, 0], false)).await;
     status(&t, &b, false, 300, snap(true, [0, 0], true)).await;
+    // 这一轮评估发现 A 在维护中的集合变了：发一次 Routers（卡片上的「维护」要跟上），之后没变不再发
+    let mut ev = t.st.events.subscribe();
+    let mut routers_events = || std::iter::from_fn(|| ev.try_recv().ok()).filter(|e| matches!(e, Event::Routers)).count();
     for s in [100, 200, 300] {
         alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(s)).await.unwrap();
     }
+    assert_eq!(routers_events(), 1, "维护窗口生效的那一轮发一次 routers 事件");
     assert_eq!(firing_set(&t).await, pairs(&[("团队2-路由M", "router_offline"), ("团队2-路由N", "router_offline")]));
     mock.wait("/hook/m", 3).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -640,6 +645,7 @@ async fn router_maintenance_and_silence() {
     for s in [400, 461] {
         alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(s)).await.unwrap();
     }
+    assert_eq!(routers_events(), 1, "窗口自己到期的那一轮也发一次 routers 事件，没人点「结束维护」也一样");
     assert_eq!(firing_set(&t).await, pairs(&[("团队2-路由M", "router_wan_down"), ("团队2-路由N", "router_offline")]));
     mock.wait("/hook/m", 5).await;
     let events: Vec<(String, String)> = mock.bodies("/hook/m").iter().map(|b| (b["event"].as_str().unwrap().into(), b["rule"].as_str().unwrap().into())).collect();

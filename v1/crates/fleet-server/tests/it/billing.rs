@@ -83,10 +83,10 @@ async fn subscription_follows_plan_and_provider() {
     t.req("PATCH", &plan_path, Some(json!({"price_cents": 4000})), None).await;
     let s = machine(&t, &id).await["subscription"].clone();
     assert_eq!((s["price_cents"].as_i64(), s["overrides"].clone(), s["auto_renew"].clone()), (Some(900), json!(["price_cents"]), json!(true)));
-    // 预览（?dry_run=true）：返回规整后的生效值与 overrides，库里什么都不变、不记审计
+    // 预览（POST …/subscription/preview，独立路由）：返回规整后的生效值与 overrides，库里什么都不变、不记审计
     let audits = t.count("select count(*) from audit_log where action = 'subscription.set'").await;
-    let dry = format!("/api/v1/machines/{id}/subscription?dry_run=true");
-    let (st, v) = t.req("PUT", &dry, Some(json!({"due_date": "2027-02-28", "price_cents": 1234, "traffic_gb": 3000})), None).await;
+    let dry = format!("/api/v1/machines/{id}/subscription/preview");
+    let (st, v) = t.req("POST", &dry, Some(json!({"due_date": "2027-02-28", "price_cents": 1234, "traffic_gb": 3000})), None).await;
     let e = &v["data"]["effective"];
     assert_eq!(
         (st, v["data"]["dry_run"].clone(), e["price_cents"].as_i64(), e["due_date"].as_str(), e["overrides"].clone()),
@@ -96,7 +96,10 @@ async fn subscription_follows_plan_and_provider() {
     assert_eq!(stored(&t, &id).await, (Some(900), None, None, None, None, None, None), "预览不写库");
     assert_eq!(machine(&t, &id).await["subscription"]["due_date"], "2027-01-31");
     assert_eq!(t.count("select count(*) from audit_log where action = 'subscription.set'").await, audits);
-    assert_eq!(t.req("PUT", &dry, Some(json!({"due_date": "2027-02-28", "cycle": "weekly"})), None).await.0, StatusCode::BAD_REQUEST, "预览同样校验");
+    assert_eq!(t.req("POST", &dry, Some(json!({"due_date": "2027-02-28", "cycle": "weekly"})), None).await.0, StatusCode::BAD_REQUEST, "预览同样校验");
+    assert_eq!(t.count("select count(*) from audit_log where action = 'subscription.set'").await, audits, "校验失败的预览同样不留审计");
+    let nobody = format!("/api/v1/machines/{}/subscription/preview", Uuid::nil());
+    assert_eq!(t.req("POST", &nobody, Some(json!({"due_date": "2027-02-28", "price_cents": 1})), None).await.0, StatusCode::NOT_FOUND, "没有这台机器");
     // 清掉单独设置（null）= 重新跟随；没传 auto_renew = 不改
     let (st, v) = put_sub(&t, &id, json!({"due_date": "2027-01-31", "price_cents": null, "traffic_gb": 0})).await;
     assert_eq!(st, StatusCode::OK, "{v}");
