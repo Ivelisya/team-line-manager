@@ -151,8 +151,9 @@ fn human_show(d: &Value) -> String {
         ("最近在线", table::ts(&st(d, "/last_seen_at"))),
         ("隧道端口", st(d, "/tunnel_port")),
     ];
+    // 在线时的 error = 连得上，但采集出错（快照是上一份）
     if let Some(e) = d["error"].as_str() {
-        kv.push(("原因", e.into()));
+        kv.push((if d["state"] == "online" { "采集出错" } else { "原因" }, e.into()));
     }
     if d["deploy"].is_object() {
         let dep = &d["deploy"];
@@ -176,7 +177,7 @@ fn human_show(d: &Value) -> String {
         kv.push(("存储", format!("{} {} / {}（{}）", st(y, "/disk_path"), bytes(num(y, "/disk_used").unwrap_or(0.0)), bytes(num(y, "/disk_total").unwrap_or(0.0)), pct(num(y, "/disk_used"), num(y, "/disk_total")))));
         kv.push(("连接表", format!("{} / {}（{}）", st(y, "/conntrack"), st(y, "/conntrack_max"), pct(num(y, "/conntrack"), num(y, "/conntrack_max")))));
         let up = num(y, "/uptime_s").map(|s| uptime_cn(s as i64)).unwrap_or("-".into());
-        kv.push(("运行", format!("{up} · {} 个进程 · 温度 {} · 时钟偏差 {} 秒", st(y, "/procs"), num(y, "/temp_c").map(|t| format!("{t:.0}℃")).unwrap_or("-".into()), st(y, "/clock_skew_s"))));
+        kv.push(("运行", format!("{up} · {} 个进程 · 温度 {} · 时钟偏差 {} 秒（中控减路由，正数 = 路由慢）", st(y, "/procs"), num(y, "/temp_c").map(|t| format!("{t:.0}℃")).unwrap_or("-".into()), st(y, "/clock_skew_s"))));
     }
     if oc.is_object() {
         let run = match (oc["enabled"] == true, oc["running"] == true) {
@@ -189,6 +190,12 @@ fn human_show(d: &Value) -> String {
             if let Some(e) = oc[k].as_str() {
                 s.push_str(&format!(" · {e}"));
             }
+        }
+        if oc["config_stale"] == true {
+            s.push_str("（出口按上次读到的配置对应入口）");
+        }
+        if let Some(e) = oc["delay_error"].as_str() {
+            s.push_str(&format!(" · 最近一次延迟测试没做成：{e}"));
         }
         kv.push(("OpenClash", s));
         kv.push(("配置", format!("{}（{}）", st(oc, "/config_path"), table::ts(&st(oc, "/config_mtime")))));
@@ -574,6 +581,19 @@ mod tests {
             json!({"id": "01a162a9-39c4-752c-b647-e61f34ef48bd", "name": "团队2-路由A", "state": "online"}),
             json!({"id": "01a162a9-4000-752c-b647-e61f34ef48bd", "name": "团队2-路由B", "state": "pending"}),
         ]
+    }
+
+    /// 在线却带原因 = 连得上但采集出错；配置读不了时写明出口按上次的配置对应；延迟测试没做成写原因；时钟偏差写明符号
+    #[test]
+    fn show_collect_error_and_stale_config() {
+        let d = json!({
+            "name": "R", "state": "online", "error": "采集脚本出错（退出码 1）：x",
+            "detail": {"system": {"os": "OpenWrt", "clock_skew_s": 3}, "openclash": {"enabled": true, "running": true, "config_error": "配置文件解析不了：y", "config_stale": true, "delay_error": "延迟测试：ssh 执行超过 45 秒"}}
+        });
+        let s = human_show(&d);
+        assert!(s.contains("采集出错") && s.contains("采集脚本出错（退出码 1）：x") && !s.contains("原因"), "{s}");
+        assert!(s.contains("配置文件解析不了：y（出口按上次读到的配置对应入口） · 最近一次延迟测试没做成：延迟测试：ssh 执行超过 45 秒"), "{s}");
+        assert!(s.contains("时钟偏差 3 秒（中控减路由，正数 = 路由慢）"), "{s}");
     }
 
     #[test]

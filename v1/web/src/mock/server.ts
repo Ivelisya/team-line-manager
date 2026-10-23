@@ -664,6 +664,11 @@ R('POST', '/entries/([^/]+)/actions', ({ params, body }) => {
   const relay = machine(e.relay.id); if (relay.relay) relay.relay.generation++;
   emit({ type: 'machines' }); emit({ type: 'relay', id: e.relay.id }); return {};
 });
+// 指向入口的软路由出口：mock 的快照按团队造（同退役预览的 exitsUsing），直出入口没有
+R('GET', '/entries/([^/]+)/routers', ({ params }) => {
+  const e = findEntry(params[0]);
+  return e.direct ? [] : exitsUsing(machine(e.node.id)).map((r) => ({ id: r.id, name: r.name, state: 'online', exits: r.exits.map((x) => x.exit) }));
+});
 R('GET', '/entries/([^/]+)/share', ({ params }) => {
   const e = findEntry(params[0]); const relay = machine(e.relay.id);
   return { url: `vless://00000000-0000-4000-8000-${String(hashStr(e.id)).padStart(12, '0')}@${relay.relay?.public_host ?? relay.ip}:${e.port}?encryption=none&type=tcp#${encodeURIComponent(e.node.name)}` };
@@ -995,7 +1000,7 @@ R('GET', '/relays/([^/]+)/evacuate', ({ params, query }) => {
     if (typeof plan === 'string') skipped.push({ machine_id: node.id, name: node.name, reason: plan });
     else jobs.push({ machine_id: node.id, name: node.name, routers: [] });
   }
-  return { from: src.name, to: dst.name, jobs, skipped, warnings: [], share_changed: jobs.length > 0, note: SHARE_NOTE };
+  return { from: src.name, to: dst.name, jobs, skipped, warnings: [], router_restarts: [], share_changed: jobs.length > 0, note: SHARE_NOTE };
 });
 R('POST', '/machines/([^/]+)/move', ({ params, body }) => {
   const m = machine(params[0]);

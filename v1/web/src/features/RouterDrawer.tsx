@@ -151,6 +151,9 @@ const Row = ({ label, children, tip }: { label: React.ReactNode; children: React
   <li className="rt-row"><span className="rt-row-label" data-tip={tip}>{label}</span><span className="rt-row-value">{children ?? '—'}</span></li>
 );
 
+/** 时钟偏差（clock_skew_s = 中控 − 路由，正数 = 路由慢；同机器的 clock_skew_ms）说成「慢 3 秒」「快 2 秒」 */
+const skewWord = (s: number) => (Math.round(s) === 0 ? '一致' : `${s > 0 ? '慢' : '快'} ${Math.abs(Math.round(s))} 秒`);
+
 function OverviewTab({ r, detail }: { r: RouterView; detail: RouterDetail | null | undefined }) {
   const s = r.summary;
   const { setTab } = useRouterDrawer();
@@ -163,6 +166,8 @@ function OverviewTab({ r, detail }: { r: RouterView; detail: RouterDetail | null
   return (
     <div className="rt-groups">
       {r.state === 'offline' && <Note tone="bad">连不上路由（最后在线 <Seen at={r.last_seen_at} />）{r.error && <>：<span className="mono">{r.error}</span></>}<InfoTip text="隧道断了时 OpenClash 与客户端上网照常，只是这里看不到它的状态" /></Note>}
+      {r.state === 'online' && r.error && <Note tone="warn">连得上，但采集出错：<span className="mono">{r.error}</span>{detail?.collected_at && <>（下面是 <Seen at={detail.collected_at} /> 的数据）</>}<InfoTip text="隧道是通的，只是采集脚本出错、输出读不了或超时；不算离线" /></Note>}
+      {oc?.config_error && <Note tone="warn">OpenClash 的配置读不了：<span className="mono">{oc.config_error}</span>{oc.config_stale ? '，出口按上次读到的配置对应面板入口' : '，出口对不上面板入口'}<InfoTip text="替换节点、换线路机时还读不了，作业会失败、不改这台路由" /></Note>}
       {showDeployTl && <Group title="一键部署"><li className="rt-row rt-row-tl"><DeployTimeline r={r} /></li></Group>}
       {/* 总览：大号的出口可用数 + 一句话，不带框 */}
       {s && (
@@ -192,7 +197,7 @@ function OverviewTab({ r, detail }: { r: RouterView; detail: RouterDetail | null
         {r.note && <Row label="备注"><span className="rt-row-wrap">{r.note}</span></Row>}
       </Group>
       {sys && (
-        <Group title="系统" foot={sys.clock_skew_s != null && Math.abs(sys.clock_skew_s) > 5 ? <span className="rt-warn">时钟差 {Math.round(sys.clock_skew_s)} 秒，出口可能连不上<InfoTip text="路由的时钟和中控差太多：TLS 与 reality 出口对时间敏感，会连不上" /></span> : undefined}>
+        <Group title="系统" foot={sys.clock_skew_s != null && Math.abs(sys.clock_skew_s) > 5 ? <span className="rt-warn">路由时钟{skewWord(sys.clock_skew_s)}，出口可能连不上<InfoTip text="路由的时钟和中控差太多：TLS 与 reality 出口对时间敏感，会连不上" /></span> : undefined}>
           <Row label="系统">{sys.os}</Row>
           <Row label="内核"><span className="mono">{sys.kernel}</span></Row>
           <Row label="CPU">{sys.cpu_model} · {sys.cores} 核</Row>
@@ -202,7 +207,7 @@ function OverviewTab({ r, detail }: { r: RouterView; detail: RouterDetail | null
           <Row label="进程">{sys.procs} 个</Row>
           <Row label="运行时长"><Num f={uptimeFmt(s?.uptime_s)} /></Row>
           <Row label="温度"><span className="rt-temp" data-tone={tempTone(s?.temp_c)}>{s?.temp_c != null ? `${s.temp_c.toFixed(0)} °C` : '没有传感器'}</span></Row>
-          <Row label="时钟偏差" tip="路由的系统时间减中控的时间">{sys.clock_skew_s != null ? `${sys.clock_skew_s > 0 ? '+' : ''}${sys.clock_skew_s.toFixed(1)} 秒` : '—'}</Row>
+          <Row label="时钟偏差" tip="和中控比：中控的时间减路由的时间，正数是路由慢、负数是路由快">{sys.clock_skew_s != null ? skewWord(sys.clock_skew_s) : '—'}</Row>
         </Group>
       )}
       {detail && (
@@ -225,6 +230,7 @@ function OverviewTab({ r, detail }: { r: RouterView; detail: RouterDetail | null
           <Row label="模式">{oc.mode}</Row>
           <Row label="配置文件"><Trunc className="mono">{oc.config_path ?? '—'}</Trunc></Row>
           <Row label="配置修改于">{F.dtFull(oc.config_mtime)}</Row>
+          {oc.delay_error && <Row label="延迟测试" tip="每 5 分钟测一次；没测成时出口的延迟沿用上一次的结果，不算不通"><span className="rt-warn">最近一次没测成：{oc.delay_error}</span></Row>}
           <Row label="核心内存" tip="clash 进程的常驻内存（VmRSS）"><Num f={F.mem(sys?.clash_rss)} /></Row>
           <Row label="代理速率" tip="经 OpenClash 的流量；↓ 是到客户端的方向">↓ <Num f={F.rate(s.openclash.down_bps)} /> ↑ <Num f={F.rate(s.openclash.up_bps)} /></Row>
           <Row label="连接">{s.openclash.conns.toLocaleString()} 条</Row>

@@ -148,6 +148,7 @@ export const EvacuateDialog = resetOnOpen(function EvacuateDialog({ relay, open,
           {routers
             ? <RouterExitList routers={pv.jobs.flatMap((j) => j.routers.map((plan) => ({ node: j.name, plan })))} title={<>要改的软路由出口 <InfoTip text="各节点同时换，同一台软路由一次只改一个节点，其余的在这一步排队。" /></>} />
             : pv.jobs.some((j) => j.routers.length > 0) && <Note tone="bad">不改软路由：指向这些入口的出口在旧入口摘掉后就断了</Note>}
+          {routers && (pv.router_restarts ?? []).map((r) => <Note key={r.id} tone="warn">软路由 {r.name} 会重启 {r.times} 次（每次断开它上面全部连接）</Note>)}
           {pv.skipped.map((k) => <Note key={k.machine_id} tone="warn">{k.name ?? '节点'} 会跳过：{k.reason}</Note>)}
           {pv.warnings.map((w) => <Note key={w} tone="warn">{w}</Note>)}
         </div>

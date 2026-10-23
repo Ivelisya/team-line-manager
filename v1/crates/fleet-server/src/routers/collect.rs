@@ -1,12 +1,18 @@
 //! 采集：每 30 秒经隧道登录每台路由（并发最多 8 台，一台最多 35 秒），跑一段只读的采集脚本（collect.uc，经 stdin 交给 `sh -s`），
 //! 把它回的 JSON 拼成快照（接口的 detail）存进 router_status，指标进 router_metric / router_exit_metric（30 秒一点）。
+//! 连不上（隧道断了、ssh 自己失败）算 reachable = false（离线看它）；连上了但采集脚本出错、输出解析不了、超时（隧道还通）
+//! 算「采集出错」：reachable = true、error 写原因、快照留着上一份（告警 router_collect_error，不算离线）。
 //!
 //! - 速率：WAN 等接口按 /proc/net/dev 两次读数之差、代理总流量按 mihomo 的 uploadTotal / downloadTotal 两次之差，在中控算
 //!   （前一次读数只在内存里，中控重启后第一轮没有速率）；各出口的流量由路由上按连接累加（见 collect.uc），中控除以间隔。
-//! - 延迟：每 5 分钟让 mihomo 经每个出口请求一次 generate_204（/proxies/<名字>/delay，每批 6 个并发），这是客户现场经出口的真实可用性；
-//!   没通的出口（不超过 5 个时）当场单独重测一次，通了就算这一轮通；超了时间预算没轮到的、mihomo 没回话的沿用上一次（delay.untested）；
+//! - 延迟：每 5 分钟让 mihomo 经每个出口请求一次 generate_204（/proxies/<名字>/delay，每批 6 个并发），这是客户现场经出口的真实可用性。
+//!   采集成功之后另起一次执行（同一段脚本 MODE=delay，单独 45 秒时限），失败、超时只影响出口数据（沿用上一次，原因记在 openclash.delay_error），
+//!   这一轮也算测过（不每轮重来）。fleet 出口（对上了 fleet 入口的）先测；没通的 fleet 出口（不超过 5 个时）当场单独重测一次，
+//!   通了就算这一轮通；超了时间预算没轮到的、mihomo 没回话的沿用上一次（delay.untested）；
 //!   结果进快照与那一点的 router_exit_metric，连续失败次数（fail_streak）随快照存着，告警 router_exits_down 看它。
-//! - 出口与 fleet 入口：配置文件的 sha256 变了才取回来解析（见 clash.rs），解析结果只在内存里。
+//! - 出口与 fleet 入口：配置文件的 sha256 变了才取回来解析（见 clash.rs），解析结果只在内存里。解析不了（或取不回来）时沿用
+//!   上一次解析成功的出口（openclash.config_stale；中控重启后内存里没有，就沿用上一份快照里各出口对上的入口），不整体退化成「不是 fleet 的」：
+//!   替换、退役预览、备用到期提醒靠它看出指向节点的出口。
 //! - 主机公钥：还没记录时（刚接入）先经隧道 keyscan 记下（只有拿到隧道私钥的才能占住这个端口），之后严格核对。
 
 use super::clash::{self, Entry, EntryRef, Proxy};
@@ -23,8 +29,14 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 const PARALLEL: usize = 8;
-/// 一台路由一轮最多等这么久（测延迟的那一轮：分批测最多约 22 秒、没通的重测最多 7 秒，见 collect.uc 的 delay）
+/// 一次采集最多等这么久
 const TIMEOUT: Duration = Duration::from_secs(35);
+/// 一次延迟测试最多等这么久（分批测最多约 29 秒、没通的重测最多 7 秒，见 collect.uc 的 delay）
+const DELAY_TIMEOUT: Duration = Duration::from_secs(45);
+/// 取配置文件最多等这么久
+const CONFIG_TIMEOUT: Duration = Duration::from_secs(20);
+/// 一台路由一轮的总时限（兜底：上面几步各有自己的时限，再加 keyscan）
+const ROUND_LIMIT: Duration = Duration::from_secs(120);
 /// 多久测一次全部出口的延迟
 const DELAY_EVERY_S: i64 = 300;
 pub const DELAY_URL: &str = "https://www.gstatic.com/generate_204";
@@ -38,13 +50,21 @@ if ! command -v ucode >/dev/null 2>&1; then echo '{"v":1,"error":"路由上没�
 cat > /tmp/fleet-collect/collect.uc <<'FLEET_UC'
 @@PROGRAM@@
 FLEET_UC
-FLEET_DELAY="$DELAY" FLEET_DELAY_URL="$DELAY_URL" exec ucode /tmp/fleet-collect/collect.uc
+FLEET_MODE="$MODE" FLEET_DELAY_URL="$DELAY_URL" FLEET_MANAGED="$MANAGED" exec ucode /tmp/fleet-collect/collect.uc
 }
 main </dev/null
 "#;
 
-pub fn script(delay: bool) -> String {
-    crate::jobs::scripts::vars(&[("DELAY", if delay { "1" } else { "0" }), ("DELAY_URL", &delay_url_param())]) + &WRAPPER.replace("@@PROGRAM@@", include_str!("collect.uc").trim_end())
+/// 采集脚本
+pub fn script() -> String { program("collect", &[]) }
+
+/// 延迟测试脚本：`managed` 是 fleet 出口的名字（先测、重测名额先给它们）
+pub fn delay_script(managed: &[String]) -> String { program("delay", managed) }
+
+fn program(mode: &str, managed: &[String]) -> String {
+    let managed = serde_json::to_string(managed).unwrap_or_else(|_| "[]".into());
+    crate::jobs::scripts::vars(&[("MODE", mode), ("DELAY_URL", &delay_url_param()), ("MANAGED", &managed)])
+        + &WRAPPER.replace("@@PROGRAM@@", include_str!("collect.uc").trim_end())
 }
 
 /// 测延迟的地址按查询参数编码（mihomo 的 `?url=`）：替换节点后测出口延迟也用它（routers::replace）
@@ -123,8 +143,12 @@ pub struct OpenClash {
     pub down_bps: Option<i64>,
     /// 核心在跑但 API 调不通时的原因
     pub error: Option<String>,
-    /// 配置文件取不回来、解析不了时的原因（出口就对不上入口）
+    /// 配置文件取不回来、解析不了时的原因
     pub config_error: Option<String>,
+    /// 配置读不了，出口与入口的对应沿用上一次读到的（config_error 有值时）
+    pub config_stale: bool,
+    /// 最近一次延迟测试没做成的原因（OpenClash 没在跑、超时…）：出口的延迟是更早测的
+    pub delay_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -345,6 +369,13 @@ pub fn build(raw: &Value, prev: &Prev, last: Option<&Snapshot>, config: Option<&
         down_bps: rate(totals.map(|t| t.1), prev.totals.map(|t| t.1), dt),
         error: s(&oc, "api_error").map(|e| format!("mihomo 的 API 调不通：{e}")),
         config_error: None,
+        config_stale: false,
+        // 这一轮没测：沿用上一份快照的
+        delay_error: match oc.get("delay") {
+            Some(d) if d.get("ok").and_then(Value::as_bool) == Some(true) => None,
+            Some(d) => Some(s(d, "error").unwrap_or_else(|| "原因不明".into())),
+            None => last.and_then(|l| l.openclash.delay_error.clone()),
+        },
     };
     let exits = exits(&oc, last, config, entries, now);
     let clients = clients(raw, &oc, &interfaces);
@@ -531,6 +562,9 @@ pub struct Mem {
     last: Option<Snapshot>,
     /// 配置文件的 sha256 与解析出的出口（解析不了时是原因）
     config: Option<(String, Result<Vec<Proxy>, String>)>,
+    /// 上一次解析成功的出口：配置解析不了时沿用
+    good: Option<Vec<Proxy>>,
+    /// 上一次测延迟（没测成也算）的时间
     last_delay: Option<OffsetDateTime>,
 }
 
@@ -547,7 +581,10 @@ enum Outcome {
     /// 还没发隧道密钥（刚建、刚重新生成接入命令）：不去连
     Pending,
     Ok(Box<Built>),
+    /// 连不上：隧道断了、ssh 自己失败（离线看它）
     Fail(String),
+    /// 连上了，但采集脚本出错、输出解析不了、超时（隧道还通）：不算离线，快照留着上一份
+    Error(String),
 }
 
 /// 每个进程只做一次的收尾：上次没跑完的一键部署（中控重启、部署中断）标为失败
@@ -663,7 +700,8 @@ async fn round_of(st: &AppState, mem: &mut HashMap<Uuid, Mem>, only: Option<&[Uu
             let (st, entries) = (st.clone(), entries.clone());
             async move {
                 let id = t.id;
-                let changed = match one(&st, &t, &mut m, &entries).await {
+                // 立即采集（作业改完配置）只要快照，不顺带测延迟：那要多等几十秒
+                let changed = match one(&st, &t, &mut m, &entries, only.is_none()).await {
                     Ok(c) => c,
                     Err(e) => {
                         tracing::warn!(router = %id, "写采集结果失败：{e:#}");
@@ -686,12 +724,12 @@ async fn round_of(st: &AppState, mem: &mut HashMap<Uuid, Mem>, only: Option<&[Uu
     Ok(())
 }
 
-/// 采集一台并落库。返回状态或摘要是否变了
-async fn one(st: &AppState, t: &Target, m: &mut Mem, entries: &[Entry]) -> anyhow::Result<bool> {
+/// 采集一台并落库（`delay`：到时候了就测延迟）。返回状态或摘要是否变了
+async fn one(st: &AppState, t: &Target, m: &mut Mem, entries: &[Entry], delay: bool) -> anyhow::Result<bool> {
     let now = OffsetDateTime::now_utc();
-    let outcome = match tokio::time::timeout(TIMEOUT, collect(st, t, m, entries, now)).await {
+    let outcome = match tokio::time::timeout(ROUND_LIMIT, collect(st, t, m, entries, now, delay)).await {
         Ok(o) => o,
-        Err(_) => Outcome::Fail(format!("采集超过 {} 秒没有完成", TIMEOUT.as_secs())),
+        Err(_) => timed_out(t.tunnel_port, format!("采集超过 {} 秒没有完成", ROUND_LIMIT.as_secs())).await,
     };
     let before: Option<(bool, Option<String>)> =
         sqlx::query_as("select reachable, error from router_status where router_id = $1").bind(t.id).fetch_optional(&st.db).await?;
@@ -716,6 +754,18 @@ async fn one(st: &AppState, t: &Target, m: &mut Mem, entries: &[Entry]) -> anyho
             .execute(&st.db)
             .await?;
             Ok(before.is_none_or(|b| b.0 || b.1.as_deref() != Some(err.as_str())))
+        }
+        // 连得上：最近一次连上的时间照样更新（不算离线），快照、指标不动
+        Outcome::Error(err) => {
+            sqlx::query(
+                "insert into router_status (router_id, ts, reachable, error, last_ok_at) values ($1, now(), true, $2, now())
+                 on conflict (router_id) do update set ts = now(), reachable = true, error = $2, last_ok_at = now()",
+            )
+            .bind(t.id)
+            .bind(&err)
+            .execute(&st.db)
+            .await?;
+            Ok(before.is_none_or(|b| !b.0 || b.1.as_deref() != Some(err.as_str())))
         }
         Outcome::Ok(b) => {
             let mut tx = st.db.begin().await?;
@@ -781,14 +831,33 @@ async fn one(st: &AppState, t: &Target, m: &mut Mem, entries: &[Entry]) -> anyho
                 .await?;
             }
             tx.commit().await?;
+            let changed = ok_changed(before.as_ref(), m.last.as_ref(), &b.snap);
             m.prev = b.prev.clone();
             m.last = Some(b.snap.clone());
-            Ok(true)
+            Ok(changed)
         }
     }
 }
 
-async fn collect(st: &AppState, t: &Target, m: &mut Mem, entries: &[Entry], now: OffsetDateTime) -> Outcome {
+/// 采集成功这一轮要不要发实时事件：之前不在线 / 有错误，或快照里看得见的状态（[`signature`]）变了。
+/// CPU、内存、速率、连接数这些每轮都在变的数值不算：否则每 30 秒必发一次，所有打开的网页都重取全部路由（它们随测延迟每 5 分钟跟着刷新一次）
+fn ok_changed(before: Option<&(bool, Option<String>)>, last: Option<&Snapshot>, new: &Snapshot) -> bool {
+    before.is_none_or(|b| !b.0 || b.1.is_some()) || last.map(signature) != Some(signature(new))
+}
+
+/// 快照里不随每轮波动的部分：系统版本、接口通断与地址、OpenClash 状态与配置、各出口的对应与延迟测试结果、在线客户端
+fn signature(s: &Snapshot) -> Value {
+    let o = &s.openclash;
+    serde_json::json!({
+        "os": s.system.os, "kernel": s.system.kernel,
+        "ifaces": s.interfaces.iter().map(|i| (&i.name, &i.device, i.up, &i.ip)).collect::<Vec<_>>(),
+        "oc": (o.enabled, o.running, &o.version, &o.mode, &o.config_path, o.config_mtime.map(|t| t.unix_timestamp()), &o.error, &o.config_error, o.config_stale, &o.delay_error),
+        "exits": s.exits.iter().map(|e| serde_json::json!([e.name, e.server, e.port, e.entry, e.sync, e.alive, e.delay_ms, e.delay_at.map(|t| t.unix_timestamp()), e.fail_streak])).collect::<Vec<_>>(),
+        "clients": s.clients.iter().filter(|c| c.online).map(|c| (&c.ip, &c.hostname)).collect::<Vec<_>>(),
+    })
+}
+
+async fn collect(st: &AppState, t: &Target, m: &mut Mem, entries: &[Entry], now: OffsetDateTime, delay_ok: bool) -> Outcome {
     if !t.has_key {
         return Outcome::Pending;
     }
@@ -814,9 +883,11 @@ async fn collect(st: &AppState, t: &Target, m: &mut Mem, entries: &[Entry], now:
             Err(e) => return Outcome::Fail(format!("{e:#}")),
         }
     }
-    let delay = m.last_delay.is_none_or(|t| (now - t).whole_seconds() >= DELAY_EVERY_S);
-    let out = match crate::ssh::exec(tunnel::via_tunnel(&st.cfg, t.id, port), &script(delay), TIMEOUT).await {
+    let out = match crate::ssh::exec(tunnel::via_tunnel(&st.cfg, t.id, port), &script(), TIMEOUT).await {
         Ok(o) => o,
+        Err(e) if crate::ssh::kind_of(&e) == crate::ssh::ErrKind::Timeout => {
+            return timed_out(port, format!("采集超过 {} 秒没有完成", TIMEOUT.as_secs())).await
+        }
         Err(e) => return Outcome::Fail(format!("{e:#}")),
     };
     if out.code == 255 {
@@ -825,41 +896,102 @@ async fn collect(st: &AppState, t: &Target, m: &mut Mem, entries: &[Entry], now:
         }
         return Outcome::Fail(tunnel::explain(&out, true));
     }
-    let raw: Value = match out.stdout.lines().rev().find(|l| l.trim_start().starts_with('{')).map(serde_json::from_str) {
-        Some(Ok(v)) => v,
-        _ => {
-            let detail = if out.stderr.trim().is_empty() { out.stdout.trim() } else { out.stderr.trim() };
-            return Outcome::Fail(format!("采集脚本出错（退出码 {}）：{}", out.code, detail.chars().take(300).collect::<String>()));
-        }
+    let Some(mut raw) = last_json(&out.stdout) else {
+        return Outcome::Error(format!("采集脚本出错（退出码 {}）：{}", out.code, detail(&out)));
     };
     if let Some(e) = s(&raw, "error").filter(|_| raw.get("now").is_none()) {
-        return Outcome::Fail(e);
-    }
-    if delay && raw.pointer("/oc/delay").is_some() {
-        m.last_delay = Some(now);
+        return Outcome::Error(e);
     }
     // 配置文件变了（或还没取过）才取回来解析
     let sha = raw.pointer("/oc/config_sha256").and_then(Value::as_str).map(String::from);
     let path = raw.pointer("/oc/config_path").and_then(Value::as_str).map(String::from);
     if let (Some(sha), Some(path)) = (sha.as_ref(), path.as_ref()) {
         if m.config.as_ref().is_none_or(|c| &c.0 != sha) {
-            m.config = Some((sha.clone(), fetch_config(st, t, path).await));
+            let parsed = fetch_config(st, t, path).await;
+            if let Ok(p) = &parsed {
+                m.good = Some(p.clone());
+            }
+            m.config = Some((sha.clone(), parsed));
         }
     }
+    // 解析不了：沿用上一次解析成功的
     let (config, config_error) = match &m.config {
         Some((_, Ok(p))) => (Some(p.as_slice()), None),
-        Some((_, Err(e))) => (None, Some(e.clone())),
+        Some((_, Err(e))) => (m.good.as_deref(), Some(e.clone())),
         None => (None, None),
     };
+    // 测延迟：采集成功、mihomo 的出口列表拿到了才测；没测成（超时、出错）这一轮也算测过，不每轮重来
+    if delay_ok && raw.pointer("/oc/proxies").is_some() && m.last_delay.is_none_or(|t| (now - t).whole_seconds() >= DELAY_EVERY_S) {
+        m.last_delay = Some(now);
+        let managed = managed_names(config, m.last.as_ref(), entries);
+        raw["oc"]["delay"] = match delay(st, t, &managed).await {
+            Ok(d) => d,
+            Err(e) => serde_json::json!({"ok": false, "error": e}),
+        };
+    }
     let mut b = build(&raw, &m.prev, m.last.as_ref(), config, entries, now);
+    if config_error.is_some() {
+        b.snap.openclash.config_stale = config.is_some() || carry_mapping(&mut b.snap.exits, m.last.as_ref());
+    }
     b.snap.openclash.config_error = config_error;
     Outcome::Ok(Box::new(b))
+}
+
+/// 输出里最后一行 JSON
+fn last_json(stdout: &str) -> Option<Value> { stdout.lines().rev().find(|l| l.trim_start().starts_with('{')).and_then(|l| serde_json::from_str(l).ok()) }
+
+/// 脚本出错时给人看的输出：有 stderr 用它，否则 stdout，最多 300 字
+fn detail(out: &crate::ssh::Output) -> String {
+    let d = if out.stderr.trim().is_empty() { out.stdout.trim() } else { out.stderr.trim() };
+    d.chars().take(300).collect()
+}
+
+/// 超时了：隧道还通（经它 5 秒内读到路由 SSH 的版本行）算「连上了但采集出错」，否则算连不上
+async fn timed_out(port: i32, msg: String) -> Outcome {
+    match crate::ssh::ssh_probe("127.0.0.1", port as u16, Duration::from_secs(5)).await {
+        Ok(()) => Outcome::Error(format!("{msg}（隧道是通的：路由忙，或出口太多）")),
+        Err(why) => Outcome::Fail(format!("{msg}，经隧道的 SSH {why}")),
+    }
+}
+
+/// fleet 出口（对上了 fleet 入口的）的名字：测延迟时先测它们。没有解析好的配置时看上一份快照
+fn managed_names(config: Option<&[Proxy]>, last: Option<&Snapshot>, entries: &[Entry]) -> Vec<String> {
+    match config {
+        Some(c) => c.iter().filter(|p| clash::match_entry(p, entries).1 != "unmanaged").map(|p| p.name.clone()).collect(),
+        None => last.map(|l| l.exits.iter().filter(|e| e.sync != "unmanaged").map(|e| e.name.clone()).collect()).unwrap_or_default(),
+    }
+}
+
+/// 配置读不了、内存里也没有上一次解析成功的出口（中控重启过）：各出口的 server:port 与对上的入口沿用上一份快照的。返回沿用了没有
+fn carry_mapping(exits: &mut [Exit], last: Option<&Snapshot>) -> bool {
+    let Some(last) = last else { return false };
+    let mut any = false;
+    for e in exits.iter_mut().filter(|e| e.server.is_none()) {
+        if let Some(p) = last.exits.iter().find(|p| p.name == e.name && p.server.is_some()) {
+            (e.server, e.port, e.entry, e.sync) = (p.server.clone(), p.port, p.entry.clone(), p.sync.clone());
+            any = true;
+        }
+    }
+    any
+}
+
+/// 测一次出口延迟（单独一次执行、单独的时限）：返回采集脚本的 oc.delay（mihomo 调不通时 ok = false 带原因）；执行本身失败返回原因
+async fn delay(st: &AppState, t: &Target, managed: &[String]) -> Result<Value, String> {
+    let out = crate::ssh::exec(tunnel::via_tunnel(&st.cfg, t.id, t.tunnel_port), &delay_script(managed), DELAY_TIMEOUT)
+        .await
+        .map_err(|e| format!("延迟测试：{e:#}"))?;
+    if out.code == 255 {
+        return Err(format!("延迟测试：{}", tunnel::explain(&out, true)));
+    }
+    last_json(&out.stdout)
+        .and_then(|v| v.pointer("/oc/delay").cloned())
+        .ok_or_else(|| format!("延迟测试脚本出错（退出码 {}）：{}", out.code, detail(&out)))
 }
 
 /// 经隧道取回 OpenClash 的源配置（顶层 `secret:` 行在路由上先删掉，不传回来），在内存里解析出口
 async fn fetch_config(st: &AppState, t: &Target, path: &str) -> Result<Vec<Proxy>, String> {
     let script = crate::jobs::scripts::vars(&[("P", path)]) + &format!("sed '/^secret[[:space:]]*:/d' \"$P\" | head -c {}\n", clash::MAX_CONFIG + 1);
-    let out = crate::ssh::exec(tunnel::via_tunnel(&st.cfg, t.id, t.tunnel_port), &script, Duration::from_secs(20)).await.map_err(|e| format!("取配置文件失败：{e:#}"))?;
+    let out = crate::ssh::exec(tunnel::via_tunnel(&st.cfg, t.id, t.tunnel_port), &script, CONFIG_TIMEOUT).await.map_err(|e| format!("取配置文件失败：{e:#}"))?;
     if out.code != 0 {
         return Err(format!("取配置文件 {path} 失败：{}", out.stderr.trim().chars().take(200).collect::<String>()));
     }
@@ -1050,6 +1182,61 @@ mod tests {
         assert_eq!((b4.exits[0].alive, b4.exits[1].alive), (Some(true), None));
     }
 
+    /// 延迟测试没做成（单独那次执行超时、OpenClash 没在跑）：出口沿用上一次，原因记在 delay_error，没测的轮次沿用它，测成了清掉
+    #[test]
+    fn delay_error_is_kept_until_next_test() {
+        let t0 = OffsetDateTime::now_utc();
+        let b0 = build(&raw(0, 0, 0, Some(json!({"ok": true, "results": {"节点01": 88}}))), &Prev::default(), None, Some(&proxies()), &[], t0);
+        let b1 = build(&raw(0, 0, 0, Some(json!({"ok": false, "error": "延迟测试：ssh 执行超过 45 秒"}))), &b0.prev, Some(&b0.snap), Some(&proxies()), &[], t0);
+        assert_eq!(b1.snap.openclash.delay_error.as_deref(), Some("延迟测试：ssh 执行超过 45 秒"));
+        assert_eq!(b1.snap.exits.iter().map(|e| e.fail_streak).collect::<Vec<_>>(), [0, 1], "不算出口不通");
+        assert!(b1.exits.iter().all(|r| r.alive.is_none()));
+        let b2 = build(&raw(0, 0, 0, None), &b1.prev, Some(&b1.snap), Some(&proxies()), &[], t0);
+        assert!(b2.snap.openclash.delay_error.is_some());
+        let b3 = build(&raw(0, 0, 0, Some(json!({"ok": true, "results": {}}))), &b2.prev, Some(&b2.snap), Some(&proxies()), &[], t0);
+        assert!(b3.snap.openclash.delay_error.is_none());
+    }
+
+    /// 配置读不了、内存里没有上一次解析成功的出口：server:port 与对上的入口沿用上一份快照；fleet 出口的名字也看它
+    #[test]
+    fn unreadable_config_keeps_last_mapping() {
+        let now = OffsetDateTime::now_utc();
+        let er = EntryRef { id: Uuid::nil(), name: "团队1-01 · 线路机2:20003".into(), node_id: Uuid::nil(), relay_id: Uuid::nil(), node_name: "团队1-01".into(), relay_name: "线路机2".into(), port: 20003, lifecycle: "active".into() };
+        let mut last = build(&raw(0, 0, 0, None), &Prev::default(), None, Some(&proxies()), &[], now).snap;
+        last.exits[0].entry = Some(er.clone());
+        last.exits[0].sync = "ok".into();
+        let mut b = build(&raw(0, 0, 0, None), &Prev::default(), Some(&last), None, &[], now);
+        assert!(b.snap.exits.iter().all(|e| e.sync == "unmanaged" && e.server.is_none()));
+        assert!(carry_mapping(&mut b.snap.exits, Some(&last)));
+        let e = &b.snap.exits;
+        assert_eq!((e[0].sync.as_str(), e[0].entry.as_ref(), e[0].server.as_deref(), e[0].port), ("ok", Some(&er), Some("198.51.100.2"), Some(20003)));
+        assert_eq!((e[1].sync.as_str(), e[1].port), ("unmanaged", Some(20004)));
+        assert_eq!(managed_names(None, Some(&last), &[]), ["节点01"]);
+        assert!(!carry_mapping(&mut b.snap.exits, None));
+    }
+
+    /// 采集成功时只有看得见的状态变了才发实时事件：速率、CPU 每轮都变不算；出口测试结果、OpenClash 状态、之前不在线 / 有错误算
+    #[test]
+    fn event_only_on_visible_change() {
+        let t0 = OffsetDateTime::now_utc();
+        let b0 = build(&raw(0, 1_000_000, 10_000, None), &Prev::default(), None, Some(&proxies()), &[], t0);
+        let mut r1 = raw(30, 4_750_000, 40_000, None);
+        r1["cpu_pct"] = json!(77.0);
+        r1["oc"]["conns"] = json!(9);
+        let b1 = build(&r1, &b0.prev, Some(&b0.snap), Some(&proxies()), &[], t0 + time::Duration::seconds(30));
+        let ok = (true, None);
+        assert!(!ok_changed(Some(&ok), Some(&b0.snap), &b1.snap));
+        assert!(ok_changed(None, Some(&b0.snap), &b1.snap), "第一次有状态");
+        assert!(ok_changed(Some(&(false, Some("连接被拒绝".into()))), Some(&b0.snap), &b1.snap), "刚连上");
+        assert!(ok_changed(Some(&(true, Some("采集脚本出错".into()))), Some(&b0.snap), &b1.snap), "采集出错之后好了");
+        assert!(ok_changed(Some(&ok), None, &b1.snap));
+        let b2 = build(&raw(60, 0, 0, Some(json!({"ok": true, "results": {"节点01": 90}}))), &b1.prev, Some(&b1.snap), Some(&proxies()), &[], t0 + time::Duration::seconds(60));
+        assert!(ok_changed(Some(&ok), Some(&b1.snap), &b2.snap), "测了延迟");
+        let mut s = b1.snap.clone();
+        s.openclash.running = false;
+        assert!(ok_changed(Some(&ok), Some(&b1.snap), &s));
+    }
+
     #[test]
     fn clients_merge_leases_neighbors_and_connections() {
         let now = OffsetDateTime::now_utc();
@@ -1070,10 +1257,12 @@ mod tests {
 
     #[test]
     fn script_carries_program_and_parameters() {
-        let s = script(true);
-        assert!(s.starts_with("DELAY='1'\nDELAY_URL='https%3A%2F%2Fwww.gstatic.com%2Fgenerate_204'\n"), "{}", &s[..120]);
+        let s = script();
+        assert!(s.starts_with("MODE='collect'\nDELAY_URL='https%3A%2F%2Fwww.gstatic.com%2Fgenerate_204'\nMANAGED='[]'\n"), "{}", &s[..120]);
         assert!(s.contains("'use strict';") && s.contains("\nFLEET_UC\n") && s.trim_end().ends_with("main </dev/null"));
-        assert!(script(false).starts_with("DELAY='0'\n"));
+        // 延迟测试：fleet 出口的名字按 JSON 数组传（单引号照样转义）
+        let d = delay_script(&["节点01".into(), "it's".into()]);
+        assert!(d.starts_with("MODE='delay'\n") && d.contains("MANAGED='[\"节点01\",\"it'\\''s\"]'\n"), "{}", &d[..160]);
         // 程序里不能有单独一行的结束标记
         assert!(!include_str!("collect.uc").lines().any(|l| l == "FLEET_UC"));
     }

@@ -166,9 +166,26 @@ pub async fn patch(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uu
 }
 
 /// 删除：撤销隧道公钥（路由上的 fleet-tunnel 之后连不上；已经连着的那条要等它自己断），关掉它的告警（不发恢复），指标随记录删掉。
-/// 路由上中控加的东西不去动，返回要在路由上执行的清理命令
+/// 路由上中控加的东西不去动，返回要在路由上执行的清理命令。
+/// 还有没做完的作业改过它的出口、没确认改回（参数 routers_applied 里有它：中途被打断、改回失败等人工处理）时 409，给出作业 id：
+/// 删了作业就连不上它、改不回也收不了尾
 pub async fn delete(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
     let mut tx = st.db.begin().await?;
+    let jobs: Vec<Uuid> = sqlx::query_scalar(
+        "select id from job where state not in ('succeeded', 'cancelled') and jsonb_typeof(params->'routers_applied') = 'array'
+           and params->'routers_applied' @> jsonb_build_array(jsonb_build_object('id', $1::text)) order by created_at",
+    )
+    .bind(id.to_string())
+    .fetch_all(&mut *tx)
+    .await?;
+    if !jobs.is_empty() {
+        let ids: Vec<String> = jobs.iter().map(Uuid::to_string).collect();
+        return Err(ApiError::conflict(format!(
+            "作业 {} 改过这台软路由的出口、还没确认改回：先把作业处理完（重试做完，见作业详情的「需要人工处理」），再删",
+            ids.join("、")
+        ))
+        .with_detail(json!({"jobs": jobs})));
+    }
     let (name, port): (String, i32) = sqlx::query_as("delete from router where id = $1 returning name, tunnel_port")
         .bind(id)
         .fetch_optional(&mut *tx)

@@ -4,6 +4,8 @@
 //!
 //! 改路由：要改哪些出口按执行时路由的配置重新确定（经隧道读源配置，同一套匹配：api::replace::replace_exit / api::lifecycle::move_exit），
 //! 发起时的计划只作展示。不在线的路由按最近一次采集看，有出口要改就一台都不改。出口对不上新入口（同预览的原因）也一台都不改。
+//! 在线的路由配置读不了（读失败、解析不了），哪怕快照里看不出它有出口要改，也一台都不改、作业失败：看不出就不能当成没有
+//! （旧节点进备用、到期回收后客户的出口就断了）；确认它没用的，重新发起时选不改软路由。路由上根本没有源配置（OpenClash 没配）的算没有出口。
 //! 同一台路由同时只有一个作业在改（替换、换线路机、重试都一样，见 `Locks`）：别的作业在改就排队（Outcome::Queue），作业的其余步骤照常并行。
 //! 排队时只等那台路由的锁（`routers_queued_id`），不读配置、不占连接。
 //! 再一台一台改（备份 → 改出口 → 重启 OpenClash → 测延迟）。哪台失败了，它自己已经改回（脚本做），之前改好的也按各自的备份改回去，
@@ -25,6 +27,7 @@ use std::collections::HashSet;
 struct Applied {
     id: Uuid,
     name: String,
+    /// 第一次改时的隧道端口（只作记录：改回时按路由现在的端口连，期间重新接入换过端口也连得上）
     port: i32,
     /// 这台第一次改之前的备份（回滚用它）
     stamp: String,
@@ -220,11 +223,15 @@ async fn ssh_failed(c: &Ctx<'_>, name: &str, o: &Output) -> String {
     tunnel::explain(o, true)
 }
 
-/// 经隧道读路由现在的 OpenClash 源配置，解析出口
+/// 经隧道读路由现在的 OpenClash 源配置，解析出口。路由上没有源配置（rr::NO_CONFIG）的算没有出口
 async fn read_config(c: &Ctx<'_>, r: &routers::Row) -> Result<Vec<clash::Proxy>, String> {
     let o = ssh::exec(tunnel::via_tunnel(&c.st.cfg, r.id, r.tunnel_port), &rr::read_script(), rr::READ_TIMEOUT).await.map_err(|e| format!("{e:#}"))?;
     if o.code == 255 {
         return Err(ssh_failed(c, &r.name, &o).await);
+    }
+    if o.code == rr::NO_CONFIG {
+        c.log(format!("软路由「{}」：{}，没有出口要改", r.name, reason(&o))).await;
+        return Ok(vec![]);
     }
     if !o.ok() {
         return Err(reason(&o));
@@ -326,8 +333,12 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
                         blocked.push(format!("软路由「{}」的配置读不了：{e}", r.name));
                         vec![]
                     }
+                    // 快照里看不出它有出口要改，但配置读不了就不知道现在有没有：不能跳过
                     Err(e) => {
-                        c.warn(format!("软路由「{}」的配置读不了（{e}）：最近一次采集里它没有出口指向{what}，不改", r.name)).await;
+                        blocked.push(format!(
+                            "软路由「{}」的配置读不了：{e}。看不出它有没有出口指向{what}（确认没有的话，重新发起时选不改软路由，fleetctl 加 --no-routers）",
+                            r.name
+                        ));
                         vec![]
                     }
                 },
@@ -441,14 +452,16 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     Ok(Outcome::Done(json!({"routers": done})))
 }
 
-/// 一台路由上本作业写的出口改回（先等它的锁）。没改回返回原因
+/// 一台路由上本作业写的出口改回（先等它的锁）。没改回返回原因。隧道端口按路由现在的（卡住期间重新接入会换端口）
 async fn revert_one(c: &Ctx<'_>, locks: &mut Locks<'_>, a: &Applied) -> anyhow::Result<Result<(), String>> {
     locks.wait(a.id).await?;
     let back = match a.back() {
         Ok(b) => b,
         Err(why) => return Ok(Err(why)),
     };
-    let out = ssh::exec(tunnel::via_tunnel(&c.st.cfg, a.id, a.port), &rr::rollback_script(&a.stamp, &back), rr::ROLLBACK_TIMEOUT).await;
+    let port: Option<i32> = sqlx::query_scalar("select tunnel_port from router where id = $1").bind(a.id).fetch_optional(&c.st.db).await?;
+    let Some(port) = port else { return Ok(Err("这台软路由已经删掉了".into())) };
+    let out = ssh::exec(tunnel::via_tunnel(&c.st.cfg, a.id, port), &rr::rollback_script(&a.stamp, &back), rr::ROLLBACK_TIMEOUT).await;
     Ok(match out {
         Ok(o) if o.ok() && matches!(o.kv("rollback"), Some("ok" | "none")) => {
             // 之后被别的作业改走的出口没动：记一行

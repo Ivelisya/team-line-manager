@@ -290,6 +290,10 @@ export const useDelTeam = () => useWrite((id: string) => del(`/teams/${id}`), [[
 export const useDelProvider = () => useWrite((id: string) => del(`/providers/${id}`), [['providers']]);
 export const useDelPlan = () => useWrite((id: string) => del(`/plans/${id}`), [['plans']]);
 export const fetchShare = (entryId: string) => get<{ url: string }>(`/entries/${entryId}/share`);
+/** 指向这个入口的软路由出口（按各路由最近一次采集）：轮换凭据、停用入口的确认对话框里列出来，打开时才取、每次重取 */
+export interface EntryRouterExits { id: string; name: string; state: string; exits: string[] }
+export const useEntryRouterExits = (entryId: string, enabled: boolean) =>
+  useQuery({ queryKey: ['entry-routers', entryId], queryFn: ({ signal }) => get<EntryRouterExits[]>(`/entries/${entryId}/routers`, signal), enabled, staleTime: 0, gcTime: 0 });
 const fetchLogs = (jobId: string, after: number, signal?: AbortSignal) => get<JobLog[]>(`/jobs/${jobId}/logs?after=${after}`, signal);
 const LOG_PAGE = 1000; // 服务端单次最多返回 1000 条
 /** 取 after 之后的全部日志：满页就接着往后拉，直到拉完。signal：离开页面 / 换作业时中止 */
