@@ -497,7 +497,7 @@ function clients() {
 	}
 }
 
-for (let step in ((MODE == 'delay') ? [delay_only] : (MODE == 'switch') ? [switch_group] : [system, ifaces, openclash, clients])) {
+for (let step in ((MODE == 'delay') ? [delay_only] : ((MODE == 'switch') ? [switch_group] : [system, ifaces, openclash, clients]))) {
 	try {
 		step();
 	}
