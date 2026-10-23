@@ -527,9 +527,9 @@ pub fn upgrade_agent(ctx: &Ctx, machine: Option<&str>, all: bool, yes: bool, fol
     if follow { cmds::follow_jobs(ctx, d["jobs"].as_array().into_iter().flatten()) } else { Ok(0) }
 }
 
-/// 一台的调优作业提交结果：Ok(Some(作业)) 已提交；`skip_conflict` 时 409（有进行中的作业、同机 IP 节点、家宽代理…）记进 `skipped` 返回 Ok(None)
-fn tune_submit(ctx: &Ctx, (id, name): &(String, String), body: &Value, skip_conflict: bool, skipped: &mut Vec<Value>) -> anyhow::Result<Option<Value>> {
-    match ctx.c.post(&format!("/machines/{id}/tune"), body) {
+/// 一台的批量作业提交结果（`path` = 接口 /machines/{id}/ 后面的部分）：Ok(Some(作业)) 已提交；`skip_conflict` 时 409（有进行中的作业、同机 IP 节点、家宽代理…）记进 `skipped` 返回 Ok(None)
+fn bulk_submit(ctx: &Ctx, path: &str, (id, name): &(String, String), body: &Value, skip_conflict: bool, skipped: &mut Vec<Value>) -> anyhow::Result<Option<Value>> {
+    match ctx.c.post(&format!("/machines/{id}/{path}"), body) {
         Ok(d) => Ok(Some(json!({"machine_id": id, "name": name, "job_id": d["job_id"]}))),
         Err(e) => match e.downcast_ref::<ApiError>() {
             Some(a) if skip_conflict && a.status == 409 => {
@@ -541,25 +541,22 @@ fn tune_submit(ctx: &Ctx, (id, name): &(String, String), body: &Value, skip_conf
     }
 }
 
-/// `fleetctl tune <机器>[,<机器>…] | --team <团队> | --all`：重做系统调优（作业 tune，不重启 ssserver / Xray）。
-/// --team / --all 只取在用的线路机和 VPS 节点（同机 IP 节点随宿主机，家宽代理没有机器），线路机在前：先做一台并跟到结束，
-/// 它失败就停（其余不提交），成功后其余逐台提交；409 的机器（有进行中的作业）跳过并列出。--all 要确认（--yes）。
-/// `rollback`：撤销列出的机器的调优（同一个作业类型，参数 rollback），要确认（--yes）
-pub fn tune(ctx: &Ctx, machine: Option<&str>, team: Option<&str>, all: bool, rollback: bool, yes: bool, follow: bool) -> anyhow::Result<u8> {
-    let body = json!({"rollback": rollback});
+/// 批量作业的目标：--team / --all 取在用的 VPS 节点（`relays` 时连线路机一起；同机 IP 节点随宿主机，家宽代理没有机器），
+/// 线路机在前；否则按机器名（逗号分隔）。`what` 用在「没有可…的机器」的提示里
+fn bulk_targets(ctx: &Ctx, machine: Option<&str>, team: Option<&str>, all: bool, relays: bool, what: &str) -> anyhow::Result<Vec<(String, String)>> {
     let mut targets: Vec<(String, String)> = vec![];
     if all || team.is_some() {
-        if all {
-            confirm("确认给所有在用的线路机和 VPS 节点重做系统调优？先做一台并等它做完，成功后其余逐台提交；不重启 ssserver / Xray、不断客户连接", yes)?;
-        }
         let list = ctx.machines()?;
         targets = list
             .iter()
-            .filter(|m| st(m, "/lifecycle") == "active" && st(m, "/kind") != "proxy" && m["host_id"].is_null() && team.is_none_or(|t| st(m, "/team/name") == t))
+            .filter(|m| {
+                let kind = st(m, "/kind");
+                st(m, "/lifecycle") == "active" && (kind == "vps" || (relays && kind == "relay")) && m["host_id"].is_null() && team.is_none_or(|t| st(m, "/team/name") == t)
+            })
             .map(|m| (st(m, "/id"), st(m, "/name")))
             .collect();
         if targets.is_empty() {
-            bail!("没有可调优的在用机器{}", team.map(|t| format!("（团队「{t}」）")).unwrap_or_default());
+            bail!("没有可{what}的在用机器{}", team.map(|t| format!("（团队「{t}」）")).unwrap_or_default());
         }
     } else {
         let q = machine.ok_or_else(|| anyhow!("给机器名（可逗号分隔多台），或用 --team / --all"))?;
@@ -569,42 +566,41 @@ pub fn tune(ctx: &Ctx, machine: Option<&str>, team: Option<&str>, all: bool, rol
                 targets.push((id, name));
             }
         }
-        if rollback {
-            let names: Vec<&str> = targets.iter().map(|t| t.1.as_str()).collect();
-            confirm(
-                &format!("确认撤销 {} 的系统调优？按机器上第一次调优前记下的原值写回内核参数、删掉调优写的 sysctl 配置；不重启 ssserver / Xray", names.join("、")),
-                yes,
-            )?;
-        }
     }
+    Ok(targets)
+}
+
+/// 给 `targets` 逐台提交 `path` 作业（body 相同），`what` 是动作名（写进提示）。`batch`（--team / --all）时先做一台并跟到结束，
+/// 它失败就停（其余不提交），成功后其余逐台提交；409 的机器（有进行中的作业）跳过并列出。返回的是退出码
+fn bulk_jobs(ctx: &Ctx, path: &str, what: &str, targets: &[(String, String)], body: &Value, batch: bool, follow: bool) -> anyhow::Result<u8> {
     let (mut jobs, mut skipped): (Vec<Value>, Vec<Value>) = (vec![], vec![]);
     let many = targets.len() > 1;
     // 批量：第一台提交成功的做金丝雀，跟到结束再提交其余
     let (mut next, mut followed) = (0, 0);
-    if (all || team.is_some()) && many {
+    if batch && many {
         while next < targets.len() && jobs.is_empty() {
-            jobs.extend(tune_submit(ctx, &targets[next], &body, true, &mut skipped)?);
+            jobs.extend(bulk_submit(ctx, path, &targets[next], body, true, &mut skipped)?);
             next += 1;
         }
         if let Some(j) = jobs.first() {
             if !ctx.json {
-                outln(format!("先给「{}」调优，等它做完再提交其余 {} 台", st(j, "/name"), targets.len() - next));
+                outln(format!("先给「{}」{what}，等它做完再提交其余 {} 台", st(j, "/name"), targets.len() - next));
             }
             let code = cmds::follow_job(ctx, &st(j, "/job_id"))?;
             followed = 1;
             if code != 0 {
                 let d = json!({"jobs": jobs, "skipped": skipped, "stopped": true});
-                ctx.emit(&d, || format!("「{}」调优没有成功，其余 {} 台没有提交", st(&jobs[0], "/name"), targets.len() - next));
+                ctx.emit(&d, || format!("「{}」{what}没有成功，其余 {} 台没有提交", st(&jobs[0], "/name"), targets.len() - next));
                 return Ok(code);
             }
         }
     }
     for t in &targets[next..] {
-        jobs.extend(tune_submit(ctx, t, &body, many, &mut skipped)?);
+        jobs.extend(bulk_submit(ctx, path, t, body, many, &mut skipped)?);
     }
     let d = json!({"jobs": jobs, "skipped": skipped});
     ctx.emit(&d, || {
-        let mut s = format!("已提交 {} 个{}作业", jobs.len(), if rollback { "撤销调优" } else { "调优" });
+        let mut s = format!("已提交 {} 个{what}作业", jobs.len());
         for j in &jobs {
             s.push_str(&format!("\n  {}  {}", st(j, "/job_id"), st(j, "/name")));
         }
@@ -617,6 +613,36 @@ pub fn tune(ctx: &Ctx, machine: Option<&str>, team: Option<&str>, all: bool, rol
         s
     });
     if follow { cmds::follow_jobs(ctx, &jobs[followed..]) } else { Ok(0) }
+}
+
+/// `fleetctl tune <机器>[,<机器>…] | --team <团队> | --all`：重做系统调优（作业 tune，不重启 ssserver / Xray）。
+/// --team / --all 只取在用的线路机和 VPS 节点（同机 IP 节点随宿主机，家宽代理没有机器），线路机在前：先做一台并跟到结束，
+/// 它失败就停（其余不提交），成功后其余逐台提交；409 的机器（有进行中的作业）跳过并列出。--all 要确认（--yes）。
+/// `rollback`：撤销列出的机器的调优（同一个作业类型，参数 rollback），要确认（--yes）
+pub fn tune(ctx: &Ctx, machine: Option<&str>, team: Option<&str>, all: bool, rollback: bool, yes: bool, follow: bool) -> anyhow::Result<u8> {
+    if all {
+        confirm("确认给所有在用的线路机和 VPS 节点重做系统调优？先做一台并等它做完，成功后其余逐台提交；不重启 ssserver / Xray、不断客户连接", yes)?;
+    }
+    let targets = bulk_targets(ctx, machine, team, all, true, "调优")?;
+    if rollback {
+        let names: Vec<&str> = targets.iter().map(|t| t.1.as_str()).collect();
+        confirm(
+            &format!("确认撤销 {} 的系统调优？按机器上第一次调优前记下的原值写回内核参数、删掉调优写的 sysctl 配置；不重启 ssserver / Xray", names.join("、")),
+            yes,
+        )?;
+    }
+    bulk_jobs(ctx, "tune", if rollback { "撤销调优" } else { "调优" }, &targets, &json!({"rollback": rollback}), all || team.is_some(), follow)
+}
+
+/// `fleetctl ss-refresh <机器>[,<机器>…] | --team <团队> | --all`：重新下发节点的 SS 配置（作业 ss_refresh）——升级中控后，把新的
+/// ssserver 配置（例如出站目标黑名单）推到存量节点；配置有变化才重启 ssserver（该节点连接断开几秒），最后经入口验收出口。
+/// --team / --all 只取在用的 VPS 节点（同机 IP 节点随宿主机一起刷，线路机和家宽代理不适用），做法同 tune：先做一台并跟到结束，成功后其余逐台提交。--all 要确认（--yes）
+pub fn ss_refresh(ctx: &Ctx, machine: Option<&str>, team: Option<&str>, all: bool, yes: bool, follow: bool) -> anyhow::Result<u8> {
+    if all {
+        confirm("确认给所有在用的 VPS 节点重新下发 SS 配置？先做一台并等它做完，成功后其余逐台提交；配置有变化的节点会重启 ssserver，该节点的连接会断开几秒", yes)?;
+    }
+    let targets = bulk_targets(ctx, machine, team, all, false, "下发")?;
+    bulk_jobs(ctx, "ss-refresh", "重新下发 SS 配置", &targets, &json!({}), all || team.is_some(), follow)
 }
 
 // ── 入口 ─────────────────────────────────────────────────────────────
