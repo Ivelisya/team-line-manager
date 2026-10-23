@@ -70,7 +70,7 @@ export function DeployTimeline({ r, max }: { r: RouterView; max?: number }) {
     items[items.length - 1].extra = <>
       {d.error && <span className="rt-tl-err">{d.error}</span>}
       <span className="row rt-tl-acts">
-        <Button size="sm" loading={boot.pending} onClick={() => void boot.run(r)} data-tip="中控连不上路由（路由在 NAT 后面）时用：生成一条命令，在路由的 SSH 里粘贴执行"><Terminal size={13} />改用在路由上执行命令</Button>
+        <Button size="sm" loading={boot.pending} onClick={() => void boot.run(r)} data-tip="中控连不上路由时用。生成一条命令，到路由的 SSH 里执行"><Terminal size={13} />改用在路由上执行命令</Button>
         <Button size="sm" variant="text" onClick={() => showDeploy({ id: r.id, name: r.name })}><RefreshCw size={13} />重新部署</Button>
       </span>
     </>;
@@ -101,8 +101,8 @@ function Hold({ r }: { r: RouterView }) {
   if (r.state === 'pending') {
     return (
       <div className="nc-res rt-span"><div className="nc-hold rt-hold">
-        <span className="rt-hold-main"><Clock />等路由执行接入命令<InfoTip text="在路由的 SSH 里执行接入命令后，约 30 秒内变为在线" /></span>
-        <Button size="sm" loading={boot.pending} onClick={() => void boot.run(r)} data-tip="原来的命令只显示一次：这里会重新生成一条，旧的作废"><Terminal size={13} />查看接入命令</Button>
+        <span className="rt-hold-main"><Clock />等路由执行接入命令<InfoTip text="在路由上执行接入命令，约半分钟后上线" /></span>
+        <Button size="sm" loading={boot.pending} onClick={() => void boot.run(r)} data-tip="命令只显示一次。这里会生成新的，旧的作废"><Terminal size={13} />查看接入命令</Button>
       </div></div>
     );
   }
@@ -151,12 +151,12 @@ function RouterCardImpl({ r, current, onOpen: open }: { r: RouterView; current?:
 
       {/* 地址行：WAN 口地址 + WAN / OpenClash 状态标；还没采集过的写隧道端口 */}
       <div className="nc-addr">
-        <span className="ellipsis" data-tip={s ? 'WAN 口地址（路由在客户现场内网里的地址）' : '中控上分给这台路由的反向隧道端口'}>{s ? `WAN ${s.wan.ip ?? '—'}` : `隧道端口 ${r.tunnel_port}`}</span>
+        <span className="ellipsis" data-tip={s ? '路由在客户现场的内网地址' : '中控分给这台路由的隧道端口'}>{s ? `WAN ${s.wan.ip ?? '—'}` : `隧道端口 ${r.tunnel_port}`}</span>
         {s && <span className="nc-marks">
-          {s.wan.up ? <Tag c="green" tip="WAN 口已连接">WAN 正常</Tag> : <Tag c="orange" tip="WAN 口断开：客户现场断网">WAN 断开</Tag>}
+          {s.wan.up ? <Tag c="green" tip="WAN 口已连接">WAN 正常</Tag> : <Tag c="orange" tip="WAN 口已断开，客户现场可能断网了">WAN 断开</Tag>}
           {!oc!.enabled ? <Tag c="gray" tip="OpenClash 没有启用">OpenClash 未启用</Tag>
             : oc!.running ? <Tag c="violet" tip={`OpenClash ${oc!.version ?? ''} · 模式 ${oc!.mode ?? '—'}`}>OpenClash</Tag>
-            : <Tag c="orange" tip="OpenClash 已启用，但核心进程没在运行：客户端此时上不了外网">OpenClash 未运行</Tag>}
+            : <Tag c="orange" tip="OpenClash 已启用但没在运行，客户端暂时上不了外网">OpenClash 未运行</Tag>}
         </span>}
       </div>
 
@@ -182,8 +182,8 @@ function RouterCardImpl({ r, current, onOpen: open }: { r: RouterView; current?:
               <b className={cn('num', ex!.alive < ex!.total && 'is-warn')}>{ex!.alive}/{ex!.total}</b>
             </span>
             {ex!.drift > 0
-              ? <span className="nc-quse rt-drift" data-tip="这些出口的 server:port 对上了面板入口，但 uuid / reality 参数和入口现在的不一致（入口轮换过凭据或换过线路机），可能已连不上">{ex!.drift} 个参数与入口不一致</span>
-              : <span className="nc-quse" data-tip="server:port 对上了面板入口的出口个数（其余是路由上自己加的，中控不管）">{ex!.managed} 个对应面板入口</span>}
+              ? <span className="nc-quse rt-drift" data-tip={"这些出口的地址和端口能对上入口，但凭据已经变了，可能连不上\n入口换过凭据或线路机时会这样"}>{ex!.drift} 个与入口不一致</span>
+              : <span className="nc-quse" data-tip="和面板入口对得上的出口数。其余是路由上自己加的，不归中控管">{ex!.managed} 个对应面板入口</span>}
           </span>
           <Cells pct={ex!.total ? (ex!.alive / ex!.total) * 100 : null} n={ex!.total || 18} color="var(--ok)" />
           <span className="sr-only">（查看出口页签）</span>
@@ -191,9 +191,9 @@ function RouterCardImpl({ r, current, onOpen: open }: { r: RouterView; current?:
       </section>
 
       <section className="slot-seg nc-run">
-        <div className="nc-run-item"><span className="nc-run-label"><Users />客户端</span><span className="nc-run-val" data-tip="在线的局域网设备（DHCP 租约、邻居表与经过 OpenClash 的来源 IP）"><Num f={{ v: String(s.clients), u: '台' }} /></span></div>
+        <div className="nc-run-item"><span className="nc-run-label"><Users />客户端</span><span className="nc-run-val" data-tip="当前在线的局域网设备"><Num f={{ v: String(s.clients), u: '台' }} /></span></div>
         <div className="nc-run-item"><span className="nc-run-label"><Cable />代理连接</span><span className="nc-run-val" data-tip="OpenClash 当前的连接数"><Num f={{ v: oc!.conns.toLocaleString(), u: '条' }} /></span></div>
-        <div className="nc-run-item"><span className="nc-run-label"><Thermometer />温度</span><span className="nc-run-val" data-tone={tt} data-tip="CPU / 主板传感器里最高的读数">{s.temp_c != null ? <Num f={{ v: s.temp_c.toFixed(0), u: '°C' }} /> : <span className="t-muted">—</span>}</span></div>
+        <div className="nc-run-item"><span className="nc-run-label"><Thermometer />温度</span><span className="nc-run-val" data-tone={tt} data-tip="CPU 和主板温度中较高的">{s.temp_c != null ? <Num f={{ v: s.temp_c.toFixed(0), u: '°C' }} /> : <span className="t-muted">—</span>}</span></div>
       </section>
 
       </>}
@@ -201,9 +201,9 @@ function RouterCardImpl({ r, current, onOpen: open }: { r: RouterView; current?:
       <div className="nc-tags">
         <div className="nc-tags-list">
           {r.team ? <Tag c={tagColor(r.team.name)} tip="团队">{r.team.name}</Tag> : <Tag c="gray">未分团队</Tag>}
-          {s && <Tag c="gray" tip="路由已连续运行（重启后从 0 算）">运行 {F.str(uptimeFmt(s.uptime_s))}</Tag>}
+          {s && <Tag c="gray" tip="自上次重启起的运行时长">运行 {F.str(uptimeFmt(s.uptime_s))}</Tag>}
         </div>
-        <span className={cn('nc-price rt-seen', r.state === 'offline' && 'is-bad')} data-tip={r.state === 'pending' ? undefined : '最近一次采集成功的时刻（每 30 秒一次）'}>
+        <span className={cn('nc-price rt-seen', r.state === 'offline' && 'is-bad')} data-tip={r.state === 'pending' ? undefined : '上次成功读取的时间'}>
           {r.state === 'pending' ? <>创建于 <Seen at={r.created_at} /></> : r.state === 'offline' ? <>最后在线 <Seen at={r.last_seen_at} /></> : <>更新于 <Seen at={r.last_seen_at} /></>}
         </span>
       </div>

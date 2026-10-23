@@ -362,23 +362,23 @@ fn tune_cn(t: &Value) -> String {
     }
 }
 
-/// 调优的推导参数（`tune.params`，tune-v2 起；步骤结果里同名字段）：「缓冲上限 43.1 MiB ← 带宽 1000 Mbps（套餐 2560，按 1000 算）、
-/// RTT 172 ms（入口连接 25 条的 P90）、内存 3911 MB」。没有（没调优过、旧档、已撤销）为 None
+/// 调优的推导参数（`tune.params`，tune-v2 起；步骤结果里同名字段）：「缓冲上限 43.1 MiB，由带宽 1000 Mbps（套餐 2560，按 1000 算）
+/// 和延迟 172 ms（来自 25 条入口连接的实测）算出，内存 3911 MB」。没有（没调优过、旧档、已撤销）为 None
 fn tune_params_cn(p: &Value) -> Option<String> {
     let buf = p["buf_max"].as_f64()?;
     let n = |k: &str| p[k].as_i64().map_or("?".to_string(), |v| v.to_string());
     let bw = match (p["bw_source"].as_str(), p["bw_plan"].as_i64()) {
         (Some("plan"), Some(plan)) if Some(plan) != p["bw"].as_i64() => format!("套餐 {plan}，按 {} 算", n("bw")),
         (Some("plan"), _) => "套餐".to_string(),
-        _ => "套餐没写带宽，按默认".to_string(),
+        _ => "套餐没填带宽，用默认值".to_string(),
     };
     let rtt = match p["rtt_source"].as_str() {
-        Some("sampled") => format!("入口连接 {} 条的 P90", n("rtt_samples")),
-        _ if p["rtt_samples"].as_i64().unwrap_or(0) > 0 => format!("样本 {} 条不够，按默认", n("rtt_samples")),
+        Some("sampled") => format!("来自 {} 条入口连接的实测", n("rtt_samples")),
+        _ if p["rtt_samples"].as_i64().unwrap_or(0) > 0 => format!("连接样本只有 {} 条，不够，用默认值", n("rtt_samples")),
         _ => "默认".to_string(),
     };
     Some(format!(
-        "缓冲上限 {:.1} MiB ← 带宽 {} Mbps（{bw}）、RTT {} ms（{rtt}）、内存 {} MB",
+        "缓冲上限 {:.1} MiB，由带宽 {} Mbps（{bw}）和延迟 {} ms（{rtt}）算出，内存 {} MB",
         buf / 1048576.0,
         n("bw"),
         n("rtt"),
@@ -508,7 +508,7 @@ pub fn show(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
         }
         rows.push(("本月流量", format!("{}{}", crate::billing::month_cn(&m), crate::billing::nic_cn(&m))));
         if !m["relay"].is_null() {
-            rows.push(("线路机", format!("{}  配置代数 {} · 已应用 {}  {}", st(&m, "/relay/public_host"), st(&m, "/relay/generation"), st(&m, "/relay/applied_generation"), m["relay"]["apply_error"].as_str().unwrap_or(""))));
+            rows.push(("线路机", format!("{}  配置版本 {} · 已生效 {}  {}", st(&m, "/relay/public_host"), st(&m, "/relay/generation"), st(&m, "/relay/applied_generation"), m["relay"]["apply_error"].as_str().unwrap_or(""))));
         }
         if !m["active_job"].is_null() {
             rows.push(("进行中作业", format!("{} · {}  {}", job_kind_cn(&st(&m, "/active_job/kind")), job_state_cn(&st(&m, "/active_job/state")), st(&m, "/active_job/id"))));
@@ -1120,10 +1120,10 @@ mod tests {
         let tune = json!({"profile": "tune-v2", "applied": ["a"], "ok": [], "kept": [], "skipped": [], "params": params});
         assert_eq!(
             step_brief(&tune).unwrap(),
-            "调优 tune-v2：已应用 1 项、本来就是 0 项、保持 0 项；缓冲上限 43.0 MiB ← 带宽 1000 Mbps（套餐 2560，按 1000 算）、RTT 172 ms（入口连接 25 条的 P90）、内存 3911 MB"
+            "调优 tune-v2：已应用 1 项、本来就是 0 项、保持 0 项；缓冲上限 43.0 MiB，由带宽 1000 Mbps（套餐 2560，按 1000 算）和延迟 172 ms（来自 25 条入口连接的实测）算出，内存 3911 MB"
         );
         let node = json!({"bw": 1000, "bw_plan": null, "bw_source": "default", "rtt": 100, "rtt_source": "default", "rtt_samples": 0, "mem_mb": 976, "buf_max": 27097152});
-        assert_eq!(tune_params_cn(&node).unwrap(), "缓冲上限 25.8 MiB ← 带宽 1000 Mbps（套餐没写带宽，按默认）、RTT 100 ms（默认）、内存 976 MB");
+        assert_eq!(tune_params_cn(&node).unwrap(), "缓冲上限 25.8 MiB，由带宽 1000 Mbps（套餐没填带宽，用默认值）和延迟 100 ms（默认）算出，内存 976 MB");
         assert!(tune_params_cn(&Value::Null).is_none());
         let rb = json!({"rollback": true, "applied": ["a", "b"], "ok": ["c"], "kept": [], "skipped": [], "before": {}});
         assert_eq!(step_brief(&rb).unwrap(), "撤销调优：写回原值 2 项、本来就是原值 1 项");

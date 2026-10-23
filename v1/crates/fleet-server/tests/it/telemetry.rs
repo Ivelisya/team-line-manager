@@ -1315,7 +1315,7 @@ async fn traffic_quota_alert_lifecycle() {
     let team = seed_team(&t, "团队1").await;
     let (node, _) = seed_node(&t, relay, team, 1, "203.0.113.5", 20000).await;
     xray_report(&t, 1, true).await;
-    // 上个月就上架了：本周期数据完整，摘要不带「X 起统计」
+    // 上个月就上架了：本周期数据完整，摘要不带「从 X 开始统计」
     sqlx::query("update machine set activated_at = now() - interval '40 days' where id = $1").bind(relay).execute(&t.st.db).await.unwrap();
     // 线路机额度 1 GB、每月 1 号重置（账单时区北京）；节点没有订阅也没有套餐：不限
     sqlx::query("insert into subscription (machine_id, price_cents, due_date, traffic_gb, traffic_reset_day) values ($1, 500, current_date + 60, 1, 1)")

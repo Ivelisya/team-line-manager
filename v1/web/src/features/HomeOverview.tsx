@@ -76,24 +76,24 @@ export const OverviewSection = React.memo(function OverviewSection({ o, loading 
       <div className="hero-grid">
         <div className="stat-grid">
           {/* 说明行用全站同一套状态名（降级 / 维护 / 故障 / 未知）；「正常」包括降级与维护（照常服务）这一点放在大数字的悬停说明里 */}
-          <Stat loading={loading} tone="ok" icon={<Server />} label="节点正常" to={NODES_LINK} value={<span data-tip="正常 = 总数 − 故障 − 未知：降级、维护照常服务，也算在正常里"><CountUp value={nodes && normal(nodes)} /></span>} unit={nodes ? `/ ${nodes.total}` : undefined}
+          <Stat loading={loading} tone="ok" icon={<Server />} label="节点正常" to={NODES_LINK} value={<span data-tip="降级和维护的机器照常服务，也算正常"><CountUp value={nodes && normal(nodes)} /></span>} unit={nodes ? `/ ${nodes.total}` : undefined}
             caption={nodes && <><DotCount tone="warn" n={nodes.degraded} label="降级" />{nodes.maintenance > 0 && <DotCount tone="neutral" n={nodes.maintenance} label="维护" />}<DotCount tone="bad" n={nodes.down} label="故障" to={DOWN_LINK} />{nodes.unknown > 0 && <DotCount tone="neutral" n={nodes.unknown} label="未知" />}</>} />
-          <Stat loading={loading} tone="teal" icon={<Waypoints />} label="线路机正常" to={RELAYS_LINK} value={<span data-tip="正常 = 总数 − 故障 − 未知：降级、维护照常服务，也算在正常里"><CountUp value={relays && normal(relays)} /></span>} unit={relays ? `/ ${relays.total}` : undefined}
+          <Stat loading={loading} tone="teal" icon={<Waypoints />} label="线路机正常" to={RELAYS_LINK} value={<span data-tip="降级和维护的机器照常服务，也算正常"><CountUp value={relays && normal(relays)} /></span>} unit={relays ? `/ ${relays.total}` : undefined}
             caption={relays && <><DotCount tone="warn" n={relays.degraded} label="降级" />{relays.maintenance > 0 && <DotCount tone="neutral" n={relays.maintenance} label="维护" />}<DotCount tone="bad" n={relays.down} label="故障" to={`${DOWN_LINK}&kind=relay`} />{relays.unknown > 0 && <DotCount tone="neutral" n={relays.unknown} label="未知" />}</>} />
           <Stat loading={loading} tone="bad" icon={<AlertTriangle />} label="故障" value={<CountUp value={o ? down : undefined} />} unit="台" to={DOWN_LINK} caption={o && <><DotCount tone="bad" n={o.nodes.down} label="节点" /><DotCount tone="bad" n={o.relays.down} label="线路机" />{o.failed > 0 && <DotCount tone="bad" n={o.failed} label="上架失败" />}</>} />
           <Stat loading={loading} tone="amber" icon={<CalendarClock />} label="即将到期" value={<CountUp value={o?.due_soon} />} unit="台" to="/nodes?due=soon&sort=due" caption={o && nd !== undefined && <>{nd ? <span className="stat-who">最近<span className="ellipsis" data-tip={nd.name}>{nd.name}</span>{nd.days <= 1 ? <b>{nd.days === 0 ? '今天' : '明天'}</b> : <><b className="num">{nd.days}</b>天后</>}</span> : <span>近期没有到期</span>}{o.overdue > 0 && <DotCount tone="bad" n={o.overdue} label="已过期" />}</>} />
           {usd ? (
-            <Stat loading={loading} tone="gold" icon={<CircleDollarSign />} label="每月费用" to={COST_LINK} info={`在用机器按月折算，统一折成美元（汇率见设置 → 汇率）。${usdTotalTip(usd)}`}
+            <Stat loading={loading} tone="gold" icon={<CircleDollarSign />} label="每月费用" to={COST_LINK} info={`在用机器的月费，统一折成美元。汇率在「设置 → 汇率」\n${usdTotalTip(usd)}`}
               value={usdEmpty ? '—' : <span data-tip={usdTotalTip(usd)}>{F.money(usd.cents, 'USD')}</span>}
-              caption={usd.unconverted.length ? <span style={{ color: 'var(--warn-text)' }} data-tip="没有这些币种的汇率，没算进合计">未折算 {usd.unconverted.map((c) => F.money(c.cents, c.currency)).join(' + ')}</span>
+              caption={usd.unconverted.length ? <span style={{ color: 'var(--warn-text)' }} data-tip="没有这些币种的汇率，未计入合计">未折算 {usd.unconverted.map((c) => F.money(c.cents, c.currency)).join(' + ')}</span>
                 : foreign.length ? <span data-tip={usdTotalTip(usd)}>含 {foreign.map((p) => `${F.money(p.cents, p.currency)} ≈ ${F.money(p.usd_cents, 'USD')}`).join(' · ')}</span>
                 : <span>在用 <b className="num">{o!.nodes.total + o!.relays.total}</b> 台 · 按月折算</span>} />
           ) : (
-            <Stat loading={loading} tone="gold" icon={<CircleDollarSign />} label="每月费用" to={COST_LINK} value={cost0 ? <span data-tip="在用机器按月折算，不同币种分开计">{F.money(cost0.cents, cost0.currency)}</span> : '—'}
+            <Stat loading={loading} tone="gold" icon={<CircleDollarSign />} label="每月费用" to={COST_LINK} value={cost0 ? <span data-tip="在用机器的月费，不同币种分开算">{F.money(cost0.cents, cost0.currency)}</span> : '—'}
               caption={o && (costMore.length ? `另有 ${costMore.map((c) => F.money(c.cents, c.currency)).join(' + ')}` : <span>在用 <b className="num">{o.nodes.total + o.relays.total}</b> 台 · 按月折算</span>)} />
           )}
           {/* 每条推送都在涨，不滚数（滚到的位数也显示不出来，白白逐帧重画）：同网卡速率，直接到位 */}
-          <Stat loading={loading} tone="sky" icon={<TrendingUp />} label="本月业务流量" info="所有入口的客户下载 + 上传，不含协议开销。和单台机器的「本周期已用」不是一回事：那是供应商按网卡、从账单日起算的，可能含接入前读数；线路机网卡因协议开销会略多。" to={TRAFFIC_LINK} value={tr ? F.inScale(trTotal, trScale) : '—'} unit={tr ? trScale.u : undefined}
+          <Stat loading={loading} tone="sky" icon={<TrendingUp />} label="本月业务流量" info={"客户经所有入口的下载加上传。\n单台机器的「本周期已用」按网卡、从账单日算起，数字通常更大。"} to={TRAFFIC_LINK} value={tr ? F.inScale(trTotal, trScale) : '—'} unit={tr ? trScale.u : undefined}
             caption={tr && <><span>下载 <Num f={F.bytes(tr.down)} /></span><span>上传 <Num f={F.bytes(tr.up)} /></span><FromTag from={tr.counted_from} /></>} />
           {/* 有吃紧的：点卡片打开最紧那台的流量页签 */}
           <Stat loading={loading} tone="violet" icon={<Database />} label="流量额度吃紧" value={<CountUp value={qt?.n} />} unit={qt ? '台' : undefined} onClick={top ? () => openDrawer(top.id, 'traffic') : undefined}
@@ -107,7 +107,7 @@ export const OverviewSection = React.memo(function OverviewSection({ o, loading 
 });
 
 const ONLINE_N = 24;
-const OFFLINE_TIP = 'agent 不再上报的机器，健康一定是故障；点进去是故障筛选，里面还有入口不通等其它原因的故障';
+const OFFLINE_TIP = 'agent 不再上报的机器，一定算故障。点开会看到全部故障，包括入口不通等其他原因';
 /** 软路由一行（集群状态底部，点进软路由页）：在线台数、出口可用、客户端。离线的读数是旧的，不算；一台软路由都没有就不出现 */
 function RoutersLink() {
   const list = useRouters().data;
@@ -138,7 +138,7 @@ function ClusterPanel({ o }: { o: Overview | undefined }) {
     return Array.from({ length: ONLINE_N }, (_, i) => (!total ? 'var(--neutral)' : i >= ONLINE_N - bad ? 'var(--bad)' : 'var(--ok)'));
   }, [offline, total]);
   // 格条的悬停：在线、离线台数，离线的最多列 5 台、一台一行（名字里的「-」处不会被折成两行）；放在格条下方，不盖住上面的在线率
-  const barTip = o ? `在线 ${online} · 离线 ${offline}${offline && offNames?.length ? `\n离线的机器：\n${offNames.slice(0, 5).join('\n')}${offNames.length > 5 ? `\n等 ${offNames.length} 台` : ''}` : ''}` : undefined;
+  const barTip = o ? `在线 ${online} · 离线 ${offline}${offline && offNames?.length ? `\n离线的机器：\n${offNames.slice(0, 5).join('\n')}${offNames.length > 5 ? `\n另有 ${offNames.length - 5} 台` : ''}` : ''}` : undefined;
   // 有离线时格条与「agent 离线」可点：去机器页的故障筛选（见 DOWN_LINK）
   const bar = <Cells pct={o ? 100 : null} n={ONLINE_N} colors={colors} className="cells-lg" />;
   const kv = <><small>agent 离线</small><b className="num" data-bad={offline ? '' : undefined}>{o ? `${offline} 台` : '—'}</b></>;
@@ -152,11 +152,11 @@ function ClusterPanel({ o }: { o: Overview | undefined }) {
       </header>
       <div className="cluster-box">
         <div className="cluster-row">
-          <span className="cluster-big"><span className="num">{o ? <><CountUp value={rate} format={(n) => n.toFixed(rate % 1 ? 1 : 0)} />%</> : '—'}</span><small data-tip="只数有自己 agent 的机器：家宽代理没有 agent，不计；同机 IP 节点算在宿主机里">在线率</small></span>
+          <span className="cluster-big"><span className="num">{o ? <><CountUp value={rate} format={(n) => n.toFixed(rate % 1 ? 1 : 0)} />%</> : '—'}</span><small data-tip="只统计装了 agent 的机器，家宽代理不算；同机 IP 节点并入宿主机">在线率</small></span>
           {offline ? <Link className="cluster-kv" to={DOWN_LINK} data-tip={OFFLINE_TIP}>{kv}</Link> : <span className="cluster-kv" data-tip={OFFLINE_TIP}>{kv}</span>}
         </div>
         {offline ? <Link to={DOWN_LINK} className="block" data-tip={barTip} data-tip-side="bottom" aria-label={`agent 离线 ${offline} 台`}>{bar}</Link> : <div data-tip={barTip} data-tip-side="bottom">{bar}</div>}
-        <div className="cluster-foot"><span>在线 <b className="num">{o ? online : '—'}</b>{o && ' 台'}{degraded > 0 && <> · 降级 <b className="num">{degraded}</b></>}</span><span data-tip="只数有自己 agent 的机器，不含家宽代理（没有 agent）">总计 <b className="num">{o ? total : '—'}</b>{o && ' 台'}</span></div>
+        <div className="cluster-foot"><span>在线 <b className="num">{o ? online : '—'}</b>{o && ' 台'}{degraded > 0 && <> · 降级 <b className="num">{degraded}</b></>}</span><span data-tip="只统计装了 agent 的机器，家宽代理不算">总计 <b className="num">{o ? total : '—'}</b>{o && ' 台'}</span></div>
       </div>
       <div className="cluster-box">
         <div className="cluster-row">

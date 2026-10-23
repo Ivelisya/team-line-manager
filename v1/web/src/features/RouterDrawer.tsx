@@ -75,7 +75,7 @@ export function RouterDrawer() {
 /** 出口、客户端只在采集成功过之后才有 */
 function Needs({ r, detail, children }: { r: RouterView; detail: RouterDetail | null | undefined; children: (d: RouterDetail) => React.ReactNode }) {
   if (detail === undefined) return <Skeleton h={180} className="is-float" />;
-  if (!detail) return <div className="hint">{r.state === 'pending' ? '接入后才有数据' : '还没采集成功过'}</div>;
+  if (!detail) return <div className="hint">{r.state === 'pending' ? '接入后才有数据' : '还没有数据'}</div>;
   return <>{children(detail)}</>;
 }
 
@@ -112,10 +112,10 @@ function Head({ r, detail, onClosed }: { r: RouterView; detail: RouterDetail | n
       </div>
       <EditDialog open={edit} onOpenChange={setEdit} r={r} />
       <ConfirmDialog open={askRegen} onOpenChange={setAskRegen} title={`重新生成「${r.name}」的接入命令？`} confirmLabel="重新生成" danger
-        description={<>隧道会立即断开<InfoTip text="会换一把隧道密钥：路由上现在的 fleet-tunnel 立刻连不上中控，直到在路由上执行新命令。不影响 OpenClash 和客户端上网，只是这段时间看不到它的状态" /></>}
+        description={<>隧道会立即断开<InfoTip text={"旧命令会立即失效，路由在执行新命令前连不上中控\n不影响客户端上网，只是这段时间看不到路由状态"} /></>}
         onConfirm={() => boot.run(r)} />
       <TypedConfirmDialog open={askDel} onOpenChange={setAskDel} title={`删除软路由「${r.name}」？`} confirmLabel="删除" danger expected={r.name} prompt="请输入名称"
-        description={<>只删采集历史<InfoTip text="撤销它的隧道公钥、删掉采集的历史；OpenClash、原来的 router-tunnel 照常。删除后会给出在路由上停掉 fleet-tunnel 的命令" /></>}
+        description={<>只删面板里的记录<InfoTip text={"撤销隧道授权并删除历史数据，路由本身不受影响\n删除后会给出一条在路由上执行的清理命令"} /></>}
         onConfirm={async () => {
           await del.mutateAsync(r.id); onClosed();
           // 从没连上过、也没一键部署过的：路由上没装 fleet-tunnel，不用给清理命令
@@ -162,7 +162,7 @@ function OverviewTab({ r, detail }: { r: RouterView; detail: RouterDetail | null
   const oc = detail?.openclash;
   return (
     <div className="rt-groups">
-      {r.state === 'offline' && <Note tone="bad">连不上路由（最后在线 <Seen at={r.last_seen_at} />）{r.error && <>：<span className="mono">{r.error}</span></>}<InfoTip text="隧道断了时 OpenClash 与客户端上网照常，只是这里看不到它的状态" /></Note>}
+      {r.state === 'offline' && <Note tone="bad">连不上路由（最后在线 <Seen at={r.last_seen_at} />）{r.error && <>：<span className="mono">{r.error}</span></>}<InfoTip text="隧道断开不影响客户端上网，只是这里看不到状态" /></Note>}
       {showDeployTl && <Group title="一键部署"><li className="rt-row rt-row-tl"><DeployTimeline r={r} /></li></Group>}
       {/* 总览：大号的出口可用数 + 一句话，不带框 */}
       {s && (
@@ -170,7 +170,7 @@ function OverviewTab({ r, detail }: { r: RouterView; detail: RouterDetail | null
           <div className="rt-hero-main"><b className="rt-hero-num num">{s.exits.alive}<small>/{s.exits.total}</small></b><span className="rt-hero-unit">个出口可用</span></div>
           <p className="rt-hero-sum">
             {s.clients} 台客户端在线 · OpenClash {s.openclash.conns.toLocaleString()} 条连接 · WAN ↓ {F.str(F.rate(s.wan.rx_bps))} ↑ {F.str(F.rate(s.wan.tx_bps))} · 已运行 {F.str(uptimeFmt(s.uptime_s))}
-            {s.exits.drift > 0 && <> · <span className="rt-warn">{s.exits.drift} 个出口参数与面板入口不一致</span></>}
+            {s.exits.drift > 0 && <> · <span className="rt-warn">{s.exits.drift} 个出口与面板入口不一致</span></>}
           </p>
           {issues.length > 0 && (
             <ul className="reason-list">
@@ -186,27 +186,27 @@ function OverviewTab({ r, detail }: { r: RouterView; detail: RouterDetail | null
       {s && <RouterMeters s={s} />}
       <Group title="基本信息">
         <Row label="团队">{r.team?.name ?? <span className="t-muted">不分团队</span>}</Row>
-        <Row label="隧道端口" tip="中控上分给这台的反向隧道端口（路由连上中控后，中控经它登录路由采集）"><span className="num">{r.tunnel_port}</span></Row>
+        <Row label="隧道端口" tip="中控分给这台路由的隧道端口，中控通过它连到路由"><span className="num">{r.tunnel_port}</span></Row>
         <Row label="创建时间">{F.dtFull(r.created_at)}</Row>
-        <Row label={r.state === 'offline' ? '最后在线' : '最近采集'} tip="每 30 秒采集一次">{r.last_seen_at ? <>{F.dt(r.last_seen_at)} <span className="t-sub">· <Seen at={r.last_seen_at} /></span></> : '还没有'}</Row>
+        <Row label={r.state === 'offline' ? '最后在线' : '最近更新'} tip="自动更新">{r.last_seen_at ? <>{F.dt(r.last_seen_at)} <span className="t-sub">· <Seen at={r.last_seen_at} /></span></> : '还没有'}</Row>
         {r.note && <Row label="备注"><span className="rt-row-wrap">{r.note}</span></Row>}
       </Group>
       {sys && (
-        <Group title="系统" foot={sys.clock_skew_s != null && Math.abs(sys.clock_skew_s) > 5 ? <span className="rt-warn">时钟差 {Math.round(sys.clock_skew_s)} 秒，出口可能连不上<InfoTip text="路由的时钟和中控差太多：TLS 与 reality 出口对时间敏感，会连不上" /></span> : undefined}>
+        <Group title="系统" foot={sys.clock_skew_s != null && Math.abs(sys.clock_skew_s) > 5 ? <span className="rt-warn">时钟差 {Math.round(sys.clock_skew_s)} 秒，出口可能连不上<InfoTip text="路由的时间和中控差得太多，加密连接会失败" /></span> : undefined}>
           <Row label="系统">{sys.os}</Row>
           <Row label="内核"><span className="mono">{sys.kernel}</span></Row>
           <Row label="CPU">{sys.cpu_model} · {sys.cores} 核</Row>
-          <Row label="负载" tip="1 / 5 / 15 分钟平均负载；百分比 = 1 分钟负载 ÷ 核数（同机器卡片），超过 100% 表示排队">
+          <Row label="负载" tip="1、5、15 分钟平均负载。百分比是 1 分钟负载除以核数，超过 100% 说明在排队">
             <Num f={F.pct((sys.load[0] / sys.cores) * 100)} /> <span className="t-sub">· {sys.load.map((x) => x.toFixed(2)).join(' / ')}</span>
           </Row>
           <Row label="进程">{sys.procs} 个</Row>
           <Row label="运行时长"><Num f={uptimeFmt(s?.uptime_s)} /></Row>
           <Row label="温度"><span className="rt-temp" data-tone={tempTone(s?.temp_c)}>{s?.temp_c != null ? `${s.temp_c.toFixed(0)} °C` : '没有传感器'}</span></Row>
-          <Row label="时钟偏差" tip="路由的系统时间减中控的时间">{sys.clock_skew_s != null ? `${sys.clock_skew_s > 0 ? '+' : ''}${sys.clock_skew_s.toFixed(1)} 秒` : '—'}</Row>
+          <Row label="时钟偏差" tip="路由时间减去中控时间，正数表示路由偏快">{sys.clock_skew_s != null ? `${sys.clock_skew_s > 0 ? '+' : ''}${sys.clock_skew_s.toFixed(1)} 秒` : '—'}</Row>
         </Group>
       )}
       {detail && (
-        <Group title="网络接口" info="速率是两次采集（30 秒）之间的平均；累计从路由开机算">
+        <Group title="网络接口" info="速率是最近一小段时间的平均，累计从开机起算">
           {detail.interfaces.map((i) => (
             <li key={i.name} className="rt-row rt-iface">
               <span className="rt-row-label"><b>{i.name}</b><span className="t-sub"> · {i.device} · {i.proto}</span>{!i.up && <span className="rt-alive" data-tone="bad"><XCircle />断开</span>}</span>
@@ -220,12 +220,12 @@ function OverviewTab({ r, detail }: { r: RouterView; detail: RouterDetail | null
       )}
       {oc && s && (
         <Group title="OpenClash">
-          <Row label="状态">{!oc.enabled ? <Pill>未启用</Pill> : oc.running ? <Pill tone="ok">运行中</Pill> : <Pill tone="bad" tip="已启用但核心进程（clash）没在运行：客户端此时上不了外网"><CircleX size={12} />核心没在运行</Pill>}</Row>
+          <Row label="状态">{!oc.enabled ? <Pill>未启用</Pill> : oc.running ? <Pill tone="ok">运行中</Pill> : <Pill tone="bad" tip="已启用但没在运行，客户端暂时上不了外网"><CircleX size={12} />没在运行</Pill>}</Row>
           <Row label="核心版本"><span className="mono">{oc.version ?? '—'}</span></Row>
           <Row label="模式">{oc.mode}</Row>
           <Row label="配置文件"><Trunc className="mono">{oc.config_path ?? '—'}</Trunc></Row>
           <Row label="配置修改于">{F.dtFull(oc.config_mtime)}</Row>
-          <Row label="核心内存" tip="clash 进程的常驻内存（VmRSS）"><Num f={F.mem(sys?.clash_rss)} /></Row>
+          <Row label="核心内存" tip="OpenClash 核心占用的内存"><Num f={F.mem(sys?.clash_rss)} /></Row>
           <Row label="代理速率" tip="经 OpenClash 的流量；↓ 是到客户端的方向">↓ <Num f={F.rate(s.openclash.down_bps)} /> ↑ <Num f={F.rate(s.openclash.up_bps)} /></Row>
           <Row label="连接">{s.openclash.conns.toLocaleString()} 条</Row>
         </Group>
@@ -237,12 +237,12 @@ function OverviewTab({ r, detail }: { r: RouterView; detail: RouterDetail | null
 
 // ---- 出口 ----
 const SYNC: Record<RouterExit['sync'], { tone: 'ok' | 'warn' | 'neutral'; label: string; tip: string }> = {
-  ok: { tone: 'ok', label: '一致', tip: '参数（uuid、reality 公钥等）与面板入口现在的一致' },
-  drift: { tone: 'warn', label: '不一致', tip: 'server:port 对上了面板入口，但 uuid / reality 参数和入口现在的不一致：入口轮换过凭据或换过线路机，路由上的这个出口可能已连不上' },
-  unmanaged: { tone: 'neutral', label: '不受管', tip: '没对上任何面板入口（server:port 不是线路机的入口端口）：是路由上自己加的，中控不管它' },
+  ok: { tone: 'ok', label: '一致', tip: '凭据和面板入口一致' },
+  drift: { tone: 'warn', label: '不一致', tip: '地址和端口对得上入口，但凭据变了。入口换过凭据或线路机，这个出口可能连不上' },
+  unmanaged: { tone: 'neutral', label: '不受管', tip: '没对上任何面板入口，是路由上自己加的，中控不管' },
 };
 /** 不一致的说明：对上的入口已停用时直接写这个（凭据没变，是线路机上没有这个入站了） */
-const syncTip = (e: RouterExit) => (e.sync === 'drift' && e.entry?.lifecycle === 'disabled' ? '对应入口已停用：线路机上没有这个入站了，路由上的这个出口连不上' : SYNC[e.sync].tip);
+const syncTip = (e: RouterExit) => (e.sync === 'drift' && e.entry?.lifecycle === 'disabled' ? '对应的入口已停用，这个出口连不上' : SYNC[e.sync].tip);
 /** 只测不通 1 次的不算不可用（同告警，连续两次才算）：标黄 */
 const exitTone = (e: RouterExit) => (!exitUsable(e) ? 'bad' : e.alive === false || e.sync === 'drift' ? 'warn' : e.sync === 'unmanaged' ? 'neutral' : 'ok');
 const exitTip = (e: RouterExit) => [`${e.name}（${e.type}）→ ${e.server}:${e.port}`, e.alive === false ? `连续 ${e.fail_streak} 次延迟测试不通` : e.delay_ms != null ? `延迟 ${e.delay_ms} ms` : '还没测过延迟', e.sync !== 'ok' && syncTip(e)].filter(Boolean).join('\n');
@@ -258,7 +258,7 @@ function ExitsTab({ id, d }: { id: string; d: RouterDetail }) {
   const drift = d.exits.filter((e) => e.sync === 'drift').length;
   return (
     <>
-      <p className="rt-lead">{d.exits.length} 个出口 · <b>{alive}</b> 个可用 · {managed} 个对应面板入口{drift > 0 && <> · <span className="rt-warn">{drift} 个参数不一致</span></>}<InfoTip text="延迟每 5 分钟测一次（经出口访问 generate_204，每批 6 个出口；没通的当场单独再测一次，再不通才算这一轮不通）；连续两轮测不通才算不可用" /></p>
+      <p className="rt-lead">{d.exits.length} 个出口 · <b>{alive}</b> 个可用 · {managed} 个对应面板入口{drift > 0 && <> · <span className="rt-warn">{drift} 个不一致</span></>}<InfoTip text="定期测一次延迟。连续两轮不通才算不可用，只不通一次不告警" /></p>
       <Section>
         <SectionHeader title="出口 → 节点" />
         <Topology exits={d.exits} onOpen={openMachine} />
@@ -355,7 +355,7 @@ function ClientsTab({ d }: { d: RouterDetail }) {
   const offline = online < list.length;
   return (
     <>
-      <p className="rt-lead"><b>{online}</b> 台在线 · 共 {list.length} 台<InfoTip text="来自 DHCP 租约、邻居表与经过 OpenClash 的来源 IP（旁路由没有租约，只认得 IP）" /></p>
+      <p className="rt-lead"><b>{online}</b> 台在线 · 共 {list.length} 台<InfoTip text="包括 DHCP 分配的设备，以及经过 OpenClash 的设备（旁路由下的设备只能认出 IP）" /></p>
       <div className="table-wrap">
         <table className="dt" style={{ minWidth: offline ? 700 : 630 }}>
           <colgroup><col style={{ width: 230 }} />{offline && <col style={{ width: 70 }} />}<col style={{ width: 70 }} /><col style={{ width: 104 }} /><col /></colgroup>

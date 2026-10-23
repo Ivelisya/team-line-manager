@@ -52,8 +52,8 @@ export function SettingsPage() {
 const SCOPES: { value: string; label: string; desc: string; sensitive?: boolean }[] = [
   { value: 'read', label: '读取', desc: '所有查询（不含凭据）' },
   { value: 'write', label: '写入', desc: '上架、改名、续费等改动' },
-  { value: 'secrets', label: '凭据', desc: '读取分享链接等凭据，记入操作记录', sensitive: true },
-  { value: 'exec', label: '远程执行', desc: '在机器上执行命令，记入操作记录', sensitive: true },
+  { value: 'secrets', label: '凭据', desc: '读取分享链接等凭据，会记入操作记录', sensitive: true },
+  { value: 'exec', label: '远程执行', desc: '在机器上执行命令，会记入操作记录', sensitive: true },
 ];
 const NEVER = '永不过期';
 const SCOPE_LABEL = Object.fromEntries(SCOPES.map((s) => [s.value, s.label]));
@@ -94,7 +94,7 @@ function ApiKeysSection() {
   };
   return (
     <>
-      <Panel title="API 密钥" count={list.length} sub={<InfoTip text="给脚本和运维命令行调用中控用（Authorization: Bearer）；只有登录会话能管理密钥" />} flush
+      <Panel title="API 密钥" count={list.length} sub={<InfoTip text="给脚本和命令行调用中控用。只有登录后才能管理密钥" />} flush
         tools={<Button variant="primary" onClick={openNew}><Plus />新建密钥</Button>}>
         {q.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div>}
         {q.isLoading ? <SkeletonRows rows={3} head /> : list.length === 0 && !q.isError ? (
@@ -140,7 +140,7 @@ function ApiKeysSection() {
           </div>
           {scopes.length === 0 && <div className="hint is-error">至少选择一项权限</div>}
         </div>
-        {(scopes.includes('exec') || scopes.includes('secrets')) && <Note tone="warn" icon={<ShieldAlert size={14} />}>高权限密钥，请设有效期 <InfoTip text={`这个密钥可以${[scopes.includes('exec') && '在机器上执行命令', scopes.includes('secrets') && '读取分享链接等凭据'].filter(Boolean).join('、')}。泄露后风险很高：只放在可信的环境里。`} /></Note>}
+        {(scopes.includes('exec') || scopes.includes('secrets')) && <Note tone="warn" icon={<ShieldAlert size={14} />}>高权限密钥，请设有效期 <InfoTip text={`这个密钥可以${[scopes.includes('exec') && '在机器上执行命令', scopes.includes('secrets') && '读取分享链接等凭据'].filter(Boolean).join('、')}，泄露的风险很高，请只放在可信的环境里`} /></Note>}
         <input type="text" autoComplete="username" value={me.data?.username ?? ''} readOnly hidden />
         <div className="form-grid">
           <Field label="当前密码"><Input type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="current-password" /></Field>
@@ -152,7 +152,7 @@ function ApiKeysSection() {
       <Dialog open={token != null} onOpenChange={(o) => !o && setToken(null)}>
         <DialogContent size="md" onInteractOutside={(e) => e.preventDefault()} onEscapeKeyDown={(e) => e.preventDefault()} onOpenAutoFocus={(e) => { e.preventDefault(); copyRef.current?.focus(); }}>
           <DialogHeader><DialogTitle>密钥已创建</DialogTitle><DialogDescription className="sr-only">复制并保存这个密钥</DialogDescription></DialogHeader>
-          <Note tone="warn" icon={<ShieldAlert size={14} />}><b>只显示这一次</b> <InfoTip text="关掉后再也看不到；丢了只能撤销后重建一个。" /></Note>
+          <Note tone="warn" icon={<ShieldAlert size={14} />}><b>只显示这一次</b> <InfoTip text="关掉后就看不到了。丢了只能撤销，再新建一个" /></Note>
           <div className="token-box"><code>{tokenHeld}</code><CopyButton text={tokenHeld ?? ''} label="密钥" size={15} /></div>
           <DialogFooter>
             <Button ref={copyRef} onClick={() => void copyText(token ?? '', '密钥')}>复制密钥</Button>
@@ -162,7 +162,7 @@ function ApiKeysSection() {
       </Dialog>
 
       <ConfirmDialog open={!!ask} onOpenChange={(o) => !o && setAsk(null)} title={`撤销密钥「${askHeld?.name ?? ''}」？`} confirmLabel="撤销" danger
-        description={<>用它的脚本会立即失效，无法恢复 <InfoTip text="脚本会收到 401；需要的话只能新建一个。" /></>}
+        description={<>用它的脚本会立即失效，无法恢复 <InfoTip text="脚本会收到 401 错误。需要的话，只能新建一个" /></>}
         onConfirm={async () => { await revoke.mutateAsync(ask!.id); toast.ok('密钥已撤销'); }} />
     </>
   );
@@ -203,7 +203,7 @@ function NotifySection() {
   };
   return (
     <>
-      <Panel title="告警通知渠道" count={list.length} sub={<InfoTip text="告警触发时按「最低级别」推送到这些渠道" />} flush
+      <Panel title="告警通知渠道" count={list.length} sub={<InfoTip text="告警达到「最低级别」时，会推送到这些渠道" />} flush
         tools={<Button variant="primary" onClick={() => setEdit('new')}><Plus />新建渠道</Button>}>
         {q.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div>}
         {q.isLoading ? <SkeletonRows rows={3} head /> : list.length === 0 && !q.isError ? (
@@ -297,7 +297,7 @@ const ChannelDialog = resetOnOpen(function ChannelDialog({ target, open, onClose
     else add.mutate({ name: name.trim(), kind, config, min_severity: sev, enabled }, { onSuccess: () => { toast.ok('渠道已创建'); onClose(); }, onError: toast.err });
   };
   return (
-    <FormDialog size="md" dirty={dirty} open={open} onOpenChange={(o) => !o && onClose()} title={ch ? `编辑渠道 · ${ch.name}` : '新建通知渠道'} desc={<>配置加密保存 <InfoTip text="保存后页面不再显示明文。" /></>}
+    <FormDialog size="md" dirty={dirty} open={open} onOpenChange={(o) => !o && onClose()} title={ch ? `编辑渠道 · ${ch.name}` : '新建通知渠道'} desc={<>配置会加密保存 <InfoTip text="保存后，页面上不再显示原文" /></>}
       submitLabel={ch ? '保存' : '创建'} busy={busy} valid={valid} onSubmit={submit}>
       <div className="form-grid">
         <Field label="名称"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：运维群" autoFocus autoComplete="off" /></Field>
@@ -314,7 +314,7 @@ const ChannelDialog = resetOnOpen(function ChannelDialog({ target, open, onClose
           </Field>
         ))}
       </div>
-      {!cfgOk && touched && <div className="hint is-error">{isNew ? '请把配置填写完整' : '要改配置，请把字段都填上'}</div>}
+      {!cfgOk && touched && <div className="hint is-error">{isNew ? '请把配置填写完整' : '要改配置，请把所有字段重新填上'}</div>}
       <div className="form-grid">
         <Field label="最低级别"><Select value={sev} onChange={setSev} options={SEVERITIES} /></Field>
         <Field label="状态"><label className="check-row" style={{ gap: 10, height: 'var(--h-lg)' }}><Switch checked={enabled} onCheckedChange={setEnabled} /><span>{enabled ? '启用' : '已停用'}</span></label></Field>

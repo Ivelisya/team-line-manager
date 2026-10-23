@@ -76,7 +76,7 @@ export function Due({ days, state, tail }: { days: number | null | undefined; st
   return <span className="due" data-tone={d.tone || undefined}>{d.pre && <span className="due-t">{d.pre}</span>}{d.f && <Num f={d.f} />}{post && <span className="due-t">{post}</span>}</span>;
 }
 /** 备用团队的说明（团队编辑、团队列表、机器卡片与抽屉的到期旁共用） */
-export const SPARE_TIP = '备用团队里在用的机器，订阅过期满 1 天（按账单时区，到期日的次日过完）后，中控自动清理节点上的服务并移入回收站；续费顺延了到期日就不回收。';
+export const SPARE_TIP = '备用团队的机器，到期满 1 天后自动清理并移入回收站。\n续费后到期日顺延，就不会回收。';
 /** 备用团队在用机器的到期旁：「MM-DD 起自动回收」+ (i)；iconOnly 只放 (i)（卡片上地方小，短句放进悬停） */
 export function SpareDue({ on, iconOnly }: { on: string; iconOnly?: boolean }) {
   return <>{' '}{!iconOnly && <span className="t-sub">{on} 起自动回收</span>}<InfoTip text={iconOnly ? `${on} 起自动回收：${SPARE_TIP}` : SPARE_TIP} /></>;

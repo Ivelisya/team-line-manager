@@ -258,7 +258,7 @@ export function maintOwner(list: Silence[], m: MaintSubject, now = Date.now()) {
   return host.length ? { owner: { ...m.host_machine, host_machine: null }, onHost: true, windows: host } : { owner: m, onHost: false, windows: own };
 }
 /** 维护结束、新的健康还没到时的健康：服务端维护中不给原因，估不出来，先标未知（不冒充正常） */
-const MAINT_ENDED: MachineView['health'] = { status: 'unknown', reasons: [{ key: 'maintenance_ended', severity: 'info', text: '维护刚结束，正在重新判定' }] };
+const MAINT_ENDED: MachineView['health'] = { status: 'unknown', reasons: [{ key: 'maintenance_ended', severity: 'info', text: '维护刚结束，正在重新检查' }] };
 /** 结束一台机器的维护（卡片菜单、抽屉「管理」）：删掉 maintOwner 找到的维护窗口（同机 IP 节点因宿主机维护时结束的是宿主机的）；
  *  「全部机器」的那种不动，只有那种时报错。返回结束了谁的维护。
  *  删完先在缓存里把这台（宿主机连同它的同机 IP 节点）改成不在维护、健康未知（同开始维护时提示一出、卡片就跟上），

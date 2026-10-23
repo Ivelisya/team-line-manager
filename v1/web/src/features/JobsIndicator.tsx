@@ -29,7 +29,7 @@ function useJobNotifier(page: Paged<JobSummary> | undefined) {
     const moved = fresh.filter((j) => j.state === 'succeeded' && j.kind === 'move_entry');
     const rest = fresh.filter((j) => !moved.includes(j));
     const label = (j: JobSummary) => `${jobKindLabel(j.kind)} · ${j.target?.name ?? '—'}`;
-    moved.forEach((j) => toast.show({ tone: 'ok', title: '换线路机完成', text: `${label(j)}：分享链接已变`, duration: 15000, action: { label: '复制新分享链接', onClick: () => void copyNewShareLink(j.id) } }));
+    moved.forEach((j) => toast.show({ tone: 'ok', title: '换线路机完成', text: `${label(j)}：分享链接已更新`, duration: 15000, action: { label: '复制新分享链接', onClick: () => void copyNewShareLink(j.id) } }));
     const ended = Math.max(rest.length, page.total - s.total - moved.length);
     s.total = page.total;
     if (rest.length > 3) {

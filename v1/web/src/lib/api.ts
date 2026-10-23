@@ -25,7 +25,7 @@ export async function api<T = unknown>(path: string, opts: Opts = {}): Promise<T
   let json: { data?: T; error?: { code: string; message: string } } | null = null;
   try { json = await res.json(); } catch {
     // 出错的响应可能没有 JSON（网关的 502 页面），下面按状态码报；2xx 却解析不了（被代理改写、截断）不能当成功悄悄返回 undefined
-    if (res.ok && res.status !== 204) throw new ApiError(res.status, 'bad_response', '中控返回了无法解析的响应');
+    if (res.ok && res.status !== 204) throw new ApiError(res.status, 'bad_response', '中控返回的内容读不懂');
   }
   if (!res.ok) {
     // 只有「没登录 / 会话失效」才跳登录页；账户安全里输错当前密码、验证码也是 401，但 code 不同（bad_password / totp_invalid…）

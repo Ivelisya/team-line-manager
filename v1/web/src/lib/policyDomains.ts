@@ -28,7 +28,7 @@ function normalizeOne(tok: string): { ok: true; value: string } | { ok: false; e
   const ipLike = isIp(d) || isIp(d.replace(/^\[|\]$/g, '')) || d.split('.').every((l) => l !== '' && /^[0-9]+$/.test(l));
   if (ipLike) return bad(`「${shown}」是 IP 地址，请填域名`);
   if (d.includes(':')) return bad(`「${shown}」不要写端口`);
-  if (d.includes('*')) return bad(`「${shown}」不要写 *，已含子域名`);
+  if (d.includes('*')) return bad(`「${shown}」不用写 *，子域名已自动包含`);
   if (/[\^$()[\]{}\\|+!%&'"`<>~=,]/.test(d)) return bad(`「${shown}」含有不支持的字符`);
   if (d.length > 253) return bad(`「${shown}」太长（最多 253 个字符）`);
   if (!d.includes('.')) return bad(`「${shown}」必须包含点（例如 example.com）`);
@@ -118,7 +118,7 @@ export function parseDomainText(text: string): ParsedDomains {
     }
   });
   const domains = [...set].sort();
-  const overall = domains.length > MAX_DOMAINS ? `每份策略最多 ${MAX_DOMAINS} 个域名，现在有 ${domains.length} 个` : null;
+  const overall = domains.length > MAX_DOMAINS ? `每份规则最多 ${MAX_DOMAINS} 个域名，现在有 ${domains.length} 个` : null;
   return { domains, issues, badLines: new Set(issues.map((x) => x.line)), overall };
 }
 

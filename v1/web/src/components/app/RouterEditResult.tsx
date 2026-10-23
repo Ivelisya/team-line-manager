@@ -15,7 +15,7 @@ export function RouterEditResult({ out }: { out: { routers: Edited[] } }) {
   const n = out.routers.length;
   return (
     <div className="tune-res">
-      <div className="tune-sum">改了 <b className="num">{n}</b> 台软路由的 <b className="num">{rows.length}</b> 个出口，每台改前都备份了原配置、改完重启 OpenClash 并测了延迟</div>
+      <div className="tune-sum">改了 <b className="num">{n}</b> 台软路由的 <b className="num">{rows.length}</b> 个出口。每台都先备份了原配置，改完重启 OpenClash 并测了延迟</div>
       <table className="tune-tbl">
         <thead><tr><th>软路由</th><th>出口</th><th>改成</th><th>改后测速</th></tr></thead>
         <tbody>

@@ -27,7 +27,7 @@ export function currentStepTitle(j: JobSummary): string | null {
 
 /** error_kind 的中文说明（服务端 ssh.rs ErrKind）；未收录的原样显示 */
 const ERROR_KIND_LABEL: Record<string, string> = {
-  network: '网络错误', auth: 'SSH 认证失败', host_key: '主机指纹不符', remote: '远端命令失败', timeout: '超时', internal: '中控内部错误',
+  network: '网络错误', auth: 'SSH 认证失败', host_key: '主机指纹不符', remote: '远端命令失败', timeout: '超时', internal: '中控出错了',
 };
 /** 同是 remote：升级 agent 换上新版本后的回滚检查（起不来、线路机检查没过）不是远端命令出错，按错误文字区分开 */
 export const errorKindLabel = (k: string, error?: string | null) =>
@@ -57,12 +57,12 @@ const OUTPUT: Record<string, [string, OutFmt] | null> = {
   // bind_ip 只有 1:1 NAT 映射的才有（公网 IP 映射到的宿主机本地地址），在网卡上的为 null、不显示
   ss_port: ['SS 端口', text], local_ips: ['宿主机本机 IP', text], bind_ip: ['本地地址（NAT）', text],
   // bootstrap
-  method: ['登录方式', () => '用 root 密码推送了中控公钥'],
+  method: ['登录方式', () => '用 root 密码装上了中控公钥'],
   // converge / converge_relay（同机 IP 节点不做系统基线，bbr 为 null、不显示）
   bbr: ['BBR', yesNo('已启用', '未启用')], nft_relays: ['防火墙放行', text], ssserver_updated: ['ssserver', yesNo('已更新', '已是最新')], xray: ['Xray 版本', text],
   // agent / wait_report（prev_version：这次换下来、留作回滚的旧程序的版本；xray_checks：升级线路机时新版本还要做到的几项）
   binary_updated: ['agent 程序', yesNo('已更新', '已是最新')], token_id: null, prev_version: ['换下的版本', text], xray_checks: ['升级后检查', (v) => jobText(String(v))],
-  first_report_at: ['首次上报', (v) => dtFull(String(v).replace(/^(\S+) (\S+) \+00:00(:00)?$/, '$1T$2Z'))], agent_version: ['agent 版本', text], old_tokens_revoked: ['撤销旧令牌', unit('枚')],
+  first_report_at: ['首次上报', (v) => dtFull(String(v).replace(/^(\S+) (\S+) \+00:00(:00)?$/, '$1T$2Z'))], agent_version: ['agent 版本', text], old_tokens_revoked: ['作废旧凭据', unit('个')],
   // attach / attach_new / detach_old / wait_applied
   entry_id: null, relay_id: null, old_entry_id: null, relay: ['线路机', text], port: ['入口端口', text], generation: ['配置版本', text],
   entry: ['入口状态', (v) => entryLabel(String(v))],
@@ -71,7 +71,7 @@ const OUTPUT: Record<string, [string, OutFmt] | null> = {
   // activate（恢复）/ 跳过
   restored: null, reason: ['说明', text],
   // detach / cleanup / revoke / finalize / purge / wait_detached_old
-  entries: ['入口', unit('个')], ss: ['ssserver', (v) => CLEANUP_SS[String(v)]], revoked: ['撤销令牌', unit('枚')], renumbered: ['重新编号', unit('台')],
+  entries: ['入口', unit('个')], ss: ['ssserver', (v) => CLEANUP_SS[String(v)]], revoked: ['作废凭据', unit('个')], renumbered: ['重新编号', unit('台')],
   // renumber（替换节点的交换编号）：交换后两台各自的新名字
   new: ['新节点', text], old: ['旧节点', text],
   rows_deleted: ['删除数据', unit('行')], recycle_bin_id: ['回收站编号', (v) => `#${v}`], already_gone: ['状态', () => '目标已不存在，无需处理'],

@@ -18,14 +18,14 @@ export async function writeClipboard(text: string): Promise<boolean> {
 /** 复制并提示：copyText('1.2.3.4', ' IP') → “已复制 IP”；show：短的值（IP、名称）一并写出 → “已复制 IP 1.2.3.4” */
 export async function copyText(text: string, label = '内容', show = false): Promise<boolean> {
   const ok = await writeClipboard(text);
-  if (ok) toast.ok(`已复制${label}${show ? ` ${text}` : ''}`); else toast.err('复制失败，请手动选择文本');
+  if (ok) toast.ok(`已复制${label}${show ? ` ${text}` : ''}`); else toast.err('复制失败，请手动选中复制');
   return ok;
 }
 
 /** 复制分享链接：提示与管理页的分享对话框一致（取链接会记审计，链接等同凭据） */
 export async function copyShareLink(url: string, label = '分享链接'): Promise<boolean> {
   const ok = await writeClipboard(url);
-  if (ok) toast.ok(`已复制${label}，已记入审计`);
-  else toast.err('复制失败，请手动选择文本');
+  if (ok) toast.ok(`已复制${label}，并记入审计`);
+  else toast.err('复制失败，请手动选中复制');
   return ok;
 }

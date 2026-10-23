@@ -77,11 +77,11 @@ function Detail({ r }: { r: RecycleItem }) {
       {(r.traffic_down != null || r.traffic_up != null) && <LabelValue label="业务流量 下载 / 上传">{`${bytes(r.traffic_down)} / ${bytes(r.traffic_up)}`}</LabelValue>}
       {(r.nic_rx != null || r.nic_tx != null) && <LabelValue label="网卡流量 下行 / 上行">{`${bytes(r.nic_rx)} / ${bytes(r.nic_tx)}`}</LabelValue>}
       {out && <LabelValue label="出口" plain>{out}</LabelValue>}
-      {entries != null && <LabelValue label="入口历史" wrap>{entries.length ? entries.map((e) => `${e.relay}:${e.port}${e.removed_at ? '（已摘除）' : ''}`).join('、') : '无'}</LabelValue>}
+      {entries != null && <LabelValue label="入口历史" wrap>{entries.length ? entries.map((e) => `${e.relay}:${e.port}${e.removed_at ? '（已移除）' : ''}`).join('、') : '无'}</LabelValue>}
       {renewals != null && <LabelValue label="续费记录">{`${renewals.length} 次`}</LabelValue>}
       {note && <LabelValue label="备注" wrap>{note}</LabelValue>}
       <LabelValue label="来源编号"><span className="row" style={{ gap: 4, flexWrap: 'nowrap', minWidth: 0 }}><Trunc className="mono">{r.source_id}</Trunc><CopyButton text={r.source_id} label="来源编号" size={13} /></span></LabelValue>
-      {d.isError && <ErrorNote error={d.error} onRetry={() => void d.refetch()}>快照加载失败：</ErrorNote>}
+      {d.isError && <ErrorNote error={d.error} onRetry={() => void d.refetch()}>详情加载失败：</ErrorNote>}
     </LabelValueGrid>
   );
 }

@@ -36,7 +36,7 @@ export function ManageTab({ m, onClosed }: { m: MachineView; onClosed: () => voi
     <>
       {!retired && <RenameSection m={m} />}
       {/* 线路机：三网 PING 的单独设置（目标与方式，默认跟随设置页的全局） */}
-      {m.kind === 'relay' && active && <Section><SectionHeader title={<>三网 PING <InfoTip text="线路机每分钟往外测一轮这些目标，看线路的延迟与丢包。勾上「单独设置」只改这台" /></>} /><PingOverrideSection id={m.id} /></Section>}
+      {m.kind === 'relay' && active && <Section><SectionHeader title={<>三网 PING <InfoTip text="线路机定时测这些目标的延迟和丢包。勾选「单独设置」，只改这一台" /></>} /><PingOverrideSection id={m.id} /></Section>}
       {/* 在用的机器没有入口时也要能加：节点「添加入口」，线路机「添加直出入口」 */}
       {!retired && (m.lifecycle === 'active' || m.entries.length > 0) && <EntrySection m={m} />}
       {/* 在用的普通 VPS 节点都能当宿主机：上面另配的公网 IP 各上架成一台同机 IP 节点 */}
@@ -93,7 +93,7 @@ function RenameSection({ m }: { m: MachineView }) {
   };
   return (
     <Section>
-      <SectionHeader title={<>{isRelay ? '改名 / 国家' : '改名 / 改编号 / 国家'} <InfoTip text="不会断开现有连接：只改显示名与线路机上的备注，不换令牌。" /></>} />
+      <SectionHeader title={<>{isRelay ? '改名 / 国家' : '改名 / 改编号 / 国家'} <InfoTip text="不影响现有连接。只改显示名和线路机上的备注" /></>} />
       <form className="form-grid" onSubmit={(e) => { e.preventDefault(); if ((nameChanged || countryChanged) && valid && !patch.isPending) save(); }}>
         {isRelay ? (
           <Field label="线路机名称" className="span-2"><Input value={label} onChange={(e) => setLabel(e.target.value)} /></Field>
@@ -105,7 +105,7 @@ function RenameSection({ m }: { m: MachineView }) {
             </Field>
           </>
         )}
-        <Field label="国家" className="span-2" info="名字前的国旗；默认按 IP 自动查，查不准时手动选。"><CountrySelect value={country} onChange={setCountry} autoLabel={auto} disabled={patch.isPending} aria-label="国家或地区" /></Field>
+        <Field label="国家" className="span-2" info="显示在名字前的国旗。默认按 IP 判断，不准可以手动选"><CountrySelect value={country} onChange={setCountry} autoLabel={auto} disabled={patch.isPending} aria-label="国家或地区" /></Field>
         <div className="span-2 row row-between">
           {/* 改了名字才出现「旧名 → 新名」 */}
           <span className="row" style={{ gap: 8 }}>
@@ -144,7 +144,7 @@ function EntrySection({ m }: { m: MachineView }) {
       <SectionHeader title="入口" />
       {/* 入口的“⋯”菜单与对话框整个入口列表共用一份 */}
       <EntryMenus entries={m.entries}><div className="stack-sm">
-        {m.entries.length === 0 && <div className="hint">还没有入口{m.kind === 'relay' && <> <InfoTip text="节点的入口在节点上添加；也可以给这台线路机加一条直出入口。" /></>}</div>}
+        {m.entries.length === 0 && <div className="hint">还没有入口{m.kind === 'relay' && <> <InfoTip text="节点的入口要在节点上添加。也可以给这台线路机加一条直出入口" /></>}</div>}
         {/* 入口行的副标题是配置状态（是否已推到线路机），右边的胶囊只标不正常的（中控连不上、探测不通…），两者各说各的 */}
         {m.entries.length > 0 && <div className="mgroup">{shown.map((e) => (
           <div key={e.id} className="manage-row">
@@ -158,26 +158,26 @@ function EntrySection({ m }: { m: MachineView }) {
         <div className="mgroup">
           {canMove && m.kind !== 'relay' && (
             <div className="manage-row">
-              <div className="t">换线路机 <InfoTip text={'不断网，完成后分享链接会变。\n把入口换到另一台线路机：新入口验收通过后才摘旧入口。'} /></div>
+              <div className="t">换线路机 <InfoTip text={'换的过程中不断网，完成后分享链接会变\n新入口验证通过后，才会移除旧的'} /></div>
               <Button variant="secondary" disabled={!!m.active_job} onClick={() => setDlg('move')}><Repeat2 />换线路机…</Button>
             </div>
           )}
           {canMove && m.kind === 'relay' && (
             <div className="manage-row">
-              <div className="t">搬空线路机 <InfoTip text={'把上面所有节点换到另一台线路机，之后就能安全退役这台。\n这些节点的分享链接会变。'} /></div>
+              <div className="t">搬空线路机 <InfoTip text={'把上面的节点都换到另一台线路机，之后就可以放心退役这台\n这些节点的分享链接会变'} /></div>
               <Button variant="secondary" onClick={() => setDlg('evacuate')}><PackageOpen />搬空到…</Button>
             </div>
           )}
           {canAddDirect && (
             <div className="manage-row">
-              <div><div className="t">直出入口</div><div className="hint">从 {m.ip} 直接出去 <InfoTip text={`不经节点；每台线路机一条，分享链接名「${m.name}-直出」。`} /></div></div>
+              <div><div className="t">直出入口</div><div className="hint">从 {m.ip} 直接出去 <InfoTip text={`不经过节点。每台线路机只能有一条，分享链接叫「${m.name}-直出」`} /></div></div>
               <Button variant="secondary" disabled={add.isPending || !!m.active_job} loading={add.isPending}
                 onClick={() => add.mutate({ id: m.id, relay_id: m.id }, { onSuccess: () => toast.ok('已提交，直出入口正在应用'), onError: toast.err })}><Plus />添加直出入口</Button>
             </div>
           )}
           {canAdd && (
             <div className="manage-row">
-              <div className="t">加入口 <InfoTip text="再挂到另一台线路机，多一条入口和分享链接；原有的入口不受影响。" /></div>
+              <div className="t">加入口 <InfoTip text="挂到另一台线路机，多一条入口和分享链接，原有的不受影响" /></div>
               <span className="row" style={{ gap: 8, flexWrap: 'nowrap' }}>
                 <div style={{ width: 160 }}><Select value={relay} onChange={setRelay} options={opts} placeholder="选择线路机" aria-label="要挂到的线路机" /></div>
                 <Button disabled={!relay || add.isPending} loading={add.isPending} onClick={() => add.mutate({ id: m.id, relay_id: relay }, { onSuccess: () => { toast.ok('已提交，新入口正在应用'); setRelay(''); }, onError: toast.err })}><Plus />添加入口</Button>
@@ -198,7 +198,7 @@ function ReplaceRow({ m }: { m: MachineView }) {
   return (
     <>
       <div className="manage-row">
-        <div className="t">替换为另一台节点 <InfoTip text={'新节点接这台的编号，软路由上指向这台的出口改成新节点的入口。\n这台改到备用团队，订阅过期满 1 天后自动回收。'} /></div>
+        <div className="t">替换为另一台节点 <InfoTip text={'新节点沿用这台的编号，软路由上指向这台的出口也会改成新节点\n这台移到备用团队，到期满 1 天后自动回收'} /></div>
         <Button variant="secondary" disabled={!!m.active_job} onClick={() => setOpen(true)}><Replace />替换为…</Button>
       </div>
       <ReplaceDialog m={m} open={open} onOpenChange={setOpen} onDone={() => setOpen(false)} />
@@ -211,7 +211,7 @@ function IpNodesRow({ m }: { m: MachineView }) {
   return (
     <div className="manage-row">
       <div>
-        <div className="t">添加 IP 节点 <InfoTip text="这台机器上另配了公网 IP 时，每个 IP 上架成一台独立节点（自己的团队编号、入口与分享链接）；SSH、agent 与主机读数都用这台的。" /></div>
+        <div className="t">添加 IP 节点 <InfoTip text={"机器上另配了公网 IP 时，每个 IP 可以上架成一个独立节点，有自己的编号、入口和分享链接\nSSH、agent 和主机读数仍用这台的"} /></div>
         {m.ip_nodes.length > 0 && <div className="hint">已有 {m.ip_nodes.length} 个同机 IP 节点</div>}
       </div>
       <Button asChild variant="secondary"><Link to={`/provision?host=${m.id}`}><Plus />添加 IP 节点…</Link></Button>
@@ -224,12 +224,12 @@ function AgentRow({ m }: { m: MachineView }) {
   const { open } = useDrawer();
   const a = m.agent!;
   const h = m.host_machine;
-  const seen = `最近上报 ${a.last_report_at ? F.ago(a.last_report_at) : '从未'}`;
+  const seen = a.last_report_at ? `最近上报 ${F.ago(a.last_report_at)}` : '从未上报';
   return (
     <div className="manage-row">
       <div>
         <div className="t">agent 版本 {a.version ?? '未知'}</div>
-        <div className="hint">{a.online ? '在线' : '离线'} · {h ? `用宿主机「${h.name}」的 · ${seen}` : seen} {h && <InfoTip text="这台同机 IP 节点没有自己的 agent；要升级就升级宿主机的。" />}</div>
+        <div className="hint">{a.online ? '在线' : '离线'} · {h ? `读数来自宿主机「${h.name}」 · ${seen}` : seen} {h && <InfoTip text="同机 IP 节点没有自己的 agent，要升级请升级宿主机" />}</div>
       </div>
       {h ? <Button variant="secondary" onClick={() => open(h.id, 'manage')}>打开宿主机</Button> : (
         <Button variant="secondary" disabled={!!m.active_job} onClick={() => openUpgrade(m.id)}>升级 agent…</Button>
@@ -244,19 +244,19 @@ function TuneRow({ m }: { m: MachineView }) {
   const [ask, setAsk] = React.useState(false);
   const t = m.tune!;
   // 档名是内部名，放进悬停；这里只写「已调优 · 10-23」，旧档写「需要重新调优」；下面一行是这台的推导参数（缓冲上限从哪来）
-  const state = !t.profile ? '未调优' : !t.current ? '需要重新调优（旧档）' : `已调优${t.at ? ` · ${F.dt(t.at).slice(0, 5)}` : ''}`;
-  const old = t.profile && !t.current ? '\n旧档的 TCP 缓冲上限是固定 16 MB；新档按这台的套餐带宽、客户连接的 RTT、内存推导，重新调优即升级（不往小改任何参数）。' : '';
+  const state = !t.profile ? '未调优' : !t.current ? '有新版调优，建议重新调优' : `已调优${t.at ? ` · ${F.dt(t.at).slice(0, 5)}` : ''}`;
+  const old = t.profile && !t.current ? '\n旧版把 TCP 缓冲固定为 16 MB，新版会按这台的带宽、延迟和内存来定。重新调优即可升级，不会调小任何参数' : '';
   return (
     <>
       <div className="manage-row">
         <div>
-          <div className="t">系统调优：{state} <InfoTip text={`内核网络参数（缓冲区、拥塞控制、连接队列等）、日志体积上限、时间同步。逐键结果在作业详情里。${old}${t.profile ? `\n档位 ${t.profile}${t.at ? `，${F.dtFull(t.at)}` : ''}` : ''}`} /></div>
+          <div className="t">系统调优：{state} <InfoTip text={`优化网络参数（缓冲区、拥塞控制、连接队列）、日志体积上限和时间同步\n每一项的结果在作业详情里${old}${t.profile ? `\n版本 ${t.profile}${t.at ? ` · ${F.dtFull(t.at)}` : ''}` : ''}`} /></div>
           {t.params && <div className="hint">{tuneParamsText(t.params)}</div>}
         </div>
         <Button variant="secondary" disabled={!!m.active_job} onClick={() => setAsk(true)}>{t.profile ? '重新调优…' : '调优…'}</Button>
       </div>
       <ConfirmDialog open={ask} onOpenChange={setAsk} title={`${t.profile ? '重新调优' : '调优'} ${m.name}？`} confirmLabel="开始调优" confirmDisabled={!!m.active_job}
-        description="不重启 ss / Xray，不断开客户连接；只可能重启一次系统日志服务（journald）。"
+        description="不会重启代理服务，也不会断开客户连接。可能重启一次系统日志服务"
         onConfirm={async () => { await tune.mutateAsync(m.id); toast.ok(`已提交 ${m.name} 的调优作业`); }} />
     </>
   );
@@ -270,7 +270,7 @@ function MaintRow({ m }: { m: MachineView }) {
   const onHost = m.maintenance && !!silences && maintOwner(silences, m).onHost;
   return (
     <div className="manage-row">
-        <div><div className="t">维护窗口 <InfoTip text="期间不发告警，卡片显示「维护」" /></div>{m.maintenance && <div className="hint">{onHost ? `宿主机「${m.host_machine!.name}」在维护中` : '维护中'}</div>}</div>
+        <div><div className="t">维护窗口 <InfoTip text="期间不发告警，卡片上显示「维护」" /></div>{m.maintenance && <div className="hint">{onHost ? `宿主机「${m.host_machine!.name}」在维护中` : '维护中'}</div>}</div>
         {m.maintenance
           ? <Button variant="secondary" loading={end.isPending} onClick={() => end.mutate(m, { onSuccess: (o) => toast.ok(`${o.name} 已结束维护`), onError: toast.err })}><Wrench />{onHost ? '结束宿主机维护' : '结束维护'}</Button>
           : <Button variant="secondary" onClick={() => openMaint(m.id)}><Wrench />维护窗口…</Button>}
@@ -298,17 +298,17 @@ function DangerSection({ m, onClosed }: { m: MachineView; onClosed: () => void }
               <div className="t">立即回收</div>
               <div className="hint">
                 {m.spare_since ? `已于 ${F.md(m.spare_since)} 退役` : '在备用团队'}{m.spare_from && `（原 ${m.spare_from}）`}，{on ? `${on} 起自动回收` : '没有订阅，不会自动回收'}
-                {' '}<InfoTip text={'清理节点上的服务并移入回收站，不等到期。\n要留下它，在上面「改名」里改回别的团队。'} />
+                {' '}<InfoTip text={'清理节点并移入回收站，不等到期\n想留下它，请到上面的「改名」把团队改回去'} />
               </div>
             </div>
           ) : (
             <div>
               <div className="t">退役{m.kind !== 'relay' && <> <InfoTip text={[
-                  m.host_machine ? '只退役这个 IP 的节点，宿主机不受影响。' : '默认移入备用团队，机器照常服务，订阅过期满 1 天后自动回收；也可以选择立即清理，移入回收站。',
-                  '同团队后面的节点会自动前移补号。', n > 0 && `这台机器上有 ${n} 个同机 IP 节点，还没开始退役的会一起走。`,
+                  m.host_machine ? '只退役这个 IP 的节点，宿主机不受影响。' : '默认移入备用团队，机器照常服务，到期满 1 天后自动回收。也可以立即清理并移入回收站',
+                  '同团队后面的节点会自动前移补号。', n > 0 && `这台机器上还有 ${n} 个同机 IP 节点，会一起退役`,
                 ].filter(Boolean).join('\n')} /></>}</div>
               {/* 线路机不能进备用；节点默认移入备用，没有同机关系时也写一句短话，不留一个孤零零的 (i) */}
-              <div className="hint">{m.kind === 'relay' ? '线路机只能立即回收：先搬空节点，直出入口随之摘除' : m.host_machine ? `宿主机「${m.host_machine.name}」不受影响` : n > 0 ? `${n} 个同机 IP 节点会一起退役` : `移入备用${m.subscription ? ` · ${F.addDays(m.subscription.due_date, 2).slice(5)} 起自动回收` : ''}`}</div>
+              <div className="hint">{m.kind === 'relay' ? '线路机只能立即回收。请先搬空节点，直出入口会一起移除' : m.host_machine ? `宿主机「${m.host_machine.name}」不受影响` : n > 0 ? `${n} 个同机 IP 节点会一起退役` : `移入备用${m.subscription ? ` · ${F.addDays(m.subscription.due_date, 2).slice(5)} 起自动回收` : ''}`}</div>
             </div>
           )}
           <Button variant="outline-danger" disabled={busyJob || m.lifecycle === 'retiring'} onClick={() => setOpen(true)}>{inSpare ? '立即回收…' : '退役…'}</Button>

@@ -26,7 +26,7 @@ export const ruleLabel = (k: string) => lbl(meta().rules, k);
 /** 网卡计量规则（供应商的「流量计量」） */
 export const trafficRuleLabel = (k: string) => lbl(meta().traffic_rules, k);
 /** 网卡计量规则（费用页签「本周期已用」旁的 (i)、额度悬停）：「按网卡流量：下行、上行取较大值」（名字同供应商对话框，来自 /meta） */
-export const trafficRulePlain = (k: string) => `按网卡流量：${trafficRuleLabel(k)}`;
+export const trafficRulePlain = (k: string) => `按网卡，${trafficRuleLabel(k)}`;
 /** 流量重置方式：自然月 / 账单日 / 滚动 30 天 */
 export const trafficResetLabel = (k: string) => lbl(meta().traffic_resets, k);
 /** 流量重置方式的说法：按自然月、按账单日、滚动 30 天 */
@@ -48,7 +48,7 @@ export const isQuiet = (m: MachineView) => (m.agent != null && !m.agent.online) 
 /** 当前网卡速率：无主机或数据过期（isQuiet）时为 null——各处显示 “—”，也不进迹线 */
 export const liveRate = (m: MachineView) => (hasHost(m) && !isQuiet(m) ? { rx: m.host!.net_rx_bps, tx: m.host!.net_tx_bps } : null);
 /** 容器（LXC 等）里 /proc/loadavg 是宿主机的，agent 不报负载（null） */
-const LOAD_NA = '容器内无法获取本机负载';
+const LOAD_NA = '容器里读不到负载';
 
 export function entryText(m: MachineView): string {
   if (m.kind === 'relay') return `${m.entries.length} 条入口`;
@@ -85,8 +85,8 @@ export function fromLabel(from: string, start?: string | null): string {
 export function monthFlowTip(m: MachineView) {
   const f = monthFlow(m);
   return [
-    f.kind === 'nic' ? '网卡流量（供应商计费口径）：下行 = 本机收，上行 = 本机发' : m.host_machine ? '网卡与宿主机共用，这里是经它的业务流量（下载 / 上传）' : '业务流量（用户视角）：经入口的下载 / 上传',
-    f.from && `${fromLabel(f.from)} 起才有这台机器的流量数据，之前的用量不在内；供应商控制台按自开通累计，数会更大`,
+    f.kind === 'nic' ? '按网卡统计，和供应商账单口径一致\n下行是收到的，上行是发出的' : m.host_machine ? '这是经这个节点的客户流量，网卡与宿主机共用' : '客户经入口的下载和上传',
+    f.from && `从 ${fromLabel(f.from)} 开始统计，之前的没算进来，所以比供应商面板上的少`,
   ].filter(Boolean).join('\n');
 }
 
@@ -95,7 +95,7 @@ export function monthFlowTip(m: MachineView) {
  *  旧 agent 报的是单词（「出口不通：timeout；refused」），新 agent 自己写中文（fleet-agent probe.rs 的 reason_cn），两种都认 */
 const ERR_ZH: [RegExp, string | ((m: string, ...g: string[]) => string)][] = [
   // ssh 自己的报错行（原文在服务端日志里）：本机端口是软路由的反向隧道，被拒绝 = 隧道没连上来；其它地址写成「连不上 地址:端口」，后面的英文由下面几条接着换。先于下面各条（它们会先把 refused 换掉）
-  [/ssh: connect to host (?:127\.0\.0\.1|localhost) port (\d+): (?:connection refused|连接被拒绝)/gi, (_, port) => `隧道没连上（中控本机的隧道端口 ${port} 没有监听）`],
+  [/ssh: connect to host (?:127\.0\.0\.1|localhost) port (\d+): (?:connection refused|连接被拒绝)/gi, (_, port) => `隧道没连上（中控上的端口 ${port} 没有响应）`],
   [/ssh: connect to host (\S+) port (\d+): ?/gi, (_, host, port) => `连不上 ${host}:${port}：`],
   [/\b(?:connection )?(?:timed out|timeout) during (?:ssh )?banner exchange\b|\bbanner exchange\b/gi, 'SSH 握手超时'], // 先于下面的「超时」，不留半句中文半句英文
   [/\b(?:timed out|timeout)(?: after)? (\d+(?:\.\d+)?) ?s\b/gi, (_, n) => `超时 ${n} 秒`],
@@ -156,28 +156,29 @@ export const quotaUsedLabel = (q: ReturnType<typeof quota>) => (q.rolling ? '近
 /** 额度怎么计的一句话：规则 · 按哪块网卡（家宽代理、同机 IP 节点是业务流量，没有规则） */
 export function quotaRuleText(m: MachineView) {
   const { rule } = m.quota; const nics = m.agent?.nic_ifaces;
-  return rule ? `${trafficRulePlain(rule)}${nics?.length ? ` · 按 ${nics.join('、')} 计` : ''}` : '按业务流量';
+  return rule ? (nics?.length ? `按 ${nics.join('、')} 网卡，${trafficRuleLabel(rule)}` : trafficRulePlain(rule)) : '按业务流量';
 }
 /** 流量周期（费用页签）：「每月 13 号重置（跟随供应商：按账单日）· 10-13 → 11-13」，滚动 30 天「滚动 30 天（跟随供应商）」 */
 export function quotaCycleText(m: MachineView) {
   const q = quota(m);
-  if (q.rolling) return '滚动 30 天（跟随供应商）';
-  const from = isOverridden(m.subscription, 'traffic_reset_day') ? '单独设置' : m.sub_template ? `${inheritSource(m, 'traffic_reset_day')}：${trafficResetText(m.sub_template.traffic_reset)}` : '';
-  return `每月 ${m.subscription?.traffic_reset_day ?? Number(q.start.slice(8))} 号重置${from && `（${from}）`} · ${mmdd(q.start)} 起，${mmdd(q.end!)} 重置`;
+  if (q.rolling) return '最近 30 天滚动，跟随供应商';
+  const from = isOverridden(m.subscription, 'traffic_reset_day') ? '单独设置' : m.sub_template ? inheritSource(m, 'traffic_reset_day') : '';
+  return `每月 ${m.subscription?.traffic_reset_day ?? Number(q.start.slice(8))} 号重置${from && `，${from}`} · ${mmdd(q.start)} 至 ${mmdd(q.end!)}`;
 }
 /** 已用的补充说明（各一句）：接入后实测 + 接入前读数（已用 = 两者之和）、数据不完整（之前的用量不在内） */
 export function quotaNotes(m: MachineView) {
   const q = quota(m);
   return [
-    q.base != null && `其中接入后实测 ${F.str(quotaGb(q.used - q.base))}，接入前读数 ${F.str(quotaGb(q.base))}（供应商面板读数，${mmdd(q.end!)} 起不再计入）`,
-    q.from && `${fromLabel(q.from, q.start)} 起才有数据，之前的用量不在内，实际剩余可能更少`,
+    q.base != null && `接入后实测 ${F.str(quotaGb(q.used - q.base))}，加上接入前的面板读数 ${F.str(quotaGb(q.base))}\n${mmdd(q.end!)} 重置后只算实测`,
+    q.from && `从 ${fromLabel(q.from, q.start)} 开始统计，之前的没算进来，实际剩余可能更少`,
   ].filter((x): x is string => !!x);
 }
 /** 额度格右侧「已用 / 上限」的悬停：周期起止 · 计量规则（含按哪块网卡），再接补充说明 */
 export function quotaTip(m: MachineView) {
   const q = quota(m);
   return [
-    `${q.rolling ? `近 30 天（${mmdd(q.start)} 起）` : `${mmdd(q.start)} 起，${mmdd(q.end!)} 重置（每月 ${m.subscription?.traffic_reset_day ?? Number(q.start.slice(8))} 号）`} · ${quotaRuleText(m)}`,
+    q.rolling ? '最近 30 天' : `${mmdd(q.start)} 至 ${mmdd(q.end!)}，每月 ${m.subscription?.traffic_reset_day ?? Number(q.start.slice(8))} 号重置`,
+    quotaRuleText(m),
     ...quotaNotes(m),
   ].join('\n');
 }
@@ -230,7 +231,7 @@ export function inheritSummary(plan: Plan, pv: Provider | undefined) {
 /** 「跟随套餐：2000 GB」：没有模板（旧接口）为 null */
 export function inheritText(m: MachineView, k: SubField, due?: string) {
   const t = m.sub_template; if (!t) return null;
-  if (k === 'price_cents' && inheritedValue(m, k, due) == null) return '没有套餐，需要单独填';
+  if (k === 'price_cents' && inheritedValue(m, k, due) == null) return '没有套餐，需要单独设置';
   return `${inheritSource(m, k)}：${inheritValueText(m, k, due)}`;
 }
 /** 跟随的值写成文字（不带来源，订阅表单里跟随态直接显示它） */
@@ -247,8 +248,8 @@ export const limitGb = (gb: number | null | undefined): F.Fmt => (gb && gb > 0 ?
 /** 同机关系标的文字与悬停说明（卡片、环形卡、机器表）：同机 IP 节点「同机 · 宿主机名」（short：窄处只写「同机」，宿主机名在说明里），
  *  宿主机「+N IP」；没有同机关系为 null */
 export function hostRel(host: MachineView['host_machine'], nodes: MachineView['ip_nodes'], short?: boolean) {
-  if (host) return { text: short ? '同机' : `同机 · ${host.name}`, tip: `同机 IP 节点：与宿主机「${host.name}」是同一台机器，CPU / 内存 / 磁盘与网卡读数都和宿主机共用` };
-  if (nodes.length) return { text: `+${nodes.length} IP`, tip: `这台机器上还有 ${nodes.length} 个同机 IP 节点：${nodes.map((x) => x.name).join('、')}` };
+  if (host) return { text: short ? '同机' : `同机 · ${host.name}`, tip: `和宿主机「${host.name}」是同一台机器，CPU、内存、磁盘和网卡读数都共用` };
+  if (nodes.length) return { text: `+${nodes.length} IP`, tip: `还有 ${nodes.length} 个同机 IP 节点：${nodes.map((x) => x.name).join('、')}` };
   return null;
 }
 /** 流量额度吃紧（首页 KPI）：本周期已用 ≥ meta 的 traffic_quota_warn_pct（同额度告警）的台数（没设额度的不计），
@@ -306,17 +307,17 @@ const probeTone = (ok: number, total: number): BeatCell => (!total ? null : ok *
 /** 颜色含义：只放在心跳条「近 1 小时」/「近 30 天」的悬停里，每格的悬停只给数据 */
 // 只按成功率着色：跨境线路 150–250 ms 的延迟是常态，按延迟标黄会让正常线路一片警告色（延迟在每格的悬停里）。
 // 一格 3 分钟、每 30 秒一次约 6 次：断 1 次（83%）黄，断 2 次（67%）红
-export const BEAT_LEGEND = '线路机每 30 秒连一次节点\n绿：成功 ≥ 99% · 黄：成功 80%–99% · 红：成功不到 80% · 灰：没有探测';
-export const AVAIL_LEGEND = '绿：成功 ≥ 99% · 黄：成功 80%–99% · 红：成功不到 80%\n灰：没有探测；TCP 与出口取较差的一种';
+export const BEAT_LEGEND = '线路机定时探测节点能不能连上\n绿：99% 以上 · 黄：80%–99% · 红：不到 80% · 灰：没有探测';
+export const AVAIL_LEGEND = '绿：99% 以上 · 黄：80%–99% · 红：不到 80% · 灰：没有探测\nTCP 和出口都看，取较差的';
 const RELAY_COLORS = '绿：都连上 · 黄：断过 1 次 · 红：断 2 次以上 · 灰：没有数据';
 /** 线路机的格子是主探测来源 → 线路机的连通性（每 30 秒连一次，轮流连它的各个入口端口），不是它名下入口的合计：入口通不通是各节点的事。
  *  主探测来源是中控或放在靠近客户的地方的探测点（设置「探测点」，GET /settings/reach-source），说明随来源变；还没取到时按中控 */
-export const BEAT_LEGEND_RELAY = `中控每 30 秒连一次线路机（轮流连它的各个入口端口），只看通不通\n${RELAY_COLORS}`;
+export const BEAT_LEGEND_RELAY = `中控定时连线路机的各个入口，只看通不通\n${RELAY_COLORS}`;
 export function beatLegendRelay(src: ReachEffective | undefined): string {
   switch (src?.state) {
-    case 'probe': return `${src.label}每 30 秒连一次线路机的客户入口（轮流连它的各个入口端口），看通不通，悬停里是建连延迟的中位数\n${RELAY_COLORS}`;
-    case 'fallback': return `${src.primary_label ?? '主探测点'}离线，暂由中控代替：中控每 30 秒连一次线路机（轮流连各个入口端口），只看通不通；连不上照报，连得上不算恢复\n${RELAY_COLORS}`;
-    case 'none': return `${src.primary_label ?? '主探测点'}离线、中控的检查关着：线路机的客户入口通不通暂时没有数据\n${RELAY_COLORS}`;
+    case 'probe': return `${src.label}定时连线路机的入口，看通不通；悬停可以看延迟\n${RELAY_COLORS}`;
+    case 'fallback': return `${src.primary_label ?? '主探测点'}离线，暂由中控代测，只看通不通\n连不上照常告警，连得上不算恢复\n${RELAY_COLORS}`;
+    case 'none': return `${src.primary_label ?? '主探测点'}离线，中控探测也关着，暂时没有入口的数据\n${RELAY_COLORS}`;
     default: return BEAT_LEGEND_RELAY;
   }
 }
@@ -345,7 +346,7 @@ export function beatTitles(buckets: ProbeBucket[] | undefined, now = Date.now())
   const hm = (t: number) => { const d = new Date(t); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
   return bs.map(([n, ok, ms, re], i) => {
     const t0 = cur - (bs.length - 1 - i) * BEAT_MS;
-    const what = !n ? '没有探测' : `成功 ${Math.round((ok / n) * 100)}%（${ok}/${n}）${ms != null ? ` · 中位 ${Math.round(ms)} ms` : ''}${re ? ` · 重发 ${re} 次` : ''}`;
+    const what = !n ? '没有探测' : `成功 ${Math.round((ok / n) * 100)}%（${ok}/${n}）${ms != null ? ` · 延迟中位 ${Math.round(ms)} ms` : ''}${re ? ` · 重试 ${re} 次` : ''}`;
     return `${hm(t0)}–${hm(t0 + BEAT_MS)}${i === bs.length - 1 ? '（进行中）' : ''} · ${what}`;
   });
 }
@@ -367,7 +368,7 @@ export function availTitles(days: AvailabilityDay[]): string[] {
   const part = (label: string, ok: number, total: number) => (total ? `${label} ${successPct((ok / total) * 100)}（${ok}/${total}）` : '');
   return days.map((d, i) => {
     const what = [part('TCP', d.tcp_ok, d.tcp_total), part('出口', d.egress_ok, d.egress_total)].filter(Boolean).join(' · ') || '没有探测';
-    return `${d.date.slice(5)}${i === days.length - 1 ? '（今天，还没过完）' : ''} · ${what}`;
+    return `${d.date.slice(5)}${i === days.length - 1 ? '（今天）' : ''} · ${what}`;
   });
 }
 /** 有探测、却一个都没成功（延迟为 null）：显示「失败」，和「—」（还没有探测）区分开 */
@@ -390,7 +391,7 @@ export function probeSummary(m: MachineView) {
   const each = lat.length > 1 ? lat.map((x) => `\n${x.name} ${Math.round(x.ms)} ms`).join('') : '';
   return {
     total: viaNode.length, tcpOk, tcp: lat.length ? Math.round(Math.min(...lat.map((x) => x.ms))) : null,
-    tcpTip: `线路机 → 节点 TCP 握手，近 1 小时中位数${lat.length > 1 ? '，取最小的一条' : ''}；连接质量页签的曲线是每分钟平均${each}`,
+    tcpTip: `线路机到节点的 TCP 延迟，近 1 小时中位数${lat.length > 1 ? '，取最小的一条' : ''}\n曲线是按分钟的平均，数字会略有不同${each}`,
     tcpFail: allFailed(viaNode.map((e) => e.tcp)), egressFail: allFailed(es.map((e) => e.egress)), egressOk: egOk > 0,
     off: m.entries.filter((e) => e.lifecycle === 'disabled').length, all: es.length, usable: es.filter((e) => (e.direct || e.tcp?.ok) && e.egress?.ok).length, tcpBad: viaNode.length - tcpOk, egressBad: es.length - egOk, reachBad: es.filter(reachFail).length,
   };
@@ -443,5 +444,5 @@ export function usdTotalTip(t: UsdTotal | undefined): string {
   if (!t) return '';
   const parts = t.by_currency.map((p) => (p.currency === 'USD' ? `USD ${F.money(p.cents, 'USD')}` : `${F.money(p.cents, p.currency)} ≈ ${F.money(p.usd_cents, 'USD')}（${F.fxRate(p.currency, p.usd_per_unit)}）`));
   const un = t.unconverted.map((p) => F.money(p.cents, p.currency));
-  return [...parts, ...(un.length ? [`未折算（没有汇率，不在合计里）：${un.join(' + ')}`] : [])].join('；');
+  return [...parts, ...(un.length ? [`没有汇率，未计入合计：${un.join(' + ')}`] : [])].join('；');
 }

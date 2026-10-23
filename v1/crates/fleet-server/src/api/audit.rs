@@ -180,7 +180,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "entry.disable" => "停用入口",
         "entry.rotate" => "轮换凭据",
         "entry.share" => "查看分享链接",
-        "entry.add" => "新增入口",
+        "entry.add" => "添加入口",
         "entry.move" => "换线路机",
         "relay.evacuate" => "搬空线路机",
         "machine.restore" => "恢复机器",

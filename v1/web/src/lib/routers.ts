@@ -158,10 +158,10 @@ export function routerMeters(s: RouterSummary) {
   const memPct = ratio(s.mem_used, s.mem_total); const diskPct = ratio(s.disk_used, s.disk_total); const ctPct = ratio(s.conntrack, s.conntrack_max);
   const loadPct = s.cores ? (s.load1 / s.cores) * 100 : null;
   return {
-    cpu: { value: F.pct(s.cpu_pct), pct: s.cpu_pct, sub: `负载 ${F.str(F.pct(loadPct))} · ${s.cores} 核`, tip: `负载 = 1 分钟平均负载 ${s.load1.toFixed(2)} ÷ ${s.cores} 核；超过 100% 表示有进程在排队` },
+    cpu: { value: F.pct(s.cpu_pct), pct: s.cpu_pct, sub: `负载 ${F.str(F.pct(loadPct))} · ${s.cores} 核`, tip: `1 分钟平均负载 ${s.load1.toFixed(2)} 除以 ${s.cores} 核。超过 100% 说明有进程在排队` },
     mem: { value: F.pct(memPct), pct: memPct, sub: `${F.str(F.mem(s.mem_used))} / ${F.str(F.mem(s.mem_total))}` },
-    disk: { value: F.pct(diskPct), pct: diskPct, sub: `${F.str(F.mem(s.disk_used))} / ${F.str(F.mem(s.disk_total))}`, tip: '/overlay（装的软件与配置）的已用 / 总量' },
-    ct: { value: F.pct(ctPct), pct: ctPct, sub: `${s.conntrack.toLocaleString()} / ${s.conntrack_max.toLocaleString()}`, tip: '连接跟踪表（conntrack）当前条目 / 上限：满了新连接会被丢弃' },
+    disk: { value: F.pct(diskPct), pct: diskPct, sub: `${F.str(F.mem(s.disk_used))} / ${F.str(F.mem(s.disk_total))}`, tip: '存放软件和配置的存储空间（/overlay）' },
+    ct: { value: F.pct(ctPct), pct: ctPct, sub: `${s.conntrack.toLocaleString()} / ${s.conntrack_max.toLocaleString()}`, tip: '连接表的已用 / 上限。满了之后，新连接会被丢弃' },
   };
 }
 /** 运行时长（秒）→ 天 / 小时 / 分钟 */
@@ -170,7 +170,7 @@ export const tempTone = (t: number | null | undefined) => (t == null ? undefined
 /** 在线但有毛病（卡片描边变黄，状态叫「降级」）：OpenClash 启用却没在跑、WAN 断了、有出口测试不通。
  *  names：不通的出口名（取自详情；列表摘要里只有个数）。多于 3 个只列前 3 个 */
 export const routerIssues = (s: RouterSummary | null, names?: string[]): string[] => (!s ? [] : [
-  s.openclash.enabled && !s.openclash.running && 'OpenClash 已启用但核心没在运行',
+  s.openclash.enabled && !s.openclash.running && 'OpenClash 已启用但没在运行',
   !s.wan.up && 'WAN 口断开',
   s.exits.alive < s.exits.total && (names?.length ? `${names.slice(0, 3).join('、')}${names.length > 3 ? ` 等 ${names.length} 个出口` : ''} 连续两次延迟测试不通` : `${s.exits.total - s.exits.alive} 个出口连续两次延迟测试不通`),
 ].filter((x): x is string => !!x));

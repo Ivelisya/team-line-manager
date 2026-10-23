@@ -59,7 +59,7 @@ function DeleteDialog({ what, item, onClose, run }: { what: string; item: { id: 
   const held = useHeld(item?.id, item);
   return (
     <ConfirmDialog open={!!item} onOpenChange={(o) => !o && onClose()} danger confirmLabel="删除" title={`删除${what}「${held?.name ?? ''}」？`}
-      description={<>删了不能恢复 <InfoTip text={what === '供应商' ? '还有机器（含回收后等待清除的）、套餐（含已归档的）用着时删不掉，会提示还有哪些' : '还有机器用着（含回收后等待清除的）时删不掉，会提示还有哪些'} /></>}
+      description={<>删了不能恢复 <InfoTip text={what === '供应商' ? '还有机器（包括已回收、待清除的）或套餐（包括已归档的）在用，就删不掉。会提示是哪些' : '还有机器用着（含回收后等待清除的）时删不掉，会提示还有哪些'} /></>}
       onConfirm={async () => { await run(item!.id); toast.ok(`${what}「${item!.name}」已删除`); }} />
   );
 }
@@ -97,7 +97,7 @@ function TeamsTab() {
   return (
     <>
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
-      <Panel title="团队" count={list.length} sub={<><InfoTip text="首页与表格按「排序」从小到大排列；月费是在用机器按月折成美元的合计（汇率见设置 → 汇率）" />{list.some((t) => t.monthly_usd) && <span className="t-sub" style={{ marginLeft: 'var(--sp-8)' }} data-tip={partial ? '带 * 的团队有没有汇率的币种，没算进合计' : undefined}>月费合计 <span className="num">{F.money(total, 'USD')}</span>{partial ? '*' : ''}</span>}</>} tools={<Button variant="primary" size="md" onClick={() => setEdit('new')}><Plus />新建团队</Button>} flush>
+      <Panel title="团队" count={list.length} sub={<><InfoTip text={"首页和表格按「排序」从小到大排列\n月费是在用机器折成美元的合计，汇率在「设置 → 汇率」"} />{list.some((t) => t.monthly_usd) && <span className="t-sub" style={{ marginLeft: 'var(--sp-8)' }} data-tip={partial ? '带 * 的团队有币种缺汇率，没计入合计' : undefined}>月费合计 <span className="num">{F.money(total, 'USD')}</span>{partial ? '*' : ''}</span>}</>} tools={<Button variant="primary" size="md" onClick={() => setEdit('new')}><Plus />新建团队</Button>} flush>
         <TableWrap>
           <table className="dt is-one" style={{ minWidth: 630 }}>
             <colgroup><col /><col style={{ width: 90 }} /><col style={{ width: 100 }} /><col style={{ width: 110 }} /><col style={{ width: 256 }} /></colgroup>
@@ -145,7 +145,7 @@ const TeamDialog = resetOnOpen(function TeamDialog({ team, open, onClose }: { te
   return (
     <FormDialog open={open} onOpenChange={(o) => !o && onClose()} title={team === 'new' ? '新建团队' : `修改 ${team.name}`} submitLabel="保存" busy={add.isPending || patch.isPending} valid={name.trim().length > 0}
       dirty={team === 'new' ? !!(name.trim() || order) : name !== team.name || order !== String(team.sort_order)}
-      desc={team !== 'new' && <>所有节点的显示名会一起变 <InfoTip text="线路机上的备注自动同步，不换令牌、不断连接。" /></>} onSubmit={save}>
+      desc={team !== 'new' && <>所有节点的显示名会一起变 <InfoTip text="线路机上的备注会自动同步，不影响现有连接" /></>} onSubmit={save}>
       <Field label="团队名"><Input value={name} onChange={(e) => setName(e.target.value)} autoFocus /></Field>
       <Field label="排序"><Input inputMode="numeric" placeholder="越小越靠前，留空放最后" value={order} onChange={(e) => setOrder(e.target.value.replace(/\D/g, ''))} /></Field>
     </FormDialog>
@@ -163,7 +163,7 @@ const RenumberDialog = resetOnOpen(function RenumberDialog({ team, open, onClose
     <Dialog open={open} onOpenChange={(o) => !o && !apply.isPending && onClose()}>
       <DialogContent size="md">
         <DialogHeader><DialogTitle>重新编号 · {team.name}</DialogTitle>
-          <DialogDescription>去掉空号，按原顺序排成 01、02、03… <InfoTip text="退役时已自动补齐空号；这里用于手工指定过跳号的情况。" /></DialogDescription></DialogHeader>
+          <DialogDescription>去掉空号，按原顺序排成 01、02、03… <InfoTip text="退役时会自动补齐空号。这里用于手动指定过跳号的情况" /></DialogDescription></DialogHeader>
         {!pv.isFetchedAfterMount && <div className="skel" style={{ height: 80 }} />}
         {pv.isFetchedAfterMount && pv.isError && <Note tone="bad">{(pv.error as Error).message}</Note>}
         {d && (n === 0
@@ -271,14 +271,14 @@ const ProviderDialog = resetOnOpen(function ProviderDialog({ provider, open, onC
   };
   return (
     <FormDialog dirty={dirty} open={open} onOpenChange={(o) => !o && onClose()} title={provider === 'new' ? '新建供应商' : '编辑供应商'} submitLabel="保存" busy={add.isPending || patch.isPending} valid={f.name.trim() !== '' && f.code.trim() !== '' && !remindBad}
-      desc={provider !== 'new' && <>改了立即对名下机器生效 <InfoTip text="账单时区、流量重置、到期提醒是名下机器订阅的模板；在「费用」页单独设置过的除外。" /></>} onSubmit={save}>
+      desc={provider !== 'new' && <>改了立即对名下机器生效 <InfoTip text="账单时区、流量重置、到期提醒会同步到名下机器；在「费用」页单独设置过的除外" /></>} onSubmit={save}>
       <div className="form-grid">
         <Field label="名称"><Input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} autoFocus /></Field>
         <Field label="代码" info="卡片上显示的缩写"><Input value={f.code} onChange={(e) => setF({ ...f, code: e.target.value })} placeholder="如 BWH" /></Field>
         <Field label="面板地址（选填）" className="span-2"><Input value={f.panel_url} onChange={(e) => setF({ ...f, panel_url: e.target.value })} placeholder="https://" /></Field>
         <Field label="账单时区" info="到期日、流量周期按这个时区的日期算" className="span-2"><TzInput value={f.timezone} onChange={(v) => setF({ ...f, timezone: v })} emptyLabel={orgTz()} aria-label="账单时区" /></Field>
-        <Field label="流量计量" info="供应商面板怎么算本周期用量（如 GOMAMI 是取较小值）；不清楚就选取较大值，不会少算" className="span-2"><Select value={f.traffic_rule} onChange={(v) => setF({ ...f, traffic_rule: v as TrafficRule })} options={ruleOptions()} /></Field>
-        <Field label="流量重置" info="每个流量周期从哪天起（按账单时区）：按账单日 = 每台机器到期日是几号就几号，月份没有这一天按月末；滚动 30 天 = 含今天往前 30 天，没有重置日"><Select value={f.traffic_reset} onChange={(v) => setF({ ...f, traffic_reset: v as TrafficReset })} options={resetOptions()} /></Field>
+        <Field label="流量计量" info="供应商面板怎么统计本周期用量（比如 GOMAMI 取较小值）。不确定就选取较大的，不会少算" className="span-2"><Select value={f.traffic_rule} onChange={(v) => setF({ ...f, traffic_rule: v as TrafficRule })} options={ruleOptions()} /></Field>
+        <Field label="流量重置" info={"流量周期从哪天开始（按账单时区）\n按账单日：每台机器的到期日是几号，就几号重置；没有这一天的月份，月底重置\n滚动 30 天：算最近 30 天，没有固定的重置日"}><Select value={f.traffic_reset} onChange={(v) => setF({ ...f, traffic_reset: v as TrafficReset })} options={resetOptions()} /></Field>
         <Field label="到期提醒" info="到期前多少天开始提醒" error={remindBad ? '填 0–60' : undefined}><UnitInput unit="天前" width={120} inputMode="numeric" value={f.remind_days} onChange={(e) => setF({ ...f, remind_days: e.target.value.replace(/\D/g, '') })} /></Field>
       </div>
     </FormDialog>
@@ -323,7 +323,7 @@ function PlansTab() {
   return (
     <>
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
-      <Panel title="套餐" count={list.length} sub={<InfoTip text="同一套餐的机器共用这里的流量配额、价格、周期" />} tools={<><CheckRow className="is-label" checked={showArchived} onChange={setShowArchived}>显示已归档</CheckRow><Button variant="primary" onClick={() => setEdit('new')}><Plus />新建套餐</Button></>} flush>
+      <Panel title="套餐" count={list.length} sub={<InfoTip text="同一套餐的机器，共用这里的流量额度、价格和周期" />} tools={<><CheckRow className="is-label" checked={showArchived} onChange={setShowArchived}>显示已归档</CheckRow><Button variant="primary" onClick={() => setEdit('new')}><Plus />新建套餐</Button></>} flush>
         <TableWrap>
           <table className="dt" style={{ minWidth: 1000 }}>
             <colgroup><col /><col style={{ width: 130 }} /><col style={{ width: 120 }} /><col style={{ width: 96 }} /><col style={{ width: 96 }} /><col style={{ width: 110 }} /><col style={{ width: 76 }} /><col style={{ width: 196 }} /></colgroup>
@@ -357,7 +357,7 @@ function PlansTab() {
       </Panel>
       {held && <PlanDialog plan={held} open={edit != null} onClose={() => setEdit(null)} />}
       <ConfirmDialog open={!!askArchive} onOpenChange={(o) => !o && setAskArchive(null)} title={`归档「${archiveHeld?.name ?? ''}」？`} confirmLabel="归档"
-        description={<>有 {archiveHeld?.machine_count} 台机器在用 <InfoTip text="在用的机器不受影响，只是上架时不再列出这个套餐；可以随时取消归档。" /></>}
+        description={<>有 {archiveHeld?.machine_count} 台机器在用 <InfoTip text="在用的机器不受影响，只是上架时不再显示这个套餐。可以随时取消归档" /></>}
         onConfirm={() => setArchived(askArchive!, true)} />
       <DeleteDialog what="套餐" item={askDel} onClose={() => setAskDel(null)} run={(id) => delPlan.mutateAsync(id)} />
     </>
@@ -390,14 +390,14 @@ const PlanDialog = resetOnOpen(function PlanDialog({ plan, open, onClose }: { pl
   const num = (k: keyof PlanForm, label: string, unit: string, ph?: string, info?: string, hint?: string | null) => <Field label={label} info={info} hint={hint ?? undefined}><UnitInput unit={unit} width="full" inputMode="decimal" placeholder={ph} value={f[k]} onChange={(e) => setF({ ...f, [k]: e.target.value.replace(/[^\d.]/g, '') })} /></Field>;
   return (
     <FormDialog size="md" dirty={dirty} open={open} onOpenChange={(o) => !o && onClose()} title={plan === 'new' ? '新建套餐' : '编辑套餐'} submitLabel="保存" busy={add.isPending || patch.isPending} valid={f.name.trim() !== '' && f.provider_id !== ''} onSubmit={save}
-      desc={plan !== 'new' && <>{plan.machine_count ? `${plan.machine_count} 台在用，` : ''}改了立即生效 <InfoTip text="套餐是模板：同一套餐的机器共用这里的配额、价格、周期；在「费用」页单独设置过的除外。" /></>}>
+      desc={plan !== 'new' && <>{plan.machine_count ? `${plan.machine_count} 台在用，` : ''}改了立即生效 <InfoTip text="同一套餐的机器共用这里的额度、价格和周期；在「费用」页单独设置过的除外" /></>}>
       <div className="form-grid">
         <Field label="套餐名"><Input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} autoFocus /></Field>
         {/* 机器的供应商就是套餐的：有机器用着时不能换（服务端也拦） */}
         <Field label="供应商" hint={plan !== 'new' && plan.machine_count ? '有机器在用，不能换' : undefined} info={plan !== 'new' && plan.machine_count ? '要换供应商就给别的供应商另建套餐' : undefined}>
           <Select value={f.provider_id} onChange={(v) => setF({ ...f, provider_id: v })} disabled={plan !== 'new' && plan.machine_count > 0} options={providers.map((p) => ({ value: p.id, label: p.name }))} /></Field>
         {num('cpu_cores', 'CPU', '核')}{num('mem_gb', '内存', 'GiB')}{num('disk_gb', '磁盘', 'GiB')}{num('bandwidth_mbps', '带宽', 'Mbps')}
-        {num('traffic_gb', '流量', 'GB', '留空或 0 = 不限', '每个流量周期的额度；流量周期按供应商的「流量重置」')}{num('price', '价格', f.currency, undefined, '每个计费周期', usdHint)}
+        {num('traffic_gb', '流量', 'GB', '留空或 0 = 不限', '每个流量周期的额度。周期按供应商的「流量重置」来')}{num('price', '价格', f.currency, undefined, '每个计费周期', usdHint)}
         <Field label="币种"><Select value={f.currency} onChange={(v) => setF({ ...f, currency: v })} options={F.withCurrent(currencyOptions(), f.currency)} /></Field>
         <Field label="计费周期"><Select value={f.cycle} onChange={(v) => setF({ ...f, cycle: v })} options={cycleOptions()} /></Field>
         <Field label="备注" className="span-2"><Input value={f.notes} onChange={(e) => setF({ ...f, notes: e.target.value })} /></Field>

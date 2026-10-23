@@ -46,7 +46,7 @@ const KIND_GROUP: Record<string, string> = { provision: '上架' };
 
 /** 需要人工处理的失败（改软路由出口改了一半、换回失败）：胶囊换成醒目的「需人工处理」，不和普通失败混在一起 */
 const JobPill = ({ state, manual }: { state: string; manual?: JobManual | null }) => {
-  if (manual) return <Pill tone="bad" className="pill-manual" tip="软路由上的配置可能停在改了一半，先人工处理再重试">需人工处理</Pill>;
+  if (manual) return <Pill tone="bad" className="pill-manual" tip="软路由上的配置可能只改了一半，请先手动处理再重试">需手动处理</Pill>;
   const s = STATE[state] ?? { tone: 'neutral' as Tone };
   return <Pill tone={s.tone} dot={s.dot}>{jobStateLabel(state)}</Pill>;
 };
@@ -154,7 +154,7 @@ function JobDetail({ id }: { id: string }) {
     <div className="stack">
       <Panel title={<span className="row" style={{ gap: 8 }}><Link to={{ pathname: '/jobs', search }} className="icon-btn icon-btn-sm job-back" aria-label="返回列表"><ArrowLeft size={16} /></Link><span>{jobKindLabel(j.kind)} · {j.target ? <NodeHover id={j.target.id}><span>{j.target.name}</span></NodeHover> : '—'}</span></span>} tools={<>
         <JobPill state={j.state} manual={j.manual} />
-        {j.manual && <span className="t-sub">先人工处理再重试</span>}
+        {j.manual && <span className="t-sub">先手动处理再重试</span>}
         {j.state === 'failed' && <RetryButton j={j} />}
         {j.cancellable && <Button size="sm" onClick={() => setCancelAsk(true)}><Square />取消</Button>}
       </>}>
@@ -179,7 +179,7 @@ function JobDetail({ id }: { id: string }) {
           <div style={{ marginTop: 12 }}>
             <Note tone="warn">
               <span className="row row-between" style={{ gap: 12 }}>
-                <span>分享链接已变 <InfoTip text="旧链接已失效，客户端要换成新的分享链接。" /></span>
+                <span>分享链接已更新 <InfoTip text="旧链接已失效，客户端要换成新链接" /></span>
                 {j.result?.new_entry_id && <Button size="sm" onClick={() => void copyNewShareLink(j.id)}><Copy size={14} />复制新分享链接</Button>}
               </span>
             </Note>
@@ -224,7 +224,7 @@ function ManualNote({ m }: { m: JobManual }) {
   return (
     <div className="job-manual" style={{ marginBottom: 12 }}>
       <Note tone="bad" icon={<TriangleAlert size={14} />}>
-        <div className="note-title">需要人工处理</div>
+        <div className="note-title">需要手动处理</div>
         <p className="job-manual-msg">{jobText(m.message)}</p>
         <ul className="job-manual-list">
           {m.routers.map((r) => (
@@ -241,9 +241,9 @@ function ManualNote({ m }: { m: JobManual }) {
 
 /** 取消的后果：失败的上架 / 恢复作业取消后机器不再停在「上架失败」；升级 agent 只有排队中的能取消 */
 function cancelDesc(j: Job): React.ReactNode {
-  if (j.state === 'failed' && j.kind.startsWith('provision_')) return <>机器会被退役并清理 <InfoTip text="不再重试这次上架：已完成的步骤会被补偿（回滚），机器会被退役并清理，释放 IP 与编号。" /></>;
-  if (j.kind === 'upgrade_agent') return <>不升了，排在后面的也取消 <InfoTip text="这台还没开始升级，取消后不升了；「全部升级」里排在它后面、等它的机器也会跟着取消。" /></>;
-  if (j.kind === 'tune') return '不调优了';
+  if (j.state === 'failed' && j.kind.startsWith('provision_')) return <>机器会被退役并清理 <InfoTip text="这次上架不会再重试。已完成的步骤会回滚，机器退役并清理，IP 和编号释放出来" /></>;
+  if (j.kind === 'upgrade_agent') return <>不再升级，排在后面的也一起取消 <InfoTip text="这台还没开始升级。「全部升级」里排在它后面的机器，也会一起取消" /></>;
+  if (j.kind === 'tune') return '不再调优';
   return '已完成的步骤会回滚';
 }
 
@@ -260,10 +260,10 @@ function RetryButton({ j }: { j: Job }) {
   // 目标机器还没取回时不知道是不是同机 IP 节点：先不给重置（没有目标的作业不用等）
   const canReset = kind === 'host_key' && !ip && (!j.target || !!target.data);
   const [short, tip] = kind === 'host_key'
-    ? (ip ? ['宿主机的主机指纹变了', '同机 IP 节点经宿主机登录，指纹不符说明宿主机的主机指纹变了（比如宿主机重装过系统）。先确认这是预期的变化，再对宿主机「升级 agent」：它也会因为指纹不符失败，在作业页重试它并勾选「重置主机指纹」；宿主机升级成功后，回来重试这个作业。']
+    ? (ip ? ['宿主机的主机指纹变了', '同机 IP 节点经宿主机登录，指纹不符，说明宿主机的主机指纹变了（比如重装过系统）\n先确认这是预期内的变化，再对宿主机「升级 agent」：它也会因指纹不符失败，到作业页重试它，并勾选「重置主机指纹」\n宿主机升级成功后，回来重试这个作业']
       : ['主机指纹和记录的不一致', '确认机器重装过、IP 没有换给别的机器，再重置指纹重试。'])
-    : ip ? ['中控密钥登录不了宿主机', '同机 IP 节点没有引导密钥这一步，填密码也用不上：先把中控公钥（中控上的 /etc/fleet/ssh/id_ed25519.pub）加回宿主机 root 的 authorized_keys，再重试。']
-    : ['中控密钥登录不上', '可以填 SSH 密码，重试时用它重新推送中控公钥。'];
+    : ip ? ['中控密钥登录不了宿主机', '同机 IP 节点不走引导密钥这一步，填密码也没用\n请先把中控公钥（中控上的 /etc/fleet/ssh/id_ed25519.pub）加回宿主机 root 的 authorized_keys，再重试']
+    : ['中控密钥登录不上', '可以填 SSH 密码，重试时会用它重新装上中控公钥'];
   const desc = <>{short} <InfoTip text={tip} /></>;
   const [open, setOpen] = React.useState(false);
   const [reset, setReset] = React.useState(false);

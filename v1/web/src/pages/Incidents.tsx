@@ -89,7 +89,7 @@ export function IncidentsPage() {
           {/* 中控自身的告警（central_ 开头）没有机器可点开：只写对象名「中控」；软路由的（router_ 开头）打开路由抽屉 */}
           <td>{sid && isRouterIncident(i) ? <button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => openRouter(sid, routerIncidentTab(i))}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button>
             : sid ? <NodeHover id={sid}><button className="btn btn-link" style={{ maxWidth: '100%' }} onClick={() => open(sid)}><span className="ellipsis">{i.subject?.name ?? i.subject_name}</span></button></NodeHover> : (i.subject_name ?? '—')}</td>
-          <td>{i.rule_name}{i.reopen_count > 0 && <span className="sub" data-tip={`恢复后 30 分钟内又复发 ${i.reopen_count} 次，合并为这一条`}>反复 {i.reopen_count + 1} 次</span>}</td>
+          <td>{i.rule_name}{i.reopen_count > 0 && <span className="sub" data-tip={`恢复后 30 分钟内又出现 ${i.reopen_count} 次，已合并成这一条`}>反复 {i.reopen_count + 1} 次</span>}</td>
           <td><span className="cell-main" data-tip={sum}>{sum}</span>{(i.resolved_at || i.ack_at) && <span className="sub">{i.resolved_at
             ? <span data-tip={`恢复于 ${F.dtFull(i.resolved_at)}`}>已恢复 · 持续 {F.span(Date.parse(i.resolved_at) - Date.parse(i.opened_at))}</span>
             : `${i.ack_by ? F.actor(i.ack_by) : ''} 已确认 · ${F.ago(i.ack_at!)}`}</span>}</td>
@@ -208,8 +208,8 @@ function Silences() {
       <SilenceDialog open={open} onOpenChange={setOpen} preset={preset} />
       <ConfirmDialog open={!!askDel} onOpenChange={(o) => !o && setAskDel(null)} title={`删除「${delHeld?.subject_name ?? '全部机器'}」的${delHeld?.is_maintenance ? '维护窗口' : '静默'}？`} confirmLabel="删除" danger
         description={delHeld && Date.parse(delHeld.starts_at) > now
-          ? '删除即取消这次预约'
-          : '仍异常的会马上发出告警'}
+          ? '删除后，这次预约会取消'
+          : '仍然异常的机器会马上发出告警'}
         onConfirm={async () => { await del.mutateAsync(askDel!.id); toast.ok(askDel!.is_maintenance ? '已删除维护窗口' : '已删除静默'); }} />
     </>
   );
@@ -257,7 +257,7 @@ const SilenceDialog = resetOnOpen(function SilenceDialog({ open, onOpenChange, p
           {startErr ? <div className="hint is-error">{startErr}</div> : mode === 'at' && <div className="hint">最多提前 {AHEAD_DAYS} 天 <InfoTip text="按这台电脑的本地时间" /></div>}
         </div>
         <DurationField d={d} items={DURATIONS} />
-        <div className="row" style={{ gap: 4 }}><CheckRow checked={maint} onChange={setMaint}>标记为维护</CheckRow><InfoTip text="卡片显示「维护」，这条叫维护窗口" /></div>
+        <div className="row" style={{ gap: 4 }}><CheckRow checked={maint} onChange={setMaint}>标记为维护</CheckRow><InfoTip text="期间不发告警，卡片上显示「维护」" /></div>
         <Field label="备注"><Input value={comment} onChange={(e) => setComment(e.target.value)} placeholder="例如：换内核" /></Field>
       </FormDialog>
       <ConfirmDialog open={askAll} onOpenChange={setAskAll} title="静默全部机器？" confirmLabel="静默全部机器" danger

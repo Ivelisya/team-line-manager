@@ -17,7 +17,7 @@ const failCell = (p: NonNullable<EntryView['tcp']>) => <span style={{ color: 'va
 /** 出口单元格（线路机页共用）：只写通不通，悬停给出口 IP 与这次出口验证的耗时（经节点去中控，不是线路延迟）；
  *  失败的悬停看错误（英文原始错误换成中文，errText） */
 export const probeCell = (p: EntryView['egress']) => (p == null ? <span className="t-muted">—</span> : p.ok
-  ? <span data-tip={`${p.detail ? `出口 IP ${p.detail}\n` : ''}出口验证耗时 ${p.latency_ms == null ? '—' : `${Math.round(p.latency_ms)} ms`}`}>正常</span>
+  ? <span data-tip={`${p.detail ? `出口 IP ${p.detail}\n` : ''}验证耗时 ${p.latency_ms == null ? '—' : `${Math.round(p.latency_ms)} ms`}`}>正常</span>
   : failCell(p));
 /** TCP 单元格：线路机 → 节点的建连延迟，近 1 小时中位数（悬停给最近一次）；直出入口没有节点，不做 TCP 探测 */
 export const tcpCell = (e: EntryView) => {
@@ -34,9 +34,9 @@ const reachErr = (detail: string | null) => (detail ? `\n${probeErr(detail.repla
 /** 入口状态列：主探测来源（`who`：中控或探测点，reachWho）连不上 > 线路机到节点探测不通 > 刚才连不上 > 配置状态；正常的不写（一整列同一个绿胶囊没有信息，同线路页） */
 export const entryStatus = (e: EntryView, who = '中控') => {
   const reach = reachFail(e); const fail = probeFail(e); const flaky = reachFlaky(e);
-  if (reach) return <Pill tone="bad" tip={`${who}连续 ${reach.fails} 次连不上线路机的 ${e.port} 端口（${F.dt(reach.ts)} 最近一次检查）${reachErr(reach.detail)}`}>{who}连不上</Pill>;
+  if (reach) return <Pill tone="bad" tip={`${who}连续 ${reach.fails} 次连不上线路机的 ${e.port} 端口（上次检查 ${F.dt(reach.ts)}）${reachErr(reach.detail)}`}>{who}连不上</Pill>;
   if (fail) return <Pill tone="bad" tip={probeErr(fail.detail)}>{probeFailLabel(e)}</Pill>;
-  if (flaky) return <Pill tone="warn" tip={`${who}最近 ${flaky.fails} 次没连上线路机的 ${e.port} 端口（${F.dt(flaky.ts)} 最近一次检查）；连续 3 次才算连不上、告警${reachErr(flaky.detail)}`}>刚才连不上 {flaky.fails} 次</Pill>;
+  if (flaky) return <Pill tone="warn" tip={`${who}最近 ${flaky.fails} 次没连上线路机的 ${e.port} 端口（上次检查 ${F.dt(flaky.ts)}）\n连续 3 次才算连不上并告警${reachErr(flaky.detail)}`}>刚才连不上 {flaky.fails} 次</Pill>;
   return entryState(e, true);
 };
 

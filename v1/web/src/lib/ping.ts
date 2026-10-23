@@ -22,7 +22,7 @@ export const PING_MS_WARN = 320;
 export const PING_LOSS_WARN = 10;
 export const pingMsTone = (ms: number | null): BeatCell => (ms == null ? null : ms <= PING_MS_OK ? 'ok' : ms <= PING_MS_WARN ? 'warn' : 'bad');
 export const pingLossTone = (loss: number | null): BeatCell => (loss == null ? null : loss <= 0 ? 'ok' : loss <= PING_LOSS_WARN ? 'warn' : 'bad');
-export const PING_LEGEND = `线路机每分钟往外连一次各目标（每次 5 下），左边是延迟、右边是丢包，3 分钟一格、近 1 小时\n延迟：≤ ${PING_MS_OK} ms 绿 · ≤ ${PING_MS_WARN} ms 黄 · 更高红（跨境 150–200 ms 是常态）\n丢包：0 绿 · ≤ ${PING_LOSS_WARN}% 黄 · 更高红 · 灰：没有数据`;
+export const PING_LEGEND = `线路机定时测各目标。左边是延迟，右边是丢包，每格 3 分钟，共近 1 小时\n延迟：≤ ${PING_MS_OK} ms 绿 · ≤ ${PING_MS_WARN} ms 黄 · 更高红（跨境 150–200 ms 属正常）\n丢包：0 绿 · ≤ ${PING_LOSS_WARN}% 黄 · 更高红 · 灰：没有数据`;
 
 const pingBeatsQuery = { queryKey: ['ping-beats'], queryFn: ({ signal }: { signal: AbortSignal }) => get<PingBeats>('/ping-beats', signal), staleTime: 60_000, refetchInterval: 60_000 };
 /** 卡片共用一个查询，各取自己那份 */

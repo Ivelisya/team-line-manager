@@ -54,9 +54,9 @@ export function RoutersPage() {
           <Stat tone="blue" icon={<RouterIcon />} label="软路由在线" value={sum.online} unit={`/ ${all.length}`}
             caption={<><DotCount tone="bad" n={sum.offline} label="离线" />{sum.pending > 0 && <DotCount tone="neutral" n={sum.pending} label="等待接入" />}</>} />
           <Stat tone="teal" icon={<Waypoints />} label="出口可用" value={sum.alive} unit={`/ ${sum.total}`}
-            caption={<><DotCount tone="warn" n={sum.total - sum.alive} label="不通" />{sum.drift > 0 && <DotCount tone="warn" n={sum.drift} label="参数不一致" />}</>} />
+            caption={<><DotCount tone="warn" n={sum.total - sum.alive} label="不通" />{sum.drift > 0 && <DotCount tone="warn" n={sum.drift} label="与入口不一致" />}</>} />
           <Stat tone="violet" icon={<Users />} label="客户端在线" value={sum.clients} unit="台" caption="在线的软路由里" />
-          <Stat tone="sky" icon={<Shuffle />} label="代理速率" info="经 OpenClash 的流量，合计在线的软路由" value={F.inScale(sum.down_bps + sum.up_bps, F.rateScale(sum.down_bps + sum.up_bps))} unit={F.rateScale(sum.down_bps + sum.up_bps).u}
+          <Stat tone="sky" icon={<Shuffle />} label="代理速率" info="在线软路由经 OpenClash 的流量合计" value={F.inScale(sum.down_bps + sum.up_bps, F.rateScale(sum.down_bps + sum.up_bps))} unit={F.rateScale(sum.down_bps + sum.up_bps).u}
             caption={<><span>下载 <Num f={F.rate(sum.down_bps)} /></span><span>上传 <Num f={F.rate(sum.up_bps)} /></span></>} />
         </div>
       )}

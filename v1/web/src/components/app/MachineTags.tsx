@@ -16,7 +16,7 @@ export function machineTagItems(m: Src): TagItem[] {
   if (provider) items.push({ key: 'provider', c: tagColor(m.provider_code ?? provider), text: provider, tip: `供应商：${provider}` });
   if (m.kind !== 'vps') items.push({ key: 'kind', c: KIND_TAG[m.kind], text: kindLabel(m.kind), tip: `类型：${kindLabel(m.kind)}` });
   if (m.host_machine || m.ip_nodes.length) items.push({ key: 'rel' });
-  if (m.maintenance) { const t = healthLabel('maintenance'); items.push({ key: 'maint', c: 'amber', text: t, tip: `${t}：在维护窗口里，不发告警、暂停健康判定` }); }
+  if (m.maintenance) { const t = healthLabel('maintenance'); items.push({ key: 'maint', c: 'amber', text: t, tip: `${t}：在维护窗口内，不发告警，也不判断健康状态` }); }
   return items;
 }
 

@@ -50,7 +50,7 @@ export const RetireDialog = resetOnOpen(function RetireDialog({ m, open, onOpenC
   return (
     <TypedConfirmDialog open={open} onOpenChange={onOpenChange} size="md" title={`${inSpare ? '回收' : '退役'} ${m.name}？`} expected={m.name} prompt="请输入显示名" danger
       confirmLabel={mode === 'spare' ? '移入备用' : inSpare ? '立即回收' : '清理并回收'}
-      description={p && !canSpare ? <>已有连接会断开 <InfoTip text="入口会立即停用，机器移入回收站，不能恢复；要重新用只能重新上架。" /></> : undefined}
+      description={p && !canSpare ? <>已有连接会断开 <InfoTip text="入口会立即停用，机器移入回收站，无法恢复。要再用，只能重新上架" /></> : undefined}
       confirmDisabled={!p} blocked={blocked}
       onConfirm={async () => {
         const r = await retire.mutateAsync({ id: m.id, confirm: m.name, now: mode === 'now', cleanup: mode === 'now' ? cleanup : undefined, reason: reason.trim() || undefined });
@@ -75,17 +75,17 @@ export const RetireDialog = resetOnOpen(function RetireDialog({ m, open, onOpenC
         <div className="choice-list" role="radiogroup" aria-label="去向">
           <Choice checked={mode === 'spare'} onSelect={() => setPick('spare')}>
             移入备用 → {p.spare.to_name}{due && recycle ? `（到期 ${due}，${recycle} 起自动回收）` : recycle ? `（${recycle} 起自动回收）` : ''}
-            <InfoTip text={`移到团队「${p.spare.team.name}」，改名为 ${p.spare.to_name}。机器照常运行，订阅过期满 1 天后自动清理并移入回收站；要留下它，改回别的团队即可。`} />
+            <InfoTip text={`移到团队「${p.spare.team.name}」，改名为 ${p.spare.to_name}。机器照常运行，到期满 1 天后自动清理并移入回收站\n想留下它，把团队改回去就行`} />
           </Choice>
           <Choice checked={mode === 'now'} onSelect={() => setPick('now')}>
             立即清理并移入回收站 <span className="t-sub">已有连接会断开</span>
-            <InfoTip text="摘掉入口、撤销令牌、清理节点上的服务，机器移入回收站，不再出现在面板里。" />
+            <InfoTip text="移除入口、清理节点上的服务，机器移入回收站，不再显示在面板里" />
           </Choice>
         </div>
       )}
       {p && mode === 'spare' && p.spare.notes.map((n) => <Note key={n}>{n}</Note>)}
       {p && !canSpare && !inSpare && !blocked && <Note>{h ? '同机 IP 节点没有订阅，只能立即回收' : `不能移入备用：${p.spare.why}`}</Note>}
-      {h && <Note>宿主机「{h.name}」不受影响 <InfoTip text={mode === 'spare' ? '只动这个 IP 的节点。' : `只回收这个 IP 的节点：摘除它的入口${cleanup ? '，停掉宿主机上它自己的 SS 实例' : '；不清理时，它在宿主机上的 SS 实例留着'}。`} /></Note>}
+      {h && <Note>宿主机「{h.name}」不受影响 <InfoTip text={mode === 'spare' ? '只动这个 IP 的节点。' : `只回收这个 IP 的节点：移除它的入口，${cleanup ? '停掉它在宿主机上的 SS 实例' : '宿主机上的 SS 实例保留'}`} /></Note>}
       {xs.length > 0 && (
         <Note>
           <div className="note-title">同机 IP 节点会{go}：</div>
@@ -108,7 +108,7 @@ export const RetireDialog = resetOnOpen(function RetireDialog({ m, open, onOpenC
       {mode === 'now' && m.kind !== 'relay' && !blocked && (
         <div className="row" style={{ gap: 4 }}>
           <CheckRow checked={cleanup} onChange={setCleanup}>{h ? '清理这个 IP 的服务' : '清理节点上的服务'}</CheckRow>
-          <InfoTip text={h ? '停掉它在宿主机上的 SS 实例、删掉它的防火墙规则' : xs.length ? '卸载 agent 与代理服务，连同同机 IP 节点的实例' : '卸载 agent 与代理服务'} />
+          <InfoTip text={h ? '停掉它在宿主机上的 SS 实例、删掉它的防火墙规则' : xs.length ? '卸载 agent 和代理服务，同机 IP 节点的实例一起清理' : '卸载 agent 与代理服务'} />
         </div>
       )}
       {!blocked && <Field label="原因（选填）"><Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="例如：供应商到期不续" /></Field>}

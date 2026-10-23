@@ -159,8 +159,8 @@ pub(crate) fn nic_cn(m: &Value) -> String {
     if m["quota"]["rule"].is_null() || names.is_empty() { String::new() } else { format!("，按 {} 计", names.join(" + ")) }
 }
 
-/// 有额度时的已用：`1035.3 GB / 2000 GB（51%），2026-10-13 → 2026-11-13，下行、上行取较小，按 ens3 计；其中接入后实测 71.2 GB，接入前读数 964.1 GB（供应商面板读数，2026-11-13 起不再计入）`。
-/// 周期中途上架、没有接入前读数的写「2026-10-22 起统计，之前的用量不在内」；滚动 30 天写起点
+/// 有额度时的已用：`1035.3 GB / 2000 GB（51%），2026-10-13 → 2026-11-13，按 ens3 网卡，取下行和上行中较小的；接入后实测 71.2 GB，加上接入前的面板读数 964.1 GB（2026-11-13 重置后只算实测）`。
+/// 周期中途上架、没有接入前读数的写「从 2026-10-22 开始统计，之前的没算进来」；滚动 30 天写起点
 fn used_cn(m: &Value, limit: Option<i64>, pct: Option<i64>, incl: &str) -> String {
     let q = &m["quota"];
     let lim = limit.map(|g| format!(" / {g} GB")).unwrap_or_default();
@@ -172,15 +172,18 @@ fn used_cn(m: &Value, limit: Option<i64>, pct: Option<i64>, incl: &str) -> Strin
     let note = match (num(q, "/base"), q["counted_from"].as_str()) {
         // used = 接入前读数 + 接入后网卡实测：拆开写，免得和只统计接入后的本月流量对不上
         (Some(b), _) => format!(
-            "；其中接入后实测 {}，接入前读数 {}（供应商面板读数{}）",
+            "；接入后实测 {}，加上接入前的面板读数 {}{}",
             gb(num(q, "/used").unwrap_or(0.0) - b),
             gb(b),
-            q["period_end"].as_str().map(|e| format!("，{e} 起不再计入")).unwrap_or_default()
+            q["period_end"].as_str().map(|e| format!("（{e} 重置后只算实测）")).unwrap_or_default()
         ),
-        (None, Some(t)) => format!("；{} 起统计，之前的用量不在内", day_of(t)),
+        (None, Some(t)) => format!("；从 {} 开始统计，之前的没算进来", day_of(t)),
         _ => String::new(),
     };
-    format!("{}{lim}{p}，{span}，{}{}{incl}{note}", gb(num(q, "/used").unwrap_or(0.0)), rule_cn(&q["rule"]), nic_cn(m))
+    // 有网卡名时先说按哪块网卡，再说怎么取（同网页）：「按 ens3 网卡，取下行和上行中较小的」
+    let nics: Vec<&str> = m.pointer("/agent/nic_ifaces").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+    let basis = if q["rule"].is_null() || nics.is_empty() { rule_cn(&q["rule"]).to_string() } else { format!("按 {} 网卡，{}", nics.join("、"), rule_cn(&q["rule"])) };
+    format!("{}{lim}{p}，{span}，{basis}{incl}{note}", gb(num(q, "/used").unwrap_or(0.0)))
 }
 
 /// 本月流量（组织时区，十进制自动单位，同网页）：有 agent 的按网卡 `网卡 ↓ 1.1 TB / ↑ 108.0 GB`，家宽代理、同机 IP 节点按业务（下载 / 上传，含已移除入口）；
@@ -589,11 +592,11 @@ mod tests {
             "base": 869_700_000_000i64, "base_at": "2026-10-22T07:30:00Z", "counted_from": null}});
         assert_eq!(
             used_cn(&q, Some(2000), Some(45), ""),
-            "901.6 GB / 2000 GB（45%），2026-10-13 → 2026-11-13，下行、上行取较小，按 ens3 计；其中接入后实测 31.9 GB，接入前读数 869.7 GB（供应商面板读数，2026-11-13 起不再计入）"
+            "901.6 GB / 2000 GB（45%），2026-10-13 → 2026-11-13，按 ens3 网卡，取下行和上行中较小的；接入后实测 31.9 GB，加上接入前的面板读数 869.7 GB（2026-11-13 重置后只算实测）"
         );
         // 滚动 30 天、周期中途上架（日期按组织时区）；业务流量不写网卡
         let q = json!({"agent": {"nic_ifaces": ["eth0"]}, "quota": {"used": 31_900_000, "period_start": "2026-09-24", "period_end": null, "rule": null, "base": null, "counted_from": "2026-10-21T17:10:00Z"}});
-        assert_eq!(used_cn(&q, Some(1000), Some(0), ""), "0.03 GB / 1000 GB（0%），2026-09-24 起，业务流量；2026-10-22 起统计，之前的用量不在内");
+        assert_eq!(used_cn(&q, Some(1000), Some(0), ""), "0.03 GB / 1000 GB（0%），2026-09-24 起，业务流量；从 2026-10-22 开始统计，之前的没算进来");
         // 不限流量只写本月：有 agent 按网卡，家宽代理按业务（含已移除入口）
         let m = json!({"nic": {"month_rx": 1_044_400_000_000i64, "month_tx": 108_000_000_000i64}, "month_counted_from": "2026-10-21T17:10:00Z"});
         assert_eq!(month_cn(&m), "网卡 ↓ 1.0 TB / ↑ 108.0 GB（2026-10-22 起）");

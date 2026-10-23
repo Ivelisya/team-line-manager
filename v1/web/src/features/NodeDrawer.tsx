@@ -198,7 +198,7 @@ function OverviewTab({ m }: { m: MachineView }) {
           <LabelValue label="上架时间">{F.dtFull(m.activated_at)}</LabelValue>
           {m.lifecycle === 'retired' ? null : m.agent ? <>
             <LabelValue label="agent 版本">{`${m.agent.version ?? '未知'}${ofHost}`}</LabelValue>
-            <LabelValue label="最近上报">{m.agent.last_report_at ? F.ago(m.agent.last_report_at) : '尚未上报'}</LabelValue>
+            <LabelValue label="最近上报">{m.agent.last_report_at ? F.ago(m.agent.last_report_at) : '还没上报'}</LabelValue>
           </> : <LabelValue label="agent"><>无 <InfoTip text="家宽代理不装 agent：没有主机读数，连通性靠线路机的探测" /></></LabelValue>}
           {/* TCP 不通与出口不通分开数（同线路页）：TCP 只数经节点的入口（直出入口没有 TCP 探测），出口数全部在用的入口 */}
           <LabelValue label="入口探测">{probeCounts(m)}</LabelValue>
@@ -263,12 +263,12 @@ function RecentIncidents({ m }: { m: MachineView }) {
                 <div className="audit-body">
                   <div className="audit-head">
                     <span className="audit-what" data-tip={errText(i.summary)}><b>{i.rule_name}</b></span>
-                    {settling ? <span className="audit-meta" data-tip="原因已消失，持续一段时间没有复发就自动恢复">恢复观察中</span>
+                    {settling ? <span className="audit-meta" data-tip="原因已消失，持续一段时间没有再出现就自动恢复">恢复观察中</span>
                       : <span className="audit-meta" data-tone={firing ? severityOf(i.severity).tone : undefined}>{firing ? '进行中' : '已恢复'}</span>}
                   </div>
                   <div className="audit-detail hint">
                     {incidentSpan(i)}
-                    {i.reopen_count > 0 && <> · <span data-tip={`恢复后 30 分钟内又复发 ${i.reopen_count} 次，合并为这一条`}>反复 {i.reopen_count + 1} 次</span></>}
+                    {i.reopen_count > 0 && <> · <span data-tip={`恢复后 30 分钟内又出现 ${i.reopen_count} 次，已合并成这一条`}>反复 {i.reopen_count + 1} 次</span></>}
                   </div>
                 </div>
               </li>

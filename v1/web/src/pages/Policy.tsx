@@ -99,7 +99,7 @@ export function PolicyPage() {
 
   return (
     <div className="stack">
-      <PageHead title="访问监控" note={<>访问规则 <InfoTip text="改动先存为草稿，发布后才会应用到线路机" /></>} tools={<AccessViewSwitch value="policy" />} />
+      <PageHead title="访问监控" note={<>访问规则 <InfoTip text="改动先存为草稿，发布后才会生效" /></>} tools={<AccessViewSwitch value="policy" />} />
 
       <div className="pol-bar" data-draft={draftCount > 0 ? '1' : undefined}>
         <div className="pol-bar-main">
@@ -259,12 +259,12 @@ function Editor({ scope, name, sp, team, node, onDirty }: { scope: 'team' | 'nod
   const modes: PolicyMode[] = scope === 'node' ? ['inherit', 'observe', 'allowlist', 'denylist', 'blocked'] : ['observe', 'allowlist', 'denylist', 'blocked'];
 
   return (
-    <Panel className="pol-edit" title={name} count={scope === 'team' ? '团队策略' : '节点策略'}
+    <Panel className="pol-edit" title={name} count={scope === 'team' ? '团队规则' : '节点规则'}
       sub={scope === 'team' ? <InfoTip text="团队内选了「跟随团队」的节点都会使用这里的设置" /> : `当前生效：${modeLabel(node!.effective.mode)}${node!.effective.source === 'team' ? `（来自 ${team.name}）` : ''}`}>
       <div className="pol-form">
         {stale && (
           <Note tone="warn">
-            草稿已被别人改过 <InfoTip text="直接保存会提示冲突；载入最新内容会丢掉你的修改。" />
+            草稿已被别人改过 <InfoTip text="直接保存会提示冲突。载入最新的，会丢掉你正在改的内容" />
             <Button size="sm" variant="secondary" style={{ marginLeft: 8 }} onClick={() => load(sp)}>载入最新</Button>
           </Note>
         )}
@@ -277,7 +277,7 @@ function Editor({ scope, name, sp, team, node, onDirty }: { scope: 'team' | 'nod
 
         {/* 只有白名单 / 黑名单用域名列表：别的模式不显示（已填的内容留着，切回来仍在） */}
         {uses && <div className="field">
-          <span className="field-label"><span className="label">域名<span className="pol-count"> · {fmtN(parsed.domains.length)} 个有效</span></span><InfoTip text="逗号、中文逗号、空格、换行都可以分隔；填 example.com 会同时匹配它的所有子域名，=example.com 只匹配它本身。" /></span>
+          <span className="field-label"><span className="label">域名<span className="pol-count"> · {fmtN(parsed.domains.length)} 个有效</span></span><InfoTip text={"用逗号、空格或换行分隔\nexample.com 会连同所有子域名一起匹配，=example.com 只匹配它自己"} /></span>
           <div className="pol-ed" data-bad={showIssues.length > 0 || (noDomains && touched) ? '1' : undefined}>
             <Gutter lines={lines.length} bad={badLines} />
             <Textarea className="pol-ta" value={text} wrap="off" spellCheck={false} autoComplete="off" aria-label="域名列表" aria-invalid={showIssues.length > 0 ? true : undefined}
@@ -386,7 +386,7 @@ const PreviewDialog = resetOnOpen(function PreviewDialog({ open, onOpenChange }:
         <DialogContent size="lg">
           <DialogHeader>
             <DialogTitle>预览：发布后会怎样</DialogTitle>
-            <DialogDescription>{d ? <>按最近 {d.window_hours} 小时的访问模拟 <InfoTip text="按访问汇总模拟，实际结果以发布后为准。" /></> : '正在模拟…'}</DialogDescription>
+            <DialogDescription>{d ? <>根据最近 {d.window_hours} 小时的访问估算 <InfoTip text="这只是估算，实际以发布后为准" /></> : '正在估算…'}</DialogDescription>
           </DialogHeader>
           {!q.isFetchedAfterMount && <SkeletonRows rows={4} list />}
           {q.isFetchedAfterMount && q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
@@ -396,7 +396,7 @@ const PreviewDialog = resetOnOpen(function PreviewDialog({ open, onOpenChange }:
               <div className="pol-sum">
                 <div><span>草稿</span><b>{d.draft_count}</b><small>份</small></div>
                 <div><span>更新线路机</span><b>{d.affected_relays}</b><small>台</small></div>
-                <div><span>会被阻止的连接</span><b>{fmtN(totalBlock)}</b><small>{total > 0 ? `占 ${pctText(totalBlock, total)}` : '近 24h 无记录'}</small></div>
+                <div><span>会被阻止的连接</span><b>{fmtN(totalBlock)}</b><small>{total > 0 ? `占 ${pctText(totalBlock, total)}` : '近 24 小时无记录'}</small></div>
               </div>
               <ChangeList changes={d.changes} />
               {d.nodes.length === 0
@@ -405,7 +405,7 @@ const PreviewDialog = resetOnOpen(function PreviewDialog({ open, onOpenChange }:
                   <div className="table-wrap is-boxed is-capped">
                     <table className="dt" style={{ minWidth: 620 }}>
                       <colgroup><col style={{ width: 120 }} /><col style={{ width: 96 }} /><col style={{ width: 84 }} /><col style={{ width: 96 }} /><col /></colgroup>
-                      <thead><tr><th>节点</th><th>模式</th><th className="r">24h 连接</th><th className="r">将阻止</th><th>被阻止最多的域名</th></tr></thead>
+                      <thead><tr><th>节点</th><th>模式</th><th className="r">24 小时连接</th><th className="r">将阻止</th><th>被阻止最多的域名</th></tr></thead>
                       <tbody>
                         {/* 改到的团队里还没有节点（或节点都有自己的规则）：只有这次没变的别处节点，先写明没有节点受影响 */}
                         {changed.length === 0 && <tr><td colSpan={5} className="t-muted">没有节点的规则因这次发布改变</td></tr>}
@@ -441,7 +441,7 @@ const PreviewDialog = resetOnOpen(function PreviewDialog({ open, onOpenChange }:
         </DialogContent>
       </Dialog>
       <ConfirmDialog open={ask} onOpenChange={setAsk} confirmLabel="确认发布" title={`发布 ${d?.draft_count ?? 0} 份草稿？`}
-        description={<>立即生效，可以回滚 <InfoTip text={`${d?.affected_relays ? `${d.affected_relays} 台线路机会热加载新的路由规则（不重启 Xray，已建立的连接不受影响）。` : '不需要线路机做任何事。'}可以在「发布记录」里回滚。`} /></>}
+        description={<>立即生效，可以回滚 <InfoTip text={`${d?.affected_relays ? `${d.affected_relays} 台线路机会直接载入新规则，不重启，已有连接不受影响` : '不需要线路机做任何事'}\n之后可以在「发布记录」里回滚`} /></>}
         onConfirm={async () => {
           if (!d?.draft_hash) throw new Error('草稿已变化，请重新预览');
           const v = await publish.mutateAsync(d.draft_hash);
@@ -478,7 +478,7 @@ function VersionsPanel() {
   const list = q.data ?? [];
   return (
     <>
-      <Panel title="发布记录" count={q.data ? `最近 ${list.length} 个版本` : undefined} sub={<InfoTip text="每次发布都是一个完整快照；回滚 = 把旧版本作为新版本再发布一次" />} flush>
+      <Panel title="发布记录" count={q.data ? `最近 ${list.length} 个版本` : undefined} sub={<InfoTip text="每次发布都保存完整的规则。回滚就是把旧版本再发布一次" />} flush>
         {q.isError && <div style={{ padding: 'var(--sp-12) var(--card-pad)' }}><ErrorNote error={q.error} onRetry={() => void q.refetch()} /></div>}
         {q.isLoading ? <SkeletonRows rows={3} head /> : list.length === 0 && !q.isError ? (
           <Empty icon={<ShieldCheck size={22} />} text="还没有发布过访问规则" />
@@ -504,7 +504,7 @@ function VersionsPanel() {
         )}
       </Panel>
       <ConfirmDialog open={!!ask} onOpenChange={(o) => !o && setAsk(null)} confirmLabel="回滚" title={`回滚到版本 v${askHeld?.seq ?? ''}？`}
-        description={<>作为新版本发布，草稿不受影响 <InfoTip text="会把当前生效的访问规则整体换成这个版本的内容，作为新版本发布并应用到线路机。" /></>}
+        description={<>作为新版本发布，草稿不受影响 <InfoTip text="当前规则会整体换成这个版本的内容，并作为新版本发布" /></>}
         onConfirm={async () => { const v = await rollback.mutateAsync(ask!.id); toast.ok(`已回滚，新版本 v${v.seq}`); }}>
         {/* 回滚实际会改什么（当前 → 这个版本）：「模拟团队A：黑名单 → 仅观察」 */}
         {pv.isError ? <ErrorNote error={pv.error} onRetry={() => void pv.refetch()} />

@@ -31,7 +31,7 @@ fn fetch() -> Option<Value> {
         "cycles": [{"key": "monthly", "label": "月", "months": 1}, {"key": "quarterly", "label": "季", "months": 3},
                    {"key": "semiannual", "label": "半年", "months": 6}, {"key": "yearly", "label": "年", "months": 12}],
         "kinds": {"vps": "VPS 节点", "proxy": "家宽代理", "relay": "线路机"},
-        "traffic_rules": {"min": "下行、上行取较小", "max": "下行、上行取较大", "sum": "下行 + 上行", "out": "只算上行"},
+        "traffic_rules": {"min": "取下行和上行中较小的", "max": "取下行和上行中较大的", "sum": "下行加上行", "out": "只算上行"},
         "traffic_resets": {"month": "自然月", "billing": "账单日", "rolling30": "滚动 30 天"},
         "entry_states": {"pending": "应用中", "active": "运行中", "disabled": "已停用", "removing": "移除中", "removed": "已移除"},
         "severities": {"critical": {"label": "严重"}, "warning": {"label": "警告"}, "info": {"label": "提示"}},

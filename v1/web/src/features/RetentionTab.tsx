@@ -13,7 +13,7 @@ import { SkeletonRows } from '@/components/ui/skeleton';
 export function RetentionTab() {
   const q = useAccessRetention();
   return (
-    <Panel title={<>访问记录保留期<InfoTip text="访问监控的数据存多久；超过保留期的每天自动清理" /></>}>
+    <Panel title={<>访问记录保留期<InfoTip text="访问数据保存多久。超过的会每天自动清理" /></>}>
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       {q.isLoading ? <SkeletonRows rows={2} /> : q.data && <RetentionForm key={`${q.data.raw_days}-${q.data.hourly_days}`} r={q.data} />}
     </Panel>
@@ -38,10 +38,10 @@ function RetentionForm({ r }: { r: AccessRetention }) {
     <>
       {/* 两个输入框与保存按钮收成一组：按钮跟在表单下面，不单独落在面板右下 */}
       <div className="row" style={{ gap: 'var(--sp-24)', alignItems: 'flex-start' }}>
-        <Field label="原始记录" info="每一条连接：访问监控的「原始记录」页签按它查" error={raw !== '' ? rawErr : undefined}>
+        <Field label="原始记录" info="每一条连接的记录，「原始记录」页签查的就是它" error={raw !== '' ? rawErr : undefined}>
           <UnitInput unit="天" width={120} inputMode="numeric" maxLength={3} value={raw} onChange={(e) => setRaw(e.target.value.replace(/\D/g, ''))} />
         </Field>
-        <Field label="小时汇总" info="按小时汇总的统计：域名、来源、节点概览和曲线。「30 天」时间范围要它至少 30 天；不能比原始记录短" hint={r.profile_days > r.hourly_days ? `来源画像按学习期留 ${r.profile_days} 天` : undefined} error={hourly !== '' ? hourlyErr : undefined}>
+        <Field label="小时汇总" info={"按小时汇总的统计，用于域名、来源、节点概览和曲线\n要看「30 天」范围，至少要保留 30 天；不能比原始记录短"} hint={r.profile_days > r.hourly_days ? `来源画像按学习期留 ${r.profile_days} 天` : undefined} error={hourly !== '' ? hourlyErr : undefined}>
           <UnitInput unit="天" width={120} inputMode="numeric" maxLength={3} value={hourly} onChange={(e) => setHourly(e.target.value.replace(/\D/g, ''))} />
         </Field>
       </div>

@@ -462,7 +462,7 @@ mod tests {
         let old = json!({"name": "甲", "code": "A", "timezone": null, "panel_url": null, "traffic_rule": "max", "traffic_reset": "month", "remind_days": 7});
         let a = ProviderArgs { code: Some("A".into()), tz: Some("Asia/Tokyo".into()), traffic_rule: Some("min".into()), remind_days: Some(7), ..Default::default() };
         let ch = changes(&old, &provider_body(None, &a), &PROVIDER_CN, &|k, v, _| provider_field(k, v));
-        assert_eq!(diff_text(&ch), "账单时区 跟随组织（北京时间） → Asia/Tokyo、流量计量 下行、上行取较大 → 下行、上行取较小");
+        assert_eq!(diff_text(&ch), "账单时区 跟随组织（北京时间） → Asia/Tokyo、流量计量 取下行和上行中较大的 → 取下行和上行中较小的");
     }
 
     #[test]

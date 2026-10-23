@@ -82,7 +82,7 @@ const SmallInfo = memo(function SmallInfo({ entry, plan, dueDays, dueState, recy
 function Hold({ m }: { m: MachineView }) {
   const now = useNow(true, 60_000);
   const off = m.agent && !m.agent.online;
-  const text = off ? (m.agent!.last_report_at ? `agent 离线 ${F.span(now - Date.parse(m.agent!.last_report_at))}` : 'agent 尚未上报') : m.lifecycle === 'provisioning' ? '上架完成后开始采集' : '暂无主机指标';
+  const text = off ? (m.agent!.last_report_at ? `agent 离线 ${F.span(now - Date.parse(m.agent!.last_report_at))}` : 'agent 还没上报') : m.lifecycle === 'provisioning' ? '上架完成后才有数据' : '暂无主机数据';
   return <div className="nc-res"><div className="nc-hold"><ServerOff />{text}</div></div>;
 }
 
@@ -210,14 +210,14 @@ function QuotaSlot({ m, onOpen, large }: { m: MachineView; onOpen: Open; large?:
 const BeatSlot = memo(function BeatSlot({ id, kind, lifecycle, reason, reasonKey, onOpen, tcp, tcpTip, egressOk, tcpFail, egressFail, all, off, usable, tcpBad, egressBad, reachBad }: { id: string; kind: MachineView['kind']; lifecycle: MachineView['lifecycle']; reason: string | undefined; reasonKey: string | undefined; onOpen: Open } & ReturnType<typeof probeSummary>) {
   const live = lifecycle === 'active';
   const src = useReachLabel();
-  const relayTip = `入口可用 = 线路机到节点的 TCP 与出口都通的在用入口数（TCP 不通 ${tcpBad} 条 · 出口不通 ${egressBad} 条${off ? ` · 停用 ${off} 条不计` : ''}）。下面的格子是${reachWho(src)}连线路机本身的结果`;
+  const relayTip = `能用的入口数：线路机到节点的 TCP 和出口都通才算\nTCP 不通 ${tcpBad} 条 · 出口不通 ${egressBad} 条${off ? ` · 停用 ${off} 条不计` : ''}\n下面的格子是${reachWho(src)}连线路机的结果`;
   const bq = useProbeBeats(useCallback((d: ProbeBeats) => d[id], [id]));
   const beats = bq.data;
   const rtt = kind === 'relay' && live ? relayRttMs(beats) : null;
-  const rttTag = rtt == null ? null : <> · <span data-tip={`${src?.label ?? '探测点'}到这台线路机的建连延迟，近 1 小时中位数`}>延迟 <b className="num">{Math.round(rtt)} ms</b></span></>;
+  const rttTag = rtt == null ? null : <> · <span data-tip={`${src?.label ?? '探测点'}连到这台线路机的延迟，近 1 小时中位数`}>延迟 <b className="num">{Math.round(rtt)} ms</b></span></>;
   const rate = kind === 'proxy' && live ? beatRate(beats) : null;
   const empty = live && bq.isSuccess && !beats?.some((b) => b[0] > 0); // 整条都没有探测：标题写明、格子画虚线，不是 20 格灰块
-  const cap = !live ? <span className="t-muted">{lifecycle === 'retired' ? '已退役' : '尚未开始探测'}</span>
+  const cap = !live ? <span className="t-muted">{lifecycle === 'retired' ? '已退役' : '还没开始探测'}</span>
     : kind === 'relay' && reason ? <><span className="nc-reason" data-tip={reason}>{reasonKey === 'relay_unreachable' ? (reachBad ? `${reachWho(src)}连不上 ${reachBad} 个入口` : `${reachWho(src)}连不上入口`) : reason}</span> · <span data-tip={relayTip}>入口可用 <b className="num">{usable}/{all}</b></span>{rttTag}</>
     : reason ? <span className="nc-reason" data-tip={reason}>{reason}</span>
     : empty ? <span className="t-muted">暂无探测</span>

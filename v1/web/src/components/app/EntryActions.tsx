@@ -57,11 +57,11 @@ export function EntryMenus({ entries, children }: { entries: EntryView[]; childr
       </>)}
 
       {dlg?.k === 'disable' && <ConfirmDialog open={dlg.open} onOpenChange={hide} title={`停用入口 ${entryLabel(dlg.e)}？`}
-        description={<>已有连接会断开 <InfoTip text="停用后入口立即不再转发流量；可随时重新启用。" /></>} confirmLabel="停用入口" danger
+        description={<>已有连接会断开 <InfoTip text="停用后入口立即停止转发，随时可以重新启用" /></>} confirmLabel="停用入口" danger
         onConfirm={async () => { await act.mutateAsync({ id: dlg.e.id, action: 'disable' }); toast.ok(`入口 ${entryLabel(dlg.e)} 已停用`); }} />}
 
       {dlg?.k === 'rotate' && <TypedConfirmDialog open={dlg.open} onOpenChange={hide} title={`轮换入口 ${entryLabel(dlg.e)} 的凭据？`} expected={entryLabel(dlg.e)} confirmLabel="轮换凭据" danger
-        description={<>旧分享链接会立即失效 <InfoTip text="会生成新的凭据，需要把新的分享链接重新发给使用者。" /></>}
+        description={<>旧分享链接会立即失效 <InfoTip text="会生成新的凭据，要把新的分享链接重新发给客户" /></>}
         onConfirm={async () => {
           const e = dlg.e;
           await act.mutateAsync({ id: e.id, action: 'rotate', confirm: entryLabel(e) });

@@ -11,13 +11,13 @@ import { toast } from '@/components/ui/toast';
 import { ErrorNote, Panel, TableWrap } from '@/components/app/primitives';
 
 const MODE_ITEMS = [{ value: 'tcp', label: 'TCP 建连' }, { value: 'icmp', label: 'ICMP' }];
-const MODE_TIP = 'TCP：建连量往返时间，目标不写端口时连 80；ICMP：线路机上的系统 ping，用不了时这一轮退回 TCP（卡片悬停里写实际用的方式）';
-const TARGET_TIP = 'host、host:port、[IPv6]:port；留空不测';
+const MODE_TIP = 'TCP：测连接建立的往返时间，目标没写端口就连 80\nICMP：用线路机上的 ping，用不了时这一轮改用 TCP（实际用了哪种，看卡片上的悬停）';
+const TARGET_TIP = '可以填 host、host:port 或 [IPv6]:port。留空就不测';
 
 export function PingTab() {
   const q = usePingTargets();
   return (
-    <Panel title={<>三网 PING<InfoTip text="线路机每分钟往外连一轮这些目标（每个 5 次），记延迟中位数与丢包，显示在线路机卡片与抽屉的连接质量里；每台线路机可以在「管理」里单独覆盖" /></>}>
+    <Panel title={<>三网 PING<InfoTip text={"线路机定时测这些目标的延迟和丢包，结果显示在线路机的卡片和「连接质量」里\n每台线路机可以在「管理」里单独设置"} /></>}>
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       {q.isLoading ? <SkeletonRows rows={4} /> : q.data && <GlobalForm key={JSON.stringify(q.data.slots) + q.data.mode} mode={q.data.mode} slots={q.data.slots} />}
     </Panel>
@@ -35,7 +35,7 @@ function GlobalForm({ mode: m0, slots: s0 }: { mode: string; slots: PingSlot[] }
       <label className="row" style={{ gap: 8 }}>方式<InfoTip text={MODE_TIP} /><Select sm aria-label="方式" value={mode} onChange={setMode} options={MODE_ITEMS} /></label>
       <TableWrap>
         <table className="table">
-          <thead><tr><th style={{ width: 48 }}>槽位</th><th>名称</th><th>目标<InfoTip text={TARGET_TIP} /></th></tr></thead>
+          <thead><tr><th style={{ width: 48 }}>序号</th><th>名称</th><th>目标<InfoTip text={TARGET_TIP} /></th></tr></thead>
           <tbody>
             {slots.map((s, i) => (
               <tr key={i}>
@@ -48,7 +48,7 @@ function GlobalForm({ mode: m0, slots: s0 }: { mode: string; slots: PingSlot[] }
         </table>
       </TableWrap>
       <div className="row">
-        <Button variant="primary" disabled={!dirty} loading={save.isPending} onClick={() => save.mutate({ mode, slots }, { onSuccess: () => toast.ok('已保存，线路机一分钟内按新目标测'), onError: toast.err })}><Radar />保存</Button>
+        <Button variant="primary" disabled={!dirty} loading={save.isPending} onClick={() => save.mutate({ mode, slots }, { onSuccess: () => toast.ok('已保存，线路机很快会按新目标测'), onError: toast.err })}><Radar />保存</Button>
       </div>
     </div>
   );
@@ -73,7 +73,7 @@ function OverrideForm({ id, global, over }: { id: string; global: { mode: string
   const submit = () => {
     const o: PingOverride = { mode: mode === 'global' ? null : (mode as 'tcp' | 'icmp'), slots };
     const empty = o.mode == null && slots.every((s) => s == null);
-    save.mutate(empty ? null : o, { onSuccess: () => toast.ok('已保存，这台一分钟内按新目标测'), onError: toast.err });
+    save.mutate(empty ? null : o, { onSuccess: () => toast.ok('已保存，这台很快会按新目标测'), onError: toast.err });
   };
   return (
     <div className="stack" style={{ gap: 'var(--sp-12)' }}>
@@ -82,7 +82,7 @@ function OverrideForm({ id, global, over }: { id: string; global: { mode: string
       </label>
       <TableWrap>
         <table className="table">
-          <thead><tr><th style={{ width: 48 }}>槽位</th><th style={{ width: 96 }}>单独设置</th><th>名称</th><th>目标<InfoTip text={TARGET_TIP} /></th></tr></thead>
+          <thead><tr><th style={{ width: 48 }}>序号</th><th style={{ width: 96 }}>单独设置</th><th>名称</th><th>目标<InfoTip text={TARGET_TIP} /></th></tr></thead>
           <tbody>
             {slots.map((s, i) => (
               <tr key={i}>

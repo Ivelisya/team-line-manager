@@ -41,7 +41,7 @@ export default function CommandPalette({ theme }: { theme: Theme }) {
       </CommandDialog>
 
       <ConfirmDialog open={askUpgrade} onOpenChange={setAskUpgrade} title="升级全部 agent？" confirmLabel="全部升级"
-        description={<>先升一台金丝雀，失败自动回滚 <InfoTip text={'先升一台做金丝雀（有线路机先挑线路机），它成功后线路机逐台升级，线路机都成功后 VPS 节点并发。\n新版本起不来、2 分钟内没有上报，或线路机上 Xray 不正常，会自动换回旧版本；出在金丝雀或线路机上时，没开始的都会取消（连不上、推送之前就失败的只算那一台）。\n排队中的可以在作业详情里取消。已有进行中作业的机器会跳过；升级时 agent 会重启，不影响线路上的连接。'} /></>}
+        description={<>先升级一台，没问题再继续；失败会自动回滚 <InfoTip text={'顺序：先升一台（有线路机就先选线路机），成功后线路机逐台升，全部成功后节点一起升\n新版本没起来、2 分钟内没有上报，或线路机上的代理不正常，会自动换回旧版本。先行的那台或线路机出问题时，没开始的会全部取消\n已有作业在跑的机器会跳过。升级时 agent 会重启，不影响线路上的连接\n排队中的可以在作业详情里取消'} /></>}
         onConfirm={async () => { const r = await upgradeAll.mutateAsync(); toast.ok(`已提交 ${r.jobs.length} 个升级作业：${r.order}`); }} />
     </>
   );
@@ -127,7 +127,7 @@ function PaletteBody({ theme, askUpgrade }: { theme: Theme; askUpgrade: () => vo
         {machineItems.length > 0 && (
           <CommandGroup heading={mode === 'copy-ip' ? '复制 IP' : mode === 'evacuate' ? '线路机' : mode === 'renew' ? '登记续费' : mode === 'terminal' ? '打开终端' : '机器'}>
             {machineItems}
-            {!q && mode !== 'evacuate' && pool.length > LIMIT && <div className="cmd-more">还有 {pool.length - LIMIT} 台，输入以搜索</div>}
+            {!q && mode !== 'evacuate' && pool.length > LIMIT && <div className="cmd-more">还有 {pool.length - LIMIT} 台，输入关键字可搜索</div>}
           </CommandGroup>
         )}
       </CommandList>

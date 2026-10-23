@@ -123,7 +123,7 @@ export const AccessTab = React.memo(function AccessTab({ id, relay }: { id: stri
           {none ? (
             <Empty icon={<Radar size={22} />} text={`最近 ${long}没有访问记录`} />
           ) : d.top_domains.length === 0 ? (
-            <div className="hint">这段时间没有汇总数据 <InfoTip text="汇总每 5 分钟更新一次，下方「最近记录」是实时的。" /></div>
+            <div className="hint">这段时间没有汇总数据 <InfoTip text="汇总会稍有延迟，下方的「最近记录」是实时的" /></div>
           ) : (
             <>
               <HostBars items={d.top_domains} limit={all ? undefined : 10} />

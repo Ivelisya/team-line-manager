@@ -213,7 +213,7 @@ pub const JOB_KINDS: Labels = &[
     ("provision_proxy", "上架家宽代理"),
     ("provision_relay", "上架线路机"),
     ("provision_ip", "上架同机 IP 节点"),
-    ("attach_entry", "新增入口"),
+    ("attach_entry", "添加入口"),
     ("move_entry", "换线路机"),
     // 恢复已退役机器已删掉：留着名字，旧作业记录照样显示
     ("restore_vps", "恢复 VPS 节点"),
@@ -238,13 +238,13 @@ pub const JOB_STATES: Labels = &[
 ];
 
 /// 作业步骤的状态（compensated：作业取消或失败后，做过的步骤被逆序撤销）
-pub const STEP_STATES: Labels = &[("pending", "等待"), ("running", "进行中"), ("done", "已完成"), ("skipped", "已跳过"), ("failed", "失败"), ("compensated", "已补偿")];
+pub const STEP_STATES: Labels = &[("pending", "等待"), ("running", "进行中"), ("done", "已完成"), ("skipped", "已跳过"), ("failed", "失败"), ("compensated", "已回滚")];
 
 /// 入口状态：pending / removing 是等线路机应用
 pub const ENTRY_STATES: Labels = &[("pending", "应用中"), ("active", "运行中"), ("disabled", "已停用"), ("removing", "移除中"), ("removed", "已移除")];
 
 /// 供应商的网卡计量规则（流量额度怎么量）；没有网卡读数的（家宽代理、同机 IP 节点）按业务流量
-pub const TRAFFIC_RULES: Labels = &[("min", "下行、上行取较小"), ("max", "下行、上行取较大"), ("sum", "下行 + 上行"), ("out", "只算上行")];
+pub const TRAFFIC_RULES: Labels = &[("min", "取下行和上行中较小的"), ("max", "取下行和上行中较大的"), ("sum", "下行加上行"), ("out", "只算上行")];
 pub const DEFAULT_TRAFFIC_RULE: &str = "max";
 /// 供应商的流量重置方式：month = 账单时区的自然月（每月 1 号），billing = 每个账单日（到期日几号），
 /// rolling30 = 滚动 30 天（账单时区的今天往前 29 天起，没有重置日）
@@ -265,7 +265,7 @@ pub const RULES: Labels = &[
     ("clock_skew", "agent 时钟不准"),
     ("no_entry", "没有在用入口"),
     ("egress_fail", "出口不通"),
-    ("tcp_fail", "线路到节点不通"),
+    ("tcp_fail", "线路机到节点不通"),
     ("renewal_due", "即将到期"),
     // 已过期并进了 renewal_due（严重）：留着名字，旧告警记录照样显示
     ("renewal_overdue", "已过期"),
@@ -280,7 +280,7 @@ pub const RULES: Labels = &[
     ("ipintel_new_isp", "来源出现新运营商"),
     ("ipintel_new_city", "来源出现新城市"),
     ("ipintel_datacenter_source", "机房 / VPN 来源"),
-    ("policy_blocked", "访问策略暂停"),
+    ("policy_blocked", "访问规则暂停"),
     ("central_channel_failing", "通知渠道发送失败"),
     ("central_backup_stale", "备份过期"),
     ("central_disk_low", "中控磁盘空间不足"),

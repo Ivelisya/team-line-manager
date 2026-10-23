@@ -186,10 +186,10 @@ export function localIssues(r: Row): { key: keyof Row; msg: string }[] {
   if (r.due_date && !/^\d{4}-\d{2}-\d{2}$/.test(r.due_date)) add('due_date', '到期日格式应为 YYYY-MM-DD');
   if (r.price.trim() && !isFinite(Number(r.price))) add('price', '费用应为数字');
   // 费用只挂在订阅上：没有到期日就没有订阅，填了的费用会被悄悄丢掉——在这里拦下
-  if (r.price.trim() && !r.due_date) add('due_date', '填了费用，也需要填到期日');
+  if (r.price.trim() && !r.due_date) add('due_date', '填了费用，也要填到期日');
   // 选了套餐就建订阅（费用、流量跟随套餐，只要到期日）；没有套餐（含同机 IP 节点）时费用没有可跟随的（同服务端校验）
   const plan = !isIpNode(r) && (r.plan_id || r.unresolved.plan_id);
-  if (plan && !r.due_date) add('due_date', '选了套餐要填到期日');
+  if (plan && !r.due_date) add('due_date', '选了套餐，也要填到期日');
   if (!plan && r.due_date && !r.price.trim()) add('price', '请填费用（免费填 0）');
   return e;
 }
