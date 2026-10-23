@@ -93,7 +93,7 @@ pub async fn incidents(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQu
             } else {
                 j["subject"] = json!({"id": i.subject_id, "name": i.subject_name.clone().unwrap_or_else(|| "（已删除）".into())});
             }
-            j["rule_name"] = json!(crate::notify::rule_name(&i.rule));
+            j["rule_name"] = json!(crate::meta::rule_label(&i.rule));
             j
         })
         .collect();
@@ -148,7 +148,7 @@ pub struct Silence {
 
 impl Silence {
     fn named(mut self) -> Self {
-        self.rule_name = self.rule.as_deref().map(|r| crate::notify::rule_name(r).to_string());
+        self.rule_name = self.rule.as_deref().map(|r| crate::meta::rule_label(r).to_string());
         self
     }
 }
@@ -226,7 +226,7 @@ pub async fn create_silence(a: Actor, State(st): State<AppState>, ApiJson(b): Ap
     };
     if let Some(r) = b.rule.as_deref() {
         // rule_name 对不认识的规则原样返回
-        if crate::notify::rule_name(r) == r {
+        if crate::meta::rule_label(r) == r {
             return Err(ApiError::bad_request(format!("没有「{r}」这条告警规则")));
         }
         // 维护是整个对象的（卡片显示「维护中」、暂停健康判定 / 冻结告警），只静默一条规则时说不通
@@ -234,7 +234,7 @@ pub async fn create_silence(a: Actor, State(st): State<AppState>, ApiJson(b): Ap
             return Err(ApiError::bad_request("维护窗口针对整台机器，不能只选一条规则；只想静默这条告警就不要标记为维护"));
         }
         if let Some((_, what, _)) = kind.filter(|(k, ..)| rule_kind(r) != Some(*k)) {
-            return Err(ApiError::bad_request(format!("「{}」不是{what}的告警规则", crate::notify::rule_name(r))));
+            return Err(ApiError::bad_request(format!("「{}」不是{what}的告警规则", crate::meta::rule_label(r))));
         }
     }
     let subject_name: Option<String> = match (kind, b.subject_id) {
@@ -312,8 +312,8 @@ async fn tell_channels(st: &AppState, actor: &str, deleted: bool, s: &Silence) {
     let mut text = format!(
         "{actor} {}了{what}\n对象：{object}{rules}\n起止：{} ~ {}（{}）",
         if deleted { "删除" } else { "新建" },
-        crate::notify::beijing(s.starts_at),
-        crate::notify::beijing(s.ends_at),
+        crate::meta::org_time(s.starts_at),
+        crate::meta::org_time(s.ends_at),
         crate::meta::org_tz_label()
     );
     // 备注收成一行、最多 200 个字

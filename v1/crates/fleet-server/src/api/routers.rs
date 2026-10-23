@@ -219,16 +219,39 @@ pub async fn delete(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<U
         .execute(&mut *tx)
         .await?;
     }
+    // 同批跟随作业：抄过来的 routers_stuck 里也摘掉它（只动 routers_stuck；它们自己没改过路由，routers_applied 里不会有它）
+    let followers: Vec<Uuid> = if ids.is_empty() {
+        vec![]
+    } else {
+        sqlx::query_scalar(
+            "update job set params = params
+                || jsonb_build_object('routers_stuck', coalesce((select jsonb_agg(s) from jsonb_array_elements(params->'routers_stuck') s where s->>'id' <> $2), '[]'::jsonb))
+             where state not in ('succeeded', 'cancelled') and params->>'routers_batch_leader' = any($1)
+               and jsonb_typeof(params->'routers_stuck') = 'array' and params->'routers_stuck' @> jsonb_build_array(jsonb_build_object('id', $2::text))
+             returning id",
+        )
+        .bind(ids.iter().map(Uuid::to_string).collect::<Vec<_>>())
+        .bind(id.to_string())
+        .fetch_all(&mut *tx)
+        .await?
+    };
     let closed = routers::alerts::close_all(&mut tx, id).await?;
     let mut detail = json!({"name": name, "tunnel_port": port});
     if !ids.is_empty() {
         detail["force"] = json!(true);
         detail["jobs"] = json!(ids);
     }
+    if !followers.is_empty() {
+        detail["follower_jobs"] = json!(followers);
+    }
     audit(&mut tx, &a.name, "router.delete", "router", Some(id), detail).await?;
     tx.commit().await?;
     for j in &ids {
         crate::jobs::log(&st, *j, "warn", format!("软路由「{name}」已被 {} 强制删除，改回放弃：它上面被本作业改过的出口没有改回，要在路由上自己处理", a.name)).await;
+        st.emit(Event::Job { id: *j, target: None });
+    }
+    for j in &followers {
+        crate::jobs::log(&st, *j, "warn", format!("软路由「{name}」已被 {} 强制删除，带头作业改回放弃：从带头作业抄来的「需要人工处理」里摘掉了它", a.name)).await;
         st.emit(Event::Job { id: *j, target: None });
     }
     tunnel::close_master(&st.cfg, id).await;

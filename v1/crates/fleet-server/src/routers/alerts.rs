@@ -460,7 +460,7 @@ mod tests {
     #[test]
     fn rules_have_names() {
         for r in [OFFLINE, COLLECT_ERROR, OPENCLASH_DOWN, EXITS_DOWN, WAN_DOWN, RESOURCE_HIGH] {
-            assert_ne!(notify::rule_name(r), r, "{r} 没有中文名");
+            assert_ne!(crate::meta::rule_label(r), r, "{r} 没有中文名");
         }
         assert_eq!(subject(Uuid::nil(), None)["name"], "（已删除）");
     }

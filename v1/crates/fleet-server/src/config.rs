@@ -31,8 +31,6 @@ pub struct Config {
     pub org_timezone: String,
     #[serde(default)]
     pub retention: Retention,
-    #[serde(default)]
-    pub numbering: Numbering,
     #[serde(default = "d_workers")]
     pub job_workers: usize,
     /// 访问监控 24h / 7d / 30d 聚合结果的缓存秒数（这些窗口读小时汇总表，每轮汇总后缓存整体作废，所以可以和汇总间隔一样长；
@@ -201,17 +199,6 @@ impl Default for Retention {
     fn default() -> Self { Self { raw_days: 3, access_days: 7, reach_days: 2, ping_days: 7, ping_hourly_days: 90 } }
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
-pub struct Numbering {
-    /// 已经不是开关：编号压缩（01..N 连续）无条件做。字段只为生产 fleet.toml 里留着的 `[numbering]` 能读进来；
-    /// 只剩 jobs/steps/replace.rs 的 `renumber` 一处还读它，那处改掉后连同这个结构一起删
-    pub auto_compact: bool,
-}
-impl Default for Numbering {
-    fn default() -> Self { Self { auto_compact: true } }
-}
-
 fn d_org_tz() -> String { crate::meta::DEFAULT_ORG_TZ.into() }
 fn d_listen() -> String { "127.0.0.1:8080".into() }
 fn d_workers() -> usize { 8 }
@@ -236,8 +223,6 @@ mod tests {
         assert_eq!((r.raw_days, r.access_days, r.reach_days, r.ping_days, r.ping_hourly_days), (30, 7, 2, 7, 90));
         let r: Retention = toml::from_str("reach_days = 5\nping_hourly_days = 400").unwrap();
         assert_eq!((r.raw_days, r.reach_days, r.ping_days, r.ping_hourly_days), (3, 5, 7, 400));
-        let n: Numbering = toml::from_str("").unwrap();
-        assert!(n.auto_compact);
         // 已经改成常量的老配置项：生产 fleet.toml 里还写着也得能读
         let i: IpintelConfig = toml::from_str("learn_days = 3\nalert_ttl_hours = 1\nenabled = false").unwrap();
         assert!(!i.enabled);
@@ -246,6 +231,16 @@ mod tests {
         let r: RoutersConfig = toml::from_str("ssh_port = 2222").unwrap();
         assert_eq!((r.ssh_port, r.port_min, r.port_max), (2222, 23000, 23999));
         assert_eq!(r.tunnel_keys_file, PathBuf::from("/var/lib/fleet/tunnel-keys"));
+    }
+
+    #[test]
+    fn legacy_numbering_table_is_ignored() {
+        // 编号压缩早已无条件做；生产 fleet.toml 里留着的 [numbering] 不能让中控起不来
+        let c: Config = toml::from_str(
+            "database_url = \"postgres://x\"\nsecret_key_file = \"/k\"\npublic_url = \"https://x.test\"\nssh_key = \"/s\"\nknown_hosts = \"/h\"\ndist_dir = \"/d\"\n[numbering]\nauto_compact = true\n",
+        )
+        .unwrap();
+        assert_eq!(c.job_workers, 8);
     }
 
     #[test]

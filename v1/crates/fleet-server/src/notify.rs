@@ -81,14 +81,6 @@ pub struct Notice {
 
 // ── 格式化 ──────────────────────────────────────────────────────────────────
 
-/// 告警规则的中文名（表在 meta::RULES，网页、fleetctl 经 /meta 用同一套）
-pub fn rule_name(key: &str) -> &str { crate::meta::rule_label(key) }
-
-pub fn severity_name(s: &str) -> &'static str { crate::meta::severity_label(s) }
-
-/// 组织时区（默认北京时间）的 `2026-10-20 15:04:05`
-pub fn beijing(t: OffsetDateTime) -> String { crate::meta::org_time(t) }
-
 /// 通知里的时间：`2026-10-20 15:04:05（北京时间）`，括注是组织时区的叫法
 fn when(t: OffsetDateTime) -> String { format!("{}（{}）", crate::meta::org_time(t), crate::meta::org_tz_label()) }
 

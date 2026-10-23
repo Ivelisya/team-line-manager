@@ -763,6 +763,42 @@ async fn evacuate_batch_stuck_holds_followers() {
     assert_eq!((entry_state(t, oe).await, entry_state(t, ne).await), ("removed".to_string(), "removed".to_string()));
 }
 
+/// 搬空同批改回失败（带头的和跟着的都抄着 routers_stuck）后强制删掉那台路由：带头的、跟着的都摘掉它，跟着的也记一条日志，「需要人工处理」消失
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn force_delete_router_clears_followers_stuck() {
+    let w = world().await;
+    let oe = old_entry(&w).await;
+    let ne: Uuid = sqlx::query_scalar("select id from entry where node_id = $1").bind(w.new).fetch_one(&w.t.st.db).await.unwrap();
+    let a = router(&w, "路由A", 23183, &[("节点01", "198.51.100.2", 20003, Some(oe)), ("节点02", "198.51.100.2", 20020, Some(ne))]).await;
+    router(&w, "路由B", 23184, &[("节点01", "198.51.100.2", 20003, Some(oe))]).await;
+    let t = &w.t;
+    let (rb, tb) = seed_relay_b(t).await;
+    std::fs::write(root(23184).join("mode"), "fail").unwrap();
+    std::fs::write(root(23183).join("rollback-fail"), "").unwrap();
+    let d = t.post(&format!("/api/v1/relays/{}/evacuate", w.relay), json!({"to_relay_id": rb})).await;
+    let ids: Vec<String> = d["jobs"].as_array().unwrap().iter().map(|j| j["job_id"].as_str().unwrap().to_string()).collect();
+    let mut sims = [Sim::new(RELAY_TOKEN.into()), Sim::new(tb)];
+    let (lj, fj) = (run(t, &mut sims, &ids[0]).await, run(t, &mut sims, &ids[1]).await);
+    let manual = json!([{"id": a, "name": "路由A", "exits": ["节点01", "节点02"]}]);
+    assert_eq!((lj["manual"]["routers"].clone(), fj["manual"]["routers"].clone()), (manual.clone(), manual), "{fj}");
+    let stuck = |job: &str| {
+        let job: Uuid = job.parse().unwrap();
+        let db = t.st.db.clone();
+        async move { sqlx::query_scalar::<_, Value>("select params->'routers_stuck' from job where id = $1").bind(job).fetch_one(&db).await.unwrap() }
+    };
+    assert_eq!(stuck(&ids[1]).await.as_array().map(Vec::len), Some(1), "跟着的抄了带头的 routers_stuck");
+    let (s, v) = t.req("DELETE", &format!("/api/v1/routers/{a}?force=true"), None, None).await;
+    assert_eq!(s, axum::http::StatusCode::OK, "{v}");
+    assert_eq!(v["data"]["jobs"], json!([ids[0]]), "{v}");
+    assert_eq!((stuck(&ids[0]).await, stuck(&ids[1]).await), (json!([]), json!([])));
+    let (lj, fj) = (t.job(&ids[0]).await, t.job(&ids[1]).await);
+    assert_eq!((lj["manual"].clone(), fj["manual"].clone()), (Value::Null, Value::Null), "{lj} {fj}");
+    assert!(logs(t, &ids[1]).await.contains("强制删除") && logs(t, &ids[1]).await.contains("路由A"), "{}", logs(t, &ids[1]).await);
+    assert!(logs(t, &ids[0]).await.contains("改回放弃"), "{}", logs(t, &ids[0]).await);
+    let au: Value = sqlx::query_scalar("select detail from audit_log where action = 'router.delete'").fetch_one(&t.st.db).await.unwrap();
+    assert_eq!(au["follower_jobs"], json!([ids[1]]), "{au}");
+}
+
 /// 不同的作业（各自单独换线路机）改同一台路由时一个一个来：第二个走到改路由这一步时第一个正在改，
 /// 它排队（不动路由、不算这一步的超时、能取消），第一个改完才轮到它
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

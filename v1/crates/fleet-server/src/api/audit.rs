@@ -402,7 +402,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         "silence.create" | "silence.delete" if d["starts_at"].is_string() => {
             let at = |k: &str| {
                 let t = d[k].as_str().and_then(|v| OffsetDateTime::parse(v, &time::format_description::well_known::Rfc3339).ok());
-                t.map(|t| crate::notify::beijing(t).chars().take(16).collect::<String>()).unwrap_or_default()
+                t.map(|t| crate::meta::org_time(t).chars().take(16).collect::<String>()).unwrap_or_default()
             };
             let what = if d["is_maintenance"] == true { "维护窗口" } else { "静默" };
             let rule = d["rule_name"].as_str().map(|r| format!(" · 只静默「{r}」")).unwrap_or_default();

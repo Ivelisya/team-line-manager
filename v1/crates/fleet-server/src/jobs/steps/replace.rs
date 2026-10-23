@@ -599,7 +599,7 @@ async fn give_up(
 }
 
 /// 交换编号：旧节点挪去目标团队（备用）/ 空号，新节点接旧编号，同一个事务里走 PATCH 的那套（machines::patch_tx）；
-/// auto_compact 时新节点原来的团队随后压缩。已经换好（中控在提交后重启、接着做）的直接算完成
+/// 新节点原来的团队随后压缩。已经换好（中控在提交后重启、接着做）的直接算完成
 pub(super) async fn renumber(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     let old = c.target_id()?;
     let new = c.param_uuid("new_id")?;
@@ -671,7 +671,7 @@ pub(super) async fn renumber(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     .execute(&mut *tx)
     .await?;
     let mut renumbered = 0;
-    if let Some(t) = new_team0.filter(|_| c.st.cfg.numbering.auto_compact) {
+    if let Some(t) = new_team0 {
         let (ch, rs) = crate::db::compact_team(&mut tx, t, actor, "替换节点后自动压缩").await?;
         renumbered = ch.len();
         relays.extend(rs);
