@@ -105,6 +105,14 @@ fn reason(o: &Output) -> String {
     format!("退出码 {}：{}", o.code, tail.into_iter().rev().collect::<Vec<_>>().join(" / "))
 }
 
+/// ssh 没连上就失败了（连接、握手、登录、主机公钥这几关，脚本一行都没跑）：这台路由上什么都没动，不用换回
+fn never_ran(o: &Output) -> bool {
+    const BEFORE: &[&str] = &["connect to host", "banner exchange", "kex_exchange_identification", "Connection refused", "No route to host", "Could not resolve", "Network is unreachable"];
+    o.code == 255
+        && o.stdout.trim().is_empty()
+        && (matches!(o.ssh_kind(), Some(ErrKind::HostKey | ErrKind::Auth)) || BEFORE.iter().any(|p| o.stderr.contains(p)))
+}
+
 /// 经隧道读路由现在的 OpenClash 源配置，解析出口
 async fn read_config(c: &Ctx<'_>, r: &routers::Row) -> Result<Vec<clash::Proxy>, String> {
     let o = ssh::exec(tunnel::via_tunnel(&c.st.cfg, r.id, r.tunnel_port), &rr::read_script(), rr::READ_TIMEOUT).await.map_err(|e| format!("{e:#}"))?;
@@ -282,16 +290,21 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
                 if o.ssh_kind() == Some(ErrKind::HostKey) {
                     tunnel::close_master(&c.st.cfg, r.id).await;
                 }
-                (o.ssh_kind().unwrap_or(ErrKind::Network), tunnel::explain(&o, true), false)
+                // 没连上：这台什么都没改（不去换回它，也不算换回失败）；连上之后断的：可能改了一半，要换回
+                let untouched = never_ran(&o);
+                let why = tunnel::explain(&o, true) + if untouched { "（没连上，这台什么都没改）" } else { "" };
+                (o.ssh_kind().unwrap_or(ErrKind::Network), why, untouched)
             }
             // 2：一行没写；其它：脚本已经换回这次改之前的备份（rolled_back=1），或换回也失败了
             Ok(o) => (ErrKind::Remote, reason(&o), o.code == 2 || o.kv("rolled_back") == Some("1")),
             Err(e) => (kind_of(&e), format!("{e:#}"), false),
         };
-        // 这一台自己换回了、而且这次的备份就是第一次改之前的：不用再回滚它
+        // 这一台自己换回了（或没连上、什么都没改），而且这次的备份就是第一次改之前的：不用再回滚它
         let undone = self_undone.then_some((r.id, stamp.as_str()));
         return give_up(c, &applied, undone, format!("软路由「{}」：{why}", r.name), kind, kept).await;
     }
+    // 马上采一次改过的路由：快照别等下一轮，紧接着的预览按新配置算
+    c.st.routers_refresh.now(todo.iter().map(|(r, _)| r.id)).await;
     Ok(Outcome::Done(json!({"routers": done})))
 }
 
@@ -316,6 +329,9 @@ async fn give_up(c: &Ctx<'_>, applied: &[Applied], undone: Option<(Uuid, &str)>,
         };
         stuck.push(format!("{}（{why}，备份 /etc/fleet-backup/openclash/*.{}）", a.name, a.stamp));
         stuck_names.push(a.name.clone());
+    }
+    if !applied.is_empty() {
+        c.st.routers_refresh.now(applied.iter().map(|a| a.id)).await;
     }
     let mut msg = head;
     if !back.is_empty() {

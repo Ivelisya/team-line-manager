@@ -88,6 +88,8 @@ pub struct Inner {
     pub(crate) access_ret: std::sync::RwLock<crate::settings::AccessRetention>,
     /// 网页终端：票据、再验证时间、在开的终端（`terminal.rs`）
     pub terminals: crate::terminal::Hub,
+    /// 请软路由采集循环马上采某几台（作业刚改完它们的配置，见 routers::collect::Refresh）
+    pub routers_refresh: crate::routers::collect::Refresh,
 }
 
 impl std::ops::Deref for AppState {
@@ -129,6 +131,7 @@ impl AppState {
             report_gaps: Default::default(),
             access_ret,
             terminals: Default::default(),
+            routers_refresh: Default::default(),
         }))
     }
 

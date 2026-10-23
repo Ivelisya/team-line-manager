@@ -33,6 +33,7 @@ mkdir -p "$R"
 script=$(cat)
 case $script in
   "MODE='read'"*) cat "$R/config.yaml"; exit 0 ;;
+  *"MODE='apply'"*) [ -e "$R/down-apply" ] && { echo "Connection timed out during banner exchange" >&2; exit 255; } ;;
   *"MODE='rollback'"*)
     [ -e "$R/rollback-fail" ] && { echo "fleet：写回备份失败" >&2; exit 3; }
     printf '%s\n' "$script" | sed -n "s/^STAMP='\(.*\)'$/\1/p" >> "$R/rollback.log"; echo rollback=ok; exit 0 ;;
@@ -306,11 +307,23 @@ async fn failure_rolls_back_and_retry_redoes() {
     drive(t).await;
     let err = t.job(&job).await["error"].as_str().unwrap().to_string();
     assert!(err.contains("配置的 proxies 里没有出口「节点01」；配置没有改动；已换回原配置：路由A"), "{err}");
+    // 读完配置之后路由B 连不上了（改配置时 ssh 没连上，脚本一行没跑）：它什么都没改，不去换回它、不算换回失败；可以直接重试 / 取消
+    std::fs::write(root(23122).join("down-apply"), "").unwrap();
+    std::fs::write(root(23122).join("rollback-fail"), "").unwrap();
+    t.post(&format!("/api/v1/jobs/{job}/retry"), json!({})).await;
+    drive(t).await;
+    let j = t.job(&job).await;
+    let err = j["error"].as_str().unwrap();
+    assert!(err.contains("Connection timed out during banner exchange（没连上，这台什么都没改）；已换回原配置：路由A。软路由都是原样，编号没改"), "{err}");
+    assert!(!err.contains("人工处理") && j["cancellable"] == true, "{j}");
+    assert_eq!(read(root(23122).join("rollback.log")), "", "没连上的不去换回");
+    std::fs::remove_file(root(23122).join("down-apply")).unwrap();
+    std::fs::remove_file(root(23122).join("rollback-fail")).unwrap();
     std::fs::write(root(23122).join("mode"), "ok").unwrap();
     t.post(&format!("/api/v1/jobs/{job}/retry"), json!({})).await;
     drive(t).await;
     assert_eq!(t.job(&job).await["state"], "succeeded", "{}", logs(t, &job).await);
-    assert_eq!((applies(23121).len(), applies(23122).len()), (3, 3));
+    assert_eq!((applies(23121).len(), applies(23122).len()), (4, 3));
     assert_eq!(name_of(t, w.new).await, "团队2-01");
 }
 
