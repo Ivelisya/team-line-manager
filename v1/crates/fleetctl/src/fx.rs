@@ -45,8 +45,10 @@ pub(crate) fn monthly_cell(s: &Value) -> String {
 }
 
 /// `status` 的每月费用：USD 合计，括注各原币种的金额与汇率；没有汇率的单列
-pub(crate) fn cost_cn(ov: &Value) -> String {
-    let u = &ov["monthly_usd"];
+pub(crate) fn cost_cn(ov: &Value) -> String { total_cn(&ov["monthly_usd"]) }
+
+/// USD 合计（中控的 Total：`{cents, by_currency, unconverted}`，如总览的月费、待付清单、批量续费的合计）写成文字
+pub(crate) fn total_cn(u: &Value) -> String {
     let by = u["by_currency"].as_array().map(Vec::as_slice).unwrap_or_default();
     let un = u["unconverted"].as_array().map(Vec::as_slice).unwrap_or_default();
     if by.is_empty() && un.is_empty() {

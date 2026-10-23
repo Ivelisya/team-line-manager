@@ -655,6 +655,57 @@ pub fn share(ctx: &Ctx, entry: &str) -> anyhow::Result<u8> {
     Ok(0)
 }
 
+/// `share --team <团队> | --machines a,b,c`：一次请求取一批在用入口的分享链接（一条审计）。
+/// 团队 = 团队里在用节点的入口；机器 = 节点的入口、线路机的直出入口。输出每行「名称 链接」，`--json` 是 `[{id, name, relay, url}]`；
+/// 没有在用入口的机器写到 stderr，不进输出（输出可以直接给脚本读）
+pub fn share_many(ctx: &Ctx, team: Option<&str>, machines: Option<&str>) -> anyhow::Result<u8> {
+    let mut nodes: Vec<(String, String)> = vec![];
+    match (team, machines) {
+        (Some(t), _) => {
+            let tid = ctx.team_id(t)?;
+            nodes = ctx.machines()?.iter().filter(|m| st(m, "/team/id") == tid && st(m, "/lifecycle") == "active").map(|m| (st(m, "/id"), st(m, "/name"))).collect();
+        }
+        (None, Some(q)) => {
+            for q in q.split([',', '，']).map(str::trim).filter(|q| !q.is_empty()) {
+                let n = ctx.find_id(q, Want::Live)?;
+                if !nodes.contains(&n) {
+                    nodes.push(n);
+                }
+            }
+        }
+        (None, None) => bail!("给 --team 或 --machines"),
+    }
+    if nodes.is_empty() {
+        bail!("没有可取链接的机器");
+    }
+    let es = cmds::all_entries(ctx)?;
+    let mut picked: Vec<&Value> = vec![];
+    for (id, name) in &nodes {
+        let mine: Vec<&Value> = es.iter().filter(|e| st(e, "/node/id") == *id && st(e, "/lifecycle") == "active").collect();
+        if mine.is_empty() {
+            eprintln!("{name} 没有在用的入口，已跳过");
+        }
+        picked.extend(mine);
+    }
+    if picked.is_empty() {
+        bail!("这些机器都没有在用的入口");
+    }
+    let ids: Vec<String> = picked.iter().map(|e| st(e, "/id")).collect();
+    let d = ctx.c.post("/entries/share", &json!({"ids": ids}))?;
+    let items: Vec<Value> = d["items"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .zip(&picked)
+        .map(|(i, e)| json!({"id": i["id"], "name": i["name"], "relay": e.pointer("/relay/name"), "url": i["url"]}))
+        .collect();
+    let items = Value::Array(items);
+    ctx.emit(&items, || items.as_array().map(Vec::as_slice).unwrap_or_default().iter().map(|i| format!("{} {}", st(i, "/name"), st(i, "/url"))).collect::<Vec<_>>().join("
+"));
+    Ok(0)
+}
+
 /// 线路机直出入口：节点就是线路机自己，出口是线路机自己的 IP。走「新增入口」作业（建入口 → 等应用 → 出口验收）
 pub fn add_direct(ctx: &Ctx, relay: &str, yes: bool, follow: bool) -> anyhow::Result<u8> {
     let m = ctx.find(relay, Want::Live)?;

@@ -1174,17 +1174,28 @@ pub async fn list_renewals(_a: Actor, State(st): State<AppState>, ApiPath(id): A
 /// 落在账单日，小月按月末；账单日不变，所以 31 号的 1-31 → 2-28 → 3-31）二选一
 #[derive(Deserialize)]
 pub struct RenewIn {
-    new_due: Option<Date>,
-    cycles: Option<u32>,
-    amount_cents: Option<i32>,
-    note: Option<String>,
+    pub new_due: Option<Date>,
+    pub cycles: Option<u32>,
+    pub amount_cents: Option<i32>,
+    pub note: Option<String>,
 }
 
-pub async fn add_renewal(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<RenewIn>) -> ApiResult<Json<Value>> {
-    let mut tx = st.db.begin().await?;
+/// 一次登记续费的结果
+pub struct Renewed {
+    pub id: Uuid,
+    pub old_due: Date,
+    pub new_due: Date,
+    pub currency: String,
+    /// 登记的金额（分）：没给时 `price_default` 取订阅价 × 周期数，否则为 None
+    pub amount_cents: Option<i32>,
+}
+
+/// 在调用方的事务里给一台登记续费（单台与批量共用）：锁住订阅、算新到期日、写续费记录、顺延到期日；审计与广播由调用方做。
+/// `price_default`：没给金额时按订阅价格（生效价）× 周期数登记（批量用；单台不给金额就记空）
+pub(crate) async fn renew_in_tx(tx: &mut sqlx::PgConnection, actor: &str, id: Uuid, b: &RenewIn, price_default: bool) -> ApiResult<Renewed> {
     // 币种记登记时生效的（subscription_eff：订阅没单独设置的跟随套餐）；按周期推时也用生效的周期
-    let (old, currency, cycle, bday): (Date, String, String, i32) = sqlx::query_as(
-        "select s.due_date, e.currency, e.cycle::text, coalesce(s.billing_day::int, extract(day from s.due_date)::int) from subscription s join subscription_eff e on e.machine_id = s.machine_id
+    let (old, currency, cycle, bday, price): (Date, String, String, i32, i32) = sqlx::query_as(
+        "select s.due_date, e.currency, e.cycle::text, coalesce(s.billing_day::int, extract(day from s.due_date)::int), e.price_cents from subscription s join subscription_eff e on e.machine_id = s.machine_id
          where s.machine_id = $1 for update of s",
     )
     .bind(id)
@@ -1204,16 +1215,21 @@ pub async fn add_renewal(a: Actor, State(st): State<AppState>, ApiPath(id): ApiP
     if new_due <= old {
         return Err(ApiError::bad_request("新到期日必须晚于当前到期日"));
     }
+    let amount = match (b.amount_cents, price_default) {
+        (Some(a), _) => Some(a),
+        (None, true) => Some(price.checked_mul(b.cycles.unwrap_or(1) as i32).ok_or_else(|| ApiError::bad_request("金额超出范围"))?),
+        (None, false) => None,
+    };
     let rid = new_id();
     sqlx::query("insert into renewal (id, machine_id, old_due, new_due, amount_cents, currency, note, actor) values ($1,$2,$3,$4,$5,$6,$7,$8)")
         .bind(rid)
         .bind(id)
         .bind(old)
         .bind(new_due)
-        .bind(b.amount_cents)
+        .bind(amount)
         .bind(&currency)
         .bind(b.note.as_deref().unwrap_or(""))
-        .bind(&a.name)
+        .bind(actor)
         .execute(&mut *tx)
         .await?;
     sqlx::query("update subscription set due_date = $2, billing_day = $3, updated_at = now() where machine_id = $1")
@@ -1222,10 +1238,16 @@ pub async fn add_renewal(a: Actor, State(st): State<AppState>, ApiPath(id): ApiP
         .bind(bday as i16)
         .execute(&mut *tx)
         .await?;
-    audit(&mut tx, &a.name, "renewal", "machine", Some(id), json!({"old_due": old, "new_due": new_due, "amount_cents": b.amount_cents, "currency": currency, "cycles": b.cycles})).await?;
+    Ok(Renewed { id: rid, old_due: old, new_due, currency, amount_cents: amount })
+}
+
+pub async fn add_renewal(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(b): ApiJson<RenewIn>) -> ApiResult<Json<Value>> {
+    let mut tx = st.db.begin().await?;
+    let r = renew_in_tx(&mut tx, &a.name, id, &b, false).await?;
+    audit(&mut tx, &a.name, "renewal", "machine", Some(id), json!({"old_due": r.old_due, "new_due": r.new_due, "amount_cents": b.amount_cents, "currency": r.currency, "cycles": b.cycles})).await?;
     tx.commit().await?;
     st.emit(Event::Machine { id });
-    Ok(ok(json!({"id": rid, "old_due": old, "new_due": new_due})))
+    Ok(ok(json!({"id": r.id, "old_due": r.old_due, "new_due": r.new_due})))
 }
 
 // ── 重新编号 ──────────────────────────────────────────────────────────────

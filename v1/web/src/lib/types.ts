@@ -131,6 +131,16 @@ export interface UsdTotal {
   by_currency: { currency: string; cents: number; usd_cents: number; usd_per_unit: number }[];
   unconverted: { currency: string; cents: number }[];
 }
+/** GET /billing/due：未来待付清单。groups 按 供应商 × 到期日 分组（不含备用团队、自动续费的）；auto 开了自动续费的（到期后自动顺延，不算待付） */
+export interface DueMachine { id: string; name: string; kind: Kind; due_date: string; due_days: number; cycle: Cycle; price_cents: number; currency: string; price_usd_cents: number | null }
+export interface DueProvider { id: string | null; name: string | null; panel_url: string | null }
+export interface DueGroup { provider: DueProvider; due_date: string; machines: DueMachine[]; total: UsdTotal }
+export interface DueList { days: number | null; until: string | null; groups: DueGroup[]; auto: { provider: DueProvider; machine: DueMachine }[]; total: UsdTotal }
+/** POST /renewals/batch：dry_run 为 true 时只是预览（什么都没写） */
+export interface RenewBatchResult {
+  dry_run: boolean; total: UsdTotal;
+  items: { machine_id: string; name: string; old_due: string; new_due: string; amount_cents: number | null; currency: string; usd_cents: number | null }[];
+}
 /** GET /settings/fx-rates：汇率设置（折算凭据）。rates 在用的币种排前面；source：base（USD）/ manual 手动 / auto 自动 / null 没有汇率 */
 export interface FxRates {
   base: 'USD'; auto: boolean; url: string; fetched_at: string | null; rates_date: string | null; source: string | null;

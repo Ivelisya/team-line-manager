@@ -6,7 +6,7 @@ import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClie
 import { del, get, patch, post, put } from './api';
 import { collator, makeDefaultCompare } from './sort';
 import { nextDue, offlineNames, quotaTight, setMeta } from './derive';
-import type { ApiKey, Availability, Incident, Job, JobSummary, Paged, JobLog, MachineView, Meta, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RetireResult, RecycleItem, RecycleDetail, ReplaceBody, ReplacePreview, MovePreview, MoveResult, EvacuateResult, RebalancePlan, ProbeBeats, SeriesResp, Silence, SilenceKind, SubField, Team, AuditEntry, NotifyChannel, NotifyLogEntry, AccountSession, TotpSetup, TotpStatus } from './types';
+import type { ApiKey, Availability, Incident, Job, JobSummary, Paged, JobLog, MachineView, Meta, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RetireResult, DueList, RenewBatchResult, RecycleItem, RecycleDetail, ReplaceBody, ReplacePreview, MovePreview, MoveResult, EvacuateResult, RebalancePlan, ProbeBeats, SeriesResp, Silence, SilenceKind, SubField, Team, AuditEntry, NotifyChannel, NotifyLogEntry, AccountSession, TotpSetup, TotpStatus } from './types';
 
 export const useMe = () => useQuery({ queryKey: ['me'], queryFn: () => get<{ username: string }>('/auth/me'), retry: false, staleTime: 5 * 60_000 });
 /** 中文名、枚举、阈值、默认值（服务端 meta.rs），一次会话内不变：取回时同时交给 derive 的同步读取（kindLabel 等）。外壳等它到了才渲染页面 */
@@ -172,15 +172,15 @@ export interface StreamEvent { type: string; id?: string }
  *  availability：近 N 天可用率按账单时区分天，改订阅（machine 事件）可能换了时区 */
 export function eventKeys(ev: StreamEvent): unknown[][] {
   switch (ev.type) {
-    case 'machine': return [['machine-ping', ev.id], ['recycle-bin'], ['overview'], ['audit'], ['policies', 'list'], ['policies', 'versions'], ['availability', ev.id]];
-    case 'machines': return [['machine'], ['machines'], ['recycle-bin'], ['relays'], ['overview'], ['audit'], ['policies', 'list'], ['policies', 'versions']];
+    case 'machine': return [['billing-due'], ['machine-ping', ev.id], ['recycle-bin'], ['overview'], ['audit'], ['policies', 'list'], ['policies', 'versions'], ['availability', ev.id]];
+    case 'machines': return [['billing-due'], ['machine'], ['machines'], ['recycle-bin'], ['relays'], ['overview'], ['audit'], ['policies', 'list'], ['policies', 'versions']];
     case 'relay': return [['relays'], ['machines']];
     case 'job': return [['jobs'], ['job', ev.id]];
     case 'incidents': return [['incidents'], ['silences']];
-    case 'catalog': return [['teams'], ['providers'], ['plans'], ['machines'], ['machine'], ['notify-channels'], ['policies', 'list'], ['policies', 'versions']];
+    case 'catalog': return [['billing-due'], ['teams'], ['providers'], ['plans'], ['machines'], ['machine'], ['notify-channels'], ['policies', 'list'], ['policies', 'versions']];
     case 'api_keys': return [['api-keys']];
     // 设置：访问记录保留期、汇率（汇率变了机器视图、总览、团队与套餐里的 USD 折算值跟着变）、主探测来源与探测点（主来源变了线路机的心跳格换一路）、三网 PING 的全局目标
-    case 'settings': return [['access-retention'], ['access'], ['audit'], ['fx-rates'], ['machines'], ['machine'], ['overview'], ['teams'], ['plans'], ['probe-points'], ['reach-source'], ['probe-beats'], ['ping-targets'], ['ping-beats'], ['machine-ping']];
+    case 'settings': return [['billing-due'], ['access-retention'], ['access'], ['audit'], ['fx-rates'], ['machines'], ['machine'], ['overview'], ['teams'], ['plans'], ['probe-points'], ['reach-source'], ['probe-beats'], ['ping-targets'], ['ping-beats'], ['machine-ping']];
     case 'policies': return [['policies'], ['machines'], ['relays']];
     // 软路由：增删改与每轮采集（最多一次）都发这一个，列表与各台详情一起重取（曲线另按时间轮询，见 lib/routers）
     case 'routers': return [['routers']];
@@ -217,6 +217,12 @@ export const useSaveSubscription = () => useWrite(({ id, ...b }: { id: string } 
 /** 续费：new_due 与 cycles（续几个周期，服务端算新到期日）二选一 */
 export const useRenew = () => useWrite(({ id, ...b }: { id: string; amount_cents?: number; note?: string } & ({ new_due: string } | { cycles: number })) =>
   post<{ id: string; old_due: string | null; new_due: string }>(`/machines/${id}/renewals`, b), [...M, ['renewals']]);
+/** 未来 N 天待付清单（按供应商 × 到期日分组，服务端折好 USD）；到期日随续费、改订阅变，靠 machine 事件失效 */
+export const useDue = (days: number) => useQuery({ queryKey: ['billing-due', days], queryFn: ({ signal }) => get<DueList>(`/billing/due?days=${days}`, signal), staleTime: 300_000 });
+/** 批量登记续费：一个事务、一条审计，按订阅周期顺延；dry_run 只预览（新到期日、金额，什么都不写） */
+export interface RenewBatchBody { items: { machine_id: string; amount_cents?: number }[]; cycles?: number; ref?: string; note?: string; dry_run?: boolean }
+export const renewBatchPreview = (items: RenewBatchBody['items']) => post<RenewBatchResult>('/renewals/batch', { items, dry_run: true });
+export const useRenewBatch = () => useWrite((b: RenewBatchBody) => post<RenewBatchResult>('/renewals/batch', b), [...M, ['renewals'], ['billing-due'], ['teams']]);
 export const useEntryAction = () => useWrite(({ id, ...b }: { id: string; action: 'enable' | 'disable' | 'rotate'; confirm?: string }) => post(`/entries/${id}/actions`, b), M);
 export const useAddEntry = () => useWrite(({ id, relay_id }: { id: string; relay_id: string }) => post<{ job_id: string }>(`/machines/${id}/entries`, { relay_id }), [...M, ['jobs']]);
 export const useMoveEntry = () => useWrite(({ id, ...b }: { id: string; to_relay_id: string; from_relay_id?: string; routers: boolean }) => post<MoveResult>(`/machines/${id}/move`, b), [...M, ['jobs']]);

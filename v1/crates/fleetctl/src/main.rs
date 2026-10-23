@@ -352,8 +352,21 @@ enum Cmd {
         days: i64,
     },
     /// 费用：订阅（价格、到期、自动续费、提醒、账单时区、流量上限与本周期已用）与最近的续费记录
-    Billing { machine: String },
-    /// 登记续费：到期日顺延（默认按订阅周期推一个周期）、金额默认取订阅价格；只记账，不会向供应商付款
+    Billing {
+        /// 机器；用 --due 看待付清单时不用写
+        #[arg(required_unless_present = "due", conflicts_with = "due")]
+        machine: Option<String>,
+        /// 待付清单（所有在用机器，不含备用团队）：30d / 30（未来多少天内到期，含已过期）或 2026-11-20（不晚于这天）。自动续费的单列、不算待付
+        #[arg(long, value_name = "Nd|日期")]
+        due: Option<String>,
+        /// 配合 --due：按 供应商 × 到期日 分组，每组机器、原币种小计与 USD 合计、供应商控制台链接（不加则每台一行）
+        #[arg(long, requires = "due")]
+        by_provider: bool,
+        /// 配合 --due：带上备用团队的机器
+        #[arg(long, requires = "due")]
+        include_spare: bool,
+    },
+    /// 登记续费：到期日顺延（默认按订阅周期推一个周期）、金额默认取订阅价格；只记账，不会向供应商付款。机器写多台（逗号分隔）或 --provider --due 选一批，则预览后（--yes）一个事务里登记
     Renew(billing::RenewOpts),
     /// 订阅：费用、到期日、提醒、账单时区、流量上限（看用 billing）
     Subscription {
@@ -506,10 +519,18 @@ enum Cmd {
     },
     /// 入口列表（可只看某台机器相关的）
     Entries { machine: Option<String> },
-    /// 输出入口的分享链接（vless://…；需要 secrets 权限，记审计）
+    /// 输出入口的分享链接（vless://…；需要 secrets 权限，记审计）。--team / --machines 一次取一批（一次请求、一条审计），每行「名称 链接」，--json 给数组。
+    /// 给自己的客户端用订阅链接（sub），给别人才用分享链接
     Share {
         /// 入口 id、`线路机名:端口` 或节点显示名
-        entry: String,
+        #[arg(required_unless_present_any = ["team", "machines"])]
+        entry: Option<String>,
+        /// 团队里在用节点的全部在用入口
+        #[arg(long, conflicts_with_all = ["entry", "machines"])]
+        team: Option<String>,
+        /// 这些机器（逗号分隔；节点 = 它的入口，线路机 = 它的直出入口）的在用入口
+        #[arg(long, value_name = "机器,…", conflicts_with = "entry")]
+        machines: Option<String>,
     },
     /// 客户端订阅：自己的客户端（Clash Verge、OpenClash、v2rayN）按一个链接拉入口，换节点、换线路机、轮换凭据后自动是新的（需要 secrets 权限）
     Sub {
@@ -951,7 +972,11 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Show { machine } => cmds::show(x, &machine),
         Cmd::Series { machine, range, metric } => cmds::series(x, &machine, &range, &metric),
         Cmd::Uptime { machine, days } => cmds::uptime(x, &machine, days),
-        Cmd::Billing { machine } => billing::billing(x, &machine),
+        Cmd::Billing { machine, due, by_provider, include_spare } => match (machine, due) {
+            (_, Some(d)) => billing::billing_due(x, &d, by_provider, include_spare),
+            (Some(m), None) => billing::billing(x, &m),
+            (None, None) => unreachable!("clap 要求给机器或 --due"),
+        },
         Cmd::Renew(o) => billing::renew(x, o),
         Cmd::Subscription { cmd: SubscriptionCmd::Set(o) } => billing::subscription_set(x, o),
         Cmd::Incidents { all, machine } => cmds::incidents(x, all, machine.as_deref()),
@@ -999,7 +1024,8 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Tune { machine, team, all, rollback, yes, follow } => ops::tune(x, machine.as_deref(), team.as_deref(), all, rollback, yes, follow),
         Cmd::SsRefresh { machine, team, all, yes, follow } => ops::ss_refresh(x, machine.as_deref(), team.as_deref(), all, yes, follow),
         Cmd::Entries { machine } => cmds::entries(x, machine.as_deref()),
-        Cmd::Share { entry } => ops::share(x, &entry),
+        Cmd::Share { entry: Some(e), .. } => ops::share(x, &e),
+        Cmd::Share { team, machines, .. } => ops::share_many(x, team.as_deref(), machines.as_deref()),
         Cmd::Sub { cmd } => match cmd {
             SubCmd::Ls => subs::ls(x),
             SubCmd::Add { name, rule } => subs::add(x, &name, &rule),
