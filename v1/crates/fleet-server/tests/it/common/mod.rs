@@ -201,7 +201,7 @@ pub async fn boot_in(dir: tempfile::TempDir, background: bool, extra: &str) -> T
     let url = std::env::var("FLEET_TEST_DB").unwrap_or_else(|_| "postgres://fleet:fleet@127.0.0.1/fleet_test".into());
     let (pool, schema) = test_db(&url, None).await;
     let d = dir.path().display().to_string().replace('\\', "/");
-    let cfg: Config = toml::from_str(&format!(
+    let mut cfg: Config = toml::from_str(&format!(
         r#"database_url = "{url}"
            secret_key_file = "/dev/null"
            public_url = "http://fleet.test"
@@ -215,10 +215,11 @@ pub async fn boot_in(dir: tempfile::TempDir, background: bool, extra: &str) -> T
            routers.control_dir = "{d}/ssh-ctl"
            routers.sshd_host_key = "{d}/ssh_host_ed25519_key.pub"
            fx.auto = false
-           notify.group_wait_s = 0
            {extra}"#
     ))
     .unwrap();
+    // 通知不等合并（只合并已经排着的）：各用例不用每条多等 20 秒
+    cfg.notify.group_wait_s = 0;
     let st = AppState::new(cfg, pool.clone(), SecretBox::from_key(&[9u8; 32]).unwrap());
     if background {
         fleet_server::spawn_background(&st);

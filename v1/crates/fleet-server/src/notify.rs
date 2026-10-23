@@ -610,10 +610,8 @@ struct Pending {
 /// 合并的一批最多等到首条入队后这么久
 const GROUP_MAX_WAIT: time::Duration = time::Duration::seconds(60);
 
-/// 能合并的：机器、软路由告警的触发与恢复（中控自身、探测点的，提醒、静默变更这些照旧一条一条发）
-fn groupable(p: &Pending) -> bool {
-    matches!(p.notice.0.kind, Kind::Firing | Kind::Resolved) && matches!(p.engine.as_deref(), Some("machine" | "router"))
-}
+/// 能合并的（`o` 待发、`i` 它的告警）：机器、软路由告警的触发与恢复。中控自身、探测点、来源画像的，持续提醒、静默变更这些不合并
+const GROUPABLE: &str = "coalesce(o.notice->>'kind' in ('firing', 'resolved') and i.engine in ('machine', 'router'), false)";
 
 /// 同一渠道里和排头（`$2` 引擎、`$3` 种类、`$4` 规则）合成一批的：入队不晚于排头 60 秒（`$5`）；同一条告警前面还排着别的种类（触发后面跟着恢复）的不并进来，免得顺序颠倒
 const GROUP_SQL: &str = "select o.id, o.notice, o.created_at from notify_outbox o join incident i on i.id = o.incident_id
@@ -632,30 +630,42 @@ async fn drain(st: &AppState, ch: Uuid) {
 /// 可重试的失败（网络错误、5xx、429）退避后重发同一条，后面的接着排（保证顺序）；渠道拒绝、配置有误之类重试也没用的记失败、发下一条；
 /// 入队满 MAX_AGE 还没发出的放弃。恢复通知只发给收到过这条告警触发的渠道。渠道停用了就丢掉它排着的（再启用后只发新的），删了的随外键一起没了。
 ///
-/// 合并：排头是机器 / 软路由告警的触发或恢复时，同一引擎、同一种类、同一规则、入队不晚于排头 60 秒的合成一条消息发（`GROUP_SQL`）。
-/// 为此先等：最近一条同类入队后 `[notify] group_wait_s`（默认 20 秒）没有新的，或排头入队满 60 秒，就发——严重的也最多因此晚 60 秒，
-/// 排在后面的跟着等。发送记录仍每条告警各记一条（恢复只发给收到过触发的渠道看它）
+/// 合并：机器 / 软路由告警的触发或恢复（`GROUPABLE`），同一引擎、同一种类、同一规则、入队不晚于排头 60 秒的合成一条消息发（`GROUP_SQL`）。
+/// 为此先等：最近一条同类入队后 `group_wait_s`（20 秒）没有新的，或排头入队满 60 秒，就发——严重的也最多因此晚 60 秒。
+/// 不合并的（中控自身的告警之类）不被等着的批挡住：每轮先按顺序发它们；等批的时候睡到该发的时刻或有新入队（`notify_queued`）两者先到者，醒来重挑。
+/// 两类各自按入队顺序；机器、软路由告警的触发与恢复都在可合并的一类里，同一条告警的触发总先于恢复。发送记录仍每条告警各记一条（恢复只发给收到过触发的渠道看它）
 async fn drain_queue(st: &AppState, ch: Uuid) -> sqlx::Result<()> {
     let quiet = time::Duration::seconds(st.cfg.notify.group_wait_s as i64);
     loop {
-        let p: Option<Pending> = sqlx::query_as(
-            "select o.id, o.notice, o.created_at, c.kind, c.config_enc, c.enabled, c.fail_count, c.last_error, i.engine
-             from notify_outbox o join notify_channel c on c.id = o.channel_id left join incident i on i.id = o.incident_id
-             where o.channel_id = $1 order by o.id limit 1",
-        )
-        .bind(ch)
-        .fetch_optional(&st.db)
-        .await?;
+        // 先登记好要听的唤醒再查库：查完到开始等之间排进来的也能叫醒
+        let queued = st.notify_queued.notified();
+        tokio::pin!(queued);
+        queued.as_mut().enable();
+        let mut p = None;
+        for groupable in [false, true] {
+            p = sqlx::query_as::<_, Pending>(&format!(
+                "select o.id, o.notice, o.created_at, c.kind, c.config_enc, c.enabled, c.fail_count, c.last_error, i.engine
+                 from notify_outbox o join notify_channel c on c.id = o.channel_id left join incident i on i.id = o.incident_id
+                 where o.channel_id = $1 and {GROUPABLE} = $2 order by o.id limit 1"
+            ))
+            .bind(ch)
+            .bind(groupable)
+            .fetch_optional(&st.db)
+            .await?;
+            if p.is_some() {
+                break;
+            }
+        }
         let Some(p) = p else { return Ok(()) };
         if !p.enabled {
             sqlx::query("delete from notify_outbox where channel_id = $1").bind(ch).execute(&st.db).await?;
             return Ok(());
         }
         let head = &p.notice.0;
-        let mut batch: Vec<(i64, Notice)> = if groupable(&p) {
+        let mut batch: Vec<(i64, Notice)> = if let Some(engine) = p.engine.as_deref().filter(|e| matches!(head.kind, Kind::Firing | Kind::Resolved) && matches!(*e, "machine" | "router")) {
             let rows: Vec<(i64, sqlx::types::Json<Notice>, OffsetDateTime)> = sqlx::query_as(GROUP_SQL)
                 .bind(ch)
-                .bind(&p.engine)
+                .bind(engine)
                 .bind(head.kind.as_str())
                 .bind(&head.rule)
                 .bind(p.created_at + GROUP_MAX_WAIT)
@@ -664,7 +674,10 @@ async fn drain_queue(st: &AppState, ch: Uuid) -> sqlx::Result<()> {
             let newest = rows.iter().map(|r| r.2).max().unwrap_or(p.created_at);
             let wait = (p.created_at + GROUP_MAX_WAIT).min(newest + quiet) - OffsetDateTime::now_utc();
             if wait.is_positive() {
-                tokio::time::sleep(wait.try_into().unwrap_or_default()).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(wait.try_into().unwrap_or_default()) => {}
+                    _ = queued => {}
+                }
                 continue;
             }
             rows.into_iter().map(|(id, n, _)| (id, n.0)).collect()
@@ -761,7 +774,10 @@ pub fn start(st: &AppState) {
 pub async fn enqueue(st: &AppState, n: Notice) {
     start(st);
     match enqueue_tx(st, &n).await {
-        Ok(()) => st.notify_wake.notify_one(),
+        Ok(()) => {
+            st.notify_wake.notify_one();
+            st.notify_queued.notify_waiters();
+        }
         Err(e) => tracing::warn!(rule = %n.rule, "通知入队失败：{e}"),
     }
 }

@@ -124,7 +124,8 @@ pub struct NotifyConfig {
     /// 只有测试或自建在内网的 webhook 才打开
     pub allow_private: bool,
     /// 机器、软路由同一规则的触发 / 恢复合并成一条发（notify.rs `drain_queue`）：最近一条入队后这么多秒没有新的同类就发，
-    /// 最晚首条入队后 60 秒。测试设 0（只合并已经排着的）
+    /// 最晚首条入队后 60 秒。不从 fleet.toml 读（固定 20 秒），只给测试改（设 0：只合并已经排着的）
+    #[serde(skip)]
     pub group_wait_s: u64,
 }
 impl Default for NotifyConfig {
