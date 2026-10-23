@@ -6,8 +6,9 @@
 # 之后检查：fleetctl ipintel-status（loaded 应为 5），或 GET /api/v1/ipintel/status。
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+. "$ROOT/lab/build-lib.sh"   # fb_tar：macOS 上打 tar 不带 ._* 与扩展属性
 SSH="ssh -F $HOME/.ssh/fleetlab_config fleet-dev"
-tar -C "$ROOT/deploy/ipintel" -czf - fetch-dbs.sh fleet-ipintel-fetch.service fleet-ipintel-fetch.timer \
+fb_tar -C "$ROOT/deploy/ipintel" -czf - fetch-dbs.sh fleet-ipintel-fetch.service fleet-ipintel-fetch.timer \
   | $SSH 'rm -rf /root/ipintel-install && mkdir -p /root/ipintel-install && tar --no-same-owner -xzf - -C /root/ipintel-install'
 $SSH 'bash -s' <<'REMOTE'
 set -euo pipefail
