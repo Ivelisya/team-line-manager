@@ -1285,7 +1285,7 @@ const channel = (id: string) => { const c = db.channels.find((x) => x.id === id)
 const pub = (c: Db['channels'][number]) => { const { config: _c, ...rest } = c; return rest; };
 const checkCfg = (kind: string, cfg: Record<string, string>) => {
   const need = kind === 'telegram' ? ['bot_token', 'chat_id'] : ['url'];
-  if (!['telegram', 'wecom', 'webhook'].includes(kind)) throw bad('不支持的渠道类型');
+  if (!['telegram', 'feishu'].includes(kind)) throw bad('不支持的渠道类型');
   if (need.some((k) => !String(cfg?.[k] ?? '').trim())) throw bad('配置不完整');
 };
 R('GET', '/notify-channels', () => db.channels.map(pub));

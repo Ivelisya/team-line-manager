@@ -448,16 +448,16 @@ export function buildDb(): Db {
   ];
   const channels: Db['channels'] = [
     { id: 'c1', name: '运维群', kind: 'telegram', min_severity: 'warning', enabled: true, created_at: iso(now() - 20 * DAY), config_hint: 'chat -1001234567', config: { bot_token: '123:abc', chat_id: '-1001234567' } },
-    { id: 'c2', name: '值班企业微信', kind: 'wecom', min_severity: 'critical', enabled: true, created_at: iso(now() - 12 * DAY), config_hint: 'qyapi.weixin.qq.com', config: { url: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=x' } },
-    { id: 'c3', name: '自建告警网关', kind: 'webhook', min_severity: 'info', enabled: false, created_at: iso(now() - 3 * DAY), config_hint: 'hooks.example.com', config: { url: 'https://hooks.example.com/fleet' } },
+    { id: 'c2', name: '值班飞书', kind: 'feishu', min_severity: 'critical', enabled: true, created_at: iso(now() - 12 * DAY), config_hint: 'open.feishu.cn · 已加签', config: { url: 'https://open.feishu.cn/open-apis/bot/v2/hook/x', secret: 'x' } },
+    { id: 'c3', name: '研发群飞书', kind: 'feishu', min_severity: 'info', enabled: false, created_at: iso(now() - 3 * DAY), config_hint: 'open.larksuite.com', config: { url: 'https://open.larksuite.com/open-apis/bot/v2/hook/y' } },
   ];
   const notifyLog: NotifyLogEntry[] = [
     { id: 'n1', channel_id: 'c1', channel_name: '运维群', incident_id: 'i1-0000-aaaa', ts: iso(now() - 14 * 60_000), ok: true, error: null, kind: 'firing', subject_name: '团队1-04', rule_name: '出口不通' },
-    { id: 'n2', channel_id: 'c2', channel_name: '值班企业微信', incident_id: 'i1-0000-aaaa', ts: iso(now() - 14 * 60_000), ok: true, error: null, kind: 'firing', subject_name: '团队1-04', rule_name: '出口不通' },
+    { id: 'n2', channel_id: 'c2', channel_name: '值班飞书', incident_id: 'i1-0000-aaaa', ts: iso(now() - 14 * 60_000), ok: true, error: null, kind: 'firing', subject_name: '团队1-04', rule_name: '出口不通' },
     { id: 'n3', channel_id: 'c1', channel_name: '运维群', incident_id: 'i3-0000-bbbb', ts: iso(now() - 50 * 60_000), ok: false, error: 'Telegram 返回 429：请求过于频繁，请 17 秒后重试', kind: 'resolved', subject_name: '线路机2', rule_name: '配置未应用' },
     // 渠道已删除：名字随渠道没了（中控 left join 为 null）
     { id: 'n6', channel_id: 'c9', channel_name: null, incident_id: 'i9-0000-cccc', ts: iso(now() - 2 * DAY), ok: true, error: null, kind: 'firing', subject_name: '团队2-01', rule_name: 'agent 离线' },
-    { id: 'n4', channel_id: 'c3', channel_name: '自建告警网关', incident_id: null, ts: iso(now() - 3 * DAY), ok: true, error: null, kind: 'test', subject_name: null, rule_name: null },
+    { id: 'n4', channel_id: 'c3', channel_name: '研发群飞书', incident_id: null, ts: iso(now() - 3 * DAY), ok: true, error: null, kind: 'test', subject_name: null, rule_name: null },
     { id: 'n5', channel_id: 'c1', channel_name: '运维群', incident_id: 'i9-0000-cccc', ts: iso(now() - 4 * DAY), ok: true, error: null, kind: 'repeat', subject_name: null, rule_name: 'agent 离线' },
   ];
   const s3 = machines.find((m) => m.id === 'm-t1-03')!.subscription!;
