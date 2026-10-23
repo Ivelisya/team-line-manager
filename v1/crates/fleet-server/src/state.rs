@@ -129,7 +129,9 @@ impl AppState {
         let view_db = PgPoolOptions::new()
             .max_connections((db.options().get_max_connections() / 2).max(2))
             .acquire_timeout(std::time::Duration::from_secs(5))
-            .after_connect(|c, _| Box::pin(async move { c.execute("set statement_timeout = '15s'").await.map(|_| ()) }))
+            // 关 JIT：190 个入口时 probes_of 的规划器代价（约 37 万）超过 JIT 门槛，每次视图加载多约 20 ms（实测开 JIT 43–60 ms，关 23 ms），
+            // 这个池跑的都是几十毫秒的小查询，JIT 没有收益
+            .after_connect(|c, _| Box::pin(async move { c.execute("set statement_timeout = '15s'; set jit = off").await.map(|_| ()) }))
             .connect_lazy_with((*db.connect_options()).clone());
         Self(Arc::new(Inner {
             cfg,
