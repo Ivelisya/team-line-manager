@@ -188,6 +188,7 @@ mod tests {
             access: vec![],
             xray: None,
             agent_health: None,
+            ping: vec![],
         }
     }
 

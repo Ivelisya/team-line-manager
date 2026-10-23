@@ -46,6 +46,24 @@ pub struct Report {
     /// Agent 自身健康（累计值，自进程启动起算）；旧 Agent 不带
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_health: Option<AgentHealth>,
+    /// 三网 PING（线路机往外测，`DesiredState::ping` 给的目标）；旧 Agent 不带、旧中控忽略
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ping: Vec<PingSample>,
+}
+
+/// 一个目标一轮（发 `sent` 次，丢 `lost` 次，`rtt_ms` 是通了的那几次的中位数，全丢为 None）
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PingSample {
+    pub slot: u8,
+    pub ts_ms: i64,
+    /// 实际测的目标（同 `PingTarget::target`）
+    pub target: String,
+    /// 实际用的方式：tcp / icmp（要 ICMP 但系统 ping 用不了时退回 tcp）
+    pub mode: String,
+    pub sent: u16,
+    pub lost: u16,
+    #[serde(default)]
+    pub rtt_ms: Option<f32>,
 }
 
 /// Agent 自身的健康数据：离线队列、访问日志尾读、最近一次应用失败、写盘失败。服务端存进 agent_state.info。
@@ -187,6 +205,51 @@ pub struct DesiredState {
     pub generation: u64,
     pub relay: RelayParams,
     pub entries: Vec<DesiredEntry>,
+    /// 三网 PING 的目标（中控按全局 + 这台的覆盖合成）；没有目标为 None。旧 agent 不认识这个字段，忽略
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ping: Option<PingConfig>,
+}
+
+/// 三网 PING：每 `interval_s` 秒一轮，每个目标发 `count` 次。`mode` 是字符串而不是枚举：以后加新方式时旧 agent 不至于整份期望状态解析失败
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PingConfig {
+    pub interval_s: u32,
+    pub count: u32,
+    /// tcp（建连，默认）/ icmp（系统 ping；用不了时退回 tcp）
+    pub mode: String,
+    pub targets: Vec<PingTarget>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PingTarget {
+    /// 槽位 0–7
+    pub slot: u8,
+    pub name: String,
+    /// `host`、`host:port`、`[IPv6]:port` 或裸 IPv6；TCP 不写端口时连 80
+    pub target: String,
+}
+
+/// TCP 方式不写端口时连的端口
+pub const PING_TCP_DEFAULT_PORT: u16 = 80;
+
+/// 拆 `target`：(主机, 端口)。`[v6]:port`、`[v6]`、裸 IPv6、`host:port`、`host`；端口不对为 None
+pub fn split_target(t: &str) -> Option<(String, Option<u16>)> {
+    let t = t.trim();
+    if let Some(rest) = t.strip_prefix('[') {
+        let (h, tail) = rest.split_once(']')?;
+        return match tail.strip_prefix(':') {
+            Some(p) => Some((h.to_string(), Some(p.parse().ok().filter(|p: &u16| *p > 0)?))),
+            None if tail.is_empty() => Some((h.to_string(), None)),
+            None => None,
+        };
+    }
+    if t.matches(':').count() > 1 {
+        return Some((t.to_string(), None));
+    }
+    match t.split_once(':') {
+        Some((h, p)) => Some((h.to_string(), Some(p.parse().ok().filter(|p: &u16| *p > 0)?))),
+        None => Some((t.to_string(), None)),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

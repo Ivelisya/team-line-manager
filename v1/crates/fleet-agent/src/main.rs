@@ -6,6 +6,7 @@
 mod collect;
 mod config;
 mod desired;
+mod ping;
 mod host;
 mod probe;
 mod probe_point;
@@ -197,6 +198,7 @@ async fn once(cfg: Config) -> Result<()> {
         access: vec![],
         xray: xs,
         agent_health: None,
+        ping: vec![],
     };
     println!("{}", serde_json::to_string_pretty(&r)?);
     let tok = std::fs::read_to_string(&cfg.token_file).map(|t| t.trim().len()).unwrap_or(0);
@@ -234,6 +236,7 @@ async fn run(cfg: Config) -> Result<()> {
         desired::restore(&sh);
         spawn_named(&mut set, "stats_task", collect::stats_task(sh.clone(), applier.cli.clone(), sd_rx.clone()));
         spawn_named(&mut set, "probe_task", collect::probe_task(sh.clone(), probe::direct_client()?, sd_rx.clone()));
+        spawn_named(&mut set, "ping_task", ping::ping_task(sh.clone(), sd_rx.clone()));
         spawn_named(&mut set, "desired_task", desired::desired_task(sh.clone(), applier.clone(), client.clone(), sd_rx.clone()));
         applier_handle = Some(applier);
     }

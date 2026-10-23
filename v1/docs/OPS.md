@@ -435,3 +435,12 @@ heartbeat_url = "https://hc-ping.com/<检查的 uuid>"
 - 卡片上写「中控（代替离线的香港探测点）」：主来源离线，暂由中控代替——连不上照报，连得上不算恢复，等它回来再判。
 - 升级：`fleetctl probe upgrade 香港`，探测点 30 秒内自己从中控下载 dist 里的 fleet-agent、核对 sha256、换上（旧的留成 `/opt/fleet/fleet-agent.prev`）、重启，命令等到它报上新版本。新版本起不来时在探测点上 `mv /opt/fleet/fleet-agent.prev /opt/fleet/fleet-agent` 再重启服务。
 - 删除：`fleetctl probe rm 香港 --yes`（主来源要先改走）；令牌立刻作废，探测点上的东西按打印出来的清理命令自己清。
+
+## 17. 三网 PING（线路机往外测线路质量）
+
+线路机每分钟往外连一轮目标（默认武汉电信 / 联通 / 移动的测速地址，TCP 80 口，每个 5 次），卡片上每个目标一行：当前延迟、左边延迟格、右边丢包格与当前丢包；抽屉「连接质量」里有延迟与丢包曲线。只展示，不开告警。它看的是线路好不好，客户连不连得上入口看探测点（§16）。
+
+- 改全局目标：网页 设置 → 三网 PING，或 `fleetctl ping-targets set <槽位 1–8> --name 武汉电信 --target hb-ct-v4.ip.zstaticcdn.com`（`--target ""` 清空 = 不测）、`fleetctl ping-targets mode tcp|icmp`。保存后全部线路机代数 +1，一分钟内按新目标测。
+- 单台覆盖：抽屉「管理」→ 三网 PING，或 `fleetctl ping <线路机> set <槽位> --name … --target …`、`fleetctl ping <线路机> mode icmp|tcp|global`、`fleetctl ping <线路机> reset [<槽位>]`。看读数：`fleetctl ping <线路机>` 或 `fleetctl show <线路机>`。
+- 要新版 agent：旧 agent 照常应用期望状态、只是不测（卡片上没有三网一块）。中控部署后升级线路机 agent（§7）。
+- 某个目标一直 100% 丢包：先看是不是目标不开那个口（TCP 不写端口连 80）——换成 `host:443` 或改 ICMP 试；ICMP 时卡片悬停写的实际方式是 TCP，说明线路机上的系统 ping 用不了（没装 iputils-ping，或 `sysctl net.ipv4.ping_group_range` 不含 0），agent 日志里 10 分钟一条「ICMP 用不了」。

@@ -11,6 +11,7 @@ pub mod lifecycle;
 pub mod machines;
 pub mod misc;
 pub mod notify;
+pub mod ping;
 pub mod policy;
 pub mod probe_points;
 pub mod provision;
@@ -164,4 +165,9 @@ pub fn router() -> Router<AppState> {
         .route("/probe-points/{id}/upgrade", post(probe_points::upgrade))
         .route("/settings/reach-source", get(probe_points::get_source).put(probe_points::put_source))
         .route("/probe-bootstrap/{token}", get(probe_points::bootstrap_script))
+        // 三网 PING（线路机往外测线路质量）
+        .route("/settings/ping-targets", get(ping::get_targets).put(ping::put_targets))
+        .route("/machines/{id}/ping", get(ping::get_machine).put(ping::put_machine))
+        .route("/machines/{id}/ping-series", get(ping::series))
+        .route("/ping-beats", get(ping::beats))
 }

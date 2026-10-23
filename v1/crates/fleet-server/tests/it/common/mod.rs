@@ -320,6 +320,7 @@ impl Sim {
             access: vec![],
             xray: None,
             agent_health: None,
+            ping: vec![],
         };
         let (s, v) = t.req("POST", "/agent/v1/report", Some(serde_json::to_value(&r).unwrap()), Some(&self.tok)).await;
         assert_eq!(s, StatusCode::OK, "report: {v}");

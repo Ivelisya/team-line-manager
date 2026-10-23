@@ -12,6 +12,7 @@ mod ipintel;
 mod jobs;
 mod lifecycle;
 mod ops;
+mod ping;
 mod policy;
 mod probe;
 mod retention;

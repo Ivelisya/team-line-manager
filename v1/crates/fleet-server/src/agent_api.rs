@@ -513,6 +513,10 @@ async fn ingest(st: &AppState, h: &HeaderMap, mut r: Report) -> Result<Json<Repo
         .execute(&mut *tx)
         .await?;
     }
+    // 三网 PING（线路机往外测，ping.rs）：只收 7 天（它的保留期）以内的
+    if a.kind == "relay" && !r.ping.is_empty() {
+        crate::ping::ingest(&mut tx, a.machine_id, &r.ping, now_ms - 7 * DAY_MS, hi).await?;
+    }
     if !dirty.is_empty() {
         sqlx::query(
             "insert into rollup_dirty (hour, touched_at) select t.h, clock_timestamp() from unnest($1::timestamptz[]) as t(h)

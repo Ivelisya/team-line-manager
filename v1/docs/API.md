@@ -486,6 +486,26 @@ TCP 探测（`ProbeSample.kind = tcp`）：线路机 → 节点出站地址建�
 
 表：`probe_point`（迁移 0046），`relay_reach` 加 `probe_point_id`（null = 中控）、`rtt_ms`（中控为 null），索引改成带来源的 `(relay_id, probe_point_id, ts desc)`、`(relay_id, probe_point_id, port, ts desc)`；保留期仍 2 天。
 
+## 三网 PING（线路机往外测线路质量）
+线路机上的 agent 每 60 秒一轮往外连一组目标，每个目标 5 次，记通了的那几次的延迟中位数与丢了几次（`ping.rs`、agent 的 `ping.rs`）。只展示、不开告警。与探测点分工：探测点管客户连不连得上入口（可用性、`relay_unreachable`），这里看线路的延迟与丢包。节点不测（客户不直连节点）。
+
+- 目标：全局 8 个槽位（`app_setting` 的 `ping_targets`：`{mode, slots: [{name, target}] × 8}`），默认 武汉电信 `hb-ct-v4.ip.zstaticcdn.com`、武汉联通 `hb-cu-v4.ip.zstaticcdn.com`、武汉移动 `hb-cm-v4.ip.zstaticcdn.com`、BGP（留空，网页占位提示 `ip.zstaticcdn.com`）、Node 1–4（留空）；目标留空的不测。目标写 `host`、`host:port`、`[IPv6]:port` 或裸 IPv6。每台线路机可以单独覆盖（`relay.ping_override`：`{mode: null | tcp | icmp, slots: [null | {name, target}] × 8}`，null = 跟随全局；覆盖成空目标 = 这台不测这个槽位）。
+- 方式：`tcp`（默认）建连量内核往返时间，目标不写端口时连 **80**（测速地址一般都开 80，443 不一定），每次超时 3 秒、间隔 0.2 秒；`icmp` 跑线路机上的系统 `ping -n -c 5 -i 0.5 -W 2`。agent 的 systemd 单元不给 `CAP_NET_RAW`、带 `NoNewPrivileges`，iputils 的 ping 拿不到原始套接字时改用 ICMP 数据报套接字（要 `net.ipv4.ping_group_range` 含 root 组，systemd 默认是全部组）；系统没有 ping、或报没权限 / 建不了套接字时这一轮退回 tcp，样本的 `mode` 写 tcp。
+- 下发：随期望状态（`DesiredState.ping = {interval_s: 60, count: 5, mode, targets: [{slot, name, target}]}`，只含有目标的槽位，一个都没有为 null）。改全局时全部在用线路机代数 +1，改覆盖时那一台 +1。旧 agent 不认识这个字段，照常应用、不测。
+- 上报：`Report.ping = [{slot, ts_ms, target, mode, sent, lost, rtt_ms}]`（旧 agent 不带、旧中控忽略）。只收线路机的、槽位 0–7、7 天以内的；同一 (线路机, 槽位, 时刻) 重报的不重复写。
+- 存：`ping_result`（每台每目标每分钟一行，保留 7 天）、`ping_hourly`（小时汇总：发了几次、丢了几次、延迟的平均与最大，保留 90 天；后台每 5 分钟重算最近 7 小时），迁移 0048。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/settings/ping-targets` | `{mode, slots: [{name, target}] × 8, modes: ["tcp","icmp"], interval_s: 60, count: 5, tcp_default_port: 80, defaults}` |
+| PUT | `/settings/ping-targets` | `{mode, slots}`（正好 8 个），要 `write`。名称最长 20 字（空的按「Node n」），目标格式不对、方式不对、槽位数不对 400。审计 `settings.ping_targets`（`detail:{from,to}`），全部在用线路机代数 +1，发 `{type:"settings"}`。返回同 GET |
+| GET | `/machines/{id}/ping` | 线路机：`{mode, slots: [{slot, name, target, source: global\|override}], override, global, current: [同 /ping-beats 的一行]}`；不是线路机 404 |
+| PUT | `/machines/{id}/ping` | `{override: null \| {mode?, slots?}}`：null 或全空 = 全部跟随全局。审计 `relay.ping_override`，这台代数 +1，发 `{type:"machine"}`。返回同 GET |
+| GET | `/ping-beats` | 卡片：`{<线路机 id>: [{slot, name, target, mode, cur_ms, cur_loss, cur_ts, cells}]}`，每个在测的目标一行（按此刻合成的槽位；目标改过的只算新目标的数据）。`cells` 是近 1 小时 20 格（同 `/probe-beats` 按墙钟 3 分钟对齐，旧→新），每格 `[延迟中位数 ms, 丢包 %]`，没有数据为 `[null, null]`；`cur_*` 是 15 分钟内最近一次（`cur_loss` 是 %）。没有目标的线路机不出现 |
+| GET | `/machines/{id}/ping-series?range=1h\|6h\|24h\|7d\|30d` | 抽屉曲线：`{range, step_s, series: [{slot, name, target, points: [{ts, rtt_ms, loss_pct}]}]}`；1h–24h 每分钟的原始点（`step_s` 60），7d / 30d 小时汇总（3600，`rtt_ms` 是这一小时各分钟中位数的平均）。别的 range 400 |
+
+网页的分档（`lib/ping.ts`）：延迟 ≤ 220 ms 绿、≤ 320 ms 黄、更高红（跨境 150–200 ms 是常态，不按国内标准标红）；丢包 0 绿、≤ 10% 黄、更高红。
+
 ## 软路由（节选）
 `GET /routers/{id}` 的 `detail`（最近一次采集的快照）里 `clients[]`：`{ip, mac, hostname, online, conns, down_bps, up_bps, exits:[{name, conns}]}`。`down_bps` / `up_bps` 是这台客户端经 OpenClash 的下载 / 上传速率（bit/s）：按 mihomo 连接的来源 IP（`sourceIP`）汇总，取差方式同出口速率（同一连接两次采集的字节数之差累加、新连接全算，除以两次采集的间隔）；没有连接的客户端为 0；路由上第一次采集（没有上一次的读数）、mihomo API 调不通时为 null（同出口的 `up_bps` / `down_bps`）。上一次的读数存在路由上，中控重启不影响它们；只有 WAN 与 OpenClash 总速率（`summary.wan.rx_bps` / `tx_bps`、`openclash.up_bps` / `down_bps`）用中控内存里的上一次读数，中控重启后的第一轮为 null。
 

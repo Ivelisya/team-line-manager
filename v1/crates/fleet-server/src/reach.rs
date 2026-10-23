@@ -228,7 +228,16 @@ mod tests {
         let p = l.local_addr().unwrap().port();
         assert_eq!(connect("127.0.0.1".into(), p).await, Ok(()));
         drop(l);
-        assert_eq!(connect("127.0.0.1".into(), p).await, Err("连接被拒绝".into()));
+        // 同一进程里别的测试在起子进程（fork 到 exec 之间子进程短暂持有这个监听套接字）：关掉之后可能还要一会儿才真的没人听
+        let mut r = Ok(());
+        for _ in 0..50 {
+            r = connect("127.0.0.1".into(), p).await;
+            if r.is_err() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(r, Err("连接被拒绝".into()));
         assert_eq!(connect_addr("nonsense").await, Err("地址无效".into()));
     }
 }

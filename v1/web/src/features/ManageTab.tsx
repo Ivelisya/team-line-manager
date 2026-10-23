@@ -19,6 +19,7 @@ import { ShowAll } from '@/components/app/Pagination';
 import { RouterMark, entryStatus } from './EntriesTable';
 import { useEntryRouters } from '@/lib/routers';
 import { ConfirmDialog } from '@/components/app/dialogs';
+import { PingOverrideSection } from './PingTab';
 import { RetireDialog } from '@/components/app/RetireDialog';
 import { EntryMenuButton, EntryMenus, entryLabel } from '@/components/app/EntryActions';
 import { EvacuateDialog, MoveDialog, movableEntries } from '@/components/app/LifecycleDialogs';
@@ -33,6 +34,8 @@ export function ManageTab({ m, onClosed }: { m: MachineView; onClosed: () => voi
   return (
     <>
       {!retired && <RenameSection m={m} />}
+      {/* 线路机：三网 PING 的单独设置（目标与方式，默认跟随设置页的全局） */}
+      {m.kind === 'relay' && active && <Section><SectionHeader title={<>三网 PING <InfoTip text="线路机每分钟往外测一轮这些目标，看线路的延迟与丢包。勾上「单独设置」只改这台" /></>} /><PingOverrideSection id={m.id} /></Section>}
       {/* 在用的机器没有入口时也要能加：节点「添加入口」，线路机「添加直出入口」 */}
       {!retired && (m.lifecycle === 'active' || m.entries.length > 0) && <EntrySection m={m} />}
       {/* 在用的普通 VPS 节点都能当宿主机：上面另配的公网 IP 各上架成一台同机 IP 节点 */}

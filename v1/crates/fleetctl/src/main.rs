@@ -10,6 +10,7 @@ mod ipintel;
 mod lifecycle;
 mod meta;
 mod ops;
+mod ping;
 mod policy;
 mod probe;
 mod recycle;
@@ -654,6 +655,56 @@ enum Cmd {
         #[command(subcommand)]
         cmd: ProbeCmd,
     },
+    /// 三网 PING 的全局目标（8 个槽位）：不给子命令显示；set 改一个槽位，mode 改方式。线路机每分钟往外测一轮
+    PingTargets {
+        #[command(subcommand)]
+        cmd: Option<PingTargetsCmd>,
+    },
+    /// 一台线路机的三网 PING：不给子命令显示目标与当前读数；set / reset / mode 改这台的单独设置
+    Ping {
+        /// 线路机（id / 名称 / IP）
+        relay: String,
+        #[command(subcommand)]
+        cmd: Option<PingCmd>,
+    },
+}
+
+#[derive(Subcommand)]
+enum PingTargetsCmd {
+    /// 改一个槽位：--target "" 清空（不测）
+    Set {
+        /// 槽位 1–8
+        slot: u8,
+        #[arg(long)]
+        name: Option<String>,
+        /// host、host:port、[IPv6]:port；TCP 不写端口连 80
+        #[arg(long)]
+        target: Option<String>,
+    },
+    /// 方式：tcp（建连，默认）/ icmp（系统 ping，用不了时退回 TCP）
+    Mode {
+        #[arg(value_parser = ["tcp", "icmp"])]
+        mode: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum PingCmd {
+    /// 这台单独设置一个槽位（--target "" = 这台不测它）
+    Set {
+        slot: u8,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        target: Option<String>,
+    },
+    /// 改回跟随全局：给槽位只改那一个，不给全部
+    Reset { slot: Option<u8> },
+    /// 这台的方式：tcp / icmp / global（跟随全局）
+    Mode {
+        #[arg(value_parser = ["tcp", "icmp", "global"])]
+        mode: String,
+    },
 }
 
 /// 探测点的安装方式：给 --host 由中控 SSH 登录装（中控用自己的密钥登录 root）；不给就打印一次性安装命令
@@ -1012,6 +1063,17 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
             ProbeCmd::Primary { source } => probe::primary(x, &source),
             ProbeCmd::Central { state } => probe::central(x, state == "on"),
             ProbeCmd::Upgrade { probe: q, no_wait } => probe::upgrade(x, &q, no_wait),
+        },
+        Cmd::PingTargets { cmd } => match cmd {
+            None => ping::targets(x),
+            Some(PingTargetsCmd::Set { slot, name, target }) => ping::targets_set(x, slot, name.as_deref(), target.as_deref()),
+            Some(PingTargetsCmd::Mode { mode }) => ping::targets_mode(x, &mode),
+        },
+        Cmd::Ping { relay, cmd } => match cmd {
+            None => ping::show(x, &relay),
+            Some(PingCmd::Set { slot, name, target }) => ping::set(x, &relay, slot, name.as_deref(), target.as_deref()),
+            Some(PingCmd::Reset { slot }) => ping::reset(x, &relay, slot),
+            Some(PingCmd::Mode { mode }) => ping::mode(x, &relay, &mode),
         },
     }
 }

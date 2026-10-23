@@ -20,6 +20,7 @@ import { type DrawerTab } from '@/lib/drawer';
 import { cn } from '@/lib/utils';
 import { Beat, Due, Flag, FromTag, HealthPill, LabelValue, Mark, Num, SPARE_TIP } from './primitives';
 import { MachineTag, machineTagItems } from './MachineTags';
+import { PingRows } from './PingRows';
 import { CellMeter, Cells, DotTrace, QUOTA_COLORS, Tag } from './viz';
 import { Button, IconButton } from '@/components/ui/button';
 
@@ -347,7 +348,8 @@ const CardBody = memo(function CardBody({ m, view, current, onOpen: open, layout
   const info: Info = { id: m.id, ip: m.ip, sshPort: m.ssh_port, entry: entryText(m), plan: m.plan, host: m.host_machine, nodes: m.ip_nodes };
   const tags = <Tags code={m.provider_code} provider={m.provider} kind={m.kind} maintenance={m.maintenance} price={subLabel(m)} priceTip={monthlyHint(m.subscription)} id={m.id} host={m.host_machine} nodes={m.ip_nodes} />;
   const reason = m.lifecycle === 'active' && m.health.status === 'down' && m.health.reasons[0] ? errText(m.health.reasons[0].text) : undefined;
-  const beat = <section className="slot-seg"><BeatSlot id={m.id} kind={m.kind} lifecycle={m.lifecycle} reason={reason} reasonKey={m.health.reasons[0]?.key} onOpen={onOpen} {...probeSummary(m)} /></section>;
+  // 线路机：心跳格（主探测来源 → 客户入口，可用性）下面接三网 PING（线路机往外，线路质量）
+  const beat = <section className="slot-seg"><BeatSlot id={m.id} kind={m.kind} lifecycle={m.lifecycle} reason={reason} reasonKey={m.health.reasons[0]?.key} onOpen={onOpen} {...probeSummary(m)} />{m.kind === 'relay' && m.lifecycle === 'active' && <PingRows id={m.id} onOpen={onOpen} />}</section>;
   const sv = showOf(m, show, view);
   const res = proxy ? <BizPair m={m} onOpen={onOpen} today={view === 'large'} /> : <Meters m={m} compact={view !== 'large'} onOpen={onOpen} />;
   // 还没有主机读数的（上架中、没上报过）照样是速率两列：读数「—」、标「离线」
