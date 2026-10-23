@@ -10,7 +10,7 @@ import { isQuiet } from './derive';
 type N = number | null;
 /** [ts, cpu_pct, load1, mem_used, mem_total, disk_used, disk_total, net_rx_bps, net_tx_bps, tcp_conns] */
 type HostTuple = [number, N, N, N, N, N, N, N, N, N];
-/** [ok, latency_ms, ts, detail, median_ms]（median_ms：TCP 近 1 小时中位数，旧中控不带） */
+/** [ok, latency_ms, ts, detail, median_ms]（median_ms：TCP 近 1 小时中位数，出口探测为 null） */
 type ProbeTuple = [boolean, N, number, string | null, N?];
 interface MachinePatch {
   host?: HostTuple | null; seen?: N; agent?: { version: string | null; online: boolean; xray_running: boolean | null; cores: number | null } | null;

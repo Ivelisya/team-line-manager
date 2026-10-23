@@ -72,11 +72,11 @@ const TEAM_COLS = [
   { id: 'name', header: '名称', first: 'asc' as const }, { id: 'order', header: '排序', r: true, first: 'asc' as const },
   { id: 'nodes', header: '在用节点', r: true, first: 'desc' as const }, { id: 'cost', header: '月费', r: true, first: 'desc' as const }, { id: 'act', header: '' },
 ];
-const TEAM_KEY: Record<string, (t: Team) => number | string> = { name: (t) => t.name, order: (t) => t.sort_order, nodes: (t) => t.node_count, cost: (t) => t.monthly_usd?.cents ?? 0 };
+const TEAM_KEY: Record<string, (t: Team) => number | string> = { name: (t) => t.name, order: (t) => t.sort_order, nodes: (t) => t.node_count, cost: (t) => t.monthly_usd.cents };
 /** 团队的月费（USD，服务端折好的在用机器合计）：悬停列出原币种与汇率；有没折算的币种时加「*」 */
 function TeamCost({ t }: { t: Team }) {
   const u = t.monthly_usd;
-  if (!u || (!u.by_currency.length && !u.unconverted.length)) return <span className="t-muted">—</span>;
+  if (!u.by_currency.length && !u.unconverted.length) return <span className="t-muted">—</span>;
   return <span className="num" data-tip={usdTotalTip(u)}>{F.money(u.cents, 'USD')}{u.unconverted.length ? '*' : ''}</span>;
 }
 function TeamsTab() {
@@ -92,12 +92,12 @@ function TeamsTab() {
   const renumHeld = useHeld(renum?.id, renum);
   const list = sortRows([...(q.data ?? [])].sort((a, b) => a.sort_order - b.sort_order), sort, TEAM_KEY);
   // 各团队在用机器的月费合计（USD）；有团队带没折算的币种时注明
-  const total = list.reduce((s, t) => s + (t.monthly_usd?.cents ?? 0), 0);
-  const partial = list.some((t) => t.monthly_usd?.unconverted.length);
+  const total = list.reduce((s, t) => s + t.monthly_usd.cents, 0);
+  const partial = list.some((t) => t.monthly_usd.unconverted.length);
   return (
     <>
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
-      <Panel title="团队" count={list.length} sub={<><InfoTip text="首页与表格按「排序」从小到大排列；月费是在用机器按月折成美元的合计（汇率见设置 → 汇率）" />{list.some((t) => t.monthly_usd) && <span className="t-sub" style={{ marginLeft: 'var(--sp-8)' }} data-tip={partial ? '带 * 的团队有没有汇率的币种，没算进合计' : undefined}>月费合计 <span className="num">{F.money(total, 'USD')}</span>{partial ? '*' : ''}</span>}</>} tools={<Button variant="primary" size="md" onClick={() => setEdit('new')}><Plus />新建团队</Button>} flush>
+      <Panel title="团队" count={list.length} sub={<><InfoTip text="首页与表格按「排序」从小到大排列；月费是在用机器按月折成美元的合计（汇率见设置 → 汇率）" />{list.length > 0 && <span className="t-sub" style={{ marginLeft: 'var(--sp-8)' }} data-tip={partial ? '带 * 的团队有没有汇率的币种，没算进合计' : undefined}>月费合计 <span className="num">{F.money(total, 'USD')}</span>{partial ? '*' : ''}</span>}</>} tools={<Button variant="primary" size="md" onClick={() => setEdit('new')}><Plus />新建团队</Button>} flush>
         <TableWrap>
           <table className="dt is-one" style={{ minWidth: 630 }}>
             <colgroup><col /><col style={{ width: 90 }} /><col style={{ width: 100 }} /><col style={{ width: 110 }} /><col style={{ width: 256 }} /></colgroup>
@@ -216,7 +216,7 @@ function ProvidersTab() {
     return m;
   }, [plans]);
   const list = sortRows(q.data ?? [], sort, {
-    name: (p) => p.name, code: (p) => p.code, remind: (p) => p.remind_days ?? meta().defaults.remind_days, plans: (p) => planCount.get(p.id) ?? 0,
+    name: (p) => p.name, code: (p) => p.code, remind: (p) => p.remind_days, plans: (p) => planCount.get(p.id) ?? 0,
   });
   // 一个面板地址都没填时不占一列
   const panel = list.some((p) => p.panel_url);
@@ -233,8 +233,8 @@ function ProvidersTab() {
               <tr key={p.id}><td className="strong">{p.name}</td><td><Chip>{p.code}</Chip></td>
                 <td data-tip={p.timezone ?? meta().org_timezone}>{p.timezone ? tzLabel(p.timezone) : <span className="t-muted">{orgTz()}</span>}</td>
                 <td>{trafficRuleLabel(p.traffic_rule)}</td>
-                <td data-tip={resetOptions().find((o) => o.value === (p.traffic_reset ?? meta().defaults.traffic_reset))?.label}>{trafficResetText(p.traffic_reset ?? meta().defaults.traffic_reset)}</td>
-                <td>提前 <span className="num">{p.remind_days ?? meta().defaults.remind_days}</span> 天</td>
+                <td data-tip={resetOptions().find((o) => o.value === p.traffic_reset)?.label}>{trafficResetText(p.traffic_reset)}</td>
+                <td>提前 <span className="num">{p.remind_days}</span> 天</td>
                 <td className="r num">{planCount.get(p.id) ?? <span className="t-muted">0</span>}</td>
                 {panel && <td>{p.panel_url && /^https?:\/\//i.test(p.panel_url) ? <a href={p.panel_url} target="_blank" rel="noreferrer noopener" className="btn-link btn" style={{ gap: 4, maxWidth: '100%' }}><span className="ellipsis">{p.panel_url.replace(/^https?:\/\//, '')}</span><ExternalLink size={12} /></a> : (p.panel_url || <span className="t-muted">—</span>)}</td>}
                 <td className="r"><span className="row row-acts" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
@@ -257,7 +257,7 @@ const ProviderDialog = resetOnOpen(function ProviderDialog({ provider, open, onC
   const add = useAddProvider(); const patch = usePatchProvider();
   const [f0] = React.useState(() => (provider === 'new' ? emptyProvider() : {
     name: provider.name, code: provider.code, panel_url: provider.panel_url ?? '', timezone: provider.timezone ?? '', traffic_rule: provider.traffic_rule,
-    traffic_reset: provider.traffic_reset ?? meta().defaults.traffic_reset, remind_days: String(provider.remind_days ?? meta().defaults.remind_days),
+    traffic_reset: provider.traffic_reset, remind_days: String(provider.remind_days),
   }));
   const [f, setF] = React.useState(f0);
   const dirty = (Object.keys(f) as (keyof typeof f)[]).some((k) => f[k] !== f0[k]);

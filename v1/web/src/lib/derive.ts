@@ -21,8 +21,6 @@ export const entryLabel = (k: string) => lbl(meta().entry_states, k);
 export const jobKindLabel = (k: string) => lbl(meta().job_kinds, k);
 export const jobStateLabel = (k: string) => lbl(meta().job_states, k);
 export const stepLabel = (k: string) => lbl(meta().step_states, k);
-/** 告警规则的中文名 */
-export const ruleLabel = (k: string) => lbl(meta().rules, k);
 /** 网卡计量规则（供应商的「流量计量」） */
 export const trafficRuleLabel = (k: string) => lbl(meta().traffic_rules, k);
 /** 网卡计量规则（费用页签「本周期已用」旁的 (i)、额度悬停）：「按网卡流量：下行、上行取较大值」（名字同供应商对话框，来自 /meta） */
@@ -33,7 +31,6 @@ export const trafficResetLabel = (k: string) => lbl(meta().traffic_resets, k);
 export const trafficResetText = (k: string) => (k === 'rolling30' ? trafficResetLabel(k) : `按${trafficResetLabel(k)}`);
 /** 计费周期的那个字：月 / 季 / 半年 / 年 */
 export const cycleLabel = (k: string) => meta().cycles.find((c) => c.key === k)?.label ?? k;
-export const dueStateLabel = (k: string) => lbl(meta().due_states, k);
 /** 告警级别的色调与中文名（同告警页的级别列）；没见过的级别按警告 */
 export const severityOf = (s: string) => meta().severities[s] ?? meta().severities.warning ?? { tone: 'warn' as const, label: s };
 /** 到期状态 → 色调：已过期红、即将到期黄 */
@@ -65,7 +62,7 @@ export function monthTraffic(m: MachineView) {
 /** 本月流量（卡片底行、首页表格、机器页的「本月流量」）：自己有 agent 的机器是网卡口径（down = 下行、up = 上行），
  *  家宽代理、同机 IP 节点是业务口径（down = 下载、up = 上传）；from：数据从哪天起才有（不完整时） */
 export function monthFlow(m: MachineView) {
-  const from = m.month_counted_from ?? null;
+  const from = m.month_counted_from;
   if (m.nic) return { kind: 'nic' as const, down: m.nic.month_rx, up: m.nic.month_tx, total: m.nic.month_rx + m.nic.month_tx, from };
   const t = monthTraffic(m);
   return { kind: 'biz' as const, down: t.down, up: t.up, total: t.down + t.up, from };
@@ -143,10 +140,9 @@ const GB = 1e9;
 /** 流量额度：上限（GB，服务端算好的 quota.limit_gb，0 = 不限）与本周期已用（服务端按网卡 / 业务流量、流量周期算，见 MachineView.quota）。
  *  shared：同机 IP 节点自己没设上限——额度与宿主机共用（宿主机的网卡含它的流量），不是「不限」；unset：没设套餐、订阅里也没写上限，同样不是「不限」。source 见 limit_source */
 export function quota(m: MachineView) {
-  // 旧接口（模拟数据）没有 limit_gb 时退回订阅 / 套餐的
-  const limit = m.quota.limit_gb !== undefined ? m.quota.limit_gb ?? 0 : m.subscription?.traffic_gb ?? m.plan?.traffic_gb ?? 0;
+  const limit = m.quota.limit_gb ?? 0;
   const { used, period_start: start, period_end: end, counted_from: from, rule, base } = m.quota;
-  const shared = m.quota.limit_source ? m.quota.limit_source === 'host' : !!m.host_machine && !(limit > 0);
+  const shared = m.quota.limit_source === 'host';
   // 没设套餐、订阅里也没写流量上限：没设置 ≠ 不限（套餐里写了不限、或订阅里单独写了 0 才是不限）
   const unset = !(limit > 0) && !shared && m.quota.limit_source === 'none' && !m.plan && !isOverridden(m.subscription, 'traffic_gb');
   return { limit, used, start, end, from, base, rolling: m.quota.mode === 'rolling30', rule, pct: limit > 0 ? (used / (limit * GB)) * 100 : null, rem: limit > 0 ? Math.max(0, limit * GB - used) : null, shared, unset, unlimited: !(limit > 0) && !shared && !unset, source: m.quota.limit_source };
@@ -162,7 +158,7 @@ export function quotaRuleText(m: MachineView) {
 export function quotaCycleText(m: MachineView) {
   const q = quota(m);
   if (q.rolling) return '滚动 30 天（跟随供应商）';
-  const from = isOverridden(m.subscription, 'traffic_reset_day') ? '单独设置' : m.sub_template ? `${inheritSource(m, 'traffic_reset_day')}：${trafficResetText(m.sub_template.traffic_reset)}` : '';
+  const from = isOverridden(m.subscription, 'traffic_reset_day') ? '单独设置' : `${inheritSource(m, 'traffic_reset_day')}：${trafficResetText(m.sub_template.traffic_reset)}`;
   return `每月 ${m.subscription?.traffic_reset_day ?? Number(q.start.slice(8))} 号重置${from && `（${from}）`} · ${mmdd(q.start)} 起，${mmdd(q.end!)} 重置`;
 }
 /** 已用的补充说明（各一句）：含接入前读数、数据不完整（之前的用量不在内） */
@@ -187,11 +183,11 @@ export const SUB_FROM: Record<SubField, 'plan' | 'provider'> = {
   price_cents: 'plan', currency: 'plan', cycle: 'plan', traffic_gb: 'plan', billing_tz: 'provider', remind_days: 'provider', traffic_reset_day: 'provider',
 };
 /** 这一项单独设置了 */
-export const isOverridden = (s: Subscription | null | undefined, k: SubField) => !!s?.overrides?.includes(k);
+export const isOverridden = (s: Subscription | null | undefined, k: SubField) => !!s?.overrides.includes(k);
 /** 跟随时的值（同服务端 subscription_eff）：重置日按供应商的方式——账单日 = 订阅的账单日，自然月 = 1 号。没有模板为 null。
  *  账单日同服务端 meta::billing_day：到期日（YYYY-MM-DD）落在现有 billing_day 上的（小月按月末，如 31 号的 2-28）沿用，否则是它几号 */
 export function inheritedValue(m: MachineView, k: SubField, due?: string): string | number | null {
-  const t = m.sub_template; if (!t) return null;
+  const t = m.sub_template;
   if (k === 'traffic_reset_day') {
     if (t.traffic_reset !== 'billing' || !/^\d{4}-\d{2}-\d{2}$/.test(due ?? '')) return 1;
     const [y, mo, d] = due!.split('-').map(Number);
@@ -227,15 +223,14 @@ export function inheritSummary(plan: Plan, pv: Provider | undefined) {
       + `${pv ? `供应商「${pv.name}」` : '默认'}：账单时区 ${pv?.timezone || M.org_timezone} · 流量${reset} · ${subValueText('remind_days', pv?.remind_days ?? M.defaults.remind_days)}提醒`,
   };
 }
-/** 「跟随套餐：2000 GB」：没有模板（旧接口）为 null */
+/** 「跟随套餐：2000 GB」 */
 export function inheritText(m: MachineView, k: SubField, due?: string) {
-  const t = m.sub_template; if (!t) return null;
   if (k === 'price_cents' && inheritedValue(m, k, due) == null) return '没有套餐，需要单独填';
   return `${inheritSource(m, k)}：${inheritValueText(m, k, due)}`;
 }
 /** 跟随的值写成文字（不带来源，订阅表单里跟随态直接显示它） */
 export const inheritValueText = (m: MachineView, k: SubField, due?: string) =>
-  m.sub_template ? subValueText(k, inheritedValue(m, k, due), m.sub_template.currency, m.sub_template.traffic_reset) : '';
+  subValueText(k, inheritedValue(m, k, due), m.sub_template.currency, m.sub_template.traffic_reset);
 /** 额度用量的写法同供应商面板：十进制 GB，不换算成 TB（901.6 GB）。业务流量等其它字节数仍用 F.bytes */
 export const quotaGb = (bytes: number): F.Fmt => {
   const x = Math.max(0, bytes) / GB;
@@ -342,11 +337,10 @@ const BEAT_MS = 3 * 60_000;
 export function beatTitles(buckets: ProbeBucket[] | undefined, now = Date.now()): string[] {
   const bs = buckets ?? [];
   const cur = Math.floor(now / BEAT_MS) * BEAT_MS;
-  const hm = (t: number) => { const d = new Date(t); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
   return bs.map(([n, ok, ms, re], i) => {
     const t0 = cur - (bs.length - 1 - i) * BEAT_MS;
     const what = !n ? '没有探测' : `成功 ${Math.round((ok / n) * 100)}%（${ok}/${n}）${ms != null ? ` · 中位 ${Math.round(ms)} ms` : ''}${re ? ` · 重发 ${re} 次` : ''}`;
-    return `${hm(t0)}–${hm(t0 + BEAT_MS)}${i === bs.length - 1 ? '（进行中）' : ''} · ${what}`;
+    return `${F.hm(t0)}–${F.hm(t0 + BEAT_MS)}${i === bs.length - 1 ? '（进行中）' : ''} · ${what}`;
   });
 }
 /** 近 1 小时的总成功率（家宽代理卡的心跳条标题：延迟已在上面的读数里）；没有探测为 null */
@@ -420,12 +414,11 @@ export function tagColor(text: string): TagColor {
   return TAG_COLORS[h % TAG_COLORS.length];
 }
 
-/** 计费统一按 USD：服务端按汇率折好的月费（monthly_usd_cents，分）。没有汇率（或旧接口）时为 null，调用方写原币种并标「未折算」 */
-export const usdMonthly = (s: Subscription | null | undefined) => (s?.monthly_usd_cents != null ? s.monthly_usd_cents : null);
 /** 月费的文字：「$37.50/月」；没有汇率时「¥299.99/月」（原币种，悬停见 priceHint 说明未折算） */
 export const subLabel = (m: MachineView) => {
   const s = m.subscription; if (!s) return null;
-  const u = usdMonthly(s);
+  // 计费统一按 USD：服务端按汇率折好的 monthly_usd_cents；没有汇率时为 null，写原币种
+  const u = s.monthly_usd_cents;
   return u != null ? `${F.money(u, 'USD')}/月` : `${F.money(s.monthly_cents, s.currency)}/月`;
 };
 /** 原价说明（月费旁的小字或悬停）：原币种不是 USD 或不是按月付时写原价「原价 ¥299.99/月 · 1 CNY = 0.1404 USD」；
@@ -436,7 +429,7 @@ export function priceHint(s: Subscription | null | undefined): string | null {
   if (s.monthly_usd_cents == null) return `${orig} · 未折算：没有 ${s.currency} 的汇率（设置 → 汇率）`;
   const monthly = meta().cycles.find((c) => c.key === s.cycle)?.months === 1;
   if (s.currency === 'USD') return monthly ? null : orig;
-  return `${orig} · ${F.fxRate(s.currency, s.usd_per_unit ?? 0)}`;
+  return `${orig} · ${F.fxRate(s.currency, s.usd_per_unit!)}`;
 }
 /** 月费合计（USD）的悬停说明：各原币种金额与所用汇率，没有汇率的单列 */
 export function usdTotalTip(t: UsdTotal | undefined): string {

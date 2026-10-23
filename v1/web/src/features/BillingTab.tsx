@@ -39,7 +39,7 @@ export function BillingTab({ m }: { m: MachineView }) {
             <LabelValue label="费用">{s.monthly_usd_cents != null
               ? <><span className="num">{F.money(s.monthly_usd_cents, 'USD')}</span> <span className="unit">/ 月</span></>
               : <><span className="num">{F.money(s.price_cents, s.currency)}</span> <span className="unit">/ {cycleLabel(s.cycle)}</span></>}
-              {(priceHint(s) || m.sub_template) && <div className="hint">{[priceHint(s), m.sub_template && ((['price_cents', 'currency', 'cycle'] as const).some((k) => isOverridden(s, k)) ? '单独设置' : inheritSource(m, 'price_cents'))].filter(Boolean).join(' · ')}</div>}</LabelValue>
+              <div className="hint">{[priceHint(s), (['price_cents', 'currency', 'cycle'] as const).some((k) => isOverridden(s, k)) ? '单独设置' : inheritSource(m, 'price_cents')].filter(Boolean).join(' · ')}</div></LabelValue>
             <LabelValue label="到期日">{s.due_date}（<Due days={s.due_days} state={s.due_state} />）{recycleOn(m) && <div className="hint"><SpareDue on={recycleOn(m)!} /></div>}</LabelValue>
             {/* 剩余比例只写一个百分数，天数在悬停里；预付了多期只写金额，期数在 (i) 里 */}
             <LabelValue label="剩余价值">{rv ? <><span className="num">{F.money(rv.cents, rv.currency)}</span> {rv.frac > 1
@@ -64,7 +64,7 @@ export function BillingTab({ m }: { m: MachineView }) {
         </Section>
       )}
       <Section>
-        <SectionHeader title={<>{s ? '修改订阅' : '设置订阅'}{m.sub_template && <> <InfoTip text={`选「跟随」的项跟随${m.plan ? `套餐「${m.plan.name}」` : '默认值'}${m.provider ? `与供应商「${m.provider.name}」` : ''}：在「团队与套餐」里改了，这里立即跟着变。`} /></>}</>} />
+        <SectionHeader title={<>{s ? '修改订阅' : '设置订阅'} <InfoTip text={`选「跟随」的项跟随${m.plan ? `套餐「${m.plan.name}」` : '默认值'}${m.provider ? `与供应商「${m.provider.name}」` : ''}：在「团队与套餐」里改了，这里立即跟着变。`} /></>} />
         {!s && !h && <div style={{ marginBottom: 12 }}><Note>还没有订阅信息 <InfoTip text={`填写后会参与到期提醒与费用统计。${m.plan ? '有套餐时只需填到期日。' : ''}`} /></Note></div>}
         <SubForm key={m.id + (s?.due_date ?? '')} m={m} />
       </Section>
@@ -102,7 +102,7 @@ function OvField({ m, k, label, info, on, setOn, due, error, hint, locked, onTou
   // 同机 IP 节点没有套餐：流量上限跟随的是宿主机的额度
   const shared = k === 'traffic_gb' && m.host_machine && !m.plan;
   const follow = shared ? '与宿主机共用额度' : inheritText(m, k, due);
-  const toggle = !locked && follow != null && (
+  const toggle = !locked && (
     <span data-tip={`跟随${inheritSource(m, k)}：${follow}`}><Segmented sm label={`${label}：跟随或单独设置`} value={on ? 'own' : 'follow'} onChange={(v) => setOn(v === 'own')} items={OV_ITEMS} /></span>
   );
   return (
@@ -121,11 +121,10 @@ function OvField({ m, k, label, info, on, setOn, due, error, hint, locked, onTou
 function SubForm({ m }: { m: MachineView }) {
   const s = m.subscription;
   const save = useSaveSubscription();
-  // 旧接口没有模板：各项都按单独设置填（同以前）。没有套餐时价格没有可跟随的，必须单独填
-  const legacy = !m.sub_template;
-  const priceLocked = legacy || m.sub_template?.price_cents == null;
+  // 没有套餐时价格没有可跟随的，必须单独填
+  const priceLocked = m.sub_template.price_cents == null;
   const [ov, setOv] = React.useState<Record<SubField, boolean>>(() =>
-    Object.fromEntries(OV_FIELDS.map((k) => [k, legacy || isOverridden(s, k) || (k === 'price_cents' && priceLocked)])) as Record<SubField, boolean>);
+    Object.fromEntries(OV_FIELDS.map((k) => [k, isOverridden(s, k) || (k === 'price_cents' && priceLocked)])) as Record<SubField, boolean>);
   const setOn = (k: SubField) => (on: boolean) => setOv((o) => ({ ...o, [k]: on }));
   const [dueDate, setDueDate] = React.useState(s?.due_date ?? '');
   // 必填 / 填错的提示等用户离开那一项再出现（一打开就满屏红字像是已经出错了）；到期日在离开表单里别的项时才算离开
@@ -133,11 +132,11 @@ function SubForm({ m }: { m: MachineView }) {
   const touch = (k: string) => () => setTouched((t) => (t[k] ? t : { ...t, [k]: true }));
   // 各项的输入：单独设置过的取当前值，否则取跟随的值（点「单独设置」时从它改起）
   const init = (k: SubField) => {
-    const v = s && (legacy || isOverridden(s, k)) ? s[k] : inheritedValue(m, k, s?.due_date);
+    const v = s && isOverridden(s, k) ? s[k] : inheritedValue(m, k, s?.due_date);
     return v == null ? '' : k === 'price_cents' ? String(Number(v) / 100) : String(v);
   };
   const [price, setPrice] = React.useState(() => init('price_cents'));
-  // 都没有时（旧接口没有模板）用 /meta 的默认值；账单时区默认组织时区
+  // 都没有时用 /meta 的默认值；账单时区默认组织时区
   const [currency, setCurrency] = React.useState(() => init('currency') || meta().defaults.currency);
   const [cycle, setCycle] = React.useState(() => init('cycle') || meta().defaults.cycle);
   const [tz, setTz] = React.useState(() => init('billing_tz') || meta().org_timezone);
@@ -167,12 +166,12 @@ function SubForm({ m }: { m: MachineView }) {
     save.mutate({ id: m.id, ...body }, { onSuccess: () => { saved.current = sig; toast.ok('订阅已保存'); }, onError: toast.err });
   };
   // 费用框里的单位：生效的币种 / 周期（单独设置的取输入，跟随的取套餐 / 供应商的）
-  const priceCur = ov.currency ? currency : m.sub_template?.currency ?? currency;
-  const priceUnit = `${priceCur} / ${cycleLabel(ov.cycle ? cycle : m.sub_template?.cycle ?? cycle)}`;
+  const priceCur = ov.currency ? currency : m.sub_template.currency;
+  const priceUnit = `${priceCur} / ${cycleLabel(ov.cycle ? cycle : m.sub_template.cycle)}`;
   // 价格按供应商收的币种录入，旁边提示折合多少美元（按设置里的汇率）
   const usdHint = useUsdPreview(price.trim() === '' || priceBad ? null : Math.round(priceNum * 100), priceCur);
   const o = (k: SubField, label: string, children: React.ReactElement, error?: string, info?: string) => (
-    <OvField m={m} k={k} label={label} info={info} on={ov[k]} setOn={setOn(k)} due={dueDate} error={touched[k] ? error : undefined} hint={k === 'price_cents' ? usdHint : undefined} onTouch={touch(k)} locked={legacy || (k === 'price_cents' && priceLocked)}>{children}</OvField>
+    <OvField m={m} k={k} label={label} info={info} on={ov[k]} setOn={setOn(k)} due={dueDate} error={touched[k] ? error : undefined} hint={k === 'price_cents' ? usdHint : undefined} onTouch={touch(k)} locked={k === 'price_cents' && priceLocked}>{children}</OvField>
   );
   return (
     <div className="form-grid" onBlur={(e) => { if (!(e.target as HTMLElement).closest('[data-due]')) touch('due')(); }}>

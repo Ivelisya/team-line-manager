@@ -15,14 +15,14 @@ import { meta, usdTotalTip } from '@/lib/derive';
 import { CountUp, DotCount, Num, Stat } from '@/components/app/primitives';
 import { AreaSpark, Cells } from '@/components/app/viz';
 
-/** 分区：浅灰大圆角容器，左上小胶囊标签（图标 + 文字）、标题、一行说明，右上放操作 */
-export function HomeSection({ icon, label, title, sub, actions, children, className, headRef }: {
-  icon: React.ReactNode; label: string; title: React.ReactNode; sub?: React.ReactNode; actions?: React.ReactNode; children: React.ReactNode; className?: string; headRef?: (el: HTMLElement | null) => void;
+/** 分区：浅灰大圆角容器，左上小胶囊标签（图标 + 文字）、标题、一行说明 */
+export function HomeSection({ icon, label, title, sub, children, className, headRef }: {
+  icon: React.ReactNode; label: string; title: React.ReactNode; sub?: React.ReactNode; children: React.ReactNode; className?: string; headRef?: (el: HTMLElement | null) => void;
 }) {
   return (
     <section className={cn('hsec', className)} aria-label={label}>
       <header className="hsec-head" ref={headRef}>
-        <div className="hsec-top"><span className="hsec-badge">{icon}{label}</span>{actions && <div className="hsec-actions">{actions}</div>}</div>
+        <div className="hsec-top"><span className="hsec-badge">{icon}{label}</span></div>
         <div className="hsec-titles">{title}{sub && <p className="hsec-sub">{sub}</p>}</div>
       </header>
       {children}
@@ -65,7 +65,6 @@ export const OverviewSection = React.memo(function OverviewSection({ o, loading 
   const down = (nodes?.down ?? 0) + (relays?.down ?? 0);
   const tr = o?.traffic_month;
   const trTotal = tr ? tr.up + tr.down : 0; const trScale = F.bytesScale(trTotal);
-  const [cost0, ...costMore] = o?.monthly_cost ?? [];
   // 计费统一按 USD：服务端折好的合计（monthly_usd）；悬停列出各原币种金额与所用汇率，没有汇率的单列在说明行
   const usd = o?.monthly_usd;
   const foreign = usd?.by_currency.filter((p) => p.currency !== 'USD') ?? [];
@@ -82,16 +81,11 @@ export const OverviewSection = React.memo(function OverviewSection({ o, loading 
             caption={relays && <><DotCount tone="warn" n={relays.degraded} label="降级" />{relays.maintenance > 0 && <DotCount tone="neutral" n={relays.maintenance} label="维护" />}<DotCount tone="bad" n={relays.down} label="故障" to={`${DOWN_LINK}&kind=relay`} />{relays.unknown > 0 && <DotCount tone="neutral" n={relays.unknown} label="未知" />}</>} />
           <Stat loading={loading} tone="bad" icon={<AlertTriangle />} label="故障" value={<CountUp value={o ? down : undefined} />} unit="台" to={DOWN_LINK} caption={o && <><DotCount tone="bad" n={o.nodes.down} label="节点" /><DotCount tone="bad" n={o.relays.down} label="线路机" />{o.failed > 0 && <DotCount tone="bad" n={o.failed} label="上架失败" />}</>} />
           <Stat loading={loading} tone="amber" icon={<CalendarClock />} label="即将到期" value={<CountUp value={o?.due_soon} />} unit="台" to="/nodes?due=soon&sort=due" caption={o && nd !== undefined && <>{nd ? <span className="stat-who">最近<span className="ellipsis" data-tip={nd.name}>{nd.name}</span>{nd.days <= 1 ? <b>{nd.days === 0 ? '今天' : '明天'}</b> : <><b className="num">{nd.days}</b>天后</>}</span> : <span>近期没有到期</span>}{o.overdue > 0 && <DotCount tone="bad" n={o.overdue} label="已过期" />}</>} />
-          {usd ? (
-            <Stat loading={loading} tone="gold" icon={<CircleDollarSign />} label="每月费用" to={COST_LINK} info={`在用机器按月折算，统一折成美元（汇率见设置 → 汇率）。${usdTotalTip(usd)}`}
-              value={usdEmpty ? '—' : <span data-tip={usdTotalTip(usd)}>{F.money(usd.cents, 'USD')}</span>}
-              caption={usd.unconverted.length ? <span style={{ color: 'var(--warn-text)' }} data-tip="没有这些币种的汇率，没算进合计">未折算 {usd.unconverted.map((c) => F.money(c.cents, c.currency)).join(' + ')}</span>
-                : foreign.length ? <span data-tip={usdTotalTip(usd)}>含 {foreign.map((p) => `${F.money(p.cents, p.currency)} ≈ ${F.money(p.usd_cents, 'USD')}`).join(' · ')}</span>
-                : <span>在用 <b className="num">{o!.nodes.total + o!.relays.total}</b> 台 · 按月折算</span>} />
-          ) : (
-            <Stat loading={loading} tone="gold" icon={<CircleDollarSign />} label="每月费用" to={COST_LINK} value={cost0 ? <span data-tip="在用机器按月折算，不同币种分开计">{F.money(cost0.cents, cost0.currency)}</span> : '—'}
-              caption={o && (costMore.length ? `另有 ${costMore.map((c) => F.money(c.cents, c.currency)).join(' + ')}` : <span>在用 <b className="num">{o.nodes.total + o.relays.total}</b> 台 · 按月折算</span>)} />
-          )}
+          <Stat loading={loading} tone="gold" icon={<CircleDollarSign />} label="每月费用" to={COST_LINK} info={`在用机器按月折算，统一折成美元（汇率见设置 → 汇率）。${usd ? usdTotalTip(usd) : ''}`}
+            value={!usd || usdEmpty ? '—' : <span data-tip={usdTotalTip(usd)}>{F.money(usd.cents, 'USD')}</span>}
+            caption={usd && (usd.unconverted.length ? <span style={{ color: 'var(--warn-text)' }} data-tip="没有这些币种的汇率，没算进合计">未折算 {usd.unconverted.map((c) => F.money(c.cents, c.currency)).join(' + ')}</span>
+              : foreign.length ? <span data-tip={usdTotalTip(usd)}>含 {foreign.map((p) => `${F.money(p.cents, p.currency)} ≈ ${F.money(p.usd_cents, 'USD')}`).join(' · ')}</span>
+              : <span>在用 <b className="num">{o!.nodes.total + o!.relays.total}</b> 台 · 按月折算</span>)} />
           {/* 每条推送都在涨，不滚数（滚到的位数也显示不出来，白白逐帧重画）：同网卡速率，直接到位 */}
           <Stat loading={loading} tone="sky" icon={<TrendingUp />} label="本月业务流量" info="按入口统计；网卡流量在线路机和节点上各算一次，不做合计" to={TRAFFIC_LINK} value={tr ? F.inScale(trTotal, trScale) : '—'} unit={tr ? trScale.u : undefined}
             caption={tr && <><span>下载 <Num f={F.bytes(tr.down)} /></span><span>上传 <Num f={F.bytes(tr.up)} /></span></>} />
