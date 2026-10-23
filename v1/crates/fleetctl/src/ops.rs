@@ -239,13 +239,13 @@ fn single_item(o: &ProvisionOpts) -> anyhow::Result<Value> {
     }
     // 订阅：到期日 + 给了的单独设置（同 subscription set 的写法与校验），其余由中控跟随套餐 / 供应商
     let so = crate::billing::SubSetOpts {
-        price: o.price.as_deref(),
-        currency: o.currency.as_deref(),
-        cycle: o.cycle.as_deref(),
-        due: o.due.as_deref(),
-        tz: o.tz.as_deref(),
-        traffic_gb: o.traffic_gb.as_deref(),
-        reset_day: o.reset_day.as_deref(),
+        price: o.price.clone(),
+        currency: o.currency.clone(),
+        cycle: o.cycle.clone(),
+        due: o.due.clone(),
+        tz: o.tz.clone(),
+        traffic_gb: o.traffic_gb.clone(),
+        reset_day: o.reset_day.clone(),
         ..Default::default()
     };
     let s = crate::billing::sub_patch(&so)?;
@@ -724,12 +724,22 @@ pub fn join_command(args: &[String]) -> String {
     if args.len() == 1 { args[0].clone() } else { args.iter().map(|a| shell_quote(a)).collect::<Vec<_>>().join(" ") }
 }
 
-pub struct ExecOpts<'a> {
-    pub machine: Option<&'a str>,
-    pub team: Option<&'a str>,
+// `fleetctl exec` 的参数（clap 直接解析成它）
+#[derive(clap::Args)]
+pub struct ExecOpts {
+    /// 机器，可逗号分隔多台
+    pub machine: Option<String>,
+    #[arg(long)]
+    pub team: Option<String>,
+    /// 超时秒数（1-600）
+    #[arg(long, default_value_t = 60)]
     pub timeout: u64,
-    pub script: Option<&'a Path>,
-    pub command: &'a [String],
+    /// 从文件读脚本
+    #[arg(long)]
+    pub script: Option<std::path::PathBuf>,
+    /// `--` 之后是要执行的命令
+    #[arg(last = true)]
+    pub command: Vec<String>,
 }
 
 struct ExecTarget {
@@ -793,10 +803,10 @@ pub(crate) fn print_result(ctx: &Ctx, d: &Value, timeout: Option<u64>) -> u8 {
     exit_code_of(d)
 }
 
-pub fn exec(ctx: &Ctx, o: ExecOpts<'_>) -> anyhow::Result<u8> {
-    let command = match (o.script, o.command.is_empty()) {
+pub fn exec(ctx: &Ctx, o: ExecOpts) -> anyhow::Result<u8> {
+    let command = match (o.script.as_deref(), o.command.is_empty()) {
         (Some(p), true) => std::fs::read_to_string(p).with_context(|| format!("读取 {}", p.display()))?,
-        (None, false) => join_command(o.command),
+        (None, false) => join_command(&o.command),
         (Some(_), false) => bail!("--script 和 `-- 命令` 只能给一个"),
         (None, true) => bail!("没有命令：fleetctl exec <机器> -- <命令...>"),
     };
@@ -805,13 +815,13 @@ pub fn exec(ctx: &Ctx, o: ExecOpts<'_>) -> anyhow::Result<u8> {
     }
     let all = ctx.machines()?;
     let mut targets: Vec<ExecTarget> = vec![];
-    if let Some(team) = o.team {
+    if let Some(team) = o.team.as_deref() {
         targets = team_targets(&all, team);
         if targets.is_empty() {
             bail!("团队「{team}」下没有可执行命令的在用机器");
         }
     }
-    if let Some(list) = o.machine {
+    if let Some(list) = o.machine.as_deref() {
         for q in list.split(',').map(str::trim).filter(|q| !q.is_empty()) {
             let m = resolve::machine(&all, q, Want::Live).map_err(|e| anyhow!(e))?;
             if !targets.iter().any(|t| t.id == st(m, "/id")) {

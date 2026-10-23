@@ -259,13 +259,16 @@ pub async fn measure(t: &ProbeTargets, turn: usize) -> Measured {
     for a in &t.controls {
         let a = a.clone();
         ctl.spawn(async move {
-            let Some((h, p)) = a.rsplit_once(':').and_then(|(h, p)| Some((h.to_string(), p.parse::<u16>().ok()?))) else { return false };
+            let Some((h, p)) = fleet_proto::host_port(&a) else { return false };
             tcp_probe(uuid::Uuid::nil(), &h, p, TCP_TIMEOUT, 0).await.ok
         });
     }
     let mut res = Vec::with_capacity(t.relays.len());
-    while let Some(Ok(x)) = set.join_next().await {
-        res.push(x);
+    while let Some(r) = set.join_next().await {
+        // 某台的任务 panic 了：只少这一台，其余照收
+        if let Ok(x) = r {
+            res.push(x);
+        }
     }
     res.sort_by_key(|x| x.0);
     let mut control_ok = t.controls.is_empty();

@@ -15,13 +15,10 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { InfoTip } from '@/components/ui/form';
 import { Beat, Empty, ErrorNote, LabelValue, LabelValueGrid, Note, Num, Section, SectionHeader, TableWrap } from '@/components/app/primitives';
 import { RANGES, TimeChart } from '@/components/app/TimeChart';
+import { chartPoll, RANGE_MS, vMs, vPct, vRate, yMs, yPct, yRate } from '@/lib/chart';
 import { entriesMeta } from './EntriesTable';
 import { Button } from '@/components/ui/button';
 
-/** 抽屉开着时曲线的重取间隔（实时流只推当前读数，不推曲线），随范围放大：范围越长点越粗、取一次越贵
- *  （线路机 24 小时流量曲线一次 130–350 ms 数据库时间，每分钟才多一个点） */
-const POLL: Record<string, number> = { '1h': 30_000, '6h': 60_000, '24h': 120_000 };
-const poll = (range: string) => POLL[range] ?? 300_000;
 
 // 曲线的线条与格式化放模块常量：抽屉随实时推送重渲染时 TimeChart（memo）的 props 不变，不重画。
 // CPU / 内存用首页节点卡的指标色（CPU 蓝、内存紫），上下行与对照序列沿用 --chart-1 / --chart-2
@@ -37,14 +34,8 @@ const L_DISK = [{ key: 'disk_pct', label: '磁盘', color: 'var(--m-disk)' }];
 const L_LOAD = [{ key: 'load_pct', label: '负载', color: 'var(--m-load)' }];
 const L_NET = [{ key: 'net_rx_bps', label: '↓ 下行', color: 'var(--chart-1)' }, { key: 'net_tx_bps', label: '↑ 上行', color: 'var(--chart-2)' }];
 const PCT_DOMAIN: [number, number] = [0, 100];
-const yMs = (v: number) => (v ? `${v} ms` : '0');
-const yPct = (v: number) => `${Math.round(v)}%`;
 const yBytes = (v: number) => (v ? F.str(F.bytes(v)) : '0');
-const yRate = (v: number) => (v ? F.str(F.rate(v)) : '0');
-const vMs = (_: string, v: number) => `${Math.round(v)} ms`;
-const vPct = (_: string, v: number) => `${v.toFixed(1)}%`;
 const vBytes = (_: string, v: number) => { const b = F.bytes(v); return `${b.v} ${b.u}`; };
-const vRate = (_: string, v: number) => { const r = F.rate(v); return `${r.v} ${r.u}`; };
 
 export function RangeBar({ range, setRange }: { range: string; setRange: (r: string) => void }) {
   return <Segmented sm label="时间范围" value={range} onChange={setRange} items={RANGES} />;
@@ -54,7 +45,6 @@ export const RangeSticky = ({ range, setRange }: { range: string; setRange: (r: 
   <div className="tab-sticky"><span>时间范围</span><RangeBar range={range} setRange={setRange} /></div>
 );
 
-const RANGE_MS: Record<string, number> = { '1h': 3600_000, '6h': 6 * 3600_000, '24h': 24 * 3600_000, '7d': 7 * 86400_000, '30d': 30 * 86400_000 };
 /** 点不到两个、画不成线时的说明：还在上架、或在所选时间范围内才上架的，是数据还在积累；其余（离线、已退役）是这段时间没有数据 */
 const fewText = (m: MachineView, range: string) =>
   m.lifecycle === 'provisioning' || (m.activated_at != null && Date.now() - Date.parse(m.activated_at) < (RANGE_MS[range] ?? 0)) ? '刚上架，数据积累中' : '这段时间没有数据';
@@ -146,7 +136,7 @@ const PING_COLORS = ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(
 /** 线路机的三网 PING 曲线：延迟（各目标一条线，1h–24h 每分钟的中位数，7d / 30d 每小时平均）与丢包率。
  *  同一轮各目标的时刻相同，按时刻合成一组点（s<槽位> 延迟、l<槽位> 丢包） */
 const PingSection = React.memo(function PingSection({ id, range }: { id: string; range: string }) {
-  const q = usePingSeries(id, range, poll(range));
+  const q = usePingSeries(id, range, chartPoll(range));
   const { points, ms, loss } = React.useMemo(() => {
     const by = new Map<string, SeriesPoint>();
     for (const s of q.data?.series ?? []) for (const p of s.points) {
@@ -177,7 +167,7 @@ const PingSection = React.memo(function PingSection({ id, range }: { id: string;
 
 export function QualityTab({ m }: { m: MachineView }) {
   const { range, setRange } = useDrawer();
-  const s = useSeries(m.id, 'probe', range, true, poll(range));
+  const s = useSeries(m.id, 'probe', range, true, chartPoll(range));
   return (
     <>
       {/* 可用率（近 30 天）与入口连通性（24 小时 / 7 天 / 30 天）是固定时间段，不跟时间范围走：放在时间范围条上面，下面的曲线才归它管 */}
@@ -212,7 +202,7 @@ function EntriesLink({ m }: { m: MachineView }) {
 
 export function TrafficTab({ m }: { m: MachineView }) {
   const { range, setRange } = useDrawer();
-  const s = useSeries(m.id, 'traffic', range, true, poll(range));
+  const s = useSeries(m.id, 'traffic', range, true, chartPoll(range));
   const t = monthTraffic(m); const nic = m.nic; const from = m.month_counted_from;
   return (
     <>
@@ -256,7 +246,7 @@ export function HostTab({ m }: { m: MachineView }) {
   const { range, setRange } = useDrawer();
   // 家宽代理没有主机；其它机器即使现在没有读数（agent 离线、还没上报），历史曲线照样能看——排查掉线前发生了什么正要看它
   const agentful = m.kind !== 'proxy';
-  const s = useSeries(m.id, 'host', range, agentful, poll(range));
+  const s = useSeries(m.id, 'host', range, agentful, chartPoll(range));
   const cores = m.agent?.cores ?? null;
   // 负载曲线：load1 按核数折成百分比（同卡片）；核数不知道时没有这条
   const loadPoints = React.useMemo(() => (cores && s.data?.points.some((p) => typeof p.load1 === 'number') ? s.data.points.map((p) => ({ ...p, load_pct: typeof p.load1 === 'number' ? (p.load1 / cores) * 100 : null })) : null), [s.data, cores]);

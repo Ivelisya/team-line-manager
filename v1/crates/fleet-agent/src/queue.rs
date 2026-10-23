@@ -182,13 +182,7 @@ mod tests {
             agent_version: "x".into(),
             sent_at_ms: 0,
             info: Some(fleet_proto::SystemInfo { hostname: "h".repeat(pad), ..Default::default() }),
-            host: vec![],
-            entries: vec![],
-            probes: vec![],
-            access: vec![],
-            xray: None,
-            agent_health: None,
-            ping: vec![],
+            ..Default::default()
         }
     }
 

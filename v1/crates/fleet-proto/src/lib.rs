@@ -25,7 +25,7 @@ pub fn build_version() -> &'static str {
 
 // ── 上报 ────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Report {
     pub seq: u64,
     pub boot_id: String,
@@ -190,11 +190,14 @@ pub struct XrayStatus {
     pub applied_generation: u64,
 }
 
+/// Agent 的上报间隔（秒）。固定值：新 agent 不再读 `ReportAck.interval_s`，中控回的也是它
+pub const REPORT_INTERVAL_S: u32 = 10;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReportAck {
     /// 服务端已持久化的最大 seq；agent 据此丢弃本地缓冲
     pub accepted_seq: u64,
-    /// 服务端希望的上报间隔（秒）
+    /// 上报间隔（秒），恒为 `REPORT_INTERVAL_S`。字段必须留着：旧 agent 解析确认时它是必填的
     pub interval_s: u32,
 }
 
@@ -232,6 +235,12 @@ pub struct PingTarget {
 /// TCP 方式不写端口时连的端口
 pub const PING_TCP_DEFAULT_PORT: u16 = 80;
 
+/// 线路机上 Xray API 的监听端口（127.0.0.1）。agent 渲染 xray.json、中控给内核保留本地端口（jobs/tune.rs）都用它：
+/// 一边改了另一边没改，内核会把 Xray 正在监听的端口当本地端口发出去，Xray 重启时绑不上
+pub const XRAY_API_PORT: u16 = 62789;
+/// 每个启用入口的回环探测入站端口 = 入口端口 + 此偏移（agent 的 `probe_ports`；中控 tune 同样要保留这段端口）
+pub const PROBE_PORT_OFFSET: u16 = 10000;
+
 /// 拆 `target`：(主机, 端口)。`[v6]:port`、`[v6]`、裸 IPv6、`host:port`、`host`；端口不对为 None
 pub fn split_target(t: &str) -> Option<(String, Option<u16>)> {
     let t = t.trim();
@@ -249,6 +258,15 @@ pub fn split_target(t: &str) -> Option<(String, Option<u16>)> {
     match t.split_once(':') {
         Some((h, p)) => Some((h.to_string(), Some(p.parse().ok().filter(|p: &u16| *p > 0)?))),
         None => Some((t.to_string(), None)),
+    }
+}
+
+/// 拆「必须带端口」的 `host:port`（探测的对照目标）：规则同 `split_target`，没写端口为 None。中控与探测点 agent 都用它，
+/// 不要各自 `rsplit_once(':')`：`[::1]:443` 会被拆成 `[::1]` 和 443，主机名带着方括号解析不出来
+pub fn host_port(t: &str) -> Option<(String, u16)> {
+    match split_target(t)? {
+        (h, Some(p)) => Some((h, p)),
+        _ => None,
     }
 }
 
@@ -436,6 +454,19 @@ pub mod tags {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_port_needs_a_port_and_handles_ipv6() {
+        let hp = |t| host_port(t);
+        assert_eq!(hp("example.com:443"), Some(("example.com".into(), 443)));
+        assert_eq!(hp("1.1.1.1:53"), Some(("1.1.1.1".into(), 53)));
+        assert_eq!(hp("[::1]:443"), Some(("::1".into(), 443)));
+        assert_eq!(hp("[2606:4700::1111]:853"), Some(("2606:4700::1111".into(), 853)));
+        // 没写端口、端口不对、裸 IPv6（分不出端口）都不算
+        for bad in ["example.com", "[::1]", "::1", "example.com:0", "example.com:70000", "[::1]:x", ""] {
+            assert_eq!(hp(bad), None, "{bad}");
+        }
+    }
 
     #[test]
     fn probe_round_keep_rule() {

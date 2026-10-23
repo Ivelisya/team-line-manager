@@ -74,7 +74,7 @@ impl Serialize for Reason {
         use serde::ser::SerializeStruct;
         let mut x = s.serialize_struct("Reason", 4)?;
         x.serialize_field("key", self.key)?;
-        x.serialize_field("rule_name", crate::notify::rule_name(self.key))?;
+        x.serialize_field("rule_name", crate::meta::rule_label(self.key))?;
         x.serialize_field("severity", self.severity)?;
         x.serialize_field("text", &self.text)?;
         x.end()

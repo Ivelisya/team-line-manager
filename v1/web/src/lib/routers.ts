@@ -10,6 +10,7 @@ import { collator } from './sort';
 import { createStore } from './store';
 import type { EntryLifecycle, SeriesPoint, Team } from './types';
 import type { BeatCell } from './derive';
+import { chartPoll, RANGE_MS } from './chart';
 import * as F from './format';
 
 /** pending = 建了记录、路由还没连上过（或重新接入后还没连上）；offline = 连上过、现在隧道不通（连得上但采集出错算 online，带 error） */
@@ -72,13 +73,11 @@ export function useRouters() {
 }
 export const useRouter = (id: string | null) =>
   useQuery({ queryKey: ['routers', id], queryFn: ({ signal }) => get<RouterFull>(`/routers/${id}`, signal), enabled: !!id, staleTime: Infinity });
-/** 曲线的轮询间隔随范围放大（同机器抽屉）；换范围时先留着上一段（调用方按 isPlaceholderData 调淡），换了路由不沿用 */
-const POLL: Record<string, number> = { '1h': 30_000, '6h': 60_000, '24h': 120_000 };
-export const routerPoll = (range: string) => POLL[range] ?? 300_000;
+/** 曲线的轮询间隔随范围放大（`chartPoll`，同机器抽屉）；换范围时先留着上一段（调用方按 isPlaceholderData 调淡），换了路由不沿用 */
 export const useRouterMetrics = (id: string, range: string) =>
-  useQuery({ queryKey: ['router-metrics', id, range], queryFn: ({ signal }) => get<RouterMetrics>(`/routers/${id}/metrics?range=${range}`, signal), staleTime: routerPoll(range), refetchInterval: routerPoll(range), refetchOnWindowFocus: false, placeholderData: (prev, pq) => (pq?.queryKey[1] === id ? keepPreviousData(prev) : undefined) });
+  useQuery({ queryKey: ['router-metrics', id, range], queryFn: ({ signal }) => get<RouterMetrics>(`/routers/${id}/metrics?range=${range}`, signal), staleTime: chartPoll(range), refetchInterval: chartPoll(range), refetchOnWindowFocus: false, placeholderData: (prev, pq) => (pq?.queryKey[1] === id ? keepPreviousData(prev) : undefined) });
 export const useRouterExitMetrics = (id: string, range: string) =>
-  useQuery({ queryKey: ['router-exit-metrics', id, range], queryFn: ({ signal }) => get<RouterExitMetrics>(`/routers/${id}/exits/metrics?range=${range}`, signal), staleTime: routerPoll(range), refetchInterval: routerPoll(range), refetchOnWindowFocus: false, placeholderData: (prev, pq) => (pq?.queryKey[1] === id ? keepPreviousData(prev) : undefined) });
+  useQuery({ queryKey: ['router-exit-metrics', id, range], queryFn: ({ signal }) => get<RouterExitMetrics>(`/routers/${id}/exits/metrics?range=${range}`, signal), staleTime: chartPoll(range), refetchInterval: chartPoll(range), refetchOnWindowFocus: false, placeholderData: (prev, pq) => (pq?.queryKey[1] === id ? keepPreviousData(prev) : undefined) });
 
 // ---- 写操作（全部写审计） ----
 const K = [['routers'], ['audit']];
@@ -196,7 +195,6 @@ export const deadExitNames = (d: RouterDetail | null | undefined) => d?.exits.fi
 // ---- 各出口的延迟测试：按固定时间窗切格 ----
 /** 各范围切几格：每格要稳稳盖住至少一次测试（5 分钟一次，实际间隔 300–330 秒），格宽取 2 倍以上，所以 1 小时只切 6 格（10 分钟一格） */
 const BEAT_BINS: Record<string, number> = { '1h': 6, '6h': 24, '24h': 24, '7d': 28, '30d': 30 };
-const RANGE_MS: Record<string, number> = { '1h': 3600_000, '6h': 6 * 3600_000, '24h': 86400_000, '7d': 7 * 86400_000, '30d': 30 * 86400_000 };
 export const beatBins = (range: string) => BEAT_BINS[range] ?? 24;
 /** 一个出口在所选范围内的测试结果切成 bins 格（从 end 往前，每格一样宽，不按数据的首末）：
  *  颜色只看成功率——全成功绿、有失败黄、失败过半红；这格里没有测试为空（路由还没接入、离线）。延迟高低看延迟曲线，不进格子。

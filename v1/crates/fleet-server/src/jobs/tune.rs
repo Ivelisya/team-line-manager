@@ -95,16 +95,18 @@ const RESERVED: &str = "@reserved@";
 /// 缓冲区上限：远端脚本算出 buf_max 后代入
 const BUF: &str = "@BUF@";
 
-/// 线路机上 Xray API 的监听端口（127.0.0.1），同 agent xray/render.rs 的 API_PORT：本地端口范围放宽到 65535 后要保留，
+/// 线路机上 Xray API 的监听端口（`fleet_proto::XRAY_API_PORT`）：本地端口范围放宽到 65535 后要保留，
 /// 免得 Xray 重启那几秒里被本机出站连接占去、Xray 绑不上
-const XRAY_API_PORT: i32 = 62789;
+const XRAY_API_PORT: i32 = fleet_proto::XRAY_API_PORT as i32;
+/// 探测入站端口 = 入口端口 + 此偏移（agent xray/render.rs 的 probe_ports）
+const PROBE_PORT_OFFSET: i32 = fleet_proto::PROBE_PORT_OFFSET as i32;
 
-/// 要保留的本地端口：入口端口池，加上各入口的回环探测入站端口（入口端口 + 10000，见 agent xray/render.rs 的 probe_ports）与 Xray API 端口。
+/// 要保留的本地端口：入口端口池，加上各入口的回环探测入站端口（入口端口 + `PROBE_PORT_OFFSET`）与 Xray API 端口。
 /// 写成内核读回的格式（按端口排序，相邻或重叠的段合并成一段，单个端口不写成段），读回才对得上
 fn reserved(min: i32, max: i32) -> String {
     let mut segs = vec![(min, max), (XRAY_API_PORT, XRAY_API_PORT)];
-    if min + 10000 <= 65535 {
-        segs.push((min + 10000, (max + 10000).min(65535)));
+    if min + PROBE_PORT_OFFSET <= 65535 {
+        segs.push((min + PROBE_PORT_OFFSET, (max + PROBE_PORT_OFFSET).min(65535)));
     }
     segs.sort();
     let mut merged: Vec<(i32, i32)> = vec![];

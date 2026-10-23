@@ -369,7 +369,7 @@ pub fn audit_text(action: &str, d: &Value) -> (String, String) {
         }
         "machine.logs" | "restore.probe" => s("name"),
         "ssh.login" => format!("{} · {}", s("name"), if d["command"] == true { "带命令（内容不记录）" } else { "交互式" }),
-        "incident.ack" => format!("{} · {}", crate::notify::rule_name(d["rule"].as_str().unwrap_or("")), s("summary")),
+        "incident.ack" => format!("{} · {}", crate::meta::rule_label(d["rule"].as_str().unwrap_or("")), s("summary")),
         "server.logs" => format!("{} 行", d["lines"]),
         "apikey.create" | "apikey.revoke" if d["via"] == "local-admin" => format!("{}（{}）· 中控命令行 local-admin", s("name"), s("prefix")),
         "terminal.open" | "terminal.close" => crate::terminal::audit_summary(action, d),

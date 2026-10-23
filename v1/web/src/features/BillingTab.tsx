@@ -9,7 +9,7 @@ import { Field, InfoTip, Input, Label, Switch, UnitInput } from '@/components/ui
 import { Segmented } from '@/components/ui/overlays';
 import { DateField } from '@/components/ui/date-field';
 import { useUsdPreview } from '@/lib/fx';
-import { inheritedValue, inheritSource, inheritText, inheritValueText, isOverridden, limitGb, monthFlow, monthFlowTip, quota, quotaCycleText, quotaGb, quotaNotes, quotaRuleText, quotaUsedLabel, recycleOn, remainingValue, cycleLabel, priceHint, currencyOptions, cycleOptions, meta } from '@/lib/derive';
+import { inheritedValue, inheritSource, inheritText, inheritValueText, isOverridden, limitGb, monthFlow, monthFlowTip, quota, quotaCycleText, quotaGb, quotaNotes, quotaRuleText, quotaUsedLabel, recycleOn, remainingValue, cycleLabel, feeView, priceHint, currencyOptions, cycleOptions, meta } from '@/lib/derive';
 import { Select } from '@/components/ui/select';
 import { toast } from '@/components/ui/toast';
 import { resetOnOpen } from '@/lib/useHeld';
@@ -39,10 +39,8 @@ export function BillingTab({ m }: { m: MachineView }) {
         <Section>
           <SectionHeader title="当前订阅" />
           <LabelValueGrid>
-            {/* 计费统一按 USD：主数字是服务端折好的月费；原价（供应商收的币种与周期）与汇率在下面一行，没有汇率的写原价、标未折算 */}
-            <LabelValue label="费用">{s.monthly_usd_cents != null
-              ? <><span className="num">{F.money(s.monthly_usd_cents, 'USD')}</span> <span className="unit">/ 月</span></>
-              : <><span className="num">{F.money(s.price_cents, s.currency)}</span> <span className="unit">/ {cycleLabel(s.cycle)}</span></>}
+            {/* 计费统一按 USD（feeView）：主数字是服务端折好的月费；原价（供应商收的币种与周期）与汇率在下面一行，没有汇率的主数字写原币种月费、下面一行写未折算 */}
+            <LabelValue label="费用"><span className="num">{feeView(s).main}</span> <span className="unit">{feeView(s).unit}</span>
               <div className="hint">{[priceHint(s), (['price_cents', 'currency', 'cycle'] as const).some((k) => isOverridden(s, k)) ? '单独设置' : inheritSource(m, 'price_cents')].filter(Boolean).join(' · ')}</div></LabelValue>
             <LabelValue label="到期日">{s.due_date}（<Due days={s.due_days} state={s.due_state} />）{recycleOn(m) && <div className="hint"><SpareDue on={recycleOn(m)!} /></div>}</LabelValue>
             {/* 剩余比例只写一个百分数，天数在悬停里；预付了多期只写金额，期数在 (i) 里 */}

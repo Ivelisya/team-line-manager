@@ -321,7 +321,7 @@ pub async fn list(st: &AppState, window: crate::reach::Window) -> sqlx::Result<V
         }
     }
     let now = OffsetDateTime::now_utc();
-    let ts = |t: Option<OffsetDateTime>| t.and_then(|t| t.format(&time::format_description::well_known::Rfc3339).ok());
+    let ts = |t: Option<OffsetDateTime>| t.map(crate::meta::fmt_ts);
     Ok(rows
         .into_iter()
         .map(|r| {

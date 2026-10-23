@@ -523,25 +523,6 @@ pub async fn audit_finish(db: &PgPool, id: i64, patch: serde_json::Value) -> sql
     tx.commit().await
 }
 
-/// 回填 search 列（0034 之前的记录，启动时跑）：每批 2000 条，直到没有空的
-pub async fn backfill_audit_search(db: &PgPool) -> sqlx::Result<u64> {
-    let mut n = 0;
-    loop {
-        let rows: Vec<(i64, String, serde_json::Value)> =
-            sqlx::query_as("select id, action, detail from audit_log where search is null order by id limit 2000").fetch_all(db).await?;
-        if rows.is_empty() {
-            return Ok(n);
-        }
-        let (ids, texts): (Vec<i64>, Vec<String>) = rows.iter().map(|(id, a, d)| (*id, crate::api::audit::audit_search_text(a, d))).unzip();
-        sqlx::query("update audit_log a set search = v.s from unnest($1::bigint[], $2::text[]) v(id, s) where a.id = v.id")
-            .bind(&ids)
-            .bind(&texts)
-            .execute(db)
-            .await?;
-        n += ids.len() as u64;
-    }
-}
-
 /// 线路机期望状态 +1，返回新代数。调用方在提交后调用 `AppState::relay_bumped`。
 pub async fn bump_relay(tx: &mut Tx<'_>, relay_id: Uuid) -> sqlx::Result<i64> {
     let (g,): (i64,) = sqlx::query_as("update relay set generation = generation + 1, generation_at = now() where machine_id = $1 returning generation")

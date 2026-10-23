@@ -5,7 +5,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { ArrowRight, ExternalLink, MoreHorizontal, Plus } from 'lucide-react';
 import { fetchRenumber, useAddPlan, useAddProvider, useAddTeam, useDelPlan, useDelProvider, useDelTeam, usePatchPlan, usePatchProvider, usePatchTeam, usePlans, useProviders, useRenumber, useTeams, useTeamsCompact } from '@/lib/queries';
 import type { Plan, Provider, Team, TrafficReset, TrafficRule } from '@/lib/types';
-import { currencyOptions, cycleLabel, cycleOptions, limitGb, meta, trafficResetText, trafficRuleLabel, usdTotalTip } from '@/lib/derive';
+import { currencyOptions, cycleOptions, feeView, limitGb, meta, trafficResetText, trafficRuleLabel, usdTotalTip } from '@/lib/derive';
 import { useUsdPreview } from '@/lib/fx';
 import { collator } from '@/lib/sort';
 import { tzLabel } from '@/lib/tz';
@@ -352,10 +352,8 @@ function PlansTab() {
                   <td>{pname(p.provider_id)}</td>
                   <td>{planSpec(p)}<span className="sub">{p.disk_gb ? `磁盘 ${p.disk_gb} GiB` : ''}</span></td>
                   <td className="r"><Num f={F.mbps(p.bandwidth_mbps)} /></td><td className="r"><Num f={limitGb(p.traffic_gb)} /></td>
-                  {/* 计费统一按 USD：主数字是服务端折好的月费，副行是原价（供应商收的币种与周期）；没有汇率的写原价、标未折算 */}
-                  <td className="r">{p.monthly_usd_cents != null
-                    ? <><span className="num">{F.money(p.monthly_usd_cents, 'USD')}</span> <span className="t-sub">/ 月</span>{(p.currency !== 'USD' || p.cycle !== 'monthly') && <span className="sub" data-tip={p.usd_per_unit != null && p.currency !== 'USD' ? F.fxRate(p.currency, p.usd_per_unit) : undefined}>{F.money(p.price_cents, p.currency)} / {cycleLabel(p.cycle)}</span>}</>
-                    : <><span className="num">{F.money(p.price_cents, p.currency)}</span> <span className="t-sub">/ {cycleLabel(p.cycle)}</span><span className="sub" data-tip={`没有 ${p.currency} 的汇率（设置 → 汇率）`}>未折算</span></>}</td>
+                  {/* 计费统一按 USD（feeView）：主数字是服务端折好的月费，副行是原价（供应商收的币种与周期）；没有汇率的写每期原价、标未折算 */}
+                  <td className="r">{(() => { const v = feeView(p); return <><span className="num">{v.main}</span> <span className="t-sub">{v.unit}</span>{v.sub && <span className="sub" data-tip={v.tip ?? undefined}>{v.sub}</span>}</>; })()}</td>
                   <td className="r num"><CountLink n={p.machine_count} to={`/nodes?plan=${p.id}`} /></td>
                   <td className="c"><RowMenu label={`套餐 ${p.name} 的操作`}>
                     <DropdownMenuItem onSelect={() => setEdit(p)}>编辑…</DropdownMenuItem>

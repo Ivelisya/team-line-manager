@@ -118,7 +118,7 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Ne
 }
 
 fn bootstrap_out(st: &AppState, token: &str, expires: OffsetDateTime) -> Value {
-    json!({"cmd": routers::bootstrap_cmd(&st.cfg.public_url, token), "expires_at": expires.format(&time::format_description::well_known::Rfc3339).unwrap_or_default()})
+    json!({"cmd": routers::bootstrap_cmd(&st.cfg.public_url, token), "expires_at": crate::meta::fmt_ts(expires)})
 }
 
 #[derive(Deserialize)]

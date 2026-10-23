@@ -174,11 +174,18 @@ pub fn show(ctx: &Ctx, who: &str) -> anyhow::Result<u8> {
     Ok(0)
 }
 
-pub struct SetOpts<'a> {
-    pub who: &'a str,
-    pub mode: &'a str,
-    pub domains: Option<&'a str>,
-    pub note: Option<&'a str>,
+// `fleetctl policy set` 的参数（clap 直接解析成它）
+#[derive(clap::Args)]
+pub struct SetOpts {
+    pub who: String,
+    /// observe | allowlist | denylist | blocked | inherit（仅节点）
+    #[arg(long, value_parser = ["observe", "allowlist", "denylist", "blocked", "inherit"])]
+    pub mode: String,
+    /// 域名，逗号或空白分隔；`=example.com` 为精确匹配，否则含子域
+    #[arg(long)]
+    pub domains: Option<String>,
+    #[arg(long)]
+    pub note: Option<String>,
 }
 
 /// 草稿优先，其次生效值
@@ -186,18 +193,15 @@ fn base_of(p: &Value) -> &Value { if p["draft"].is_null() { p } else { &p["draft
 
 pub fn set(ctx: &Ctx, o: SetOpts) -> anyhow::Result<u8> {
     let list = ctx.c.get("/policies")?;
-    let t = resolve_target(ctx, &list, o.who)?;
-    if o.mode == "inherit" && t.scope == "team" {
-        bail!("团队没有可继承的上一级，模式不能是 inherit");
-    }
+    let t = resolve_target(ctx, &list, &o.who)?;
     let base = base_of(&t.policy);
     // 没写 --domains / --note 就沿用草稿（没有草稿则生效值）里的
-    let domains: Value = match o.domains {
+    let domains: Value = match &o.domains {
         Some(s) => json!(s),
         None => base["domains"].clone(),
     };
-    let note = match o.note {
-        Some(n) => n.to_string(),
+    let note = match &o.note {
+        Some(n) => n.clone(),
         None => base["note"].as_str().unwrap_or("").to_string(),
     };
     let body = json!({"mode": o.mode, "domains": domains, "note": note, "expected_revision": t.policy["revision"]});

@@ -11,7 +11,7 @@ use uuid::Uuid;
 pub const API_TAG: &str = "api";
 /// Xray API 监听地址：只在本机回环，agent 经 `xray api --server=` 连它。没有需要改它的场景，不做成配置项
 pub const API_HOST: &str = "127.0.0.1";
-pub const API_PORT: u16 = 62789;
+pub const API_PORT: u16 = fleet_proto::XRAY_API_PORT;
 pub const STATIC_OUTBOUNDS: [&str; 3] = ["deny", "direct", "blocked"];
 /// mihomo 兼容：minClientVer 不得高于此值
 pub const MAX_MIN_CLIENT_VER: &str = "1.8.2";
@@ -91,14 +91,14 @@ fn parse_ver(s: &str) -> Option<(u32, u32, u32)> {
     Some((a, b, c))
 }
 
-/// 每个启用入口的回环探测入站端口 = 入口端口 + 10000。超出 65535 或与其它端口冲突则没有探测入站。
+/// 每个启用入口的回环探测入站端口 = 入口端口 + `fleet_proto::PROBE_PORT_OFFSET`。超出 65535 或与其它端口冲突则没有探测入站。
 pub fn probe_ports(entries: &[DesiredEntry]) -> HashMap<Uuid, u16> {
     let taken: HashSet<u16> = entries.iter().filter(|e| e.enabled).map(|e| e.port).chain([API_PORT]).collect();
     entries
         .iter()
         .filter(|e| e.enabled)
         .filter_map(|e| {
-            let p = e.port.checked_add(10000)?;
+            let p = e.port.checked_add(fleet_proto::PROBE_PORT_OFFSET)?;
             (!taken.contains(&p)).then_some((e.id, p))
         })
         .collect()
@@ -136,7 +136,10 @@ fn outbound_json(id: Uuid, o: &Outbound) -> Value {
     }
 }
 
-/// VLESS REALITY 入站，与 mihomo 兼容的固定形状（见 spec/edge.md §6.2，不要改）
+/// VLESS REALITY 入站，与 mihomo / OpenClash 兼容的固定形状，不要改（客户是用 OpenClash 软路由的团队）：
+/// - 只有 VLESS + REALITY，传输 tcp、`header.type` 为 none，flow 用 `xtls-rprx-vision`，sniffing 的 `destOverride` 含 `quic`；
+/// - `minClientVer` 不得高于 `MAX_MIN_CLIENT_VER`（1.8.2）：更高的值会让 mihomo 被 Xray 26.7+ 拒绝连接；
+/// - 分享链接里 `fp=chrome`、`flow=xtls-rprx-vision`、`type=tcp`
 fn inbound_json(e: &DesiredEntry, rp: &RelayParams, min_ver: &str) -> Value {
     json!({
         "listen": "0.0.0.0",

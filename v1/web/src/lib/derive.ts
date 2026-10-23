@@ -1,5 +1,5 @@
 // 从 MachineView 推导卡片/表格要显示的数据（纯函数，便于复用）
-import type { AvailabilityDay, DueState, EntryView, MachineView, Meta, Plan, ProbeBucket, ProbeResult, Provider, SubField, Subscription, TrafficReset, UsageMetric, UsdTotal } from './types';
+import type { AvailabilityDay, Cycle, DueState, EntryView, MachineView, Meta, Plan, ProbeBucket, ProbeResult, Provider, SubField, Subscription, TrafficReset, UsageMetric, UsdTotal } from './types';
 import * as F from './format';
 import { tzLabel } from './tz';
 import { primaryIssue, type ReachEffective } from './probePoints';
@@ -416,21 +416,31 @@ export function tagColor(text: string): TagColor {
   return TAG_COLORS[h % TAG_COLORS.length];
 }
 
+/** 带价格的订阅或套餐（套餐没有 monthly_cents，USD 字段也是可选的） */
+type Priced = { price_cents: number; currency: string; cycle: Cycle; monthly_cents?: number; monthly_usd_cents?: number | null; usd_per_unit?: number | null };
+const isMonthly = (cycle: Cycle) => meta().cycles.find((c) => c.key === cycle)?.months === 1;
+/** 月费的展示（订阅、套餐各处统一用它）：计费统一按 USD，主数字是服务端折好的月费。
+ *  没有汇率（monthly_usd_cents 为 null）时主数字写原币种、`sub` 写「未折算」（套餐没有 monthly_cents，主数字写每期价格）；
+ *  有汇率时 `sub` 是原价（原币种不是 USD 或不是按月付才有，否则 null）。`tip` 是悬停说明（priceHint） */
+export function feeView(f: Priced): { main: string; unit: string; sub: string | null; tip: string | null; converted: boolean } {
+  const tip = priceHint(f);
+  if (f.monthly_usd_cents != null) {
+    const orig = f.currency !== 'USD' || !isMonthly(f.cycle) ? `${F.money(f.price_cents, f.currency)} / ${cycleLabel(f.cycle)}` : null;
+    return { main: F.money(f.monthly_usd_cents, 'USD'), unit: '/ 月', sub: orig, tip, converted: true };
+  }
+  return f.monthly_cents != null
+    ? { main: F.money(f.monthly_cents, f.currency), unit: '/ 月', sub: '未折算', tip, converted: false }
+    : { main: F.money(f.price_cents, f.currency), unit: `/ ${cycleLabel(f.cycle)}`, sub: '未折算', tip, converted: false };
+}
 /** 月费的文字：「$37.50/月」；没有汇率时「¥299.99/月」（原币种，悬停见 priceHint 说明未折算） */
-export const subLabel = (m: MachineView) => {
-  const s = m.subscription; if (!s) return null;
-  // 计费统一按 USD：服务端按汇率折好的 monthly_usd_cents；没有汇率时为 null，写原币种
-  const u = s.monthly_usd_cents;
-  return u != null ? `${F.money(u, 'USD')}/月` : `${F.money(s.monthly_cents, s.currency)}/月`;
-};
+export const subLabel = (m: MachineView) => (m.subscription ? `${feeView(m.subscription).main}/月` : null);
 /** 原价说明（月费旁的小字或悬停）：原币种不是 USD 或不是按月付时写原价「原价 ¥299.99/月 · 1 CNY = 0.1404 USD」；
  *  没有汇率写「未折算」；USD 按月付的为 null */
-export function priceHint(s: Subscription | null | undefined): string | null {
+export function priceHint(s: Priced | null | undefined): string | null {
   if (!s) return null;
   const orig = `原价 ${F.money(s.price_cents, s.currency)}/${cycleLabel(s.cycle)}`;
   if (s.monthly_usd_cents == null) return `${orig} · 未折算：没有 ${s.currency} 的汇率（设置 → 汇率）`;
-  const monthly = meta().cycles.find((c) => c.key === s.cycle)?.months === 1;
-  if (s.currency === 'USD') return monthly ? null : orig;
+  if (s.currency === 'USD') return isMonthly(s.cycle) ? null : orig;
   return `${orig} · ${F.fxRate(s.currency, s.usd_per_unit!)}`;
 }
 /** 月费合计（USD）的悬停说明：各原币种金额与所用汇率，没有汇率的单列 */

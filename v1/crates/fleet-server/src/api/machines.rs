@@ -425,7 +425,7 @@ async fn spare_team(conn: &mut sqlx::PgConnection) -> sqlx::Result<(Uuid, String
 
 /// 移进备用团队（退役的默认去向）：一个事务里改到备用团队的最小空号（patch_tx：同改名的校验与审计，顺带记下 spare_since / spare_from、
 /// 刷新线路机备注），退役原因记进 lifecycle_reason。宿主机上还没退役、不在备用团队的同机 IP 节点一起进（编号挨着，到期随宿主机回收）。
-/// 原团队压缩编号（auto_compact，同退役完成）。入口、端口、软路由出口都不动。返回 `{mode:"spare", name, from, recycle_on, ip_nodes}`
+/// 原团队压缩编号（同退役完成）。入口、端口、软路由出口都不动。返回 `{mode:"spare", name, from, recycle_on, ip_nodes}`
 pub async fn move_to_spare(st: &AppState, actor: &str, id: Uuid, reason: Option<&str>) -> ApiResult<Value> {
     let mut tx = st.db.begin().await?;
     // 先锁团队（原团队、同机 IP 节点的团队、备用团队，按 id 排）再锁机器：和退役收尾、压缩编号同一个顺序（团队 → 机器）
@@ -482,12 +482,10 @@ pub async fn move_to_spare(st: &AppState, actor: &str, id: Uuid, reason: Option<
     // 原团队少了这几台：压缩编号（同退役完成时）
     teams.retain(|t| *t != spare_id && revs.iter().any(|r| r.2 == Some(*t)));
     let mut compacted = false;
-    if st.cfg.numbering.auto_compact {
-        for t in &teams {
-            let (ch, rs) = crate::db::compact_team(&mut tx, *t, actor, "节点退役后自动压缩").await?;
-            compacted |= !ch.is_empty();
-            relays.extend(rs);
-        }
+    for t in &teams {
+        let (ch, rs) = crate::db::compact_team(&mut tx, *t, actor, "节点退役后自动压缩").await?;
+        compacted |= !ch.is_empty();
+        relays.extend(rs);
     }
     let recycle_on = due.map(crate::spare::recycle_on);
     let (host_from, host_to) = (moved[0].1.clone(), moved[0].2.clone());
@@ -724,26 +722,24 @@ pub async fn retire_preview(_a: Actor, State(st): State<AppState>, ApiPath(id): 
     let leaving: Vec<Uuid> = std::iter::once(id).chain(ip_nodes.iter().map(|x| x.0)).collect();
     let blockers = retire_blockers(&mut conn, id, &kind, &lc, &leaving, false).await?;
     let mut renames = vec![];
-    if st.cfg.numbering.auto_compact {
-        let teams: Vec<(Uuid, String)> =
-            sqlx::query_as("select id, name from team where id in (select team_id from machine where id = any($1)) order by sort_order, name")
-                .bind(&leaving)
-                .fetch_all(&mut *conn)
-                .await?;
-        for (team_id, team) in teams {
-            let nodes: Vec<(Uuid, i32)> = sqlx::query_as(
-                "select id, number from machine where team_id = $1 and kind <> 'relay' and lifecycle <> 'retired' and id <> all($2) order by number",
-            )
-            .bind(team_id)
+    let teams: Vec<(Uuid, String)> =
+        sqlx::query_as("select id, name from team where id in (select team_id from machine where id = any($1)) order by sort_order, name")
             .bind(&leaving)
             .fetch_all(&mut *conn)
             .await?;
-            renames.extend(
-                compact_numbers(nodes)
-                    .into_iter()
-                    .map(|(mid, o, n)| json!({"machine_id": mid, "old_name": node_name(&team, o), "new_name": node_name(&team, n)})),
-            );
-        }
+    for (team_id, team) in teams {
+        let nodes: Vec<(Uuid, i32)> = sqlx::query_as(
+            "select id, number from machine where team_id = $1 and kind <> 'relay' and lifecycle <> 'retired' and id <> all($2) order by number",
+        )
+        .bind(team_id)
+        .bind(&leaving)
+        .fetch_all(&mut *conn)
+        .await?;
+        renames.extend(
+            compact_numbers(nodes)
+                .into_iter()
+                .map(|(mid, o, n)| json!({"machine_id": mid, "old_name": node_name(&team, o), "new_name": node_name(&team, n)})),
+        );
     }
     // 进备用：编号按 move_to_spare 的分法（宿主机先取最小的空号，同机 IP 节点接着取）
     let (eligible, due) = spare_check(&mut conn, id).await?;
@@ -1062,7 +1058,26 @@ const SUB_AUDIT: &str = "select jsonb_build_object('due_date', due_date, 'price_
     'remind_days', remind_days, 'traffic_gb', traffic_gb, 'traffic_reset_day', traffic_reset_day, 'auto_renew', auto_renew)
     from subscription_eff where machine_id = $1";
 
-pub async fn put_subscription(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>, ApiJson(mut b): ApiJson<SubIn>) -> ApiResult<Json<Value>> {
+/// 订阅按 `subscription_eff` 算出的生效值，带 `overrides`（单独设置了哪几项）：改订阅预览的返回
+const SUB_EFFECTIVE: &str = "select jsonb_build_object('due_date', due_date, 'price_cents', price_cents, 'currency', currency, 'cycle', cycle, 'billing_tz', billing_tz,
+    'remind_days', remind_days, 'traffic_gb', traffic_gb, 'traffic_reset_day', traffic_reset_day, 'auto_renew', auto_renew, 'overrides', to_jsonb(overrides))
+    from subscription_eff where machine_id = $1";
+
+#[derive(Deserialize, Default)]
+pub struct SubQuery {
+    /// 只预览：照常校验、写、规整（和模板相同的改回跟随，账单日照规则算），读出生效值后整个回滚，什么都不留（不记审计、不广播）。
+    /// 返回 `{dry_run: true, effective: {…生效值…, overrides: […]}}`，fleetctl 用它在确认前显示「改前 → 改后」，不在客户端重算跟随规则
+    #[serde(default)]
+    dry_run: bool,
+}
+
+pub async fn put_subscription(
+    a: Actor,
+    State(st): State<AppState>,
+    ApiPath(id): ApiPath<Uuid>,
+    ApiQuery(q): ApiQuery<SubQuery>,
+    ApiJson(mut b): ApiJson<SubIn>,
+) -> ApiResult<Json<Value>> {
     if b.traffic_used_gb.is_some() {
         return Err(ApiError::bad_request("流量已用改为由 agent 按网卡统计，不再按面板校准"));
     }
@@ -1080,6 +1095,11 @@ pub async fn put_subscription(a: Actor, State(st): State<AppState>, ApiPath(id):
     b.ov.write(&mut tx, id, b.due_date).await?;
     if let Some(auto) = b.auto_renew {
         sqlx::query("update subscription set auto_renew = $2 where machine_id = $1").bind(id).bind(auto).execute(&mut *tx).await?;
+    }
+    if q.dry_run {
+        let effective: Option<Value> = sqlx::query_scalar(SUB_EFFECTIVE).bind(id).fetch_optional(&mut *tx).await?;
+        tx.rollback().await?;
+        return Ok(ok(json!({"dry_run": true, "effective": effective})));
     }
     // 审计详情：请求本身 + 机器名 + 改动前后的生效值（摘要写出改了哪几项，见 audit::audit_text）
     let after: Option<Value> = sqlx::query_scalar(SUB_AUDIT).bind(id).fetch_optional(&mut *tx).await?;

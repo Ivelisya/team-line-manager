@@ -152,7 +152,7 @@ impl Default for SelfmonConfig {
     fn default() -> Self { Self { heartbeat_url: None, backup_dir: PathBuf::from("/var/backups/fleet") } }
 }
 
-/// `[ipintel]`：全部有默认值，老配置文件不用改
+/// `[ipintel]`：全部有默认值，老配置文件不用改（以前有的 `learn_days`、`alert_ttl_hours` 已经是 ipintel.rs 里的常量，文件里还写着也只是被忽略）
 #[derive(Debug, Clone, Deserialize)]
 pub struct IpintelConfig {
     #[serde(default = "d_true")]
@@ -166,12 +166,6 @@ pub struct IpintelConfig {
     /// 额外视为内部地址的 IP（运维出口等）。线路机和节点的 IP 自动算内部，不用写
     #[serde(default)]
     pub internal_ips: Vec<String>,
-    /// 学习期天数：从节点第一条访问记录算起，期间只学习不告警
-    #[serde(default = "d_learn_days")]
-    pub learn_days: u32,
-    /// 一次性异常（新运营商 / 新城市 / 机房来源）最后一次出现后多少小时自动恢复
-    #[serde(default = "d_alert_ttl_hours")]
-    pub alert_ttl_hours: u32,
 }
 impl Default for IpintelConfig {
     fn default() -> Self {
@@ -180,16 +174,12 @@ impl Default for IpintelConfig {
             db_dir: d_ipintel_dir(),
             overrides: d_ipintel_overrides(),
             internal_ips: vec![],
-            learn_days: d_learn_days(),
-            alert_ttl_hours: d_alert_ttl_hours(),
         }
     }
 }
 fn d_true() -> bool { true }
 fn d_ipintel_dir() -> PathBuf { PathBuf::from("/var/lib/fleet/ipintel") }
 fn d_ipintel_overrides() -> Option<PathBuf> { Some(PathBuf::from("/etc/fleet/ipintel-overrides.toml")) }
-fn d_learn_days() -> u32 { 7 }
-fn d_alert_ttl_hours() -> u32 { 24 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -214,7 +204,8 @@ impl Default for Retention {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Numbering {
-    /// 节点退役后自动把该团队编号压缩成 01..N（编号连续，数量一眼可见）
+    /// 已经不是开关：编号压缩（01..N 连续）无条件做。字段只为生产 fleet.toml 里留着的 `[numbering]` 能读进来；
+    /// 只剩 jobs/steps/replace.rs 的 `renumber` 一处还读它，那处改掉后连同这个结构一起删
     pub auto_compact: bool,
 }
 impl Default for Numbering {
@@ -247,6 +238,9 @@ mod tests {
         assert_eq!((r.raw_days, r.reach_days, r.ping_days, r.ping_hourly_days), (3, 5, 7, 400));
         let n: Numbering = toml::from_str("").unwrap();
         assert!(n.auto_compact);
+        // 已经改成常量的老配置项：生产 fleet.toml 里还写着也得能读
+        let i: IpintelConfig = toml::from_str("learn_days = 3\nalert_ttl_hours = 1\nenabled = false").unwrap();
+        assert!(!i.enabled);
         let s: SelfmonConfig = toml::from_str("heartbeat_url = \"https://hc-ping.com/x\"").unwrap();
         assert_eq!((s.heartbeat_url.as_deref(), s.backup_dir), (Some("https://hc-ping.com/x"), PathBuf::from("/var/backups/fleet")));
         let r: RoutersConfig = toml::from_str("ssh_port = 2222").unwrap();

@@ -1,6 +1,6 @@
 // 入口操作：停用/启用、轮换凭据（输入 线路机名:端口 确认）、分享链接。节点抽屉的“管理”页与线路页共用。
 // 菜单、对话框与 mutation 按容器挂一份（EntryMenus：一张线路机卡、抽屉管理页的入口区），行里只放 EntryMenuButton——
-// 以前每行一个 Radix DropdownMenu 根（各给 document 加一个 keydown 捕获监听）和一个 mutation 观察者，入口几十条的卡随推送重渲染时一起重画。
+// 不要每行挂一个 Radix DropdownMenu 根（各给 document 加一个 keydown 捕获监听）和一个 mutation 观察者：入口几十条的卡随推送重渲染时会一起重画。
 import * as React from 'react';
 import { Slot } from '@radix-ui/react-slot';
 import { KeyRound, Link2, Loader2, MoreHorizontal, Power, PowerOff } from 'lucide-react';

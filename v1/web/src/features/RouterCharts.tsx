@@ -3,6 +3,7 @@
 import * as React from 'react';
 import { Activity, Cable, Cpu, Network, Radar, Shuffle, Thermometer, Users } from 'lucide-react';
 import { beatBins, exitBeats, routerMeters, useRouterExitMetrics, useRouterMetrics, type RouterView } from '@/lib/routers';
+import { RANGE_MS, vMs, vPct, vRate, yMs, yPct, yRate } from '@/lib/chart';
 import { useDrawer } from '@/lib/drawer';
 import * as F from '@/lib/format';
 import { InfoTip } from '@/components/ui/form';
@@ -22,18 +23,11 @@ const L_CONNS = [{ key: 'conns', label: '代理连接', color: 'var(--chart-1)' 
 const L_PEOPLE = [{ key: 'clients', label: '在线客户端', color: 'var(--chart-1)' }, { key: 'exits_alive', label: '可用出口', color: 'var(--chart-2)' }];
 const L_DELAY = [{ key: 'delay_ms', label: '延迟', color: 'var(--chart-1)' }];
 const PCT: [number, number] = [0, 100];
-const yPct = (v: number) => `${Math.round(v)}%`;
-const vPct = (_: string, v: number) => `${v.toFixed(1)}%`;
-const yRate = (v: number) => (v ? F.str(F.rate(v)) : '0');
-const vRate = (_: string, v: number) => F.str(F.rate(v));
 const yInt = (v: number) => String(Math.round(v));
 const vInt = (_: string, v: number) => String(Math.round(v));
 const yTemp = (v: number) => `${Math.round(v)}°`;
 const vTemp = (_: string, v: number) => `${v.toFixed(1)} °C`;
-const yMs = (v: number) => (v ? `${v} ms` : '0');
-const vMs = (_: string, v: number) => `${Math.round(v)} ms`;
 
-const RANGE_MS: Record<string, number> = { '1h': 3600_000, '6h': 6 * 3600_000, '24h': 86400_000, '7d': 7 * 86400_000, '30d': 30 * 86400_000 };
 /** 点不到两个时的说明：所选范围内才接入的是数据还在积累，其余（离线）是这段时间没有数据 */
 const fewText = (r: RouterView, range: string) => (Date.now() - Date.parse(r.created_at) < (RANGE_MS[range] ?? 0) ? '刚接入，数据还在积累' : '这段时间没有数据');
 

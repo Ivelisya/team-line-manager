@@ -63,8 +63,6 @@ job_workers = 8
 raw_days = 3
 access_days = 7
 
-[numbering]
-auto_compact = true
 TOML
 chown fleet:fleet /etc/fleet/fleet.toml; chmod 640 /etc/fleet/fleet.toml
 # 软路由的反向隧道：同 deploy/central/install.sh（fleet-tunnel 账号、tunnel-keys、sshd 的 Match 段；幂等）

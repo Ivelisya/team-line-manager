@@ -1,11 +1,15 @@
 //! 差异与顺序：当前（磁盘配置 + 运行态 tag）→ 候选。纯函数。
 //!
-//! 顺序（spec/edge.md §5.3 第 8 步）：
+//! 顺序（每项都经 Xray API 生效，不重启 Xray）：
 //!   1. 出站：新增 ado；变化 rmo+ado
 //!   2. 入站：先 rmi 运行态多余的；变化的彼此没有端口冲突时同一入站 rmi、adi 相邻，
 //!      有冲突（端口互换等）就先全部 rmi 再全部 adi；最后 adi 新增的
 //!   3. 规则：不一致时整表替换 adrules（原子，保证位置）
 //!   4. 出站删除 rmo（此时规则已不再引用）
+//!
+//! 每步带反向操作 `undo`：任一步失败时按相反顺序逐个撤回（出站新增 → rmo；出站变化 → rmo + 旧的 ado；入站删除 → 旧的 adi；
+//! 入站变化 → rmi + 旧的 adi；规则整表 → 旧的整表 adrules；出站删除 → 旧的 ado）。单项撤回失败继续撤其余的；
+//! 做了一半的也撤（rmi 成功、adi 失败仍要把旧入站加回去）。配置文件在全部步骤成功之后才写
 
 use super::cli::{Op, Runtime};
 use super::render::{is_static_outbound, rule_tag_of, tag_of, Rendered, API_TAG};

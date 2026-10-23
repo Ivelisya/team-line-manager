@@ -8,7 +8,6 @@ use crate::resolve::Want;
 use crate::table::{self, gb, money, money_at, traffic};
 use anyhow::{anyhow, bail};
 use serde_json::{json, Map, Value};
-use std::ops::RangeInclusive;
 use time::macros::format_description;
 use time::Date;
 
@@ -24,42 +23,6 @@ const OVR: [&str; 7] = ["price_cents", "currency", "cycle", "billing_tz", "remin
 /// 这一项单独设置了（订阅的 overrides 里有它）
 fn overridden(s: &Value, k: &str) -> bool { s["overrides"].as_array().is_some_and(|a| a.iter().any(|x| x == k)) }
 
-/// 跟随时的值（同中控 sub_template / subscription_eff）：重置日按供应商的方式，账单日 = 订阅的账单日（billing_day）、自然月 = 1 号、
-/// 滚动 30 天没有重置日（null）。
-/// 账单日（同中控 meta::billing_day）：到期日落在现有账单日上的（含原样带回、31 号账单日的 2-28）沿用，否则（或新建）是新到期日几号
-fn inherited(tpl: &Value, k: &str, due: &str, cur: &Value) -> Value {
-    let bday = || match (date(due), cur["billing_day"].as_u64()) {
-        (Some(d), Some(c)) if u64::from(d.day()) == c.min(u64::from(d.month().length(d.year()))) => c,
-        (d, _) => d.map_or(1, |d| u64::from(d.day())),
-    };
-    match k {
-        "traffic_reset_day" => match tpl["traffic_reset"].as_str() {
-            Some("billing") => json!(bday()),
-            Some("rolling30") => Value::Null,
-            _ => json!(1),
-        },
-        _ => tpl[k].clone(),
-    }
-}
-
-/// 要提交的订阅的生效值与 overrides：null 或和模板相同的按跟随（同中控 subscription_normalize；流量上限 0 与套餐的 null 都是不限）。
-/// 改订阅的确认语按它逐项对比；`cur` 是现有订阅（新建为 null）
-fn effective(body: &Value, tpl: &Value, cur: &Value) -> Value {
-    let mut e = body.clone();
-    let mut ov = vec![];
-    for k in OVR {
-        let inh = inherited(tpl, k, &st(body, "/due_date"), cur);
-        let same = body[k] == inh || (k == "traffic_gb" && body[k] == 0 && inh.is_null());
-        if body[k].is_null() || same {
-            e[k] = inh;
-        } else {
-            ov.push(k);
-        }
-    }
-    e["overrides"] = json!(ov);
-    e
-}
-
 /// 金额：`39.46` / `39` / `0.5`（最多两位小数，不带正负号）→ 分。接口收整数分，币种是订阅的
 pub(crate) fn parse_money(s: &str) -> anyhow::Result<i32> {
     let s = s.trim();
@@ -74,12 +37,11 @@ pub(crate) fn parse_money(s: &str) -> anyhow::Result<i32> {
 /// `YYYY-MM-DD`
 fn date(s: &str) -> Option<Date> { Date::parse(s.trim(), format_description!("[year]-[month]-[day]")).ok() }
 
-/// 登记续费的请求体：给了 `--to` 交新到期日；否则交周期数，由中控按订阅周期从当前到期日推（小月按月末，同网页）
+/// 登记续费的请求体：给了 `--to` 交新到期日；否则交周期数，由中控按订阅周期从当前到期日推（小月按月末，同网页；周期数的范围中控校验）
 fn renew_body(to: Option<&str>, cycles: u32, amount: i64, note: Option<&str>) -> anyhow::Result<Value> {
     let mut b = json!({"amount_cents": amount, "note": note});
     match to {
         Some(t) => b["new_due"] = json!(date(t).ok_or_else(|| anyhow!("--to 写成 YYYY-MM-DD，如 2026-11-25"))?.to_string()),
-        None if cycles == 0 => bail!("--cycles 至少是 1"),
         None => b["cycles"] = json!(cycles),
     }
     Ok(b)
@@ -287,12 +249,22 @@ pub fn billing(ctx: &Ctx, machine: &str) -> anyhow::Result<u8> {
     Ok(0)
 }
 
-pub struct RenewOpts<'a> {
-    pub machine: &'a str,
-    pub to: Option<&'a str>,
+// `fleetctl renew` 的参数（clap 直接解析成它）
+#[derive(clap::Args)]
+pub struct RenewOpts {
+    pub machine: String,
+    /// 新到期日 YYYY-MM-DD（不写则按订阅周期推 --cycles 个周期，目标月没有那一天时落到月末）
+    #[arg(long, conflicts_with = "cycles")]
+    pub to: Option<String>,
+    /// 按订阅的计费周期推几个周期（一次付了几期）
+    #[arg(long, default_value_t = 1)]
     pub cycles: u32,
-    pub amount: Option<&'a str>,
-    pub note: Option<&'a str>,
+    /// 实付金额，如 39.46（币种同订阅；不写 = 订阅价格 × 周期数，给 --to 时是一个周期的价格）
+    #[arg(long)]
+    pub amount: Option<String>,
+    #[arg(long)]
+    pub note: Option<String>,
+    #[arg(long)]
     pub yes: bool,
 }
 
@@ -303,8 +275,8 @@ fn default_amount(s: &Value, name: &str, has_to: bool, cycles: u32) -> anyhow::R
 }
 
 /// `renew <机器>`：登记一次续费（到期日顺延、续费类告警下一轮评估恢复）。`--json` 输出这条续费记录（同 billing 的 renewals[]）
-pub fn renew(ctx: &Ctx, o: RenewOpts<'_>) -> anyhow::Result<u8> {
-    let (id, name) = ctx.find_id(o.machine, Want::Live)?;
+pub fn renew(ctx: &Ctx, o: RenewOpts) -> anyhow::Result<u8> {
+    let (id, name) = ctx.find_id(&o.machine, Want::Live)?;
     let m = ctx.c.get(&format!("/machines/{id}"))?;
     let s = &m["subscription"];
     if s.is_null() {
@@ -312,16 +284,16 @@ pub fn renew(ctx: &Ctx, o: RenewOpts<'_>) -> anyhow::Result<u8> {
     }
     let due = date(&st(s, "/due_date")).ok_or_else(|| anyhow!("中控返回的到期日不是 YYYY-MM-DD：{}", st(s, "/due_date")))?;
     let cur = st(s, "/currency");
-    let amount = match o.amount {
+    let amount = match o.amount.as_deref() {
         Some(a) => i64::from(parse_money(a)?),
         // 默认是订阅价格（同网页）；--cycles 推几个周期就是几期的钱
         None => default_amount(s, &name, o.to.is_some(), o.cycles)?,
     };
-    let note = o.note.map(str::trim).filter(|n| !n.is_empty());
+    let note = o.note.as_deref().map(str::trim).filter(|n| !n.is_empty());
     let note_cn = note.map(|n| format!("，备注「{n}」")).unwrap_or_default();
-    let body = renew_body(o.to, o.cycles, amount, note)?;
+    let body = renew_body(o.to.as_deref(), o.cycles, amount, note)?;
     // 新到期日由中控算：推一个周期的就是订阅里的 next_due
-    let target = match (o.to, o.cycles) {
+    let target = match (o.to.as_deref(), o.cycles) {
         (Some(t), _) => format!("到期 {due} → {}", t.trim()),
         (None, 1) => format!("到期 {due} → {}", st(s, "/next_due")),
         (None, n) => format!("到期 {due} 按订阅周期（{}）顺延 {n} 期", cycle_cn(&st(s, "/cycle"))),
@@ -342,78 +314,82 @@ pub fn renew(ctx: &Ctx, o: RenewOpts<'_>) -> anyhow::Result<u8> {
     Ok(0)
 }
 
-#[derive(Default)]
-pub struct SubSetOpts<'a> {
-    pub machine: &'a str,
-    pub price: Option<&'a str>,
-    pub currency: Option<&'a str>,
-    pub cycle: Option<&'a str>,
-    pub due: Option<&'a str>,
+// `fleetctl subscription set` 的参数（clap 直接解析成它；上架的订阅各项也借它转成接口写法，见 `sub_patch`）
+#[derive(clap::Args, Default)]
+pub struct SubSetOpts {
+    pub machine: String,
+    /// 价格，如 39.46（币种的主单位，最多两位小数）；none = 跟随套餐
+    #[arg(long)]
+    pub price: Option<String>,
+    /// 币种代码，如 USD / CNY；none = 跟随套餐
+    #[arg(long)]
+    pub currency: Option<String>,
+    /// 计费周期：monthly | quarterly | semiannual | yearly；none = 跟随套餐
+    #[arg(long)]
+    pub cycle: Option<String>,
+    /// 到期日 YYYY-MM-DD（账单时区的日期）。续费请用 renew，会留续费记录
+    #[arg(long)]
+    pub due: Option<String>,
+    /// 到期自动续费：true | false（到期后中控按周期自动顺延到期日、记一条续费记录，到期前不提醒；不会真的扣款）
+    #[arg(long)]
     pub auto_renew: Option<bool>,
-    pub remind_days: Option<&'a str>,
-    pub tz: Option<&'a str>,
-    pub traffic_gb: Option<&'a str>,
-    pub reset_day: Option<&'a str>,
+    /// 到期前几天开始提醒（0–60）；none = 跟随供应商
+    #[arg(long)]
+    pub remind_days: Option<String>,
+    /// 账单时区（IANA 名）：到期与流量周期按它的日期算；none = 跟随供应商
+    #[arg(long)]
+    pub tz: Option<String>,
+    /// 流量上限 GB（供应商的十进制 GB；0 = 不限）；none = 跟随套餐（同机 IP 节点没有套餐 = 与宿主机共用）
+    #[arg(long)]
+    pub traffic_gb: Option<String>,
+    /// 流量每月几号重置（1–31，小月没有这一天按月末）；none = 跟随供应商（按账单日 = 到期日几号，或按自然月 = 1 号）
+    #[arg(long)]
+    pub reset_day: Option<String>,
+    #[arg(long)]
     pub yes: bool,
 }
 
 /// `none`（不分大小写）= null：单独设置的字段改回跟随
 pub(crate) fn is_none(s: &str) -> bool { s.trim().eq_ignore_ascii_case("none") }
 
-/// `N` 或 `none`（= null）；N 不在 `range` 里报 `bad`
-fn int_or_none(s: &str, range: RangeInclusive<i32>, bad: &str) -> anyhow::Result<Value> {
+/// `N`（整数）或 `none`（= null）；不是整数报 `bad`。范围由中控校验
+fn int_or_none(s: &str, bad: &str) -> anyhow::Result<Value> {
     if is_none(s) {
         return Ok(Value::Null);
     }
-    s.trim().parse::<i32>().ok().filter(|n| range.contains(n)).map(|n| json!(n)).ok_or_else(|| anyhow!("{bad}"))
+    s.trim().parse::<i32>().map(|n| json!(n)).map_err(|_| anyhow!("{bad}"))
 }
 
-/// 命令行给了的字段，换成接口的写法，提交前先校验。可单独设置的字段给 none = null（改回跟随套餐 / 供应商）。
-/// 上架（provision）的订阅也用它
-pub(crate) fn sub_patch(o: &SubSetOpts<'_>) -> anyhow::Result<Map<String, Value>> {
+/// 命令行给了的字段，换成接口的写法：`none` = null（改回跟随套餐 / 供应商）、价格换成分、到期日换成 `YYYY-MM-DD`。
+/// 只做这些写法转换；值合不合法（币种、周期、范围、时区）由中控校验，报错原样给出。上架（provision）的订阅也用它
+pub(crate) fn sub_patch(o: &SubSetOpts) -> anyhow::Result<Map<String, Value>> {
     let mut p = Map::new();
-    if let Some(v) = o.price {
+    if let Some(v) = &o.price {
         p.insert("price_cents".into(), if is_none(v) { Value::Null } else { json!(parse_money(v)?) });
     }
-    if let Some(c) = o.currency {
-        let c = c.trim().to_uppercase();
-        // 同中控的币种校验：3 个字母
-        let v = match c.as_str() {
-            "NONE" => Value::Null,
-            _ if c.len() == 3 && c.bytes().all(|b| b.is_ascii_uppercase()) => json!(c),
-            _ => bail!("--currency 写 3 个字母的币种代码，如 USD / CNY；none = 跟随套餐"),
-        };
-        p.insert("currency".into(), v);
+    if let Some(c) = &o.currency {
+        p.insert("currency".into(), if is_none(c) { Value::Null } else { json!(c.trim()) });
     }
-    if let Some(c) = o.cycle {
-        let v = match c.trim() {
-            c if is_none(c) => Value::Null,
-            // 计费周期以中控 /meta 为准；取不到时交给中控校验
-            c if meta::cycles().all(|x| x["key"] != c) && meta::cycles().next().is_some() => {
-                let all: Vec<String> = meta::cycles().map(|x| format!("{}（{}）", st(x, "/key"), st(x, "/label"))).collect();
-                bail!("--cycle 只能是 {}；none = 跟随套餐", all.join(" / "))
-            }
-            c => json!(c),
-        };
-        p.insert("cycle".into(), v);
+    if let Some(c) = &o.cycle {
+        p.insert("cycle".into(), if is_none(c) { Value::Null } else { json!(c.trim()) });
     }
-    if let Some(d) = o.due {
+    if let Some(d) = &o.due {
         p.insert("due_date".into(), json!(date(d).ok_or_else(|| anyhow!("--due 写成 YYYY-MM-DD，如 2026-11-25"))?.to_string()));
     }
     if let Some(b) = o.auto_renew {
         p.insert("auto_renew".into(), json!(b));
     }
-    if let Some(v) = o.remind_days {
-        p.insert("remind_days".into(), int_or_none(v, 0..=60, "--remind-days 写 0–60（到期前几天提醒），或 none（跟随供应商）")?);
+    if let Some(v) = &o.remind_days {
+        p.insert("remind_days".into(), int_or_none(v, "--remind-days 写整数（到期前几天提醒），或 none（跟随供应商）")?);
     }
-    if let Some(z) = o.tz {
+    if let Some(z) = &o.tz {
         p.insert("billing_tz".into(), if is_none(z) { Value::Null } else { json!(z.trim()) });
     }
-    if let Some(v) = o.traffic_gb {
-        p.insert("traffic_gb".into(), int_or_none(v, 0..=i32::MAX, "--traffic-gb 写流量上限的 GB 数（0 = 不限），或 none（跟随套餐）")?);
+    if let Some(v) = &o.traffic_gb {
+        p.insert("traffic_gb".into(), int_or_none(v, "--traffic-gb 写流量上限的 GB 数（整数，0 = 不限），或 none（跟随套餐）")?);
     }
-    if let Some(v) = o.reset_day {
-        p.insert("traffic_reset_day".into(), int_or_none(v, 1..=31, "--reset-day 写 1–31（每月几号），或 none（跟随供应商：按账单日或自然月）")?);
+    if let Some(v) = &o.reset_day {
+        p.insert("traffic_reset_day".into(), int_or_none(v, "--reset-day 写整数（每月几号），或 none（跟随供应商：按账单日或自然月）")?);
     }
     Ok(p)
 }
@@ -438,32 +414,30 @@ fn merge_sub(cur: &Value, patch: Map<String, Value>) -> anyhow::Result<Value> {
 }
 
 /// 改了哪些（`费用 39.46 USD / 月（跟随套餐） → 45.00 USD / 月（单独设置）`）；新建时列出全部。
-/// 新值按 `effective` 算生效值（和模板相同的按跟随，同中控）
-fn sub_changes(m: &Value, new: &Value) -> Vec<String> {
+/// `eff` 是中控预览（`PUT …?dry_run=true`）返回的规整后的生效值：和模板相同的按跟随、账单日与重置日怎么算都是中控的规则，这里只对比
+fn sub_changes(m: &Value, eff: &Value) -> Vec<String> {
     let cur = &m["subscription"];
-    let mut eff = effective(new, &m["sub_template"], cur);
-    if eff["auto_renew"].is_null() {
-        eff["auto_renew"] = json!(false);
-    }
     if cur.is_null() {
-        sub_fields(&eff, m).into_iter().map(|(k, v)| format!("{k} {v}")).collect()
+        sub_fields(eff, m).into_iter().map(|(k, v)| format!("{k} {v}")).collect()
     } else {
-        sub_fields(cur, m).into_iter().zip(sub_fields(&eff, m)).filter(|(a, b)| a.1 != b.1).map(|((k, a), (_, b))| format!("{k} {a} → {b}")).collect()
+        sub_fields(cur, m).into_iter().zip(sub_fields(eff, m)).filter(|(a, b)| a.1 != b.1).map(|((k, a), (_, b))| format!("{k} {a} → {b}")).collect()
     }
 }
 
 /// `subscription set <机器>`：先读现有订阅、只改给了的字段再整份提交；可单独设置的字段给 none 改回跟随。
 /// `--json` 输出改完的订阅（同 show 的 subscription，含 overrides）
-pub fn subscription_set(ctx: &Ctx, o: SubSetOpts<'_>) -> anyhow::Result<u8> {
+pub fn subscription_set(ctx: &Ctx, o: SubSetOpts) -> anyhow::Result<u8> {
     let patch = sub_patch(&o)?;
     if patch.is_empty() {
         bail!("没有要改的内容：给 --price / --currency / --cycle / --due / --auto-renew / --remind-days / --tz / --traffic-gb / --reset-day 之一");
     }
-    let (id, name) = ctx.find_id(o.machine, Want::Live)?;
+    let (id, name) = ctx.find_id(&o.machine, Want::Live)?;
     let m = ctx.c.get(&format!("/machines/{id}"))?;
     let cur = &m["subscription"];
     let body = merge_sub(cur, patch)?;
-    let changes = sub_changes(&m, &body).join("；");
+    // 先让中控预览：校验与规整都在中控（不通过就是中控的报错），回来的是改完之后的生效值
+    let eff = ctx.c.put(&format!("/machines/{id}/subscription?dry_run=true"), &body)?["effective"].clone();
+    let changes = sub_changes(&m, &eff).join("；");
     if changes.is_empty() {
         ctx.emit(cur, || format!("{name} 的订阅没有变化，未提交"));
         return Ok(0);
@@ -509,7 +483,8 @@ mod tests {
         // 推几个周期交给中控算（小月按月末、一次加够）；--to 原样交日期
         assert_eq!(renew_body(None, 3, 11838, None).unwrap(), json!({"amount_cents": 11838, "note": null, "cycles": 3}));
         assert_eq!(renew_body(Some(" 2027-01-01 "), 1, 100, Some("账单 #1")).unwrap(), json!({"amount_cents": 100, "note": "账单 #1", "new_due": "2027-01-01"}));
-        assert!(renew_body(None, 0, 1, None).is_err() && renew_body(Some("2026/11/25"), 1, 1, None).is_err());
+        // 周期数的范围由中控校验；日期写法不对在本地就报
+        assert!(renew_body(Some("2026/11/25"), 1, 1, None).is_err());
         // 默认金额是订阅价格 × 周期数；订阅里没有价格不能当 0 元记账
         let sub = json!({"price_cents": 3946});
         assert_eq!((default_amount(&sub, "x", false, 3).unwrap(), default_amount(&sub, "x", true, 3).unwrap()), (11838, 3946));
@@ -526,53 +501,96 @@ mod tests {
         })
     }
 
+    /// 当前订阅的副本，再改几项：模拟中控预览（`PUT …?dry_run=true`）回来的生效值
+    fn eff(cur: &Value, set: Value) -> Value {
+        let mut e = cur.clone();
+        for (k, v) in set.as_object().unwrap() {
+            e[k] = v.clone();
+        }
+        e
+    }
+
+    fn sopts(f: impl FnOnce(&mut SubSetOpts)) -> SubSetOpts {
+        let mut o = SubSetOpts::default();
+        f(&mut o);
+        o
+    }
+
     #[test]
     fn subscription_set_merges_given_fields() {
         let m = machine();
         let cur = &m["subscription"];
         // 跟随的提交 null（不把套餐的值抄进订阅），单独设置的照旧；due_days 是中控算的，不提交
-        let o = SubSetOpts { traffic_gb: Some("500"), ..Default::default() };
+        let o = sopts(|o| o.traffic_gb = Some("500".into()));
         let b = merge_sub(cur, sub_patch(&o).unwrap()).unwrap();
         let want = json!({"price_cents": 4200, "currency": null, "cycle": null, "due_date": "2026-10-25", "billing_tz": null,
             "auto_renew": false, "remind_days": null, "traffic_gb": 500, "traffic_reset_day": null});
         assert_eq!(b, want);
-        assert_eq!(sub_changes(&m, &b), ["流量上限 2000 GB（跟随套餐） → 500 GB（单独设置）"]);
+        // 改前 → 改后：只对比现有订阅与中控预览回来的生效值
+        let after = eff(cur, json!({"traffic_gb": 500, "overrides": ["price_cents", "traffic_gb"]}));
+        assert_eq!(sub_changes(&m, &after), ["流量上限 2000 GB（跟随套餐） → 500 GB（单独设置）"]);
         // none = 改回跟随
-        let b = merge_sub(cur, sub_patch(&SubSetOpts { price: Some("none"), ..Default::default() }).unwrap()).unwrap();
+        let b = merge_sub(cur, sub_patch(&sopts(|o| o.price = Some("none".into()))).unwrap()).unwrap();
         assert!(b["price_cents"].is_null());
-        assert_eq!(sub_changes(&m, &b), ["费用 42.00 USD / 月（单独设置） → 39.46 USD / 月（跟随套餐）"]);
-        // 填的和套餐一样：按跟随（同中控），没有变化
-        let same = SubSetOpts { price: Some("42"), cycle: Some("monthly"), currency: Some("usd"), reset_day: Some("25"), ..Default::default() };
-        assert!(sub_changes(&m, &merge_sub(cur, sub_patch(&same).unwrap()).unwrap()).is_empty());
-        // 按账单日重置的跟随值随到期日变（小月按月末的事中控按周期算）
-        let b = merge_sub(cur, sub_patch(&SubSetOpts { due: Some("2026-11-30"), ..Default::default() }).unwrap()).unwrap();
-        assert_eq!(sub_changes(&m, &b), ["到期日 2026-10-25 → 2026-11-30", "流量重置日 每月 25 号（跟随供应商：按账单日） → 每月 30 号（跟随供应商：按账单日）"]);
+        let after = eff(cur, json!({"price_cents": 3946, "overrides": []}));
+        assert_eq!(sub_changes(&m, &after), ["费用 42.00 USD / 月（单独设置） → 39.46 USD / 月（跟随套餐）"]);
+        // 预览回来和现在一样：没有变化，不提交
+        let same = sopts(|o| {
+            o.price = Some("42".into());
+            o.cycle = Some("monthly".into());
+            o.currency = Some("usd".into());
+            o.reset_day = Some("25".into());
+        });
+        assert!(merge_sub(cur, sub_patch(&same).unwrap()).is_ok() && sub_changes(&m, &eff(cur, json!({}))).is_empty());
+        // 按账单日重置的跟随值随到期日变：怎么算是中控的事，这里只显示
+        let b = merge_sub(cur, sub_patch(&sopts(|o| o.due = Some("2026-11-30".into()))).unwrap()).unwrap();
+        assert_eq!(b["due_date"], "2026-11-30");
+        let after = eff(cur, json!({"due_date": "2026-11-30", "traffic_reset_day": 30}));
+        assert_eq!(sub_changes(&m, &after), ["到期日 2026-10-25 → 2026-11-30", "流量重置日 每月 25 号（跟随供应商：按账单日） → 每月 30 号（跟随供应商：按账单日）"]);
         // 没有订阅：新建只要到期日，其余跟随（不写默认值）
         let mut fresh = machine();
         fresh["subscription"] = Value::Null;
-        assert!(merge_sub(&Value::Null, sub_patch(&SubSetOpts { price: Some("39.46"), ..Default::default() }).unwrap()).is_err());
-        let b = merge_sub(&Value::Null, sub_patch(&SubSetOpts { due: Some("2026-11-25"), auto_renew: Some(true), ..Default::default() }).unwrap()).unwrap();
+        assert!(merge_sub(&Value::Null, sub_patch(&sopts(|o| o.price = Some("39.46".into()))).unwrap()).is_err());
+        let o = sopts(|o| {
+            o.due = Some("2026-11-25".into());
+            o.auto_renew = Some(true);
+        });
+        let b = merge_sub(&Value::Null, sub_patch(&o).unwrap()).unwrap();
         let want = json!({"price_cents": null, "currency": null, "cycle": null, "due_date": "2026-11-25", "billing_tz": null,
             "auto_renew": true, "remind_days": null, "traffic_gb": null, "traffic_reset_day": null});
         assert_eq!(b, want);
-        assert_eq!(sub_changes(&fresh, &b)[..3], ["费用 39.46 USD / 月（跟随套餐）", "到期日 2026-11-25", "自动续费 是"]);
-        // 写法不对的在提交前就报
+        let created = json!({"price_cents": 3946, "currency": "USD", "cycle": "monthly", "due_date": "2026-11-25", "billing_tz": "America/Los_Angeles",
+            "auto_renew": true, "remind_days": 7, "traffic_gb": 2000, "traffic_reset_day": 25, "overrides": []});
+        assert_eq!(sub_changes(&fresh, &created)[..3], ["费用 39.46 USD / 月（跟随套餐）", "到期日 2026-11-25", "自动续费 是"]);
+        // 写法转换不了的在提交前就报；值合不合法（币种、周期、范围）由中控校验
         let bad = [
-            SubSetOpts { cycle: Some("month"), ..Default::default() },
-            SubSetOpts { remind_days: Some("61"), ..Default::default() },
-            SubSetOpts { reset_day: Some("32"), ..Default::default() },
-            SubSetOpts { reset_day: Some("0"), ..Default::default() },
-            SubSetOpts { traffic_gb: Some("-1"), ..Default::default() },
-            SubSetOpts { due: Some("2026-11-31"), ..Default::default() },
-            SubSetOpts { currency: Some("US"), ..Default::default() },
-            SubSetOpts { price: Some("1.999"), ..Default::default() },
+            sopts(|o| o.due = Some("2026-11-31".into())),
+            sopts(|o| o.price = Some("1.999".into())),
+            sopts(|o| o.remind_days = Some("abc".into())),
+            sopts(|o| o.traffic_gb = Some("1.5".into())),
+            sopts(|o| o.reset_day = Some("x".into())),
         ];
         for o in &bad {
             assert!(sub_patch(o).is_err());
         }
-        let all_none = SubSetOpts { price: Some("none"), currency: Some("None"), cycle: Some("none"), tz: Some("none"), remind_days: Some("none"), traffic_gb: Some("0"), reset_day: Some("none"), ..Default::default() };
+        let all_none = sopts(|o| {
+            o.price = Some("none".into());
+            o.currency = Some("None".into());
+            o.cycle = Some("none".into());
+            o.tz = Some("none".into());
+            o.remind_days = Some("none".into());
+            o.traffic_gb = Some("0".into());
+            o.reset_day = Some("none".into());
+        });
         let want = json!({"price_cents": null, "currency": null, "cycle": null, "billing_tz": null, "remind_days": null, "traffic_gb": 0, "traffic_reset_day": null});
         assert_eq!(sub_patch(&all_none).unwrap(), *want.as_object().unwrap());
+        // 值原样交给中控（只去掉首尾空白）
+        let o = sopts(|o| {
+            o.currency = Some(" usd ".into());
+            o.cycle = Some("month".into());
+            o.remind_days = Some("61".into());
+        });
+        assert_eq!(Value::Object(sub_patch(&o).unwrap()), json!({"currency": "usd", "cycle": "month", "remind_days": 61}));
     }
 
     #[test]

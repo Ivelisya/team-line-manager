@@ -975,12 +975,23 @@ pub fn job_retry(ctx: &Ctx, id: &str, reset_host_key: bool, password_env: Option
     Ok(0)
 }
 
-pub struct AuditOpts<'a> {
-    pub target: Option<&'a str>,
+// `fleetctl audit` 的参数（clap 直接解析成它）
+#[derive(clap::Args)]
+pub struct AuditOpts {
+    /// 只看某台机器
+    #[arg(long)]
+    pub target: Option<String>,
+    #[arg(long, default_value_t = 50)]
     pub limit: i64,
+    /// 翻页：只看编号小于它的记录（上一页末尾提示的编号）
+    #[arg(long)]
     pub before: Option<i64>,
-    pub cat: Option<&'a str>,
-    pub q: Option<&'a str>,
+    /// 分类：auth（登录与账户）| exec（远程执行）| machine（机器与入口）| config（设置与告警）
+    #[arg(long)]
+    pub cat: Option<String>,
+    /// 搜索标题、摘要、操作人
+    #[arg(short, long)]
+    pub q: Option<String>,
 }
 
 pub fn audit(ctx: &Ctx, o: AuditOpts) -> anyhow::Result<u8> {
@@ -990,12 +1001,12 @@ pub fn audit(ctx: &Ctx, o: AuditOpts) -> anyhow::Result<u8> {
         q.push(("before_id", b.to_string()));
     }
     // 分类、搜索由中控筛（与 --before 翻页一起用）
-    for (k, v) in [("cat", o.cat), ("q", o.q)] {
+    for (k, v) in [("cat", &o.cat), ("q", &o.q)] {
         if let Some(v) = v {
             q.push((k, v.to_string()));
         }
     }
-    if let Some(t) = o.target {
+    if let Some(t) = o.target.as_deref() {
         let (id, _) = ctx.find_id(t, Want::Any)?;
         q.push(("target_id", id));
     }

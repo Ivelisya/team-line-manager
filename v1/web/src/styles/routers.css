@@ -125,4 +125,3 @@ button.rt-topo-pill { cursor: pointer; transition: background-color var(--dur-1)
 .rx-tbl .rx-to b { font-weight: var(--fw-medium); color: var(--fg); }
 .rx-tbl .rx-addr { white-space: nowrap; }
 .opt-relay.is-down { color: var(--fg-3); }
-.rx-pairs { display: grid; grid-template-columns: max-content max-content; gap: var(--sp-2) var(--sp-16); font-size: var(--fs-label); line-height: var(--lh-label); }

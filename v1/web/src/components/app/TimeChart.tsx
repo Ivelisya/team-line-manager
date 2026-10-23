@@ -2,6 +2,7 @@
 // memo：抽屉随实时推送重渲染时，曲线点没变（lines / 格式化函数由调用方放在模块常量里）就不重画
 import { memo, useCallback, useId, useMemo, useState } from 'react';
 import type { SeriesPoint } from '@/lib/types';
+import { RANGE_MS } from '@/lib/chart';
 import { dt, hm } from '@/lib/format';
 import { ChartContainer, ChartLegend, chartTooltip, Recharts, axisProps, type ChartConfig } from '@/components/ui/chart';
 
@@ -15,7 +16,6 @@ const xFmt = (range: string) => (t: string | number) => {
 };
 
 const MIN = 60_000; const HOUR = 60 * MIN; const DAY = 24 * HOUR;
-const RANGE_MS: Record<string, number> = { '1h': HOUR, '6h': 6 * HOUR, '24h': DAY, '7d': 7 * DAY, '30d': 30 * DAY };
 const TICK_STEP: Record<string, number> = { '1h': 10 * MIN, '6h': HOUR, '24h': 3 * HOUR, '7d': DAY, '30d': 5 * DAY };
 /** 刻度步长与格式按数据实际跨度取，不按所选范围：刚上架或早已离线的机器看「7 天」，数据只有一天多，按 7 天只标日期会标出一排相同的 10-20 */
 const spanRange = (span: number) => (span <= HOUR ? '1h' : span <= 6 * HOUR ? '6h' : span <= 2 * DAY ? '24h' : span <= 7 * DAY ? '7d' : '30d');

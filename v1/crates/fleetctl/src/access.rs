@@ -4,36 +4,52 @@ use crate::cmds::{st, Ctx};
 use crate::resolve::Want;
 use crate::table;
 
-pub struct AccessOpts<'a> {
-    pub view: &'a str,
-    pub node: Option<&'a str>,
-    pub team: Option<&'a str>,
-    pub window: &'a str,
-    pub search: Option<&'a str>,
+// `fleetctl access` 的参数（clap 直接解析成它）
+#[derive(clap::Args)]
+pub struct AccessOpts {
+    /// summary（按节点汇总）| targets（域名与 IP）| new（新出现的目标）| sources（来源地址）| events（原始记录）
+    #[arg(default_value = "targets")]
+    pub view: String,
+    /// 只看某台机器（id / 显示名 / IP）
+    #[arg(long)]
+    pub node: Option<String>,
+    #[arg(long)]
+    pub team: Option<String>,
+    /// 1h | 24h | 7d | 30d，不能比汇总的保留期长（见 settings retention）；events 固定取最近记录
+    #[arg(long, default_value = "24h")]
+    pub window: String,
+    /// 搜索域名（events / sources 也匹配来源 IP）
+    #[arg(long)]
+    pub search: Option<String>,
+    /// 只看被阻止的连接
+    #[arg(long)]
     pub blocked: bool,
-    pub kind: Option<&'a str>,
+    /// domain | ip
+    #[arg(long)]
+    pub kind: Option<String>,
+    #[arg(long, default_value_t = 50)]
     pub limit: i64,
 }
 
 pub fn access(ctx: &Ctx, o: AccessOpts) -> anyhow::Result<u8> {
     let mut q: Vec<(&str, String)> = vec![];
-    if let Some(n) = o.node {
+    if let Some(n) = o.node.as_deref() {
         q.push(("node", ctx.find_id(n, Want::Any)?.0));
     }
-    if let Some(t) = o.team {
+    if let Some(t) = o.team.as_deref() {
         q.push(("team", ctx.team_id(t)?));
     }
-    if let Some(s) = o.search {
+    if let Some(s) = o.search.as_deref() {
         q.push(("search", s.to_string()));
     }
     if o.blocked {
         q.push(("action", "blocked".into()));
     }
-    if let Some(k) = o.kind {
+    if let Some(k) = o.kind.as_deref() {
         q.push(("kind", k.to_string()));
     }
     let lim = ("limit", o.limit.to_string());
-    match o.view {
+    match o.view.as_str() {
         "summary" => {
             q.push(("window", o.window.to_string()));
             let mut d = ctx.c.get_q("/access/summary", &q)?;

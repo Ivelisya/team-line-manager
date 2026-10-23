@@ -117,11 +117,6 @@ async fn main() -> anyhow::Result<()> {
             let l = tokio::net::TcpListener::bind(listen).await.with_context(|| format!("监听 {listen}（已经有一个 fleet-server 在跑？）"))?;
             let pool = db::connect(&cfg.database_url).await?;
             db::MIGRATOR.run(&pool).await.context("数据库迁移")?;
-            // 0034 之前的操作记录没有搜索文本：回填（只第一次启动时有活）
-            let n = db::backfill_audit_search(&pool).await.context("回填操作记录的搜索文本")?;
-            if n > 0 {
-                tracing::info!("回填了 {n} 条操作记录的搜索文本");
-            }
             fleet_server::meta::sync_org_tz(&pool, &cfg.org_timezone).await?;
             // 期望状态的生成逻辑改过（DESIRED_FORMAT 升了）：线路机代数统一 +1，重连后重拉
             let n = db::sync_desired_format(&pool).await.context("核对期望状态格式版本")?;

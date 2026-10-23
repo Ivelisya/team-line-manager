@@ -531,7 +531,7 @@ async fn ingest(st: &AppState, a: AgentId, mut r: Report) -> Result<Json<ReportA
                 .execute(&mut *tx)
                 .await?;
             tx.commit().await?;
-            return Ok(Json(ReportAck { accepted_seq: *seq as u64, interval_s: 10 }));
+            return Ok(Json(ReportAck { accepted_seq: *seq as u64, interval_s: fleet_proto::REPORT_INTERVAL_S }));
         }
     }
     let info = r.info.as_ref().map(|i| serde_json::to_value(i).unwrap_or_default());
@@ -679,7 +679,7 @@ async fn ingest(st: &AppState, a: AgentId, mut r: Report) -> Result<Json<ReportA
     }
     // 新读数由 live.rs 合并推送（最多每 3 s 一次），不发失效事件
     st.metrics_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
-    Ok(Json(ReportAck { accepted_seq: r.seq, interval_s: 10 }))
+    Ok(Json(ReportAck { accepted_seq: r.seq, interval_s: fleet_proto::REPORT_INTERVAL_S }))
 }
 
 /// 本进程已入库过的一份又发来（确认在路上丢了、503 后重试）：不查入口、不补建分区、不进去重事务，只刷新最近上报时间（agent 活着），
@@ -689,7 +689,7 @@ async fn resent(st: &AppState, machine: Uuid) -> sqlx::Result<Json<ReportAck>> {
         .bind(machine)
         .fetch_one(&st.db)
         .await?;
-    Ok(Json(ReportAck { accepted_seq: last as u64, interval_s: 10 }))
+    Ok(Json(ReportAck { accepted_seq: last as u64, interval_s: fleet_proto::REPORT_INTERVAL_S }))
 }
 
 #[derive(Deserialize)]

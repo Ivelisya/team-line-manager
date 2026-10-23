@@ -172,25 +172,38 @@ pub fn evacuate(ctx: &Ctx, relay: &str, to: &str, no_routers: bool, yes: bool, f
     Ok(code)
 }
 
-pub struct ReplaceOpts<'a> {
-    pub old: &'a str,
-    pub new: &'a str,
-    pub to: Option<&'a str>,
+// `fleetctl replace` 的参数（clap 直接解析成它）
+#[derive(clap::Args)]
+pub struct ReplaceOpts {
+    /// 旧节点（id / 显示名 / IP）
+    pub old: String,
+    /// 新节点
+    #[arg(long = "with")]
+    pub new: String,
+    /// 旧节点去哪个团队（默认：同团队的备用团队）
+    #[arg(long)]
+    pub to: Option<String>,
+    /// 旧节点在那个团队里的编号（默认第一个空号）
+    #[arg(long)]
     pub number: Option<i32>,
+    /// 不改软路由，只交换编号
+    #[arg(long)]
     pub no_routers: bool,
+    #[arg(long)]
     pub yes: bool,
+    #[arg(long)]
     pub follow: bool,
 }
 
 /// `fleetctl replace <旧节点> --with <新节点>`：先 GET 预览（改哪些路由的哪些出口、编号怎么变、旧节点去哪）；
 /// 不加 --yes 只打印预览，加了才提交作业
 pub fn replace(ctx: &Ctx, o: ReplaceOpts) -> anyhow::Result<u8> {
-    let old = ctx.find(o.old, Want::Live)?;
-    let new = ctx.find(o.new, Want::Live)?;
+    let old = ctx.find(&o.old, Want::Live)?;
+    let new = ctx.find(&o.new, Want::Live)?;
     let id = st(&old, "/id");
     let mut q: Vec<(&str, String)> = vec![("new_machine_id", st(&new, "/id"))];
     let mut old_to = json!({});
-    if let Some(t) = o.to {
+    if let Some(t) = o.to.as_deref() {
         let tid = ctx.team_id(t)?;
         old_to["team_id"] = json!(tid);
         q.push(("team_id", tid));
