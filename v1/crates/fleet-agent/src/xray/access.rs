@@ -467,12 +467,7 @@ mod tests {
         assert!(matches!(parse_line("2026/10/20 13:50:56 from 1.2.3.4:5 accepted tcp:a.com:99999 [in-x -> y]", 0), Parsed::Bad));
     }
 
-    fn tmp(n: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("fa-acc-{n}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
-    }
+    fn tmp(n: &str) -> crate::util::TmpDir { crate::util::TmpDir::new(&format!("acc-{n}")) }
 
     fn line(h: &str) -> String {
         format!("2026/10/20 13:50:56 from 1.2.3.4:5 accepted tcp:{h}:80 [in-{} -> out-x] email: e-{}\n", id().simple(), id().simple())
@@ -522,7 +517,6 @@ mod tests {
         let b = t.read_batch(10, 0).unwrap();
         assert_eq!(b.events.len(), 1);
         assert_eq!(t.counters.truncations, 1);
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
@@ -534,7 +528,6 @@ mod tests {
         std::fs::write(&p, line("first.com")).unwrap();
         let b = t.read_batch(10, 0).unwrap();
         assert_eq!(b.events.len(), 1);
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
@@ -547,7 +540,6 @@ mod tests {
         let b = t.read_batch(10, 0).unwrap();
         assert_eq!(t.counters.dropped_lines, 1);
         assert_eq!(b.next.unwrap().offset, 40 * 1024);
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     fn hosts(b: &Batch) -> Vec<&str> {
@@ -590,7 +582,6 @@ mod tests {
         let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
         write!(f, "{}", line(&h('h'))).unwrap();
         assert_eq!(hosts(&t.read_batch(10, 0).unwrap()), ["hhh.com"]);
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
@@ -606,7 +597,6 @@ mod tests {
         let b = t.read_batch(10, 0).unwrap();
         assert_eq!(hosts(&b), ["aaa.com", "bbb.com", "ccc.com"]);
         assert_eq!(t.counters.truncations, 1);
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
@@ -628,7 +618,6 @@ mod tests {
         let b = t.read_batch(10, 0).unwrap();
         assert_eq!(hosts(&b), ["nnn.com"]);
         assert_eq!(t.counters.dropped_lines, 1);
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
@@ -650,7 +639,6 @@ mod tests {
         let b = t.read_batch(1, 0).unwrap();
         assert_eq!(hosts(&b), ["zzz.com"]);
         assert!(!b.more);
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
@@ -677,6 +665,5 @@ mod tests {
         let b = t.read_batch(10, 0).unwrap();
         assert_eq!(hosts(&b), ["aaa.com"]);
         assert!(b.next.unwrap().fp.is_some()); // 读过一次就补上了指纹
-        let _ = std::fs::remove_dir_all(&d);
     }
 }

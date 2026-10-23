@@ -83,14 +83,43 @@ pub fn backoff(fails: u32, base_s: u64, cap_s: u64) -> std::time::Duration {
     std::time::Duration::from_secs_f64(d * j)
 }
 
+/// 测试用临时目录：创建时是空目录，离开作用域（测试中途 panic 也一样）时整个删掉
+#[cfg(test)]
+pub struct TmpDir(std::path::PathBuf);
+
+#[cfg(test)]
+impl TmpDir {
+    pub fn new(tag: &str) -> Self {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let d = std::env::temp_dir().join(format!("fa-{tag}-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+        std::fs::create_dir_all(&d).unwrap();
+        TmpDir(d)
+    }
+}
+
+#[cfg(test)]
+impl std::ops::Deref for TmpDir {
+    type Target = Path;
+    fn deref(&self) -> &Path { &self.0 }
+}
+
+#[cfg(test)]
+impl AsRef<Path> for TmpDir {
+    fn as_ref(&self) -> &Path { &self.0 }
+}
+
+#[cfg(test)]
+impl Drop for TmpDir {
+    fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn atomic_write_roundtrip() {
-        let d = std::env::temp_dir().join(format!("fa-test-{}", std::process::id()));
-        std::fs::create_dir_all(&d).unwrap();
+        let d = TmpDir::new("test");
         let p = d.join("x.json");
         save_json(&p, &serde_json::json!({"a":1}), true).unwrap();
         let v: serde_json::Value = load_json(&p).unwrap();
@@ -100,7 +129,6 @@ mod tests {
         std::fs::create_dir_all(target.join("sub")).unwrap();
         assert!(write_atomic(&target, b"{}", true).is_err());
         assert!(!d.join(".dir.json.tmp").exists());
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

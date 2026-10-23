@@ -147,14 +147,6 @@ impl IpToAsn {
         }
         out
     }
-
-    /// 同上，供加载后调用（只丢映射页，不影响正确性：只读文件映射缺页时重新从页缓存 / 磁盘读）。
-    pub fn release_pages(&self) {
-        #[cfg(unix)]
-        unsafe {
-            let _ = self.map.unchecked_advise(memmap2::UncheckedAdvice::DontNeed);
-        }
-    }
 }
 
 fn memchr_nl(b: &[u8], from: usize) -> usize {
