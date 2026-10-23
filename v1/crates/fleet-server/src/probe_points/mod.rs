@@ -84,10 +84,12 @@ pub struct Effective {
     pub label: String,
     /// 设置里的主来源是探测点时它的叫法（离线、停用也给）
     pub primary_label: Option<String>,
+    /// 主来源的探测点为什么用不了（fallback / none 时给，页面直接拿来说）：「香港探测点离线」「香港探测点探测无效」「香港探测点已停用」…
+    pub primary_issue: Option<String>,
 }
 
 impl Effective {
-    pub fn central() -> Self { Self { state: "central", probe_point_id: None, label: "中控".into(), primary_label: None } }
+    pub fn central() -> Self { Self { state: "central", probe_point_id: None, label: "中控".into(), primary_label: None, primary_issue: None } }
 
     /// 暂由中控代替：连不上照报，连得上不算恢复（reach::unknown_sql）
     pub fn fallback(&self) -> bool { self.state == "fallback" }
@@ -145,23 +147,24 @@ pub async fn effective(st: &AppState) -> sqlx::Result<Effective> {
 /// 纯函数部分（便于测试）：`name` 为 None = 主来源的探测点已经删了
 pub fn decide(set: Setting, name: Option<&str>, enabled: bool, live: Liveness) -> Effective {
     let Some(id) = set.primary else {
-        return if set.central { Effective::central() } else { Effective { state: "none", probe_point_id: None, label: "中控（检查已关闭）".into(), primary_label: None } };
+        return if set.central { Effective::central() } else { Effective { state: "none", probe_point_id: None, label: "中控（检查已关闭）".into(), primary_label: None, primary_issue: None } };
     };
     let pl = name.map(label_of).unwrap_or_else(|| "主探测点（已删除）".into());
     if name.is_some() && enabled && live.usable() {
-        return Effective { state: "probe", probe_point_id: Some(id), label: pl.clone(), primary_label: Some(pl) };
+        return Effective { state: "probe", probe_point_id: Some(id), label: pl.clone(), primary_label: Some(pl), primary_issue: None };
     }
-    let why = match () {
-        _ if name.is_none() => pl.clone(),
-        _ if !enabled => format!("已停用的{pl}"),
-        _ if !live.ever => format!("还没上报的{pl}"),
-        _ if live.online => format!("检查都作废了的{pl}"),
-        _ => format!("离线的{pl}"),
+    // (定语, 状态)：「离线的香港探测点」放进中控代替时的叫法，「香港探测点离线」给页面直接说
+    let (why, issue) = match () {
+        _ if name.is_none() => (pl.clone(), "主探测点已删除".to_string()),
+        _ if !enabled => (format!("已停用的{pl}"), format!("{pl}已停用")),
+        _ if !live.ever => (format!("还没上报的{pl}"), format!("{pl}还没上报")),
+        _ if live.online => (format!("探测无效的{pl}"), format!("{pl}探测无效")),
+        _ => (format!("离线的{pl}"), format!("{pl}离线")),
     };
     if set.central {
-        Effective { state: "fallback", probe_point_id: None, label: format!("中控（代替{why}）"), primary_label: Some(pl) }
+        Effective { state: "fallback", probe_point_id: None, label: format!("中控（代替{why}）"), primary_label: Some(pl), primary_issue: Some(issue) }
     } else {
-        Effective { state: "none", probe_point_id: None, label: format!("{pl}（离线）"), primary_label: Some(pl) }
+        Effective { state: "none", probe_point_id: None, label: format!("{pl}（不可用）"), primary_label: Some(pl), primary_issue: Some(issue) }
     }
 }
 
@@ -254,11 +257,11 @@ pub async fn check_once(st: &AppState, now: OffsetDateTime) -> anyhow::Result<()
             let why = why.as_deref().unwrap_or("原因不明");
             let mut text = match *kept {
                 _ if !live.online => format!("{}没有上报（最近一次 {}）", dur(seen), crate::meta::org_md(seen)),
-                Some(k) => format!("在线，但最近 {}的检查都作废了：{why}", dur(k)),
-                None => format!("在线，但还没有一轮检查被采纳：{why}"),
+                Some(k) => format!("在线，但最近 {}的探测都无效：{why}", dur(k)),
+                None => format!("在线，但还没有一次有效的探测：{why}"),
             };
             if set.primary == Some(*id) {
-                text.push_str(if set.central { "；它是主探测来源，线路机的连通性暂由中控代替（连不上照报，连得上不算恢复）" } else { "；它是主探测来源、中控的检查关着，线路机的连通性暂时判不出" });
+                text.push_str(if set.central { "；它是主探测来源，暂由中控代测（连不上照常告警，连得上不算恢复）" } else { "；它是主探测来源，中控探测也关着，暂时判断不了线路机通不通" });
             }
             Some(Want { rule: OFFLINE_RULE, subject: *id, name, severity: "warning", text, detail: None, ready: true })
         })
@@ -367,9 +370,13 @@ mod tests {
         let g = decide(hk(false), Some("香港"), true, off);
         assert_eq!((g.state, g.cond("r")), ("none", "false".to_string()));
         assert!(!g.uses(None) && !g.uses(Some(id)));
+        assert_eq!(g.primary_issue.as_deref(), Some("香港探测点离线"));
+        // 中控的检查关着、主探测点在线但探测无效：页面要说「探测无效」，不能说成离线
+        let gb = decide(hk(false), Some("香港"), true, live(true, true, false));
+        assert_eq!((gb.state, gb.label.as_str(), gb.primary_issue.as_deref()), ("none", "香港探测点（不可用）", Some("香港探测点探测无效")));
         // 在线、但最近的检查都作废了：同离线
         let b = decide(hk(true), Some("香港"), true, live(true, true, false));
-        assert_eq!((b.state, b.label.as_str()), ("fallback", "中控（代替检查都作废了的香港探测点）"));
+        assert_eq!((b.state, b.label.as_str(), b.primary_issue.as_deref()), ("fallback", "中控（代替探测无效的香港探测点）", Some("香港探测点探测无效")));
         assert_eq!(decide(hk(true), Some("香港"), true, never).label, "中控（代替还没上报的香港探测点）");
         assert_eq!(decide(hk(true), Some("香港"), false, up).label, "中控（代替已停用的香港探测点）");
         assert_eq!(decide(hk(true), None, false, never).state, "fallback");
@@ -378,7 +385,7 @@ mod tests {
 
     #[test]
     fn label_sql_escapes_quotes() {
-        let e = Effective { state: "probe", probe_point_id: None, label: "o'clock探测点".into(), primary_label: None };
+        let e = Effective { state: "probe", probe_point_id: None, label: "o'clock探测点".into(), primary_label: None, primary_issue: None };
         assert_eq!(e.label_sql(), "'o''clock探测点'");
     }
 

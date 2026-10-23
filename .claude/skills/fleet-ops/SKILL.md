@@ -100,7 +100,7 @@ fleetctl exec --team 团队1 --timeout 30 -- uptime           # 多台并发 4�
 - 状态 `state`：`pending`（还没接入，或刚重新生成接入命令、等在路由上执行）/ `online` / `offline`（接入过、此刻隧道连不上，`error` 是原因）。`online` 而 `error` 不为空 = 连得上但采集出错（脚本出错、输出读不了、超时），快照是上一次成功采集的，不是离线。
 - OpenClash 的配置读不了（`detail.openclash.config_error`）时，`config_stale: true` 表示出口与 fleet 入口的对应沿用上次读到的。这时替换 / 换线路机 / 搬空的预览会提醒，执行时还读不了作业就失败、一台路由都不改（不会静默跳过）；用户确认那台路由没用这个节点，才重新发起加 `--no-routers`。`deploy` 是最近一次一键部署：`state` running / failed / done，`step` 正在做的那一步，`error` 失败原因。
 - 出口的 `sync`：`ok` 参数和对应的 fleet 入口一致；`drift` 对上了入口但参数不一样（入口轮换过凭据、换了线路机后路由的配置没同步，或入口已删除）；`unmanaged` 不是 fleet 的入口。`drift` 要告诉用户，AI 不要去改路由的配置。
-- 告警（对象是路由：`subject.kind` 为 `router`，不能 `show`，用 `router show`）：`router_offline`（接入过、隧道连不上超过 2 分钟，critical，中控停机的时段不算；重新接入后 30 分钟还没连上也开，warning，摘要「重新接入后还没连上」；重新生成接入命令 / 重新部署时开着的离线告警直接关掉、不发恢复）、`router_collect_error`（连得上但采集出错满 60 秒，warning：多半是路由固件 / ucode 不兼容或路由太忙，转告用户，不是网络问题）、`router_openclash_down`（OpenClash 启用了但核心没在跑，critical）、`router_exits_down`（有 fleet 出口连续两次延迟测试不通，warning；全部 fleet 出口不通 critical；客户自己的出口 `unmanaged` 不算）、`router_wan_down`（WAN 口断开，critical）、`router_resource_high`（CPU 持续 10 分钟 > 90%、内存 / 存储 > 90%、连接表 > 80%，warning）。全局静默对它们生效；单台机器的静默管不到路由。
+- 告警（对象是路由：`subject.kind` 为 `router`，不能 `show`，用 `router show`）：`router_offline`（接入过、隧道连不上超过 2 分钟，critical，中控停机的时段不算；重新接入后 30 分钟还没连上也开，warning，摘要「重新接入后还没连上」；重新生成接入命令 / 重新部署时开着的离线告警直接关掉、不发恢复）、`router_collect_error`（「软路由读取出错」：连得上但采集出错满 60 秒，摘要「连得上，但没读到状态：…」，warning：多半是路由固件 / ucode 不兼容或路由太忙，转告用户，不是网络问题）、`router_openclash_down`（OpenClash 启用了但核心没在跑，critical）、`router_exits_down`（有 fleet 出口连续两次延迟测试不通，warning，摘要「N 个出口连续两次延迟测试不通：…」；全部 fleet 出口不通 critical，摘要「对应面板入口的 N 个出口都…」；客户自己的出口 `unmanaged` 不算）、`router_wan_down`（WAN 口断开，critical）、`router_resource_high`（CPU 持续 10 分钟 > 90%、内存 / 存储 > 90%、连接表 > 80%，warning）。全局静默对它们生效；单台机器的静默管不到路由。
 - 接入（会改路由，先向用户确认，见下一节的命令）有两种，路由上执行的是同一份脚本：
   - 中控连不到路由（路由在 NAT 后面，三台现场路由都是）：`fleetctl router add <名称> [--team 团队2]` 打印接入命令（30 分钟、只能用一次），让用户在路由上用 root 执行；过期了 `fleetctl router bootstrap <路由> --yes` 重新生成（现在的隧道密钥立刻作废，在线的路由马上掉线）。
   - 中控能直接连到路由的 SSH（公网映射、同一网段）：一键部署 `fleetctl router add <名称> --host <IP> [--port 22] [--user root] --password-stdin --yes --follow`（密码从标准输入读一行，不要写在参数里）；路由上已经授权过中控公钥时不用密码。已有的路由重新部署用 `router deploy`；上传密钥、启动隧道这两步失败时中控把原来的隧道密钥与端口写回，在线的路由不掉线（错误里写「已改回原来的隧道密钥与端口」）。失败原因原样转告用户；中控连不到它就改用接入命令。
@@ -109,13 +109,13 @@ fleetctl exec --team 团队1 --timeout 30 -- uptime           # 多台并发 4�
 
 ## 探测点
 
-中控在德国，客户在中国大陆：中控连不连得上线路机不代表客户。探测点是放在靠近客户的地方（如香港）的小机器，跑 `fleet-agent probe`，每 30 秒连一遍各线路机的客户入口（同中控的轮换与作废规则），另记建连延迟。「主探测来源」（中控或某个探测点）决定线路机卡片的心跳格、入口的「连不上」与 `relay_unreachable`；主来源离线（3 分钟没上报），或在线但 3 分钟里的检查都作废了（它自己连不上对照目标，摘要写「中控（代替检查都作废了的香港探测点）…」）时，中控的检查开着就由中控代替（连不上照报、连得上不算恢复，摘要写「中控（代替离线的香港探测点）…」），关着就标灰。离线、作废都扣掉中控停机的时段。对照目标通、三台以上线路机全部连不上的轮次照记，`relay_unreachable` 摘要后面会带「；全部线路机同时连不上（可能是供应商整段故障）」：这时先查供应商（同一家、同一网段的几台），不要逐台排查。
+中控在德国，客户在中国大陆：中控连不连得上线路机不代表客户。探测点是放在靠近客户的地方（如香港）的小机器，跑 `fleet-agent probe`，每 30 秒连一遍各线路机的客户入口（同中控的轮换与作废规则），另记建连延迟。「主探测来源」（中控或某个探测点）决定线路机卡片的心跳格、入口的「连不上」与 `relay_unreachable`；主来源离线（3 分钟没上报），或在线但 3 分钟里的检查都作废了（它自己连不上对照目标，摘要写「中控（代替探测无效的香港探测点）…」）时，中控的检查开着就由中控代替（连不上照报、连得上不算恢复，摘要写「中控（代替离线的香港探测点）…」），关着就标灰。离线、作废都扣掉中控停机的时段。对照目标通、三台以上线路机全部连不上的轮次照记，`relay_unreachable` 摘要后面会带「；所有线路机同时连不上，可能是供应商整体故障」：这时先查供应商（同一家、同一网段的几台），不要逐台排查。
 
-- 查看：`fleetctl --json probe ls`（`state` 多一种 `blind`：在线但检查都作废了，`discard_reason` 写原因）。24 小时 / 7 天 / 30 天到各线路机的成功率与延迟在网页（设置 → 探测点切时间窗；线路机抽屉「连接质量」的「客户入口连通性」，中控与各探测点并排），数据来自小时汇总，用来对比香港与中控、核对某次投诉的时段。
+- 查看：`fleetctl --json probe ls`（`state` 多一种 `blind`：在线但检查都作废了，`discard_reason` 写原因）。24 小时 / 7 天 / 30 天到各线路机的成功率与延迟在网页（设置 → 探测点切时间窗；线路机抽屉「连接质量」的「入口连通性」，中控与各探测点并排），数据来自小时汇总，用来对比香港与中控、核对某次投诉的时段。
 - 加一台（会登录 / 改那台机器，先向用户确认）：中控能 SSH 到它就 `fleetctl probe add <名称> --host <IP> [--ssh-port 22]`（中控用自己的密钥登录 root，等到首次上报；登不进时报错里有中控公钥全文，转给用户加进探测点的 `/root/.ssh/authorized_keys`，再 `fleetctl probe install <名称> --host <IP>`）；否则 `fleetctl probe add <名称>` 打印一次性安装命令（30 分钟、只能用一次），让用户在探测点上用 root 执行，过期了 `fleetctl probe install <名称>`。
 - 设主来源：`fleetctl probe primary <名称|central>`；中控自己的检查：`fleetctl probe central on|off`（主来源是中控时不能关）。改主来源会改变告警的判断依据，先向用户确认。
 - 启停、改名：`fleetctl probe set <名称> --enable|--disable [--name …] [--note …]`（主来源不能停用、删除）；升级成中控 dist 里的 fleet-agent：`fleetctl probe upgrade <名称>`（探测点自己下载替换，等到报上新版本；新版本 5 分钟内一次都没上报成功会自己换回旧版本、不再换成这个版本，`probe ls` 一直显示升级中，告诉用户这个版本在探测点上跑不起来）；删除：`fleetctl probe rm <名称> --yes`，输出里的 `cleanup` 是要在探测点上执行的清理命令，转给用户。
-- 告警 `probe_point_offline`（warning，对象是探测点：`subject_id` 为 null、`subject_name` 是探测点名）：探测点超过 3 分钟没上报，或在线但 3 分钟里的检查都作废了（摘要「在线，但最近 N 分钟的检查都作废了：对照目标（…）都连不上」：探测点自己的出网坏了，不是线路机的问题）。转告用户在探测点上看 `rc-service fleet-probe status`、`/var/log/fleet-probe.log`（systemd：`journalctl -u fleet-probe`），见 OPS.md §17。
+- 告警 `probe_point_offline`（warning，对象是探测点：`subject_id` 为 null、`subject_name` 是探测点名）：探测点超过 3 分钟没上报，或在线但 3 分钟里的检查都作废了（摘要「在线，但最近 N 分钟的探测都无效：对照目标（…）都连不上」：探测点自己的出网坏了，不是线路机的问题）。转告用户在探测点上看 `rc-service fleet-probe status`、`/var/log/fleet-probe.log`（systemd：`journalctl -u fleet-probe`），见 OPS.md §17。
 
 ## 三网 PING
 

@@ -30,7 +30,7 @@ export const META: Meta = {
     relay_apply_lag: '配置未应用', relay_apply_error: '配置应用失败', relay_xray_down: 'Xray 未运行', relay_unreachable: '客户入口连不上', host_cpu_high: 'CPU 持续偏高', host_mem_high: '内存持续偏高', host_disk_high: '磁盘空间不足',
     traffic_quota_high: '流量额度吃紧', ipintel_new_isp: '来源出现新运营商', ipintel_new_city: '来源出现新城市', ipintel_datacenter_source: '机房 / VPN 来源', policy_blocked: '访问规则暂停',
     central_channel_failing: '通知渠道发送失败', central_backup_stale: '备份过期', central_disk_low: '中控磁盘空间不足', central_ingress: 'agent 同时失联',
-    router_offline: '软路由离线', router_collect_error: '软路由采集出错', router_openclash_down: 'OpenClash 没在运行', router_exits_down: '软路由出口不通', router_wan_down: '软路由 WAN 口断开', router_resource_high: '软路由资源吃紧',
+    router_offline: '软路由离线', router_collect_error: '软路由读取出错', router_openclash_down: 'OpenClash 没在运行', router_exits_down: '软路由出口不通', router_wan_down: '软路由 WAN 口断开', router_resource_high: '软路由资源吃紧',
   },
   severities: { critical: { label: '严重', tone: 'bad' }, warning: { label: '警告', tone: 'warn' }, info: { label: '提示', tone: 'info' } },
   thresholds: {

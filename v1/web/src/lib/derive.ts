@@ -2,7 +2,7 @@
 import type { AvailabilityDay, DueState, EntryView, MachineView, Meta, Plan, ProbeBucket, ProbeResult, Provider, SubField, Subscription, TrafficReset, UsageMetric, UsdTotal } from './types';
 import * as F from './format';
 import { tzLabel } from './tz';
-import type { ReachEffective } from './probePoints';
+import { primaryIssue, type ReachEffective } from './probePoints';
 
 // ── /meta：中文名、枚举、阈值、默认值只认服务端这一份 ──
 // 外壳等 /meta 取回（useMeta 的 queryFn 里 setMeta）之后才渲染页面，所以下面这些同步读取在页面里总有值；登录页不用它们
@@ -311,8 +311,8 @@ export const BEAT_LEGEND_RELAY = `中控定时连线路机的各个入口，只�
 export function beatLegendRelay(src: ReachEffective | undefined): string {
   switch (src?.state) {
     case 'probe': return `${src.label}定时连线路机的入口，看通不通；悬停可以看延迟\n${RELAY_COLORS}`;
-    case 'fallback': return `${src.primary_label ?? '主探测点'}离线，暂由中控代测，只看通不通\n连不上照常告警，连得上不算恢复\n${RELAY_COLORS}`;
-    case 'none': return `${src.primary_label ?? '主探测点'}离线，中控探测也关着，暂时没有入口的数据\n${RELAY_COLORS}`;
+    case 'fallback': return `${primaryIssue(src)}，暂由中控代测，只看通不通\n连不上照常告警，连得上不算恢复\n${RELAY_COLORS}`;
+    case 'none': return `${primaryIssue(src)}，中控探测也关着，暂时没有入口的数据\n${RELAY_COLORS}`;
     default: return BEAT_LEGEND_RELAY;
   }
 }

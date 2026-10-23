@@ -251,7 +251,8 @@
 .sec { padding-top: var(--card-seg); margin-top: var(--card-seg); border-top: 1px solid var(--line); }
 .sec:first-child { padding-top: 0; margin-top: 0; border-top: 0; }
 .sec:has(> .mgroup:only-child) { border-top: 0; padding-top: 0; } /* 只有一个分组容器的段：容器自己有边框，不再画段间的线 */
-.tab-sticky + .sec { border-top: 0; } /* 吸顶条自带下边线，紧跟的一段不再画一道 */
+.tab-sticky + .sec { border-top: 0; }
+.tab-sticky:not(:first-child) { margin-top: 0; border-top: 1px solid var(--line); } /* 前面还有固定时间段的内容（连接质量的可用率）：不抵正文上内边距，上下各一道线分开 */ /* 吸顶条自带下边线，紧跟的一段不再画一道 */
 
 /* 标签/值（LabelValue 唯一实现）：dt 12 灰、dd 13 */
 .lv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: var(--sp-12) var(--sp-16); margin: 0; }

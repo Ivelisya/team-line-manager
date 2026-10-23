@@ -10,7 +10,7 @@ import { Select } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Beat, Empty, ErrorNote, Num, Section, SectionHeader } from '@/components/app/primitives';
 import { TimeChart } from '@/components/app/TimeChart';
-import { ChartCard, ChartFrame, RangeBar } from './DrawerCharts';
+import { ChartCard, ChartFrame, RangeSticky } from './DrawerCharts';
 
 // 线条与格式化放模块常量：抽屉随推送重渲染时 TimeChart（memo）不重画。资源用首页的指标色，上下行 --chart-1 / --chart-2
 const L_CPU = [{ key: 'cpu_pct', label: 'CPU', color: 'var(--m-cpu)' }];
@@ -55,9 +55,8 @@ function Charts({ r }: { r: RouterView }) {
   );
   return (
     <>
-      <Section>
-        <SectionHeader title={<>曲线<InfoTip text={'数据定时更新，抽屉开着时曲线会自动刷新'} /></>} meta={q.data ? (q.data.step_s >= 3600 ? '每小时平均' : q.data.step_s >= 300 ? '每 5 分钟平均' : '每 30 秒一个点') : undefined}><RangeBar range={range} setRange={setRange} /></SectionHeader>
-      </Section>
+      {/* 同机器抽屉的曲线页签：顶部吸顶的「时间范围」条 */}
+      <RangeSticky range={range} setRange={setRange} />
       <Section className="chart-stack">
         <ChartCard c="var(--m-cpu)" icon={<Cpu />} title="CPU" value={s ? <Num f={F.pct(s.cpu_pct, 1)} /> : '—'} caption="使用率">{chart(L_CPU, yPct, vPct, { domain: PCT })}</ChartCard>
         <ChartCard c="var(--m-mem)" icon={<Activity />} title="内存 · 存储 · 连接表" value={mt ? <>内存 <Num f={mt.mem.value} /> <span className="t-sub">·</span> 存储 <Num f={mt.disk.value} /> <span className="t-sub">·</span> 连接表 <Num f={mt.ct.value} /></> : '—'} caption="占总量的百分比">{chart(L_RES, yPct, vPct, { domain: PCT, kind: 'line' })}</ChartCard>

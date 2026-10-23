@@ -110,7 +110,7 @@ const AvailabilitySection = React.memo(function AvailabilitySection({ id, relay 
 
 const REACH_WINDOWS = [['24h', '近 24 小时'], ['7d', '近 7 天'], ['30d', '近 30 天']] as const;
 const reachCell = (w: ReachWindowStat | null) => (!w || !w.total ? '—'
-  : <span data-tip={`${w.ok}/${w.total} 次连上${w.median_ms == null ? '' : `；延迟中位数约 ${Math.round(w.median_ms)} ms`}`}>
+  : <span data-tip={`${w.ok}/${w.total} 次连上${w.median_ms == null ? '' : ` · 延迟中位 ${Math.round(w.median_ms)} ms`}`}>
     <b className="num">{successPct((100 * w.ok) / w.total)}</b>{w.avg_ms != null && <span className="t-sub"> · {Math.round(w.avg_ms)} ms</span>}</span>);
 /** 线路机的客户入口连通性：各路来源（中控、各探测点）连它客户入口的成功率与平均建连延迟（中控只判通不通），来自小时汇总。
  *  卡片心跳格只看主来源近 1 小时；这里给长期的、各路并排的（对比香港与中控、事后核对投诉） */
@@ -119,13 +119,13 @@ const ReachQualitySection = React.memo(function ReachQualitySection({ id }: { id
   const s = q.data?.sources ?? [];
   return (
     <Section>
-      <SectionHeader title={<>客户入口连通性<InfoTip text="中控与各探测点连这台线路机客户入口（public_host + 在用入口端口）的成功率与平均建连延迟，来自小时汇总（每 5 分钟重算）。对照目标连不上的轮次不算；中控只判通不通，没有延迟" /></>} />
+      <SectionHeader title={<>入口连通性<InfoTip text={'中控和各探测点连这台线路机入口的成功率和平均延迟\n探测点自己网络不通的那段不算；中控只看通不通，没有延迟'} /></>} />
       {q.isError && !q.data ? <ErrorNote error={q.error} onRetry={() => void q.refetch()}>连通性加载失败：</ErrorNote>
         : q.isLoading ? <Skeleton h={72} />
-        : !s.length ? <div className="hint">还没有检查记录</div>
+        : !s.length ? <div className="hint">还没有探测记录</div>
         : (
           <TableWrap>
-            <table className="table">
+            <table className="dt is-one" style={{ minWidth: 440 }}>
               <thead><tr><th>来源</th>{REACH_WINDOWS.map(([k, l]) => <th key={k}>{l}</th>)}</tr></thead>
               <tbody>
                 {s.map((x) => (
@@ -180,9 +180,10 @@ export function QualityTab({ m }: { m: MachineView }) {
   const s = useSeries(m.id, 'probe', range, true, poll(range));
   return (
     <>
-      <RangeSticky range={range} setRange={setRange} />
+      {/* 可用率（近 30 天）与入口连通性（24 小时 / 7 天 / 30 天）是固定时间段，不跟时间范围走：放在时间范围条上面，下面的曲线才归它管 */}
       <AvailabilitySection id={m.id} relay={m.kind === 'relay'} />
       {m.kind === 'relay' && <ReachQualitySection id={m.id} />}
+      <RangeSticky range={range} setRange={setRange} />
       {m.kind === 'relay' && <PingSection id={m.id} range={range} />}
       <Section>
         {/* 多条入口时曲线是各入口的平均（序列接口不分入口），写明几条、是哪几台线路机 */}

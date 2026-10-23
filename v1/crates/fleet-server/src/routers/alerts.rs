@@ -106,7 +106,7 @@ pub fn problems(v: &View, cpu_high_since: Option<OffsetDateTime>, now: OffsetDat
         return (out, false);
     }
     if let Some(e) = &v.error {
-        out.push(Problem { rule: COLLECT_ERROR, severity: "warning", text: format!("连得上，但采集出错：{e}"), hold_s: DEBOUNCE_S });
+        out.push(Problem { rule: COLLECT_ERROR, severity: "warning", text: format!("连得上，但没读到状态：{e}"), hold_s: DEBOUNCE_S });
         return (out, false);
     }
     let Some(s) = &v.snap else { return (out, false) };
@@ -124,9 +124,9 @@ pub fn problems(v: &View, cpu_high_since: Option<OffsetDateTime>, now: OffsetDat
             names.push_str(&format!(" 等 {} 个", down.len()));
         }
         let text = if all {
-            format!("全部 {} 个 fleet 出口连续两次延迟测试不通：{names}", down.len())
+            format!("对应面板入口的 {} 个出口都连续两次延迟测试不通：{names}", down.len())
         } else {
-            format!("{} 个 fleet 出口连续两次延迟测试不通：{names}", down.len())
+            format!("{} 个出口连续两次延迟测试不通：{names}", down.len())
         };
         out.push(Problem { rule: EXITS_DOWN, severity: if all { "critical" } else { "warning" }, text, hold_s: 0 });
     }
@@ -319,7 +319,7 @@ mod tests {
         v.error = Some("采集脚本出错（退出码 1）：Syntax error".into());
         let (p, judged) = problems(&v, None, now);
         assert!(!judged);
-        assert_eq!(p, vec![Problem { rule: COLLECT_ERROR, severity: "warning", text: "连得上，但采集出错：采集脚本出错（退出码 1）：Syntax error".into(), hold_s: DEBOUNCE_S }]);
+        assert_eq!(p, vec![Problem { rule: COLLECT_ERROR, severity: "warning", text: "连得上，但没读到状态：采集脚本出错（退出码 1）：Syntax error".into(), hold_s: DEBOUNCE_S }]);
     }
 
     #[test]
@@ -341,7 +341,7 @@ mod tests {
         let (p, _) = problems(&view("online", Some(s.clone()), 0, now), Some(now - time::Duration::seconds(700)), now);
         let rules: Vec<&str> = p.iter().map(|p| p.rule).collect();
         assert_eq!(rules, [OPENCLASH_DOWN, EXITS_DOWN, WAN_DOWN, RESOURCE_HIGH]);
-        assert_eq!((p[1].severity, p[1].text.as_str()), ("warning", "1 个 fleet 出口连续两次延迟测试不通：节点02"));
+        assert_eq!((p[1].severity, p[1].text.as_str()), ("warning", "1 个出口连续两次延迟测试不通：节点02"));
         assert_eq!(p[2].text, "WAN 口断开（wan · eth0）");
         assert_eq!(p[3].text, "资源吃紧：CPU 95%（超过 90% 已 11 分钟）；内存 92%（368 B / 400 B）；连接表 81%（81 / 100）");
         // CPU 高还不到 10 分钟、内存 90% 整、连接表 80% 整都不算
@@ -355,7 +355,7 @@ mod tests {
         }
         let (p, _) = problems(&view("online", Some(s.clone()), 0, now), None, now);
         let ex = p.iter().find(|p| p.rule == EXITS_DOWN).unwrap();
-        assert_eq!((ex.severity, ex.text.as_str()), ("critical", "全部 3 个 fleet 出口连续两次延迟测试不通：节点01、节点02、节点03"));
+        assert_eq!((ex.severity, ex.text.as_str()), ("critical", "对应面板入口的 3 个出口都连续两次延迟测试不通：节点01、节点02、节点03"));
         // 只有客户自己的出口不通：不报
         for e in &mut s.exits {
             e.fail_streak = if e.sync == "unmanaged" { 5 } else { 0 };

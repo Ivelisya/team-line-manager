@@ -88,7 +88,7 @@ pub(crate) fn unreachable_sql(relay: &str, src: &Effective) -> String {
 }
 
 /// relay_unreachable 摘要里全部线路机同时连不上时的说法
-pub const ALL_DOWN: &str = "全部线路机同时连不上（可能是供应商整段故障）";
+pub const ALL_DOWN: &str = "所有线路机同时连不上，可能是供应商整体故障";
 
 /// 线路机 `relay` 整台连不连得上判不出：有在用入口，5 分钟内 `src` 那一路的检查却不到 3 轮（中控 / 探测点刚重启、整轮作废），
 /// 或此刻没有可用的来源（标灰）、暂由中控代替离线的探测点（中控连得上不能当成探测点那边恢复了）。

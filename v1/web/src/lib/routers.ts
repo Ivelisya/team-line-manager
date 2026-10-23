@@ -95,10 +95,22 @@ export const usePatchRouter = () => useWrite(({ id, ...b }: { id: string; name?:
 export const useDeleteRouter = () => useWrite((id: string) => del(`/routers/${id}`), K);
 
 // ---- 抽屉：?r=<路由id>&rtab=<页签>，与机器抽屉（?m=）各管各的 ----
-export type RouterTab = 'overview' | 'exits' | 'clients' | 'charts';
+export type RouterTab = 'overview' | 'exits' | 'clients' | 'charts' | 'manage';
+/** 同机器抽屉：操作（改名、接入命令、重新部署、终端、删除）收在最后的「管理」页签 */
 export const ROUTER_TABS: { value: RouterTab; label: string }[] = [
-  { value: 'overview', label: '概览' }, { value: 'exits', label: '出口' }, { value: 'clients', label: '客户端' }, { value: 'charts', label: '曲线' },
+  { value: 'overview', label: '概览' }, { value: 'exits', label: '出口' }, { value: 'clients', label: '客户端' }, { value: 'charts', label: '曲线' }, { value: 'manage', label: '管理' },
 ];
+
+// 上一台 / 下一台的顺序：软路由页把当前筛选后的顺序交过来（同 setDrawerOrder），离开页面时清掉；没有时按列表的默认顺序
+let order: readonly string[] | null = null;
+export const setRouterOrder = (ids: readonly string[] | null) => { order = ids; };
+/** 抽屉头部的上一台 / 下一台：到头为 null，不绕回；这台不在顺序里时返回 undefined（不显示按钮） */
+export function routerSiblings(list: readonly { id: string }[] | undefined, id: string | null): { prev: string | null; next: string | null } | undefined {
+  if (!id) return undefined;
+  const ids = order?.includes(id) ? order : list?.map((r) => r.id);
+  const i = ids ? ids.indexOf(id) : -1;
+  return !ids || i < 0 ? undefined : { prev: i > 0 ? ids[i - 1] : null, next: i < ids.length - 1 ? ids[i + 1] : null };
+}
 export function useRouterDrawer() {
   const [sp, setSp] = useSearchParams();
   const id = sp.get('r');
@@ -109,10 +121,12 @@ export function useRouterDrawer() {
   // 打开时收起机器抽屉（告警页上开着机器抽屉时点了路由的告警）：两个抽屉不叠在一起
   const open = useCallback((rid: string, t?: RouterTab) => setRef.current((p) => { const n = new URLSearchParams(p); n.delete('m'); n.delete('tab'); n.delete('range'); n.set('r', rid); if (t) n.set('rtab', t); else n.delete('rtab'); return n; }), []);
   const setTab = useCallback((t: RouterTab) => setRef.current((p) => { const n = new URLSearchParams(p); n.set('rtab', t); return n; }, { replace: true }), []);
+  /** 开着抽屉换一台（头部的上一台 / 下一台）：留在当前页签，替换当前历史，后退仍是一步关掉 */
+  const switchTo = useCallback((rid: string) => setRef.current((p) => { const n = new URLSearchParams(p); n.set('r', rid); return n; }, { replace: true }), []);
   const close = useCallback(() => setRef.current((p) => { const n = new URLSearchParams(p); n.delete('r'); n.delete('rtab'); n.delete('range'); return n; }), []);
   /** 出口对应的 fleet 入口：换成那台机器的抽屉（压一条历史，后退回到这台路由） */
   const openMachine = useCallback((mid: string) => setRef.current((p) => { const n = new URLSearchParams(p); n.delete('r'); n.delete('rtab'); n.delete('tab'); n.delete('range'); n.set('m', mid); return n; }), []);
-  return { id, tab, open, setTab, close, openMachine };
+  return { id, tab, open, setTab, switchTo, close, openMachine };
 }
 
 /** 告警对象是路由：规则以 router_ 开头（subject.kind = "router"），点对象要开路由抽屉 */

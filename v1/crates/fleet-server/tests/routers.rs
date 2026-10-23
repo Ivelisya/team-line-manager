@@ -442,8 +442,8 @@ async fn collect_error_is_not_offline() {
     alerts::evaluate(&t.st, &mut st, t0 + time::Duration::seconds(61)).await.unwrap();
     let inc = incidents(&t, "firing").await;
     assert_eq!(inc.len(), 1, "{inc:?}");
-    assert_eq!((inc[0]["rule"].as_str(), inc[0]["severity"].as_str(), inc[0]["rule_name"].as_str()), (Some("router_collect_error"), Some("warning"), Some("软路由采集出错")));
-    assert_eq!(inc[0]["summary"], "团队1-路由E：连得上，但采集出错：采集脚本出错（退出码 0）：Syntax error: unexpected token");
+    assert_eq!((inc[0]["rule"].as_str(), inc[0]["severity"].as_str(), inc[0]["rule_name"].as_str()), (Some("router_collect_error"), Some("warning"), Some("软路由读取出错")));
+    assert_eq!(inc[0]["summary"], "团队1-路由E：连得上，但没读到状态：采集脚本出错（退出码 0）：Syntax error: unexpected token");
     // 好了：满 60 秒恢复
     std::fs::write(r.join("collect.json"), collect_json(now + 90, 4_000_000).to_string()).unwrap();
     collect::round(&t.st, &mut fresh).await.unwrap();

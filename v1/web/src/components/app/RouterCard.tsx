@@ -25,15 +25,17 @@ export function RouterStatePill({ r }: { r: Pick<RouterView, 'id' | 'state' | 'e
   const slow = r.state === 'online' && !!r.summary && r.summary.exits.alive < r.summary.exits.total;
   const names = deadExitNames(useRouter(slow ? r.id : null).data?.detail);
   if (r.deploy?.state === 'running') return <Pill tone="info" dot="pulse">部署中</Pill>;
-  if (r.state === 'pending') return <Pill tone="info" tip={r.deploy?.state === 'failed' ? `一键部署失败：${r.deploy.error ?? ''}` : '路由还没连上过中控'}>等待接入</Pill>;
+  // 一键部署失败、路由还没连上：时间线里已经红了，状态标也说「部署失败」（故障色），不再是中性的「等待接入」
+  if (r.state === 'pending' && r.deploy?.state === 'failed') return <Pill tone="bad" tip={r.deploy.error ?? undefined} tabIndex={r.deploy.error ? 0 : undefined}>部署失败</Pill>;
+  if (r.state === 'pending') return <Pill tone="info" tip="路由还没连上过中控">等待接入</Pill>;
   if (r.state === 'offline') return <Pill tone="bad" tip={r.error ?? undefined} tabIndex={r.error ? 0 : undefined}>离线</Pill>;
-  // 在线却带原因：连得上但采集出错，数据是上一次的
-  if (r.error) return <Pill tone="warn" tip={`采集出错：${r.error}`} tabIndex={0}>采集出错</Pill>;
+  // 在线却带原因：连得上但这次没读到状态，数据是上一次的
+  if (r.error) return <Pill tone="warn" tip={`${r.error}\n路由连得上，显示的是上次读到的数据`} tabIndex={0}>读取出错</Pill>;
   const issues = routerIssues(r.summary, names);
   return issues.length ? <Pill tone="warn" tip={issues.join('\n')} tabIndex={0}>降级</Pill> : <Pill tone="ok">在线</Pill>;
 }
 /** 卡片描边：离线红、在线但有毛病黄（同机器卡的故障 / 降级） */
-export const routerHealth = (r: RouterView) => (r.state === 'offline' ? 'down' : r.state === 'online' && (r.error || routerIssues(r.summary).length) ? 'degraded' : 'ok');
+export const routerHealth = (r: RouterView) => (r.state === 'offline' || (r.state === 'pending' && r.deploy?.state === 'failed') ? 'down' : r.state === 'online' && (r.error || routerIssues(r.summary).length) ? 'degraded' : 'ok');
 
 /** 资源四项格条（CPU / 内存 / 存储 / 连接表）：卡片与抽屉「当前」共用 */
 export function RouterMeters({ s }: { s: RouterSummary }) {
@@ -205,8 +207,9 @@ function RouterCardImpl({ r, current, onOpen: open }: { r: RouterView; current?:
           {r.team ? <Tag c={tagColor(r.team.name)} tip="团队">{r.team.name}</Tag> : <Tag c="gray">未分团队</Tag>}
           {s && <Tag c="gray" tip="自上次重启起的运行时长">运行 {F.str(uptimeFmt(s.uptime_s))}</Tag>}
         </div>
-        <span className={cn('nc-price rt-seen', r.state === 'offline' && 'is-bad')} data-tip={r.state === 'pending' ? undefined : '上次成功读取的时间'}>
-          {r.state === 'pending' ? <>创建于 <Seen at={r.created_at} /></> : r.state === 'offline' ? <>最后在线 <Seen at={r.last_seen_at} /></> : <>更新于 <Seen at={r.last_seen_at} /></>}
+        {/* 离线多久已经写在中间的占位里：这里不再红字重复「最后在线」，同等待接入写创建时间 */}
+        <span className="nc-price rt-seen" data-tip={r.state === 'online' ? '上次成功读取的时间' : undefined}>
+          {r.state === 'online' ? <>更新于 <Seen at={r.last_seen_at} /></> : <>创建于 <Seen at={r.created_at} /></>}
         </span>
       </div>
 
