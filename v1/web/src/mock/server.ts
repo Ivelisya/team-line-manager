@@ -999,7 +999,7 @@ function replacePlan(old: MachineView, newId: string | null, teamId: string | nu
       const host = machine(e.relay.id).ip;
       const exit = `节点${String((old.number ?? 1) + i).padStart(2, '0')}`;
       // 第二个出口演示「映射不了」：服务端把它也列在出口里，带原因，同时进阻断
-      if (i === 1) { const why = `软路由 ${old.team!.name}-路由A 的出口 ${exit}：旧入口在线路机 ${e.relay.name} 上，新节点在这台线路机上没有入口`; blockers.push(why); return { exit, old_entry_id: e.id, new_entry_id: null, from: `${host}:${e.port}`, to: null, error: why }; }
+      if (i === 1) { const why = `旧入口在线路机 ${e.relay.name} 上，新节点在这台线路机上没有入口，而它有 2 个入口，不知道换成哪个：先给新节点在 ${e.relay.name} 上加入口，或只留一个入口`; blockers.push(`软路由「${old.team!.name}-路由A」的出口「${exit}」：${why}`); return { exit, old_entry_id: e.id, new_entry_id: null, from: `${host}:${e.port}`, to: null, error: why }; }
       return { exit, old_entry_id: e.id, new_entry_id: ne?.id ?? '', from: `${host}:${e.port}`, to: ne ? `${machine(ne.relay.id).ip}:${ne.port}` : '?' };
     }),
   }] : [];

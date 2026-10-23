@@ -42,7 +42,7 @@ export interface RouterExit {
 }
 /** 出口算不算可用（同服务端摘要的 alive 与告警）：连续两次测不通才不算，只不通 1 次的还算 */
 export const exitUsable = (e: RouterExit) => e.alive !== false || e.fail_streak < 2;
-export interface RouterClient { ip: string; mac: string | null; hostname: string | null; online: boolean; conns: number; down_bps: number; up_bps: number; exits: { name: string; conns: number }[] }
+export interface RouterClient { ip: string; mac: string | null; hostname: string | null; online: boolean; conns: number; down_bps: number | null; up_bps: number | null; exits: { name: string; conns: number }[] }
 export interface RouterDetail {
   system: { os: string; kernel: string; cpu_model: string; cores: number; load: [number, number, number]; procs: number; clock_skew_s: number | null; clash_rss: number | null };
   interfaces: RouterIface[];

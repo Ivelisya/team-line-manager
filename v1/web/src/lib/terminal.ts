@@ -15,12 +15,23 @@ export const useTerminalAsk = asking.use;
 // 当前目标与会话是否连着：openTerminal / closeTerminal 在组件外调用，要同步读到，createStore 不给读值，这里另记一份
 let cur: TermTarget | null = null;
 let live = false;
+// 打开终端的地方想在关窗后回到原处（软路由抽屉：为了不被盖住先收起，关掉终端再打开）：pending 是等换台确认的那次，back 是正在显示的这个终端的
 /** 窗口在连上 / 断开时上报，决定关窗、换台前要不要确认 */
 export const setTerminalLive = (v: boolean) => { live = v; };
-const show = (t: TermTarget | null) => { cur = t; live = false; asking.set(null); target.set(t); };
+let pendingBack: (() => void) | undefined;
+let back: (() => void) | undefined;
+const show = (t: TermTarget | null) => {
+  const was = back;
+  back = t ? pendingBack : undefined;
+  pendingBack = undefined;
+  cur = t; live = false; asking.set(null); target.set(t);
+  if (!t) was?.();
+};
 
-export function openTerminal(t: TermTarget) {
-  if (cur && cur.kind === t.kind && cur.id === t.id) return;
+/** onClosed：这个终端关掉时（只此一次）做的事；换到别的终端不算 */
+export function openTerminal(t: TermTarget, onClosed?: () => void) {
+  if (cur && cur.kind === t.kind && cur.id === t.id) { back = onClosed ?? back; return; }
+  pendingBack = onClosed;
   if (cur && live) asking.set(t); else show(t);
 }
 /** 关窗：连着时先确认 */
