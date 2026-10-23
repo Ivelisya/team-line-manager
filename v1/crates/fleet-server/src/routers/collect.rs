@@ -55,7 +55,7 @@ if ! command -v ucode >/dev/null 2>&1; then echo '{"v":1,"error":"路由上没�
 cat > /tmp/fleet-collect/collect.uc <<'FLEET_UC'
 @@PROGRAM@@
 FLEET_UC
-FLEET_MODE="$MODE" FLEET_DELAY_URL="$DELAY_URL" FLEET_MANAGED="$MANAGED" FLEET_ONLY="$ONLY" FLEET_GROUP="$GROUP" FLEET_TO="$TO" exec ucode /tmp/fleet-collect/collect.uc
+FLEET_MODE="$MODE" FLEET_DELAY_URL="$DELAY_URL" FLEET_MANAGED="$MANAGED" FLEET_ONLY="$ONLY" FLEET_RETEST_MAX="$RETEST_MAX" FLEET_GROUP="$GROUP" FLEET_TO="$TO" exec ucode /tmp/fleet-collect/collect.uc
 }
 main </dev/null
 "#;
@@ -68,7 +68,7 @@ pub fn delay_script(managed: &[String], only: &[String]) -> String { program("de
 
 fn program(mode: &str, managed: &[String], only: &[String]) -> String {
     let json = |v: &[String]| serde_json::to_string(v).unwrap_or_else(|_| "[]".into());
-    crate::jobs::scripts::vars(&[("MODE", mode), ("DELAY_URL", &delay_url_param()), ("MANAGED", &json(managed)), ("ONLY", &json(only))]) + &wrapped()
+    crate::jobs::scripts::vars(&[("MODE", mode), ("DELAY_URL", &delay_url_param()), ("MANAGED", &json(managed)), ("ONLY", &json(only)), ("RETEST_MAX", &RETEST_MAX.to_string())]) + &wrapped()
 }
 
 fn wrapped() -> String { WRAPPER.replace("@@PROGRAM@@", include_str!("collect.uc").trim_end()) }
@@ -1042,7 +1042,7 @@ async fn collect(st: &AppState, t: &Target, m: &mut Mem, entries: &[Entry], now:
         None => (None, None),
     };
     // 测延迟：采集成功、mihomo 的出口列表拿到了才测；没测成（超时、出错）这一轮也算测过，不每轮重来。
-    // 没到 5 分钟时只重测上次测不通、还在确认的 fleet 出口（刚不通一次的也算：同步、轮换后不用等 5 分钟才更新）（多于 RETEST_MAX 个多半是路由自己的网络断了，不重测）
+    // 没到 5 分钟时只重测还在确认的 fleet 出口（不通过一次的也算，同步、轮换后不用等 5 分钟）；多于 RETEST_MAX 个多半是路由自己断网，不重测
     if delay_ok && raw.pointer("/oc/proxies").is_some() {
         let only: Option<Vec<String>> = if m.last_delay.is_none_or(|t| (now - t).whole_seconds() >= DELAY_EVERY_S) {
             m.last_delay = Some(now);
@@ -1068,7 +1068,7 @@ async fn collect(st: &AppState, t: &Target, m: &mut Mem, entries: &[Entry], now:
     Outcome::Ok(Box::new(b))
 }
 
-/// 每轮单独重测的出口最多这么多个（同 collect.uc 的 RETEST_MAX）
+/// 每轮单独重测的出口最多这么多个（也传给 collect.uc，整批测完当场重测的名额同它）
 const RETEST_MAX: usize = 5;
 
 /// 输出里最后一行 JSON
@@ -1417,11 +1417,11 @@ mod tests {
     #[test]
     fn script_carries_program_and_parameters() {
         let s = script();
-        assert!(s.starts_with("MODE='collect'\nDELAY_URL='https%3A%2F%2Fwww.gstatic.com%2Fgenerate_204'\nMANAGED='[]'\nONLY='[]'\n"), "{}", &s[..120]);
+        assert!(s.starts_with("MODE='collect'\nDELAY_URL='https%3A%2F%2Fwww.gstatic.com%2Fgenerate_204'\nMANAGED='[]'\nONLY='[]'\nRETEST_MAX='5'\n"), "{}", &s[..120]);
         assert!(s.contains("'use strict';") && s.contains("\nFLEET_UC\n") && s.trim_end().ends_with("main </dev/null"));
         // 延迟测试：fleet 出口的名字按 JSON 数组传（单引号照样转义）
         let d = delay_script(&["节点01".into(), "it's".into()], &["节点01".into()]);
-        assert!(d.starts_with("MODE='delay'\n") && d.contains("MANAGED='[\"节点01\",\"it'\\''s\"]'\nONLY='[\"节点01\"]'\n"), "{}", &d[..180]);
+        assert!(d.starts_with("MODE='delay'\n") && d.contains("MANAGED='[\"节点01\",\"it'\\''s\"]'\nONLY='[\"节点01\"]'\nRETEST_MAX='5'\n"), "{}", &d[..180]);
         // 程序里不能有单独一行的结束标记
         assert!(!include_str!("collect.uc").lines().any(|l| l == "FLEET_UC"));
     }

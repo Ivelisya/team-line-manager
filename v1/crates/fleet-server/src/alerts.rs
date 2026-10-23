@@ -304,19 +304,6 @@ pub async fn evaluate(st: &AppState, state: &mut AlertState, now: OffsetDateTime
 mod tests {
     use super::*;
 
-    /// 一条在告警的（只为下面几个判断函数凑参数）
-    #[allow(dead_code)]
-    struct Open {
-        id: Uuid,
-        rule: String,
-        subject_id: Uuid,
-        severity: String,
-        summary: String,
-        opened_at: OffsetDateTime,
-        notified_at: Option<OffsetDateTime>,
-        told_resolved_at: Option<OffsetDateTime>,
-    }
-
     #[test]
     fn summary_digits_do_not_count_as_change() {
         assert!(same_summary("团队1-01：5 分钟没有上报", "团队1-01：6 分钟没有上报"));
@@ -328,52 +315,29 @@ mod tests {
     fn reopen_firing_not_resent_while_in_flight() {
         let now = OffsetDateTime::now_utc();
         let ago = |s: i64| now - time::Duration::seconds(s);
-        let inc = |notified: Option<OffsetDateTime>, resolved: OffsetDateTime| Open {
-            id: Uuid::nil(),
-            rule: "relay_xray_down".into(),
-            subject_id: Uuid::nil(),
-            severity: "critical".into(),
-            summary: String::new(),
-            opened_at: ago(3600),
-            notified_at: notified,
-            told_resolved_at: Some(resolved),
-        };
-        let due = |i: &Open, sev: &str, now| due(&i.rule, sev, i.notified_at, i.told_resolved_at, now);
+        let due = |notified, resolved, sev| due("relay_xray_down", sev, notified, resolved, now);
         // 恢复通知 10 分钟前，之后没再发过：发「触发」
-        assert!(matches!(due(&inc(Some(ago(900)), ago(600)), "critical", now), Some(Kind::Firing)));
+        assert!(matches!(due(Some(ago(900)), Some(ago(600)), "critical"), Some(Kind::Firing)));
         // 「触发」30 s 前已开始发送、还没写进 notify_log（最近一条仍是恢复）：不重发
-        assert!(due(&inc(Some(ago(30)), ago(600)), "critical", now).is_none());
+        assert!(due(Some(ago(30)), Some(ago(600)), "critical").is_none());
         // 开告警时没能写进发送队列（库出错）：下一轮补发「触发」，警告也补
-        let never = Open { told_resolved_at: None, ..inc(None, ago(600)) };
-        assert!(matches!(due(&never, "warning", now), Some(Kind::Firing)));
+        assert!(matches!(due(None, None, "warning"), Some(Kind::Firing)));
         // 入队过、没到提醒间隔：不发
-        let queued = Open { told_resolved_at: None, ..inc(Some(ago(60)), ago(600)) };
-        assert!(due(&queued, "critical", now).is_none());
+        assert!(due(Some(ago(60)), None, "critical").is_none());
     }
 
     #[test]
     fn resolved_notice_follows_queued_firing() {
         let now = OffsetDateTime::now_utc();
         let ago = |s: i64| now - time::Duration::seconds(s);
-        let inc = |notified: Option<OffsetDateTime>, resolved: Option<OffsetDateTime>| Open {
-            id: Uuid::nil(),
-            rule: "relay_xray_down".into(),
-            subject_id: Uuid::nil(),
-            severity: "critical".into(),
-            summary: String::new(),
-            opened_at: ago(3600),
-            notified_at: notified,
-            told_resolved_at: resolved,
-        };
-        let told_firing = |i: &Open| told_firing(i.notified_at, i.told_resolved_at);
         // 从没通知过（如开告警时被静默）：不报恢复
-        assert!(!told_firing(&inc(None, None)));
+        assert!(!told_firing(None, None));
         // 触发已入队（notify_log 里可能还没有）：报恢复
-        assert!(told_firing(&inc(Some(ago(30)), None)));
+        assert!(told_firing(Some(ago(30)), None));
         // 报过恢复后复发、又入队了触发：报恢复
-        assert!(told_firing(&inc(Some(ago(30)), Some(ago(600)))));
+        assert!(told_firing(Some(ago(30)), Some(ago(600))));
         // 最近一条是恢复、之后没再入队触发：不重复报
-        assert!(!told_firing(&inc(Some(ago(900)), Some(ago(600)))));
+        assert!(!told_firing(Some(ago(900)), Some(ago(600))));
     }
 
     #[test]

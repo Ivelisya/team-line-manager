@@ -9,10 +9,10 @@ export interface SubRule { team_mode: 'all' | 'only' | 'except'; team_ids: strin
 /** items：按现在的入口算的条目数；last_fetch_*：最近一次成功拉取（10 分钟内只记一次），轮换后清空 */
 export interface ClientSub {
   id: string; name: string; enabled: boolean; rule: SubRule; rule_text: string; items: number;
-  created_at: string; token_at: string; last_fetch_at: string | null; last_fetch_ip: string | null;
+  token_at: string; last_fetch_at: string | null; last_fetch_ip: string | null;
 }
 /** 条目：客户端里的名字、走哪台线路机哪个端口（不含凭据） */
-export interface ClientSubEntry { name: string; entry_id: string; node_id: string; relay: string; port: number; server: string; direct: boolean }
+export interface ClientSubEntry { name: string; entry_id: string; relay: string; port: number }
 export type ClientSubWithUrl = ClientSub & { url: string };
 
 export const DEFAULT_RULE: SubRule = { team_mode: 'all', team_ids: [], direct: true, include_ids: [], exclude_ids: [] };

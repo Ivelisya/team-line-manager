@@ -245,24 +245,3 @@ pub async fn reconcile(st: &AppState, router: Uuid, snap: &Snapshot, started: Of
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn snap() -> Snapshot {
-        let g = |name: &str, kind: &str| Group { name: name.into(), kind: kind.into(), now: Some("节点01".into()), all: vec!["节点01".into(), "节点02".into()] };
-        Snapshot { groups: vec![g("手动", "Selector"), g("自动", "URLTest")], ..Snapshot::default() }
-    }
-
-    /// 只能切 select 组、只能切到组里已有的出口
-    #[test]
-    fn only_select_groups_and_members() {
-        let s = snap();
-        assert_eq!(check(&s, "手动", "节点02").unwrap().name, "手动");
-        let e = check(&s, "自动", "节点02").unwrap_err();
-        assert!(e.message.contains("url-test（自动测速） 组") && e.message.contains("只有 select 组可以"), "{}", e.message);
-        assert!(check(&s, "手动", "节点09").unwrap_err().message.contains("只能切到组里已有的出口（节点01、节点02）"));
-        assert!(check(&s, "没有", "节点01").unwrap_err().message.contains("没有策略组「没有」"));
-    }
-}

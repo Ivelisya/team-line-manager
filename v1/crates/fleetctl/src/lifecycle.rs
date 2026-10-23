@@ -2,7 +2,7 @@
 //! 都是先看预检/校验、确认后才提交作业；作业本身的进度用 `fleetctl job <id> --follow` 看。
 
 use crate::cmds::{self, num, outln, st, Ctx};
-use crate::ops::confirm;
+use crate::ops::{confirm, shell_quote};
 use crate::resolve::Want;
 use crate::table;
 use anyhow::bail;
@@ -177,11 +177,6 @@ pub fn evacuate(ctx: &Ctx, relay: &str, to: &str, no_routers: bool, yes: bool, f
     Ok(code)
 }
 
-/// 命令行里的参数：只含字母数字（含中文）和 `-_.` 的原样写，别的加单引号
-fn sh(s: &str) -> String {
-    if !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || "-_.".contains(c)) { s.to_string() } else { format!("'{}'", s.replace('\'', "'\''")) }
-}
-
 /// 搬迁建议里每个入口一条可直接执行的 `fleetctl move`
 fn rebalance_commands(d: &Value) -> Vec<String> {
     let (from, to) = (st(d, "/relay/name"), st(d, "/target/name"));
@@ -189,7 +184,7 @@ fn rebalance_commands(d: &Value) -> Vec<String> {
         .as_array()
         .into_iter()
         .flatten()
-        .map(|m| format!("fleetctl move {} --to {}{}", sh(&st(m, "/node/name")), sh(&to), if m["needs_from"] == true { format!(" --from {}", sh(&from)) } else { String::new() }))
+        .map(|m| format!("fleetctl move {} --to {}{}", shell_quote(&st(m, "/node/name")), shell_quote(&to), if m["needs_from"] == true { format!(" --from {}", shell_quote(&from)) } else { String::new() }))
         .collect()
 }
 

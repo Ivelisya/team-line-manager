@@ -406,7 +406,6 @@ pub async fn rebalance(_a: Actor, State(st): State<AppState>, ApiPath(relay): Ap
         "daily_avg": src.quota.daily_avg, "forecast_full_at": src.quota.forecast_full_at.map(meta::fmt_ts),
         "projected_pct": (sq.daily > 0.0).then(|| pct(sq.projected(), limit)),
         "target": null, "moves": [], "needed": false, "ok": false, "reason": null,
-        "safe_pct": crate::quota::TARGET_SAFE_PCT,
     });
     let early = if src.quota.daily_avg.is_none() {
         Some(("本周期的数据不足 1 天，还估不出速度", false))
@@ -475,7 +474,6 @@ pub async fn rebalance(_a: Actor, State(st): State<AppState>, ApiPath(relay): Ap
     out["ok"] = json!(reached && !picked.is_empty());
     out["after"] = json!({"daily_avg": (sq.daily - cut).max(0.0).round() as i64, "projected_pct": pct(sq.used + (sq.daily - cut).max(0.0) * sq.days_left, limit)});
     out["target_after"] = json!({"fits": tq.fits(cut), "projected_pct": tq.limit.map(|l| pct(tq.projected() + cut * tq.days_left, l))});
-    out["excluded"] = json!(live.iter().filter(|e| exclude.contains(&e.node.id)).map(|e| &e.node).collect::<Vec<_>>());
     if !reached {
         out["reason"] = json!("能搬的入口都搬走也撑不到重置日（被排除的、已在目标上有入口的、直出的不算）");
     } else if !tq.fits(cut) {
