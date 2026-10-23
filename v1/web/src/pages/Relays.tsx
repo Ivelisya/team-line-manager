@@ -23,6 +23,7 @@ import { scrollBackTo } from '@/lib/usePage';
 import { ENTRY_CAP, RouterMark, entryStatus, probeCell, tcpCell } from '@/features/EntriesTable';
 import { useEntryRouters } from '@/lib/routers';
 import { HEALTH_TONE } from '@/lib/sort';
+import { PlacementPanel } from '@/features/PlacementPanel';
 
 type Open = ReturnType<typeof useDrawer>['open'];
 type Users = { id: string; name: string; exit: string }[];
@@ -143,6 +144,8 @@ export function RelaysPage() {
       <PageHead title="线路" note={q.data ? `${list.length} 台线路机 · ${list.reduce((s, m) => s + m.entries.length, 0)} 条入口` : undefined} />
       {q.isError && <ErrorNote error={q.error} onRetry={() => void q.refetch()} />}
       {q.isLoading && <Skeleton h={220} />}
+      {/* 节点放在哪台线路机最好：换线前先看这里 */}
+      {list.length > 1 && <PlacementPanel />}
       {/* 线路机多了竖着排很长：吸顶的一行名字，点一下跳到那张卡；只有故障的写状态 */}
       {list.length > 2 && (
         <nav className="relay-jump" aria-label="线路机">

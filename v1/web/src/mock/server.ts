@@ -1169,6 +1169,36 @@ R('GET', '/relays/([^/]+)/rebalance', ({ params, query }) => {
     moves, after: { daily_avg: daily - cut, projected_pct: pct(q.used + (daily - cut) * days) }, target_after: { fits: true, projected_pct: target?.quota.limit_gb ? pct2(target, cut) : null },
   };
 });
+// 放置矩阵（mock：往返按 id 算出固定的值，当前线路机偏慢一点让几个节点有建议；不看额度）
+R('GET', '/placement', () => {
+  const relays = db.machines.filter((x) => x.kind === 'relay' && x.lifecycle === 'active');
+  const nodes = db.machines.filter((x) => x.kind === 'vps' && x.lifecycle === 'active' && !x.spare);
+  const h = (s: string) => [...s].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7);
+  const name = (id: string) => relays.find((r) => r.id === id)?.name ?? '';
+  const groups = new Map<string, { id: string; name: string; from: { id: string; name: string }; port: number; reason: string }[]>();
+  const out = nodes.map((n) => {
+    const live = n.entries.filter((e) => e.lifecycle === 'active' && !e.direct);
+    const cur = live.length === 1 ? live[0] : null;
+    const cells = relays.map((r) => {
+      const v = h(n.id + r.id);
+      const ok = v % 9 === 0 ? 280 : 288;
+      return { relay_id: r.id, samples: 288, ok, success_pct: Math.round((ok * 1000) / 288) / 10, p50_ms: 120 + (v % 90) + (cur?.relay.id === r.id && h(n.id) % 3 === 0 ? 25 : 0) };
+    });
+    const good = cells.filter((c) => (c.success_pct ?? 0) >= 99 && relays.find((r) => r.id === c.relay_id)?.health.status !== 'down').sort((a, b) => a.p50_ms - b.p50_ms);
+    const best = good[0]?.relay_id ?? null;
+    const cc = cells.find((c) => c.relay_id === cur?.relay.id);
+    const curGood = !!cc && (cc.success_pct ?? 0) >= 99;
+    const suggest = !!cur && !!best && best !== cur.relay.id && (!curGood || cc!.p50_ms - good[0].p50_ms >= 10);
+    const reason = suggest ? (curGood ? `慢 ${cc!.p50_ms - good[0].p50_ms} ms` : `当前成功率 ${cc?.success_pct}%`) : null;
+    if (suggest && cur && best) groups.set(best, [...(groups.get(best) ?? []), { id: n.id, name: n.name, from: { id: cur.relay.id, name: cur.relay.name }, port: cur.port, reason: reason! }]);
+    return { id: n.id, name: n.name, team: n.team, ip: n.ip, current_relay_id: cur?.relay.id ?? null, entries: live.length, cells, tcp_fail_7d: h(n.id) % 7 === 0 ? 3 : 0, daily_bytes: 5e9, best_relay_id: best, suggest, reason, no_room: [] };
+  });
+  return {
+    relays: relays.map((r) => ({ id: r.id, name: r.name, status: r.health.status })), nodes: out,
+    suggestions: [...groups].map(([id, ns]) => ({ to: { id, name: name(id) }, nodes: ns, command: `fleetctl move ${ns.map((x) => x.name).join(',')} --to ${name(id)}` })),
+    window_h: 24, interval_s: 300, min_success_pct: 99, min_gain_ms: 10,
+  };
+});
 const pct2 = (x: MachineView, extra: number) => { const days = Math.max(1, (Date.parse(x.quota.period_end ?? '') - Date.now()) / 864e5); return Math.round(((x.quota.used + ((x.quota.daily_avg ?? 0) + extra) * days) * 1000) / ((x.quota.limit_gb ?? 1) * 1e9)) / 10; };
 R('POST', '/machines/([^/]+)/move', ({ params, body }) => {
   const m = machine(params[0]);
