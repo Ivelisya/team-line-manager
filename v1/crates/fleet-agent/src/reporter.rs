@@ -1,4 +1,5 @@
 //! 上报循环：每 `REPORT_INTERVAL_S`（10 秒）把缓冲打成一个 Report → 先落盘进队列 → 按序发送，确认后删除。
+//! 探测结果翻转时探测任务叫它马上发一份（`Shared::report_now`，两份之间至少 2 秒）：中控的告警据此马上评估。
 //! 写不进磁盘（磁盘满等）时这份留在内存里、排在队列之后直接发送（`Unsaved`）：中控照样收得到遥测，健康信息里带着写盘错误。
 //!
 //! 磁盘 IO（读访问日志、fsync 写队列、删文件）全部放在 `spawn_blocking` 里，不占 async 运行时的工作线程；
@@ -37,6 +38,8 @@ const CATCHUP_MAX_TIME: Duration = Duration::from_secs(3);
 /// 上报连续失败（断网 / 服务端不可达 / 连续拒收）时，建报间隔至少拉长到这么久：
 /// 合并更多样本进同一份报告，少产生队列文件（每份离线报告恢复后都要一次 RTT 重放）
 const OFFLINE_BUILD_INTERVAL: Duration = Duration::from_secs(60);
+/// 被叫去马上发（`Shared::report_now`）时，离上一份建报至少隔这么久
+const REPORT_NOW_GAP: Duration = Duration::from_secs(2);
 /// 报告持续写不进磁盘时，错误日志每隔这么久再打一条
 const DISK_LOG_EVERY: Duration = Duration::from_secs(3600);
 
@@ -138,11 +141,19 @@ impl Reporter {
 
     pub async fn run(mut self, mut sd: watch::Receiver<bool>) {
         let mut next_build = Instant::now() + build_interval(self.fails);
+        let mut last_build = Instant::now();
         let mut tick = tokio::time::interval(Duration::from_secs(1));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let sh = self.sh.clone();
         loop {
             tokio::select! {
                 _ = tick.tick() => {}
+                // 探测结果翻转：提前建报发出去（上报失败中不赶，照离线的间隔攒）
+                _ = sh.report_now.notified() => {
+                    if self.fails == 0 {
+                        next_build = next_build.min(last_build + REPORT_NOW_GAP);
+                    }
+                }
                 _ = sd.changed() => {
                     // 退出前把缓冲里的数据落盘，下次启动继续发
                     self.build_and_push(true).await;
@@ -152,6 +163,7 @@ impl Reporter {
             let now = Instant::now();
             if now >= next_build {
                 next_build = now + build_interval(self.fails);
+                last_build = now;
                 let mut more = self.build_and_push(true).await;
                 // 访问日志有积压：在时间预算内追加只含访问事件的报告，尽快追上。
                 // 上报连续失败时不追：离线期间日志文件本身就是缓冲，不必把它大量搬进队列
@@ -286,7 +298,7 @@ impl Reporter {
                 }
                 Outcome::Retry { wait, why } => {
                     self.note_failure(&why);
-                    self.next_send = Instant::now() + wait.unwrap_or_else(|| backoff(self.fails, 5, 60));
+                    self.next_send = Instant::now() + wait.unwrap_or_else(|| backoff(self.fails, 5, 30));
                     return;
                 }
                 Outcome::Revoked => {
@@ -311,7 +323,7 @@ impl Reporter {
                         // 连续拒收多半是系统性问题（agent 与中控版本不配套等）：照常建报、读访问日志只会把数据成批送进 dead/。
                         // 按失败处理，进入离线模式（停读访问日志、停追赶、建报间隔拉长），访问日志留在文件里当缓冲
                         self.note_failure(&format!("服务端连续 {} 次拒收报告", self.rejects));
-                        self.next_send = Instant::now() + backoff(self.fails, 5, 60);
+                        self.next_send = Instant::now() + backoff(self.fails, 5, 30);
                         return;
                     }
                 }
