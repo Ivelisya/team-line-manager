@@ -1,5 +1,6 @@
 // 搬迁建议：线路机按近 7 天的速度重置前会用满时，列出搬走后能撑到重置日的最少入口和目标线路机（只读建议，GET /relays/{id}/rebalance）。
-// 每行「搬过去」打开现有的换线路机对话框（目标线路机已选好），在那里预览软路由、确认后建作业；这里不执行任何事。
+// 「全部搬过去」打开批量换线路机对话框（一起换，每台软路由只重启一次），每行「搬过去」打开单个的换线路机对话框；
+// 目标线路机都已选好，在那里预览软路由、确认后建作业；这里不执行任何事。
 import * as React from 'react';
 import { X } from 'lucide-react';
 import type { MachineView } from '@/lib/types';
@@ -11,7 +12,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { InfoTip } from '@/components/ui/form';
 import { resetOnOpen } from '@/lib/useHeld';
 import { ErrorNote, Note } from './primitives';
-import { MoveDialog } from './LifecycleDialogs';
+import { MoveDialog, MovesDialog } from './LifecycleDialogs';
 
 const gb = (n: number) => F.str(quotaGb(n));
 
@@ -22,6 +23,7 @@ export const RebalanceDialog = resetOnOpen(function RebalanceDialog({ relay, ope
   const p = q.data;
   const machines = useMachines().data ?? [];
   const [move, setMove] = React.useState<{ node: MachineView; from?: string } | null>(null);
+  const [all, setAll] = React.useState(false);
   const start = (id: string, needsFrom: boolean) => {
     const node = machines.find((x) => x.id === id);
     if (node) setMove({ node, from: needsFrom ? relay.id : undefined });
@@ -57,7 +59,10 @@ export const RebalanceDialog = resetOnOpen(function RebalanceDialog({ relay, ope
                   </span>
                 </div>
               ))}
-              <div className="hint">搬走后分享链接会变，客户端要换新链接</div>
+              <div className="row row-between">
+                <span className="hint">搬走后入口地址会变：用订阅链接的自动更新，用分享链接的要换新链接</span>
+                {p.moves.length > 1 && <Button size="sm" onClick={() => setAll(true)} data-tip="一起换，每台软路由只改一次、OpenClash 只重启一次">全部搬过去</Button>}
+              </div>
             </div>
           )}
           {skip.length > 0 && (
@@ -69,6 +74,7 @@ export const RebalanceDialog = resetOnOpen(function RebalanceDialog({ relay, ope
           <DialogFooter><Button onClick={() => onOpenChange(false)}>关闭</Button></DialogFooter>
         </DialogContent>
       </Dialog>
+      {all && p?.target && <MovesDialog nodes={p.moves.map((m) => ({ id: m.node.id, name: m.node.name, port: m.port }))} from={relay} open onOpenChange={(o) => { if (!o) setAll(false); }} onDone={() => { setAll(false); onOpenChange(false); }} initialTo={p.target.id} />}
       {move && <MoveDialog m={move.node} open onOpenChange={(o) => { if (!o) setMove(null); }} onDone={() => { setMove(null); onOpenChange(false); }} initialTo={q.data?.target?.id} initialFrom={move.from} />}
     </>
   );

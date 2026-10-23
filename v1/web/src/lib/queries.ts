@@ -6,7 +6,7 @@ import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClie
 import { del, get, patch, post, put } from './api';
 import { collator, makeDefaultCompare } from './sort';
 import { nextDue, offlineNames, quotaTight, setMeta } from './derive';
-import type { ApiKey, Availability, Incident, Job, JobSummary, Paged, JobLog, MachineView, Meta, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RetireResult, RecycleItem, RecycleDetail, ReplaceBody, ReplacePreview, MovePreview, MoveResult, EvacuateResult, RebalancePlan, ProbeBeats, SeriesResp, Silence, SilenceKind, SubField, Team, AuditEntry, NotifyChannel, NotifyLogEntry, AccountSession, TotpSetup, TotpStatus } from './types';
+import type { ApiKey, Availability, Incident, Job, JobSummary, Paged, JobLog, MachineView, Meta, Overview, Plan, Provider, ProvisionCheckItem, ProvisionItem, Renewal, RenumberPreview, RetirePreview, RetireResult, RecycleItem, RecycleDetail, ReplaceBody, ReplacePreview, MovePreview, MoveResult, MovesResult, EvacuateResult, RebalancePlan, ProbeBeats, SeriesResp, Silence, SilenceKind, SubField, Team, AuditEntry, NotifyChannel, NotifyLogEntry, AccountSession, TotpSetup, TotpStatus } from './types';
 
 export const useMe = () => useQuery({ queryKey: ['me'], queryFn: () => get<{ username: string }>('/auth/me'), retry: false, staleTime: 5 * 60_000 });
 /** 中文名、枚举、阈值、默认值（服务端 meta.rs），一次会话内不变：取回时同时交给 derive 的同步读取（kindLabel 等）。外壳等它到了才渲染页面 */
@@ -220,6 +220,8 @@ export const useRenew = () => useWrite(({ id, ...b }: { id: string; amount_cents
 export const useEntryAction = () => useWrite(({ id, ...b }: { id: string; action: 'enable' | 'disable' | 'rotate'; confirm?: string }) => post(`/entries/${id}/actions`, b), M);
 export const useAddEntry = () => useWrite(({ id, relay_id }: { id: string; relay_id: string }) => post<{ job_id: string }>(`/machines/${id}/entries`, { relay_id }), [...M, ['jobs']]);
 export const useMoveEntry = () => useWrite(({ id, ...b }: { id: string; to_relay_id: string; from_relay_id?: string; routers: boolean }) => post<MoveResult>(`/machines/${id}/move`, b), [...M, ['jobs']]);
+/** 批量换线路机：几个节点一起换，每台软路由只改一次、OpenClash 只重启一次 */
+export const useMoves = () => useWrite((b: { machine_ids: string[]; to_relay_id: string; from_relay_id?: string; routers: boolean }) => post<MovesResult>('/moves', b), [...M, ['jobs']]);
 export const useEvacuate = () => useWrite(({ id, ...b }: { id: string; to_relay_id: string; routers: boolean }) => post<EvacuateResult>(`/relays/${id}/evacuate`, b), [...M, ['jobs']]);
 /** 换线路机 / 搬空预览（只读库）：要改的软路由出口、不能换的原因 */
 const lifecyclePreview = <T,>(key: string, path: string | null, o: Record<string, string | undefined>, routers: boolean) =>
@@ -234,6 +236,8 @@ const lifecyclePreview = <T,>(key: string, path: string | null, o: Record<string
   });
 export const useMovePreview = (id: string | null, open: boolean, o: { to_relay_id: string; from_relay_id?: string; routers: boolean }) =>
   lifecyclePreview<MovePreview>('move-preview', open && id ? `/machines/${id}/move` : null, { to_relay_id: o.to_relay_id, from_relay_id: o.from_relay_id }, o.routers);
+export const useMovesPreview = (open: boolean, o: { machine_ids: string[]; to_relay_id: string; from_relay_id?: string; routers: boolean }) =>
+  lifecyclePreview<MovesResult>('moves-preview', open && o.machine_ids.length ? '/moves' : null, { machine_ids: o.machine_ids.join(','), to_relay_id: o.to_relay_id, from_relay_id: o.from_relay_id }, o.routers);
 /** 搬迁建议（只读）：exclude = 不动的节点 id */
 export const useRebalance = (id: string | null, open: boolean, exclude: string[]) =>
   useQuery<RebalancePlan>({

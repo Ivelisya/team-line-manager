@@ -1,4 +1,5 @@
 // 入口表：抽屉的概览 / 连接质量 / 流量页签共用。线路机的入口可能有几十条：异常的排在前面，先露 max(ENTRY_CAP, 异常条数) 条，表尾展开全部。
+// 线路机概览（pick）可以勾选几个节点一起「换到…」另一台线路机（批量换线路机，每台软路由只重启一次）。
 import * as React from 'react';
 import type { EntryView, MachineView } from '@/lib/types';
 import * as F from '@/lib/format';
@@ -7,6 +8,9 @@ import { useReachLabel } from '@/lib/probePoints';
 import { entryState, Num, Pill } from '@/components/app/primitives';
 import { ShowAll } from '@/components/app/Pagination';
 import { useEntryRouters, useRouterDrawer } from '@/lib/routers';
+import { Checkbox } from '@/components/ui/form';
+import { Button } from '@/components/ui/button';
+import { MovesDialog, movableEntries } from '@/components/app/LifecycleDialogs';
 
 /** 入口表先露的条数（抽屉入口表、线路机页共用） */
 export const ENTRY_CAP = 10;
@@ -40,9 +44,17 @@ export const entryStatus = (e: EntryView, who = '中控') => {
   return entryState(e, true);
 };
 
-/** onlyBad：只列异常的入口（线路机概览：正常的几十条不重复列，全部在连接质量页签） */
-export function EntriesTable({ m, traffic, onlyBad }: { m: MachineView; traffic?: boolean; onlyBad?: boolean }) {
+/** onlyBad：只列异常的入口（线路机概览：正常的几十条不重复列，全部在连接质量页签）；
+ *  pick：线路机的入口可以勾选（在用的非直出入口），选了之后表上方出「换到…」 */
+export function EntriesTable({ m, traffic, onlyBad, pick }: { m: MachineView; traffic?: boolean; onlyBad?: boolean; pick?: boolean }) {
   const [all, setAll] = React.useState(false);
+  const [sel, setSel] = React.useState<string[]>([]);
+  const [moving, setMoving] = React.useState(false);
+  const picking = !!pick && m.kind === 'relay';
+  const movable = picking ? movableEntries(m) : [];
+  // 选过之后换走了、停用了的不算
+  const picked = movable.filter((e) => sel.includes(e.id));
+  const onPick = React.useCallback((id: string, on: boolean) => setSel((s) => (on ? [...s, id] : s.filter((x) => x !== id))), []);
   const routers = useEntryRouters();
   const sorted = React.useMemo(() => (onlyBad ? m.entries.filter(entryBad) : [...m.entries.filter(entryBad), ...m.entries.filter((e) => !entryBad(e))]), [m.entries, onlyBad]);
   // 流量页：已移除入口（换线路机后的旧入口）本月的流量也计入汇总，单列一行，各行加起来等于汇总
@@ -51,20 +63,34 @@ export function EntriesTable({ m, traffic, onlyBad }: { m: MachineView; traffic?
   if (onlyBad && !sorted.length) return <div className="hint">入口都正常</div>;
   const cap = Math.max(ENTRY_CAP, m.entries.filter(entryBad).length);
   const entries = all ? sorted : sorted.slice(0, cap);
+  const allOn = movable.length > 0 && picked.length === movable.length;
   return (
+    <>
+    {picked.length > 0 && (
+      <div className="row row-between" style={{ marginBottom: 8 }}>
+        <span>已选 <b className="num">{picked.length}</b> 个节点</span>
+        <span className="row">
+          <Button size="sm" variant="quiet" onClick={() => setSel([])}>取消</Button>
+          <Button size="sm" onClick={() => setMoving(true)} data-tip="一起换到另一台线路机，每台软路由只改一次、OpenClash 只重启一次">换到…</Button>
+        </span>
+      </div>
+    )}
     <div className="table-wrap is-boxed">
       <table className="dt is-one" style={{ minWidth: 520 }}>
-        <colgroup><col style={{ width: 172 }} /><col style={{ width: 96 }} /><col style={{ width: 72 }} /><col style={{ width: 72 }} />{traffic && <col style={{ width: 112 }} />}</colgroup>
-        <thead><tr><th>{m.kind === 'relay' ? '端口 · 节点' : '线路机:端口'}</th><th>状态</th><th className="r">TCP</th><th className="r">出口</th>{traffic && <th className="r">本月业务流量</th>}</tr></thead>
+        <colgroup>{picking && <col style={{ width: 36 }} />}<col style={{ width: 172 }} /><col style={{ width: 96 }} /><col style={{ width: 72 }} /><col style={{ width: 72 }} />{traffic && <col style={{ width: 112 }} />}</colgroup>
+        <thead><tr>{picking && <th>{movable.length > 0 && <Checkbox aria-label="全选可换线的入口" checked={allOn} onCheckedChange={(v) => setSel(v === true ? movable.map((e) => e.id) : [])} />}</th>}<th>{m.kind === 'relay' ? '端口 · 节点' : '线路机:端口'}</th><th>状态</th><th className="r">TCP</th><th className="r">出口</th>{traffic && <th className="r">本月业务流量</th>}</tr></thead>
         <tbody>
-          {entries.map((e) => <EntryRow key={e.id} e={e} relay={m.kind === 'relay'} traffic={!!traffic} routers={routers.get(e.id)} />)}
+          {entries.map((e) => <EntryRow key={e.id} e={e} relay={m.kind === 'relay'} traffic={!!traffic} routers={routers.get(e.id)}
+            picked={picking ? (movable.some((x) => x.id === e.id) ? sel.includes(e.id) : null) : undefined} onPick={onPick} />)}
           {removed > 0 && (
-            <tr><td className="t-sub" colSpan={4}>已移除的入口</td><td className="r"><Num f={F.bytes(removed)} /></td></tr>
+            <tr><td className="t-sub" colSpan={picking ? 5 : 4}>已移除的入口</td><td className="r"><Num f={F.bytes(removed)} /></td></tr>
           )}
         </tbody>
       </table>
       <ShowAll total={sorted.length} cap={cap} open={all} onToggle={() => setAll((v) => !v)} />
     </div>
+    {moving && <MovesDialog nodes={picked.map((e) => ({ id: e.node.id, name: e.node.name, port: e.port }))} from={m} open onOpenChange={(o) => { if (!o) setMoving(false); }} onDone={() => { setMoving(false); setSel([]); }} />}
+    </>
   );
 }
 
@@ -74,11 +100,13 @@ export function RouterMark({ users }: { users: { id: string; name: string; exit:
   return <button type="button" className="rt-mark" data-tip={users.map((u) => `${u.name} · ${u.exit}`).join('\n')} onClick={() => open(users[0].id, 'exits')}>软路由 {users.length}</button>;
 }
 
-/** 一行一个 memo：实时推送只换变了的入口（live.ts 的入口补丁把没变的原样返回），线路机展开全部的上百行不跟着重画 */
-const EntryRow = React.memo(function EntryRow({ e, relay, traffic, routers }: { e: EntryView; relay: boolean; traffic: boolean; routers?: { id: string; name: string; exit: string }[] }) {
+/** 一行一个 memo：实时推送只换变了的入口（live.ts 的入口补丁把没变的原样返回），线路机展开全部的上百行不跟着重画。
+ *  picked：undefined = 没有勾选列；null = 这条不能换线（停用、应用中、直出） */
+const EntryRow = React.memo(function EntryRow({ e, relay, traffic, routers, picked, onPick }: { e: EntryView; relay: boolean; traffic: boolean; routers?: { id: string; name: string; exit: string }[]; picked?: boolean | null; onPick: (id: string, on: boolean) => void }) {
   const who = reachWho(useReachLabel());
   return (
     <tr>
+      {picked !== undefined && <td>{picked !== null && <Checkbox aria-label={`选择 ${e.node.name}`} checked={picked} onCheckedChange={(v) => onPick(e.id, v === true)} />}</td>}
       <td className="strong">{relay ? `${e.port} · ${e.node.name}` : `${e.relay.name}:${e.port}`}{routers && <RouterMark users={routers} />}</td>
       <td>{entryStatus(e, who)}</td>{e.lifecycle === 'disabled' ? <><td className="r t-muted">—</td><td className="r t-muted">—</td></> : <><td className="r">{tcpCell(e)}</td><td className="r">{probeCell(e.egress)}</td></>}
       {traffic && <td className="r"><Num f={F.bytes(e.traffic.month_up + e.traffic.month_down)} /></td>}
