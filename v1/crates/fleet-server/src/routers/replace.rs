@@ -6,7 +6,8 @@
 //! - 临时文件每次独立：工作目录 `mktemp -d /tmp/fleet-replace.XXXXXX`、配置旁的临时文件 `mktemp $CFG.fleet-tmp.XXXXXX`，退出（含被信号终止）时删。
 //!   外层超时后中控杀掉本地 ssh、路由上的旧脚本可能还在跑，它和紧接着的改回不会抢同一个临时文件。
 //! - 路由自身流量走 OpenClash（router_self_proxy）时，重启 OpenClash 会掐断隧道和中控这条 ssh：改配置 / 改回的主体在后台跑（不理 HUP / PIPE），
-//!   输出与退出码写进 /tmp/fleet-replace.res.<MODE>.<STAMP>.*，前台等它跑完原样转出、删掉；连接断了，中控等隧道回连后用 [`fetch_script`] 取回（jobs/steps/replace.rs 的 run_script）。
+//!   输出与退出码写进 /tmp/fleet-replace.res.<MODE>.<STAMP>.*，前台等它跑完原样转出；连接断了，中控等隧道回连后用 [`fetch_script`] 取回（jobs/steps/replace.rs 的 run_script）。
+//!   结果文件由 fetch_script 取走时删，没人取的下一次开跑前删（连接断了前台 shell 不一定被杀，不能由它删）。
 //! - 改的是源配置（`uci get openclash.config.config_path`，OpenClash 重启时由它生成运行配置）。
 //!   团队1 旁路由（team2 那台）上的看门服务会用模板重新生成配置，但它以当前配置为准、会自动写回模板，不用特殊处理。
 //! - 只改「- name: 出口名」（名字带不带引号都认；name 不在第一行也认）这个列表项里、字段那一层的 server / port / uuid / servername（或 sni），
@@ -417,16 +418,16 @@ done
 echo replace=ok
 }
 # 路由自身流量走 OpenClash（router_self_proxy）时，重启 OpenClash 会掐断隧道和这条 ssh：main 在后台跑、不理 HUP / PIPE，
-# 输出写进 $RES.*，这边等它跑完原样转出；这条连接断了，中控等隧道回连后用 fetch_script 取结果
+# 输出写进 $RES.*，这边等它跑完原样转出；这条连接断了，中控等隧道回连后用 fetch_script 取结果。
+# 连接断了这边的 shell 不一定被杀（dropbear 不发 HUP），转出失败也照样走到最后：结果文件这里不删（不然中控取不到），
+# 由 fetch_script 取走时删，没人取的下一次开跑前删（同一台路由同一时刻只有一个作业在改）
 umask 077
 RES="/tmp/fleet-replace.res.$MODE.$STAMP"
-rm -f "$RES.out" "$RES.err" "$RES.rc"
+rm -f /tmp/fleet-replace.res.*
 ( trap '' HUP PIPE; ( main ) >"$RES.out" 2>"$RES.err"; echo "$?" > "$RES.rc.tmp" && mv -f "$RES.rc.tmp" "$RES.rc" ) </dev/null >/dev/null 2>&1 &
 wait $!
 cat "$RES.out"; cat "$RES.err" >&2
-rc=$(cat "$RES.rc" 2>/dev/null || echo 1)
-rm -f "$RES.out" "$RES.err" "$RES.rc"
-exit "$rc"
+exit "$(cat "$RES.rc" 2>/dev/null || echo 1)"
 "#;
 
 /// 结果文件不在（脚本没开始跑，或结果已经取走）的退出码
@@ -493,7 +494,7 @@ mod tests {
         assert!(s.starts_with("MODE='apply'\nSTAMP='20261023-073012Z'\nKEEP='20261016-073012Z'\nMAXBK='30'\nPIN='20261020-000001Z 20261021-000002Z'\nN='2'\nDELAY_URL='https%3A%2F%2Fwww.gstatic.com%2Fgenerate_204'\n"), "{}", &s[..200]);
         assert!(s.contains("NAME_1='节点01'\n") && s.contains(&format!("UUID_1='{UUID_NEW}'\n")) && s.contains("NAME_2='it'\\''s'\n"));
         // 主体在后台跑（不理 HUP），前台等它跑完再按它的退出码退出
-        assert!(s.contains("( trap '' HUP PIPE; ( main ) >\"$RES.out\"") && s.trim_end().ends_with("exit \"$rc\""));
+        assert!(s.contains("( trap '' HUP PIPE; ( main ) >\"$RES.out\"") && s.trim_end().ends_with("exit \"$(cat \"$RES.rc\" 2>/dev/null || echo 1)\""));
         // 结束标记不能被参数里的内容提前结束；脚本本身不回显凭据
         assert_eq!(SCRIPT.matches("\nFLEET_AWK\n").count(), 1);
         for leak in ["$UUID_", "$PBK_", "$SID_", "$SECRET\""] {
@@ -542,11 +543,17 @@ rules:\n- MATCH,节点01组\n";
             Fake { dir, busybox }
         }
 
-        /// 脚本退出后，临时工作目录与配置旁的临时文件都不留
+        /// 脚本退出后，临时工作目录与配置旁的临时文件都不留（结果文件 w.res.* 是有意留给中控取的，另查）
         fn assert_no_leftovers(&self) {
             let names = |d: std::path::PathBuf| std::fs::read_dir(d).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect::<Vec<_>>();
             assert_eq!(names(self.path("etc/openclash/config")), ["c.yaml"]);
-            assert!(!names(self.dir.path().to_path_buf()).iter().any(|n| n.starts_with("w.")), "工作目录没删");
+            assert!(!names(self.dir.path().to_path_buf()).iter().any(|n| n.starts_with("w.") && !n.starts_with("w.res.")), "工作目录没删");
+        }
+
+        fn results(&self) -> Vec<String> {
+            let mut v: Vec<String> = std::fs::read_dir(self.dir.path()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with("w.res.")).collect();
+            v.sort();
+            v
         }
 
         fn path(&self, s: &str) -> std::path::PathBuf { self.dir.path().join(s) }
@@ -784,11 +791,19 @@ rules:\n- MATCH,节点01组\n";
             std::fs::write(res("rc"), "0\n").unwrap();
             let o = f.run(&fetch_script("apply", S), &[]);
             assert_eq!((o.code, o.kv("replace"), o.stderr.as_str()), (0, Some("ok"), "fleet：说明\n"), "busybox={bb} {o:?}");
-            f.assert_no_leftovers();
-            // 正常跑完（连接没断）：前台原样转出，结果文件不留
+            assert!(f.results().is_empty(), "{:?}", f.results());
+            // 跑完后结果留着（前台转出失败时中控还要取）：取一次就删；下一次开跑前删掉上一次没人取的
             assert_eq!(f.run(&apply_script(&[edit("节点01")], at(S), &[]), &[("节点01", 9)]).kv("replace"), Some("ok"));
+            let o = f.run(&fetch_script("apply", S), &[]);
+            assert_eq!((o.code, o.kv("delay_1"), o.kv("replace")), (0, Some("9"), Some("ok")), "busybox={bb} {o:?}");
             assert_eq!(f.run(&fetch_script("apply", S), &[]).code, NO_RESULT);
+            assert!(f.results().is_empty(), "{:?}", f.results());
             f.assert_no_leftovers();
+            assert_eq!(f.run(&rollback_script(S, &[edit("节点01")]), &[]).kv("rollback"), Some("ok"));
+            assert_eq!(f.results(), [format!("w.res.rollback.{S}.err"), format!("w.res.rollback.{S}.out"), format!("w.res.rollback.{S}.rc")]);
+            assert_eq!(f.run(&apply_script(&[edit("节点01")], at("20261023-020000Z"), &[]), &[("节点01", 9)]).code, 0);
+            let r = "w.res.apply.20261023-020000Z";
+            assert_eq!(f.results(), [format!("{r}.err"), format!("{r}.out"), format!("{r}.rc")], "上一次没人取的结果没删");
         }
     }
 }
