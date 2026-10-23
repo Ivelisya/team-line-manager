@@ -126,22 +126,17 @@ struct Advice {
 
 fn cmd(c: String) -> Vec<Advice> { vec![Advice { cmd: c, switch: None }] }
 
-type Suggest = fn(&IncidentOut, &[routers::Row]) -> Vec<Advice>;
-
 /// 告警规则 → 建议操作。只这几条：出口不通 → 把用着它的 select 组临时切到别的出口；参数不一致 → 同步；线路机额度吃紧 → 搬迁建议；agent 离线 → 看日志
-const SUGGEST: &[(&str, Suggest)] = &[
-    ("egress_fail", |i, rs| switches(rs, None, |x| x.entry.as_ref().is_some_and(|e| e.node_id == i.subject_id))),
-    (routers::alerts::EXITS_DOWN, |i, rs| switches(rs, Some(i.subject_id), |x| x.sync != "unmanaged" && x.fail_streak >= 2)),
-    (routers::alerts::EXIT_DRIFT, |i, _| cmd(format!("fleetctl router sync {}", sh(i.subject_name.as_deref().unwrap_or_default())))),
-    ("traffic_quota_high", |i, _| if i.subject_kind.as_deref() == Some("relay") { cmd(format!("fleetctl rebalance {}", sh(i.subject_name.as_deref().unwrap_or_default()))) } else { vec![] }),
-    ("agent_offline", |i, _| cmd(format!("fleetctl logs {}", sh(i.subject_name.as_deref().unwrap_or_default())))),
-];
-
 fn suggest(i: &IncidentOut, routers: &[routers::Row]) -> Vec<Advice> {
-    if i.subject_name.is_none() {
-        return vec![];
+    let Some(name) = i.subject_name.as_deref() else { return vec![] };
+    match i.rule.as_str() {
+        "egress_fail" => switches(routers, None, |x| x.entry.as_ref().is_some_and(|e| e.node_id == i.subject_id)),
+        routers::alerts::EXITS_DOWN => switches(routers, Some(i.subject_id), |x| x.sync != "unmanaged" && x.fail_streak >= 2),
+        routers::alerts::EXIT_DRIFT => cmd(format!("fleetctl router sync {}", sh(name))),
+        "traffic_quota_high" if i.subject_kind.as_deref() == Some("relay") => cmd(format!("fleetctl rebalance {}", sh(name))),
+        "agent_offline" => cmd(format!("fleetctl logs {}", sh(name))),
+        _ => vec![],
     }
-    SUGGEST.iter().find(|(r, _)| *r == i.rule).map(|(_, f)| f(i, routers)).unwrap_or_default()
 }
 
 /// 路由（`only` 给了就只看这台）上当前选中「坏」出口的 select 组：切到组里第一个能用（测通或没测过）、不是坏的出口，4 小时后自动切回
@@ -170,7 +165,7 @@ fn sh(s: &str) -> String {
     if !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || "-_.:/@+=,".contains(c)) {
         s.to_string()
     } else {
-        format!("'{}'", s.replace('\'', "'\''"))
+        format!("'{}'", s.replace('\'', "'\\''"))
     }
 }
 
@@ -413,4 +408,15 @@ async fn tell_channels(st: &AppState, actor: &str, deleted: bool, s: &Silence) {
         opened_at: None,
     };
     crate::notify::enqueue(st, n).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sh;
+
+    #[test]
+    fn sh_quotes_single_quote() {
+        assert_eq!(sh("线路-1"), "线路-1");
+        assert_eq!(sh("a'b c"), "'a'\\''b c'");
+    }
 }

@@ -1126,7 +1126,7 @@ R('GET', '/relays/([^/]+)/rebalance', ({ params, query }) => {
   const pct = (v: number) => Math.round((v * 1000) / limit) / 10;
   return {
     relay: { id: src.id, name: src.name }, limit_gb: q.limit_gb, used: q.used, period_end: q.period_end, daily_avg: q.daily_avg, forecast_full_at: q.forecast_full_at, projected_pct: daily > 0 ? pct(q.used + daily * days) : null,
-    needed, ok: needed && moves.length > 0 && daily - cut <= allowed, reason: needed ? null : '按近 7 天的速度，重置前用不满，不用搬', safe_pct: 80,
+    needed, ok: needed && moves.length > 0 && daily - cut <= allowed, reason: needed ? null : '按近 7 天的速度，重置前用不满，不用搬',
     target: target && { id: target.id, name: target.name, limit_gb: target.quota.limit_gb, used: target.quota.used, daily_avg: target.quota.daily_avg, projected_pct: target.quota.limit_gb ? pct2(target, 0) : null },
     moves, after: { daily_avg: daily - cut, projected_pct: pct(q.used + (daily - cut) * days) }, target_after: { fits: true, projected_pct: target?.quota.limit_gb ? pct2(target, cut) : null },
   };

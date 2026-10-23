@@ -199,9 +199,6 @@ fn text(status: StatusCode, body: String) -> Response {
     (status, [(header::CONTENT_TYPE, "text/plain; charset=utf-8"), (header::CACHE_CONTROL, "no-store")], body).into_response()
 }
 
-/// 令牌的样子：random_token(32) 的 43 个 base64url 字符
-fn token_shape_ok(t: &str) -> bool { t.len() == 43 && t.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') }
-
 /// `GET /sub/{令牌}?format=clash|base64`（默认 clash）。令牌按 sha256 查库（比的是哈希，耗时和令牌内容无关，同 API 密钥）；
 /// 不对或停用了回 404，并和登录共用按来源的失败限速（auth::begin_attempt：同一来源 15 分钟 20 次，含登录失败）。
 /// 限速键按令牌的哈希分开：别人猜错的不会把对的令牌一起封掉。成功不记审计，最近拉取时间与来源 10 分钟内只写一次
@@ -227,11 +224,7 @@ async fn fetch_inner(st: &AppState, ip: Option<IpAddr>, token: &str, fmt: &str) 
     let hash = sha256(token.as_bytes());
     let key = format!("sub:{}", &hex::encode(&hash)[..16]);
     let attempt = auth::begin_attempt(st, &key, ip.map(auth::ip_group)).await?;
-    let row: Option<Row> = if token_shape_ok(token) {
-        sqlx::query_as(&format!("select {COLS} from client_sub where token_hash = $1 and enabled")).bind(&hash).fetch_optional(&st.db).await?
-    } else {
-        None
-    };
+    let row: Option<Row> = sqlx::query_as(&format!("select {COLS} from client_sub where token_hash = $1 and enabled")).bind(&hash).fetch_optional(&st.db).await?;
     // 不对：开头记下的那条失败留着
     let Some(Row { id, name, rule, .. }) = row else { return Ok(text(StatusCode::NOT_FOUND, "订阅链接不对或已停用\n".into())) };
     auth::forget_attempt(st, attempt).await?;
@@ -265,13 +258,12 @@ struct Row {
     #[sqlx(flatten)]
     rule: Rule,
     enabled: bool,
-    created_at: OffsetDateTime,
     token_at: OffsetDateTime,
     last_fetch_at: Option<OffsetDateTime>,
     last_fetch_ip: Option<String>,
 }
 
-const COLS: &str = "id, name, team_mode, team_ids, direct, include_ids, exclude_ids, enabled, created_at, token_at, last_fetch_at, host(last_fetch_ip) last_fetch_ip";
+const COLS: &str = "id, name, team_mode, team_ids, direct, include_ids, exclude_ids, enabled, token_at, last_fetch_at, host(last_fetch_ip) last_fetch_ip";
 
 /// 机器的 (id, kind, label, 团队名, 编号)
 type MachineRef = (Uuid, String, Option<String>, Option<String>, Option<i32>);
@@ -313,7 +305,6 @@ fn view(r: &Row, cs: &[Cand], names: &HashMap<Uuid, String>) -> Value {
     json!({
         "id": r.id, "name": r.name, "enabled": r.enabled, "rule": r.rule, "rule_text": rule_text(&r.rule, names),
         "items": cs.iter().filter(|c| r.rule.picks(c)).count(),
-        "created_at": r.created_at.format(&time::format_description::well_known::Rfc3339).ok(),
         "token_at": r.token_at.format(&time::format_description::well_known::Rfc3339).ok(),
         "last_fetch_at": r.last_fetch_at.and_then(|t| t.format(&time::format_description::well_known::Rfc3339).ok()),
         "last_fetch_ip": r.last_fetch_ip,
@@ -356,7 +347,7 @@ pub async fn get_one(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<
     let mut v = view(&r, &cs, &ref_names(&st.db, &[&r.rule]).await?);
     v["entries"] = pick(&cs, &r.rule)
         .into_iter()
-        .map(|(c, name)| json!({"name": name, "entry_id": c.entry_id, "node_id": c.node_id, "relay": c.relay, "port": c.port, "server": format!("{}:{}", c.host, c.port), "direct": c.direct}))
+        .map(|(c, name)| json!({"name": name, "entry_id": c.entry_id, "relay": c.relay, "port": c.port}))
         .collect();
     Ok(ok(v))
 }

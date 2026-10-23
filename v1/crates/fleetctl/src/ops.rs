@@ -733,7 +733,7 @@ fn router_note(rs: &Value, done: &str) -> String {
 
 // ── 远程执行 ─────────────────────────────────────────────────────────
 
-fn shell_quote(a: &str) -> String {
+pub fn shell_quote(a: &str) -> String {
     if !a.is_empty() && a.chars().all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c)) {
         a.to_string()
     } else {

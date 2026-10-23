@@ -20,7 +20,7 @@ export function installClientSubsMock(R: Reg, env: Env) {
   const entries = (r: SubRule): ClientSubEntry[] => env.machines().filter((m) => m.lifecycle === 'active').flatMap((m) =>
     m.entries.filter((e) => e.lifecycle === 'active' && e.node.id === m.id).filter(() => picks(r, m, m.kind === 'relay')).map((e) => ({
       name: [m.country, m.kind === 'relay' ? `${m.provider?.name ?? ''} ${m.name} 直出`.trim() : `${m.provider?.name ?? ''} 家宽`.trim(), m.kind === 'relay' ? null : m.name, m.ip, 'VLESS Reality'].filter(Boolean).join(' · '),
-      entry_id: e.id, node_id: m.id, relay: e.relay.name, port: e.port, server: `relay.example:${e.port}`, direct: m.kind === 'relay',
+      entry_id: e.id, relay: e.relay.name, port: e.port,
     })));
   const names = (ids: string[]) => ids.map((id) => env.teams().find((t) => t.id === id)?.name ?? env.machines().find((m) => m.id === id)?.name ?? '（已删除）').join('、');
   const text = (r: SubRule) => [
@@ -36,7 +36,7 @@ export function installClientSubsMock(R: Reg, env: Env) {
     const name = String(body.name ?? '').trim();
     if (subs.some((s) => s.name === name)) throw env.bad('已经有同名的订阅', 409, 'conflict');
     const now = new Date().toISOString();
-    const s: ClientSub = { id: crypto.randomUUID(), name, enabled: true, rule: { team_mode: 'all', team_ids: [], direct: true, include_ids: [], exclude_ids: [], ...body.rule }, rule_text: '', items: 0, created_at: now, token_at: now, last_fetch_at: null, last_fetch_ip: null };
+    const s: ClientSub = { id: crypto.randomUUID(), name, enabled: true, rule: { team_mode: 'all', team_ids: [], direct: true, include_ids: [], exclude_ids: [], ...body.rule }, rule_text: '', items: 0, token_at: now, last_fetch_at: null, last_fetch_ip: null };
     subs.push(s);
     return { ...view(s), url: url() };
   });

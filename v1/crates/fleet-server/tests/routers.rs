@@ -1077,6 +1077,10 @@ async fn switch_and_auto_back() {
     let (code, v) = t.req("POST", &path, Some(json!({"group": "自动", "to": "节点02"})), None).await;
     assert_eq!(code, StatusCode::BAD_REQUEST);
     assert!(v["error"]["message"].as_str().unwrap().contains("只有 select 组可以"), "{v}");
+    for (group, to, msg) in [("手动选择", "节点09", "只能切到组里已有的出口（节点01、节点02）"), ("没有", "节点01", "没有策略组「没有」")] {
+        let (code, v) = t.req("POST", &path, Some(json!({"group": group, "to": to})), None).await;
+        assert!(code == StatusCode::BAD_REQUEST && v["error"]["message"].as_str().unwrap().contains(msg), "{v}");
+    }
     assert!(read(&r.join("switch.log")).is_empty(), "没去动路由");
     // 切到 节点02，1 小时后自动切回
     let d = t.post(&path, json!({"group": "手动选择", "to": "节点02", "back_after_s": 3600})).await;

@@ -337,7 +337,8 @@ function delay_batch(port, names, results) {
 // 没通的 fleet 出口太多多半是路由自己的网络断了，不重测；客户自己的死节点不占名额、也不挡 fleet 出口的重测。
 // 时间预算：开测 BUDGET 秒后不再开新的一批，重测也只在 RETEST_BUDGET 秒内开始（中控给这次执行 45 秒）；
 // 没轮到的、mihomo 没回话的记进 untested（中控沿用上一次的结果，不算不通）。results 只有通的出口，同 mihomo 分组测试的格式
-const BATCH = 6, RETEST_MAX = 5, BUDGET = 22, RETEST_BUDGET = 28;
+const RETEST_MAX = int(getenv('FLEET_RETEST_MAX'));
+const BATCH = 6, BUDGET = 22, RETEST_BUDGET = 28;
 
 function rotated(a) {
 	let n = length(a), k = (n > 0) ? int(time() / 60) % n : 0, r = [];

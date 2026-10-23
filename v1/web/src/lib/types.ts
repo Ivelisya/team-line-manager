@@ -278,10 +278,10 @@ export interface MovePreview { name?: string; from?: string; to?: string; router
 /** 搬迁建议（GET /relays/{id}/rebalance，只读）：重置前会用满时，搬走哪些入口、搬去哪台；daily_bytes 是搬走后这台每天少的流量 */
 export interface RebalancePlan {
   relay: { id: string; name: string }; limit_gb: number; used: number; period_end: string; daily_avg: number | null; forecast_full_at: string | null; projected_pct: number | null;
-  needed: boolean; ok: boolean; reason: string | null; safe_pct: number;
+  needed: boolean; ok: boolean; reason: string | null;
   target: { id: string; name: string; limit_gb: number | null; used: number; daily_avg: number | null; projected_pct: number | null } | null;
   moves: { node: { id: string; name: string }; entry_id: string; port: number; period_bytes: number; daily_bytes: number; needs_from: boolean }[];
-  after?: { daily_avg: number; projected_pct: number }; target_after?: { fits: boolean; projected_pct: number | null }; excluded?: { id: string; name: string }[];
+  after?: { daily_avg: number; projected_pct: number }; target_after?: { fits: boolean; projected_pct: number | null };
 }
 export interface MoveResult extends MovePreview { job_id: string; name: string; from: string; to: string }
 export interface EvacuateResult { from: string; to: string; /** job_id 只在真正搬空（POST）的结果里有，预览没有 */ jobs: { machine_id: string; name: string; job_id?: string; routers: RouterExitPlan[] }[]; skipped: { machine_id: string; name: string | null; reason: string }[]; warnings: string[];

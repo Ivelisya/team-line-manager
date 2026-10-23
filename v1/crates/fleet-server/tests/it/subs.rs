@@ -1,4 +1,4 @@
-//! 客户端订阅：拉取按规则选入口（默认不带备用团队、带直出）、错误令牌 404 且计入按来源的失败限速、轮换后旧链接失效
+//! 客户端订阅：拉取按规则选入口（默认不带备用团队、带直出）、轮换后旧链接 404 且计入按来源的失败限速
 
 use crate::common::{self, tele, T};
 use axum::body::Body;
@@ -39,9 +39,9 @@ async fn seed(t: &T) -> Uuid {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn fetch_picks_entries_and_counts_failures() {
+async fn fetch_rotate_and_failure_limit() {
     let t = common::boot(false, "trust_forwarded_for = true").await;
-    seed(&t).await;
+    let spare = seed(&t).await;
     let d = t.post("/api/v1/client-subs", json!({"name": "家里"})).await;
     assert_eq!(d["items"], 2, "{d}");
     let path = sub_path(&d["url"]);
@@ -57,28 +57,21 @@ async fn fetch_picks_entries_and_counts_failures() {
     let fetched: Option<String> = sqlx::query_scalar("select host(last_fetch_ip) from client_sub").fetch_one(&t.st.db).await.unwrap();
     assert_eq!(fetched.as_deref(), Some("192.0.2.9"));
 
-    // 错的令牌 404，记一次失败；成功的不留记录
-    let (s, _, _) = pull(&t, "/sub/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").await;
-    assert_eq!(s, StatusCode::NOT_FOUND);
+    // 轮换：旧链接 404（错的令牌记一次失败；成功的不留记录），新链接照常
+    let r = t.post(&format!("/api/v1/client-subs/{}/rotate", d["id"].as_str().unwrap()), json!({})).await;
+    assert_eq!(pull(&t, &path).await.0, StatusCode::NOT_FOUND);
     let n: i64 = sqlx::query_scalar("select count(*) from login_failure where ip = '192.0.2.9'").fetch_one(&t.st.db).await.unwrap();
     assert_eq!(n, 1);
-    // 同一来源失败满 20 次（和登录共用）：对的令牌也先 429
-    sqlx::query("insert into login_failure (username, ip) select 'x' || g, '192.0.2.9' from generate_series(1, 19) g").execute(&t.st.db).await.unwrap();
-    let (s, _, _) = pull(&t, &path).await;
-    assert_eq!(s, StatusCode::TOO_MANY_REQUESTS);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn rotate_kills_old_link() {
-    let t = common::boot(false, "trust_forwarded_for = true").await;
-    let spare = seed(&t).await;
-    let d = t.post("/api/v1/client-subs", json!({"name": "家里", "rule": {"team_mode": "only", "team_ids": [spare], "direct": false}})).await;
-    assert_eq!(d["items"], 1, "只要备用团队：{d}");
-    let old = sub_path(&d["url"]);
-    let r = t.post(&format!("/api/v1/client-subs/{}/rotate", d["id"].as_str().unwrap()), json!({})).await;
-    assert_eq!(pull(&t, &old).await.0, StatusCode::NOT_FOUND);
-    let (s, _, y) = pull(&t, &sub_path(&r["url"])).await;
-    assert!(s == StatusCode::OK && y.contains("203.0.113.9") && !y.contains("203.0.113.5"), "{y}");
+    let new = sub_path(&r["url"]);
+    assert_eq!(pull(&t, &new).await.0, StatusCode::OK);
     let acts: Vec<String> = sqlx::query_scalar("select action from audit_log where target_kind = 'client_sub' order by id").fetch_all(&t.st.db).await.unwrap();
     assert_eq!(acts, ["client_sub.create", "client_sub.rotate"], "拉取不记审计");
+    // 只要备用团队、不含直出
+    let d = t.post("/api/v1/client-subs", json!({"name": "备用", "rule": {"team_mode": "only", "team_ids": [spare], "direct": false}})).await;
+    let (_, _, y) = pull(&t, &sub_path(&d["url"])).await;
+    assert!(d["items"] == 1 && y.contains("203.0.113.9") && !y.contains("203.0.113.5"), "{d} {y}");
+    // 同一来源失败满 20 次（和登录共用）：对的令牌也先 429
+    sqlx::query("insert into login_failure (username, ip) select 'x' || g, '192.0.2.9' from generate_series(1, 19) g").execute(&t.st.db).await.unwrap();
+    let (s, _, _) = pull(&t, &new).await;
+    assert_eq!(s, StatusCode::TOO_MANY_REQUESTS);
 }
