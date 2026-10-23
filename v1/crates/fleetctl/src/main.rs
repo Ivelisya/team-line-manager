@@ -589,7 +589,7 @@ enum Cmd {
         #[command(subcommand)]
         cmd: RouterCmd,
     },
-    /// 探测点：从靠近客户的地方（如香港）测线路机的客户入口；主探测来源决定心跳格与「客户入口连不上」告警
+    /// 探测点：从靠近客户的地方（家里 PVE、香港）测线路机的客户入口；探测顺序决定心跳格与「客户入口连不上」告警
     Probe {
         #[command(subcommand)]
         cmd: ProbeCmd,
@@ -648,7 +648,7 @@ enum PingCmd {
 
 #[derive(Subcommand)]
 enum ProbeCmd {
-    /// 列表：状态、最近上报、版本、近 1 小时到各线路机的平均延迟；主探测来源与此刻实际用的那一路
+    /// 列表：状态、在探测顺序里排第几、最近上报、版本、近 1 小时到各线路机的平均延迟；探测顺序与此刻实际用的那一路
     Ls,
     /// 新建并安装：给 --host 由中控 SSH 装好、等首次上报；不给就打印一次性安装命令
     Add {
@@ -683,10 +683,11 @@ enum ProbeCmd {
         #[arg(long)]
         yes: bool,
     },
-    /// 设主探测来源：探测点名称，或 central（中控；同时打开中控自己的检查）
-    Primary {
-        /// 探测点（id / id 前缀 / 名称）或 central
-        source: String,
+    /// 设探测顺序：按顺序用第一个能用的探测点（第一个是主探测来源），都用不了时由中控代测；只写 central = 主来源是中控（同时打开中控自己的检查）
+    Order {
+        /// 探测点（id / id 前缀 / 名称），按优先顺序；或只写 central
+        #[arg(required = true, num_args = 1..)]
+        sources: Vec<String>,
     },
     /// 中控自己的检查开 / 关（主来源是中控时不能关）
     Central {
@@ -937,7 +938,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
                 probe::set(x, &q, en, name.as_deref(), note.as_deref())
             }
             ProbeCmd::Rm { probe: q, yes } => probe::rm(x, &q, yes),
-            ProbeCmd::Primary { source } => probe::primary(x, &source),
+            ProbeCmd::Order { sources } => probe::order(x, &sources),
             ProbeCmd::Central { state } => probe::central(x, state == "on"),
             ProbeCmd::Upgrade { probe: q, no_wait } => probe::upgrade(x, &q, no_wait),
         },
@@ -1050,7 +1051,8 @@ mod tests {
         }
         assert!(p(&["set", "香港", "--enable", "--disable"]).is_err());
         assert!(p(&["central", "maybe"]).is_err() && p(&["central", "off"]).is_ok());
-        assert!(p(&["primary", "central"]).is_ok() && p(&["upgrade", "香港", "--no-wait"]).is_ok());
+        assert!(p(&["order", "central"]).is_ok() && p(&["order", "PVE", "香港"]).is_ok() && p(&["order"]).is_err());
+        assert!(p(&["upgrade", "香港", "--no-wait"]).is_ok());
     }
 
     #[test]

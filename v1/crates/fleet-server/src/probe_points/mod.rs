@@ -5,13 +5,15 @@
 //! 按 reach.rs 同样的轮换与「对照目标都不通就整轮作废、三台以上全不通照记并标出」规则建连，把通不通与建连的往返时间报回来，进 relay_reach（probe_point_id 是它）。
 //! 中控自己的检查照旧（probe_point_id 为 null），可以在设置里关掉。
 //!
-//! 「主探测来源」（设置 `reach_source`，app_setting）决定线路机卡片的心跳格、入口表的「连不上」、relay_unreachable 告警看哪一路：
-//! 中控，或某个探测点。主来源是探测点、它离线（超过 [`OFFLINE_S`] 没上报，或被停用 / 删掉）时，
-//! 或在线、但超过 [`OFFLINE_S`] 没有一轮检查被采纳（每轮都因对照目标连不上而作废，`probe_point.last_kept_at`）时——这时它测不了，等于离线：
-//! - 中控的检查开着：退回中控的检查，**连不上照报、连得上不算恢复**（[`Effective::fallback`]）。理由：relay_unreachable 是严重告警，
-//!   探测点停机的这段时间不能什么都看不到；中控连续 3 轮连不上（自己的对照目标是通的）多半是线路机或供应商真出了问题，照报；
-//!   但香港看到的「连不上」（比如大陆方向被封）中控未必看得到，中控连得上不能把它判成恢复，等探测点回来再判。告警与卡片写明是中控代替的。
-//! - 中控的检查关着：标灰（判不出），不开也不关 relay_unreachable。线路机整台挂了仍有 agent 离线告警兜底。
+//! 「探测顺序」（设置 `reach_source`，app_setting：`order` 是探测点 id 的有序列表，`central` 是中控自己的检查开不开）决定线路机卡片的心跳格、
+//! 入口表的「连不上」、relay_unreachable 告警看哪一路：按顺序用第一个能用的探测点，第一个就是「主探测来源」；列表为空时主来源是中控。
+//! 一个探测点离线（超过 [`OFFLINE_S`] 没上报，或被删掉）、停用，或在线、但超过 [`OFFLINE_S`] 没有一轮检查被采纳
+//! （每轮都因对照目标连不上而作废，`probe_point.last_kept_at`）时，它测不了，等于离线，轮到下一个：
+//! - 主来源用不了、后面有能用的探测点（如家里 PVE → 香港）：由它代测；后面的都用不了、中控的检查开着：由中控代测。
+//!   代测时**连不上照报、连得上不算恢复**（[`Effective::fallback`]）。理由：relay_unreachable 是严重告警，主来源停机的这段时间不能什么都看不到；
+//!   代测的一路连续 3 轮连不上（自己的对照目标是通的）多半是线路机或供应商真出了问题，照报；但主来源看到的「连不上」（比如大陆方向被封）
+//!   代测的那一路未必看得到，它连得上不能把它判成恢复，等主来源回来再判。告警与卡片写明是谁代替的。
+//! - 都用不了、中控的检查关着：标灰（判不出），不开也不关 relay_unreachable。线路机整台挂了仍有 agent 离线告警兜底。
 //!
 //! 并对探测点本身开告警 `probe_point_offline`（警告，对象是探测点，subject_id = probe_point.id）：启用的、上报过的探测点超过 [`OFFLINE_S`] 没上报，
 //! 或在线、但超过 [`OFFLINE_S`] 没有一轮检查被采纳（摘要写「在线，但最近 N 分钟的检查都作废了：对照目标（…）都连不上」）。
@@ -47,22 +49,30 @@ const KEY: &str = "reach_source";
 /// 卡片、告警里探测点的叫法：名字已经以「探测点」结尾的原样，否则加上（「香港」→「香港探测点」）
 pub fn label_of(name: &str) -> String { if name.ends_with("探测点") { name.to_string() } else { format!("{name}探测点") } }
 
-/// 设置里的主探测来源：`primary` 为 None = 中控；`central` = 中控自己的检查开不开
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// 探测顺序最多这么多个探测点
+pub const MAX_ORDER: usize = 8;
+
+/// 设置里的探测顺序：`order` 是探测点 id，按顺序用第一个能用的（空 = 主来源是中控）；`central` = 中控自己的检查开不开
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Setting {
-    pub primary: Option<Uuid>,
+    pub order: Vec<Uuid>,
     pub central: bool,
 }
 
 impl Default for Setting {
-    fn default() -> Self { Self { primary: None, central: true } }
+    fn default() -> Self { Self { order: vec![], central: true } }
 }
 
 impl Setting {
     fn from_json(v: &Value) -> Self {
-        Self { primary: v["primary"].as_str().and_then(|s| Uuid::try_parse(s).ok()), central: v["central"].as_bool().unwrap_or(true) }
+        let order = v["order"].as_array().map(|a| a.iter().filter_map(|s| s.as_str().and_then(|s| Uuid::try_parse(s).ok())).collect()).unwrap_or_default();
+        Self { order, central: v["central"].as_bool().unwrap_or(true) }
     }
-    fn to_json(self) -> Value { json!({"primary": self.primary, "central": self.central}) }
+    fn to_json(&self) -> Value { json!({"order": self.order, "central": self.central}) }
+    /// 主探测来源（顺序里的第一个探测点；None = 中控）
+    pub fn primary(&self) -> Option<Uuid> { self.order.first().copied() }
+    /// 在顺序里排第几（从 1 起）
+    pub fn rank(&self, id: Uuid) -> Option<usize> { self.order.iter().position(|o| *o == id).map(|i| i + 1) }
 }
 
 pub async fn setting(db: &sqlx::PgPool) -> sqlx::Result<Setting> {
@@ -73,22 +83,25 @@ pub async fn setting(db: &sqlx::PgPool) -> sqlx::Result<Setting> {
 /// 此刻实际用哪一路检查（视图、告警、心跳格、入口表都按它取 relay_reach）
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Effective {
-    /// central：中控（主来源就是中控）；probe：探测点；fallback：主来源的探测点离线（或在线但检查都作废了），暂由中控代替；none：没有可用的来源（标灰）
+    /// central：中控（主来源就是中控）；probe：主来源的探测点；fallback：主来源的探测点离线（或在线但检查都作废了），暂由顺序里后面的探测点或中控代替；
+    /// none：没有可用的来源（标灰）
     pub state: &'static str,
-    /// 用的是哪个探测点的记录（state = probe）
+    /// 用的是哪个探测点的记录（state = probe，或由探测点代测的 fallback；None = 中控的）
     pub probe_point_id: Option<Uuid>,
-    /// 告警、卡片里的说法：「中控」「香港探测点」「中控（代替离线的香港探测点）」
+    /// 告警、卡片里的说法：「中控」「香港探测点」「香港探测点（代替离线的PVE探测点）」「中控（代替离线的香港探测点）」
     pub label: String,
     /// 设置里的主来源是探测点时它的叫法（离线、停用也给）
     pub primary_label: Option<String>,
     /// 主来源的探测点为什么用不了（fallback / none 时给，页面直接拿来说）：「香港探测点离线」「香港探测点探测无效」「香港探测点已停用」…
     pub primary_issue: Option<String>,
+    /// 代测的是谁（fallback 时给）：「香港探测点」「中控」
+    pub substitute: Option<String>,
 }
 
 impl Effective {
-    pub fn central() -> Self { Self { state: "central", probe_point_id: None, label: "中控".into(), primary_label: None, primary_issue: None } }
+    pub fn central() -> Self { Self { state: "central", probe_point_id: None, label: "中控".into(), primary_label: None, primary_issue: None, substitute: None } }
 
-    /// 暂由中控代替：连不上照报，连得上不算恢复（reach::unknown_sql）
+    /// 暂由别的来源代替主来源：连不上照报，连得上不算恢复（reach::unknown_sql）
     pub fn fallback(&self) -> bool { self.state == "fallback" }
 
     /// relay_reach 里属于这一路的行（`a` 是表别名）；没有可用的来源时一行都不取
@@ -127,61 +140,99 @@ impl Liveness {
     pub fn usable(self) -> bool { self.online && self.kept }
 }
 
-/// 按设置与探测点此刻在不在线、有没有轮次被采纳算出实际用哪一路（一次查询）。`db`：在哪个池上查（视图加载走 `view_db`，有语句超时）
-pub async fn effective(st: &AppState, db: &sqlx::PgPool) -> sqlx::Result<Effective> {
-    let row: (Option<Value>, Option<String>, bool, Option<OffsetDateTime>, Option<OffsetDateTime>) = sqlx::query_as(
-        "select s.v, p.name, coalesce(p.enabled, false), p.last_seen_at, p.last_kept_at
-         from (select (select value from app_setting where key = $1) v) s
-         left join probe_point p on p.id = case when s.v->>'primary' ~ '^[0-9a-f-]{36}$' then (s.v->>'primary')::uuid end",
-    )
-    .bind(KEY)
-    .fetch_one(db)
-    .await?;
-    let set = row.0.as_ref().map(Setting::from_json).unwrap_or_default();
-    Ok(decide(set, row.1.as_deref(), row.2, Liveness::of(st, row.3, row.4, OffsetDateTime::now_utc())))
+/// 顺序里一个探测点此刻的情况（[`decide`] 用）：`name` 为 None = 已经删了
+#[derive(Debug, Clone, Copy)]
+pub struct Cand<'a> {
+    pub id: Uuid,
+    pub name: Option<&'a str>,
+    pub enabled: bool,
+    pub live: Liveness,
 }
 
-/// 纯函数部分（便于测试）：`name` 为 None = 主来源的探测点已经删了
-pub fn decide(set: Setting, name: Option<&str>, enabled: bool, live: Liveness) -> Effective {
-    let Some(id) = set.primary else {
-        return if set.central { Effective::central() } else { Effective { state: "none", probe_point_id: None, label: "中控（检查已关闭）".into(), primary_label: None, primary_issue: None } };
+/// 顺序里探测点的一行：(id, 名字, 启用, 最后上报, 最后采纳)
+type LiveRow = (Uuid, String, bool, Option<OffsetDateTime>, Option<OffsetDateTime>);
+
+/// 按设置与顺序里各探测点此刻在不在线、有没有轮次被采纳算出实际用哪一路。`db`：在哪个池上查（视图加载走 `view_db`，有语句超时）
+pub async fn effective(st: &AppState, db: &sqlx::PgPool) -> sqlx::Result<Effective> {
+    let v: Option<Value> = sqlx::query_scalar("select value from app_setting where key = $1").bind(KEY).fetch_optional(db).await?;
+    let set = v.as_ref().map(Setting::from_json).unwrap_or_default();
+    let rows: Vec<LiveRow> = if set.order.is_empty() {
+        vec![]
+    } else {
+        sqlx::query_as("select id, name, enabled, last_seen_at, last_kept_at from probe_point where id = any($1)").bind(&set.order).fetch_all(db).await?
     };
-    let pl = name.map(label_of).unwrap_or_else(|| "主探测点（已删除）".into());
-    if name.is_some() && enabled && live.usable() {
-        return Effective { state: "probe", probe_point_id: Some(id), label: pl.clone(), primary_label: Some(pl), primary_issue: None };
+    let now = OffsetDateTime::now_utc();
+    let cands: Vec<Cand> = set
+        .order
+        .iter()
+        .map(|id| match rows.iter().find(|r| r.0 == *id) {
+            Some(r) => Cand { id: *id, name: Some(&r.1), enabled: r.2, live: Liveness::of(st, r.3, r.4, now) },
+            None => Cand { id: *id, name: None, enabled: false, live: Liveness { ever: false, online: false, kept: false } },
+        })
+        .collect();
+    Ok(decide(set.central, &cands))
+}
+
+/// 纯函数部分（便于测试）：`central` = 中控的检查开不开，`cands` = 探测顺序里的探测点（按顺序）
+pub fn decide(central: bool, cands: &[Cand]) -> Effective {
+    let Some(first) = cands.first() else {
+        return if central {
+            Effective::central()
+        } else {
+            Effective { state: "none", probe_point_id: None, label: "中控（检查已关闭）".into(), primary_label: None, primary_issue: None, substitute: None }
+        };
+    };
+    let usable = |c: &Cand| c.name.is_some() && c.enabled && c.live.usable();
+    let pl = first.name.map(label_of).unwrap_or_else(|| "主探测点（已删除）".into());
+    if usable(first) {
+        return Effective { state: "probe", probe_point_id: Some(first.id), label: pl.clone(), primary_label: Some(pl), primary_issue: None, substitute: None };
     }
-    // (定语, 状态)：「离线的香港探测点」放进中控代替时的叫法，「香港探测点离线」给页面直接说
+    // (定语, 状态)：「离线的香港探测点」放进代替时的叫法，「香港探测点离线」给页面直接说
     let (why, issue) = match () {
-        _ if name.is_none() => (pl.clone(), "主探测点已删除".to_string()),
-        _ if !enabled => (format!("已停用的{pl}"), format!("{pl}已停用")),
-        _ if !live.ever => (format!("还没上报的{pl}"), format!("{pl}还没上报")),
-        _ if live.online => (format!("探测无效的{pl}"), format!("{pl}探测无效")),
+        _ if first.name.is_none() => (pl.clone(), "主探测点已删除".to_string()),
+        _ if !first.enabled => (format!("已停用的{pl}"), format!("{pl}已停用")),
+        _ if !first.live.ever => (format!("还没上报的{pl}"), format!("{pl}还没上报")),
+        _ if first.live.online => (format!("探测无效的{pl}"), format!("{pl}探测无效")),
         _ => (format!("离线的{pl}"), format!("{pl}离线")),
     };
-    if set.central {
-        Effective { state: "fallback", probe_point_id: None, label: format!("中控（代替{why}）"), primary_label: Some(pl), primary_issue: Some(issue) }
-    } else {
-        Effective { state: "none", probe_point_id: None, label: format!("{pl}（不可用）"), primary_label: Some(pl), primary_issue: Some(issue) }
+    let by = cands[1..].iter().find(|c| usable(c)).map(|c| (Some(c.id), label_of(c.name.unwrap_or_default())));
+    match by.or_else(|| central.then(|| (None, "中控".to_string()))) {
+        Some((id, sub)) => Effective {
+            state: "fallback",
+            probe_point_id: id,
+            label: format!("{sub}（代替{why}）"),
+            primary_label: Some(pl),
+            primary_issue: Some(issue),
+            substitute: Some(sub),
+        },
+        None => Effective { state: "none", probe_point_id: None, label: format!("{pl}（不可用）"), primary_label: Some(pl), primary_issue: Some(issue), substitute: None },
     }
 }
 
-/// 改主探测来源：探测点要存在、启用；主来源是中控时中控的检查不能关。写库、写审计，返回改之前的
+/// 改探测顺序：探测点要存在、启用、不重复，最多 [`MAX_ORDER`] 个；顺序为空（主来源是中控）时中控的检查不能关。写库、写审计，返回改之前的
 pub async fn save_setting(st: &AppState, actor: &str, new: Setting) -> ApiResult<Setting> {
+    if new.order.len() > MAX_ORDER {
+        return Err(ApiError::bad_request(format!("探测顺序最多 {MAX_ORDER} 个探测点")));
+    }
+    if new.order.iter().enumerate().any(|(i, id)| new.order[..i].contains(id)) {
+        return Err(ApiError::bad_request("探测顺序里有重复的探测点"));
+    }
+    if new.order.is_empty() && !new.central {
+        return Err(ApiError::conflict("主探测来源是中控时不能关掉中控的检查：先在探测顺序里放一个探测点"));
+    }
     let mut tx = st.db.begin().await?;
     // 锁住设置行所在的位置（同一时刻只让一个在改），读旧值
     sqlx::query("select pg_advisory_xact_lock(hashtext('app_setting.reach_source'))").execute(&mut *tx).await?;
     let old: Option<Value> = sqlx::query_scalar("select value from app_setting where key = $1").bind(KEY).fetch_optional(&mut *tx).await?;
     let old = old.map(|v| Setting::from_json(&v)).unwrap_or_default();
-    let mut name = None;
-    if let Some(id) = new.primary {
-        let p: Option<(String, bool)> = sqlx::query_as("select name, enabled from probe_point where id = $1").bind(id).fetch_optional(&mut *tx).await?;
-        match p {
+    let rows: Vec<(Uuid, String, bool)> = sqlx::query_as("select id, name, enabled from probe_point where id = any($1)").bind(&new.order).fetch_all(&mut *tx).await?;
+    let mut names = vec![];
+    for id in &new.order {
+        match rows.iter().find(|r| r.0 == *id) {
             None => return Err(ApiError::bad_request("没有这个探测点")),
-            Some((n, false)) => return Err(ApiError::conflict(format!("探测点「{n}」已停用，先启用再设为主来源"))),
-            Some((n, true)) => name = Some(n),
+            Some((_, n, false)) => return Err(ApiError::conflict(format!("探测点「{n}」已停用，先启用再放进探测顺序"))),
+            Some((_, n, true)) => names.push(n.clone()),
         }
-    } else if !new.central {
-        return Err(ApiError::conflict("主探测来源是中控时不能关掉中控的检查：先把主来源设成某个探测点"));
     }
     if old == new {
         return Ok(old);
@@ -195,8 +246,7 @@ pub async fn save_setting(st: &AppState, actor: &str, new: Setting) -> ApiResult
     .bind(actor)
     .execute(&mut *tx)
     .await?;
-    let primary = name.unwrap_or_else(|| "中控".into());
-    audit(&mut tx, actor, "settings.reach_source", "setting", None, json!({"from": old.to_json(), "to": new.to_json(), "primary_name": primary})).await?;
+    audit(&mut tx, actor, "settings.reach_source", "setting", None, json!({"from": old.to_json(), "to": new.to_json(), "order_names": names})).await?;
     tx.commit().await?;
     changed(st);
     Ok(old)
@@ -245,6 +295,13 @@ pub async fn check_once(st: &AppState, now: OffsetDateTime) -> anyhow::Result<()
         sqlx::query_as("select id, name, enabled, last_seen_at, last_kept_at, discard_reason from probe_point").fetch_all(&st.db).await?;
     let set = setting(&st.db).await?;
     let names: HashMap<Uuid, (String, bool)> = rows.iter().map(|r| (r.0, (r.1.clone(), r.2))).collect();
+    let cands: Vec<Cand> = set
+        .order
+        .iter()
+        .filter_map(|id| rows.iter().find(|r| r.0 == *id))
+        .map(|r| Cand { id: r.0, name: Some(&r.1), enabled: r.2, live: Liveness::of(st, r.3, r.4, now) })
+        .collect();
+    let eff = decide(set.central, &cands);
     let dur = |t: OffsetDateTime| crate::notify::fmt_duration((now - t).whole_seconds());
     let want: Vec<Want> = rows
         .iter()
@@ -260,8 +317,13 @@ pub async fn check_once(st: &AppState, now: OffsetDateTime) -> anyhow::Result<()
                 Some(k) => format!("在线，但最近 {}的探测都无效：{why}", dur(k)),
                 None => format!("在线，但还没有一次有效的探测：{why}"),
             };
-            if set.primary == Some(*id) {
-                text.push_str(if set.central { "；它是主探测来源，暂由中控代测（连不上照常告警，连得上不算恢复）" } else { "；它是主探测来源，中控探测也关着，暂时判断不了线路机通不通" });
+            match set.rank(*id) {
+                Some(1) => match &eff.substitute {
+                    Some(s) => text.push_str(&format!("；它是主探测来源，暂由{s}代测（连不上照常告警，连得上不算恢复）")),
+                    None => text.push_str("；它是主探测来源，后面的探测来源也都用不了、中控探测关着，暂时判断不了线路机通不通"),
+                },
+                Some(n) => text.push_str(&format!("；它在探测顺序里排第 {n}，主来源用不了时现在也代替不了")),
+                None => {}
             }
             Some(Want { rule: OFFLINE_RULE, subject: *id, name, severity: "warning", text, detail: None, ready: true })
         })
@@ -340,7 +402,7 @@ pub async fn list(st: &AppState, window: crate::reach::Window) -> sqlx::Result<V
             });
             json!({
                 "id": r.id, "name": r.name, "label": label_of(&r.name), "enabled": r.enabled, "note": r.note, "state": state, "installed": r.installed,
-                "primary": set.primary == Some(r.id), "maintenance": silences.maintenance(r.id), "last_seen_at": ts(r.last_seen_at), "last_kept_at": ts(r.last_kept_at),
+                "primary": set.primary() == Some(r.id), "rank": set.rank(r.id), "maintenance": silences.maintenance(r.id), "last_seen_at": ts(r.last_seen_at), "last_kept_at": ts(r.last_kept_at),
                 "discard_reason": r.discard_reason.filter(|_| live.online && !live.kept), "last_ip": r.last_ip, "version": r.version,
                 "window": window.as_str(),
                 "created_at": ts(Some(r.created_at)), "bootstrap_expires_at": ts(r.bootstrap_expires_at), "install": install,
@@ -355,49 +417,74 @@ pub async fn list(st: &AppState, window: crate::reach::Window) -> sqlx::Result<V
 mod tests {
     use super::*;
 
+    fn live(ever: bool, online: bool, kept: bool) -> Liveness { Liveness { ever, online, kept } }
+    const UP: Liveness = Liveness { ever: true, online: true, kept: true };
+    const OFF: Liveness = Liveness { ever: true, online: false, kept: false };
+    const NEVER: Liveness = Liveness { ever: false, online: false, kept: false };
+
+    fn c(id: Uuid, name: Option<&str>, enabled: bool, live: Liveness) -> Cand<'_> { Cand { id, name, enabled, live } }
+
     #[test]
     fn effective_source_and_fallback() {
         let id = Uuid::nil();
-        let hk = |central| Setting { primary: Some(id), central };
-        let live = |ever, online, kept| Liveness { ever, online, kept };
-        let up = live(true, true, true);
-        let off = live(true, false, false);
-        let never = live(false, false, false);
-        assert_eq!(decide(Setting::default(), None, false, never), Effective::central());
-        let e = decide(hk(true), Some("香港"), true, up);
+        let hk = |enabled, l| [c(id, Some("香港"), enabled, l)];
+        assert_eq!(decide(true, &[]), Effective::central());
+        let e = decide(true, &hk(true, UP));
         assert_eq!((e.state, e.label.as_str(), e.probe_point_id), ("probe", "香港探测点", Some(id)));
         assert_eq!(e.cond("rr"), format!("rr.probe_point_id = '{id}'::uuid"));
         assert!(e.uses(Some(id)) && !e.uses(None));
         // 离线：中控的检查开着就退回中控（恢复不算），关着就标灰
-        let f = decide(hk(true), Some("香港探测点"), true, off);
+        let f = decide(true, &[c(id, Some("香港探测点"), true, OFF)]);
         assert_eq!((f.state, f.label.as_str(), f.cond("r")), ("fallback", "中控（代替离线的香港探测点）", "r.probe_point_id is null".to_string()));
         assert!(f.fallback() && f.uses(None));
-        let g = decide(hk(false), Some("香港"), true, off);
+        assert_eq!(f.substitute.as_deref(), Some("中控"));
+        let g = decide(false, &hk(true, OFF));
         assert_eq!((g.state, g.cond("r")), ("none", "false".to_string()));
         assert!(!g.uses(None) && !g.uses(Some(id)));
         assert_eq!(g.primary_issue.as_deref(), Some("香港探测点离线"));
         // 中控的检查关着、主探测点在线但探测无效：页面要说「探测无效」，不能说成离线
-        let gb = decide(hk(false), Some("香港"), true, live(true, true, false));
+        let gb = decide(false, &hk(true, live(true, true, false)));
         assert_eq!((gb.state, gb.label.as_str(), gb.primary_issue.as_deref()), ("none", "香港探测点（不可用）", Some("香港探测点探测无效")));
         // 在线、但最近的检查都作废了：同离线
-        let b = decide(hk(true), Some("香港"), true, live(true, true, false));
+        let b = decide(true, &hk(true, live(true, true, false)));
         assert_eq!((b.state, b.label.as_str(), b.primary_issue.as_deref()), ("fallback", "中控（代替探测无效的香港探测点）", Some("香港探测点探测无效")));
-        assert_eq!(decide(hk(true), Some("香港"), true, never).label, "中控（代替还没上报的香港探测点）");
-        assert_eq!(decide(hk(true), Some("香港"), false, up).label, "中控（代替已停用的香港探测点）");
-        assert_eq!(decide(hk(true), None, false, never).state, "fallback");
-        assert_eq!(decide(Setting { primary: None, central: false }, None, false, never).state, "none");
+        assert_eq!(decide(true, &hk(true, NEVER)).label, "中控（代替还没上报的香港探测点）");
+        assert_eq!(decide(true, &hk(false, UP)).label, "中控（代替已停用的香港探测点）");
+        assert_eq!(decide(true, &[c(id, None, false, NEVER)]).state, "fallback");
+        assert_eq!(decide(false, &[]).state, "none");
+    }
+
+    /// 探测顺序：主来源用不了时按顺序找下一个能用的探测点，都用不了才轮到中控
+    #[test]
+    fn order_falls_through_to_next_probe_then_central() {
+        let (pve, hk) = (Uuid::now_v7(), Uuid::now_v7());
+        let e = decide(true, &[c(pve, Some("PVE"), true, UP), c(hk, Some("香港"), true, UP)]);
+        assert_eq!((e.state, e.probe_point_id), ("probe", Some(pve)));
+        let f = decide(true, &[c(pve, Some("PVE"), true, OFF), c(hk, Some("香港"), true, UP)]);
+        assert_eq!((f.state, f.label.as_str(), f.probe_point_id), ("fallback", "香港探测点（代替离线的PVE探测点）", Some(hk)));
+        assert_eq!((f.substitute.as_deref(), f.primary_issue.as_deref()), (Some("香港探测点"), Some("PVE探测点离线")));
+        assert!(f.fallback() && f.uses(Some(hk)) && !f.uses(None) && !f.uses(Some(pve)));
+        assert_eq!(f.cond("r"), format!("r.probe_point_id = '{hk}'::uuid"));
+        // 后面的也用不了（停用、探测无效）：中控代测；中控也关着：标灰
+        let both = [c(pve, Some("PVE"), true, OFF), c(hk, Some("香港"), true, live(true, true, false))];
+        let g = decide(true, &both);
+        assert_eq!((g.state, g.label.as_str(), g.probe_point_id), ("fallback", "中控（代替离线的PVE探测点）", None));
+        assert_eq!(decide(false, &both).label, "PVE探测点（不可用）");
+        assert_eq!(decide(true, &[c(pve, Some("PVE"), true, OFF), c(hk, Some("香港"), false, UP)]).substitute.as_deref(), Some("中控"));
     }
 
     #[test]
     fn label_sql_escapes_quotes() {
-        let e = Effective { state: "probe", probe_point_id: None, label: "o'clock探测点".into(), primary_label: None, primary_issue: None };
+        let e = Effective { state: "probe", probe_point_id: None, label: "o'clock探测点".into(), primary_label: None, primary_issue: None, substitute: None };
         assert_eq!(e.label_sql(), "'o''clock探测点'");
     }
 
     #[test]
     fn setting_json_roundtrip() {
-        let s = Setting { primary: Some(Uuid::now_v7()), central: false };
+        let s = Setting { order: vec![Uuid::now_v7(), Uuid::now_v7()], central: false };
         assert_eq!(Setting::from_json(&s.to_json()), s);
+        assert_eq!((s.primary(), s.rank(s.order[1]), s.rank(Uuid::nil())), (Some(s.order[0]), Some(2), None));
         assert_eq!(Setting::from_json(&json!({})), Setting::default());
+        assert_eq!(Setting::default().primary(), None);
     }
 }

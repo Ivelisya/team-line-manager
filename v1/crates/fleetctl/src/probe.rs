@@ -1,6 +1,6 @@
-//! 探测点：probe ls / add / install / set / rm / primary / central / upgrade。
-//! 探测点是放在靠近客户的地方（如香港）的一台小机器，替中控测线路机的客户入口通不通；「主探测来源」决定线路机卡片的心跳格与
-//! relay_unreachable 告警看哪一路（中控或某个探测点）。安装有两种：给 --host 由中控 SSH 登录装好（等首次上报）；
+//! 探测点：probe ls / add / install / set / rm / order / central / upgrade。
+//! 探测点是放在靠近客户的地方（如家里的 PVE、香港）的一台小机器，替中控测线路机的客户入口通不通；「探测顺序」决定线路机卡片的心跳格与
+//! relay_unreachable 告警看哪一路（按顺序第一个能用的探测点，都用不了时中控代测）。安装有两种：给 --host 由中控 SSH 登录装好（等首次上报）；
 //! 不给就打印一次性安装命令（30 分钟、只能用一次），在探测点上用 root 执行。
 
 use crate::cmds::{num, st, Ctx};
@@ -57,7 +57,11 @@ fn row(p: &Value) -> Vec<String> {
     let relays = p["relays"].as_array().map(|rs| rs.iter().map(|r| format!("{} {}", st(r, "/name"), ms(r, "/avg_ms"))).collect::<Vec<_>>().join("，")).unwrap_or_default();
     vec![
         st(p, "/name"),
-        if p["primary"] == true { "是".into() } else { "".into() },
+        match p["rank"].as_u64() {
+            Some(1) => "1（主来源）".into(),
+            Some(n) => n.to_string(),
+            None => "".into(),
+        },
         state,
         table::ts(&st(p, "/last_seen_at")),
         p["version"].as_str().unwrap_or("-").to_string(),
@@ -74,12 +78,16 @@ fn upgrade_failed(p: &Value) -> Option<String> {
     Some(format!("升级到 {} 失败，已回到 {}", v("to"), v("from")))
 }
 
-const HEAD: [&str; 8] = ["名称", "主来源", "状态", "最近上报", "版本", "来源地址", "近 1 小时平均延迟", "id"];
+const HEAD: [&str; 8] = ["名称", "顺序", "状态", "最近上报", "版本", "来源地址", "近 1 小时平均延迟", "id"];
 
-/// 主探测来源的说法：「香港探测点」「中控（代替离线的香港探测点）」……
+/// 探测顺序与此刻用的那一路：「探测顺序：PVE → 香港 → 中控；此刻用的是：香港探测点（代替离线的PVE探测点）」……
 fn source_line(src: &Value) -> String {
-    let mut s = format!("主探测来源：{}；此刻用的是：{}", st(src, "/primary_name"), st(src, "/effective/label"));
-    s.push_str(if src["central_enabled"] == true { "；中控自己的检查：开" } else { "；中控自己的检查：关" });
+    let mut chain: Vec<String> = src["order"].as_array().map(|o| o.iter().map(|p| st(p, "/name")).collect()).unwrap_or_default();
+    if src["central_enabled"] == true {
+        chain.push("中控".into());
+    }
+    let mut s = format!("探测顺序：{}；此刻用的是：{}", chain.join(" → "), st(src, "/effective/label"));
+    s.push_str(if src["central_enabled"] == true { "；中控自己的检查：开" } else { "；中控自己的检查：关（都用不了时标灰）" });
     s
 }
 
@@ -123,7 +131,7 @@ fn follow_install(ctx: &Ctx, id: &str) -> anyhow::Result<u8> {
         }
         match ins["state"].as_str() {
             Some("done") => {
-                ctx.emit(&p, || format!("「{}」装好了，已收到首次上报（版本 {}）。设为主探测来源：fleetctl probe primary {}", st(&p, "/name"), st(&p, "/version"), st(&p, "/name")));
+                ctx.emit(&p, || format!("「{}」装好了，已收到首次上报（版本 {}）。放进探测顺序：fleetctl probe order {} [<其他探测点>…]", st(&p, "/name"), st(&p, "/version"), st(&p, "/name")));
                 return Ok(0);
             }
             Some("failed") => {
@@ -242,16 +250,21 @@ pub fn rm(ctx: &Ctx, q: &str, yes: bool) -> anyhow::Result<u8> {
     Ok(0)
 }
 
-/// 主探测来源：探测点名称 / id，或 central（中控）
-pub fn primary(ctx: &Ctx, q: &str) -> anyhow::Result<u8> {
-    let (body, what) = if q.eq_ignore_ascii_case("central") || q == "中控" {
-        (json!({"primary": "central", "central_enabled": true}), "中控".to_string())
-    } else {
-        let p = find(&ctx.list("/probe-points")?, q)?;
-        (json!({"primary": st(&p, "/id")}), st(&p, "/label"))
+fn is_central(q: &str) -> bool { q.eq_ignore_ascii_case("central") || q == "中控" }
+
+/// 探测顺序：探测点名称 / id，按优先顺序；只写 central（中控）= 主来源是中控
+pub fn order(ctx: &Ctx, qs: &[String]) -> anyhow::Result<u8> {
+    let body = match qs {
+        [q] if is_central(q) => json!({"order": [], "central_enabled": true}),
+        _ if qs.iter().any(|q| is_central(q)) => bail!("中控总在最后兜底（中控自己的检查开着时），不用写进顺序；只写 central 是把主来源改成中控"),
+        _ => {
+            let all = ctx.list("/probe-points")?;
+            let ids = qs.iter().map(|q| find(&all, q).map(|p| st(&p, "/id"))).collect::<anyhow::Result<Vec<_>>>()?;
+            json!({"order": ids})
+        }
     };
     let d = ctx.c.put("/settings/reach-source", &body)?;
-    ctx.emit(&d, || format!("主探测来源改成了{what}。线路机卡片的心跳格与「客户入口连不上」告警都看它。\n{}", source_line(&d)));
+    ctx.emit(&d, || format!("探测顺序改好了。线路机卡片的心跳格与「客户入口连不上」告警按它取第一个能用的来源。\n{}", source_line(&d)));
     Ok(0)
 }
 
@@ -310,17 +323,27 @@ mod tests {
     #[test]
     fn list_row_wording() {
         let p = json!({
-            "id": "01a162a9-39c4-752c-b647-e61f34ef48bd", "name": "香港", "primary": true, "state": "online", "last_seen_at": "2026-10-22T08:10:54Z",
+            "id": "01a162a9-39c4-752c-b647-e61f34ef48bd", "name": "香港", "primary": true, "rank": 1, "state": "online", "last_seen_at": "2026-10-22T08:10:54Z",
             "version": "0.1.0+abc", "last_ip": "47.0.0.1", "install": {"state": "done"}, "upgrade": null,
             "relays": [{"name": "线路机1", "avg_ms": 158.4}, {"name": "线路机2", "avg_ms": null}]
         });
-        assert_eq!(row(&p), ["香港", "是", "在线", "2026-10-22 16:10:54", "0.1.0+abc", "47.0.0.1", "线路机1 158 ms，线路机2 -", "01a162a9-39c4"]);
+        assert_eq!(row(&p), ["香港", "1（主来源）", "在线", "2026-10-22 16:10:54", "0.1.0+abc", "47.0.0.1", "线路机1 158 ms，线路机2 -", "01a162a9-39c4"]);
         let q = json!({"id": "x", "name": "东京", "state": "pending", "install": {"state": "failed"}, "upgrade": {"sha256": "a"}, "relays": []});
         assert_eq!(row(&q)[1..3], ["", "等待安装（安装失败）（升级中）"]);
         let b = json!({"id": "y", "name": "新加坡", "state": "blind", "relays": []});
         assert_eq!(row(&b)[2], "在线（探测无效）");
         let f = json!({"id": "z", "name": "首尔", "state": "online", "upgrade": null, "upgrade_failed": {"sha256": "a", "to": "0.2.0+new", "from": "0.1.0+old", "at": "2026-10-22T08:10:54Z"}, "relays": []});
         assert_eq!(row(&f)[2], "在线（升级到 0.2.0+new 失败，已回到 0.1.0+old）");
+    }
+
+    #[test]
+    fn source_line_shows_chain() {
+        let src = json!({"order": [{"id": "a", "name": "PVE"}, {"id": "b", "name": "香港"}], "central_enabled": true,
+                         "effective": {"label": "香港探测点（代替离线的PVE探测点）"}});
+        assert_eq!(source_line(&src), "探测顺序：PVE → 香港 → 中控；此刻用的是：香港探测点（代替离线的PVE探测点）；中控自己的检查：开");
+        let c = json!({"order": [], "central_enabled": true, "effective": {"label": "中控"}});
+        assert_eq!(source_line(&c), "探测顺序：中控；此刻用的是：中控；中控自己的检查：开");
+        assert_eq!(row(&json!({"id": "x", "name": "香港", "rank": 2, "state": "online", "relays": []}))[1], "2");
     }
 
     #[test]

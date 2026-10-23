@@ -69,7 +69,7 @@ fleetctl ssh router <名称> [-- 'logread | tail -50']        # 软路由（Open
 | 供应商（缩写、账单时区、流量计量与重置、提前提醒、套餐数） | `fleetctl --json provider ls` |
 | 套餐（供应商、规格、价格 / 周期、在用机器数） | `fleetctl --json plan ls [--provider <供应商>] [--all 含已归档]` |
 | 三网 PING：线路机往外到各目标（默认武汉电信 / 联通 / 移动）的延迟与丢包 | `fleetctl --json ping <线路机>`（`current[]`：`name target mode cur_ms cur_loss`，`cur_loss` 是 %；`show <线路机>` 的 `ping` 字段相同）；全局目标 `fleetctl --json ping-targets` |
-| 探测点与主探测来源：谁在测线路机的客户入口、此刻用的是哪一路、各探测点到各线路机的近 1 小时平均延迟 | `fleetctl --json probe ls`（`{probe_points:[…], source:{primary, central_enabled, effective:{state,label}}}`；`state`：online / blind（在线但探测无效）/ offline / pending / disabled） |
+| 探测点与探测顺序：谁在测线路机的客户入口、此刻用的是哪一路（谁在代测）、各探测点到各线路机的近 1 小时平均延迟 | `fleetctl --json probe ls`（`{probe_points:[…（rank 是在探测顺序里排第几）], source:{order:[{id,name,label}], primary_name, central_enabled, effective:{state,label,substitute}}}`；`state`：online / blind（在线但探测无效）/ offline / pending / disabled） |
 
 访问规则的健康提示：节点被设为 `blocked` 时健康原因里有 `policy_blocked`（info，不降级、不开告警）。
 
@@ -109,13 +109,13 @@ fleetctl exec --team 团队1 --timeout 30 -- uptime           # 多台并发 4�
 
 ## 探测点
 
-中控在德国，客户在中国大陆：中控连不连得上线路机不代表客户。探测点是放在靠近客户的地方（如香港）的小机器，跑 `fleet-agent probe`，每 30 秒连一遍各线路机的客户入口（同中控的轮换与作废规则），另记建连延迟。「主探测来源」（中控或某个探测点）决定线路机卡片的心跳格、入口的「连不上」与 `relay_unreachable`；主来源离线（3 分钟没上报），或在线但 3 分钟里的检查都作废了（它自己连不上对照目标，摘要写「中控（代替探测无效的香港探测点）…」）时，中控的检查开着就由中控代替（连不上照报、连得上不算恢复，摘要写「中控（代替离线的香港探测点）…」），关着就标灰。离线、作废都扣掉中控停机的时段。对照目标通、三台以上线路机全部连不上的轮次照记，`relay_unreachable` 摘要后面会带「；所有线路机同时连不上，可能是供应商整体故障」：这时先查供应商（同一家、同一网段的几台），不要逐台排查。
+中控在德国，客户在中国大陆：中控连不连得上线路机不代表客户。探测点是放在靠近客户的地方（家里 PVE 上的容器、香港）的小机器，跑 `fleet-agent probe`，每 30 秒连一遍各线路机的客户入口（同中控的轮换与作废规则），另记建连延迟。「探测顺序」（有序的探测点列表，第一个是主探测来源；空 = 主来源是中控）决定线路机卡片的心跳格、入口的「连不上」与 `relay_unreachable`：按顺序用第一个能用的。主来源离线（3 分钟没上报）、停用，或在线但 3 分钟里的检查都作废了（它自己连不上对照目标）时，由顺序里下一个能用的探测点代测，都用不了时中控的检查开着就由中控代测，关着就标灰；代测时连不上照报、连得上不算恢复，摘要写「香港探测点（代替离线的PVE探测点）…」「中控（代替探测无效的PVE探测点）…」。离线、作废都扣掉中控停机的时段。对照目标通、三台以上线路机全部连不上的轮次照记，`relay_unreachable` 摘要后面会带「；所有线路机同时连不上，可能是供应商整体故障」：这时先查供应商（同一家、同一网段的几台），不要逐台排查。
 
-- 查看：`fleetctl --json probe ls`（`state` 多一种 `blind`：在线但探测无效，`discard_reason` 写原因）。24 小时 / 7 天 / 30 天到各线路机的成功率与延迟在网页（设置 → 探测点切时间窗；线路机抽屉「连接质量」的「入口连通性」，中控与各探测点并排），数据来自小时汇总，用来对比香港与中控、核对某次投诉的时段。
+- 查看：`fleetctl --json probe ls`（`state` 多一种 `blind`：在线但探测无效，`discard_reason` 写原因）。24 小时 / 7 天 / 30 天到各线路机的成功率与延迟在网页（设置 → 探测点切时间窗；线路机抽屉「连接质量」的「入口连通性」，中控与各探测点并排），数据来自小时汇总，用来对比各路来源、核对某次投诉的时段。
 - 加一台（会登录 / 改那台机器，先向用户确认）：中控能 SSH 到它就 `fleetctl probe add <名称> --host <IP> [--ssh-port 22]`（中控用自己的密钥登录 root，等到首次上报；登不进时报错里有中控公钥全文，转给用户加进探测点的 `/root/.ssh/authorized_keys`，再 `fleetctl probe install <名称> --host <IP>`）；否则 `fleetctl probe add <名称>` 打印一次性安装命令（30 分钟、只能用一次），让用户在探测点上用 root 执行，过期了 `fleetctl probe install <名称>`。
-- 设主来源：`fleetctl probe primary <名称|central>`；中控自己的检查：`fleetctl probe central on|off`（主来源是中控时不能关）。改主来源会改变告警的判断依据，先向用户确认。
-- 启停、改名：`fleetctl probe set <名称> --enable|--disable [--name …] [--note …]`（主来源不能停用、删除）；升级成中控 dist 里的 fleet-agent：`fleetctl probe upgrade <名称>`（探测点自己下载替换，等到报上新版本；新版本 5 分钟内一次都没上报成功会自己换回旧版本、不再换成这个版本，中控记成升级失败、不再下发，`probe ls` 显示「升级到 X 失败，已回到 Y」，告诉用户这个版本在探测点上跑不起来，修好后发新版本再 `probe upgrade`；同一个版本再 `probe upgrade` 中控会拒绝（「这个版本在「X」上跑不起来过」），不要反复试）；删除：`fleetctl probe rm <名称> --yes`，输出里的 `cleanup` 是要在探测点上执行的清理命令，转给用户。
-- 探测点要停机、换机房：先开维护窗口 `fleetctl silence add --probe <名称> --for 2h --maintenance --comment …`（期间 `probe_point_offline` 不开、开着的保持、不发通知；它是主来源时照样退回中控代测）。
+- 设探测顺序：`fleetctl probe order <探测点> [<探测点>…]`（按优先顺序，如 `probe order PVE 香港`；中控总在最后兜底，不写进去）；只写 `fleetctl probe order central` = 主来源改成中控。中控自己的检查：`fleetctl probe central on|off`（顺序为空时不能关）。改顺序会改变告警的判断依据，先向用户确认。
+- 启停、改名：`fleetctl probe set <名称> --enable|--disable [--name …] [--note …]`（在探测顺序里的不能停用、删除：先用 `probe order` 把它移出去）；升级成中控 dist 里的 fleet-agent：`fleetctl probe upgrade <名称>`（探测点自己下载替换，等到报上新版本；新版本 5 分钟内一次都没上报成功会自己换回旧版本、不再换成这个版本，中控记成升级失败、不再下发，`probe ls` 显示「升级到 X 失败，已回到 Y」，告诉用户这个版本在探测点上跑不起来，修好后发新版本再 `probe upgrade`；同一个版本再 `probe upgrade` 中控会拒绝（「这个版本在「X」上跑不起来过」），不要反复试）；删除：`fleetctl probe rm <名称> --yes`，输出里的 `cleanup` 是要在探测点上执行的清理命令，转给用户。
+- 探测点要停机、换机房：先开维护窗口 `fleetctl silence add --probe <名称> --for 2h --maintenance --comment …`（期间 `probe_point_offline` 不开、开着的保持、不发通知；它是主来源时照样由顺序里下一个或中控代测）。
 - 告警 `probe_point_offline`（warning，对象是探测点：`subject_id` 为 null、`subject_name` 是探测点名）：探测点超过 3 分钟没上报，或在线但 3 分钟里的检查都作废了（摘要「在线，但最近 N 分钟的探测都无效：对照目标（…）都连不上」：探测点自己的出网坏了，不是线路机的问题）。转告用户在探测点上看 `rc-service fleet-probe status`、`/var/log/fleet-probe.log`（systemd：`journalctl -u fleet-probe`），见 OPS.md §17。
 
 ## 三网 PING

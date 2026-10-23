@@ -1,9 +1,10 @@
-// 设置「探测点」：放在靠近客户的地方（如香港）的小机器，替中控测线路机的客户入口通不通。
-// 列表（状态、最近上报、版本、近 1 小时 / 24 小时 / 7 天 / 30 天到各线路机的平均延迟与成功率）、主探测来源（单选：中控或某个探测点）、中控自己的检查开关、新增（打印一次性安装命令）。
+// 设置「探测点」：放在靠近客户的地方（如家里的 PVE、香港）的小机器，替中控测线路机的客户入口通不通。
+// 探测顺序（按顺序用第一个能用的探测点，可调整先后、移出、加入；中控在最后兜底，开关是中控自己的检查）、
+// 列表（状态、最近上报、版本、近 1 小时 / 24 小时 / 7 天 / 30 天到各线路机的平均延迟与成功率）、新增（打印一次性安装命令）。
 // 经 SSH 安装、升级用 fleetctl（要等、要看步骤，见 OPS.md「探测点」）。
 import * as React from 'react';
-import { Plus, Radar, RefreshCw, Trash2, Wrench } from 'lucide-react';
-import { useAddProbePoint, useDelProbePoint, usePatchProbePoint, useProbePoints, useReachSource, useReinstallProbePoint, useSaveReachSource, type Bootstrap, type ProbePoint, type ProbeWindow, primaryIssue } from '@/lib/probePoints';
+import { ArrowDown, ArrowUp, Plus, Radar, RefreshCw, Trash2, Wrench, X } from 'lucide-react';
+import { useAddProbePoint, useDelProbePoint, usePatchProbePoint, useProbePoints, useReachSource, useReinstallProbePoint, useSaveReachSource, type Bootstrap, type ProbePoint, type ProbeWindow, primaryIssue, substituteOf } from '@/lib/probePoints';
 import * as F from '@/lib/format';
 import { healthLabel, successPct } from '@/lib/derive';
 import { useEndSubjectMaint } from '@/lib/queries';
@@ -21,7 +22,7 @@ import { CopyButton, Empty, ErrorNote, Note, Panel, Pill, TableWrap } from '@/co
 const STATE: Record<ProbePoint['state'], { label: string; tone: 'ok' | 'bad' | 'neutral' | 'warn' }> = {
   online: { label: '在线', tone: 'ok' }, blind: { label: '探测无效', tone: 'warn' }, offline: { label: '离线', tone: 'bad' }, pending: { label: '等待安装', tone: 'warn' }, disabled: { label: '已停用', tone: 'neutral' },
 };
-const SOURCE_TIP = '线路机的心跳格、入口的「连不上」和相关告警，都以它的结果为准\n主来源离线超过 3 分钟，或在线但探测无效（它自己的网络不通）：中控探测开着就由中控代测，关着就显示灰色\n代测时连不上照常告警，连得上不算恢复';
+const SOURCE_TIP = '线路机的心跳格、入口的「连不上」和相关告警，都以排在最前、能用的那一路为准\n一个探测点离线超过 3 分钟，或在线但探测无效（它自己的网络不通），就轮到下一个；都用不了时中控探测开着就由中控代测，关着就显示灰色\n代测时连不上照常告警，连得上不算恢复，等第一个回来再判';
 const MAINT_TIP = '在维护窗口内：离线不告警，开着的告警保持到维护结束';
 const WINDOWS: { value: ProbeWindow; label: string }[] = [{ value: '1h', label: '1 小时' }, { value: '24h', label: '24 小时' }, { value: '7d', label: '7 天' }, { value: '30d', label: '30 天' }];
 const WINDOW_LABEL: Record<ProbeWindow, string> = { '1h': '近 1 小时', '24h': '近 24 小时', '7d': '近 7 天', '30d': '近 30 天' };
@@ -39,27 +40,54 @@ export function ProbeTab() {
   const patch = usePatchProbePoint(); const reinstall = useReinstallProbePoint(); const remove = useDelProbePoint(); const endMaint = useEndSubjectMaint();
   const list = q.data ?? [];
   const s = src.data;
-  const pick = (primary: string) => save.mutate({ primary, ...(primary === 'central' ? { central_enabled: true } : {}) }, { onSuccess: () => toast.ok('主探测来源已保存'), onError: toast.err });
+  const setOrder = (order: string[]) =>
+    save.mutate({ order, ...(order.length ? {} : { central_enabled: true }) }, { onSuccess: () => toast.ok('探测顺序已保存'), onError: toast.err });
+  const ids = s?.order.map((o) => o.id) ?? [];
+  const move = (i: number, d: -1 | 1) => { const n = [...ids]; [n[i], n[i + d]] = [n[i + d], n[i]]; setOrder(n); };
+  // 能加进顺序的：启用的、还不在顺序里的
+  const addable = list.filter((p) => p.enabled && !ids.includes(p.id));
+  // 此刻在用的那一路（null = 中控；标灰时谁都不是）
+  const used = !s || s.effective.state === 'none' ? undefined : s.effective.probe_point_id;
+  const inUse = (id: string | null) => used === id;
   return (
     <div className="stack">
-      <Panel title={<>主探测来源<InfoTip text={SOURCE_TIP} /></>}>
+      <Panel title={<>探测顺序<InfoTip text={SOURCE_TIP} /></>}>
         {src.isError && <ErrorNote error={src.error} onRetry={() => void src.refetch()} />}
         {!s ? <SkeletonRows rows={2} /> : (
           <div className="stack" style={{ gap: 'var(--sp-12)' }}>
-            <div role="radiogroup" className="row" style={{ gap: 'var(--sp-16)', flexWrap: 'wrap' }}>
-              {[{ id: 'central', label: '中控（德国）', disabled: false }, ...list.map((p) => ({ id: p.id, label: p.label, disabled: !p.enabled }))].map((o) => (
-                <label key={o.id} className="choice" style={{ opacity: o.disabled ? 0.5 : 1, cursor: o.disabled ? 'not-allowed' : undefined }}>
-                  <input type="radio" name="reach-primary" checked={s.primary === o.id} disabled={o.disabled || save.isPending} onChange={() => pick(o.id)} />{o.label}
-                </label>
+            <ol className="choice-list probe-order" aria-label="探测顺序">
+              {s.order.map((o, i) => (
+                <li key={o.id} className="choice">
+                  <span className="probe-order-n num">{i + 1}</span>
+                  <span className="cell-main">{o.label}</span>
+                  {i === 0 && <span className="t-sub">主来源</span>}
+                  {inUse(o.id) && <Pill tone="ok">在用</Pill>}
+                  <span className="row" style={{ gap: 2, marginLeft: 'auto', flexWrap: 'nowrap' }}>
+                    <IconButton size="sm" label="往前排" disabled={i === 0 || save.isPending} onClick={() => move(i, -1)}><ArrowUp size={14} /></IconButton>
+                    <IconButton size="sm" label="往后排" disabled={i === s.order.length - 1 || save.isPending} onClick={() => move(i, 1)}><ArrowDown size={14} /></IconButton>
+                    <IconButton size="sm" label="移出顺序" disabled={save.isPending || (s.order.length === 1 && !s.central_enabled)} onClick={() => setOrder(ids.filter((x) => x !== o.id))}><X size={14} /></IconButton>
+                  </span>
+                </li>
               ))}
-            </div>
-            <label className="row" style={{ gap: 8 }}>
-              <Switch checked={s.central_enabled} disabled={save.isPending || s.primary === 'central'} onCheckedChange={(v) => save.mutate({ central_enabled: v }, { onError: toast.err })} />
-              中控自己的探测<InfoTip text="中控自己连各线路机的入口。主来源是中控时不能关；主来源是探测点时建议开着，探测点离线时由它代测" />
-            </label>
+              <li className="choice">
+                <span className="probe-order-n num">{s.order.length + 1}</span>
+                <span className="cell-main">中控（德国）</span>
+                <span className="t-sub">{s.order.length ? '前面的都用不了时代测，只看通不通' : '主来源'}</span>
+                {inUse(null) && <Pill tone="ok">在用</Pill>}
+                <span style={{ marginLeft: 'auto' }}>
+                  <Switch checked={s.central_enabled} disabled={save.isPending || !s.order.length} onCheckedChange={(v) => save.mutate({ central_enabled: v }, { onError: toast.err })} aria-label="中控自己的探测" />
+                </span>
+              </li>
+            </ol>
+            {addable.length > 0 && (
+              <div className="row" style={{ gap: 'var(--sp-8)', flexWrap: 'wrap' }}>
+                <span className="t-sub">加入顺序：</span>
+                {addable.map((p) => <Button key={p.id} size="sm" disabled={save.isPending} onClick={() => setOrder([...ids, p.id])}><Plus />{p.label}</Button>)}
+              </div>
+            )}
             {/* 主探测点为什么用不了按服务端给的原因说（离线、探测无效、已停用…），不一律写成离线 */}
-            {s.effective.state === 'fallback' && <Note tone="warn">{primaryIssue(s.effective)}，暂由中控代测。连不上照常告警，连得上不算恢复</Note>}
-            {s.effective.state === 'none' && <Note tone="bad">{s.effective.primary_label ? primaryIssue(s.effective) : '中控探测关着'}，{s.effective.primary_label ? '中控探测也关着，' : ''}暂时判断不了入口通不通</Note>}
+            {s.effective.state === 'fallback' && <Note tone="warn">{primaryIssue(s.effective)}，暂由{substituteOf(s.effective)}代测。连不上照常告警，连得上不算恢复</Note>}
+            {s.effective.state === 'none' && <Note tone="bad">{s.effective.primary_label ? `${primaryIssue(s.effective)}，后面也没有能代测的来源（中控探测关着）` : '中控探测关着'}，暂时判断不了入口通不通</Note>}
           </div>
         )}
       </Panel>
@@ -74,7 +102,7 @@ export function ProbeTab() {
               <tbody>
                 {list.map((p) => (
                   <tr key={p.id}>
-                    <td><span className="cell-main strong">{p.name}</span>{p.primary && <span className="sub">主来源</span>}{p.note && <span className="sub">{p.note}</span>}</td>
+                    <td><span className="cell-main strong">{p.name}</span>{p.rank != null && <span className="sub">{p.rank === 1 ? '主来源' : `探测顺序第 ${p.rank}`}</span>}{p.note && <span className="sub">{p.note}</span>}</td>
                     <td>
                       <Pill tone={STATE[p.state].tone}>{STATE[p.state].label}</Pill>
                       {p.maintenance && <Pill tone={HEALTH_TONE.maintenance} tip={MAINT_TIP} tabIndex={0}>{healthLabel('maintenance')}</Pill>}
@@ -90,13 +118,13 @@ export function ProbeTab() {
                     <td>{p.relays.length ? p.relays.map((r) => (
                       <div key={r.relay_id} className="t-sub">{r.name} · <b className="num">{r.avg_ms == null ? '—' : `${Math.round(r.avg_ms)} ms`}</b> · <span data-tip={`${r.ok}/${r.total} 次连上`}>{successPct(r.total ? (100 * r.ok) / r.total : null)}</span></div>
                     )) : '—'}</td>
-                    <td><Switch checked={p.enabled} disabled={patch.isPending || (p.primary && p.enabled)} onCheckedChange={(v) => patch.mutate({ id: p.id, enabled: v }, { onError: toast.err })} aria-label="启用" /></td>
+                    <td><Switch checked={p.enabled} disabled={patch.isPending || (p.rank != null && p.enabled)} onCheckedChange={(v) => patch.mutate({ id: p.id, enabled: v }, { onError: toast.err })} aria-label="启用" /></td>
                     <td className="r"><span className="row" style={{ gap: 4, justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
                       {p.maintenance
                         ? <IconButton label="结束维护" disabled={endMaint.isPending} onClick={() => endMaint.mutate({ kind: 'probe_point', id: p.id }, { onSuccess: () => toast.ok(`${p.label} 已结束维护`), onError: toast.err })}><Wrench size={14} /></IconButton>
                         : <IconButton label="维护窗口" onClick={() => setMaint(p)}><Wrench size={14} /></IconButton>}
                       <IconButton label="重新生成安装命令" onClick={() => reinstall.mutate(p.id, { onSuccess: (d) => d.bootstrap && setBoot({ name: p.name, b: d.bootstrap }), onError: toast.err })}><RefreshCw size={14} /></IconButton>
-                      <IconButton label={p.primary ? '主来源不能删除' : '删除'} disabled={p.primary} onClick={() => setDel(p)}><Trash2 size={14} /></IconButton>
+                      <IconButton label={p.rank != null ? '在探测顺序里，先移出再删除' : '删除'} disabled={p.rank != null} onClick={() => setDel(p)}><Trash2 size={14} /></IconButton>
                     </span></td>
                   </tr>
                 ))}
