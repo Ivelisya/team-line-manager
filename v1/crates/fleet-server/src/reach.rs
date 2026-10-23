@@ -35,8 +35,9 @@ use uuid::Uuid;
 const EVERY: Duration = Duration::from_secs(30);
 /// 同 agent 的 TCP 探测：盖住 SYN 的第三次重发（第 7 秒）
 const TIMEOUT: Duration = Duration::from_secs(10);
-/// 对照目标：任一连上就算测的这一方自己的网络是好的（中控在德国、探测点在香港，访问这两个都没问题）
-pub const CONTROLS: &[&str] = &["1.1.1.1:443", "8.8.8.8:443"];
+/// 对照目标：任一连上就算测的这一方自己的网络是好的。中控在德国、探测点在香港访问前两个都没问题；
+/// 大陆的探测点（家里的 PVE）连不上 1.1.1.1 / 8.8.8.8 的 443，靠阿里 DNS（223.5.5.5，各地都有节点）
+pub const CONTROLS: &[&str] = &["1.1.1.1:443", "8.8.8.8:443", "223.5.5.5:443"];
 /// 连续这么多次连不上算「中控连不上」（告警的 `unreachable_sql`、视图入口的 reach.fails 与网页同一口径）
 pub const FAILS: i32 = 3;
 

@@ -79,7 +79,7 @@ async fn probe_token_auth() {
     let (st, v) = t.req("GET", "/agent/v1/probe/targets", None, Some(&tok)).await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(v["interval_s"], 30);
-    assert_eq!(v["controls"], json!(["1.1.1.1:443", "8.8.8.8:443"]));
+    assert_eq!(v["controls"], json!(["1.1.1.1:443", "8.8.8.8:443", "223.5.5.5:443"]));
     assert_eq!(v["relays"], json!([{"relay_id": relay, "host": "relay.test", "ports": [20001]}]));
     assert!(v.get("upgrade").is_none());
     // 停用：拿到空目标，上报照收心跳、不写检查

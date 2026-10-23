@@ -500,7 +500,7 @@ url = "https://api.frankfurter.dev/v1/latest?base=USD"   # 回包 {base:"USD", d
 
 放在家里 / 办公室网络里时，探测点的出网必须是**直连**的宽带：网关上跑着 OpenClash 之类代理（旁路由）时，到线路机的连接会被代理接走，测到的是代理的结果。生产的 PVE 探测点是 PVE 上的容器 CT 180 `fleet-probe`（Debian 13，192.168.31.59，网关指向主路由 192.168.31.1、不经旁路由 192.168.31.2），宿主机自己的网关不动；建容器后先 `curl ip-api.com/line` 核对出口是本地宽带再装。
 
-要求：x86_64 Linux（dist 里的 fleet-agent 是 musl 静态的，Alpine 直接跑），systemd 或 OpenRC，能出网访问中控（https）与 1.1.1.1 / 8.8.8.8 的 443；不需要公网入站，几 MB 内存。
+要求：x86_64 Linux（dist 里的 fleet-agent 是 musl 静态的，Alpine 直接跑），systemd 或 OpenRC，能出网访问中控（https）与对照目标（1.1.1.1 / 8.8.8.8 / 223.5.5.5 的 443，任一连上即可；大陆的网络连不上前两个，靠 223.5.5.5）；不需要公网入站，几 MB 内存。
 
 **加一台**（二选一）：
 - 中控能 SSH 到它（有公网 IP，NAT 后面但 22 映射出来了）：`fleetctl probe add 香港 --host <IP> [--ssh-port 22]`。中控用自己的密钥登录 root（主机指纹首次记录、之后严格校验），推 fleet-agent 到 `/opt/fleet/`、写 `/etc/fleet/probe.toml`（0600）、装服务，等到首次上报才算完。登不进时报错里有中控公钥全文：在探测点上把它加进 `/root/.ssh/authorized_keys` 再执行一次 `fleetctl probe install 香港 --host <IP>`。
@@ -510,7 +510,7 @@ url = "https://api.frankfurter.dev/v1/latest?base=USD"   # 回包 {base:"USD", d
 **服务**：OpenRC（Alpine）是 `/etc/init.d/fleet-probe`（`supervise-daemon` 守护、挂了 5 秒后拉起、开机启动），日志 `/var/log/fleet-probe.log`（只在出问题时写、同一个问题 10 分钟一条，不轮转也涨得很慢）；systemd 是 `fleet-probe.service`（`journalctl -u fleet-probe`）。以系统用户 `fleet-probe` 跑。
 
 **它判不了的时候**：
-- 每轮对照目标（1.1.1.1 / 8.8.8.8 的 443）都连不上：这一轮作废，只算心跳。在线、但 3 分钟里没有一轮被采纳（`fleetctl probe ls` 状态「在线（探测无效）」，网页「探测无效」并写原因）就当它离线：轮到顺序里的下一个（卡片写「香港探测点（代替探测无效的PVE探测点）」，都用不了时「中控（代替…）」），开 `probe_point_offline`。离线后刚回来的那一轮作废不算，从回来时算起。
+- 每轮对照目标（1.1.1.1 / 8.8.8.8 / 223.5.5.5 的 443）都连不上：这一轮作废，只算心跳。在线、但 3 分钟里没有一轮被采纳（`fleetctl probe ls` 状态「在线（探测无效）」，网页「探测无效」并写原因）就当它离线：轮到顺序里的下一个（卡片写「香港探测点（代替探测无效的PVE探测点）」，都用不了时「中控（代替…）」），开 `probe_point_offline`。离线后刚回来的那一轮作废不算，从回来时算起。
 - 对照目标通、三台以上线路机全部连不上：照记（以前整轮作废），`relay_unreachable` 摘要写「所有线路机同时连不上，可能是供应商整体故障」。
 - 「多久没上报」「多久没采纳」都扣掉中控收不到上报的时段（中控或库停一阵恢复后不会先判离线、退回中控再切回来，同 agent 离线）。
 
