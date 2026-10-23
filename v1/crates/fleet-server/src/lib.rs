@@ -20,6 +20,7 @@ pub mod meta;
 pub mod names;
 pub mod notify;
 pub mod ping;
+pub mod placement;
 pub mod policy;
 pub mod probe_points;
 pub mod reach;
@@ -150,6 +151,7 @@ pub fn spawn_background(st: &AppState) {
     supervise(st, "汇率更新", fx::run_forever);
     supervise(st, "探测点", probe_points::run_forever);
     supervise(st, "三网 PING 汇总与清理", ping::run_forever);
+    supervise(st, "放置矩阵", placement::run_forever);
 }
 
 /// 命令行（user-set 重设密码）在别的进程里删会话：经 NOTIFY 转来，实时流的连接马上复核。

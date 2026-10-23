@@ -49,6 +49,20 @@ pub struct Report {
     /// 三网 PING（线路机往外测，`DesiredState::ping` 给的目标）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ping: Vec<PingSample>,
+    /// 线路机 → 各 VPS 节点的网络往返（`DesiredState::rtt` 给的节点；放置矩阵，见 fleet-server 的 placement.rs）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rtt: Vec<RttSample>,
+}
+
+/// 一个节点一轮：`ok` = 这一轮 3 秒内有回应（ICMP 回了，或退回 TCP 时连上 / 被拒——RST 回来也说明路由可达）；
+/// `rtt_ms` 是这一轮的往返时间（ICMP 几次回应的中位数），不通为 None
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RttSample {
+    pub node_id: Uuid,
+    pub ts_ms: i64,
+    pub ok: bool,
+    #[serde(default)]
+    pub rtt_ms: Option<f32>,
 }
 
 /// 一个目标一轮（发 `sent` 次，丢 `lost` 次，`rtt_ms` 是通了的那几次的中位数，全丢为 None）
@@ -212,6 +226,25 @@ pub struct DesiredState {
     /// 三网 PING 的目标（中控按全局 + 这台的覆盖合成）；没有目标为 None
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ping: Option<PingConfig>,
+    /// 放置矩阵：这台要测往返的全部在用 VPS 节点（不只是挂在它上面的）；没有为 None。
+    /// 旧 agent 不认识这个字段、照常应用，只是不测；新 agent 没收到（旧中控）就不测
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rtt: Option<RttConfig>,
+}
+
+/// 放置矩阵：每 `interval_s` 秒一轮，各节点测一次网络往返（ICMP；系统 ping 用不了时 TCP 建连 `port`，即节点的 SSH 端口）
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RttConfig {
+    pub interval_s: u32,
+    pub targets: Vec<RttTarget>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RttTarget {
+    pub node_id: Uuid,
+    /// 节点的公网 IP
+    pub host: String,
+    pub port: u16,
 }
 
 /// 三网 PING：每 `interval_s` 秒一轮，每个目标发 `count` 次。`mode` 是字符串而不是枚举：以后加新方式时旧 agent 不至于整份期望状态解析失败

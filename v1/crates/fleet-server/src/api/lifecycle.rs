@@ -478,6 +478,20 @@ pub async fn moves(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Mov
     Ok(ok(moves_view(&e, Some(&created))))
 }
 
+// ── 放置矩阵 ──────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct PlacementQ {
+    /// 团队 id 或名称；不填 = 全部
+    team: Option<String>,
+}
+
+/// 放置矩阵（只读，逻辑见 `crate::placement`）：每个在用 VPS 节点到各线路机近 24 小时的 p50 与成功率、当前与最优线路机，
+/// 建议换线的按目标线路机合成一条批量 `fleetctl move A,B --to X`
+pub async fn placement(_a: Actor, State(st): State<AppState>, ApiQuery(q): ApiQuery<PlacementQ>) -> ApiResult<Json<Value>> {
+    Ok(ok(crate::placement::view(&st, q.team.as_deref()).await?))
+}
+
 // ── 搬迁建议 ──────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -488,7 +502,7 @@ pub struct RebalanceIn {
     exclude: Option<String>,
 }
 
-fn quota_q(m: &MachineView, now: OffsetDateTime) -> Q {
+pub(crate) fn quota_q(m: &MachineView, now: OffsetDateTime) -> Q {
     let q = &m.quota;
     let days_left = q.period_end.map_or(0.0, |e| ((q.period_start_at + time::Duration::days((e - q.period_start).whole_days())) - now).as_seconds_f64().max(0.0) / 86400.0);
     Q { limit: q.limit_gb.map(|g| g as f64 * 1e9), used: q.used as f64, daily: q.daily_avg.unwrap_or(0) as f64, days_left }

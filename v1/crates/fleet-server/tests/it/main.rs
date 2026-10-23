@@ -15,6 +15,7 @@ mod jobs;
 mod lifecycle;
 mod ops;
 mod ping;
+mod placement;
 mod policy;
 mod probe;
 mod retention;

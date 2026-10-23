@@ -52,7 +52,7 @@ pub const TCP_TIMEOUT: Duration = Duration::from_secs(10);
 /// 已连上的套接字的 (往返时间 µs, SYN 重发次数)，取自内核 TCP_INFO。往返时间是内核拿 SYN-ACK 量的：
 /// 重发过的建连按时间戳选项算（只算最后那次 SYN 的往返），量不到时为 0
 #[cfg(target_os = "linux")]
-fn tcp_info(s: &TcpStream) -> Option<(u32, u32)> {
+pub(crate) fn tcp_info(s: &TcpStream) -> Option<(u32, u32)> {
     use std::os::fd::AsRawFd;
     // SAFETY: tcp_info 是纯数据结构，全零合法；getsockopt 最多写 len 字节
     let mut info: libc::tcp_info = unsafe { std::mem::zeroed() };
@@ -62,13 +62,13 @@ fn tcp_info(s: &TcpStream) -> Option<(u32, u32)> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn tcp_info(_: &TcpStream) -> Option<(u32, u32)> {
+pub(crate) fn tcp_info(_: &TcpStream) -> Option<(u32, u32)> {
     None
 }
 
 /// 建连延迟：有内核往返时间用它（不含重发等待、不受 tokio 调度影响）；内核没量到时，没重发过才用墙钟耗时，
 /// 重发过就不给延迟（墙钟耗时里是 1 s / 3 s 的重发等待，不是线路延迟）
-fn connect_latency(elapsed_ms: f32, info: Option<(u32, u32)>) -> Option<f32> {
+pub(crate) fn connect_latency(elapsed_ms: f32, info: Option<(u32, u32)>) -> Option<f32> {
     match info {
         Some((rtt_us, _)) if rtt_us > 0 => Some(rtt_us as f32 / 1000.0),
         Some((_, retrans)) if retrans > 0 => None,

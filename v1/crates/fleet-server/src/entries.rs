@@ -197,6 +197,8 @@ pub async fn desired_state(db: &PgPool, secrets: &SecretBox, relay_id: Uuid, ech
         entries,
         // 三网 PING 的目标：全局 + 这台的覆盖（ping.rs）
         ping: crate::ping::config_for(db, relay_id).await?,
+        // 放置矩阵：全部在用 VPS 节点（placement.rs）
+        rtt: crate::placement::config(db).await?,
     })
 }
 

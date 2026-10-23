@@ -101,6 +101,8 @@ pub fn router() -> Router<AppState> {
         .route("/relays/{id}/evacuate", get(lifecycle::evacuate_preview).post(lifecycle::evacuate))
         // 搬迁建议（只读）：按近 7 天的速度重置前会用满的线路机，挑出搬走后能撑到重置日的最少入口
         .route("/relays/{id}/rebalance", get(lifecycle::rebalance))
+        // 放置矩阵（只读）：各节点到每台线路机的往返，当前与最优线路机，换线建议
+        .route("/placement", get(lifecycle::placement))
         // 替换节点：GET 预览，POST 建作业（改软路由出口 → 交换编号）
         .route("/machines/{id}/replace", get(replace::preview).post(replace::replace))
         // 改出口指向：软路由上指向这个入口的出口改成另一个入口（GET 预览，POST 建作业）
