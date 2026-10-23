@@ -1424,9 +1424,10 @@ pub fn overview_of(ms: &[MachineView], traffic: &HashMap<Uuid, Traffic>) -> Valu
         bucket["total"] = json!(bucket["total"].as_i64().unwrap_or(0) + 1);
         bucket[key] = json!(bucket[key].as_i64().unwrap_or(0) + 1);
         if let Some(s) = &m.subscription {
+            // 备用团队的不续费（替换下来等到期丢弃的），不算要续的（同前端 nextDue 与机器页「即将到期」筛选）
             match s.due_state {
-                "soon" => due_soon += 1,
-                "overdue" => overdue += 1,
+                "soon" if !m.spare => due_soon += 1,
+                "overdue" if !m.spare => overdue += 1,
                 _ => {}
             }
             // 月费：各台折好的 monthly_cents 按币种（大写）相加
@@ -1555,6 +1556,10 @@ mod tests {
         assert_eq!((ov["due_soon"].as_i64(), ov["overdue"].as_i64()), (Some(2), Some(1)));
         let ov1 = overview_of(&[with(-1, true)], &HashMap::new());
         assert_eq!(ov1["overdue"].as_i64(), Some(0), "自动续费的到期日次日还不算已过期");
+        let (mut spare_soon, mut spare_over) = (with(3, false), with(-2, false));
+        (spare_soon.spare, spare_over.spare) = (true, true);
+        let ov2 = overview_of(&[spare_soon, spare_over], &HashMap::new());
+        assert_eq!((ov2["due_soon"].as_i64(), ov2["overdue"].as_i64()), (Some(0), Some(0)), "备用团队的不算");
         // 月费是各台 monthly_cents 之和
         assert_eq!(ov["monthly_cost"], json!([{"currency": "USD", "cents": 433}]));
     }

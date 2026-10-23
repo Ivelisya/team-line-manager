@@ -126,7 +126,7 @@ function overview() {
     // 需要续费的按订阅的 due_state（同服务端）：自动续费的只在已过期时算
     // 在线/离线按 agent 连通（同 isQuiet），只数有自己 agent 的（家宽代理、同机 IP 节点不计）
     online: live.filter((m) => m.agent && !m.host_machine && !isQuiet(m)).length, offline: live.filter((m) => m.agent && !m.host_machine && isQuiet(m)).length,
-    due_soon: live.filter((m) => m.subscription?.due_state === 'soon').length, overdue: live.filter((m) => m.subscription?.due_state === 'overdue').length,
+    due_soon: live.filter((m) => !m.spare && m.subscription?.due_state === 'soon').length, overdue: live.filter((m) => !m.spare && m.subscription?.due_state === 'overdue').length,
     monthly_cost: Object.entries(live.reduce<Record<string, number>>((acc, m) => { if (m.subscription) acc[m.subscription.currency] = (acc[m.subscription.currency] ?? 0) + m.subscription.monthly_cents; return acc; }, {})).map(([currency, cents]) => ({ currency, cents })),
     traffic_month: { up, down },
     // 实时速率只算数据没过期的（同 liveRate）；同机 IP 节点的读数就是宿主机的，不重复算
