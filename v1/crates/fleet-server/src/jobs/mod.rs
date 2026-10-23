@@ -144,18 +144,27 @@ pub fn provisions(kind: &str) -> bool { kind.starts_with("provision_") }
 
 pub fn cancellable(kind: &str) -> bool { provisions(kind) || matches!(kind, "attach_entry" | "move_entry" | "upgrade_agent" | "replace" | "tune") }
 
+/// 停在「改软路由出口」这一步
+fn at_routers(kind: &str, step: i32) -> bool { (kind == "replace" && step == 0) || (kind == "move_entry" && step == MOVE_ROUTERS) }
+
 /// 作业走到第 `step` 步、处于 `state` 时为什么不能取消；能取消返回 None。`params` 是作业参数（「改软路由出口」记的
-/// `routers_queued` / `routers_stuck`，见 steps/replace.rs）。
+/// `routers_queued` / `routers_applied` / `routers_stuck`，见 steps/replace.rs）。
 /// 换线路机一旦开始改软路由就只能重试到完成（取消会摘掉路由已经指向的新入口；摘旧入口之后回滚会让节点没有入口），
-/// 排队等别的作业改完同一台路由、或改路由失败（已换回原配置）停在这一步时还能取消；改失败且有路由没换回时不能取消，人工处理好后重试。
+/// 排队等别的作业改完同一台路由、或改路由失败（已确认改回原配置）停在这一步时还能取消；路由可能还改着一部分（中途被打断、
+/// 改回失败，`routers_applied` 不空）时不能取消，重试做完（重试之后、核对过路由之前也一样）。
 /// 升级 agent 只能在排队时取消（推送、重启到一半中断更危险）；替换节点同换线路机，只能在动路由之前取消
 pub fn cancel_blocker(kind: &str, step: i32, state: &str, params: &Value) -> Option<&'static str> {
     if !cancellable(kind) {
         return Some("这类作业不能取消（可以重试到完成）");
     }
-    let at_routers = (kind == "replace" && step == 0) || (kind == "move_entry" && step == MOVE_ROUTERS);
-    if at_routers && state == "failed" && params["routers_stuck"].as_array().is_some_and(|a| !a.is_empty()) {
-        return Some("有软路由改失败后没能换回原配置（见作业日志）：人工处理好那台路由再点重试；现在取消，路由上的出口会指着对不上的入口");
+    let at_routers = at_routers(kind, step);
+    let some = |k: &str| params[k].as_array().is_some_and(|a| !a.is_empty());
+    if at_routers && matches!(state, "queued" | "running" | "waiting" | "failed") && (some("routers_stuck") || some("routers_applied")) {
+        return Some(if some("routers_stuck") {
+            "有软路由改失败后没能改回原配置（见作业详情的「需要人工处理」）：让路由恢复连接后点重试做完；现在取消，路由上的出口会指着对不上的入口"
+        } else {
+            "改软路由出口这一步中途被打断，路由可能改了一部分：点重试做完；现在取消，路由上的出口会指着对不上的入口"
+        });
     }
     // 排队等别的作业改完同一台路由：路由还没动
     let queued = at_routers && state == "waiting" && params["routers_queued"].is_string();
@@ -182,6 +191,29 @@ pub fn cancel_blocker(kind: &str, step: i32, state: &str, params: &Value) -> Opt
     } else {
         "升级已经开始，不能取消：推送、重启到一半中断更危险，等它结束（新版本有问题会自动换回旧版本）"
     })
+}
+
+/// 作业要人工处理时（接口的 `manual`）：改软路由出口失败、改回也失败，停在这一步。`stuck` 是参数 `routers_stuck`
+/// （steps/replace.rs 的 Stuck）。其余为 null
+pub fn manual(kind: &str, step: i32, state: &str, stuck: &Value) -> Value {
+    let rs: Vec<&Value> = stuck.as_array().into_iter().flatten().filter(|r| r.is_object()).collect();
+    if !at_routers(kind, step) || state != "failed" || rs.is_empty() {
+        return Value::Null;
+    }
+    let strs = |v: &Value| v.as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect::<Vec<_>>();
+    let what: Vec<String> = rs
+        .iter()
+        .map(|r| {
+            let xs: Vec<String> = strs(&r["exits"]).into_iter().zip(strs(&r["was"])).map(|(x, w)| format!("{x}（原来指向 {w}）")).collect();
+            format!("「{}」的出口 {}", r["name"].as_str().unwrap_or(""), xs.join("、"))
+        })
+        .collect();
+    let message = format!(
+        "软路由{}可能停在改了一半，中控没能把它们改回去。先让软路由恢复连接（软路由页显示在线），再点「重试」，中控会核对并接着改完；\
+         也可以登录路由，只把这几个出口改回原来的地址后再重试，不要整份换回备份（会抹掉别的作业对其它出口的改动）。这时不能取消",
+        what.join("；")
+    );
+    json!({"message": message, "routers": rs.iter().map(|r| json!({"id": r["id"], "name": r["name"], "exits": strs(&r["exits"])})).collect::<Vec<_>>()})
 }
 
 /// 外层超时：步骤自己的 timeout_s 再加 120 秒余量
@@ -1050,6 +1082,35 @@ mod tests {
         let stuck = json!({"routers_stuck": ["路由A"]});
         assert!(!with("move_entry", 4, "failed", stuck.clone()) && !with("replace", 0, "failed", stuck));
         assert!(with("move_entry", 4, "failed", json!({"routers_stuck": []})));
+        // 路由可能改着一部分（中途被打断、改回失败）：失败停着、重试后排队 / 等锁，都不能取消；这一步做完之后照常看后面的步骤
+        let applied = json!({"routers_applied": [{"id": Uuid::nil()}], "routers_stuck": [], "routers_queued": "路由A"});
+        for (kind, step) in [("move_entry", 4), ("replace", 0)] {
+            for state in ["failed", "queued", "waiting", "running"] {
+                assert!(!with(kind, step, state, applied.clone()), "{kind} {state}");
+            }
+        }
+        assert!(cancel_blocker("move_entry", 4, "failed", &applied).unwrap().contains("中途被打断"));
+        assert!(cancel_blocker("move_entry", 4, "failed", &json!({"routers_stuck": [{"id": Uuid::nil()}]})).unwrap().contains("需要人工处理"));
+        assert!(!with("replace", 1, "failed", applied.clone()) && with("move_entry", 4, "failed", json!({"routers_applied": []})));
+    }
+
+    #[test]
+    fn manual_only_when_revert_failed() {
+        let stuck = json!([{"id": Uuid::nil(), "name": "路由A", "exits": ["节点01", "节点02"], "was": ["198.51.100.2:20003", "relay.test:20003"]}]);
+        let m = manual("move_entry", 4, "failed", &stuck);
+        assert_eq!(m["routers"], json!([{"id": Uuid::nil(), "name": "路由A", "exits": ["节点01", "节点02"]}]));
+        let msg = m["message"].as_str().unwrap();
+        assert!(msg.starts_with("软路由「路由A」的出口 节点01（原来指向 198.51.100.2:20003）、节点02（原来指向 relay.test:20003）可能停在改了一半"), "{msg}");
+        assert!(msg.contains("点「重试」") && !msg.is_ascii(), "{msg}");
+        for (kind, step, state, s) in [
+            ("move_entry", 4, "running", stuck.clone()),
+            ("move_entry", 5, "failed", stuck.clone()),
+            ("replace", 0, "failed", json!([])),
+            ("replace", 0, "failed", Value::Null),
+        ] {
+            assert!(manual(kind, step, state, &s).is_null(), "{kind} {step} {state} {s}");
+        }
+        assert!(!manual("replace", 0, "failed", &stuck).is_null());
     }
 
     /// 作业定义变了：按步骤 key 对齐。MOVE_ENTRY 在第 4 步插入了 routers（原来 7 步）

@@ -113,20 +113,53 @@ pub async fn keyscan(host: &str, port: u16) -> anyhow::Result<Option<String>> {
     Ok(seen)
 }
 
-/// ssh 自己失败（退出码 255）时给人看的原因
+/// 经隧道交互式登录路由（网页终端）：同 `via_tunnel` 的密钥与主机公钥核对，不复用 ControlMaster（每个终端自己一条连接），
+/// 同 ssh::Target::interactive：不转发、关掉转义字符、要远端分配终端
+pub fn interactive(cfg: &Config, id: Uuid, port: i32) -> Command {
+    let mut c = Command::new("ssh");
+    c.args(["-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-i"]).arg(&cfg.ssh_key);
+    common(&mut c, &cfg.routers.known_hosts, id);
+    c.args(["-o", "ClearAllForwardings=yes", "-e", "none", "-tt"]);
+    c.arg("-p").arg(port.to_string()).arg("root@127.0.0.1");
+    c
+}
+
+/// ssh 常见报错的中文说法（按先后匹配，认不出的原样给出）
+const ZH: &[(&str, &str)] = &[
+    ("banner exchange", "SSH 握手超时（路由忙，或隧道断了）"),
+    ("kex_exchange_identification", "SSH 握手时连接被关闭（路由忙，或隧道断了）"),
+    ("Connection refused", "连接被拒绝（隧道没连上）"),
+    ("Connection timed out", "连接超时"),
+    ("Operation timed out", "连接超时"),
+    ("No route to host", "到不了这个地址"),
+    ("Network is unreachable", "网络不通"),
+    ("Could not resolve", "域名解析失败"),
+    ("Connection reset", "连接被重置"),
+    ("Connection closed", "连接被对方关闭"),
+    ("Broken pipe", "连接中途断了"),
+    ("Timeout, server", "对方长时间没有响应，连接断了"),
+];
+
+/// ssh 自己失败（退出码 255）时给人看的原因：中文；认不出的错误原样跟在后面，stderr 是空的（连上之后断了）写明
 pub fn explain(o: &Output, via_tunnel: bool) -> String {
-    let detail = o.stderr.lines().map(str::trim).filter(|l| !l.is_empty()).last().unwrap_or("").to_string();
+    let detail = o.stderr.lines().map(str::trim).rfind(|l| !l.is_empty()).unwrap_or("");
     match o.ssh_kind() {
         Some(ErrKind::HostKey) => format!(
-            "路由的主机公钥和记录的不一样（{detail}）：{}",
+            "路由的主机公钥和记录的不一样：{}",
             if via_tunnel { "隧道端口上的不是这台路由；确认路由重装过再「重新生成接入命令」，会清掉旧记录" } else { "可能连错了机器" }
         ),
         Some(ErrKind::Auth) => format!(
-            "登录被拒（{detail}）：{}",
+            "登录被拒：{}",
             if via_tunnel { "路由的 /etc/dropbear/authorized_keys 里没有中控的公钥，重新接入会加上" } else { "用户名或密码不对，或路由不收这个中控的密钥" }
         ),
-        _ if via_tunnel => format!("经隧道连不上路由：{detail}"),
-        _ => format!("SSH 连接失败：{detail}"),
+        _ => {
+            let what = if via_tunnel { "经隧道连不上路由" } else { "SSH 连接失败" };
+            match ZH.iter().find(|(en, _)| detail.contains(en)) {
+                _ if detail.is_empty() => format!("{}连接中途断了（ssh 退出码 255，没有输出）", if via_tunnel { "经隧道的" } else { "SSH " }),
+                Some((_, zh)) => format!("{what}：{zh}"),
+                None => format!("{what}：{detail}"),
+            }
+        }
     }
 }
 
@@ -141,7 +174,12 @@ mod tests {
         assert!(explain(&out(255, "Host key verification failed."), true).starts_with("路由的主机公钥和记录的不一样"));
         assert!(explain(&out(255, "root@127.0.0.1: Permission denied (publickey)."), true).contains("authorized_keys"));
         assert!(explain(&normalize(out(5, ""), true), false).contains("用户名或密码不对"));
-        assert!(explain(&out(255, "ssh: connect to host 127.0.0.1 port 23001: Connection refused"), true).starts_with("经隧道连不上路由：ssh: connect"));
+        assert_eq!(explain(&out(255, "ssh: connect to host 127.0.0.1 port 23001: Connection refused"), true), "经隧道连不上路由：连接被拒绝（隧道没连上）");
+        assert_eq!(explain(&out(255, "Connection timed out during banner exchange\n"), true), "经隧道连不上路由：SSH 握手超时（路由忙，或隧道断了）");
+        // 连上之后断了（ControlMaster 的从属会话 255、没有输出）：不留空冒号
+        assert_eq!(explain(&out(255, ""), true), "经隧道的连接中途断了（ssh 退出码 255，没有输出）");
+        assert_eq!(explain(&out(255, "weird thing"), false), "SSH 连接失败：weird thing");
+        assert!(!explain(&out(255, "Host key verification failed."), true).contains("verification"), "主机公钥、登录被拒不夹英文原文");
         assert_eq!(normalize(out(5, ""), false).code, 5, "没用密码时不折算");
     }
 

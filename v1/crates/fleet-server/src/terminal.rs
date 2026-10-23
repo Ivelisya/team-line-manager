@@ -1,6 +1,7 @@
 //! 网页终端：在浏览器里直接打开机器的 shell（用户常换设备，登录密钥只放在中控）。
 //!
-//! 中控本地开 PTY 跑 `ssh -tt`（中控自己的密钥与 known_hosts，见 `ssh::Target::interactive`），WebSocket 上二进制帧双向搬
+//! 中控本地开 PTY 跑 `ssh -tt`（中控自己的密钥与 known_hosts，见 `ssh::Target::interactive`；软路由经它的反向隧道，
+//! 见 `routers::tunnel::interactive`），WebSocket 上二进制帧双向搬
 //! 终端字节，文本帧是 JSON 控制消息。接口在 api/terminal.rs，协议见 docs/API.md「网页终端」。安全要求落在这里的部分：
 //! - 票据：随机 32 字节，只存 sha256，60 秒有效，取出即删（对不对都删），绑定开票的会话与目标（`Hub::issue` / `Hub::redeem`）；
 //!   握手之后的第一条消息才送票据，不进地址：反代与中控的请求日志都记不到它。等票据的连接每个会话最多 5 个（`Hub::wait_ticket`）
@@ -91,7 +92,7 @@ pub fn site_origin(public_url: &str) -> Option<String> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Machine,
-    /// 软路由（另一个分支做；合并后在 `resolve` 里接上）
+    /// 软路由：经它的反向隧道登录（routers::tunnel::interactive）
     Router,
 }
 
@@ -339,23 +340,56 @@ pub struct Target {
     pub name: String,
     /// 同机 IP 节点：实际登录的宿主机（id、显示名）
     pub via: Option<(Uuid, String)>,
-    pub ssh: ssh::Target,
+    /// 实际登录的地址与端口（软路由是中控本机的隧道端口）
+    pub ip: String,
+    pub port: u16,
+    login: Login,
+}
+
+/// 怎么登录
+enum Login {
+    Machine(ssh::Target),
+    /// 经软路由连到中控的反向隧道（同 `fleetctl ssh router`，routers::tunnel）
+    Router,
 }
 
 impl Target {
     /// 审计里的目标：名字、实际登录的地址与端口、经哪台宿主机
     fn audit_detail(&self) -> Value {
-        json!({"kind": self.kind.as_str(), "name": self.name, "ip": self.ssh.ip, "port": self.ssh.port,
+        json!({"kind": self.kind.as_str(), "name": self.name, "ip": self.ip, "port": self.port,
                "host": self.via.as_ref().map(|(id, name)| json!({"id": id, "name": name}))})
+    }
+
+    /// 交给 PTY 的 ssh 命令
+    fn command(&self, cfg: &crate::config::Config) -> tokio::process::Command {
+        match &self.login {
+            Login::Machine(t) => t.interactive(),
+            Login::Router => crate::routers::tunnel::interactive(cfg, self.id, self.port.into()),
+        }
     }
 }
 
-/// 按 kind 解析出 ssh 目标。开票时与连上时各查一次（中间可能已经退役）
+/// 按 kind 解析出 ssh 目标。开票时与连上时各查一次（中间可能已经退役、删除）
 pub async fn resolve(st: &AppState, kind: Kind, id: Uuid) -> ApiResult<Target> {
     match kind {
         Kind::Machine => machine(st, id).await,
-        Kind::Router => Err(ApiError::bad_request("软路由终端稍后开放")),
+        Kind::Router => router(st, id).await,
     }
+}
+
+/// 软路由：经它的反向隧道（127.0.0.1:<隧道端口>），中控密钥，主机公钥按 router-<id> 在 [routers] known_hosts 里核对。
+/// 还没接入过（没记下主机公钥）、现在离线（隧道没连上）的不开：开了也只会连不上
+async fn router(st: &AppState, id: Uuid) -> ApiResult<Target> {
+    let r = crate::routers::load(&st.db, Some(id)).await?.into_iter().next().ok_or_else(|| ApiError::not_found("没有这台软路由"))?;
+    match r.state() {
+        "pending" => return Err(ApiError::conflict(format!("软路由「{}」还没接入过，不能打开终端：在路由上执行接入命令、等它在线后再开", r.name))),
+        "offline" => {
+            let why = r.error.as_deref().map(|e| format!("（{e}）")).unwrap_or_default();
+            return Err(ApiError::conflict(format!("软路由「{}」现在离线{why}，连不上：等它在线后再开终端", r.name)));
+        }
+        _ => {}
+    }
+    Ok(Target { kind: Kind::Router, id, name: r.name, via: None, ip: "127.0.0.1".into(), port: r.tunnel_port as u16, login: Login::Router })
 }
 
 /// 这个生命周期的机器能不能登录：已退役的、还没上架完成的（草稿、上架中、上架失败）不行。`who` 是说法里的主语
@@ -395,7 +429,9 @@ async fn machine(st: &AppState, id: Uuid) -> ApiResult<Target> {
         id,
         name,
         via: host_id.zip(host_name),
-        ssh: ssh::Target { ip, port: port as u16, key: st.cfg.ssh_key.clone(), known_hosts: st.cfg.known_hosts.clone(), password: None },
+        ip: ip.clone(),
+        port: port as u16,
+        login: Login::Machine(ssh::Target { ip, port: port as u16, key: st.cfg.ssh_key.clone(), known_hosts: st.cfg.known_hosts.clone(), password: None }),
     })
 }
 
@@ -676,7 +712,7 @@ async fn run(io: &mut Io<'_>, st: &AppState, who: &Who, mut events: broadcast::R
         Ok(p) => p,
         Err(e) => return (End::internal("打开伪终端失败", e), false),
     };
-    let mut cmd = target.ssh.interactive();
+    let mut cmd = target.command(&st.cfg);
     // 不把中控进程的环境变量（数据库地址、代理设置…）带给 ssh：只留这三个
     cmd.env_clear()
         .env("PATH", std::env::var_os("PATH").unwrap_or_else(|| "/usr/local/bin:/usr/bin:/bin".into()))
@@ -696,7 +732,7 @@ async fn run(io: &mut Io<'_>, st: &AppState, who: &Who, mut events: broadcast::R
             return (End { code: 1011, reason }, false);
         }
     };
-    tracing::info!(user = %who.user, target = %target.name, ip = %target.ssh.ip, "打开网页终端");
+    tracing::info!(user = %who.user, target = %target.name, ip = %target.ip, "打开网页终端");
     let pty = Arc::new(pty);
     let (stop, bytes_in, bytes_out) = pump(io, st, who, &pty, &mut slot.kicked, &mut events).await;
     // 中控在重启：systemd 停服务时连同 ssh 一起结束，读到 EOF 可能比踢人的通知先到

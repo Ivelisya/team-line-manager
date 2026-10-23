@@ -168,7 +168,8 @@ pub struct Reach {
     #[serde(with = "time::serde::rfc3339")]
     pub ts: OffsetDateTime,
     pub detail: Option<String>,
-    /// 这个端口到最近一次为止连续连不上的次数（通的为 0）。告警按同一个端口连续 3 次算（reach::unreachable_sql），界面同一口径
+    /// 这个端口到最近一次为止连续连不上的次数（通的为 0）。告警按同一个端口连续 3 次算（reach::unreachable_sql），界面同一口径；
+    /// 整台线路机连不上（最近 3 轮都失败）时这台上的入口都按连不上：ok 为 false、次数至少 3，时间与原因取最近一轮的
     pub fails: i32,
 }
 
@@ -844,7 +845,27 @@ async fn reach_of(db: &sqlx::PgPool, es: &[(Uuid, Uuid, i32)]) -> sqlx::Result<H
     .bind(es.iter().map(|e| e.2).collect::<Vec<_>>())
     .fetch_all(db)
     .await?;
-    Ok(rs.into_iter().map(|(id, ok, ts, detail, fails)| (id, Reach { ok, ts, detail, fails })).collect())
+    let mut out: HashMap<Uuid, Reach> = rs.into_iter().map(|(id, ok, ts, detail, fails)| (id, Reach { ok, ts, detail, fails })).collect();
+    // 整台连不上（同告警：最近 3 轮、5 分钟内都失败，不论哪个端口）：这台上的入口都按连不上，次数至少 3，取最近一轮的时间与原因
+    let mut relays: Vec<Uuid> = es.iter().map(|e| e.1).collect();
+    relays.sort();
+    relays.dedup();
+    let down: Vec<(Uuid, OffsetDateTime, Option<String>)> = sqlx::query_as(
+        "select u.id, x.ts, x.detail from unnest($1::uuid[]) u(id) cross join lateral (
+            select max(ts) ts, (array_agg(detail order by ts desc))[1] detail, count(*) n, bool_or(ok) any_ok from (
+                select ts, ok, detail from relay_reach rr where rr.relay_id = u.id and rr.ts > now() - interval '5 minutes' order by ts desc limit 3) l) x
+         where x.n = 3 and not x.any_ok",
+    )
+    .bind(&relays)
+    .fetch_all(db)
+    .await?;
+    for (relay, ts, detail) in down {
+        for e in es.iter().filter(|e| e.1 == relay) {
+            let fails = out.get(&e.0).map_or(0, |r| r.fails).max(crate::reach::FAILS);
+            out.insert(e.0, Reach { ok: false, ts, detail: detail.clone(), fails });
+        }
+    }
+    Ok(out)
 }
 
 /// 进行中的作业与失败的上架 / 退役作业，各按机器取最后建的：(进行中, 失败)

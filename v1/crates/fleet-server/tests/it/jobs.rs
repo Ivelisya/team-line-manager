@@ -290,6 +290,7 @@ async fn purge_refused_while_peer_still_counts_traffic() {
         .execute(&t.st.db)
         .await
         .unwrap();
+    sqlx::query("update machine set lifecycle = 'retired' where id = $1").bind(node).execute(&t.st.db).await.unwrap();
     let want: String = sqlx::query_scalar("select (((date_trunc('hour', now()) - interval '10 days' + interval '35 days 1 hour') at time zone 'Asia/Shanghai')::date + 1)::text")
         .fetch_one(&t.st.db)
         .await

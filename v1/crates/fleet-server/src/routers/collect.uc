@@ -1,5 +1,5 @@
 // fleet 软路由采集：中控每 30 秒经隧道执行一次（随 fleet-server 编进去，经 stdin 交给 sh -s，路由上不装东西），只读。
-// 输出一行紧凑 JSON：系统、接口、OpenClash / mihomo 的汇总（每个出口的连接数、客户端数、这段时间的流量）、DHCP 租约、邻居表。
+// 输出一行紧凑 JSON：系统、接口、OpenClash / mihomo 的汇总（每个出口、每个来源 IP 的连接数与这段时间的流量）、DHCP 租约、邻居表。
 // mihomo 的 API 密钥（uci 的 dashboard_password）只在本机读来用，写在 0600 的 /tmp/fleet-collect/auth 里给 curl，不回传。
 // 上一次的 CPU 计数、各连接的字节数存在 /tmp/fleet-collect/（tmpfs），用来算 CPU 使用率与各出口这段时间的流量
 // （同一连接两次之差累加，新连接全算，关掉的连接最后一段会漏掉：估计值）。
@@ -225,8 +225,10 @@ function connections(oc, port) {
 		if (ip) {
 			e.ips[ip] = true;
 			if (!cl[ip])
-				cl[ip] = { conns: 0, exits: {} };
+				cl[ip] = { conns: 0, exits: {}, up: 0, down: 0 };
 			cl[ip].conns = cl[ip].conns + 1;
+			cl[ip].up = cl[ip].up + du;
+			cl[ip].down = cl[ip].down + dd;
 			cl[ip].exits[name] = (cl[ip].exits[name] || 0) + 1;
 		}
 	}
@@ -240,6 +242,11 @@ function connections(oc, port) {
 			e.down = null;
 		}
 	}
+	if (pts == null)
+		for (let ip in cl) {
+			cl[ip].up = null;
+			cl[ip].down = null;
+		}
 	oc.exits = ex;
 	oc.clients = cl;
 	oc.conn_dt = (pts != null) ? out.now - pts : null;
