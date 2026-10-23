@@ -181,6 +181,7 @@ pub fn router() -> Router<AppState> {
         .route("/routers/{id}", get(routers::get_one).patch(routers::patch).delete(routers::delete))
         .route("/routers/{id}/metrics", get(routers::metrics))
         .route("/routers/{id}/exits/metrics", get(routers::exit_metrics))
+        .route("/routers/{id}/changes", get(routers::changes))
         .route("/routers/{id}/bootstrap", post(routers::bootstrap))
         .route("/routers/{id}/deploy", post(routers::deploy_one))
         .route("/routers/{id}/sync", get(router_ops::sync_preview).post(router_ops::sync))

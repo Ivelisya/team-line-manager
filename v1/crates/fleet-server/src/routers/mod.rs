@@ -13,6 +13,7 @@
 //! - 接入只新增、采集只读：不动路由的 root 密码、dropbear / LuCI 监听、OpenClash 配置与密钥、防火墙、原有的 router-tunnel。
 
 pub mod alerts;
+pub mod changes;
 pub mod clash;
 pub mod collect;
 pub mod deploy;

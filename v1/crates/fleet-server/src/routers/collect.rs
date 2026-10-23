@@ -17,6 +17,7 @@
 //!   替换、退役预览、备用到期提醒靠它看出指向节点的出口。
 //! - 主机公钥：还没记录时（刚接入）先经隧道 keyscan 记下（只有拿到隧道私钥的才能占住这个端口），之后严格核对。
 
+use super::changes;
 use super::clash::{self, Entry, EntryRef, Proxy};
 use super::tunnel;
 use crate::state::{AppState, Event};
@@ -167,6 +168,8 @@ pub struct OpenClash {
     pub config_path: Option<String>,
     #[serde(with = "time::serde::rfc3339::option")]
     pub config_mtime: Option<OffsetDateTime>,
+    /// 配置文件的 sha256：和上一份快照的不同就是配置变了（记进变更时间线，见 changes.rs）
+    pub config_sha256: Option<String>,
     pub conns: Option<i64>,
     pub up_bps: Option<i64>,
     pub down_bps: Option<i64>,
@@ -395,6 +398,7 @@ pub fn build(raw: &Value, prev: &Prev, last: Option<&Snapshot>, config: Option<&
         mode: s(&oc, "mode"),
         config_path: s(&oc, "config_path"),
         config_mtime: ts(&oc, "config_mtime"),
+        config_sha256: s(&oc, "config_sha256"),
         conns: i(&oc, "conns"),
         up_bps: rate(totals.map(|t| t.0), prev.totals.map(|t| t.0), dt),
         down_bps: rate(totals.map(|t| t.1), prev.totals.map(|t| t.1), dt),
@@ -598,6 +602,8 @@ pub struct Mem {
     last: Option<Snapshot>,
     /// 配置文件的 sha256 与解析出的出口（解析不了时是原因）
     config: Option<(String, Result<Vec<Proxy>, String>)>,
+    /// 上一份存下来的快照对应的配置 sha256 与解析出的出口（解析不了为 None）：配置变了时拿它比出口差异；中控重启后为 None
+    stored: Option<(String, Option<Vec<Proxy>>)>,
     /// 上一次解析成功的出口：配置解析不了时沿用
     good: Option<Vec<Proxy>>,
     /// 上一次测延迟（没测成也算）的时间
@@ -621,7 +627,8 @@ struct Target {
 enum Outcome {
     /// 还没发隧道密钥（刚建、刚重新生成接入命令）：不去连
     Pending,
-    Ok(Box<Built>),
+    /// 采集成功；有值 = 配置文件和上一份快照的不一样，这一轮记进变更时间线
+    Ok(Box<Built>, Option<changes::Change>),
     /// 连不上：隧道断了、ssh 自己失败（离线看它）
     Fail(String),
     /// 连上了，但采集脚本出错、输出解析不了、超时（隧道还通）：不算离线，快照留着上一份
@@ -639,11 +646,13 @@ pub struct Refresh {
     served: tokio::sync::watch::Sender<u64>,
     /// 这个 AppState 的采集循环在跑（测试里一般不跑：不等）
     running: AtomicBool,
+    /// 中控作业改了哪台路由的配置：采集发现配置变了时认来源（见 changes.rs）
+    pub claims: changes::Claims,
 }
 
 impl Default for Refresh {
     fn default() -> Self {
-        Refresh { due: Default::default(), wake: Default::default(), served: tokio::sync::watch::channel(0).0, running: AtomicBool::new(false) }
+        Refresh { due: Default::default(), wake: Default::default(), served: tokio::sync::watch::channel(0).0, running: AtomicBool::new(false), claims: Default::default() }
     }
 }
 
@@ -880,7 +889,7 @@ async fn one(st: &AppState, t: &Target, m: &mut Mem, entries: &[Entry], delay: b
             .await?;
             Ok(before.is_none_or(|b| !b.0 || b.1.as_deref() != Some(err.as_str())))
         }
-        Outcome::Ok(b) => {
+        Outcome::Ok(b, change) => {
             let mut tx = st.db.begin().await?;
             // 路由刚被删掉：外键挡住，什么都不写
             let exists: Option<i32> = sqlx::query_scalar("select 1 from router where id = $1 for share").bind(t.id).fetch_optional(&mut *tx).await?;
@@ -923,6 +932,9 @@ async fn one(st: &AppState, t: &Target, m: &mut Mem, entries: &[Entry], delay: b
             .bind(r.exits_alive as i32)
             .execute(&mut *tx)
             .await?;
+            if let Some(c) = &change {
+                changes::record(&mut tx, t.id, now, c).await?;
+            }
             if !b.exits.is_empty() {
                 let col = |f: fn(&ExitRow) -> Option<i64>| b.exits.iter().map(f).collect::<Vec<_>>();
                 sqlx::query(
@@ -954,6 +966,10 @@ async fn one(st: &AppState, t: &Target, m: &mut Mem, entries: &[Entry], delay: b
             }
             m.prev = b.prev.clone();
             m.last = Some(b.snap.clone());
+            let sha = b.snap.openclash.config_sha256.as_ref();
+            if m.stored.as_ref().map(|s| &s.0) != sha {
+                m.stored = m.config.as_ref().filter(|c| Some(&c.0) == sha).map(|c| (c.0.clone(), c.1.as_ref().ok().cloned()));
+            }
             Ok(changed)
         }
     }
@@ -1035,6 +1051,14 @@ async fn collect(st: &AppState, t: &Target, m: &mut Mem, entries: &[Entry], now:
             m.config = Some((sha.clone(), parsed));
         }
     }
+    // 和上一份存下来的快照比：配置变了就记一条（来源、出口差异见 changes.rs）
+    let old_sha = m.last.as_ref().and_then(|l| l.openclash.config_sha256.as_deref());
+    let change = sha.as_deref().zip(old_sha).filter(|(n, o)| n != o).map(|(n, o)| {
+        let new = m.config.as_ref().map(|(s, r)| (s.as_str(), r.as_deref().ok()));
+        let new_err = m.config.as_ref().and_then(|(_, r)| r.as_ref().err()).map(String::as_str);
+        let old = m.stored.as_ref().map(|(s, p)| (s.as_str(), p.as_deref()));
+        changes::detect(&st.routers_refresh.claims, t.id, o, n, old, new, new_err)
+    });
     // 解析不了：沿用上一次解析成功的
     let (config, config_error) = match &m.config {
         Some((_, Ok(p))) => (Some(p.as_slice()), None),
@@ -1065,7 +1089,7 @@ async fn collect(st: &AppState, t: &Target, m: &mut Mem, entries: &[Entry], now:
         b.snap.openclash.config_stale = config.is_some() || carry_mapping(&mut b.snap.exits, m.last.as_ref());
     }
     b.snap.openclash.config_error = config_error;
-    Outcome::Ok(Box::new(b))
+    Outcome::Ok(Box::new(b), change)
 }
 
 /// 每轮单独重测的出口最多这么多个（也传给 collect.uc，整批测完当场重测的名额同它）

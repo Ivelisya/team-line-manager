@@ -533,7 +533,10 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         c.set_params(json!({"routers_applied": applied})).await?;
         let what: Vec<String> = ed.iter().map(|e| format!("{} {}:{} → {}:{}", e.exit, e.old_server, e.old_port, e.server, e.port)).collect();
         c.log(format!("软路由「{}」：改出口 {}（先备份，改完重启 OpenClash 并测延迟）", r.name, what.join("，"))).await;
+        // 采集发现配置变了时认来源：脚本跑之前先记「在改」，回话后记上改完（或自己改回）的配置 sha（routers/changes.rs）
+        c.st.routers_refresh.claims.editing(r.id, c.job.id, &c.job.kind);
         let res = run_script(c, r.id, &r.name, r.tunnel_port, &rr::apply_script(&ed, t, &pins), "apply", &stamp, rr::APPLY_TIMEOUT).await;
+        c.st.routers_refresh.claims.edited(r.id, c.job.id, res.as_ref().ok().and_then(|o| o.kv("sha")));
         let (kind, why, self_undone) = match res {
             Ok(o) if o.ok() && o.kv("replace") == Some("ok") => {
                 let delays: Vec<String> = (1..=ed.len()).map(|i| format!("{} {} ms", ed[i - 1].exit, o.kv(&format!("delay_{i}")).unwrap_or("?"))).collect();
@@ -615,7 +618,9 @@ async fn revert_one(c: &Ctx<'_>, locks: &mut Locks<'_>, a: &Applied) -> anyhow::
     };
     let port: Option<i32> = sqlx::query_scalar("select tunnel_port from router where id = $1").bind(a.id).fetch_optional(&c.st.db).await?;
     let Some(port) = port else { return Ok(Err("这台软路由已经删掉了".into())) };
+    c.st.routers_refresh.claims.editing(a.id, c.job.id, &c.job.kind);
     let out = run_script(c, a.id, &a.name, port, &rr::rollback_script(&a.stamp, &back), "rollback", &a.stamp, rr::ROLLBACK_TIMEOUT).await;
+    c.st.routers_refresh.claims.edited(a.id, c.job.id, out.as_ref().ok().and_then(|o| o.kv("sha")));
     Ok(match out {
         Ok(o) if o.ok() && matches!(o.kv("rollback"), Some("ok" | "none")) => {
             // 之后被别的作业改走的出口没动：记一行
