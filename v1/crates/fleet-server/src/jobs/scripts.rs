@@ -103,7 +103,7 @@ impl SsInst {
 /// 节点：ssserver + 只放行线路机的 nft 规则。变量 SS_PORT SS_METHOD SS_PASSWORD ALLOW（逗号分隔的线路机 IP）。
 /// 宿主机渲染出的脚本除了开头的锁，和引入同机 IP 节点之前逐字相同：已上架的节点重新收敛时配置、单元、nft、include 行都不变，
 /// 不会重启 ssserver。同机 IP 节点的 bind 地址直接写进配置（校验过的或 `ip -4 addr` 列出的 IPv4，不含引号和 %）。
-/// 重跑时以运行中的实例为准：配置、单元比它新（换上之后没来得及重启就被打断）也重启。输出 `linklocal_dns=1` 见 `LINKLOCAL_DNS`
+/// 重跑时以运行中的实例为准：配置、单元比它新（换上之后没来得及重启就被打断）也重启。输出 `linklocal_dns=1` 见 `LINKLOCAL_DNS`；`ss_restarted=1|0` = 这次重启了 ssserver（配置、ACL、单元有变化，或实例没在跑）
 pub fn node_ss(i: &SsInst) -> String {
     let (conf, unit, unit_conf, listen, bind) = match &i.ip {
         None => ("config.json".to_string(), "fleet-ssserver.service", "config.json", "0.0.0.0".to_string(), String::new()),
@@ -200,7 +200,9 @@ cmp -s $U.tmp $U && rm -f $U.tmp || { mv $U.tmp $U; systemctl daemon-reload; RES
 since=$(TZ=UTC0 systemctl show -p ExecMainStartTimestamp --value __SVC__)
 [ -z "$since" ] || [ "$(date -d "$since" +%s)" -ge "$(stat -c %Y $C $U $A | sort -n | tail -n1)" ] || RESTART=1
 systemctl enable -q __SVC__
-if [ $RESTART = 1 ] || ! systemctl -q is-active __SVC__; then systemctl restart __SVC__; fi
+systemctl -q is-active __SVC__ || RESTART=1
+[ $RESTART = 0 ] || systemctl restart __SVC__
+echo ss_restarted=$RESTART
 # 防火墙：SS 端口只放行线路机
 install -d -m 755 /etc/fleet/nft
 N=/etc/fleet/nft/__T__.nft
@@ -643,7 +645,7 @@ mod tests {
         ));
         assert!(s.contains("C=/etc/shadowsocks-rust/8389.json\n"));
         assert!(s.contains("U=/etc/systemd/system/fleet-ssserver@.service\n") && s.contains("ExecStart=/usr/local/bin/ssserver -c /etc/shadowsocks-rust/%i.json\n"));
-        assert!(s.contains("systemctl enable -q fleet-ssserver@8389\n") && s.contains("then systemctl restart fleet-ssserver@8389; fi"));
+        assert!(s.contains("systemctl enable -q fleet-ssserver@8389\n") && s.contains("|| systemctl restart fleet-ssserver@8389\n"));
         assert!(s.contains("table inet ss_guard_8389 {") && s.contains("nft list set inet ss_guard_8389 relays"));
         assert!(s.contains(r#"echo 'include "/etc/fleet/nft/ss_guard_8389.nft"' >> /etc/nftables.conf"#));
         // 宿主机自己的配置、单元、防火墙一个都不碰

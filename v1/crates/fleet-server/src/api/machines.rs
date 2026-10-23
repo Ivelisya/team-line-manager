@@ -905,6 +905,36 @@ pub async fn tune(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uui
     Ok(ok(json!({"machine_id": id, "name": name, "job_id": job})))
 }
 
+/// 重新下发节点的 SS 配置（作业 `ss_refresh`）：在节点上跑与上架同一份 ssserver 配置脚本，把当前的配置模板（出站目标黑名单等）推到存量节点，
+/// 同机的同机 IP 节点实例一起刷；配置有变化才重启 ssserver（该节点现有连接断开几秒），最后经入口做出口验收（失败不回滚）。
+/// 同机 IP 节点和宿主机共用黑名单文件：对宿主机下发。线路机、家宽代理没有落地节点的 ssserver；没有入口的节点没有放行名单也没法验收。
+/// 机器上已有进行中的作业时由唯一索引挡住（409）
+pub async fn ss_refresh(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPath<Uuid>) -> ApiResult<Json<Value>> {
+    let (kind, lc, name, host) = brief_of(&st, id).await?;
+    if let Some(h) = host {
+        return Err(ApiError::conflict(format!("同机 IP 节点和宿主机共用 ssserver 的黑名单文件：对宿主机「{h}」下发，同机的实例一起刷")));
+    }
+    match kind.as_str() {
+        "relay" => return Err(ApiError::conflict("线路机上没有落地节点的 ssserver")),
+        "proxy" => return Err(ApiError::conflict("家宽代理没有我们的 ssserver")),
+        _ => {}
+    }
+    if lc != "active" {
+        return Err(ApiError::conflict("只有在用的节点能下发"));
+    }
+    let has_entry: bool = sqlx::query_scalar("select exists (select 1 from entry where node_id = $1 and lifecycle <> 'removed')").bind(id).fetch_one(&st.db).await?;
+    if !has_entry {
+        return Err(ApiError::conflict("这台节点还没有入口（没有线路机在连它），没有可放行的线路机，也没法验收出口"));
+    }
+    let mut tx = st.db.begin().await?;
+    let job = jobs::enqueue(&mut tx, "ss_refresh", Some(id), json!({}), &a.name).await?;
+    audit(&mut tx, &a.name, "machine.ss_refresh", "machine", Some(id), json!({"name": name, "job_id": job})).await?;
+    tx.commit().await?;
+    st.wake_jobs();
+    st.emit(Event::Job { id: job, target: Some(id) });
+    Ok(ok(json!({"machine_id": id, "name": name, "job_id": job})))
+}
+
 /// 「全部升级」要推的 agent：dist 里程序的 sha256 与版本号。记进每个作业的参数 `rollout`，作业开始前核对（jobs::halted）：
 /// 中途重新部署过中控时，后面的机器不能装上金丝雀没验过的版本
 async fn dist_agent(st: &AppState) -> ApiResult<Value> {

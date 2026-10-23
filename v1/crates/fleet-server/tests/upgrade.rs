@@ -15,7 +15,7 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{seed_node, seed_team, setup, T};
+use common::{seed_node, seed_relay, seed_team, setup, T};
 use fleet_server::jobs;
 use serde_json::{json, Value};
 use std::os::unix::fs::PermissionsExt;
@@ -732,4 +732,64 @@ async fn tune_job_records_the_profile() {
     let px = seed_node(&t, team, 3, "192.0.2.98", "active").await;
     let (s, v) = post(px, json!({})).await;
     assert!(s == StatusCode::CONFLICT && v.to_string().contains("家宽代理没有我们的机器"), "{s} {v}");
+}
+
+/// 作业 ss_refresh：在节点上跑与上架同一份 ssserver 脚本（配置里带出站黑名单的 acl，黑名单文件写下去），再经入口做出口验收（要有本步开始之后的成功探测）；
+/// 审计写明哪台；线路机、家宽代理、同机 IP 节点 409
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ss_refresh_job_writes_the_acl_and_verifies_the_egress() {
+    let t = setup(false).await;
+    let (m, root) = machine(&t, "192.0.2.51", "0.1.0+old", "0.1.0+new").await;
+    let (rid, _) = seed_relay(&t).await;
+    sqlx::query("insert into node_outbound (machine_id, protocol, host, port, secret_enc) values ($1, 'shadowsocks', '192.0.2.51', 8388, $2)")
+        .bind(m)
+        .bind(t.st.secrets.seal_str("pw"))
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let entry = Uuid::now_v7();
+    sqlx::query("insert into entry (id, relay_id, node_id, port, client_uuid, short_id, lifecycle) values ($1, $2, $3, 20001, $4, 'ab', 'active')")
+        .bind(entry)
+        .bind(rid)
+        .bind(m)
+        .bind(Uuid::now_v7())
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+
+    let path = |id: Uuid| format!("/api/v1/machines/{id}/ss-refresh");
+    let (s, v) = t.req("POST", &path(rid), Some(json!({})), None).await;
+    assert!(s == StatusCode::CONFLICT && v.to_string().contains("线路机上没有落地节点的 ssserver"), "{s} {v}");
+    let team: Uuid = sqlx::query_scalar("select team_id from machine where id = $1").bind(m).fetch_one(&t.st.db).await.unwrap();
+    let px = seed_node(&t, team, 3, "192.0.2.98", "active").await;
+    let (s, v) = t.req("POST", &path(px), Some(json!({})), None).await;
+    assert!(s == StatusCode::CONFLICT && v.to_string().contains("家宽代理没有我们的 ssserver"), "{s} {v}");
+
+    let job = t.post(&path(m), json!({})).await["job_id"].as_str().unwrap().to_string();
+    let au = t.get("/api/v1/audit?cat=machine").await;
+    assert_eq!((&au[0]["title"], &au[0]["summary"]), (&json!("重新下发 SS 配置"), &json!("团队1-01")), "{au}");
+    // 下发：配置带 acl、黑名单文件写下去、实例重启；验收要等本步开始之后的成功探测
+    let j = run_round(&t, &job).await;
+    assert_eq!((j["state"].as_str(), j["step"].as_i64()), (Some("waiting"), Some(1)), "{j}");
+    assert_eq!((&j["steps"][0]["output"]["instances"][0]["port"], &j["steps"][0]["output"]["instances"][0]["restarted"]), (&json!(8388), &json!(true)), "{j}");
+    assert!(read(&root.join("etc/shadowsocks-rust/config.json")).contains("\"acl\":\"") && read(&root.join("etc/shadowsocks-rust/config.json")).contains("fleet.acl"));
+    assert!(read(&root.join("etc/shadowsocks-rust/fleet.acl")).starts_with("[outbound_block_list]\n0.0.0.0/8\n127.0.0.0/8\n"));
+    assert!(read(&root.join("systemctl.log")).contains("restart fleet-ssserver"));
+    sqlx::query("insert into probe_result (entry_id, ts, kind, ok, latency_ms, detail) values ($1, now() - interval '1 hour', 'egress', true, 10, '203.0.113.1')").bind(entry).execute(&t.st.db).await.unwrap();
+    assert_eq!(run_round(&t, &job).await["state"], "waiting", "开始之前的探测不算");
+    sqlx::query("insert into probe_result (entry_id, ts, kind, ok, latency_ms, detail) values ($1, now(), 'egress', true, 10, '203.0.113.1')").bind(entry).execute(&t.st.db).await.unwrap();
+    let j = run_round(&t, &job).await;
+    assert_eq!(j["state"], "succeeded", "{j}");
+    assert_eq!(j["steps"][1]["output"]["entries"][0]["egress_ip"], "203.0.113.1", "{j}");
+
+    // 同机 IP 节点：指向宿主机
+    let ipn = Uuid::now_v7();
+    sqlx::query("insert into machine (id, kind, team_id, number, primary_ip, lifecycle, host_id, ssh_port) select $1, 'vps', team_id, 2, '192.0.2.99'::inet, 'active', id, null from machine where id = $2")
+        .bind(ipn)
+        .bind(m)
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let (s, v) = t.req("POST", &path(ipn), Some(json!({})), None).await;
+    assert!(s == StatusCode::CONFLICT && v.to_string().contains("对宿主机「团队1-01」下发"), "{s} {v}");
 }
