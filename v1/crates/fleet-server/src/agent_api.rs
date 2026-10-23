@@ -6,6 +6,7 @@ use crate::db::floor_hour;
 use crate::entries;
 use crate::error::ApiJson;
 use crate::error::{ApiError, ApiResult};
+use crate::lock;
 use crate::state::{AppState, Event};
 use axum::extract::{ConnectInfo, FromRequest, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -17,7 +18,7 @@ use serde::Deserialize;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{LazyLock, Mutex, MutexGuard, OnceLock};
+use std::sync::{LazyLock, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use time::{Date, OffsetDateTime};
 use tower_http::decompression::RequestDecompressionLayer;
@@ -300,10 +301,6 @@ struct Bucket {
 }
 
 static BUCKETS: LazyLock<Mutex<HashMap<Uuid, Bucket>>> = LazyLock::new(Default::default);
-
-/// 本文件的几把锁里只做算术和集合增删，别处 panic 留下的中毒标记不影响数据，照常用；
-/// InFlight 的 drop 可能在 panic 展开途中执行，这时再 panic 进程就直接中止了
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> { m.lock().unwrap_or_else(|e| e.into_inner()) }
 
 /// 只看不扣：新的一份（seq 大于提交过的）要有一个令牌，返回按余额能收的主机样本数；扣不到令牌返回还要等几秒。
 /// 重发的（seq 不大于提交过的）放行、返回 None：这份已经入过库，调用方只刷新最近上报时间

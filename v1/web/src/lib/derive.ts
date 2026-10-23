@@ -87,9 +87,8 @@ export function monthFlowTip(m: MachineView) {
   ].filter(Boolean).join('\n');
 }
 
-/** 探测 / 应用的英文原始错误 → 中文（抽屉、卡片的健康原因、告警悬停卡片共用）。只换认得的片段，前面的中文（「出口不通：」）
- *  和认不出的原样留着。片段只吃 ASCII 字符，不会把前缀一起吞掉。
- *  旧 agent 报的是单词（「出口不通：timeout；refused」），新 agent 自己写中文（fleet-agent probe.rs 的 reason_cn），两种都认 */
+/** 探测 / 应用的英文原始错误（主要是 ssh 的报错行和系统返回的 timeout、refused 之类）→ 中文（抽屉、卡片的健康原因、告警悬停卡片共用）。
+ *  只换认得的片段，前面的中文（「出口不通：」）和认不出的原样留着。片段只吃 ASCII 字符，不会把前缀一起吞掉 */
 const ERR_ZH: [RegExp, string | ((m: string, ...g: string[]) => string)][] = [
   // ssh 自己的报错行（原文在服务端日志里）：本机端口是软路由的反向隧道，被拒绝 = 隧道没连上来；其它地址写成「连不上 地址:端口」，后面的英文由下面几条接着换。先于下面各条（它们会先把 refused 换掉）
   [/ssh: connect to host (?:127\.0\.0\.1|localhost) port (\d+): (?:connection refused|连接被拒绝)/gi, (_, port) => `隧道没连上（中控上的端口 ${port} 没有响应）`],

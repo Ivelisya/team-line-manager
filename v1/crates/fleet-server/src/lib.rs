@@ -38,6 +38,12 @@ pub mod terminal;
 pub mod totp;
 pub mod views;
 
+/// 取锁。本 crate 的锁里只做算术和集合增删，别处 panic 留下的中毒标记不影响数据，照常用；
+/// 不在这里再 panic：drop 可能在 panic 展开途中执行，再 panic 进程就直接中止了
+pub(crate) fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> { m.lock().unwrap_or_else(|e| e.into_inner()) }
+pub(crate) fn rlock<T>(l: &std::sync::RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> { l.read().unwrap_or_else(|e| e.into_inner()) }
+pub(crate) fn wlock<T>(l: &std::sync::RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> { l.write().unwrap_or_else(|e| e.into_inner()) }
+
 use axum::extract::State;
 use axum::routing::get;
 use axum::Router;

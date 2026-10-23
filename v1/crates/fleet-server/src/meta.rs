@@ -1,6 +1,7 @@
 //! 共用的常量、枚举与中文名：只在这里定义一次。中控自己的文案（作业名、告警、通知、报错）、健康阈值都从这里取，
 //! `GET /meta` 原样发给网页和 fleetctl，它们不再各写一份。新增枚举值、改叫法只改这里。
 
+use crate::{rlock, wlock};
 use anyhow::Context;
 use serde_json::{json, Map, Value};
 use sqlx::PgPool;
@@ -21,7 +22,7 @@ static ORG_OFFSET_S: AtomicI32 = AtomicI32::new(DEFAULT_ORG_OFFSET_S);
 
 /// 组织时区的 IANA 名
 pub fn org_tz() -> String {
-    let s = ORG_TZ.read().unwrap_or_else(|e| e.into_inner());
+    let s = rlock(&ORG_TZ);
     if s.is_empty() { DEFAULT_ORG_TZ.into() } else { s.clone() }
 }
 
@@ -71,7 +72,7 @@ pub async fn sync_org_tz(db: &PgPool, tz: &str) -> anyhow::Result<()> {
     .bind(tz)
     .execute(db)
     .await?;
-    *ORG_TZ.write().unwrap_or_else(|e| e.into_inner()) = tz.to_string();
+    *wlock(&ORG_TZ) = tz.to_string();
     ORG_OFFSET_S.store(off, Ordering::Relaxed);
     Ok(())
 }

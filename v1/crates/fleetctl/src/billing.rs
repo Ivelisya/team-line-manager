@@ -1,7 +1,6 @@
 //! 费用与续费：billing（订阅、流量额度、最近的续费记录）、renew（登记续费）、subscription set（改订阅）。
 //! 默认值与说法同网页抽屉的「费用」页签：续费默认按订阅周期推一个周期、金额取订阅价格；只记账，不会向供应商付款。
 
-use crate::client::ApiError;
 use crate::cmds::{cycle_cn, due_at, due_cn, num, st, Ctx};
 use crate::meta;
 use crate::ops::confirm;
@@ -426,14 +425,6 @@ fn sub_changes(m: &Value, eff: &Value) -> Vec<String> {
     }
 }
 
-/// 预览是独立路由：旧中控没有它（404），不会像 query 参数那样被忽略、直接把订阅改了；这时报错退出，不提交
-fn preview_effective(r: anyhow::Result<Value>) -> anyhow::Result<Value> {
-    match r {
-        Err(e) if e.downcast_ref::<ApiError>().is_some_and(|a| a.status == 404) => bail!("中控版本较旧，先升级中控再用 subscription set"),
-        r => Ok(r?["effective"].clone()),
-    }
-}
-
 /// `subscription set <机器>`：先读现有订阅、只改给了的字段再整份提交；可单独设置的字段给 none 改回跟随。
 /// `--json` 输出改完的订阅（同 show 的 subscription，含 overrides）
 pub fn subscription_set(ctx: &Ctx, o: SubSetOpts) -> anyhow::Result<u8> {
@@ -446,7 +437,7 @@ pub fn subscription_set(ctx: &Ctx, o: SubSetOpts) -> anyhow::Result<u8> {
     let cur = &m["subscription"];
     let body = merge_sub(cur, patch)?;
     // 先让中控预览：校验与规整都在中控（不通过就是中控的报错），回来的是改完之后的生效值
-    let eff = preview_effective(ctx.c.post(&format!("/machines/{id}/subscription/preview"), &body))?;
+    let eff = ctx.c.post(&format!("/machines/{id}/subscription/preview"), &body)?["effective"].clone();
     let changes = sub_changes(&m, &eff).join("；");
     if changes.is_empty() {
         ctx.emit(cur, || format!("{name} 的订阅没有变化，未提交"));
@@ -478,15 +469,6 @@ mod tests {
         assert_eq!(spare_cn(&m(true, "retired", on)), None);
         // 替换下来之前就在备用团队里的（没有 spare_from / spare_since）
         assert_eq!(spare_cn(&json!({"spare": true, "lifecycle": "active", "recycle_on": "2026-10-22"})).as_deref(), Some("已退役，2026-10-22 起自动回收（账单时区）"));
-    }
-
-    #[test]
-    fn preview_404_means_old_server() {
-        let old = anyhow::Error::from(ApiError { status: 404, code: "not_found".into(), message: "没有这个接口".into() });
-        assert_eq!(preview_effective(Err(old)).unwrap_err().to_string(), "中控版本较旧，先升级中控再用 subscription set");
-        let bad = anyhow::Error::from(ApiError { status: 400, code: "bad_request".into(), message: "cycle 不对".into() });
-        assert!(preview_effective(Err(bad)).unwrap_err().to_string().contains("cycle 不对"));
-        assert_eq!(preview_effective(Ok(json!({"dry_run": true, "effective": {"price_cents": 1}}))).unwrap(), json!({"price_cents": 1}));
     }
 
     #[test]

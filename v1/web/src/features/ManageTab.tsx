@@ -245,12 +245,11 @@ function TuneRow({ m }: { m: MachineView }) {
   const t = m.tune!;
   // 档名是内部名，放进悬停；这里只写「已调优 · 10-23」，旧档写「需要重新调优」；下面一行是这台的推导参数（缓冲上限从哪来）
   const state = !t.profile ? '未调优' : !t.current ? '有新版调优，建议重新调优' : `已调优${t.at ? ` · ${F.dt(t.at).slice(0, 5)}` : ''}`;
-  const old = t.profile && !t.current ? '\n旧版把 TCP 缓冲固定为 16 MB，新版会按这台的带宽、延迟和内存来定。重新调优即可升级，不会调小任何参数' : '';
   return (
     <>
       <div className="manage-row">
         <div>
-          <div className="t">系统调优 <InfoTip text={`优化网络参数（缓冲区、拥塞控制、连接队列）、日志体积上限和时间同步\n每一项的结果在作业详情里${old}${t.profile ? `\n版本 ${t.profile}${t.at ? ` · ${F.dtFull(t.at)}` : ''}` : ''}`} /></div>
+          <div className="t">系统调优 <InfoTip text={`优化网络参数（缓冲区、拥塞控制、连接队列）、日志体积上限和时间同步\n每一项的结果在作业详情里${t.profile ? `\n版本 ${t.profile}${t.at ? ` · ${F.dtFull(t.at)}` : ''}` : ''}`} /></div>
           {/* 同别的行：标题 + 灰色副行（状态 · 推导参数），不写成「系统调优：未调优」 */}
           <div className="hint">{state}{t.params && <> · {tuneParamsText(t.params)}</>}</div>
         </div>

@@ -5,6 +5,7 @@ use super::ok;
 use crate::auth::{Actor, ClientIp};
 use crate::db::{audit, new_id};
 use crate::error::{ApiError, ApiJson, ApiPath, ApiQuery, ApiResult};
+use crate::lock;
 use crate::routers::{self, deploy, scripts::Bootstrap, tunnel};
 use crate::silence::Silences;
 use crate::state::{AppState, Event};
@@ -91,7 +92,7 @@ pub async fn create(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Ne
     // 一键部署的不发接入命令：免得多出一个 30 分钟内有效、能取走隧道私钥的令牌
     let token = login.is_none().then(routers::new_token);
     let mut tx = st.db.begin().await?;
-    let port = routers::alloc_port(&mut tx, &st.cfg).await?;
+    let port = routers::alloc_port(&mut tx).await?;
     sqlx::query(
         "insert into router (id, name, team_id, note, tunnel_port, bootstrap_token_hash, bootstrap_expires_at) values ($1, $2, $3, $4, $5, $6, $7)",
     )
@@ -274,7 +275,7 @@ pub async fn bootstrap(a: Actor, State(st): State<AppState>, ApiPath(id): ApiPat
     if deploying {
         return Err(ApiError::conflict("这台路由正在一键部署，等它结束再重新生成接入命令"));
     }
-    let port = routers::rotate_port(&mut tx, &st.cfg, id).await?;
+    let port = routers::rotate_port(&mut tx, id).await?;
     let (t, h, exp) = routers::new_token();
     sqlx::query(
         "update router set tunnel_pubkey = null, tunnel_key_at = null, host_key = null, bootstrap_token_hash = $2, bootstrap_expires_at = $3, updated_at = now()
@@ -312,7 +313,7 @@ type FetchMap = HashMap<Option<IpAddr>, (Instant, u32)>;
 static FETCHES: Mutex<Option<FetchMap>> = Mutex::new(None);
 
 pub(crate) fn rate_ok(ip: Option<IpAddr>) -> bool {
-    let mut g = FETCHES.lock().unwrap_or_else(|e| e.into_inner());
+    let mut g = lock(&FETCHES);
     let m = g.get_or_insert_with(HashMap::new);
     if m.len() > 10_000 {
         m.retain(|_, (t, _)| t.elapsed() < FETCH_WINDOW);

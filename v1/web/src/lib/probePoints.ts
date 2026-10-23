@@ -71,7 +71,3 @@ export function useDelProbePoint() {
   const inv = useInvalidate();
   return useMutation({ mutationFn: (id: string) => del<{ ok: boolean; cleanup: string }>(`/probe-points/${id}`), onSuccess: inv });
 }
-export function useUpgradeProbePoint() {
-  const inv = useInvalidate();
-  return useMutation({ mutationFn: (id: string) => post<{ version: string; from: string | null }>(`/probe-points/${id}/upgrade`, {}), onSuccess: inv });
-}

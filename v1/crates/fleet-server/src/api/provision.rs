@@ -7,6 +7,7 @@ use crate::crypto::reality_keypair;
 use crate::db::{audit, new_id, Tx};
 use crate::error::{ApiError, ApiResult};
 use crate::jobs;
+use crate::lock;
 use crate::names::node_name;
 use crate::state::{AppState, Event};
 use axum::extract::State;
@@ -384,7 +385,7 @@ pub async fn check(a: Actor, State(st): State<AppState>, ApiJson(b): ApiJson<Bat
     // 每台宿主机只登录一次，拿到的本机 IP 对照它上面的全部条目；每台宿主机也算一次探测
     let on_host: Vec<usize> = (0..v.len()).filter(|&i| v[i].errors.is_empty() && v[i].host.is_some()).collect();
     let host_ids: Vec<Uuid> = on_host.iter().filter_map(|&i| v[i].item.host_id).collect::<HashSet<_>>().into_iter().collect();
-    if let Err(wait) = take_probes(&mut PROBE_BUDGET.lock().unwrap_or_else(|e| e.into_inner()), &a.name, probe.len() + host_ids.len(), Instant::now()) {
+    if let Err(wait) = take_probes(&mut lock(&PROBE_BUDGET), &a.name, probe.len() + host_ids.len(), Instant::now()) {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
             "rate_limited",

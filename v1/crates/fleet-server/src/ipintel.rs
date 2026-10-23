@@ -18,6 +18,7 @@ use crate::error::{ApiError, ApiResult};
 use crate::incident::{self, Close, Engine, Want};
 use crate::meta;
 use crate::state::AppState;
+use crate::{lock, rlock, wlock};
 use fleet_ipintel::{canonical, is_global, ConnType, IpIntel};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -213,7 +214,7 @@ impl Service {
 
     /// 地址属于我方哪台机器（线路机 / 节点 / 配置里的运维出口）
     pub fn internal_name(&self, ip: IpAddr) -> Option<String> {
-        self.internal.read().unwrap_or_else(|e| e.into_inner()).get(&canonical(ip)).cloned()
+        rlock(&self.internal).get(&canonical(ip)).cloned()
     }
 
     /// 重读 machine 表建内部地址表（线路机和节点的 primary_ip 自动算内部）。
@@ -237,13 +238,13 @@ impl Service {
                 map.insert(canonical(ip), name);
             }
         }
-        *self.internal.write().unwrap_or_else(|e| e.into_inner()) = map;
-        *self.refreshed.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+        *wlock(&self.internal) = map;
+        *lock(&self.refreshed) = Some(Instant::now());
     }
 
     /// 内部地址表超过一分钟没刷新就刷新（接口用；后台循环自己每轮刷新）
     pub async fn ensure_internal(&self, db: &PgPool) {
-        let stale = self.refreshed.lock().unwrap_or_else(|e| e.into_inner()).is_none_or(|t| t.elapsed() > INTERNAL_TTL);
+        let stale = lock(&self.refreshed).is_none_or(|t| t.elapsed() > INTERNAL_TTL);
         if stale {
             self.refresh_internal(db).await;
         }

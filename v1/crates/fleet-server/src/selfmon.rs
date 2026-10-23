@@ -23,6 +23,7 @@
 
 use crate::alerts;
 use crate::incident::{self, Close, Engine, Want};
+use crate::lock;
 use crate::notify;
 use crate::state::AppState;
 use std::collections::HashSet;
@@ -128,7 +129,7 @@ pub async fn check_once(st: &AppState, now: OffsetDateTime) -> anyhow::Result<()
         let mins = (now - since).whole_minutes();
         want.push(problem(VIEW_STUCK, CENTRAL, "critical", format!("机器视图已经 {mins} 分钟算不出来（{err}）：机器告警暂停评估，列表与总览停在旧数据，查数据库的锁与慢查询")));
     }
-    if let Some(text) = st.tunnel_host.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+    if let Some(text) = lock(&st.tunnel_host).clone() {
         want.push(problem(TUNNEL_HOST, CENTRAL, "warning", text));
     }
     let enabled: HashSet<Uuid> = channels.iter().map(|c| c.0).collect();

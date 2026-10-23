@@ -7,6 +7,7 @@
 //! - 目标按 (节点, 目标) 聚合，「域名与 IP」默认再按目标合并（`target_groups`）。「来源数」在小时表里是各小时去重数的最大值（跨小时无法精确去重，偏小的近似）。
 
 use crate::db::{floor_hour, Args};
+use crate::lock;
 use crate::settings::AccessRetention;
 use crate::state::AppState;
 use anyhow::Context;
@@ -238,7 +239,7 @@ impl QueryCache {
         }
         let ttl = if short { self.ttl.min(Self::SHORT_TTL) } else { self.ttl };
         let g = self.gen();
-        let m = self.map.lock().unwrap_or_else(|e| e.into_inner());
+        let m = lock(&self.map);
         m.get(key).filter(|(at, eg, _)| *eg == g && at.elapsed() < ttl).map(|(_, _, v)| v.clone())
     }
 
@@ -246,7 +247,7 @@ impl QueryCache {
         if self.ttl.is_zero() {
             return;
         }
-        let mut m = self.map.lock().unwrap_or_else(|e| e.into_inner());
+        let mut m = lock(&self.map);
         if m.len() >= Self::MAX {
             let (ttl, g) = (self.ttl, self.gen());
             m.retain(|_, (at, eg, _)| *eg == g && at.elapsed() < ttl);
