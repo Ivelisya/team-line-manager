@@ -275,11 +275,12 @@ pub async fn check_once(st: &AppState, now: OffsetDateTime) -> anyhow::Result<()
     Ok(())
 }
 
-/// 列表里一个探测点：状态（online / blind：在线但检查都作废了 / offline / pending / disabled）、最近上报、版本、升级（upgrade：在等它换上；
+/// 列表里一个探测点：状态（online / blind：在线但检查都作废了 / offline / pending / disabled）、维护中（maintenance：自己的或全局的维护窗口）、最近上报、版本、升级（upgrade：在等它换上；
 /// upgrade_failed：上次升级失败了 {sha256, to, from, at}，见 agent.rs）、
 /// 近 `window`（1h 读原始记录；24h / 7d / 30d 读小时汇总，见 reach::quality）到各线路机的成功次数与延迟
 pub async fn list(st: &AppState, window: crate::reach::Window) -> sqlx::Result<Vec<Value>> {
     let set = setting(&st.db).await?;
+    let silences = crate::silence::Silences::load(&st.db).await?;
     #[derive(sqlx::FromRow)]
     struct PRow {
         id: Uuid,
@@ -339,7 +340,7 @@ pub async fn list(st: &AppState, window: crate::reach::Window) -> sqlx::Result<V
             });
             json!({
                 "id": r.id, "name": r.name, "label": label_of(&r.name), "enabled": r.enabled, "note": r.note, "state": state, "installed": r.installed,
-                "primary": set.primary == Some(r.id), "last_seen_at": ts(r.last_seen_at), "last_kept_at": ts(r.last_kept_at),
+                "primary": set.primary == Some(r.id), "maintenance": silences.maintenance(r.id), "last_seen_at": ts(r.last_seen_at), "last_kept_at": ts(r.last_kept_at),
                 "discard_reason": r.discard_reason.filter(|_| live.online && !live.kept), "last_ip": r.last_ip, "version": r.version,
                 "window": window.as_str(),
                 "created_at": ts(Some(r.created_at)), "bootstrap_expires_at": ts(r.bootstrap_expires_at), "install": install,

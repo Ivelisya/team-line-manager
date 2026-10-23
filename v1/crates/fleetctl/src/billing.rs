@@ -69,8 +69,9 @@ fn src(s: &Value, m: &Value, keys: &[&str]) -> &'static str {
     }
 }
 
-/// 额度怎么量（中控 /meta 的 traffic_rules）：有 agent 的机器按网卡、照供应商的规则；家宽代理与同机 IP 节点是业务流量
-fn rule_cn(v: &Value) -> &str { v.as_str().map_or("业务流量", |r| meta::label("traffic_rules", r)) }
+/// 额度怎么量（中控 /meta 的 traffic_rules）：有 agent 的机器按网卡、照供应商的规则；家宽代理与同机 IP 节点没有自己的网卡，
+/// 按业务流量下载加上传（不跟供应商的规则）
+fn rule_cn(v: &Value) -> &str { v.as_str().map_or("按业务流量，下载加上传", |r| meta::label("traffic_rules", r)) }
 
 /// 流量重置日（生效值）：跟随供应商时注明按账单日还是自然月；供应商按滚动 30 天的没有重置日
 fn reset_day_cn(s: &Value, m: &Value) -> String {
@@ -621,7 +622,7 @@ mod tests {
         );
         // 滚动 30 天、周期中途上架（日期按组织时区）；业务流量不写网卡
         let q = json!({"agent": {"nic_ifaces": ["eth0"]}, "quota": {"used": 31_900_000, "period_start": "2026-09-24", "period_end": null, "rule": null, "base": null, "counted_from": "2026-10-21T17:10:00Z"}});
-        assert_eq!(used_cn(&q, Some(1000), Some(0), ""), "0.03 GB / 1000 GB（0%），2026-09-24 起，业务流量；从 2026-10-22 开始统计，之前的没算进来");
+        assert_eq!(used_cn(&q, Some(1000), Some(0), ""), "0.03 GB / 1000 GB（0%），2026-09-24 起，按业务流量，下载加上传；从 2026-10-22 开始统计，之前的没算进来");
         // 不限流量只写本月：有 agent 按网卡，家宽代理按业务（含已移除入口）
         let m = json!({"nic": {"month_rx": 1_044_400_000_000i64, "month_tx": 108_000_000_000i64}, "month_counted_from": "2026-10-21T17:10:00Z"});
         assert_eq!(month_cn(&m), "网卡 ↓ 1.0 TB / ↑ 108.0 GB（2026-10-22 起）");

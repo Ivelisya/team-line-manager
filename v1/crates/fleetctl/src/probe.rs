@@ -33,7 +33,7 @@ fn install_cn(s: &str) -> &str {
 
 
 /// 找一个探测点：id、id 前缀（至少 6 位）、名称（不分大小写）；规则同 `resolve::named`
-fn find(all: &[Value], q: &str) -> anyhow::Result<Value> {
+pub(crate) fn find(all: &[Value], q: &str) -> anyhow::Result<Value> {
     let name = |p: &Value| st(p, "/name");
     resolve::named(all, q, "探测点", &[&name], &name).cloned().map_err(|e| anyhow!("{e}（先 fleetctl probe ls 看列表）"))
 }
@@ -47,6 +47,9 @@ fn row(p: &Value) -> Vec<String> {
     }
     if p["upgrade"].is_object() {
         state.push_str("（升级中）");
+    }
+    if p["maintenance"] == true {
+        state.push_str("（维护中）");
     }
     if let Some(f) = upgrade_failed(p) {
         state.push_str(&format!("（{f}）"));

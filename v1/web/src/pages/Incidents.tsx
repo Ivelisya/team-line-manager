@@ -7,10 +7,11 @@ import { INCIDENT_PAGE, useAck, useAddSilence, useDelSilence, useIncidents, useM
 import { usePage } from '@/lib/usePage';
 import { Pagination } from '@/components/app/Pagination';
 import { useDrawer } from '@/lib/drawer';
-import { isRouterIncident, routerIncidentTab, useRouterDrawer } from '@/lib/routers';
+import { isRouterIncident, routerIncidentTab, useRouterDrawer, useRouters } from '@/lib/routers';
+import { useProbePoints } from '@/lib/probePoints';
 import * as F from '@/lib/format';
 import { errText, severityOf } from '@/lib/derive';
-import type { Incident, Silence } from '@/lib/types';
+import type { Incident, Silence, SilenceKind } from '@/lib/types';
 import { resetOnOpen, useHeld } from '@/lib/useHeld';
 import { useNow } from '@/lib/useNow';
 import { Button, IconButton } from '@/components/ui/button';
@@ -20,7 +21,6 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { collator } from '@/lib/sort';
 import { matchTier, sv } from '@/lib/match';
 import { DurationField, SILENCE_MAX_MIN, useDuration, type DurationItem } from '@/components/app/DurationField';
-import type { MachineBrief } from '@/lib/queries';
 import { SkeletonRows } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
 import { ConfirmDialog, FormDialog } from '@/components/app/dialogs';
@@ -147,6 +147,11 @@ export function IncidentsPage() {
 }
 
 const ALL = '__all__';
+/** 静默对象类型的叫法（同服务端 api/incidents.rs KINDS） */
+const KIND_LABEL: Record<SilenceKind, string> = { machine: '机器', router: '软路由', probe_point: '探测点' };
+/** 对象在确认框、提示里的叫法：机器是名字，软路由、探测点带上类型，全部是「全部机器」（同服务端通知） */
+const subjectText = (s: Pick<Silence, 'subject_kind' | 'subject_name'>) =>
+  !s.subject_name ? '全部机器' : s.subject_kind && s.subject_kind !== 'machine' ? `${KIND_LABEL[s.subject_kind]}「${s.subject_name}」` : `「${s.subject_name}」`;
 const AHEAD_DAYS = 90; // 最多提前 90 天预约（同中控）
 const MIN = 60_000;
 type StartMode = 'now' | 'at';
@@ -194,7 +199,8 @@ function Silences() {
                 const start = Date.parse(s.starts_at); const on = start <= now;
                 return (
                   <tr key={s.id}>
-                    <td><span className="cell-main strong">{s.subject_name ?? '全部机器'}</span>{s.rule && <span className="sub">只静默「{s.rule_name ?? s.rule}」</span>}</td>
+                    <td><span className="cell-main strong">{s.subject_name ?? '全部机器'}</span>
+                      {(s.subject_kind || s.rule) && <span className="sub">{[s.subject_kind && KIND_LABEL[s.subject_kind], s.rule && `只静默「${s.rule_name ?? s.rule}」`].filter(Boolean).join(' · ')}</span>}</td>
                     <td>{s.is_maintenance ? <Pill tone="info" dot="none"><Wrench size={11} />维护</Pill> : <Pill>静默</Pill>}</td>
                     <td>{on ? <Pill tone="ok">进行中</Pill> : <Pill>已预约</Pill>}</td>
                     <td>{F.dt(s.starts_at)} → {F.dt(s.ends_at)}<span className="sub">{on ? `还剩 ${F.span(Date.parse(s.ends_at) - now)}` : `${F.span(start - now)}后开始`}</span></td>
@@ -208,10 +214,10 @@ function Silences() {
         )}
       </Panel>
       <SilenceDialog open={open} onOpenChange={setOpen} preset={preset} />
-      <ConfirmDialog open={!!askDel} onOpenChange={(o) => !o && setAskDel(null)} title={`删除「${delHeld?.subject_name ?? '全部机器'}」的${delHeld?.is_maintenance ? '维护窗口' : '静默'}？`} confirmLabel="删除" danger
+      <ConfirmDialog open={!!askDel} onOpenChange={(o) => !o && setAskDel(null)} title={`删除${delHeld ? subjectText(delHeld) : ''}的${delHeld?.is_maintenance ? '维护窗口' : '静默'}？`} confirmLabel="删除" danger
         description={delHeld && Date.parse(delHeld.starts_at) > now
           ? '删除后，这次预约会取消'
-          : '仍然异常的机器会马上发出告警'}
+          : '仍然异常的对象会马上发出告警'}
         onConfirm={async () => { await del.mutateAsync(askDel!.id); toast.ok(askDel!.is_maintenance ? '已删除维护窗口' : '已删除静默'); }} />
     </>
   );
@@ -222,6 +228,8 @@ function Silences() {
 const SilenceDialog = resetOnOpen(function SilenceDialog({ open, onOpenChange, preset }: { open: boolean; onOpenChange: (o: boolean) => void; preset: string }) {
   const add = useAddSilence();
   const [subject, setSubject] = React.useState(preset);
+  // 预选的是机器（右键菜单、命令面板）；选了软路由、探测点时跟着换
+  const [kind, setKind] = React.useState<SilenceKind | null>(preset ? 'machine' : null);
   const [mode, setMode] = React.useState<StartMode>('now'); const [start, setStart] = React.useState(nextHour);
   const d = useDuration(240, SILENCE_MAX_MIN);
   const [maint, setMaint] = React.useState(false); const [comment, setComment] = React.useState('');
@@ -239,7 +247,7 @@ const SilenceDialog = resetOnOpen(function SilenceDialog({ open, onOpenChange, p
   const startAt = () => (mode === 'now' ? Date.now() : startMs);
   const body = () => {
     const s = startAt();
-    return { subject_id: subject === ALL ? null : subject, starts_at: new Date(s).toISOString(), ends_at: new Date(s + minutes * MIN).toISOString(), is_maintenance: maint, comment: comment.trim() };
+    return { subject_kind: subject === ALL ? null : kind, subject_id: subject === ALL ? null : subject, starts_at: new Date(s).toISOString(), ends_at: new Date(s + minutes * MIN).toISOString(), is_maintenance: maint, comment: comment.trim() };
   };
   const submit = () => add.mutate(body(), { onSuccess: () => { toast.ok(`已创建${what}`); onOpenChange(false); }, onError: toast.err });
   const desc = !d.valid ? (mode === 'now' ? '从现在起' : `${dtMs(startMs)} 起`) : mode === 'now' ? `从现在起 ${F.span(minutes * MIN)}` : `${dtMs(startMs)} → ${dtMs(startMs + minutes * MIN)}`;
@@ -248,8 +256,8 @@ const SilenceDialog = resetOnOpen(function SilenceDialog({ open, onOpenChange, p
       <FormDialog open={open} onOpenChange={onOpenChange} title={`新建${what}`} desc={desc} submitLabel="创建" busy={add.isPending} valid={valid}
         dirty={subject !== preset || mode !== 'now' || d.dur !== 240 || maint || !!comment.trim()}
         onSubmit={() => (subject === ALL ? setAskAll(true) : submit())}>
-        <Field label="对象"><SubjectSelect value={subject} onChange={setSubject} /></Field>
-        {subject === ALL && <Note tone="warn">全部机器不发告警</Note>}
+        <Field label="对象"><SubjectSelect value={subject} onChange={(v, k) => { setSubject(v); setKind(k); }} /></Field>
+        {subject === ALL && <Note tone="warn">全部机器（含软路由、探测点）不发告警</Note>}
         <div className="field">
           <span className="label">开始</span>
           <div className="row">
@@ -263,7 +271,7 @@ const SilenceDialog = resetOnOpen(function SilenceDialog({ open, onOpenChange, p
         <Field label="备注"><Input value={comment} onChange={(e) => setComment(e.target.value)} placeholder="例如：换内核" /></Field>
       </FormDialog>
       <ConfirmDialog open={askAll} onOpenChange={setAskAll} title="静默全部机器？" confirmLabel="静默全部机器" danger
-        description={`从${mode === 'now' ? '现在' : ` ${dtMs(startMs)} `}到 ${dtMs(startAt() + minutes * MIN)}，所有机器都不发告警`}
+        description={`从${mode === 'now' ? '现在' : ` ${dtMs(startMs)} `}到 ${dtMs(startAt() + minutes * MIN)}，所有机器（含软路由、探测点）都不发告警`}
         onConfirm={async () => { await add.mutateAsync(body()); toast.ok(`已创建${what}`); onOpenChange(false); }} />
     </>
   );
@@ -272,35 +280,41 @@ const SilenceDialog = resetOnOpen(function SilenceDialog({ open, onOpenChange, p
 /** 对象搜索同命令面板：名称前缀优先、连续子串（搜「C-01」不命中「C-10」）。keywords 是 [名称, 分组…] */
 const subjectFilter = (_v: string, s: string, kw?: string[]) => matchTier(sv(kw?.[0] ?? '', '', kw?.slice(1).join(' ') ?? ''), s.trim().toLowerCase());
 
-/** 静默对象：可搜索的下拉（名称、团队都能搜），按线路机 / 各团队分组；最前一项「全部机器」。接口一次只收一个对象 */
-function SubjectSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+type SubjectItem = { id: string; name: string; kind: SilenceKind };
+/** 静默对象：可搜索的下拉（名称、团队都能搜），按线路机 / 各团队分组，最后是软路由、探测点；最前一项「全部机器」（软路由、探测点也一起）。接口一次只收一个对象 */
+function SubjectSelect({ value, onChange }: { value: string; onChange: (v: string, kind: SilenceKind | null) => void }) {
   const machines = useMachineBriefs().data;
+  const routers = useRouters().data; const probes = useProbePoints().data;
   const [open, setOpen] = React.useState(false);
-  // 分组随机器列表变（结构共享：只改读数的推送不换引用）
+  // 分组随列表变（结构共享：只改读数的推送不换引用）
   const groups = React.useMemo(() => {
-    const by = new Map<string, MachineBrief[]>();
+    const by = new Map<string, SubjectItem[]>();
     for (const m of machines ?? []) {
       const g = m.kind === 'relay' ? '线路机' : m.team?.name ?? '未分团队';
-      by.set(g, [...(by.get(g) ?? []), m]);
+      by.set(g, [...(by.get(g) ?? []), { id: m.id, name: m.name, kind: 'machine' }]);
     }
-    return [...by].sort(([a], [b]) => (a === '线路机' ? -1 : b === '线路机' ? 1 : collator.compare(a, b)));
-  }, [machines]);
-  const name = value === ALL ? '全部机器' : machines?.find((m) => m.id === value)?.name;
-  const pick = (v: string) => { setOpen(false); onChange(v); };
+    const out = [...by].sort(([a], [b]) => (a === '线路机' ? -1 : b === '线路机' ? 1 : collator.compare(a, b)));
+    if (routers?.length) out.push(['软路由', routers.map((r) => ({ id: r.id, name: r.name, kind: 'router' }))]);
+    if (probes?.length) out.push(['探测点', probes.map((p) => ({ id: p.id, name: p.label, kind: 'probe_point' }))]);
+    return out;
+  }, [machines, routers, probes]);
+  const items = React.useMemo(() => new Map(groups.flatMap(([, l]) => l.map((x) => [x.id, x] as const))), [groups]);
+  const name = value === ALL ? '全部机器' : items.get(value)?.name;
+  const pick = (v: string) => { setOpen(false); onChange(v, items.get(v)?.kind ?? null); };
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button type="button" className="select-trigger cs-trigger" aria-label="对象">
-          <span className={name ? undefined : 't-muted'}>{name ?? '选择机器'}</span><ChevronDown />
+          <span className={name ? undefined : 't-muted'}>{name ?? '选择对象'}</span><ChevronDown />
         </button>
       </PopoverTrigger>
       <PopoverContent className="cs-pop is-wide" align="start">
         {/* 列表只在打开时建（一两百台），关着不占渲染 */}
         {open && (
           <Command loop filter={subjectFilter}>
-            <CommandInput placeholder="搜索机器或团队" />
+            <CommandInput placeholder="搜索机器、团队、软路由或探测点" />
             <CommandList>
-              <CommandEmpty>没有这台机器</CommandEmpty>
+              <CommandEmpty>没有这个对象</CommandEmpty>
               <CommandItem value={ALL} keywords={['全部机器', '所有']} onSelect={pick}><span className="cmd-main">全部机器</span><span className="cmd-aside">所有告警</span>{value === ALL && <Check className="cs-check" />}</CommandItem>
               {groups.map(([g, list]) => (
                 <CommandGroup key={g} heading={g}>

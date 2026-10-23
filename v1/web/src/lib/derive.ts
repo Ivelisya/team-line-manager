@@ -149,10 +149,10 @@ export function quota(m: MachineView) {
 }
 /** 额度格里已用的叫法：滚动 30 天的是「近 30 天已用」 */
 export const quotaUsedLabel = (q: ReturnType<typeof quota>) => (q.rolling ? '近 30 天已用' : '本周期已用');
-/** 额度怎么计的一句话：规则 · 按哪块网卡（家宽代理、同机 IP 节点是业务流量，没有规则） */
+/** 额度怎么计的一句话：规则 · 按哪块网卡（家宽代理、同机 IP 节点没有自己的网卡，按业务流量下载加上传，不跟供应商的计量规则） */
 export function quotaRuleText(m: MachineView) {
   const { rule } = m.quota; const nics = m.agent?.nic_ifaces;
-  return rule ? (nics?.length ? `按 ${nics.join('、')} 网卡，${trafficRuleLabel(rule)}` : trafficRulePlain(rule)) : '按业务流量';
+  return rule ? (nics?.length ? `按 ${nics.join('、')} 网卡，${trafficRuleLabel(rule)}` : trafficRulePlain(rule)) : '按业务流量，下载加上传';
 }
 /** 流量周期（费用页签）：「每月 13 号重置（跟随供应商：按账单日）· 10-13 → 11-13」，滚动 30 天「滚动 30 天（跟随供应商）」 */
 export function quotaCycleText(m: MachineView) {

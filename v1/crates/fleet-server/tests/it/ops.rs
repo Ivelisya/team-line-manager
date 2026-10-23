@@ -688,7 +688,7 @@ async fn migration_0029_normalizes_existing_rows() {
     assert_eq!(ports, [(host, Some(2222)), (ipn, None)]);
     let cur: (String, String, String) = sqlx::query_as("select (select currency from plan), (select currency from subscription), (select currency from renewal)").fetch_one(db).await.unwrap();
     assert_eq!(cur, ("USD".into(), "CNY".into(), "CNY".into()));
-    let subj: Vec<Option<Uuid>> = sqlx::query_scalar("select subject_id from silence order by subject_id nulls last").fetch_all(db).await.unwrap();
+    let subj: Vec<Option<Uuid>> = sqlx::query_scalar("select machine_id from silence order by machine_id nulls last").fetch_all(db).await.unwrap();
     assert_eq!(subj, [Some(ipn), None], "对象已不存在的静默删掉");
     // 约束都验证过了（存量合规）
     let unvalidated: i64 = sqlx::query_scalar("select count(*) from pg_constraint where conname in ('plan_currency_iso', 'subscription_currency_iso', 'renewal_currency_iso', 'notify_channel_kind_check') and not convalidated and connamespace = (select oid from pg_namespace where nspname = current_schema())").fetch_one(db).await.unwrap();
@@ -696,7 +696,7 @@ async fn migration_0029_normalizes_existing_rows() {
 
     // 外键：删机器连带它的静默；同机 IP 节点不能再存 SSH 端口；email 渠道、非 3 字母币种写不进来
     q("delete from machine where host_id is not null").await;
-    let n: i64 = sqlx::query_scalar("select count(*) from silence where subject_id is not null").fetch_one(db).await.unwrap();
+    let n: i64 = sqlx::query_scalar("select count(*) from silence where machine_id is not null").fetch_one(db).await.unwrap();
     assert_eq!(n, 0);
     for bad in [
         "insert into machine (id, kind, team_id, number, primary_ip, host_id, lifecycle) select gen_random_uuid(), 'vps', team_id, 9, '203.0.113.9', id, 'active' from machine",

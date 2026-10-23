@@ -7,6 +7,9 @@
 //! - 恢复后 30 分钟内同一 (规则, 对象) 又成立（`ready`）：重开原告警（`reopen_count` +1、清掉确认），不新建；悄悄关掉的（带 closed_by：对象删了、停用了、来源画像过期）不重开；
 //! - 重开时已报过恢复的，距那条恢复通知满 5 分钟才发「触发」（不满则等满 5 分钟仍在触发再发），恢复只在上次恢复通知之后发过触发 / 提醒时才报：
 //!   反复抖动的告警每 5 分钟最多一对触发 / 恢复，真故障最多晚 5 分钟报。被静默的不发任何通知。
+//!
+//! 维护窗口（软路由、探测点；全局维护也算）同机器：开着的告警保持原状（不改、不恢复、不发通知），不开新的；
+//! 维护结束后按那时的状态再判。对象删了、停用了这类悄悄关掉（`Close::Quiet`）的照关。
 
 use crate::alerts::{due, rank, same_summary, told_firing, REOPEN_WINDOW_S, TOLD_RESOLVED_SQL};
 use crate::notify::{self, Kind, Notice};
@@ -34,6 +37,9 @@ pub enum Engine {
 }
 
 impl Engine {
+    /// 这个引擎的对象能开维护窗口、维护中冻结开着的告警（机器的维护由 alerts.rs 自己处理；中控、来源画像没有维护的说法，维护对它们只是静默）
+    const fn has_maintenance(self) -> bool { matches!(self, Engine::Router | Engine::Probe) }
+
     /// `incident.engine` 里存的值
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -131,7 +137,13 @@ pub async fn reconcile<'n>(
     };
     let mut t = Tally::default();
     let mut touch: Vec<Uuid> = vec![];
+    let maintenance = |id: Uuid| engine.has_maintenance() && silences.maintenance(id);
     for w in want {
+        // 维护中：开着的保持原状（从 open 里拿走，下面也不当成恢复），不开新的
+        if maintenance(w.subject) {
+            open.remove(&(w.rule.to_string(), w.subject));
+            continue;
+        }
         let summary = format!("{}：{}", w.name, w.text);
         let silenced = silences.matches(w.rule, w.subject);
         if let Some(inc) = open.remove(&(w.rule.to_string(), w.subject)) {
@@ -216,6 +228,7 @@ pub async fn reconcile<'n>(
     for inc in open.into_values() {
         let (closed_by, name) = match close(&inc) {
             Close::Keep => continue,
+            Close::Resolve(_) if maintenance(inc.subject_id) => continue,
             Close::Resolve(name) => (json!({}), Some(name)),
             Close::Quiet(by) => (json!({"closed_by": by}), None),
         };

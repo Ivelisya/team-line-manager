@@ -345,6 +345,61 @@ async fn reenabled_probe_is_not_blind() {
     assert_eq!(t.count("select count(*) from incident where rule = 'probe_point_offline'").await, 0);
 }
 
+/// 探测点 10 分钟没上报（也没有被采纳的轮次）：离线
+async fn go_offline(t: &T, id: Uuid) {
+    sqlx::query("update probe_point set last_seen_at = now() - interval '10 minutes', last_kept_at = now() - interval '10 minutes' where id = $1").bind(id).execute(&t.st.db).await.unwrap();
+}
+
+/// 单个探测点的维护窗口与静默（同机器）：维护中离线不开告警；开着的保持（回来了也不恢复）、到期后再判；列表显示维护中；
+/// 只静默离线这条规则的不开；删探测点连带删它的静默
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn probe_point_maintenance_and_silence() {
+    let t = setup().await;
+    let (hk, hk_tok) = add_probe(&t, "香港").await;
+    let (tk, tk_tok) = add_probe(&t, "东京").await;
+    report(&t, hk, &hk_tok, &[]).await;
+    report(&t, tk, &tk_tok, &[]).await;
+    let now = OffsetDateTime::now_utc();
+    let at = |m: i64| (now + time::Duration::minutes(m)).format(&time::format_description::well_known::Rfc3339).unwrap();
+    const FIRING: &str = "select count(*) from incident where rule = 'probe_point_offline' and state = 'firing'";
+    let maint = |id: Uuid| json!({"subject_kind": "probe_point", "subject_id": id, "is_maintenance": true, "starts_at": at(-1), "ends_at": at(60), "comment": "换机房"});
+
+    // 维护中离线：不开新的；列表与静默列表写明
+    let w = t.post("/api/v1/silences", maint(hk)).await["id"].as_str().unwrap().to_string();
+    let ps = t.get("/api/v1/probe-points").await;
+    let m: Vec<(&str, bool)> = ps.as_array().unwrap().iter().map(|p| (p["name"].as_str().unwrap(), p["maintenance"].as_bool().unwrap())).collect();
+    assert_eq!(m, [("香港", true), ("东京", false)]);
+    let list = t.get("/api/v1/silences").await;
+    assert_eq!((list[0]["subject_kind"].as_str(), list[0]["subject_name"].as_str()), (Some("probe_point"), Some("香港")), "{list}");
+    go_offline(&t, hk).await;
+    probe_points::check_once(&t.st, OffsetDateTime::now_utc()).await.unwrap();
+    assert_eq!(t.count(FIRING).await, 0, "维护中不开");
+    // 结束维护：照报
+    t.req("DELETE", &format!("/api/v1/silences/{w}"), None, None).await;
+    probe_points::check_once(&t.st, OffsetDateTime::now_utc()).await.unwrap();
+    assert_eq!(t.count(FIRING).await, 1);
+    // 再开维护、探测点回来：开着的保持，到期后恢复
+    let w = t.post("/api/v1/silences", maint(hk)).await["id"].as_str().unwrap().to_string();
+    report(&t, hk, &hk_tok, &[]).await;
+    probe_points::check_once(&t.st, OffsetDateTime::now_utc()).await.unwrap();
+    assert_eq!(t.count(FIRING).await, 1, "维护中开着的保持");
+    sqlx::query("update silence set ends_at = now() - interval '1 second' where id = $1::uuid").bind(&w).execute(&t.st.db).await.unwrap();
+    probe_points::check_once(&t.st, OffsetDateTime::now_utc()).await.unwrap();
+    assert_eq!(t.count(FIRING).await, 0, "到期后按那时的状态恢复");
+
+    // 只静默东京的离线：不开；规则要是探测点的
+    let (s, v) = t.req("POST", "/api/v1/silences", Some(json!({"subject_kind": "probe_point", "subject_id": tk, "rule": "router_offline", "starts_at": at(-1), "ends_at": at(60)})), None).await;
+    assert_eq!((s, v["error"]["message"].as_str()), (StatusCode::BAD_REQUEST, Some("「软路由离线」不是探测点的告警规则")));
+    t.post("/api/v1/silences", json!({"subject_kind": "probe_point", "subject_id": tk, "rule": "probe_point_offline", "starts_at": at(-1), "ends_at": at(60)})).await;
+    go_offline(&t, tk).await;
+    probe_points::check_once(&t.st, OffsetDateTime::now_utc()).await.unwrap();
+    assert_eq!(t.count(FIRING).await, 0);
+
+    // 删探测点：它的静默一起删
+    assert_eq!(t.req("DELETE", &format!("/api/v1/probe-points/{tk}"), None, None).await.0, StatusCode::OK);
+    assert_eq!(t.count(&format!("select count(*) from silence where probe_point_id = '{tk}'")).await, 0);
+}
+
 /// 入口表的最近一次检查不算早于入口创建的：端口以前被别的入口用过（0050 之前复用过，或推算偏低），保留期里还留着它的检查
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn entry_reach_ignores_checks_before_entry() {

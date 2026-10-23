@@ -256,7 +256,9 @@ export interface Incident {
   reopen_count: number;
 }
 /** 静默：subject_id 为 null = 全部机器，rule 为 null = 全部规则（rule_name 是规则中文名，同告警）。列表只有没结束的：进行中的与已预约的（starts_at 还没到） */
-export interface Silence { id: string; subject_id: string | null; subject_name: string | null; rule: string | null; rule_name: string | null; starts_at: string; ends_at: string; is_maintenance: boolean; comment: string }
+/** 静默 / 维护窗口的对象类型；全部为 null */
+export type SilenceKind = 'machine' | 'router' | 'probe_point';
+export interface Silence { id: string; subject_kind: SilenceKind | null; subject_id: string | null; subject_name: string | null; rule: string | null; rule_name: string | null; starts_at: string; ends_at: string; is_maintenance: boolean; comment: string }
 /** currency：登记时订阅的币种（之后改订阅币种，这条的金额不跟着变） */
 export interface Renewal { id: string; old_due: string | null; new_due: string; amount_cents: number | null; currency: string; note: string | null; actor: string; created_at: string }
 /** 审计：界面只显示 title 与 summary（服务端生成的中文）；detail 是原始 JSON，不要直接渲染 */

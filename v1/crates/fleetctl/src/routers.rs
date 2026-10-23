@@ -74,6 +74,9 @@ fn row(r: &Value) -> Vec<String> {
     if let Some(d) = r["deploy"]["state"].as_str().filter(|d| *d != "done") {
         state.push_str(&format!("（{}）", deploy_cn(d)));
     }
+    if r["maintenance"] == true {
+        state.push_str("（维护中）");
+    }
     vec![
         st(r, "/name"),
         r["team"]["name"].as_str().unwrap_or("-").to_string(),
@@ -125,7 +128,7 @@ fn human_show(d: &Value) -> String {
     let mut kv: Vec<(&str, String)> = vec![
         ("名称", st(d, "/name")),
         ("团队", d["team"]["name"].as_str().unwrap_or("-").into()),
-        ("状态", state_cn(&st(d, "/state")).into()),
+        ("状态", format!("{}{}", state_cn(&st(d, "/state")), if d["maintenance"] == true { "（维护中：不开新告警，开着的保持）" } else { "" })),
         ("最近在线", table::ts(&st(d, "/last_seen_at"))),
         ("隧道端口", st(d, "/tunnel_port")),
     ];

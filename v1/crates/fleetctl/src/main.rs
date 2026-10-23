@@ -118,14 +118,20 @@ enum PolicyCmd {
 enum SilenceCmd {
     /// 进行中与已预约的静默（含维护窗口），进行中的在前
     Ls,
-    /// 新建静默：一台机器，或 --all（全部机器，要 --yes）。--start 预约开始时间
+    /// 新建静默：一台机器、--router 一台软路由、--probe 一个探测点，或 --all（全部，要 --yes）。--start 预约开始时间
     Add {
         /// 机器（id / 显示名 / 线路机名 / IP）
         machine: Option<String>,
-        /// 静默全部机器
+        /// 软路由（id / 名称，见 fleetctl routers）
+        #[arg(long, value_name = "软路由")]
+        router: Option<String>,
+        /// 探测点（id / 名称，见 fleetctl probe ls）
+        #[arg(long, value_name = "探测点")]
+        probe: Option<String>,
+        /// 静默全部机器（软路由、探测点也一起）
         #[arg(long)]
         all: bool,
-        /// 只静默这条告警规则（规则 key，如 agent_offline；不填 = 全部规则）
+        /// 只静默这条告警规则（规则 key，如 agent_offline、router_exits_down；要是这类对象的规则；不填 = 全部规则）
         #[arg(long)]
         rule: Option<String>,
         /// 开始时间，组织时区（中控的 org_timezone，默认北京时间；同表格）：2026-10-23 02:00（别的时区写带时区的 2026-10-23T02:00:00+09:00）；不填 = 现在，最多提前 90 天
@@ -134,7 +140,7 @@ enum SilenceCmd {
         /// 时长：30m / 4h / 2d，可组合（1h30m）；最长 30 天
         #[arg(long = "for", value_name = "DURATION")]
         dur: String,
-        /// 标成维护：卡片显示「维护」，期间暂停健康判定（针对整台机器，不能和 --rule 一起用）
+        /// 标成维护：卡片显示「维护」，机器暂停健康判定，软路由、探测点开着的告警保持、不开新的（针对整个对象，不能和 --rule 一起用）
         #[arg(long)]
         maintenance: bool,
         #[arg(long)]
@@ -866,9 +872,20 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Cmd::Ack { id } => cmds::ack(x, &id),
         Cmd::Silence { cmd } => match cmd {
             SilenceCmd::Ls => silence::ls(x),
-            SilenceCmd::Add { machine, all, rule, start, dur, maintenance, comment, yes } => silence::add(
+            SilenceCmd::Add { machine, router, probe, all, rule, start, dur, maintenance, comment, yes } => silence::add(
                 x,
-                silence::AddOpts { machine: machine.as_deref(), all, rule: rule.as_deref(), start: start.as_deref(), dur: &dur, maintenance, comment: comment.as_deref(), yes },
+                silence::AddOpts {
+                    machine: machine.as_deref(),
+                    router: router.as_deref(),
+                    probe: probe.as_deref(),
+                    all,
+                    rule: rule.as_deref(),
+                    start: start.as_deref(),
+                    dur: &dur,
+                    maintenance,
+                    comment: comment.as_deref(),
+                    yes,
+                },
             ),
             SilenceCmd::Rm { id } => silence::rm(x, &id),
         },

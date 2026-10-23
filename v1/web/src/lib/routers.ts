@@ -31,6 +31,8 @@ export interface RouterView {
   id: string; name: string; team: { id: string; name: string } | null; note: string; tunnel_port: number; created_at: string;
   /** offline / pending 时是连不上的原因；online 时有值 = 连得上但采集出错（summary / detail 是上一次成功采集的） */
   state: RouterState; last_seen_at: string | null; error: string | null; summary: RouterSummary | null; deploy: RouterDeploy | null;
+  /** 在维护窗口里（自己的或「全部」的）：开着的告警保持、不开新的、不发通知 */
+  maintenance: boolean;
 }
 export interface RouterIface { name: string; device: string; up: boolean; proto: string; ip: string | null; uptime_s: number | null; rx_bps: number; tx_bps: number; rx_bytes: number; tx_bytes: number }
 /** ok：参数与 fleet 入口一致；drift：server:port 对上了，但 uuid / reality 参数不一致；unmanaged：没对上任何 fleet 入口 */

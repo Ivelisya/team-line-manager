@@ -267,8 +267,8 @@ impl Row {
 
     pub fn snapshot(&self) -> Option<collect::Snapshot> { self.data.clone().and_then(|d| serde_json::from_value(d).ok()) }
 
-    /// 接口里的 Router；`detail` 为真时加上完整快照
-    pub fn view(&self, detail: bool) -> Value {
+    /// 接口里的 Router；`detail` 为真时加上完整快照。`maintenance`：在维护窗口里（自己的或全局的，见 silence.rs）
+    pub fn view(&self, detail: bool, maintenance: bool) -> Value {
         let snap = self.snapshot();
         let deploy = self.deploy_state.as_ref().map(|s| {
             json!({
@@ -290,6 +290,7 @@ impl Row {
             "summary": snap.as_ref().map(collect::summary),
             "deploy": deploy,
             "bootstrap_expires_at": rfc(self.bootstrap_expires_at),
+            "maintenance": maintenance,
         });
         if detail {
             v["detail"] = snap.map(|s| serde_json::to_value(s).unwrap_or_default()).unwrap_or(Value::Null);
