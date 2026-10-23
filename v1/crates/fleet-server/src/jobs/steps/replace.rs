@@ -484,7 +484,7 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
         c.set_params(json!({"routers_applied": applied})).await?;
         let what: Vec<String> = ed.iter().map(|e| format!("{} {}:{} → {}:{}", e.exit, e.old_server, e.old_port, e.server, e.port)).collect();
         c.log(format!("软路由「{}」：改出口 {}（先备份，改完重启 OpenClash 并测延迟）", r.name, what.join("，"))).await;
-        let res = ssh::exec(tunnel::via_tunnel(&c.st.cfg, r.id, r.tunnel_port), &rr::apply_script(&ed, t, &pins), rr::APPLY_TIMEOUT).await;
+        let res = run_script(c, r.id, &r.name, r.tunnel_port, &rr::apply_script(&ed, t, &pins), "apply", &stamp, rr::APPLY_TIMEOUT).await;
         let (kind, why, self_undone) = match res {
             Ok(o) if o.ok() && o.kv("replace") == Some("ok") => {
                 let delays: Vec<String> = (1..=ed.len()).map(|i| format!("{} {} ms", ed[i - 1].exit, o.kv(&format!("delay_{i}")).unwrap_or("?"))).collect();
@@ -525,6 +525,38 @@ pub(super) async fn routers(c: &Ctx<'_>) -> anyhow::Result<Outcome> {
     Ok(Outcome::Done(out))
 }
 
+/// 隧道断了之后等它回连、取结果的时长上限（路由上 fleet-tunnel 断线后约 10 秒重连，中控这边旧的转发端口释放还要一会儿）
+const RECONNECT: Duration = Duration::from_secs(180);
+
+/// 在路由上跑改配置 / 改回的脚本（`mode`、`stamp` 同脚本的 MODE、STAMP）。连上之后断了（路由自身流量走 OpenClash 时，
+/// 脚本里重启 OpenClash 会掐断隧道和这条 ssh）：脚本在路由上照样跑完、结果留在文件里（routers::replace 的 SCRIPT），
+/// 等隧道回连后取回它的结果，按正常跑完处理。取不到（RECONNECT 内连不回来、路由上没有结果）就返回断掉的那次
+#[allow(clippy::too_many_arguments)]
+async fn run_script(c: &Ctx<'_>, id: Uuid, name: &str, port: i32, script: &str, mode: &str, stamp: &str, timeout: Duration) -> anyhow::Result<ssh::Output> {
+    let o = ssh::exec(tunnel::via_tunnel(&c.st.cfg, id, port), script, timeout).await?;
+    if o.code != 255 || never_ran(&o) || o.ssh_kind() == Some(ErrKind::HostKey) {
+        return Ok(o);
+    }
+    c.log(format!("软路由「{name}」：连接中途断了（重启 OpenClash 会断开经它的隧道），脚本在路由上接着跑，等隧道回连后取结果")).await;
+    let deadline = tokio::time::Instant::now() + RECONNECT;
+    loop {
+        tunnel::close_master(&c.st.cfg, id).await;
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        // 按路由现在的隧道端口（期间重新接入会换）
+        let port: Option<i32> = sqlx::query_scalar("select tunnel_port from router where id = $1").bind(id).fetch_optional(&c.st.db).await?;
+        let Some(port) = port else { return Ok(o) };
+        match ssh::exec(tunnel::via_tunnel(&c.st.cfg, id, port), &rr::fetch_script(mode, stamp), rr::FETCH_TIMEOUT).await {
+            Ok(f) if f.code == rr::NO_RESULT => return Ok(o),
+            Ok(f) if f.code != 255 => {
+                c.log(format!("软路由「{name}」：隧道回连了，取回路由上的结果")).await;
+                return Ok(f);
+            }
+            _ if tokio::time::Instant::now() >= deadline => return Ok(o),
+            _ => {}
+        }
+    }
+}
+
 /// 一台路由上本作业写的出口改回（先等它的锁）。没改回返回原因。隧道端口按路由现在的（卡住期间重新接入会换端口）
 async fn revert_one(c: &Ctx<'_>, locks: &mut Locks<'_>, a: &Applied) -> anyhow::Result<Result<(), String>> {
     locks.wait(a.id).await?;
@@ -534,7 +566,7 @@ async fn revert_one(c: &Ctx<'_>, locks: &mut Locks<'_>, a: &Applied) -> anyhow::
     };
     let port: Option<i32> = sqlx::query_scalar("select tunnel_port from router where id = $1").bind(a.id).fetch_optional(&c.st.db).await?;
     let Some(port) = port else { return Ok(Err("这台软路由已经删掉了".into())) };
-    let out = ssh::exec(tunnel::via_tunnel(&c.st.cfg, a.id, port), &rr::rollback_script(&a.stamp, &back), rr::ROLLBACK_TIMEOUT).await;
+    let out = run_script(c, a.id, &a.name, port, &rr::rollback_script(&a.stamp, &back), "rollback", &a.stamp, rr::ROLLBACK_TIMEOUT).await;
     Ok(match out {
         Ok(o) if o.ok() && matches!(o.kv("rollback"), Some("ok" | "none")) => {
             // 之后被别的作业改走的出口没动：记一行

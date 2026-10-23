@@ -5,6 +5,8 @@
 //!   脚本不回显它们，作业日志、错误里只写出口名与 server:port。改回也带这组参数（只用来核对「现在仍是本作业写的」）。
 //! - 临时文件每次独立：工作目录 `mktemp -d /tmp/fleet-replace.XXXXXX`、配置旁的临时文件 `mktemp $CFG.fleet-tmp.XXXXXX`，退出（含被信号终止）时删。
 //!   外层超时后中控杀掉本地 ssh、路由上的旧脚本可能还在跑，它和紧接着的改回不会抢同一个临时文件。
+//! - 路由自身流量走 OpenClash（router_self_proxy）时，重启 OpenClash 会掐断隧道和中控这条 ssh：改配置 / 改回的主体在后台跑（不理 HUP / PIPE），
+//!   输出与退出码写进 /tmp/fleet-replace.res.<MODE>.<STAMP>.*，前台等它跑完原样转出、删掉；连接断了，中控等隧道回连后用 [`fetch_script`] 取回（jobs/steps/replace.rs 的 run_script）。
 //! - 改的是源配置（`uci get openclash.config.config_path`，OpenClash 重启时由它生成运行配置）。
 //!   团队1 旁路由（team2 那台）上的看门服务会用模板重新生成配置，但它以当前配置为准、会自动写回模板，不用特殊处理。
 //! - 只改「- name: 出口名」（名字带不带引号都认；name 不在第一行也认）这个列表项里、字段那一层的 server / port / uuid / servername（或 sni），
@@ -144,8 +146,8 @@ W=$(mktemp -d /tmp/fleet-replace.XXXXXX) || exit 2
 TMP=
 cleanup() { rm -rf "$W"; if [ -n "$TMP" ]; then rm -f "$TMP"; fi; }
 trap cleanup EXIT
-trap 'exit 1' HUP INT TERM PIPE
-say() { echo "fleet：$*" >&2; }
+trap 'exit 1' INT TERM
+say(){ echo "fleet：$*" >&2; }
 CFG=$(uci -q get openclash.config.config_path 2>/dev/null || true)
 if [ -z "$CFG" ] || [ ! -f "$CFG" ]; then say "OpenClash 的源配置（uci openclash.config.config_path）不存在：${CFG:-没有设置}"; exit 2; fi
 BKDIR=/etc/fleet-backup/openclash
@@ -414,8 +416,44 @@ while [ "$i" -le "$N" ]; do
 done
 echo replace=ok
 }
-main </dev/null
+# 路由自身流量走 OpenClash（router_self_proxy）时，重启 OpenClash 会掐断隧道和这条 ssh：main 在后台跑、不理 HUP / PIPE，
+# 输出写进 $RES.*，这边等它跑完原样转出；这条连接断了，中控等隧道回连后用 fetch_script 取结果
+umask 077
+RES="/tmp/fleet-replace.res.$MODE.$STAMP"
+rm -f "$RES.out" "$RES.err" "$RES.rc"
+( trap '' HUP PIPE; ( main ) >"$RES.out" 2>"$RES.err"; echo "$?" > "$RES.rc.tmp" && mv -f "$RES.rc.tmp" "$RES.rc" ) </dev/null >/dev/null 2>&1 &
+wait $!
+cat "$RES.out"; cat "$RES.err" >&2
+rc=$(cat "$RES.rc" 2>/dev/null || echo 1)
+rm -f "$RES.out" "$RES.err" "$RES.rc"
+exit "$rc"
 "#;
+
+/// 结果文件不在（脚本没开始跑，或结果已经取走）的退出码
+pub const NO_RESULT: i32 = 5;
+/// 等脚本跑完的时长上限（路由上）：改配置 + 重启 + 等 API + 测延迟
+pub const FETCH_WAIT: u32 = 360;
+/// 取结果的外层时长上限
+pub const FETCH_TIMEOUT: Duration = Duration::from_secs(FETCH_WAIT as u64 + 30);
+
+/// 取回 `apply_script` / `rollback_script`（`mode` 为 apply / rollback，`stamp` 同它们的 STAMP）在后台跑出的结果：等它跑完，
+/// 原样输出 stdout / stderr、以它的退出码退出，并删掉结果文件。没有结果文件以 [`NO_RESULT`] 退出
+pub fn fetch_script(mode: &str, stamp: &str) -> String {
+    vars(&[("MODE", mode), ("STAMP", stamp), ("WAIT", &FETCH_WAIT.to_string())])
+        + &format!(
+            r#"
+RES="/tmp/fleet-replace.res.$MODE.$STAMP"
+if [ ! -f "$RES.out" ] && [ ! -f "$RES.rc" ]; then echo "fleet：路由上没有这次的结果（脚本没开始跑，或结果已经取走）" >&2; exit {NO_RESULT}; fi
+t=0
+while [ ! -f "$RES.rc" ] && [ "$t" -lt "$WAIT" ]; do sleep 2; t=$((t + 2)); done
+if [ ! -f "$RES.rc" ]; then echo "fleet：路由上的脚本 $WAIT 秒内还没跑完" >&2; exit 6; fi
+cat "$RES.out" 2>/dev/null; cat "$RES.err" >&2 2>/dev/null
+rc=$(cat "$RES.rc")
+rm -f "$RES.out" "$RES.err" "$RES.rc"
+exit "$rc"
+"#
+        )
+}
 
 #[cfg(test)]
 mod tests {
@@ -454,7 +492,8 @@ mod tests {
         let s = apply_script(&[edit("节点01"), Edit { exit: "it's".into(), ..edit("x") }], at("20261023-073012Z"), &["20261020-000001Z".into(), "20261021-000002Z".into()]);
         assert!(s.starts_with("MODE='apply'\nSTAMP='20261023-073012Z'\nKEEP='20261016-073012Z'\nMAXBK='30'\nPIN='20261020-000001Z 20261021-000002Z'\nN='2'\nDELAY_URL='https%3A%2F%2Fwww.gstatic.com%2Fgenerate_204'\n"), "{}", &s[..200]);
         assert!(s.contains("NAME_1='节点01'\n") && s.contains(&format!("UUID_1='{UUID_NEW}'\n")) && s.contains("NAME_2='it'\\''s'\n"));
-        assert!(s.trim_end().ends_with("main </dev/null"));
+        // 主体在后台跑（不理 HUP），前台等它跑完再按它的退出码退出
+        assert!(s.contains("( trap '' HUP PIPE; ( main ) >\"$RES.out\"") && s.trim_end().ends_with("exit \"$rc\""));
         // 结束标记不能被参数里的内容提前结束；脚本本身不回显凭据
         assert_eq!(SCRIPT.matches("\nFLEET_AWK\n").count(), 1);
         for leak in ["$UUID_", "$PBK_", "$SID_", "$SECRET\""] {
@@ -727,6 +766,29 @@ rules:\n- MATCH,节点01组\n";
             let o = f.run(&apply_script(&[edit("节点01")], at(S), &[]).replace("WAIT_API='120'", "WAIT_API='0'"), &[("节点01", 5)]);
             assert_eq!((o.code, o.kv("rolled_back")), (3, Some("1")), "{o:?}");
             assert_eq!(f.read("etc/openclash/config/c.yaml"), CONFIG);
+        }
+    }
+
+    /// 连接断了之后取结果：脚本在后台跑完留下的输出与退出码原样取回、取完就删；没有结果文件单独的退出码
+    #[cfg(unix)]
+    #[test]
+    fn fetch_returns_detached_result() {
+        for bb in shells() {
+            let f = Fake::new(CONFIG, bb);
+            let o = f.run(&fetch_script("apply", S), &[]);
+            assert!(o.code == NO_RESULT && o.stderr.contains("fleet：路由上没有这次的结果"), "busybox={bb} {o:?}");
+            // 前台被掐断时结果文件留在路由上（这里手写一份同样的）
+            let res = |ext: &str| f.path(&format!("w.res.apply.{S}.{ext}"));
+            std::fs::write(res("out"), "backup=/x\nreplace=ok\n").unwrap();
+            std::fs::write(res("err"), "fleet：说明\n").unwrap();
+            std::fs::write(res("rc"), "0\n").unwrap();
+            let o = f.run(&fetch_script("apply", S), &[]);
+            assert_eq!((o.code, o.kv("replace"), o.stderr.as_str()), (0, Some("ok"), "fleet：说明\n"), "busybox={bb} {o:?}");
+            f.assert_no_leftovers();
+            // 正常跑完（连接没断）：前台原样转出，结果文件不留
+            assert_eq!(f.run(&apply_script(&[edit("节点01")], at(S), &[]), &[("节点01", 9)]).kv("replace"), Some("ok"));
+            assert_eq!(f.run(&fetch_script("apply", S), &[]).code, NO_RESULT);
+            f.assert_no_leftovers();
         }
     }
 }
